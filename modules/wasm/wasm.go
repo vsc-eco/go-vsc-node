@@ -33,7 +33,8 @@ func (w *Wasm) Stop() error {
 }
 
 func (w *Wasm) Execute(byteCode []byte, gas uint, entrypoint string, args string) (string, error) {
-	vm := wasmedge.NewVMWithConfig(wasmedge.NewConfigure())
+	vm := wasmedge.NewVM()
+	defer vm.Release()
 	err := vm.RegisterWasmBuffer("contract", byteCode)
 	if err != nil {
 		return "", err
