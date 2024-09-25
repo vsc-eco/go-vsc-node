@@ -16,13 +16,19 @@ func New(db *db.Db) *Streamer {
 }
 
 func (s *Streamer) Init() error {
-	panic("unimplemented")
+
+	return nil
+	// panic("unimplemented")
 }
 
 func (s *Streamer) Start() error {
-	panic("unimplemented")
+
+	return nil
+	// panic("unimplemented")
 }
 
 func (s *Streamer) Stop() error {
-	panic("unimplemented")
+
+	return nil
+	// panic("unimplemented")
 }
