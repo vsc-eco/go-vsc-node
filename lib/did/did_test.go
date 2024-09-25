@@ -12,28 +12,19 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestProviderwithBadLengthedSeed(t *testing.T) {
-	// invalid seed (not 32 bytes)
-	invalidSeed := []byte("short")
-	_, err := did.NewEd25519Provider(invalidSeed)
-	assert.Equal(t, did.ErrInvalidSeed, err)
-}
-
 func TestNewEd25519Provider(t *testing.T) {
 	// seed must be 32 bytes
-	seed := []byte("short")
-	_, err := did.NewEd25519Provider(seed)
-	assert.Equal(t, did.ErrInvalidSeed, err)
-
+	seed := [32]byte{}
+	copy(seed[:], "anAbsoluteUnitOfAHumongousFoobar")
 	// use the random high-entropy seed to gen a new ed25519 key pair (32-bytes)
-	seed = []byte("anAbsoluteUnitOfAHumongousFoobar")
-	_, err = did.NewEd25519Provider(seed)
+	_, err := did.NewEd25519Provider(seed)
 	assert.Nil(t, err)
 }
 
 func TestSettingGettingDID(t *testing.T) {
 	// create provider
-	seed := []byte("asuperduperfoobarthatisthelength")
+	seed := [32]byte{}
+	copy(seed[:], "asuperduperfoobarthatisthelength")
 	provider, err := did.NewEd25519Provider(seed)
 	assert.Nil(t, err)
 
@@ -49,7 +40,8 @@ func TestDIDValidity(t *testing.T) {
 	assert.False(t, invalidDID.IsValid())
 
 	// valid
-	seed := []byte("asuperduperfoobarthatisthelength")
+	seed := [32]byte{}
+	copy(seed[:], "asuperduperfoobarthatisthelength")
 	provider, err := did.NewEd25519Provider(seed)
 	assert.Nil(t, err)
 	assert.True(t, provider.DID().IsValid())
@@ -57,7 +49,8 @@ func TestDIDValidity(t *testing.T) {
 
 func TestCreateAndVerifyJWS(t *testing.T) {
 	// create provider
-	seed := []byte("asuperduperfoobarthatisthelength")
+	seed := [32]byte{}
+	copy(seed[:], "asuperduperfoobarthatisthelength")
 	provider, err := did.NewEd25519Provider(seed)
 	assert.Nil(t, err)
 
@@ -86,7 +79,8 @@ func TestCreateAndVerifyJWS(t *testing.T) {
 
 func TestCreateAndDecryptJWE(t *testing.T) {
 	// create provider
-	seed := []byte("asuperduperfoobarthatisthelength")
+	seed := [32]byte{}
+	copy(seed[:], "asuperduperfoobarthatisthelength")
 	provider, err := did.NewEd25519Provider(seed)
 	assert.Nil(t, err)
 
@@ -116,7 +110,8 @@ func TestCreateAndDecryptJWE(t *testing.T) {
 
 func TestInvalidDIDForJWE(t *testing.T) {
 	// create provider
-	seed := []byte("asuperduperfoobarthatisthelength")
+	seed := [32]byte{}
+	copy(seed[:], "asuperduperfoobarthatisthelength")
 	provider, err := did.NewEd25519Provider(seed)
 	assert.Nil(t, err)
 
@@ -136,7 +131,8 @@ func TestInvalidDIDForJWE(t *testing.T) {
 
 func TestTamperedPayloadJWE(t *testing.T) {
 	// create provider
-	seed := []byte("asuperduperfoobarthatisthelength")
+	seed := [32]byte{}
+	copy(seed[:], "asuperduperfoobarthatisthelength")
 	provider, err := did.NewEd25519Provider(seed)
 	assert.Nil(t, err)
 
@@ -167,7 +163,8 @@ func TestTamperedPayloadJWE(t *testing.T) {
 
 func TestInvalidSignatureJWS(t *testing.T) {
 	// create provider
-	seed := []byte("asuperduperfoobarthatisthelength")
+	seed := [32]byte{}
+	copy(seed[:], "asuperduperfoobarthatisthelength")
 	provider, err := did.NewEd25519Provider(seed)
 	assert.Nil(t, err)
 
@@ -206,7 +203,8 @@ func TestInvalidSignatureJWS(t *testing.T) {
 
 func TestHugePayload(t *testing.T) {
 	// create provider
-	seed := []byte("asuperduperfoobarthatisthelength")
+	seed := [32]byte{}
+	copy(seed[:], "asuperduperfoobarthatisthelength")
 	provider, err := did.NewEd25519Provider(seed)
 	assert.Nil(t, err)
 

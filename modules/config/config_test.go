@@ -1,8 +1,8 @@
 package config_test
 
 import (
+	"config/config"
 	"testing"
-	"vsc-node/modules/config"
 )
 
 func TestBasic(t *testing.T) {
