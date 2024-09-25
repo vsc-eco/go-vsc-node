@@ -16,7 +16,6 @@ import (
 )
 
 var (
-	ErrInvalidSeed       = errors.New("invalid seed")
 	ErrInvalidDID        = errors.New("invalid DID")
 	ErrInvalidPubKeySize = errors.New("invalid public key size")
 	ErrDecryptionFailed  = errors.New("decryption failed")
@@ -56,14 +55,10 @@ func (p *Ed25519Provider) PublicKey() ed25519.PublicKey {
 // creates a new DID provider using the seed as the private key
 //
 // takes a 32-byte high-entropy seed
-func NewEd25519Provider(seed []byte) (*Ed25519Provider, error) {
-	// seed must be 32 bytes
-	if len(seed) != 32 {
-		return nil, ErrInvalidSeed
-	}
+func NewEd25519Provider(seed [ed25519.SeedSize]byte) (*Ed25519Provider, error) {
 
 	// use a random high-entropy seed to gen a new ed25519 key pair
-	pubKey, privKey, err := ed25519.GenerateKey(bytes.NewReader(seed))
+	pubKey, privKey, err := ed25519.GenerateKey(bytes.NewReader(seed[:]))
 	if err != nil {
 		return nil, err
 	}
