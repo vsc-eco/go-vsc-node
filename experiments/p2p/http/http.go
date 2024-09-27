@@ -5,9 +5,9 @@ import (
 	"io"
 	"net/http"
 
-	"vsc-node/lib/p2p/config"
-	"vsc-node/lib/p2p/peer"
-	"vsc-node/lib/p2p/peers"
+	"vsc-node/experiments/p2p/config"
+	"vsc-node/experiments/p2p/peer"
+	"vsc-node/experiments/p2p/peers"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/aggregate"
 )

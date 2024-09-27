@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"vsc-node/lib/p2p/peers"
+	"vsc-node/experiments/p2p/peers"
 	"vsc-node/modules/aggregate"
 )
 

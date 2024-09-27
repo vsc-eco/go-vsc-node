@@ -3,7 +3,7 @@ package upnp
 import (
 	"gitlab.com/NebulousLabs/go-upnp"
 
-	"vsc-node/lib/p2p/config"
+	"vsc-node/experiments/p2p/config"
 	"vsc-node/modules/aggregate"
 )
 

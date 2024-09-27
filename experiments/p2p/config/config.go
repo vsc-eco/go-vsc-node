@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"vsc-node/lib/p2p/peer"
+	"vsc-node/experiments/p2p/peer"
 	"vsc-node/modules/aggregate"
 )
 

@@ -6,8 +6,8 @@ import (
 	"sync"
 	"unsafe"
 
-	"vsc-node/lib/p2p/config"
-	"vsc-node/lib/p2p/peer"
+	"vsc-node/experiments/p2p/config"
+	"vsc-node/experiments/p2p/peer"
 	"vsc-node/modules/aggregate"
 
 	"github.com/zyedidia/generic/heap"

@@ -3,8 +3,8 @@ package peers_test
 import (
 	"testing"
 
-	"vsc-node/lib/p2p/peer"
-	"vsc-node/lib/p2p/peers"
+	"vsc-node/experiments/p2p/peer"
+	"vsc-node/experiments/p2p/peers"
 )
 
 func TestPeersValues(t *testing.T) {
