@@ -2,17 +2,17 @@ package streamer
 
 import (
 	a "vsc-node/modules/aggregate"
-	"vsc-node/modules/db"
+	"vsc-node/modules/db/vsc/witnesses"
 )
 
 type Streamer struct {
-	db *db.Db
+	witnesses witnesses.Witnesses
 }
 
 var _ a.Plugin = &Streamer{}
 
-func New(db *db.Db) *Streamer {
-	return &Streamer{db}
+func New(witnesses witnesses.Witnesses) *Streamer {
+	return &Streamer{witnesses: witnesses}
 }
 
 func (s *Streamer) Init() error {

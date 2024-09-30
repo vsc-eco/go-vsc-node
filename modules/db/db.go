@@ -10,19 +10,23 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type Db struct {
+type Db interface {
+	Database(name string, opts ...*options.DatabaseOptions) *mongo.Database
+}
+type db struct {
 	db     *ferretdb.FerretDB
 	cancel context.CancelFunc
 	*mongo.Client
 }
 
-var _ a.Plugin = &Db{}
+var _ a.Plugin = &db{}
+var _ Db = &db{}
 
-func New() *Db {
-	return &Db{}
+func New() *db {
+	return &db{}
 }
 
-func (db *Db) Init() error {
+func (db *db) Init() error {
 	err := os.MkdirAll("data/", os.ModeDir)
 	if err != nil {
 		return err
@@ -41,7 +45,7 @@ func (db *Db) Init() error {
 	return nil
 }
 
-func (db *Db) Start() error {
+func (db *db) Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	db.cancel = cancel
 	go db.db.Run(ctx)
@@ -54,7 +58,7 @@ func (db *Db) Start() error {
 	return nil
 }
 
-func (db *Db) Stop() error {
+func (db *db) Stop() error {
 	db.cancel()
 	return nil // TODO grab error from db.Run()
 }
