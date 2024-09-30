@@ -16,6 +16,7 @@ type Db interface {
 type db struct {
 	db     *ferretdb.FerretDB
 	cancel context.CancelFunc
+	err    chan error
 	*mongo.Client
 }
 
@@ -23,7 +24,7 @@ var _ a.Plugin = &db{}
 var _ Db = &db{}
 
 func New() *db {
-	return &db{}
+	return &db{err: make(chan error, 1)}
 }
 
 func (db *db) Init() error {
@@ -48,7 +49,9 @@ func (db *db) Init() error {
 func (db *db) Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	db.cancel = cancel
-	go db.db.Run(ctx)
+	go func() {
+		db.err <- db.db.Run(ctx)
+	}()
 	driver, err := mongo.Connect(ctx, options.Client().ApplyURI(db.db.MongoDBURI()))
 	if err != nil {
 		cancel()
@@ -60,5 +63,9 @@ func (db *db) Start() error {
 
 func (db *db) Stop() error {
 	db.cancel()
-	return nil // TODO grab error from db.Run()
+	err := <-db.err
+	if err == context.Canceled {
+		return nil
+	}
+	return err
 }
