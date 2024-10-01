@@ -8,6 +8,16 @@ import (
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 )
 
+// ===== constants =====
+
+// matching the "did:ethr" part from:
+// - https://github.com/decentralized-identity/ethr-did-resolver/blob/master/doc/did-method-spec.md
+// - https://github.com/uport-project/ethr-did
+
+// could be: "did:pkh:eip155:1:" as that matches what is from vsc's system (however, both seem to be valid):
+// - https://github.com/vsc-eco/Bitcoin-wrap-UI/blob/365d24bc592003be9600f8a0c886e4e6f9bbb1c1/src/hooks/auth/wagmi-web3modal/index.ts#L10
+const EthDIDPrefix = "did:ethr:"
+
 // ===== interface assertions =====
 
 // ethr addr | payload type
@@ -20,7 +30,7 @@ var _ Provider = &EthProvider{}
 type EthDID string
 
 func NewEthDID(ethAddr string) EthDID {
-	return EthDID("did:ethr:" + ethAddr)
+	return EthDID(EthDIDPrefix + ethAddr)
 }
 
 // ===== implementing the DID interface =====
@@ -34,7 +44,7 @@ func (d EthDID) Identifier() string {
 	// 0x123...
 	//
 	// remove "did:ethr:" prefix
-	return string(d)[9:]
+	return string(d)[len(EthDIDPrefix):]
 }
 
 func (d EthDID) Verify(payload apitypes.TypedData, sig string) (bool, error) {

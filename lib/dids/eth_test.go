@@ -14,6 +14,8 @@ import (
 )
 
 // mock typed data (abiding by EIP-712) for the mocks/tests
+// akin to: https://github.com/vsc-eco/client/blob/483a3f7bc182a75785fb8e1118868bfe6e60db97/src/utils.ts#L96
+// but uses the official github.com/ethereum/go-ethereum lib (don't reinvent the wheel)
 var mockTypedData = apitypes.TypedData{
 	Domain: apitypes.TypedDataDomain{
 		Name:              "vsc app",

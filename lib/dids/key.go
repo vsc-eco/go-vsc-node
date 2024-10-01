@@ -20,6 +20,10 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
+// ===== constants =====
+
+const KeyDIDPrefix = "did:key:"
+
 // ===== interface assertions =====
 
 var _ DID[ed25519.PublicKey, map[string]interface{}] = KeyDID("")
@@ -40,7 +44,7 @@ func NewKeyDID(pubKey ed25519.PublicKey) (KeyDID, error) {
 		return "", err
 	}
 
-	return KeyDID("did:key:" + string(base58Encoded)), nil
+	return KeyDID(KeyDIDPrefix + string(base58Encoded)), nil
 }
 
 // ===== implementing the DID interface =====
@@ -51,7 +55,7 @@ func (d KeyDID) String() string {
 
 func (d KeyDID) Identifier() ed25519.PublicKey {
 	// remove the "did:key:" prefix
-	base58Encoded := string(d)[8:]
+	base58Encoded := string(d)[len(KeyDIDPrefix):]
 
 	// decoding the base58 encoded string
 	_, data, err := multibase.Decode(base58Encoded)
@@ -260,6 +264,9 @@ func (k KeyProvider) CreateJWE(payload map[string]interface{}, recipient ed25519
 	// return the JWE in a compact format
 	//
 	// ref: https://docs.authlib.org/en/v1.0.1/jose/jwe.html
+	//
+	// we don't use the 2nd "portion" of the compact JWE form since we generate our own shared key and stick the ephemeral pub key in the header (epk)
+	// we don't use this so it's standard to leave it blank
 	return fmt.Sprintf("%s..%s.%s.%s", encodedHeader, encodedNonce, encodedCiphertext, encodedTag), nil
 }
 
