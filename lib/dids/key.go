@@ -1,6 +1,7 @@
 package dids
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ed25519"
@@ -63,46 +64,16 @@ func (d KeyDID) Identifier() ed25519.PublicKey {
 }
 
 func (d KeyDID) Verify(payload map[string]interface{}, sig string) (bool, error) {
-	// extract the pub key from the did
-	pubKey := d.Identifier()
-	if pubKey == nil {
-		return false, fmt.Errorf("invalid did or pub key")
-	}
-
-	// header field refs:
-	// - https://www.scottbrady91.com/jose/json-web-encryption
-	// - https://www.iana.org/assignments/jose/jose.xhtml
-	header := map[string]interface{}{
-		"alg": "EdDSA",    // the algorithm used for signing
-		"kid": d.String(), // full did
-		"typ": "JWT",
-		"cty": "JWT",
-	}
-
-	// serialize the header and payload to json and base64 encode them
-	headerJSON, err := json.Marshal(header)
-	if err != nil {
-		return false, err
-	}
-	payloadJSON, err := json.Marshal(payload)
+	// internally use RecoverSigner to recover the signer DID from the signature
+	recoveredDID, err := d.RecoverSigner(payload, sig)
 	if err != nil {
 		return false, err
 	}
 
-	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
-	encodedPayload := base64.RawURLEncoding.EncodeToString(payloadJSON)
-
-	// recreate the signing input
-	signingInput := encodedHeader + "." + encodedPayload
-
-	// decode the sig from base64
-	decodedSig, err := base64.RawURLEncoding.DecodeString(sig)
-	if err != nil {
-		return false, fmt.Errorf("invalid sig encoding: %w", err)
-	}
-
-	// verify the sig
-	return ed25519.Verify(pubKey, []byte(signingInput), decodedSig), nil
+	// check if the recovered DID's identifier matches the current DID's identifier
+	//
+	// we need to compare with bytes.Equal, else we get "slice can only be compared to nil"
+	return bytes.Equal(recoveredDID.Identifier(), d.Identifier()), nil
 }
 
 // ===== KeyDIDProvider =====
@@ -128,7 +99,7 @@ func (k KeyProvider) Sign(payload map[string]interface{}) (string, error) {
 	// - https://www.iana.org/assignments/jose/jose.xhtml
 	header := map[string]interface{}{
 		"alg": "EdDSA",
-		"kid": did.String(), // opted to include full DID
+		"kid": did.String(), // include full DID
 		"typ": "JWT",
 		"cty": "JWT",
 	}
@@ -154,6 +125,55 @@ func (k KeyProvider) Sign(payload map[string]interface{}) (string, error) {
 	// encoding the sig and returning it
 	encodedSig := base64.RawURLEncoding.EncodeToString(sig)
 	return signingInput + "." + encodedSig, nil
+}
+
+func (d KeyDID) RecoverSigner(payload map[string]interface{}, sig string) (DID[ed25519.PublicKey, map[string]interface{}], error) {
+	// split the JWT-like sig into 3 parts
+	parts := strings.Split(sig, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid signature format: expected 3 parts")
+	}
+
+	// decode the header
+	decodedHeader, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("invalid header encoding: %w", err)
+	}
+
+	// unmashal the header
+	var header map[string]interface{}
+	err = json.Unmarshal(decodedHeader, &header)
+	if err != nil {
+		return nil, fmt.Errorf("invalid header JSON: %w", err)
+	}
+
+	// exctract the DID from kid field
+	didStr, ok := header["kid"].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid or missing 'kid' in header")
+	}
+
+	// form new KeyDID from the extracted kid param
+	keyDID := KeyDID(didStr)
+
+	// recreate the signing input (header + payload, delimited by .)
+	encodedPayload := parts[1]
+	signingInput := parts[0] + "." + encodedPayload
+
+	// decode the sig
+	decodedSig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, fmt.Errorf("invalid signature encoding: %w", err)
+	}
+
+	// verify the sig
+	verified := ed25519.Verify(keyDID.Identifier(), []byte(signingInput), decodedSig)
+	if !verified {
+		return nil, fmt.Errorf("signature verification failed")
+	}
+
+	// return the recovered KeyDID
+	return keyDID, nil
 }
 
 // creates JWE using the recipient's pub key

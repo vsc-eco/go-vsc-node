@@ -14,7 +14,6 @@ import (
 var _ DID[string, apitypes.TypedData] = EthDID("")
 
 var _ Provider = &EthProvider{}
-var _ EthDIDProvider = &EthProvider{}
 
 // ===== EthDID =====
 
@@ -39,39 +38,14 @@ func (d EthDID) Identifier() string {
 }
 
 func (d EthDID) Verify(payload apitypes.TypedData, sig string) (bool, error) {
-	dataHash, err := ComputeEIP712Hash(payload)
+	// internally use RecoverSigner func to recover the signer DID from the sig
+	recoveredDID, err := d.RecoverSigner(payload, sig)
 	if err != nil {
-		return false, fmt.Errorf("failed to compute EIP712 hash: %v", err)
+		return false, fmt.Errorf("failed to recover signer: %v", err)
 	}
 
-	sigBytes, err := hex.DecodeString(sig)
-	if err != nil {
-		return false, fmt.Errorf("failed to decode signature: %v", err)
-	}
-
-	// Adjust V value back to [0, 1] if necessary
-	// todo: add docs
-	if sigBytes[64] != 0 && sigBytes[64] != 1 {
-		sigBytes[64] -= 27
-	}
-
-	address := d.Identifier()
-
-	if len(dataHash) != 32 {
-		return false, fmt.Errorf("invalid data hash length: expected 32 bytes, got %d", len(dataHash))
-	}
-
-	if len(sigBytes) != 65 {
-		return false, fmt.Errorf("invalid signature length: expected 65 bytes, got %d", len(sigBytes))
-	}
-
-	pubKey, err := crypto.SigToPub(dataHash, sigBytes)
-	if err != nil {
-		return false, fmt.Errorf("failed to recover public key from signature: %v", err)
-	}
-
-	recoveredAddr := crypto.PubkeyToAddress(*pubKey).Hex()
-	return recoveredAddr == address, nil
+	// match the recovered DID's identifier with the current DID's identifier
+	return recoveredDID.Identifier() == d.Identifier(), nil
 }
 
 // ===== EthProvider =====
@@ -84,29 +58,46 @@ func NewEthProvider() *EthProvider {
 	return &EthProvider{}
 }
 
-// ===== implementing the Provider and EthDIDProvider interfaces =====
+// ===== implementing the Provider interface =====
 
 func (e *EthProvider) Sign(payload map[string]interface{}) (string, error) {
 	// todo: implement a way to sign the payload from the EthProvider
 	panic("unimplemented")
 }
 
-func (e *EthProvider) RecoverSigner(payload apitypes.TypedData, sig string) (string, error) {
+func (d EthDID) RecoverSigner(payload apitypes.TypedData, sig string) (DID[string, apitypes.TypedData], error) {
+	// compute the EIP-712 hash
 	dataHash, err := ComputeEIP712Hash(payload)
 	if err != nil {
-		return "", fmt.Errorf("failed to compute EIP712 hash: %v", err)
+		return nil, fmt.Errorf("failed to compute EIP712 hash: %v", err)
 	}
 
+	// decode the sig from hex
 	sigBytes, err := hex.DecodeString(sig)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode signature: %v", err)
+		return nil, fmt.Errorf("failed to decode signature: %v", err)
 	}
 
+	// ensure the sig is 65 bytes long
 	if len(sigBytes) != 65 {
-		return "", fmt.Errorf("invalid signature length: expected 65 bytes, got %d", len(sigBytes))
+		return nil, fmt.Errorf("invalid signature length: expected 65 bytes, got %d", len(sigBytes))
 	}
 
-	// adjust V value back to [0, 1] for recovery if necessary
+	// ensure the data hash is 32 bytes long
+	if len(dataHash) != 32 {
+		return nil, fmt.Errorf("invalid data hash length: expected 32 bytes, got %d", len(dataHash))
+	}
+
+	// adjust V value back to [0, 1] if necessary
+	//
+	// this Gist was provided in the team Notion: https://gist.github.com/APTy/f2a6864a97889793c587635b562c7d72
+	// it demos the need to subtract 27 from the 65th (index 64) byte of the sig
+	//
+	// internally, this Gist says it does this for this reason: https://github.com/ethereum/go-ethereum/blob/55599ee95d4151a2502465e0afc7c47bd1acba77/internal/ethapi/api.go#L442
+	//
+	// this is also described on the official ethereum site in an article
+	// by Vitalik Buterin: https://eips.ethereum.org/EIPS/eip-155
+	// which describes this in EIP-155
 	if sigBytes[64] != 0 && sigBytes[64] != 1 {
 		sigBytes[64] -= 27
 	}
@@ -114,12 +105,12 @@ func (e *EthProvider) RecoverSigner(payload apitypes.TypedData, sig string) (str
 	// recover the pub key
 	pubKey, err := crypto.SigToPub(dataHash, sigBytes)
 	if err != nil {
-		return "", fmt.Errorf("failed to recover public key from signature: %v", err)
+		return nil, fmt.Errorf("failed to recover public key from signature: %v", err)
 	}
 
 	// return the recovered addr
 	address := crypto.PubkeyToAddress(*pubKey).Hex()
-	return address, nil
+	return NewEthDID(address), nil
 }
 
 // ===== utils =====
@@ -131,11 +122,13 @@ func ComputeEIP712Hash(typedData apitypes.TypedData) ([]byte, error) {
 		return nil, fmt.Errorf("failed to hash domain separator: %v", err)
 	}
 
+	// hash the message
 	messageHash, err := typedData.HashStruct(typedData.PrimaryType, typedData.Message)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash message: %v", err)
 	}
 
+	// hash the final hash in the EIP-712 format as described here: https://eips.ethereum.org/EIPS/eip-712#Specification
 	finalHash := crypto.Keccak256(
 		[]byte("\x19\x01"),
 		domainSeparator,

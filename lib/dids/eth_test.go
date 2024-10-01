@@ -92,6 +92,29 @@ func TestEthDIDVerify(t *testing.T) {
 	assert.True(t, valid)
 }
 
+func TestEthDIDRecoverSigner(t *testing.T) {
+	// gen a real priv key for signing
+	privateKey, err := crypto.GenerateKey()
+	assert.NoError(t, err)
+
+	// gen a valid sig for our mocked data
+	sigHex, err := generateValidSignature(mockTypedData, privateKey)
+	assert.NoError(t, err)
+
+	// get the expected addr from the priv key
+	expectedAddress := crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
+
+	// init the EthDID
+	ethDid := dids.NewEthDID(expectedAddress)
+
+	// recover the signer from the sig
+	recoveredDID, err := ethDid.RecoverSigner(mockTypedData, sigHex)
+	assert.NoError(t, err)
+
+	// check that the recovered DID's identifier matches the expected address
+	assert.Equal(t, expectedAddress, recoveredDID.Identifier())
+}
+
 func TestEthDIDVerifyInvalidSig(t *testing.T) {
 	// gen a real priv key for signing
 	privateKey, err := crypto.GenerateKey()
@@ -116,27 +139,4 @@ func TestEthDIDVerifyInvalidSig(t *testing.T) {
 	assert.Error(t, err)
 	// ensure the sig is invalid
 	assert.False(t, valid)
-}
-
-func TestEthProviderRecoverSigner(t *testing.T) {
-	// gen a real priv key for signing
-	privateKey, err := crypto.GenerateKey()
-	assert.NoError(t, err)
-
-	// gen a valid sig for our mocked data
-	sigHex, err := generateValidSignature(mockTypedData, privateKey)
-	assert.NoError(t, err)
-
-	// get the expected addr from the priv key
-	expectedAddress := crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
-
-	// init a provider
-	provider := dids.NewEthProvider()
-
-	// recover the signer from the sig
-	recoveredAddress, err := provider.RecoverSigner(mockTypedData, sigHex)
-	assert.NoError(t, err)
-
-	// check that the recovered addr matches the expected addr
-	assert.Equal(t, expectedAddress, recoveredAddress)
 }

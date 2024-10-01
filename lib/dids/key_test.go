@@ -3,7 +3,6 @@ package dids_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -34,16 +33,9 @@ func TestSignVerify(t *testing.T) {
 	did, err := dids.NewKeyDID(pubKey)
 	assert.NoError(t, err)
 
-	// parse the sig from the signed JWT
-	parts := strings.Split(signedJWT, ".")
-	if len(parts) != 3 {
-		t.Fatalf("expected JWT to have 3 parts, got %d", len(parts))
-	}
-	sig := parts[2]
-
-	// verify the sig
-	valid, err := did.Verify(payload, sig)
-	assert.NoError(t, err)
+	// verify the signedJWT (JWS)
+	valid, err := did.Verify(payload, signedJWT)
+	assert.Nil(t, err)
 	assert.True(t, valid)
 }
 
@@ -52,7 +44,7 @@ func TestCreateDecryptJWE(t *testing.T) {
 	recipientPubKey, recipientPrivKey, err := ed25519.GenerateKey(rand.Reader)
 	assert.NoError(t, err)
 
-	// gen an  ed25519 keypair for sender
+	// gen an ed25519 keypair for sender
 	_, senderPrivKey, err := ed25519.GenerateKey(rand.Reader)
 	assert.NoError(t, err)
 
@@ -77,7 +69,6 @@ func TestCreateDecryptJWE(t *testing.T) {
 	assert.NoError(t, err)
 
 	// ensure the decrypted payload matches the original
-	fmt.Println(payload, decryptedPayload, reflect.DeepEqual(payload, decryptedPayload))
 	assert.True(t, reflect.DeepEqual(payload, decryptedPayload))
 }
 
@@ -149,5 +140,72 @@ func TestDecryptJWEWithWrongKey(t *testing.T) {
 	// attempt to decrypt the JWE using the wrong recipient's priv key
 	_, err = wrongProvider.DecryptJWE(jwe)
 	// since the wrong key is used, an error should be thrown
+	assert.Error(t, err)
+}
+
+func TestRecoverSigner(t *testing.T) {
+	// gen an ed25519 keypair
+	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+	assert.NoError(t, err)
+
+	// create a provider
+	provider := dids.NewKeyProvider(privKey)
+
+	// create a payload
+	payload := map[string]interface{}{
+		"someKey":  "someVal",
+		"otherKey": float64(123),
+	}
+
+	// sign the payload
+	signedJWT, err := provider.Sign(payload)
+	assert.NoError(t, err)
+
+	// create a DID from the pub key
+	did, err := dids.NewKeyDID(pubKey)
+	assert.NoError(t, err)
+
+	// use the RecoverSigner function to recover the signer DID from the signature
+	recoveredDID, err := did.RecoverSigner(payload, signedJWT)
+	assert.NoError(t, err)
+
+	// assert that the recovered DID's identifier matches the original DID's identifier
+	assert.Equal(t, did.Identifier(), recoveredDID.Identifier())
+
+	// also assert that the DID matches what we expect from the original public key
+	expectedDID, err := dids.NewKeyDID(pubKey)
+	assert.NoError(t, err)
+	assert.Equal(t, expectedDID, recoveredDID)
+}
+
+func TestRecoverSignerInvalidSignature(t *testing.T) {
+	// gen an ed25519 keypair
+	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+	assert.NoError(t, err)
+
+	// create a provider
+	provider := dids.NewKeyProvider(privKey)
+
+	// create a payload
+	payload := map[string]interface{}{
+		"someKey":  "someVal",
+		"otherKey": float64(123),
+	}
+
+	// sign the payload
+	signedJWT, err := provider.Sign(payload)
+	assert.NoError(t, err)
+
+	// create a DID from the pub key
+	did, err := dids.NewKeyDID(pubKey)
+	assert.NoError(t, err)
+
+	// tamper with the sig by changing the sig part
+	parts := strings.Split(signedJWT, ".")
+	assert.Equal(t, 3, len(parts))
+	tamperedJWT := parts[0] + "." + parts[1] + "." + "bad sig abc 123"
+
+	// try to recover the signer using the tampered sig, which should fail
+	_, err = did.RecoverSigner(payload, tamperedJWT)
 	assert.Error(t, err)
 }
