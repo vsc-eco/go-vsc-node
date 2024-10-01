@@ -1,387 +1,340 @@
 package dids
 
 import (
-	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha512"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io"
 	"strings"
 
-	"filippo.io/edwards25519"
+	"golang.org/x/crypto/hkdf"
+
+	"github.com/jorrizza/ed2curve25519"
 	"github.com/multiformats/go-multibase"
-	"golang.org/x/crypto/nacl/box"
+	"golang.org/x/crypto/curve25519"
 )
 
-var (
-	ErrInvalidPrivateKeySize = errors.New("invalid private key size")
-	ErrInvalidDID            = errors.New("invalid DID format")
-	ErrInvalidSignature      = errors.New("invalid signature")
-	ErrSerialization         = errors.New("serialization error")
-	ErrDeserialization       = errors.New("deserialization error")
-	ErrInvalidEncoding       = errors.New("invalid base64 encoding")
-	ErrDecryptionFailed      = errors.New("decryption failed")
-)
+// ===== interface assertions =====
+
+var _ DID[ed25519.PublicKey, map[string]interface{}] = KeyDID("")
+var _ Provider = KeyProvider{}
+var _ KeyDIDProvider = KeyProvider{}
+
+// ===== KeyDID =====
 
 type KeyDID string
 
-func NewDID(pubKey ed25519.PublicKey) (DID, error) {
-	// prefix the pub key with the indicator bytes for ed25519 keys
+func NewKeyDID(pubKey ed25519.PublicKey) (KeyDID, error) {
+	// adds indicator bytes saying "this is an ed25519 key"
 	data := append([]byte{0xED, 0x01}, pubKey...)
 
-	// base 58 encode key
-	encodedKey, err := multibase.Encode(multibase.Base58BTC, data)
+	// encoding everything in base58, as per the spec
+	base58Encoded, err := multibase.Encode(multibase.Base58BTC, data)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
-	// prepend the did:key: prefix
-	did := KeyDID("did:key:" + encodedKey)
-
-	return did, nil
+	return KeyDID("did:key:" + string(base58Encoded)), nil
 }
 
-func PubKeyFromKeyDID(did string) ([]byte, error) {
-	// remove did prefix
-	if !strings.HasPrefix(string(did), "did:key:") {
-		return nil, fmt.Errorf("invalid DID format: missing did:key: prefix")
-	}
+// ===== implementing the DID interface =====
 
-	// remove 'did:key:' (8 chars)
-	encodedKey := string(did)[8:]
-
-	// decode base 58 string including the z prefix
-	_, decodedBytes, err := multibase.Decode(encodedKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode multibase string: %w", err)
-	}
-
-	// remove the bytes and confirm they are there and the ed25519 indicator bytes
-	if len(decodedBytes) < 2 || !bytes.Equal(decodedBytes[:2], []byte{0xED, 0x01}) {
-		return nil, fmt.Errorf("invalid multicodec prefix: expected 0xED01 for Ed25519")
-	}
-	pubKey := decodedBytes[2:]
-
-	return pubKey, nil
-}
-
-func (d KeyDID) FullString() string {
+func (d KeyDID) String() string {
 	return string(d)
 }
 
-// key provider for did ed25519 keys
-type KeyProvider struct {
-	pubKey  ed25519.PublicKey
-	privKey ed25519.PrivateKey
-	did     DID
-}
+func (d KeyDID) Identifier() ed25519.PublicKey {
+	// remove the "did:key:" prefix
+	base58Encoded := string(d)[8:]
 
-func (p *KeyProvider) DID() DID {
-	return p.did
-}
-
-// create new key provider
-func NewKeyProvider(privKey ed25519.PrivateKey) (*KeyProvider, error) {
-	// Get the pub key from priv
-	pubKey := privKey.Public().(ed25519.PublicKey)
-
-	// create a new DID
-	did, err := NewDID(pubKey)
+	// decoding the base58 encoded string
+	_, data, err := multibase.Decode(base58Encoded)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create DID: %w", err)
+		return nil
 	}
 
-	// validate the DID by attempting to extract the public key
-	extractedPubKey, err := PubKeyFromKeyDID(did.FullString())
-	if err != nil {
-		return nil, fmt.Errorf("failed to validate DID: %w", err)
-	}
-
-	// ensure the extracted public key matches the original
-	if !bytes.Equal(pubKey, extractedPubKey) {
-		return nil, fmt.Errorf("extracted public key does not match original")
-	}
-
-	// return new provider for keys
-	return &KeyProvider{
-		pubKey:  pubKey,
-		privKey: privKey,
-		did:     did,
-	}, nil
+	// remove the indicator bytes
+	return ed25519.PublicKey(data[2:])
 }
 
-// creates a JWS using the priv key
-func (p *KeyProvider) Sign(payload interface{}) (string, error) {
-
-	// assert payload of type map[string]interface{}
-	payloadMap, ok := payload.(map[string]interface{})
-	if !ok {
-		return "", fmt.Errorf("payload must be of type map[string]interface{}")
+func (d KeyDID) Verify(payload map[string]interface{}, sig string) (bool, error) {
+	// extract the pub key from the did
+	pubKey := d.Identifier()
+	if pubKey == nil {
+		return false, fmt.Errorf("invalid did or pub key")
 	}
 
-	// write the header
+	// header field refs:
+	// - https://www.scottbrady91.com/jose/json-web-encryption
+	// - https://www.iana.org/assignments/jose/jose.xhtml
 	header := map[string]interface{}{
-		"alg": "EdDSA",
+		"alg": "EdDSA",    // the algorithm used for signing
+		"kid": d.String(), // full did
 		"typ": "JWT",
-		"kid": p.did.FullString(), // set kid as full DID like did:key:z123...
+		"cty": "JWT",
 	}
 
-	// encode header and payload
+	// serialize the header and payload to json and base64 encode them
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal header: %w", err)
+		return false, err
 	}
-
-	payloadJSON, err := json.Marshal(payloadMap)
+	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal payload: %w", err)
+		return false, err
 	}
 
 	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
 	encodedPayload := base64.RawURLEncoding.EncodeToString(payloadJSON)
 
-	// create input for signing and sign
+	// recreate the signing input
 	signingInput := encodedHeader + "." + encodedPayload
-	signature := ed25519.Sign(p.privKey, []byte(signingInput))
 
-	// encode the sig
-	encodedSignature := base64.RawURLEncoding.EncodeToString(signature)
-
-	// aggregate all parts to form JWS
-	return signingInput + "." + encodedSignature, nil
-}
-
-// verifies the JWS sig and returns the payload if it's valid
-func VerifyJWS(pubKey ed25519.PublicKey, jws string) (map[string]interface{}, error) {
-	// split JWS into components
-	parts := strings.Split(jws, ".")
-	if len(parts) != 3 {
-		return nil, ErrInvalidSignature
-	}
-
-	// header, payload, sig
-	encodedHeader, encodedPayload, encodedSignature := parts[0], parts[1], parts[2]
-
-	// decode the sig
-	signature, err := base64.RawURLEncoding.DecodeString(encodedSignature)
+	// decode the sig from base64
+	decodedSig, err := base64.RawURLEncoding.DecodeString(sig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode signature: %w", err)
+		return false, fmt.Errorf("invalid sig encoding: %w", err)
 	}
 
 	// verify the sig
+	return ed25519.Verify(pubKey, []byte(signingInput), decodedSig), nil
+}
+
+// ===== KeyDIDProvider =====
+
+type KeyProvider struct {
+	privKey ed25519.PrivateKey
+}
+
+func NewKeyProvider(privKey ed25519.PrivateKey) KeyProvider {
+	return KeyProvider{privKey: privKey}
+}
+
+// ===== implementing the Provider and KeyDIDProvider interfaces =====
+
+func (k KeyProvider) Sign(payload map[string]interface{}) (string, error) {
+	did, err := NewKeyDID(k.privKey.Public().(ed25519.PublicKey))
+	if err != nil {
+		return "", err
+	}
+
+	// header field refs:
+	// - https://www.scottbrady91.com/jose/json-web-encryption
+	// - https://www.iana.org/assignments/jose/jose.xhtml
+	header := map[string]interface{}{
+		"alg": "EdDSA",
+		"kid": did.String(), // opted to include full DID
+		"typ": "JWT",
+		"cty": "JWT",
+	}
+
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	// encoding the header and payload
+	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
+	encodedPayload := base64.RawURLEncoding.EncodeToString(payloadJSON)
+
+	// signing the header and payload
 	signingInput := encodedHeader + "." + encodedPayload
-	if !ed25519.Verify(pubKey, []byte(signingInput), signature) {
-		return nil, ErrInvalidSignature
-	}
+	sig := ed25519.Sign(k.privKey, []byte(signingInput))
 
-	// decode and parse the payload
-	payloadJSON, err := base64.RawURLEncoding.DecodeString(encodedPayload)
+	// encoding the sig and returning it
+	encodedSig := base64.RawURLEncoding.EncodeToString(sig)
+	return signingInput + "." + encodedSig, nil
+}
+
+// creates JWE using the recipient's pub key
+func (k KeyProvider) CreateJWE(payload map[string]interface{}, recipient ed25519.PublicKey) (string, error) {
+
+	// convert recipient's ed25519 pub key to curve25519 pub key
+	curve25519PubKey := ed2curve25519.Ed25519PublicKeyToCurve25519(recipient)
+
+	// gen ephemeral keypair for ECDH using x25519
+	ephemeralPriv := make([]byte, 32)
+	_, err := rand.Read(ephemeralPriv)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode payload: %w", err)
+		return "", err
+	}
+	ephemeralPub, err := curve25519.X25519(ephemeralPriv, curve25519.Basepoint)
+	if err != nil {
+		return "", err
 	}
 
+	// perform x25519 to compute shared secret
+	sharedSecret, err := curve25519.X25519(ephemeralPriv, curve25519PubKey[:])
+	if err != nil {
+		return "", err
+	}
+
+	// apply HKDF to derive AES key from shared secret using SHA-256
+	// helpful ref: https://kerkour.com/derive-keys-hkdf-sha256-golang
+	hkdf := hkdf.New(sha256.New, sharedSecret, nil, nil)
+	aesKey := make([]byte, 32)
+	if _, err := io.ReadFull(hkdf, aesKey); err != nil {
+		return "", err
+	}
+
+	// encrypt the payload using AES-GCM
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	// make a random gcm.NonceSize()-sized nonce for encryption
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+
+	// marshal and then encrypt the payload
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	ciphertext := gcm.Seal(nil, nonce, payloadJSON, nil)
+
+	// extract the tag and separate it from ciphertext and to ensure
+	// the integrity of the ciphertext
+	//
+	// referenced: https://www.reddit.com/r/cryptography/comments/11wvpdu/can_the_length_of_an_aesgcm_output_be_predicted/
+	// which caused me to look into cipher.AEAD type and found Overhead() which gets the length of the tag
+	tagStart := len(ciphertext) - gcm.Overhead()
+	authTag := ciphertext[tagStart:]
+	cipherText := ciphertext[:tagStart]
+
+	// create the JWE header in accordance with spec mentioned in the Sign method
+	header := map[string]interface{}{
+		"alg": "ECDH-ES",                                          // using ECDH (x25519) for key exchange
+		"enc": "A256GCM",                                          // AES-GCM for encryption
+		"epk": base64.RawURLEncoding.EncodeToString(ephemeralPub), // ephemeral pub key
+		"typ": "JWE",
+	}
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+
+	// base64 encode everything
+	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
+	encodedCiphertext := base64.RawURLEncoding.EncodeToString(cipherText)
+	encodedTag := base64.RawURLEncoding.EncodeToString(authTag)
+	encodedNonce := base64.RawURLEncoding.EncodeToString(nonce)
+
+	// return the JWE in a compact format
+	//
+	// ref: https://docs.authlib.org/en/v1.0.1/jose/jwe.html
+	return fmt.Sprintf("%s..%s.%s.%s", encodedHeader, encodedNonce, encodedCiphertext, encodedTag), nil
+}
+
+func (k KeyProvider) DecryptJWE(jwe string) (map[string]interface{}, error) {
+	// split a compact JWE (5 parts) into all 5 components
+	parts := strings.Split(jwe, ".")
+	if len(parts) != 5 {
+		return nil, fmt.Errorf("invalid JWE format")
+	}
+
+	// decode each component from base64 (as it was originally encoded into this)
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("invalid header encoding: %w", err)
+	}
+	nonce, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, fmt.Errorf("invalid nonce encoding: %w", err)
+	}
+	ciphertext, err := base64.RawURLEncoding.DecodeString(parts[3])
+	if err != nil {
+		return nil, fmt.Errorf("invalid ciphertext encoding: %w", err)
+	}
+	authTag, err := base64.RawURLEncoding.DecodeString(parts[4])
+	if err != nil {
+		return nil, fmt.Errorf("invalid authentication tag encoding: %w", err)
+	}
+
+	// combine the ciphertext and auth tag
+	fullCiphertext := append(ciphertext, authTag...)
+
+	// parse the header to extract the ephemeral pub key passed
+	// in originally during the JWE being encrypted
+	var header map[string]interface{}
+	err = json.Unmarshal(headerJSON, &header)
+	if err != nil {
+		return nil, fmt.Errorf("invalid header JSON: %w", err)
+	}
+
+	// this MUST be set into the header so we can decrypt
+	ephemeralPubKeyStr, ok := header["epk"].(string)
+	if !ok {
+		// if the key isn't there, there's really nothing we can do
+		return nil, fmt.Errorf("invalid ephemeral public key in header")
+	}
+
+	// decode the ephemeral pub key from base64 (as it was originally encoded into this)
+	ephemeralPubKey, err := base64.RawURLEncoding.DecodeString(ephemeralPubKeyStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid ephemeral pub key encoding: %w", err)
+	}
+
+	// convert the ed25519 priv key to curve25519 priv key for decryption
+	//
+	// I got this from a library created to fix this issue: https://github.com/golang/go/issues/20504
+	curve25519PrivKey := ed2curve25519.Ed25519PrivateKeyToCurve25519(k.privKey)
+
+	// perform x25519 ECDH to compute the shared secret between the ephemeral pub key and
+	// our curve25519 priv key derived from our ed25519 priv key
+	sharedSecret, err := curve25519.X25519(curve25519PrivKey[:], ephemeralPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("error during ECDH: %w", err)
+	}
+
+	// applying HKDF to derive a shared AES key from shared secret using sha256
+	//
+	// helpful ref: https://kerkour.com/derive-keys-hkdf-sha256-golang
+	hkdf := hkdf.New(sha256.New, sharedSecret, nil, nil)
+	aesKey := make([]byte, 32) // aes256 key is 32 bytes
+	if _, err := io.ReadFull(hkdf, aesKey); err != nil {
+		return nil, err
+	}
+
+	// init AES-CGM for to use for decryption
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return nil, fmt.Errorf("error initializing AES cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("error initializing GCM: %w", err)
+	}
+
+	// decrypt the ciphertext using AES-GCM with a gcm.NonceSize()-sized nonce and auth tag
+	plaintext, err := gcm.Open(nil, nonce, fullCiphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("decryption failed: %w", err)
+	}
+
+	// unmarshal the decrypted payload
 	var payload map[string]interface{}
-	err = json.Unmarshal(payloadJSON, &payload)
+	err = json.Unmarshal(plaintext, &payload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal payload: %w", err)
+		return nil, fmt.Errorf("error unmarshalling payload: %w", err)
 	}
 
 	return payload, nil
-}
-
-// encrypts the payload using an X25519 key derived from the edd25519 one and NaCl box encryption
-func (p *KeyProvider) CreateJWE(payload map[string]interface{}, to DID) (string, error) {
-	// get the "who we're sending to"'s pub key
-	sendingToPubKey, err := PubKeyFromKeyDID(to.FullString())
-	if err != nil {
-		return "", fmt.Errorf("failed to get sending to's pub key: %w", err)
-	}
-
-	// convert ed25519 keys to curve25519
-	senderPrivKey, err := ed25519PrivateKeyToCurve25519(p.privKey)
-	if err != nil {
-		return "", fmt.Errorf("failed to convert sender's private key: %w", err)
-	}
-	recipientCurvePubKey, err := ed25519PublicKeyToCurve25519(sendingToPubKey)
-	if err != nil {
-		return "", fmt.Errorf("failed to convert recipient's pub key: %w", err)
-	}
-
-	// gen a random nonce, 24 bytes as required
-	var nonce [24]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return "", fmt.Errorf("failed to generate nonce: %w", err)
-	}
-
-	// encode payload
-	plaintext, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	// encrypt the payload via box seal
-	encrypted := box.Seal(nil, plaintext, &nonce, &recipientCurvePubKey, &senderPrivKey)
-
-	// create the protected header
-	protectedHeader := map[string]interface{}{
-		"alg":  "X25519",
-		"enc":  "XSalsa20-Poly1305",
-		"skid": p.did.FullString(), // sender's full DID
-	}
-
-	// encoded protected header
-	protectedHeaderJSON, err := json.Marshal(protectedHeader)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal protected header: %w", err)
-	}
-	protectedHeaderEncoded := base64.RawURLEncoding.EncodeToString(protectedHeaderJSON)
-
-	// create JWE
-	jwe := map[string]interface{}{
-		"protected":  protectedHeaderEncoded,
-		"iv":         base64.RawURLEncoding.EncodeToString(nonce[:]),
-		"ciphertext": base64.RawURLEncoding.EncodeToString(encrypted),
-		"recipients": []map[string]interface{}{
-			{
-				"header": map[string]interface{}{
-					"kid": to.FullString(), // sending to's DID
-				},
-			},
-		},
-	}
-
-	// serialize the JWE
-	jweJSON, err := json.Marshal(jwe)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal JWE: %w", err)
-	}
-
-	return string(jweJSON), nil
-}
-
-// decrypts the JWE and returns the payload
-func (p *KeyProvider) DecryptJWE(jwe string) (map[string]interface{}, error) {
-	// parse the JWE
-	var jweData map[string]interface{}
-	err := json.Unmarshal([]byte(jwe), &jweData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal JWE: %w", err)
-	}
-
-	// extracts our needed components
-	nonceEncoded, ok := jweData["iv"].(string)
-	if !ok {
-		return nil, fmt.Errorf("nonce not found in JWE")
-	}
-	nonce, err := base64.RawURLEncoding.DecodeString(nonceEncoded)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode nonce: %w", err)
-	}
-
-	ciphertextEncoded, ok := jweData["ciphertext"].(string)
-	if !ok {
-		return nil, fmt.Errorf("ciphertext not found in JWE")
-	}
-	ciphertext, err := base64.RawURLEncoding.DecodeString(ciphertextEncoded)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode ciphertext: %w", err)
-	}
-
-	// decodes the protected header
-	protectedHeaderEncoded, ok := jweData["protected"].(string)
-	if !ok {
-		return nil, fmt.Errorf("protected header not found in JWE")
-	}
-	protectedHeaderJSON, err := base64.RawURLEncoding.DecodeString(protectedHeaderEncoded)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode protected header: %w", err)
-	}
-	var protectedHeader map[string]interface{}
-	err = json.Unmarshal(protectedHeaderJSON, &protectedHeader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal protected header: %w", err)
-	}
-
-	// get the sender's DID from 'skid'
-	senderDIDStr, ok := protectedHeader["skid"].(string)
-	if !ok {
-		return nil, fmt.Errorf("sender's DID not found in protected header")
-	}
-
-	// get the sender's public key from the DID
-	senderPubKey, err := PubKeyFromKeyDID(senderDIDStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get sender's pub key: %w", err)
-	}
-
-	// convert keys to curve25519
-	recipientPrivKey, err := ed25519PrivateKeyToCurve25519(p.privKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert recipient's private key: %w", err)
-	}
-	senderCurvePubKey, err := ed25519PublicKeyToCurve25519(senderPubKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert sender's public key: %w", err)
-	}
-
-	// decrypt the ciphertext
-	var nonceArray [24]byte
-	copy(nonceArray[:], nonce)
-
-	decrypted, ok := box.Open(nil, ciphertext, &nonceArray, &senderCurvePubKey, &recipientPrivKey)
-	if !ok {
-		return nil, ErrDecryptionFailed
-	}
-
-	// parse the decrypted payload
-	var payload map[string]interface{}
-	err = json.Unmarshal(decrypted, &payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal decrypted payload: %w", err)
-	}
-
-	return payload, nil
-}
-
-// converts an ed25519 private key to a curve25519 private key
-func ed25519PrivateKeyToCurve25519(privKey ed25519.PrivateKey) ([32]byte, error) {
-	var curvePrivKey [32]byte
-
-	// check that the private key has the correct size
-	if len(privKey) != ed25519.PrivateKeySize {
-		return curvePrivKey, fmt.Errorf("invalid ed25519 private key size")
-	}
-
-	// get the seed and hash it with sha-512
-	seed := privKey.Seed()
-	h := sha512.Sum512(seed)
-
-	// apply clamping to the hashed seed
-	h[0] &= 248
-	h[31] &= 127
-	h[31] |= 64
-
-	// copy the first 32 bytes as the curve25519 private key
-	copy(curvePrivKey[:], h[:32])
-
-	return curvePrivKey, nil
-}
-
-// converts an ed25519 public key to a curve25519 public key
-func ed25519PublicKeyToCurve25519(pubKey ed25519.PublicKey) ([32]byte, error) {
-	var curvePubKey [32]byte
-
-	// parse the ed25519 public key to an edwards25519 point
-	edPubKeyPoint, err := new(edwards25519.Point).SetBytes(pubKey)
-	if err != nil {
-		return curvePubKey, fmt.Errorf("invalid ed25519 public key: %v", err)
-	}
-
-	// convert to a curve25519 public key in montgomery form
-	copy(curvePubKey[:], edPubKeyPoint.BytesMontgomery())
-
-	return curvePubKey, nil
 }

@@ -2,109 +2,141 @@ package dids_test
 
 import (
 	"crypto/ecdsa"
-	"crypto/rand"
 	"encoding/hex"
 	"testing"
+
 	"vsc-node/lib/dids"
 
+	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/stretchr/testify/assert"
 )
 
+// mock typed data (abiding by EIP-712) for the mocks/tests
 var mockTypedData = apitypes.TypedData{
+	Domain: apitypes.TypedDataDomain{
+		Name:              "vsc app",
+		Version:           "1",
+		ChainId:           math.NewHexOrDecimal256(1),
+		VerifyingContract: "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC",
+	},
+	PrimaryType: "vsc",
+	Message: apitypes.TypedDataMessage{
+		"from": apitypes.TypedDataMessage{
+			"name":   "bob",
+			"wallet": "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC",
+		},
+		"to": apitypes.TypedDataMessage{
+			"name":   "alice",
+			"wallet": "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC",
+		},
+		"contents": "hello world",
+	},
 	Types: apitypes.Types{
 		"EIP712Domain": []apitypes.Type{
 			{Name: "name", Type: "string"},
 			{Name: "version", Type: "string"},
+			{Name: "chainId", Type: "uint256"},
+			{Name: "verifyingContract", Type: "address"},
 		},
-		"Message": []apitypes.Type{
-			{Name: "message", Type: "string"},
+		"vsc": []apitypes.Type{
+			{Name: "from", Type: "User"},
+			{Name: "to", Type: "User"},
+			{Name: "contents", Type: "string"},
 		},
-	},
-	PrimaryType: "Message",
-	Domain: apitypes.TypedDataDomain{
-		Name:    "Hello world",
-		Version: "1",
-	},
-	Message: apitypes.TypedDataMessage{
-		"message": "Hello World",
+		"User": []apitypes.Type{
+			{Name: "name", Type: "string"},
+			{Name: "wallet", Type: "address"},
+		},
 	},
 }
 
-func TestNewEthProvider(t *testing.T) {
-	// gen a new ECDSA priv key
-	privKey, err := ecdsa.GenerateKey(crypto.S256(), rand.Reader)
-	assert.NoError(t, err)
-
-	// create a new eth provider
-	provider, err := dids.NewEthProvider(privKey)
-	assert.NoError(t, err)
-
-	// ensure DID is not empty
-	assert.NotEmpty(t, provider.DID().FullString())
-}
-
-func TestEthProviderSignAndVerifyTypedData(t *testing.T) {
-	// gen a new ECDSA private key and create an eth provider
-	privKey, err := ecdsa.GenerateKey(crypto.S256(), rand.Reader)
-	assert.NoError(t, err)
-	provider, err := dids.NewEthProvider(privKey)
-	assert.NoError(t, err)
-
-	// ref mock data
-	typedData := mockTypedData
-
-	// sign the typed data
-	signature, err := provider.Sign(typedData)
-	assert.NoError(t, err)
-
-	// decode the signature from hex
-	sigBytes, err := hex.DecodeString(signature)
-	assert.NoError(t, err)
-	assert.Equal(t, len(sigBytes), 65)
-
-	// ensure V value is in [27, 28]
-	if sigBytes[64] < 27 {
-		sigBytes[64] += 27
+// gen a valid signature for the EIP-712 typed data using the provided priv key
+//
+// this is a helper function for the tests, and should not be used in production
+func generateValidSignature(typedData apitypes.TypedData, privateKey *ecdsa.PrivateKey) (string, error) {
+	// compute the EIP-712 hash
+	dataHash, err := dids.ComputeEIP712Hash(typedData)
+	if err != nil {
+		return "", err
 	}
 
-	// verify the sig
-	valid, err := provider.VerifyTypedData(typedData, signature)
+	// sign the hash
+	sig, err := crypto.Sign(dataHash, privateKey)
+	if err != nil {
+		return "", err
+	}
+
+	// encode the sig in hex format for eth tests
+	return hex.EncodeToString(sig), nil
+}
+
+func TestEthDIDVerify(t *testing.T) {
+	// gen a real priv key for signing
+	privateKey, err := crypto.GenerateKey()
 	assert.NoError(t, err)
+
+	// gen a real sig for our mocked data type
+	sigHex, err := generateValidSignature(mockTypedData, privateKey)
+	assert.NoError(t, err)
+
+	// get the addr from the priv key
+	address := crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
+	ethDid := dids.NewEthDID(address)
+
+	// verify the valid sig
+	valid, err := ethDid.Verify(mockTypedData, sigHex)
+	assert.NoError(t, err)
+	// ensure the sig is valid, it should be
 	assert.True(t, valid)
 }
 
-func TestEthProviderRecoverSigner(t *testing.T) {
-	// gen a new ECDSA priv key and create an eth provider
-	privKey, err := crypto.GenerateKey()
-	assert.NoError(t, err)
-	provider, err := dids.NewEthProvider(privKey)
+func TestEthDIDVerifyInvalidSig(t *testing.T) {
+	// gen a real priv key for signing
+	privateKey, err := crypto.GenerateKey()
 	assert.NoError(t, err)
 
-	// create simple typed data
-	typedData := mockTypedData
-
-	// sign the typed data
-	signature, err := provider.Sign(typedData)
+	// gen a real sig for our mocked data type
+	sigHex, err := generateValidSignature(mockTypedData, privateKey)
 	assert.NoError(t, err)
 
-	// recover the signer
-	recoveredDID, err := provider.RecoverSigner(typedData, signature)
+	// get the addr from the priv key
+	address := crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
+	ethDid := dids.NewEthDID(address)
+
+	// verify the valid sig
+	valid, err := ethDid.Verify(mockTypedData, sigHex)
 	assert.NoError(t, err)
-	assert.Equal(t, provider.DID().FullString(), recoveredDID.FullString())
+	// ensure the sig is valid, it should be
+	assert.True(t, valid)
+
+	// verify an invalid sig
+	valid, err = ethDid.Verify(mockTypedData, "0x123")
+	assert.Error(t, err)
+	// ensure the sig is invalid
+	assert.False(t, valid)
 }
 
-func TestEthDIDAbidesByInterfaces(t *testing.T) {
-	// gens a new ECDSA private key
-	privKey, err := ecdsa.GenerateKey(crypto.S256(), rand.Reader)
+func TestEthProviderRecoverSigner(t *testing.T) {
+	// gen a real priv key for signing
+	privateKey, err := crypto.GenerateKey()
 	assert.NoError(t, err)
 
-	// creates a new eth provider
-	provider, err := dids.NewEthProvider(privKey)
+	// gen a valid sig for our mocked data
+	sigHex, err := generateValidSignature(mockTypedData, privateKey)
 	assert.NoError(t, err)
 
-	// ensure it abides by both interfaces
-	var _ dids.Provider = provider
-	var _ dids.EthDIDProvider = provider
+	// get the expected addr from the priv key
+	expectedAddress := crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
+
+	// init a provider
+	provider := dids.NewEthProvider()
+
+	// recover the signer from the sig
+	recoveredAddress, err := provider.RecoverSigner(mockTypedData, sigHex)
+	assert.NoError(t, err)
+
+	// check that the recovered addr matches the expected addr
+	assert.Equal(t, expectedAddress, recoveredAddress)
 }
