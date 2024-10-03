@@ -1,7 +1,6 @@
 package dids
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ed25519"
@@ -28,20 +27,19 @@ const KeyDIDPrefix = "did:key:"
 
 var _ DID[ed25519.PublicKey, map[string]interface{}] = KeyDID("")
 var _ Provider = KeyProvider{}
-var _ KeyDIDProvider = KeyProvider{}
 
 // ===== KeyDID =====
 
 type KeyDID string
 
-func NewKeyDID(pubKey ed25519.PublicKey) (KeyDID, error) {
+func NewKeyDID(pubKey ed25519.PublicKey) (DID[ed25519.PublicKey, map[string]interface{}], error) {
 	// adds indicator bytes saying "this is an ed25519 key"
 	data := append([]byte{0xED, 0x01}, pubKey...)
 
 	// encoding everything in base58, as per the spec
 	base58Encoded, err := multibase.Encode(multibase.Base58BTC, data)
 	if err != nil {
-		return "", err
+		return KeyDID(""), err
 	}
 
 	return KeyDID(KeyDIDPrefix + string(base58Encoded)), nil
@@ -68,16 +66,59 @@ func (d KeyDID) Identifier() ed25519.PublicKey {
 }
 
 func (d KeyDID) Verify(payload map[string]interface{}, sig string) (bool, error) {
-	// internally use RecoverSigner to recover the signer DID from the signature
-	recoveredDID, err := d.RecoverSigner(payload, sig)
-	if err != nil {
-		return false, err
+	// split the JWT-like sig into 3 parts: header, payload, and sig
+	parts := strings.Split(sig, ".")
+	if len(parts) != 3 {
+		return false, fmt.Errorf("invalid sig format: expected 3 parts")
 	}
 
-	// check if the recovered DID's identifier matches the current DID's identifier
-	//
-	// we need to compare with bytes.Equal, else we get "slice can only be compared to nil"
-	return bytes.Equal(recoveredDID.Identifier(), d.Identifier()), nil
+	// decode the header
+	decodedHeader, err := base64.StdEncoding.DecodeString(parts[0])
+	if err != nil {
+		return false, fmt.Errorf("invalid header encoding: %w", err)
+	}
+
+	// unmarshal header
+	var header map[string]interface{}
+	err = json.Unmarshal(decodedHeader, &header)
+	if err != nil {
+		return false, fmt.Errorf("invalid header JSON: %w", err)
+	}
+
+	// extract the kid param (key id) field from the header
+	kid, ok := header["kid"].(string)
+	if !ok {
+		return false, fmt.Errorf("invalid or missing kid in header")
+	}
+
+	// ensure the DID in the header matches the current DID
+	if kid != d.String() {
+		return false, fmt.Errorf("kid in the header does not match current DID")
+	}
+
+	// reconstruct the signing input: header + payload (both base64-encoded)
+	signingInput := parts[0] + "." + parts[1]
+
+	// decode the sig from base64
+	decodedSig, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil {
+		return false, fmt.Errorf("invalid sig encoding: %w", err)
+	}
+
+	// get the pub key from the DID
+	pubKey := d.Identifier()
+	if pubKey == nil {
+		return false, fmt.Errorf("invalid DID identifier: nil pub key")
+	}
+
+	// verify the sig using
+	verified := ed25519.Verify(pubKey, []byte(signingInput), decodedSig)
+
+	if !verified {
+		return false, fmt.Errorf("sig verification failed")
+	}
+
+	return true, nil
 }
 
 // ===== KeyDIDProvider =====
@@ -119,65 +160,16 @@ func (k KeyProvider) Sign(payload map[string]interface{}) (string, error) {
 	}
 
 	// encoding the header and payload
-	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
-	encodedPayload := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	encodedHeader := base64.StdEncoding.EncodeToString(headerJSON)
+	encodedPayload := base64.StdEncoding.EncodeToString(payloadJSON)
 
 	// signing the header and payload
 	signingInput := encodedHeader + "." + encodedPayload
 	sig := ed25519.Sign(k.privKey, []byte(signingInput))
 
 	// encoding the sig and returning it
-	encodedSig := base64.RawURLEncoding.EncodeToString(sig)
+	encodedSig := base64.StdEncoding.EncodeToString(sig)
 	return signingInput + "." + encodedSig, nil
-}
-
-func (d KeyDID) RecoverSigner(payload map[string]interface{}, sig string) (DID[ed25519.PublicKey, map[string]interface{}], error) {
-	// split the JWT-like sig into 3 parts
-	parts := strings.Split(sig, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid signature format: expected 3 parts")
-	}
-
-	// decode the header
-	decodedHeader, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return nil, fmt.Errorf("invalid header encoding: %w", err)
-	}
-
-	// unmashal the header
-	var header map[string]interface{}
-	err = json.Unmarshal(decodedHeader, &header)
-	if err != nil {
-		return nil, fmt.Errorf("invalid header JSON: %w", err)
-	}
-
-	// exctract the DID from kid field
-	didStr, ok := header["kid"].(string)
-	if !ok {
-		return nil, fmt.Errorf("invalid or missing 'kid' in header")
-	}
-
-	// form new KeyDID from the extracted kid param
-	keyDID := KeyDID(didStr)
-
-	// recreate the signing input (header + payload, delimited by .)
-	encodedPayload := parts[1]
-	signingInput := parts[0] + "." + encodedPayload
-
-	// decode the sig
-	decodedSig, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return nil, fmt.Errorf("invalid signature encoding: %w", err)
-	}
-
-	// verify the sig
-	verified := ed25519.Verify(keyDID.Identifier(), []byte(signingInput), decodedSig)
-	if !verified {
-		return nil, fmt.Errorf("signature verification failed")
-	}
-
-	// return the recovered KeyDID
-	return keyDID, nil
 }
 
 // creates JWE using the recipient's pub key
@@ -245,9 +237,9 @@ func (k KeyProvider) CreateJWE(payload map[string]interface{}, recipient ed25519
 
 	// create the JWE header in accordance with spec mentioned in the Sign method
 	header := map[string]interface{}{
-		"alg": "ECDH-ES",                                          // using ECDH (x25519) for key exchange
-		"enc": "A256GCM",                                          // AES-GCM for encryption
-		"epk": base64.RawURLEncoding.EncodeToString(ephemeralPub), // ephemeral pub key
+		"alg": "ECDH-ES",                                       // using ECDH (x25519) for key exchange
+		"enc": "A256GCM",                                       // AES-GCM for encryption
+		"epk": base64.StdEncoding.EncodeToString(ephemeralPub), // ephemeral pub key
 		"typ": "JWE",
 	}
 	headerJSON, err := json.Marshal(header)
@@ -256,10 +248,10 @@ func (k KeyProvider) CreateJWE(payload map[string]interface{}, recipient ed25519
 	}
 
 	// base64 encode everything
-	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
-	encodedCiphertext := base64.RawURLEncoding.EncodeToString(cipherText)
-	encodedTag := base64.RawURLEncoding.EncodeToString(authTag)
-	encodedNonce := base64.RawURLEncoding.EncodeToString(nonce)
+	encodedHeader := base64.StdEncoding.EncodeToString(headerJSON)
+	encodedCiphertext := base64.StdEncoding.EncodeToString(cipherText)
+	encodedTag := base64.StdEncoding.EncodeToString(authTag)
+	encodedNonce := base64.StdEncoding.EncodeToString(nonce)
 
 	// return the JWE in a compact format
 	//
@@ -278,19 +270,19 @@ func (k KeyProvider) DecryptJWE(jwe string) (map[string]interface{}, error) {
 	}
 
 	// decode each component from base64 (as it was originally encoded into this)
-	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	headerJSON, err := base64.StdEncoding.DecodeString(parts[0])
 	if err != nil {
 		return nil, fmt.Errorf("invalid header encoding: %w", err)
 	}
-	nonce, err := base64.RawURLEncoding.DecodeString(parts[2])
+	nonce, err := base64.StdEncoding.DecodeString(parts[2])
 	if err != nil {
 		return nil, fmt.Errorf("invalid nonce encoding: %w", err)
 	}
-	ciphertext, err := base64.RawURLEncoding.DecodeString(parts[3])
+	ciphertext, err := base64.StdEncoding.DecodeString(parts[3])
 	if err != nil {
 		return nil, fmt.Errorf("invalid ciphertext encoding: %w", err)
 	}
-	authTag, err := base64.RawURLEncoding.DecodeString(parts[4])
+	authTag, err := base64.StdEncoding.DecodeString(parts[4])
 	if err != nil {
 		return nil, fmt.Errorf("invalid authentication tag encoding: %w", err)
 	}
@@ -314,7 +306,7 @@ func (k KeyProvider) DecryptJWE(jwe string) (map[string]interface{}, error) {
 	}
 
 	// decode the ephemeral pub key from base64 (as it was originally encoded into this)
-	ephemeralPubKey, err := base64.RawURLEncoding.DecodeString(ephemeralPubKeyStr)
+	ephemeralPubKey, err := base64.StdEncoding.DecodeString(ephemeralPubKeyStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid ephemeral pub key encoding: %w", err)
 	}
