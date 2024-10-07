@@ -3,142 +3,72 @@ package dids_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"reflect"
-	"strings"
+	"crypto/sha256"
 	"testing"
 	"vsc-node/lib/dids"
 
+	blocks "github.com/ipfs/go-block-format"
+	"github.com/ipfs/go-cid"
+	mh "github.com/multiformats/go-multihash"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestSignVerify(t *testing.T) {
-	// gen an ed25519 keypair
-	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
-	assert.NoError(t, err)
+type dummyBlock struct {
+	data []byte
+}
 
-	// create a provider
+func (b *dummyBlock) RawData() []byte {
+	return b.data
+}
+
+func (b *dummyBlock) Cid() cid.Cid {
+	hash := sha256.Sum256(b.data)
+	multihash, _ := mh.Encode(hash[:], mh.SHA2_256)
+	return cid.NewCidV0(multihash)
+}
+
+func createDummyBlock(data []byte) blocks.Block {
+	return &dummyBlock{data: data}
+}
+
+// loggable
+func (b *dummyBlock) Loggable() map[string]interface{} {
+	return map[string]interface{}{
+		"cid": b.Cid().String(),
+	}
+}
+
+// string
+func (b *dummyBlock) String() string {
+	return b.Cid().String()
+}
+
+func TestSignVerify(t *testing.T) {
+	// gen a keypair
+	pubKey, privKey, _ := ed25519.GenerateKey(rand.Reader)
+	assert.NotNil(t, pubKey)
+
 	provider := dids.NewKeyProvider(privKey)
 
-	// create a payload with consistent data types
-	payload := map[string]interface{}{
-		"someKey":  "someVal",
-		"otherKey": float64(123),
-	}
+	// create original block
+	block := createDummyBlock([]byte("dummy data"))
+	assert.NotNil(t, block)
 
-	// sign the payload
-	signedJWT, err := provider.Sign(payload)
-	assert.NoError(t, err)
+	jws1, err := provider.Sign(block)
+	assert.Nil(t, err)
 
-	// create a DID from the pub key
+	// create DID from the pub key
 	did, err := dids.NewKeyDID(pubKey)
-	assert.NoError(t, err)
+	assert.Nil(t, err)
 
-	// verify the signedJWT (JWS)
-	valid, err := did.Verify(payload, signedJWT)
+	// verify the original block with its sig
+	valid, err := did.Verify(block, jws1)
 	assert.Nil(t, err)
 	assert.True(t, valid)
-}
 
-func TestCreateDecryptJWE(t *testing.T) {
-	// gen an ed25519 keypair for recipient
-	recipientPubKey, recipientPrivKey, err := ed25519.GenerateKey(rand.Reader)
-	assert.NoError(t, err)
-
-	// gen an ed25519 keypair for sender
-	_, senderPrivKey, err := ed25519.GenerateKey(rand.Reader)
-	assert.NoError(t, err)
-
-	// create sender provider
-	senderProvider := dids.NewKeyProvider(senderPrivKey)
-
-	// create a payload
-	payload := map[string]interface{}{
-		"someKey":  "someVal",
-		"otherKey": float64(123),
-	}
-
-	// encrypt the payload using the recipient's pub key
-	jwe, err := senderProvider.CreateJWE(payload, recipientPubKey)
-	assert.NoError(t, err)
-
-	// create a recipient provider
-	recipientProvider := dids.NewKeyProvider(recipientPrivKey)
-
-	// decrypt the JWE using the recipient's priv key
-	decryptedPayload, err := recipientProvider.DecryptJWE(jwe)
-	assert.NoError(t, err)
-
-	// ensure the decrypted payload matches the original
-	assert.True(t, reflect.DeepEqual(payload, decryptedPayload))
-}
-
-func TestInvalidSignature(t *testing.T) {
-	// gen an ed25519 keypair
-	_, privKey, err := ed25519.GenerateKey(rand.Reader)
-	assert.NoError(t, err)
-
-	// create a provider
-	provider := dids.NewKeyProvider(privKey)
-
-	// create a payload
-	payload := map[string]interface{}{
-		"someKey":  "someVal",
-		"otherKey": float64(123),
-	}
-
-	// sign the payload
-	signedJWT, err := provider.Sign(payload)
-	assert.NoError(t, err)
-
-	// modify/tamper with the payload
-	payload["otherKey"] = 999
-
-	// create a DID from the public key
-	did, err := dids.NewKeyDID(privKey.Public().(ed25519.PublicKey))
-	assert.NoError(t, err)
-
-	// parse the sigs from the signed JWT
-	parts := strings.Split(signedJWT, ".")
-	// SIGNED JWS must have 3 parts (JWE is another story)
-	assert.Equal(t, 3, len(parts))
-	sig := parts[2]
-
-	// verify the tampered payload, it should fail or error out
-	valid, err := did.Verify(payload, sig)
-	assert.True(t, !valid || err != nil)
-}
-
-func TestDecryptJWEWithWrongKey(t *testing.T) {
-	// gen an ed25519 keypair for the intended recipient
-	recipientPubKey, _, err := ed25519.GenerateKey(rand.Reader)
-	assert.NoError(t, err)
-
-	// gen an ed25519 keypair for another (wrong) recipient
-	_, wrongPrivKey, err := ed25519.GenerateKey(rand.Reader)
-	assert.NoError(t, err)
-
-	// gen an ed25519 keypair for sender
-	_, senderPrivKey, err := ed25519.GenerateKey(rand.Reader)
-	assert.NoError(t, err)
-
-	// create a sender provider
-	senderProvider := dids.NewKeyProvider(senderPrivKey)
-
-	// create a payload
-	payload := map[string]interface{}{
-		"someKey":  "someVal",
-		"otherKey": float64(123),
-	}
-
-	// encrypt the payload using the intended recipient's pub key
-	jwe, err := senderProvider.CreateJWE(payload, recipientPubKey)
-	assert.NoError(t, err)
-
-	// create a provider for the WRONG recipient
-	wrongProvider := dids.NewKeyProvider(wrongPrivKey)
-
-	// attempt to decrypt the JWE using the wrong recipient's priv key
-	_, err = wrongProvider.DecryptJWE(jwe)
-	// since the wrong key is used, an error should be thrown
-	assert.Error(t, err)
+	// create modified/incorrect block with different content
+	modifiedBlock := createDummyBlock([]byte("modified data 123 456"))
+	valid, err = did.Verify(modifiedBlock, jws1)
+	assert.NotNil(t, err)
+	assert.False(t, valid)
 }

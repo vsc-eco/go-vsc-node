@@ -2,25 +2,28 @@ package dids
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"math/big"
 	"reflect"
 	"strings"
 
-	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
+	blocks "github.com/ipfs/go-block-format"
 )
 
 // ===== constants =====
 
 // matches what is from vsc's system:
 // - https://github.com/vsc-eco/Bitcoin-wrap-UI/blob/365d24bc592003be9600f8a0c886e4e6f9bbb1c1/src/hooks/auth/wagmi-web3modal/index.ts#L10
+// - https://github.com/w3c-ccg/did-pkh/blob/main/did-pkh-method-draft.md
 const EthDIDPrefix = "did:pkh:eip155:1:"
 
 // ===== interface assertions =====
 
 // ethr addr | payload type
-var _ DID[string, apitypes.TypedData] = EthDID("")
+var _ DID[string] = EthDID("")
 
 var _ Provider = &EthProvider{}
 
@@ -46,9 +49,18 @@ func (d EthDID) Identifier() string {
 	return string(d)[len(EthDIDPrefix):]
 }
 
-func (d EthDID) Verify(payload apitypes.TypedData, sig string) (bool, error) {
-	// internally use RecoverSigner func to recover the signer DID from the sig
-	recoveredDID, err := d.recoverSigner(payload, sig)
+func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
+	// internally use recoverSigner func to recover the signer DID from the sig
+
+	// convert the block to a typed data struct
+	payload, err := ConvertToEIP712TypedData("vsc.network", block, "tx_container_v0", func(f float64) (*big.Int, error) {
+		return big.NewInt(int64(f)), nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to convert block to typed data: %v", err)
+	}
+
+	recoveredDID, err := d.recoverSigner(payload.Data, sig)
 	if err != nil {
 		return false, fmt.Errorf("failed to recover signer: %v", err)
 	}
@@ -69,12 +81,12 @@ func NewEthProvider() *EthProvider {
 
 // ===== implementing the Provider interface =====
 
-func (e *EthProvider) Sign(payload map[string]interface{}) (string, error) {
+func (e *EthProvider) Sign(block blocks.Block) (string, error) {
 	// todo: implement a way to sign the payload from the EthProvider
 	panic("unimplemented")
 }
 
-func (d EthDID) recoverSigner(payload apitypes.TypedData, sig string) (DID[string, apitypes.TypedData], error) {
+func (d EthDID) recoverSigner(payload apitypes.TypedData, sig string) (DID[string], error) {
 	// compute the EIP-712 hash
 	dataHash, err := computeEIP712Hash(payload)
 	if err != nil {
@@ -148,212 +160,173 @@ func computeEIP712Hash(typedData apitypes.TypedData) ([]byte, error) {
 
 // ===== struct -> EIP-712 typed data conversion logic =====
 
-// converts a go struct to eip-712 typed data and validates it
-func ConvertToEIP712TypedData(
-	domainName, version, verifyingContract, salt string,
-	chainId *math.HexOrDecimal256, data interface{}, primaryTypeName string,
-	floatHandler func(float64) (*math.HexOrDecimal256, error)) (apitypes.TypedData, error) {
+// struct wrapper for EIP-712 typed data
+//
+// needed, else we can't marshal the domain field separately
+type TypedData struct {
+	Data apitypes.TypedData
+}
 
-	// convert go struct to eip-712 format
-	message, types, err := goStructsToTypedData(data, primaryTypeName, make(map[string]bool), make(map[string][]apitypes.Type), floatHandler)
-	if err != nil {
-		return apitypes.TypedData{}, err
+// marshals typed data into JSON, handling the domain field separately
+//
+// this is needed because the domain field is a map[string]interface{} and we only want to serialize the "name" field, if
+// we don't handle this separately, the entire domain map will be serialized, including zero values and such
+func (d TypedData) MarshalJSON() ([]byte, error) {
+	type Alias struct {
+		Types       apitypes.Types            `json:"types"`
+		PrimaryType string                    `json:"primaryType"`
+		Domain      map[string]interface{}    `json:"domain"`
+		Message     apitypes.TypedDataMessage `json:"message"`
 	}
 
-	// add the EIP712Domain type
+	// serialize only the "name" field for the domain
+	domain := make(map[string]interface{})
+	if d.Data.Domain.Name != "" {
+		domain["name"] = d.Data.Domain.Name
+	}
+
+	alias := Alias{
+		Types:       d.Data.Types,
+		PrimaryType: d.Data.PrimaryType,
+		Domain:      domain,
+		Message:     d.Data.Message,
+	}
+
+	return json.Marshal(alias)
+}
+
+// converts map into EIP-712 typed data
+func ConvertToEIP712TypedData(
+	domainName string,
+	data interface{}, primaryTypeName string,
+	floatHandler func(float64) (*big.Int, error)) (TypedData, error) {
+
+	// assert data as map[string]interface{} or return an error if it's not
+	dataMap, ok := data.(map[string]interface{})
+	if !ok {
+		return TypedData{}, fmt.Errorf("data must be of type map[string]interface{}")
+	}
+
+	// gen the msg and types
+	message, types := generateTypedData(dataMap, primaryTypeName, floatHandler)
+
+	// add EIP712Domain type with "name" field
 	types["EIP712Domain"] = []apitypes.Type{
 		{Name: "name", Type: "string"},
-		{Name: "version", Type: "string"},
-		{Name: "chainId", Type: "uint256"},
-		{Name: "verifyingContract", Type: "address"},
-		{Name: "salt", Type: "bytes32"},
+		// we do not need to add any other fields in accordance with vsc-eco's system
 	}
 
-	// construct the full eip-712 typed data
-	typedData := apitypes.TypedData{
-		Domain: apitypes.TypedDataDomain{
-			Name:              domainName,
-			Version:           version,
-			ChainId:           chainId,
-			VerifyingContract: verifyingContract,
-			Salt:              salt,
-		},
-		PrimaryType: primaryTypeName,
-		Message:     message,
-		Types:       types,
-	}
+	// populates the TypedData struct
+	typedData := TypedData{}
+	typedData.Data.Domain = apitypes.TypedDataDomain{Name: domainName}
+	typedData.Data.PrimaryType = primaryTypeName
+	typedData.Data.Message = message
+	typedData.Data.Types = types
 
-	// validate the final typed data
-	if err := validateTypedData(typedData); err != nil {
-		return apitypes.TypedData{}, err
+	// validates the final typed data
+	if err := validateTypedData(typedData.Data); err != nil {
+		return TypedData{}, err
 	}
 
 	return typedData, nil
 }
 
-// converts go types to eip-712 typed data recursively
-func goStructsToTypedData(
-	data interface{},
-	typeName string,
-	addedTypes map[string]bool,
-	typeDefs map[string][]apitypes.Type,
-	floatHandler func(float64) (*math.HexOrDecimal256, error)) (apitypes.TypedDataMessage, apitypes.Types, error) {
-
-	typedData := apitypes.TypedDataMessage{}
-	types := apitypes.Types{}
-
-	v := reflect.ValueOf(data)
-	t := reflect.TypeOf(data)
-
-	// check for nil or non-struct values
-	if v.Kind() != reflect.Struct {
-		return nil, nil, fmt.Errorf("unsupported kind: %s", t.Kind().String())
-	}
-
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		fieldValue := v.Field(i)
-
-		// skip nil pointer fields
-		if fieldValue.Kind() == reflect.Ptr && fieldValue.IsNil() {
-			continue
-		}
-
-		fieldName := strings.ToLower(field.Name)
-		fieldType := getEIP712Type(field.Type)
-
-		switch fieldValue.Kind() {
-		case reflect.Struct:
-			// recurse into structs
-			subTypedData, subTypes, err := goStructsToTypedData(fieldValue.Interface(), fieldType, addedTypes, typeDefs, floatHandler)
-			if err != nil {
-				return nil, nil, err
-			}
-			typedData[fieldName] = subTypedData
-			if !addedTypes[field.Type.Name()] {
-				types[field.Type.Name()] = subTypes[field.Type.Name()]
-				addedTypes[field.Type.Name()] = true
-			}
-		case reflect.Array, reflect.Slice:
-			// ensure it's a supported slice type
-			if !isValidEIP712Array(fieldValue.Type()) {
-				return nil, nil, fmt.Errorf("unsupported array/slice type: %s", fieldValue.Type())
-			}
-
-			// handle byte slices (bytes[] or fixed bytesN)
-			if fieldValue.Type().Elem().Kind() == reflect.Uint8 {
-				if fieldValue.Len() == 0 {
-					// empty byte array, set to "0x"
-					typedData[fieldName] = "0x"
-				} else {
-					// handle dynamic byte arrays (bytes[]), like [65]byte
-					bytes := make([]byte, fieldValue.Len())
-					for j := 0; j < fieldValue.Len(); j++ {
-						bytes[j] = byte(fieldValue.Index(j).Uint())
-					}
-					// serialize as dynamic bytes[]
-					typedData[fieldName] = fmt.Sprintf("0x%x", bytes)
-				}
-			} else {
-				arrayData, err := handleArray(fieldValue, fieldType, floatHandler)
-				if err != nil {
-					return nil, nil, err
-				}
-				typedData[fieldName] = arrayData
-			}
-		default:
-			// handle primitive types
-			primitiveValue, err := handlePrimitive(fieldValue.Interface(), fieldType, floatHandler)
-			if err != nil {
-				return nil, nil, err
-			}
-			typedData[fieldName] = primitiveValue
-		}
-
-		// add the field's type definition
-		typeDefs[typeName] = append(typeDefs[typeName], apitypes.Type{Name: fieldName, Type: fieldType})
-	}
-
-	types[typeName] = typeDefs[typeName]
-	return typedData, types, nil
-}
-
-// returns the EIP-712 type for a go type
-func getEIP712Type(t reflect.Type) string {
-	switch t.Kind() {
-	case reflect.String:
-		return "string"
-	case reflect.Bool:
-		return "bool"
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return "int256"
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return "uint256"
-	case reflect.Float32, reflect.Float64:
-		return "uint256"
-	case reflect.Array, reflect.Slice:
-		if t.Elem().Kind() == reflect.Uint8 {
-			if t.Len() > 32 {
-				return "bytes" // coerce byte arrays > 32 bytes into dynamic bytes[] else apitypes from go-ethereum will error
-			}
-			return fmt.Sprintf("bytes%d", t.Len()) // handle fixed-length byte arrays as bytesN as is prevalent in the go-ethereum keys file
-		}
-		return fmt.Sprintf("%s[]", getEIP712Type(t.Elem())) // dynamic arrays with elem type then []
-	case reflect.Struct:
-		return t.Name() // else, just take the struct name
-	default:
-		return "object" // unsupported types we just consider "object"
-	}
-}
-
-// checks if a slice or array is a valid EIP-712 array, coercing integer types
-func isValidEIP712Array(t reflect.Type) bool {
-	switch t.Elem().Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.String, reflect.Bool:
-		return true
-	default:
+// check if a string is an eth addr
+func isEthAddr(s string) bool {
+	if len(s) != 42 || !strings.HasPrefix(s, "0x") {
 		return false
 	}
+	_, err := hex.DecodeString(s[2:])
+	return err == nil
 }
 
-// handles arrays and slices, preserving int[], uint[], string[], bool[], address[]
-func handleArray(v reflect.Value, fieldType string, floatHandler func(float64) (*math.HexOrDecimal256, error)) ([]interface{}, error) {
-	sliceLen := v.Len()
-	sliceData := make([]interface{}, sliceLen)
-	for j := 0; j < sliceLen; j++ {
-		elem := v.Index(j)
-		primitiveValue, err := handlePrimitive(elem.Interface(), fieldType, floatHandler)
-		if err != nil {
-			return nil, err
+func generateTypedData(data map[string]interface{}, typeName string, floatHandler func(float64) (*big.Int, error)) (map[string]interface{}, map[string][]apitypes.Type) {
+	message := make(map[string]interface{})
+	types := make(map[string][]apitypes.Type)
+	types[typeName] = []apitypes.Type{}
+
+	for fieldName, fieldValue := range data {
+		fieldKind := reflect.ValueOf(fieldValue).Kind()
+		var fieldType string
+
+		switch fieldKind {
+		case reflect.Slice, reflect.Array:
+			elemType := reflect.TypeOf(fieldValue).Elem()
+
+			// default to int256[] for arrays of integers
+			if elemType.Kind() == reflect.Int || elemType.Kind() == reflect.Int8 || elemType.Kind() == reflect.Int16 || elemType.Kind() == reflect.Int32 || elemType.Kind() == reflect.Int64 {
+				fieldType = "int256[]"
+				// convert each int in the array to string
+				intArray := reflect.ValueOf(fieldValue)
+				strArray := make([]string, intArray.Len())
+				for i := 0; i < intArray.Len(); i++ {
+					strArray[i] = fmt.Sprintf("%d", intArray.Index(i).Int())
+				}
+				message[fieldName] = strArray
+			} else if elemType.Kind() == reflect.Uint8 {
+				fieldType = "bytes" // handle byte slices
+				message[fieldName] = fieldValue
+			} else {
+				fieldType = fmt.Sprintf("%s[]", elemType.Kind()) // handle other slice/array types
+				message[fieldName] = fieldValue
+			}
+
+		case reflect.Map:
+			// handle nested maps recursively, we name them as "<FieldName>MapInterface" since we don't have the type name
+			nestedTypeName := fmt.Sprintf("%sMapInterface", fieldName)
+			nestedMessage, nestedTypes := generateTypedData(fieldValue.(map[string]interface{}), nestedTypeName, floatHandler)
+			fieldType = nestedTypeName
+			message[fieldName] = nestedMessage
+			for k, v := range nestedTypes {
+				types[k] = v
+			}
+
+		case reflect.String:
+			// check if the string is a valid eth addr
+			if isEthAddr(fieldValue.(string)) {
+				fieldType = "address"
+			} else {
+				fieldType = "string"
+			}
+			message[fieldName] = fieldValue
+
+		case reflect.Float64:
+			// handle floats using the provided float handler
+			if floatValue, err := floatHandler(fieldValue.(float64)); err == nil {
+				message[fieldName] = floatValue
+				fieldType = "uint256"
+			} else {
+				// return an error if the float handler fails
+				// todo: fix
+				panic(fmt.Sprintf("failed to handle float: %v", err))
+			}
+
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			// handle all integer types, convert to int256 and serialize as string
+			intValue := reflect.ValueOf(fieldValue).Int()
+			fieldType = "int256"
+			message[fieldName] = fmt.Sprintf("%d", intValue)
+
+		default:
+			// handle other primitive types
+			fieldType = fieldKind.String()
+			message[fieldName] = fieldValue
 		}
-		sliceData[j] = primitiveValue
-	}
-	return sliceData, nil
-}
 
-// handles primitive types like int, string, bool, etc
-func handlePrimitive(value interface{}, fieldType string, floatHandler func(float64) (*math.HexOrDecimal256, error)) (interface{}, error) {
-	switch v := value.(type) {
-	case string, bool:
-		return v, nil
-	case int, int8, int16, int32, int64:
-		// convert integer types to hex format
-		return fmt.Sprintf("0x%x", v), nil
-	case uint, uint8, uint16, uint32, uint64:
-		// convert unsigned integer types to hex format
-		return fmt.Sprintf("0x%x", v), nil
-	case float32, float64:
-		// handle floats using the provided float handler
-		return floatHandler(v.(float64))
-	default:
-		// if type is unsupported, return an error
-		return nil, fmt.Errorf("unsupported field type: %s", fieldType)
+		// append the field to the types array
+		types[typeName] = append(types[typeName], apitypes.Type{Name: fieldName, Type: fieldType})
 	}
+
+	return message, types
 }
 
 // validates the EIP-712 typed data
+//
+// uses the ethereum/go-ethereum signer package to validate the typed data,
+// we don't actually care about the result, we just want to know if the typed data is valid
+// because the signer package will throw an error if the typed data is invalid and their validation
+// logic is more comprehensive than what we could write since it's the official ethereum package
 func validateTypedData(typedData apitypes.TypedData) error {
-	// ensure we don't have any "object" types as they are unsupported
 	for typeName, fields := range typedData.Types {
 		for _, field := range fields {
 			if field.Type == "object" {
@@ -362,10 +335,6 @@ func validateTypedData(typedData apitypes.TypedData) error {
 		}
 	}
 
-	// attempt to hash the typed data for validation
-	//
-	// we don't care what the result is, only if it errors out as
-	// the official ethereum/go-ethereum lib has tons of data validation
 	_, _, err := apitypes.TypedDataAndHash(typedData)
 	if err != nil {
 		return fmt.Errorf("failed to hash typed data: %v", err)

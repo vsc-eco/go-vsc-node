@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/crypto/hkdf"
 
+	blocks "github.com/ipfs/go-block-format"
 	"github.com/jorrizza/ed2curve25519"
 	"github.com/multiformats/go-multibase"
 	"golang.org/x/crypto/curve25519"
@@ -25,14 +26,14 @@ const KeyDIDPrefix = "did:key:"
 
 // ===== interface assertions =====
 
-var _ DID[ed25519.PublicKey, map[string]interface{}] = KeyDID("")
+var _ DID[ed25519.PublicKey] = KeyDID("")
 var _ Provider = KeyProvider{}
 
 // ===== KeyDID =====
 
 type KeyDID string
 
-func NewKeyDID(pubKey ed25519.PublicKey) (DID[ed25519.PublicKey, map[string]interface{}], error) {
+func NewKeyDID(pubKey ed25519.PublicKey) (DID[ed25519.PublicKey], error) {
 	// adds indicator bytes saying "this is an ed25519 key"
 	data := append([]byte{0xED, 0x01}, pubKey...)
 
@@ -65,8 +66,8 @@ func (d KeyDID) Identifier() ed25519.PublicKey {
 	return ed25519.PublicKey(data[2:])
 }
 
-func (d KeyDID) Verify(payload map[string]interface{}, sig string) (bool, error) {
-	// split the JWT-like sig into 3 parts: header, payload, and sig
+func (d KeyDID) Verify(block blocks.Block, sig string) (bool, error) {
+	// split the JWT-like signature into 3 parts: header, payload, and signature
 	parts := strings.Split(sig, ".")
 	if len(parts) != 3 {
 		return false, fmt.Errorf("invalid sig format: expected 3 parts")
@@ -78,44 +79,59 @@ func (d KeyDID) Verify(payload map[string]interface{}, sig string) (bool, error)
 		return false, fmt.Errorf("invalid header encoding: %w", err)
 	}
 
-	// unmarshal header
+	// unmarshal the header
 	var header map[string]interface{}
-	err = json.Unmarshal(decodedHeader, &header)
-	if err != nil {
+	if err = json.Unmarshal(decodedHeader, &header); err != nil {
 		return false, fmt.Errorf("invalid header JSON: %w", err)
 	}
 
-	// extract the kid param (key id) field from the header
+	// extract the 'kid' (key id) field from the header and verify it matches the current DID
 	kid, ok := header["kid"].(string)
 	if !ok {
 		return false, fmt.Errorf("invalid or missing kid in header")
 	}
-
-	// ensure the DID in the header matches the current DID
 	if kid != d.String() {
 		return false, fmt.Errorf("kid in the header does not match current DID")
+	}
+
+	// decode the payload and extract the CID (string format)
+	decodedPayload, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false, fmt.Errorf("invalid payload encoding: %w", err)
+	}
+
+	var payloadCID string
+	if err := json.Unmarshal(decodedPayload, &payloadCID); err != nil {
+		return false, fmt.Errorf("error decoding payload CID: %w", err)
+	}
+
+	// get block CID and compare it to the payload CID
+	blockCID := block.Cid().String()
+
+	if blockCID != payloadCID {
+		return false, fmt.Errorf("block CID does not match the one in the payload")
 	}
 
 	// reconstruct the signing input: header + payload (both base64-encoded)
 	signingInput := parts[0] + "." + parts[1]
 
-	// decode the sig from base64
+	// decode the signature
 	decodedSig, err := base64.StdEncoding.DecodeString(parts[2])
 	if err != nil {
-		return false, fmt.Errorf("invalid sig encoding: %w", err)
+		return false, fmt.Errorf("invalid signature encoding: %w", err)
 	}
 
-	// get the pub key from the DID
+	// get the public key from the DID
 	pubKey := d.Identifier()
 	if pubKey == nil {
-		return false, fmt.Errorf("invalid DID identifier: nil pub key")
+		return false, fmt.Errorf("invalid DID identifier: nil public key")
 	}
 
-	// verify the sig using
+	// verify the signature
 	verified := ed25519.Verify(pubKey, []byte(signingInput), decodedSig)
 
 	if !verified {
-		return false, fmt.Errorf("sig verification failed")
+		return false, fmt.Errorf("signature verification failed")
 	}
 
 	return true, nil
@@ -133,18 +149,19 @@ func NewKeyProvider(privKey ed25519.PrivateKey) KeyProvider {
 
 // ===== implementing the Provider and KeyDIDProvider interfaces =====
 
-func (k KeyProvider) Sign(payload map[string]interface{}) (string, error) {
+func (k KeyProvider) Sign(block blocks.Block) (string, error) {
+	// get the string representation of the CID
+	cidStr := block.Cid().String()
+
 	did, err := NewKeyDID(k.privKey.Public().(ed25519.PublicKey))
 	if err != nil {
 		return "", err
 	}
 
-	// header field refs:
-	// - https://www.scottbrady91.com/jose/json-web-encryption
-	// - https://www.iana.org/assignments/jose/jose.xhtml
+	// create the JWT header
 	header := map[string]interface{}{
 		"alg": "EdDSA",
-		"kid": did.String(), // include full DID
+		"kid": did.String(),
 		"typ": "JWT",
 		"cty": "JWT",
 	}
@@ -154,26 +171,31 @@ func (k KeyProvider) Sign(payload map[string]interface{}) (string, error) {
 		return "", err
 	}
 
-	payloadJSON, err := json.Marshal(payload)
+	// use the string representation of the CID for the payload
+	payloadJSON, err := json.Marshal(cidStr)
 	if err != nil {
 		return "", err
 	}
 
-	// encoding the header and payload
+	// base64 encode the header and payload
 	encodedHeader := base64.StdEncoding.EncodeToString(headerJSON)
 	encodedPayload := base64.StdEncoding.EncodeToString(payloadJSON)
 
-	// signing the header and payload
+	// signing the encoded header and payload
 	signingInput := encodedHeader + "." + encodedPayload
 	sig := ed25519.Sign(k.privKey, []byte(signingInput))
 
-	// encoding the sig and returning it
+	// base64 encode the signature
 	encodedSig := base64.StdEncoding.EncodeToString(sig)
+
+	// return the full JWT token
 	return signingInput + "." + encodedSig, nil
 }
 
+// ===== other methods =====
+
 // creates JWE using the recipient's pub key
-func (k KeyProvider) CreateJWE(payload map[string]interface{}, recipient ed25519.PublicKey) (string, error) {
+func CreateJWE(payload map[string]interface{}, recipient ed25519.PublicKey) (string, error) {
 
 	// convert recipient's ed25519 pub key to curve25519 pub key
 	curve25519PubKey := ed2curve25519.Ed25519PublicKeyToCurve25519(recipient)
