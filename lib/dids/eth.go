@@ -195,35 +195,49 @@ func (d TypedData) MarshalJSON() ([]byte, error) {
 	return json.Marshal(alias)
 }
 
-// converts map into EIP-712 typed data
 func ConvertToEIP712TypedData(
 	domainName string,
 	data interface{}, primaryTypeName string,
 	floatHandler func(float64) (*big.Int, error)) (TypedData, error) {
 
-	// assert data as map[string]interface{} or return an error if it's not
+	// try to assert data as map[string]interface{} first
 	dataMap, ok := data.(map[string]interface{})
 	if !ok {
-		return TypedData{}, fmt.Errorf("data must be of type map[string]interface{}")
+		// if not, try to marshal and then unmarshal the data into a map
+		jsonBytes, err := json.Marshal(data)
+		if err != nil {
+			return TypedData{}, fmt.Errorf("failed to marshal struct: %v", err)
+		}
+
+		err = json.Unmarshal(jsonBytes, &dataMap)
+		if err != nil {
+			return TypedData{}, fmt.Errorf("failed to unmarshal into map: %v", err)
+		}
 	}
 
-	// gen the msg and types
-	message, types := generateTypedData(dataMap, primaryTypeName, floatHandler)
+	// gen the message and types
+	message, types, err := generateTypedData(dataMap, primaryTypeName, floatHandler)
+	if err != nil {
+		return TypedData{}, fmt.Errorf("failed to generate typed data: %v", err)
+	}
 
 	// add EIP712Domain type with "name" field
 	types["EIP712Domain"] = []apitypes.Type{
 		{Name: "name", Type: "string"},
-		// we do not need to add any other fields in accordance with vsc-eco's system
+		// no need to add more fields per vsc-eco's system
 	}
 
-	// populates the TypedData struct
+	// populate the TypedData struct
 	typedData := TypedData{}
 	typedData.Data.Domain = apitypes.TypedDataDomain{Name: domainName}
 	typedData.Data.PrimaryType = primaryTypeName
 	typedData.Data.Message = message
 	typedData.Data.Types = types
 
-	// validates the final typed data
+	// validate the final typed data
+	//
+	// this is the final validation check that is done by ethereum/go-ethereum's signer package; if this
+	// passes, it means our type is "valid" by their standards
 	if err := validateTypedData(typedData.Data); err != nil {
 		return TypedData{}, err
 	}
@@ -240,7 +254,7 @@ func isEthAddr(s string) bool {
 	return err == nil
 }
 
-func generateTypedData(data map[string]interface{}, typeName string, floatHandler func(float64) (*big.Int, error)) (map[string]interface{}, map[string][]apitypes.Type) {
+func generateTypedData(data map[string]interface{}, typeName string, floatHandler func(float64) (*big.Int, error)) (map[string]interface{}, map[string][]apitypes.Type, error) {
 	message := make(map[string]interface{})
 	types := make(map[string][]apitypes.Type)
 	types[typeName] = []apitypes.Type{}
@@ -274,7 +288,10 @@ func generateTypedData(data map[string]interface{}, typeName string, floatHandle
 		case reflect.Map:
 			// handle nested maps recursively, we name them as "<FieldName>MapInterface" since we don't have the type name
 			nestedTypeName := fmt.Sprintf("%sMapInterface", fieldName)
-			nestedMessage, nestedTypes := generateTypedData(fieldValue.(map[string]interface{}), nestedTypeName, floatHandler)
+			nestedMessage, nestedTypes, err := generateTypedData(fieldValue.(map[string]interface{}), nestedTypeName, floatHandler)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to generate typed data for nested map: %v", err)
+			}
 			fieldType = nestedTypeName
 			message[fieldName] = nestedMessage
 			for k, v := range nestedTypes {
@@ -296,9 +313,7 @@ func generateTypedData(data map[string]interface{}, typeName string, floatHandle
 				message[fieldName] = floatValue
 				fieldType = "uint256"
 			} else {
-				// return an error if the float handler fails
-				// todo: fix
-				panic(fmt.Sprintf("failed to handle float: %v", err))
+				return nil, nil, fmt.Errorf("failed to handle float value: %v", err)
 			}
 
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -317,7 +332,7 @@ func generateTypedData(data map[string]interface{}, typeName string, floatHandle
 		types[typeName] = append(types[typeName], apitypes.Type{Name: fieldName, Type: fieldType})
 	}
 
-	return message, types
+	return message, types, nil
 }
 
 // validates the EIP-712 typed data
