@@ -224,6 +224,10 @@ func ConvertToEIP712TypedData(
 	data interface{}, primaryTypeName string,
 	floatHandler func(float64) (*big.Int, error)) (TypedData, error) {
 
+	if domainName == "" || primaryTypeName == "" {
+		return TypedData{}, fmt.Errorf("domain name or primary type name cannot be empty")
+	}
+
 	// try to assert data as map[string]interface{} first
 	dataMap, ok := data.(map[string]interface{})
 	if !ok {
@@ -329,6 +333,10 @@ func generateTypedDataWithPath(data map[string]interface{}, typeName string, flo
 			// mark invalid fields as "undefined"
 			fieldType = "undefined"  // to match the JS implementation
 			message[fieldName] = nil // represent undefined as nil
+
+		// invalid types like channels or funcs, etc.
+		case reflect.Chan, reflect.Func, reflect.UnsafePointer, reflect.Complex64, reflect.Complex128:
+			return nil, nil, fmt.Errorf("unsupported field type: %s", fieldKind.String())
 
 		default:
 			// handle other primitive types

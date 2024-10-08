@@ -34,6 +34,11 @@ var _ Provider = KeyProvider{}
 type KeyDID string
 
 func NewKeyDID(pubKey ed25519.PublicKey) (DID[ed25519.PublicKey], error) {
+
+	if pubKey == nil {
+		return KeyDID(""), fmt.Errorf("invalid public key")
+	}
+
 	// adds indicator bytes saying "this is an ed25519 key"
 	data := append([]byte{0xED, 0x01}, pubKey...)
 

@@ -20,6 +20,41 @@ func TestNewEthDID(t *testing.T) {
 	assert.Equal(t, expectedDID, did.String())
 }
 
+func TestConvertToEIP712TypedDataInvalidDomain(t *testing.T) {
+	data := map[string]interface{}{"name": "Alice"}
+
+	_, err := dids.ConvertToEIP712TypedData("", data, "tx_container_v0", func(f float64) (*big.Int, error) {
+		return big.NewInt(int64(f)), nil
+	})
+	assert.NotNil(t, err)
+}
+
+func TestConvertToEIP712TypedDataInvalidPrimaryTypename(t *testing.T) {
+	data := map[string]interface{}{"name": "Alice"}
+
+	_, err := dids.ConvertToEIP712TypedData("vsc.network", data, "", func(f float64) (*big.Int, error) {
+		return big.NewInt(int64(f)), nil
+	})
+	assert.NotNil(t, err)
+}
+
+func TestUnsupportedFieldType(t *testing.T) {
+	unsupportedData := map[string]interface{}{
+		// we don't support channels, for example
+		"test": make(chan string),
+	}
+
+	_, err := dids.ConvertToEIP712TypedData("vsc.network", unsupportedData, "tx_container_v0", func(f float64) (*big.Int, error) {
+		return big.NewInt(int64(f)), nil
+	})
+	assert.NotNil(t, err)
+}
+
+func TestCreateEthDIDProvider(t *testing.T) {
+	provider := dids.NewEthProvider()
+	assert.NotNil(t, provider)
+}
+
 func TestEIP712RealDataCase(t *testing.T) {
 	// structure to match the required JSON schema for a tx on the Bitoin wrapper UI: https://github.com/vsc-eco/Bitcoin-wrap-UI
 	// with some potentially sensitive data replaced with XXXXXs and YYYYYs
