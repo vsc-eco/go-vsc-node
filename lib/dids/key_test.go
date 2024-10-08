@@ -17,28 +17,31 @@ type dummyBlock struct {
 	data []byte
 }
 
+// raw data, to fulfil interface
 func (b *dummyBlock) RawData() []byte {
 	return b.data
 }
 
+// cid, to fulfil interface
 func (b *dummyBlock) Cid() cid.Cid {
 	hash := sha256.Sum256(b.data)
 	multihash, _ := mh.Encode(hash[:], mh.SHA2_256)
 	return cid.NewCidV0(multihash)
 }
 
+// create a dummy block
 func createDummyBlock(data []byte) blocks.Block {
 	return &dummyBlock{data: data}
 }
 
-// loggable
+// loggable, to fulfil interface
 func (b *dummyBlock) Loggable() map[string]interface{} {
 	return map[string]interface{}{
 		"cid": b.Cid().String(),
 	}
 }
 
-// string
+// string, to fulfil interface
 func (b *dummyBlock) String() string {
 	return b.Cid().String()
 }

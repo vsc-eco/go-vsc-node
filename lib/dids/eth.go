@@ -158,7 +158,7 @@ func computeEIP712Hash(typedData apitypes.TypedData) ([]byte, error) {
 	return finalHash, nil
 }
 
-// ===== struct -> EIP-712 typed data conversion logic =====
+// ===== struct/interface -> EIP-712 typed data conversion logic =====
 
 // struct wrapper for EIP-712 typed data
 //
@@ -167,16 +167,35 @@ type TypedData struct {
 	Data apitypes.TypedData
 }
 
+type EIP712DomainType struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// this allows us to serialize the EIP712Domain field separately outside of the types field and instead in the main object
+func (d EIP712DomainType) MarshalJSON() ([]byte, error) {
+	// structure to serialize
+	domain := []map[string]string{
+		{
+			"name": d.Name,
+			"type": d.Type,
+		},
+	}
+
+	return json.Marshal(domain)
+}
+
 // marshals typed data into JSON, handling the domain field separately
 //
 // this is needed because the domain field is a map[string]interface{} and we only want to serialize the "name" field, if
 // we don't handle this separately, the entire domain map will be serialized, including zero values and such
 func (d TypedData) MarshalJSON() ([]byte, error) {
 	type Alias struct {
-		Types       apitypes.Types            `json:"types"`
-		PrimaryType string                    `json:"primaryType"`
-		Domain      map[string]interface{}    `json:"domain"`
-		Message     apitypes.TypedDataMessage `json:"message"`
+		Types        apitypes.Types            `json:"types"`
+		PrimaryType  string                    `json:"primaryType"`
+		Domain       map[string]interface{}    `json:"domain"`
+		Message      apitypes.TypedDataMessage `json:"message"`
+		EIP712Domain EIP712DomainType          `json:"EIP712Domain"`
 	}
 
 	// serialize only the "name" field for the domain
@@ -190,6 +209,11 @@ func (d TypedData) MarshalJSON() ([]byte, error) {
 		PrimaryType: d.Data.PrimaryType,
 		Domain:      domain,
 		Message:     d.Data.Message,
+		// allows us to serialize the EIP712Domain field separately outside of the types field and instead in the main object
+		EIP712Domain: EIP712DomainType{
+			Name: "name",
+			Type: "string",
+		},
 	}
 
 	return json.Marshal(alias)
@@ -216,15 +240,9 @@ func ConvertToEIP712TypedData(
 	}
 
 	// gen the message and types
-	message, types, err := generateTypedData(dataMap, primaryTypeName, floatHandler)
+	message, types, err := generateTypedDataWithPath(dataMap, primaryTypeName, floatHandler)
 	if err != nil {
 		return TypedData{}, fmt.Errorf("failed to generate typed data: %v", err)
-	}
-
-	// add EIP712Domain type with "name" field
-	types["EIP712Domain"] = []apitypes.Type{
-		{Name: "name", Type: "string"},
-		// no need to add more fields per vsc-eco's system
 	}
 
 	// populate the TypedData struct
@@ -234,27 +252,10 @@ func ConvertToEIP712TypedData(
 	typedData.Data.Message = message
 	typedData.Data.Types = types
 
-	// validate the final typed data
-	//
-	// this is the final validation check that is done by ethereum/go-ethereum's signer package; if this
-	// passes, it means our type is "valid" by their standards
-	if err := validateTypedData(typedData.Data); err != nil {
-		return TypedData{}, err
-	}
-
 	return typedData, nil
 }
 
-// check if a string is an eth addr
-func isEthAddr(s string) bool {
-	if len(s) != 42 || !strings.HasPrefix(s, "0x") {
-		return false
-	}
-	_, err := hex.DecodeString(s[2:])
-	return err == nil
-}
-
-func generateTypedData(data map[string]interface{}, typeName string, floatHandler func(float64) (*big.Int, error)) (map[string]interface{}, map[string][]apitypes.Type, error) {
+func generateTypedDataWithPath(data map[string]interface{}, typeName string, floatHandler func(float64) (*big.Int, error)) (map[string]interface{}, map[string][]apitypes.Type, error) {
 	message := make(map[string]interface{})
 	types := make(map[string][]apitypes.Type)
 	types[typeName] = []apitypes.Type{}
@@ -267,10 +268,12 @@ func generateTypedData(data map[string]interface{}, typeName string, floatHandle
 		case reflect.Slice, reflect.Array:
 			elemType := reflect.TypeOf(fieldValue).Elem()
 
-			// default to int256[] for arrays of integers
-			if elemType.Kind() == reflect.Int || elemType.Kind() == reflect.Int8 || elemType.Kind() == reflect.Int16 || elemType.Kind() == reflect.Int32 || elemType.Kind() == reflect.Int64 {
+			// handle slices and arrays
+			if elemType.Kind() == reflect.Invalid || elemType.Kind() == reflect.Interface {
+				fieldType = "undefined[]" // to match the JS implementation
+				message[fieldName] = fieldValue
+			} else if elemType.Kind() == reflect.Int || elemType.Kind() == reflect.Int8 || elemType.Kind() == reflect.Int16 || elemType.Kind() == reflect.Int32 || elemType.Kind() == reflect.Int64 {
 				fieldType = "int256[]"
-				// convert each int in the array to string
 				intArray := reflect.ValueOf(fieldValue)
 				strArray := make([]string, intArray.Len())
 				for i := 0; i < intArray.Len(); i++ {
@@ -278,17 +281,17 @@ func generateTypedData(data map[string]interface{}, typeName string, floatHandle
 				}
 				message[fieldName] = strArray
 			} else if elemType.Kind() == reflect.Uint8 {
-				fieldType = "bytes" // handle byte slices
+				fieldType = "bytes"
 				message[fieldName] = fieldValue
 			} else {
-				fieldType = fmt.Sprintf("%s[]", elemType.Kind()) // handle other slice/array types
+				fieldType = fmt.Sprintf("%s[]", elemType.Kind()) // fallback for other slices/arrays
 				message[fieldName] = fieldValue
 			}
 
 		case reflect.Map:
-			// handle nested maps recursively, we name them as "<FieldName>MapInterface" since we don't have the type name
-			nestedTypeName := fmt.Sprintf("%sMapInterface", fieldName)
-			nestedMessage, nestedTypes, err := generateTypedData(fieldValue.(map[string]interface{}), nestedTypeName, floatHandler)
+			// generate path-like naming structure for nested types
+			nestedTypeName := fmt.Sprintf("%s.%s", typeName, fieldName)
+			nestedMessage, nestedTypes, err := generateTypedDataWithPath(fieldValue.(map[string]interface{}), nestedTypeName, floatHandler)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to generate typed data for nested map: %v", err)
 			}
@@ -319,8 +322,13 @@ func generateTypedData(data map[string]interface{}, typeName string, floatHandle
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			// handle all integer types, convert to int256 and serialize as string
 			intValue := reflect.ValueOf(fieldValue).Int()
-			fieldType = "int256"
-			message[fieldName] = fmt.Sprintf("%d", intValue)
+			fieldType = "uint256"
+			message[fieldName] = intValue
+
+		case reflect.Invalid, reflect.Interface:
+			// mark invalid fields as "undefined"
+			fieldType = "undefined"  // to match the JS implementation
+			message[fieldName] = nil // represent undefined as nil
 
 		default:
 			// handle other primitive types
@@ -328,32 +336,18 @@ func generateTypedData(data map[string]interface{}, typeName string, floatHandle
 			message[fieldName] = fieldValue
 		}
 
-		// append the field to the types array
+		// append the field to the types array with nested type naming
 		types[typeName] = append(types[typeName], apitypes.Type{Name: fieldName, Type: fieldType})
 	}
 
 	return message, types, nil
 }
 
-// validates the EIP-712 typed data
-//
-// uses the ethereum/go-ethereum signer package to validate the typed data,
-// we don't actually care about the result, we just want to know if the typed data is valid
-// because the signer package will throw an error if the typed data is invalid and their validation
-// logic is more comprehensive than what we could write since it's the official ethereum package
-func validateTypedData(typedData apitypes.TypedData) error {
-	for typeName, fields := range typedData.Types {
-		for _, field := range fields {
-			if field.Type == "object" {
-				return fmt.Errorf("unsupported field type 'object' in type %s for field %s", typeName, field.Name)
-			}
-		}
+// check if a string is an eth addr
+func isEthAddr(s string) bool {
+	if len(s) != 42 || !strings.HasPrefix(s, "0x") {
+		return false
 	}
-
-	_, _, err := apitypes.TypedDataAndHash(typedData)
-	if err != nil {
-		return fmt.Errorf("failed to hash typed data: %v", err)
-	}
-
-	return nil
+	_, err := hex.DecodeString(s[2:])
+	return err == nil
 }
