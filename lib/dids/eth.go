@@ -259,6 +259,16 @@ func ConvertToEIP712TypedData(
 	return typedData, nil
 }
 
+// check if a string is an eth addr
+func isEthAddr(s string) bool {
+	if len(s) != 42 || !strings.HasPrefix(s, "0x") {
+		return false
+	}
+	_, err := hex.DecodeString(s[2:])
+	return err == nil
+}
+
+// generates typed data recursively for nested maps and slices/arrays
 func generateTypedDataWithPath(data map[string]interface{}, typeName string, floatHandler func(float64) (*big.Int, error)) (map[string]interface{}, map[string][]apitypes.Type, error) {
 	message := make(map[string]interface{})
 	types := make(map[string][]apitypes.Type)
@@ -270,30 +280,65 @@ func generateTypedDataWithPath(data map[string]interface{}, typeName string, flo
 
 		switch fieldKind {
 		case reflect.Slice, reflect.Array:
-			elemType := reflect.TypeOf(fieldValue).Elem()
-
-			// handle slices and arrays
-			if elemType.Kind() == reflect.Invalid || elemType.Kind() == reflect.Interface {
-				fieldType = "undefined[]" // to match the JS implementation
-				message[fieldName] = fieldValue
-			} else if elemType.Kind() == reflect.Int || elemType.Kind() == reflect.Int8 || elemType.Kind() == reflect.Int16 || elemType.Kind() == reflect.Int32 || elemType.Kind() == reflect.Int64 {
-				fieldType = "int256[]"
-				intArray := reflect.ValueOf(fieldValue)
-				strArray := make([]string, intArray.Len())
-				for i := 0; i < intArray.Len(); i++ {
-					strArray[i] = fmt.Sprintf("%d", intArray.Index(i).Int())
-				}
-				message[fieldName] = strArray
-			} else if elemType.Kind() == reflect.Uint8 {
-				fieldType = "bytes"
+			// check if the array/slice is empty
+			arrayVal := reflect.ValueOf(fieldValue)
+			if arrayVal.Len() == 0 {
+				fieldType = "undefined[]" // allow undefined for empty arrays
 				message[fieldName] = fieldValue
 			} else {
-				fieldType = fmt.Sprintf("%s[]", elemType.Kind()) // fallback for other slices/arrays
-				message[fieldName] = fieldValue
+				// check the first element to infer the inner type of the slice/array
+				firstElem := arrayVal.Index(0).Interface()
+				elemType := reflect.TypeOf(firstElem)
+
+				switch elemType.Kind() {
+				case reflect.String:
+					fieldType = "string[]"
+					message[fieldName] = fieldValue
+
+				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+					fieldType = "int256[]"
+					intArray := arrayVal
+					intArrayValues := make([]int64, intArray.Len())
+					for i := 0; i < intArray.Len(); i++ {
+						// ensure we use int only for valid int types
+						if intVal, ok := intArray.Index(i).Interface().(int); ok {
+							intArrayValues[i] = int64(intVal)
+						} else {
+							return nil, nil, fmt.Errorf("invalid int value in array")
+						}
+					}
+					message[fieldName] = intArrayValues
+
+				case reflect.Float64:
+					fieldType = "uint256[]"
+					floatArray := arrayVal
+					bigIntArray := make([]*big.Int, floatArray.Len())
+					for i := 0; i < floatArray.Len(); i++ {
+						if floatVal, ok := floatArray.Index(i).Interface().(float64); ok {
+							bigInt, err := floatHandler(floatVal)
+							if err != nil {
+								return nil, nil, fmt.Errorf("failed to handle float array value: %v", err)
+							}
+							bigIntArray[i] = bigInt
+						} else {
+							return nil, nil, fmt.Errorf("invalid float value in array")
+						}
+					}
+					message[fieldName] = bigIntArray
+
+				case reflect.Uint8:
+					fieldType = "bytes" // treat []uint8 as bytes
+					message[fieldName] = fieldValue
+
+				default:
+					// fallback for unrecognized slice types
+					fieldType = fmt.Sprintf("%s[]", elemType.Kind())
+					message[fieldName] = fieldValue
+				}
 			}
 
 		case reflect.Map:
-			// generate path-like naming structure for nested types
+			// nested maps generate new type names and process recursively
 			nestedTypeName := fmt.Sprintf("%s.%s", typeName, fieldName)
 			nestedMessage, nestedTypes, err := generateTypedDataWithPath(fieldValue.(map[string]interface{}), nestedTypeName, floatHandler)
 			if err != nil {
@@ -306,7 +351,7 @@ func generateTypedDataWithPath(data map[string]interface{}, typeName string, flo
 			}
 
 		case reflect.String:
-			// check if the string is a valid eth addr
+			// handle eth addresses or regular strings
 			if isEthAddr(fieldValue.(string)) {
 				fieldType = "address"
 			} else {
@@ -315,7 +360,7 @@ func generateTypedDataWithPath(data map[string]interface{}, typeName string, flo
 			message[fieldName] = fieldValue
 
 		case reflect.Float64:
-			// handle floats using the provided float handler
+			// use the float handler for all float values
 			if floatValue, err := floatHandler(fieldValue.(float64)); err == nil {
 				message[fieldName] = floatValue
 				fieldType = "uint256"
@@ -324,38 +369,29 @@ func generateTypedDataWithPath(data map[string]interface{}, typeName string, flo
 			}
 
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			// handle all integer types, convert to int256 and serialize as string
+			// all integers are treated as uint256
 			intValue := reflect.ValueOf(fieldValue).Int()
 			fieldType = "uint256"
 			message[fieldName] = intValue
 
 		case reflect.Invalid, reflect.Interface:
-			// mark invalid fields as "undefined"
-			fieldType = "undefined"  // to match the JS implementation
-			message[fieldName] = nil // represent undefined as nil
+			// undefined or invalid types
+			fieldType = "undefined"
+			message[fieldName] = nil
 
 		// invalid types like channels or funcs, etc.
 		case reflect.Chan, reflect.Func, reflect.UnsafePointer, reflect.Complex64, reflect.Complex128:
 			return nil, nil, fmt.Errorf("unsupported field type: %s", fieldKind.String())
 
 		default:
-			// handle other primitive types
+			// fallback for other primitive types
 			fieldType = fieldKind.String()
 			message[fieldName] = fieldValue
 		}
 
-		// append the field to the types array with nested type naming
+		// append field and its type to the types array
 		types[typeName] = append(types[typeName], apitypes.Type{Name: fieldName, Type: fieldType})
 	}
 
 	return message, types, nil
-}
-
-// check if a string is an eth addr
-func isEthAddr(s string) bool {
-	if len(s) != 42 || !strings.HasPrefix(s, "0x") {
-		return false
-	}
-	_, err := hex.DecodeString(s[2:])
-	return err == nil
 }

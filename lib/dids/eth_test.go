@@ -38,16 +38,76 @@ func TestConvertToEIP712TypedDataInvalidPrimaryTypename(t *testing.T) {
 	assert.NotNil(t, err)
 }
 
-func TestUnsupportedFieldType(t *testing.T) {
-	unsupportedData := map[string]interface{}{
-		// we don't support channels, for example
-		"test": make(chan string),
+func TestEIP712InvalidTypes(t *testing.T) {
+	data := map[string]interface{}{
+		"myFunc": func() {},
+		"myChan": make(chan int),
 	}
 
-	_, err := dids.ConvertToEIP712TypedData("vsc.network", unsupportedData, "tx_container_v0", func(f float64) (*big.Int, error) {
+	_, err := dids.ConvertToEIP712TypedData("vsc.network", data, "tx_container_v0", func(f float64) (*big.Int, error) {
 		return big.NewInt(int64(f)), nil
 	})
+
+	// invalid types SHOULD throw errors
 	assert.NotNil(t, err)
+}
+
+func TestEIP712ComplexSliceArrayData(t *testing.T) {
+	// we need to be able to confirm these types in the EIP-712 typed data, since they are difficult edge cases
+	data := map[string]interface{}{
+		"names":        []interface{}{"Alice", "Bob"},
+		"ages":         []interface{}{25, 30},
+		"someByteData": []byte{0x01, 0x02, 0x03},
+		"marks":        []interface{}{25.5, 30.5},
+	}
+
+	// convert data into EIP-712 typed data
+	typedData, err := dids.ConvertToEIP712TypedData("vsc.network", data, "tx_container_v0", func(f float64) (*big.Int, error) {
+		return big.NewInt(int64(f)), nil
+	})
+	assert.Nil(t, err)
+
+	// marshal the output for manual field assertions
+	marshalled, err := typedData.MarshalJSON()
+	assert.Nil(t, err)
+
+	// unmarshal the output for easier assertions
+	var result map[string]interface{}
+	err = json.Unmarshal(marshalled, &result)
+	assert.Nil(t, err)
+
+	// assert that the types field exists
+	typesField, ok := result["types"].(map[string]interface{})
+	assert.True(t, ok)
+
+	// ensure tx_container_v0 field exists in types
+	txContainerField, ok := typesField["tx_container_v0"].([]interface{})
+	assert.True(t, ok)
+
+	// helper func to find a type by name
+	findFieldsType := func(fields []interface{}, name string) string {
+		for _, field := range fields {
+			fieldMap, ok := field.(map[string]interface{})
+			if ok && fieldMap["name"] == name {
+				return fieldMap["type"].(string)
+			}
+		}
+		return ""
+	}
+
+	// assert the types of the fields match the expected types
+	assert.Equal(t, "string[]", findFieldsType(txContainerField, "names"))
+	assert.Equal(t, "int256[]", findFieldsType(txContainerField, "ages"))
+	assert.Equal(t, "uint256[]", findFieldsType(txContainerField, "marks"))
+	assert.Equal(t, "bytes", findFieldsType(txContainerField, "someByteData"))
+
+	// assert the primary type matches what we expect
+	assert.Equal(t, "tx_container_v0", result["primaryType"])
+
+	// assert domain matches
+	domainField, ok := result["domain"].(map[string]interface{})
+	assert.True(t, ok)
+	assert.Equal(t, domainField["name"], "vsc.network")
 }
 
 func TestCreateEthDIDProvider(t *testing.T) {
