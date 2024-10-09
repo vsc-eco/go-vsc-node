@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
+	"sort"
 	"strings"
+
+	cbor "github.com/ipfs/go-ipld-cbor"
 
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
@@ -50,23 +53,48 @@ func (d EthDID) Identifier() string {
 }
 
 func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
-	// internally use recoverSigner func to recover the signer DID from the sig
+	// decode the block using CBOR into a generic type of map[string]interface
+	var decodedData map[string]interface{}
+	if err := decodeFromCBOR(block.RawData(), &decodedData); err != nil {
+		return false, fmt.Errorf("failed to decode CBOR data: %v", err)
+	}
 
-	// convert the block to a typed data struct
-	payload, err := ConvertToEIP712TypedData("vsc.network", block, "tx_container_v0", func(f float64) (*big.Int, error) {
+	// convert the sorted decoded data into EIP-712 typed data
+	payload, err := ConvertToEIP712TypedData("vsc.network", decodedData, "tx_container_v0", func(f float64) (*big.Int, error) {
 		return big.NewInt(int64(f)), nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("failed to convert block to typed data: %v", err)
+		return false, fmt.Errorf("failed to convert block to EIP-712 typed data: %v", err)
 	}
 
-	recoveredDID, err := d.recoverSigner(payload.Data, sig)
+	// compute the EIP-712 hash
+	dataHash, err := computeEIP712Hash(payload.Data)
 	if err != nil {
-		return false, fmt.Errorf("failed to recover signer: %v", err)
+		return false, fmt.Errorf("failed to compute EIP-712 hash: %v", err)
 	}
 
-	// match the recovered DID's identifier with the current DID's identifier
-	return recoveredDID.Identifier() == d.Identifier(), nil
+	// decode the sig from the hex
+	sigBytes, err := hex.DecodeString(sig)
+	if err != nil {
+		return false, fmt.Errorf("failed to decode signature: %v", err)
+	}
+
+	// recover the pub key from the signature and data hash
+	pubKey, err := crypto.SigToPub(dataHash, sigBytes)
+	if err != nil {
+		return false, fmt.Errorf("failed to recover public key from signature: %v", err)
+	}
+
+	// extract the recovered addr
+	recoveredAddress := crypto.PubkeyToAddress(*pubKey).Hex()
+
+	// get the expected addr from the DID
+	expectedAddress := d.Identifier()
+
+	// compare the recovered address to the expected addr
+	//
+	// if they are equal, the signature is valid
+	return strings.EqualFold(recoveredAddress, expectedAddress), nil
 }
 
 // ===== EthProvider =====
@@ -86,58 +114,18 @@ func (e *EthProvider) Sign(block blocks.Block) (string, error) {
 	panic("unimplemented")
 }
 
-func (d EthDID) recoverSigner(payload apitypes.TypedData, sig string) (DID[string], error) {
-	// compute the EIP-712 hash
-	dataHash, err := computeEIP712Hash(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compute EIP712 hash: %v", err)
-	}
-
-	// decode the sig from hex
-	sigBytes, err := hex.DecodeString(sig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode signature: %v", err)
-	}
-
-	// ensure the sig is 65 bytes long
-	if len(sigBytes) != 65 {
-		return nil, fmt.Errorf("invalid signature length: expected 65 bytes, got %d", len(sigBytes))
-	}
-
-	// ensure the data hash is 32 bytes long
-	if len(dataHash) != 32 {
-		return nil, fmt.Errorf("invalid data hash length: expected 32 bytes, got %d", len(dataHash))
-	}
-
-	// adjust V value back to [0, 1] if necessary
-	//
-	// this Gist was provided in the team Notion: https://gist.github.com/APTy/f2a6864a97889793c587635b562c7d72
-	// it demos the need to subtract 27 from the 65th (index 64) byte of the sig
-	//
-	// internally, this Gist says it does this for this reason: https://github.com/ethereum/go-ethereum/blob/55599ee95d4151a2502465e0afc7c47bd1acba77/internal/ethapi/api.go#L442
-	//
-	// this is also described on the official ethereum site in an article
-	// by Vitalik Buterin: https://eips.ethereum.org/EIPS/eip-155
-	// which describes this in EIP-155
-	if sigBytes[64] != 0 && sigBytes[64] != 1 {
-		sigBytes[64] -= 27
-	}
-
-	// recover the pub key
-	pubKey, err := crypto.SigToPub(dataHash, sigBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to recover public key from signature: %v", err)
-	}
-
-	// return the recovered addr
-	address := crypto.PubkeyToAddress(*pubKey).Hex()
-	return NewEthDID(address), nil
-}
-
 // ===== utils =====
 
-// computes the EIP-712 hash for the provided typed data
 func computeEIP712Hash(typedData apitypes.TypedData) ([]byte, error) {
+	// add the EIP712Domain type to the types
+	typedData.Types["EIP712Domain"] = []apitypes.Type{
+		{
+			Name: "name",
+			Type: "string",
+		},
+	}
+
+	// hash the domain
 	domainSeparator, err := typedData.HashStruct("EIP712Domain", typedData.Domain.Map())
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash domain separator: %v", err)
@@ -149,20 +137,34 @@ func computeEIP712Hash(typedData apitypes.TypedData) ([]byte, error) {
 		return nil, fmt.Errorf("failed to hash message: %v", err)
 	}
 
-	// hash the final hash in the EIP-712 format as described here: https://eips.ethereum.org/EIPS/eip-712#Specification
+	// combine the two hashes as per EIP-712 spec
 	finalHash := crypto.Keccak256(
-		[]byte("\x19\x01"),
+		[]byte("\x19\x01"), // EIP-712 spec prefix indicator bytes
 		domainSeparator,
 		messageHash,
 	)
+
 	return finalHash, nil
+}
+
+// decode CBOR back into a map[string]interface{}
+func decodeFromCBOR(data []byte, out interface{}) error {
+	var tempData map[string]interface{}
+	if err := cbor.DecodeInto(data, &tempData); err != nil {
+		return fmt.Errorf("failed to decode CBOR data: %v", err)
+	}
+
+	// set the decoded data back into the output
+	//
+	// this is a bit hacky, but it seems to work
+	reflect.ValueOf(out).Elem().Set(reflect.ValueOf(tempData))
+
+	return nil
 }
 
 // ===== struct/interface -> EIP-712 typed data conversion logic =====
 
 // struct wrapper for EIP-712 typed data
-//
-// needed, else we can't marshal the domain field separately
 type TypedData struct {
 	Data apitypes.TypedData
 }
@@ -172,9 +174,9 @@ type EIP712DomainType struct {
 	Type string `json:"type"`
 }
 
-// this allows us to serialize the EIP712Domain field separately outside of the types field and instead in the main object
+// this allows us to serialize the EIP-712 domain field separately outside of the types field and instead in the main obj
 func (d EIP712DomainType) MarshalJSON() ([]byte, error) {
-	// structure to serialize
+	// Structure to serialize
 	domain := []map[string]string{
 		{
 			"name": d.Name,
@@ -186,9 +188,6 @@ func (d EIP712DomainType) MarshalJSON() ([]byte, error) {
 }
 
 // marshals typed data into JSON, handling the domain field separately
-//
-// this is needed because the domain field is a map[string]interface{} and we only want to serialize the "name" field, if
-// we don't handle this separately, the entire domain map will be serialized, including zero values and such
 func (d TypedData) MarshalJSON() ([]byte, error) {
 	type Alias struct {
 		Types        apitypes.Types            `json:"types"`
@@ -198,7 +197,7 @@ func (d TypedData) MarshalJSON() ([]byte, error) {
 		EIP712Domain EIP712DomainType          `json:"EIP712Domain"`
 	}
 
-	// serialize only the "name" field for the domain
+	// serializes only the "name" field for the domain
 	domain := make(map[string]interface{})
 	if d.Data.Domain.Name != "" {
 		domain["name"] = d.Data.Domain.Name
@@ -209,7 +208,7 @@ func (d TypedData) MarshalJSON() ([]byte, error) {
 		PrimaryType: d.Data.PrimaryType,
 		Domain:      domain,
 		Message:     d.Data.Message,
-		// allows us to serialize the EIP712Domain field separately outside of the types field and instead in the main object
+		// this allows us to serialize the EIP-712 domain field separately outside of the types field and instead in the main object
 		EIP712Domain: EIP712DomainType{
 			Name: "name",
 			Type: "string",
@@ -221,8 +220,10 @@ func (d TypedData) MarshalJSON() ([]byte, error) {
 
 func ConvertToEIP712TypedData(
 	domainName string,
-	data interface{}, primaryTypeName string,
-	floatHandler func(float64) (*big.Int, error)) (TypedData, error) {
+	data interface{},
+	primaryTypeName string,
+	floatHandler func(float64) (*big.Int, error),
+) (TypedData, error) {
 
 	if domainName == "" || primaryTypeName == "" {
 		return TypedData{}, fmt.Errorf("domain name or primary type name cannot be empty")
@@ -231,7 +232,7 @@ func ConvertToEIP712TypedData(
 	// try to assert data as map[string]interface{} first
 	dataMap, ok := data.(map[string]interface{})
 	if !ok {
-		// if not, try to marshal and then unmarshal the data into a map
+		// if not ok, try to marshal and then unmarshal the data into a map
 		jsonBytes, err := json.Marshal(data)
 		if err != nil {
 			return TypedData{}, fmt.Errorf("failed to marshal struct: %v", err)
@@ -243,13 +244,13 @@ func ConvertToEIP712TypedData(
 		}
 	}
 
-	// gen the message and types
+	// gen the msg and types
 	message, types, err := generateTypedDataWithPath(dataMap, primaryTypeName, floatHandler)
 	if err != nil {
 		return TypedData{}, fmt.Errorf("failed to generate typed data: %v", err)
 	}
 
-	// populate the TypedData struct
+	// populate the typed data struct
 	typedData := TypedData{}
 	typedData.Data.Domain = apitypes.TypedDataDomain{Name: domainName}
 	typedData.Data.PrimaryType = primaryTypeName
@@ -259,7 +260,7 @@ func ConvertToEIP712TypedData(
 	return typedData, nil
 }
 
-// check if a string is an eth addr
+// is the string an Ethereum addr?
 func isEthAddr(s string) bool {
 	if len(s) != 42 || !strings.HasPrefix(s, "0x") {
 		return false
@@ -268,54 +269,85 @@ func isEthAddr(s string) bool {
 	return err == nil
 }
 
-// generates typed data recursively for nested maps and slices/arrays
-func generateTypedDataWithPath(data map[string]interface{}, typeName string, floatHandler func(float64) (*big.Int, error)) (map[string]interface{}, map[string][]apitypes.Type, error) {
+// gens typed data recursively for nested maps and slices/arrays
+func generateTypedDataWithPath(
+	data map[string]interface{},
+	typeName string,
+	floatHandler func(float64) (*big.Int, error),
+) (map[string]interface{}, map[string][]apitypes.Type, error) {
+
 	message := make(map[string]interface{})
 	types := make(map[string][]apitypes.Type)
 	types[typeName] = []apitypes.Type{}
 
-	for fieldName, fieldValue := range data {
+	// collects and sorts field names
+	var fieldNames []string
+	for fieldName := range data {
+		fieldNames = append(fieldNames, fieldName)
+	}
+	sort.Strings(fieldNames)
+
+	for _, fieldName := range fieldNames {
+		fieldValue := data[fieldName]
 		fieldKind := reflect.ValueOf(fieldValue).Kind()
 		var fieldType string
 
 		switch fieldKind {
 		case reflect.Slice, reflect.Array:
-			// check if the array/slice is empty
+			// checks if the array | slice is empty
 			arrayVal := reflect.ValueOf(fieldValue)
 			if arrayVal.Len() == 0 {
-				fieldType = "undefined[]" // allow undefined for empty arrays
+				fieldType = "undefined[]" // allow undefined for empty arrays, as per the JS version in the Bitcoin wrapper UI
 				message[fieldName] = fieldValue
 			} else {
-				// check the first element to infer the inner type of the slice/array
+				// check the first elem to infer the inner type of the slice/array
 				firstElem := arrayVal.Index(0).Interface()
-				elemType := reflect.TypeOf(firstElem)
+				elemKind := reflect.TypeOf(firstElem).Kind()
 
-				switch elemType.Kind() {
+				switch elemKind {
 				case reflect.String:
 					fieldType = "string[]"
 					message[fieldName] = fieldValue
 
+				case reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+					fieldType = "uint256[]"
+					uintArrayValues := make([]*big.Int, arrayVal.Len())
+					for i := 0; i < arrayVal.Len(); i++ {
+						uintVal := arrayVal.Index(i).Interface()
+						var u64 uint64
+						switch v := uintVal.(type) {
+						case uint, uint8, uint16, uint32, uint64:
+							u64 = v.(uint64)
+						default:
+							return nil, nil, fmt.Errorf("unsupported uint type in array for field %s", fieldName)
+						}
+						uintArrayValues[i] = new(big.Int).SetUint64(u64)
+					}
+					message[fieldName] = uintArrayValues
+
 				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 					fieldType = "int256[]"
-					intArray := arrayVal
-					intArrayValues := make([]int64, intArray.Len())
-					for i := 0; i < intArray.Len(); i++ {
-						// ensure we use int only for valid int types
-						if intVal, ok := intArray.Index(i).Interface().(int); ok {
-							intArrayValues[i] = int64(intVal)
-						} else {
-							return nil, nil, fmt.Errorf("invalid int value in array")
+					intArrayValues := make([]*big.Int, arrayVal.Len())
+					for i := 0; i < arrayVal.Len(); i++ {
+						intVal := arrayVal.Index(i).Interface()
+						var i64 int64
+						switch v := intVal.(type) {
+						case int, int8, int16, int32, int64:
+							i64 = reflect.ValueOf(v).Int()
+						default:
+							return nil, nil, fmt.Errorf("unsupported int type in array for field %s", fieldName)
 						}
+						intArrayValues[i] = big.NewInt(i64)
 					}
 					message[fieldName] = intArrayValues
 
 				case reflect.Float64:
 					fieldType = "uint256[]"
-					floatArray := arrayVal
-					bigIntArray := make([]*big.Int, floatArray.Len())
-					for i := 0; i < floatArray.Len(); i++ {
-						if floatVal, ok := floatArray.Index(i).Interface().(float64); ok {
-							bigInt, err := floatHandler(floatVal)
+					bigIntArray := make([]*big.Int, arrayVal.Len())
+					for i := 0; i < arrayVal.Len(); i++ {
+						floatVal := arrayVal.Index(i).Interface()
+						if f64, ok := floatVal.(float64); ok {
+							bigInt, err := floatHandler(f64)
 							if err != nil {
 								return nil, nil, fmt.Errorf("failed to handle float array value: %v", err)
 							}
@@ -327,20 +359,25 @@ func generateTypedDataWithPath(data map[string]interface{}, typeName string, flo
 					message[fieldName] = bigIntArray
 
 				case reflect.Uint8:
-					fieldType = "bytes" // treat []uint8 as bytes
+					// treat []uint8 as bytes
+					fieldType = "bytes"
 					message[fieldName] = fieldValue
 
 				default:
-					// fallback for unrecognized slice types
-					fieldType = fmt.Sprintf("%s[]", elemType.Kind())
+					// fallback/default for unrecognized slice types
+					fieldType = fmt.Sprintf("%s[]", elemKind.String())
 					message[fieldName] = fieldValue
 				}
 			}
 
 		case reflect.Map:
-			// nested maps generate new type names and process recursively
+			// nested maps gen new type names and processes recursively
 			nestedTypeName := fmt.Sprintf("%s.%s", typeName, fieldName)
-			nestedMessage, nestedTypes, err := generateTypedDataWithPath(fieldValue.(map[string]interface{}), nestedTypeName, floatHandler)
+			nestedData, ok := fieldValue.(map[string]interface{})
+			if !ok {
+				return nil, nil, fmt.Errorf("expected map[string]interface{} for field '%s'", fieldName)
+			}
+			nestedMessage, nestedTypes, err := generateTypedDataWithPath(nestedData, nestedTypeName, floatHandler)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to generate typed data for nested map: %v", err)
 			}
@@ -351,7 +388,9 @@ func generateTypedDataWithPath(data map[string]interface{}, typeName string, flo
 			}
 
 		case reflect.String:
-			// handle eth addresses or regular strings
+			// handle eth addr or regular strings
+			//
+			// if the string is an Ethereum address, use the "address" type
 			if isEthAddr(fieldValue.(string)) {
 				fieldType = "address"
 			} else {
@@ -361,37 +400,59 @@ func generateTypedDataWithPath(data map[string]interface{}, typeName string, flo
 
 		case reflect.Float64:
 			// use the float handler for all float values
-			if floatValue, err := floatHandler(fieldValue.(float64)); err == nil {
-				message[fieldName] = floatValue
+			if floatValue, ok := fieldValue.(float64); ok {
+				bigIntValue, err := floatHandler(floatValue)
+				if err != nil {
+					return nil, nil, fmt.Errorf("failed to handle float value: %v", err)
+				}
+				message[fieldName] = bigIntValue
 				fieldType = "uint256"
 			} else {
-				return nil, nil, fmt.Errorf("failed to handle float value: %v", err)
+				return nil, nil, fmt.Errorf("expected float64 for field '%s'", fieldName)
 			}
 
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			// all integers are treated as uint256
-			intValue := reflect.ValueOf(fieldValue).Int()
+			// convert all integers to big int using type assertions
+			var i64 int64
+			switch v := fieldValue.(type) {
+			case int, int8, int16, int32, int64:
+				i64 = reflect.ValueOf(v).Int()
+			default:
+				return nil, nil, fmt.Errorf("unsupported integer type for field '%s'", fieldName)
+			}
+			message[fieldName] = big.NewInt(i64)
+			fieldType = "int256"
+
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			// convert all integers to big int using type assertions
+			var u64 uint64
+			switch v := fieldValue.(type) {
+			case uint, uint8, uint16, uint32, uint64:
+				u64 = v.(uint64)
+			default:
+				return nil, nil, fmt.Errorf("unsupported unsigned integer type for field '%s'", fieldName)
+			}
+			message[fieldName] = new(big.Int).SetUint64(u64)
 			fieldType = "uint256"
-			message[fieldName] = intValue
 
-		case reflect.Invalid, reflect.Interface:
-			// undefined or invalid types
-			fieldType = "undefined"
-			message[fieldName] = nil
-
-		// invalid types like channels or funcs, etc.
-		case reflect.Chan, reflect.Func, reflect.UnsafePointer, reflect.Complex64, reflect.Complex128:
-			return nil, nil, fmt.Errorf("unsupported field type: %s", fieldKind.String())
+		case reflect.Bool:
+			fieldType = "bool"
+			message[fieldName] = fieldValue
 
 		default:
-			// fallback for other primitive types
-			fieldType = fieldKind.String()
-			message[fieldName] = fieldValue
+			return nil, nil, fmt.Errorf("unsupported field type %s for field %s", fieldKind.String(), fieldName)
 		}
 
 		// append field and its type to the types array
 		types[typeName] = append(types[typeName], apitypes.Type{Name: fieldName, Type: fieldType})
 	}
+
+	// sort the `types[typeName]` slice to ensure consistent ordering
+	//
+	// this is primarily for deterministic EIP-712 hash generation, else, tests "sometimes" pass
+	sort.Slice(types[typeName], func(i, j int) bool {
+		return types[typeName][i].Name < types[typeName][j].Name
+	})
 
 	return message, types, nil
 }

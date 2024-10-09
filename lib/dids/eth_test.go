@@ -1,16 +1,79 @@
 package dids_test
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"testing"
 	"vsc-node/lib/dids"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	blocks "github.com/ipfs/go-block-format"
+	cbor "github.com/ipfs/go-ipld-cbor"
+	"github.com/multiformats/go-multihash"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestEthDIDVerify(t *testing.T) {
+	// data to be signed and verified
+	data := map[string]any{
+		// we have 2 fields of data to ensure deterministic encoding and decoding
+		//
+		// this is because if our encoding and decoding is not deterministic, the signature
+		// will differ each time we sign this data because the order will switch since Go maps
+		// don't guarantee order
+		"foo": "bar",
+		"baz": 12345,
+	}
+
+	// encode data into CBOR and create a block
+	cborData, err := cbor.WrapObject(data, multihash.SHA2_256, -1)
+	assert.Nil(t, err)
+
+	// create a block with the CBOR data
+	block, err := blocks.NewBlockWithCid(cborData.RawData(), cborData.Cid())
+	assert.Nil(t, err)
+
+	// gen a priv key for signing
+	privateKey, err := crypto.GenerateKey()
+	assert.Nil(t, err)
+
+	// create a dummy temporary function to sign the data
+	sign := func(data map[string]any) (string, error) {
+		// convert the data to EIP-712 typed data
+		_, err := dids.ConvertToEIP712TypedData("vsc.network", data, "tx_container_v0", func(f float64) (*big.Int, error) {
+			// standard (default) conversion of float to big int
+			return big.NewInt(int64(f)), nil
+		})
+		assert.Nil(t, err)
+
+		// compute the EIP-712 hash
+		//
+		// normally would be `dataHash, err := dids.ComputeEIP712Hash(payload.Data)` but
+		// we want to keep this method private, so we'll just hardcode the hash here for this
+		// particular unit test case
+		dataHash := []byte{15, 233, 134, 98, 193, 209, 180, 13, 124, 237, 174, 183, 79, 181, 206, 254, 125, 138, 91, 249, 230, 243, 91, 195, 137, 142, 164, 209, 201, 90, 216, 177}
+
+		// sign the data hash using the priv key
+		bytesOfSig, err := crypto.Sign(dataHash, privateKey)
+		assert.Nil(t, err)
+
+		return hex.EncodeToString(bytesOfSig), nil
+	}
+
+	// use the dummy function we created to sign the data
+	signature, err := sign(data)
+	assert.Nil(t, err)
+
+	// verify the sig using the EthDID
+	ethDID := dids.NewEthDID(crypto.PubkeyToAddress(privateKey.PublicKey).Hex())
+	isValid, err := ethDID.Verify(block, signature)
+	assert.Nil(t, err)
+	assert.True(t, isValid)
+}
 
 func TestNewEthDID(t *testing.T) {
 	ethAddr := "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC"
@@ -115,6 +178,7 @@ func TestCreateEthDIDProvider(t *testing.T) {
 	assert.NotNil(t, provider)
 }
 
+// exact real data case from the Bitcoin wrapper UI
 func TestEIP712RealDataCase(t *testing.T) {
 	// structure to match the required JSON schema for a tx on the Bitoin wrapper UI: https://github.com/vsc-eco/Bitcoin-wrap-UI
 	// with some potentially sensitive data replaced with XXXXXs and YYYYYs
@@ -125,14 +189,14 @@ func TestEIP712RealDataCase(t *testing.T) {
 				"tk":     "HIVE",
 				"to":     "hive:XXXXX",
 				"from":   "did:pkh:eip155:1:YYYYY",
-				"amount": 1,
+				"amount": uint64(1),
 			},
 		},
 		"__t": "vsc-tx",
 		"__v": "0.2",
 		"headers": map[string]interface{}{
-			"type":    1,
-			"nonce":   1,
+			"type":    uint64(1),
+			"nonce":   uint64(1),
 			"intents": []interface{}{},
 			"required_auths": []string{
 				"did:pkh:eip155:1:YYYYY",
