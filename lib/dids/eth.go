@@ -1,17 +1,22 @@
 package dids
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"reflect"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"vsc-node/lib/cbor"
 
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	blocks "github.com/ipfs/go-block-format"
+	"github.com/vsc-eco/go-ethereum/signer/core/apitypes"
 
 	"github.com/ugorji/go/codec"
 )
@@ -66,10 +71,13 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 
 	fmt.Println(decodedData2)
 
-	// convert the sorted decoded data into EIP-712 typed data
-	payload, err := ConvertToEIP712TypedData("vsc.network", decodedData, "tx_container_v0", func(f float64) (*big.Int, error) {
+	payload, err := ConvertCBORToEIP712TypedData("vsc.network", block.RawData(), "tx_container_v0", func(f float64) (*big.Int, error) {
 		return big.NewInt(int64(f)), nil
 	})
+	// convert the sorted decoded data into EIP-712 typed data
+	// payload, err := ConvertToEIP712TypedData("vsc.network", decodedData, "tx_container_v0", func(f float64) (*big.Int, error) {
+	// 	return big.NewInt(int64(f)), nil
+	// })
 	if err != nil {
 		return false, fmt.Errorf("failed to convert block to EIP-712 typed data: %v", err)
 	}
@@ -81,7 +89,7 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 	}
 
 	// decode the sig from the hex
-	sigBytes, err := hex.DecodeString(sig)
+	sigBytes, err := hexutil.Decode(sig)
 	if err != nil {
 		return false, fmt.Errorf("failed to decode signature: %v", err)
 	}
@@ -91,9 +99,14 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 	}
 
 	// recover the pub key from the signature and data hash
-	pubKey, err := crypto.SigToPub(dataHash, sigBytes)
+	sigPubkey, err := crypto.Ecrecover(dataHash, sigBytes)
 	if err != nil {
 		return false, fmt.Errorf("failed to recover public key from signature: %v", err)
+	}
+
+	pubKey, err := crypto.UnmarshalPubkey(sigPubkey)
+	if err != nil {
+		return false, fmt.Errorf("%v", err)
 	}
 
 	// extract the recovered addr
@@ -109,6 +122,355 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 	//
 	// if they are equal, the signature is valid
 	return strings.EqualFold(recoveredAddress, expectedAddress), nil
+}
+
+// []string{"tx/payload/tk"} -> string
+// []string{"tx/op"} -> string
+// []string{"headers/required_auths/[0]"} -> string
+func convertPathMapToMessage(pathMap []struct {
+	path []string
+	val  interface{}
+}) interface{} {
+	keys := make(map[string][][]string)
+	for _, pathInfo := range pathMap {
+		keys[pathInfo.path[0]] = append(keys[pathInfo.path[0]], pathInfo.path[1:])
+	}
+	isArray := false
+	for key, _ := range keys {
+		isArray = isValidArr(key)
+		break
+	}
+	if isArray {
+		res := make([]interface{}, len(keys))
+		for i, pathInfo := range pathMap {
+			res[i] = pathInfo.val
+		}
+		return res
+	} else {
+		seenKeys := make(map[string]bool, len(keys))
+		res := make(map[string]interface{}, len(keys))
+		for _, pathInfo := range pathMap {
+			key := pathInfo.path[0]
+			if seenKeys[key] {
+				continue
+			}
+			filteredKeys := filterMap(pathMap, key)
+			if len(filteredKeys) == 1 && len(filteredKeys[0].path) == 0 {
+				res[key] = filteredKeys[0].val
+			} else {
+				res[key] = convertPathMapToMessage(filteredKeys)
+			}
+			seenKeys[key] = true
+		}
+		return res
+	}
+}
+
+// takes: pathMap, filters out all elements with path that start with provided key, removes that key from path
+// pathMap, key -> new filtered and mapped pathMap
+
+func filterMap(pathMap []struct {
+	path []string
+	val  interface{}
+}, key string) []struct {
+	path []string
+	val  interface{}
+} {
+	newPathStructs := []struct {
+		path []string
+		val  interface{}
+	}{}
+	for _, e := range pathMap {
+		if len(e.path) < 1 || e.path[0] == key {
+			// starts with key -> keep
+			newPathStructs = append(newPathStructs, struct {
+				path []string
+				val  interface{}
+			}{
+				path: e.path[1:],
+				val:  e.val,
+			})
+		}
+		// else, doesn't start with key, or invalid path len -> discard
+	}
+	return newPathStructs
+}
+
+// returns true iff array is valid
+//
+// examples:
+// - "[]" -> false
+// - "[2]" -> true
+// - "4" -> false
+// - "[1" -> false
+// - "[two]" - false
+func isValidArr(s string) bool {
+	if len(s) <= 2 {
+		return false
+	}
+
+	if s[0] != '[' || s[len(s)-1] != ']' {
+		return false
+	}
+
+	_, err := strconv.Atoi(s[1 : len(s)-1])
+	return err == nil
+}
+
+// for any list of paths like []string{"headers", "required_auths", "[0]"} will
+// return true once the (0-indexed) 1st element is an array alongside its length
+//
+// examples:
+// - []string{"headers", "required_auths", "[0]"} -> (false, 0)
+// - []string{"required_auths", "[5]"} -> (true, 5)
+// - []string{"required_auths", "[]"} -> (false, 0) (invalid array, also for cases like "[2" or "]")
+// - []string{"[0]"} -> (false, 0)
+func arrayData(strSlice []string) (bool, int) {
+	if len(strSlice) < 2 {
+		return false, 0
+	}
+
+	s := strSlice[1]
+	if len(s) <= 2 {
+		return false, 0
+	}
+	if s[0] != '[' || s[len(s)-1] != ']' {
+		return false, 0
+	}
+	val, err := strconv.Atoi(s[1 : len(s)-1])
+	if err != nil {
+		return false, 0
+	}
+	return true, val
+}
+
+func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeName string, floatHandler func(f float64) (*big.Int, error)) (TypedData, error) {
+	reader := bytes.NewReader(data)
+	decoder := cbor.NewDecoder(reader)
+
+	pathMap := make([]struct {
+		path []string
+		val  interface{}
+	}, 0)
+	typeMap := make([]struct {
+		typeName []string
+		val      apitypes.Type
+	}, 0)
+
+	typedData := TypedData{}
+	typedData.Data.Domain = apitypes.TypedDataDomain{Name: domainName}
+	typedData.Data.PrimaryType = primaryTypeName
+
+	v := cbor.JoinVisitors(
+		cbor.Visitor{
+			IntVisitor: func(path []string, val *big.Int) error {
+				typeName := append([]string{primaryTypeName}, path[:len(path)-1]...)
+
+				typeMap = append(typeMap, struct {
+					typeName []string
+					val      apitypes.Type
+				}{
+					typeName: typeName,
+					val: apitypes.Type{
+						Name: path[len(path)-1],
+						Type: "uint256",
+					},
+				})
+				pathMap = append(pathMap, struct {
+					path []string
+					val  interface{}
+				}{
+					path: path,
+					val:  val,
+				})
+				return nil
+			},
+			NilVisitor: func(path []string) error {
+				return fmt.Errorf("no nil exists")
+			},
+			Float32Visitor: func(path []string, val float32) error {
+				v, err := floatHandler(float64(val))
+				if err != nil {
+					return err
+				}
+				typeName := append([]string{primaryTypeName}, path[:len(path)-1]...)
+
+				typeMap = append(typeMap, struct {
+					typeName []string
+					val      apitypes.Type
+				}{
+					typeName: typeName,
+					val: apitypes.Type{
+						Name: path[len(path)-1],
+						Type: "uint256",
+					},
+				})
+				pathMap = append(pathMap, struct {
+					path []string
+					val  interface{}
+				}{
+					path: path,
+					val:  v,
+				})
+				return nil
+			},
+			Float64Visitor: func(path []string, val float64) error {
+				v, err := floatHandler(val)
+				if err != nil {
+					return err
+				}
+				typeName := append([]string{primaryTypeName}, path[:len(path)-1]...)
+
+				typeMap = append(typeMap, struct {
+					typeName []string
+					val      apitypes.Type
+				}{
+					typeName: typeName,
+					val: apitypes.Type{
+						Name: path[len(path)-1],
+						Type: "uint256",
+					},
+				})
+
+				pathMap = append(pathMap, struct {
+					path []string
+					val  interface{}
+				}{
+					path: path,
+					val:  v,
+				})
+				return nil
+			},
+			EmptyArrayVisitor: func(path []string) error {
+				typeName := append([]string{primaryTypeName}, path[:len(path)-1]...)
+
+				typeMap = append(typeMap, struct {
+					typeName []string
+					val      apitypes.Type
+				}{
+					typeName: typeName,
+					val: apitypes.Type{
+						Name: path[len(path)-1],
+						Type: "undefined[]",
+					},
+				})
+
+				pathMap = append(pathMap, struct {
+					path []string
+					val  interface{}
+				}{
+					path: path,
+					val:  []interface{}{},
+				})
+				return nil
+			},
+		},
+		cbor.NewBytesCollector(func(path []string, val []byte) error {
+			typeName := append([]string{primaryTypeName}, path[:len(path)-1]...)
+
+			typeMap = append(typeMap, struct {
+				typeName []string
+				val      apitypes.Type
+			}{
+				typeName: typeName,
+				val: apitypes.Type{
+					Name: path[len(path)-1],
+					Type: "byte[]",
+				},
+			})
+			pathMap = append(pathMap, struct {
+				path []string
+				val  interface{}
+			}{
+				path: path,
+				val:  val,
+			})
+			return nil
+		}),
+		cbor.NewStringCollector(func(path []string, val string) error {
+			typeName := append([]string{primaryTypeName}, path[:len(path)-1]...)
+			typeMap = append(typeMap, struct {
+				typeName []string
+				val      apitypes.Type
+			}{
+				typeName: typeName,
+				val: apitypes.Type{
+					Name: path[len(path)-1],
+					Type: "string",
+				},
+			})
+			pathMap = append(pathMap, struct {
+				path []string
+				val  interface{}
+			}{
+				path: path,
+				val:  val,
+			})
+
+			return nil
+		}),
+	)
+
+	err := decoder.Decode(v)
+	if err != nil {
+		return TypedData{}, fmt.Errorf("failed to decode CBOR into typed data with values: %v", err)
+	}
+
+	uniqueTypes := make(map[string]uint)
+	for _, types := range typeMap {
+		uniqueTypes[strings.Join(types.typeName, ".")] += 1
+	}
+
+	// primaryTypeName.path.path.path : []{Name: x, Type: y}
+	types := make(map[string][]apitypes.Type, len(uniqueTypes))
+	for _, partialType := range typeMap {
+		for i, _ := range partialType.typeName {
+			before := partialType.typeName[:i+1] // [tx_container], [tx_container, tx], [tx_container, tx, payload]
+			after := partialType.typeName[i+1:]
+			typeName := strings.Join(before, ".")
+			if len(after) == 0 {
+				types[typeName] = append(types[typeName], partialType.val)
+			} else {
+				val, exists := types[typeName]
+				if !exists || !slices.ContainsFunc(val, func(t apitypes.Type) bool {
+					return t.Name == after[0]
+				}) {
+					isArray := isValidArr(partialType.val.Name)
+					if isArray {
+						typeNameToFind := append(before, after[0])
+						arrayType := typeMap[slices.IndexFunc(typeMap, func(findType struct {
+							typeName []string
+							val      apitypes.Type
+						}) bool {
+							return slices.Equal(findType.typeName, typeNameToFind)
+						})].val.Type
+						types[typeName] = append(val, apitypes.Type{Name: after[0], Type: arrayType + "[]"})
+						break
+					} else {
+						types[typeName] = append(val, apitypes.Type{Name: after[0], Type: typeName + "." + after[0]})
+					}
+				}
+			}
+		}
+	}
+
+	typedData.Data.Types = types
+	typedData.Data.Message = convertPathMapToMessage(pathMap).(map[string]interface{})
+
+	for key, tv := range typedData.Data.Message {
+		fmt.Println(key, ":", tv)
+	}
+
+	jsonData, err := json.MarshalIndent(typedData, "", "  ")
+	if err != nil {
+		fmt.Println("Error:", err)
+	}
+	fmt.Println(string(jsonData))
+
+	// chainId : nil
+	// version: ""
+
+	return typedData, nil
 }
 
 // ===== EthProvider =====
@@ -153,9 +515,14 @@ func computeEIP712Hash(typedData apitypes.TypedData) ([]byte, error) {
 
 	// combine the two hashes as per EIP-712 spec
 	finalHash := crypto.Keccak256(
-		[]byte("\x19\x01"), // EIP-712 spec prefix indicator bytes
-		domainSeparator,
-		messageHash,
+		bytes.Join(
+			[][]byte{
+				{0x19, 0x01}, // EIP-712 spec prefix indicator bytes
+				domainSeparator,
+				messageHash,
+			},
+			[]byte{},
+		),
 	)
 
 	return finalHash, nil

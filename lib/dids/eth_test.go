@@ -65,7 +65,7 @@ func TestVerifyExternalSigCIDKeyAndBytes(t *testing.T) {
 
 	// verify the signature using EthDID
 	ethDID := dids.NewEthDID(ethAddress)
-	sigStr := hex.EncodeToString(sig)
+	sigStr := "0x" + hex.EncodeToString(sig)
 	isValid, err := ethDID.Verify(block, sigStr)
 	assert.Nil(t, err)
 	assert.True(t, isValid)
