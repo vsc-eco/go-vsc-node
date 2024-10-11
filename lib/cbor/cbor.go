@@ -2,14 +2,13 @@
 package cbor
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math"
 	"math/big"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -46,14 +45,6 @@ var tagNegBignum uint64 = 3
 var tagDecimal uint64 = 4
 var tagBigfloat uint64 = 5
 
-// TODO: honor encoding.BinaryMarshaler interface and encapsulate blob returned from that.
-
-// Load one object into v
-func Loads(blob []byte, v interface{}) error {
-	dec := NewDecoder(bytes.NewReader(blob))
-	return dec.Decode(v)
-}
-
 type TagDecoder interface {
 	// Handle things which match this.
 	//
@@ -81,22 +72,173 @@ type Decoder struct {
 	// many values fit within the next 8 bytes
 	b8 []byte
 
+	internalVisitors []Visitor
+	userVisitor      Visitor
+
 	// Extra processing for CBOR TAG objects.
 	TagDecoders map[uint64]TagDecoder
 }
+
+// {tx: {op: "myOp"}} -> []string{"tx", "op"}
+type Visitor struct {
+	IntVisitor     func(path []string, val *big.Int) error
+	NilVisitor     func(path []string) error
+	BoolVisitor    func(path []string, val bool) error
+	BytesVisitor   func(path []string, val []byte) error
+	StringVisitor  func(path []string, val string) error
+	Float32Visitor func(path []string, val float32) error
+	Float64Visitor func(path []string, val float64) error
+}
+
+func NewStringCollector(collected func(path []string, val string) error) Visitor {
+	var currentPath []string = nil
+	buf := ""
+	return Visitor{
+		StringVisitor: func(path []string, val string) error {
+			if currentPath != nil && !slices.Equal(path, currentPath) {
+				collected(currentPath, buf)
+				currentPath = nil
+				buf = val
+			} else {
+				buf += val
+				currentPath = path
+			}
+			return nil
+		},
+	}
+}
+
+func NewBytesCollector(collected func(path []string, val []byte) error) Visitor {
+	var currentPath []string = nil
+	buf := make([]byte, 0)
+	return Visitor{
+		BytesVisitor: func(path []string, val []byte) error {
+			if currentPath != nil && !slices.Equal(path, currentPath) {
+				collected(currentPath, buf)
+				currentPath = nil
+				buf = val
+			} else {
+				buf = append(buf, val...)
+				currentPath = path
+			}
+			return nil
+		},
+	}
+}
+
+func JoinVisitors(visitors ...Visitor) Visitor {
+	return JoinVisitorsWithSlice(visitors)
+}
+
+func JoinVisitorsWithSlice(visitors []Visitor) Visitor {
+	return Visitor{
+		IntVisitor: func(path []string, val *big.Int) error {
+			for _, v := range visitors {
+				if v.IntVisitor == nil {
+					continue
+				}
+				err := v.IntVisitor(path, val)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		NilVisitor: func(path []string) error {
+			for _, v := range visitors {
+				if v.NilVisitor == nil {
+					continue
+				}
+				err := v.NilVisitor(path)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		BoolVisitor: func(path []string, val bool) error {
+			for _, v := range visitors {
+				if v.BoolVisitor == nil {
+					continue
+				}
+				err := v.BoolVisitor(path, val)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		BytesVisitor: func(path []string, val []byte) error {
+			for _, v := range visitors {
+				if v.BytesVisitor == nil {
+					continue
+				}
+				err := v.BytesVisitor(path, val)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		StringVisitor: func(path []string, val string) error {
+			for _, v := range visitors {
+				if v.StringVisitor == nil {
+					continue
+				}
+				err := v.StringVisitor(path, val)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Float32Visitor: func(path []string, val float32) error {
+			for _, v := range visitors {
+				if v.Float32Visitor == nil {
+					continue
+				}
+				err := v.Float32Visitor(path, val)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Float64Visitor: func(path []string, val float64) error {
+			for _, v := range visitors {
+				if v.Float64Visitor == nil {
+					continue
+				}
+				err := v.Float64Visitor(path, val)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+}
+
+var pathRoot = []string{}
 
 func NewDecoder(r io.Reader) *Decoder {
 	return &Decoder{
 		r,
 		make([]byte, 1),
 		make([]byte, 8),
+		make([]Visitor, 0),
+		Visitor{},
 		make(map[uint64]TagDecoder),
 	}
 }
-func (dec *Decoder) Decode(v interface{}) error {
-	return dec.reflectDecode()
+func (dec *Decoder) Decode(v Visitor) error {
+	visitorBak := dec.userVisitor
+	dec.userVisitor = v
+	res := dec.reflectDecode(pathRoot)
+	dec.userVisitor = visitorBak
+	return res
 }
-func (dec *Decoder) reflectDecode() error {
+func (dec *Decoder) reflectDecode(path []string) error {
 	var didread int
 	var err error
 
@@ -110,7 +252,11 @@ func (dec *Decoder) reflectDecode() error {
 		return err
 	}
 
-	return dec.innerDecodeC(dec.c[0])
+	return dec.innerDecodeC(dec.c[0], path)
+}
+
+func (dec *Decoder) groupVisitors() Visitor {
+	return JoinVisitorsWithSlice(append(dec.internalVisitors, dec.userVisitor))
 }
 
 func (dec *Decoder) handleInfoBits(cborInfo byte) (uint64, error) {
@@ -157,7 +303,7 @@ func (dec *Decoder) handleInfoBits(cborInfo byte) (uint64, error) {
 	return 0, nil
 }
 
-func (dec *Decoder) innerDecodeC(c byte) error {
+func (dec *Decoder) innerDecodeC(c byte, path []string) error {
 	cborType := c & typeMask
 	cborInfo := c & infoBits
 
@@ -169,27 +315,19 @@ func (dec *Decoder) innerDecodeC(c byte) error {
 	//log.Printf("cborType %x cborInfo %d aux %x", cborType, cborInfo, aux)
 
 	if cborType == cborUint {
-		// value = aux
-		return nil
+		return dec.groupVisitors().IntVisitor(path, new(big.Int).SetUint64(aux))
 	} else if cborType == cborNegint {
-		if aux > 0x7fffffffffffffff {
-			bigU := &big.Int{}
-			bigU.SetUint64(aux)
-			minusOne := big.NewInt(-1)
-			bn := &big.Int{}
-			bn.Sub(minusOne, bigU)
-			// value = bn
-			return nil
-		}
-		// value = -1-int64(aux)
-		return nil
+		bigU := &big.Int{}
+		bigU.SetUint64(aux)
+		minusOne := big.NewInt(-1)
+		bn := &big.Int{}
+		bn.Sub(minusOne, bigU)
+		return dec.groupVisitors().IntVisitor(path, bn)
 	} else if cborType == cborBytes {
 		//log.Printf("cborType %x bytes cborInfo %d aux %x", cborType, cborInfo, aux)
 		if cborInfo == varFollows {
-			parts := make([][]byte, 0, 1)
-			allsize := 0
-			subc = []byte{0}
-			for true {
+			subc := []byte{0}
+			for {
 				_, err = io.ReadFull(dec.rin, subc)
 				if err != nil {
 					log.Printf("error reading next byte for bar bytes")
@@ -197,30 +335,16 @@ func (dec *Decoder) innerDecodeC(c byte) error {
 				}
 				if subc[0] == 0xff {
 					// done
-					var out []byte = nil
-					if len(parts) == 0 {
-						out = make([]byte, 0)
-					} else {
-						pos := 0
-						out = make([]byte, allsize)
-						for _, p := range parts {
-							pos += copy(out[pos:], p)
-						}
-					}
-					// value = out
-					return nil
+					return dec.groupVisitors().BytesVisitor([]string{"[bytes-end]"}, []byte{})
 				} else {
-					var subb []byte = nil
 					if (subc[0] & typeMask) != cborBytes {
 						return fmt.Errorf("sub of var bytes is type %x, wanted %x", subc[0], cborBytes)
 					}
-					err = dec.innerDecodeC(subc[0]) // TODO get result
+					err = dec.innerDecodeC(subc[0], path) // TODO get result [probably not here]
 					if err != nil {
 						log.Printf("error decoding sub bytes")
 						return err
 					}
-					allsize += len(subb)
-					parts = append(parts, subb)
 				}
 			}
 		} else {
@@ -229,17 +353,18 @@ func (dec *Decoder) innerDecodeC(c byte) error {
 			if err != nil {
 				return err
 			}
-			// value = val
-			return nil
+			err = dec.groupVisitors().BytesVisitor(path, val)
+			if err != nil {
+				return err
+			}
+			return dec.groupVisitors().BytesVisitor([]string{"[bytes-end]"}, []byte{})
 		}
 	} else if cborType == cborText {
-		return dec.decodeText(cborInfo, aux)
+		return dec.decodeText(cborInfo, aux, path)
 	} else if cborType == cborArray {
-		// TODO start here
-		return dec.decodeArray(rv, cborInfo, aux)
+		return dec.decodeArray(cborInfo, aux, path)
 	} else if cborType == cborMap {
-		return dec.decodeMap(rv, cborInfo, aux)
-		// TODO finish here
+		return dec.decodeMap(cborInfo, aux, path)
 	} else if cborType == cborTag {
 		/*var innerOb interface{}*/
 		ic := []byte{0}
@@ -252,8 +377,7 @@ func (dec *Decoder) innerDecodeC(c byte) error {
 			if err != nil {
 				return err
 			}
-			// value = bn
-			return nil
+			return dec.groupVisitors().IntVisitor(path, bn)
 		} else if aux == tagNegBignum {
 			bn, err := dec.decodeBignum(ic[0])
 			if err != nil {
@@ -262,9 +386,36 @@ func (dec *Decoder) innerDecodeC(c byte) error {
 			minusOne := big.NewInt(-1)
 			bnOut := &big.Int{}
 			bnOut.Sub(minusOne, bn)
-			// value = bnOut
-			return nil
-		} 
+			return dec.groupVisitors().IntVisitor(path, bnOut)
+		} else if aux == tagDecimal {
+			log.Printf("TODO: directly read bytes into decimal")
+		} else if aux == tagBigfloat {
+			log.Printf("TODO: directly read bytes into bigfloat")
+		} else { // TODO dubious we need this fix if needed
+			decoder, ok := dec.TagDecoders[aux]
+			if ok {
+				target := decoder.DecodeTarget()
+				err = dec.innerDecodeC(ic[0], path) // TODO get result
+				if err != nil {
+					return err
+				}
+				target, err = decoder.PostDecode(target)
+				if err != nil {
+					return err
+				}
+				// value = target
+				return nil
+			} else {
+				target := CBORTag{}
+				target.Tag = aux
+				err = dec.innerDecodeC(ic[0], path) // TODO get result
+				if err != nil {
+					return err
+				}
+				// value = target
+				return nil
+			}
+		}
 		return nil
 	} else if cborType == cbor7 {
 		if cborInfo == int16Follows {
@@ -274,46 +425,37 @@ func (dec *Decoder) innerDecodeC(c byte) error {
 			if exp == 0 {
 				val = math.Ldexp(float64(mant), -24)
 			} else if exp != 31 {
-				// value = math.Ldexp(float64(mant+1024), int(exp-25))
-				return nil
+				val = math.Ldexp(float64(mant+1024), int(exp-25))
 			} else if mant == 0 {
-				// value = math.Inf(-1)
-				return nil
+				val = math.Inf(1)
 			} else {
-				// value = math.NaN()
-				return nil
+				val = math.NaN()
 			}
 			if (aux & 0x08000) != 0 {
-				// value = value * -1
-				return nil
+				val = -val
 			}
-			return setFloat64(rv, val)
+			return dec.groupVisitors().Float64Visitor(path, val)
 		} else if cborInfo == int32Follows {
-			// value = math.Float32frombits(uint32(aux))
-			return nil
+			value := math.Float32frombits(uint32(aux))
+			return dec.groupVisitors().Float32Visitor(path, value)
 		} else if cborInfo == int64Follows {
-			// value = math.Float64frombits(aux)
-			return nil
+			value := math.Float64frombits(aux)
+			return dec.groupVisitors().Float64Visitor(path, value)
 		} else if cborInfo == cborFalse {
-			// value = false
-			return nil
+			return dec.groupVisitors().BoolVisitor(path, false)
 		} else if cborInfo == cborTrue {
-			// value = true
-			return nil
+			return dec.groupVisitors().BoolVisitor(path, true)
 		} else if cborInfo == cborNull {
-			// value = nil
-			// ABC
-			return nil
+			return dec.groupVisitors().NilVisitor(path)
 		}
 	}
 
 	return err
 }
 
-func (dec *Decoder) decodeText(cborInfo byte, aux uint64) error {
+func (dec *Decoder) decodeText(cborInfo byte, aux uint64, path []string) error {
 	var err error
 	if cborInfo == varFollows {
-		parts := make([]string, 0, 1)
 		subc := []byte{0}
 		for {
 			_, err = io.ReadFull(dec.rin, subc)
@@ -323,185 +465,46 @@ func (dec *Decoder) decodeText(cborInfo byte, aux uint64) error {
 			}
 			if subc[0] == 0xff {
 				// done
-				joined := strings.Join(parts, "")
-				// value = joined
-				return nil
+				return dec.groupVisitors().StringVisitor([]string{"[string-end]"}, "")
 			} else {
-				var subtext interface{}
-				err = dec.innerDecodeC(subc[0]) // TODO get result
+				err = dec.innerDecodeC(subc[0], path) // TODO get result
 				if err != nil {
 					log.Printf("error decoding subtext")
 					return err
-				}
-				st, ok := subtext.(string)
-				if ok {
-					parts = append(parts, st)
-				} else {
-					return fmt.Errorf("var text sub element not text but %T", subtext)
 				}
 			}
 		}
 	} else {
 		raw := make([]byte, aux)
 		_, err = io.ReadFull(dec.rin, raw)
-		xs := string(raw)
-		// value = xs
-		return nil
-	}
-}
-
-type mapAssignable interface {
-	ReflectValueForKey(key interface{}) (*reflect.Value, bool)
-	SetReflectValueForKey(key interface{}, value reflect.Value) error
-}
-
-type mapReflectValue struct {
-	reflect.Value
-}
-
-func (irv *mapReflectValue) ReflectValueForKey(key interface{}) (*reflect.Value, bool) {
-	//var x interface{}
-	//rv := reflect.ValueOf(&x)
-	rv := reflect.New(irv.Type().Elem())
-	return &rv, true
-}
-func (irv *mapReflectValue) SetReflectValueForKey(key interface{}, value reflect.Value) error {
-	//log.Printf("k T %T v%#v, v T %s v %#v", key, key, value.Type().String(), value.Interface())
-	krv := reflect.Indirect(reflect.ValueOf(key))
-	vrv := reflect.Indirect(value)
-	//log.Printf("irv T %s v %#v", irv.Type().String(), irv.Interface())
-	//log.Printf("k T %s v %#v, v T %s v %#v", krv.Type().String(), krv.Interface(), vrv.Type().String(), vrv.Interface())
-	if krv.Kind() == reflect.Interface {
-		krv = krv.Elem()
-		//log.Printf("ke T %s v %#v", krv.Type().String(), krv.Interface())
-	}
-	if (krv.Kind() == reflect.Slice) || (krv.Kind() == reflect.Array) {
-		//log.Printf("key is slice or array")
-		if krv.Type().Elem().Kind() == reflect.Uint8 {
-			//log.Printf("key is []uint8")
-			ks := string(krv.Bytes())
-			krv = reflect.ValueOf(ks)
-		}
-	}
-	irv.SetMapIndex(krv, vrv)
-	return nil
-}
-
-type structAssigner struct {
-	Srv reflect.Value
-
-	//keyType reflect.Type
-}
-
-func (sa *structAssigner) ReflectValueForKey(key interface{}) (*reflect.Value, bool) {
-	var skey string
-	switch tkey := key.(type) {
-	case string:
-		skey = tkey
-	case *string:
-		skey = *tkey
-	default:
-		log.Printf("rvfk key is not string, got %T", key)
-		return nil, false
-	}
-
-	ft := sa.Srv.Type()
-	numFields := ft.NumField()
-	for i := 0; i < numFields; i++ {
-		sf := ft.Field(i)
-		fieldname, ok := fieldname(sf)
-		if !ok {
-			continue
-		}
-		if (fieldname == skey) || strings.EqualFold(fieldname, skey) {
-			fieldVal := sa.Srv.FieldByName(sf.Name)
-			if !fieldVal.CanSet() {
-				log.Printf("cannot set field %s for key %s", sf.Name, skey)
-				return nil, false
-			}
-			return &fieldVal, true
-		}
-	}
-	return nil, false
-}
-func (sa *structAssigner) SetReflectValueForKey(key interface{}, value reflect.Value) error {
-	return nil
-}
-
-func (dec *Decoder) setMapKV(krv reflect.Value, ma mapAssignable) error {
-	var err error
-	val, ok := ma.ReflectValueForKey(krv.Interface())
-	if !ok {
-		var throwaway interface{}
-		err = dec.Decode(&throwaway)
 		if err != nil {
 			return err
 		}
-		return nil
+		xs := string(raw)
+		err = dec.groupVisitors().StringVisitor(path, xs)
+		if err != nil {
+			return err
+		}
+		return dec.groupVisitors().StringVisitor([]string{"[string-end]"}, "")
 	}
-	err = dec.reflectDecode(*val)
+}
+
+func (dec *Decoder) setMapKV(key string, path []string) error {
+	// parses map value for key
+	err := dec.reflectDecode(append(path, key)) // TODO get result
 	if err != nil {
-		log.Printf("error decoding map val: T %T v %#v v.T %s", val, val, val.Type().String())
-		return err
-	}
-	err = ma.SetReflectValueForKey(krv.Interface(), *val)
-	if err != nil {
-		log.Printf("error setting value")
 		return err
 	}
 
 	return nil
 }
 
-func (dec *Decoder) decodeMap(rv reflect.Value, cborInfo byte, aux uint64) error {
-	//log.Print("decode map into   ", rv.Type().String())
-	// dereferenced reflect value
-	var drv reflect.Value
-	if rv.Kind() == reflect.Ptr {
-		drv = reflect.Indirect(rv)
-	} else {
-		drv = rv
-	}
-	//log.Print("decode map into d ", drv.Type().String())
-
-	// inner reflect value
-	var irv reflect.Value
-	var ma mapAssignable
-
-	var keyType reflect.Type
-
-	switch drv.Kind() {
-	case reflect.Interface:
-		//log.Print("decode map into interface ", drv.Type().String())
-		// TODO: maybe I should make this map[string]interface{}
-		nob := make(map[interface{}]interface{})
-		irv = reflect.ValueOf(nob)
-		ma = &mapReflectValue{irv}
-		keyType = irv.Type().Key()
-	case reflect.Struct:
-		//log.Print("decode map into struct ", drv.Type().String())
-		ma = &structAssigner{drv}
-		keyType = reflect.TypeOf("")
-	case reflect.Map:
-		//log.Print("decode map into map ", drv.Type().String())
-		if drv.IsNil() {
-			if drv.CanSet() {
-				drv.Set(reflect.MakeMap(drv.Type()))
-			} else {
-				return fmt.Errorf("target map is nil and not settable")
-			}
-		}
-		keyType = drv.Type().Key()
-		ma = &mapReflectValue{drv}
-	default:
-		return fmt.Errorf("can't read map into %s", rv.Type().String())
-	}
-
+func (dec *Decoder) decodeMap(cborInfo byte, aux uint64, path []string) error {
 	var err error
 
 	if cborInfo == varFollows {
 		subc := []byte{0}
-		for true {
+		for {
 			_, err = io.ReadFull(dec.rin, subc)
 			if err != nil {
 				log.Printf("error reading next byte for var text")
@@ -509,18 +512,29 @@ func (dec *Decoder) decodeMap(rv reflect.Value, cborInfo byte, aux uint64) error
 			}
 			if subc[0] == 0xff {
 				// Done
-				break
+				return nil
 			} else {
-				//var key interface{}
-				krv := reflect.New(keyType)
-				//var val interface{}
-				err = dec.innerDecodeC(krv, subc[0])
+				var key string
+				vBak := dec.internalVisitors
+				uBak := dec.userVisitor
+				dec.userVisitor = Visitor{}
+				dec.internalVisitors = append(dec.internalVisitors, NewStringCollector(func(foundPath []string, val string) error {
+					if !slices.Equal(path, foundPath) {
+						return fmt.Errorf("not same paths")
+					}
+					key = val
+					return nil
+				}))
+				// parses a map key
+				err = dec.innerDecodeC(subc[0], path) // TODO get result
+				dec.internalVisitors = vBak
+				dec.userVisitor = uBak
 				if err != nil {
 					log.Printf("error decoding map key V, %s", err)
 					return err
 				}
 
-				err = dec.setMapKV(krv, ma)
+				err = dec.setMapKV(key, path)
 				if err != nil {
 					return err
 				}
@@ -529,67 +543,43 @@ func (dec *Decoder) decodeMap(rv reflect.Value, cborInfo byte, aux uint64) error
 	} else {
 		var i uint64
 		for i = 0; i < aux; i++ {
-			//var key interface{}
-			krv := reflect.New(keyType)
-			//var val interface{}
-			//err = dec.Decode(&key)
-			err = dec.reflectDecode(krv)
+			var key string
+			vBak := dec.internalVisitors
+			uBak := dec.userVisitor
+			dec.userVisitor = Visitor{}
+			dec.internalVisitors = append(dec.internalVisitors, NewStringCollector(func(foundPath []string, val string) error {
+				if !slices.Equal(path, foundPath) {
+					return fmt.Errorf("not same paths")
+				}
+				key = val
+				return nil
+			}))
+			// parses a map key
+			err = dec.reflectDecode(path) // TODO get result
+			dec.internalVisitors = vBak
+			dec.userVisitor = uBak
 			if err != nil {
 				log.Printf("error decoding map key #, %s", err)
 				return err
 			}
-			err = dec.setMapKV(krv, ma)
+			err = dec.setMapKV(key, path)
 			if err != nil {
 				return err
 			}
 		}
 	}
 
-	if drv.Kind() == reflect.Interface {
-		drv.Set(irv)
-	}
 	return nil
 }
 
-func (dec *Decoder) decodeArray(rv reflect.Value, cborInfo byte, aux uint64) error {
-	if rv.Kind() == reflect.Ptr {
-		rv = reflect.Indirect(rv)
-	}
-
-	var makeLength int = 0
-	if cborInfo == varFollows {
-		// no special capacity to allocate the slice to
-	} else {
-		makeLength = int(aux)
-	}
-
-	// inner reflect value
-	var irv reflect.Value
-	var elemType reflect.Type
-
-	switch rv.Kind() {
-	case reflect.Interface:
-		// make a slice
-		nob := make([]interface{}, 0, makeLength)
-		irv = reflect.ValueOf(nob)
-		elemType = irv.Type().Elem()
-	case reflect.Slice:
-		// we have a slice
-		irv = rv
-		elemType = irv.Type().Elem()
-	case reflect.Array:
-		// no irv, no elemType
-	default:
-		return fmt.Errorf("can't read array into %s", rv.Type().String())
-	}
-
+func (dec *Decoder) decodeArray(cborInfo byte, aux uint64, path []string) error {
 	var err error
 
 	if cborInfo == varFollows {
 		var arrayPos int = 0
 		//log.Printf("var array")
 		subc := []byte{0}
-		for true {
+		for {
 			_, err = io.ReadFull(dec.rin, subc)
 			if err != nil {
 				log.Printf("error reading next byte for var text")
@@ -598,46 +588,24 @@ func (dec *Decoder) decodeArray(rv reflect.Value, cborInfo byte, aux uint64) err
 			if subc[0] == 0xff {
 				// Done
 				break
-			} else if rv.Kind() == reflect.Array {
-				err := dec.innerDecodeC(rv.Index(arrayPos), subc[0])
+			} else {
+				err := dec.innerDecodeC(subc[0], append(path, fmt.Sprintf("[%d]", arrayPos))) // TODO get result
 				if err != nil {
 					log.Printf("error decoding array subob")
 					return err
 				}
 				arrayPos++
-			} else {
-				subrv := reflect.New(elemType)
-				err := dec.innerDecodeC(subrv, subc[0])
-				if err != nil {
-					log.Printf("error decoding array subob")
-					return err
-				}
-				irv = reflect.Append(irv, reflect.Indirect(subrv))
 			}
 		}
 	} else {
 		var i uint64
 		for i = 0; i < aux; i++ {
-			if rv.Kind() == reflect.Array {
-				err := dec.reflectDecode(rv.Index(int(i)))
-				if err != nil {
-					log.Printf("error decoding array subob")
-					return err
-				}
-			} else {
-				subrv := reflect.New(elemType)
-				err := dec.reflectDecode(subrv)
-				if err != nil {
-					log.Printf("error decoding array subob")
-					return err
-				}
-				irv = reflect.Append(irv, reflect.Indirect(subrv))
+			err := dec.reflectDecode(append(path, fmt.Sprintf("[%d]", i))) // TODO get result
+			if err != nil {
+				log.Printf("error decoding array subob")
+				return err
 			}
 		}
-	}
-
-	if rv.Kind() != reflect.Array {
-		rv.Set(irv)
 	}
 
 	return nil
@@ -672,13 +640,9 @@ func (dec *Decoder) decodeBignum(c byte) (*big.Int, error) {
 		littleBig.SetUint64(uint64(bv))
 		bn.Or(d, littleBig)
 	}
-	default:
-		return fmt.Errorf("cannot assign []byte into Kind=%s Type=%s %#v", rv.Kind().String(), "" /*rv.Type().String()*/, rv)
-	}
+
+	return bn, nil
 }
-
-
-
 
 // copied from encoding/json/decode.go
 // An InvalidUnmarshalError describes an invalid argument passed to Unmarshal.
@@ -701,12 +665,6 @@ func (e *InvalidUnmarshalError) Error() string {
 type CBORTag struct {
 	Tag           uint64
 	WrappedObject interface{}
-}
-
-type Encoder struct {
-	out io.Writer
-
-	scratch []byte
 }
 
 // parse StructField.Tag.Get("json" or "cbor")
@@ -745,233 +703,4 @@ func fieldname(fieldinfo reflect.StructField) (string, bool) {
 		return fieldname, true
 	}
 	return fieldinfo.Name, true
-}
-
-// Write out an object to an io.Writer
-func Encode(out io.Writer, ob interface{}) error {
-	return NewEncoder(out).Encode(ob)
-}
-
-// Write out an object to a new byte slice
-func Dumps(ob interface{}) ([]byte, error) {
-	writeTarget := &bytes.Buffer{}
-	writeTarget.Grow(20000)
-	err := Encode(writeTarget, ob)
-	if err != nil {
-		return nil, err
-	}
-	return writeTarget.Bytes(), nil
-}
-
-// Return new Encoder object for writing to supplied io.Writer.
-//
-// TODO: set options on Encoder object.
-func NewEncoder(out io.Writer) *Encoder {
-	return &Encoder{out, make([]byte, 9)}
-}
-
-func (enc *Encoder) Encode(ob interface{}) error {
-	switch x := ob.(type) {
-	case int:
-		return enc.writeInt(int64(x))
-	case int8:
-		return enc.writeInt(int64(x))
-	case int16:
-		return enc.writeInt(int64(x))
-	case int32:
-		return enc.writeInt(int64(x))
-	case int64:
-		return enc.writeInt(x)
-	case uint:
-		return enc.tagAuxOut(cborUint, uint64(x))
-	case uint8: /* aka byte */
-		return enc.tagAuxOut(cborUint, uint64(x))
-	case uint16:
-		return enc.tagAuxOut(cborUint, uint64(x))
-	case uint32:
-		return enc.tagAuxOut(cborUint, uint64(x))
-	case uint64:
-		return enc.tagAuxOut(cborUint, x)
-	case float32:
-		return enc.writeFloat(float64(x))
-	case float64:
-		return enc.writeFloat(x)
-	case string:
-		return enc.writeText(x)
-	case []byte:
-		return enc.writeBytes(x)
-	case bool:
-		return enc.writeBool(x)
-	case nil:
-		return enc.tagAuxOut(cbor7, uint64(cborNull))
-	case big.Int:
-		return fmt.Errorf("TODO: encode big.Int")
-	}
-
-	// If none of the simple types work, try reflection
-	return enc.writeReflection(reflect.ValueOf(ob))
-}
-
-func (enc *Encoder) writeReflection(rv reflect.Value) error {
-	var err error
-	switch rv.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return enc.writeInt(rv.Int())
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return enc.tagAuxOut(cborUint, rv.Uint())
-	case reflect.Float32, reflect.Float64:
-		return enc.writeFloat(rv.Float())
-	case reflect.Bool:
-		return enc.writeBool(rv.Bool())
-	case reflect.String:
-		return enc.writeText(rv.String())
-	case reflect.Slice, reflect.Array:
-		elemType := rv.Type().Elem()
-		if elemType.Kind() == reflect.Uint8 {
-			// special case, write out []byte
-			return enc.writeBytes(rv.Bytes())
-		}
-		alen := rv.Len()
-		err = enc.tagAuxOut(cborArray, uint64(alen))
-		for i := 0; i < alen; i++ {
-			err = enc.writeReflection(rv.Index(i))
-			if err != nil {
-				log.Printf("error at array elem %d", i)
-				return err
-			}
-		}
-		return nil
-	case reflect.Map:
-		err = enc.tagAuxOut(cborMap, uint64(rv.Len()))
-		keys := rv.MapKeys()
-		for _, krv := range keys {
-			vrv := rv.MapIndex(krv)
-			err = enc.writeReflection(krv)
-			if err != nil {
-				log.Printf("error encoding map key")
-				return err
-			}
-			err = enc.writeReflection(vrv)
-			if err != nil {
-				log.Printf("error encoding map val")
-				return err
-			}
-		}
-		return nil
-	case reflect.Struct:
-		// TODO: check for big.Int ?
-		numfields := rv.NumField()
-		structType := rv.Type()
-		usableFields := 0
-		for i := 0; i < numfields; i++ {
-			fieldinfo := structType.Field(i)
-			_, ok := fieldname(fieldinfo)
-			if !ok {
-				continue
-			}
-			usableFields++
-		}
-		err = enc.tagAuxOut(cborMap, uint64(usableFields))
-		if err != nil {
-			return err
-		}
-		for i := 0; i < numfields; i++ {
-			fieldinfo := structType.Field(i)
-			fieldname, ok := fieldname(fieldinfo)
-			if !ok {
-				continue
-			}
-			err = enc.writeText(fieldname)
-			if err != nil {
-				return err
-			}
-			err = enc.writeReflection(rv.Field(i))
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	case reflect.Interface:
-		//return fmt.Errorf("TODO: serialize interface{} k=%s T=%s", rv.Kind().String(), rv.Type().String())
-		return enc.Encode(rv.Interface())
-	case reflect.Ptr:
-		if rv.IsNil() {
-			return enc.tagAuxOut(cbor7, uint64(cborNull))
-		}
-		return enc.writeReflection(reflect.Indirect(rv))
-	}
-
-	return fmt.Errorf("don't know how to CBOR serialize k=%s t=%s", rv.Kind().String(), rv.Type().String())
-}
-
-func (enc *Encoder) writeInt(x int64) error {
-	if x < 0 {
-		return enc.tagAuxOut(cborNegint, uint64(-1-x))
-	}
-	return enc.tagAuxOut(cborUint, uint64(x))
-}
-
-func (enc *Encoder) tagAuxOut(tag byte, x uint64) error {
-	var err error
-	if x <= 23 {
-		// tiny literal
-		enc.scratch[0] = tag | byte(x)
-		_, err = enc.out.Write(enc.scratch[:1])
-	} else if x < 0x0ff {
-		enc.scratch[0] = tag | int8Follows
-		enc.scratch[1] = byte(x & 0x0ff)
-		_, err = enc.out.Write(enc.scratch[:2])
-	} else if x < 0x0ffff {
-		enc.scratch[0] = tag | int16Follows
-		enc.scratch[1] = byte((x >> 8) & 0x0ff)
-		enc.scratch[2] = byte(x & 0x0ff)
-		_, err = enc.out.Write(enc.scratch[:3])
-	} else if x < 0x0ffffffff {
-		enc.scratch[0] = tag | int32Follows
-		enc.scratch[1] = byte((x >> 24) & 0x0ff)
-		enc.scratch[2] = byte((x >> 16) & 0x0ff)
-		enc.scratch[3] = byte((x >> 8) & 0x0ff)
-		enc.scratch[4] = byte(x & 0x0ff)
-		_, err = enc.out.Write(enc.scratch[:5])
-	} else {
-		err = enc.tagAux64(tag, x)
-	}
-	return err
-}
-func (enc *Encoder) tagAux64(tag byte, x uint64) error {
-	enc.scratch[0] = tag | int64Follows
-	enc.scratch[1] = byte((x >> 56) & 0x0ff)
-	enc.scratch[2] = byte((x >> 48) & 0x0ff)
-	enc.scratch[3] = byte((x >> 40) & 0x0ff)
-	enc.scratch[4] = byte((x >> 32) & 0x0ff)
-	enc.scratch[5] = byte((x >> 24) & 0x0ff)
-	enc.scratch[6] = byte((x >> 16) & 0x0ff)
-	enc.scratch[7] = byte((x >> 8) & 0x0ff)
-	enc.scratch[8] = byte(x & 0x0ff)
-	_, err := enc.out.Write(enc.scratch[:9])
-	return err
-}
-
-func (enc *Encoder) writeText(x string) error {
-	enc.tagAuxOut(cborText, uint64(len(x)))
-	_, err := io.WriteString(enc.out, x)
-	return err
-}
-
-func (enc *Encoder) writeBytes(x []byte) error {
-	enc.tagAuxOut(cborBytes, uint64(len(x)))
-	_, err := enc.out.Write(x)
-	return err
-}
-
-func (enc *Encoder) writeFloat(x float64) error {
-	return enc.tagAux64(cbor7, math.Float64bits(x))
-}
-
-func (enc *Encoder) writeBool(x bool) error {
-	if x {
-		return enc.tagAuxOut(cbor7, uint64(cborTrue))
-	} else {
-		return enc.tagAuxOut(cbor7, uint64(cborFalse))
-	}
 }
