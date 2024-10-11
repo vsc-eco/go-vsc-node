@@ -58,9 +58,9 @@ func TestCborDecode(t *testing.T) {
 	// 	headers: {
 	// 	  type: 1, 7
 	// 	  nonce: 13, 8
-	// 	  intents: [], SKIP // TODO is this supposed to be skipped?
+	// 	  intents: [], 9 // TODO is this supposed to be skipped?
 	// 	  required_auths: [
-	// 		"did:pkh:eip155:1:0x88EBB64C264AFf10141149F9770F8D644C9D86C5" 9
+	// 		"did:pkh:eip155:1:0x88EBB64C264AFf10141149F9770F8D644C9D86C5" 10
 	// 	  ]
 	// 	}
 	//   }
@@ -114,6 +114,16 @@ func TestCborDecode(t *testing.T) {
 			},
 			Float64Visitor: func(path []string, val float64) error {
 				return fmt.Errorf("no float64 exists")
+			},
+			EmptyArrayVisitor: func(path []string) error {
+				fmt.Printf("empty array: %+v, %d\n", path, i)
+				if i == 9 {
+					assert.Equal(t, []string{"headers", "intents"}, path)
+				} else {
+					return fmt.Errorf("empty array should not be called on %d", i)
+				}
+
+				return nil
 			},
 		},
 		cbor.NewBytesCollector(func(path []string, val []byte) error {

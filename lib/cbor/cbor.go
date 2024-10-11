@@ -81,13 +81,14 @@ type Decoder struct {
 
 // {tx: {op: "myOp"}} -> []string{"tx", "op"}
 type Visitor struct {
-	IntVisitor     func(path []string, val *big.Int) error
-	NilVisitor     func(path []string) error
-	BoolVisitor    func(path []string, val bool) error
-	BytesVisitor   func(path []string, val []byte) error
-	StringVisitor  func(path []string, val string) error
-	Float32Visitor func(path []string, val float32) error
-	Float64Visitor func(path []string, val float64) error
+	IntVisitor        func(path []string, val *big.Int) error
+	NilVisitor        func(path []string) error
+	BoolVisitor       func(path []string, val bool) error
+	BytesVisitor      func(path []string, val []byte) error
+	StringVisitor     func(path []string, val string) error
+	Float32Visitor    func(path []string, val float32) error
+	Float64Visitor    func(path []string, val float64) error
+	EmptyArrayVisitor func(path []string) error
 }
 
 func NewStringCollector(collected func(path []string, val string) error) Visitor {
@@ -210,6 +211,18 @@ func JoinVisitorsWithSlice(visitors []Visitor) Visitor {
 					continue
 				}
 				err := v.Float64Visitor(path, val)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		EmptyArrayVisitor: func(path []string) error {
+			for _, v := range visitors {
+				if v.EmptyArrayVisitor == nil {
+					continue
+				}
+				err := v.EmptyArrayVisitor(path)
 				if err != nil {
 					return err
 				}
@@ -579,6 +592,7 @@ func (dec *Decoder) decodeArray(cborInfo byte, aux uint64, path []string) error 
 		var arrayPos int = 0
 		//log.Printf("var array")
 		subc := []byte{0}
+		justStarted := true
 		for {
 			_, err = io.ReadFull(dec.rin, subc)
 			if err != nil {
@@ -587,7 +601,9 @@ func (dec *Decoder) decodeArray(cborInfo byte, aux uint64, path []string) error 
 			}
 			if subc[0] == 0xff {
 				// Done
-				break
+				if justStarted {
+					return dec.groupVisitors().EmptyArrayVisitor(path)
+				}
 			} else {
 				err := dec.innerDecodeC(subc[0], append(path, fmt.Sprintf("[%d]", arrayPos))) // TODO get result
 				if err != nil {
@@ -596,6 +612,7 @@ func (dec *Decoder) decodeArray(cborInfo byte, aux uint64, path []string) error 
 				}
 				arrayPos++
 			}
+			justStarted = false
 		}
 	} else {
 		var i uint64
@@ -605,6 +622,9 @@ func (dec *Decoder) decodeArray(cborInfo byte, aux uint64, path []string) error 
 				log.Printf("error decoding array subob")
 				return err
 			}
+		}
+		if aux == 0 {
+			return dec.groupVisitors().EmptyArrayVisitor(path)
 		}
 	}
 
