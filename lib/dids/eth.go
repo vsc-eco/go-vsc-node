@@ -9,11 +9,11 @@ import (
 	"sort"
 	"strings"
 
-	cbor "github.com/ipfs/go-ipld-cbor"
-
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	blocks "github.com/ipfs/go-block-format"
+
+	"github.com/ugorji/go/codec"
 )
 
 // ===== constants =====
@@ -59,6 +59,13 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 		return false, fmt.Errorf("failed to decode CBOR data: %v", err)
 	}
 
+	var decodedData2 []interface{}
+	if err := decodeFromCBOR(block.RawData(), &decodedData2); err != nil {
+		return false, fmt.Errorf("failed to decode CBOR data: %v", err)
+	}
+
+	fmt.Println(decodedData2)
+
 	// convert the sorted decoded data into EIP-712 typed data
 	payload, err := ConvertToEIP712TypedData("vsc.network", decodedData, "tx_container_v0", func(f float64) (*big.Int, error) {
 		return big.NewInt(int64(f)), nil
@@ -79,6 +86,10 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 		return false, fmt.Errorf("failed to decode signature: %v", err)
 	}
 
+	if sigBytes[64] != 0 && sigBytes[64] != 1 {
+		sigBytes[64] -= 27
+	}
+
 	// recover the pub key from the signature and data hash
 	pubKey, err := crypto.SigToPub(dataHash, sigBytes)
 	if err != nil {
@@ -90,6 +101,9 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 
 	// get the expected addr from the DID
 	expectedAddress := d.Identifier()
+
+	fmt.Println("RECOVERED: ", recoveredAddress)
+	fmt.Println("EXPECTED: ", expectedAddress)
 
 	// compare the recovered address to the expected addr
 	//
@@ -149,15 +163,16 @@ func computeEIP712Hash(typedData apitypes.TypedData) ([]byte, error) {
 
 // decode CBOR back into a map[string]interface{}
 func decodeFromCBOR(data []byte, out interface{}) error {
-	var tempData map[string]interface{}
-	if err := cbor.DecodeInto(data, &tempData); err != nil {
-		return fmt.Errorf("failed to decode CBOR data: %v", err)
-	}
+	// var tempData map[string]interface{}
+	codec.NewDecoderBytes(data, &codec.CborHandle{}).Decode(out)
+	// if err := cbor.DecodeInto(data, &tempData); err != nil {
+	// 	return fmt.Errorf("failed to decode CBOR data: %v", err)
+	// }
 
 	// set the decoded data back into the output
 	//
 	// this is a bit hacky, but it seems to work
-	reflect.ValueOf(out).Elem().Set(reflect.ValueOf(tempData))
+	// reflect.ValueOf(out).Elem().Set(reflect.ValueOf(tempData))
 
 	return nil
 }
@@ -244,8 +259,13 @@ func ConvertToEIP712TypedData(
 		}
 	}
 
+	newMap := make(map[any]interface{})
+	for k, v := range data.(map[string]interface{}) {
+		newMap[k] = v
+	}
+
 	// gen the msg and types
-	message, types, err := generateTypedDataWithPath(dataMap, primaryTypeName, floatHandler)
+	message, types, err := generateTypedDataWithPath(newMap, primaryTypeName, floatHandler)
 	if err != nil {
 		return TypedData{}, fmt.Errorf("failed to generate typed data: %v", err)
 	}
@@ -271,7 +291,7 @@ func isEthAddr(s string) bool {
 
 // gens typed data recursively for nested maps and slices/arrays
 func generateTypedDataWithPath(
-	data map[string]interface{},
+	data map[any]interface{},
 	typeName string,
 	floatHandler func(float64) (*big.Int, error),
 ) (map[string]interface{}, map[string][]apitypes.Type, error) {
@@ -281,11 +301,11 @@ func generateTypedDataWithPath(
 	types[typeName] = []apitypes.Type{}
 
 	// collects and sorts field names
-	var fieldNames []string
+	var fieldNames []any
 	for fieldName := range data {
 		fieldNames = append(fieldNames, fieldName)
 	}
-	sort.Strings(fieldNames)
+	// sort.Strings(fieldNames)
 
 	for _, fieldName := range fieldNames {
 		fieldValue := data[fieldName]
@@ -298,7 +318,7 @@ func generateTypedDataWithPath(
 			arrayVal := reflect.ValueOf(fieldValue)
 			if arrayVal.Len() == 0 {
 				fieldType = "undefined[]" // allow undefined for empty arrays, as per the JS version in the Bitcoin wrapper UI
-				message[fieldName] = fieldValue
+				message[fieldName.(string)] = fieldValue
 			} else {
 				// check the first elem to infer the inner type of the slice/array
 				firstElem := arrayVal.Index(0).Interface()
@@ -307,7 +327,7 @@ func generateTypedDataWithPath(
 				switch elemKind {
 				case reflect.String:
 					fieldType = "string[]"
-					message[fieldName] = fieldValue
+					message[fieldName.(string)] = fieldValue
 
 				case reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 					fieldType = "uint256[]"
@@ -323,7 +343,7 @@ func generateTypedDataWithPath(
 						}
 						uintArrayValues[i] = new(big.Int).SetUint64(u64)
 					}
-					message[fieldName] = uintArrayValues
+					message[fieldName.(string)] = uintArrayValues
 
 				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 					fieldType = "int256[]"
@@ -339,7 +359,7 @@ func generateTypedDataWithPath(
 						}
 						intArrayValues[i] = big.NewInt(i64)
 					}
-					message[fieldName] = intArrayValues
+					message[fieldName.(string)] = intArrayValues
 
 				case reflect.Float64:
 					fieldType = "uint256[]"
@@ -356,33 +376,38 @@ func generateTypedDataWithPath(
 							return nil, nil, fmt.Errorf("invalid float value in array")
 						}
 					}
-					message[fieldName] = bigIntArray
+					message[fieldName.(string)] = bigIntArray
 
 				case reflect.Uint8:
 					// treat []uint8 as bytes
 					fieldType = "bytes"
-					message[fieldName] = fieldValue
+					message[fieldName.(string)] = fieldValue
 
 				default:
 					// fallback/default for unrecognized slice types
 					fieldType = fmt.Sprintf("%s[]", elemKind.String())
-					message[fieldName] = fieldValue
+					message[fieldName.(string)] = fieldValue
 				}
 			}
 
 		case reflect.Map:
 			// nested maps gen new type names and processes recursively
+			fmt.Println("VAL: ", reflect.ValueOf(fieldValue).Kind())
 			nestedTypeName := fmt.Sprintf("%s.%s", typeName, fieldName)
-			nestedData, ok := fieldValue.(map[string]interface{})
+			fmt.Println("pre-NESTED: ", fieldValue)
+			nestedData, ok := fieldValue.(map[any]interface{})
 			if !ok {
-				return nil, nil, fmt.Errorf("expected map[string]interface{} for field '%s'", fieldName)
+				fmt.Println(nestedTypeName, fieldValue)
+				fmt.Println(reflect.ValueOf(fieldValue).MapKeys()[0].Interface())
+				return nil, nil, fmt.Errorf("379 expected map[string]interface{} for field '%s'", fieldName)
 			}
+			fmt.Println("NESTED: ", nestedData)
 			nestedMessage, nestedTypes, err := generateTypedDataWithPath(nestedData, nestedTypeName, floatHandler)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to generate typed data for nested map: %v", err)
 			}
 			fieldType = nestedTypeName
-			message[fieldName] = nestedMessage
+			message[fieldName.(string)] = nestedMessage
 			for k, v := range nestedTypes {
 				types[k] = v
 			}
@@ -396,7 +421,7 @@ func generateTypedDataWithPath(
 			} else {
 				fieldType = "string"
 			}
-			message[fieldName] = fieldValue
+			message[fieldName.(string)] = fieldValue
 
 		case reflect.Float64:
 			// use the float handler for all float values
@@ -405,7 +430,7 @@ func generateTypedDataWithPath(
 				if err != nil {
 					return nil, nil, fmt.Errorf("failed to handle float value: %v", err)
 				}
-				message[fieldName] = bigIntValue
+				message[fieldName.(string)] = bigIntValue
 				fieldType = "uint256"
 			} else {
 				return nil, nil, fmt.Errorf("expected float64 for field '%s'", fieldName)
@@ -420,7 +445,7 @@ func generateTypedDataWithPath(
 			default:
 				return nil, nil, fmt.Errorf("unsupported integer type for field '%s'", fieldName)
 			}
-			message[fieldName] = big.NewInt(i64)
+			message[fieldName.(string)] = big.NewInt(i64)
 			fieldType = "int256"
 
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
@@ -432,19 +457,19 @@ func generateTypedDataWithPath(
 			default:
 				return nil, nil, fmt.Errorf("unsupported unsigned integer type for field '%s'", fieldName)
 			}
-			message[fieldName] = new(big.Int).SetUint64(u64)
+			message[fieldName.(string)] = new(big.Int).SetUint64(u64)
 			fieldType = "uint256"
 
 		case reflect.Bool:
 			fieldType = "bool"
-			message[fieldName] = fieldValue
+			message[fieldName.(string)] = fieldValue
 
 		default:
 			return nil, nil, fmt.Errorf("unsupported field type %s for field %s", fieldKind.String(), fieldName)
 		}
 
 		// append field and its type to the types array
-		types[typeName] = append(types[typeName], apitypes.Type{Name: fieldName, Type: fieldType})
+		types[typeName] = append(types[typeName], apitypes.Type{Name: fieldName.(string), Type: fieldType})
 	}
 
 	// sort the `types[typeName]` slice to ensure consistent ordering
