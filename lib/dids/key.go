@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	blocks "github.com/ipfs/go-block-format"
+	"github.com/ipfs/go-cid"
 	"github.com/jorrizza/ed2curve25519"
 	"github.com/multiformats/go-multibase"
 	"golang.org/x/crypto/curve25519"
@@ -100,18 +101,18 @@ func (d KeyDID) Verify(block blocks.Block, sig string) (bool, error) {
 	}
 
 	// decode the payload and extract the CID (string format)
-	decodedPayload, err := base64.StdEncoding.DecodeString(parts[1])
+	payloadOfCidBytes, err := base64.StdEncoding.DecodeString(parts[1])
 	if err != nil {
 		return false, fmt.Errorf("invalid payload encoding: %w", err)
 	}
 
-	var payloadCID string
-	if err := json.Unmarshal(decodedPayload, &payloadCID); err != nil {
-		return false, fmt.Errorf("error decoding payload CID: %w", err)
+	payloadCID, err := cid.Parse(payloadOfCidBytes)
+	if err != nil {
+		return false, fmt.Errorf("invalid CID in payload: %w", err)
 	}
 
 	// get block CID and compare it to the payload CID
-	blockCID := block.Cid().String()
+	blockCID := block.Cid()
 
 	if blockCID != payloadCID {
 		return false, fmt.Errorf("block CID does not match the one in the payload")
@@ -155,8 +156,6 @@ func NewKeyProvider(privKey ed25519.PrivateKey) KeyProvider {
 // ===== implementing the Provider and KeyDIDProvider interfaces =====
 
 func (k KeyProvider) Sign(block blocks.Block) (string, error) {
-	// get the string representation of the CID
-	cidStr := block.Cid().String()
 
 	did, err := NewKeyDID(k.privKey.Public().(ed25519.PublicKey))
 	if err != nil {
@@ -176,15 +175,9 @@ func (k KeyProvider) Sign(block blocks.Block) (string, error) {
 		return "", err
 	}
 
-	// use the string representation of the CID for the payload
-	payloadJSON, err := json.Marshal(cidStr)
-	if err != nil {
-		return "", err
-	}
-
 	// base64 encode the header and payload
 	encodedHeader := base64.StdEncoding.EncodeToString(headerJSON)
-	encodedPayload := base64.StdEncoding.EncodeToString(payloadJSON)
+	encodedPayload := base64.StdEncoding.EncodeToString(block.Cid().Bytes())
 
 	// signing the encoded header and payload
 	signingInput := encodedHeader + "." + encodedPayload
