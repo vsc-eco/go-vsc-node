@@ -30,6 +30,14 @@ func genRandomBlsDIDAndBlstSecretKey() (dids.BlsDID, *blst.SecretKey, error) {
 	return did, privKey, nil
 }
 
+// the full flow of using a bls circuit is:
+//
+// 1. create a circuit generator
+// 2. list in the circuit generator the members of the circuit and who need to sign it
+// 3. generate a partial circuit once all need-to-sign members are listed
+// 4. let each member sign the partial circuit with block message and add/verify their sigs to the partial circuit
+// 5. once all members have signed, and their sigs are all valid and match the required list of members that had to-sign,
+// finalize the circuit to create a bls circuit that we can then verify and use
 func TestFullCircuitFlow(t *testing.T) {
 	// generate DIDs and their corresponding pub keys and secret keys for signing
 	did1, secretKey1, err := genRandomBlsDIDAndBlstSecretKey()
@@ -99,7 +107,7 @@ func TestInvalidSignature(t *testing.T) {
 	// generate valid signature and tamper it to create an invalid signature
 	sig, err := provider1.Sign(block)
 	assert.NoError(t, err)
-	invalidSig := sig[:len(sig)-1] + "X"
+	invalidSig := sig[:len(sig)-1] + "SOME_INVALID_SIG_SUFFIX"
 
 	// add and verify the invalid signature
 	err = partialCircuit.AddAndVerify(dids.Member{Account: "account1", DID: did1}, invalidSig)
