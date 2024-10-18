@@ -73,69 +73,60 @@ func (d KeyDID) Identifier() ed25519.PublicKey {
 }
 
 func (d KeyDID) Verify(block blocks.Block, sig string) (bool, error) {
-	// split the JWT-like signature into 3 parts: header, payload, and signature
 	parts := strings.Split(sig, ".")
 	if len(parts) != 3 {
-		return false, fmt.Errorf("invalid sig format: expected 3 parts")
+		return false, fmt.Errorf("invalid signature format: expected 3 parts")
 	}
 
-	// decode the header
-	decodedHeader, err := base64.StdEncoding.DecodeString(parts[0])
+	// decode header
+	decodedHeader, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
 		return false, fmt.Errorf("invalid header encoding: %w", err)
 	}
 
-	// unmarshal the header
 	var header map[string]interface{}
 	if err = json.Unmarshal(decodedHeader, &header); err != nil {
 		return false, fmt.Errorf("invalid header JSON: %w", err)
 	}
 
-	// extract the 'kid' (key id) field from the header and verify it matches the current DID
 	kid, ok := header["kid"].(string)
-	if !ok {
-		return false, fmt.Errorf("invalid or missing kid in header")
-	}
-	if kid != d.String() {
-		return false, fmt.Errorf("kid in the header does not match current DID")
+	if !ok || kid != d.String()+"#"+strings.Split(d.String(), ":")[2] {
+		return false, fmt.Errorf("kid in header does not match current DID")
 	}
 
-	// decode the payload and extract the CID (string format)
-	payloadOfCidBytes, err := base64.StdEncoding.DecodeString(parts[1])
+	// decode payload (CID bytes)
+	decodedPayload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return false, fmt.Errorf("invalid payload encoding: %w", err)
 	}
 
-	payloadCID, err := cid.Parse(payloadOfCidBytes)
+	payloadCID, err := cid.Parse(decodedPayload)
 	if err != nil {
 		return false, fmt.Errorf("invalid CID in payload: %w", err)
 	}
 
-	// get block CID and compare it to the payload CID
-	blockCID := block.Cid()
-
-	if blockCID != payloadCID {
+	// verify block CID matches payload CID
+	if block.Cid() != payloadCID {
 		return false, fmt.Errorf("block CID does not match the one in the payload")
 	}
 
-	// reconstruct the signing input: header + payload (both base64-encoded)
+	// recreate signing input
 	signingInput := parts[0] + "." + parts[1]
 
-	// decode the signature
-	decodedSig, err := base64.StdEncoding.DecodeString(parts[2])
+	// decode the sig (third part)
+	decodedSignature, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
 		return false, fmt.Errorf("invalid signature encoding: %w", err)
 	}
 
-	// get the public key from the DID
+	// get public key from the DID
 	pubKey := d.Identifier()
 	if pubKey == nil {
 		return false, fmt.Errorf("invalid DID identifier: nil public key")
 	}
 
-	// verify the signature
-	verified := ed25519.Verify(pubKey, []byte(signingInput), decodedSig)
-
+	// verify the sig
+	verified := ed25519.Verify(pubKey, []byte(signingInput), decodedSignature)
 	if !verified {
 		return false, fmt.Errorf("signature verification failed")
 	}
@@ -156,37 +147,41 @@ func NewKeyProvider(privKey ed25519.PrivateKey) KeyProvider {
 // ===== implementing the Provider and KeyDIDProvider interfaces =====
 
 func (k KeyProvider) Sign(block blocks.Block) (string, error) {
-
+	// gen the DID from the priv key
 	did, err := NewKeyDID(k.privKey.Public().(ed25519.PublicKey))
 	if err != nil {
 		return "", err
 	}
 
-	// create the JWT header
+	// construct the "kid" string for the header
+	kidStr := did.String() + "#" + strings.Split(did.String(), ":")[2]
+
+	// create the JWT header (to match https://github.com/vsc-eco/vsc-node/blob/main/src/services/new/transactionPool.ts#L153)
 	header := map[string]interface{}{
 		"alg": "EdDSA",
-		"kid": did.String(),
-		"typ": "JWT",
-		"cty": "JWT",
+		"kid": kidStr,
 	}
 
+	// serialize the header to JSON
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
 		return "", err
 	}
 
-	// base64 encode the header and payload
-	encodedHeader := base64.StdEncoding.EncodeToString(headerJSON)
-	encodedPayload := base64.StdEncoding.EncodeToString(block.Cid().Bytes())
+	// base64 raw URL encode the header and payload (CID)
+	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
+	encodedPayload := base64.RawURLEncoding.EncodeToString(block.Cid().Bytes())
 
-	// signing the encoded header and payload
+	// create the sig input (header + payload)
 	signingInput := encodedHeader + "." + encodedPayload
+
+	// sigh the sig input using Ed25519
 	sig := ed25519.Sign(k.privKey, []byte(signingInput))
 
-	// base64 encode the signature
-	encodedSig := base64.StdEncoding.EncodeToString(sig)
+	// raw base64 URL encode the sig
+	encodedSig := base64.RawURLEncoding.EncodeToString(sig)
 
-	// return the full JWT token
+	// return the full JWT-like sig (header.payload.signature)
 	return signingInput + "." + encodedSig, nil
 }
 
