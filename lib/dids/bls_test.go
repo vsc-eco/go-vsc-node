@@ -1,7 +1,6 @@
 package dids_test
 
 import (
-	"crypto/rand"
 	"testing"
 	"vsc-node/lib/dids"
 
@@ -10,18 +9,13 @@ import (
 	blst "github.com/supranational/blst/bindings/go"
 )
 
-func genRandomBlsDIDAndBlstSecretKey() (dids.BlsDID, *blst.SecretKey, error) {
-	var seed [32]byte
-	_, err := rand.Read(seed[:])
-	if err != nil {
-		return "", nil, err
-	}
-
-	// generate a priv key and its corresponding public key using the random seed
+// gens a random BlsDID and BlsPrivKey using a seed
+func genRandomBlsDIDAndBlstSecretKeyWithSeed(seed [32]byte) (dids.BlsDID, *dids.BlsPrivKey, error) {
+	// gens a priv key and its corresponding pub key using the provided seed
 	privKey := blst.KeyGen(seed[:])
-	pubKey := new(blst.P1Affine).From(privKey)
+	pubKey := new(dids.BlsPubKey).From(privKey)
 
-	// generate the BlsDID from the pub key
+	// gens the BlsDID from the pub key
 	did, err := dids.NewBlsDID(pubKey)
 	if err != nil {
 		return "", nil, err
@@ -30,42 +24,48 @@ func genRandomBlsDIDAndBlstSecretKey() (dids.BlsDID, *blst.SecretKey, error) {
 	return did, privKey, nil
 }
 
-// the full flow of using a bls circuit is:
-//
-// 1. create a circuit generator
-// 2. list in the circuit generator the members of the circuit and who need to sign it
-// 3. generate a partial circuit once all need-to-sign members are listed
-// 4. let each member sign the partial circuit with block message and add/verify their sigs to the partial circuit
-// 5. once all members have signed, and their sigs are all valid and match the required list of members that had to-sign,
-// finalize the circuit to create a bls circuit that we can then verify and use
+// the full flow of using a BLS circuit is:
+//  1. create a circuit generator
+//  2. list in the circuit generator the members of the circuit who need to sign it
+//  3. generate a partial circuit once all need-to-sign members are listed
+//  4. let each member sign the partial circuit with block message and add/verify their signatures to the partial circuit
+//  5. once all members have signed, and their signatures are all valid and match the required list of members that had to sign,
+//     finalize the circuit to create a BLS circuit that we can then verify and use
 func TestFullCircuitFlow(t *testing.T) {
-	// generate DIDs and their corresponding pub keys and secret keys for signing
-	did1, secretKey1, err := genRandomBlsDIDAndBlstSecretKey()
+	// use predefined seeds for determinism
+	var seed1 [32]byte
+	copy(seed1[:], []byte("test_seed_1_101234567"))
+
+	var seed2 [32]byte
+	copy(seed2[:], []byte("test_seed_2_98765432876543"))
+
+	// gen DIDs and their corresponding public keys and secret keys for signing
+	did1, privKey1, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed1)
 	assert.NoError(t, err)
-	provider1, err := dids.NewBlsProvider(secretKey1)
+	provider1, err := dids.NewBlsProvider(privKey1)
 	assert.NoError(t, err)
 
-	did2, secretKey2, err := genRandomBlsDIDAndBlstSecretKey()
+	did2, privKey2, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed2)
 	assert.NoError(t, err)
-	provider2, err := dids.NewBlsProvider(secretKey2)
+	provider2, err := dids.NewBlsProvider(privKey2)
 	assert.NoError(t, err)
 
 	// create a dummy block for testing purposes
 	block := blocks.NewBlock([]byte("test abc 123"))
 
-	// initialize a new BlsCircuitGenerator with two members
+	// inits a new BlsCircuitGenerator with two members
 	generator := dids.NewBlsCircuitGenerator([]dids.Member{
 		{Account: "account1", DID: did1},
 		{Account: "account2", DID: did2},
 	})
 
-	// generate a partial circuit
+	// gens a partial circuit
 	partialCircuit, err := generator.Generate(block)
 	assert.NoError(t, err)
 
+	// sign the block with both providers
 	sig1, err := provider1.Sign(block)
 	assert.NoError(t, err)
-
 	sig2, err := provider2.Sign(block)
 	assert.NoError(t, err)
 
@@ -81,22 +81,29 @@ func TestFullCircuitFlow(t *testing.T) {
 	finalCircuit, err := partialCircuit.Finalize()
 	assert.NoError(t, err)
 
-	// verify the aggregated signature in the final circuit
-	verified, err := finalCircuit.Verify()
+	// get the aggregated signature and bit vector from the circuit
+	aggSigEncoded, err := finalCircuit.AggregatedSignature()
+	assert.NoError(t, err)
+	bvEncoded, err := finalCircuit.BitVector()
+	assert.NoError(t, err)
+
+	// now call Verify with the aggregated signature and bit vector
+	verified, includedDIDsVerified, err := finalCircuit.Verify(aggSigEncoded, bvEncoded)
 	assert.NoError(t, err)
 	assert.True(t, verified)
 
-	// verify the pub keys of the members match the final aggregated pub key in the circuit
-	didsToVerify := []dids.BlsDID{did1, did2}
-	verifiedPubKeys, err := finalCircuit.VerifyDIDs(didsToVerify)
-	assert.NoError(t, err)
-	assert.True(t, verifiedPubKeys)
+	// ensure included DIDs match
+	assert.Equal(t, finalCircuit.IncludedDIDs(), includedDIDsVerified)
 }
 
 func TestInvalidSignature(t *testing.T) {
-	did1, secretKey1, err := genRandomBlsDIDAndBlstSecretKey()
+	// use a predefined seed
+	var seed1 [32]byte
+	copy(seed1[:], []byte("test_seed_3_85610963"))
+
+	did1, privKey1, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed1)
 	assert.NoError(t, err)
-	provider1, err := dids.NewBlsProvider(secretKey1)
+	provider1, err := dids.NewBlsProvider(privKey1)
 	assert.NoError(t, err)
 
 	block := blocks.NewBlock([]byte("hello there"))
@@ -104,23 +111,31 @@ func TestInvalidSignature(t *testing.T) {
 	partialCircuit, err := generator.Generate(block)
 	assert.NoError(t, err)
 
-	// generate valid signature and tamper it to create an invalid signature
+	// gens a valid signature and tamper it to create an invalid signature
 	sig, err := provider1.Sign(block)
 	assert.NoError(t, err)
 	invalidSig := sig[:len(sig)-1] + "SOME_INVALID_SIG_SUFFIX"
 
 	// add and verify the invalid signature
 	err = partialCircuit.AddAndVerify(dids.Member{Account: "account1", DID: did1}, invalidSig)
+	// should error out
 	assert.Error(t, err)
 }
 
 func TestWrongPublicKey(t *testing.T) {
-	did1, secretKey1, err := genRandomBlsDIDAndBlstSecretKey()
+	// use predefined seeds
+	var seed1 [32]byte
+	copy(seed1[:], []byte("test_seed_4_209385723"))
+
+	var seed2 [32]byte
+	copy(seed2[:], []byte("test_seed_4_189263402963"))
+
+	did1, privKey1, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed1)
 	assert.NoError(t, err)
-	provider1, err := dids.NewBlsProvider(secretKey1)
+	provider1, err := dids.NewBlsProvider(privKey1)
 	assert.NoError(t, err)
 
-	did2, _, err := genRandomBlsDIDAndBlstSecretKey()
+	did2, _, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed2)
 	assert.NoError(t, err)
 
 	block := blocks.NewBlock([]byte("foo bar"))
@@ -133,16 +148,24 @@ func TestWrongPublicKey(t *testing.T) {
 
 	// use wrong DID for verification
 	err = partialCircuit.AddAndVerify(dids.Member{Account: "account1", DID: did2}, sig)
+	// should error out
 	assert.Error(t, err)
 }
 
 func TestNotAllMembersSigned(t *testing.T) {
-	did1, secretKey1, err := genRandomBlsDIDAndBlstSecretKey()
+	// use predefined seeds
+	var seed1 [32]byte
+	copy(seed1[:], []byte("test_seed_5_46948173"))
+
+	var seed2 [32]byte
+	copy(seed2[:], []byte("test_seed_5_5897398793"))
+
+	did1, privKey1, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed1)
 	assert.NoError(t, err)
-	provider1, err := dids.NewBlsProvider(secretKey1)
+	provider1, err := dids.NewBlsProvider(privKey1)
 	assert.NoError(t, err)
 
-	did2, _, err := genRandomBlsDIDAndBlstSecretKey()
+	did2, _, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed2)
 	assert.NoError(t, err)
 
 	block := blocks.NewBlock([]byte("hello world"))
@@ -165,16 +188,22 @@ func TestNotAllMembersSigned(t *testing.T) {
 }
 
 func TestSerializeDeserialize(t *testing.T) {
-	// gen random DID and key
-	did1, secretKey1, err := genRandomBlsDIDAndBlstSecretKey()
+	// use predefined seeds
+	var seed1 [32]byte
+	copy(seed1[:], []byte("test_seed_6_62526935846259348"))
+
+	var seed2 [32]byte
+	copy(seed2[:], []byte("test_seed_6_800822431434"))
+
+	// generate DIDs and keys
+	did1, privKey1, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed1)
 	assert.NoError(t, err)
-	provider1, err := dids.NewBlsProvider(secretKey1)
+	provider1, err := dids.NewBlsProvider(privKey1)
 	assert.NoError(t, err)
 
-	// gen another random DID without key
-	did2, secretKey2, err := genRandomBlsDIDAndBlstSecretKey()
+	did2, privKey2, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed2)
 	assert.NoError(t, err)
-	provider2, err := dids.NewBlsProvider(secretKey2)
+	provider2, err := dids.NewBlsProvider(privKey2)
 	assert.NoError(t, err)
 
 	// create a block
@@ -190,10 +219,9 @@ func TestSerializeDeserialize(t *testing.T) {
 	partialCircuit, err := generator.Generate(block)
 	assert.NoError(t, err)
 
-	// sign the block with the first provider and add the signature to the partial circuit
+	// sign the block with both providers
 	sig1, err := provider1.Sign(block)
 	assert.NoError(t, err)
-
 	sig2, err := provider2.Sign(block)
 	assert.NoError(t, err)
 
@@ -201,24 +229,33 @@ func TestSerializeDeserialize(t *testing.T) {
 	err = partialCircuit.AddAndVerify(dids.Member{Account: "account1", DID: did1}, sig1)
 	assert.NoError(t, err)
 
+	// add and verify the second signature
 	err = partialCircuit.AddAndVerify(dids.Member{Account: "account2", DID: did2}, sig2)
 	assert.NoError(t, err)
-
-	// get the current circuit map
-	circuitMap := partialCircuit.CircuitMap()
 
 	// finalize the circuit
 	finalCircuit, err := partialCircuit.Finalize()
 	assert.NoError(t, err)
 
-	// serialize and deserialize the circuit
-	serializedCircuit, err := finalCircuit.Serialize(circuitMap)
-	assert.NoError(t, err)
-	deserializedCircuit, err := dids.DeserializeBlsCircuit(serializedCircuit, []string{did1.String(), did2.String()})
+	// serialize the circuit (includes CID and bit vector)
+	serializedCircuit, err := finalCircuit.Serialize()
 	assert.NoError(t, err)
 
-	// ensure that the deserialized circuit matches the original circuit; it should pass verification
-	verified, err := deserializedCircuit.Verify()
+	// deserialize the circuit to get the AggregateDID
+	keyset := generator.CircuitMap()
+	aggDID, err := dids.DeserializeBlsCircuit(serializedCircuit, keyset)
+	assert.NoError(t, err)
+
+	// use aggDID to verify the original block
+	// get the aggregated signature from the circuit
+	aggSigEncoded, err := finalCircuit.AggregatedSignature()
+	assert.NoError(t, err)
+
+	// verify the signature using aggDID
+	verified, err := aggDID.AggPubKey.Verify(finalCircuit.Msg(), aggSigEncoded)
 	assert.NoError(t, err)
 	assert.True(t, verified)
+
+	// verify that the included DIDs match
+	assert.Equal(t, aggDID.IncludedDIDs, finalCircuit.IncludedDIDs())
 }
