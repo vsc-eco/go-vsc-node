@@ -1,3 +1,4 @@
 {
   // "go.testTimeout": "300s"
+  // "go.testFlags": ["-count=1"] // disable test cache
 }
