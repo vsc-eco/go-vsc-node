@@ -15,7 +15,6 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	blocks "github.com/ipfs/go-block-format"
-	"github.com/ipfs/go-cid"
 	"github.com/jorrizza/ed2curve25519"
 	"github.com/multiformats/go-multibase"
 	"golang.org/x/crypto/curve25519"
@@ -73,53 +72,29 @@ func (d KeyDID) Identifier() ed25519.PublicKey {
 }
 
 func (d KeyDID) Verify(block blocks.Block, sig string) (bool, error) {
-	parts := strings.Split(sig, ".")
-	if len(parts) != 3 {
-		return false, fmt.Errorf("invalid signature format: expected 3 parts")
+	// re-create the header
+	header := map[string]interface{}{
+		"alg": "EdDSA",
+		"kid": d.String() + "#" + strings.Split(d.String(), ":")[2],
 	}
 
-	// decode header
-	decodedHeader, err := base64.RawURLEncoding.DecodeString(parts[0])
+	// marshal
+	headerJSON, err := json.Marshal(header)
 	if err != nil {
-		return false, fmt.Errorf("invalid header encoding: %w", err)
+		return false, fmt.Errorf("error marshalling header: %w", err)
 	}
 
-	var header map[string]interface{}
-	if err = json.Unmarshal(decodedHeader, &header); err != nil {
-		return false, fmt.Errorf("invalid header JSON: %w", err)
-	}
+	// encode header as raw url base 64
+	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
+	signingInput := encodedHeader + "." + base64.RawURLEncoding.EncodeToString(block.Cid().Bytes())
 
-	kid, ok := header["kid"].(string)
-	if !ok || kid != d.String()+"#"+strings.Split(d.String(), ":")[2] {
-		return false, fmt.Errorf("kid in header does not match current DID")
-	}
-
-	// decode payload (CID bytes)
-	decodedPayload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return false, fmt.Errorf("invalid payload encoding: %w", err)
-	}
-
-	payloadCID, err := cid.Parse(decodedPayload)
-	if err != nil {
-		return false, fmt.Errorf("invalid CID in payload: %w", err)
-	}
-
-	// verify block CID matches payload CID
-	if block.Cid() != payloadCID {
-		return false, fmt.Errorf("block CID does not match the one in the payload")
-	}
-
-	// recreate signing input
-	signingInput := parts[0] + "." + parts[1]
-
-	// decode the sig (third part)
-	decodedSignature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	// decode the sig
+	decodedSignature, err := base64.RawURLEncoding.DecodeString(sig)
 	if err != nil {
 		return false, fmt.Errorf("invalid signature encoding: %w", err)
 	}
 
-	// get public key from the DID
+	// get pub key from the DID
 	pubKey := d.Identifier()
 	if pubKey == nil {
 		return false, fmt.Errorf("invalid DID identifier: nil public key")
@@ -182,7 +157,7 @@ func (k KeyProvider) Sign(block blocks.Block) (string, error) {
 	encodedSig := base64.RawURLEncoding.EncodeToString(sig)
 
 	// return the full JWT-like sig (header.payload.signature)
-	return signingInput + "." + encodedSig, nil
+	return encodedSig, nil
 }
 
 // ===== other methods =====

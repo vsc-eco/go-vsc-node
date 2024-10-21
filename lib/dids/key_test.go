@@ -3,9 +3,6 @@ package dids_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
-	"strings"
 	"testing"
 	"vsc-node/lib/dids"
 
@@ -126,8 +123,8 @@ func TestBasicSignVerify(t *testing.T) {
 	assert.False(t, valid)
 }
 func TestRealIpfsVerify(t *testing.T) {
-	// parse the real provided CID
-	block, err := blocks.NewBlockWithCid([]byte("data doesn't matter"), cid.MustParse("bafyreiapoy2k666lcpsnbbilyzloqbc64mevrkymorujyi4cjqkzp2ukj4"))
+	// parse the real provided CID into a dummy block with that set CID
+	realBlock, err := blocks.NewBlockWithCid([]byte("data doesn't matter"), cid.MustParse("bafyreiapoy2k666lcpsnbbilyzloqbc64mevrkymorujyi4cjqkzp2ukj4"))
 	assert.Nil(t, err)
 
 	// the real DID from the transaction
@@ -136,28 +133,11 @@ func TestRealIpfsVerify(t *testing.T) {
 	// the real sig from the transaction
 	realSig := "SV1jI7m-Fs59cBioCxrV1oLIbsbA-nDAQtpFUFDvr2iAxeq5JnfUHb2N8z2N78Lt4PnsMeX9flaq-IpzN97wDA"
 
-	// create the header
-	header := map[string]interface{}{
-		"alg": "EdDSA",
-		"kid": realKeyDid + "#" + strings.Split(realKeyDid, ":")[2],
-	}
-
-	// marshal the header and encode in base64-url
-	headerJSON, err := json.Marshal(header)
-	assert.Nil(t, err)
-	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
-
-	// encode the CID (payload) in base64-url
-	encodedPayload := base64.RawURLEncoding.EncodeToString(block.Cid().Bytes())
-
-	// recreate the full signature string in JWT format (header.payload.signature)
-	fullSignature := encodedHeader + "." + encodedPayload + "." + realSig
-
 	// create the KeyDID from the realKeyDid
 	keyDID := dids.KeyDID(realKeyDid)
 
 	// call the Verify function with the full signature
-	verified, err := keyDID.Verify(block, fullSignature)
+	verified, err := keyDID.Verify(realBlock, realSig)
 	assert.Nil(t, err)
 	assert.True(t, verified)
 }
