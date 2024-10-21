@@ -279,7 +279,7 @@ func (pbc *partialBlsCircuit) Finalize() (*BlsCircuit, error) {
 	}
 
 	// aggregate signatures and build bit vector
-	if err := pbc.circuit.AggregateSignatures(); err != nil {
+	if err := pbc.circuit.aggregateSignatures(); err != nil {
 		return nil, fmt.Errorf("failed to aggregate signatures: %w", err)
 	}
 
@@ -345,7 +345,7 @@ func (b *BlsCircuit) add(member Member, sig string) error {
 }
 
 // aggregates the collected signatures and builds the bit vector
-func (b *BlsCircuit) AggregateSignatures() error {
+func (b *BlsCircuit) aggregateSignatures() error {
 	if len(b.sigs) == 0 {
 		return fmt.Errorf("no signatures to aggregate")
 	}
@@ -410,7 +410,7 @@ type SerializedCircuit struct {
 func (b *BlsCircuit) Serialize() ([]byte, error) {
 	// ensure signatures are aggregated
 	if b.aggSigs == nil || b.bitVector == nil {
-		if err := b.AggregateSignatures(); err != nil {
+		if err := b.aggregateSignatures(); err != nil {
 			return nil, fmt.Errorf("failed to aggregate signatures: %w", err)
 		}
 	}
@@ -502,9 +502,28 @@ func DeserializeBlsCircuit(serializedData []byte, keyset []BlsDID) (*AggregateDI
 // returns whether it's valid and which BLS DIDs were part of the valid sig aggregation
 // "sig": aggregated sig as base64 string
 // "bv": bit vector as base64 string (rawurlencoded base64 of bitset.Text(16))
-func (b *BlsCircuit) Verify(sig string, bv string) (bool, []BlsDID, error) {
+func (b *BlsCircuit) Verify() (bool, []BlsDID, error) {
 	if b.msg == nil {
 		return false, nil, fmt.Errorf("block is nil")
+	}
+
+	// should have already been aggregated when the circuit was finalized
+	// but just as a "sanity check" we'll ensure they are before we proceed
+	if b.aggSigs == nil || b.bitVector == nil {
+		if err := b.aggregateSignatures(); err != nil {
+			return false, nil, fmt.Errorf("failed to aggregate signatures: %w", err)
+		}
+	}
+
+	// get the aggregated sig and bit vector
+	sig, err := b.AggregatedSignature()
+	if err != nil {
+		return false, nil, fmt.Errorf("failed to get aggregated signature: %w", err)
+	}
+
+	bv, err := b.BitVector()
+	if err != nil {
+		return false, nil, fmt.Errorf("failed to get bit vector: %w", err)
 	}
 
 	// decode the sig from base64

@@ -81,14 +81,8 @@ func TestFullCircuitFlow(t *testing.T) {
 	finalCircuit, err := partialCircuit.Finalize()
 	assert.NoError(t, err)
 
-	// get the aggregated signature and bit vector from the circuit
-	aggSigEncoded, err := finalCircuit.AggregatedSignature()
-	assert.NoError(t, err)
-	bvEncoded, err := finalCircuit.BitVector()
-	assert.NoError(t, err)
-
-	// now call Verify with the aggregated signature and bit vector
-	verified, includedDIDsVerified, err := finalCircuit.Verify(aggSigEncoded, bvEncoded)
+	// now call Verify to ensure all sigs valid
+	verified, includedDIDsVerified, err := finalCircuit.Verify()
 	assert.NoError(t, err)
 	assert.True(t, verified)
 
@@ -248,11 +242,11 @@ func TestSerializeDeserialize(t *testing.T) {
 
 	// use aggDID to verify the original block
 	// get the aggregated signature from the circuit
-	aggSigEncoded, err := finalCircuit.AggregatedSignature()
+	sig, err := finalCircuit.AggregatedSignature()
 	assert.NoError(t, err)
 
 	// verify the signature using aggDID
-	verified, err := aggDID.AggPubKey.Verify(finalCircuit.Msg(), aggSigEncoded)
+	verified, err := aggDID.AggPubKey.Verify(finalCircuit.Msg(), sig)
 	assert.NoError(t, err)
 	assert.True(t, verified)
 
