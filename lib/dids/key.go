@@ -154,10 +154,7 @@ func (k KeyProvider) Sign(block blocks.Block) (string, error) {
 	sig := ed25519.Sign(k.privKey, []byte(signingInput))
 
 	// raw base64 URL encode the sig
-	encodedSig := base64.RawURLEncoding.EncodeToString(sig)
-
-	// return the full JWT-like sig (header.payload.signature)
-	return encodedSig, nil
+	return base64.RawURLEncoding.EncodeToString(sig), nil
 }
 
 // ===== other methods =====
