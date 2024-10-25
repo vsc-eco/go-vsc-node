@@ -3,9 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
-	"time"
 
-	p2pInterface "vsc-node/lib/libp2p"
+	p2pInterface "vsc-node/lib/p2p"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
@@ -36,8 +35,5 @@ func main() {
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)
-	}
-	for {
-		time.Sleep(2500 * time.Second)
 	}
 }

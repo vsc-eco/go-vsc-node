@@ -13,11 +13,13 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	rhost "github.com/libp2p/go-libp2p/p2p/host/routed"
-	ping "github.com/libp2p/go-libp2p/p2p/protocol/ping"
 
 	rpc "github.com/libp2p/go-libp2p-gorpc"
 	// p "vsc-node/lib/pubsub"
 	// "vsc-node/modules/aggregate"
+
+	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
+	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 )
 
 var BOOTSTRAP = []string{
@@ -31,9 +33,12 @@ var BOOTSTRAP = []string{
 
 type P2PServer struct {
 	host           host.Host
+	dht            *kadDht.IpfsDHT
 	rpcClient      *rpc.Client
 	pubsub         *pubsub.PubSub
 	multicastTopic *pubsub.Topic
+
+	topics map[string]*pubsub.Topic
 
 	subs    []*pubsub.Subscription
 	tickers []*time.Ticker
@@ -47,6 +52,43 @@ func New() *P2PServer {
 	return &P2PServer{}
 }
 
+var topicNameFlag = "/vsc/mainnet/multicast"
+
+func discoverPeers(ctx context.Context, p2p *P2PServer) {
+	h := p2p.host
+
+	routingDiscovery := drouting.NewRoutingDiscovery(p2p.dht)
+	dutil.Advertise(ctx, routingDiscovery, topicNameFlag)
+
+	// Look for others who have announced and attempt to connect to them
+	anyConnected := false
+	for !anyConnected {
+		fmt.Println("Searching for peers...")
+		time.Sleep(time.Second)
+
+		peerChan, err := routingDiscovery.FindPeers(ctx, topicNameFlag)
+		if err != nil {
+			panic(err)
+		}
+		for peer := range peerChan {
+
+			fmt.Println("Found", peer.ID.String())
+			if peer.ID == h.ID() {
+				fmt.Println("Detected self!")
+				continue // No self connection
+			}
+			err := h.Connect(ctx, peer)
+			if err != nil {
+				fmt.Println("Failed connecting to ", peer.ID.String(), ", error:", err)
+			} else {
+				fmt.Println("Connected to:", peer.ID.String())
+				anyConnected = true
+			}
+		}
+	}
+	fmt.Println("Peer discovery complete")
+}
+
 // =================================
 // ===== Plugin Implementation =====
 // =================================
@@ -54,13 +96,17 @@ func New() *P2PServer {
 // Init implements aggregate.Plugin.
 func (p2pServer *P2PServer) Init() error {
 	//Future initialize using a configuration object with more detailed info
-	p2p, _ := libp2p.New(libp2p.Identity(nil))
+	p2p, _ := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"))
 
 	//DHT wrapped host
 	ctx := context.Background()
 	dht, _ := kadDht.New(ctx, p2p)
 	routedHost := rhost.Wrap(p2p, dht)
 	p2pServer.host = routedHost
+	p2pServer.dht = dht
+	dht.Bootstrap(ctx)
+
+	go discoverPeers(ctx, p2pServer)
 
 	fmt.Println("Starting up")
 
@@ -83,6 +129,7 @@ func (p2pServer *P2PServer) Init() error {
 	p2pServer.pubsub = ps
 
 	topic, _ := ps.Join("/vsc/mainnet/multicast")
+	topic.Relay()
 	p2pServer.multicastTopic = topic
 
 	// reply := HelloReply{}
@@ -113,6 +160,18 @@ func (p2ps *P2PServer) Start() error {
 			select {
 			case <-ticker.C:
 				// do stuff
+				peers := p2ps.host.Network().Peers()
+				pubsubPeers := p2ps.multicastTopic.ListPeers()
+				fmt.Println("Peers", len(peers), len(pubsubPeers))
+				for _, val := range pubsubPeers {
+					protocols, _ := p2ps.host.Network().Peerstore().GetProtocols(val)
+					for _, protoName := range protocols {
+						if protoName == "/vsc.network/rpc" {
+							//Do connection stuff
+						}
+					}
+					fmt.Println(protocols)
+				}
 				fmt.Println("it's ticking yeah!")
 			}
 		}
@@ -276,6 +335,7 @@ func main() {
 	ctx := context.Background()
 	dht, _ := kadDht.New(ctx, p2p)
 	routedHost := rhost.Wrap(p2p, dht)
+	dht.Bootstrap(ctx)
 
 	fmt.Println(routedHost)
 
@@ -319,13 +379,13 @@ func main() {
 	s, _ := p2p.NewStream(context.TODO(), peerId.ID, "vsc-ksdljfl")
 	_ = s
 
-	ping.NewPingService(p2p)
-	pctx, cancel := context.WithCancel(context.Background())
-	pingChan := ping.Ping(pctx, p2p, peerId.ID)
-	for val := range pingChan {
-		fmt.Println(val.RTT.Milliseconds())
-		cancel()
-	}
+	// ping.NewPingService(p2p)
+	// pctx, cancel := context.WithCancel(context.Background())
+	// pingChan := ping.Ping(pctx, p2p, peerId.ID)
+	// for val := range pingChan {
+	// 	fmt.Println(val.RTT.Milliseconds())
+	// 	cancel()
+	// }
 
 	// ps.Publish("topic", []byte("Hello, World!"))
 
@@ -360,21 +420,4 @@ func main() {
 		}
 	}()
 
-	for {
-		time.Sleep(2500 * time.Second)
-	}
-
-	//ptr := bls12381.NewG1().One()
-
-	// ptr,err1 := bls.HashToG1([]byte("Hello, World!"), []byte("dstdd"))
-	// ptr2,_ := bls.HashToG1([]byte("Hello, World!"), []byte("dstdd"))
-
-	// if err1 == nil {
-
-	// 	fmt.Println(ptr.Y)
-	// 	fmt.Println(ptr.Add(&ptr, &ptr2).Y)
-	// 	println("Hello, World!")
-	// } else {
-	// 	println("Error", err1.Error())
-	// }
 }
