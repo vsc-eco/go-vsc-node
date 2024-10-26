@@ -8,22 +8,20 @@ import (
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
-	"vsc-node/modules/db/vsc/witnesses"
-	hiveStreamer "vsc-node/modules/hive/streamer"
 )
 
 func main() {
 	db := db.New()
 	vscDb := vsc.New(db)
-	witnesses := witnesses.New(vscDb)
+	// hiveBlocks := hive_blocks.New(vscDb)
 
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
 		db,
 		vscDb,
-		witnesses,
-		hiveStreamer.New(witnesses),
+		// hiveBlocks,
+		// hiveStreamer.New(hiveBlocks),
 		p2pInterface.New(),
 	)
 
