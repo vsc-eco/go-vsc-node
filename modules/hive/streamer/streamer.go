@@ -2,6 +2,7 @@ package streamer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -15,9 +16,20 @@ import (
 // ===== constants =====
 
 const (
+	// where we are pulling our blocks from
 	hiveDataSource = "https://api.hive.blog"
+	// how many blocks we pull per batch
 	blockBatchSize = 10
-	pollInterval   = time.Second * 5
+	// how far behind we're willing to be in blocks from the head before
+	// we re-pull the newest batch
+	//
+	// the code will ignore this if we're more than [blockBatchSize] behind
+	blockLag = 5
+	// delay between re-polling for the newest information about the chain height
+	headBlockCheckPollInterval = time.Second * 5
+	// even if all predicate funcs say we should keep pulling the next batch of
+	// blocks, this is how long we should wait between fetches
+	minTimeBetweenBlockBatchFetches = time.Second * 3
 )
 
 // ===== interface implementation =====
@@ -41,6 +53,7 @@ type Streamer struct {
 	mtx          sync.Mutex
 	stopped      chan struct{}
 	stopOnlyOnce sync.Once
+	headHeight   int
 }
 
 // ===== streamer =====
@@ -87,7 +100,38 @@ func (s *Streamer) Init() error {
 func (s *Streamer) Start() error {
 	s.stopped = make(chan struct{})
 	go s.streamBlocks()
-	return nil
+	go s.trackHeadHeight()
+	return nil // returns error just to satisfy plugin interface
+}
+
+// trackHeadHeight periodically updates the head block height
+func (s *Streamer) trackHeadHeight() {
+	ticker := time.NewTicker(headBlockCheckPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			props, err := s.client.GetDynamicGlobalProps()
+			if err != nil {
+				continue
+			}
+
+			var data map[string]interface{}
+			if err := json.Unmarshal(props, &data); err != nil {
+				continue
+			}
+
+			// get the latest head block number
+			if height, ok := data["head_block_number"].(float64); ok {
+				s.mtx.Lock()
+				s.headHeight = int(height)
+				s.mtx.Unlock()
+			}
+		}
+	}
 }
 
 func (s *Streamer) streamBlocks() {
@@ -104,6 +148,17 @@ func (s *Streamer) streamBlocks() {
 		default:
 			if s.IsStreamPaused() {
 				// retry after a second to check if unpaused
+				time.Sleep(1 * time.Second)
+				continue
+			}
+
+			// check if we're within the acceptable block lag
+			s.mtx.Lock()
+			currentHeadHeight := s.headHeight
+			localStartBlock := *s.startBlock
+			s.mtx.Unlock()
+
+			if currentHeadHeight-localStartBlock <= blockLag {
 				time.Sleep(1 * time.Second)
 				continue
 			}
@@ -130,7 +185,7 @@ func (s *Streamer) streamBlocks() {
 			}
 
 			// await before re-checking
-			time.Sleep(pollInterval)
+			time.Sleep(minTimeBetweenBlockBatchFetches)
 		}
 	}
 }

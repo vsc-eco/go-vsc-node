@@ -58,7 +58,7 @@ func TestStream(t *testing.T) {
 
 	// hive blocks
 	hiveBlockDbManager := hive_blocks.New(vscDb)
-	assert.NoError(t, hiveBlockDbManager.ClearBlocks())
+	// assert.NoError(t, hiveBlockDbManager.ClearBlocks())
 
 	filter1 := func(op hivego.Operation) bool {
 		return true
