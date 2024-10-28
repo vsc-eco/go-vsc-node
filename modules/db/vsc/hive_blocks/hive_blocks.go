@@ -11,22 +11,21 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// hiveBlocks is the unexported implementation of the HiveBlocks interface.
 type hiveBlocks struct {
 	*db.Collection
 }
 
-// inits and returns a HiveBlocks interface with the underlying hiveBlocks struct.
-func New(vscDb *vsc.VscDb) HiveBlocks {
-	return &hiveBlocks{db.NewCollection(vscDb.DbInstance, "hive_blocks")}
+func New(d *vsc.VscDb) HiveBlocks {
+	return &hiveBlocks{db.NewCollection(d.DbInstance, "hive_blocks")}
 }
 
+// stores a block alongside updating our last processed block
 func (h *hiveBlocks) StoreBlock(block *HiveBlock) error {
 	if block == nil {
 		return fmt.Errorf("block is nil")
 	}
 
-	_, err := h.InsertOne(context.TODO(), bson.M{
+	_, err := h.InsertOne(context.Background(), bson.M{
 		"type":  "block",
 		"block": block,
 	})
@@ -42,36 +41,18 @@ func (h *hiveBlocks) StoreBlock(block *HiveBlock) error {
 	return nil
 }
 
-// deletes all block and metadata documents from the collection.
+// deletes all block and metadata documents from the collection
 func (h *hiveBlocks) ClearBlocks() error {
-	// start a session for tx
-	session, err := h.Database().Client().StartSession()
+	// delete blocks
+	_, err := h.DeleteMany(context.Background(), bson.M{"type": "block"})
 	if err != nil {
-		return fmt.Errorf("failed to start session: %v", err)
-	}
-	defer session.EndSession(context.Background())
-
-	// define a tx func
-	callback := func(sessCtx mongo.SessionContext) (interface{}, error) {
-		// delete blocks
-		_, err := h.DeleteMany(sessCtx, bson.M{"type": "block"})
-		if err != nil {
-			return nil, fmt.Errorf("failed to clear blocks collection: %v", err)
-		}
-
-		// delete metadata
-		_, err = h.DeleteMany(sessCtx, bson.M{"type": "metadata"})
-		if err != nil {
-			return nil, fmt.Errorf("failed to clear metadata: %v", err)
-		}
-
-		return nil, nil
+		return fmt.Errorf("failed to clear blocks collection: %v", err)
 	}
 
-	// execute the tx
-	_, err = session.WithTransaction(context.Background(), callback)
+	// delete metadata
+	_, err = h.DeleteMany(context.Background(), bson.M{"type": "metadata"})
 	if err != nil {
-		return fmt.Errorf("transaction failed: %v", err)
+		return fmt.Errorf("failed to clear metadata: %v", err)
 	}
 
 	return nil

@@ -12,14 +12,21 @@ import (
 	"github.com/vsc-eco/hivego"
 )
 
+// ===== constants =====
+
 const (
-	HiveDataSource = "https://api.hive.blog"
-	BlockBatchSize = 10
+	hiveDataSource = "https://api.hive.blog"
+	blockBatchSize = 10
+	pollInterval   = time.Second * 5
 )
+
+// ===== interface implementation =====
 
 var _ aggregate.Plugin = &Streamer{}
 
-type FilterFunc func(op hiveblocks.Op) bool
+// ===== type definitions =====
+
+type FilterFunc func(op hivego.Operation) bool
 type ProcessFunction func(block hiveblocks.HiveBlock) error
 
 type Streamer struct {
@@ -36,11 +43,13 @@ type Streamer struct {
 	stopOnlyOnce sync.Once
 }
 
+// ===== streamer =====
+
 func New(hiveBlocks hiveblocks.HiveBlocks, filters []FilterFunc, process ProcessFunction, startAtBlock *int) *Streamer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Streamer{
 		hiveBlocks:   hiveBlocks,
-		client:       hivego.NewHiveRpc(HiveDataSource),
+		client:       hivego.NewHiveRpc(hiveDataSource),
 		filters:      filters,
 		process:      process,
 		ctx:          ctx,
@@ -56,22 +65,22 @@ func (s *Streamer) Init() error {
 		return fmt.Errorf("client or hiveBlocks not initialized")
 	}
 
-	// determine the starting block if not provided
-	if s.startBlock == nil {
-		lastBlock, err := s.hiveBlocks.GetLastProcessedBlock()
-		if err != nil {
-			return fmt.Errorf("error getting last block: %v", err)
-		}
-		if lastBlock == 0 {
-			// no previous blocks processed; default to starting at block 1
-			s.startBlock = &[]int{1}[0]
-		} else {
-			// continue from the next block after the last processed one
-			s.startBlock = &[]int{lastBlock + 1}[0]
-		}
+	// retrieves the last processed block
+	lastBlock, err := s.hiveBlocks.GetLastProcessedBlock()
+	if err != nil {
+		return fmt.Errorf("error getting last block: %v", err)
 	}
 
-	fmt.Printf("starting stream from block: %d\n", *s.startBlock)
+	// determines the starting block based on input or last saved block
+	if s.startBlock == nil || *s.startBlock < lastBlock {
+		if lastBlock == 0 {
+			// no prev blocks processed; start from block 1
+			s.startBlock = &[]int{1}[0] // sneaky way to avoid creating a new variable for *int
+		} else {
+			// continue from the next block after our last processed one
+			s.startBlock = &[]int{lastBlock + 1}[0] // sneaky way to avoid creating a new variable for *int
+		}
+	}
 	return nil
 }
 
@@ -91,20 +100,17 @@ func (s *Streamer) streamBlocks() {
 	for {
 		select {
 		case <-s.ctx.Done():
-			fmt.Println("Context done, stopping streamBlocks")
 			return
 		default:
 			if s.IsStreamPaused() {
-				fmt.Println("Stream is paused")
+				// retry after a second to check if unpaused
 				time.Sleep(1 * time.Second)
 				continue
 			}
 
 			// batch of n blocks
-			fmt.Printf("Fetching block batch starting from block %d\n", *s.startBlock)
-			blocks, err := s.fetchBlockBatch(*s.startBlock, BlockBatchSize)
+			blocks, err := s.fetchBlockBatch(*s.startBlock, blockBatchSize)
 			if err != nil {
-				fmt.Printf("Error fetching block batch: %v\n", err)
 				time.Sleep(3 * time.Second)
 				continue
 			}
@@ -112,22 +118,19 @@ func (s *Streamer) streamBlocks() {
 			for _, blk := range blocks {
 				select {
 				case <-s.ctx.Done():
-					fmt.Println("Context done during block processing, stopping streamBlocks")
 					return
 				default:
 					blk.BlockNumber = *s.startBlock
-					fmt.Printf("Processing block: %d\n", blk.BlockNumber)
 					err = s.processBlock(&blk)
 					if err != nil {
-						fmt.Printf("Error processing block %d: %v\n", blk.BlockNumber, err)
 						return
 					}
 					*s.startBlock++
 				}
 			}
 
-			// await for 3 seconds before checking for new data
-			time.Sleep(3 * time.Second)
+			// await before re-checking
+			time.Sleep(pollInterval)
 		}
 	}
 }
@@ -152,10 +155,9 @@ func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, e
 			block.BlockNumber = currentBlock
 			currentBlock++
 			if block.BlockID == "" {
-				fmt.Printf("Empty block ID for block number %d, skipping\n", block.BlockNumber)
+				// sanity check: if empty block ID => we assume "bad block"
 				continue
 			}
-			fmt.Printf("Received block %d with ID %s\n", block.BlockNumber, block.BlockID)
 			blocks = append(blocks, block)
 
 			if len(blocks) >= batchSize {
@@ -169,19 +171,53 @@ func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, e
 }
 
 func (s *Streamer) processBlock(block *hivego.Block) error {
+	// init the filtered block with essential fields
 	hiveBlock := hiveblocks.HiveBlock{
 		BlockNumber:  block.BlockNumber,
 		BlockID:      block.BlockID,
 		Timestamp:    block.Timestamp,
-		Transactions: []hiveblocks.Tx{}, // init with empty txs if necessary
+		Transactions: []hiveblocks.Tx{},
 	}
 
-	// directly store the block instead of relying on `s.process`, aka, we store and let the user just "do fun stuff"
+	// filter txs within the block
+	for _, tx := range block.Transactions {
+		// filter the ops within this tx
+		filteredTx := hiveblocks.Tx{
+			Operations: []hivego.Operation{},
+		}
+		for _, op := range tx.Operations {
+			shouldInclude := true
+			for _, filter := range s.filters {
+				if !filter(op) {
+					shouldInclude = false
+					break
+				}
+			}
+			if shouldInclude {
+				filteredTx.Operations = append(filteredTx.Operations, op)
+			}
+		}
+
+		// add the tx if it has any ops that passed the filters
+		if len(filteredTx.Operations) > 0 {
+			hiveBlock.Transactions = append(hiveBlock.Transactions, filteredTx)
+		}
+	}
+
+	// store the block with filtered txs
+	//
+	// even if a block has no txs, we store
 	if err := s.hiveBlocks.StoreBlock(&hiveBlock); err != nil {
 		return fmt.Errorf("failed to store block: %v", err)
 	}
 
-	fmt.Printf("Stored block: %d\n", hiveBlock.BlockNumber)
+	// calls the process func on the stored block
+	if s.process != nil {
+		if err := s.process(hiveBlock); err != nil {
+			return fmt.Errorf("failed to process block: %v", err)
+		}
+	}
+
 	return nil
 }
 
