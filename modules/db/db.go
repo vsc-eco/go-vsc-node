@@ -28,7 +28,7 @@ func New() *db {
 }
 
 func (db *db) Init() error {
-	err := os.MkdirAll("data/", os.ModeDir)
+	err := os.MkdirAll("data/", 0755)
 	if err != nil {
 		return err
 	}
