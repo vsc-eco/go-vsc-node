@@ -28,7 +28,7 @@ type BlockClient interface {
 // to modify these values at runtime
 var (
 	// how many blocks we pull per batch
-	BlockBatchSize = 10
+	BlockBatchSize = 100
 	// how far behind we're willing to be in blocks from the head before
 	// we re-pull the newest batch
 	//
