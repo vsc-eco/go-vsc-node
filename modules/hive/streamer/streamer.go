@@ -13,23 +13,32 @@ import (
 	"github.com/vsc-eco/hivego"
 )
 
-// ===== constants =====
+// ===== block client interface =====
 
-const (
-	// where we are pulling our blocks from
-	hiveDataSource = "https://api.hive.blog"
+// interface to add generality to block data source to
+// aid in mocking this service for unit tests
+type BlockClient interface {
+	GetDynamicGlobalProps() ([]byte, error)
+	GetBlockRange(startBlock int, count int) (<-chan hivego.Block, error)
+}
+
+// ===== variables =====
+
+// these are not constants because it should be possible (although not likely)
+// to modify these values at runtime
+var (
 	// how many blocks we pull per batch
-	blockBatchSize = 10
+	BlockBatchSize = 10
 	// how far behind we're willing to be in blocks from the head before
 	// we re-pull the newest batch
 	//
 	// the code will ignore this if we're more than [blockBatchSize] behind
-	blockLag = 5
+	AcceptableBlockLag = 5
 	// delay between re-polling for the newest information about the chain height
-	headBlockCheckPollInterval = time.Second * 5
+	HeadBlockCheckPollInterval = time.Second * 5
 	// even if all predicate funcs say we should keep pulling the next batch of
 	// blocks, this is how long we should wait between fetches
-	minTimeBetweenBlockBatchFetches = time.Second * 3
+	MinTimeBetweenBlockBatchFetches = time.Second * 3
 )
 
 // ===== interface implementation =====
@@ -43,7 +52,7 @@ type ProcessFunction func(block hiveblocks.HiveBlock) error
 
 type Streamer struct {
 	hiveBlocks   hiveblocks.HiveBlocks
-	client       *hivego.HiveRpcNode
+	client       BlockClient
 	startBlock   *int
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -58,11 +67,11 @@ type Streamer struct {
 
 // ===== streamer =====
 
-func New(hiveBlocks hiveblocks.HiveBlocks, filters []FilterFunc, process ProcessFunction, startAtBlock *int) *Streamer {
+func New(blockClient BlockClient, hiveBlocks hiveblocks.HiveBlocks, filters []FilterFunc, process ProcessFunction, startAtBlock *int) *Streamer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Streamer{
 		hiveBlocks:   hiveBlocks,
-		client:       hivego.NewHiveRpc(hiveDataSource),
+		client:       blockClient,
 		filters:      filters,
 		process:      process,
 		ctx:          ctx,
@@ -106,7 +115,7 @@ func (s *Streamer) Start() error {
 
 // trackHeadHeight periodically updates the head block height
 func (s *Streamer) trackHeadHeight() {
-	ticker := time.NewTicker(headBlockCheckPollInterval)
+	ticker := time.NewTicker(HeadBlockCheckPollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -146,9 +155,7 @@ func (s *Streamer) streamBlocks() {
 		case <-s.ctx.Done():
 			return
 		default:
-			if s.IsStreamPaused() {
-				// retry after a second to check if unpaused
-				time.Sleep(1 * time.Second)
+			if s.IsPaused() {
 				continue
 			}
 
@@ -158,16 +165,17 @@ func (s *Streamer) streamBlocks() {
 			localStartBlock := *s.startBlock
 			s.mtx.Unlock()
 
-			if currentHeadHeight-localStartBlock <= blockLag {
-				time.Sleep(1 * time.Second)
+			// this case can also trigger when getting the head height fails and it
+			// defaults the headHeight to 0, which makes sense
+			if currentHeadHeight-localStartBlock <= AcceptableBlockLag {
 				continue
 			}
 
 			// batch of n blocks
-			blocks, err := s.fetchBlockBatch(*s.startBlock, blockBatchSize)
+			blocks, err := s.fetchBlockBatch(*s.startBlock, BlockBatchSize)
 			if err != nil {
 				time.Sleep(3 * time.Second)
-				continue
+				continue // we can retry after a short delay in this case
 			}
 
 			for _, blk := range blocks {
@@ -185,7 +193,7 @@ func (s *Streamer) streamBlocks() {
 			}
 
 			// await before re-checking
-			time.Sleep(minTimeBetweenBlockBatchFetches)
+			time.Sleep(MinTimeBetweenBlockBatchFetches)
 		}
 	}
 }
@@ -302,8 +310,27 @@ func (s *Streamer) Stop() error {
 	return nil
 }
 
-func (s *Streamer) IsStreamPaused() bool {
+func (s *Streamer) IsPaused() bool {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 	return s.streamPaused
+}
+
+func (s *Streamer) IsStopped() bool {
+	select {
+	case <-s.stopped:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Streamer) HeadHeight() int {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	return s.headHeight
+}
+
+func (s *Streamer) StartBlock() int {
+	return *s.startBlock
 }
