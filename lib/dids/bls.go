@@ -7,6 +7,7 @@ import (
 	"math/big"
 
 	blocks "github.com/ipfs/go-block-format"
+	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multibase"
 	blst "github.com/supranational/blst/bindings/go"
 )
@@ -84,10 +85,7 @@ func (d BlsDID) Identifier() *BlsPubKey {
 }
 
 // verifies if the sig is valid for the block (based on its CID)
-func (d BlsDID) Verify(block blocks.Block, sig string) (bool, error) {
-	if block == nil {
-		return false, fmt.Errorf("failed to verify signature: block is nil")
-	}
+func (d BlsDID) Verify(cid cid.Cid, sig string) (bool, error) {
 
 	// get the pub key from the DID
 	pubKey := d.Identifier()
@@ -105,7 +103,7 @@ func (d BlsDID) Verify(block blocks.Block, sig string) (bool, error) {
 	}
 
 	// verify the sig using the pub key and the CID bytes directly
-	verified := signature.Verify(true, pubKey, true, block.Cid().Bytes(), nil)
+	verified := signature.Verify(true, pubKey, true, cid.Bytes(), nil)
 
 	// return the verification result
 	if !verified {
@@ -131,13 +129,10 @@ func NewBlsProvider(privKey *BlsPrivKey) (BlsProvider, error) {
 }
 
 // signs a block using the BLS priv key
-func (b BlsProvider) Sign(block blocks.Block) (string, error) {
-	if block == nil {
-		return "", fmt.Errorf("failed to sign block: block is nil")
-	}
+func (b BlsProvider) Sign(cid cid.Cid) (string, error) {
 
 	// sign the CID using the BLS priv key
-	sig := new(BlsSig).Sign(b.privKey, block.Cid().Bytes(), nil)
+	sig := new(BlsSig).Sign(b.privKey, cid.Bytes(), nil)
 
 	// compress and encode to base64; make the sig transportable
 	encodedSig := base64.StdEncoding.EncodeToString(sig.Compress())

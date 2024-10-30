@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/crypto/hkdf"
 
-	blocks "github.com/ipfs/go-block-format"
+	"github.com/ipfs/go-cid"
 	"github.com/jorrizza/ed2curve25519"
 	"github.com/multiformats/go-multibase"
 	"golang.org/x/crypto/curve25519"
@@ -71,7 +71,7 @@ func (d KeyDID) Identifier() ed25519.PublicKey {
 	return ed25519.PublicKey(data[2:])
 }
 
-func (d KeyDID) Verify(block blocks.Block, sig string) (bool, error) {
+func (d KeyDID) Verify(cid cid.Cid, sig string) (bool, error) {
 	// re-create the header
 	header := map[string]interface{}{
 		"alg": "EdDSA",
@@ -86,7 +86,7 @@ func (d KeyDID) Verify(block blocks.Block, sig string) (bool, error) {
 
 	// encode header as raw url base 64
 	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
-	signingInput := encodedHeader + "." + base64.RawURLEncoding.EncodeToString(block.Cid().Bytes())
+	signingInput := encodedHeader + "." + base64.RawURLEncoding.EncodeToString(cid.Bytes())
 
 	// decode the sig
 	decodedSignature, err := base64.RawURLEncoding.DecodeString(sig)
@@ -121,7 +121,7 @@ func NewKeyProvider(privKey ed25519.PrivateKey) KeyProvider {
 
 // ===== implementing the Provider and KeyDIDProvider interfaces =====
 
-func (k KeyProvider) Sign(block blocks.Block) (string, error) {
+func (k KeyProvider) Sign(cid cid.Cid) (string, error) {
 	// gen the DID from the priv key
 	did, err := NewKeyDID(k.privKey.Public().(ed25519.PublicKey))
 	if err != nil {
@@ -145,7 +145,7 @@ func (k KeyProvider) Sign(block blocks.Block) (string, error) {
 
 	// base64 raw URL encode the header and payload (CID)
 	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
-	encodedPayload := base64.RawURLEncoding.EncodeToString(block.Cid().Bytes())
+	encodedPayload := base64.RawURLEncoding.EncodeToString(cid.Bytes())
 
 	// create the sig input (header + payload)
 	signingInput := encodedHeader + "." + encodedPayload

@@ -64,9 +64,9 @@ func TestFullCircuitFlow(t *testing.T) {
 	assert.NoError(t, err)
 
 	// sign the block with both providers
-	sig1, err := provider1.Sign(block)
+	sig1, err := provider1.Sign(block.Cid())
 	assert.NoError(t, err)
-	sig2, err := provider2.Sign(block)
+	sig2, err := provider2.Sign(block.Cid())
 	assert.NoError(t, err)
 
 	// add and verify the first member's signature
@@ -106,7 +106,7 @@ func TestInvalidSignature(t *testing.T) {
 	assert.NoError(t, err)
 
 	// gens a valid signature and tamper it to create an invalid signature
-	sig, err := provider1.Sign(block)
+	sig, err := provider1.Sign(block.Cid())
 	assert.NoError(t, err)
 	invalidSig := sig[:len(sig)-1] + "SOME_INVALID_SIG_SUFFIX"
 
@@ -137,7 +137,7 @@ func TestWrongPublicKey(t *testing.T) {
 	partialCircuit, err := generator.Generate(block)
 	assert.NoError(t, err)
 
-	sig, err := provider1.Sign(block)
+	sig, err := provider1.Sign(block.Cid())
 	assert.NoError(t, err)
 
 	// use wrong DID for verification
@@ -171,7 +171,7 @@ func TestNotAllMembersSigned(t *testing.T) {
 	assert.NoError(t, err)
 
 	// add and verify only one signature
-	sig1, err := provider1.Sign(block)
+	sig1, err := provider1.Sign(block.Cid())
 	assert.NoError(t, err)
 	err = partialCircuit.AddAndVerify(dids.Member{Account: "account1", DID: did1}, sig1)
 	assert.NoError(t, err)
@@ -214,9 +214,9 @@ func TestSerializeDeserialize(t *testing.T) {
 	assert.NoError(t, err)
 
 	// sign the block with both providers
-	sig1, err := provider1.Sign(block)
+	sig1, err := provider1.Sign(block.Cid())
 	assert.NoError(t, err)
-	sig2, err := provider2.Sign(block)
+	sig2, err := provider2.Sign(block.Cid())
 	assert.NoError(t, err)
 
 	// add and verify the first signature
@@ -246,7 +246,7 @@ func TestSerializeDeserialize(t *testing.T) {
 	assert.NoError(t, err)
 
 	// verify the signature using aggDID
-	verified, err := aggDID.AggPubKey.Verify(finalCircuit.Msg(), sig)
+	verified, err := aggDID.AggPubKey.Verify(finalCircuit.Msg().Cid(), sig)
 	assert.NoError(t, err)
 	assert.True(t, verified)
 

@@ -104,7 +104,7 @@ func TestBasicSignVerify(t *testing.T) {
 	block := blocks.NewBlock([]byte("hello world"))
 	assert.NotNil(t, block)
 
-	jws1, err := provider.Sign(block)
+	jws1, err := provider.Sign(block.Cid())
 	assert.Nil(t, err)
 
 	// create DID from the pub key
@@ -112,13 +112,13 @@ func TestBasicSignVerify(t *testing.T) {
 	assert.Nil(t, err)
 
 	// verify the original block with its sig
-	valid, err := did.Verify(block, jws1)
+	valid, err := did.Verify(block.Cid(), jws1)
 	assert.Nil(t, err)
 	assert.True(t, valid)
 
 	// create modified/incorrect block with different content
 	modifiedBlock := blocks.NewBlock([]byte("data doesn't matter"))
-	valid, err = did.Verify(modifiedBlock, jws1)
+	valid, err = did.Verify(modifiedBlock.Cid(), jws1)
 	assert.NotNil(t, err)
 	assert.False(t, valid)
 }
@@ -137,7 +137,7 @@ func TestRealIpfsVerify(t *testing.T) {
 	keyDID := dids.KeyDID(realKeyDid)
 
 	// call the Verify function with the full signature
-	verified, err := keyDID.Verify(realBlock, realSig)
+	verified, err := keyDID.Verify(realBlock.Cid(), realSig)
 	assert.Nil(t, err)
 	assert.True(t, verified)
 }
