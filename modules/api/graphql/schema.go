@@ -1,13 +1,11 @@
 package schema
 
-import "encoding/json"
-
-type JSONScalar json.RawMessage // or   // type JSON map[string]interface{}
+type JSON map[string]interface{}
 
 type JsonPatchOp struct {
-	Op    string     `json:"op"`
-	Path  string     `json:"path"`
-	Value JSONScalar `json:"value"`
+	Op    string `json:"op"`
+	Path  string `json:"path"`
+	Value JSON   `json:"value"`
 }
 
 // this represents the smart contract
@@ -66,10 +64,10 @@ type Auth struct {
 }
 
 type TransactionData struct {
-	Op         string     `json:"op"`
-	Action     string     `json:"action, omitempty"`
-	Payload    JSONScalar `json: "payload, omitempty"`
-	ContractID string     `json:"contract_id, omitempty"`
+	Op         string `json:"op"`
+	Action     string `json:"action, omitempty"`
+	Payload    JSON   `json: "payload, omitempty"`
+	ContractID string `json:"contract_id, omitempty"`
 }
 
 // Transaction output
@@ -80,17 +78,17 @@ type TransactionOutput struct {
 
 // output of contract execution
 type ContractOutput struct {
-	ID             string       `json: "id"`
-	AnchorBlock    string       `json: "anchor_block, omitempty"`
-	AnchoredHeight string       `json: "anchored_height, omitempty"`
-	AnchoredID     string       `json: "anchored_id, omitempty"`
-	AnchoredIndex  string       `json: "anchored_index, omitempty"`
-	ContractID     string       `json: "contract_id, omitempty"`
-	Gas            *Gas         `json: "gas, omitempty"`
-	Inputs         []string     `json:"inputs"`
-	Results        []JSONScalar `json:"results"`
-	SideEffects    JSONScalar   `json: "side_effects, omitempty"`
-	StateMarket    string       `json: "state_market, omitempty"`
+	ID             string   `json: "id"`
+	AnchorBlock    string   `json: "anchor_block, omitempty"`
+	AnchoredHeight string   `json: "anchored_height, omitempty"`
+	AnchoredID     string   `json: "anchored_id, omitempty"`
+	AnchoredIndex  string   `json: "anchored_index, omitempty"`
+	ContractID     string   `json: "contract_id, omitempty"`
+	Gas            *Gas     `json: "gas, omitempty"`
+	Inputs         []string `json:"inputs"`
+	Results        []JSON   `json:"results"`
+	SideEffects    JSON     `json: "side_effects, omitempty"`
+	StateMarket    string   `json: "state_market, omitempty"`
 }
 
 // Gas represents gas usage information
@@ -100,8 +98,8 @@ type Gas struct {
 
 // Contract Diff represents difference int
 type ContractDiff struct {
-	Diff                    JSONScalar `json:"diff"`
-	PreviousContractStateID string     `json: "previous_contract_state_id`
+	Diff                    JSON   `json:"diff"`
+	PreviousContractStateID string `json: "previous_contract_state_id`
 }
 
 type ContractState struct {
@@ -253,37 +251,18 @@ type FindContractOutputFilter struct {
 type Query struct {
 	ContractStateDiff    func(id string) ContractDiff
 	ContractState        func(id string) ContractState
-	FindTransaction      func(filter FindTransactionFilter, decodedFilter JSONScalar) FindTransactionsResult
-	FindContractOutput   func(filter FindContractOutputFilter, decodedFilter JSONScalar) FindContractOutputResult
+	FindTransaction      func(filter FindTransactionFilter, decodedFilter JSON) FindTransactionsResult
+	FindContractOutput   func(filter FindContractOutputFilter, decodedFilter JSON) FindContractOutputResult
 	FindLedgerTXs        func(filter LedgerTxFilter) LedgerResults
 	GetAccountBalance    func(account string) GetBalanceResult
 	SubmitTransactionV1  func(tx string, sig string) TransactionSubmitResult
 	GetAccountNonce      func(keyGroup []string) AccountNonceResult
 	LocalNodeInfo        func() LocalNodeInfo
 	WitnessNodes         func(height int) []WitnessNode
-	ActiveWitnessNodes   func() JSONScalar
-	WitnessSchedule      func(height int) JSONScalar
-	NextWitnessSlot      func(self bool) JSONScalar
-	WitnessActiveScore   func(height int) JSONScalar
-	MockGenerateElection func() JSONScalar
+	ActiveWitnessNodes   func() JSON
+	WitnessSchedule      func(height int) JSON
+	NextWitnessSlot      func(self bool) JSON
+	WitnessActiveScore   func(height int) JSON
+	MockGenerateElection func() JSON
 	AnchorProducer       func() AnchorProducer
 }
-
-// type Query struct {
-// 	ContractStateDiff    func(id string) ContractDiff
-// 	ContractState        func(id string) ContractState
-// 	FindTransaction      func(filter FindTransactionFilter, decodedFilter JSON) FindTransactionsResult
-// 	FindContractOutput   func(filter FindContractOutputFilter, decodedFilter JSON) FindContractOutputResult
-// 	FindLedgerTXs        func(filter LedgerTxFilter) LedgerResults
-// 	GetAccountBalance    func(account string) GetBalanceResult
-// 	SubmitTransactionV1  func(tx string, sig string) TransactionSubmitResult
-// 	GetAccountNonce      func(keyGroup []string) AccountNonceResult
-// 	LocalNodeInfo        func() LocalNodeInfo
-// 	WitnessNodes         func(height int) []WitnessNode
-// 	ActiveWitnessNodes   func() JSON
-// 	WitnessSchedule      func(height int) JSON
-// 	NextWitnessSlot      func(self bool) JSON
-// 	WitnessActiveScore   func(height int) JSON
-// 	MockGenerateElection func() JSON
-// 	AnchorProducer       func() AnchorProducer
-// }
