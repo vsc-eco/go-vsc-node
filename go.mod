@@ -5,6 +5,7 @@ go 1.23.0
 toolchain go1.24.0
 
 require (
+	github.com/99designs/gqlgen v0.17.55
 	github.com/JustinKnueppel/go-result v1.0.0
 	github.com/btcsuite/btcutil v1.0.2
 	github.com/chebyrash/promise v0.0.0-20230709133807-42ec49ba1459
@@ -15,6 +16,7 @@ require (
 	github.com/moznion/go-optional v0.12.0
 	github.com/protolambda/bls12-381-util v0.1.0
 	github.com/robfig/cron/v3 v3.0.1
+	github.com/vektah/gqlparser/v2 v2.5.20
 	github.com/vsc-eco/go-ethereum v0.0.1
 	github.com/vsc-eco/hivego v0.0.0-20250204064306-7dc96bb734b7
 	github.com/zealic/go2node v0.1.0
@@ -62,6 +64,14 @@ require (
 	golang.org/x/arch v0.15.0 // indirect
 	golang.org/x/telemetry v0.0.0-20250305155315-2a181eac97a3 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
+)
+
+require (
+	github.com/agnivade/levenshtein v1.2.0 // indirect
+	github.com/mitchellh/mapstructure v1.5.0 // indirect
+	github.com/sosodev/duration v1.3.1 // indirect
+	github.com/urfave/cli/v2 v2.27.5 // indirect
+	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
 )
 
 require (

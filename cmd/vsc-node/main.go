@@ -16,6 +16,8 @@ import (
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
+	"vsc-node/modules/gql"
+	"vsc-node/modules/gql/gqlgen"
 	"vsc-node/modules/hive/streamer"
 	p2pInterface "vsc-node/modules/p2p"
 
@@ -38,6 +40,7 @@ func main() {
 	vscDb := vsc.New(db)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)
+	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{}}), "localhost:8080")
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)
@@ -110,6 +113,7 @@ func main() {
 		p2p,
 		dataAvailability,
 		wasm,
+		gqlManager,
 	)
 
 	a := aggregate.New(

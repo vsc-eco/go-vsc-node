@@ -1,0 +1,23 @@
+schema:
+  - modules/gql/schema.graphql
+
+exec:
+  filename: modules/gql/gqlgen/generated.go
+  package: gqlgen
+
+model:
+  filename: modules/gql/gqlgen/models.go
+  package: gqlgen
+
+resolver:
+  layout: follow-schema
+  dir: modules/gql/gqlgen
+  package: gqlgen
+  filename_template: "{name}.resolvers.go"
+
+models:
+  ID:
+    model:
+      - github.com/99designs/gql/gqlgen/graphql.ID
+
+call_argument_directives_with_null: true
