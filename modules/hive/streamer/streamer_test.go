@@ -111,9 +111,6 @@ func TestStreamFiltering(t *testing.T) {
 	// dummy filters and processing function
 	filter := func(op map[string]interface{}) bool {
 		totalTxs++
-		// filter out the transfer operations, which is the type we're generating
-		// in our mocks
-		fmt.Println(op, op["amount"], "removing: ", op["amount"] == "1 HIVE")
 
 		return op["amount"] != "1 HIVE"
 	}
@@ -261,15 +258,11 @@ func TestFilterOrdering(t *testing.T) {
 	// dummy filters and processing function
 	filter1 := func(op map[string]interface{}) bool {
 		filter1Called++
-		// filter out the transfer operations, which is the type we're generating
-		// in our mocks
 		return op["amount"] != "1 HIVE"
 	}
 
 	filter2 := func(op map[string]interface{}) bool {
 		filter2Called++
-		// filter out the transfer operations, which is the type we're generating
-		// in our mocks
 		return op["amount"] != "1 HIVE"
 	}
 
@@ -658,7 +651,7 @@ func TestNestedArrayStructure(t *testing.T) {
 
 // todo: vault's experiment
 func TestVaultecExperiments(t *testing.T) {
-	// return // todo: remove for further work
+	return // todo: remove for further work
 	setupAndCleanUpDataDir(t)
 
 	// db
