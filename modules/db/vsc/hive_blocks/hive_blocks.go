@@ -18,38 +18,44 @@ type hiveBlocks struct {
 	*db.Collection
 }
 
-// a unique UUID prefix to avoid collisions for when we convert nested arrays
-// into BSON-compatible structures and need to name fields and have unique keys
+// a unique UUID prefix to avoid collisions when we convert nested arrays
+// into BSON-compatible structures and need to name fields with unique keys
 const fieldPrefix = "69ba102f-c815-4ce9-8022-90e520fe8516_"
 
 // transforms nested arrays into BSON-compatible structures with unique keys
 //
-// we need to do this because mongoDB freaks out if you try to insert nested arrays which
-// some blocks seem to have
+// we need to do this because mongoDB doesn't support certain nested array structures,
+// so we convert them into documents with unique keys
 func makeBSONCompatible(value interface{}) interface{} {
 	switch v := value.(type) {
 	case []interface{}:
-		// check if elem is an array
+		// check if the array contains other arrays
 		isArrayOfArrays := false
 		for _, item := range v {
-			if _, ok := item.([]interface{}); ok {
+			switch item.(type) {
+			case []interface{}, primitive.A:
 				isArrayOfArrays = true
-				break
 			}
 		}
 		if isArrayOfArrays {
-			// convert each inner array into a document with unique keys due to our UUID prefix
-			// to avoid collisions
+			// convert each inner array into a doc with unique keys
 			arr := make([]interface{}, len(v))
 			for i, item := range v {
-				if innerArray, ok := item.([]interface{}); ok {
+				switch innerArray := item.(type) {
+				case []interface{}:
 					innerMap := make(map[string]interface{})
 					for idx, elem := range innerArray {
 						innerMap[fmt.Sprintf("%s%d", fieldPrefix, idx)] = makeBSONCompatible(elem)
 					}
 					arr[i] = innerMap
-				} else {
-					// not an array, we can process it recursively
+				case primitive.A:
+					innerMap := make(map[string]interface{})
+					for idx, elem := range innerArray {
+						innerMap[fmt.Sprintf("%s%d", fieldPrefix, idx)] = makeBSONCompatible(elem)
+					}
+					arr[i] = innerMap
+				default:
+					// not an array, process recursively
 					arr[i] = makeBSONCompatible(item)
 				}
 			}
@@ -68,13 +74,26 @@ func makeBSONCompatible(value interface{}) interface{} {
 			m[k] = makeBSONCompatible(val)
 		}
 		return m
+	case primitive.M:
+		// convert primitive.M to map[string]interface{} and process recursively
+		return makeBSONCompatible(map[string]interface{}(v))
+	case primitive.D:
+		// convert primitive.D to map[string]interface{} and process recursively
+		m := make(map[string]interface{})
+		for _, elem := range v {
+			m[elem.Key] = makeBSONCompatible(elem.Value)
+		}
+		return m
+	case primitive.A:
+		// convert primitive.A to []interface{} and process recursively
+		return makeBSONCompatible([]interface{}(v))
 	default:
 		return v
 	}
 }
 
 // restores BSON-compatible structures back to the original nested arrays
-// after we had to convert them away from the nested arrays to store them in mongoDB
+// after we converted them to store them in mongoDB
 func remakeOriginalNestedArrayStructure(value interface{}) interface{} {
 	switch v := value.(type) {
 	case []interface{}:
@@ -101,7 +120,7 @@ func remakeOriginalNestedArrayStructure(value interface{}) interface{} {
 				return arr
 			}
 		}
-		// process elems recursively
+		// process elements recursively
 		arr := make([]interface{}, len(v))
 		for i, item := range v {
 			arr[i] = remakeOriginalNestedArrayStructure(item)
@@ -110,22 +129,18 @@ func remakeOriginalNestedArrayStructure(value interface{}) interface{} {
 	case primitive.A:
 		// convert to []interface{} and process recursively
 		return remakeOriginalNestedArrayStructure([]interface{}(v))
-	case map[string]interface{}, primitive.M:
+	case map[string]interface{}:
 		m := make(map[string]interface{})
-		switch vv := v.(type) {
-		case map[string]interface{}:
-			for k, val := range vv {
-				m[k] = remakeOriginalNestedArrayStructure(val)
-			}
-		case primitive.M:
-			for k, val := range vv {
-				m[k] = remakeOriginalNestedArrayStructure(val)
-			}
+		for k, val := range v {
+			m[k] = remakeOriginalNestedArrayStructure(val)
 		}
 		return m
+	case primitive.M:
+		// convert primitive.M to map[string]interface{} and process recursively
+		return remakeOriginalNestedArrayStructure(map[string]interface{}(v))
 	case primitive.D:
-		// convert doc primitive to map[string]interface{}
-		m := map[string]interface{}{}
+		// convert primitive.D to map[string]interface{}
+		m := make(map[string]interface{})
 		for _, elem := range v {
 			m[elem.Key] = remakeOriginalNestedArrayStructure(elem.Value)
 		}
@@ -137,11 +152,9 @@ func remakeOriginalNestedArrayStructure(value interface{}) interface{} {
 
 // checks if a map has keys that start with the unique field prefix
 func isFieldKeys(m map[string]interface{}) bool {
-	// if map is empty, then not field keys
 	if len(m) == 0 {
 		return false
 	}
-	// else, for each key, check if it starts with the field prefix
 	for key := range m {
 		if !strings.HasPrefix(key, fieldPrefix) {
 			return false
@@ -150,12 +163,12 @@ func isFieldKeys(m map[string]interface{}) bool {
 	return true
 }
 
-// func to convert various map types to map[string]interface{}
+// converts various map types to map[string]interface{}
 func toMap(value interface{}) (map[string]interface{}, bool) {
 	switch v := value.(type) {
 	case map[string]interface{}:
 		return v, true
-	case bson.M:
+	case primitive.M: // bson.M is the same as primitive.M, so I excluded
 		return map[string]interface{}(v), true
 	case primitive.D:
 		m := make(map[string]interface{})
