@@ -27,7 +27,7 @@ func main() {
 
 	// choose the source
 	blockClient := hivego.NewHiveRpc("https://api.hive.blog")
-	filter := func(op hivego.Operation) bool { return true }
+	filter := func(op map[string]interface{}) bool { return true }
 	filters := []streamer.FilterFunc{filter}
 	process := func(block hive_blocks.HiveBlock) {
 		fmt.Printf("processed block %d with ID %s\n", block.BlockNumber, block.BlockID)
