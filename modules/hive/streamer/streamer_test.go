@@ -59,8 +59,11 @@ func (m *MockBlockClient) GetBlockRange(startBlock int, count int) (<-chan hiveg
 		for i := 0; i < count; i++ {
 			blockNumber := startBlock + i
 			blockChannel <- hivego.Block{
-				BlockNumber: blockNumber,
-				BlockID:     fmt.Sprintf("fake-block-id-%d", blockNumber),
+				Timestamp:             time.Now().UTC().Format(time.RFC3339),
+				TransactionMerkleRoot: fmt.Sprintf("fake-merkle-root-%d", blockNumber),
+				TransactionIds:        []string{fmt.Sprintf("fake-tx-id-%d", blockNumber)},
+				BlockNumber:           blockNumber,
+				BlockID:               fmt.Sprintf("fake-block-id-%d", blockNumber),
 				Transactions: []hivego.Transaction{
 					{
 						RefBlockNum: uint16(blockNumber),
@@ -106,11 +109,13 @@ func TestStreamFiltering(t *testing.T) {
 	totalTxs := 0
 
 	// dummy filters and processing function
-	filter := func(op hivego.Operation) bool {
+	filter := func(op map[string]interface{}) bool {
 		totalTxs++
 		// filter out the transfer operations, which is the type we're generating
 		// in our mocks
-		return op.Type != "transfer_operation"
+		fmt.Println(op, op["amount"], "removing: ", op["amount"] == "1 HIVE")
+
+		return op["amount"] != "1 HIVE"
 	}
 
 	txsAfterFiltering := 0
@@ -138,7 +143,7 @@ func TestStreamFiltering(t *testing.T) {
 	time.Sleep(3 * time.Second)
 
 	// we've filtered all the txs
-	assert.Equal(t, txsAfterFiltering, 0)
+	assert.Equal(t, 0, txsAfterFiltering)
 	assert.Less(t, txsAfterFiltering, totalTxs)
 	assert.NotEqual(t, totalTxs, 0)
 
@@ -169,8 +174,8 @@ func TestStreamStatusAndBlockProcessing(t *testing.T) {
 	blocksProcessed := 0
 
 	// dummy filters and processing function
-	filter1 := func(op hivego.Operation) bool { return true }
-	filter2 := func(op hivego.Operation) bool { return true }
+	filter1 := func(op map[string]interface{}) bool { return true }
+	filter2 := func(op map[string]interface{}) bool { return true }
 	process := func(block hive_blocks.HiveBlock) {
 		blocksProcessed++
 	}
@@ -254,18 +259,18 @@ func TestFilterOrdering(t *testing.T) {
 	filter2Called := 0
 
 	// dummy filters and processing function
-	filter1 := func(op hivego.Operation) bool {
+	filter1 := func(op map[string]interface{}) bool {
 		filter1Called++
 		// filter out the transfer operations, which is the type we're generating
 		// in our mocks
-		return op.Type != "transfer_operation"
+		return op["amount"] != "1 HIVE"
 	}
 
-	filter2 := func(op hivego.Operation) bool {
+	filter2 := func(op map[string]interface{}) bool {
 		filter2Called++
 		// filter out the transfer operations, which is the type we're generating
 		// in our mocks
-		return op.Type != "transfer_operation"
+		return op["amount"] != "1 HIVE"
 	}
 
 	process := func(block hive_blocks.HiveBlock) {}
@@ -317,7 +322,7 @@ func TestBlockLag(t *testing.T) {
 	assert.NoError(t, err)
 
 	// dummy filters and processing function
-	filter := func(op hivego.Operation) bool {
+	filter := func(op map[string]interface{}) bool {
 		return true
 	}
 
@@ -367,7 +372,7 @@ func TestFindingSettingClearing(t *testing.T) {
 	assert.NoError(t, hiveBlockDbManager.ClearBlocks(context.Background()))
 
 	// dummy filters and processing function
-	filter := func(op hivego.Operation) bool {
+	filter := func(op map[string]interface{}) bool {
 		return true
 	}
 
@@ -443,7 +448,7 @@ func TestStartAndHeadBlock(t *testing.T) {
 	assert.NoError(t, err)
 
 	// dummy filters and processing function
-	filter := func(op hivego.Operation) bool {
+	filter := func(op map[string]interface{}) bool {
 		return true
 	}
 
@@ -492,7 +497,7 @@ func TestFetchStoredBlocks(t *testing.T) {
 	assert.NoError(t, err)
 
 	// dummy filters and processing function
-	filter := func(op hivego.Operation) bool {
+	filter := func(op map[string]interface{}) bool {
 		return true
 	}
 
@@ -556,7 +561,7 @@ func TestProcessAfterFiltering(t *testing.T) {
 	assert.NoError(t, err)
 
 	// dummy filters and processing function
-	filter := func(op hivego.Operation) bool {
+	filter := func(op map[string]interface{}) bool {
 		return false // don't let any ops through
 	}
 
@@ -621,15 +626,12 @@ func TestNestedArrayStructure(t *testing.T) {
 		Transactions: []hive_blocks.Tx{
 			{
 				TransactionID: "some-tx-id-123",
-				Operations: []hivego.Operation{
+				Operations: []map[string]interface{}{
 					{
-						Type: hivego.OperationType.CustomJson,
-						Value: map[string]interface{}{
-							"json": map[string]interface{}{
-								"nested_array": []interface{}{
-									[]interface{}{"hello", "world"}, // this is our nested array!
-									[]interface{}{"foo", "bar"},     // this is our nested array!
-								},
+						"json": map[string]interface{}{
+							"nested_array": []interface{}{
+								[]interface{}{"hello", "world"}, // this is our nested array!
+								[]interface{}{"foo", "bar"},     // this is our nested array!
 							},
 						},
 					},
@@ -656,7 +658,7 @@ func TestNestedArrayStructure(t *testing.T) {
 
 // todo: vault's experiment
 func TestVaultecExperiments(t *testing.T) {
-	return // todo: remove for further work
+	// return // todo: remove for further work
 	setupAndCleanUpDataDir(t)
 
 	// db
@@ -678,7 +680,7 @@ func TestVaultecExperiments(t *testing.T) {
 	assert.NoError(t, err)
 
 	// dummy filters and processing function
-	filter := func(op hivego.Operation) bool {
+	filter := func(op map[string]interface{}) bool {
 		return true
 	}
 
@@ -702,7 +704,7 @@ func TestVaultecExperiments(t *testing.T) {
 	streamer.MinTimeBetweenBlockBatchFetches = 3 * time.Second
 
 	// init and start the streamer
-	s := streamer.New(client, hiveBlockDbManager, []streamer.FilterFunc{filter}, process, nil)
+	s := streamer.New(client, hiveBlockDbManager, []streamer.FilterFunc{filter}, process, &[]int{81614765}[0])
 
 	assert.NoError(t, s.Init())
 	assert.NoError(t, s.Start())

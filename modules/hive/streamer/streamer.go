@@ -59,7 +59,7 @@ var _ aggregate.Plugin = &Streamer{}
 
 // ===== type definitions =====
 
-type FilterFunc func(op hivego.Operation) bool
+type FilterFunc func(tx map[string]interface{}) bool
 type ProcessFunction func(block hiveblocks.HiveBlock)
 
 type Streamer struct {
@@ -285,7 +285,6 @@ func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, e
 }
 
 func (s *Streamer) processBlock(block *hivego.Block) error {
-
 	// init the filtered block with essential fields
 	hiveBlock := hiveblocks.HiveBlock{
 		BlockNumber:  block.BlockNumber,
@@ -302,18 +301,18 @@ func (s *Streamer) processBlock(block *hivego.Block) error {
 		// filter the ops within this tx
 		filteredTx := hiveblocks.Tx{
 			TransactionID: txIds[i],
-			Operations:    []hivego.Operation{},
+			Operations:    []map[string]interface{}{},
 		}
 		for _, op := range tx.Operations {
 			shouldInclude := true
 			for _, filter := range s.filters {
-				if !filter(op) {
+				if !filter(op.Value) {
 					shouldInclude = false
 					break
 				}
 			}
 			if shouldInclude {
-				filteredTx.Operations = append(filteredTx.Operations, op)
+				filteredTx.Operations = append(filteredTx.Operations, op.Value)
 			}
 		}
 
