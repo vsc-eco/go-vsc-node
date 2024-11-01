@@ -295,11 +295,14 @@ func (s *Streamer) processBlock(block *hivego.Block) error {
 		MerkleRoot:   block.TransactionMerkleRoot,
 	}
 
+	txIds := append([]string{}, block.TransactionIds...)
+
 	// filter txs within the block
-	for _, tx := range block.Transactions {
+	for i, tx := range block.Transactions {
 		// filter the ops within this tx
 		filteredTx := hiveblocks.Tx{
-			Operations: []hivego.Operation{},
+			TransactionID: txIds[i],
+			Operations:    []hivego.Operation{},
 		}
 		for _, op := range tx.Operations {
 			shouldInclude := true
