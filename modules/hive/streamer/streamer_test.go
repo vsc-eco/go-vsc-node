@@ -683,8 +683,7 @@ func TestVaultecExperiments(t *testing.T) {
 	}
 
 	process := func(block hive_blocks.HiveBlock) {
-		fmt.Println("bn:", block.BlockNumber)
-		// fmt.Println(block.Transactions)
+		fmt.Println("PROCESSING BLOCK:", block.BlockNumber, "WITH TXS:", len(block.Transactions))
 
 		// for _, tx := range block.Transactions {
 		// 	fmt.Println(tx)
