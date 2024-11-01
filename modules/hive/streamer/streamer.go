@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"math"
 	"sync"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	hiveblocks "vsc-node/modules/db/vsc/hive_blocks"
 
 	"github.com/vsc-eco/hivego"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // ===== block client interface =====
@@ -33,12 +36,21 @@ var (
 	// we re-pull the newest batch
 	//
 	// the code will ignore this if we're more than [blockBatchSize] behind
-	AcceptableBlockLag = 5
+	//
+	// @Vaultec says lag should be 0
+	AcceptableBlockLag = 0
 	// delay between re-polling for the newest information about the chain height
-	HeadBlockCheckPollInterval = time.Second * 5
+	HeadBlockCheckPollInterval = time.Millisecond * 1500
 	// even if all predicate funcs say we should keep pulling the next batch of
 	// blocks, this is how long we should wait between fetches
-	MinTimeBetweenBlockBatchFetches = time.Second * 3
+	MinTimeBetweenBlockBatchFetches = time.Millisecond * 1500
+	// where the hive block streamer starts from by default if nothing
+	// has been persisted yet or overridden as a starting point
+	DefaultBlockStart = 81614028
+	// db poll interval
+	//
+	// @Vaultec says 500ms is ideal
+	DbPollInterval = time.Millisecond * 500
 )
 
 // ===== interface implementation =====
@@ -48,7 +60,7 @@ var _ aggregate.Plugin = &Streamer{}
 // ===== type definitions =====
 
 type FilterFunc func(op hivego.Operation) bool
-type ProcessFunction func(block hiveblocks.HiveBlock) error
+type ProcessFunction func(block hiveblocks.HiveBlock)
 
 type Streamer struct {
 	hiveBlocks   hiveblocks.HiveBlocks
@@ -87,20 +99,28 @@ func (s *Streamer) Init() error {
 		return fmt.Errorf("client or hiveBlocks not initialized")
 	}
 
-	// retrieves the last processed block
-	lastBlock, err := s.hiveBlocks.GetLastProcessedBlock()
-	if err != nil {
-		return fmt.Errorf("error getting last block: %v", err)
+	// if start block provided (non-nil) then set it as that and return
+	if s.startBlock != nil {
+		return nil
 	}
 
-	// determines the starting block based on input or last saved block
+	// gets the last processed block
+	lastBlock, err := s.hiveBlocks.GetLastProcessedBlock(context.Background())
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			// no previous blocks processed, thus start from DefaultBlockStart
+			lastBlock = DefaultBlockStart
+		} else {
+			return fmt.Errorf("error getting last block: %v", err)
+		}
+	}
+
+	// ensures startBlock is either the given startBlock, lastBlock+1, or DefaultBlockStart
 	if s.startBlock == nil || *s.startBlock < lastBlock {
 		if lastBlock == 0 {
-			// no prev blocks processed; start from block 1
-			s.startBlock = &[]int{1}[0] // sneaky way to avoid creating a new variable for *int
+			s.startBlock = &[]int{DefaultBlockStart}[0]
 		} else {
-			// continue from the next block after our last processed one
-			s.startBlock = &[]int{lastBlock + 1}[0] // sneaky way to avoid creating a new variable for *int
+			s.startBlock = &[]int{lastBlock + 1}[0]
 		}
 	}
 	return nil
@@ -110,7 +130,33 @@ func (s *Streamer) Start() error {
 	s.stopped = make(chan struct{})
 	go s.streamBlocks()
 	go s.trackHeadHeight()
+	go s.pollDb()
 	return nil // returns error just to satisfy plugin interface
+}
+
+func (s *Streamer) pollDb() {
+	ticker := time.NewTicker(DbPollInterval)
+	defer ticker.Stop()
+
+	// what was the last block we processed?
+	lastProcessedBlock := *s.startBlock - 1
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			blocks, err := s.hiveBlocks.FetchStoredBlocks(context.Background(), lastProcessedBlock+1, lastProcessedBlock+10)
+			if err != nil {
+				continue
+			}
+
+			for _, block := range blocks {
+				s.process(block)
+				lastProcessedBlock = block.BlockNumber
+			}
+		}
+	}
 }
 
 // trackHeadHeight periodically updates the head block height
@@ -165,9 +211,8 @@ func (s *Streamer) streamBlocks() {
 			localStartBlock := *s.startBlock
 			s.mtx.Unlock()
 
-			// this case can also trigger when getting the head height fails and it
-			// defaults the headHeight to 0, which makes sense
-			if currentHeadHeight-localStartBlock <= AcceptableBlockLag {
+			// if we're within the acceptable block lag, we don't need to fetch more blocks
+			if int(math.Abs(float64(currentHeadHeight-localStartBlock))) <= AcceptableBlockLag {
 				continue
 			}
 
@@ -177,18 +222,20 @@ func (s *Streamer) streamBlocks() {
 				time.Sleep(3 * time.Second)
 				continue // we can retry after a short delay in this case
 			}
-
 			for _, blk := range blocks {
 				select {
 				case <-s.ctx.Done():
 					return
 				default:
-					blk.BlockNumber = *s.startBlock
-					err = s.processBlock(&blk)
+					// inc startBlock before processing to ensure progress
+					*s.startBlock = blk.BlockNumber + 1
+
+					// process block
+					err := s.processBlock(&blk)
 					if err != nil {
-						return
+						log.Printf("error processing block %d: %v\n", blk.BlockNumber, err)
+						continue // continue to the next block even if there's an error
 					}
-					*s.startBlock++
 				}
 			}
 
@@ -199,6 +246,7 @@ func (s *Streamer) streamBlocks() {
 }
 
 func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, error) {
+	log.Printf("fetching block range %d-%d\n", startBlock, startBlock+batchSize-1)
 	blockChan, err := s.client.GetBlockRange(startBlock, batchSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initiate block range fetch: %v", err)
@@ -215,9 +263,12 @@ func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, e
 				return blocks, nil
 			}
 			// set the block number directly here to ensure it isn’t zero
+			//
+			// we know this value is correct because we’re iterating over the range
 			block.BlockNumber = currentBlock
 			currentBlock++
 			if block.BlockID == "" {
+				log.Printf("empty block ID at block %d, skipping\n", block.BlockNumber)
 				// sanity check: if empty block ID => we assume "bad block"
 				continue
 			}
@@ -234,12 +285,14 @@ func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, e
 }
 
 func (s *Streamer) processBlock(block *hivego.Block) error {
+
 	// init the filtered block with essential fields
 	hiveBlock := hiveblocks.HiveBlock{
 		BlockNumber:  block.BlockNumber,
 		BlockID:      block.BlockID,
 		Timestamp:    block.Timestamp,
 		Transactions: []hiveblocks.Tx{},
+		MerkleRoot:   block.TransactionMerkleRoot,
 	}
 
 	// filter txs within the block
@@ -267,18 +320,17 @@ func (s *Streamer) processBlock(block *hivego.Block) error {
 		}
 	}
 
+	// if the streamer is paused or stopped, skip block processing, this
+	// fixes some case where the streamer is stopped but some other go routine
+	// is still finishing up a cycle of processing
+	if !s.canProcess() {
+		return fmt.Errorf("streamer is paused or stopped")
+	}
 	// store the block with filtered txs
 	//
 	// even if a block has no txs, we store
-	if err := s.hiveBlocks.StoreBlock(&hiveBlock); err != nil {
+	if err := s.hiveBlocks.StoreBlock(context.Background(), &hiveBlock); err != nil {
 		return fmt.Errorf("failed to store block: %v", err)
-	}
-
-	// calls the process func on the stored block
-	if s.process != nil {
-		if err := s.process(hiveBlock); err != nil {
-			return fmt.Errorf("failed to process block: %v", err)
-		}
 	}
 
 	return nil
@@ -300,6 +352,12 @@ func (s *Streamer) Resume() error {
 		s.streamPaused = false
 		return nil
 	}
+}
+
+func (s *Streamer) canProcess() bool {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	return !s.streamPaused && !s.IsStopped()
 }
 
 func (s *Streamer) Stop() error {

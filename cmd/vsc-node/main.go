@@ -19,15 +19,18 @@ func main() {
 	db := db.New()
 	vscDb := vsc.New(db)
 	witnesses := witnesses.New(vscDb)
-	hiveBlocks := hive_blocks.New(vscDb)
+	hiveBlocks, err := hive_blocks.New(vscDb)
+	if err != nil {
+		fmt.Println("error is", err)
+		os.Exit(1)
+	}
 
 	// choose the source
 	blockClient := hivego.NewHiveRpc("https://api.hive.blog")
 	filter := func(op hivego.Operation) bool { return true }
 	filters := []streamer.FilterFunc{filter}
-	process := func(block hive_blocks.HiveBlock) error {
+	process := func(block hive_blocks.HiveBlock) {
 		fmt.Printf("processed block %d with ID %s\n", block.BlockNumber, block.BlockID)
-		return nil
 	}
 	streamerPlugin := streamer.New(blockClient, hiveBlocks, filters, process, nil) // optional starting block #
 
@@ -46,7 +49,7 @@ func main() {
 		plugins,
 	)
 
-	err := a.Run()
+	err = a.Run()
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)

@@ -7,6 +7,7 @@ type HiveBlock struct {
 	BlockNumber  int    `json:"block_number" bson:"block_number"`
 	BlockID      string `json:"block_id" bson:"block_id"`
 	Timestamp    string `json:"timestamp" bson:"timestamp"`
+	MerkleRoot   string `json:"merkle_root" bson:"merkle_root"`
 	Transactions []Tx   `json:"transactions" bson:"transactions"`
 }
 
