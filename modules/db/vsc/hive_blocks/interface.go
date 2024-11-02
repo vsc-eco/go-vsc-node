@@ -12,4 +12,5 @@ type HiveBlocks interface {
 	StoreLastProcessedBlock(ctx context.Context, blockNumber int) error
 	GetLastProcessedBlock(ctx context.Context) (int, error)
 	FetchStoredBlocks(ctx context.Context, startBlock int, endBlock int) ([]HiveBlock, error)
+	GetHighestBlock(ctx context.Context) (int, error)
 }

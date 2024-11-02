@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
@@ -16,6 +17,7 @@ import (
 
 type hiveBlocks struct {
 	*db.Collection
+	writeMutex sync.Mutex // mutex for synchronizing writes, else SQLite will be busy
 }
 
 // a unique UUID prefix to avoid collisions when we convert nested arrays
@@ -23,9 +25,6 @@ type hiveBlocks struct {
 const fieldPrefix = "69ba102f-c815-4ce9-8022-90e520fe8516_"
 
 // transforms nested arrays into BSON-compatible structures with unique keys
-//
-// we need to do this because mongoDB doesn't support certain nested array structures,
-// so we convert them into documents with unique keys
 func makeBSONCompatible(value interface{}) interface{} {
 	switch v := value.(type) {
 	case []interface{}:
@@ -38,7 +37,7 @@ func makeBSONCompatible(value interface{}) interface{} {
 			}
 		}
 		if isArrayOfArrays {
-			// convert each inner array into a doc with unique keys
+			// convert each inner array into a map with unique keys
 			arr := make([]interface{}, len(v))
 			for i, item := range v {
 				switch innerArray := item.(type) {
@@ -49,13 +48,13 @@ func makeBSONCompatible(value interface{}) interface{} {
 					}
 					arr[i] = innerMap
 				case primitive.A:
+					innerArrayConverted := []interface{}(innerArray)
 					innerMap := make(map[string]interface{})
-					for idx, elem := range innerArray {
+					for idx, elem := range innerArrayConverted {
 						innerMap[fmt.Sprintf("%s%d", fieldPrefix, idx)] = makeBSONCompatible(elem)
 					}
 					arr[i] = innerMap
 				default:
-					// not an array, process recursively
 					arr[i] = makeBSONCompatible(item)
 				}
 			}
@@ -68,6 +67,9 @@ func makeBSONCompatible(value interface{}) interface{} {
 			}
 			return arr
 		}
+	case primitive.A:
+		// convert primitive.A to []interface{} and process recursively
+		return makeBSONCompatible([]interface{}(v))
 	case map[string]interface{}:
 		m := make(map[string]interface{})
 		for k, val := range v {
@@ -84,42 +86,15 @@ func makeBSONCompatible(value interface{}) interface{} {
 			m[elem.Key] = makeBSONCompatible(elem.Value)
 		}
 		return m
-	case primitive.A:
-		// convert primitive.A to []interface{} and process recursively
-		return makeBSONCompatible([]interface{}(v))
 	default:
 		return v
 	}
 }
 
-// restores BSON-compatible structures back to the original nested arrays
-// after we converted them to store them in mongoDB
+// restores bson-compatible structures back to the original nested arrays
 func remakeOriginalNestedArrayStructure(value interface{}) interface{} {
 	switch v := value.(type) {
 	case []interface{}:
-		if len(v) > 0 {
-			if m, ok := toMap(v[0]); ok && isFieldKeys(m) {
-				// re-make array of arrays
-				arr := make([]interface{}, len(v))
-				for i, item := range v {
-					if m, ok := toMap(item); ok {
-						innerArr := []interface{}{}
-						for idx := 0; ; idx++ {
-							key := fmt.Sprintf("%s%d", fieldPrefix, idx)
-							val, exists := m[key]
-							if !exists {
-								break
-							}
-							innerArr = append(innerArr, remakeOriginalNestedArrayStructure(val))
-						}
-						arr[i] = innerArr
-					} else {
-						arr[i] = remakeOriginalNestedArrayStructure(item)
-					}
-				}
-				return arr
-			}
-		}
 		// process elements recursively
 		arr := make([]interface{}, len(v))
 		for i, item := range v {
@@ -130,16 +105,31 @@ func remakeOriginalNestedArrayStructure(value interface{}) interface{} {
 		// convert to []interface{} and process recursively
 		return remakeOriginalNestedArrayStructure([]interface{}(v))
 	case map[string]interface{}:
-		m := make(map[string]interface{})
-		for k, val := range v {
-			m[k] = remakeOriginalNestedArrayStructure(val)
+		if isFieldKeys(v) {
+			// reconstruct array from map
+			innerArr := []interface{}{}
+			for idx := 0; ; idx++ {
+				key := fmt.Sprintf("%s%d", fieldPrefix, idx)
+				val, exists := v[key]
+				if !exists {
+					break
+				}
+				innerArr = append(innerArr, remakeOriginalNestedArrayStructure(val))
+			}
+			return innerArr
+		} else {
+			// process map elements recursively
+			m := make(map[string]interface{})
+			for k, val := range v {
+				m[k] = remakeOriginalNestedArrayStructure(val)
+			}
+			return m
 		}
-		return m
 	case primitive.M:
 		// convert primitive.M to map[string]interface{} and process recursively
 		return remakeOriginalNestedArrayStructure(map[string]interface{}(v))
 	case primitive.D:
-		// convert primitive.D to map[string]interface{}
+		// convert primitive.D to map[string]interface{} and process recursively
 		m := make(map[string]interface{})
 		for _, elem := range v {
 			m[elem.Key] = remakeOriginalNestedArrayStructure(elem.Value)
@@ -163,33 +153,15 @@ func isFieldKeys(m map[string]interface{}) bool {
 	return true
 }
 
-// converts various map types to map[string]interface{}
-func toMap(value interface{}) (map[string]interface{}, bool) {
-	switch v := value.(type) {
-	case map[string]interface{}:
-		return v, true
-	case primitive.M: // bson.M is the same as primitive.M, so I excluded
-		return map[string]interface{}(v), true
-	case primitive.D:
-		m := make(map[string]interface{})
-		for _, elem := range v {
-			m[elem.Key] = elem.Value
-		}
-		return m, true
-	default:
-		return nil, false
-	}
-}
-
 func New(d *vsc.VscDb) (HiveBlocks, error) {
-	hiveBlocks := &hiveBlocks{db.NewCollection(d.DbInstance, "hive_blocks")}
+	hiveBlocks := &hiveBlocks{db.NewCollection(d.DbInstance, "hive_blocks"), sync.Mutex{}}
 
 	indexModel := mongo.IndexModel{
 		Keys:    bson.D{{Key: "block.block_number", Value: 1}}, // ascending order
-		Options: options.Index().SetUnique(false),              // not unique though!
+		Options: options.Index().SetUnique(false),              // not unique
 	}
 
-	// this index will make it (way) faster to query blocks by block number
+	// create index on block.block_number for faster queries
 	_, err := hiveBlocks.Collection.Indexes().CreateOne(context.Background(), indexModel)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create index: %w", err)
@@ -198,8 +170,11 @@ func New(d *vsc.VscDb) (HiveBlocks, error) {
 	return hiveBlocks, nil
 }
 
-// stores a block and updates the last processed block atomically without transactions
+// stores a block and updates the last stored block atomically without txs
 func (h *hiveBlocks) StoreBlock(ctx context.Context, block *HiveBlock) error {
+	h.writeMutex.Lock()
+	defer h.writeMutex.Unlock()
+
 	if block == nil {
 		return fmt.Errorf("block is nil")
 	}
@@ -226,7 +201,7 @@ func (h *hiveBlocks) StoreBlock(ctx context.Context, block *HiveBlock) error {
 		}),
 		mongo.NewUpdateOneModel().
 			SetFilter(bson.M{"type": "metadata"}).
-			SetUpdate(bson.M{"$set": bson.M{"block_number": block.BlockNumber}}).
+			SetUpdate(bson.M{"$set": bson.M{"last_stored_block": block.BlockNumber}}).
 			SetUpsert(true),
 	}
 
@@ -246,9 +221,7 @@ func (h *hiveBlocks) FetchStoredBlocks(ctx context.Context, startBlock, endBlock
 	filter := bson.M{
 		"type": "block",
 		"block.block_number": bson.M{
-			// "greater than or equal to..."
 			"$gte": startBlock,
-			// "less than or equal to..."
 			"$lte": endBlock,
 		},
 	}
@@ -300,6 +273,9 @@ func (h *hiveBlocks) FetchStoredBlocks(ctx context.Context, startBlock, endBlock
 
 // deletes all block and metadata documents from the collection
 func (h *hiveBlocks) ClearBlocks(ctx context.Context) error {
+	h.writeMutex.Lock()
+	defer h.writeMutex.Unlock()
+
 	_, err := h.Collection.DeleteMany(ctx, bson.M{"type": "block"})
 	if err != nil {
 		return fmt.Errorf("failed to clear blocks: %w", err)
@@ -315,8 +291,11 @@ func (h *hiveBlocks) ClearBlocks(ctx context.Context) error {
 
 // stores the last processed block number
 func (h *hiveBlocks) StoreLastProcessedBlock(ctx context.Context, blockNumber int) error {
+	h.writeMutex.Lock()
+	defer h.writeMutex.Unlock()
+
 	_, err := h.Collection.UpdateOne(ctx, bson.M{"type": "metadata"},
-		bson.M{"$set": bson.M{"block_number": blockNumber}},
+		bson.M{"$set": bson.M{"last_processed_block": blockNumber}},
 		options.Update().SetUpsert(true),
 	)
 	if err != nil {
@@ -326,16 +305,78 @@ func (h *hiveBlocks) StoreLastProcessedBlock(ctx context.Context, blockNumber in
 }
 
 // retrieves the last processed block number
+//
+// returns -1 if no blocks have been processed yet
 func (h *hiveBlocks) GetLastProcessedBlock(ctx context.Context) (int, error) {
+	var result bson.M
+	err := h.Collection.FindOne(ctx, bson.M{"type": "metadata"}).Decode(&result)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return -1, nil
+		}
+		return 0, fmt.Errorf("failed to get last processed block: %w", err)
+	}
+
+	blockNumberRaw, exists := result["last_processed_block"]
+	if !exists {
+		// field does not exist! thus, no blocks have been processed yet
+		return -1, nil
+	}
+
+	blockNumber, ok := blockNumberRaw.(int32)
+	if !ok {
+		return 0, fmt.Errorf("failed to parse block number")
+	}
+
+	return int(blockNumber), nil
+}
+
+// retrieves the last stored block number
+func (h *hiveBlocks) GetLastStoredBlock(ctx context.Context) (int, error) {
 	var result struct {
-		BlockNumber int `bson:"block_number"`
+		BlockNumber int `bson:"last_stored_block"`
 	}
 	err := h.Collection.FindOne(ctx, bson.M{"type": "metadata"}).Decode(&result)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return 0, nil
 		}
-		return 0, fmt.Errorf("failed to get last processed block: %w", err)
+		return 0, fmt.Errorf("failed to get last stored block: %w", err)
 	}
 	return result.BlockNumber, nil
+}
+
+func (h *hiveBlocks) GetHighestBlock(ctx context.Context) (int, error) {
+	findOptions := options.FindOne().SetSort(bson.D{{Key: "block.block_number", Value: -1}})
+	var result bson.M
+	err := h.Collection.FindOne(ctx, bson.M{"type": "block"}, findOptions).Decode(&result)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return 0, nil // no blocks stored yet
+		}
+		return 0, fmt.Errorf("failed to get highest block: %w", err)
+	}
+
+	// extracts block.block_number
+	blockData, ok := result["block"].(bson.M)
+	if !ok {
+		// attempt other possible types
+		blockDataMap, ok := result["block"].(map[string]interface{})
+		if !ok {
+			return 0, fmt.Errorf("failed to get highest block: 'block' field missing or invalid")
+		}
+		blockData = bson.M(blockDataMap)
+	}
+
+	blockNumberRaw, ok := blockData["block_number"]
+	if !ok {
+		return 0, fmt.Errorf("failed to get highest block: 'block_number' field missing in block")
+	}
+
+	blockNumber, ok := blockNumberRaw.(float64)
+	if !ok {
+		return 0, fmt.Errorf("failed to get highest block: 'block_number' field is not a float64")
+	}
+
+	return int(blockNumber), nil
 }

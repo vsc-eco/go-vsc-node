@@ -40,7 +40,16 @@ var (
 	// @Vaultec says lag should be 0
 	AcceptableBlockLag = 0
 	// delay between re-polling for the newest information about the chain height
-	HeadBlockCheckPollInterval = time.Millisecond * 1500
+	// before we've updated it once
+	HeadBlockCheckPollIntervalBeforeFirstUpdate = time.Millisecond * 1500
+	// delay between re-polling for the newest information about the chain height
+	// once we've updated it once, since we know it's not going to change much
+	//
+	// we need this because if we call it too often, this route seems
+	// to get rate limited very, very easily
+	HeadBlockCheckPollIntervalOnceUpdated = time.Minute * 1
+	// maximum backoff interval for fetching the head block number
+	HeadBlockMaxBackoffInterval = time.Minute * 5
 	// even if all predicate funcs say we should keep pulling the next batch of
 	// blocks, this is how long we should wait between fetches
 	MinTimeBetweenBlockBatchFetches = time.Millisecond * 1500
@@ -53,9 +62,141 @@ var (
 	DbPollInterval = time.Millisecond * 500
 )
 
+// ===== StreamReader =====
+
+type StreamReader struct {
+	process       ProcessFunction
+	ctx           context.Context
+	cancel        context.CancelFunc
+	mtx           sync.Mutex
+	isPaused      bool
+	lastProcessed int
+	stopped       chan struct{}
+	hiveBlocks    hiveblocks.HiveBlocks
+}
+
+// inits a StreamReader with the provided hiveBlocks interface and process function
+func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction) *StreamReader {
+	if process == nil {
+		panic("process function must be provided")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &StreamReader{
+		process:    process,
+		hiveBlocks: hiveBlocks,
+		ctx:        ctx,
+		cancel:     cancel,
+		stopped:    make(chan struct{}),
+	}
+}
+
+// inits the StreamReader, fetching the last processed block
+func (s *StreamReader) Init() error {
+	// fetch the last processed block number
+	lp, err := s.hiveBlocks.GetLastProcessedBlock(context.Background())
+	if err != nil {
+		return fmt.Errorf("error getting last processed block: %v", err)
+	}
+	fmt.Println("last processed block:", lp)
+	s.lastProcessed = lp
+	return nil
+}
+
+// begins the polling loop for the StreamReader
+func (s *StreamReader) Start() error {
+	go s.pollDb()
+	return nil
+}
+
+// polls the database at intervals, processing new blocks as they arrive
+func (s *StreamReader) pollDb() {
+	ticker := time.NewTicker(DbPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			close(s.stopped)
+			return
+		case <-ticker.C:
+			if s.IsPaused() {
+				continue
+			}
+
+			// fetch the highest stored block in the database
+			highestBlock, err := s.hiveBlocks.GetHighestBlock(context.Background())
+			if err != nil {
+				log.Printf("error fetching highest block: %v", err)
+				continue
+			}
+
+			// if there are new blocks, process all of them up to the highest block
+			if s.lastProcessed < highestBlock {
+				// fetch all blocks from lastProcessed + 1 to highestBlock
+				batchEnd := highestBlock
+
+				blocks, err := s.hiveBlocks.FetchStoredBlocks(context.Background(), s.lastProcessed+1, batchEnd)
+				if err != nil {
+					log.Printf("error fetching blocks: %v", err)
+					continue
+				}
+
+				// if no blocks were fetched, continue
+				if len(blocks) == 0 {
+					continue
+				}
+
+				for _, block := range blocks {
+					s.process(block)
+					// update last processed block
+					s.lastProcessed = block.BlockNumber
+				}
+
+				// persist the updated last processed block number
+				if err := s.hiveBlocks.StoreLastProcessedBlock(context.Background(), s.lastProcessed); err != nil {
+					log.Printf("error updating last processed block: %v", err)
+				}
+			}
+		}
+	}
+}
+
+// stops the StreamReader
+func (s *StreamReader) Stop() error {
+	s.cancel()
+	<-s.stopped
+	return nil
+}
+
+// checks if the StreamReader is currently paused
+func (s *StreamReader) IsPaused() bool {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	return s.isPaused
+}
+
+// pauses the StreamReader, stopping further processing until resumed
+func (s *StreamReader) Pause() {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	s.isPaused = true
+}
+
+// resumes the StreamReader
+func (s *StreamReader) Resume() error {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	if s.ctx.Err() != nil {
+		return fmt.Errorf("StreamReader has been stopped")
+	}
+	s.isPaused = false
+	return nil
+}
+
 // ===== interface implementation =====
 
 var _ aggregate.Plugin = &Streamer{}
+var _ aggregate.Plugin = &StreamReader{}
 
 // ===== type definitions =====
 
@@ -63,40 +204,44 @@ type FilterFunc func(tx map[string]interface{}) bool
 type ProcessFunction func(block hiveblocks.HiveBlock)
 
 type Streamer struct {
-	hiveBlocks   hiveblocks.HiveBlocks
-	client       BlockClient
-	startBlock   *int
-	ctx          context.Context
-	cancel       context.CancelFunc
-	filters      []FilterFunc
-	process      ProcessFunction
-	streamPaused bool
-	mtx          sync.Mutex
-	stopped      chan struct{}
-	stopOnlyOnce sync.Once
-	headHeight   int
+	hiveBlocks     hiveblocks.HiveBlocks
+	client         BlockClient
+	startBlock     *int
+	ctx            context.Context
+	cancel         context.CancelFunc
+	filters        []FilterFunc
+	streamPaused   bool
+	mtx            sync.Mutex
+	stopped        chan struct{}
+	stopOnlyOnce   sync.Once
+	headHeight     int
+	hasFetchedHead bool
 }
 
 // ===== streamer =====
 
-func New(blockClient BlockClient, hiveBlocks hiveblocks.HiveBlocks, filters []FilterFunc, process ProcessFunction, startAtBlock *int) *Streamer {
+func NewStreamer(blockClient BlockClient, hiveBlocks hiveblocks.HiveBlocks, filters []FilterFunc, startAtBlock *int) *Streamer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Streamer{
-		hiveBlocks:   hiveBlocks,
-		client:       blockClient,
-		filters:      filters,
-		process:      process,
-		ctx:          ctx,
-		cancel:       cancel,
-		startBlock:   startAtBlock,
-		streamPaused: false,
-		stopped:      nil,
+		hiveBlocks:     hiveBlocks,
+		client:         blockClient,
+		filters:        filters,
+		ctx:            ctx,
+		cancel:         cancel,
+		startBlock:     startAtBlock,
+		streamPaused:   false,
+		stopped:        nil,
+		hasFetchedHead: false,
 	}
 }
 
 func (s *Streamer) Init() error {
 	if s.client == nil || s.hiveBlocks == nil {
 		return fmt.Errorf("client or hiveBlocks not initialized")
+	}
+
+	if s.filters == nil {
+		s.filters = []FilterFunc{}
 	}
 
 	// if start block provided (non-nil) then set it as that and return
@@ -115,14 +260,21 @@ func (s *Streamer) Init() error {
 		}
 	}
 
+	// if lastBlock is -1, this means that we haven't processed any
+	// blocks yet, thus we should start at our default point
+	if lastBlock == -1 {
+		lastBlock = DefaultBlockStart
+	}
+
 	// ensures startBlock is either the given startBlock, lastBlock+1, or DefaultBlockStart
 	if s.startBlock == nil || *s.startBlock < lastBlock {
 		if lastBlock == 0 {
 			s.startBlock = &[]int{DefaultBlockStart}[0]
 		} else {
-			s.startBlock = &[]int{lastBlock + 1}[0]
+			s.startBlock = &[]int{lastBlock}[0]
 		}
 	}
+
 	return nil
 }
 
@@ -130,60 +282,68 @@ func (s *Streamer) Start() error {
 	s.stopped = make(chan struct{})
 	go s.streamBlocks()
 	go s.trackHeadHeight()
-	go s.pollDb()
 	return nil // returns error just to satisfy plugin interface
 }
 
-func (s *Streamer) pollDb() {
-	ticker := time.NewTicker(DbPollInterval)
-	defer ticker.Stop()
-
-	// what was the last block we processed?
-	lastProcessedBlock := *s.startBlock - 1
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case <-ticker.C:
-			blocks, err := s.hiveBlocks.FetchStoredBlocks(context.Background(), lastProcessedBlock+1, lastProcessedBlock+10)
-			if err != nil {
-				continue
-			}
-
-			for _, block := range blocks {
-				s.process(block)
-				lastProcessedBlock = block.BlockNumber
-			}
-		}
+func updateHead(bc BlockClient) (int, error) {
+	props, err := bc.GetDynamicGlobalProps()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get dynamic global properties: %v", err)
 	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(props, &data); err != nil {
+		return 0, fmt.Errorf("failed to unmarshal dynamic global properties: %v", err)
+	}
+
+	// get the latest head block number
+	if height, ok := data["head_block_number"].(float64); ok {
+		return int(height), nil
+	}
+
+	return 0, fmt.Errorf("failed to get head block number")
 }
 
-// trackHeadHeight periodically updates the head block height
 func (s *Streamer) trackHeadHeight() {
-	ticker := time.NewTicker(HeadBlockCheckPollInterval)
+	ticker := time.NewTicker(HeadBlockCheckPollIntervalBeforeFirstUpdate)
 	defer ticker.Stop()
+
+	var updateLock sync.Mutex
+	backoff := HeadBlockCheckPollIntervalBeforeFirstUpdate
 
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
-			props, err := s.client.GetDynamicGlobalProps()
-			if err != nil {
-				continue
-			}
+			if updateLock.TryLock() {
+				go func() {
+					defer updateLock.Unlock()
 
-			var data map[string]interface{}
-			if err := json.Unmarshal(props, &data); err != nil {
-				continue
-			}
+					head, err := updateHead(s.client)
+					if err != nil {
+						log.Printf("Failed to update head height: %v\n", err)
 
-			// get the latest head block number
-			if height, ok := data["head_block_number"].(float64); ok {
-				s.mtx.Lock()
-				s.headHeight = int(height)
-				s.mtx.Unlock()
+						// apply backoff with max cap if update fails
+						if backoff < HeadBlockMaxBackoffInterval {
+							backoff *= 2
+						}
+						ticker.Reset(backoff)
+						return
+					}
+
+					// on successful head height -> update
+					s.mtx.Lock()
+					s.headHeight = head
+					if !s.hasFetchedHead {
+						s.hasFetchedHead = true
+					}
+					s.mtx.Unlock()
+
+					// reset to normal interval after first successful update
+					backoff = HeadBlockCheckPollIntervalOnceUpdated
+					ticker.Reset(backoff)
+				}()
 			}
 		}
 	}
@@ -201,27 +361,25 @@ func (s *Streamer) streamBlocks() {
 		case <-s.ctx.Done():
 			return
 		default:
-			if s.IsPaused() {
+			// if paused, or we haven't fetched the head yet, we don't need to fetch blocks
+			if s.IsPaused() || !s.hasFetchedHead {
 				continue
 			}
 
-			// check if we're within the acceptable block lag
-			s.mtx.Lock()
-			currentHeadHeight := s.headHeight
-			localStartBlock := *s.startBlock
-			s.mtx.Unlock()
-
-			// if we're within the acceptable block lag, we don't need to fetch more blocks
-			if int(math.Abs(float64(currentHeadHeight-localStartBlock))) <= AcceptableBlockLag {
+			// if we're within the acceptable block lag, no need to fetch more blocks
+			if int(math.Abs(float64(s.headHeight-*s.startBlock))) <= AcceptableBlockLag {
+				time.Sleep(MinTimeBetweenBlockBatchFetches)
 				continue
 			}
 
-			// batch of n blocks
+			// batch fetch and process blocks
 			blocks, err := s.fetchBlockBatch(*s.startBlock, BlockBatchSize)
 			if err != nil {
-				time.Sleep(3 * time.Second)
-				continue // we can retry after a short delay in this case
+				log.Printf("error fetching block batch: %v\n", err)
+				time.Sleep(3 * time.Second) // retry delay
+				continue
 			}
+
 			for _, blk := range blocks {
 				select {
 				case <-s.ctx.Done():
@@ -230,17 +388,17 @@ func (s *Streamer) streamBlocks() {
 					// inc startBlock before processing to ensure progress
 					*s.startBlock = blk.BlockNumber + 1
 
-					// process block
 					err := s.processBlock(&blk)
 					if err != nil {
-						log.Printf("error processing block %d: %v\n", blk.BlockNumber, err)
-						continue // continue to the next block even if there's an error
+						log.Printf("processing block %d failed: %v\n", blk.BlockNumber, err)
+						continue
 					}
 				}
 			}
 
-			// await before re-checking
+			// min time between fetches
 			time.Sleep(MinTimeBetweenBlockBatchFetches)
+
 		}
 	}
 }
@@ -306,6 +464,12 @@ func (s *Streamer) processBlock(block *hivego.Block) error {
 		for _, op := range tx.Operations {
 			shouldInclude := true
 			for _, filter := range s.filters {
+				// if the streamer is paused or stopped, skip block processing, this
+				// fixes some case where the streamer is stopped but some other go routine
+				// is still finishing up a cycle of processing
+				if !s.canProcess() {
+					return fmt.Errorf("streamer is paused or stopped")
+				}
 				if !filter(op.Value) {
 					shouldInclude = false
 					break
