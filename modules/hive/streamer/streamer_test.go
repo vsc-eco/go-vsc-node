@@ -21,7 +21,26 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vsc-eco/hivego"
+	"golang.org/x/exp/rand"
 )
+
+// ===== constants =====
+
+const (
+	dummyBlockHead = 244_842_084
+)
+
+// ===== init =====
+
+func init() {
+	// ensure we have consistent testing settings & env
+	streamer.AcceptableBlockLag = 0
+	streamer.BlockBatchSize = 100
+	streamer.DefaultBlockStart = 81614028
+	streamer.HeadBlockCheckPollIntervalBeforeFirstUpdate = time.Millisecond * 10
+	streamer.MinTimeBetweenBlockBatchFetches = time.Millisecond * 10
+	streamer.DbPollInterval = time.Millisecond * 10
+}
 
 // ===== test utils =====
 
@@ -42,18 +61,52 @@ func setupAndCleanUpDataDir(t *testing.T) {
 	}()
 }
 
+func seedBlockData(t *testing.T, hiveBlocks hive_blocks.HiveBlocks, n int) {
+
+	for i := 1; i <= n; i++ {
+		// a dummy hiveblock
+		block := &hive_blocks.HiveBlock{
+			BlockNumber: i,
+			BlockID:     fmt.Sprintf("some-block-id-%d", i),
+			Timestamp:   "2024-01-01T00:00:00",
+			MerkleRoot:  fmt.Sprintf("some-merkle-root-%d", i),
+			Transactions: []hive_blocks.Tx{
+				{
+					TransactionID: fmt.Sprintf("some-tx-id-%d", i),
+					Operations: []map[string]interface{}{
+						{
+							"amount": "1 HIVE",
+						},
+					},
+				},
+			},
+		}
+
+		// store block
+		err := hiveBlocks.StoreBlock(context.Background(), block)
+		assert.NoError(t, err)
+	}
+}
+
 // ===== mock hive block client service =====
 
 type MockBlockClient struct{}
 
 func (m *MockBlockClient) GetDynamicGlobalProps() ([]byte, error) {
+	// await for random duration to simulate real-world scenario
+	//
+	// to contribute to innate thread randomness since these tests because of that can't be 100% deterministic anyway
+	time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(90)))
 	props, _ := json.Marshal(map[string]interface{}{
-		"head_block_number": float64(streamer.DefaultBlockStart * 3), // dummy head, whatever it may be
+		"head_block_number": float64(dummyBlockHead), // dummy head, whatever it may be
 	})
 	return props, nil
 }
 
 func (m *MockBlockClient) GetBlockRange(startBlock int, count int) (<-chan hivego.Block, error) {
+	// await for random duration to simulate real-world scenario
+	//
+	// to contribute to innate thread randomness since these tests because of that can't be 100% deterministic anyway
 	blockChannel := make(chan hivego.Block, count)
 	go func() {
 		for i := 0; i < count; i++ {
@@ -82,11 +135,12 @@ func (m *MockBlockClient) GetBlockRange(startBlock int, count int) (<-chan hiveg
 	return blockChannel, nil
 }
 
-// ===== test cases =====
+// ===== tests =====
 
-func TestStreamFiltering(t *testing.T) {
+func TestFetchStoreBlocks(t *testing.T) {
+
+	// cleanup
 	setupAndCleanUpDataDir(t)
-	mockBlockClient := &MockBlockClient{}
 
 	// db
 	d := db.New()
@@ -100,55 +154,177 @@ func TestStreamFiltering(t *testing.T) {
 	assert.NoError(t, vscDb.Start())
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
+	// perms
 	os.Chmod("data", 0755)
 
-	// new hive block manager
-	hiveBlockDbManager, err := hive_blocks.New(vscDb)
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
 
-	totalTxs := 0
+	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, nil)
+	assert.NoError(t, s.Init())
+	assert.NoError(t, s.Start())
+	defer func() { assert.NoError(t, s.Stop()) }()
 
-	// dummy filters and processing function
+	totalBlksReceived := 0
+
+	process := func(block hive_blocks.HiveBlock) {
+		totalBlksReceived++
+	}
+
+	sr := streamer.NewStreamReader(hiveBlocks, process)
+	assert.NoError(t, sr.Init())
+	assert.NoError(t, sr.Start())
+	defer func() { assert.NoError(t, sr.Stop()) }()
+
+	time.Sleep(3 * time.Second)
+
+	assert.Greater(t, totalBlksReceived, 0)
+}
+
+func TestStartBlock(t *testing.T) {
+
+	// cleanup
+	setupAndCleanUpDataDir(t)
+
+	// db
+	d := db.New()
+	assert.NoError(t, d.Init())
+	assert.NoError(t, d.Start())
+	defer func() { assert.NoError(t, d.Stop()) }()
+
+	// vsc db
+	vscDb := vsc.New(d)
+	assert.NoError(t, vscDb.Init())
+	assert.NoError(t, vscDb.Start())
+	defer func() { assert.NoError(t, vscDb.Stop()) }()
+
+	// perms
+	os.Chmod("data", 0755)
+
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
+	assert.NoError(t, err)
+
+	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, nil)
+	assert.NoError(t, s.Init())
+
+	// should default to our default if we don't specify and instead input nil
+	assert.Equal(t, streamer.DefaultBlockStart, s.StartBlock())
+
+	assert.NoError(t, s.Start())
+	assert.NoError(t, s.Stop())
+
+	s = streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, &[]int{99}[0])
+	assert.NoError(t, s.Init())
+
+	// should be the value we input
+	assert.Equal(t, 99, s.StartBlock())
+
+	assert.NoError(t, s.Start())
+	assert.NoError(t, s.Stop())
+}
+
+func TestIntensePolling(t *testing.T) {
+	// cleanup
+	setupAndCleanUpDataDir(t)
+
+	// db
+	d := db.New()
+	assert.NoError(t, d.Init())
+	assert.NoError(t, d.Start())
+	defer func() { assert.NoError(t, d.Stop()) }()
+
+	// vsc db
+	vscDb := vsc.New(d)
+	assert.NoError(t, vscDb.Init())
+	assert.NoError(t, vscDb.Start())
+	defer func() { assert.NoError(t, vscDb.Stop()) }()
+
+	// perms
+	os.Chmod("data", 0755)
+
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
+	assert.NoError(t, err)
+
+	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, nil)
+	assert.NoError(t, s.Init())
+	assert.NoError(t, s.Start())
+	defer func() { assert.NoError(t, s.Stop()) }()
+
+	seenBlocks := make(map[int]int)
+
+	sr := streamer.NewStreamReader(hiveBlocks, func(block hive_blocks.HiveBlock) {
+		seenBlocks[block.BlockNumber]++
+	})
+	assert.NoError(t, sr.Init())
+	assert.NoError(t, sr.Start())
+	defer func() { assert.NoError(t, sr.Stop()) }()
+
+	time.Sleep(3 * time.Second)
+
+	// ensure in entire map, no dupes!
+	for _, v := range seenBlocks {
+		assert.Equal(t, 1, v)
+	}
+}
+
+func TestStreamFilter(t *testing.T) {
+
+	// cleanup
+	setupAndCleanUpDataDir(t)
+
+	// db
+	d := db.New()
+	assert.NoError(t, d.Init())
+	assert.NoError(t, d.Start())
+	defer func() { assert.NoError(t, d.Stop()) }()
+
+	// vsc db
+	vscDb := vsc.New(d)
+	assert.NoError(t, vscDb.Init())
+	assert.NoError(t, vscDb.Start())
+	defer func() { assert.NoError(t, vscDb.Stop()) }()
+
+	// perms
+	os.Chmod("data", 0755)
+
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
+	assert.NoError(t, err)
+
 	filter := func(op map[string]interface{}) bool {
-		totalTxs++
-
+		// filter everything!
 		return op["amount"] != "1 HIVE"
 	}
 
-	txsAfterFiltering := 0
+	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
+	assert.NoError(t, s.Init())
+	assert.NoError(t, s.Start())
+	defer func() { assert.NoError(t, s.Stop()) }()
+
+	txsReceived := 0
 
 	process := func(block hive_blocks.HiveBlock) {
-		for _, tx := range block.Transactions {
-			txsAfterFiltering += len(tx.Operations)
+		if len(block.Timestamp) > 0 {
+			txsReceived += len(block.Transactions)
 		}
 	}
 
-	// init and start the streamer
-	startBlock := 5000
-	s := streamer.New(mockBlockClient, hiveBlockDbManager, []streamer.FilterFunc{filter}, process, &startBlock)
+	sr := streamer.NewStreamReader(hiveBlocks, process)
+	assert.NoError(t, sr.Init())
+	assert.NoError(t, sr.Start())
+	defer func() { assert.NoError(t, sr.Stop()) }()
 
-	streamer.BlockBatchSize = 10
-	streamer.AcceptableBlockLag = 2
-	streamer.HeadBlockCheckPollInterval = 100 * time.Millisecond
-	streamer.MinTimeBetweenBlockBatchFetches = 100 * time.Millisecond
-
-	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
-	defer func() { assert.NoError(t, s.Stop()) }()
-
-	// allow time for processing the dummy data
 	time.Sleep(3 * time.Second)
 
-	// we've filtered all the txs
-	assert.Equal(t, 0, txsAfterFiltering)
-	assert.Less(t, txsAfterFiltering, totalTxs)
-	assert.NotEqual(t, totalTxs, 0)
-
+	assert.Equal(t, 0, txsReceived)
 }
 
-func TestStreamStatusAndBlockProcessing(t *testing.T) {
+func TestPersistingBlocksStored(t *testing.T) {
+	// cleanup
 	setupAndCleanUpDataDir(t)
-	mockBlockClient := &MockBlockClient{}
 
 	// db
 	d := db.New()
@@ -162,77 +338,335 @@ func TestStreamStatusAndBlockProcessing(t *testing.T) {
 	assert.NoError(t, vscDb.Start())
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
+	// perms
 	os.Chmod("data", 0755)
 
-	// new hive block manager
-	hiveBlockDbManager, err := hive_blocks.New(vscDb)
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
 
-	blocksProcessed := 0
+	// start at 0
+	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, &[]int{0}[0])
+	assert.NoError(t, s.Init())
+	assert.NoError(t, s.Start())
 
-	// dummy filters and processing function
-	filter1 := func(op map[string]interface{}) bool { return true }
-	filter2 := func(op map[string]interface{}) bool { return true }
-	process := func(block hive_blocks.HiveBlock) {
-		blocksProcessed++
-	}
+	time.Sleep(3 * time.Second)
 
-	// init and start the streamer
-	startBlock := 4000
-	s := streamer.New(mockBlockClient, hiveBlockDbManager, []streamer.FilterFunc{filter1, filter2}, process, &startBlock)
+	assert.NoError(t, s.Stop())
 
-	streamer.BlockBatchSize = 10
-	streamer.AcceptableBlockLag = 2
-	streamer.HeadBlockCheckPollInterval = 100 * time.Millisecond
-	streamer.MinTimeBetweenBlockBatchFetches = 100 * time.Millisecond
+	gotToBlock, err := hiveBlocks.GetHighestBlock(context.Background())
+	assert.NoError(t, err)
 
+	assert.Greater(t, gotToBlock, 0)
+
+	s = streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, nil)
 	assert.NoError(t, s.Init())
 	assert.NoError(t, s.Start())
 	defer func() { assert.NoError(t, s.Stop()) }()
 
-	// allow time for processing the dummy data
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 
-	// check if we processed all blocks
-	assert.GreaterOrEqual(t, blocksProcessed, 10) // we should process at least 1 batch
+	gotToBlockTry2, err := hiveBlocks.GetHighestBlock(context.Background())
+	assert.NoError(t, err)
 
-	blocksProcessedBeforePause := blocksProcessed
+	assert.Greater(t, gotToBlockTry2, streamer.DefaultBlockStart)
+	assert.Greater(t, gotToBlockTry2, gotToBlock)
+}
 
-	assert.False(t, s.IsPaused())
-	assert.False(t, s.IsStopped())
+func TestPersistingBlocksProcessed(t *testing.T) {
+	// cleanup
+	setupAndCleanUpDataDir(t)
 
-	// pause the streamer
+	// db
+	d := db.New()
+	assert.NoError(t, d.Init())
+	assert.NoError(t, d.Start())
+	defer func() { assert.NoError(t, d.Stop()) }()
+
+	// vsc db
+	vscDb := vsc.New(d)
+	assert.NoError(t, vscDb.Init())
+	assert.NoError(t, vscDb.Start())
+	defer func() { assert.NoError(t, vscDb.Stop()) }()
+
+	// perms
+	os.Chmod("data", 0755)
+
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
+	assert.NoError(t, err)
+
+	// start at default
+	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, nil)
+	assert.NoError(t, s.Init())
+	assert.NoError(t, s.Start())
+	defer func() { assert.NoError(t, s.Stop()) }()
+
+	lastProcessedBlk := -1
+
+	sr := streamer.NewStreamReader(hiveBlocks, func(block hive_blocks.HiveBlock) {
+		lastProcessedBlk = block.BlockNumber
+	})
+	assert.NoError(t, sr.Init())
+	assert.NoError(t, sr.Start())
+
+	time.Sleep(2 * time.Second)
+
+	assert.Greater(t, lastProcessedBlk, streamer.DefaultBlockStart)
+
 	s.Pause()
+	assert.NoError(t, sr.Stop())
 
-	assert.True(t, s.IsPaused())
-	assert.False(t, s.IsStopped())
+	newLastProcessedBlk, err := hiveBlocks.GetLastProcessedBlock(context.Background())
+	assert.NoError(t, err)
 
-	// resume the streamer
+	assert.Greater(t, newLastProcessedBlk, streamer.DefaultBlockStart)
+	assert.Equal(t, lastProcessedBlk, newLastProcessedBlk)
+
+	assert.NoError(t, sr.Stop())
+
+	resumedLastProcessedBlk := -1
+
 	s.Resume()
 
-	assert.False(t, s.IsPaused())
-	assert.False(t, s.IsStopped())
+	// redefine stream reader and see if it picks up where it left off
+	sr = streamer.NewStreamReader(hiveBlocks, func(block hive_blocks.HiveBlock) {
+		resumedLastProcessedBlk = block.BlockNumber
+	})
+	assert.NoError(t, sr.Init())
+	assert.NoError(t, sr.Start())
+	defer func() { assert.NoError(t, sr.Stop()) }()
 
-	// allow time for the streamer to resume
+	time.Sleep(2 * time.Second)
+
+	assert.Greater(t, resumedLastProcessedBlk, streamer.DefaultBlockStart)
+	assert.Greater(t, resumedLastProcessedBlk, newLastProcessedBlk)
+}
+
+func TestBlockProcessing(t *testing.T) {
+	// cleanup
+	setupAndCleanUpDataDir(t)
+
+	// db
+	d := db.New()
+	assert.NoError(t, d.Init())
+	assert.NoError(t, d.Start())
+	defer func() { assert.NoError(t, d.Stop()) }()
+
+	// vsc db
+	vscDb := vsc.New(d)
+	assert.NoError(t, vscDb.Init())
+	assert.NoError(t, vscDb.Start())
+	defer func() { assert.NoError(t, vscDb.Stop()) }()
+
+	// perms
+	os.Chmod("data", 0755)
+
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
+	assert.NoError(t, err)
+
+	// seed
+	seedBlockData(t, hiveBlocks, 10)
+
+	totalSeenBlocks := 0
+
+	sr := streamer.NewStreamReader(hiveBlocks, func(block hive_blocks.HiveBlock) {
+		totalSeenBlocks++
+	})
+	assert.NoError(t, sr.Init())
+	assert.NoError(t, sr.Start())
+	defer func() { assert.NoError(t, sr.Stop()) }()
+
 	time.Sleep(3 * time.Second)
 
-	// check if we processed more blocks
-	assert.Greater(t, blocksProcessed, blocksProcessedBeforePause)
+	assert.Equal(t, 10, totalSeenBlocks)
+}
 
-	// stop the streamer
-	assert.NoError(t, s.Stop())
+func StreamReaderTestPauseResumeStop(t *testing.T) {
+	// cleanup
+	setupAndCleanUpDataDir(t)
 
-	// check if the streamer stopped
-	assert.True(t, s.IsStopped())
+	// db
+	d := db.New()
+	assert.NoError(t, d.Init())
+	assert.NoError(t, d.Start())
+	defer func() { assert.NoError(t, d.Stop()) }()
 
-	// check if given all the time provided (more than streamer.MinTimeBetweenBlockBatchFetches multiple times over)
-	// that since `startBlock` is way less than our head, we have at least 3x batches provided, or 30 blocks
-	assert.GreaterOrEqual(t, blocksProcessed, 30)
+	// vsc db
+	vscDb := vsc.New(d)
+	assert.NoError(t, vscDb.Init())
+	assert.NoError(t, vscDb.Start())
+	defer func() { assert.NoError(t, vscDb.Stop()) }()
+
+	// perms
+	os.Chmod("data", 0755)
+
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
+	assert.NoError(t, err)
+
+	// seed
+	seedBlockData(t, hiveBlocks, 10)
+
+	totalSeenBlocks := 0
+
+	sr := streamer.NewStreamReader(hiveBlocks, func(block hive_blocks.HiveBlock) {
+		totalSeenBlocks++
+	})
+	assert.NoError(t, sr.Init())
+	assert.NoError(t, sr.Start())
+	defer func() { assert.NoError(t, sr.Stop()) }()
+
+	time.Sleep(3 * time.Second)
+
+	seenBlocksBeforePause := totalSeenBlocks
+
+	sr.Pause()
+
+	time.Sleep(1 * time.Second)
+
+	assert.Equal(t, seenBlocksBeforePause, totalSeenBlocks)
+
+	// resume
+	sr.Resume()
+
+	time.Sleep(1 * time.Second)
+
+	assert.Greater(t, totalSeenBlocks, seenBlocksBeforePause)
+
+	seenBlocksBeforeStop := totalSeenBlocks
+
+	// stop
+	sr.Stop()
+
+	time.Sleep(1 * time.Second)
+
+	assert.Equal(t, seenBlocksBeforeStop, totalSeenBlocks)
+}
+
+func StreamTestPauseResumeStop(t *testing.T) {
+	// cleanup
+	setupAndCleanUpDataDir(t)
+
+	// db
+	d := db.New()
+	assert.NoError(t, d.Init())
+	assert.NoError(t, d.Start())
+	defer func() { assert.NoError(t, d.Stop()) }()
+
+	// vsc db
+	vscDb := vsc.New(d)
+	assert.NoError(t, vscDb.Init())
+	assert.NoError(t, vscDb.Start())
+	defer func() { assert.NoError(t, vscDb.Stop()) }()
+
+	// perms
+	os.Chmod("data", 0755)
+
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
+	assert.NoError(t, err)
+
+	totalBlocks := 0
+
+	filter := func(op map[string]interface{}) bool {
+		// count total blocks in filter because this is also
+		// called just once like the process function so we can
+		// use it to guage if the streamer is still processing
+		totalBlocks++
+		return true
+	}
+
+	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
+	assert.NoError(t, s.Init())
+	assert.NoError(t, s.Start())
+	defer func() { assert.NoError(t, s.Stop()) }()
+
+	time.Sleep(3 * time.Second)
+
+	totalBlocksBeforePause := totalBlocks
+
+	s.Pause()
+
+	time.Sleep(1 * time.Second)
+
+	assert.Equal(t, totalBlocksBeforePause, totalBlocks)
+
+	// resume
+	s.Resume()
+
+	time.Sleep(1 * time.Second)
+
+	assert.Greater(t, totalBlocks, totalBlocksBeforePause)
+
+	totalBlocksBeforeStop := totalBlocks
+
+	// stop
+	s.Stop()
+
+	time.Sleep(1 * time.Second)
+
+	assert.Equal(t, totalBlocksBeforeStop, totalBlocks)
+}
+
+func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
+	// cleanup
+	setupAndCleanUpDataDir(t)
+
+	// db
+	d := db.New()
+	assert.NoError(t, d.Init())
+	assert.NoError(t, d.Start())
+	defer func() { assert.NoError(t, d.Stop()) }()
+
+	// vsc db
+	vscDb := vsc.New(d)
+	assert.NoError(t, vscDb.Init())
+	assert.NoError(t, vscDb.Start())
+	defer func() { assert.NoError(t, vscDb.Stop()) }()
+
+	// perms
+	os.Chmod("data", 0755)
+
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
+	assert.NoError(t, err)
+
+	// seed
+	seedBlockData(t, hiveBlocks, 10)
+
+	processedUpTo, err := hiveBlocks.GetLastProcessedBlock(context.Background())
+	assert.NoError(t, err)
+
+	assert.Equal(t, processedUpTo, -1) // -1 means no blocks processed yet
+
+	sr := streamer.NewStreamReader(hiveBlocks, func(block hive_blocks.HiveBlock) {})
+	assert.NoError(t, sr.Init())
+	assert.NoError(t, sr.Start())
+	defer func() { assert.NoError(t, sr.Stop()) }()
+
+	time.Sleep(3 * time.Second)
+
+	processedUpToAfterStart, err := hiveBlocks.GetLastProcessedBlock(context.Background())
+	assert.NoError(t, err)
+
+	assert.Greater(t, processedUpToAfterStart, processedUpTo)
+
+	// now seed up to 20 (10 new)
+	seedBlockData(t, hiveBlocks, 20)
+
+	time.Sleep(3 * time.Second)
+
+	processedAfterNewSeed, err := hiveBlocks.GetLastProcessedBlock(context.Background())
+	assert.NoError(t, err)
+
+	assert.Greater(t, processedAfterNewSeed, processedUpToAfterStart)
 }
 
 func TestFilterOrdering(t *testing.T) {
+	// cleanup
 	setupAndCleanUpDataDir(t)
-	mockBlockClient := &MockBlockClient{}
 
 	// db
 	d := db.New()
@@ -246,55 +680,43 @@ func TestFilterOrdering(t *testing.T) {
 	assert.NoError(t, vscDb.Start())
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
+	// perms
 	os.Chmod("data", 0755)
 
-	// new hive block manager
-	hiveBlockDbManager, err := hive_blocks.New(vscDb)
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
 
-	filter1Called := 0
-	filter2Called := 0
+	filter1SeenBlocks := 0
+	filter2SeenBlocks := 0
 
-	// dummy filters and processing function
 	filter1 := func(op map[string]interface{}) bool {
-		filter1Called++
-		return op["amount"] != "1 HIVE"
+		// filter everything
+		filter1SeenBlocks++
+		return false
 	}
 
 	filter2 := func(op map[string]interface{}) bool {
-		filter2Called++
-		return op["amount"] != "1 HIVE"
+		// filter nothing
+		filter2SeenBlocks++
+		return true
 	}
 
-	process := func(block hive_blocks.HiveBlock) {}
-
-	// init and start the streamer
-	startBlock := 5000
-	s := streamer.New(mockBlockClient, hiveBlockDbManager, []streamer.FilterFunc{filter1, filter2}, process, &startBlock)
-
-	streamer.BlockBatchSize = 10
-	streamer.AcceptableBlockLag = 2
-	streamer.HeadBlockCheckPollInterval = 100 * time.Millisecond
-	streamer.MinTimeBetweenBlockBatchFetches = 100 * time.Millisecond
-
+	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter1, filter2}, nil)
 	assert.NoError(t, s.Init())
 	assert.NoError(t, s.Start())
 	defer func() { assert.NoError(t, s.Stop()) }()
 
-	// allow time for processing the dummy data
 	time.Sleep(3 * time.Second)
 
-	// check if the filters were called in correct order
-	//
-	// since we're filtering out all the operations, filter 2 should not be called
-	assert.Greater(t, filter1Called, filter2Called)
-	assert.Equal(t, filter2Called, 0)
-	assert.NotEqual(t, filter1Called, 0)
+	assert.Greater(t, filter1SeenBlocks, filter2SeenBlocks)
+	assert.Equal(t, 0, filter2SeenBlocks)
+	assert.Greater(t, filter1SeenBlocks, 0)
 }
 
 func TestBlockLag(t *testing.T) {
+	// cleanup
 	setupAndCleanUpDataDir(t)
-	mockBlockClient := &MockBlockClient{}
 
 	// db
 	d := db.New()
@@ -308,119 +730,53 @@ func TestBlockLag(t *testing.T) {
 	assert.NoError(t, vscDb.Start())
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
+	// perms
 	os.Chmod("data", 0755)
 
-	// new hive block manager
-	hiveBlockDbManager, err := hive_blocks.New(vscDb)
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
 
-	// dummy filters and processing function
+	streamer.AcceptableBlockLag = 5
+	streamer.DefaultBlockStart = dummyBlockHead - 3
+
+	totalBlocks := 0
+
 	filter := func(op map[string]interface{}) bool {
+		totalBlocks++
+		// allow anything through
 		return true
 	}
 
-	process := func(block hive_blocks.HiveBlock) {}
-
-	// init and start the streamer
-	startBlock := streamer.DefaultBlockStart*3 - 7 // 7 blocks behind head from our mock head
-	s := streamer.New(mockBlockClient, hiveBlockDbManager, []streamer.FilterFunc{filter}, process, &startBlock)
-
-	streamer.BlockBatchSize = 10
-	streamer.AcceptableBlockLag = 8 // we tolerate 8 blocks behind head
-	streamer.HeadBlockCheckPollInterval = 100 * time.Millisecond
-	streamer.MinTimeBetweenBlockBatchFetches = 100 * time.Millisecond
-
-	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
-	defer func() { assert.NoError(t, s.Stop()) }()
-
-	// allow time for processing the dummy data
-	time.Sleep(3 * time.Second)
-
-	// check if we're within the block lag
-	assert.Equal(t, s.StartBlock(), startBlock)
-}
-
-func TestFindingSettingClearing(t *testing.T) {
-	setupAndCleanUpDataDir(t)
-	mockBlockClient := &MockBlockClient{}
-
-	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
-
-	// vsc db
-	vscDb := vsc.New(d)
-	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
-	defer func() { assert.NoError(t, vscDb.Stop()) }()
-
-	os.Chmod("data", 0755)
-
-	// new hive block manager
-	hiveBlockDbManager, err := hive_blocks.New(vscDb)
-	assert.NoError(t, err)
-	assert.NoError(t, hiveBlockDbManager.ClearBlocks(context.Background()))
-
-	// dummy filters and processing function
-	filter := func(op map[string]interface{}) bool {
-		return true
-	}
-
-	process := func(block hive_blocks.HiveBlock) {}
-
-	// init and start the streamer
-	s := streamer.New(mockBlockClient, hiveBlockDbManager, []streamer.FilterFunc{filter}, process, nil)
-
-	streamer.BlockBatchSize = 10
-	streamer.AcceptableBlockLag = 2
-	streamer.HeadBlockCheckPollInterval = 100 * time.Millisecond
-	streamer.MinTimeBetweenBlockBatchFetches = 100 * time.Millisecond
-
-	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
-	defer func() { assert.NoError(t, s.Stop()) }()
-
-	assert.Equal(t, s.StartBlock(), streamer.DefaultBlockStart)
-
-	// now we run for a bit to increase this
-	time.Sleep(3 * time.Second)
-
-	// now let's stop it
-	assert.NoError(t, s.Stop())
-
-	// then let's redefine a new one
-	s = streamer.New(mockBlockClient, hiveBlockDbManager, []streamer.FilterFunc{filter}, process, nil)
-
-	// we should no have it start NOT at default since it has SOME amount of blocks its processed
-	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
-
-	assert.Greater(t, s.StartBlock(), streamer.DefaultBlockStart)
-
-	// pause
-	s.Pause()
-
-	time.Sleep(6 * time.Second)
-
-	// now let's test our clear functionality
-	assert.NoError(t, hiveBlockDbManager.ClearBlocks(context.Background()))
-
-	assert.NoError(t, s.Stop())
-
-	// now if we redeclare and start, it should be back at default
-	s = streamer.New(mockBlockClient, hiveBlockDbManager, []streamer.FilterFunc{filter}, process, nil)
-
+	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
 	assert.NoError(t, s.Init())
 	assert.Equal(t, streamer.DefaultBlockStart, s.StartBlock())
 	assert.NoError(t, s.Start())
+
+	time.Sleep(3 * time.Second)
+
+	// we shoudn't see any blocks because we're
+	// only 3 blocks behind which is within the lag
+	assert.Equal(t, 0, totalBlocks)
+	assert.NoError(t, s.Stop())
+
+	// now we should see blocks
+	streamer.DefaultBlockStart = dummyBlockHead - 6
+
+	// create new streamer
+	s = streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
+	assert.NoError(t, s.Init())
+	assert.NoError(t, s.Start())
+	defer func() { assert.NoError(t, s.Stop()) }()
+
+	time.Sleep(3 * time.Second)
+
+	assert.Greater(t, totalBlocks, 0)
 }
 
-func TestStartAndHeadBlock(t *testing.T) {
+func TestClearingStoredBlocks(t *testing.T) {
+	// cleanup
 	setupAndCleanUpDataDir(t)
-	mockBlockClient := &MockBlockClient{}
 
 	// db
 	d := db.New()
@@ -434,42 +790,50 @@ func TestStartAndHeadBlock(t *testing.T) {
 	assert.NoError(t, vscDb.Start())
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
+	// perms
 	os.Chmod("data", 0755)
 
-	// new hive block manager
-	hiveBlockDbManager, err := hive_blocks.New(vscDb)
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
 
-	// dummy filters and processing function
+	// seed
+	seedBlockData(t, hiveBlocks, 10)
+
+	totalBlocks := 0
+
 	filter := func(op map[string]interface{}) bool {
+		totalBlocks++
+		// allow anything through
 		return true
 	}
 
-	process := func(block hive_blocks.HiveBlock) {}
-
-	// init and start the streamer
-	s := streamer.New(mockBlockClient, hiveBlockDbManager, []streamer.FilterFunc{filter}, process, nil)
-
-	streamer.BlockBatchSize = 10
-	streamer.AcceptableBlockLag = 2
-	streamer.HeadBlockCheckPollInterval = 100 * time.Millisecond
-	streamer.MinTimeBetweenBlockBatchFetches = 100 * time.Millisecond
-
+	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
 	assert.NoError(t, s.Init())
 	assert.NoError(t, s.Start())
-	defer func() { assert.NoError(t, s.Stop()) }()
 
-	// allow time for processing the dummy data
 	time.Sleep(3 * time.Second)
 
-	// check if we're within the block lag
-	assert.Greater(t, s.StartBlock(), 1)
-	assert.Equal(t, s.HeadHeight(), streamer.DefaultBlockStart*3)
+	assert.Greater(t, totalBlocks, 0)
+
+	assert.NotEqual(t, s.StartBlock(), streamer.DefaultBlockStart)
+
+	assert.NoError(t, s.Stop())
+
+	// clear
+	assert.NoError(t, hiveBlocks.ClearBlocks(context.Background()))
+
+	// restart
+	s = streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
+	assert.NoError(t, s.Init())
+	assert.Equal(t, streamer.DefaultBlockStart, s.StartBlock())
+	assert.NoError(t, s.Start())
+	assert.NoError(t, s.Stop())
 }
 
-func TestFetchStoredBlocks(t *testing.T) {
+func TestClearingLastProcessedBlock(t *testing.T) {
+	// cleanup
 	setupAndCleanUpDataDir(t)
-	mockBlockClient := &MockBlockClient{}
 
 	// db
 	d := db.New()
@@ -483,106 +847,139 @@ func TestFetchStoredBlocks(t *testing.T) {
 	assert.NoError(t, vscDb.Start())
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
+	// perms
 	os.Chmod("data", 0755)
 
-	// new hive block manager
-	hiveBlockDbManager, err := hive_blocks.New(vscDb)
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
 
-	// dummy filters and processing function
-	filter := func(op map[string]interface{}) bool {
-		return true
-	}
+	seedBlockData(t, hiveBlocks, 10)
 
-	process := func(block hive_blocks.HiveBlock) {}
+	totalBlocks := 0
 
-	// init and start the streamer
-	s := streamer.New(mockBlockClient, hiveBlockDbManager, []streamer.FilterFunc{filter}, process, nil)
+	sr := streamer.NewStreamReader(hiveBlocks, func(block hive_blocks.HiveBlock) {
+		totalBlocks++
+	})
+	assert.NoError(t, sr.Init())
+	assert.NoError(t, sr.Start())
+	defer func() { assert.NoError(t, sr.Stop()) }()
 
-	streamer.BlockBatchSize = 10
-	streamer.AcceptableBlockLag = 2
-	streamer.HeadBlockCheckPollInterval = 100 * time.Millisecond
-	streamer.MinTimeBetweenBlockBatchFetches = 100 * time.Millisecond
+	time.Sleep(3 * time.Second)
 
+	lastProcessedBlock, err := hiveBlocks.GetLastProcessedBlock(context.Background())
+	assert.NoError(t, err)
+
+	assert.Greater(t, lastProcessedBlock, 0)
+
+	assert.NoError(t, hiveBlocks.StoreLastProcessedBlock(context.Background(), 33))
+
+	lastProcessedBlockAfterClear, err := hiveBlocks.GetLastProcessedBlock(context.Background())
+	assert.NoError(t, err)
+
+	assert.Equal(t, 33, lastProcessedBlockAfterClear)
+}
+
+func TestHeadBlock(t *testing.T) {
+	// cleanup
+	setupAndCleanUpDataDir(t)
+
+	// db
+	d := db.New()
+	assert.NoError(t, d.Init())
+	assert.NoError(t, d.Start())
+	defer func() { assert.NoError(t, d.Stop()) }()
+
+	// vsc db
+	vscDb := vsc.New(d)
+	assert.NoError(t, vscDb.Init())
+	assert.NoError(t, vscDb.Start())
+	defer func() { assert.NoError(t, vscDb.Stop()) }()
+
+	// perms
+	os.Chmod("data", 0755)
+
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
+	assert.NoError(t, err)
+
+	mockClient := &MockBlockClient{}
+
+	dynData, err := mockClient.GetDynamicGlobalProps()
+	assert.NoError(t, err)
+
+	var headBlock map[string]interface{}
+	err = json.Unmarshal(dynData, &headBlock)
+	assert.NoError(t, err)
+
+	headBlockNum := int(headBlock["head_block_number"].(float64))
+
+	s := streamer.NewStreamer(mockClient, hiveBlocks, nil, nil)
 	assert.NoError(t, s.Init())
 	assert.NoError(t, s.Start())
 	defer func() { assert.NoError(t, s.Stop()) }()
 
-	// allow time for processing the dummy data
 	time.Sleep(3 * time.Second)
 
-	// now let's fetch the stored blocks
-	blocks, err := hiveBlockDbManager.FetchStoredBlocks(context.Background(), streamer.DefaultBlockStart, streamer.DefaultBlockStart+9)
+	assert.Equal(t, headBlockNum, s.HeadHeight())
+}
+
+func TestDbStoredBlockIntegrity(t *testing.T) {
+	// cleanup
+	setupAndCleanUpDataDir(t)
+
+	// db
+	d := db.New()
+	assert.NoError(t, d.Init())
+	assert.NoError(t, d.Start())
+	defer func() { assert.NoError(t, d.Stop()) }()
+
+	// vsc db
+	vscDb := vsc.New(d)
+	assert.NoError(t, vscDb.Init())
+	assert.NoError(t, vscDb.Start())
+	defer func() { assert.NoError(t, vscDb.Stop()) }()
+
+	// perms
+	os.Chmod("data", 0755)
+
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
-	assert.Len(t, blocks, 10)
 
-	// confirm that these blocks match our mock data and are in order
-	//
-	// also, checks validity of blocks
-	for i, block := range blocks {
+	seedBlockData(t, hiveBlocks, 10)
 
-		// block metadata
-		assert.Equal(t, block.BlockNumber, streamer.DefaultBlockStart+i)
-		assert.Equal(t, block.BlockID, fmt.Sprintf("fake-block-id-%d", streamer.DefaultBlockStart+i))
+	// ensure all blocks are there
+	storedBlocks, err := hiveBlocks.FetchStoredBlocks(context.Background(), 1, 10)
+	assert.NoError(t, err)
+	assert.Len(t, storedBlocks, 10)
 
-		// block txs
+	// ensure all blocks are in order
+	for i, block := range storedBlocks {
+		assert.Equal(t, i+1, block.BlockNumber)
+	}
+
+	// expected metadata
+	expectedTimestamp := "2024-01-01T00:00:00"
+	expectedAmount := "1 HIVE"
+
+	// ensure all blocks have the expected data
+	for i, block := range storedBlocks {
+		expectedBlockID := fmt.Sprintf("some-block-id-%d", i+1)
+		expectedMerkleRoot := fmt.Sprintf("some-merkle-root-%d", i+1)
+		expectedTransactionID := fmt.Sprintf("some-tx-id-%d", i+1)
+
+		assert.Equal(t, i+1, block.BlockNumber)
+		assert.Equal(t, expectedBlockID, block.BlockID)
+		assert.Equal(t, expectedTimestamp, block.Timestamp)
+		assert.Equal(t, expectedMerkleRoot, block.MerkleRoot)
+
 		assert.Len(t, block.Transactions, 1)
+		assert.Equal(t, expectedTransactionID, block.Transactions[0].TransactionID)
 		assert.Len(t, block.Transactions[0].Operations, 1)
-	}
-}
-
-func TestProcessAfterFiltering(t *testing.T) {
-	setupAndCleanUpDataDir(t)
-	mockBlockClient := &MockBlockClient{}
-
-	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
-
-	// vsc db
-	vscDb := vsc.New(d)
-	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
-	defer func() { assert.NoError(t, vscDb.Stop()) }()
-
-	os.Chmod("data", 0755)
-
-	// new hive block manager
-	hiveBlockDbManager, err := hive_blocks.New(vscDb)
-	assert.NoError(t, err)
-
-	// dummy filters and processing function
-	filter := func(op map[string]interface{}) bool {
-		return false // don't let any ops through
+		assert.Equal(t, expectedAmount, block.Transactions[0].Operations[0]["amount"])
 	}
 
-	processCalled := 0
-
-	process := func(block hive_blocks.HiveBlock) {
-		processCalled++
-		// we should have no txs since we filtered them all out before this
-		assert.Len(t, block.Transactions, 0)
-	}
-
-	// init and start the streamer
-	s := streamer.New(mockBlockClient, hiveBlockDbManager, []streamer.FilterFunc{filter}, process, nil)
-
-	streamer.BlockBatchSize = 10
-	streamer.AcceptableBlockLag = 2
-	streamer.HeadBlockCheckPollInterval = 100 * time.Millisecond
-	streamer.MinTimeBetweenBlockBatchFetches = 100 * time.Millisecond
-
-	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
-	defer func() { assert.NoError(t, s.Stop()) }()
-
-	// allow time for processing the dummy data
-	time.Sleep(3 * time.Second)
-
-	// check if we processed all blocks
-	assert.GreaterOrEqual(t, processCalled, 10) // we should process at least 1 batch
 }
 
 func TestNestedArrayStructure(t *testing.T) {
@@ -649,9 +1046,11 @@ func TestNestedArrayStructure(t *testing.T) {
 	assert.Equal(t, originalBlock, &fetchedBlocks[0])
 }
 
-// todo: vault's experiment
+// todo: Vaultec's experiments
 func TestVaultecExperiments(t *testing.T) {
-	return // todo: remove for further work
+	// return // todo: Vaultec's experiments
+
+	// cleanup
 	setupAndCleanUpDataDir(t)
 
 	// db
@@ -666,42 +1065,40 @@ func TestVaultecExperiments(t *testing.T) {
 	assert.NoError(t, vscDb.Start())
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
+	// perms
 	os.Chmod("data", 0755)
 
-	// new hive block manager
-	hiveBlockDbManager, err := hive_blocks.New(vscDb)
+	// settings
+	streamer.AcceptableBlockLag = 0
+	streamer.BlockBatchSize = 100
+	streamer.DefaultBlockStart = 81614028
+	streamer.HeadBlockCheckPollIntervalBeforeFirstUpdate = time.Millisecond * 1500
+	streamer.MinTimeBetweenBlockBatchFetches = time.Millisecond * 1500
+	streamer.DbPollInterval = time.Millisecond * 500
+
+	// hive blocks
+	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
 
-	// dummy filters and processing function
 	filter := func(op map[string]interface{}) bool {
+		// filter nothing
 		return true
-	}
-
-	process := func(block hive_blocks.HiveBlock) {
-		fmt.Println("PROCESSING BLOCK:", block.BlockNumber, "WITH TXS:", len(block.Transactions))
-
-		// for _, tx := range block.Transactions {
-		// 	fmt.Println(tx)
-		// 	for _,op := range tx.Operations {
-
-		// 	}
-
-		// }
 	}
 
 	client := hivego.NewHiveRpc("https://api.hive.blog") // https://hive-api.web3telekom.xyz
 
-	streamer.BlockBatchSize = 100
-	// streamer.AcceptableBlockLag = 2
-	// streamer.HeadBlockCheckPollInterval = 3 * time.Second
-	streamer.MinTimeBetweenBlockBatchFetches = 3 * time.Second
-
-	// init and start the streamer
-	s := streamer.New(client, hiveBlockDbManager, []streamer.FilterFunc{filter}, process, &[]int{81614765}[0])
-
+	s := streamer.NewStreamer(client, hiveBlocks, []streamer.FilterFunc{filter}, nil)
 	assert.NoError(t, s.Init())
 	assert.NoError(t, s.Start())
 	defer func() { assert.NoError(t, s.Stop()) }()
+
+	process := func(block hive_blocks.HiveBlock) {
+		fmt.Printf("block: %v\n", block)
+	}
+	sr := streamer.NewStreamReader(hiveBlocks, process)
+	assert.NoError(t, sr.Init())
+	assert.NoError(t, sr.Start())
+	defer func() { assert.NoError(t, sr.Stop()) }()
 
 	select {}
 }

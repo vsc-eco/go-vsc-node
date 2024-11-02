@@ -29,10 +29,7 @@ func main() {
 	blockClient := hivego.NewHiveRpc("https://api.hive.blog")
 	filter := func(op map[string]interface{}) bool { return true }
 	filters := []streamer.FilterFunc{filter}
-	process := func(block hive_blocks.HiveBlock) {
-		fmt.Printf("processed block %d with ID %s\n", block.BlockNumber, block.BlockID)
-	}
-	streamerPlugin := streamer.New(blockClient, hiveBlocks, filters, process, nil) // optional starting block #
+	streamerPlugin := streamer.NewStreamer(blockClient, hiveBlocks, filters, nil) // optional starting block #
 
 	plugins := make([]aggregate.Plugin, 0)
 
