@@ -73,38 +73,57 @@ type StreamReader struct {
 	lastProcessed int
 	stopped       chan struct{}
 	hiveBlocks    hiveblocks.HiveBlocks
+	stopOnlyOnce  sync.Once
+	wg            sync.WaitGroup
 }
 
 // inits a StreamReader with the provided hiveBlocks interface and process function
 func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction) *StreamReader {
 	if process == nil {
-		panic("process function must be provided")
+		process = func(block hiveblocks.HiveBlock) {} // no-op
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &StreamReader{
-		process:    process,
-		hiveBlocks: hiveBlocks,
-		ctx:        ctx,
-		cancel:     cancel,
-		stopped:    make(chan struct{}),
+		process:      process,
+		hiveBlocks:   hiveBlocks,
+		ctx:          ctx,
+		cancel:       cancel,
+		stopped:      make(chan struct{}),
+		wg:           sync.WaitGroup{},
+		stopOnlyOnce: sync.Once{},
+		isPaused:     false,
+	}
+}
+
+func (s *StreamReader) canProcess() bool {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	select {
+	case <-s.stopped:
+		return false
+	default:
+		return !s.isPaused
 	}
 }
 
 // inits the StreamReader, fetching the last processed block
 func (s *StreamReader) Init() error {
 	// fetch the last processed block number
-	lp, err := s.hiveBlocks.GetLastProcessedBlock(context.Background())
+	lp, err := s.hiveBlocks.GetLastProcessedBlock()
 	if err != nil {
 		return fmt.Errorf("error getting last processed block: %v", err)
 	}
-	fmt.Println("last processed block:", lp)
 	s.lastProcessed = lp
 	return nil
 }
 
 // begins the polling loop for the StreamReader
 func (s *StreamReader) Start() error {
-	go s.pollDb()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.pollDb()
+	}()
 	return nil
 }
 
@@ -116,15 +135,14 @@ func (s *StreamReader) pollDb() {
 	for {
 		select {
 		case <-s.ctx.Done():
-			close(s.stopped)
 			return
 		case <-ticker.C:
-			if s.IsPaused() {
+			if s.IsPaused() || !s.canProcess() {
 				continue
 			}
 
 			// fetch the highest stored block in the database
-			highestBlock, err := s.hiveBlocks.GetHighestBlock(context.Background())
+			highestBlock, err := s.hiveBlocks.GetHighestBlock()
 			if err != nil {
 				log.Printf("error fetching highest block: %v", err)
 				continue
@@ -133,9 +151,7 @@ func (s *StreamReader) pollDb() {
 			// if there are new blocks, process all of them up to the highest block
 			if s.lastProcessed < highestBlock {
 				// fetch all blocks from lastProcessed + 1 to highestBlock
-				batchEnd := highestBlock
-
-				blocks, err := s.hiveBlocks.FetchStoredBlocks(context.Background(), s.lastProcessed+1, batchEnd)
+				blocks, err := s.hiveBlocks.FetchStoredBlocks(s.lastProcessed+1, highestBlock)
 				if err != nil {
 					log.Printf("error fetching blocks: %v", err)
 					continue
@@ -146,15 +162,24 @@ func (s *StreamReader) pollDb() {
 					continue
 				}
 
+				// store the initial lastProcessed value
+				oldLastProcessed := s.lastProcessed
+
 				for _, block := range blocks {
-					s.process(block)
-					// update last processed block
-					s.lastProcessed = block.BlockNumber
+					if s.canProcess() {
+						s.process(block)
+						s.mtx.Lock()
+						// update last processed block
+						s.lastProcessed = block.BlockNumber
+						s.mtx.Unlock()
+					}
 				}
 
-				// persist the updated last processed block number
-				if err := s.hiveBlocks.StoreLastProcessedBlock(context.Background(), s.lastProcessed); err != nil {
-					log.Printf("error updating last processed block: %v", err)
+				// persist the updated last processed block only if it changed
+				if s.lastProcessed != oldLastProcessed {
+					if err := s.hiveBlocks.StoreLastProcessedBlock(s.lastProcessed); err != nil {
+						log.Printf("error updating last processed block: %v", err)
+					}
 				}
 			}
 		}
@@ -163,8 +188,14 @@ func (s *StreamReader) pollDb() {
 
 // stops the StreamReader
 func (s *StreamReader) Stop() error {
-	s.cancel()
-	<-s.stopped
+	s.stopOnlyOnce.Do(func() {
+		s.cancel()
+		s.wg.Wait()
+		if s.stopped != nil {
+			close(s.stopped)
+		}
+
+	})
 	return nil
 }
 
@@ -216,6 +247,8 @@ type Streamer struct {
 	stopOnlyOnce   sync.Once
 	headHeight     int
 	hasFetchedHead bool
+	wg             sync.WaitGroup
+	processWg      sync.WaitGroup
 }
 
 // ===== streamer =====
@@ -232,6 +265,9 @@ func NewStreamer(blockClient BlockClient, hiveBlocks hiveblocks.HiveBlocks, filt
 		streamPaused:   false,
 		stopped:        nil,
 		hasFetchedHead: false,
+		wg:             sync.WaitGroup{},
+		processWg:      sync.WaitGroup{},
+		stopOnlyOnce:   sync.Once{},
 	}
 }
 
@@ -250,7 +286,7 @@ func (s *Streamer) Init() error {
 	}
 
 	// gets the last processed block
-	lastBlock, err := s.hiveBlocks.GetLastProcessedBlock(context.Background())
+	lastBlock, err := s.hiveBlocks.GetLastProcessedBlock()
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			// no previous blocks processed, thus start from DefaultBlockStart
@@ -280,8 +316,15 @@ func (s *Streamer) Init() error {
 
 func (s *Streamer) Start() error {
 	s.stopped = make(chan struct{})
-	go s.streamBlocks()
-	go s.trackHeadHeight()
+	s.wg.Add(2)
+	go func() {
+		defer s.wg.Done()
+		s.streamBlocks()
+	}()
+	go func() {
+		defer s.wg.Done()
+		s.trackHeadHeight()
+	}()
 	return nil // returns error just to satisfy plugin interface
 }
 
@@ -304,10 +347,11 @@ func updateHead(bc BlockClient) (int, error) {
 	return 0, fmt.Errorf("failed to get head block number")
 }
 
+// updates the head height of the streamer at intervals, and since this endpiont is sensitive
+// to rate limiting, we apply backoff intervals
 func (s *Streamer) trackHeadHeight() {
 	ticker := time.NewTicker(HeadBlockCheckPollIntervalBeforeFirstUpdate)
 	defer ticker.Stop()
-
 	var updateLock sync.Mutex
 	backoff := HeadBlockCheckPollIntervalBeforeFirstUpdate
 
@@ -317,88 +361,85 @@ func (s *Streamer) trackHeadHeight() {
 			return
 		case <-ticker.C:
 			if updateLock.TryLock() {
-				go func() {
-					defer updateLock.Unlock()
+				// unlock immediately since we're not in a nested goroutine
+				updateLock.Unlock()
 
-					head, err := updateHead(s.client)
-					if err != nil {
-						log.Printf("Failed to update head height: %v\n", err)
+				head, err := updateHead(s.client)
+				if err != nil {
+					log.Printf("failed to update head height: %v\n", err)
 
-						// apply backoff with max cap if update fails
-						if backoff < HeadBlockMaxBackoffInterval {
-							backoff *= 2
+					// apply backoff with max cap if update fails
+					if backoff < HeadBlockMaxBackoffInterval {
+						backoff *= 2
+						if backoff > HeadBlockMaxBackoffInterval {
+							backoff = HeadBlockMaxBackoffInterval
 						}
-						ticker.Reset(backoff)
-						return
 					}
-
-					// on successful head height -> update
-					s.mtx.Lock()
-					s.headHeight = head
-					if !s.hasFetchedHead {
-						s.hasFetchedHead = true
-					}
-					s.mtx.Unlock()
-
-					// reset to normal interval after first successful update
-					backoff = HeadBlockCheckPollIntervalOnceUpdated
 					ticker.Reset(backoff)
-				}()
+					continue
+				}
+
+				// on successful head height update
+				s.mtx.Lock()
+				s.headHeight = head
+				if !s.hasFetchedHead {
+					s.hasFetchedHead = true // this will then allow the streamer to start
+				}
+				s.mtx.Unlock()
+
+				// reset backoff to normal interval after successful update
+				backoff = HeadBlockCheckPollIntervalOnceUpdated
+				ticker.Reset(backoff)
 			}
 		}
 	}
 }
 
 func (s *Streamer) streamBlocks() {
-	defer func() {
-		if s.stopped != nil {
-			close(s.stopped)
-		}
-	}()
-
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		default:
-			// if paused, or we haven't fetched the head yet, we don't need to fetch blocks
 			if s.IsPaused() || !s.hasFetchedHead {
 				continue
 			}
 
-			// if we're within the acceptable block lag, no need to fetch more blocks
 			if int(math.Abs(float64(s.headHeight-*s.startBlock))) <= AcceptableBlockLag {
+				continue
+			}
+
+			blocks, err := s.fetchBlockBatch(*s.startBlock, BlockBatchSize)
+			if err != nil {
+				log.Printf("error fetching block batch: %v\n", err)
 				time.Sleep(MinTimeBetweenBlockBatchFetches)
 				continue
 			}
 
-			// batch fetch and process blocks
-			blocks, err := s.fetchBlockBatch(*s.startBlock, BlockBatchSize)
-			if err != nil {
-				log.Printf("error fetching block batch: %v\n", err)
-				time.Sleep(3 * time.Second) // retry delay
-				continue
-			}
+			s.mtx.Lock()
+			*s.startBlock += len(blocks)
+			s.mtx.Unlock()
 
-			for _, blk := range blocks {
-				select {
-				case <-s.ctx.Done():
-					return
-				default:
-					// inc startBlock before processing to ensure progress
-					*s.startBlock = blk.BlockNumber + 1
-
-					err := s.processBlock(&blk)
-					if err != nil {
-						log.Printf("processing block %d failed: %v\n", blk.BlockNumber, err)
-						continue
+			// start goroutine to process the blocks
+			//
+			// this REALLY, REALLY helps speed up the processing of blocks
+			s.processWg.Add(1)
+			go func(blocks []hivego.Block) {
+				defer s.processWg.Done()
+				for _, blk := range blocks {
+					select {
+					case <-s.ctx.Done():
+						return
+					default:
+						if err := s.storeBlock(&blk); err != nil {
+							log.Printf("processing block %d failed: %v\n", blk.BlockNumber, err)
+						}
 					}
 				}
-			}
+			}(blocks)
 
-			// min time between fetches
+			// wait before fetching the next batch whatever min duration that is preset
 			time.Sleep(MinTimeBetweenBlockBatchFetches)
-
 		}
 	}
 }
@@ -416,6 +457,8 @@ func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, e
 
 	for {
 		select {
+		case <-s.ctx.Done():
+			return blocks, fmt.Errorf("streamer is stopped")
 		case block, ok := <-blockChan:
 			if !ok {
 				return blocks, nil
@@ -442,7 +485,7 @@ func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, e
 	}
 }
 
-func (s *Streamer) processBlock(block *hivego.Block) error {
+func (s *Streamer) storeBlock(block *hivego.Block) error {
 	// init the filtered block with essential fields
 	hiveBlock := hiveblocks.HiveBlock{
 		BlockNumber:  block.BlockNumber,
@@ -467,7 +510,7 @@ func (s *Streamer) processBlock(block *hivego.Block) error {
 				// if the streamer is paused or stopped, skip block processing, this
 				// fixes some case where the streamer is stopped but some other go routine
 				// is still finishing up a cycle of processing
-				if !s.canProcess() {
+				if !s.canStore() {
 					return fmt.Errorf("streamer is paused or stopped")
 				}
 				if !filter(op.Value) {
@@ -489,13 +532,13 @@ func (s *Streamer) processBlock(block *hivego.Block) error {
 	// if the streamer is paused or stopped, skip block processing, this
 	// fixes some case where the streamer is stopped but some other go routine
 	// is still finishing up a cycle of processing
-	if !s.canProcess() {
+	if !s.canStore() {
 		return fmt.Errorf("streamer is paused or stopped")
 	}
 	// store the block with filtered txs
 	//
 	// even if a block has no txs, we store
-	if err := s.hiveBlocks.StoreBlock(context.Background(), &hiveBlock); err != nil {
+	if err := s.hiveBlocks.StoreBlock(&hiveBlock); err != nil {
 		return fmt.Errorf("failed to store block: %v", err)
 	}
 
@@ -520,7 +563,7 @@ func (s *Streamer) Resume() error {
 	}
 }
 
-func (s *Streamer) canProcess() bool {
+func (s *Streamer) canStore() bool {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 	return !s.streamPaused && !s.IsStopped()
@@ -528,8 +571,29 @@ func (s *Streamer) canProcess() bool {
 
 func (s *Streamer) Stop() error {
 	s.stopOnlyOnce.Do(func() {
-		s.cancel()
-		<-s.stopped
+		s.cancel() // cancel context to signal all goroutines to stop
+
+		// wait for the main routines to stop
+		s.wg.Wait()
+
+		// wait for the block processing goroutines with a timeout
+		// to ensure we don't wait forever
+		stoppedProcessing := make(chan struct{})
+		go func() {
+			s.processWg.Wait()
+			close(stoppedProcessing)
+		}()
+
+		select {
+		case <-stoppedProcessing:
+			log.Println("all processing routines stopped successfully")
+		case <-time.After(5 * time.Second):
+			log.Println("timeout waiting for processing routines to stop")
+		}
+
+		if s.stopped != nil {
+			close(s.stopped)
+		}
 	})
 	return nil
 }

@@ -6,7 +6,6 @@ package streamer_test
 // ===== NOTE =====
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -39,7 +38,7 @@ func init() {
 	streamer.DefaultBlockStart = 81614028
 	streamer.HeadBlockCheckPollIntervalBeforeFirstUpdate = time.Millisecond * 10
 	streamer.MinTimeBetweenBlockBatchFetches = time.Millisecond * 10
-	streamer.DbPollInterval = time.Millisecond * 10
+	streamer.DbPollInterval = time.Millisecond * 200
 }
 
 // ===== test utils =====
@@ -83,7 +82,7 @@ func seedBlockData(t *testing.T, hiveBlocks hive_blocks.HiveBlocks, n int) {
 		}
 
 		// store block
-		err := hiveBlocks.StoreBlock(context.Background(), block)
+		err := hiveBlocks.StoreBlock(block)
 		assert.NoError(t, err)
 	}
 }
@@ -354,7 +353,7 @@ func TestPersistingBlocksStored(t *testing.T) {
 
 	assert.NoError(t, s.Stop())
 
-	gotToBlock, err := hiveBlocks.GetHighestBlock(context.Background())
+	gotToBlock, err := hiveBlocks.GetHighestBlock()
 	assert.NoError(t, err)
 
 	assert.Greater(t, gotToBlock, 0)
@@ -364,9 +363,9 @@ func TestPersistingBlocksStored(t *testing.T) {
 	assert.NoError(t, s.Start())
 	defer func() { assert.NoError(t, s.Stop()) }()
 
-	time.Sleep(1 * time.Second)
+	time.Sleep(3 * time.Second)
 
-	gotToBlockTry2, err := hiveBlocks.GetHighestBlock(context.Background())
+	gotToBlockTry2, err := hiveBlocks.GetHighestBlock()
 	assert.NoError(t, err)
 
 	assert.Greater(t, gotToBlockTry2, streamer.DefaultBlockStart)
@@ -417,7 +416,7 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 	s.Pause()
 	assert.NoError(t, sr.Stop())
 
-	newLastProcessedBlk, err := hiveBlocks.GetLastProcessedBlock(context.Background())
+	newLastProcessedBlk, err := hiveBlocks.GetLastProcessedBlock()
 	assert.NoError(t, err)
 
 	assert.Greater(t, newLastProcessedBlk, streamer.DefaultBlockStart)
@@ -483,7 +482,7 @@ func TestBlockProcessing(t *testing.T) {
 	assert.Equal(t, 10, totalSeenBlocks)
 }
 
-func StreamReaderTestPauseResumeStop(t *testing.T) {
+func TestStreamReaderPauseResumeStop(t *testing.T) {
 	// cleanup
 	setupAndCleanUpDataDir(t)
 
@@ -531,6 +530,9 @@ func StreamReaderTestPauseResumeStop(t *testing.T) {
 	// resume
 	sr.Resume()
 
+	// seed
+	seedBlockData(t, hiveBlocks, 20)
+
 	time.Sleep(1 * time.Second)
 
 	assert.Greater(t, totalSeenBlocks, seenBlocksBeforePause)
@@ -545,7 +547,7 @@ func StreamReaderTestPauseResumeStop(t *testing.T) {
 	assert.Equal(t, seenBlocksBeforeStop, totalSeenBlocks)
 }
 
-func StreamTestPauseResumeStop(t *testing.T) {
+func TestStreamPauseResumeStop(t *testing.T) {
 	// cleanup
 	setupAndCleanUpDataDir(t)
 
@@ -636,7 +638,7 @@ func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
 	// seed
 	seedBlockData(t, hiveBlocks, 10)
 
-	processedUpTo, err := hiveBlocks.GetLastProcessedBlock(context.Background())
+	processedUpTo, err := hiveBlocks.GetLastProcessedBlock()
 	assert.NoError(t, err)
 
 	assert.Equal(t, processedUpTo, -1) // -1 means no blocks processed yet
@@ -648,7 +650,7 @@ func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
 
 	time.Sleep(3 * time.Second)
 
-	processedUpToAfterStart, err := hiveBlocks.GetLastProcessedBlock(context.Background())
+	processedUpToAfterStart, err := hiveBlocks.GetLastProcessedBlock()
 	assert.NoError(t, err)
 
 	assert.Greater(t, processedUpToAfterStart, processedUpTo)
@@ -658,7 +660,7 @@ func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
 
 	time.Sleep(3 * time.Second)
 
-	processedAfterNewSeed, err := hiveBlocks.GetLastProcessedBlock(context.Background())
+	processedAfterNewSeed, err := hiveBlocks.GetLastProcessedBlock()
 	assert.NoError(t, err)
 
 	assert.Greater(t, processedAfterNewSeed, processedUpToAfterStart)
@@ -821,7 +823,7 @@ func TestClearingStoredBlocks(t *testing.T) {
 	assert.NoError(t, s.Stop())
 
 	// clear
-	assert.NoError(t, hiveBlocks.ClearBlocks(context.Background()))
+	assert.NoError(t, hiveBlocks.ClearBlocks())
 
 	// restart
 	s = streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
@@ -867,14 +869,14 @@ func TestClearingLastProcessedBlock(t *testing.T) {
 
 	time.Sleep(3 * time.Second)
 
-	lastProcessedBlock, err := hiveBlocks.GetLastProcessedBlock(context.Background())
+	lastProcessedBlock, err := hiveBlocks.GetLastProcessedBlock()
 	assert.NoError(t, err)
 
 	assert.Greater(t, lastProcessedBlock, 0)
 
-	assert.NoError(t, hiveBlocks.StoreLastProcessedBlock(context.Background(), 33))
+	assert.NoError(t, hiveBlocks.StoreLastProcessedBlock(33))
 
-	lastProcessedBlockAfterClear, err := hiveBlocks.GetLastProcessedBlock(context.Background())
+	lastProcessedBlockAfterClear, err := hiveBlocks.GetLastProcessedBlock()
 	assert.NoError(t, err)
 
 	assert.Equal(t, 33, lastProcessedBlockAfterClear)
@@ -950,7 +952,7 @@ func TestDbStoredBlockIntegrity(t *testing.T) {
 	seedBlockData(t, hiveBlocks, 10)
 
 	// ensure all blocks are there
-	storedBlocks, err := hiveBlocks.FetchStoredBlocks(context.Background(), 1, 10)
+	storedBlocks, err := hiveBlocks.FetchStoredBlocks(1, 10)
 	assert.NoError(t, err)
 	assert.Len(t, storedBlocks, 10)
 
@@ -1003,7 +1005,7 @@ func TestNestedArrayStructure(t *testing.T) {
 	assert.NoError(t, err)
 
 	// clear existing data
-	assert.NoError(t, hiveBlockDbManager.ClearBlocks(context.Background()))
+	assert.NoError(t, hiveBlockDbManager.ClearBlocks())
 
 	// a dummy hiveblock that has a nested array structure that
 	// should fail when stored in mongoDB norally, BUT, with our
@@ -1031,11 +1033,11 @@ func TestNestedArrayStructure(t *testing.T) {
 	}
 
 	// store block
-	err = hiveBlockDbManager.StoreBlock(context.Background(), originalBlock)
+	err = hiveBlockDbManager.StoreBlock(originalBlock)
 	assert.NoError(t, err)
 
 	// fetch stored block directly by its ID (we do this with a 1-wide range)
-	fetchedBlocks, err := hiveBlockDbManager.FetchStoredBlocks(context.Background(), 123, 123)
+	fetchedBlocks, err := hiveBlockDbManager.FetchStoredBlocks(123, 123)
 	assert.NoError(t, err)
 	assert.Len(t, fetchedBlocks, 1) // we should only get this 1 block back
 
@@ -1048,7 +1050,7 @@ func TestNestedArrayStructure(t *testing.T) {
 
 // todo: Vaultec's experiments
 func TestVaultecExperiments(t *testing.T) {
-	// return // todo: Vaultec's experiments
+	return
 
 	// cleanup
 	setupAndCleanUpDataDir(t)
@@ -1068,7 +1070,7 @@ func TestVaultecExperiments(t *testing.T) {
 	// perms
 	os.Chmod("data", 0755)
 
-	// settings
+	// slow down the streamer a bit for real data
 	streamer.AcceptableBlockLag = 0
 	streamer.BlockBatchSize = 100
 	streamer.DefaultBlockStart = 81614028
@@ -1076,24 +1078,18 @@ func TestVaultecExperiments(t *testing.T) {
 	streamer.MinTimeBetweenBlockBatchFetches = time.Millisecond * 1500
 	streamer.DbPollInterval = time.Millisecond * 500
 
-	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
 
-	filter := func(op map[string]interface{}) bool {
-		// filter nothing
-		return true
-	}
-
-	client := hivego.NewHiveRpc("https://api.hive.blog") // https://hive-api.web3telekom.xyz
-
+	filter := func(op map[string]interface{}) bool { return true }
+	client := hivego.NewHiveRpc("https://api.hive.blog")
 	s := streamer.NewStreamer(client, hiveBlocks, []streamer.FilterFunc{filter}, nil)
 	assert.NoError(t, s.Init())
 	assert.NoError(t, s.Start())
 	defer func() { assert.NoError(t, s.Stop()) }()
 
 	process := func(block hive_blocks.HiveBlock) {
-		fmt.Printf("block: %v\n", block)
+		// fmt.Printf("block #: %v\n", block.BlockNumber)
 	}
 	sr := streamer.NewStreamReader(hiveBlocks, process)
 	assert.NoError(t, sr.Init())
