@@ -1,16 +1,15 @@
 package hive_blocks
 
 import (
-	"context"
-	a "vsc-node/modules/aggregate"
+	"vsc-node/modules/aggregate"
 )
 
 type HiveBlocks interface {
-	a.Plugin
-	StoreBlock(ctx context.Context, block *HiveBlock) error
-	ClearBlocks(ctx context.Context) error
-	StoreLastProcessedBlock(ctx context.Context, blockNumber int) error
-	GetLastProcessedBlock(ctx context.Context) (int, error)
-	FetchStoredBlocks(ctx context.Context, startBlock int, endBlock int) ([]HiveBlock, error)
-	GetHighestBlock(ctx context.Context) (int, error)
+	aggregate.Plugin
+	StoreBlock(block *HiveBlock) error
+	ClearBlocks() error
+	StoreLastProcessedBlock(blockNumber int) error
+	GetLastProcessedBlock() (int, error)
+	FetchStoredBlocks(startBlock int, endBlock int) ([]HiveBlock, error)
+	GetHighestBlock() (int, error)
 }

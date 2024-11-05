@@ -39,8 +39,8 @@ func makeBSONCompatible(value interface{}) interface{} {
 		if isArrayOfArrays {
 			// convert each inner array into a map with unique keys
 			arr := make([]interface{}, len(v))
-			for i, item := range v {
-				switch innerArray := item.(type) {
+			for i, elem := range v {
+				switch innerArray := elem.(type) {
 				case []interface{}:
 					innerMap := make(map[string]interface{})
 					for idx, elem := range innerArray {
@@ -55,12 +55,12 @@ func makeBSONCompatible(value interface{}) interface{} {
 					}
 					arr[i] = innerMap
 				default:
-					arr[i] = makeBSONCompatible(item)
+					arr[i] = makeBSONCompatible(elem)
 				}
 			}
 			return arr
 		} else {
-			// process elements recursively
+			// process elems recursively
 			arr := make([]interface{}, len(v))
 			for i, item := range v {
 				arr[i] = makeBSONCompatible(item)
@@ -171,7 +171,7 @@ func New(d *vsc.VscDb) (HiveBlocks, error) {
 }
 
 // stores a block and updates the last stored block atomically without txs
-func (h *hiveBlocks) StoreBlock(ctx context.Context, block *HiveBlock) error {
+func (h *hiveBlocks) StoreBlock(block *HiveBlock) error {
 	h.writeMutex.Lock()
 	defer h.writeMutex.Unlock()
 
@@ -207,17 +207,17 @@ func (h *hiveBlocks) StoreBlock(ctx context.Context, block *HiveBlock) error {
 
 	bulkWriteOptions := options.BulkWrite().SetOrdered(true)
 
-	// execute the bulk write operation
-	_, err = h.Collection.BulkWrite(ctx, models, bulkWriteOptions)
-	if err != nil {
-		return fmt.Errorf("failed to perform bulk write: %w", err)
+	// execute the bulk write op
+	_, err = h.Collection.BulkWrite(context.Background(), models, bulkWriteOptions)
+	if err == nil {
+		return nil
 	}
-
-	return nil
+	return fmt.Errorf("failed to perform bulk write after retries: %w", err)
 }
 
 // retrieves blocks in a specified range, ordered by block number
-func (h *hiveBlocks) FetchStoredBlocks(ctx context.Context, startBlock, endBlock int) ([]HiveBlock, error) {
+func (h *hiveBlocks) FetchStoredBlocks(startBlock, endBlock int) ([]HiveBlock, error) {
+	ctx := context.Background()
 	filter := bson.M{
 		"type": "block",
 		"block.block_number": bson.M{
@@ -272,7 +272,8 @@ func (h *hiveBlocks) FetchStoredBlocks(ctx context.Context, startBlock, endBlock
 }
 
 // deletes all block and metadata documents from the collection
-func (h *hiveBlocks) ClearBlocks(ctx context.Context) error {
+func (h *hiveBlocks) ClearBlocks() error {
+	ctx := context.Background()
 	h.writeMutex.Lock()
 	defer h.writeMutex.Unlock()
 
@@ -290,7 +291,8 @@ func (h *hiveBlocks) ClearBlocks(ctx context.Context) error {
 }
 
 // stores the last processed block number
-func (h *hiveBlocks) StoreLastProcessedBlock(ctx context.Context, blockNumber int) error {
+func (h *hiveBlocks) StoreLastProcessedBlock(blockNumber int) error {
+	ctx := context.Background()
 	h.writeMutex.Lock()
 	defer h.writeMutex.Unlock()
 
@@ -307,9 +309,9 @@ func (h *hiveBlocks) StoreLastProcessedBlock(ctx context.Context, blockNumber in
 // retrieves the last processed block number
 //
 // returns -1 if no blocks have been processed yet
-func (h *hiveBlocks) GetLastProcessedBlock(ctx context.Context) (int, error) {
+func (h *hiveBlocks) GetLastProcessedBlock() (int, error) {
 	var result bson.M
-	err := h.Collection.FindOne(ctx, bson.M{"type": "metadata"}).Decode(&result)
+	err := h.Collection.FindOne(context.Background(), bson.M{"type": "metadata"}).Decode(&result)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return -1, nil
@@ -332,11 +334,11 @@ func (h *hiveBlocks) GetLastProcessedBlock(ctx context.Context) (int, error) {
 }
 
 // retrieves the last stored block number
-func (h *hiveBlocks) GetLastStoredBlock(ctx context.Context) (int, error) {
+func (h *hiveBlocks) GetLastStoredBlock() (int, error) {
 	var result struct {
 		BlockNumber int `bson:"last_stored_block"`
 	}
-	err := h.Collection.FindOne(ctx, bson.M{"type": "metadata"}).Decode(&result)
+	err := h.Collection.FindOne(context.Background(), bson.M{"type": "metadata"}).Decode(&result)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return 0, nil
@@ -346,10 +348,10 @@ func (h *hiveBlocks) GetLastStoredBlock(ctx context.Context) (int, error) {
 	return result.BlockNumber, nil
 }
 
-func (h *hiveBlocks) GetHighestBlock(ctx context.Context) (int, error) {
+func (h *hiveBlocks) GetHighestBlock() (int, error) {
 	findOptions := options.FindOne().SetSort(bson.D{{Key: "block.block_number", Value: -1}})
 	var result bson.M
-	err := h.Collection.FindOne(ctx, bson.M{"type": "block"}, findOptions).Decode(&result)
+	err := h.Collection.FindOne(context.Background(), bson.M{"type": "block"}, findOptions).Decode(&result)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return 0, nil // no blocks stored yet
