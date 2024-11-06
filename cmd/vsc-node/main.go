@@ -13,6 +13,8 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/hive/streamer"
 
+	"vsc-node/modules/wasm/parent_ipc"
+
 	"github.com/vsc-eco/hivego"
 )
 
@@ -54,6 +56,8 @@ func main() {
 	filters := []streamer.FilterFunc{filter}
 	streamerPlugin := streamer.NewStreamer(blockClient, hiveBlocks, filters, nil) // optional starting block #
 
+	wasm := wasm_parent_ipc.New() // TODO set proper cmd path
+
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
@@ -64,6 +68,7 @@ func main() {
 		hiveBlocks,
 		streamerPlugin,
 		p2pInterface.New(),
+		wasm,
 	)
 
 	a := aggregate.New(
