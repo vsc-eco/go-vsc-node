@@ -3,9 +3,13 @@ module vsc-node
 go 1.22.3
 
 require (
+	github.com/JustinKnueppel/go-result v1.0.0
 	github.com/btcsuite/btcutil v1.0.2
 	github.com/chebyrash/promise v0.0.0-20230709133807-42ec49ba1459
 	github.com/ethereum/go-ethereum v1.14.3
+	github.com/go-viper/mapstructure/v2 v2.2.1
+	github.com/libp2p/go-libp2p-gorpc v0.6.0
+	github.com/moznion/go-optional v0.12.0
 	github.com/zealic/go2node v0.1.0
 	github.com/zyedidia/generic v1.2.1
 	gitlab.com/NebulousLabs/go-upnp v0.0.0-20211002182029-11da932010b6
@@ -62,7 +66,6 @@ require (
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
 	github.com/jbenet/goprocess v0.1.4 // indirect
 	github.com/libp2p/go-cidranger v1.1.0 // indirect
-	github.com/libp2p/go-libp2p-gorpc v0.6.0
 	github.com/libp2p/go-libp2p-kbucket v0.6.3 // indirect
 	github.com/libp2p/go-libp2p-record v0.2.0 // indirect
 	github.com/libp2p/go-libp2p-routing-helpers v0.7.3 // indirect
