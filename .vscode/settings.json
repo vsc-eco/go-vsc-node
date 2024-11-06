@@ -1,4 +1,12 @@
 {
+  "filewatcher.commands": [
+    {
+      "cmd": "cd ${fileDirname}/../..; go run vsc-node/scripts/manager_gen",
+      "event": "onFileChange",
+      "isAsync": true,
+      "match": "/modules/protocol/protocol.go"
+    }
+  ]
   // "go.testTimeout": "300s"
   // "go.testFlags": ["-count=1"] // disable test cache
 }
