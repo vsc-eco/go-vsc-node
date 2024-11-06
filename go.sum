@@ -19,6 +19,8 @@ github.com/FerretDB/FerretDB v1.24.0 h1:7WJmezL48Bj9bYWnhT/bEJgX5gjT5s7LFdHTqkN2
 github.com/FerretDB/FerretDB v1.24.0/go.mod h1:E7e8dVcgsQim1k9jQ5LmP0HDQ3beZ1s1UnE3BsyerLw=
 github.com/FerretDB/wire v0.0.7 h1:ZDsz3CgNjJ7vkr9ZDcqpcu0lj298GuhVA9ZrIqT8tD8=
 github.com/FerretDB/wire v0.0.7/go.mod h1:2HkyhNgxvEOZotjeZP4dVDgZ3aUcYFilL/tXLrHXZmI=
+github.com/JustinKnueppel/go-result v1.0.0 h1:YS9tHkkX/PtNgEucR9aA4g2p6S7Kr+1V6tniM/U0Jqk=
+github.com/JustinKnueppel/go-result v1.0.0/go.mod h1:rzEtGC5roEDDi4P0dDCpvXuKcgGJiHtqhPJNlPGEq38=
 github.com/OneOfOne/xxhash v1.2.2 h1:KMrpdQIwFcEqXDklaen+P1axHaj9BSKzvpUUfnHldSE=
 github.com/OneOfOne/xxhash v1.2.2/go.mod h1:HSdplMjZKSmBqAxg5vPj2TmRDmfkzw+cTzAElWljhcU=
 github.com/SAP/go-hdb v1.10.1 h1:c9dGT5xHZNDwPL3NQcRpnNISn3MchwYaGoMZpCAllUs=
@@ -76,6 +78,8 @@ github.com/crackcomm/go-gitignore v0.0.0-20231225121904-e25f5bc08668 h1:ZFUue+PN
 github.com/crackcomm/go-gitignore v0.0.0-20231225121904-e25f5bc08668/go.mod h1:p1d6YEZWvFzEh4KLyvBcVSnrfNDDvK2zfK/4x2v/4pE=
 github.com/cskr/pubsub v1.0.2 h1:vlOzMhl6PFn60gRlTQQsIfVwaPB/B/8MziK8FhEPt/0=
 github.com/cskr/pubsub v1.0.2/go.mod h1:/8MzYXk/NJAz782G8RPkFzXTZVu63VotefPnR9TIRis=
+github.com/dave/jennifer v1.7.1 h1:B4jJJDHelWcDhlRQxWeo0Npa/pYKBLrirAQoTN45txo=
+github.com/dave/jennifer v1.7.1/go.mod h1:nXbxhEmQfOZhWml3D1cDK5M1FLnMSozpbFN/m3RmGZc=
 github.com/davecgh/go-spew v0.0.0-20171005155431-ecdeabc65495/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
