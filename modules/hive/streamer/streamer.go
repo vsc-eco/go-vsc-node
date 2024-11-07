@@ -138,6 +138,7 @@ func (s *StreamReader) pollDb() {
 			return
 		case <-ticker.C:
 			if s.IsPaused() || !s.canProcess() {
+				time.Sleep(time.Millisecond * 100)
 				continue
 			}
 
@@ -145,6 +146,8 @@ func (s *StreamReader) pollDb() {
 			highestBlock, err := s.hiveBlocks.GetHighestBlock()
 			if err != nil {
 				log.Printf("error fetching highest block: %v", err)
+				time.Sleep(time.Millisecond * 100)
+
 				continue
 			}
 
@@ -154,11 +157,15 @@ func (s *StreamReader) pollDb() {
 				blocks, err := s.hiveBlocks.FetchStoredBlocks(s.lastProcessed+1, highestBlock)
 				if err != nil {
 					log.Printf("error fetching blocks: %v", err)
+					time.Sleep(time.Millisecond * 100)
+
 					continue
 				}
 
 				// if no blocks were fetched, continue
 				if len(blocks) == 0 {
+					time.Sleep(time.Millisecond * 100)
+
 					continue
 				}
 
@@ -402,17 +409,29 @@ func (s *Streamer) streamBlocks() {
 			return
 		default:
 			if s.IsPaused() || !s.hasFetchedHead {
+				time.Sleep(time.Millisecond * 100)
+
 				continue
 			}
 
 			if int(math.Abs(float64(s.headHeight-*s.startBlock))) <= AcceptableBlockLag {
+				time.Sleep(time.Millisecond * 100)
+
 				continue
 			}
 
 			blocks, err := s.fetchBlockBatch(*s.startBlock, BlockBatchSize)
 			if err != nil {
 				log.Printf("error fetching block batch: %v\n", err)
-				time.Sleep(MinTimeBetweenBlockBatchFetches)
+				time.Sleep(MinTimeBetweenBlockBatchFetches + time.Millisecond*100)
+
+				continue
+			}
+
+			// if not can store, across this async gap, we should skip processing
+			if !s.canStore() {
+				time.Sleep(time.Millisecond * 100)
+
 				continue
 			}
 
@@ -471,6 +490,8 @@ func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, e
 			if block.BlockID == "" {
 				log.Printf("empty block ID at block %d, skipping\n", block.BlockNumber)
 				// sanity check: if empty block ID => we assume "bad block"
+				time.Sleep(time.Millisecond * 100)
+
 				continue
 			}
 			blocks = append(blocks, block)
@@ -502,7 +523,7 @@ func (s *Streamer) storeBlock(block *hivego.Block) error {
 		// filter the ops within this tx
 		filteredTx := hiveblocks.Tx{
 			TransactionID: txIds[i],
-			Operations:    []map[string]interface{}{},
+			Operations:    []hivego.Operation{},
 		}
 		for _, op := range tx.Operations {
 			shouldInclude := true
@@ -519,7 +540,13 @@ func (s *Streamer) storeBlock(block *hivego.Block) error {
 				}
 			}
 			if shouldInclude {
-				filteredTx.Operations = append(filteredTx.Operations, op.Value)
+
+				// remove any postfix of "_operation" if it exists from op.Type
+				if len(op.Type) > 10 && op.Type[len(op.Type)-10:] == "_operation" {
+					op.Type = op.Type[:len(op.Type)-10]
+				}
+
+				filteredTx.Operations = append(filteredTx.Operations, op)
 			}
 		}
 

@@ -36,9 +36,9 @@ func init() {
 	streamer.AcceptableBlockLag = 0
 	streamer.BlockBatchSize = 100
 	streamer.DefaultBlockStart = 81614028
-	streamer.HeadBlockCheckPollIntervalBeforeFirstUpdate = time.Millisecond * 10
-	streamer.MinTimeBetweenBlockBatchFetches = time.Millisecond * 10
-	streamer.DbPollInterval = time.Millisecond * 200
+	streamer.HeadBlockCheckPollIntervalBeforeFirstUpdate = time.Millisecond * 200
+	streamer.MinTimeBetweenBlockBatchFetches = time.Millisecond * 200
+	streamer.DbPollInterval = time.Millisecond * 400
 }
 
 // ===== test utils =====
@@ -52,6 +52,14 @@ func setupAndCleanUpDataDir(t *testing.T) {
 
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
+
+	// block until data dir is removed
+	for {
+		if _, err := os.Stat("data"); os.IsNotExist(err) {
+			break
+		}
+		time.Sleep(time.Millisecond * 100)
+	}
 
 	go func() {
 		<-signalChan
@@ -72,9 +80,12 @@ func seedBlockData(t *testing.T, hiveBlocks hive_blocks.HiveBlocks, n int) {
 			Transactions: []hive_blocks.Tx{
 				{
 					TransactionID: fmt.Sprintf("some-tx-id-%d", i),
-					Operations: []map[string]interface{}{
+					Operations: []hivego.Operation{
 						{
-							"amount": "1 HIVE",
+							Value: map[string]interface{}{
+								"amount": "1 HIVE",
+							},
+							Type: "custom_json",
 						},
 					},
 				},
@@ -964,6 +975,7 @@ func TestDbStoredBlockIntegrity(t *testing.T) {
 	// expected metadata
 	expectedTimestamp := "2024-01-01T00:00:00"
 	expectedAmount := "1 HIVE"
+	expectedType := "custom_json"
 
 	// ensure all blocks have the expected data
 	for i, block := range storedBlocks {
@@ -979,7 +991,8 @@ func TestDbStoredBlockIntegrity(t *testing.T) {
 		assert.Len(t, block.Transactions, 1)
 		assert.Equal(t, expectedTransactionID, block.Transactions[0].TransactionID)
 		assert.Len(t, block.Transactions[0].Operations, 1)
-		assert.Equal(t, expectedAmount, block.Transactions[0].Operations[0]["amount"])
+		assert.Equal(t, expectedAmount, block.Transactions[0].Operations[0].Value["amount"])
+		assert.Equal(t, expectedType, block.Transactions[0].Operations[0].Type)
 	}
 
 }
@@ -1018,14 +1031,17 @@ func TestNestedArrayStructure(t *testing.T) {
 		Transactions: []hive_blocks.Tx{
 			{
 				TransactionID: "some-tx-id-123",
-				Operations: []map[string]interface{}{
+				Operations: []hivego.Operation{
 					{
-						"json": map[string]interface{}{
-							"nested_array": []interface{}{
-								[]interface{}{"hello", "world"}, // this is our nested array!
-								[]interface{}{"foo", "bar"},     // this is our nested array!
+						Value: map[string]interface{}{
+							"json": map[string]interface{}{
+								"nested_array": []interface{}{
+									[]interface{}{"hello", "world"}, // this is our nested array!
+									[]interface{}{"foo", "bar"},     // this is our nested array!
+								},
 							},
 						},
+						Type: "custom_json_operation",
 					},
 				},
 			},
@@ -1089,7 +1105,7 @@ func TestVaultecExperiments(t *testing.T) {
 	defer func() { assert.NoError(t, s.Stop()) }()
 
 	process := func(block hive_blocks.HiveBlock) {
-		// fmt.Printf("block #: %v\n", block.BlockNumber)
+		fmt.Printf("block #: %v\n", block.Transactions)
 	}
 	sr := streamer.NewStreamReader(hiveBlocks, process)
 	assert.NoError(t, sr.Init())
