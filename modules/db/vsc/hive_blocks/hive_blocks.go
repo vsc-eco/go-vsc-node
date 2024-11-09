@@ -271,6 +271,60 @@ func (h *hiveBlocks) FetchStoredBlocks(startBlock, endBlock int) ([]HiveBlock, e
 	return blocks, nil
 }
 
+func (h *hiveBlocks) FetchNextBlocks(startBlock int, limit int) ([]HiveBlock, error) {
+	ctx := context.Background()
+	filter := bson.M{
+		"type": "block",
+		"block.block_number": bson.M{
+			"$gte": startBlock,
+		},
+	}
+
+	findOptions := options.Find().SetSort(bson.D{{Key: "block.block_number", Value: 1}}).SetLimit(int64(limit))
+	cursor, err := h.Collection.Find(ctx, filter, findOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch blocks: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var blocks []HiveBlock
+
+	for cursor.Next(ctx) {
+		var result bson.M
+		if err := cursor.Decode(&result); err != nil {
+			return nil, fmt.Errorf("failed to decode block: %w", err)
+		}
+
+		// extract the stored block data
+		blockDataRaw, ok := result["block"]
+		if !ok {
+			return nil, fmt.Errorf("invalid block data")
+		}
+
+		// reconstruct the original block data
+		reconstructedData := remakeOriginalNestedArrayStructure(blockDataRaw)
+
+		// convert our reconstructed data to JSON
+		blockJSON, err := json.Marshal(reconstructedData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal reconstructed block: %w", err)
+		}
+
+		// unmarshal JSON into HiveBlock struct
+		var block HiveBlock
+		if err := json.Unmarshal(blockJSON, &block); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal block JSON: %w", err)
+		}
+
+		blocks = append(blocks, block)
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("cursor error: %w", err)
+	}
+
+	return blocks, nil
+}
+
 // deletes all block and metadata documents from the collection
 func (h *hiveBlocks) ClearBlocks() error {
 	ctx := context.Background()

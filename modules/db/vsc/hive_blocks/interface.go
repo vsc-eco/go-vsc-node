@@ -11,5 +11,6 @@ type HiveBlocks interface {
 	StoreLastProcessedBlock(blockNumber int) error
 	GetLastProcessedBlock() (int, error)
 	FetchStoredBlocks(startBlock int, endBlock int) ([]HiveBlock, error)
+	FetchNextBlocks(startBlock int, limit int) ([]HiveBlock, error)
 	GetHighestBlock() (int, error)
 }

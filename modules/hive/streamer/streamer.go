@@ -154,7 +154,7 @@ func (s *StreamReader) pollDb() {
 			// if there are new blocks, process all of them up to the highest block
 			if s.lastProcessed < highestBlock {
 				// fetch all blocks from lastProcessed + 1 to highestBlock
-				blocks, err := s.hiveBlocks.FetchStoredBlocks(s.lastProcessed+1, highestBlock)
+				blocks, err := s.hiveBlocks.FetchNextBlocks(s.lastProcessed+1, 250)
 				if err != nil {
 					log.Printf("error fetching blocks: %v", err)
 					time.Sleep(time.Millisecond * 100)
@@ -293,7 +293,7 @@ func (s *Streamer) Init() error {
 	}
 
 	// gets the last processed block
-	lastBlock, err := s.hiveBlocks.GetLastProcessedBlock()
+	lastBlock, err := s.hiveBlocks.GetHighestBlock()
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			// no previous blocks processed, thus start from DefaultBlockStart

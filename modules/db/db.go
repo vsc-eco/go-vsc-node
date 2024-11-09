@@ -52,7 +52,7 @@ func (db *db) Start() error {
 	go func() {
 		db.err <- db.db.Run(ctx)
 	}()
-	driver, err := mongo.Connect(ctx, options.Client().ApplyURI(db.db.MongoDBURI()))
+	driver, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
 	if err != nil {
 		cancel()
 		return err
