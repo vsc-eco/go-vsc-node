@@ -2,10 +2,8 @@ package db
 
 import (
 	"context"
-	"os"
 	a "vsc-node/modules/aggregate"
 
-	"github.com/FerretDB/FerretDB/ferretdb"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -14,7 +12,6 @@ type Db interface {
 	Database(name string, opts ...*options.DatabaseOptions) *mongo.Database
 }
 type db struct {
-	db     *ferretdb.FerretDB
 	cancel context.CancelFunc
 	err    chan error
 	*mongo.Client
@@ -28,33 +25,14 @@ func New() *db {
 }
 
 func (db *db) Init() error {
-	err := os.MkdirAll("data/", 0755)
-	if err != nil {
-		return err
-	}
-	d, err := ferretdb.New(&ferretdb.Config{
-		Handler:   "sqlite",
-		SQLiteURL: "file:data/",
-		Listener: ferretdb.ListenerConfig{
-			TCP: "127.0.0.1:9999",
-		},
-	})
-	if err != nil {
-		return err
-	}
-	db.db = d
 	return nil
 }
 
 func (db *db) Start() error {
-	ctx, cancel := context.WithCancel(context.Background())
-	db.cancel = cancel
-	go func() {
-		db.err <- db.db.Run(ctx)
-	}()
+	ctx := context.Background()
+
 	driver, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
 	if err != nil {
-		cancel()
 		return err
 	}
 	db.Client = driver
