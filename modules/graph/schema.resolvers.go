@@ -7,7 +7,7 @@ package graph
 import (
 	"context"
 	"fmt"
-	"vsc-node/graph/model"
+	"vsc-node/modules/graph/model"
 )
 
 // ContractStateDiff is the resolver for the contractStateDiff field.

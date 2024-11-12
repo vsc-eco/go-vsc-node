@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
-	"vsc-node/graph/model"
+	"vsc-node/modules/graph/model"
 
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/99designs/gqlgen/graphql/introspection"
