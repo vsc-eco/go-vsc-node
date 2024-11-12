@@ -1,18 +1,25 @@
 package graph_test
 
-// import (
-// 	"testing"
-//     "vsc_node/modules/graph"
-// )
+import (
+	"testing"
+	"vsc-node/modules/graph"
+)
 
-// func TestBasic(t *testing.T) {
+func Test(t *testing.T) {
 
-// 	type conf struct {
-// 		A uint
-// 		B string
-// 	}
+	g := graph.New()
 
-// 	c := graph.New(conf{1, "hello"})
-// }
+	err := g.Init()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = g.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = g.Stop()
+	if err != nil {
+		t.Fatal(err)
+	}
 
-func main() {}
+}

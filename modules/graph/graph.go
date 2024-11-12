@@ -15,8 +15,7 @@ import (
 type graph struct {
 	server *handler.Server
 	port   string
-	//
-	done chan bool
+	done   chan bool
 }
 
 var _ a.Plugin = &graph{}
@@ -30,28 +29,12 @@ func New() *graph {
 
 const defaultPort = "8080"
 
-func (g *graph) graohQLResolver(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-
-	g.server.ServeHTTP(w, r)
-}
-
-func (g *graph) playgroundHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	playground.ApolloSandboxHandler("GraphQL playground", "/query").ServeHTTP(w, r)
-}
-
 func (g *graph) Init() error {
 	g.server = handler.NewDefaultServer(NewExecutableSchema(Config{Resolvers: &Resolver{}}))
 
-	http.HandleFunc("/", g.playgroundHandler)
-	http.HandleFunc("/query", g.graohQLResolver)
+	http.Handle("/", playground.ApolloSandboxHandler("GraphQL Playground", "/api/v1/graphql"))
 
+	http.Handle("/api/v1/graphql", g.server)
 	return nil
 }
 
