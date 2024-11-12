@@ -156,59 +156,66 @@ func isFieldKeys(m map[string]interface{}) bool {
 func New(d *vsc.VscDb) (HiveBlocks, error) {
 	hiveBlocks := &hiveBlocks{db.NewCollection(d.DbInstance, "hive_blocks"), sync.Mutex{}}
 
+	return hiveBlocks, nil
+}
+
+func (blocks *hiveBlocks) Init() error {
+	err := blocks.Collection.Init()
+	if err != nil {
+		return err
+	}
+
 	indexModel := mongo.IndexModel{
 		Keys:    bson.D{{Key: "block.block_number", Value: 1}}, // ascending order
 		Options: options.Index().SetUnique(false),              // not unique
 	}
 
 	// create index on block.block_number for faster queries
-	_, err := hiveBlocks.Collection.Indexes().CreateOne(context.Background(), indexModel)
+	_, err = blocks.Collection.Indexes().CreateOne(context.Background(), indexModel)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create index: %w", err)
+		return fmt.Errorf("failed to create index: %w", err)
 	}
 
-	return hiveBlocks, nil
+	return nil
 }
 
 // stores a block and updates the last stored block atomically without txs
-func (h *hiveBlocks) StoreBlock(block *HiveBlock) error {
+func (h *hiveBlocks) StoreBlocks(blocks ...HiveBlock) error {
+	models := make([]mongo.WriteModel, len(blocks)+1) // space for all hive blocks + the metadata doc
+
 	h.writeMutex.Lock()
 	defer h.writeMutex.Unlock()
+	for i, block := range blocks {
 
-	if block == nil {
-		return fmt.Errorf("block is nil")
-	}
+		// convert block to map[string]interface{}
+		var blockMap map[string]interface{}
+		blockJSON, err := json.Marshal(block)
+		if err != nil {
+			return fmt.Errorf("failed to marshal block to JSON: %w", err)
+		}
+		err = json.Unmarshal(blockJSON, &blockMap)
+		if err != nil {
+			return fmt.Errorf("failed to unmarshal block JSON: %w", err)
+		}
 
-	// convert block to map[string]interface{}
-	var blockMap map[string]interface{}
-	blockJSON, err := json.Marshal(block)
-	if err != nil {
-		return fmt.Errorf("failed to marshal block to JSON: %w", err)
-	}
-	err = json.Unmarshal(blockJSON, &blockMap)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal block JSON: %w", err)
-	}
+		// process map to make it BSON compatible
+		processedBlock := makeBSONCompatible(blockMap)
 
-	// process map to make it BSON compatible
-	processedBlock := makeBSONCompatible(blockMap)
-
-	// create ordered bulk write models
-	models := []mongo.WriteModel{
-		mongo.NewInsertOneModel().SetDocument(bson.M{
+		// create ordered bulk write models
+		models[i] = mongo.NewInsertOneModel().SetDocument(bson.M{
 			"type":  "block",
 			"block": processedBlock,
-		}),
-		mongo.NewUpdateOneModel().
-			SetFilter(bson.M{"type": "metadata"}).
-			SetUpdate(bson.M{"$set": bson.M{"last_stored_block": block.BlockNumber}}).
-			SetUpsert(true),
+		})
 	}
 
+	models[len(models)-1] = mongo.NewUpdateOneModel().
+		SetFilter(bson.M{"type": "metadata"}).
+		SetUpdate(bson.M{"$set": bson.M{"last_stored_block": blocks[len(blocks)-1].BlockNumber}}).
+		SetUpsert(true)
 	bulkWriteOptions := options.BulkWrite().SetOrdered(true)
 
 	// execute the bulk write op
-	_, err = h.Collection.BulkWrite(context.Background(), models, bulkWriteOptions)
+	_, err := h.Collection.BulkWrite(context.Background(), models, bulkWriteOptions)
 	if err == nil {
 		return nil
 	}

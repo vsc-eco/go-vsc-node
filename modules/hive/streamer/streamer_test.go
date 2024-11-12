@@ -72,7 +72,7 @@ func seedBlockData(t *testing.T, hiveBlocks hive_blocks.HiveBlocks, n int) {
 
 	for i := 1; i <= n; i++ {
 		// a dummy hiveblock
-		block := &hive_blocks.HiveBlock{
+		block := hive_blocks.HiveBlock{
 			BlockNumber: i,
 			BlockID:     fmt.Sprintf("some-block-id-%d", i),
 			Timestamp:   "2024-01-01T00:00:00",
@@ -93,7 +93,7 @@ func seedBlockData(t *testing.T, hiveBlocks hive_blocks.HiveBlocks, n int) {
 		}
 
 		// store block
-		err := hiveBlocks.StoreBlock(block)
+		err := hiveBlocks.StoreBlocks(block)
 		assert.NoError(t, err)
 	}
 }
@@ -1023,7 +1023,7 @@ func TestNestedArrayStructure(t *testing.T) {
 	// a dummy hiveblock that has a nested array structure that
 	// should fail when stored in mongoDB norally, BUT, with our
 	// conversion function, this should now work
-	originalBlock := &hive_blocks.HiveBlock{
+	originalBlock := hive_blocks.HiveBlock{
 		BlockNumber: 123,
 		BlockID:     "some-block-id-123",
 		Timestamp:   "2024-01-01T00:00:00",
@@ -1049,7 +1049,7 @@ func TestNestedArrayStructure(t *testing.T) {
 	}
 
 	// store block
-	err = hiveBlockDbManager.StoreBlock(originalBlock)
+	err = hiveBlockDbManager.StoreBlocks(originalBlock)
 	assert.NoError(t, err)
 
 	// fetch stored block directly by its ID (we do this with a 1-wide range)

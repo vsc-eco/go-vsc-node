@@ -452,19 +452,12 @@ func (s *Streamer) streamBlocks() {
 			//
 			// this REALLY, REALLY helps speed up the processing of blocks
 			s.processWg.Add(1)
-			go func(blocks []hivego.Block) {
+			go func() {
 				defer s.processWg.Done()
-				for _, blk := range blocks {
-					select {
-					case <-s.ctx.Done():
-						return
-					default:
-						if err := s.storeBlock(&blk); err != nil {
-							log.Printf("processing block %d failed: %v\n", blk.BlockNumber, err)
-						}
-					}
+				if err := s.storeBlocks(blocks); err != nil {
+					log.Printf("processing blocks failed: %v\n", err)
 				}
-			}(blocks)
+			}()
 
 			// wait before fetching the next batch whatever min duration that is preset
 			time.Sleep(MinTimeBetweenBlockBatchFetches)
@@ -515,52 +508,57 @@ func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, e
 	}
 }
 
-func (s *Streamer) storeBlock(block *hivego.Block) error {
-	// init the filtered block with essential fields
-	hiveBlock := hiveblocks.HiveBlock{
-		BlockNumber:  block.BlockNumber,
-		BlockID:      block.BlockID,
-		Timestamp:    block.Timestamp,
-		Transactions: []hiveblocks.Tx{},
-		MerkleRoot:   block.TransactionMerkleRoot,
-	}
-
-	txIds := append([]string{}, block.TransactionIds...)
-
-	// filter txs within the block
-	for i, tx := range block.Transactions {
-		// filter the ops within this tx
-		filteredTx := hiveblocks.Tx{
-			Index:         i,
-			TransactionID: txIds[i],
-			Operations:    []hivego.Operation{},
+func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
+	hiveBlocks := make([]hiveblocks.HiveBlock, len(blocks))
+	for i, block := range blocks {
+		// init the filtered block with essential fields
+		hiveBlock := hiveblocks.HiveBlock{
+			BlockNumber:  block.BlockNumber,
+			BlockID:      block.BlockID,
+			Timestamp:    block.Timestamp,
+			Transactions: []hiveblocks.Tx{},
+			MerkleRoot:   block.TransactionMerkleRoot,
 		}
-		shouldInclude := false
 
-		for _, op := range tx.Operations {
-			// remove any postfix of "_operation" if it exists from op.Type
-			if len(op.Type) > 10 && op.Type[len(op.Type)-10:] == "_operation" {
-				op.Type = op.Type[:len(op.Type)-10]
+		txIds := block.TransactionIds
+
+		// filter txs within the block
+		for i, tx := range block.Transactions {
+			// filter the ops within this tx
+			filteredTx := hiveblocks.Tx{
+				Index:         i,
+				TransactionID: txIds[i],
+				Operations:    []hivego.Operation{},
 			}
-			for _, filter := range s.filters {
-				// if the streamer is paused or stopped, skip block processing, this
-				// fixes some case where the streamer is stopped but some other go routine
-				// is still finishing up a cycle of processing
-				if !s.canStore() {
-					return fmt.Errorf("streamer is paused or stopped")
+			shouldInclude := false
+
+			for _, op := range tx.Operations {
+				// remove any postfix of "_operation" if it exists from op.Type
+				if len(op.Type) > 10 && op.Type[len(op.Type)-10:] == "_operation" {
+					op.Type = op.Type[:len(op.Type)-10]
 				}
-				if filter(op) {
-					shouldInclude = true
+				for _, filter := range s.filters {
+					// if the streamer is paused or stopped, skip block processing, this
+					// fixes some case where the streamer is stopped but some other go routine
+					// is still finishing up a cycle of processing
+					if !s.canStore() {
+						return fmt.Errorf("streamer is paused or stopped")
+					}
+					if filter(op) {
+						shouldInclude = true
+					}
 				}
+
+				filteredTx.Operations = append(filteredTx.Operations, op)
 			}
 
-			filteredTx.Operations = append(filteredTx.Operations, op)
+			// add the tx if it has any ops that passed the filters
+			if shouldInclude {
+				hiveBlock.Transactions = append(hiveBlock.Transactions, filteredTx)
+			}
 		}
 
-		// add the tx if it has any ops that passed the filters
-		if shouldInclude {
-			hiveBlock.Transactions = append(hiveBlock.Transactions, filteredTx)
-		}
+		hiveBlocks[i] = hiveBlock
 	}
 
 	// if the streamer is paused or stopped, skip block processing, this
@@ -572,7 +570,7 @@ func (s *Streamer) storeBlock(block *hivego.Block) error {
 	// store the block with filtered txs
 	//
 	// even if a block has no txs, we store
-	if err := s.hiveBlocks.StoreBlock(&hiveBlock); err != nil {
+	if err := s.hiveBlocks.StoreBlocks(hiveBlocks...); err != nil {
 		return fmt.Errorf("failed to store block: %v", err)
 	}
 

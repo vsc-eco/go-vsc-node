@@ -6,7 +6,7 @@ import (
 
 type HiveBlocks interface {
 	aggregate.Plugin
-	StoreBlock(block *HiveBlock) error
+	StoreBlocks(blocks ...HiveBlock) error
 	ClearBlocks() error
 	StoreLastProcessedBlock(blockNumber int) error
 	GetLastProcessedBlock() (int, error)
