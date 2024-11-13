@@ -3,6 +3,7 @@ package db
 import (
 	a "vsc-node/modules/aggregate"
 
+	"github.com/chebyrash/promise"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -33,7 +34,7 @@ func (c *Collection) Init() error {
 }
 
 // Start implements aggregate.Plugin.
-func (c *Collection) Start() error {
+func (c *Collection) Start() *promise.Promise[any] {
 	return nil
 }
 

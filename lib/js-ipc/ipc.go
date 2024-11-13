@@ -8,6 +8,7 @@ import (
 	"vsc-node/lib/utils"
 	"vsc-node/modules/aggregate"
 
+	"github.com/chebyrash/promise"
 	"github.com/zealic/go2node"
 )
 
@@ -43,13 +44,16 @@ func (j *JsIpc) Init() error {
 }
 
 // Start implements aggregate.Plugin.
-func (j *JsIpc) Start() error {
-	c, err := go2node.ExecNode(j.cmd)
-	if err != nil {
-		return err
-	}
+func (j *JsIpc) Start() *promise.Promise[any] {
+	return promise.New(func(resolve func(any), reject func(error)) {
+		c, err := go2node.ExecNode(j.cmd)
+		if err != nil {
+			reject(err)
+			return
+		}
 
-	go func() {
+		j.channel = c
+
 		defer j.cmd.Process.Kill()
 		for !j.done.Load() {
 			msg, err := c.Read()
@@ -62,10 +66,9 @@ func (j *JsIpc) Start() error {
 				go listener(msg)
 			}
 		}
-	}()
 
-	j.channel = c
-	return nil
+		resolve(nil)
+	})
 }
 
 // Stop implements aggregate.Plugin.

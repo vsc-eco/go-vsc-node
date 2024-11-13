@@ -42,7 +42,7 @@ func (p *PeerDiscovery) Init() error {
 }
 
 // Start implements aggregate.Plugin.
-func (p *PeerDiscovery) Start() error {
+func (p *PeerDiscovery) Start() *promise.Promise[any] {
 	go func() {
 		lastPeerCount := 0
 		attempts := 0

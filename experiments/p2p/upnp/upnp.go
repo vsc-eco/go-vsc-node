@@ -1,6 +1,7 @@
 package upnp
 
 import (
+	"github.com/chebyrash/promise"
 	"gitlab.com/NebulousLabs/go-upnp"
 
 	"vsc-node/experiments/p2p/config"
@@ -53,9 +54,15 @@ func (u *UPnP) Init() error {
 }
 
 // Start implements aggregate.Plugin.
-func (u *UPnP) Start() error {
+func (u *UPnP) Start() *promise.Promise[any] {
 	// forward a port
-	return u.router.Forward(u.config.Port, "p2p service")
+	return promise.New(func(resolve func(any), reject func(error)) {
+		err := u.router.Forward(u.config.Port, "p2p service")
+		if err != nil {
+			reject(err)
+		}
+		resolve(nil)
+	})
 	// TODO change service name
 }
 

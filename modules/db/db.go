@@ -5,6 +5,7 @@ import (
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/config"
 
+	"github.com/chebyrash/promise"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -38,7 +39,7 @@ func (db *db) Init() error {
 	return nil
 }
 
-func (db *db) Start() error {
+func (db *db) Start() *promise.Promise[any] {
 	return nil
 }
 

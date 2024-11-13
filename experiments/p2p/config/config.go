@@ -6,6 +6,8 @@ import (
 
 	"vsc-node/experiments/p2p/peer"
 	"vsc-node/modules/aggregate"
+
+	"github.com/chebyrash/promise"
 )
 
 type Config struct {
@@ -45,7 +47,7 @@ func (c *Config) Init() error {
 }
 
 // Start implements aggregate.Plugin.
-func (c *Config) Start() error {
+func (c *Config) Start() *promise.Promise[any] {
 	// TODO maybe listen to file updates?
 	return nil
 }

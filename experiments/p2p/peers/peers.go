@@ -10,6 +10,7 @@ import (
 	"vsc-node/experiments/p2p/peer"
 	"vsc-node/modules/aggregate"
 
+	"github.com/chebyrash/promise"
 	"github.com/zyedidia/generic/heap"
 )
 
@@ -115,7 +116,7 @@ func (p *Peers) Init() error {
 }
 
 // Start implements aggregate.Plugin.
-func (p *Peers) Start() error {
+func (p *Peers) Start() *promise.Promise[any] {
 	p.Push(peer.Peer(p.config.Host()))
 	return nil
 }

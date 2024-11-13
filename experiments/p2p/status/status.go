@@ -6,6 +6,8 @@ import (
 
 	"vsc-node/experiments/p2p/peers"
 	"vsc-node/modules/aggregate"
+
+	"github.com/chebyrash/promise"
 )
 
 type Status struct {
@@ -33,7 +35,7 @@ func (s *Status) Init() error {
 }
 
 // Start implements aggregate.Plugin.
-func (s *Status) Start() error {
+func (s *Status) Start() *promise.Promise[any] {
 	go func() {
 		for {
 			select {

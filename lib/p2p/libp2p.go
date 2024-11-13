@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/chebyrash/promise"
 	libp2p "github.com/libp2p/go-libp2p"
 	kadDht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -141,7 +142,7 @@ func (p2pServer *P2PServer) Init() error {
 }
 
 // Start implements aggregate.Plugin.
-func (p2ps *P2PServer) Start() error {
+func (p2ps *P2PServer) Start() *promise.Promise[any] {
 	//What would we "start" for P2P?
 
 	//Ask for P2P profiling from other nodes
@@ -155,7 +156,7 @@ func (p2ps *P2PServer) Start() error {
 	// fmt.Println("error is", err)
 
 	ticker := time.NewTicker(5 * time.Second)
-	go func() {
+	p := promise.New(func(resolve func(any), reject func(error)) {
 		for {
 			select {
 			case <-ticker.C:
@@ -175,7 +176,8 @@ func (p2ps *P2PServer) Start() error {
 				fmt.Println("it's ticking yeah!")
 			}
 		}
-	}()
+		resolve(nil)
+	})
 	p2ps.tickers = append(p2ps.tickers, ticker)
 	// ticker.Stop()
 
@@ -193,7 +195,7 @@ func (p2ps *P2PServer) Start() error {
 	// peerId, _ := peer.AddrInfoFromString("/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWAvxZcLJmZVUaoAtey28REvaBwxvfTvQfxWtXJ2fpqWnw")
 	// connectErr := p2ps.host.Connect(ctx, *peerId)
 
-	return nil
+	return p
 }
 
 // Stop implements aggregate.Plugin.

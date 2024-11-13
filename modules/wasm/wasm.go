@@ -4,6 +4,7 @@ import (
 	"fmt"
 	a "vsc-node/modules/aggregate"
 
+	"github.com/chebyrash/promise"
 	"github.com/second-state/WasmEdge-go/wasmedge"
 )
 
@@ -24,7 +25,7 @@ func (w *Wasm) Init() error {
 	return nil
 }
 
-func (w *Wasm) Start() error {
+func (w *Wasm) Start() *promise.Promise[any] {
 	return nil
 }
 

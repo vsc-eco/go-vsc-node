@@ -10,6 +10,8 @@ import (
 	"vsc-node/experiments/p2p/peers"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/aggregate"
+
+	"github.com/chebyrash/promise"
 )
 
 type HttpServer struct {
@@ -88,7 +90,7 @@ func (h *HttpServer) Init() error {
 }
 
 // Start implements aggregate.Plugin.
-func (h *HttpServer) Start() error {
+func (h *HttpServer) Start() *promise.Promise[any] {
 	// TODO handle errors: i.e. port already in use
 	go h.server.ListenAndServe()
 	return nil

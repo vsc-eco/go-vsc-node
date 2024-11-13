@@ -12,6 +12,7 @@ import (
 	"vsc-node/modules/aggregate"
 	hiveblocks "vsc-node/modules/db/vsc/hive_blocks"
 
+	"github.com/chebyrash/promise"
 	"github.com/vsc-eco/hivego"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -118,13 +119,13 @@ func (s *StreamReader) Init() error {
 }
 
 // begins the polling loop for the StreamReader
-func (s *StreamReader) Start() error {
+func (s *StreamReader) Start() *promise.Promise[any] {
 	s.wg.Add(1)
-	go func() {
+	return promise.New(func(resolve func(any), reject func(error)) {
 		defer s.wg.Done()
 		s.pollDb()
-	}()
-	return nil
+		resolve(nil)
+	})
 }
 
 // polls the database at intervals, processing new blocks as they arrive
@@ -330,7 +331,7 @@ func (s *Streamer) Init() error {
 	return nil
 }
 
-func (s *Streamer) Start() error {
+func (s *Streamer) Start() *promise.Promise[any] {
 	s.stopped = make(chan struct{})
 	s.wg.Add(2)
 	go func() {
@@ -341,7 +342,10 @@ func (s *Streamer) Start() error {
 		defer s.wg.Done()
 		s.trackHeadHeight()
 	}()
-	return nil // returns error just to satisfy plugin interface
+	return promise.New(func(resolve func(any), reject func(error)) {
+		s.wg.Wait()
+		resolve(nil)
+	})
 }
 
 func updateHead(bc BlockClient) (int, error) {

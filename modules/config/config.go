@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/JustinKnueppel/go-result"
+	"github.com/chebyrash/promise"
 )
 
 type Config[T any] struct {
@@ -99,7 +100,7 @@ func (c *Config[T]) Init() error {
 	return nil
 }
 
-func (c *Config[T]) Start() error {
+func (c *Config[T]) Start() *promise.Promise[any] {
 	return nil
 }
 
