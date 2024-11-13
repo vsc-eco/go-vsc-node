@@ -2,10 +2,16 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
+	"runtime"
+	"testing"
+
+	"github.com/JustinKnueppel/go-result"
 )
 
 type Config[T any] struct {
@@ -15,6 +21,8 @@ type Config[T any] struct {
 	value  T
 }
 
+var UseMainConfigDuringTests = true
+
 const DATA_DIR = "data"
 const CONFIG_DIR = DATA_DIR + "/config"
 
@@ -22,8 +30,44 @@ func New[T any](defaultValue T) *Config[T] {
 	return &Config[T]{defaultValue: defaultValue}
 }
 
+func hasGoMod(dir string) bool {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.Name() == "go.mod" {
+			return true
+		}
+	}
+	return false
+}
+
+func projectRoot() result.Result[string] {
+	_, file, _, ok := runtime.Caller(0)
+	wd := file
+	if !ok {
+		return result.Err[string](fmt.Errorf("could not find root caller source file"))
+	}
+	for !hasGoMod(wd) {
+		prevWd := wd
+		wd = filepath.Dir(wd)
+		if wd == prevWd {
+			return result.Err[string](fmt.Errorf("could not find root of project in this test. This is a bug with the test"))
+		}
+	}
+	return result.Ok(wd)
+}
+
 func (c *Config[T]) filePath() string {
 	name := reflect.TypeFor[T]().Name()
+	if testing.Testing() && UseMainConfigDuringTests {
+		return path.Join(projectRoot().Expect("project root should be easy to find while running a test"), CONFIG_DIR, name+".json")
+	}
 	return path.Join(CONFIG_DIR, name+".json")
 }
 
