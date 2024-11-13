@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	p2pInterface "vsc-node/lib/p2p"
 	"vsc-node/modules/aggregate"
@@ -27,7 +28,28 @@ func main() {
 
 	// choose the source
 	blockClient := hivego.NewHiveRpc("https://api.hive.blog")
-	filter := func(op map[string]interface{}) bool { return true }
+	filter := func(op hivego.Operation) bool {
+		if op.Type == "custom_json" {
+			if strings.HasPrefix(op.Value["id"].(string), "vsc.") {
+				return true
+			}
+		}
+		if op.Type == "account_update" || op.Type == "account_update2" {
+			return true
+		}
+
+		if op.Type == "transfer" {
+			if strings.HasPrefix(op.Value["to"].(string), "vsc.") {
+				return true
+			}
+
+			if strings.HasPrefix(op.Value["from"].(string), "vsc.") {
+				return true
+			}
+		}
+
+		return false
+	}
 	filters := []streamer.FilterFunc{filter}
 	streamerPlugin := streamer.NewStreamer(blockClient, hiveBlocks, filters, nil) // optional starting block #
 
