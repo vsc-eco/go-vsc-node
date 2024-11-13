@@ -12,5 +12,5 @@ type VscDb struct {
 var _ a.Plugin = &VscDb{}
 
 func New(d db.Db) *VscDb {
-	return &VscDb{db.NewDbInstance(d, "vsc")}
+	return &VscDb{db.NewDbInstance(d, "go-vsc")}
 }
