@@ -9,18 +9,26 @@ import (
 
 type DbInstance struct {
 	*mongo.Database
+
+	db   Db
+	name string
+	opts []*options.DatabaseOptions
 }
 
 var _ a.Plugin = &DbInstance{}
 
 func NewDbInstance(db Db, name string, opts ...*options.DatabaseOptions) *DbInstance {
 	return &DbInstance{
-		db.Database(name, opts...),
+		nil,
+		db,
+		name,
+		opts,
 	}
 }
 
 // Init implements aggregate.Plugin.
 func (d *DbInstance) Init() error {
+	d.Database = d.db.Database(d.name, d.opts...)
 	return nil
 }
 
