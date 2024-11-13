@@ -32,9 +32,9 @@ const defaultPort = "8080"
 func (g *graph) Init() error {
 	g.server = handler.NewDefaultServer(NewExecutableSchema(Config{Resolvers: &Resolver{}}))
 
-	http.Handle("/", playground.ApolloSandboxHandler("GraphQL Playground", "/api/v1/graphql"))
+	http.Handle("GET /api/v1/graphql", playground.ApolloSandboxHandler("GraphQL Playground", "/api/v1/graphql"))
 
-	http.Handle("/api/v1/graphql", g.server)
+	http.Handle("POST /api/v1/graphql", g.server)
 	return nil
 }
 
