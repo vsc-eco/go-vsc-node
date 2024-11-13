@@ -13,6 +13,7 @@ type HiveBlock struct {
 
 // a tx that can be stored inside a hive block
 type Tx struct {
+	Index         int                `json:"index" bson:"index"`
 	TransactionID string             `json:"transaction_id" bson:"transaction_id"`
 	Operations    []hivego.Operation `json:"operations" bson:"operations"`
 }
