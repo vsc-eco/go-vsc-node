@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
@@ -153,10 +154,15 @@ func TestFetchStoreBlocks(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -198,10 +204,15 @@ func TestStartBlock(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -240,10 +251,15 @@ func TestIntensePolling(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -286,10 +302,15 @@ func TestStreamFilter(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -337,10 +358,15 @@ func TestPersistingBlocksStored(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -388,10 +414,15 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -458,10 +489,15 @@ func TestBlockProcessing(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -498,10 +534,15 @@ func TestStreamReaderPauseResumeStop(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -563,10 +604,15 @@ func TestStreamPauseResumeStop(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -628,10 +674,15 @@ func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -682,10 +733,15 @@ func TestFilterOrdering(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -732,10 +788,15 @@ func TestBlockLag(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -792,10 +853,15 @@ func TestClearingStoredBlocks(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -849,10 +915,15 @@ func TestClearingLastProcessedBlock(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -898,10 +969,15 @@ func TestHeadBlock(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -942,10 +1018,15 @@ func TestDbStoredBlockIntegrity(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
@@ -1001,10 +1082,15 @@ func TestNestedArrayStructure(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// init the db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// init the vsc db
 	vscDb := vsc.New(d)
@@ -1072,10 +1158,15 @@ func TestVaultecExperiments(t *testing.T) {
 	setupAndCleanUpDataDir(t)
 
 	// db
-	d := db.New()
-	assert.NoError(t, d.Init())
-	assert.NoError(t, d.Start())
-	defer func() { assert.NoError(t, d.Stop()) }()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	assert.NoError(t, agg.Init())
+	assert.NoError(t, agg.Start())
+	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)

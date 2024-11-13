@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 	"testing"
+	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db"
 
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -43,12 +44,17 @@ type empty struct{}
 
 func TestCompat(t *testing.T) {
 	setupAndCleanUpDataDir(t)
-	d := db.New()
-	err := d.Init()
+	conf := db.NewDbConfig()
+	d := db.New(conf)
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		d,
+	})
+	err := agg.Init()
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = d.Start()
+	err = agg.Start()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +81,7 @@ func TestCompat(t *testing.T) {
 	if res[0].Name != "B" {
 		t.Fatal("skip does not work")
 	}
-	err = d.Stop()
+	err = agg.Stop()
 	if err != nil {
 		t.Fatal(err)
 	}

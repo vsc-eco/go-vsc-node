@@ -17,7 +17,8 @@ import (
 )
 
 func main() {
-	db := db.New()
+	conf := db.NewDbConfig()
+	db := db.New(conf)
 	vscDb := vsc.New(db)
 	witnesses := witnesses.New(vscDb)
 	hiveBlocks, err := hive_blocks.New(vscDb)
@@ -56,6 +57,7 @@ func main() {
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
+		conf,
 		db,
 		vscDb,
 		witnesses,
