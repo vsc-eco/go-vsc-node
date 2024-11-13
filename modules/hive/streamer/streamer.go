@@ -59,7 +59,7 @@ var (
 	// db poll interval
 	//
 	// @Vaultec says 500ms is ideal
-	DbPollInterval = time.Millisecond * 500
+	DbPollInterval = time.Millisecond * 100
 )
 
 // ===== StreamReader =====
@@ -132,14 +132,22 @@ func (s *StreamReader) pollDb() {
 	ticker := time.NewTicker(DbPollInterval)
 	defer ticker.Stop()
 
+	saveTicks := 0
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
 			if s.IsPaused() || !s.canProcess() {
-				time.Sleep(time.Millisecond * 100)
+				time.Sleep(time.Millisecond * 10)
 				continue
+			}
+
+			if saveTicks > 10 {
+				saveTicks = 0
+				if err := s.hiveBlocks.StoreLastProcessedBlock(s.lastProcessed); err != nil {
+					log.Printf("error updating last processed block: %v", err)
+				}
 			}
 
 			// fetch the highest stored block in the database
@@ -184,6 +192,7 @@ func (s *StreamReader) pollDb() {
 
 				// persist the updated last processed block only if it changed
 				if s.lastProcessed != oldLastProcessed {
+					saveTicks = saveTicks + 1
 					if err := s.hiveBlocks.StoreLastProcessedBlock(s.lastProcessed); err != nil {
 						log.Printf("error updating last processed block: %v", err)
 					}
@@ -238,7 +247,7 @@ var _ aggregate.Plugin = &StreamReader{}
 
 // ===== type definitions =====
 
-type FilterFunc func(tx map[string]interface{}) bool
+type FilterFunc func(tx hivego.Operation) bool
 type ProcessFunction func(block hiveblocks.HiveBlock)
 
 type Streamer struct {
@@ -522,11 +531,17 @@ func (s *Streamer) storeBlock(block *hivego.Block) error {
 	for i, tx := range block.Transactions {
 		// filter the ops within this tx
 		filteredTx := hiveblocks.Tx{
+			Index:         i,
 			TransactionID: txIds[i],
 			Operations:    []hivego.Operation{},
 		}
+		shouldInclude := false
+
 		for _, op := range tx.Operations {
-			shouldInclude := true
+			// remove any postfix of "_operation" if it exists from op.Type
+			if len(op.Type) > 10 && op.Type[len(op.Type)-10:] == "_operation" {
+				op.Type = op.Type[:len(op.Type)-10]
+			}
 			for _, filter := range s.filters {
 				// if the streamer is paused or stopped, skip block processing, this
 				// fixes some case where the streamer is stopped but some other go routine
@@ -534,24 +549,16 @@ func (s *Streamer) storeBlock(block *hivego.Block) error {
 				if !s.canStore() {
 					return fmt.Errorf("streamer is paused or stopped")
 				}
-				if !filter(op.Value) {
-					shouldInclude = false
-					break
+				if filter(op) {
+					shouldInclude = true
 				}
 			}
-			if shouldInclude {
 
-				// remove any postfix of "_operation" if it exists from op.Type
-				if len(op.Type) > 10 && op.Type[len(op.Type)-10:] == "_operation" {
-					op.Type = op.Type[:len(op.Type)-10]
-				}
-
-				filteredTx.Operations = append(filteredTx.Operations, op)
-			}
+			filteredTx.Operations = append(filteredTx.Operations, op)
 		}
 
 		// add the tx if it has any ops that passed the filters
-		if len(filteredTx.Operations) > 0 {
+		if shouldInclude {
 			hiveBlock.Transactions = append(hiveBlock.Transactions, filteredTx)
 		}
 	}

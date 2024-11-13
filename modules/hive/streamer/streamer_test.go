@@ -304,9 +304,9 @@ func TestStreamFilter(t *testing.T) {
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
 
-	filter := func(op map[string]interface{}) bool {
+	filter := func(op hivego.Operation) bool {
 		// filter everything!
-		return op["amount"] != "1 HIVE"
+		return op.Value["amount"] != "1 HIVE"
 	}
 
 	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
@@ -583,7 +583,7 @@ func TestStreamPauseResumeStop(t *testing.T) {
 
 	totalBlocks := 0
 
-	filter := func(op map[string]interface{}) bool {
+	filter := func(op hivego.Operation) bool {
 		// count total blocks in filter because this is also
 		// called just once like the process function so we can
 		// use it to guage if the streamer is still processing
@@ -703,13 +703,13 @@ func TestFilterOrdering(t *testing.T) {
 	filter1SeenBlocks := 0
 	filter2SeenBlocks := 0
 
-	filter1 := func(op map[string]interface{}) bool {
+	filter1 := func(op hivego.Operation) bool {
 		// filter everything
 		filter1SeenBlocks++
 		return false
 	}
 
-	filter2 := func(op map[string]interface{}) bool {
+	filter2 := func(op hivego.Operation) bool {
 		// filter nothing
 		filter2SeenBlocks++
 		return true
@@ -755,7 +755,7 @@ func TestBlockLag(t *testing.T) {
 
 	totalBlocks := 0
 
-	filter := func(op map[string]interface{}) bool {
+	filter := func(op hivego.Operation) bool {
 		totalBlocks++
 		// allow anything through
 		return true
@@ -815,7 +815,7 @@ func TestClearingStoredBlocks(t *testing.T) {
 
 	totalBlocks := 0
 
-	filter := func(op map[string]interface{}) bool {
+	filter := func(op hivego.Operation) bool {
 		totalBlocks++
 		// allow anything through
 		return true
@@ -1097,7 +1097,7 @@ func TestVaultecExperiments(t *testing.T) {
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
 
-	filter := func(op map[string]interface{}) bool { return true }
+	filter := func(op hivego.Operation) bool { return true }
 	client := hivego.NewHiveRpc("https://api.hive.blog")
 	s := streamer.NewStreamer(client, hiveBlocks, []streamer.FilterFunc{filter}, nil)
 	assert.NoError(t, s.Init())
