@@ -239,7 +239,7 @@ func (blocks *hiveBlocks) Init() error {
 
 	indexModel := mongo.IndexModel{
 		Keys:    bson.D{{Key: "block.block_number", Value: 1}}, // ascending order
-		Options: options.Index().SetUnique(false),              // not unique
+		Options: options.Index().SetUnique(true),               // not unique
 	}
 
 	// create index on block.block_number for faster queries
