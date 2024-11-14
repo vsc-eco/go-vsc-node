@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"vsc-node/modules/db"
@@ -159,6 +160,77 @@ func New(d *vsc.VscDb) (HiveBlocks, error) {
 	return hiveBlocks, nil
 }
 
+// CompareIndexOptions compares index options between two IndexModels
+func compareIndexOptions(existingOptions *mongo.IndexSpecification, newOptions *options.IndexOptions) bool {
+	// Compare options like Unique, Sparse, etc.
+	// If any of the options don't match, return false
+	if existingOptions == nil && newOptions == nil {
+		return true
+	}
+
+	if existingOptions == nil || newOptions == nil {
+		return false
+	}
+
+	// Compare relevant fields (add more as needed)
+	if existingOptions.Unique != nil && newOptions.Unique != nil && *existingOptions.Unique != *newOptions.Unique {
+		return false
+	}
+
+	if existingOptions.Sparse != nil && newOptions.Sparse != nil && *existingOptions.Sparse != *newOptions.Sparse {
+		return false
+	}
+
+	if existingOptions.ExpireAfterSeconds != nil && newOptions.ExpireAfterSeconds != nil && *existingOptions.ExpireAfterSeconds != *newOptions.ExpireAfterSeconds {
+		return false
+	}
+
+	// Add more option comparisons as needed
+
+	return true
+}
+
+func createIndexIfNotExist(collection *mongo.Collection, indexModel mongo.IndexModel) error {
+	// List all index specifications
+	indexes, err := collection.Indexes().ListSpecifications(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to list index specifications: %v", err)
+	}
+
+	keys, err := bson.Marshal(indexModel.Keys)
+	if err != nil {
+		return fmt.Errorf("failed to marshal index model: %v", err)
+	}
+
+	// Check if the index already exists and matches the options
+	var indexExists bool
+	for _, existingIndex := range indexes {
+		// Compare the index keys
+		existingKeys, err := bson.Marshal(existingIndex.KeysDocument)
+		if err != nil {
+			return fmt.Errorf("failed to marshal existing index key doc: %v", err)
+		}
+
+		if slices.Equal(existingKeys, keys) {
+			// Compare the options of the index
+			if compareIndexOptions(existingIndex, indexModel.Options) {
+				indexExists = true
+				break
+			}
+		}
+	}
+
+	// If the index doesn't exist, create it
+	if !indexExists {
+		_, err := collection.Indexes().CreateOne(context.Background(), indexModel)
+		if err != nil {
+			return fmt.Errorf("failed to create index: %v", err)
+		}
+	}
+
+	return nil
+}
+
 func (blocks *hiveBlocks) Init() error {
 	err := blocks.Collection.Init()
 	if err != nil {
@@ -171,7 +243,7 @@ func (blocks *hiveBlocks) Init() error {
 	}
 
 	// create index on block.block_number for faster queries
-	_, err = blocks.Collection.Indexes().CreateOne(context.Background(), indexModel)
+	err = createIndexIfNotExist(blocks.Collection.Collection, indexModel)
 	if err != nil {
 		return fmt.Errorf("failed to create index: %w", err)
 	}
