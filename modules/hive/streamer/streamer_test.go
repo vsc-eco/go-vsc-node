@@ -6,6 +6,7 @@ package streamer_test
 // ===== NOTE =====
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,12 +14,14 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"vsc-node/lib/utils"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/hive/streamer"
 
+	"github.com/chebyrash/promise"
 	"github.com/stretchr/testify/assert"
 	"github.com/vsc-eco/hivego"
 	"golang.org/x/exp/rand"
@@ -99,6 +102,130 @@ func seedBlockData(t *testing.T, hiveBlocks hive_blocks.HiveBlocks, n int) {
 	}
 }
 
+// ==== mock hive block db ====
+
+type MockHiveBlockDb struct {
+	Blocks             []hive_blocks.HiveBlock
+	LastProcessedBlock int
+}
+
+var _ hive_blocks.HiveBlocks = &MockHiveBlockDb{}
+
+// ClearBlocks implements hive_blocks.HiveBlocks.
+func (m *MockHiveBlockDb) ClearBlocks() error {
+	m.Blocks = nil
+	m.LastProcessedBlock = 0
+	return nil
+}
+
+// FetchNextBlocks implements hive_blocks.HiveBlocks.
+func (m *MockHiveBlockDb) FetchNextBlocks(startBlock int, limit int) ([]hive_blocks.HiveBlock, error) {
+	if m.Blocks == nil {
+		return []hive_blocks.HiveBlock{}, nil
+	}
+
+	startIndex := len(m.Blocks)
+	for i, block := range m.Blocks {
+		if block.BlockNumber == startBlock {
+			startIndex = i
+			break
+		}
+	}
+
+	return m.Blocks[startIndex:min(startIndex+limit, len(m.Blocks))], nil
+}
+
+// FetchStoredBlocks implements hive_blocks.HiveBlocks.
+func (m *MockHiveBlockDb) FetchStoredBlocks(startBlock int, endBlock int) ([]hive_blocks.HiveBlock, error) {
+	if m.Blocks == nil {
+		return []hive_blocks.HiveBlock{}, nil
+	}
+
+	startIndex := len(m.Blocks)
+	endIndex := len(m.Blocks)
+	for i, block := range m.Blocks {
+		if block.BlockNumber == startBlock {
+			startIndex = i
+		}
+		if block.BlockNumber == endBlock {
+			endIndex = i
+			break
+		}
+	}
+
+	return m.Blocks[startIndex : endIndex+1], nil
+}
+
+// GetHighestBlock implements hive_blocks.HiveBlocks.
+func (m *MockHiveBlockDb) GetHighestBlock() (int, error) {
+	if m.Blocks == nil {
+		return 0, nil
+	}
+
+	// we assume our highest is 0 if we have nothing yet
+	if len(m.Blocks) <= 0 {
+		return 0, nil
+	}
+
+	return m.Blocks[len(m.Blocks)-1].BlockNumber, nil
+}
+
+// GetLastProcessedBlock implements hive_blocks.HiveBlocks.
+func (m *MockHiveBlockDb) GetLastProcessedBlock() (int, error) {
+	if m.Blocks == nil {
+		return -1, nil
+	}
+
+	return m.LastProcessedBlock, nil
+}
+
+// StoreBlocks implements hive_blocks.HiveBlocks.
+func (m *MockHiveBlockDb) StoreBlocks(blocks ...hive_blocks.HiveBlock) error {
+	if len(m.Blocks) == 350 {
+		println("blocks")
+	}
+	if len(blocks) == 350 {
+		println("input blocks")
+	}
+	if len(m.Blocks) == 102 {
+		println("blocks")
+	}
+	if len(blocks) == 102 {
+		println("input blocks")
+	}
+	m.Blocks = append(m.Blocks, blocks...)
+	return nil
+}
+
+// StoreLastProcessedBlock implements hive_blocks.HiveBlocks.
+func (m *MockHiveBlockDb) StoreLastProcessedBlock(blockNumber int) error {
+	if blockNumber == 350 {
+		println("input blocks")
+	}
+	if blockNumber == 102 {
+		println("blocks")
+	}
+	m.LastProcessedBlock = blockNumber
+	return nil
+}
+
+// Init implements hive_blocks.HiveBlocks.
+func (m *MockHiveBlockDb) Init() error {
+	return nil
+}
+
+// Start implements hive_blocks.HiveBlocks.
+func (m *MockHiveBlockDb) Start() *promise.Promise[any] {
+	return utils.PromiseResolve[any](nil)
+}
+
+// Stop implements hive_blocks.HiveBlocks.
+func (m *MockHiveBlockDb) Stop() error {
+	m.Blocks = nil
+	m.LastProcessedBlock = 0
+	return nil
+}
+
 // ===== mock hive block client service =====
 
 type MockBlockClient struct{}
@@ -146,41 +273,28 @@ func (m *MockBlockClient) GetBlockRange(startBlock int, count int) (<-chan hiveg
 	return blockChannel, nil
 }
 
+// ===== test utils =====
+
+func runPlugin(t *testing.T, plugin aggregate.Plugin) {
+	assert.NoError(t, plugin.Init())
+	go func() {
+		_, err := plugin.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	t.Cleanup(func() {
+		assert.NoError(t, plugin.Stop())
+	})
+}
+
 // ===== tests =====
 
 func TestFetchStoreBlocks(t *testing.T) {
+	// hive mocks db
+	mockHiveBlocks := &MockHiveBlockDb{}
 
-	// cleanup
-	setupAndCleanUpDataDir(t)
-
-	// db
-	conf := db.NewDbConfig()
-	d := db.New(conf)
-	agg := aggregate.New([]aggregate.Plugin{
-		conf,
-		d,
-	})
-	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
-	defer func() { assert.NoError(t, agg.Stop()) }()
-
-	// vsc db
-	vscDb := vsc.New(d)
-	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
-	defer func() { assert.NoError(t, vscDb.Stop()) }()
-
-	// perms
-	os.Chmod("data", 0755)
-
-	// hive blocks
-	hiveBlocks, err := hive_blocks.New(vscDb)
-	assert.NoError(t, err)
-
-	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, nil)
-	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
-	defer func() { assert.NoError(t, s.Stop()) }()
+	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{func(tx hivego.Operation) bool {
+		return true
+	}}, nil)
 
 	totalBlksReceived := 0
 
@@ -188,20 +302,21 @@ func TestFetchStoreBlocks(t *testing.T) {
 		totalBlksReceived++
 	}
 
-	sr := streamer.NewStreamReader(hiveBlocks, process)
-	assert.NoError(t, sr.Init())
-	assert.NoError(t, sr.Start())
-	defer func() { assert.NoError(t, sr.Stop()) }()
+	sr := streamer.NewStreamReader(mockHiveBlocks, process)
+	agg := aggregate.New([]aggregate.Plugin{
+		mockHiveBlocks,
+		s,
+		sr,
+	})
 
-	time.Sleep(3 * time.Second)
+	runPlugin(t, agg)
 
-	assert.Greater(t, totalBlksReceived, 0)
+	assert.Eventually(t, func() bool {
+		return totalBlksReceived > 0
+	}, 3*time.Second, 10*time.Millisecond)
 }
 
 func TestStartBlock(t *testing.T) {
-
-	// cleanup
-	setupAndCleanUpDataDir(t)
 
 	// db
 	conf := db.NewDbConfig()
@@ -211,13 +326,19 @@ func TestStartBlock(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -226,6 +347,12 @@ func TestStartBlock(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, nil)
 	assert.NoError(t, s.Init())
@@ -233,7 +360,10 @@ func TestStartBlock(t *testing.T) {
 	// should default to our default if we don't specify and instead input nil
 	assert.Equal(t, streamer.DefaultBlockStart, s.StartBlock())
 
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	assert.NoError(t, s.Stop())
 
 	s = streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, &[]int{99}[0])
@@ -242,7 +372,10 @@ func TestStartBlock(t *testing.T) {
 	// should be the value we input
 	assert.Equal(t, 99, s.StartBlock())
 
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	assert.NoError(t, s.Stop())
 }
 
@@ -258,13 +391,19 @@ func TestIntensePolling(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -273,10 +412,19 @@ func TestIntensePolling(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, nil)
 	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, s.Stop()) }()
 
 	seenBlocks := make(map[int]int)
@@ -285,7 +433,10 @@ func TestIntensePolling(t *testing.T) {
 		seenBlocks[block.BlockNumber]++
 	})
 	assert.NoError(t, sr.Init())
-	assert.NoError(t, sr.Start())
+	go func() {
+		_, err := sr.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, sr.Stop()) }()
 
 	time.Sleep(3 * time.Second)
@@ -309,13 +460,19 @@ func TestStreamFilter(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -324,6 +481,12 @@ func TestStreamFilter(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	filter := func(op hivego.Operation) bool {
 		// filter everything!
@@ -332,7 +495,10 @@ func TestStreamFilter(t *testing.T) {
 
 	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
 	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, s.Stop()) }()
 
 	txsReceived := 0
@@ -345,7 +511,10 @@ func TestStreamFilter(t *testing.T) {
 
 	sr := streamer.NewStreamReader(hiveBlocks, process)
 	assert.NoError(t, sr.Init())
-	assert.NoError(t, sr.Start())
+	go func() {
+		_, err := sr.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, sr.Stop()) }()
 
 	time.Sleep(3 * time.Second)
@@ -365,13 +534,19 @@ func TestPersistingBlocksStored(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -380,11 +555,20 @@ func TestPersistingBlocksStored(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	// start at 0
 	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, &[]int{0}[0])
 	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 
 	time.Sleep(3 * time.Second)
 
@@ -397,7 +581,10 @@ func TestPersistingBlocksStored(t *testing.T) {
 
 	s = streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, nil)
 	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, s.Stop()) }()
 
 	time.Sleep(3 * time.Second)
@@ -421,13 +608,19 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -436,11 +629,20 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	// start at default
 	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, nil, nil)
 	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, s.Stop()) }()
 
 	lastProcessedBlk := -1
@@ -449,7 +651,10 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 		lastProcessedBlk = block.BlockNumber
 	})
 	assert.NoError(t, sr.Init())
-	assert.NoError(t, sr.Start())
+	go func() {
+		_, err := sr.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 
 	time.Sleep(2 * time.Second)
 
@@ -475,7 +680,10 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 		resumedLastProcessedBlk = block.BlockNumber
 	})
 	assert.NoError(t, sr.Init())
-	assert.NoError(t, sr.Start())
+	go func() {
+		_, err := sr.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, sr.Stop()) }()
 
 	time.Sleep(2 * time.Second)
@@ -496,13 +704,19 @@ func TestBlockProcessing(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -511,6 +725,12 @@ func TestBlockProcessing(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	// seed
 	seedBlockData(t, hiveBlocks, 10)
@@ -521,7 +741,10 @@ func TestBlockProcessing(t *testing.T) {
 		totalSeenBlocks++
 	})
 	assert.NoError(t, sr.Init())
-	assert.NoError(t, sr.Start())
+	go func() {
+		_, err := sr.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, sr.Stop()) }()
 
 	time.Sleep(3 * time.Second)
@@ -541,13 +764,19 @@ func TestStreamReaderPauseResumeStop(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -556,6 +785,12 @@ func TestStreamReaderPauseResumeStop(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	// seed
 	seedBlockData(t, hiveBlocks, 10)
@@ -566,7 +801,10 @@ func TestStreamReaderPauseResumeStop(t *testing.T) {
 		totalSeenBlocks++
 	})
 	assert.NoError(t, sr.Init())
-	assert.NoError(t, sr.Start())
+	go func() {
+		_, err := sr.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, sr.Stop()) }()
 
 	time.Sleep(3 * time.Second)
@@ -611,13 +849,19 @@ func TestStreamPauseResumeStop(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -626,6 +870,12 @@ func TestStreamPauseResumeStop(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	totalBlocks := 0
 
@@ -639,7 +889,10 @@ func TestStreamPauseResumeStop(t *testing.T) {
 
 	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
 	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, s.Stop()) }()
 
 	time.Sleep(3 * time.Second)
@@ -681,13 +934,19 @@ func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -696,6 +955,12 @@ func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	// seed
 	seedBlockData(t, hiveBlocks, 10)
@@ -707,7 +972,10 @@ func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
 
 	sr := streamer.NewStreamReader(hiveBlocks, func(block hive_blocks.HiveBlock) {})
 	assert.NoError(t, sr.Init())
-	assert.NoError(t, sr.Start())
+	go func() {
+		_, err := sr.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, sr.Stop()) }()
 
 	time.Sleep(3 * time.Second)
@@ -740,13 +1008,19 @@ func TestFilterOrdering(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -755,6 +1029,12 @@ func TestFilterOrdering(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	filter1SeenBlocks := 0
 	filter2SeenBlocks := 0
@@ -773,7 +1053,10 @@ func TestFilterOrdering(t *testing.T) {
 
 	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter1, filter2}, nil)
 	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, s.Stop()) }()
 
 	time.Sleep(3 * time.Second)
@@ -795,13 +1078,19 @@ func TestBlockLag(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -810,6 +1099,12 @@ func TestBlockLag(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	streamer.AcceptableBlockLag = 5
 	streamer.DefaultBlockStart = dummyBlockHead - 3
@@ -825,7 +1120,10 @@ func TestBlockLag(t *testing.T) {
 	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
 	assert.NoError(t, s.Init())
 	assert.Equal(t, streamer.DefaultBlockStart, s.StartBlock())
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 
 	time.Sleep(3 * time.Second)
 
@@ -840,7 +1138,10 @@ func TestBlockLag(t *testing.T) {
 	// create new streamer
 	s = streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
 	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, s.Stop()) }()
 
 	time.Sleep(3 * time.Second)
@@ -860,13 +1161,19 @@ func TestClearingStoredBlocks(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -875,6 +1182,12 @@ func TestClearingStoredBlocks(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	// seed
 	seedBlockData(t, hiveBlocks, 10)
@@ -889,7 +1202,10 @@ func TestClearingStoredBlocks(t *testing.T) {
 
 	s := streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
 	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 
 	time.Sleep(3 * time.Second)
 
@@ -906,7 +1222,10 @@ func TestClearingStoredBlocks(t *testing.T) {
 	s = streamer.NewStreamer(&MockBlockClient{}, hiveBlocks, []streamer.FilterFunc{filter}, nil)
 	assert.NoError(t, s.Init())
 	assert.Equal(t, streamer.DefaultBlockStart, s.StartBlock())
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	assert.NoError(t, s.Stop())
 }
 
@@ -922,13 +1241,19 @@ func TestClearingLastProcessedBlock(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -937,6 +1262,12 @@ func TestClearingLastProcessedBlock(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	seedBlockData(t, hiveBlocks, 10)
 
@@ -946,7 +1277,10 @@ func TestClearingLastProcessedBlock(t *testing.T) {
 		totalBlocks++
 	})
 	assert.NoError(t, sr.Init())
-	assert.NoError(t, sr.Start())
+	go func() {
+		_, err := sr.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, sr.Stop()) }()
 
 	time.Sleep(3 * time.Second)
@@ -976,13 +1310,19 @@ func TestHeadBlock(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -991,6 +1331,12 @@ func TestHeadBlock(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	mockClient := &MockBlockClient{}
 
@@ -1005,7 +1351,10 @@ func TestHeadBlock(t *testing.T) {
 
 	s := streamer.NewStreamer(mockClient, hiveBlocks, nil, nil)
 	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, s.Stop()) }()
 
 	time.Sleep(3 * time.Second)
@@ -1025,13 +1374,19 @@ func TestDbStoredBlockIntegrity(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -1040,6 +1395,12 @@ func TestDbStoredBlockIntegrity(t *testing.T) {
 	// hive blocks
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	seedBlockData(t, hiveBlocks, 10)
 
@@ -1089,13 +1450,19 @@ func TestNestedArrayStructure(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// init the vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	os.Chmod("data", 0755)
@@ -1165,13 +1532,19 @@ func TestVaultecExperiments(t *testing.T) {
 		d,
 	})
 	assert.NoError(t, agg.Init())
-	assert.NoError(t, agg.Start())
+	go func() {
+		_, err := agg.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, agg.Stop()) }()
 
 	// vsc db
 	vscDb := vsc.New(d)
 	assert.NoError(t, vscDb.Init())
-	assert.NoError(t, vscDb.Start())
+	go func() {
+		_, err := vscDb.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, vscDb.Stop()) }()
 
 	// perms
@@ -1187,12 +1560,21 @@ func TestVaultecExperiments(t *testing.T) {
 
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	assert.NoError(t, err)
+	assert.NoError(t, hiveBlocks.Init())
+	go func() {
+		_, err := hiveBlocks.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
+	defer func() { assert.NoError(t, hiveBlocks.Stop()) }()
 
 	filter := func(op hivego.Operation) bool { return true }
 	client := hivego.NewHiveRpc("https://api.hive.blog")
 	s := streamer.NewStreamer(client, hiveBlocks, []streamer.FilterFunc{filter}, nil)
 	assert.NoError(t, s.Init())
-	assert.NoError(t, s.Start())
+	go func() {
+		_, err := s.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, s.Stop()) }()
 
 	process := func(block hive_blocks.HiveBlock) {
@@ -1200,7 +1582,10 @@ func TestVaultecExperiments(t *testing.T) {
 	}
 	sr := streamer.NewStreamReader(hiveBlocks, process)
 	assert.NoError(t, sr.Init())
-	assert.NoError(t, sr.Start())
+	go func() {
+		_, err := sr.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}()
 	defer func() { assert.NoError(t, sr.Stop()) }()
 
 	select {}
