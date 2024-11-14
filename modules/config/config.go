@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"runtime"
 	"testing"
+	"vsc-node/lib/utils"
 
 	"github.com/JustinKnueppel/go-result"
 	"github.com/chebyrash/promise"
@@ -101,7 +102,7 @@ func (c *Config[T]) Init() error {
 }
 
 func (c *Config[T]) Start() *promise.Promise[any] {
-	return nil
+	return utils.PromiseResolve[any](nil)
 }
 
 func (c *Config[T]) Stop() error {

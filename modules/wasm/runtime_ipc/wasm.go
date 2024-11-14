@@ -7,12 +7,14 @@ import (
 	"os"
 	"unicode/utf16"
 	ipc_client "vsc-node/lib/stdio-ipc/client"
+	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/wasm/ipc_requests"
 	"vsc-node/modules/wasm/ipc_requests/execute"
 	sdkTypes "vsc-node/modules/wasm/sdk/types"
 
 	"github.com/JustinKnueppel/go-result"
+	"github.com/chebyrash/promise"
 	"github.com/second-state/WasmEdge-go/wasmedge"
 	// bindgen "github.com/second-state/wasmedge-bindgen/host/go"
 )
@@ -31,8 +33,8 @@ func (w *Wasm) Init() error {
 	return nil
 }
 
-func (w *Wasm) Start() error {
-	return nil
+func (w *Wasm) Start() *promise.Promise[any] {
+	return utils.PromiseResolve[any](nil)
 }
 
 func (w *Wasm) Stop() error {

@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/config"
 
@@ -40,7 +41,7 @@ func (db *db) Init() error {
 }
 
 func (db *db) Start() *promise.Promise[any] {
-	return nil
+	return utils.PromiseResolve[any](nil)
 }
 
 func (db *db) Stop() error {

@@ -1,6 +1,7 @@
 package wasm_runtime_ipc_test
 
 import (
+	"context"
 	"testing"
 	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
 )
@@ -11,7 +12,7 @@ func TestCompat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = w.Start()
+	_, err = w.Start().Await(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -54,7 +54,7 @@ func TestCompat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = agg.Start()
+	_, err = agg.Start().Await(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

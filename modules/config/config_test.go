@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"context"
 	"testing"
 	"vsc-node/modules/config"
 )
@@ -15,7 +16,7 @@ func TestBasic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = c.Start()
+	_, err = c.Start().Await(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

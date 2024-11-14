@@ -1,6 +1,7 @@
 package db
 
 import (
+	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 
 	"github.com/chebyrash/promise"
@@ -35,7 +36,7 @@ func (d *DbInstance) Init() error {
 
 // Start implements aggregate.Plugin.
 func (d *DbInstance) Start() *promise.Promise[any] {
-	return nil
+	return utils.PromiseResolve[any](nil)
 }
 
 // Stop implements aggregate.Plugin.

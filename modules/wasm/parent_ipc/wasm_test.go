@@ -1,6 +1,7 @@
 package wasm_parent_ipc_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -856,7 +857,7 @@ func TestCompat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = w.Start()
+	_, err = w.Start().Await(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

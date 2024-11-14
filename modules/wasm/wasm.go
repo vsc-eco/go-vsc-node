@@ -2,6 +2,7 @@ package wasm
 
 import (
 	"fmt"
+	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 
 	"github.com/chebyrash/promise"
@@ -26,7 +27,7 @@ func (w *Wasm) Init() error {
 }
 
 func (w *Wasm) Start() *promise.Promise[any] {
-	return nil
+	return utils.PromiseResolve[any](nil)
 }
 
 func (w *Wasm) Stop() error {

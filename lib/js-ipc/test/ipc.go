@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	js_ipc "vsc-node/lib/js-ipc"
 )
 
@@ -12,7 +13,7 @@ func main() {
 		panic(err)
 	}
 
-	err = ipc.Start()
+	_, err = ipc.Start().Await(context.Background())
 	if err != nil {
 		panic(err)
 	}
