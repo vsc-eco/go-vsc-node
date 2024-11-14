@@ -67,6 +67,9 @@ func TestBasicJsonConnection(t *testing.T) {
 		"nil": nil,
 	}))
 
+	var m ipc_requests.Message[string]
+	assert.Error(t, cio.Receive(&m), "EOF")
+
 	assert.True(t, cio.Finished())
 
 	assert.Nil(t, cio.Send(nil))
