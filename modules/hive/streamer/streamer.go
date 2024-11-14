@@ -76,10 +76,15 @@ type StreamReader struct {
 	hiveBlocks    hiveblocks.HiveBlocks
 	stopOnlyOnce  sync.Once
 	wg            sync.WaitGroup
+	startBlock    int
 }
 
 // inits a StreamReader with the provided hiveBlocks interface and process function
-func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction) *StreamReader {
+func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, maybeStartBlock ...int) *StreamReader {
+	startBlock := DefaultBlockStart
+	if len(maybeStartBlock) > 0 {
+		startBlock = maybeStartBlock[0]
+	}
 	if process == nil {
 		process = func(block hiveblocks.HiveBlock) {} // no-op
 	}
@@ -93,6 +98,7 @@ func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction) 
 		wg:           sync.WaitGroup{},
 		stopOnlyOnce: sync.Once{},
 		isPaused:     false,
+		startBlock:   startBlock,
 	}
 }
 
@@ -114,6 +120,11 @@ func (s *StreamReader) Init() error {
 	if err != nil {
 		return fmt.Errorf("error getting last processed block: %v", err)
 	}
+
+	if lp < s.startBlock {
+		lp = s.startBlock - 1
+	}
+
 	s.lastProcessed = lp
 	return nil
 }
@@ -539,6 +550,9 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 			for _, op := range tx.Operations {
 				// remove any postfix of "_operation" if it exists from op.Type
 				if len(op.Type) > 10 && op.Type[len(op.Type)-10:] == "_operation" {
+					if len(op.Type)-10 == 350 {
+						println("350")
+					}
 					op.Type = op.Type[:len(op.Type)-10]
 				}
 				for _, filter := range s.filters {
