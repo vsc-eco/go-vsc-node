@@ -60,7 +60,7 @@ func TestFullCircuitFlow(t *testing.T) {
 	})
 
 	// gens a partial circuit
-	partialCircuit, err := generator.Generate(block)
+	partialCircuit, err := generator.Generate(block.Cid())
 	assert.NoError(t, err)
 
 	// sign the block with both providers
@@ -102,7 +102,7 @@ func TestInvalidSignature(t *testing.T) {
 
 	block := blocks.NewBlock([]byte("hello there"))
 	generator := dids.NewBlsCircuitGenerator([]dids.Member{{Account: "account1", DID: did1}})
-	partialCircuit, err := generator.Generate(block)
+	partialCircuit, err := generator.Generate(block.Cid())
 	assert.NoError(t, err)
 
 	// gens a valid signature and tamper it to create an invalid signature
@@ -134,7 +134,7 @@ func TestWrongPublicKey(t *testing.T) {
 
 	block := blocks.NewBlock([]byte("foo bar"))
 	generator := dids.NewBlsCircuitGenerator([]dids.Member{{Account: "account1", DID: did1}})
-	partialCircuit, err := generator.Generate(block)
+	partialCircuit, err := generator.Generate(block.Cid())
 	assert.NoError(t, err)
 
 	sig, err := provider1.Sign(block.Cid())
@@ -167,7 +167,7 @@ func TestNotAllMembersSigned(t *testing.T) {
 		{Account: "account1", DID: did1},
 		{Account: "account2", DID: did2},
 	})
-	partialCircuit, err := generator.Generate(block)
+	partialCircuit, err := generator.Generate(block.Cid())
 	assert.NoError(t, err)
 
 	// add and verify only one signature
@@ -210,7 +210,7 @@ func TestSerializeDeserialize(t *testing.T) {
 	})
 
 	// gen partial circuit
-	partialCircuit, err := generator.Generate(block)
+	partialCircuit, err := generator.Generate(block.Cid())
 	assert.NoError(t, err)
 
 	// sign the block with both providers
@@ -246,7 +246,7 @@ func TestSerializeDeserialize(t *testing.T) {
 	assert.NoError(t, err)
 
 	// verify the signature using aggDID
-	verified, err := aggDID.AggPubKey.Verify(finalCircuit.Msg().Cid(), sig)
+	verified, err := aggDID.AggPubKey.Verify(finalCircuit.Msg(), sig)
 	assert.NoError(t, err)
 	assert.True(t, verified)
 
