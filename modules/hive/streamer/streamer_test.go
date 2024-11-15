@@ -544,7 +544,7 @@ func TestStreamPauseResumeStop(t *testing.T) {
 	totalBlocksBeforeStop := totalBlocks
 
 	// stop
-	s.Stop()
+	assert.NoError(t, s.Stop())
 
 	time.Sleep(1 * time.Second)
 
