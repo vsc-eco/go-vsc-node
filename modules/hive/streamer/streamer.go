@@ -564,6 +564,7 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 					}
 					if filter(op) {
 						shouldInclude = true
+						break
 					}
 				}
 
