@@ -281,21 +281,19 @@ func TestIntensePolling(t *testing.T) {
 	mockHiveBlocks := &MockHiveBlockDb{}
 
 	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil)
-
-	agg := aggregate.New([]aggregate.Plugin{
-		mockHiveBlocks,
-		s,
-	})
-
-	test_utils.RunPlugin(t, agg)
-
 	seenBlocks := make(map[int]int)
 
 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
 		seenBlocks[block.BlockNumber]++
 	})
 
-	test_utils.RunPlugin(t, sr)
+	agg := aggregate.New([]aggregate.Plugin{
+		mockHiveBlocks,
+		s,
+		sr,
+	})
+
+	test_utils.RunPlugin(t, agg)
 
 	time.Sleep(3 * time.Second)
 
@@ -496,7 +494,7 @@ func TestStreamReaderPauseResumeStop(t *testing.T) {
 	seenBlocksBeforeStop := totalSeenBlocks
 
 	// stop
-	sr.Stop()
+	assert.NoError(t, sr.Stop())
 
 	time.Sleep(1 * time.Second)
 
@@ -593,8 +591,6 @@ func TestFilterOrdering(t *testing.T) {
 	// hive blocks
 	mockHiveBlocks := &MockHiveBlockDb{}
 
-	test_utils.RunPlugin(t, mockHiveBlocks)
-
 	filter1SeenBlocks := 0
 	filter2SeenBlocks := 0
 
@@ -610,7 +606,12 @@ func TestFilterOrdering(t *testing.T) {
 
 	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter1, filter2}, nil)
 
-	test_utils.RunPlugin(t, s)
+	agg := aggregate.New([]aggregate.Plugin{
+		mockHiveBlocks,
+		s,
+	})
+
+	test_utils.RunPlugin(t, agg)
 
 	time.Sleep(3 * time.Second)
 
@@ -623,8 +624,6 @@ func TestBlockLag(t *testing.T) {
 
 	// hive blocks
 	mockHiveBlocks := &MockHiveBlockDb{}
-
-	test_utils.RunPlugin(t, mockHiveBlocks)
 
 	streamer.AcceptableBlockLag = 5
 	streamer.DefaultBlockStart = dummyBlockHead - 3
@@ -639,7 +638,12 @@ func TestBlockLag(t *testing.T) {
 
 	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil)
 
-	test_utils.RunPlugin(t, s)
+	agg := aggregate.New([]aggregate.Plugin{
+		mockHiveBlocks,
+		s,
+	})
+
+	test_utils.RunPlugin(t, agg)
 
 	time.Sleep(3 * time.Second)
 
