@@ -422,12 +422,8 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 	sr = streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
 		resumedLastProcessedBlk = block.BlockNumber
 	})
-	assert.NoError(t, sr.Init())
-	go func() {
-		_, err := sr.Start().Await(context.Background())
-		assert.NoError(t, err)
-	}()
-	defer func() { assert.NoError(t, sr.Stop()) }()
+
+	test_utils.RunPlugin(t, sr)
 
 	time.Sleep(2 * time.Second)
 
@@ -874,23 +870,15 @@ func TestVaultecExperiments(t *testing.T) {
 	filter := func(op hivego.Operation) bool { return true }
 	client := hivego.NewHiveRpc("https://api.hive.blog")
 	s := streamer.NewStreamer(client, mockHiveBlocks, []streamer.FilterFunc{filter}, nil)
-	assert.NoError(t, s.Init())
-	go func() {
-		_, err := s.Start().Await(context.Background())
-		assert.NoError(t, err)
-	}()
-	defer func() { assert.NoError(t, s.Stop()) }()
+
+	test_utils.RunPlugin(t, s)
 
 	process := func(block hive_blocks.HiveBlock) {
 		fmt.Printf("block #: %v\n", block.Transactions)
 	}
 	sr := streamer.NewStreamReader(mockHiveBlocks, process)
-	assert.NoError(t, sr.Init())
-	go func() {
-		_, err := sr.Start().Await(context.Background())
-		assert.NoError(t, err)
-	}()
-	defer func() { assert.NoError(t, sr.Stop()) }()
+
+	test_utils.RunPlugin(t, sr)
 
 	select {}
 }
