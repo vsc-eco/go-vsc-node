@@ -486,10 +486,18 @@ func DeserializeBlsCircuit(serialized SerializedCircuit, keyset []BlsDID, msg ci
 	}
 
 	sigBytes, err := base64.StdEncoding.DecodeString(serialized.Signature)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode signature: %w", err)
+	}
+
+	aggSignature := new(BlsSig)
+	if aggSignature.Uncompress(sigBytes) == nil {
+		return nil, fmt.Errorf("failed to uncompress aggregated signature")
+	}
 
 	// return the aggregate DID
 	return &BlsCircuit{
-		aggSigs:   sigBytes,
+		aggSigs:   aggSignature,
 		bitVector: bitset,
 		keyset:    keyset,
 		msg:       &msg,

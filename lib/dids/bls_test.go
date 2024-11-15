@@ -180,7 +180,6 @@ func TestNotAllMembersSigned(t *testing.T) {
 	_, err = partialCircuit.Finalize()
 	assert.Error(t, err)
 }
-
 func TestSerializeDeserialize(t *testing.T) {
 	// use predefined seeds
 	var seed1 [32]byte
@@ -237,19 +236,14 @@ func TestSerializeDeserialize(t *testing.T) {
 
 	// deserialize the circuit to get the AggregateDID
 	keyset := generator.CircuitMap()
-	aggDID, err := dids.DeserializeBlsCircuit(serializedCircuit, keyset)
+	aggDID, err := dids.DeserializeBlsCircuit(*serializedCircuit, keyset, block.Cid())
 	assert.NoError(t, err)
 
-	// use aggDID to verify the original block
-	// get the aggregated signature from the circuit
-	sig, err := finalCircuit.AggregatedSignature()
-	assert.NoError(t, err)
-
-	// verify the signature using aggDID
-	verified, err := aggDID.AggPubKey.Verify(finalCircuit.Msg(), sig)
+	// verify the aggregated signature and included DIDs
+	verified, includedDIDs, err := aggDID.Verify()
 	assert.NoError(t, err)
 	assert.True(t, verified)
 
 	// verify that the included DIDs match
-	assert.Equal(t, aggDID.IncludedDIDs, finalCircuit.IncludedDIDs())
+	assert.Equal(t, includedDIDs, finalCircuit.IncludedDIDs())
 }
