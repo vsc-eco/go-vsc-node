@@ -82,7 +82,7 @@ func (d BlsDID) Identifier() *BlsPubKey {
 	return pubKey
 }
 
-// verifies if the sig is valid for the block (based on its CID)
+// verifies if the sig is valid for the cid
 func (d BlsDID) Verify(cid cid.Cid, sig string) (bool, error) {
 
 	// get the pub key from the DID
@@ -101,14 +101,8 @@ func (d BlsDID) Verify(cid cid.Cid, sig string) (bool, error) {
 	}
 
 	// verify the sig using the pub key and the CID bytes directly
-	verified := signature.Verify(true, pubKey, true, cid.Bytes(), nil)
-
-	// return the verification result
-	if !verified {
-		return false, fmt.Errorf("sig verification failed for DID: %s", d.String())
-	}
-
-	return true, nil
+	// and return this directly
+	return signature.Verify(true, pubKey, true, cid.Bytes(), nil), nil
 }
 
 // ===== KeyDIDProvider =====
@@ -126,23 +120,21 @@ func NewBlsProvider(privKey *BlsPrivKey) (BlsProvider, error) {
 	return BlsProvider{privKey}, nil
 }
 
-// signs a block using the BLS priv key
+// signs a cid using the BLS priv key
 func (b BlsProvider) Sign(cid cid.Cid) (string, error) {
 
 	// sign the CID using the BLS priv key
 	sig := new(BlsSig).Sign(b.privKey, cid.Bytes(), nil)
 
 	// compress and encode to base64; make the sig transportable
-	encodedSig := base64.StdEncoding.EncodeToString(sig.Compress())
-
-	return encodedSig, nil
+	return base64.StdEncoding.EncodeToString(sig.Compress()), nil
 }
 
 // ===== BLS circuit generator =====
 
 // represents an account and its associated pub key
 type Member struct {
-	Account string
+	Account string // likely account username
 	DID     BlsDID
 }
 
@@ -157,8 +149,8 @@ func NewBlsCircuitGenerator(members []Member) *BlsCircuitGenerator {
 }
 
 // gen a partial BLS circuit
-func (bcg BlsCircuitGenerator) Generate(msg cid.Cid) (*partialBlsCircuit, error) {
-	circuit, err := newBlsCircuit(&msg, bcg.CircuitMap())
+func (bcg *BlsCircuitGenerator) Generate(cid cid.Cid) (*partialBlsCircuit, error) {
+	circuit, err := newBlsCircuit(&cid, bcg.CircuitMap())
 	if err != nil {
 		return nil, err
 	}
@@ -169,6 +161,7 @@ func (bcg BlsCircuitGenerator) Generate(msg cid.Cid) (*partialBlsCircuit, error)
 	}, nil
 }
 
+// adds a member to the list of "members that must sign to finalize this circuit" list
 func (bcg *BlsCircuitGenerator) AddMember(member Member) {
 	// check if member already exists by DID
 	for _, m := range bcg.members {
@@ -224,14 +217,13 @@ func (pbc *partialBlsCircuit) CircuitMap() []BlsDID {
 	return dids
 }
 
-// view the message (Block)
-func (pbc *partialBlsCircuit) Msg() cid.Cid {
-	return *pbc.circuit.msg
+// view the message (cid)
+func (pbc *partialBlsCircuit) Cid() cid.Cid {
+	return *pbc.circuit.cid
 }
 
 // add a sig to the partial BLS circuit and verify it
-
-// from @vaultec note members should be predefined in the structure before AddAndVerify. TH
+// from @vaultec: members should be predefined in the structure before AddAndVerify
 func (pbc *partialBlsCircuit) AddAndVerify(member Member, sig string) error {
 	// check if member exists
 	found := false
@@ -258,9 +250,9 @@ func (pbc *partialBlsCircuit) AddAndVerify(member Member, sig string) error {
 // finalize the partial BLS circuit into a full
 // BLS circuit which we can then use
 func (pbc *partialBlsCircuit) Finalize() (*BlsCircuit, error) {
-	// if the block (message) is nil, fail the finalization
-	if pbc.circuit.msg == nil {
-		return nil, fmt.Errorf("failed to finalize BLS circuit: block is nil")
+	// if the cid (message) is nil, fail the finalization
+	if pbc.circuit.cid == nil {
+		return nil, fmt.Errorf("failed to finalize BLS circuit: cid is nil")
 	}
 
 	// if no members have signed, fail the finalization
@@ -286,33 +278,31 @@ func (pbc *partialBlsCircuit) Finalize() (*BlsCircuit, error) {
 
 // a full BLS circuit with all members signed
 type BlsCircuit struct {
-	//Core structure of what is a BLS circuit
-	msg       *cid.Cid
-	aggSigs   *BlsSig
+	// === core internal structure of what is a BLS circuit ===
+	cid       *cid.Cid
+	aggSig    *BlsSig
 	bitVector *big.Int
-
-	//External input variable
+	// === external input vars ===
+	// order is important here so we can use this
+	// in combo with the bit vector
 	keyset []BlsDID
-
-	//Construction variable
+	// sigs we construct when we call `add` with
+	// each member's sig
 	sigs map[BlsDID]*BlsSig
-
-	//Calculated Value
-	// includedDIDs []BlsDID
 }
 
-// message (Block) getter
-func (b *BlsCircuit) Msg() cid.Cid {
-	return *b.msg
+// message (cid) getter
+func (b *BlsCircuit) Cid() cid.Cid {
+	return *b.cid
 }
 
 // internal method to create a new BLS circuit
-func newBlsCircuit(msg *cid.Cid, keyset []BlsDID) (*BlsCircuit, error) {
-	if msg == nil {
-		return nil, fmt.Errorf("failed to create BLS circuit: block is nil")
+func newBlsCircuit(cid *cid.Cid, keyset []BlsDID) (*BlsCircuit, error) {
+	if cid == nil {
+		return nil, fmt.Errorf("failed to create BLS circuit: cid is nil")
 	}
 	return &BlsCircuit{
-		msg:    msg,
+		cid:    cid,
 		keyset: keyset,
 		// pre-alloc based on size we know it must be
 		sigs: make(map[BlsDID]*BlsSig, len(keyset)),
@@ -335,7 +325,7 @@ func (b *BlsCircuit) add(member Member, sig string) error {
 	}
 
 	// verify the sig using the pub key and the CID bytes (message)
-	verified := signature.Verify(true, pubKey, true, b.msg.Bytes(), nil)
+	verified := signature.Verify(true, pubKey, true, b.cid.Bytes(), nil)
 	if !verified {
 		return fmt.Errorf("signature verification failed for DID: %s", member.DID.String())
 	}
@@ -370,17 +360,17 @@ func (b *BlsCircuit) aggregateSignatures() error {
 
 	var aggSig blst.P2Aggregate
 	aggSig.Aggregate(sigs, true)
-	b.aggSigs = aggSig.ToAffine()
+	b.aggSig = aggSig.ToAffine()
 
 	return nil
 }
 
-// agg sigs
+// returns the aggregated signature (`internally aggSig`) as a base64 encoded string
 func (b *BlsCircuit) AggregatedSignature() (string, error) {
-	if b.aggSigs == nil {
+	if b.aggSig == nil {
 		return "", fmt.Errorf("aggregated signature not generated")
 	}
-	aggSigBytes := b.aggSigs.Compress()
+	aggSigBytes := b.aggSig.Compress()
 	aggSigEncoded := base64.StdEncoding.EncodeToString(aggSigBytes)
 	return aggSigEncoded, nil
 }
@@ -398,7 +388,7 @@ func (b *BlsCircuit) BitVector() (string, error) {
 	return bvEncoded, nil
 }
 
-// returns the included DIDs
+// returns the included DIDs in the circuit
 func (b *BlsCircuit) IncludedDIDs() []BlsDID {
 	var includedDIDs []BlsDID
 
@@ -419,8 +409,8 @@ type SerializedCircuit struct {
 
 // serialize the BLS circuit, including the bit vector
 func (b *BlsCircuit) Serialize() (*SerializedCircuit, error) {
-	// ensure signatures are aggregated
-	if b.aggSigs == nil || b.bitVector == nil {
+	// ensure signatures are aggregated (if not, we can quickly do it here)
+	if b.aggSig == nil || b.bitVector == nil {
 		if err := b.aggregateSignatures(); err != nil {
 			return nil, fmt.Errorf("failed to aggregate signatures: %w", err)
 		}
@@ -432,25 +422,21 @@ func (b *BlsCircuit) Serialize() (*SerializedCircuit, error) {
 		return nil, fmt.Errorf("failed to get bit vector: %w", err)
 	}
 
+	// get the encoded aggregated signature
 	sig, err := b.AggregatedSignature()
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sig: %w", err)
 	}
 
 	// create the SerializedCircuit struct
-	serializedCircuit := &SerializedCircuit{
+	return &SerializedCircuit{
 		Signature: sig,
 		BitVector: bvEncoded,
-	}
-
-	return serializedCircuit, nil
+	}, nil
 }
 
 // reconstructs the aggregate DID from serialized data and keyset
-func DeserializeBlsCircuit(serialized SerializedCircuit, keyset []BlsDID, msg cid.Cid) (*BlsCircuit, error) {
-	// unmarshal the JSON data
-
+func DeserializeBlsCircuit(serialized SerializedCircuit, keyset []BlsDID, cid cid.Cid) (*BlsCircuit, error) {
 	// decode the bit vector
 	bvBytes, err := base64.RawURLEncoding.DecodeString(serialized.BitVector)
 	if err != nil {
@@ -461,13 +447,12 @@ func DeserializeBlsCircuit(serialized SerializedCircuit, keyset []BlsDID, msg ci
 
 	// build the included public keys based on the bitset
 	var includedPubKeys []*BlsPubKey
-	var includedDIDs []BlsDID
-
 	for idx, did := range keyset {
 		if bitset.Bit(idx) == 1 {
+			// if the bit is set, then we know
+			// that this DID was included in the aggregation
 			pubKey := did.Identifier()
 			includedPubKeys = append(includedPubKeys, pubKey)
-			includedDIDs = append(includedDIDs, did)
 		}
 	}
 
@@ -476,6 +461,8 @@ func DeserializeBlsCircuit(serialized SerializedCircuit, keyset []BlsDID, msg ci
 	}
 
 	// agg the pub keys all at once
+	// as internally this is the
+	// fastest way to do it
 	var aggPub blst.P1Aggregate
 	aggPub.Aggregate(includedPubKeys, true)
 	aggPubKey := aggPub.ToAffine()
@@ -495,67 +482,33 @@ func DeserializeBlsCircuit(serialized SerializedCircuit, keyset []BlsDID, msg ci
 		return nil, fmt.Errorf("failed to uncompress aggregated signature")
 	}
 
-	// return the aggregate DID
+	// return the new circuit
 	return &BlsCircuit{
-		aggSigs:   aggSignature,
+		aggSig:    aggSignature,
 		bitVector: bitset,
 		keyset:    keyset,
-		msg:       &msg,
+		cid:       &cid,
+		// we don't need the `sigs` field here, because we don't use `sigs` in any of the
+		// public methods of `BlsCircuit`, although it might be expected
 	}, nil
 }
 
-// verifies the correctness of the BLS circuit by comparing the aggregate signature with the dynamically aggregated pub keys
-//
-// returns whether it's valid and which BLS DIDs were part of the valid sig aggregation
-// "sig": aggregated sig as base64 string
-// "bv": bit vector as base64 string (rawurlencoded base64 of bitset.Text(16))
+// verifies the correctness of the BLS circuit by checking the aggregated signature
+// and ensuring that the included DIDs are correct and their aggregated signature matches
+// the CID that they signed
 func (b *BlsCircuit) Verify() (bool, []BlsDID, error) {
-	if b.msg == nil {
-		return false, nil, fmt.Errorf("Msg is nil")
+	if b.cid == nil {
+		return false, nil, fmt.Errorf("cid is nil")
 	}
 
 	// should have already been aggregated when the circuit was finalized
 	// but just as a "sanity check" we'll ensure they are before we proceed
-	//@vaultec note: in production we won't have access to the original signatures.
-
-	// if b.aggSigs == nil || b.bitVector == nil {
-	// 	if err := b.aggregateSignatures(); err != nil {
-	// 		return false, nil, fmt.Errorf("failed to aggregate signatures: %w", err)
-	// 	}
-	// }
-
-	// get the aggregated sig and bit vector
-	// sig, err := b.AggregatedSignature()
-	// if err != nil {
-	// 	return false, nil, fmt.Errorf("failed to get aggregated signature: %w", err)
-	// }
+	// @vaultec note: in production we won't have access to the original signatures
 
 	_, err := b.BitVector()
 	if err != nil {
 		return false, nil, fmt.Errorf("failed to get bit vector: %w", err)
 	}
-
-	// decode the sig from base64
-	// sigBytes, err := base64.StdEncoding.DecodeString(sig)
-	// if err != nil {
-	// 	return false, nil, fmt.Errorf("failed to decode signature: %w", err)
-	// }
-
-	// decompress the aggregated sig
-	// aggSignature := new(BlsSig)
-	// if aggSignature.Uncompress(sigBytes) == nil {
-	// 	return false, nil, fmt.Errorf("failed to uncompress aggregated signature")
-	// }
-
-	// decode the bit vector from base64
-	// bvBytes, err := base64.RawURLEncoding.DecodeString(bv)
-	// if err != nil {
-	// 	return false, nil, fmt.Errorf("failed to decode bit vector: %w", err)
-	// }
-
-	// // rebuild the bitset from the hex string
-	// bitset := new(big.Int)
-	// bitset.SetString(string(bvBytes), 16)
 
 	// build the included public keys based on the bitset
 	var includedPubKeys []*BlsPubKey
@@ -569,8 +522,8 @@ func (b *BlsCircuit) Verify() (bool, []BlsDID, error) {
 		}
 	}
 
-	if len(includedPubKeys) == 0 {
-		return false, nil, fmt.Errorf("no public keys to verify")
+	if len(includedPubKeys) == 0 || len(includedDIDs) == 0 { // checking both semi-redundantly to be safe and prevent against future changes
+		return false, nil, fmt.Errorf("no included DIDs to verify")
 	}
 
 	// aggregate the pub keys
@@ -579,8 +532,6 @@ func (b *BlsCircuit) Verify() (bool, []BlsDID, error) {
 	aggPub.Aggregate(includedPubKeys, true)
 	aggPubKey := aggPub.ToAffine()
 
-	// verify the aggregated sig
-	verified := b.aggSigs.Verify(true, aggPubKey, true, b.msg.Bytes(), nil)
-
-	return verified, includedDIDs, nil
+	// verify the aggregated sig and return results
+	return b.aggSig.Verify(true, aggPubKey, true, b.cid.Bytes(), nil), includedDIDs, nil
 }

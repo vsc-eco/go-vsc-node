@@ -236,11 +236,11 @@ func TestSerializeDeserialize(t *testing.T) {
 
 	// deserialize the circuit to get the AggregateDID
 	keyset := generator.CircuitMap()
-	aggDID, err := dids.DeserializeBlsCircuit(*serializedCircuit, keyset, block.Cid())
+	blsCircuit, err := dids.DeserializeBlsCircuit(*serializedCircuit, keyset, block.Cid())
 	assert.NoError(t, err)
 
 	// verify the aggregated signature and included DIDs
-	verified, includedDIDs, err := aggDID.Verify()
+	verified, includedDIDs, err := blsCircuit.Verify()
 	assert.NoError(t, err)
 	assert.True(t, verified)
 
