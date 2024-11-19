@@ -398,6 +398,10 @@ func (b *BlsCircuit) BitVector() (string, error) {
 	return bvEncoded, nil
 }
 
+func (b *BlsCircuit) RawBitVector() *big.Int {
+	return b.bitVector
+}
+
 // returns the included DIDs
 func (b *BlsCircuit) IncludedDIDs() []BlsDID {
 	var includedDIDs []BlsDID
@@ -459,37 +463,20 @@ func DeserializeBlsCircuit(serialized SerializedCircuit, keyset []BlsDID, msg ci
 	bitset := new(big.Int)
 	bitset.SetString(string(bvBytes), 16)
 
-	// build the included public keys based on the bitset
-	var includedPubKeys []*BlsPubKey
-	var includedDIDs []BlsDID
-
-	for idx, did := range keyset {
-		if bitset.Bit(idx) == 1 {
-			pubKey := did.Identifier()
-			includedPubKeys = append(includedPubKeys, pubKey)
-			includedDIDs = append(includedDIDs, did)
-		}
-	}
-
-	if len(includedPubKeys) == 0 {
-		return nil, fmt.Errorf("no public keys to aggregate")
-	}
-
-	// agg the pub keys all at once
-	var aggPub blst.P1Aggregate
-	aggPub.Aggregate(includedPubKeys, true)
-	aggPubKey := aggPub.ToAffine()
-
-	_, err = NewBlsDID(aggPubKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate aggregate DID: %w", err)
-	}
-
 	sigBytes, err := base64.StdEncoding.DecodeString(serialized.Signature)
+
+	if err != nil {
+		return nil, err
+	}
+
+	signature := new(BlsSig)
+	if signature.Uncompress(sigBytes) == nil {
+		return nil, fmt.Errorf("failed to uncompress signatures")
+	}
 
 	// return the aggregate DID
 	return &BlsCircuit{
-		aggSigs:   sigBytes,
+		aggSigs:   signature,
 		bitVector: bitset,
 		keyset:    keyset,
 		msg:       &msg,
