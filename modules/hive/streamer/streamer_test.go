@@ -804,6 +804,57 @@ func TestDbStoredBlockIntegrity(t *testing.T) {
 
 }
 
+func TestNestedArrayStructure(t *testing.T) {
+
+	mockHiveBlocks := &MockHiveBlockDb{}
+
+	// clear existing data
+	assert.NoError(t, mockHiveBlocks.ClearBlocks())
+
+	// a dummy hiveblock that has a nested array structure that
+	// should fail when stored in mongoDB norally, BUT, with our
+	// conversion function, this should now work
+	originalBlock := hive_blocks.HiveBlock{
+		BlockNumber: 123,
+		BlockID:     "some-block-id-123",
+		Timestamp:   "2024-01-01T00:00:00",
+		MerkleRoot:  "123",
+		Transactions: []hive_blocks.Tx{
+			{
+				TransactionID: "some-tx-id-123",
+				Operations: []hivego.Operation{
+					{
+						Value: map[string]interface{}{
+							"json": map[string]interface{}{
+								"nested_array": []interface{}{
+									[]interface{}{"hello", "world"}, // this is our nested array!
+									[]interface{}{"foo", "bar"},     // this is our nested array!
+								},
+							},
+						},
+						Type: "custom_json_operation",
+					},
+				},
+			},
+		},
+	}
+
+	// store block
+	err := mockHiveBlocks.StoreBlocks(originalBlock)
+	assert.NoError(t, err)
+
+	// fetch stored block directly by its ID (we do this with a 1-wide range)
+	fetchedBlocks, err := mockHiveBlocks.FetchStoredBlocks(123, 123)
+	assert.NoError(t, err)
+	assert.Len(t, fetchedBlocks, 1) // we should only get this 1 block back
+
+	// compare the original and fetched blocks
+	//
+	// the reason we have to do this is because we store it internally in a different format so we
+	// want to ensure that our retrieval and conversion function is working correctly
+	assert.Equal(t, originalBlock, fetchedBlocks[0])
+}
+
 // todo: Vaultec's experiments
 func TestVaultecExperiments(t *testing.T) {
 	return
