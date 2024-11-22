@@ -19,6 +19,7 @@ const BlsDIDPrefix = "did:key:"
 
 type BlsPubKey = blst.P1Affine
 type BlsSig = blst.P2Affine
+type blsAggSig = blst.P2Aggregate
 
 // included for completeness, though it's obvious from the name
 // that this is the private (secret) key
@@ -474,8 +475,8 @@ func DeserializeBlsCircuit(serialized SerializedCircuit, keyset []BlsDID, msg ci
 		return nil, err
 	}
 
-	signature := new(BlsSig)
-	if signature.Uncompress(sigBytes) == nil {
+	signature := new(BlsSig).Uncompress(sigBytes)
+	if signature == nil || !signature.SigValidate(true) {
 		return nil, fmt.Errorf("failed to uncompress signatures")
 	}
 
@@ -570,7 +571,7 @@ func (b *BlsCircuit) Verify() (bool, []BlsDID, error) {
 
 	fmt.Println("aggSigs", b.aggSigs)
 	// verify the aggregated sig
-	verified := b.aggSigs.Verify(true, aggPubKey, true, b.msg.Bytes(), nil)
+	verified := b.aggSigs.FastAggregateVerify(true, includedPubKeys, b.msg.Bytes(), nil)
 
 	return verified, includedDIDs, nil
 }

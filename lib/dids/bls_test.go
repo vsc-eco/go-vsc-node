@@ -1,10 +1,12 @@
 package dids_test
 
 import (
+	"encoding/base64"
 	"testing"
 	"vsc-node/lib/dids"
 
 	blocks "github.com/ipfs/go-block-format"
+	"github.com/ipfs/go-cid"
 	"github.com/stretchr/testify/assert"
 	blst "github.com/supranational/blst/bindings/go"
 )
@@ -181,75 +183,242 @@ func TestNotAllMembersSigned(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestSerializeDeserialize(t *testing.T) {
-	// use predefined seeds
-	var seed1 [32]byte
-	copy(seed1[:], []byte("test_seed_6_62526935846259348"))
+func Test(t *testing.T) {
+	didList := []dids.BlsDID{
+		dids.BlsDID("did:key:z3tEFFFAKtRc8B9oXCM7LiH4xYKW4zNrKcE2p1S6PzJdcz5icZBCj4akv6w5feJ6mQhopG"),
+		dids.BlsDID("did:key:z3tEGiumPhsgaGjq997DbadLP8YhbNVWzvzaiKXajqqaZ9KRs1o4xmfHX9SEAZiLixPx1y"),
+		dids.BlsDID("did:key:z3tEFz3LYFSg6XhjTxXvPnrtQyEtAfsx3fD6pUB1KSs434XsLeNTFkTVyPUYwz4MvpbRFf"),
+		dids.BlsDID("did:key:z3tEGcSWJNbUw6GxijVdRG8nQtB32BRGbGSkEusGEFKfmPPDz2bxR4ktyyfV8Pn1WeCMCj"),
+		dids.BlsDID("did:key:z3tEEt3vHLEEjab3uK8Ss4BnFLZ2LvH3RzMn5bL54eTQbHPEZhxfmVgyPW1aTL2b43xM1N"),
+		dids.BlsDID("did:key:z3tEFJMGRpMsmQWB7GkxV2zYQ4YRft8jsiUuvqRvy5PG4PwxDmnqpLHC9bPJb9TxoeYXpL"),
+		dids.BlsDID("did:key:z3tEGKWdYE7AwmDjT9Nuq9pJUMvZ3FXToHQ1swJv3xNgPPpisBLXHRfyymoDVRB3AvpJPu"),
+		dids.BlsDID("did:key:z3tEF7PQgndGv3t9agcB5F5ELhX8yTh7iYfKJAFdKnoEqJsPf8EdnRbhVSjLZJBRAY6NKM"),
+		dids.BlsDID("did:key:z3tEGL89VBKtsD8kNEJqtg96Z25v8cfMxa7gx6qKSL73Q31g8qVE6KzDgBWEFubh9iDqxJ"),
+		dids.BlsDID("did:key:z3tEGgxgA2iDyw95AyefwY62d1mJmPYry7j2MaicxnmSafjpJHuXBUxGArUDcP6NcAxXY6"),
+		dids.BlsDID("did:key:z3tEFVF1BeYPp5PU7erY4Bi1kHQFJVpKqrwJ83qSAgzTTStNV8SFT1QmmBxpVyPoKKRX3q"),
+		dids.BlsDID("did:key:z3tEGGXL2zcKrnFh97T7heMRciQNVGRBaqe1TUqw8t3EfXmuhBcEH7gSDncDYML11ZGbQL"),
+		dids.BlsDID("did:key:z3tEFXunHAWZvxGRyQbXuCutZ3xebRgVZML7N7t1kMzyppEjBwpyrFUSn8bNE3gmc1y7Qp"),
+		dids.BlsDID("did:key:z3tEGYbX4TiY7rmQa6fPNH6bxXXBfc1Kz1eQytrUVMkjWEXbofnFyG5GMwJWQWP9J3E8C4"),
+		dids.BlsDID("did:key:z3tEFzzA26fjP72ZY6v1NLgrs9ruErHk7nmYCE2HHLmWQhU4myLuV8GxpK6XBVBJ1udkzh"),
+		dids.BlsDID("did:key:z3tEGWJ1estpynDoexoh4eFiQEro3ydxPiWMq2HNNQ6h1owvb49AQ9fEniYywyyLod8YFd"),
+		dids.BlsDID("did:key:z3tEFUsQiNndov8ysxyzXEZggBe7PyBdP1DswJ2nuJcCFtxpgE9NfZ2ek61SJEszE2Nvmw"),
+		dids.BlsDID("did:key:z3tEG4yj2v1vMpooaa686DNE3BcPyQumfze4v9poY4ucx2kYLGJuPYtyiWQjhayk4oU761"),
+	}
 
-	var seed2 [32]byte
-	copy(seed2[:], []byte("test_seed_6_800822431434"))
+	keyset := []dids.BlsDID{dids.BlsDID("did:key:z3tEFFFAKtRc8B9oXCM7LiH4xYKW4zNrKcE2p1S6PzJdcz5icZBCj4akv6w5feJ6mQhopG"),
+		dids.BlsDID("did:key:z3tEGiumPhsgaGjq997DbadLP8YhbNVWzvzaiKXajqqaZ9KRs1o4xmfHX9SEAZiLixPx1y"),
+		dids.BlsDID("did:key:z3tEFzX6HusCWzwjdf3LM1uAny8KX6KuereChqF8eoEkENvKX6H96DBe45avev6XrQQMMs"),
+		dids.BlsDID("did:key:z3tEFz3LYFSg6XhjTxXvPnrtQyEtAfsx3fD6pUB1KSs434XsLeNTFkTVyPUYwz4MvpbRFf"),
+		dids.BlsDID("did:key:z3tEGcSWJNbUw6GxijVdRG8nQtB32BRGbGSkEusGEFKfmPPDz2bxR4ktyyfV8Pn1WeCMCj"),
+		dids.BlsDID("did:key:z3tEF69iEFo7Z4SznE6QA5YQnZxQg4JHBod7HpXWKYjzCMvS91xuxhNspr8jtA78nac3ua"),
+		dids.BlsDID("did:key:z3tEGeiVx2CoifcjYYiFLmTbxLHWPeteZhnbN2AWuZHscagPFWxCyo5MY3g1Hf9FNe4kik"),
+		dids.BlsDID("did:key:z3tEEt3vHLEEjab3uK8Ss4BnFLZ2LvH3RzMn5bL54eTQbHPEZhxfmVgyPW1aTL2b43xM1N"),
+		dids.BlsDID("did:key:z3tEFJMGRpMsmQWB7GkxV2zYQ4YRft8jsiUuvqRvy5PG4PwxDmnqpLHC9bPJb9TxoeYXpL"),
+		dids.BlsDID("did:key:z3tEGKWdYE7AwmDjT9Nuq9pJUMvZ3FXToHQ1swJv3xNgPPpisBLXHRfyymoDVRB3AvpJPu"),
+		dids.BlsDID("did:key:z3tEF7PQgndGv3t9agcB5F5ELhX8yTh7iYfKJAFdKnoEqJsPf8EdnRbhVSjLZJBRAY6NKM"),
+		dids.BlsDID("did:key:z3tEGHYuGW4bRo1fjUwTmkGWwn2Rv7GTPB2BCaygjke1H7xPughqELuiNtStEphhQrVyXG"),
+		dids.BlsDID("did:key:z3tEFsGef9ZDg5SWqgdKL48nkt5mC7XZnoXHQpeDgZCCUL5d4VVQZ9aaStUPmyFYepzHnd"),
+		dids.BlsDID("did:key:z3tEGL89VBKtsD8kNEJqtg96Z25v8cfMxa7gx6qKSL73Q31g8qVE6KzDgBWEFubh9iDqxJ"),
+		dids.BlsDID("did:key:z3tEGgxgA2iDyw95AyefwY62d1mJmPYry7j2MaicxnmSafjpJHuXBUxGArUDcP6NcAxXY6"),
+		dids.BlsDID("did:key:z3tEFVF1BeYPp5PU7erY4Bi1kHQFJVpKqrwJ83qSAgzTTStNV8SFT1QmmBxpVyPoKKRX3q"),
+		dids.BlsDID("did:key:z3tEGGXL2zcKrnFh97T7heMRciQNVGRBaqe1TUqw8t3EfXmuhBcEH7gSDncDYML11ZGbQL"),
+		dids.BlsDID("did:key:z3tEFXunHAWZvxGRyQbXuCutZ3xebRgVZML7N7t1kMzyppEjBwpyrFUSn8bNE3gmc1y7Qp"),
+		dids.BlsDID("did:key:z3tEGCcFc3TpqREEURPt3o73q6vEW2t6tDRV9YjhdTKKYzZf7eFMeqfNZudsQEUrqVZRLv"),
+		dids.BlsDID("did:key:z3tEGYbX4TiY7rmQa6fPNH6bxXXBfc1Kz1eQytrUVMkjWEXbofnFyG5GMwJWQWP9J3E8C4"),
+		dids.BlsDID("did:key:z3tEFzzA26fjP72ZY6v1NLgrs9ruErHk7nmYCE2HHLmWQhU4myLuV8GxpK6XBVBJ1udkzh"),
+		dids.BlsDID("did:key:z3tEGWJ1estpynDoexoh4eFiQEro3ydxPiWMq2HNNQ6h1owvb49AQ9fEniYywyyLod8YFd"),
+		dids.BlsDID("did:key:z3tEGY6FyKiJcvEgBZRspUjLk8n4jUqWG7fPkaFvjUnnoxCGJT7r8Ac38HdFZKAc1NHNmv"),
+		dids.BlsDID("did:key:z3tEGFbLo8toPnWJgLaAto6McP9S3XUbfZEavZsgfLsZnbC5nK7zRETJSwMjFJZVmNyjC3"),
+		dids.BlsDID("did:key:z3tEFUsQiNndov8ysxyzXEZggBe7PyBdP1DswJ2nuJcCFtxpgE9NfZ2ek61SJEszE2Nvmw"),
+		dids.BlsDID("did:key:z3tEG4yj2v1vMpooaa686DNE3BcPyQumfze4v9poY4ucx2kYLGJuPYtyiWQjhayk4oU761"),
+	}
 
-	// generate DIDs and keys
-	did1, privKey1, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed1)
-	assert.NoError(t, err)
-	provider1, err := dids.NewBlsProvider(privKey1)
-	assert.NoError(t, err)
+	sigBytes := []byte{
+		163,
+		109,
+		222,
+		124,
+		11,
+		42,
+		190,
+		28,
+		243,
+		92,
+		164,
+		103,
+		54,
+		231,
+		142,
+		255,
+		171,
+		76,
+		124,
+		83,
+		183,
+		33,
+		178,
+		33,
+		8,
+		184,
+		113,
+		175,
+		1,
+		180,
+		75,
+		251,
+		51,
+		140,
+		251,
+		111,
+		32,
+		159,
+		188,
+		33,
+		69,
+		124,
+		230,
+		74,
+		139,
+		239,
+		217,
+		247,
+		5,
+		19,
+		122,
+		196,
+		188,
+		219,
+		64,
+		252,
+		35,
+		99,
+		44,
+		158,
+		124,
+		119,
+		143,
+		123,
+		70,
+		15,
+		22,
+		173,
+		212,
+		91,
+		32,
+		122,
+		63,
+		192,
+		19,
+		203,
+		215,
+		139,
+		66,
+		152,
+		188,
+		244,
+		55,
+		14,
+		125,
+		109,
+		138,
+		168,
+		70,
+		121,
+		158,
+		145,
+		12,
+		236,
+		163,
+		97,
+	}
 
-	did2, privKey2, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed2)
-	assert.NoError(t, err)
-	provider2, err := dids.NewBlsProvider(privKey2)
-	assert.NoError(t, err)
+	s := dids.SerializedCircuit{
+		Signature: "o23efAsqvhzzXKRnNueO_6tMfFO3IbIhCLhxrwG0S_szjPtvIJ-8IUV85kqL79n3BRN6xLzbQPwjYyyefHePe0YPFq3UWyB6P8ATy9eLQpi89DcOfW2KqEZ5npEM7KNh",
+		BitVector: "Azvnmw",
+	}
 
-	// create a block
-	block := blocks.NewBlock([]byte("test block data"))
-
-	// create the circuit generator with two members
-	generator := dids.NewBlsCircuitGenerator([]dids.Member{
-		{Account: "account1", DID: did1},
-		{Account: "account2", DID: did2},
-	})
-
-	// gen partial circuit
-	partialCircuit, err := generator.Generate(block.Cid())
+	sig, err := base64.RawURLEncoding.DecodeString(s.Signature)
 	assert.NoError(t, err)
+	assert.Equal(t, sigBytes, sig)
 
-	// sign the block with both providers
-	sig1, err := provider1.Sign(block.Cid())
-	assert.NoError(t, err)
-	sig2, err := provider2.Sign(block.Cid())
-	assert.NoError(t, err)
+	circuit, err := dids.DeserializeBlsCircuit(s, keyset, cid.MustParse("bafyreihmvmys5xp4mdy2vo73hhefydkbhzwj3tf4t5exzp6rrognjdql4q"))
 
-	// add and verify the first signature
-	err = partialCircuit.AddAndVerify(dids.Member{Account: "account1", DID: did1}, sig1)
 	assert.NoError(t, err)
-
-	// add and verify the second signature
-	err = partialCircuit.AddAndVerify(dids.Member{Account: "account2", DID: did2}, sig2)
+	verified, incluedDids, err := circuit.Verify()
 	assert.NoError(t, err)
-
-	// finalize the circuit
-	finalCircuit, err := partialCircuit.Finalize()
-	assert.NoError(t, err)
-
-	// serialize the circuit (includes CID and bit vector)
-	serializedCircuit, err := finalCircuit.Serialize()
-	assert.NoError(t, err)
-
-	// deserialize the circuit to get the AggregateDID
-	keyset := generator.CircuitMap()
-	aggDID, err := dids.DeserializeBlsCircuit(serializedCircuit, keyset)
-	assert.NoError(t, err)
-
-	// use aggDID to verify the original block
-	// get the aggregated signature from the circuit
-	sig, err := finalCircuit.AggregatedSignature()
-	assert.NoError(t, err)
-
-	// verify the signature using aggDID
-	verified, err := aggDID.AggPubKey.Verify(finalCircuit.Msg(), sig)
-	assert.NoError(t, err)
+	assert.Equal(t, didList, incluedDids)
 	assert.True(t, verified)
-
-	// verify that the included DIDs match
-	assert.Equal(t, aggDID.IncludedDIDs, finalCircuit.IncludedDIDs())
 }
+
+// func TestSerializeDeserialize(t *testing.T) {
+// 	// use predefined seeds
+// 	var seed1 [32]byte
+// 	copy(seed1[:], []byte("test_seed_6_62526935846259348"))
+
+// 	var seed2 [32]byte
+// 	copy(seed2[:], []byte("test_seed_6_800822431434"))
+
+// 	// generate DIDs and keys
+// 	did1, privKey1, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed1)
+// 	assert.NoError(t, err)
+// 	provider1, err := dids.NewBlsProvider(privKey1)
+// 	assert.NoError(t, err)
+
+// 	did2, privKey2, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed2)
+// 	assert.NoError(t, err)
+// 	provider2, err := dids.NewBlsProvider(privKey2)
+// 	assert.NoError(t, err)
+
+// 	// create a block
+// 	block := blocks.NewBlock([]byte("test block data"))
+
+// 	// create the circuit generator with two members
+// 	generator := dids.NewBlsCircuitGenerator([]dids.Member{
+// 		{Account: "account1", DID: did1},
+// 		{Account: "account2", DID: did2},
+// 	})
+
+// 	// gen partial circuit
+// 	partialCircuit, err := generator.Generate(block.Cid())
+// 	assert.NoError(t, err)
+
+// 	// sign the block with both providers
+// 	sig1, err := provider1.Sign(block.Cid())
+// 	assert.NoError(t, err)
+// 	sig2, err := provider2.Sign(block.Cid())
+// 	assert.NoError(t, err)
+
+// 	// add and verify the first signature
+// 	err = partialCircuit.AddAndVerify(dids.Member{Account: "account1", DID: did1}, sig1)
+// 	assert.NoError(t, err)
+
+// 	// add and verify the second signature
+// 	err = partialCircuit.AddAndVerify(dids.Member{Account: "account2", DID: did2}, sig2)
+// 	assert.NoError(t, err)
+
+// 	// finalize the circuit
+// 	finalCircuit, err := partialCircuit.Finalize()
+// 	assert.NoError(t, err)
+
+// 	// serialize the circuit (includes CID and bit vector)
+// 	serializedCircuit, err := finalCircuit.Serialize()
+// 	assert.NoError(t, err)
+
+// 	// deserialize the circuit to get the AggregateDID
+// 	keyset := generator.CircuitMap()
+// 	aggDID, err := dids.DeserializeBlsCircuit(serializedCircuit, keyset)
+// 	assert.NoError(t, err)
+
+// 	// use aggDID to verify the original block
+// 	// get the aggregated signature from the circuit
+// 	sig, err := finalCircuit.AggregatedSignature()
+// 	assert.NoError(t, err)
+
+// 	// verify the signature using aggDID
+// 	verified, err := aggDID.AggPubKey.Verify(finalCircuit.Msg(), sig)
+// 	assert.NoError(t, err)
+// 	assert.True(t, verified)
+
+// 	// verify that the included DIDs match
+// 	assert.Equal(t, aggDID.IncludedDIDs, finalCircuit.IncludedDIDs())
+// }
