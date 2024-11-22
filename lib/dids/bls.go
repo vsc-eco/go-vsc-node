@@ -2,6 +2,7 @@ package dids
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 
@@ -12,7 +13,7 @@ import (
 
 // ===== constants =====
 
-const BlsDIDPrefix = "did:key:z"
+const BlsDIDPrefix = "did:key:"
 
 // ===== type aliases for clarity =====
 
@@ -66,12 +67,14 @@ func (d BlsDID) Identifier() *BlsPubKey {
 	// decode from base58
 	_, data, err := multibase.Decode(base58Encoded)
 	if err != nil {
+		fmt.Println(err)
 		return nil
 	}
 
 	// remove indicator bytes
 	pubKeyBytes := data[2:]
 
+	fmt.Println("PublicKey bytes", len(pubKeyBytes), hex.EncodeToString(pubKeyBytes))
 	// decompress the pub key
 	pubKey := new(BlsPubKey)
 	if pubKey.Uncompress(pubKeyBytes) == nil {
@@ -461,9 +464,11 @@ func DeserializeBlsCircuit(serialized SerializedCircuit, keyset []BlsDID, msg ci
 		return nil, fmt.Errorf("failed to decode bit vector: %w", err)
 	}
 	bitset := new(big.Int)
-	bitset.SetString(string(bvBytes), 16)
+	//SetString was failing
+	bitset.SetBytes(bvBytes)
 
-	sigBytes, err := base64.StdEncoding.DecodeString(serialized.Signature)
+	//Decode should be base64url
+	sigBytes, err := base64.RawURLEncoding.DecodeString(serialized.Signature)
 
 	if err != nil {
 		return nil, err
@@ -555,9 +560,15 @@ func (b *BlsCircuit) Verify() (bool, []BlsDID, error) {
 	// aggregate the pub keys
 	var aggPub blst.P1Aggregate
 	// agg all the pub keys at once
-	aggPub.Aggregate(includedPubKeys, true)
+	aggWorks := aggPub.Aggregate(includedPubKeys, true)
 	aggPubKey := aggPub.ToAffine()
 
+	dida, _ := NewBlsDID(aggPub.ToAffine())
+
+	fmt.Println("did", dida, aggWorks)
+	fmt.Println("Did HEX", hex.EncodeToString(aggPubKey.Compress()))
+
+	fmt.Println("aggSigs", b.aggSigs)
 	// verify the aggregated sig
 	verified := b.aggSigs.Verify(true, aggPubKey, true, b.msg.Bytes(), nil)
 
