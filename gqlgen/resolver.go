@@ -1,4 +1,4 @@
-package graph
+package gqlgen
 
 // This file will not be regenerated automatically.
 //

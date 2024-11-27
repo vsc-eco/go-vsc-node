@@ -1,4 +1,4 @@
-package graph
+package gqlgen
 
 // This file will be automatically regenerated based on the schema, any resolver implementations
 // will be copied through when generating and any unknown code will be moved to the end.
@@ -7,61 +7,61 @@ package graph
 import (
 	"context"
 	"fmt"
-	"vsc-node/modules/graph/model"
+	"vsc-node/modules/gql/gqlgen"
 )
 
 // ContractStateDiff is the resolver for the contractStateDiff field.
-func (r *queryResolver) ContractStateDiff(ctx context.Context, id *string) (*model.ContractDiff, error) {
+func (r *queryResolver) ContractStateDiff(ctx context.Context, id *string) (*gqlgen.ContractDiff, error) {
 	panic(fmt.Errorf("not implemented: ContractStateDiff - contractStateDiff"))
 }
 
 // ContractState is the resolver for the contractState field.
-func (r *queryResolver) ContractState(ctx context.Context, id *string) (*model.ContractState, error) {
+func (r *queryResolver) ContractState(ctx context.Context, id *string) (*gqlgen.ContractState, error) {
 	panic(fmt.Errorf("not implemented: ContractState - contractState"))
 }
 
 // FindTransaction is the resolver for the findTransaction field.
-func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *model.FindTransactionFilter, decodedFilter *string) (*model.FindTransactionResult, error) {
+func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *gqlgen.FindTransactionFilter, decodedFilter *string) (*gqlgen.FindTransactionResult, error) {
 	panic(fmt.Errorf("not implemented: FindTransaction - findTransaction"))
 }
 
 // FindContractOutput is the resolver for the findContractOutput field.
-func (r *queryResolver) FindContractOutput(ctx context.Context, filterOptions *model.FindContractOutputFilter, decodedFilter *string) (*model.FindContractOutputResult, error) {
+func (r *queryResolver) FindContractOutput(ctx context.Context, filterOptions *gqlgen.FindContractOutputFilter, decodedFilter *string) (*gqlgen.FindContractOutputResult, error) {
 	panic(fmt.Errorf("not implemented: FindContractOutput - findContractOutput"))
 }
 
 // FindLedgerTXs is the resolver for the findLedgerTXs field.
-func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *model.LedgerTxFilter) (*model.LedgerResults, error) {
+func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *gqlgen.LedgerTxFilter) (*gqlgen.LedgerResults, error) {
 	panic(fmt.Errorf("not implemented: FindLedgerTXs - findLedgerTXs"))
 }
 
 // GetAccountBalance is the resolver for the getAccountBalance field.
-func (r *queryResolver) GetAccountBalance(ctx context.Context, account *string) (*model.GetBalanceResult, error) {
+func (r *queryResolver) GetAccountBalance(ctx context.Context, account *string) (*gqlgen.GetBalanceResult, error) {
 	panic(fmt.Errorf("not implemented: GetAccountBalance - getAccountBalance"))
 }
 
 // FindContract is the resolver for the findContract field.
-func (r *queryResolver) FindContract(ctx context.Context, id *string) (*model.FindContractResult, error) {
+func (r *queryResolver) FindContract(ctx context.Context, id *string) (*gqlgen.FindContractResult, error) {
 	panic(fmt.Errorf("not implemented: FindContract - findContract"))
 }
 
 // SubmitTransactionV1 is the resolver for the submitTransactionV1 field.
-func (r *queryResolver) SubmitTransactionV1(ctx context.Context, tx string, sig string) (*model.TransactionSubmitResult, error) {
+func (r *queryResolver) SubmitTransactionV1(ctx context.Context, tx string, sig string) (*gqlgen.TransactionSubmitResult, error) {
 	panic(fmt.Errorf("not implemented: SubmitTransactionV1 - submitTransactionV1"))
 }
 
 // GetAccountNonce is the resolver for the getAccountNonce field.
-func (r *queryResolver) GetAccountNonce(ctx context.Context, keyGroup []*string) (*model.AccountNonceResult, error) {
+func (r *queryResolver) GetAccountNonce(ctx context.Context, keyGroup []*string) (*gqlgen.AccountNonceResult, error) {
 	panic(fmt.Errorf("not implemented: GetAccountNonce - getAccountNonce"))
 }
 
 // LocalNodeInfo is the resolver for the localNodeInfo field.
-func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*model.LocalNodeInfo, error) {
+func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*gqlgen.LocalNodeInfo, error) {
 	panic(fmt.Errorf("not implemented: LocalNodeInfo - localNodeInfo"))
 }
 
 // WitnessNodes is the resolver for the witnessNodes field.
-func (r *queryResolver) WitnessNodes(ctx context.Context, height *int) ([]*model.WitnessNode, error) {
+func (r *queryResolver) WitnessNodes(ctx context.Context, height *int) ([]*gqlgen.WitnessNode, error) {
 	panic(fmt.Errorf("not implemented: WitnessNodes - witnessNodes"))
 }
 
@@ -91,28 +91,11 @@ func (r *queryResolver) MockGenerateElection(ctx context.Context) (*string, erro
 }
 
 // AnchorProducer is the resolver for the anchorProducer field.
-func (r *queryResolver) AnchorProducer(ctx context.Context) (*model.AnchorProducer, error) {
+func (r *queryResolver) AnchorProducer(ctx context.Context) (*gqlgen.AnchorProducer, error) {
 	panic(fmt.Errorf("not implemented: AnchorProducer - anchorProducer"))
 }
 
-// Query returns QueryResolver implementation.
-func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
+// Query returns gqlgen.QueryResolver implementation.
+func (r *Resolver) Query() gqlgen.QueryResolver { return &queryResolver{r} }
 
 type queryResolver struct{ *Resolver }
-
-// !!! WARNING !!!
-// The code below was going to be deleted when updating resolvers. It has been copied here so you have
-// one last chance to move it out of harms way if you want. There are two reasons this happens:
-//  - When renaming or deleting a resolver the old code will be put in here. You can safely delete
-//    it when you're done.
-//  - You have helper methods in this file. Move them out to keep these resolver files clean.
-/*
-	func (r *mutationResolver) CreateTodo(ctx context.Context, input model.NewTodo) (*model.Todo, error) {
-	panic(fmt.Errorf("not implemented: CreateTodo - createTodo"))
-}
-func (r *queryResolver) Todos(ctx context.Context) ([]*model.Todo, error) {
-	panic(fmt.Errorf("not implemented: Todos - todos"))
-}
-func (r *Resolver) Mutation() MutationResolver { return &mutationResolver{r} }
-type mutationResolver struct{ *Resolver }
-*/

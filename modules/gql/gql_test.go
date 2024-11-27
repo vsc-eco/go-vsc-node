@@ -1,22 +1,26 @@
-package graph_test
+package gql_test
 
 import (
+	"context"
 	"testing"
-	"vsc-node/modules/graph"
+	"vsc-node/modules/gql"
 )
 
 func Test(t *testing.T) {
 
-	g := graph.New()
+	g := gql.New()
 
 	err := g.Init()
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = g.Start()
+	_, err = g.Start().Await(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	select {}
+
 	err = g.Stop()
 	if err != nil {
 		t.Fatal(err)
