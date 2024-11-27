@@ -18,6 +18,7 @@ require (
 
 require (
 	github.com/cfoxon/hivego v0.0.0-20230410131714-9f5a7f11f8df // indirect
+	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
 )
 
@@ -90,7 +91,6 @@ require (
 )
 
 require (
-	github.com/JustinKnueppel/go-result v1.0.0
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
