@@ -9,84 +9,105 @@ import (
 	"fmt"
 )
 
+// IncrementNumber is the resolver for the incrementNumber field.
 func (r *mutationResolver) IncrementNumber(ctx context.Context) (*TestResult, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// ContractStateDiff is the resolver for the contractStateDiff field.
 func (r *queryResolver) ContractStateDiff(ctx context.Context, id *string) (*ContractDiff, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// ContractState is the resolver for the contractState field.
 func (r *queryResolver) ContractState(ctx context.Context, id *string) (*ContractState, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// FindTransaction is the resolver for the findTransaction field.
 func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *FindTransactionFilter, decodedFilter *string) (*FindTransactionResult, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// FindContractOutput is the resolver for the findContractOutput field.
 func (r *queryResolver) FindContractOutput(ctx context.Context, filterOptions *FindContractOutputFilter, decodedFilter *string) (*FindContractOutputResult, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// FindLedgerTXs is the resolver for the findLedgerTXs field.
 func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) (*LedgerResults, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// GetAccountBalance is the resolver for the getAccountBalance field.
 func (r *queryResolver) GetAccountBalance(ctx context.Context, account *string) (*GetBalanceResult, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// FindContract is the resolver for the findContract field.
 func (r *queryResolver) FindContract(ctx context.Context, id *string) (*FindContractResult, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// SubmitTransactionV1 is the resolver for the submitTransactionV1 field.
 func (r *queryResolver) SubmitTransactionV1(ctx context.Context, tx string, sig string) (*TransactionSubmitResult, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// GetAccountNonce is the resolver for the getAccountNonce field.
 func (r *queryResolver) GetAccountNonce(ctx context.Context, keyGroup []*string) (*AccountNonceResult, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// LocalNodeInfo is the resolver for the localNodeInfo field.
 func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// WitnessNodes is the resolver for the witnessNodes field.
 func (r *queryResolver) WitnessNodes(ctx context.Context, height *int) ([]*WitnessNode, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// ActiveWitnessNodes is the resolver for the activeWitnessNodes field.
 func (r *queryResolver) ActiveWitnessNodes(ctx context.Context) (*string, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// WitnessSchedule is the resolver for the witnessSchedule field.
 func (r *queryResolver) WitnessSchedule(ctx context.Context, height *int) (*string, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// NextWitnessSlot is the resolver for the nextWitnessSlot field.
 func (r *queryResolver) NextWitnessSlot(ctx context.Context, self *bool) (*string, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// WitnessActiveScore is the resolver for the witnessActiveScore field.
 func (r *queryResolver) WitnessActiveScore(ctx context.Context, height *int) (*string, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// MockGenerateElection is the resolver for the mockGenerateElection field.
 func (r *queryResolver) MockGenerateElection(ctx context.Context) (*string, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// AnchorProducer is the resolver for the anchorProducer field.
 func (r *queryResolver) AnchorProducer(ctx context.Context) (*AnchorProducer, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// GetCurrentNumber is the resolver for the getCurrentNumber field.
 func (r *queryResolver) GetCurrentNumber(ctx context.Context) (*TestResult, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
+// Mutation returns MutationResolver implementation.
 func (r *Resolver) Mutation() MutationResolver { return &mutationResolver{r} }
 
+// Query returns QueryResolver implementation.
 func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 
 type mutationResolver struct{ *Resolver }
