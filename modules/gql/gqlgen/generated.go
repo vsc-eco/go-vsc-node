@@ -37,6 +37,7 @@ type Config struct {
 }
 
 type ResolverRoot interface {
+	Mutation() MutationResolver
 	Query() QueryResolver
 }
 
@@ -159,6 +160,10 @@ type ComplexityRoot struct {
 		PeerID func(childComplexity int) int
 	}
 
+	Mutation struct {
+		IncrementNumber func(childComplexity int) int
+	}
+
 	Query struct {
 		ActiveWitnessNodes   func(childComplexity int) int
 		AnchorProducer       func(childComplexity int) int
@@ -170,6 +175,7 @@ type ComplexityRoot struct {
 		FindTransaction      func(childComplexity int, filterOptions *FindTransactionFilter, decodedFilter *string) int
 		GetAccountBalance    func(childComplexity int, account *string) int
 		GetAccountNonce      func(childComplexity int, keyGroup []*string) int
+		GetCurrentNumber     func(childComplexity int) int
 		LocalNodeInfo        func(childComplexity int) int
 		MockGenerateElection func(childComplexity int) int
 		NextWitnessSlot      func(childComplexity int, self *bool) int
@@ -177,6 +183,10 @@ type ComplexityRoot struct {
 		WitnessActiveScore   func(childComplexity int, height *int) int
 		WitnessNodes         func(childComplexity int, height *int) int
 		WitnessSchedule      func(childComplexity int, height *int) int
+	}
+
+	TestResult struct {
+		CurrentNumber func(childComplexity int) int
 	}
 
 	Transaction struct {
@@ -224,6 +234,9 @@ type ComplexityRoot struct {
 	}
 }
 
+type MutationResolver interface {
+	IncrementNumber(ctx context.Context) (*TestResult, error)
+}
 type QueryResolver interface {
 	ContractStateDiff(ctx context.Context, id *string) (*ContractDiff, error)
 	ContractState(ctx context.Context, id *string) (*ContractState, error)
@@ -242,6 +255,7 @@ type QueryResolver interface {
 	WitnessActiveScore(ctx context.Context, height *int) (*string, error)
 	MockGenerateElection(ctx context.Context) (*string, error)
 	AnchorProducer(ctx context.Context) (*AnchorProducer, error)
+	GetCurrentNumber(ctx context.Context) (*TestResult, error)
 }
 
 type executableSchema struct {
@@ -668,6 +682,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.LocalNodeInfo.PeerID(childComplexity), true
 
+	case "Mutation.incrementNumber":
+		if e.complexity.Mutation.IncrementNumber == nil {
+			break
+		}
+
+		return e.complexity.Mutation.IncrementNumber(childComplexity), true
+
 	case "Query.activeWitnessNodes":
 		if e.complexity.Query.ActiveWitnessNodes == nil {
 			break
@@ -778,6 +799,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Query.GetAccountNonce(childComplexity, args["keyGroup"].([]*string)), true
 
+	case "Query.getCurrentNumber":
+		if e.complexity.Query.GetCurrentNumber == nil {
+			break
+		}
+
+		return e.complexity.Query.GetCurrentNumber(childComplexity), true
+
 	case "Query.localNodeInfo":
 		if e.complexity.Query.LocalNodeInfo == nil {
 			break
@@ -851,6 +879,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.Query.WitnessSchedule(childComplexity, args["height"].(*int)), true
+
+	case "TestResult.currentNumber":
+		if e.complexity.TestResult.CurrentNumber == nil {
+			break
+		}
+
+		return e.complexity.TestResult.CurrentNumber(childComplexity), true
 
 	case "Transaction.accessible":
 		if e.complexity.Transaction.Accessible == nil {
@@ -1100,6 +1135,21 @@ func (e *executableSchema) Exec(ctx context.Context) graphql.ResponseHandler {
 
 			return &response
 		}
+	case ast.Mutation:
+		return func(ctx context.Context) *graphql.Response {
+			if !first {
+				return nil
+			}
+			first = false
+			ctx = graphql.WithUnmarshalerMap(ctx, inputUnmarshalMap)
+			data := ec._Mutation(ctx, rc.Operation.SelectionSet)
+			var buf bytes.Buffer
+			data.MarshalGQL(&buf)
+
+			return &graphql.Response{
+				Data: buf.Bytes(),
+			}
+		}
 
 	default:
 		return graphql.OneShot(graphql.ErrorResponse(ctx, "unsupported GraphQL operation"))
@@ -1148,15 +1198,7 @@ func (ec *executionContext) introspectType(name string) (*introspection.Type, er
 }
 
 var sources = []*ast.Source{
-	{Name: "../schema.graphql", Input: `# GraphQL schema example
-#
-# https://gqlgen.com/getting-started/
-
-# GraphQL schema
-#
-# This schema defines the types and operations for the API
-
-scalar JSON
+	{Name: "../schema.graphql", Input: `scalar JSON
 
 type JsonPatchOp {
   op: String
@@ -1416,6 +1458,16 @@ type Query {
   witnessActiveScore(height: Int): JSON
   mockGenerateElection: JSON
   anchorProducer: AnchorProducer
+  getCurrentNumber: TestResult # TESTING QUERY
+}
+
+type Mutation {
+  incrementNumber: TestResult # TESTING MUTATION
+}
+
+# TESTING TYPE
+type TestResult {
+  currentNumber: Int
 }
 `, BuiltIn: false},
 }
@@ -4393,6 +4445,51 @@ func (ec *executionContext) fieldContext_LocalNodeInfo_did(_ context.Context, fi
 	return fc, nil
 }
 
+func (ec *executionContext) _Mutation_incrementNumber(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Mutation_incrementNumber(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Mutation().IncrementNumber(rctx)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*TestResult)
+	fc.Result = res
+	return ec.marshalOTestResult2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTestResult(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Mutation_incrementNumber(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "currentNumber":
+				return ec.fieldContext_TestResult_currentNumber(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type TestResult", field.Name)
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Query_contractStateDiff(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_Query_contractStateDiff(ctx, field)
 	if err != nil {
@@ -5307,6 +5404,51 @@ func (ec *executionContext) fieldContext_Query_anchorProducer(_ context.Context,
 	return fc, nil
 }
 
+func (ec *executionContext) _Query_getCurrentNumber(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_getCurrentNumber(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().GetCurrentNumber(rctx)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*TestResult)
+	fc.Result = res
+	return ec.marshalOTestResult2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTestResult(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_getCurrentNumber(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "currentNumber":
+				return ec.fieldContext_TestResult_currentNumber(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type TestResult", field.Name)
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Query___type(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_Query___type(ctx, field)
 	if err != nil {
@@ -5431,6 +5573,47 @@ func (ec *executionContext) fieldContext_Query___schema(_ context.Context, field
 				return ec.fieldContext___Schema_directives(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type __Schema", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TestResult_currentNumber(ctx context.Context, field graphql.CollectedField, obj *TestResult) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_TestResult_currentNumber(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.CurrentNumber, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*int)
+	fc.Result = res
+	return ec.marshalOInt2ᚖint(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_TestResult_currentNumber(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TestResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
 		},
 	}
 	return fc, nil
@@ -9477,6 +9660,52 @@ func (ec *executionContext) _LocalNodeInfo(ctx context.Context, sel ast.Selectio
 	return out
 }
 
+var mutationImplementors = []string{"Mutation"}
+
+func (ec *executionContext) _Mutation(ctx context.Context, sel ast.SelectionSet) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, mutationImplementors)
+	ctx = graphql.WithFieldContext(ctx, &graphql.FieldContext{
+		Object: "Mutation",
+	})
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		innerCtx := graphql.WithRootFieldContext(ctx, &graphql.RootFieldContext{
+			Object: field.Name,
+			Field:  field,
+		})
+
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("Mutation")
+		case "incrementNumber":
+			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
+				return ec._Mutation_incrementNumber(ctx, field)
+			})
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
 var queryImplementors = []string{"Query"}
 
 func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) graphql.Marshaler {
@@ -9819,6 +10048,25 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "getCurrentNumber":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_getCurrentNumber(ctx, field)
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "__type":
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Query___type(ctx, field)
@@ -9827,6 +10075,42 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Query___schema(ctx, field)
 			})
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var testResultImplementors = []string{"TestResult"}
+
+func (ec *executionContext) _TestResult(ctx context.Context, sel ast.SelectionSet, obj *TestResult) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, testResultImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("TestResult")
+		case "currentNumber":
+			out.Values[i] = ec._TestResult_currentNumber(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -11182,6 +11466,13 @@ func (ec *executionContext) marshalOString2ᚖstring(ctx context.Context, sel as
 	}
 	res := graphql.MarshalString(*v)
 	return res
+}
+
+func (ec *executionContext) marshalOTestResult2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTestResult(ctx context.Context, sel ast.SelectionSet, v *TestResult) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._TestResult(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalOTransaction2ᚕᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTransaction(ctx context.Context, sel ast.SelectionSet, v []*Transaction) graphql.Marshaler {

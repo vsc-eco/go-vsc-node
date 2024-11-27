@@ -174,7 +174,14 @@ type LocalNodeInfo struct {
 	Did    *string `json:"did,omitempty"`
 }
 
+type Mutation struct {
+}
+
 type Query struct {
+}
+
+type TestResult struct {
+	CurrentNumber *int `json:"currentNumber,omitempty"`
 }
 
 type Transaction struct {

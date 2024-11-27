@@ -9,8 +9,10 @@ The VSC node is the core of the VSC ecosystem, holding the code necessary for ke
 
 ## GraphQL API
 
-To regenerate the GraphQL code:
+To regenerate the GraphQL code, run:
 
 ```bash
 go run github.com/99designs/gqlgen generate
 ```
+
+To view the GraphQL playground, start the `gql` package and navigate to whatever URL specified when creating a new `gql` with `gql.New(...)` + `/sandbox`.

@@ -7,25 +7,24 @@ import (
 	"time"
 
 	a "vsc-node/modules/aggregate"
-	"vsc-node/modules/gql/gqlgen"
 
+	"github.com/99designs/gqlgen/graphql"
 	"github.com/99designs/gqlgen/graphql/handler"
-	"github.com/99designs/gqlgen/graphql/handler/apollotracing"
-	"github.com/99designs/gqlgen/graphql/playground"
+	pg "github.com/99designs/gqlgen/graphql/playground"
 	"github.com/chebyrash/promise"
 )
 
 // ===== constants =====
 
-const defaultPort = "8080"
 const shutdownTimeout = 5 * time.Second
 
 // ===== types =====
 
 type gqlManager struct {
 	server *http.Server
-	port   string
+	Addr   string
 	stop   chan struct{}
+	schema graphql.ExecutableSchema
 }
 
 // ===== interface assertion =====
@@ -34,27 +33,30 @@ var _ a.Plugin = &gqlManager{}
 
 // ===== implementing the a.Plugin interface =====
 
-func New() *gqlManager {
+func New(schema graphql.ExecutableSchema, addr string) *gqlManager {
 	return &gqlManager{
-		port: defaultPort,
-		stop: make(chan struct{}),
+		Addr:   addr,
+		stop:   make(chan struct{}),
+		schema: schema,
 	}
 }
 
 func (g *gqlManager) Init() error {
 	mux := http.NewServeMux()
 
-	// creates GraphQL server with Apollo for performance tracing
-	gqlServer := handler.NewDefaultServer(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{}}))
-	gqlServer.Use(apollotracing.Tracer{})
+	// creates GraphQL server with Apollo
+	gqlServer := handler.NewDefaultServer(g.schema)
+
+	// OPTIONAL, UNCOMMENT TO ENABLE TRACING
+	// gqlServer.Use(apollotracing.Tracer{})
 
 	// adds handlers for GraphQL and Apollo sandbox environment
 	mux.Handle("/api/v1/graphql", gqlServer)
-	mux.Handle("/sandbox", playground.ApolloSandboxHandler("Apollo Sandbox", "/api/v1/graphql"))
+	mux.Handle("/sandbox", pg.ApolloSandboxHandler("Apollo Sandbox", "/api/v1/graphql"))
 
 	// assigns the HTTP server
 	g.server = &http.Server{
-		Addr:    ":" + g.port,
+		Addr:    g.Addr,
 		Handler: mux,
 	}
 
@@ -63,7 +65,7 @@ func (g *gqlManager) Init() error {
 
 func (g *gqlManager) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
-		log.Printf("GraphQL sandbox available on: http://localhost:%s/sandbox", g.port)
+		log.Printf("GraphQL sandbox available on %s/sandbox", g.Addr)
 
 		go func() {
 			if err := g.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

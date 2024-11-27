@@ -1,11 +1,3 @@
-# GraphQL schema example
-#
-# https://gqlgen.com/getting-started/
-
-# GraphQL schema
-#
-# This schema defines the types and operations for the API
-
 scalar JSON
 
 type JsonPatchOp {
@@ -266,4 +258,14 @@ type Query {
   witnessActiveScore(height: Int): JSON
   mockGenerateElection: JSON
   anchorProducer: AnchorProducer
+  getCurrentNumber: TestResult # TESTING QUERY
+}
+
+type Mutation {
+  incrementNumber: TestResult # TESTING MUTATION
+}
+
+# TESTING TYPE
+type TestResult {
+  currentNumber: Int
 }
