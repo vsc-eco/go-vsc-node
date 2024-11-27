@@ -29,6 +29,7 @@ require (
 	github.com/kilic/bls12-381 v0.1.0 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
 	github.com/protolambda/bls12-381-util v0.1.0 // indirect
+	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
