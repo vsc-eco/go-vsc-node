@@ -13,7 +13,7 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/hive/streamer"
 
-	"vsc-node/modules/wasm/parent_ipc"
+	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 
 	"github.com/vsc-eco/hivego"
 )
