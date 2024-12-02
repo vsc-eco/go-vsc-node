@@ -3,10 +3,10 @@
   // "go.testFlags": ["-count=1"] // disable test cache
   "filewatcher.commands": [
     {
-      "match": "\\.go$",
+      "match": "go-vsc-node/modules/gql/.*\\.go$",
       "isAsync": true,
-      "cmd": "cd ~/go-vsc-node/cmd/vsc-node && go run main.go",
+      "cmd": "go run github.com/99designs/gqlgen generate",
       "event": "onFileChange"
-    }
+    },
   ]
 }
