@@ -2,14 +2,19 @@ module vsc-node
 
 go 1.22.3
 
+replace github.com/mattrltrent/hivego => ../forks/hivego
+
 require (
 	github.com/JustinKnueppel/go-result v1.0.0
 	github.com/btcsuite/btcutil v1.0.2
 	github.com/chebyrash/promise v0.0.0-20230709133807-42ec49ba1459
+	github.com/consensys/gnark-crypto v0.14.0
 	github.com/ethereum/go-ethereum v1.14.12
 	github.com/go-viper/mapstructure/v2 v2.2.1
 	github.com/libp2p/go-libp2p-gorpc v0.6.0
 	github.com/moznion/go-optional v0.12.0
+	github.com/protolambda/bls12-381-util v0.1.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/zealic/go2node v0.1.0
 	github.com/zyedidia/generic v1.2.1
 	gitlab.com/NebulousLabs/go-upnp v0.0.0-20211002182029-11da932010b6
@@ -18,18 +23,9 @@ require (
 
 require (
 	github.com/bits-and-blooms/bitset v1.14.2 // indirect
-	github.com/cfoxon/hivego v0.0.0-20230410131714-9f5a7f11f8df // indirect
 	github.com/consensys/bavard v0.1.13 // indirect
-	github.com/consensys/gnark-crypto v0.14.0 // indirect
-	github.com/crate-crypto/go-ipa v0.0.0-20240223125850-b1e8a79f509c // indirect
-	github.com/crate-crypto/go-kzg-4844 v1.0.0 // indirect
-	github.com/ethereum/c-kzg-4844 v1.0.0 // indirect
-	github.com/ethereum/go-verkle v0.1.1-0.20240829091221-dffa7562dbe9 // indirect
-	github.com/holiman/uint256 v1.3.1 // indirect
 	github.com/kilic/bls12-381 v0.1.0 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
-	github.com/protolambda/bls12-381-util v0.1.0 // indirect
-	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
@@ -143,6 +139,7 @@ require (
 	github.com/libp2p/go-yamux/v4 v4.0.1 // indirect
 	github.com/marten-seemann/tcp v0.0.0-20210406111302-dfbc87cc63fd // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattrltrent/hivego v0.0.0-20241128005725-5aeca21c7e91
 	github.com/miekg/dns v1.1.61 // indirect
 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b // indirect
 	github.com/mikioh/tcpopt v0.0.0-20190314235656-172688c1accc // indirect
