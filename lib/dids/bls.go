@@ -8,7 +8,8 @@ import (
 
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multibase"
-	blst "github.com/supranational/blst/bindings/go"
+
+	bls "github.com/protolambda/bls12-381-util"
 )
 
 // ===== constants =====
@@ -17,13 +18,13 @@ const BlsDIDPrefix = "did:key:"
 
 // ===== type aliases for clarity =====
 
-type BlsPubKey = blst.P1Affine
-type BlsSig = blst.P2Affine
-type blsAggSig = blst.P2Aggregate
+type BlsPubKey = bls.Pubkey
+type BlsSig = bls.Signature
+type blsAggSig = bls.Signature
 
 // included for completeness, though it's obvious from the name
 // that this is the private (secret) key
-type BlsPrivKey = blst.SecretKey
+type BlsPrivKey = bls.SecretKey
 
 // ===== interface assertions =====
 
@@ -40,10 +41,10 @@ func NewBlsDID(pubKey *BlsPubKey) (BlsDID, error) {
 	}
 
 	// compress
-	pubKeyBytes := pubKey.Compress()
+	pubKeyBytes := pubKey.Serialize()
 
 	// prepend indicator bytes & bytes of compressed key
-	data := append([]byte{0xea, 0x01}, pubKeyBytes...)
+	data := append([]byte{0xea, 0x01}, pubKeyBytes[:]...)
 
 	// encode to base58, as is standard
 	base58Encoded, err := multibase.Encode(multibase.Base58BTC, data)
@@ -78,7 +79,7 @@ func (d BlsDID) Identifier() *BlsPubKey {
 	fmt.Println("PublicKey bytes", len(pubKeyBytes), hex.EncodeToString(pubKeyBytes))
 	// decompress the pub key
 	pubKey := new(BlsPubKey)
-	if pubKey.Uncompress(pubKeyBytes) == nil {
+	if pubKey.Deserialize((*[48]byte)(pubKeyBytes)) != nil {
 		return nil
 	}
 
@@ -100,12 +101,13 @@ func (d BlsDID) Verify(cid cid.Cid, sig string) (bool, error) {
 
 	// decompress the sig into a P2Affine-type (which is a BlsSig)
 	signature := new(BlsSig)
-	if signature.Uncompress(sigBytes) == nil {
+	if signature.Deserialize((*[96]byte)(sigBytes)) == nil {
 		return false, fmt.Errorf("failed to uncompress signature for DID: %s", d.String())
 	}
 
 	// verify the sig using the pub key and the CID bytes directly
-	verified := signature.Verify(true, pubKey, true, cid.Bytes(), nil)
+	// verified := signature.Verify(true, pubKey, true, cid.Bytes(), nil)
+	verified := bls.Verify(pubKey, cid.Bytes(), signature)
 
 	// return the verification result
 	if !verified {
@@ -133,11 +135,13 @@ func NewBlsProvider(privKey *BlsPrivKey) (BlsProvider, error) {
 // signs a block using the BLS priv key
 func (b BlsProvider) Sign(cid cid.Cid) (string, error) {
 
+	sig := bls.Sign(b.privKey, cid.Bytes())
 	// sign the CID using the BLS priv key
-	sig := new(BlsSig).Sign(b.privKey, cid.Bytes(), nil)
+	// sig := new(blst.P2Affine).Sign(b.privKey, cid.Bytes(), nil)
 
 	// compress and encode to base64; make the sig transportable
-	encodedSig := base64.StdEncoding.EncodeToString(sig.Compress())
+	sigBytes := sig.Serialize()
+	encodedSig := base64.URLEncoding.EncodeToString(sigBytes[:])
 
 	return encodedSig, nil
 }
@@ -252,9 +256,13 @@ func (pbc *partialBlsCircuit) AddAndVerify(member Member, sig string) error {
 	}
 
 	// add and verify the signature and public key
+
+	fmt.Println("Sig err", sig)
 	if err := pbc.circuit.add(member, sig); err != nil {
 		return fmt.Errorf("failed to add and verify signature: %w", err)
 	}
+
+	fmt.Println("Broke here?")
 
 	return nil
 }
@@ -281,6 +289,7 @@ func (pbc *partialBlsCircuit) Finalize() (*BlsCircuit, error) {
 	if err := pbc.circuit.aggregateSignatures(); err != nil {
 		return nil, fmt.Errorf("failed to aggregate signatures: %w", err)
 	}
+	// pbc.circuit.msg = pbc.Msg()
 
 	// returns the fully populated and verified BLS circuit
 	return pbc.circuit, nil
@@ -327,19 +336,20 @@ func newBlsCircuit(msg *cid.Cid, keyset []BlsDID) (*BlsCircuit, error) {
 func (b *BlsCircuit) add(member Member, sig string) error {
 	pubKey := member.DID.Identifier()
 
-	sigBytes, err := base64.StdEncoding.DecodeString(sig)
+	sigBytes, err := base64.URLEncoding.DecodeString(sig)
 	if err != nil {
 		return fmt.Errorf("failed to decode signature: %w", err)
 	}
 
 	// decompress the sig
 	signature := new(BlsSig)
-	if signature.Uncompress(sigBytes) == nil {
+	if signature.Deserialize((*[96]byte)(sigBytes)) != nil {
 		return fmt.Errorf("failed to uncompress signature for DID: %s", member.DID.String())
 	}
 
+	fmt.Println("Bls here", pubKey, b.msg.Bytes(), signature)
 	// verify the sig using the pub key and the CID bytes (message)
-	verified := signature.Verify(true, pubKey, true, b.msg.Bytes(), nil)
+	verified := bls.Verify(pubKey, b.msg.Bytes(), signature)
 	if !verified {
 		return fmt.Errorf("signature verification failed for DID: %s", member.DID.String())
 	}
@@ -372,9 +382,8 @@ func (b *BlsCircuit) aggregateSignatures() error {
 		return fmt.Errorf("no signatures to aggregate")
 	}
 
-	var aggSig blst.P2Aggregate
-	aggSig.Aggregate(sigs, true)
-	b.aggSigs = aggSig.ToAffine()
+	sig, _ := bls.Aggregate(sigs)
+	b.aggSigs = sig
 
 	return nil
 }
@@ -384,8 +393,8 @@ func (b *BlsCircuit) AggregatedSignature() (string, error) {
 	if b.aggSigs == nil {
 		return "", fmt.Errorf("aggregated signature not generated")
 	}
-	aggSigBytes := b.aggSigs.Compress()
-	aggSigEncoded := base64.StdEncoding.EncodeToString(aggSigBytes)
+	aggSigBytes := b.aggSigs.Serialize()
+	aggSigEncoded := base64.StdEncoding.EncodeToString(aggSigBytes[:])
 	return aggSigEncoded, nil
 }
 
@@ -475,8 +484,9 @@ func DeserializeBlsCircuit(serialized SerializedCircuit, keyset []BlsDID, msg ci
 		return nil, err
 	}
 
-	signature := new(BlsSig).Uncompress(sigBytes)
-	if signature == nil || !signature.SigValidate(true) {
+	signature := new(BlsSig)
+	err = signature.Deserialize((*[96]byte)(sigBytes))
+	if err != nil {
 		return nil, fmt.Errorf("failed to uncompress signatures")
 	}
 
@@ -559,19 +569,14 @@ func (b *BlsCircuit) Verify() (bool, []BlsDID, error) {
 	}
 
 	// aggregate the pub keys
-	var aggPub blst.P1Aggregate
 	// agg all the pub keys at once
-	aggWorks := aggPub.Aggregate(includedPubKeys, true)
-	aggPubKey := aggPub.ToAffine()
+	pubKey, _ := bls.AggregatePubkeys(includedPubKeys)
+	// aggWorks := aggPub.Aggregate(includedPubKeys, true)
+	// aggPubKey := aggPub.ToAffine()
 
-	dida, _ := NewBlsDID(aggPub.ToAffine())
-
-	fmt.Println("did", dida, aggWorks)
-	fmt.Println("Did HEX", hex.EncodeToString(aggPubKey.Compress()))
-
-	fmt.Println("aggSigs", b.aggSigs)
 	// verify the aggregated sig
-	verified := b.aggSigs.FastAggregateVerify(true, includedPubKeys, b.msg.Bytes(), nil)
+	verified := bls.Verify(pubKey, b.msg.Bytes(), b.aggSigs)
+	// verified := b.aggSigs.FastAggregateVerify(true, includedPubKeys, b.msg.Bytes(), nil)
 
 	return verified, includedDIDs, nil
 }

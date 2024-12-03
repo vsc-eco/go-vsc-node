@@ -38,7 +38,6 @@ func (w *witnesses) StoreNodeAnnouncement(nodeId string) error {
 func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 	ctx := context.Background()
 	findOptions := options.FindOneAndUpdate().SetUpsert(true)
-	fmt.Println("Setting witness update!")
 
 	bbytes, _ := json.Marshal(requestIn)
 	request := SetWitnessUpdateType{}
@@ -56,10 +55,7 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 			"net_id":     request.Metadata.VscNode.UnsignedProof.NetId,
 		},
 	}
-	fmt.Println(query, update)
 	w.FindOneAndUpdate(ctx, query, update, findOptions)
-
-	fmt.Println("Stalled?")
 
 	// if result.Err() != nil {
 	// 	return result.Err()
@@ -73,7 +69,6 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 		Value: -1,
 	}})
 	cursor, _ := w.Find(ctx, oldRecordsFilter, oldRecordsOptions)
-	fmt.Println("Stalled?")
 	var deletionHeight *int32
 	for cursor.Next(ctx) {
 		var result bson.M

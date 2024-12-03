@@ -43,5 +43,12 @@ func (c *contracts) RegisterContract(contractId string, args SetContractArgs) {
 	}
 	opts := options.FindOneAndUpdate().SetUpsert(true)
 	c.FindOneAndUpdate(context.Background(), findQuery, updateQuery, opts)
+}
+
+type contractHistory struct {
+	*db.Collection
+}
+
+func (ch *contractHistory) IngestOutput() {
 
 }

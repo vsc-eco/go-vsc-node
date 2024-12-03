@@ -53,7 +53,7 @@ var (
 	HeadBlockMaxBackoffInterval = time.Minute * 5
 	// even if all predicate funcs say we should keep pulling the next batch of
 	// blocks, this is how long we should wait between fetches
-	MinTimeBetweenBlockBatchFetches = time.Millisecond * 1500
+	MinTimeBetweenBlockBatchFetches = time.Millisecond * 1
 	// where the hive block streamer starts from by default if nothing
 	// has been persisted yet or overridden as a starting point
 	DefaultBlockStart = 81614028
@@ -82,6 +82,7 @@ type StreamReader struct {
 // inits a StreamReader with the provided hiveBlocks interface and process function
 func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, maybeStartBlock ...int) *StreamReader {
 	startBlock := DefaultBlockStart
+	fmt.Println("startBlock", startBlock)
 	if len(maybeStartBlock) > 0 {
 		startBlock = maybeStartBlock[0]
 	}
@@ -134,9 +135,16 @@ func (s *StreamReader) Start() *promise.Promise[any] {
 	s.wg.Add(1)
 	return promise.New(func(resolve func(any), reject func(error)) {
 		defer s.wg.Done()
+		defer inteceptError()
 		s.pollDb()
+
 		resolve(nil)
 	})
+}
+
+func inteceptError() {
+	MyError := recover()
+	fmt.Println(MyError)
 }
 
 // polls the database at intervals, processing new blocks as they arrive
@@ -427,6 +435,7 @@ func (s *Streamer) trackHeadHeight() {
 }
 
 func (s *Streamer) streamBlocks() {
+	last := time.Now()
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -443,6 +452,9 @@ func (s *Streamer) streamBlocks() {
 
 				continue
 			}
+
+			fmt.Println("Going to fetch again!", time.Since(last), "block/s", float64(BlockBatchSize)/time.Since(last).Seconds())
+			last = time.Now()
 
 			blocks, err := s.fetchBlockBatch(*s.startBlock, BlockBatchSize)
 			if err != nil {
@@ -482,7 +494,9 @@ func (s *Streamer) streamBlocks() {
 
 func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, error) {
 	log.Printf("fetching block range %d-%d\n", startBlock, startBlock+batchSize-1)
+
 	blockChan, err := s.client.GetBlockRange(startBlock, batchSize)
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to initiate block range fetch: %v", err)
 	}

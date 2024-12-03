@@ -2,6 +2,8 @@ package dids_test
 
 import (
 	"encoding/base64"
+	"encoding/hex"
+	"fmt"
 	"testing"
 	"vsc-node/lib/dids"
 
@@ -9,13 +11,19 @@ import (
 	"github.com/ipfs/go-cid"
 	"github.com/stretchr/testify/assert"
 	blst "github.com/supranational/blst/bindings/go"
+
+	bls "github.com/consensys/gnark-crypto/ecc/bls12-381"
+	ethBls "github.com/protolambda/bls12-381-util"
 )
 
 // gens a random BlsDID and BlsPrivKey using a seed
 func genRandomBlsDIDAndBlstSecretKeyWithSeed(seed [32]byte) (dids.BlsDID, *dids.BlsPrivKey, error) {
 	// gens a priv key and its corresponding pub key using the provided seed
-	privKey := blst.KeyGen(seed[:])
-	pubKey := new(dids.BlsPubKey).From(privKey)
+	// privKey := blst.KeyGen(seed[:])
+	privKey := dids.BlsPrivKey{}
+	privKey.Deserialize(&seed)
+	// pubKey := new(dids.BlsPubKey).From(privKey.)
+	pubKey, _ := ethBls.SkToPk(&privKey)
 
 	// gens the BlsDID from the pub key
 	did, err := dids.NewBlsDID(pubKey)
@@ -23,7 +31,7 @@ func genRandomBlsDIDAndBlstSecretKeyWithSeed(seed [32]byte) (dids.BlsDID, *dids.
 		return "", nil, err
 	}
 
-	return did, privKey, nil
+	return did, &privKey, nil
 }
 
 // the full flow of using a BLS circuit is:
@@ -63,6 +71,8 @@ func TestFullCircuitFlow(t *testing.T) {
 
 	// gens a partial circuit
 	partialCircuit, err := generator.Generate(block.Cid())
+
+	fmt.Println("BROKEN", err)
 	assert.NoError(t, err)
 
 	// sign the block with both providers
@@ -422,3 +432,38 @@ func Test(t *testing.T) {
 // 	// verify that the included DIDs match
 // 	assert.Equal(t, aggDID.IncludedDIDs, finalCircuit.IncludedDIDs())
 // }
+
+func TestBlsGnark(t *testing.T) {
+	cidt := cid.MustParse("bafyreihmvmys5xp4mdy2vo73hhefydkbhzwj3tf4t5exzp6rrognjdql4q")
+	affine, err := bls.HashToG2(cidt.Bytes(), []byte("BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_"))
+
+	bbytes := affine.Bytes()
+	fmt.Println(hex.EncodeToString(bbytes[:]), err)
+	pubKey := bls.G1Affine{}
+	bytesPubKey, _ := hex.DecodeString("95e0ef0109d414147401fd670ba99c6c8490bd982bfe8ad18323195869452dce9c612b5e3a28c1ea4cede3007e354d05")
+	fmt.Println(pubKey.Unmarshal(bytesPubKey))
+
+	sigBytes, _ := base64.URLEncoding.DecodeString("o23efAsqvhzzXKRnNueO_6tMfFO3IbIhCLhxrwG0S_szjPtvIJ-8IUV85kqL79n3BRN6xLzbQPwjYyyefHePe0YPFq3UWyB6P8ATy9eLQpi89DcOfW2KqEZ5npEM7KNh")
+
+	e1, _ := bls.Pair([]bls.G1Affine{*pubKey.Neg(&pubKey)}, []bls.G2Affine{affine})
+	_, _, g1Gen, _ := bls.Generators()
+
+	g2Sig := bls.G2Affine{}
+	fmt.Println(g2Sig.Unmarshal(sigBytes))
+	e2, _ := bls.Pair([]bls.G1Affine{g1Gen}, []bls.G2Affine{g2Sig})
+
+	fmt.Println(e2)
+	fmt.Println("Verified", e1.Equal(&e2))
+	pk := ethBls.Pubkey{}
+	pk.Deserialize((*[48]byte)(bytesPubKey))
+	sig := ethBls.Signature{}
+	sig.Deserialize((*[96]byte)(sigBytes))
+
+	blstSig := blst.P2Affine{}
+	blstPub := blst.P1Affine{}
+	blstPub.Deserialize(bytesPubKey)
+	blstSig.Deserialize(sigBytes)
+
+	fmt.Println("verified blst", blstSig.Verify(true, &blstPub, true, cidt.Bytes(), []byte("BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_")))
+	fmt.Println("verified", ethBls.Verify(&pk, cidt.Bytes(), &sig))
+}

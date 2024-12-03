@@ -36,7 +36,12 @@ func (e *elections) StoreElection(a ElectionResult) {
 	}
 	updateQuery := bson.M{
 		"$set": bson.M{
-			"members": a.Members,
+			"block_height": a.BlockHeight,
+			"data":         a.Data,
+			"members":      a.Members,
+			"proposer":     a.Proposer,
+			"weights":      a.Weights,
+			"weight_total": a.WeightTotal,
 		},
 	}
 	result := e.FindOneAndUpdate(ctx, filter, updateQuery, options)
@@ -61,14 +66,18 @@ func (e *elections) GetElection(epoch int) *ElectionResult {
 
 func (e *elections) GetElectionByHeight(height int) *ElectionResult {
 	findQuery := bson.M{
-		"height": bson.M{
+		"block_height": bson.M{
 			//Elections activate going forward, not retroactively to the same block
 			//Thus $lt is logical
 			"$lt": height,
 		},
 	}
+	queryOptions := options.FindOne()
+	queryOptions.SetSort(bson.M{
+		"block_height": -1,
+	})
 	ctx := context.Background()
-	findResult := e.FindOne(ctx, findQuery)
+	findResult := e.FindOne(ctx, findQuery, queryOptions)
 
 	if findResult.Err() != nil {
 		return nil

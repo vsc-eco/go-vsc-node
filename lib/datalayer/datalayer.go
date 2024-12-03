@@ -98,30 +98,30 @@ func (dl *DataLayer) PutObject(data interface{}) (*cid.Cid, error) {
 	return &cid, nil
 }
 
-func (dl *DataLayer) Get(cid cid.Cid, options GetOptions) (*format.Node, error) {
-	if options.NoStore {
-		//This is using direct bitswap access which may not use a block store.
-		//Thus, it will not store anything upon request.
-		block, err := dl.bitswap.GetBlock(context.Background(), cid)
-		if err != nil {
-			return nil, err
-		}
-		node, err := dagCbor.DecodeBlock(block)
-
-		if err != nil {
-			return nil, err
-		}
-		return &node, nil
-	} else {
-		//This will automatically store locally
-		node, err := dl.DagServ.Get(context.Background(), cid)
-		return &node, err
+func (dl *DataLayer) Get(cid cid.Cid, options *GetOptions) (*format.Node, error) {
+	//This is using direct bitswap access which may not use a block store.
+	//Thus, it will not store anything upon request.
+	block, err := dl.bitswap.GetBlock(context.Background(), cid)
+	if err != nil {
+		return nil, err
 	}
+	node, err := dagCbor.DecodeBlock(block)
+
+	if err != nil {
+		return nil, err
+	}
+	return &node, nil
+	// if options.NoStore {
+	// } else {
+	// 	//This will automatically store locally
+	// 	node, err := dl.DagServ.Get(context.Background(), cid)
+	// 	return &node, err
+	// }
 }
 
 // Gets Object then converts it to Golang type seemlessly
 func (dl *DataLayer) GetObject(cid cid.Cid, v any, options GetOptions) error {
-	dataNode, err := dl.Get(cid, options)
+	dataNode, err := dl.Get(cid, &options)
 
 	if err != nil {
 		return err
@@ -139,6 +139,15 @@ func (dl *DataLayer) GetObject(cid cid.Cid, v any, options GetOptions) error {
 	}
 
 	return goJson.Unmarshal(bytes, v)
+}
+
+func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
+	block, err := dl.bitswap.GetBlock(context.Background(), cid)
+	if err != nil {
+		return nil, err
+	}
+	dag, err := dagCbor.Decode(block.RawData(), mh.SHA2_256, -1)
+	return dag, err
 }
 
 type AddPin struct {
@@ -185,67 +194,6 @@ func (dl *DataLayer) RmPin(pinCid cid.Cid, options struct {
 	}
 }
 
-type TransactionHeader struct {
-	Nonce         int64    `json:"nonce"`
-	RequiredAuths []string `json:"required_auths" jsonschema:"required"`
-}
-
-type TransactionContainer struct {
-	Type    string `json:"__t" jsonschema:"required"`
-	Version string `json:"__v" jsonschema:"required"`
-
-	Headers TransactionHeader `json:"headers"`
-
-	PurposeLink cid.Cid
-
-	//This this can be any kind of object.
-	Tx map[string]interface{} `json:"tx"`
-}
-
-func (tx *TransactionContainer) Encode() (*[]byte, error) {
-
-	jsonBytes, err := goJson.Marshal(tx)
-	fmt.Println(string(jsonBytes))
-
-	fmt.Println(err)
-	r := bytes.NewReader(jsonBytes)
-	dagNode, err := dagCbor.FromJSON(r, mh.SHA2_256, -1)
-
-	if err != nil {
-		return nil, err
-	}
-
-	// node, err := dagCbor.WrapObject(tx, mh.SHA2_256, -1)
-	// fmt.Println(err)
-	bytes := dagNode.RawData()
-	return &bytes, nil
-}
-
-func (tx *TransactionContainer) Decode(rawData []byte) error {
-
-	dagNode, _ := dagCbor.Decode(rawData, mh.SHA2_256, -1)
-
-	bytes, err := dagNode.MarshalJSON()
-	if err != nil {
-		return err
-	}
-	return goJson.Unmarshal(bytes, tx)
-}
-
-func (tx *TransactionContainer) ToBlock() (*blocks.BasicBlock, error) {
-	jsonBytes, err := goJson.Marshal(tx)
-
-	if err != nil {
-		return nil, err
-	}
-
-	r := bytes.NewReader(jsonBytes)
-	block, _ := dagCbor.FromJSON(r, mh.SHA2_256, -1)
-
-	blk, err := blocks.NewBlockWithCid(block.RawData(), block.Cid())
-	return blk, err
-}
-
 func (dl *DataLayer) FindProviders(cid.Cid) []peer.ID {
 	dl.host.ID()
 
@@ -263,6 +211,8 @@ func New(host host.Host, dht *kadDht.IpfsDHT) *DataLayer {
 	exchange := bitswap.New(ctx, network, bstore)
 	// exchange.GetBlock()
 	blockService := blockservice.New(bstore, exchange)
+
+	fmt.Println("PeerId", host.ID())
 
 	// fx.Lifecycle.
 	// cid, _ := cid.Parse("bafyreic5eyutoi7gattebiutaj4prdeev7jwyyeba2hpdnmzxb2cuk4hge")
