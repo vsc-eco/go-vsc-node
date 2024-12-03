@@ -1,8 +1,11 @@
 module vsc-node
 
-go 1.22.3
+go 1.22.5
+
+toolchain go1.23.2
 
 require (
+	github.com/99designs/gqlgen v0.17.55
 	github.com/JustinKnueppel/go-result v1.0.0
 	github.com/btcsuite/btcutil v1.0.2
 	github.com/chebyrash/promise v0.0.0-20230709133807-42ec49ba1459
@@ -10,6 +13,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.2.1
 	github.com/libp2p/go-libp2p-gorpc v0.6.0
 	github.com/moznion/go-optional v0.12.0
+	github.com/vektah/gqlparser/v2 v2.5.20
 	github.com/zealic/go2node v0.1.0
 	github.com/zyedidia/generic v1.2.1
 	gitlab.com/NebulousLabs/go-upnp v0.0.0-20211002182029-11da932010b6
@@ -20,17 +24,22 @@ require (
 	github.com/bits-and-blooms/bitset v1.14.2 // indirect
 	github.com/cfoxon/hivego v0.0.0-20230410131714-9f5a7f11f8df // indirect
 	github.com/consensys/bavard v0.1.13 // indirect
-	github.com/consensys/gnark-crypto v0.14.0 // indirect
-	github.com/crate-crypto/go-ipa v0.0.0-20240223125850-b1e8a79f509c // indirect
-	github.com/crate-crypto/go-kzg-4844 v1.0.0 // indirect
-	github.com/ethereum/c-kzg-4844 v1.0.0 // indirect
-	github.com/ethereum/go-verkle v0.1.1-0.20240829091221-dffa7562dbe9 // indirect
-	github.com/holiman/uint256 v1.3.1 // indirect
+	github.com/consensys/gnark-crypto v0.14.0
 	github.com/kilic/bls12-381 v0.1.0 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
-	github.com/protolambda/bls12-381-util v0.1.0 // indirect
+	github.com/protolambda/bls12-381-util v0.1.0
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
+)
+
+require (
+	github.com/agnivade/levenshtein v1.2.0 // indirect
+	github.com/cpuguy83/go-md2man/v2 v2.0.5 // indirect
+	github.com/mitchellh/mapstructure v1.5.0 // indirect
+	github.com/russross/blackfriday/v2 v2.1.0 // indirect
+	github.com/sosodev/duration v1.3.1 // indirect
+	github.com/urfave/cli/v2 v2.27.5 // indirect
+	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
 )
 
 require (
@@ -191,7 +200,7 @@ require (
 	github.com/segmentio/fasthash v1.0.3 // indirect
 	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.10.0
 	github.com/supranational/blst v0.3.13
 	github.com/vsc-eco/hivego v0.0.0-20241001180559-d366900cb8a5
 	gitlab.com/NebulousLabs/fastrand v0.0.0-20181126182046-603482d69e40 // indirect
@@ -200,15 +209,15 @@ require (
 	go.uber.org/mock v0.4.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
-	golang.org/x/crypto v0.26.0
+	golang.org/x/crypto v0.29.0
 	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56
-	golang.org/x/mod v0.19.0 // indirect
-	golang.org/x/net v0.27.0 // indirect
-	golang.org/x/sync v0.8.0 // indirect
-	golang.org/x/sys v0.24.0 // indirect
-	golang.org/x/text v0.17.0 // indirect
-	golang.org/x/tools v0.23.0 // indirect
-	google.golang.org/protobuf v1.34.2 // indirect
+	golang.org/x/mod v0.22.0 // indirect
+	golang.org/x/net v0.31.0 // indirect
+	golang.org/x/sync v0.9.0 // indirect
+	golang.org/x/sys v0.27.0 // indirect
+	golang.org/x/text v0.20.0 // indirect
+	golang.org/x/tools v0.27.0 // indirect
+	google.golang.org/protobuf v1.35.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/blake3 v1.3.0 // indirect
 )
