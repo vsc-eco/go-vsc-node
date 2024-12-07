@@ -23,7 +23,7 @@ type Config[T any] struct {
 	value  T
 }
 
-var UseMainConfigDuringTests = true
+var UseMainConfigDuringTests = false
 
 const DATA_DIR = "data"
 const CONFIG_DIR = DATA_DIR + "/config"

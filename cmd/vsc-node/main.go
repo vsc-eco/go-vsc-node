@@ -4,23 +4,25 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	p2pInterface "vsc-node/lib/p2p"
 	"vsc-node/modules/aggregate"
+	"vsc-node/modules/announcements"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/hive/streamer"
 
-	"vsc-node/modules/wasm/parent_ipc"
+	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 
 	"github.com/vsc-eco/hivego"
 )
 
 func main() {
-	conf := db.NewDbConfig()
-	db := db.New(conf)
+	dbConf := db.NewDbConfig()
+	db := db.New(dbConf)
 	vscDb := vsc.New(db)
 	witnesses := witnesses.New(vscDb)
 	hiveBlocks, err := hive_blocks.New(vscDb)
@@ -56,13 +58,20 @@ func main() {
 	filters := []streamer.FilterFunc{filter}
 	streamerPlugin := streamer.NewStreamer(blockClient, hiveBlocks, filters, nil) // optional starting block #
 
+	// new announcements manager
+	hiveRpcClient := hivego.NewHiveRpc("http://hive-api.web3telekom.xyz/")
+	announcementsConf := announcements.NewAnnouncementsConfig()
+	announcementsManager := announcements.New(hiveRpcClient, announcementsConf, time.Hour*24)
+
 	wasm := wasm_parent_ipc.New() // TODO set proper cmd path
 
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
-		conf,
+		dbConf,
 		db,
+		announcementsConf,
+		announcementsManager,
 		vscDb,
 		witnesses,
 		hiveBlocks,

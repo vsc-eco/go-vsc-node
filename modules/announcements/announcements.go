@@ -1,19 +1,18 @@
 package announcements
 
 import (
-	"bytes"
 	"context"
-	"crypto/ed25519"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 	"vsc-node/lib/dids"
 	agg "vsc-node/modules/aggregate"
 	"vsc-node/modules/config"
 
-	"github.com/mattrltrent/hivego"
 	"github.com/robfig/cron/v3"
+	"github.com/vsc-eco/hivego"
+
 	blst "github.com/supranational/blst/bindings/go"
 
 	"github.com/chebyrash/promise"
@@ -22,227 +21,165 @@ import (
 // ===== types =====
 
 type announcementsManager struct {
-	conf *config.Config[announcementsConfig]
-	cron *cron.Cron
-	stop chan struct{}
+	conf         *config.Config[announcementsConfig]
+	cron         *cron.Cron
+	ctx          context.Context
+	cancel       context.CancelFunc
+	client       HiveRpcClient
+	cronDuration time.Duration
 }
 
-// ===== intetface assertions =====
+type HiveRpcClient interface {
+	GetAccount(accountNames []string) ([]hivego.AccountData, error)
+	UpdateAccount(account string, owner *hivego.Auths, active *hivego.Auths, posting *hivego.Auths, jsonMetadata string, memoKey string, wif *string) (string, error)
+}
+
+// ===== interface assertions =====
 
 var _ agg.Plugin = &announcementsManager{}
 
 // ===== constructor =====
 
-func New(conf *config.Config[announcementsConfig]) *announcementsManager {
+func New(client HiveRpcClient, conf *config.Config[announcementsConfig], cronDuration time.Duration) *announcementsManager {
 	return &announcementsManager{
-		cron: cron.New(),
-		conf: conf,
-		stop: make(chan struct{}),
+		cron:         cron.New(),
+		conf:         conf,
+		client:       client,
+		cronDuration: cronDuration,
 	}
 }
 
 // ===== implementing plugin interface =====
 
 func (a *announcementsManager) Init() error {
+	// inits context and cancel function
+	a.ctx, a.cancel = context.WithCancel(context.Background())
 	return nil
 }
 
 func (a *announcementsManager) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
-		// create a ctx that cancels when the stop chan is closed
-		ctx, cancel := context.WithCancel(context.Background())
+		// run the first announcement immediately
 		go func() {
-			<-a.stop
-			cancel()
+			err := a.announce(a.ctx)
+			if err != nil {
+				log.Println("error announcing:", err)
+			}
 		}()
 
-		// run task immediately
-		go a.announce(ctx)
+		cronSpec := fmt.Sprintf("@every %ds", int(a.cronDuration.Seconds()))
 
-		// schedule the task to run every 24 hours starting from now
-		_, err := a.cron.AddFunc("@every 24h", func() {
-			// check if stop signal has been received before running the task
+		fmt.Println("cronSpec", cronSpec)
+
+		// schedule the task to then run every 24 hours
+		_, err := a.cron.AddFunc(cronSpec, func() {
+			// check if the context is canceled before running the task
 			select {
-			case <-a.stop:
+			case <-a.ctx.Done():
 				return
 			default:
-				go a.announce(ctx)
+				go func() {
+					err := a.announce(a.ctx)
+					if err != nil {
+						log.Println("error announcing:", err)
+					}
+				}()
 			}
 		})
 		if err != nil {
 			reject(err)
 			return
 		}
-		a.cron.Start()
+		a.cron.Start() // start the cron scheduler
 		resolve(nil)
 	})
 }
 
 func (a *announcementsManager) Stop() error {
-	// safely close the stop channel
-	select {
-	case <-a.stop:
-		// do nothing, already stopped
-	default:
-		close(a.stop)
+	// cancel the context
+	if a.cancel != nil {
+		a.cancel()
 	}
-	// stop cron scheduler
+
+	// stop the cron scheduler
 	a.cron.Stop()
 	return nil
 }
 
-// ===== announcement impl =====
+// ===== announcement types =====
 
 type payload struct {
-	did_keys []didConsensusKey `json:"did_keys"`
-	vsc_node vscNode           `json:"vsc_node"`
+	DidKeys []didConsensusKey `json:"did_keys"`
 }
 
 type didConsensusKey struct {
-	t   string      `json:"t"`
-	ct  string      `json:"ct"`
-	key dids.BlsDID `json:"key"`
+	T   string      `json:"t"`
+	Ct  string      ` json:"ct"`
+	Key dids.BlsDID `json:"key"`
 }
 
-type signature struct {
-	protected string `json:"protected"`
-	signature string `json:"signature"`
-}
+// ===== announcement impl =====
 
-type signedProof struct {
-	payload    string      `json:"payload"`
-	signatures []signature `json:"signatures"`
-}
-
-type unsignedProof struct{} // todo
-
-type vscNode struct {
-	Did           dids.DID[ed25519.PublicKey] `json:"did"`
-	signedProof   signedProof                 `json:"signed_proof"`
-	unsignedProof unsignedProof               `json:"unsigned_proof"`
-}
-
-type accountUpdateOperation struct {
-	// key fields
-	Account      string `json:"account"`
-	JSONMetadata string `json:"json_metadata"`
-	MemoKey      string `json:"memo_key"`
-	// metadata fields
-	// Owner        string   `json:"owner,omitempty"`
-	// Active       string   `json:"active,omitempty"`
-	// Posting      string   `json:"posting,omitempty"`
-	Extensions []string `json:"extensions"`
-	opText     string
-}
-
-func (o accountUpdateOperation) OpName() string {
-	return "account_update"
-}
-
-func appendVString(s string, b *bytes.Buffer) *bytes.Buffer {
-	vBuf := make([]byte, 5)
-	vLen := binary.PutUvarint(vBuf, uint64(len(s)))
-	b.Write(vBuf[0:vLen])
-
-	b.WriteString(s)
-	return b
-}
-
-func appendVStringArray(a []string, b *bytes.Buffer) *bytes.Buffer {
-	b.Write([]byte{byte(len(a))})
-	for _, s := range a {
-		appendVString(s, b)
+// example announcement on-chain: https://hivexplorer.com/tx/cad30bcf0891b6b7f9bcf16a05dc084a02acef65
+func (a *announcementsManager) announce(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		log.Println("announce task canceled")
+		return nil
+	default:
+		log.Println("announcing")
 	}
-	return b
-}
 
-func (o accountUpdateOperation) SerializeOp() ([]byte, error) {
-	var buf bytes.Buffer
-	buf.Write([]byte{byte(10)})
-	appendVString(o.Account, &buf)
-	appendVString(o.JSONMetadata, &buf)
-	appendVString(o.MemoKey, &buf)
-	// appendVString(o.Owner, &buf)
-	// appendVString(o.Active, &buf)
-	// appendVString(o.Posting, &buf)
-	// appendVStringArray(o.Extensions, &buf)
-	buf.WriteByte(0) // Extensions (empty)
-	appendVString(o.opText, &buf)
-
-	fmt.Println("finished SerializeOp", buf)
-	return buf.Bytes(), nil
-}
-
-func (a *announcementsManager) updateAccount(hrpc *hivego.HiveRpcNode) (string, error) {
-
-	blsPrivKey := a.conf.Get().BlsPrivKey
-	fmt.Println("BLS PRIV KEY", blsPrivKey)
-	blsDid, err := dids.NewBlsDID(new(blst.P1Affine).From(&blsPrivKey))
+	// get the account's memo key based on their account username
+	accounts, err := a.client.GetAccount([]string{a.conf.Get().Username})
 	if err != nil {
-		return "", err
+		return fmt.Errorf("failed to get account: %w", err)
 	}
 
-	keyPubKey := a.conf.Get().ConsensusKey.Public().(ed25519.PublicKey)
-	keyDid, err := dids.NewKeyDID(keyPubKey)
+	// check if the account exists
+	if len(accounts) == 0 {
+		return fmt.Errorf("account not found")
+	}
+
+	// there should only be one account
+	if len(accounts) > 1 {
+		return fmt.Errorf("more than one account found, this case should not happen")
+	}
+
+	// get the account's memo key
+	memoKey := accounts[0].MemoKey
+	if memoKey == "" {
+		return fmt.Errorf("account has no memo key")
+	}
+
+	blsPrivKey := blst.KeyGen([]byte(a.conf.Get().BlsPrivKeySeed)[:])
+	blsPubKey := new(dids.BlsPubKey).From(blsPrivKey)
+
+	blsDid, err := dids.NewBlsDID(blsPubKey)
 	if err != nil {
-		return "", err
-	}
-
-	fmt.Println("GOT HERE!!!!!!!!!!!!!!!!!!")
-
-	// Example setup for payload struct
-	unsignedProof := unsignedProof{} // Populate as needed
-	signedProof := signedProof{
-		payload: "example_payload",
-		signatures: []signature{
-			{
-				protected: "example_protected",
-				signature: "example_signature",
-			},
-		},
-	}
-
-	vscNode := vscNode{
-		Did:           keyDid,
-		unsignedProof: unsignedProof,
-		signedProof:   signedProof,
+		return fmt.Errorf("failed to create bls did: %w", err)
 	}
 
 	payload := payload{
-		did_keys: []didConsensusKey{
+		DidKeys: []didConsensusKey{
 			{
-				t:   "consensus",
-				ct:  "DID-BLS",
-				key: blsDid,
+				T:   "consensus",
+				Ct:  "DID-BLS",
+				Key: blsDid,
 			},
 		},
-		vsc_node: vscNode,
 	}
 
-	// Serialize payload into JSON
-	payloadJSON, err := json.Marshal(payload)
+	jsonBytes, err := json.Marshal(payload)
 	if err != nil {
-		log.Fatalf("Failed to serialize payload: %v", err)
+		log.Println("error marshaling JSON:", err)
 	}
 
-	// Prepare account update operation
-	op := accountUpdateOperation{
-		Account:      "mattrltrent",
-		JSONMetadata: string(payloadJSON),
-		MemoKey:      "STM7DGfyBPBRuq4f426M7jgLsbAPDqf82R6wdahWcQFUgSi3DJHiT",
-		Extensions:   []string{},
-		opText:       "account_update",
+	wif := a.conf.Get().AnnouncementPrivateWif
+	_, err = a.client.UpdateAccount(a.conf.Get().Username, nil, nil, nil, string(jsonBytes), memoKey, &wif)
+	if err != nil {
+		return fmt.Errorf("failed to update account: %w", err)
 	}
 
-	// todo: WIF private key
-	wif := ""
-
-	// Broadcast the operation
-	return hrpc.Broadcast([]hivego.HiveOperation{op}, &wif)
-}
-
-func (a *announcementsManager) announce(ctx context.Context) {
-	log.Println("announcing")
-	hrpc := hivego.NewHiveRpc("https://api.hive.blog")
-	log.Println(a.updateAccount(hrpc))
+	return nil
 }
