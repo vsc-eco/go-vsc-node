@@ -13,9 +13,8 @@ import (
 	"github.com/robfig/cron/v3"
 	"github.com/vsc-eco/hivego"
 
-	blst "github.com/supranational/blst/bindings/go"
-
 	"github.com/chebyrash/promise"
+	ethBls "github.com/protolambda/bls12-381-util"
 )
 
 // ===== types =====
@@ -152,10 +151,14 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 		return fmt.Errorf("account has no memo key")
 	}
 
-	blsPrivKey := blst.KeyGen([]byte(a.conf.Get().BlsPrivKeySeed)[:])
-	blsPubKey := new(dids.BlsPubKey).From(blsPrivKey)
+	blsPrivKey := dids.BlsPrivKey{}
+	var arr [32]byte
+	copy(arr[:], a.conf.Get().BlsPrivKeySeed)
+	blsPrivKey.Deserialize(&arr)
+	pubKey, _ := ethBls.SkToPk(&blsPrivKey)
 
-	blsDid, err := dids.NewBlsDID(blsPubKey)
+	// gens the BlsDID from the pub key
+	blsDid, err := dids.NewBlsDID(pubKey)
 	if err != nil {
 		return fmt.Errorf("failed to create bls did: %w", err)
 	}
