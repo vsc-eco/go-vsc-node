@@ -2,6 +2,7 @@ package announcements
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"vsc-node/modules/config"
 )
@@ -22,7 +23,7 @@ func NewAnnouncementsConfig() *config.Config[announcementsConfig] {
 
 	// defaults now for our config if not already provided
 	return config.New(announcementsConfig{
-		BlsPrivKeySeed:         string(seed[:]),
+		BlsPrivKeySeed:         hex.EncodeToString(seed[:]),
 		AnnouncementPrivateWif: "ADD_YOUR_PRIVATE_WIF",
 		Username:               "ADD_YOUR_USERNAME",
 	})
