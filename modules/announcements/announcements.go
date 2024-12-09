@@ -2,6 +2,7 @@ package announcements
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -153,7 +154,12 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 
 	blsPrivKey := dids.BlsPrivKey{}
 	var arr [32]byte
-	copy(arr[:], a.conf.Get().BlsPrivKeySeed)
+	blsPrivSeedHex := a.conf.Get().BlsPrivKeySeed
+	blsPrivSeed, err := hex.DecodeString(blsPrivSeedHex)
+	if err != nil {
+		return fmt.Errorf("failed to decode bls priv seed: %w", err)
+	}
+	copy(arr[:], blsPrivSeed)
 	blsPrivKey.Deserialize(&arr)
 	pubKey, _ := ethBls.SkToPk(&blsPrivKey)
 
