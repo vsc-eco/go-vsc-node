@@ -40,13 +40,25 @@ var _ agg.Plugin = &announcementsManager{}
 
 // ===== constructor =====
 
-func New(client HiveRpcClient, conf *config.Config[announcementsConfig], cronDuration time.Duration) *announcementsManager {
+func New(client HiveRpcClient, conf *config.Config[announcementsConfig], cronDuration time.Duration) (*announcementsManager, error) {
+
+	// sanity checks
+	if conf == nil {
+		return nil, fmt.Errorf("config must be provided")
+	}
+	if client == nil {
+		return nil, fmt.Errorf("client must be provided")
+	}
+	if cronDuration <= 0 || cronDuration < time.Second {
+		return nil, fmt.Errorf("cron duration must be greater than 1 second") // avoid accidental too-frequent announcements
+	}
+
 	return &announcementsManager{
 		cron:         cron.New(),
 		conf:         conf,
 		client:       client,
 		cronDuration: cronDuration,
-	}
+	}, nil
 }
 
 // ===== implementing plugin interface =====
@@ -68,8 +80,6 @@ func (a *announcementsManager) Start() *promise.Promise[any] {
 		}()
 
 		cronSpec := fmt.Sprintf("@every %ds", int(a.cronDuration.Seconds()))
-
-		fmt.Println("cronSpec", cronSpec)
 
 		// schedule the task to then run every 24 hours
 		_, err := a.cron.AddFunc(cronSpec, func() {
@@ -159,9 +169,18 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to decode bls priv seed: %w", err)
 	}
+	if len(blsPrivSeed) != 32 {
+		return fmt.Errorf("bls priv seed must be 32 bytes")
+	}
+
 	copy(arr[:], blsPrivSeed)
-	blsPrivKey.Deserialize(&arr)
-	pubKey, _ := ethBls.SkToPk(&blsPrivKey)
+	if err = blsPrivKey.Deserialize(&arr); err != nil {
+		return fmt.Errorf("failed to deserialize bls priv key: %w", err)
+	}
+	pubKey, err := ethBls.SkToPk(&blsPrivKey)
+	if err != nil {
+		return fmt.Errorf("failed to get bls pub key: %w", err)
+	}
 
 	// gens the BlsDID from the pub key
 	blsDid, err := dids.NewBlsDID(pubKey)
