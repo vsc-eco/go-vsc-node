@@ -61,7 +61,11 @@ func main() {
 	// new announcements manager
 	hiveRpcClient := hivego.NewHiveRpc("http://hive-api.web3telekom.xyz/")
 	announcementsConf := announcements.NewAnnouncementsConfig()
-	announcementsManager := announcements.New(hiveRpcClient, announcementsConf, time.Hour*24)
+	announcementsManager, err := announcements.New(hiveRpcClient, announcementsConf, time.Hour*24)
+	if err != nil {
+		fmt.Println("error is", err)
+		os.Exit(1)
+	}
 
 	wasm := wasm_parent_ipc.New() // TODO set proper cmd path
 
