@@ -575,8 +575,8 @@ github.com/valyala/fasthttp v1.57.0 h1:Xw8SjWGEP/+wAAgyy5XTvgrWlOD1+TxbbvNADYCm1
 github.com/valyala/fasthttp v1.57.0/go.mod h1:h6ZBaPRlzpZ6O3H5t2gEk1Qi33+TmLvfwgLLp0t9CpE=
 github.com/viant/assertly v0.4.8/go.mod h1:aGifi++jvCrUaklKEKT0BU95igDNaqkvz+49uaYMPRU=
 github.com/viant/toolbox v0.24.0/go.mod h1:OxMCG57V0PXuIP2HNQrtJf2CjqdmbrOx5EkMILuUhzM=
-github.com/vsc-eco/hivego v0.0.0-20241207084102-460ff3aa2440 h1:0wswKyl1eL8LyLcTVNm5A6PYle7rb4VttsK+TAFhnJw=
-github.com/vsc-eco/hivego v0.0.0-20241207084102-460ff3aa2440/go.mod h1:iCM8eljf5SOSnYtAq4qy/Ax8qpi83lPr+rahUVcQ2e8=
+github.com/vsc-eco/hivego v0.0.0-20241212014928-c34ff80419be h1:ILFr/54qlQprRCZVSCGDR74VUaleMbua6sr+l7za93E=
+github.com/vsc-eco/hivego v0.0.0-20241212014928-c34ff80419be/go.mod h1:iCM8eljf5SOSnYtAq4qy/Ax8qpi83lPr+rahUVcQ2e8=
 github.com/warpfork/go-testmark v0.12.1 h1:rMgCpJfwy1sJ50x0M0NgyphxYYPMOODIJHhsXyEHU0s=
 github.com/warpfork/go-testmark v0.12.1/go.mod h1:kHwy7wfvGSPh1rQJYKayD4AbtNaeyZdcGi9tNJTaa5Y=
 github.com/warpfork/go-wish v0.0.0-20220906213052-39a1cc7a02d0 h1:GDDkbFiaK8jsSDJfjId/PEGEShv6ugrt4kYsC5UIDaQ=

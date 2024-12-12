@@ -1,6 +1,7 @@
 package hive_blocks
 
 import (
+	"context"
 	"vsc-node/modules/aggregate"
 )
 
@@ -11,6 +12,6 @@ type HiveBlocks interface {
 	StoreLastProcessedBlock(blockNumber int) error
 	GetLastProcessedBlock() (int, error)
 	FetchStoredBlocks(startBlock int, endBlock int) ([]HiveBlock, error)
-	FetchNextBlocks(startBlock int, limit int) ([]HiveBlock, error)
+	ListenToBlockUpdates(ctx context.Context, startBlock int, listener func(block HiveBlock) error) (context.CancelFunc, <-chan error)
 	GetHighestBlock() (int, error)
 }

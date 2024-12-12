@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"vsc-node/modules/aggregate"
@@ -23,7 +23,7 @@ import (
 // aid in mocking this service for unit tests
 type BlockClient interface {
 	GetDynamicGlobalProps() ([]byte, error)
-	GetBlockRange(startBlock int, count int) (<-chan hivego.Block, error)
+	GetBlockRange(startBlock int, count int) ([]hivego.Block, error)
 }
 
 // ===== variables =====
@@ -66,11 +66,11 @@ var (
 // ===== StreamReader =====
 
 type StreamReader struct {
-	process       ProcessFunction
-	ctx           context.Context
-	cancel        context.CancelFunc
-	mtx           sync.Mutex
-	isPaused      bool
+	process ProcessFunction
+	ctx     context.Context
+	cancel  context.CancelFunc
+	// mtx           sync.Mutex
+	isPaused      atomic.Bool
 	lastProcessed int
 	stopped       chan struct{}
 	hiveBlocks    hiveblocks.HiveBlocks
@@ -91,26 +91,11 @@ func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, 
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &StreamReader{
-		process:      process,
-		hiveBlocks:   hiveBlocks,
-		ctx:          ctx,
-		cancel:       cancel,
-		stopped:      make(chan struct{}),
-		wg:           sync.WaitGroup{},
-		stopOnlyOnce: sync.Once{},
-		isPaused:     false,
-		startBlock:   startBlock,
-	}
-}
-
-func (s *StreamReader) canProcess() bool {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-	select {
-	case <-s.stopped:
-		return false
-	default:
-		return !s.isPaused
+		process:    process,
+		hiveBlocks: hiveBlocks,
+		ctx:        ctx,
+		cancel:     cancel,
+		startBlock: startBlock,
 	}
 }
 
@@ -132,12 +117,9 @@ func (s *StreamReader) Init() error {
 
 // begins the polling loop for the StreamReader
 func (s *StreamReader) Start() *promise.Promise[any] {
-	s.wg.Add(1)
 	return promise.New(func(resolve func(any), reject func(error)) {
-		defer s.wg.Done()
 		defer inteceptError()
-		s.pollDb()
-
+		s.pollDb(reject)
 		resolve(nil)
 	})
 }
@@ -148,115 +130,31 @@ func inteceptError() {
 }
 
 // polls the database at intervals, processing new blocks as they arrive
-func (s *StreamReader) pollDb() {
-	ticker := time.NewTicker(DbPollInterval)
-	defer ticker.Stop()
+func (s *StreamReader) pollDb(fail func(error)) {
+	newBlocksProcessed := 0
+	processBlock := func(block hiveblocks.HiveBlock) error {
+		s.process(block)
+		// update last processed block
+		s.lastProcessed = block.BlockNumber
 
-	saveTicks := 0
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case <-ticker.C:
-			if s.IsPaused() || !s.canProcess() {
-				time.Sleep(time.Millisecond * 10)
-				continue
+		newBlocksProcessed++
+
+		if newBlocksProcessed > 100 {
+			if err := s.hiveBlocks.StoreLastProcessedBlock(s.lastProcessed); err != nil {
+				return fmt.Errorf("error updating last processed block: %v", err)
 			}
-
-			if saveTicks > 10 {
-				saveTicks = 0
-				if err := s.hiveBlocks.StoreLastProcessedBlock(s.lastProcessed); err != nil {
-					log.Printf("error updating last processed block: %v", err)
-				}
-			}
-
-			// fetch the highest stored block in the database
-			highestBlock, err := s.hiveBlocks.GetHighestBlock()
-			if err != nil {
-				log.Printf("error fetching highest block: %v", err)
-				time.Sleep(time.Millisecond * 100)
-
-				continue
-			}
-
-			// if there are new blocks, process all of them up to the highest block
-			if s.lastProcessed < highestBlock {
-				// fetch all blocks from lastProcessed + 1 to highestBlock
-				blocks, err := s.hiveBlocks.FetchNextBlocks(s.lastProcessed+1, 250)
-				if err != nil {
-					log.Printf("error fetching blocks: %v", err)
-					time.Sleep(time.Millisecond * 100)
-
-					continue
-				}
-
-				// if no blocks were fetched, continue
-				if len(blocks) == 0 {
-					time.Sleep(time.Millisecond * 100)
-
-					continue
-				}
-
-				// store the initial lastProcessed value
-				oldLastProcessed := s.lastProcessed
-
-				for _, block := range blocks {
-					if s.canProcess() {
-						s.process(block)
-						s.mtx.Lock()
-						// update last processed block
-						s.lastProcessed = block.BlockNumber
-						s.mtx.Unlock()
-					}
-				}
-
-				// persist the updated last processed block only if it changed
-				if s.lastProcessed != oldLastProcessed {
-					saveTicks = saveTicks + 1
-					if err := s.hiveBlocks.StoreLastProcessedBlock(s.lastProcessed); err != nil {
-						log.Printf("error updating last processed block: %v", err)
-					}
-				}
-			}
+			newBlocksProcessed = 0
 		}
+		return nil
 	}
+	_, errChan := s.hiveBlocks.ListenToBlockUpdates(s.ctx, s.lastProcessed, processBlock)
+	err := <-errChan
+	fail(err)
 }
 
 // stops the StreamReader
 func (s *StreamReader) Stop() error {
-	s.stopOnlyOnce.Do(func() {
-		s.cancel()
-		s.wg.Wait()
-		if s.stopped != nil {
-			close(s.stopped)
-		}
-
-	})
-	return nil
-}
-
-// checks if the StreamReader is currently paused
-func (s *StreamReader) IsPaused() bool {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-	return s.isPaused
-}
-
-// pauses the StreamReader, stopping further processing until resumed
-func (s *StreamReader) Pause() {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-	s.isPaused = true
-}
-
-// resumes the StreamReader
-func (s *StreamReader) Resume() error {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-	if s.ctx.Err() != nil {
-		return fmt.Errorf("StreamReader has been stopped")
-	}
-	s.isPaused = false
+	s.cancel()
 	return nil
 }
 
@@ -326,7 +224,7 @@ func (s *Streamer) Init() error {
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			// no previous blocks processed, thus start from DefaultBlockStart
-			lastBlock = DefaultBlockStart
+			lastBlock = *s.startBlock
 		} else {
 			return fmt.Errorf("error getting last block: %v", err)
 		}
@@ -335,7 +233,7 @@ func (s *Streamer) Init() error {
 	// if lastBlock is -1, this means that we haven't processed any
 	// blocks yet, thus we should start at our default point
 	if lastBlock == -1 {
-		lastBlock = DefaultBlockStart
+		lastBlock = *s.startBlock
 	}
 
 	// ensures startBlock is either the given startBlock, lastBlock+1, or DefaultBlockStart
@@ -373,17 +271,14 @@ func updateHead(bc BlockClient) (int, error) {
 		return 0, fmt.Errorf("failed to get dynamic global properties: %v", err)
 	}
 
-	var data map[string]interface{}
+	var data struct {
+		HeadBlockNumber int `json:"head_block_number"`
+	}
 	if err := json.Unmarshal(props, &data); err != nil {
 		return 0, fmt.Errorf("failed to unmarshal dynamic global properties: %v", err)
 	}
 
-	// get the latest head block number
-	if height, ok := data["head_block_number"].(float64); ok {
-		return int(height), nil
-	}
-
-	return 0, fmt.Errorf("failed to get head block number")
+	return data.HeadBlockNumber, nil
 }
 
 // updates the head height of the streamer at intervals, and since this endpiont is sensitive
@@ -447,7 +342,7 @@ func (s *Streamer) streamBlocks() {
 				continue
 			}
 
-			if int(math.Abs(float64(s.headHeight-*s.startBlock))) <= AcceptableBlockLag {
+			if max(s.headHeight, *s.startBlock)-min(s.headHeight, *s.startBlock) <= AcceptableBlockLag {
 				time.Sleep(time.Millisecond * 100)
 
 				continue
@@ -494,42 +389,19 @@ func (s *Streamer) streamBlocks() {
 
 func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, error) {
 	log.Printf("fetching block range %d-%d\n", startBlock, startBlock+batchSize-1)
-
-	blockChan, err := s.client.GetBlockRange(startBlock, batchSize)
-
+	blocks, err := s.client.GetBlockRange(startBlock, batchSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initiate block range fetch: %v", err)
 	}
 
-	var blocks []hivego.Block
 	timeout := time.After(10 * time.Second)
-	currentBlock := startBlock
 
 	for {
 		select {
 		case <-s.ctx.Done():
 			return blocks, fmt.Errorf("streamer is stopped")
-		case block, ok := <-blockChan:
-			if !ok {
-				return blocks, nil
-			}
-			// set the block number directly here to ensure it isn’t zero
-			//
-			// we know this value is correct because we’re iterating over the range
-			block.BlockNumber = currentBlock
-			currentBlock++
-			if block.BlockID == "" {
-				log.Printf("empty block ID at block %d, skipping\n", block.BlockNumber)
-				// sanity check: if empty block ID => we assume "bad block"
-				time.Sleep(time.Millisecond * 100)
-
-				continue
-			}
-			blocks = append(blocks, block)
-
-			if len(blocks) >= batchSize {
-				return blocks, nil
-			}
+		default:
+			return blocks, nil
 
 		case <-timeout:
 			return blocks, fmt.Errorf("timeout waiting for blocks in range starting at %d", startBlock)
