@@ -253,15 +253,23 @@ func (blocks *hiveBlocks) Init() error {
 
 // stores a block and updates the last stored block atomically without txs
 func (h *hiveBlocks) StoreBlocks(blocks ...HiveBlock) error {
+
+	if len(blocks) == 0 {
+		return fmt.Errorf("empty blocks")
+	}
 	models := make([]mongo.WriteModel, len(blocks)+1) // space for all hive blocks + the metadata doc
 
 	h.writeMutex.Lock()
 	defer h.writeMutex.Unlock()
 	for i, block := range blocks {
-		models[i] = mongo.NewInsertOneModel().SetDocument(Document{
-			Type:  DocumentTypeHiveBlock,
-			Block: &block,
-		})
+		models[i] = mongo.NewUpdateOneModel().SetFilter(bson.M{
+			"block.block_number": block.BlockNumber,
+		}).SetUpdate(bson.M{
+			"$set": Document{
+				Type:  DocumentTypeHiveBlock,
+				Block: &block,
+			},
+		}).SetUpsert(true)
 	}
 
 	models[len(models)-1] = mongo.NewUpdateOneModel().
