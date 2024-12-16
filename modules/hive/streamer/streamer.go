@@ -330,7 +330,7 @@ func (s *Streamer) trackHeadHeight() {
 }
 
 func (s *Streamer) streamBlocks() {
-	last := time.Now()
+	// last := time.Now()
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -348,8 +348,8 @@ func (s *Streamer) streamBlocks() {
 				continue
 			}
 
-			fmt.Println("Going to fetch again!", time.Since(last), "block/s", float64(BlockBatchSize)/time.Since(last).Seconds())
-			last = time.Now()
+			// fmt.Println("Going to fetch again!", time.Since(last), "block/s", float64(BlockBatchSize)/time.Since(last).Seconds())
+			// last = time.Now()
 
 			blocks, err := s.fetchBlockBatch(*s.startBlock, BlockBatchSize)
 			if err != nil {
@@ -377,7 +377,9 @@ func (s *Streamer) streamBlocks() {
 			go func() {
 				defer s.processWg.Done()
 				if err := s.storeBlocks(blocks); err != nil {
-					log.Printf("processing blocks failed: %v\n", err)
+					if err.Error() != "empty blocks" {
+						log.Printf("processing blocks failed: %v\n", err)
+					}
 				}
 			}()
 
@@ -472,10 +474,14 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 	if !s.canStore() {
 		return fmt.Errorf("streamer is paused or stopped")
 	}
+
 	// store the block with filtered txs
 	//
 	// even if a block has no txs, we store
 	if err := s.hiveBlocks.StoreBlocks(hiveBlocks...); err != nil {
+		if err.Error() == "empty blocks" {
+			return nil
+		}
 		return fmt.Errorf("failed to store block: %v", err)
 	}
 
