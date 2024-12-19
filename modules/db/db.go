@@ -2,59 +2,49 @@ package db
 
 import (
 	"context"
-	"os"
+	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
+	"vsc-node/modules/config"
 
-	"github.com/FerretDB/FerretDB/ferretdb"
+	"github.com/chebyrash/promise"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type Db struct {
-	db     *ferretdb.FerretDB
+type Db interface {
+	Database(name string, opts ...*options.DatabaseOptions) *mongo.Database
+}
+type db struct {
+	conf   *config.Config[dbConfig]
 	cancel context.CancelFunc
 	*mongo.Client
 }
 
-var _ a.Plugin = &Db{}
+var _ a.Plugin = &db{}
+var _ Db = &db{}
 
-func New() *Db {
-	return &Db{}
+func New(conf *config.Config[dbConfig]) *db {
+	return &db{conf: conf}
 }
 
-func (db *Db) Init() error {
-	err := os.MkdirAll("data/", os.ModeDir)
-	if err != nil {
-		return err
-	}
-	d, err := ferretdb.New(&ferretdb.Config{
-		Handler:   "sqlite",
-		SQLiteURL: "file:data/",
-		Listener: ferretdb.ListenerConfig{
-			TCP: "127.0.0.1:9999",
-		},
-	})
-	if err != nil {
-		return err
-	}
-	db.db = d
-	return nil
-}
-
-func (db *Db) Start() error {
+func (db *db) Init() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	db.cancel = cancel
-	go db.db.Run(ctx)
-	driver, err := mongo.Connect(ctx, options.Client().ApplyURI(db.db.MongoDBURI()))
+
+	c, err := mongo.Connect(ctx, options.Client().ApplyURI(db.conf.Get().DbURI))
 	if err != nil {
-		cancel()
 		return err
 	}
-	db.Client = driver
+	db.Client = c
+
 	return nil
 }
 
-func (db *Db) Stop() error {
+func (db *db) Start() *promise.Promise[any] {
+	return utils.PromiseResolve[any](nil)
+}
+
+func (db *db) Stop() error {
 	db.cancel()
-	return nil // TODO grab error from db.Run()
+	return nil
 }

@@ -31,9 +31,9 @@ const EthDIDPrefix = "did:pkh:eip155:1:"
 // ===== interface assertions =====
 
 // ethr addr | payload type
-var _ DID[string] = EthDID("")
+var _ DID[string, blocks.Block] = EthDID("")
 
-var _ Provider = &EthProvider{}
+var _ Provider[blocks.Block] = &EthProvider{}
 
 // ===== EthDID =====
 

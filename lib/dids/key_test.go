@@ -3,13 +3,11 @@ package dids_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
 	"testing"
 	"vsc-node/lib/dids"
 
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
-	mh "github.com/multiformats/go-multihash"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -95,40 +93,7 @@ func TestJWEDecryptionWithWrongKey(t *testing.T) {
 	assert.NotNil(t, err)
 }
 
-type dummyBlock struct {
-	data []byte
-}
-
-// raw data, to fulfil interface
-func (b *dummyBlock) RawData() []byte {
-	return b.data
-}
-
-// cid, to fulfil interface
-func (b *dummyBlock) Cid() cid.Cid {
-	hash := sha256.Sum256(b.data)
-	multihash, _ := mh.Encode(hash[:], mh.SHA2_256)
-	return cid.NewCidV0(multihash)
-}
-
-// create a dummy block
-func createDummyBlock(data []byte) blocks.Block {
-	return &dummyBlock{data: data}
-}
-
-// loggable, to fulfil interface
-func (b *dummyBlock) Loggable() map[string]interface{} {
-	return map[string]interface{}{
-		"cid": b.Cid().String(),
-	}
-}
-
-// string, to fulfil interface
-func (b *dummyBlock) String() string {
-	return b.Cid().String()
-}
-
-func TestSignVerify(t *testing.T) {
+func TestBasicSignVerify(t *testing.T) {
 	// gen a keypair
 	pubKey, privKey, _ := ed25519.GenerateKey(rand.Reader)
 	assert.NotNil(t, pubKey)
@@ -136,10 +101,10 @@ func TestSignVerify(t *testing.T) {
 	provider := dids.NewKeyProvider(privKey)
 
 	// create original block
-	block := createDummyBlock([]byte("dummy data"))
+	block := blocks.NewBlock([]byte("hello world"))
 	assert.NotNil(t, block)
 
-	jws1, err := provider.Sign(block)
+	jws1, err := provider.Sign(block.Cid())
 	assert.Nil(t, err)
 
 	// create DID from the pub key
@@ -147,13 +112,32 @@ func TestSignVerify(t *testing.T) {
 	assert.Nil(t, err)
 
 	// verify the original block with its sig
-	valid, err := did.Verify(block, jws1)
+	valid, err := did.Verify(block.Cid(), jws1)
 	assert.Nil(t, err)
 	assert.True(t, valid)
 
 	// create modified/incorrect block with different content
-	modifiedBlock := createDummyBlock([]byte("modified data 123 456"))
-	valid, err = did.Verify(modifiedBlock, jws1)
+	modifiedBlock := blocks.NewBlock([]byte("data doesn't matter"))
+	valid, err = did.Verify(modifiedBlock.Cid(), jws1)
 	assert.NotNil(t, err)
 	assert.False(t, valid)
+}
+func TestRealIpfsVerify(t *testing.T) {
+	// parse the real provided CID into a dummy block with that set CID
+	realBlock, err := blocks.NewBlockWithCid([]byte("data doesn't matter"), cid.MustParse("bafyreiapoy2k666lcpsnbbilyzloqbc64mevrkymorujyi4cjqkzp2ukj4"))
+	assert.Nil(t, err)
+
+	// the real DID from the transaction
+	realKeyDid := "did:key:z6MkoqsapCm3eQXQBByJTFcL5SMFg7d3aH8iobtmoL8tt6yw"
+
+	// the real sig from the transaction
+	realSig := "SV1jI7m-Fs59cBioCxrV1oLIbsbA-nDAQtpFUFDvr2iAxeq5JnfUHb2N8z2N78Lt4PnsMeX9flaq-IpzN97wDA"
+
+	// create the KeyDID from the realKeyDid
+	keyDID := dids.KeyDID(realKeyDid)
+
+	// call the Verify function with the full signature
+	verified, err := keyDID.Verify(realBlock.Cid(), realSig)
+	assert.Nil(t, err)
+	assert.True(t, verified)
 }

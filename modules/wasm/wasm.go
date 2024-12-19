@@ -2,8 +2,10 @@ package wasm
 
 import (
 	"fmt"
+	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 
+	"github.com/chebyrash/promise"
 	"github.com/second-state/WasmEdge-go/wasmedge"
 )
 
@@ -24,8 +26,8 @@ func (w *Wasm) Init() error {
 	return nil
 }
 
-func (w *Wasm) Start() error {
-	return nil
+func (w *Wasm) Start() *promise.Promise[any] {
+	return utils.PromiseResolve[any](nil)
 }
 
 func (w *Wasm) Stop() error {

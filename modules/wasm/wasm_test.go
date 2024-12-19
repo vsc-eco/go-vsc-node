@@ -1,6 +1,7 @@
 package wasm_test
 
 import (
+	"context"
 	"testing"
 	"vsc-node/modules/wasm"
 )
@@ -11,7 +12,7 @@ func TestCompat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = w.Start()
+	_, err = w.Start().Await(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
