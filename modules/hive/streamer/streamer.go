@@ -131,6 +131,25 @@ func inteceptError() {
 
 // polls the database at intervals, processing new blocks as they arrive
 func (s *StreamReader) pollDb(fail func(error)) {
+	ticker := time.NewTicker(1 * time.Second)
+	quit := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				// do stuff
+				if err := s.hiveBlocks.StoreLastProcessedBlock(s.lastProcessed); err != nil {
+
+				}
+			case <-quit:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+	defer func() {
+		quit <- struct{}{}
+	}()
 	newBlocksProcessed := 0
 	processBlock := func(block hiveblocks.HiveBlock) error {
 		s.process(block)
