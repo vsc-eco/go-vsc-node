@@ -142,7 +142,19 @@ func (dl *DataLayer) GetObject(cid cid.Cid, v any, options GetOptions) error {
 }
 
 func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
-	block, err := dl.bitswap.GetBlock(context.Background(), cid)
+
+	go func() {
+		dl.dht.Bootstrap(context.TODO())
+		peers, _ := dl.dht.FindProviders(context.Background(), cid)
+		fmt.Println("ConnectingPeers", len(peers))
+		for _, peer := range peers {
+			fmt.Println("Connecting to peer", peer)
+			dl.host.Connect(context.Background(), peer)
+		}
+	}()
+	block, err := dl.blockServ.GetBlock(context.Background(), cid)
+	//Make sure it is stored
+	// dl.blockServ.AddBlock(context.Background(), block)
 	if err != nil {
 		return nil, err
 	}
