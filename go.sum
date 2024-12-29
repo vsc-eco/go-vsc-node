@@ -611,6 +611,8 @@ github.com/vsc-eco/go-ethereum v0.0.1 h1:FlOvDj10WZCwzDK7bmcOVBaDuTBtUkWeoZGqrEr
 github.com/vsc-eco/go-ethereum v0.0.1/go.mod h1:hjzsxodERJCS+XYc169Nz36F/7d1GKvMBya4E7MjFWs=
 github.com/vsc-eco/hivego v0.0.0-20241213233954-ca02e5519556 h1:Qu3FO/hNBk8lfxQGNBea9CtNjlg/CsQKz1lfBsurVBo=
 github.com/vsc-eco/hivego v0.0.0-20241213233954-ca02e5519556/go.mod h1:iCM8eljf5SOSnYtAq4qy/Ax8qpi83lPr+rahUVcQ2e8=
+github.com/vsc-eco/hivego v0.0.0-20241224015433-d09a15c982d6 h1:sU2xSOZR/r+QKUf30R32lx4pEjxyORcByO5DYiyUB28=
+github.com/vsc-eco/hivego v0.0.0-20241224015433-d09a15c982d6/go.mod h1:iCM8eljf5SOSnYtAq4qy/Ax8qpi83lPr+rahUVcQ2e8=
 github.com/warpfork/go-testmark v0.12.1 h1:rMgCpJfwy1sJ50x0M0NgyphxYYPMOODIJHhsXyEHU0s=
 github.com/warpfork/go-testmark v0.12.1/go.mod h1:kHwy7wfvGSPh1rQJYKayD4AbtNaeyZdcGi9tNJTaa5Y=
 github.com/warpfork/go-wish v0.0.0-20220906213052-39a1cc7a02d0 h1:GDDkbFiaK8jsSDJfjId/PEGEShv6ugrt4kYsC5UIDaQ=

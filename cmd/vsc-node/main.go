@@ -33,7 +33,7 @@ func main() {
 
 	// choose the source
 	blockClient := hivego.NewHiveRpc("https://api.hive.blog")
-	filter := func(op hivego.Operation) bool {
+	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		if op.Type == "custom_json" {
 			if strings.HasPrefix(op.Value["id"].(string), "vsc.") {
 				return true
@@ -43,7 +43,7 @@ func main() {
 			return true
 		}
 
-		if op.Type == "transfer" {
+		if op.Type == "transfer" || op.Type == "transfer_to_savings" {
 			if strings.HasPrefix(op.Value["to"].(string), "vsc.") {
 				return true
 			}
@@ -56,7 +56,7 @@ func main() {
 		return false
 	}
 	filters := []streamer.FilterFunc{filter}
-	streamerPlugin := streamer.NewStreamer(blockClient, hiveBlocks, filters, nil) // optional starting block #
+	streamerPlugin := streamer.NewStreamer(blockClient, hiveBlocks, filters, nil, nil) // optional starting block #
 
 	// new announcements manager
 	hiveRpcClient := hivego.NewHiveRpc("http://hive-api.web3telekom.xyz/")

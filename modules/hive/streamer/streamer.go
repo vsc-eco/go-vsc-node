@@ -24,6 +24,7 @@ import (
 type BlockClient interface {
 	GetDynamicGlobalProps() ([]byte, error)
 	GetBlockRange(startBlock int, count int) ([]hivego.Block, error)
+	FetchVirtualOps(block int, onlyVirtual bool, includeReversible bool) ([]hivego.VirtualOp, error)
 }
 
 // ===== variables =====
@@ -184,8 +185,13 @@ var _ aggregate.Plugin = &StreamReader{}
 
 // ===== type definitions =====
 
-type FilterFunc func(tx hivego.Operation) bool
+type FilterFunc func(tx hivego.Operation, ctx *BlockParams) bool
+type VirtualFilterFunc func(vop hivego.VirtualOp) bool
 type ProcessFunction func(block hiveblocks.HiveBlock)
+
+type BlockParams struct {
+	NeedsVirtualOps bool
+}
 
 type Streamer struct {
 	hiveBlocks     hiveblocks.HiveBlocks
@@ -194,6 +200,7 @@ type Streamer struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	filters        []FilterFunc
+	vFilters       []VirtualFilterFunc
 	streamPaused   bool
 	mtx            sync.Mutex
 	stopped        chan struct{}
@@ -206,12 +213,13 @@ type Streamer struct {
 
 // ===== streamer =====
 
-func NewStreamer(blockClient BlockClient, hiveBlocks hiveblocks.HiveBlocks, filters []FilterFunc, startAtBlock *int) *Streamer {
+func NewStreamer(blockClient BlockClient, hiveBlocks hiveblocks.HiveBlocks, filters []FilterFunc, vFilters []VirtualFilterFunc, startAtBlock *int) *Streamer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Streamer{
 		hiveBlocks:     hiveBlocks,
 		client:         blockClient,
 		filters:        filters,
+		vFilters:       vFilters,
 		ctx:            ctx,
 		cancel:         cancel,
 		startBlock:     startAtBlock,
@@ -442,6 +450,8 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 			MerkleRoot:   block.TransactionMerkleRoot,
 		}
 
+		needsVirtualOps := false
+
 		txIds := block.TransactionIds
 
 		// filter txs within the block
@@ -469,7 +479,13 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 					if !s.canStore() {
 						return fmt.Errorf("streamer is paused or stopped")
 					}
-					if filter(op) {
+					blockParams := &BlockParams{
+						NeedsVirtualOps: false,
+					}
+					if filter(op, blockParams) {
+						if blockParams.NeedsVirtualOps {
+							needsVirtualOps = true
+						}
 						shouldInclude = true
 						break
 					}
@@ -482,6 +498,22 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 			if shouldInclude {
 				hiveBlock.Transactions = append(hiveBlock.Transactions, filteredTx)
 			}
+		}
+
+		if needsVirtualOps {
+			fmt.Println("Pulling virtual ops")
+			virtualOps, _ := s.client.FetchVirtualOps(block.BlockNumber, true, false)
+			bbytes, _ := json.Marshal(virtualOps)
+			fmt.Println("virtualOps", string(bbytes))
+			filteredOps := make([]hivego.VirtualOp, 0)
+			for _, vop := range virtualOps {
+				for _, vFilter := range s.vFilters {
+					if vFilter(vop) {
+						filteredOps = append(filteredOps, vop)
+					}
+				}
+			}
+			hiveBlock.VirtualOps = filteredOps
 		}
 
 		hiveBlocks[i] = hiveBlock

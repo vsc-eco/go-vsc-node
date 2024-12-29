@@ -13,6 +13,7 @@ import (
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/hive/streamer"
@@ -81,8 +82,10 @@ func TestStateEngine(t *testing.T) {
 	witnessesDb := witnesses.New(vscDb)
 	contractDb := contracts.New(vscDb)
 	txDb := transactions.New(vscDb)
+	ledgerDbImpl := ledgerDb.New(vscDb)
+	balanceDb := ledgerDb.NewBalances(vscDb)
 
-	filter := func(op hivego.Operation) bool {
+	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		if op.Type == "custom_json" {
 			if strings.HasPrefix(op.Value["id"].(string), "vsc.") {
 				return true
@@ -92,7 +95,14 @@ func TestStateEngine(t *testing.T) {
 			return true
 		}
 
-		if op.Type == "transfer" {
+		if op.Type == "transfer_from_savings" {
+			if op.Value["memo"].(string) == "Claim HBD interest" && strings.HasPrefix(op.Value["to"].(string), "vsc.") {
+				blockParams.NeedsVirtualOps = true
+			}
+			return true
+		}
+
+		if op.Type == "transfer" || op.Type == "transfer_to_savings" {
 			if strings.HasPrefix(op.Value["to"].(string), "vsc.") {
 				return true
 			}
@@ -106,7 +116,11 @@ func TestStateEngine(t *testing.T) {
 	}
 
 	client := hivego.NewHiveRpc("https://api.hive.blog")
-	s := streamer.NewStreamer(client, hiveBlocks, []streamer.FilterFunc{filter}, nil)
+	s := streamer.NewStreamer(client, hiveBlocks, []streamer.FilterFunc{filter}, []streamer.VirtualFilterFunc{
+		func(op hivego.VirtualOp) bool {
+			return op.Op.Type == "interest_operation"
+		},
+	}, nil)
 
 	// slow down the streamer a bit for real data
 	streamer.AcceptableBlockLag = 0
@@ -122,7 +136,7 @@ func TestStateEngine(t *testing.T) {
 
 	dl := DataLayer.New(setup.host, setup.dht)
 
-	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, txDb)
+	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, txDb, ledgerDbImpl, balanceDb)
 
 	se.Commit()
 	process := func(block hive_blocks.HiveBlock) {
@@ -144,6 +158,8 @@ func TestStateEngine(t *testing.T) {
 		witnessesDb,
 		contractDb,
 		txDb,
+		ledgerDbImpl,
+		balanceDb,
 		hiveBlocks,
 		s,
 		sr,

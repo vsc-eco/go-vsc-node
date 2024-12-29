@@ -237,6 +237,11 @@ func (m *MockBlockClient) GetBlockRange(startBlock int, count int) ([]hivego.Blo
 	return blockChannel, nil
 }
 
+func (m *MockBlockClient) FetchVirtualOps(block int, onlyVirtual bool, includeReversible bool) ([]hivego.VirtualOp, error) {
+
+	return nil, nil
+}
+
 // ===== tests =====
 
 func TestFetchStoreBlocks(t *testing.T) {
@@ -244,10 +249,10 @@ func TestFetchStoreBlocks(t *testing.T) {
 	mockHiveBlocks := &MockHiveBlockDb{}
 
 	blockClient := hivego.NewHiveRpc("https://api.hive.blog")
-	s := streamer.NewStreamer(blockClient, mockHiveBlocks, []streamer.FilterFunc{func(tx hivego.Operation) bool {
+	s := streamer.NewStreamer(blockClient, mockHiveBlocks, []streamer.FilterFunc{func(tx hivego.Operation, blockParams *streamer.BlockParams) bool {
 		// s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{func(tx hivego.Operation) bool {
 		return true
-	}}, nil)
+	}}, nil, nil)
 
 	totalBlksReceived := 0
 
@@ -276,13 +281,13 @@ func TestStartBlock(t *testing.T) {
 
 	test_utils.RunPlugin(t, mockHiveBlocks)
 
-	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil)
+	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, nil)
 	assert.NoError(t, s.Init())
 
 	// should default to our default if we don't specify and instead input nil
 	assert.Equal(t, streamer.DefaultBlockStart, s.StartBlock())
 
-	s = streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, &[]int{99}[0])
+	s = streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, &[]int{99}[0])
 	assert.NoError(t, s.Init())
 
 	// should be the value we input
@@ -293,7 +298,7 @@ func TestIntensePolling(t *testing.T) {
 	// hive blocks
 	mockHiveBlocks := &MockHiveBlockDb{}
 
-	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil)
+	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, nil)
 	seenBlocks := make(map[int]int)
 
 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
@@ -320,12 +325,12 @@ func TestStreamFilter(t *testing.T) {
 	// hive blocks
 	mockHiveBlocks := &MockHiveBlockDb{}
 
-	filter := func(op hivego.Operation) bool {
+	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		// filter everything!
 		return op.Value["amount"] != "1 HIVE"
 	}
 
-	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil)
+	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil, nil)
 
 	txsReceived := 0
 
@@ -356,7 +361,7 @@ func TestPersistingBlocksStored(t *testing.T) {
 	mockHiveBlocks := &MockHiveBlockDb{}
 
 	// start at 0
-	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil)
+	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, nil)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		mockHiveBlocks,
@@ -372,7 +377,7 @@ func TestPersistingBlocksStored(t *testing.T) {
 
 	assert.Greater(t, gotToBlock, 0)
 
-	s = streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil)
+	s = streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, nil)
 
 	test_utils.RunPlugin(t, s)
 
@@ -390,7 +395,7 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 	mockHiveBlocks := &MockHiveBlockDb{}
 
 	// start at default
-	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil)
+	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, nil)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		mockHiveBlocks,
@@ -522,7 +527,7 @@ func TestStreamPauseResumeStop(t *testing.T) {
 
 	totalBlocks := 0
 
-	filter := func(op hivego.Operation) bool {
+	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		// count total blocks in filter because this is also
 		// called just once like the process function so we can
 		// use it to guage if the streamer is still processing
@@ -530,7 +535,7 @@ func TestStreamPauseResumeStop(t *testing.T) {
 		return true
 	}
 
-	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil)
+	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil, nil)
 	assert.NoError(t, s.Init())
 	go func() {
 		_, err := s.Start().Await(context.Background())
@@ -607,17 +612,17 @@ func TestFilterOrdering(t *testing.T) {
 	filter1SeenBlocks := 0
 	filter2SeenBlocks := 0
 
-	filter1 := func(op hivego.Operation) bool {
+	filter1 := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		filter1SeenBlocks++
 		return true
 	}
 
-	filter2 := func(op hivego.Operation) bool {
+	filter2 := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		filter2SeenBlocks++
 		return false
 	}
 
-	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter1, filter2}, nil)
+	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter1, filter2}, nil, nil)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		mockHiveBlocks,
@@ -643,13 +648,13 @@ func TestBlockLag(t *testing.T) {
 
 	totalBlocks := 0
 
-	filter := func(op hivego.Operation) bool {
+	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		totalBlocks++
 		// allow anything through
 		return true
 	}
 
-	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil)
+	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil, nil)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		mockHiveBlocks,
@@ -669,7 +674,7 @@ func TestBlockLag(t *testing.T) {
 	streamer.DefaultBlockStart = dummyBlockHead - 6
 
 	// create new streamer
-	s = streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil)
+	s = streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil, nil)
 
 	test_utils.RunPlugin(t, s)
 
@@ -689,13 +694,13 @@ func TestClearingStoredBlocks(t *testing.T) {
 
 	totalBlocks := 0
 
-	filter := func(op hivego.Operation) bool {
+	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		totalBlocks++
 		// allow anything through
 		return true
 	}
 
-	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil)
+	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil, nil)
 
 	test_utils.RunPlugin(t, s)
 
@@ -711,7 +716,7 @@ func TestClearingStoredBlocks(t *testing.T) {
 	assert.NoError(t, mockHiveBlocks.ClearBlocks())
 
 	// restart
-	s = streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil)
+	s = streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil, nil)
 	assert.NoError(t, s.Init()) // just re-init to get start block
 	assert.Equal(t, streamer.DefaultBlockStart, s.StartBlock())
 }
@@ -764,7 +769,7 @@ func TestHeadBlock(t *testing.T) {
 
 	headBlockNum := int(headBlock["head_block_number"].(float64))
 
-	s := streamer.NewStreamer(mockClient, mockHiveBlocks, nil, nil)
+	s := streamer.NewStreamer(mockClient, mockHiveBlocks, nil, nil, nil)
 
 	test_utils.RunPlugin(t, s)
 
@@ -884,9 +889,9 @@ func TestVaultecExperiments(t *testing.T) {
 
 	test_utils.RunPlugin(t, mockHiveBlocks)
 
-	filter := func(op hivego.Operation) bool { return true }
+	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool { return true }
 	client := hivego.NewHiveRpc("https://api.hive.blog")
-	s := streamer.NewStreamer(client, mockHiveBlocks, []streamer.FilterFunc{filter}, nil)
+	s := streamer.NewStreamer(client, mockHiveBlocks, []streamer.FilterFunc{filter}, nil, nil)
 
 	test_utils.RunPlugin(t, s)
 

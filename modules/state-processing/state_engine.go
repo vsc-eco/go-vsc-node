@@ -3,18 +3,24 @@ package stateEngine
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"time"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 
 	"github.com/chebyrash/promise"
 	"github.com/ipfs/go-cid"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
+
+const GATEWAY_WALLET = "vsc.gateway"
 
 type ProcessExtraInfo struct {
 	BlockHeight int
@@ -42,6 +48,8 @@ type StateEngine struct {
 	VirtualRoot    []byte
 	VirtualOutputs []byte
 	VirtualState   []byte
+
+	LedgerExecutor *LedgerExecutor
 
 	//Transaction
 	// InputArgs string -->
@@ -92,6 +100,21 @@ func (se *StateEngine) ProcessTransfer() {
 func (se *StateEngine) ProcessTx(tx hive_blocks.Tx, extraInfo ProcessExtraInfo) {
 	//Detect Transaction Type
 
+	if tx.Operations[0].Type == "custom_json" && len(tx.Operations) > 1 {
+		headerOp := tx.Operations[0]
+		Id := headerOp.Value["id"].(string)
+		RequiredAuths := arrayToStringArry(headerOp.Value["required_auths"].(primitive.A))
+
+		if (Id == "vsc.bridge_ref" || Id == "vsc.bridge_withdraw" || Id == "vsc.savings_withdraw") && RequiredAuths[0] == GATEWAY_WALLET {
+			if tx.Operations[1].Type == "transfer" {
+				//Process withdraw
+			}
+			if tx.Operations[1].Type == "transfer_from_savings" {
+				//Process withdraw
+			}
+		}
+	}
+
 	for opIdx, op := range tx.Operations {
 		if op.Type == "account_update" {
 			// fmt.Println(op)
@@ -122,10 +145,11 @@ func (se *StateEngine) ProcessTx(tx hive_blocks.Tx, extraInfo ProcessExtraInfo) 
 		if op.Type == "custom_json" {
 			opVal := op.Value
 
+			fmt.Println(opVal["required_auths"])
 			cj := CustomJson{
 				Id:                   opVal["id"].(string),
-				RequiredAuths:        arrayToStringArry(opVal["required_auths"].([]interface{})),
-				RequiredPostingAuths: arrayToStringArry(opVal["required_posting_auths"].([]interface{})),
+				RequiredAuths:        arrayToStringArry(opVal["required_auths"].(primitive.A)),
+				RequiredPostingAuths: arrayToStringArry(opVal["required_posting_auths"].(primitive.A)),
 				Json:                 []byte(opVal["json"].(string)),
 			}
 
@@ -193,6 +217,53 @@ func (se *StateEngine) ProcessTx(tx hive_blocks.Tx, extraInfo ProcessExtraInfo) 
 			tx.ExecuteTx(se)
 			// panic("Expected Panic!")
 		}
+		if op.Type == "transfer" || op.Type == "transfer_to_savings" {
+
+			//TODO: Finish up support for directly handling staked transfers
+			fmt.Println("Transfer Op", op)
+			fmt.Println("Transfer Value")
+
+			var token string
+			if op.Value["amount"].(map[string]interface{})["nai"] == "@@000000021" {
+				token = "hive"
+
+			} else if op.Value["amount"].(map[string]interface{})["nai"] == "@@000000013" {
+				token = "hbd"
+			}
+
+			if op.Type == "transfer_to_savings" && token == "hbd" {
+				if token == "hbd" {
+					//Labeled as savings as there can be hbd savings, hive savings, and hive staked, but not hbd staked (within hive)
+					//Only HBD savings generates APR
+					token = "hbd_savings"
+				} else {
+					//TODO: Add failover logic to return the amount to the user in form of VSC balance
+					return
+				}
+			}
+			amount, _ := strconv.ParseInt(op.Value["amount"].(map[string]interface{})["amount"].(string), 10, 64)
+
+			fmt.Println("Token", token, amount)
+
+			if op.Value["to"] == "vsc.gateway" {
+				se.LedgerExecutor.Deposit(Deposit{
+					Id:     tx.TransactionID,
+					Asset:  token,
+					Amount: amount,
+					From:   op.Value["from"].(string),
+					Memo:   op.Value["memo"].(string),
+
+					BIdx:  int64(tx.Index),
+					OpIdx: int64(opIdx),
+				})
+
+				bbytes, _ := json.Marshal(se.LedgerExecutor.VirtualLedger)
+
+				fmt.Println("bbytes string()", string(bbytes))
+				time.Sleep(1 * time.Hour)
+				panic("Hello")
+			}
+		}
 	}
 }
 
@@ -222,7 +293,7 @@ func (se *StateEngine) Stop() {
 
 }
 
-func New(da *DataLayer.DataLayer, witnessesDb witnesses.Witnesses, electionsDb elections.Elections, contractDb contracts.Contracts, txDb transactions.Transactions) StateEngine {
+func New(da *DataLayer.DataLayer, witnessesDb witnesses.Witnesses, electionsDb elections.Elections, contractDb contracts.Contracts, txDb transactions.Transactions, ledgerDb ledgerDb.Ledger, balanceDb ledgerDb.Balances) StateEngine {
 	return StateEngine{
 		da: da,
 		// db: db,
@@ -231,5 +302,12 @@ func New(da *DataLayer.DataLayer, witnessesDb witnesses.Witnesses, electionsDb e
 		electionDb: electionsDb,
 		contractDb: contractDb,
 		txDb:       txDb,
+
+		LedgerExecutor: &LedgerExecutor{
+			Ls: &LedgerSystem{
+				BalanceDb: balanceDb,
+				LedgerDb:  ledgerDb,
+			},
+		},
 	}
 }
