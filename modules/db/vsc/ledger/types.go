@@ -2,8 +2,6 @@ package ledgerDb
 
 import (
 	"vsc-node/modules/aggregate"
-
-	"go.mongodb.org/mongo-driver/bson"
 )
 
 type Ledger interface {
@@ -62,7 +60,12 @@ type ILedgerExecutor interface {
 
 type SideEffect interface {
 	Type() string
-	Execute(le *ILedgerExecutor) bson.M
+	Execute(le *ILedgerExecutor)
+}
+
+// TODO: Flesh out to build more modular op creation
+type IAction interface {
+	Craft()
 }
 
 type ActionRecord struct {
