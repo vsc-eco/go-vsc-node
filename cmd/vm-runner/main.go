@@ -18,8 +18,6 @@ func main() {
 		return nil
 	}).Unwrap()
 
-	_ = args
-
 	wasm := wasm_runtime_ipc.New()
 	a := aggregate.New(
 		[]aggregate.Plugin{
@@ -34,7 +32,7 @@ func main() {
 	}
 
 	fmt.Fprintln(os.Stderr, "exec start:", time.Now())
-	res := wasm.Execute(args.byteCode, args.gas, args.entrypoint, args.args).MapErr(func(err error) error {
+	res := wasm.Execute(args.gas, args.entrypoint, args.args).MapErr(func(err error) error {
 		fmt.Println("execution error:", err)
 		os.Exit(1)
 		return nil

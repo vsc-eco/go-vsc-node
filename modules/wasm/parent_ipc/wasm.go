@@ -62,15 +62,14 @@ const timePer15_000GasUnits = 5 * time.Millisecond
 const startupTime = 3000 * time.Millisecond // TODO investigate large startup time
 
 func (w *Wasm) Execute(ctxValue wasm_context.ExecContextValue, byteCode []byte, gas uint, entrypoint string, args string) result.Result[string] {
-	ctx, cancel := context.WithTimeout(context.WithValue(w.ctx, wasm_context.WasmExecCtxKey, ctxValue), (timePer15_000GasUnits*time.Duration(gas)/15_000)+startupTime)
+	ctx, cancel := context.WithTimeout(context.WithValue(context.WithValue(w.ctx, wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(byteCode)), (timePer15_000GasUnits*time.Duration(gas)/15_000)+startupTime)
 	defer cancel()
 	return ipc_host.RunWithContext[string](ctx,
 		w.execPath[0], append(w.execPath[1:],
-			// TODO move this to an IPC request since the cmd line arg length can be as little as 32KB
-			// see http://stackoverflow.com/questions/19354870/ddg#19355351
-			"-bytecode", hex.EncodeToString(byteCode),
 			"-gas", fmt.Sprint(gas),
 			"-entrypoint", entrypoint,
+			// TODO move this to an IPC request since the cmd line arg length can be as little as 32KB
+			// see http://stackoverflow.com/questions/19354870/ddg#19355351
 			"-args", args,
 		)...)
 

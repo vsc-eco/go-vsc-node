@@ -3,6 +3,7 @@ package wasm_runtime_ipc
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"unicode/utf16"
@@ -208,7 +209,7 @@ func registerImport(vm *wasmedge.VM, client ipc_client.Client[string], modname s
 	})
 }
 
-func (w *Wasm) Execute(byteCode []byte, gas uint, entrypoint string, args string) result.Result[string] {
+func (w *Wasm) Execute(gas uint, entrypoint string, args string) result.Result[string] {
 	client := ipc_client.Run[string]()
 	conf := wasmedge.NewConfigure()
 	defer conf.Release()
@@ -217,32 +218,59 @@ func (w *Wasm) Execute(byteCode []byte, gas uint, entrypoint string, args string
 	conf.SetStatisticsTimeMeasuring(true)
 	vm := wasmedge.NewVMWithConfig(conf)
 	defer vm.Release()
+	type initResult struct {
+		mods     []*wasmedge.Module
+		byteCode []byte
+	}
 	return result.AndThen(
 		result.MapOrElse(
 			result.AndThen(
 				result.AndThen(
 					client,
-					func(client ipc_client.Client[string]) result.Result[[]*wasmedge.Module] {
-						return resultJoin(
-							registerImport(vm, client, "sdk", sdkTypes.SdkTypes),
-							registerImport(vm, client, "env", []sdkTypes.SdkType{
-								{
-									Name: "abort",
-									Type: sdkTypes.VmType{
-										Parameters: []wasmedge.ValType{wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32},
+					func(client ipc_client.Client[string]) result.Result[initResult] {
+						return result.AndThen(
+							resultJoin(
+								registerImport(vm, client, "sdk", sdkTypes.SdkTypes),
+								registerImport(vm, client, "env", []sdkTypes.SdkType{
+									{
+										Name: "abort",
+										Type: sdkTypes.VmType{
+											Parameters: []wasmedge.ValType{wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32},
+										},
 									},
-								},
-							}),
+								}),
+							),
+							func(mods []*wasmedge.Module) result.Result[initResult] {
+								return result.AndThen(
+									client.Request(&execute.ExecutionReady[string]{}),
+									func(res ipc_requests.ProcessedMessage[string]) result.Result[initResult] {
+										return result.AndThen(
+											resultWrap(res.Result.Take()).
+												MapErr(func(err error) error {
+													return fmt.Errorf("no code provided")
+												}),
+											func(str string) result.Result[initResult] {
+												return result.Map(
+													resultWrap(hex.DecodeString(str)),
+													func(byteCode []byte) initResult {
+														return initResult{mods, byteCode}
+													},
+												)
+											},
+										)
+									},
+								)
+							},
 						)
 					},
 				),
-				func(mods []*wasmedge.Module) result.Result[string] {
+				func(init initResult) result.Result[string] {
 					vm.GetStatistics().SetCostLimit(gas)
 					res := result.AndThen(
 						result.AndThen(
 							result.AndThen(
 								result.And(
-									result.Err[any](vm.LoadWasmBuffer(byteCode)),
+									result.Err[any](vm.LoadWasmBuffer(init.byteCode)),
 									result.And(
 										result.Err[any](vm.Validate()),
 										result.Err[any](vm.Instantiate()),
@@ -272,7 +300,7 @@ func (w *Wasm) Execute(byteCode []byte, gas uint, entrypoint string, args string
 							return result.Err[string](fmt.Errorf("return value is not a string"))
 						},
 					)
-					for _, mod := range mods {
+					for _, mod := range init.mods {
 						modCleanup(mod)
 					}
 					return res

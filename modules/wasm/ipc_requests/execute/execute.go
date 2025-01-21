@@ -89,6 +89,32 @@ func (res *ExecutionFinish[Result]) Process(context.Context) result.Result[ipc_r
 	)
 }
 
+type ExecutionReady[Result any] struct{}
+
+var _ ipc_requests.Message[any] = &ExecutionReady[any]{}
+
+// Process implements ipc_requests.Message.
+func (res *ExecutionReady[Result]) Process(ctx context.Context) result.Result[ipc_requests.ProcessedMessage[Result]] {
+	return result.Ok(ipc_requests.ProcessedMessage[Result]{
+		Response: optional.Some(ipc_requests.Message[Result](&ExecutionCode[Result]{
+			Code: ctx.Value(wasm_context.WasmExecCodeCtxKey).(string),
+		})),
+	})
+}
+
+type ExecutionCode[Result any] struct {
+	Code string
+}
+
+var _ ipc_requests.Message[any] = &ExecutionCode[any]{}
+
+// Process implements ipc_requests.Message.
+func (res *ExecutionCode[Result]) Process(context.Context) result.Result[ipc_requests.ProcessedMessage[Result]] {
+	return result.Ok(ipc_requests.ProcessedMessage[Result]{
+		Result: any(optional.Some(res.Code)).(optional.Option[Result]),
+	})
+}
+
 func resultWrap[T any](res T, err error) result.Result[T] {
 	if err != nil {
 		return result.Err[T](err)
