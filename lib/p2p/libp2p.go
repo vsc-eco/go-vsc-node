@@ -131,6 +131,9 @@ func (p2pServer *P2PServer) Init() error {
 
 	topic, _ := ps.Join("/vsc/mainnet/multicast")
 	topic.Relay()
+
+	ps.RegisterTopicValidator("/vsc/mainnet/multicast", func(ctx context.Context, p peer.ID, msg *pubsub.Message) bool { return true })
+
 	p2pServer.multicastTopic = topic
 
 	// reply := HelloReply{}
@@ -188,7 +191,7 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 	}
 	subscription, _ := p2ps.multicastTopic.Subscribe()
 
-	p2ps.handleMulticast(subscription)
+	// p2ps.handleMulticast(subscription)
 
 	p2ps.subs = append(p2ps.subs, subscription)
 
@@ -209,19 +212,6 @@ func (p2p *P2PServer) Stop() error {
 	for _, value := range p2p.tickers {
 		value.Stop()
 	}
-
-	return nil
-}
-
-func (l *P2PServer) handleMulticast(subscription *pubsub.Subscription) error {
-	ctx := context.Context(context.Background())
-	go func() {
-		for {
-			msg, _ := subscription.Next(ctx)
-
-			fmt.Println(msg.GetFrom(), string(msg.GetData()))
-		}
-	}()
 
 	return nil
 }

@@ -13,7 +13,9 @@ type announcementsConfig struct {
 	Username               string
 }
 
-func NewAnnouncementsConfig() *config.Config[announcementsConfig] {
+type AnnouncementsConfig = *config.Config[announcementsConfig]
+
+func NewAnnouncementsConfig() AnnouncementsConfig {
 	// gen a random seed for the BLS key
 	var seed [32]byte
 	_, err := rand.Read(seed[:])

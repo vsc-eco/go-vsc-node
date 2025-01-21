@@ -135,15 +135,27 @@ func NewBlsProvider(privKey *BlsPrivKey) (BlsProvider, error) {
 // signs a block using the BLS priv key
 func (b BlsProvider) Sign(cid cid.Cid) (string, error) {
 
+	sigBytes, err := b.SignRaw(cid)
+	if err != nil {
+		return "", err
+	}
+
+	encodedSig := base64.URLEncoding.EncodeToString(sigBytes[:])
+
+	return encodedSig, nil
+}
+
+// signs a block using the BLS priv key
+func (b BlsProvider) SignRaw(cid cid.Cid) ([96]byte, error) {
+
 	sig := bls.Sign(b.privKey, cid.Bytes())
 	// sign the CID using the BLS priv key
 	// sig := new(blst.P2Affine).Sign(b.privKey, cid.Bytes(), nil)
 
 	// compress and encode to base64; make the sig transportable
 	sigBytes := sig.Serialize()
-	encodedSig := base64.URLEncoding.EncodeToString(sigBytes[:])
 
-	return encodedSig, nil
+	return sigBytes, nil
 }
 
 // ===== BLS circuit generator =====

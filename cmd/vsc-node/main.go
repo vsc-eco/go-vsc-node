@@ -9,6 +9,7 @@ import (
 	p2pInterface "vsc-node/lib/p2p"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
+	data_availability "vsc-node/modules/data-availability"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
@@ -74,6 +75,10 @@ func main() {
 
 	wasm := wasm_parent_ipc.New() // TODO set proper cmd path
 
+	p2p := p2pInterface.New()
+
+	dataAvailability := data_availability.New(p2p, announcementsConf)
+
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
@@ -85,7 +90,8 @@ func main() {
 		witnesses,
 		hiveBlocks,
 		streamerPlugin,
-		p2pInterface.New(),
+		p2p,
+		dataAvailability,
 		wasm,
 	)
 
