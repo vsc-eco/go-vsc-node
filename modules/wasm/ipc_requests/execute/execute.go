@@ -13,7 +13,7 @@ import (
 
 type SdkCallRequest[Result any] struct {
 	Function string
-	Argument string
+	Argument any
 }
 
 var _ ipc_requests.Message[any] = &SdkCallRequest[any]{}
