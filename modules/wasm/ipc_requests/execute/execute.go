@@ -1,7 +1,9 @@
 package execute
 
 import (
+	"context"
 	"fmt"
+	wasm_context "vsc-node/modules/wasm/context"
 	"vsc-node/modules/wasm/ipc_requests"
 	"vsc-node/modules/wasm/sdk"
 
@@ -17,13 +19,13 @@ type SdkCallRequest[Result any] struct {
 var _ ipc_requests.Message[any] = &SdkCallRequest[any]{}
 
 // Process implements ipc_requests.Message.
-func (s *SdkCallRequest[Result]) Process() result.Result[ipc_requests.ProcessedMessage[Result]] {
+func (s *SdkCallRequest[Result]) Process(ctx context.Context) result.Result[ipc_requests.ProcessedMessage[Result]] {
 	fn, ok := sdk.SdkModule[s.Function]
 	if !ok {
 		return result.Err[ipc_requests.ProcessedMessage[Result]](fmt.Errorf("vm requested non-existing function: %s", s.Function))
 	}
 	res := result.MapOrElse(
-		fn(s.Argument),
+		fn(ctx, s.Argument),
 		func(err error) *SdkCallResponse[Result] {
 			str := err.Error()
 			return &SdkCallResponse[Result]{
@@ -51,7 +53,7 @@ type SdkCallResponse[Result any] struct {
 var _ ipc_requests.Message[any] = &SdkCallResponse[any]{}
 
 // Process implements ipc_requests.Message.
-func (res *SdkCallResponse[Result]) Process() result.Result[ipc_requests.ProcessedMessage[Result]] {
+func (res *SdkCallResponse[Result]) Process(context.Context) result.Result[ipc_requests.ProcessedMessage[Result]] {
 	return result.Map(
 		resultWrap(optional.FromNillable(res.Result).Take()).MapErr(func(err error) error {
 			if res.Error == nil {
@@ -73,7 +75,7 @@ type ExecutionFinish[Result any] struct {
 var _ ipc_requests.Message[any] = &ExecutionFinish[any]{}
 
 // Process implements ipc_requests.Message.
-func (res *ExecutionFinish[Result]) Process() result.Result[ipc_requests.ProcessedMessage[Result]] {
+func (res *ExecutionFinish[Result]) Process(context.Context) result.Result[ipc_requests.ProcessedMessage[Result]] {
 	return result.Map(
 		resultWrap(optional.FromNillable(res.Result).Take()).MapErr(func(err error) error {
 			if res.Error == nil {

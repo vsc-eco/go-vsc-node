@@ -1,6 +1,8 @@
 package ipc_requests
 
 import (
+	"context"
+
 	"github.com/JustinKnueppel/go-result"
 	"github.com/moznion/go-optional"
 )
@@ -11,5 +13,5 @@ type ProcessedMessage[Result any] struct {
 }
 
 type Message[Result any] interface {
-	Process() result.Result[ProcessedMessage[Result]]
+	Process(context.Context) result.Result[ProcessedMessage[Result]]
 }

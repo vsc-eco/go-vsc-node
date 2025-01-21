@@ -867,8 +867,9 @@ func TestCompat(t *testing.T) {
 	//0.00037473899999999996
 	//0.00021495799999999998 seconds
 	//0.000234295 seconds
+	ctxValue := ""
 	fmt.Println("exec init:", time.Now())
-	res := w.Execute(TEST_CODE, 14718, "main", "my-args-testing-123")
+	res := w.Execute(ctxValue, TEST_CODE, 14718, "main", "my-args-testing-123")
 	if res.IsOk() {
 		t.Log("res:", res.Unwrap())
 	} else {

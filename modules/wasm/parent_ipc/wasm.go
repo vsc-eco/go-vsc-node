@@ -9,6 +9,7 @@ import (
 	ipc_host "vsc-node/lib/stdio-ipc/host"
 	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
+	wasm_context "vsc-node/modules/wasm/context"
 
 	"github.com/JustinKnueppel/go-result"
 	"github.com/chebyrash/promise"
@@ -60,8 +61,8 @@ func (w *Wasm) Stop() error {
 const timePer15_000GasUnits = 5 * time.Millisecond
 const startupTime = 3000 * time.Millisecond // TODO investigate large startup time
 
-func (w *Wasm) Execute(byteCode []byte, gas uint, entrypoint string, args string) result.Result[string] {
-	ctx, cancel := context.WithTimeout(w.ctx, (timePer15_000GasUnits*time.Duration(gas)/15_000)+startupTime)
+func (w *Wasm) Execute(ctxValue wasm_context.ExecContextValue, byteCode []byte, gas uint, entrypoint string, args string) result.Result[string] {
+	ctx, cancel := context.WithTimeout(context.WithValue(w.ctx, wasm_context.WasmExecCtxKey, ctxValue), (timePer15_000GasUnits*time.Duration(gas)/15_000)+startupTime)
 	defer cancel()
 	return ipc_host.RunWithContext[string](ctx,
 		w.execPath[0], append(w.execPath[1:],

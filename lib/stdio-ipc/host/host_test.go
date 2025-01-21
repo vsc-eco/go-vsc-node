@@ -2,6 +2,7 @@ package ipc_host_test
 
 import (
 	"bytes"
+	"context"
 	"testing"
 	stdio_ipc "vsc-node/lib/stdio-ipc"
 	ipc_host "vsc-node/lib/stdio-ipc/host"
@@ -22,7 +23,7 @@ func assertResultOk[T any](t *testing.T, res result.Result[T]) T {
 type m1 struct{}
 
 // Process implements ipc_requests.Message.
-func (m *m1) Process() result.Result[ipc_requests.ProcessedMessage[string]] {
+func (m *m1) Process(context.Context) result.Result[ipc_requests.ProcessedMessage[string]] {
 	return result.Ok(ipc_requests.ProcessedMessage[string]{
 		Result:   optional.Some("result from m1"),
 		Response: optional.Some[ipc_requests.Message[string]](&m1{}),
@@ -32,7 +33,7 @@ func (m *m1) Process() result.Result[ipc_requests.ProcessedMessage[string]] {
 type m2 struct{}
 
 // Process implements ipc_requests.Message.
-func (m *m2) Process() result.Result[ipc_requests.ProcessedMessage[string]] {
+func (m *m2) Process(context.Context) result.Result[ipc_requests.ProcessedMessage[string]] {
 	return result.Ok(ipc_requests.ProcessedMessage[string]{
 		Result:   optional.Some("result from m2"),
 		Response: optional.Some[ipc_requests.Message[string]](&m1{}),
@@ -54,7 +55,7 @@ func TestBasicHost(t *testing.T) {
 
 	assert.NoError(t, cio1.Send(&m2{}))
 
-	resStr := assertResultOk(t, ipc_host.ExecuteCommand(cio2))
+	resStr := assertResultOk(t, ipc_host.ExecuteCommand(context.Background(), cio2))
 	assert.Equal(t, resStr, "result from m2")
 
 	assert.NoError(t, cio1.Close())
