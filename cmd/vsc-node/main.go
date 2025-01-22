@@ -25,9 +25,12 @@ func main() {
 	dbConf := db.NewDbConfig()
 
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
-	dbConf.Update(func(dc *db.DbConfig) {
-		dc.DbURI = os.Getenv("MONGO_URL")
-	})
+	err := dbConf.SetDbURI(os.Getenv("MONGO_URL"))
+	if err != nil {
+		fmt.Println("error is", err)
+		os.Exit(1)
+	}
+
 	db := db.New(dbConf)
 	vscDb := vsc.New(db)
 	witnesses := witnesses.New(vscDb)
