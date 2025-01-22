@@ -13,10 +13,10 @@ services:
     networks:
       - go-vsc-node
   db:
-    image: mongo:6.0.20
+    image: mongo:8.0.4
     # restart: always
     ports:
-      - 127.0.0.1:27022:27017
+      - 127.0.0.1:27027:27017
     networks:
       - go-vsc-node
     volumes:

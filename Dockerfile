@@ -1,10 +1,25 @@
 # syntax=docker/dockerfile:1
 
 # Use the official Go image as the base image
-FROM golang:1.23
+FROM rockylinux:9.3 AS build
+
+# RUN dnf update -y
+
+# Wasmedge Install Dependencies
+RUN dnf install -y git python which
+
+# Install Go
+RUN dnf install -y go
+
+RUN useradd -m app
+
+USER app
 
 # Set the working directory inside the container
-WORKDIR /app
+WORKDIR /home/app/app
+
+# Install Wasmedge
+RUN curl -sSf https://raw.githubusercontent.com/WasmEdge/WasmEdge/master/utils/install.sh | bash -s -- -v 0.13.4
 
 # Copy the Go module files
 COPY go.mod go.sum ./
@@ -16,10 +31,30 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o main cmd/vsc-node/main.go
+RUN go build -o vsc-node vsc-node/cmd/vsc-node
 
-# Expose the port your application listens on
-EXPOSE 8080
+# Build VM Runner
+RUN source /home/app/.wasmedge/env && go build -o vm-runner vsc-node/cmd/vm-runner
+
+
+
+FROM rockylinux:9.3-minimal
+
+RUN useradd -m app
+
+USER app
+
+# Set the working directory inside the container
+WORKDIR /home/app/app
+
+# Copy the binary from the build stage
+COPY --from=build /home/app/app/vsc-node .
+
+# Copy the binary from the build stage
+COPY --from=build /home/app/app/vm-runner .
+
+# Copy the WasmEdge from the build stage
+COPY --from=build /home/app/.wasmedge /home/app/.wasmedge
 
 # Command to run when the container starts
-CMD ["./main"]
+ENTRYPOINT ["./vsc-node"]
