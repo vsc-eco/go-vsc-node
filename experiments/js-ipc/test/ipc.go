@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	js_ipc "vsc-node/lib/js-ipc"
+	js_ipc "vsc-node/experiments/js-ipc"
 )
 
 func main() {

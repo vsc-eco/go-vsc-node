@@ -25,7 +25,7 @@ type JsIpc struct {
 
 var _ aggregate.Plugin = &JsIpc{}
 
-// Requires Node.JS to be installed and included in the $PATH envirnoment variable
+// Requires Node.JS to be installed and included in the $PATH environment variable
 func New(giveStdin bool, nodeArgs ...string) *JsIpc {
 	return &JsIpc{
 		cmd:       exec.Command("node", nodeArgs...),
