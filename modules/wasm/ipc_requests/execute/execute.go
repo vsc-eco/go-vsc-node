@@ -45,50 +45,45 @@ func (s *SdkCallRequest[Result]) Process(ctx context.Context) result.Result[ipc_
 	})
 }
 
-var ErrEmptySdkCallResponse = fmt.Errorf("empty sdk call response")
-
-type SdkCallResponse[Result any] struct {
+type BasicErrorResult[Result any] struct {
 	Result *string
 	Error  *string
 }
+
+func (res BasicErrorResult[Result]) process(emptyErr error) result.Result[ipc_requests.ProcessedMessage[Result]] {
+	return result.Map(
+		resultWrap(optional.FromNillable(res.Result).Take()).MapErr(func(err error) error {
+			if res.Error == nil {
+				return emptyErr
+			}
+			return fmt.Errorf("%s", *res.Error)
+		}),
+		func(res string) ipc_requests.ProcessedMessage[Result] {
+			return any(ipc_requests.ProcessedMessage[string]{Result: optional.Some(res)}).(ipc_requests.ProcessedMessage[Result])
+		},
+	)
+}
+
+var ErrEmptySdkCallResponse = fmt.Errorf("empty sdk call response")
+
+type SdkCallResponse[Result any] BasicErrorResult[Result]
 
 var _ ipc_requests.Message[any] = &SdkCallResponse[any]{}
 
 // Process implements ipc_requests.Message.
 func (res *SdkCallResponse[Result]) Process(context.Context) result.Result[ipc_requests.ProcessedMessage[Result]] {
-	return result.Map(
-		resultWrap(optional.FromNillable(res.Result).Take()).MapErr(func(err error) error {
-			if res.Error == nil {
-				return ErrEmptySdkCallResponse
-			}
-			return fmt.Errorf("%s", *res.Error)
-		}),
-		func(res string) ipc_requests.ProcessedMessage[Result] {
-			return any(ipc_requests.ProcessedMessage[string]{Result: optional.Some(res)}).(ipc_requests.ProcessedMessage[Result])
-		},
-	)
+	return BasicErrorResult[Result](*res).process(ErrEmptySdkCallResponse)
 }
 
-type ExecutionFinish[Result any] struct {
-	Result *string
-	Error  *string
-}
+var ErrEmptyExecutionFinish = fmt.Errorf("empty execution finish response")
+
+type ExecutionFinish[Result any] BasicErrorResult[Result]
 
 var _ ipc_requests.Message[any] = &ExecutionFinish[any]{}
 
 // Process implements ipc_requests.Message.
 func (res *ExecutionFinish[Result]) Process(context.Context) result.Result[ipc_requests.ProcessedMessage[Result]] {
-	return result.Map(
-		resultWrap(optional.FromNillable(res.Result).Take()).MapErr(func(err error) error {
-			if res.Error == nil {
-				return ErrEmptySdkCallResponse
-			}
-			return fmt.Errorf("%s", *res.Error)
-		}),
-		func(res string) ipc_requests.ProcessedMessage[Result] {
-			return any(ipc_requests.ProcessedMessage[string]{Result: optional.Some(res)}).(ipc_requests.ProcessedMessage[Result])
-		},
-	)
+	return BasicErrorResult[Result](*res).process(ErrEmptyExecutionFinish)
 }
 
 type ExecutionReady[Result any] struct{}
