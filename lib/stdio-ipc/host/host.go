@@ -198,5 +198,5 @@ func parseMessages[Result any](ctx context.Context, cio stdio_ipc.Connection[ipc
 	for !state.UnwrapOr(parseLoopInfo[Result]{done: true}).done && !cio.Finished() {
 		state = parseMessage(ctx, cio)
 	}
-	return state
+	return result.And(result.Err[any](cio.Close()), state)
 }

@@ -10,6 +10,7 @@ import (
 	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 	wasm_context "vsc-node/modules/wasm/context"
+	wasm_runtime "vsc-node/modules/wasm/runtime"
 
 	"github.com/JustinKnueppel/go-result"
 	"github.com/chebyrash/promise"
@@ -61,7 +62,7 @@ func (w *Wasm) Stop() error {
 const timePer15_000GasUnits = 5 * time.Millisecond
 const startupTime = 3000 * time.Millisecond // TODO investigate large startup time
 
-func (w *Wasm) Execute(ctxValue wasm_context.ExecContextValue, byteCode []byte, gas uint, entrypoint string, args string) result.Result[string] {
+func (w *Wasm) Execute(ctxValue wasm_context.ExecContextValue, byteCode []byte, gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime) result.Result[string] {
 	ctx, cancel := context.WithTimeout(context.WithValue(context.WithValue(w.ctx, wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(byteCode)), (timePer15_000GasUnits*time.Duration(gas)/15_000)+startupTime)
 	defer cancel()
 	return ipc_host.RunWithContext[string](ctx,
@@ -71,6 +72,7 @@ func (w *Wasm) Execute(ctxValue wasm_context.ExecContextValue, byteCode []byte, 
 			// TODO move this to an IPC request since the cmd line arg length can be as little as 32KB
 			// see http://stackoverflow.com/questions/19354870/ddg#19355351
 			"-args", args,
+			"-runtime", runtime.String(),
 		)...)
 
 }

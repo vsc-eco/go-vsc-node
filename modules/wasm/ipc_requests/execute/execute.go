@@ -3,6 +3,7 @@ package execute
 import (
 	"context"
 	"fmt"
+	"os"
 	wasm_context "vsc-node/modules/wasm/context"
 	"vsc-node/modules/wasm/ipc_requests"
 	"vsc-node/modules/wasm/sdk"
@@ -20,6 +21,7 @@ var _ ipc_requests.Message[any] = &SdkCallRequest[any]{}
 
 // Process implements ipc_requests.Message.
 func (s *SdkCallRequest[Result]) Process(ctx context.Context) result.Result[ipc_requests.ProcessedMessage[Result]] {
+	fmt.Fprintln(os.Stderr, "sdk call request", s)
 	fn, ok := sdk.SdkModule[s.Function]
 	if !ok {
 		return result.Err[ipc_requests.ProcessedMessage[Result]](fmt.Errorf("vm requested non-existing function: %s", s.Function))
