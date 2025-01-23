@@ -1,0 +1,629 @@
+# vsc-node/lib/datalayer_test [vsc-node/lib/datalayer.test]
+lib/datalayer/datalayer_test.go:72:18: undefined: DataLayer.TransactionContainer
+lib/datalayer/datalayer_test.go:76:22: undefined: DataLayer.TransactionHeader
+lib/datalayer/datalayer_test.go:99:21: undefined: DataLayer.TransactionContainer
+{"Time":"2025-01-23T13:29:09.67057028-05:00","Action":"start","Package":"vsc-node/cmd/vm-runner"}
+{"Time":"2025-01-23T13:29:09.674905063-05:00","Action":"output","Package":"vsc-node/cmd/vm-runner","Output":"\tvsc-node/cmd/vm-runner\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:09.676956105-05:00","Action":"pass","Package":"vsc-node/cmd/vm-runner","Elapsed":0.006}
+{"Time":"2025-01-23T13:29:09.722981417-05:00","Action":"start","Package":"vsc-node/cmd/vsc-node"}
+{"Time":"2025-01-23T13:29:09.724413577-05:00","Action":"output","Package":"vsc-node/cmd/vsc-node","Output":"\tvsc-node/cmd/vsc-node\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:09.725725334-05:00","Action":"pass","Package":"vsc-node/cmd/vsc-node","Elapsed":0.003}
+{"Time":"2025-01-23T13:29:09.789079403-05:00","Action":"start","Package":"vsc-node/lib/cbor"}
+{"Time":"2025-01-23T13:29:09.789168284-05:00","Action":"start","Package":"vsc-node/lib/datalayer"}
+{"Time":"2025-01-23T13:29:09.789180764-05:00","Action":"output","Package":"vsc-node/lib/datalayer","Output":"FAIL\tvsc-node/lib/datalayer [build failed]\n"}
+{"Time":"2025-01-23T13:29:09.789187746-05:00","Action":"fail","Package":"vsc-node/lib/datalayer","Elapsed":0}
+{"Time":"2025-01-23T13:29:09.790740564-05:00","Action":"run","Package":"vsc-node/lib/cbor","Test":"TestCborDecode"}
+{"Time":"2025-01-23T13:29:09.79075157-05:00","Action":"output","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Output":"=== RUN   TestCborDecode\n"}
+{"Time":"2025-01-23T13:29:09.790775844-05:00","Action":"output","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Output":"string: [tx op], 0\n"}
+{"Time":"2025-01-23T13:29:09.790793181-05:00","Action":"output","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Output":"string: [tx payload tk], 1\n"}
+{"Time":"2025-01-23T13:29:09.790797987-05:00","Action":"output","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Output":"string: [tx payload to], 2\n"}
+{"Time":"2025-01-23T13:29:09.79080181-05:00","Action":"output","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Output":"string: [tx payload from], 3\n"}
+{"Time":"2025-01-23T13:29:09.79081138-05:00","Action":"output","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Output":"int: [tx payload amount], 4\n"}
+{"Time":"2025-01-23T13:29:09.790821571-05:00","Action":"output","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Output":"string: [__t], 5\n"}
+{"Time":"2025-01-23T13:29:09.790824204-05:00","Action":"output","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Output":"string: [__v], 6\n"}
+{"Time":"2025-01-23T13:29:09.790833131-05:00","Action":"output","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Output":"int: [headers type], 7\n"}
+{"Time":"2025-01-23T13:29:09.790835665-05:00","Action":"output","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Output":"int: [headers nonce], 8\n"}
+{"Time":"2025-01-23T13:29:09.790840315-05:00","Action":"output","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Output":"empty array: [headers intents], 9\n"}
+{"Time":"2025-01-23T13:29:09.790845599-05:00","Action":"output","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Output":"string: [headers required_auths [0]], 9\n"}
+{"Time":"2025-01-23T13:29:09.790858376-05:00","Action":"output","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Output":"--- PASS: TestCborDecode (0.00s)\n"}
+{"Time":"2025-01-23T13:29:09.790867401-05:00","Action":"pass","Package":"vsc-node/lib/cbor","Test":"TestCborDecode","Elapsed":0}
+{"Time":"2025-01-23T13:29:09.790870493-05:00","Action":"output","Package":"vsc-node/lib/cbor","Output":"PASS\n"}
+{"Time":"2025-01-23T13:29:09.791196848-05:00","Action":"output","Package":"vsc-node/lib/cbor","Output":"coverage: 28.5% of statements\n"}
+{"Time":"2025-01-23T13:29:09.791820693-05:00","Action":"output","Package":"vsc-node/lib/cbor","Output":"ok  \tvsc-node/lib/cbor\t0.003s\tcoverage: 28.5% of statements\n"}
+{"Time":"2025-01-23T13:29:09.791851726-05:00","Action":"pass","Package":"vsc-node/lib/cbor","Elapsed":0.003}
+# github.com/supranational/blst/bindings/go
+In file included from ../../../go/pkg/mod/github.com/supranational/blst@v0.3.13/bindings/go/../../src/server.c:15,
+                 from cgo_server.c:1:
+../../../go/pkg/mod/github.com/supranational/blst@v0.3.13/bindings/go/../../src/aggregate.c: In function ‘PAIRING_FinalVerify’:
+../../../go/pkg/mod/github.com/supranational/blst@v0.3.13/bindings/go/../../src/aggregate.c:428:3: error: implicit declaration of function ‘printf’ [-Wimplicit-function-declaration]
+  428 |   printf("C1\n");
+      |   ^~~~~~
+../../../go/pkg/mod/github.com/supranational/blst@v0.3.13/bindings/go/../../src/aggregate.c:1:1: note: include ‘<stdio.h>’ or provide a declaration of ‘printf’
+  +++ |+#include <stdio.h>
+    1 | /*
+../../../go/pkg/mod/github.com/supranational/blst@v0.3.13/bindings/go/../../src/aggregate.c:428:3: warning: incompatible implicit declaration of built-in function ‘printf’ [-Wbuiltin-declaration-mismatch]
+  428 |   printf("C1\n");
+      |   ^~~~~~
+../../../go/pkg/mod/github.com/supranational/blst@v0.3.13/bindings/go/../../src/aggregate.c:428:3: note: include ‘<stdio.h>’ or provide a declaration of ‘printf’
+{"Time":"2025-01-23T13:29:10.51372657-05:00","Action":"start","Package":"vsc-node/lib/dids"}
+{"Time":"2025-01-23T13:29:10.513739521-05:00","Action":"output","Package":"vsc-node/lib/dids","Output":"FAIL\tvsc-node/lib/dids [build failed]\n"}
+{"Time":"2025-01-23T13:29:10.513744011-05:00","Action":"fail","Package":"vsc-node/lib/dids","Elapsed":0}
+{"Time":"2025-01-23T13:29:10.513803903-05:00","Action":"start","Package":"vsc-node/lib/event-engine"}
+{"Time":"2025-01-23T13:29:10.513884331-05:00","Action":"start","Package":"vsc-node/lib/p2p"}
+{"Time":"2025-01-23T13:29:10.513907173-05:00","Action":"start","Package":"vsc-node/lib/pubsub"}
+{"Time":"2025-01-23T13:29:10.513939379-05:00","Action":"start","Package":"vsc-node/lib/stdio-ipc"}
+{"Time":"2025-01-23T13:29:10.513956929-05:00","Action":"output","Package":"vsc-node/lib/pubsub","Output":"?   \tvsc-node/lib/pubsub\t[no test files]\n"}
+{"Time":"2025-01-23T13:29:10.513963483-05:00","Action":"skip","Package":"vsc-node/lib/pubsub","Elapsed":0}
+{"Time":"2025-01-23T13:29:10.51403813-05:00","Action":"start","Package":"vsc-node/lib/stdio-ipc/client"}
+{"Time":"2025-01-23T13:29:10.514058659-05:00","Action":"start","Package":"vsc-node/lib/stdio-ipc/common"}
+{"Time":"2025-01-23T13:29:10.514156649-05:00","Action":"start","Package":"vsc-node/lib/stdio-ipc/host"}
+{"Time":"2025-01-23T13:29:10.51429805-05:00","Action":"start","Package":"vsc-node/lib/stdio-ipc/messages"}
+{"Time":"2025-01-23T13:29:10.514472103-05:00","Action":"start","Package":"vsc-node/lib/test_utils"}
+{"Time":"2025-01-23T13:29:10.51460099-05:00","Action":"start","Package":"vsc-node/lib/utils"}
+{"Time":"2025-01-23T13:29:10.514644625-05:00","Action":"start","Package":"vsc-node/modules/aggregate"}
+{"Time":"2025-01-23T13:29:10.515741473-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/common","Output":"\tvsc-node/lib/stdio-ipc/common\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.515738977-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/client","Output":"\tvsc-node/lib/stdio-ipc/client\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.516313375-05:00","Action":"output","Package":"vsc-node/modules/aggregate","Output":"\tvsc-node/modules/aggregate\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.516330541-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/messages","Output":"\tvsc-node/lib/stdio-ipc/messages\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.516345936-05:00","Action":"run","Package":"vsc-node/lib/utils","Test":"TestMergeSort"}
+{"Time":"2025-01-23T13:29:10.516511212-05:00","Action":"output","Package":"vsc-node/lib/utils","Test":"TestMergeSort","Output":"=== RUN   TestMergeSort\n"}
+{"Time":"2025-01-23T13:29:10.51631293-05:00","Action":"run","Package":"vsc-node/lib/stdio-ipc","Test":"TestBasicJsonConnection"}
+{"Time":"2025-01-23T13:29:10.516696507-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc","Test":"TestBasicJsonConnection","Output":"=== RUN   TestBasicJsonConnection\n"}
+{"Time":"2025-01-23T13:29:10.516721724-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc","Test":"TestBasicJsonConnection","Output":"--- PASS: TestBasicJsonConnection (0.00s)\n"}
+{"Time":"2025-01-23T13:29:10.516725707-05:00","Action":"pass","Package":"vsc-node/lib/stdio-ipc","Test":"TestBasicJsonConnection","Elapsed":0}
+{"Time":"2025-01-23T13:29:10.516730233-05:00","Action":"run","Package":"vsc-node/lib/stdio-ipc","Test":"TestDuplexJsonConnection"}
+{"Time":"2025-01-23T13:29:10.516732934-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc","Test":"TestDuplexJsonConnection","Output":"=== RUN   TestDuplexJsonConnection\n"}
+{"Time":"2025-01-23T13:29:10.516738728-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc","Test":"TestDuplexJsonConnection","Output":"--- PASS: TestDuplexJsonConnection (0.00s)\n"}
+{"Time":"2025-01-23T13:29:10.516741667-05:00","Action":"pass","Package":"vsc-node/lib/stdio-ipc","Test":"TestDuplexJsonConnection","Elapsed":0}
+{"Time":"2025-01-23T13:29:10.516744641-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc","Output":"PASS\n"}
+{"Time":"2025-01-23T13:29:10.516747998-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc","Output":"coverage: 86.7% of statements\n"}
+{"Time":"2025-01-23T13:29:10.517065172-05:00","Action":"run","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost"}
+{"Time":"2025-01-23T13:29:10.517075704-05:00","Action":"output","Package":"vsc-node/lib/test_utils","Output":"\tvsc-node/lib/test_utils\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.517071935-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"=== RUN   TestBasicHost\n"}
+{"Time":"2025-01-23T13:29:10.517371269-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"    host_test.go:18: \n"}
+{"Time":"2025-01-23T13:29:10.517381422-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \tError Trace:\t/home/geoffrey/Programming/go-vsc-node/main/lib/stdio-ipc/host/host_test.go:18\n"}
+{"Time":"2025-01-23T13:29:10.517384528-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t\t\t\t/home/geoffrey/go/pkg/mod/github.com/!justin!knueppel/go-result@v1.0.0/result.go:88\n"}
+{"Time":"2025-01-23T13:29:10.517386955-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t\t\t\t/home/geoffrey/Programming/go-vsc-node/main/lib/stdio-ipc/host/host_test.go:17\n"}
+{"Time":"2025-01-23T13:29:10.51738921-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t\t\t\t/home/geoffrey/Programming/go-vsc-node/main/lib/stdio-ipc/host/host_test.go:58\n"}
+{"Time":"2025-01-23T13:29:10.5173916-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \tError:      \tExpected nil, but got: \u0026errors.errorString{s:\"could not decode ending bracket: EOF\"}\n"}
+{"Time":"2025-01-23T13:29:10.517394313-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \tTest:       \tTestBasicHost\n"}
+{"Time":"2025-01-23T13:29:10.517397703-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"    host_test.go:59: \n"}
+{"Time":"2025-01-23T13:29:10.517399626-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \tError Trace:\t/home/geoffrey/Programming/go-vsc-node/main/lib/stdio-ipc/host/host_test.go:59\n"}
+{"Time":"2025-01-23T13:29:10.517401527-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \tError:      \tNot equal: \n"}
+{"Time":"2025-01-23T13:29:10.517404439-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \texpected: \"\"\n"}
+{"Time":"2025-01-23T13:29:10.517406704-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \tactual  : \"result from m2\"\n"}
+{"Time":"2025-01-23T13:29:10.517409473-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t\n"}
+{"Time":"2025-01-23T13:29:10.517411058-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \tDiff:\n"}
+{"Time":"2025-01-23T13:29:10.517413087-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t--- Expected\n"}
+{"Time":"2025-01-23T13:29:10.517415078-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t+++ Actual\n"}
+{"Time":"2025-01-23T13:29:10.5174171-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t@@ -1 +1 @@\n"}
+{"Time":"2025-01-23T13:29:10.517419032-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t-\n"}
+{"Time":"2025-01-23T13:29:10.517421324-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t+result from m2\n"}
+{"Time":"2025-01-23T13:29:10.51741878-05:00","Action":"pass","Package":"vsc-node/lib/stdio-ipc/common","Elapsed":0.003}
+{"Time":"2025-01-23T13:29:10.517423528-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \tTest:       \tTestBasicHost\n"}
+{"Time":"2025-01-23T13:29:10.517425375-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"    host_test.go:64: \n"}
+{"Time":"2025-01-23T13:29:10.517427126-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \tError Trace:\t/home/geoffrey/Programming/go-vsc-node/main/lib/stdio-ipc/host/host_test.go:64\n"}
+{"Time":"2025-01-23T13:29:10.517429289-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \tError:      \tNot equal: \n"}
+{"Time":"2025-01-23T13:29:10.51743165-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \texpected: \"[\\n{\\\"Type\\\":\\\"m1\\\",\\\"Message\\\":{}}\\n]]\"\n"}
+{"Time":"2025-01-23T13:29:10.517434559-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \tactual  : \"[\\n{\\\"Type\\\":\\\"m1\\\",\\\"Message\\\":{}}\\n]\"\n"}
+{"Time":"2025-01-23T13:29:10.517436898-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t\n"}
+{"Time":"2025-01-23T13:29:10.517438895-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \tDiff:\n"}
+{"Time":"2025-01-23T13:29:10.517440683-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t--- Expected\n"}
+{"Time":"2025-01-23T13:29:10.517442396-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t+++ Actual\n"}
+{"Time":"2025-01-23T13:29:10.517444354-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t@@ -2,2 +2,2 @@\n"}
+{"Time":"2025-01-23T13:29:10.517446448-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t {\"Type\":\"m1\",\"Message\":{}}\n"}
+{"Time":"2025-01-23T13:29:10.517448553-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t-]]\n"}
+{"Time":"2025-01-23T13:29:10.517450539-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \t            \t+]\n"}
+{"Time":"2025-01-23T13:29:10.517452297-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"        \tTest:       \tTestBasicHost\n"}
+{"Time":"2025-01-23T13:29:10.517457066-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Output":"--- FAIL: TestBasicHost (0.00s)\n"}
+{"Time":"2025-01-23T13:29:10.517459007-05:00","Action":"fail","Package":"vsc-node/lib/stdio-ipc/host","Test":"TestBasicHost","Elapsed":0}
+{"Time":"2025-01-23T13:29:10.517462734-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Output":"FAIL\n"}
+{"Time":"2025-01-23T13:29:10.517507794-05:00","Action":"output","Package":"vsc-node/lib/event-engine","Output":"\tvsc-node/lib/event-engine\t\t"}
+{"Time":"2025-01-23T13:29:10.517512972-05:00","Action":"pass","Package":"vsc-node/lib/event-engine","Elapsed":0.004}
+{"Time":"2025-01-23T13:29:10.517896252-05:00","Action":"pass","Package":"vsc-node/lib/stdio-ipc/client","Elapsed":0.004}
+{"Time":"2025-01-23T13:29:10.51809436-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Output":"coverage: 25.9% of statements\n"}
+{"Time":"2025-01-23T13:29:10.518199175-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc","Output":"ok  \tvsc-node/lib/stdio-ipc\t0.004s\tcoverage: 86.7% of statements\n"}
+{"Time":"2025-01-23T13:29:10.518227552-05:00","Action":"pass","Package":"vsc-node/lib/stdio-ipc","Elapsed":0.004}
+{"Time":"2025-01-23T13:29:10.518245592-05:00","Action":"pass","Package":"vsc-node/modules/aggregate","Elapsed":0.004}
+{"Time":"2025-01-23T13:29:10.519012602-05:00","Action":"pass","Package":"vsc-node/lib/test_utils","Elapsed":0.005}
+{"Time":"2025-01-23T13:29:10.519137412-05:00","Action":"output","Package":"vsc-node/lib/stdio-ipc/host","Output":"FAIL\tvsc-node/lib/stdio-ipc/host\t0.005s\n"}
+{"Time":"2025-01-23T13:29:10.520067056-05:00","Action":"fail","Package":"vsc-node/lib/stdio-ipc/host","Elapsed":0.006}
+{"Time":"2025-01-23T13:29:10.52002626-05:00","Action":"pass","Package":"vsc-node/lib/stdio-ipc/messages","Elapsed":0.006}
+{"Time":"2025-01-23T13:29:10.52088065-05:00","Action":"run","Package":"vsc-node/lib/p2p","Test":"Test"}
+{"Time":"2025-01-23T13:29:10.520895454-05:00","Action":"output","Package":"vsc-node/lib/p2p","Test":"Test","Output":"=== RUN   Test\n"}
+{"Time":"2025-01-23T13:29:10.524479183-05:00","Action":"output","Package":"vsc-node/lib/utils","Test":"TestMergeSort","Output":"--- PASS: TestMergeSort (0.01s)\n"}
+{"Time":"2025-01-23T13:29:10.524721343-05:00","Action":"pass","Package":"vsc-node/lib/utils","Test":"TestMergeSort","Elapsed":0.01}
+{"Time":"2025-01-23T13:29:10.524735992-05:00","Action":"run","Package":"vsc-node/lib/utils","Test":"TestSort"}
+{"Time":"2025-01-23T13:29:10.524739073-05:00","Action":"output","Package":"vsc-node/lib/utils","Test":"TestSort","Output":"=== RUN   TestSort\n"}
+{"Time":"2025-01-23T13:29:10.524749574-05:00","Action":"output","Package":"vsc-node/lib/utils","Test":"TestSort","Output":"--- PASS: TestSort (0.00s)\n"}
+{"Time":"2025-01-23T13:29:10.524751571-05:00","Action":"pass","Package":"vsc-node/lib/utils","Test":"TestSort","Elapsed":0}
+{"Time":"2025-01-23T13:29:10.524753463-05:00","Action":"output","Package":"vsc-node/lib/utils","Output":"PASS\n"}
+{"Time":"2025-01-23T13:29:10.525171334-05:00","Action":"output","Package":"vsc-node/lib/utils","Output":"coverage: 50.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.525584376-05:00","Action":"output","Package":"vsc-node/lib/utils","Output":"ok  \tvsc-node/lib/utils\t0.011s\tcoverage: 50.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.525596059-05:00","Action":"pass","Package":"vsc-node/lib/utils","Elapsed":0.011}
+# vsc-node/modules/db/vsc/transactions
+modules/db/vsc/transactions/transactionsDb.go:19:9: cannot use &transactions{…} (value of type *transactions) as Transactions value in return statement: *transactions does not implement Transactions (missing method SetOutput)
+{"Time":"2025-01-23T13:29:10.818926009-05:00","Action":"start","Package":"vsc-node/modules/announcements"}
+{"Time":"2025-01-23T13:29:10.818969856-05:00","Action":"start","Package":"vsc-node/modules/config"}
+{"Time":"2025-01-23T13:29:10.819049573-05:00","Action":"start","Package":"vsc-node/modules/data-availability"}
+{"Time":"2025-01-23T13:29:10.819071935-05:00","Action":"start","Package":"vsc-node/modules/db"}
+{"Time":"2025-01-23T13:29:10.819153749-05:00","Action":"start","Package":"vsc-node/modules/db/vsc"}
+{"Time":"2025-01-23T13:29:10.819222437-05:00","Action":"start","Package":"vsc-node/modules/db/vsc/contracts"}
+{"Time":"2025-01-23T13:29:10.819337949-05:00","Action":"start","Package":"vsc-node/modules/db/vsc/elections"}
+{"Time":"2025-01-23T13:29:10.81937966-05:00","Action":"start","Package":"vsc-node/modules/db/vsc/hive_blocks"}
+{"Time":"2025-01-23T13:29:10.819492848-05:00","Action":"start","Package":"vsc-node/modules/db/vsc/ledger"}
+{"Time":"2025-01-23T13:29:10.819603423-05:00","Action":"start","Package":"vsc-node/modules/db/vsc/transactions"}
+{"Time":"2025-01-23T13:29:10.819712179-05:00","Action":"output","Package":"vsc-node/modules/db/vsc/transactions","Output":"FAIL\tvsc-node/modules/db/vsc/transactions [build failed]\n"}
+{"Time":"2025-01-23T13:29:10.81982129-05:00","Action":"fail","Package":"vsc-node/modules/db/vsc/transactions","Elapsed":0}
+{"Time":"2025-01-23T13:29:10.819727522-05:00","Action":"start","Package":"vsc-node/modules/db/vsc/witnesses"}
+{"Time":"2025-01-23T13:29:10.820834994-05:00","Action":"run","Package":"vsc-node/modules/config","Test":"TestBasic"}
+{"Time":"2025-01-23T13:29:10.82085212-05:00","Action":"output","Package":"vsc-node/modules/config","Test":"TestBasic","Output":"=== RUN   TestBasic\n"}
+{"Time":"2025-01-23T13:29:10.821044121-05:00","Action":"output","Package":"vsc-node/modules/config","Test":"TestBasic","Output":"--- PASS: TestBasic (0.00s)\n"}
+{"Time":"2025-01-23T13:29:10.821088173-05:00","Action":"output","Package":"vsc-node/modules/data-availability","Output":"\tvsc-node/modules/data-availability\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.821173249-05:00","Action":"pass","Package":"vsc-node/modules/config","Test":"TestBasic","Elapsed":0}
+{"Time":"2025-01-23T13:29:10.821183462-05:00","Action":"output","Package":"vsc-node/modules/config","Output":"PASS\n"}
+{"Time":"2025-01-23T13:29:10.821500233-05:00","Action":"output","Package":"vsc-node/modules/db/vsc/elections","Output":"\tvsc-node/modules/db/vsc/elections\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.821497817-05:00","Action":"output","Package":"vsc-node/modules/db/vsc/contracts","Output":"\tvsc-node/modules/db/vsc/contracts\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.82166357-05:00","Action":"output","Package":"vsc-node/modules/config","Output":"coverage: 25.9% of statements\n"}
+{"Time":"2025-01-23T13:29:10.82214844-05:00","Action":"output","Package":"vsc-node/modules/config","Output":"ok  \tvsc-node/modules/config\t0.003s\tcoverage: 25.9% of statements\n"}
+{"Time":"2025-01-23T13:29:10.82216319-05:00","Action":"pass","Package":"vsc-node/modules/config","Elapsed":0.003}
+{"Time":"2025-01-23T13:29:10.822404821-05:00","Action":"output","Package":"vsc-node/modules/db/vsc/hive_blocks","Output":"\tvsc-node/modules/db/vsc/hive_blocks\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.822421212-05:00","Action":"output","Package":"vsc-node/modules/db/vsc/ledger","Output":"\tvsc-node/modules/db/vsc/ledger\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.822824918-05:00","Action":"pass","Package":"vsc-node/modules/data-availability","Elapsed":0.004}
+{"Time":"2025-01-23T13:29:10.822861848-05:00","Action":"run","Package":"vsc-node/modules/db","Test":"TestCompat"}
+{"Time":"2025-01-23T13:29:10.822868771-05:00","Action":"output","Package":"vsc-node/modules/db","Test":"TestCompat","Output":"=== RUN   TestCompat\n"}
+{"Time":"2025-01-23T13:29:10.823081414-05:00","Action":"output","Package":"vsc-node/modules/db/vsc","Output":"\tvsc-node/modules/db/vsc\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.824182268-05:00","Action":"pass","Package":"vsc-node/modules/db/vsc/elections","Elapsed":0.005}
+{"Time":"2025-01-23T13:29:10.824235776-05:00","Action":"pass","Package":"vsc-node/modules/db/vsc/contracts","Elapsed":0.005}
+{"Time":"2025-01-23T13:29:10.824247204-05:00","Action":"run","Package":"vsc-node/modules/db/vsc/witnesses","Test":"TestWitness"}
+{"Time":"2025-01-23T13:29:10.824249685-05:00","Action":"output","Package":"vsc-node/modules/db/vsc/witnesses","Test":"TestWitness","Output":"=== RUN   TestWitness\n"}
+{"Time":"2025-01-23T13:29:10.824342635-05:00","Action":"pass","Package":"vsc-node/modules/db/vsc/ledger","Elapsed":0.005}
+{"Time":"2025-01-23T13:29:10.824785844-05:00","Action":"pass","Package":"vsc-node/modules/db/vsc/hive_blocks","Elapsed":0.005}
+{"Time":"2025-01-23T13:29:10.825257977-05:00","Action":"pass","Package":"vsc-node/modules/db/vsc","Elapsed":0.006}
+{"Time":"2025-01-23T13:29:10.828869156-05:00","Action":"output","Package":"vsc-node/modules/db/vsc/witnesses","Test":"TestWitness","Output":"Serialized {\"Hello\":\"aGVsbG8gd29ybGQ=\"} \u003cnil\u003e\n"}
+{"Time":"2025-01-23T13:29:10.828892372-05:00","Action":"output","Package":"vsc-node/modules/db/vsc/witnesses","Test":"TestWitness","Output":"{[104 101 108 108 111 32 119 111 114 108 100]}\n"}
+{"Time":"2025-01-23T13:29:10.829200328-05:00","Action":"output","Package":"vsc-node/modules/db/vsc/witnesses","Test":"TestWitness","Output":"--- PASS: TestWitness (0.01s)\n"}
+{"Time":"2025-01-23T13:29:10.829212826-05:00","Action":"pass","Package":"vsc-node/modules/db/vsc/witnesses","Test":"TestWitness","Elapsed":0.01}
+{"Time":"2025-01-23T13:29:10.829218014-05:00","Action":"output","Package":"vsc-node/modules/db/vsc/witnesses","Output":"PASS\n"}
+{"Time":"2025-01-23T13:29:10.829503502-05:00","Action":"output","Package":"vsc-node/modules/db/vsc/witnesses","Output":"coverage: 65.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.831026363-05:00","Action":"output","Package":"vsc-node/modules/db/vsc/witnesses","Output":"ok  \tvsc-node/modules/db/vsc/witnesses\t0.011s\tcoverage: 65.0% of statements\n"}
+{"Time":"2025-01-23T13:29:10.831041634-05:00","Action":"pass","Package":"vsc-node/modules/db/vsc/witnesses","Elapsed":0.011}
+{"Time":"2025-01-23T13:29:10.847117988-05:00","Action":"run","Package":"vsc-node/modules/announcements","Test":"TestImmediateExecution"}
+{"Time":"2025-01-23T13:29:10.847133774-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestImmediateExecution","Output":"=== RUN   TestImmediateExecution\n"}
+{"Time":"2025-01-23T13:29:10.847256925-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestImmediateExecution","Output":"2025/01/23 13:29:10 announcing\n"}
+{"Time":"2025-01-23T13:29:11.019509832-05:00","Action":"start","Package":"vsc-node/modules/hive/streamer"}
+{"Time":"2025-01-23T13:29:11.01959152-05:00","Action":"start","Package":"vsc-node/modules/state-processing"}
+{"Time":"2025-01-23T13:29:11.019607289-05:00","Action":"output","Package":"vsc-node/modules/state-processing","Output":"FAIL\tvsc-node/modules/state-processing [build failed]\n"}
+{"Time":"2025-01-23T13:29:11.019613977-05:00","Action":"fail","Package":"vsc-node/modules/state-processing","Elapsed":0}
+{"Time":"2025-01-23T13:29:11.019653391-05:00","Action":"start","Package":"vsc-node/modules/wasm/context"}
+{"Time":"2025-01-23T13:29:11.019677668-05:00","Action":"start","Package":"vsc-node/modules/wasm/ipc_requests"}
+{"Time":"2025-01-23T13:29:11.019709325-05:00","Action":"output","Package":"vsc-node/modules/wasm/context","Output":"?   \tvsc-node/modules/wasm/context\t[no test files]\n"}
+{"Time":"2025-01-23T13:29:11.019715602-05:00","Action":"skip","Package":"vsc-node/modules/wasm/context","Elapsed":0}
+{"Time":"2025-01-23T13:29:11.019720485-05:00","Action":"output","Package":"vsc-node/modules/wasm/ipc_requests","Output":"?   \tvsc-node/modules/wasm/ipc_requests\t[no test files]\n"}
+{"Time":"2025-01-23T13:29:11.019725167-05:00","Action":"skip","Package":"vsc-node/modules/wasm/ipc_requests","Elapsed":0}
+{"Time":"2025-01-23T13:29:11.019733392-05:00","Action":"start","Package":"vsc-node/modules/wasm/ipc_requests/execute"}
+{"Time":"2025-01-23T13:29:11.019758219-05:00","Action":"start","Package":"vsc-node/modules/wasm/parent_ipc"}
+{"Time":"2025-01-23T13:29:11.019837139-05:00","Action":"start","Package":"vsc-node/modules/wasm/runtime"}
+{"Time":"2025-01-23T13:29:11.021265374-05:00","Action":"output","Package":"vsc-node/modules/wasm/ipc_requests/execute","Output":"\tvsc-node/modules/wasm/ipc_requests/execute\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:11.021296523-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime","Output":"\tvsc-node/modules/wasm/runtime\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:11.021526078-05:00","Action":"run","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat"}
+{"Time":"2025-01-23T13:29:11.021532595-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat","Output":"=== RUN   TestAssemblyScriptCompat\n"}
+{"Time":"2025-01-23T13:29:11.022029123-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat","Output":"pwd: /home/geoffrey/Programming/go-vsc-node/main\n"}
+{"Time":"2025-01-23T13:29:11.02266578-05:00","Action":"pass","Package":"vsc-node/modules/wasm/runtime","Elapsed":0.003}
+{"Time":"2025-01-23T13:29:11.022788479-05:00","Action":"pass","Package":"vsc-node/modules/wasm/ipc_requests/execute","Elapsed":0.003}
+{"Time":"2025-01-23T13:29:11.023828019-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat","Output":"exec init: 2025-01-23 13:29:11.023774551 -0500 EST m=+0.002547212\n"}
+{"Time":"2025-01-23T13:29:11.023869105-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat","Output":"stdout:\n"}
+{"Time":"2025-01-23T13:29:11.023881041-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat","Output":"connection\n"}
+{"Time":"2025-01-23T13:29:11.036102315-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks"}
+{"Time":"2025-01-23T13:29:11.036112575-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Output":"=== RUN   TestFetchStoreBlocks\n"}
+{"Time":"2025-01-23T13:29:11.036129522-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Output":"startBlock 81614028\n"}
+{"Time":"2025-01-23T13:29:11.136994266-05:00","Action":"start","Package":"vsc-node/modules/wasm/runtime_ipc"}
+{"Time":"2025-01-23T13:29:11.137074691-05:00","Action":"start","Package":"vsc-node/modules/wasm/sdk"}
+{"Time":"2025-01-23T13:29:11.137176244-05:00","Action":"start","Package":"vsc-node/modules/wasm/sdk/types"}
+{"Time":"2025-01-23T13:29:11.138409605-05:00","Action":"output","Package":"vsc-node/modules/wasm/sdk/types","Output":"\tvsc-node/modules/wasm/sdk/types\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:11.138493005-05:00","Action":"output","Package":"vsc-node/modules/wasm/sdk","Output":"\tvsc-node/modules/wasm/sdk\t\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:11.139497688-05:00","Action":"pass","Package":"vsc-node/modules/wasm/sdk/types","Elapsed":0.002}
+{"Time":"2025-01-23T13:29:11.139532346-05:00","Action":"pass","Package":"vsc-node/modules/wasm/sdk","Elapsed":0.002}
+{"Time":"2025-01-23T13:29:11.142629881-05:00","Action":"run","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat"}
+{"Time":"2025-01-23T13:29:11.142639617-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"=== RUN   TestGoCompat\n"}
+{"Time":"2025-01-23T13:29:11.144473691-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"go runtime init\n"}
+{"Time":"2025-01-23T13:29:11.14450267-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"alloc string\n"}
+{"Time":"2025-01-23T13:29:11.144506577-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"alloc string testing-123\n"}
+{"Time":"2025-01-23T13:29:11.144508557-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"allocated string testing-123\n"}
+{"Time":"2025-01-23T13:29:11.144510447-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"parsed alloc string res testing-123\n"}
+{"Time":"2025-01-23T13:29:11.14451464-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"set string data testing-123\n"}
+{"Time":"2025-01-23T13:29:11.144516342-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"set string pointers testing-123\n"}
+{"Time":"2025-01-23T13:29:11.144517924-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"alloc string complete testing-123\n"}
+{"Time":"2025-01-23T13:29:11.144519733-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"execute\n"}
+{"Time":"2025-01-23T13:29:11.144592621-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"sdk call request \u0026{db.getObject testing-123}\n"}
+{"Time":"2025-01-23T13:29:11.144638011-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"alloc string testing-123\n"}
+{"Time":"2025-01-23T13:29:11.144659723-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"allocated string testing-123\n"}
+{"Time":"2025-01-23T13:29:11.144662782-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"parsed alloc string res testing-123\n"}
+{"Time":"2025-01-23T13:29:11.144665769-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"set string data testing-123\n"}
+{"Time":"2025-01-23T13:29:11.144668426-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"set string pointers testing-123\n"}
+{"Time":"2025-01-23T13:29:11.144671632-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"alloc string complete testing-123\n"}
+{"Time":"2025-01-23T13:29:11.144704088-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"time: 1.9113e-05 seconds\n"}
+{"Time":"2025-01-23T13:29:11.144828218-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Output":"--- PASS: TestGoCompat (0.00s)\n"}
+{"Time":"2025-01-23T13:29:11.144832619-05:00","Action":"pass","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestGoCompat","Elapsed":0}
+{"Time":"2025-01-23T13:29:11.144836587-05:00","Action":"run","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestAssemblyScriptCompat"}
+{"Time":"2025-01-23T13:29:11.144838815-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestAssemblyScriptCompat","Output":"=== RUN   TestAssemblyScriptCompat\n"}
+{"Time":"2025-01-23T13:29:11.147144084-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestAssemblyScriptCompat","Output":"alloc string\n"}
+{"Time":"2025-01-23T13:29:11.147408096-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestAssemblyScriptCompat","Output":"execute\n"}
+{"Time":"2025-01-23T13:29:11.147457855-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestAssemblyScriptCompat","Output":"sdk call request \u0026{db.getObject testing-123}\n"}
+{"Time":"2025-01-23T13:29:11.147535229-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestAssemblyScriptCompat","Output":"time: 0.00028018 seconds\n"}
+{"Time":"2025-01-23T13:29:11.147590918-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestAssemblyScriptCompat","Output":"--- PASS: TestAssemblyScriptCompat (0.00s)\n"}
+{"Time":"2025-01-23T13:29:11.147593264-05:00","Action":"pass","Package":"vsc-node/modules/wasm/runtime_ipc","Test":"TestAssemblyScriptCompat","Elapsed":0}
+{"Time":"2025-01-23T13:29:11.14759545-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Output":"PASS\n"}
+{"Time":"2025-01-23T13:29:11.147950993-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Output":"coverage: 82.6% of statements\n"}
+{"Time":"2025-01-23T13:29:11.148845922-05:00","Action":"output","Package":"vsc-node/modules/wasm/runtime_ipc","Output":"ok  \tvsc-node/modules/wasm/runtime_ipc\t0.012s\tcoverage: 82.6% of statements\n"}
+{"Time":"2025-01-23T13:29:11.148854167-05:00","Action":"pass","Package":"vsc-node/modules/wasm/runtime_ipc","Elapsed":0.012}
+{"Time":"2025-01-23T13:29:11.249612286-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat","Output":"err: exec start: 2025-01-23 13:29:11.24951767 -0500 EST m=+0.000083971\n"}
+{"Time":"2025-01-23T13:29:11.250317627-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat","Output":"alloc string\n"}
+{"Time":"2025-01-23T13:29:11.250495857-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat","Output":"execute\n"}
+{"Time":"2025-01-23T13:29:11.250551856-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat","Output":"sdk call request \u0026{db.getObject my-args-testing-123}\n"}
+{"Time":"2025-01-23T13:29:11.25070448-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat","Output":"time: 0.000222389 seconds\n"}
+{"Time":"2025-01-23T13:29:11.250714091-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat","Output":"    wasm_test.go:963: res: my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.250720058-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat","Output":"--- PASS: TestAssemblyScriptCompat (0.23s)\n"}
+{"Time":"2025-01-23T13:29:11.25072197-05:00","Action":"pass","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestAssemblyScriptCompat","Elapsed":0.23}
+{"Time":"2025-01-23T13:29:11.250726543-05:00","Action":"run","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat"}
+{"Time":"2025-01-23T13:29:11.250728875-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"=== RUN   TestGoCompat\n"}
+{"Time":"2025-01-23T13:29:11.250838093-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"\n"}
+{"Time":"2025-01-23T13:29:11.250844768-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"\n"}
+{"Time":"2025-01-23T13:29:11.250846922-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"res my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.250848484-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"pwd: /home/geoffrey/Programming/go-vsc-node/main\n"}
+{"Time":"2025-01-23T13:29:11.25234983-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"exec init: 2025-01-23 13:29:11.252340034 -0500 EST m=+0.231112695\n"}
+{"Time":"2025-01-23T13:29:11.252372296-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"stdout:\n"}
+{"Time":"2025-01-23T13:29:11.252375832-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"connection\n"}
+{"Time":"2025-01-23T13:29:11.438858698-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Output":"2025/01/23 13:29:11 fetching block range 81614028-81614127\n"}
+{"Time":"2025-01-23T13:29:11.502656621-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"err: exec start: 2025-01-23 13:29:11.502493436 -0500 EST m=+0.000177236\n"}
+{"Time":"2025-01-23T13:29:11.503154818-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"go runtime init\n"}
+{"Time":"2025-01-23T13:29:11.503168402-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"alloc string\n"}
+{"Time":"2025-01-23T13:29:11.503170876-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"alloc string my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.503173534-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"allocated string my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.50317523-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"parsed alloc string res my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.503178001-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"set string data my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.503180793-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"set string pointers my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.503183361-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"alloc string complete my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.503186069-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"execute\n"}
+{"Time":"2025-01-23T13:29:11.503222546-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"sdk call request \u0026{db.getObject my-args-testing-123}\n"}
+{"Time":"2025-01-23T13:29:11.503238982-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"alloc string my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.503244794-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"allocated string my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.503247823-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"parsed alloc string res my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.503250356-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"set string data my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.503253403-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"set string pointers my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.503257588-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"alloc string complete my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.503386977-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"    wasm_test.go:1001: res: my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.503394961-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"time: 1.5239e-05 seconds\n"}
+{"Time":"2025-01-23T13:29:11.503399913-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Output":"--- PASS: TestGoCompat (0.25s)\n"}
+{"Time":"2025-01-23T13:29:11.503402041-05:00","Action":"pass","Package":"vsc-node/modules/wasm/parent_ipc","Test":"TestGoCompat","Elapsed":0.25}
+{"Time":"2025-01-23T13:29:11.503407673-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Output":"PASS\n"}
+{"Time":"2025-01-23T13:29:11.503410308-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Output":"\n"}
+{"Time":"2025-01-23T13:29:11.503412343-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Output":"\n"}
+{"Time":"2025-01-23T13:29:11.503414991-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Output":"res my-args-testing-123\n"}
+{"Time":"2025-01-23T13:29:11.503757373-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Output":"coverage: 50.8% of statements\n"}
+{"Time":"2025-01-23T13:29:11.504781251-05:00","Action":"output","Package":"vsc-node/modules/wasm/parent_ipc","Output":"ok  \tvsc-node/modules/wasm/parent_ipc\t0.485s\tcoverage: 50.8% of statements\n"}
+{"Time":"2025-01-23T13:29:11.504792129-05:00","Action":"pass","Package":"vsc-node/modules/wasm/parent_ipc","Elapsed":0.485}
+{"Time":"2025-01-23T13:29:11.847898051-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestImmediateExecution","Output":"--- PASS: TestImmediateExecution (1.00s)\n"}
+{"Time":"2025-01-23T13:29:11.848016759-05:00","Action":"pass","Package":"vsc-node/modules/announcements","Test":"TestImmediateExecution","Elapsed":1}
+{"Time":"2025-01-23T13:29:11.848029713-05:00","Action":"run","Package":"vsc-node/modules/announcements","Test":"TestCronExecutions"}
+{"Time":"2025-01-23T13:29:11.848036334-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestCronExecutions","Output":"=== RUN   TestCronExecutions\n"}
+{"Time":"2025-01-23T13:29:11.848301176-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestCronExecutions","Output":"2025/01/23 13:29:11 announcing\n"}
+{"Time":"2025-01-23T13:29:12.330614338-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Output":"2025/01/23 13:29:12 fetching block range 81614128-81614227\n"}
+{"Time":"2025-01-23T13:29:13.001147111-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestCronExecutions","Output":"2025/01/23 13:29:13 announcing\n"}
+{"Time":"2025-01-23T13:29:13.10376331-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Output":"2025/01/23 13:29:13 fetching block range 81614228-81614327\n"}
+{"Time":"2025-01-23T13:29:13.535453116-05:00","Action":"output","Package":"vsc-node/lib/p2p","Test":"Test","Output":"--- PASS: Test (3.01s)\n"}
+{"Time":"2025-01-23T13:29:13.535520697-05:00","Action":"pass","Package":"vsc-node/lib/p2p","Test":"Test","Elapsed":3.01}
+{"Time":"2025-01-23T13:29:13.535534382-05:00","Action":"output","Package":"vsc-node/lib/p2p","Output":"PASS\n"}
+{"Time":"2025-01-23T13:29:13.535966806-05:00","Action":"output","Package":"vsc-node/lib/p2p","Output":"coverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:13.538508712-05:00","Action":"output","Package":"vsc-node/lib/p2p","Output":"ok  \tvsc-node/lib/p2p\t3.024s\tcoverage: 0.0% of statements\n"}
+{"Time":"2025-01-23T13:29:13.538538708-05:00","Action":"pass","Package":"vsc-node/lib/p2p","Elapsed":3.025}
+{"Time":"2025-01-23T13:29:13.813600413-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Output":"2025/01/23 13:29:13 fetching block range 81614328-81614427\n"}
+{"Time":"2025-01-23T13:29:14.036722284-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Output":"    streamer_test.go:272: \n"}
+{"Time":"2025-01-23T13:29:14.036764885-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Output":"        \tError Trace:\t/home/geoffrey/Programming/go-vsc-node/main/modules/hive/streamer/streamer_test.go:272\n"}
+{"Time":"2025-01-23T13:29:14.036784357-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Output":"        \tError:      \tCondition never satisfied\n"}
+{"Time":"2025-01-23T13:29:14.036792404-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Output":"        \tTest:       \tTestFetchStoreBlocks\n"}
+{"Time":"2025-01-23T13:29:14.433696479-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Output":"2025/01/23 13:29:14 error fetching block batch: streamer is stopped\n"}
+{"Time":"2025-01-23T13:29:14.734419166-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Output":"2025/01/23 13:29:14 all processing routines stopped successfully\n"}
+{"Time":"2025-01-23T13:29:14.734475124-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Output":"--- FAIL: TestFetchStoreBlocks (3.70s)\n"}
+{"Time":"2025-01-23T13:29:14.734492557-05:00","Action":"fail","Package":"vsc-node/modules/hive/streamer","Test":"TestFetchStoreBlocks","Elapsed":3.7}
+{"Time":"2025-01-23T13:29:14.734507313-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestStartBlock"}
+{"Time":"2025-01-23T13:29:14.734514506-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStartBlock","Output":"=== RUN   TestStartBlock\n"}
+{"Time":"2025-01-23T13:29:14.734612209-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStartBlock","Output":"--- PASS: TestStartBlock (0.00s)\n"}
+{"Time":"2025-01-23T13:29:14.734674638-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestStartBlock","Elapsed":0}
+{"Time":"2025-01-23T13:29:14.734691113-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling"}
+{"Time":"2025-01-23T13:29:14.734700906-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"=== RUN   TestIntensePolling\n"}
+{"Time":"2025-01-23T13:29:14.734718289-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"startBlock 81614028\n"}
+{"Time":"2025-01-23T13:29:15.001611886-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestCronExecutions","Output":"2025/01/23 13:29:15 announcing\n"}
+{"Time":"2025-01-23T13:29:15.035941061-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:15 fetching block range 81614028-81614127\n"}
+{"Time":"2025-01-23T13:29:15.237257474-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:15 fetching block range 81614128-81614227\n"}
+{"Time":"2025-01-23T13:29:15.43771547-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:15 fetching block range 81614228-81614327\n"}
+{"Time":"2025-01-23T13:29:15.638197381-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:15 fetching block range 81614328-81614427\n"}
+{"Time":"2025-01-23T13:29:15.838661495-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:15 fetching block range 81614428-81614527\n"}
+{"Time":"2025-01-23T13:29:16.039190308-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:16 fetching block range 81614528-81614627\n"}
+{"Time":"2025-01-23T13:29:16.239651897-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:16 fetching block range 81614628-81614727\n"}
+{"Time":"2025-01-23T13:29:16.440087592-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:16 fetching block range 81614728-81614827\n"}
+{"Time":"2025-01-23T13:29:16.640373127-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:16 fetching block range 81614828-81614927\n"}
+{"Time":"2025-01-23T13:29:16.840869085-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:16 fetching block range 81614928-81615027\n"}
+{"Time":"2025-01-23T13:29:17.001051134-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestCronExecutions","Output":"2025/01/23 13:29:17 announcing\n"}
+{"Time":"2025-01-23T13:29:17.041339163-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:17 fetching block range 81615028-81615127\n"}
+{"Time":"2025-01-23T13:29:17.241770626-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:17 fetching block range 81615128-81615227\n"}
+{"Time":"2025-01-23T13:29:17.442490203-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:17 fetching block range 81615228-81615327\n"}
+{"Time":"2025-01-23T13:29:17.642967632-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:17 fetching block range 81615328-81615427\n"}
+{"Time":"2025-01-23T13:29:17.843317675-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"2025/01/23 13:29:17 all processing routines stopped successfully\n"}
+{"Time":"2025-01-23T13:29:17.843357576-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Output":"--- PASS: TestIntensePolling (3.11s)\n"}
+{"Time":"2025-01-23T13:29:17.843371799-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestIntensePolling","Elapsed":3.11}
+{"Time":"2025-01-23T13:29:17.8433803-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter"}
+{"Time":"2025-01-23T13:29:17.843385389-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"=== RUN   TestStreamFilter\n"}
+{"Time":"2025-01-23T13:29:17.843390411-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"startBlock 81614028\n"}
+{"Time":"2025-01-23T13:29:18.144704999-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:18 fetching block range 81614028-81614127\n"}
+{"Time":"2025-01-23T13:29:18.345977759-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:18 fetching block range 81614128-81614227\n"}
+{"Time":"2025-01-23T13:29:18.546449444-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:18 fetching block range 81614228-81614327\n"}
+{"Time":"2025-01-23T13:29:18.746814841-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:18 fetching block range 81614328-81614427\n"}
+{"Time":"2025-01-23T13:29:18.947273215-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:18 fetching block range 81614428-81614527\n"}
+{"Time":"2025-01-23T13:29:19.001543493-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestCronExecutions","Output":"2025/01/23 13:29:19 announcing\n"}
+{"Time":"2025-01-23T13:29:19.147835103-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:19 fetching block range 81614528-81614627\n"}
+{"Time":"2025-01-23T13:29:19.348213739-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:19 fetching block range 81614628-81614727\n"}
+{"Time":"2025-01-23T13:29:19.548613481-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:19 fetching block range 81614728-81614827\n"}
+{"Time":"2025-01-23T13:29:19.748962246-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:19 fetching block range 81614828-81614927\n"}
+{"Time":"2025-01-23T13:29:19.848496964-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestCronExecutions","Output":"5\n"}
+{"Time":"2025-01-23T13:29:19.848562752-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestCronExecutions","Output":"--- PASS: TestCronExecutions (8.00s)\n"}
+{"Time":"2025-01-23T13:29:19.848591628-05:00","Action":"pass","Package":"vsc-node/modules/announcements","Test":"TestCronExecutions","Elapsed":8}
+{"Time":"2025-01-23T13:29:19.848604459-05:00","Action":"run","Package":"vsc-node/modules/announcements","Test":"TestStopAnnouncer"}
+{"Time":"2025-01-23T13:29:19.848611996-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestStopAnnouncer","Output":"=== RUN   TestStopAnnouncer\n"}
+{"Time":"2025-01-23T13:29:19.849020815-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestStopAnnouncer","Output":"2025/01/23 13:29:19 announcing\n"}
+{"Time":"2025-01-23T13:29:19.949339074-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:19 fetching block range 81614928-81615027\n"}
+{"Time":"2025-01-23T13:29:20.15000875-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:20 fetching block range 81615028-81615127\n"}
+{"Time":"2025-01-23T13:29:20.351374078-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:20 fetching block range 81615128-81615227\n"}
+{"Time":"2025-01-23T13:29:20.551825478-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:20 fetching block range 81615228-81615327\n"}
+{"Time":"2025-01-23T13:29:20.753126492-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:20 fetching block range 81615328-81615427\n"}
+{"Time":"2025-01-23T13:29:20.953803687-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"2025/01/23 13:29:20 all processing routines stopped successfully\n"}
+{"Time":"2025-01-23T13:29:20.953848647-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Output":"--- PASS: TestStreamFilter (3.11s)\n"}
+{"Time":"2025-01-23T13:29:20.953862272-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamFilter","Elapsed":3.11}
+{"Time":"2025-01-23T13:29:20.953870607-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored"}
+{"Time":"2025-01-23T13:29:20.95387457-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"=== RUN   TestPersistingBlocksStored\n"}
+{"Time":"2025-01-23T13:29:21.001008127-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestStopAnnouncer","Output":"2025/01/23 13:29:21 announcing\n"}
+{"Time":"2025-01-23T13:29:21.255389729-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:21 fetching block range 81614028-81614127\n"}
+{"Time":"2025-01-23T13:29:21.456041189-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:21 fetching block range 81614128-81614227\n"}
+{"Time":"2025-01-23T13:29:21.656577178-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:21 fetching block range 81614228-81614327\n"}
+{"Time":"2025-01-23T13:29:21.857126383-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:21 fetching block range 81614328-81614427\n"}
+{"Time":"2025-01-23T13:29:22.057761103-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:22 fetching block range 81614428-81614527\n"}
+{"Time":"2025-01-23T13:29:22.258167272-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:22 fetching block range 81614528-81614627\n"}
+{"Time":"2025-01-23T13:29:22.458736838-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:22 fetching block range 81614628-81614727\n"}
+{"Time":"2025-01-23T13:29:22.660062474-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:22 fetching block range 81614728-81614827\n"}
+{"Time":"2025-01-23T13:29:22.86075817-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:22 fetching block range 81614828-81614927\n"}
+{"Time":"2025-01-23T13:29:23.001488913-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestStopAnnouncer","Output":"2025/01/23 13:29:23 announcing\n"}
+{"Time":"2025-01-23T13:29:23.061394426-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:23 fetching block range 81614928-81615027\n"}
+{"Time":"2025-01-23T13:29:23.261886305-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:23 fetching block range 81615028-81615127\n"}
+{"Time":"2025-01-23T13:29:23.462624769-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:23 fetching block range 81615128-81615227\n"}
+{"Time":"2025-01-23T13:29:23.663216881-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:23 fetching block range 81615228-81615327\n"}
+{"Time":"2025-01-23T13:29:23.863659287-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:23 fetching block range 81615328-81615427\n"}
+{"Time":"2025-01-23T13:29:24.06469975-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:24 fetching block range 81615428-81615527\n"}
+{"Time":"2025-01-23T13:29:24.256317519-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:24 fetching block range 81615427-81615526\n"}
+{"Time":"2025-01-23T13:29:24.265534395-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:24 fetching block range 81615528-81615627\n"}
+{"Time":"2025-01-23T13:29:24.457033119-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:24 fetching block range 81615527-81615626\n"}
+{"Time":"2025-01-23T13:29:24.467153978-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:24 fetching block range 81615628-81615727\n"}
+{"Time":"2025-01-23T13:29:24.657519452-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:24 fetching block range 81615627-81615726\n"}
+{"Time":"2025-01-23T13:29:24.66765776-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:24 fetching block range 81615728-81615827\n"}
+{"Time":"2025-01-23T13:29:24.8581574-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:24 fetching block range 81615727-81615826\n"}
+{"Time":"2025-01-23T13:29:24.868297645-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:24 fetching block range 81615828-81615927\n"}
+{"Time":"2025-01-23T13:29:25.058870494-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:25 fetching block range 81615827-81615926\n"}
+{"Time":"2025-01-23T13:29:25.069001163-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:25 fetching block range 81615928-81616027\n"}
+{"Time":"2025-01-23T13:29:25.25959297-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:25 fetching block range 81615927-81616026\n"}
+{"Time":"2025-01-23T13:29:25.269802589-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:25 fetching block range 81616028-81616127\n"}
+{"Time":"2025-01-23T13:29:25.460045541-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:25 fetching block range 81616027-81616126\n"}
+{"Time":"2025-01-23T13:29:25.471173596-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:25 fetching block range 81616128-81616227\n"}
+{"Time":"2025-01-23T13:29:25.660633469-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:25 fetching block range 81616127-81616226\n"}
+{"Time":"2025-01-23T13:29:25.671827312-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:25 fetching block range 81616228-81616327\n"}
+{"Time":"2025-01-23T13:29:25.861506334-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:25 fetching block range 81616227-81616326\n"}
+{"Time":"2025-01-23T13:29:25.872451503-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:25 fetching block range 81616328-81616427\n"}
+{"Time":"2025-01-23T13:29:26.062728068-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:26 fetching block range 81616327-81616426\n"}
+{"Time":"2025-01-23T13:29:26.073868456-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:26 fetching block range 81616428-81616527\n"}
+{"Time":"2025-01-23T13:29:26.2634933-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:26 fetching block range 81616427-81616526\n"}
+{"Time":"2025-01-23T13:29:26.274766852-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:26 fetching block range 81616528-81616627\n"}
+{"Time":"2025-01-23T13:29:26.464040304-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:26 fetching block range 81616527-81616626\n"}
+{"Time":"2025-01-23T13:29:26.475180423-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:26 fetching block range 81616628-81616727\n"}
+{"Time":"2025-01-23T13:29:26.66468802-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:26 fetching block range 81616627-81616726\n"}
+{"Time":"2025-01-23T13:29:26.675867486-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:26 fetching block range 81616728-81616827\n"}
+{"Time":"2025-01-23T13:29:26.865645621-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:26 fetching block range 81616727-81616826\n"}
+{"Time":"2025-01-23T13:29:26.876801185-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:26 fetching block range 81616828-81616927\n"}
+{"Time":"2025-01-23T13:29:27.066817653-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:27 all processing routines stopped successfully\n"}
+{"Time":"2025-01-23T13:29:27.078017826-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"2025/01/23 13:29:27 all processing routines stopped successfully\n"}
+{"Time":"2025-01-23T13:29:27.07803653-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Output":"--- PASS: TestPersistingBlocksStored (6.12s)\n"}
+{"Time":"2025-01-23T13:29:27.078041695-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksStored","Elapsed":6.12}
+{"Time":"2025-01-23T13:29:27.078045975-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed"}
+{"Time":"2025-01-23T13:29:27.078048127-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"=== RUN   TestPersistingBlocksProcessed\n"}
+{"Time":"2025-01-23T13:29:27.078051355-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"startBlock 81614028\n"}
+{"Time":"2025-01-23T13:29:27.379359981-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:27 fetching block range 81614028-81614127\n"}
+{"Time":"2025-01-23T13:29:27.579885612-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:27 fetching block range 81614128-81614227\n"}
+{"Time":"2025-01-23T13:29:27.780503735-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:27 fetching block range 81614228-81614327\n"}
+{"Time":"2025-01-23T13:29:27.980913398-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:27 fetching block range 81614328-81614427\n"}
+{"Time":"2025-01-23T13:29:28.181966544-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:28 fetching block range 81614428-81614527\n"}
+{"Time":"2025-01-23T13:29:28.382482242-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:28 fetching block range 81614528-81614627\n"}
+{"Time":"2025-01-23T13:29:28.583041093-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:28 fetching block range 81614628-81614727\n"}
+{"Time":"2025-01-23T13:29:28.783533804-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:28 fetching block range 81614728-81614827\n"}
+{"Time":"2025-01-23T13:29:28.984613262-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:28 fetching block range 81614828-81614927\n"}
+{"Time":"2025-01-23T13:29:29.079385632-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"    streamer_test.go:420: \n"}
+{"Time":"2025-01-23T13:29:29.079428864-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"        \tError Trace:\t/home/geoffrey/Programming/go-vsc-node/main/modules/hive/streamer/streamer_test.go:420\n"}
+{"Time":"2025-01-23T13:29:29.079439744-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"        \tError:      \t\"-1\" is not greater than \"81614028\"\n"}
+{"Time":"2025-01-23T13:29:29.079448677-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"        \tTest:       \tTestPersistingBlocksProcessed\n"}
+{"Time":"2025-01-23T13:29:29.079462233-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"    streamer_test.go:428: \n"}
+{"Time":"2025-01-23T13:29:29.079470252-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"        \tError Trace:\t/home/geoffrey/Programming/go-vsc-node/main/modules/hive/streamer/streamer_test.go:428\n"}
+{"Time":"2025-01-23T13:29:29.079477795-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"        \tError:      \t\"81614027\" is not greater than \"81614028\"\n"}
+{"Time":"2025-01-23T13:29:29.079501656-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"        \tTest:       \tTestPersistingBlocksProcessed\n"}
+{"Time":"2025-01-23T13:29:29.07951911-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"    streamer_test.go:429: \n"}
+{"Time":"2025-01-23T13:29:29.079529985-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"        \tError Trace:\t/home/geoffrey/Programming/go-vsc-node/main/modules/hive/streamer/streamer_test.go:429\n"}
+{"Time":"2025-01-23T13:29:29.079540732-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"        \tError:      \tNot equal: \n"}
+{"Time":"2025-01-23T13:29:29.079551663-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"        \t            \texpected: -1\n"}
+{"Time":"2025-01-23T13:29:29.079562641-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"        \t            \tactual  : 81614027\n"}
+{"Time":"2025-01-23T13:29:29.079573757-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"        \tTest:       \tTestPersistingBlocksProcessed\n"}
+{"Time":"2025-01-23T13:29:29.079586846-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"startBlock 81614028\n"}
+{"Time":"2025-01-23T13:29:29.185555356-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:29 fetching block range 81614928-81615027\n"}
+{"Time":"2025-01-23T13:29:29.386122172-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:29 fetching block range 81615028-81615127\n"}
+{"Time":"2025-01-23T13:29:29.587587986-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:29 fetching block range 81615128-81615227\n"}
+{"Time":"2025-01-23T13:29:29.788075862-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:29 fetching block range 81615228-81615327\n"}
+{"Time":"2025-01-23T13:29:29.849885088-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestStopAnnouncer","Output":"--- PASS: TestStopAnnouncer (10.00s)\n"}
+{"Time":"2025-01-23T13:29:29.849970971-05:00","Action":"pass","Package":"vsc-node/modules/announcements","Test":"TestStopAnnouncer","Elapsed":10}
+{"Time":"2025-01-23T13:29:29.849988953-05:00","Action":"run","Package":"vsc-node/modules/announcements","Test":"TestInvalidAnnouncementsFrequencySetup"}
+{"Time":"2025-01-23T13:29:29.850000635-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestInvalidAnnouncementsFrequencySetup","Output":"=== RUN   TestInvalidAnnouncementsFrequencySetup\n"}
+{"Time":"2025-01-23T13:29:29.850023846-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestInvalidAnnouncementsFrequencySetup","Output":"--- PASS: TestInvalidAnnouncementsFrequencySetup (0.00s)\n"}
+{"Time":"2025-01-23T13:29:29.85003732-05:00","Action":"pass","Package":"vsc-node/modules/announcements","Test":"TestInvalidAnnouncementsFrequencySetup","Elapsed":0}
+{"Time":"2025-01-23T13:29:29.850044195-05:00","Action":"run","Package":"vsc-node/modules/announcements","Test":"TestInvalidRpcClient"}
+{"Time":"2025-01-23T13:29:29.850051591-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestInvalidRpcClient","Output":"=== RUN   TestInvalidRpcClient\n"}
+{"Time":"2025-01-23T13:29:29.850068008-05:00","Action":"output","Package":"vsc-node/modules/announcements","Test":"TestInvalidRpcClient","Output":"--- PASS: TestInvalidRpcClient (0.00s)\n"}
+{"Time":"2025-01-23T13:29:29.850102278-05:00","Action":"pass","Package":"vsc-node/modules/announcements","Test":"TestInvalidRpcClient","Elapsed":0}
+{"Time":"2025-01-23T13:29:29.850110659-05:00","Action":"output","Package":"vsc-node/modules/announcements","Output":"PASS\n"}
+{"Time":"2025-01-23T13:29:29.851164256-05:00","Action":"output","Package":"vsc-node/modules/announcements","Output":"coverage: 73.7% of statements\n"}
+{"Time":"2025-01-23T13:29:29.853382148-05:00","Action":"output","Package":"vsc-node/modules/announcements","Output":"ok  \tvsc-node/modules/announcements\t19.034s\tcoverage: 73.7% of statements\n"}
+{"Time":"2025-01-23T13:29:29.853431843-05:00","Action":"pass","Package":"vsc-node/modules/announcements","Elapsed":19.035}
+{"Time":"2025-01-23T13:29:29.988686333-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:29 fetching block range 81615328-81615427\n"}
+{"Time":"2025-01-23T13:29:30.189600334-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:30 fetching block range 81615428-81615527\n"}
+{"Time":"2025-01-23T13:29:30.39035569-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:30 fetching block range 81615528-81615627\n"}
+{"Time":"2025-01-23T13:29:30.591115862-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:30 fetching block range 81615628-81615727\n"}
+{"Time":"2025-01-23T13:29:30.792153363-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:30 fetching block range 81615728-81615827\n"}
+{"Time":"2025-01-23T13:29:30.993587361-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:30 fetching block range 81615828-81615927\n"}
+{"Time":"2025-01-23T13:29:31.194495243-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"2025/01/23 13:29:31 all processing routines stopped successfully\n"}
+{"Time":"2025-01-23T13:29:31.194524065-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Output":"--- FAIL: TestPersistingBlocksProcessed (4.12s)\n"}
+{"Time":"2025-01-23T13:29:31.194531905-05:00","Action":"fail","Package":"vsc-node/modules/hive/streamer","Test":"TestPersistingBlocksProcessed","Elapsed":4.12}
+{"Time":"2025-01-23T13:29:31.194539296-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockProcessing"}
+{"Time":"2025-01-23T13:29:31.194543447-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockProcessing","Output":"=== RUN   TestBlockProcessing\n"}
+{"Time":"2025-01-23T13:29:31.194550114-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockProcessing","Output":"startBlock 81614028\n"}
+{"Time":"2025-01-23T13:29:34.195010255-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockProcessing","Output":"--- PASS: TestBlockProcessing (3.00s)\n"}
+{"Time":"2025-01-23T13:29:34.195058649-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockProcessing","Elapsed":3}
+{"Time":"2025-01-23T13:29:34.195069977-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop"}
+{"Time":"2025-01-23T13:29:34.195076269-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"=== RUN   TestStreamPauseResumeStop\n"}
+{"Time":"2025-01-23T13:29:34.496522681-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:34 fetching block range 81614028-81614127\n"}
+{"Time":"2025-01-23T13:29:34.697146755-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:34 fetching block range 81614128-81614227\n"}
+{"Time":"2025-01-23T13:29:34.897958627-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:34 fetching block range 81614228-81614327\n"}
+{"Time":"2025-01-23T13:29:35.099128014-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:35 fetching block range 81614328-81614427\n"}
+{"Time":"2025-01-23T13:29:35.299945479-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:35 fetching block range 81614428-81614527\n"}
+{"Time":"2025-01-23T13:29:35.5004856-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:35 fetching block range 81614528-81614627\n"}
+{"Time":"2025-01-23T13:29:35.701154326-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:35 fetching block range 81614628-81614727\n"}
+{"Time":"2025-01-23T13:29:35.901909748-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:35 fetching block range 81614728-81614827\n"}
+{"Time":"2025-01-23T13:29:36.103027932-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:36 fetching block range 81614828-81614927\n"}
+{"Time":"2025-01-23T13:29:36.303857112-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:36 fetching block range 81614928-81615027\n"}
+{"Time":"2025-01-23T13:29:36.50434254-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:36 fetching block range 81615028-81615127\n"}
+{"Time":"2025-01-23T13:29:36.705006456-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:36 fetching block range 81615128-81615227\n"}
+{"Time":"2025-01-23T13:29:36.905933993-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:36 fetching block range 81615228-81615327\n"}
+{"Time":"2025-01-23T13:29:37.106838463-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:37 fetching block range 81615328-81615427\n"}
+{"Time":"2025-01-23T13:29:38.211956798-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:38 fetching block range 81615428-81615527\n"}
+{"Time":"2025-01-23T13:29:38.412500976-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:38 fetching block range 81615528-81615627\n"}
+{"Time":"2025-01-23T13:29:38.612983559-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:38 fetching block range 81615628-81615727\n"}
+{"Time":"2025-01-23T13:29:38.813613976-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:38 fetching block range 81615728-81615827\n"}
+{"Time":"2025-01-23T13:29:39.014034782-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:39 fetching block range 81615828-81615927\n"}
+{"Time":"2025-01-23T13:29:39.215161853-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"2025/01/23 13:29:39 all processing routines stopped successfully\n"}
+{"Time":"2025-01-23T13:29:40.216045571-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Output":"--- PASS: TestStreamPauseResumeStop (6.02s)\n"}
+{"Time":"2025-01-23T13:29:40.216094643-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestStreamPauseResumeStop","Elapsed":6.02}
+{"Time":"2025-01-23T13:29:40.216108674-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestRestartingProcessingAfterHavingStoppedWithSomeLeft"}
+{"Time":"2025-01-23T13:29:40.216118556-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestRestartingProcessingAfterHavingStoppedWithSomeLeft","Output":"=== RUN   TestRestartingProcessingAfterHavingStoppedWithSomeLeft\n"}
+{"Time":"2025-01-23T13:29:40.216189469-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestRestartingProcessingAfterHavingStoppedWithSomeLeft","Output":"startBlock 81614028\n"}
+{"Time":"2025-01-23T13:29:40.824335907-05:00","Action":"output","Package":"vsc-node/modules/db","Test":"TestCompat","Output":"    db_test.go:64: server selection error: server selection timeout, current topology: { Type: Unknown, Servers: [{ Addr: localhost:27017, Type: Unknown, Last error: dial tcp [::1]:27017: connect: connection refused }, ] }\n"}
+{"Time":"2025-01-23T13:29:40.824463072-05:00","Action":"output","Package":"vsc-node/modules/db","Test":"TestCompat","Output":"--- FAIL: TestCompat (30.00s)\n"}
+{"Time":"2025-01-23T13:29:40.824476617-05:00","Action":"fail","Package":"vsc-node/modules/db","Test":"TestCompat","Elapsed":30}
+{"Time":"2025-01-23T13:29:40.824490619-05:00","Action":"output","Package":"vsc-node/modules/db","Output":"FAIL\n"}
+{"Time":"2025-01-23T13:29:40.825488158-05:00","Action":"output","Package":"vsc-node/modules/db","Output":"coverage: 34.6% of statements\n"}
+{"Time":"2025-01-23T13:29:40.827368959-05:00","Action":"output","Package":"vsc-node/modules/db","Output":"FAIL\tvsc-node/modules/db\t30.008s\n"}
+{"Time":"2025-01-23T13:29:40.827419714-05:00","Action":"fail","Package":"vsc-node/modules/db","Elapsed":30.008}
+{"Time":"2025-01-23T13:29:46.217632893-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestRestartingProcessingAfterHavingStoppedWithSomeLeft","Output":"    streamer_test.go:605: \n"}
+{"Time":"2025-01-23T13:29:46.217662595-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestRestartingProcessingAfterHavingStoppedWithSomeLeft","Output":"        \tError Trace:\t/home/geoffrey/Programming/go-vsc-node/main/modules/hive/streamer/streamer_test.go:605\n"}
+{"Time":"2025-01-23T13:29:46.217669819-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestRestartingProcessingAfterHavingStoppedWithSomeLeft","Output":"        \tError:      \t\"10\" is not greater than \"10\"\n"}
+{"Time":"2025-01-23T13:29:46.217676822-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestRestartingProcessingAfterHavingStoppedWithSomeLeft","Output":"        \tTest:       \tTestRestartingProcessingAfterHavingStoppedWithSomeLeft\n"}
+{"Time":"2025-01-23T13:29:46.21768859-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestRestartingProcessingAfterHavingStoppedWithSomeLeft","Output":"--- FAIL: TestRestartingProcessingAfterHavingStoppedWithSomeLeft (6.00s)\n"}
+{"Time":"2025-01-23T13:29:46.217698931-05:00","Action":"fail","Package":"vsc-node/modules/hive/streamer","Test":"TestRestartingProcessingAfterHavingStoppedWithSomeLeft","Elapsed":6}
+{"Time":"2025-01-23T13:29:46.217706035-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering"}
+{"Time":"2025-01-23T13:29:46.217717283-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"=== RUN   TestFilterOrdering\n"}
+{"Time":"2025-01-23T13:29:46.518772217-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:46 fetching block range 81614028-81614127\n"}
+{"Time":"2025-01-23T13:29:46.719404315-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:46 fetching block range 81614128-81614227\n"}
+{"Time":"2025-01-23T13:29:46.920086063-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:46 fetching block range 81614228-81614327\n"}
+{"Time":"2025-01-23T13:29:47.121963953-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:47 fetching block range 81614328-81614427\n"}
+{"Time":"2025-01-23T13:29:47.322052245-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:47 fetching block range 81614428-81614527\n"}
+{"Time":"2025-01-23T13:29:47.522269907-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:47 fetching block range 81614528-81614627\n"}
+{"Time":"2025-01-23T13:29:47.722745127-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:47 fetching block range 81614628-81614727\n"}
+{"Time":"2025-01-23T13:29:47.923380564-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:47 fetching block range 81614728-81614827\n"}
+{"Time":"2025-01-23T13:29:48.1243939-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:48 fetching block range 81614828-81614927\n"}
+{"Time":"2025-01-23T13:29:48.326080753-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:48 fetching block range 81614928-81615027\n"}
+{"Time":"2025-01-23T13:29:48.526393581-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:48 fetching block range 81615028-81615127\n"}
+{"Time":"2025-01-23T13:29:48.7267873-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:48 fetching block range 81615128-81615227\n"}
+{"Time":"2025-01-23T13:29:48.927489171-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:48 fetching block range 81615228-81615327\n"}
+{"Time":"2025-01-23T13:29:49.128406301-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:49 fetching block range 81615328-81615427\n"}
+{"Time":"2025-01-23T13:29:49.329266487-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"2025/01/23 13:29:49 all processing routines stopped successfully\n"}
+{"Time":"2025-01-23T13:29:49.32931007-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Output":"--- PASS: TestFilterOrdering (3.11s)\n"}
+{"Time":"2025-01-23T13:29:49.329323103-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestFilterOrdering","Elapsed":3.11}
+{"Time":"2025-01-23T13:29:49.329332995-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag"}
+{"Time":"2025-01-23T13:29:49.329340444-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"=== RUN   TestBlockLag\n"}
+{"Time":"2025-01-23T13:29:52.341033706-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:52 all processing routines stopped successfully\n"}
+{"Time":"2025-01-23T13:29:52.641970741-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:52 fetching block range 244842078-244842177\n"}
+{"Time":"2025-01-23T13:29:52.842366748-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:52 fetching block range 244842178-244842277\n"}
+{"Time":"2025-01-23T13:29:53.043123826-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:53 fetching block range 244842278-244842377\n"}
+{"Time":"2025-01-23T13:29:53.24404372-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:53 fetching block range 244842378-244842477\n"}
+{"Time":"2025-01-23T13:29:53.444335216-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:53 fetching block range 244842478-244842577\n"}
+{"Time":"2025-01-23T13:29:53.645985863-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:53 fetching block range 244842578-244842677\n"}
+{"Time":"2025-01-23T13:29:53.846487875-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:53 fetching block range 244842678-244842777\n"}
+{"Time":"2025-01-23T13:29:54.047018516-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:54 fetching block range 244842778-244842877\n"}
+{"Time":"2025-01-23T13:29:54.247928905-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:54 fetching block range 244842878-244842977\n"}
+{"Time":"2025-01-23T13:29:54.448811638-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:54 fetching block range 244842978-244843077\n"}
+{"Time":"2025-01-23T13:29:54.649195913-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:54 fetching block range 244843078-244843177\n"}
+{"Time":"2025-01-23T13:29:54.849657104-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:54 fetching block range 244843178-244843277\n"}
+{"Time":"2025-01-23T13:29:55.050155516-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:55 fetching block range 244843278-244843377\n"}
+{"Time":"2025-01-23T13:29:55.25107092-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:55 fetching block range 244843378-244843477\n"}
+{"Time":"2025-01-23T13:29:55.451669798-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"2025/01/23 13:29:55 all processing routines stopped successfully\n"}
+{"Time":"2025-01-23T13:29:55.451693653-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Output":"--- PASS: TestBlockLag (6.12s)\n"}
+{"Time":"2025-01-23T13:29:55.451700975-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestBlockLag","Elapsed":6.12}
+{"Time":"2025-01-23T13:29:55.451705246-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks"}
+{"Time":"2025-01-23T13:29:55.451707065-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"=== RUN   TestClearingStoredBlocks\n"}
+{"Time":"2025-01-23T13:29:55.75295532-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:55 fetching block range 10-109\n"}
+{"Time":"2025-01-23T13:29:55.954258314-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:55 fetching block range 110-209\n"}
+{"Time":"2025-01-23T13:29:56.155278279-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:56 fetching block range 210-309\n"}
+{"Time":"2025-01-23T13:29:56.355967965-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:56 fetching block range 310-409\n"}
+{"Time":"2025-01-23T13:29:56.556580047-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:56 fetching block range 410-509\n"}
+{"Time":"2025-01-23T13:29:56.75712326-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:56 fetching block range 510-609\n"}
+{"Time":"2025-01-23T13:29:56.957769988-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:56 fetching block range 610-709\n"}
+{"Time":"2025-01-23T13:29:57.158928885-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:57 fetching block range 710-809\n"}
+{"Time":"2025-01-23T13:29:57.360042222-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:57 fetching block range 810-909\n"}
+{"Time":"2025-01-23T13:29:57.560536061-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:57 fetching block range 910-1009\n"}
+{"Time":"2025-01-23T13:29:57.761052214-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:57 fetching block range 1010-1109\n"}
+{"Time":"2025-01-23T13:29:57.961652831-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:57 fetching block range 1110-1209\n"}
+{"Time":"2025-01-23T13:29:58.162044834-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:58 fetching block range 1210-1309\n"}
+{"Time":"2025-01-23T13:29:58.362858077-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:58 fetching block range 1310-1409\n"}
+{"Time":"2025-01-23T13:29:58.563514247-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"2025/01/23 13:29:58 all processing routines stopped successfully\n"}
+{"Time":"2025-01-23T13:29:58.563540212-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Output":"--- PASS: TestClearingStoredBlocks (3.11s)\n"}
+{"Time":"2025-01-23T13:29:58.563549313-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingStoredBlocks","Elapsed":3.11}
+{"Time":"2025-01-23T13:29:58.563553303-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingLastProcessedBlock"}
+{"Time":"2025-01-23T13:29:58.563555489-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingLastProcessedBlock","Output":"=== RUN   TestClearingLastProcessedBlock\n"}
+{"Time":"2025-01-23T13:29:58.563558071-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingLastProcessedBlock","Output":"startBlock 244842078\n"}
+{"Time":"2025-01-23T13:30:01.564564634-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingLastProcessedBlock","Output":"--- PASS: TestClearingLastProcessedBlock (3.00s)\n"}
+{"Time":"2025-01-23T13:30:01.564612239-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestClearingLastProcessedBlock","Elapsed":3}
+{"Time":"2025-01-23T13:30:01.564626331-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock"}
+{"Time":"2025-01-23T13:30:01.564635312-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"=== RUN   TestHeadBlock\n"}
+{"Time":"2025-01-23T13:30:01.903617133-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:01 fetching block range 244842078-244842177\n"}
+{"Time":"2025-01-23T13:30:02.10488013-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:02 fetching block range 244842178-244842277\n"}
+{"Time":"2025-01-23T13:30:02.30577799-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:02 fetching block range 244842278-244842377\n"}
+{"Time":"2025-01-23T13:30:02.506354982-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:02 fetching block range 244842378-244842477\n"}
+{"Time":"2025-01-23T13:30:02.70736222-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:02 fetching block range 244842478-244842577\n"}
+{"Time":"2025-01-23T13:30:02.90795104-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:02 fetching block range 244842578-244842677\n"}
+{"Time":"2025-01-23T13:30:03.108942006-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:03 fetching block range 244842678-244842777\n"}
+{"Time":"2025-01-23T13:30:03.309695087-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:03 fetching block range 244842778-244842877\n"}
+{"Time":"2025-01-23T13:30:03.510680209-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:03 fetching block range 244842878-244842977\n"}
+{"Time":"2025-01-23T13:30:03.71140619-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:03 fetching block range 244842978-244843077\n"}
+{"Time":"2025-01-23T13:30:03.912037922-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:03 fetching block range 244843078-244843177\n"}
+{"Time":"2025-01-23T13:30:04.113126192-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:04 fetching block range 244843178-244843277\n"}
+{"Time":"2025-01-23T13:30:04.314047906-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:04 fetching block range 244843278-244843377\n"}
+{"Time":"2025-01-23T13:30:04.515410863-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:04 fetching block range 244843378-244843477\n"}
+{"Time":"2025-01-23T13:30:04.716390027-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"2025/01/23 13:30:04 all processing routines stopped successfully\n"}
+{"Time":"2025-01-23T13:30:04.716453491-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Output":"--- PASS: TestHeadBlock (3.15s)\n"}
+{"Time":"2025-01-23T13:30:04.716468381-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestHeadBlock","Elapsed":3.15}
+{"Time":"2025-01-23T13:30:04.71648327-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestDbStoredBlockIntegrity"}
+{"Time":"2025-01-23T13:30:04.716491735-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestDbStoredBlockIntegrity","Output":"=== RUN   TestDbStoredBlockIntegrity\n"}
+{"Time":"2025-01-23T13:30:04.716880504-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestDbStoredBlockIntegrity","Output":"--- PASS: TestDbStoredBlockIntegrity (0.00s)\n"}
+{"Time":"2025-01-23T13:30:04.716961862-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestDbStoredBlockIntegrity","Elapsed":0}
+{"Time":"2025-01-23T13:30:04.716975974-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestNestedArrayStructure"}
+{"Time":"2025-01-23T13:30:04.716984722-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestNestedArrayStructure","Output":"=== RUN   TestNestedArrayStructure\n"}
+{"Time":"2025-01-23T13:30:04.71700686-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestNestedArrayStructure","Output":"--- PASS: TestNestedArrayStructure (0.00s)\n"}
+{"Time":"2025-01-23T13:30:04.717018017-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestNestedArrayStructure","Elapsed":0}
+{"Time":"2025-01-23T13:30:04.717025883-05:00","Action":"run","Package":"vsc-node/modules/hive/streamer","Test":"TestVaultecExperiments"}
+{"Time":"2025-01-23T13:30:04.717038928-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestVaultecExperiments","Output":"=== RUN   TestVaultecExperiments\n"}
+{"Time":"2025-01-23T13:30:04.717053279-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Test":"TestVaultecExperiments","Output":"--- PASS: TestVaultecExperiments (0.00s)\n"}
+{"Time":"2025-01-23T13:30:04.717061488-05:00","Action":"pass","Package":"vsc-node/modules/hive/streamer","Test":"TestVaultecExperiments","Elapsed":0}
+{"Time":"2025-01-23T13:30:04.717069748-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Output":"FAIL\n"}
+{"Time":"2025-01-23T13:30:04.718737476-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Output":"coverage: 78.7% of statements\n"}
+{"Time":"2025-01-23T13:30:04.722731684-05:00","Action":"output","Package":"vsc-node/modules/hive/streamer","Output":"FAIL\tvsc-node/modules/hive/streamer\t53.703s\n"}
+{"Time":"2025-01-23T13:30:04.722772094-05:00","Action":"fail","Package":"vsc-node/modules/hive/streamer","Elapsed":53.703}

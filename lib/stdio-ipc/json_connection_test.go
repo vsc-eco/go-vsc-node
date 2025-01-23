@@ -71,12 +71,13 @@ func TestBasicJsonConnection(t *testing.T) {
 	var m ipc_requests.Message[string]
 	assert.Error(t, cio.Receive(&m), "EOF")
 
-	assert.True(t, cio.Finished())
-
 	assert.Nil(t, cio.Send(nil))
 
 	assert.Nil(t, cio.Close())
-	assert.Equal(t, stdin.String(), "[\n{\"Type\":\"nil\",\"Message\":null}\n]")
+
+	assert.True(t, cio.Finished())
+
+	assert.Equal(t, "[\n{\"Type\":\"nil\",\"Message\":null}\n]", stdin.String())
 }
 
 func TestDuplexJsonConnection(t *testing.T) {

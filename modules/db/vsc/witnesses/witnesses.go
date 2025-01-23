@@ -68,7 +68,10 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 		Key:   "height",
 		Value: -1,
 	}})
-	cursor, _ := w.Find(ctx, oldRecordsFilter, oldRecordsOptions)
+	cursor, err := w.Find(ctx, oldRecordsFilter, oldRecordsOptions)
+	if err != nil {
+		return err
+	}
 	var deletionHeight *int32
 	for cursor.Next(ctx) {
 		var result bson.M
