@@ -8,7 +8,7 @@ type ElectionResult struct {
 	Members     []ElectionMember `json:"members" bson:"members"`
 	Proposer    string           `json:"proposer" bson:"proposer"`
 	Weights     []int64          `json:"weights" bson:"weights"`
-	WeightTotal int64            `json:"weight_total" bson:"weight_total`
+	WeightTotal int64            `json:"weight_total" bson:"weight_total"`
 }
 
 type ElectionMember struct {

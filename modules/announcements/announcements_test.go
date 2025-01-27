@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 	"time"
+	"vsc-node/lib/hive"
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
@@ -41,7 +42,19 @@ func TestImmediateExecution(t *testing.T) {
 	// create new clients
 	hiveRpcClient := &mockHiveRpcClient{}
 	conf := announcements.NewAnnouncementsConfig()
-	anouncementsManager, err := announcements.New(hiveRpcClient, conf, time.Second*15)
+
+	wif := conf.Get().AnnouncementPrivateWif
+	keypair, _ := hivego.KeyPairFromWif(wif)
+
+	txCreator := hive.LiveTransactionCreator{
+		TransactionBroadcaster: hive.TransactionBroadcaster{
+			KeyPair: keypair,
+			Client:  nil,
+		},
+		TransactionCrafter: hive.TransactionCrafter{},
+	}
+
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, time.Second*15, &txCreator)
 	assert.NoError(t, err)
 
 	agg := aggregate.New([]aggregate.Plugin{
@@ -62,7 +75,17 @@ func TestCronExecutions(t *testing.T) {
 	// create new clients
 	hiveRpcClient := &mockHiveRpcClient{}
 	conf := announcements.NewAnnouncementsConfig()
-	anouncementsManager, err := announcements.New(hiveRpcClient, conf, time.Second*2)
+	wif := conf.Get().AnnouncementPrivateWif
+	keypair, _ := hivego.KeyPairFromWif(wif)
+
+	txCreator := hive.LiveTransactionCreator{
+		TransactionBroadcaster: hive.TransactionBroadcaster{
+			KeyPair: keypair,
+			Client:  nil,
+		},
+		TransactionCrafter: hive.TransactionCrafter{},
+	}
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, time.Second*2, &txCreator)
 	assert.NoError(t, err)
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
@@ -88,7 +111,15 @@ func TestStopAnnouncer(t *testing.T) {
 	// create new clients
 	hiveRpcClient := &mockHiveRpcClient{}
 	conf := announcements.NewAnnouncementsConfig()
-	anouncementsManager, err := announcements.New(hiveRpcClient, conf, time.Second*2)
+
+	txCreator := hive.LiveTransactionCreator{
+		TransactionBroadcaster: hive.TransactionBroadcaster{
+			KeyPair: nil,
+			Client:  nil,
+		},
+		TransactionCrafter: hive.TransactionCrafter{},
+	}
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, time.Second*2, &txCreator)
 	assert.NoError(t, err)
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
@@ -113,20 +144,21 @@ func TestStopAnnouncer(t *testing.T) {
 
 func TestInvalidAnnouncementsFrequencySetup(t *testing.T) {
 	// create new clients
+
 	hiveRpcClient := &mockHiveRpcClient{}
 	conf := announcements.NewAnnouncementsConfig()
-	_, err := announcements.New(hiveRpcClient, conf, time.Second*0)
+	_, err := announcements.New(hiveRpcClient, conf, time.Second*0, nil)
 	assert.Error(t, err)
-	_, err = announcements.New(hiveRpcClient, conf, time.Second*-1)
+	_, err = announcements.New(hiveRpcClient, conf, time.Second*-1, nil)
 	assert.Error(t, err)
-	_, err = announcements.New(hiveRpcClient, conf, time.Second*-2)
+	_, err = announcements.New(hiveRpcClient, conf, time.Second*-2, nil)
 	assert.Error(t, err)
-	_, err = announcements.New(hiveRpcClient, conf, time.Second*3)
+	_, err = announcements.New(hiveRpcClient, conf, time.Second*3, nil)
 	assert.NoError(t, err)
 }
 
 func TestInvalidRpcClient(t *testing.T) {
 	conf := announcements.NewAnnouncementsConfig()
-	_, err := announcements.New(nil, conf, time.Second*2)
+	_, err := announcements.New(nil, conf, time.Second*2, nil)
 	assert.Error(t, err)
 }

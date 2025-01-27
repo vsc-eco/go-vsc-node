@@ -35,7 +35,7 @@ type Tx struct {
 
 type VirtualOp struct {
 	Block int64 `json:"block" bson:"block"`
-	Op    map[string]struct {
+	Op    struct {
 		Type  string                 `json:"type" bson:"type"`
 		Value map[string]interface{} `json:"value" bson:"value"`
 	} `json:"op" bson:"op"`

@@ -17,9 +17,10 @@ type SetContractArgs struct {
 	CreationHeight int
 }
 
-type ContractHistory interface {
+type ContractState interface {
 	a.Plugin
 	IngestOutput(inputArgs IngestOutputArgs)
+	GetLastOutput(contractId string, height int) *ContractOutput
 }
 
 type IngestOutputArgs struct {
@@ -30,8 +31,29 @@ type IngestOutputArgs struct {
 	Gas         struct {
 		IO int64
 	}
+	Results []struct {
+		Ret       *string  `bson:"ret"`
+		Logs      []string `bson:"logs"`
+		Error     *string  `bson:"error"`
+		ErrorType *int     `bson:"errorType"`
+	} `bson:"results"`
 	AnchoredBlock  string
 	AnchoredHeight int64
 	AnchoredId     string
 	AnchoredIndex  int64
+}
+
+type ContractOutput struct {
+	Id          string   `bson:"id"`
+	Inputs      []string `bson:"inputs"`
+	ContractId  string   `bson:"contract_id"`
+	StateMerkle string   `bson:"state_merkle"`
+
+	Results []struct {
+		Ret       *string  `bson:"ret"`
+		Logs      []string `bson:"logs"`
+		Error     *string  `bson:"error"`
+		ErrorType *int     `bson:"errorType"`
+	} `bson:"results"`
+	BlockHeight int64 `bson:"block_height"`
 }

@@ -8,11 +8,13 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	bitswap "github.com/ipfs/boxo/bitswap"
-	bsnet "github.com/ipfs/boxo/bitswap/network"
+	"github.com/ipfs/boxo/bitswap/network"
 	"github.com/ipfs/boxo/blockservice"
 	blockstore "github.com/ipfs/boxo/blockstore"
 	"github.com/ipfs/boxo/datastore/dshelp"
+	"github.com/ipfs/boxo/exchange/providing"
 	"github.com/ipfs/boxo/ipld/merkledag"
+	"github.com/ipfs/boxo/provider"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-datastore"
@@ -101,11 +103,13 @@ func (dl *DataLayer) PutObject(data interface{}) (*cid.Cid, error) {
 func (dl *DataLayer) Get(cid cid.Cid, options *GetOptions) (*format.Node, error) {
 	//This is using direct bitswap access which may not use a block store.
 	//Thus, it will not store anything upon request.
-	block, err := dl.bitswap.GetBlock(context.Background(), cid)
+	block, err := dl.blockServ.GetBlock(context.Background(), cid)
 	if err != nil {
 		return nil, err
 	}
 	node, err := dagCbor.DecodeBlock(block)
+
+	dl.blockServ.AddBlock(context.Background(), block)
 
 	if err != nil {
 		return nil, err
@@ -146,11 +150,12 @@ func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
 	go func() {
 		dl.dht.Bootstrap(context.TODO())
 		peers, _ := dl.dht.FindProviders(context.Background(), cid)
-		fmt.Println("ConnectingPeers", len(peers))
 		for _, peer := range peers {
-			fmt.Println("Connecting to peer", peer)
 			dl.host.Connect(context.Background(), peer)
 		}
+		fmt.Println("TRYING TO PULL IN LOOP")
+		dl.bitswap.GetBlock(context.Background(), cid)
+		fmt.Println("I PULLED SOMETHING LOL")
 	}()
 	block, err := dl.blockServ.GetBlock(context.Background(), cid)
 	//Make sure it is stored
@@ -212,19 +217,37 @@ func (dl *DataLayer) FindProviders(cid.Cid) []peer.ID {
 	return make([]peer.ID, 0)
 }
 
-func New(host host.Host, dht *kadDht.IpfsDHT) *DataLayer {
+func New(host host.Host, dht *kadDht.IpfsDHT, dbPrefix ...string) *DataLayer {
 
 	var ctx context.Context = context.Background()
 
-	ds, _ := badger.NewDatastore("badger", &badger.DefaultOptions)
+	var path string
+
+	if len(dbPrefix) > 0 {
+		path = "badger-" + dbPrefix[0]
+	} else {
+		path = "badger"
+	}
+
+	ds, eerrBad := badger.NewDatastore(path, &badger.DefaultOptions)
 	var bstore blockstore.Blockstore = blockstore.NewBlockstore(ds)
 
-	network := bsnet.NewFromIpfsHost(host, dht)
-	exchange := bitswap.New(ctx, network, bstore)
-	// exchange.GetBlock()
+	bswapnet := network.NewFromIpfsHost(host)
+	// Create Bitswap: a new "discovery" parameter, usually the "contentRouter"
+	// which does both discovery and providing.
+	bswap := bitswap.New(ctx, bswapnet, dht, bstore)
+	// A provider system that handles concurrent provides etc. "contentProvider"
+	// is usually the "contentRouter" which does both discovery and providing.
+	// "contentProvider" could be used directly without wrapping, but it is recommended
+	// to do so to provide more efficiently.
+	provider, err := provider.New(ds, provider.Online(dht))
+	// A wrapped providing exchange using the previous exchange and the provider.
+	exchange := providing.New(bswap, provider)
+
+	// Finally the blockservice
 	blockService := blockservice.New(bstore, exchange)
 
-	fmt.Println("PeerId", host.ID())
+	fmt.Println("PeerId", host.ID(), err, eerrBad)
 
 	// fx.Lifecycle.
 	// cid, _ := cid.Parse("bafyreic5eyutoi7gattebiutaj4prdeev7jwyyeba2hpdnmzxb2cuk4hge")
@@ -290,7 +313,7 @@ func New(host host.Host, dht *kadDht.IpfsDHT) *DataLayer {
 	// blockService.AddBlock(context.TODO(), block2)
 
 	return &DataLayer{
-		bitswap:   *exchange,
+		bitswap:   *bswap,
 		host:      host,
 		dht:       dht,
 		blockServ: blockService,

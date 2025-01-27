@@ -15,13 +15,81 @@ import (
 
 type MockBalanceDb struct {
 	aggregate.Plugin
+
+	BalanceRecords map[string][]ledgerDb.BalanceRecord
 }
 
-func (m *MockBalanceDb) GetBalanceRecord(account string, blockHeight int64, asset string) (int64, error) {
-	if account == "test-account" && asset == "HIVE" {
-		return 0, nil
+func (m *MockBalanceDb) GetBalanceRecord(account string, blockHeight int64, asset string) (int64, int64, error) {
+	var latestRecord ledgerDb.BalanceRecord
+	for _, record := range m.BalanceRecords[account] {
+		if record.BlockHeight < blockHeight {
+			latestRecord = record
+		}
 	}
-	return 0, nil
+
+	bal := int64(0)
+	if asset == "hive" {
+		bal = latestRecord.Hive
+	} else if asset == "hbd" {
+		bal = latestRecord.HBD
+	} else if asset == "hbd_savings" {
+		bal = latestRecord.HBD_SAVINGS
+	}
+
+	return bal, latestRecord.BlockHeight, nil
+}
+
+func (m *MockBalanceDb) UpdateBalanceRecord(account string, blockHeight int64, balances map[string]int64) error {
+	previousRecord := m.GetLatestRecord(account, blockHeight)
+
+	//HBD_MODIFY_HEIGHT = some value that is less than claim height aka % of the month interval
+	//HBD_CLAIM_HEIGHT = time since last claim (caculated value)
+	//HBD_AVG = average balance throughout the month using average calculation
+	moreAvg := int64(0)
+	HBD_AVG := int64(0)
+	if previousRecord != nil {
+		moreAvg = previousRecord.HBD_SAVINGS * previousRecord.HBD_MODIFY_HEIGHT / previousRecord.HBD_CLAIM_HEIGHT
+		HBD_AVG = previousRecord.HBD_AVG
+
+	}
+
+	m.BalanceRecords[account] = append(m.BalanceRecords[account], ledgerDb.BalanceRecord{
+		Account:           account,
+		BlockHeight:       blockHeight,
+		Hive:              balances["hive"],
+		HBD:               balances["hbd"],
+		HBD_SAVINGS:       balances["hbd_savings"],
+		HBD_AVG:           HBD_AVG + moreAvg,
+		HBD_MODIFY_HEIGHT: blockHeight,
+		HBD_CLAIM_HEIGHT:  1,
+	})
+	return nil
+}
+
+func (m *MockBalanceDb) GetLatestRecord(account string, beforeHeight int64) *ledgerDb.BalanceRecord {
+	var record ledgerDb.BalanceRecord
+
+	found := false
+	for _, records := range m.BalanceRecords[account] {
+		if record.BlockHeight < records.BlockHeight {
+			record = records
+			found = true
+		}
+	}
+
+	if !found {
+		return nil
+	}
+
+	return &record
+}
+
+func (m *MockBalanceDb) GetAll(blockHeight int64) []ledgerDb.BalanceRecord {
+	out := make([]ledgerDb.BalanceRecord, 0)
+	for _, records := range m.BalanceRecords {
+		out = append(out, records...)
+	}
+	return out
 }
 
 type MockLedgerDb struct {
@@ -38,9 +106,32 @@ func (m *MockLedgerDb) InsertLedgerRecord(ledgerRecord ledgerDb.LedgerRecord) er
 func (m *MockLedgerDb) GetLedgerRecords1(account string, anchorHeight int64, blockHeight int64, asset string) ([]ledgerDb.LedgerRecord, error) {
 	return m.LedgerRecords[account], nil
 }
+
 func (m *MockLedgerDb) GetLedgerAfterHeight(account string, blockHeight int64, asset string, limit *int64) (*[]ledgerDb.LedgerRecord, error) {
 	das := m.LedgerRecords[account]
-	return &das, nil
+	filteredResults := make([]ledgerDb.LedgerRecord, 0)
+	for _, record := range das {
+		if record.BlockHeight >= blockHeight && record.Asset == asset {
+			filteredResults = append(filteredResults, record)
+		}
+	}
+
+	return &filteredResults, nil
+}
+
+func (m *MockLedgerDb) GetLedgerRange(account string, start int64, end int64, asset string) (*[]ledgerDb.LedgerRecord, error) {
+	das := m.LedgerRecords[account]
+	filteredResults := make([]ledgerDb.LedgerRecord, 0)
+	for _, record := range das {
+		if record.Asset == asset {
+			if record.BlockHeight >= start && record.BlockHeight <= end {
+				filteredResults = append(filteredResults, record)
+			}
+		}
+	}
+
+	return &filteredResults, nil
+
 }
 
 func (m *MockLedgerDb) StoreLedger(ledgerRecord ledgerDb.LedgerRecord) {
@@ -61,6 +152,24 @@ func (m *MockWithdrawsDb) StoreWithdrawal(withdraw ledgerDb.ActionRecord) {
 func (m *MockWithdrawsDb) MarkComplete(id string) {
 	withdraw := m.Withdraws[id]
 	withdraw.Status = "completed"
+	m.Withdraws[id] = withdraw
+}
+
+func (m *MockWithdrawsDb) ExecuteComplete(id string) {
+
+}
+
+func (m *MockWithdrawsDb) Get(id string) (*ledgerDb.ActionRecord, error) {
+	d := m.Withdraws[id]
+	if d.Id == "" {
+		return nil, nil
+	}
+	return &d, nil
+}
+
+func (m *MockWithdrawsDb) SetStatus(id string, status string) {
+	withdraw := m.Withdraws[id]
+	withdraw.Status = status
 	m.Withdraws[id] = withdraw
 }
 
@@ -181,6 +290,7 @@ func TestInsertCheckBalance(t *testing.T) {
 			Memo:   "",
 		},
 		false,
+		true,
 	})
 
 	ledgerExecutor.Stake(stateEngine.StakeOp{
@@ -194,6 +304,7 @@ func TestInsertCheckBalance(t *testing.T) {
 			Memo:   "",
 		},
 		true,
+		true,
 	})
 
 	ledgerExecutor.Unstake(stateEngine.StakeOp{
@@ -207,6 +318,7 @@ func TestInsertCheckBalance(t *testing.T) {
 			Memo:   "",
 		},
 		true,
+		true,
 	})
 	ledgerExecutor.Unstake(stateEngine.StakeOp{
 		stateEngine.OpLogEvent{
@@ -219,6 +331,7 @@ func TestInsertCheckBalance(t *testing.T) {
 			Memo:   "",
 		},
 		false,
+		true,
 	})
 }
 
@@ -379,6 +492,155 @@ func TestFractionReserve(t *testing.T) {
 	fmt.Println("Fractional reserve calculation", string(bbytes))
 }
 
-func TestGatewaySync(t *testing.T) {
+// Tests HBD Savings
+// Handles stake and unstake operations
+// Will handle claiming in the future
+func TestHBDSavings(t *testing.T) {
+
+	ledgerDbA := MockLedgerDb{
+		LedgerRecords: make(map[string][]ledgerDb.LedgerRecord),
+	}
+	actionsDb := &MockWithdrawsDb{
+		Withdraws: make(map[string]ledgerDb.ActionRecord),
+	}
+	ledgerSystem := stateEngine.LedgerSystem{
+		BalanceDb: &MockBalanceDb{
+			BalanceRecords: make(map[string][]ledgerDb.BalanceRecord),
+		},
+		LedgerDb:  &ledgerDbA,
+		ActionsDb: actionsDb,
+	}
+	ledgerExecutor := stateEngine.LedgerExecutor{
+		Ls: &ledgerSystem,
+	}
+	ledgerExecutor.SetHeight(10)
+
+	//Note this will record into "virtualLedger"
+	ledgerExecutor.Deposit(stateEngine.Deposit{
+		Id:     "deposit-tx-0",
+		Asset:  "hbd",
+		Amount: 100,
+		From:   "hive:test-account",
+		Memo:   "Deposit test",
+		BIdx:   1,
+		OpIdx:  0,
+	})
+	ledgerExecutor.Deposit(stateEngine.Deposit{
+		Id:     "deposit-tx-0",
+		Asset:  "hbd",
+		Amount: 100,
+		From:   "hive:vaultec",
+		Memo:   "Deposit test",
+		BIdx:   1,
+		OpIdx:  0,
+	})
+
+	//Note: this pulls from the virtualLedger and not the actual ledger in the db
+	bal := ledgerExecutor.SnapshotForAccount("hive:test-account", 9, "hbd")
+
+	fmt.Println("Balance", bal)
+	ledgerResult := ledgerExecutor.Stake(
+		stateEngine.StakeOp{
+			OpLogEvent: stateEngine.OpLogEvent{
+				Id:     "stake-tx-0",
+				From:   "hive:test-account",
+				To:     "hive:test-account",
+				Amount: 10,
+				Type:   "stake",
+				Asset:  "hbd",
+				Memo:   "Stake test",
+			},
+		},
+	)
+	ledgerResult = ledgerExecutor.Stake(
+		stateEngine.StakeOp{
+			OpLogEvent: stateEngine.OpLogEvent{
+				Id:     "stake-tx-0",
+				From:   "hive:vaultec",
+				To:     "hive:vaultec",
+				Amount: 10,
+				Type:   "stake",
+				Asset:  "hbd",
+				Memo:   "Stake test",
+			},
+		},
+	)
+	fmt.Println("Ledger Result", ledgerResult)
+	fromBal := ledgerExecutor.SnapshotForAccount("hive:test-account", 11, "hbd")
+	toBal := ledgerExecutor.SnapshotForAccount("hive:test-account", 11, "hbd_savings")
+	fmt.Println("From Balance", fromBal, toBal)
+
+	//First thing must happen! It must be finalized!
+	//We are going to simulate that here. In place of a block finalization!
+
+	//Pull out oplog
+	exported := ledgerExecutor.Export()
+	fmt.Println("exported.Oplog", exported.Oplog)
+
+	//Flush oplog
+	ledgerExecutor.Flush()
+
+	//Theoretically agree and publish a signed block
+	//This is what goes into blocks
+	ledgerSystem.ExecuteOplog(exported.Oplog, 0, 20)
+
+	// fmt.Println("ActionsDb", actionsDb.Withdraws)
+
+	//This is where a stake/unstake operation should happen on chain and get back indexed
+	ledgerSystem.ExecuteActions([]string{"stake-tx-0-1"}, stateEngine.ExtraInfo{
+		//Hypothetically a few minutes
+		BlockHeight: 30,
+	})
+
+	hbdBal := ledgerSystem.GetBalance("hive:vaultec", 31, "hbd_savings")
+	ledgerSystem.SaveSnapshot("hive:vaultec", 32)
+
+	fmt.Println("HBD savings Balance", hbdBal)
+	// ledgerJson, _ := json.Marshal(ledgerDbA.LedgerRecords)
+	// fmt.Println("Ledger Records", string(ledgerJson))
+	// ledgerJson, _ = json.Marshal(ledgerSystem.ActionsDb)
+	// fmt.Println("ActionsDb", string(ledgerJson))
+	// ledgerJson, _ = json.Marshal(ledgerSystem.BalanceDb)
+	// fmt.Println("BalanceDb", string(ledgerJson))
+
+	ledgerSystem.ClaimHBDInterest(1, 40, 1)
+	hbdBal = ledgerSystem.GetBalance("hive:vaultec", 45, "hbd_savings")
+
+	fmt.Println("HBD savings Balance after claim", hbdBal)
+
+	ledgerExecutor.SetHeight(40)
+	ledgerResult = ledgerExecutor.Unstake(
+		stateEngine.StakeOp{
+			OpLogEvent: stateEngine.OpLogEvent{
+				Id:     "unstake-tx-0",
+				From:   "hive:vaultec",
+				To:     "hive:vaultec",
+				Amount: 5,
+				Type:   "unstake",
+				Asset:  "hbd",
+				Memo:   "Stake test",
+			},
+		},
+	)
+	fmt.Println("Ledger Result", ledgerResult)
+	hbdBal = ledgerSystem.GetBalance("hive:vaultec", 50, "hbd")
+	fmt.Println("HBD Balance before unstake", hbdBal)
+	exported = ledgerExecutor.Export()
+	ledgerExecutor.Flush()
+
+	ledgerSystem.ExecuteOplog(exported.Oplog, 40, 50)
+	//ID = 0x0F8239B80720BA9367B19047c92924e7287b7A35-0-unstake
+	ledgerSystem.ExecuteActions([]string{"unstake-tx-0-1"}, stateEngine.ExtraInfo{
+		BlockHeight: 60,
+	})
+
+	fmt.Println(ledgerSystem.LedgerDb)
+
+	hbdBal = ledgerSystem.GetBalance("hive:vaultec", 86459, "hbd")
+
+	fmt.Println("HBD Balance after unstake", hbdBal)
+
+	// ledgerJson, _ = json.Marshal(ledgerDbA.LedgerRecords)
+	// fmt.Println("Ledger Records", string(ledgerJson))
 
 }

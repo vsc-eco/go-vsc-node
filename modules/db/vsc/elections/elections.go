@@ -3,6 +3,7 @@ package elections
 import (
 	"context"
 	"fmt"
+	"math"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
@@ -108,3 +109,44 @@ func CalculateSigningScore(circuit dids.BlsCircuit, election ElectionResult) (in
 
 	return sum, WeightTotal
 }
+
+func MinimumSigningScore(lastElectionHeight int64, memberCount int64) {
+
+}
+
+// Probably should be a minimum of 6
+const MIN_BLOCKS_SINCE_LAST_ELECTION = 1200   // 1 hour
+const MAX_BLOCKS_SINCE_LAST_ELECTION = 403200 // 2 weeks
+
+func MinimalRequiredElectionVotes(blocksSinceLastElection, memberCountOfLastElection int) int {
+	if blocksSinceLastElection < MIN_BLOCKS_SINCE_LAST_ELECTION {
+		//Return 2/3
+		return int(math.Ceil(float64(memberCountOfLastElection) * 2.0 / 3.0))
+	}
+
+	// Calculate minimum and maximum members.
+	minMembers := int(math.Floor(float64(memberCountOfLastElection)/2 + 1))
+	maxMembers := int(math.Ceil(float64(memberCountOfLastElection) * 2.0 / 3.0))
+
+	// Compute drift.
+	cappedBlocks := math.Min(float64(blocksSinceLastElection), float64(MAX_BLOCKS_SINCE_LAST_ELECTION))
+	drift := (float64(MAX_BLOCKS_SINCE_LAST_ELECTION) - cappedBlocks) / float64(MAX_BLOCKS_SINCE_LAST_ELECTION)
+
+	// Map drift from [0, 1] to [minMembers, maxMembers].
+	mappedValue := float64(minMembers) + (float64(maxMembers)-float64(minMembers))*drift
+
+	return int(math.Round(mappedValue))
+}
+
+// export const MIN_BLOCKS_SINCE_LAST_ELECTION = 1200 // 1 hour
+// export const MAX_BLOCKS_SINCE_LAST_ELECTION = 403200 // 2 weeks
+
+// export function minimalRequiredElectionVotes(blocksSinceLastElection: number, memberCountOfLastElection: number): number {
+//     if (blocksSinceLastElection < MIN_BLOCKS_SINCE_LAST_ELECTION) {
+//         throw new Error('tried to run election before time slot')
+//     }
+//     const minMembers = Math.floor((memberCountOfLastElection / 2) + 1) // 1/2 + 1
+//     const maxMembers = Math.ceil(memberCountOfLastElection * 2 / 3) // 2/3
+//     const drift = (MAX_BLOCKS_SINCE_LAST_ELECTION - Math.min(blocksSinceLastElection, MAX_BLOCKS_SINCE_LAST_ELECTION)) / MAX_BLOCKS_SINCE_LAST_ELECTION;
+//     return Math.round(Range.from([0, 1]).map(drift, Range.from([minMembers, maxMembers])));
+// }

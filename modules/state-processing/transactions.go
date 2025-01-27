@@ -49,7 +49,7 @@ func (tx TxCreateContract) ExecuteTx(se *StateEngine) {
 		election := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
 
 		if election != nil {
-			panic("disabled")
+			// panic("disabled")
 			return
 		}
 
@@ -57,7 +57,7 @@ func (tx TxCreateContract) ExecuteTx(se *StateEngine) {
 
 		fmt.Println("Storage proof verify result", verified)
 
-		panic("not implemented yet")
+		// panic("not implemented yet")
 	}
 
 	fmt.Println("tx.Code", tx)
@@ -152,7 +152,6 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 	if tx.Epoch == 0 {
 		electionResult := se.electionDb.GetElection(0)
 
-		fmt.Println("fakerr", electionResult)
 		if electionResult == nil {
 			parsedCid, err := cid.Parse(tx.Data)
 			fmt.Println("Cid data", tx.Data, err, "Tx data", tx)
@@ -184,12 +183,25 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 		//Validate normally
 		prevElection := se.electionDb.GetElection(tx.Epoch - 1)
 		if prevElection == nil {
+			fmt.Println("NO PREVIOUS ELECTION")
 			return
 		}
 
+		if prevElection.Epoch >= tx.Epoch {
+			fmt.Println("Election is back in time!")
+			return
+		}
+
+		//Weight that is calculated by aggregating number of signers
+		potentialWeight := 0
 		memberDids := make([]dids.BlsDID, 0)
-		for _, value := range prevElection.Members {
+		for idx, value := range prevElection.Members {
 			memberDids = append(memberDids, dids.BlsDID(value.Key))
+			if prevElection.WeightTotal == 0 {
+				potentialWeight += 1
+			} else {
+				potentialWeight = int(prevElection.Weights[idx])
+			}
 		}
 
 		verifyObj := map[string]interface{}{
@@ -212,8 +224,40 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 
 		fmt.Println("Verify error", err, verified, len(includedDids) > (len(memberDids)*2/3))
 
-		if verified && len(includedDids) > (len(memberDids)*2/3) {
+		totalWeight := 0
+		if prevElection.WeightTotal == 0 {
+			totalWeight = len(prevElection.Members)
+		} else {
+			totalWeight = int(prevElection.WeightTotal)
+		}
+
+		blocksLastElection := tx.Self.BlockHeight - prevElection.BlockHeight
+
+		fmt.Println("Blocks since last election!", blocksLastElection)
+		minimums := elections.MinimalRequiredElectionVotes(blocksLastElection, totalWeight)
+
+		realWeight := 0
+		bv := blsCircuit.RawBitVector()
+		for idx := range prevElection.Members {
+			if bv.Bit(idx) == 1 {
+				if prevElection.WeightTotal == 0 {
+					realWeight += 1
+				} else {
+					realWeight += int(prevElection.Weights[idx])
+				}
+			}
+		}
+		fmt.Println("Minimum requirements", minimums, "orig reqs", len(prevElection.Members)*2/3)
+
+		fmt.Println("realWeight", realWeight, " len(includedDids)", len(includedDids))
+
+		if verified && realWeight >= minimums {
+			fmt.Println("Election verified, indexing...", tx.Epoch)
+			fmt.Println("Election CID", parsedCid)
+			se.da.GetDag(parsedCid)
+			fmt.Println("Got dag prolly")
 			node, _ := se.da.Get(parsedCid, nil)
+			fmt.Println("Got Election from DA")
 			//Verified and 2/3 majority signed
 			dagNode, _ := dagCbor.Decode((*node).RawData(), mh.SHA2_256, -1)
 			elecResult := elections.ElectionResult{
@@ -225,11 +269,17 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 			}
 			bbytes, _ := dagNode.MarshalJSON()
 			json.Unmarshal(bbytes, &elecResult)
-			fmt.Println("elecResult", elecResult)
+
 			se.electionDb.StoreElection(elecResult)
+			fmt.Println("Indexed Election", tx.Epoch)
 		} else {
-			fmt.Println("brooken")
+			fmt.Println("Election Failed verification")
 		}
+
+		// if prevElection.Epoch > 124 {
+		// 	fmt.Println("HELL ON EARTH")
+		// 	time.Sleep(time.Hour)
+		// }
 
 		// fmt.Println("Cid data", tx.Data, err, "Tx data", tx)
 		// if err != nil {
@@ -261,7 +311,7 @@ type TxProposeBlock struct {
 // ProcessTx implements VSCTransaction.
 func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
 	elecResult := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
-	fmt.Println("elecResult", elecResult)
+	fmt.Println("Election Epoch", elecResult.Epoch)
 	if elecResult == nil {
 		//Cannot process block due to missing election
 		return
@@ -290,20 +340,27 @@ func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 	verified, _, _ := circuit.Verify()
 
+	fmt.Println("br - block range", t.SignedBlock.Headers.Br, t.Self.BlockHeight)
+
 	fmt.Println("Verified", verified)
+	if t.SignedBlock.Headers.Br[1]+CONSENSUS_SPECS.SlotLength <= int64(t.Self.BlockHeight) {
+		fmt.Println("Block is too far in the future")
+		return
+	}
 	if verified {
 		signingScore, total := elections.CalculateSigningScore(*circuit, *elecResult)
 		fmt.Println("signingScore, total", signingScore, total, signingScore > ((total*2)/3))
+
 		if signingScore > ((total * 2) / 3) {
 			//PASS
 			fmt.Println("Block Has passed inspection! Approved!")
 			// blockCid := cid.MustParse(t.SignedBlock.Block)
-			fmt.Println("Getting Block info!")
+			fmt.Println("Getting Block info!", t.SignedBlock.Block, t.Self.TxId)
+
 			node, _ := se.da.GetDag(t.SignedBlock.Block)
 			jsonBytes, _ := node.MarshalJSON()
 			blockContent := BlockContent{}
 			json.Unmarshal(jsonBytes, &blockContent)
-			fmt.Println(blockContent)
 
 			//At this point of the process a call should be made to state engine
 			//To kick off finalization of the inflight state
@@ -318,7 +375,11 @@ func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
 				//Thus: TX confirmation is 30s maximum
 				//Author: @vaultec81
 
-				fmt.Println("Decoding TX")
+				if tx.Type == 2 {
+					continue
+				}
+
+				fmt.Println("Decoding TX", tx.Id)
 
 				txContainer := tx.Decode(se.da)
 				fmt.Println(txContainer, txContainer.Type())
@@ -339,20 +400,21 @@ func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
 				} else if txContainer.Type() == "output" {
 					contractOutput := txContainer.AsContractOutput()
 
-					jsonBlsaz, _ := json.Marshal(contractOutput)
-					fmt.Println(contractOutput, string(jsonBlsaz))
+					// jsonBlsaz, _ := json.Marshal(contractOutput)
+					// fmt.Println(contractOutput, string(jsonBlsaz))
 
 					contractOutput.Ingest(se, TxSelf{
 						BlockId:     t.Self.BlockId,
 						BlockHeight: t.Self.BlockHeight,
 						TxId:        t.Self.TxId,
 					})
+				} else if txContainer.Type() == "events" {
+					txContainer.AsEvents()
 				}
 			}
 		}
 	}
 
-	panic("Ingesting Block")
 }
 
 type SignedBlockHeader struct {
@@ -387,9 +449,13 @@ type BlockContent struct {
 
 // Reference pointer to the transaction itself
 type BlockTx struct {
-	Id   string `json:"id"`
-	Op   string `json:"op"`
-	Type int    `json:"type"`
+	Id string `json:"id"`
+	Op string `json:"op"`
+	// 1 input
+	// 2 output
+	// 5 anchor
+
+	Type int `json:"type"`
 }
 
 func (bTx *BlockTx) Decode(da *datalayer.DataLayer) TransactionContainer {
@@ -499,6 +565,8 @@ func (tx *TransactionContainer) Type() string {
 		return "output"
 	} else if tx.TypeInt == 5 {
 		return "anchor"
+	} else if tx.TypeInt == 6 {
+		return "events"
 	} else {
 		return "unknown"
 	}
@@ -513,6 +581,8 @@ func (tx *TransactionContainer) AsContractOutput() *ContractOutput {
 	dag, _ := tx.da.GetDag(txCid)
 
 	bJson, _ := dag.MarshalJSON()
+
+	fmt.Println("Marshelled JSON from contract output", bJson)
 	json.Unmarshal(bJson, &output)
 
 	return &output
@@ -527,16 +597,19 @@ func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
 	// obj := make(map[string]interface{}, 0)
 
 	// headers := obj["headers"].(map[string]interface{})
+	// Type:    obj["__t"].(string),
+	// Version: obj["__v"].(string),
+
+	// Headers: TransactionHeader{
+	// 	Nonce:         headers["nonce"].(int64),
+	// 	RequiredAuths: headers["required_auths"].([]string),
+	// },
+
+	// Tx: obj["tx"].(map[string]interface{}),
+
+	fmt.Println("bJson", string(bJson))
 	offchainTx := OffchainTransaction{
-		// Type:    obj["__t"].(string),
-		// Version: obj["__v"].(string),
-
-		// Headers: TransactionHeader{
-		// 	Nonce:         headers["nonce"].(int64),
-		// 	RequiredAuths: headers["required_auths"].([]string),
-		// },
-
-		// Tx: obj["tx"].(map[string]interface{}),
+		Type: "hello",
 	}
 	json.Unmarshal(bJson, &offchainTx)
 	return &offchainTx
@@ -545,6 +618,10 @@ func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
 // Hive anchor containing merkle root, list of hive txs
 // Consider deprecating from protocol
 func (tx *TransactionContainer) AsHiveAnchor() {
+
+}
+
+func (tx *TransactionContainer) AsEvents() {
 
 }
 
@@ -691,7 +768,20 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
 		})
 	}
 	//Set output history
-	se.contractHistory.IngestOutput(contracts.IngestOutputArgs{})
+	se.contractState.IngestOutput(contracts.IngestOutputArgs{
+		Id:         output.Id,
+		ContractId: output.ContractId,
+		Inputs:     output.Inputs,
+		Gas: struct {
+			IO int64
+		}{
+			IO: output.IoGas,
+		},
+		AnchoredBlock:  txSelf.BlockId,
+		AnchoredHeight: int64(txSelf.BlockHeight),
+		AnchoredId:     txSelf.TxId,
+		AnchoredIndex:  int64(txSelf.Index),
+	})
 }
 
 type ContractResult struct {
@@ -712,6 +802,7 @@ type VSCTransaction interface {
 	ExecuteTx(se *StateEngine)
 }
 
+// More information about the TX
 type TxSelf struct {
 	TxId          string
 	BlockId       string
@@ -721,12 +812,3 @@ type TxSelf struct {
 	Timestamp     string
 	RequiredAuths []string
 }
-
-// type TxResult2 interface {
-// 	Type() string
-// }
-
-// type TxResult struct {
-// 	Ok   bool
-// 	Type string
-// }

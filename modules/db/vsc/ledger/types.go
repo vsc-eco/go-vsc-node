@@ -8,22 +8,40 @@ type Ledger interface {
 	aggregate.Plugin
 	StoreLedger(LedgerRecord)
 	GetLedgerAfterHeight(account string, blockHeight int64, asset string, limit *int64) (*[]LedgerRecord, error)
+	GetLedgerRange(account string, start int64, end int64, asset string) (*[]LedgerRecord, error)
 }
 
 type Balances interface {
 	aggregate.Plugin
-	GetBalanceRecord(account string, blockHeight int64, asset string) (int64, error)
+	GetBalanceRecord(account string, blockHeight int64, asset string) (int64, int64, error)
+	UpdateBalanceRecord(account string, blockHeight int64, balances map[string]int64) error
+	GetAll(blockHeight int64) []BalanceRecord
+}
+
+type InterestClaims interface {
+	aggregate.Plugin
+	GetLastClaim(blockHeight int) *ClaimRecord
+	SaveClaim(blockHeight int, amount int)
 }
 
 type GatewayLedger interface {
 	aggregate.Plugin
 }
 
+type ClaimRecord struct {
+	BlockHeight int `bson:"block_height"`
+	Amount      int `bson:"amount"`
+}
+
 type BalanceRecord struct {
-	Account     string `bson:"account"`
-	BlockHeight int64  `bson:"block_height"`
-	Hive        int64  `bson:"t_hive"`
-	HBD         int64  `bson:"t_hbd"`
+	Account           string `bson:"account"`
+	BlockHeight       int64  `bson:"block_height"`
+	Hive              int64  `bson:"t_hive"`
+	HBD               int64  `bson:"t_hbd"`
+	HBD_SAVINGS       int64  `bson:"t_hbd_savings"`
+	HBD_AVG           int64  `bson:"t_hbd_avg"`
+	HBD_CLAIM_HEIGHT  int64  `bson:"t_hbd_claim"`
+	HBD_MODIFY_HEIGHT int64  `bson:"t_hbd_modify"`
 }
 
 // {
@@ -47,12 +65,18 @@ type LedgerRecord struct {
 	Type        string `bson:"t"`
 	Asset       string `bson:"tk"`
 	TxId        string `bson:"tx_id"`
+
+	BIdx int64
+	//Op Index: Index of the operation in the TX
+	OpIdx int64
 }
 
 type BridgeActions interface {
 	aggregate.Plugin
 	StoreWithdrawal(withdraw ActionRecord)
-	MarkComplete(id string)
+	ExecuteComplete(id string)
+	Get(id string) (*ActionRecord, error)
+	SetStatus(id string, status string)
 }
 
 type ILedgerExecutor interface {
@@ -79,7 +103,7 @@ type ActionRecord struct {
 	Type   string `bson:"type"`
 
 	//Extra stored data
-	Data map[string]interface{} `bson:"data"`
+	Params map[string]interface{} `bson:"data"`
 
 	SideEffect *SideEffect
 }

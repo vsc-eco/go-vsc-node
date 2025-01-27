@@ -29,7 +29,7 @@ func (e *transactions) Init() error {
 }
 
 func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
-	fmt.Println("Injecting TX")
+	fmt.Println("Ingesting TX")
 	ctx := context.Background()
 	queryy := bson.M{
 		"id": offTx.Id,
@@ -41,15 +41,14 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 	opts.SetUpsert(true)
 	fmt.Println(findResult, findResult.Err())
 	setOp := bson.M{
-		"status":          "INCLUDED",
-		"first_seen":      time.Now(),
-		"a_block":         offTx.AnchoredBlock,
-		"anchored_id":     offTx.AnchoredId,
-		"anchored_height": offTx.AnchoredHeight,
-		"anchored_index":  offTx.AnchoredIndex,
-		"anchored_opidx":  offTx.AnchoredOpIdx,
-		"data":            offTx.Tx,
-		"required_auths":  offTx.RequiredAuths,
+		"first_seen":     time.Now(),
+		"anchr_block":    offTx.AnchoredBlock,
+		"anchr_id":       offTx.AnchoredId,
+		"anchr_height":   offTx.AnchoredHeight,
+		"anchr_index":    offTx.AnchoredIndex,
+		"anchr_opidx":    offTx.AnchoredOpIdx,
+		"data":           offTx.Tx,
+		"required_auths": offTx.RequiredAuths,
 	}
 	if findResult.Err() != nil {
 		setOp["first_seen"] = time.Now()
@@ -63,4 +62,38 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 	}, opts)
 
 	return updateResult.Err()
+}
+
+func (e *transactions) SetOutput(sOut SetOutputUpdate) {
+	query := bson.M{
+		"id": sOut.Id,
+	}
+	ctx := context.Background()
+
+	e.FindOneAndUpdate(ctx, query, bson.M{
+		"$set": bson.M{
+			"output": bson.M{
+				"id":    sOut.OutputId,
+				"index": sOut.Index,
+			},
+		},
+	})
+}
+
+func (e *transactions) GetTransaction(id string) *TransactionRecord {
+	query := bson.M{
+		"id": id,
+	}
+	ctx := context.Background()
+	findResult := e.FindOne(ctx, query)
+
+	if findResult.Err() != nil {
+		return nil
+	}
+	record := TransactionRecord{}
+	err := findResult.Decode(&record)
+	if err != nil {
+		return nil
+	}
+	return &record
 }

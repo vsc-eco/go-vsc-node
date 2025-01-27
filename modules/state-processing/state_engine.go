@@ -1,10 +1,11 @@
 package stateEngine
 
 import (
+	"crypto"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
-	"time"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/db/vsc"
@@ -37,12 +38,14 @@ type StateEngine struct {
 	witnessDb       witnesses.Witnesses
 	electionDb      elections.Elections
 	contractDb      contracts.Contracts
-	contractHistory contracts.ContractHistory
+	contractState   contracts.ContractState
 	txDb            transactions.Transactions
+	hiveBlocks      hive_blocks.HiveBlocks
+	interestClaimDb ledgerDb.InterestClaims
 
 	//Nonce map similar to what we use before
-	NonceMap   map[string]int
-	BalanceMap map[string]map[string]int64
+	NonceMap map[string]int
+	// BalanceMap map[string]map[string]int64
 
 	AnchoredHeight int
 	VirtualRoot    []byte
@@ -51,232 +54,338 @@ type StateEngine struct {
 
 	LedgerExecutor *LedgerExecutor
 
-	//Transaction
-	// InputArgs string -->
-	// // - Entrypoint
-	// // - Args
-	// // - Contract ID
-	// // - Account auths
-	// Intents []interface -->
+	TxBatch []any
 
-	// //Pass yes or no
-	// Output interface <--
-	// // - error
-	// // - logs
-	// // - ok: bool
-
-	// //State changes
-	// BalanceMap map[string]int -->
-	// StateMerkle string <--
-	// BalanceMapUpdates []interface <-- //Ledger ops
-	// SideEffects []interface <-- //Placeholder for future
+	BlockHeight int
 }
 
-type AuthCheckType struct {
-	Level    string
-	Required []string
+//Transaction
+// InputArgs string -->
+// // - Entrypoint
+// // - Args
+// // - Contract ID
+// // - Account auths
+// Intents []interface -->
+
+// //Pass yes or no
+// Output interface <--
+// // - error
+// // - logs
+// // - ok: bool
+
+// //State changes
+// StateMerkle string <--
+// BalanceMapUpdates []interface <-- //Ledger ops
+// SideEffects []interface <-- //Placeholder for future
+
+func (se *StateEngine) GetLastElection(blockHeight int) {
+
 }
 
-func AuthCheck(customJson CustomJson, args AuthCheckType) bool {
-	// if args.Level != nil {
-
-	// }
-	//Write code for auth check
-	return false
+// Finalizes state into pseudo block
+func (se *StateEngine) Finalize() {
+	//Make it happen!
 }
 
-func arrayToStringArry(arr []interface{}) []string {
-	out := make([]string, 0)
-	for _, v := range arr {
-		out = append(out, v.(string))
+func (se *StateEngine) claimHBDInterest(blockHeight int, amount int) {
+	lastClaim := se.interestClaimDb.GetLastClaim(blockHeight)
+
+	claimHeight := 0
+	if lastClaim != nil {
+		claimHeight = lastClaim.BlockHeight
 	}
-	return out
+
+	se.LedgerExecutor.Ls.ClaimHBDInterest(int64(claimHeight), int64(blockHeight), int64(amount))
+
+	se.interestClaimDb.SaveClaim(blockHeight, amount)
 }
 
-func (se *StateEngine) ProcessTransfer() {
+// Gets ranomized schedule of witnesses
+// Uses a different PRNG variant from the original used in JS VSC
+// Not aiming for exact replica
+func (se *StateEngine) getSchedule(slotHeight int) []WitnessSlot {
+	lastElection := se.electionDb.GetElectionByHeight(slotHeight)
 
+	if lastElection == nil {
+		return nil
+	}
+	witnessList := make([]Witness, 0)
+
+	for _, v := range lastElection.Members {
+		witnessList = append(witnessList, Witness{
+			Key:     v.Key,
+			Account: v.Account,
+		})
+	}
+
+	//Use the slot height to calculate round start and finish.
+	//Slot height is consistent.
+	roundInfo := CalculateRoundInfo(int64(slotHeight))
+
+	randBlock := roundInfo.StartHeight - 1
+
+	hiveBlock, err := se.hiveBlocks.GetBlock(int(randBlock))
+
+	hash := crypto.SHA256.New()
+	if err != nil {
+		//Defualt seed
+		//This will only happen if the network is very new within the first 1 hour of creation
+		hash.Write([]byte("VSC.NETWORK"))
+	} else {
+		hash.Write([]byte(hiveBlock.BlockID))
+	}
+	hash.Write([]byte(strconv.Itoa(int(roundInfo.StartHeight))))
+
+	seed := hash.Sum(nil)
+
+	var seed32 [32]byte
+	// var seed2 [32]byte
+	copy(seed32[:], seed)
+	witnessSchedule := GenerateSchedule(int64(slotHeight), witnessList, seed32)
+
+	return witnessSchedule
 }
 
-func (se *StateEngine) ProcessTx(tx hive_blocks.Tx, extraInfo ProcessExtraInfo) {
+func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	//Detect Transaction Type
+	blockInfo := struct {
+		BlockHeight int
+		BlockId     string
+		Timestamp   string
+	}{
+		BlockHeight: block.BlockNumber,
+		BlockId:     block.BlockID,
+		Timestamp:   block.Timestamp,
+	}
 
-	if tx.Operations[0].Type == "custom_json" && len(tx.Operations) > 1 {
-		headerOp := tx.Operations[0]
-		Id := headerOp.Value["id"].(string)
-		RequiredAuths := arrayToStringArry(headerOp.Value["required_auths"].(primitive.A))
+	if blockInfo.BlockHeight == 0 {
+		return
+	}
 
-		if (Id == "vsc.bridge_ref" || Id == "vsc.bridge_withdraw" || Id == "vsc.savings_withdraw") && RequiredAuths[0] == GATEWAY_WALLET {
-			if tx.Operations[1].Type == "transfer" {
-				//Process withdraw
-			}
-			if tx.Operations[1].Type == "transfer_from_savings" {
-				//Process withdraw
+	slotInfo := CalculateSlotInfo(int64(blockInfo.BlockHeight))
+
+	schedule := se.getSchedule(int(slotInfo.StartHeight))
+
+	//Select current slot as per consensus algorithm
+	var witnessSlot WitnessSlot
+	for _, slot := range schedule {
+		if slot.SlotHeight > slotInfo.StartHeight && slot.SlotHeight <= slotInfo.EndHeight {
+			witnessSlot = slot
+			break
+		}
+	}
+
+	for _, virtualOp := range block.VirtualOps {
+		fmt.Println("witnessSlot", witnessSlot)
+		//Process virtual operations here such as claimed interest
+		fmt.Println("registered vOP", virtualOp)
+
+		if virtualOp.Op.Type == "interest_operation" {
+			//Ensure it matches our gateway wallet
+			if virtualOp.Op.Value["owner"].(string) == GATEWAY_WALLET {
+				fmt.Println("virtualOp.Op.Value", virtualOp.Op.Value)
+
+				amount, err := strconv.Atoi(virtualOp.Op.Value["interest"].(map[string]any)["amount"].(string))
+
+				if err != nil {
+					//Should we panic here?
+					panic("Invalid Interest Amount. Possible deviation")
+				}
+				se.claimHBDInterest(blockInfo.BlockHeight, amount)
 			}
 		}
 	}
 
-	for opIdx, op := range tx.Operations {
-		if op.Type == "account_update" {
-			// fmt.Println(op)
-			opValue := op.Value
+	for _, tx := range block.Transactions {
+		//Main Pipeline
+		if tx.Operations[0].Type == "custom_json" && len(tx.Operations) > 1 {
+			headerOp := tx.Operations[0]
+			Id := headerOp.Value["id"].(string)
+			RequiredAuths := arrayToStringArray(headerOp.Value["required_auths"].(primitive.A))
 
-			if opValue["json_metadata"] != nil {
-				// fmt.Println(opValue["posting_json_metadata"])
-				untypedJson := make(map[string]interface{})
+			if (Id == "vsc.bridge_ref" || Id == "vsc.bridge_withdraw" || Id == "vsc.savings_withdraw") && RequiredAuths[0] == GATEWAY_WALLET {
+				if tx.Operations[1].Type == "transfer" {
+					//Process withdraw
+				}
+				if tx.Operations[1].Type == "transfer_from_savings" {
+					//Process withdraw
+				}
+			}
+		}
 
-				bbytes := []byte(opValue["json_metadata"].(string))
-				json.Unmarshal(bbytes, &untypedJson)
+		for opIdx, op := range tx.Operations {
+			if op.Type == "transfer" {
 
-				if untypedJson["vsc_node"] != nil {
+				if op.Value["from"] == "vsc.gateway" {
+					continue
+				}
+
+				//TODO: Finish up support for directly handling staked transfers
+
+				var token string
+				if op.Value["amount"].(map[string]interface{})["nai"] == "@@000000021" {
+					token = "hive"
+
+				} else if op.Value["amount"].(map[string]interface{})["nai"] == "@@000000013" {
+					token = "hbd"
+				}
+
+				if op.Type == "transfer_to_savings" && token == "hbd" {
+					if token == "hbd" {
+						//Labeled as savings as there can be hbd savings, hive savings, and hive staked, but not hbd staked (within hive)
+						//Only HBD savings generates APR
+						token = "hbd_savings"
+					} else {
+						//Potentially add failover logic
+						//However, balance is considered "untracked" if it is Hive token deposited directly to savings
+
+						continue
+					}
+				}
+				amount, _ := strconv.ParseInt(op.Value["amount"].(map[string]interface{})["amount"].(string), 10, 64)
+				// amount, _ := op.Value["amount"].(map[string]interface{})["amount"].(int64)
+
+				if op.Value["to"] == "vsc.gateway" {
+					// fmt.Println("Indexing deposit", "from:"+op.Value["from"].(string), token, amount)
+					se.LedgerExecutor.Deposit(Deposit{
+						Id:     tx.TransactionID,
+						Asset:  token,
+						Amount: amount,
+						From:   "hive:" + op.Value["from"].(string),
+						Memo:   op.Value["memo"].(string),
+
+						BIdx:  int64(tx.Index),
+						OpIdx: int64(opIdx),
+					})
+
+					bbytes, _ := json.Marshal(se.LedgerExecutor.VirtualLedger)
+
+					fmt.Println("bbytes string()", string(bbytes))
+				}
+			}
+
+			//Main pipeline
+			if op.Type == "account_update" {
+				// fmt.Println(op)
+
+				opValue := op.Value
+				fmt.Println("Indexing account update", opValue)
+
+				if opValue["json_metadata"] != nil {
+					// fmt.Println(opValue["posting_json_metadata"])
+					untypedJson := make(map[string]interface{})
+
+					bbytes := []byte(opValue["json_metadata"].(string))
+					json.Unmarshal(bbytes, &untypedJson)
+
+					// if untypedJson["vsc_node"] != nil {
 					rawJson := witnesses.PostingJsonMetadata{}
 					json.Unmarshal(bbytes, &rawJson)
 
 					inputData := witnesses.SetWitnessUpdateType{
 						Account:  op.Value["account"].(string),
-						Height:   extraInfo.BlockHeight,
+						Height:   blockInfo.BlockHeight,
 						TxId:     tx.TransactionID,
-						BlockId:  extraInfo.BlockId,
+						BlockId:  blockInfo.BlockId,
 						Metadata: rawJson,
+						DidKeys:  rawJson.DidKeys,
 					}
 					se.witnessDb.SetWitnessUpdate(inputData)
+					// }
 				}
 			}
-		}
-		if op.Type == "custom_json" {
-			opVal := op.Value
+			if op.Type == "custom_json" {
+				opVal := op.Value
 
-			fmt.Println(opVal["required_auths"])
-			cj := CustomJson{
-				Id:                   opVal["id"].(string),
-				RequiredAuths:        arrayToStringArry(opVal["required_auths"].(primitive.A)),
-				RequiredPostingAuths: arrayToStringArry(opVal["required_posting_auths"].(primitive.A)),
-				Json:                 []byte(opVal["json"].(string)),
-			}
-
-			fmt.Println("cj.RequiredAuths", cj.RequiredAuths)
-			txSelf := TxSelf{
-				BlockHeight:   extraInfo.BlockHeight,
-				BlockId:       extraInfo.BlockId,
-				Timestamp:     extraInfo.Timestamp,
-				Index:         tx.Index,
-				OpIndex:       opIdx,
-				TxId:          tx.TransactionID,
-				RequiredAuths: cj.RequiredAuths,
-			}
-
-			var tx VSCTransaction
-			//Definitely will be string
-			if cj.Id == "vsc.tx" {
-				tx = TxVscHive{
-					Self: txSelf,
+				cj := CustomJson{
+					Id:                   opVal["id"].(string),
+					RequiredAuths:        arrayToStringArray(opVal["required_auths"].(primitive.A)),
+					RequiredPostingAuths: arrayToStringArray(opVal["required_posting_auths"].(primitive.A)),
+					Json:                 []byte(opVal["json"].(string)),
 				}
-				json.Unmarshal(cj.Json, &tx)
-				fmt.Println(tx)
 
-				//Hopefully contracts
-				//Also transfer execution, and withdraw
-			} else if cj.Id == "vsc.propose_block" {
-				rawJson := map[string]interface{}{}
-				json.Unmarshal(cj.Json, &rawJson)
-				meinTx := TxProposeBlock{
-					Self: txSelf,
-					SignedBlock: SignedBlockHeader{
-						UnsignedBlockHeader: UnsignedBlockHeader{
-							Block: cid.MustParse(rawJson["signed_block"].(map[string]interface{})["block"].(string)),
+				// fmt.Println("cj.RequiredAuths", cj.RequiredAuths, opVal["id"].(string))
+				txSelf := TxSelf{
+					BlockHeight:   blockInfo.BlockHeight,
+					BlockId:       blockInfo.BlockId,
+					Timestamp:     blockInfo.Timestamp,
+					Index:         tx.Index,
+					OpIndex:       opIdx,
+					TxId:          tx.TransactionID,
+					RequiredAuths: cj.RequiredAuths,
+				}
+
+				var vscTx VSCTransaction
+
+				//Secondary
+				if cj.Id == "vsc.tx" {
+					vscTx = TxVscHive{
+						Self: txSelf,
+					}
+					json.Unmarshal(cj.Json, &tx)
+					fmt.Println(tx)
+
+					//Hopefully contracts
+					//Also transfer execution, and withdraw
+				} else if cj.Id == "vsc.propose_block" {
+					//Main Pipeline
+
+					rawJson := map[string]interface{}{}
+					json.Unmarshal(cj.Json, &rawJson)
+					parsedTx := TxProposeBlock{
+						Self: txSelf,
+						SignedBlock: SignedBlockHeader{
+							UnsignedBlockHeader: UnsignedBlockHeader{
+								Block: cid.MustParse(rawJson["signed_block"].(map[string]interface{})["block"].(string)),
+							},
+							Signature: dids.SerializedCircuit{
+								BitVector: rawJson["signed_block"].(map[string]interface{})["signature"].(map[string]interface{})["bv"].(string),
+								Signature: rawJson["signed_block"].(map[string]interface{})["signature"].(map[string]interface{})["sig"].(string),
+							},
 						},
-						Signature: dids.SerializedCircuit{
-							BitVector: rawJson["signed_block"].(map[string]interface{})["signature"].(map[string]interface{})["bv"].(string),
-							Signature: rawJson["signed_block"].(map[string]interface{})["signature"].(map[string]interface{})["sig"].(string),
-						},
-					},
-				}
-				json.Unmarshal(cj.Json, &meinTx)
+					}
+					json.Unmarshal(cj.Json, &parsedTx)
 
-				fmt.Println("vanechkin do you speak english?", meinTx)
-				tx = meinTx
-			} else if cj.Id == "vsc.election_result" {
-				meinTx := TxElectionResult{
-					Self: txSelf,
-				}
-				json.Unmarshal(cj.Json, &meinTx)
-				fmt.Println(meinTx)
-				tx = meinTx
-			} else if cj.Id == "vsc.create_contract" {
-				meinTx := TxCreateContract{
-					Self: txSelf,
-				}
-				json.Unmarshal(cj.Json, &meinTx)
+					vscTx = parsedTx
+				} else if cj.Id == "vsc.election_result" {
+					parsedTx := TxElectionResult{
+						Self: txSelf,
+					}
+					json.Unmarshal(cj.Json, &parsedTx)
+					fmt.Println(parsedTx)
+					vscTx = parsedTx
+				} else if cj.Id == "vsc.create_contract" {
+					parsedTx := TxCreateContract{
+						Self: txSelf,
+					}
+					json.Unmarshal(cj.Json, &parsedTx)
 
-				tx = meinTx
-			} else {
-				//Unrecognized TX
-				continue
-			}
-
-			fmt.Println("Executing se", tx)
-			tx.ExecuteTx(se)
-			// panic("Expected Panic!")
-		}
-		if op.Type == "transfer" || op.Type == "transfer_to_savings" {
-
-			//TODO: Finish up support for directly handling staked transfers
-			fmt.Println("Transfer Op", op)
-			fmt.Println("Transfer Value")
-
-			var token string
-			if op.Value["amount"].(map[string]interface{})["nai"] == "@@000000021" {
-				token = "hive"
-
-			} else if op.Value["amount"].(map[string]interface{})["nai"] == "@@000000013" {
-				token = "hbd"
-			}
-
-			if op.Type == "transfer_to_savings" && token == "hbd" {
-				if token == "hbd" {
-					//Labeled as savings as there can be hbd savings, hive savings, and hive staked, but not hbd staked (within hive)
-					//Only HBD savings generates APR
-					token = "hbd_savings"
+					vscTx = parsedTx
 				} else {
-					//TODO: Add failover logic to return the amount to the user in form of VSC balance
-					return
+					//Unrecognized TX
+					continue
 				}
-			}
-			amount, _ := strconv.ParseInt(op.Value["amount"].(map[string]interface{})["amount"].(string), 10, 64)
 
-			fmt.Println("Token", token, amount)
+				fmt.Println("Executing se", cj.Id)
+				if cj.Id == "vsc.election_result" {
+					fmt.Println(tx)
+				}
 
-			if op.Value["to"] == "vsc.gateway" {
-				se.LedgerExecutor.Deposit(Deposit{
-					Id:     tx.TransactionID,
-					Asset:  token,
-					Amount: amount,
-					From:   op.Value["from"].(string),
-					Memo:   op.Value["memo"].(string),
+				if slices.Contains(BAD_BLOCK_TXS, tx.TransactionID) {
+					continue
+				}
 
-					BIdx:  int64(tx.Index),
-					OpIdx: int64(opIdx),
-				})
-
-				bbytes, _ := json.Marshal(se.LedgerExecutor.VirtualLedger)
-
-				fmt.Println("bbytes string()", string(bbytes))
-				time.Sleep(1 * time.Hour)
-				panic("Hello")
+				vscTx.ExecuteTx(se)
 			}
 		}
 	}
 }
 
-func (se *StateEngine) GetBalance(id string, asset string) int64 {
-
-	return 0
+func (se *StateEngine) SaveBlockHeight(lastBlk int) int {
+	return lastBlk
 }
 
 func (se *StateEngine) Commit() {
-
-}
-
-func (se *StateEngine) ProcessBlock() {
 
 }
 
@@ -293,15 +402,28 @@ func (se *StateEngine) Stop() {
 
 }
 
-func New(da *DataLayer.DataLayer, witnessesDb witnesses.Witnesses, electionsDb elections.Elections, contractDb contracts.Contracts, txDb transactions.Transactions, ledgerDb ledgerDb.Ledger, balanceDb ledgerDb.Balances) StateEngine {
+func New(da *DataLayer.DataLayer,
+	witnessesDb witnesses.Witnesses,
+	electionsDb elections.Elections,
+	contractDb contracts.Contracts,
+	contractStateDb contracts.ContractState,
+	txDb transactions.Transactions,
+	ledgerDb ledgerDb.Ledger,
+	balanceDb ledgerDb.Balances,
+	hiveBlocks hive_blocks.HiveBlocks,
+	interestClaims ledgerDb.InterestClaims,
+) StateEngine {
 	return StateEngine{
 		da: da,
 		// db: db,
 
-		witnessDb:  witnessesDb,
-		electionDb: electionsDb,
-		contractDb: contractDb,
-		txDb:       txDb,
+		witnessDb:       witnessesDb,
+		electionDb:      electionsDb,
+		contractDb:      contractDb,
+		contractState:   contractStateDb,
+		hiveBlocks:      hiveBlocks,
+		interestClaimDb: interestClaims,
+		txDb:            txDb,
 
 		LedgerExecutor: &LedgerExecutor{
 			Ls: &LedgerSystem{

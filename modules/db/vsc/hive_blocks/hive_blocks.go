@@ -488,3 +488,18 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock int, l
 	}()
 	return cancel, errChan
 }
+
+func (h *hiveBlocks) GetBlock(blockNum int) (HiveBlock, error) {
+	var result Document
+	err := h.FindOne(context.Background(), bson.M{
+		"block.block_number": blockNum,
+	}).Decode(&result)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return HiveBlock{}, mongo.ErrNoDocuments
+		}
+		return HiveBlock{}, fmt.Errorf("failed to get block: %w", err)
+	}
+
+	return *result.Block, nil
+}

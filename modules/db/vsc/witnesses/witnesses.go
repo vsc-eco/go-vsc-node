@@ -48,11 +48,12 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 	}
 	update := bson.M{
 		"$set": bson.M{
-			"peerId": request.Metadata.VscNode.UnsignedProof.PeerId,
+			"peer_id": request.Metadata.VscNode.UnsignedProof.PeerId,
 			// "signing_keys": request.Metadata.DidKeys,
 			// "version_id":   request.Metadata.VscNode.UnsignedProof.VersionId,
 			"git_commit": request.Metadata.VscNode.UnsignedProof.GitCommit,
 			"net_id":     request.Metadata.VscNode.UnsignedProof.NetId,
+			"did_keys":   request.Metadata.DidKeys,
 		},
 	}
 	w.FindOneAndUpdate(ctx, query, update, findOptions)

@@ -43,4 +43,5 @@ type SetWitnessUpdateType struct {
 	Height   int
 	TxId     string
 	BlockId  string
+	DidKeys  []PostingJsonKeys
 }

@@ -8,6 +8,7 @@ import (
 	"log"
 	"time"
 	"vsc-node/lib/dids"
+	"vsc-node/lib/hive"
 	agg "vsc-node/modules/aggregate"
 	"vsc-node/modules/config"
 
@@ -26,6 +27,7 @@ type announcementsManager struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	client       HiveRpcClient
+	hiveCreator  hive.HiveTransactionCreator
 	cronDuration time.Duration
 }
 
@@ -40,7 +42,7 @@ var _ agg.Plugin = &announcementsManager{}
 
 // ===== constructor =====
 
-func New(client HiveRpcClient, conf *config.Config[announcementsConfig], cronDuration time.Duration) (*announcementsManager, error) {
+func New(client HiveRpcClient, conf *config.Config[announcementsConfig], cronDuration time.Duration, creator hive.HiveTransactionCreator) (*announcementsManager, error) {
 
 	// sanity checks
 	if conf == nil {
@@ -57,6 +59,7 @@ func New(client HiveRpcClient, conf *config.Config[announcementsConfig], cronDur
 		cron:         cron.New(),
 		conf:         conf,
 		client:       client,
+		hiveCreator:  creator,
 		cronDuration: cronDuration,
 	}, nil
 }
@@ -203,11 +206,29 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 		log.Println("error marshaling JSON:", err)
 	}
 
-	wif := a.conf.Get().AnnouncementPrivateWif
-	_, err = a.client.UpdateAccount(a.conf.Get().Username, nil, nil, nil, string(jsonBytes), memoKey, &wif)
+	op := a.hiveCreator.UpdateAccount(a.conf.Get().Username, nil, nil, nil, string(jsonBytes), memoKey)
+
+	tx := a.hiveCreator.MakeTransaction([]hivego.HiveOperation{op})
+
+	a.hiveCreator.PopulateSigningProps(&tx, nil)
+
+	sig, _ := a.hiveCreator.Sign(tx)
+
+	tx.AddSig(sig)
+
+	id, err := a.hiveCreator.Broadcast(tx)
+
 	if err != nil {
 		return fmt.Errorf("failed to update account: %w", err)
 	}
 
+	fmt.Println("Updated account TxId", id)
+
 	return nil
+}
+
+func (a *announcementsManager) Announce() {
+	ctx := context.Background()
+
+	a.announce(ctx)
 }

@@ -68,7 +68,7 @@ func main() {
 	streamerPlugin := streamer.NewStreamer(blockClient, hiveBlocks, filters, nil, nil) // optional starting block #
 
 	// new announcements manager
-	hiveRpcClient := hivego.NewHiveRpc("http://hive-api.web3telekom.xyz/")
+	hiveRpcClient := hivego.NewHiveRpc("https://hive-api.web3telekom.xyz/")
 	announcementsConf := announcements.NewAnnouncementsConfig()
 	announcementsManager, err := announcements.New(hiveRpcClient, announcementsConf, time.Hour*24)
 	if err != nil {

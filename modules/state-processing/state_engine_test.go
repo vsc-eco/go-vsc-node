@@ -1,8 +1,6 @@
 package stateEngine_test
 
 import (
-	"bytes"
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -23,55 +21,9 @@ import (
 
 	stateEngine "vsc-node/modules/state-processing"
 
-	"github.com/libp2p/go-libp2p"
-	kadDht "github.com/libp2p/go-libp2p-kad-dht"
-	"github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
-	rhost "github.com/libp2p/go-libp2p/p2p/host/routed"
 	"github.com/stretchr/testify/assert"
 	"github.com/vsc-eco/hivego"
 )
-
-var BOOTSTRAP = []string{
-	"/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWAvxZcLJmZVUaoAtey28REvaBwxvfTvQfxWtXJ2fpqWnw",
-	"/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-	"/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
-	"/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
-	"/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
-	"/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",         // mars.i.ipfs.io
-	"/ip4/104.131.131.82/udp/4001/quic-v1/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ", // mars.i.ipfs.io
-	"/ip4/85.215.198.234/tcp/4001/p2p/12D3KooWJf8f9anWjHLc5CPcVdpmzGMAKhGXCjKsjqCQ5o8r1e1d",
-	"/ip4/95.211.231.201/tcp/4001/p2p/12D3KooWJAsC5ZtFNGpLZCQVzwfmssodvxJ4g1SuvtqEvk7KFjfZ",
-}
-
-type setupResult struct {
-	host host.Host
-	dht  *kadDht.IpfsDHT
-}
-
-func setupEnv() setupResult {
-	pkbytes := []byte("PRIVATE_KEY_TEST_ONLY")
-	pk, _, _ := crypto.GenerateSecp256k1Key(bytes.NewReader(pkbytes))
-	host, _ := libp2p.New(libp2p.Identity(pk))
-	ctx := context.Background()
-
-	dht, _ := kadDht.New(ctx, host)
-	routedHost := rhost.Wrap(host, dht)
-	go func() {
-		dht.Bootstrap(ctx)
-		for _, peerStr := range BOOTSTRAP {
-			peerId, _ := peer.AddrInfoFromString(peerStr)
-
-			routedHost.Connect(ctx, *peerId)
-		}
-	}()
-
-	return setupResult{
-		host: routedHost,
-		dht:  dht,
-	}
-}
 
 func TestStateEngine(t *testing.T) {
 	conf := db.NewDbConfig()
@@ -84,6 +36,8 @@ func TestStateEngine(t *testing.T) {
 	txDb := transactions.New(vscDb)
 	ledgerDbImpl := ledgerDb.New(vscDb)
 	balanceDb := ledgerDb.NewBalances(vscDb)
+	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
+	contractState := contracts.NewContractState(vscDb)
 
 	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		if op.Type == "custom_json" {
@@ -96,7 +50,7 @@ func TestStateEngine(t *testing.T) {
 		}
 
 		if op.Type == "transfer_from_savings" {
-			if op.Value["memo"].(string) == "Claim HBD interest" && strings.HasPrefix(op.Value["to"].(string), "vsc.") {
+			if strings.HasPrefix(op.Value["to"].(string), "vsc.") {
 				blockParams.NeedsVirtualOps = true
 			}
 			return true
@@ -132,23 +86,17 @@ func TestStateEngine(t *testing.T) {
 
 	assert.NoError(t, err)
 
-	setup := setupEnv()
+	setup := stateEngine.SetupEnv()
 
-	dl := DataLayer.New(setup.host, setup.dht)
+	dl := DataLayer.New(setup.Host, setup.Dht)
 
-	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, txDb, ledgerDbImpl, balanceDb)
+	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims)
 
 	se.Commit()
 	process := func(block hive_blocks.HiveBlock) {
-		for _, tx := range block.Transactions {
-			se.ProcessTx(tx, stateEngine.ProcessExtraInfo{
-				BlockId:     block.BlockID,
-				BlockHeight: block.BlockNumber,
-				Timestamp:   block.Timestamp,
-			})
-		}
+		se.ProcessBlock(block)
 	}
-	sr := streamer.NewStreamReader(hiveBlocks, process)
+	sr := streamer.NewStreamReader(hiveBlocks, process, se.SaveBlockHeight)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
@@ -161,6 +109,7 @@ func TestStateEngine(t *testing.T) {
 		ledgerDbImpl,
 		balanceDb,
 		hiveBlocks,
+		interestClaims,
 		s,
 		sr,
 	})
@@ -168,6 +117,88 @@ func TestStateEngine(t *testing.T) {
 	test_utils.RunPlugin(t, agg)
 
 	fmt.Println(err)
+
+	select {}
+}
+
+func TestMockEngine(t *testing.T) {
+	conf := db.NewDbConfig()
+	db := db.New(conf)
+	vscDb := vsc.New(db)
+	hiveBlocks, err := hive_blocks.New(vscDb)
+	electionDb := elections.New(vscDb)
+	witnessesDb := witnesses.New(vscDb)
+	contractDb := contracts.New(vscDb)
+	txDb := transactions.New(vscDb)
+	ledgerDbImpl := ledgerDb.New(vscDb)
+	balanceDb := ledgerDb.NewBalances(vscDb)
+	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
+	contractState := contracts.NewContractState(vscDb)
+
+	// slow down the streamer a bit for real data
+	streamer.AcceptableBlockLag = 0
+	streamer.BlockBatchSize = 500
+	streamer.DefaultBlockStart = 81614028
+	streamer.HeadBlockCheckPollIntervalBeforeFirstUpdate = time.Millisecond * 250
+	streamer.MinTimeBetweenBlockBatchFetches = time.Millisecond * 250
+	streamer.DbPollInterval = time.Millisecond * 500
+
+	assert.NoError(t, err)
+
+	setup := stateEngine.SetupEnv()
+
+	dl := DataLayer.New(setup.Host, setup.Dht)
+
+	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims)
+
+	process := func(block hive_blocks.HiveBlock) {
+		se.ProcessBlock(block)
+	}
+
+	agg := aggregate.New([]aggregate.Plugin{
+		conf,
+		db,
+		vscDb,
+		electionDb,
+		witnessesDb,
+		contractDb,
+		txDb,
+		ledgerDbImpl,
+		balanceDb,
+		hiveBlocks,
+		interestClaims,
+	})
+
+	// go func() {
+	test_utils.RunPlugin(t, agg)
+	// }()
+
+	mockReader := &stateEngine.MockReader{
+		ProcessFunction: process,
+	}
+
+	mockReader.StartRealtime()
+
+	mockCreator := stateEngine.MockCreator{
+		Mr: mockReader,
+	}
+
+	// mockCreator.CustomJson(stateEngine.MockJson{
+	// 	Id:                   "vsc.test",
+	// 	Json:                 `{"action": ":3"}`,
+	// 	RequiredAuths:        []string{"test-account"},
+	// 	RequiredPostingAuths: []string{},
+	// })
+
+	mockCreator.Transfer("test-account", "vsc.gateway", "10", "HBD", "test transfer")
+
+	// mockCreator.ClaimInterest("test-account", 1000)
+
+	time.Sleep(10 * time.Second)
+
+	bal := se.LedgerExecutor.Ls.GetBalance("hive:test-account", int64(mockReader.LastBlock), "hbd")
+
+	fmt.Println("guaranteed bal", bal)
 
 	select {}
 }
