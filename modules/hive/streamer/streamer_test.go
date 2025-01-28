@@ -80,6 +80,17 @@ type MockHiveBlockDb struct {
 	LastProcessedBlock int
 }
 
+// GetBlock implements hive_blocks.HiveBlocks.
+func (m *MockHiveBlockDb) GetBlock(blockNum int) (hive_blocks.HiveBlock, error) {
+	for _, block := range m.Blocks {
+		if block.BlockNumber == blockNum {
+			return block, nil
+		}
+	}
+
+	return hive_blocks.HiveBlock{}, fmt.Errorf("block not found")
+}
+
 // ListenToBlockUpdates implements hive_blocks.HiveBlocks.
 func (m *MockHiveBlockDb) ListenToBlockUpdates(ctx context.Context, startBlock int, listener func(block hive_blocks.HiveBlock) error) (context.CancelFunc, <-chan error) {
 	ctx, cancel := context.WithCancel(ctx)
