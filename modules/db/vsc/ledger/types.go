@@ -7,21 +7,21 @@ import (
 type Ledger interface {
 	aggregate.Plugin
 	StoreLedger(LedgerRecord)
-	GetLedgerAfterHeight(account string, blockHeight int64, asset string, limit *int64) (*[]LedgerRecord, error)
-	GetLedgerRange(account string, start int64, end int64, asset string) (*[]LedgerRecord, error)
+	GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error)
+	GetLedgerRange(account string, start uint64, end uint64, asset string) (*[]LedgerRecord, error)
 }
 
 type Balances interface {
 	aggregate.Plugin
-	GetBalanceRecord(account string, blockHeight int64, asset string) (int64, int64, error)
-	UpdateBalanceRecord(account string, blockHeight int64, balances map[string]int64) error
-	GetAll(blockHeight int64) []BalanceRecord
+	GetBalanceRecord(account string, blockHeight uint64, asset string) (int64, uint64, error)
+	UpdateBalanceRecord(account string, blockHeight uint64, balances map[string]int64) error
+	GetAll(blockHeight uint64) []BalanceRecord
 }
 
 type InterestClaims interface {
 	aggregate.Plugin
-	GetLastClaim(blockHeight int) *ClaimRecord
-	SaveClaim(blockHeight int, amount int)
+	GetLastClaim(blockHeight uint64) *ClaimRecord
+	SaveClaim(blockHeight uint64, amount int64)
 }
 
 type GatewayLedger interface {
@@ -29,19 +29,19 @@ type GatewayLedger interface {
 }
 
 type ClaimRecord struct {
-	BlockHeight int `bson:"block_height"`
-	Amount      int `bson:"amount"`
+	BlockHeight uint64 `bson:"block_height"`
+	Amount      int64  `bson:"amount"`
 }
 
 type BalanceRecord struct {
 	Account           string `bson:"account"`
-	BlockHeight       int64  `bson:"block_height"`
+	BlockHeight       uint64 `bson:"block_height"`
 	Hive              int64  `bson:"t_hive"`
 	HBD               int64  `bson:"t_hbd"`
 	HBD_SAVINGS       int64  `bson:"t_hbd_savings"`
 	HBD_AVG           int64  `bson:"t_hbd_avg"`
-	HBD_CLAIM_HEIGHT  int64  `bson:"t_hbd_claim"`
-	HBD_MODIFY_HEIGHT int64  `bson:"t_hbd_modify"`
+	HBD_CLAIM_HEIGHT  uint64 `bson:"t_hbd_claim"`
+	HBD_MODIFY_HEIGHT uint64 `bson:"t_hbd_modify"`
 }
 
 // {
@@ -59,7 +59,7 @@ type LedgerRecord struct {
 	//Unique ID of the operation
 	Id          string `bson:"id"`
 	Amount      int64  `bson:"amount"`
-	BlockHeight int64  `bson:"block_height"`
+	BlockHeight uint64 `bson:"block_height"`
 	From        string `bson:"from"`
 	Owner       string `bson:"owner"`
 	Type        string `bson:"t"`

@@ -14,7 +14,7 @@ type SetContractArgs struct {
 	Creator        string
 	Owner          string
 	TxId           string
-	CreationHeight int
+	CreationHeight uint64
 }
 
 type ContractState interface {

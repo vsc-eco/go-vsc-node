@@ -40,7 +40,7 @@ type PostingJsonMetadataVscNode struct {
 type SetWitnessUpdateType struct {
 	Metadata PostingJsonMetadata
 	Account  string
-	Height   int
+	Height   uint64
 	TxId     string
 	BlockId  string
 	DidKeys  []PostingJsonKeys

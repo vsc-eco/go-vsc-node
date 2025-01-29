@@ -23,8 +23,8 @@ import (
 // aid in mocking this service for unit tests
 type BlockClient interface {
 	GetDynamicGlobalProps() ([]byte, error)
-	GetBlockRange(startBlock int, count int) ([]hivego.Block, error)
-	FetchVirtualOps(block int, onlyVirtual bool, includeReversible bool) ([]hivego.VirtualOp, error)
+	GetBlockRange(startBlock uint64, count uint64) ([]hivego.Block, error)
+	FetchVirtualOps(block uint64, onlyVirtual bool, includeReversible bool) ([]hivego.VirtualOp, error)
 }
 
 // ===== variables =====
@@ -33,14 +33,14 @@ type BlockClient interface {
 // to modify these values at runtime
 var (
 	// how many blocks we pull per batch
-	BlockBatchSize = 100
+	BlockBatchSize = uint64(100)
 	// how far behind we're willing to be in blocks from the head before
 	// we re-pull the newest batch
 	//
 	// the code will ignore this if we're more than [blockBatchSize] behind
 	//
 	// @Vaultec says lag should be 0
-	AcceptableBlockLag = 0
+	AcceptableBlockLag = uint64(0)
 	// delay between re-polling for the newest information about the chain height
 	// before we've updated it once
 	HeadBlockCheckPollIntervalBeforeFirstUpdate = time.Millisecond * 1500
@@ -57,7 +57,7 @@ var (
 	MinTimeBetweenBlockBatchFetches = time.Millisecond * 1
 	// where the hive block streamer starts from by default if nothing
 	// has been persisted yet or overridden as a starting point
-	DefaultBlockStart = 81614028
+	DefaultBlockStart = uint64(81614028)
 	// db poll interval
 	//
 	// @Vaultec says 500ms is ideal
@@ -72,16 +72,16 @@ type StreamReader struct {
 	cancel  context.CancelFunc
 	// mtx           sync.Mutex
 	isPaused      atomic.Bool
-	lastProcessed int
+	lastProcessed uint64
 	stopped       chan struct{}
 	hiveBlocks    hiveblocks.HiveBlocks
 	stopOnlyOnce  sync.Once
 	wg            sync.WaitGroup
-	startBlock    int
+	startBlock    uint64
 }
 
 // inits a StreamReader with the provided hiveBlocks interface and process function
-func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, maybeStartBlock ...int) *StreamReader {
+func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, maybeStartBlock ...uint64) *StreamReader {
 	startBlock := DefaultBlockStart
 	fmt.Println("startBlock", startBlock)
 	if len(maybeStartBlock) > 0 {
@@ -196,7 +196,7 @@ type BlockParams struct {
 type Streamer struct {
 	hiveBlocks     hiveblocks.HiveBlocks
 	client         BlockClient
-	startBlock     *int
+	startBlock     *uint64
 	ctx            context.Context
 	cancel         context.CancelFunc
 	filters        []FilterFunc
@@ -205,7 +205,7 @@ type Streamer struct {
 	mtx            sync.Mutex
 	stopped        chan struct{}
 	stopOnlyOnce   sync.Once
-	headHeight     int
+	headHeight     uint64
 	hasFetchedHead bool
 	wg             sync.WaitGroup
 	processWg      sync.WaitGroup
@@ -213,7 +213,7 @@ type Streamer struct {
 
 // ===== streamer =====
 
-func NewStreamer(blockClient BlockClient, hiveBlocks hiveblocks.HiveBlocks, filters []FilterFunc, vFilters []VirtualFilterFunc, startAtBlock *int) *Streamer {
+func NewStreamer(blockClient BlockClient, hiveBlocks hiveblocks.HiveBlocks, filters []FilterFunc, vFilters []VirtualFilterFunc, startAtBlock *uint64) *Streamer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Streamer{
 		hiveBlocks:     hiveBlocks,
@@ -257,18 +257,18 @@ func (s *Streamer) Init() error {
 		}
 	}
 
-	// if lastBlock is -1, this means that we haven't processed any
+	// if lastBlock is 0, this means that we haven't processed any
 	// blocks yet, thus we should start at our default point
-	if lastBlock == -1 {
+	if lastBlock == 0 {
 		lastBlock = *s.startBlock
 	}
 
 	// ensures startBlock is either the given startBlock, lastBlock+1, or DefaultBlockStart
 	if s.startBlock == nil || *s.startBlock < lastBlock {
 		if lastBlock == 0 {
-			s.startBlock = &[]int{DefaultBlockStart}[0]
+			s.startBlock = &[]uint64{DefaultBlockStart}[0]
 		} else {
-			s.startBlock = &[]int{lastBlock}[0]
+			s.startBlock = &[]uint64{lastBlock}[0]
 		}
 	}
 
@@ -292,14 +292,14 @@ func (s *Streamer) Start() *promise.Promise[any] {
 	})
 }
 
-func updateHead(bc BlockClient) (int, error) {
+func updateHead(bc BlockClient) (uint64, error) {
 	props, err := bc.GetDynamicGlobalProps()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get dynamic global properties: %v", err)
 	}
 
 	var data struct {
-		HeadBlockNumber int `json:"head_block_number"`
+		HeadBlockNumber uint64 `json:"head_block_number"`
 	}
 	if err := json.Unmarshal(props, &data); err != nil {
 		return 0, fmt.Errorf("failed to unmarshal dynamic global properties: %v", err)
@@ -394,7 +394,7 @@ func (s *Streamer) streamBlocks() {
 			}
 
 			s.mtx.Lock()
-			*s.startBlock += len(blocks)
+			*s.startBlock += uint64(len(blocks))
 			s.mtx.Unlock()
 
 			// start goroutine to process the blocks
@@ -416,7 +416,7 @@ func (s *Streamer) streamBlocks() {
 	}
 }
 
-func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, error) {
+func (s *Streamer) fetchBlockBatch(startBlock, batchSize uint64) ([]hivego.Block, error) {
 	log.Printf("fetching block range %d-%d\n", startBlock, startBlock+batchSize-1)
 	blocks, err := s.client.GetBlockRange(startBlock, batchSize)
 	if err != nil {
@@ -607,12 +607,12 @@ func (s *Streamer) IsStopped() bool {
 	}
 }
 
-func (s *Streamer) HeadHeight() int {
+func (s *Streamer) HeadHeight() uint64 {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 	return s.headHeight
 }
 
-func (s *Streamer) StartBlock() int {
+func (s *Streamer) StartBlock() uint64 {
 	return *s.startBlock
 }

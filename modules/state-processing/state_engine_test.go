@@ -93,10 +93,8 @@ func TestStateEngine(t *testing.T) {
 	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims)
 
 	se.Commit()
-	process := func(block hive_blocks.HiveBlock) {
-		se.ProcessBlock(block)
-	}
-	sr := streamer.NewStreamReader(hiveBlocks, process, se.SaveBlockHeight)
+
+	sr := streamer.NewStreamReader(hiveBlocks, se.ProcessBlock)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
@@ -196,7 +194,7 @@ func TestMockEngine(t *testing.T) {
 
 	time.Sleep(10 * time.Second)
 
-	bal := se.LedgerExecutor.Ls.GetBalance("hive:test-account", int64(mockReader.LastBlock), "hbd")
+	bal := se.LedgerExecutor.Ls.GetBalance("hive:test-account", mockReader.LastBlock, "hbd")
 
 	fmt.Println("guaranteed bal", bal)
 

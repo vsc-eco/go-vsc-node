@@ -19,7 +19,7 @@ type MockBalanceDb struct {
 	BalanceRecords map[string][]ledgerDb.BalanceRecord
 }
 
-func (m *MockBalanceDb) GetBalanceRecord(account string, blockHeight int64, asset string) (int64, int64, error) {
+func (m *MockBalanceDb) GetBalanceRecord(account string, blockHeight uint64, asset string) (int64, uint64, error) {
 	var latestRecord ledgerDb.BalanceRecord
 	for _, record := range m.BalanceRecords[account] {
 		if record.BlockHeight < blockHeight {
@@ -39,7 +39,7 @@ func (m *MockBalanceDb) GetBalanceRecord(account string, blockHeight int64, asse
 	return bal, latestRecord.BlockHeight, nil
 }
 
-func (m *MockBalanceDb) UpdateBalanceRecord(account string, blockHeight int64, balances map[string]int64) error {
+func (m *MockBalanceDb) UpdateBalanceRecord(account string, blockHeight uint64, balances map[string]int64) error {
 	previousRecord := m.GetLatestRecord(account, blockHeight)
 
 	//HBD_MODIFY_HEIGHT = some value that is less than claim height aka % of the month interval
@@ -48,7 +48,7 @@ func (m *MockBalanceDb) UpdateBalanceRecord(account string, blockHeight int64, b
 	moreAvg := int64(0)
 	HBD_AVG := int64(0)
 	if previousRecord != nil {
-		moreAvg = previousRecord.HBD_SAVINGS * previousRecord.HBD_MODIFY_HEIGHT / previousRecord.HBD_CLAIM_HEIGHT
+		moreAvg = previousRecord.HBD_SAVINGS * int64(previousRecord.HBD_MODIFY_HEIGHT) / int64(previousRecord.HBD_CLAIM_HEIGHT)
 		HBD_AVG = previousRecord.HBD_AVG
 
 	}
@@ -66,7 +66,7 @@ func (m *MockBalanceDb) UpdateBalanceRecord(account string, blockHeight int64, b
 	return nil
 }
 
-func (m *MockBalanceDb) GetLatestRecord(account string, beforeHeight int64) *ledgerDb.BalanceRecord {
+func (m *MockBalanceDb) GetLatestRecord(account string, beforeHeight uint64) *ledgerDb.BalanceRecord {
 	var record ledgerDb.BalanceRecord
 
 	found := false
@@ -84,7 +84,7 @@ func (m *MockBalanceDb) GetLatestRecord(account string, beforeHeight int64) *led
 	return &record
 }
 
-func (m *MockBalanceDb) GetAll(blockHeight int64) []ledgerDb.BalanceRecord {
+func (m *MockBalanceDb) GetAll(blockHeight uint64) []ledgerDb.BalanceRecord {
 	out := make([]ledgerDb.BalanceRecord, 0)
 	for _, records := range m.BalanceRecords {
 		out = append(out, records...)
@@ -103,11 +103,11 @@ func (m *MockLedgerDb) InsertLedgerRecord(ledgerRecord ledgerDb.LedgerRecord) er
 	return nil
 }
 
-func (m *MockLedgerDb) GetLedgerRecords1(account string, anchorHeight int64, blockHeight int64, asset string) ([]ledgerDb.LedgerRecord, error) {
+func (m *MockLedgerDb) GetLedgerRecords1(account string, anchorHeight uint64, blockHeight uint64, asset string) ([]ledgerDb.LedgerRecord, error) {
 	return m.LedgerRecords[account], nil
 }
 
-func (m *MockLedgerDb) GetLedgerAfterHeight(account string, blockHeight int64, asset string, limit *int64) (*[]ledgerDb.LedgerRecord, error) {
+func (m *MockLedgerDb) GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]ledgerDb.LedgerRecord, error) {
 	das := m.LedgerRecords[account]
 	filteredResults := make([]ledgerDb.LedgerRecord, 0)
 	for _, record := range das {
@@ -119,7 +119,7 @@ func (m *MockLedgerDb) GetLedgerAfterHeight(account string, blockHeight int64, a
 	return &filteredResults, nil
 }
 
-func (m *MockLedgerDb) GetLedgerRange(account string, start int64, end int64, asset string) (*[]ledgerDb.LedgerRecord, error) {
+func (m *MockLedgerDb) GetLedgerRange(account string, start uint64, end uint64, asset string) (*[]ledgerDb.LedgerRecord, error) {
 	das := m.LedgerRecords[account]
 	filteredResults := make([]ledgerDb.LedgerRecord, 0)
 	for _, record := range das {

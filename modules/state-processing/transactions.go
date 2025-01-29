@@ -136,9 +136,9 @@ func (sp *StorageProof) Verify(electionInfo elections.ElectionResult) bool {
 type TxElectionResult struct {
 	Self TxSelf
 
-	BlockHeight int
+	BlockHeight uint64
 	Data        string                 `json:"data"`
-	Epoch       int                    `json:"epoch"`
+	Epoch       uint64                 `json:"epoch"`
 	NetId       string                 `json:"net_id"`
 	Signature   dids.SerializedCircuit `json:"signature"`
 }
@@ -224,11 +224,11 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 
 		fmt.Println("Verify error", err, verified, len(includedDids) > (len(memberDids)*2/3))
 
-		totalWeight := 0
+		totalWeight := uint64(0)
 		if prevElection.WeightTotal == 0 {
-			totalWeight = len(prevElection.Members)
+			totalWeight = uint64(len(prevElection.Members))
 		} else {
-			totalWeight = int(prevElection.WeightTotal)
+			totalWeight = prevElection.WeightTotal
 		}
 
 		blocksLastElection := tx.Self.BlockHeight - prevElection.BlockHeight
@@ -343,7 +343,7 @@ func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
 	fmt.Println("br - block range", t.SignedBlock.Headers.Br, t.Self.BlockHeight)
 
 	fmt.Println("Verified", verified)
-	if t.SignedBlock.Headers.Br[1]+CONSENSUS_SPECS.SlotLength <= int64(t.Self.BlockHeight) {
+	if t.SignedBlock.Headers.Br[1]+CONSENSUS_SPECS.SlotLength <= t.Self.BlockHeight {
 		fmt.Println("Block is too far in the future")
 		return
 	}
@@ -426,8 +426,8 @@ type UnsignedBlockHeader struct {
 	Type    string `json:"__t"`
 	Version string `json:"__v"`
 	Headers struct {
-		PrevBlock string   `json:"prevb"`
-		Br        [2]int64 `json:"br"`
+		PrevBlock string    `json:"prevb"`
+		Br        [2]uint64 `json:"br"`
 	} `json:"headers"`
 	//Define a potential struct to streamline merkle proofs.
 	//Maybe convert to that struct too
@@ -806,7 +806,7 @@ type VSCTransaction interface {
 type TxSelf struct {
 	TxId          string
 	BlockId       string
-	BlockHeight   int
+	BlockHeight   uint64
 	Index         int
 	OpIndex       int
 	Timestamp     string

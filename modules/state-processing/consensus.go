@@ -9,9 +9,9 @@ import (
 )
 
 var CONSENSUS_SPECS = struct {
-	SlotLength     int64
-	EpochLength    int64
-	ScheduleLength int64
+	SlotLength     uint64
+	EpochLength    uint64
+	ScheduleLength uint64
 }{
 	EpochLength:    7_200, // 6 hours - length between elections
 	SlotLength:     10,    //10 * 3 seconds = 30 seconds - length between blocks
@@ -26,50 +26,50 @@ func (consensus *Consensus) GetWitnessSchedule(blockHeight int) {
 
 }
 
-func CalculateEpochRound(blockHeight int64) struct {
-	NextRoundHeight int64
-	PastRoundHeight int64
+func CalculateEpochRound(blockHeight uint64) struct {
+	NextRoundHeight uint64
+	PastRoundHeight uint64
 } {
 	modLength := CONSENSUS_SPECS.ScheduleLength * CONSENSUS_SPECS.EpochLength
 	mod3 := blockHeight % modLength
 	pastRoundHeight := blockHeight - mod3
 
 	return struct {
-		NextRoundHeight int64
-		PastRoundHeight int64
+		NextRoundHeight uint64
+		PastRoundHeight uint64
 	}{
 		NextRoundHeight: blockHeight + (modLength - mod3),
 		PastRoundHeight: pastRoundHeight,
 	}
 }
 
-func CalculateSlotInfo(blockHeight int64) struct {
-	StartHeight int64
-	EndHeight   int64
+func CalculateSlotInfo(blockHeight uint64) struct {
+	StartHeight uint64
+	EndHeight   uint64
 } {
 	mod3 := blockHeight % CONSENSUS_SPECS.SlotLength
 
 	pastHeight := blockHeight - mod3
 
 	return struct {
-		StartHeight int64
-		EndHeight   int64
+		StartHeight uint64
+		EndHeight   uint64
 	}{
 		StartHeight: pastHeight,
 		EndHeight:   pastHeight + CONSENSUS_SPECS.SlotLength,
 	}
 }
 
-func CalculateRoundInfo(blockHeight int64) struct {
-	StartHeight int64
-	EndHeight   int64
+func CalculateRoundInfo(blockHeight uint64) struct {
+	StartHeight uint64
+	EndHeight   uint64
 } {
 	mod3 := blockHeight % CONSENSUS_SPECS.ScheduleLength
 
 	pastHeight := blockHeight - mod3
 	return struct {
-		StartHeight int64
-		EndHeight   int64
+		StartHeight uint64
+		EndHeight   uint64
 	}{
 		StartHeight: pastHeight,
 		EndHeight:   pastHeight + CONSENSUS_SPECS.ScheduleLength,
@@ -83,18 +83,18 @@ type Witness struct {
 
 type WitnessSlot struct {
 	Account    string `json:"account"`
-	SlotHeight int64  `json:"bn"`
+	SlotHeight uint64 `json:"bn"`
 }
 
-func GenerateSchedule(blockHeight int64, witnessList []Witness, seed [32]byte) []WitnessSlot {
+func GenerateSchedule(blockHeight uint64, witnessList []Witness, seed [32]byte) []WitnessSlot {
 
 	roundInfo := CalculateRoundInfo(blockHeight)
 
 	slots := (roundInfo.EndHeight - roundInfo.StartHeight) / CONSENSUS_SPECS.SlotLength
 
 	schedule := make([]WitnessSlot, 0)
-	for slot := int64(0); slot < slots; slot++ {
-		selection := witnessList[slot%int64(len(witnessList))]
+	for slot := uint64(0); slot < slots; slot++ {
+		selection := witnessList[slot%uint64(len(witnessList))]
 		schedule = append(schedule, WitnessSlot{
 			Account: selection.Account,
 		})
@@ -107,7 +107,7 @@ func GenerateSchedule(blockHeight int64, witnessList []Witness, seed [32]byte) [
 	})
 	//Apply block numbers after sorting
 	for i, slot := range schedule {
-		sh := (int64(i) * CONSENSUS_SPECS.SlotLength) + roundInfo.StartHeight
+		sh := (uint64(i) * CONSENSUS_SPECS.SlotLength) + roundInfo.StartHeight
 
 		slot.SlotHeight = sh
 		schedule[i] = slot
@@ -116,7 +116,7 @@ func GenerateSchedule(blockHeight int64, witnessList []Witness, seed [32]byte) [
 	return schedule
 }
 
-func CalculateSlotLeader(blockHeight int64, witnessList []Witness, seed [32]byte) *WitnessSlot {
+func CalculateSlotLeader(blockHeight uint64, witnessList []Witness, seed [32]byte) *WitnessSlot {
 	schedule := GenerateSchedule(blockHeight, witnessList, seed)
 	slotInfo := CalculateSlotInfo(blockHeight)
 
@@ -141,7 +141,7 @@ type ConsensusStreamer struct {
 }
 
 func (consensus *ConsensusStreamer) StreamFunc(block hive_blocks.HiveBlock, extraInfo ProcessExtraInfo) {
-	epochInfo := CalculateEpochRound(int64(block.BlockNumber))
+	epochInfo := CalculateEpochRound(uint64(block.BlockNumber))
 
 	fmt.Println("EpochInfo", epochInfo)
 	for _, tx := range block.Transactions {

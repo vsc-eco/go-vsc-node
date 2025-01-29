@@ -287,7 +287,7 @@ func (h *hiveBlocks) StoreBlocks(blocks ...HiveBlock) error {
 }
 
 // retrieves blocks in a specified range, ordered by block number
-func (h *hiveBlocks) FetchStoredBlocks(startBlock, endBlock int) ([]HiveBlock, error) {
+func (h *hiveBlocks) FetchStoredBlocks(startBlock, endBlock uint64) ([]HiveBlock, error) {
 	ctx := context.Background()
 	filter := bson.M{
 		"type": "block",
@@ -342,7 +342,7 @@ func (h *hiveBlocks) FetchStoredBlocks(startBlock, endBlock int) ([]HiveBlock, e
 	return blocks, nil
 }
 
-func (h *hiveBlocks) FetchNextBlocks(startBlock int) (<-chan HiveBlock, error) {
+func (h *hiveBlocks) FetchNextBlocks(startBlock uint64) (<-chan HiveBlock, error) {
 	ctx := context.Background()
 	filter := Document{
 		Type: DocumentTypeHiveBlock,
@@ -388,7 +388,7 @@ func (h *hiveBlocks) ClearBlocks() error {
 }
 
 // stores the last processed block number
-func (h *hiveBlocks) StoreLastProcessedBlock(blockNumber int) error {
+func (h *hiveBlocks) StoreLastProcessedBlock(blockNumber uint64) error {
 	ctx := context.Background()
 
 	_, err := h.Collection.UpdateOne(ctx, Document{Type: DocumentTypeMetadata},
@@ -404,12 +404,12 @@ func (h *hiveBlocks) StoreLastProcessedBlock(blockNumber int) error {
 // retrieves the last processed block number
 //
 // returns -1 if no blocks have been processed yet
-func (h *hiveBlocks) GetLastProcessedBlock() (int, error) {
+func (h *hiveBlocks) GetLastProcessedBlock() (uint64, error) {
 	var result Document
 	err := h.Collection.FindOne(context.Background(), Document{Type: DocumentTypeMetadata}).Decode(&result)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return -1, mongo.ErrNoDocuments
+			return 0, mongo.ErrNoDocuments
 		}
 		return 0, fmt.Errorf("failed to get last processed block: %w", err)
 	}
@@ -418,7 +418,7 @@ func (h *hiveBlocks) GetLastProcessedBlock() (int, error) {
 }
 
 // retrieves the last stored block number
-func (h *hiveBlocks) GetLastStoredBlock() (int, error) {
+func (h *hiveBlocks) GetLastStoredBlock() (uint64, error) {
 	var result Document
 	err := h.Collection.FindOne(context.Background(), Document{Type: DocumentTypeMetadata}).Decode(&result)
 	if err != nil {
@@ -430,7 +430,7 @@ func (h *hiveBlocks) GetLastStoredBlock() (int, error) {
 	return *result.LastStoredBlock, nil
 }
 
-func (h *hiveBlocks) GetHighestBlock() (int, error) {
+func (h *hiveBlocks) GetHighestBlock() (uint64, error) {
 	findOptions := options.FindOne().SetSort(bson.D{{Key: "block.block_number", Value: -1}})
 	var result Document
 	err := h.Collection.FindOne(context.Background(), Document{Type: DocumentTypeHiveBlock}, findOptions).Decode(&result)
@@ -444,7 +444,7 @@ func (h *hiveBlocks) GetHighestBlock() (int, error) {
 	return result.Block.BlockNumber, nil
 }
 
-func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock int, listener func(block HiveBlock) error) (context.CancelFunc, <-chan error) {
+func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block HiveBlock) error) (context.CancelFunc, <-chan error) {
 	startBlock--
 	ctx, cancel := context.WithCancel(ctx)
 	errChan := make(chan error)
@@ -489,7 +489,7 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock int, l
 	return cancel, errChan
 }
 
-func (h *hiveBlocks) GetBlock(blockNum int) (HiveBlock, error) {
+func (h *hiveBlocks) GetBlock(blockNum uint64) (HiveBlock, error) {
 	var result Document
 	err := h.FindOne(context.Background(), bson.M{
 		"block.block_number": blockNum,

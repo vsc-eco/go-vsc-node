@@ -44,9 +44,9 @@ func init() {
 
 // ===== test utils =====
 
-func seedBlockData(t *testing.T, hiveBlocks hive_blocks.HiveBlocks, n int) {
+func seedBlockData(t *testing.T, hiveBlocks hive_blocks.HiveBlocks, n uint64) {
 
-	for i := 1; i <= n; i++ {
+	for i := uint64(1); i <= n; i++ {
 		// a dummy hiveblock
 		block := hive_blocks.HiveBlock{
 			BlockNumber: i,
@@ -77,11 +77,11 @@ func seedBlockData(t *testing.T, hiveBlocks hive_blocks.HiveBlocks, n int) {
 
 type MockHiveBlockDb struct {
 	Blocks             []hive_blocks.HiveBlock
-	LastProcessedBlock int
+	LastProcessedBlock uint64
 }
 
 // GetBlock implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) GetBlock(blockNum int) (hive_blocks.HiveBlock, error) {
+func (m *MockHiveBlockDb) GetBlock(blockNum uint64) (hive_blocks.HiveBlock, error) {
 	for _, block := range m.Blocks {
 		if block.BlockNumber == blockNum {
 			return block, nil
@@ -92,7 +92,7 @@ func (m *MockHiveBlockDb) GetBlock(blockNum int) (hive_blocks.HiveBlock, error) 
 }
 
 // ListenToBlockUpdates implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) ListenToBlockUpdates(ctx context.Context, startBlock int, listener func(block hive_blocks.HiveBlock) error) (context.CancelFunc, <-chan error) {
+func (m *MockHiveBlockDb) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block hive_blocks.HiveBlock) error) (context.CancelFunc, <-chan error) {
 	ctx, cancel := context.WithCancel(ctx)
 	errChan := make(chan error)
 	if m.Blocks == nil {
@@ -129,7 +129,7 @@ func (m *MockHiveBlockDb) ClearBlocks() error {
 }
 
 // FetchStoredBlocks implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) FetchStoredBlocks(startBlock int, endBlock int) ([]hive_blocks.HiveBlock, error) {
+func (m *MockHiveBlockDb) FetchStoredBlocks(startBlock, endBlock uint64) ([]hive_blocks.HiveBlock, error) {
 	if m.Blocks == nil {
 		return []hive_blocks.HiveBlock{}, nil
 	}
@@ -150,7 +150,7 @@ func (m *MockHiveBlockDb) FetchStoredBlocks(startBlock int, endBlock int) ([]hiv
 }
 
 // GetHighestBlock implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) GetHighestBlock() (int, error) {
+func (m *MockHiveBlockDb) GetHighestBlock() (uint64, error) {
 	if m.Blocks == nil {
 		return 0, nil
 	}
@@ -164,9 +164,9 @@ func (m *MockHiveBlockDb) GetHighestBlock() (int, error) {
 }
 
 // GetLastProcessedBlock implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) GetLastProcessedBlock() (int, error) {
+func (m *MockHiveBlockDb) GetLastProcessedBlock() (uint64, error) {
 	if m.Blocks == nil {
-		return -1, nil
+		return 0, nil
 	}
 
 	return m.LastProcessedBlock, nil
@@ -179,7 +179,7 @@ func (m *MockHiveBlockDb) StoreBlocks(blocks ...hive_blocks.HiveBlock) error {
 }
 
 // StoreLastProcessedBlock implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) StoreLastProcessedBlock(blockNumber int) error {
+func (m *MockHiveBlockDb) StoreLastProcessedBlock(blockNumber uint64) error {
 	m.LastProcessedBlock = blockNumber
 	return nil
 }
@@ -218,12 +218,12 @@ func (m *MockBlockClient) GetDynamicGlobalProps() ([]byte, error) {
 	return props, nil
 }
 
-func (m *MockBlockClient) GetBlockRange(startBlock int, count int) ([]hivego.Block, error) {
+func (m *MockBlockClient) GetBlockRange(startBlock, count uint64) ([]hivego.Block, error) {
 	// await for random duration to simulate real-world scenario
 	//
 	// to contribute to innate thread randomness since these tests because of that can't be 100% deterministic anyway
 	blockChannel := make([]hivego.Block, count)
-	for i := 0; i < count; i++ {
+	for i := uint64(0); i < count; i++ {
 		blockNumber := startBlock + i
 		blockChannel[i] = hivego.Block{
 			Timestamp:             time.Now().UTC().Format(time.RFC3339),
@@ -248,7 +248,7 @@ func (m *MockBlockClient) GetBlockRange(startBlock int, count int) ([]hivego.Blo
 	return blockChannel, nil
 }
 
-func (m *MockBlockClient) FetchVirtualOps(block int, onlyVirtual bool, includeReversible bool) ([]hivego.VirtualOp, error) {
+func (m *MockBlockClient) FetchVirtualOps(block uint64, onlyVirtual bool, includeReversible bool) ([]hivego.VirtualOp, error) {
 
 	return nil, nil
 }
@@ -259,7 +259,7 @@ func TestFetchStoreBlocks(t *testing.T) {
 	// hive mocks db
 	mockHiveBlocks := &MockHiveBlockDb{}
 
-	blockClient := hivego.NewHiveRpc("https://api.hive.blog")
+	blockClient := &MockBlockClient{}
 	s := streamer.NewStreamer(blockClient, mockHiveBlocks, []streamer.FilterFunc{func(tx hivego.Operation, blockParams *streamer.BlockParams) bool {
 		// s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{func(tx hivego.Operation) bool {
 		return true
@@ -298,7 +298,7 @@ func TestStartBlock(t *testing.T) {
 	// should default to our default if we don't specify and instead input nil
 	assert.Equal(t, streamer.DefaultBlockStart, s.StartBlock())
 
-	s = streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, &[]int{99}[0])
+	s = streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, &[]uint64{99}[0])
 	assert.NoError(t, s.Init())
 
 	// should be the value we input
@@ -310,7 +310,7 @@ func TestIntensePolling(t *testing.T) {
 	mockHiveBlocks := &MockHiveBlockDb{}
 
 	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, nil)
-	seenBlocks := make(map[int]int)
+	seenBlocks := make(map[uint64]int)
 
 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
 		seenBlocks[block.BlockNumber]++
@@ -415,7 +415,7 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 
 	test_utils.RunPlugin(t, agg)
 
-	lastProcessedBlk := -1
+	lastProcessedBlk := uint64(0)
 
 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
 		lastProcessedBlk = block.BlockNumber
@@ -441,7 +441,7 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 
 	assert.NoError(t, sr.Stop())
 
-	resumedLastProcessedBlk := -1
+	resumedLastProcessedBlk := uint64(0)
 
 	s.Resume()
 
@@ -882,36 +882,4 @@ func TestNestedArrayStructure(t *testing.T) {
 	// the reason we have to do this is because we store it internally in a different format so we
 	// want to ensure that our retrieval and conversion function is working correctly
 	assert.Equal(t, originalBlock, fetchedBlocks[0])
-}
-
-// todo: Vaultec's experiments
-func TestVaultecExperiments(t *testing.T) {
-	return
-
-	mockHiveBlocks := &MockHiveBlockDb{}
-
-	// slow down the streamer a bit for real data
-	streamer.AcceptableBlockLag = 0
-	streamer.BlockBatchSize = 100
-	streamer.DefaultBlockStart = 81614028
-	streamer.HeadBlockCheckPollIntervalBeforeFirstUpdate = time.Millisecond * 1500
-	streamer.MinTimeBetweenBlockBatchFetches = time.Millisecond * 1500
-	streamer.DbPollInterval = time.Millisecond * 500
-
-	test_utils.RunPlugin(t, mockHiveBlocks)
-
-	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool { return true }
-	client := hivego.NewHiveRpc("https://api.hive.blog")
-	s := streamer.NewStreamer(client, mockHiveBlocks, []streamer.FilterFunc{filter}, nil, nil)
-
-	test_utils.RunPlugin(t, s)
-
-	process := func(block hive_blocks.HiveBlock) {
-		fmt.Printf("block #: %v\n", block.Transactions)
-	}
-	sr := streamer.NewStreamReader(mockHiveBlocks, process)
-
-	test_utils.RunPlugin(t, sr)
-
-	select {}
 }

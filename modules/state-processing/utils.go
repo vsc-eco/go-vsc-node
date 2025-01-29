@@ -148,7 +148,7 @@ type MockReader struct {
 	VMempool []hivego.VirtualOp
 
 	ProcessFunction streamer.ProcessFunction
-	LastBlock       int
+	LastBlock       uint64
 
 	lastTs time.Time
 }

@@ -28,7 +28,7 @@ func (ledger *ledger) StoreLedger(ledgerRecord LedgerRecord) {
 }
 
 // Get ledger ops after height inclusive
-func (ledger *ledger) GetLedgerAfterHeight(account string, blockHeight int64, asset string, limit *int64) (*[]LedgerRecord, error) {
+func (ledger *ledger) GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error) {
 	opts := options.Find().SetSort(bson.M{"block_height": 1})
 	if limit != nil {
 		opts.SetLimit(*limit)
@@ -56,7 +56,7 @@ func (ledger *ledger) GetLedgerAfterHeight(account string, blockHeight int64, as
 }
 
 // Get ledger ops after height inclusive
-func (ledger *ledger) GetLedgerRange(account string, start int64, end int64, asset string) (*[]LedgerRecord, error) {
+func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, asset string) (*[]LedgerRecord, error) {
 	opts := options.Find().SetSort(bson.M{"block_height": 1})
 
 	findResult, err := ledger.Find(context.Background(), bson.M{
@@ -91,7 +91,7 @@ func NewBalances(d *vsc.VscDb) Balances {
 
 // Gets the balance record for a given account and asset
 // Note: this does not return updated ledger records
-func (balances *balances) GetBalanceRecord(account string, blockHeight int64, asset string) (int64, int64, error) {
+func (balances *balances) GetBalanceRecord(account string, blockHeight uint64, asset string) (int64, uint64, error) {
 	singleResult := balances.FindOne(context.Background(), bson.M{
 		"account": account,
 		"block_height": bson.M{
@@ -118,7 +118,7 @@ func (balances *balances) PutBalanceRecord(balRecord BalanceRecord) {
 }
 
 // FIX ME!!
-func (balances *balances) UpdateBalanceRecord(account string, blockHeight int64, balancesMap map[string]int64) error {
+func (balances *balances) UpdateBalanceRecord(account string, blockHeight uint64, balancesMap map[string]int64) error {
 	findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
 	balances.FindOneAndUpdate(context.Background(), bson.M{
 		"account":      account,
@@ -129,7 +129,7 @@ func (balances *balances) UpdateBalanceRecord(account string, blockHeight int64,
 	return nil
 }
 
-func (balances *balances) GetAll(blockHeight int64) []BalanceRecord {
+func (balances *balances) GetAll(blockHeight uint64) []BalanceRecord {
 	return nil
 }
 
@@ -174,7 +174,7 @@ type interestClaims struct {
 	*db.Collection
 }
 
-func (ic *interestClaims) GetLastClaim(blockHeight int) *ClaimRecord {
+func (ic *interestClaims) GetLastClaim(blockHeight uint64) *ClaimRecord {
 	findResult := ic.FindOne(context.Background(), bson.M{
 		"block_height": bson.M{
 			"$lt": blockHeight,
@@ -188,7 +188,7 @@ func (ic *interestClaims) GetLastClaim(blockHeight int) *ClaimRecord {
 	return &claimRecord
 }
 
-func (ic *interestClaims) SaveClaim(blockHeight int, amount int) {
+func (ic *interestClaims) SaveClaim(blockHeight uint64, amount int64) {
 	claimRecord := ClaimRecord{
 		BlockHeight: blockHeight,
 		Amount:      amount,

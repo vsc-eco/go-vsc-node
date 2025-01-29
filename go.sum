@@ -613,6 +613,8 @@ github.com/vsc-eco/hivego v0.0.0-20250123061606-dbf3fb0ad262 h1:uINL+hPRwe/Ud1NE
 github.com/vsc-eco/hivego v0.0.0-20250123061606-dbf3fb0ad262/go.mod h1:iCM8eljf5SOSnYtAq4qy/Ax8qpi83lPr+rahUVcQ2e8=
 github.com/vsc-eco/hivego v0.0.0-20250125013530-01af08e5d343 h1:dpRQLCjnupBCdQXadfHkGe9lpXipAeoHM9gPrTdz45c=
 github.com/vsc-eco/hivego v0.0.0-20250125013530-01af08e5d343/go.mod h1:iCM8eljf5SOSnYtAq4qy/Ax8qpi83lPr+rahUVcQ2e8=
+github.com/vsc-eco/hivego v0.0.0-20250129020919-184a0e579c53 h1:7wa+19v7U2rSub7hHGFeXx5E3sYMgfdat/Zftr76xK0=
+github.com/vsc-eco/hivego v0.0.0-20250129020919-184a0e579c53/go.mod h1:iCM8eljf5SOSnYtAq4qy/Ax8qpi83lPr+rahUVcQ2e8=
 github.com/warpfork/go-testmark v0.12.1 h1:rMgCpJfwy1sJ50x0M0NgyphxYYPMOODIJHhsXyEHU0s=
 github.com/warpfork/go-testmark v0.12.1/go.mod h1:kHwy7wfvGSPh1rQJYKayD4AbtNaeyZdcGi9tNJTaa5Y=
 github.com/warpfork/go-wish v0.0.0-20220906213052-39a1cc7a02d0 h1:GDDkbFiaK8jsSDJfjId/PEGEShv6ugrt4kYsC5UIDaQ=

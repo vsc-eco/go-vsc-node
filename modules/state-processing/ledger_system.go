@@ -32,7 +32,7 @@ const HIVE_REGEX = `^[a-z][0-9a-z\-]*[0-9a-z](\.[a-z][0-9a-z\-]*[0-9a-z])*$`
 type LedgerUpdate struct {
 	Id string
 	//Block Index
-	BlockHeight int64
+	BlockHeight uint64
 	//Block Index: Index of the TX in the block
 	BIdx int64
 	//Op Index: Index of the operation in the TX
@@ -85,10 +85,12 @@ type LedgerSystem struct {
 
 // }
 
-func (ls *LedgerSystem) GetBalance(account string, blockHeight int64, asset string) int64 {
+func (ls *LedgerSystem) GetBalance(account string, blockHeight uint64, asset string) int64 {
 	if !slices.Contains(assetTypes, asset) {
 		return 0
 	}
+
+	// TODO: handle errors
 	balRecord, lastHeight, _ := ls.BalanceDb.GetBalanceRecord(account, blockHeight, asset)
 
 	ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, lastHeight, blockHeight, asset)
@@ -100,7 +102,7 @@ func (ls *LedgerSystem) GetBalance(account string, blockHeight int64, asset stri
 	return balRecord
 }
 
-func (ls *LedgerSystem) ClaimHBDInterest(lastClaim int64, blockHeight int64, amount int64) {
+func (ls *LedgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64) {
 	//Do distribution of HBD interest on an going forward basis
 	//Save to ledger DB the difference.
 	ledgerBalances := ls.BalanceDb.GetAll(blockHeight)
@@ -109,7 +111,7 @@ func (ls *LedgerSystem) ClaimHBDInterest(lastClaim int64, blockHeight int64, amo
 	totalAvg := int64(0)
 	//Ensure averages have been updated before distribution;
 	for _, balance := range ledgerBalances {
-		moreAvg := balance.HBD_SAVINGS * balance.HBD_MODIFY_HEIGHT / lastClaim
+		moreAvg := balance.HBD_SAVINGS * int64(balance.HBD_MODIFY_HEIGHT) / int64(lastClaim)
 		fmt.Println("INCREASING TOTAL AVG", balance.HBD_SAVINGS, moreAvg)
 		balance.HBD_AVG = balance.HBD_AVG + moreAvg
 
@@ -133,7 +135,7 @@ func (ls *LedgerSystem) ClaimHBDInterest(lastClaim int64, blockHeight int64, amo
 			ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
 				Id:          "hbd_interest_" + strconv.Itoa(int(blockHeight)) + "_" + strconv.Itoa(id),
 				BlockHeight: blockHeight,
-				Amount:      distributeAmt,
+				Amount:      int64(distributeAmt),
 				Asset:       "hbd_savings",
 				Owner:       balance.Account,
 				Type:        "hbd_interest",
@@ -143,7 +145,7 @@ func (ls *LedgerSystem) ClaimHBDInterest(lastClaim int64, blockHeight int64, amo
 	//DONE
 }
 
-func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight int64, endBlock int64) {
+func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) {
 	affectedAccounts := map[string]bool{}
 
 	for _, v := range oplog {
@@ -262,7 +264,7 @@ func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight int64, endB
 	}
 }
 
-func (ls *LedgerSystem) SaveSnapshot(k string, endBlock int64) {
+func (ls *LedgerSystem) SaveSnapshot(k string, endBlock uint64) {
 	assets := []string{"hbd", "hive", "hbd_savings"}
 	ledgerBalances := map[string]int64{}
 	for _, asset := range assets {
@@ -281,7 +283,7 @@ func (ls *LedgerSystem) SaveSnapshot(k string, endBlock int64) {
 }
 
 type ExtraInfo struct {
-	BlockHeight int64
+	BlockHeight uint64
 }
 
 func (ls *LedgerSystem) ExecuteActions(actionsIds []string, extraInfo ExtraInfo) {
@@ -340,14 +342,14 @@ type LedgerExecutor struct {
 	//Virtual ledger is a cache of all balance changes (virtual and non-virtual)
 	//Includes deposits, transfers (in-n-out), withdrawals, and stake/unstake operations (future)
 	VirtualLedger map[string][]LedgerUpdate
-	BlockHeight   int64
+	BlockHeight   uint64
 
 	//Live calculated gateway balances on the fly
 	//Use last saved balance as the starting data
-	GatewayBalances map[string]int64
+	GatewayBalances map[string]uint64
 }
 
-func (le *LedgerExecutor) SetHeight(bh int64) error {
+func (le *LedgerExecutor) SetHeight(bh uint64) error {
 	if bh < le.BlockHeight {
 		return fmt.Errorf("cannot go back in time. Make a new instance")
 	}
@@ -357,7 +359,7 @@ func (le *LedgerExecutor) SetHeight(bh int64) error {
 }
 
 // Pretends blocks are being produced; utility function
-func (le *LedgerExecutor) Mine(i int64) {
+func (le *LedgerExecutor) Mine(i uint64) {
 	le.SetHeight(le.BlockHeight + i)
 }
 
@@ -624,7 +626,7 @@ func (le *LedgerExecutor) Withdraw(withdraw WithdrawParams) LedgerResult {
 	}
 }
 
-func (le *LedgerExecutor) CalculationFractStats(accountList []string, blockHeight int64) struct {
+func (le *LedgerExecutor) CalculationFractStats(accountList []string, blockHeight uint64) struct {
 	//Total staked balance of hbd_savings accounts
 	StakedBalance int64
 
@@ -711,7 +713,7 @@ type StakeOp struct {
 	NoFail bool
 }
 
-const HBD_UNSTAKE_BLOCKS = int64(86400)
+const HBD_UNSTAKE_BLOCKS = uint64(86400)
 
 // HBD instant stake/unstake fee
 const HBD_INSTANT_FEE = int64(1) // 1% or 100 bps
@@ -923,7 +925,7 @@ func (le *LedgerExecutor) Unstake(stakeOp StakeOp) LedgerResult {
 	}
 }
 
-func (le *LedgerExecutor) SnapshotForAccount(account string, blockHeight int64, asset string) int64 {
+func (le *LedgerExecutor) SnapshotForAccount(account string, blockHeight uint64, asset string) int64 {
 
 	bal, _, err := le.Ls.BalanceDb.GetBalanceRecord(account, blockHeight, asset)
 	if err != nil {
@@ -949,7 +951,7 @@ func (le *LedgerExecutor) Snapshot(RelevantAccounts *[]string) {
 
 type FilterLedgerParams struct {
 	//Allow all transactions in all blocks up to this height
-	FinalHeight int64
+	FinalHeight uint64
 	BelowBIdx   int64
 	BelowOpIdx  int64
 }

@@ -49,7 +49,7 @@ func (e *elections) StoreElection(a ElectionResult) {
 	fmt.Println(result.Err())
 }
 
-func (e *elections) GetElection(epoch int) *ElectionResult {
+func (e *elections) GetElection(epoch uint64) *ElectionResult {
 	findQuery := bson.M{
 		"epoch": epoch,
 	}
@@ -65,7 +65,7 @@ func (e *elections) GetElection(epoch int) *ElectionResult {
 	}
 }
 
-func (e *elections) GetElectionByHeight(height int) *ElectionResult {
+func (e *elections) GetElectionByHeight(height uint64) *ElectionResult {
 	findQuery := bson.M{
 		"block_height": bson.M{
 			//Elections activate going forward, not retroactively to the same block
@@ -90,14 +90,14 @@ func (e *elections) GetElectionByHeight(height int) *ElectionResult {
 }
 
 // Utility function
-func CalculateSigningScore(circuit dids.BlsCircuit, election ElectionResult) (int64, int64) {
+func CalculateSigningScore(circuit dids.BlsCircuit, election ElectionResult) (uint64, uint64) {
 	IncludedDids := circuit.IncludedDIDs()
 	BitVector := circuit.RawBitVector()
-	WeightTotal := int64(0)
-	sum := int64(0)
+	WeightTotal := uint64(0)
+	sum := uint64(0)
 	if election.Weights == nil {
-		sum = sum + int64(len(IncludedDids))
-		WeightTotal = int64(len(election.Members))
+		sum = sum + uint64(len(IncludedDids))
+		WeightTotal = uint64(len(election.Members))
 	} else {
 		for idx, weight := range election.Weights {
 			if BitVector.Bit(idx) == 1 {
@@ -118,7 +118,7 @@ func MinimumSigningScore(lastElectionHeight int64, memberCount int64) {
 const MIN_BLOCKS_SINCE_LAST_ELECTION = 1200   // 1 hour
 const MAX_BLOCKS_SINCE_LAST_ELECTION = 403200 // 2 weeks
 
-func MinimalRequiredElectionVotes(blocksSinceLastElection, memberCountOfLastElection int) int {
+func MinimalRequiredElectionVotes(blocksSinceLastElection, memberCountOfLastElection uint64) int {
 	if blocksSinceLastElection < MIN_BLOCKS_SINCE_LAST_ELECTION {
 		//Return 2/3
 		return int(math.Ceil(float64(memberCountOfLastElection) * 2.0 / 3.0))

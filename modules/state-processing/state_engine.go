@@ -87,15 +87,15 @@ func (se *StateEngine) Finalize() {
 	//Make it happen!
 }
 
-func (se *StateEngine) claimHBDInterest(blockHeight int, amount int) {
+func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64) {
 	lastClaim := se.interestClaimDb.GetLastClaim(blockHeight)
 
-	claimHeight := 0
+	claimHeight := uint64(0)
 	if lastClaim != nil {
 		claimHeight = lastClaim.BlockHeight
 	}
 
-	se.LedgerExecutor.Ls.ClaimHBDInterest(int64(claimHeight), int64(blockHeight), int64(amount))
+	se.LedgerExecutor.Ls.ClaimHBDInterest(claimHeight, blockHeight, amount)
 
 	se.interestClaimDb.SaveClaim(blockHeight, amount)
 }
@@ -103,7 +103,7 @@ func (se *StateEngine) claimHBDInterest(blockHeight int, amount int) {
 // Gets ranomized schedule of witnesses
 // Uses a different PRNG variant from the original used in JS VSC
 // Not aiming for exact replica
-func (se *StateEngine) getSchedule(slotHeight int) []WitnessSlot {
+func (se *StateEngine) getSchedule(slotHeight uint64) []WitnessSlot {
 	lastElection := se.electionDb.GetElectionByHeight(slotHeight)
 
 	if lastElection == nil {
@@ -120,11 +120,11 @@ func (se *StateEngine) getSchedule(slotHeight int) []WitnessSlot {
 
 	//Use the slot height to calculate round start and finish.
 	//Slot height is consistent.
-	roundInfo := CalculateRoundInfo(int64(slotHeight))
+	roundInfo := CalculateRoundInfo(slotHeight)
 
 	randBlock := roundInfo.StartHeight - 1
 
-	hiveBlock, err := se.hiveBlocks.GetBlock(int(randBlock))
+	hiveBlock, err := se.hiveBlocks.GetBlock(randBlock)
 
 	hash := crypto.SHA256.New()
 	if err != nil {
@@ -141,7 +141,7 @@ func (se *StateEngine) getSchedule(slotHeight int) []WitnessSlot {
 	var seed32 [32]byte
 	// var seed2 [32]byte
 	copy(seed32[:], seed)
-	witnessSchedule := GenerateSchedule(int64(slotHeight), witnessList, seed32)
+	witnessSchedule := GenerateSchedule(slotHeight, witnessList, seed32)
 
 	return witnessSchedule
 }
@@ -149,7 +149,7 @@ func (se *StateEngine) getSchedule(slotHeight int) []WitnessSlot {
 func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	//Detect Transaction Type
 	blockInfo := struct {
-		BlockHeight int
+		BlockHeight uint64
 		BlockId     string
 		Timestamp   string
 	}{
@@ -162,9 +162,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		return
 	}
 
-	slotInfo := CalculateSlotInfo(int64(blockInfo.BlockHeight))
+	slotInfo := CalculateSlotInfo(blockInfo.BlockHeight)
 
-	schedule := se.getSchedule(int(slotInfo.StartHeight))
+	schedule := se.getSchedule(slotInfo.StartHeight)
 
 	//Select current slot as per consensus algorithm
 	var witnessSlot WitnessSlot
@@ -185,10 +185,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			if virtualOp.Op.Value["owner"].(string) == GATEWAY_WALLET {
 				fmt.Println("virtualOp.Op.Value", virtualOp.Op.Value)
 
-				amount, err := strconv.Atoi(virtualOp.Op.Value["interest"].(map[string]any)["amount"].(string))
+				amount, err := strconv.ParseInt(virtualOp.Op.Value["interest"].(map[string]any)["amount"].(string), 10, 64)
 
 				if err != nil {
-					//Should we panic here?
+					//Should we panic here? ...No
 					panic("Invalid Interest Amount. Possible deviation")
 				}
 				se.claimHBDInterest(blockInfo.BlockHeight, amount)
