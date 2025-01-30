@@ -1,9 +1,9 @@
 package data_availability
 
 import (
-	libp2p "vsc-node/lib/p2p"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
+	libp2p "vsc-node/modules/p2p"
 
 	"github.com/chebyrash/promise"
 )

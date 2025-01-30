@@ -5,8 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"vsc-node/lib/dids"
-	libp2p "vsc-node/lib/p2p"
 	"vsc-node/modules/announcements"
+	libp2p "vsc-node/modules/p2p"
 
 	"github.com/ipfs/go-cid"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
