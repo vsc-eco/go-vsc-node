@@ -68,7 +68,7 @@ func (d *DataAvailability) stopP2P() error {
 }
 
 // ValidateMessage implements libp2p.PubSubServiceParams.
-func (p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message) bool {
+func (p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
 	// Can add a blacklist for spammers or ignore previously seen messages.
 	return true
 }

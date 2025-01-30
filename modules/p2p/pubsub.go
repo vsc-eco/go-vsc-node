@@ -13,7 +13,7 @@ type SendFunc[Msg any] func(msg Msg) error
 type PubSubServiceParams[Msg any] interface {
 	Topic() string
 
-	ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message) bool
+	ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg Msg) bool
 	HandleMessage(ctx context.Context, from peer.ID, msg Msg, send SendFunc[Msg]) error
 	HandleRawMessage(ctx context.Context, rawMsg *pubsub.Message, send SendFunc[Msg]) error
 
@@ -70,12 +70,11 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 
 	// Invalid messages are not relayed nor processed by subscribers
 	err = p2p.pubsub.RegisterTopicValidator(service.Topic(), func(ctx context.Context, from peer.ID, msg *pubsub.Message) bool {
-		valid := service.ValidateMessage(ctx, from, msg)
-		if !valid {
+		parsedMsg, err := service.ParseMessage(msg.GetData())
+		if err != nil {
 			return false
 		}
-		_, err := service.ParseMessage(msg.GetData())
-		return err == nil
+		return service.ValidateMessage(ctx, from, msg, parsedMsg)
 	})
 	if err != nil {
 		return nil, err
@@ -107,9 +106,9 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 			}
 
 			// TODO isn't this already run internally by libp2p?
-			if !service.ValidateMessage(ctx, msg.GetFrom(), msg) {
-				continue
-			}
+			// if !service.ValidateMessage(ctx, msg.GetFrom(), msg) {
+			// 	continue
+			// }
 
 			go func() {
 				parsedMsg, err := service.ParseMessage(msg.GetData())
