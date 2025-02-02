@@ -1,11 +1,13 @@
 package e2e_test
 
 import (
+	"context"
 	"crypto"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 	"vsc-node/modules/aggregate"
@@ -17,12 +19,15 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
+	"vsc-node/modules/e2e"
 
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/hive"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/vsc-eco/hivego"
 )
 
@@ -41,9 +46,7 @@ func TestE2E(t *testing.T) {
 	broadcastFunc := func(tx hivego.HiveTransaction) error {
 		// fmt.Println("Broadcast function is working", tx)
 
-		jbb, _ := json.Marshal(tx.Operations)
-
-		fmt.Println("jbb", string(jbb))
+		// jbb, _ := json.Marshal(tx.Operations)
 
 		var insertOps []hivego.Operation
 		for _, op := range tx.Operations {
@@ -55,9 +58,28 @@ func TestE2E(t *testing.T) {
 			json.Unmarshal(bval, &Value)
 
 			// Do operation specific parsing to match hivego.Operation format
-			// if opName == "transfer" || opName == "transfer_from_savings" || opName == "transfer_to_savings" {
+			if opName == "transfer" || opName == "transfer_from_savings" || opName == "transfer_to_savings" {
+				rawAmount := Value["amount"].(string)
 
-			// }
+				splitAmt := strings.Split(rawAmount, " ")
+				var nai string
+				if splitAmt[1] == "HBD" {
+					nai = "@@000000013"
+				} else if splitAmt[1] == "HIVE" {
+					nai = "@@000000021"
+				}
+
+				amtFloat, _ := strconv.ParseFloat(splitAmt[0], 64)
+
+				//3 decimal places.
+				amount := map[string]interface{}{
+					"nai":       nai,
+					"amount":    strconv.Itoa(int(amtFloat * 1000)),
+					"precision": 3,
+				}
+
+				Value["amount"] = amount
+			}
 			//Probably not needed? Add more specific parsers as required
 
 			insertOps = append(insertOps, hivego.Operation{
@@ -77,6 +99,28 @@ func TestE2E(t *testing.T) {
 		runningNodes = append(runningNodes, makeNode(name, broadcastFunc))
 	}
 
+	go func() {
+
+		fmt.Println("Connecting local peers")
+		time.Sleep(5 * time.Second)
+		peerAddrs := make([]string, 0)
+
+		for _, node := range runningNodes {
+			for _, addr := range node.P2P.Host.Addrs() {
+				peerAddrs = append(peerAddrs, addr.String()+"/p2p/"+node.P2P.Host.ID().String())
+			}
+		}
+
+		for _, node := range runningNodes {
+			for _, peerStr := range peerAddrs {
+				peerId, _ := peer.AddrInfoFromString(peerStr)
+				ctx := context.Background()
+				ctx, _ = context.WithTimeout(ctx, 5*time.Second)
+				node.P2P.Host.Connect(ctx, *peerId)
+
+			}
+		}
+	}()
 	mockReader.ProcessFunction = func(block hive_blocks.HiveBlock) {
 		for _, node := range runningNodes {
 			node.StateEngine.ProcessBlock(block)
@@ -140,11 +184,10 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error) E2EN
 
 	announcementsManager, err := announcements.New(hiveRpcClient, announcementsConf, time.Hour*24, &txCreator)
 
-	fmt.Println("Did I do something wrong?")
 	go func() {
-		fmt.Println("Announceing after 15s")
+		// fmt.Println("Announceing after 15s")
 		time.Sleep(15 * time.Second)
-		fmt.Println("Announceing NOW")
+		// fmt.Println("Announceing NOW")
 		announcementsManager.Announce()
 	}()
 	if err != nil {
@@ -152,11 +195,15 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error) E2EN
 		os.Exit(1)
 	}
 
-	setup := stateEngine.SetupEnv()
+	// setup := stateEngine.SetupEnv()
 
-	dl := DataLayer.New(setup.Host, setup.Dht, name)
+	p2p := p2pInterface.New(witnessesDb)
+
+	dl := DataLayer.New(p2p, name)
 
 	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims)
+
+	dbNuker := e2e.NewDbNuker(vscDb)
 
 	plugins := make([]aggregate.Plugin, 0)
 
@@ -166,7 +213,9 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error) E2EN
 		announcementsConf,
 		announcementsManager,
 		vscDb,
+		dbNuker,
 		witnessesDb,
+		p2p,
 		electionDb,
 		contractDb,
 		hiveBlocks,
@@ -183,14 +232,24 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error) E2EN
 		)
 
 		err = a.Run()
+
 		if err != nil {
 			fmt.Println("error is", err)
 			os.Exit(1)
 		}
 	}()
 
+	go func() {
+		time.Sleep(15 * time.Second)
+		fmt.Println(p2p.Host.Addrs()[0], p2p.Host.ID())
+		for _, addr := range p2p.Host.Addrs() {
+			fmt.Println(addr.String() + "/p2p/" + p2p.Host.ID().String())
+		}
+	}()
+
 	return E2ENode{
 		StateEngine: se,
+		P2P:         p2p,
 	}
 }
 
@@ -200,4 +259,5 @@ func cleanupNode() {
 
 type E2ENode struct {
 	StateEngine stateEngine.StateEngine
+	P2P         *p2pInterface.P2PServer
 }
