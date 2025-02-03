@@ -42,7 +42,6 @@ func (e *elections) StoreElection(a ElectionResult) {
 			"members":      a.Members,
 			"proposer":     a.Proposer,
 			"weights":      a.Weights,
-			"weight_total": a.WeightTotal,
 		},
 	}
 	result := e.FindOneAndUpdate(ctx, filter, updateQuery, options)
@@ -118,10 +117,10 @@ func MinimumSigningScore(lastElectionHeight int64, memberCount int64) {
 const MIN_BLOCKS_SINCE_LAST_ELECTION = 1200   // 1 hour
 const MAX_BLOCKS_SINCE_LAST_ELECTION = 403200 // 2 weeks
 
-func MinimalRequiredElectionVotes(blocksSinceLastElection, memberCountOfLastElection uint64) int {
+func MinimalRequiredElectionVotes(blocksSinceLastElection, memberCountOfLastElection uint64) uint64 {
 	if blocksSinceLastElection < MIN_BLOCKS_SINCE_LAST_ELECTION {
 		//Return 2/3
-		return int(math.Ceil(float64(memberCountOfLastElection) * 2.0 / 3.0))
+		return uint64(math.Ceil(float64(memberCountOfLastElection) * 2.0 / 3.0))
 	}
 
 	// Calculate minimum and maximum members.
@@ -135,7 +134,7 @@ func MinimalRequiredElectionVotes(blocksSinceLastElection, memberCountOfLastElec
 	// Map drift from [0, 1] to [minMembers, maxMembers].
 	mappedValue := float64(minMembers) + (float64(maxMembers)-float64(minMembers))*drift
 
-	return int(math.Round(mappedValue))
+	return uint64(math.Round(mappedValue))
 }
 
 // export const MIN_BLOCKS_SINCE_LAST_ELECTION = 1200 // 1 hour

@@ -18,6 +18,7 @@ import (
 
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/test_utils"
+	p2p "vsc-node/modules/p2p"
 
 	stateEngine "vsc-node/modules/state-processing"
 
@@ -86,15 +87,14 @@ func TestStateEngine(t *testing.T) {
 
 	assert.NoError(t, err)
 
-	setup := stateEngine.SetupEnv()
-
-	dl := DataLayer.New(setup.Host, setup.Dht)
+	p2p := p2p.New(witnessesDb)
+	dl := DataLayer.New(p2p, "state-engine")
 
 	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims)
 
 	se.Commit()
 
-	sr := streamer.NewStreamReader(hiveBlocks, se.ProcessBlock)
+	sr := streamer.NewStreamReader(hiveBlocks, se.ProcessBlock, se.SaveBlockHeight)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
@@ -143,9 +143,9 @@ func TestMockEngine(t *testing.T) {
 
 	assert.NoError(t, err)
 
-	setup := stateEngine.SetupEnv()
+	p2p := p2p.New(witnessesDb)
 
-	dl := DataLayer.New(setup.Host, setup.Dht)
+	dl := DataLayer.New(p2p, "state-engine")
 
 	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims)
 

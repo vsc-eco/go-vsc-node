@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	p2pInterface "vsc-node/lib/p2p"
+	"vsc-node/lib/hive"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
 	data_availability "vsc-node/modules/data-availability"
@@ -15,6 +15,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/hive/streamer"
+	p2pInterface "vsc-node/modules/p2p"
 
 	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 
@@ -70,7 +71,20 @@ func main() {
 	// new announcements manager
 	hiveRpcClient := hivego.NewHiveRpc("https://hive-api.web3telekom.xyz/")
 	announcementsConf := announcements.NewAnnouncementsConfig()
-	announcementsManager, err := announcements.New(hiveRpcClient, announcementsConf, time.Hour*24)
+
+	//TODO: Pull from proper sources
+	//Placeholder wif
+	wif := "5Hx12hCEUxBxZRcCY41RxacDAapnsuGihx5553k6Ne1bwXLBi7s"
+	kp, _ := hivego.KeyPairFromWif(wif)
+	hiveCreator := hive.LiveTransactionCreator{
+		TransactionCrafter: hive.TransactionCrafter{},
+		TransactionBroadcaster: hive.TransactionBroadcaster{
+			Client:  hiveRpcClient,
+			KeyPair: kp,
+		},
+	}
+
+	announcementsManager, err := announcements.New(hiveRpcClient, announcementsConf, time.Hour*24, &hiveCreator)
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)

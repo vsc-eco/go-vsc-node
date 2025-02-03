@@ -246,7 +246,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				// amount, _ := op.Value["amount"].(map[string]interface{})["amount"].(int64)
 
 				if op.Value["to"] == "vsc.gateway" {
-					// fmt.Println("Indexing deposit", "from:"+op.Value["from"].(string), token, amount)
 					se.LedgerExecutor.Deposit(Deposit{
 						Id:     tx.TransactionID,
 						Asset:  token,
@@ -257,41 +256,32 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						BIdx:  int64(tx.Index),
 						OpIdx: int64(opIdx),
 					})
-
-					bbytes, _ := json.Marshal(se.LedgerExecutor.VirtualLedger)
-
-					fmt.Println("bbytes string()", string(bbytes))
 				}
 			}
 
 			//Main pipeline
 			if op.Type == "account_update" {
-				// fmt.Println(op)
-
 				opValue := op.Value
-				fmt.Println("Indexing account update", opValue)
 
 				if opValue["json_metadata"] != nil {
-					// fmt.Println(opValue["posting_json_metadata"])
 					untypedJson := make(map[string]interface{})
 
 					bbytes := []byte(opValue["json_metadata"].(string))
 					json.Unmarshal(bbytes, &untypedJson)
 
-					// if untypedJson["vsc_node"] != nil {
 					rawJson := witnesses.PostingJsonMetadata{}
 					json.Unmarshal(bbytes, &rawJson)
 
-					inputData := witnesses.SetWitnessUpdateType{
-						Account:  op.Value["account"].(string),
-						Height:   blockInfo.BlockHeight,
-						TxId:     tx.TransactionID,
-						BlockId:  blockInfo.BlockId,
-						Metadata: rawJson,
-						DidKeys:  rawJson.DidKeys,
+					if slices.Contains(rawJson.Services, "vsc.network") {
+						inputData := witnesses.SetWitnessUpdateType{
+							Account:  op.Value["account"].(string),
+							Height:   blockInfo.BlockHeight,
+							TxId:     tx.TransactionID,
+							BlockId:  blockInfo.BlockId,
+							Metadata: rawJson,
+						}
+						se.witnessDb.SetWitnessUpdate(inputData)
 					}
-					se.witnessDb.SetWitnessUpdate(inputData)
-					// }
 				}
 			}
 			if op.Type == "custom_json" {
@@ -381,7 +371,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	}
 }
 
-func (se *StateEngine) SaveBlockHeight(lastBlk int) int {
+func (se *StateEngine) SaveBlockHeight(lastBlk uint64) uint64 {
 	return lastBlk
 }
 

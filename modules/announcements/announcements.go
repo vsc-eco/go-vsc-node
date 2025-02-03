@@ -122,7 +122,23 @@ func (a *announcementsManager) Stop() error {
 // ===== announcement types =====
 
 type payload struct {
-	DidKeys []didConsensusKey `json:"did_keys"`
+	DidKeys  []didConsensusKey `json:"did_keys"`
+	VscNode  payloadVscNode    `json:"vsc_node"`
+	Services []string          `json:"services"`
+}
+
+type payloadVscNode struct {
+	NetId           string   `json:"net_id"`
+	PeerId          string   `json:"peer_id"`
+	PeerAddrs       []string `json:"peer_addrs"`
+	Ts              string   `json:"ts"`
+	VersionId       string   `json:"version_id"`
+	GitCommit       string   `json:"git_commit"`
+	ProtocolVersion uint64   `json:"protocol_version"`
+	SigningKey      string   `json:"signing_key"`
+	Witness         struct {
+		Enabled bool `json:"enabled"`
+	}
 }
 
 type didConsensusKey struct {
@@ -140,7 +156,7 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 		log.Println("announce task canceled")
 		return nil
 	default:
-		log.Println("announcing")
+		// log.Println("announcing")
 	}
 
 	// get the account's memo key based on their account username
@@ -192,11 +208,29 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 	}
 
 	payload := payload{
+		Services: []string{"vsc.network"},
 		DidKeys: []didConsensusKey{
 			{
 				T:   "consensus",
 				Ct:  "DID-BLS",
 				Key: blsDid,
+			},
+		},
+		VscNode: payloadVscNode{
+			//Potentially use specific net ID for E2E tests
+			NetId:           "go-testnet",
+			PeerId:          "", //Plz fill in
+			PeerAddrs:       []string{},
+			Ts:              time.Now().Format(time.RFC3339),
+			GitCommit:       "",          //Plz detect
+			VersionId:       "go-v0.1.0", //Use standard versioning
+			ProtocolVersion: 0,           //Protocol 0 until protocol 1 is finalized.
+			Witness: struct {
+				Enabled bool `json:"enabled"`
+			}{
+				//Put a proper toggle / on chain configuration option
+				//Witness should be enabled/disabled by making a transaction on chain.
+				Enabled: true,
 			},
 		},
 	}
@@ -207,8 +241,9 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 	}
 
 	op := a.hiveCreator.UpdateAccount(a.conf.Get().Username, nil, nil, nil, string(jsonBytes), memoKey)
+	op1 := a.hiveCreator.Transfer("vsc.node1", "vsc.gateway", "0.005", "hbd", "test transfer")
 
-	tx := a.hiveCreator.MakeTransaction([]hivego.HiveOperation{op})
+	tx := a.hiveCreator.MakeTransaction([]hivego.HiveOperation{op, op1})
 
 	a.hiveCreator.PopulateSigningProps(&tx, nil)
 
@@ -216,13 +251,13 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 
 	tx.AddSig(sig)
 
-	id, err := a.hiveCreator.Broadcast(tx)
+	_, err = a.hiveCreator.Broadcast(tx)
 
 	if err != nil {
 		return fmt.Errorf("failed to update account: %w", err)
 	}
 
-	fmt.Println("Updated account TxId", id)
+	//fmt.Println("Updated account TxId", id)
 
 	return nil
 }
@@ -231,4 +266,8 @@ func (a *announcementsManager) Announce() {
 	ctx := context.Background()
 
 	a.announce(ctx)
+}
+
+func (a *announcementsManager) PeerConnect() {
+
 }

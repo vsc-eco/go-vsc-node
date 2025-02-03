@@ -197,7 +197,8 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 		memberDids := make([]dids.BlsDID, 0)
 		for idx, value := range prevElection.Members {
 			memberDids = append(memberDids, dids.BlsDID(value.Key))
-			if prevElection.WeightTotal == 0 {
+
+			if len(prevElection.Weights) == 0 {
 				potentialWeight += 1
 			} else {
 				potentialWeight = int(prevElection.Weights[idx])
@@ -225,25 +226,26 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 		fmt.Println("Verify error", err, verified, len(includedDids) > (len(memberDids)*2/3))
 
 		totalWeight := uint64(0)
-		if prevElection.WeightTotal == 0 {
+		if len(prevElection.Weights) == 0 {
 			totalWeight = uint64(len(prevElection.Members))
 		} else {
-			totalWeight = prevElection.WeightTotal
+			for _, v := range prevElection.Weights {
+				totalWeight = totalWeight + v
+			}
 		}
 
 		blocksLastElection := tx.Self.BlockHeight - prevElection.BlockHeight
 
-		fmt.Println("Blocks since last election!", blocksLastElection)
 		minimums := elections.MinimalRequiredElectionVotes(blocksLastElection, totalWeight)
 
-		realWeight := 0
+		realWeight := uint64(0)
 		bv := blsCircuit.RawBitVector()
 		for idx := range prevElection.Members {
 			if bv.Bit(idx) == 1 {
-				if prevElection.WeightTotal == 0 {
+				if len(prevElection.Weights) == 0 {
 					realWeight += 1
 				} else {
-					realWeight += int(prevElection.Weights[idx])
+					realWeight += prevElection.Weights[idx]
 				}
 			}
 		}

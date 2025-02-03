@@ -271,7 +271,7 @@ func TestFetchStoreBlocks(t *testing.T) {
 		totalBlksReceived++
 	}
 
-	sr := streamer.NewStreamReader(mockHiveBlocks, process)
+	sr := streamer.NewStreamReader(mockHiveBlocks, process, nil)
 	agg := aggregate.New([]aggregate.Plugin{
 		mockHiveBlocks,
 		s,
@@ -314,7 +314,7 @@ func TestIntensePolling(t *testing.T) {
 
 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
 		seenBlocks[block.BlockNumber]++
-	})
+	}, nil)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		mockHiveBlocks,
@@ -351,7 +351,7 @@ func TestStreamFilter(t *testing.T) {
 		}
 	}
 
-	sr := streamer.NewStreamReader(mockHiveBlocks, process)
+	sr := streamer.NewStreamReader(mockHiveBlocks, process, nil)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		mockHiveBlocks,
@@ -419,7 +419,7 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 
 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
 		lastProcessedBlk = block.BlockNumber
-	})
+	}, nil)
 	assert.NoError(t, sr.Init())
 	go func() {
 		_, err := sr.Start().Await(context.Background())
@@ -448,7 +448,7 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 	// redefine stream reader and see if it picks up where it left off
 	sr = streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
 		resumedLastProcessedBlk = block.BlockNumber
-	})
+	}, nil)
 
 	test_utils.RunPlugin(t, sr)
 
@@ -471,7 +471,7 @@ func TestBlockProcessing(t *testing.T) {
 
 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
 		totalSeenBlocks++
-	}, 0)
+	}, nil, 0)
 
 	test_utils.RunPlugin(t, sr)
 
@@ -594,7 +594,7 @@ func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
 
 	assert.Equal(t, processedUpTo, 0)
 
-	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {}, 0)
+	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {}, nil, 0)
 
 	test_utils.RunPlugin(t, sr)
 
@@ -743,7 +743,7 @@ func TestClearingLastProcessedBlock(t *testing.T) {
 
 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
 		totalBlocks++
-	}, 0)
+	}, nil, 0)
 
 	test_utils.RunPlugin(t, sr)
 

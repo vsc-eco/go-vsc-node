@@ -67,9 +67,10 @@ var (
 // ===== StreamReader =====
 
 type StreamReader struct {
-	process ProcessFunction
-	ctx     context.Context
-	cancel  context.CancelFunc
+	process        ProcessFunction
+	getBlockHeight BlockHeightFunction
+	ctx            context.Context
+	cancel         context.CancelFunc
 	// mtx           sync.Mutex
 	isPaused      atomic.Bool
 	lastProcessed uint64
@@ -81,7 +82,7 @@ type StreamReader struct {
 }
 
 // inits a StreamReader with the provided hiveBlocks interface and process function
-func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, maybeStartBlock ...uint64) *StreamReader {
+func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, getBlockHeight BlockHeightFunction, maybeStartBlock ...uint64) *StreamReader {
 	startBlock := DefaultBlockStart
 	fmt.Println("startBlock", startBlock)
 	if len(maybeStartBlock) > 0 {
@@ -90,13 +91,15 @@ func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, 
 	if process == nil {
 		process = func(block hiveblocks.HiveBlock) {} // no-op
 	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	return &StreamReader{
-		process:    process,
-		hiveBlocks: hiveBlocks,
-		ctx:        ctx,
-		cancel:     cancel,
-		startBlock: startBlock,
+		process:        process,
+		getBlockHeight: getBlockHeight,
+		hiveBlocks:     hiveBlocks,
+		ctx:            ctx,
+		cancel:         cancel,
+		startBlock:     startBlock,
 	}
 }
 
@@ -155,7 +158,13 @@ func (s *StreamReader) pollDb(fail func(error)) {
 	processBlock := func(block hiveblocks.HiveBlock) error {
 		s.process(block)
 		// update last processed block
-		s.lastProcessed = block.BlockNumber
+
+		if s.getBlockHeight == nil {
+			s.lastProcessed = block.BlockNumber
+		} else {
+			//Retrieves the calculated block height
+			s.lastProcessed = s.getBlockHeight(block.BlockNumber)
+		}
 
 		newBlocksProcessed++
 
@@ -188,6 +197,11 @@ var _ aggregate.Plugin = &StreamReader{}
 type FilterFunc func(tx hivego.Operation, ctx *BlockParams) bool
 type VirtualFilterFunc func(vop hivego.VirtualOp) bool
 type ProcessFunction func(block hiveblocks.HiveBlock)
+
+// Block height function returns the last block height that should be resumed form
+// This is useful for production where there is a replay requirement to get into *now* state
+// Or tests...
+type BlockHeightFunction func(lastBlock uint64) uint64
 
 type BlockParams struct {
 	NeedsVirtualOps bool
