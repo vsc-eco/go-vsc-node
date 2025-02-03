@@ -4,19 +4,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/rand"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 )
 
-var CONSENSUS_SPECS = struct {
-	SlotLength     uint64
-	EpochLength    uint64
-	ScheduleLength uint64
-}{
-	EpochLength:    7_200, // 6 hours - length between elections
-	SlotLength:     10,    //10 * 3 seconds = 30 seconds - length between blocks
-	ScheduleLength: 1_200, // 60 * 20 = 1 hour - length of a schedule before it's recalcualted
-}
+var CONSENSUS_SPECS = common.CONSENSUS_SPECS
 
 type Consensus struct {
 	witnessDb witnesses.Witnesses
