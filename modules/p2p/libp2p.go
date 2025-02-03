@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"vsc-node/modules/db/vsc/witnesses"
 
 	"github.com/chebyrash/promise"
 	libp2p "github.com/libp2p/go-libp2p"
@@ -14,6 +15,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	rhost "github.com/libp2p/go-libp2p/p2p/host/routed"
+	"github.com/robfig/cron/v3"
 
 	rpc "github.com/libp2p/go-libp2p-gorpc"
 	// p "vsc-node/lib/pubsub"
@@ -33,11 +35,14 @@ var BOOTSTRAP = []string{
 }
 
 type P2PServer struct {
-	host           host.Host
-	dht            *kadDht.IpfsDHT
+	witnessDb witnesses.Witnesses
+
+	Host           host.Host
+	Dht            *kadDht.IpfsDHT
 	rpcClient      *rpc.Client
 	pubsub         *pubsub.PubSub
 	multicastTopic *pubsub.Topic
+	cron           *cron.Cron
 
 	topics map[string]*pubsub.Topic
 
@@ -48,24 +53,28 @@ type P2PServer struct {
 // var _ aggregate.Plugin = &Libp2p{}
 // var _ p.PubSub[peer.ID] = &Libp2p{}
 
-func New() *P2PServer {
+func New(witnessDb witnesses.Witnesses) *P2PServer {
 
-	return &P2PServer{}
+	return &P2PServer{
+		witnessDb: witnessDb,
+		cron:      cron.New(),
+	}
 }
 
 var topicNameFlag = "/vsc/mainnet/multicast"
 
-func discoverPeers(ctx context.Context, p2p *P2PServer) {
-	h := p2p.host
+// Finds VSC peers through DHT
+func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
+	h := p2p.Host
 
-	routingDiscovery := drouting.NewRoutingDiscovery(p2p.dht)
+	routingDiscovery := drouting.NewRoutingDiscovery(p2p.Dht)
 	dutil.Advertise(ctx, routingDiscovery, topicNameFlag)
 
 	// Look for others who have announced and attempt to connect to them
 	anyConnected := false
 	for !anyConnected {
-		fmt.Println("Searching for peers...")
-		time.Sleep(time.Second)
+
+		fmt.Println("Bootstraping peers via dht... PeerId: " + h.ID().String())
 
 		peerChan, err := routingDiscovery.FindPeers(ctx, topicNameFlag)
 		if err != nil {
@@ -73,21 +82,20 @@ func discoverPeers(ctx context.Context, p2p *P2PServer) {
 		}
 		for peer := range peerChan {
 
-			fmt.Println("Found", peer.ID.String())
 			if peer.ID == h.ID() {
-				fmt.Println("Detected self!")
 				continue // No self connection
 			}
 			err := h.Connect(ctx, peer)
 			if err != nil {
-				fmt.Println("Failed connecting to ", peer.ID.String(), ", error:", err)
+				// fmt.Println("Failed connecting to ", peer.ID.String(), ", error:", err)
 			} else {
-				fmt.Println("Connected to:", peer.ID.String())
+				// fmt.Println("Connected to:", peer.ID.String())
 				anyConnected = true
 			}
 		}
+		time.Sleep(30 * time.Second)
 	}
-	fmt.Println("Peer discovery complete")
+	fmt.Println("Bootstrap discovery complete")
 }
 
 // =================================
@@ -103,13 +111,8 @@ func (p2pServer *P2PServer) Init() error {
 	ctx := context.Background()
 	dht, _ := kadDht.New(ctx, p2p)
 	routedHost := rhost.Wrap(p2p, dht)
-	p2pServer.host = routedHost
-	p2pServer.dht = dht
-	dht.Bootstrap(ctx)
-
-	go discoverPeers(ctx, p2pServer)
-
-	fmt.Println("Starting up")
+	p2pServer.Host = routedHost
+	p2pServer.Dht = dht
 
 	//Setup GORPC server and client
 	var protocolID = protocol.ID("/vsc.network/rpc")
@@ -156,47 +159,49 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 
 	// err := p2ps.rpcClient.Stream(ctx, p2ps.host.ID(), "witness", "HelloWorld", send, reply)
 
-	// fmt.Println("error is", err)
-
 	ticker := time.NewTicker(5 * time.Second)
 	p := promise.New(func(resolve func(any), reject func(error)) {
 		for {
 			select {
 			case <-ticker.C:
 				// do stuff
-				peers := p2ps.host.Network().Peers()
+				// peers := p2ps.host.Network().Peers()
 				pubsubPeers := p2ps.multicastTopic.ListPeers()
-				fmt.Println("Peers", len(peers), len(pubsubPeers))
 				for _, val := range pubsubPeers {
-					protocols, _ := p2ps.host.Network().Peerstore().GetProtocols(val)
+					protocols, _ := p2ps.Host.Network().Peerstore().GetProtocols(val)
 					for _, protoName := range protocols {
 						if protoName == "/vsc.network/rpc" {
 							//Do connection stuff
 						}
 					}
-					fmt.Println(protocols)
 				}
-				fmt.Println("it's ticking yeah!")
 			}
 		}
-		resolve(nil)
 	})
-	p2ps.tickers = append(p2ps.tickers, ticker)
-	// ticker.Stop()
+	p2ps.cron.AddFunc("@every 5m", func() {
+		p2ps.connectRegisteredPeers()
+	})
+
+	p2ps.cron.AddFunc("@every 5m", func() {
+		p2ps.discoverPeers()
+	})
 
 	for _, peerStr := range BOOTSTRAP {
 		peerId, _ := peer.AddrInfoFromString(peerStr)
 
-		p2ps.host.Connect(context.Background(), *peerId)
+		p2ps.Host.Connect(context.Background(), *peerId)
 	}
+
+	p2ps.Dht.Bootstrap(context.Background())
+	go bootstrapVSCPeers(context.Background(), p2ps)
+	//First startup to try and get connected to the network
+	go p2ps.connectRegisteredPeers()
+
+	p2ps.tickers = append(p2ps.tickers, ticker)
+
 	subscription, _ := p2ps.multicastTopic.Subscribe()
 
-	// p2ps.handleMulticast(subscription)
-
 	p2ps.subs = append(p2ps.subs, subscription)
-
-	// peerId, _ := peer.AddrInfoFromString("/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWAvxZcLJmZVUaoAtey28REvaBwxvfTvQfxWtXJ2fpqWnw")
-	// connectErr := p2ps.host.Connect(ctx, *peerId)
 
 	return p
 }
@@ -214,6 +219,47 @@ func (p2p *P2PServer) Stop() error {
 	}
 
 	return nil
+}
+
+func (p2p *P2PServer) connectRegisteredPeers() {
+	witnesses, _ := p2p.witnessDb.GetLastestWitnesses()
+
+	for _, witness := range witnesses {
+		if witness.PeerId == "" {
+			continue
+		}
+		peerId, _ := peer.AddrInfoFromString("/p2p/" + witness.PeerId)
+
+		for _, peer := range p2p.Host.Network().Peers() {
+			if peer.String() == peerId.ID.String() {
+				p2p.Host.Connect(context.Background(), *peerId)
+			}
+		}
+		p2p.Host.Connect(context.Background(), *peerId)
+	}
+}
+
+func (p2p *P2PServer) discoverPeers() {
+	ctx := context.Background()
+
+	h := p2p.Host
+
+	routingDiscovery := drouting.NewRoutingDiscovery(p2p.Dht)
+	dutil.Advertise(ctx, routingDiscovery, topicNameFlag)
+
+	// Look for others who have announced and attempt to connect to them
+	// fmt.Println("Searching for peers via dht...")
+
+	peerChan, err := routingDiscovery.FindPeers(ctx, topicNameFlag)
+	if err != nil {
+		panic(err)
+	}
+	for peer := range peerChan {
+		if peer.ID == h.ID() {
+			continue // No self connection
+		}
+		h.Connect(ctx, peer)
+	}
 }
 
 type RPCService struct {
@@ -318,98 +364,4 @@ func (l *P2PServer) SendTo(topic string, message []byte, recipients []peer.ID) {
 // SendToAll implements pubsub.PubSub.
 func (l *P2PServer) SendToAll(topic string, message []byte) {
 	panic("unimplemented")
-}
-
-func main() {
-	p2p, _ := libp2p.New()
-
-	fmt.Println(p2p.ID())
-	ctx := context.Background()
-	dht, _ := kadDht.New(ctx, p2p)
-	routedHost := rhost.Wrap(p2p, dht)
-	dht.Bootstrap(ctx)
-
-	fmt.Println(routedHost)
-
-	peerId, _ := peer.AddrInfoFromString("/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWAvxZcLJmZVUaoAtey28REvaBwxvfTvQfxWtXJ2fpqWnw")
-	connectErr := p2p.Connect(ctx, *peerId)
-	peerId, _ = peer.AddrInfoFromString("/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ")
-	connectErr = p2p.Connect(ctx, *peerId)
-
-	const test string = "Hello, World!"
-
-	fmt.Println(test)
-
-	node2, _ := libp2p.New()
-	fmt.Println()
-	var addr = p2p.Addrs()[0].String() + "/p2p/" + p2p.ID().String()
-
-	addrInfo, _ := peer.AddrInfoFromString(addr)
-	node2.Connect(ctx, *addrInfo)
-
-	// p2p.SetStreamHandler("/vsc.eco/multicast/1.0.0")
-	// str, err := node2.NewStream(ctx, p2p.ID(), "/vsc.eco/multicast/1.0.0")
-
-	// if err != nil {
-	// 	fmt.Println(err)
-	// } else {
-
-	// 	str.Write([]byte("GET / HTTP/1.0\r\n\r\n"))
-	// 	fmt.Println(str.Conn().Stat())
-	// }
-
-	dht.Bootstrap((ctx))
-
-	// peerInfo,_ := dht.FindPeer(ctx, peer.ID("12D3KooWLxp3mk99i9QYt1wNzGzv1zLS1ZppofTkw3bEgz9FwvS4"))
-
-	// fmt.Println(peerInfo)
-	fmt.Println(p2p.Network().Peers())
-	fmt.Println(connectErr)
-
-	ps, _ := pubsub.NewGossipSub(ctx, p2p)
-
-	s, _ := p2p.NewStream(context.TODO(), peerId.ID, "vsc-ksdljfl")
-	_ = s
-
-	// ping.NewPingService(p2p)
-	// pctx, cancel := context.WithCancel(context.Background())
-	// pingChan := ping.Ping(pctx, p2p, peerId.ID)
-	// for val := range pingChan {
-	// 	fmt.Println(val.RTT.Milliseconds())
-	// 	cancel()
-	// }
-
-	// ps.Publish("topic", []byte("Hello, World!"))
-
-	// p2p.
-
-	topic, _ := ps.Join("test-topic")
-
-	subscription, _ := topic.Subscribe()
-
-	go func() {
-		for {
-			msg, _ := subscription.Next(ctx)
-
-			fmt.Println(msg.GetFrom(), string(msg.GetData()))
-		}
-	}()
-
-	time.Sleep(5 * time.Second)
-	topic.Publish(ctx, []byte("Hello, World!"))
-
-	go func() {
-		for {
-			time.Sleep(5 * time.Second)
-			fmt.Println("Connected Peers", len(routedHost.Network().Peers()))
-
-			//dht.Bootstrap(ctx)
-			pi, err := dht.NetworkSize()
-			fmt.Println("NetworkSize", pi, err)
-			// peers,_ := dht.FindProviders(ctx, cid.Cid)
-
-			// fmt.Println(peers)
-		}
-	}()
-
 }

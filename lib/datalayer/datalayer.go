@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/chebyrash/promise"
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	bitswap "github.com/ipfs/boxo/bitswap"
@@ -13,13 +14,15 @@ import (
 	blockstore "github.com/ipfs/boxo/blockstore"
 	"github.com/ipfs/boxo/datastore/dshelp"
 	"github.com/ipfs/boxo/exchange/providing"
-	"github.com/ipfs/boxo/ipld/merkledag"
 	"github.com/ipfs/boxo/provider"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-datastore"
 	badger "github.com/ipfs/go-ds-badger2"
 	format "github.com/ipfs/go-ipld-format"
+
+	"vsc-node/lib/utils"
+	libp2p "vsc-node/modules/p2p"
 
 	"github.com/libp2p/go-libp2p/core/host"
 
@@ -29,15 +32,21 @@ import (
 	kadDht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/multiformats/go-multicodec"
 	mh "github.com/multiformats/go-multihash"
+
+	a "vsc-node/modules/aggregate"
 )
 
 type DataLayer struct {
-	bitswap   bitswap.Bitswap
-	host      host.Host
-	dht       *kadDht.IpfsDHT
-	blockServ blockservice.BlockService
-	DagServ   format.DAGService
-	Datastore *badger.Datastore
+	// a.Plugin
+	p2pService *libp2p.P2PServer
+	bitswap    *bitswap.Bitswap
+	dht        *kadDht.IpfsDHT
+	host       host.Host
+	blockServ  blockservice.BlockService
+	DagServ    format.DAGService
+	Datastore  *badger.Datastore
+
+	dbPrefix []string
 }
 
 type MetricsCtx context.Context
@@ -49,6 +58,54 @@ type GetOptions struct {
 type PutRawOptions struct {
 	Codec multicodec.Code
 	Pin   bool
+}
+
+func (dl *DataLayer) Init() error {
+	ctx := context.Background()
+
+	var path string
+
+	if len(dl.dbPrefix) > 0 {
+		path = "badger-" + dl.dbPrefix[0]
+	} else {
+		path = "badger"
+	}
+
+	ds, err := badger.NewDatastore(path, &badger.DefaultOptions)
+
+	if err != nil {
+		panic(err)
+	}
+
+	var bstore blockstore.Blockstore = blockstore.NewBlockstore(ds)
+
+	bswapnet := network.NewFromIpfsHost(dl.p2pService.Host)
+
+	// Create Bitswap: a new "discovery" parameter, usually the "contentRouter"
+	// which does both discovery and providing.
+	bswap := bitswap.New(ctx, bswapnet, dl.p2pService.Dht, bstore)
+	// A provider system that handles concurrent provides etc. "contentProvider"
+	// is usually the "contentRouter" which does both discovery and providing.
+	// "contentProvider" could be used directly without wrapping, but it is recommended
+	// to do so to provide more efficiently.
+	provider, _ := provider.New(ds, provider.Online(dl.p2pService.Dht))
+	// A wrapped providing exchange using the previous exchange and the provider.
+	exchange := providing.New(bswap, provider)
+
+	// Finally the blockservice
+	blockService := blockservice.New(bstore, exchange)
+	dl.blockServ = blockService
+	dl.bitswap = bswap
+
+	return nil
+}
+
+func (dl *DataLayer) Start() *promise.Promise[any] {
+	return utils.PromiseResolve[any](nil)
+}
+
+func (dl *DataLayer) Stop() error {
+	return nil
 }
 
 // Will always hash using sha256
@@ -212,112 +269,19 @@ func (dl *DataLayer) RmPin(pinCid cid.Cid, options struct {
 }
 
 func (dl *DataLayer) FindProviders(cid.Cid) []peer.ID {
-	dl.host.ID()
 
 	return make([]peer.ID, 0)
 }
 
-func New(host host.Host, dht *kadDht.IpfsDHT, dbPrefix ...string) *DataLayer {
+var _ a.Plugin = &DataLayer{}
 
-	var ctx context.Context = context.Background()
-
-	var path string
-
-	if len(dbPrefix) > 0 {
-		path = "badger-" + dbPrefix[0]
-	} else {
-		path = "badger"
-	}
-
-	ds, eerrBad := badger.NewDatastore(path, &badger.DefaultOptions)
-	var bstore blockstore.Blockstore = blockstore.NewBlockstore(ds)
-
-	bswapnet := network.NewFromIpfsHost(host)
-	// Create Bitswap: a new "discovery" parameter, usually the "contentRouter"
-	// which does both discovery and providing.
-	bswap := bitswap.New(ctx, bswapnet, dht, bstore)
-	// A provider system that handles concurrent provides etc. "contentProvider"
-	// is usually the "contentRouter" which does both discovery and providing.
-	// "contentProvider" could be used directly without wrapping, but it is recommended
-	// to do so to provide more efficiently.
-	provider, err := provider.New(ds, provider.Online(dht))
-	// A wrapped providing exchange using the previous exchange and the provider.
-	exchange := providing.New(bswap, provider)
-
-	// Finally the blockservice
-	blockService := blockservice.New(bstore, exchange)
-
-	fmt.Println("PeerId", host.ID(), err, eerrBad)
-
-	// fx.Lifecycle.
-	// cid, _ := cid.Parse("bafyreic5eyutoi7gattebiutaj4prdeev7jwyyeba2hpdnmzxb2cuk4hge")
-	// block, _ := blockService.GetBlock(ctx, cid)
-	// fmt.Println(block.RawData())
-
-	// exchange.NotifyNewBlocks(ctx, block)
-	// newCid := blocks.NewBlock(block.RawData()).Cid()
-	// fmt.Println(newCid)
-	// dagServ := merkledag.NewDAGService(blockService)
-	// dagServ.Add(ctx, )
-	// dagNode, _ := dagServ.Get(ctx, cid)
-
-	// dagNode.RawData()
-	// decodedObj := struct {
-	// 	__t         string
-	// 	Merkle_root string
-	// }{}
-	// decodedObj2 := make(map[string]interface{})
-	// dagCbor.DecodeInto(dagNode.RawData(), &decodedObj)
-	// dagCbor.DecodeInto(dagNode.RawData(), &decodedObj2)
-
-	// fmt.Println("decodedObj", decodedObj, decodedObj)
-	// fmt.Println("decodedObj2", decodedObj2, decodedObj2["__t"], decodedObj2["merkle_root"])
-	// fmt.Println("DagNode", dagNode.Links(), dagNode)
-
-	// cid.Prefix()
-	// fmt.Println(dagNode.Size())
-	// for _, val := range dagNode.Links() {
-	// 	fmt.Println(*val)
-	// }
-
-	// obj := map[string]interface{}{
-	// 	"foo":   "test object",
-	// 	"hello": 123,
-	// 	"link":  cid,
-	// }
-
-	// cborNode, _ := dagCbor.WrapObject(obj, mh.SHA2_256, -1)
-	// fmt.Println(cborNode.Cid())
-	// dagServ.Add(ctx, cborNode)
-	// dht.Provide(ctx, cborNode.Cid(), true)
-	// addrsInfo, _ := dht.FindProviders(ctx, cborNode.Cid())
-
-	// for _, value := range addrsInfo {
-	// 	fmt.Println("providerInfo", value)
-	// }
-
-	// multicodec.DagCbor.String()
-
-	// testBytes := []byte("brat")
-	// val := cid.Prefix{
-	// 	Version:  1,
-	// 	Codec:    uint64(multicodec.Raw),
-	// 	MhType:   mh.SHA2_256,
-	// 	MhLength: -1,
-	// }
-	// cid, _ := val.Sum(testBytes)
-
-	// fmt.Println("Connection here for bart", cid)
-	// block2, _ := blocks.NewBlockWithCid(testBytes, cid)
-
-	// blockService.AddBlock(context.TODO(), block2)
+func New(p2pService *libp2p.P2PServer, dbPrefix ...string) *DataLayer {
 
 	return &DataLayer{
-		bitswap:   *bswap,
-		host:      host,
-		dht:       dht,
-		blockServ: blockService,
-		DagServ:   merkledag.NewDAGService(blockService),
-		Datastore: ds,
+
+		p2pService: p2pService,
+		host:       p2pService.Host,
+		dht:        p2pService.Dht,
+		dbPrefix:   dbPrefix,
 	}
 }
