@@ -224,7 +224,7 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64) ([]Witness, error) {
 	return outWit, nil
 }
 
-func (w *witnesses) GetWitnesseByPeerId(PeerIds []string) ([]Witness, error) {
+func (w *witnesses) GetWitnessesByPeerId(PeerIds ...string) ([]Witness, error) {
 	findResult, err := w.Find(context.Background(), bson.M{
 		"peer_id": bson.M{
 			"$in": PeerIds,

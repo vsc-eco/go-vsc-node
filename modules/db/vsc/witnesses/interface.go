@@ -8,5 +8,5 @@ type Witnesses interface {
 	SetWitnessUpdate(accountInfo SetWitnessUpdateType) error
 	GetLastestWitnesses() ([]Witness, error)
 	GetWitnessesAtBlockHeight(bh uint64) ([]Witness, error)
-	GetWitnesseByPeerId(peerIds []string) ([]Witness, error)
+	GetWitnessesByPeerId(peerIds ...string) ([]Witness, error)
 }
