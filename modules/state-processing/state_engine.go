@@ -104,9 +104,9 @@ func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64) {
 // Uses a different PRNG variant from the original used in JS VSC
 // Not aiming for exact replica
 func (se *StateEngine) getSchedule(slotHeight uint64) []WitnessSlot {
-	lastElection := se.electionDb.GetElectionByHeight(slotHeight)
+	lastElection, err := se.electionDb.GetElectionByHeight(slotHeight)
 
-	if lastElection == nil {
+	if err != nil {
 		return nil
 	}
 	witnessList := make([]Witness, 0)

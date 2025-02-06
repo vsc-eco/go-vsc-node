@@ -46,14 +46,14 @@ func (tx TxCreateContract) ExecuteTx(se *StateEngine) {
 	if tx.Self.BlockHeight > CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT {
 		fmt.Println("Must validate storage proof")
 		// tx.StorageProof.
-		election := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
+		election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
 
-		if election != nil {
+		if err != nil {
 			// panic("disabled")
 			return
 		}
 
-		verified := tx.StorageProof.Verify(*election)
+		verified := tx.StorageProof.Verify(election)
 
 		fmt.Println("Storage proof verify result", verified)
 
@@ -166,16 +166,15 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 			bbytes, _ := dagNode.MarshalJSON()
 			json.Unmarshal(bbytes, &elecResult)
 
+			elecResult.Proposer = tx.Self.RequiredAuths[0]
+			elecResult.BlockHeight = tx.Self.BlockHeight
+			elecResult.Epoch = tx.Epoch
+			elecResult.NetId = tx.NetId
+			elecResult.Data = tx.Data
+
 			fmt.Println("Hit here 3")
 			//Store
-			se.electionDb.StoreElection(elections.ElectionResult{
-				Proposer:    tx.Self.RequiredAuths[0],
-				BlockHeight: tx.Self.BlockHeight,
-				Epoch:       tx.Epoch,
-				NetId:       tx.NetId,
-				Data:        tx.Data,
-				Members:     elecResult.Members,
-			})
+			se.electionDb.StoreElection(elecResult)
 		} else {
 			fmt.Println("ln 180")
 		}
@@ -265,10 +264,11 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 			elecResult := elections.ElectionResult{
 				Proposer:    tx.Self.RequiredAuths[0],
 				BlockHeight: tx.Self.BlockHeight,
-				Epoch:       tx.Epoch,
-				NetId:       tx.NetId,
-				Data:        tx.Data,
 			}
+			elecResult.Epoch = tx.Epoch
+			elecResult.NetId = tx.NetId
+			elecResult.Data = tx.Data
+
 			bbytes, _ := dagNode.MarshalJSON()
 			json.Unmarshal(bbytes, &elecResult)
 
@@ -312,9 +312,9 @@ type TxProposeBlock struct {
 
 // ProcessTx implements VSCTransaction.
 func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
-	elecResult := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
+	elecResult, err := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
 	fmt.Println("Election Epoch", elecResult.Epoch)
-	if elecResult == nil {
+	if err != nil {
 		//Cannot process block due to missing election
 		return
 	}
@@ -350,7 +350,7 @@ func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
 		return
 	}
 	if verified {
-		signingScore, total := elections.CalculateSigningScore(*circuit, *elecResult)
+		signingScore, total := elections.CalculateSigningScore(*circuit, elecResult)
 		fmt.Println("signingScore, total", signingScore, total, signingScore > ((total*2)/3))
 
 		if signingScore > ((total * 2) / 3) {

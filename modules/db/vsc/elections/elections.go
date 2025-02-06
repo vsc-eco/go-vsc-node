@@ -8,6 +8,7 @@ import (
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
+	cbornode "github.com/ipfs/go-ipld-cbor"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -25,6 +26,10 @@ func (e *elections) Init() error {
 	if err != nil {
 		return err
 	}
+
+	cbornode.RegisterCborType(ElectionResult{})
+	cbornode.RegisterCborType(ElectionData{})
+	cbornode.RegisterCborType(electionHeaderRaw{})
 
 	return nil
 }
@@ -64,7 +69,7 @@ func (e *elections) GetElection(epoch uint64) *ElectionResult {
 	}
 }
 
-func (e *elections) GetElectionByHeight(height uint64) *ElectionResult {
+func (e *elections) GetElectionByHeight(height uint64) (ElectionResult, error) {
 	findQuery := bson.M{
 		"block_height": bson.M{
 			//Elections activate going forward, not retroactively to the same block
@@ -80,11 +85,11 @@ func (e *elections) GetElectionByHeight(height uint64) *ElectionResult {
 	findResult := e.FindOne(ctx, findQuery, queryOptions)
 
 	if findResult.Err() != nil {
-		return nil
+		return ElectionResult{}, findResult.Err()
 	} else {
 		electionResult := ElectionResult{}
 		findResult.Decode(&electionResult)
-		return &electionResult
+		return electionResult, nil
 	}
 }
 
