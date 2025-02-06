@@ -2,13 +2,13 @@ package witnesses
 
 type Witness struct {
 	Account         string            `json:"account"`
-	Height          int               `json:"height"`
+	Height          uint64            `json:"height"`
 	DidKeys         []PostingJsonKeys `json:"did_keys"`
 	Enabled         bool              `json:"enabled"`
 	GitCommit       string            `json:"git_commit"`
 	NetId           string            `json:"net_id"`
 	PeerId          string            `json:"peer_id"`
-	ProtocolVersion string            `json:"protocol_version"`
+	ProtocolVersion uint64            `json:"protocol_version"`
 	Ts              string            `json:"ts"`
 	VersionId       string            `json:"version_id"`
 }
