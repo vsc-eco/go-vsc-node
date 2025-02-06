@@ -241,13 +241,15 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 	}
 
 	op := a.hiveCreator.UpdateAccount(a.conf.Get().Username, nil, nil, nil, string(jsonBytes), memoKey)
-	op1 := a.hiveCreator.Transfer("vsc.node1", "vsc.gateway", "0.005", "hbd", "test transfer")
 
-	tx := a.hiveCreator.MakeTransaction([]hivego.HiveOperation{op, op1})
+	tx := a.hiveCreator.MakeTransaction([]hivego.HiveOperation{op})
 
 	a.hiveCreator.PopulateSigningProps(&tx, nil)
 
-	sig, _ := a.hiveCreator.Sign(tx)
+	sig, err := a.hiveCreator.Sign(tx)
+	if err != nil {
+		return fmt.Errorf("failed to update account: %w", err)
+	}
 
 	tx.AddSig(sig)
 
