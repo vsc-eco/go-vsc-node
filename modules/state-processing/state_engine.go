@@ -8,6 +8,7 @@ import (
 	"strconv"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -20,8 +21,6 @@ import (
 	"github.com/ipfs/go-cid"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
-
-const GATEWAY_WALLET = "vsc.gateway"
 
 type ProcessExtraInfo struct {
 	BlockHeight int
@@ -109,6 +108,10 @@ func (se *StateEngine) getSchedule(slotHeight uint64) []WitnessSlot {
 	if err != nil {
 		return nil
 	}
+
+	if lastElection == nil {
+		return nil
+	}
 	witnessList := make([]Witness, 0)
 
 	for _, v := range lastElection.Members {
@@ -182,7 +185,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 		if virtualOp.Op.Type == "interest_operation" {
 			//Ensure it matches our gateway wallet
-			if virtualOp.Op.Value["owner"].(string) == GATEWAY_WALLET {
+			if virtualOp.Op.Value["owner"].(string) == common.GATEWAY_WALLET {
 				fmt.Println("virtualOp.Op.Value", virtualOp.Op.Value)
 
 				amount, err := strconv.ParseInt(virtualOp.Op.Value["interest"].(map[string]any)["amount"].(string), 10, 64)
@@ -203,7 +206,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			Id := headerOp.Value["id"].(string)
 			RequiredAuths := arrayToStringArray(headerOp.Value["required_auths"].(primitive.A))
 
-			if (Id == "vsc.bridge_ref" || Id == "vsc.bridge_withdraw" || Id == "vsc.savings_withdraw") && RequiredAuths[0] == GATEWAY_WALLET {
+			if (Id == "vsc.bridge_ref" || Id == "vsc.bridge_withdraw" || Id == "vsc.savings_withdraw") && RequiredAuths[0] == common.GATEWAY_WALLET {
 				if tx.Operations[1].Type == "transfer" {
 					//Process withdraw
 				}
@@ -289,8 +292,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 				cj := CustomJson{
 					Id:                   opVal["id"].(string),
-					RequiredAuths:        arrayToStringArray(opVal["required_auths"].(primitive.A)),
-					RequiredPostingAuths: arrayToStringArray(opVal["required_posting_auths"].(primitive.A)),
+					RequiredAuths:        arrayToStringArray(opVal["required_auths"]),
+					RequiredPostingAuths: arrayToStringArray(opVal["required_posting_auths"]),
 					Json:                 []byte(opVal["json"].(string)),
 				}
 
@@ -379,8 +382,8 @@ func (se *StateEngine) Commit() {
 
 }
 
-func (se *StateEngine) Init() {
-
+func (se *StateEngine) Init() error {
+	return nil
 }
 
 func (se *StateEngine) Start() *promise.Promise[any] {
@@ -388,8 +391,8 @@ func (se *StateEngine) Start() *promise.Promise[any] {
 	return nil
 }
 
-func (se *StateEngine) Stop() {
-
+func (se *StateEngine) Stop() error {
+	return nil
 }
 
 func New(da *DataLayer.DataLayer,
@@ -402,8 +405,8 @@ func New(da *DataLayer.DataLayer,
 	balanceDb ledgerDb.Balances,
 	hiveBlocks hive_blocks.HiveBlocks,
 	interestClaims ledgerDb.InterestClaims,
-) StateEngine {
-	return StateEngine{
+) *StateEngine {
+	return &StateEngine{
 		da: da,
 		// db: db,
 

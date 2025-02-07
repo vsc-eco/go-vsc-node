@@ -12,6 +12,7 @@ import (
 	"time"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
+	blockproducer "vsc-node/modules/block-producer"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
@@ -20,6 +21,7 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/e2e"
+	"vsc-node/modules/vstream"
 
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/hive"
@@ -92,11 +94,26 @@ func TestE2E(t *testing.T) {
 
 		return nil
 	}
-
 	runningNodes := make([]E2ENode, 0)
-	for i := 0; i < NODE_COUNT; i++ {
+
+	//Make primary node
+
+	r2e := &e2e.E2ERunner{}
+
+	r2e.SetSteps([]func(){
+		r2e.WaitToStart(), //This doesn't do anything right now
+		r2e.Sleep(5),
+		r2e.BroadcastMockElection([]string{"e2e-1", "e2e-2", "e2e-3", "e2e-4"}),
+		r2e.Produce(100),
+	})
+
+	primaryNode := makeNode("e2e-1", broadcastFunc, r2e)
+	runningNodes = append(runningNodes, primaryNode)
+
+	//Make the remaining 3 nodes for consensus operation
+	for i := 2; i < NODE_COUNT+1; i++ {
 		name := "e2e-" + strconv.Itoa(i)
-		runningNodes = append(runningNodes, makeNode(name, broadcastFunc))
+		runningNodes = append(runningNodes, makeNode(name, broadcastFunc, nil))
 	}
 
 	go func() {
@@ -117,7 +134,6 @@ func TestE2E(t *testing.T) {
 				ctx := context.Background()
 				ctx, _ = context.WithTimeout(ctx, 5*time.Second)
 				node.P2P.Host.Connect(ctx, *peerId)
-
 			}
 		}
 	}()
@@ -144,7 +160,7 @@ func hashSeed(seed []byte) *hivego.KeyPair {
 	return hivego.KeyPairFromBytes(hSeed)
 }
 
-func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error) E2ENode {
+func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error, r2e *e2e.E2ERunner) E2ENode {
 	dbConf := db.NewDbConfig()
 	db := db.New(dbConf)
 	vscDb := vsc.New(db, name)
@@ -158,8 +174,11 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error) E2EN
 	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
 	contractState := contracts.NewContractState(vscDb)
 
-	hiveRpcClient := hivego.NewHiveRpc("https://api.hive.blog")
-	announcementsConf := announcements.NewAnnouncementsConfig()
+	// hiveRpcClient := hivego.NewHiveRpc("https://api.hive.blog")
+	announcementsConf := announcements.NewAnnouncementsConfig("data-" + name + "/config")
+
+	announcementsConf.Init()
+	announcementsConf.SetUsername(name)
 
 	// wif := announcementsConf.Get().AnnouncementPrivateWif
 
@@ -182,7 +201,9 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error) E2EN
 		TransactionCrafter:         hive.TransactionCrafter{},
 	}
 
-	announcementsManager, err := announcements.New(hiveRpcClient, announcementsConf, time.Hour*24, &txCreator)
+	hrpc := &e2e.MockHiveRpcClient{}
+
+	announcementsManager, err := announcements.New(hrpc, &announcementsConf, time.Hour*24, &txCreator)
 
 	go func() {
 		// fmt.Println("Announceing after 15s")
@@ -199,11 +220,14 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error) E2EN
 
 	p2p := p2pInterface.New(witnessesDb)
 
-	dl := DataLayer.New(p2p, name)
+	datalayer := DataLayer.New(p2p, name)
 
-	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims)
+	se := stateEngine.New(datalayer, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims)
 
 	dbNuker := e2e.NewDbNuker(vscDb)
+
+	vstream := vstream.New()
+	bp := blockproducer.New(vstream, se)
 
 	plugins := make([]aggregate.Plugin, 0)
 
@@ -216,6 +240,7 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error) E2EN
 		dbNuker,
 		witnessesDb,
 		p2p,
+		datalayer,
 		electionDb,
 		contractDb,
 		hiveBlocks,
@@ -224,7 +249,16 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error) E2EN
 		balanceDb,
 		interestClaims,
 		contractState,
+		se,
+		bp,
 	)
+
+	if r2e != nil {
+		r2e.Datalayer = datalayer
+		r2e.Witnesses = witnessesDb
+		r2e.HiveCreator = &txCreator
+		plugins = append(plugins, r2e)
+	}
 
 	go func() {
 		a := aggregate.New(
@@ -234,18 +268,19 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error) E2EN
 		err = a.Run()
 
 		if err != nil {
+			fmt.Println(err)
 			fmt.Println("error is", err)
 			os.Exit(1)
 		}
 	}()
 
-	go func() {
-		time.Sleep(15 * time.Second)
-		fmt.Println(p2p.Host.Addrs()[0], p2p.Host.ID())
-		for _, addr := range p2p.Host.Addrs() {
-			fmt.Println(addr.String() + "/p2p/" + p2p.Host.ID().String())
-		}
-	}()
+	// go func() {
+	// 	time.Sleep(15 * time.Second)
+	// 	fmt.Println(p2p.Host.Addrs()[0], p2p.Host.ID())
+	// 	for _, addr := range p2p.Host.Addrs() {
+	// 		fmt.Println(addr.String() + "/p2p/" + p2p.Host.ID().String())
+	// 	}
+	// }()
 
 	return E2ENode{
 		StateEngine: se,
@@ -258,6 +293,6 @@ func cleanupNode() {
 }
 
 type E2ENode struct {
-	StateEngine stateEngine.StateEngine
+	StateEngine *stateEngine.StateEngine
 	P2P         *p2pInterface.P2PServer
 }
