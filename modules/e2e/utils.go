@@ -1,6 +1,10 @@
 package e2e
 
-import "github.com/vsc-eco/hivego"
+import (
+	"crypto"
+
+	"github.com/vsc-eco/hivego"
+)
 
 type MockHiveRpcClient struct {
 }
@@ -15,4 +19,11 @@ func (m *MockHiveRpcClient) GetAccount(accountNames []string) ([]hivego.AccountD
 
 func (m *MockHiveRpcClient) UpdateAccount(account string, owner *hivego.Auths, active *hivego.Auths, posting *hivego.Auths, jsonMetadata string, memoKey string, wif *string) (string, error) {
 	return "mock-dont-use-this", nil
+}
+
+func HashSeed(seed []byte) *hivego.KeyPair {
+	h := crypto.SHA256.New()
+	h.Write(seed)
+	hSeed := h.Sum(nil)
+	return hivego.KeyPairFromBytes(hSeed)
 }

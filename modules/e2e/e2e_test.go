@@ -2,12 +2,9 @@ package e2e_test
 
 import (
 	"context"
-	"crypto"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 	"vsc-node/modules/aggregate"
@@ -46,50 +43,7 @@ func TestE2E(t *testing.T) {
 	}
 
 	broadcastFunc := func(tx hivego.HiveTransaction) error {
-		// fmt.Println("Broadcast function is working", tx)
-
-		// jbb, _ := json.Marshal(tx.Operations)
-
-		var insertOps []hivego.Operation
-		for _, op := range tx.Operations {
-			opName := op.OpName()
-
-			//Prepass, convert to flat map[string]interface{}
-			var Value map[string]interface{}
-			bval, _ := json.Marshal(op)
-			json.Unmarshal(bval, &Value)
-
-			// Do operation specific parsing to match hivego.Operation format
-			if opName == "transfer" || opName == "transfer_from_savings" || opName == "transfer_to_savings" {
-				rawAmount := Value["amount"].(string)
-
-				splitAmt := strings.Split(rawAmount, " ")
-				var nai string
-				if splitAmt[1] == "HBD" {
-					nai = "@@000000013"
-				} else if splitAmt[1] == "HIVE" {
-					nai = "@@000000021"
-				}
-
-				amtFloat, _ := strconv.ParseFloat(splitAmt[0], 64)
-
-				//3 decimal places.
-				amount := map[string]interface{}{
-					"nai":       nai,
-					"amount":    strconv.Itoa(int(amtFloat * 1000)),
-					"precision": 3,
-				}
-
-				Value["amount"] = amount
-			}
-			//Probably not needed? Add more specific parsers as required
-
-			insertOps = append(insertOps, hivego.Operation{
-				Type:  opName,
-				Value: Value,
-			})
-		}
-
+		insertOps := e2e.TransformTx(tx)
 		mockCreator.BroadcastOps(insertOps)
 
 		return nil
@@ -153,13 +107,6 @@ func TestE2E(t *testing.T) {
 // Mock seed for testing
 const MOCK_SEED = "MOCK_SEED-"
 
-func hashSeed(seed []byte) *hivego.KeyPair {
-	h := crypto.SHA256.New()
-	h.Write(seed)
-	hSeed := h.Sum(nil)
-	return hivego.KeyPairFromBytes(hSeed)
-}
-
 func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error, r2e *e2e.E2ERunner) E2ENode {
 	dbConf := db.NewDbConfig()
 	db := db.New(dbConf)
@@ -184,16 +131,11 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error, r2e 
 
 	//Use different seeds so signatures come out differently.
 	//It's recommended as multisig signing will by default filter out duplicate signatures
-	kp := hashSeed([]byte(MOCK_SEED + name))
+	kp := e2e.HashSeed([]byte(MOCK_SEED + name))
 
 	brcst := hive.MockTransactionBroadcaster{
 		KeyPair:  kp,
 		Callback: mockBbrst,
-		// {
-		//
-		// 	txId, _ := tx.GenerateTrxId()
-		// 	return nil
-		// },
 	}
 
 	txCreator := hive.MockTransactionCreator{
@@ -206,9 +148,9 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error, r2e 
 	announcementsManager, err := announcements.New(hrpc, &announcementsConf, time.Hour*24, &txCreator)
 
 	go func() {
-		// fmt.Println("Announceing after 15s")
+		//This should be executed via the e2e runner steps in the future
+		//For now, we just wait a bit and then announce
 		time.Sleep(15 * time.Second)
-		// fmt.Println("Announceing NOW")
 		announcementsManager.Announce()
 	}()
 	if err != nil {
