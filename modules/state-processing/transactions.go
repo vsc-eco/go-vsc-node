@@ -53,7 +53,7 @@ func (tx TxCreateContract) ExecuteTx(se *StateEngine) {
 			return
 		}
 
-		verified := tx.StorageProof.Verify(election)
+		verified := tx.StorageProof.Verify(*election)
 
 		fmt.Println("Storage proof verify result", verified)
 
@@ -145,9 +145,6 @@ type TxElectionResult struct {
 
 // ProcessTx implements VSCTransaction.
 func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
-	if tx.Self.BlockHeight < 83313113 {
-		return
-	}
 	// ctx := context.Background()
 	if tx.Epoch == 0 {
 		electionResult := se.electionDb.GetElection(0)
@@ -350,7 +347,7 @@ func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
 		return
 	}
 	if verified {
-		signingScore, total := elections.CalculateSigningScore(*circuit, elecResult)
+		signingScore, total := elections.CalculateSigningScore(*circuit, *elecResult)
 		fmt.Println("signingScore, total", signingScore, total, signingScore > ((total*2)/3))
 
 		if signingScore > ((total * 2) / 3) {

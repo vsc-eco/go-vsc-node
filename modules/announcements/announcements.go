@@ -10,7 +10,6 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
 	agg "vsc-node/modules/aggregate"
-	"vsc-node/modules/config"
 
 	"github.com/robfig/cron/v3"
 	"github.com/vsc-eco/hivego"
@@ -22,7 +21,7 @@ import (
 // ===== types =====
 
 type announcementsManager struct {
-	conf         *config.Config[announcementsConfig]
+	conf         *AnnouncementsConfig
 	cron         *cron.Cron
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -42,7 +41,7 @@ var _ agg.Plugin = &announcementsManager{}
 
 // ===== constructor =====
 
-func New(client HiveRpcClient, conf *config.Config[announcementsConfig], cronDuration time.Duration, creator hive.HiveTransactionCreator) (*announcementsManager, error) {
+func New(client HiveRpcClient, conf *AnnouncementsConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator) (*announcementsManager, error) {
 
 	// sanity checks
 	if conf == nil {

@@ -11,3 +11,5 @@ var CONSENSUS_SPECS = struct {
 }
 
 var NETWORK_ID = "vsc-mainnet"
+
+var GATEWAY_WALLET = "vsc.gateway"

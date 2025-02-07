@@ -253,3 +253,33 @@ func (w *witnesses) GetWitnessesByPeerId(PeerIds ...string) ([]Witness, error) {
 
 	return witnesses, nil
 }
+
+func (w *witnesses) GetWitnessAtHeight(account string, bh *uint64) (*Witness, error) {
+	ctx := context.Background()
+
+	findOptions := options.FindOne().SetSort(bson.D{{Key: "height", Value: -1}})
+	findQuery := bson.M{
+		"account": account,
+	}
+
+	if bh != nil {
+		findQuery["height"] = bson.M{
+			"$lt": *bh,
+		}
+	}
+
+	findResult := w.FindOne(ctx, findQuery, findOptions)
+
+	if findResult.Err() != nil {
+		return nil, findResult.Err()
+	}
+
+	witness := Witness{}
+	err := findResult.Decode(&witness)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &witness, nil
+}

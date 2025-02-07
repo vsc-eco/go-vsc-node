@@ -18,7 +18,7 @@ type DbConfig struct {
 func NewDbConfig() DbConfig {
 	return DbConfig{config.New(dbConfig{
 		DbURI: "mongodb://localhost:27017",
-	})}
+	}, nil)}
 }
 
 func (dc *DbConfig) SetDbURI(uri string) error {

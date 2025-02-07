@@ -11,7 +11,7 @@ func TestBasic(t *testing.T) {
 		A uint
 		B string
 	}
-	c := config.New(conf{1, "hi"})
+	c := config.New(conf{1, "hi"}, nil)
 	err := c.Init()
 	if err != nil {
 		t.Fatal(err)

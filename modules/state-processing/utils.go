@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	rhost "github.com/libp2p/go-libp2p/p2p/host/routed"
 	"github.com/vsc-eco/hivego"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // Key DIDs are always supposed to be normalized
@@ -133,11 +135,19 @@ func AuthCheck(customJson CustomJson, args AuthCheckType) bool {
 	return false
 }
 
-func arrayToStringArray(arr []interface{}) []string {
+func arrayToStringArray(arr interface{}) []string {
 	out := make([]string, 0)
-	for _, v := range arr {
-		out = append(out, v.(string))
+	if reflect.TypeOf(arr).String() == "primitive.A" {
+		for _, v := range arr.(primitive.A) {
+			out = append(out, v.(string))
+		}
+	} else {
+		//Assume []interface{}
+		for _, v := range arr.([]interface{}) {
+			out = append(out, v.(string))
+		}
 	}
+
 	return out
 }
 

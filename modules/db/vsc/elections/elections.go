@@ -8,7 +8,6 @@ import (
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
-	cbornode "github.com/ipfs/go-ipld-cbor"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -27,9 +26,11 @@ func (e *elections) Init() error {
 		return err
 	}
 
-	cbornode.RegisterCborType(ElectionResult{})
-	cbornode.RegisterCborType(ElectionData{})
-	cbornode.RegisterCborType(electionHeaderRaw{})
+	//This was causing panic - @vaultec
+	//TODO - Fix this
+	// cbornode.RegisterCborType(ElectionResult{})
+	// cbornode.RegisterCborType(ElectionData{})
+	// cbornode.RegisterCborType(electionHeaderRaw{})
 
 	return nil
 }
@@ -69,7 +70,7 @@ func (e *elections) GetElection(epoch uint64) *ElectionResult {
 	}
 }
 
-func (e *elections) GetElectionByHeight(height uint64) (ElectionResult, error) {
+func (e *elections) GetElectionByHeight(height uint64) (*ElectionResult, error) {
 	findQuery := bson.M{
 		"block_height": bson.M{
 			//Elections activate going forward, not retroactively to the same block
@@ -85,11 +86,24 @@ func (e *elections) GetElectionByHeight(height uint64) (ElectionResult, error) {
 	findResult := e.FindOne(ctx, findQuery, queryOptions)
 
 	if findResult.Err() != nil {
-		return ElectionResult{}, findResult.Err()
+		return nil, findResult.Err()
 	} else {
-		electionResult := ElectionResult{}
-		findResult.Decode(&electionResult)
-		return electionResult, nil
+		electionRecord := ElectionResultRecord{}
+		findResult.Decode(&electionRecord)
+
+		electionResult := ElectionResult{
+			ElectionCommonInfo: ElectionCommonInfo{
+				Epoch: electionRecord.Epoch,
+				NetId: electionRecord.NetId,
+			},
+			ElectionHeaderInfo: ElectionHeaderInfo{
+				Data: electionRecord.Data,
+			},
+			ElectionDataInfo: ElectionDataInfo{
+				Members: electionRecord.Members,
+			},
+		}
+		return &electionResult, nil
 	}
 }
 

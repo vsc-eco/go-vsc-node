@@ -13,9 +13,20 @@ type announcementsConfig struct {
 	Username               string
 }
 
-type AnnouncementsConfig = *config.Config[announcementsConfig]
+func (ac *AnnouncementsConfig) SetUsername(username string) error {
+	if username == "" {
+		return fmt.Errorf("empty username")
+	}
+	return ac.Update(func(dc *announcementsConfig) {
+		dc.Username = username
+	})
+}
 
-func NewAnnouncementsConfig() AnnouncementsConfig {
+type AnnouncementsConfig struct {
+	*config.Config[announcementsConfig]
+}
+
+func NewAnnouncementsConfig(dataDir ...string) AnnouncementsConfig {
 	// gen a random seed for the BLS key
 	var seed [32]byte
 	_, err := rand.Read(seed[:])
@@ -23,10 +34,20 @@ func NewAnnouncementsConfig() AnnouncementsConfig {
 		panic(fmt.Errorf("failed to generate random seed: %w", err))
 	}
 
+	var dataDirPtr *string
+	if len(dataDir) > 0 {
+		dataDirPtr = &dataDir[0]
+	}
+
+	fmt.Println("AnnouncementsConfig", *dataDirPtr)
 	// defaults now for our config if not already provided
-	return config.New(announcementsConfig{
-		BlsPrivKeySeed:         hex.EncodeToString(seed[:]),
-		AnnouncementPrivateWif: "ADD_YOUR_PRIVATE_WIF",
-		Username:               "ADD_YOUR_USERNAME",
-	})
+
+	return AnnouncementsConfig{config.New(
+		announcementsConfig{
+			BlsPrivKeySeed:         hex.EncodeToString(seed[:]),
+			AnnouncementPrivateWif: "ADD_YOUR_PRIVATE_WIF",
+			Username:               "ADD_YOUR_USERNAME",
+		},
+		dataDirPtr,
+	)}
 }

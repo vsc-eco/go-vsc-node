@@ -1,16 +1,16 @@
 package witnesses
 
 type Witness struct {
-	Account         string            `json:"account"`
-	Height          uint64            `json:"height"`
-	DidKeys         []PostingJsonKeys `json:"did_keys"`
-	Enabled         bool              `json:"enabled"`
-	GitCommit       string            `json:"git_commit"`
-	NetId           string            `json:"net_id"`
-	PeerId          string            `json:"peer_id"`
-	ProtocolVersion uint64            `json:"protocol_version"`
-	Ts              string            `json:"ts"`
-	VersionId       string            `json:"version_id"`
+	Account         string            `json:"account" bson:"account"`
+	Height          uint64            `json:"height" bson:"height"`
+	DidKeys         []PostingJsonKeys `json:"did_keys" bson:"did_keys"`
+	Enabled         bool              `json:"enabled" bson:"enabled"`
+	GitCommit       string            `json:"git_commit" bson:"git_commit"`
+	NetId           string            `json:"net_id" bson:"net_id"`
+	PeerId          string            `json:"peer_id" bson:"peer_id"`
+	ProtocolVersion uint64            `json:"protocol_version" bson:"protocol_version"`
+	Ts              string            `json:"ts" bson:"ts"`
+	VersionId       string            `json:"version_id" bson:"version_id"`
 }
 
 type PostingJsonMetadata struct {
@@ -31,7 +31,7 @@ type PostingJsonMetadataVscNode struct {
 	Ts              string `json:"ts"`
 	GitCommit       string `json:"git_commit"`
 	VersionId       string `json:"version_id" bson:"version_id"`
-	ProtocolVersion string `json:"protocol_version"`
+	ProtocolVersion uint64 `json:"protocol_version"`
 	Witness         struct {
 		Enabled bool `json:"enabled"`
 		// Plugins     []string `json:"plugins"`

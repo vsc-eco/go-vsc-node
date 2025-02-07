@@ -14,6 +14,7 @@ import (
 	blockstore "github.com/ipfs/boxo/blockstore"
 	"github.com/ipfs/boxo/datastore/dshelp"
 	"github.com/ipfs/boxo/exchange/providing"
+	"github.com/ipfs/boxo/ipld/merkledag"
 	"github.com/ipfs/boxo/provider"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
@@ -97,6 +98,8 @@ func (dl *DataLayer) Init() error {
 	dl.blockServ = blockService
 	dl.bitswap = bswap
 
+	dl.DagServ = merkledag.NewDAGService(blockService)
+
 	return nil
 }
 
@@ -151,7 +154,7 @@ func (dl *DataLayer) PutObject(data interface{}) (*cid.Cid, error) {
 	cid := block.Cid()
 	dl.bitswap.NotifyNewBlocks(ctx, block)
 	//We might need to proactively rebroadcast that we are storing a CID
-	dl.dht.Provide(ctx, cid, true)
+	dl.p2pService.Dht.Provide(ctx, cid, true)
 	dl.DagServ.Add(ctx, block)
 
 	return &cid, nil
