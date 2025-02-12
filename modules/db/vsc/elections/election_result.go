@@ -9,16 +9,16 @@ import (
 
 func (e ElectionResult) Cid() (cid.Cid, error) {
 	dataCid, err := ElectionData{
-		e.ElectionCommonInfo,
-		e.ElectionDataInfo,
+		e.electionCommonInfo,
+		e.electionDataInfo,
 	}.Cid()
 	if err != nil {
 		return cid.Cid{}, err
 	}
 
 	return ElectionHeader{
-		e.ElectionCommonInfo,
-		ElectionHeaderInfo{
+		e.electionCommonInfo,
+		electionHeaderInfo{
 			dataCid.String(),
 		},
 	}.Cid()

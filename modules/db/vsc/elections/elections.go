@@ -2,12 +2,13 @@ package elections
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
+	cbornode "github.com/ipfs/go-ipld-cbor"
+	"github.com/polydawn/refmt"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -26,32 +27,25 @@ func (e *elections) Init() error {
 		return err
 	}
 
-	//This was causing panic - @vaultec
-	//TODO - Fix this
-	// cbornode.RegisterCborType(ElectionResult{})
-	// cbornode.RegisterCborType(ElectionData{})
-	// cbornode.RegisterCborType(electionHeaderRaw{})
-
 	return nil
 }
 
-func (e *elections) StoreElection(a ElectionResult) {
+func (e *elections) StoreElection(a ElectionResult) error {
 	ctx := context.Background()
-	options := options.FindOneAndUpdate().SetUpsert(true)
+	options := options.Update().SetUpsert(true)
 	filter := bson.M{
 		"epoch": a.Epoch,
 	}
-	updateQuery := bson.M{
-		"$set": bson.M{
-			"block_height": a.BlockHeight,
-			"data":         a.Data,
-			"members":      a.Members,
-			"proposer":     a.Proposer,
-			"weights":      a.Weights,
-		},
+	update := ElectionResultRecord{}
+	err := refmt.CloneAtlased(a, &update, cbornode.CborAtlas)
+	if err != nil {
+		return err
 	}
-	result := e.FindOneAndUpdate(ctx, filter, updateQuery, options)
-	fmt.Println(result.Err())
+	updateQuery := bson.M{
+		"$set": update,
+	}
+	_, err = e.UpdateOne(ctx, filter, updateQuery, options)
+	return err
 }
 
 func (e *elections) GetElection(epoch uint64) *ElectionResult {
@@ -89,20 +83,29 @@ func (e *elections) GetElectionByHeight(height uint64) (*ElectionResult, error) 
 		return nil, findResult.Err()
 	} else {
 		electionRecord := ElectionResultRecord{}
-		findResult.Decode(&electionRecord)
-
-		electionResult := ElectionResult{
-			ElectionCommonInfo: ElectionCommonInfo{
-				Epoch: electionRecord.Epoch,
-				NetId: electionRecord.NetId,
-			},
-			ElectionHeaderInfo: ElectionHeaderInfo{
-				Data: electionRecord.Data,
-			},
-			ElectionDataInfo: ElectionDataInfo{
-				Members: electionRecord.Members,
-			},
+		err := findResult.Decode(&electionRecord)
+		if err != nil {
+			return nil, err
 		}
+
+		electionResult := ElectionResult{}
+		err = refmt.CloneAtlased(electionRecord, &electionResult, cbornode.CborAtlas)
+		if err != nil {
+			return nil, err
+		}
+
+		// electionResult := ElectionResult{
+		// 	electionCommonInfo{
+		// 		Epoch: electionRecord.Epoch,
+		// 		NetId: electionRecord.NetId,
+		// 	},
+		// 	electionHeaderInfo{
+		// 		Data: electionRecord.Data,
+		// 	},
+		// 	electionDataInfo{
+		// 		Members: electionRecord.Members,
+		// 	},
+		// }
 		return &electionResult, nil
 	}
 }
@@ -168,3 +171,11 @@ func MinimalRequiredElectionVotes(blocksSinceLastElection, memberCountOfLastElec
 //     const drift = (MAX_BLOCKS_SINCE_LAST_ELECTION - Math.min(blocksSinceLastElection, MAX_BLOCKS_SINCE_LAST_ELECTION)) / MAX_BLOCKS_SINCE_LAST_ELECTION;
 //     return Math.round(Range.from([0, 1]).map(drift, Range.from([minMembers, maxMembers])));
 // }
+
+func init() {
+	cbornode.RegisterCborType(ElectionResultRecord{})
+	cbornode.RegisterCborType(ElectionResult{})
+	cbornode.RegisterCborType(ElectionData{})
+	cbornode.RegisterCborType(ElectionMember{})
+	cbornode.RegisterCborType(electionHeaderRaw{})
+}

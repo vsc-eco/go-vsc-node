@@ -7,7 +7,7 @@ import (
 )
 
 type electionHeaderRaw struct {
-	ElectionCommonInfo
+	electionCommonInfo
 	Data cid.Cid
 }
 
@@ -18,7 +18,7 @@ func (e ElectionHeader) Cid() (cid.Cid, error) {
 	}
 
 	raw := electionHeaderRaw{
-		e.ElectionCommonInfo,
+		e.electionCommonInfo,
 		c,
 	}
 

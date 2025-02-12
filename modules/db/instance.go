@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 
@@ -42,4 +43,8 @@ func (d *DbInstance) Start() *promise.Promise[any] {
 // Stop implements aggregate.Plugin.
 func (d *DbInstance) Stop() error {
 	return nil
+}
+
+func (d *DbInstance) Clear() error {
+	return d.Drop(context.TODO())
 }
