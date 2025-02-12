@@ -2,21 +2,17 @@ package e2e
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/utils"
-	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc"
-	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/witnesses"
+	election_proposer "vsc-node/modules/election-proposer"
 
 	a "vsc-node/modules/aggregate"
 
 	"github.com/chebyrash/promise"
-	"github.com/vsc-eco/hivego"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -70,10 +66,11 @@ func NewDbNuker(db *vsc.VscDb) *DbNuker {
 var _ a.Plugin = &DbNuker{}
 
 type E2ERunner struct {
-	steps       []func()
-	HiveCreator hive.HiveTransactionCreator
-	Datalayer   *datalayer.DataLayer
-	Witnesses   witnesses.Witnesses
+	steps            []func() error
+	HiveCreator      hive.HiveTransactionCreator
+	Datalayer        *datalayer.DataLayer
+	Witnesses        witnesses.Witnesses
+	ElectionProposer election_proposer.ElectionProposer
 }
 
 func (e2e *E2ERunner) Init() error {
@@ -81,123 +78,55 @@ func (e2e *E2ERunner) Init() error {
 }
 
 func (e2e *E2ERunner) Start() *promise.Promise[any] {
-
-	go func() {
+	return promise.New(func(resolve func(any), reject func(error)) {
 		for _, step := range e2e.steps {
-			step()
+			err := step()
+			if err != nil {
+				reject(err)
+				return
+			}
 		}
-	}()
-	return utils.PromiseResolve[any](nil)
+		resolve(nil)
+	})
 }
 
 func (e2e *E2ERunner) Stop() error {
 	return nil
 }
 
-func (e2e *E2ERunner) SetSteps(steps []func()) {
+func (e2e *E2ERunner) SetSteps(steps []func() error) {
 	e2e.steps = steps
 }
 
-func (e2e *E2ERunner) Wait(blocks uint64) func() {
-	return func() {
-
+func (e2e *E2ERunner) Wait(blocks uint64) func() error {
+	return func() error {
+		return nil
 	}
 }
 
-func (e2e *E2ERunner) WaitToStart() func() {
-	return func() {
-
+func (e2e *E2ERunner) WaitToStart() func() error {
+	return func() error {
+		return nil
 	}
 }
 
-func (e2e *E2ERunner) Sleep(seconds uint64) func() {
-	return func() {
+func (e2e *E2ERunner) Sleep(seconds uint64) func() error {
+	return func() error {
 		time.Sleep(time.Duration(seconds) * time.Second)
+		return nil
 	}
 }
 
 // Creates and broadcasts a mock election using predefined list of validator user names
-func (e2e *E2ERunner) BroadcastMockElection(witnessListS []string) func() {
-	return func() {
-		da := e2e.Datalayer
-
-		members := []elections.ElectionMember{}
-
-		witnessList := []witnesses.Witness{}
-		//TODO detect current height
-		for _, wStr := range witnessListS {
-			w, err := e2e.Witnesses.GetWitnessAtHeight(wStr, nil)
-			fmt.Println("w, err", w, err)
-			if err != nil {
-				continue
-			}
-			witnessList = append(witnessList, *w)
-		}
-		//Finish this when I can!
-		for _, w := range witnessList {
-			var key string
-
-			for _, dk := range w.DidKeys {
-				if dk.Type == "consensus" {
-					key = dk.Key
-					break
-				}
-			}
-
-			if key == "" {
-				//Don't do witness
-				continue
-			}
-
-			members = append(members, elections.ElectionMember{
-				Key:     key,
-				Account: w.Account,
-			})
-		}
-
-		fmt.Println("len(members)", len(members))
-		fmt.Println("members", members)
-		if len(members) == 0 {
-			panic("No members found")
-		}
-
-		electionData := elections.ElectionData{
-			ElectionCommonInfo: elections.ElectionCommonInfo{
-				Epoch: 0,
-				NetId: common.NETWORK_ID,
-			},
-			ElectionDataInfo: elections.ElectionDataInfo{
-				Weights:         []uint64{},
-				Members:         members,
-				ProtocolVersion: 0,
-			},
-		}
-
-		cid, err := da.PutObject(electionData)
-
-		if err != nil {
-			return
-		}
-
-		electionHeader := map[string]interface{}{
-			"epoch":  0,
-			"data":   cid.String(),
-			"net_id": common.NETWORK_ID,
-		}
-
-		bbyes, _ := json.Marshal(electionHeader)
-
-		op := e2e.HiveCreator.CustomJson([]string{"e2e.mocks"}, []string{}, "vsc.election_result", string(bbyes))
-
-		tx := e2e.HiveCreator.MakeTransaction([]hivego.HiveOperation{op})
-
-		e2e.HiveCreator.Broadcast(tx)
+func (e2e *E2ERunner) BroadcastMockElection(block uint64) func() error {
+	return func() error {
+		return e2e.ElectionProposer.HoldElection(block)
 	}
 }
 
 // Produces X number of mock blocks
-func (e2e *E2ERunner) Produce(blocks uint64) func() {
-	return func() {
-
+func (e2e *E2ERunner) Produce(blocks uint64) func() error {
+	return func() error {
+		return nil
 	}
 }

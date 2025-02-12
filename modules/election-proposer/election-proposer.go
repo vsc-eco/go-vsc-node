@@ -14,6 +14,7 @@ import (
 	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/witnesses"
 	libp2p "vsc-node/modules/p2p"
@@ -66,17 +67,17 @@ func New(
 
 // Init implements aggregate.Plugin.
 func (e *electionProposer) Init() error {
-	panic("unimplemented")
+	return nil
 }
 
 // Start implements aggregate.Plugin.
 func (e *electionProposer) Start() *promise.Promise[any] {
-	panic("unimplemented")
+	return utils.PromiseResolve[any](nil)
 }
 
 // Stop implements aggregate.Plugin.
 func (e *electionProposer) Stop() error {
-	panic("unimplemented")
+	return nil
 }
 
 func (e *electionProposer) GenerateElection() (elections.ElectionHeader, elections.ElectionData, error) {
@@ -144,7 +145,16 @@ func (e *electionProposer) GenerateElectionWithWitnessesAndEpochAndConsensusVers
 	)
 
 	distWeight := uint64(math.Ceil((1 + float64(totalOptionalWeight)/2) / float64(len(REQUIRED_ELECTION_MEMBERS))))
-	members := witnessList
+	members := utils.Map(witnessList, func(w witnesses.Witness) elections.ElectionMember {
+		key, err := w.ConsensusKey()
+		if err != nil {
+			panic(err)
+		}
+		return elections.ElectionMember{
+			Key:     key.String(),
+			Account: w.Account,
+		}
+	})
 
 	weights := make([]uint64, len(members))
 	for i, member := range members {
@@ -160,10 +170,21 @@ func (e *electionProposer) GenerateElectionWithWitnessesAndEpochAndConsensusVers
 		}
 	}
 
-	// TODO: Fill in the rest of the election data
 	electionData := elections.ElectionData{}
+	electionData.Epoch = previousEpoch + 1
+	electionData.Members = members
+	electionData.NetId = common.NETWORK_ID
+	electionData.ProtocolVersion = consensusVersion
+	electionData.Weights = weights
+	cid, err := electionData.Cid()
+	if err != nil {
+		return elections.ElectionHeader{}, elections.ElectionData{}, err
+	}
 
 	electionHeader := elections.ElectionHeader{}
+	electionHeader.Data = cid.String()
+	electionHeader.Epoch = electionData.Epoch
+	electionHeader.NetId = electionData.NetId
 
 	return electionHeader, electionData, nil
 }

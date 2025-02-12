@@ -10,6 +10,7 @@ import (
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
 	blockproducer "vsc-node/modules/block-producer"
+	"vsc-node/modules/config"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
@@ -18,10 +19,12 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/e2e"
+	election_proposer "vsc-node/modules/election-proposer"
 	"vsc-node/modules/vstream"
 
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/hive"
+	"vsc-node/lib/test_utils"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
@@ -36,6 +39,7 @@ import (
 const NODE_COUNT = 4
 
 func TestE2E(t *testing.T) {
+	config.UseMainConfigDuringTests = true
 	mockReader := &stateEngine.MockReader{}
 
 	mockCreator := stateEngine.MockCreator{
@@ -54,20 +58,20 @@ func TestE2E(t *testing.T) {
 
 	r2e := &e2e.E2ERunner{}
 
-	r2e.SetSteps([]func(){
+	r2e.SetSteps([]func() error{
 		r2e.WaitToStart(), //This doesn't do anything right now
 		r2e.Sleep(5),
-		r2e.BroadcastMockElection([]string{"e2e-1", "e2e-2", "e2e-3", "e2e-4"}),
+		r2e.BroadcastMockElection(2),
 		r2e.Produce(100),
 	})
 
-	primaryNode := makeNode("e2e-1", broadcastFunc, r2e)
+	primaryNode := makeNode(t, "e2e-1", broadcastFunc, r2e)
 	runningNodes = append(runningNodes, primaryNode)
 
 	//Make the remaining 3 nodes for consensus operation
 	for i := 2; i < NODE_COUNT+1; i++ {
 		name := "e2e-" + strconv.Itoa(i)
-		runningNodes = append(runningNodes, makeNode(name, broadcastFunc, nil))
+		runningNodes = append(runningNodes, makeNode(t, name, broadcastFunc, nil))
 	}
 
 	go func() {
@@ -101,13 +105,13 @@ func TestE2E(t *testing.T) {
 
 	mockCreator.Transfer("test-account", "vsc.gateway", "10", "HBD", "test transfer")
 
-	select {}
+	test_utils.RunPlugin(t, r2e)
 }
 
 // Mock seed for testing
 const MOCK_SEED = "MOCK_SEED-"
 
-func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error, r2e *e2e.E2ERunner) E2ENode {
+func makeNode(t *testing.T, name string, mockBbrst func(tx hivego.HiveTransaction) error, r2e *e2e.E2ERunner) E2ENode {
 	dbConf := db.NewDbConfig()
 	db := db.New(dbConf)
 	vscDb := vsc.New(db, name)
@@ -168,6 +172,8 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error, r2e 
 
 	dbNuker := e2e.NewDbNuker(vscDb)
 
+	ep := election_proposer.New(p2p, witnessesDb, electionDb, datalayer, &txCreator, announcementsConf)
+
 	vstream := vstream.New()
 	bp := blockproducer.New(vstream, se)
 
@@ -193,28 +199,18 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error, r2e 
 		contractState,
 		se,
 		bp,
+		ep,
 	)
 
 	if r2e != nil {
 		r2e.Datalayer = datalayer
 		r2e.Witnesses = witnessesDb
 		r2e.HiveCreator = &txCreator
+		r2e.ElectionProposer = ep
 		plugins = append(plugins, r2e)
 	}
 
-	go func() {
-		a := aggregate.New(
-			plugins,
-		)
-
-		err = a.Run()
-
-		if err != nil {
-			fmt.Println(err)
-			fmt.Println("error is", err)
-			os.Exit(1)
-		}
-	}()
+	test_utils.RunPlugin(t, aggregate.New(plugins))
 
 	// go func() {
 	// 	time.Sleep(15 * time.Second)
@@ -225,8 +221,9 @@ func makeNode(name string, mockBbrst func(tx hivego.HiveTransaction) error, r2e 
 	// }()
 
 	return E2ENode{
-		StateEngine: se,
-		P2P:         p2p,
+		StateEngine:      se,
+		P2P:              p2p,
+		ElectionProposer: ep,
 	}
 }
 
@@ -235,6 +232,7 @@ func cleanupNode() {
 }
 
 type E2ENode struct {
-	StateEngine *stateEngine.StateEngine
-	P2P         *p2pInterface.P2PServer
+	StateEngine      *stateEngine.StateEngine
+	P2P              *p2pInterface.P2PServer
+	ElectionProposer election_proposer.ElectionProposer
 }
