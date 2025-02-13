@@ -13,7 +13,6 @@ import (
 	"vsc-node/lib/hive"
 	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
-	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/witnesses"
@@ -26,7 +25,7 @@ import (
 )
 
 type electionProposer struct {
-	conf announcements.AnnouncementsConfig
+	conf common.IdentityConfig
 
 	p2p     *libp2p.P2PServer
 	service libp2p.PubSubService[p2pMessage]
@@ -53,7 +52,7 @@ func New(
 	elections elections.Elections,
 	da *datalayer.DataLayer,
 	txCreator hive.HiveTransactionCreator,
-	conf announcements.AnnouncementsConfig,
+	conf common.IdentityConfig,
 ) ElectionProposer {
 	return &electionProposer{
 		conf:      conf,
@@ -189,7 +188,11 @@ func (e *electionProposer) GenerateElectionWithWitnessesAndEpochAndConsensusVers
 	return electionHeader, electionData, nil
 }
 
-func (e *electionProposer) HoldElection(blk uint64) error {
+type ElectionOptions struct {
+	OverrideMinimumMemberCount int
+}
+
+func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) error {
 	if e.circuit != nil {
 		return errors.New("election already in progress")
 	}
@@ -209,7 +212,14 @@ func (e *electionProposer) HoldElection(blk uint64) error {
 
 	// console.log("electionData - holding election", electionData)
 
-	if len(electionData.Members) < MINIMUM_ELECTION_MEMBER_COUNT {
+	var minimumMemberCount int
+	if len(options) > 0 {
+		minimumMemberCount = options[0].OverrideMinimumMemberCount
+	} else {
+		minimumMemberCount = MINIMUM_ELECTION_MEMBER_COUNT
+	}
+
+	if len(electionData.Members) < minimumMemberCount {
 		return errors.New("Minimum network config not met for election. Skipping.")
 	}
 
@@ -221,6 +231,8 @@ func (e *electionProposer) HoldElection(blk uint64) error {
 	var memberKeys []dids.BlsDID
 	if firstElection {
 		w, err := e.witnesses.GetWitnessesAtBlockHeight(blk)
+
+		fmt.Println("GetWitnessesAtBlockHeight err", err)
 		if err != nil {
 			return err
 		}
@@ -287,7 +299,7 @@ func (e *electionProposer) HoldElection(blk uint64) error {
 			return err
 		}
 
-		op := e.txCreator.CustomJson([]string{e.conf.Get().Username}, []string{}, VSC_ELECTION_TX_ID, string(jsonBytes))
+		op := e.txCreator.CustomJson([]string{e.conf.Get().HiveUsername}, []string{}, VSC_ELECTION_TX_ID, string(jsonBytes))
 
 		tx := e.txCreator.MakeTransaction([]hivego.HiveOperation{op})
 
