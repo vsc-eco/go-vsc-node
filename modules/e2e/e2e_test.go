@@ -134,15 +134,13 @@ func TestE2E(t *testing.T) {
 
 	mainAggregate := aggregate.New(plugs)
 
-	mainAggregate.Init()
+	test_utils.RunPlugin(t, mainAggregate)
 
 	mockReader.ProcessFunction = func(block hive_blocks.HiveBlock) {
 		for _, node := range runningNodes {
 			node.VStream.ProcessBlock(block)
 		}
 	}
-
-	mainAggregate.Start()
 
 	go func() {
 
@@ -171,8 +169,7 @@ func TestE2E(t *testing.T) {
 	// mockCreator.Transfer("test-account", "vsc.gateway", "10", "HBD", "test transfer")
 
 	fmt.Println("Starting up! 173")
-	test_utils.RunPlugin(t, r2e)
-	select {}
+	test_utils.RunPlugin(t, r2e, true)
 }
 
 // Mock seed for testing
