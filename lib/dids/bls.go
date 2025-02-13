@@ -493,11 +493,9 @@ func (b *BlsCircuit) BitVector() (string, error) {
 	if b.bitVector == nil {
 		return "", fmt.Errorf("bit vector not generated")
 	}
-	h := b.bitVector.Text(16)
-	if len(h)%2 != 0 {
-		h = "0" + h
-	}
-	bvEncoded := base64.RawURLEncoding.EncodeToString([]byte(h))
+	bs := b.bitVector.Bytes()
+
+	bvEncoded := base64.RawURLEncoding.EncodeToString(bs)
 	return bvEncoded, nil
 }
 
