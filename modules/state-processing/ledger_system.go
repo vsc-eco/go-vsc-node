@@ -55,9 +55,10 @@ type OpLogEvent struct {
 	Type   string
 
 	//Not parted of compiled state
-	Id    string
-	BIdx  int64
-	OpIdx int64
+	Id          string
+	BIdx        int64
+	OpIdx       int64
+	BlockHeight uint64 `json:"-"`
 
 	//Fee for instant stake unstake
 	// Fee int64 `json:"fee,omitempty"`
@@ -342,25 +343,10 @@ type LedgerExecutor struct {
 	//Virtual ledger is a cache of all balance changes (virtual and non-virtual)
 	//Includes deposits, transfers (in-n-out), withdrawals, and stake/unstake operations (future)
 	VirtualLedger map[string][]LedgerUpdate
-	BlockHeight   uint64
 
 	//Live calculated gateway balances on the fly
 	//Use last saved balance as the starting data
 	GatewayBalances map[string]uint64
-}
-
-func (le *LedgerExecutor) SetHeight(bh uint64) error {
-	if bh < le.BlockHeight {
-		return fmt.Errorf("cannot go back in time. Make a new instance")
-	}
-	le.BlockHeight = bh
-	//TODO: Potentially do virtual op calculation here
-	return nil
-}
-
-// Pretends blocks are being produced; utility function
-func (le *LedgerExecutor) Mine(i uint64) {
-	le.SetHeight(le.BlockHeight + i)
 }
 
 // Empties the virtual state, such as when a block is executed
@@ -414,8 +400,7 @@ func (le *LedgerExecutor) ExecuteTransfer(OpLogEvent OpLogEvent, options ...Tran
 			Msg: "Invalid asset",
 		}
 	}
-	// fromBal := le.Ls.GetBalance(OpLogEvent.From, le.BlockHeight, OpLogEvent.From)
-	fromBal := le.SnapshotForAccount(OpLogEvent.From, le.BlockHeight, OpLogEvent.Asset)
+	fromBal := le.SnapshotForAccount(OpLogEvent.From, OpLogEvent.BlockHeight, OpLogEvent.Asset)
 	fmt.Println("fromBal", fromBal)
 	if (fromBal - exclusion) < OpLogEvent.Amount {
 		return LedgerResult{
@@ -457,9 +442,10 @@ func (le *LedgerExecutor) ExecuteTransfer(OpLogEvent OpLogEvent, options ...Tran
 }
 
 type Deposit struct {
-	Id    string
-	OpIdx int64
-	BIdx  int64
+	Id          string
+	OpIdx       int64
+	BIdx        int64
+	BlockHeight uint64
 
 	Account string
 	Amount  int64
@@ -511,7 +497,7 @@ func (le *LedgerExecutor) Deposit(deposit Deposit) {
 		Id:          deposit.Id,
 		BIdx:        deposit.BIdx,
 		OpIdx:       deposit.OpIdx,
-		BlockHeight: le.BlockHeight,
+		BlockHeight: deposit.BlockHeight,
 
 		Owner:  decodedParams.To,
 		Amount: deposit.Amount,
@@ -521,7 +507,7 @@ func (le *LedgerExecutor) Deposit(deposit Deposit) {
 	le.VirtualLedger[decodedParams.To] = append(le.VirtualLedger[decodedParams.To], ledgerUpdate)
 	le.Ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
 		Id:          deposit.Id,
-		BlockHeight: le.BlockHeight,
+		BlockHeight: deposit.BlockHeight,
 		Amount:      deposit.Amount,
 		Asset:       deposit.Asset,
 		From:        deposit.From,
@@ -543,8 +529,9 @@ type WithdrawParams struct {
 	Amount int64  `json:"amount"`
 	Memo   string `json:"memo"`
 
-	BIdx  int64 `json:"bidx"`
-	OpIdx int64 `json:"opidx"`
+	BIdx        int64  `json:"bidx"`
+	OpIdx       int64  `json:"opidx"`
+	BlockHeight uint64 `json:"block_height"`
 }
 
 func (le *LedgerExecutor) Withdraw(withdraw WithdrawParams) LedgerResult {
@@ -586,7 +573,7 @@ func (le *LedgerExecutor) Withdraw(withdraw WithdrawParams) LedgerResult {
 		}
 	}
 
-	balAmt := le.SnapshotForAccount(withdraw.From, le.BlockHeight, withdraw.Asset)
+	balAmt := le.SnapshotForAccount(withdraw.From, withdraw.BlockHeight, withdraw.Asset)
 
 	if balAmt < withdraw.Amount {
 		return LedgerResult{
@@ -703,7 +690,12 @@ type CompiledResult struct {
 
 func (le *LedgerExecutor) Compile() *CompiledResult {
 
-	return nil
+	oplog := make([]OpLogEvent, len(le.Oplog))
+	copy(oplog, le.Oplog)
+
+	return &CompiledResult{
+		OpLog: le.Oplog,
+	}
 }
 
 type StakeOp struct {
@@ -748,7 +740,7 @@ func (le *LedgerExecutor) Stake(stakeOp StakeOp, options ...TransferOptions) Led
 		}
 	}
 
-	fromBal := le.SnapshotForAccount(stakeOp.From, le.BlockHeight, "hbd")
+	fromBal := le.SnapshotForAccount(stakeOp.From, stakeOp.BlockHeight, "hbd")
 
 	if (exclusion + fromBal) < stakeOp.Amount {
 		return LedgerResult{
@@ -794,7 +786,7 @@ func (le *LedgerExecutor) Stake(stakeOp StakeOp, options ...TransferOptions) Led
 		})
 		le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], LedgerUpdate{
 			Id:          stakeOp.Id,
-			BlockHeight: le.BlockHeight,
+			BlockHeight: stakeOp.BlockHeight,
 			OpIdx:       0,
 			Owner:       stakeOp.To,
 			Amount:      withdrawAmount,
@@ -844,7 +836,7 @@ func (le *LedgerExecutor) Unstake(stakeOp StakeOp) LedgerResult {
 		}
 	}
 
-	fromBal := le.SnapshotForAccount(stakeOp.From, le.BlockHeight, "hbd_savings")
+	fromBal := le.SnapshotForAccount(stakeOp.From, stakeOp.BlockHeight, "hbd_savings")
 
 	if fromBal < stakeOp.Amount {
 		return LedgerResult{
@@ -879,7 +871,7 @@ func (le *LedgerExecutor) Unstake(stakeOp StakeOp) LedgerResult {
 
 		le.VirtualLedger[HBD_FEE_RECEIVER] = append(le.VirtualLedger[HBD_FEE_RECEIVER], LedgerUpdate{
 			Id:          stakeOp.Id + "-fee",
-			BlockHeight: le.BlockHeight,
+			BlockHeight: stakeOp.BlockHeight,
 			OpIdx:       0,
 
 			Owner:  HBD_FEE_RECEIVER,
@@ -891,7 +883,7 @@ func (le *LedgerExecutor) Unstake(stakeOp StakeOp) LedgerResult {
 
 		le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], LedgerUpdate{
 			Id:          stakeOp.Id + "-out",
-			BlockHeight: le.BlockHeight,
+			BlockHeight: stakeOp.BlockHeight,
 			OpIdx:       0,
 
 			Owner:  stakeOp.To,

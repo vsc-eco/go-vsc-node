@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/hive_blocks"
+	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 )
 
@@ -53,22 +54,6 @@ func CalculateSlotInfo(blockHeight uint64) struct {
 	}
 }
 
-func CalculateRoundInfo(blockHeight uint64) struct {
-	StartHeight uint64
-	EndHeight   uint64
-} {
-	mod3 := blockHeight % CONSENSUS_SPECS.ScheduleLength
-
-	pastHeight := blockHeight - mod3
-	return struct {
-		StartHeight uint64
-		EndHeight   uint64
-	}{
-		StartHeight: pastHeight,
-		EndHeight:   pastHeight + CONSENSUS_SPECS.ScheduleLength,
-	}
-}
-
 type Witness struct {
 	Account string
 	Key     string
@@ -81,7 +66,7 @@ type WitnessSlot struct {
 
 func GenerateSchedule(blockHeight uint64, witnessList []Witness, seed [32]byte) []WitnessSlot {
 
-	roundInfo := CalculateRoundInfo(blockHeight)
+	roundInfo := vscBlocks.CalculateRoundInfo(blockHeight)
 
 	slots := (roundInfo.EndHeight - roundInfo.StartHeight) / CONSENSUS_SPECS.SlotLength
 

@@ -10,6 +10,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
 	agg "vsc-node/modules/aggregate"
+	"vsc-node/modules/common"
 
 	"github.com/robfig/cron/v3"
 	"github.com/vsc-eco/hivego"
@@ -21,7 +22,7 @@ import (
 // ===== types =====
 
 type announcementsManager struct {
-	conf         *AnnouncementsConfig
+	conf         *common.IdentityConfig
 	cron         *cron.Cron
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -41,7 +42,7 @@ var _ agg.Plugin = &announcementsManager{}
 
 // ===== constructor =====
 
-func New(client HiveRpcClient, conf *AnnouncementsConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator) (*announcementsManager, error) {
+func New(client HiveRpcClient, conf *common.IdentityConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator) (*announcementsManager, error) {
 
 	// sanity checks
 	if conf == nil {
@@ -159,7 +160,7 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 	}
 
 	// get the account's memo key based on their account username
-	accounts, err := a.client.GetAccount([]string{a.conf.Get().Username})
+	accounts, err := a.client.GetAccount([]string{a.conf.Get().HiveUsername})
 	if err != nil {
 		return fmt.Errorf("failed to get account: %w", err)
 	}
@@ -239,7 +240,7 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 		log.Println("error marshaling JSON:", err)
 	}
 
-	op := a.hiveCreator.UpdateAccount(a.conf.Get().Username, nil, nil, nil, string(jsonBytes), memoKey)
+	op := a.hiveCreator.UpdateAccount(a.conf.Get().HiveUsername, nil, nil, nil, string(jsonBytes), memoKey)
 
 	tx := a.hiveCreator.MakeTransaction([]hivego.HiveOperation{op})
 

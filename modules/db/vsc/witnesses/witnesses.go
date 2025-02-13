@@ -160,9 +160,16 @@ const maxSignedDiff = (3 * 24 * 60 * 20)
 func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64) ([]Witness, error) {
 	ctx := context.Background()
 
+	var gte uint64
+	if bh > maxSignedDiff {
+		gte = bh - maxSignedDiff
+	} else {
+		gte = 0
+	}
+
 	distinctAccounts, err := w.Distinct(ctx, "account", bson.M{
 		"height": bson.M{
-			"$gte": bh - maxSignedDiff,
+			"$gte": gte,
 			"$lt":  bh,
 		},
 	})
@@ -177,7 +184,7 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64) ([]Witness, error) {
 	}})
 	cursor, err := w.Find(ctx, bson.M{
 		"height": bson.M{
-			"$gte": bh - maxSignedDiff,
+			"$gte": gte,
 			"$lt":  bh,
 		},
 
@@ -198,6 +205,7 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64) ([]Witness, error) {
 
 	//TODO: add filtering options equivalent to the old VSC network
 
+	fmt.Println("Witnesses at block height", witnesses)
 	witnessMap := make(map[string]*Witness)
 
 	for _, witness := range witnesses {

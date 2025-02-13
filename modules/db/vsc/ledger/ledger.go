@@ -100,6 +100,9 @@ func (balances *balances) GetBalanceRecord(account string, blockHeight uint64, a
 	})
 
 	if singleResult.Err() != nil {
+		if singleResult.Err().Error() == "mongo: no documents in result" {
+			return 0, 0, nil
+		}
 		return 0, 0, singleResult.Err()
 	}
 	balRecord := BalanceRecord{}

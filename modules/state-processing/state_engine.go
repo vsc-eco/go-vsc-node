@@ -15,10 +15,10 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/transactions"
+	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 
 	"github.com/chebyrash/promise"
-	"github.com/ipfs/go-cid"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -40,6 +40,7 @@ type StateEngine struct {
 	contractState   contracts.ContractState
 	txDb            transactions.Transactions
 	hiveBlocks      hive_blocks.HiveBlocks
+	vscBlocks       vscBlocks.VscBlocks
 	interestClaimDb ledgerDb.InterestClaims
 
 	//Nonce map similar to what we use before
@@ -53,7 +54,9 @@ type StateEngine struct {
 
 	LedgerExecutor *LedgerExecutor
 
-	TxBatch []any
+	TxBatch []VSCTransaction
+
+	slotStatus *SlotStatus
 
 	BlockHeight int
 }
@@ -102,7 +105,7 @@ func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64) {
 // Gets ranomized schedule of witnesses
 // Uses a different PRNG variant from the original used in JS VSC
 // Not aiming for exact replica
-func (se *StateEngine) getSchedule(slotHeight uint64) []WitnessSlot {
+func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 	lastElection, err := se.electionDb.GetElectionByHeight(slotHeight)
 
 	if err != nil {
@@ -123,7 +126,7 @@ func (se *StateEngine) getSchedule(slotHeight uint64) []WitnessSlot {
 
 	//Use the slot height to calculate round start and finish.
 	//Slot height is consistent.
-	roundInfo := CalculateRoundInfo(slotHeight)
+	roundInfo := vscBlocks.CalculateRoundInfo(slotHeight)
 
 	randBlock := roundInfo.StartHeight - 1
 
@@ -167,7 +170,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 	slotInfo := CalculateSlotInfo(blockInfo.BlockHeight)
 
-	schedule := se.getSchedule(slotInfo.StartHeight)
+	schedule := se.GetSchedule(slotInfo.StartHeight)
 
 	//Select current slot as per consensus algorithm
 	var witnessSlot WitnessSlot
@@ -249,6 +252,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				// amount, _ := op.Value["amount"].(map[string]interface{})["amount"].(int64)
 
 				if op.Value["to"] == "vsc.gateway" {
+
+					// fmt.Println("Registering deposit!")
 					se.LedgerExecutor.Deposit(Deposit{
 						Id:     tx.TransactionID,
 						Asset:  token,
@@ -323,23 +328,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				} else if cj.Id == "vsc.propose_block" {
 					//Main Pipeline
 
-					rawJson := map[string]interface{}{}
-					json.Unmarshal(cj.Json, &rawJson)
-					parsedTx := TxProposeBlock{
-						Self: txSelf,
-						SignedBlock: SignedBlockHeader{
-							UnsignedBlockHeader: UnsignedBlockHeader{
-								Block: cid.MustParse(rawJson["signed_block"].(map[string]interface{})["block"].(string)),
-							},
-							Signature: dids.SerializedCircuit{
-								BitVector: rawJson["signed_block"].(map[string]interface{})["signature"].(map[string]interface{})["bv"].(string),
-								Signature: rawJson["signed_block"].(map[string]interface{})["signature"].(map[string]interface{})["sig"].(string),
-							},
-						},
-					}
-					json.Unmarshal(cj.Json, &parsedTx)
-
-					vscTx = parsedTx
 				} else if cj.Id == "vsc.election_result" {
 					parsedTx := TxElectionResult{
 						Self: txSelf,
@@ -354,12 +342,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					json.Unmarshal(cj.Json, &parsedTx)
 
 					vscTx = parsedTx
+				} else if cj.Id == "vsc.withdraw" {
+					continue
 				} else {
 					//Unrecognized TX
 					continue
 				}
 
-				fmt.Println("Executing se", cj.Id)
+				// fmt.Println("Executing se", cj.Id)
 				if cj.Id == "vsc.election_result" {
 					fmt.Println(tx)
 				}
@@ -372,6 +362,168 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			}
 		}
 	}
+}
+
+// Implementation note:
+// You might be wondering why there is a side batch of TXs which awaits new block processing
+// This is done to prevent needing to scan the transaction pool upon node restart
+// Instead, this scans the blocks that have been indexed to get the correct state
+// However, if we did the original approach of constant execution of hive transactions...
+// ...even if no VSC block, that would result in needing scan blocks before the last VSC block to get the correct state
+// Even in that scenario, we would still need to scan backwards to get the "wet" state of the stateEngine
+// In other words, it adds complexity to the state engine while being less efficient.
+// This model is more efficient and best yet, it prevents MEV potential by locking the block execution time to the witness slot.
+// Nice right? No front-running!
+func (se *StateEngine) ProcessBlockSkipRow(block hive_blocks.HiveBlock) {
+	blockInfo := struct {
+		BlockHeight uint64
+		BlockId     string
+		Timestamp   string
+	}{
+		BlockHeight: block.BlockNumber,
+		BlockId:     block.BlockID,
+		Timestamp:   block.Timestamp,
+	}
+
+	//What is active slot?
+	// bh = 5
+	// 0 - 10
+	// prev blk = 1,
+	slotInfo := CalculateSlotInfo(block.BlockNumber)
+	if se.slotStatus == nil {
+		// block, _ := se.vscBlocks.GetBlockByHeight(block.BlockNumber)
+
+		// if block == nil {
+		// 	se.slotStatus = &SlotStatus{
+		// 		SlotHeight: slotInfo.StartHeight,
+		// 		Done:       false,
+		// 	}
+		// } else {
+		// 	se.slotStatus = &SlotStatus{
+		// 		SlotHeight: slotInfo.StartHeight,
+		// 		Done:       true,
+		// 	}
+		// }
+
+		se.slotStatus = &SlotStatus{
+			SlotHeight: slotInfo.StartHeight,
+			Done:       false,
+		}
+	} else {
+		if se.slotStatus.SlotHeight != slotInfo.StartHeight {
+			se.ExecuteBatch()
+			se.slotStatus = &SlotStatus{
+				SlotHeight: slotInfo.StartHeight,
+				Done:       false,
+			}
+		}
+	}
+
+	for opIdx, tx := range block.Transactions {
+		//We are only looking for custom_json transactions
+
+		//Start by looking for block production
+		op := tx.Operations[0]
+
+		if op.Type == "custom_json" {
+			// fmt.Println(op.Type)
+			opVal := op.Value
+			cj := CustomJson{
+				Id:                   opVal["id"].(string),
+				RequiredAuths:        arrayToStringArray(opVal["required_auths"]),
+				RequiredPostingAuths: arrayToStringArray(opVal["required_posting_auths"]),
+				Json:                 []byte(opVal["json"].(string)),
+			}
+
+			txSelf := TxSelf{
+				BlockHeight:   blockInfo.BlockHeight,
+				BlockId:       blockInfo.BlockId,
+				Timestamp:     blockInfo.Timestamp,
+				Index:         tx.Index,
+				OpIndex:       opIdx,
+				TxId:          tx.TransactionID,
+				RequiredAuths: cj.RequiredAuths,
+			}
+			if cj.Id == "vsc.produce_block" {
+				//Process block production
+				rawJson := map[string]interface{}{}
+				json.Unmarshal(cj.Json, &rawJson)
+				// parsedTx := TxProposeBlock{}
+				// json.Unmarshal(cj.Json, &parsedTx)
+
+				// parsedTx.ExecuteTx(se)
+
+				schedule := se.GetSchedule(slotInfo.StartHeight)
+
+				var scheduleSlot WitnessSlot
+
+				for _, slot := range schedule {
+					if slot.SlotHeight == slotInfo.StartHeight {
+						scheduleSlot = slot
+						break
+					}
+				}
+
+				// fmt.Println("cj.RequiredAuths[0], scheduleSlot.Account ", cj.RequiredAuths[0], scheduleSlot.Account)
+				if cj.RequiredAuths[0] == scheduleSlot.Account {
+					fmt.Println("Accepted block!", "txId="+txSelf.TxId, "from="+cj.RequiredAuths[0], "bh="+strconv.Itoa(int(txSelf.BlockHeight)))
+					se.slotStatus.Done = true
+					se.slotStatus.Producer = cj.RequiredAuths[0]
+
+					rawJson := map[string]interface{}{}
+					json.Unmarshal(cj.Json, &rawJson)
+
+					fmt.Println("TxProposeBlock", string(cj.Json))
+
+					parsedBlock := TxProposeBlock{
+						Self: txSelf,
+						SignedBlock: SignedBlockHeader{
+							UnsignedBlockHeader: UnsignedBlockHeader{},
+							Signature:           dids.SerializedCircuit{},
+						},
+					}
+					json.Unmarshal(cj.Json, &parsedBlock)
+
+					jsonSerialized, _ := json.Marshal(parsedBlock)
+					fmt.Println("parsedBlock", string(jsonSerialized))
+
+					validated := parsedBlock.Validate(se)
+					if validated {
+						parsedBlock.ExecuteTx(se)
+					}
+				}
+			}
+			if cj.Id == "vsc.withdraw" {
+				var vscTx VSCTransaction
+				parsedTx := TxVSCWithdraw{
+					Self: txSelf,
+				}
+				json.Unmarshal(cj.Json, &parsedTx)
+
+				vscTx = &parsedTx
+				se.TxBatch = append(se.TxBatch, vscTx)
+			}
+		}
+	}
+	// fmt.Println("potentialTx", se.TxBatch)
+	if se.slotStatus.Done {
+		se.ExecuteBatch()
+	}
+}
+
+func (se *StateEngine) ExecuteBatch() {
+	for _, tx := range se.TxBatch {
+		txSelf := tx.TxSelf()
+		fmt.Println("Batch executing", txSelf.BlockHeight, txSelf.TxId)
+		tx.ExecuteTx(se)
+	}
+
+	se.TxBatch = make([]VSCTransaction, 0)
+}
+
+// Execute block within state engine as it is very important
+func (se *StateEngine) ExecuteBlock(blockContent BlockContent) {
+
 }
 
 func (se *StateEngine) SaveBlockHeight(lastBlk uint64) uint64 {
@@ -405,6 +557,7 @@ func New(da *DataLayer.DataLayer,
 	balanceDb ledgerDb.Balances,
 	hiveBlocks hive_blocks.HiveBlocks,
 	interestClaims ledgerDb.InterestClaims,
+	vscBlocks vscBlocks.VscBlocks,
 ) *StateEngine {
 	return &StateEngine{
 		da: da,
@@ -415,6 +568,7 @@ func New(da *DataLayer.DataLayer,
 		contractDb:      contractDb,
 		contractState:   contractStateDb,
 		hiveBlocks:      hiveBlocks,
+		vscBlocks:       vscBlocks,
 		interestClaimDb: interestClaims,
 		txDb:            txDb,
 

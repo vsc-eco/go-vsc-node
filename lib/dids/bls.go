@@ -111,7 +111,7 @@ func (d BlsDID) Identifier() *BlsPubKey {
 	// remove indicator bytes
 	pubKeyBytes := data[2:]
 
-	fmt.Println("PublicKey bytes", len(pubKeyBytes), hex.EncodeToString(pubKeyBytes))
+	fmt.Println("PublicKey bytes", len(pubKeyBytes), d.String())
 	// decompress the pub key
 	pubKey := new(BlsPubKey)
 	if pubKey.Deserialize((*[48]byte)(pubKeyBytes)) != nil {
@@ -484,7 +484,7 @@ func (b *BlsCircuit) AggregatedSignature() (string, error) {
 		return "", fmt.Errorf("aggregated signature not generated")
 	}
 	aggSigBytes := b.aggSigs.Serialize()
-	aggSigEncoded := base64.StdEncoding.EncodeToString(aggSigBytes[:])
+	aggSigEncoded := base64.RawURLEncoding.EncodeToString(aggSigBytes[:])
 	return aggSigEncoded, nil
 }
 

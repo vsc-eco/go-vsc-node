@@ -3,6 +3,7 @@ package vstream
 import (
 	"vsc-node/lib/utils"
 	"vsc-node/modules/db/vsc/hive_blocks"
+	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/chebyrash/promise"
 )
@@ -11,6 +12,8 @@ import (
 
 type VStream struct {
 	ticks map[string]*BlockTick
+
+	StateEngine *stateEngine.StateEngine
 }
 
 //Make a module!
@@ -35,7 +38,15 @@ func (v *VStream) RegisterBlockTick(name string, funck BTFunc, async bool) {
 }
 
 func (v *VStream) ProcessBlock(blk hive_blocks.HiveBlock) {
-
+	for _, tick := range v.ticks {
+		if tick.async {
+			go tick.funck(blk.BlockNumber)
+		} else {
+			tick.funck(blk.BlockNumber)
+		}
+	}
+	v.StateEngine.ProcessBlock(blk)
+	v.StateEngine.ProcessBlockSkipRow(blk)
 }
 
 type BlockTick struct {
@@ -45,8 +56,9 @@ type BlockTick struct {
 
 type BTFunc func(bh uint64)
 
-func New() *VStream {
+func New(se *stateEngine.StateEngine) *VStream {
 	return &VStream{
-		ticks: make(map[string]*BlockTick),
+		StateEngine: se,
+		ticks:       make(map[string]*BlockTick),
 	}
 }

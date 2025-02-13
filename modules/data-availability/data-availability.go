@@ -2,7 +2,7 @@ package data_availability
 
 import (
 	a "vsc-node/modules/aggregate"
-	"vsc-node/modules/announcements"
+	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
 
 	"github.com/chebyrash/promise"
@@ -11,12 +11,12 @@ import (
 type DataAvailability struct {
 	p2p     *libp2p.P2PServer
 	service libp2p.PubSubService[p2pMessage]
-	conf    announcements.AnnouncementsConfig
+	conf    common.IdentityConfig
 }
 
 var _ a.Plugin = (*DataAvailability)(nil)
 
-func New(p2p *libp2p.P2PServer, conf announcements.AnnouncementsConfig) *DataAvailability {
+func New(p2p *libp2p.P2PServer, conf common.IdentityConfig) *DataAvailability {
 	return &DataAvailability{
 		p2p:  p2p,
 		conf: conf,

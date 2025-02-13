@@ -36,8 +36,6 @@ func New[T any](defaultValue T, dataDir *string) *Config[T] {
 		dataDir = &CONFIG_DIR
 	}
 
-	fmt.Println("dataDir", *dataDir)
-
 	return &Config[T]{
 		defaultValue: defaultValue,
 		DataDir:      *dataDir,
@@ -126,7 +124,6 @@ func (c *Config[T]) Get() T {
 }
 
 func (c *Config[T]) Update(updater func(*T)) error {
-	fmt.Println("Updating ", c.value)
 	temp := c.value
 	updater(&temp)
 	b, err := json.MarshalIndent(temp, "", "  ")

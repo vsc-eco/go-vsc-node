@@ -8,10 +8,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/hive/streamer"
@@ -161,6 +162,7 @@ type MockReader struct {
 	LastBlock       uint64
 
 	lastTs time.Time
+	mutex  *sync.Mutex
 }
 
 // Mines empty blocks to simulate empty activity
@@ -195,6 +197,7 @@ func (mr *MockReader) StartRealtime() {
 }
 
 func (mr *MockReader) witnessBlock() {
+	mr.mutex.Lock()
 	ts := mr.lastTs.Add(3 * time.Second)
 
 	bn := mr.LastBlock + 1
@@ -219,24 +222,27 @@ func (mr *MockReader) witnessBlock() {
 		Timestamp:    ts.Format("2006-01-02T15:04:05Z"),
 	}
 
-	fmt.Println(hb)
-
 	if mr.ProcessFunction != nil {
-		mr.ProcessFunction(hb)
+		go mr.ProcessFunction(hb)
 	}
 
 	mr.lastTs = ts
 	mr.LastBlock = mr.LastBlock + 1
 	mr.Mempool = make([]hive_blocks.Tx, 0)
+	mr.mutex.Unlock()
 }
 
 func (mr *MockReader) IngestTx(tx hive_blocks.Tx) {
+	mr.mutex.Lock()
 	tx.Index = len(mr.Mempool) + 1
 	mr.Mempool = append(mr.Mempool, tx)
+	mr.mutex.Unlock()
 }
 
 func NewMockReader() *MockReader {
-	return &MockReader{}
+	return &MockReader{
+		mutex: &sync.Mutex{},
+	}
 }
 
 // Mock Transaction creator
@@ -355,30 +361,33 @@ func (mc *MockCreator) ClaimInterest(account string, amount int) TxConfirmation 
 	return mc.ingestTx(tx)
 }
 
-func (mc *MockCreator) BroadcastOps(ops []hivego.Operation) TxConfirmation {
+func (mc *MockCreator) BroadcastOps(ops []hivego.Operation, txId string) TxConfirmation {
 	tx := hive_blocks.Tx{
 		Operations: ops,
 	}
 
-	return mc.ingestTx(tx)
+	return mc.ingestTx(tx, txId)
 }
 
 func (mc *MockCreator) BroadcastTx() {
 	//Figure this out
 }
 
-func (mc *MockCreator) ingestTx(tx hive_blocks.Tx) TxConfirmation {
+func (mc *MockCreator) ingestTx(tx hive_blocks.Tx, txId ...string) TxConfirmation {
 
 	bbytes, _ := json.Marshal(tx)
 
-	txId := mc.hashTx(bbytes)
-
-	tx.TransactionID = txId
+	if len(txId) > 0 {
+		tx.TransactionID = txId[0]
+	} else {
+		txId := mc.hashTx(bbytes)
+		tx.TransactionID = txId
+	}
 
 	mc.Mr.IngestTx(tx)
 
 	return TxConfirmation{
-		Id: txId,
+		Id: tx.TransactionID,
 	}
 }
 
@@ -399,4 +408,18 @@ func (mc *MockCreator) hashTx(bbytes []byte) string {
 
 type TxConfirmation struct {
 	Id string
+}
+
+type SlotStatus struct {
+	Done       bool
+	SlotHeight uint64
+	Producer   string
+}
+
+func MakeTxId(TxId string, opIdx int) string {
+	if opIdx == 0 {
+		return TxId
+	} else {
+		return TxId + "-" + strconv.Itoa(opIdx)
+	}
 }

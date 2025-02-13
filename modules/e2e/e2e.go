@@ -2,17 +2,23 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/utils"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc"
+	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/witnesses"
 	election_proposer "vsc-node/modules/election-proposer"
+	"vsc-node/modules/vstream"
 
 	a "vsc-node/modules/aggregate"
 
 	"github.com/chebyrash/promise"
+	"github.com/vsc-eco/hivego"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -71,9 +77,15 @@ type E2ERunner struct {
 	Datalayer        *datalayer.DataLayer
 	Witnesses        witnesses.Witnesses
 	ElectionProposer election_proposer.ElectionProposer
+
+	BlockHeight uint64
+
+	VStream    *vstream.VStream
+	BlockEvent chan uint64
 }
 
 func (e2e *E2ERunner) Init() error {
+	e2e.VStream.RegisterBlockTick("e2e.runner", e2e.BlockTick, true)
 	return nil
 }
 
@@ -100,12 +112,27 @@ func (e2e *E2ERunner) SetSteps(steps []func() error) {
 
 func (e2e *E2ERunner) Wait(blocks uint64) func() error {
 	return func() error {
+
+		bh := e2e.BlockHeight + blocks
+
+		for {
+			bhx := <-e2e.BlockEvent
+			if bhx >= bh {
+				break
+			}
+		}
+
+		// for e2e.BlockHeight < bh {
+		// 	time.Sleep(500 * time.Millisecond)
+		// }
 		return nil
 	}
 }
 
 func (e2e *E2ERunner) WaitToStart() func() error {
 	return func() error {
+		//Wait till first block is produced
+		<-e2e.BlockEvent
 		return nil
 	}
 }
@@ -118,10 +145,77 @@ func (e2e *E2ERunner) Sleep(seconds uint64) func() error {
 }
 
 // Creates and broadcasts a mock election using predefined list of validator user names
-func (e2e *E2ERunner) BroadcastMockElection(block uint64) func() error {
+func (e2e *E2ERunner) BroadcastMockElection(witnessListS []string) func() error {
 	return func() error {
-		return e2e.ElectionProposer.HoldElection(block)
+		da := e2e.Datalayer
+		members := []elections.ElectionMember{}
+		witnessList := []witnesses.Witness{}
+		//TODO detect current height
+		for _, wStr := range witnessListS {
+			w, err := e2e.Witnesses.GetWitnessAtHeight(wStr, nil)
+			if err != nil {
+				continue
+			}
+			witnessList = append(witnessList, *w)
+		}
+
+		var weights []uint64
+		//Finish this when I can!
+		for _, w := range witnessList {
+			var key string
+			for _, dk := range w.DidKeys {
+				if dk.Type == "consensus" {
+					key = dk.Key
+					break
+				}
+			}
+			if key == "" {
+				//Don't do witness
+				continue
+			}
+			members = append(members, elections.ElectionMember{
+				Key:     key,
+				Account: w.Account,
+			})
+			weights = append(weights, 10)
+		}
+		fmt.Println("len(members)", len(members))
+		fmt.Println("members", members)
+		if len(members) == 0 {
+			panic("No members found")
+		}
+		electionData := elections.ElectionData{
+			ElectionCommonInfo: elections.ElectionCommonInfo{
+				Epoch: 0,
+				NetId: common.NETWORK_ID,
+			},
+			ElectionDataInfo: elections.ElectionDataInfo{
+				Weights:         weights,
+				Members:         members,
+				ProtocolVersion: 0,
+			},
+		}
+		cid, err := da.PutObject(electionData)
+		if err != nil {
+			return err
+		}
+		electionHeader := map[string]interface{}{
+			"epoch":  0,
+			"data":   cid.String(),
+			"net_id": common.NETWORK_ID,
+		}
+		bbyes, _ := json.Marshal(electionHeader)
+		op := e2e.HiveCreator.CustomJson([]string{"e2e.mocks"}, []string{}, "vsc.election_result", string(bbyes))
+		tx := e2e.HiveCreator.MakeTransaction([]hivego.HiveOperation{op})
+		e2e.HiveCreator.Broadcast(tx)
+
+		return nil
 	}
+}
+
+func (e2e *E2ERunner) BlockTick(bh uint64) {
+	e2e.BlockEvent <- bh
+	e2e.BlockHeight = bh
 }
 
 // Produces X number of mock blocks

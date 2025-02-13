@@ -9,6 +9,7 @@ import (
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
+	"vsc-node/modules/common"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vsc-eco/hivego"
@@ -41,9 +42,9 @@ func (m *mockHiveRpcClient) UpdateAccount(account string, owner *hivego.Auths, a
 func TestImmediateExecution(t *testing.T) {
 	// create new clients
 	hiveRpcClient := &mockHiveRpcClient{}
-	conf := announcements.NewAnnouncementsConfig()
+	conf := common.NewIdentityConfig()
 
-	wif := conf.Get().AnnouncementPrivateWif
+	wif := conf.Get().HiveActiveKey
 	keypair, _ := hivego.KeyPairFromWif(wif)
 
 	txCreator := hive.LiveTransactionCreator{
@@ -74,8 +75,8 @@ func TestImmediateExecution(t *testing.T) {
 func TestCronExecutions(t *testing.T) {
 	// create new clients
 	hiveRpcClient := &mockHiveRpcClient{}
-	conf := announcements.NewAnnouncementsConfig()
-	wif := conf.Get().AnnouncementPrivateWif
+	conf := common.NewIdentityConfig()
+	wif := conf.Get().HiveActiveKey
 	keypair, _ := hivego.KeyPairFromWif(wif)
 
 	txCreator := hive.LiveTransactionCreator{
@@ -110,7 +111,7 @@ func TestCronExecutions(t *testing.T) {
 func TestStopAnnouncer(t *testing.T) {
 	// create new clients
 	hiveRpcClient := &mockHiveRpcClient{}
-	conf := announcements.NewAnnouncementsConfig()
+	conf := common.NewIdentityConfig()
 
 	txCreator := hive.LiveTransactionCreator{
 		TransactionBroadcaster: hive.TransactionBroadcaster{
@@ -146,7 +147,7 @@ func TestInvalidAnnouncementsFrequencySetup(t *testing.T) {
 	// create new clients
 
 	hiveRpcClient := &mockHiveRpcClient{}
-	conf := announcements.NewAnnouncementsConfig()
+	conf := common.NewIdentityConfig()
 	_, err := announcements.New(hiveRpcClient, &conf, time.Second*0, nil)
 	assert.Error(t, err)
 	_, err = announcements.New(hiveRpcClient, &conf, time.Second*-1, nil)
@@ -158,7 +159,7 @@ func TestInvalidAnnouncementsFrequencySetup(t *testing.T) {
 }
 
 func TestInvalidRpcClient(t *testing.T) {
-	conf := announcements.NewAnnouncementsConfig()
+	conf := common.NewIdentityConfig()
 	_, err := announcements.New(nil, &conf, time.Second*2, nil)
 	assert.Error(t, err)
 }

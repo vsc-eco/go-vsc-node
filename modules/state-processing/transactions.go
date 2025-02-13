@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
@@ -37,6 +39,10 @@ type TxCreateContract struct {
 	Owner        string       `json:"owner"`
 	Description  string       `json:"description"`
 	StorageProof StorageProof `json:"storage_proof"`
+}
+
+func (tx TxCreateContract) TxSelf() TxSelf {
+	return tx.Self
 }
 
 const CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT = 84162592
@@ -143,6 +149,10 @@ type TxElectionResult struct {
 	Signature   dids.SerializedCircuit `json:"signature"`
 }
 
+func (tx TxElectionResult) TxSelf() TxSelf {
+	return tx.Self
+}
+
 // ProcessTx implements VSCTransaction.
 func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 	// ctx := context.Background()
@@ -151,11 +161,11 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 
 		if electionResult == nil {
 			parsedCid, err := cid.Parse(tx.Data)
-			fmt.Println("Cid data", tx.Data, err, "Tx data", tx)
+			// fmt.Println("Cid data", tx.Data, err, "Tx data", tx)
 			if err != nil {
-				// return
+				return
 			}
-			fmt.Println("Hit here 2")
+			// fmt.Println("Hit here 2")
 			node, _ := se.da.Get(parsedCid, nil)
 
 			dagNode, _ := dagCbor.Decode((*node).RawData(), mh.SHA2_256, -1)
@@ -169,7 +179,8 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 			elecResult.NetId = tx.NetId
 			elecResult.Data = tx.Data
 
-			fmt.Println("Hit here 3")
+			fmt.Println("TxElection bytes", string(bbytes))
+			// fmt.Println("Hit here 3")
 			//Store
 			se.electionDb.StoreElection(elecResult)
 		} else {
@@ -302,18 +313,20 @@ type TxProposeBlock struct {
 	Self TxSelf
 
 	//ReplayId should be deprecated soon
-	ReplayId    int               `json:"replay_id"`
 	NetId       string            `json:"net_id"`
 	SignedBlock SignedBlockHeader `json:"signed_block"`
 }
 
-// ProcessTx implements VSCTransaction.
-func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
+func (tx TxProposeBlock) TxSelf() TxSelf {
+	return tx.Self
+}
+
+func (t TxProposeBlock) Validate(se *StateEngine) bool {
 	elecResult, err := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
 	fmt.Println("Election Epoch", elecResult.Epoch)
 	if err != nil {
 		//Cannot process block due to missing election
-		return
+		return false
 	}
 	fmt.Println("Proposer!", elecResult.Proposer)
 	memberDids := make([]dids.BlsDID, 0)
@@ -331,89 +344,100 @@ func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
 			"prevb": t.SignedBlock.Headers.PrevBlock,
 		},
 		"merkle_root": t.SignedBlock.MerkleRoot,
-		"block":       cid.MustParse(t.SignedBlock.Block),
+		"block":       t.SignedBlock.Block,
 	}
+
 	dag, _ := dagCbor.WrapObject(blockHeader, mh.SHA2_256, -1)
+	cid, _ := se.da.HashObject(blockHeader)
 
-	circuit, _ := dids.DeserializeBlsCircuit(t.SignedBlock.Signature, memberDids, dag.Cid())
+	fmt.Println("validate dag.Cid()", dag.Cid(), cid)
+	circuit, err := dids.DeserializeBlsCircuit(t.SignedBlock.Signature, memberDids, *cid)
 
+	fmt.Println("circuit, err", err)
 	verified, _, _ := circuit.Verify()
 
 	fmt.Println("br - block range", t.SignedBlock.Headers.Br, t.Self.BlockHeight)
 
 	fmt.Println("Verified", verified)
-	if t.SignedBlock.Headers.Br[1]+CONSENSUS_SPECS.SlotLength <= t.Self.BlockHeight {
+	fmt.Println("TxProposeBlock", t.SignedBlock)
+	if uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength <= t.Self.BlockHeight {
 		fmt.Println("Block is too far in the future")
-		return
+		return false
 	}
-	if verified {
-		signingScore, total := elections.CalculateSigningScore(*circuit, *elecResult)
-		fmt.Println("signingScore, total", signingScore, total, signingScore > ((total*2)/3))
 
-		if signingScore > ((total * 2) / 3) {
-			//PASS
-			fmt.Println("Block Has passed inspection! Approved!")
-			// blockCid := cid.MustParse(t.SignedBlock.Block)
-			fmt.Println("Getting Block info!", t.SignedBlock.Block, t.Self.TxId)
+	if !verified {
+		return false
+	}
 
-			node, _ := se.da.GetDag(t.SignedBlock.Block)
-			jsonBytes, _ := node.MarshalJSON()
-			blockContent := BlockContent{}
-			json.Unmarshal(jsonBytes, &blockContent)
+	signingScore, total := elections.CalculateSigningScore(*circuit, *elecResult)
+	fmt.Println("signingScore, total", signingScore, total, signingScore > ((total*2)/3))
+	//PASS
+	fmt.Println("Block Has passed inspection! Approved!")
+	// blockCid := cid.MustParse(t.SignedBlock.Block)
+	fmt.Println("Getting Block info!", t.SignedBlock.Block, t.Self.TxId)
 
-			//At this point of the process a call should be made to state engine
-			//To kick off finalization of the inflight state
-			//Such as transfers, contract calls, etc
-			//New TXs should be indexed at this point
-			for idx, tx := range blockContent.Transactions {
-				//Things to Process
-				// - Contract execution
-				// - Transfers, withdraws
-				// - New TXs (repeat process in state engine)
-				//Note: VSC txs can be processed immediately once anchored on chain
-				//Thus: TX confirmation is 30s maximum
-				//Author: @vaultec81
+	return signingScore > ((total * 2) / 3)
+}
 
-				if tx.Type == 2 {
-					continue
-				}
+// ProcessTx implements VSCTransaction.
+func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
+	blockCid, _ := cid.Parse(t.SignedBlock.Block)
+	node, _ := se.da.GetDag(blockCid)
+	jsonBytes, _ := node.MarshalJSON()
+	blockContent := BlockContent{}
+	json.Unmarshal(jsonBytes, &blockContent)
 
-				fmt.Println("Decoding TX", tx.Id)
+	txsToInjest := make([]VSCTransaction, 0)
+	//At this point of the process a call should be made to state engine
+	//To kick off finalization of the inflight state
+	//Such as transfers, contract calls, etc
+	//New TXs should be indexed at this point
+	for idx, tx := range blockContent.Transactions {
+		//Things to Process
+		// - Contract execution
+		// - Transfers, withdraws
+		// - New TXs (repeat process in state engine)
+		//Note: VSC txs can be processed immediately once anchored on chain
+		//Thus: TX confirmation is 30s maximum
+		//Author: @vaultec81
 
-				txContainer := tx.Decode(se.da)
-				fmt.Println(txContainer, txContainer.Type())
+		if tx.Type == 2 {
+			continue
+		}
 
-				if txContainer.Type() == "transaction" {
-					//Note: sig verification has already happened
-					tx := txContainer.AsTransaction()
-					fmt.Println(tx)
+		txContainer := tx.Decode(se.da)
 
-					fmt.Println("Ingesting")
-					tx.Ingest(se, TxSelf{
-						BlockId:     t.Self.BlockId,
-						BlockHeight: t.Self.BlockHeight,
-						Index:       t.Self.Index,
-						OpIndex:     idx,
-					})
+		if txContainer.Type() == "transaction" {
+			//Note: sig verification has already happened
+			tx := txContainer.AsTransaction()
+			fmt.Println(tx)
 
-				} else if txContainer.Type() == "output" {
-					contractOutput := txContainer.AsContractOutput()
+			fmt.Println("Ingesting")
+			tx.Ingest(se, TxSelf{
+				BlockId:     t.Self.BlockId,
+				BlockHeight: t.Self.BlockHeight,
+				Index:       t.Self.Index,
+				OpIndex:     idx,
+			})
 
-					// jsonBlsaz, _ := json.Marshal(contractOutput)
-					// fmt.Println(contractOutput, string(jsonBlsaz))
+			txsToInjest = append(txsToInjest, tx)
 
-					contractOutput.Ingest(se, TxSelf{
-						BlockId:     t.Self.BlockId,
-						BlockHeight: t.Self.BlockHeight,
-						TxId:        t.Self.TxId,
-					})
-				} else if txContainer.Type() == "events" {
-					txContainer.AsEvents()
-				}
-			}
+		} else if txContainer.Type() == "output" {
+			contractOutput := txContainer.AsContractOutput()
+
+			// jsonBlsaz, _ := json.Marshal(contractOutput)
+			// fmt.Println(contractOutput, string(jsonBlsaz))
+
+			contractOutput.Ingest(se, TxSelf{
+				BlockId:     t.Self.BlockId,
+				BlockHeight: t.Self.BlockHeight,
+				TxId:        t.Self.TxId,
+			})
+		} else if txContainer.Type() == "events" {
+			txContainer.AsEvents()
 		}
 	}
-
+	se.TxBatch = append(txsToInjest, se.TxBatch...)
 }
 
 type SignedBlockHeader struct {
@@ -425,13 +449,13 @@ type UnsignedBlockHeader struct {
 	Type    string `json:"__t"`
 	Version string `json:"__v"`
 	Headers struct {
-		PrevBlock string    `json:"prevb"`
-		Br        [2]uint64 `json:"br"`
+		PrevBlock *string `json:"prevb"`
+		Br        [2]int  `json:"br"`
 	} `json:"headers"`
 	//Define a potential struct to streamline merkle proofs.
 	//Maybe convert to that struct too
-	MerkleRoot string  `json:"merkle_root"`
-	Block      cid.Cid `json:"block"`
+	MerkleRoot *string `json:"merkle_root"`
+	Block      string  `json:"block"`
 }
 
 type BlockContent struct {
@@ -449,10 +473,11 @@ type BlockContent struct {
 // Reference pointer to the transaction itself
 type BlockTx struct {
 	Id string `json:"id"`
-	Op string `json:"op"`
+	Op string `json:"op,omitempty"`
 	// 1 input
 	// 2 output
 	// 5 anchor
+	// 6 oplog
 
 	Type int `json:"type"`
 }
@@ -484,6 +509,10 @@ type TxVscHive struct {
 	Tx      ITxBody                `json:"tx"`
 }
 
+func (tx TxVscHive) TxSelf() TxSelf {
+	return tx.Self
+}
+
 // ProcessTx implements VSCTransaction.
 func (t TxVscHive) ExecuteTx(se *StateEngine) {
 
@@ -513,11 +542,56 @@ type TxVSCTransfer struct {
 }
 
 type TxVSCWithdraw struct {
+	Self TxSelf
+
+	NetId string `json:"net_id"`
+
 	From   string `json:"from"`
 	To     string `json:"to"`
-	Amount string `json:"amt"`
-	Token  string `json:"tk"`
+	Amount int64  `json:"amount"`
+	Token  string `json:"token"`
 	Memo   string `json:"memo"`
+}
+
+func (tx TxVSCWithdraw) TxSelf() TxSelf {
+	return tx.Self
+}
+
+// Development note:
+// t.From is a slightly different field from t.Self.RequiredAuths[0]
+// It must exist this way for cosigned transaction support.
+func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine) {
+	if t.NetId != common.NETWORK_ID {
+		return
+	}
+	if t.To == "" {
+		return
+	}
+	params := WithdrawParams{
+		Id:     MakeTxId(t.Self.TxId, t.Self.OpIndex),
+		BIdx:   int64(t.Self.Index),
+		OpIdx:  int64(t.Self.OpIndex),
+		To:     t.To,
+		Asset:  t.Token,
+		Memo:   t.Memo,
+		Amount: t.Amount,
+	}
+	if t.From == "" {
+		params.From = "hive:" + t.Self.RequiredAuths[0]
+	} else {
+		params.From = t.From
+	}
+
+	//Verifies
+	if !slices.Contains(t.Self.RequiredAuths, strings.Split(t.From, ":")[1]) {
+		return
+	}
+
+	ledgerResult := se.LedgerExecutor.Withdraw(params)
+
+	fmt.Println("Executed ledgerResult", ledgerResult)
+	fmt.Println("se Oplog", se.LedgerExecutor.Oplog)
+	fmt.Println("se VirtualLedger", se.LedgerExecutor.VirtualLedger)
 }
 
 type TransactionSig struct {
@@ -728,6 +802,20 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, txSelf TxSelf) {
 		RequiredAuths:  tx.Headers.RequiredAuths,
 		Tx:             tx.Tx,
 	})
+
+}
+
+func (tx *OffchainTransaction) ExecuteTx(se *StateEngine) {
+
+}
+
+func (tx *OffchainTransaction) TxSelf() TxSelf {
+	return TxSelf{}
+}
+
+func (tx *OffchainTransaction) ToTransaction() VSCTransaction {
+
+	return nil
 }
 
 // Note: this is functionality different than original implementation
@@ -799,6 +887,7 @@ var _ VSCTransaction = TxCreateContract{}
 
 type VSCTransaction interface {
 	ExecuteTx(se *StateEngine)
+	TxSelf() TxSelf
 }
 
 // More information about the TX

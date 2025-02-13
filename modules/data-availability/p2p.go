@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"vsc-node/lib/dids"
-	"vsc-node/modules/announcements"
+	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
 
 	"github.com/ipfs/go-cid"
@@ -14,7 +14,7 @@ import (
 )
 
 type p2pSpec struct {
-	conf announcements.AnnouncementsConfig
+	conf common.IdentityConfig
 }
 
 type p2pMessageType byte
