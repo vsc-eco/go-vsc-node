@@ -71,12 +71,16 @@ func (e *electionProposer) Init() error {
 
 // Start implements aggregate.Plugin.
 func (e *electionProposer) Start() *promise.Promise[any] {
+	err := e.startP2P()
+	if err != nil {
+		return utils.PromiseReject[any](err)
+	}
 	return utils.PromiseResolve[any](nil)
 }
 
 // Stop implements aggregate.Plugin.
 func (e *electionProposer) Stop() error {
-	return nil
+	return e.stopP2P()
 }
 
 func (e *electionProposer) GenerateElection() (elections.ElectionHeader, elections.ElectionData, error) {
