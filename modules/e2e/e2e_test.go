@@ -40,7 +40,7 @@ import (
 //End to end test environment of VSC network
 
 // 4 nodes minimum for 2/3 consensus minimum
-const NODE_COUNT = 4
+const NODE_COUNT = 9
 
 func TestE2E(t *testing.T) {
 	config.UseMainConfigDuringTests = true
@@ -105,7 +105,7 @@ func TestE2E(t *testing.T) {
 			return nil
 		},
 		r2e.Wait(5),
-		r2e.BroadcastMockElection([]string{"e2e-1", "e2e-2", "e2e-3", "e2e-4"}),
+		r2e.BroadcastMockElection(2),
 		func() error {
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "test transfer")
 			return nil
