@@ -96,7 +96,7 @@ func (e *electionProposer) GenerateElectionAtBlock(blk uint64) (elections.Electi
 		return elections.ElectionHeader{}, elections.ElectionData{}, err
 	}
 	electionResult, err := e.elections.GetElectionByHeight(blk - 1)
-	if err != nil {
+	if err != nil && err != mongo.ErrNoDocuments {
 		return elections.ElectionHeader{}, elections.ElectionData{}, err
 	}
 
@@ -259,7 +259,19 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 
 	e.circuit = circuit
 
-	time.Sleep(20 * time.Second)
+	sig, err := signCid(e.conf, cid)
+	if err != nil {
+		return err
+	}
+	err = e.service.Send(p2pMessageElectionProposal(p2pMessageElectionSignature{sig}))
+	if err != nil {
+		return err
+	}
+
+	for i := 0; i < 20; i++ {
+		time.Sleep(time.Second)
+		// TODO check if necessary voting weight is achieved, and break early
+	}
 
 	finalCircuit, err := circuit.Finalize()
 	if err != nil {

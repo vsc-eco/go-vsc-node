@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"vsc-node/lib/weak"
+	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
+	"weak"
 
+	"github.com/ipfs/go-cid"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 	blsu "github.com/protolambda/bls12-381-util"
@@ -54,12 +56,17 @@ func (s p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.
 	case p2pMessageElectionProposal:
 		return s.ValidateMessage(ctx, from, msg, p2pMessageElectionSignature(parsedMsg))
 	case p2pMessageElectionSignature:
-		proposer := s.electionProposer.Strong()
+		proposer := s.electionProposer.Value()
 		if proposer == nil {
 			return false
 		}
-		res, err := proposer.witnesses.GetWitnessesByPeerId(from.String())
+		fromStr := from.String()
+		res, err := proposer.witnesses.GetWitnessesByPeerId(fromStr)
 		if err != nil {
+			return false
+		}
+
+		if len(res) != 1 {
 			return false
 		}
 
@@ -90,25 +97,9 @@ func (s p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.
 func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
 	switch msg := msg.(type) {
 	case p2pMessageElectionProposal:
-		proposer := s.electionProposer.Strong()
+		proposer := s.electionProposer.Value()
 		if proposer == nil {
 			return fmt.Errorf("election proposer is stopped")
-		}
-
-		blsPrivKey := blsu.SecretKey{}
-		var arr [32]byte
-		blsPrivSeedHex := proposer.conf.Get().BlsPrivKeySeed
-		blsPrivSeed, err := hex.DecodeString(blsPrivSeedHex)
-		if err != nil {
-			return fmt.Errorf("failed to decode bls priv seed: %w", err)
-		}
-		if len(blsPrivSeed) != 32 {
-			return fmt.Errorf("bls priv seed must be 32 bytes")
-		}
-
-		copy(arr[:], blsPrivSeed)
-		if err = blsPrivKey.Deserialize(&arr); err != nil {
-			return fmt.Errorf("failed to deserialize bls priv key: %w", err)
 		}
 
 		electionHeader, _, err := proposer.GenerateElection()
@@ -121,14 +112,14 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 			return err
 		}
 
-		sig := blsu.Sign(&blsPrivKey, cid.Bytes())
-		if sig == nil {
-			return fmt.Errorf("signing failed")
+		sig, err := signCid(proposer.conf, cid)
+		if err != nil {
+			return err
 		}
 
-		send(p2pMessageElectionSignature{*sig})
+		send(p2pMessageElectionSignature{sig})
 	case p2pMessageElectionSignature:
-		proposer := s.electionProposer.Strong()
+		proposer := s.electionProposer.Value()
 		if proposer == nil {
 			return fmt.Errorf("election proposer is stopped")
 		}
@@ -212,4 +203,29 @@ func (s p2pSpec) SerializeMessage(msg p2pMessage) []byte {
 // Topic implements libp2p.PubSubServiceParams.
 func (p2pSpec) Topic() string {
 	return "/vsc/mainnet/election-proposal/v1"
+}
+
+func signCid(conf common.IdentityConfig, cid cid.Cid) (blsu.Signature, error) {
+	blsPrivKey := blsu.SecretKey{}
+	var arr [32]byte
+	blsPrivSeedHex := conf.Get().BlsPrivKeySeed
+	blsPrivSeed, err := hex.DecodeString(blsPrivSeedHex)
+	if err != nil {
+		return blsu.Signature{}, fmt.Errorf("failed to decode bls priv seed: %w", err)
+	}
+	if len(blsPrivSeed) != 32 {
+		return blsu.Signature{}, fmt.Errorf("bls priv seed must be 32 bytes")
+	}
+
+	copy(arr[:], blsPrivSeed)
+	if err = blsPrivKey.Deserialize(&arr); err != nil {
+		return blsu.Signature{}, fmt.Errorf("failed to deserialize bls priv key: %w", err)
+	}
+
+	sig := blsu.Sign(&blsPrivKey, cid.Bytes())
+	if sig == nil {
+		return blsu.Signature{}, fmt.Errorf("signing failed")
+	}
+
+	return *sig, nil
 }
