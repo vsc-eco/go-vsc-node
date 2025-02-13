@@ -72,5 +72,5 @@ func TestGetElectionByHeight(t *testing.T) {
 
 	res, err := e.GetElectionByHeight(43)
 	assert.NoError(t, err)
-	assert.Equal(t, electionMock, *res)
+	assert.Equal(t, electionMock, res)
 }

@@ -112,9 +112,6 @@ func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 		return nil
 	}
 
-	if lastElection == nil {
-		return nil
-	}
 	witnessList := make([]Witness, 0)
 
 	for _, v := range lastElection.Members {

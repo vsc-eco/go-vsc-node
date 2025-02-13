@@ -59,7 +59,7 @@ func (tx TxCreateContract) ExecuteTx(se *StateEngine) {
 			return
 		}
 
-		verified := tx.StorageProof.Verify(*election)
+		verified := tx.StorageProof.Verify(election)
 
 		fmt.Println("Storage proof verify result", verified)
 
@@ -369,7 +369,7 @@ func (t TxProposeBlock) Validate(se *StateEngine) bool {
 		return false
 	}
 
-	signingScore, total := elections.CalculateSigningScore(*circuit, *elecResult)
+	signingScore, total := elections.CalculateSigningScore(*circuit, elecResult)
 	fmt.Println("signingScore, total", signingScore, total, signingScore > ((total*2)/3))
 	//PASS
 	fmt.Println("Block Has passed inspection! Approved!")

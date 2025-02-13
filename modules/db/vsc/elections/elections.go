@@ -64,7 +64,7 @@ func (e *elections) GetElection(epoch uint64) *ElectionResult {
 	}
 }
 
-func (e *elections) GetElectionByHeight(height uint64) (*ElectionResult, error) {
+func (e *elections) GetElectionByHeight(height uint64) (ElectionResult, error) {
 	findQuery := bson.M{
 		"block_height": bson.M{
 			//Elections activate going forward, not retroactively to the same block
@@ -80,18 +80,18 @@ func (e *elections) GetElectionByHeight(height uint64) (*ElectionResult, error) 
 	findResult := e.FindOne(ctx, findQuery, queryOptions)
 
 	if findResult.Err() != nil {
-		return nil, findResult.Err()
+		return ElectionResult{}, findResult.Err()
 	} else {
 		electionRecord := ElectionResultRecord{}
 		err := findResult.Decode(&electionRecord)
 		if err != nil {
-			return nil, err
+			return ElectionResult{}, err
 		}
 
 		electionResult := ElectionResult{}
 		err = refmt.CloneAtlased(electionRecord, &electionResult, cbornode.CborAtlas)
 		if err != nil {
-			return nil, err
+			return electionResult, err
 		}
 
 		// electionResult := ElectionResult{
@@ -106,7 +106,7 @@ func (e *elections) GetElectionByHeight(height uint64) (*ElectionResult, error) 
 		// 		Members: electionRecord.Members,
 		// 	},
 		// }
-		return &electionResult, nil
+		return electionResult, nil
 	}
 }
 

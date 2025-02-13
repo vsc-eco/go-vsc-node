@@ -120,7 +120,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	electionResult, err := bp.electionsDb.GetElectionByHeight(bh)
 
-	if err != nil || electionResult == nil {
+	if err != nil {
 		return
 	}
 
@@ -144,7 +144,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 		circuit:    &circuit,
 	}
 	ctx, _ := context.WithTimeout(context.Background(), 20*time.Second)
-	signedWeight, err := bp.waitForSigs(ctx, electionResult)
+	signedWeight, err := bp.waitForSigs(ctx, &electionResult)
 
 	fmt.Println("signedWeight", signedWeight)
 
