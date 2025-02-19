@@ -31,7 +31,7 @@ type CustomJson struct {
 }
 
 type TxCreateContract struct {
-	Self TxSelf
+	TxSelf
 
 	Version      string       `json:"__v"`
 	NetId        string       `json:"net_id"`
@@ -42,18 +42,14 @@ type TxCreateContract struct {
 	StorageProof StorageProof `json:"storage_proof"`
 }
 
-func (tx TxCreateContract) TxSelf() TxSelf {
-	return tx.Self
-}
-
 const CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT = 84162592
 
 // ProcessTx implements VSCTransaction.
 func (tx TxCreateContract) ExecuteTx(se *StateEngine) {
-	if tx.Self.BlockHeight > CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT {
+	if tx.BlockHeight > CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT {
 		fmt.Println("Must validate storage proof")
 		// tx.StorageProof.
-		election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
+		election, err := se.electionDb.GetElectionByHeight(tx.BlockHeight)
 
 		if err != nil {
 			// panic("disabled")
@@ -74,8 +70,8 @@ func (tx TxCreateContract) ExecuteTx(se *StateEngine) {
 	}()
 
 	idObj := map[string]interface{}{
-		"ref_id": tx.Self.TxId,
-		"index":  strconv.Itoa(tx.Self.OpIndex),
+		"ref_id": tx.TxId,
+		"index":  strconv.Itoa(tx.OpIndex),
 	}
 	contractIdDag, _ := dagCbor.WrapObject(idObj, mh.SHA2_256, -1)
 
@@ -84,7 +80,7 @@ func (tx TxCreateContract) ExecuteTx(se *StateEngine) {
 
 	var owner string
 	if tx.Owner == "" {
-		owner = tx.Self.RequiredAuths[0]
+		owner = tx.RequiredAuths[0]
 	} else {
 		owner = tx.Owner
 	}
@@ -93,10 +89,10 @@ func (tx TxCreateContract) ExecuteTx(se *StateEngine) {
 		Code:           tx.Code,
 		Name:           tx.Name,
 		Description:    tx.Description,
-		Creator:        tx.Self.RequiredAuths[0],
+		Creator:        tx.RequiredAuths[0],
 		Owner:          owner,
-		TxId:           tx.Self.TxId,
-		CreationHeight: tx.Self.BlockHeight,
+		TxId:           tx.TxId,
+		CreationHeight: tx.BlockHeight,
 	})
 
 	// dd := map[string]interface{}{
@@ -141,17 +137,13 @@ func (sp *StorageProof) Verify(electionInfo elections.ElectionResult) bool {
 }
 
 type TxElectionResult struct {
-	Self TxSelf
+	TxSelf
 
 	BlockHeight uint64
 	Data        string                 `json:"data"`
 	Epoch       uint64                 `json:"epoch"`
 	NetId       string                 `json:"net_id"`
 	Signature   dids.SerializedCircuit `json:"signature"`
-}
-
-func (tx TxElectionResult) TxSelf() TxSelf {
-	return tx.Self
 }
 
 // ProcessTx implements VSCTransaction.
@@ -174,8 +166,8 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 			bbytes, _ := dagNode.MarshalJSON()
 			json.Unmarshal(bbytes, &elecResult)
 
-			elecResult.Proposer = tx.Self.RequiredAuths[0]
-			elecResult.BlockHeight = tx.Self.BlockHeight
+			elecResult.Proposer = tx.RequiredAuths[0]
+			elecResult.BlockHeight = tx.BlockHeight
 			elecResult.Epoch = tx.Epoch
 			elecResult.NetId = tx.NetId
 			elecResult.Data = tx.Data
@@ -242,7 +234,7 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 			}
 		}
 
-		blocksLastElection := tx.Self.BlockHeight - prevElection.BlockHeight
+		blocksLastElection := tx.BlockHeight - prevElection.BlockHeight
 
 		minimums := elections.MinimalRequiredElectionVotes(blocksLastElection, totalWeight)
 
@@ -271,8 +263,8 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 			//Verified and 2/3 majority signed
 			dagNode, _ := dagCbor.Decode((*node).RawData(), mh.SHA2_256, -1)
 			elecResult := elections.ElectionResult{
-				Proposer:    tx.Self.RequiredAuths[0],
-				BlockHeight: tx.Self.BlockHeight,
+				Proposer:    tx.RequiredAuths[0],
+				BlockHeight: tx.BlockHeight,
 			}
 			elecResult.Epoch = tx.Epoch
 			elecResult.NetId = tx.NetId
@@ -311,19 +303,15 @@ func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
 }
 
 type TxProposeBlock struct {
-	Self TxSelf
+	TxSelf
 
 	//ReplayId should be deprecated soon
 	NetId       string            `json:"net_id"`
 	SignedBlock SignedBlockHeader `json:"signed_block"`
 }
 
-func (tx TxProposeBlock) TxSelf() TxSelf {
-	return tx.Self
-}
-
 func (t TxProposeBlock) Validate(se *StateEngine) bool {
-	elecResult, err := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
+	elecResult, err := se.electionDb.GetElectionByHeight(t.BlockHeight)
 	if err != nil {
 		//Cannot process block due to missing election
 		return false
@@ -372,7 +360,7 @@ func (t TxProposeBlock) Validate(se *StateEngine) bool {
 
 	// fmt.Println("circuit.Verify()", err)
 
-	if uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength <= t.Self.BlockHeight {
+	if uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength <= t.BlockHeight {
 		// fmt.Println("Block is too far in the future")
 		return false
 	}
@@ -426,9 +414,9 @@ func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
 			fmt.Println(tx)
 
 			tx.Ingest(se, TxSelf{
-				BlockId:     t.Self.BlockId,
-				BlockHeight: t.Self.BlockHeight,
-				Index:       t.Self.Index,
+				BlockId:     t.BlockId,
+				BlockHeight: t.BlockHeight,
+				Index:       t.Index,
 				OpIndex:     idx,
 			})
 
@@ -441,9 +429,9 @@ func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
 			// fmt.Println(contractOutput, string(jsonBlsaz))
 
 			contractOutput.Ingest(se, TxSelf{
-				BlockId:     t.Self.BlockId,
-				BlockHeight: t.Self.BlockHeight,
-				TxId:        t.Self.TxId,
+				BlockId:     t.BlockId,
+				BlockHeight: t.BlockHeight,
+				TxId:        t.TxId,
 			})
 		} else if txContainer.Type() == "events" {
 			txContainer.AsEvents()
@@ -511,18 +499,15 @@ func (bTx *BlockTx) Decode(da *datalayer.DataLayer) TransactionContainer {
 
 // VSC interaction on Hive
 type TxVscHive struct {
-	Self TxSelf
+	TxSelf
 
 	Type    string `json:"__t"`
 	Version string `json:"__v"`
 	NetId   string `json:"net_id"`
 	//We don't have set type for this.
+	// TODO: We should ^
 	Headers map[string]interface{} `json:"headers"`
 	Tx      ITxBody                `json:"tx"`
-}
-
-func (tx TxVscHive) TxSelf() TxSelf {
-	return tx.Self
 }
 
 // ProcessTx implements VSCTransaction.
@@ -554,7 +539,7 @@ type TxVSCTransfer struct {
 }
 
 type TxVSCWithdraw struct {
-	Self TxSelf
+	TxSelf
 
 	NetId string `json:"net_id"`
 
@@ -565,12 +550,8 @@ type TxVSCWithdraw struct {
 	Memo   string `json:"memo"`
 }
 
-func (tx TxVSCWithdraw) TxSelf() TxSelf {
-	return tx.Self
-}
-
 // Development note:
-// t.From is a slightly different field from t.Self.RequiredAuths[0]
+// t.From is a slightly different field from t.RequiredAuths[0]
 // It must exist this way for cosigned transaction support.
 func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine) {
 	if t.NetId != common.NETWORK_ID {
@@ -580,22 +561,22 @@ func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine) {
 		return
 	}
 	params := WithdrawParams{
-		Id:     MakeTxId(t.Self.TxId, t.Self.OpIndex),
-		BIdx:   int64(t.Self.Index),
-		OpIdx:  int64(t.Self.OpIndex),
+		Id:     MakeTxId(t.TxId, t.OpIndex),
+		BIdx:   int64(t.Index),
+		OpIdx:  int64(t.OpIndex),
 		To:     t.To,
 		Asset:  t.Token,
 		Memo:   t.Memo,
 		Amount: t.Amount,
 	}
 	if t.From == "" {
-		params.From = "hive:" + t.Self.RequiredAuths[0]
+		params.From = "hive:" + t.RequiredAuths[0]
 	} else {
 		params.From = t.From
 	}
 
 	//Verifies
-	if !slices.Contains(t.Self.RequiredAuths, strings.Split(t.From, ":")[1]) {
+	if !slices.Contains(t.RequiredAuths, strings.Split(t.From, ":")[1]) {
 		return
 	}
 
@@ -821,13 +802,8 @@ func (tx *OffchainTransaction) ExecuteTx(se *StateEngine) {
 
 }
 
-func (tx *OffchainTransaction) TxSelf() TxSelf {
-	return TxSelf{}
-}
-
-func (tx *OffchainTransaction) ToTransaction() VSCTransaction {
-
-	return nil
+func (tx *OffchainTransaction) String() string {
+	return "TODO-OffchainTx-String"
 }
 
 // Note: this is functionality different than original implementation
@@ -899,7 +875,7 @@ var _ VSCTransaction = TxCreateContract{}
 
 type VSCTransaction interface {
 	ExecuteTx(se *StateEngine)
-	TxSelf() TxSelf
+	fmt.Stringer
 }
 
 // More information about the TX
@@ -912,3 +888,10 @@ type TxSelf struct {
 	Timestamp     string
 	RequiredAuths []string
 }
+
+// String implements fmt.Stringer.
+func (t TxSelf) String() string {
+	return fmt.Sprint(t.BlockHeight, t.TxId)
+}
+
+var _ fmt.Stringer = TxSelf{}

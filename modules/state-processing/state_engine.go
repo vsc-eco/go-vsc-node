@@ -315,7 +315,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				//Secondary
 				if cj.Id == "vsc.tx" {
 					vscTx = TxVscHive{
-						Self: txSelf,
+						TxSelf: txSelf,
 					}
 					json.Unmarshal(cj.Json, &tx)
 					fmt.Println(tx)
@@ -327,14 +327,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 				} else if cj.Id == "vsc.election_result" {
 					parsedTx := TxElectionResult{
-						Self: txSelf,
+						TxSelf: txSelf,
 					}
 					json.Unmarshal(cj.Json, &parsedTx)
 					fmt.Println(parsedTx)
 					vscTx = parsedTx
 				} else if cj.Id == "vsc.create_contract" {
 					parsedTx := TxCreateContract{
-						Self: txSelf,
+						TxSelf: txSelf,
 					}
 					json.Unmarshal(cj.Json, &parsedTx)
 
@@ -471,7 +471,7 @@ func (se *StateEngine) ProcessBlockSkipRow(block hive_blocks.HiveBlock) {
 					json.Unmarshal(cj.Json, &rawJson)
 
 					parsedBlock := TxProposeBlock{
-						Self: txSelf,
+						TxSelf: txSelf,
 						SignedBlock: SignedBlockHeader{
 							UnsignedBlockHeader: UnsignedBlockHeader{},
 							Signature:           dids.SerializedCircuit{},
@@ -488,7 +488,7 @@ func (se *StateEngine) ProcessBlockSkipRow(block hive_blocks.HiveBlock) {
 			if cj.Id == "vsc.withdraw" {
 				var vscTx VSCTransaction
 				parsedTx := TxVSCWithdraw{
-					Self: txSelf,
+					TxSelf: txSelf,
 				}
 				json.Unmarshal(cj.Json, &parsedTx)
 
@@ -505,8 +505,7 @@ func (se *StateEngine) ProcessBlockSkipRow(block hive_blocks.HiveBlock) {
 
 func (se *StateEngine) ExecuteBatch() {
 	for _, tx := range se.TxBatch {
-		// txSelf := tx.TxSelf()
-		// fmt.Println("Batch executing", txSelf.BlockHeight, txSelf.TxId)
+		// fmt.Println("Batch executing", tx.String())
 		tx.ExecuteTx(se)
 	}
 
