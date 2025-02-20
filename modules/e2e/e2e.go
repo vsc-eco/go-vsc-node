@@ -2,11 +2,14 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/utils"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc"
+	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/witnesses"
 	election_proposer "vsc-node/modules/election-proposer"
 	"vsc-node/modules/vstream"
@@ -14,6 +17,7 @@ import (
 	a "vsc-node/modules/aggregate"
 
 	"github.com/chebyrash/promise"
+	"github.com/vsc-eco/hivego"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -140,9 +144,70 @@ func (e2e *E2ERunner) Sleep(seconds uint64) func() error {
 }
 
 // Creates and broadcasts a mock election using predefined list of validator user names
-func (e2e *E2ERunner) BroadcastMockElection(blk uint64) func() error {
+func (e2e *E2ERunner) BroadcastMockElection(witnessListS []string) func() error {
 	return func() error {
-		return e2e.ElectionProposer.HoldElection(blk)
+		da := e2e.Datalayer
+		members := []elections.ElectionMember{}
+		witnessList := []witnesses.Witness{}
+		//TODO detect current height
+		for _, wStr := range witnessListS {
+			w, err := e2e.Witnesses.GetWitnessAtHeight(wStr, nil)
+			if err != nil {
+				continue
+			}
+			witnessList = append(witnessList, *w)
+		}
+
+		var weights []uint64
+		//Finish this when I can!
+		for _, w := range witnessList {
+			var key string
+			for _, dk := range w.DidKeys {
+				if dk.Type == "consensus" {
+					key = dk.Key
+					break
+				}
+			}
+			if key == "" {
+				//Don't do witness
+				continue
+			}
+			members = append(members, elections.ElectionMember{
+				Key:     key,
+				Account: w.Account,
+			})
+			weights = append(weights, 10)
+		}
+
+		if len(members) == 0 {
+			panic("No members found")
+		}
+		electionData := elections.ElectionData{
+			ElectionCommonInfo: elections.ElectionCommonInfo{
+				Epoch: 0,
+				NetId: common.NETWORK_ID,
+			},
+			ElectionDataInfo: elections.ElectionDataInfo{
+				Weights:         weights,
+				Members:         members,
+				ProtocolVersion: 0,
+			},
+		}
+		cid, err := da.PutObject(electionData)
+		if err != nil {
+			return err
+		}
+		electionHeader := map[string]interface{}{
+			"epoch":  0,
+			"data":   cid.String(),
+			"net_id": common.NETWORK_ID,
+		}
+		bbyes, _ := json.Marshal(electionHeader)
+		op := e2e.HiveCreator.CustomJson([]string{"e2e.mocks"}, []string{}, "vsc.election_result", string(bbyes))
+		tx := e2e.HiveCreator.MakeTransaction([]hivego.HiveOperation{op})
+		e2e.HiveCreator.Broadcast(tx)
+
+		return nil
 	}
 }
 

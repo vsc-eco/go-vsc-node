@@ -96,16 +96,14 @@ func TestE2E(t *testing.T) {
 
 	r2e.SetSteps([]func() error{
 		func() error {
-			fmt.Println("Starting up 99")
 			return nil
 		},
 		r2e.WaitToStart(), //This doesn't do anything right now
 		func() error {
-			fmt.Println("Started up!")
 			return nil
 		},
 		r2e.Wait(5),
-		r2e.BroadcastMockElection(2),
+		r2e.BroadcastMockElection([]string{"e2e-0", "e2e-1", "e2e-2", "e2e-3"}),
 		func() error {
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "test transfer")
 			return nil
@@ -168,7 +166,6 @@ func TestE2E(t *testing.T) {
 
 	// mockCreator.Transfer("test-account", "vsc.gateway", "10", "HBD", "test transfer")
 
-	fmt.Println("Starting up! 173")
 	test_utils.RunPlugin(t, r2e, true)
 }
 

@@ -13,6 +13,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/transactions"
+	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/hive/streamer"
 
@@ -39,6 +40,7 @@ func TestStateEngine(t *testing.T) {
 	balanceDb := ledgerDb.NewBalances(vscDb)
 	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
 	contractState := contracts.NewContractState(vscDb)
+	vscBlocks := vscBlocks.New(vscDb)
 
 	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		if op.Type == "custom_json" {
@@ -90,7 +92,7 @@ func TestStateEngine(t *testing.T) {
 	p2p := p2p.New(witnessesDb)
 	dl := DataLayer.New(p2p, "state-engine")
 
-	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims)
+	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks)
 
 	se.Commit()
 
@@ -132,6 +134,7 @@ func TestMockEngine(t *testing.T) {
 	balanceDb := ledgerDb.NewBalances(vscDb)
 	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
 	contractState := contracts.NewContractState(vscDb)
+	vscBlocks := vscBlocks.New(vscDb)
 
 	// slow down the streamer a bit for real data
 	streamer.AcceptableBlockLag = 0
@@ -147,7 +150,7 @@ func TestMockEngine(t *testing.T) {
 
 	dl := DataLayer.New(p2p, "state-engine")
 
-	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims)
+	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks)
 
 	process := func(block hive_blocks.HiveBlock) {
 		se.ProcessBlock(block)

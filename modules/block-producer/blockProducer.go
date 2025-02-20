@@ -15,6 +15,7 @@ import (
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
+	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	"vsc-node/modules/vstream"
@@ -79,44 +80,44 @@ func (bp *BlockProducer) BlockTick(bh uint64) {
 
 // This function should generate a deterministically generated block
 // In the future we should apply protocol versioning to this
-func (bp *BlockProducer) GenerateBlock(slotHeight uint64) (map[string]interface{}, error) {
-	blockData := map[string]interface{}{
-		"txs": []struct {
-			Id   string `json:"id"`
-			Op   string `json:"op"`
-			Type int    `json:"type"`
-		}{},
-		"headers": map[string]interface{}{
-			"prevb": nil,
-			"br":    [2]uint64{0, slotHeight},
+func (bp *BlockProducer) GenerateBlock(slotHeight uint64) (*vscBlocks.VscHeader, error) {
+
+	blockData := vscBlocks.VscBlock{
+		Headers: struct {
+			Prevb *string "refmt:\"prevb\""
+		}{
+			Prevb: nil,
 		},
+		Transactions: []vscBlocks.VscBlockTx{},
 	}
 
-	cid, _ := bp.Datalayer.PutObject(blockData)
+	blockCid, err := bp.Datalayer.PutObject(blockData)
+	fmt.Println(err)
 
-	signedBlock := map[string]interface{}{
-		"__t": "vsc-bh",
-		"__v": "0.1",
-
-		"headers": map[string]interface{}{
-			"br":    [2]int{0, int(slotHeight)},
-			"prevb": nil,
+	blockHeader := vscBlocks.VscHeader{
+		Type:    "vsc-bh",
+		Version: "0.1",
+		Headers: struct {
+			Br    [2]int "refmt:\"br\""
+			Prevb *string
+		}{
+			Br:    [2]int{0, int(slotHeight)},
+			Prevb: nil,
 		},
-
-		"merkle_root": nil,
-		"block":       cid.String(),
+		MerkleRoot: nil,
+		Block:      *blockCid,
 	}
 
-	return signedBlock, nil
+	return &blockHeader, nil
 }
 
 func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	//For right now we will just produce a blank
 	//This will allow us to test the e2e parsing
 
-	signedBlock, _ := bp.GenerateBlock(bh)
+	genBlock, _ := bp.GenerateBlock(bh)
 
-	cid, _ := bp.Datalayer.HashObject(signedBlock)
+	cid, _ := bp.Datalayer.HashObject(genBlock)
 
 	electionResult, err := bp.electionsDb.GetElectionByHeight(bh)
 
@@ -124,6 +125,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 		return
 	}
 
+	fmt.Println("producer cid", cid.String())
 	circuit, err := dids.NewBlsCircuitGenerator(electionResult.MemberKeys()).Generate(*cid)
 
 	go func() {
@@ -146,13 +148,23 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	ctx, _ := context.WithTimeout(context.Background(), 20*time.Second)
 	signedWeight, err := bp.waitForSigs(ctx, &electionResult)
 
-	fmt.Println("signedWeight", signedWeight)
+	fmt.Println("signedWeight", signedWeight, err)
+	fmt.Println("CircuitMap", circuit.CircuitMap())
 
 	finalCircuit, _ := circuit.Finalize()
 
 	serialized, _ := finalCircuit.Serialize()
 
-	signedBlock["signature"] = serialized
+	// signedBlock["signature"] = serialized
+
+	signedBlock := map[string]interface{}{
+		"__t":         genBlock.Type,
+		"__v":         genBlock.Version,
+		"headers":     genBlock.Headers,
+		"merkle_root": genBlock.MerkleRoot,
+		"block":       genBlock.Block.String(),
+		"signature":   serialized,
+	}
 
 	blockHeader := map[string]interface{}{
 		"net_id": common.NETWORK_ID,
@@ -232,6 +244,8 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 
 	cid, err := bp.Datalayer.HashObject(blockHeader)
 
+	fmt.Println("I WILL SIGN CID", cid.String())
+
 	if err != nil {
 		return "", err
 	}
@@ -267,7 +281,7 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 			// slotHeight := bp.blockSigning.slotHeight
 
 			fmt.Println(signedWeight, weightTotal)
-			for signedWeight < (weightTotal * 8 / 10) {
+			for signedWeight < (weightTotal * 9 / 10) {
 				sig := <-bp.sigChannels[bp.blockSigning.slotHeight]
 
 				sigStr := sig.Data["sig"].(string)
@@ -287,7 +301,7 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 
 				err := circuit.AddAndVerify(member, sigStr)
 
-				fmt.Println("circuit.AddAndVerify err", err)
+				fmt.Println("adding", sigStr, account)
 				if err == nil {
 					signedWeight += election.Weights[index]
 				}

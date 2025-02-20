@@ -74,8 +74,7 @@ func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 	anyConnected := false
 	for !anyConnected {
 
-		fmt.Println("Bootstraping peers via dht... PeerId: " + h.ID().String())
-
+		// fmt.Println("Bootstraping peers via dht... PeerId: " + h.ID().String())
 		peerChan, err := routingDiscovery.FindPeers(ctx, topicNameFlag)
 		if err != nil {
 			panic(err)

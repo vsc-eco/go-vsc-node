@@ -185,25 +185,27 @@ func TestInsertCheckBalance(t *testing.T) {
 			LedgerDb:  &ledgerDb,
 		},
 	}
-	ledgerExecutor.SetHeight(1000)
+	// ledgerExecutor.SetHeight(1000)
 
 	ledgerExecutor.Deposit(stateEngine.Deposit{
-		Id:     "tx0-1",
-		Asset:  "HIVE",
-		Amount: 100,
-		From:   "hive:test-account",
-		Memo:   "test",
-		BIdx:   1,
-		OpIdx:  0,
+		Id:          "tx0-1",
+		Asset:       "HIVE",
+		Amount:      100,
+		From:        "hive:test-account",
+		Memo:        "test",
+		BIdx:        1,
+		OpIdx:       0,
+		BlockHeight: 1000,
 	})
 	fmt.Println(ledgerExecutor)
 	check1 := reflect.DeepEqual(ledgerExecutor.VirtualLedger["hive:test-account"][0], stateEngine.LedgerUpdate{
-		Id:     "tx0-1",
-		Asset:  "HIVE",
-		Amount: 100,
-		Owner:  "hive:test-account",
-		Memo:   "",
-		Type:   "deposit",
+		Id:          "tx0-1",
+		Asset:       "HIVE",
+		Amount:      100,
+		Owner:       "hive:test-account",
+		Memo:        "",
+		Type:        "deposit",
+		BlockHeight: 1000,
 
 		BIdx:  1,
 		OpIdx: 0,
@@ -347,24 +349,26 @@ func TestGatewayWithdrawal(t *testing.T) {
 			ActionsDb: &MockWithdrawsDb{},
 		},
 	}
-	ledgerExecutor.SetHeight(1000)
+	// ledgerExecutor.SetHeight(1000)
 	ledgerExecutor.Deposit(stateEngine.Deposit{
-		Id:     "tx0-1",
-		Asset:  "hbd",
-		Amount: 100,
-		From:   "hive:test-account",
-		Memo:   "test",
-		BIdx:   1,
-		OpIdx:  0,
+		Id:          "tx0-1",
+		Asset:       "hbd",
+		Amount:      100,
+		From:        "hive:test-account",
+		Memo:        "test",
+		BIdx:        1,
+		OpIdx:       0,
+		BlockHeight: 1000,
 	})
 
 	result := ledgerExecutor.Withdraw(stateEngine.WithdrawParams{
-		Id:     "1",
-		Asset:  "hbd",
-		Amount: 10,
-		From:   "hive:test-account",
-		To:     "hive:test-account",
-		Memo:   "test",
+		Id:          "1",
+		Asset:       "hbd",
+		Amount:      10,
+		From:        "hive:test-account",
+		To:          "hive:test-account",
+		Memo:        "test",
+		BlockHeight: 1000,
 	})
 
 	fmt.Println("Result", result)
@@ -432,18 +436,18 @@ func TestFractionReserve(t *testing.T) {
 		"hive:theycallmedan": 50_000,
 	}
 
-	ledgerExecutor.SetHeight(1000)
 	x := 0
 	idx := int64(0)
 	for account, balance := range hbdBalanceMap {
 		ledgerExecutor.Deposit(stateEngine.Deposit{
-			Id:     "hbd-" + strconv.Itoa(x),
-			Asset:  "hbd",
-			Amount: balance,
-			From:   account,
-			Memo:   "Test Deposit",
-			BIdx:   idx,
-			OpIdx:  0,
+			Id:          "hbd-" + strconv.Itoa(x),
+			Asset:       "hbd",
+			Amount:      balance,
+			From:        account,
+			Memo:        "Test Deposit",
+			BIdx:        idx,
+			OpIdx:       0,
+			BlockHeight: 1000,
 		})
 
 		x++
@@ -452,13 +456,14 @@ func TestFractionReserve(t *testing.T) {
 	x = 0
 	for account, balance := range hbdStakedBalance {
 		ledgerExecutor.Deposit(stateEngine.Deposit{
-			Id:     "hbdstaked-" + strconv.Itoa(x),
-			Asset:  "hbd_savings",
-			Amount: balance,
-			From:   account,
-			Memo:   "Test Deposit",
-			BIdx:   idx,
-			OpIdx:  0,
+			Id:          "hbdstaked-" + strconv.Itoa(x),
+			Asset:       "hbd_savings",
+			Amount:      balance,
+			From:        account,
+			Memo:        "Test Deposit",
+			BIdx:        idx,
+			OpIdx:       0,
+			BlockHeight: 1000,
 		})
 		idx++
 		x++
@@ -513,26 +518,27 @@ func TestHBDSavings(t *testing.T) {
 	ledgerExecutor := stateEngine.LedgerExecutor{
 		Ls: &ledgerSystem,
 	}
-	ledgerExecutor.SetHeight(10)
 
 	//Note this will record into "virtualLedger"
 	ledgerExecutor.Deposit(stateEngine.Deposit{
-		Id:     "deposit-tx-0",
-		Asset:  "hbd",
-		Amount: 100,
-		From:   "hive:test-account",
-		Memo:   "Deposit test",
-		BIdx:   1,
-		OpIdx:  0,
+		Id:          "deposit-tx-0",
+		Asset:       "hbd",
+		Amount:      100,
+		From:        "hive:test-account",
+		Memo:        "Deposit test",
+		BIdx:        1,
+		OpIdx:       0,
+		BlockHeight: 10,
 	})
 	ledgerExecutor.Deposit(stateEngine.Deposit{
-		Id:     "deposit-tx-0",
-		Asset:  "hbd",
-		Amount: 100,
-		From:   "hive:vaultec",
-		Memo:   "Deposit test",
-		BIdx:   1,
-		OpIdx:  0,
+		Id:          "deposit-tx-0",
+		Asset:       "hbd",
+		Amount:      100,
+		From:        "hive:vaultec",
+		Memo:        "Deposit test",
+		BIdx:        1,
+		OpIdx:       0,
+		BlockHeight: 10,
 	})
 
 	//Note: this pulls from the virtualLedger and not the actual ledger in the db
@@ -542,26 +548,28 @@ func TestHBDSavings(t *testing.T) {
 	ledgerResult := ledgerExecutor.Stake(
 		stateEngine.StakeOp{
 			OpLogEvent: stateEngine.OpLogEvent{
-				Id:     "stake-tx-0",
-				From:   "hive:test-account",
-				To:     "hive:test-account",
-				Amount: 10,
-				Type:   "stake",
-				Asset:  "hbd",
-				Memo:   "Stake test",
+				Id:          "stake-tx-0",
+				From:        "hive:test-account",
+				To:          "hive:test-account",
+				Amount:      10,
+				Type:        "stake",
+				Asset:       "hbd",
+				Memo:        "Stake test",
+				BlockHeight: 10,
 			},
 		},
 	)
 	ledgerResult = ledgerExecutor.Stake(
 		stateEngine.StakeOp{
 			OpLogEvent: stateEngine.OpLogEvent{
-				Id:     "stake-tx-0",
-				From:   "hive:vaultec",
-				To:     "hive:vaultec",
-				Amount: 10,
-				Type:   "stake",
-				Asset:  "hbd",
-				Memo:   "Stake test",
+				Id:          "stake-tx-0",
+				From:        "hive:vaultec",
+				To:          "hive:vaultec",
+				Amount:      10,
+				Type:        "stake",
+				Asset:       "hbd",
+				Memo:        "Stake test",
+				BlockHeight: 10,
 			},
 		},
 	)
@@ -608,17 +616,18 @@ func TestHBDSavings(t *testing.T) {
 
 	fmt.Println("HBD savings Balance after claim", hbdBal)
 
-	ledgerExecutor.SetHeight(40)
+	// ledgerExecutor.SetHeight(40)
 	ledgerResult = ledgerExecutor.Unstake(
 		stateEngine.StakeOp{
 			OpLogEvent: stateEngine.OpLogEvent{
-				Id:     "unstake-tx-0",
-				From:   "hive:vaultec",
-				To:     "hive:vaultec",
-				Amount: 5,
-				Type:   "unstake",
-				Asset:  "hbd",
-				Memo:   "Stake test",
+				Id:          "unstake-tx-0",
+				From:        "hive:vaultec",
+				To:          "hive:vaultec",
+				Amount:      5,
+				Type:        "unstake",
+				Asset:       "hbd",
+				Memo:        "Stake test",
+				BlockHeight: 40,
 			},
 		},
 	)

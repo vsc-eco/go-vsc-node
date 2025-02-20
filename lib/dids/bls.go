@@ -111,7 +111,6 @@ func (d BlsDID) Identifier() *BlsPubKey {
 	// remove indicator bytes
 	pubKeyBytes := data[2:]
 
-	fmt.Println("PublicKey bytes", len(pubKeyBytes), d.String())
 	// decompress the pub key
 	pubKey := new(BlsPubKey)
 	if pubKey.Deserialize((*[48]byte)(pubKeyBytes)) != nil {
@@ -303,12 +302,9 @@ func (pbc *partialBlsCircuit) AddAndVerify(member Member, sig string) error {
 
 	// add and verify the signature and public key
 
-	fmt.Println("Sig err", sig)
 	if err := pbc.circuit.add(member, sig); err != nil {
 		return fmt.Errorf("failed to add and verify signature: %w", err)
 	}
-
-	fmt.Println("Broke here?")
 
 	return nil
 }
@@ -330,12 +326,9 @@ func (pbc *partialBlsCircuit) AddAndVerifyRaw(member BlsDID, sig []byte) error {
 
 	// add and verify the signature and public key
 
-	fmt.Println("Sig err", sig)
 	if err := pbc.circuit.addRaw(member, sig); err != nil {
 		return fmt.Errorf("failed to add and verify signature: %w", err)
 	}
-
-	fmt.Println("Broke here?")
 
 	return nil
 }
@@ -407,7 +400,7 @@ func newBlsCircuit(msg *cid.Cid, keyset []BlsDID) (*BlsCircuit, error) {
 
 // internally adds a new sig and pub key to the circuit after verification
 func (b *BlsCircuit) add(member Member, sig string) error {
-	sigBytes, err := base64.URLEncoding.DecodeString(sig)
+	sigBytes, err := base64.RawURLEncoding.DecodeString(sig)
 	if err != nil {
 		return fmt.Errorf("failed to decode signature: %w", err)
 	}
@@ -424,7 +417,6 @@ func (b *BlsCircuit) addRaw(DID BlsDID, sigBytes []byte) error {
 		return fmt.Errorf("failed to uncompress signature for DID: %s", DID.String())
 	}
 
-	fmt.Println("Bls here", pubKey, b.msg.Bytes(), signature)
 	// verify the sig using the pub key and the CID bytes (message)
 	verified := bls.Verify(pubKey, b.msg.Bytes(), signature)
 	if !verified {

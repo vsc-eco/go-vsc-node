@@ -470,8 +470,6 @@ func (se *StateEngine) ProcessBlockSkipRow(block hive_blocks.HiveBlock) {
 					rawJson := map[string]interface{}{}
 					json.Unmarshal(cj.Json, &rawJson)
 
-					fmt.Println("TxProposeBlock", string(cj.Json))
-
 					parsedBlock := TxProposeBlock{
 						Self: txSelf,
 						SignedBlock: SignedBlockHeader{
@@ -480,9 +478,6 @@ func (se *StateEngine) ProcessBlockSkipRow(block hive_blocks.HiveBlock) {
 						},
 					}
 					json.Unmarshal(cj.Json, &parsedBlock)
-
-					jsonSerialized, _ := json.Marshal(parsedBlock)
-					fmt.Println("parsedBlock", string(jsonSerialized))
 
 					validated := parsedBlock.Validate(se)
 					if validated {
@@ -510,8 +505,8 @@ func (se *StateEngine) ProcessBlockSkipRow(block hive_blocks.HiveBlock) {
 
 func (se *StateEngine) ExecuteBatch() {
 	for _, tx := range se.TxBatch {
-		txSelf := tx.TxSelf()
-		fmt.Println("Batch executing", txSelf.BlockHeight, txSelf.TxId)
+		// txSelf := tx.TxSelf()
+		// fmt.Println("Batch executing", txSelf.BlockHeight, txSelf.TxId)
 		tx.ExecuteTx(se)
 	}
 

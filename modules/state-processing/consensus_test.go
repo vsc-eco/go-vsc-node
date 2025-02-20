@@ -18,7 +18,7 @@ func TestConsensusEpoch(t *testing.T) {
 
 	epochInfo := stateEngine.CalculateEpochRound(0)
 
-	roundInfo := stateEngine.CalculateRoundInfo(0)
+	roundInfo := stateEngine.CalculateSlotInfo(0)
 
 	fmt.Println(epochInfo, roundInfo)
 	bbbytes := []byte("sadfaseqrwefwvfwrwdddzxcvasdfasd")

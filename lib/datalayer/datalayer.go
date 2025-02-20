@@ -20,6 +20,7 @@ import (
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-datastore"
 	badger "github.com/ipfs/go-ds-badger2"
+	cbornode "github.com/ipfs/go-ipld-cbor"
 	format "github.com/ipfs/go-ipld-format"
 
 	"vsc-node/lib/utils"
@@ -61,6 +62,10 @@ type PutRawOptions struct {
 	Pin   bool
 }
 
+type PutOptions struct {
+	Broadcast bool
+}
+
 func (dl *DataLayer) Init() error {
 	ctx := context.Background()
 
@@ -89,7 +94,11 @@ func (dl *DataLayer) Init() error {
 	// is usually the "contentRouter" which does both discovery and providing.
 	// "contentProvider" could be used directly without wrapping, but it is recommended
 	// to do so to provide more efficiently.
-	provider, _ := provider.New(ds, provider.Online(dl.p2pService.Dht))
+	provider, err := provider.New(ds, provider.Online(dl.p2pService.Dht))
+	if err != nil {
+		panic(err)
+	}
+
 	// A wrapped providing exchange using the previous exchange and the provider.
 	exchange := providing.New(bswap, provider)
 
@@ -134,30 +143,88 @@ func (dl *DataLayer) PutRaw(rawData []byte, options PutRawOptions) (*cid.Cid, er
 	return &cid, nil
 }
 
-func (dl *DataLayer) PutObject(data interface{}) (*cid.Cid, error) {
+func (dl *DataLayer) PutObject(data interface{}, options ...PutOptions) (*cid.Cid, error) {
 	ctx := context.Background()
+	cborBytes, err := cbornode.Encode(data)
 
+	if err != nil {
+		return nil, err
+	}
+
+	prefix := cid.Prefix{
+		Version:  1,
+		Codec:    uint64(multicodec.DagCbor),
+		MhType:   mh.SHA2_256,
+		MhLength: -1,
+	}
+	cid, err := prefix.Sum(cborBytes)
+
+	if err != nil {
+		return nil, err
+	}
+
+	blockData, _ := blocks.NewBlockWithCid(cborBytes, cid)
+
+	dl.blockServ.AddBlock(context.TODO(), blockData)
+
+	// block := blocks.NewBlock(bytes)
+
+	brcst := false
+	if len(options) > 0 {
+		if options[0].Broadcast {
+			brcst = true
+		}
+	}
+
+	if brcst {
+		dl.notify(ctx, blockData)
+	} else {
+		go dl.notify(ctx, blockData)
+	}
+
+	return &cid, nil
+}
+
+func (dl *DataLayer) PutJson(data interface{}, options ...PutOptions) (*cid.Cid, error) {
 	jsonBytes, err := goJson.Marshal(data)
 
 	if err != nil {
 		return nil, err
 	}
 
-	r := bytes.NewReader(jsonBytes)
-	block, err := dagCbor.FromJSON(r, mh.SHA2_256, -1)
+	dagNode, err := cbornode.FromJSON(bytes.NewReader(jsonBytes), mh.SHA2_256, -1)
 
 	if err != nil {
 		return nil, err
 	}
 
-	// block := blocks.NewBlock(bytes)
-	cid := block.Cid()
-	dl.bitswap.NotifyNewBlocks(ctx, block)
-	//We might need to proactively rebroadcast that we are storing a CID
-	dl.p2pService.Dht.Provide(ctx, cid, true)
-	dl.DagServ.Add(ctx, block)
+	err = dl.blockServ.AddBlock(context.Background(), dagNode)
 
-	return &cid, nil
+	if err != nil {
+		return nil, err
+	}
+
+	ccid := dagNode.Cid()
+
+	return &ccid, nil
+}
+
+func (dl *DataLayer) HashObject(data interface{}) (*cid.Cid, error) {
+	cborBytes, err := cbornode.Encode(data)
+
+	if err != nil {
+		return nil, err
+	}
+
+	prefix := cid.Prefix{
+		Version:  1,
+		Codec:    uint64(multicodec.DagCbor),
+		MhType:   mh.SHA2_256,
+		MhLength: -1,
+	}
+	cid, err := prefix.Sum(cborBytes)
+
+	return &cid, err
 }
 
 func (dl *DataLayer) Get(cid cid.Cid, options *GetOptions) (*format.Node, error) {
@@ -184,38 +251,28 @@ func (dl *DataLayer) Get(cid cid.Cid, options *GetOptions) (*format.Node, error)
 }
 
 // Gets Object then converts it to Golang type seemlessly
-func (dl *DataLayer) GetObject(cid cid.Cid, v any, options GetOptions) error {
+func (dl *DataLayer) GetObject(cid cid.Cid, v interface{}, options GetOptions) error {
 	dataNode, err := dl.Get(cid, &options)
 
 	if err != nil {
 		return err
 	}
 
-	dagNode, err := dagCbor.Decode((*dataNode).RawData(), mh.SHA2_256, -1)
-	if err != nil {
-		return err
-	}
+	err = cbornode.DecodeInto((*dataNode).RawData(), v)
 
-	bytes, err := dagNode.MarshalJSON()
-
-	if err != nil {
-		return err
-	}
-
-	return goJson.Unmarshal(bytes, v)
+	return err
 }
 
 func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
-
 	go func() {
-		dl.dht.Bootstrap(context.TODO())
-		peers, _ := dl.dht.FindProviders(context.Background(), cid)
-		for _, peer := range peers {
-			dl.host.Connect(context.Background(), peer)
-		}
-		fmt.Println("TRYING TO PULL IN LOOP")
-		dl.bitswap.GetBlock(context.Background(), cid)
-		fmt.Println("I PULLED SOMETHING LOL")
+		// dl.dht.Bootstrap(context.TODO())
+		// peers, _ := dl.dht.FindProviders(context.Background(), cid)
+		// for _, peer := range peers {
+		// 	dl.host.Connect(context.Background(), peer)
+		// }
+		// fmt.Println("TRYING TO PULL IN LOOP")
+		// dl.bitswap.GetBlock(context.Background(), cid)
+		// fmt.Println("I PULLED SOMETHING LOL")
 	}()
 	block, err := dl.blockServ.GetBlock(context.Background(), cid)
 	//Make sure it is stored
@@ -225,6 +282,12 @@ func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
 	}
 	dag, err := dagCbor.Decode(block.RawData(), mh.SHA2_256, -1)
 	return dag, err
+}
+
+func (dl *DataLayer) notify(ctx context.Context, block blocks.Block) {
+	dl.bitswap.NotifyNewBlocks(ctx, block)
+	//We might need to proactively rebroadcast that we are storing a CID
+	dl.p2pService.Dht.Provide(ctx, block.Cid(), true)
 }
 
 type AddPin struct {
