@@ -1,21 +1,17 @@
 package stateEngine
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
-	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 
-	"github.com/btcsuite/btcutil/bech32"
 	blocks "github.com/ipfs/go-block-format"
 
 	"github.com/ipfs/go-cid"
@@ -28,286 +24,6 @@ type CustomJson struct {
 	RequiredAuths        []string `json:"required_auths"`
 	RequiredPostingAuths []string `json:"required_posting_auths"`
 	Json                 []byte   `json:"json"`
-}
-
-type TxCreateContract struct {
-	Self TxSelf
-
-	Version      string       `json:"__v"`
-	NetId        string       `json:"net_id"`
-	Name         string       `json:"name"`
-	Code         string       `json:"code"`
-	Owner        string       `json:"owner"`
-	Description  string       `json:"description"`
-	StorageProof StorageProof `json:"storage_proof"`
-}
-
-func (tx TxCreateContract) TxSelf() TxSelf {
-	return tx.Self
-}
-
-const CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT = 84162592
-
-// ProcessTx implements VSCTransaction.
-func (tx TxCreateContract) ExecuteTx(se *StateEngine) {
-	if tx.Self.BlockHeight > CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT {
-		fmt.Println("Must validate storage proof")
-		// tx.StorageProof.
-		election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
-
-		if err != nil {
-			// panic("disabled")
-			return
-		}
-
-		verified := tx.StorageProof.Verify(election)
-
-		fmt.Println("Storage proof verify result", verified)
-
-		// panic("not implemented yet")
-	}
-
-	fmt.Println("tx.Code", tx)
-	cid := cid.MustParse(tx.Code)
-	go func() {
-		se.da.GetDag(cid)
-	}()
-
-	idObj := map[string]interface{}{
-		"ref_id": tx.Self.TxId,
-		"index":  strconv.Itoa(tx.Self.OpIndex),
-	}
-	contractIdDag, _ := dagCbor.WrapObject(idObj, mh.SHA2_256, -1)
-
-	conv, _ := bech32.ConvertBits(contractIdDag.Cid().Bytes(), 8, 5, true)
-	bech32Addr, _ := bech32.Encode("vs4", conv)
-
-	var owner string
-	if tx.Owner == "" {
-		owner = tx.Self.RequiredAuths[0]
-	} else {
-		owner = tx.Owner
-	}
-
-	se.contractDb.RegisterContract(bech32Addr, contracts.SetContractArgs{
-		Code:           tx.Code,
-		Name:           tx.Name,
-		Description:    tx.Description,
-		Creator:        tx.Self.RequiredAuths[0],
-		Owner:          owner,
-		TxId:           tx.Self.TxId,
-		CreationHeight: tx.Self.BlockHeight,
-	})
-
-	// dd := map[string]interface{}{
-	// 	"bytes": []byte("HELLO WORLD LOLLL"),
-	// }
-	// dagCbor, _ := dagCbor.WrapObject(dd, mh.SHA2_256, -2)
-
-	// cid2, _ := se.da.PutObject(dd)
-	// bbytes, _ := dagCbor.MarshalJSON()
-	// fmt.Println("GDAGCBOR TEST", string(bbytes), cid2)
-
-}
-
-type StorageProof struct {
-	Hash      string                 `json:"hash"`
-	Signature dids.SerializedCircuit `json:"signature"`
-}
-
-// TODO: Define everything else that'll happen with this
-func (sp *StorageProof) Verify(electionInfo elections.ElectionResult) bool {
-	didMembers := make([]dids.BlsDID, 0)
-	for _, v := range electionInfo.Members {
-		didMembers = append(didMembers, dids.BlsDID(v.Key))
-	}
-	cid, err := cid.Parse(sp.Hash)
-
-	if err != nil {
-		return false
-	}
-	circuit, err := dids.DeserializeBlsCircuit(sp.Signature, didMembers, cid)
-
-	if err != nil {
-		return false
-	}
-	verified, includedDids, err := circuit.Verify()
-
-	if !verified || err != nil || len(includedDids) < 2 {
-		return false
-	}
-
-	return true
-}
-
-type TxElectionResult struct {
-	Self TxSelf
-
-	BlockHeight uint64
-	Data        string                 `json:"data"`
-	Epoch       uint64                 `json:"epoch"`
-	NetId       string                 `json:"net_id"`
-	Signature   dids.SerializedCircuit `json:"signature"`
-}
-
-func (tx TxElectionResult) TxSelf() TxSelf {
-	return tx.Self
-}
-
-// ProcessTx implements VSCTransaction.
-func (tx TxElectionResult) ExecuteTx(se *StateEngine) {
-	// ctx := context.Background()
-	if tx.Epoch == 0 {
-		electionResult := se.electionDb.GetElection(0)
-
-		if electionResult == nil {
-			parsedCid, err := cid.Parse(tx.Data)
-			// fmt.Println("Cid data", tx.Data, err, "Tx data", tx)
-			if err != nil {
-				return
-			}
-			// fmt.Println("Hit here 2")
-			node, _ := se.da.Get(parsedCid, nil)
-
-			dagNode, _ := dagCbor.Decode((*node).RawData(), mh.SHA2_256, -1)
-			elecResult := elections.ElectionResult{}
-			bbytes, _ := dagNode.MarshalJSON()
-			json.Unmarshal(bbytes, &elecResult)
-
-			elecResult.Proposer = tx.Self.RequiredAuths[0]
-			elecResult.BlockHeight = tx.Self.BlockHeight
-			elecResult.Epoch = tx.Epoch
-			elecResult.NetId = tx.NetId
-			elecResult.Data = tx.Data
-
-			// fmt.Println("TxElection bytes", string(bbytes))
-			// fmt.Println("Hit here 3")
-			//Store
-			se.electionDb.StoreElection(elecResult)
-		} else {
-			fmt.Println("ln 180")
-		}
-	} else {
-		//Validate normally
-		prevElection := se.electionDb.GetElection(tx.Epoch - 1)
-		if prevElection == nil {
-			fmt.Println("NO PREVIOUS ELECTION")
-			return
-		}
-
-		if prevElection.Epoch >= tx.Epoch {
-			fmt.Println("Election is back in time!")
-			return
-		}
-
-		//Weight that is calculated by aggregating number of signers
-		potentialWeight := 0
-		memberDids := make([]dids.BlsDID, 0)
-		for idx, value := range prevElection.Members {
-			memberDids = append(memberDids, dids.BlsDID(value.Key))
-
-			if len(prevElection.Weights) == 0 {
-				potentialWeight += 1
-			} else {
-				potentialWeight = int(prevElection.Weights[idx])
-			}
-		}
-
-		verifyObj := map[string]interface{}{
-			"data":   tx.Data,
-			"epoch":  tx.Epoch,
-			"net_id": tx.NetId,
-		}
-		verifyHash, _ := dagCbor.WrapObject(verifyObj, mh.SHA2_256, -1)
-		fmt.Println("verifyObj", verifyObj, verifyHash.Cid())
-
-		parsedCid, _ := cid.Parse(tx.Data)
-
-		blsCircuit, err := dids.DeserializeBlsCircuit(tx.Signature, memberDids, verifyHash.Cid())
-
-		fmt.Println("Err deserialize", err)
-
-		fmt.Println("IncludedDids", blsCircuit.IncludedDIDs())
-
-		verified, includedDids, err := blsCircuit.Verify()
-
-		fmt.Println("Verify error", err, verified, len(includedDids) > (len(memberDids)*2/3))
-
-		totalWeight := uint64(0)
-		if len(prevElection.Weights) == 0 {
-			totalWeight = uint64(len(prevElection.Members))
-		} else {
-			for _, v := range prevElection.Weights {
-				totalWeight = totalWeight + v
-			}
-		}
-
-		blocksLastElection := tx.Self.BlockHeight - prevElection.BlockHeight
-
-		minimums := elections.MinimalRequiredElectionVotes(blocksLastElection, totalWeight)
-
-		realWeight := uint64(0)
-		bv := blsCircuit.RawBitVector()
-		for idx := range prevElection.Members {
-			if bv.Bit(idx) == 1 {
-				if len(prevElection.Weights) == 0 {
-					realWeight += 1
-				} else {
-					realWeight += prevElection.Weights[idx]
-				}
-			}
-		}
-		fmt.Println("Minimum requirements", minimums, "orig reqs", len(prevElection.Members)*2/3)
-
-		fmt.Println("realWeight", realWeight, " len(includedDids)", len(includedDids))
-
-		if verified && realWeight >= minimums {
-			fmt.Println("Election verified, indexing...", tx.Epoch)
-			fmt.Println("Election CID", parsedCid)
-			se.da.GetDag(parsedCid)
-			fmt.Println("Got dag prolly")
-			node, _ := se.da.Get(parsedCid, nil)
-			fmt.Println("Got Election from DA")
-			//Verified and 2/3 majority signed
-			dagNode, _ := dagCbor.Decode((*node).RawData(), mh.SHA2_256, -1)
-			elecResult := elections.ElectionResult{
-				Proposer:    tx.Self.RequiredAuths[0],
-				BlockHeight: tx.Self.BlockHeight,
-			}
-			elecResult.Epoch = tx.Epoch
-			elecResult.NetId = tx.NetId
-			elecResult.Data = tx.Data
-
-			bbytes, _ := dagNode.MarshalJSON()
-			json.Unmarshal(bbytes, &elecResult)
-
-			se.electionDb.StoreElection(elecResult)
-			fmt.Println("Indexed Election", tx.Epoch)
-		} else {
-			fmt.Println("Election Failed verification")
-		}
-
-		// if prevElection.Epoch > 124 {
-		// 	fmt.Println("HELL ON EARTH")
-		// 	time.Sleep(time.Hour)
-		// }
-
-		// fmt.Println("Cid data", tx.Data, err, "Tx data", tx)
-		// if err != nil {
-		// 	// return
-		// }
-		// fmt.Println("Hit here 2")
-		// node, _ := se.da.Get(parsedCid, nil)
-
-		// dagNode, _ := dagCbor.Decode((*node).RawData(), mh.SHA2_256, -1)
-		// elecResult := elections.ElectionResult{}
-		// bbytes, _ := dagNode.MarshalJSON()
-		// json.Unmarshal(bbytes, &elecResult)
-
-		// prevElection.Members
-
-		fmt.Println("prevElection", prevElection)
-	}
 }
 
 type TxProposeBlock struct {
@@ -351,8 +67,8 @@ func (t TxProposeBlock) Validate(se *StateEngine) bool {
 		Type:    t.SignedBlock.Type,
 		Version: t.SignedBlock.Version,
 		Headers: struct {
-			Br    [2]int "refmt:\"br\""
-			Prevb *string
+			Br    [2]int  "refmt:\"br\""
+			Prevb *string "refmt:\"prevb\""
 		}{
 			Br:    t.SignedBlock.Headers.Br,
 			Prevb: t.SignedBlock.Headers.PrevBlock,
@@ -373,7 +89,7 @@ func (t TxProposeBlock) Validate(se *StateEngine) bool {
 	// fmt.Println("circuit.Verify()", err)
 
 	if uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength <= t.Self.BlockHeight {
-		// fmt.Println("Block is too far in the future")
+		fmt.Println("Block is too far in the future", t.SignedBlock.Headers.Br, uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength, t.Self.BlockHeight)
 		return false
 	}
 
@@ -397,15 +113,46 @@ func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
 	blockCid, _ := cid.Parse(t.SignedBlock.Block)
 	node, _ := se.da.GetDag(blockCid)
 	jsonBytes, _ := node.MarshalJSON()
-	blockContent := BlockContent{}
-	json.Unmarshal(jsonBytes, &blockContent)
+	blockContentC := vscBlocks.VscBlock{}
+	// json.Unmarshal(jsonBytes, &blockContent)
+
+	err := se.da.GetObject(blockCid, &blockContentC, datalayer.GetOptions{})
+
+	fmt.Println("399 err GetObject", err, blockContentC)
+
+	bbyes, _ := json.Marshal(blockContentC)
+	fmt.Println("Decoded VSC Block header", string(bbyes))
+	slotInfo := CalculateSlotInfo(t.Self.BlockHeight)
+
+	se.vscBlocks.StoreHeader(vscBlocks.VscHeaderRecord{
+		Id: t.Self.TxId,
+
+		MerkleRoot: blockContentC.MerkleRoot,
+		Proposer:   t.Self.RequiredAuths[0],
+		SigRoot:    blockContentC.SigRoot,
+
+		// SlotHeight: ,
+
+		SlotHeight: int(slotInfo.StartHeight),
+		Stats: struct {
+			Size uint64 `bson:"size"`
+		}{
+			Size: uint64(len(jsonBytes)),
+		},
+		Ts: t.Self.Timestamp,
+	})
 
 	txsToInjest := make([]VSCTransaction, 0)
 	//At this point of the process a call should be made to state engine
 	//To kick off finalization of the inflight state
 	//Such as transfers, contract calls, etc
 	//New TXs should be indexed at this point
-	for idx, tx := range blockContent.Transactions {
+	for idx, txInfo := range blockContentC.Transactions {
+		tx := BlockTx{
+			Id:   txInfo.Id,
+			Op:   *txInfo.Op,
+			Type: txInfo.Type,
+		}
 		//Things to Process
 		// - Contract executionll
 		// - Transfers, withdraws
@@ -414,16 +161,14 @@ func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
 		//Thus: TX confirmation is 30s maximum
 		//Author: @vaultec81
 
-		if tx.Type == 2 {
-			continue
-		}
-
 		txContainer := tx.Decode(se.da)
+		fmt.Println("Iterating transaction check", tx, txContainer.Type())
 
 		if txContainer.Type() == "transaction" {
 			//Note: sig verification has already happened
 			tx := txContainer.AsTransaction()
-			fmt.Println(tx)
+
+			fmt.Println("INGESTING TRANSACTION", tx, txContainer)
 
 			tx.Ingest(se, TxSelf{
 				BlockId:     t.Self.BlockId,
@@ -618,7 +363,7 @@ type TransactionSig struct {
 }
 
 type TransactionHeader struct {
-	Nonce         int64    `json:"nonce"`
+	Nonce         uint64   `json:"nonce"`
 	RequiredAuths []string `json:"required_auths" jsonschema:"required"`
 }
 
@@ -679,24 +424,25 @@ func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
 	dag, _ := tx.da.GetDag(txCid)
 
 	bJson, _ := dag.MarshalJSON()
-	// obj := make(map[string]interface{}, 0)
-
-	// headers := obj["headers"].(map[string]interface{})
-	// Type:    obj["__t"].(string),
-	// Version: obj["__v"].(string),
-
-	// Headers: TransactionHeader{
-	// 	Nonce:         headers["nonce"].(int64),
-	// 	RequiredAuths: headers["required_auths"].([]string),
-	// },
-
-	// Tx: obj["tx"].(map[string]interface{}),
 
 	fmt.Println("bJson", string(bJson))
 	offchainTx := OffchainTransaction{
-		Type: "hello",
+		TxId: tx.Id,
 	}
 	json.Unmarshal(bJson, &offchainTx)
+
+	// b64Bytes, _ := base64.StdEncoding.DecodeString(offchainTx.Tx["payload"].(string))
+
+	// node, _ := cbornode.Decode(b64Bytes, mh.SHA2_256, -1)
+	// bbytes, _ := node.MarshalJSON()
+	// var txPayload map[string]interface{}
+	// json.Unmarshal(bbytes, &txPayload)
+
+	// offchainTx.Tx = map[string]interface{}{
+	// 	"type":    offchainTx.Tx["op"],
+	// 	"payload": txPayload,
+	// }
+
 	return &offchainTx
 }
 
@@ -715,6 +461,8 @@ func (tx *TransactionContainer) Decode(bytes []byte) {
 }
 
 type OffchainTransaction struct {
+	TxId string `json:"-"`
+
 	Type    string `json:"__t" jsonschema:"required"`
 	Version string `json:"__v" jsonschema:"required"`
 
@@ -753,24 +501,8 @@ func (tx *OffchainTransaction) Verify(txSig TransactionSig, nonce int) (bool, er
 	return true, nil
 }
 
-func (tx *OffchainTransaction) Encode() (*[]byte, error) {
-	jsonBytes, err := json.Marshal(tx)
-
-	if err != nil {
-		return nil, err
-	}
-
-	r := bytes.NewReader(jsonBytes)
-	dagNode, err := dagCbor.FromJSON(r, mh.SHA2_256, -1)
-
-	if err != nil {
-		return nil, err
-	}
-
-	// node, err := dagCbor.WrapObject(tx, mh.SHA2_256, -1)
-	// fmt.Println(err)
-	bytes := dagNode.RawData()
-	return &bytes, nil
+func (tx *OffchainTransaction) Encode() ([]byte, error) {
+	return common.EncodeDagCbor(tx)
 }
 
 func (tx *OffchainTransaction) Decode(rawData []byte) error {
@@ -784,32 +516,44 @@ func (tx *OffchainTransaction) Decode(rawData []byte) error {
 }
 
 func (tx *OffchainTransaction) ToBlock() (*blocks.BasicBlock, error) {
-	jsonBytes, err := json.Marshal(tx)
+	encodedBytes, _ := common.EncodeDagCbor(tx)
+
+	prefix := cid.Prefix{
+		Version:  1,
+		Codec:    cid.DagCBOR,
+		MhType:   mh.SHA2_256,
+		MhLength: -1,
+	}
+
+	cid, err := prefix.Sum(encodedBytes)
 
 	if err != nil {
 		return nil, err
 	}
 
-	r := bytes.NewReader(jsonBytes)
-	block, _ := dagCbor.FromJSON(r, mh.SHA2_256, -1)
-
-	blk, err := blocks.NewBlockWithCid(block.RawData(), block.Cid())
+	blk, err := blocks.NewBlockWithCid(encodedBytes, cid)
 	return blk, err
 }
 
 func (tx *OffchainTransaction) Cid() cid.Cid {
-	block, _ := tx.ToBlock()
-	return block.Cid()
+	txId := cid.MustParse(tx.TxId)
+	return txId
 }
 
 func (tx *OffchainTransaction) Ingest(se *StateEngine, txSelf TxSelf) {
+	anchoredHeight := int64(txSelf.BlockHeight)
+	anchoredIndex := int64(txSelf.Index)
+	anchoredOpIdx := int64(txSelf.OpIndex)
+
+	fmt.Println("Ingesting the following tx", tx.Tx)
 	se.txDb.Ingest(transactions.IngestTransactionUpdate{
-		AnchoredHeight: int64(txSelf.BlockHeight),
-		AnchoredBlock:  txSelf.BlockId,
-		AnchoredId:     txSelf.BlockId,
-		AnchoredIndex:  int64(txSelf.Index),
-		AnchoredOpIdx:  int64(txSelf.OpIndex),
+		Status:         "INCLUDED",
 		Id:             tx.Cid().String(),
+		AnchoredIndex:  &anchoredIndex,
+		AnchoredOpIdx:  &anchoredOpIdx,
+		AnchoredHeight: &anchoredHeight,
+		AnchoredBlock:  &txSelf.BlockId,
+		AnchoredId:     &txSelf.BlockId,
 		Nonce:          tx.Headers.Nonce,
 		RequiredAuths:  tx.Headers.RequiredAuths,
 		Tx:             tx.Tx,
@@ -828,68 +572,6 @@ func (tx *OffchainTransaction) TxSelf() TxSelf {
 func (tx *OffchainTransaction) ToTransaction() VSCTransaction {
 
 	return nil
-}
-
-// Note: this is functionality different than original implementation
-// It doesn't matter as this is just for DB serialization
-// null vs bool value
-func HashAuths(auths []string) *cid.Cid {
-	obj := make(map[string]bool)
-
-	for _, v := range auths {
-		obj[v] = true
-	}
-
-	dag, _ := dagCbor.WrapObject(obj, mh.SHA2_256, -1)
-
-	cid := dag.Cid()
-
-	return &cid
-}
-
-type ContractOutput struct {
-	Id         string
-	ContractId string   `json:"contract_id"`
-	Inputs     []string `json:"inputs"`
-	IoGas      int64    `json:"io_gas"`
-	//This might not be used
-	RemoteCalls []string         `json:"remote_calls"`
-	Results     []ContractResult `json:"results"`
-	StateMerkle string           `json:"state_merkle"`
-}
-
-func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
-	for idx, InputId := range output.Inputs {
-		se.txDb.SetOutput(transactions.SetOutputUpdate{
-			Id:       InputId,
-			OutputId: output.Id,
-			Index:    int64(idx),
-		})
-	}
-	//Set output history
-	se.contractState.IngestOutput(contracts.IngestOutputArgs{
-		Id:         output.Id,
-		ContractId: output.ContractId,
-		Inputs:     output.Inputs,
-		Gas: struct {
-			IO int64
-		}{
-			IO: output.IoGas,
-		},
-		AnchoredBlock:  txSelf.BlockId,
-		AnchoredHeight: int64(txSelf.BlockHeight),
-		AnchoredId:     txSelf.TxId,
-		AnchoredIndex:  int64(txSelf.Index),
-	})
-}
-
-type ContractResult struct {
-	IOGas     int           `type:"IOGas"`
-	Error     string        `json:"error"`
-	ErrorType string        `json:"errorType"`
-	Ledger    []interface{} `json:"ledger"`
-	Logs      string        `json:"logs"`
-	Ret       string        `json:"ret"`
 }
 
 var _ VSCTransaction = TxElectionResult{}
