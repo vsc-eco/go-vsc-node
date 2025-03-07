@@ -13,9 +13,12 @@ import (
 	"strings"
 	"vsc-node/lib/cbor"
 
+	"crypto/ecdsa"
+
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/crypto"
+	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	blocks "github.com/ipfs/go-block-format"
+
 	"github.com/vsc-eco/go-ethereum/signer/core/apitypes"
 
 	"github.com/ugorji/go/codec"
@@ -78,12 +81,17 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 	// payload, err := ConvertToEIP712TypedData("vsc.network", decodedData, "tx_container_v0", func(f float64) (*big.Int, error) {
 	// 	return big.NewInt(int64(f)), nil
 	// })
+
+	typeJson, _ := json.Marshal(payload)
+	fmt.Println("ConvertCBORToEIP712TypedData payload", payload, string(typeJson))
 	if err != nil {
 		return false, fmt.Errorf("failed to convert block to EIP-712 typed data: %v", err)
 	}
 
 	// compute the EIP-712 hash
 	dataHash, err := computeEIP712Hash(payload.Data)
+
+	fmt.Println("DATA HASH: ", hex.EncodeToString(dataHash))
 	if err != nil {
 		return false, fmt.Errorf("failed to compute EIP-712 hash: %v", err)
 	}
@@ -99,18 +107,18 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 	}
 
 	// recover the pub key from the signature and data hash
-	sigPubkey, err := crypto.Ecrecover(dataHash, sigBytes)
+	sigPubkey, err := ethCrypto.Ecrecover(dataHash, sigBytes)
 	if err != nil {
 		return false, fmt.Errorf("failed to recover public key from signature: %v", err)
 	}
 
-	pubKey, err := crypto.UnmarshalPubkey(sigPubkey)
+	pubKey, err := ethCrypto.UnmarshalPubkey(sigPubkey)
 	if err != nil {
 		return false, fmt.Errorf("%v", err)
 	}
 
 	// extract the recovered addr
-	recoveredAddress := crypto.PubkeyToAddress(*pubKey).Hex()
+	recoveredAddress := ethCrypto.PubkeyToAddress(*pubKey).Hex()
 
 	// get the expected addr from the DID
 	expectedAddress := d.Identifier()
@@ -476,18 +484,41 @@ func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeNam
 // ===== EthProvider =====
 
 type EthProvider struct {
-	// todo: in the future, we may want to store some sort of priv key here (future-proofing)
+	Priv *ecdsa.PrivateKey
 }
 
-func NewEthProvider() *EthProvider {
-	return &EthProvider{}
+func NewEthProvider(priv *ecdsa.PrivateKey) *EthProvider {
+
+	return &EthProvider{
+		Priv: priv,
+	}
 }
 
 // ===== implementing the Provider interface =====
 
 func (e *EthProvider) Sign(block blocks.Block) (string, error) {
 	// todo: implement a way to sign the payload from the EthProvider
-	panic("unimplemented")
+
+	var decodedData map[string]interface{}
+	if err := decodeFromCBOR(block.RawData(), &decodedData); err != nil {
+		return "", fmt.Errorf("failed to decode CBOR data: %v", err)
+	}
+
+	payload, err := ConvertCBORToEIP712TypedData("vsc.network", block.RawData(), "tx_container_v0", func(f float64) (*big.Int, error) {
+		return big.NewInt(int64(f)), nil
+	})
+
+	if err != nil {
+		return "", fmt.Errorf("failed to convert block to EIP-712 typed data: %v", err)
+	}
+
+	dataHash, err := computeEIP712Hash(payload.Data)
+
+	sig, err := ethCrypto.Sign(dataHash, e.Priv)
+
+	fmt.Println("Hex sig", hex.EncodeToString(sig))
+
+	return "0x" + hex.EncodeToString(sig), nil
 }
 
 // ===== utils =====
@@ -514,7 +545,7 @@ func computeEIP712Hash(typedData apitypes.TypedData) ([]byte, error) {
 	}
 
 	// combine the two hashes as per EIP-712 spec
-	finalHash := crypto.Keccak256(
+	finalHash := ethCrypto.Keccak256(
 		bytes.Join(
 			[][]byte{
 				{0x19, 0x01}, // EIP-712 spec prefix indicator bytes

@@ -1,12 +1,19 @@
 package dids_test
 
 import (
+	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"testing"
 	"vsc-node/lib/dids"
+	"vsc-node/modules/common"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
+	cbornode "github.com/ipfs/go-ipld-cbor"
+	"github.com/multiformats/go-multicodec"
+	"github.com/multiformats/go-multihash"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -71,44 +78,69 @@ func TestVerifyExternalSigCIDKeyAndBytes(t *testing.T) {
 	assert.True(t, isValid)
 }
 
-// func TestEthDIDVerify(t *testing.T) {
-// 	// data to be signed and verified
-// 	data := map[string]any{
-// 		// we have 2 fields of data to ensure deterministic encoding and decoding
-// 		//
-// 		// this is because if our encoding and decoding is not deterministic, the signature
-// 		// will differ each time we sign this data because the order will switch since Go maps
-// 		// don't guarantee order
-// 		"foo": "bar",
-// 		"baz": 12345,
-// 	}
+func TestEthDIDVerify(t *testing.T) {
+	// data to be signed and verified
+	data := map[string]any{
+		// we have 2 fields of data to ensure deterministic encoding and decoding
+		//
+		// this is because if our encoding and decoding is not deterministic, the signature
+		// will differ each time we sign this data because the order will switch since Go maps
+		// don't guarantee order
+		"headers": map[string]any{
+			"type":           1,
+			"required_auths": []string{"did:pkh:eip155:1:0x553Cb1F25f4409360E081E5e015812d1FB238e23"},
+			"nonce":          20,
+		},
+		"tx": map[string]any{
+			"op": "withdraw",
+			"payload": map[string]any{
+				"to":     "hive:vaultec",
+				"from":   `did:pkh:eip155:1:0x553Cb1F25f4409360E081E5e015812d1FB238e23`,
+				"memo":   "What's up!",
+				"amount": 500,
+				"tk":     "HIVE",
+			},
+		},
+		"__t": "vsc-tx",
+		"__v": "0.2",
+	}
 
-// 	// encode data into CBOR and create a block
-// 	cborData, err := cbor.WrapObject(data, multihash.SHA2_256, -1)
-// 	assert.Nil(t, err)
+	// encode data into CBOR and create a block
+	cbornode, err := cbornode.WrapObject(data, multihash.SHA2_256, -1)
+	cborData := cbornode.RawData()
+	// cborData, err := common.EncodeDagCbor(data)
+	assert.Nil(t, err)
 
-// 	// create a block with the CBOR data
-// 	block, err := blocks.NewBlockWithCid(cborData.RawData(), cborData.Cid())
-// 	assert.Nil(t, err)
+	cid, err := cid.Prefix{
+		Version:  1,
+		Codec:    uint64(multicodec.DagCbor),
+		MhType:   uint64(multihash.SHA2_256),
+		MhLength: -1,
+	}.Sum(cborData)
+	assert.Nil(t, err)
 
-// 	// gen a priv key for signing
-// 	privateKey, err := crypto.GenerateKey()
-// 	assert.Nil(t, err)
+	// create a block with the CBOR data
+	block, err := blocks.NewBlockWithCid(cborData, cid)
+	assert.Nil(t, err)
 
-// 	// create new provider capable of signing
-// 	provider, err := dids.NewEthProvider(privateKey)
-// 	assert.Nil(t, err)
+	// gen a priv key for signing
+	privateKey, err := crypto.GenerateKey()
+	assert.Nil(t, err)
 
-// 	// sign the block
-// 	sig, err := provider.Sign(block)
-// 	assert.Nil(t, err)
+	// create new provider capable of signing
+	provider := dids.NewEthProvider(privateKey)
+	assert.Nil(t, err)
 
-// 	// verify the sig using the EthDID
-// 	ethDID := dids.NewEthDID(crypto.PubkeyToAddress(privateKey.PublicKey).Hex())
-// 	isValid, err := ethDID.Verify(block, sig)
-// 	assert.Nil(t, err)
-// 	assert.True(t, isValid)
-// }
+	// sign the block
+	sig, err := provider.Sign(block)
+	assert.Nil(t, err)
+
+	// verify the sig using the EthDID
+	ethDID := dids.NewEthDID(crypto.PubkeyToAddress(privateKey.PublicKey).Hex())
+	isValid, err := ethDID.Verify(block, sig)
+	assert.Nil(t, err)
+	assert.True(t, isValid)
+}
 
 // func TestNewEthDID(t *testing.T) {
 // 	ethAddr := "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC"
@@ -526,3 +558,38 @@ func TestVerifyExternalSigCIDKeyAndBytes(t *testing.T) {
 // 	assert.Contains(t, walletField, "type")
 // 	assert.Equal(t, walletField["type"], "address")
 // }
+
+func TestEthSigning(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	ethProvider := dids.NewEthProvider(key)
+
+	fmt.Println("ethProvider", ethProvider)
+
+	obj := map[string]interface{}{
+		"foo": "bar",
+		"baz": 12345,
+	}
+
+	bytes, _ := common.EncodeDagCbor(obj)
+
+	sig, _ := ethProvider.Sign(blocks.NewBlock(bytes))
+
+	ethDid := dids.NewEthDID(crypto.PubkeyToAddress(key.PublicKey).Hex())
+
+	verified, err := ethDid.Verify(blocks.NewBlock(bytes), sig)
+
+	fmt.Println(verified, err)
+}
+
+func TestEthVerif(t *testing.T) {
+	sig := "0xb7f0f7664fbf9be3f7dbe1614c3f6fa7a569ca7d5a7c9f8181a54370db251881596ea31724a071b1fcf9a5c034fdab0dbee2e8ab4e3a93f2fa8952114cf765cf1c"
+
+	b64tx := "pGJ0eKJib3Bod2l0aGRyYXdncGF5bG9hZKVidGtkSElWRWJ0b2xoaXZlOnZhdWx0ZWNkZnJvbXg7ZGlkOnBraDplaXAxNTU6MToweDU1M0NiMUYyNWY0NDA5MzYwRTA4MUU1ZTAxNTgxMmQxRkIyMzhlMjNkbWVtb2pXaGF0J3MgdXAhZmFtb3VudBkB9GNfX3RmdnNjLXR4Y19fdmMwLjJnaGVhZGVyc6NkdHlwZQFlbm9uY2UUbnJlcXVpcmVkX2F1dGhzgXg7ZGlkOnBraDplaXAxNTU6MToweDU1M0NiMUYyNWY0NDA5MzYwRTA4MUU1ZTAxNTgxMmQxRkIyMzhlMjM"
+
+	ethDid := dids.NewEthDID("0x553Cb1F25f4409360E081E5e015812d1FB238e23")
+	txData, _ := base64.RawURLEncoding.DecodeString(b64tx)
+
+	verified, err := ethDid.Verify(blocks.NewBlock(txData), sig)
+
+	fmt.Println("Verified error", verified, err)
+}
