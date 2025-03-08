@@ -3,7 +3,6 @@ package datalayer
 import (
 	"bytes"
 	"context"
-	"fmt"
 
 	"github.com/chebyrash/promise"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -122,6 +121,7 @@ func (dl *DataLayer) Stop() error {
 
 // Will always hash using sha256
 func (dl *DataLayer) PutRaw(rawData []byte, options PutRawOptions) (*cid.Cid, error) {
+
 	prefix := cid.Prefix{
 		Version:  1,
 		Codec:    uint64(multicodec.Raw),
@@ -130,7 +130,6 @@ func (dl *DataLayer) PutRaw(rawData []byte, options PutRawOptions) (*cid.Cid, er
 	}
 	cid, _ := prefix.Sum(rawData)
 
-	fmt.Println("Connection here for bart", cid)
 	blockData, _ := blocks.NewBlockWithCid(rawData, cid)
 
 	dl.blockServ.AddBlock(context.TODO(), blockData)

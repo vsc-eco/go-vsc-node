@@ -7,4 +7,5 @@ type Transactions interface {
 	Ingest(offTx IngestTransactionUpdate) error
 	SetOutput(sOut SetOutputUpdate)
 	GetTransaction(id string) *TransactionRecord
+	FindUnconfirmedTransactions(height uint64) ([]TransactionRecord, error)
 }

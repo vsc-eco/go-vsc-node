@@ -3,14 +3,14 @@ package stateEngine
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
-	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
-	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 
 	blocks "github.com/ipfs/go-block-format"
 
@@ -26,281 +26,112 @@ type CustomJson struct {
 	Json                 []byte   `json:"json"`
 }
 
-type TxProposeBlock struct {
-	Self TxSelf
+type TxVscCallContract struct {
+	Self  TxSelf
+	NetId string `json:"net_id"`
 
-	//ReplayId should be deprecated soon
-	NetId       string            `json:"net_id"`
-	SignedBlock SignedBlockHeader `json:"signed_block"`
-}
+	//Excluded RC balance for RC allocations
+	//Note: Hive users will get small limit of RCs by default
+	//Hold more hbd to get more RCs
+	RcExclusion uint64 `json:"rc_exclusion"`
 
-func (tx TxProposeBlock) TxSelf() TxSelf {
-	return tx.Self
-}
-
-func (t TxProposeBlock) Validate(se *StateEngine) bool {
-	elecResult, err := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
-	if err != nil {
-		//Cannot process block due to missing election
-		return false
-	}
-	memberDids := make([]dids.BlsDID, 0)
-	for _, member := range elecResult.Members {
-		memberDids = append(memberDids, dids.BlsDID(member.Key))
-	}
-
-	//We can't use json convert then unmarshell due to CID instance must be passed to cbor lib
-	//..to properly serialize the CID into the correct cbor type
-	// blockHeader := map[string]interface{}{
-	// 	"__v": t.SignedBlock.Version,
-	// 	"__t": t.SignedBlock.Type,
-	// 	"headers": map[string]interface{}{
-	// 		"br":    t.SignedBlock.Headers.Br,
-	// 		"prevb": t.SignedBlock.Headers.PrevBlock,
-	// 	},
-	// 	"merkle_root": t.SignedBlock.MerkleRoot,
-	// 	"block":       t.SignedBlock.Block,
-	// }
-
-	blockCid, _ := cid.Parse(t.SignedBlock.Block)
-	blockHeader := vscBlocks.VscHeader{
-		Type:    t.SignedBlock.Type,
-		Version: t.SignedBlock.Version,
-		Headers: struct {
-			Br    [2]int  "refmt:\"br\""
-			Prevb *string "refmt:\"prevb\""
-		}{
-			Br:    t.SignedBlock.Headers.Br,
-			Prevb: t.SignedBlock.Headers.PrevBlock,
-		},
-		MerkleRoot: t.SignedBlock.MerkleRoot,
-		Block:      blockCid,
-	}
-
-	// dag, _ := dagCbor.WrapObject(blockHeader, mh.SHA2_256, -1)
-	cid, _ := se.da.HashObject(blockHeader)
-
-	// fmt.Println("Validated CID", cid)
-	// fmt.Println("MemberDids", memberDids)
-	circuit, err := dids.DeserializeBlsCircuit(t.SignedBlock.Signature, memberDids, *cid)
-
-	verified, _, err := circuit.Verify()
-
-	// fmt.Println("circuit.Verify()", err)
-
-	if uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength <= t.Self.BlockHeight {
-		fmt.Println("Block is too far in the future", t.SignedBlock.Headers.Br, uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength, t.Self.BlockHeight)
-		return false
-	}
-
-	fmt.Println("Verified sig", verified)
-	if !verified {
-		return false
-	}
-
-	signingScore, total := elections.CalculateSigningScore(*circuit, elecResult)
-	fmt.Println("signingScore, total", signingScore, total, signingScore > ((total*2)/3))
-	//PASS
-	// blockCid := cid.MustParse(t.SignedBlock.Block)
-
-	verifiedR := signingScore > ((total * 2) / 3)
-
-	return verifiedR
-}
-
-// ProcessTx implements VSCTransaction.
-func (t TxProposeBlock) ExecuteTx(se *StateEngine) {
-	blockCid, _ := cid.Parse(t.SignedBlock.Block)
-	node, _ := se.da.GetDag(blockCid)
-	jsonBytes, _ := node.MarshalJSON()
-	blockContentC := vscBlocks.VscBlock{}
-	// json.Unmarshal(jsonBytes, &blockContent)
-
-	err := se.da.GetObject(blockCid, &blockContentC, datalayer.GetOptions{})
-
-	fmt.Println("399 err GetObject", err, blockContentC)
-
-	bbyes, _ := json.Marshal(blockContentC)
-	fmt.Println("Decoded VSC Block header", string(bbyes))
-	slotInfo := CalculateSlotInfo(t.Self.BlockHeight)
-
-	se.vscBlocks.StoreHeader(vscBlocks.VscHeaderRecord{
-		Id: t.Self.TxId,
-
-		MerkleRoot: blockContentC.MerkleRoot,
-		Proposer:   t.Self.RequiredAuths[0],
-		SigRoot:    blockContentC.SigRoot,
-
-		// SlotHeight: ,
-
-		SlotHeight: int(slotInfo.StartHeight),
-		Stats: struct {
-			Size uint64 `bson:"size"`
-		}{
-			Size: uint64(len(jsonBytes)),
-		},
-		Ts: t.Self.Timestamp,
-	})
-
-	txsToInjest := make([]VSCTransaction, 0)
-	//At this point of the process a call should be made to state engine
-	//To kick off finalization of the inflight state
-	//Such as transfers, contract calls, etc
-	//New TXs should be indexed at this point
-	for idx, txInfo := range blockContentC.Transactions {
-		tx := BlockTx{
-			Id:   txInfo.Id,
-			Op:   *txInfo.Op,
-			Type: txInfo.Type,
-		}
-		//Things to Process
-		// - Contract executionll
-		// - Transfers, withdraws
-		// - New TXs (repeat process in state engine)
-		//Note: VSC txs can be processed immediately once anchored on chain
-		//Thus: TX confirmation is 30s maximum
-		//Author: @vaultec81
-
-		txContainer := tx.Decode(se.da)
-		fmt.Println("Iterating transaction check", tx, txContainer.Type())
-
-		if txContainer.Type() == "transaction" {
-			//Note: sig verification has already happened
-			tx := txContainer.AsTransaction()
-
-			fmt.Println("INGESTING TRANSACTION", tx, txContainer)
-
-			tx.Ingest(se, TxSelf{
-				BlockId:     t.Self.BlockId,
-				BlockHeight: t.Self.BlockHeight,
-				Index:       t.Self.Index,
-				OpIndex:     idx,
-			})
-
-			txsToInjest = append(txsToInjest, tx)
-
-		} else if txContainer.Type() == "output" {
-			contractOutput := txContainer.AsContractOutput()
-
-			// jsonBlsaz, _ := json.Marshal(contractOutput)
-			// fmt.Println(contractOutput, string(jsonBlsaz))
-
-			contractOutput.Ingest(se, TxSelf{
-				BlockId:     t.Self.BlockId,
-				BlockHeight: t.Self.BlockHeight,
-				TxId:        t.Self.TxId,
-			})
-		} else if txContainer.Type() == "events" {
-			txContainer.AsEvents()
-		}
-	}
-	se.TxBatch = append(txsToInjest, se.TxBatch...)
-}
-
-type SignedBlockHeader struct {
-	UnsignedBlockHeader
-	Signature dids.SerializedCircuit `json:"signature"`
-}
-
-type UnsignedBlockHeader struct {
-	Type    string `json:"__t"`
-	Version string `json:"__v"`
-	Headers struct {
-		PrevBlock *string `json:"prevb"`
-		Br        [2]int  `json:"br"`
-	} `json:"headers"`
-	//Define a potential struct to streamline merkle proofs.
-	//Maybe convert to that struct too
-	MerkleRoot *string `json:"merkle_root"`
-	Block      string  `json:"block"`
-}
-
-type BlockContent struct {
-	Headers struct {
-		PrevBlock string `json:"prevb"`
-	} `json:"headers"`
-	Transactions []BlockTx `json:"txs"`
-
-	//Maybe in future make a magic merkle root class with a prototype of string..
-	//..and functions to do proof verification
-	MerkleRoot string `json:"merkle_root"`
-	SigRoot    string `json:"sig_root"`
-}
-
-// Reference pointer to the transaction itself
-type BlockTx struct {
-	Id string `json:"id"`
-	Op string `json:"op,omitempty"`
-	// 1 input
-	// 2 output
-	// 5 anchor
-	// 6 oplog
-
-	Type int `json:"type"`
-}
-
-func (bTx *BlockTx) Decode(da *datalayer.DataLayer) TransactionContainer {
-	//Do some conversion back to a TX type?
-	txCid := cid.MustParse(bTx.Id)
-
-	dagNode, _ := da.GetDag(txCid)
-	tx := TransactionContainer{
-		da:      da,
-		Id:      bTx.Id,
-		TypeInt: bTx.Type,
-	}
-	tx.Decode(dagNode.RawData())
-
-	return tx
-}
-
-// VSC interaction on Hive
-type TxVscHive struct {
-	Self TxSelf
-
-	Type    string `json:"__t"`
-	Version string `json:"__v"`
-	NetId   string `json:"net_id"`
-	//We don't have set type for this.
-	Headers map[string]interface{} `json:"headers"`
-	Tx      ITxBody                `json:"tx"`
-}
-
-func (tx TxVscHive) TxSelf() TxSelf {
-	return tx.Self
-}
-
-// ProcessTx implements VSCTransaction.
-func (t TxVscHive) ExecuteTx(se *StateEngine) {
-
-}
-
-type ITxBody interface {
-	Type() string
-	//Define
-	AsContractCall() *TxVscContract
-	AsTransfer() *TxVSCTransfer
-	AsWithdraw() *TxVSCWithdraw
-}
-
-type TxVscContract struct {
 	Op         string `json:"op"`
-	Action     string `json:"action"`
 	ContractId string `json:"contract_id"`
 	Payload    string `json:"payload"`
 }
 
+func (tx TxVscCallContract) Type() string {
+	return "call_contract"
+}
+
+func (tx TxVscCallContract) ExecuteTx(se *StateEngine) {
+	//Hook up to the contract executor
+
+	//Access to ledger executor, access to IPFS state
+	//Access to ??
+
+	// se.LedgerExecutor.ExecuteTransfer()
+
+}
+
+func (tx TxVscCallContract) TxSelf() TxSelf {
+	return tx.Self
+}
+
+func (tx TxVscCallContract) ToData() map[string]interface{} {
+	return map[string]interface{}{
+		"type":        "call",
+		"op":          tx.Op,
+		"contract_id": tx.ContractId,
+		"payload":     tx.Payload,
+	}
+}
+
+// Costs no RCs as it consumes Hive RCs.
+// Only applies if original transaction is Hive
 type TxVSCTransfer struct {
+	Self  TxSelf
+	NetId string `json:"net_id"`
+
 	From   string `json:"from"`
 	To     string `json:"to"`
-	Amount string `json:"amt"`
-	Token  string `json:"tk"`
+	Amount string `json:"amount"`
+	Asset  string `json:"asset"`
 	Memo   string `json:"memo"`
 }
 
-type TxVSCWithdraw struct {
-	Self TxSelf
+func (tx TxVSCTransfer) Type() string {
+	return "transfer"
+}
 
+func (tx TxVSCTransfer) TxSelf() TxSelf {
+	return tx.Self
+}
+
+func (tx TxVSCTransfer) ExecuteTx(se *StateEngine) {
+	fmt.Println("Executing transfer tx", tx)
+	// if tx.NetId != common.NETWORK_ID {
+	// 	return
+	// }
+	if tx.To == "" || tx.From == "" {
+		return
+	}
+
+	if !slices.Contains(tx.Self.RequiredAuths, tx.From) {
+		return
+	}
+	amount, _ := strconv.ParseFloat(tx.Amount, 64)
+
+	amt := amount * math.Pow(10, 3)
+
+	transferParams := OpLogEvent{
+		Id:     MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
+		BIdx:   int64(tx.Self.Index),
+		OpIdx:  int64(tx.Self.OpIndex),
+		From:   tx.From,
+		To:     tx.To,
+		Amount: int64(amt),
+		Asset:  tx.Asset,
+		Memo:   tx.Memo,
+	}
+
+	ledgerResult := se.LedgerExecutor.ExecuteTransfer(transferParams)
+
+	fmt.Println("LedgerResult", ledgerResult)
+}
+
+func (tx TxVSCTransfer) ToData() map[string]interface{} {
+	return map[string]interface{}{
+		"from":   tx.From,
+		"to":     tx.To,
+		"amount": tx.Amount,
+		"asset":  tx.Asset,
+		"memo":   tx.Memo,
+	}
+}
+
+type TxVSCWithdraw struct {
+	Self  TxSelf
 	NetId string `json:"net_id"`
 
 	From   string `json:"from"`
@@ -308,6 +139,10 @@ type TxVSCWithdraw struct {
 	Amount int64  `json:"amount"`
 	Token  string `json:"token"`
 	Memo   string `json:"memo"`
+}
+
+func (tx TxVSCWithdraw) Type() string {
+	return "withdraw"
 }
 
 func (tx TxVSCWithdraw) TxSelf() TxSelf {
@@ -346,9 +181,16 @@ func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine) {
 
 	se.LedgerExecutor.Withdraw(params)
 
-	// fmt.Println("Executed ledgerResult", ledgerResult)
-	// fmt.Println("se Oplog", se.LedgerExecutor.Oplog)
-	// fmt.Println("se VirtualLedger", se.LedgerExecutor.VirtualLedger)
+}
+
+func (tx *TxVSCWithdraw) ToData() map[string]interface{} {
+	return map[string]interface{}{
+		"from":   tx.From,
+		"to":     tx.To,
+		"amount": tx.Amount,
+		"token":  tx.Token,
+		"memo":   tx.Memo,
+	}
 }
 
 type TransactionSig struct {
@@ -378,6 +220,8 @@ type TransactionHeader struct {
 // 		chain: "hive"
 
 type TransactionContainer struct {
+	Self TxSelf
+
 	da *datalayer.DataLayer
 
 	//Guaranteed fields
@@ -396,7 +240,7 @@ func (tx *TransactionContainer) Type() string {
 	} else if tx.TypeInt == 5 {
 		return "anchor"
 	} else if tx.TypeInt == 6 {
-		return "events"
+		return "oplog"
 	} else {
 		return "unknown"
 	}
@@ -428,6 +272,9 @@ func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
 	fmt.Println("bJson", string(bJson))
 	offchainTx := OffchainTransaction{
 		TxId: tx.Id,
+		Self: TxSelf{
+			TxId: tx.Id,
+		},
 	}
 	json.Unmarshal(bJson, &offchainTx)
 
@@ -452,19 +299,53 @@ func (tx *TransactionContainer) AsHiveAnchor() {
 
 }
 
-func (tx *TransactionContainer) AsEvents() {
+func (tx *TransactionContainer) AsOplog() Oplog {
+	cid := cid.MustParse(tx.Id)
+	node, err := tx.da.GetDag(cid)
 
+	if err != nil {
+		panic(err)
+	}
+	jsonBytes, _ := node.MarshalJSON()
+	fmt.Println("Oplog node", node, string(jsonBytes))
+
+	oplog := Oplog{
+		Self: tx.Self,
+	}
+	json.Unmarshal(jsonBytes, &oplog)
+	fmt.Println("Oplog decoded", oplog)
+
+	return oplog
 }
 
 func (tx *TransactionContainer) Decode(bytes []byte) {
 
 }
 
+type Oplog struct {
+	Self TxSelf
+
+	Oplog []OpLogEvent `json:"oplog"`
+}
+
+func (oplog *Oplog) ExecuteTx(se *StateEngine) {
+	se.LedgerExecutor.Flush()
+
+	aoplog := make([]OpLogEvent, 0)
+	for _, v := range oplog.Oplog {
+		v.BlockHeight = oplog.Self.BlockHeight
+		aoplog = append(aoplog, v)
+	}
+	se.LedgerExecutor.Ls.IngestOplog(aoplog)
+}
+
 type OffchainTransaction struct {
+	Self TxSelf
+
 	TxId string `json:"-"`
 
-	Type    string `json:"__t" jsonschema:"required"`
-	Version string `json:"__v" jsonschema:"required"`
+	DataType string `json:"__t" jsonschema:"required"`
+	Version  string `json:"__v" jsonschema:"required"`
 
 	Headers TransactionHeader `json:"headers"`
 
@@ -545,10 +426,20 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, txSelf TxSelf) {
 	anchoredIndex := int64(txSelf.Index)
 	anchoredOpIdx := int64(txSelf.OpIndex)
 
+	parsedTx := tx.ToTransaction()[0]
+
+	data := make(map[string]interface{})
+
+	for k, v := range parsedTx.ToData() {
+		data[k] = v
+	}
+
+	data["type"] = parsedTx.Type()
+
 	fmt.Println("Ingesting the following tx", tx.Tx)
 	se.txDb.Ingest(transactions.IngestTransactionUpdate{
 		Status:         "INCLUDED",
-		Id:             tx.Cid().String(),
+		Id:             tx.TxId,
 		AnchoredIndex:  &anchoredIndex,
 		AnchoredOpIdx:  &anchoredOpIdx,
 		AnchoredHeight: &anchoredHeight,
@@ -556,32 +447,79 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, txSelf TxSelf) {
 		AnchoredId:     &txSelf.BlockId,
 		Nonce:          tx.Headers.Nonce,
 		RequiredAuths:  tx.Headers.RequiredAuths,
-		Tx:             tx.Tx,
+		Tx:             data,
 	})
 
 }
 
-func (tx *OffchainTransaction) ExecuteTx(se *StateEngine) {
-
-}
-
 func (tx *OffchainTransaction) TxSelf() TxSelf {
-	return TxSelf{}
+	return tx.Self
 }
 
-func (tx *OffchainTransaction) ToTransaction() VSCTransaction {
+func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
+	self := tx.TxSelf()
+	self.RequiredAuths = tx.Headers.RequiredAuths
 
-	return nil
+	var vtx VSCTransaction
+	switch tx.Tx["type"].(string) {
+	case "call":
+		callTx := TxVscCallContract{
+			Self: self,
+		}
+		vtx = callTx
+	case "transfer":
+		transferTx := TxVSCTransfer{
+			Self: self,
+		}
+		decodeErr := decodeTxCbor(tx, &transferTx)
+
+		bbytes, _ := json.Marshal(transferTx)
+		fmt.Println("Decoded transfer tx", string(bbytes), decodeErr)
+		vtx = transferTx
+	case "withdraw":
+		withdrawTx := TxVSCWithdraw{
+			Self: self,
+		}
+		decodeTxCbor(tx, &withdrawTx)
+
+		vtx = &withdrawTx
+	case "stake_hbd":
+
+	case "unstake_hbd":
+
+	}
+
+	fmt.Println("Maybe transfer tx", vtx, tx.Type())
+
+	if vtx == nil {
+		return nil
+	}
+
+	return []VSCTransaction{vtx}
 }
 
-var _ VSCTransaction = TxElectionResult{}
-var _ VSCTransaction = TxVscHive{}
-var _ VSCTransaction = TxProposeBlock{}
-var _ VSCTransaction = TxCreateContract{}
+func (tx *OffchainTransaction) Type() string {
+
+	return "offchain"
+}
+
+var _ VSCTransaction = &TxElectionResult{}
+
+// var _ VSCTransaction = &TxProposeBlock{}
+var _ VSCTransaction = &TxCreateContract{}
+
+var _ VscTxContainer = &OffchainTransaction{}
 
 type VSCTransaction interface {
 	ExecuteTx(se *StateEngine)
 	TxSelf() TxSelf
+	ToData() map[string]interface{}
+	Type() string
+}
+
+type VscTxContainer interface {
+	Type() string //Hive, offchain
+	ToTransaction() []VSCTransaction
 }
 
 // More information about the TX

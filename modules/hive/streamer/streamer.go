@@ -163,7 +163,7 @@ func (s *StreamReader) pollDb(fail func(error)) {
 			s.lastProcessed = block.BlockNumber
 		} else {
 			//Retrieves the calculated block height
-			s.lastProcessed = s.getBlockHeight(block.BlockNumber)
+			s.lastProcessed = s.getBlockHeight(block.BlockNumber, s.lastProcessed)
 		}
 
 		newBlocksProcessed++
@@ -201,7 +201,7 @@ type ProcessFunction func(block hiveblocks.HiveBlock)
 // Block height function returns the last block height that should be resumed form
 // This is useful for production where there is a replay requirement to get into *now* state
 // Or tests...
-type BlockHeightFunction func(lastBlock uint64) uint64
+type BlockHeightFunction func(lastBlock uint64, lastSavedBlk uint64) uint64
 
 type BlockParams struct {
 	NeedsVirtualOps bool

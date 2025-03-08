@@ -24,16 +24,15 @@ func (vblks *vscBlocks) StoreHeader(header VscHeaderRecord) {
 }
 
 // Gets VSC block by height
-// Note: this converts the height into a valid slot height
 func (vblks *vscBlocks) GetBlockByHeight(height uint64) (*VscHeaderRecord, error) {
 	ctx := context.Background()
-	slotInfo := CalculateRoundInfo(height)
 
-	findResult := vblks.FindOne(ctx, bson.M{
+	slotFilter := bson.M{
 		"slot_height": bson.M{
-			"$eq": slotInfo.StartHeight,
+			"$lte": height,
 		},
-	})
+	}
+	findResult := vblks.FindOne(ctx, slotFilter)
 
 	if findResult.Err() != nil {
 		return nil, findResult.Err()

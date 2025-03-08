@@ -20,6 +20,11 @@ type p2pMessage struct {
 	Data map[string]interface{} `json:"data"`
 }
 
+type sigMsg struct {
+	Type string
+	Msg  p2pMessage
+}
+
 type p2pSpec struct {
 	conf common.IdentityConfig
 	bp   *BlockProducer
@@ -52,9 +57,11 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 	}
 
 	if msg.Type == "block_sig" {
-
 		if s.bp.sigChannels[msg.SlotHeight] != nil {
-			s.bp.sigChannels[msg.SlotHeight] <- msg
+			s.bp.sigChannels[msg.SlotHeight] <- sigMsg{
+				Type: "sig",
+				Msg:  msg,
+			}
 		}
 	}
 	return nil

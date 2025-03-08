@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"crypto"
+	"time"
 
 	"github.com/vsc-eco/hivego"
 )
@@ -26,4 +27,8 @@ func HashSeed(seed []byte) *hivego.KeyPair {
 	h.Write(seed)
 	hSeed := h.Sum(nil)
 	return hivego.KeyPairFromBytes(hSeed)
+}
+
+func TimeToBlocks(time time.Duration) uint64 {
+	return uint64(time.Seconds() / 3)
 }

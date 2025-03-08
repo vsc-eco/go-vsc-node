@@ -46,7 +46,6 @@ func (v *VStream) ProcessBlock(blk hive_blocks.HiveBlock) {
 		}
 	}
 	v.StateEngine.ProcessBlock(blk)
-	v.StateEngine.ProcessBlockSkipRow(blk)
 }
 
 type BlockTick struct {

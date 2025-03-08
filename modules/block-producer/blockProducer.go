@@ -15,6 +15,7 @@ import (
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/chebyrash/promise"
 	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multicodec"
 	blsu "github.com/protolambda/bls12-381-util"
 	"github.com/vsc-eco/hivego"
 )
@@ -33,18 +35,22 @@ type BlockProducer struct {
 
 	config      *common.IdentityConfig
 	StateEngine *stateEngine.StateEngine
+	VscBlocks   vscBlocks.VscBlocks
 	VStream     *vstream.VStream
 	HiveCreator hive.HiveTransactionCreator
 	Datalayer   *datalayer.DataLayer
+	TxDb        transactions.Transactions
 
 	p2p     *libp2p.P2PServer
 	service libp2p.PubSubService[p2pMessage]
 
-	sigChannels  map[uint64]chan p2pMessage
+	sigChannels  map[uint64]chan sigMsg
 	blockSigning *signingInfo
 	bh           uint64
 
 	electionsDb elections.Elections
+
+	_started bool
 }
 
 type signingInfo struct {
@@ -54,6 +60,9 @@ type signingInfo struct {
 }
 
 func (bp *BlockProducer) BlockTick(bh uint64) {
+	if !bp._started {
+		return
+	}
 	bp.bh = bh
 
 	slotInfo := stateEngine.CalculateSlotInfo(bh)
@@ -71,51 +80,121 @@ func (bp *BlockProducer) BlockTick(bh uint64) {
 
 	if witnessSlot != nil {
 		if witnessSlot.Account == bp.config.Get().HiveUsername && bh%CONSENSUS_SPECS.SlotLength == 0 {
-			if witnessSlot.SlotHeight == 20 {
+			canProduce := bp.canProduce(bh)
+			if canProduce {
 				bp.ProduceBlock(witnessSlot.SlotHeight)
 			}
 		}
 	}
 }
 
+type generateBlockParams struct {
+	Transactions []vscBlocks.VscBlockTx
+	PopulateTxs  bool
+}
+
 // This function should generate a deterministically generated block
 // In the future we should apply protocol versioning to this
-func (bp *BlockProducer) GenerateBlock(slotHeight uint64) (*vscBlocks.VscHeader, error) {
+func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlockParams) (*vscBlocks.VscHeader, []string, error) {
+	prevBlock, err := bp.VscBlocks.GetBlockByHeight(slotHeight)
+	daSession := datalayer.NewSession(bp.Datalayer)
+
+	var prevBlockId *string
+	var prevRange [2]int
+	if prevBlock != nil {
+		fmt.Println("PrevBlock exists")
+		prevBlockId = &prevBlock.Id
+		prevRange = [2]int{prevBlock.EndBlock, int(slotHeight)}
+	} else {
+		prevBlockId = nil
+		prevRange = [2]int{0, int(slotHeight)}
+	}
+
+	offchainTxs := []vscBlocks.VscBlockTx{}
+	outTxs := []string{}
+	outCids := []cid.Cid{}
+	if len(options) > 0 && options[0].PopulateTxs {
+		fmt.Println("Populating transactions")
+		offchainTxs = bp.generateTransactions(slotHeight)
+
+	} else if len(options) > 0 && len(options[0].Transactions) > 0 {
+		offchainTxs = options[0].Transactions
+	}
+	for _, tx := range offchainTxs {
+		outTxs = append(outTxs, tx.Id)
+		outCids = append(outCids, cid.MustParse(tx.Id))
+	}
+
+	oplog := bp.MakeOplog(slotHeight, daSession)
+
+	fmt.Println("Oplog", oplog)
+
+	if oplog != nil {
+		offchainTxs = append(offchainTxs, *oplog)
+	}
+
+	mr, err := MerklizeCids(outCids)
+
+	if err != nil {
+		return nil, nil, err
+	}
 
 	blockData := vscBlocks.VscBlock{
 		Headers: struct {
 			Prevb *string "refmt:\"prevb\""
 		}{
-			Prevb: nil,
+			Prevb: prevBlockId,
 		},
-		Transactions: []vscBlocks.VscBlockTx{},
+		Transactions: offchainTxs,
+		MerkleRoot:   &mr,
 	}
 
-	blockCid, err := bp.Datalayer.PutObject(blockData)
-	fmt.Println(err)
+	blockCid, _ := bp.Datalayer.PutObject(blockData)
 
 	blockHeader := vscBlocks.VscHeader{
 		Type:    "vsc-bh",
 		Version: "0.1",
 		Headers: struct {
-			Br    [2]int "refmt:\"br\""
-			Prevb *string
+			Br    [2]int  "refmt:\"br\""
+			Prevb *string "refmt:\"prevb\""
 		}{
-			Br:    [2]int{0, int(slotHeight)},
-			Prevb: nil,
+			Br:    prevRange,
+			Prevb: prevBlockId,
 		},
 		MerkleRoot: nil,
 		Block:      *blockCid,
 	}
 
-	return &blockHeader, nil
+	daSession.Commit()
+
+	return &blockHeader, outTxs, nil
+}
+
+func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.VscBlockTx {
+	txs := make([]vscBlocks.VscBlockTx, 0)
+	//Get transactions here!
+
+	txRecords, _ := bp.TxDb.FindUnconfirmedTransactions(slotHeight)
+
+	for _, txRecord := range txRecords {
+		op := txRecord.Data["type"].(string)
+		txs = append(txs, vscBlocks.VscBlockTx{
+			Id:   txRecord.Id,
+			Op:   &op,
+			Type: 1,
+		})
+	}
+
+	return txs
 }
 
 func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	//For right now we will just produce a blank
 	//This will allow us to test the e2e parsing
 
-	genBlock, _ := bp.GenerateBlock(bh)
+	genBlock, transactions, _ := bp.GenerateBlock(bh, generateBlockParams{
+		PopulateTxs: true,
+	})
 
 	cid, _ := bp.Datalayer.HashObject(genBlock)
 
@@ -125,31 +204,37 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 		return
 	}
 
-	fmt.Println("producer cid", cid.String())
 	circuit, err := dids.NewBlsCircuitGenerator(electionResult.MemberKeys()).Generate(*cid)
 
 	go func() {
+		// 4 ms
 		time.Sleep(4 * time.Millisecond)
 		bp.service.Send(p2pMessage{
 			Type:       "block",
 			SlotHeight: bh,
 			Data: map[string]interface{}{
-				"producer": bp.config.Config.Get().HiveUsername,
+				"producer":     bp.config.Config.Get().HiveUsername,
+				"transactions": transactions,
 			},
 		})
 	}()
 
-	bp.sigChannels[bh] = make(chan p2pMessage)
+	bp.sigChannels[bh] = make(chan sigMsg)
 	bp.blockSigning = &signingInfo{
 		cid:        *cid,
 		slotHeight: bh,
 		circuit:    &circuit,
 	}
-	ctx, _ := context.WithTimeout(context.Background(), 20*time.Second)
-	signedWeight, err := bp.waitForSigs(ctx, &electionResult)
+
+	signedWeight, err := bp.waitForSigs(context.Background(), &electionResult)
 
 	fmt.Println("signedWeight", signedWeight, err)
 	fmt.Println("CircuitMap", circuit.CircuitMap())
+
+	if !(signedWeight > (electionResult.TotalWeight * 2 / 3)) {
+		fmt.Println("[bp] not enough signatures")
+		return
+	}
 
 	finalCircuit, _ := circuit.Finalize()
 
@@ -189,7 +274,6 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 }
 
 func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
-	fmt.Println(msg.Data)
 	if reflect.TypeOf(msg.Data["producer"]) != reflect.TypeOf("") {
 		return "", errors.New("invalid input data")
 	}
@@ -234,7 +318,28 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		return "", fmt.Errorf("failed to deserialize bls priv key: %w", err)
 	}
 
-	blockHeader, err := bp.GenerateBlock(msg.SlotHeight)
+	txStrs := []string{}
+	for _, v := range msg.Data["transactions"].([]interface{}) {
+		txStrs = append(txStrs, v.(string))
+	}
+
+	transactions := []vscBlocks.VscBlockTx{}
+	for _, txStr := range txStrs {
+		txRecord := bp.TxDb.GetTransaction(txStr)
+		if txRecord == nil {
+			return "", errors.New("invalid transaction")
+		}
+		op := txRecord.Data["type"].(string)
+		transactions = append(transactions, vscBlocks.VscBlockTx{
+			Id:   txRecord.Id,
+			Op:   &op,
+			Type: 1,
+		})
+	}
+
+	blockHeader, _, err := bp.GenerateBlock(msg.SlotHeight, generateBlockParams{
+		Transactions: transactions,
+	})
 
 	if err != nil {
 		return "", err
@@ -243,8 +348,6 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	// fmt.Println("[bp] maybe blockHeader", blockHeader, err)
 
 	cid, err := bp.Datalayer.HashObject(blockHeader)
-
-	fmt.Println("I WILL SIGN CID", cid.String())
 
 	if err != nil {
 		return "", err
@@ -263,7 +366,15 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 }
 
 func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.ElectionResult) (uint64, error) {
-
+	if bp.blockSigning == nil {
+		return 0, errors.New("no block signing info")
+	}
+	go func() {
+		time.Sleep(12 * time.Second)
+		bp.sigChannels[bp.blockSigning.slotHeight] <- sigMsg{
+			Type: "end",
+		}
+	}()
 	weightTotal := uint64(0)
 	for _, weight := range election.Weights {
 		weightTotal += weight
@@ -271,19 +382,21 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 
 	select {
 	case <-ctx.Done():
+		fmt.Println("[bp] ctx done")
 		return 0, ctx.Err() // Return error if canceled
 	default:
 		signedWeight := uint64(0)
 
 		fmt.Println("[bp] default action")
 		// Perform the operation
-		if bp.blockSigning != nil {
-			// slotHeight := bp.blockSigning.slotHeight
 
-			fmt.Println(signedWeight, weightTotal)
-			for signedWeight < (weightTotal * 9 / 10) {
-				sig := <-bp.sigChannels[bp.blockSigning.slotHeight]
+		// slotHeight := bp.blockSigning.slotHeight
 
+		for signedWeight < (weightTotal * 9 / 10) {
+			msg := <-bp.sigChannels[bp.blockSigning.slotHeight]
+
+			if msg.Type == "sig" {
+				sig := msg.Msg
 				sigStr := sig.Data["sig"].(string)
 				account := sig.Data["account"].(string)
 
@@ -301,30 +414,59 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 
 				err := circuit.AddAndVerify(member, sigStr)
 
-				fmt.Println("adding", sigStr, account)
+				fmt.Println("[bp] aggregating signature", sigStr, "from", account)
+				fmt.Println("[bp] agg err", err)
 				if err == nil {
 					signedWeight += election.Weights[index]
 				}
+
 			}
-			fmt.Println("Done waittt")
+			if msg.Type == "end" {
+				fmt.Println("Ending wait for sig")
+				break
+			}
 		}
-		fmt.Println("Returning nil")
+		fmt.Println("Done waittt")
 		return signedWeight, nil
 	}
 }
 
-func (bp *BlockProducer) MakeOplog() {
-	// fmt.Println("Making the oplog")
+func (bp *BlockProducer) canProduce(height uint64) bool {
+	txRecords, _ := bp.TxDb.FindUnconfirmedTransactions(height)
 
-	compileResult := bp.StateEngine.LedgerExecutor.Compile()
+	if len(txRecords) > 0 {
+		return true
+	}
+
+	if len(bp.StateEngine.LedgerExecutor.Oplog) > 0 {
+		return true
+	}
+	return false
+}
+
+func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBlocks.VscBlockTx {
+	compileResult := bp.StateEngine.LedgerExecutor.Compile(bh)
+
+	if compileResult == nil {
+		return nil
+	}
 
 	oplogData := map[string]interface{}{
 		"__t":   "vsc-oplog",
 		"__v":   "0.1",
-		"oplog": compileResult,
+		"oplog": compileResult.OpLog,
 	}
-	fmt.Println("oplogData", oplogData)
 
+	cborBytes, _ := common.EncodeDagCbor(oplogData)
+
+	cid, _ := common.HashBytes(cborBytes, multicodec.DagCbor)
+
+	session.Put(cborBytes, cid)
+
+	return &vscBlocks.VscBlockTx{
+		Id:   cid.String(),
+		Type: 6,
+	}
 }
 
 func (bp *BlockProducer) getSlot(bh uint64) *stateEngine.WitnessSlot {
@@ -347,6 +489,7 @@ func (bp *BlockProducer) Init() error {
 func (bp *BlockProducer) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
 		err := bp.startP2P()
+		bp._started = true
 		if err != nil {
 			reject(err)
 			return
@@ -360,9 +503,9 @@ func (bp *BlockProducer) Stop() error {
 	return bp.stopP2P()
 }
 
-func New(p2p *libp2p.P2PServer, vstream *vstream.VStream, se *stateEngine.StateEngine, conf *common.IdentityConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections) *BlockProducer {
+func New(p2p *libp2p.P2PServer, vstream *vstream.VStream, se *stateEngine.StateEngine, conf *common.IdentityConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions) *BlockProducer {
 	return &BlockProducer{
-		sigChannels: make(map[uint64]chan p2pMessage),
+		sigChannels: make(map[uint64]chan sigMsg),
 		StateEngine: se,
 		VStream:     vstream,
 		config:      conf,
@@ -370,5 +513,7 @@ func New(p2p *libp2p.P2PServer, vstream *vstream.VStream, se *stateEngine.StateE
 		p2p:         p2p,
 		Datalayer:   da,
 		electionsDb: electionsDb,
+		VscBlocks:   vscBlocks,
+		TxDb:        txDb,
 	}
 }

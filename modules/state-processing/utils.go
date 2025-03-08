@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strconv"
@@ -17,13 +19,19 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/hive/streamer"
 
+	vscCommon "vsc-node/modules/common"
+
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ipfs/go-cid"
+	cbornode "github.com/ipfs/go-ipld-cbor"
 	"github.com/libp2p/go-libp2p"
 	kadDht "github.com/libp2p/go-libp2p-kad-dht"
 	libCrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	rhost "github.com/libp2p/go-libp2p/p2p/host/routed"
+	"github.com/multiformats/go-multicodec"
+	mh "github.com/multiformats/go-multihash"
 	"github.com/vsc-eco/hivego"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -114,14 +122,6 @@ func SetupEnv() setupResult {
 }
 
 // Bad block txs that were out of slot (invalid witness per slot)
-var BAD_BLOCK_TXS = []string{
-	"d84b3cd4f9d9f1e3f663dd4b6aed3f2260eb6dd1",
-	"70e031f35fbae9d115c392b1988a655616b73d83",
-	"1ace9b1b7718f82c82f1046d50f3bb39a2e6ddbb",
-	"24d05cc8c9b187cffec66e2c3d71fefc05603bdc",
-	"5eab2219467f7401ddc6407449904aa8617558f5",
-	"3a28f4eba45552fabc5c165ab5d1cff5b0c44415",
-}
 
 type AuthCheckType struct {
 	Level    string
@@ -422,4 +422,47 @@ func MakeTxId(TxId string, opIdx int) string {
 	} else {
 		return TxId + "-" + strconv.Itoa(opIdx)
 	}
+}
+
+// Note: this is functionality different than original implementation
+// It doesn't matter as this is just for DB serialization
+// null vs bool value
+func HashAuths(auths []string) *cid.Cid {
+	obj := make(map[string]bool)
+
+	for _, v := range auths {
+		obj[v] = true
+	}
+
+	dag, _ := vscCommon.EncodeDagCbor(obj)
+
+	cid, _ := cid.Prefix{
+		Version:  1,
+		Codec:    uint64(multicodec.DagCbor),
+		MhType:   mh.SHA2_256,
+		MhLength: -1,
+	}.Sum(dag)
+
+	return &cid
+}
+
+func copyJsonToType(src map[string]interface{}, dest interface{}) error {
+	bytes, err := json.Marshal(src)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(bytes, dest)
+}
+
+func decodeTxCbor(tx *OffchainTransaction, input interface{}) error {
+	payloadBytes, err := base64.StdEncoding.DecodeString(tx.Tx["payload"].(string))
+	if err != nil {
+		return nil
+	}
+	node, _ := cbornode.Decode(payloadBytes, mh.SHA2_256, -1)
+	jsonBytes, _ := node.MarshalJSON()
+
+	fmt.Println("Decoded json bytes", string(jsonBytes))
+
+	return json.Unmarshal(jsonBytes, input)
 }

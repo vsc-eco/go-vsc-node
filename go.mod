@@ -22,6 +22,8 @@ require (
 )
 
 require (
+	github.com/StackExchange/wmi v1.2.1 // indirect
+	github.com/VictoriaMetrics/fastcache v1.12.2 // indirect
 	github.com/bits-and-blooms/bitset v1.14.2 // indirect
 	github.com/consensys/bavard v0.1.13 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240223125850-b1e8a79f509c // indirect
@@ -29,10 +31,18 @@ require (
 	github.com/filecoin-project/go-clock v0.1.0 // indirect
 	github.com/gammazero/chanqueue v1.0.0 // indirect
 	github.com/gammazero/deque v1.0.0 // indirect
+	github.com/go-ole/go-ole v1.3.0 // indirect
+	github.com/gofrs/flock v0.8.1 // indirect
 	github.com/ipfs/go-cidutil v0.1.0 // indirect
 	github.com/kilic/bls12-381 v0.1.0 // indirect
+	github.com/mattn/go-runewidth v0.0.13 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
+	github.com/olekukonko/tablewriter v0.0.5 // indirect
 	github.com/pion/transport/v3 v3.0.7 // indirect
+	github.com/rivo/uniseg v0.2.0 // indirect
+	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
+	github.com/tklauser/go-sysconf v0.3.12 // indirect
+	github.com/tklauser/numcpus v0.6.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
@@ -78,7 +88,7 @@ require (
 	github.com/ipfs/go-metrics-interface v0.0.1 // indirect
 	github.com/ipfs/go-peertaskqueue v0.8.2 // indirect
 	github.com/ipld/go-codec-dagpb v1.6.0 // indirect
-	github.com/ipld/go-ipld-prime v0.21.0 // indirect
+	github.com/ipld/go-ipld-prime v0.21.0
 	github.com/jbenet/goprocess v0.1.4 // indirect
 	github.com/libp2p/go-cidranger v1.1.0 // indirect
 	github.com/libp2p/go-libp2p-kbucket v0.6.4 // indirect
@@ -86,7 +96,7 @@ require (
 	github.com/libp2p/go-libp2p-routing-helpers v0.7.4 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/polydawn/refmt v0.89.0 // indirect
+	github.com/polydawn/refmt v0.89.0
 	github.com/supranational/blst v0.3.13
 	github.com/ugorji/go/codec v1.2.6
 	github.com/valyala/bytebufferpool v1.0.0 // indirect

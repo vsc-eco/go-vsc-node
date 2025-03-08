@@ -2,6 +2,8 @@ package e2e_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -23,10 +25,12 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/e2e"
 	election_proposer "vsc-node/modules/election-proposer"
+	transactionpool "vsc-node/modules/transaction-pool"
 	"vsc-node/modules/vstream"
 
 	cbortypes "vsc-node/lib/cbor-types"
 	DataLayer "vsc-node/lib/datalayer"
+	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/test_utils"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -94,26 +98,12 @@ func TestE2E(t *testing.T) {
 		return nil
 	}
 
-	r2e.SetSteps([]func() error{
-		func() error {
-			return nil
-		},
-		r2e.WaitToStart(), //This doesn't do anything right now
-		func() error {
-			return nil
-		},
-		r2e.Wait(5),
-		r2e.BroadcastMockElection([]string{"e2e-0", "e2e-1", "e2e-2", "e2e-3"}),
-		func() error {
-			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "test transfer")
-			return nil
-		},
-		r2e.Wait(3),
-		doWithdraw,
-		doWithdraw,
-		r2e.Wait(11),
-		doWithdraw,
-	})
+	nodeNames := make([]string, 0)
+	nodeNames = append(nodeNames, "e2e-1")
+	for i := 2; i < NODE_COUNT+1; i++ {
+		name := "e2e-" + strconv.Itoa(i)
+		nodeNames = append(nodeNames, name)
+	}
 
 	primaryNode := makeNode(t, "e2e-1", broadcastFunc, r2e)
 	runningNodes = append(runningNodes, primaryNode)
@@ -130,6 +120,56 @@ func TestE2E(t *testing.T) {
 		plugs = append(plugs, node.Aggregate)
 	}
 
+	pubKey, privKey, _ := ed25519.GenerateKey(rand.Reader)
+	didKey, _ := dids.NewKeyDID(pubKey)
+
+	transactionCreator := transactionpool.TransactionCrafter{
+		Identity: dids.NewKeyProvider(privKey),
+		Did:      didKey,
+
+		VSCBroadcast: &transactionpool.InternalBroadcast{
+			TxPool: runningNodes[0].TxPool,
+		},
+	}
+
+	r2e.SetSteps([]func() error{
+		r2e.WaitToStart(),
+		func() error {
+			return nil
+		},
+		r2e.Wait(10),
+		r2e.BroadcastMockElection(nodeNames),
+		func() error {
+			fmt.Println("Executing test transfer from test-account to @vsc.gateway of 50 hbd")
+			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "to="+didKey.String())
+			return nil
+		},
+		r2e.Wait(3),
+		doWithdraw,
+		doWithdraw,
+		r2e.Wait(11),
+		doWithdraw,
+
+		func() error {
+			for i := 0; i < 5; i++ {
+				transferOp := &transactionpool.VSCTransfer{
+					From:   didKey.String(),
+					To:     "vsc.account",
+					Amount: "0.001",
+					Asset:  "hbd",
+					NetId:  "vsc-mainnet",
+					Nonce:  uint64(i),
+				}
+				sTx, _ := transactionCreator.SignFinal(transferOp)
+
+				transactionCreator.Broadcast(sTx)
+			}
+			return nil
+		},
+		r2e.Wait(40),
+		r2e.Produce(e2e.TimeToBlocks(time.Duration(time.Hour * 24 * 3))),
+	})
+
 	mainAggregate := aggregate.New(plugs)
 
 	test_utils.RunPlugin(t, mainAggregate)
@@ -143,7 +183,6 @@ func TestE2E(t *testing.T) {
 	go func() {
 
 		fmt.Println("Connecting local peers")
-		time.Sleep(5 * time.Second)
 		peerAddrs := make([]string, 0)
 
 		for _, node := range runningNodes {
@@ -167,6 +206,8 @@ func TestE2E(t *testing.T) {
 	// mockCreator.Transfer("test-account", "vsc.gateway", "10", "HBD", "test transfer")
 
 	test_utils.RunPlugin(t, r2e, true)
+
+	select {}
 }
 
 // Mock seed for testing
@@ -226,6 +267,7 @@ func makeNode(t *testing.T, name string, mockBbrst func(tx hivego.HiveTransactio
 	p2p := p2pInterface.New(witnessesDb)
 
 	datalayer := DataLayer.New(p2p, name)
+	txpool := transactionpool.New(p2p, txDb, datalayer)
 
 	se := stateEngine.New(datalayer, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks)
 
@@ -234,7 +276,7 @@ func makeNode(t *testing.T, name string, mockBbrst func(tx hivego.HiveTransactio
 	ep := election_proposer.New(p2p, witnessesDb, electionDb, datalayer, &txCreator, identityConfig)
 
 	vstream := vstream.New(se)
-	bp := blockproducer.New(p2p, vstream, se, &identityConfig, &txCreator, datalayer, electionDb)
+	bp := blockproducer.New(p2p, vstream, se, &identityConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb)
 
 	plugins := make([]aggregate.Plugin, 0)
 
@@ -261,6 +303,7 @@ func makeNode(t *testing.T, name string, mockBbrst func(tx hivego.HiveTransactio
 		se,
 		bp,
 		ep,
+		txpool,
 	)
 
 	if r2e != nil {
@@ -287,6 +330,7 @@ func makeNode(t *testing.T, name string, mockBbrst func(tx hivego.HiveTransactio
 		P2P:              p2p,
 		VStream:          vstream,
 		ElectionProposer: ep,
+		TxPool:           txpool,
 	}
 }
 
@@ -300,4 +344,5 @@ type E2ENode struct {
 	P2P              *p2pInterface.P2PServer
 	VStream          *vstream.VStream
 	ElectionProposer election_proposer.ElectionProposer
+	TxPool           *transactionpool.TransactionPool
 }

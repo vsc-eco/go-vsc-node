@@ -47,17 +47,17 @@ type LedgerUpdate struct {
 }
 
 type OpLogEvent struct {
-	To     string
-	From   string
-	Amount int64
-	Asset  string
-	Memo   string
-	Type   string
+	To     string `json:"to"`
+	From   string `json:"from"`
+	Amount int64  `json:"amount"`
+	Asset  string `json:"asset"`
+	Memo   string `json:"memo"`
+	Type   string `json:"type"`
 
 	//Not parted of compiled state
-	Id          string
-	BIdx        int64
-	OpIdx       int64
+	Id          string `json:"id"`
+	BIdx        int64  `json:"-"`
+	OpIdx       int64  `json:"-"`
 	BlockHeight uint64 `json:"-"`
 
 	//Fee for instant stake unstake
@@ -333,6 +333,38 @@ func (ls *LedgerSystem) ExecuteActions(actionsIds []string, extraInfo ExtraInfo)
 	}
 }
 
+func (ls *LedgerSystem) IngestOplog(oplog []OpLogEvent) {
+	ledgerRecords := make([]ledgerDb.LedgerRecord, 0)
+	for _, v := range oplog {
+		fmt.Println("v", v)
+
+		if v.Type == "transfer" {
+			ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
+				Id:          v.Id + "#0",
+				Amount:      -v.Amount,
+				Asset:       v.Asset,
+				From:        v.From,
+				Owner:       v.From,
+				Type:        "transfer",
+				TxId:        v.Id,
+				BlockHeight: v.BlockHeight,
+			})
+			ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
+				Id:          v.Id + "#1",
+				Amount:      v.Amount,
+				Asset:       v.Asset,
+				Owner:       v.To,
+				Type:        "transfer",
+				TxId:        v.Id,
+				BlockHeight: v.BlockHeight,
+			})
+		}
+	}
+	for _, v := range ledgerRecords {
+		ls.LedgerDb.StoreLedger(v)
+	}
+}
+
 // Used during live execution of transfers such as those from contracts or user transaction
 type LedgerExecutor struct {
 	Ls *LedgerSystem
@@ -347,6 +379,24 @@ type LedgerExecutor struct {
 	//Live calculated gateway balances on the fly
 	//Use last saved balance as the starting data
 	GatewayBalances map[string]uint64
+}
+
+type LedgerSession struct {
+	le *LedgerExecutor
+}
+
+func (lss *LedgerSession) Clear() {
+
+}
+
+func (lss *LedgerSession) Commit() {
+
+}
+
+func (le *LedgerExecutor) NewSession() *LedgerSession {
+	return &LedgerSession{
+		le: le,
+	}
 }
 
 // Empties the virtual state, such as when a block is executed
@@ -409,10 +459,12 @@ func (le *LedgerExecutor) ExecuteTransfer(OpLogEvent OpLogEvent, options ...Tran
 		}
 	}
 
+	OpLogEvent.Type = "transfer"
+
 	le.Oplog = append(le.Oplog, OpLogEvent)
 
 	le.VirtualLedger[OpLogEvent.From] = append(le.VirtualLedger[OpLogEvent.From], LedgerUpdate{
-		Id:    OpLogEvent.Id,
+		Id:    OpLogEvent.Id + "#0",
 		BIdx:  OpLogEvent.BIdx,
 		OpIdx: OpLogEvent.OpIdx,
 
@@ -420,11 +472,10 @@ func (le *LedgerExecutor) ExecuteTransfer(OpLogEvent OpLogEvent, options ...Tran
 		Amount: -OpLogEvent.Amount,
 		Asset:  OpLogEvent.Asset,
 		Type:   "transfer",
-		Memo:   OpLogEvent.Memo,
 	})
 
 	le.VirtualLedger[OpLogEvent.To] = append(le.VirtualLedger[OpLogEvent.To], LedgerUpdate{
-		Id:    OpLogEvent.Id,
+		Id:    OpLogEvent.Id + "#1",
 		OpIdx: OpLogEvent.OpIdx,
 		BIdx:  OpLogEvent.BIdx,
 
@@ -432,7 +483,6 @@ func (le *LedgerExecutor) ExecuteTransfer(OpLogEvent OpLogEvent, options ...Tran
 		Amount: OpLogEvent.Amount,
 		Asset:  OpLogEvent.Asset,
 		Type:   "transfer",
-		Memo:   OpLogEvent.Memo,
 	})
 
 	return LedgerResult{
@@ -462,8 +512,11 @@ type DepositParams struct {
 func (le *LedgerExecutor) Deposit(deposit Deposit) {
 	decodedParams := DepositParams{}
 	values, err := url.ParseQuery(deposit.Memo)
+	fmt.Println("values.err", err)
 	if err == nil {
 		decodedParams.To = values.Get("to")
+
+		fmt.Println("decodedParams.To", decodedParams.To)
 	} else {
 		err = json.Unmarshal([]byte(deposit.Memo), &decodedParams)
 		if err != nil {
@@ -484,6 +537,8 @@ func (le *LedgerExecutor) Deposit(deposit Deposit) {
 		if !(matchedEth && len(decodedParams.To) >= 3 && len(decodedParams.To) < 17) {
 			decodedParams.To = "hive:" + deposit.From
 		}
+	} else if strings.HasPrefix(decodedParams.To, "did:") {
+		//No nothing. It's parsed correctly
 	} else {
 		//Default to the original sender to prevent fund loss
 		// addr, _ := NormalizeAddress(deposit.From, "hive")
@@ -688,10 +743,19 @@ type CompiledResult struct {
 	OpLog []OpLogEvent
 }
 
-func (le *LedgerExecutor) Compile() *CompiledResult {
+func (le *LedgerExecutor) Compile(bh uint64) *CompiledResult {
+	if len(le.Oplog) == 0 {
+		return nil
+	}
+	oplog := make([]OpLogEvent, 0)
+	// copy(oplog, le.Oplog)
 
-	oplog := make([]OpLogEvent, len(le.Oplog))
-	copy(oplog, le.Oplog)
+	for _, v := range le.Oplog {
+		//bh should be == slot height
+		if v.BlockHeight <= bh {
+			oplog = append(oplog, v)
+		}
+	}
 
 	return &CompiledResult{
 		OpLog: le.Oplog,

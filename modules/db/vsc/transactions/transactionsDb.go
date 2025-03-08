@@ -2,7 +2,6 @@ package transactions
 
 import (
 	"context"
-	"fmt"
 	"time"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
@@ -29,19 +28,18 @@ func (e *transactions) Init() error {
 }
 
 func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
-	fmt.Println("Ingesting TX")
 	ctx := context.Background()
+
 	queryy := bson.M{
 		"id": offTx.Id,
 	}
+
 	findResult := e.FindOne(ctx, bson.M{
 		"id": offTx.Id,
 	})
-	opts := options.FindOneAndUpdate()
-	opts.SetUpsert(true)
-	fmt.Println(findResult, findResult.Err())
+
+	opts := options.FindOneAndUpdate().SetUpsert(true)
 	setOp := bson.M{
-		"first_seen":     time.Now(),
 		"anchr_block":    offTx.AnchoredBlock,
 		"anchr_id":       offTx.AnchoredId,
 		"anchr_height":   offTx.AnchoredHeight,
@@ -49,13 +47,21 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 		"anchr_opidx":    offTx.AnchoredOpIdx,
 		"data":           offTx.Tx,
 		"required_auths": offTx.RequiredAuths,
+		"nonce":          offTx.Nonce,
 	}
 	if findResult.Err() != nil {
 		setOp["first_seen"] = time.Now()
 		//Prevents case of reprocessing/reindexing
-		setOp["status"] = "INCLUDED"
+		if offTx.Status != "" {
+			setOp["status"] = offTx.Status
+		} else {
+			setOp["status"] = "UNCONFIRMED"
+		}
 	} else {
 		//If it already exists do nothing
+		if offTx.Status != "" {
+			setOp["status"] = offTx.Status
+		}
 	}
 	updateResult := e.FindOneAndUpdate(ctx, queryy, bson.M{
 		"$set": setOp,
@@ -96,4 +102,45 @@ func (e *transactions) GetTransaction(id string) *TransactionRecord {
 		return nil
 	}
 	return &record
+}
+
+// Searches for unconfirmed VSC transactions with no verification
+// Provide height for expiration filtering
+func (e *transactions) FindUnconfirmedTransactions(height uint64) ([]TransactionRecord, error) {
+	query := bson.M{
+		"status": "UNCONFIRMED",
+		"$or": bson.A{
+			bson.M{
+				"expire_block": bson.M{
+					"$exists": false,
+				},
+			},
+			bson.M{
+				"expire_block": bson.M{
+					"$gt": height,
+				},
+			},
+			bson.M{
+				"expire_block": bson.M{
+					"$eq": nil,
+				},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	findResult, _ := e.Find(ctx, query)
+
+	txList := make([]TransactionRecord, 0)
+	for findResult.Next(ctx) {
+		tx := TransactionRecord{}
+		err := findResult.Decode(&tx)
+
+		if err != nil {
+			return nil, err
+		}
+		txList = append(txList, tx)
+	}
+
+	return txList, nil
 }

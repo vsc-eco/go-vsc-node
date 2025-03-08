@@ -11,8 +11,8 @@ func RegisterTypes() {
 	cbornode.RegisterCborType(vscBlocks.VscHeader{})
 	cbornode.RegisterCborType(vscBlocks.VscBlockTx{})
 	cbornode.RegisterCborType(struct {
-		Br    [2]int "refmt:\"br\""
-		Prevb *string
+		Br    [2]int  "refmt:\"br\""
+		Prevb *string "refmt:\"prevb\""
 	}{})
 	cbornode.RegisterCborType(struct {
 		Prevb *string "refmt:\"prevb\""
