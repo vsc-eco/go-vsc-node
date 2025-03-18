@@ -18,6 +18,7 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
+	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 
 	"github.com/chebyrash/promise"
 )
@@ -42,6 +43,8 @@ type StateEngine struct {
 	hiveBlocks      hive_blocks.HiveBlocks
 	vscBlocks       vscBlocks.VscBlocks
 	interestClaimDb ledgerDb.InterestClaims
+
+	wasm *wasm_parent_ipc.Wasm
 
 	//Nonce map similar to what we use before
 	NonceMap map[string]int
@@ -598,6 +601,7 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 	interestClaims ledgerDb.InterestClaims,
 	vscBlocks vscBlocks.VscBlocks,
 	actionDb ledgerDb.BridgeActions,
+	wasm *wasm_parent_ipc.Wasm,
 ) *StateEngine {
 	return &StateEngine{
 		log:      logger,
@@ -613,6 +617,8 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 		vscBlocks:       vscBlocks,
 		interestClaimDb: interestClaims,
 		txDb:            txDb,
+
+		wasm: wasm,
 
 		LedgerExecutor: &LedgerExecutor{
 			Ls: &LedgerSystem{

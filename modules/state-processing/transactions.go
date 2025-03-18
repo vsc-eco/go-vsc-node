@@ -10,8 +10,10 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
+	contract_execution_context "vsc-node/modules/contract/execution-context"
 	"vsc-node/modules/db/vsc/transactions"
 
+	"github.com/JustinKnueppel/go-result"
 	blocks "github.com/ipfs/go-block-format"
 
 	"github.com/ipfs/go-cid"
@@ -37,24 +39,57 @@ type TxVscCallContract struct {
 
 	Op         string `json:"op"`
 	ContractId string `json:"contract_id"`
+	Action     string `json:"action"`
 	Payload    string `json:"payload"`
+	MaxGas     uint   `json:"max_gas"`
+}
+
+func errorToTxResult(err error) TxResult {
+	return TxResult{
+		Success: false,
+		Ret:     err.Error(),
+	}
+}
+
+// ExecuteTx implements VSCTransaction.
+func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
+	info, err := se.contractDb.ContractById(t.ContractId)
+	if err != nil {
+		return errorToTxResult(err)
+	}
+
+	c, err := cid.Decode(info.Code)
+	if err != nil {
+		return errorToTxResult(err)
+	}
+
+	node, err := se.da.Get(c, nil)
+	if err != nil {
+		return errorToTxResult(err)
+	}
+
+	code := node.RawData()
+
+	ctx := contract_execution_context.New(t.ContractId)
+
+	availableGas := uint(math.MaxUint)
+
+	gas := min(availableGas, t.MaxGas)
+
+	return result.MapOrElse(
+		se.wasm.Execute(ctx, code, gas, t.Action, t.Payload, info.Runtime),
+		errorToTxResult,
+		func(s string) TxResult {
+			return TxResult{
+				Success: true,
+				Ret:     s,
+			}
+		},
+	)
 }
 
 func (tx TxVscCallContract) Type() string {
 	return "call_contract"
-}
-
-func (tx TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
-	//Hook up to the contract executor
-
-	//Access to ledger executor, access to IPFS state
-	//Access to ??
-
-	// se.LedgerExecutor.ExecuteTransfer()
-
-	return TxResult{
-		Success: true,
-	}
 }
 
 func (tx TxVscCallContract) TxSelf() TxSelf {

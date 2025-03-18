@@ -16,6 +16,7 @@ import (
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/hive/streamer"
+	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/test_utils"
@@ -93,7 +94,9 @@ func TestStateEngine(t *testing.T) {
 	p2p := p2p.New(witnessesDb)
 	dl := DataLayer.New(p2p, "state-engine")
 
-	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionDb)
+	wasm := wasm_parent_ipc.New()
+
+	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionDb, wasm)
 
 	se.Commit()
 
@@ -111,6 +114,7 @@ func TestStateEngine(t *testing.T) {
 		balanceDb,
 		hiveBlocks,
 		interestClaims,
+		wasm,
 		s,
 		sr,
 	})
@@ -152,7 +156,9 @@ func TestMockEngine(t *testing.T) {
 
 	dl := DataLayer.New(p2p, "state-engine")
 
-	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb)
+	wasm := wasm_parent_ipc.New()
+
+	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, wasm)
 
 	process := func(block hive_blocks.HiveBlock) {
 		se.ProcessBlock(block)
@@ -170,6 +176,7 @@ func TestMockEngine(t *testing.T) {
 		balanceDb,
 		hiveBlocks,
 		interestClaims,
+		wasm,
 	})
 
 	// go func() {

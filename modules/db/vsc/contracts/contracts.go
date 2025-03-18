@@ -26,6 +26,21 @@ func (e *contracts) Init() error {
 	return nil
 }
 
+// ContractById implements Contracts.
+func (c *contracts) ContractById(contractId string) (SetContractArgs, error) {
+	res := SetContractArgs{}
+	filter := bson.M{
+		"id": contractId,
+	}
+	qRes := c.FindOne(context.TODO(), filter)
+	if err := qRes.Err(); err != nil {
+		return res, err
+	}
+
+	err := qRes.Decode(&res)
+	return res, err
+}
+
 func (c *contracts) RegisterContract(contractId string, args SetContractArgs) {
 	findQuery := bson.M{
 		"id": contractId,
@@ -39,6 +54,7 @@ func (c *contracts) RegisterContract(contractId string, args SetContractArgs) {
 			"owner":           args.Owner,
 			"tx_id":           args.TxId,
 			"creation_height": args.CreationHeight,
+			"runtime":         args.Runtime,
 		},
 	}
 	opts := options.FindOneAndUpdate().SetUpsert(true)

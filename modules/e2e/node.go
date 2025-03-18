@@ -25,6 +25,7 @@ import (
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
+	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 
 	"vsc-node/modules/vstream"
 
@@ -108,7 +109,9 @@ func MakeNode(input MakeNodeInput) *Node {
 	datalayer := DataLayer.New(p2p, input.Username)
 	txpool := transactionpool.New(p2p, txDb, datalayer, identityConfig)
 
-	se := stateEngine.New(logger, datalayer, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb)
+	wasm := wasm_parent_ipc.New()
+
+	se := stateEngine.New(logger, datalayer, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, wasm)
 
 	dbNuker := NewDbNuker(vscDb)
 
@@ -142,6 +145,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		interestClaims,
 		contractState,
 		vstream,
+		wasm,
 		se,
 		bp,
 		ep,
