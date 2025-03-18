@@ -19,37 +19,33 @@ import (
 
 func TestVerifyExternalSigCIDKeyAndBytes(t *testing.T) {
 	// external CID, eth addr, and sig provided
-	cidStr := "bafyreibgojpwsyovx2idjo5vz75f5gf4uevegoansmx3jx4exy5zggbmre"
-	signatureHex := "0x05b806a4c8c091d604049f8333aad796c9b707cffa5c154a2d0f6d310080103b5f2d5816121806bd349eb6b206ac0d1048c787bea8325ccb3b8963ddee66e1541c"
+	cidStr := "bafyreiglzf54t4pfhn6du6ez77oi7dseba52yii7hbq77tlpasvjkzfde4"
+	signatureHex := "0x1e5c6be56c5a2915958f3b663f0831331111e2b1e0ac3e9aec2f7b497229d0f810014789193da635dc35be1ae6dbd5be5250c0f020b67f9fa2e7abe387f7d88e1c"
 	ethAddress := "0x88EBB64C264AFf10141149F9770F8D644C9D86C5"
 
 	// raw CBOR message bytes
 	msg := []byte{
-		0xa4, 0x62, 0x74, 0x78, 0xa2, 0x62, 0x6f, 0x70, 0x68, 0x74, 0x72, 0x61,
-		0x6e, 0x73, 0x66, 0x65, 0x72, 0x67, 0x70, 0x61, 0x79, 0x6c, 0x6f, 0x61,
-		0x64, 0xa4, 0x62, 0x74, 0x6b, 0x64, 0x48, 0x49, 0x56, 0x45, 0x62, 0x74,
-		0x6f, 0x78, 0x3b, 0x64, 0x69, 0x64, 0x3a, 0x70, 0x6b, 0x68, 0x3a, 0x65,
-		0x69, 0x70, 0x31, 0x35, 0x35, 0x3a, 0x31, 0x3a, 0x30, 0x78, 0x38, 0x38,
-		0x45, 0x42, 0x42, 0x36, 0x34, 0x43, 0x32, 0x36, 0x34, 0x41, 0x46, 0x66,
-		0x31, 0x30, 0x31, 0x34, 0x31, 0x31, 0x34, 0x39, 0x46, 0x39, 0x37, 0x37,
-		0x30, 0x46, 0x38, 0x44, 0x36, 0x34, 0x34, 0x43, 0x39, 0x44, 0x38, 0x36,
-		0x43, 0x35, 0x64, 0x66, 0x72, 0x6f, 0x6d, 0x78, 0x3b, 0x64, 0x69, 0x64,
-		0x3a, 0x70, 0x6b, 0x68, 0x3a, 0x65, 0x69, 0x70, 0x31, 0x35, 0x35, 0x3a,
-		0x31, 0x3a, 0x30, 0x78, 0x38, 0x38, 0x45, 0x42, 0x42, 0x36, 0x34, 0x43,
-		0x32, 0x36, 0x34, 0x41, 0x46, 0x66, 0x31, 0x30, 0x31, 0x34, 0x31, 0x31,
-		0x34, 0x39, 0x46, 0x39, 0x37, 0x37, 0x30, 0x46, 0x38, 0x44, 0x36, 0x34,
-		0x34, 0x43, 0x39, 0x44, 0x38, 0x36, 0x43, 0x35, 0x66, 0x61, 0x6d, 0x6f,
-		0x75, 0x6e, 0x74, 0x01, 0x63, 0x5f, 0x5f, 0x74, 0x66, 0x76, 0x73, 0x63,
-		0x2d, 0x74, 0x78, 0x63, 0x5f, 0x5f, 0x76, 0x63, 0x30, 0x2e, 0x32, 0x67,
-		0x68, 0x65, 0x61, 0x64, 0x65, 0x72, 0x73, 0xa4, 0x64, 0x74, 0x79, 0x70,
-		0x65, 0x01, 0x65, 0x6e, 0x6f, 0x6e, 0x63, 0x65, 0x0d, 0x67, 0x69, 0x6e,
-		0x74, 0x65, 0x6e, 0x74, 0x73, 0x80, 0x6e, 0x72, 0x65, 0x71, 0x75, 0x69,
-		0x72, 0x65, 0x64, 0x5f, 0x61, 0x75, 0x74, 0x68, 0x73, 0x81, 0x78, 0x3b,
-		0x64, 0x69, 0x64, 0x3a, 0x70, 0x6b, 0x68, 0x3a, 0x65, 0x69, 0x70, 0x31,
-		0x35, 0x35, 0x3a, 0x31, 0x3a, 0x30, 0x78, 0x38, 0x38, 0x45, 0x42, 0x42,
-		0x36, 0x34, 0x43, 0x32, 0x36, 0x34, 0x41, 0x46, 0x66, 0x31, 0x30, 0x31,
-		0x34, 0x31, 0x31, 0x34, 0x39, 0x46, 0x39, 0x37, 0x37, 0x30, 0x46, 0x38,
-		0x44, 0x36, 0x34, 0x34, 0x43, 0x39, 0x44, 0x38, 0x36, 0x43, 0x35,
+		164, 98, 116, 120, 162, 98, 111, 112, 104, 119, 105, 116,
+		104, 100, 114, 97, 119, 103, 112, 97, 121, 108, 111, 97,
+		100, 164, 98, 116, 107, 100, 72, 73, 86, 69, 98, 116,
+		111, 109, 104, 105, 118, 101, 58, 103, 101, 111, 53, 50,
+		114, 101, 121, 100, 102, 114, 111, 109, 120, 59, 100, 105,
+		100, 58, 112, 107, 104, 58, 101, 105, 112, 49, 53, 53,
+		58, 49, 58, 48, 120, 56, 56, 69, 66, 66, 54, 52,
+		67, 50, 54, 52, 65, 70, 102, 49, 48, 49, 52, 49,
+		49, 52, 57, 70, 57, 55, 55, 48, 70, 56, 68, 54,
+		52, 52, 67, 57, 68, 56, 54, 67, 53, 102, 97, 109,
+		111, 117, 110, 116, 1, 99, 95, 95, 116, 102, 118, 115,
+		99, 45, 116, 120, 99, 95, 95, 118, 99, 48, 46, 50,
+		103, 104, 101, 97, 100, 101, 114, 115, 164, 100, 116, 121,
+		112, 101, 1, 101, 110, 111, 110, 99, 101, 16, 103, 105,
+		110, 116, 101, 110, 116, 115, 128, 110, 114, 101, 113, 117,
+		105, 114, 101, 100, 95, 97, 117, 116, 104, 115, 129, 120,
+		59, 100, 105, 100, 58, 112, 107, 104, 58, 101, 105, 112,
+		49, 53, 53, 58, 49, 58, 48, 120, 56, 56, 69, 66,
+		66, 54, 52, 67, 50, 54, 52, 65, 70, 102, 49, 48,
+		49, 52, 49, 49, 52, 57, 70, 57, 55, 55, 48, 70,
+		56, 68, 54, 52, 52, 67, 57, 68, 56, 54, 67, 53,
 	}
 
 	// decode the provided signature and CID
@@ -76,6 +72,125 @@ func TestVerifyExternalSigCIDKeyAndBytes(t *testing.T) {
 	isValid, err := ethDID.Verify(block, sigStr)
 	assert.Nil(t, err)
 	assert.True(t, isValid)
+	/*
+		js encoded: 0x90f55a770a52909974ce8a033f5e060c6046a1a628234c2e61a8a1d11ff80614596fc75134cb31a04558fc9869ed7ac74f196d396cff907de6ac32216e1d9925fee0390b0d348b125dafff71891fb7a9a70403dbce52e514b5de3888344007cfc1907d585d0b0e66920f6383717e2e9e7c44e42ba86ef49b0e19983ffd702288cc8feccad8246ba9bdd9c600859bb5e43eadfa5224228b775bb152892c4a9386
+		go encoded: 0xfec2fa31c80bd2fe1d325dd7ec8de38a40077462095bda76e2030161cf061fb36dc4917ef98e6d005e1d117df7c7b2ad1d9b0bafe8d9e88de8dd477091c25d69fee0390b0d348b125dafff71891fb7a9a70403dbce52e514b5de3888344007cfc1907d585d0b0e66920f6383717e2e9e7c44e42ba86ef49b0e19983ffd702288cd0b2cabc3a4062923b484bac2fdbc5d41a10361ae647122482157869c1dccea
+
+		js type: tx_container_v0(tx_container_v0.tx tx,string __t,string __v,tx_container_v0.headers headers)
+		go type: tx_container_v0(tx_container_v0.tx tx,string __t,string __v,tx_container_v0.headers headers)tx_container_v0.headers(uint256 type,uint256 nonce,string[] required_auths)tx_container_v0.tx(string op,tx_container_v0.tx.payload payload)tx_container_v0.tx.payload(string tk,string to,string from,uint256 amount)
+
+		js type 2: tx_container_v0(tx_container_v0_tx tx,string __t,string __v,tx_container_v0_headers headers)tx_container_v0_headers(uint256 type,uint256 nonce,string[] required_auths)tx_container_v0_tx(string op,tx_container_v0_tx_payload payload)tx_container_v0_tx_payload(string tk,string to,string from,uint256 amount)
+		go type 2: tx_container_v0(tx_container_v0_tx tx,string __t,string __v,tx_container_v0_headers headers)tx_container_v0_headers(uint256 type,uint256 nonce,string[] required_auths)tx_container_v0_tx(string op,tx_container_v0_tx_payload payload)tx_container_v0_tx_payload(string tk,string to,string from,uint256 amount)
+
+		js encoded 2: 0x8864599cf4366c3385cb45e1243c2cf532675c39037804321ad28a79056e1d75 c76e4779c43a6f4a8969edc6e1f75a8bf27488f2855ea0d941407351f26e4a48 fee0390b0d348b125dafff71891fb7a9a70403dbce52e514b5de3888344007cfc1907d585d0b0e66920f6383717e2e9e7c44e42ba86ef49b0e19983ffd702288a42993297a96fe37c3af6a2b1a1cfe40afb58a7dea98c53d4b55253045cabbc3
+		go encoded 2: 0x8864599cf4366c3385cb45e1243c2cf532675c39037804321ad28a79056e1d75 db3d12d880908f53ef36ee1ef35d07abfd40ffdb05ea940facbfa87169c373d6 fee0390b0d348b125dafff71891fb7a9a70403dbce52e514b5de3888344007cfc1907d585d0b0e66920f6383717e2e9e7c44e42ba86ef49b0e19983ffd702288a42993297a96fe37c3af6a2b1a1cfe40afb58a7dea98c53d4b55253045cabbc3
+		js encoded 3: 0x8864599cf4366c3385cb45e1243c2cf532675c39037804321ad28a79056e1d75db3d12d880908f53ef36ee1ef35d07abfd40ffdb05ea940facbfa87169c373d6fee0390b0d348b125dafff71891fb7a9a70403dbce52e514b5de3888344007cfc1907d585d0b0e66920f6383717e2e9e7c44e42ba86ef49b0e19983ffd702288a42993297a96fe37c3af6a2b1a1cfe40afb58a7dea98c53d4b55253045cabbc3
+							[
+						    "0x1901",
+							0xb364cbb4ec1c3d3d438ef95f01322f22b04280d481abaa8cd6c7b5c7108f1a7e
+						    "0xb364cbb4ec1c3d3d438ef95f01322f22b04280d481abaa8cd6c7b5c7108f1a7e",
+						    "0x52c738ef2dbc2a12feaa2b2ff7dde580484533090e826ea4e42c42cded4f5dee"
+						]
+
+						{
+				    "parts": [
+				        "0x1901",
+				        "0xb364cbb4ec1c3d3d438ef95f01322f22b04280d481abaa8cd6c7b5c7108f1a7e",
+				        "0x52c738ef2dbc2a12feaa2b2ff7dde580484533090e826ea4e42c42cded4f5dee"
+				    ],
+				    "message": {
+				        "tx": {
+				            "op": "withdraw",
+				            "payload": {
+				                "tk": "HIVE",
+				                "to": "hive:geo52rey",
+				                "from": "did:pkh:eip155:1:0x88EBB64C264AFf10141149F9770F8D644C9D86C5",
+				                "amount": 1
+				            }
+				        },
+				        "__t": "vsc-tx",
+				        "__v": "0.2",
+				        "headers": {
+				            "type": 1,
+				            "nonce": 16,
+				            "intents": [],
+				            "required_auths": [
+				                "did:pkh:eip155:1:0x88EBB64C264AFf10141149F9770F8D644C9D86C5"
+				            ]
+				        }
+				    },
+				    "primaryType": "tx_container_v0",
+				    "types": {
+				        "EIP712Domain": [
+				            {
+				                "name": "name",
+				                "type": "string"
+				            }
+				        ],
+				        "tx_container_v0": [
+				            {
+				                "name": "tx",
+				                "type": "tx_container_v0.tx"
+				            },
+				            {
+				                "name": "__t",
+				                "type": "string"
+				            },
+				            {
+				                "name": "__v",
+				                "type": "string"
+				            },
+				            {
+				                "name": "headers",
+				                "type": "tx_container_v0.headers"
+				            }
+				        ],
+				        "tx_container_v0.tx": [
+				            {
+				                "name": "op",
+				                "type": "string"
+				            },
+				            {
+				                "name": "payload",
+				                "type": "tx_container_v0.tx.payload"
+				            }
+				        ],
+				        "tx_container_v0.tx.payload": [
+				            {
+				                "name": "tk",
+				                "type": "string"
+				            },
+				            {
+				                "name": "to",
+				                "type": "string"
+				            },
+				            {
+				                "name": "from",
+				                "type": "string"
+				            },
+				            {
+				                "name": "amount",
+				                "type": "uint256"
+				            }
+				        ],
+				        "tx_container_v0.headers": [
+				            {
+				                "name": "type",
+				                "type": "uint256"
+				            },
+				            {
+				                "name": "nonce",
+				                "type": "uint256"
+				            },
+				            {
+				                "name": "required_auths",
+				                "type": "string[]"
+				            }
+				        ]
+				    }
+				}
+
+	*/
 }
 
 func TestEthDIDVerify(t *testing.T) {
