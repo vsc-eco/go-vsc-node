@@ -15,6 +15,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
+
+	"github.com/go-viper/mapstructure/v2"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/vsc-eco/go-ethereum/signer/core/apitypes"
 
@@ -27,6 +29,15 @@ import (
 // - https://github.com/vsc-eco/Bitcoin-wrap-UI/blob/365d24bc592003be9600f8a0c886e4e6f9bbb1c1/src/hooks/auth/wagmi-web3modal/index.ts#L10
 // - https://github.com/w3c-ccg/did-pkh/blob/main/did-pkh-method-draft.md
 const EthDIDPrefix = "did:pkh:eip155:1:"
+
+const debug = false
+
+func runDebug(run func() error) error {
+	if debug {
+		return run()
+	}
+	return nil
+}
 
 // ===== interface assertions =====
 
@@ -58,18 +69,24 @@ func (d EthDID) Identifier() string {
 }
 
 func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
-	// decode the block using CBOR into a generic type of map[string]interface
-	var decodedData map[string]interface{}
-	if err := decodeFromCBOR(block.RawData(), &decodedData); err != nil {
-		return false, fmt.Errorf("failed to decode CBOR data: %v", err)
-	}
+	err := runDebug(func() error {
+		// decode the block using CBOR into a generic type of map[string]interface
+		var decodedData map[string]interface{}
+		if err := decodeFromCBOR(block.RawData(), &decodedData); err != nil {
+			return fmt.Errorf("failed to decode CBOR data: %v", err)
+		}
 
-	var decodedData2 []interface{}
-	if err := decodeFromCBOR(block.RawData(), &decodedData2); err != nil {
-		return false, fmt.Errorf("failed to decode CBOR data: %v", err)
-	}
+		var decodedData2 []interface{}
+		if err := decodeFromCBOR(block.RawData(), &decodedData2); err != nil {
+			return fmt.Errorf("failed to decode CBOR data: %v", err)
+		}
 
-	fmt.Println(decodedData2)
+		fmt.Println(decodedData2)
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
 
 	payload, err := ConvertCBORToEIP712TypedData("vsc.network", block.RawData(), "tx_container_v0", func(f float64) (*big.Int, error) {
 		return big.NewInt(int64(f)), nil
@@ -115,8 +132,15 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 	// get the expected addr from the DID
 	expectedAddress := d.Identifier()
 
-	fmt.Println("RECOVERED: ", recoveredAddress)
-	fmt.Println("EXPECTED: ", expectedAddress)
+	err = runDebug(func() error {
+		fmt.Println("RECOVERED: ", recoveredAddress)
+		fmt.Println("EXPECTED: ", expectedAddress)
+		return nil
+	})
+
+	if err != nil {
+		return false, err
+	}
 
 	// compare the recovered address to the expected addr
 	//
@@ -342,26 +366,6 @@ func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeNam
 				return nil
 			},
 			EmptyArrayVisitor: func(path []string) error {
-				typeName := append([]string{primaryTypeName}, path[:len(path)-1]...)
-
-				typeMap = append(typeMap, struct {
-					typeName []string
-					val      apitypes.Type
-				}{
-					typeName: typeName,
-					val: apitypes.Type{
-						Name: path[len(path)-1],
-						Type: "undefined[]",
-					},
-				})
-
-				pathMap = append(pathMap, struct {
-					path []string
-					val  interface{}
-				}{
-					path: path,
-					val:  []interface{}{},
-				})
 				return nil
 			},
 		},
@@ -427,7 +431,7 @@ func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeNam
 		for i, _ := range partialType.typeName {
 			before := partialType.typeName[:i+1] // [tx_container], [tx_container, tx], [tx_container, tx, payload]
 			after := partialType.typeName[i+1:]
-			typeName := strings.Join(before, ".")
+			typeName := strings.Join(before, "_")
 			if len(after) == 0 {
 				types[typeName] = append(types[typeName], partialType.val)
 			} else {
@@ -447,7 +451,7 @@ func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeNam
 						types[typeName] = append(val, apitypes.Type{Name: after[0], Type: arrayType + "[]"})
 						break
 					} else {
-						types[typeName] = append(val, apitypes.Type{Name: after[0], Type: typeName + "." + after[0]})
+						types[typeName] = append(val, apitypes.Type{Name: after[0], Type: typeName + "_" + after[0]})
 					}
 				}
 			}
@@ -457,20 +461,24 @@ func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeNam
 	typedData.Data.Types = types
 	typedData.Data.Message = convertPathMapToMessage(pathMap).(map[string]interface{})
 
-	for key, tv := range typedData.Data.Message {
-		fmt.Println(key, ":", tv)
-	}
+	err = runDebug(func() error {
+		for key, tv := range typedData.Data.Message {
+			fmt.Println(key, ":", tv)
+		}
 
-	jsonData, err := json.MarshalIndent(typedData, "", "  ")
-	if err != nil {
-		fmt.Println("Error:", err)
-	}
-	fmt.Println(string(jsonData))
+		jsonData, err := json.MarshalIndent(typedData, "", "  ")
+		if err != nil {
+			fmt.Println("Error:", err)
+			return err
+		}
+		fmt.Println(string(jsonData))
+		return nil
+	})
 
 	// chainId : nil
 	// version: ""
 
-	return typedData, nil
+	return typedData, err
 }
 
 // ===== EthProvider =====
@@ -507,10 +515,39 @@ func computeEIP712Hash(typedData apitypes.TypedData) ([]byte, error) {
 		return nil, fmt.Errorf("failed to hash domain separator: %v", err)
 	}
 
+	realTypedData := typedData
+	err = runDebug(func() error {
+		fmt.Println("domain", hexutil.Encode(domainSeparator))
+
+		err = mapstructure.Decode(typedData, &realTypedData)
+		if err != nil {
+			return err
+		}
+
+		fmt.Println("real typed data:", realTypedData)
+		enc, err := realTypedData.EncodeData(typedData.PrimaryType, typedData.Message, 1)
+		if err != nil {
+			return err
+		}
+		fmt.Println("real encoded:", enc.String())
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	// hash the message
 	messageHash, err := typedData.HashStruct(typedData.PrimaryType, typedData.Message)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash message: %v", err)
+	}
+
+	err = runDebug(func() error {
+		fmt.Println("msg", typedData.PrimaryType, "\n", typedData.Message, "\n", typedData.Types, "\n", hexutil.Encode(messageHash))
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	// combine the two hashes as per EIP-712 spec
@@ -524,6 +561,14 @@ func computeEIP712Hash(typedData apitypes.TypedData) ([]byte, error) {
 			[]byte{},
 		),
 	)
+
+	err = runDebug(func() error {
+		fmt.Println("final", hexutil.Encode(finalHash))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	return finalHash, nil
 }
