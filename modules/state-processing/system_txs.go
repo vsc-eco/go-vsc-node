@@ -221,7 +221,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 			// fmt.Println("Hit here 2")
 			node, _ := se.da.Get(parsedCid, nil)
 
-			dagNode, _ := dagCbor.Decode((*node).RawData(), mh.SHA2_256, -1)
+			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
 			elecResult := elections.ElectionResult{}
 			bbytes, _ := dagNode.MarshalJSON()
 			json.Unmarshal(bbytes, &elecResult)
@@ -316,7 +316,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 			node, _ := se.da.Get(parsedCid, nil)
 			fmt.Println("Got Election from DA")
 			//Verified and 2/3 majority signed
-			dagNode, _ := dagCbor.Decode((*node).RawData(), mh.SHA2_256, -1)
+			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
 			elecResult := elections.ElectionResult{
 				Proposer:    tx.Self.RequiredAuths[0],
 				BlockHeight: tx.Self.BlockHeight,
