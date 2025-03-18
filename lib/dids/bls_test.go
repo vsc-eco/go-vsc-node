@@ -10,7 +10,8 @@ import (
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/stretchr/testify/assert"
-	blst "github.com/supranational/blst/bindings/go"
+
+	// blst "github.com/supranational/blst/bindings/go"
 
 	bls "github.com/consensys/gnark-crypto/ecc/bls12-381"
 	ethBls "github.com/protolambda/bls12-381-util"
@@ -459,11 +460,11 @@ func TestBlsGnark(t *testing.T) {
 	sig := ethBls.Signature{}
 	sig.Deserialize((*[96]byte)(sigBytes))
 
-	blstSig := blst.P2Affine{}
-	blstPub := blst.P1Affine{}
-	blstPub.Deserialize(bytesPubKey)
-	blstSig.Deserialize(sigBytes)
+	// blstSig := blst.P2Affine{}
+	// blstPub := blst.P1Affine{}
+	// blstPub.Deserialize(bytesPubKey)
+	// blstSig.Deserialize(sigBytes)
 
-	fmt.Println("verified blst", blstSig.Verify(true, &blstPub, true, cidt.Bytes(), []byte("BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_")))
+	// fmt.Println("verified blst", blstSig.Verify(true, &blstPub, true, cidt.Bytes(), []byte("BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_")))
 	fmt.Println("verified", ethBls.Verify(&pk, cidt.Bytes(), &sig))
 }
