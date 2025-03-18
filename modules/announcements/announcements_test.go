@@ -44,18 +44,15 @@ func TestImmediateExecution(t *testing.T) {
 	hiveRpcClient := &mockHiveRpcClient{}
 	conf := common.NewIdentityConfig()
 
-	wif := conf.Get().HiveActiveKey
-	keypair, _ := hivego.KeyPairFromWif(wif)
-
 	txCreator := hive.LiveTransactionCreator{
 		TransactionBroadcaster: hive.TransactionBroadcaster{
-			KeyPair: keypair,
+			KeyPair: conf.HiveActiveKeyPair,
 			Client:  nil,
 		},
 		TransactionCrafter: hive.TransactionCrafter{},
 	}
 
-	anouncementsManager, err := announcements.New(hiveRpcClient, &conf, time.Second*15, &txCreator)
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, time.Second*15, &txCreator)
 	assert.NoError(t, err)
 
 	agg := aggregate.New([]aggregate.Plugin{
@@ -76,17 +73,15 @@ func TestCronExecutions(t *testing.T) {
 	// create new clients
 	hiveRpcClient := &mockHiveRpcClient{}
 	conf := common.NewIdentityConfig()
-	wif := conf.Get().HiveActiveKey
-	keypair, _ := hivego.KeyPairFromWif(wif)
 
 	txCreator := hive.LiveTransactionCreator{
 		TransactionBroadcaster: hive.TransactionBroadcaster{
-			KeyPair: keypair,
+			KeyPair: conf.HiveActiveKeyPair,
 			Client:  nil,
 		},
 		TransactionCrafter: hive.TransactionCrafter{},
 	}
-	anouncementsManager, err := announcements.New(hiveRpcClient, &conf, time.Second*2, &txCreator)
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, time.Second*2, &txCreator)
 	assert.NoError(t, err)
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
@@ -120,7 +115,7 @@ func TestStopAnnouncer(t *testing.T) {
 		},
 		TransactionCrafter: hive.TransactionCrafter{},
 	}
-	anouncementsManager, err := announcements.New(hiveRpcClient, &conf, time.Second*2, &txCreator)
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, time.Second*2, &txCreator)
 	assert.NoError(t, err)
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
@@ -148,18 +143,18 @@ func TestInvalidAnnouncementsFrequencySetup(t *testing.T) {
 
 	hiveRpcClient := &mockHiveRpcClient{}
 	conf := common.NewIdentityConfig()
-	_, err := announcements.New(hiveRpcClient, &conf, time.Second*0, nil)
+	_, err := announcements.New(hiveRpcClient, conf, time.Second*0, nil)
 	assert.Error(t, err)
-	_, err = announcements.New(hiveRpcClient, &conf, time.Second*-1, nil)
+	_, err = announcements.New(hiveRpcClient, conf, time.Second*-1, nil)
 	assert.Error(t, err)
-	_, err = announcements.New(hiveRpcClient, &conf, time.Second*-2, nil)
+	_, err = announcements.New(hiveRpcClient, conf, time.Second*-2, nil)
 	assert.Error(t, err)
-	_, err = announcements.New(hiveRpcClient, &conf, time.Second*3, nil)
+	_, err = announcements.New(hiveRpcClient, conf, time.Second*3, nil)
 	assert.NoError(t, err)
 }
 
 func TestInvalidRpcClient(t *testing.T) {
 	conf := common.NewIdentityConfig()
-	_, err := announcements.New(nil, &conf, time.Second*2, nil)
+	_, err := announcements.New(nil, conf, time.Second*2, nil)
 	assert.Error(t, err)
 }
