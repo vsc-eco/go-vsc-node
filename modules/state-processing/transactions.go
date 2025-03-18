@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
+	contract_execution_context "vsc-node/modules/contract/execution-context"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
@@ -497,37 +499,98 @@ func (bTx *BlockTx) Decode(da *datalayer.DataLayer) TransactionContainer {
 	return tx
 }
 
-// VSC interaction on Hive
-type TxVscHive struct {
-	TxSelf
-
+type txVscHiveHeader struct {
 	Type    string `json:"__t"`
 	Version string `json:"__v"`
 	NetId   string `json:"net_id"`
 	//We don't have set type for this.
 	// TODO: We should ^
 	Headers map[string]interface{} `json:"headers"`
-	Tx      ITxBody                `json:"tx"`
 }
+
+// VSC interaction on Hive
+type TxVscHive struct {
+	TxSelf
+
+	txVscHiveHeader
+	Tx VSCTransaction `json:"tx"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (t *TxVscHive) UnmarshalJSON(data []byte) error {
+	err := json.Unmarshal(data, &t.txVscHiveHeader)
+	if err != nil {
+		return err
+	}
+
+	switch t.Type {
+	case "contract": // TODO what does the onchain data look like?
+		txContainer := struct {
+			Tx TxVscCallContract `json:"tx"`
+		}{}
+		err = json.Unmarshal(data, &txContainer)
+		if err != nil {
+			return err
+		}
+		txContainer.Tx.TxSelf = &t.TxSelf
+		t.Tx = txContainer.Tx
+		return nil
+	default:
+		return fmt.Errorf("unknown transaction type %s", t.Type)
+	}
+}
+
+var _ json.Unmarshaler = &TxVscHive{}
 
 // ProcessTx implements VSCTransaction.
 func (t TxVscHive) ExecuteTx(se *StateEngine) {
-
+	t.Tx.ExecuteTx(se)
 }
 
-type ITxBody interface {
-	Type() string
-	//Define
-	AsContractCall() *TxVscContract
-	AsTransfer() *TxVSCTransfer
-	AsWithdraw() *TxVSCWithdraw
-}
+type TxVscCallContract struct {
+	*TxSelf
 
-type TxVscContract struct {
-	Op         string `json:"op"`
 	Action     string `json:"action"`
 	ContractId string `json:"contract_id"`
 	Payload    string `json:"payload"`
+	MaxGas     uint   `json:"max_gas"`
+}
+
+// ExecuteTx implements VSCTransaction.
+func (t TxVscCallContract) ExecuteTx(se *StateEngine) {
+	info, err := se.contractDb.ContractById(t.ContractId)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	c, err := cid.Decode(info.Code)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	node, err := se.da.Get(c, nil)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	code := node.RawData()
+
+	ctx := contract_execution_context.New(t.ContractId)
+
+	availableGas := uint(math.MaxUint)
+
+	gas := min(availableGas, t.MaxGas)
+
+	se.wasm.Execute(ctx, code, gas, t.Action, t.Payload, info.Runtime).
+		Inspect(func(s string) {
+			// TODO store result
+		}).
+		InspectErr(func(err error) {
+			// TODO store error result
+		})
 }
 
 type TxVSCTransfer struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"time"
 
 	ipc_host "vsc-node/lib/stdio-ipc/host"
@@ -63,6 +64,8 @@ func (w *Wasm) Stop() error {
 	return nil
 }
 
+// tera  1_000_000_000_000 per second
+// TODO consider: https://cosmwasm.cosmos.network/core/architecture/gas
 const timePer15_000GasUnits = 5 * time.Millisecond
 const startupTime = 3000 * time.Millisecond // TODO investigate large startup time
 
