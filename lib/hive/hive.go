@@ -34,7 +34,7 @@ type HiveTransactionCreator interface {
 
 type TransactionBroadcaster struct {
 	Client  *hivego.HiveRpcNode
-	KeyPair *hivego.KeyPair
+	KeyPair func() (*hivego.KeyPair, error)
 }
 
 func (t *TransactionBroadcaster) Broadcast(tx hivego.HiveTransaction) (string, error) {
@@ -145,7 +145,11 @@ func (t *TransactionCrafter) CancelTransferFromSavings(from string, requestId in
 }
 
 func (t *TransactionBroadcaster) Sign(tx hivego.HiveTransaction) (string, error) {
-	return tx.Sign(*t.KeyPair)
+	kp, err := t.KeyPair()
+	if err != nil {
+		return "", err
+	}
+	return tx.Sign(*kp)
 }
 
 func (t *TransactionCrafter) MakeTransaction(ops []hivego.HiveOperation) hivego.HiveTransaction {
