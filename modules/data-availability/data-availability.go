@@ -1,6 +1,7 @@
 package data_availability
 
 import (
+	"vsc-node/lib/datalayer"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
@@ -12,14 +13,16 @@ type DataAvailability struct {
 	p2p     *libp2p.P2PServer
 	service libp2p.PubSubService[p2pMessage]
 	conf    common.IdentityConfig
+	dl      *datalayer.DataLayer
 }
 
 var _ a.Plugin = (*DataAvailability)(nil)
 
-func New(p2p *libp2p.P2PServer, conf common.IdentityConfig) *DataAvailability {
+func New(p2p *libp2p.P2PServer, conf common.IdentityConfig, dl *datalayer.DataLayer) *DataAvailability {
 	return &DataAvailability{
 		p2p:  p2p,
 		conf: conf,
+		dl:   dl,
 	}
 }
 

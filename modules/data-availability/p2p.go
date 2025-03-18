@@ -4,17 +4,18 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
 
-	"github.com/ipfs/go-cid"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 type p2pSpec struct {
 	conf common.IdentityConfig
+	dl   *datalayer.DataLayer
 }
 
 type p2pMessageType byte
@@ -56,7 +57,7 @@ var _ libp2p.PubSubServiceParams[p2pMessage] = p2pSpec{}
 
 func (d *DataAvailability) startP2P() error {
 	var err error
-	d.service, err = libp2p.NewPubSubService(d.p2p, p2pSpec{d.conf})
+	d.service, err = libp2p.NewPubSubService(d.p2p, p2pSpec{d.conf, d.dl})
 	return err
 }
 
@@ -98,12 +99,12 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 			return fmt.Errorf("failed to create bls provider: %w", err)
 		}
 
-		c, err := cid.V0Builder{}.Sum(msg.Data())
+		c, err := s.dl.PutRaw(msg.Data(), datalayer.PutRawOptions{Pin: true})
 		if err != nil {
 			return fmt.Errorf("failed to create cid: %w", err)
 		}
 
-		sig, err := provider.SignRaw(c)
+		sig, err := provider.SignRaw(*c)
 		if err != nil {
 			return fmt.Errorf("failed to sign data: %w", err)
 		}
