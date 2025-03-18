@@ -43,6 +43,10 @@ func New(execPath ...string) *Wasm {
 }
 
 func (w *Wasm) Init() error {
+	if uint64(math.MaxUint) != uint64(math.MaxUint64) {
+		return fmt.Errorf("gas calculations require `uint` to 64-bit. This isn't supported on your machine")
+	}
+
 	err := setup()
 	if err != nil {
 		return err
