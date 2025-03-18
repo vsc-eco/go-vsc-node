@@ -227,7 +227,7 @@ func (dl *DataLayer) HashObject(data interface{}) (*cid.Cid, error) {
 	return &cid, err
 }
 
-func (dl *DataLayer) Get(cid cid.Cid, options *GetOptions) (*format.Node, error) {
+func (dl *DataLayer) Get(cid cid.Cid, options *GetOptions) (format.Node, error) {
 	//This is using direct bitswap access which may not use a block store.
 	//Thus, it will not store anything upon request.
 	block, err := dl.blockServ.GetBlock(context.Background(), cid)
@@ -241,7 +241,7 @@ func (dl *DataLayer) Get(cid cid.Cid, options *GetOptions) (*format.Node, error)
 	if err != nil {
 		return nil, err
 	}
-	return &node, nil
+	return node, nil
 	// if options.NoStore {
 	// } else {
 	// 	//This will automatically store locally
@@ -258,7 +258,7 @@ func (dl *DataLayer) GetObject(cid cid.Cid, v interface{}, options GetOptions) e
 		return err
 	}
 
-	err = cbornode.DecodeInto((*dataNode).RawData(), v)
+	err = cbornode.DecodeInto(dataNode.RawData(), v)
 
 	return err
 }
