@@ -101,7 +101,7 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	hrpc := &MockHiveRpcClient{}
 
-	announcementsManager, _ := announcements.New(hrpc, &identityConfig, time.Hour*24, &txCreator)
+	announcementsManager, _ := announcements.New(hrpc, identityConfig, time.Hour*24, &txCreator)
 
 	p2p := p2pInterface.New(witnessesDb)
 
@@ -115,7 +115,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	ep := election_proposer.New(p2p, witnessesDb, electionDb, datalayer, &txCreator, identityConfig)
 
 	vstream := vstream.New(se)
-	bp := blockproducer.New(logger, p2p, vstream, se, &identityConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb)
+	bp := blockproducer.New(logger, p2p, vstream, se, identityConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb)
 
 	multisig := gateway.New(logger, witnessesDb, electionDb, actionsDb, &txCreator, vstream, p2p, se, identityConfig)
 

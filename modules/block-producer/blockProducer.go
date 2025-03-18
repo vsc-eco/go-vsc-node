@@ -34,7 +34,7 @@ var CONSENSUS_SPECS = common.CONSENSUS_SPECS
 type BlockProducer struct {
 	a.Plugin
 
-	config      *common.IdentityConfig
+	config      common.IdentityConfig
 	StateEngine *stateEngine.StateEngine
 	VscBlocks   vscBlocks.VscBlocks
 	VStream     *vstream.VStream
@@ -505,7 +505,7 @@ func (bp *BlockProducer) Stop() error {
 	return bp.stopP2P()
 }
 
-func New(logger logger.Logger, p2p *libp2p.P2PServer, vstream *vstream.VStream, se *stateEngine.StateEngine, conf *common.IdentityConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions) *BlockProducer {
+func New(logger logger.Logger, p2p *libp2p.P2PServer, vstream *vstream.VStream, se *stateEngine.StateEngine, conf common.IdentityConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions) *BlockProducer {
 	return &BlockProducer{
 		log:         logger,
 		sigChannels: make(map[uint64]chan sigMsg),
