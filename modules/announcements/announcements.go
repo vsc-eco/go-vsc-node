@@ -22,7 +22,7 @@ import (
 // ===== types =====
 
 type announcementsManager struct {
-	conf         *common.IdentityConfig
+	conf         common.IdentityConfig
 	cron         *cron.Cron
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -42,7 +42,7 @@ var _ agg.Plugin = &announcementsManager{}
 
 // ===== constructor =====
 
-func New(client HiveRpcClient, conf *common.IdentityConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator) (*announcementsManager, error) {
+func New(client HiveRpcClient, conf common.IdentityConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator) (*announcementsManager, error) {
 
 	// sanity checks
 	if conf == nil {

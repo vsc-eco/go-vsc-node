@@ -88,7 +88,7 @@ var _ libp2p.PubSubServiceParams[p2pMessage] = p2pSpec{}
 func (bp *BlockProducer) startP2P() error {
 	var err error
 	bp.service, err = libp2p.NewPubSubService(bp.p2p, p2pSpec{
-		conf: *bp.config,
+		conf: bp.config,
 		bp:   bp,
 	})
 	return err

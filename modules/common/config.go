@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"vsc-node/modules/config"
+
+	"github.com/vsc-eco/hivego"
 )
 
 type identityConfig struct {
@@ -13,7 +15,7 @@ type identityConfig struct {
 	HiveUsername   string
 }
 
-func (ac *IdentityConfig) SetUsername(username string) error {
+func (ac *identityConfigStruct) SetUsername(username string) error {
 	if username == "" {
 		return fmt.Errorf("empty username")
 	}
@@ -22,9 +24,16 @@ func (ac *IdentityConfig) SetUsername(username string) error {
 	})
 }
 
-type IdentityConfig struct {
+func (ac *identityConfigStruct) HiveActiveKeyPair() (*hivego.KeyPair, error) {
+	wif := ac.Get().HiveActiveKey
+	return hivego.KeyPairFromWif(wif)
+}
+
+type identityConfigStruct struct {
 	*config.Config[identityConfig]
 }
+
+type IdentityConfig = *identityConfigStruct
 
 func NewIdentityConfig(dataDir ...string) IdentityConfig {
 	// gen a random seed for the BLS key
@@ -41,7 +50,7 @@ func NewIdentityConfig(dataDir ...string) IdentityConfig {
 
 	// defaults now for our config if not already provided
 
-	return IdentityConfig{config.New(
+	return &identityConfigStruct{config.New(
 		identityConfig{
 			BlsPrivKeySeed: hex.EncodeToString(seed[:]),
 			HiveActiveKey:  "ADD_YOUR_PRIVATE_WIF",
