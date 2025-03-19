@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"reflect"
 	"slices"
 	"strconv"
@@ -461,8 +460,6 @@ func decodeTxCbor(tx *OffchainTransaction, input interface{}) error {
 	}
 	node, _ := cbornode.Decode(payloadBytes, mh.SHA2_256, -1)
 	jsonBytes, _ := node.MarshalJSON()
-
-	fmt.Println("Decoded json bytes", string(jsonBytes))
 
 	return json.Unmarshal(jsonBytes, input)
 }

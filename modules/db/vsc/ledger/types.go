@@ -9,11 +9,14 @@ type Ledger interface {
 	StoreLedger(LedgerRecord)
 	GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error)
 	GetLedgerRange(account string, start uint64, end uint64, asset string) (*[]LedgerRecord, error)
+	//Gets distinct accounts on or after a block height
+	//Used to indicate whether balance has been updated or not
+	GetDistinctAccountsRange(startBlock, endBlock uint64) ([]string, error)
 }
 
 type Balances interface {
 	aggregate.Plugin
-	GetBalanceRecord(account string, blockHeight uint64, asset string) (int64, uint64, error)
+	GetBalanceRecord(account string, blockHeight uint64, asset string) (*BalanceRecord, error)
 	UpdateBalanceRecord(account string, blockHeight uint64, balances map[string]int64) error
 	GetAll(blockHeight uint64) []BalanceRecord
 }
@@ -36,12 +39,12 @@ type ClaimRecord struct {
 type BalanceRecord struct {
 	Account           string `bson:"account"`
 	BlockHeight       uint64 `bson:"block_height"`
-	Hive              int64  `bson:"t_hive"`
-	HBD               int64  `bson:"t_hbd"`
-	HBD_SAVINGS       int64  `bson:"t_hbd_savings"`
-	HBD_AVG           int64  `bson:"t_hbd_avg"`
-	HBD_CLAIM_HEIGHT  uint64 `bson:"t_hbd_claim"`
-	HBD_MODIFY_HEIGHT uint64 `bson:"t_hbd_modify"`
+	Hive              int64  `bson:"hive"`
+	HBD               int64  `bson:"hbd"`
+	HBD_SAVINGS       int64  `bson:"hbd_savings"`
+	HBD_AVG           int64  `bson:"hbd_avg"`
+	HBD_CLAIM_HEIGHT  uint64 `bson:"hbd_claim"`
+	HBD_MODIFY_HEIGHT uint64 `bson:"hbd_modify"`
 }
 
 // {
@@ -73,10 +76,11 @@ type LedgerRecord struct {
 
 type BridgeActions interface {
 	aggregate.Plugin
-	StoreWithdrawal(withdraw ActionRecord)
+	StoreAction(withdraw ActionRecord)
 	ExecuteComplete(id string)
 	Get(id string) (*ActionRecord, error)
 	SetStatus(id string, status string)
+	GetPendingActions(bh uint64) ([]ActionRecord, error)
 }
 
 type ILedgerExecutor interface {
@@ -103,9 +107,8 @@ type ActionRecord struct {
 	Type   string `bson:"type"`
 
 	//Extra stored data
-	Params map[string]interface{} `bson:"data"`
-
-	SideEffect *SideEffect
+	Params      map[string]interface{} `bson:"data"`
+	BlockHeight uint64                 `bson:"block_height"`
 }
 
 type WithdrawalSideEffect struct {

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
+	"vsc-node/lib/logger"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
@@ -19,7 +20,6 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 
 	"github.com/chebyrash/promise"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type ProcessExtraInfo struct {
@@ -55,7 +55,13 @@ type StateEngine struct {
 
 	LedgerExecutor *LedgerExecutor
 
-	TxBatch []VSCTransaction
+	//Atomic packet; aka -> array of transactions with ops in each
+	TxBatch []TxPacket
+
+	//Map of txId --> output
+	TxOutput map[string]TxOutput
+
+	log logger.Logger
 
 	slotStatus *SlotStatus
 
@@ -82,9 +88,6 @@ type StateEngine struct {
 // SideEffects []interface <-- //Placeholder for future
 
 // Finalizes state into pseudo block
-func (se *StateEngine) Finalize() {
-	//Make it happen!
-}
 
 func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64) {
 	lastClaim := se.interestClaimDb.GetLastClaim(blockHeight)
@@ -155,7 +158,6 @@ func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 // Even in that scenario, we would still need to scan backwards to get the "wet" state of the stateEngine
 // In other words, it adds complexity to the state engine while being less efficient.
 // This model is more efficient and best yet, it prevents MEV potential by locking the block execution time to the witness slot.
-// Nice right? No front-running!
 func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	blockInfo := struct {
 		BlockHeight uint64
@@ -189,12 +191,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 	for _, virtualOp := range block.VirtualOps {
 		//Process virtual operations here such as claimed interest
-		fmt.Println("registered vOP", virtualOp)
 
 		if virtualOp.Op.Type == "interest_operation" {
 			//Ensure it matches our gateway wallet
 			if virtualOp.Op.Value["owner"].(string) == common.GATEWAY_WALLET {
-				fmt.Println("virtualOp.Op.Value", virtualOp.Op.Value)
 
 				amount, err := strconv.ParseInt(virtualOp.Op.Value["interest"].(map[string]any)["amount"].(string), 10, 64)
 
@@ -209,18 +209,51 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 	for blkIdx, tx := range block.Transactions {
 
-		if tx.Operations[0].Type == "custom_json" && len(tx.Operations) > 1 {
+		if tx.Operations[0].Type == "custom_json" {
 			headerOp := tx.Operations[0]
 			Id := headerOp.Value["id"].(string)
-			RequiredAuths := arrayToStringArray(headerOp.Value["required_auths"].(primitive.A))
+			opVal := headerOp.Value
+			RequiredAuths := arrayToStringArray(opVal["required_auths"])
 
-			if (Id == "vsc.bridge_ref" || Id == "vsc.bridge_withdraw" || Id == "vsc.savings_withdraw") && RequiredAuths[0] == common.GATEWAY_WALLET {
-				if tx.Operations[1].Type == "transfer" {
-					//Process withdraw
+			se.log.Debug("INDEXING ACTIONS", RequiredAuths[0], common.GATEWAY_WALLET)
+			if (Id == "vsc.actions" || Id == "vsc.bridge_withdraw" || Id == "vsc.savings_withdraw") && RequiredAuths[0] == common.GATEWAY_WALLET {
+
+				cj := CustomJson{
+					Id:                   opVal["id"].(string),
+					RequiredAuths:        arrayToStringArray(opVal["required_auths"]),
+					RequiredPostingAuths: arrayToStringArray(opVal["required_posting_auths"]),
+					Json:                 []byte(opVal["json"].(string)),
 				}
-				if tx.Operations[1].Type == "transfer_from_savings" {
-					//Process withdraw
-				}
+
+				// txSelf := TxSelf{
+				// 	BlockHeight:   blockInfo.BlockHeight,
+				// 	BlockId:       blockInfo.BlockId,
+				// 	Timestamp:     blockInfo.Timestamp,
+				// 	Index:         blkIdx,
+				// 	OpIndex:       0,
+				// 	TxId:          tx.TransactionID,
+				// 	RequiredAuths: cj.RequiredAuths,
+				// }
+
+				actionUpdate := map[string]interface{}{}
+				json.Unmarshal(cj.Json, &actionUpdate)
+
+				aa, _ := json.Marshal(block.Transactions)
+
+				se.log.Debug("IA JSON", string(aa))
+				se.LedgerExecutor.Ls.IndexActions(actionUpdate, ExtraInfo{
+					block.BlockNumber,
+				})
+
+				// if tx.Operations[1].Type == "transfer" {
+				// 	//Process withdraw
+				// }
+				// if tx.Operations[1].Type == "transfer_from_savings" {
+				// 	//Process withdraw
+				// }
+				// if tx.Operations[1].Type == "transfer_to_savings" {
+				// 	//Process deposit
+				// }
 			}
 		}
 
@@ -254,6 +287,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			continue
 		}
 
+		var lastblock uint64
+		vscBlock, _ := se.vscBlocks.GetBlockByHeight(blockInfo.BlockHeight)
+		if vscBlock != nil {
+			lastblock = uint64(vscBlock.EndBlock)
+		}
+
+		session := se.LedgerExecutor.NewSession(lastblock)
 		if singleOp.Type == "custom_json" {
 			// fmt.Println(op.Type)
 			opVal := singleOp.Value
@@ -329,18 +369,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 				json.Unmarshal(cj.Json, &parsedTx)
 
-				parsedTx.ExecuteTx(se)
+				parsedTx.ExecuteTx(se, session)
 				continue
 			} else if cj.Id == "vsc.election_result" {
 				parsedTx := &TxElectionResult{
 					Self: txSelf,
 				}
 				json.Unmarshal(cj.Json, &parsedTx)
-				parsedTx.ExecuteTx(se)
+				parsedTx.ExecuteTx(se, session)
 				continue
 			}
 			//# End parsing system transactions
 		}
+
+		opList := make([]VSCTransaction, 0)
 
 		for opIndex, op := range tx.Operations {
 
@@ -387,7 +429,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						BIdx:  int64(tx.Index),
 						OpIdx: int64(opIndex),
 					}
-					fmt.Println("Registering deposit!", leDeposit)
+					// fmt.Println("Registering deposit!", leDeposit)
 					se.LedgerExecutor.Deposit(leDeposit)
 				}
 			}
@@ -420,6 +462,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 					json.Unmarshal(cj.Json, &parsedTx)
 
+					// se.log.Debug("parsedTx vsc.withdraw", parsedTx)
+
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.call" {
 					parsedTx := TxVscCallContract{
@@ -430,10 +474,26 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					vscTx = parsedTx
 				} else if cj.Id == "vsc.stake_hbd" {
 					//Fill this in
+					parsedTx := TxStakeHbd{
+						Self: txSelf,
+					}
+					json.Unmarshal(cj.Json, &parsedTx)
+
+					vscTx = &parsedTx
 				}
 
-				se.TxBatch = append(se.TxBatch, vscTx)
+				if vscTx != nil {
+					opList = append(opList, vscTx)
+				}
 			}
+		}
+
+		//Do not push empty tx packets
+		if len(opList) > 0 {
+			se.TxBatch = append(se.TxBatch, TxPacket{
+				TxId: tx.TransactionID,
+				Ops:  opList,
+			})
 		}
 	}
 
@@ -444,13 +504,48 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 }
 
 func (se *StateEngine) ExecuteBatch() {
-	for _, tx := range se.TxBatch {
-		// txSelf := tx.TxSelf()
-		// fmt.Println("Batch executing", txSelf.BlockHeight, txSelf.TxId)
-		tx.ExecuteTx(se)
+
+	lastBlock, _ := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight)
+
+	var lastBlockBh uint64
+	if lastBlock == nil {
+		lastBlockBh = 0
+	} else {
+		lastBlockBh = uint64(lastBlock.EndBlock)
 	}
 
-	se.TxBatch = make([]VSCTransaction, 0)
+	types := make([]string, 0)
+	for _, tx := range se.TxBatch {
+		for _, vscTx := range tx.Ops {
+			types = append(types, vscTx.Type())
+		}
+	}
+
+	for _, tx := range se.TxBatch {
+		ledgerSession := se.LedgerExecutor.NewSession(lastBlockBh)
+
+		logs := make([]string, 0)
+		ok := true
+		//TODO: Save the transaction failure status to the memory store
+		for idx, vscTx := range tx.Ops {
+			result := vscTx.ExecuteTx(se, ledgerSession)
+			se.log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
+			logs = append(logs, result.Ret)
+			if !result.Success {
+				se.log.Debug("TRANSACTION REVERTING")
+				ok = false
+				ledgerSession.Revert()
+				break
+			}
+		}
+		ledgerSession.Done()
+		se.TxOutput[tx.TxId] = TxOutput{
+			Ok:   ok,
+			Logs: logs,
+		}
+	}
+
+	se.TxBatch = make([]TxPacket, 0)
 }
 
 // Execute block within state engine as it is very important
@@ -491,7 +586,7 @@ func (se *StateEngine) Stop() error {
 	return nil
 }
 
-func New(da *DataLayer.DataLayer,
+func New(logger logger.Logger, da *DataLayer.DataLayer,
 	witnessesDb witnesses.Witnesses,
 	electionsDb elections.Elections,
 	contractDb contracts.Contracts,
@@ -502,9 +597,12 @@ func New(da *DataLayer.DataLayer,
 	hiveBlocks hive_blocks.HiveBlocks,
 	interestClaims ledgerDb.InterestClaims,
 	vscBlocks vscBlocks.VscBlocks,
+	actionDb ledgerDb.BridgeActions,
 ) *StateEngine {
 	return &StateEngine{
-		da: da,
+		log:      logger,
+		TxOutput: make(map[string]TxOutput),
+		da:       da,
 		// db: db,
 
 		witnessDb:       witnessesDb,
@@ -520,6 +618,8 @@ func New(da *DataLayer.DataLayer,
 			Ls: &LedgerSystem{
 				BalanceDb: balanceDb,
 				LedgerDb:  ledgerDb,
+				ActionsDb: actionDb,
+				log:       logger,
 			},
 		},
 	}

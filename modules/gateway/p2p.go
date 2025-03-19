@@ -1,4 +1,4 @@
-package transactionpool
+package gateway
 
 import (
 	"context"
@@ -10,15 +10,15 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-type p2pSpec struct {
-	conf common.IdentityConfig
-
-	txp *TransactionPool
-}
-
 type p2pMessage struct {
 	Type string                 `json:"type"`
 	Data map[string]interface{} `json:"data"`
+}
+
+type p2pSpec struct {
+	conf common.IdentityConfig
+
+	ms *MultiSig
 }
 
 // ValidateMessage implements libp2p.PubSubServiceParams.
@@ -28,9 +28,6 @@ func (p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Me
 }
 
 func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
-	if msg.Type == "announce_tx" {
-		s.txp.ReceiveTx(msg)
-	}
 
 	return nil
 }
@@ -52,7 +49,7 @@ func (p2pSpec) SerializeMessage(msg p2pMessage) []byte {
 }
 
 func (p2pSpec) Topic() string {
-	return "/vsc/mainnet/txpool/v1"
+	return "/vsc/mainnet/gateway/v1"
 }
 
 var _ libp2p.PubSubServiceParams[p2pMessage] = p2pSpec{}
@@ -60,20 +57,18 @@ var _ libp2p.PubSubServiceParams[p2pMessage] = p2pSpec{}
 type p2pService struct {
 }
 
-func (txp *TransactionPool) startP2P() error {
-	service, err := libp2p.NewPubSubService(txp.p2p, p2pSpec{
-		txp: txp,
+func (ms *MultiSig) startP2P() error {
+	service, err := libp2p.NewPubSubService(ms.p2p, p2pSpec{
+		ms: ms,
 	})
-
 	if err != nil {
 		return err
 	}
-	txp.service = service
-
+	ms.service = service
 	return nil
 }
 
-func (txp *TransactionPool) stopP2P() error {
+func (txp *MultiSig) stopP2P() error {
 
 	return nil
 }

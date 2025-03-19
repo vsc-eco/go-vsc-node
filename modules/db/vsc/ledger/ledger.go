@@ -2,7 +2,6 @@ package ledgerDb
 
 import (
 	"context"
-	"fmt"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
@@ -49,7 +48,6 @@ func (ledger *ledger) GetLedgerAfterHeight(account string, blockHeight uint64, a
 		findResult.Decode(&ledRes)
 		results = append(results, ledRes)
 	}
-	fmt.Println("Results: ", results)
 
 	return &results, nil
 	// return nil
@@ -65,6 +63,7 @@ func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, a
 			"$gte": start,
 			"$lte": end,
 		},
+		"tk": asset,
 	}, opts)
 	if err != nil {
 		return nil, err
@@ -76,9 +75,31 @@ func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, a
 		findResult.Decode(&ledRes)
 		results = append(results, ledRes)
 	}
-	fmt.Println("Results: ", results)
 
 	return &results, nil
+}
+
+func (ledger *ledger) GetDistinctAccountsRange(startHeight, endHeight uint64) ([]string, error) {
+	arr, err := ledger.Distinct(context.Background(), "owner", bson.M{
+		// "block_height": bson.M{
+		//Example: 21
+		// "$gte": startHeight,
+		// //Example: 30
+		// "$lte": endHeight,
+		//Captures range of 21 - 30 (inclusive)
+		// },
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	accounts := make([]string, 0)
+	for _, v := range arr {
+		accounts = append(accounts, v.(string))
+	}
+
+	return accounts, nil
 }
 
 type balances struct {
@@ -91,23 +112,24 @@ func NewBalances(d *vsc.VscDb) Balances {
 
 // Gets the balance record for a given account and asset
 // Note: this does not return updated ledger records
-func (balances *balances) GetBalanceRecord(account string, blockHeight uint64, asset string) (int64, uint64, error) {
+func (balances *balances) GetBalanceRecord(account string, blockHeight uint64, asset string) (*BalanceRecord, error) {
 	singleResult := balances.FindOne(context.Background(), bson.M{
 		"account": account,
 		"block_height": bson.M{
-			"$lt": blockHeight,
+			"$lte": blockHeight,
 		},
 	})
 
 	if singleResult.Err() != nil {
 		if singleResult.Err().Error() == "mongo: no documents in result" {
-			return 0, 0, nil
+			return nil, nil
 		}
-		return 0, 0, singleResult.Err()
+		return nil, singleResult.Err()
 	}
 	balRecord := BalanceRecord{}
 	singleResult.Decode(&balRecord)
-	return 0, 0, nil
+
+	return &balRecord, nil
 }
 
 func (balances *balances) PutBalanceRecord(balRecord BalanceRecord) {
@@ -127,7 +149,7 @@ func (balances *balances) UpdateBalanceRecord(account string, blockHeight uint64
 		"account":      account,
 		"block_height": blockHeight,
 	}, bson.M{
-		"$set": balances,
+		"$set": balancesMap,
 	}, findUpdateOpts)
 	return nil
 }
@@ -144,7 +166,7 @@ func NewActionsDb(d *vsc.VscDb) BridgeActions {
 	return &actionsDb{db.NewCollection(d.DbInstance, "ledger_actions")}
 }
 
-func (actionsDb *actionsDb) StoreWithdrawal(withdraw ActionRecord) {
+func (actionsDb *actionsDb) StoreAction(withdraw ActionRecord) {
 	findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
 	actionsDb.FindOneAndUpdate(context.Background(), bson.M{
 		"id": withdraw.Id,
@@ -154,7 +176,13 @@ func (actionsDb *actionsDb) StoreWithdrawal(withdraw ActionRecord) {
 }
 
 func (actionsDb *actionsDb) ExecuteComplete(id string) {
-
+	actionsDb.FindOneAndUpdate(context.Background(), bson.M{
+		"id": id,
+	}, bson.M{
+		"$set": bson.M{
+			"status": "complete",
+		},
+	})
 }
 
 func (actionsDb *actionsDb) Get(id string) (*ActionRecord, error) {
@@ -166,11 +194,47 @@ func (actionsDb *actionsDb) Get(id string) (*ActionRecord, error) {
 		return nil, findResult.Err()
 	}
 
-	return nil, nil
+	ac := ActionRecord{}
+
+	findResult.Decode(&ac)
+
+	return &ac, nil
 }
 
 func (actionsDb *actionsDb) SetStatus(id string, status string) {
 
+}
+
+func (actionsDb *actionsDb) GetPendingActions(bh uint64) ([]ActionRecord, error) {
+	options := options.Find().SetSort(bson.D{
+		{
+			Key:   "block_height",
+			Value: 1,
+		},
+		{
+			Key:   "id",
+			Value: 1,
+		},
+	})
+	cursor, err := actionsDb.Find(context.Background(), bson.M{
+		"status": "pending",
+		"block_height": bson.M{
+			"$lte": bh,
+		},
+	}, options)
+
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]ActionRecord, 0)
+	for cursor.Next(context.Background()) {
+		action := ActionRecord{}
+		cursor.Decode(&action)
+		results = append(results, action)
+	}
+
+	return results, nil
 }
 
 type interestClaims struct {

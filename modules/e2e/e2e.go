@@ -3,6 +3,8 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/hive"
@@ -90,8 +92,11 @@ func (e2e *E2ERunner) Init() error {
 
 func (e2e *E2ERunner) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
-		for _, step := range e2e.steps {
+		for idx, step := range e2e.steps {
+			fmt.Println("Running step " + strconv.Itoa(idx))
 			err := step()
+
+			fmt.Println("Error in step: "+strconv.Itoa(idx), err)
 			if err != nil {
 				reject(err)
 				return

@@ -12,6 +12,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
+	"vsc-node/lib/logger"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
@@ -51,6 +52,8 @@ type BlockProducer struct {
 	electionsDb elections.Elections
 
 	_started bool
+
+	log logger.Logger
 }
 
 type signingInfo struct {
@@ -126,8 +129,6 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 	}
 
 	oplog := bp.MakeOplog(slotHeight, daSession)
-
-	fmt.Println("Oplog", oplog)
 
 	if oplog != nil {
 		offchainTxs = append(offchainTxs, *oplog)
@@ -228,8 +229,8 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	signedWeight, err := bp.waitForSigs(context.Background(), &electionResult)
 
-	fmt.Println("signedWeight", signedWeight, err)
-	fmt.Println("CircuitMap", circuit.CircuitMap())
+	// fmt.Println("signedWeight", signedWeight, err)
+	// fmt.Println("CircuitMap", circuit.CircuitMap())
 
 	if !(signedWeight > (electionResult.TotalWeight * 2 / 3)) {
 		fmt.Println("[bp] not enough signatures")
@@ -284,9 +285,10 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 
 	// fmt.Println("[bp] too ahead in future", msg.SlotHeight-common.CONSENSUS_SPECS.SlotLength, bp.bh)
 	// fmt.Println("[bp] is block ahead?", msg.SlotHeight, bp.bh)
+
 	if msg.SlotHeight > bp.bh {
 		//Local node is out of sync perhaps
-		for bp.bh > msg.SlotHeight {
+		for msg.SlotHeight > bp.bh {
 			time.Sleep(1 * time.Second)
 		}
 	} else if msg.SlotHeight-common.CONSENSUS_SPECS.SlotLength > bp.bh {
@@ -503,8 +505,9 @@ func (bp *BlockProducer) Stop() error {
 	return bp.stopP2P()
 }
 
-func New(p2p *libp2p.P2PServer, vstream *vstream.VStream, se *stateEngine.StateEngine, conf *common.IdentityConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions) *BlockProducer {
+func New(logger logger.Logger, p2p *libp2p.P2PServer, vstream *vstream.VStream, se *stateEngine.StateEngine, conf *common.IdentityConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions) *BlockProducer {
 	return &BlockProducer{
+		log:         logger,
 		sigChannels: make(map[uint64]chan sigMsg),
 		StateEngine: se,
 		VStream:     vstream,

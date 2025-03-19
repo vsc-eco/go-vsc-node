@@ -31,6 +31,16 @@ func (e *elections) Init() error {
 }
 
 func (e *elections) StoreElection(a ElectionResult) error {
+
+	totalWeight := uint64(0)
+	if len(a.Weights) > 0 {
+		for _, weight := range a.Weights {
+			totalWeight = totalWeight + weight
+		}
+	} else {
+		totalWeight = uint64(len(a.Members))
+	}
+	a.TotalWeight = totalWeight
 	ctx := context.Background()
 	options := options.Update().SetUpsert(true)
 	filter := bson.M{

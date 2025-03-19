@@ -12,6 +12,7 @@ import (
 	agg "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 
+	"github.com/minio/sha256-simd"
 	"github.com/robfig/cron/v3"
 	"github.com/vsc-eco/hivego"
 
@@ -21,7 +22,7 @@ import (
 
 // ===== types =====
 
-type announcementsManager struct {
+type AnnouncementsManager struct {
 	conf         *common.IdentityConfig
 	cron         *cron.Cron
 	ctx          context.Context
@@ -38,11 +39,11 @@ type HiveRpcClient interface {
 
 // ===== interface assertions =====
 
-var _ agg.Plugin = &announcementsManager{}
+var _ agg.Plugin = &AnnouncementsManager{}
 
 // ===== constructor =====
 
-func New(client HiveRpcClient, conf *common.IdentityConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator) (*announcementsManager, error) {
+func New(client HiveRpcClient, conf *common.IdentityConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator) (*AnnouncementsManager, error) {
 
 	// sanity checks
 	if conf == nil {
@@ -55,7 +56,7 @@ func New(client HiveRpcClient, conf *common.IdentityConfig, cronDuration time.Du
 		return nil, fmt.Errorf("cron duration must be greater than 1 second") // avoid accidental too-frequent announcements
 	}
 
-	return &announcementsManager{
+	return &AnnouncementsManager{
 		cron:         cron.New(),
 		conf:         conf,
 		client:       client,
@@ -66,13 +67,13 @@ func New(client HiveRpcClient, conf *common.IdentityConfig, cronDuration time.Du
 
 // ===== implementing plugin interface =====
 
-func (a *announcementsManager) Init() error {
+func (a *AnnouncementsManager) Init() error {
 	// inits context and cancel function
 	a.ctx, a.cancel = context.WithCancel(context.Background())
 	return nil
 }
 
-func (a *announcementsManager) Start() *promise.Promise[any] {
+func (a *AnnouncementsManager) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
 		// run the first announcement immediately
 		go func() {
@@ -108,7 +109,7 @@ func (a *announcementsManager) Start() *promise.Promise[any] {
 	})
 }
 
-func (a *announcementsManager) Stop() error {
+func (a *AnnouncementsManager) Stop() error {
 	// cancel the context
 	if a.cancel != nil {
 		a.cancel()
@@ -135,7 +136,7 @@ type payloadVscNode struct {
 	VersionId       string   `json:"version_id"`
 	GitCommit       string   `json:"git_commit"`
 	ProtocolVersion uint64   `json:"protocol_version"`
-	SigningKey      string   `json:"signing_key"`
+	GatewayKey      string   `json:"gateway_key"`
 	Witness         struct {
 		Enabled bool `json:"enabled"`
 	}
@@ -150,7 +151,7 @@ type didConsensusKey struct {
 // ===== announcement impl =====
 
 // example announcement on-chain: https://hivexplorer.com/tx/cad30bcf0891b6b7f9bcf16a05dc084a02acef65
-func (a *announcementsManager) announce(ctx context.Context) error {
+func (a *AnnouncementsManager) announce(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		log.Println("announce task canceled")
@@ -206,6 +207,10 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create bls did: %w", err)
 	}
+	salt := []byte("gateway_key")
+	gatewayKey := sha256.Sum256(append(blsPrivSeed, salt...))
+
+	kp := hivego.KeyPairFromBytes(gatewayKey[:])
 
 	payload := payload{
 		Services: []string{"vsc.network"},
@@ -225,6 +230,7 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 			GitCommit:       "",          //Plz detect
 			VersionId:       "go-v0.1.0", //Use standard versioning
 			ProtocolVersion: 0,           //Protocol 0 until protocol 1 is finalized.
+			GatewayKey:      *kp.GetPublicKeyString(),
 			Witness: struct {
 				Enabled bool `json:"enabled"`
 			}{
@@ -264,12 +270,12 @@ func (a *announcementsManager) announce(ctx context.Context) error {
 	return nil
 }
 
-func (a *announcementsManager) Announce() {
+func (a *AnnouncementsManager) Announce() {
 	ctx := context.Background()
 
 	a.announce(ctx)
 }
 
-func (a *announcementsManager) PeerConnect() {
+func (a *AnnouncementsManager) PeerConnect() {
 
 }

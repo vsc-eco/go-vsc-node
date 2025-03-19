@@ -41,6 +41,7 @@ func TestStateEngine(t *testing.T) {
 	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
 	contractState := contracts.NewContractState(vscDb)
 	vscBlocks := vscBlocks.New(vscDb)
+	actionDb := ledgerDb.NewActionsDb(vscDb)
 
 	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		if op.Type == "custom_json" {
@@ -92,7 +93,7 @@ func TestStateEngine(t *testing.T) {
 	p2p := p2p.New(witnessesDb)
 	dl := DataLayer.New(p2p, "state-engine")
 
-	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks)
+	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionDb)
 
 	se.Commit()
 
@@ -135,6 +136,7 @@ func TestMockEngine(t *testing.T) {
 	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
 	contractState := contracts.NewContractState(vscDb)
 	vscBlocks := vscBlocks.New(vscDb)
+	actionsDb := ledgerDb.NewActionsDb(vscDb)
 
 	// slow down the streamer a bit for real data
 	streamer.AcceptableBlockLag = 0
@@ -150,7 +152,7 @@ func TestMockEngine(t *testing.T) {
 
 	dl := DataLayer.New(p2p, "state-engine")
 
-	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks)
+	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb)
 
 	process := func(block hive_blocks.HiveBlock) {
 		se.ProcessBlock(block)

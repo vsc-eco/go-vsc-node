@@ -19,6 +19,9 @@ type globalProps struct {
 type HiveTransactionCreator interface {
 	CustomJson(requiredAuths []string, requiredPostingAuths []string, id string, json string) hivego.HiveOperation
 	Transfer(from string, to string, amount string, asset string, memo string) hivego.HiveOperation
+	TransferToSavings(from string, to string, amount string, asset string, memo string) hivego.HiveOperation
+	TransferFromSavings(from string, to string, amount string, asset string, memo string, requestId int) hivego.HiveOperation
+
 	UpdateAccount(username string, owner *hivego.Auths, active *hivego.Auths, posting *hivego.Auths, jsonMetadata string, memoKey string) hivego.HiveOperation
 
 	MakeTransaction(ops []hivego.HiveOperation) hivego.HiveTransaction

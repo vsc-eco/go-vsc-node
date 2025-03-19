@@ -85,23 +85,20 @@ func (tx TxCreateContract) TxSelf() TxSelf {
 const CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT = 84162592
 
 // ProcessTx implements VSCTransaction.
-func (tx *TxCreateContract) ExecuteTx(se *StateEngine) {
-	if tx.Self.BlockHeight > CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT {
-		fmt.Println("Must validate storage proof")
-		// tx.StorageProof.
-		election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
+func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
+	fmt.Println("Must validate storage proof")
+	// tx.StorageProof.
+	election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
 
-		if err != nil {
-			// panic("disabled")
-			return
-		}
-
-		verified := tx.StorageProof.Verify(election)
-
-		fmt.Println("Storage proof verify result", verified)
-
-		// panic("not implemented yet")
+	if err != nil {
+		panic("Failed to get election")
 	}
+
+	verified := tx.StorageProof.Verify(election)
+
+	fmt.Println("Storage proof verify result", verified)
+
+	// panic("not implemented yet")
 
 	fmt.Println("tx.Code", tx)
 	cid := cid.MustParse(tx.Code)
@@ -144,6 +141,9 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) {
 	// bbytes, _ := dagCbor.MarshalJSON()
 	// fmt.Println("GDAGCBOR TEST", string(bbytes), cid2)
 
+	return TxResult{
+		Success: true,
+	}
 }
 
 func (tx *TxCreateContract) ToData() map[string]interface{} {
@@ -207,7 +207,7 @@ func (tx TxElectionResult) TxSelf() TxSelf {
 }
 
 // ProcessTx implements VSCTransaction.
-func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
+func (tx *TxElectionResult) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) {
 	// ctx := context.Background()
 	if tx.Epoch == 0 {
 		electionResult := se.electionDb.GetElection(0)
@@ -441,12 +441,13 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	blockContentC := vscBlocks.VscBlock{}
 	// json.Unmarshal(jsonBytes, &blockContent)
 
-	err := se.da.GetObject(blockCid, &blockContentC, datalayer.GetOptions{})
+	se.da.GetObject(blockCid, &blockContentC, datalayer.GetOptions{})
 
-	fmt.Println("399 err GetObject", err, blockContentC)
+	// fmt.Println("399 err GetObject", err, blockContentC)
 
-	bbyes, _ := json.Marshal(blockContentC)
-	fmt.Println("Decoded VSC Block header", string(bbyes))
+	// bbyes, _ := json.Marshal(blockContentC)
+	// fmt.Println("Decoded VSC Block header", string(bbyes))
+
 	slotInfo := CalculateSlotInfo(t.Self.BlockHeight)
 
 	se.vscBlocks.StoreHeader(vscBlocks.VscHeaderRecord{
@@ -464,10 +465,12 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		}{
 			Size: uint64(len(jsonBytes)),
 		},
-		Ts: t.Self.Timestamp,
+		Ts:        t.Self.Timestamp,
+		DebugData: blockContentC,
 	})
 
-	txsToInjest := make([]VSCTransaction, 0)
+	txsToInjest := make([]TxPacket, 0)
+
 	//At this point of the process a call should be made to state engine
 	//To kick off finalization of the inflight state
 	//Such as transfers, contract calls, etc
@@ -486,7 +489,6 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		//Thus: TX confirmation is 30s maximum
 		//Author: @vaultec81
 
-		fmt.Println("txContainer.Type()", tx)
 		txContainer := tx.Decode(se.da, TxSelf{
 			TxId:        txInfo.Id,
 			Index:       -1,
@@ -494,7 +496,6 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			BlockHeight: uint64(t.SignedBlock.Headers.Br[1]),
 			BlockId:     t.Self.BlockId,
 		})
-		fmt.Println("Iterating transaction check", tx, txContainer.Type())
 
 		if txContainer.Type() == "transaction" {
 			//Note: sig verification has already happened
@@ -509,9 +510,10 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			})
 
 			txs := tx.ToTransaction()
-			for _, tx := range txs {
-				txsToInjest = append(txsToInjest, tx)
-			}
+			txsToInjest = append(txsToInjest, TxPacket{
+				TxId: t.Self.TxId,
+				Ops:  txs,
+			})
 		} else if txContainer.Type() == "output" {
 			contractOutput := txContainer.AsContractOutput()
 			// fmt.Println(contractOutput, string(jsonBlsaz))
@@ -524,8 +526,8 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 		} else if txContainer.Type() == "oplog" {
 
-			fmt.Println("OpLog detected!", txContainer)
 			oplog := txContainer.AsOplog()
+			fmt.Println("OpLog detected!", txContainer, oplog)
 			oplog.ExecuteTx(se)
 		}
 	}

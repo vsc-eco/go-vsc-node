@@ -8,6 +8,7 @@ import (
 	"slices"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/transactions"
 	libp2p "vsc-node/modules/p2p"
 
@@ -23,6 +24,8 @@ type TransactionPool struct {
 	p2p       *libp2p.P2PServer
 	service   libp2p.PubSubService[p2pMessage]
 	datalayer *datalayer.DataLayer
+
+	conf common.IdentityConfig
 }
 
 type IngestOptions struct {
@@ -50,7 +53,6 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 
 	jsonData, _ := node.MarshalJSON()
 
-	fmt.Println("jsonData", jsonData)
 	json.Unmarshal(jsonData, &tempObj)
 
 	verifiedDids := make([]dids.KeyDID, 0)
@@ -101,7 +103,10 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 
 	fmt.Println("tx CID", cidz.String(), "cidc", cidc.String())
 
+	fmt.Println("Options", options)
 	if options[0].Broadcast {
+
+		fmt.Println("cidz.String(), sTx", cidz.String(), sTx)
 		tp.Broadcast(cidz.String(), sTx)
 	}
 
@@ -181,9 +186,7 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 }
 
 func (tp *TransactionPool) indexTx(txId string, txShell VSCTransactionShell) {
-	payloadJson := map[string]interface{}{
-		"type": "unknown",
-	}
+	payloadJson := map[string]interface{}{}
 
 	cbornode.DecodeInto(txShell.Tx.Payload, &payloadJson)
 
@@ -211,6 +214,7 @@ func (tp *TransactionPool) Start() *promise.Promise[any] {
 			reject(err)
 			return
 		}
+
 		<-tp.service.Context().Done()
 		resolve(nil)
 	})
@@ -220,10 +224,11 @@ func (tp *TransactionPool) Stop() error {
 	return tp.stopP2P()
 }
 
-func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, da *datalayer.DataLayer) *TransactionPool {
+func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, da *datalayer.DataLayer, conf common.IdentityConfig) *TransactionPool {
 	return &TransactionPool{
 		TxDb:      txDb,
 		p2p:       p2p,
 		datalayer: da,
+		conf:      conf,
 	}
 }

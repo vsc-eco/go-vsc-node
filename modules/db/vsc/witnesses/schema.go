@@ -11,6 +11,7 @@ type Witness struct {
 	ProtocolVersion uint64            `json:"protocol_version" bson:"protocol_version"`
 	Ts              string            `json:"ts" bson:"ts"`
 	VersionId       string            `json:"version_id" bson:"version_id"`
+	GatewayKey      string            `json:"gateway_key" bson:"gateway_key"`
 }
 
 type PostingJsonMetadata struct {
@@ -38,12 +39,14 @@ type PostingJsonMetadataVscNode struct {
 		// DelayNotch  int      `json:"delay_notch"`
 		// SigningKeys []string `json:"signing_keys"`
 	} `json:"witness"`
+	GatewayKey string `json:"gateway_key"`
 }
 
 type SetWitnessUpdateType struct {
-	Metadata PostingJsonMetadata
-	Account  string
-	Height   uint64
-	TxId     string
-	BlockId  string
+	Metadata   PostingJsonMetadata
+	Account    string
+	Height     uint64
+	TxId       string
+	BlockId    string
+	GatewayKey string
 }

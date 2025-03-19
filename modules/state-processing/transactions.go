@@ -44,7 +44,7 @@ func (tx TxVscCallContract) Type() string {
 	return "call_contract"
 }
 
-func (tx TxVscCallContract) ExecuteTx(se *StateEngine) {
+func (tx TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
 	//Hook up to the contract executor
 
 	//Access to ledger executor, access to IPFS state
@@ -52,6 +52,9 @@ func (tx TxVscCallContract) ExecuteTx(se *StateEngine) {
 
 	// se.LedgerExecutor.ExecuteTransfer()
 
+	return TxResult{
+		Success: true,
+	}
 }
 
 func (tx TxVscCallContract) TxSelf() TxSelf {
@@ -88,36 +91,65 @@ func (tx TxVSCTransfer) TxSelf() TxSelf {
 	return tx.Self
 }
 
-func (tx TxVSCTransfer) ExecuteTx(se *StateEngine) {
-	fmt.Println("Executing transfer tx", tx)
-	// if tx.NetId != common.NETWORK_ID {
-	// 	return
-	// }
+func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
+	if tx.NetId != common.NETWORK_ID {
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid network id",
+		}
+	}
 	if tx.To == "" || tx.From == "" {
-		return
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid to/from",
+		}
+	}
+
+	if (!strings.HasPrefix(tx.To, "did:") && !strings.HasPrefix(tx.To, "hive:")) || (!strings.HasPrefix(tx.From, "did:") && !strings.HasPrefix(tx.From, "hive:")) {
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid to/from",
+		}
 	}
 
 	if !slices.Contains(tx.Self.RequiredAuths, tx.From) {
-		return
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid RequiredAuths",
+		}
 	}
-	amount, _ := strconv.ParseFloat(tx.Amount, 64)
+	amount, err := strconv.ParseFloat(tx.Amount, 64)
+
+	if err != nil {
+		return TxResult{
+			Success: false,
+		}
+	}
 
 	amt := amount * math.Pow(10, 3)
 
 	transferParams := OpLogEvent{
-		Id:     MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
-		BIdx:   int64(tx.Self.Index),
-		OpIdx:  int64(tx.Self.OpIndex),
-		From:   tx.From,
-		To:     tx.To,
-		Amount: int64(amt),
-		Asset:  tx.Asset,
-		Memo:   tx.Memo,
+		Id:          MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
+		BIdx:        int64(tx.Self.Index),
+		OpIdx:       int64(tx.Self.OpIndex),
+		From:        tx.From,
+		To:          tx.To,
+		Amount:      int64(amt),
+		Asset:       tx.Asset,
+		Memo:        tx.Memo,
+		BlockHeight: tx.Self.BlockHeight,
 	}
 
-	ledgerResult := se.LedgerExecutor.ExecuteTransfer(transferParams)
+	se.log.Debug("Transfer - tx.Self.BlockHeight", tx.Self.BlockHeight)
 
-	fmt.Println("LedgerResult", ledgerResult)
+	ledgerResult := se.LedgerExecutor.ExecuteTransfer(transferParams, ledgerSession)
+
+	se.log.Debug("Transfer LedgerResult", ledgerResult)
+
+	return TxResult{
+		Success: ledgerResult.Ok,
+		Ret:     ledgerResult.Msg,
+	}
 }
 
 func (tx TxVSCTransfer) ToData() map[string]interface{} {
@@ -136,8 +168,8 @@ type TxVSCWithdraw struct {
 
 	From   string `json:"from"`
 	To     string `json:"to"`
-	Amount int64  `json:"amount"`
-	Token  string `json:"token"`
+	Amount string `json:"amount"`
+	Asset  string `json:"asset"`
 	Memo   string `json:"memo"`
 }
 
@@ -152,21 +184,32 @@ func (tx TxVSCWithdraw) TxSelf() TxSelf {
 // Development note:
 // t.From is a slightly different field from t.Self.RequiredAuths[0]
 // It must exist this way for cosigned transaction support.
-func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine) {
+// Note: this function does the work of translating any and all VSC transactions to the ledger compatible formats
+// ledgerExecutor will then do the heavy lifting of executing the input ops
+// as LedgerExecutor may be called within other contexts, such as the contract executor
+func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
 	if t.NetId != common.NETWORK_ID {
-		return
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid network id",
+		}
 	}
 	if t.To == "" {
-		return
+		//Maybe default to self later?
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid to",
+		}
 	}
+	fl, _ := strconv.ParseFloat(t.Amount, 64)
 	params := WithdrawParams{
 		Id:     MakeTxId(t.Self.TxId, t.Self.OpIndex),
 		BIdx:   int64(t.Self.Index),
 		OpIdx:  int64(t.Self.OpIndex),
 		To:     t.To,
-		Asset:  t.Token,
+		Asset:  t.Asset,
 		Memo:   t.Memo,
-		Amount: t.Amount,
+		Amount: int64(fl * math.Pow(10, 3)),
 	}
 	if t.From == "" {
 		params.From = "hive:" + t.Self.RequiredAuths[0]
@@ -176,11 +219,20 @@ func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine) {
 
 	//Verifies
 	if !slices.Contains(t.Self.RequiredAuths, strings.Split(t.From, ":")[1]) {
-		return
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid RequiredAuths",
+		}
 	}
 
-	se.LedgerExecutor.Withdraw(params)
+	parameter, _ := json.Marshal(params)
+	ledgerResult := se.LedgerExecutor.Withdraw(params, ledgerSession)
 
+	se.log.Debug("ExecuteTx Result", params, ledgerResult, string(parameter))
+	return TxResult{
+		Success: ledgerResult.Ok,
+		Ret:     ledgerResult.Msg,
+	}
 }
 
 func (tx *TxVSCWithdraw) ToData() map[string]interface{} {
@@ -188,9 +240,84 @@ func (tx *TxVSCWithdraw) ToData() map[string]interface{} {
 		"from":   tx.From,
 		"to":     tx.To,
 		"amount": tx.Amount,
-		"token":  tx.Token,
+		"asset":  tx.Asset,
 		"memo":   tx.Memo,
 	}
+}
+
+type TxStakeHbd struct {
+	Self   TxSelf
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Amount string `json:"amount"`
+	Asset  string `json:"asset"`
+	Typei  string `json:"type"`
+
+	NetId string `json:"-"`
+}
+
+func (t *TxStakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
+	if t.NetId != common.NETWORK_ID {
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid network id",
+		}
+	}
+	if t.To == "" || t.From == "" {
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid to/from",
+		}
+	}
+	fl, _ := strconv.ParseFloat(t.Amount, 64)
+	params := StakeOp{
+		OpLogEvent: OpLogEvent{
+			Id:          MakeTxId(t.Self.TxId, t.Self.OpIndex),
+			To:          t.To,
+			From:        t.From,
+			Asset:       t.Asset,
+			Amount:      int64(fl * math.Pow(10, 3)),
+			Memo:        "",
+			BlockHeight: t.Self.BlockHeight,
+		},
+	}
+	if t.From == "" {
+		params.From = "hive:" + t.Self.RequiredAuths[0]
+	} else {
+		params.From = t.From
+	}
+
+	if !slices.Contains(t.Self.RequiredAuths, t.From) {
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid RequiredAuths",
+		}
+	}
+	ledgerResult := se.LedgerExecutor.Stake(params, ledgerSession)
+
+	se.log.Debug("Stake LedgerResult", ledgerResult)
+	return TxResult{
+		Success: ledgerResult.Ok,
+		Ret:     ledgerResult.Msg,
+	}
+}
+
+func (t *TxStakeHbd) ToData() map[string]interface{} {
+	return map[string]interface{}{
+		"from":   t.From,
+		"to":     t.To,
+		"amount": t.Amount,
+		"asset":  t.Asset,
+		"type":   t.Type,
+	}
+}
+
+func (t *TxStakeHbd) TxSelf() TxSelf {
+	return t.Self
+}
+
+func (t *TxStakeHbd) Type() string {
+	return "stake_hbd"
 }
 
 type TransactionSig struct {
@@ -205,6 +332,7 @@ type TransactionSig struct {
 }
 
 type TransactionHeader struct {
+	NetId         string   `json:"net_id"`
 	Nonce         uint64   `json:"nonce"`
 	RequiredAuths []string `json:"required_auths" jsonschema:"required"`
 }
@@ -269,11 +397,11 @@ func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
 
 	bJson, _ := dag.MarshalJSON()
 
-	fmt.Println("bJson", string(bJson))
 	offchainTx := OffchainTransaction{
 		TxId: tx.Id,
 		Self: TxSelf{
-			TxId: tx.Id,
+			TxId:        tx.Id,
+			BlockHeight: tx.Self.BlockHeight,
 		},
 	}
 	json.Unmarshal(bJson, &offchainTx)
@@ -307,13 +435,13 @@ func (tx *TransactionContainer) AsOplog() Oplog {
 		panic(err)
 	}
 	jsonBytes, _ := node.MarshalJSON()
-	fmt.Println("Oplog node", node, string(jsonBytes))
+	// fmt.Println("Oplog node", node, string(jsonBytes))
 
 	oplog := Oplog{
 		Self: tx.Self,
 	}
 	json.Unmarshal(jsonBytes, &oplog)
-	fmt.Println("Oplog decoded", oplog)
+	// fmt.Println("Oplog decoded", oplog)
 
 	return oplog
 }
@@ -336,7 +464,18 @@ func (oplog *Oplog) ExecuteTx(se *StateEngine) {
 		v.BlockHeight = oplog.Self.BlockHeight
 		aoplog = append(aoplog, v)
 	}
-	se.LedgerExecutor.Ls.IngestOplog(aoplog)
+	vscBlock, _ := se.vscBlocks.GetBlockByHeight(oplog.Self.BlockHeight - 1)
+
+	startBlock := uint64(0)
+	if vscBlock != nil {
+		//Need to confirm the slot height here
+		startBlock = uint64(vscBlock.EndBlock)
+	}
+
+	se.LedgerExecutor.Ls.IngestOplog(aoplog, OplogInjestOptions{
+		EndHeight:   oplog.Self.BlockHeight,
+		StartHeight: startBlock,
+	})
 }
 
 type OffchainTransaction struct {
@@ -426,17 +565,21 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, txSelf TxSelf) {
 	anchoredIndex := int64(txSelf.Index)
 	anchoredOpIdx := int64(txSelf.OpIndex)
 
-	parsedTx := tx.ToTransaction()[0]
-
 	data := make(map[string]interface{})
+	txs := tx.ToTransaction()
 
-	for k, v := range parsedTx.ToData() {
-		data[k] = v
+	if len(txs) == 0 {
+		data = tx.Tx
+	} else {
+		parsedTx := txs[0]
+
+		for k, v := range parsedTx.ToData() {
+			data[k] = v
+		}
+
+		data["type"] = parsedTx.Type()
 	}
 
-	data["type"] = parsedTx.Type()
-
-	fmt.Println("Ingesting the following tx", tx.Tx)
 	se.txDb.Ingest(transactions.IngestTransactionUpdate{
 		Status:         "INCLUDED",
 		Id:             tx.TxId,
@@ -460,36 +603,49 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 	self := tx.TxSelf()
 	self.RequiredAuths = tx.Headers.RequiredAuths
 
+	fmt.Println("stakeTx tx.Tx[type].(string)", tx.Tx["type"].(string))
 	var vtx VSCTransaction
 	switch tx.Tx["type"].(string) {
 	case "call":
 		callTx := TxVscCallContract{
-			Self: self,
+			Self:  self,
+			NetId: tx.Headers.NetId,
 		}
 		vtx = callTx
 	case "transfer":
 		transferTx := TxVSCTransfer{
-			Self: self,
+			Self:  self,
+			NetId: tx.Headers.NetId,
 		}
-		decodeErr := decodeTxCbor(tx, &transferTx)
+		decodeTxCbor(tx, &transferTx)
 
-		bbytes, _ := json.Marshal(transferTx)
-		fmt.Println("Decoded transfer tx", string(bbytes), decodeErr)
+		// bbytes, _ := json.Marshal(transferTx)
+		// fmt.Println("Decoded transfer tx", string(bbytes), decodeErr)
 		vtx = transferTx
 	case "withdraw":
 		withdrawTx := TxVSCWithdraw{
-			Self: self,
+			Self:  self,
+			NetId: tx.Headers.NetId,
 		}
 		decodeTxCbor(tx, &withdrawTx)
 
 		vtx = &withdrawTx
-	case "stake_hbd":
+	case "stake":
+		stakeTx := TxStakeHbd{
+			Self: self,
 
+			NetId: tx.Headers.NetId,
+		}
+
+		decodeTxCbor(tx, &stakeTx)
+
+		fmt.Println("stakeTx", stakeTx)
+		vtx = &stakeTx
 	case "unstake_hbd":
 
 	}
 
-	fmt.Println("Maybe transfer tx", vtx, tx.Type())
+	// fmt.Println("Maybe transfer tx", vtx, tx.Type())
 
 	if vtx == nil {
 		return nil
@@ -503,15 +659,17 @@ func (tx *OffchainTransaction) Type() string {
 	return "offchain"
 }
 
-var _ VSCTransaction = &TxElectionResult{}
+// var _ VSCTransaction = &TxElectionResult{}
 
 // var _ VSCTransaction = &TxProposeBlock{}
+
+// This would probably be the only one to be considered a tx, since we can apply pulling of balance for deployment
 var _ VSCTransaction = &TxCreateContract{}
 
 var _ VscTxContainer = &OffchainTransaction{}
 
 type VSCTransaction interface {
-	ExecuteTx(se *StateEngine)
+	ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult
 	TxSelf() TxSelf
 	ToData() map[string]interface{}
 	Type() string
@@ -520,15 +678,4 @@ type VSCTransaction interface {
 type VscTxContainer interface {
 	Type() string //Hive, offchain
 	ToTransaction() []VSCTransaction
-}
-
-// More information about the TX
-type TxSelf struct {
-	TxId          string
-	BlockId       string
-	BlockHeight   uint64
-	Index         int
-	OpIndex       int
-	Timestamp     string
-	RequiredAuths []string
 }

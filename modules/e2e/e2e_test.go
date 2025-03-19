@@ -4,37 +4,19 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"testing"
 	"time"
 	"vsc-node/modules/aggregate"
-	"vsc-node/modules/announcements"
-	blockproducer "vsc-node/modules/block-producer"
-	"vsc-node/modules/common"
 	"vsc-node/modules/config"
-	"vsc-node/modules/db"
-	"vsc-node/modules/db/vsc"
-	"vsc-node/modules/db/vsc/contracts"
-	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
-	"vsc-node/modules/db/vsc/transactions"
-	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
-	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/e2e"
-	election_proposer "vsc-node/modules/election-proposer"
 	transactionpool "vsc-node/modules/transaction-pool"
-	"vsc-node/modules/vstream"
 
 	cbortypes "vsc-node/lib/cbor-types"
-	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
-	"vsc-node/lib/hive"
 	"vsc-node/lib/test_utils"
-	ledgerDb "vsc-node/modules/db/vsc/ledger"
-	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -64,7 +46,7 @@ func TestE2E(t *testing.T) {
 
 		return nil
 	}
-	runningNodes := make([]E2ENode, 0)
+	runningNodes := make([]e2e.Node, 0)
 
 	//Make primary node
 
@@ -73,19 +55,17 @@ func TestE2E(t *testing.T) {
 	}
 
 	doWithdraw := func() error {
-		withdrawalRequest := map[string]interface{}{
-			"net_id": common.NETWORK_ID,
-			"amount": 1,
-			"from":   "hive:test-account",
-			"to":     "hive:test-account",
-			"token":  "hbd",
+		withdrawalRequest := transactionpool.VscWithdraw{
+			Amount: "0.020",
+			Asset:  "hbd",
+			From:   "hive:test-account",
+			To:     "hive:test-account",
+			NetId:  "vsc-mainnet",
 		}
 
-		serialzedBytes, _ := json.Marshal(withdrawalRequest)
+		ops, _ := withdrawalRequest.SerializeHive()
 
-		op := r2e.HiveCreator.CustomJson([]string{"test-account"}, []string{}, "vsc.withdraw", string(serialzedBytes))
-
-		tx := r2e.HiveCreator.MakeTransaction([]hivego.HiveOperation{op})
+		tx := r2e.HiveCreator.MakeTransaction(ops)
 		r2e.HiveCreator.PopulateSigningProps(&tx, nil)
 		sig, _ := r2e.HiveCreator.Sign(tx)
 
@@ -93,7 +73,8 @@ func TestE2E(t *testing.T) {
 
 		r2e.HiveCreator.Broadcast(tx)
 
-		tx.GenerateTrxId()
+		withdrawTxId, err := tx.GenerateTrxId()
+		fmt.Println("[Prefix: e2e-1] Withdraw tx id", withdrawTxId, err)
 
 		return nil
 	}
@@ -105,13 +86,21 @@ func TestE2E(t *testing.T) {
 		nodeNames = append(nodeNames, name)
 	}
 
-	primaryNode := makeNode(t, "e2e-1", broadcastFunc, r2e)
-	runningNodes = append(runningNodes, primaryNode)
+	primaryNode := e2e.MakeNode(e2e.MakeNodeInput{
+		Username:  "e2e-1",
+		BrcstFunc: broadcastFunc,
+		Runner:    r2e,
+	})
+	runningNodes = append(runningNodes, *primaryNode)
 
 	//Make the remaining 3 nodes for consensus operation
 	for i := 2; i < NODE_COUNT+1; i++ {
 		name := "e2e-" + strconv.Itoa(i)
-		runningNodes = append(runningNodes, makeNode(t, name, broadcastFunc, nil))
+		runningNodes = append(runningNodes, *e2e.MakeNode(e2e.MakeNodeInput{
+			Username:  name,
+			BrcstFunc: broadcastFunc,
+			Runner:    nil,
+		}))
 	}
 
 	plugs := make([]aggregate.Plugin, 0)
@@ -140,8 +129,9 @@ func TestE2E(t *testing.T) {
 		r2e.Wait(10),
 		r2e.BroadcastMockElection(nodeNames),
 		func() error {
-			fmt.Println("Executing test transfer from test-account to @vsc.gateway of 50 hbd")
+			fmt.Println("[Prefix: e2e-1] Executing test transfer from test-account to @vsc.gateway of 50 hbd")
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "to="+didKey.String())
+			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "")
 			return nil
 		},
 		r2e.Wait(3),
@@ -154,7 +144,7 @@ func TestE2E(t *testing.T) {
 			for i := 0; i < 5; i++ {
 				transferOp := &transactionpool.VSCTransfer{
 					From:   didKey.String(),
-					To:     "vsc.account",
+					To:     "hive:vsc.account",
 					Amount: "0.001",
 					Asset:  "hbd",
 					NetId:  "vsc-mainnet",
@@ -164,15 +154,79 @@ func TestE2E(t *testing.T) {
 
 				transactionCreator.Broadcast(sTx)
 			}
+
+			stakeOp := &transactionpool.VSCStake{
+				From:   didKey.String(),
+				To:     didKey.String(),
+				Amount: "0.010",
+				Asset:  "hbd",
+				NetId:  "vsc-mainnet",
+				Type:   "stake",
+				Nonce:  uint64(5),
+			}
+			sTx, err := transactionCreator.SignFinal(stakeOp)
+
+			fmt.Println("Sign error", err, sTx)
+
+			stakeId, err := transactionCreator.Broadcast(sTx)
+
+			fmt.Println("stakeId", stakeId, err)
 			return nil
 		},
 		r2e.Wait(40),
-		r2e.Produce(e2e.TimeToBlocks(time.Duration(time.Hour * 24 * 3))),
+		func() error {
+			fmt.Println("Preparing atomicId")
+			withdrawTx := &transactionpool.VscWithdraw{
+				From:   "hive:test-account",
+				To:     "hive:test-account",
+				Amount: "0.030",
+				Asset:  "hbd",
+				NetId:  "vsc-mainnet",
+				Type:   "withdraw",
+			}
+			withdrawTx2 := &transactionpool.VscWithdraw{
+				From:   "hive:test-account",
+				To:     "hive:test-account",
+				Amount: "0.060",
+				Asset:  "hbd",
+				NetId:  "vsc-mainnet",
+				Type:   "withdraw",
+			}
+
+			ops, _ := withdrawTx.SerializeHive()
+			ops2, _ := withdrawTx2.SerializeHive()
+			totalOps := []hivego.HiveOperation{}
+			totalOps = append(totalOps, ops...)
+			totalOps = append(totalOps, ops2...)
+
+			tx := r2e.HiveCreator.MakeTransaction(totalOps)
+
+			r2e.HiveCreator.PopulateSigningProps(&tx, nil)
+			sig, _ := r2e.HiveCreator.Sign(tx)
+
+			tx.AddSig(sig)
+
+			atomicId, _ := r2e.HiveCreator.Broadcast(tx)
+			fmt.Println("atomicId", atomicId)
+
+			return nil
+		},
+
+		// r2e.Produce(e2e.TimeToBlocks(time.Duration(time.Hour * 24 * 3))),
 	})
 
 	mainAggregate := aggregate.New(plugs)
 
 	test_utils.RunPlugin(t, mainAggregate)
+
+	plugsz := make([]aggregate.Plugin, 0)
+
+	for _, node := range runningNodes {
+		plugsz = append(plugsz, &node)
+	}
+	startupAggregate := aggregate.New(plugsz)
+
+	test_utils.RunPlugin(t, startupAggregate, true)
 
 	mockReader.ProcessFunction = func(block hive_blocks.HiveBlock) {
 		for _, node := range runningNodes {
@@ -180,9 +234,8 @@ func TestE2E(t *testing.T) {
 		}
 	}
 
-	go func() {
+	func() {
 
-		fmt.Println("Connecting local peers")
 		peerAddrs := make([]string, 0)
 
 		for _, node := range runningNodes {
@@ -211,138 +264,3 @@ func TestE2E(t *testing.T) {
 }
 
 // Mock seed for testing
-const MOCK_SEED = "MOCK_SEED-"
-
-func makeNode(t *testing.T, name string, mockBbrst func(tx hivego.HiveTransaction) error, r2e *e2e.E2ERunner) E2ENode {
-	dbConf := db.NewDbConfig()
-	db := db.New(dbConf)
-	vscDb := vsc.New(db, name)
-	hiveBlocks, _ := hive_blocks.New(vscDb)
-	vscBlocks := vscBlocks.New(vscDb)
-	witnessesDb := witnesses.New(vscDb)
-	electionDb := elections.New(vscDb)
-	contractDb := contracts.New(vscDb)
-	txDb := transactions.New(vscDb)
-	ledgerDbImpl := ledgerDb.New(vscDb)
-	balanceDb := ledgerDb.NewBalances(vscDb)
-	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
-	contractState := contracts.NewContractState(vscDb)
-
-	// hiveRpcClient := hivego.NewHiveRpc("https://api.hive.blog")
-	identityConfig := common.NewIdentityConfig("data-" + name + "/config")
-
-	identityConfig.Init()
-	identityConfig.SetUsername(name)
-
-	//Use different seeds so signatures come out differently.
-	//It's recommended as multisig signing will by default filter out duplicate signatures
-	kp := e2e.HashSeed([]byte(MOCK_SEED + name))
-
-	brcst := hive.MockTransactionBroadcaster{
-		KeyPair:  kp,
-		Callback: mockBbrst,
-	}
-
-	txCreator := hive.MockTransactionCreator{
-		MockTransactionBroadcaster: brcst,
-		TransactionCrafter:         hive.TransactionCrafter{},
-	}
-
-	hrpc := &e2e.MockHiveRpcClient{}
-
-	announcementsManager, err := announcements.New(hrpc, &identityConfig, time.Hour*24, &txCreator)
-
-	go func() {
-		//This should be executed via the e2e runner steps in the future
-		//For now, we just wait a bit and then announce
-		announcementsManager.Announce()
-	}()
-	if err != nil {
-		fmt.Println("error is", err)
-		os.Exit(1)
-	}
-
-	// setup := stateEngine.SetupEnv()
-
-	p2p := p2pInterface.New(witnessesDb)
-
-	datalayer := DataLayer.New(p2p, name)
-	txpool := transactionpool.New(p2p, txDb, datalayer)
-
-	se := stateEngine.New(datalayer, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks)
-
-	dbNuker := e2e.NewDbNuker(vscDb)
-
-	ep := election_proposer.New(p2p, witnessesDb, electionDb, datalayer, &txCreator, identityConfig)
-
-	vstream := vstream.New(se)
-	bp := blockproducer.New(p2p, vstream, se, &identityConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb)
-
-	plugins := make([]aggregate.Plugin, 0)
-
-	plugins = append(plugins,
-		dbConf,
-		db,
-		identityConfig,
-		announcementsManager,
-		vscDb,
-		dbNuker,
-		witnessesDb,
-		p2p,
-		datalayer,
-		electionDb,
-		contractDb,
-		hiveBlocks,
-		vscBlocks,
-		txDb,
-		ledgerDbImpl,
-		balanceDb,
-		interestClaims,
-		contractState,
-		vstream,
-		se,
-		bp,
-		ep,
-		txpool,
-	)
-
-	if r2e != nil {
-		r2e.Datalayer = datalayer
-		r2e.Witnesses = witnessesDb
-		r2e.HiveCreator = &txCreator
-
-		r2e.ElectionProposer = ep
-		r2e.VStream = vstream
-		// plugins = append(plugins, r2e)
-	}
-
-	// go func() {
-	// 	time.Sleep(15 * time.Second)
-	// 	fmt.Println(p2p.Host.Addrs()[0], p2p.Host.ID())
-	// 	for _, addr := range p2p.Host.Addrs() {
-	// 		fmt.Println(addr.String() + "/p2p/" + p2p.Host.ID().String())
-	// 	}
-
-	return E2ENode{
-
-		Aggregate:        aggregate.New(plugins),
-		StateEngine:      se,
-		P2P:              p2p,
-		VStream:          vstream,
-		ElectionProposer: ep,
-		TxPool:           txpool,
-	}
-}
-
-func cleanupNode() {
-
-}
-
-type E2ENode struct {
-	Aggregate        *aggregate.Aggregate
-	StateEngine      *stateEngine.StateEngine
-	P2P              *p2pInterface.P2PServer
-	VStream          *vstream.VStream
-	ElectionProposer election_proposer.ElectionProposer
-	TxPool           *transactionpool.TransactionPool
-}

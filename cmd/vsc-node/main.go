@@ -9,6 +9,7 @@ import (
 	"vsc-node/lib/hive"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
+	"vsc-node/modules/common"
 	data_availability "vsc-node/modules/data-availability"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
@@ -36,6 +37,7 @@ func main() {
 	vscDb := vsc.New(db)
 	witnesses := witnesses.New(vscDb)
 	hiveBlocks, err := hive_blocks.New(vscDb)
+	witnessDb := witnesses.New(vscDb)
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)
@@ -70,7 +72,7 @@ func main() {
 
 	// new announcements manager
 	hiveRpcClient := hivego.NewHiveRpc("https://hive-api.web3telekom.xyz/")
-	announcementsConf := announcements.NewAnnouncementsConfig()
+	identityConfig := common.NewIdentityConfig()
 
 	//TODO: Pull from proper sources
 	//Placeholder wif
@@ -84,7 +86,7 @@ func main() {
 		},
 	}
 
-	announcementsManager, err := announcements.New(hiveRpcClient, announcementsConf, time.Hour*24, &hiveCreator)
+	announcementsManager, err := announcements.New(hiveRpcClient, &identityConfig, time.Hour*24, &hiveCreator)
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)
@@ -92,16 +94,16 @@ func main() {
 
 	wasm := wasm_parent_ipc.New() // TODO set proper cmd path
 
-	p2p := p2pInterface.New()
+	p2p := p2pInterface.New(witnessDb)
 
-	dataAvailability := data_availability.New(p2p, announcementsConf)
+	dataAvailability := data_availability.New(p2p, identityConfig)
 
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
 		dbConf,
 		db,
-		announcementsConf,
+		identityConfig,
 		announcementsManager,
 		vscDb,
 		witnesses,

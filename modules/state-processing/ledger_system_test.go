@@ -144,7 +144,7 @@ type MockWithdrawsDb struct {
 	Withdraws map[string]ledgerDb.ActionRecord
 }
 
-func (m *MockWithdrawsDb) StoreWithdrawal(withdraw ledgerDb.ActionRecord) {
+func (m *MockWithdrawsDb) StoreAction(withdraw ledgerDb.ActionRecord) {
 	withdraw.Status = "pending"
 	m.Withdraws[withdraw.Id] = withdraw
 }
