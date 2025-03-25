@@ -254,7 +254,7 @@ func (e BalanceAccessConditionType) String() string {
 	return string(e)
 }
 
-func (e *BalanceAccessConditionType) UnmarshalGQL(v interface{}) error {
+func (e *BalanceAccessConditionType) UnmarshalGQL(v any) error {
 	str, ok := v.(string)
 	if !ok {
 		return fmt.Errorf("enums must be strings")
@@ -297,7 +297,7 @@ func (e BalanceControllerType) String() string {
 	return string(e)
 }
 
-func (e *BalanceControllerType) UnmarshalGQL(v interface{}) error {
+func (e *BalanceControllerType) UnmarshalGQL(v any) error {
 	str, ok := v.(string)
 	if !ok {
 		return fmt.Errorf("enums must be strings")
@@ -344,7 +344,7 @@ func (e TransactionStatus) String() string {
 	return string(e)
 }
 
-func (e *TransactionStatus) UnmarshalGQL(v interface{}) error {
+func (e *TransactionStatus) UnmarshalGQL(v any) error {
 	str, ok := v.(string)
 	if !ok {
 		return fmt.Errorf("enums must be strings")
@@ -391,7 +391,7 @@ func (e TransactionType) String() string {
 	return string(e)
 }
 
-func (e *TransactionType) UnmarshalGQL(v interface{}) error {
+func (e *TransactionType) UnmarshalGQL(v any) error {
 	str, ok := v.(string)
 	if !ok {
 		return fmt.Errorf("enums must be strings")

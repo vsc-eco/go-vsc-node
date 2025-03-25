@@ -29,25 +29,17 @@ require (
 	github.com/StackExchange/wmi v1.2.1 // indirect
 	github.com/VictoriaMetrics/fastcache v1.12.2 // indirect
 	github.com/bits-and-blooms/bitset v1.14.2 // indirect
-	github.com/cilium/ebpf v0.17.3 // indirect
 	github.com/consensys/bavard v0.1.13 // indirect
-	github.com/cosiner/argv v0.1.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.6 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240223125850-b1e8a79f509c // indirect
 	github.com/crate-crypto/go-kzg-4844 v1.1.0 // indirect
-	github.com/derekparker/trie v0.0.0-20230829180723-39f4de51ef7d // indirect
 	github.com/filecoin-project/go-clock v0.1.0 // indirect
 	github.com/gammazero/chanqueue v1.0.0 // indirect
 	github.com/gammazero/deque v1.0.0 // indirect
-	github.com/go-delve/delve v1.24.1 // indirect
-	github.com/go-delve/liner v1.2.3-0.20231231155935-4726ab1d7f62 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/gofrs/flock v0.8.1 // indirect
-	github.com/google/go-dap v0.12.0 // indirect
-	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/ipfs/go-cidutil v0.1.0 // indirect
 	github.com/kilic/bls12-381 v0.1.0 // indirect
-	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
 	github.com/olekukonko/tablewriter v0.0.5 // indirect
@@ -55,20 +47,14 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
-	github.com/spf13/cobra v1.9.1 // indirect
-	github.com/spf13/pflag v1.0.6 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
-	go.starlark.net v0.0.0-20250225190231-0d3f41d403af // indirect
-	golang.org/x/arch v0.15.0 // indirect
-	golang.org/x/telemetry v0.0.0-20250305155315-2a181eac97a3 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
 
 require (
 	github.com/agnivade/levenshtein v1.2.1 // indirect
-	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/sosodev/duration v1.3.1 // indirect
 	github.com/urfave/cli/v2 v2.27.6 // indirect
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
@@ -124,7 +110,7 @@ require (
 	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/polydawn/refmt v0.89.0
-	github.com/supranational/blst v0.3.13
+	github.com/supranational/blst v0.3.13 // indirect
 	github.com/ugorji/go/codec v1.2.6
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.57.0 // indirect
@@ -188,7 +174,7 @@ require (
 	github.com/miekg/dns v1.1.62 // indirect
 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b // indirect
 	github.com/mikioh/tcpopt v0.0.0-20190314235656-172688c1accc // indirect
-	github.com/minio/sha256-simd v1.0.1 // indirect
+	github.com/minio/sha256-simd v1.0.1
 	github.com/mr-tron/base58 v1.2.0 // indirect
 	github.com/multiformats/go-base32 v0.1.0 // indirect
 	github.com/multiformats/go-base36 v0.2.0 // indirect

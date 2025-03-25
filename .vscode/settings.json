@@ -5,7 +5,7 @@
     {
       "match": "go-vsc-node/modules/gql/.*\\.go$",
       "isAsync": true,
-      "cmd": "go run github.com/99designs/gqlgen generate",
+      "cmd": "cd ${workspaceRoot}; go run github.com/99designs/gqlgen generate",
       "event": "onFileChange"
     },
   ]

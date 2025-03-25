@@ -23,7 +23,6 @@ const shutdownTimeout = 5 * time.Second
 type gqlManager struct {
 	server *http.Server
 	Addr   string
-	stop   chan struct{}
 	schema graphql.ExecutableSchema
 }
 
@@ -36,7 +35,6 @@ var _ a.Plugin = &gqlManager{}
 func New(schema graphql.ExecutableSchema, addr string) *gqlManager {
 	return &gqlManager{
 		Addr:   addr,
-		stop:   make(chan struct{}),
 		schema: schema,
 	}
 }
@@ -45,7 +43,7 @@ func (g *gqlManager) Init() error {
 	mux := http.NewServeMux()
 
 	// creates GraphQL server with Apollo
-	gqlServer := handler.NewDefaultServer(g.schema)
+	gqlServer := handler.New(g.schema)
 
 	// OPTIONAL, UNCOMMENT TO ENABLE TRACING
 	// gqlServer.Use(apollotracing.Tracer{})
@@ -67,11 +65,9 @@ func (g *gqlManager) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
 		log.Printf("GraphQL sandbox available on %s/sandbox", g.Addr)
 
-		go func() {
-			if err := g.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				reject(err)
-			}
-		}()
+		if err := g.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			reject(err)
+		}
 
 		resolve(nil)
 	})
@@ -87,9 +83,6 @@ func (g *gqlManager) Stop() error {
 	if err := g.server.Shutdown(ctx); err != nil {
 		return err
 	}
-
-	// signals that the server has stopped
-	close(g.stop)
 
 	log.Println("GraphQL server shut down successfully")
 	return nil
