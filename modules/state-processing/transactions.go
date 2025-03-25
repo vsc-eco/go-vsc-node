@@ -32,16 +32,11 @@ type TxVscCallContract struct {
 	Self  TxSelf
 	NetId string `json:"net_id"`
 
-	//Excluded RC balance for RC allocations
-	//Note: Hive users will get small limit of RCs by default
-	//Hold more hbd to get more RCs
-	RcExclusion uint64 `json:"rc_exclusion"`
-
 	Op         string `json:"op"`
 	ContractId string `json:"contract_id"`
 	Action     string `json:"action"`
 	Payload    string `json:"payload"`
-	MaxGas     uint   `json:"max_gas"`
+	RcLimit    uint   `json:"rc_limit"`
 }
 
 func errorToTxResult(err error) TxResult {
@@ -74,7 +69,7 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 	availableGas := uint(math.MaxUint)
 
-	gas := min(availableGas, t.MaxGas)
+	gas := min(availableGas, t.RcLimit)
 
 	return result.MapOrElse(
 		se.wasm.Execute(ctx, code, gas, t.Action, t.Payload, info.Runtime),
