@@ -5,6 +5,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multibase"
@@ -28,8 +31,8 @@ type BlsPrivKey = bls.SecretKey
 
 // ===== interface assertions =====
 
-var _ DID[*BlsPubKey] = BlsDID("")
-var _ Provider = BlsProvider{}
+var _ DID[*BlsPubKey, cid.Cid] = BlsDID("")
+var _ Provider[cid.Cid] = BlsProvider{}
 
 // ===== BlsDID =====
 
@@ -55,6 +58,38 @@ func NewBlsDID(pubKey *BlsPubKey) (BlsDID, error) {
 	return BlsDID(BlsDIDPrefix + string(base58Encoded)), nil
 }
 
+func ParseBlsDID(did string) (BlsDID, error) {
+	if !strings.HasPrefix(did, BlsDIDPrefix) {
+		return "", fmt.Errorf("invalid BLS DID: %s", did)
+	}
+
+	// remove the prefix
+	encoded := did[len(BlsDIDPrefix):]
+	encoding, data, err := multibase.Decode(encoded)
+	if err != nil {
+		return "", err
+	}
+
+	// ensure the encoding is base58
+	if encoding != multibase.Base58BTC {
+		return "", fmt.Errorf("invalid encoding for BLS DID: %c", encoding)
+	}
+
+	// ensure the data has the right prefix bytes
+	if len(data) < 2 || data[0] != 0xea || data[1] != 0x01 {
+		return "", fmt.Errorf("invalid BLS DID data: %s", hex.EncodeToString(data))
+	}
+
+	// ensure pub key is valid
+	pubKeyBytes := data[2:]
+	pubKey := new(BlsPubKey)
+	if err := pubKey.Deserialize((*[48]byte)(pubKeyBytes)); err != nil {
+		return "", fmt.Errorf("failed to deserialize pub key: %w", err)
+	}
+
+	return BlsDID(did), nil
+}
+
 // ===== implementing the DID interface =====
 
 // stringifies the DID
@@ -76,7 +111,6 @@ func (d BlsDID) Identifier() *BlsPubKey {
 	// remove indicator bytes
 	pubKeyBytes := data[2:]
 
-	fmt.Println("PublicKey bytes", len(pubKeyBytes), hex.EncodeToString(pubKeyBytes))
 	// decompress the pub key
 	pubKey := new(BlsPubKey)
 	if pubKey.Deserialize((*[48]byte)(pubKeyBytes)) != nil {
@@ -135,24 +169,33 @@ func NewBlsProvider(privKey *BlsPrivKey) (BlsProvider, error) {
 // signs a block using the BLS priv key
 func (b BlsProvider) Sign(cid cid.Cid) (string, error) {
 
+	sigBytes, err := b.SignRaw(cid)
+	if err != nil {
+		return "", err
+	}
+
+	encodedSig := base64.URLEncoding.EncodeToString(sigBytes[:])
+
+	return encodedSig, nil
+}
+
+// signs a block using the BLS priv key
+func (b BlsProvider) SignRaw(cid cid.Cid) ([96]byte, error) {
+
 	sig := bls.Sign(b.privKey, cid.Bytes())
 	// sign the CID using the BLS priv key
 	// sig := new(blst.P2Affine).Sign(b.privKey, cid.Bytes(), nil)
 
 	// compress and encode to base64; make the sig transportable
 	sigBytes := sig.Serialize()
-	encodedSig := base64.URLEncoding.EncodeToString(sigBytes[:])
 
-	return encodedSig, nil
+	return sigBytes, nil
 }
 
 // ===== BLS circuit generator =====
 
 // represents an account and its associated pub key
-type Member struct {
-	Account string
-	DID     BlsDID
-}
+type Member = BlsDID
 
 // helper struct that allows you to gen a BLS circuit
 type BlsCircuitGenerator struct {
@@ -165,7 +208,7 @@ func NewBlsCircuitGenerator(members []Member) *BlsCircuitGenerator {
 }
 
 // gen a partial BLS circuit
-func (bcg BlsCircuitGenerator) Generate(msg cid.Cid) (*partialBlsCircuit, error) {
+func (bcg BlsCircuitGenerator) Generate(msg cid.Cid) (PartialBlsCircuit, error) {
 	circuit, err := newBlsCircuit(&msg, bcg.CircuitMap())
 	if err != nil {
 		return nil, err
@@ -180,7 +223,7 @@ func (bcg BlsCircuitGenerator) Generate(msg cid.Cid) (*partialBlsCircuit, error)
 func (bcg *BlsCircuitGenerator) AddMember(member Member) {
 	// check if member already exists by DID
 	for _, m := range bcg.members {
-		if m.DID == member.DID {
+		if m == member {
 			return // already exists, keep operation idempotent, so just pretend it's ok
 		}
 	}
@@ -194,11 +237,11 @@ func (bcg *BlsCircuitGenerator) SetMembers(members []Member) error {
 	// check if dupe members exist by DID
 	seen := make(map[BlsDID]struct{})
 	for _, member := range members {
-		if _, ok := seen[member.DID]; ok {
+		if _, ok := seen[member]; ok {
 			// no duplicate members allowed, else, error
-			return fmt.Errorf("duplicate member: %s", member.DID)
+			return fmt.Errorf("duplicate member: %s", member)
 		}
-		seen[member.DID] = struct{}{}
+		seen[member] = struct{}{}
 	}
 
 	// set members
@@ -210,7 +253,7 @@ func (bcg *BlsCircuitGenerator) SetMembers(members []Member) error {
 func (bcg BlsCircuitGenerator) CircuitMap() []BlsDID {
 	var dids []BlsDID
 	for _, member := range bcg.members {
-		dids = append(dids, member.DID)
+		dids = append(dids, member)
 	}
 	return dids
 }
@@ -223,11 +266,13 @@ type partialBlsCircuit struct {
 	members []Member
 }
 
+type PartialBlsCircuit = *partialBlsCircuit
+
 // get the members of the partial BLS circuit as a list of DIDs
 func (pbc *partialBlsCircuit) CircuitMap() []BlsDID {
 	var dids []BlsDID
 	for _, member := range pbc.members {
-		dids = append(dids, member.DID)
+		dids = append(dids, member)
 	}
 	return dids
 }
@@ -244,7 +289,7 @@ func (pbc *partialBlsCircuit) AddAndVerify(member Member, sig string) error {
 	// check if member exists
 	found := false
 	for _, m := range pbc.members {
-		if m.DID == member.DID {
+		if m == member {
 			found = true
 			break
 		}
@@ -252,17 +297,38 @@ func (pbc *partialBlsCircuit) AddAndVerify(member Member, sig string) error {
 
 	// if not found, error
 	if !found {
-		return fmt.Errorf("member not found: %s", member.DID)
+		return fmt.Errorf("member not found: %s", member)
 	}
 
 	// add and verify the signature and public key
 
-	fmt.Println("Sig err", sig)
 	if err := pbc.circuit.add(member, sig); err != nil {
 		return fmt.Errorf("failed to add and verify signature: %w", err)
 	}
 
-	fmt.Println("Broke here?")
+	return nil
+}
+
+func (pbc *partialBlsCircuit) AddAndVerifyRaw(member BlsDID, sig []byte) error {
+	// check if member exists
+	found := false
+	for _, m := range pbc.members {
+		if m == member {
+			found = true
+			break
+		}
+	}
+
+	// if not found, error
+	if !found {
+		return fmt.Errorf("member not found: %s", member)
+	}
+
+	// add and verify the signature and public key
+
+	if err := pbc.circuit.addRaw(member, sig); err != nil {
+		return fmt.Errorf("failed to add and verify signature: %w", err)
+	}
 
 	return nil
 }
@@ -280,10 +346,8 @@ func (pbc *partialBlsCircuit) Finalize() (*BlsCircuit, error) {
 		return nil, fmt.Errorf("failed to finalize BLS circuit: no signatures collected")
 	}
 
-	// if not all members have signed, fail the finalization
-	if len(pbc.circuit.sigs) != len(pbc.members) {
-		return nil, fmt.Errorf("failed to finalize BLS circuit: not all members have signed")
-	}
+	// finalize the BLS circuit
+	pbc.circuit.finalize()
 
 	// aggregate signatures and build bit vector
 	if err := pbc.circuit.aggregateSignatures(); err != nil {
@@ -308,7 +372,9 @@ type BlsCircuit struct {
 	keyset []BlsDID
 
 	//Construction variable
-	sigs map[BlsDID]*BlsSig
+	mutex     sync.Mutex
+	finalized atomic.Bool
+	sigs      map[BlsDID]*BlsSig
 
 	//Calculated Value
 	// includedDIDs []BlsDID
@@ -334,36 +400,52 @@ func newBlsCircuit(msg *cid.Cid, keyset []BlsDID) (*BlsCircuit, error) {
 
 // internally adds a new sig and pub key to the circuit after verification
 func (b *BlsCircuit) add(member Member, sig string) error {
-	pubKey := member.DID.Identifier()
-
-	sigBytes, err := base64.URLEncoding.DecodeString(sig)
+	sigBytes, err := base64.RawURLEncoding.DecodeString(sig)
 	if err != nil {
 		return fmt.Errorf("failed to decode signature: %w", err)
 	}
 
+	return b.addRaw(member, sigBytes)
+}
+
+func (b *BlsCircuit) addRaw(DID BlsDID, sigBytes []byte) error {
+	pubKey := DID.Identifier()
+
 	// decompress the sig
 	signature := new(BlsSig)
 	if signature.Deserialize((*[96]byte)(sigBytes)) != nil {
-		return fmt.Errorf("failed to uncompress signature for DID: %s", member.DID.String())
+		return fmt.Errorf("failed to uncompress signature for DID: %s", DID.String())
 	}
 
-	fmt.Println("Bls here", pubKey, b.msg.Bytes(), signature)
 	// verify the sig using the pub key and the CID bytes (message)
 	verified := bls.Verify(pubKey, b.msg.Bytes(), signature)
 	if !verified {
-		return fmt.Errorf("signature verification failed for DID: %s", member.DID.String())
+		return fmt.Errorf("signature verification failed for DID: %s", DID.String())
 	}
 
 	// store the sig
-	b.sigs[member.DID] = signature
+	if !b.finalized.Load() {
+		b.mutex.Lock()
+		b.sigs[DID] = signature
+		b.mutex.Unlock()
+	}
 
 	return nil
+}
+
+// finalizes the BLS circuit
+func (b *BlsCircuit) finalize() {
+	b.finalized.Store(true)
 }
 
 // aggregates the collected signatures and builds the bit vector
 func (b *BlsCircuit) aggregateSignatures() error {
 	if len(b.sigs) == 0 {
 		return fmt.Errorf("no signatures to aggregate")
+	}
+
+	if !b.finalized.Load() {
+		return fmt.Errorf("circuit not finalized")
 	}
 
 	var sigs []*BlsSig
@@ -394,7 +476,7 @@ func (b *BlsCircuit) AggregatedSignature() (string, error) {
 		return "", fmt.Errorf("aggregated signature not generated")
 	}
 	aggSigBytes := b.aggSigs.Serialize()
-	aggSigEncoded := base64.StdEncoding.EncodeToString(aggSigBytes[:])
+	aggSigEncoded := base64.RawURLEncoding.EncodeToString(aggSigBytes[:])
 	return aggSigEncoded, nil
 }
 
@@ -403,11 +485,9 @@ func (b *BlsCircuit) BitVector() (string, error) {
 	if b.bitVector == nil {
 		return "", fmt.Errorf("bit vector not generated")
 	}
-	h := b.bitVector.Text(16)
-	if len(h)%2 != 0 {
-		h = "0" + h
-	}
-	bvEncoded := base64.RawURLEncoding.EncodeToString([]byte(h))
+	bs := b.bitVector.Bytes()
+
+	bvEncoded := base64.RawURLEncoding.EncodeToString(bs)
 	return bvEncoded, nil
 }
 

@@ -21,15 +21,25 @@ type Config[T any] struct {
 
 	loaded bool
 	value  T
+
+	DataDir string
 }
 
-var UseMainConfigDuringTests = true
+var UseMainConfigDuringTests = false
 
 const DATA_DIR = "data"
-const CONFIG_DIR = DATA_DIR + "/config"
 
-func New[T any](defaultValue T) *Config[T] {
-	return &Config[T]{defaultValue: defaultValue}
+var CONFIG_DIR string = DATA_DIR + "/config"
+
+func New[T any](defaultValue T, dataDir *string) *Config[T] {
+	if dataDir == nil {
+		dataDir = &CONFIG_DIR
+	}
+
+	return &Config[T]{
+		defaultValue: defaultValue,
+		DataDir:      *dataDir,
+	}
 }
 
 func hasGoMod(dir string) bool {
@@ -68,9 +78,9 @@ func projectRoot() result.Result[string] {
 func (c *Config[T]) filePath() string {
 	name := reflect.TypeFor[T]().Name()
 	if testing.Testing() && UseMainConfigDuringTests {
-		return path.Join(projectRoot().Expect("project root should be easy to find while running a test"), CONFIG_DIR, name+".json")
+		return path.Join(projectRoot().Expect("project root should be easy to find while running a test"), c.DataDir, name+".json")
 	}
-	return path.Join(CONFIG_DIR, name+".json")
+	return path.Join(c.DataDir, name+".json")
 }
 
 func (c *Config[T]) Init() error {

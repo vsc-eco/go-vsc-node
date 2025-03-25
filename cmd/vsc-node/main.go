@@ -4,9 +4,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
-	p2pInterface "vsc-node/lib/p2p"
+	"vsc-node/lib/datalayer"
+	"vsc-node/lib/hive"
 	"vsc-node/modules/aggregate"
+	"vsc-node/modules/announcements"
+	"vsc-node/modules/common"
+	data_availability "vsc-node/modules/data-availability"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
@@ -14,6 +19,7 @@ import (
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
 	"vsc-node/modules/hive/streamer"
+	p2pInterface "vsc-node/modules/p2p"
 
 	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 
@@ -21,20 +27,29 @@ import (
 )
 
 func main() {
-	conf := db.NewDbConfig()
-	db := db.New(conf)
-	vscDb := vsc.New(db)
-	witnesses := witnesses.New(vscDb)
-	hiveBlocks, err := hive_blocks.New(vscDb)
-	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{}}), "localhost:8080")
+	dbConf := db.NewDbConfig()
+
+	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
+	err := dbConf.SetDbURI(os.Getenv("MONGO_URL"))
 	if err != nil {
+		fmt.Println("error is", err)
+		os.Exit(1)
+	}
+
+	db := db.New(dbConf)
+	vscDb := vsc.New(db)
+	hiveBlocks, err := hive_blocks.New(vscDb)
+	witnessDb := witnesses.New(vscDb)
+	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{}}), "localhost:8080")
+
+  if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)
 	}
 
 	// choose the source
 	blockClient := hivego.NewHiveRpc("https://api.hive.blog")
-	filter := func(op hivego.Operation) bool {
+	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		if op.Type == "custom_json" {
 			if strings.HasPrefix(op.Value["id"].(string), "vsc.") {
 				return true
@@ -44,7 +59,7 @@ func main() {
 			return true
 		}
 
-		if op.Type == "transfer" {
+		if op.Type == "transfer" || op.Type == "transfer_to_savings" {
 			if strings.HasPrefix(op.Value["to"].(string), "vsc.") {
 				return true
 			}
@@ -57,20 +72,47 @@ func main() {
 		return false
 	}
 	filters := []streamer.FilterFunc{filter}
-	streamerPlugin := streamer.NewStreamer(blockClient, hiveBlocks, filters, nil) // optional starting block #
+	streamerPlugin := streamer.NewStreamer(blockClient, hiveBlocks, filters, nil, nil) // optional starting block #
+
+	// new announcements manager
+	hiveRpcClient := hivego.NewHiveRpc("https://hive-api.web3telekom.xyz/")
+	identityConfig := common.NewIdentityConfig()
+
+	hiveCreator := hive.LiveTransactionCreator{
+		TransactionCrafter: hive.TransactionCrafter{},
+		TransactionBroadcaster: hive.TransactionBroadcaster{
+			Client:  hiveRpcClient,
+			KeyPair: identityConfig.HiveActiveKeyPair,
+		},
+	}
+
+	announcementsManager, err := announcements.New(hiveRpcClient, identityConfig, time.Hour*24, &hiveCreator)
+	if err != nil {
+		fmt.Println("error is", err)
+		os.Exit(1)
+	}
 
 	wasm := wasm_parent_ipc.New() // TODO set proper cmd path
+
+	p2p := p2pInterface.New(witnessDb)
+
+	da := datalayer.New(p2p)
+
+	dataAvailability := data_availability.New(p2p, identityConfig, da)
 
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
-		conf,
+		dbConf,
 		db,
+		identityConfig,
+		announcementsManager,
 		vscDb,
-		witnesses,
+		witnessDb,
 		hiveBlocks,
 		streamerPlugin,
-		p2pInterface.New(),
+		p2p,
+		dataAvailability,
 		wasm,
 		gqlManager,
 	)

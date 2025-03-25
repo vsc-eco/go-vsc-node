@@ -1,9 +1,20 @@
 package sdk
 
-import "github.com/JustinKnueppel/go-result"
+import (
+	"context"
+	"fmt"
+	wasm_context "vsc-node/modules/wasm/context"
 
-var SdkModule = map[string]func(string) result.Result[string]{
-	"db.getObject": func(s string) result.Result[string] {
-		return result.Ok("test")
+	"github.com/JustinKnueppel/go-result"
+)
+
+var SdkModule = map[string]func(context.Context, any) result.Result[string]{
+	"db.getObject": func(ctx context.Context, a any) result.Result[string] {
+		/*execValue :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+		s, ok := a.(string)
+		if !ok {
+			return result.Err[string](fmt.Errorf("invalid argument"))
+		}
+		return result.Ok(s)
 	},
 }

@@ -28,9 +28,11 @@ func RunWithStdioAndContext[Result any](ctx context.Context, stdin io.Reader, st
 }
 
 func RunWithStdioAndContextAndTypeMap[Result any](ctx context.Context, typeMap map[string]ipc_requests.Message[Result], stdin io.Reader, stdout io.Writer) result.Result[Client[Result]] {
-	return result.AndThen[stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]](
+	return result.AndThen(
 		stdio_ipc.NewJsonConnection(stdout, stdin, typeMap),
-		newClient,
+		func(cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[Client[Result]] {
+			return result.Ok[Client[Result]](&client[Result]{cio, ctx})
+		},
 	)
 }
 
@@ -48,6 +50,7 @@ type Client[Result any] interface {
 
 type client[Result any] struct {
 	cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]
+	ctx context.Context
 }
 
 // Request implements Client.
@@ -55,7 +58,9 @@ func (c *client[Result]) Request(msg ipc_requests.Message[Result]) result.Result
 	return result.AndThen(
 		result.AndThen(
 			resultWrap(c.cio, c.cio.Send(msg)),
-			ipc_common.ProcessMessage[Result],
+			func(cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[ipc_requests.ProcessedMessage[Result]] {
+				return ipc_common.ProcessMessage(c.ctx, cio)
+			},
 		),
 		func(pm ipc_requests.ProcessedMessage[Result]) result.Result[ipc_requests.ProcessedMessage[Result]] {
 			return ipc_common.SendResponse(c.cio, pm)
@@ -71,10 +76,6 @@ func (c *client[Result]) Send(msg ipc_requests.Message[Result]) result.Result[an
 // Request implements Client.
 func (c *client[Result]) Close() error {
 	return c.cio.Close()
-}
-
-func newClient[Result any](cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[Client[Result]] {
-	return result.Ok[Client[Result]](&client[Result]{cio})
 }
 
 var ErrResultTypeCast = fmt.Errorf("type cast")

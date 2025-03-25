@@ -23,9 +23,9 @@ type cmdIo[Result any] struct {
 func (c *cmdIo[Result]) Close() error {
 	return resultGetErr(
 		result.AndThen(
-			result.Err[any](c.dec.Close()),
+			result.Err[any](c.enc.Close()),
 			func(any) result.Result[any] {
-				return result.Err[any](c.enc.Close())
+				return result.Err[any](c.dec.Close())
 			},
 		),
 	)
@@ -142,7 +142,11 @@ func (dec *jsonArrayDecoder) ensureStarted() result.Result[json.Token] {
 func (dec *jsonArrayDecoder) More() bool {
 	dec.lock.Lock()
 	defer dec.lock.Unlock()
-	return !dec.started || dec.decoder.More()
+	if !dec.started {
+		return true
+	}
+	buf, _ := io.ReadAll(dec.decoder.Buffered()) // This can't fail because the buffer is in memory
+	return len(buf) != 0 || dec.decoder.More()
 	// return dec.ensureStarted().IsOkAnd(func(t json.Token) bool {
 	// 	return dec.decoder.More()
 	// })

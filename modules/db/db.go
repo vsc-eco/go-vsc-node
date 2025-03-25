@@ -4,7 +4,6 @@ import (
 	"context"
 	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
-	"vsc-node/modules/config"
 
 	"github.com/chebyrash/promise"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -15,7 +14,7 @@ type Db interface {
 	Database(name string, opts ...*options.DatabaseOptions) *mongo.Database
 }
 type db struct {
-	conf   *config.Config[dbConfig]
+	conf   DbConfig
 	cancel context.CancelFunc
 	*mongo.Client
 }
@@ -23,7 +22,7 @@ type db struct {
 var _ a.Plugin = &db{}
 var _ Db = &db{}
 
-func New(conf *config.Config[dbConfig]) *db {
+func New(conf DbConfig) *db {
 	return &db{conf: conf}
 }
 

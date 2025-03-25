@@ -6,4 +6,8 @@ type Witnesses interface {
 	a.Plugin
 	StoreNodeAnnouncement(nodeId string) error
 	SetWitnessUpdate(accountInfo SetWitnessUpdateType) error
+	GetLastestWitnesses() ([]Witness, error)
+	GetWitnessesAtBlockHeight(bh uint64) ([]Witness, error)
+	GetWitnessesByPeerId(peerIds ...string) ([]Witness, error)
+	GetWitnessAtHeight(account string, bh *uint64) (*Witness, error)
 }

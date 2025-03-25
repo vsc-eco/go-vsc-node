@@ -1,6 +1,7 @@
 package ipc_common
 
 import (
+	"context"
 	stdio_ipc "vsc-node/lib/stdio-ipc"
 	"vsc-node/modules/wasm/ipc_requests"
 
@@ -15,12 +16,12 @@ func resultWrap[T any](res T, err error) result.Result[T] {
 	return result.Ok(res)
 }
 
-func ProcessMessage[Result any](cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[ipc_requests.ProcessedMessage[Result]] {
+func ProcessMessage[Result any](ctx context.Context, cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[ipc_requests.ProcessedMessage[Result]] {
 	var m ipc_requests.Message[Result]
 	return result.AndThen(
 		resultWrap(m, cio.Receive(&m)),
 		func(m ipc_requests.Message[Result]) result.Result[ipc_requests.ProcessedMessage[Result]] {
-			return m.Process()
+			return m.Process(ctx)
 		},
 	)
 }

@@ -2,6 +2,7 @@ package stdio_ipc_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"testing"
 	stdio_ipc "vsc-node/lib/stdio-ipc"
@@ -34,7 +35,7 @@ func (m *m1) UnmarshalJSON([]byte) error {
 }
 
 // Process implements ipc_requests.Message.
-func (m *m1) Process() result.Result[ipc_requests.ProcessedMessage[string]] {
+func (m *m1) Process(context.Context) result.Result[ipc_requests.ProcessedMessage[string]] {
 	return result.Ok(ipc_requests.ProcessedMessage[string]{
 		Result:   optional.Some("result from m1"),
 		Response: optional.Some[ipc_requests.Message[string]](&m1{}),
@@ -49,7 +50,7 @@ func (m *m2) UnmarshalJSON([]byte) error {
 }
 
 // Process implements ipc_requests.Message.
-func (m *m2) Process() result.Result[ipc_requests.ProcessedMessage[string]] {
+func (m *m2) Process(context.Context) result.Result[ipc_requests.ProcessedMessage[string]] {
 	return result.Ok(ipc_requests.ProcessedMessage[string]{
 		Result:   optional.Some("result from m2"),
 		Response: optional.Some[ipc_requests.Message[string]](&m1{}),
@@ -70,12 +71,13 @@ func TestBasicJsonConnection(t *testing.T) {
 	var m ipc_requests.Message[string]
 	assert.Error(t, cio.Receive(&m), "EOF")
 
-	assert.True(t, cio.Finished())
-
 	assert.Nil(t, cio.Send(nil))
 
 	assert.Nil(t, cio.Close())
-	assert.Equal(t, stdin.String(), "[\n{\"Type\":\"nil\",\"Message\":null}\n]")
+
+	assert.True(t, cio.Finished())
+
+	assert.Equal(t, "[\n{\"Type\":\"nil\",\"Message\":null}\n]", stdin.String())
 }
 
 func TestDuplexJsonConnection(t *testing.T) {
@@ -93,7 +95,7 @@ func TestDuplexJsonConnection(t *testing.T) {
 	assert.NoError(t, cio2.Receive(&m))
 	assert.NotNil(t, m)
 	assert.Equal(t, m, &m2{})
-	res := assertResultOk(t, m.Process())
+	res := assertResultOk(t, m.Process(context.Background()))
 	resp, ok := res.Response.Unwrap().(*m1)
 	assert.True(t, ok)
 	resStr := res.Result.Unwrap()

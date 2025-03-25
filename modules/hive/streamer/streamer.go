@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"vsc-node/modules/aggregate"
@@ -23,7 +23,8 @@ import (
 // aid in mocking this service for unit tests
 type BlockClient interface {
 	GetDynamicGlobalProps() ([]byte, error)
-	GetBlockRange(startBlock int, count int) (<-chan hivego.Block, error)
+	GetBlockRange(startBlock uint64, count uint64) ([]hivego.Block, error)
+	FetchVirtualOps(block uint64, onlyVirtual bool, includeReversible bool) ([]hivego.VirtualOp, error)
 }
 
 // ===== variables =====
@@ -32,14 +33,14 @@ type BlockClient interface {
 // to modify these values at runtime
 var (
 	// how many blocks we pull per batch
-	BlockBatchSize = 100
+	BlockBatchSize = uint64(100)
 	// how far behind we're willing to be in blocks from the head before
 	// we re-pull the newest batch
 	//
 	// the code will ignore this if we're more than [blockBatchSize] behind
 	//
 	// @Vaultec says lag should be 0
-	AcceptableBlockLag = 0
+	AcceptableBlockLag = uint64(0)
 	// delay between re-polling for the newest information about the chain height
 	// before we've updated it once
 	HeadBlockCheckPollIntervalBeforeFirstUpdate = time.Millisecond * 1500
@@ -56,7 +57,7 @@ var (
 	MinTimeBetweenBlockBatchFetches = time.Millisecond * 1
 	// where the hive block streamer starts from by default if nothing
 	// has been persisted yet or overridden as a starting point
-	DefaultBlockStart = 81614028
+	DefaultBlockStart = uint64(81614028)
 	// db poll interval
 	//
 	// @Vaultec says 500ms is ideal
@@ -66,21 +67,22 @@ var (
 // ===== StreamReader =====
 
 type StreamReader struct {
-	process       ProcessFunction
-	ctx           context.Context
-	cancel        context.CancelFunc
-	mtx           sync.Mutex
-	isPaused      bool
-	lastProcessed int
+	process        ProcessFunction
+	getBlockHeight BlockHeightFunction
+	ctx            context.Context
+	cancel         context.CancelFunc
+	// mtx           sync.Mutex
+	isPaused      atomic.Bool
+	lastProcessed uint64
 	stopped       chan struct{}
 	hiveBlocks    hiveblocks.HiveBlocks
 	stopOnlyOnce  sync.Once
 	wg            sync.WaitGroup
-	startBlock    int
+	startBlock    uint64
 }
 
 // inits a StreamReader with the provided hiveBlocks interface and process function
-func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, maybeStartBlock ...int) *StreamReader {
+func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, getBlockHeight BlockHeightFunction, maybeStartBlock ...uint64) *StreamReader {
 	startBlock := DefaultBlockStart
 	fmt.Println("startBlock", startBlock)
 	if len(maybeStartBlock) > 0 {
@@ -89,28 +91,15 @@ func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, 
 	if process == nil {
 		process = func(block hiveblocks.HiveBlock) {} // no-op
 	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	return &StreamReader{
-		process:      process,
-		hiveBlocks:   hiveBlocks,
-		ctx:          ctx,
-		cancel:       cancel,
-		stopped:      make(chan struct{}),
-		wg:           sync.WaitGroup{},
-		stopOnlyOnce: sync.Once{},
-		isPaused:     false,
-		startBlock:   startBlock,
-	}
-}
-
-func (s *StreamReader) canProcess() bool {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-	select {
-	case <-s.stopped:
-		return false
-	default:
-		return !s.isPaused
+		process:        process,
+		getBlockHeight: getBlockHeight,
+		hiveBlocks:     hiveBlocks,
+		ctx:            ctx,
+		cancel:         cancel,
+		startBlock:     startBlock,
 	}
 }
 
@@ -132,12 +121,9 @@ func (s *StreamReader) Init() error {
 
 // begins the polling loop for the StreamReader
 func (s *StreamReader) Start() *promise.Promise[any] {
-	s.wg.Add(1)
 	return promise.New(func(resolve func(any), reject func(error)) {
-		defer s.wg.Done()
 		defer inteceptError()
-		s.pollDb()
-
+		s.pollDb(reject)
 		resolve(nil)
 	})
 }
@@ -148,115 +134,56 @@ func inteceptError() {
 }
 
 // polls the database at intervals, processing new blocks as they arrive
-func (s *StreamReader) pollDb() {
-	ticker := time.NewTicker(DbPollInterval)
-	defer ticker.Stop()
-
-	saveTicks := 0
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case <-ticker.C:
-			if s.IsPaused() || !s.canProcess() {
-				time.Sleep(time.Millisecond * 10)
-				continue
-			}
-
-			if saveTicks > 10 {
-				saveTicks = 0
+func (s *StreamReader) pollDb(fail func(error)) {
+	ticker := time.NewTicker(1 * time.Second)
+	quit := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				// do stuff
 				if err := s.hiveBlocks.StoreLastProcessedBlock(s.lastProcessed); err != nil {
-					log.Printf("error updating last processed block: %v", err)
+
 				}
-			}
-
-			// fetch the highest stored block in the database
-			highestBlock, err := s.hiveBlocks.GetHighestBlock()
-			if err != nil {
-				log.Printf("error fetching highest block: %v", err)
-				time.Sleep(time.Millisecond * 100)
-
-				continue
-			}
-
-			// if there are new blocks, process all of them up to the highest block
-			if s.lastProcessed < highestBlock {
-				// fetch all blocks from lastProcessed + 1 to highestBlock
-				blocks, err := s.hiveBlocks.FetchNextBlocks(s.lastProcessed+1, 250)
-				if err != nil {
-					log.Printf("error fetching blocks: %v", err)
-					time.Sleep(time.Millisecond * 100)
-
-					continue
-				}
-
-				// if no blocks were fetched, continue
-				if len(blocks) == 0 {
-					time.Sleep(time.Millisecond * 100)
-
-					continue
-				}
-
-				// store the initial lastProcessed value
-				oldLastProcessed := s.lastProcessed
-
-				for _, block := range blocks {
-					if s.canProcess() {
-						s.process(block)
-						s.mtx.Lock()
-						// update last processed block
-						s.lastProcessed = block.BlockNumber
-						s.mtx.Unlock()
-					}
-				}
-
-				// persist the updated last processed block only if it changed
-				if s.lastProcessed != oldLastProcessed {
-					saveTicks = saveTicks + 1
-					if err := s.hiveBlocks.StoreLastProcessedBlock(s.lastProcessed); err != nil {
-						log.Printf("error updating last processed block: %v", err)
-					}
-				}
+			case <-quit:
+				ticker.Stop()
+				return
 			}
 		}
+	}()
+	defer func() {
+		quit <- struct{}{}
+	}()
+	newBlocksProcessed := 0
+	processBlock := func(block hiveblocks.HiveBlock) error {
+		s.process(block)
+		// update last processed block
+
+		if s.getBlockHeight == nil {
+			s.lastProcessed = block.BlockNumber
+		} else {
+			//Retrieves the calculated block height
+			s.lastProcessed = s.getBlockHeight(block.BlockNumber, s.lastProcessed)
+		}
+
+		newBlocksProcessed++
+
+		if newBlocksProcessed > 100 {
+			if err := s.hiveBlocks.StoreLastProcessedBlock(s.lastProcessed); err != nil {
+				return fmt.Errorf("error updating last processed block: %v", err)
+			}
+			newBlocksProcessed = 0
+		}
+		return nil
 	}
+	_, errChan := s.hiveBlocks.ListenToBlockUpdates(s.ctx, s.lastProcessed, processBlock)
+	err := <-errChan
+	fail(err)
 }
 
 // stops the StreamReader
 func (s *StreamReader) Stop() error {
-	s.stopOnlyOnce.Do(func() {
-		s.cancel()
-		s.wg.Wait()
-		if s.stopped != nil {
-			close(s.stopped)
-		}
-
-	})
-	return nil
-}
-
-// checks if the StreamReader is currently paused
-func (s *StreamReader) IsPaused() bool {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-	return s.isPaused
-}
-
-// pauses the StreamReader, stopping further processing until resumed
-func (s *StreamReader) Pause() {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-	s.isPaused = true
-}
-
-// resumes the StreamReader
-func (s *StreamReader) Resume() error {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-	if s.ctx.Err() != nil {
-		return fmt.Errorf("StreamReader has been stopped")
-	}
-	s.isPaused = false
+	s.cancel()
 	return nil
 }
 
@@ -267,21 +194,32 @@ var _ aggregate.Plugin = &StreamReader{}
 
 // ===== type definitions =====
 
-type FilterFunc func(tx hivego.Operation) bool
+type FilterFunc func(tx hivego.Operation, ctx *BlockParams) bool
+type VirtualFilterFunc func(vop hivego.VirtualOp) bool
 type ProcessFunction func(block hiveblocks.HiveBlock)
+
+// Block height function returns the last block height that should be resumed form
+// This is useful for production where there is a replay requirement to get into *now* state
+// Or tests...
+type BlockHeightFunction func(lastBlock uint64, lastSavedBlk uint64) uint64
+
+type BlockParams struct {
+	NeedsVirtualOps bool
+}
 
 type Streamer struct {
 	hiveBlocks     hiveblocks.HiveBlocks
 	client         BlockClient
-	startBlock     *int
+	startBlock     *uint64
 	ctx            context.Context
 	cancel         context.CancelFunc
 	filters        []FilterFunc
+	vFilters       []VirtualFilterFunc
 	streamPaused   bool
 	mtx            sync.Mutex
 	stopped        chan struct{}
 	stopOnlyOnce   sync.Once
-	headHeight     int
+	headHeight     uint64
 	hasFetchedHead bool
 	wg             sync.WaitGroup
 	processWg      sync.WaitGroup
@@ -289,12 +227,13 @@ type Streamer struct {
 
 // ===== streamer =====
 
-func NewStreamer(blockClient BlockClient, hiveBlocks hiveblocks.HiveBlocks, filters []FilterFunc, startAtBlock *int) *Streamer {
+func NewStreamer(blockClient BlockClient, hiveBlocks hiveblocks.HiveBlocks, filters []FilterFunc, vFilters []VirtualFilterFunc, startAtBlock *uint64) *Streamer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Streamer{
 		hiveBlocks:     hiveBlocks,
 		client:         blockClient,
 		filters:        filters,
+		vFilters:       vFilters,
 		ctx:            ctx,
 		cancel:         cancel,
 		startBlock:     startAtBlock,
@@ -326,24 +265,24 @@ func (s *Streamer) Init() error {
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			// no previous blocks processed, thus start from DefaultBlockStart
-			lastBlock = DefaultBlockStart
+			lastBlock = *s.startBlock
 		} else {
 			return fmt.Errorf("error getting last block: %v", err)
 		}
 	}
 
-	// if lastBlock is -1, this means that we haven't processed any
+	// if lastBlock is 0, this means that we haven't processed any
 	// blocks yet, thus we should start at our default point
-	if lastBlock == -1 {
-		lastBlock = DefaultBlockStart
+	if lastBlock == 0 {
+		lastBlock = *s.startBlock
 	}
 
 	// ensures startBlock is either the given startBlock, lastBlock+1, or DefaultBlockStart
 	if s.startBlock == nil || *s.startBlock < lastBlock {
 		if lastBlock == 0 {
-			s.startBlock = &[]int{DefaultBlockStart}[0]
+			s.startBlock = &[]uint64{DefaultBlockStart}[0]
 		} else {
-			s.startBlock = &[]int{lastBlock}[0]
+			s.startBlock = &[]uint64{lastBlock}[0]
 		}
 	}
 
@@ -367,23 +306,20 @@ func (s *Streamer) Start() *promise.Promise[any] {
 	})
 }
 
-func updateHead(bc BlockClient) (int, error) {
+func updateHead(bc BlockClient) (uint64, error) {
 	props, err := bc.GetDynamicGlobalProps()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get dynamic global properties: %v", err)
 	}
 
-	var data map[string]interface{}
+	var data struct {
+		HeadBlockNumber uint64 `json:"head_block_number"`
+	}
 	if err := json.Unmarshal(props, &data); err != nil {
 		return 0, fmt.Errorf("failed to unmarshal dynamic global properties: %v", err)
 	}
 
-	// get the latest head block number
-	if height, ok := data["head_block_number"].(float64); ok {
-		return int(height), nil
-	}
-
-	return 0, fmt.Errorf("failed to get head block number")
+	return data.HeadBlockNumber, nil
 }
 
 // updates the head height of the streamer at intervals, and since this endpiont is sensitive
@@ -435,7 +371,7 @@ func (s *Streamer) trackHeadHeight() {
 }
 
 func (s *Streamer) streamBlocks() {
-	last := time.Now()
+	// last := time.Now()
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -447,14 +383,14 @@ func (s *Streamer) streamBlocks() {
 				continue
 			}
 
-			if int(math.Abs(float64(s.headHeight-*s.startBlock))) <= AcceptableBlockLag {
+			if max(s.headHeight, *s.startBlock)-min(s.headHeight, *s.startBlock) <= AcceptableBlockLag {
 				time.Sleep(time.Millisecond * 100)
 
 				continue
 			}
 
-			fmt.Println("Going to fetch again!", time.Since(last), "block/s", float64(BlockBatchSize)/time.Since(last).Seconds())
-			last = time.Now()
+			// fmt.Println("Going to fetch again!", time.Since(last), "block/s", float64(BlockBatchSize)/time.Since(last).Seconds())
+			// last = time.Now()
 
 			blocks, err := s.fetchBlockBatch(*s.startBlock, BlockBatchSize)
 			if err != nil {
@@ -472,7 +408,7 @@ func (s *Streamer) streamBlocks() {
 			}
 
 			s.mtx.Lock()
-			*s.startBlock += len(blocks)
+			*s.startBlock += uint64(len(blocks))
 			s.mtx.Unlock()
 
 			// start goroutine to process the blocks
@@ -482,7 +418,9 @@ func (s *Streamer) streamBlocks() {
 			go func() {
 				defer s.processWg.Done()
 				if err := s.storeBlocks(blocks); err != nil {
-					log.Printf("processing blocks failed: %v\n", err)
+					if err.Error() != "empty blocks" {
+						log.Printf("processing blocks failed: %v\n", err)
+					}
 				}
 			}()
 
@@ -492,44 +430,21 @@ func (s *Streamer) streamBlocks() {
 	}
 }
 
-func (s *Streamer) fetchBlockBatch(startBlock, batchSize int) ([]hivego.Block, error) {
+func (s *Streamer) fetchBlockBatch(startBlock, batchSize uint64) ([]hivego.Block, error) {
 	log.Printf("fetching block range %d-%d\n", startBlock, startBlock+batchSize-1)
-
-	blockChan, err := s.client.GetBlockRange(startBlock, batchSize)
-
+	blocks, err := s.client.GetBlockRange(startBlock, batchSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initiate block range fetch: %v", err)
 	}
 
-	var blocks []hivego.Block
 	timeout := time.After(10 * time.Second)
-	currentBlock := startBlock
 
 	for {
 		select {
 		case <-s.ctx.Done():
 			return blocks, fmt.Errorf("streamer is stopped")
-		case block, ok := <-blockChan:
-			if !ok {
-				return blocks, nil
-			}
-			// set the block number directly here to ensure it isn’t zero
-			//
-			// we know this value is correct because we’re iterating over the range
-			block.BlockNumber = currentBlock
-			currentBlock++
-			if block.BlockID == "" {
-				log.Printf("empty block ID at block %d, skipping\n", block.BlockNumber)
-				// sanity check: if empty block ID => we assume "bad block"
-				time.Sleep(time.Millisecond * 100)
-
-				continue
-			}
-			blocks = append(blocks, block)
-
-			if len(blocks) >= batchSize {
-				return blocks, nil
-			}
+		default:
+			return blocks, nil
 
 		case <-timeout:
 			return blocks, fmt.Errorf("timeout waiting for blocks in range starting at %d", startBlock)
@@ -548,6 +463,8 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 			Transactions: []hiveblocks.Tx{},
 			MerkleRoot:   block.TransactionMerkleRoot,
 		}
+
+		needsVirtualOps := false
 
 		txIds := block.TransactionIds
 
@@ -576,7 +493,13 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 					if !s.canStore() {
 						return fmt.Errorf("streamer is paused or stopped")
 					}
-					if filter(op) {
+					blockParams := &BlockParams{
+						NeedsVirtualOps: false,
+					}
+					if filter(op, blockParams) {
+						if blockParams.NeedsVirtualOps {
+							needsVirtualOps = true
+						}
 						shouldInclude = true
 						break
 					}
@@ -591,6 +514,22 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 			}
 		}
 
+		if needsVirtualOps {
+			fmt.Println("Pulling virtual ops")
+			virtualOps, _ := s.client.FetchVirtualOps(block.BlockNumber, true, false)
+			bbytes, _ := json.Marshal(virtualOps)
+			fmt.Println("virtualOps", string(bbytes))
+			filteredOps := make([]hivego.VirtualOp, 0)
+			for _, vop := range virtualOps {
+				for _, vFilter := range s.vFilters {
+					if vFilter(vop) {
+						filteredOps = append(filteredOps, vop)
+					}
+				}
+			}
+			hiveBlock.VirtualOps = filteredOps
+		}
+
 		hiveBlocks[i] = hiveBlock
 	}
 
@@ -600,10 +539,14 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 	if !s.canStore() {
 		return fmt.Errorf("streamer is paused or stopped")
 	}
+
 	// store the block with filtered txs
 	//
 	// even if a block has no txs, we store
 	if err := s.hiveBlocks.StoreBlocks(hiveBlocks...); err != nil {
+		if err.Error() == "empty blocks" {
+			return nil
+		}
 		return fmt.Errorf("failed to store block: %v", err)
 	}
 
@@ -678,12 +621,12 @@ func (s *Streamer) IsStopped() bool {
 	}
 }
 
-func (s *Streamer) HeadHeight() int {
+func (s *Streamer) HeadHeight() uint64 {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 	return s.headHeight
 }
 
-func (s *Streamer) StartBlock() int {
+func (s *Streamer) StartBlock() uint64 {
 	return *s.startBlock
 }

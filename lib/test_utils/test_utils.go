@@ -11,13 +11,18 @@ import (
 // manages the lifecycle of a plugin
 //
 // inits -> starts -> stops upon test completion
-func RunPlugin(t *testing.T, plugin aggregate.Plugin) {
+func RunPlugin(t *testing.T, plugin aggregate.Plugin, blockUntilComplete ...bool) {
 	assert.NoError(t, plugin.Init())
-	go func() {
-		_, err := plugin.Start().Await(context.Background())
-		assert.NoError(t, err)
-	}()
 	t.Cleanup(func() {
 		assert.NoError(t, plugin.Stop())
 	})
+	run := func() {
+		_, err := plugin.Start().Await(context.Background())
+		assert.NoError(t, err)
+	}
+	if len(blockUntilComplete) >= 1 && blockUntilComplete[0] {
+		run()
+	} else {
+		go run()
+	}
 }

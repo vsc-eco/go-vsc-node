@@ -11,6 +11,13 @@ type VscDb struct {
 
 var _ a.Plugin = &VscDb{}
 
-func New(d db.Db) *VscDb {
-	return &VscDb{db.NewDbInstance(d, "go-vsc")}
+func New(d db.Db, suffix ...string) *VscDb {
+	var dbPath string
+	if len(suffix) > 0 {
+		dbPath = "go-vsc-" + suffix[0]
+	} else {
+		dbPath = "go-vsc"
+	}
+
+	return &VscDb{db.NewDbInstance(d, dbPath)}
 }

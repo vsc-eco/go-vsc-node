@@ -19,3 +19,9 @@ func PromiseResolve[T any](val T) *promise.Promise[T] {
 		resolve(val)
 	})
 }
+
+func PromiseReject[T any](val error) *promise.Promise[T] {
+	return promise.New(func(resolve func(T), reject func(error)) {
+		reject(val)
+	})
+}

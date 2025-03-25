@@ -3,6 +3,7 @@ package wasm_runtime_ipc
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"unicode/utf16"
@@ -11,6 +12,7 @@ import (
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/wasm/ipc_requests"
 	"vsc-node/modules/wasm/ipc_requests/execute"
+	wasm_runtime "vsc-node/modules/wasm/runtime"
 	sdkTypes "vsc-node/modules/wasm/sdk/types"
 
 	"github.com/JustinKnueppel/go-result"
@@ -51,7 +53,7 @@ func modCleanup(mod *wasmedge.Module) {
 	mod.Release()
 }
 
-func resultToWasmEdgeResult(vm *wasmedge.VM, memory *wasmedge.Memory, res result.Result[string]) ([]interface{}, wasmedge.Result) {
+func resultToWasmEdgeResult(runtime wasm_runtime.Runtime, vm *wasmedge.VM, memory *wasmedge.Memory, res result.Result[string]) ([]interface{}, wasmedge.Result) {
 	// res.InspectErr(func(err error) {
 	// 	fmt.Println("err:", err)
 	// })
@@ -59,7 +61,7 @@ func resultToWasmEdgeResult(vm *wasmedge.VM, memory *wasmedge.Memory, res result
 			result.AndThen(
 				res,
 				func(t string) result.Result[int32] {
-					return assemblyScriptAllocString(vm, memory, t)
+					return allocString(runtime, vm, memory, t)
 				}),
 			func(err error) []interface{} {
 				errStr := err.Error()
@@ -86,7 +88,7 @@ func assemblyScriptAllocString(vm *wasmedge.VM, memory *wasmedge.Memory, t strin
 		resultWrap(encodeUtf16(t, binary.LittleEndian)),
 		func(b []byte) result.Result[int32] {
 			return result.AndThen(
-				resultWrap(vm.Execute("__new", int32(2*len(t)), ASSEMBLY_SCRIPT_STRING_ID)),
+				resultWrap(vm.ExecuteRegistered("contract", "__new", int32(2*len(t)), ASSEMBLY_SCRIPT_STRING_ID)),
 				func(res []any) result.Result[int32] {
 					if len(res) != 1 {
 						return result.Err[int32](fmt.Errorf("invalid result when allocating memory for string"))
@@ -132,6 +134,96 @@ func assemblyScriptReadString(memory *wasmedge.Memory, ptr int32) result.Result[
 	)
 }
 
+func parseAllocResult(res []any) result.Result[int32] {
+	if len(res) != 1 {
+		return result.Err[int32](fmt.Errorf("invalid result when allocating memory for string"))
+	}
+	ptr, ok := res[0].(int32)
+	if !ok {
+		return result.Err[int32](fmt.Errorf("invalid result type when allocating memory for string"))
+	}
+	return result.Ok(ptr)
+}
+
+func goAllocString(vm *wasmedge.VM, memory *wasmedge.Memory, t string) result.Result[int32] {
+	// mod := vm.GetRegisteredModule("contract")
+	b := []byte(t)
+	fmt.Fprintln(os.Stderr, "alloc string", t)
+	return result.AndThen(
+		result.AndThen(
+			resultJoin(
+				resultWrap(vm.ExecuteRegistered("contract", "alloc", int32(2*4))),
+				resultWrap(vm.ExecuteRegistered("contract", "alloc", int32(len(b)))),
+			),
+			func(res [][]any) result.Result[[]int32] {
+				fmt.Fprintln(os.Stderr, "allocated string", t)
+				return resultJoin(
+					parseAllocResult(res[0]),
+					parseAllocResult(res[1]),
+				)
+			},
+		),
+		func(res []int32) result.Result[int32] {
+			fmt.Fprintln(os.Stderr, "parsed alloc string res", t)
+			doublePtr := res[0]
+			ptr := res[1]
+			if memory == nil {
+				// mod := vm.GetRegisteredModule("env")
+				// memory = mod.FindMemory("memory")
+				mod := vm.GetRegisteredModule("contract")
+				memory = mod.FindMemory(mod.ListMemory()[0])
+			}
+			return result.Map(
+				resultJoin(
+					result.Map(
+						resultWrap(memory.GetData(uint(ptr), uint(len(b)))),
+						func(data []byte) int32 {
+							fmt.Fprintln(os.Stderr, "set string data", t)
+							copy(data, b)
+							return ptr
+						},
+					),
+					result.Map(
+						resultWrap(memory.GetData(uint(doublePtr), uint(8))),
+						func(data []byte) int32 {
+							fmt.Fprintln(os.Stderr, "set string pointers", t)
+							// FIXME assuming little endian for now
+							binary.LittleEndian.PutUint32(data[:4], uint32(ptr))
+							binary.LittleEndian.PutUint32(data[4:], uint32(len(t)))
+							return doublePtr
+						},
+					),
+				),
+				func(res []int32) int32 {
+					fmt.Fprintln(os.Stderr, "alloc string complete", t)
+					return res[1]
+				},
+			)
+		},
+	)
+}
+
+func goReadString(memory *wasmedge.Memory, ptr int32) result.Result[string] {
+	return result.Map(
+		result.AndThen(
+			resultWrap(memory.GetData(uint(ptr), 8)),
+			func(ptrAndsizeBytes []byte) result.Result[[]byte] {
+				ptrBytes := ptrAndsizeBytes[:4]
+				sizeBytes := ptrAndsizeBytes[4:]
+
+				// FIXME assuming little endian for now
+				size := binary.LittleEndian.Uint32(sizeBytes)
+				ptr := binary.LittleEndian.Uint32(ptrBytes)
+
+				return resultWrap(memory.GetData(uint(ptr), uint(size)))
+			},
+		),
+		func(b []byte) string {
+			return string(b)
+		},
+	)
+}
+
 func decodeUtf16(b []byte, order binary.ByteOrder) (string, error) {
 	ints := make([]uint16, len(b)/2)
 	if err := binary.Read(bytes.NewReader(b), order, &ints); err != nil {
@@ -149,7 +241,29 @@ func encodeUtf16(b string, order binary.ByteOrder) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func registerImport(vm *wasmedge.VM, client ipc_client.Client[string], modname string, funcs []sdkTypes.SdkType) result.Result[*wasmedge.Module] {
+func readString(runtime wasm_runtime.Runtime, memory *wasmedge.Memory, ptr int32) result.Result[string] {
+	return wasm_runtime.Execute(runtime, wasm_runtime.RuntimeAction[result.Result[string]]{
+		AssemblyScript: func() result.Result[string] {
+			return assemblyScriptReadString(memory, ptr)
+		},
+		Go: func() result.Result[string] {
+			return goReadString(memory, ptr)
+		},
+	})
+}
+
+func allocString(runtime wasm_runtime.Runtime, vm *wasmedge.VM, memory *wasmedge.Memory, t string) result.Result[int32] {
+	return wasm_runtime.Execute(runtime, wasm_runtime.RuntimeAction[result.Result[int32]]{
+		AssemblyScript: func() result.Result[int32] {
+			return assemblyScriptAllocString(vm, memory, t)
+		},
+		Go: func() result.Result[int32] {
+			return goAllocString(vm, memory, t)
+		},
+	})
+}
+
+func registerImport(runtime wasm_runtime.Runtime, vm *wasmedge.VM, client ipc_client.Client[string], modname string, funcs []sdkTypes.SdkType) result.Result[*wasmedge.Module] {
 	mod := wasmedge.NewModule(modname)
 	for _, f := range funcs {
 		fnType := wasmedge.NewFunctionType(f.Type.Parameters, f.Type.Result)
@@ -161,8 +275,8 @@ func registerImport(vm *wasmedge.VM, client ipc_client.Client[string], modname s
 				memory := callframe.GetMemoryByIndex(0)
 				if len(params) == 1 {
 					ptr := params[0].(int32)
-					// the following assumes we are using the AssemblyScript
-					res := assemblyScriptReadString(memory, ptr)
+					// the following assumes that the argument is a string
+					res := readString(runtime, memory, ptr)
 					if res.IsErr() {
 						return []any{}, wasmedge.Result_Fail
 					}
@@ -182,6 +296,7 @@ func registerImport(vm *wasmedge.VM, client ipc_client.Client[string], modname s
 				// })
 
 				return resultToWasmEdgeResult(
+					runtime,
 					vm,
 					memory,
 					result.AndThen(
@@ -208,8 +323,12 @@ func registerImport(vm *wasmedge.VM, client ipc_client.Client[string], modname s
 	})
 }
 
-func (w *Wasm) Execute(byteCode []byte, gas uint, entrypoint string, args string) result.Result[string] {
+func (w *Wasm) Execute(gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime) result.Result[string] {
 	client := ipc_client.Run[string]()
+	return w.ExecuteWithClient(gas, entrypoint, args, runtime, client)
+}
+
+func (w *Wasm) ExecuteWithClient(gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime, client result.Result[ipc_client.Client[string]]) result.Result[string] {
 	conf := wasmedge.NewConfigure()
 	defer conf.Release()
 	conf.SetStatisticsCostMeasuring(true)
@@ -217,45 +336,84 @@ func (w *Wasm) Execute(byteCode []byte, gas uint, entrypoint string, args string
 	conf.SetStatisticsTimeMeasuring(true)
 	vm := wasmedge.NewVMWithConfig(conf)
 	defer vm.Release()
+	type initResult struct {
+		mods     []*wasmedge.Module
+		byteCode []byte
+	}
 	return result.AndThen(
 		result.MapOrElse(
 			result.AndThen(
 				result.AndThen(
 					client,
-					func(client ipc_client.Client[string]) result.Result[[]*wasmedge.Module] {
-						return resultJoin(
-							registerImport(vm, client, "sdk", sdkTypes.SdkTypes),
-							registerImport(vm, client, "env", []sdkTypes.SdkType{
-								{
-									Name: "abort",
-									Type: sdkTypes.VmType{
-										Parameters: []wasmedge.ValType{wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32},
+					func(client ipc_client.Client[string]) result.Result[initResult] {
+						return result.AndThen(
+							resultJoin(
+								registerImport(runtime, vm, client, "sdk", sdkTypes.SdkTypes),
+								registerImport(runtime, vm, client, "env", []sdkTypes.SdkType{
+									{
+										Name: "abort",
+										Type: sdkTypes.VmType{
+											Parameters: []wasmedge.ValType{wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32},
+										},
 									},
-								},
-							}),
+								}),
+							),
+							func(mods []*wasmedge.Module) result.Result[initResult] {
+								return result.AndThen(
+									client.Request(&execute.ExecutionReady[string]{}),
+									func(res ipc_requests.ProcessedMessage[string]) result.Result[initResult] {
+										return result.AndThen(
+											resultWrap(res.Result.Take()).
+												MapErr(func(err error) error {
+													return fmt.Errorf("no code provided")
+												}),
+											func(str string) result.Result[initResult] {
+												return result.Map(
+													resultWrap(hex.DecodeString(str)),
+													func(byteCode []byte) initResult {
+														return initResult{mods, byteCode}
+													},
+												)
+											},
+										)
+									},
+								)
+							},
 						)
 					},
 				),
-				func(mods []*wasmedge.Module) result.Result[string] {
+				func(init initResult) result.Result[string] {
 					vm.GetStatistics().SetCostLimit(gas)
 					res := result.AndThen(
 						result.AndThen(
 							result.AndThen(
-								result.And(
-									result.Err[any](vm.LoadWasmBuffer(byteCode)),
-									result.And(
-										result.Err[any](vm.Validate()),
-										result.Err[any](vm.Instantiate()),
-									),
+								result.AndThen(
+									// result.And(
+									result.Err[any](vm.RegisterWasmBuffer("contract", init.byteCode)),
+									// result.And(
+									// result.Err[any](vm.Validate()),
+									// result.Err[any](vm.Instantiate()),
+									// ),
+									// ),
+									func(any) result.Result[[]any] {
+										return wasm_runtime.Execute(runtime, wasm_runtime.RuntimeAction[result.Result[[]any]]{
+											Go: func() result.Result[[]any] {
+												fmt.Fprintln(os.Stderr, "go runtime init")
+												return resultWrap(vm.ExecuteRegistered("contract", "_initialize"))
+											},
+										})
+									},
 								),
-								func(any) result.Result[int32] {
+								func([]any) result.Result[int32] {
+									fmt.Fprintln(os.Stderr, "alloc string")
 									// mod := vm.GetRegisteredModule("contract")
 									// mod.AddMemory("memory", memory)
-									return assemblyScriptAllocString(vm, nil, args)
+									return allocString(runtime, vm, nil, args)
 								},
 							),
 							func(args int32) result.Result[[]any] {
-								return resultWrap(vm.Execute(entrypoint, args))
+								fmt.Fprintln(os.Stderr, "execute")
+								return resultWrap(vm.ExecuteRegistered("contract", entrypoint, args))
 							},
 						),
 						func(res []any) result.Result[string] {
@@ -265,14 +423,19 @@ func (w *Wasm) Execute(byteCode []byte, gas uint, entrypoint string, args string
 							}
 							switch v := res[0].(type) {
 							case int32:
-								mod := vm.GetRegisteredModule("env")
-								memory := mod.FindMemory("memory")
-								return assemblyScriptReadString(memory, v)
+								mod := vm.GetRegisteredModule("contract")
+								memoryList := mod.ListMemory()
+								if len(memoryList) == 0 {
+									mod = vm.GetRegisteredModule("env")
+									memoryList = []string{"memory"}
+								}
+								memory := mod.FindMemory(memoryList[0])
+								return readString(runtime, memory, v)
 							}
 							return result.Err[string](fmt.Errorf("return value is not a string"))
 						},
 					)
-					for _, mod := range mods {
+					for _, mod := range init.mods {
 						modCleanup(mod)
 					}
 					return res

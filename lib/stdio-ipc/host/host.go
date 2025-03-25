@@ -42,7 +42,9 @@ func RunWithContextAndTypeMap[Result any](ctx context.Context, typeMap map[strin
 				return res
 			},
 		),
-		ExecuteCommand,
+		func(cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[Result] {
+			return ExecuteCommand(ctx, cio)
+		},
 	)
 }
 
@@ -145,18 +147,18 @@ func emptyResultAndThen[T any](res emptyResult, mapper func() result.Result[T]) 
 	})
 }
 
-func ExecuteCommand[Result any](cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[Result] {
+func ExecuteCommand[Result any](ctx context.Context, cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[Result] {
 	return result.Map(
-		parseMessages(cio),
+		parseMessages(ctx, cio),
 		func(state parseLoopInfo[Result]) Result {
 			return state.res
 		},
 	)
 }
 
-func processMessage[Result any](cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[optional.Pair[stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]], ipc_requests.ProcessedMessage[Result]]] {
+func processMessage[Result any](ctx context.Context, cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[optional.Pair[stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]], ipc_requests.ProcessedMessage[Result]]] {
 	return result.Map(
-		ipc_common.ProcessMessage(cio),
+		ipc_common.ProcessMessage(ctx, cio),
 		func(pm ipc_requests.ProcessedMessage[Result]) optional.Pair[stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]], ipc_requests.ProcessedMessage[Result]] {
 			return optionalPair(cio, pm)
 		},
@@ -184,17 +186,17 @@ func handleProcessedMessage[Result any](pair optional.Pair[stdio_ipc.Connection[
 	)
 }
 
-func parseMessage[Result any](cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[parseLoopInfo[Result]] {
+func parseMessage[Result any](ctx context.Context, cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[parseLoopInfo[Result]] {
 	return result.AndThen(
-		processMessage(cio),
+		processMessage(ctx, cio),
 		handleProcessedMessage,
 	)
 }
 
-func parseMessages[Result any](cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[parseLoopInfo[Result]] {
+func parseMessages[Result any](ctx context.Context, cio stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]) result.Result[parseLoopInfo[Result]] {
 	state := result.Ok(parseLoopInfo[Result]{})
 	for !state.UnwrapOr(parseLoopInfo[Result]{done: true}).done && !cio.Finished() {
-		state = parseMessage(cio)
+		state = parseMessage(ctx, cio)
 	}
-	return state
+	return result.And(result.Err[any](cio.Close()), state)
 }

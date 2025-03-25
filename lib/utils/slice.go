@@ -6,6 +6,24 @@ import (
 	"golang.org/x/exp/constraints"
 )
 
+func Reduce[T any, R any](a []T, reducer func(R, T) R, initial R) R {
+	res := initial
+	for _, v := range a {
+		res = reducer(res, v)
+	}
+	return res
+}
+
+type Number interface {
+	constraints.Float | constraints.Integer
+}
+
+func Sum[T Number](a []T) T {
+	return Reduce(a, func(acc T, v T) T {
+		return acc + v
+	}, 0)
+}
+
 func Map[T any, R any](a []T, mapper func(T) R) []R {
 	res := make([]R, len(a))
 	for i, v := range a {

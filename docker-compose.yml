@@ -1,0 +1,30 @@
+version: "3.9"
+services:
+  app:
+    build:
+      dockerfile: Dockerfile
+      context: .
+    ports:
+      - "3000:3000"
+    environment:
+      - MONGO_URL=mongodb://db:27017
+    depends_on:
+      - db
+    networks:
+      - go-vsc-node
+  db:
+    image: mongo:8.0.4
+    # restart: always
+    ports:
+      - 127.0.0.1:27027:27017
+    networks:
+      - go-vsc-node
+    volumes:
+      - db:/data/db
+
+volumes:
+  db: {}
+      
+networks:
+  go-vsc-node:
+    driver: bridge

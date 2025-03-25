@@ -26,14 +26,14 @@ const KeyDIDPrefix = "did:key:"
 
 // ===== interface assertions =====
 
-var _ DID[ed25519.PublicKey] = KeyDID("")
-var _ Provider = KeyProvider{}
+var _ DID[ed25519.PublicKey, cid.Cid] = KeyDID("")
+var _ Provider[cid.Cid] = KeyProvider{}
 
 // ===== KeyDID =====
 
 type KeyDID string
 
-func NewKeyDID(pubKey ed25519.PublicKey) (DID[ed25519.PublicKey], error) {
+func NewKeyDID(pubKey ed25519.PublicKey) (DID[ed25519.PublicKey, cid.Cid], error) {
 
 	if pubKey == nil {
 		return KeyDID(""), fmt.Errorf("invalid public key")
