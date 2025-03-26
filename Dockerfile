@@ -1,15 +1,10 @@
 # syntax=docker/dockerfile:1
 
 # Use the official Go image as the base image
-FROM rockylinux:9.3 AS build
-
-# RUN dnf update -y
+FROM golang:1.24.1 AS build
 
 # Wasmedge Install Dependencies
-RUN dnf install -y git python which
-
-# Install Go
-RUN dnf install -y go
+RUN apt install -y git python3
 
 RUN useradd -m app
 
@@ -31,10 +26,10 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN go build -o vsc-node vsc-node/cmd/vsc-node
+RUN go build -buildvcs=false -o vsc-node vsc-node/cmd/vsc-node
 
 # Build VM Runner
-RUN source /home/app/.wasmedge/env && go build -o vm-runner vsc-node/cmd/vm-runner
+RUN . /home/app/.wasmedge/env && go build -buildvcs=false -o vm-runner vsc-node/cmd/vm-runner
 
 
 
