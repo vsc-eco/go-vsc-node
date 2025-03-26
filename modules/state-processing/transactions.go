@@ -172,7 +172,7 @@ func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession)
 
 	se.log.Debug("Transfer - tx.Self.BlockHeight", tx.Self.BlockHeight)
 
-	ledgerResult := se.LedgerExecutor.ExecuteTransfer(transferParams, ledgerSession)
+	ledgerResult := ledgerSession.ExecuteTransfer(transferParams)
 
 	se.log.Debug("Transfer LedgerResult", ledgerResult)
 
@@ -256,7 +256,7 @@ func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession)
 	}
 
 	parameter, _ := json.Marshal(params)
-	ledgerResult := se.LedgerExecutor.Withdraw(params, ledgerSession)
+	ledgerResult := ledgerSession.Withdraw(params)
 
 	se.log.Debug("ExecuteTx Result", params, ledgerResult, string(parameter))
 	return TxResult{

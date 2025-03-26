@@ -686,7 +686,8 @@ type TransferOptions struct {
 	Exclusion int64
 }
 
-func (le *LedgerExecutor) ExecuteTransfer(OpLogEvent OpLogEvent, ledgerSession *LedgerSession, options ...TransferOptions) LedgerResult {
+func (ledgerSession *LedgerSession) ExecuteTransfer(OpLogEvent OpLogEvent, options ...TransferOptions) LedgerResult {
+	le := ledgerSession.le
 	//Check if the from account has enough balance
 	exclusion := int64(0)
 
@@ -859,7 +860,8 @@ type WithdrawParams struct {
 	BlockHeight uint64 `json:"block_height"`
 }
 
-func (le *LedgerExecutor) Withdraw(withdraw WithdrawParams, ledgerSession *LedgerSession) LedgerResult {
+func (ledgerSession *LedgerSession) Withdraw(withdraw WithdrawParams) LedgerResult {
+	le := ledgerSession.le
 	if withdraw.Amount <= 0 {
 		return LedgerResult{
 			Ok:  false,
