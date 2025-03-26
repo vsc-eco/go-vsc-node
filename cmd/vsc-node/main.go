@@ -35,7 +35,7 @@ func main() {
 	vscDb := vsc.New(db)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)
-	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{}}), "localhost:8080")
+	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{witnessDb}}), "localhost:8080")
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)

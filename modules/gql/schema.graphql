@@ -126,7 +126,7 @@ type HiveKeys {
   owner: String
 }
 
-type WitnessNode {
+type Witness {
   account: String
   ipfs_peer_id: String
   last_signed: Int
@@ -251,15 +251,17 @@ type Query {
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(keyGroup: [String]!): AccountNonceResult
   localNodeInfo: LocalNodeInfo
-  witnessNodes(height: Int): [WitnessNode]
+  witnessNodes(height: Uint64!): [Witness!]!
   activeWitnessNodes: JSON
-  witnessSchedule(height: Int): JSON
+  witnessSchedule(height: Uint64!): JSON
   nextWitnessSlot(self: Boolean): JSON
   witnessActiveScore(height: Int): JSON
   mockGenerateElection: JSON
   anchorProducer: AnchorProducer
   getCurrentNumber: TestResult # TESTING QUERY
 }
+
+scalar Uint64
 
 type Mutation {
   incrementNumber: TestResult # TESTING MUTATION

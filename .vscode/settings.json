@@ -3,7 +3,7 @@
   // "go.testFlags": ["-count=1"] // disable test cache
   "filewatcher.commands": [
     {
-      "match": "go-vsc-node/modules/gql/.*\\.go$",
+      "match": "go-vsc-node/modules/gql/.*\\.graphql",
       "isAsync": true,
       "cmd": "cd ${workspaceRoot}; go run github.com/99designs/gqlgen generate",
       "event": "onFileChange"

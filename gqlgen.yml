@@ -9,6 +9,17 @@ model:
   filename: modules/gql/gqlgen/models.go
   package: gqlgen
 
+omit_slice_element_pointers: true
+
+autobind:
+  - vsc-node/modules/db/vsc/contracts
+  - vsc-node/modules/db/vsc/elections
+  - vsc-node/modules/db/vsc/hive_blocks
+  - vsc-node/modules/db/vsc/ledger
+  - vsc-node/modules/db/vsc/transactions
+  - vsc-node/modules/db/vsc/vsc_blocks
+  - vsc-node/modules/db/vsc/witnesses
+
 resolver:
   layout: follow-schema
   dir: modules/gql/gqlgen
@@ -19,5 +30,8 @@ models:
   ID:
     model:
       - github.com/99designs/gql/gqlgen/graphql.ID
+  Uint64:
+    model:
+      - vsc-node/modules/gql/model.Uint64
 
 call_argument_directives_with_null: true

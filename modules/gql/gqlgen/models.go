@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"vsc-node/modules/db/vsc/contracts"
 )
 
 type BalanceAccessCondition interface {
@@ -63,28 +64,6 @@ type ContractDiff struct {
 	PreviousContractStateID string  `json:"previousContractStateId"`
 }
 
-type ContractOutput struct {
-	ID             string    `json:"id"`
-	AnchoredBlock  *string   `json:"anchored_block,omitempty"`
-	AnchoredHeight *int      `json:"anchored_height,omitempty"`
-	AnchoredID     *string   `json:"anchored_id,omitempty"`
-	AnchoredIndex  *int      `json:"anchored_index,omitempty"`
-	ContractID     *string   `json:"contract_id,omitempty"`
-	Gas            *Gas      `json:"gas,omitempty"`
-	Inputs         []string  `json:"inputs"`
-	Results        []*string `json:"results"`
-	SideEffects    *string   `json:"side_effects,omitempty"`
-	StateMerkle    *string   `json:"state_merkle,omitempty"`
-}
-
-type ContractState struct {
-	ID          *string `json:"id,omitempty"`
-	State       *string `json:"state,omitempty"`
-	StateQuery  *string `json:"stateQuery,omitempty"`
-	StateKeys   *string `json:"stateKeys,omitempty"`
-	StateMerkle *string `json:"state_merkle,omitempty"`
-}
-
 type FindContractOutputFilter struct {
 	ByInput    *string `json:"byInput,omitempty"`
 	ByOutput   *string `json:"byOutput,omitempty"`
@@ -93,7 +72,7 @@ type FindContractOutputFilter struct {
 }
 
 type FindContractOutputResult struct {
-	Outputs []*ContractOutput `json:"outputs,omitempty"`
+	Outputs []*contracts.ContractOutput `json:"outputs,omitempty"`
 }
 
 type FindContractResult struct {
@@ -159,7 +138,7 @@ type LedgerOp struct {
 }
 
 type LedgerResults struct {
-	Txs []*LedgerOp `json:"txs,omitempty"`
+	Txs []LedgerOp `json:"txs,omitempty"`
 }
 
 type LedgerTxFilter struct {
@@ -188,7 +167,7 @@ type Transaction struct {
 	ID              string             `json:"id"`
 	Status          string             `json:"status"`
 	Headers         *Headers           `json:"headers,omitempty"`
-	RequiredAuths   []*Auth            `json:"required_auths,omitempty"`
+	RequiredAuths   []Auth             `json:"required_auths,omitempty"`
 	Data            *TransactionData   `json:"data,omitempty"`
 	SigHash         *string            `json:"sig_hash,omitempty"`
 	Src             *string            `json:"src,omitempty"`
@@ -217,15 +196,6 @@ type TransactionOutput struct {
 
 type TransactionSubmitResult struct {
 	ID *string `json:"id,omitempty"`
-}
-
-type WitnessNode struct {
-	Account     *string   `json:"account,omitempty"`
-	IpfsPeerID  *string   `json:"ipfs_peer_id,omitempty"`
-	LastSigned  *int      `json:"last_signed,omitempty"`
-	NetID       *string   `json:"net_id,omitempty"`
-	VersionID   *string   `json:"version_id,omitempty"`
-	SigningKeys *HiveKeys `json:"signing_keys,omitempty"`
 }
 
 type BalanceAccessConditionType string

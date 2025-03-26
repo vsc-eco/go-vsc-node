@@ -3,13 +3,17 @@ package gql
 import (
 	"context"
 	"log"
+	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
+	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/99designs/gqlgen/graphql/handler"
+	"github.com/99designs/gqlgen/graphql/handler/transport"
 	pg "github.com/99designs/gqlgen/graphql/playground"
 	"github.com/chebyrash/promise"
 )
@@ -21,9 +25,11 @@ const shutdownTimeout = 5 * time.Second
 // ===== types =====
 
 type gqlManager struct {
-	server *http.Server
-	Addr   string
-	schema graphql.ExecutableSchema
+	server       *http.Server
+	started      atomic.Bool
+	startPromise *promise.Promise[any]
+	Addr         string
+	schema       graphql.ExecutableSchema
 }
 
 // ===== interface assertion =====
@@ -44,19 +50,28 @@ func (g *gqlManager) Init() error {
 
 	// creates GraphQL server with Apollo
 	gqlServer := handler.New(g.schema)
+	gqlServer.AddTransport(transport.POST{})
 
 	// OPTIONAL, UNCOMMENT TO ENABLE TRACING
 	// gqlServer.Use(apollotracing.Tracer{})
 
 	// adds handlers for GraphQL and Apollo sandbox environment
-	mux.Handle("/api/v1/graphql", gqlServer)
-	mux.Handle("/sandbox", pg.ApolloSandboxHandler("Apollo Sandbox", "/api/v1/graphql"))
+	mux.Handle("POST /api/v1/graphql", gqlServer)
+	mux.Handle("GET /sandbox", pg.ApolloSandboxHandler("Apollo Sandbox", "/api/v1/graphql"))
 
 	// assigns the HTTP server
 	g.server = &http.Server{
 		Addr:    g.Addr,
 		Handler: mux,
 	}
+
+	g.startPromise = promise.New(func(resolve func(any), reject func(error)) {
+		g.server.BaseContext = func(l net.Listener) context.Context {
+			g.started.Store(true)
+			resolve(nil)
+			return context.Background()
+		}
+	})
 
 	return nil
 }
@@ -86,4 +101,11 @@ func (g *gqlManager) Stop() error {
 
 	log.Println("GraphQL server shut down successfully")
 	return nil
+}
+
+func (g *gqlManager) Started() *promise.Promise[any] {
+	if g.started.Load() {
+		return utils.PromiseResolve[any](nil)
+	}
+	return g.startPromise
 }

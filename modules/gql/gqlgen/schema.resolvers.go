@@ -7,7 +7,70 @@ package gqlgen
 import (
 	"context"
 	"fmt"
+	"vsc-node/modules/db/vsc/contracts"
+	"vsc-node/modules/db/vsc/witnesses"
+	"vsc-node/modules/gql/model"
 )
+
+// AnchoredBlock is the resolver for the anchored_block field.
+func (r *contractOutputResolver) AnchoredBlock(ctx context.Context, obj *contracts.ContractOutput) (*string, error) {
+	panic(fmt.Errorf("not implemented: AnchoredBlock - anchored_block"))
+}
+
+// AnchoredHeight is the resolver for the anchored_height field.
+func (r *contractOutputResolver) AnchoredHeight(ctx context.Context, obj *contracts.ContractOutput) (*int, error) {
+	panic(fmt.Errorf("not implemented: AnchoredHeight - anchored_height"))
+}
+
+// AnchoredID is the resolver for the anchored_id field.
+func (r *contractOutputResolver) AnchoredID(ctx context.Context, obj *contracts.ContractOutput) (*string, error) {
+	panic(fmt.Errorf("not implemented: AnchoredID - anchored_id"))
+}
+
+// AnchoredIndex is the resolver for the anchored_index field.
+func (r *contractOutputResolver) AnchoredIndex(ctx context.Context, obj *contracts.ContractOutput) (*int, error) {
+	panic(fmt.Errorf("not implemented: AnchoredIndex - anchored_index"))
+}
+
+// Gas is the resolver for the gas field.
+func (r *contractOutputResolver) Gas(ctx context.Context, obj *contracts.ContractOutput) (*Gas, error) {
+	panic(fmt.Errorf("not implemented: Gas - gas"))
+}
+
+// Results is the resolver for the results field.
+func (r *contractOutputResolver) Results(ctx context.Context, obj *contracts.ContractOutput) ([]*string, error) {
+	panic(fmt.Errorf("not implemented: Results - results"))
+}
+
+// SideEffects is the resolver for the side_effects field.
+func (r *contractOutputResolver) SideEffects(ctx context.Context, obj *contracts.ContractOutput) (*string, error) {
+	panic(fmt.Errorf("not implemented: SideEffects - side_effects"))
+}
+
+// ID is the resolver for the id field.
+func (r *contractStateResolver) ID(ctx context.Context, obj contracts.ContractState) (*string, error) {
+	panic(fmt.Errorf("not implemented: ID - id"))
+}
+
+// State is the resolver for the state field.
+func (r *contractStateResolver) State(ctx context.Context, obj contracts.ContractState, key *string) (*string, error) {
+	panic(fmt.Errorf("not implemented: State - state"))
+}
+
+// StateQuery is the resolver for the stateQuery field.
+func (r *contractStateResolver) StateQuery(ctx context.Context, obj contracts.ContractState, key *string, query *string) (*string, error) {
+	panic(fmt.Errorf("not implemented: StateQuery - stateQuery"))
+}
+
+// StateKeys is the resolver for the stateKeys field.
+func (r *contractStateResolver) StateKeys(ctx context.Context, obj contracts.ContractState, key *string) (*string, error) {
+	panic(fmt.Errorf("not implemented: StateKeys - stateKeys"))
+}
+
+// StateMerkle is the resolver for the state_merkle field.
+func (r *contractStateResolver) StateMerkle(ctx context.Context, obj contracts.ContractState) (*string, error) {
+	panic(fmt.Errorf("not implemented: StateMerkle - state_merkle"))
+}
 
 // IncrementNumber is the resolver for the incrementNumber field.
 func (r *mutationResolver) IncrementNumber(ctx context.Context) (*TestResult, error) {
@@ -20,7 +83,7 @@ func (r *queryResolver) ContractStateDiff(ctx context.Context, id *string) (*Con
 }
 
 // ContractState is the resolver for the contractState field.
-func (r *queryResolver) ContractState(ctx context.Context, id *string) (*ContractState, error) {
+func (r *queryResolver) ContractState(ctx context.Context, id *string) (contracts.ContractState, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
@@ -65,8 +128,8 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 }
 
 // WitnessNodes is the resolver for the witnessNodes field.
-func (r *queryResolver) WitnessNodes(ctx context.Context, height *int) ([]*WitnessNode, error) {
-	panic(fmt.Errorf("not implemented"))
+func (r *queryResolver) WitnessNodes(ctx context.Context, height model.Uint64) ([]witnesses.Witness, error) {
+	return r.Witnesses.GetWitnessesAtBlockHeight(uint64(height))
 }
 
 // ActiveWitnessNodes is the resolver for the activeWitnessNodes field.
@@ -75,7 +138,7 @@ func (r *queryResolver) ActiveWitnessNodes(ctx context.Context) (*string, error)
 }
 
 // WitnessSchedule is the resolver for the witnessSchedule field.
-func (r *queryResolver) WitnessSchedule(ctx context.Context, height *int) (*string, error) {
+func (r *queryResolver) WitnessSchedule(ctx context.Context, height model.Uint64) (*string, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
@@ -104,11 +167,38 @@ func (r *queryResolver) GetCurrentNumber(ctx context.Context) (*TestResult, erro
 	panic(fmt.Errorf("not implemented"))
 }
 
+// IpfsPeerID is the resolver for the ipfs_peer_id field.
+func (r *witnessResolver) IpfsPeerID(ctx context.Context, obj *witnesses.Witness) (*string, error) {
+	panic(fmt.Errorf("not implemented: IpfsPeerID - ipfs_peer_id"))
+}
+
+// LastSigned is the resolver for the last_signed field.
+func (r *witnessResolver) LastSigned(ctx context.Context, obj *witnesses.Witness) (*int, error) {
+	panic(fmt.Errorf("not implemented: LastSigned - last_signed"))
+}
+
+// SigningKeys is the resolver for the signing_keys field.
+func (r *witnessResolver) SigningKeys(ctx context.Context, obj *witnesses.Witness) (*HiveKeys, error) {
+	panic(fmt.Errorf("not implemented: SigningKeys - signing_keys"))
+}
+
+// ContractOutput returns ContractOutputResolver implementation.
+func (r *Resolver) ContractOutput() ContractOutputResolver { return &contractOutputResolver{r} }
+
+// ContractState returns ContractStateResolver implementation.
+func (r *Resolver) ContractState() ContractStateResolver { return &contractStateResolver{r} }
+
 // Mutation returns MutationResolver implementation.
 func (r *Resolver) Mutation() MutationResolver { return &mutationResolver{r} }
 
 // Query returns QueryResolver implementation.
 func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 
+// Witness returns WitnessResolver implementation.
+func (r *Resolver) Witness() WitnessResolver { return &witnessResolver{r} }
+
+type contractOutputResolver struct{ *Resolver }
+type contractStateResolver struct{ *Resolver }
 type mutationResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
+type witnessResolver struct{ *Resolver }
