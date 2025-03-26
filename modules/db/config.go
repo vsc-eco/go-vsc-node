@@ -2,6 +2,7 @@ package db
 
 import (
 	"errors"
+	"os"
 	"vsc-node/modules/config"
 )
 
@@ -11,17 +12,33 @@ type dbConfig struct {
 	DbURI string
 }
 
-type DbConfig struct {
+type dbConfigStruct struct {
 	*config.Config[dbConfig]
 }
 
+type DbConfig = *dbConfigStruct
+
 func NewDbConfig() DbConfig {
-	return DbConfig{config.New(dbConfig{
+	return &dbConfigStruct{config.New(dbConfig{
 		DbURI: "mongodb://localhost:27017",
 	}, nil)}
 }
 
-func (dc *DbConfig) SetDbURI(uri string) error {
+func (dc *dbConfigStruct) Init() error {
+	err := dc.Config.Init()
+	if err != nil {
+		return err
+	}
+
+	url := os.Getenv("MONGO_URL")
+	if url != "" {
+		return dc.SetDbURI(url)
+	}
+
+	return nil
+}
+
+func (dc *dbConfigStruct) SetDbURI(uri string) error {
 	if uri == "" {
 		return ErrEmptyURI
 	}
