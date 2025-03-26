@@ -8,18 +8,25 @@ import (
 
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/hive"
+	"vsc-node/lib/logger"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
 	data_availability "vsc-node/modules/data-availability"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
+	"vsc-node/modules/db/vsc/contracts"
+	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/transactions"
+	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
 	"vsc-node/modules/hive/streamer"
 	p2pInterface "vsc-node/modules/p2p"
+	stateEngine "vsc-node/modules/state-processing"
 
 	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 
@@ -30,7 +37,7 @@ func main() {
 	dbConf := db.NewDbConfig()
 
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
-	
+
 	db := db.New(dbConf)
 	vscDb := vsc.New(db)
 	hiveBlocks, err := hive_blocks.New(vscDb)
@@ -94,6 +101,18 @@ func main() {
 
 	dataAvailability := data_availability.New(p2p, identityConfig, da)
 
+	l := logger.PrefixedLogger{}
+	e := elections.New(vscDb)
+	c := contracts.New(vscDb)
+	cState := contracts.NewContractState(vscDb)
+	tx := transactions.New(vscDb)
+	le := ledgerDb.New(vscDb)
+	b := ledgerDb.NewBalances(vscDb)
+	intrest := ledgerDb.NewInterestClaimDb(vscDb)
+	blks := vscBlocks.New(vscDb)
+	actions := ledgerDb.NewActionsDb(vscDb)
+	se := stateEngine.New(l, da, witnessDb, e, c, cState, tx, le, b, hiveBlocks, intrest, blks, actions, wasm)
+
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
@@ -107,6 +126,7 @@ func main() {
 		streamerPlugin,
 		p2p,
 		dataAvailability,
+		e, c, cState, tx, le, b, intrest, blks, actions, se,
 		wasm,
 		gqlManager,
 	)
