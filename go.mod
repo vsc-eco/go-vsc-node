@@ -18,7 +18,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/vektah/gqlparser/v2 v2.5.23
 	github.com/vsc-eco/go-ethereum v0.0.1
-	github.com/vsc-eco/hivego v0.0.0-20250204064306-7dc96bb734b7
+	github.com/vsc-eco/hivego v0.0.0-20250326022052-753ab49b6067
 	github.com/zealic/go2node v0.1.0
 	github.com/zyedidia/generic v1.2.1
 	gitlab.com/NebulousLabs/go-upnp v0.0.0-20211002182029-11da932010b6

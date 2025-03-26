@@ -218,12 +218,12 @@ func (m *MockBlockClient) GetDynamicGlobalProps() ([]byte, error) {
 	return props, nil
 }
 
-func (m *MockBlockClient) GetBlockRange(startBlock, count uint64) ([]hivego.Block, error) {
+func (m *MockBlockClient) GetBlockRange(startBlock, count int) ([]hivego.Block, error) {
 	// await for random duration to simulate real-world scenario
 	//
 	// to contribute to innate thread randomness since these tests because of that can't be 100% deterministic anyway
 	blockChannel := make([]hivego.Block, count)
-	for i := uint64(0); i < count; i++ {
+	for i := int(0); i < count; i++ {
 		blockNumber := startBlock + i
 		blockChannel[i] = hivego.Block{
 			Timestamp:             time.Now().UTC().Format(time.RFC3339),
@@ -248,7 +248,7 @@ func (m *MockBlockClient) GetBlockRange(startBlock, count uint64) ([]hivego.Bloc
 	return blockChannel, nil
 }
 
-func (m *MockBlockClient) FetchVirtualOps(block uint64, onlyVirtual bool, includeReversible bool) ([]hivego.VirtualOp, error) {
+func (m *MockBlockClient) FetchVirtualOps(block int, onlyVirtual bool, includeReversible bool) ([]hivego.VirtualOp, error) {
 
 	return nil, nil
 }

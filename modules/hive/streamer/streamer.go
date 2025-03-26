@@ -23,8 +23,8 @@ import (
 // aid in mocking this service for unit tests
 type BlockClient interface {
 	GetDynamicGlobalProps() ([]byte, error)
-	GetBlockRange(startBlock uint64, count uint64) ([]hivego.Block, error)
-	FetchVirtualOps(block uint64, onlyVirtual bool, includeReversible bool) ([]hivego.VirtualOp, error)
+	GetBlockRange(startBlock int, count int) ([]hivego.Block, error)
+	FetchVirtualOps(block int, onlyVirtual bool, includeReversible bool) ([]hivego.VirtualOp, error)
 }
 
 // ===== variables =====
@@ -432,7 +432,7 @@ func (s *Streamer) streamBlocks() {
 
 func (s *Streamer) fetchBlockBatch(startBlock, batchSize uint64) ([]hivego.Block, error) {
 	log.Printf("fetching block range %d-%d\n", startBlock, startBlock+batchSize-1)
-	blocks, err := s.client.GetBlockRange(startBlock, batchSize)
+	blocks, err := s.client.GetBlockRange(int(startBlock), int(batchSize))
 	if err != nil {
 		return nil, fmt.Errorf("failed to initiate block range fetch: %v", err)
 	}
@@ -457,7 +457,7 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 	for i, block := range blocks {
 		// init the filtered block with essential fields
 		hiveBlock := hiveblocks.HiveBlock{
-			BlockNumber:  block.BlockNumber,
+			BlockNumber:  uint64(block.BlockNumber),
 			BlockID:      block.BlockID,
 			Timestamp:    block.Timestamp,
 			Transactions: []hiveblocks.Tx{},
@@ -516,7 +516,7 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 
 		if needsVirtualOps {
 			fmt.Println("Pulling virtual ops")
-			virtualOps, _ := s.client.FetchVirtualOps(block.BlockNumber, true, false)
+			virtualOps, _ := s.client.FetchVirtualOps(int(block.BlockNumber), true, false)
 			bbytes, _ := json.Marshal(virtualOps)
 			fmt.Println("virtualOps", string(bbytes))
 			filteredOps := make([]hivego.VirtualOp, 0)
