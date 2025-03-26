@@ -263,18 +263,9 @@ func (s *Streamer) Init() error {
 	// gets the last processed block
 	lastBlock, err := s.hiveBlocks.GetHighestBlock()
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			// no previous blocks processed, thus start from DefaultBlockStart
-			lastBlock = *s.startBlock
-		} else {
+		if err != mongo.ErrNoDocuments {
 			return fmt.Errorf("error getting last block: %v", err)
 		}
-	}
-
-	// if lastBlock is 0, this means that we haven't processed any
-	// blocks yet, thus we should start at our default point
-	if lastBlock == 0 {
-		lastBlock = *s.startBlock
 	}
 
 	// ensures startBlock is either the given startBlock, lastBlock+1, or DefaultBlockStart
