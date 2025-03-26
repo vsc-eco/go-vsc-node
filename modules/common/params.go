@@ -13,3 +13,7 @@ var CONSENSUS_SPECS = struct {
 var NETWORK_ID = "vsc-mainnet"
 
 var GATEWAY_WALLET = "vsc.gateway"
+
+var FR_VIRTUAL_ACCOUNT = "system:fr_balance"
+
+var DAO_WALLET = "hive:vsc.dao"

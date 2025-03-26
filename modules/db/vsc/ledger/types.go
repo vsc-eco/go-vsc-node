@@ -8,7 +8,7 @@ type Ledger interface {
 	aggregate.Plugin
 	StoreLedger(LedgerRecord)
 	GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error)
-	GetLedgerRange(account string, start uint64, end uint64, asset string) (*[]LedgerRecord, error)
+	GetLedgerRange(account string, start uint64, end uint64, asset string, options ...LedgerOptions) (*[]LedgerRecord, error)
 	//Gets distinct accounts on or after a block height
 	//Used to indicate whether balance has been updated or not
 	GetDistinctAccountsRange(startBlock, endBlock uint64) ([]string, error)
@@ -16,15 +16,15 @@ type Ledger interface {
 
 type Balances interface {
 	aggregate.Plugin
-	GetBalanceRecord(account string, blockHeight uint64, asset string) (*BalanceRecord, error)
-	UpdateBalanceRecord(account string, blockHeight uint64, balances map[string]int64) error
+	GetBalanceRecord(account string, blockHeight uint64) (*BalanceRecord, error)
+	UpdateBalanceRecord(record BalanceRecord) error
 	GetAll(blockHeight uint64) []BalanceRecord
 }
 
 type InterestClaims interface {
 	aggregate.Plugin
 	GetLastClaim(blockHeight uint64) *ClaimRecord
-	SaveClaim(blockHeight uint64, amount int64)
+	SaveClaim(claimRecord ClaimRecord)
 }
 
 type GatewayLedger interface {
@@ -34,6 +34,12 @@ type GatewayLedger interface {
 type ClaimRecord struct {
 	BlockHeight uint64 `bson:"block_height"`
 	Amount      int64  `bson:"amount"`
+	//Claim transaction ID. Can be directly triggered or implicit
+	TxId string `bson:"tx_id"`
+	//Numbers of accounts received interest
+	ReceivedN int `bson:"received_n"`
+	//Percent that was observed based on network averages
+	ObservedApr float64 `bson:"observed_apr"`
 }
 
 type BalanceRecord struct {
@@ -43,8 +49,10 @@ type BalanceRecord struct {
 	HBD               int64  `bson:"hbd"`
 	HBD_SAVINGS       int64  `bson:"hbd_savings"`
 	HBD_AVG           int64  `bson:"hbd_avg"`
-	HBD_CLAIM_HEIGHT  uint64 `bson:"hbd_claim"`
-	HBD_MODIFY_HEIGHT uint64 `bson:"hbd_modify"`
+	HBD_CLAIM_HEIGHT  uint64 `bson:"hbd_claim,omitempty"`
+	HBD_MODIFY_HEIGHT uint64 `bson:"hbd_modify,omitempty"`
+	//HBD savings first deposit time. Indicates when there is a positive balance
+	HBD_FDT uint64 `bson:"hbd_fdt,omitempty"`
 }
 
 // {
@@ -112,4 +120,9 @@ type ActionRecord struct {
 }
 
 type WithdrawalSideEffect struct {
+}
+
+type LedgerOptions struct {
+	//Ledger option type
+	OpType []string
 }

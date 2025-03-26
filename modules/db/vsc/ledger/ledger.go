@@ -2,6 +2,7 @@ package ledgerDb
 
 import (
 	"context"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
@@ -54,17 +55,28 @@ func (ledger *ledger) GetLedgerAfterHeight(account string, blockHeight uint64, a
 }
 
 // Get ledger ops after height inclusive
-func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, asset string) (*[]LedgerRecord, error) {
+func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, asset string, searchOps ...LedgerOptions) (*[]LedgerRecord, error) {
 	opts := options.Find().SetSort(bson.M{"block_height": 1})
 
-	findResult, err := ledger.Find(context.Background(), bson.M{
+	query := bson.M{
 		"owner": account,
 		"block_height": bson.M{
 			"$gte": start,
 			"$lte": end,
 		},
-		"tk": asset,
-	}, opts)
+	}
+	if asset != "" {
+		query["tk"] = asset
+	}
+
+	for _, op := range searchOps {
+		if len(op.OpType) > 0 {
+			query["t"] = bson.M{
+				"$in": op.OpType,
+			}
+		}
+	}
+	findResult, err := ledger.Find(context.Background(), query, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -81,13 +93,13 @@ func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, a
 
 func (ledger *ledger) GetDistinctAccountsRange(startHeight, endHeight uint64) ([]string, error) {
 	arr, err := ledger.Distinct(context.Background(), "owner", bson.M{
-		// "block_height": bson.M{
-		//Example: 21
-		// "$gte": startHeight,
-		// //Example: 30
-		// "$lte": endHeight,
-		//Captures range of 21 - 30 (inclusive)
-		// },
+		"block_height": bson.M{
+			//Example: 21
+			"$gte": startHeight,
+			//Example: 30
+			"$lte": endHeight,
+			//Captures range of 21 - 30 (inclusive)
+		},
 	})
 
 	if err != nil {
@@ -112,13 +124,14 @@ func NewBalances(d *vsc.VscDb) Balances {
 
 // Gets the balance record for a given account and asset
 // Note: this does not return updated ledger records
-func (balances *balances) GetBalanceRecord(account string, blockHeight uint64, asset string) (*BalanceRecord, error) {
+func (balances *balances) GetBalanceRecord(account string, blockHeight uint64) (*BalanceRecord, error) {
+	options := options.FindOne().SetSort(bson.D{{"block_height", -1}})
 	singleResult := balances.FindOne(context.Background(), bson.M{
 		"account": account,
 		"block_height": bson.M{
 			"$lte": blockHeight,
 		},
-	})
+	}, options)
 
 	if singleResult.Err() != nil {
 		if singleResult.Err().Error() == "mongo: no documents in result" {
@@ -143,19 +156,33 @@ func (balances *balances) PutBalanceRecord(balRecord BalanceRecord) {
 }
 
 // FIX ME!!
-func (balances *balances) UpdateBalanceRecord(account string, blockHeight uint64, balancesMap map[string]int64) error {
+func (balances *balances) UpdateBalanceRecord(record BalanceRecord) error {
 	findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
 	balances.FindOneAndUpdate(context.Background(), bson.M{
-		"account":      account,
-		"block_height": blockHeight,
+		"account":      record.Account,
+		"block_height": record.BlockHeight,
 	}, bson.M{
-		"$set": balancesMap,
+		"$set": record,
 	}, findUpdateOpts)
 	return nil
 }
 
 func (balances *balances) GetAll(blockHeight uint64) []BalanceRecord {
-	return nil
+	distinctAccountZ, _ := balances.Distinct(context.Background(), "account", bson.M{})
+	distinctAccount := common.ArrayToStringArray(distinctAccountZ)
+
+	//TODO: Either use a bulk read or use threads
+	//Initial iteration
+	records := make([]BalanceRecord, 0)
+	for _, act := range distinctAccount {
+		br, _ := balances.GetBalanceRecord(act, blockHeight)
+
+		if br != nil {
+			records = append(records, *br)
+		}
+	}
+
+	return records
 }
 
 type actionsDb struct {
@@ -242,11 +269,12 @@ type interestClaims struct {
 }
 
 func (ic *interestClaims) GetLastClaim(blockHeight uint64) *ClaimRecord {
+	options := options.FindOne().SetSort(bson.D{{"block_height", -1}})
 	findResult := ic.FindOne(context.Background(), bson.M{
 		"block_height": bson.M{
 			"$lt": blockHeight,
 		},
-	})
+	}, options)
 	if findResult.Err() != nil {
 		return nil
 	}
@@ -255,16 +283,13 @@ func (ic *interestClaims) GetLastClaim(blockHeight uint64) *ClaimRecord {
 	return &claimRecord
 }
 
-func (ic *interestClaims) SaveClaim(blockHeight uint64, amount int64) {
-	claimRecord := ClaimRecord{
-		BlockHeight: blockHeight,
-		Amount:      amount,
-	}
+func (ic *interestClaims) SaveClaim(claim ClaimRecord) {
+
 	options := options.FindOneAndUpdate().SetUpsert(true)
 	ic.FindOneAndUpdate(context.Background(), bson.M{
-		"block_height": blockHeight,
+		"block_height": claim.BlockHeight,
 	}, bson.M{
-		"$set": claimRecord,
+		"$set": claim,
 	}, options)
 }
 

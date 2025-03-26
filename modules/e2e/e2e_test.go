@@ -132,6 +132,7 @@ func TestE2E(t *testing.T) {
 			fmt.Println("[Prefix: e2e-1] Executing test transfer from test-account to @vsc.gateway of 50 hbd")
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "to="+didKey.String())
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "")
+			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HIVE", "")
 			return nil
 		},
 		r2e.Wait(3),
@@ -139,6 +140,29 @@ func TestE2E(t *testing.T) {
 		doWithdraw,
 		r2e.Wait(11),
 		doWithdraw,
+
+		func() error {
+			unstakeTx := &transactionpool.VscConsenusStake{
+				Account: "hive:test-account",
+				Amount:  "0.025",
+				Type:    "stake",
+				NetId:   "vsc-mainnet",
+			}
+
+			ops, err := unstakeTx.SerializeHive()
+
+			if err != nil {
+				panic(err)
+			}
+
+			tx := r2e.HiveCreator.MakeTransaction(ops)
+			r2e.HiveCreator.PopulateSigningProps(&tx, nil)
+			sig, _ := r2e.HiveCreator.Sign(tx)
+			tx.AddSig(sig)
+			unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
+			fmt.Println("stakeId", unstakeId)
+			return nil
+		},
 
 		func() error {
 			for i := 0; i < 5; i++ {
@@ -158,7 +182,7 @@ func TestE2E(t *testing.T) {
 			stakeOp := &transactionpool.VSCStake{
 				From:   didKey.String(),
 				To:     didKey.String(),
-				Amount: "0.010",
+				Amount: "0.020",
 				Asset:  "hbd",
 				NetId:  "vsc-mainnet",
 				Type:   "stake",
@@ -175,42 +199,178 @@ func TestE2E(t *testing.T) {
 		},
 		r2e.Wait(40),
 		func() error {
-			fmt.Println("Preparing atomicId")
-			withdrawTx := &transactionpool.VscWithdraw{
-				From:   "hive:test-account",
-				To:     "hive:test-account",
-				Amount: "0.030",
-				Asset:  "hbd",
+			transferTx := &transactionpool.VSCTransfer{
+				From:   didKey.String(),
+				To:     "hive:vsc.account",
+				Amount: "0.015",
+				Asset:  "hbd_savings",
 				NetId:  "vsc-mainnet",
-				Type:   "withdraw",
+				Nonce:  uint64(6),
 			}
-			withdrawTx2 := &transactionpool.VscWithdraw{
-				From:   "hive:test-account",
-				To:     "hive:test-account",
-				Amount: "0.060",
-				Asset:  "hbd",
+			sTx, _ := transactionCreator.SignFinal(transferTx)
+
+			stakeId, err := transactionCreator.Broadcast(sTx)
+
+			fmt.Println("transferStakeId", stakeId, err)
+			return nil
+		},
+		r2e.Wait(10),
+		func() error {
+			unstakeTx := &transactionpool.VSCStake{
+				From:   "hive:vsc.account",
+				To:     "hive:vsc.account",
+				Amount: "0.001",
+				Asset:  "hbd_savings",
+				Type:   "unstake",
 				NetId:  "vsc-mainnet",
-				Type:   "withdraw",
 			}
 
-			ops, _ := withdrawTx.SerializeHive()
-			ops2, _ := withdrawTx2.SerializeHive()
-			totalOps := []hivego.HiveOperation{}
-			totalOps = append(totalOps, ops...)
-			totalOps = append(totalOps, ops2...)
+			ops, err := unstakeTx.SerializeHive()
 
-			tx := r2e.HiveCreator.MakeTransaction(totalOps)
+			if err != nil {
 
+				panic(err)
+			}
+
+			fmt.Println("Prefix: e2e-1] Unstake ops", ops, err)
+			tx := r2e.HiveCreator.MakeTransaction(ops)
 			r2e.HiveCreator.PopulateSigningProps(&tx, nil)
 			sig, _ := r2e.HiveCreator.Sign(tx)
-
 			tx.AddSig(sig)
-
-			atomicId, _ := r2e.HiveCreator.Broadcast(tx)
-			fmt.Println("atomicId", atomicId)
+			unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
+			fmt.Println("unstakeId", unstakeId)
 
 			return nil
 		},
+		r2e.Wait(20),
+		func() error {
+			unstakeTx := &transactionpool.VSCStake{
+				From:   "hive:vsc.account",
+				To:     "hive:vsc.account",
+				Amount: "0.001",
+				Asset:  "hbd_savings",
+				Type:   "unstake",
+				NetId:  "vsc-mainnet",
+			}
+
+			ops, err := unstakeTx.SerializeHive()
+
+			if err != nil {
+
+				panic(err)
+			}
+
+			fmt.Println("Prefix: e2e-1] Unstake ops", ops, err)
+			tx := r2e.HiveCreator.MakeTransaction(ops)
+			r2e.HiveCreator.PopulateSigningProps(&tx, nil)
+			sig, _ := r2e.HiveCreator.Sign(tx)
+			tx.AddSig(sig)
+			unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
+			fmt.Println("unstakeId", unstakeId)
+
+			return nil
+		},
+		r2e.Wait(40),
+		func() error {
+			// mockCreator.Mr.MineNullBlocks(200)
+			return nil
+		},
+
+		func() error {
+			unstakeTx := &transactionpool.VSCStake{
+				From:   "hive:vsc.account",
+				To:     "hive:vsc.account",
+				Amount: "0.001",
+				Asset:  "hbd_savings",
+				Type:   "unstake",
+				NetId:  "vsc-mainnet",
+			}
+
+			ops, err := unstakeTx.SerializeHive()
+
+			if err != nil {
+
+				panic(err)
+			}
+
+			fmt.Println("Prefix: e2e-1] Unstake ops", ops, err)
+			tx := r2e.HiveCreator.MakeTransaction(ops)
+			r2e.HiveCreator.PopulateSigningProps(&tx, nil)
+			sig, _ := r2e.HiveCreator.Sign(tx)
+			tx.AddSig(sig)
+			unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
+			fmt.Println("unstakeId", unstakeId)
+
+			return nil
+		},
+		r2e.Wait(20),
+		func() error {
+			mockCreator.ClaimInterest("vsc.gateway", 100)
+			return nil
+		},
+
+		r2e.Wait(20),
+		func() error {
+
+			fmt.Println("syncBalance depositing")
+
+			var demoAccounts = []string{
+				"vsc.staker1",
+				"vsc.staker2",
+				"vsc.staker3",
+				"vsc.staker4",
+				"vsc.staker5",
+				"vsc.staker6",
+			}
+
+			for _, account := range demoAccounts {
+				mockCreator.Transfer(account, "vsc.gateway", "100", "HBD", "")
+			}
+
+			return nil
+		},
+		r2e.Wait(90),
+		func() error {
+			mockCreator.ClaimInterest("vsc.gateway", 50)
+			return nil
+		},
+		// func() error {
+		// 	fmt.Println("Preparing atomicId")
+		// 	withdrawTx := &transactionpool.VscWithdraw{
+		// 		From:   "hive:test-account",
+		// 		To:     "hive:test-account",
+		// 		Amount: "0.030",
+		// 		Asset:  "hbd",
+		// 		NetId:  "vsc-mainnet",
+		// 		Type:   "withdraw",
+		// 	}
+		// 	withdrawTx2 := &transactionpool.VscWithdraw{
+		// 		From:   "hive:test-account",
+		// 		To:     "hive:test-account",
+		// 		Amount: "0.060",
+		// 		Asset:  "hbd",
+		// 		NetId:  "vsc-mainnet",
+		// 		Type:   "withdraw",
+		// 	}
+
+		// 	ops, _ := withdrawTx.SerializeHive()
+		// 	ops2, _ := withdrawTx2.SerializeHive()
+		// 	totalOps := []hivego.HiveOperation{}
+		// 	totalOps = append(totalOps, ops...)
+		// 	totalOps = append(totalOps, ops2...)
+
+		// 	tx := r2e.HiveCreator.MakeTransaction(totalOps)
+
+		// 	r2e.HiveCreator.PopulateSigningProps(&tx, nil)
+		// 	sig, _ := r2e.HiveCreator.Sign(tx)
+
+		// 	tx.AddSig(sig)
+
+		// 	atomicId, _ := r2e.HiveCreator.Broadcast(tx)
+		// 	fmt.Println("atomicId", atomicId)
+
+		// 	return nil
+		// },
 
 		// r2e.Produce(e2e.TimeToBlocks(time.Duration(time.Hour * 24 * 3))),
 	})

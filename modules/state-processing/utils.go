@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,7 +31,6 @@ import (
 	"github.com/multiformats/go-multicodec"
 	mh "github.com/multiformats/go-multihash"
 	"github.com/vsc-eco/hivego"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // Key DIDs are always supposed to be normalized
@@ -135,22 +133,6 @@ func AuthCheck(customJson CustomJson, args AuthCheckType) bool {
 	return false
 }
 
-func arrayToStringArray(arr interface{}) []string {
-	out := make([]string, 0)
-	if reflect.TypeOf(arr).String() == "primitive.A" {
-		for _, v := range arr.(primitive.A) {
-			out = append(out, v.(string))
-		}
-	} else {
-		//Assume []interface{}
-		for _, v := range arr.([]interface{}) {
-			out = append(out, v.(string))
-		}
-	}
-
-	return out
-}
-
 // Mock block reader which aims to recreate the behavior of the real reader
 type MockReader struct {
 	//Mock mempool for testing
@@ -169,7 +151,8 @@ func (mr *MockReader) MineNullBlocks(count int) {
 	// Mine null blocks
 
 	for i := 0; i < count; i++ {
-
+		mr.witnessBlock()
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -219,6 +202,7 @@ func (mr *MockReader) witnessBlock() {
 		MerkleRoot:   "fake-merkle-root",
 		Transactions: mr.Mempool,
 		Timestamp:    ts.Format("2006-01-02T15:04:05Z"),
+		VirtualOps:   mr.VMempool,
 	}
 
 	if mr.ProcessFunction != nil {
@@ -228,6 +212,7 @@ func (mr *MockReader) witnessBlock() {
 	mr.lastTs = ts
 	mr.LastBlock = mr.LastBlock + 1
 	mr.Mempool = make([]hive_blocks.Tx, 0)
+	mr.VMempool = make([]hivego.VirtualOp, 0)
 	mr.mutex.Unlock()
 }
 
@@ -391,7 +376,9 @@ func (mc *MockCreator) ingestTx(tx hive_blocks.Tx, txId ...string) TxConfirmatio
 }
 
 func (mc *MockCreator) ingestVp(v hivego.VirtualOp) {
+	// mc.Mr.mutex.Lock()
 	mc.Mr.VMempool = append(mc.Mr.VMempool, v)
+	// mc.Mr.mutex.Unlock()
 }
 
 func (mc *MockCreator) hashTx(bbytes []byte) string {
@@ -410,9 +397,10 @@ type TxConfirmation struct {
 }
 
 type SlotStatus struct {
-	Done       bool
-	SlotHeight uint64
-	Producer   string
+	Done           bool
+	SlotHeight     uint64
+	Producer       string
+	BalanceUpdated bool
 }
 
 func MakeTxId(TxId string, opIdx int) string {

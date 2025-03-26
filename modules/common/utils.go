@@ -3,12 +3,14 @@ package common
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 
 	"github.com/ipfs/go-cid"
 	"github.com/ipld/go-ipld-prime/codec/dagcbor"
 	"github.com/ipld/go-ipld-prime/node/basicnode"
 	"github.com/multiformats/go-multicodec"
 	multihash "github.com/multiformats/go-multihash/core"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 
 	codecJson "github.com/ipld/go-ipld-prime/codec/json"
 )
@@ -36,4 +38,20 @@ func HashBytes(data []byte, mf multicodec.Code) (cid.Cid, error) {
 	}
 
 	return prefix.Sum(data)
+}
+
+func ArrayToStringArray(arr interface{}) []string {
+	out := make([]string, 0)
+	if reflect.TypeOf(arr).String() == "primitive.A" {
+		for _, v := range arr.(primitive.A) {
+			out = append(out, v.(string))
+		}
+	} else {
+		//Assume []interface{}
+		for _, v := range arr.([]interface{}) {
+			out = append(out, v.(string))
+		}
+	}
+
+	return out
 }

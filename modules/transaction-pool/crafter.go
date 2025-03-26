@@ -3,6 +3,7 @@ package transactionpool
 import (
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -68,17 +69,6 @@ func (tp *TransactionCrafter) SignFinal(vscOp VSCOperation) (SerializedVSCTransa
 	}, nil
 }
 
-// {
-// "__t":"vsc-sig",
-// "sigs":[
-//
-//		{
-//			"alg":"EdDSA",
-//			"kid":"did:key:z6MkmzUVuC9rdXtDgrfUDRJqBZKUAwpAy3k1dDscsmvK5ftb",
-//			"sig":"dEQ062klY_JekaW5iX6FJss0VQLCqU9PvMAL_4Q8jJo-NwZvoM8nyJlJoa9jw9HwP6e76ChKEch-Ta-VFCF5Cw"
-//		}
-//		]
-//	}
 type SignaturePackage struct {
 	Type string `json:"__t"`
 	Sigs []struct {
@@ -264,9 +254,9 @@ func (tx *VSCStake) SerializeHive() ([]hivego.HiveOperation, error) {
 
 	var id string
 	if tx.Type == "stake" {
-		id = "vsc.stake"
+		id = "vsc.stake_hbd"
 	} else if tx.Type == "unstake" {
-		id = "vsc.unstake"
+		id = "vsc.unstake_hbd"
 	}
 
 	op := hivego.CustomJsonOperation{
@@ -297,13 +287,78 @@ func (tx *VSCStake) Validate() (bool, error) {
 	if tx.To == "" || tx.From == "" {
 		return false, fmt.Errorf("failed validation - to and from must be set")
 	}
-	valid := tx.Asset == "hbd" && (tx.Type == "stake" || tx.Type == "unstake")
+	valid := tx.Asset == "hbd" || tx.Asset == "hbd_savings" && (tx.Type == "stake" || tx.Type == "unstake")
 
 	if !valid {
 		return false, fmt.Errorf("failed validation - invalid asset or type; asset must equal hbd, and stake = stake|unstake")
 	}
 
 	return valid, nil
+}
+
+type VscConsenusStake struct {
+	Account string `json:"account"`
+	Amount  string `json:"amount"`
+	Type    string `json:"type"`
+
+	NetId string `json:"-"`
+	Nonce uint64 `json:"-"`
+}
+
+func (tx *VscConsenusStake) SerializeVSC() (SerializedVSCTransaction, error) {
+	return SerializedVSCTransaction{}, errors.New("Unsupported operation")
+}
+
+func (tx *VscConsenusStake) SerializeHive() ([]hivego.HiveOperation, error) {
+	serializedJson := map[string]interface{}{
+		"account": tx.Account,
+		"amount":  tx.Amount,
+		"net_id":  tx.NetId,
+	}
+
+	jsonBytes, _ := json.Marshal(serializedJson)
+
+	valid, err := tx.Validate()
+	if !valid {
+		return nil, err
+	}
+
+	var id string
+	if tx.Type == "stake" {
+		id = "vsc.consensus_stake"
+	} else if tx.Type == "unstake" {
+		id = "vsc.consensus_unstake"
+	}
+
+	op := hivego.CustomJsonOperation{
+		RequiredAuths:        []string{tx.Account},
+		RequiredPostingAuths: []string{},
+		Id:                   id,
+		Json:                 string(jsonBytes),
+	}
+
+	return []hivego.HiveOperation{op}, nil
+}
+
+func (tx *VscConsenusStake) Hash() (cid.Cid, error) {
+	return hashVSCOperation(tx)
+}
+
+func (tx *VscConsenusStake) Validate() (bool, error) {
+	if tx.NetId == "" {
+		return false, fmt.Errorf("failed validation - net_id must be set")
+	}
+	if tx.Account == "" {
+		return false, fmt.Errorf("failed validation - account must be set")
+	}
+	if tx.Type != "stake" && tx.Type != "unstake" {
+		return false, fmt.Errorf("failed validation - type must be stake or unstake")
+	}
+	if _, err := strconv.ParseFloat(tx.Amount, 64); err != nil {
+		return false, fmt.Errorf("failed validation - amount must be a valid number")
+	}
+
+	return true, nil
 }
 
 type VscWithdraw struct {
@@ -325,7 +380,6 @@ func (tx *VscWithdraw) SerializeVSC() (SerializedVSCTransaction, error) {
 		return SerializedVSCTransaction{}, err
 	}
 
-	fmt.Println("jsonBytes", string(jjsonBytes))
 	err = json.Unmarshal(jjsonBytes, &recode)
 
 	if err != nil {
@@ -338,8 +392,6 @@ func (tx *VscWithdraw) SerializeVSC() (SerializedVSCTransaction, error) {
 	}
 
 	encodedBytes, _ := common.EncodeDagCbor(recode)
-
-	fmt.Println("encodedBytes", string(encodedBytes))
 
 	txShell := VSCTransactionShell{
 		Type:    "vsc-tx",

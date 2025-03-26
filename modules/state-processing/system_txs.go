@@ -457,6 +457,9 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		Proposer:   t.Self.RequiredAuths[0],
 		SigRoot:    blockContentC.SigRoot,
 
+		EndBlock:   t.SignedBlock.Headers.Br[1],
+		StartBlock: t.SignedBlock.Headers.Br[0] + 1,
+
 		// SlotHeight: ,
 
 		SlotHeight: int(slotInfo.StartHeight),
@@ -526,7 +529,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 		} else if txContainer.Type() == "oplog" {
 
-			oplog := txContainer.AsOplog()
+			oplog := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))
 			fmt.Println("OpLog detected!", txContainer, oplog)
 			oplog.ExecuteTx(se)
 		}

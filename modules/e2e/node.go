@@ -120,7 +120,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	vstream := vstream.New(se)
 	bp := blockproducer.New(logger, p2p, vstream, se, identityConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb)
 
-	multisig := gateway.New(logger, witnessesDb, electionDb, actionsDb, &txCreator, vstream, p2p, se, identityConfig)
+	multisig := gateway.New(logger, witnessesDb, electionDb, actionsDb, balanceDb, &txCreator, vstream, p2p, se, identityConfig)
 
 	plugins := make([]aggregate.Plugin, 0)
 

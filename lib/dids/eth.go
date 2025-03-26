@@ -483,6 +483,12 @@ func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeNam
 		return nil
 	})
 
+	// jsonData, err := json.MarshalIndent(typedData, "", "  ")
+	// if err != nil {
+	// 	fmt.Println("Error:", err)
+	// }
+	// fmt.Println(string(jsonData))
+
 	// chainId : nil
 	// version: ""
 

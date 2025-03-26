@@ -1,8 +1,10 @@
 package stateEngine
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/url"
 	"regexp"
 	"slices"
@@ -10,7 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"vsc-node/lib/logger"
+	"vsc-node/modules/common"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	ledgerSystem "vsc-node/modules/ledger-system"
 )
 
 //Implementation notes:
@@ -30,42 +34,6 @@ var assetTypes = []string{"hive", "hbd", "hbd_savings"}
 const ETH_REGEX = "^0x[a-fA-F0-9]{40}$"
 const HIVE_REGEX = `^[a-z][0-9a-z\-]*[0-9a-z](\.[a-z][0-9a-z\-]*[0-9a-z])*$`
 
-type LedgerUpdate struct {
-	Id string
-	//Block Index
-	BlockHeight uint64
-	//Block Index: Index of the TX in the block
-	BIdx int64
-	//Op Index: Index of the operation in the TX
-	OpIdx int64
-
-	Owner  string
-	Amount int64
-	Asset  string
-	Memo   string
-	//transfer, withdraw, stake, unstake
-	Type string
-}
-
-type OpLogEvent struct {
-	To     string `json:"to"`
-	From   string `json:"from"`
-	Amount int64  `json:"amount"`
-	Asset  string `json:"asset"`
-	Memo   string `json:"memo"`
-	Type   string `json:"type"`
-
-	//Not parted of compiled state
-	Id          string `json:"id"`
-	BIdx        int64  `json:"-"`
-	OpIdx       int64  `json:"-"`
-	BlockHeight uint64 `json:"-"`
-
-	//Fee for instant stake unstake
-	// Fee int64 `json:"fee,omitempty"`
-	Params map[string]interface{} `json:"params,omitempty"`
-}
-
 type LedgerResult struct {
 	Ok  bool
 	Msg string
@@ -74,6 +42,7 @@ type LedgerResult struct {
 type LedgerSystem struct {
 	BalanceDb ledgerDb.Balances
 	LedgerDb  ledgerDb.Ledger
+	ClaimDb   ledgerDb.InterestClaims
 
 	//Bridge actions are side effects that require secondary (outside of execution) processing to complete
 	//Some examples are withdrawals, and stake/unstake operations. Other future operations might be applicable as well
@@ -94,19 +63,39 @@ func (ls *LedgerSystem) GetBalance(account string, blockHeight uint64, asset str
 		return 0
 	}
 
-	balRecord, _ := ls.BalanceDb.GetBalanceRecord(account, blockHeight, asset)
+	balRecord, _ := ls.BalanceDb.GetBalanceRecord(account, blockHeight)
 
-	jsona, _ := json.Marshal(balRecord)
-	ls.log.Debug("balRecord", string(jsona))
 	if balRecord == nil {
 		return 0
 	}
 	if asset == "hbd" {
-		return balRecord.HBD
+		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, balRecord.BlockHeight+1, blockHeight, asset, ledgerDb.LedgerOptions{
+			OpType: []string{"unstake"},
+		})
+
+		unstake := int64(0)
+
+		for _, v := range *ledgerResults {
+			unstake += v.Amount
+		}
+
+		return balRecord.HBD + unstake
 	} else if asset == "hive" {
 		return balRecord.Hive
 	} else if asset == "hbd_savings" {
-		return balRecord.HBD_SAVINGS
+
+		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, balRecord.BlockHeight+1, blockHeight, asset, ledgerDb.LedgerOptions{
+			OpType: []string{"stake"},
+		})
+
+		stakeBal := int64(0)
+
+		for _, v := range *ledgerResults {
+			stakeBal += v.Amount
+		}
+		ls.log.Debug("GetBalance HBD_SAVINGS-BAL", stakeBal, *balRecord, blockHeight)
+
+		return balRecord.HBD_SAVINGS + stakeBal
 	} else {
 		return 0
 	}
@@ -121,6 +110,7 @@ func (ls *LedgerSystem) GetBalance(account string, blockHeight uint64, asset str
 }
 
 func (ls *LedgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64) {
+	fmt.Println("ClaimHBDInterest", lastClaim, blockHeight, amount)
 	//Do distribution of HBD interest on an going forward basis
 	//Save to ledger DB the difference.
 	ledgerBalances := ls.BalanceDb.GetAll(blockHeight)
@@ -129,48 +119,89 @@ func (ls *LedgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	totalAvg := int64(0)
 	//Ensure averages have been updated before distribution;
 	for _, balance := range ledgerBalances {
-		moreAvg := balance.HBD_SAVINGS * int64(balance.HBD_MODIFY_HEIGHT) / int64(lastClaim)
-		fmt.Println("INCREASING TOTAL AVG", balance.HBD_SAVINGS, moreAvg)
-		balance.HBD_AVG = balance.HBD_AVG + moreAvg
+
+		A := blockHeight - balance.HBD_MODIFY_HEIGHT //Example: Modifed at 10, endBlock = 40; thus 10-40 = 30
+		B := blockHeight - balance.HBD_CLAIM_HEIGHT  //Example: Claimed at block 100, current block 800; thus
+
+		moreAvg := balance.HBD_SAVINGS * int64(A) / int64(B)
+
+		var tmpAvg int64
+		if moreAvg > 0 {
+			tmpAvg = balance.HBD_AVG + moreAvg
+		} else {
+			tmpAvg = balance.HBD_AVG
+		}
+
+		//Apply adjustments
+		endingAvg := tmpAvg * int64(A) / int64(B)
+
+		if endingAvg < 1 {
+			fmt.Println("ClaimHBD tmpAvg is sub zero", balance.Account, tmpAvg)
+			continue
+		}
+
+		balance.HBD_AVG = endingAvg
 
 		processedBalRecords = append(processedBalRecords, balance)
-		totalAvg = totalAvg + balance.HBD_AVG
+		totalAvg = totalAvg + endingAvg
 	}
 
 	bsj, _ := json.Marshal(processedBalRecords)
 
-	fmt.Println("Processed bal records", processedBalRecords, string(bsj))
+	fmt.Println("Processed bal records", ledgerBalances, string(bsj))
 
 	for id, balance := range processedBalRecords {
-		if balance.HBD_AVG == 0 {
-			continue
-		}
+		// if balance.HBD_AVG == 0 {
+		// 	continue
+		// }
 
 		distributeAmt := balance.HBD_AVG * amount / totalAvg
 
-		fmt.Println("Distribute", distributeAmt)
 		if distributeAmt > 0 {
+			var owner string
+			if strings.HasPrefix(balance.Account, "system:") {
+				if balance.Account == "system:fr_balance" {
+					owner = common.DAO_WALLET
+				} else {
+					//Filter
+					continue
+				}
+			} else {
+				owner = balance.Account
+			}
+
 			ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-				Id:          "hbd_interest_" + strconv.Itoa(int(blockHeight)) + "_" + strconv.Itoa(id),
-				BlockHeight: blockHeight,
+				Id: "hbd_interest_" + strconv.Itoa(int(blockHeight)) + "_" + strconv.Itoa(id),
+				//next block
+				BlockHeight: blockHeight + 1,
 				Amount:      int64(distributeAmt),
 				Asset:       "hbd_savings",
-				Owner:       balance.Account,
-				Type:        "hbd_interest",
+				Owner:       owner,
+				Type:        "interest",
 			})
 		}
 	}
+	//Note this calculation is inaccurate and should be calculated based on N blocks of Y claim period
+	//Should not assume a static amount of time or 12 exactly claim interals per year. But since this is for statistics, it doesn't matter.
+	observedApr := (float64(amount) / float64(totalAvg)) * 12
+
+	ls.ClaimDb.SaveClaim(ledgerDb.ClaimRecord{
+		BlockHeight: blockHeight,
+		Amount:      amount,
+		ReceivedN:   len(processedBalRecords),
+		ObservedApr: observedApr,
+	})
 	//DONE
 }
 
-func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struct {
+func (ls *LedgerSystem) ExecuteOplog(oplog []ledgerSystem.OpLogEvent, startHeight uint64, endBlock uint64) struct {
 	accounts      []string
-	ledgerRecords []LedgerUpdate
+	ledgerRecords []ledgerSystem.LedgerUpdate
 	actionRecords []ledgerDb.ActionRecord
 } {
 	affectedAccounts := map[string]bool{}
 
-	ledgerRecords := make([]LedgerUpdate, 0)
+	ledgerRecords := make([]ledgerSystem.LedgerUpdate, 0)
 	actionRecords := make([]ledgerDb.ActionRecord, 0)
 
 	for _, v := range oplog {
@@ -178,7 +209,7 @@ func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight uint64, end
 			affectedAccounts[v.From] = true
 			affectedAccounts[v.To] = true
 
-			ledgerRecords = append(ledgerRecords, LedgerUpdate{
+			ledgerRecords = append(ledgerRecords, ledgerSystem.LedgerUpdate{
 				Id:          v.Id + "#in",
 				Owner:       v.From,
 				Amount:      -v.Amount,
@@ -186,38 +217,19 @@ func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight uint64, end
 				Type:        "transfer",
 				BlockHeight: endBlock,
 			})
-			ledgerRecords = append(ledgerRecords, LedgerUpdate{
+			ledgerRecords = append(ledgerRecords, ledgerSystem.LedgerUpdate{
 				Id:          v.Id + "#out",
-				Owner:       v.From,
+				Owner:       v.To,
 				Amount:      v.Amount,
 				Asset:       v.Asset,
 				Type:        "transfer",
 				BlockHeight: endBlock,
 			})
-
-			// ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-			// 	Id:          v.Id,
-			// 	BlockHeight: endBlock,
-			// 	Amount:      -v.Amount,
-			// 	Asset:       v.Asset,
-			// 	Owner:       v.From,
-			// 	Type:        "transfer",
-			// 	TxId:        v.Id,
-			// })
-			// ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-			// 	Id:          v.Id,
-			// 	BlockHeight: endBlock,
-			// 	Amount:      v.Amount,
-			// 	Asset:       v.Asset,
-			// 	Owner:       v.To,
-			// 	Type:        "transfer",
-			// 	TxId:        v.Id,
-			// })
 		}
 		if v.Type == "withdraw" {
 			affectedAccounts[v.From] = true
 
-			ledgerRecords = append(ledgerRecords, LedgerUpdate{
+			ledgerRecords = append(ledgerRecords, ledgerSystem.LedgerUpdate{
 				Id:          v.Id + "#in",
 				Owner:       v.From,
 				Amount:      -v.Amount,
@@ -225,15 +237,6 @@ func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight uint64, end
 				Type:        "withdraw",
 				BlockHeight: endBlock,
 			})
-			// ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-			// 	Id:          v.Id,
-			// 	BlockHeight: endBlock,
-			// 	Amount:      -v.Amount,
-			// 	Asset:       v.Asset,
-			// 	Owner:       v.From,
-			// 	Type:        "withdraw",
-			// 	TxId:        v.Id,
-			// })
 
 			actionRecords = append(actionRecords, ledgerDb.ActionRecord{
 				Id:     v.Id,
@@ -249,23 +252,15 @@ func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight uint64, end
 		if v.Type == "stake" {
 			affectedAccounts[v.From] = true
 
-			ledgerRecords = append(ledgerRecords, LedgerUpdate{
-				Id:          v.Id,
+			ledgerRecords = append(ledgerRecords, ledgerSystem.LedgerUpdate{
+				Id:          v.Id + "#in",
 				Owner:       v.From,
 				Amount:      -v.Amount,
 				Asset:       "hbd",
 				Type:        "stake",
 				BlockHeight: endBlock,
 			})
-			// ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-			// 	Id:          v.Id,
-			// 	BlockHeight: endBlock,
-			// 	Amount:      -v.Amount,
-			// 	Asset:       "hbd",
-			// 	Owner:       v.From,
-			// 	Type:        "stake",
-			// 	TxId:        v.Id,
-			// })
+
 			actionRecords = append(actionRecords, ledgerDb.ActionRecord{
 				Id:          v.Id,
 				Amount:      v.Amount,
@@ -274,7 +269,7 @@ func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight uint64, end
 				Memo:        v.Memo,
 				TxId:        v.Id,
 				Status:      "pending",
-				Type:        "stake_hbd",
+				Type:        "stake",
 				BlockHeight: endBlock,
 			})
 
@@ -282,8 +277,8 @@ func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight uint64, end
 		if v.Type == "unstake" {
 			affectedAccounts[v.From] = true
 
-			ledgerRecords = append(ledgerRecords, LedgerUpdate{
-				Id:          v.Id,
+			ledgerRecords = append(ledgerRecords, ledgerSystem.LedgerUpdate{
+				Id:          v.Id + "#in",
 				BlockHeight: endBlock,
 				Amount:      -v.Amount,
 				Asset:       "hbd_savings",
@@ -298,7 +293,47 @@ func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight uint64, end
 				Memo:        v.Memo,
 				TxId:        v.Id,
 				Status:      "pending",
-				Type:        "unstake_hbd",
+				Type:        "unstake",
+				BlockHeight: endBlock,
+			})
+		}
+		if v.Type == "consensus_stake" {
+			ledgerRecords = append(ledgerRecords, ledgerSystem.LedgerUpdate{
+				Id:          v.Id + "#in",
+				BlockHeight: endBlock,
+				Amount:      -v.Amount,
+				Asset:       "hive",
+				Owner:       v.From,
+				Type:        "consensus_stake",
+			})
+			ledgerRecords = append(ledgerRecords, ledgerSystem.LedgerUpdate{
+				Id:          v.Id + "#out",
+				BlockHeight: endBlock,
+				Amount:      v.Amount,
+				Asset:       "hive_consensus",
+				Owner:       v.To,
+				Type:        "consensus_stake",
+			})
+		}
+		if v.Type == "consensus_unstake" {
+			ledgerRecords = append(ledgerRecords, ledgerSystem.LedgerUpdate{
+				Id:          v.Id + "#in",
+				BlockHeight: endBlock,
+				Amount:      -v.Amount,
+				Asset:       "hive_consensus",
+				Owner:       v.From,
+				Type:        "consensus_unstake",
+			})
+
+			actionRecords = append(actionRecords, ledgerDb.ActionRecord{
+				Id:          v.Id,
+				Amount:      v.Amount,
+				Asset:       "-",
+				To:          v.To,
+				Memo:        v.Memo,
+				TxId:        v.Id,
+				Status:      "pending",
+				Type:        "consensus_unstake",
 				BlockHeight: endBlock,
 			})
 		}
@@ -315,9 +350,9 @@ func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight uint64, end
 	// 		fmt.Println("bal", bal)
 	// 		ledgerBalances[asset] = bal
 
-	// 		// ledgerUpdates, _ := ls.LedgerDb.GetLedgerRange(k, startHeight, endBlock, asset)
+	// 		// ledgerSystem.ledgerSystem.LedgerUpdates, _ := ls.LedgerDb.GetLedgerRange(k, startHeight, endBlock, asset)
 
-	// 		// for _, v := range *ledgerUpdates {
+	// 		// for _, v := range *ledgerSystem.ledgerSystem.LedgerUpdates {
 	// 		// 	ledgerBalances[asset] += v.Amount
 	// 		// }
 	// 	}
@@ -331,7 +366,7 @@ func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight uint64, end
 
 	return struct {
 		accounts      []string
-		ledgerRecords []LedgerUpdate
+		ledgerRecords []ledgerSystem.LedgerUpdate
 		actionRecords []ledgerDb.ActionRecord
 	}{
 		accounts,
@@ -340,22 +375,30 @@ func (ls *LedgerSystem) ExecuteOplog(oplog []OpLogEvent, startHeight uint64, end
 	}
 }
 
-func (ls *LedgerSystem) SaveSnapshot(k string, endBlock uint64) {
-	assets := []string{"hbd", "hive", "hbd_savings"}
-	ledgerBalances := map[string]int64{}
-	for _, asset := range assets {
-		//As of block X or below
-		bal := ls.GetBalance(k, endBlock, asset)
-		ledgerBalances[asset] = bal
+// func (ls *LedgerSystem) SaveSnapshot(k string, endBlock uint64) {
+// 	assets := []string{"hbd", "hive", "hbd_savings"}
+// 	ledgerBalances := map[string]int64{}
+// 	for _, asset := range assets {
+// 		//As of block X or below
+// 		bal := ls.GetBalance(k, endBlock, asset)
+// 		ledgerBalances[asset] = bal
 
-		// ledgerUpdates, _ := ls.LedgerDb.GetLedgerRange(k, startHeight, endBlock, asset)
+// 		// ledgerSystem.ledgerSystem.LedgerUpdates, _ := ls.LedgerDb.GetLedgerRange(k, startHeight, endBlock, asset)
 
-		// for _, v := range *ledgerUpdates {
-		// 	ledgerBalances[asset] += v.Amount
-		// }
-	}
-	ls.BalanceDb.UpdateBalanceRecord(k, endBlock, ledgerBalances)
-}
+// 		// for _, v := range *ledgerSystem.LedgerUpdates {
+// 		// 	ledgerBalances[asset] += v.Amount
+// 		// }
+// 	}
+// 	ls.BalanceDb.UpdateBalanceRecord(ledgerDb.BalanceRecord{
+// 		Account:     k,
+// 		BlockHeight: endBlock,
+// 		Hive:        ledgerBalances["hive"],
+// 		HBD:         ledgerBalances["hbd"],
+// 		HBD_SAVINGS: ledgerBalances["hbd_savings"],
+
+// 	})
+// 	// ls.BalanceDb.UpdateBalanceRecord(k, endBlock, ledgerBalances)
+// }
 
 type ExtraInfo struct {
 	BlockHeight uint64
@@ -364,19 +407,28 @@ type ExtraInfo struct {
 func (ls *LedgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ExtraInfo) {
 	ls.log.Debug("IndexActions", actionUpdate)
 
-	actionIds := arrayToStringArray(actionUpdate["ops"].([]interface{}))
+	actionIds := common.ArrayToStringArray(actionUpdate["ops"].([]interface{}))
 
-	for _, id := range actionIds {
+	//All stake related ops
+	completeOps := actionUpdate["cleared_ops"].(string)
+
+	b64, _ := base64.RawURLEncoding.DecodeString(completeOps)
+
+	bs := big.Int{}
+
+	bs.SetBytes(b64)
+
+	for idx, id := range actionIds {
 		record, _ := ls.ActionsDb.Get(id)
 		if record == nil {
 			continue
 		}
-
 		ls.ActionsDb.ExecuteComplete(id)
 
 		if record.Type == "stake" {
+			ls.log.Debug("Indexxing stake Ledger")
 			ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-				Id:     record.Id,
+				Id:     record.Id + "#out",
 				Amount: record.Amount,
 				Asset:  "hbd_savings",
 				Owner:  record.To,
@@ -390,33 +442,28 @@ func (ls *LedgerSystem) IndexActions(actionUpdate map[string]interface{}, extraI
 			})
 		}
 		if record.Type == "unstake" {
+			var blockDelay uint64
+
+			//If is a neutral stake op, then set only 1 block delay
+			if bs.Bit(idx) == 1 {
+				blockDelay = 1
+			} else {
+				blockDelay = HBD_UNSTAKE_BLOCKS
+			}
 			ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-				Id:     record.Id,
+				Id:     record.Id + "#out",
 				Amount: record.Amount,
 				Asset:  "hbd",
 				Owner:  record.To,
 				Type:   "unstake",
 
 				//It'll become available in 3 days of blocks
-				BlockHeight: extraInfo.BlockHeight + HBD_UNSTAKE_BLOCKS,
+				BlockHeight: extraInfo.BlockHeight + blockDelay,
 				BIdx:        -1,
 				OpIdx:       -1,
 			})
 		}
 	}
-
-	//All stake related ops
-	// completeOps := actionUpdate["stake_ops"].(string)
-
-	// b64, _ := base64.RawURLEncoding.DecodeString(completeOps)
-
-	// // bitset.
-	// bs := big.Int{}
-
-	// bs.SetBytes(b64)
-
-	// stakedOps := make([]string, 0)
-	// unstakeOps := make([]string, 0)
 
 }
 
@@ -425,148 +472,134 @@ type OplogInjestOptions struct {
 	EndHeight   uint64
 }
 
-func (ls *LedgerSystem) IngestOplog(oplog []OpLogEvent, options OplogInjestOptions) {
-	affectedAccounts := map[string]bool{}
-	affectedBalances := map[string]int64{}
-	ledgerRecords := make([]ledgerDb.LedgerRecord, 0)
-	actionRecords := make([]ledgerDb.ActionRecord, 0)
+func (ls *LedgerSystem) IngestOplog(oplog []ledgerSystem.OpLogEvent, options OplogInjestOptions) {
+	executeResults := ls.ExecuteOplog(oplog, options.StartHeight, options.EndHeight)
 
-	oplogResults := ls.ExecuteOplog(oplog, options.StartHeight, options.EndHeight)
+	ledgerRecords := executeResults.ledgerRecords
+	actionRecords := executeResults.actionRecords
 
-	ls.log.Debug("OplogResults", oplogResults)
-	for _, v := range oplog {
+	// ls.log.Debug("OplogResults", oplogResults)
+	// for _, v := range oplog {
 
-		if v.Type == "transfer" {
-			ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
-				Id:          v.Id + "#in",
-				Amount:      -v.Amount,
-				Asset:       v.Asset,
-				From:        v.From,
-				Owner:       v.From,
-				Type:        "transfer",
-				TxId:        v.Id,
-				BlockHeight: v.BlockHeight,
-			})
+	// 	if v.Type == "transfer" {
+	// 		ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
+	// 			Id:          v.Id + "#in",
+	// 			Amount:      -v.Amount,
+	// 			Asset:       v.Asset,
+	// 			From:        v.From,
+	// 			Owner:       v.From,
+	// 			Type:        "transfer",
+	// 			TxId:        v.Id,
+	// 			BlockHeight: v.BlockHeight,
+	// 		})
 
-			ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
-				Id:          v.Id + "#out",
-				Amount:      v.Amount,
-				Asset:       v.Asset,
-				Owner:       v.To,
-				Type:        "transfer",
-				TxId:        v.Id,
-				BlockHeight: v.BlockHeight,
-			})
-			affectedBalances[v.From+v.Asset] = affectedBalances[v.From+v.Asset] - v.Amount
-			affectedBalances[v.To+v.Asset] = affectedBalances[v.To+v.Asset] + v.Amount
-			affectedAccounts[v.From] = true
-			affectedAccounts[v.To] = true
-		}
-		if v.Type == "withdraw" {
-			ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
-				Id:          v.Id + "#in",
-				Amount:      -v.Amount,
-				Asset:       v.Asset,
-				From:        v.From,
-				Owner:       v.From,
-				Type:        "withdraw",
-				TxId:        v.Id,
-				BlockHeight: v.BlockHeight,
-			})
-			actionRecords = append(actionRecords, ledgerDb.ActionRecord{
-				Id:     v.Id,
-				Amount: v.Amount,
-				Asset:  v.Asset,
-				To:     v.To,
-				Memo:   v.Memo,
-				TxId:   v.Id,
-				Status: "pending",
-				Type:   "withdraw",
-			})
-			affectedBalances[v.From+v.Asset] = affectedBalances[v.From+v.Asset] - v.Amount
-			affectedAccounts[v.From] = true
-		}
-		if v.Type == "stake" {
-			affectedAccounts[v.From] = true
+	// 		ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
+	// 			Id:          v.Id + "#out",
+	// 			Amount:      v.Amount,
+	// 			Asset:       v.Asset,
+	// 			Owner:       v.To,
+	// 			Type:        "transfer",
+	// 			TxId:        v.Id,
+	// 			BlockHeight: v.BlockHeight,
+	// 		})
+	// 		affectedBalances[v.From+v.Asset] = affectedBalances[v.From+v.Asset] - v.Amount
+	// 		affectedBalances[v.To+v.Asset] = affectedBalances[v.To+v.Asset] + v.Amount
+	// 		affectedAccounts[v.From] = true
+	// 		affectedAccounts[v.To] = true
+	// 	}
+	// 	if v.Type == "withdraw" {
+	// 		ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
+	// 			Id:          v.Id + "#in",
+	// 			Amount:      -v.Amount,
+	// 			Asset:       v.Asset,
+	// 			From:        v.From,
+	// 			Owner:       v.From,
+	// 			Type:        "withdraw",
+	// 			TxId:        v.Id,
+	// 			BlockHeight: v.BlockHeight,
+	// 		})
+	// 		actionRecords = append(actionRecords, ledgerDb.ActionRecord{
+	// 			Id:     v.Id,
+	// 			Amount: v.Amount,
+	// 			Asset:  v.Asset,
+	// 			To:     v.To,
+	// 			Memo:   v.Memo,
+	// 			TxId:   v.Id,
+	// 			Status: "pending",
+	// 			Type:   "withdraw",
+	// 		})
+	// 		affectedBalances[v.From+v.Asset] = affectedBalances[v.From+v.Asset] - v.Amount
+	// 		affectedAccounts[v.From] = true
+	// 	}
+	// 	if v.Type == "stake" {
+	// 		affectedAccounts[v.From] = true
 
-			ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-				Id: v.Id + "#in",
-				//plz passthrough original block height
-				BlockHeight: options.EndHeight,
-				Amount:      -v.Amount,
-				Asset:       "hbd",
-				Owner:       v.From,
-				Type:        "stake",
-				TxId:        v.Id,
-			})
-			ls.ActionsDb.StoreAction(
-				ledgerDb.ActionRecord{
-					Id:     v.Id,
-					Amount: v.Amount,
-					Asset:  "hbd_savings",
-					To:     v.To,
-					Memo:   v.Memo,
-					TxId:   v.Id,
-					Status: "pending",
-					Type:   "stake",
-				},
-			)
-		}
-		if v.Type == "unstake" {
-			affectedAccounts[v.From] = true
-			ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-				Id: v.Id + "#in",
-				////plz passthrough original block height
-				BlockHeight: options.EndHeight,
-				Amount:      -v.Amount,
-				Asset:       "hbd_savings",
-				Owner:       v.From,
-				Type:        "transfer",
-				TxId:        v.Id,
-			})
-			ls.ActionsDb.StoreAction(
-				ledgerDb.ActionRecord{
-					Id:     v.Id,
-					Amount: v.Amount,
-					Asset:  "hbd_savings",
-					To:     v.To,
-					Memo:   v.Memo,
-					TxId:   v.Id,
-					Status: "pending",
-					Type:   "unstake",
-				},
-			)
-		}
-	}
+	// 		ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+	// 			Id: v.Id + "#in",
+	// 			//plz passthrough original block height
+	// 			BlockHeight: options.EndHeight,
+	// 			Amount:      -v.Amount,
+	// 			Asset:       "hbd",
+	// 			Owner:       v.From,
+	// 			Type:        "stake",
+	// 			TxId:        v.Id,
+	// 		})
+	// 		ls.ActionsDb.StoreAction(
+	// 			ledgerDb.ActionRecord{
+	// 				Id:     v.Id,
+	// 				Amount: v.Amount,
+	// 				Asset:  "hbd_savings",
+	// 				To:     v.To,
+	// 				Memo:   v.Memo,
+	// 				TxId:   v.Id,
+	// 				Status: "pending",
+	// 				Type:   "stake",
+	// 			},
+	// 		)
+	// 	}
+	// 	if v.Type == "unstake" {
+	// 		affectedAccounts[v.From] = true
+	// 		ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+	// 			Id: v.Id + "#in",
+	// 			////plz passthrough original block height
+	// 			BlockHeight: options.EndHeight,
+	// 			Amount:      -v.Amount,
+	// 			Asset:       "hbd_savings",
+	// 			Owner:       v.From,
+	// 			Type:        "transfer",
+	// 			TxId:        v.Id,
+	// 		})
+	// 		ls.ActionsDb.StoreAction(
+	// 			ledgerDb.ActionRecord{
+	// 				Id:     v.Id,
+	// 				Amount: v.Amount,
+	// 				Asset:  "hbd_savings",
+	// 				To:     v.To,
+	// 				Memo:   v.Memo,
+	// 				TxId:   v.Id,
+	// 				Status: "pending",
+	// 				Type:   "unstake",
+	// 			},
+	// 		)
+	// 	}
+	// }
 	for _, v := range ledgerRecords {
-		ls.LedgerDb.StoreLedger(v)
+		ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+			Id: v.Id,
+			//plz passthrough original block height
+			BlockHeight: options.EndHeight,
+			Amount:      v.Amount,
+			Asset:       v.Asset,
+			Owner:       v.Owner,
+			Type:        v.Type,
+			// TxId:        v.,
+		})
 	}
 
 	for _, v := range actionRecords {
 		ls.ActionsDb.StoreAction(v)
 	}
 
-	distinctAccounts, _ := ls.LedgerDb.GetDistinctAccountsRange(options.StartHeight, options.EndHeight)
-
-	assets := []string{"hbd", "hive", "hbd_savings", "consensus"}
-
-	//Cleanup!
-	for _, k := range distinctAccounts {
-		ledgerBalances := map[string]int64{}
-		for _, asset := range assets {
-			//As of block X or below
-			bal := ls.GetBalance(k, options.StartHeight, asset)
-			ledgerBalances[asset] = bal
-			fmt.Println("LedgerBalance", bal, asset)
-
-			ledgerUpdates, _ := ls.LedgerDb.GetLedgerRange(k, options.StartHeight, options.EndHeight, asset)
-
-			for _, v := range *ledgerUpdates {
-				ledgerBalances[asset] += v.Amount
-			}
-		}
-		ls.BalanceDb.UpdateBalanceRecord(k, options.EndHeight, ledgerBalances)
-	}
 }
 
 // Used during live execution of transfers such as those from contracts or user transaction
@@ -575,10 +608,10 @@ type LedgerExecutor struct {
 
 	//List of finalized operations such as transfers, withdrawals.
 	//Expected to be identical when block is produced and used during block creation
-	Oplog []OpLogEvent
+	Oplog []ledgerSystem.OpLogEvent
 	//Virtual ledger is a cache of all balance changes (virtual and non-virtual)
 	//Includes deposits, transfers (in-n-out), withdrawals, and stake/unstake operations (future)
-	VirtualLedger map[string][]LedgerUpdate
+	VirtualLedger map[string][]ledgerSystem.LedgerUpdate
 
 	//Live calculated gateway balances on the fly
 	//Use last saved balance as the starting data
@@ -588,8 +621,8 @@ type LedgerExecutor struct {
 type LedgerSession struct {
 	le *LedgerExecutor
 
-	oplog     []OpLogEvent
-	ledgerOps []LedgerUpdate
+	oplog     []ledgerSystem.OpLogEvent
+	ledgerOps []ledgerSystem.LedgerUpdate
 	balances  map[string]*int64
 
 	StartHeight uint64
@@ -602,19 +635,19 @@ func (lss *LedgerSession) Done() {
 		lss.le.VirtualLedger[op.Owner] = append(lss.le.VirtualLedger[op.Owner], op)
 	}
 	lss.balances = make(map[string]*int64)
-	lss.oplog = make([]OpLogEvent, 0)
-	lss.ledgerOps = make([]LedgerUpdate, 0)
+	lss.oplog = make([]ledgerSystem.OpLogEvent, 0)
+	lss.ledgerOps = make([]ledgerSystem.LedgerUpdate, 0)
 }
 
 func (lss *LedgerSession) Revert() {
-	lss.oplog = make([]OpLogEvent, 0)
-	lss.ledgerOps = make([]LedgerUpdate, 0)
+	lss.oplog = make([]ledgerSystem.OpLogEvent, 0)
+	lss.ledgerOps = make([]ledgerSystem.LedgerUpdate, 0)
 	lss.balances = make(map[string]*int64)
 }
 
 // Appends an Oplog with no validation
-func (lss *LedgerSession) AppendOplog(event OpLogEvent) {
-	result := lss.le.Ls.ExecuteOplog([]OpLogEvent{event}, lss.StartHeight, event.BlockHeight)
+func (lss *LedgerSession) AppendOplog(event ledgerSystem.OpLogEvent) {
+	result := lss.le.Ls.ExecuteOplog([]ledgerSystem.OpLogEvent{event}, lss.StartHeight, event.BlockHeight)
 
 	for _, v := range result.ledgerRecords {
 		lss.AppendLedger(v)
@@ -628,7 +661,8 @@ func (lss *LedgerSession) Transfer() {
 }
 
 // Appends an ledger with no validation
-func (lss *LedgerSession) AppendLedger(event LedgerUpdate) {
+func (lss *LedgerSession) AppendLedger(event ledgerSystem.LedgerUpdate) {
+	lss.le.Ls.log.Debug("LedgerSession.AppendLedger GetBalance")
 	bal := lss.GetBalance(event.Owner, event.BlockHeight, event.Asset)
 	lss.setBalance(event.Owner, event.Asset, bal+event.Amount)
 
@@ -655,8 +689,8 @@ func (lss *LedgerSession) key(account, asset string) string {
 func (le *LedgerExecutor) NewSession(startHeight uint64) *LedgerSession {
 	return &LedgerSession{
 		balances:    make(map[string]*int64),
-		oplog:       make([]OpLogEvent, 0),
-		ledgerOps:   make([]LedgerUpdate, 0),
+		oplog:       make([]ledgerSystem.OpLogEvent, 0),
+		ledgerOps:   make([]ledgerSystem.LedgerUpdate, 0),
 		StartHeight: startHeight,
 		le:          le,
 	}
@@ -664,18 +698,18 @@ func (le *LedgerExecutor) NewSession(startHeight uint64) *LedgerSession {
 
 // Empties the virtual state, such as when a block is executed
 func (le *LedgerExecutor) Flush() {
-	le.VirtualLedger = make(map[string][]LedgerUpdate)
-	le.Oplog = make([]OpLogEvent, 0)
+	le.VirtualLedger = make(map[string][]ledgerSystem.LedgerUpdate)
+	le.Oplog = make([]ledgerSystem.OpLogEvent, 0)
 }
 
 func (le *LedgerExecutor) Export() struct {
-	Oplog []OpLogEvent
+	Oplog []ledgerSystem.OpLogEvent
 } {
-	oplogCP := make([]OpLogEvent, len(le.Oplog))
+	oplogCP := make([]ledgerSystem.OpLogEvent, len(le.Oplog))
 	copy(oplogCP, le.Oplog)
 
 	return struct {
-		Oplog []OpLogEvent
+		Oplog []ledgerSystem.OpLogEvent
 	}{
 		Oplog: oplogCP,
 	}
@@ -686,7 +720,7 @@ type TransferOptions struct {
 	Exclusion int64
 }
 
-func (ledgerSession *LedgerSession) ExecuteTransfer(OpLogEvent OpLogEvent, options ...TransferOptions) LedgerResult {
+func (ledgerSession *LedgerSession) ExecuteTransfer(opLogEvent ledgerSystem.OpLogEvent, options ...TransferOptions) LedgerResult {
 	le := ledgerSession.le
 	//Check if the from account has enough balance
 	exclusion := int64(0)
@@ -695,62 +729,43 @@ func (ledgerSession *LedgerSession) ExecuteTransfer(OpLogEvent OpLogEvent, optio
 		options[0].Exclusion = exclusion
 	}
 
-	if OpLogEvent.Amount <= 0 {
+	if opLogEvent.Amount <= 0 {
 		return LedgerResult{
 			Ok:  false,
 			Msg: "Invalid amount",
 		}
 	}
-	if OpLogEvent.To == OpLogEvent.From {
+	if opLogEvent.To == opLogEvent.From {
 		return LedgerResult{
 			Ok:  false,
 			Msg: "Cannot send to self",
 		}
 	}
-	if !slices.Contains(assetTypes, OpLogEvent.Asset) {
+	if !slices.Contains(assetTypes, opLogEvent.Asset) {
 		return LedgerResult{
 			Ok:  false,
 			Msg: "Invalid asset",
 		}
 	}
-	fromBal := ledgerSession.GetBalance(OpLogEvent.From, OpLogEvent.BlockHeight, OpLogEvent.Asset)
+	fromBal := ledgerSession.GetBalance(opLogEvent.From, opLogEvent.BlockHeight, opLogEvent.Asset)
 
-	le.Ls.log.Debug("Transfer - balAmt", fromBal, "bh="+strconv.Itoa(int(OpLogEvent.BlockHeight)))
+	le.Ls.log.Debug("Transfer - balAmt", fromBal, "bh="+strconv.Itoa(int(opLogEvent.BlockHeight)))
 
-	if (fromBal - exclusion) < OpLogEvent.Amount {
+	results, _ := le.Ls.LedgerDb.GetLedgerRange(opLogEvent.From, ledgerSession.StartHeight, opLogEvent.BlockHeight, opLogEvent.Asset)
+
+	le.Ls.log.Debug("Ledger results", *results)
+
+	le.Ls.log.Debug("ledgerSession.StartHeight", ledgerSession.StartHeight, "ledgerSystem.OpLogEvent.BlockHeight", opLogEvent.BlockHeight)
+
+	if (fromBal - exclusion) < opLogEvent.Amount {
 		return LedgerResult{
 			Ok:  false,
 			Msg: "Insufficient balance",
 		}
 	}
+	opLogEvent.Type = "transfer"
 
-	OpLogEvent.Type = "transfer"
-
-	ledgerSession.AppendOplog(OpLogEvent)
-
-	// le.Oplog = append(le.Oplog, OpLogEvent)
-
-	// le.VirtualLedger[OpLogEvent.From] = append(le.VirtualLedger[OpLogEvent.From], LedgerUpdate{
-	// 	Id:    OpLogEvent.Id + "#0",
-	// 	OpIdx: OpLogEvent.OpIdx,
-
-	// 	Owner:  OpLogEvent.From,
-	// 	Amount: -OpLogEvent.Amount,
-	// 	Asset:  OpLogEvent.Asset,
-	// 	Type:   "transfer",
-	// })
-
-	// le.VirtualLedger[OpLogEvent.To] = append(le.VirtualLedger[OpLogEvent.To], LedgerUpdate{
-	// 	Id:    OpLogEvent.Id + "#1",
-	// 	OpIdx: OpLogEvent.OpIdx,
-	// 	BIdx:  OpLogEvent.BIdx,
-
-	// 	Owner:  OpLogEvent.To,
-	// 	Amount: OpLogEvent.Amount,
-	// 	Asset:  OpLogEvent.Asset,
-	// 	Type:   "transfer",
-	// })
-	// 	BIdx:  OpLogEvent.BIdx,
+	ledgerSession.AppendOplog(opLogEvent)
 
 	return LedgerResult{
 		Ok:  true,
@@ -810,10 +825,10 @@ func (le *LedgerExecutor) Deposit(deposit Deposit) {
 		decodedParams.To = deposit.From
 	}
 	if le.VirtualLedger == nil {
-		le.VirtualLedger = make(map[string][]LedgerUpdate)
+		le.VirtualLedger = make(map[string][]ledgerSystem.LedgerUpdate)
 	}
 
-	ledgerUpdate := LedgerUpdate{
+	ledgerUpdate := ledgerSystem.LedgerUpdate{
 		Id:          deposit.Id,
 		BIdx:        deposit.BIdx,
 		OpIdx:       deposit.OpIdx,
@@ -825,7 +840,7 @@ func (le *LedgerExecutor) Deposit(deposit Deposit) {
 		Type:   "deposit",
 	}
 	le.VirtualLedger[decodedParams.To] = append(le.VirtualLedger[decodedParams.To], ledgerUpdate)
-	// le.AppendLedger(ledgerUpdate)
+	// le.AppendLedger(ledgerSystem.LedgerUpdate)
 
 	le.Ls.log.Debug("ledgerExecutor", le.VirtualLedger[decodedParams.To])
 	le.Ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
@@ -840,27 +855,14 @@ func (le *LedgerExecutor) Deposit(deposit Deposit) {
 	})
 }
 
-func (le *LedgerExecutor) AppendLedger(update LedgerUpdate) {
+func (le *LedgerExecutor) AppendLedger(update ledgerSystem.LedgerUpdate) {
 	key := update.Owner + "#" + update.Asset
 	if le.GatewayBalances[key] == 0 {
 		le.Ls.GetBalance(update.Owner, update.BlockHeight, update.Asset)
 	}
 }
 
-type WithdrawParams struct {
-	Id     string `json:"id"`
-	From   string `json:"from"`
-	To     string `json:"to"`
-	Asset  string `json:"asset"`
-	Amount int64  `json:"amount"`
-	Memo   string `json:"memo"`
-
-	BIdx        int64  `json:"bidx"`
-	OpIdx       int64  `json:"opidx"`
-	BlockHeight uint64 `json:"block_height"`
-}
-
-func (ledgerSession *LedgerSession) Withdraw(withdraw WithdrawParams) LedgerResult {
+func (ledgerSession *LedgerSession) Withdraw(withdraw ledgerSystem.WithdrawParams) LedgerResult {
 	le := ledgerSession.le
 	if withdraw.Amount <= 0 {
 		return LedgerResult{
@@ -911,7 +913,7 @@ func (ledgerSession *LedgerSession) Withdraw(withdraw WithdrawParams) LedgerResu
 		}
 	}
 
-	ledgerSession.AppendOplog(OpLogEvent{
+	ledgerSession.AppendOplog(ledgerSystem.OpLogEvent{
 		Id:     withdraw.Id,
 		From:   withdraw.From,
 		To:     dest,
@@ -922,6 +924,64 @@ func (ledgerSession *LedgerSession) Withdraw(withdraw WithdrawParams) LedgerResu
 
 		BIdx:  withdraw.BIdx,
 		OpIdx: withdraw.OpIdx,
+	})
+
+	return LedgerResult{
+		Ok:  true,
+		Msg: "Success",
+	}
+}
+
+func (le *LedgerExecutor) ConsensusStake(params ledgerSystem.ConsensusParams, ledgerSession *LedgerSession) LedgerResult {
+
+	if params.Amount <= 0 {
+		return LedgerResult{
+			Ok:  false,
+			Msg: "Invalid amount",
+		}
+	}
+
+	// if !slices.Contains(assetTypes, withdraw.Asset) {
+	// 	return LedgerResult{
+	// 		Ok:  false,
+	// 		Msg: "Invalid asset",
+	// 	}
+	// }
+
+	balAmt := ledgerSession.GetBalance(params.Account, params.BlockHeight, "hive")
+
+	if balAmt < params.Amount {
+		return LedgerResult{
+			Ok:  false,
+			Msg: "Insufficient balance",
+		}
+	}
+
+	ledgerSession.AppendOplog(ledgerSystem.OpLogEvent{
+		To:          params.Account,
+		From:        params.Account,
+		BlockHeight: params.BlockHeight,
+
+		Amount: params.Amount,
+		Asset:  "hbd",
+		Type:   "consensus_stake",
+	})
+
+	return LedgerResult{
+		Ok:  true,
+		Msg: "Success",
+	}
+}
+
+func (le *LedgerExecutor) ConsensusUnstake(params ledgerSystem.ConsensusParams, ledgerSession *LedgerSession) LedgerResult {
+	ledgerSession.AppendOplog(ledgerSystem.OpLogEvent{
+		To:          params.Account,
+		From:        params.Account,
+		BlockHeight: params.BlockHeight,
+
+		Amount: params.Amount,
+		Asset:  "hbd",
+		Type:   "consensus_stake",
 	})
 
 	return LedgerResult{
@@ -1002,14 +1062,14 @@ func (le *LedgerExecutor) SavingsSync() {
 }
 
 type CompiledResult struct {
-	OpLog []OpLogEvent
+	OpLog []ledgerSystem.OpLogEvent
 }
 
 func (le *LedgerExecutor) Compile(bh uint64) *CompiledResult {
 	if len(le.Oplog) == 0 {
 		return nil
 	}
-	oplog := make([]OpLogEvent, 0)
+	oplog := make([]ledgerSystem.OpLogEvent, 0)
 	// copy(oplog, le.Oplog)
 
 	for _, v := range le.Oplog {
@@ -1025,7 +1085,7 @@ func (le *LedgerExecutor) Compile(bh uint64) *CompiledResult {
 }
 
 type StakeOp struct {
-	OpLogEvent
+	ledgerSystem.OpLogEvent
 	Instant bool
 	//If true, if stake/unstake fails, then regular op will occurr
 	NoFail bool
@@ -1078,7 +1138,7 @@ func (le *LedgerExecutor) Stake(stakeOp StakeOp, ledgerSession *LedgerSession, o
 		}
 	}
 
-	ledgerSession.AppendLedger(LedgerUpdate{
+	ledgerSession.AppendLedger(ledgerSystem.LedgerUpdate{
 		Id:     stakeOp.Id,
 		OpIdx:  0,
 		Owner:  stakeOp.From,
@@ -1088,7 +1148,7 @@ func (le *LedgerExecutor) Stake(stakeOp StakeOp, ledgerSession *LedgerSession, o
 		Memo:   stakeOp.Memo,
 	})
 
-	// le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], LedgerUpdate{
+	// le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], ledgerSystem.LedgerUpdate{
 	// 	Id:     stakeOp.Id,
 	// 	OpIdx:  0,
 	// 	Owner:  stakeOp.From,
@@ -1114,7 +1174,7 @@ func (le *LedgerExecutor) Stake(stakeOp StakeOp, ledgerSession *LedgerSession, o
 		}
 		withdrawAmount := stakeOp.Amount - fee
 
-		ledgerSession.AppendLedger(LedgerUpdate{
+		ledgerSession.AppendLedger(ledgerSystem.LedgerUpdate{
 			Id:     stakeOp.Id + "#fee",
 			OpIdx:  0,
 			Owner:  HBD_FEE_RECEIVER,
@@ -1123,7 +1183,7 @@ func (le *LedgerExecutor) Stake(stakeOp StakeOp, ledgerSession *LedgerSession, o
 			Type:   "fee",
 			Memo:   "HBD_INSTANT_FEE",
 		})
-		le.VirtualLedger[HBD_FEE_RECEIVER] = append(le.VirtualLedger[HBD_FEE_RECEIVER], LedgerUpdate{
+		le.VirtualLedger[HBD_FEE_RECEIVER] = append(le.VirtualLedger[HBD_FEE_RECEIVER], ledgerSystem.LedgerUpdate{
 			Id:     stakeOp.Id + "#fee",
 			OpIdx:  0,
 			Owner:  HBD_FEE_RECEIVER,
@@ -1132,7 +1192,7 @@ func (le *LedgerExecutor) Stake(stakeOp StakeOp, ledgerSession *LedgerSession, o
 			Type:   "fee",
 			Memo:   "HBD_INSTANT_FEE",
 		})
-		le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], LedgerUpdate{
+		le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], ledgerSystem.LedgerUpdate{
 			Id:          stakeOp.Id,
 			BlockHeight: stakeOp.BlockHeight,
 			OpIdx:       0,
@@ -1144,7 +1204,7 @@ func (le *LedgerExecutor) Stake(stakeOp StakeOp, ledgerSession *LedgerSession, o
 		})
 	}
 
-	le.Oplog = append(le.Oplog, OpLogEvent{
+	le.Oplog = append(le.Oplog, ledgerSystem.OpLogEvent{
 		Id: stakeOp.Id,
 		// Index: 1,
 
@@ -1177,15 +1237,16 @@ func (le *LedgerExecutor) Unstake(stakeOp StakeOp, ledgerSession *LedgerSession)
 		}
 	}
 
-	if stakeOp.Asset != "hbd" {
+	if stakeOp.Asset != "hbd" && stakeOp.Asset != "hbd_savings" {
 		return LedgerResult{
 			Ok:  false,
 			Msg: "Invalid asset",
 		}
 	}
 
-	fromBal := le.SnapshotForAccount(stakeOp.From, stakeOp.BlockHeight, "hbd_savings")
+	fromBal := ledgerSession.GetBalance(stakeOp.From, stakeOp.BlockHeight, "hbd_savings")
 
+	le.Ls.log.Debug("Unstake - balAmt", fromBal, stakeOp.Amount)
 	if fromBal < stakeOp.Amount {
 		return LedgerResult{
 			Ok:  false,
@@ -1195,15 +1256,16 @@ func (le *LedgerExecutor) Unstake(stakeOp StakeOp, ledgerSession *LedgerSession)
 
 	fee := int64(0)
 
-	le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], LedgerUpdate{
-		Id:     stakeOp.Id + "-in",
+	ledgerSession.AppendLedger(ledgerSystem.LedgerUpdate{
+		Id:     stakeOp.Id,
 		OpIdx:  0,
 		Owner:  stakeOp.From,
 		Amount: -stakeOp.Amount,
-		Asset:  "hbd_savingss",
-		Type:   "unstake",
+		Asset:  stakeOp.Asset,
+		Type:   "stake",
 		Memo:   stakeOp.Memo,
 	})
+	// le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], )
 
 	if stakeOp.Instant {
 		//withdrawAmount < currently available "safe" unstaked balance
@@ -1217,7 +1279,7 @@ func (le *LedgerExecutor) Unstake(stakeOp StakeOp, ledgerSession *LedgerSession)
 		}
 		withdrawAmount := stakeOp.Amount - fee
 
-		le.VirtualLedger[HBD_FEE_RECEIVER] = append(le.VirtualLedger[HBD_FEE_RECEIVER], LedgerUpdate{
+		le.VirtualLedger[HBD_FEE_RECEIVER] = append(le.VirtualLedger[HBD_FEE_RECEIVER], ledgerSystem.LedgerUpdate{
 			Id:          stakeOp.Id + "#fee",
 			BlockHeight: stakeOp.BlockHeight,
 			OpIdx:       0,
@@ -1229,7 +1291,7 @@ func (le *LedgerExecutor) Unstake(stakeOp StakeOp, ledgerSession *LedgerSession)
 			Memo:   "HBD_INSTANT_FEE",
 		})
 
-		le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], LedgerUpdate{
+		le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], ledgerSystem.LedgerUpdate{
 			Id:          stakeOp.Id + "-out",
 			BlockHeight: stakeOp.BlockHeight,
 			OpIdx:       0,
@@ -1242,7 +1304,7 @@ func (le *LedgerExecutor) Unstake(stakeOp StakeOp, ledgerSession *LedgerSession)
 		})
 	}
 
-	le.Oplog = append(le.Oplog, OpLogEvent{
+	ledgerSession.AppendOplog(ledgerSystem.OpLogEvent{
 		Id: stakeOp.Id,
 		// Index: 1,
 
@@ -1268,7 +1330,7 @@ func (le *LedgerExecutor) Unstake(stakeOp StakeOp, ledgerSession *LedgerSession)
 func (le *LedgerExecutor) SnapshotForAccount(account string, blockHeight uint64, asset string) int64 {
 	bal := le.Ls.GetBalance(account, blockHeight, asset)
 
-	le.Ls.log.Debug("getBalance le.VirtualLedger["+account+"]", le.VirtualLedger[account], blockHeight)
+	//le.Ls.log.Debug("getBalance le.VirtualLedger["+account+"]", le.VirtualLedger[account], blockHeight)
 	for _, v := range le.VirtualLedger[account] {
 		//Must be ledger ops with height below or equal to the current block height
 		//Current block height ledger ops are recently executed
@@ -1288,8 +1350,8 @@ type FilterLedgerParams struct {
 
 // In memory filter for ledger ops for querying virtualOps cache
 // Use this for writing safer queries against in memory stack
-func FilterLedgerOps(query FilterLedgerParams, array []LedgerUpdate) []LedgerUpdate {
-	outArray := make([]LedgerUpdate, 0)
+func FilterLedgerOps(query FilterLedgerParams, array []ledgerSystem.LedgerUpdate) []ledgerSystem.LedgerUpdate {
+	outArray := make([]ledgerSystem.LedgerUpdate, 0)
 	for _, v := range array {
 		allowed := false
 
