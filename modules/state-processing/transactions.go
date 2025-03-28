@@ -135,12 +135,14 @@ func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession)
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid network id",
+			RcUsed:  50,
 		}
 	}
 	if tx.To == "" || tx.From == "" {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
+			RcUsed:  50,
 		}
 	}
 
@@ -148,6 +150,7 @@ func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession)
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
+			RcUsed:  50,
 		}
 	}
 
@@ -155,6 +158,7 @@ func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession)
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid RequiredAuths",
+			RcUsed:  50,
 		}
 	}
 	amount, err := strconv.ParseFloat(tx.Amount, 64)
@@ -162,6 +166,7 @@ func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession)
 	if err != nil {
 		return TxResult{
 			Success: false,
+			RcUsed:  50,
 		}
 	}
 
@@ -188,6 +193,7 @@ func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession)
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,
+		RcUsed:  100,
 	}
 }
 
@@ -231,6 +237,7 @@ func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession)
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid network id",
+			RcUsed:  50,
 		}
 	}
 	if t.To == "" {
@@ -238,6 +245,7 @@ func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession)
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to",
+			RcUsed:  50,
 		}
 	}
 	fl, _ := strconv.ParseFloat(t.Amount, 64)
@@ -261,6 +269,7 @@ func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession)
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid RequiredAuths",
+			RcUsed:  50,
 		}
 	}
 
@@ -271,6 +280,7 @@ func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession)
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,
+		RcUsed:  200,
 	}
 }
 
@@ -306,6 +316,7 @@ func (t *TxStakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) Tx
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
+			RcUsed:  50,
 		}
 	}
 	fl, _ := strconv.ParseFloat(t.Amount, 64)
@@ -330,6 +341,7 @@ func (t *TxStakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) Tx
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid RequiredAuths",
+			RcUsed:  50,
 		}
 	}
 	ledgerResult := se.LedgerExecutor.Stake(params, ledgerSession)
@@ -338,6 +350,7 @@ func (t *TxStakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) Tx
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,
+		RcUsed:  200,
 	}
 }
 
@@ -374,12 +387,14 @@ func (t *TxUnstakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) 
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid network id",
+			RcUsed:  50,
 		}
 	}
 	if t.To == "" || t.From == "" {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
+			RcUsed:  50,
 		}
 	}
 	fl, _ := strconv.ParseFloat(t.Amount, 64)
@@ -405,6 +420,7 @@ func (t *TxUnstakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) 
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid RequiredAuths",
+			RcUsed:  50,
 		}
 	}
 	ledgerResult := se.LedgerExecutor.Unstake(params, ledgerSession)
@@ -414,6 +430,7 @@ func (t *TxUnstakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) 
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,
+		RcUsed:  200,
 	}
 }
 
@@ -458,6 +475,7 @@ func (t *TxConsensusStake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid network id",
+			RcUsed:  50,
 		}
 	}
 	fl, _ := strconv.ParseFloat(t.Amount, 64)
@@ -475,6 +493,7 @@ func (t *TxConsensusStake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,
+		RcUsed:  100,
 	}
 }
 
@@ -509,16 +528,20 @@ func (t *TxConsensusUnstake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSes
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid network id",
+			RcUsed:  50,
 		}
 	}
 	fl, _ := strconv.ParseFloat(t.Amount, 64)
 
+	electionResult, _ := se.electionDb.GetElectionByHeight(t.Self.BlockHeight - 1)
+
 	params := ledgerSystem.ConsensusParams{
-		Id:          MakeTxId(t.Self.TxId, t.Self.OpIndex),
-		Account:     t.Account,
-		Amount:      int64(fl * math.Pow(10, 3)),
-		BlockHeight: t.Self.BlockHeight,
-		Type:        "unstake",
+		Id:            MakeTxId(t.Self.TxId, t.Self.OpIndex),
+		Account:       t.Account,
+		Amount:        int64(fl * math.Pow(10, 3)),
+		BlockHeight:   t.Self.BlockHeight,
+		Type:          "unstake",
+		ElectionEpoch: electionResult.Epoch,
 	}
 
 	ledgerResult := se.LedgerExecutor.ConsensusUnstake(params, ledgerSession)
@@ -526,6 +549,7 @@ func (t *TxConsensusUnstake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSes
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,
+		RcUsed:  100,
 	}
 }
 
@@ -534,7 +558,7 @@ func (t *TxConsensusUnstake) ToData() map[string]interface{} {
 		"account": t.Account,
 		"amount":  t.Amount,
 		"asset":   t.Asset,
-		"type":    "consensus_stake",
+		"type":    "consensus_unstake",
 	}
 }
 
@@ -587,14 +611,16 @@ type TransactionContainer struct {
 }
 
 func (tx *TransactionContainer) Type() string {
-	if tx.TypeInt == 1 {
+	if tx.TypeInt == int(common.BlockTypeTransaction) {
 		return "transaction"
-	} else if tx.TypeInt == 2 {
+	} else if tx.TypeInt == int(common.BlockTypeOutput) {
 		return "output"
-	} else if tx.TypeInt == 5 {
+	} else if tx.TypeInt == int(common.BlockTypeAnchor) {
 		return "anchor"
-	} else if tx.TypeInt == 6 {
+	} else if tx.TypeInt == int(common.BlockTypeOplog) {
 		return "oplog"
+	} else if tx.TypeInt == int(common.BlockTypeRcUpdate) {
+		return "rc_update"
 	} else {
 		return "unknown"
 	}
