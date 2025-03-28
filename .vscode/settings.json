@@ -1,6 +1,6 @@
 {
   "go.testTimeout": "300s",
-  // "go.testFlags": ["-count=1"] // disable test cache
+  "go.testFlags": ["-count=1"], // disable test cache
   "filewatcher.commands": [
     {
       "match": "go-vsc-node/modules/gql/.*\\.graphql",

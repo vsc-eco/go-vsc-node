@@ -37,7 +37,7 @@ func RunWithContextAndTypeMap[Result any](ctx context.Context, typeMap map[strin
 				res := resultWrap(cio, cmd.Start())
 				// time.Sleep(time.Second)
 				// err, _ := io.ReadAll(stderr)
-				fmt.Fprintf(os.Stderr, "err: ")
+				// fmt.Fprintf(os.Stderr, "err: ")
 				// io.Copy(os.Stderr, stderr)
 				return res
 			},
@@ -90,10 +90,10 @@ func newCommandIO[Result any](cmd *exec.Cmd, typeMap map[string]ipc_requests.Mes
 				resultWrap(cmd.StdinPipe()),
 				func(stdin io.WriteCloser) result.Result[stdio_ipc.Connection[ipc_requests.Message[Result], ipc_requests.Message[Result]]] {
 					// stdin.Write([]byte("[\n"))
-					fmt.Fprintln(os.Stderr, "stdout:")
+					// fmt.Fprintln(os.Stderr, "stdout:")
 					// io.Copy(os.Stderr, stdout)
 					res := stdio_ipc.NewJsonConnection(stdin, stdout, typeMap)
-					fmt.Fprintln(os.Stderr, "connection")
+					// fmt.Fprintln(os.Stderr, "connection")
 					return res
 				})
 		})

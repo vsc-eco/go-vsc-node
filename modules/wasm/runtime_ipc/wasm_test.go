@@ -9,6 +9,7 @@ import (
 	ipc_host "vsc-node/lib/stdio-ipc/host"
 	"vsc-node/lib/stdio-ipc/messages"
 	"vsc-node/lib/test_utils"
+	contract_execution_context "vsc-node/modules/contract/execution-context"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
 	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
@@ -942,35 +943,43 @@ func (b *Buffer) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+const ioGas = 11
+
+const goGas = 604
+const asGas = 14655
+
 func TestGoCompat(t *testing.T) {
 	w := wasm_runtime_ipc.New()
 
 	test_utils.RunPlugin(t, w)
 
-	var ctxValue wasm_context.ExecContextValue = "test"
+	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New("contract-id", nil, nil)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(GO_TEST_CODE))
 
 	in := NewBuffer()
 	out := NewBuffer()
 
-	_, err := promise.All(ctx,
-		promise.New(func(resolve func(string), reject func(error)) {
-			host := stdio_ipc.NewJsonConnection(in, out, messages.MessageTypes[string]()).Unwrap()
+	res, err := promise.All(ctx,
+		promise.New(func(resolve func(wasm_runtime_ipc.WasmResultStruct), reject func(error)) {
+			host := stdio_ipc.NewJsonConnection(in, out, messages.MessageTypes[wasm_runtime_ipc.WasmResultStruct]()).Unwrap()
 			resolve(ipc_host.ExecuteCommand(ctx, host).MapErr(func(err error) error {
 				reject(err)
 				return nil
 			}).Unwrap())
 		}),
-		promise.New(func(resolve func(string), reject func(error)) {
-			client := ipc_client.RunWithStdio[string](in, out)
-			resolve(w.ExecuteWithClient(604, "entrypoint", "testing-123", wasm_runtime.Go, client).MapErr(func(err error) error {
+		promise.New(func(resolve func(wasm_runtime_ipc.WasmResultStruct), reject func(error)) {
+			client := ipc_client.RunWithStdio[wasm_runtime_ipc.WasmResultStruct](in, out)
+			resolve(w.ExecuteWithClient(goGas+uint(ioGas), "entrypoint", "testing-123", wasm_runtime.Go, client).MapErr(func(err error) error {
 				reject(err)
 				return nil
 			}).Unwrap())
 		}),
 	).Await(ctx)
 
+	assert.Equal(t, ioGas, ctxValue.IOGas())
+
 	assert.NoError(t, err)
+	assert.NotNil(t, res)
 }
 
 func TestAssemblyScriptCompat(t *testing.T) {
@@ -978,28 +987,90 @@ func TestAssemblyScriptCompat(t *testing.T) {
 
 	test_utils.RunPlugin(t, w)
 
-	var ctxValue wasm_context.ExecContextValue = "test"
+	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New("contract-id", nil, nil)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(ASSEMBLY_SCRIPT_TEST_CODE))
 
 	in := NewBuffer()
 	out := NewBuffer()
 
-	_, err := promise.All(ctx,
-		promise.New(func(resolve func(string), reject func(error)) {
-			host := stdio_ipc.NewJsonConnection(in, out, messages.MessageTypes[string]()).Unwrap()
+	res, err := promise.All(ctx,
+		promise.New(func(resolve func(wasm_runtime_ipc.WasmResultStruct), reject func(error)) {
+			host := stdio_ipc.NewJsonConnection(in, out, messages.MessageTypes[wasm_runtime_ipc.WasmResultStruct]()).Unwrap()
 			resolve(ipc_host.ExecuteCommand(ctx, host).MapErr(func(err error) error {
 				reject(err)
 				return nil
 			}).Unwrap())
 		}),
-		promise.New(func(resolve func(string), reject func(error)) {
-			client := ipc_client.RunWithStdio[string](in, out)
-			resolve(w.ExecuteWithClient(14845, "main", "testing-123", wasm_runtime.AssemblyScript, client).MapErr(func(err error) error {
+		promise.New(func(resolve func(wasm_runtime_ipc.WasmResultStruct), reject func(error)) {
+			client := ipc_client.RunWithStdio[wasm_runtime_ipc.WasmResultStruct](in, out)
+			resolve(w.ExecuteWithClient(asGas+uint(ioGas), "main", "testing-123", wasm_runtime.AssemblyScript, client).MapErr(func(err error) error {
 				reject(err)
 				return nil
 			}).Unwrap())
 		}),
 	).Await(ctx)
 
+	assert.Equal(t, 11, ctxValue.IOGas())
+
 	assert.NoError(t, err)
+	assert.NotNil(t, res)
+}
+
+// i5 8250U => 1.46 billion gas per sec
+func BenchmarkInstructionsPerSecond(b *testing.B) {
+	tests := []struct {
+		code       []byte
+		runtime    wasm_runtime.Runtime
+		maxGas     uint
+		entrypoint string
+	}{
+		{
+			code:       ASSEMBLY_SCRIPT_TEST_CODE,
+			runtime:    wasm_runtime.AssemblyScript,
+			maxGas:     asGas,
+			entrypoint: "main",
+		},
+		{
+			code:       GO_TEST_CODE,
+			runtime:    wasm_runtime.Go,
+			maxGas:     goGas,
+			entrypoint: "entrypoint",
+		},
+	}
+	for _, test := range tests {
+		for i := 0; i < b.N; i++ {
+
+			w := wasm_runtime_ipc.New()
+
+			test_utils.RunPlugin(b, w)
+
+			var ctxValue wasm_context.ExecContextValue = contract_execution_context.New("contract-id", nil, nil)
+			ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(test.code))
+
+			in := NewBuffer()
+			out := NewBuffer()
+
+			res, err := promise.All(ctx,
+				promise.New(func(resolve func(wasm_runtime_ipc.WasmResultStruct), reject func(error)) {
+					host := stdio_ipc.NewJsonConnection(in, out, messages.MessageTypes[wasm_runtime_ipc.WasmResultStruct]()).Unwrap()
+					resolve(ipc_host.ExecuteCommand(ctx, host).MapErr(func(err error) error {
+						reject(err)
+						return nil
+					}).Unwrap())
+				}),
+				promise.New(func(resolve func(wasm_runtime_ipc.WasmResultStruct), reject func(error)) {
+					client := ipc_client.RunWithStdio[wasm_runtime_ipc.WasmResultStruct](in, out)
+					resolve(w.ExecuteWithClient(test.maxGas+uint(ioGas), test.entrypoint, "testing-123", test.runtime, client).MapErr(func(err error) error {
+						reject(err)
+						return nil
+					}).Unwrap())
+				}),
+			).Await(ctx)
+
+			assert.NoError(b, err)
+			assert.NotNil(b, res)
+
+			b.SetBytes(int64((*res)[1].Gas))
+		}
+	}
 }

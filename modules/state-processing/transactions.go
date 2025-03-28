@@ -11,6 +11,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
+	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/transactions"
 	ledgerSystem "vsc-node/modules/ledger-system"
 
@@ -33,11 +34,12 @@ type TxVscCallContract struct {
 	Self  TxSelf
 	NetId string `json:"net_id"`
 
-	Op         string `json:"op"`
-	ContractId string `json:"contract_id"`
-	Action     string `json:"action"`
-	Payload    string `json:"payload"`
-	RcLimit    uint   `json:"rc_limit"`
+	Op         string             `json:"op"`
+	ContractId string             `json:"contract_id"`
+	Action     string             `json:"action"`
+	Payload    string             `json:"payload"`
+	RcLimit    uint               `json:"rc_limit"`
+	Intents    []contracts.Intent `json:"intents"`
 }
 
 func errorToTxResult(err error) TxResult {
@@ -66,13 +68,13 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 	code := node.RawData()
 
-	ctx := contract_execution_context.New(t.ContractId)
+	ctx := contract_execution_context.New(t.ContractId, t.Intents, ledgerSession)
 
 	availableGas := uint(math.MaxUint)
 
 	gas := min(availableGas, t.RcLimit)
 
-	return result.MapOrElse(
+	res := result.MapOrElse(
 		se.wasm.Execute(ctx, code, gas, t.Action, t.Payload, info.Runtime),
 		errorToTxResult,
 		func(s string) TxResult {
@@ -82,6 +84,12 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 			}
 		},
 	)
+
+	if !res.Success {
+		ctx.Revert()
+	}
+
+	return res
 }
 
 func (tx TxVscCallContract) Type() string {

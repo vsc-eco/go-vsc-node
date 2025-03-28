@@ -63,4 +63,8 @@ type LedgerSession interface {
 	AppendOplog(event OpLogEvent)
 	AppendLedger(event LedgerUpdate)
 	GetBalance(account string, blockHeight uint64, asset string) int64
+	// ExecuteTransfer(OpLogEvent OpLogEvent, options ...TransferOptions) LedgerResult
+	// Revert()
+	// Transfer()
+	// Withdraw(withdraw WithdrawParams) LedgerResult
 }

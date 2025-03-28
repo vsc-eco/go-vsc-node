@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"testing"
 	"time"
+	contract_execution_context "vsc-node/modules/contract/execution-context"
 	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
 )
@@ -937,8 +938,8 @@ func TestAssemblyScriptCompat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pwd, _ := os.Getwd()
-	fmt.Fprintln(os.Stderr, "pwd:", pwd)
+	// pwd, _ := os.Getwd()
+	// fmt.Fprintln(os.Stderr, "pwd:", pwd)
 	w := wasm_parent_ipc.New("go", "run", MAIN_PATH)
 	// TODO attempt at running child process with debugger, but does not work :/
 	// w := wasm_parent_ipc.New("~/go/bin/dlv", "--headless=true", "debug", MAIN_PATH)
@@ -956,7 +957,7 @@ func TestAssemblyScriptCompat(t *testing.T) {
 	//0.00037473899999999996
 	//0.00021495799999999998 seconds
 	//0.000234295 seconds
-	ctxValue := ""
+	ctxValue := contract_execution_context.New("contract-id", nil, nil)
 	fmt.Println("exec init:", time.Now())
 	res := w.Execute(ctxValue, ASSEMBLY_SCRIPT_TEST_CODE, 14845, "main", "my-args-testing-123", wasm_runtime.AssemblyScript)
 	if res.IsOk() {
@@ -975,8 +976,8 @@ func TestGoCompat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pwd, _ := os.Getwd()
-	fmt.Fprintln(os.Stderr, "pwd:", pwd)
+	// pwd, _ := os.Getwd()
+	// fmt.Fprintln(os.Stderr, "pwd:", pwd)
 	w := wasm_parent_ipc.New("go", "run", MAIN_PATH)
 	// TODO attempt at running child process with debugger, but does not work :/
 	// w := wasm_parent_ipc.New("~/go/bin/dlv", "--headless=true", "debug", MAIN_PATH)
@@ -994,7 +995,7 @@ func TestGoCompat(t *testing.T) {
 	//0.00037473899999999996
 	//0.00021495799999999998 seconds
 	//0.000234295 seconds
-	ctxValue := ""
+	ctxValue := contract_execution_context.New("contract-id", nil, nil)
 	fmt.Println("exec init:", time.Now())
 	res := w.Execute(ctxValue, GO_TEST_CODE, 4845, "entrypoint", "my-args-testing-123", wasm_runtime.Go)
 	if res.IsOk() {

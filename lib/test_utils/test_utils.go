@@ -2,16 +2,20 @@ package test_utils
 
 import (
 	"context"
-	"testing"
 	"vsc-node/modules/aggregate"
 
 	"github.com/stretchr/testify/assert"
 )
 
+type TestingT interface {
+	assert.TestingT
+	Cleanup(func())
+}
+
 // manages the lifecycle of a plugin
 //
 // inits -> starts -> stops upon test completion
-func RunPlugin(t *testing.T, plugin aggregate.Plugin, blockUntilComplete ...bool) {
+func RunPlugin(t TestingT, plugin aggregate.Plugin, blockUntilComplete ...bool) {
 	assert.NoError(t, plugin.Init())
 	t.Cleanup(func() {
 		assert.NoError(t, plugin.Stop())

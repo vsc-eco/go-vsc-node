@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"unicode/utf16"
 	ipc_client "vsc-node/lib/stdio-ipc/client"
 	"vsc-node/lib/utils"
@@ -14,6 +13,7 @@ import (
 	"vsc-node/modules/wasm/ipc_requests/execute"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
 	sdkTypes "vsc-node/modules/wasm/sdk/types"
+	wasm_types "vsc-node/modules/wasm/types"
 
 	"github.com/JustinKnueppel/go-result"
 	"github.com/chebyrash/promise"
@@ -25,6 +25,10 @@ type Wasm struct {
 }
 
 var _ a.Plugin = &Wasm{}
+
+type WasmResultStruct = wasm_types.WasmResultStruct
+
+type WasmResult = wasm_types.WasmResult
 
 func New() *Wasm {
 	return &Wasm{}
@@ -148,7 +152,7 @@ func parseAllocResult(res []any) result.Result[int32] {
 func goAllocString(vm *wasmedge.VM, memory *wasmedge.Memory, t string) result.Result[int32] {
 	// mod := vm.GetRegisteredModule("contract")
 	b := []byte(t)
-	fmt.Fprintln(os.Stderr, "alloc string", t)
+	// fmt.Fprintln(os.Stderr, "alloc string", t)
 	return result.AndThen(
 		result.AndThen(
 			resultJoin(
@@ -156,7 +160,7 @@ func goAllocString(vm *wasmedge.VM, memory *wasmedge.Memory, t string) result.Re
 				resultWrap(vm.ExecuteRegistered("contract", "alloc", int32(len(b)))),
 			),
 			func(res [][]any) result.Result[[]int32] {
-				fmt.Fprintln(os.Stderr, "allocated string", t)
+				// fmt.Fprintln(os.Stderr, "allocated string", t)
 				return resultJoin(
 					parseAllocResult(res[0]),
 					parseAllocResult(res[1]),
@@ -164,7 +168,7 @@ func goAllocString(vm *wasmedge.VM, memory *wasmedge.Memory, t string) result.Re
 			},
 		),
 		func(res []int32) result.Result[int32] {
-			fmt.Fprintln(os.Stderr, "parsed alloc string res", t)
+			// fmt.Fprintln(os.Stderr, "parsed alloc string res", t)
 			doublePtr := res[0]
 			ptr := res[1]
 			if memory == nil {
@@ -178,7 +182,7 @@ func goAllocString(vm *wasmedge.VM, memory *wasmedge.Memory, t string) result.Re
 					result.Map(
 						resultWrap(memory.GetData(uint(ptr), uint(len(b)))),
 						func(data []byte) int32 {
-							fmt.Fprintln(os.Stderr, "set string data", t)
+							// fmt.Fprintln(os.Stderr, "set string data", t)
 							copy(data, b)
 							return ptr
 						},
@@ -186,7 +190,7 @@ func goAllocString(vm *wasmedge.VM, memory *wasmedge.Memory, t string) result.Re
 					result.Map(
 						resultWrap(memory.GetData(uint(doublePtr), uint(8))),
 						func(data []byte) int32 {
-							fmt.Fprintln(os.Stderr, "set string pointers", t)
+							// fmt.Fprintln(os.Stderr, "set string pointers", t)
 							// FIXME assuming little endian for now
 							binary.LittleEndian.PutUint32(data[:4], uint32(ptr))
 							binary.LittleEndian.PutUint32(data[4:], uint32(len(t)))
@@ -195,7 +199,7 @@ func goAllocString(vm *wasmedge.VM, memory *wasmedge.Memory, t string) result.Re
 					),
 				),
 				func(res []int32) int32 {
-					fmt.Fprintln(os.Stderr, "alloc string complete", t)
+					// fmt.Fprintln(os.Stderr, "alloc string complete", t)
 					return res[1]
 				},
 			)
@@ -263,7 +267,7 @@ func allocString(runtime wasm_runtime.Runtime, vm *wasmedge.VM, memory *wasmedge
 	})
 }
 
-func registerImport(runtime wasm_runtime.Runtime, vm *wasmedge.VM, client ipc_client.Client[string], modname string, funcs []sdkTypes.SdkType) result.Result[*wasmedge.Module] {
+func registerImport(runtime wasm_runtime.Runtime, vm *wasmedge.VM, gas *uint, client ipc_client.Client[WasmResultStruct], modname string, funcs []sdkTypes.SdkType) result.Result[*wasmedge.Module] {
 	mod := wasmedge.NewModule(modname)
 	for _, f := range funcs {
 		fnType := wasmedge.NewFunctionType(f.Type.Parameters, f.Type.Result)
@@ -285,7 +289,7 @@ func registerImport(runtime wasm_runtime.Runtime, vm *wasmedge.VM, client ipc_cl
 					return []any{}, wasmedge.Result_Fail
 				}
 
-				res := client.Request(&execute.SdkCallRequest[string]{
+				res := client.Request(&execute.SdkCallRequest[WasmResultStruct]{
 					Function: f.Name,
 					Argument: arg,
 				})
@@ -299,10 +303,17 @@ func registerImport(runtime wasm_runtime.Runtime, vm *wasmedge.VM, client ipc_cl
 					runtime,
 					vm,
 					memory,
-					result.AndThen(
-						res,
-						func(pm ipc_requests.ProcessedMessage[string]) result.Result[string] {
-							return resultWrap(pm.Result.Take())
+					result.Map(
+						result.AndThen(
+							res,
+							func(pm ipc_requests.ProcessedMessage[WasmResultStruct]) WasmResult {
+								return resultWrap(pm.Result.Take())
+							},
+						),
+						func(res WasmResultStruct) string {
+							*gas -= uint(res.Gas)
+							vm.GetStatistics().SetCostLimit(*gas)
+							return res.Result
 						},
 					),
 				)
@@ -323,12 +334,12 @@ func registerImport(runtime wasm_runtime.Runtime, vm *wasmedge.VM, client ipc_cl
 	})
 }
 
-func (w *Wasm) Execute(gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime) result.Result[string] {
-	client := ipc_client.Run[string]()
+func (w *Wasm) Execute(gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime) WasmResult {
+	client := ipc_client.Run[WasmResultStruct]()
 	return w.ExecuteWithClient(gas, entrypoint, args, runtime, client)
 }
 
-func (w *Wasm) ExecuteWithClient(gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime, client result.Result[ipc_client.Client[string]]) result.Result[string] {
+func (w *Wasm) ExecuteWithClient(gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime, client result.Result[ipc_client.Client[WasmResultStruct]]) WasmResult {
 	conf := wasmedge.NewConfigure()
 	defer conf.Release()
 	conf.SetStatisticsCostMeasuring(true)
@@ -340,127 +351,148 @@ func (w *Wasm) ExecuteWithClient(gas uint, entrypoint string, args string, runti
 		mods     []*wasmedge.Module
 		byteCode []byte
 	}
-	return result.AndThen(
-		result.MapOrElse(
-			result.AndThen(
+	return result.Map(
+		result.AndThen(
+			result.MapOrElse(
 				result.AndThen(
-					client,
-					func(client ipc_client.Client[string]) result.Result[initResult] {
-						return result.AndThen(
-							resultJoin(
-								registerImport(runtime, vm, client, "sdk", sdkTypes.SdkTypes),
-								registerImport(runtime, vm, client, "env", []sdkTypes.SdkType{
-									{
-										Name: "abort",
-										Type: sdkTypes.VmType{
-											Parameters: []wasmedge.ValType{wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32},
-										},
-									},
-								}),
-							),
-							func(mods []*wasmedge.Module) result.Result[initResult] {
-								return result.AndThen(
-									client.Request(&execute.ExecutionReady[string]{}),
-									func(res ipc_requests.ProcessedMessage[string]) result.Result[initResult] {
-										return result.AndThen(
-											resultWrap(res.Result.Take()).
-												MapErr(func(err error) error {
-													return fmt.Errorf("no code provided")
-												}),
-											func(str string) result.Result[initResult] {
-												return result.Map(
-													resultWrap(hex.DecodeString(str)),
-													func(byteCode []byte) initResult {
-														return initResult{mods, byteCode}
-													},
-												)
+					result.AndThen(
+						client,
+						func(client ipc_client.Client[WasmResultStruct]) result.Result[initResult] {
+							return result.AndThen(
+								resultJoin(
+									registerImport(runtime, vm, &gas, client, "sdk", sdkTypes.SdkTypes),
+									registerImport(runtime, vm, &gas, client, "env", []sdkTypes.SdkType{
+										{
+											Name: "abort",
+											Type: sdkTypes.VmType{
+												Parameters: []wasmedge.ValType{wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32},
 											},
-										)
-									},
-								)
-							},
-						)
-					},
-				),
-				func(init initResult) result.Result[string] {
-					vm.GetStatistics().SetCostLimit(gas)
-					res := result.AndThen(
-						result.AndThen(
+										},
+									}),
+								),
+								func(mods []*wasmedge.Module) result.Result[initResult] {
+									return result.AndThen(
+										client.Request(&execute.ExecutionReady[WasmResultStruct]{}),
+										func(res ipc_requests.ProcessedMessage[WasmResultStruct]) result.Result[initResult] {
+											return result.AndThen(
+												resultWrap(res.Result.Take()).
+													MapErr(func(err error) error {
+														return fmt.Errorf("no code provided")
+													}),
+												func(str WasmResultStruct) result.Result[initResult] {
+													return result.Map(
+														resultWrap(hex.DecodeString(str.Result)),
+														func(byteCode []byte) initResult {
+															return initResult{mods, byteCode}
+														},
+													)
+												},
+											)
+										},
+									)
+								},
+							)
+						},
+					),
+					func(init initResult) result.Result[string] {
+						vm.GetStatistics().SetCostLimit(gas)
+						res := result.AndThen(
 							result.AndThen(
 								result.AndThen(
-									// result.And(
-									result.Err[any](vm.RegisterWasmBuffer("contract", init.byteCode)),
-									// result.And(
-									// result.Err[any](vm.Validate()),
-									// result.Err[any](vm.Instantiate()),
-									// ),
-									// ),
-									func(any) result.Result[[]any] {
-										return wasm_runtime.Execute(runtime, wasm_runtime.RuntimeAction[result.Result[[]any]]{
-											Go: func() result.Result[[]any] {
-												fmt.Fprintln(os.Stderr, "go runtime init")
-												return resultWrap(vm.ExecuteRegistered("contract", "_initialize"))
-											},
-										})
+									result.AndThen(
+										// result.And(
+										result.Err[any](vm.RegisterWasmBuffer("contract", init.byteCode)),
+										// result.And(
+										// result.Err[any](vm.Validate()),
+										// result.Err[any](vm.Instantiate()),
+										// ),
+										// ),
+										func(any) result.Result[[]any] {
+											return wasm_runtime.Execute(runtime, wasm_runtime.RuntimeAction[result.Result[[]any]]{
+												Go: func() result.Result[[]any] {
+													// fmt.Fprintln(os.Stderr, "go runtime init")
+													return resultWrap(vm.ExecuteRegistered("contract", "_initialize"))
+												},
+											})
+										},
+									),
+									func([]any) result.Result[int32] {
+										// fmt.Fprintln(os.Stderr, "alloc string")
+										// mod := vm.GetRegisteredModule("contract")
+										// mod.AddMemory("memory", memory)
+										return allocString(runtime, vm, nil, args)
 									},
 								),
-								func([]any) result.Result[int32] {
-									fmt.Fprintln(os.Stderr, "alloc string")
-									// mod := vm.GetRegisteredModule("contract")
-									// mod.AddMemory("memory", memory)
-									return allocString(runtime, vm, nil, args)
+								func(args int32) result.Result[[]any] {
+									// fmt.Fprintln(os.Stderr, "execute")
+									return resultWrap(vm.ExecuteRegistered("contract", entrypoint, args))
 								},
 							),
-							func(args int32) result.Result[[]any] {
-								fmt.Fprintln(os.Stderr, "execute")
-								return resultWrap(vm.ExecuteRegistered("contract", entrypoint, args))
-							},
-						),
-						func(res []any) result.Result[string] {
-							// fmt.Printf("complete: %+v\n", res)
-							if len(res) != 1 {
-								return result.Err[string](fmt.Errorf("not exactly 1 return value"))
-							}
-							switch v := res[0].(type) {
-							case int32:
-								mod := vm.GetRegisteredModule("contract")
-								memoryList := mod.ListMemory()
-								if len(memoryList) == 0 {
-									mod = vm.GetRegisteredModule("env")
-									memoryList = []string{"memory"}
+							func(res []any) result.Result[string] {
+								// fmt.Printf("complete: %+v\n", res)
+								if len(res) != 1 {
+									return result.Err[string](fmt.Errorf("not exactly 1 return value"))
 								}
-								memory := mod.FindMemory(memoryList[0])
-								return readString(runtime, memory, v)
-							}
-							return result.Err[string](fmt.Errorf("return value is not a string"))
-						},
-					)
-					for _, mod := range init.mods {
-						modCleanup(mod)
-					}
-					return res
-				},
-			),
-			func(err error) result.Result[string] {
-				return result.AndThen(
-					client,
-					func(client ipc_client.Client[string]) result.Result[string] {
-						errStr := err.Error()
-						return result.Map(
-							client.Send(&execute.ExecutionFinish[string]{Error: &errStr}),
-							func(any) string {
-								return errStr
+								switch v := res[0].(type) {
+								case int32:
+									mod := vm.GetRegisteredModule("contract")
+									memoryList := mod.ListMemory()
+									if len(memoryList) == 0 {
+										mod = vm.GetRegisteredModule("env")
+										memoryList = []string{"memory"}
+									}
+									memory := mod.FindMemory(memoryList[0])
+									return readString(runtime, memory, v)
+								}
+								return result.Err[string](fmt.Errorf("return value is not a string"))
 							},
 						)
+						for _, mod := range init.mods {
+							modCleanup(mod)
+						}
+						return res
 					},
-				)
-			},
+				),
+				func(err error) result.Result[string] {
+					return result.AndThen(
+						client,
+						func(client ipc_client.Client[WasmResultStruct]) result.Result[string] {
+							errStr := err.Error()
+							return result.Map(
+								client.Send(&execute.ExecutionFinish[WasmResultStruct]{Error: &errStr}),
+								func(any) string {
+									return errStr
+								},
+							)
+						},
+					)
+				},
+				func(res string) result.Result[string] {
+					return result.AndThen(
+						client,
+						func(client ipc_client.Client[WasmResultStruct]) result.Result[string] {
+							return result.Map(
+								client.Send(&execute.ExecutionFinish[WasmResultStruct]{Result: &wasm_types.WasmResultStruct{
+									Result: res,
+									Gas:    vm.GetStatistics().GetTotalCost(),
+								}}),
+								func(any) string {
+									return res
+								},
+							)
+						},
+					)
+				},
+			),
 			func(res string) result.Result[string] {
+				// stat := vm.GetStatistics()
+				// fmt.Fprintf(os.Stderr, "speed: %f instructions per second\n", stat.GetInstrPerSecond())
+				// fmt.Fprintln(os.Stderr, "time:", float64(stat.GetInstrCount())/stat.GetInstrPerSecond(), "seconds")
 				return result.AndThen(
 					client,
-					func(client ipc_client.Client[string]) result.Result[string] {
+					func(client ipc_client.Client[WasmResultStruct]) result.Result[string] {
 						return result.Map(
-							client.Send(&execute.ExecutionFinish[string]{Result: &res}),
+							result.Err[any](client.Close()),
 							func(any) string {
 								return res
 							},
@@ -469,20 +501,11 @@ func (w *Wasm) ExecuteWithClient(gas uint, entrypoint string, args string, runti
 				)
 			},
 		),
-		func(res string) result.Result[string] {
-			stat := vm.GetStatistics()
-			fmt.Fprintln(os.Stderr, "time:", float64(stat.GetInstrCount())/stat.GetInstrPerSecond(), "seconds")
-			return result.AndThen(
-				client,
-				func(client ipc_client.Client[string]) result.Result[string] {
-					return result.Map(
-						result.Err[any](client.Close()),
-						func(any) string {
-							return res
-						},
-					)
-				},
-			)
+		func(res string) WasmResultStruct {
+			return WasmResultStruct{
+				Result: res,
+				Gas:    vm.GetStatistics().GetTotalCost(),
+			}
 		},
 	)
 	// {"Type":"sdk_call_response","Message":{"Result":"test","Error":null}}

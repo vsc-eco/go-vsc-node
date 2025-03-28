@@ -12,3 +12,8 @@ type SetContractArgs struct {
 	CreationHeight uint64               `bson:"creation_height"`
 	Runtime        wasm_runtime.Runtime `bson:"runtime"`
 }
+
+type Intent struct {
+	Type string            `json:"type"`
+	Args map[string]string `json:"args"`
+}
