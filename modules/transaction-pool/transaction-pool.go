@@ -33,9 +33,9 @@ type IngestOptions struct {
 }
 
 // Ingests and verifies a transaction
-func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...IngestOptions) error {
+func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...IngestOptions) (*cid.Cid, error) {
 	if sTx.Sig == nil {
-		return errors.New("No signature provided")
+		return nil, errors.New("No signature provided")
 	}
 
 	prefix := cid.Prefix{
@@ -45,15 +45,27 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		MhLength: -1,
 	}
 
-	cidz, _ := prefix.Sum(sTx.Tx)
+	cidz, err := prefix.Sum(sTx.Tx)
+	if err != nil {
+		return nil, err
+	}
 
 	tempObj := map[string]interface{}{}
 
-	node, _ := cbornode.Decode(sTx.Sig, multihash.SHA2_256, -1)
+	node, err := cbornode.Decode(sTx.Sig, multihash.SHA2_256, -1)
+	if err != nil {
+		return nil, err
+	}
 
-	jsonData, _ := node.MarshalJSON()
+	jsonData, err := node.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
 
-	json.Unmarshal(jsonData, &tempObj)
+	err = json.Unmarshal(jsonData, &tempObj)
+	if err != nil {
+		return nil, err
+	}
 
 	verifiedDids := make([]dids.KeyDID, 0)
 
@@ -61,45 +73,66 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		sig := v.(map[string]interface{})
 
 		if sig["alg"] != "EdDSA" {
-			return errors.New("Unsupported signature algorithm")
+			return nil, errors.New("Unsupported signature algorithm")
 		}
 
 		if sig["kid"] == nil {
-			return errors.New("No key id provided")
+			return nil, errors.New("No key id provided")
 		}
 
 		if sig["sig"] == nil {
-			return errors.New("No signature provided")
+			return nil, errors.New("No signature provided")
 		}
 
 		keyDid := dids.KeyDID(sig["kid"].(string))
 
 		verified, err := keyDid.Verify(cidz, sig["sig"].(string))
+		if err != nil {
+			return nil, err
+		}
 
 		if !verified {
-			return err
+			if err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("invalid sig")
 		}
 		verifiedDids = append(verifiedDids, keyDid)
 	}
 
-	cborgNode, _ := cbornode.Decode(sTx.Tx, multihash.SHA2_256, -1)
+	cborgNode, err := cbornode.Decode(sTx.Tx, multihash.SHA2_256, -1)
+	if err != nil {
+		return nil, err
+	}
 
-	jsonData, _ = cborgNode.MarshalJSON()
+	jsonData, err = cborgNode.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
 
 	txShell := VSCTransactionShell{}
-	json.Unmarshal(jsonData, &txShell)
+	err = json.Unmarshal(jsonData, &txShell)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, auth := range txShell.Headers.RequiredAuths {
 		if !slices.Contains(verifiedDids, dids.KeyDID(auth)) {
 			fmt.Println("Missing auth", auth)
-			return errors.New("missing required auth")
+			return nil, errors.New("missing required auth")
 		}
 	}
 
-	tp.indexTx(cidz.String(), txShell)
-	cidc, _ := tp.datalayer.PutRaw(sTx.Tx, datalayer.PutRawOptions{
+	err = tp.indexTx(cidz.String(), txShell)
+	if err != nil {
+		return nil, err
+	}
+	cidc, err := tp.datalayer.PutRaw(sTx.Tx, datalayer.PutRawOptions{
 		Codec: multicodec.DagCbor,
 	})
+	if err != nil {
+		return nil, err
+	}
 
 	fmt.Println("tx CID", cidz.String(), "cidc", cidc.String())
 
@@ -107,17 +140,20 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	if options[0].Broadcast {
 
 		fmt.Println("cidz.String(), sTx", cidz.String(), sTx)
-		tp.Broadcast(cidz.String(), sTx)
+		err = tp.Broadcast(cidz.String(), sTx)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	return nil
+	return &cidz, nil
 }
 
-func (tp *TransactionPool) Broadcast(id string, serializedTx SerializedVSCTransaction) {
+func (tp *TransactionPool) Broadcast(id string, serializedTx SerializedVSCTransaction) error {
 	b64tx := base64.StdEncoding.EncodeToString(serializedTx.Tx)
 	b64sig := base64.StdEncoding.EncodeToString(serializedTx.Sig)
 
-	tp.service.Send(p2pMessage{
+	return tp.service.Send(p2pMessage{
 		Type: "announce_tx",
 		Data: map[string]interface{}{
 			"id":  id,
@@ -185,15 +221,17 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 	}
 }
 
-func (tp *TransactionPool) indexTx(txId string, txShell VSCTransactionShell) {
+func (tp *TransactionPool) indexTx(txId string, txShell VSCTransactionShell) error {
 	payloadJson := map[string]interface{}{}
 
-	cbornode.DecodeInto(txShell.Tx.Payload, &payloadJson)
-
+	err := cbornode.DecodeInto(txShell.Tx.Payload, &payloadJson)
+	if err != nil {
+		return err
+	}
 	//Ensure modified after to avoid overriden fields
 	payloadJson["type"] = txShell.Tx.Type
 
-	tp.TxDb.Ingest(transactions.IngestTransactionUpdate{
+	return tp.TxDb.Ingest(transactions.IngestTransactionUpdate{
 		Id:            txId,
 		RequiredAuths: txShell.Headers.RequiredAuths,
 		Type:          "vsc",

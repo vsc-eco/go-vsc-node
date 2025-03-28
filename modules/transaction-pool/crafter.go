@@ -98,14 +98,8 @@ type InternalBroadcast struct {
 }
 
 func (ib *InternalBroadcast) Broadcast(tx SerializedVSCTransaction) (string, error) {
-	err := ib.TxPool.IngestTx(tx, IngestOptions{Broadcast: true})
+	cidz, err := ib.TxPool.IngestTx(tx, IngestOptions{Broadcast: true})
 	fmt.Println("err", err)
-	cidz, err := cid.Prefix{
-		Version:  1,
-		Codec:    uint64(multicodec.DagCbor),
-		MhType:   multihash.SHA2_256,
-		MhLength: -1,
-	}.Sum(tx.Tx)
 	return cidz.String(), err
 }
 
