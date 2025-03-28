@@ -137,7 +137,7 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	fmt.Println("tx CID", cidz.String(), "cidc", cidc.String())
 
 	fmt.Println("Options", options)
-	if options[0].Broadcast {
+	if len(options) == 0 || options[0].Broadcast {
 
 		fmt.Println("cidz.String(), sTx", cidz.String(), sTx)
 		err = tp.Broadcast(cidz.String(), sTx)
