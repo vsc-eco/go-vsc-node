@@ -6,10 +6,12 @@ package gqlgen
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
+	transactionpool "vsc-node/modules/transaction-pool"
 )
 
 // AnchoredBlock is the resolver for the anchored_block field.
@@ -114,7 +116,25 @@ func (r *queryResolver) FindContract(ctx context.Context, id *string) (*FindCont
 
 // SubmitTransactionV1 is the resolver for the submitTransactionV1 field.
 func (r *queryResolver) SubmitTransactionV1(ctx context.Context, tx string, sig string) (*TransactionSubmitResult, error) {
-	panic(fmt.Errorf("not implemented"))
+	Tx, err := base64.URLEncoding.DecodeString(tx)
+	if err != nil {
+		return nil, err
+	}
+	Sig, err := base64.URLEncoding.DecodeString(sig)
+	if err != nil {
+		return nil, err
+	}
+	cid, err := r.TxPool.IngestTx(transactionpool.SerializedVSCTransaction{
+		Tx,
+		Sig,
+	})
+	if err != nil {
+		return nil, err
+	}
+	id := cid.String()
+	return &TransactionSubmitResult{
+		ID: &id,
+	}, nil
 }
 
 // GetAccountNonce is the resolver for the getAccountNonce field.

@@ -7,13 +7,18 @@ import (
 	"net/http"
 	"testing"
 	"time"
+	"vsc-node/lib/datalayer"
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/aggregate"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
+	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
+	libp2p "vsc-node/modules/p2p"
+	transactionpool "vsc-node/modules/transaction-pool"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -24,8 +29,14 @@ func TestQueryAndMutation(t *testing.T) {
 	d := db.New(dbConfg)
 	vscDb := vsc.New(d)
 	witnesses := witnesses.New(vscDb)
+	p2p := libp2p.New(witnesses)
+	txDb := transactions.New(vscDb)
+	da := datalayer.New(p2p)
+	conf := common.NewIdentityConfig()
+	txPool := transactionpool.New(p2p, txDb, da, conf)
 	resolver := &gqlgen.Resolver{
 		witnesses,
+		txPool,
 	}
 	schema := gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: resolver})
 
@@ -35,6 +46,11 @@ func TestQueryAndMutation(t *testing.T) {
 		d,
 		vscDb,
 		witnesses,
+		p2p,
+		txDb,
+		da,
+		conf,
+		txPool,
 		g,
 	})
 	test_utils.RunPlugin(t, agg)

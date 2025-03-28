@@ -1,6 +1,9 @@
 package gqlgen
 
-import "vsc-node/modules/db/vsc/witnesses"
+import (
+	"vsc-node/modules/db/vsc/witnesses"
+	transactionpool "vsc-node/modules/transaction-pool"
+)
 
 // This file will not be regenerated automatically.
 //
@@ -8,4 +11,5 @@ import "vsc-node/modules/db/vsc/witnesses"
 
 type Resolver struct {
 	Witnesses witnesses.Witnesses
+	TxPool    *transactionpool.TransactionPool
 }

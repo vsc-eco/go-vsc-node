@@ -27,6 +27,7 @@ import (
 	"vsc-node/modules/hive/streamer"
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
+	transactionpool "vsc-node/modules/transaction-pool"
 
 	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 
@@ -42,7 +43,6 @@ func main() {
 	vscDb := vsc.New(db)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)
-	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{witnessDb}}), "localhost:8080")
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)
@@ -113,6 +113,9 @@ func main() {
 	actions := ledgerDb.NewActionsDb(vscDb)
 	se := stateEngine.New(l, da, witnessDb, e, c, cState, tx, le, b, hiveBlocks, intrest, blks, actions, wasm)
 
+	txPool := transactionpool.New(p2p, tx, da, identityConfig)
+	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{witnessDb, txPool}}), "localhost:8080")
+
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
@@ -128,6 +131,7 @@ func main() {
 		dataAvailability,
 		e, c, cState, tx, le, b, intrest, blks, actions, se,
 		wasm,
+		txPool,
 		gqlManager,
 	)
 
