@@ -181,15 +181,17 @@ var SdkModule = map[string]func(context.Context, any) SdkResult{
 	//Gets current balance of contract account or tag
 	//Cannot be used to get balance of other accounts (or generally shouldn"t)
 	"hive.getbalance": func(ctx context.Context, a any) SdkResult {
-		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
-		// args: :{
-		// 	account: string
-		// 	tag: string
-		// } = JSON.parse(value)
-		// snapshot := this.getBalanceSnapshot(`${args.account}${args.tag  "#" + args.tag.replace("#", "") : ""}`, block_height)
-
-		// return result.Ok(snapshot.tokens)
-		return ErrUnimplemented
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+		args, ok := a.([]string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		account := args[0]
+		asset := args[1]
+		return result.Ok(SdkResultStruct{
+			Result: fmt.Sprint(eCtx.GetBalance(account, asset)),
+			Gas:    100_000,
+		})
 	},
 	//Pulls token balance from user transction
 	"hive.draw": func(ctx context.Context, a any) SdkResult {

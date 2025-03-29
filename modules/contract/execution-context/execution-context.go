@@ -75,7 +75,7 @@ func (ctx *contractExecutionContext) doIO(gas int) {
 }
 
 func (ctx *contractExecutionContext) Revert() {
-	// ctx.ledger.Revert()
+	ctx.ledger.Revert()
 }
 
 func (ctx *contractExecutionContext) Log(msg string) {
@@ -106,6 +106,6 @@ func (ctx *contractExecutionContext) DeleteState(key string) result.Result[struc
 	return result.Ok(struct{}{})
 }
 
-func (ctx *contractExecutionContext) DrawFunds() {
-	// ctx.ledger.
+func (ctx *contractExecutionContext) GetBalance(account string, asset string) int64 {
+	return ctx.ledger.GetBalance(account, 0, asset) // TODO get block height from env
 }
