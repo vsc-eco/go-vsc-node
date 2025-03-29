@@ -57,14 +57,19 @@ type ConsensusParams struct {
 	BlockHeight uint64
 }
 
+type LedgerResult struct {
+	Ok  bool
+	Msg string
+}
+
+type TransferOptions struct {
+	//Excluded HBD amount that cannot be sent
+	Exclusion int64
+}
+
 type LedgerSession interface {
-	Done()
 	Revert()
-	AppendOplog(event OpLogEvent)
-	AppendLedger(event LedgerUpdate)
 	GetBalance(account string, blockHeight uint64, asset string) int64
-	// ExecuteTransfer(OpLogEvent OpLogEvent, options ...TransferOptions) LedgerResult
-	// Revert()
-	// Transfer()
-	// Withdraw(withdraw WithdrawParams) LedgerResult
+	ExecuteTransfer(OpLogEvent OpLogEvent, options ...TransferOptions) LedgerResult
+	Withdraw(withdraw WithdrawParams) LedgerResult
 }
