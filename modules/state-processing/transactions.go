@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"vsc-node/lib/datalayer"
-	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	"vsc-node/modules/db/vsc/contracts"
@@ -571,14 +570,8 @@ func (t *TxConsensusUnstake) Type() string {
 }
 
 type TransactionSig struct {
-	Type string `json:"__t"`
-	Sigs []struct {
-		Algo string `json:"alg"`
-		Sig  string `json:"sig"`
-		//Only applies to KeyID
-		//Technically redundant as it's stored in Required_Auths
-		Kid string `json:"kid"`
-	} `json:"sigs"`
+	Type string       `json:"__t"`
+	Sigs []common.Sig `json:"sigs"`
 }
 
 type TransactionHeader struct {
@@ -762,21 +755,12 @@ type OffchainTransaction struct {
 func (tx *OffchainTransaction) Verify(txSig TransactionSig, nonce int) (bool, error) {
 	//Do verification logic using Key DID and Ethereum DID
 
-	for idx, v := range tx.Headers.RequiredAuths {
-		split := strings.Split(v, "?")
-		// keyAuths = append(keyAuths, dids.KeyDID(v))
-		did := dids.KeyDID(split[0])
-		sig := txSig.Sigs[idx]
-		verified, err := did.Verify(tx.Cid(), sig.Sig)
-		if err != nil {
-			return false, err
-		}
-		if !verified {
-			return false, nil
-		}
+	blk, err := tx.ToBlock()
+	if err != nil {
+		return false, err
 	}
 
-	return true, nil
+	return common.VerifySignatures(tx.Headers.RequiredAuths, blk, txSig.Sigs)
 }
 
 func (tx *OffchainTransaction) Encode() ([]byte, error) {

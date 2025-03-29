@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"vsc-node/lib/datalayer"
-	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/transactions"
 	libp2p "vsc-node/modules/p2p"
 
 	"github.com/chebyrash/promise"
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/ipfs/go-cid"
 	cbornode "github.com/ipfs/go-ipld-cbor"
 	"github.com/multiformats/go-multicodec"
@@ -50,77 +49,38 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		return nil, err
 	}
 
-	tempObj := map[string]interface{}{}
+	sigPack := SignaturePackage{}
 
-	node, err := cbornode.Decode(sTx.Sig, multihash.SHA2_256, -1)
+	err = cbornode.DecodeInto(sTx.Sig, &sigPack)
 	if err != nil {
 		return nil, err
 	}
 
-	jsonData, err := node.MarshalJSON()
-	if err != nil {
+	var m interface{}
+	if err := cbornode.DecodeInto(sTx.Tx, &m); err != nil {
 		return nil, err
 	}
 
-	err = json.Unmarshal(jsonData, &tempObj)
-	if err != nil {
-		return nil, err
-	}
-
-	verifiedDids := make([]dids.KeyDID, 0)
-
-	for _, v := range tempObj["sigs"].([]interface{}) {
-		sig := v.(map[string]interface{})
-
-		if sig["alg"] != "EdDSA" {
-			return nil, errors.New("Unsupported signature algorithm")
-		}
-
-		if sig["kid"] == nil {
-			return nil, errors.New("No key id provided")
-		}
-
-		if sig["sig"] == nil {
-			return nil, errors.New("No signature provided")
-		}
-
-		keyDid := dids.KeyDID(sig["kid"].(string))
-
-		verified, err := keyDid.Verify(cidz, sig["sig"].(string))
-		if err != nil {
-			return nil, err
-		}
-
-		if !verified {
-			if err != nil {
-				return nil, err
-			}
-			return nil, fmt.Errorf("invalid sig")
-		}
-		verifiedDids = append(verifiedDids, keyDid)
-	}
-
-	cborgNode, err := cbornode.Decode(sTx.Tx, multihash.SHA2_256, -1)
-	if err != nil {
-		return nil, err
-	}
-
-	jsonData, err = cborgNode.MarshalJSON()
+	// We throw away `b` here to ensure that we canonicalize the encoded
+	// CBOR object.
+	node, err := cbornode.WrapObject(m, multihash.SHA2_256, -1)
 	if err != nil {
 		return nil, err
 	}
 
 	txShell := VSCTransactionShell{}
-	err = json.Unmarshal(jsonData, &txShell)
+	err = mapstructure.Decode(m, &txShell)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, auth := range txShell.Headers.RequiredAuths {
-		if !slices.Contains(verifiedDids, dids.KeyDID(auth)) {
-			fmt.Println("Missing auth", auth)
-			return nil, errors.New("missing required auth")
-		}
+	verified, err := common.VerifySignatures(txShell.Headers.RequiredAuths, node, sigPack.Sigs)
+	if err != nil {
+		return nil, err
+	}
+
+	if !verified {
+		return nil, errors.New("missing required auth")
 	}
 
 	err = tp.indexTx(cidz.String(), txShell)
@@ -207,16 +167,12 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 
 	json.Unmarshal(sigJson, &sigPack)
 
-	verified, verifiedAuths, _ := VerifyTxSignatures(cidz, sigPack)
+	verified, err := common.VerifySignatures(txShell.Headers.RequiredAuths, node, sigPack.Sigs)
+	if err != nil {
+		return
+	}
 
 	if verified {
-		for _, auth := range txShell.Headers.RequiredAuths {
-			if !slices.Contains(verifiedAuths, auth) {
-				fmt.Println("Missing auth", auth)
-				return
-			}
-		}
-
 		tp.indexTx(cidz.String(), txShell)
 	}
 }

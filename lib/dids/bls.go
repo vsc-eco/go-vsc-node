@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multibase"
 
@@ -31,7 +32,7 @@ type BlsPrivKey = bls.SecretKey
 
 // ===== interface assertions =====
 
-var _ DID[*BlsPubKey, cid.Cid] = BlsDID("")
+var _ DID = BlsDID("")
 var _ Provider[cid.Cid] = BlsProvider{}
 
 // ===== BlsDID =====
@@ -122,8 +123,8 @@ func (d BlsDID) Identifier() *BlsPubKey {
 }
 
 // verifies if the sig is valid for the block (based on its CID)
-func (d BlsDID) Verify(cid cid.Cid, sig string) (bool, error) {
-
+func (d BlsDID) Verify(blk blocks.Block, sig string) (bool, error) {
+	cid := blk.Cid()
 	// get the pub key from the DID
 	pubKey := d.Identifier()
 

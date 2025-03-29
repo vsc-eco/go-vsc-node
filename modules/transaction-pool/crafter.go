@@ -1,7 +1,6 @@
 package transactionpool
 
 import (
-	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,7 +19,7 @@ type TransactionCrafter struct {
 	VSCBroadcast
 
 	Identity dids.KeyProvider
-	Did      dids.DID[ed25519.PublicKey, cid.Cid]
+	Did      dids.DID
 }
 
 func (tp *TransactionCrafter) Sign(vsOp VSCOperation) (string, error) {
@@ -38,15 +37,11 @@ func (tp *TransactionCrafter) SignFinal(vscOp VSCOperation) (SerializedVSCTransa
 
 	sigPackage := SignaturePackage{
 		Type: "vsc-sig",
-		Sigs: []struct {
-			Alg string `json:"alg"`
-			Kid string `json:"kid"`
-			Sig string `json:"sig"`
-		}{
+		Sigs: []common.Sig{
 			{
-				Alg: "EdDSA",
-				Kid: tp.Did.String(),
-				Sig: sig,
+				Algo: "EdDSA",
+				Kid:  tp.Did.String(),
+				Sig:  sig,
 			},
 		},
 	}
@@ -70,12 +65,8 @@ func (tp *TransactionCrafter) SignFinal(vscOp VSCOperation) (SerializedVSCTransa
 }
 
 type SignaturePackage struct {
-	Type string `json:"__t"`
-	Sigs []struct {
-		Alg string `json:"alg"`
-		Kid string `json:"kid"`
-		Sig string `json:"sig"`
-	} `json:"sigs"`
+	Type string       `json:"__t"`
+	Sigs []common.Sig `json:"sigs"`
 }
 
 type VSCOperation interface {

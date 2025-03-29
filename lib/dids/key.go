@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/crypto/hkdf"
 
+	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/jorrizza/ed2curve25519"
 	"github.com/multiformats/go-multibase"
@@ -26,14 +27,33 @@ const KeyDIDPrefix = "did:key:"
 
 // ===== interface assertions =====
 
-var _ DID[ed25519.PublicKey, cid.Cid] = KeyDID("")
+var _ DID = KeyDID("")
 var _ Provider[cid.Cid] = KeyProvider{}
 
 // ===== KeyDID =====
 
 type KeyDID string
 
-func NewKeyDID(pubKey ed25519.PublicKey) (DID[ed25519.PublicKey, cid.Cid], error) {
+func ParseKeyDID(did string) (KeyDID, error) {
+	didNoOptions := strings.Split(did, "?")[0]
+	base58Encoded, hasPrefix := strings.CutPrefix(didNoOptions, KeyDIDPrefix)
+	if !hasPrefix {
+		return "", fmt.Errorf("does not have eth prefix")
+	}
+
+	enc, data, err := multibase.Decode(base58Encoded)
+	if err != nil || enc != multibase.Base58BTC {
+		return "", fmt.Errorf("key did not base58btc encoded")
+	}
+
+	if len(data[2:]) != ed25519.PublicKeySize {
+		return "", fmt.Errorf("key did public key length is not %d", ed25519.PublicKeySize)
+	}
+
+	return KeyDID(didNoOptions), nil
+}
+
+func NewKeyDID(pubKey ed25519.PublicKey) (DID, error) {
 
 	if pubKey == nil {
 		return KeyDID(""), fmt.Errorf("invalid public key")
@@ -71,7 +91,8 @@ func (d KeyDID) Identifier() ed25519.PublicKey {
 	return ed25519.PublicKey(data[2:])
 }
 
-func (d KeyDID) Verify(cid cid.Cid, sig string) (bool, error) {
+func (d KeyDID) Verify(blk blocks.Block, sig string) (bool, error) {
+	cid := blk.Cid()
 	// re-create the header
 	header := map[string]interface{}{
 		"alg": "EdDSA",

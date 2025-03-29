@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"vsc-node/lib/dids"
+	"vsc-node/lib/utils"
 
+	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/ipld/go-ipld-prime/codec/dagcbor"
 	"github.com/ipld/go-ipld-prime/node/basicnode"
@@ -54,4 +57,25 @@ func ArrayToStringArray(arr interface{}) []string {
 	}
 
 	return out
+}
+
+type Sig struct {
+	Algo string "json:\"alg\""
+	Sig  string "json:\"sig\""
+	//Only applies to KeyID
+	//Technically redundant as it's stored in Required_Auths
+	Kid string "json:\"kid\""
+}
+
+func VerifySignatures(requiredAuths []string, blk blocks.Block, sigs []Sig) (bool, error) {
+	auths, err := dids.ParseMany(requiredAuths)
+	if err != nil {
+		return false, err
+	}
+
+	verified, _, err := dids.VerifyMany(auths, blk, utils.Map(sigs, func(sig Sig) string {
+		return sig.Sig
+	}))
+
+	return verified, err
 }

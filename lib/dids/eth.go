@@ -15,6 +15,7 @@ import (
 
 	"crypto/ecdsa"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 
@@ -45,13 +46,26 @@ func runDebug(run func() error) error {
 // ===== interface assertions =====
 
 // ethr addr | payload type
-var _ DID[string, blocks.Block] = EthDID("")
+var _ DID = EthDID("")
 
 var _ Provider[blocks.Block] = &EthProvider{}
 
 // ===== EthDID =====
 
 type EthDID string
+
+func ParseEthDID(did string) (EthDID, error) {
+	addr, hasPrefix := strings.CutPrefix(did, EthDIDPrefix)
+	if !hasPrefix {
+		return "", fmt.Errorf("does not have eth prefix")
+	}
+
+	if !common.IsHexAddress(addr) {
+		return "", fmt.Errorf("can not represent valid eth address")
+	}
+
+	return EthDID(addr), nil
+}
 
 func NewEthDID(ethAddr string) EthDID {
 	return EthDID(EthDIDPrefix + ethAddr)
