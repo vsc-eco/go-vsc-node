@@ -2,12 +2,15 @@ package sdk
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_types "vsc-node/modules/wasm/types"
 
 	"github.com/JustinKnueppel/go-result"
+	"golang.org/x/crypto/ripemd160"
 )
 
 type SdkResultStruct = wasm_types.WasmResultStruct
@@ -140,14 +143,40 @@ var SdkModule = map[string]func(context.Context, any) SdkResult{
 		)
 	},
 	"crypto.sha256": func(ctx context.Context, a any) SdkResult {
-		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
-		return ErrUnimplemented
-		// return sha256(Buffer.from(value, "hex")).toString("hex")
+		value, ok := a.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+
+		b, err := hex.DecodeString(value)
+		if err != nil {
+			return result.Err[SdkResultStruct](err)
+		}
+
+		res := sha256.Sum256(b)
+
+		return result.Ok(SdkResultStruct{
+			Result: hex.EncodeToString(res[:]),
+			Gas:    uint(150*len(b) + 300), // TODO set a more fair value
+		})
 	},
 	"crypto.ripemd160": func(ctx context.Context, a any) SdkResult {
-		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
-		return ErrUnimplemented
-		// return ripemd160(Buffer.from(value, "hex")).toString("hex")
+		value, ok := a.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+
+		b, err := hex.DecodeString(value)
+		if err != nil {
+			return result.Err[SdkResultStruct](err)
+		}
+
+		res := ripemd160.New().Sum(b)
+
+		return result.Ok(SdkResultStruct{
+			Result: hex.EncodeToString(res[:]),
+			Gas:    uint(150*len(b) + 300), // TODO set a more fair value
+		})
 	},
 	//Gets current balance of contract account or tag
 	//Cannot be used to get balance of other accounts (or generally shouldn"t)
