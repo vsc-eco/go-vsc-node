@@ -10,6 +10,8 @@ var CONSENSUS_SPECS = struct {
 	ScheduleLength: 1_200, // 60 * 20 = 1 hour - length of a schedule before it's recalcualted
 }
 
+const CYCLE_GAS_PER_RC = 100_000_000
+
 // 2,000 HIVE
 var CONSENSUS_STAKE_MIN = int64(2_000_000)
 
