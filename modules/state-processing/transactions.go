@@ -43,10 +43,11 @@ type TxVscCallContract struct {
 	Intents    []contracts.Intent `json:"intents"`
 }
 
-func errorToTxResult(err error) TxResult {
+func errorToTxResult(err error, RCs int64) TxResult {
 	return TxResult{
 		Success: false,
 		Ret:     err.Error(),
+		RcUsed:  RCs,
 	}
 }
 
@@ -54,17 +55,17 @@ func errorToTxResult(err error) TxResult {
 func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession) TxResult {
 	info, err := se.contractDb.ContractById(t.ContractId)
 	if err != nil {
-		return errorToTxResult(err)
+		return errorToTxResult(err, 100)
 	}
 
 	c, err := cid.Decode(info.Code)
 	if err != nil {
-		return errorToTxResult(err)
+		return errorToTxResult(err, 100)
 	}
 
 	node, err := se.da.Get(c, nil)
 	if err != nil {
-		return errorToTxResult(err)
+		return errorToTxResult(err, 100)
 	}
 
 	code := node.RawData()
@@ -77,7 +78,9 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 	res := result.MapOrElse(
 		se.wasm.Execute(ctx, code, gas, t.Action, t.Payload, info.Runtime),
-
+		func(err error) TxResult {
+			return errorToTxResult(err, int64(gas))
+		},
 		func(res wasm_types.WasmResultStruct) TxResult {
 			return TxResult{
 				Success: !res.Error,
