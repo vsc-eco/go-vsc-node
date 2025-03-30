@@ -27,12 +27,13 @@ type PostingJsonKeys struct {
 }
 
 type PostingJsonMetadataVscNode struct {
-	NetId           string `json:"net_id"`
-	PeerId          string `json:"peer_id"`
-	Ts              string `json:"ts"`
-	GitCommit       string `json:"git_commit"`
-	VersionId       string `json:"version_id" bson:"version_id"`
-	ProtocolVersion uint64 `json:"protocol_version"`
+	NetId           string   `json:"net_id"`
+	PeerId          string   `json:"peer_id"`
+	PeerAddrs       []string `json:"peer_addrs"`
+	Ts              string   `json:"ts"`
+	GitCommit       string   `json:"git_commit"`
+	VersionId       string   `json:"version_id" bson:"version_id"`
+	ProtocolVersion uint64   `json:"protocol_version"`
 	Witness         struct {
 		Enabled bool `json:"enabled"`
 		// Plugins     []string `json:"plugins"`

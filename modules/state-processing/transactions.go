@@ -13,6 +13,7 @@ import (
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/transactions"
 	ledgerSystem "vsc-node/modules/ledger-system"
+	rcSystem "vsc-node/modules/rc-system"
 
 	"github.com/JustinKnueppel/go-result"
 	blocks "github.com/ipfs/go-block-format"
@@ -49,7 +50,7 @@ func errorToTxResult(err error) TxResult {
 }
 
 // ExecuteTx implements VSCTransaction.
-func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
+func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession) TxResult {
 	info, err := se.contractDb.ContractById(t.ContractId)
 	if err != nil {
 		return errorToTxResult(err)
@@ -129,7 +130,7 @@ func (tx TxVSCTransfer) TxSelf() TxSelf {
 	return tx.Self
 }
 
-func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
+func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession) TxResult {
 	if tx.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
@@ -231,7 +232,7 @@ func (tx TxVSCWithdraw) TxSelf() TxSelf {
 // Note: this function does the work of translating any and all VSC transactions to the ledger compatible formats
 // ledgerExecutor will then do the heavy lifting of executing the input ops
 // as LedgerExecutor may be called within other contexts, such as the contract executor
-func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
+func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession) TxResult {
 	if t.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
@@ -264,7 +265,7 @@ func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession)
 	}
 
 	//Verifies
-	if !slices.Contains(t.Self.RequiredAuths, strings.Split(t.From, ":")[1]) {
+	if !slices.Contains(t.Self.RequiredAuths, t.From) {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid RequiredAuths",
@@ -304,7 +305,7 @@ type TxStakeHbd struct {
 	NetId string `json:"net_id"`
 }
 
-func (t *TxStakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
+func (t *TxStakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession) TxResult {
 	if t.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
@@ -380,7 +381,7 @@ type TxUnstakeHbd struct {
 	NetId  string `json:"net_id"`
 }
 
-func (t *TxUnstakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
+func (t *TxUnstakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession) TxResult {
 	se.log.Debug("TxUnstakeHbd", t.Self.BlockHeight, t.Self.TxId, t.Self.OpIndex, t.NetId, common.NETWORK_ID)
 	if t.NetId != common.NETWORK_ID {
 		return TxResult{
@@ -463,27 +464,53 @@ func (t *TxUnstakeHbd) Type() string {
 type TxConsensusStake struct {
 	Self TxSelf
 
-	Account string `json:"account"`
-	Amount  string `json:"amount"`
-	Asset   string `json:"asset"`
-	NetId   string `json:"net_id"`
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Amount string `json:"amount"`
+	Asset  string `json:"asset"`
+	NetId  string `json:"net_id"`
 }
 
-func (t *TxConsensusStake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
-	if t.NetId != common.NETWORK_ID {
+func (tx *TxConsensusStake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession) TxResult {
+	if tx.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid network id",
 			RcUsed:  50,
 		}
 	}
-	fl, _ := strconv.ParseFloat(t.Amount, 64)
+
+	if tx.To == "" || tx.From == "" {
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid to/from",
+			RcUsed:  50,
+		}
+	}
+
+	if !slices.Contains(tx.Self.RequiredAuths, tx.From) {
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid RequiredAuths",
+			RcUsed:  50,
+		}
+	}
+
+	if (strings.HasPrefix(tx.To, "did:") || !strings.HasPrefix(tx.To, "hive:")) || (!strings.HasPrefix(tx.From, "did:") && !strings.HasPrefix(tx.From, "hive:")) {
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid to/from",
+			RcUsed:  50,
+		}
+	}
+	fl, _ := strconv.ParseFloat(tx.Amount, 64)
 
 	params := ledgerSystem.ConsensusParams{
-		Id:          MakeTxId(t.Self.TxId, t.Self.OpIndex),
-		Account:     t.Account,
+		Id:          MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
+		From:        tx.From,
+		To:          tx.To,
 		Amount:      int64(fl * math.Pow(10, 3)),
-		BlockHeight: t.Self.BlockHeight,
+		BlockHeight: tx.Self.BlockHeight,
 		Type:        "stake",
 	}
 
@@ -498,10 +525,11 @@ func (t *TxConsensusStake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 func (t *TxConsensusStake) ToData() map[string]interface{} {
 	return map[string]interface{}{
-		"account": t.Account,
-		"amount":  t.Amount,
-		"asset":   t.Asset,
-		"type":    "consensus_stake",
+		"to":     t.To,
+		"from":   t.From,
+		"amount": t.Amount,
+		"asset":  t.Asset,
+		"type":   "consensus_stake",
 	}
 }
 
@@ -516,33 +544,56 @@ func (t *TxConsensusStake) Type() string {
 type TxConsensusUnstake struct {
 	Self TxSelf
 
-	Account string `json:"account"`
-	Amount  string `json:"amount"`
-	Asset   string `json:"asset"`
-	NetId   string `json:"net_id"`
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Amount string `json:"amount"`
+	Asset  string `json:"asset"`
+	NetId  string `json:"net_id"`
 }
 
-func (t *TxConsensusUnstake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
-	if t.NetId != common.NETWORK_ID {
+func (tx *TxConsensusUnstake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession) TxResult {
+	if tx.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid network id",
 			RcUsed:  50,
 		}
 	}
-	fl, _ := strconv.ParseFloat(t.Amount, 64)
 
-	electionResult, _ := se.electionDb.GetElectionByHeight(t.Self.BlockHeight - 1)
+	if tx.To == "" || tx.From == "" {
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid to/from",
+			RcUsed:  50,
+		}
+	}
+	if !slices.Contains(tx.Self.RequiredAuths, tx.From) {
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid RequiredAuths",
+			RcUsed:  50,
+		}
+	}
+	if (strings.HasPrefix(tx.To, "did:") && !strings.HasPrefix(tx.To, "hive:")) || (strings.HasPrefix(tx.From, "did:") || !strings.HasPrefix(tx.From, "hive:")) {
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid to/from",
+			RcUsed:  50,
+		}
+	}
+	fl, _ := strconv.ParseFloat(tx.Amount, 64)
+
+	electionResult, _ := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight - 1)
 
 	params := ledgerSystem.ConsensusParams{
-		Id:            MakeTxId(t.Self.TxId, t.Self.OpIndex),
-		Account:       t.Account,
+		Id:            MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
+		From:          tx.From,
+		To:            tx.To,
 		Amount:        int64(fl * math.Pow(10, 3)),
-		BlockHeight:   t.Self.BlockHeight,
+		BlockHeight:   tx.Self.BlockHeight,
 		Type:          "unstake",
-		ElectionEpoch: electionResult.Epoch,
+		ElectionEpoch: electionResult.Epoch + 5,
 	}
-
 	ledgerResult := se.LedgerExecutor.ConsensusUnstake(params, ledgerSession)
 
 	return TxResult{
@@ -554,10 +605,11 @@ func (t *TxConsensusUnstake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSes
 
 func (t *TxConsensusUnstake) ToData() map[string]interface{} {
 	return map[string]interface{}{
-		"account": t.Account,
-		"amount":  t.Amount,
-		"asset":   t.Asset,
-		"type":    "consensus_unstake",
+		"from":   t.From,
+		"to":     t.To,
+		"amount": t.Amount,
+		"asset":  t.Asset,
+		"type":   "consensus_unstake",
 	}
 }
 
@@ -578,6 +630,7 @@ type TransactionHeader struct {
 	NetId         string   `json:"net_id"`
 	Nonce         uint64   `json:"nonce"`
 	RequiredAuths []string `json:"required_auths" jsonschema:"required"`
+	RcLimit       uint64   `json:"rc_limit"`
 }
 
 // 0: Object
@@ -831,8 +884,11 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, txSelf TxSelf) {
 		AnchoredBlock:  &txSelf.BlockId,
 		AnchoredId:     &txSelf.BlockId,
 		Nonce:          tx.Headers.Nonce,
+		RcLimit:        tx.Headers.RcLimit,
 		RequiredAuths:  tx.Headers.RequiredAuths,
 		Tx:             data,
+		//Transaction is a VSC transaction
+		Type: "vsc",
 	})
 
 }
@@ -872,7 +928,7 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 		decodeTxCbor(tx, &withdrawTx)
 
 		vtx = &withdrawTx
-	case "stake":
+	case "stake_hbd":
 		stakeTx := TxStakeHbd{
 			Self: self,
 
@@ -920,7 +976,7 @@ var _ VSCTransaction = &TxCreateContract{}
 var _ VscTxContainer = &OffchainTransaction{}
 
 type VSCTransaction interface {
-	ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult
+	ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession) TxResult
 	TxSelf() TxSelf
 	ToData() map[string]interface{}
 	Type() string

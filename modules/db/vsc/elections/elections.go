@@ -48,6 +48,9 @@ func (e *elections) StoreElection(a ElectionResult) error {
 	}
 	update := ElectionResultRecord{}
 	err := refmt.CloneAtlased(a, &update, cbornode.CborAtlas)
+	if update.Type == "" {
+		update.Type = "initial"
+	}
 	if err != nil {
 		return err
 	}

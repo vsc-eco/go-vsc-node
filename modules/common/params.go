@@ -10,6 +10,9 @@ var CONSENSUS_SPECS = struct {
 	ScheduleLength: 1_200, // 60 * 20 = 1 hour - length of a schedule before it's recalcualted
 }
 
+// 2,000 HIVE
+var CONSENSUS_STAKE_MIN = int64(2_000_000)
+
 var NETWORK_ID = "vsc-mainnet"
 
 var GATEWAY_WALLET = "vsc.gateway"

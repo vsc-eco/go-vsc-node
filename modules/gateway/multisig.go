@@ -3,6 +3,7 @@ package gateway
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"slices"
@@ -30,6 +31,7 @@ type MultiSig struct {
 	identity      common.IdentityConfig
 	ledgerActions ledgerDb.BridgeActions
 	hiveCreator   hive.HiveTransactionCreator
+	hiveClient    *hivego.HiveRpcNode
 	electionDb    elections.Elections
 	witnessDb     witnesses.Witnesses
 	balanceDb     ledgerDb.Balances
@@ -39,6 +41,7 @@ type MultiSig struct {
 	p2p     *libp2p.P2PServer
 	se      *stateEngine.StateEngine
 	log     logger.Logger
+	msgChan map[string]chan p2pMessage
 }
 
 func (ms *MultiSig) Init() error {
@@ -94,16 +97,43 @@ func (ms *MultiSig) BlockTick(bh uint64) {
 			go ms.TickActions(bh)
 		}
 		if bh&SYNC_INTERVAL == 0 {
-			go ms.SyncBalance(bh)
+			go ms.TickSyncFr(bh)
 		}
 	}
 }
 
 func (ms *MultiSig) TickKeyRotation(bh uint64) {
-	electionResult, err := ms.electionDb.GetElectionByHeight(bh)
+	signPkg, err := ms.keyRotation(bh)
 
 	if err != nil {
 		return
+	}
+
+	ms.msgChan[signPkg.TxId] = make(chan p2pMessage)
+	signReq := signRequest{}
+
+	sigJson, _ := json.Marshal(signReq)
+
+	ms.service.Send(p2pMessage{
+		Type: "sign_request",
+		Op:   "key_rotation",
+		Data: string(sigJson),
+	})
+
+	ms.waitForSigs(signPkg.TxId)
+	// txHash := hivego.HashTxForSig(signPkg.Tx)
+	// signingTms.getThreshold()
+	// recoverPublicKey()
+}
+
+func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
+	if bh%ACTION_INTERVAL != 0 {
+		return signingPackage{}, errors.New("invalid slot")
+	}
+	electionResult, err := ms.electionDb.GetElectionByHeight(bh)
+
+	if err != nil {
+		return signingPackage{}, err
 	}
 
 	gatewayKeys := make([][2]interface{}, 0)
@@ -147,19 +177,32 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 	}, string(jsonBytes), "STM8buQNWovTcX7H8yLdYNx82xDddQE9R5MzQDNg4mocScnXTGSkE")
 
 	tx := ms.hiveCreator.MakeTransaction([]hivego.HiveOperation{rotationTx})
-	ms.hiveCreator.PopulateSigningProps(&tx, nil)
+	ms.hiveCreator.PopulateSigningProps(&tx, []int{int(bh)})
 
-	ms.hiveCreator.Broadcast(tx)
+	txId, _ := tx.GenerateTrxId()
+
+	return signingPackage{
+		Ops:  []hivego.HiveOperation{rotationTx},
+		Tx:   tx,
+		TxId: txId,
+	}, nil
 }
 
-func (ms *MultiSig) TickActions(bh uint64) {
-	actions, err := ms.ledgerActions.GetPendingActions(bh)
+func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
+	if bh%ACTION_INTERVAL != 0 {
+		return signingPackage{}, errors.New("invalid slot")
+	}
+	actionFilter := []string{
+		"withdraw", "stake", "unstake",
+	}
+	actions, err := ms.ledgerActions.GetPendingActions(bh, actionFilter...)
 
+	fmt.Println("Tick actions", actions, err)
 	if err != nil {
-		return
+		return signingPackage{}, err
 	}
 	if len(actions) == 0 {
-		return
+		return signingPackage{}, errors.New("no actions to process")
 	}
 
 	ops := []hivego.HiveOperation{}
@@ -273,32 +316,24 @@ func (ms *MultiSig) TickActions(bh uint64) {
 	ops = append([]hivego.HiveOperation{headerOp}, ops...)
 	tx := ms.hiveCreator.MakeTransaction(ops)
 
-	ms.hiveCreator.PopulateSigningProps(&tx, nil)
+	ms.hiveCreator.PopulateSigningProps(&tx, []int{int(bh)})
 
-	txId, _ := ms.hiveCreator.Broadcast(tx)
-
-	ms.log.Debug("TickAction TxID!", txId, tx)
+	txId, _ := tx.GenerateTrxId()
 
 	//Do signing
-}
 
-// Executes on chain actions such as withdrawals, staking, unstaking, etc
-func (ms *MultiSig) ExecuteActions() {
-
-}
-
-// Automatic function to claim HBD interest
-func (ms *MultiSig) ClaimHBDInterest() {
-
-}
-
-// Handles incoming signing request
-func (ms *MultiSig) HandleClaimHbdInterest() {
-
+	return signingPackage{
+		Ops:  ops,
+		Tx:   tx,
+		TxId: txId,
+	}, nil
 }
 
 // Sync balances between liquid and staked HBD
-func (ms *MultiSig) SyncBalance(bh uint64) {
+func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
+	if bh%ACTION_INTERVAL != 0 {
+		return signingPackage{}, errors.New("invalid slot")
+	}
 	//system:sync_balance is the tag that is used to track the system balance
 	//Note: when interest is claimed it goes to a separate account
 	//This account is considered a "virtual" account.
@@ -330,8 +365,7 @@ func (ms *MultiSig) SyncBalance(bh uint64) {
 
 	if len(topBalances) < 6 {
 
-		fmt.Println("syncBalance conditions not met", topBalances, totalHbd, stakedBal)
-		return
+		return signingPackage{}, errors.New("no sync to process")
 	}
 
 	topBals := topBalances[:HBD_TOP_CUTOFF]
@@ -387,19 +421,93 @@ func (ms *MultiSig) SyncBalance(bh uint64) {
 
 		tx := ms.hiveCreator.MakeTransaction(ops)
 
-		ms.hiveCreator.PopulateSigningProps(&tx, nil)
+		ms.hiveCreator.PopulateSigningProps(&tx, []int{int(bh)})
 
-		txId, _ := ms.hiveCreator.Broadcast(tx)
+		txId, _ := tx.GenerateTrxId()
 
-		fmt.Println("Prefix: e2e-1]: SyncBalance TxID!", txId, tx)
+		return signingPackage{
+			Ops:  ops,
+			Tx:   tx,
+			TxId: txId,
+		}, nil
 		// return ops
 	}
 
+	return signingPackage{}, errors.New("no sync to process")
+}
+
+// Automatic function to claim HBD interest
+func (ms *MultiSig) ClaimHBDInterest() {
+
+}
+
+func (ms *MultiSig) getThreshold() (int, []string, []int, error) {
+	accountData, err := ms.hiveClient.GetAccount([]string{common.GATEWAY_WALLET})
+
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	if len(accountData) == 0 {
+		return 0, nil, nil, errors.New("account not found")
+	}
+	gatewayAccount := accountData[0]
+
+	publicKeys := make([]string, 0)
+	weights := make([]int, 0)
+	for _, key := range gatewayAccount.Owner.KeyAuths {
+		publicKeys = append(publicKeys, key[0].(string))
+		weights = append(weights, key[1].(int))
+	}
+
+	return gatewayAccount.Owner.WeightThreshold, publicKeys, weights, nil
+}
+
+func (ms *MultiSig) waitForSigs(tx hivego.HiveTransaction, hivetxId string) ([]string, uint64, error) {
+	threshold, publicList, weights, _ := ms.getThreshold()
+	txId, err := tx.GenerateTrxId()
+	if err != nil {
+		return nil, 0, err
+	}
+	if ms.msgChan[txId] == nil {
+		return nil, 0, errors.New("no channel for txId")
+	}
+
+	txBytes, err := hivego.SerializeTx(tx)
+
+	if err != nil {
+		return nil, 0, err
+	}
+	txHash := hivego.HashTxForSig(txBytes)
+
+	signedWeight := uint64(0)
+	sigs := make([]string, 0)
+	for uint64(threshold) > signedWeight {
+		msg := <-ms.msgChan[txId]
+		if msg.Type == "sign_response" {
+			sigRes := signResponse{}
+			err := json.Unmarshal([]byte(msg.Data), &sigRes)
+
+			if err == nil {
+
+				pubKey, err := recoverPublicKey(sigRes.Sig, txHash)
+				if err != nil {
+					return nil, 0, err
+				}
+				idx := slices.Index(publicList, pubKey)
+				if idx != -1 {
+					sigs = append(sigs, sigRes.Sig)
+					signedWeight = signedWeight + uint64(weights[idx])
+				}
+			}
+		}
+	}
+
+	return sigs, signedWeight, nil
 }
 
 var _ a.Plugin = &MultiSig{}
 
-func New(logger logger.Logger, witnessDb witnesses.Witnesses, electionDb elections.Elections, ledgerActions ledgerDb.BridgeActions, balanceDb ledgerDb.Balances, hiveCreator hive.HiveTransactionCreator, vstream *vstream.VStream, p2p *libp2p.P2PServer, se *stateEngine.StateEngine, identityConfig common.IdentityConfig) *MultiSig {
+func New(logger logger.Logger, witnessDb witnesses.Witnesses, electionDb elections.Elections, ledgerActions ledgerDb.BridgeActions, balanceDb ledgerDb.Balances, hiveCreator hive.HiveTransactionCreator, vstream *vstream.VStream, p2p *libp2p.P2PServer, se *stateEngine.StateEngine, identityConfig common.IdentityConfig, hiveClient *hivego.HiveRpcNode) *MultiSig {
 	return &MultiSig{
 		witnessDb:     witnessDb,
 		electionDb:    electionDb,
@@ -411,5 +519,6 @@ func New(logger logger.Logger, witnessDb witnesses.Witnesses, electionDb electio
 		se:            se,
 		identity:      identityConfig,
 		log:           logger,
+		hiveClient:    hiveClient,
 	}
 }

@@ -112,9 +112,21 @@ func TestE2E(t *testing.T) {
 	pubKey, privKey, _ := ed25519.GenerateKey(rand.Reader)
 	didKey, _ := dids.NewKeyDID(pubKey)
 
+	pubKey1, privKey1, _ := ed25519.GenerateKey(rand.Reader)
+	didKeyNoRcs, _ := dids.NewKeyDID(pubKey1)
+
 	transactionCreator := transactionpool.TransactionCrafter{
 		Identity: dids.NewKeyProvider(privKey),
 		Did:      didKey,
+
+		VSCBroadcast: &transactionpool.InternalBroadcast{
+			TxPool: runningNodes[0].TxPool,
+		},
+	}
+
+	transactionCreatorNoRc := transactionpool.TransactionCrafter{
+		Identity: dids.NewKeyProvider(privKey1),
+		Did:      didKeyNoRcs,
 
 		VSCBroadcast: &transactionpool.InternalBroadcast{
 			TxPool: runningNodes[0].TxPool,
@@ -127,10 +139,14 @@ func TestE2E(t *testing.T) {
 			return nil
 		},
 		r2e.Wait(10),
-		r2e.BroadcastMockElection(nodeNames),
+		// r2e.BroadcastMockElection(nodeNames),
+		func() error {
+			r2e.ElectionProposer.HoldElection(10)
+			return nil
+		},
 		func() error {
 			fmt.Println("[Prefix: e2e-1] Executing test transfer from test-account to @vsc.gateway of 50 hbd")
-			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "to="+didKey.String())
+			mockCreator.Transfer("test-account", "vsc.gateway", "0.2", "HBD", "to="+didKey.String())
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "")
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HIVE", "")
 			return nil
@@ -140,16 +156,35 @@ func TestE2E(t *testing.T) {
 		doWithdraw,
 		r2e.Wait(11),
 		doWithdraw,
+		func() error {
+			transferOp := &transactionpool.VSCTransfer{
+				From:   didKeyNoRcs.String(),
+				To:     "hive:vsc.account",
+				Amount: "0.001",
+				Asset:  "hbd",
+				NetId:  "vsc-mainnet",
+				Nonce:  0,
+			}
+			sTx, err := transactionCreatorNoRc.SignFinal(transferOp)
+
+			fmt.Println("VSCTransfer err", err)
+
+			transactionCreatorNoRc.Broadcast(sTx)
+
+			return nil
+		},
 
 		func() error {
-			unstakeTx := &transactionpool.VscConsenusStake{
+			stakeTx := &transactionpool.VscConsenusStake{
 				Account: "hive:test-account",
 				Amount:  "0.025",
 				Type:    "stake",
 				NetId:   "vsc-mainnet",
 			}
 
-			ops, err := unstakeTx.SerializeHive()
+			ops, err := stakeTx.SerializeHive()
+
+			fmt.Println("consensus stake err", err)
 
 			if err != nil {
 				panic(err)
@@ -198,6 +233,30 @@ func TestE2E(t *testing.T) {
 			return nil
 		},
 		r2e.Wait(40),
+		func() error {
+			stakeTx := &transactionpool.VscConsenusStake{
+				Account: "hive:test-account",
+				Amount:  "0.025",
+				Type:    "unstake",
+				NetId:   "vsc-mainnet",
+			}
+
+			ops, err := stakeTx.SerializeHive()
+
+			fmt.Println("consensus stake erro", err)
+			if err != nil {
+				panic(err)
+			}
+
+			tx := r2e.HiveCreator.MakeTransaction(ops)
+			r2e.HiveCreator.PopulateSigningProps(&tx, nil)
+			sig, _ := r2e.HiveCreator.Sign(tx)
+			tx.AddSig(sig)
+
+			unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
+			fmt.Println("stakeId", unstakeId)
+			return nil
+		},
 		func() error {
 			transferTx := &transactionpool.VSCTransfer{
 				From:   didKey.String(),

@@ -17,12 +17,15 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/nonces"
+	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	election_proposer "vsc-node/modules/election-proposer"
 	"vsc-node/modules/gateway"
 	p2pInterface "vsc-node/modules/p2p"
+	rcSystem "vsc-node/modules/rc-system"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
@@ -49,7 +52,7 @@ func (n *Node) Init() error {
 }
 
 func (n *Node) Start() *promise.Promise[any] {
-	n.announcementsManager.Announce()
+	// n.announcementsManager.Announce()
 	return utils.PromiseResolve[any](nil)
 }
 
@@ -80,6 +83,9 @@ func MakeNode(input MakeNodeInput) *Node {
 	actionsDb := ledgerDb.NewActionsDb(vscDb)
 	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
 	contractState := contracts.NewContractState(vscDb)
+	rcDb := rcDb.New(vscDb)
+	nonceDb := nonces.New(vscDb)
+
 	logger := logger.PrefixedLogger{
 		Prefix: input.Username,
 	}
@@ -89,6 +95,8 @@ func MakeNode(input MakeNodeInput) *Node {
 	identityConfig.Init()
 	identityConfig.SetUsername(input.Username)
 	kp := HashSeed([]byte(SEED_PREFIX + input.Username))
+
+	hiveClient := hivego.NewHiveRpc("https://api.hive.blog")
 
 	brcst := hive.MockTransactionBroadcaster{
 		KeyPair:  kp,
@@ -102,25 +110,28 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	hrpc := &MockHiveRpcClient{}
 
-	announcementsManager, _ := announcements.New(hrpc, identityConfig, time.Hour*24, &txCreator)
-
 	p2p := p2pInterface.New(witnessesDb)
+
+	peerGetter := p2p.PeerInfo()
+
+	announcementsManager, _ := announcements.New(hrpc, identityConfig, time.Hour*24, &txCreator, peerGetter)
 
 	datalayer := DataLayer.New(p2p, input.Username)
 	txpool := transactionpool.New(p2p, txDb, datalayer, identityConfig)
 
 	wasm := wasm_parent_ipc.New()
+	rcSystem := rcSystem.New(rcDb)
 
-	se := stateEngine.New(logger, datalayer, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, wasm)
+	se := stateEngine.New(logger, datalayer, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
 
 	dbNuker := NewDbNuker(vscDb)
 
-	ep := election_proposer.New(p2p, witnessesDb, electionDb, datalayer, &txCreator, identityConfig)
+	ep := election_proposer.New(p2p, witnessesDb, electionDb, balanceDb, datalayer, &txCreator, identityConfig)
 
 	vstream := vstream.New(se)
-	bp := blockproducer.New(logger, p2p, vstream, se, identityConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb)
+	bp := blockproducer.New(logger, p2p, vstream, se, identityConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
 
-	multisig := gateway.New(logger, witnessesDb, electionDb, actionsDb, balanceDb, &txCreator, vstream, p2p, se, identityConfig)
+	multisig := gateway.New(logger, witnessesDb, electionDb, actionsDb, balanceDb, &txCreator, vstream, p2p, se, identityConfig, hiveClient)
 
 	plugins := make([]aggregate.Plugin, 0)
 
@@ -144,8 +155,11 @@ func MakeNode(input MakeNodeInput) *Node {
 		balanceDb,
 		interestClaims,
 		contractState,
+		rcDb,
+		nonceDb,
 		vstream,
 		wasm,
+		rcSystem,
 		se,
 		bp,
 		ep,

@@ -18,13 +18,17 @@ func New(d *vsc.VscDb) Ledger {
 	return &ledger{db.NewCollection(d.DbInstance, "ledger")}
 }
 
-func (ledger *ledger) StoreLedger(ledgerRecord LedgerRecord) {
-	findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
-	ledger.FindOneAndUpdate(context.Background(), bson.M{
-		"id": ledgerRecord.Id,
-	}, bson.M{
-		"$set": ledgerRecord,
-	}, findUpdateOpts)
+func (ledger *ledger) StoreLedger(ledgerRecords ...LedgerRecord) {
+	if len(ledgerRecords) > 0 {
+		for _, ledgerRecord := range ledgerRecords {
+			findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
+			ledger.FindOneAndUpdate(context.Background(), bson.M{
+				"id": ledgerRecord.Id,
+			}, bson.M{
+				"$set": ledgerRecord,
+			}, findUpdateOpts)
+		}
+	}
 }
 
 // Get ledger ops after height inclusive
@@ -119,7 +123,7 @@ type balances struct {
 }
 
 func NewBalances(d *vsc.VscDb) Balances {
-	return &balances{db.NewCollection(d.DbInstance, "balances")}
+	return &balances{db.NewCollection(d.DbInstance, "ledger_balances")}
 }
 
 // Gets the balance record for a given account and asset
@@ -202,9 +206,14 @@ func (actionsDb *actionsDb) StoreAction(withdraw ActionRecord) {
 	}, findUpdateOpts)
 }
 
-func (actionsDb *actionsDb) ExecuteComplete(id string) {
-	actionsDb.FindOneAndUpdate(context.Background(), bson.M{
-		"id": id,
+func (actionsDb *actionsDb) ExecuteComplete(ids ...string) {
+	if len(ids) == 0 {
+		return
+	}
+	actionsDb.UpdateMany(context.Background(), bson.M{
+		"id": bson.M{
+			"$in": ids,
+		},
 	}, bson.M{
 		"$set": bson.M{
 			"status": "complete",
@@ -232,7 +241,7 @@ func (actionsDb *actionsDb) SetStatus(id string, status string) {
 
 }
 
-func (actionsDb *actionsDb) GetPendingActions(bh uint64) ([]ActionRecord, error) {
+func (actionsDb *actionsDb) GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error) {
 	options := options.Find().SetSort(bson.D{
 		{
 			Key:   "block_height",
@@ -243,12 +252,18 @@ func (actionsDb *actionsDb) GetPendingActions(bh uint64) ([]ActionRecord, error)
 			Value: 1,
 		},
 	})
-	cursor, err := actionsDb.Find(context.Background(), bson.M{
+	query := bson.M{
 		"status": "pending",
 		"block_height": bson.M{
 			"$lte": bh,
 		},
-	}, options)
+	}
+	if len(t) > 0 {
+		query["type"] = bson.M{
+			"$in": t,
+		}
+	}
+	cursor, err := actionsDb.Find(context.Background(), query, options)
 
 	if err != nil {
 		return nil, err
@@ -262,6 +277,44 @@ func (actionsDb *actionsDb) GetPendingActions(bh uint64) ([]ActionRecord, error)
 	}
 
 	return results, nil
+}
+
+// Gets list of actions equal or less than the supplied epoch
+func (actions *actionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([]ActionRecord, error) {
+	options := options.Find().SetSort(bson.D{
+		{
+			Key:   "block_height",
+			Value: 1,
+		},
+		{
+			Key:   "id",
+			Value: 1,
+		},
+	})
+	query := bson.M{
+		"params.epoch": bson.M{
+			"$lte":    epoch,
+			"$exists": true,
+		},
+		"status": "pending",
+	}
+	if len(t) > 0 {
+		query["type"] = bson.M{
+			"$in": t,
+		}
+	}
+	cursor, _ := actions.Find(context.Background(), query, options)
+
+	actionRecords := make([]ActionRecord, 0)
+
+	if cursor.Next(context.Background()) {
+		record := ActionRecord{}
+		cursor.Decode(&record)
+
+		actionRecords = append(actionRecords, record)
+	}
+
+	return actionRecords, nil
 }
 
 type interestClaims struct {

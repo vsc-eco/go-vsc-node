@@ -10,6 +10,8 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
+	rcSystem "vsc-node/modules/rc-system"
+	transactionpool "vsc-node/modules/transaction-pool"
 
 	"github.com/btcsuite/btcutil/bech32"
 	"github.com/ipfs/go-cid"
@@ -85,7 +87,7 @@ func (tx TxCreateContract) TxSelf() TxSelf {
 const CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT = 84162592
 
 // ProcessTx implements VSCTransaction.
-func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) TxResult {
+func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession) TxResult {
 	fmt.Println("Must validate storage proof")
 	// tx.StorageProof.
 	election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
@@ -207,14 +209,13 @@ func (tx TxElectionResult) TxSelf() TxSelf {
 }
 
 // ProcessTx implements VSCTransaction.
-func (tx *TxElectionResult) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession) {
+func (tx *TxElectionResult) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession) {
 	// ctx := context.Background()
 	if tx.Epoch == 0 {
 		electionResult := se.electionDb.GetElection(0)
 
 		if electionResult == nil {
 			parsedCid, err := cid.Parse(tx.Data)
-			// fmt.Println("Cid data", tx.Data, err, "Tx data", tx)
 			if err != nil {
 				return
 			}
@@ -418,13 +419,13 @@ func (t TxProposeBlock) Validate(se *StateEngine) bool {
 		return false
 	}
 
-	fmt.Println("Verified sig", verified)
+	// fmt.Println("Verified sig", verified)
 	if !verified {
 		return false
 	}
 
 	signingScore, total := elections.CalculateSigningScore(*circuit, elecResult)
-	fmt.Println("signingScore, total", signingScore, total, signingScore > ((total*2)/3))
+	// fmt.Println("signingScore, total", signingScore, total, signingScore > ((total*2)/3))
 	//PASS
 	// blockCid := cid.MustParse(t.SignedBlock.Block)
 
@@ -443,11 +444,6 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 	se.da.GetObject(blockCid, &blockContentC, datalayer.GetOptions{})
 
-	// fmt.Println("399 err GetObject", err, blockContentC)
-
-	// bbyes, _ := json.Marshal(blockContentC)
-	// fmt.Println("Decoded VSC Block header", string(bbyes))
-
 	slotInfo := CalculateSlotInfo(t.Self.BlockHeight)
 
 	se.vscBlocks.StoreHeader(vscBlocks.VscHeaderRecord{
@@ -457,8 +453,9 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		Proposer:   t.Self.RequiredAuths[0],
 		SigRoot:    blockContentC.SigRoot,
 
-		EndBlock:   t.SignedBlock.Headers.Br[1],
-		StartBlock: t.SignedBlock.Headers.Br[0] + 1,
+		EndBlock:     t.SignedBlock.Headers.Br[1],
+		StartBlock:   t.SignedBlock.Headers.Br[0] + 1,
+		BlockContent: t.SignedBlock.Block,
 
 		// SlotHeight: ,
 
@@ -473,6 +470,8 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	})
 
 	txsToInjest := make([]TxPacket, 0)
+
+	nonceUpdates := make(map[string]uint64)
 
 	//At this point of the process a call should be made to state engine
 	//To kick off finalization of the inflight state
@@ -512,9 +511,14 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				OpIndex: idx,
 			})
 
+			keyId := transactionpool.HashKeyAuths(tx.Headers.RequiredAuths)
+			if nonceUpdates[keyId] < tx.Headers.Nonce {
+				nonceUpdates[keyId] = tx.Headers.Nonce
+			}
+
 			txs := tx.ToTransaction()
 			txsToInjest = append(txsToInjest, TxPacket{
-				TxId: t.Self.TxId,
+				TxId: tx.Cid().String(),
 				Ops:  txs,
 			})
 		} else if txContainer.Type() == "output" {
@@ -530,10 +534,15 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		} else if txContainer.Type() == "oplog" {
 
 			oplog := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))
-			fmt.Println("OpLog detected!", txContainer, oplog)
+			// fmt.Println("OpLog detected!", txContainer, oplog)
 			oplog.ExecuteTx(se)
 		}
 	}
+
+	for k, v := range nonceUpdates {
+		se.nonceDb.SetNonce(k, v+1)
+	}
+
 	se.TxBatch = append(txsToInjest, se.TxBatch...)
 }
 

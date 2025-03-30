@@ -31,6 +31,8 @@ type IngestOptions struct {
 	Broadcast bool
 }
 
+var MAX_TX_SIZE = 16384
+
 // Ingests and verifies a transaction
 func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...IngestOptions) (*cid.Cid, error) {
 	if sTx.Sig == nil {
@@ -42,6 +44,10 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		Codec:    uint64(multicodec.DagCbor),
 		MhType:   uint64(multihash.SHA2_256),
 		MhLength: -1,
+	}
+
+	if len(sTx.Tx) > MAX_TX_SIZE {
+		return nil, fmt.Errorf("transaction size too big %d > %d", len(sTx.Tx), MAX_TX_SIZE)
 	}
 
 	cidz, err := prefix.Sum(sTx.Tx)
@@ -98,8 +104,6 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 
 	fmt.Println("Options", options)
 	if len(options) == 0 || options[0].Broadcast {
-
-		fmt.Println("cidz.String(), sTx", cidz.String(), sTx)
 		err = tp.Broadcast(cidz.String(), sTx)
 		if err != nil {
 			return nil, err
@@ -142,6 +146,10 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 
 	decodedTx, _ := base64.StdEncoding.DecodeString(formattedData.Tx)
 	decodedSig, _ := base64.StdEncoding.DecodeString(formattedData.Sig)
+
+	if len(decodedTx) > MAX_TX_SIZE {
+		return
+	}
 
 	prefix := cid.Prefix{
 		Version:  1,

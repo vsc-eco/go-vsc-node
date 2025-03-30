@@ -3,11 +3,14 @@ package blockproducer
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"reflect"
+	"slices"
 	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
@@ -16,10 +19,13 @@ import (
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	libp2p "vsc-node/modules/p2p"
+	rcSystem "vsc-node/modules/rc-system"
 	stateEngine "vsc-node/modules/state-processing"
+	transactionpool "vsc-node/modules/transaction-pool"
 	"vsc-node/modules/vstream"
 
 	"github.com/chebyrash/promise"
@@ -41,6 +47,8 @@ type BlockProducer struct {
 	HiveCreator hive.HiveTransactionCreator
 	Datalayer   *datalayer.DataLayer
 	TxDb        transactions.Transactions
+	rcSystem    *rcSystem.RcSystem
+	nonceDb     nonces.Nonces
 
 	p2p     *libp2p.P2PServer
 	service libp2p.PubSubService[p2pMessage]
@@ -84,6 +92,7 @@ func (bp *BlockProducer) BlockTick(bh uint64) {
 	if witnessSlot != nil {
 		if witnessSlot.Account == bp.config.Get().HiveUsername && bh%CONSENSUS_SPECS.SlotLength == 0 {
 			canProduce := bp.canProduce(bh)
+			fmt.Println("Can produce", canProduce)
 			if canProduce {
 				bp.ProduceBlock(witnessSlot.SlotHeight)
 			}
@@ -105,7 +114,7 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 	var prevBlockId *string
 	var prevRange [2]int
 	if prevBlock != nil {
-		fmt.Println("PrevBlock exists")
+		// fmt.Println("PrevBlock exists")
 		prevBlockId = &prevBlock.Id
 		prevRange = [2]int{prevBlock.EndBlock, int(slotHeight)}
 	} else {
@@ -133,6 +142,8 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 	if oplog != nil {
 		offchainTxs = append(offchainTxs, *oplog)
 	}
+
+	// rcMap := bp.MakeRcMap()
 
 	mr, err := MerklizeCids(outCids)
 
@@ -175,23 +186,132 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 	txs := make([]vscBlocks.VscBlockTx, 0)
 	//Get transactions here!
 
-	txRecords, _ := bp.TxDb.FindUnconfirmedTransactions(slotHeight)
+	prefilteredTxs, _ := bp.TxDb.FindUnconfirmedTransactions(slotHeight)
+	txRecords := make([]transactions.TransactionRecord, 0)
+
+	nonceMap := make(map[string]int64)
+
+	for _, txRecord := range prefilteredTxs {
+		keyId := transactionpool.HashKeyAuths(txRecord.RequiredAuths)
+		if nonceMap[keyId] == 0 {
+			nonceRecord, _ := bp.nonceDb.GetNonce(keyId)
+			nonceMap[keyId] = int64(nonceRecord.Nonce)
+		}
+		if txRecord.Nonce >= nonceMap[keyId] && txRecord.RcLimit < 50 {
+			txRecords = append(txRecords, txRecord)
+		}
+	}
+
+	if len(prefilteredTxs) == 0 {
+		return []vscBlocks.VscBlockTx{}
+	}
+
+	//Sequence transactions
+
+	preOrder := make([]transactions.TransactionRecord, len(txRecords))
+	copy(preOrder, txRecords)
+
+	ids := make([]string, 0)
 
 	for _, txRecord := range txRecords {
+		ids = append(ids, txRecord.Id)
+	}
+
+	seedStr := []byte(transactionpool.HashKeyAuths(ids))
+
+	data := binary.BigEndian.Uint64(seedStr[:])
+	rando := rand.New(rand.NewSource(int64(data)))
+	rando.Shuffle(len(preOrder), func(i, j int) {
+		preOrder[i], preOrder[j] = preOrder[j], preOrder[i]
+	})
+
+	// nonceMap := make(map[string]uint64)
+
+	txMap := make(map[string][]transactions.TransactionRecord)
+
+	for _, txRecord := range txRecords {
+		keyId := transactionpool.HashKeyAuths(txRecord.RequiredAuths)
+		if txMap[keyId] == nil {
+			txMap[keyId] = []transactions.TransactionRecord{}
+		}
+		txMap[keyId] = append(txMap[keyId], txRecord)
+	}
+
+	for k, _ := range txMap {
+		slices.SortFunc(txMap[k], func(i, j transactions.TransactionRecord) int {
+			return int(i.Nonce) - int(j.Nonce)
+		})
+	}
+
+	ledgerSession := bp.StateEngine.LedgerExecutor.NewSession(slotHeight)
+	rcSession := bp.rcSystem.NewSession(ledgerSession)
+
+	sequencedTxs := make([]transactions.TransactionRecord, 0)
+	for _, preRecord := range preOrder {
+		keyId := transactionpool.HashKeyAuths(preRecord.RequiredAuths)
+		payer := preRecord.RequiredAuths[0]
+
+		tx := txMap[keyId][0]
+
+		if tx.RcLimit == 0 {
+			//Minimum of 0.05 hbd or 50 integer units
+			if preRecord.Data["type"] == "transfer" {
+				tx.RcLimit = 100
+			} else if preRecord.Data["type"] == "stake_hbd" {
+				tx.RcLimit = 200
+			} else if preRecord.Data["type"] == "unstake_hbd" {
+				tx.RcLimit = 200
+			} else if preRecord.Data["type"] == "withdraw" {
+				tx.RcLimit = 200
+			} else if preRecord.Data["type"] == "call" {
+				tx.RcLimit = 100
+			} else {
+				tx.RcLimit = 50
+			}
+		}
+
+		didConsume, _ := rcSession.Consume(payer, slotHeight, int64(tx.RcLimit))
+
+		if didConsume {
+			if nonceMap[keyId] == tx.Nonce {
+				txMap[keyId] = txMap[keyId][1:]
+				nonceMap[keyId]++
+				sequencedTxs = append(sequencedTxs, tx)
+			}
+		}
+	}
+	// rcFinish := rcSession.Done()
+	// fmt.Println("rcFinish", rcFinish)
+	for _, txRecord := range sequencedTxs {
 		op := txRecord.Data["type"].(string)
 		txs = append(txs, vscBlocks.VscBlockTx{
 			Id:   txRecord.Id,
 			Op:   &op,
-			Type: 1,
+			Type: int(common.BlockTypeTransaction),
 		})
 	}
 
 	return txs
 }
 
+func (bp *BlockProducer) sortTransactions(slotHeight uint64) []transactions.TransactionRecord {
+
+	return nil
+}
+
 func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	//For right now we will just produce a blank
 	//This will allow us to test the e2e parsing
+
+	fmt.Println("bp.bh", bp.bh)
+	stTime := bp.bh + 1
+	for i := 0; i < 5; i++ {
+		if bh == stTime {
+			break
+		}
+
+		time.Sleep(1 * time.Second)
+	}
 
 	genBlock, transactions, _ := bp.GenerateBlock(bh, generateBlockParams{
 		PopulateTxs: true,
@@ -335,7 +455,7 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		transactions = append(transactions, vscBlocks.VscBlockTx{
 			Id:   txRecord.Id,
 			Op:   &op,
-			Type: 1,
+			Type: int(common.BlockTypeTransaction),
 		})
 	}
 
@@ -434,7 +554,8 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 }
 
 func (bp *BlockProducer) canProduce(height uint64) bool {
-	txRecords, _ := bp.TxDb.FindUnconfirmedTransactions(height)
+	// txRecords, _ := bp.TxDb.FindUnconfirmedTransactions(height)
+	txRecords := bp.generateTransactions(height)
 
 	if len(txRecords) > 0 {
 		return true
@@ -453,6 +574,7 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 		return nil
 	}
 
+	//CLEAN Oplog
 	oplogData := map[string]interface{}{
 		"__t":   "vsc-oplog",
 		"__v":   "0.1",
@@ -467,7 +589,41 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 
 	return &vscBlocks.VscBlockTx{
 		Id:   cid.String(),
-		Type: 6,
+		Type: int(common.BlockTypeOplog),
+	}
+}
+
+func (bp *BlockProducer) MakeRcMap(session *datalayer.Session) *vscBlocks.VscBlockTx {
+	rcMap := bp.StateEngine.RcMap
+
+	var exists bool
+	for key := range rcMap {
+		if key != "" {
+			exists = true
+			continue
+		}
+	}
+
+	if !exists {
+		return nil
+	}
+
+	//CLEAN Oplog
+	oplogData := map[string]interface{}{
+		"__t":    "vsc-rc",
+		"__v":    "0.1",
+		"rc_map": rcMap,
+	}
+
+	cborBytes, _ := common.EncodeDagCbor(oplogData)
+
+	cid, _ := common.HashBytes(cborBytes, multicodec.DagCbor)
+
+	session.Put(cborBytes, cid)
+
+	return &vscBlocks.VscBlockTx{
+		Id:   cid.String(),
+		Type: int(common.BlockTypeRcUpdate),
 	}
 }
 
@@ -505,7 +661,7 @@ func (bp *BlockProducer) Stop() error {
 	return bp.stopP2P()
 }
 
-func New(logger logger.Logger, p2p *libp2p.P2PServer, vstream *vstream.VStream, se *stateEngine.StateEngine, conf common.IdentityConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions) *BlockProducer {
+func New(logger logger.Logger, p2p *libp2p.P2PServer, vstream *vstream.VStream, se *stateEngine.StateEngine, conf common.IdentityConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions, rcSystem *rcSystem.RcSystem, nonceDb nonces.Nonces) *BlockProducer {
 	return &BlockProducer{
 		log:         logger,
 		sigChannels: make(map[uint64]chan sigMsg),
@@ -518,5 +674,7 @@ func New(logger logger.Logger, p2p *libp2p.P2PServer, vstream *vstream.VStream, 
 		electionsDb: electionsDb,
 		VscBlocks:   vscBlocks,
 		TxDb:        txDb,
+		rcSystem:    rcSystem,
+		nonceDb:     nonceDb,
 	}
 }

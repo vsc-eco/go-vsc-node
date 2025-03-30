@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"encoding/json"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	DataLayer "vsc-node/lib/datalayer"
@@ -15,9 +16,12 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/nonces"
+	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
+	rcSystem "vsc-node/modules/rc-system"
 	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 
 	"github.com/chebyrash/promise"
@@ -43,12 +47,15 @@ type StateEngine struct {
 	hiveBlocks    hive_blocks.HiveBlocks
 	vscBlocks     vscBlocks.VscBlocks
 	claimDb       ledgerDb.InterestClaims
+	rcDb          rcDb.RcDb
+	nonceDb       nonces.Nonces
 
 	wasm *wasm_parent_ipc.Wasm
 
 	//Nonce map similar to what we use before
 	NonceMap map[string]int
-	// BalanceMap map[string]map[string]int64
+	RcMap    map[string]int64
+	rcSystem *rcSystem.RcSystem
 
 	AnchoredHeight uint64
 	VirtualRoot    []byte
@@ -192,7 +199,19 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 			se.UpdateBalances(startBlock, se.slotStatus.SlotHeight)
 
+			se.UpdateRcMap(se.slotStatus.SlotHeight)
+
+			se.RcMap = make(map[string]int64)
+
 			se.ExecuteBatch()
+
+			txIds := make([]string, 0)
+			for txId := range se.TxOutput {
+				txIds = append(txIds, txId)
+			}
+
+			se.txDb.SetConfirmed(txIds)
+
 			se.slotStatus = &SlotStatus{
 				SlotHeight: slotInfo.StartHeight,
 				Done:       false,
@@ -389,12 +408,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					validated := parsedBlock.Validate(se)
 
-					fmt.Println("Validated block?", validated)
+					// fmt.Println("Validated block?", validated)
 					if validated {
 						se.slotStatus.Done = true
 						se.slotStatus.Producer = cj.RequiredAuths[0]
 						parsedBlock.ExecuteTx(se)
-
 					}
 				}
 				continue
@@ -408,14 +426,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 				json.Unmarshal(cj.Json, &parsedTx)
 
-				parsedTx.ExecuteTx(se, session)
+				parsedTx.ExecuteTx(se, session, nil)
 				continue
 			} else if cj.Id == "vsc.election_result" {
 				parsedTx := &TxElectionResult{
 					Self: txSelf,
 				}
 				json.Unmarshal(cj.Json, &parsedTx)
-				parsedTx.ExecuteTx(se, session)
+				parsedTx.ExecuteTx(se, session, nil)
 				continue
 			}
 			//# End parsing system transactions
@@ -454,14 +472,16 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						continue
 					}
 				}
-				amount, _ := strconv.ParseInt(op.Value["amount"].(map[string]interface{})["amount"].(string), 10, 64)
+				amount, _ := strconv.ParseFloat(op.Value["amount"].(map[string]interface{})["amount"].(string), 64)
+
+				amt := int64(amount * math.Pow10(3))
 				// amount, _ := op.Value["amount"].(map[string]interface{})["amount"].(int64)
 
 				if op.Value["to"] == "vsc.gateway" {
 					leDeposit := Deposit{
 						Id:     MakeTxId(tx.TransactionID, opIndex),
 						Asset:  token,
-						Amount: amount,
+						Amount: amt,
 						From:   "hive:" + op.Value["from"].(string),
 						Memo:   op.Value["memo"].(string),
 
@@ -486,14 +506,23 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					Json:                 []byte(opVal["json"].(string)),
 				}
 
+				for idx, auth := range cj.RequiredAuths {
+					cj.RequiredAuths[idx] = "hive:" + auth
+				}
+
+				for idx, auth := range cj.RequiredPostingAuths {
+					cj.RequiredPostingAuths[idx] = "hive:" + auth
+				}
+
 				txSelf := TxSelf{
-					TxId:          MakeTxId(tx.TransactionID, opIndex),
-					BlockHeight:   blockInfo.BlockHeight,
-					BlockId:       blockInfo.BlockId,
-					Timestamp:     blockInfo.Timestamp,
-					Index:         tx.Index,
-					OpIndex:       opIndex,
-					RequiredAuths: cj.RequiredAuths,
+					TxId:                 MakeTxId(tx.TransactionID, opIndex),
+					BlockHeight:          blockInfo.BlockHeight,
+					BlockId:              blockInfo.BlockId,
+					Timestamp:            blockInfo.Timestamp,
+					Index:                tx.Index,
+					OpIndex:              opIndex,
+					RequiredAuths:        cj.RequiredAuths,
+					RequiredPostingAuths: cj.RequiredPostingAuths,
 				}
 
 				var vscTx VSCTransaction
@@ -606,14 +635,20 @@ func (se *StateEngine) ExecuteBatch() {
 
 	for _, tx := range se.TxBatch {
 		ledgerSession := se.LedgerExecutor.NewSession(lastBlockBh)
+		rcSession := se.rcSystem.NewSession(ledgerSession)
 
 		logs := make([]string, 0)
 		ok := true
 		//TODO: Save the transaction failure status to the memory store
 		for idx, vscTx := range tx.Ops {
-			result := vscTx.ExecuteTx(se, ledgerSession)
-			se.log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
+			result := vscTx.ExecuteTx(se, ledgerSession, rcSession)
 			logs = append(logs, result.Ret)
+			payer := vscTx.TxSelf().RequiredAuths[0]
+
+			se.log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
+			fmt.Println("RC Payer is", payer, vscTx.Type(), vscTx, result.RcUsed)
+
+			se.RcMap[payer] = se.RcMap[payer] + result.RcUsed
 			if !result.Success {
 				se.log.Debug("TRANSACTION REVERTING")
 				ok = false
@@ -641,10 +676,29 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		stBlock = endBlock - 9
 	}
 
-	se.log.Debug("stBlock, endBlock", stBlock, endBlock)
+	election, _ := se.electionDb.GetElectionByHeight(endBlock)
+	records, _ := se.LedgerExecutor.Ls.ActionsDb.GetPendingActionsByEpoch(election.Epoch, "consensus_unstake")
+
+	completeIds := make([]string, 0)
+	ledgerRecords := make([]ledgerDb.LedgerRecord, 0)
+	for _, record := range records {
+		completeIds = append(completeIds, record.Id)
+
+		ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
+			Id:          record.Id + "#out",
+			Amount:      record.Amount,
+			Asset:       "hive",
+			BlockHeight: endBlock,
+			Owner:       record.To,
+		})
+	}
+	se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)
+	se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(completeIds...)
+
+	//se.log.Debug("stBlock, endBlock", stBlock, endBlock)
 	distinctAccounts, _ := se.LedgerExecutor.Ls.LedgerDb.GetDistinctAccountsRange(stBlock, endBlock)
 
-	assets := []string{"hbd", "hive", "hbd_savings", "consensus"}
+	assets := []string{"hbd", "hive", "hbd_savings", "hive_consensus"}
 
 	//Cleanup!
 	for _, k := range distinctAccounts {
@@ -663,6 +717,8 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 				ledgerBalances[asset] = balanceR.Hive
 			} else if asset == "hbd_savings" {
 				ledgerBalances[asset] = balanceR.HBD_SAVINGS
+			} else if asset == "hive_consensus" {
+				ledgerBalances[asset] = balanceR.HIVE_CONSENSUS
 			} else {
 				ledgerBalances[asset] = 0
 			}
@@ -740,12 +796,13 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		}
 
 		newRecord := ledgerDb.BalanceRecord{
-			Account:     k,
-			BlockHeight: endBlock,
-			Hive:        ledgerBalances["hive"],
-			HBD:         ledgerBalances["hbd"],
-			HBD_SAVINGS: ledgerBalances["hbd_savings"],
-			HBD_AVG:     hbdAvg,
+			Account:        k,
+			BlockHeight:    endBlock,
+			Hive:           ledgerBalances["hive"],
+			HIVE_CONSENSUS: ledgerBalances["hive_consensus"],
+			HBD:            ledgerBalances["hbd"],
+			HBD_SAVINGS:    ledgerBalances["hbd_savings"],
+			HBD_AVG:        hbdAvg,
 		}
 
 		newRecord.HBD_MODIFY_HEIGHT = modifyHeight
@@ -753,6 +810,23 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		newRecord.HBD_CLAIM_HEIGHT = claimHeight
 
 		se.LedgerExecutor.Ls.BalanceDb.UpdateBalanceRecord(newRecord)
+	}
+}
+
+func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
+	for k, v := range se.RcMap {
+		//Get the last rc record
+		rcRecord, _ := se.rcDb.GetRecord(k, blockHeight-1)
+
+		var rcBal int64
+		if rcRecord.BlockHeight == 0 {
+			rcBal = v
+		} else {
+			frozeAmt := rcSystem.CalculateFrozenBal(rcRecord.BlockHeight, blockHeight, rcRecord.Amount)
+
+			rcBal = frozeAmt + v
+		}
+		se.rcDb.SetRecord(k, blockHeight, rcBal)
 	}
 }
 
@@ -806,6 +880,8 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 	interestClaims ledgerDb.InterestClaims,
 	vscBlocks vscBlocks.VscBlocks,
 	actionDb ledgerDb.BridgeActions,
+	rcDb rcDb.RcDb,
+	nonceDb nonces.Nonces,
 	wasm *wasm_parent_ipc.Wasm,
 ) *StateEngine {
 	return &StateEngine{
@@ -822,6 +898,9 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 		vscBlocks:     vscBlocks,
 		claimDb:       interestClaims,
 		txDb:          txDb,
+		rcDb:          rcDb,
+		nonceDb:       nonceDb,
+		rcSystem:      rcSystem.New(rcDb),
 
 		wasm: wasm,
 

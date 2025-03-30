@@ -3,6 +3,7 @@ package elections
 type ElectionCommonInfo struct {
 	Epoch uint64 `json:"epoch" refmt:"epoch" bson:"epoch"`
 	NetId string `json:"net_id" refmt:"net_id" bson:"net_id"`
+	Type  string `json:"type" refmt:"type" bson:"type"`
 }
 
 type ElectionHeaderInfo struct {
@@ -44,6 +45,7 @@ type ElectionResultRecord struct {
 	TotalWeight     uint64           `json:"total_weight" refmt:"total_weight" bson:"total_weight"`
 	BlockHeight     uint64           `json:"block_height" refmt:"block_height" bson:"block_height"`
 	Proposer        string           `json:"proposer" refmt:"proposer" bson:"proposer"`
+	Type            string           `json:"type" refmt:"type" bson:"type"`
 }
 
 type ElectionMember struct {

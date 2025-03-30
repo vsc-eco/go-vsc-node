@@ -38,7 +38,7 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 		"id": offTx.Id,
 	})
 
-	opts := options.FindOneAndUpdate().SetUpsert(true)
+	opts := options.Update().SetUpsert(true)
 	setOp := bson.M{
 		"anchr_block":    offTx.AnchoredBlock,
 		"anchr_id":       offTx.AnchoredId,
@@ -48,6 +48,7 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 		"data":           offTx.Tx,
 		"required_auths": offTx.RequiredAuths,
 		"nonce":          offTx.Nonce,
+		"rc_limit":       offTx.RcLimit,
 	}
 	if findResult.Err() != nil {
 		setOp["first_seen"] = time.Now()
@@ -63,11 +64,11 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 			setOp["status"] = offTx.Status
 		}
 	}
-	updateResult := e.FindOneAndUpdate(ctx, queryy, bson.M{
+	_, err := e.UpdateOne(ctx, queryy, bson.M{
 		"$set": setOp,
 	}, opts)
 
-	return updateResult.Err()
+	return err
 }
 
 func (e *transactions) SetOutput(sOut SetOutputUpdate) {
@@ -143,4 +144,18 @@ func (e *transactions) FindUnconfirmedTransactions(height uint64) ([]Transaction
 	}
 
 	return txList, nil
+}
+
+func (e *transactions) SetConfirmed(ids []string) {
+	query := bson.M{
+		"id": bson.M{
+			"$in": ids,
+		},
+	}
+
+	e.UpdateMany(context.Background(), query, bson.M{
+		"$set": bson.M{
+			"status": "CONFIRMED",
+		},
+	})
 }

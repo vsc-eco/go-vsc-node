@@ -15,6 +15,7 @@ import (
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/witnesses"
 	libp2p "vsc-node/modules/p2p"
 
@@ -32,6 +33,7 @@ type electionProposer struct {
 
 	witnesses witnesses.Witnesses
 	elections elections.Elections
+	balanceDb ledgerDb.Balances
 
 	da *datalayer.DataLayer
 
@@ -50,6 +52,7 @@ func New(
 	p2p *libp2p.P2PServer,
 	witnesses witnesses.Witnesses,
 	elections elections.Elections,
+	balanceDb ledgerDb.Balances,
 	da *datalayer.DataLayer,
 	txCreator hive.HiveTransactionCreator,
 	conf common.IdentityConfig,
@@ -59,6 +62,7 @@ func New(
 		p2p:       p2p,
 		witnesses: witnesses,
 		elections: elections,
+		balanceDb: balanceDb,
 		da:        da,
 		txCreator: txCreator,
 	}
@@ -102,23 +106,25 @@ func (e *electionProposer) GenerateElectionAtBlock(blk uint64) (elections.Electi
 
 	// TODO: Add a way to get the witness active score
 	// const scoreChart = await this.self.witness.getWitnessActiveScore(blk)
-	scoreChart := map[string]uint64{}
+	// scoreChart := map[string]uint64{}
 
-	return e.GenerateElectionWithWitnessesAndEpochAndConsensusVersionAndScoreChart(witnesses, electionResult.Epoch, electionResult.ProtocolVersion, scoreChart)
+	return e.GenerateFullElection(witnesses, electionResult.Epoch, electionResult.ProtocolVersion, blk)
 }
 
 const DEFAULT_NEW_NODE_WEIGHT = uint64(10)
-const MINIMUM_ELECTION_MEMBER_COUNT = int(8)
+const MINIMUM_ELECTION_MEMBER_COUNT = int(7)
 
-var REQUIRED_ELECTION_MEMBERS = []string{} // TODO: Set this to a list of required election members
+var REQUIRED_ELECTION_MEMBERS = []string{
+	"vaultec.vsc",
+} // TODO: Set this to a list of required election members
 
 const VSC_ELECTION_TX_ID = "vsc.election_result"
 
-func (e *electionProposer) GenerateElectionWithWitnessesAndEpochAndConsensusVersionAndScoreChart(
+func (e *electionProposer) GenerateFullElection(
 	witnessList []witnesses.Witness,
 	previousEpoch uint64,
 	consensusVersion uint64,
-	scoreChart map[string]uint64,
+	blockHeight uint64,
 ) (elections.ElectionHeader, elections.ElectionData, error) {
 	witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 		return w.ProtocolVersion < consensusVersion
@@ -132,22 +138,65 @@ func (e *electionProposer) GenerateElectionWithWitnessesAndEpochAndConsensusVers
 		},
 	)
 
+	previousElection := e.elections.GetElection(previousEpoch)
+
+	var etype string
+	var firstElection bool
+	if previousElection != nil {
+		etype = previousElection.Type
+	} else {
+		etype = "initial"
+		firstElection = true
+	}
+
+	stakedMap := map[string]uint64{}
+	defaultWeightMap := map[string]uint64{}
+	nodesWithStake := uint64(0)
+	for _, w := range witnessList {
+		// electionResult.
+		// if etype == "initial" {
+		// 	weightMap[w.Account] = 10
+		// } else {
+		// 	balRecord, _ := e.balanceDb.GetBalanceRecord("hive:"+w.Account, blockHeight)
+		// 	weightMap[w.Account] = uint64(balRecord.HIVE_CONSENSUS)
+		// }
+		balRecord, err := e.balanceDb.GetBalanceRecord("hive:"+w.Account, blockHeight)
+		if err != nil {
+			return elections.ElectionHeader{}, elections.ElectionData{}, err
+		}
+		if balRecord != nil {
+			if balRecord.HIVE_CONSENSUS > common.CONSENSUS_STAKE_MIN {
+				nodesWithStake++
+				stakedMap[w.Account] = uint64(balRecord.HIVE_CONSENSUS)
+			}
+		}
+		defaultWeightMap[w.Account] = DEFAULT_NEW_NODE_WEIGHT
+	}
+
+	var pType string
+	weightMap := map[string]uint64{}
+	if nodesWithStake >= uint64(MINIMUM_ELECTION_MEMBER_COUNT) || etype == "staked" {
+		pType = "staked"
+		weightMap = stakedMap
+	} else {
+		pType = "initial"
+		weightMap = defaultWeightMap
+	}
+
 	optionalNodes := slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 		return slices.Contains(REQUIRED_ELECTION_MEMBERS, w.Account)
 	})
 
 	totalOptionalWeight := utils.Sum(
 		utils.Map(optionalNodes, func(w witnesses.Witness) uint64 {
-			score, ok := scoreChart[w.Account]
-			if ok {
-				return score
-			}
-
-			return DEFAULT_NEW_NODE_WEIGHT
+			return weightMap[w.Account]
 		}),
 	)
 
-	distWeight := uint64(math.Ceil((1 + float64(totalOptionalWeight)/2) / float64(len(REQUIRED_ELECTION_MEMBERS))))
+	distWeight := uint64(0)
+	if len(REQUIRED_ELECTION_MEMBERS) > 0 {
+		distWeight = uint64(math.Ceil((1 + float64(totalOptionalWeight)/2) / float64(len(REQUIRED_ELECTION_MEMBERS))))
+	}
 	members := utils.Map(witnessList, func(w witnesses.Witness) elections.ElectionMember {
 		key, err := w.ConsensusKey()
 		if err != nil {
@@ -164,17 +213,17 @@ func (e *electionProposer) GenerateElectionWithWitnessesAndEpochAndConsensusVers
 		if slices.Contains(REQUIRED_ELECTION_MEMBERS, member.Account) {
 			weights[i] = distWeight
 		} else {
-			score, ok := scoreChart[member.Account]
-			if ok {
-				weights[i] = score
-			} else {
-				weights[i] = DEFAULT_NEW_NODE_WEIGHT
-			}
+			weights[i] = weightMap[member.Account]
 		}
 	}
 
 	electionData := elections.ElectionData{}
-	electionData.Epoch = previousEpoch + 1
+
+	if firstElection {
+		electionData.Epoch = 0
+	} else {
+		electionData.Epoch = previousEpoch + 1
+	}
 	electionData.Members = members
 	electionData.NetId = common.NETWORK_ID
 	electionData.ProtocolVersion = consensusVersion
@@ -188,6 +237,7 @@ func (e *electionProposer) GenerateElectionWithWitnessesAndEpochAndConsensusVers
 	electionHeader.Data = cid.String()
 	electionHeader.Epoch = electionData.Epoch
 	electionHeader.NetId = electionData.NetId
+	electionHeader.Type = pType
 
 	return electionHeader, electionData, nil
 }
@@ -210,8 +260,45 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 	}
 
 	electionHeader, electionData, err := e.GenerateElectionAtBlock(blk)
+
 	if err != nil {
 		return err
+	}
+
+	if firstElection {
+		electionResultJson := struct {
+			elections.ElectionHeader
+		}{
+			electionHeader,
+		}
+		fmt.Println("gen first election", electionHeader, electionData)
+		jsonBytes, err := json.Marshal(electionResultJson)
+		if err != nil {
+			return err
+		}
+
+		fmt.Println("gen json", string(jsonBytes))
+
+		op := e.txCreator.CustomJson([]string{e.conf.Get().HiveUsername}, []string{}, VSC_ELECTION_TX_ID, string(jsonBytes))
+
+		tx := e.txCreator.MakeTransaction([]hivego.HiveOperation{op})
+
+		e.txCreator.PopulateSigningProps(&tx, nil)
+
+		sig, err := e.txCreator.Sign(tx)
+		if err != nil {
+			return fmt.Errorf("failed to update account: %w", err)
+		}
+
+		tx.AddSig(sig)
+
+		txId, err := e.txCreator.Broadcast(tx)
+		if err != nil {
+			return err
+		}
+
+		fmt.Println("gen TxId", txId)
+		return nil
 	}
 
 	// console.log("electionData - holding election", electionData)

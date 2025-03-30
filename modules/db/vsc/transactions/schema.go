@@ -10,6 +10,7 @@ type IngestTransactionUpdate struct {
 	Version        string
 	Nonce          uint64
 	Tx             interface{}
+	RcLimit        uint64
 	AnchoredBlock  *string
 	AnchoredId     *string
 	AnchoredIndex  *int64
@@ -28,6 +29,7 @@ type TransactionRecord struct {
 	Status        string   `json:"status" bson:"status"`
 	RequiredAuths []string `json:"required_auths" bson:"required_auths"`
 	Nonce         int64    `json:"nonce" bson:"nonce"`
+	RcLimit       uint64   `json:"rc_limit" bson:"rc_limit"`
 	//VSC or Hive
 	Type          string                 `json:"type" bson:"type"`
 	Version       string                 `json:"__v" bson:"__v"`

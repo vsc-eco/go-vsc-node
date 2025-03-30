@@ -11,8 +11,19 @@ import (
 )
 
 type p2pMessage struct {
-	Type string                 `json:"type"`
-	Data map[string]interface{} `json:"data"`
+	Type string `json:"type"`
+	Op   string `json:"op"`
+	Data string `json:"data"`
+}
+
+type signRequest struct {
+	TxId        string `json:"tx_id"`
+	BlockHeight uint64 `json:"block_height"`
+}
+
+type signResponse struct {
+	TxId string `json:"tx_id"`
+	Sig  string `json:"sig"`
 }
 
 type p2pSpec struct {

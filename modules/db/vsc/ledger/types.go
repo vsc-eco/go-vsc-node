@@ -6,7 +6,7 @@ import (
 
 type Ledger interface {
 	aggregate.Plugin
-	StoreLedger(LedgerRecord)
+	StoreLedger(...LedgerRecord)
 	GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error)
 	GetLedgerRange(account string, start uint64, end uint64, asset string, options ...LedgerOptions) (*[]LedgerRecord, error)
 	//Gets distinct accounts on or after a block height
@@ -46,13 +46,12 @@ type BalanceRecord struct {
 	Account           string `bson:"account"`
 	BlockHeight       uint64 `bson:"block_height"`
 	Hive              int64  `bson:"hive"`
+	HIVE_CONSENSUS    int64  `bson:"hive_consensus"`
 	HBD               int64  `bson:"hbd"`
 	HBD_SAVINGS       int64  `bson:"hbd_savings"`
 	HBD_AVG           int64  `bson:"hbd_avg"`
 	HBD_CLAIM_HEIGHT  uint64 `bson:"hbd_claim,omitempty"`
 	HBD_MODIFY_HEIGHT uint64 `bson:"hbd_modify,omitempty"`
-	//HBD savings first deposit time. Indicates when there is a positive balance
-	HBD_FDT uint64 `bson:"hbd_fdt,omitempty"`
 }
 
 // {
@@ -85,10 +84,11 @@ type LedgerRecord struct {
 type BridgeActions interface {
 	aggregate.Plugin
 	StoreAction(withdraw ActionRecord)
-	ExecuteComplete(id string)
+	ExecuteComplete(ids ...string)
 	Get(id string) (*ActionRecord, error)
 	SetStatus(id string, status string)
-	GetPendingActions(bh uint64) ([]ActionRecord, error)
+	GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error)
+	GetPendingActionsByEpoch(epoch uint64, t ...string) ([]ActionRecord, error)
 }
 
 type ILedgerExecutor interface {

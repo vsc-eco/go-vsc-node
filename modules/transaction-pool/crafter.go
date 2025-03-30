@@ -148,10 +148,14 @@ func (vt *VSCTransfer) SerializeHive() ([]hivego.HiveOperation, error) {
 		"net_id": vt.NetId,
 	}
 
+	if !strings.HasPrefix(vt.From, "hive:") {
+		return nil, fmt.Errorf("cannot serialize if from is not hive account")
+	}
+
 	jsonBytes, _ := json.Marshal(serializedJson)
 
 	op := hivego.CustomJsonOperation{
-		RequiredAuths:        []string{vt.From},
+		RequiredAuths:        []string{strings.Split(vt.From, ":")[1]},
 		RequiredPostingAuths: []string{},
 		Id:                   "vsc.transfer",
 		Json:                 string(jsonBytes),
@@ -183,7 +187,6 @@ func (tx *VSCStake) SerializeVSC() (SerializedVSCTransaction, error) {
 		return SerializedVSCTransaction{}, err
 	}
 
-	fmt.Println("jsonBytes", string(jjsonBytes))
 	err = json.Unmarshal(jjsonBytes, &recode)
 
 	if err != nil {
@@ -197,8 +200,6 @@ func (tx *VSCStake) SerializeVSC() (SerializedVSCTransaction, error) {
 
 	encodedBytes, _ := common.EncodeDagCbor(recode)
 
-	fmt.Println("encodedBytes", string(encodedBytes))
-
 	txShell := VSCTransactionShell{
 		Type:    "vsc-tx",
 		Version: "0.1",
@@ -209,7 +210,7 @@ func (tx *VSCStake) SerializeVSC() (SerializedVSCTransaction, error) {
 			NetId:         tx.NetId,
 		},
 		Tx: VSCTransactionData{
-			Type:    "stake",
+			Type:    "stake_hbd",
 			Payload: encodedBytes,
 		},
 	}
@@ -244,8 +245,12 @@ func (tx *VSCStake) SerializeHive() ([]hivego.HiveOperation, error) {
 		id = "vsc.unstake_hbd"
 	}
 
+	if !strings.HasPrefix(tx.From, "hive:") {
+		return nil, fmt.Errorf("cannot serialize if from is not hive account")
+	}
+
 	op := hivego.CustomJsonOperation{
-		RequiredAuths:        []string{tx.From},
+		RequiredAuths:        []string{strings.Split(tx.From, ":")[1]},
 		RequiredPostingAuths: []string{},
 		Id:                   id,
 		Json:                 string(jsonBytes),
@@ -315,8 +320,12 @@ func (tx *VscConsenusStake) SerializeHive() ([]hivego.HiveOperation, error) {
 		id = "vsc.consensus_unstake"
 	}
 
+	if !strings.HasPrefix(tx.Account, "hive:") {
+		return nil, fmt.Errorf("cannot serialize if from is not hive account")
+	}
+
 	op := hivego.CustomJsonOperation{
-		RequiredAuths:        []string{tx.Account},
+		RequiredAuths:        []string{strings.Split(tx.Account, ":")[1]},
 		RequiredPostingAuths: []string{},
 		Id:                   id,
 		Json:                 string(jsonBytes),
@@ -414,6 +423,10 @@ func (tx *VscWithdraw) SerializeHive() ([]hivego.HiveOperation, error) {
 	valid, err := tx.Validate()
 	if !valid {
 		return nil, err
+	}
+
+	if !strings.HasPrefix(tx.From, "hive:") {
+		return nil, fmt.Errorf("cannot serialize if from is not hive account")
 	}
 
 	op := hivego.CustomJsonOperation{

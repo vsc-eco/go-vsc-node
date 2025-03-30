@@ -50,11 +50,13 @@ type WithdrawParams struct {
 }
 
 type ConsensusParams struct {
-	Id          string
-	Account     string
-	Amount      int64
-	Type        string
-	BlockHeight uint64
+	Id            string
+	From          string
+	To            string
+	Amount        int64
+	Type          string
+	BlockHeight   uint64
+	ElectionEpoch uint64
 }
 
 type LedgerResult struct {
