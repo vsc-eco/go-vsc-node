@@ -21,13 +21,17 @@ var (
 	ErrUnimplemented   = result.Err[SdkResultStruct](fmt.Errorf("unimplemented"))
 )
 
-var sdkModuleRef *map[string]func(context.Context, any) SdkResult
+var sdkModuleRef *map[string]sdkFunc
 
 func init() {
 	sdkModuleRef = &SdkModule
 }
 
-var SdkModule = map[string]func(context.Context, any) SdkResult{
+type sdkFunc any
+
+// func(context.Context, args ...any) SdkResult
+
+var SdkModule = map[string]sdkFunc{
 	"console.log": func(ctx context.Context, a any) SdkResult {
 		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 		s, ok := a.(string)
@@ -41,20 +45,16 @@ var SdkModule = map[string]func(context.Context, any) SdkResult{
 			Gas: gas,
 		})
 	},
-	"console.logNumber": func(ctx context.Context, a any) SdkResult {
-		return (*sdkModuleRef)["console.log"](ctx, fmt.Sprint(a))
-	},
-	"console.logBool": func(ctx context.Context, a any) SdkResult {
-		return (*sdkModuleRef)["console.log"](ctx, fmt.Sprint(a))
-	},
-	"db.setObject": func(ctx context.Context, a any) SdkResult {
+	"db.setObject": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
 		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
-		args, ok := a.([]string)
-		if !ok || len(args) != 2 {
+		key, ok := arg1.(string)
+		if !ok {
 			return ErrInvalidArgument
 		}
-		key := args[0]
-		val := args[1]
+		val, ok := arg2.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
 
 		session := eCtx.IOSession()
 		return result.Map(
@@ -101,23 +101,34 @@ var SdkModule = map[string]func(context.Context, any) SdkResult{
 			},
 		)
 	},
-	"system.call": func(ctx context.Context, a any) SdkResult {
+	"system.call": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
 		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
-		args, ok := a.([]string)
-		if !ok || len(args) != 2 {
+		callArg, ok := arg1.(string)
+		if !ok {
 			return ErrInvalidArgument
 		}
-		callArg := args[0]
+
+		rawValArg, ok := arg2.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+
 		var valArg struct {
 			Arg0 string `json:"arg0"`
 		}
-		err := json.Unmarshal([]byte(args[1]), &valArg)
+		err := json.Unmarshal([]byte(rawValArg), &valArg)
 
 		f, ok := (*sdkModuleRef)[callArg]
 		if ok {
 			return result.And(
 				result.Err[any](err),
-				f(ctx, valArg.Arg0),
+				result.Map(
+					f.(func(context.Context, any) SdkResult)(ctx, valArg.Arg0),
+					func(res SdkResultStruct) SdkResultStruct {
+						res.Result = fmt.Sprintf(`{"result":"%s"}`, res.Result)
+						return res
+					},
+				),
 			)
 		} else {
 			return result.Err[SdkResultStruct](fmt.Errorf("INVALID_CALL"))

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"unicode/utf16"
 	ipc_client "vsc-node/lib/stdio-ipc/client"
 	"vsc-node/lib/utils"
@@ -134,6 +135,38 @@ func assemblyScriptReadString(memory *wasmedge.Memory, ptr int32) result.Result[
 		),
 		func(b []byte) result.Result[string] {
 			return resultWrap(decodeUtf16(b, binary.LittleEndian))
+		},
+	)
+}
+
+type dataType uint32
+
+const (
+	objectDataType dataType = 0
+	bufferDataType dataType = 1
+	stringDataType dataType = 2
+)
+
+func assemblyScriptTypeOf(memory *wasmedge.Memory, ptr int32) result.Result[dataType] {
+
+	return result.AndThen(
+		resultWrap(memory.GetData(uint(ptr)-8, 4)),
+		func(dataTypeBytes []byte) result.Result[dataType] {
+			// FIXME assuming little endian for now
+			DataType := dataType(binary.LittleEndian.Uint32(dataTypeBytes))
+			switch DataType {
+			case objectDataType:
+				fmt.Fprintln(os.Stderr, "object datatype")
+				return result.Ok(objectDataType)
+			case bufferDataType:
+				fmt.Fprintln(os.Stderr, "buffer datatype")
+				return result.Ok(bufferDataType)
+			case stringDataType:
+				fmt.Fprintln(os.Stderr, "string datatype")
+				return result.Ok(stringDataType)
+			default:
+				return result.Err[dataType](fmt.Errorf("unknown assemblyscript data type: rtId=%d", DataType))
+			}
 		},
 	)
 }
@@ -275,23 +308,49 @@ func registerImport(runtime wasm_runtime.Runtime, vm *wasmedge.VM, gas *uint, cl
 		fn := wasmedge.NewFunction(
 			fnType,
 			func(data interface{}, callframe *wasmedge.CallingFrame, params []interface{}) ([]interface{}, wasmedge.Result) {
-				var arg string
+				fmt.Fprintln(os.Stderr, "fn name:", f.Name)
 				memory := callframe.GetMemoryByIndex(0)
-				if len(params) == 1 {
-					ptr := params[0].(int32)
-					// the following assumes that the argument is a string
-					res := readString(runtime, memory, ptr)
-					if res.IsErr() {
-						return []any{}, wasmedge.Result_Fail
-					}
-					arg = res.Unwrap()
-				} else if len(params) > 1 {
+
+				if f.Name == "abort" {
+					// abort(msg?: string | null, fileName?: string | null, lineNumber?: i32, columnNumber?: i32)
+					msgPtr := params[0].(int32)
+					filePtr := params[1].(int32)
+					line := params[2].(int32)
+					column := params[3].(int32)
+					msg := readString(runtime, memory, msgPtr).UnwrapOr("no message")
+					file := readString(runtime, memory, filePtr).UnwrapOr("unknown-file")
+					errStr := fmt.Sprintf("msg: %s\nfile: %s:%d:%d", msg, file, line, column)
+					client.Send(&execute.ExecutionFinish[WasmResultStruct]{Result: &wasm_types.WasmResultStruct{
+						Gas: vm.GetStatistics().GetTotalCost(),
+					}, Error: &errStr}).Expect("exec finish failed")
+					fmt.Fprintln(os.Stderr, client.Close())
 					return []any{}, wasmedge.Result_Fail
 				}
 
+				parsed := resultJoin(utils.Map(params, func(arg any) result.Result[any] {
+					ptr := arg.(int32)
+					fmt.Fprintln(os.Stderr, "ptr value:", ptr)
+					assemblyScriptTypeOf(memory, ptr).Inspect(func(dt dataType) {
+						fmt.Fprintln(os.Stderr, "data type:", dt)
+					}).InspectErr(func(err error) {
+						fmt.Fprintln(os.Stderr, "err:", err)
+					})
+					// the following assumes that the argument is a string
+					return result.Map(
+						readString(runtime, memory, ptr),
+						func(str string) any {
+							return str
+						},
+					)
+				})...)
+				if parsed.IsErr() {
+					return []any{}, wasmedge.Result_Fail
+				}
+				args := parsed.Unwrap()
+
 				res := client.Request(&execute.SdkCallRequest[WasmResultStruct]{
 					Function: f.Name,
-					Argument: arg,
+					Argument: args,
 				})
 
 				// fmt.Printf("res %+v\n", res)
@@ -299,7 +358,10 @@ func registerImport(runtime wasm_runtime.Runtime, vm *wasmedge.VM, gas *uint, cl
 				// 	fmt.Printf("res.error %s\n", err.Error())
 				// })
 
-				return resultToWasmEdgeResult(
+				for f.Name == "system.getEnv" {
+					break
+				}
+				wasmRes, err := resultToWasmEdgeResult(
 					runtime,
 					vm,
 					memory,
@@ -315,8 +377,20 @@ func registerImport(runtime wasm_runtime.Runtime, vm *wasmedge.VM, gas *uint, cl
 							vm.GetStatistics().SetCostLimit(*gas)
 							return res.Result
 						},
-					),
+					).InspectErr(func(err error) {
+						errStr := err.Error()
+						client.Send(&execute.ExecutionFinish[WasmResultStruct]{Result: &wasm_types.WasmResultStruct{
+							Gas: vm.GetStatistics().GetTotalCost(),
+						}, Error: &errStr}).Expect("exec finish failed")
+						fmt.Fprintln(os.Stderr, client.Close())
+					}),
 				)
+
+				if len(f.Type.Result) == 0 {
+					return []any{}, err
+				}
+
+				return wasmRes, err
 			},
 			nil,
 			f.Cost,
@@ -459,7 +533,9 @@ func (w *Wasm) ExecuteWithClient(gas uint, entrypoint string, args string, runti
 						func(client ipc_client.Client[WasmResultStruct]) result.Result[string] {
 							errStr := err.Error()
 							return result.Map(
-								client.Send(&execute.ExecutionFinish[WasmResultStruct]{Error: &errStr}),
+								client.Send(&execute.ExecutionFinish[WasmResultStruct]{Result: &wasm_types.WasmResultStruct{
+									Gas: vm.GetStatistics().GetTotalCost(),
+								}, Error: &errStr}),
 								func(any) string {
 									return errStr
 								},

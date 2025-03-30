@@ -14,6 +14,7 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
+	wasm_types "vsc-node/modules/wasm/types"
 
 	"github.com/JustinKnueppel/go-result"
 	blocks "github.com/ipfs/go-block-format"
@@ -76,11 +77,12 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 	res := result.MapOrElse(
 		se.wasm.Execute(ctx, code, gas, t.Action, t.Payload, info.Runtime),
-		errorToTxResult,
-		func(s string) TxResult {
+
+		func(res wasm_types.WasmResultStruct) TxResult {
 			return TxResult{
-				Success: true,
-				Ret:     s,
+				Success: !res.Error,
+				Ret:     res.Result,
+				RcUsed:  int64(res.Gas),
 			}
 		},
 	)

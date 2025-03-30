@@ -12,6 +12,7 @@ import (
 	a "vsc-node/modules/aggregate"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
+	wasm_types "vsc-node/modules/wasm/types"
 
 	"github.com/JustinKnueppel/go-result"
 	"github.com/chebyrash/promise"
@@ -69,10 +70,10 @@ func (w *Wasm) Stop() error {
 const timePer15_000GasUnits = 5 * time.Millisecond
 const startupTime = 3000 * time.Millisecond // TODO investigate large startup time
 
-func (w *Wasm) Execute(ctxValue wasm_context.ExecContextValue, byteCode []byte, gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime) result.Result[string] {
+func (w *Wasm) Execute(ctxValue wasm_context.ExecContextValue, byteCode []byte, gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime) result.Result[wasm_types.WasmResultStruct] {
 	ctx, cancel := context.WithTimeout(context.WithValue(context.WithValue(w.ctx, wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(byteCode)), (timePer15_000GasUnits*time.Duration(gas)/15_000)+startupTime)
 	defer cancel()
-	return ipc_host.RunWithContext[string](ctx,
+	return ipc_host.RunWithContext[wasm_types.WasmResultStruct](ctx,
 		w.execPath[0], append(w.execPath[1:],
 			"-gas", fmt.Sprint(gas),
 			"-entrypoint", entrypoint,

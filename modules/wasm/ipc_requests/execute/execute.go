@@ -3,6 +3,9 @@ package execute
 import (
 	"context"
 	"fmt"
+	"os"
+	"reflect"
+	"vsc-node/lib/utils"
 	wasm_context "vsc-node/modules/wasm/context"
 	"vsc-node/modules/wasm/ipc_requests"
 	"vsc-node/modules/wasm/sdk"
@@ -14,7 +17,7 @@ import (
 
 type SdkCallRequest[Result any] struct {
 	Function string
-	Argument any
+	Argument []any
 }
 
 var _ ipc_requests.Message[any] = &SdkCallRequest[any]{}
@@ -26,8 +29,19 @@ func (s *SdkCallRequest[Result]) Process(ctx context.Context) result.Result[ipc_
 	if !ok {
 		return result.Err[ipc_requests.ProcessedMessage[Result]](fmt.Errorf("vm requested non-existing function: %s", s.Function))
 	}
+	fmt.Fprintln(os.Stderr, s.Function, s.Argument, fn)
 	res := result.MapOrElse(
-		fn(ctx, s.Argument),
+		reflect.ValueOf(fn).Call(
+			append(
+				[]reflect.Value{reflect.ValueOf(ctx)},
+				utils.Map(
+					s.Argument,
+					func(arg any) reflect.Value {
+						return reflect.ValueOf(arg)
+					},
+				)...,
+			),
+		)[0].Interface().(sdk.SdkResult),
 		func(err error) *SdkCallResponse[Result] {
 			str := err.Error()
 			return &SdkCallResponse[Result]{
@@ -88,7 +102,18 @@ var _ ipc_requests.Message[any] = &ExecutionFinish[any]{}
 
 // Process implements ipc_requests.Message.
 func (res *ExecutionFinish[Result]) Process(context.Context) result.Result[ipc_requests.ProcessedMessage[Result]] {
-	return BasicErrorResult[Result](*res).process(ErrEmptyExecutionFinish)
+	processed := BasicErrorResult[Result](*res).process(ErrEmptyExecutionFinish)
+	processed.Inspect(func(pm ipc_requests.ProcessedMessage[Result]) {
+		processedRes := pm.Result.UnwrapAsPtr()
+		if processedRes != nil {
+			resStruct := any(processedRes).(*wasm_types.WasmResultStruct)
+			resStruct.Error = res.Error != nil
+			if resStruct.Error {
+				resStruct.Result = *res.Error
+			}
+		}
+	})
+	return processed
 }
 
 type ExecutionReady[Result any] struct{}

@@ -1,6 +1,8 @@
 package sdk_types
 
 import (
+	"fmt"
+	"os"
 	"reflect"
 	"vsc-node/modules/wasm/sdk"
 
@@ -27,12 +29,13 @@ func generateSdkTypes() []SdkType {
 		res = append(res, SdkType{
 			name,
 			VmType{
-				generateFunctionParameters(t),
-				generateFunctionResult(t),
+				generateFunctionParameters(name, t),
+				generateFunctionResult(name, t),
 			},
 			generateCost(name, t),
 		})
 	}
+	fmt.Fprintln(os.Stderr, "sdk types", res)
 	return res
 }
 
@@ -41,7 +44,27 @@ func generateCost(name string, fn reflect.Type) uint {
 	return 0
 }
 
-func generateFunctionResult(fn reflect.Type) []wasmedge.ValType {
+func generateFunctionResult(name string, fn reflect.Type) []wasmedge.ValType {
+	switch name {
+	case "db.delObject":
+		fallthrough
+	case "ic.link":
+		fallthrough
+	case "console.log":
+		fallthrough
+	case "console.logNumber":
+		fallthrough
+	case "console.logUint8Array":
+		fallthrough
+	case "ic.unlink":
+		fallthrough
+	case "console.logBool":
+		fallthrough
+	case "db.setObject":
+		return nil
+	default:
+		// generate result type
+	}
 	c := fn.NumOut()
 	res := make([]wasmedge.ValType, c)
 
@@ -52,11 +75,15 @@ func generateFunctionResult(fn reflect.Type) []wasmedge.ValType {
 	return res
 }
 
-func generateFunctionParameters(fn reflect.Type) []wasmedge.ValType {
+func generateFunctionParameters(name string, fn reflect.Type) []wasmedge.ValType {
 	c := fn.NumIn()
 	res := make([]wasmedge.ValType, c-1)
 
 	for i := range res {
+		if name == "console.logNumber" {
+			res[i] = wasmedge.ValType_F64
+			continue
+		}
 		res[i] = goTypeToWasmType(fn.In(i + 1))
 	}
 
