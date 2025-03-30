@@ -13,6 +13,7 @@ import (
 	"vsc-node/modules/common"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql"
@@ -34,9 +35,11 @@ func TestQueryAndMutation(t *testing.T) {
 	da := datalayer.New(p2p)
 	conf := common.NewIdentityConfig()
 	txPool := transactionpool.New(p2p, txDb, da, conf)
+	balances := ledgerDb.NewBalances(vscDb)
 	resolver := &gqlgen.Resolver{
 		witnesses,
 		txPool,
+		balances,
 	}
 	schema := gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: resolver})
 
@@ -51,6 +54,7 @@ func TestQueryAndMutation(t *testing.T) {
 		da,
 		conf,
 		txPool,
+		balances,
 		g,
 	})
 	test_utils.RunPlugin(t, agg)

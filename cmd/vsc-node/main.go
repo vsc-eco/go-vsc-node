@@ -49,7 +49,6 @@ func main() {
 	vscDb := vsc.New(db)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)
-	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{witnessDb}}), "localhost:8080")
 	vscBlocks := vscBlocks.New(vscDb)
 	witnessesDb := witnesses.New(vscDb)
 	electionDb := elections.New(vscDb)
@@ -116,6 +115,12 @@ func main() {
 	multisig := gateway.New(l, witnessesDb, electionDb, actionsDb, balanceDb, &hiveCreator, vstream, p2p, se, identityConfig)
 
 	txpool := transactionpool.New(p2p, txDb, da, identityConfig)
+
+	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{
+		witnessDb,
+		txpool,
+		balanceDb,
+	}}), "localhost:8080")
 
 	plugins := make([]aggregate.Plugin, 0)
 

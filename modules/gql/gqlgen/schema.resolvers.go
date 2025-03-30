@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
@@ -187,6 +188,18 @@ func (r *queryResolver) GetCurrentNumber(ctx context.Context) (*TestResult, erro
 	panic(fmt.Errorf("not implemented"))
 }
 
+// WitnessStake is the resolver for the witnessStake field.
+func (r *queryResolver) WitnessStake(ctx context.Context, account string) (model.Uint64, error) {
+	res, err := r.Balances.GetBalanceRecord(account, uint64(math.MaxUint64))
+	if err != nil {
+		return 0, err
+	}
+	if res == nil {
+		return 0, nil
+	}
+	return model.Uint64(res.HIVE_CONSENSUS), nil
+}
+
 // IpfsPeerID is the resolver for the ipfs_peer_id field.
 func (r *witnessResolver) IpfsPeerID(ctx context.Context, obj *witnesses.Witness) (*string, error) {
 	panic(fmt.Errorf("not implemented: IpfsPeerID - ipfs_peer_id"))
@@ -222,3 +235,15 @@ type contractStateResolver struct{ *Resolver }
 type mutationResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
+
+// !!! WARNING !!!
+// The code below was going to be deleted when updating resolvers. It has been copied here so you have
+// one last chance to move it out of harms way if you want. There are two reasons this happens:
+//  - When renaming or deleting a resolver the old code will be put in here. You can safely delete
+//    it when you're done.
+//  - You have helper methods in this file. Move them out to keep these resolver files clean.
+/*
+	func (r *queryResolver) Stake(ctx context.Context, account string) (model.Uint64, error) {
+	panic(fmt.Errorf("not implemented: Stake - stake"))
+}
+*/

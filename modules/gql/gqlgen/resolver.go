@@ -1,6 +1,7 @@
 package gqlgen
 
 import (
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/witnesses"
 	transactionpool "vsc-node/modules/transaction-pool"
 )
@@ -12,4 +13,5 @@ import (
 type Resolver struct {
 	Witnesses witnesses.Witnesses
 	TxPool    *transactionpool.TransactionPool
+	Balances  ledgerDb.Balances
 }
