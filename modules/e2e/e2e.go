@@ -92,6 +92,11 @@ func (e2e *E2ERunner) Init() error {
 
 func (e2e *E2ERunner) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
+		defer func() {
+			if r := recover(); r != nil {
+				reject(fmt.Errorf("recovered from panic: %v", r))
+			}
+		}()
 		for idx, step := range e2e.steps {
 			fmt.Println("Running step " + strconv.Itoa(idx))
 			err := step()
@@ -117,10 +122,13 @@ func (e2e *E2ERunner) SetSteps(steps []func() error) {
 func (e2e *E2ERunner) Wait(blocks uint64) func() error {
 	return func() error {
 
+		// fmt.Println("e2e.BlockHeight", e2e.BlockHeight)
+
 		bh := e2e.BlockHeight + blocks
 
 		for {
 			bhx := <-e2e.BlockEvent
+			// fmt.Println("e2e.Wait Waiting for", bhx)
 			if bhx >= bh {
 				break
 			}
@@ -191,6 +199,7 @@ func (e2e *E2ERunner) BroadcastMockElection(witnessListS []string) func() error 
 			ElectionCommonInfo: elections.ElectionCommonInfo{
 				Epoch: 0,
 				NetId: common.NETWORK_ID,
+				Type:  "initial",
 			},
 			ElectionDataInfo: elections.ElectionDataInfo{
 				Weights:         weights,

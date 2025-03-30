@@ -49,7 +49,8 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 	}
 	update := bson.M{
 		"$set": bson.M{
-			"peer_id": request.Metadata.VscNode.PeerId,
+			"peer_id":    request.Metadata.VscNode.PeerId,
+			"peer_addrs": request.Metadata.VscNode.PeerAddrs,
 			//timestamp
 			"ts":               request.Metadata.VscNode.Ts,
 			"version_id":       request.Metadata.VscNode.VersionId,
@@ -206,7 +207,6 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64) ([]Witness, error) {
 
 	//TODO: add filtering options equivalent to the old VSC network
 
-	fmt.Println("Witnesses at block height", witnesses)
 	witnessMap := make(map[string]*Witness)
 
 	for _, witness := range witnesses {

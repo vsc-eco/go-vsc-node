@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/witnesses"
 
 	"github.com/chebyrash/promise"
@@ -219,6 +220,12 @@ func (p2p *P2PServer) Stop() error {
 	}
 
 	return nil
+}
+
+func (p2p *P2PServer) PeerInfo() common.PeerInfoGetter {
+	return &peerGetter{
+		server: p2p,
+	}
 }
 
 func (p2p *P2PServer) connectRegisteredPeers() {

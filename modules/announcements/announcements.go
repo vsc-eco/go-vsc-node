@@ -30,6 +30,7 @@ type AnnouncementsManager struct {
 	client       HiveRpcClient
 	hiveCreator  hive.HiveTransactionCreator
 	cronDuration time.Duration
+	peerInfo     common.PeerInfoGetter
 }
 
 type HiveRpcClient interface {
@@ -43,12 +44,10 @@ var _ agg.Plugin = &AnnouncementsManager{}
 
 // ===== constructor =====
 
-func New(client HiveRpcClient, conf common.IdentityConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator) (*AnnouncementsManager, error) {
+func New(client HiveRpcClient, conf common.IdentityConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator, peerInfo common.PeerInfoGetter) (*AnnouncementsManager, error) {
 
 	// sanity checks
-	if conf == nil {
-		return nil, fmt.Errorf("config must be provided")
-	}
+
 	if client == nil {
 		return nil, fmt.Errorf("client must be provided")
 	}
@@ -62,6 +61,7 @@ func New(client HiveRpcClient, conf common.IdentityConfig, cronDuration time.Dur
 		client:       client,
 		hiveCreator:  creator,
 		cronDuration: cronDuration,
+		peerInfo:     peerInfo,
 	}, nil
 }
 
@@ -212,6 +212,11 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 
 	kp := hivego.KeyPairFromBytes(gatewayKey[:])
 
+	peerAddrs := make([]string, 0)
+
+	for _, addr := range a.peerInfo.GetPeerAddrs() {
+		peerAddrs = append(peerAddrs, addr.String())
+	}
 	payload := payload{
 		Services: []string{"vsc.network"},
 		DidKeys: []didConsensusKey{
@@ -223,9 +228,9 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 		},
 		VscNode: payloadVscNode{
 			//Potentially use specific net ID for E2E tests
-			NetId:           "go-testnet",
-			PeerId:          "", //Plz fill in
-			PeerAddrs:       []string{},
+			NetId:           "go-mainnet",
+			PeerId:          a.peerInfo.GetPeerId(), //Plz fill in
+			PeerAddrs:       peerAddrs,
 			Ts:              time.Now().Format(time.RFC3339),
 			GitCommit:       "",          //Plz detect
 			VersionId:       "go-v0.1.0", //Use standard versioning
