@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"vsc-node/lib/datalayer"
@@ -11,24 +10,31 @@ import (
 	"vsc-node/lib/logger"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
+	blockproducer "vsc-node/modules/block-producer"
 	"vsc-node/modules/common"
-	data_availability "vsc-node/modules/data-availability"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/nonces"
+	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
+	election_proposer "vsc-node/modules/election-proposer"
+	"vsc-node/modules/gateway"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
 	"vsc-node/modules/hive/streamer"
 	p2pInterface "vsc-node/modules/p2p"
+	rcSystem "vsc-node/modules/rc-system"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 
+	data_availability "vsc-node/modules/data-availability"
+	"vsc-node/modules/vstream"
 	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 
 	"github.com/vsc-eco/hivego"
@@ -43,40 +49,31 @@ func main() {
 	vscDb := vsc.New(db)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)
+	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{witnessDb}}), "localhost:8080")
+	vscBlocks := vscBlocks.New(vscDb)
+	witnessesDb := witnesses.New(vscDb)
+	electionDb := elections.New(vscDb)
+	contractDb := contracts.New(vscDb)
+	txDb := transactions.New(vscDb)
+	ledgerDbImpl := ledgerDb.New(vscDb)
+	balanceDb := ledgerDb.NewBalances(vscDb)
+	actionsDb := ledgerDb.NewActionsDb(vscDb)
+	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
+	contractState := contracts.NewContractState(vscDb)
+	nonceDb := nonces.New(vscDb)
+	rcDb := rcDb.New(vscDb)
+
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)
 	}
 
 	// choose the source
-	blockClient := hivego.NewHiveRpc("https://api.hive.blog")
-	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
-		if op.Type == "custom_json" {
-			if strings.HasPrefix(op.Value["id"].(string), "vsc.") {
-				return true
-			}
-		}
-		if op.Type == "account_update" || op.Type == "account_update2" {
-			return true
-		}
+	hiveRpcClient := hivego.NewHiveRpc("https://api.hive.blog")
 
-		if op.Type == "transfer" || op.Type == "transfer_to_savings" {
-			if strings.HasPrefix(op.Value["to"].(string), "vsc.") {
-				return true
-			}
-
-			if strings.HasPrefix(op.Value["from"].(string), "vsc.") {
-				return true
-			}
-		}
-
-		return false
-	}
 	filters := []streamer.FilterFunc{filter}
-	streamerPlugin := streamer.NewStreamer(blockClient, hiveBlocks, filters, nil, nil) // optional starting block #
+	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, nil, nil) // optional starting block #
 
-	// new announcements manager
-	hiveRpcClient := hivego.NewHiveRpc("https://hive-api.web3telekom.xyz/")
 	identityConfig := common.NewIdentityConfig()
 
 	hiveCreator := hive.LiveTransactionCreator{
@@ -87,7 +84,11 @@ func main() {
 		},
 	}
 
-	announcementsManager, err := announcements.New(hiveRpcClient, identityConfig, time.Hour*24, &hiveCreator)
+	p2p := p2pInterface.New(witnessesDb)
+
+	peerGetter := p2p.PeerInfo()
+
+	announcementsManager, err := announcements.New(hiveRpcClient, identityConfig, time.Hour*24, &hiveCreator, peerGetter)
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)
@@ -95,43 +96,69 @@ func main() {
 
 	wasm := wasm_parent_ipc.New() // TODO set proper cmd path
 
-	p2p := p2pInterface.New(witnessDb)
-
 	da := datalayer.New(p2p)
 
 	dataAvailability := data_availability.New(p2p, identityConfig, da)
 
-	l := logger.PrefixedLogger{}
-	e := elections.New(vscDb)
-	c := contracts.New(vscDb)
-	cState := contracts.NewContractState(vscDb)
-	tx := transactions.New(vscDb)
-	le := ledgerDb.New(vscDb)
-	b := ledgerDb.NewBalances(vscDb)
-	intrest := ledgerDb.NewInterestClaimDb(vscDb)
-	blks := vscBlocks.New(vscDb)
-	actions := ledgerDb.NewActionsDb(vscDb)
-	se := stateEngine.New(l, da, witnessDb, e, c, cState, tx, le, b, hiveBlocks, intrest, blks, actions, wasm)
+	l := logger.PrefixedLogger{
+		"vsc-node",
+	}
 
-	txPool := transactionpool.New(p2p, tx, da, identityConfig)
-	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{witnessDb, txPool}}), "localhost:8080")
+	rcSystem := rcSystem.New(rcDb)
+
+	se := stateEngine.New(l, da, witnessDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
+
+	ep := election_proposer.New(p2p, witnessesDb, electionDb, balanceDb, da, &hiveCreator, identityConfig)
+
+	vstream := vstream.New(se)
+	bp := blockproducer.New(l, p2p, vstream, se, identityConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
+
+	multisig := gateway.New(l, witnessesDb, electionDb, actionsDb, balanceDb, &hiveCreator, vstream, p2p, se, identityConfig)
+
+	txpool := transactionpool.New(p2p, txDb, da, identityConfig)
 
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
+		//Configuration init
 		dbConf,
-		db,
 		identityConfig,
-		announcementsManager,
+
+		//DB plugin initialization
+		db,
 		vscDb,
+		//DB collections
+		witnessesDb,
+		electionDb,
 		witnessDb,
+		contractDb,
 		hiveBlocks,
-		streamerPlugin,
+		vscBlocks,
+		txDb,
+		ledgerDbImpl,
+		actionsDb,
+		balanceDb,
+		interestClaims,
+		contractState,
+
 		p2p,
-		dataAvailability,
-		e, c, cState, tx, le, b, intrest, blks, actions, se,
+		da,                   //Deps: [p2p]
+		dataAvailability,     //Deps: [p2p]
+		announcementsManager, // Deps: [p2p]
+
+		vstream,
+		//Startup main state processing pipeline
+		streamerPlugin,
+		se,
+		bp,
+		ep,
+		multisig,
+
+		//WASM execution environment
 		wasm,
-		txPool,
+		txpool,
+
+		//Setup graphql manager after everything is initialized
 		gqlManager,
 	)
 
