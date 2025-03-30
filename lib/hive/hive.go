@@ -48,34 +48,58 @@ func (t *TransactionBroadcaster) Broadcast(tx hivego.HiveTransaction) (string, e
 }
 
 func (t *TransactionBroadcaster) PopulateSigningProps(tx *hivego.HiveTransaction, bh []int) error {
-	byteProps, err := t.Client.GetDynamicGlobalProps()
-	if err != nil {
-		return err
-	}
+	if len(bh) > 0 {
+		bha := bh[0]
+		hBlock, _ := t.Client.GetBlock(bha)
 
-	var props globalProps
-	err = json.Unmarshal(byteProps, &props)
-	if err != nil {
-		return err
-	}
+		refBlockNum := uint16(hBlock.BlockNumber & 0xffff)
+		hbidB, err := hex.DecodeString(hBlock.BlockID)
+		if err != nil {
+			return err
+		}
+		refBlockPrefix := binary.LittleEndian.Uint32(hbidB[4:])
 
-	refBlockNum := uint16(props.HeadBlockNumber & 0xffff)
-	hbidB, err := hex.DecodeString(props.HeadBlockId)
-	if err != nil {
-		return err
-	}
-	refBlockPrefix := binary.LittleEndian.Uint32(hbidB[4:])
+		exp, err := time.Parse("2006-01-02T15:04:05", hBlock.Timestamp)
+		if err != nil {
+			return err
+		}
+		exp = exp.Add(30 * time.Second)
+		expStr := exp.Format("2006-01-02T15:04:05")
 
-	exp, err := time.Parse("2006-01-02T15:04:05", props.Time)
-	if err != nil {
-		return err
-	}
-	exp = exp.Add(30 * time.Second)
-	expStr := exp.Format("2006-01-02T15:04:05")
+		tx.Expiration = expStr
+		tx.RefBlockNum = refBlockNum
+		tx.RefBlockPrefix = refBlockPrefix
+	} else {
+		byteProps, err := t.Client.GetDynamicGlobalProps()
+		if err != nil {
+			return err
+		}
 
-	tx.Expiration = expStr
-	tx.RefBlockNum = refBlockNum
-	tx.RefBlockPrefix = refBlockPrefix
+		var props globalProps
+		err = json.Unmarshal(byteProps, &props)
+		if err != nil {
+			return err
+		}
+
+		refBlockNum := uint16(props.HeadBlockNumber & 0xffff)
+		hbidB, err := hex.DecodeString(props.HeadBlockId)
+		if err != nil {
+			return err
+		}
+		refBlockPrefix := binary.LittleEndian.Uint32(hbidB[4:])
+
+		exp, err := time.Parse("2006-01-02T15:04:05", props.Time)
+		if err != nil {
+			return err
+		}
+		exp = exp.Add(30 * time.Second)
+		expStr := exp.Format("2006-01-02T15:04:05")
+
+		tx.Expiration = expStr
+		tx.RefBlockNum = refBlockNum
+		tx.RefBlockPrefix = refBlockPrefix
+
+	}
 
 	return nil
 }
