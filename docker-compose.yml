@@ -6,6 +6,7 @@ services:
       context: .
     ports:
       - "8080:8080"
+      - "10720:10720"
     environment:
       - MONGO_URL=mongodb://db:27017
     depends_on:
