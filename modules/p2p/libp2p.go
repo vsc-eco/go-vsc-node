@@ -105,7 +105,7 @@ func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 // Init implements aggregate.Plugin.
 func (p2pServer *P2PServer) Init() error {
 	//Future initialize using a configuration object with more detailed info
-	p2p, _ := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"))
+	p2p, _ := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/10720"))
 
 	//DHT wrapped host
 	ctx := context.Background()
