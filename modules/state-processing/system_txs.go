@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
+	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
@@ -88,7 +89,7 @@ func (tx TxCreateContract) TxSelf() TxSelf {
 const CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT = 84162592
 
 // ProcessTx implements VSCTransaction.
-func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *ContractSession) TxResult {
+func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
 	res := ledgerSession.ExecuteTransfer(ledgerSystem.OpLogEvent{
 		From:   tx.Self.RequiredAuths[0],
 		To:     "hive:vsc.dao",

@@ -10,6 +10,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/common"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
+	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/transactions"
 	ledgerSystem "vsc-node/modules/ledger-system"
@@ -52,7 +53,10 @@ func errorToTxResult(err error, RCs int64) TxResult {
 }
 
 // ExecuteTx implements VSCTransaction.
-func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *ContractSession) TxResult {
+func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
+	if t.NetId != common.NETWORK_ID {
+		return errorToTxResult(fmt.Errorf("wrong net ID"), 100)
+	}
 	info, err := se.contractDb.ContractById(t.ContractId)
 	if err != nil {
 		return errorToTxResult(err, 100)
@@ -149,7 +153,7 @@ func (tx TxVSCTransfer) TxSelf() TxSelf {
 	return tx.Self
 }
 
-func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *ContractSession) TxResult {
+func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
 	if tx.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
@@ -250,7 +254,7 @@ func (tx TxVSCWithdraw) TxSelf() TxSelf {
 // Note: this function does the work of translating any and all VSC transactions to the ledger compatible formats
 // ledgerExecutor will then do the heavy lifting of executing the input ops
 // as LedgerExecutor may be called within other contexts, such as the contract executor
-func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *ContractSession) TxResult {
+func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
 	if t.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
@@ -323,7 +327,7 @@ type TxStakeHbd struct {
 	NetId string `json:"net_id"`
 }
 
-func (t *TxStakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *ContractSession) TxResult {
+func (t *TxStakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
 	if t.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
@@ -399,7 +403,7 @@ type TxUnstakeHbd struct {
 	NetId  string `json:"net_id"`
 }
 
-func (t *TxUnstakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *ContractSession) TxResult {
+func (t *TxUnstakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
 	se.log.Debug("TxUnstakeHbd", t.Self.BlockHeight, t.Self.TxId, t.Self.OpIndex, t.NetId, common.NETWORK_ID)
 	if t.NetId != common.NETWORK_ID {
 		return TxResult{
@@ -489,7 +493,7 @@ type TxConsensusStake struct {
 	NetId  string `json:"net_id"`
 }
 
-func (tx *TxConsensusStake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *ContractSession) TxResult {
+func (tx *TxConsensusStake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
 	if tx.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
@@ -569,7 +573,7 @@ type TxConsensusUnstake struct {
 	NetId  string `json:"net_id"`
 }
 
-func (tx *TxConsensusUnstake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *ContractSession) TxResult {
+func (tx *TxConsensusUnstake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
 	if tx.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
@@ -994,7 +998,7 @@ var _ VSCTransaction = &TxCreateContract{}
 var _ VscTxContainer = &OffchainTransaction{}
 
 type VSCTransaction interface {
-	ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *ContractSession) TxResult
+	ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult
 	TxSelf() TxSelf
 	ToData() map[string]interface{}
 	Type() string

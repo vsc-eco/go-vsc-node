@@ -11,6 +11,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/lib/logger"
 	"vsc-node/modules/common"
+	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -57,7 +58,7 @@ type StateEngine struct {
 	RcMap    map[string]int64
 	rcSystem *rcSystem.RcSystem
 
-	VirtualOutputs map[string]*TempOutput
+	VirtualOutputs map[string]*contract_session.TempOutput
 
 	//Unused ideas
 	// AnchoredHeight uint64
@@ -72,7 +73,7 @@ type StateEngine struct {
 
 	//Map of txId --> output
 	TxOutput    map[string]TxOutput
-	TempOutputs map[string]*TempOutput
+	TempOutputs map[string]*contract_session.TempOutput
 
 	log logger.Logger
 
@@ -640,40 +641,36 @@ func (se *StateEngine) ExecuteBatch() {
 		ledgerSession := se.LedgerExecutor.NewSession(lastBlockBh)
 		rcSession := se.rcSystem.NewSession(ledgerSession)
 
-		contractSessions := make(map[string]*ContractSession)
+		contractSessions := make(map[string]*contract_session.ContractSession)
 
 		for k, v := range se.TempOutputs {
 			val := *v
 
-			sess := ContractSession{
-				stateEngine: se,
-			}
+			sess := contract_session.New(se.da)
 			sess.FromOutput(val)
-			contractSessions[k] = &sess
+			contractSessions[k] = sess
 		}
 
 		logs := make([]string, 0)
 		ok := true
 		for idx, vscTx := range tx.Ops {
-			var contractSession *ContractSession
+			var contractSession *contract_session.ContractSession
 			if vscTx.Type() == "call_contract" {
 				contractCall, ok := vscTx.(TxVscCallContract)
 				if ok {
 					if contractSessions[contractCall.ContractId] == nil {
 						contractOutput := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
 
-						tmpOut := TempOutput{
+						tmpOut := contract_session.TempOutput{
 							Cache:    make(map[string][]byte),
 							Metadata: make(map[string]interface{}),
 							Cid:      contractOutput.StateMerkle,
 						}
 
-						sess := ContractSession{
-							stateEngine: se,
-						}
+						sess := contract_session.New(se.da)
 
 						sess.FromOutput(tmpOut)
-						contractSessions[contractCall.ContractId] = &sess
+						contractSessions[contractCall.ContractId] = sess
 					}
 					contractSession = contractSessions[contractCall.ContractId]
 				}
