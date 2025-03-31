@@ -15,12 +15,15 @@ type contractExecutionContext struct {
 	intents []contracts.Intent
 	ledger  ledgerSystem.LedgerSession
 	env     Environment
+	rcLimit int64
 
 	logs []string
 
 	ioReadGas  int
 	ioWriteGas int
 	ioSessions []IOSession
+
+	tokenLimits map[string]*int64
 }
 
 type ContractExecutionContext = *contractExecutionContext
@@ -39,15 +42,39 @@ type Environment struct {
 
 // var _ wasm_context.ExecContextValue = &contractExecutionContext{}
 
-func New(env Environment, intents []contracts.Intent, ledger ledgerSystem.LedgerSession) ContractExecutionContext {
+func New(env Environment, rcLimit int64, intents []contracts.Intent, ledger ledgerSystem.LedgerSession) ContractExecutionContext {
+	seenTypes := make(map[string]bool)
+	tokenLimits := make(map[string]*int64)
+	for _, intent := range intents {
+		if intent.Type == "transfer.allow" {
+			limit, ok := intent.Args["limit"]
+			if !ok {
+				continue
+			}
+			token, ok := intent.Args["token"]
+			if !ok {
+				continue
+			}
+			key := intent.Type + "-" + token
+			seen, _ := seenTypes[key]
+			if seen {
+				continue
+			}
+			seenTypes[key] = true
+			val, _ := common.SafeParseHiveFloat(limit)
+			tokenLimits[token] = &val
+		}
+	}
 	return &contractExecutionContext{
 		intents,
 		ledger,
 		env,
+		rcLimit,
 		nil,
 		0,
 		0,
 		nil,
+		tokenLimits,
 	}
 }
 
@@ -180,7 +207,83 @@ func (ctx *contractExecutionContext) DeleteState(key string) result.Result[struc
 }
 
 func (ctx *contractExecutionContext) GetBalance(account string, asset string) int64 {
-	return ctx.ledger.GetBalance(account, 0, asset) // TODO get block height from env
+	return ctx.ledger.GetBalance(account, ctx.env.BlockHeight, asset)
+}
+
+func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) result.Result[struct{}] {
+	if len(ctx.env.RequiredAuths) == 0 {
+		return result.Err[struct{}](fmt.Errorf("no active authority"))
+	}
+	tokenLimit, ok := ctx.tokenLimits[asset]
+	if !ok {
+		return result.Err[struct{}](fmt.Errorf("no user intent for: %s", asset))
+	}
+	if amount > *tokenLimit {
+		return result.Err[struct{}](fmt.Errorf("amount (%d) is over remaining token limit (%d)", amount, *tokenLimit))
+	}
+	*tokenLimit -= amount
+
+	var transferOptions []ledgerSystem.TransferOptions
+	if asset == "hbd" {
+		transferOptions = []ledgerSystem.TransferOptions{
+			{
+				Exclusion: ctx.rcLimit,
+			},
+		}
+	}
+	res := ctx.ledger.ExecuteTransfer(ledgerSystem.OpLogEvent{
+		To:     ctx.env.ContractId,
+		From:   ctx.env.RequiredAuths[0],
+		Amount: amount,
+		Asset:  asset,
+		// Memo   string `json:"mo" // TODO add in future
+		Type: "transfer",
+
+		//Not parted of compiled state
+		// Id          string `json:"id"`
+		BlockHeight: ctx.env.BlockHeight,
+	}, transferOptions...)
+	if !res.Ok {
+		return result.Err[struct{}](fmt.Errorf("%s", res.Msg))
+	}
+	return result.Ok(struct{}{})
+}
+
+func (ctx *contractExecutionContext) SendBalance(to string, amount int64, asset string) result.Result[struct{}] {
+	res := ctx.ledger.ExecuteTransfer(ledgerSystem.OpLogEvent{
+		From:   ctx.env.ContractId,
+		To:     to,
+		Amount: amount,
+		Asset:  asset,
+		// Memo   string `json:"mo" // TODO add in future
+		Type: "transfer",
+
+		//Not parted of compiled state
+		// Id          string `json:"id"`
+		BlockHeight: ctx.env.BlockHeight,
+	})
+	if !res.Ok {
+		return result.Err[struct{}](fmt.Errorf("%s", res.Msg))
+	}
+	return result.Ok(struct{}{})
+}
+
+func (ctx *contractExecutionContext) WithdrawBalance(to string, amount int64, asset string) result.Result[struct{}] {
+	res := ctx.ledger.Withdraw(ledgerSystem.WithdrawParams{
+		From:   ctx.env.ContractId,
+		To:     to,
+		Amount: amount,
+		Asset:  asset,
+		// Memo   string `json:"mo" // TODO add in future
+
+		//Not parted of compiled state
+		// Id          string `json:"id"`
+		BlockHeight: ctx.env.BlockHeight,
+	})
+	if !res.Ok {
+		return result.Err[struct{}](fmt.Errorf("%s", res.Msg))
+	}
+	return result.Ok(struct{}{})
 }
 
 func resultWrap[T any](res T, err error) result.Result[T] {

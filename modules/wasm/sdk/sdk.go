@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_types "vsc-node/modules/wasm/types"
 
@@ -191,22 +192,45 @@ var SdkModule = map[string]sdkFunc{
 	},
 	//Gets current balance of contract account or tag
 	//Cannot be used to get balance of other accounts (or generally shouldn"t)
-	"hive.getbalance": func(ctx context.Context, a any) SdkResult {
+	"hive.getbalance": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
 		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
-		args, ok := a.([]string)
+		account, ok := arg1.(string)
 		if !ok {
 			return ErrInvalidArgument
 		}
-		account := args[0]
-		asset := args[1]
+		asset, ok := arg2.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
 		return result.Ok(SdkResultStruct{
 			Result: fmt.Sprint(eCtx.GetBalance(account, asset)),
 			Gas:    100_000,
 		})
 	},
 	//Pulls token balance from user transction
-	"hive.draw": func(ctx context.Context, a any) SdkResult {
-		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+	"hive.draw": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+		amountString, ok := arg1.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		amount, err := strconv.ParseInt(amountString, 10, 64)
+		if err != nil {
+			return result.Err[SdkResultStruct](err)
+		}
+		asset, ok := arg2.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+
+		return result.Map(
+			eCtx.PullBalance(amount, asset),
+			func(struct{}) SdkResultStruct {
+				return SdkResultStruct{
+					Gas: 1_000_000,
+				}
+			},
+		)
 		// const args:{
 		// 	from: string
 		// 	amount: number
@@ -263,8 +287,34 @@ var SdkModule = map[string]sdkFunc{
 		return ErrUnimplemented
 	},
 	//Transfer tokens owned by contract to another user or
-	"hive.transfer": func(ctx context.Context, a any) SdkResult {
-		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+	"hive.transfer": func(ctx context.Context, arg1 any, arg2 any, arg3 any) SdkResult {
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+
+		to, ok := arg1.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		amountString, ok := arg2.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		amount, err := strconv.ParseInt(amountString, 10, 64)
+		if err != nil {
+			return result.Err[SdkResultStruct](err)
+		}
+		asset, ok := arg3.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+
+		return result.Map(
+			eCtx.SendBalance(to, amount, asset),
+			func(struct{}) SdkResultStruct {
+				return SdkResultStruct{
+					Gas: 1_000_000,
+				}
+			},
+		)
 		// const args: {
 		// 	//$self#tag
 		// 	dest: string
@@ -325,8 +375,34 @@ var SdkModule = map[string]sdkFunc{
 		return ErrUnimplemented
 	},
 	//Triggers withdrawal of tokens owned by contract
-	"hive.withdraw": func(ctx context.Context, a any) SdkResult {
-		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+	"hive.withdraw": func(ctx context.Context, arg1 any, arg2 any, arg3 any) SdkResult {
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+
+		to, ok := arg1.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		amountString, ok := arg2.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		amount, err := strconv.ParseInt(amountString, 10, 64)
+		if err != nil {
+			return result.Err[SdkResultStruct](err)
+		}
+		asset, ok := arg3.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+
+		return result.Map(
+			eCtx.WithdrawBalance(to, amount, asset),
+			func(struct{}) SdkResultStruct {
+				return SdkResultStruct{
+					Gas: 1_000_000,
+				}
+			},
+		)
 		// const args:{
 		// 	dest: string
 		// 	from_tag: string

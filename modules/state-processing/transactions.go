@@ -70,6 +70,14 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 	code := node.RawData()
 
+	hasMinRCs, availableGas, _ := rcSession.CanConsume(t.Self.RequiredAuths[0], t.Self.BlockHeight, 100)
+
+	if !hasMinRCs {
+		return errorToTxResult(fmt.Errorf("minimum RC requirement is not met. RCs available: %d", availableGas), 100)
+	}
+
+	gas := min(uint(availableGas), t.RcLimit)
+
 	ctx := contract_execution_context.New(contract_execution_context.Environment{
 		t.ContractId,
 		t.Self.BlockHeight,
@@ -80,15 +88,7 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 		t.Self.Timestamp,
 		t.Self.RequiredAuths,
 		t.Self.RequiredPostingAuths,
-	}, t.Intents, ledgerSession)
-
-	hasMinRCs, availableGas, _ := rcSession.CanConsume(t.Self.RequiredAuths[0], t.Self.BlockHeight, 100)
-
-	if !hasMinRCs {
-		return errorToTxResult(fmt.Errorf("minimum RC requirement is not met. RCs available: %d", availableGas), 100)
-	}
-
-	gas := min(uint(availableGas), t.RcLimit)
+	}, int64(gas), t.Intents, ledgerSession)
 
 	res := result.MapOrElse(
 		se.wasm.Execute(ctx, code, gas*common.CYCLE_GAS_PER_RC, t.Action, t.Payload, info.Runtime),
