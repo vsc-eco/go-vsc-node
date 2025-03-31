@@ -58,8 +58,6 @@ type StateEngine struct {
 	RcMap    map[string]int64
 	rcSystem *rcSystem.RcSystem
 
-	VirtualOutputs map[string]*contract_session.TempOutput
-
 	//Unused ideas
 	// AnchoredHeight uint64
 	// VirtualRoot    []byte
@@ -72,8 +70,9 @@ type StateEngine struct {
 	TxBatch []TxPacket
 
 	//Map of txId --> output
-	TxOutput    map[string]TxOutput
-	TempOutputs map[string]*contract_session.TempOutput
+	TxOutput        map[string]TxOutput
+	TempOutputs     map[string]*contract_session.TempOutput
+	ContractResults map[string][]TxResultWithId
 
 	log logger.Logger
 
@@ -214,7 +213,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				txIds = append(txIds, txId)
 			}
 
-			se.txDb.SetConfirmed(txIds)
+			se.txDb.SetStatus(txIds, "CONFIRMED")
 
 			se.slotStatus = &SlotStatus{
 				SlotHeight: slotInfo.StartHeight,
@@ -655,16 +654,19 @@ func (se *StateEngine) ExecuteBatch() {
 		ok := true
 		for idx, vscTx := range tx.Ops {
 			var contractSession *contract_session.ContractSession
+			var contractId string
 			if vscTx.Type() == "call_contract" {
 				contractCall, ok := vscTx.(TxVscCallContract)
 				if ok {
+					contractId = contractCall.ContractId
 					if contractSessions[contractCall.ContractId] == nil {
 						contractOutput := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
 
 						tmpOut := contract_session.TempOutput{
-							Cache:    make(map[string][]byte),
-							Metadata: make(map[string]interface{}),
-							Cid:      contractOutput.StateMerkle,
+							Cache:     make(map[string][]byte),
+							Metadata:  make(map[string]interface{}),
+							Deletions: make(map[string]bool),
+							Cid:       contractOutput.StateMerkle,
 						}
 
 						sess := contract_session.New(se.da)
@@ -684,6 +686,14 @@ func (se *StateEngine) ExecuteBatch() {
 			fmt.Println("RC Payer is", payer, vscTx.Type(), vscTx, result.RcUsed)
 
 			se.RcMap[payer] = se.RcMap[payer] + result.RcUsed
+
+			if vscTx.Type() == "call_contract" {
+				se.AppendOutput(contractId, TxResultWithId{
+					TxId:    MakeTxId(tx.TxId, idx),
+					Ret:     result.Ret,
+					Success: result.Success,
+				})
+			}
 			if !result.Success {
 				se.log.Debug("TRANSACTION REVERTING")
 				ok = false
@@ -871,9 +881,18 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 	}
 }
 
-// Execute block within state engine as it is very important
-func (se *StateEngine) ExecuteBlock(blockContent BlockContent) {
+// Appends an output to the output map
+func (se *StateEngine) AppendOutput(contractId string, out TxResultWithId) {
+	if se.ContractResults[contractId] == nil {
+		se.ContractResults[contractId] = make([]TxResultWithId, 0)
+	}
+	se.ContractResults[contractId] = append(se.ContractResults[contractId], out)
+}
 
+func (se *StateEngine) Flush() {
+	se.ContractResults = make(map[string][]TxResultWithId)
+	se.TempOutputs = make(map[string]*contract_session.TempOutput)
+	se.TxOutput = make(map[string]TxOutput)
 }
 
 // If there is transactions in the queue, use the last vsc block height to resume
@@ -926,9 +945,12 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 	wasm *wasm_parent_ipc.Wasm,
 ) *StateEngine {
 	return &StateEngine{
-		log:      logger,
-		TxOutput: make(map[string]TxOutput),
-		da:       da,
+		log:             logger,
+		TxOutput:        make(map[string]TxOutput),
+		ContractResults: make(map[string][]TxResultWithId),
+		TempOutputs:     make(map[string]*contract_session.TempOutput),
+
+		da: da,
 		// db: db,
 
 		witnessDb:     witnessesDb,

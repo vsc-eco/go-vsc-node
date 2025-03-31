@@ -70,11 +70,13 @@ func (ch *contractState) IngestOutput(output IngestOutputArgs) {
 	ch.FindOneAndUpdate(context.Background(), bson.M{"id": output.Id}, bson.M{
 		"$set": bson.M{
 			"id":           output.Id,
-			"inputs":       output.Inputs,
 			"contract_id":  output.ContractId,
 			"state_merkle": output.StateMerkle,
-			"results":      output.Results,
 			"block_height": output.AnchoredHeight,
+
+			"metadata": output.Metadata,
+			"inputs":   output.Inputs,
+			"results":  output.Results,
 		},
 	}, options)
 

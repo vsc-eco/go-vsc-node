@@ -82,6 +82,8 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 	gas := min(uint(availableGas), t.RcLimit)
 
+	ss := contractSession.GetStateStore()
+
 	ctx := contract_execution_context.New(contract_execution_context.Environment{
 		t.ContractId,
 		t.Self.BlockHeight,
@@ -92,7 +94,7 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 		t.Self.Timestamp,
 		t.Self.RequiredAuths,
 		t.Self.RequiredPostingAuths,
-	}, int64(gas), t.Intents, ledgerSession, contractSession.GetStateStore(), contractSession.GetMetadata())
+	}, int64(gas), t.Intents, ledgerSession, ss, contractSession.GetMetadata())
 
 	res := result.MapOrElse(
 		se.wasm.Execute(ctx, code, gas*common.CYCLE_GAS_PER_RC, t.Action, t.Payload, info.Runtime),
@@ -112,6 +114,8 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 	if !res.Success {
 		ctx.Revert()
 	}
+
+	ss.Commit()
 
 	return res
 }

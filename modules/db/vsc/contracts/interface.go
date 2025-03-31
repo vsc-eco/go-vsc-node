@@ -16,18 +16,17 @@ type ContractState interface {
 
 type IngestOutputArgs struct {
 	Id          string
-	Inputs      []string
 	ContractId  string
 	StateMerkle string
-	Gas         struct {
-		IO int64
-	}
+
+	Inputs  []string
 	Results []struct {
-		Ret       *string  `bson:"ret"`
-		Logs      []string `bson:"logs"`
-		Error     *string  `bson:"error"`
-		ErrorType *int     `bson:"errorType"`
+		Ret string `json:"ret" bson:"ret"`
+		Ok  bool   `json:"ok" bson:"ok"`
 	} `bson:"results"`
+
+	Metadata map[string]interface{} `bson:"metadata"`
+
 	AnchoredBlock  string
 	AnchoredHeight int64
 	AnchoredId     string

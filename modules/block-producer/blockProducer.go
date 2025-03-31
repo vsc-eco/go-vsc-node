@@ -144,6 +144,11 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 		offchainTxs = append(offchainTxs, *oplog)
 	}
 
+	contractOutputs := bp.MakeOutputs(daSession)
+	if len(contractOutputs) > 0 {
+		offchainTxs = append(offchainTxs, contractOutputs...)
+	}
+
 	// rcMap := bp.MakeRcMap()
 
 	mr, err := MerklizeCids(outCids)
@@ -597,7 +602,7 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.VscBlockTx {
 
 	contractOutputs := make([]vscBlocks.VscBlockTx, 0)
-	for contractId, output := range bp.StateEngine.VirtualOutputs {
+	for contractId, output := range bp.StateEngine.TempOutputs {
 		var db datalayer.DataBin
 		if output.Cid != "" {
 			db = datalayer.NewDataBin(bp.Datalayer)
@@ -607,6 +612,10 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 		}
 
 		for key, value := range output.Cache {
+			if output.Deletions[key] {
+				db.Delete(key)
+				continue
+			}
 			if len(value) > 0 {
 				cidz, err := common.HashBytes(value, multicodec.Raw)
 				if err != nil {
@@ -615,11 +624,31 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 				session.Put(value, cidz)
 
 				db.Set(key, cidz)
-			} else {
-				db.Delete(key)
 			}
 		}
 		savedCid := db.Save()
+
+		if len(bp.StateEngine.ContractResults[contractId]) == 0 {
+			continue
+		}
+
+		results := make([]struct {
+			Ret string `json:"ret" bson:"ret"`
+			Ok  bool   `json:"ok" bson:"ok"`
+		}, 0)
+
+		inputIds := make([]string, 0)
+
+		for _, v := range bp.StateEngine.ContractResults[contractId] {
+			results = append(results, struct {
+				Ret string "json:\"ret\" bson:\"ret\""
+				Ok  bool   "json:\"ok\" bson:\"ok\""
+			}{
+				Ret: v.Ret,
+				Ok:  v.Success,
+			})
+			inputIds = append(inputIds, v.TxId)
+		}
 
 		outputObj := map[string]interface{}{
 			"__t":          "vsc-output",
@@ -627,9 +656,10 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			"contract_id":  contractId,
 			"metadata":     output.Metadata,
 			"state_merkle": savedCid.String(),
-			"inputs":       []string{},
-			"results":      []string{},
+			"inputs":       inputIds,
+			"results":      results,
 		}
+
 		dagBytes, _ := common.EncodeDagCbor(outputObj)
 
 		outputId, _ := cid.Prefix{

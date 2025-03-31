@@ -24,34 +24,59 @@ import (
 )
 
 type ContractOutput struct {
-	Id         string
-	ContractId string   `json:"contract_id"`
-	Inputs     []string `json:"inputs"`
-	IoGas      int64    `json:"io_gas"`
+	Id         string                 `json:"id"`
+	ContractId string                 `json:"contract_id"`
+	Inputs     []string               `json:"inputs"`
+	Metadata   map[string]interface{} `json:"metadata"`
 	//This might not be used
-	RemoteCalls []string         `json:"remote_calls"`
-	Results     []ContractResult `json:"results"`
-	StateMerkle string           `json:"state_merkle"`
+
+	Results []struct {
+		Ret string `json:"ret" bson:"ret"`
+		Ok  bool   `json:"ok" bson:"ok"`
+	} `json:"results" bson:"results"`
+	StateMerkle string `json:"state_merkle"`
 }
 
 func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
+	se.Flush()
+
 	for idx, InputId := range output.Inputs {
 		se.txDb.SetOutput(transactions.SetOutputUpdate{
 			Id:       InputId,
 			OutputId: output.Id,
 			Index:    int64(idx),
 		})
+		if output.Results[idx].Ok {
+			se.txDb.SetStatus([]string{InputId}, "CONFIRMED")
+		} else {
+			se.txDb.SetStatus([]string{InputId}, "FAILED")
+		}
 	}
+
+	go func() {
+		cid, err := cid.Parse(output.StateMerkle)
+		if err == nil {
+			db := datalayer.NewDataBinFromCid(se.da, cid)
+			list, _ := db.List("")
+			if list != nil {
+				for _, v := range *list {
+					cidz, err := db.Get(v)
+					if err == nil {
+						se.da.Get(*cidz, &datalayer.GetOptions{})
+					}
+				}
+			}
+		}
+	}()
 	//Set output history
 	se.contractState.IngestOutput(contracts.IngestOutputArgs{
 		Id:         output.Id,
 		ContractId: output.ContractId,
-		Inputs:     output.Inputs,
-		Gas: struct {
-			IO int64
-		}{
-			IO: output.IoGas,
-		},
+
+		StateMerkle: output.StateMerkle,
+		Inputs:      output.Inputs,
+		Results:     output.Results,
+
 		AnchoredBlock:  txSelf.BlockId,
 		AnchoredHeight: int64(txSelf.BlockHeight),
 		AnchoredId:     txSelf.TxId,
@@ -60,12 +85,8 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
 }
 
 type ContractResult struct {
-	IOGas     int           `type:"IOGas"`
-	Error     string        `json:"error"`
-	ErrorType string        `json:"errorType"`
-	Ledger    []interface{} `json:"ledger"`
-	Logs      string        `json:"logs"`
-	Ret       string        `json:"ret"`
+	Ret string `json:"ret" bson:"ret"`
+	Ok  bool   `json:"ok" bson:"ok"`
 }
 
 type TxCreateContract struct {

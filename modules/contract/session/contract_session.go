@@ -11,6 +11,7 @@ type ContractSession struct {
 
 	metadata    map[string]interface{}
 	cache       map[string][]byte
+	deletions   map[string]bool
 	stateMerkle string
 
 	// stateSesions map[string]*StateStore
@@ -25,7 +26,7 @@ func New(dl *datalayer.DataLayer) *ContractSession {
 // Longer term this should allow for getting from multiple contracts
 // This just does the only contract here
 func (cs *ContractSession) GetStateStore(contractId ...string) *StateStore {
-	ss := NewStateStore(cs.dl, cs.stateMerkle)
+	ss := NewStateStore(cs.dl, cs.stateMerkle, cs)
 	return &ss
 	// if cs.stateSesions[contractId] != nil {
 	// 	txOutput := cs.stateEngine.VirtualOutputs[contractId]
@@ -54,9 +55,10 @@ func (cs *ContractSession) SetMetadata(meta map[string]interface{}) {
 
 func (cs *ContractSession) ToOutput() TempOutput {
 	return TempOutput{
-		Cache:    cs.cache,
-		Cid:      cs.stateMerkle,
-		Metadata: cs.metadata,
+		Cache:     cs.cache,
+		Cid:       cs.stateMerkle,
+		Metadata:  cs.metadata,
+		Deletions: cs.deletions,
 	}
 }
 
@@ -68,8 +70,10 @@ func (cs *ContractSession) FromOutput(output TempOutput) {
 
 type StateStore struct {
 	cache     map[string][]byte
+	deletions map[string]bool
 	datalayer *datalayer.DataLayer
 	databin   *datalayer.DataBin
+	cs        *ContractSession
 }
 
 func (ss *StateStore) Get(key string) []byte {
@@ -94,18 +98,21 @@ func (ss *StateStore) Get(key string) []byte {
 
 func (ss *StateStore) Set(key string, value []byte) {
 	ss.cache[key] = value
+	delete(ss.deletions, key)
 }
 
 func (ss *StateStore) Delete(key string) {
 	delete(ss.cache, key)
+	ss.deletions[key] = true
 }
 
-func (ss *StateStore) Commit() map[string][]byte {
+func (ss *StateStore) Commit() {
 	// commit the changes to the underlying storage
-	return ss.cache
+	ss.cs.deletions = ss.deletions
+	ss.cs.cache = ss.cache
 }
 
-func NewStateStore(dl *datalayer.DataLayer, cids string) StateStore {
+func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) StateStore {
 	if cids == "" {
 		databin := datalayer.NewDataBin(dl)
 
@@ -113,6 +120,7 @@ func NewStateStore(dl *datalayer.DataLayer, cids string) StateStore {
 			cache:     make(map[string][]byte),
 			datalayer: dl,
 			databin:   &databin,
+			cs:        cs,
 		}
 	} else {
 		cidz := cid.MustParse(cids)
@@ -122,6 +130,7 @@ func NewStateStore(dl *datalayer.DataLayer, cids string) StateStore {
 			cache:     make(map[string][]byte),
 			datalayer: dl,
 			databin:   &databin,
+			cs:        cs,
 		}
 	}
 }
@@ -129,6 +138,7 @@ func NewStateStore(dl *datalayer.DataLayer, cids string) StateStore {
 type TempOutput struct {
 	Cache map[string][]byte
 
-	Metadata map[string]interface{}
-	Cid      string
+	Metadata  map[string]interface{}
+	Deletions map[string]bool
+	Cid       string
 }

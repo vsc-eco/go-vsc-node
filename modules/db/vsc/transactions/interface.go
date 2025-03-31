@@ -8,5 +8,5 @@ type Transactions interface {
 	SetOutput(sOut SetOutputUpdate)
 	GetTransaction(id string) *TransactionRecord
 	FindUnconfirmedTransactions(height uint64) ([]TransactionRecord, error)
-	SetConfirmed(ids []string)
+	SetStatus(ids []string, status string)
 }

@@ -17,6 +17,13 @@ type TxResult struct {
 	RcUsed  int64
 }
 
+type TxResultWithId struct {
+	Success bool
+	Ret     string
+	TxId    string
+	RcUsed  int64
+}
+
 // More information about the TX
 type TxSelf struct {
 	TxId                 string

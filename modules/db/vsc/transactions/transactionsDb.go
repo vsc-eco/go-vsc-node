@@ -146,7 +146,7 @@ func (e *transactions) FindUnconfirmedTransactions(height uint64) ([]Transaction
 	return txList, nil
 }
 
-func (e *transactions) SetConfirmed(ids []string) {
+func (e *transactions) SetStatus(ids []string, status string) {
 	query := bson.M{
 		"id": bson.M{
 			"$in": ids,
@@ -155,7 +155,7 @@ func (e *transactions) SetConfirmed(ids []string) {
 
 	e.UpdateMany(context.Background(), query, bson.M{
 		"$set": bson.M{
-			"status": "CONFIRMED",
+			"status": status,
 		},
 	})
 }
