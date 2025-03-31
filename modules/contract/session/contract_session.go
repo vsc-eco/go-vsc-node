@@ -24,7 +24,7 @@ func New(dl *datalayer.DataLayer) *ContractSession {
 
 // Longer term this should allow for getting from multiple contracts
 // This just does the only contract here
-func (cs *ContractSession) GetStateStore(contractId string) *StateStore {
+func (cs *ContractSession) GetStateStore(contractId ...string) *StateStore {
 	ss := NewStateStore(cs.dl, cs.stateMerkle)
 	return &ss
 	// if cs.stateSesions[contractId] != nil {
@@ -77,9 +77,9 @@ func (ss *StateStore) Get(key string) []byte {
 	if ss.cache[key] == nil {
 		cidz, err := ss.databin.Get(key)
 
-		if err != nil {
+		if err == nil {
 			rawBytes, err := ss.datalayer.GetRaw(*cidz)
-			if err != nil {
+			if err == nil {
 				ss.cache[key] = rawBytes
 			} else {
 				ss.cache[key] = make([]byte, 0)
