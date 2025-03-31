@@ -518,6 +518,7 @@ type LedgerSession struct {
 	oplog     []ledgerSystem.OpLogEvent
 	ledgerOps []ledgerSystem.LedgerUpdate
 	balances  map[string]*int64
+	idCache   map[string]int
 
 	StartHeight uint64
 }
@@ -541,6 +542,12 @@ func (lss *LedgerSession) Revert() {
 
 // Appends an Oplog with no validation
 func (lss *LedgerSession) AppendOplog(event ledgerSystem.OpLogEvent) {
+	//Maybe this should be calculated upon indexing rather than before
+	if lss.idCache[event.Id] > 0 {
+		event.Id = event.Id + ":" + strconv.Itoa(lss.idCache[event.Id])
+	}
+	lss.idCache[event.Id]++
+
 	result := lss.le.Ls.ExecuteOplog([]ledgerSystem.OpLogEvent{event}, lss.StartHeight, event.BlockHeight)
 
 	for _, v := range result.ledgerRecords {
