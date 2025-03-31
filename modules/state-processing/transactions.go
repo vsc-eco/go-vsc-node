@@ -70,7 +70,17 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 	code := node.RawData()
 
-	ctx := contract_execution_context.New(t.ContractId, t.Intents, ledgerSession)
+	ctx := contract_execution_context.New(contract_execution_context.Environment{
+		t.ContractId,
+		t.Self.BlockHeight,
+		t.Self.TxId,
+		t.Self.BlockId,
+		t.Self.Index,
+		t.Self.OpIndex,
+		t.Self.Timestamp,
+		t.Self.RequiredAuths,
+		t.Self.RequiredPostingAuths,
+	}, t.Intents, ledgerSession)
 
 	hasMinRCs, availableGas, _ := rcSession.CanConsume(t.Self.RequiredAuths[0], t.Self.BlockHeight, 100)
 

@@ -12,6 +12,12 @@ var CONSENSUS_SPECS = struct {
 
 const CYCLE_GAS_PER_RC = 100_000_000
 
+// Areweave does $10.5 per GB we can use less b/c we charge for reads and modifications as well
+// 19 RCs per new written byte ($4/GB)
+// 1 RC per read or modified byte ($0.21/GB)
+const WRITE_IO_GAS_RC_COST = 19
+const READ_IO_GAS_RC_COST = 1
+
 // 2,000 HIVE
 var CONSENSUS_STAKE_MIN = int64(2_000_000)
 
