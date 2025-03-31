@@ -8,7 +8,9 @@ import (
 	"runtime"
 	"testing"
 	"time"
+	"vsc-node/modules/common"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
+	wasm_context "vsc-node/modules/wasm/context"
 	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
 )
@@ -957,7 +959,7 @@ func TestAssemblyScriptCompat(t *testing.T) {
 	//0.00037473899999999996
 	//0.00021495799999999998 seconds
 	//0.000234295 seconds
-	ctxValue := contract_execution_context.New("contract-id", nil, nil)
+	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, (14845)/common.CYCLE_GAS_PER_RC, nil, nil)
 	fmt.Println("exec init:", time.Now())
 	res := w.Execute(ctxValue, ASSEMBLY_SCRIPT_TEST_CODE, 14845, "main", "my-args-testing-123", wasm_runtime.AssemblyScript)
 	if res.IsOk() {
@@ -995,7 +997,7 @@ func TestGoCompat(t *testing.T) {
 	//0.00037473899999999996
 	//0.00021495799999999998 seconds
 	//0.000234295 seconds
-	ctxValue := contract_execution_context.New("contract-id", nil, nil)
+	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, (4845)/common.CYCLE_GAS_PER_RC, nil, nil)
 	fmt.Println("exec init:", time.Now())
 	res := w.Execute(ctxValue, GO_TEST_CODE, 4845, "entrypoint", "my-args-testing-123", wasm_runtime.Go)
 	if res.IsOk() {

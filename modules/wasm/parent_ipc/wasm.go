@@ -70,9 +70,19 @@ func (w *Wasm) Stop() error {
 const timePer15_000GasUnits = 5 * time.Millisecond
 const startupTime = 3000 * time.Millisecond // TODO investigate large startup time
 
-func (w *Wasm) Execute(ctxValue wasm_context.ExecContextValue, byteCode []byte, gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime) result.Result[wasm_types.WasmResultStruct] {
+func (w *Wasm) Execute(ctxValue wasm_context.ExecContextValue, byteCode []byte, gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime) (res result.Result[wasm_types.WasmResultStruct]) {
 	ctx, cancel := context.WithTimeout(context.WithValue(context.WithValue(w.ctx, wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(byteCode)), (timePer15_000GasUnits*time.Duration(gas)/15_000)+startupTime)
 	defer cancel()
+	defer func() {
+		rec := recover()
+		if rec != nil {
+			err, ok := rec.(error)
+			if !ok {
+				err = fmt.Errorf("%v", rec)
+			}
+			res = result.Err[wasm_types.WasmResultStruct](err)
+		}
+	}()
 	return ipc_host.RunWithContext[wasm_types.WasmResultStruct](ctx,
 		w.execPath[0], append(w.execPath[1:],
 			"-gas", fmt.Sprint(gas),
@@ -82,5 +92,4 @@ func (w *Wasm) Execute(ctxValue wasm_context.ExecContextValue, byteCode []byte, 
 			"-args", args,
 			"-runtime", runtime.String(),
 		)...)
-
 }
