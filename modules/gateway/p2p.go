@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
 
@@ -11,9 +12,10 @@ import (
 )
 
 type p2pMessage struct {
-	Type string `json:"type"`
-	Op   string `json:"op"`
-	Data string `json:"data"`
+	Type    string `json:"type"`
+	Version string `json:"v"`
+	Op      string `json:"op"`
+	Data    string `json:"data"`
 }
 
 type signRequest struct {
@@ -39,7 +41,147 @@ func (p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Me
 }
 
 func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
+	if msg.Type == "sign_request" {
+		if s.ms.bh == 0 {
+			return nil
+		}
+		if msg.Op == "key_rotation" {
+			var signReq signRequest
+			err := json.Unmarshal([]byte(msg.Data), &signReq)
+			if err != nil {
+				return nil
+			}
 
+			err = s.ms.waitCheckBh(ROTATION_INTERVAL, signReq.BlockHeight)
+
+			if err != nil {
+				return nil
+			}
+
+			signPkg, err := s.ms.keyRotation(signReq.BlockHeight)
+
+			if err != nil {
+				return nil
+			}
+
+			fmt.Println("signPkg", signPkg)
+
+			if signPkg.TxId == signReq.TxId {
+				sig, err := s.ms.hiveCreator.Sign(signPkg.Tx)
+				if err != nil {
+					return nil
+				}
+
+				resp := signResponse{
+					TxId: signPkg.TxId,
+					Sig:  sig,
+				}
+
+				data, _ := json.Marshal(resp)
+
+				send(p2pMessage{
+					Type:    "sign_response",
+					Version: "1",
+					Op:      "key_rotation",
+					Data:    string(data),
+				})
+			}
+		} else if msg.Op == "execute_actions" {
+			var signReq signRequest
+			err := json.Unmarshal([]byte(msg.Data), &signReq)
+			if err != nil {
+				return nil
+			}
+
+			err = s.ms.waitCheckBh(ACTION_INTERVAL, signReq.BlockHeight)
+
+			if err != nil {
+				return nil
+			}
+
+			signPkg, err := s.ms.keyRotation(signReq.BlockHeight)
+
+			if err != nil {
+				return nil
+			}
+
+			if signPkg.TxId == signReq.TxId {
+				sig, err := s.ms.hiveCreator.Sign(signPkg.Tx)
+				if err != nil {
+					return nil
+				}
+
+				resp := signResponse{
+					TxId: signPkg.TxId,
+					Sig:  sig,
+				}
+
+				data, _ := json.Marshal(resp)
+
+				send(p2pMessage{
+					Type:    "sign_response",
+					Version: "1",
+					Op:      "execute_actions",
+					Data:    string(data),
+				})
+			}
+		} else if msg.Op == "fr_sync" {
+			var signReq signRequest
+			err := json.Unmarshal([]byte(msg.Data), &signReq)
+			if err != nil {
+				return nil
+			}
+
+			err = s.ms.waitCheckBh(SYNC_INTERVAL, signReq.BlockHeight)
+
+			if err != nil {
+				return nil
+			}
+
+			signPkg, err := s.ms.syncBalance(signReq.BlockHeight)
+
+			if err != nil {
+				return nil
+			}
+
+			if signPkg.TxId == signReq.TxId {
+				sig, err := s.ms.hiveCreator.Sign(signPkg.Tx)
+				if err != nil {
+					return nil
+				}
+
+				resp := signResponse{
+					TxId: signPkg.TxId,
+					Sig:  sig,
+				}
+
+				data, _ := json.Marshal(resp)
+
+				send(p2pMessage{
+					Type:    "sign_response",
+					Version: "1",
+					Op:      "fr_sync",
+					Data:    string(data),
+				})
+			}
+		}
+		// s.ms.executeActions()
+		// sig, err := s.ms.signRequest(ctx, signReq)
+		// if err != nil {
+		// 	return err
+		// }
+		// resp := signResponse{
+		// 	TxId: signReq.TxId,
+		// 	Sig:  sig,
+		// }
+		// data, _ := json.Marshal(resp)
+		// msg := p2pMessage{
+		// 	Type:    "sign_response",
+		// 	Version: "1",
+		// 	Data:    string(data),
+		// }
+		// send(msg)
+	}
 	return nil
 }
 
