@@ -71,7 +71,9 @@ func main() {
 	hiveRpcClient := hivego.NewHiveRpc("https://api.hive.blog")
 
 	filters := []streamer.FilterFunc{filter}
-	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, nil, nil) // optional starting block #
+
+	stBlock := uint64(94601000)
+	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, nil, &stBlock) // optional starting block #
 
 	identityConfig := common.NewIdentityConfig()
 
@@ -116,6 +118,8 @@ func main() {
 
 	txpool := transactionpool.New(p2p, txDb, da, identityConfig)
 
+	sr := streamer.NewStreamReader(hiveBlocks, vstream.ProcessBlock, se.SaveBlockHeight)
+
 	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{
 		witnessDb,
 		txpool,
@@ -158,6 +162,7 @@ func main() {
 		bp,
 		ep,
 		multisig,
+		sr,
 
 		//WASM execution environment
 		wasm,
