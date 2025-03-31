@@ -231,60 +231,6 @@ var SdkModule = map[string]sdkFunc{
 				}
 			},
 		)
-		// const args:{
-		// 	from: string
-		// 	amount: number
-		// 	asset: "HIVE" | "HBD"
-		// 	tag: string
-		// } = JSON.parse(value)
-		// snapshot := this.getBalanceSnapshot(args.from, block_height)
-
-		//Total amount drawn from ledgerStack during this execution
-		// totalAmountDrawn := Math.abs(this.ledgerStack.filter(sift({
-		// 	owner: args.from,
-		// 	to: contract_id,
-		// 	unit: args.asset
-		// })).reduce((acc, cur) => acc + cur.amt, 0))
-
-		// allowedByIntent := this.verifyIntent("hive.allow_transfer", {
-		// 	token: {
-		// 		$eq: args.asset.toLowerCase()
-		// 	},
-		// 	limit: {
-		// 		$gte: args.amount + totalAmountDrawn
-		// 	}
-		// })
-
-		// if(!allowedByIntent) {
-		// 	return {
-		// 		result: "MISSING_INTENT_HEADER"
-		// 	}
-		// }
-
-		// if(snapshot.tokens[args.asset] >= args.amount) {
-		// 	this.applyLedgerOp({
-		// 		t: EventOpType["ledger:transfer"],
-		// 		owner: args.from,
-		// 		amt: -args.amount,
-		// 		tk: args.asset
-		// 	})
-		// 	this.applyLedgerOp({
-		// 		t: EventOpType["ledger:transfer"],
-		// 		//Tag using contract address #tag
-		// 		owner: args.tag  `${contract_id}#${args.tag}` : contract_id,
-		// 		amt: args.amount,
-		// 		tk: args.asset
-		// 	})
-
-		// 	return {
-		// 		result: "SUCCESS"
-		// 	}
-		// } else {
-		// 	return {
-		// 		result: "INSUFFICIENT_FUNDS"
-		// 	}
-		// }
-		return ErrUnimplemented
 	},
 	//Transfer tokens owned by contract to another user or
 	"hive.transfer": func(ctx context.Context, arg1 any, arg2 any, arg3 any) SdkResult {
@@ -315,64 +261,6 @@ var SdkModule = map[string]sdkFunc{
 				}
 			},
 		)
-		// const args: {
-		// 	//$self#tag
-		// 	dest: string
-		// 	//Transfer tag
-		// 	from_tag: string
-		// 	memo: string
-		// 	amount: number
-		// 	asset: "HIVE" | "HBD"
-		// } = JSON.parse(value)
-		// normalizedFrom := args.from_tag  `${contract_id}#${args.from_tag}` : contract_id
-		// var normalizedDest any
-
-		// if(!["HIVE", "HBD"].includes(args.asset)) {
-		// 	return {
-		// 		result: "INVALID_ASSET"
-		// 	}
-		// }
-
-		// if args.dest == "$self" {
-		// const [, tag] = args.dest.split("#")
-		// normalizedDest = tag  `${contract_id}#${tag}` : contract_id
-		// } else {
-		// if args.dest.startsWith("did:") || args.dest.startsWith("hive:") {
-		// normalizedDest = args.dest
-		// } else {
-		// return {
-		// 	result: "INVALID_DEST"
-		// }
-		// }
-		// }
-		// snapshot := this.getBalanceSnapshot(normalizedFrom, block_height)
-		// if snapshot.tokens[args.asset] >= args.amount {
-		// this.applyLedgerOp({
-		// 	t: EventOpType["ledger:transfer"],
-		// 	owner: normalizedFrom,
-		// 	amt: -args.amount,
-		// 	tk: args.asset
-		// })
-
-		// this.applyLedgerOp({
-		// 	t: EventOpType["ledger:transfer"],
-		// 	owner: normalizedDest,
-		// 	amt: args.amount,
-		// 	tk: args.asset,
-		// 	//Memo will always be in last op to save space. Indexing makes it easier to search for memos
-		// 	...(args.memo  {memo: args.memo} : {})
-		// })
-
-		// return {
-		// 	result: "SUCCESS"
-		// }
-		// } else {
-		// return {
-		// 	result: "INSUFFICIENT_FUNDS"
-		// }
-		// }
-
-		return ErrUnimplemented
 	},
 	//Triggers withdrawal of tokens owned by contract
 	"hive.withdraw": func(ctx context.Context, arg1 any, arg2 any, arg3 any) SdkResult {
@@ -403,57 +291,6 @@ var SdkModule = map[string]sdkFunc{
 				}
 			},
 		)
-		// const args:{
-		// 	dest: string
-		// 	from_tag: string
-		// 	memo: string
-		// 	amount: number
-		// 	asset: "HIVE" | "HBD"
-		// } = JSON.parse(value)
-		// normalizedFrom := args.from_tag  `${contract_id}#${args.from_tag}` : contract_id
-		// var normalizedDest any
-
-		// if(!["HIVE", "HBD"].includes(args.asset)) {
-		// 	return {
-		// 		result: "INVALID_ASSET"
-		// 	}
-		// }
-
-		// if args.dest.startsWith("hive:") {
-		// normalizedDest = args.dest
-		// } else {
-		// return {
-		// 	result: "INVALID_DEST"
-		// }
-		// }
-
-		// snapshot := this.getBalanceSnapshot(normalizedFrom, block_height)
-		// console.log("snapshot result", snapshot)
-
-		// if snapshot.tokens[args.asset] >= args.amount {
-		// this.applyLedgerOp({
-		// 	t: EventOpType["ledger:withdraw"],
-		// 	owner: normalizedFrom,
-		// 	amt: -args.amount,
-		// 	tk: args.asset,
-		// })
-		// this.applyLedgerOp({
-		// 	t: EventOpType["ledger:withdraw"],
-		// 	owner: `#withdrawto=${normalizedDest}`,
-		// 	amt: args.amount,
-		// 	tk: args.asset,
-		// 	...(args.memo  {memo: args.memo} : {})
-		// })
-		// console.log(this.ledgerStack)
-		// return {
-		// 	result: "SUCCESS"
-		// }
-		// } else {
-		// return {
-		// 	result: "INSUFFICIENT_FUNDS"
-		// }
-		// }
-		return ErrUnimplemented
 	},
 	//Intercontract read
 	"ic.read": func(ctx context.Context, a any) SdkResult {
