@@ -34,6 +34,10 @@ func (db *db) Init() error {
 	if err != nil {
 		return err
 	}
+	err = c.Ping(ctx, nil)
+	if err != nil {
+		return err
+	}
 	db.Client = c
 
 	return nil
