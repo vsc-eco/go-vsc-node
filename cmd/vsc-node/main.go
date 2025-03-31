@@ -86,7 +86,7 @@ func main() {
 		},
 	}
 
-	p2p := p2pInterface.New(witnessesDb)
+	p2p := p2pInterface.New(witnessesDb, identityConfig)
 
 	peerGetter := p2p.PeerInfo()
 

@@ -37,6 +37,7 @@ var BOOTSTRAP = []string{
 
 type P2PServer struct {
 	witnessDb witnesses.Witnesses
+	conf      common.IdentityConfig
 
 	Host           host.Host
 	Dht            *kadDht.IpfsDHT
@@ -54,10 +55,11 @@ type P2PServer struct {
 // var _ aggregate.Plugin = &Libp2p{}
 // var _ p.PubSub[peer.ID] = &Libp2p{}
 
-func New(witnessDb witnesses.Witnesses) *P2PServer {
+func New(witnessDb witnesses.Witnesses, conf common.IdentityConfig) *P2PServer {
 
 	return &P2PServer{
 		witnessDb: witnessDb,
+		conf:      conf,
 		cron:      cron.New(),
 	}
 }
@@ -105,7 +107,12 @@ func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 // Init implements aggregate.Plugin.
 func (p2pServer *P2PServer) Init() error {
 	//Future initialize using a configuration object with more detailed info
-	p2p, _ := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/10720"))
+	key, err := p2pServer.conf.Libp2pPrivateKey()
+	if err != nil {
+		return err
+	}
+	p2p, _ := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/10720"), libp2p.Identity(key))
+	fmt.Println("peer ID:", p2pServer.PeerInfo().GetPeerId())
 
 	//DHT wrapped host
 	ctx := context.Background()
