@@ -766,7 +766,7 @@ func (ledgerSession *LedgerSession) Withdraw(withdraw ledgerSystem.WithdrawParam
 		}
 	}
 
-	if !slices.Contains(assetTypes, withdraw.Asset) {
+	if !slices.Contains([]string{"hive", "hbd"}, withdraw.Asset) {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
 			Msg: "Invalid asset",
