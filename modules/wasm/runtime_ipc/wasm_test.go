@@ -955,7 +955,7 @@ func TestGoCompat(t *testing.T) {
 
 	test_utils.RunPlugin(t, w)
 
-	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, (sdkGas+ioGas)/common.CYCLE_GAS_PER_RC, nil, nil)
+	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, (goGas+ioGas)/common.CYCLE_GAS_PER_RC, nil, nil, nil, nil)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(GO_TEST_CODE))
 
 	in := NewBuffer()
@@ -989,7 +989,7 @@ func TestAssemblyScriptCompat(t *testing.T) {
 
 	test_utils.RunPlugin(t, w)
 
-	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, (sdkGas+ioGas)/common.CYCLE_GAS_PER_RC, nil, nil)
+	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, (asGas+ioGas)/common.CYCLE_GAS_PER_RC, nil, nil, nil, nil)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(ASSEMBLY_SCRIPT_TEST_CODE))
 
 	in := NewBuffer()
@@ -1046,7 +1046,7 @@ func BenchmarkInstructionsPerSecond(b *testing.B) {
 
 			test_utils.RunPlugin(b, w)
 
-			var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, (sdkGas+ioGas)/common.CYCLE_GAS_PER_RC, nil, nil)
+			var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, int64(test.maxGas+ioGas)/common.CYCLE_GAS_PER_RC, nil, nil, nil, nil)
 			ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(test.code))
 
 			in := NewBuffer()
@@ -4393,7 +4393,7 @@ func TestSdkCompat(t *testing.T) {
 
 	test_utils.RunPlugin(t, w)
 
-	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, (sdkGas+ioGas)/common.CYCLE_GAS_PER_RC, nil, nil)
+	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, (sdkGas+ioGas)/common.CYCLE_GAS_PER_RC, nil, nil, nil, nil)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(SDK_TEST_CODE_2))
 
 	in := NewBuffer()

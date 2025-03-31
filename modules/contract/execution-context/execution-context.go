@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"vsc-node/modules/common"
+	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	ledgerSystem "vsc-node/modules/ledger-system"
 
@@ -12,10 +13,13 @@ import (
 )
 
 type contractExecutionContext struct {
-	intents []contracts.Intent
-	ledger  ledgerSystem.LedgerSession
-	env     Environment
-	rcLimit int64
+	intents     []contracts.Intent
+	ledger      ledgerSystem.LedgerSession
+	env         Environment
+	rcLimit     int64
+	storage     *contract_session.StateStore
+	currentSize int
+	maxSize     int
 
 	logs []string
 
@@ -42,7 +46,7 @@ type Environment struct {
 
 // var _ wasm_context.ExecContextValue = &contractExecutionContext{}
 
-func New(env Environment, rcLimit int64, intents []contracts.Intent, ledger ledgerSystem.LedgerSession) ContractExecutionContext {
+func New(env Environment, rcLimit int64, intents []contracts.Intent, ledger ledgerSystem.LedgerSession, storage *contract_session.StateStore, interalStorage map[string]interface{}) ContractExecutionContext {
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
 	for _, intent := range intents {
@@ -65,16 +69,38 @@ func New(env Environment, rcLimit int64, intents []contracts.Intent, ledger ledg
 			tokenLimits[token] = &val
 		}
 	}
+	ensureInternalStorageInitialized(interalStorage)
 	return &contractExecutionContext{
 		intents,
 		ledger,
 		env,
 		rcLimit,
+		storage,
+		interalStorage["current_size"].(int),
+		interalStorage["max_size"].(int),
 		nil,
 		0,
 		0,
 		nil,
 		tokenLimits,
+	}
+}
+
+func ensureInternalStorageInitialized(internalStorage map[string]interface{}) {
+	_, ok := internalStorage["current_size"]
+	if !ok {
+		internalStorage["current_size"] = 0
+	}
+	_, ok = internalStorage["max_size"]
+	if !ok {
+		internalStorage["max_size"] = 0
+	}
+}
+
+func (ctx *contractExecutionContext) InternalStorage() map[string]interface{} {
+	return map[string]interface{}{
+		"current_size": ctx.currentSize,
+		"max_size":     ctx.maxSize,
 	}
 }
 
@@ -171,20 +197,21 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 }
 
 func (ctx *contractExecutionContext) SetState(key string, value string) result.Result[struct{}] {
-	// TODO replace logic with current & max size counter
+	newWriteToAdd := 0
 	result.MapOrElse(
 		ctx.GetState(key),
 		func(err error) any { // key didn't exist before
 			// new write key & value
 			// no modifications
-			ctx.doIO(0, len(key)+len(value))
+			newWriteToAdd = len(key) + len(value)
 			return nil
 		},
 		func(prevValue string) any {
 			if len(prevValue) < len(value) { // previous value is shorter than new value
 				// new write value excluding previously written bytes
 				// modification previous value
-				ctx.doIO(len(prevValue), len(value)-len(prevValue))
+				newWriteToAdd = len(value) - len(prevValue)
+				ctx.doIO(len(prevValue))
 			} else {
 				// no new write
 				// modification value
@@ -193,16 +220,29 @@ func (ctx *contractExecutionContext) SetState(key string, value string) result.R
 			return nil
 		},
 	)
+	ctx.currentSize += newWriteToAdd
+	newWriteGas := max(0, ctx.currentSize-ctx.maxSize)
+	ctx.maxSize = max(ctx.currentSize, ctx.maxSize)
+	ctx.doIO(newWriteToAdd-newWriteGas, newWriteGas)
+	ctx.storage.Set(key, []byte(value))
 	return result.Ok(struct{}{})
 }
 
 func (ctx *contractExecutionContext) GetState(key string) result.Result[string] {
 	ctx.doIO(len(key))
-	return result.Ok("TODO")
+	res := ctx.storage.Get(key)
+	if res == nil {
+		return result.Err[string](fmt.Errorf("key does not exist"))
+	}
+	ctx.doIO(len(string(res)))
+	return result.Ok(string(res))
 }
 
 func (ctx *contractExecutionContext) DeleteState(key string) result.Result[struct{}] {
 	ctx.doIO(len(key))
+	value := ctx.GetState(key).Unwrap()
+	ctx.currentSize -= len(value) + len(key)
+	ctx.storage.Delete(key)
 	return result.Ok(struct{}{})
 }
 

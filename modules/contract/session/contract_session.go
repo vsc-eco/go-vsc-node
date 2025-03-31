@@ -85,7 +85,7 @@ func (ss *StateStore) Get(key string) []byte {
 				ss.cache[key] = make([]byte, 0)
 			}
 		} else {
-			ss.cache[key] = make([]byte, 0)
+			ss.cache[key] = nil
 		}
 	}
 

@@ -92,7 +92,7 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 		t.Self.Timestamp,
 		t.Self.RequiredAuths,
 		t.Self.RequiredPostingAuths,
-	}, int64(gas), t.Intents, ledgerSession)
+	}, int64(gas), t.Intents, ledgerSession, contractSession.GetStateStore(), contractSession.GetMetadata())
 
 	res := result.MapOrElse(
 		se.wasm.Execute(ctx, code, gas*common.CYCLE_GAS_PER_RC, t.Action, t.Payload, info.Runtime),
@@ -100,6 +100,7 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 			return errorToTxResult(err, int64(gas))
 		},
 		func(res wasm_types.WasmResultStruct) TxResult {
+			contractSession.SetMetadata(ctx.InternalStorage())
 			return TxResult{
 				Success: !res.Error,
 				Ret:     res.Result,
