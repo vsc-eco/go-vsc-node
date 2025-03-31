@@ -414,6 +414,9 @@ func (h *hiveBlocks) GetLastProcessedBlock() (uint64, error) {
 		return 0, fmt.Errorf("failed to get last processed block: %w", err)
 	}
 
+	if result.LastProcessedBlock == nil {
+		return 0, nil
+	}
 	return *result.LastProcessedBlock, nil
 }
 
