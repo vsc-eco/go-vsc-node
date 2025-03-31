@@ -180,7 +180,8 @@ func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession,
 			RcUsed:  50,
 		}
 	}
-	amount, err := strconv.ParseFloat(tx.Amount, 64)
+
+	amt, err := common.SafeParseHiveFloat(tx.Amount)
 
 	if err != nil {
 		return TxResult{
@@ -188,8 +189,6 @@ func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession,
 			RcUsed:  50,
 		}
 	}
-
-	amt := amount * math.Pow(10, 3)
 
 	transferParams := ledgerSystem.OpLogEvent{
 		Id:          MakeTxId(tx.Self.TxId, tx.Self.OpIndex),

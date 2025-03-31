@@ -3,7 +3,10 @@ package common
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"strconv"
+	"strings"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/utils"
 
@@ -78,4 +81,17 @@ func VerifySignatures(requiredAuths []string, blk blocks.Block, sigs []Sig) (boo
 	}))
 
 	return verified, err
+}
+
+func SafeParseHiveFloat(amount string) (int64, error) {
+	parts := strings.Split(amount, ".")
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("must have exactly 1 decimal point")
+	}
+
+	if len(parts[1]) != 3 {
+		return 0, fmt.Errorf("decimal part must have 3 decimal places")
+	}
+
+	return strconv.ParseInt(strings.Join(parts, ""), 10, 64)
 }
