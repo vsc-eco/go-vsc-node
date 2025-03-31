@@ -41,6 +41,7 @@ import (
 )
 
 func main() {
+	init := os.Args[len(os.Args)-1] == "--init"
 	dbConf := db.NewDbConfig()
 
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
@@ -176,7 +177,12 @@ func main() {
 		plugins,
 	)
 
+	if init {
+		fmt.Println("initing")
+		err = a.Init()
+	} else {
 	err = a.Run()
+	}
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)

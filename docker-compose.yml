@@ -1,6 +1,21 @@
 version: "3.9"
 services:
+  init:
+    profiles: ["init"]
+    build:
+      dockerfile: Dockerfile
+      context: .
+    command: ./vsc-node --init
+    environment:
+      - MONGO_URL=mongodb://db:27017
+    depends_on:
+      - db
+    networks:
+      - go-vsc-node
+    volumes:
+      - ./data:/home/app/app/data
   app:
+    profiles: ["default"]
     build:
       dockerfile: Dockerfile
       context: .
@@ -13,6 +28,8 @@ services:
       - db
     networks:
       - go-vsc-node
+    volumes:
+      - ./data:/home/app/app/data
   db:
     image: mongo:8.0.4
     # restart: always
