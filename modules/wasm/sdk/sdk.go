@@ -287,7 +287,7 @@ var SdkModule = map[string]sdkFunc{
 			eCtx.WithdrawBalance(to, amount, asset),
 			func(struct{}) SdkResultStruct {
 				return SdkResultStruct{
-					Gas: 1_000_000,
+					Gas: 10_000_000,
 				}
 			},
 		)
