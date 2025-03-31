@@ -119,7 +119,7 @@ func main() {
 
 	txpool := transactionpool.New(p2p, txDb, da, identityConfig)
 
-	sr := streamer.NewStreamReader(hiveBlocks, vstream.ProcessBlock, se.SaveBlockHeight)
+	sr := streamer.NewStreamReader(hiveBlocks, vstream.ProcessBlock, se.SaveBlockHeight, stBlock)
 
 	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{
 		witnessDb,
