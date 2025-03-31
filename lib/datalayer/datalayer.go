@@ -283,6 +283,14 @@ func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
 	return dag, err
 }
 
+func (dl *DataLayer) GetRaw(cid cid.Cid) ([]byte, error) {
+	block, err := dl.blockServ.GetBlock(context.Background(), cid)
+	if err != nil {
+		return nil, err
+	}
+	return block.RawData(), nil
+}
+
 func (dl *DataLayer) notify(ctx context.Context, block blocks.Block) {
 	dl.bitswap.NotifyNewBlocks(ctx, block)
 	//We might need to proactively rebroadcast that we are storing a CID

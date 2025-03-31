@@ -20,14 +20,15 @@ import (
 )
 
 type ContractOutput struct {
-	Id         string
-	ContractId string   `json:"contract_id"`
-	Inputs     []string `json:"inputs"`
-	IoGas      int64    `json:"io_gas"`
-	//This might not be used
-	RemoteCalls []string         `json:"remote_calls"`
+	Id          string
+	ContractId  string           `json:"contract_id"`
+	Inputs      []string         `json:"inputs"`
 	Results     []ContractResult `json:"results"`
 	StateMerkle string           `json:"state_merkle"`
+
+	IoGas int64 `json:"io_gas"`
+	//This might not be used
+	RemoteCalls []string `json:"remote_calls"`
 }
 
 func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
@@ -87,7 +88,7 @@ func (tx TxCreateContract) TxSelf() TxSelf {
 const CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT = 84162592
 
 // ProcessTx implements VSCTransaction.
-func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession) TxResult {
+func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *ContractSession) TxResult {
 	fmt.Println("Must validate storage proof")
 	// tx.StorageProof.
 	election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)

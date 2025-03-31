@@ -57,11 +57,13 @@ type StateEngine struct {
 	RcMap    map[string]int64
 	rcSystem *rcSystem.RcSystem
 
-	AnchoredHeight uint64
-	VirtualRoot    []byte
-	VirtualOutputs []byte
-	VirtualState   []byte
-	VirtualOps     uint64
+	VirtualOutputs map[string]*TempOutput
+
+	//Unused ideas
+	// AnchoredHeight uint64
+	// VirtualRoot    []byte
+	// VirtualState   []byte
+	// VirtualOps     uint64
 
 	LedgerExecutor *LedgerExecutor
 
@@ -69,7 +71,8 @@ type StateEngine struct {
 	TxBatch []TxPacket
 
 	//Map of txId --> output
-	TxOutput map[string]TxOutput
+	TxOutput    map[string]TxOutput
+	TempOutputs map[string]*TempOutput
 
 	log logger.Logger
 
@@ -426,7 +429,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 				json.Unmarshal(cj.Json, &parsedTx)
 
-				parsedTx.ExecuteTx(se, session, nil)
+				parsedTx.ExecuteTx(se, session, nil, nil)
 				continue
 			} else if cj.Id == "vsc.election_result" {
 				parsedTx := &TxElectionResult{
@@ -637,11 +640,46 @@ func (se *StateEngine) ExecuteBatch() {
 		ledgerSession := se.LedgerExecutor.NewSession(lastBlockBh)
 		rcSession := se.rcSystem.NewSession(ledgerSession)
 
+		contractSessions := make(map[string]*ContractSession)
+
+		for k, v := range se.TempOutputs {
+			val := *v
+
+			sess := ContractSession{
+				stateEngine: se,
+			}
+			sess.FromOutput(val)
+			contractSessions[k] = &sess
+		}
+
 		logs := make([]string, 0)
 		ok := true
-		//TODO: Save the transaction failure status to the memory store
 		for idx, vscTx := range tx.Ops {
-			result := vscTx.ExecuteTx(se, ledgerSession, rcSession)
+			var contractSession *ContractSession
+			if vscTx.Type() == "call_contract" {
+				contractCall, ok := vscTx.(TxVscCallContract)
+				if ok {
+					if contractSessions[contractCall.ContractId] == nil {
+						contractOutput := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
+
+						tmpOut := TempOutput{
+							Cache:    make(map[string][]byte),
+							Metadata: make(map[string]interface{}),
+							Cid:      contractOutput.StateMerkle,
+						}
+
+						sess := ContractSession{
+							stateEngine: se,
+						}
+
+						sess.FromOutput(tmpOut)
+						contractSessions[contractCall.ContractId] = &sess
+					}
+					contractSession = contractSessions[contractCall.ContractId]
+				}
+			}
+
+			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, contractSession)
 			logs = append(logs, result.Ret)
 			payer := vscTx.TxSelf().RequiredAuths[0]
 
@@ -654,6 +692,12 @@ func (se *StateEngine) ExecuteBatch() {
 				ok = false
 				ledgerSession.Revert()
 				break
+			}
+		}
+		if ok {
+			for k, v := range contractSessions {
+				tmpOut := v.ToOutput()
+				se.TempOutputs[k] = &tmpOut
 			}
 		}
 		ledgerSession.Done()
@@ -842,7 +886,7 @@ func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint
 	if len(se.TxBatch) > 0 {
 		vscRecord, _ := se.vscBlocks.GetBlockByHeight(lastBlk)
 		if lastSavedBlk != uint64(vscRecord.EndBlock) {
-			return uint64(vscRecord.EndBlock)
+			return uint64(vscRecord.EndBlock) + 1
 		} else {
 			return lastSavedBlk
 		}

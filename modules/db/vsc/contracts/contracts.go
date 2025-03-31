@@ -80,7 +80,7 @@ func (ch *contractState) IngestOutput(output IngestOutputArgs) {
 
 }
 
-func (ch *contractState) GetLastOutput(contractId string, height int) *ContractOutput {
+func (ch *contractState) GetLastOutput(contractId string, height uint64) *ContractOutput {
 	options := options.FindOne().SetSort(bson.M{"block_height": -1})
 	findResult := ch.FindOne(context.Background(), bson.M{"contract_id": contractId, "block_height": bson.M{
 		"$lte": height,

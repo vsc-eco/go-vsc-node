@@ -11,7 +11,7 @@ type Contracts interface {
 type ContractState interface {
 	a.Plugin
 	IngestOutput(inputArgs IngestOutputArgs)
-	GetLastOutput(contractId string, height int) *ContractOutput
+	GetLastOutput(contractId string, height uint64) *ContractOutput
 }
 
 type IngestOutputArgs struct {
