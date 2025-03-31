@@ -409,7 +409,7 @@ func (h *hiveBlocks) GetLastProcessedBlock() (uint64, error) {
 	err := h.Collection.FindOne(context.Background(), Document{Type: DocumentTypeMetadata}).Decode(&result)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return 0, mongo.ErrNoDocuments
+			return 0, nil
 		}
 		return 0, fmt.Errorf("failed to get last processed block: %w", err)
 	}
