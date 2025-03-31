@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
+	"vsc-node/modules/common"
 	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -15,9 +16,10 @@ import (
 	rcSystem "vsc-node/modules/rc-system"
 	transactionpool "vsc-node/modules/transaction-pool"
 
-	"github.com/btcsuite/btcutil/bech32"
+	"github.com/btcsuite/btcutil/base58"
 	"github.com/ipfs/go-cid"
 	dagCbor "github.com/ipfs/go-ipld-cbor"
+	"github.com/multiformats/go-multicodec"
 	mh "github.com/multiformats/go-multihash"
 )
 
@@ -124,19 +126,27 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 	// panic("not implemented yet")
 
 	fmt.Println("tx.Code", tx)
-	cid := cid.MustParse(tx.Code)
+	cidz := cid.MustParse(tx.Code)
 	go func() {
-		se.da.GetDag(cid)
+		se.da.Get(cidz, &datalayer.GetOptions{})
 	}()
 
 	idObj := map[string]interface{}{
 		"ref_id": tx.Self.TxId,
 		"index":  strconv.Itoa(tx.Self.OpIndex),
 	}
-	contractIdDag, _ := dagCbor.WrapObject(idObj, mh.SHA2_256, -1)
+	bytes, _ := common.EncodeDagCbor(idObj)
 
-	conv, _ := bech32.ConvertBits(contractIdDag.Cid().Bytes(), 8, 5, true)
-	bech32Addr, _ := bech32.Encode("vs4", conv)
+	idCid, _ := cid.Prefix{
+		Version:  1,
+		Codec:    uint64(multicodec.DagCbor),
+		MhType:   mh.SHA2_256,
+		MhLength: -1,
+	}.Sum(bytes)
+
+	b58 := idCid.Bytes()
+	trunkb58 := b58[len(b58)-20:]
+	id := "vsc1" + base58.CheckEncode(trunkb58, 0x1a)
 
 	var owner string
 	if tx.Owner == "" {
@@ -145,7 +155,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		owner = tx.Owner
 	}
 
-	se.contractDb.RegisterContract(bech32Addr, contracts.SetContractArgs{
+	se.contractDb.RegisterContract(id, contracts.SetContractArgs{
 		Code:           tx.Code,
 		Name:           tx.Name,
 		Description:    tx.Description,

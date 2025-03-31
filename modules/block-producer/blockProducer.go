@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
@@ -591,6 +592,64 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 		Id:   cid.String(),
 		Type: int(common.BlockTypeOplog),
 	}
+}
+
+func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.VscBlockTx {
+
+	contractOutputs := make([]vscBlocks.VscBlockTx, 0)
+	for contractId, output := range bp.StateEngine.VirtualOutputs {
+		var db datalayer.DataBin
+		if output.Cid != "" {
+			db = datalayer.NewDataBin(bp.Datalayer)
+		} else {
+			cidz := cid.MustParse(output.Cid)
+			db = datalayer.NewDataBinFromCid(bp.Datalayer, cidz)
+		}
+
+		for key, value := range output.Cache {
+			if len(value) > 0 {
+				cidz, err := common.HashBytes(value, multicodec.Raw)
+				if err != nil {
+					continue
+				}
+				session.Put(value, cidz)
+
+				db.Set(key, cidz)
+			} else {
+				db.Delete(key)
+			}
+		}
+		savedCid := db.Save()
+
+		outputObj := map[string]interface{}{
+			"__t":          "vsc-output",
+			"__v":          "0.1",
+			"contract_id":  contractId,
+			"metadata":     output.Metadata,
+			"state_merkle": savedCid.String(),
+			"inputs":       []string{},
+			"results":      []string{},
+		}
+		dagBytes, _ := common.EncodeDagCbor(outputObj)
+
+		outputId, _ := cid.Prefix{
+			Version:  1,
+			Codec:    uint64(multicodec.DagCbor),
+			MhType:   uint64(multicodec.Sha2_256),
+			MhLength: -1,
+		}.Sum(dagBytes)
+
+		contractOutputs = append(contractOutputs, vscBlocks.VscBlockTx{
+			Id:   outputId.String(),
+			Type: int(common.BlockTypeOutput),
+		})
+	}
+
+	slices.SortFunc(contractOutputs, func(a, b vscBlocks.VscBlockTx) int {
+		return strings.Compare(a.Id, b.Id)
+	})
+
+	return contractOutputs
 }
 
 func (bp *BlockProducer) MakeRcMap(session *datalayer.Session) *vscBlocks.VscBlockTx {
