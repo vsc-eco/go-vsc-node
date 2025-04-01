@@ -321,10 +321,18 @@ func (s *Streamer) trackHeadHeight() {
 	var updateLock sync.Mutex
 	backoff := HeadBlockCheckPollIntervalBeforeFirstUpdate
 
+	threeSecTicker := time.NewTicker(3 * time.Second)
+
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
+		case <-threeSecTicker.C:
+			s.mtx.Lock()
+			if s.hasFetchedHead {
+				s.headHeight++
+			}
+			s.mtx.Unlock()
 		case <-ticker.C:
 			if updateLock.TryLock() {
 				// unlock immediately since we're not in a nested goroutine
@@ -383,10 +391,10 @@ func (s *Streamer) streamBlocks() {
 			// fmt.Println("Going to fetch again!", time.Since(last), "block/s", float64(BlockBatchSize)/time.Since(last).Seconds())
 			// last = time.Now()
 
-			blocks, err := s.fetchBlockBatch(*s.startBlock, BlockBatchSize)
+			blocks, err := s.fetchBlockBatch(*s.startBlock, min(BlockBatchSize, s.headHeight-*s.startBlock))
 			if err != nil {
 				log.Printf("error fetching block batch: %v\n", err)
-				time.Sleep(MinTimeBetweenBlockBatchFetches + time.Millisecond*100)
+				time.Sleep(MinTimeBetweenBlockBatchFetches + 3*time.Second)
 
 				continue
 			}
