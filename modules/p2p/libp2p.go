@@ -27,6 +27,8 @@ import (
 )
 
 var BOOTSTRAP = []string{
+	"/dnsaddr/api.vsc.eco/tcp/10720/p2p/12D3KooWFVVQ2xG6ohJ3tQrh3V6zZnRnKPVfQWVH5LjJakzBCs7E",
+	"/ip4/149.56.25.168/tcp/10720/p2p/12D3KooWFVVQ2xG6ohJ3tQrh3V6zZnRnKPVfQWVH5LjJakzBCs7E", // TODO this is api.vsc.eco, but DNS resolution doesn't work?
 	// "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
 	// "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
 	// "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
@@ -211,6 +213,12 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 	subscription, _ := p2ps.multicastTopic.Subscribe()
 
 	p2ps.subs = append(p2ps.subs, subscription)
+
+	go func() {
+		for {
+			fmt.Println(p2ps.Host.Network().Peers())
+		}
+	}()
 
 	return p
 }
