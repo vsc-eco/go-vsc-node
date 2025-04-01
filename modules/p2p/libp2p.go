@@ -216,7 +216,8 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 
 	go func() {
 		for {
-			fmt.Println(p2ps.Host.Network().Peers())
+			time.Sleep(5*time.Second)
+			fmt.Println("peers", p2ps.Host.Network().Peers())
 		}
 	}()
 
