@@ -255,11 +255,6 @@ func (s *Streamer) Init() error {
 		s.filters = []FilterFunc{}
 	}
 
-	// if start block provided (non-nil) then set it as that and return
-	if s.startBlock != nil {
-		return nil
-	}
-
 	// gets the last processed block
 	lastBlock, err := s.hiveBlocks.GetHighestBlock()
 	if err != nil {
