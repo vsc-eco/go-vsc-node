@@ -43,9 +43,10 @@ import (
 func main() {
 	init := os.Args[len(os.Args)-1] == "--init"
 	dbConf := db.NewDbConfig()
-	hiveApiUrl := "https://api.hive.blog"
+	hiveApiUrl := streamer.NewHiveConfig()
 
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
+	fmt.Println("HIVE_API", hiveApiUrl.Get().HiveURI)
 
 	db := db.New(dbConf)
 	vscDb := vsc.New(db)
@@ -69,14 +70,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// set hive api url
-	if hiveApiEnv, exists := os.LookupEnv("HIVE_API"); exists && hiveApiEnv != "" {
-		hiveApiUrl = hiveApiEnv // Only override if non-empty
-	}
-	fmt.Println("HIVE_API", hiveApiUrl)
-
 	// choose the source
-	hiveRpcClient := hivego.NewHiveRpc(hiveApiUrl)
+	hiveRpcClient := hivego.NewHiveRpc(hiveApiUrl.Get().HiveURI)
 
 	filters := []streamer.FilterFunc{filter}
 
@@ -188,7 +183,7 @@ func main() {
 		fmt.Println("initing")
 		err = a.Init()
 	} else {
-	err = a.Run()
+		err = a.Run()
 	}
 	if err != nil {
 		fmt.Println("error is", err)
