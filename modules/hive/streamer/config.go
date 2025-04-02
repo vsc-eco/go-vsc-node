@@ -28,7 +28,7 @@ func NewHiveConfig() HiveConfig {
 func (hc *hiveConfigStruct) Init() error {
 	err := hc.Config.Init()
 	if err != nil {
-		return err
+		return fmt.Errorf("Failed to init Hive config: %w", err)
 	}
 
 	url := os.Getenv("HIVE_API")

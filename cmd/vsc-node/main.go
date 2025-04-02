@@ -66,8 +66,11 @@ func main() {
 	nonceDb := nonces.New(vscDb)
 	rcDb := rcDb.New(vscDb)
 
-	if err != nil || hiveApiUrlErr != nil {
+	if err != nil {
 		fmt.Println("error is", err)
+		os.Exit(1)
+	} else if hiveApiUrlErr != nil {
+		fmt.Println("Failed to parse Hive API config", hiveApiUrlErr)
 		os.Exit(1)
 	}
 
