@@ -386,6 +386,11 @@ func (s *Streamer) streamBlocks() {
 			// fmt.Println("Going to fetch again!", time.Since(last), "block/s", float64(BlockBatchSize)/time.Since(last).Seconds())
 			// last = time.Now()
 
+			if *s.startBlock >= s.headHeight {
+				time.Sleep(time.Second)
+				continue
+			}
+
 			blocks, err := s.fetchBlockBatch(*s.startBlock, min(BlockBatchSize, s.headHeight-*s.startBlock))
 			if err != nil {
 				log.Printf("error fetching block batch: %v\n", err)
