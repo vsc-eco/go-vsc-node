@@ -76,7 +76,7 @@ func main() {
 	fmt.Println("HIVE_API", hiveApiUrl)
 
 	// choose the source
-	hiveRpcClient := hivego.NewHiveRpc("https://api.hive.blog")
+	hiveRpcClient := hivego.NewHiveRpc(hiveApiUrl)
 
 	filters := []streamer.FilterFunc{filter}
 
