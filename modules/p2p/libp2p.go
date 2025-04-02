@@ -121,6 +121,7 @@ func (p2pServer *P2PServer) Init() error {
 		libp2p.Identity(key),
 		libp2p.EnableNATService(),
 		libp2p.EnableRelayService(),
+		libp2p.NATPortMap(),
 	}
 
 	p2p, _ := libp2p.New(options...)
