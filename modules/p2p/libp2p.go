@@ -10,11 +10,13 @@ import (
 
 	"github.com/chebyrash/promise"
 	libp2p "github.com/libp2p/go-libp2p"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
 	kadDht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/core/routing"
 	rhost "github.com/libp2p/go-libp2p/p2p/host/routed"
 	"github.com/robfig/cron/v3"
 
@@ -116,6 +118,13 @@ func (p2pServer *P2PServer) Init() error {
 		return err
 	}
 
+	ctx := context.Background()
+
+	kadOptions := []kadDht.Option{
+		kadDht.ProtocolPrefix("/vsc.network/kad/1.0.0"),
+	}
+
+	var idht *dht.IpfsDHT
 	options := []libp2p.Option{
 		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/10720"),
 		libp2p.Identity(key),
@@ -124,17 +133,19 @@ func (p2pServer *P2PServer) Init() error {
 		libp2p.NATPortMap(),
 		libp2p.EnableAutoNATv2(),
 		libp2p.EnableHolePunching(),
+		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
+			idht, err = kadDht.New(context.Background(), h, kadOptions...)
+			return idht, err
+		}),
 	}
 
 	p2p, _ := libp2p.New(options...)
 
 	//DHT wrapped host
-	ctx := context.Background()
-	kadDht.ProtocolPrefix("/vsc.network/kad/1.0.0")
-	dht, _ := kadDht.New(ctx, p2p)
-	routedHost := rhost.Wrap(p2p, dht)
+
+	routedHost := rhost.Wrap(p2p, idht)
 	p2pServer.Host = routedHost
-	p2pServer.Dht = dht
+	p2pServer.Dht = idht
 	fmt.Println("peer ID:", p2pServer.PeerInfo().GetPeerId())
 
 	//Setup GORPC server and client
