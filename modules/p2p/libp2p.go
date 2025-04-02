@@ -114,7 +114,15 @@ func (p2pServer *P2PServer) Init() error {
 	if err != nil {
 		return err
 	}
-	p2p, _ := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/10720"), libp2p.Identity(key))
+
+	options := []libp2p.Option{
+		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/10720"),
+		libp2p.Identity(key),
+		libp2p.EnableNATService(),
+		libp2p.EnableRelayService(),
+	}
+
+	p2p, _ := libp2p.New(options...)
 
 	//DHT wrapped host
 	ctx := context.Background()
@@ -123,7 +131,6 @@ func (p2pServer *P2PServer) Init() error {
 	routedHost := rhost.Wrap(p2p, dht)
 	p2pServer.Host = routedHost
 	p2pServer.Dht = dht
-
 	fmt.Println("peer ID:", p2pServer.PeerInfo().GetPeerId())
 
 	//Setup GORPC server and client
