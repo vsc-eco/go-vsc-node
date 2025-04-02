@@ -1,6 +1,8 @@
 package streamer
 
 import (
+	"fmt"
+	"net/url"
 	"os"
 	"vsc-node/modules/config"
 )
@@ -32,12 +34,17 @@ func (hc *hiveConfigStruct) Init() error {
 	url := os.Getenv("HIVE_API")
 	if url != "" {
 		return hc.SetHiveURI(url)
-	} else {
-		return hc.SetHiveURI(DefaultHiveURI)
 	}
+	return nil
 }
 
 func (hc *hiveConfigStruct) SetHiveURI(uri string) error {
+	if uri != "" {
+		_, err := url.Parse(uri)
+		if err != nil {
+			return fmt.Errorf("Invalid Hive API URL: %w", err)
+		}
+	}
 	return hc.Update(func(hc *hiveConfig) {
 		if uri == "" {
 			hc.HiveURI = DefaultHiveURI

@@ -44,7 +44,7 @@ func main() {
 	init := os.Args[len(os.Args)-1] == "--init"
 	dbConf := db.NewDbConfig()
 	hiveApiUrl := streamer.NewHiveConfig()
-	hiveApiUrl.Init()
+	hiveApiUrlErr := hiveApiUrl.Init()
 
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
 	fmt.Println("HIVE_API", hiveApiUrl.Get().HiveURI)
@@ -66,7 +66,7 @@ func main() {
 	nonceDb := nonces.New(vscDb)
 	rcDb := rcDb.New(vscDb)
 
-	if err != nil {
+	if err != nil || hiveApiUrlErr != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)
 	}
