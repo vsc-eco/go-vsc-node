@@ -44,6 +44,7 @@ func main() {
 	init := os.Args[len(os.Args)-1] == "--init"
 	dbConf := db.NewDbConfig()
 	hiveApiUrl := streamer.NewHiveConfig()
+	hiveApiUrl.Init()
 
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
 	fmt.Println("HIVE_API", hiveApiUrl.Get().HiveURI)
