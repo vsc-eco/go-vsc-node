@@ -43,6 +43,7 @@ import (
 func main() {
 	init := os.Args[len(os.Args)-1] == "--init"
 	dbConf := db.NewDbConfig()
+	hiveApiUrl := "https://api.hive.blog"
 
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
 
@@ -67,6 +68,12 @@ func main() {
 		fmt.Println("error is", err)
 		os.Exit(1)
 	}
+
+	// set hive api url
+	if hiveApiEnv, exists := os.LookupEnv("HIVE_API"); exists && hiveApiEnv != "" {
+		hiveApiUrl = hiveApiEnv // Only override if non-empty
+	}
+	fmt.Println("HIVE_API", hiveApiUrl)
 
 	// choose the source
 	hiveRpcClient := hivego.NewHiveRpc("https://api.hive.blog")
