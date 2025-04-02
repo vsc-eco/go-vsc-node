@@ -122,6 +122,8 @@ func (p2pServer *P2PServer) Init() error {
 		libp2p.EnableNATService(),
 		libp2p.EnableRelayService(),
 		libp2p.NATPortMap(),
+		libp2p.EnableAutoNATv2(),
+		libp2p.EnableHolePunching(),
 	}
 
 	p2p, _ := libp2p.New(options...)
