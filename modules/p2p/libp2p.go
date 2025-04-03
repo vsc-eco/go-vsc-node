@@ -13,6 +13,7 @@ import (
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	kadDht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/event"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -121,7 +122,7 @@ func (p2pServer *P2PServer) Init() error {
 	ctx := context.Background()
 
 	kadOptions := []kadDht.Option{
-		kadDht.ProtocolPrefix("/vsc.network/kad/1.0.0"),
+		kadDht.ProtocolPrefix("/vsc.network"),
 	}
 
 	var idht *dht.IpfsDHT
@@ -153,6 +154,18 @@ func (p2pServer *P2PServer) Init() error {
 	rpcServer := rpc.NewServer(routedHost, protocolID)
 	rpcClient := rpc.NewClientWithServer(routedHost, protocolID, rpcServer)
 
+	go func() {
+		cSub, _ := p2pServer.Host.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
+		defer cSub.Close()
+
+		select {
+		case stat := <-cSub.Out():
+
+			fmt.Println("NAT Status", stat)
+		case <-time.After(30 * time.Second):
+
+		}
+	}()
 	svc := &RPCService{
 		p2pService: p2pServer,
 	}
@@ -240,7 +253,7 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 	go func() {
 		for {
 			time.Sleep(5 * time.Second)
-			fmt.Println("peers", p2ps.Host.Network().Peers())
+			fmt.Println("peers", p2ps.Host.Network().Peers(), len(p2ps.Host.Network().Peers()))
 		}
 	}()
 
@@ -287,6 +300,15 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 }
 
 func (p2p *P2PServer) discoverPeers() {
+
+	if len(p2p.Host.Network().Peers()) < 2 {
+		for _, peerStr := range BOOTSTRAP {
+			peerId, _ := peer.AddrInfoFromString(peerStr)
+
+			p2p.Host.Connect(context.Background(), *peerId)
+		}
+	}
+
 	ctx := context.Background()
 
 	h := p2p.Host
