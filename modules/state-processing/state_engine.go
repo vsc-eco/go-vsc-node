@@ -4,7 +4,6 @@ import (
 	"crypto"
 	"encoding/json"
 	"fmt"
-	"math"
 	"slices"
 	"strconv"
 	DataLayer "vsc-node/lib/datalayer"
@@ -22,6 +21,7 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
+	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 
@@ -67,12 +67,16 @@ type StateEngine struct {
 	LedgerExecutor *LedgerExecutor
 
 	//Atomic packet; aka -> array of transactions with ops in each
-	TxBatch []TxPacket
+	TxBatch  []TxPacket
+	TxOutIds []string
 
 	//Map of txId --> output
 	TxOutput        map[string]TxOutput
-	TempOutputs     map[string]*contract_session.TempOutput
+	ContractOutputs map[string]*contract_session.TempOutput
 	ContractResults map[string][]TxResultWithId
+
+	//First Tx of batch
+	firstTxHeight uint64
 
 	log logger.Logger
 
@@ -207,13 +211,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			se.RcMap = make(map[string]int64)
 
 			se.ExecuteBatch()
-
-			txIds := make([]string, 0)
-			for txId := range se.TxOutput {
-				txIds = append(txIds, txId)
-			}
-
-			se.txDb.SetStatus(txIds, "CONFIRMED")
 
 			se.slotStatus = &SlotStatus{
 				SlotHeight: slotInfo.StartHeight,
@@ -475,10 +472,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						continue
 					}
 				}
+				fmt.Println("Deposit info", op.Value)
 				amount, _ := strconv.ParseFloat(op.Value["amount"].(map[string]interface{})["amount"].(string), 64)
 
-				amt := int64(amount * math.Pow10(3))
-				// amount, _ := op.Value["amount"].(map[string]interface{})["amount"].(int64)
+				amt := int64(amount)
 
 				if op.Value["to"] == "vsc.gateway" {
 					leDeposit := Deposit{
@@ -493,7 +490,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						BIdx:  int64(tx.Index),
 						OpIdx: int64(opIndex),
 					}
-					// fmt.Println("Registering deposit!", leDeposit)
+					fmt.Println("Registering deposit!", leDeposit)
 					se.LedgerExecutor.Deposit(leDeposit)
 				}
 			}
@@ -598,6 +595,25 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				TxId: tx.TransactionID,
 				Ops:  opList,
 			})
+			for idx, vscTx := range opList {
+				txData := vscTx.ToData()
+				txData["type"] = vscTx.Type()
+				fmt.Println("Ingesting Hive tx")
+
+				opIdx := int64(vscTx.TxSelf().OpIndex)
+				blkIdx := int64(vscTx.TxSelf().Index)
+				se.txDb.Ingest(transactions.IngestTransactionUpdate{
+					Id:             MakeTxId(vscTx.TxSelf().TxId, idx),
+					RequiredAuths:  vscTx.TxSelf().RequiredAuths,
+					Status:         "INCLUDED",
+					Type:           "hive",
+					Tx:             txData,
+					AnchoredBlock:  &block.BlockID,
+					AnchoredHeight: &block.BlockNumber,
+					AnchoredOpIdx:  &opIdx,
+					AnchoredIndex:  &blkIdx,
+				})
+			}
 		}
 	}
 
@@ -615,7 +631,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		se.ExecuteBatch()
 		//Balances must be updated after the current slot has been fully executed
 	}
-
 }
 
 func (se *StateEngine) ExecuteBatch() {
@@ -636,13 +651,18 @@ func (se *StateEngine) ExecuteBatch() {
 		}
 	}
 
-	for _, tx := range se.TxBatch {
+	// if len(se.TxOutput) > 0 {
+	// 	se.log.Debug("TxOutput pending", se.TxOutput, len(se.TxBatch))
+	// }
+
+	for idx, tx := range se.TxBatch {
+		fmt.Println("Executing item in batch", idx, len(se.TxBatch))
 		ledgerSession := se.LedgerExecutor.NewSession(lastBlockBh)
 		rcSession := se.rcSystem.NewSession(ledgerSession)
 
 		contractSessions := make(map[string]*contract_session.ContractSession)
 
-		for k, v := range se.TempOutputs {
+		for k, v := range se.ContractOutputs {
 			val := *v
 
 			sess := contract_session.New(se.da)
@@ -653,6 +673,10 @@ func (se *StateEngine) ExecuteBatch() {
 		logs := make([]string, 0)
 		ok := true
 		for idx, vscTx := range tx.Ops {
+			if se.firstTxHeight == 0 {
+				se.firstTxHeight = vscTx.TxSelf().BlockHeight - 1
+			}
+
 			var contractSession *contract_session.ContractSession
 			var contractId string
 			if vscTx.Type() == "call_contract" {
@@ -704,14 +728,17 @@ func (se *StateEngine) ExecuteBatch() {
 		if ok {
 			for k, v := range contractSessions {
 				tmpOut := v.ToOutput()
-				se.TempOutputs[k] = &tmpOut
+				se.ContractOutputs[k] = &tmpOut
 			}
 		}
-		ledgerSession.Done()
+		ledgerIds := ledgerSession.Done()
+
 		se.TxOutput[tx.TxId] = TxOutput{
-			Ok:   ok,
-			Logs: logs,
+			Ok:        ok,
+			Logs:      logs,
+			LedgerIds: ledgerIds,
 		}
+		se.TxOutIds = append(se.TxOutIds, tx.TxId)
 	}
 
 	se.TxBatch = make([]TxPacket, 0)
@@ -754,7 +781,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	//Cleanup!
 	for _, k := range distinctAccounts {
 		ledgerBalances := map[string]int64{}
-		prevBalRecord, _ := se.LedgerExecutor.Ls.BalanceDb.GetBalanceRecord(k, stBlock)
+		prevBalRecord, _ := se.LedgerExecutor.Ls.BalanceDb.GetBalanceRecord(k, endBlock)
 		var balanceR ledgerDb.BalanceRecord
 		var stHeight uint64
 		if prevBalRecord != nil {
@@ -775,9 +802,13 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			}
 		}
 		//As of block X or below
-		se.LedgerExecutor.Ls.log.Debug("GetBalance for account", stBlock, endBlock)
+		// se.LedgerExecutor.Ls.log.Debug("GetBalance for account", stBlock, stHeight, endBlock)
 
 		ledgerUpdates, _ := se.LedgerExecutor.Ls.LedgerDb.GetLedgerRange(k, stHeight, endBlock, "")
+
+		if len(*ledgerUpdates) == 0 {
+			continue
+		}
 
 		for _, v := range *ledgerUpdates {
 			ledgerBalances[v.Asset] += v.Amount
@@ -861,6 +892,10 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		newRecord.HBD_CLAIM_HEIGHT = claimHeight
 
 		se.LedgerExecutor.Ls.BalanceDb.UpdateBalanceRecord(newRecord)
+
+		se.LedgerExecutor.VirtualLedger[k] = slices.DeleteFunc(se.LedgerExecutor.VirtualLedger[k], func(v ledgerSystem.LedgerUpdate) bool {
+			return v.Type == "deposit"
+		})
 	}
 }
 
@@ -891,24 +926,40 @@ func (se *StateEngine) AppendOutput(contractId string, out TxResultWithId) {
 
 func (se *StateEngine) Flush() {
 	se.ContractResults = make(map[string][]TxResultWithId)
-	se.TempOutputs = make(map[string]*contract_session.TempOutput)
+	se.ContractOutputs = make(map[string]*contract_session.TempOutput)
 	se.TxOutput = make(map[string]TxOutput)
+	se.TxOutIds = make([]string, 0)
+	se.firstTxHeight = 0
 }
 
 // If there is transactions in the queue, use the last vsc block height to resume
 // If not continue parsing from lastBlk
 // Need to test
 func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint64 {
-	if len(se.TxBatch) > 0 {
+	var outputExists bool
+	for _, _ = range se.TxOutput {
+		outputExists = true
+		break
+	}
+	if outputExists {
 		vscRecord, _ := se.vscBlocks.GetBlockByHeight(lastBlk)
-		if lastSavedBlk != uint64(vscRecord.EndBlock) {
-			return uint64(vscRecord.EndBlock) + 1
+		if vscRecord != nil {
+			if lastSavedBlk != uint64(vscRecord.SlotHeight) {
+				return uint64(vscRecord.SlotHeight) + 1
+			} else {
+				return lastSavedBlk
+			}
 		} else {
-			return lastSavedBlk
+			return se.firstTxHeight - 1
 		}
 	} else {
 		return lastBlk
 	}
+
+	// if len(se.TxBatch) > 0 {
+	// } else {
+	// 	return lastBlk
+	// }
 }
 
 func (se *StateEngine) Commit() {
@@ -948,7 +999,8 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 		log:             logger,
 		TxOutput:        make(map[string]TxOutput),
 		ContractResults: make(map[string][]TxResultWithId),
-		TempOutputs:     make(map[string]*contract_session.TempOutput),
+		ContractOutputs: make(map[string]*contract_session.TempOutput),
+		TxOutIds:        make([]string, 0),
 
 		da: da,
 		// db: db,
@@ -968,6 +1020,7 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 		wasm: wasm,
 
 		LedgerExecutor: &LedgerExecutor{
+			VirtualLedger: make(map[string][]ledgerSystem.LedgerUpdate),
 			Ls: &LedgerSystem{
 				BalanceDb: balanceDb,
 				LedgerDb:  ledgerDb,

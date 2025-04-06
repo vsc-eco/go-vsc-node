@@ -18,6 +18,15 @@ func (e ElectionData) Cid() (cid.Cid, error) {
 	return node.Cid(), nil
 }
 
+func (e ElectionData) Node() (*cbornode.Node, error) {
+	node, err := cbornode.WrapObject(e, multihash.SHA2_256, -1)
+	if err != nil {
+		return nil, err
+	}
+
+	return node, nil
+}
+
 func (e ElectionData) MemberKeys() []dids.BlsDID {
 	return utils.Map(e.Members, func(m ElectionMember) dids.BlsDID {
 		return dids.BlsDID(m.Key)

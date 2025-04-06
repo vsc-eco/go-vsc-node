@@ -14,6 +14,8 @@ type Document struct {
 	Block              *HiveBlock   `json:"block,omitempty" bson:"block,omitempty"`
 	LastProcessedBlock *uint64      `json:"last_processed_block,omitempty" bson:"last_processed_block,omitempty"`
 	LastStoredBlock    *uint64      `json:"last_stored_block,omitempty" bson:"last_stored_block,omitempty"`
+	HeadHeight         *uint64      `json:"head_height,omitempty" bson:"head_height,omitempty"`
+	ReindexId          *uint64      `json:"reindex_id,omitempty" bson:"reindex_id,omitempty"`
 }
 
 // the simplified version of a hive block we store

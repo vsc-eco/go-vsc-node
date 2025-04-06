@@ -68,8 +68,12 @@ var ACTION_INTERVAL = uint64(20)   // One minute of Hive blocks
 var SYNC_INTERVAL = uint64(28_800) // One day of Hive blocks
 // var SYNC_INTERVAL = uint64(20) // Use during e2e testing
 
-func (ms *MultiSig) BlockTick(bh uint64) {
+func (ms *MultiSig) BlockTick(bh uint64, headHeight uint64) {
 	ms.bh = bh
+
+	if bh < headHeight-20 {
+		return
+	}
 	if bh%ROTATION_INTERVAL == 0 || bh%ACTION_INTERVAL == 0 {
 
 		ms.electionDb.GetElectionByHeight(bh)
@@ -88,7 +92,7 @@ func (ms *MultiSig) BlockTick(bh uint64) {
 			return
 		}
 
-		if bh%ROTATION_INTERVAL == 0 {
+		if bh%20 == 0 {
 			go ms.TickKeyRotation(bh)
 		}
 		if bh%ACTION_INTERVAL == 0 {
@@ -182,7 +186,7 @@ func (ms *MultiSig) TickActions(bh uint64) {
 
 func (ms *MultiSig) TickSyncFr(bh uint64) {
 
-	signPkg, err := ms.executeActions(bh)
+	signPkg, err := ms.syncBalance(bh)
 
 	if err != nil {
 		return
@@ -235,6 +239,10 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	gatewayKeys := make([][2]interface{}, 0)
 	for idx, member := range electionResult.Members {
 		witnessData, _ := ms.witnessDb.GetWitnessAtHeight(member.Account, &bh)
+		if witnessData == nil {
+			fmt.Println("No witness data for", member.Account, "at", bh)
+			continue
+		}
 		var key [2]interface{}
 		key[0] = witnessData.GatewayKey
 		key[1] = 1
@@ -249,7 +257,13 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 		return int(weightMap[aKey]) - int(weightMap[bKey])
 	})
 
-	gatewayKeys = gatewayKeys[:40]
+	cutOff := 0
+	if len(gatewayKeys) > 40 {
+		cutOff = 40
+	} else {
+		cutOff = len(gatewayKeys)
+	}
+	gatewayKeys = gatewayKeys[:cutOff]
 
 	if len(gatewayKeys) < 8 {
 		return signingPackage{}, errors.New("not enough keys")
@@ -310,7 +324,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 	}
 	actions, err := ms.ledgerActions.GetPendingActions(bh, actionFilter...)
 
-	fmt.Println("Tick actions", actions, err)
+	// fmt.Println("Tick actions", actions, err)
 	if err != nil {
 		return signingPackage{}, err
 	}
@@ -560,7 +574,7 @@ func (ms *MultiSig) getThreshold() (int, []string, []int, error) {
 	weights := make([]int, 0)
 	for _, key := range gatewayAccount.Owner.KeyAuths {
 		publicKeys = append(publicKeys, key[0].(string))
-		weights = append(weights, key[1].(int))
+		weights = append(weights, int(key[1].(float64)))
 	}
 
 	return gatewayAccount.Owner.WeightThreshold, publicKeys, weights, nil
@@ -653,5 +667,7 @@ func New(logger logger.Logger, witnessDb witnesses.Witnesses, electionDb electio
 		identity:      identityConfig,
 		log:           logger,
 		hiveClient:    hiveClient,
+
+		msgChan: make(map[string]chan p2pMessage),
 	}
 }

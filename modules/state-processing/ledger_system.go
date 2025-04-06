@@ -523,7 +523,14 @@ type LedgerSession struct {
 	StartHeight uint64
 }
 
-func (lss *LedgerSession) Done() {
+func (lss *LedgerSession) Done() []string {
+	// oplog := make([]ledgerSystem.OpLogEvent, len(lss.oplog))
+	// copy(oplog, lss.oplog)
+	ledgerIds := make([]string, 0)
+	for _, v := range lss.oplog {
+		ledgerIds = append(ledgerIds, v.Id)
+	}
+
 	lss.le.Oplog = append(lss.le.Oplog, lss.oplog...)
 	for _, op := range lss.ledgerOps {
 		lss.le.Ls.log.Debug("LedgerSession.Done adding ledgerSystem.LedgerResult", op)
@@ -532,6 +539,8 @@ func (lss *LedgerSession) Done() {
 	lss.balances = make(map[string]*int64)
 	lss.oplog = make([]ledgerSystem.OpLogEvent, 0)
 	lss.ledgerOps = make([]ledgerSystem.LedgerUpdate, 0)
+
+	return ledgerIds
 }
 
 func (lss *LedgerSession) Revert() {
@@ -563,7 +572,7 @@ func (lss *LedgerSession) Transfer() {
 
 // Appends an ledger with no validation
 func (lss *LedgerSession) AppendLedger(event ledgerSystem.LedgerUpdate) {
-	lss.le.Ls.log.Debug("LedgerSession.AppendLedger GetBalance")
+	// lss.le.Ls.log.Debug("LedgerSession.AppendLedger GetBalance")
 	bal := lss.GetBalance(event.Owner, event.BlockHeight, event.Asset)
 	lss.setBalance(event.Owner, event.Asset, bal+event.Amount)
 
@@ -574,6 +583,7 @@ func (lss *LedgerSession) GetBalance(account string, blockHeight uint64, asset s
 	if lss.balances[lss.key(account, asset)] == nil {
 		bal := lss.le.SnapshotForAccount(account, blockHeight, asset)
 		lss.balances[lss.key(account, asset)] = &bal
+		fmt.Println("Ledger get Current lol")
 	}
 
 	return *lss.balances[lss.key(account, asset)]
@@ -592,6 +602,7 @@ func (le *LedgerExecutor) NewSession(startHeight uint64) *LedgerSession {
 		balances:    make(map[string]*int64),
 		oplog:       make([]ledgerSystem.OpLogEvent, 0),
 		ledgerOps:   make([]ledgerSystem.LedgerUpdate, 0),
+		idCache:     make(map[string]int),
 		StartHeight: startHeight,
 		le:          le,
 	}
@@ -659,6 +670,7 @@ func (ledgerSession *LedgerSession) ExecuteTransfer(opLogEvent ledgerSystem.OpLo
 
 	le.Ls.log.Debug("ledgerSession.StartHeight", ledgerSession.StartHeight, "ledgerSystem.OpLogEvent.BlockHeight", opLogEvent.BlockHeight)
 
+	fmt.Println("Ledger.Status", fromBal, opLogEvent.Amount)
 	if (fromBal - exclusion) < opLogEvent.Amount {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,

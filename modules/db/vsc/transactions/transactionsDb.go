@@ -71,19 +71,23 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 	return err
 }
 
-func (e *transactions) SetOutput(sOut SetOutputUpdate) {
+func (e *transactions) SetOutput(sOut SetResultUpdate) {
 	query := bson.M{
 		"id": sOut.Id,
 	}
 	ctx := context.Background()
 
+	update := bson.M{}
+
+	if sOut.Output != nil {
+		update["output"] = sOut.Output
+	}
+	if sOut.Ledger != nil {
+		update["ledger"] = sOut.Ledger
+	}
+
 	e.FindOneAndUpdate(ctx, query, bson.M{
-		"$set": bson.M{
-			"output": bson.M{
-				"id":    sOut.OutputId,
-				"index": sOut.Index,
-			},
-		},
+		"$set": update,
 	})
 }
 
@@ -110,6 +114,7 @@ func (e *transactions) GetTransaction(id string) *TransactionRecord {
 func (e *transactions) FindUnconfirmedTransactions(height uint64) ([]TransactionRecord, error) {
 	query := bson.M{
 		"status": "UNCONFIRMED",
+		"type":   "vsc",
 		"$or": bson.A{
 			bson.M{
 				"expire_block": bson.M{
@@ -146,16 +151,29 @@ func (e *transactions) FindUnconfirmedTransactions(height uint64) ([]Transaction
 	return txList, nil
 }
 
+// SetStatus of all IDs and ID + Opidx to a specific status
 func (e *transactions) SetStatus(ids []string, status string) {
-	query := bson.M{
-		"id": bson.M{
-			"$in": ids,
-		},
-	}
 
-	e.UpdateMany(context.Background(), query, bson.M{
-		"$set": bson.M{
-			"status": status,
-		},
-	})
+	for _, id := range ids {
+
+		oneResult := e.FindOne(context.Background(), bson.M{
+			"id": id,
+		})
+		var result TransactionRecord
+		err := oneResult.Decode(&result)
+
+		//Transaction not indexed (for some reason!)
+		if err != nil {
+			continue
+		}
+
+		e.UpdateMany(context.Background(), bson.M{
+			"anchr_height": result.AnchoredHeight,
+			"anchr_opidx":  result.AnchoredOpIdx,
+		}, bson.M{
+			"$set": bson.M{
+				"status": status,
+			},
+		})
+	}
 }

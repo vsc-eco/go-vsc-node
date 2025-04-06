@@ -115,7 +115,7 @@ const DEFAULT_NEW_NODE_WEIGHT = uint64(10)
 const MINIMUM_ELECTION_MEMBER_COUNT = int(7)
 
 var REQUIRED_ELECTION_MEMBERS = []string{
-	"vaultec.vsc",
+	// "vaultec.vsc",
 } // TODO: Set this to a list of required election members
 
 const VSC_ELECTION_TX_ID = "vsc.election_result"
@@ -197,8 +197,11 @@ func (e *electionProposer) GenerateFullElection(
 	if len(REQUIRED_ELECTION_MEMBERS) > 0 {
 		distWeight = uint64(math.Ceil((1 + float64(totalOptionalWeight)/2) / float64(len(REQUIRED_ELECTION_MEMBERS))))
 	}
+
+	// fmt.Println("witnessList", witnessList)
 	members := utils.Map(witnessList, func(w witnesses.Witness) elections.ElectionMember {
 		key, err := w.ConsensusKey()
+
 		if err != nil {
 			panic(err)
 		}
@@ -232,6 +235,12 @@ func (e *electionProposer) GenerateFullElection(
 	if err != nil {
 		return elections.ElectionHeader{}, elections.ElectionData{}, err
 	}
+
+	cborNode, _ := electionData.Node()
+	ses := datalayer.NewSession(e.da)
+
+	ses.Put(cborNode.RawData(), cid)
+	ses.Commit()
 
 	electionHeader := elections.ElectionHeader{}
 	electionHeader.Data = cid.String()
@@ -271,13 +280,10 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 		}{
 			electionHeader,
 		}
-		fmt.Println("gen first election", electionHeader, electionData)
 		jsonBytes, err := json.Marshal(electionResultJson)
 		if err != nil {
 			return err
 		}
-
-		fmt.Println("gen json", string(jsonBytes))
 
 		op := e.txCreator.CustomJson([]string{e.conf.Get().HiveUsername}, []string{}, VSC_ELECTION_TX_ID, string(jsonBytes))
 
@@ -297,7 +303,8 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 			return err
 		}
 
-		fmt.Println("gen TxId", txId)
+		fmt.Println("Propose Election TxId", txId)
+
 		return nil
 	}
 

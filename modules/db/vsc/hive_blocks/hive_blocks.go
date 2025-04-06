@@ -252,7 +252,7 @@ func (blocks *hiveBlocks) Init() error {
 }
 
 // stores a block and updates the last stored block atomically without txs
-func (h *hiveBlocks) StoreBlocks(blocks ...HiveBlock) error {
+func (h *hiveBlocks) StoreBlocks(headBlock uint64, blocks ...HiveBlock) error {
 
 	if len(blocks) == 0 {
 		return fmt.Errorf("empty blocks")
@@ -274,7 +274,11 @@ func (h *hiveBlocks) StoreBlocks(blocks ...HiveBlock) error {
 
 	models[len(models)-1] = mongo.NewUpdateOneModel().
 		SetFilter(Document{Type: DocumentTypeMetadata}).
-		SetUpdate(bson.M{"$set": Document{Type: DocumentTypeMetadata, LastStoredBlock: &blocks[len(blocks)-1].BlockNumber}}).
+		SetUpdate(bson.M{"$set": Document{
+			Type:            DocumentTypeMetadata,
+			LastStoredBlock: &blocks[len(blocks)-1].BlockNumber,
+			HeadHeight:      &headBlock,
+		}}).
 		SetUpsert(true)
 	bulkWriteOptions := options.BulkWrite().SetOrdered(true)
 
@@ -447,7 +451,7 @@ func (h *hiveBlocks) GetHighestBlock() (uint64, error) {
 	return result.Block.BlockNumber, nil
 }
 
-func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block HiveBlock) error) (context.CancelFunc, <-chan error) {
+func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block HiveBlock, headBlock uint64) error) (context.CancelFunc, <-chan error) {
 	startBlock--
 	ctx, cancel := context.WithCancel(ctx)
 	errChan := make(chan error)
@@ -457,6 +461,16 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 			case <-ctx.Done():
 				return
 			default:
+
+				metadata := Document{}
+				metadataFind := h.FindOne(ctx, Document{Type: DocumentTypeMetadata})
+
+				err := metadataFind.Decode(&metadata)
+				if err != nil {
+					errChan <- err
+					return
+				}
+
 				// TODO mongo.ErrNoDocuments
 				cur, err := h.Find(ctx, bson.M{
 					"type":               DocumentTypeHiveBlock,
@@ -475,7 +489,7 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 						return
 					}
 					startBlock = doc.Block.BlockNumber
-					err = listener(*doc.Block)
+					err = listener(*doc.Block, *metadata.HeadHeight)
 					if err != nil {
 						errChan <- err
 						return
@@ -505,4 +519,30 @@ func (h *hiveBlocks) GetBlock(blockNum uint64) (HiveBlock, error) {
 	}
 
 	return *result.Block, nil
+}
+
+func (h *hiveBlocks) SetMetadata(doc Document) error {
+	ctx := context.Background()
+
+	_, err := h.Collection.UpdateOne(ctx, Document{Type: DocumentTypeMetadata},
+		bson.M{"$set": doc},
+		options.Update().SetUpsert(true),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set metadata: %w", err)
+	}
+	return nil
+}
+
+func (h *hiveBlocks) GetMetadata() (Document, error) {
+	var result Document
+	err := h.Collection.FindOne(context.Background(), Document{Type: DocumentTypeMetadata}).Decode(&result)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return Document{}, nil
+		}
+		return Document{}, fmt.Errorf("failed to get metadata: %w", err)
+	}
+
+	return result, nil
 }

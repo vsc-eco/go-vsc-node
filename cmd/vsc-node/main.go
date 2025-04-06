@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	cbortypes "vsc-node/lib/cbor-types"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/logger"
@@ -41,6 +42,7 @@ import (
 )
 
 func main() {
+	cbortypes.RegisterTypes()
 	init := os.Args[len(os.Args)-1] == "--init"
 	dbConf := db.NewDbConfig()
 	hiveApiUrl := streamer.NewHiveConfig()
@@ -49,8 +51,9 @@ func main() {
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
 	fmt.Println("HIVE_API", hiveApiUrl.Get().HiveURI)
 
-	db := db.New(dbConf)
-	vscDb := vsc.New(db)
+	dbImpl := db.New(dbConf)
+	vscDb := vsc.New(dbImpl)
+	reindexDb := db.NewReindex(vscDb.DbInstance)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)
 	vscBlocks := vscBlocks.New(vscDb)
@@ -141,8 +144,9 @@ func main() {
 		identityConfig,
 
 		//DB plugin initialization
-		db,
+		dbImpl,
 		vscDb,
+		reindexDb,
 		//DB collections
 		witnessesDb,
 		electionDb,
@@ -154,6 +158,7 @@ func main() {
 		ledgerDbImpl,
 		actionsDb,
 		balanceDb,
+		rcDb,
 		interestClaims,
 		contractState,
 

@@ -310,8 +310,8 @@ func TestMultisigKeys(t *testing.T) {
 	hiveCreator := hive.LiveTransactionCreator{
 		TransactionCrafter: hive.TransactionCrafter{},
 		TransactionBroadcaster: hive.TransactionBroadcaster{
-			Client:  client,
-			KeyPair: kp,
+			Client: client,
+			// KeyPair: kp,
 		},
 	}
 
@@ -341,12 +341,12 @@ func TestMultisigKeys(t *testing.T) {
 
 	hiveCreator.PopulateSigningProps(&tx, nil)
 
-	for _, key := range privKeys {
-		hiveCreator.KeyPair = &key
-		sig, _ := hiveCreator.Sign(tx)
-		tx.AddSig(sig)
+	// for _, key := range privKeys {
+	// 	hiveCreator.KeyPair = &key
+	// 	sig, _ := hiveCreator.Sign(tx)
+	// 	tx.AddSig(sig)
 
-	}
+	// }
 
 	id, err := hiveCreator.Broadcast(tx)
 

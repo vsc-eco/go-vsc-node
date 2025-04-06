@@ -225,7 +225,7 @@ func (e2e *E2ERunner) BroadcastMockElection(witnessListS []string) func() error 
 	}
 }
 
-func (e2e *E2ERunner) BlockTick(bh uint64) {
+func (e2e *E2ERunner) BlockTick(bh uint64, headHeight uint64) {
 	e2e.BlockEvent <- bh
 	e2e.BlockHeight = bh
 }

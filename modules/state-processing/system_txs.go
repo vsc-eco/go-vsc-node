@@ -41,16 +41,21 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
 	se.Flush()
 
 	for idx, InputId := range output.Inputs {
-		se.txDb.SetOutput(transactions.SetOutputUpdate{
-			Id:       InputId,
-			OutputId: output.Id,
-			Index:    int64(idx),
+		se.txDb.SetOutput(transactions.SetResultUpdate{
+			Id: InputId,
+			Output: &struct {
+				Id    string `json:"id" bson:"id"`
+				Index int64  `json:"index" bson:"index"`
+			}{
+				Id:    output.Id,
+				Index: int64(idx),
+			},
 		})
-		if output.Results[idx].Ok {
-			se.txDb.SetStatus([]string{InputId}, "CONFIRMED")
-		} else {
-			se.txDb.SetStatus([]string{InputId}, "FAILED")
-		}
+		// if output.Results[idx].Ok {
+		// 	se.txDb.SetStatus([]string{InputId}, "CONFIRMED")
+		// } else {
+		// 	se.txDb.SetStatus([]string{InputId}, "FAILED")
+		// }
 	}
 
 	go func() {
@@ -584,7 +589,6 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			})
 
 		} else if txContainer.Type() == "oplog" {
-
 			oplog := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))
 			// fmt.Println("OpLog detected!", txContainer, oplog)
 			oplog.ExecuteTx(se)

@@ -23,6 +23,7 @@ import (
 	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
+	ledgerSystem "vsc-node/modules/ledger-system"
 	libp2p "vsc-node/modules/p2p"
 	rcSystem "vsc-node/modules/rc-system"
 	stateEngine "vsc-node/modules/state-processing"
@@ -71,11 +72,14 @@ type signingInfo struct {
 	circuit    *dids.PartialBlsCircuit
 }
 
-func (bp *BlockProducer) BlockTick(bh uint64) {
+func (bp *BlockProducer) BlockTick(bh uint64, headHeight uint64) {
 	if !bp._started {
 		return
 	}
 	bp.bh = bh
+	if bh < headHeight-10 {
+		return
+	}
 
 	slotInfo := stateEngine.CalculateSlotInfo(bh)
 
@@ -116,7 +120,7 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 	var prevRange [2]int
 	if prevBlock != nil {
 		// fmt.Println("PrevBlock exists")
-		prevBlockId = &prevBlock.Id
+		prevBlockId = &prevBlock.BlockContent
 		prevRange = [2]int{prevBlock.EndBlock, int(slotHeight)}
 	} else {
 		prevBlockId = nil
@@ -135,7 +139,6 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 	}
 	for _, tx := range offchainTxs {
 		outTxs = append(outTxs, tx.Id)
-		outCids = append(outCids, cid.MustParse(tx.Id))
 	}
 
 	oplog := bp.MakeOplog(slotHeight, daSession)
@@ -144,12 +147,21 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 		offchainTxs = append(offchainTxs, *oplog)
 	}
 
+	//Make contract outputs
 	contractOutputs := bp.MakeOutputs(daSession)
 	if len(contractOutputs) > 0 {
 		offchainTxs = append(offchainTxs, contractOutputs...)
 	}
 
+	for _, tx := range offchainTxs {
+		outCids = append(outCids, cid.MustParse(tx.Id))
+	}
+
 	// rcMap := bp.MakeRcMap()
+
+	if len(offchainTxs) == 0 {
+		return nil, nil, errors.New("no transactions to include")
+	}
 
 	mr, err := MerklizeCids(outCids)
 
@@ -167,7 +179,14 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 		MerkleRoot:   &mr,
 	}
 
-	blockCid, _ := bp.Datalayer.PutObject(blockData)
+	fmt.Println("vsc Block", blockData)
+
+	blockCid, err := bp.Datalayer.PutObject(blockData)
+	fmt.Println("vsc Block", blockCid, err)
+
+	if err != nil {
+		return nil, nil, err
+	}
 
 	blockHeader := vscBlocks.VscHeader{
 		Type:    "vsc-bh",
@@ -319,9 +338,13 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 		time.Sleep(1 * time.Second)
 	}
 
-	genBlock, transactions, _ := bp.GenerateBlock(bh, generateBlockParams{
+	genBlock, transactions, err := bp.GenerateBlock(bh, generateBlockParams{
 		PopulateTxs: true,
 	})
+
+	if err != nil {
+		return
+	}
 
 	cid, _ := bp.Datalayer.HashObject(genBlock)
 
@@ -580,12 +603,37 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 		return nil
 	}
 
+	outputs := make([]stateEngine.OplogOutputEntry, 0)
+	for _, txId := range bp.StateEngine.TxOutIds {
+		output := bp.StateEngine.TxOutput[txId]
+		// fmt.Println("Making oplog", output)
+
+		LedgerIdx := make([]int, 0)
+		for _, opId := range output.LedgerIds {
+			idx := slices.IndexFunc(compileResult.OpLog, func(i ledgerSystem.OpLogEvent) bool {
+				return i.Id == opId
+			})
+			LedgerIdx = append(LedgerIdx, idx)
+		}
+
+		outputs = append(outputs, stateEngine.OplogOutputEntry{
+			Id:        txId,
+			Ok:        output.Ok,
+			LedgerIdx: LedgerIdx,
+		})
+	}
+
 	//CLEAN Oplog
 	oplogData := map[string]interface{}{
-		"__t":   "vsc-oplog",
-		"__v":   "0.1",
-		"oplog": compileResult.OpLog,
+		"__t":     "vsc-oplog",
+		"__v":     "0.1",
+		"ledger":  compileResult.OpLog,
+		"outputs": outputs,
 	}
+
+	outputJson, _ := json.Marshal(oplogData)
+
+	fmt.Println("outputJson", string(outputJson))
 
 	cborBytes, _ := common.EncodeDagCbor(oplogData)
 
@@ -602,7 +650,7 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.VscBlockTx {
 
 	contractOutputs := make([]vscBlocks.VscBlockTx, 0)
-	for contractId, output := range bp.StateEngine.TempOutputs {
+	for contractId, output := range bp.StateEngine.ContractOutputs {
 		var db datalayer.DataBin
 		if output.Cid != "" {
 			db = datalayer.NewDataBin(bp.Datalayer)

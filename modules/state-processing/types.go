@@ -6,9 +6,10 @@ type TxPacket struct {
 }
 
 type TxOutput struct {
-	Ok     bool
-	Logs   []string
-	RcUsed int64
+	Ok        bool
+	Logs      []string
+	RcUsed    int64
+	LedgerIds []string
 }
 
 type TxResult struct {
@@ -34,4 +35,10 @@ type TxSelf struct {
 	Timestamp            string
 	RequiredAuths        []string
 	RequiredPostingAuths []string
+}
+
+type OplogOutputEntry struct {
+	Id        string `json:"id" bson:"id"`
+	Ok        bool   `json:"ok" bson:"ok"`
+	LedgerIdx []int  `json:"lidx" bson:"lidx"`
 }

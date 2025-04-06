@@ -780,16 +780,18 @@ func (tx *TransactionContainer) Decode(bytes []byte) {
 type Oplog struct {
 	Self TxSelf
 
-	Oplog []ledgerSystem.OpLogEvent `json:"oplog"`
+	LedgerOps []ledgerSystem.OpLogEvent `json:"ledger"`
+	Outputs   []OplogOutputEntry        `json:"outputs"`
 
 	EndBlock uint64 `json:"-"`
 }
 
 func (oplog *Oplog) ExecuteTx(se *StateEngine) {
 	se.LedgerExecutor.Flush()
+	se.Flush()
 
 	aoplog := make([]ledgerSystem.OpLogEvent, 0)
-	for _, v := range oplog.Oplog {
+	for _, v := range oplog.LedgerOps {
 		v.BlockHeight = oplog.Self.BlockHeight
 		aoplog = append(aoplog, v)
 	}
@@ -807,6 +809,22 @@ func (oplog *Oplog) ExecuteTx(se *StateEngine) {
 		EndHeight:   oplog.EndBlock,
 		StartHeight: startBlock,
 	})
+
+	for _, v := range oplog.Outputs {
+		ledgerOps := make([]ledgerSystem.OpLogEvent, 0)
+		for _, v2 := range v.LedgerIdx {
+			ledgerOps = append(ledgerOps, oplog.LedgerOps[v2])
+		}
+		se.txDb.SetOutput(transactions.SetResultUpdate{
+			Id:     v.Id,
+			Ledger: &ledgerOps,
+		})
+		if v.Ok {
+			se.txDb.SetStatus([]string{v.Id}, "CONFIRMED")
+		} else {
+			se.txDb.SetStatus([]string{v.Id}, "FAILED")
+		}
+	}
 }
 
 type OffchainTransaction struct {
@@ -883,7 +901,7 @@ func (tx *OffchainTransaction) Cid() cid.Cid {
 }
 
 func (tx *OffchainTransaction) Ingest(se *StateEngine, txSelf TxSelf) {
-	anchoredHeight := int64(txSelf.BlockHeight)
+	anchoredHeight := txSelf.BlockHeight
 	anchoredIndex := int64(txSelf.Index)
 	anchoredOpIdx := int64(txSelf.OpIndex)
 
