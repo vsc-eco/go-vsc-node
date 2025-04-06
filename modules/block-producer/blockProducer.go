@@ -201,7 +201,7 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 			Br:    prevRange,
 			Prevb: prevBlockId,
 		},
-		MerkleRoot: nil,
+		MerkleRoot: &mr,
 		Block:      *blockCid,
 	}
 
