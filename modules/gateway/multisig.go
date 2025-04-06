@@ -68,10 +68,12 @@ var ACTION_INTERVAL = uint64(20)   // One minute of Hive blocks
 var SYNC_INTERVAL = uint64(28_800) // One day of Hive blocks
 // var SYNC_INTERVAL = uint64(20) // Use during e2e testing
 
-func (ms *MultiSig) BlockTick(bh uint64, headHeight uint64) {
+func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 	ms.bh = bh
-
-	if bh < headHeight-20 {
+	if headHeight == nil {
+		return
+	}
+	if bh < *headHeight-20 {
 		return
 	}
 	if bh%ROTATION_INTERVAL == 0 || bh%ACTION_INTERVAL == 0 {

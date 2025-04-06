@@ -37,7 +37,7 @@ func (v *VStream) RegisterBlockTick(name string, funck BTFunc, async bool) {
 	}
 }
 
-func (v *VStream) ProcessBlock(blk hive_blocks.HiveBlock, headHeight uint64) {
+func (v *VStream) ProcessBlock(blk hive_blocks.HiveBlock, headHeight *uint64) {
 	for _, tick := range v.ticks {
 		if tick.async {
 			go tick.funck(blk.BlockNumber, headHeight)
@@ -53,7 +53,7 @@ type BlockTick struct {
 	async bool
 }
 
-type BTFunc func(bh uint64, headHeight uint64)
+type BTFunc func(bh uint64, headHeight *uint64)
 
 func New(se *stateEngine.StateEngine) *VStream {
 	return &VStream{

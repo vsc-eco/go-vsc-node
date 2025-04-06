@@ -91,7 +91,7 @@ func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, 
 		startBlock = maybeStartBlock[0]
 	}
 	if process == nil {
-		process = func(block hiveblocks.HiveBlock, headHeight uint64) {} // no-op
+		process = func(block hiveblocks.HiveBlock, headHeight *uint64) {} // no-op
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -157,7 +157,7 @@ func (s *StreamReader) pollDb(fail func(error)) {
 		quit <- struct{}{}
 	}()
 	newBlocksProcessed := 0
-	processBlock := func(block hiveblocks.HiveBlock, headHeight uint64) error {
+	processBlock := func(block hiveblocks.HiveBlock, headHeight *uint64) error {
 		s.process(block, headHeight)
 		// update last processed block
 
@@ -200,7 +200,7 @@ var _ aggregate.Plugin = &StreamReader{}
 
 type FilterFunc func(tx hivego.Operation, ctx *BlockParams) bool
 type VirtualFilterFunc func(vop hivego.VirtualOp) bool
-type ProcessFunction func(block hiveblocks.HiveBlock, headHeight uint64)
+type ProcessFunction func(block hiveblocks.HiveBlock, headHeight *uint64)
 
 // Block height function returns the last block height that should be resumed form
 // This is useful for production where there is a replay requirement to get into *now* state

@@ -451,7 +451,7 @@ func (h *hiveBlocks) GetHighestBlock() (uint64, error) {
 	return result.Block.BlockNumber, nil
 }
 
-func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block HiveBlock, headBlock uint64) error) (context.CancelFunc, <-chan error) {
+func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block HiveBlock, headBlock *uint64) error) (context.CancelFunc, <-chan error) {
 	startBlock--
 	ctx, cancel := context.WithCancel(ctx)
 	errChan := make(chan error)
@@ -489,7 +489,7 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 						return
 					}
 					startBlock = doc.Block.BlockNumber
-					err = listener(*doc.Block, *metadata.HeadHeight)
+					err = listener(*doc.Block, metadata.HeadHeight)
 					if err != nil {
 						errChan <- err
 						return

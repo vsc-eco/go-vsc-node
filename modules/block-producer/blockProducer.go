@@ -72,12 +72,15 @@ type signingInfo struct {
 	circuit    *dids.PartialBlsCircuit
 }
 
-func (bp *BlockProducer) BlockTick(bh uint64, headHeight uint64) {
+func (bp *BlockProducer) BlockTick(bh uint64, headHeight *uint64) {
 	if !bp._started {
 		return
 	}
 	bp.bh = bh
-	if bh < headHeight-10 {
+	if headHeight == nil {
+		return
+	}
+	if bh < *headHeight-10 {
 		return
 	}
 

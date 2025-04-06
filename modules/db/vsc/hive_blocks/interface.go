@@ -12,7 +12,7 @@ type HiveBlocks interface {
 	StoreLastProcessedBlock(blockNumber uint64) error
 	GetLastProcessedBlock() (uint64, error)
 	FetchStoredBlocks(startBlock uint64, endBlock uint64) ([]HiveBlock, error)
-	ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block HiveBlock, headHeight uint64) error) (context.CancelFunc, <-chan error)
+	ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block HiveBlock, headHeight *uint64) error) (context.CancelFunc, <-chan error)
 	GetHighestBlock() (uint64, error)
 	GetBlock(blockNum uint64) (HiveBlock, error)
 	SetMetadata(doc Document) error
