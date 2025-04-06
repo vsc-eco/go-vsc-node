@@ -195,6 +195,7 @@ func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession,
 	if err != nil {
 		return TxResult{
 			Success: false,
+			Ret:     "Invalid decimal amount",
 			RcUsed:  50,
 		}
 	}
@@ -565,7 +566,7 @@ func (t *TxConsensusStake) TxSelf() TxSelf {
 }
 
 func (t *TxConsensusStake) Type() string {
-	return "unstake_hbd"
+	return "consensus_stake"
 }
 
 type TxConsensusUnstake struct {
@@ -645,7 +646,7 @@ func (t *TxConsensusUnstake) TxSelf() TxSelf {
 }
 
 func (t *TxConsensusUnstake) Type() string {
-	return "unstake_hbd"
+	return "consensus_unstake"
 }
 
 type TransactionSig struct {
