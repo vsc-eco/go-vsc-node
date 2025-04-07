@@ -278,16 +278,17 @@ func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession,
 	}
 	fl, _ := strconv.ParseFloat(t.Amount, 64)
 	params := ledgerSystem.WithdrawParams{
-		Id:     MakeTxId(t.Self.TxId, t.Self.OpIndex),
-		BIdx:   int64(t.Self.Index),
-		OpIdx:  int64(t.Self.OpIndex),
-		To:     t.To,
-		Asset:  t.Asset,
-		Memo:   t.Memo,
-		Amount: int64(fl * math.Pow(10, 3)),
+		Id:          MakeTxId(t.Self.TxId, t.Self.OpIndex),
+		BIdx:        int64(t.Self.Index),
+		OpIdx:       int64(t.Self.OpIndex),
+		To:          t.To,
+		Asset:       t.Asset,
+		Memo:        t.Memo,
+		Amount:      int64(fl * math.Pow(10, 3)),
+		BlockHeight: t.Self.BlockHeight,
 	}
 	if t.From == "" {
-		params.From = "hive:" + t.Self.RequiredAuths[0]
+		params.From = t.Self.RequiredAuths[0]
 	} else {
 		params.From = t.From
 	}
