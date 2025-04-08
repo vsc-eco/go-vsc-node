@@ -878,7 +878,7 @@ func (le *LedgerExecutor) ConsensusStake(params ledgerSystem.ConsensusParams, le
 		BlockHeight: params.BlockHeight,
 
 		Amount: params.Amount,
-		Asset:  "hbd",
+		Asset:  "hive",
 		Type:   "consensus_stake",
 	})
 
@@ -896,7 +896,7 @@ func (le *LedgerExecutor) ConsensusUnstake(params ledgerSystem.ConsensusParams, 
 		BlockHeight: params.BlockHeight,
 
 		Amount: params.Amount,
-		Asset:  "hbd",
+		Asset:  "hive",
 		Type:   "consensus_unstake",
 
 		Params: map[string]interface{}{
