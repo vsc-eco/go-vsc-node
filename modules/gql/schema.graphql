@@ -135,6 +135,11 @@ type Witness {
   signing_keys: HiveKeys
 }
 
+type WitnessSlot {
+  account: String
+  bn: Uint64!
+}
+
 interface BalanceController {
   type: BalanceControllerType
   authority: String
@@ -253,7 +258,7 @@ type Query {
   localNodeInfo: LocalNodeInfo
   witnessNodes(height: Uint64!): [Witness!]!
   activeWitnessNodes: JSON
-  witnessSchedule(height: Uint64!): JSON
+  witnessSchedule(height: Uint64!): [WitnessSlot!]!
   nextWitnessSlot(self: Boolean): JSON
   witnessActiveScore(height: Int): JSON
   mockGenerateElection: JSON

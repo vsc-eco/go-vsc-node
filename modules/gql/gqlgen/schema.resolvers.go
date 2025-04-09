@@ -12,6 +12,7 @@ import (
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
+	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 )
 
@@ -159,8 +160,10 @@ func (r *queryResolver) ActiveWitnessNodes(ctx context.Context) (*string, error)
 }
 
 // WitnessSchedule is the resolver for the witnessSchedule field.
-func (r *queryResolver) WitnessSchedule(ctx context.Context, height model.Uint64) (*string, error) {
-	panic(fmt.Errorf("not implemented"))
+func (r *queryResolver) WitnessSchedule(ctx context.Context, height model.Uint64) ([]stateEngine.WitnessSlot, error) {
+	slotInfo := stateEngine.CalculateSlotInfo(uint64(height))
+	schedule := r.StateEngine.GetSchedule(slotInfo.StartHeight)
+	return schedule, nil
 }
 
 // NextWitnessSlot is the resolver for the nextWitnessSlot field.
@@ -215,6 +218,11 @@ func (r *witnessResolver) SigningKeys(ctx context.Context, obj *witnesses.Witnes
 	panic(fmt.Errorf("not implemented: SigningKeys - signing_keys"))
 }
 
+// Bn is the resolver for the bn field.
+func (r *witnessSlotResolver) Bn(ctx context.Context, obj *stateEngine.WitnessSlot) (model.Uint64, error) {
+	return model.Uint64(obj.SlotHeight), nil
+}
+
 // ContractOutput returns ContractOutputResolver implementation.
 func (r *Resolver) ContractOutput() ContractOutputResolver { return &contractOutputResolver{r} }
 
@@ -230,20 +238,12 @@ func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 // Witness returns WitnessResolver implementation.
 func (r *Resolver) Witness() WitnessResolver { return &witnessResolver{r} }
 
+// WitnessSlot returns WitnessSlotResolver implementation.
+func (r *Resolver) WitnessSlot() WitnessSlotResolver { return &witnessSlotResolver{r} }
+
 type contractOutputResolver struct{ *Resolver }
 type contractStateResolver struct{ *Resolver }
 type mutationResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
-
-// !!! WARNING !!!
-// The code below was going to be deleted when updating resolvers. It has been copied here so you have
-// one last chance to move it out of harms way if you want. There are two reasons this happens:
-//  - When renaming or deleting a resolver the old code will be put in here. You can safely delete
-//    it when you're done.
-//  - You have helper methods in this file. Move them out to keep these resolver files clean.
-/*
-	func (r *queryResolver) Stake(ctx context.Context, account string) (model.Uint64, error) {
-	panic(fmt.Errorf("not implemented: Stake - stake"))
-}
-*/
+type witnessSlotResolver struct{ *Resolver }

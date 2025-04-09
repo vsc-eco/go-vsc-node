@@ -8,38 +8,68 @@ import (
 	"testing"
 	"time"
 	"vsc-node/lib/datalayer"
+	"vsc-node/lib/logger"
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
+	"vsc-node/modules/db/vsc/contracts"
+	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/nonces"
+	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
+	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
 	libp2p "vsc-node/modules/p2p"
+	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
+	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 
 	"github.com/stretchr/testify/assert"
 )
 
 func TestQueryAndMutation(t *testing.T) {
 	// init the gql plugin with an in-memory test server
+	l := logger.PrefixedLogger{
+		Prefix: "vsc-node",
+	}
 	dbConfg := db.NewDbConfig()
+	identityConfig := common.NewIdentityConfig()
 	d := db.New(dbConfg)
 	vscDb := vsc.New(d)
 	witnesses := witnesses.New(vscDb)
-	p2p := libp2p.New(witnesses)
+	p2p := libp2p.New(witnesses, identityConfig)
+	hiveBlocks, hiveBlocksErr := hive_blocks.New(vscDb)
+	electionDb := elections.New(vscDb)
+	contractDb := contracts.New(vscDb)
 	txDb := transactions.New(vscDb)
+	vscBlocks := vscBlocks.New(vscDb)
+	ledgerDbImpl := ledgerDb.New(vscDb)
+	balanceDb := ledgerDb.NewBalances(vscDb)
+	actionsDb := ledgerDb.NewActionsDb(vscDb)
+	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
+	contractState := contracts.NewContractState(vscDb)
+	nonceDb := nonces.New(vscDb)
+	rcDb := rcDb.New(vscDb)
 	da := datalayer.New(p2p)
 	conf := common.NewIdentityConfig()
 	txPool := transactionpool.New(p2p, txDb, da, conf)
 	balances := ledgerDb.NewBalances(vscDb)
+	wasm := wasm_parent_ipc.New()
+
+	assert.NoError(t, hiveBlocksErr)
+	se := stateEngine.New(l, da, witnesses, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
 	resolver := &gqlgen.Resolver{
 		witnesses,
 		txPool,
 		balances,
+		se,
+		hiveBlocks,
 	}
 	schema := gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: resolver})
 
