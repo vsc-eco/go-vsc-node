@@ -190,7 +190,7 @@ func (r *queryResolver) GetCurrentNumber(ctx context.Context) (*TestResult, erro
 
 // WitnessStake is the resolver for the witnessStake field.
 func (r *queryResolver) WitnessStake(ctx context.Context, account string) (model.Uint64, error) {
-	res, err := r.Balances.GetBalanceRecord(account, uint64(math.MaxUint64))
+	res, err := r.Balances.GetBalanceRecord(account, uint64(math.MaxInt64))
 	if err != nil {
 		return 0, err
 	}
