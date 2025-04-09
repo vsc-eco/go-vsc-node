@@ -64,8 +64,6 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 				return nil
 			}
 
-			fmt.Println("signPkg", signPkg)
-
 			if signPkg.TxId == signReq.TxId {
 				sig, err := s.ms.hiveCreator.Sign(signPkg.Tx)
 				if err != nil {
@@ -87,6 +85,7 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 				})
 			}
 		} else if msg.Op == "execute_actions" {
+
 			var signReq signRequest
 			err := json.Unmarshal([]byte(msg.Data), &signReq)
 			if err != nil {
@@ -99,7 +98,9 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 				return nil
 			}
 
-			signPkg, err := s.ms.keyRotation(signReq.BlockHeight)
+			signPkg, err := s.ms.executeActions(signReq.BlockHeight)
+
+			fmt.Println("executeActions signPkg", signPkg)
 
 			if err != nil {
 				return nil

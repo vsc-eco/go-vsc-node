@@ -42,7 +42,7 @@ type MultiSig struct {
 	p2p     *libp2p.P2PServer
 	se      *stateEngine.StateEngine
 	log     logger.Logger
-	msgChan map[string]chan p2pMessage
+	msgChan map[string]chan *p2pMessage
 
 	bh uint64
 }
@@ -76,6 +76,7 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 	if bh < *headHeight-20 {
 		return
 	}
+
 	if bh%ROTATION_INTERVAL == 0 || bh%ACTION_INTERVAL == 0 {
 
 		ms.electionDb.GetElectionByHeight(bh)
@@ -95,9 +96,11 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 		}
 
 		if bh%20 == 0 {
+			fmt.Println("Multisig: Running key rotation")
 			go ms.TickKeyRotation(bh)
 		}
 		if bh%ACTION_INTERVAL == 0 {
+			fmt.Println("Multisig: Running Actions")
 			go ms.TickActions(bh)
 		}
 		if bh&SYNC_INTERVAL == 0 {
@@ -113,7 +116,7 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 		return
 	}
 
-	ms.msgChan[signPkg.TxId] = make(chan p2pMessage)
+	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage)
 	signReq := signRequest{
 		TxId:        signPkg.TxId,
 		BlockHeight: bh,
@@ -149,11 +152,12 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 func (ms *MultiSig) TickActions(bh uint64) {
 	signPkg, err := ms.executeActions(bh)
 
+	fmt.Println("TickActions", err, signPkg)
 	if err != nil {
 		return
 	}
 
-	ms.msgChan[signPkg.TxId] = make(chan p2pMessage)
+	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage)
 	signReq := signRequest{
 		TxId:        signPkg.TxId,
 		BlockHeight: bh,
@@ -161,15 +165,20 @@ func (ms *MultiSig) TickActions(bh uint64) {
 
 	sigJson, _ := json.Marshal(signReq)
 
-	ms.service.Send(p2pMessage{
-		Type: "sign_request",
-		Op:   "execute_actions",
-		Data: string(sigJson),
-	})
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		ms.service.Send(p2pMessage{
+			Type: "sign_request",
+			Op:   "execute_actions",
+			Data: string(sigJson),
+		})
+	}()
 
+	fmt.Println("TickActions getThreshold()")
 	threshold, _, _, _ := ms.getThreshold()
 	signatures, weight, err := ms.waitForSigs(signPkg.Tx, signPkg.TxId)
 
+	fmt.Println("TickActions signatures", signatures, weight, err)
 	if err != nil {
 		return
 	}
@@ -194,7 +203,7 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 		return
 	}
 
-	ms.msgChan[signPkg.TxId] = make(chan p2pMessage)
+	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage)
 	signReq := signRequest{
 		TxId:        signPkg.TxId,
 		BlockHeight: bh,
@@ -582,7 +591,7 @@ func (ms *MultiSig) getThreshold() (int, []string, []int, error) {
 	return gatewayAccount.Owner.WeightThreshold, publicKeys, weights, nil
 }
 
-func (ms *MultiSig) waitForSigs(tx hivego.HiveTransaction, hivetxId string) ([]string, uint64, error) {
+func (ms *MultiSig) waitForSigs(tx hivego.HiveTransaction, hivetxId string, timeout ...time.Duration) ([]string, uint64, error) {
 	threshold, publicList, weights, _ := ms.getThreshold()
 	txId, err := tx.GenerateTrxId()
 	if err != nil {
@@ -599,10 +608,28 @@ func (ms *MultiSig) waitForSigs(tx hivego.HiveTransaction, hivetxId string) ([]s
 	}
 	txHash := hivego.HashTxForSig(txBytes)
 
+	var timeoutz time.Duration
+	if len(timeout) > 0 {
+		timeoutz = timeout[0]
+	} else {
+		timeoutz = 20 * time.Second
+	}
+
+	go func() {
+		time.Sleep(timeoutz)
+		if ms.msgChan[txId] != nil {
+			ms.msgChan[txId] <- nil
+		}
+	}()
+
 	signedWeight := uint64(0)
 	sigs := make([]string, 0)
 	for uint64(threshold) > signedWeight {
 		msg := <-ms.msgChan[txId]
+		fmt.Println("Receiving tickActions msg", msg)
+		if msg == nil {
+			break
+		}
 		if msg.Type == "sign_response" {
 			sigRes := signResponse{}
 			err := json.Unmarshal([]byte(msg.Data), &sigRes)
@@ -670,6 +697,6 @@ func New(logger logger.Logger, witnessDb witnesses.Witnesses, electionDb electio
 		log:           logger,
 		hiveClient:    hiveClient,
 
-		msgChan: make(map[string]chan p2pMessage),
+		msgChan: make(map[string]chan *p2pMessage),
 	}
 }
