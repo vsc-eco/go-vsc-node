@@ -16,6 +16,7 @@ import (
 	"github.com/99designs/gqlgen/graphql/handler/transport"
 	pg "github.com/99designs/gqlgen/graphql/playground"
 	"github.com/chebyrash/promise"
+	"github.com/rs/cors"
 )
 
 // ===== constants =====
@@ -59,10 +60,18 @@ func (g *gqlManager) Init() error {
 	mux.Handle("POST /api/v1/graphql", gqlServer)
 	mux.Handle("GET /sandbox", pg.ApolloSandboxHandler("Apollo Sandbox", "/api/v1/graphql"))
 
+	// Configure CORS
+	c := cors.New(cors.Options{
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedHeaders:   []string{"*"},
+		AllowCredentials: false,
+	})
+
 	// assigns the HTTP server
 	g.server = &http.Server{
 		Addr:    g.Addr,
-		Handler: mux,
+		Handler: c.Handler(mux),
 	}
 
 	g.startPromise = promise.New(func(resolve func(any), reject func(error)) {
