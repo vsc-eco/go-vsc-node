@@ -69,7 +69,6 @@ func TestQueryAndMutation(t *testing.T) {
 		txPool,
 		balances,
 		se,
-		hiveBlocks,
 	}
 	schema := gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: resolver})
 
