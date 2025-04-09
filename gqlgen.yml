@@ -33,5 +33,8 @@ models:
   Uint64:
     model:
       - vsc-node/modules/gql/model.Uint64
+  WitnessSlot:
+    model:
+      - vsc-node/modules/state-processing.WitnessSlot
 
 call_argument_directives_with_null: true

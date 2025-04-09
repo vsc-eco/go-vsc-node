@@ -13,6 +13,7 @@ import (
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
+	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/99designs/gqlgen/graphql/introspection"
@@ -45,6 +46,7 @@ type ResolverRoot interface {
 	Mutation() MutationResolver
 	Query() QueryResolver
 	Witness() WitnessResolver
+	WitnessSlot() WitnessSlotResolver
 }
 
 type DirectiveRoot struct {
@@ -239,6 +241,11 @@ type ComplexityRoot struct {
 		SigningKeys func(childComplexity int) int
 		VersionId   func(childComplexity int) int
 	}
+
+	WitnessSlot struct {
+		Account func(childComplexity int) int
+		Bn      func(childComplexity int) int
+	}
 }
 
 type ContractOutputResolver interface {
@@ -275,7 +282,7 @@ type QueryResolver interface {
 	LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, error)
 	WitnessNodes(ctx context.Context, height model.Uint64) ([]witnesses.Witness, error)
 	ActiveWitnessNodes(ctx context.Context) (*string, error)
-	WitnessSchedule(ctx context.Context, height model.Uint64) (*string, error)
+	WitnessSchedule(ctx context.Context, height model.Uint64) ([]stateEngine.WitnessSlot, error)
 	NextWitnessSlot(ctx context.Context, self *bool) (*string, error)
 	WitnessActiveScore(ctx context.Context, height *int) (*string, error)
 	MockGenerateElection(ctx context.Context) (*string, error)
@@ -288,6 +295,9 @@ type WitnessResolver interface {
 	LastSigned(ctx context.Context, obj *witnesses.Witness) (*int, error)
 
 	SigningKeys(ctx context.Context, obj *witnesses.Witness) (*HiveKeys, error)
+}
+type WitnessSlotResolver interface {
+	Bn(ctx context.Context, obj *stateEngine.WitnessSlot) (model.Uint64, error)
 }
 
 type executableSchema struct {
@@ -1134,6 +1144,20 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Witness.VersionId(childComplexity), true
 
+	case "WitnessSlot.account":
+		if e.complexity.WitnessSlot.Account == nil {
+			break
+		}
+
+		return e.complexity.WitnessSlot.Account(childComplexity), true
+
+	case "WitnessSlot.bn":
+		if e.complexity.WitnessSlot.Bn == nil {
+			break
+		}
+
+		return e.complexity.WitnessSlot.Bn(childComplexity), true
+
 	}
 	return 0, false
 }
@@ -1379,6 +1403,11 @@ type Witness {
   signing_keys: HiveKeys
 }
 
+type WitnessSlot {
+  account: String
+  bn: Uint64!
+}
+
 interface BalanceController {
   type: BalanceControllerType
   authority: String
@@ -1497,7 +1526,7 @@ type Query {
   localNodeInfo: LocalNodeInfo
   witnessNodes(height: Uint64!): [Witness!]!
   activeWitnessNodes: JSON
-  witnessSchedule(height: Uint64!): JSON
+  witnessSchedule(height: Uint64!): [WitnessSlot!]!
   nextWitnessSlot(self: Boolean): JSON
   witnessActiveScore(height: Int): JSON
   mockGenerateElection: JSON
@@ -5302,11 +5331,14 @@ func (ec *executionContext) _Query_witnessSchedule(ctx context.Context, field gr
 		return graphql.Null
 	}
 	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
 		return graphql.Null
 	}
-	res := resTmp.(*string)
+	res := resTmp.([]stateEngine.WitnessSlot)
 	fc.Result = res
-	return ec.marshalOJSON2ᚖstring(ctx, field.Selections, res)
+	return ec.marshalNWitnessSlot2ᚕvscᚑnodeᚋmodulesᚋstateᚑprocessingᚐWitnessSlotᚄ(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) fieldContext_Query_witnessSchedule(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
@@ -5316,7 +5348,13 @@ func (ec *executionContext) fieldContext_Query_witnessSchedule(ctx context.Conte
 		IsMethod:   true,
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type JSON does not have child fields")
+			switch field.Name {
+			case "account":
+				return ec.fieldContext_WitnessSlot_account(ctx, field)
+			case "bn":
+				return ec.fieldContext_WitnessSlot_bn(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type WitnessSlot", field.Name)
 		},
 	}
 	defer func() {
@@ -7020,6 +7058,91 @@ func (ec *executionContext) fieldContext_Witness_signing_keys(_ context.Context,
 				return ec.fieldContext_HiveKeys_owner(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type HiveKeys", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _WitnessSlot_account(ctx context.Context, field graphql.CollectedField, obj *stateEngine.WitnessSlot) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_WitnessSlot_account(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Account, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_WitnessSlot_account(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "WitnessSlot",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _WitnessSlot_bn(ctx context.Context, field graphql.CollectedField, obj *stateEngine.WitnessSlot) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_WitnessSlot_bn(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.WitnessSlot().Bn(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_WitnessSlot_bn(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "WitnessSlot",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
 		},
 	}
 	return fc, nil
@@ -10685,13 +10808,16 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 		case "witnessSchedule":
 			field := field
 
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
 				defer func() {
 					if r := recover(); r != nil {
 						ec.Error(ctx, ec.Recover(ctx, r))
 					}
 				}()
 				res = ec._Query_witnessSchedule(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
 				return res
 			}
 
@@ -11169,6 +11295,78 @@ func (ec *executionContext) _Witness(ctx context.Context, sel ast.SelectionSet, 
 					}
 				}()
 				res = ec._Witness_signing_keys(ctx, field, obj)
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var witnessSlotImplementors = []string{"WitnessSlot"}
+
+func (ec *executionContext) _WitnessSlot(ctx context.Context, sel ast.SelectionSet, obj *stateEngine.WitnessSlot) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, witnessSlotImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("WitnessSlot")
+		case "account":
+			out.Values[i] = ec._WitnessSlot_account(ctx, field, obj)
+		case "bn":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._WitnessSlot_bn(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
 				return res
 			}
 
@@ -11735,6 +11933,54 @@ func (ec *executionContext) marshalNWitness2ᚕvscᚑnodeᚋmodulesᚋdbᚋvsc�
 				defer wg.Done()
 			}
 			ret[i] = ec.marshalNWitness2vscᚑnodeᚋmodulesᚋdbᚋvscᚋwitnessesᚐWitness(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
+func (ec *executionContext) marshalNWitnessSlot2vscᚑnodeᚋmodulesᚋstateᚑprocessingᚐWitnessSlot(ctx context.Context, sel ast.SelectionSet, v stateEngine.WitnessSlot) graphql.Marshaler {
+	return ec._WitnessSlot(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNWitnessSlot2ᚕvscᚑnodeᚋmodulesᚋstateᚑprocessingᚐWitnessSlotᚄ(ctx context.Context, sel ast.SelectionSet, v []stateEngine.WitnessSlot) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNWitnessSlot2vscᚑnodeᚋmodulesᚋstateᚑprocessingᚐWitnessSlot(ctx, sel, v[i])
 		}
 		if isLen1 {
 			f(i)
