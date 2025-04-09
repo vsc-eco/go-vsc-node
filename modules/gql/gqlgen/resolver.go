@@ -1,7 +1,6 @@
 package gqlgen
 
 import (
-	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/witnesses"
 	stateEngine "vsc-node/modules/state-processing"
@@ -17,5 +16,4 @@ type Resolver struct {
 	TxPool      *transactionpool.TransactionPool
 	Balances    ledgerDb.Balances
 	StateEngine *stateEngine.StateEngine
-	HiveBlocks  hive_blocks.HiveBlocks
 }

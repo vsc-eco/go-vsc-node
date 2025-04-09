@@ -16,6 +16,7 @@ require (
 	github.com/moznion/go-optional v0.12.0
 	github.com/protolambda/bls12-381-util v0.1.0
 	github.com/robfig/cron/v3 v3.0.1
+	github.com/rs/cors v1.11.1
 	github.com/vektah/gqlparser/v2 v2.5.23
 	github.com/vsc-eco/go-ethereum v0.0.1
 	github.com/vsc-eco/hivego v0.0.0-20250326022052-753ab49b6067
@@ -55,7 +56,6 @@ require (
 
 require (
 	github.com/agnivade/levenshtein v1.2.1 // indirect
-	github.com/rs/cors v1.11.1 // indirect
 	github.com/sosodev/duration v1.3.1 // indirect
 	github.com/urfave/cli/v2 v2.27.6 // indirect
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
