@@ -1,6 +1,7 @@
 package election_proposer
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,12 +19,17 @@ import (
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/witnesses"
 	libp2p "vsc-node/modules/p2p"
+	stateEngine "vsc-node/modules/state-processing"
+	"vsc-node/modules/vstream"
 
 	"github.com/JustinKnueppel/go-result"
 	"github.com/chebyrash/promise"
 	"github.com/vsc-eco/hivego"
 	"go.mongodb.org/mongo-driver/mongo"
 )
+
+// 6 hours of  hive blocks
+var ELECTION_INTERVAL = uint64(6 * 60 * 20)
 
 type electionProposer struct {
 	conf common.IdentityConfig
@@ -39,7 +45,17 @@ type electionProposer struct {
 
 	txCreator hive.HiveTransactionCreator
 
-	circuit dids.PartialBlsCircuit
+	circuit    dids.PartialBlsCircuit
+	vstream    *vstream.VStream
+	se         *stateEngine.StateEngine
+	bh         uint64
+	headHeight *uint64
+
+	sigChannels map[uint64]chan p2pMessage
+	signingInfo *struct {
+		epoch   uint64
+		circuit *dids.PartialBlsCircuit
+	}
 }
 
 type ElectionProposer = *electionProposer
@@ -56,20 +72,26 @@ func New(
 	da *datalayer.DataLayer,
 	txCreator hive.HiveTransactionCreator,
 	conf common.IdentityConfig,
+	se *stateEngine.StateEngine,
+	vstream *vstream.VStream,
 ) ElectionProposer {
 	return &electionProposer{
-		conf:      conf,
-		p2p:       p2p,
-		witnesses: witnesses,
-		elections: elections,
-		balanceDb: balanceDb,
-		da:        da,
-		txCreator: txCreator,
+		conf:        conf,
+		p2p:         p2p,
+		witnesses:   witnesses,
+		elections:   elections,
+		balanceDb:   balanceDb,
+		da:          da,
+		txCreator:   txCreator,
+		se:          se,
+		vstream:     vstream,
+		sigChannels: make(map[uint64]chan p2pMessage),
 	}
 }
 
 // Init implements aggregate.Plugin.
 func (e *electionProposer) Init() error {
+	e.vstream.RegisterBlockTick("election-proposer", e.blockTick, false)
 	return nil
 }
 
@@ -87,10 +109,59 @@ func (e *electionProposer) Stop() error {
 	return e.stopP2P()
 }
 
+func (e *electionProposer) blockTick(bh uint64, headHeight *uint64) {
+	e.bh = bh
+	e.headHeight = headHeight
+
+	if e.canHold() {
+		// fmt.Println("canHold", e.canHold())
+
+		slotInfo := stateEngine.CalculateSlotInfo(bh)
+
+		schedule := e.se.GetSchedule(slotInfo.StartHeight)
+
+		//Select current slot as per consensus algorithm
+		var witnessSlot *stateEngine.WitnessSlot
+		for _, slot := range schedule {
+			if slot.SlotHeight == slotInfo.StartHeight {
+				witnessSlot = &slot
+				break
+			}
+		}
+
+		if e.circuit == nil {
+			fmt.Println("Holding new election!")
+			err := e.HoldElection(witnessSlot.SlotHeight)
+			fmt.Println("HoldElection err", err)
+			if err != nil {
+				// panic(err)
+			}
+		}
+
+		if witnessSlot != nil {
+			if witnessSlot.Account == e.conf.Get().HiveUsername && bh%common.CONSENSUS_SPECS.SlotLength == 0 {
+			}
+		}
+	}
+}
+
+func (e *electionProposer) canHold() bool {
+	if e.headHeight == nil {
+		return false
+	}
+	if e.bh < *e.headHeight-50 {
+		return false
+	}
+
+	result, _ := e.elections.GetElectionByHeight(e.bh)
+
+	return result.BlockHeight < e.bh-ELECTION_INTERVAL
+}
+
 func (e *electionProposer) GenerateElection() (elections.ElectionHeader, elections.ElectionData, error) {
 	// TODO: get latest block
-	blk := uint64(0)
-	return e.GenerateElectionAtBlock(blk)
+
+	return e.GenerateElectionAtBlock(e.bh)
 }
 
 // Generates a raw election graph from local data
@@ -257,6 +328,7 @@ type ElectionOptions struct {
 
 func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) error {
 	if e.circuit != nil {
+		fmt.Println("election already in progress")
 		return errors.New("election already in progress")
 	}
 
@@ -265,12 +337,14 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 	if err == mongo.ErrNoDocuments {
 		firstElection = true
 	} else if err != nil {
+		fmt.Println("election.err", err)
 		return err
 	}
 
 	electionHeader, electionData, err := e.GenerateElectionAtBlock(blk)
 
 	if err != nil {
+		fmt.Println("election.err", err)
 		return err
 	}
 
@@ -282,6 +356,7 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 		}
 		jsonBytes, err := json.Marshal(electionResultJson)
 		if err != nil {
+			fmt.Println("election.err", err)
 			return err
 		}
 
@@ -293,17 +368,18 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 
 		sig, err := e.txCreator.Sign(tx)
 		if err != nil {
+			fmt.Println("election.err", err)
 			return fmt.Errorf("failed to update account: %w", err)
 		}
 
 		tx.AddSig(sig)
 
-		txId, err := e.txCreator.Broadcast(tx)
-		if err != nil {
-			return err
-		}
+		// txId, err := e.txCreator.Broadcast(tx)
+		// if err != nil {
+		// 	return err
+		// }
 
-		fmt.Println("Propose Election TxId", txId)
+		// fmt.Println("Propose Election TxId", txId)
 
 		return nil
 	}
@@ -318,11 +394,13 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 	}
 
 	if len(electionData.Members) < minimumMemberCount {
+		fmt.Println("election minimum member count not met", len(electionData.Members), minimumMemberCount)
 		return errors.New("Minimum network config not met for election. Skipping.")
 	}
 
 	cid, err := electionHeader.Cid()
 	if err != nil {
+		fmt.Println("election.err", err)
 		return err
 	}
 
@@ -332,6 +410,7 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 
 		fmt.Println("GetWitnessesAtBlockHeight err", err)
 		if err != nil {
+			fmt.Println("election.err", err)
 			return err
 		}
 		res := resultJoin(utils.Map(w, func(w witnesses.Witness) result.Result[dids.BlsDID] {
@@ -348,17 +427,31 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 
 	circuit, err := dids.NewBlsCircuitGenerator(memberKeys).Generate(cid)
 	if err != nil {
+		fmt.Println("election.err", err)
 		return err
 	}
 
 	e.circuit = circuit
 
 	sig, err := signCid(e.conf, cid)
+
+	fmt.Println("election.sig", sig, err)
 	if err != nil {
 		return err
 	}
-	err = e.service.Send(p2pMessageElectionProposal(p2pMessageElectionSignature{sig}))
+
+	signReq := signRequest{
+		Epoch:       electionHeader.Epoch,
+		BlockHeight: blk,
+	}
+	reqJson, _ := json.Marshal(signReq)
+	err = e.service.Send(p2pMessage{
+		Type: "hold_election",
+		Data: string(reqJson),
+	})
+	fmt.Println("SEnding error", err)
 	if err != nil {
+		fmt.Println("election.err", err)
 		return err
 	}
 
@@ -369,6 +462,7 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 
 	finalCircuit, err := circuit.Finalize()
 	if err != nil {
+		fmt.Println("election.err", err)
 		return err
 	}
 
@@ -393,6 +487,7 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 
 		circuit, err := finalCircuit.Serialize()
 		if err != nil {
+			fmt.Println("election.err", err)
 			return err
 		}
 
@@ -422,14 +517,80 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 
 		tx.AddSig(sig)
 
-		_, err = e.txCreator.Broadcast(tx)
+		// _, err = e.txCreator.Broadcast(tx)
 
-		if err != nil {
-			return fmt.Errorf("failed to update account: %w", err)
-		}
+		// if err != nil {
+		// 	return fmt.Errorf("failed to update account: %w", err)
+		// }
 	}
 
 	return nil
+}
+
+func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections.ElectionResult) (uint64, error) {
+
+	if ep.signingInfo == nil {
+		return 0, errors.New("no block signing info")
+	}
+	go func() {
+		time.Sleep(12 * time.Second)
+		// ep.sigChannels[ep.signingInfo.epoch] <- sigMsg{
+		// 	Type: "end",
+		// }
+	}()
+	weightTotal := uint64(0)
+	for _, weight := range election.Weights {
+		weightTotal += weight
+	}
+
+	select {
+	case <-ctx.Done():
+		fmt.Println("[bp] ctx done")
+		return 0, ctx.Err() // Return error if canceled
+	default:
+		signedWeight := uint64(0)
+
+		fmt.Println("[bp] default action")
+		// Perform the operation
+
+		// slotHeight := bp.blockSigning.slotHeight
+
+		for signedWeight < (weightTotal * 9 / 10) {
+			msg := <-ep.sigChannels[ep.signingInfo.epoch]
+
+			if msg.Type == "sig" {
+				// sig := msg.Msg
+				// sigStr := sig.Data["sig"].(string)
+				// account := sig.Data["account"].(string)
+
+				// var member dids.Member
+				// var index int
+				// for i, data := range election.Members {
+				// 	if data.Account == account {
+				// 		member = dids.BlsDID(data.Key)
+				// 		index = i
+				// 		break
+				// 	}
+				// }
+
+				// circuit := *bp.blockSigning.circuit
+
+				// err := circuit.AddAndVerify(member, sigStr)
+
+				// fmt.Println("[bp] aggregating signature", sigStr, "from", account)
+				// fmt.Println("[bp] agg err", err)
+				// if err == nil {
+				// 	signedWeight += election.Weights[index]
+				// }
+			}
+			if msg.Type == "end" {
+				fmt.Println("Ending wait for sig")
+				break
+			}
+		}
+		fmt.Println("Done waittt")
+		return signedWeight, nil
+	}
 }
 
 // {drain} :=  this.self.p2pService.multicastChannel.call("hold_election", {

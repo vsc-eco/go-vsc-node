@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"slices"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -25,14 +26,18 @@ func (dbr *DbReindex) Init() error {
 		"type": "metadata",
 	})
 	result := SearchResult{}
-	err := findResult.Decode(result)
+	err := findResult.Decode(&result)
 
 	var indexId uint64
 	if err != nil {
 		indexId = 0
+	} else {
+		indexId = *result.ReindexId
+		fmt.Println("result", result)
 	}
 
 	if indexId != uint64(REINDEX_ID) {
+		fmt.Println("Reindexing database...")
 		cols, _ := dbr.ListCollectionNames(ctx, bson.M{})
 
 		for _, name := range cols {

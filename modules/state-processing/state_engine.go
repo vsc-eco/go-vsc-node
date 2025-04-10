@@ -936,6 +936,11 @@ func (se *StateEngine) Flush() {
 // If not continue parsing from lastBlk
 // Need to test
 func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint64 {
+
+	if lastBlk == 0 || lastSavedBlk == 0 {
+		fmt.Println("Returning lastSavdBlk", lastBlk, lastSavedBlk)
+		return lastSavedBlk
+	}
 	var outputExists bool
 	for _, _ = range se.TxOutput {
 		outputExists = true

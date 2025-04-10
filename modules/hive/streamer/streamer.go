@@ -74,7 +74,7 @@ type StreamReader struct {
 	// mtx           sync.Mutex
 	isPaused      atomic.Bool
 	lastProcessed uint64
-	lastSaved     uint64
+	lastSaved     *uint64
 	headHeight    uint64
 	stopped       chan struct{}
 	hiveBlocks    hiveblocks.HiveBlocks
@@ -118,6 +118,7 @@ func (s *StreamReader) Init() error {
 	}
 
 	s.lastProcessed = lp
+	s.lastSaved = &lp
 	return nil
 }
 
@@ -144,8 +145,10 @@ func (s *StreamReader) pollDb(fail func(error)) {
 			select {
 			case <-ticker.C:
 				// do stuff
-				if err := s.hiveBlocks.StoreLastProcessedBlock(s.lastSaved); err != nil {
+				if s.lastSaved != nil {
+					if err := s.hiveBlocks.StoreLastProcessedBlock(*s.lastSaved); err != nil {
 
+					}
 				}
 			case <-quit:
 				ticker.Stop()
@@ -162,10 +165,11 @@ func (s *StreamReader) pollDb(fail func(error)) {
 		// update last processed block
 
 		if s.getBlockHeight == nil {
-			s.lastSaved = block.BlockNumber
+			s.lastSaved = &block.BlockNumber
 		} else {
 			//Retrieves the calculated block height
-			s.lastSaved = s.getBlockHeight(block.BlockNumber, s.lastProcessed)
+			bh := s.getBlockHeight(block.BlockNumber, s.lastProcessed)
+			s.lastSaved = &bh
 		}
 
 		s.lastProcessed = block.BlockNumber
@@ -173,10 +177,12 @@ func (s *StreamReader) pollDb(fail func(error)) {
 		newBlocksProcessed++
 
 		if newBlocksProcessed > 100 {
-			if err := s.hiveBlocks.StoreLastProcessedBlock(s.lastSaved); err != nil {
-				return fmt.Errorf("error updating last processed block: %v", err)
+			if s.lastSaved != nil {
+				if err := s.hiveBlocks.StoreLastProcessedBlock(*s.lastSaved); err != nil {
+					return fmt.Errorf("error updating last processed block: %v", err)
+				}
+				newBlocksProcessed = 0
 			}
-			newBlocksProcessed = 0
 		}
 		return nil
 	}

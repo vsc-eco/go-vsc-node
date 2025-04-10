@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/witnesses"
@@ -253,7 +254,25 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 	go func() {
 		for {
 			time.Sleep(5 * time.Second)
-			fmt.Println("peers", p2ps.Host.Network().Peers(), len(p2ps.Host.Network().Peers()))
+			peerList := ""
+			if len(p2ps.Host.Network().Peers()) > 5 {
+				for idx, peer := range p2ps.Host.Network().Peers() {
+					if idx >= 4 {
+						break
+					}
+					if idx > 0 {
+						peerList += " "
+					}
+					peerList += peer.String()
+				}
+				peerList += "..." + strconv.Itoa(len(p2ps.Host.Network().Peers())-4) + " more"
+			} else {
+				for _, peer := range p2ps.Host.Network().Peers() {
+					peerList += peer.String() + ", "
+				}
+			}
+			peerLen := len(p2ps.Host.Network().Peers())
+			fmt.Println("peers", "["+peerList+"]", "peers.len()="+strconv.Itoa(peerLen))
 		}
 	}()
 

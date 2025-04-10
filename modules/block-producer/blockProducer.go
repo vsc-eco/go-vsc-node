@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"vsc-node/lib/datalayer"
@@ -78,9 +79,10 @@ func (bp *BlockProducer) BlockTick(bh uint64, headHeight *uint64) {
 	}
 	bp.bh = bh
 	if headHeight == nil {
+		fmt.Println("HeadHeight is nil")
 		return
 	}
-	if bh < *headHeight-10 {
+	if bh < *headHeight-40 {
 		return
 	}
 
@@ -385,7 +387,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	// fmt.Println("CircuitMap", circuit.CircuitMap())
 
 	if !(signedWeight > (electionResult.TotalWeight * 2 / 3)) {
-		fmt.Println("[bp] not enough signatures")
+		fmt.Println("[bp] not enough signatures", "signedW="+strconv.Itoa(int(signedWeight)), "totalW="+strconv.Itoa(int(electionResult.TotalWeight*2/3)))
 		return
 	}
 
@@ -491,6 +493,7 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		})
 	}
 
+	fmt.Println("Received msg to create block", msg)
 	blockHeader, _, err := bp.GenerateBlock(msg.SlotHeight, generateBlockParams{
 		Transactions: transactions,
 	})

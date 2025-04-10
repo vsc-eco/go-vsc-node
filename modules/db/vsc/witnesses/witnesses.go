@@ -244,7 +244,7 @@ func (w *witnesses) GetWitnessesByPeerId(PeerIds ...string) ([]Witness, error) {
 		return nil, err
 	}
 
-	witnesses := make([]Witness, 0)
+	witnessSet := make(map[string]Witness)
 	for findResult.Next(context.Background()) {
 		var result Witness
 		if err := findResult.Decode(&result); err != nil {
@@ -257,6 +257,11 @@ func (w *witnesses) GetWitnessesByPeerId(PeerIds ...string) ([]Witness, error) {
 			return nil, err
 		}
 
+		witnessSet[witness.Account] = witness
+	}
+
+	witnesses := make([]Witness, 0)
+	for _, witness := range witnessSet {
 		witnesses = append(witnesses, witness)
 	}
 

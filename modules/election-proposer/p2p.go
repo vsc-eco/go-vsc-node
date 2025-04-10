@@ -3,6 +3,7 @@ package election_proposer
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
@@ -18,16 +19,22 @@ type p2pSpec struct {
 	electionProposer weak.Pointer[electionProposer]
 }
 
-type p2pMessageType byte
+type p2pMessage struct {
+	Type    string `json:"type"`
+	Version string `json:"v"`
+	Op      string `json:"op"`
+	Data    string `json:"data"`
+}
 
-const (
-	p2pMessageProposal p2pMessageType = iota
-	p2pMessageSignature
-)
+type signRequest struct {
+	Epoch       uint64 `json:"epoch"`
+	BlockHeight uint64 `json:"block_height"`
+}
 
-type p2pMessage interface{}
-
-type p2pMessageElectionProposal p2pMessageElectionSignature
+type signResponse struct {
+	Epoch uint64 `json:"epoch"`
+	Sig   string `json:"sig"`
+}
 
 const signatureSize = 96
 
@@ -52,98 +59,105 @@ func (d *electionProposer) stopP2P() error {
 
 // ValidateMessage implements libp2p.PubSubServiceParams.
 func (s p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
-	switch parsedMsg := parsedMsg.(type) {
-	case p2pMessageElectionProposal:
-		return s.ValidateMessage(ctx, from, msg, p2pMessageElectionSignature(parsedMsg))
-	case p2pMessageElectionSignature:
-		proposer := s.electionProposer.Value()
-		if proposer == nil {
-			return false
-		}
-		fromStr := from.String()
-		res, err := proposer.witnesses.GetWitnessesByPeerId(fromStr)
-		if err != nil {
-			return false
-		}
 
-		if len(res) != 1 {
-			return false
-		}
+	return true
+	// switch parsedMsg := parsedMsg.(type) {
+	// case p2pMessageElectionProposal:
+	// 	return s.ValidateMessage(ctx, from, msg, p2pMessageElectionProposal(parsedMsg))
+	// case p2pMessageElectionSignature:
+	// 	proposer := s.electionProposer.Value()
+	// 	if proposer == nil {
+	// 		return false
+	// 	}
+	// 	fromStr := from.String()
+	// 	res, err := proposer.witnesses.GetWitnessesByPeerId(fromStr)
 
-		key, err := res[0].ConsensusKey()
-		if err != nil {
-			return false
-		}
+	// 	fmt.Println("res, err", res, err)
+	// 	if err != nil {
+	// 		return false
+	// 	}
 
-		// err = proposer.circuit.AddAndVerifyRaw(key, electionData.Signature)
-		electionHeader, _, err := proposer.GenerateElection()
-		if err != nil {
-			return false
-		}
+	// 	if len(res) != 1 {
+	// 		return false
+	// 	}
 
-		cid, err := electionHeader.Cid()
-		if err != nil {
-			return false
-		}
+	// 	key, err := res[0].ConsensusKey()
+	// 	fmt.Println("key, err", res, err)
+	// 	if err != nil {
+	// 		return false
+	// 	}
 
-		// Ensure that the signature is valid.
-		return blsu.Verify(key.Identifier(), cid.Bytes(), &parsedMsg.Signature)
-	default:
-		return false
-	}
+	// 	// err = proposer.circuit.AddAndVerifyRaw(key, electionData.Signature)
+	// 	electionHeader, _, err := proposer.GenerateElection()
+
+	// 	fmt.Println("electionHeader, _, err", electionHeader, err)
+	// 	if err != nil {
+	// 		return false
+	// 	}
+
+	// 	cid, err := electionHeader.Cid()
+	// 	if err != nil {
+	// 		return false
+	// 	}
+
+	// 	// Ensure that the signature is valid.
+	// 	return blsu.Verify(key.Identifier(), cid.Bytes(), &parsedMsg.Signature)
+	// default:
+	// 	return false
+	// }
 }
 
 // HandleMessage implements libp2p.PubSubServiceParams.
 func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
-	switch msg := msg.(type) {
-	case p2pMessageElectionProposal:
-		proposer := s.electionProposer.Value()
-		if proposer == nil {
-			return fmt.Errorf("election proposer is stopped")
-		}
+	// switch msg := msg.(type) {
+	// case p2pMessageElectionProposal:
+	// 	proposer := s.electionProposer.Value()
+	// 	if proposer == nil {
+	// 		return fmt.Errorf("election proposer is stopped")
+	// 	}
 
-		electionHeader, _, err := proposer.GenerateElection()
-		if err != nil {
-			return err
-		}
+	// 	electionHeader, _, err := proposer.GenerateElection()
+	// 	if err != nil {
+	// 		return err
+	// 	}
 
-		cid, err := electionHeader.Cid()
-		if err != nil {
-			return err
-		}
+	// 	cid, err := electionHeader.Cid()
+	// 	if err != nil {
+	// 		return err
+	// 	}
 
-		sig, err := signCid(proposer.conf, cid)
-		if err != nil {
-			return err
-		}
+	// 	sig, err := signCid(proposer.conf, cid)
+	// 	if err != nil {
+	// 		return err
+	// 	}
 
-		send(p2pMessageElectionSignature{sig})
-	case p2pMessageElectionSignature:
-		proposer := s.electionProposer.Value()
-		if proposer == nil {
-			return fmt.Errorf("election proposer is stopped")
-		}
+	// 	send(p2pMessageElectionSignature{sig})
+	// case p2pMessageElectionSignature:
+	// 	proposer := s.electionProposer.Value()
+	// 	if proposer == nil {
+	// 		return fmt.Errorf("election proposer is stopped")
+	// 	}
 
-		circuit := proposer.circuit
+	// 	circuit := proposer.circuit
 
-		if circuit == nil {
-			return fmt.Errorf("election proposer is not proposing an election right now")
-		}
+	// 	if circuit == nil {
+	// 		return fmt.Errorf("election proposer is not proposing an election right now")
+	// 	}
 
-		res, err := proposer.witnesses.GetWitnessesByPeerId(from.String())
-		if err != nil {
-			return err
-		}
+	// 	res, err := proposer.witnesses.GetWitnessesByPeerId(from.String())
+	// 	if err != nil {
+	// 		return err
+	// 	}
 
-		key, err := res[0].ConsensusKey()
-		if err != nil {
-			return err
-		}
+	// 	key, err := res[0].ConsensusKey()
+	// 	if err != nil {
+	// 		return err
+	// 	}
 
-		sig := msg.Signature.Serialize()
+	// 	sig := msg.Signature.Serialize()
 
-		return circuit.AddAndVerifyRaw(key, sig[:])
-	}
+	// 	return circuit.AddAndVerifyRaw(key, sig[:])
+	// }
 
 	return nil
 }
@@ -156,48 +170,42 @@ func (p2pSpec) HandleRawMessage(ctx context.Context, rawMsg *pubsub.Message, sen
 
 // ParseMessage implements libp2p.PubSubServiceParams.
 func (s p2pSpec) ParseMessage(data []byte) (p2pMessage, error) {
-	if len(data) < 1 {
-		return nil, fmt.Errorf("message type not in message")
-	}
-	switch p2pMessageType(data[0]) {
-	case p2pMessageProposal:
-		data[0] = byte(p2pMessageSignature)
-		sig, err := s.ParseMessage(data)
-		return p2pMessageElectionProposal(sig.(p2pMessageElectionSignature)), err
-	case p2pMessageSignature:
-		if len(data) != 1+signatureSize {
-			return nil, fmt.Errorf("invalid signature message size")
-		}
+	msg := p2pMessage{}
+	err := json.Unmarshal(data, &msg)
+	return msg, err
 
-		res := p2pMessageElectionSignature{}
+	// if len(data) < 1 {
+	// 	return nil, fmt.Errorf("message type not in message")
+	// }
+	// switch p2pMessageType(data[0]) {
+	// case p2pMessageProposal:
+	// 	data[0] = byte(p2pMessageSignature)
+	// 	sig, err := s.ParseMessage(data)
+	// 	return p2pMessageElectionProposal(sig.(p2pMessageElectionProposal)), err
+	// case p2pMessageSignature:
+	// 	if len(data) != 1+signatureSize {
+	// 		return nil, fmt.Errorf("invalid signature message size")
+	// 	}
 
-		sig := [signatureSize]byte{}
-		copy(sig[:], data[1:])
-		err := res.Signature.Deserialize(&sig)
-		if err != nil {
-			return nil, err
-		}
+	// 	res := p2pMessageElectionSignature{}
 
-		return res, nil
-	default:
-		return nil, fmt.Errorf("unknown message type")
-	}
+	// 	sig := [signatureSize]byte{}
+	// 	copy(sig[:], data[1:])
+	// 	err := res.Signature.Deserialize(&sig)
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
+
+	// 	return res, nil
+	// default:
+	// 	return nil, fmt.Errorf("unknown message type")
+	// }
 }
 
 // SerializeMessage implements libp2p.PubSubServiceParams.
 func (s p2pSpec) SerializeMessage(msg p2pMessage) []byte {
-	switch msg := msg.(type) {
-	case p2pMessageElectionProposal:
-		res := s.SerializeMessage(p2pMessageElectionSignature(msg))
-		res[0] = byte(p2pMessageProposal)
-		return res
-	case p2pMessageElectionSignature:
-		res := make([]byte, 0, 1+signatureSize)
-		sig := msg.Signature.Serialize()
-		return append(append(res, byte(p2pMessageSignature)), sig[:]...)
-	default:
-		panic("unknown message type --- THIS IS A BUG")
-	}
+	jsonBytes, _ := json.Marshal(msg)
+	return jsonBytes
 }
 
 // Topic implements libp2p.PubSubServiceParams.
