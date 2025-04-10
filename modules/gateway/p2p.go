@@ -182,6 +182,15 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 		// 	Data:    string(data),
 		// }
 		// send(msg)
+	} else if msg.Type == "sign_response" {
+		var signResp signResponse
+		err := json.Unmarshal([]byte(msg.Data), &signResp)
+		if err != nil {
+			return nil
+		}
+		if s.ms.msgChan[signResp.TxId] != nil {
+			s.ms.msgChan[signResp.TxId] <- &msg
+		}
 	}
 	return nil
 }
