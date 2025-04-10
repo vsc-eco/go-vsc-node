@@ -71,9 +71,9 @@ func (dl *DataLayer) Init() error {
 	var path string
 
 	if len(dl.dbPrefix) > 0 {
-		path = "badger-" + dl.dbPrefix[0]
+		path = "data/badger-" + dl.dbPrefix[0]
 	} else {
-		path = "badger"
+		path = "data/badger"
 	}
 
 	ds, err := badger.NewDatastore(path, &badger.DefaultOptions)
