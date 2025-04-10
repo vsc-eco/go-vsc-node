@@ -65,7 +65,11 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 			}
 
 			if signPkg.TxId == signReq.TxId {
-				sig, err := s.ms.hiveCreator.Sign(signPkg.Tx)
+				kp := s.ms.getSigningKp()
+				if kp == nil {
+					return nil
+				}
+				sig, err := signPkg.Tx.Sign(*kp)
 				if err != nil {
 					return nil
 				}
@@ -107,7 +111,11 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 			}
 
 			if signPkg.TxId == signReq.TxId {
-				sig, err := s.ms.hiveCreator.Sign(signPkg.Tx)
+				kp := s.ms.getSigningKp()
+				if kp == nil {
+					return nil
+				}
+				sig, err := signPkg.Tx.Sign(*kp)
 				if err != nil {
 					return nil
 				}
@@ -146,7 +154,11 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 			}
 
 			if signPkg.TxId == signReq.TxId {
-				sig, err := s.ms.hiveCreator.Sign(signPkg.Tx)
+				kp := s.ms.getSigningKp()
+				if kp == nil {
+					return nil
+				}
+				sig, err := signPkg.Tx.Sign(*kp)
 				if err != nil {
 					return nil
 				}

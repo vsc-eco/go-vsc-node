@@ -681,6 +681,19 @@ func (ms *MultiSig) waitCheckBh(INTERVAL uint64, blockHeight uint64) error {
 	return nil
 }
 
+func (ms *MultiSig) getSigningKp() *hivego.KeyPair {
+	blsPrivSeed, err := hex.DecodeString(ms.identity.Get().BlsPrivKeySeed)
+	if err != nil {
+		fmt.Println("Failed to decode bls priv seed", err)
+		return nil
+	}
+	salt := []byte("gateway_key")
+	gatewayKey := sha256.Sum256(append(blsPrivSeed, salt...))
+
+	kp := hivego.KeyPairFromBytes(gatewayKey[:])
+	return kp
+}
+
 var _ a.Plugin = &MultiSig{}
 
 func New(logger logger.Logger, witnessDb witnesses.Witnesses, electionDb elections.Elections, ledgerActions ledgerDb.BridgeActions, balanceDb ledgerDb.Balances, hiveCreator hive.HiveTransactionCreator, vstream *vstream.VStream, p2p *libp2p.P2PServer, se *stateEngine.StateEngine, identityConfig common.IdentityConfig, hiveClient *hivego.HiveRpcNode) *MultiSig {
