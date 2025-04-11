@@ -34,3 +34,25 @@ func TestSavingsWithdraw(t *testing.T) {
 	txId, err := hiveClient.BroadcastRaw(tx)
 	fmt.Println("TX ID:", txId, "error", err)
 }
+
+func TestAmountToString(t *testing.T) {
+	// Test cases
+	tests := []struct {
+		amount int64
+		want   string
+	}{
+		{10000, "10.000"},
+		{10250, "10.250"},
+		{1000, "1.000"},
+		{100, "0.100"},
+		{1, "0.001"},
+		{0, "0.000"},
+	}
+
+	for _, test := range tests {
+		got := hive.AmountToString(test.amount)
+		if got != test.want {
+			t.Errorf("AmountToString(%d) = %s; want %s", test.amount, got, test.want)
+		}
+	}
+}
