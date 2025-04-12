@@ -43,15 +43,15 @@ type ClaimRecord struct {
 }
 
 type BalanceRecord struct {
-	Account           string `bson:"account"`
-	BlockHeight       uint64 `bson:"block_height"`
-	Hive              int64  `bson:"hive"`
-	HIVE_CONSENSUS    int64  `bson:"hive_consensus"`
-	HBD               int64  `bson:"hbd"`
-	HBD_SAVINGS       int64  `bson:"hbd_savings"`
-	HBD_AVG           int64  `bson:"hbd_avg"`
-	HBD_CLAIM_HEIGHT  uint64 `bson:"hbd_claim,omitempty"`
-	HBD_MODIFY_HEIGHT uint64 `bson:"hbd_modify,omitempty"`
+	Account           string `json:"account" bson:"account"`
+	BlockHeight       uint64 `json:"block_height" bson:"block_height"`
+	Hive              int64  `json:"hive" bson:"hive"`
+	HIVE_CONSENSUS    int64  `json:"hive_consensus" bson:"hive_consensus"`
+	HBD               int64  `json:"hbd" bson:"hbd"`
+	HBD_SAVINGS       int64  `json:"hbd_savings" bson:"hbd_savings"`
+	HBD_AVG           int64  `json:"hbd_avg" bson:"hbd_avg"`
+	HBD_CLAIM_HEIGHT  uint64 `json:"hbd_claim" bson:"hbd_claim,omitempty"`
+	HBD_MODIFY_HEIGHT uint64 `json:"hbd_modify" bson:"hbd_modify,omitempty"`
 }
 
 // {

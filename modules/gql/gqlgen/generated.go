@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"vsc-node/modules/db/vsc/contracts"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
 	stateEngine "vsc-node/modules/state-processing"
@@ -41,6 +42,7 @@ type Config struct {
 }
 
 type ResolverRoot interface {
+	BalanceRecord() BalanceRecordResolver
 	ContractOutput() ContractOutputResolver
 	ContractState() ContractStateResolver
 	Mutation() MutationResolver
@@ -68,6 +70,18 @@ type ComplexityRoot struct {
 
 	Auth struct {
 		Value func(childComplexity int) int
+	}
+
+	BalanceRecord struct {
+		Account       func(childComplexity int) int
+		BlockHeight   func(childComplexity int) int
+		Hbd           func(childComplexity int) int
+		HbdAvg        func(childComplexity int) int
+		HbdClaim      func(childComplexity int) int
+		HbdModify     func(childComplexity int) int
+		HbdSavings    func(childComplexity int) int
+		Hive          func(childComplexity int) int
+		HiveConsensus func(childComplexity int) int
 	}
 
 	Contract struct {
@@ -117,17 +131,6 @@ type ComplexityRoot struct {
 
 	Gas struct {
 		Io func(childComplexity int) int
-	}
-
-	GetBalanceResult struct {
-		Account     func(childComplexity int) int
-		BlockHeight func(childComplexity int) int
-		Tokens      func(childComplexity int) int
-	}
-
-	GetBalanceTokens struct {
-		Hbd  func(childComplexity int) int
-		Hive func(childComplexity int) int
 	}
 
 	Headers struct {
@@ -181,7 +184,7 @@ type ComplexityRoot struct {
 		FindContractOutput   func(childComplexity int, filterOptions *FindContractOutputFilter, decodedFilter *string) int
 		FindLedgerTXs        func(childComplexity int, filterOptions *LedgerTxFilter) int
 		FindTransaction      func(childComplexity int, filterOptions *FindTransactionFilter, decodedFilter *string) int
-		GetAccountBalance    func(childComplexity int, account *string) int
+		GetAccountBalance    func(childComplexity int, account string, height *model.Uint64) int
 		GetAccountNonce      func(childComplexity int, keyGroup []*string) int
 		GetCurrentNumber     func(childComplexity int) int
 		GetDagByCid          func(childComplexity int, cidString string) int
@@ -249,6 +252,16 @@ type ComplexityRoot struct {
 	}
 }
 
+type BalanceRecordResolver interface {
+	BlockHeight(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Uint64, error)
+	Hbd(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error)
+	HbdAvg(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error)
+	HbdModify(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Uint64, error)
+	HbdClaim(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Uint64, error)
+	HbdSavings(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error)
+	Hive(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error)
+	HiveConsensus(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error)
+}
 type ContractOutputResolver interface {
 	AnchoredBlock(ctx context.Context, obj *contracts.ContractOutput) (*string, error)
 	AnchoredHeight(ctx context.Context, obj *contracts.ContractOutput) (*int, error)
@@ -276,7 +289,7 @@ type QueryResolver interface {
 	FindTransaction(ctx context.Context, filterOptions *FindTransactionFilter, decodedFilter *string) (*FindTransactionResult, error)
 	FindContractOutput(ctx context.Context, filterOptions *FindContractOutputFilter, decodedFilter *string) (*FindContractOutputResult, error)
 	FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) (*LedgerResults, error)
-	GetAccountBalance(ctx context.Context, account *string) (*GetBalanceResult, error)
+	GetAccountBalance(ctx context.Context, account string, height *model.Uint64) (*ledgerDb.BalanceRecord, error)
 	FindContract(ctx context.Context, id *string) (*FindContractResult, error)
 	SubmitTransactionV1(ctx context.Context, tx string, sig string) (*TransactionSubmitResult, error)
 	GetAccountNonce(ctx context.Context, keyGroup []*string) (*AccountNonceResult, error)
@@ -360,6 +373,69 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.Auth.Value(childComplexity), true
+
+	case "BalanceRecord.account":
+		if e.complexity.BalanceRecord.Account == nil {
+			break
+		}
+
+		return e.complexity.BalanceRecord.Account(childComplexity), true
+
+	case "BalanceRecord.block_height":
+		if e.complexity.BalanceRecord.BlockHeight == nil {
+			break
+		}
+
+		return e.complexity.BalanceRecord.BlockHeight(childComplexity), true
+
+	case "BalanceRecord.hbd":
+		if e.complexity.BalanceRecord.Hbd == nil {
+			break
+		}
+
+		return e.complexity.BalanceRecord.Hbd(childComplexity), true
+
+	case "BalanceRecord.hbd_avg":
+		if e.complexity.BalanceRecord.HbdAvg == nil {
+			break
+		}
+
+		return e.complexity.BalanceRecord.HbdAvg(childComplexity), true
+
+	case "BalanceRecord.hbd_claim":
+		if e.complexity.BalanceRecord.HbdClaim == nil {
+			break
+		}
+
+		return e.complexity.BalanceRecord.HbdClaim(childComplexity), true
+
+	case "BalanceRecord.hbd_modify":
+		if e.complexity.BalanceRecord.HbdModify == nil {
+			break
+		}
+
+		return e.complexity.BalanceRecord.HbdModify(childComplexity), true
+
+	case "BalanceRecord.hbd_savings":
+		if e.complexity.BalanceRecord.HbdSavings == nil {
+			break
+		}
+
+		return e.complexity.BalanceRecord.HbdSavings(childComplexity), true
+
+	case "BalanceRecord.hive":
+		if e.complexity.BalanceRecord.Hive == nil {
+			break
+		}
+
+		return e.complexity.BalanceRecord.Hive(childComplexity), true
+
+	case "BalanceRecord.hive_consensus":
+		if e.complexity.BalanceRecord.HiveConsensus == nil {
+			break
+		}
+
+		return e.complexity.BalanceRecord.HiveConsensus(childComplexity), true
 
 	case "Contract.code":
 		if e.complexity.Contract.Code == nil {
@@ -550,41 +626,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.Gas.Io(childComplexity), true
-
-	case "GetBalanceResult.account":
-		if e.complexity.GetBalanceResult.Account == nil {
-			break
-		}
-
-		return e.complexity.GetBalanceResult.Account(childComplexity), true
-
-	case "GetBalanceResult.block_height":
-		if e.complexity.GetBalanceResult.BlockHeight == nil {
-			break
-		}
-
-		return e.complexity.GetBalanceResult.BlockHeight(childComplexity), true
-
-	case "GetBalanceResult.tokens":
-		if e.complexity.GetBalanceResult.Tokens == nil {
-			break
-		}
-
-		return e.complexity.GetBalanceResult.Tokens(childComplexity), true
-
-	case "GetBalanceTokens.HBD":
-		if e.complexity.GetBalanceTokens.Hbd == nil {
-			break
-		}
-
-		return e.complexity.GetBalanceTokens.Hbd(childComplexity), true
-
-	case "GetBalanceTokens.HIVE":
-		if e.complexity.GetBalanceTokens.Hive == nil {
-			break
-		}
-
-		return e.complexity.GetBalanceTokens.Hive(childComplexity), true
 
 	case "Headers.nonce":
 		if e.complexity.Headers.Nonce == nil {
@@ -829,7 +870,7 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 			return 0, false
 		}
 
-		return e.complexity.Query.GetAccountBalance(childComplexity, args["account"].(*string)), true
+		return e.complexity.Query.GetAccountBalance(childComplexity, args["account"].(string), args["height"].(*model.Uint64)), true
 
 	case "Query.getAccountNonce":
 		if e.complexity.Query.GetAccountNonce == nil {
@@ -1457,15 +1498,16 @@ interface BlockRef {
   included_block: Int
 }
 
-type GetBalanceTokens {
-  HBD: Float
-  HIVE: Float
-}
-
-type GetBalanceResult {
+type BalanceRecord {
   account: String
-  block_height: Int
-  tokens: GetBalanceTokens
+  block_height: Uint64!
+  hbd: Int64!
+  hbd_avg: Int64!
+  hbd_modify: Uint64!
+  hbd_claim: Uint64!
+  hbd_savings: Int64!
+  hive: Int64!
+  hive_consensus: Int64!
 }
 
 type FindTransactionResult {
@@ -1533,7 +1575,7 @@ type Query {
     decodedFilter: JSON
   ): FindContractOutputResult
   findLedgerTXs(filterOptions: LedgerTxFilter): LedgerResults
-  getAccountBalance(account: String): GetBalanceResult
+  getAccountBalance(account: String!, height: Uint64): BalanceRecord
   findContract(id: String): FindContractResult
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(keyGroup: [String]!): AccountNonceResult
@@ -1551,6 +1593,7 @@ type Query {
 }
 
 scalar Uint64
+scalar Int64
 
 type Mutation {
   incrementNumber: TestResult # TESTING MUTATION
@@ -1883,18 +1926,36 @@ func (ec *executionContext) field_Query_getAccountBalance_args(ctx context.Conte
 		return nil, err
 	}
 	args["account"] = arg0
+	arg1, err := ec.field_Query_getAccountBalance_argsHeight(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["height"] = arg1
 	return args, nil
 }
 func (ec *executionContext) field_Query_getAccountBalance_argsAccount(
 	ctx context.Context,
 	rawArgs map[string]any,
-) (*string, error) {
+) (string, error) {
 	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("account"))
 	if tmp, ok := rawArgs["account"]; ok {
-		return ec.unmarshalOString2ᚖstring(ctx, tmp)
+		return ec.unmarshalNString2string(ctx, tmp)
 	}
 
-	var zeroVal *string
+	var zeroVal string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_getAccountBalance_argsHeight(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (*model.Uint64, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("height"))
+	if tmp, ok := rawArgs["height"]; ok {
+		return ec.unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, tmp)
+	}
+
+	var zeroVal *model.Uint64
 	return zeroVal, nil
 }
 
@@ -2414,6 +2475,399 @@ func (ec *executionContext) fieldContext_Auth_value(_ context.Context, field gra
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BalanceRecord_account(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.BalanceRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BalanceRecord_account(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Account, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BalanceRecord_account(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BalanceRecord",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BalanceRecord_block_height(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.BalanceRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BalanceRecord_block_height(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.BalanceRecord().BlockHeight(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BalanceRecord_block_height(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BalanceRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BalanceRecord_hbd(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.BalanceRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BalanceRecord_hbd(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.BalanceRecord().Hbd(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Int64)
+	fc.Result = res
+	return ec.marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BalanceRecord_hbd(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BalanceRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BalanceRecord_hbd_avg(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.BalanceRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BalanceRecord_hbd_avg(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.BalanceRecord().HbdAvg(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Int64)
+	fc.Result = res
+	return ec.marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BalanceRecord_hbd_avg(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BalanceRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BalanceRecord_hbd_modify(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.BalanceRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BalanceRecord_hbd_modify(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.BalanceRecord().HbdModify(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BalanceRecord_hbd_modify(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BalanceRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BalanceRecord_hbd_claim(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.BalanceRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BalanceRecord_hbd_claim(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.BalanceRecord().HbdClaim(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BalanceRecord_hbd_claim(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BalanceRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BalanceRecord_hbd_savings(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.BalanceRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BalanceRecord_hbd_savings(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.BalanceRecord().HbdSavings(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Int64)
+	fc.Result = res
+	return ec.marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BalanceRecord_hbd_savings(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BalanceRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BalanceRecord_hive(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.BalanceRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BalanceRecord_hive(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.BalanceRecord().Hive(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Int64)
+	fc.Result = res
+	return ec.marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BalanceRecord_hive(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BalanceRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BalanceRecord_hive_consensus(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.BalanceRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BalanceRecord_hive_consensus(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.BalanceRecord().HiveConsensus(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Int64)
+	fc.Result = res
+	return ec.marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BalanceRecord_hive_consensus(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BalanceRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
 		},
 	}
 	return fc, nil
@@ -3546,217 +4000,6 @@ func (ec *executionContext) fieldContext_Gas_IO(_ context.Context, field graphql
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Int does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _GetBalanceResult_account(ctx context.Context, field graphql.CollectedField, obj *GetBalanceResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_GetBalanceResult_account(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Account, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_GetBalanceResult_account(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "GetBalanceResult",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type String does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _GetBalanceResult_block_height(ctx context.Context, field graphql.CollectedField, obj *GetBalanceResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_GetBalanceResult_block_height(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.BlockHeight, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*int)
-	fc.Result = res
-	return ec.marshalOInt2ᚖint(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_GetBalanceResult_block_height(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "GetBalanceResult",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Int does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _GetBalanceResult_tokens(ctx context.Context, field graphql.CollectedField, obj *GetBalanceResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_GetBalanceResult_tokens(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Tokens, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*GetBalanceTokens)
-	fc.Result = res
-	return ec.marshalOGetBalanceTokens2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐGetBalanceTokens(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_GetBalanceResult_tokens(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "GetBalanceResult",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			switch field.Name {
-			case "HBD":
-				return ec.fieldContext_GetBalanceTokens_HBD(ctx, field)
-			case "HIVE":
-				return ec.fieldContext_GetBalanceTokens_HIVE(ctx, field)
-			}
-			return nil, fmt.Errorf("no field named %q was found under type GetBalanceTokens", field.Name)
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _GetBalanceTokens_HBD(ctx context.Context, field graphql.CollectedField, obj *GetBalanceTokens) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_GetBalanceTokens_HBD(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Hbd, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*float64)
-	fc.Result = res
-	return ec.marshalOFloat2ᚖfloat64(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_GetBalanceTokens_HBD(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "GetBalanceTokens",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Float does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _GetBalanceTokens_HIVE(ctx context.Context, field graphql.CollectedField, obj *GetBalanceTokens) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_GetBalanceTokens_HIVE(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Hive, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*float64)
-	fc.Result = res
-	return ec.marshalOFloat2ᚖfloat64(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_GetBalanceTokens_HIVE(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "GetBalanceTokens",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Float does not have child fields")
 		},
 	}
 	return fc, nil
@@ -4977,7 +5220,7 @@ func (ec *executionContext) _Query_getAccountBalance(ctx context.Context, field 
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().GetAccountBalance(rctx, fc.Args["account"].(*string))
+		return ec.resolvers.Query().GetAccountBalance(rctx, fc.Args["account"].(string), fc.Args["height"].(*model.Uint64))
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -4986,9 +5229,9 @@ func (ec *executionContext) _Query_getAccountBalance(ctx context.Context, field 
 	if resTmp == nil {
 		return graphql.Null
 	}
-	res := resTmp.(*GetBalanceResult)
+	res := resTmp.(*ledgerDb.BalanceRecord)
 	fc.Result = res
-	return ec.marshalOGetBalanceResult2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐGetBalanceResult(ctx, field.Selections, res)
+	return ec.marshalOBalanceRecord2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐBalanceRecord(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) fieldContext_Query_getAccountBalance(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
@@ -5000,13 +5243,25 @@ func (ec *executionContext) fieldContext_Query_getAccountBalance(ctx context.Con
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			switch field.Name {
 			case "account":
-				return ec.fieldContext_GetBalanceResult_account(ctx, field)
+				return ec.fieldContext_BalanceRecord_account(ctx, field)
 			case "block_height":
-				return ec.fieldContext_GetBalanceResult_block_height(ctx, field)
-			case "tokens":
-				return ec.fieldContext_GetBalanceResult_tokens(ctx, field)
+				return ec.fieldContext_BalanceRecord_block_height(ctx, field)
+			case "hbd":
+				return ec.fieldContext_BalanceRecord_hbd(ctx, field)
+			case "hbd_avg":
+				return ec.fieldContext_BalanceRecord_hbd_avg(ctx, field)
+			case "hbd_modify":
+				return ec.fieldContext_BalanceRecord_hbd_modify(ctx, field)
+			case "hbd_claim":
+				return ec.fieldContext_BalanceRecord_hbd_claim(ctx, field)
+			case "hbd_savings":
+				return ec.fieldContext_BalanceRecord_hbd_savings(ctx, field)
+			case "hive":
+				return ec.fieldContext_BalanceRecord_hive(ctx, field)
+			case "hive_consensus":
+				return ec.fieldContext_BalanceRecord_hive_consensus(ctx, field)
 			}
-			return nil, fmt.Errorf("no field named %q was found under type GetBalanceResult", field.Name)
+			return nil, fmt.Errorf("no field named %q was found under type BalanceRecord", field.Name)
 		},
 	}
 	defer func() {
@@ -9550,6 +9805,330 @@ func (ec *executionContext) _Auth(ctx context.Context, sel ast.SelectionSet, obj
 	return out
 }
 
+var balanceRecordImplementors = []string{"BalanceRecord"}
+
+func (ec *executionContext) _BalanceRecord(ctx context.Context, sel ast.SelectionSet, obj *ledgerDb.BalanceRecord) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, balanceRecordImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("BalanceRecord")
+		case "account":
+			out.Values[i] = ec._BalanceRecord_account(ctx, field, obj)
+		case "block_height":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._BalanceRecord_block_height(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "hbd":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._BalanceRecord_hbd(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "hbd_avg":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._BalanceRecord_hbd_avg(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "hbd_modify":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._BalanceRecord_hbd_modify(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "hbd_claim":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._BalanceRecord_hbd_claim(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "hbd_savings":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._BalanceRecord_hbd_savings(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "hive":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._BalanceRecord_hive(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "hive_consensus":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._BalanceRecord_hive_consensus(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
 var contractImplementors = []string{"Contract"}
 
 func (ec *executionContext) _Contract(ctx context.Context, sel ast.SelectionSet, obj *Contract) graphql.Marshaler {
@@ -10233,84 +10812,6 @@ func (ec *executionContext) _Gas(ctx context.Context, sel ast.SelectionSet, obj 
 			out.Values[i] = graphql.MarshalString("Gas")
 		case "IO":
 			out.Values[i] = ec._Gas_IO(ctx, field, obj)
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
-var getBalanceResultImplementors = []string{"GetBalanceResult"}
-
-func (ec *executionContext) _GetBalanceResult(ctx context.Context, sel ast.SelectionSet, obj *GetBalanceResult) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, getBalanceResultImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("GetBalanceResult")
-		case "account":
-			out.Values[i] = ec._GetBalanceResult_account(ctx, field, obj)
-		case "block_height":
-			out.Values[i] = ec._GetBalanceResult_block_height(ctx, field, obj)
-		case "tokens":
-			out.Values[i] = ec._GetBalanceResult_tokens(ctx, field, obj)
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
-var getBalanceTokensImplementors = []string{"GetBalanceTokens"}
-
-func (ec *executionContext) _GetBalanceTokens(ctx context.Context, sel ast.SelectionSet, obj *GetBalanceTokens) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, getBalanceTokensImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("GetBalanceTokens")
-		case "HBD":
-			out.Values[i] = ec._GetBalanceTokens_HBD(ctx, field, obj)
-		case "HIVE":
-			out.Values[i] = ec._GetBalanceTokens_HIVE(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -11912,6 +12413,16 @@ func (ec *executionContext) marshalNInt2int(ctx context.Context, sel ast.Selecti
 	return res
 }
 
+func (ec *executionContext) unmarshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx context.Context, v any) (model.Int64, error) {
+	var res model.Int64
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx context.Context, sel ast.SelectionSet, v model.Int64) graphql.Marshaler {
+	return v
+}
+
 func (ec *executionContext) unmarshalNJSON2string(ctx context.Context, v any) (string, error) {
 	res, err := graphql.UnmarshalString(v)
 	return res, graphql.ErrorOnPath(ctx, err)
@@ -12442,6 +12953,13 @@ func (ec *executionContext) marshalOAuth2ᚕvscᚑnodeᚋmodulesᚋgqlᚋgqlgen�
 	return ret
 }
 
+func (ec *executionContext) marshalOBalanceRecord2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐBalanceRecord(ctx context.Context, sel ast.SelectionSet, v *ledgerDb.BalanceRecord) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._BalanceRecord(ctx, sel, v)
+}
+
 func (ec *executionContext) unmarshalOBoolean2bool(ctx context.Context, v any) (bool, error) {
 	res, err := graphql.UnmarshalBoolean(v)
 	return res, graphql.ErrorOnPath(ctx, err)
@@ -12567,41 +13085,11 @@ func (ec *executionContext) marshalOFindTransactionResult2ᚖvscᚑnodeᚋmodule
 	return ec._FindTransactionResult(ctx, sel, v)
 }
 
-func (ec *executionContext) unmarshalOFloat2ᚖfloat64(ctx context.Context, v any) (*float64, error) {
-	if v == nil {
-		return nil, nil
-	}
-	res, err := graphql.UnmarshalFloatContext(ctx, v)
-	return &res, graphql.ErrorOnPath(ctx, err)
-}
-
-func (ec *executionContext) marshalOFloat2ᚖfloat64(ctx context.Context, sel ast.SelectionSet, v *float64) graphql.Marshaler {
-	if v == nil {
-		return graphql.Null
-	}
-	res := graphql.MarshalFloatContext(*v)
-	return graphql.WrapContextMarshaler(ctx, res)
-}
-
 func (ec *executionContext) marshalOGas2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐGas(ctx context.Context, sel ast.SelectionSet, v *Gas) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
 	}
 	return ec._Gas(ctx, sel, v)
-}
-
-func (ec *executionContext) marshalOGetBalanceResult2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐGetBalanceResult(ctx context.Context, sel ast.SelectionSet, v *GetBalanceResult) graphql.Marshaler {
-	if v == nil {
-		return graphql.Null
-	}
-	return ec._GetBalanceResult(ctx, sel, v)
-}
-
-func (ec *executionContext) marshalOGetBalanceTokens2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐGetBalanceTokens(ctx context.Context, sel ast.SelectionSet, v *GetBalanceTokens) graphql.Marshaler {
-	if v == nil {
-		return graphql.Null
-	}
-	return ec._GetBalanceTokens(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalOHeaders2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐHeaders(ctx context.Context, sel ast.SelectionSet, v *Headers) graphql.Marshaler {
@@ -12819,6 +13307,22 @@ func (ec *executionContext) marshalOTransactionSubmitResult2ᚖvscᚑnodeᚋmodu
 		return graphql.Null
 	}
 	return ec._TransactionSubmitResult(ctx, sel, v)
+}
+
+func (ec *executionContext) unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx context.Context, v any) (*model.Uint64, error) {
+	if v == nil {
+		return nil, nil
+	}
+	var res = new(model.Uint64)
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx context.Context, sel ast.SelectionSet, v *model.Uint64) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return v
 }
 
 func (ec *executionContext) marshalO__EnumValue2ᚕgithubᚗcomᚋ99designsᚋgqlgenᚋgraphqlᚋintrospectionᚐEnumValueᚄ(ctx context.Context, sel ast.SelectionSet, v []introspection.EnumValue) graphql.Marshaler {

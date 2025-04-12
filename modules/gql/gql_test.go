@@ -68,6 +68,7 @@ func TestQueryAndMutation(t *testing.T) {
 		witnesses,
 		txPool,
 		balances,
+		hiveBlocks,
 		se,
 		da,
 	}
