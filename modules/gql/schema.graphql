@@ -216,6 +216,25 @@ type LedgerResults {
   txs: [LedgerOp!]
 }
 
+type ElectionMember {
+  key: String!
+  account: String!
+}
+
+type ElectionResult {
+  epoch: Uint64!
+  net_id: String!
+  type: String!
+  data: String!
+  members: [ElectionMember!]!
+  weights: [Uint64!]!
+  protocol_version: Uint64!
+  total_weight: Uint64!
+  block_height: Uint64!
+  proposer: String!
+  tx_id: String!
+}
+
 input LedgerTxFilter {
   byToFrom: String
   byTxId: String
@@ -267,6 +286,7 @@ type Query {
   getCurrentNumber: TestResult # TESTING QUERY
   witnessStake(account: String!): Uint64!
   getDagByCID(cidString: String!): JSON!
+  getElection(epoch: Uint64!): ElectionResult
 }
 
 scalar Uint64

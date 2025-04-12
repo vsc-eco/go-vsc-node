@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"vsc-node/modules/db/vsc/contracts"
+	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
@@ -45,6 +46,7 @@ type ResolverRoot interface {
 	BalanceRecord() BalanceRecordResolver
 	ContractOutput() ContractOutputResolver
 	ContractState() ContractStateResolver
+	ElectionResult() ElectionResultResolver
 	Mutation() MutationResolver
 	Query() QueryResolver
 	Witness() WitnessResolver
@@ -115,6 +117,25 @@ type ComplexityRoot struct {
 		StateKeys   func(childComplexity int, key *string) int
 		StateMerkle func(childComplexity int) int
 		StateQuery  func(childComplexity int, key *string, query *string) int
+	}
+
+	ElectionMember struct {
+		Account func(childComplexity int) int
+		Key     func(childComplexity int) int
+	}
+
+	ElectionResult struct {
+		BlockHeight     func(childComplexity int) int
+		Data            func(childComplexity int) int
+		Epoch           func(childComplexity int) int
+		Members         func(childComplexity int) int
+		NetId           func(childComplexity int) int
+		Proposer        func(childComplexity int) int
+		ProtocolVersion func(childComplexity int) int
+		TotalWeight     func(childComplexity int) int
+		TxId            func(childComplexity int) int
+		Type            func(childComplexity int) int
+		Weights         func(childComplexity int) int
 	}
 
 	FindContractOutputResult struct {
@@ -188,6 +209,7 @@ type ComplexityRoot struct {
 		GetAccountNonce      func(childComplexity int, keyGroup []*string) int
 		GetCurrentNumber     func(childComplexity int) int
 		GetDagByCid          func(childComplexity int, cidString string) int
+		GetElection          func(childComplexity int, epoch model.Uint64) int
 		LocalNodeInfo        func(childComplexity int) int
 		MockGenerateElection func(childComplexity int) int
 		NextWitnessSlot      func(childComplexity int, self *bool) int
@@ -280,6 +302,14 @@ type ContractStateResolver interface {
 	StateKeys(ctx context.Context, obj contracts.ContractState, key *string) (*string, error)
 	StateMerkle(ctx context.Context, obj contracts.ContractState) (*string, error)
 }
+type ElectionResultResolver interface {
+	Epoch(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error)
+
+	Weights(ctx context.Context, obj *elections.ElectionResult) ([]model.Uint64, error)
+	ProtocolVersion(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error)
+	TotalWeight(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error)
+	BlockHeight(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error)
+}
 type MutationResolver interface {
 	IncrementNumber(ctx context.Context) (*TestResult, error)
 }
@@ -304,6 +334,7 @@ type QueryResolver interface {
 	GetCurrentNumber(ctx context.Context) (*TestResult, error)
 	WitnessStake(ctx context.Context, account string) (model.Uint64, error)
 	GetDagByCid(ctx context.Context, cidString string) (string, error)
+	GetElection(ctx context.Context, epoch model.Uint64) (*elections.ElectionResult, error)
 }
 type WitnessResolver interface {
 	IpfsPeerID(ctx context.Context, obj *witnesses.Witness) (*string, error)
@@ -598,6 +629,97 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.ContractState.StateQuery(childComplexity, args["key"].(*string), args["query"].(*string)), true
+
+	case "ElectionMember.account":
+		if e.complexity.ElectionMember.Account == nil {
+			break
+		}
+
+		return e.complexity.ElectionMember.Account(childComplexity), true
+
+	case "ElectionMember.key":
+		if e.complexity.ElectionMember.Key == nil {
+			break
+		}
+
+		return e.complexity.ElectionMember.Key(childComplexity), true
+
+	case "ElectionResult.block_height":
+		if e.complexity.ElectionResult.BlockHeight == nil {
+			break
+		}
+
+		return e.complexity.ElectionResult.BlockHeight(childComplexity), true
+
+	case "ElectionResult.data":
+		if e.complexity.ElectionResult.Data == nil {
+			break
+		}
+
+		return e.complexity.ElectionResult.Data(childComplexity), true
+
+	case "ElectionResult.epoch":
+		if e.complexity.ElectionResult.Epoch == nil {
+			break
+		}
+
+		return e.complexity.ElectionResult.Epoch(childComplexity), true
+
+	case "ElectionResult.members":
+		if e.complexity.ElectionResult.Members == nil {
+			break
+		}
+
+		return e.complexity.ElectionResult.Members(childComplexity), true
+
+	case "ElectionResult.net_id":
+		if e.complexity.ElectionResult.NetId == nil {
+			break
+		}
+
+		return e.complexity.ElectionResult.NetId(childComplexity), true
+
+	case "ElectionResult.proposer":
+		if e.complexity.ElectionResult.Proposer == nil {
+			break
+		}
+
+		return e.complexity.ElectionResult.Proposer(childComplexity), true
+
+	case "ElectionResult.protocol_version":
+		if e.complexity.ElectionResult.ProtocolVersion == nil {
+			break
+		}
+
+		return e.complexity.ElectionResult.ProtocolVersion(childComplexity), true
+
+	case "ElectionResult.total_weight":
+		if e.complexity.ElectionResult.TotalWeight == nil {
+			break
+		}
+
+		return e.complexity.ElectionResult.TotalWeight(childComplexity), true
+
+	case "ElectionResult.tx_id":
+		if e.complexity.ElectionResult.TxId == nil {
+			break
+		}
+
+		return e.complexity.ElectionResult.TxId(childComplexity), true
+
+	case "ElectionResult.type":
+		if e.complexity.ElectionResult.Type == nil {
+			break
+		}
+
+		return e.complexity.ElectionResult.Type(childComplexity), true
+
+	case "ElectionResult.weights":
+		if e.complexity.ElectionResult.Weights == nil {
+			break
+		}
+
+		return e.complexity.ElectionResult.Weights(childComplexity), true
 
 	case "FindContractOutputResult.outputs":
 		if e.complexity.FindContractOutputResult.Outputs == nil {
@@ -902,6 +1024,18 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.Query.GetDagByCid(childComplexity, args["cidString"].(string)), true
+
+	case "Query.getElection":
+		if e.complexity.Query.GetElection == nil {
+			break
+		}
+
+		args, err := ec.field_Query_getElection_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.GetElection(childComplexity, args["epoch"].(model.Uint64)), true
 
 	case "Query.localNodeInfo":
 		if e.complexity.Query.LocalNodeInfo == nil {
@@ -1539,6 +1673,25 @@ type LedgerResults {
   txs: [LedgerOp!]
 }
 
+type ElectionMember {
+  key: String!
+  account: String!
+}
+
+type ElectionResult {
+  epoch: Uint64!
+  net_id: String!
+  type: String!
+  data: String!
+  members: [ElectionMember!]!
+  weights: [Uint64!]!
+  protocol_version: Uint64!
+  total_weight: Uint64!
+  block_height: Uint64!
+  proposer: String!
+  tx_id: String!
+}
+
 input LedgerTxFilter {
   byToFrom: String
   byTxId: String
@@ -1590,6 +1743,7 @@ type Query {
   getCurrentNumber: TestResult # TESTING QUERY
   witnessStake(account: String!): Uint64!
   getDagByCID(cidString: String!): JSON!
+  getElection(epoch: Uint64!): ElectionResult
 }
 
 scalar Uint64
@@ -2002,6 +2156,29 @@ func (ec *executionContext) field_Query_getDagByCID_argsCidString(
 	}
 
 	var zeroVal string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_getElection_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_getElection_argsEpoch(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["epoch"] = arg0
+	return args, nil
+}
+func (ec *executionContext) field_Query_getElection_argsEpoch(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (model.Uint64, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("epoch"))
+	if tmp, ok := rawArgs["epoch"]; ok {
+		return ec.unmarshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, tmp)
+	}
+
+	var zeroVal model.Uint64
 	return zeroVal, nil
 }
 
@@ -3776,6 +3953,584 @@ func (ec *executionContext) fieldContext_ContractState_state_merkle(_ context.Co
 		Field:      field,
 		IsMethod:   true,
 		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ElectionMember_key(ctx context.Context, field graphql.CollectedField, obj *elections.ElectionMember) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ElectionMember_key(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Key, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ElectionMember_key(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ElectionMember",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ElectionMember_account(ctx context.Context, field graphql.CollectedField, obj *elections.ElectionMember) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ElectionMember_account(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Account, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ElectionMember_account(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ElectionMember",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ElectionResult_epoch(ctx context.Context, field graphql.CollectedField, obj *elections.ElectionResult) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ElectionResult_epoch(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.ElectionResult().Epoch(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ElectionResult_epoch(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ElectionResult",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ElectionResult_net_id(ctx context.Context, field graphql.CollectedField, obj *elections.ElectionResult) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ElectionResult_net_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.NetId, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ElectionResult_net_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ElectionResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ElectionResult_type(ctx context.Context, field graphql.CollectedField, obj *elections.ElectionResult) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ElectionResult_type(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Type, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ElectionResult_type(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ElectionResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ElectionResult_data(ctx context.Context, field graphql.CollectedField, obj *elections.ElectionResult) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ElectionResult_data(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Data, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ElectionResult_data(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ElectionResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ElectionResult_members(ctx context.Context, field graphql.CollectedField, obj *elections.ElectionResult) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ElectionResult_members(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Members, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]elections.ElectionMember)
+	fc.Result = res
+	return ec.marshalNElectionMember2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋelectionsᚐElectionMemberᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ElectionResult_members(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ElectionResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "key":
+				return ec.fieldContext_ElectionMember_key(ctx, field)
+			case "account":
+				return ec.fieldContext_ElectionMember_account(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ElectionMember", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ElectionResult_weights(ctx context.Context, field graphql.CollectedField, obj *elections.ElectionResult) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ElectionResult_weights(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.ElectionResult().Weights(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642ᚕvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64ᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ElectionResult_weights(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ElectionResult",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ElectionResult_protocol_version(ctx context.Context, field graphql.CollectedField, obj *elections.ElectionResult) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ElectionResult_protocol_version(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.ElectionResult().ProtocolVersion(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ElectionResult_protocol_version(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ElectionResult",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ElectionResult_total_weight(ctx context.Context, field graphql.CollectedField, obj *elections.ElectionResult) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ElectionResult_total_weight(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.ElectionResult().TotalWeight(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ElectionResult_total_weight(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ElectionResult",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ElectionResult_block_height(ctx context.Context, field graphql.CollectedField, obj *elections.ElectionResult) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ElectionResult_block_height(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.ElectionResult().BlockHeight(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ElectionResult_block_height(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ElectionResult",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ElectionResult_proposer(ctx context.Context, field graphql.CollectedField, obj *elections.ElectionResult) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ElectionResult_proposer(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Proposer, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ElectionResult_proposer(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ElectionResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ElectionResult_tx_id(ctx context.Context, field graphql.CollectedField, obj *elections.ElectionResult) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ElectionResult_tx_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.TxId, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ElectionResult_tx_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ElectionResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type String does not have child fields")
 		},
@@ -6003,6 +6758,82 @@ func (ec *executionContext) fieldContext_Query_getDagByCID(ctx context.Context, 
 	}()
 	ctx = graphql.WithFieldContext(ctx, fc)
 	if fc.Args, err = ec.field_Query_getDagByCID_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_getElection(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_getElection(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().GetElection(rctx, fc.Args["epoch"].(model.Uint64))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*elections.ElectionResult)
+	fc.Result = res
+	return ec.marshalOElectionResult2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋelectionsᚐElectionResult(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_getElection(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "epoch":
+				return ec.fieldContext_ElectionResult_epoch(ctx, field)
+			case "net_id":
+				return ec.fieldContext_ElectionResult_net_id(ctx, field)
+			case "type":
+				return ec.fieldContext_ElectionResult_type(ctx, field)
+			case "data":
+				return ec.fieldContext_ElectionResult_data(ctx, field)
+			case "members":
+				return ec.fieldContext_ElectionResult_members(ctx, field)
+			case "weights":
+				return ec.fieldContext_ElectionResult_weights(ctx, field)
+			case "protocol_version":
+				return ec.fieldContext_ElectionResult_protocol_version(ctx, field)
+			case "total_weight":
+				return ec.fieldContext_ElectionResult_total_weight(ctx, field)
+			case "block_height":
+				return ec.fieldContext_ElectionResult_block_height(ctx, field)
+			case "proposer":
+				return ec.fieldContext_ElectionResult_proposer(ctx, field)
+			case "tx_id":
+				return ec.fieldContext_ElectionResult_tx_id(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ElectionResult", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_getElection_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
 	}
@@ -10691,6 +11522,294 @@ func (ec *executionContext) _ContractState(ctx context.Context, sel ast.Selectio
 	return out
 }
 
+var electionMemberImplementors = []string{"ElectionMember"}
+
+func (ec *executionContext) _ElectionMember(ctx context.Context, sel ast.SelectionSet, obj *elections.ElectionMember) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, electionMemberImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ElectionMember")
+		case "key":
+			out.Values[i] = ec._ElectionMember_key(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "account":
+			out.Values[i] = ec._ElectionMember_account(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var electionResultImplementors = []string{"ElectionResult"}
+
+func (ec *executionContext) _ElectionResult(ctx context.Context, sel ast.SelectionSet, obj *elections.ElectionResult) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, electionResultImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ElectionResult")
+		case "epoch":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._ElectionResult_epoch(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "net_id":
+			out.Values[i] = ec._ElectionResult_net_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "type":
+			out.Values[i] = ec._ElectionResult_type(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "data":
+			out.Values[i] = ec._ElectionResult_data(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "members":
+			out.Values[i] = ec._ElectionResult_members(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "weights":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._ElectionResult_weights(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "protocol_version":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._ElectionResult_protocol_version(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "total_weight":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._ElectionResult_total_weight(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "block_height":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._ElectionResult_block_height(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "proposer":
+			out.Values[i] = ec._ElectionResult_proposer(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "tx_id":
+			out.Values[i] = ec._ElectionResult_tx_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
 var findContractOutputResultImplementors = []string{"FindContractOutputResult"}
 
 func (ec *executionContext) _FindContractOutputResult(ctx context.Context, sel ast.SelectionSet, obj *FindContractOutputResult) graphql.Marshaler {
@@ -11560,6 +12679,25 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "getElection":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_getElection(ctx, field)
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "__type":
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Query___type(ctx, field)
@@ -12383,6 +13521,54 @@ func (ec *executionContext) marshalNBoolean2bool(ctx context.Context, sel ast.Se
 	return res
 }
 
+func (ec *executionContext) marshalNElectionMember2vscᚑnodeᚋmodulesᚋdbᚋvscᚋelectionsᚐElectionMember(ctx context.Context, sel ast.SelectionSet, v elections.ElectionMember) graphql.Marshaler {
+	return ec._ElectionMember(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNElectionMember2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋelectionsᚐElectionMemberᚄ(ctx context.Context, sel ast.SelectionSet, v []elections.ElectionMember) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNElectionMember2vscᚑnodeᚋmodulesᚋdbᚋvscᚋelectionsᚐElectionMember(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
 func (ec *executionContext) unmarshalNFloat2float64(ctx context.Context, v any) (float64, error) {
 	res, err := graphql.UnmarshalFloatContext(ctx, v)
 	return res, graphql.ErrorOnPath(ctx, err)
@@ -12543,6 +13729,36 @@ func (ec *executionContext) unmarshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodel�
 
 func (ec *executionContext) marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx context.Context, sel ast.SelectionSet, v model.Uint64) graphql.Marshaler {
 	return v
+}
+
+func (ec *executionContext) unmarshalNUint642ᚕvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64ᚄ(ctx context.Context, v any) ([]model.Uint64, error) {
+	var vSlice []any
+	vSlice = graphql.CoerceList(v)
+	var err error
+	res := make([]model.Uint64, len(vSlice))
+	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
+		res[i], err = ec.unmarshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, vSlice[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+func (ec *executionContext) marshalNUint642ᚕvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64ᚄ(ctx context.Context, sel ast.SelectionSet, v []model.Uint64) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	for i := range v {
+		ret[i] = ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, sel, v[i])
+	}
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
 }
 
 func (ec *executionContext) marshalNWitness2vscᚑnodeᚋmodulesᚋdbᚋvscᚋwitnessesᚐWitness(ctx context.Context, sel ast.SelectionSet, v witnesses.Witness) graphql.Marshaler {
@@ -13046,6 +14262,13 @@ func (ec *executionContext) marshalOContractState2vscᚑnodeᚋmodulesᚋdbᚋvs
 		return graphql.Null
 	}
 	return ec._ContractState(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalOElectionResult2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋelectionsᚐElectionResult(ctx context.Context, sel ast.SelectionSet, v *elections.ElectionResult) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._ElectionResult(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalOFindContractOutputFilter2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐFindContractOutputFilter(ctx context.Context, v any) (*FindContractOutputFilter, error) {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"vsc-node/modules/db/vsc/contracts"
+	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
@@ -117,6 +118,35 @@ func (r *contractStateResolver) StateKeys(ctx context.Context, obj contracts.Con
 // StateMerkle is the resolver for the state_merkle field.
 func (r *contractStateResolver) StateMerkle(ctx context.Context, obj contracts.ContractState) (*string, error) {
 	panic(fmt.Errorf("not implemented: StateMerkle - state_merkle"))
+}
+
+// Epoch is the resolver for the epoch field.
+func (r *electionResultResolver) Epoch(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error) {
+	return model.Uint64(obj.Epoch), nil
+}
+
+// Weights is the resolver for the weights field.
+func (r *electionResultResolver) Weights(ctx context.Context, obj *elections.ElectionResult) ([]model.Uint64, error) {
+	converted := make([]model.Uint64, len(obj.Weights))
+	for i, v := range obj.Weights {
+		converted[i] = model.Uint64(v)
+	}
+	return converted, nil
+}
+
+// ProtocolVersion is the resolver for the protocol_version field.
+func (r *electionResultResolver) ProtocolVersion(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error) {
+	return model.Uint64(obj.ProtocolVersion), nil
+}
+
+// TotalWeight is the resolver for the total_weight field.
+func (r *electionResultResolver) TotalWeight(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error) {
+	return model.Uint64(obj.TotalWeight), nil
+}
+
+// BlockHeight is the resolver for the block_height field.
+func (r *electionResultResolver) BlockHeight(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error) {
+	return model.Uint64(obj.BlockHeight), nil
 }
 
 // IncrementNumber is the resolver for the incrementNumber field.
@@ -273,6 +303,11 @@ func (r *queryResolver) GetDagByCid(ctx context.Context, cidString string) (stri
 	return string(jsonBytes), nil
 }
 
+// GetElection is the resolver for the getElection field.
+func (r *queryResolver) GetElection(ctx context.Context, epoch model.Uint64) (*elections.ElectionResult, error) {
+	return r.Elections.GetElection(uint64(epoch)), nil
+}
+
 // IpfsPeerID is the resolver for the ipfs_peer_id field.
 func (r *witnessResolver) IpfsPeerID(ctx context.Context, obj *witnesses.Witness) (*string, error) {
 	panic(fmt.Errorf("not implemented: IpfsPeerID - ipfs_peer_id"))
@@ -302,6 +337,9 @@ func (r *Resolver) ContractOutput() ContractOutputResolver { return &contractOut
 // ContractState returns ContractStateResolver implementation.
 func (r *Resolver) ContractState() ContractStateResolver { return &contractStateResolver{r} }
 
+// ElectionResult returns ElectionResultResolver implementation.
+func (r *Resolver) ElectionResult() ElectionResultResolver { return &electionResultResolver{r} }
+
 // Mutation returns MutationResolver implementation.
 func (r *Resolver) Mutation() MutationResolver { return &mutationResolver{r} }
 
@@ -317,6 +355,7 @@ func (r *Resolver) WitnessSlot() WitnessSlotResolver { return &witnessSlotResolv
 type balanceRecordResolver struct{ *Resolver }
 type contractOutputResolver struct{ *Resolver }
 type contractStateResolver struct{ *Resolver }
+type electionResultResolver struct{ *Resolver }
 type mutationResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }

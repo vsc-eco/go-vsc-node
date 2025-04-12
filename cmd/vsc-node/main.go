@@ -134,6 +134,7 @@ func main() {
 		witnessDb,
 		txpool,
 		balanceDb,
+		electionDb,
 		hiveBlocks,
 		se,
 		da,
