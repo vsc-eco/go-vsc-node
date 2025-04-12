@@ -73,6 +73,17 @@ func (e *elections) GetElection(epoch uint64) *ElectionResult {
 	} else {
 		electionResult := ElectionResult{}
 		findResult.Decode(&electionResult)
+
+		electionRecord := ElectionResultRecord{}
+		err := findResult.Decode(&electionRecord)
+		if err != nil {
+			return nil
+		}
+
+		err = refmt.CloneAtlased(electionRecord, &electionResult, cbornode.CborAtlas)
+		if err != nil {
+			return nil
+		}
 		return &electionResult
 	}
 }

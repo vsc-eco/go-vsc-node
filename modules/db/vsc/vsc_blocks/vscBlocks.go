@@ -26,13 +26,16 @@ func (vblks *vscBlocks) StoreHeader(header VscHeaderRecord) {
 // Gets VSC block by height
 func (vblks *vscBlocks) GetBlockByHeight(height uint64) (*VscHeaderRecord, error) {
 	ctx := context.Background()
+	findOptions := options.FindOne().SetSort(bson.M{
+		"slot_height": -1,
+	})
 
 	slotFilter := bson.M{
 		"slot_height": bson.M{
 			"$lte": height,
 		},
 	}
-	findResult := vblks.FindOne(ctx, slotFilter)
+	findResult := vblks.FindOne(ctx, slotFilter, findOptions)
 
 	if findResult.Err() != nil {
 		return nil, findResult.Err()
