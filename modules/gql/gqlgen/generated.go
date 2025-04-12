@@ -48,6 +48,7 @@ type ResolverRoot interface {
 	ContractState() ContractStateResolver
 	ElectionResult() ElectionResultResolver
 	Mutation() MutationResolver
+	PostingJsonKeys() PostingJsonKeysResolver
 	Query() QueryResolver
 	Witness() WitnessResolver
 	WitnessSlot() WitnessSlotResolver
@@ -158,12 +159,6 @@ type ComplexityRoot struct {
 		Nonce func(childComplexity int) int
 	}
 
-	HiveKeys struct {
-		Active  func(childComplexity int) int
-		Owner   func(childComplexity int) int
-		Posting func(childComplexity int) int
-	}
-
 	JsonPatchOp struct {
 		Op    func(childComplexity int) int
 		Path  func(childComplexity int) int
@@ -194,6 +189,12 @@ type ComplexityRoot struct {
 
 	Mutation struct {
 		IncrementNumber func(childComplexity int) int
+	}
+
+	PostingJsonKeys struct {
+		Ct  func(childComplexity int) int
+		Key func(childComplexity int) int
+		T   func(childComplexity int) int
 	}
 
 	Query struct {
@@ -260,12 +261,18 @@ type ComplexityRoot struct {
 	}
 
 	Witness struct {
-		Account     func(childComplexity int) int
-		IpfsPeerID  func(childComplexity int) int
-		LastSigned  func(childComplexity int) int
-		NetId       func(childComplexity int) int
-		SigningKeys func(childComplexity int) int
-		VersionId   func(childComplexity int) int
+		Account         func(childComplexity int) int
+		DidKeys         func(childComplexity int) int
+		Enabled         func(childComplexity int) int
+		GatewayKey      func(childComplexity int) int
+		GitCommit       func(childComplexity int) int
+		Height          func(childComplexity int) int
+		NetId           func(childComplexity int) int
+		PeerId          func(childComplexity int) int
+		ProtocolVersion func(childComplexity int) int
+		Ts              func(childComplexity int) int
+		TxId            func(childComplexity int) int
+		VersionId       func(childComplexity int) int
 	}
 
 	WitnessSlot struct {
@@ -313,6 +320,10 @@ type ElectionResultResolver interface {
 type MutationResolver interface {
 	IncrementNumber(ctx context.Context) (*TestResult, error)
 }
+type PostingJsonKeysResolver interface {
+	Ct(ctx context.Context, obj *witnesses.PostingJsonKeys) (*string, error)
+	T(ctx context.Context, obj *witnesses.PostingJsonKeys) (*string, error)
+}
 type QueryResolver interface {
 	ContractStateDiff(ctx context.Context, id *string) (*ContractDiff, error)
 	ContractState(ctx context.Context, id *string) (contracts.ContractState, error)
@@ -337,10 +348,9 @@ type QueryResolver interface {
 	GetElection(ctx context.Context, epoch model.Uint64) (*elections.ElectionResult, error)
 }
 type WitnessResolver interface {
-	IpfsPeerID(ctx context.Context, obj *witnesses.Witness) (*string, error)
-	LastSigned(ctx context.Context, obj *witnesses.Witness) (*int, error)
+	Height(ctx context.Context, obj *witnesses.Witness) (model.Uint64, error)
 
-	SigningKeys(ctx context.Context, obj *witnesses.Witness) (*HiveKeys, error)
+	ProtocolVersion(ctx context.Context, obj *witnesses.Witness) (model.Uint64, error)
 }
 type WitnessSlotResolver interface {
 	Bn(ctx context.Context, obj *stateEngine.WitnessSlot) (model.Uint64, error)
@@ -756,27 +766,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Headers.Nonce(childComplexity), true
 
-	case "HiveKeys.active":
-		if e.complexity.HiveKeys.Active == nil {
-			break
-		}
-
-		return e.complexity.HiveKeys.Active(childComplexity), true
-
-	case "HiveKeys.owner":
-		if e.complexity.HiveKeys.Owner == nil {
-			break
-		}
-
-		return e.complexity.HiveKeys.Owner(childComplexity), true
-
-	case "HiveKeys.posting":
-		if e.complexity.HiveKeys.Posting == nil {
-			break
-		}
-
-		return e.complexity.HiveKeys.Posting(childComplexity), true
-
 	case "JsonPatchOp.op":
 		if e.complexity.JsonPatchOp.Op == nil {
 			break
@@ -895,6 +884,27 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.Mutation.IncrementNumber(childComplexity), true
+
+	case "PostingJsonKeys.ct":
+		if e.complexity.PostingJsonKeys.Ct == nil {
+			break
+		}
+
+		return e.complexity.PostingJsonKeys.Ct(childComplexity), true
+
+	case "PostingJsonKeys.key":
+		if e.complexity.PostingJsonKeys.Key == nil {
+			break
+		}
+
+		return e.complexity.PostingJsonKeys.Key(childComplexity), true
+
+	case "PostingJsonKeys.t":
+		if e.complexity.PostingJsonKeys.T == nil {
+			break
+		}
+
+		return e.complexity.PostingJsonKeys.T(childComplexity), true
 
 	case "Query.activeWitnessNodes":
 		if e.complexity.Query.ActiveWitnessNodes == nil {
@@ -1298,19 +1308,40 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Witness.Account(childComplexity), true
 
-	case "Witness.ipfs_peer_id":
-		if e.complexity.Witness.IpfsPeerID == nil {
+	case "Witness.did_keys":
+		if e.complexity.Witness.DidKeys == nil {
 			break
 		}
 
-		return e.complexity.Witness.IpfsPeerID(childComplexity), true
+		return e.complexity.Witness.DidKeys(childComplexity), true
 
-	case "Witness.last_signed":
-		if e.complexity.Witness.LastSigned == nil {
+	case "Witness.enabled":
+		if e.complexity.Witness.Enabled == nil {
 			break
 		}
 
-		return e.complexity.Witness.LastSigned(childComplexity), true
+		return e.complexity.Witness.Enabled(childComplexity), true
+
+	case "Witness.gateway_key":
+		if e.complexity.Witness.GatewayKey == nil {
+			break
+		}
+
+		return e.complexity.Witness.GatewayKey(childComplexity), true
+
+	case "Witness.git_commit":
+		if e.complexity.Witness.GitCommit == nil {
+			break
+		}
+
+		return e.complexity.Witness.GitCommit(childComplexity), true
+
+	case "Witness.height":
+		if e.complexity.Witness.Height == nil {
+			break
+		}
+
+		return e.complexity.Witness.Height(childComplexity), true
 
 	case "Witness.net_id":
 		if e.complexity.Witness.NetId == nil {
@@ -1319,12 +1350,33 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Witness.NetId(childComplexity), true
 
-	case "Witness.signing_keys":
-		if e.complexity.Witness.SigningKeys == nil {
+	case "Witness.peer_id":
+		if e.complexity.Witness.PeerId == nil {
 			break
 		}
 
-		return e.complexity.Witness.SigningKeys(childComplexity), true
+		return e.complexity.Witness.PeerId(childComplexity), true
+
+	case "Witness.protocol_version":
+		if e.complexity.Witness.ProtocolVersion == nil {
+			break
+		}
+
+		return e.complexity.Witness.ProtocolVersion(childComplexity), true
+
+	case "Witness.ts":
+		if e.complexity.Witness.Ts == nil {
+			break
+		}
+
+		return e.complexity.Witness.Ts(childComplexity), true
+
+	case "Witness.tx_id":
+		if e.complexity.Witness.TxId == nil {
+			break
+		}
+
+		return e.complexity.Witness.TxId(childComplexity), true
 
 	case "Witness.version_id":
 		if e.complexity.Witness.VersionId == nil {
@@ -1577,19 +1629,25 @@ type LocalNodeInfo {
   did: String
 }
 
-type HiveKeys {
-  posting: String
-  active: String
-  owner: String
+type PostingJsonKeys {
+  ct: String
+  t: String
+  key: String
 }
 
 type Witness {
   account: String
-  ipfs_peer_id: String
-  last_signed: Int
+  height: Uint64!
+  did_keys: [PostingJsonKeys!]!
+  enabled: Boolean
+  git_commit: String
   net_id: String
+  peer_id: String
+  protocol_version: Uint64!
+  ts: String
+  tx_id: String
   version_id: String
-  signing_keys: HiveKeys
+  gateway_key: String
 }
 
 type WitnessSlot {
@@ -4801,129 +4859,6 @@ func (ec *executionContext) fieldContext_Headers_nonce(_ context.Context, field 
 	return fc, nil
 }
 
-func (ec *executionContext) _HiveKeys_posting(ctx context.Context, field graphql.CollectedField, obj *HiveKeys) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_HiveKeys_posting(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Posting, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_HiveKeys_posting(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "HiveKeys",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type String does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _HiveKeys_active(ctx context.Context, field graphql.CollectedField, obj *HiveKeys) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_HiveKeys_active(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Active, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_HiveKeys_active(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "HiveKeys",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type String does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _HiveKeys_owner(ctx context.Context, field graphql.CollectedField, obj *HiveKeys) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_HiveKeys_owner(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Owner, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_HiveKeys_owner(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "HiveKeys",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type String does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
 func (ec *executionContext) _JsonPatchOp_op(ctx context.Context, field graphql.CollectedField, obj *JSONPatchOp) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_JsonPatchOp_op(ctx, field)
 	if err != nil {
@@ -5671,6 +5606,129 @@ func (ec *executionContext) fieldContext_Mutation_incrementNumber(_ context.Cont
 	return fc, nil
 }
 
+func (ec *executionContext) _PostingJsonKeys_ct(ctx context.Context, field graphql.CollectedField, obj *witnesses.PostingJsonKeys) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PostingJsonKeys_ct(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.PostingJsonKeys().Ct(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PostingJsonKeys_ct(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PostingJsonKeys",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PostingJsonKeys_t(ctx context.Context, field graphql.CollectedField, obj *witnesses.PostingJsonKeys) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PostingJsonKeys_t(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.PostingJsonKeys().T(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PostingJsonKeys_t(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PostingJsonKeys",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PostingJsonKeys_key(ctx context.Context, field graphql.CollectedField, obj *witnesses.PostingJsonKeys) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PostingJsonKeys_key(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Key, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PostingJsonKeys_key(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PostingJsonKeys",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Query_contractStateDiff(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_Query_contractStateDiff(ctx, field)
 	if err != nil {
@@ -6289,16 +6347,28 @@ func (ec *executionContext) fieldContext_Query_witnessNodes(ctx context.Context,
 			switch field.Name {
 			case "account":
 				return ec.fieldContext_Witness_account(ctx, field)
-			case "ipfs_peer_id":
-				return ec.fieldContext_Witness_ipfs_peer_id(ctx, field)
-			case "last_signed":
-				return ec.fieldContext_Witness_last_signed(ctx, field)
+			case "height":
+				return ec.fieldContext_Witness_height(ctx, field)
+			case "did_keys":
+				return ec.fieldContext_Witness_did_keys(ctx, field)
+			case "enabled":
+				return ec.fieldContext_Witness_enabled(ctx, field)
+			case "git_commit":
+				return ec.fieldContext_Witness_git_commit(ctx, field)
 			case "net_id":
 				return ec.fieldContext_Witness_net_id(ctx, field)
+			case "peer_id":
+				return ec.fieldContext_Witness_peer_id(ctx, field)
+			case "protocol_version":
+				return ec.fieldContext_Witness_protocol_version(ctx, field)
+			case "ts":
+				return ec.fieldContext_Witness_ts(ctx, field)
+			case "tx_id":
+				return ec.fieldContext_Witness_tx_id(ctx, field)
 			case "version_id":
 				return ec.fieldContext_Witness_version_id(ctx, field)
-			case "signing_keys":
-				return ec.fieldContext_Witness_signing_keys(ctx, field)
+			case "gateway_key":
+				return ec.fieldContext_Witness_gateway_key(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type Witness", field.Name)
 		},
@@ -8029,8 +8099,8 @@ func (ec *executionContext) fieldContext_Witness_account(_ context.Context, fiel
 	return fc, nil
 }
 
-func (ec *executionContext) _Witness_ipfs_peer_id(ctx context.Context, field graphql.CollectedField, obj *witnesses.Witness) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Witness_ipfs_peer_id(ctx, field)
+func (ec *executionContext) _Witness_height(ctx context.Context, field graphql.CollectedField, obj *witnesses.Witness) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Witness_height(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -8043,35 +8113,38 @@ func (ec *executionContext) _Witness_ipfs_peer_id(ctx context.Context, field gra
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Witness().IpfsPeerID(rctx, obj)
+		return ec.resolvers.Witness().Height(rctx, obj)
 	})
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
 	}
 	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
 		return graphql.Null
 	}
-	res := resTmp.(*string)
+	res := resTmp.(model.Uint64)
 	fc.Result = res
-	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_Witness_ipfs_peer_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_Witness_height(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "Witness",
 		Field:      field,
 		IsMethod:   true,
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type String does not have child fields")
+			return nil, errors.New("field of type Uint64 does not have child fields")
 		},
 	}
 	return fc, nil
 }
 
-func (ec *executionContext) _Witness_last_signed(ctx context.Context, field graphql.CollectedField, obj *witnesses.Witness) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Witness_last_signed(ctx, field)
+func (ec *executionContext) _Witness_did_keys(ctx context.Context, field graphql.CollectedField, obj *witnesses.Witness) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Witness_did_keys(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -8084,7 +8157,59 @@ func (ec *executionContext) _Witness_last_signed(ctx context.Context, field grap
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Witness().LastSigned(rctx, obj)
+		return obj.DidKeys, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]witnesses.PostingJsonKeys)
+	fc.Result = res
+	return ec.marshalNPostingJsonKeys2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋwitnessesᚐPostingJsonKeysᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Witness_did_keys(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Witness",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "ct":
+				return ec.fieldContext_PostingJsonKeys_ct(ctx, field)
+			case "t":
+				return ec.fieldContext_PostingJsonKeys_t(ctx, field)
+			case "key":
+				return ec.fieldContext_PostingJsonKeys_key(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type PostingJsonKeys", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Witness_enabled(ctx context.Context, field graphql.CollectedField, obj *witnesses.Witness) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Witness_enabled(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Enabled, nil
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -8093,19 +8218,60 @@ func (ec *executionContext) _Witness_last_signed(ctx context.Context, field grap
 	if resTmp == nil {
 		return graphql.Null
 	}
-	res := resTmp.(*int)
+	res := resTmp.(bool)
 	fc.Result = res
-	return ec.marshalOInt2ᚖint(ctx, field.Selections, res)
+	return ec.marshalOBoolean2bool(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_Witness_last_signed(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_Witness_enabled(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "Witness",
 		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
+		IsMethod:   false,
+		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Int does not have child fields")
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Witness_git_commit(ctx context.Context, field graphql.CollectedField, obj *witnesses.Witness) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Witness_git_commit(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.GitCommit, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Witness_git_commit(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Witness",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
 		},
 	}
 	return fc, nil
@@ -8140,6 +8306,173 @@ func (ec *executionContext) _Witness_net_id(ctx context.Context, field graphql.C
 }
 
 func (ec *executionContext) fieldContext_Witness_net_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Witness",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Witness_peer_id(ctx context.Context, field graphql.CollectedField, obj *witnesses.Witness) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Witness_peer_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.PeerId, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Witness_peer_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Witness",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Witness_protocol_version(ctx context.Context, field graphql.CollectedField, obj *witnesses.Witness) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Witness_protocol_version(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Witness().ProtocolVersion(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Witness_protocol_version(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Witness",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Witness_ts(ctx context.Context, field graphql.CollectedField, obj *witnesses.Witness) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Witness_ts(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Ts, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Witness_ts(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Witness",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Witness_tx_id(ctx context.Context, field graphql.CollectedField, obj *witnesses.Witness) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Witness_tx_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.TxId, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Witness_tx_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "Witness",
 		Field:      field,
@@ -8193,8 +8526,8 @@ func (ec *executionContext) fieldContext_Witness_version_id(_ context.Context, f
 	return fc, nil
 }
 
-func (ec *executionContext) _Witness_signing_keys(ctx context.Context, field graphql.CollectedField, obj *witnesses.Witness) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Witness_signing_keys(ctx, field)
+func (ec *executionContext) _Witness_gateway_key(ctx context.Context, field graphql.CollectedField, obj *witnesses.Witness) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Witness_gateway_key(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -8207,7 +8540,7 @@ func (ec *executionContext) _Witness_signing_keys(ctx context.Context, field gra
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Witness().SigningKeys(rctx, obj)
+		return obj.GatewayKey, nil
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -8216,27 +8549,19 @@ func (ec *executionContext) _Witness_signing_keys(ctx context.Context, field gra
 	if resTmp == nil {
 		return graphql.Null
 	}
-	res := resTmp.(*HiveKeys)
+	res := resTmp.(string)
 	fc.Result = res
-	return ec.marshalOHiveKeys2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐHiveKeys(ctx, field.Selections, res)
+	return ec.marshalOString2string(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_Witness_signing_keys(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_Witness_gateway_key(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "Witness",
 		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
+		IsMethod:   false,
+		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			switch field.Name {
-			case "posting":
-				return ec.fieldContext_HiveKeys_posting(ctx, field)
-			case "active":
-				return ec.fieldContext_HiveKeys_active(ctx, field)
-			case "owner":
-				return ec.fieldContext_HiveKeys_owner(ctx, field)
-			}
-			return nil, fmt.Errorf("no field named %q was found under type HiveKeys", field.Name)
+			return nil, errors.New("field of type String does not have child fields")
 		},
 	}
 	return fc, nil
@@ -11990,46 +12315,6 @@ func (ec *executionContext) _Headers(ctx context.Context, sel ast.SelectionSet, 
 	return out
 }
 
-var hiveKeysImplementors = []string{"HiveKeys"}
-
-func (ec *executionContext) _HiveKeys(ctx context.Context, sel ast.SelectionSet, obj *HiveKeys) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, hiveKeysImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("HiveKeys")
-		case "posting":
-			out.Values[i] = ec._HiveKeys_posting(ctx, field, obj)
-		case "active":
-			out.Values[i] = ec._HiveKeys_active(ctx, field, obj)
-		case "owner":
-			out.Values[i] = ec._HiveKeys_owner(ctx, field, obj)
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
 var jsonPatchOpImplementors = []string{"JsonPatchOp"}
 
 func (ec *executionContext) _JsonPatchOp(ctx context.Context, sel ast.SelectionSet, obj *JSONPatchOp) graphql.Marshaler {
@@ -12245,6 +12530,108 @@ func (ec *executionContext) _Mutation(ctx context.Context, sel ast.SelectionSet)
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Mutation_incrementNumber(ctx, field)
 			})
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var postingJsonKeysImplementors = []string{"PostingJsonKeys"}
+
+func (ec *executionContext) _PostingJsonKeys(ctx context.Context, sel ast.SelectionSet, obj *witnesses.PostingJsonKeys) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, postingJsonKeysImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("PostingJsonKeys")
+		case "ct":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._PostingJsonKeys_ct(ctx, field, obj)
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "t":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._PostingJsonKeys_t(ctx, field, obj)
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "key":
+			out.Values[i] = ec._PostingJsonKeys_key(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -12969,16 +13356,19 @@ func (ec *executionContext) _Witness(ctx context.Context, sel ast.SelectionSet, 
 			out.Values[i] = graphql.MarshalString("Witness")
 		case "account":
 			out.Values[i] = ec._Witness_account(ctx, field, obj)
-		case "ipfs_peer_id":
+		case "height":
 			field := field
 
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
 				defer func() {
 					if r := recover(); r != nil {
 						ec.Error(ctx, ec.Recover(ctx, r))
 					}
 				}()
-				res = ec._Witness_ipfs_peer_id(ctx, field, obj)
+				res = ec._Witness_height(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
 				return res
 			}
 
@@ -13002,53 +13392,32 @@ func (ec *executionContext) _Witness(ctx context.Context, sel ast.SelectionSet, 
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-		case "last_signed":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._Witness_last_signed(ctx, field, obj)
-				return res
+		case "did_keys":
+			out.Values[i] = ec._Witness_did_keys(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
 			}
-
-			if field.Deferrable != nil {
-				dfs, ok := deferred[field.Deferrable.Label]
-				di := 0
-				if ok {
-					dfs.AddField(field)
-					di = len(dfs.Values) - 1
-				} else {
-					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
-					deferred[field.Deferrable.Label] = dfs
-				}
-				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
-					return innerFunc(ctx, dfs)
-				})
-
-				// don't run the out.Concurrently() call below
-				out.Values[i] = graphql.Null
-				continue
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "enabled":
+			out.Values[i] = ec._Witness_enabled(ctx, field, obj)
+		case "git_commit":
+			out.Values[i] = ec._Witness_git_commit(ctx, field, obj)
 		case "net_id":
 			out.Values[i] = ec._Witness_net_id(ctx, field, obj)
-		case "version_id":
-			out.Values[i] = ec._Witness_version_id(ctx, field, obj)
-		case "signing_keys":
+		case "peer_id":
+			out.Values[i] = ec._Witness_peer_id(ctx, field, obj)
+		case "protocol_version":
 			field := field
 
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
 				defer func() {
 					if r := recover(); r != nil {
 						ec.Error(ctx, ec.Recover(ctx, r))
 					}
 				}()
-				res = ec._Witness_signing_keys(ctx, field, obj)
+				res = ec._Witness_protocol_version(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
 				return res
 			}
 
@@ -13072,6 +13441,14 @@ func (ec *executionContext) _Witness(ctx context.Context, sel ast.SelectionSet, 
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "ts":
+			out.Values[i] = ec._Witness_ts(ctx, field, obj)
+		case "tx_id":
+			out.Values[i] = ec._Witness_tx_id(ctx, field, obj)
+		case "version_id":
+			out.Values[i] = ec._Witness_version_id(ctx, field, obj)
+		case "gateway_key":
+			out.Values[i] = ec._Witness_gateway_key(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -13650,6 +14027,54 @@ func (ec *executionContext) marshalNJSON2ᚕᚖstring(ctx context.Context, sel a
 
 func (ec *executionContext) marshalNLedgerOp2vscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐLedgerOp(ctx context.Context, sel ast.SelectionSet, v LedgerOp) graphql.Marshaler {
 	return ec._LedgerOp(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNPostingJsonKeys2vscᚑnodeᚋmodulesᚋdbᚋvscᚋwitnessesᚐPostingJsonKeys(ctx context.Context, sel ast.SelectionSet, v witnesses.PostingJsonKeys) graphql.Marshaler {
+	return ec._PostingJsonKeys(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNPostingJsonKeys2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋwitnessesᚐPostingJsonKeysᚄ(ctx context.Context, sel ast.SelectionSet, v []witnesses.PostingJsonKeys) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNPostingJsonKeys2vscᚑnodeᚋmodulesᚋdbᚋvscᚋwitnessesᚐPostingJsonKeys(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
 }
 
 func (ec *executionContext) unmarshalNString2string(ctx context.Context, v any) (string, error) {
@@ -14320,13 +14745,6 @@ func (ec *executionContext) marshalOHeaders2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlg
 		return graphql.Null
 	}
 	return ec._Headers(ctx, sel, v)
-}
-
-func (ec *executionContext) marshalOHiveKeys2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐHiveKeys(ctx context.Context, sel ast.SelectionSet, v *HiveKeys) graphql.Marshaler {
-	if v == nil {
-		return graphql.Null
-	}
-	return ec._HiveKeys(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalOInt2ᚖint(ctx context.Context, v any) (*int, error) {

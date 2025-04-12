@@ -101,12 +101,6 @@ type Headers struct {
 	Nonce *int `json:"nonce,omitempty"`
 }
 
-type HiveKeys struct {
-	Posting *string `json:"posting,omitempty"`
-	Active  *string `json:"active,omitempty"`
-	Owner   *string `json:"owner,omitempty"`
-}
-
 type JSONPatchOp struct {
 	Op    *string `json:"op,omitempty"`
 	Path  *string `json:"path,omitempty"`

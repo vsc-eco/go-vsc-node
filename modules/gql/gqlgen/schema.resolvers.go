@@ -154,6 +154,16 @@ func (r *mutationResolver) IncrementNumber(ctx context.Context) (*TestResult, er
 	panic(fmt.Errorf("not implemented"))
 }
 
+// Ct is the resolver for the ct field.
+func (r *postingJsonKeysResolver) Ct(ctx context.Context, obj *witnesses.PostingJsonKeys) (*string, error) {
+	return &obj.CryptoType, nil
+}
+
+// T is the resolver for the t field.
+func (r *postingJsonKeysResolver) T(ctx context.Context, obj *witnesses.PostingJsonKeys) (*string, error) {
+	return &obj.Type, nil
+}
+
 // ContractStateDiff is the resolver for the contractStateDiff field.
 func (r *queryResolver) ContractStateDiff(ctx context.Context, id *string) (*ContractDiff, error) {
 	panic(fmt.Errorf("not implemented"))
@@ -308,19 +318,14 @@ func (r *queryResolver) GetElection(ctx context.Context, epoch model.Uint64) (*e
 	return r.Elections.GetElection(uint64(epoch)), nil
 }
 
-// IpfsPeerID is the resolver for the ipfs_peer_id field.
-func (r *witnessResolver) IpfsPeerID(ctx context.Context, obj *witnesses.Witness) (*string, error) {
-	panic(fmt.Errorf("not implemented: IpfsPeerID - ipfs_peer_id"))
+// Height is the resolver for the height field.
+func (r *witnessResolver) Height(ctx context.Context, obj *witnesses.Witness) (model.Uint64, error) {
+	return model.Uint64(obj.Height), nil
 }
 
-// LastSigned is the resolver for the last_signed field.
-func (r *witnessResolver) LastSigned(ctx context.Context, obj *witnesses.Witness) (*int, error) {
-	panic(fmt.Errorf("not implemented: LastSigned - last_signed"))
-}
-
-// SigningKeys is the resolver for the signing_keys field.
-func (r *witnessResolver) SigningKeys(ctx context.Context, obj *witnesses.Witness) (*HiveKeys, error) {
-	panic(fmt.Errorf("not implemented: SigningKeys - signing_keys"))
+// ProtocolVersion is the resolver for the protocol_version field.
+func (r *witnessResolver) ProtocolVersion(ctx context.Context, obj *witnesses.Witness) (model.Uint64, error) {
+	return model.Uint64(obj.ProtocolVersion), nil
 }
 
 // Bn is the resolver for the bn field.
@@ -343,6 +348,9 @@ func (r *Resolver) ElectionResult() ElectionResultResolver { return &electionRes
 // Mutation returns MutationResolver implementation.
 func (r *Resolver) Mutation() MutationResolver { return &mutationResolver{r} }
 
+// PostingJsonKeys returns PostingJsonKeysResolver implementation.
+func (r *Resolver) PostingJsonKeys() PostingJsonKeysResolver { return &postingJsonKeysResolver{r} }
+
 // Query returns QueryResolver implementation.
 func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 
@@ -357,6 +365,7 @@ type contractOutputResolver struct{ *Resolver }
 type contractStateResolver struct{ *Resolver }
 type electionResultResolver struct{ *Resolver }
 type mutationResolver struct{ *Resolver }
+type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }
