@@ -673,6 +673,9 @@ func (se *StateEngine) ExecuteBatch() {
 		logs := make([]string, 0)
 		ok := true
 		for idx, vscTx := range tx.Ops {
+			if se.firstTxHeight == 0 {
+				se.firstTxHeight = vscTx.TxSelf().BlockHeight - 1
+			}
 			if len(vscTx.TxSelf().RequiredAuths) == 0 && len(vscTx.TxSelf().RequiredPostingAuths) == 0 {
 				se.log.Debug("TRANSACTION REVERTING - no required auths")
 				ok = false
@@ -685,10 +688,6 @@ func (se *StateEngine) ExecuteBatch() {
 				payer = vscTx.TxSelf().RequiredPostingAuths[0]
 			} else {
 				payer = vscTx.TxSelf().RequiredAuths[0]
-			}
-
-			if se.firstTxHeight == 0 {
-				se.firstTxHeight = vscTx.TxSelf().BlockHeight - 1
 			}
 
 			var contractSession *contract_session.ContractSession
