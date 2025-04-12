@@ -120,19 +120,25 @@ type LocalNodeInfo {
   did: String
 }
 
-type HiveKeys {
-  posting: String
-  active: String
-  owner: String
+type PostingJsonKeys {
+  ct: String
+  t: String
+  key: String
 }
 
 type Witness {
   account: String
-  ipfs_peer_id: String
-  last_signed: Int
+  height: Uint64!
+  did_keys: [PostingJsonKeys!]!
+  enabled: Boolean
+  git_commit: String
   net_id: String
+  peer_id: String
+  protocol_version: Uint64!
+  ts: String
+  tx_id: String
   version_id: String
-  signing_keys: HiveKeys
+  gateway_key: String
 }
 
 type WitnessSlot {
