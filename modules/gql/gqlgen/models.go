@@ -97,17 +97,6 @@ type Gas struct {
 	Io *int `json:"IO,omitempty"`
 }
 
-type GetBalanceResult struct {
-	Account     *string           `json:"account,omitempty"`
-	BlockHeight *int              `json:"block_height,omitempty"`
-	Tokens      *GetBalanceTokens `json:"tokens,omitempty"`
-}
-
-type GetBalanceTokens struct {
-	Hbd  *float64 `json:"HBD,omitempty"`
-	Hive *float64 `json:"HIVE,omitempty"`
-}
-
 type Headers struct {
 	Nonce *int `json:"nonce,omitempty"`
 }

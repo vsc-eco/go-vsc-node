@@ -134,6 +134,7 @@ func main() {
 		witnessDb,
 		txpool,
 		balanceDb,
+		hiveBlocks,
 		se,
 		da,
 	}}), "0.0.0.0:8080")

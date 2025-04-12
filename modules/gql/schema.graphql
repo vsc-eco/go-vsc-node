@@ -175,15 +175,16 @@ interface BlockRef {
   included_block: Int
 }
 
-type GetBalanceTokens {
-  HBD: Float
-  HIVE: Float
-}
-
-type GetBalanceResult {
+type BalanceRecord {
   account: String
-  block_height: Int
-  tokens: GetBalanceTokens
+  block_height: Uint64!
+  hbd: Int64!
+  hbd_avg: Int64!
+  hbd_modify: Uint64!
+  hbd_claim: Uint64!
+  hbd_savings: Int64!
+  hive: Int64!
+  hive_consensus: Int64!
 }
 
 type FindTransactionResult {
@@ -251,7 +252,7 @@ type Query {
     decodedFilter: JSON
   ): FindContractOutputResult
   findLedgerTXs(filterOptions: LedgerTxFilter): LedgerResults
-  getAccountBalance(account: String): GetBalanceResult
+  getAccountBalance(account: String!, height: Uint64): BalanceRecord
   findContract(id: String): FindContractResult
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(keyGroup: [String]!): AccountNonceResult
@@ -269,6 +270,7 @@ type Query {
 }
 
 scalar Uint64
+scalar Int64
 
 type Mutation {
   incrementNumber: TestResult # TESTING MUTATION

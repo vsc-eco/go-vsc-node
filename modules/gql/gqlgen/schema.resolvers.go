@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"vsc-node/modules/db/vsc/contracts"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
 	stateEngine "vsc-node/modules/state-processing"
@@ -17,6 +18,46 @@ import (
 
 	"github.com/ipfs/go-cid"
 )
+
+// BlockHeight is the resolver for the block_height field.
+func (r *balanceRecordResolver) BlockHeight(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Uint64, error) {
+	return model.Uint64(obj.BlockHeight), nil
+}
+
+// Hbd is the resolver for the hbd field.
+func (r *balanceRecordResolver) Hbd(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error) {
+	return model.Int64(obj.HBD), nil
+}
+
+// HbdAvg is the resolver for the hbd_avg field.
+func (r *balanceRecordResolver) HbdAvg(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error) {
+	return model.Int64(obj.HBD_AVG), nil
+}
+
+// HbdModify is the resolver for the hbd_modify field.
+func (r *balanceRecordResolver) HbdModify(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Uint64, error) {
+	return model.Uint64(obj.HBD_MODIFY_HEIGHT), nil
+}
+
+// HbdClaim is the resolver for the hbd_claim field.
+func (r *balanceRecordResolver) HbdClaim(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Uint64, error) {
+	return model.Uint64(obj.HBD_CLAIM_HEIGHT), nil
+}
+
+// HbdSavings is the resolver for the hbd_savings field.
+func (r *balanceRecordResolver) HbdSavings(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error) {
+	return model.Int64(obj.HBD_SAVINGS), nil
+}
+
+// Hive is the resolver for the hive field.
+func (r *balanceRecordResolver) Hive(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error) {
+	return model.Int64(obj.Hive), nil
+}
+
+// HiveConsensus is the resolver for the hive_consensus field.
+func (r *balanceRecordResolver) HiveConsensus(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error) {
+	return model.Int64(obj.HIVE_CONSENSUS), nil
+}
 
 // AnchoredBlock is the resolver for the anchored_block field.
 func (r *contractOutputResolver) AnchoredBlock(ctx context.Context, obj *contracts.ContractOutput) (*string, error) {
@@ -109,8 +150,18 @@ func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *Ledger
 }
 
 // GetAccountBalance is the resolver for the getAccountBalance field.
-func (r *queryResolver) GetAccountBalance(ctx context.Context, account *string) (*GetBalanceResult, error) {
-	panic(fmt.Errorf("not implemented"))
+func (r *queryResolver) GetAccountBalance(ctx context.Context, account string, height *model.Uint64) (*ledgerDb.BalanceRecord, error) {
+	var blockHeight uint64
+	if height != nil {
+		blockHeight = uint64(*height)
+	} else {
+		head, headErr := r.HiveBlocks.GetLastProcessedBlock()
+		if headErr != nil {
+			return nil, headErr
+		}
+		blockHeight = head
+	}
+	return r.Balances.GetBalanceRecord(account, blockHeight)
 }
 
 // FindContract is the resolver for the findContract field.
@@ -242,6 +293,9 @@ func (r *witnessSlotResolver) Bn(ctx context.Context, obj *stateEngine.WitnessSl
 	return model.Uint64(obj.SlotHeight), nil
 }
 
+// BalanceRecord returns BalanceRecordResolver implementation.
+func (r *Resolver) BalanceRecord() BalanceRecordResolver { return &balanceRecordResolver{r} }
+
 // ContractOutput returns ContractOutputResolver implementation.
 func (r *Resolver) ContractOutput() ContractOutputResolver { return &contractOutputResolver{r} }
 
@@ -260,6 +314,7 @@ func (r *Resolver) Witness() WitnessResolver { return &witnessResolver{r} }
 // WitnessSlot returns WitnessSlotResolver implementation.
 func (r *Resolver) WitnessSlot() WitnessSlotResolver { return &witnessSlotResolver{r} }
 
+type balanceRecordResolver struct{ *Resolver }
 type contractOutputResolver struct{ *Resolver }
 type contractStateResolver struct{ *Resolver }
 type mutationResolver struct{ *Resolver }
