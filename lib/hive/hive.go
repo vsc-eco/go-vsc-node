@@ -50,7 +50,11 @@ func (t *TransactionBroadcaster) Broadcast(tx hivego.HiveTransaction) (string, e
 func (t *TransactionBroadcaster) PopulateSigningProps(tx *hivego.HiveTransaction, bh []int) error {
 	if len(bh) > 0 {
 		bha := bh[0]
-		hBlock, _ := t.Client.GetBlock(bha)
+		hBlock, err := t.Client.GetBlock(bha)
+
+		if err != nil {
+			return err
+		}
 
 		refBlockNum := uint16(hBlock.BlockNumber & 0xffff)
 		hbidB, err := hex.DecodeString(hBlock.BlockID)

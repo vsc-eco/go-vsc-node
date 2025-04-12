@@ -2,6 +2,7 @@ package election_proposer
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/JustinKnueppel/go-result"
 	"github.com/chebyrash/promise"
+	blsu "github.com/protolambda/bls12-381-util"
 	"github.com/vsc-eco/hivego"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -45,13 +47,12 @@ type electionProposer struct {
 
 	txCreator hive.HiveTransactionCreator
 
-	circuit    dids.PartialBlsCircuit
 	vstream    *vstream.VStream
 	se         *stateEngine.StateEngine
 	bh         uint64
 	headHeight *uint64
 
-	sigChannels map[uint64]chan p2pMessage
+	sigChannels map[uint64]chan *signResponse
 	signingInfo *struct {
 		epoch   uint64
 		circuit *dids.PartialBlsCircuit
@@ -85,13 +86,13 @@ func New(
 		txCreator:   txCreator,
 		se:          se,
 		vstream:     vstream,
-		sigChannels: make(map[uint64]chan p2pMessage),
+		sigChannels: make(map[uint64]chan *signResponse),
 	}
 }
 
 // Init implements aggregate.Plugin.
 func (e *electionProposer) Init() error {
-	e.vstream.RegisterBlockTick("election-proposer", e.blockTick, false)
+	e.vstream.RegisterBlockTick("election-proposer", e.blockTick, true)
 	return nil
 }
 
@@ -114,7 +115,6 @@ func (e *electionProposer) blockTick(bh uint64, headHeight *uint64) {
 	e.headHeight = headHeight
 
 	if e.canHold() {
-		// fmt.Println("canHold", e.canHold())
 
 		slotInfo := stateEngine.CalculateSlotInfo(bh)
 
@@ -129,23 +129,18 @@ func (e *electionProposer) blockTick(bh uint64, headHeight *uint64) {
 			}
 		}
 
-		if e.circuit == nil {
-			fmt.Println("Holding new election!")
-			err := e.HoldElection(witnessSlot.SlotHeight)
-			fmt.Println("HoldElection err", err)
-			if err != nil {
-				// panic(err)
-			}
-		}
-
 		if witnessSlot != nil {
 			if witnessSlot.Account == e.conf.Get().HiveUsername && bh%common.CONSENSUS_SPECS.SlotLength == 0 {
+				e.HoldElection(bh)
 			}
 		}
 	}
 }
 
 func (e *electionProposer) canHold() bool {
+	if e.bh%10 == 0 {
+		// fmt.Println("caHold()", e.bh)
+	}
 	if e.headHeight == nil {
 		return false
 	}
@@ -155,6 +150,7 @@ func (e *electionProposer) canHold() bool {
 
 	result, _ := e.elections.GetElectionByHeight(e.bh)
 
+	// fmt.Println("Last check", result.BlockHeight < e.bh-ELECTION_INTERVAL)
 	return result.BlockHeight < e.bh-ELECTION_INTERVAL
 }
 
@@ -326,13 +322,13 @@ type ElectionOptions struct {
 	OverrideMinimumMemberCount int
 }
 
-func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) error {
-	if e.circuit != nil {
+func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) error {
+	if ep.signingInfo != nil {
 		fmt.Println("election already in progress")
 		return errors.New("election already in progress")
 	}
 
-	electionResult, err := e.elections.GetElectionByHeight(blk - 1)
+	electionResult, err := ep.elections.GetElectionByHeight(blk - 1)
 	firstElection := false
 	if err == mongo.ErrNoDocuments {
 		firstElection = true
@@ -341,7 +337,7 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 		return err
 	}
 
-	electionHeader, electionData, err := e.GenerateElectionAtBlock(blk)
+	electionHeader, electionData, err := ep.GenerateElectionAtBlock(blk)
 
 	if err != nil {
 		fmt.Println("election.err", err)
@@ -360,13 +356,13 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 			return err
 		}
 
-		op := e.txCreator.CustomJson([]string{e.conf.Get().HiveUsername}, []string{}, VSC_ELECTION_TX_ID, string(jsonBytes))
+		op := ep.txCreator.CustomJson([]string{ep.conf.Get().HiveUsername}, []string{}, VSC_ELECTION_TX_ID, string(jsonBytes))
 
-		tx := e.txCreator.MakeTransaction([]hivego.HiveOperation{op})
+		tx := ep.txCreator.MakeTransaction([]hivego.HiveOperation{op})
 
-		e.txCreator.PopulateSigningProps(&tx, nil)
+		ep.txCreator.PopulateSigningProps(&tx, nil)
 
-		sig, err := e.txCreator.Sign(tx)
+		sig, err := ep.txCreator.Sign(tx)
 		if err != nil {
 			fmt.Println("election.err", err)
 			return fmt.Errorf("failed to update account: %w", err)
@@ -374,169 +370,190 @@ func (e *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) 
 
 		tx.AddSig(sig)
 
-		// txId, err := e.txCreator.Broadcast(tx)
+		txId, err := ep.txCreator.Broadcast(tx)
+		if err != nil {
+			return err
+		}
+
+		fmt.Println("Propose Election TxId", txId)
+
+		return nil
+	} else {
+
+		// console.log("electionData - holding election", electionData)
+
+		var minimumMemberCount int
+		if len(options) > 0 {
+			minimumMemberCount = options[0].OverrideMinimumMemberCount
+		} else {
+			minimumMemberCount = MINIMUM_ELECTION_MEMBER_COUNT
+		}
+
+		if len(electionData.Members) < minimumMemberCount {
+			fmt.Println("election minimum member count not met", len(electionData.Members), minimumMemberCount)
+			return errors.New("Minimum network config not met for election. Skipping.")
+		}
+
+		cid, err := electionHeader.Cid()
+		if err != nil {
+			fmt.Println("election.err", err)
+			return err
+		}
+
+		var memberKeys []dids.BlsDID
+		if firstElection {
+			w, err := ep.witnesses.GetWitnessesAtBlockHeight(blk)
+
+			fmt.Println("GetWitnessesAtBlockHeight err", err)
+			if err != nil {
+				fmt.Println("election.err", err)
+				return err
+			}
+			res := resultJoin(utils.Map(w, func(w witnesses.Witness) result.Result[dids.BlsDID] {
+				return resultWrap(w.ConsensusKey())
+			})...)
+
+			if res.IsErr() {
+				return res.UnwrapErr()
+			}
+			memberKeys = res.Unwrap()
+		} else {
+			memberKeys = electionResult.MemberKeys()
+		}
+
+		circuit, err := dids.NewBlsCircuitGenerator(memberKeys).Generate(cid)
+		if err != nil {
+			fmt.Println("election.err", err)
+			return err
+		}
+
+		ep.signingInfo = &struct {
+			epoch   uint64
+			circuit *dids.PartialBlsCircuit
+		}{
+			epoch:   electionHeader.Epoch,
+			circuit: &circuit,
+		}
+
+		// sig, err := signCid(ep.conf, cid)
+
 		// if err != nil {
 		// 	return err
 		// }
 
-		// fmt.Println("Propose Election TxId", txId)
+		signReq := signRequest{
+			Epoch:       electionHeader.Epoch,
+			BlockHeight: blk,
+		}
 
+		reqJson, _ := json.Marshal(signReq)
+		go func() {
+			time.Sleep(4 * time.Millisecond)
+			ep.service.Send(p2pMessage{
+				Type: "sign_request",
+				Op:   "hold_election",
+				Data: string(reqJson),
+			})
+		}()
+
+		ep.sigChannels[ep.signingInfo.epoch] = make(chan *signResponse)
+
+		fmt.Println("[ep] waiting for signatures", blk, electionHeader.Epoch)
+		ep.waitForSigs(context.Background(), &electionResult)
+
+		ep.signingInfo = nil
+
+		finalCircuit, err := circuit.Finalize()
+		if err != nil {
+			fmt.Println("election.err", err)
+			return err
+		}
+
+		bv := finalCircuit.RawBitVector()
+		votedWeight := uint64(0)
+		totalWeight := uint64(0)
+		for i := 0; i < bv.BitLen(); i++ {
+			if bv.Bit(i) == 1 {
+				votedWeight += electionResult.Weights[i]
+			}
+			totalWeight += electionResult.Weights[i]
+		}
+
+		blocksSinceLastElection := blk
+		if !firstElection {
+			blocksSinceLastElection = blk - electionResult.BlockHeight
+		}
+		voteMajority := elections.MinimalRequiredElectionVotes(blocksSinceLastElection, totalWeight)
+
+		if (votedWeight >= voteMajority) || firstElection {
+			// Send out Election to Hive
+
+			circuit, err := finalCircuit.Serialize()
+			if err != nil {
+				fmt.Println("election.err", err)
+				return err
+			}
+
+			electionResultJson := struct {
+				elections.ElectionHeader
+				Signature dids.SerializedCircuit `json:"signature"`
+			}{
+				electionHeader,
+				*circuit,
+			}
+
+			jsonBytes, err := json.Marshal(electionResultJson)
+			if err != nil {
+				return err
+			}
+
+			op := ep.txCreator.CustomJson([]string{ep.conf.Get().HiveUsername}, []string{}, VSC_ELECTION_TX_ID, string(jsonBytes))
+
+			tx := ep.txCreator.MakeTransaction([]hivego.HiveOperation{op})
+
+			ep.txCreator.PopulateSigningProps(&tx, nil)
+
+			sig, err := ep.txCreator.Sign(tx)
+			if err != nil {
+				return fmt.Errorf("failed to update account: %w", err)
+			}
+
+			tx.AddSig(sig)
+
+			_, err = ep.txCreator.Broadcast(tx)
+
+			if err != nil {
+				return fmt.Errorf("failed to update account: %w", err)
+			}
+		}
 		return nil
 	}
+}
 
-	// console.log("electionData - holding election", electionData)
+func (ep *electionProposer) makeElection(blk uint64) (elections.ElectionHeader, error) {
+	electionResult, err := ep.elections.GetElectionByHeight(blk - 1)
 
-	var minimumMemberCount int
-	if len(options) > 0 {
-		minimumMemberCount = options[0].OverrideMinimumMemberCount
-	} else {
-		minimumMemberCount = MINIMUM_ELECTION_MEMBER_COUNT
-	}
-
-	if len(electionData.Members) < minimumMemberCount {
-		fmt.Println("election minimum member count not met", len(electionData.Members), minimumMemberCount)
-		return errors.New("Minimum network config not met for election. Skipping.")
-	}
-
-	cid, err := electionHeader.Cid()
 	if err != nil {
-		fmt.Println("election.err", err)
-		return err
+		return elections.ElectionHeader{}, err
 	}
 
-	var memberKeys []dids.BlsDID
-	if firstElection {
-		w, err := e.witnesses.GetWitnessesAtBlockHeight(blk)
-
-		fmt.Println("GetWitnessesAtBlockHeight err", err)
-		if err != nil {
-			fmt.Println("election.err", err)
-			return err
-		}
-		res := resultJoin(utils.Map(w, func(w witnesses.Witness) result.Result[dids.BlsDID] {
-			return resultWrap(w.ConsensusKey())
-		})...)
-
-		if res.IsErr() {
-			return res.UnwrapErr()
-		}
-		memberKeys = res.Unwrap()
-	} else {
-		memberKeys = electionResult.MemberKeys()
+	if blk-electionResult.BlockHeight < ELECTION_INTERVAL {
+		return elections.ElectionHeader{}, errors.New("next election not ready")
 	}
+	electionHeader, _, err := ep.GenerateElectionAtBlock(blk)
 
-	circuit, err := dids.NewBlsCircuitGenerator(memberKeys).Generate(cid)
-	if err != nil {
-		fmt.Println("election.err", err)
-		return err
-	}
-
-	e.circuit = circuit
-
-	sig, err := signCid(e.conf, cid)
-
-	fmt.Println("election.sig", sig, err)
-	if err != nil {
-		return err
-	}
-
-	signReq := signRequest{
-		Epoch:       electionHeader.Epoch,
-		BlockHeight: blk,
-	}
-	reqJson, _ := json.Marshal(signReq)
-	err = e.service.Send(p2pMessage{
-		Type: "hold_election",
-		Data: string(reqJson),
-	})
-	fmt.Println("SEnding error", err)
-	if err != nil {
-		fmt.Println("election.err", err)
-		return err
-	}
-
-	for i := 0; i < 20; i++ {
-		time.Sleep(time.Second)
-		// TODO check if necessary voting weight is achieved, and break early
-	}
-
-	finalCircuit, err := circuit.Finalize()
-	if err != nil {
-		fmt.Println("election.err", err)
-		return err
-	}
-
-	bv := finalCircuit.RawBitVector()
-	votedWeight := uint64(0)
-	totalWeight := uint64(0)
-	for i := 0; i < bv.BitLen(); i++ {
-		if bv.Bit(i) == 1 {
-			votedWeight += electionResult.Weights[i]
-		}
-		totalWeight += electionResult.Weights[i]
-	}
-
-	blocksSinceLastElection := blk
-	if !firstElection {
-		blocksSinceLastElection = blk - electionResult.BlockHeight
-	}
-	voteMajority := elections.MinimalRequiredElectionVotes(blocksSinceLastElection, totalWeight)
-
-	if (votedWeight >= voteMajority) || firstElection {
-		// Send out Election to Hive
-
-		circuit, err := finalCircuit.Serialize()
-		if err != nil {
-			fmt.Println("election.err", err)
-			return err
-		}
-
-		electionResultJson := struct {
-			elections.ElectionHeader
-			Signature dids.SerializedCircuit `json:"signature"`
-		}{
-			electionHeader,
-			*circuit,
-		}
-
-		jsonBytes, err := json.Marshal(electionResultJson)
-		if err != nil {
-			return err
-		}
-
-		op := e.txCreator.CustomJson([]string{e.conf.Get().HiveUsername}, []string{}, VSC_ELECTION_TX_ID, string(jsonBytes))
-
-		tx := e.txCreator.MakeTransaction([]hivego.HiveOperation{op})
-
-		e.txCreator.PopulateSigningProps(&tx, nil)
-
-		sig, err := e.txCreator.Sign(tx)
-		if err != nil {
-			return fmt.Errorf("failed to update account: %w", err)
-		}
-
-		tx.AddSig(sig)
-
-		// _, err = e.txCreator.Broadcast(tx)
-
-		// if err != nil {
-		// 	return fmt.Errorf("failed to update account: %w", err)
-		// }
-	}
-
-	return nil
+	return electionHeader, err
 }
 
 func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections.ElectionResult) (uint64, error) {
-
 	if ep.signingInfo == nil {
 		return 0, errors.New("no block signing info")
 	}
 	go func() {
-		time.Sleep(12 * time.Second)
-		// ep.sigChannels[ep.signingInfo.epoch] <- sigMsg{
-		// 	Type: "end",
-		// }
+		time.Sleep(30 * time.Second)
+		if ep.signingInfo != nil {
+			ep.sigChannels[ep.signingInfo.epoch] <- nil
+		}
 	}()
 	weightTotal := uint64(0)
 	for _, weight := range election.Weights {
@@ -550,42 +567,49 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 	default:
 		signedWeight := uint64(0)
 
-		fmt.Println("[bp] default action")
-		// Perform the operation
+		for signedWeight < (weightTotal * 8 / 10) {
+			signResp := <-ep.sigChannels[ep.signingInfo.epoch]
 
-		// slotHeight := bp.blockSigning.slotHeight
-
-		for signedWeight < (weightTotal * 9 / 10) {
-			msg := <-ep.sigChannels[ep.signingInfo.epoch]
-
-			if msg.Type == "sig" {
-				// sig := msg.Msg
-				// sigStr := sig.Data["sig"].(string)
-				// account := sig.Data["account"].(string)
-
-				// var member dids.Member
-				// var index int
-				// for i, data := range election.Members {
-				// 	if data.Account == account {
-				// 		member = dids.BlsDID(data.Key)
-				// 		index = i
-				// 		break
-				// 	}
-				// }
-
-				// circuit := *bp.blockSigning.circuit
-
-				// err := circuit.AddAndVerify(member, sigStr)
-
-				// fmt.Println("[bp] aggregating signature", sigStr, "from", account)
-				// fmt.Println("[bp] agg err", err)
-				// if err == nil {
-				// 	signedWeight += election.Weights[index]
-				// }
-			}
-			if msg.Type == "end" {
-				fmt.Println("Ending wait for sig")
+			if signResp == nil {
+				fmt.Println("[ep] timed out waiting")
 				break
+			}
+
+			sigBytes, err := base64.URLEncoding.DecodeString(signResp.Sig)
+
+			if err != nil {
+				return 0, nil
+			}
+
+			sig := blsu.Signature{}
+			sig96 := [96]byte{}
+			copy(sig96[:], sigBytes[:])
+			sig.Deserialize(&sig96)
+
+			if err != nil {
+				return 0, nil
+			}
+			sigStr := signResp.Sig
+			account := signResp.Account
+
+			var member dids.Member
+			var index int
+			for i, data := range election.Members {
+				if data.Account == account {
+					member = dids.BlsDID(data.Key)
+					index = i
+					break
+				}
+			}
+
+			circuit := *ep.signingInfo.circuit
+
+			err = circuit.AddAndVerify(member, sigStr)
+
+			fmt.Println("[ep] aggregating signature", sigStr, "from", account)
+			fmt.Println("[ep] agg err", err)
+			if err == nil {
+				signedWeight += election.Weights[index]
 			}
 		}
 		fmt.Println("Done waittt")

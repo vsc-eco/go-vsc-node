@@ -2,6 +2,7 @@ package election_proposer
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -32,11 +33,10 @@ type signRequest struct {
 }
 
 type signResponse struct {
-	Epoch uint64 `json:"epoch"`
-	Sig   string `json:"sig"`
+	Epoch   uint64 `json:"epoch"`
+	Account string `json:"account"`
+	Sig     string `json:"sig"`
 }
-
-const signatureSize = 96
 
 type p2pMessageElectionSignature struct {
 	Signature blsu.Signature
@@ -109,6 +109,81 @@ func (s p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.
 
 // HandleMessage implements libp2p.PubSubServiceParams.
 func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
+	ep := s.electionProposer.Value()
+	if msg.Type == "sign_request" {
+		if s.electionProposer.Value().bh == 0 {
+			return nil
+		}
+		if msg.Op == "hold_election" {
+			var signReq signRequest
+			err := json.Unmarshal([]byte(msg.Data), &signReq)
+			if err != nil {
+				return nil
+			}
+
+			// err = s.electionProposer.waitCheckBh(ROTATION_INTERVAL, signReq.BlockHeight)
+
+			// if err != nil {
+			// 	return nil
+			// }
+
+			electionHeader, err := ep.makeElection(signReq.BlockHeight)
+
+			if err != nil {
+				return nil
+			}
+
+			if electionHeader.Epoch != signReq.Epoch {
+				return nil
+			}
+
+			cid, err := electionHeader.Cid()
+
+			if err != nil {
+				return nil
+			}
+
+			sig, err := signCid(ep.conf, cid)
+
+			if err != nil {
+				return nil
+			}
+
+			sigBytes := sig.Serialize()
+
+			sigStr := base64.URLEncoding.EncodeToString(sigBytes[:])
+
+			resp := signResponse{
+				Epoch:   electionHeader.Epoch,
+				Sig:     sigStr,
+				Account: ep.conf.Get().HiveUsername,
+			}
+
+			data, _ := json.Marshal(resp)
+
+			send(p2pMessage{
+				Type:    "sign_response",
+				Version: "1",
+				Op:      "hold_election",
+				Data:    string(data),
+			})
+		}
+	} else if msg.Type == "sign_response" {
+		if msg.Op == "hold_election" {
+			var signResp signResponse
+			err := json.Unmarshal([]byte(msg.Data), &signResp)
+			if err != nil {
+				return nil
+			}
+
+			// err = s.electionProposer.waitCheckBh(ROTATION_INTERVAL, signResp.BlockHeight)
+
+			if ep.sigChannels[signResp.Epoch] != nil {
+				ep.sigChannels[signResp.Epoch] <- &signResp
+			}
+		}
+	}
+
 	// switch msg := msg.(type) {
 	// case p2pMessageElectionProposal:
 	// 	proposer := s.electionProposer.Value()
