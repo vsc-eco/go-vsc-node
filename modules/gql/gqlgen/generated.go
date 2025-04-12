@@ -177,7 +177,6 @@ type ComplexityRoot struct {
 		AnchorProducer       func(childComplexity int) int
 		ContractState        func(childComplexity int, id *string) int
 		ContractStateDiff    func(childComplexity int, id *string) int
-		FindCid              func(childComplexity int, cidString string) int
 		FindContract         func(childComplexity int, id *string) int
 		FindContractOutput   func(childComplexity int, filterOptions *FindContractOutputFilter, decodedFilter *string) int
 		FindLedgerTXs        func(childComplexity int, filterOptions *LedgerTxFilter) int
@@ -185,6 +184,7 @@ type ComplexityRoot struct {
 		GetAccountBalance    func(childComplexity int, account *string) int
 		GetAccountNonce      func(childComplexity int, keyGroup []*string) int
 		GetCurrentNumber     func(childComplexity int) int
+		GetDagByCid          func(childComplexity int, cidString string) int
 		LocalNodeInfo        func(childComplexity int) int
 		MockGenerateElection func(childComplexity int) int
 		NextWitnessSlot      func(childComplexity int, self *bool) int
@@ -290,7 +290,7 @@ type QueryResolver interface {
 	AnchorProducer(ctx context.Context) (*AnchorProducer, error)
 	GetCurrentNumber(ctx context.Context) (*TestResult, error)
 	WitnessStake(ctx context.Context, account string) (model.Uint64, error)
-	FindCid(ctx context.Context, cidString string) (string, error)
+	GetDagByCid(ctx context.Context, cidString string) (string, error)
 }
 type WitnessResolver interface {
 	IpfsPeerID(ctx context.Context, obj *witnesses.Witness) (*string, error)
@@ -771,18 +771,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Query.ContractStateDiff(childComplexity, args["id"].(*string)), true
 
-	case "Query.findCID":
-		if e.complexity.Query.FindCid == nil {
-			break
-		}
-
-		args, err := ec.field_Query_findCID_args(context.TODO(), rawArgs)
-		if err != nil {
-			return 0, false
-		}
-
-		return e.complexity.Query.FindCid(childComplexity, args["cidString"].(string)), true
-
 	case "Query.findContract":
 		if e.complexity.Query.FindContract == nil {
 			break
@@ -861,6 +849,18 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.Query.GetCurrentNumber(childComplexity), true
+
+	case "Query.getDagByCID":
+		if e.complexity.Query.GetDagByCid == nil {
+			break
+		}
+
+		args, err := ec.field_Query_getDagByCID_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.GetDagByCid(childComplexity, args["cidString"].(string)), true
 
 	case "Query.localNodeInfo":
 		if e.complexity.Query.LocalNodeInfo == nil {
@@ -1547,7 +1547,7 @@ type Query {
   anchorProducer: AnchorProducer
   getCurrentNumber: TestResult # TESTING QUERY
   witnessStake(account: String!): Uint64!
-  findCID(cidString: String!): JSON!
+  getDagByCID(cidString: String!): JSON!
 }
 
 scalar Uint64
@@ -1747,29 +1747,6 @@ func (ec *executionContext) field_Query_contractState_argsID(
 	return zeroVal, nil
 }
 
-func (ec *executionContext) field_Query_findCID_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
-	var err error
-	args := map[string]any{}
-	arg0, err := ec.field_Query_findCID_argsCidString(ctx, rawArgs)
-	if err != nil {
-		return nil, err
-	}
-	args["cidString"] = arg0
-	return args, nil
-}
-func (ec *executionContext) field_Query_findCID_argsCidString(
-	ctx context.Context,
-	rawArgs map[string]any,
-) (string, error) {
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("cidString"))
-	if tmp, ok := rawArgs["cidString"]; ok {
-		return ec.unmarshalNString2string(ctx, tmp)
-	}
-
-	var zeroVal string
-	return zeroVal, nil
-}
-
 func (ec *executionContext) field_Query_findContractOutput_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
 	var err error
 	args := map[string]any{}
@@ -1941,6 +1918,29 @@ func (ec *executionContext) field_Query_getAccountNonce_argsKeyGroup(
 	}
 
 	var zeroVal []*string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_getDagByCID_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_getDagByCID_argsCidString(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["cidString"] = arg0
+	return args, nil
+}
+func (ec *executionContext) field_Query_getDagByCID_argsCidString(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (string, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("cidString"))
+	if tmp, ok := rawArgs["cidString"]; ok {
+		return ec.unmarshalNString2string(ctx, tmp)
+	}
+
+	var zeroVal string
 	return zeroVal, nil
 }
 
@@ -5699,8 +5699,8 @@ func (ec *executionContext) fieldContext_Query_witnessStake(ctx context.Context,
 	return fc, nil
 }
 
-func (ec *executionContext) _Query_findCID(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Query_findCID(ctx, field)
+func (ec *executionContext) _Query_getDagByCID(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_getDagByCID(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -5713,7 +5713,7 @@ func (ec *executionContext) _Query_findCID(ctx context.Context, field graphql.Co
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().FindCid(rctx, fc.Args["cidString"].(string))
+		return ec.resolvers.Query().GetDagByCid(rctx, fc.Args["cidString"].(string))
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -5730,7 +5730,7 @@ func (ec *executionContext) _Query_findCID(ctx context.Context, field graphql.Co
 	return ec.marshalNJSON2string(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_Query_findCID(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_Query_getDagByCID(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "Query",
 		Field:      field,
@@ -5747,7 +5747,7 @@ func (ec *executionContext) fieldContext_Query_findCID(ctx context.Context, fiel
 		}
 	}()
 	ctx = graphql.WithFieldContext(ctx, fc)
-	if fc.Args, err = ec.field_Query_findCID_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+	if fc.Args, err = ec.field_Query_getDagByCID_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
 	}
@@ -11037,7 +11037,7 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
-		case "findCID":
+		case "getDagByCID":
 			field := field
 
 			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
@@ -11046,7 +11046,7 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 						ec.Error(ctx, ec.Recover(ctx, r))
 					}
 				}()
-				res = ec._Query_findCID(ctx, field)
+				res = ec._Query_getDagByCID(ctx, field)
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}

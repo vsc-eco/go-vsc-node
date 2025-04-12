@@ -205,8 +205,8 @@ func (r *queryResolver) WitnessStake(ctx context.Context, account string) (model
 	return model.Uint64(res.HIVE_CONSENSUS), nil
 }
 
-// FindCid is the resolver for the findCID field.
-func (r *queryResolver) FindCid(ctx context.Context, cidString string) (string, error) {
+// GetDagByCid is the resolver for the getDagByCID field.
+func (r *queryResolver) GetDagByCid(ctx context.Context, cidString string) (string, error) {
 	blockCid, parseErr := cid.Parse(cidString)
 	if parseErr != nil {
 		return "", parseErr
