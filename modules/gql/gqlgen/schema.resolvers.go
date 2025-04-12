@@ -191,6 +191,9 @@ func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *Ledger
 
 // GetAccountBalance is the resolver for the getAccountBalance field.
 func (r *queryResolver) GetAccountBalance(ctx context.Context, account string, height *model.Uint64) (*ledgerDb.BalanceRecord, error) {
+	if account == "" {
+		return nil, fmt.Errorf("Account parameter cannot be empty")
+	}
 	var blockHeight uint64
 	if height != nil {
 		blockHeight = uint64(*height)
