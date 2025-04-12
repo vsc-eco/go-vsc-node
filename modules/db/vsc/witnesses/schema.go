@@ -10,6 +10,7 @@ type Witness struct {
 	PeerId          string            `json:"peer_id" bson:"peer_id"`
 	ProtocolVersion uint64            `json:"protocol_version" bson:"protocol_version"`
 	Ts              string            `json:"ts" bson:"ts"`
+	TxId            string            `json:"tx_id" bson:"tx_id"`
 	VersionId       string            `json:"version_id" bson:"version_id"`
 	GatewayKey      string            `json:"gateway_key" bson:"gateway_key"`
 }

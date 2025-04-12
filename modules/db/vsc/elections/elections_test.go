@@ -66,6 +66,7 @@ func TestGetElectionByHeight(t *testing.T) {
 	electionMock.Weights = []uint64{
 		42069,
 	}
+	electionMock.TxId = "0123456789abcdef0123456789abcdef01234567"
 
 	err = e.StoreElection(electionMock)
 	assert.NoError(t, err)

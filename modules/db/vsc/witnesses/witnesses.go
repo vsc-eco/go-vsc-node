@@ -53,6 +53,7 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 			"peer_addrs": request.Metadata.VscNode.PeerAddrs,
 			//timestamp
 			"ts":               request.Metadata.VscNode.Ts,
+			"tx_id":            request.TxId,
 			"version_id":       request.Metadata.VscNode.VersionId,
 			"git_commit":       request.Metadata.VscNode.GitCommit,
 			"net_id":           request.Metadata.VscNode.NetId,

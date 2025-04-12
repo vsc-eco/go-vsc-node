@@ -287,6 +287,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 
 			elecResult.Proposer = tx.Self.RequiredAuths[0]
 			elecResult.BlockHeight = tx.Self.BlockHeight
+			elecResult.TxId = tx.Self.TxId
 			elecResult.Epoch = tx.Epoch
 			elecResult.NetId = tx.NetId
 			elecResult.Data = tx.Data
@@ -392,6 +393,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 			elecResult := elections.ElectionResult{
 				Proposer:    tx.Self.RequiredAuths[0],
 				BlockHeight: tx.Self.BlockHeight,
+				TxId:        tx.Self.TxId,
 			}
 			elecResult.Epoch = tx.Epoch
 			elecResult.NetId = tx.NetId
