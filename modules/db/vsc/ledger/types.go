@@ -50,8 +50,8 @@ type BalanceRecord struct {
 	HBD               int64  `json:"hbd" bson:"hbd"`
 	HBD_SAVINGS       int64  `json:"hbd_savings" bson:"hbd_savings"`
 	HBD_AVG           int64  `json:"hbd_avg" bson:"hbd_avg"`
-	HBD_CLAIM_HEIGHT  uint64 `json:"hbd_claim" bson:"hbd_claim,omitempty"`
-	HBD_MODIFY_HEIGHT uint64 `json:"hbd_modify" bson:"hbd_modify,omitempty"`
+	HBD_CLAIM_HEIGHT  uint64 `json:"hbd_claim,omitempty" bson:"hbd_claim,omitempty"`
+	HBD_MODIFY_HEIGHT uint64 `json:"hbd_modify,omitempty" bson:"hbd_modify,omitempty"`
 }
 
 // {
