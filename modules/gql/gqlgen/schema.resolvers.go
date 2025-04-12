@@ -14,6 +14,8 @@ import (
 	"vsc-node/modules/gql/model"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
+
+	"github.com/ipfs/go-cid"
 )
 
 // AnchoredBlock is the resolver for the anchored_block field.
@@ -201,6 +203,23 @@ func (r *queryResolver) WitnessStake(ctx context.Context, account string) (model
 		return 0, nil
 	}
 	return model.Uint64(res.HIVE_CONSENSUS), nil
+}
+
+// GetDagByCid is the resolver for the getDagByCID field.
+func (r *queryResolver) GetDagByCid(ctx context.Context, cidString string) (string, error) {
+	blockCid, parseErr := cid.Parse(cidString)
+	if parseErr != nil {
+		return "", parseErr
+	}
+	node, nodeErr := r.Da.GetDag(blockCid)
+	if nodeErr != nil {
+		return "", nodeErr
+	}
+	jsonBytes, jsonErr := node.MarshalJSON()
+	if jsonErr != nil {
+		return "", jsonErr
+	}
+	return string(jsonBytes), nil
 }
 
 // IpfsPeerID is the resolver for the ipfs_peer_id field.

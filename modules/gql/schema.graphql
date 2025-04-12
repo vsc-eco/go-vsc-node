@@ -265,6 +265,7 @@ type Query {
   anchorProducer: AnchorProducer
   getCurrentNumber: TestResult # TESTING QUERY
   witnessStake(account: String!): Uint64!
+  getDagByCID(cidString: String!): JSON!
 }
 
 scalar Uint64

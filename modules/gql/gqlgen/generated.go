@@ -184,6 +184,7 @@ type ComplexityRoot struct {
 		GetAccountBalance    func(childComplexity int, account *string) int
 		GetAccountNonce      func(childComplexity int, keyGroup []*string) int
 		GetCurrentNumber     func(childComplexity int) int
+		GetDagByCid          func(childComplexity int, cidString string) int
 		LocalNodeInfo        func(childComplexity int) int
 		MockGenerateElection func(childComplexity int) int
 		NextWitnessSlot      func(childComplexity int, self *bool) int
@@ -289,6 +290,7 @@ type QueryResolver interface {
 	AnchorProducer(ctx context.Context) (*AnchorProducer, error)
 	GetCurrentNumber(ctx context.Context) (*TestResult, error)
 	WitnessStake(ctx context.Context, account string) (model.Uint64, error)
+	GetDagByCid(ctx context.Context, cidString string) (string, error)
 }
 type WitnessResolver interface {
 	IpfsPeerID(ctx context.Context, obj *witnesses.Witness) (*string, error)
@@ -847,6 +849,18 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.Query.GetCurrentNumber(childComplexity), true
+
+	case "Query.getDagByCID":
+		if e.complexity.Query.GetDagByCid == nil {
+			break
+		}
+
+		args, err := ec.field_Query_getDagByCID_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.GetDagByCid(childComplexity, args["cidString"].(string)), true
 
 	case "Query.localNodeInfo":
 		if e.complexity.Query.LocalNodeInfo == nil {
@@ -1533,6 +1547,7 @@ type Query {
   anchorProducer: AnchorProducer
   getCurrentNumber: TestResult # TESTING QUERY
   witnessStake(account: String!): Uint64!
+  getDagByCID(cidString: String!): JSON!
 }
 
 scalar Uint64
@@ -1903,6 +1918,29 @@ func (ec *executionContext) field_Query_getAccountNonce_argsKeyGroup(
 	}
 
 	var zeroVal []*string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_getDagByCID_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_getDagByCID_argsCidString(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["cidString"] = arg0
+	return args, nil
+}
+func (ec *executionContext) field_Query_getDagByCID_argsCidString(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (string, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("cidString"))
+	if tmp, ok := rawArgs["cidString"]; ok {
+		return ec.unmarshalNString2string(ctx, tmp)
+	}
+
+	var zeroVal string
 	return zeroVal, nil
 }
 
@@ -5655,6 +5693,61 @@ func (ec *executionContext) fieldContext_Query_witnessStake(ctx context.Context,
 	}()
 	ctx = graphql.WithFieldContext(ctx, fc)
 	if fc.Args, err = ec.field_Query_witnessStake_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_getDagByCID(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_getDagByCID(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().GetDagByCid(rctx, fc.Args["cidString"].(string))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNJSON2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_getDagByCID(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type JSON does not have child fields")
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_getDagByCID_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
 	}
@@ -10944,6 +11037,28 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "getDagByCID":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_getDagByCID(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "__type":
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Query___type(ctx, field)
@@ -11789,6 +11904,21 @@ func (ec *executionContext) unmarshalNInt2int(ctx context.Context, v any) (int, 
 
 func (ec *executionContext) marshalNInt2int(ctx context.Context, sel ast.SelectionSet, v int) graphql.Marshaler {
 	res := graphql.MarshalInt(v)
+	if res == graphql.Null {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+	}
+	return res
+}
+
+func (ec *executionContext) unmarshalNJSON2string(ctx context.Context, v any) (string, error) {
+	res, err := graphql.UnmarshalString(v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalNJSON2string(ctx context.Context, sel ast.SelectionSet, v string) graphql.Marshaler {
+	res := graphql.MarshalString(v)
 	if res == graphql.Null {
 		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
 			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
