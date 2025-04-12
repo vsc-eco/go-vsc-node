@@ -33,6 +33,7 @@ type ElectionResult struct {
 	TotalWeight uint64 `json:"total_weight" refmt:"total_weight" bson:"total_weight"`
 	BlockHeight uint64 `json:"block_height" refmt:"block_height" bson:"block_height"`
 	Proposer    string `json:"proposer" refmt:"proposer" bson:"proposer"`
+	TxId        string `json:"tx_id" refmt:"tx_id" bson:"tx_id"`
 }
 
 type ElectionResultRecord struct {
@@ -46,6 +47,7 @@ type ElectionResultRecord struct {
 	BlockHeight     uint64           `json:"block_height" refmt:"block_height" bson:"block_height"`
 	Proposer        string           `json:"proposer" refmt:"proposer" bson:"proposer"`
 	Type            string           `json:"type" refmt:"type" bson:"type"`
+	TxId            string           `json:"tx_id" refmt:"tx_id" bson:"tx_id"`
 }
 
 type ElectionMember struct {
