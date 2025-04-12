@@ -318,7 +318,11 @@ func (r *queryResolver) GetDagByCid(ctx context.Context, cidString string) (stri
 
 // GetElection is the resolver for the getElection field.
 func (r *queryResolver) GetElection(ctx context.Context, epoch model.Uint64) (*elections.ElectionResult, error) {
-	return r.Elections.GetElection(uint64(epoch)), nil
+	result := r.Elections.GetElection(uint64(epoch))
+	if result == nil {
+		return nil, fmt.Errorf("election not found or error occurred for epoch %d", uint64(epoch))
+	}
+	return result, nil
 }
 
 // Height is the resolver for the height field.
