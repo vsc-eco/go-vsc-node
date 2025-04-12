@@ -254,6 +254,7 @@ type TxElectionResult struct {
 	Data        string                 `json:"data"`
 	Epoch       uint64                 `json:"epoch"`
 	NetId       string                 `json:"net_id"`
+	EType       string                 `json:"type"`
 	Signature   dids.SerializedCircuit `json:"signature"`
 }
 
@@ -322,15 +323,29 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		}
 
 		verifyObj := map[string]interface{}{
+			"__t":    "approve_election",
 			"data":   tx.Data,
 			"epoch":  tx.Epoch,
 			"net_id": tx.NetId,
+			"type":   tx.EType,
 		}
-		verifyHash, _ := dagCbor.WrapObject(verifyObj, mh.SHA2_256, -1)
+		verifyData, _ := common.EncodeDagCbor(verifyObj)
+
+		verifyHash, err := cid.Prefix{
+			Version:  1,
+			Codec:    uint64(multicodec.DagCbor),
+			MhType:   mh.SHA2_256,
+			MhLength: -1,
+		}.Sum(verifyData)
+
+		if err != nil {
+			fmt.Println("Failed to create cid for election", err)
+			return
+		}
 
 		parsedCid, _ := cid.Parse(tx.Data)
 
-		blsCircuit, err := dids.DeserializeBlsCircuit(tx.Signature, memberDids, verifyHash.Cid())
+		blsCircuit, err := dids.DeserializeBlsCircuit(tx.Signature, memberDids, verifyHash)
 
 		if err != nil {
 			return
@@ -363,8 +378,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 			}
 		}
 		fmt.Println("Minimum requirements", minimums, "orig reqs", len(prevElection.Members)*2/3)
-
-		fmt.Println("realWeight", realWeight, " len(includedDids)", len(includedDids))
+		fmt.Println(verified, "realWeight", realWeight, " len(includedDids)", len(includedDids))
 
 		if verified && realWeight >= minimums {
 			fmt.Println("Election verified, indexing...", tx.Epoch)

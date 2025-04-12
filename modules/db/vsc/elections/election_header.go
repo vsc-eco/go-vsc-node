@@ -1,8 +1,10 @@
 package elections
 
 import (
+	"vsc-node/modules/common"
+
 	"github.com/ipfs/go-cid"
-	cbornode "github.com/ipfs/go-ipld-cbor"
+	"github.com/multiformats/go-multicodec"
 	"github.com/multiformats/go-multihash"
 )
 
@@ -12,20 +14,21 @@ type electionHeaderRaw struct {
 }
 
 func (e ElectionHeader) Cid() (cid.Cid, error) {
-	c, err := cid.Parse(e.Data)
-	if err != nil {
-		return cid.Cid{}, err
+	verifyObj := map[string]interface{}{
+		"__t":    "approve_election",
+		"data":   e.Data,
+		"epoch":  e.Epoch,
+		"net_id": e.NetId,
+		"type":   e.Type,
 	}
+	bytes, _ := common.EncodeDagCbor(verifyObj)
 
-	raw := electionHeaderRaw{
-		e.ElectionCommonInfo,
-		c,
-	}
+	cid, err := cid.Prefix{
+		Version:  1,
+		Codec:    uint64(multicodec.DagCbor),
+		MhType:   multihash.SHA2_256,
+		MhLength: -1,
+	}.Sum(bytes)
 
-	node, err := cbornode.WrapObject(raw, multihash.SHA2_256, -1)
-	if err != nil {
-		return cid.Cid{}, err
-	}
-
-	return node.Cid(), nil
+	return cid, err
 }
