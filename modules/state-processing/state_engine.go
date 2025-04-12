@@ -673,6 +673,20 @@ func (se *StateEngine) ExecuteBatch() {
 		logs := make([]string, 0)
 		ok := true
 		for idx, vscTx := range tx.Ops {
+			if len(vscTx.TxSelf().RequiredAuths) == 0 || len(vscTx.TxSelf().RequiredPostingAuths) == 0 {
+				se.log.Debug("TRANSACTION REVERTING - no required auths")
+				ok = false
+				ledgerSession.Revert()
+				break
+			}
+
+			var payer string
+			if len(vscTx.TxSelf().RequiredAuths) == 0 {
+				payer = vscTx.TxSelf().RequiredPostingAuths[0]
+			} else {
+				payer = vscTx.TxSelf().RequiredAuths[0]
+			}
+
 			if se.firstTxHeight == 0 {
 				se.firstTxHeight = vscTx.TxSelf().BlockHeight - 1
 			}
@@ -704,7 +718,6 @@ func (se *StateEngine) ExecuteBatch() {
 
 			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, contractSession)
 			logs = append(logs, result.Ret)
-			payer := vscTx.TxSelf().RequiredAuths[0]
 
 			se.log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
 			fmt.Println("RC Payer is", payer, vscTx.Type(), vscTx, result.RcUsed)
