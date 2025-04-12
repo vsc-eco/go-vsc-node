@@ -228,7 +228,7 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 		},
 		VscNode: payloadVscNode{
 			//Potentially use specific net ID for E2E tests
-			NetId:           "go-mainnet",
+			NetId:           common.NETWORK_ID,
 			PeerId:          a.peerInfo.GetPeerId(), //Plz fill in
 			PeerAddrs:       peerAddrs,
 			Ts:              time.Now().Format(time.RFC3339),
