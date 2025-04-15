@@ -13,6 +13,7 @@ import (
 
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/99designs/gqlgen/graphql/handler"
+	"github.com/99designs/gqlgen/graphql/handler/extension"
 	"github.com/99designs/gqlgen/graphql/handler/transport"
 	pg "github.com/99designs/gqlgen/graphql/playground"
 	"github.com/chebyrash/promise"
@@ -52,6 +53,7 @@ func (g *gqlManager) Init() error {
 	// creates GraphQL server with Apollo
 	gqlServer := handler.New(g.schema)
 	gqlServer.AddTransport(transport.POST{})
+	gqlServer.Use(extension.Introspection{})
 
 	// OPTIONAL, UNCOMMENT TO ENABLE TRACING
 	// gqlServer.Use(apollotracing.Tracer{})
