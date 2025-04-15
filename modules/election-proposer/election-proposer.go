@@ -250,6 +250,11 @@ func (e *electionProposer) GenerateFullElection(
 		weightMap = defaultWeightMap
 	}
 
+	witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
+		weight, included := weightMap[w.Account]
+		return !included || weight == 0
+	})
+
 	optionalNodes := slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 		return slices.Contains(REQUIRED_ELECTION_MEMBERS, w.Account)
 	})
@@ -298,6 +303,7 @@ func (e *electionProposer) GenerateFullElection(
 	electionData.NetId = common.NETWORK_ID
 	electionData.ProtocolVersion = consensusVersion
 	electionData.Weights = weights
+	electionData.Type = pType
 	cid, err := electionData.Cid()
 	if err != nil {
 		return elections.ElectionHeader{}, elections.ElectionData{}, err
@@ -313,7 +319,7 @@ func (e *electionProposer) GenerateFullElection(
 	electionHeader.Data = cid.String()
 	electionHeader.Epoch = electionData.Epoch
 	electionHeader.NetId = electionData.NetId
-	electionHeader.Type = pType
+	electionHeader.Type = electionData.Type
 
 	return electionHeader, electionData, nil
 }
