@@ -232,7 +232,7 @@ func (e *electionProposer) GenerateFullElection(
 			return elections.ElectionHeader{}, elections.ElectionData{}, err
 		}
 		if balRecord != nil {
-			if balRecord.HIVE_CONSENSUS > common.CONSENSUS_STAKE_MIN {
+			if balRecord.HIVE_CONSENSUS >= common.CONSENSUS_STAKE_MIN {
 				nodesWithStake++
 				stakedMap[w.Account] = uint64(balRecord.HIVE_CONSENSUS)
 			}
