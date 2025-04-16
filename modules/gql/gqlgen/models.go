@@ -42,10 +42,6 @@ type AccountInfoResult struct {
 	RcCurrent *int `json:"rc_current,omitempty"`
 }
 
-type AccountNonceResult struct {
-	Nonce *int `json:"nonce,omitempty"`
-}
-
 type AnchorProducer struct {
 	NextSlot *string `json:"nextSlot,omitempty"`
 }

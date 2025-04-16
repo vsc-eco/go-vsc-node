@@ -48,6 +48,9 @@ models:
   BalanceRecord:
     model:
       - vsc-node/modules/db/vsc/ledger.BalanceRecord
+  NonceRecord:
+    model:
+      - vsc-node/modules/db/vsc/nonces.NonceRecord
   OpLogEvent:
     model:
       - vsc-node/modules/ledger-system.OpLogEvent

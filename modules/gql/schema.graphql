@@ -113,8 +113,9 @@ type TransactionSubmitResult {
   id: String
 }
 
-type AccountNonceResult {
-  nonce: Int
+type NonceRecord {
+  account: String!
+  nonce: Uint64!
 }
 
 type AccountInfoResult {
@@ -280,7 +281,7 @@ type Query {
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
   findContract(id: String): FindContractResult
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
-  getAccountNonce(keyGroup: [String]!): AccountNonceResult
+  getAccountNonce(account: String!): NonceRecord
   localNodeInfo: LocalNodeInfo
   witnessNodes(height: Uint64!): [Witness!]!
   activeWitnessNodes: JSON

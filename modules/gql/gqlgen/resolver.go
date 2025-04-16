@@ -5,6 +5,7 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	stateEngine "vsc-node/modules/state-processing"
@@ -22,6 +23,7 @@ type Resolver struct {
 	Ledger       ledgerDb.Ledger
 	Elections    elections.Elections
 	Transactions transactions.Transactions
+	Nonces       nonces.Nonces
 	HiveBlocks   hive_blocks.HiveBlocks
 	StateEngine  *stateEngine.StateEngine
 	Da           *datalayer.DataLayer
