@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
@@ -21,6 +22,8 @@ func (b *Uint64) UnmarshalGQL(v any) (err error) {
 		u = v
 	case int64:
 		u = uint64(v)
+	case json.Number:
+		u, err = strconv.ParseUint(string(v), 10, 64)
 	default:
 		err = fmt.Errorf("%T is not a Uint64", v)
 	}

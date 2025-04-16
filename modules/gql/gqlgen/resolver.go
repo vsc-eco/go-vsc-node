@@ -18,6 +18,7 @@ type Resolver struct {
 	Witnesses   witnesses.Witnesses
 	TxPool      *transactionpool.TransactionPool
 	Balances    ledgerDb.Balances
+	Ledger      ledgerDb.Ledger
 	Elections   elections.Elections
 	HiveBlocks  hive_blocks.HiveBlocks
 	StateEngine *stateEngine.StateEngine

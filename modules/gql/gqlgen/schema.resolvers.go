@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math"
+	"unicode/utf8"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -149,6 +150,26 @@ func (r *electionResultResolver) BlockHeight(ctx context.Context, obj *elections
 	return model.Uint64(obj.BlockHeight), nil
 }
 
+// Amount is the resolver for the amount field.
+func (r *ledgerResultResolver) Amount(ctx context.Context, obj *ledgerDb.LedgerResult) (model.Int64, error) {
+	return model.Int64(obj.Amount), nil
+}
+
+// BlockHeight is the resolver for the block_height field.
+func (r *ledgerResultResolver) BlockHeight(ctx context.Context, obj *ledgerDb.LedgerResult) (model.Uint64, error) {
+	return model.Uint64(obj.BlockHeight), nil
+}
+
+// T is the resolver for the t field.
+func (r *ledgerResultResolver) T(ctx context.Context, obj *ledgerDb.LedgerResult) (string, error) {
+	return obj.Type, nil
+}
+
+// Tk is the resolver for the tk field.
+func (r *ledgerResultResolver) Tk(ctx context.Context, obj *ledgerDb.LedgerResult) (string, error) {
+	return obj.Asset, nil
+}
+
 // IncrementNumber is the resolver for the incrementNumber field.
 func (r *mutationResolver) IncrementNumber(ctx context.Context) (*TestResult, error) {
 	panic(fmt.Errorf("not implemented"))
@@ -175,7 +196,7 @@ func (r *queryResolver) ContractState(ctx context.Context, id *string) (contract
 }
 
 // FindTransaction is the resolver for the findTransaction field.
-func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *FindTransactionFilter, decodedFilter *string) (*FindTransactionResult, error) {
+func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *TransactionFilter) ([]Transaction, error) {
 	panic(fmt.Errorf("not implemented"))
 }
 
@@ -185,14 +206,33 @@ func (r *queryResolver) FindContractOutput(ctx context.Context, filterOptions *F
 }
 
 // FindLedgerTXs is the resolver for the findLedgerTXs field.
-func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) (*LedgerResults, error) {
-	panic(fmt.Errorf("not implemented"))
+func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) ([]ledgerDb.LedgerResult, error) {
+	var limit int
+	var offset int
+	if filterOptions.Limit == nil {
+		limit = 50
+	} else if *filterOptions.Limit < 1 || *filterOptions.Limit > 100 {
+		return nil, fmt.Errorf("limit must be between 1 and 100")
+	} else {
+		limit = *filterOptions.Limit
+	}
+	if filterOptions.Offset == nil {
+		offset = 0
+	} else if *filterOptions.Offset < 0 || *filterOptions.Limit > 10000 {
+		return nil, fmt.Errorf("offset must be between 0 and 10000")
+	} else {
+		offset = *filterOptions.Offset
+	}
+	if filterOptions.ByTxID != nil && utf8.RuneCountInString(*filterOptions.ByTxID) < 40 {
+		return nil, fmt.Errorf("invalid tx id")
+	}
+	return r.Ledger.GetLedgersTsRange(filterOptions.ByToFrom, filterOptions.ByTxID, filterOptions.ByTypes, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
 // GetAccountBalance is the resolver for the getAccountBalance field.
 func (r *queryResolver) GetAccountBalance(ctx context.Context, account string, height *model.Uint64) (*ledgerDb.BalanceRecord, error) {
 	if account == "" {
-		return nil, fmt.Errorf("Account parameter cannot be empty")
+		return nil, fmt.Errorf("account parameter cannot be empty")
 	}
 	var blockHeight uint64
 	if height != nil {
@@ -223,8 +263,8 @@ func (r *queryResolver) SubmitTransactionV1(ctx context.Context, tx string, sig 
 		return nil, err
 	}
 	cid, err := r.TxPool.IngestTx(transactionpool.SerializedVSCTransaction{
-		Tx,
-		Sig,
+		Tx:  Tx,
+		Sig: Sig,
 	})
 	if err != nil {
 		return nil, err
@@ -352,6 +392,9 @@ func (r *Resolver) ContractState() ContractStateResolver { return &contractState
 // ElectionResult returns ElectionResultResolver implementation.
 func (r *Resolver) ElectionResult() ElectionResultResolver { return &electionResultResolver{r} }
 
+// LedgerResult returns LedgerResultResolver implementation.
+func (r *Resolver) LedgerResult() LedgerResultResolver { return &ledgerResultResolver{r} }
+
 // Mutation returns MutationResolver implementation.
 func (r *Resolver) Mutation() MutationResolver { return &mutationResolver{r} }
 
@@ -371,6 +414,7 @@ type balanceRecordResolver struct{ *Resolver }
 type contractOutputResolver struct{ *Resolver }
 type contractStateResolver struct{ *Resolver }
 type electionResultResolver struct{ *Resolver }
+type ledgerResultResolver struct{ *Resolver }
 type mutationResolver struct{ *Resolver }
 type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
