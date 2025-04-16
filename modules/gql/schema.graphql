@@ -30,21 +30,18 @@ enum TransactionType {
 
 type Transaction {
   id: String!
+  anchr_block: String!
+  anchr_height: Uint64!
+  anchr_index: Uint64!
+  anchr_opidx: Uint64!
+  anchr_ts: String!
+  data: JSON
+  first_seen: String!
+  nonce: Uint64!
+  rc_limit: Uint64
+  required_auths: [String!]
   status: String!
-  headers: Headers
-  required_auths: [Auth!]
-  data: TransactionData
-  sig_hash: String
-  src: String
-  first_seen: String
-  local: Boolean
-  accessible: Boolean
-  anchored_block: String
-  anchored_height: Int
-  anchored_id: String
-  anchored_index: Int
-  anchored_op_index: Int
-  output: TransactionOutput
+  ledger: JSON
 }
 
 type Headers {
@@ -193,10 +190,6 @@ type BalanceRecord {
   hive_consensus: Int64!
 }
 
-type FindTransactionResult {
-  txs: [Transaction]
-}
-
 type FindContractOutputResult {
   outputs: [ContractOutput]
 }
@@ -205,21 +198,16 @@ type AnchorProducer {
   nextSlot(account: String): JSON
 }
 
-type LedgerOp {
+type LedgerResult {
   id: String!
-  amount: Int!
-  block_height: Int!
-  idx: Float!
-  from: String
-  memo: String
+  amount: Int64!
+  block_height: Uint64!
+  timestamp: String!
+  from: String!
   owner: String!
   t: String!
   tk: String!
-  status: String!
-}
-
-type LedgerResults {
-  txs: [LedgerOp!]
+  tx_id: String!
 }
 
 type ElectionMember {
@@ -244,17 +232,20 @@ type ElectionResult {
 input LedgerTxFilter {
   byToFrom: String
   byTxId: String
+  byTypes: [String!]
+  fromBlock: Uint64
+  toBlock: Uint64
   offset: Int
   limit: Int
 }
 
-input FindTransactionFilter {
+input TransactionFilter {
   byId: String
   byAccount: String
   byContract: String
   byStatus: String
-  byOpCategory: String
-  byAction: String
+  byType: String
+  offset: Int
   limit: Int
 }
 
@@ -268,15 +259,12 @@ input FindContractOutputFilter {
 type Query {
   contractStateDiff(id: String): ContractDiff
   contractState(id: String): ContractState
-  findTransaction(
-    filterOptions: FindTransactionFilter
-    decodedFilter: JSON
-  ): FindTransactionResult
+  findTransaction(filterOptions: TransactionFilter): [Transaction!]
   findContractOutput(
     filterOptions: FindContractOutputFilter
     decodedFilter: JSON
   ): FindContractOutputResult
-  findLedgerTXs(filterOptions: LedgerTxFilter): LedgerResults
+  findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerResult!]
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
   findContract(id: String): FindContractResult
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult

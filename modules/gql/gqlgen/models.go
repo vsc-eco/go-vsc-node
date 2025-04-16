@@ -7,6 +7,7 @@ import (
 	"io"
 	"strconv"
 	"vsc-node/modules/db/vsc/contracts"
+	"vsc-node/modules/gql/model"
 )
 
 type BalanceAccessCondition interface {
@@ -79,20 +80,6 @@ type FindContractResult struct {
 	Status *string `json:"status,omitempty"`
 }
 
-type FindTransactionFilter struct {
-	ByID         *string `json:"byId,omitempty"`
-	ByAccount    *string `json:"byAccount,omitempty"`
-	ByContract   *string `json:"byContract,omitempty"`
-	ByStatus     *string `json:"byStatus,omitempty"`
-	ByOpCategory *string `json:"byOpCategory,omitempty"`
-	ByAction     *string `json:"byAction,omitempty"`
-	Limit        *int    `json:"limit,omitempty"`
-}
-
-type FindTransactionResult struct {
-	Txs []*Transaction `json:"txs,omitempty"`
-}
-
 type Gas struct {
 	Io *int `json:"IO,omitempty"`
 }
@@ -107,28 +94,14 @@ type JSONPatchOp struct {
 	Value *string `json:"value,omitempty"`
 }
 
-type LedgerOp struct {
-	ID          string  `json:"id"`
-	Amount      int     `json:"amount"`
-	BlockHeight int     `json:"block_height"`
-	Idx         float64 `json:"idx"`
-	From        *string `json:"from,omitempty"`
-	Memo        *string `json:"memo,omitempty"`
-	Owner       string  `json:"owner"`
-	T           string  `json:"t"`
-	Tk          string  `json:"tk"`
-	Status      string  `json:"status"`
-}
-
-type LedgerResults struct {
-	Txs []LedgerOp `json:"txs,omitempty"`
-}
-
 type LedgerTxFilter struct {
-	ByToFrom *string `json:"byToFrom,omitempty"`
-	ByTxID   *string `json:"byTxId,omitempty"`
-	Offset   *int    `json:"offset,omitempty"`
-	Limit    *int    `json:"limit,omitempty"`
+	ByToFrom  *string       `json:"byToFrom,omitempty"`
+	ByTxID    *string       `json:"byTxId,omitempty"`
+	ByTypes   []string      `json:"byTypes,omitempty"`
+	FromBlock *model.Uint64 `json:"fromBlock,omitempty"`
+	ToBlock   *model.Uint64 `json:"toBlock,omitempty"`
+	Offset    *int          `json:"offset,omitempty"`
+	Limit     *int          `json:"limit,omitempty"`
 }
 
 type LocalNodeInfo struct {
@@ -147,22 +120,19 @@ type TestResult struct {
 }
 
 type Transaction struct {
-	ID              string             `json:"id"`
-	Status          string             `json:"status"`
-	Headers         *Headers           `json:"headers,omitempty"`
-	RequiredAuths   []Auth             `json:"required_auths,omitempty"`
-	Data            *TransactionData   `json:"data,omitempty"`
-	SigHash         *string            `json:"sig_hash,omitempty"`
-	Src             *string            `json:"src,omitempty"`
-	FirstSeen       *string            `json:"first_seen,omitempty"`
-	Local           *bool              `json:"local,omitempty"`
-	Accessible      *bool              `json:"accessible,omitempty"`
-	AnchoredBlock   *string            `json:"anchored_block,omitempty"`
-	AnchoredHeight  *int               `json:"anchored_height,omitempty"`
-	AnchoredID      *string            `json:"anchored_id,omitempty"`
-	AnchoredIndex   *int               `json:"anchored_index,omitempty"`
-	AnchoredOpIndex *int               `json:"anchored_op_index,omitempty"`
-	Output          *TransactionOutput `json:"output,omitempty"`
+	ID            string        `json:"id"`
+	AnchrBlock    string        `json:"anchr_block"`
+	AnchrHeight   model.Uint64  `json:"anchr_height"`
+	AnchrIndex    model.Uint64  `json:"anchr_index"`
+	AnchrOpidx    model.Uint64  `json:"anchr_opidx"`
+	AnchrTs       string        `json:"anchr_ts"`
+	Data          *string       `json:"data,omitempty"`
+	FirstSeen     string        `json:"first_seen"`
+	Nonce         model.Uint64  `json:"nonce"`
+	RcLimit       *model.Uint64 `json:"rc_limit,omitempty"`
+	RequiredAuths []string      `json:"required_auths,omitempty"`
+	Status        string        `json:"status"`
+	Ledger        *string       `json:"ledger,omitempty"`
 }
 
 type TransactionData struct {
@@ -170,6 +140,16 @@ type TransactionData struct {
 	Action     *string `json:"action,omitempty"`
 	Payload    *string `json:"payload,omitempty"`
 	ContractID *string `json:"contract_id,omitempty"`
+}
+
+type TransactionFilter struct {
+	ByID       *string `json:"byId,omitempty"`
+	ByAccount  *string `json:"byAccount,omitempty"`
+	ByContract *string `json:"byContract,omitempty"`
+	ByStatus   *string `json:"byStatus,omitempty"`
+	ByType     *string `json:"byType,omitempty"`
+	Offset     *int    `json:"offset,omitempty"`
+	Limit      *int    `json:"limit,omitempty"`
 }
 
 type TransactionOutput struct {
