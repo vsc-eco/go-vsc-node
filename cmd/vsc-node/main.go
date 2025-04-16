@@ -136,6 +136,7 @@ func main() {
 		balanceDb,
 		ledgerDbImpl,
 		electionDb,
+		txDb,
 		hiveBlocks,
 		se,
 		da,

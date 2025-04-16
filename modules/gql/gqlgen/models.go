@@ -119,23 +119,6 @@ type TestResult struct {
 	CurrentNumber *int `json:"currentNumber,omitempty"`
 }
 
-type Transaction struct {
-	ID            string        `json:"id"`
-	AnchrBlock    string        `json:"anchr_block"`
-	AnchrHeight   model.Uint64  `json:"anchr_height"`
-	AnchrIndex    model.Uint64  `json:"anchr_index"`
-	AnchrOpidx    model.Uint64  `json:"anchr_opidx"`
-	AnchrTs       string        `json:"anchr_ts"`
-	Type          string        `json:"type"`
-	Data          *string       `json:"data,omitempty"`
-	FirstSeen     string        `json:"first_seen"`
-	Nonce         model.Uint64  `json:"nonce"`
-	RcLimit       *model.Uint64 `json:"rc_limit,omitempty"`
-	RequiredAuths []string      `json:"required_auths,omitempty"`
-	Status        string        `json:"status"`
-	Ledger        *string       `json:"ledger,omitempty"`
-}
-
 type TransactionData struct {
 	Op         string  `json:"op"`
 	Action     *string `json:"action,omitempty"`
@@ -144,13 +127,15 @@ type TransactionData struct {
 }
 
 type TransactionFilter struct {
-	ByID       *string `json:"byId,omitempty"`
-	ByAccount  *string `json:"byAccount,omitempty"`
-	ByContract *string `json:"byContract,omitempty"`
-	ByStatus   *string `json:"byStatus,omitempty"`
-	ByType     *string `json:"byType,omitempty"`
-	Offset     *int    `json:"offset,omitempty"`
-	Limit      *int    `json:"limit,omitempty"`
+	ByID           *string  `json:"byId,omitempty"`
+	ByAccount      *string  `json:"byAccount,omitempty"`
+	ByContract     *string  `json:"byContract,omitempty"`
+	ByStatus       *string  `json:"byStatus,omitempty"`
+	ByType         *string  `json:"byType,omitempty"`
+	ByLedgerToFrom *string  `json:"byLedgerToFrom,omitempty"`
+	ByLedgerTypes  []string `json:"byLedgerTypes,omitempty"`
+	Offset         *int     `json:"offset,omitempty"`
+	Limit          *int     `json:"limit,omitempty"`
 }
 
 type TransactionOutput struct {
