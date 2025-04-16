@@ -13,8 +13,10 @@ import (
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
+	ledgerSystem "vsc-node/modules/ledger-system"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 
@@ -175,6 +177,16 @@ func (r *mutationResolver) IncrementNumber(ctx context.Context) (*TestResult, er
 	panic(fmt.Errorf("not implemented"))
 }
 
+// Amount is the resolver for the amount field.
+func (r *opLogEventResolver) Amount(ctx context.Context, obj *ledgerSystem.OpLogEvent) (model.Int64, error) {
+	return model.Int64(obj.Amount), nil
+}
+
+// Params is the resolver for the params field.
+func (r *opLogEventResolver) Params(ctx context.Context, obj *ledgerSystem.OpLogEvent) (model.Map, error) {
+	return model.Map(obj.Params), nil
+}
+
 // Ct is the resolver for the ct field.
 func (r *postingJsonKeysResolver) Ct(ctx context.Context, obj *witnesses.PostingJsonKeys) (*string, error) {
 	return &obj.CryptoType, nil
@@ -196,8 +208,13 @@ func (r *queryResolver) ContractState(ctx context.Context, id *string) (contract
 }
 
 // FindTransaction is the resolver for the findTransaction field.
-func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *TransactionFilter) ([]Transaction, error) {
-	panic(fmt.Errorf("not implemented"))
+func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *TransactionFilter) ([]transactions.TransactionRecord, error) {
+	// panic(fmt.Errorf("not implemented"))
+	offset, limit, paginateErr := Paginate(filterOptions.Offset, filterOptions.Limit)
+	if paginateErr != nil {
+		return nil, paginateErr
+	}
+	return r.Transactions.FindTransactions(filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, filterOptions.ByLedgerToFrom, filterOptions.ByLedgerTypes, offset, limit)
 }
 
 // FindContractOutput is the resolver for the findContractOutput field.
@@ -207,21 +224,9 @@ func (r *queryResolver) FindContractOutput(ctx context.Context, filterOptions *F
 
 // FindLedgerTXs is the resolver for the findLedgerTXs field.
 func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) ([]ledgerDb.LedgerResult, error) {
-	var limit int
-	var offset int
-	if filterOptions.Limit == nil {
-		limit = 50
-	} else if *filterOptions.Limit < 1 || *filterOptions.Limit > 100 {
-		return nil, fmt.Errorf("limit must be between 1 and 100")
-	} else {
-		limit = *filterOptions.Limit
-	}
-	if filterOptions.Offset == nil {
-		offset = 0
-	} else if *filterOptions.Offset < 0 || *filterOptions.Limit > 10000 {
-		return nil, fmt.Errorf("offset must be between 0 and 10000")
-	} else {
-		offset = *filterOptions.Offset
+	offset, limit, paginateErr := Paginate(filterOptions.Offset, filterOptions.Limit)
+	if paginateErr != nil {
+		return nil, paginateErr
 	}
 	if filterOptions.ByTxID != nil && utf8.RuneCountInString(*filterOptions.ByTxID) < 40 {
 		return nil, fmt.Errorf("invalid tx id")
@@ -365,6 +370,41 @@ func (r *queryResolver) GetElection(ctx context.Context, epoch model.Uint64) (*e
 	return result, nil
 }
 
+// AnchrHeight is the resolver for the anchr_height field.
+func (r *transactionRecordResolver) AnchrHeight(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
+	return model.Uint64(obj.AnchoredHeight), nil
+}
+
+// AnchrIndex is the resolver for the anchr_index field.
+func (r *transactionRecordResolver) AnchrIndex(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
+	return model.Uint64(obj.AnchoredIndex), nil
+}
+
+// AnchrOpidx is the resolver for the anchr_opidx field.
+func (r *transactionRecordResolver) AnchrOpidx(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
+	return model.Uint64(obj.AnchoredOpIdx), nil
+}
+
+// AnchrTs is the resolver for the anchr_ts field.
+func (r *transactionRecordResolver) AnchrTs(ctx context.Context, obj *transactions.TransactionRecord) (string, error) {
+	return *obj.AnchoredTs, nil
+}
+
+// Data is the resolver for the data field.
+func (r *transactionRecordResolver) Data(ctx context.Context, obj *transactions.TransactionRecord) (model.Map, error) {
+	return model.Map(obj.Data), nil
+}
+
+// Nonce is the resolver for the nonce field.
+func (r *transactionRecordResolver) Nonce(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
+	return model.Uint64(obj.Nonce), nil
+}
+
+// RcLimit is the resolver for the rc_limit field.
+func (r *transactionRecordResolver) RcLimit(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
+	return model.Uint64(obj.RcLimit), nil
+}
+
 // Height is the resolver for the height field.
 func (r *witnessResolver) Height(ctx context.Context, obj *witnesses.Witness) (model.Uint64, error) {
 	return model.Uint64(obj.Height), nil
@@ -398,11 +438,19 @@ func (r *Resolver) LedgerResult() LedgerResultResolver { return &ledgerResultRes
 // Mutation returns MutationResolver implementation.
 func (r *Resolver) Mutation() MutationResolver { return &mutationResolver{r} }
 
+// OpLogEvent returns OpLogEventResolver implementation.
+func (r *Resolver) OpLogEvent() OpLogEventResolver { return &opLogEventResolver{r} }
+
 // PostingJsonKeys returns PostingJsonKeysResolver implementation.
 func (r *Resolver) PostingJsonKeys() PostingJsonKeysResolver { return &postingJsonKeysResolver{r} }
 
 // Query returns QueryResolver implementation.
 func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
+
+// TransactionRecord returns TransactionRecordResolver implementation.
+func (r *Resolver) TransactionRecord() TransactionRecordResolver {
+	return &transactionRecordResolver{r}
+}
 
 // Witness returns WitnessResolver implementation.
 func (r *Resolver) Witness() WitnessResolver { return &witnessResolver{r} }
@@ -416,7 +464,9 @@ type contractStateResolver struct{ *Resolver }
 type electionResultResolver struct{ *Resolver }
 type ledgerResultResolver struct{ *Resolver }
 type mutationResolver struct{ *Resolver }
+type opLogEventResolver struct{ *Resolver }
 type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
+type transactionRecordResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }

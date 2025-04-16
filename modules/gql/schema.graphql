@@ -28,21 +28,30 @@ enum TransactionType {
   CORE
 }
 
-type Transaction {
+type TransactionRecord {
   id: String!
-  anchr_block: String!
   anchr_height: Uint64!
   anchr_index: Uint64!
   anchr_opidx: Uint64!
   anchr_ts: String!
   type: String!
-  data: JSON
-  first_seen: String!
+  data: Map
+  first_seen: DateTime!
   nonce: Uint64!
-  rc_limit: Uint64
+  rc_limit: Uint64!
   required_auths: [String!]
   status: String!
-  ledger: JSON
+  ledger: [OpLogEvent!]
+}
+
+type OpLogEvent {
+  to: String!
+  from: String!
+  amount: Int64!
+  asset: String!
+  memo: String
+  type: String!
+  params: Map
 }
 
 type Headers {
@@ -246,6 +255,8 @@ input TransactionFilter {
   byContract: String
   byStatus: String
   byType: String
+  byLedgerToFrom: String
+  byLedgerTypes: [String!]
   offset: Int
   limit: Int
 }
@@ -260,7 +271,7 @@ input FindContractOutputFilter {
 type Query {
   contractStateDiff(id: String): ContractDiff
   contractState(id: String): ContractState
-  findTransaction(filterOptions: TransactionFilter): [Transaction!]
+  findTransaction(filterOptions: TransactionFilter): [TransactionRecord!]
   findContractOutput(
     filterOptions: FindContractOutputFilter
     decodedFilter: JSON
@@ -286,6 +297,8 @@ type Query {
 
 scalar Uint64
 scalar Int64
+scalar Map
+scalar DateTime
 
 type Mutation {
   incrementNumber: TestResult # TESTING MUTATION
