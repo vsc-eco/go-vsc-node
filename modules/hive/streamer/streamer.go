@@ -86,13 +86,13 @@ type StreamReader struct {
 // inits a StreamReader with the provided hiveBlocks interface and process function
 func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, getBlockHeight BlockHeightFunction, maybeStartBlock ...uint64) *StreamReader {
 	startBlock := DefaultBlockStart
-	fmt.Println("startBlock", startBlock)
 	if len(maybeStartBlock) > 0 {
 		startBlock = maybeStartBlock[0]
 	}
 	if process == nil {
 		process = func(block hiveblocks.HiveBlock, headHeight *uint64) {} // no-op
 	}
+	fmt.Println("startBlock", startBlock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &StreamReader{
@@ -186,9 +186,14 @@ func (s *StreamReader) pollDb(fail func(error)) {
 		}
 		return nil
 	}
-	_, errChan := s.hiveBlocks.ListenToBlockUpdates(s.ctx, s.lastProcessed, processBlock)
-	err := <-errChan
-	fail(err)
+	cancel, errChan := s.hiveBlocks.ListenToBlockUpdates(s.ctx, s.lastProcessed, processBlock)
+	select {
+	case err := <-errChan:
+		fail(err)
+	case <-s.ctx.Done():
+		cancel()
+		return
+	}
 }
 
 // stops the StreamReader
@@ -233,6 +238,7 @@ type Streamer struct {
 	hasFetchedHead bool
 	wg             sync.WaitGroup
 	processWg      sync.WaitGroup
+	errChan        chan any
 }
 
 // ===== streamer =====
@@ -253,6 +259,7 @@ func NewStreamer(blockClient BlockClient, hiveBlocks hiveblocks.HiveBlocks, filt
 		wg:             sync.WaitGroup{},
 		processWg:      sync.WaitGroup{},
 		stopOnlyOnce:   sync.Once{},
+		errChan:        make(chan any),
 	}
 }
 
@@ -289,17 +296,37 @@ func (s *Streamer) Start() *promise.Promise[any] {
 	s.stopped = make(chan struct{})
 	s.wg.Add(2)
 	go func() {
+		defer s.recover()
 		defer s.wg.Done()
 		s.streamBlocks()
 	}()
 	go func() {
+		defer s.recover()
 		defer s.wg.Done()
 		s.trackHeadHeight()
 	}()
+	finished := make(chan struct{})
+	go func() {
+		s.wg.Done()
+		finished <- struct{}{}
+	}()
 	return promise.New(func(resolve func(any), reject func(error)) {
-		s.wg.Wait()
-		resolve(nil)
+		select {
+		case <-finished:
+			resolve(nil)
+		case <-s.stopped:
+			resolve(nil)
+		case err := <-s.errChan:
+			reject(fmt.Errorf("streamer panic: %v", err))
+		}
 	})
+}
+
+func (s *Streamer) recover() {
+	err := recover()
+	if err != nil {
+		s.errChan <- err
+	}
 }
 
 func updateHead(bc BlockClient) (uint64, error) {
@@ -410,7 +437,7 @@ func (s *Streamer) streamBlocks() {
 			}
 
 			// if not can store, across this async gap, we should skip processing
-			if !s.canStore() {
+			if !s.canStore() || len(blocks) == 0 {
 				time.Sleep(time.Millisecond * 100)
 
 				continue

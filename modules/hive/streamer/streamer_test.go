@@ -69,7 +69,7 @@ func seedBlockData(t *testing.T, hiveBlocks hive_blocks.HiveBlocks, n uint64) {
 		}
 
 		// store block
-		assert.NoError(t, hiveBlocks.StoreBlocks(block))
+		assert.NoError(t, hiveBlocks.StoreBlocks(n, block))
 	}
 }
 
@@ -78,6 +78,19 @@ func seedBlockData(t *testing.T, hiveBlocks hive_blocks.HiveBlocks, n uint64) {
 type MockHiveBlockDb struct {
 	Blocks             []hive_blocks.HiveBlock
 	LastProcessedBlock uint64
+	HeadHeight         uint64
+	Metadata           hive_blocks.Document
+}
+
+// GetMetadata implements hive_blocks.HiveBlocks.
+func (m *MockHiveBlockDb) GetMetadata() (hive_blocks.Document, error) {
+	return m.Metadata, nil
+}
+
+// SetMetadata implements hive_blocks.HiveBlocks.
+func (m *MockHiveBlockDb) SetMetadata(doc hive_blocks.Document) error {
+	m.Metadata = doc
+	return nil
 }
 
 // GetBlock implements hive_blocks.HiveBlocks.
@@ -92,7 +105,7 @@ func (m *MockHiveBlockDb) GetBlock(blockNum uint64) (hive_blocks.HiveBlock, erro
 }
 
 // ListenToBlockUpdates implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block hive_blocks.HiveBlock) error) (context.CancelFunc, <-chan error) {
+func (m *MockHiveBlockDb) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block hive_blocks.HiveBlock, headHeight *uint64) error) (context.CancelFunc, <-chan error) {
 	ctx, cancel := context.WithCancel(ctx)
 	errChan := make(chan error)
 	if m.Blocks == nil {
@@ -106,7 +119,7 @@ func (m *MockHiveBlockDb) ListenToBlockUpdates(ctx context.Context, startBlock u
 				case <-ctx.Done():
 					break
 				default:
-					err := listener(block)
+					err := listener(block, &m.HeadHeight)
 					if err != nil {
 						errChan <- err
 						break
@@ -173,8 +186,9 @@ func (m *MockHiveBlockDb) GetLastProcessedBlock() (uint64, error) {
 }
 
 // StoreBlocks implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) StoreBlocks(blocks ...hive_blocks.HiveBlock) error {
+func (m *MockHiveBlockDb) StoreBlocks(headBlock uint64, blocks ...hive_blocks.HiveBlock) error {
 	m.Blocks = append(m.Blocks, blocks...)
+	m.HeadHeight = headBlock
 	return nil
 }
 
@@ -259,6 +273,7 @@ func TestFetchStoreBlocks(t *testing.T) {
 	// hive mocks db
 	mockHiveBlocks := &MockHiveBlockDb{}
 
+	startBlock := uint64(0)
 	blockClient := &MockBlockClient{}
 	s := streamer.NewStreamer(blockClient, mockHiveBlocks, []streamer.FilterFunc{func(tx hivego.Operation, blockParams *streamer.BlockParams) bool {
 		// s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{func(tx hivego.Operation) bool {
@@ -267,11 +282,11 @@ func TestFetchStoreBlocks(t *testing.T) {
 
 	totalBlksReceived := 0
 
-	process := func(block hive_blocks.HiveBlock) {
+	process := func(block hive_blocks.HiveBlock, headHeigt *uint64) {
 		totalBlksReceived++
 	}
 
-	sr := streamer.NewStreamReader(mockHiveBlocks, process, nil)
+	sr := streamer.NewStreamReader(mockHiveBlocks, process, nil, startBlock)
 	agg := aggregate.New([]aggregate.Plugin{
 		mockHiveBlocks,
 		s,
@@ -312,7 +327,7 @@ func TestIntensePolling(t *testing.T) {
 	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, nil)
 	seenBlocks := make(map[uint64]int)
 
-	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
+	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock, headHeigt *uint64) {
 		seenBlocks[block.BlockNumber]++
 	}, nil)
 
@@ -345,7 +360,7 @@ func TestStreamFilter(t *testing.T) {
 
 	txsReceived := 0
 
-	process := func(block hive_blocks.HiveBlock) {
+	process := func(block hive_blocks.HiveBlock, headHeigt *uint64) {
 		if len(block.Timestamp) > 0 {
 			txsReceived += len(block.Transactions)
 		}
@@ -417,7 +432,7 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 
 	lastProcessedBlk := uint64(0)
 
-	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
+	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock, headHeigt *uint64) {
 		lastProcessedBlk = block.BlockNumber
 	}, nil)
 	assert.NoError(t, sr.Init())
@@ -446,7 +461,7 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 	s.Resume()
 
 	// redefine stream reader and see if it picks up where it left off
-	sr = streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
+	sr = streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock, headHeigt *uint64) {
 		resumedLastProcessedBlk = block.BlockNumber
 	}, nil)
 
@@ -469,7 +484,7 @@ func TestBlockProcessing(t *testing.T) {
 
 	totalSeenBlocks := 0
 
-	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
+	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock, headHeigt *uint64) {
 		totalSeenBlocks++
 	}, nil, 0)
 
@@ -491,7 +506,7 @@ func TestBlockProcessing(t *testing.T) {
 
 // 	totalSeenBlocks := 0
 
-// 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
+// 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock, headHeigt *uint64) {
 // 		totalSeenBlocks++
 // 	}, 0)
 // 	assert.NoError(t, sr.Init())
@@ -594,7 +609,7 @@ func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
 
 	assert.Equal(t, processedUpTo, 0)
 
-	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {}, nil, 0)
+	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock, headHeigt *uint64) {}, nil, 0)
 
 	test_utils.RunPlugin(t, sr)
 
@@ -741,7 +756,7 @@ func TestClearingLastProcessedBlock(t *testing.T) {
 
 	totalBlocks := 0
 
-	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock) {
+	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock, headHeigt *uint64) {
 		totalBlocks++
 	}, nil, 0)
 
@@ -869,7 +884,7 @@ func TestNestedArrayStructure(t *testing.T) {
 	}
 
 	// store block
-	err := mockHiveBlocks.StoreBlocks(originalBlock)
+	err := mockHiveBlocks.StoreBlocks(originalBlock.BlockNumber, originalBlock)
 	assert.NoError(t, err)
 
 	// fetch stored block directly by its ID (we do this with a 1-wide range)
