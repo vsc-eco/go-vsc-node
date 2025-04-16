@@ -232,13 +232,10 @@ type Streamer struct {
 	vFilters       []VirtualFilterFunc
 	streamPaused   bool
 	mtx            sync.Mutex
-	stopped        chan struct{}
 	stopOnlyOnce   sync.Once
 	headHeight     uint64
 	hasFetchedHead bool
-	wg             sync.WaitGroup
 	processWg      sync.WaitGroup
-	errChan        chan any
 }
 
 // ===== streamer =====
@@ -254,12 +251,9 @@ func NewStreamer(blockClient BlockClient, hiveBlocks hiveblocks.HiveBlocks, filt
 		cancel:         cancel,
 		startBlock:     startAtBlock,
 		streamPaused:   false,
-		stopped:        nil,
 		hasFetchedHead: false,
-		wg:             sync.WaitGroup{},
 		processWg:      sync.WaitGroup{},
 		stopOnlyOnce:   sync.Once{},
-		errChan:        make(chan any),
 	}
 }
 
@@ -293,40 +287,21 @@ func (s *Streamer) Init() error {
 }
 
 func (s *Streamer) Start() *promise.Promise[any] {
-	s.stopped = make(chan struct{})
-	s.wg.Add(2)
-	go func() {
-		defer s.recover()
-		defer s.wg.Done()
+	stream := promise.New(func(resolve func(any), reject func(error)) {
 		s.streamBlocks()
-	}()
-	go func() {
-		defer s.recover()
-		defer s.wg.Done()
-		s.trackHeadHeight()
-	}()
-	finished := make(chan struct{})
-	go func() {
-		s.wg.Done()
-		finished <- struct{}{}
-	}()
-	return promise.New(func(resolve func(any), reject func(error)) {
-		select {
-		case <-finished:
-			resolve(nil)
-		case <-s.stopped:
-			resolve(nil)
-		case err := <-s.errChan:
-			reject(fmt.Errorf("streamer panic: %v", err))
-		}
+		reject(fmt.Errorf("streamer: block stream: exited prematurely"))
 	})
-}
-
-func (s *Streamer) recover() {
-	err := recover()
-	if err != nil {
-		s.errChan <- err
-	}
+	tracker := promise.New(func(resolve func(any), reject func(error)) {
+		s.trackHeadHeight()
+		reject(fmt.Errorf("streamer: head tracker: exited prematurely"))
+	})
+	return promise.Then(
+		promise.All(context.Background(), stream, tracker),
+		context.Background(),
+		func([]any) (any, error) {
+			return nil, nil
+		},
+	)
 }
 
 func updateHead(bc BlockClient) (uint64, error) {
@@ -617,9 +592,6 @@ func (s *Streamer) Stop() error {
 	s.stopOnlyOnce.Do(func() {
 		s.cancel() // cancel context to signal all goroutines to stop
 
-		// wait for the main routines to stop
-		s.wg.Wait()
-
 		// wait for the block processing goroutines with a timeout
 		// to ensure we don't wait forever
 		stoppedProcessing := make(chan struct{})
@@ -634,10 +606,6 @@ func (s *Streamer) Stop() error {
 		case <-time.After(5 * time.Second):
 			log.Println("timeout waiting for processing routines to stop")
 		}
-
-		if s.stopped != nil {
-			close(s.stopped)
-		}
 	})
 	return nil
 }
@@ -649,12 +617,7 @@ func (s *Streamer) IsPaused() bool {
 }
 
 func (s *Streamer) IsStopped() bool {
-	select {
-	case <-s.stopped:
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 func (s *Streamer) HeadHeight() uint64 {
