@@ -13,6 +13,7 @@ import (
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
@@ -177,6 +178,11 @@ func (r *mutationResolver) IncrementNumber(ctx context.Context) (*TestResult, er
 	panic(fmt.Errorf("not implemented"))
 }
 
+// Nonce is the resolver for the nonce field.
+func (r *nonceRecordResolver) Nonce(ctx context.Context, obj *nonces.NonceRecord) (model.Uint64, error) {
+	return model.Uint64(obj.Nonce), nil
+}
+
 // Amount is the resolver for the amount field.
 func (r *opLogEventResolver) Amount(ctx context.Context, obj *ledgerSystem.OpLogEvent) (model.Int64, error) {
 	return model.Int64(obj.Amount), nil
@@ -281,8 +287,9 @@ func (r *queryResolver) SubmitTransactionV1(ctx context.Context, tx string, sig 
 }
 
 // GetAccountNonce is the resolver for the getAccountNonce field.
-func (r *queryResolver) GetAccountNonce(ctx context.Context, keyGroup []*string) (*AccountNonceResult, error) {
-	panic(fmt.Errorf("not implemented"))
+func (r *queryResolver) GetAccountNonce(ctx context.Context, account string) (*nonces.NonceRecord, error) {
+	record, err := r.Nonces.GetNonce(account)
+	return &record, err
 }
 
 // LocalNodeInfo is the resolver for the localNodeInfo field.
@@ -438,6 +445,9 @@ func (r *Resolver) LedgerResult() LedgerResultResolver { return &ledgerResultRes
 // Mutation returns MutationResolver implementation.
 func (r *Resolver) Mutation() MutationResolver { return &mutationResolver{r} }
 
+// NonceRecord returns NonceRecordResolver implementation.
+func (r *Resolver) NonceRecord() NonceRecordResolver { return &nonceRecordResolver{r} }
+
 // OpLogEvent returns OpLogEventResolver implementation.
 func (r *Resolver) OpLogEvent() OpLogEventResolver { return &opLogEventResolver{r} }
 
@@ -464,6 +474,7 @@ type contractStateResolver struct{ *Resolver }
 type electionResultResolver struct{ *Resolver }
 type ledgerResultResolver struct{ *Resolver }
 type mutationResolver struct{ *Resolver }
+type nonceRecordResolver struct{ *Resolver }
 type opLogEventResolver struct{ *Resolver }
 type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }

@@ -71,6 +71,7 @@ func TestQueryAndMutation(t *testing.T) {
 		ledgerDbImpl,
 		electionDb,
 		txDb,
+		nonceDb,
 		hiveBlocks,
 		se,
 		da,

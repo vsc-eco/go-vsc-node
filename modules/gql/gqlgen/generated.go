@@ -14,6 +14,7 @@ import (
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
@@ -52,6 +53,7 @@ type ResolverRoot interface {
 	ElectionResult() ElectionResultResolver
 	LedgerResult() LedgerResultResolver
 	Mutation() MutationResolver
+	NonceRecord() NonceRecordResolver
 	OpLogEvent() OpLogEventResolver
 	PostingJsonKeys() PostingJsonKeysResolver
 	Query() QueryResolver
@@ -67,10 +69,6 @@ type ComplexityRoot struct {
 	AccountInfoResult struct {
 		RcCurrent func(childComplexity int) int
 		RcMax     func(childComplexity int) int
-	}
-
-	AccountNonceResult struct {
-		Nonce func(childComplexity int) int
 	}
 
 	AnchorProducer struct {
@@ -188,6 +186,11 @@ type ComplexityRoot struct {
 		IncrementNumber func(childComplexity int) int
 	}
 
+	NonceRecord struct {
+		Account func(childComplexity int) int
+		Nonce   func(childComplexity int) int
+	}
+
 	OpLogEvent struct {
 		Amount func(childComplexity int) int
 		Asset  func(childComplexity int) int
@@ -214,7 +217,7 @@ type ComplexityRoot struct {
 		FindLedgerTXs        func(childComplexity int, filterOptions *LedgerTxFilter) int
 		FindTransaction      func(childComplexity int, filterOptions *TransactionFilter) int
 		GetAccountBalance    func(childComplexity int, account string, height *model.Uint64) int
-		GetAccountNonce      func(childComplexity int, keyGroup []*string) int
+		GetAccountNonce      func(childComplexity int, account string) int
 		GetCurrentNumber     func(childComplexity int) int
 		GetDagByCid          func(childComplexity int, cidString string) int
 		GetElection          func(childComplexity int, epoch model.Uint64) int
@@ -331,6 +334,9 @@ type LedgerResultResolver interface {
 type MutationResolver interface {
 	IncrementNumber(ctx context.Context) (*TestResult, error)
 }
+type NonceRecordResolver interface {
+	Nonce(ctx context.Context, obj *nonces.NonceRecord) (model.Uint64, error)
+}
 type OpLogEventResolver interface {
 	Amount(ctx context.Context, obj *ledgerSystem.OpLogEvent) (model.Int64, error)
 
@@ -349,7 +355,7 @@ type QueryResolver interface {
 	GetAccountBalance(ctx context.Context, account string, height *model.Uint64) (*ledgerDb.BalanceRecord, error)
 	FindContract(ctx context.Context, id *string) (*FindContractResult, error)
 	SubmitTransactionV1(ctx context.Context, tx string, sig string) (*TransactionSubmitResult, error)
-	GetAccountNonce(ctx context.Context, keyGroup []*string) (*AccountNonceResult, error)
+	GetAccountNonce(ctx context.Context, account string) (*nonces.NonceRecord, error)
 	LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, error)
 	WitnessNodes(ctx context.Context, height model.Uint64) ([]witnesses.Witness, error)
 	ActiveWitnessNodes(ctx context.Context) (*string, error)
@@ -415,13 +421,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.AccountInfoResult.RcMax(childComplexity), true
-
-	case "AccountNonceResult.nonce":
-		if e.complexity.AccountNonceResult.Nonce == nil {
-			break
-		}
-
-		return e.complexity.AccountNonceResult.Nonce(childComplexity), true
 
 	case "AnchorProducer.nextSlot":
 		if e.complexity.AnchorProducer.NextSlot == nil {
@@ -891,6 +890,20 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Mutation.IncrementNumber(childComplexity), true
 
+	case "NonceRecord.account":
+		if e.complexity.NonceRecord.Account == nil {
+			break
+		}
+
+		return e.complexity.NonceRecord.Account(childComplexity), true
+
+	case "NonceRecord.nonce":
+		if e.complexity.NonceRecord.Nonce == nil {
+			break
+		}
+
+		return e.complexity.NonceRecord.Nonce(childComplexity), true
+
 	case "OpLogEvent.amount":
 		if e.complexity.OpLogEvent.Amount == nil {
 			break
@@ -1069,7 +1082,7 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 			return 0, false
 		}
 
-		return e.complexity.Query.GetAccountNonce(childComplexity, args["keyGroup"].([]*string)), true
+		return e.complexity.Query.GetAccountNonce(childComplexity, args["account"].(string)), true
 
 	case "Query.getCurrentNumber":
 		if e.complexity.Query.GetCurrentNumber == nil {
@@ -1656,8 +1669,9 @@ type TransactionSubmitResult {
   id: String
 }
 
-type AccountNonceResult {
-  nonce: Int
+type NonceRecord {
+  account: String!
+  nonce: Uint64!
 }
 
 type AccountInfoResult {
@@ -1823,7 +1837,7 @@ type Query {
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
   findContract(id: String): FindContractResult
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
-  getAccountNonce(keyGroup: [String]!): AccountNonceResult
+  getAccountNonce(account: String!): NonceRecord
   localNodeInfo: LocalNodeInfo
   witnessNodes(height: Uint64!): [Witness!]!
   activeWitnessNodes: JSON
@@ -2192,23 +2206,23 @@ func (ec *executionContext) field_Query_getAccountBalance_argsHeight(
 func (ec *executionContext) field_Query_getAccountNonce_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
 	var err error
 	args := map[string]any{}
-	arg0, err := ec.field_Query_getAccountNonce_argsKeyGroup(ctx, rawArgs)
+	arg0, err := ec.field_Query_getAccountNonce_argsAccount(ctx, rawArgs)
 	if err != nil {
 		return nil, err
 	}
-	args["keyGroup"] = arg0
+	args["account"] = arg0
 	return args, nil
 }
-func (ec *executionContext) field_Query_getAccountNonce_argsKeyGroup(
+func (ec *executionContext) field_Query_getAccountNonce_argsAccount(
 	ctx context.Context,
 	rawArgs map[string]any,
-) ([]*string, error) {
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("keyGroup"))
-	if tmp, ok := rawArgs["keyGroup"]; ok {
-		return ec.unmarshalNString2ᚕᚖstring(ctx, tmp)
+) (string, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("account"))
+	if tmp, ok := rawArgs["account"]; ok {
+		return ec.unmarshalNString2string(ctx, tmp)
 	}
 
-	var zeroVal []*string
+	var zeroVal string
 	return zeroVal, nil
 }
 
@@ -2586,47 +2600,6 @@ func (ec *executionContext) _AccountInfoResult_rc_current(ctx context.Context, f
 func (ec *executionContext) fieldContext_AccountInfoResult_rc_current(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "AccountInfoResult",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Int does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _AccountNonceResult_nonce(ctx context.Context, field graphql.CollectedField, obj *AccountNonceResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_AccountNonceResult_nonce(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Nonce, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*int)
-	fc.Result = res
-	return ec.marshalOInt2ᚖint(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_AccountNonceResult_nonce(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "AccountNonceResult",
 		Field:      field,
 		IsMethod:   false,
 		IsResolver: false,
@@ -5448,6 +5421,94 @@ func (ec *executionContext) fieldContext_Mutation_incrementNumber(_ context.Cont
 	return fc, nil
 }
 
+func (ec *executionContext) _NonceRecord_account(ctx context.Context, field graphql.CollectedField, obj *nonces.NonceRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_NonceRecord_account(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Account, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_NonceRecord_account(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "NonceRecord",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _NonceRecord_nonce(ctx context.Context, field graphql.CollectedField, obj *nonces.NonceRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_NonceRecord_nonce(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.NonceRecord().Nonce(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_NonceRecord_nonce(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "NonceRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _OpLogEvent_to(ctx context.Context, field graphql.CollectedField, obj *ledgerSystem.OpLogEvent) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_OpLogEvent_to(ctx, field)
 	if err != nil {
@@ -6401,7 +6462,7 @@ func (ec *executionContext) _Query_getAccountNonce(ctx context.Context, field gr
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().GetAccountNonce(rctx, fc.Args["keyGroup"].([]*string))
+		return ec.resolvers.Query().GetAccountNonce(rctx, fc.Args["account"].(string))
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -6410,9 +6471,9 @@ func (ec *executionContext) _Query_getAccountNonce(ctx context.Context, field gr
 	if resTmp == nil {
 		return graphql.Null
 	}
-	res := resTmp.(*AccountNonceResult)
+	res := resTmp.(*nonces.NonceRecord)
 	fc.Result = res
-	return ec.marshalOAccountNonceResult2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐAccountNonceResult(ctx, field.Selections, res)
+	return ec.marshalONonceRecord2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋnoncesᚐNonceRecord(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) fieldContext_Query_getAccountNonce(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
@@ -6423,10 +6484,12 @@ func (ec *executionContext) fieldContext_Query_getAccountNonce(ctx context.Conte
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			switch field.Name {
+			case "account":
+				return ec.fieldContext_NonceRecord_account(ctx, field)
 			case "nonce":
-				return ec.fieldContext_AccountNonceResult_nonce(ctx, field)
+				return ec.fieldContext_NonceRecord_nonce(ctx, field)
 			}
-			return nil, fmt.Errorf("no field named %q was found under type AccountNonceResult", field.Name)
+			return nil, fmt.Errorf("no field named %q was found under type NonceRecord", field.Name)
 		},
 	}
 	defer func() {
@@ -10962,42 +11025,6 @@ func (ec *executionContext) _AccountInfoResult(ctx context.Context, sel ast.Sele
 	return out
 }
 
-var accountNonceResultImplementors = []string{"AccountNonceResult"}
-
-func (ec *executionContext) _AccountNonceResult(ctx context.Context, sel ast.SelectionSet, obj *AccountNonceResult) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, accountNonceResultImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("AccountNonceResult")
-		case "nonce":
-			out.Values[i] = ec._AccountNonceResult_nonce(ctx, field, obj)
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
 var anchorProducerImplementors = []string{"AnchorProducer"}
 
 func (ec *executionContext) _AnchorProducer(ctx context.Context, sel ast.SelectionSet, obj *AnchorProducer) graphql.Marshaler {
@@ -12695,6 +12722,81 @@ func (ec *executionContext) _Mutation(ctx context.Context, sel ast.SelectionSet)
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Mutation_incrementNumber(ctx, field)
 			})
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var nonceRecordImplementors = []string{"NonceRecord"}
+
+func (ec *executionContext) _NonceRecord(ctx context.Context, sel ast.SelectionSet, obj *nonces.NonceRecord) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, nonceRecordImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("NonceRecord")
+		case "account":
+			out.Values[i] = ec._NonceRecord_account(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "nonce":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._NonceRecord_nonce(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -14632,30 +14734,6 @@ func (ec *executionContext) marshalNString2ᚕstringᚄ(ctx context.Context, sel
 	return ret
 }
 
-func (ec *executionContext) unmarshalNString2ᚕᚖstring(ctx context.Context, v any) ([]*string, error) {
-	var vSlice []any
-	vSlice = graphql.CoerceList(v)
-	var err error
-	res := make([]*string, len(vSlice))
-	for i := range vSlice {
-		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
-		res[i], err = ec.unmarshalOString2ᚖstring(ctx, vSlice[i])
-		if err != nil {
-			return nil, err
-		}
-	}
-	return res, nil
-}
-
-func (ec *executionContext) marshalNString2ᚕᚖstring(ctx context.Context, sel ast.SelectionSet, v []*string) graphql.Marshaler {
-	ret := make(graphql.Array, len(v))
-	for i := range v {
-		ret[i] = ec.marshalOString2ᚖstring(ctx, sel, v[i])
-	}
-
-	return ret
-}
-
 func (ec *executionContext) marshalNTransactionRecord2vscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionRecord(ctx context.Context, sel ast.SelectionSet, v transactions.TransactionRecord) graphql.Marshaler {
 	return ec._TransactionRecord(ctx, sel, &v)
 }
@@ -15047,13 +15125,6 @@ func (ec *executionContext) marshalN__TypeKind2string(ctx context.Context, sel a
 	return res
 }
 
-func (ec *executionContext) marshalOAccountNonceResult2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐAccountNonceResult(ctx context.Context, sel ast.SelectionSet, v *AccountNonceResult) graphql.Marshaler {
-	if v == nil {
-		return graphql.Null
-	}
-	return ec._AccountNonceResult(ctx, sel, v)
-}
-
 func (ec *executionContext) marshalOAnchorProducer2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐAnchorProducer(ctx context.Context, sel ast.SelectionSet, v *AnchorProducer) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
@@ -15300,6 +15371,13 @@ func (ec *executionContext) marshalOMap2vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐMap
 		return graphql.Null
 	}
 	return v
+}
+
+func (ec *executionContext) marshalONonceRecord2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋnoncesᚐNonceRecord(ctx context.Context, sel ast.SelectionSet, v *nonces.NonceRecord) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._NonceRecord(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalOOpLogEvent2ᚕvscᚑnodeᚋmodulesᚋledgerᚑsystemᚐOpLogEventᚄ(ctx context.Context, sel ast.SelectionSet, v []ledgerSystem.OpLogEvent) graphql.Marshaler {
