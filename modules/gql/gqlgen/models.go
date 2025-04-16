@@ -126,6 +126,7 @@ type Transaction struct {
 	AnchrIndex    model.Uint64  `json:"anchr_index"`
 	AnchrOpidx    model.Uint64  `json:"anchr_opidx"`
 	AnchrTs       string        `json:"anchr_ts"`
+	Type          string        `json:"type"`
 	Data          *string       `json:"data,omitempty"`
 	FirstSeen     string        `json:"first_seen"`
 	Nonce         model.Uint64  `json:"nonce"`

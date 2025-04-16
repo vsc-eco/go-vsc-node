@@ -35,6 +35,7 @@ type Transaction {
   anchr_index: Uint64!
   anchr_opidx: Uint64!
   anchr_ts: String!
+  type: String!
   data: JSON
   first_seen: String!
   nonce: Uint64!
