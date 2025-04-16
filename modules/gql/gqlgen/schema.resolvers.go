@@ -154,23 +154,13 @@ func (r *electionResultResolver) BlockHeight(ctx context.Context, obj *elections
 }
 
 // Amount is the resolver for the amount field.
-func (r *ledgerResultResolver) Amount(ctx context.Context, obj *ledgerDb.LedgerResult) (model.Int64, error) {
+func (r *ledgerRecordResolver) Amount(ctx context.Context, obj *ledgerDb.LedgerRecord) (model.Int64, error) {
 	return model.Int64(obj.Amount), nil
 }
 
 // BlockHeight is the resolver for the block_height field.
-func (r *ledgerResultResolver) BlockHeight(ctx context.Context, obj *ledgerDb.LedgerResult) (model.Uint64, error) {
+func (r *ledgerRecordResolver) BlockHeight(ctx context.Context, obj *ledgerDb.LedgerRecord) (model.Uint64, error) {
 	return model.Uint64(obj.BlockHeight), nil
-}
-
-// T is the resolver for the t field.
-func (r *ledgerResultResolver) T(ctx context.Context, obj *ledgerDb.LedgerResult) (string, error) {
-	return obj.Type, nil
-}
-
-// Tk is the resolver for the tk field.
-func (r *ledgerResultResolver) Tk(ctx context.Context, obj *ledgerDb.LedgerResult) (string, error) {
-	return obj.Asset, nil
 }
 
 // IncrementNumber is the resolver for the incrementNumber field.
@@ -229,7 +219,7 @@ func (r *queryResolver) FindContractOutput(ctx context.Context, filterOptions *F
 }
 
 // FindLedgerTXs is the resolver for the findLedgerTXs field.
-func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) ([]ledgerDb.LedgerResult, error) {
+func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) ([]ledgerDb.LedgerRecord, error) {
 	offset, limit, paginateErr := Paginate(filterOptions.Offset, filterOptions.Limit)
 	if paginateErr != nil {
 		return nil, paginateErr
@@ -439,8 +429,8 @@ func (r *Resolver) ContractState() ContractStateResolver { return &contractState
 // ElectionResult returns ElectionResultResolver implementation.
 func (r *Resolver) ElectionResult() ElectionResultResolver { return &electionResultResolver{r} }
 
-// LedgerResult returns LedgerResultResolver implementation.
-func (r *Resolver) LedgerResult() LedgerResultResolver { return &ledgerResultResolver{r} }
+// LedgerRecord returns LedgerRecordResolver implementation.
+func (r *Resolver) LedgerRecord() LedgerRecordResolver { return &ledgerRecordResolver{r} }
 
 // Mutation returns MutationResolver implementation.
 func (r *Resolver) Mutation() MutationResolver { return &mutationResolver{r} }
@@ -472,7 +462,7 @@ type balanceRecordResolver struct{ *Resolver }
 type contractOutputResolver struct{ *Resolver }
 type contractStateResolver struct{ *Resolver }
 type electionResultResolver struct{ *Resolver }
-type ledgerResultResolver struct{ *Resolver }
+type ledgerRecordResolver struct{ *Resolver }
 type mutationResolver struct{ *Resolver }
 type nonceRecordResolver struct{ *Resolver }
 type opLogEventResolver struct{ *Resolver }

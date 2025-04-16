@@ -9,7 +9,7 @@ type Ledger interface {
 	StoreLedger(...LedgerRecord)
 	GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error)
 	GetLedgerRange(account string, start uint64, end uint64, asset string, options ...LedgerOptions) (*[]LedgerRecord, error)
-	GetLedgersTsRange(account *string, txId *string, txTypes []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerResult, error)
+	GetLedgersTsRange(account *string, txId *string, txTypes []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error)
 	//Gets distinct accounts on or after a block height
 	//Used to indicate whether balance has been updated or not
 	GetDistinctAccountsRange(startBlock, endBlock uint64) ([]string, error)
@@ -68,31 +68,19 @@ type BalanceRecord struct {
 
 type LedgerRecord struct {
 	//Unique ID of the operation
-	Id          string `json:"id" bson:"id"`
-	Amount      int64  `json:"amount" bson:"amount"`
-	BlockHeight uint64 `json:"block_height" bson:"block_height"`
-	From        string `json:"from" bson:"from"`
-	Owner       string `json:"owner" bson:"owner"`
-	Type        string `json:"t" bson:"t"`
-	Asset       string `json:"tk" bson:"tk"`
-	TxId        string `json:"tx_id" bson:"tx_id"`
+	Id          string  `json:"id" bson:"id"`
+	Amount      int64   `json:"amount" bson:"amount"`
+	BlockHeight uint64  `json:"block_height" bson:"block_height"`
+	Timestamp   *string `json:"timestamp" bson:"timestamp"`
+	From        string  `json:"from" bson:"from"`
+	Owner       string  `json:"owner" bson:"owner"`
+	Type        string  `json:"t" bson:"t"`
+	Asset       string  `json:"tk" bson:"tk"`
+	TxId        string  `json:"tx_id" bson:"tx_id"`
 
 	BIdx int64
 	//Op Index: Index of the operation in the TX
 	OpIdx int64
-}
-
-type LedgerResult struct {
-	//Unique ID of the operation
-	Id          string `json:"id" bson:"id"`
-	Amount      int64  `json:"amount" bson:"amount"`
-	BlockHeight uint64 `json:"block_height" bson:"block_height"`
-	Timestamp   string `json:"timestamp" bson:"timestamp"`
-	From        string `json:"from" bson:"from"`
-	Owner       string `json:"owner" bson:"owner"`
-	Type        string `json:"t" bson:"t"`
-	Asset       string `json:"tk" bson:"tk"`
-	TxId        string `json:"tx_id" bson:"tx_id"`
 }
 
 type BridgeActions interface {

@@ -209,15 +209,15 @@ type AnchorProducer {
   nextSlot(account: String): JSON
 }
 
-type LedgerResult {
+type LedgerRecord {
   id: String!
   amount: Int64!
   block_height: Uint64!
   timestamp: String!
   from: String!
   owner: String!
-  t: String!
-  tk: String!
+  type: String!
+  asset: String!
   tx_id: String!
 }
 
@@ -277,7 +277,7 @@ type Query {
     filterOptions: FindContractOutputFilter
     decodedFilter: JSON
   ): FindContractOutputResult
-  findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerResult!]
+  findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerRecord!]
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
   findContract(id: String): FindContractResult
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
