@@ -51,7 +51,7 @@ type ResolverRoot interface {
 	ContractOutput() ContractOutputResolver
 	ContractState() ContractStateResolver
 	ElectionResult() ElectionResultResolver
-	LedgerResult() LedgerResultResolver
+	LedgerRecord() LedgerRecordResolver
 	Mutation() MutationResolver
 	NonceRecord() NonceRecordResolver
 	OpLogEvent() OpLogEventResolver
@@ -165,16 +165,16 @@ type ComplexityRoot struct {
 		Value func(childComplexity int) int
 	}
 
-	LedgerResult struct {
+	LedgerRecord struct {
 		Amount      func(childComplexity int) int
+		Asset       func(childComplexity int) int
 		BlockHeight func(childComplexity int) int
 		From        func(childComplexity int) int
 		Id          func(childComplexity int) int
 		Owner       func(childComplexity int) int
-		T           func(childComplexity int) int
 		Timestamp   func(childComplexity int) int
-		Tk          func(childComplexity int) int
 		TxId        func(childComplexity int) int
+		Type        func(childComplexity int) int
 	}
 
 	LocalNodeInfo struct {
@@ -324,12 +324,9 @@ type ElectionResultResolver interface {
 	TotalWeight(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error)
 	BlockHeight(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error)
 }
-type LedgerResultResolver interface {
-	Amount(ctx context.Context, obj *ledgerDb.LedgerResult) (model.Int64, error)
-	BlockHeight(ctx context.Context, obj *ledgerDb.LedgerResult) (model.Uint64, error)
-
-	T(ctx context.Context, obj *ledgerDb.LedgerResult) (string, error)
-	Tk(ctx context.Context, obj *ledgerDb.LedgerResult) (string, error)
+type LedgerRecordResolver interface {
+	Amount(ctx context.Context, obj *ledgerDb.LedgerRecord) (model.Int64, error)
+	BlockHeight(ctx context.Context, obj *ledgerDb.LedgerRecord) (model.Uint64, error)
 }
 type MutationResolver interface {
 	IncrementNumber(ctx context.Context) (*TestResult, error)
@@ -351,7 +348,7 @@ type QueryResolver interface {
 	ContractState(ctx context.Context, id *string) (contracts.ContractState, error)
 	FindTransaction(ctx context.Context, filterOptions *TransactionFilter) ([]transactions.TransactionRecord, error)
 	FindContractOutput(ctx context.Context, filterOptions *FindContractOutputFilter, decodedFilter *string) (*FindContractOutputResult, error)
-	FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) ([]ledgerDb.LedgerResult, error)
+	FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) ([]ledgerDb.LedgerRecord, error)
 	GetAccountBalance(ctx context.Context, account string, height *model.Uint64) (*ledgerDb.BalanceRecord, error)
 	FindContract(ctx context.Context, id *string) (*FindContractResult, error)
 	SubmitTransactionV1(ctx context.Context, tx string, sig string) (*TransactionSubmitResult, error)
@@ -806,68 +803,68 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.JsonPatchOp.Value(childComplexity), true
 
-	case "LedgerResult.amount":
-		if e.complexity.LedgerResult.Amount == nil {
+	case "LedgerRecord.amount":
+		if e.complexity.LedgerRecord.Amount == nil {
 			break
 		}
 
-		return e.complexity.LedgerResult.Amount(childComplexity), true
+		return e.complexity.LedgerRecord.Amount(childComplexity), true
 
-	case "LedgerResult.block_height":
-		if e.complexity.LedgerResult.BlockHeight == nil {
+	case "LedgerRecord.asset":
+		if e.complexity.LedgerRecord.Asset == nil {
 			break
 		}
 
-		return e.complexity.LedgerResult.BlockHeight(childComplexity), true
+		return e.complexity.LedgerRecord.Asset(childComplexity), true
 
-	case "LedgerResult.from":
-		if e.complexity.LedgerResult.From == nil {
+	case "LedgerRecord.block_height":
+		if e.complexity.LedgerRecord.BlockHeight == nil {
 			break
 		}
 
-		return e.complexity.LedgerResult.From(childComplexity), true
+		return e.complexity.LedgerRecord.BlockHeight(childComplexity), true
 
-	case "LedgerResult.id":
-		if e.complexity.LedgerResult.Id == nil {
+	case "LedgerRecord.from":
+		if e.complexity.LedgerRecord.From == nil {
 			break
 		}
 
-		return e.complexity.LedgerResult.Id(childComplexity), true
+		return e.complexity.LedgerRecord.From(childComplexity), true
 
-	case "LedgerResult.owner":
-		if e.complexity.LedgerResult.Owner == nil {
+	case "LedgerRecord.id":
+		if e.complexity.LedgerRecord.Id == nil {
 			break
 		}
 
-		return e.complexity.LedgerResult.Owner(childComplexity), true
+		return e.complexity.LedgerRecord.Id(childComplexity), true
 
-	case "LedgerResult.t":
-		if e.complexity.LedgerResult.T == nil {
+	case "LedgerRecord.owner":
+		if e.complexity.LedgerRecord.Owner == nil {
 			break
 		}
 
-		return e.complexity.LedgerResult.T(childComplexity), true
+		return e.complexity.LedgerRecord.Owner(childComplexity), true
 
-	case "LedgerResult.timestamp":
-		if e.complexity.LedgerResult.Timestamp == nil {
+	case "LedgerRecord.timestamp":
+		if e.complexity.LedgerRecord.Timestamp == nil {
 			break
 		}
 
-		return e.complexity.LedgerResult.Timestamp(childComplexity), true
+		return e.complexity.LedgerRecord.Timestamp(childComplexity), true
 
-	case "LedgerResult.tk":
-		if e.complexity.LedgerResult.Tk == nil {
+	case "LedgerRecord.tx_id":
+		if e.complexity.LedgerRecord.TxId == nil {
 			break
 		}
 
-		return e.complexity.LedgerResult.Tk(childComplexity), true
+		return e.complexity.LedgerRecord.TxId(childComplexity), true
 
-	case "LedgerResult.tx_id":
-		if e.complexity.LedgerResult.TxId == nil {
+	case "LedgerRecord.type":
+		if e.complexity.LedgerRecord.Type == nil {
 			break
 		}
 
-		return e.complexity.LedgerResult.TxId(childComplexity), true
+		return e.complexity.LedgerRecord.Type(childComplexity), true
 
 	case "LocalNodeInfo.did":
 		if e.complexity.LocalNodeInfo.Did == nil {
@@ -1765,15 +1762,15 @@ type AnchorProducer {
   nextSlot(account: String): JSON
 }
 
-type LedgerResult {
+type LedgerRecord {
   id: String!
   amount: Int64!
   block_height: Uint64!
   timestamp: String!
   from: String!
   owner: String!
-  t: String!
-  tk: String!
+  type: String!
+  asset: String!
   tx_id: String!
 }
 
@@ -1833,7 +1830,7 @@ type Query {
     filterOptions: FindContractOutputFilter
     decodedFilter: JSON
   ): FindContractOutputResult
-  findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerResult!]
+  findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerRecord!]
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
   findContract(id: String): FindContractResult
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
@@ -4898,8 +4895,8 @@ func (ec *executionContext) fieldContext_JsonPatchOp_value(_ context.Context, fi
 	return fc, nil
 }
 
-func (ec *executionContext) _LedgerResult_id(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_LedgerResult_id(ctx, field)
+func (ec *executionContext) _LedgerRecord_id(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerRecord_id(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -4929,9 +4926,9 @@ func (ec *executionContext) _LedgerResult_id(ctx context.Context, field graphql.
 	return ec.marshalNString2string(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_LedgerResult_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_LedgerRecord_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
-		Object:     "LedgerResult",
+		Object:     "LedgerRecord",
 		Field:      field,
 		IsMethod:   false,
 		IsResolver: false,
@@ -4942,8 +4939,8 @@ func (ec *executionContext) fieldContext_LedgerResult_id(_ context.Context, fiel
 	return fc, nil
 }
 
-func (ec *executionContext) _LedgerResult_amount(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_LedgerResult_amount(ctx, field)
+func (ec *executionContext) _LedgerRecord_amount(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerRecord_amount(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -4956,7 +4953,7 @@ func (ec *executionContext) _LedgerResult_amount(ctx context.Context, field grap
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.LedgerResult().Amount(rctx, obj)
+		return ec.resolvers.LedgerRecord().Amount(rctx, obj)
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -4973,9 +4970,9 @@ func (ec *executionContext) _LedgerResult_amount(ctx context.Context, field grap
 	return ec.marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_LedgerResult_amount(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_LedgerRecord_amount(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
-		Object:     "LedgerResult",
+		Object:     "LedgerRecord",
 		Field:      field,
 		IsMethod:   true,
 		IsResolver: true,
@@ -4986,8 +4983,8 @@ func (ec *executionContext) fieldContext_LedgerResult_amount(_ context.Context, 
 	return fc, nil
 }
 
-func (ec *executionContext) _LedgerResult_block_height(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_LedgerResult_block_height(ctx, field)
+func (ec *executionContext) _LedgerRecord_block_height(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerRecord_block_height(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -5000,7 +4997,7 @@ func (ec *executionContext) _LedgerResult_block_height(ctx context.Context, fiel
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.LedgerResult().BlockHeight(rctx, obj)
+		return ec.resolvers.LedgerRecord().BlockHeight(rctx, obj)
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -5017,9 +5014,9 @@ func (ec *executionContext) _LedgerResult_block_height(ctx context.Context, fiel
 	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_LedgerResult_block_height(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_LedgerRecord_block_height(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
-		Object:     "LedgerResult",
+		Object:     "LedgerRecord",
 		Field:      field,
 		IsMethod:   true,
 		IsResolver: true,
@@ -5030,8 +5027,8 @@ func (ec *executionContext) fieldContext_LedgerResult_block_height(_ context.Con
 	return fc, nil
 }
 
-func (ec *executionContext) _LedgerResult_timestamp(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_LedgerResult_timestamp(ctx, field)
+func (ec *executionContext) _LedgerRecord_timestamp(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerRecord_timestamp(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -5056,14 +5053,14 @@ func (ec *executionContext) _LedgerResult_timestamp(ctx context.Context, field g
 		}
 		return graphql.Null
 	}
-	res := resTmp.(string)
+	res := resTmp.(*string)
 	fc.Result = res
-	return ec.marshalNString2string(ctx, field.Selections, res)
+	return ec.marshalNString2ᚖstring(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_LedgerResult_timestamp(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_LedgerRecord_timestamp(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
-		Object:     "LedgerResult",
+		Object:     "LedgerRecord",
 		Field:      field,
 		IsMethod:   false,
 		IsResolver: false,
@@ -5074,8 +5071,8 @@ func (ec *executionContext) fieldContext_LedgerResult_timestamp(_ context.Contex
 	return fc, nil
 }
 
-func (ec *executionContext) _LedgerResult_from(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_LedgerResult_from(ctx, field)
+func (ec *executionContext) _LedgerRecord_from(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerRecord_from(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -5105,9 +5102,9 @@ func (ec *executionContext) _LedgerResult_from(ctx context.Context, field graphq
 	return ec.marshalNString2string(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_LedgerResult_from(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_LedgerRecord_from(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
-		Object:     "LedgerResult",
+		Object:     "LedgerRecord",
 		Field:      field,
 		IsMethod:   false,
 		IsResolver: false,
@@ -5118,8 +5115,8 @@ func (ec *executionContext) fieldContext_LedgerResult_from(_ context.Context, fi
 	return fc, nil
 }
 
-func (ec *executionContext) _LedgerResult_owner(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_LedgerResult_owner(ctx, field)
+func (ec *executionContext) _LedgerRecord_owner(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerRecord_owner(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -5149,9 +5146,9 @@ func (ec *executionContext) _LedgerResult_owner(ctx context.Context, field graph
 	return ec.marshalNString2string(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_LedgerResult_owner(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_LedgerRecord_owner(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
-		Object:     "LedgerResult",
+		Object:     "LedgerRecord",
 		Field:      field,
 		IsMethod:   false,
 		IsResolver: false,
@@ -5162,8 +5159,8 @@ func (ec *executionContext) fieldContext_LedgerResult_owner(_ context.Context, f
 	return fc, nil
 }
 
-func (ec *executionContext) _LedgerResult_t(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_LedgerResult_t(ctx, field)
+func (ec *executionContext) _LedgerRecord_type(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerRecord_type(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -5176,7 +5173,7 @@ func (ec *executionContext) _LedgerResult_t(ctx context.Context, field graphql.C
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.LedgerResult().T(rctx, obj)
+		return obj.Type, nil
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -5193,12 +5190,12 @@ func (ec *executionContext) _LedgerResult_t(ctx context.Context, field graphql.C
 	return ec.marshalNString2string(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_LedgerResult_t(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_LedgerRecord_type(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
-		Object:     "LedgerResult",
+		Object:     "LedgerRecord",
 		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
+		IsMethod:   false,
+		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type String does not have child fields")
 		},
@@ -5206,8 +5203,8 @@ func (ec *executionContext) fieldContext_LedgerResult_t(_ context.Context, field
 	return fc, nil
 }
 
-func (ec *executionContext) _LedgerResult_tk(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_LedgerResult_tk(ctx, field)
+func (ec *executionContext) _LedgerRecord_asset(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerRecord_asset(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -5220,7 +5217,7 @@ func (ec *executionContext) _LedgerResult_tk(ctx context.Context, field graphql.
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.LedgerResult().Tk(rctx, obj)
+		return obj.Asset, nil
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -5237,12 +5234,12 @@ func (ec *executionContext) _LedgerResult_tk(ctx context.Context, field graphql.
 	return ec.marshalNString2string(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_LedgerResult_tk(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_LedgerRecord_asset(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
-		Object:     "LedgerResult",
+		Object:     "LedgerRecord",
 		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
+		IsMethod:   false,
+		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type String does not have child fields")
 		},
@@ -5250,8 +5247,8 @@ func (ec *executionContext) fieldContext_LedgerResult_tk(_ context.Context, fiel
 	return fc, nil
 }
 
-func (ec *executionContext) _LedgerResult_tx_id(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_LedgerResult_tx_id(ctx, field)
+func (ec *executionContext) _LedgerRecord_tx_id(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerRecord_tx_id(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -5281,9 +5278,9 @@ func (ec *executionContext) _LedgerResult_tx_id(ctx context.Context, field graph
 	return ec.marshalNString2string(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_LedgerResult_tx_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_LedgerRecord_tx_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
-		Object:     "LedgerResult",
+		Object:     "LedgerRecord",
 		Field:      field,
 		IsMethod:   false,
 		IsResolver: false,
@@ -6215,9 +6212,9 @@ func (ec *executionContext) _Query_findLedgerTXs(ctx context.Context, field grap
 	if resTmp == nil {
 		return graphql.Null
 	}
-	res := resTmp.([]ledgerDb.LedgerResult)
+	res := resTmp.([]ledgerDb.LedgerRecord)
 	fc.Result = res
-	return ec.marshalOLedgerResult2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐLedgerResultᚄ(ctx, field.Selections, res)
+	return ec.marshalOLedgerRecord2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐLedgerRecordᚄ(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) fieldContext_Query_findLedgerTXs(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
@@ -6229,25 +6226,25 @@ func (ec *executionContext) fieldContext_Query_findLedgerTXs(ctx context.Context
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			switch field.Name {
 			case "id":
-				return ec.fieldContext_LedgerResult_id(ctx, field)
+				return ec.fieldContext_LedgerRecord_id(ctx, field)
 			case "amount":
-				return ec.fieldContext_LedgerResult_amount(ctx, field)
+				return ec.fieldContext_LedgerRecord_amount(ctx, field)
 			case "block_height":
-				return ec.fieldContext_LedgerResult_block_height(ctx, field)
+				return ec.fieldContext_LedgerRecord_block_height(ctx, field)
 			case "timestamp":
-				return ec.fieldContext_LedgerResult_timestamp(ctx, field)
+				return ec.fieldContext_LedgerRecord_timestamp(ctx, field)
 			case "from":
-				return ec.fieldContext_LedgerResult_from(ctx, field)
+				return ec.fieldContext_LedgerRecord_from(ctx, field)
 			case "owner":
-				return ec.fieldContext_LedgerResult_owner(ctx, field)
-			case "t":
-				return ec.fieldContext_LedgerResult_t(ctx, field)
-			case "tk":
-				return ec.fieldContext_LedgerResult_tk(ctx, field)
+				return ec.fieldContext_LedgerRecord_owner(ctx, field)
+			case "type":
+				return ec.fieldContext_LedgerRecord_type(ctx, field)
+			case "asset":
+				return ec.fieldContext_LedgerRecord_asset(ctx, field)
 			case "tx_id":
-				return ec.fieldContext_LedgerResult_tx_id(ctx, field)
+				return ec.fieldContext_LedgerRecord_tx_id(ctx, field)
 			}
-			return nil, fmt.Errorf("no field named %q was found under type LedgerResult", field.Name)
+			return nil, fmt.Errorf("no field named %q was found under type LedgerRecord", field.Name)
 		},
 	}
 	defer func() {
@@ -12458,19 +12455,19 @@ func (ec *executionContext) _JsonPatchOp(ctx context.Context, sel ast.SelectionS
 	return out
 }
 
-var ledgerResultImplementors = []string{"LedgerResult"}
+var ledgerRecordImplementors = []string{"LedgerRecord"}
 
-func (ec *executionContext) _LedgerResult(ctx context.Context, sel ast.SelectionSet, obj *ledgerDb.LedgerResult) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, ledgerResultImplementors)
+func (ec *executionContext) _LedgerRecord(ctx context.Context, sel ast.SelectionSet, obj *ledgerDb.LedgerRecord) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, ledgerRecordImplementors)
 
 	out := graphql.NewFieldSet(fields)
 	deferred := make(map[string]*graphql.FieldSet)
 	for i, field := range fields {
 		switch field.Name {
 		case "__typename":
-			out.Values[i] = graphql.MarshalString("LedgerResult")
+			out.Values[i] = graphql.MarshalString("LedgerRecord")
 		case "id":
-			out.Values[i] = ec._LedgerResult_id(ctx, field, obj)
+			out.Values[i] = ec._LedgerRecord_id(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&out.Invalids, 1)
 			}
@@ -12483,7 +12480,7 @@ func (ec *executionContext) _LedgerResult(ctx context.Context, sel ast.Selection
 						ec.Error(ctx, ec.Recover(ctx, r))
 					}
 				}()
-				res = ec._LedgerResult_amount(ctx, field, obj)
+				res = ec._LedgerRecord_amount(ctx, field, obj)
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}
@@ -12519,7 +12516,7 @@ func (ec *executionContext) _LedgerResult(ctx context.Context, sel ast.Selection
 						ec.Error(ctx, ec.Recover(ctx, r))
 					}
 				}()
-				res = ec._LedgerResult_block_height(ctx, field, obj)
+				res = ec._LedgerRecord_block_height(ctx, field, obj)
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}
@@ -12547,94 +12544,32 @@ func (ec *executionContext) _LedgerResult(ctx context.Context, sel ast.Selection
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
 		case "timestamp":
-			out.Values[i] = ec._LedgerResult_timestamp(ctx, field, obj)
+			out.Values[i] = ec._LedgerRecord_timestamp(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&out.Invalids, 1)
 			}
 		case "from":
-			out.Values[i] = ec._LedgerResult_from(ctx, field, obj)
+			out.Values[i] = ec._LedgerRecord_from(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&out.Invalids, 1)
 			}
 		case "owner":
-			out.Values[i] = ec._LedgerResult_owner(ctx, field, obj)
+			out.Values[i] = ec._LedgerRecord_owner(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&out.Invalids, 1)
 			}
-		case "t":
-			field := field
-
-			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._LedgerResult_t(ctx, field, obj)
-				if res == graphql.Null {
-					atomic.AddUint32(&fs.Invalids, 1)
-				}
-				return res
+		case "type":
+			out.Values[i] = ec._LedgerRecord_type(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
 			}
-
-			if field.Deferrable != nil {
-				dfs, ok := deferred[field.Deferrable.Label]
-				di := 0
-				if ok {
-					dfs.AddField(field)
-					di = len(dfs.Values) - 1
-				} else {
-					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
-					deferred[field.Deferrable.Label] = dfs
-				}
-				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
-					return innerFunc(ctx, dfs)
-				})
-
-				// don't run the out.Concurrently() call below
-				out.Values[i] = graphql.Null
-				continue
+		case "asset":
+			out.Values[i] = ec._LedgerRecord_asset(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
 			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-		case "tk":
-			field := field
-
-			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._LedgerResult_tk(ctx, field, obj)
-				if res == graphql.Null {
-					atomic.AddUint32(&fs.Invalids, 1)
-				}
-				return res
-			}
-
-			if field.Deferrable != nil {
-				dfs, ok := deferred[field.Deferrable.Label]
-				di := 0
-				if ok {
-					dfs.AddField(field)
-					di = len(dfs.Values) - 1
-				} else {
-					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
-					deferred[field.Deferrable.Label] = dfs
-				}
-				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
-					return innerFunc(ctx, dfs)
-				})
-
-				// don't run the out.Concurrently() call below
-				out.Values[i] = graphql.Null
-				continue
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
 		case "tx_id":
-			out.Values[i] = ec._LedgerResult_tx_id(ctx, field, obj)
+			out.Values[i] = ec._LedgerRecord_tx_id(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&out.Invalids, 1)
 			}
@@ -14633,8 +14568,8 @@ func (ec *executionContext) marshalNJSON2ᚕᚖstring(ctx context.Context, sel a
 	return ret
 }
 
-func (ec *executionContext) marshalNLedgerResult2vscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐLedgerResult(ctx context.Context, sel ast.SelectionSet, v ledgerDb.LedgerResult) graphql.Marshaler {
-	return ec._LedgerResult(ctx, sel, &v)
+func (ec *executionContext) marshalNLedgerRecord2vscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐLedgerRecord(ctx context.Context, sel ast.SelectionSet, v ledgerDb.LedgerRecord) graphql.Marshaler {
+	return ec._LedgerRecord(ctx, sel, &v)
 }
 
 func (ec *executionContext) marshalNOpLogEvent2vscᚑnodeᚋmodulesᚋledgerᚑsystemᚐOpLogEvent(ctx context.Context, sel ast.SelectionSet, v ledgerSystem.OpLogEvent) graphql.Marshaler {
@@ -14732,6 +14667,27 @@ func (ec *executionContext) marshalNString2ᚕstringᚄ(ctx context.Context, sel
 	}
 
 	return ret
+}
+
+func (ec *executionContext) unmarshalNString2ᚖstring(ctx context.Context, v any) (*string, error) {
+	res, err := graphql.UnmarshalString(v)
+	return &res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalNString2ᚖstring(ctx context.Context, sel ast.SelectionSet, v *string) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	res := graphql.MarshalString(*v)
+	if res == graphql.Null {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+	}
+	return res
 }
 
 func (ec *executionContext) marshalNTransactionRecord2vscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionRecord(ctx context.Context, sel ast.SelectionSet, v transactions.TransactionRecord) graphql.Marshaler {
@@ -15295,7 +15251,7 @@ func (ec *executionContext) marshalOJSON2ᚖstring(ctx context.Context, sel ast.
 	return res
 }
 
-func (ec *executionContext) marshalOLedgerResult2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐLedgerResultᚄ(ctx context.Context, sel ast.SelectionSet, v []ledgerDb.LedgerResult) graphql.Marshaler {
+func (ec *executionContext) marshalOLedgerRecord2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐLedgerRecordᚄ(ctx context.Context, sel ast.SelectionSet, v []ledgerDb.LedgerRecord) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
 	}
@@ -15322,7 +15278,7 @@ func (ec *executionContext) marshalOLedgerResult2ᚕvscᚑnodeᚋmodulesᚋdbᚋ
 			if !isLen1 {
 				defer wg.Done()
 			}
-			ret[i] = ec.marshalNLedgerResult2vscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐLedgerResult(ctx, sel, v[i])
+			ret[i] = ec.marshalNLedgerRecord2vscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐLedgerRecord(ctx, sel, v[i])
 		}
 		if isLen1 {
 			f(i)

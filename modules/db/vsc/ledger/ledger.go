@@ -96,7 +96,7 @@ func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, a
 	return &results, nil
 }
 
-func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerResult, error) {
+func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error) {
 	filters := bson.D{}
 	if account != nil {
 		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
@@ -143,14 +143,14 @@ func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes [
 	}
 	cursor, err := ledger.Aggregate(context.TODO(), pipe)
 	if err != nil {
-		return []LedgerResult{}, err
+		return []LedgerRecord{}, err
 	}
 	defer cursor.Close(context.TODO())
-	var results []LedgerResult
+	var results []LedgerRecord
 	for cursor.Next(context.TODO()) {
-		var elem LedgerResult
+		var elem LedgerRecord
 		if err := cursor.Decode(&elem); err != nil {
-			return []LedgerResult{}, err
+			return []LedgerRecord{}, err
 		}
 		results = append(results, elem)
 	}
