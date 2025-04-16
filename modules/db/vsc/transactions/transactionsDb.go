@@ -45,6 +45,7 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 		"anchr_height":   offTx.AnchoredHeight,
 		"anchr_index":    offTx.AnchoredIndex,
 		"anchr_opidx":    offTx.AnchoredOpIdx,
+		"type":           offTx.Type,
 		"data":           offTx.Tx,
 		"required_auths": offTx.RequiredAuths,
 		"nonce":          offTx.Nonce,
