@@ -446,7 +446,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			//# Start parsing gateway transfer operations
 			if op.Type == "transfer" {
 
-				if op.Value["from"] == "vsc.gateway" {
+				if op.Value["from"] == common.GATEWAY_WALLET {
 					continue
 				}
 
@@ -472,12 +472,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						continue
 					}
 				}
-				fmt.Println("Deposit info", op.Value)
 				amount, _ := strconv.ParseFloat(op.Value["amount"].(map[string]interface{})["amount"].(string), 64)
 
 				amt := int64(amount)
 
 				if op.Value["to"] == "vsc.gateway" {
+
 					leDeposit := Deposit{
 						Id:     MakeTxId(tx.TransactionID, opIndex),
 						Asset:  token,
@@ -780,6 +780,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			Asset:       "hive",
 			BlockHeight: endBlock,
 			Owner:       record.To,
+			Type:        "consensus_unstake",
 		})
 	}
 	se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)

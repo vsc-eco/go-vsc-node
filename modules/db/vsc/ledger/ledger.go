@@ -354,7 +354,7 @@ func (actions *actionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([
 		},
 	})
 	query := bson.M{
-		"params.epoch": bson.M{
+		"data.epoch": bson.M{
 			"$lte":    epoch,
 			"$exists": true,
 		},
