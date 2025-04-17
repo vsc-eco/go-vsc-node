@@ -29,7 +29,7 @@ func (dbr *DbReindex) Init() error {
 	err := findResult.Decode(&result)
 
 	var indexId uint64
-	if err != nil {
+	if err != nil || result.ReindexId == nil {
 		indexId = 0
 	} else {
 		indexId = *result.ReindexId
