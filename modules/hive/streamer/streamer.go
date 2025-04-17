@@ -447,39 +447,23 @@ func (s *Streamer) streamBlocks() {
 
 func (s *Streamer) fetchBlockBatch(startBlock, batchSize uint64) ([]hivego.Block, error) {
 	log.Printf("fetching block range %d-%d\n", startBlock, startBlock+batchSize-1)
-	// blocks := make([]hivego.Block, 0)
-	// var err error
-	// go func() {
-	// 	blocks, err = s.client.GetBlockRange(int(startBlock), int(batchSize))
-	// }()
-
-	// for len(blocks) == 0 && err == nil {
-	// 	select {
-	// 	case <-s.ctx.Done():
-	// 		return blocks, fmt.Errorf("streamer is stopped")
-	// 	case <-timeout:
-	// 		return blocks, fmt.Errorf("timeout waiting for blocks in range starting at %d", startBlock)
-	// 	}
-	// }
-	// return blocks, err
-	blocks, err := s.client.GetBlockRange(int(startBlock), int(batchSize))
-	if err != nil {
-		return nil, fmt.Errorf("failed to initiate block range fetch: %v", err)
-	}
-
-	timeout := time.After(10 * time.Second)
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			return blocks, fmt.Errorf("streamer is stopped")
-		default:
-			return blocks, nil
-
-		case <-timeout:
-			return blocks, fmt.Errorf("timeout waiting for blocks in range starting at %d", startBlock)
+	p := promise.New(func(resolve func([]hivego.Block), reject func(error)) {
+		blocks, err := s.client.GetBlockRange(int(startBlock), int(batchSize))
+		if err != nil {
+			reject(err)
+			return
 		}
+		resolve(blocks)
+	})
+
+	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
+	defer cancel()
+
+	blocks, err := p.Await(ctx)
+	if blocks == nil || *blocks == nil {
+		return make([]hivego.Block, 0), err
 	}
+	return *blocks, err
 }
 
 func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
