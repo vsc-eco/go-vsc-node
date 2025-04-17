@@ -411,6 +411,10 @@ func (s *Streamer) streamBlocks() {
 				continue
 			}
 
+			if len(blocks) == 0 {
+				log.Println("warning no blocks fetched")
+			}
+
 			// if not can store, across this async gap, we should skip processing
 			if !s.canStore() || len(blocks) == 0 {
 				time.Sleep(time.Millisecond * 100)
@@ -443,24 +447,23 @@ func (s *Streamer) streamBlocks() {
 
 func (s *Streamer) fetchBlockBatch(startBlock, batchSize uint64) ([]hivego.Block, error) {
 	log.Printf("fetching block range %d-%d\n", startBlock, startBlock+batchSize-1)
-	blocks, err := s.client.GetBlockRange(int(startBlock), int(batchSize))
-	if err != nil {
-		return nil, fmt.Errorf("failed to initiate block range fetch: %v", err)
-	}
+	blocks := make([]hivego.Block, 0)
+	var err error
+	go func() {
+		blocks, err = s.client.GetBlockRange(int(startBlock), int(batchSize))
+	}()
 
 	timeout := time.After(10 * time.Second)
 
-	for {
+	for len(blocks) == 0 && err == nil {
 		select {
 		case <-s.ctx.Done():
 			return blocks, fmt.Errorf("streamer is stopped")
-		default:
-			return blocks, nil
-
 		case <-timeout:
 			return blocks, fmt.Errorf("timeout waiting for blocks in range starting at %d", startBlock)
 		}
 	}
+	return blocks, err
 }
 
 func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
