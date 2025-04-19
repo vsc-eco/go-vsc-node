@@ -6,9 +6,9 @@ import (
 	"time"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
+	"vsc-node/modules/db/vsc/hive_blocks"
 
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -142,31 +142,7 @@ func (e *transactions) FindTransactions(id *string, account *string, contract *s
 		}
 		filters = append(filters, bson.E{Key: "$or", Value: ledgerTypeFilter})
 	}
-	pipe := mongo.Pipeline{
-		{{Key: "$match", Value: filters}},
-		// Join with hive_blocks
-		{{Key: "$lookup", Value: bson.D{
-			{Key: "from", Value: "hive_blocks"},
-			{Key: "localField", Value: "anchr_height"},
-			{Key: "foreignField", Value: "block.block_number"},
-			{Key: "as", Value: "block_info"},
-		}}},
-		// Unwind the joined array
-		{{Key: "$unwind", Value: "$block_info"}},
-		// Add timestamp field
-		{{Key: "$addFields", Value: bson.D{
-			{Key: "anchr_ts", Value: "$block_info.block.timestamp"},
-		}}},
-		// Remove temporary field
-		{{Key: "$project", Value: bson.D{
-			{Key: "block_info", Value: 0},
-		}}},
-		// Sorting
-		{{Key: "$sort", Value: bson.D{{Key: "anchr_height", Value: -1}}}},
-		// Pagination
-		{{Key: "$skip", Value: offset}},
-		{{Key: "$limit", Value: limit}},
-	}
+	pipe := hive_blocks.GetAggTimestampPipeline(filters, "anchr_height", "anchr_ts", offset, limit)
 	cursor, err := e.Aggregate(context.TODO(), pipe)
 	if err != nil {
 		return []TransactionRecord{}, err

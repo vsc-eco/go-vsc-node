@@ -546,3 +546,32 @@ func (h *hiveBlocks) GetMetadata() (Document, error) {
 
 	return result, nil
 }
+
+// creates a mongo aggregation pipeline that joins localField with block.block_number in hive_blocks to obtain the block timestamp
+func GetAggTimestampPipeline(filters bson.D, localField string, timestampField string, offset int, limit int) mongo.Pipeline {
+	return mongo.Pipeline{
+		{{Key: "$match", Value: filters}},
+		// Join with hive_blocks
+		{{Key: "$lookup", Value: bson.D{
+			{Key: "from", Value: "hive_blocks"},
+			{Key: "localField", Value: localField},
+			{Key: "foreignField", Value: "block.block_number"},
+			{Key: "as", Value: "block_info"},
+		}}},
+		// Unwind the joined array
+		{{Key: "$unwind", Value: "$block_info"}},
+		// Add timestamp field
+		{{Key: "$addFields", Value: bson.D{
+			{Key: timestampField, Value: "$block_info.block.timestamp"},
+		}}},
+		// Remove temporary field
+		{{Key: "$project", Value: bson.D{
+			{Key: "block_info", Value: 0},
+		}}},
+		// Sorting
+		{{Key: "$sort", Value: bson.D{{Key: localField, Value: -1}}}},
+		// Pagination
+		{{Key: "$skip", Value: offset}},
+		{{Key: "$limit", Value: limit}},
+	}
+}

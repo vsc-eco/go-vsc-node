@@ -6,9 +6,9 @@ import (
 	"vsc-node/modules/common"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
+	"vsc-node/modules/db/vsc/hive_blocks"
 
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -117,31 +117,7 @@ func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes [
 	if len(txTypes) > 0 {
 		filters = append(filters, bson.E{Key: "t", Value: bson.D{{Key: "$in", Value: txTypes}}})
 	}
-	pipe := mongo.Pipeline{
-		{{Key: "$match", Value: filters}},
-		// Join with hive_blocks
-		{{Key: "$lookup", Value: bson.D{
-			{Key: "from", Value: "hive_blocks"},
-			{Key: "localField", Value: "block_height"},
-			{Key: "foreignField", Value: "block.block_number"},
-			{Key: "as", Value: "block_info"},
-		}}},
-		// Unwind the joined array
-		{{Key: "$unwind", Value: "$block_info"}},
-		// Add timestamp field
-		{{Key: "$addFields", Value: bson.D{
-			{Key: "timestamp", Value: "$block_info.block.timestamp"},
-		}}},
-		// Remove temporary field
-		{{Key: "$project", Value: bson.D{
-			{Key: "block_info", Value: 0},
-		}}},
-		// Sorting
-		{{Key: "$sort", Value: bson.D{{Key: "block_height", Value: -1}}}},
-		// Pagination
-		{{Key: "$skip", Value: offset}},
-		{{Key: "$limit", Value: limit}},
-	}
+	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
 	cursor, err := ledger.Aggregate(context.TODO(), pipe)
 	if err != nil {
 		return []LedgerRecord{}, err
@@ -407,31 +383,7 @@ func (actions *actionsDb) GetActionsRange(txId *string, actionId *string, accoun
 	if toBlock != nil {
 		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$lte", Value: *toBlock}}})
 	}
-	pipe := mongo.Pipeline{
-		{{Key: "$match", Value: filters}},
-		// Join with hive_blocks
-		{{Key: "$lookup", Value: bson.D{
-			{Key: "from", Value: "hive_blocks"},
-			{Key: "localField", Value: "block_height"},
-			{Key: "foreignField", Value: "block.block_number"},
-			{Key: "as", Value: "block_info"},
-		}}},
-		// Unwind the joined array
-		{{Key: "$unwind", Value: "$block_info"}},
-		// Add timestamp field
-		{{Key: "$addFields", Value: bson.D{
-			{Key: "timestamp", Value: "$block_info.block.timestamp"},
-		}}},
-		// Remove temporary field
-		{{Key: "$project", Value: bson.D{
-			{Key: "block_info", Value: 0},
-		}}},
-		// Sorting
-		{{Key: "$sort", Value: bson.D{{Key: "block_height", Value: -1}}}},
-		// Pagination
-		{{Key: "$skip", Value: offset}},
-		{{Key: "$limit", Value: limit}},
-	}
+	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
 	cursor, err := actions.Aggregate(context.TODO(), pipe)
 	if err != nil {
 		return []ActionRecord{}, err
