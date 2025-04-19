@@ -257,6 +257,9 @@ func (r *queryResolver) FindLedgerActions(ctx context.Context, filterOptions *Le
 	if paginateErr != nil {
 		return nil, paginateErr
 	}
+	if filterOptions.ByTxID != nil && utf8.RuneCountInString(*filterOptions.ByTxID) < 40 {
+		return nil, fmt.Errorf("invalid tx id")
+	}
 	return r.Actions.GetActionsRange(filterOptions.ByTxID, filterOptions.ByActionID, filterOptions.ByAccount, filterOptions.ByTypes, filterOptions.ByStatus, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
