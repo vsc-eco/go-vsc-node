@@ -14,6 +14,7 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
@@ -277,6 +278,25 @@ func (r *queryResolver) GetAccountBalance(ctx context.Context, account string, h
 	return r.Balances.GetBalanceRecord(account, blockHeight)
 }
 
+// GetAccountRc is the resolver for the getAccountRC field.
+func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height *model.Uint64) (*rcDb.RcRecord, error) {
+	if account == "" {
+		return nil, fmt.Errorf("account parameter cannot be empty")
+	}
+	var blockHeight uint64
+	if height != nil {
+		blockHeight = uint64(*height)
+	} else {
+		head, headErr := r.HiveBlocks.GetLastProcessedBlock()
+		if headErr != nil {
+			return nil, headErr
+		}
+		blockHeight = head
+	}
+	rc, err := r.Rc.GetRecord(account, blockHeight)
+	return &rc, err
+}
+
 // FindContract is the resolver for the findContract field.
 func (r *queryResolver) FindContract(ctx context.Context, id *string) (*FindContractResult, error) {
 	panic(fmt.Errorf("not implemented"))
@@ -396,6 +416,16 @@ func (r *queryResolver) GetElection(ctx context.Context, epoch model.Uint64) (*e
 	return result, nil
 }
 
+// Amount is the resolver for the amount field.
+func (r *rcRecordResolver) Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error) {
+	return model.Int64(obj.Amount), nil
+}
+
+// BlockHeight is the resolver for the block_height field.
+func (r *rcRecordResolver) BlockHeight(ctx context.Context, obj *rcDb.RcRecord) (model.Uint64, error) {
+	return model.Uint64(obj.BlockHeight), nil
+}
+
 // AnchrHeight is the resolver for the anchr_height field.
 func (r *transactionRecordResolver) AnchrHeight(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
 	return model.Uint64(obj.AnchoredHeight), nil
@@ -479,6 +509,9 @@ func (r *Resolver) PostingJsonKeys() PostingJsonKeysResolver { return &postingJs
 // Query returns QueryResolver implementation.
 func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 
+// RcRecord returns RcRecordResolver implementation.
+func (r *Resolver) RcRecord() RcRecordResolver { return &rcRecordResolver{r} }
+
 // TransactionRecord returns TransactionRecordResolver implementation.
 func (r *Resolver) TransactionRecord() TransactionRecordResolver {
 	return &transactionRecordResolver{r}
@@ -501,6 +534,7 @@ type nonceRecordResolver struct{ *Resolver }
 type opLogEventResolver struct{ *Resolver }
 type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
+type rcRecordResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }

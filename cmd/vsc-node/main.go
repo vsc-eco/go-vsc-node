@@ -139,6 +139,7 @@ func main() {
 		electionDb,
 		txDb,
 		nonceDb,
+		rcDb,
 		hiveBlocks,
 		se,
 		da,

@@ -201,6 +201,12 @@ type BalanceRecord {
   hive_consensus: Int64!
 }
 
+type RcRecord {
+  account: String!
+  amount: Int64!
+  block_height: Uint64!
+}
+
 type FindContractOutputResult {
   outputs: [ContractOutput]
 }
@@ -306,6 +312,7 @@ type Query {
   findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerRecord!]
   findLedgerActions(filterOptions: LedgerActionsFilter): [ActionRecord!]
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
+  getAccountRC(account: String!, height: Uint64): RcRecord
   findContract(id: String): FindContractResult
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(account: String!): NonceRecord

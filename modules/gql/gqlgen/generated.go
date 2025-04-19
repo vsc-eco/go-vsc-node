@@ -15,6 +15,7 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
@@ -58,6 +59,7 @@ type ResolverRoot interface {
 	OpLogEvent() OpLogEventResolver
 	PostingJsonKeys() PostingJsonKeysResolver
 	Query() QueryResolver
+	RcRecord() RcRecordResolver
 	TransactionRecord() TransactionRecordResolver
 	Witness() WitnessResolver
 	WitnessSlot() WitnessSlotResolver
@@ -234,6 +236,7 @@ type ComplexityRoot struct {
 		FindTransaction      func(childComplexity int, filterOptions *TransactionFilter) int
 		GetAccountBalance    func(childComplexity int, account string, height *model.Uint64) int
 		GetAccountNonce      func(childComplexity int, account string) int
+		GetAccountRc         func(childComplexity int, account string, height *model.Uint64) int
 		GetCurrentNumber     func(childComplexity int) int
 		GetDagByCid          func(childComplexity int, cidString string) int
 		GetElection          func(childComplexity int, epoch model.Uint64) int
@@ -245,6 +248,12 @@ type ComplexityRoot struct {
 		WitnessNodes         func(childComplexity int, height model.Uint64) int
 		WitnessSchedule      func(childComplexity int, height model.Uint64) int
 		WitnessStake         func(childComplexity int, account string) int
+	}
+
+	RcRecord struct {
+		Account     func(childComplexity int) int
+		Amount      func(childComplexity int) int
+		BlockHeight func(childComplexity int) int
 	}
 
 	TestResult struct {
@@ -375,6 +384,7 @@ type QueryResolver interface {
 	FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) ([]ledgerDb.LedgerRecord, error)
 	FindLedgerActions(ctx context.Context, filterOptions *LedgerActionsFilter) ([]ledgerDb.ActionRecord, error)
 	GetAccountBalance(ctx context.Context, account string, height *model.Uint64) (*ledgerDb.BalanceRecord, error)
+	GetAccountRc(ctx context.Context, account string, height *model.Uint64) (*rcDb.RcRecord, error)
 	FindContract(ctx context.Context, id *string) (*FindContractResult, error)
 	SubmitTransactionV1(ctx context.Context, tx string, sig string) (*TransactionSubmitResult, error)
 	GetAccountNonce(ctx context.Context, account string) (*nonces.NonceRecord, error)
@@ -390,6 +400,10 @@ type QueryResolver interface {
 	WitnessStake(ctx context.Context, account string) (model.Uint64, error)
 	GetDagByCid(ctx context.Context, cidString string) (string, error)
 	GetElection(ctx context.Context, epoch model.Uint64) (*elections.ElectionResult, error)
+}
+type RcRecordResolver interface {
+	Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error)
+	BlockHeight(ctx context.Context, obj *rcDb.RcRecord) (model.Uint64, error)
 }
 type TransactionRecordResolver interface {
 	AnchrHeight(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
@@ -1195,6 +1209,18 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Query.GetAccountNonce(childComplexity, args["account"].(string)), true
 
+	case "Query.getAccountRC":
+		if e.complexity.Query.GetAccountRc == nil {
+			break
+		}
+
+		args, err := ec.field_Query_getAccountRC_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.GetAccountRc(childComplexity, args["account"].(string), args["height"].(*model.Uint64)), true
+
 	case "Query.getCurrentNumber":
 		if e.complexity.Query.GetCurrentNumber == nil {
 			break
@@ -1311,6 +1337,27 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.Query.WitnessStake(childComplexity, args["account"].(string)), true
+
+	case "RcRecord.account":
+		if e.complexity.RcRecord.Account == nil {
+			break
+		}
+
+		return e.complexity.RcRecord.Account(childComplexity), true
+
+	case "RcRecord.amount":
+		if e.complexity.RcRecord.Amount == nil {
+			break
+		}
+
+		return e.complexity.RcRecord.Amount(childComplexity), true
+
+	case "RcRecord.block_height":
+		if e.complexity.RcRecord.BlockHeight == nil {
+			break
+		}
+
+		return e.complexity.RcRecord.BlockHeight(childComplexity), true
 
 	case "TestResult.currentNumber":
 		if e.complexity.TestResult.CurrentNumber == nil {
@@ -1869,6 +1916,12 @@ type BalanceRecord {
   hive_consensus: Int64!
 }
 
+type RcRecord {
+  account: String!
+  amount: Int64!
+  block_height: Uint64!
+}
+
 type FindContractOutputResult {
   outputs: [ContractOutput]
 }
@@ -1974,6 +2027,7 @@ type Query {
   findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerRecord!]
   findLedgerActions(filterOptions: LedgerActionsFilter): [ActionRecord!]
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
+  getAccountRC(account: String!, height: Uint64): RcRecord
   findContract(id: String): FindContractResult
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(account: String!): NonceRecord
@@ -2385,6 +2439,47 @@ func (ec *executionContext) field_Query_getAccountNonce_argsAccount(
 	}
 
 	var zeroVal string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_getAccountRC_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_getAccountRC_argsAccount(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["account"] = arg0
+	arg1, err := ec.field_Query_getAccountRC_argsHeight(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["height"] = arg1
+	return args, nil
+}
+func (ec *executionContext) field_Query_getAccountRC_argsAccount(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (string, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("account"))
+	if tmp, ok := rawArgs["account"]; ok {
+		return ec.unmarshalNString2string(ctx, tmp)
+	}
+
+	var zeroVal string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_getAccountRC_argsHeight(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (*model.Uint64, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("height"))
+	if tmp, ok := rawArgs["height"]; ok {
+		return ec.unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, tmp)
+	}
+
+	var zeroVal *model.Uint64
 	return zeroVal, nil
 }
 
@@ -7055,6 +7150,66 @@ func (ec *executionContext) fieldContext_Query_getAccountBalance(ctx context.Con
 	return fc, nil
 }
 
+func (ec *executionContext) _Query_getAccountRC(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_getAccountRC(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().GetAccountRc(rctx, fc.Args["account"].(string), fc.Args["height"].(*model.Uint64))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*rcDb.RcRecord)
+	fc.Result = res
+	return ec.marshalORcRecord2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋrcsᚐRcRecord(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_getAccountRC(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "account":
+				return ec.fieldContext_RcRecord_account(ctx, field)
+			case "amount":
+				return ec.fieldContext_RcRecord_amount(ctx, field)
+			case "block_height":
+				return ec.fieldContext_RcRecord_block_height(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type RcRecord", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_getAccountRC_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Query_findContract(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_Query_findContract(ctx, field)
 	if err != nil {
@@ -8002,6 +8157,138 @@ func (ec *executionContext) fieldContext_Query___schema(_ context.Context, field
 				return ec.fieldContext___Schema_directives(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type __Schema", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _RcRecord_account(ctx context.Context, field graphql.CollectedField, obj *rcDb.RcRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_RcRecord_account(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Account, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_RcRecord_account(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "RcRecord",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _RcRecord_amount(ctx context.Context, field graphql.CollectedField, obj *rcDb.RcRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_RcRecord_amount(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.RcRecord().Amount(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Int64)
+	fc.Result = res
+	return ec.marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_RcRecord_amount(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "RcRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _RcRecord_block_height(ctx context.Context, field graphql.CollectedField, obj *rcDb.RcRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_RcRecord_block_height(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.RcRecord().BlockHeight(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_RcRecord_block_height(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "RcRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
 		},
 	}
 	return fc, nil
@@ -14149,6 +14436,25 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "getAccountRC":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_getAccountRC(ctx, field)
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "findContract":
 			field := field
 
@@ -14454,6 +14760,117 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Query___schema(ctx, field)
 			})
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var rcRecordImplementors = []string{"RcRecord"}
+
+func (ec *executionContext) _RcRecord(ctx context.Context, sel ast.SelectionSet, obj *rcDb.RcRecord) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, rcRecordImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("RcRecord")
+		case "account":
+			out.Values[i] = ec._RcRecord_account(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "amount":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._RcRecord_amount(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "block_height":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._RcRecord_block_height(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -16478,6 +16895,13 @@ func (ec *executionContext) marshalOOpLogEvent2ᚕvscᚑnodeᚋmodulesᚋledger�
 
 func (ec *executionContext) marshalOOpLogEvent2ᚖᚕvscᚑnodeᚋmodulesᚋledgerᚑsystemᚐOpLogEventᚄ(ctx context.Context, sel ast.SelectionSet, v *[]ledgerSystem.OpLogEvent) graphql.Marshaler {
 	return ec.marshalOOpLogEvent2ᚕvscᚑnodeᚋmodulesᚋledgerᚑsystemᚐOpLogEventᚄ(ctx, sel, *v)
+}
+
+func (ec *executionContext) marshalORcRecord2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋrcsᚐRcRecord(ctx context.Context, sel ast.SelectionSet, v *rcDb.RcRecord) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._RcRecord(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalOString2string(ctx context.Context, v any) (string, error) {
