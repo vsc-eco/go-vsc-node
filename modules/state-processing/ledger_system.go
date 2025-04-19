@@ -401,6 +401,7 @@ func (ls *LedgerSystem) ExecuteOplog(oplog []ledgerSystem.OpLogEvent, startHeigh
 
 type ExtraInfo struct {
 	BlockHeight uint64
+	ActionId    string
 }
 
 func (ls *LedgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ExtraInfo) {
@@ -422,7 +423,7 @@ func (ls *LedgerSystem) IndexActions(actionUpdate map[string]interface{}, extraI
 		if record == nil {
 			continue
 		}
-		ls.ActionsDb.ExecuteComplete(id)
+		ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
 
 		if record.Type == "stake" {
 			ls.log.Debug("Indexxing stake Ledger")

@@ -155,7 +155,7 @@ func (m *MockWithdrawsDb) MarkComplete(id string) {
 	m.Withdraws[id] = withdraw
 }
 
-func (m *MockWithdrawsDb) ExecuteComplete(id string) {
+func (m *MockWithdrawsDb) ExecuteComplete(actionId *string, id string) {
 
 }
 

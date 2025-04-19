@@ -301,6 +301,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 				se.LedgerExecutor.Ls.IndexActions(actionUpdate, ExtraInfo{
 					block.BlockNumber,
+					tx.TransactionID,
 				})
 
 				// if tx.Operations[1].Type == "transfer" {
@@ -784,7 +785,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		})
 	}
 	se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)
-	se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(completeIds...)
+	se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(nil, completeIds...)
 
 	//se.log.Debug("stBlock, endBlock", stBlock, endBlock)
 	distinctAccounts, _ := se.LedgerExecutor.Ls.LedgerDb.GetDistinctAccountsRange(stBlock, endBlock)
