@@ -9,7 +9,7 @@ type RcDb interface {
 }
 
 type RcRecord struct {
-	Account     string
-	Amount      int64
-	BlockHeight uint64
+	Account     string `json:"account" bson:"account"`
+	Amount      int64  `json:"amount" bson:"amount"`
+	BlockHeight uint64 `json:"block_height" bson:"block_height"`
 }

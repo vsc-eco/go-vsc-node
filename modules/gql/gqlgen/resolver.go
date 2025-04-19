@@ -6,6 +6,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	stateEngine "vsc-node/modules/state-processing"
@@ -25,6 +26,7 @@ type Resolver struct {
 	Elections    elections.Elections
 	Transactions transactions.Transactions
 	Nonces       nonces.Nonces
+	Rc           rcDb.RcDb
 	HiveBlocks   hive_blocks.HiveBlocks
 	StateEngine  *stateEngine.StateEngine
 	Da           *datalayer.DataLayer

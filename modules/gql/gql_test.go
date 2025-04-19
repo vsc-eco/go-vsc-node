@@ -73,6 +73,7 @@ func TestQueryAndMutation(t *testing.T) {
 		electionDb,
 		txDb,
 		nonceDb,
+		rcDb,
 		hiveBlocks,
 		se,
 		da,

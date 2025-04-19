@@ -51,6 +51,9 @@ models:
   NonceRecord:
     model:
       - vsc-node/modules/db/vsc/nonces.NonceRecord
+  RcRecord:
+    model:
+      - vsc-node/modules/db/vsc/rcs.RcRecord
   OpLogEvent:
     model:
       - vsc-node/modules/ledger-system.OpLogEvent

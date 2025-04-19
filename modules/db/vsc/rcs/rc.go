@@ -32,8 +32,9 @@ func (e *rcDb) GetRecord(account string, blockHeight uint64) (RcRecord, error) {
 		"account":      account,
 		"block_height": bson.M{"$lte": blockHeight},
 	}
+	opts := options.FindOne().SetSort(bson.D{{Key: "block_height", Value: -1}})
 
-	findResult := e.Collection.FindOne(context.Background(), query)
+	findResult := e.Collection.FindOne(context.Background(), query, opts)
 
 	var record RcRecord
 	err := findResult.Decode(&record)
