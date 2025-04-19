@@ -24,6 +24,26 @@ import (
 	"github.com/ipfs/go-cid"
 )
 
+// Amount is the resolver for the amount field.
+func (r *actionRecordResolver) Amount(ctx context.Context, obj *ledgerDb.ActionRecord) (model.Int64, error) {
+	return model.Int64(obj.Amount), nil
+}
+
+// ActionID is the resolver for the action_id field.
+func (r *actionRecordResolver) ActionID(ctx context.Context, obj *ledgerDb.ActionRecord) (string, error) {
+	return obj.TxId, nil
+}
+
+// Params is the resolver for the params field.
+func (r *actionRecordResolver) Params(ctx context.Context, obj *ledgerDb.ActionRecord) (model.Map, error) {
+	return model.Map(obj.Params), nil
+}
+
+// BlockHeight is the resolver for the block_height field.
+func (r *actionRecordResolver) BlockHeight(ctx context.Context, obj *ledgerDb.ActionRecord) (model.Uint64, error) {
+	return model.Uint64(obj.BlockHeight), nil
+}
+
 // BlockHeight is the resolver for the block_height field.
 func (r *balanceRecordResolver) BlockHeight(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Uint64, error) {
 	return model.Uint64(obj.BlockHeight), nil
@@ -230,6 +250,15 @@ func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *Ledger
 	return r.Ledger.GetLedgersTsRange(filterOptions.ByToFrom, filterOptions.ByTxID, filterOptions.ByTypes, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
+// FindLedgerActions is the resolver for the findLedgerActions field.
+func (r *queryResolver) FindLedgerActions(ctx context.Context, filterOptions *LedgerActionsFilter) ([]ledgerDb.ActionRecord, error) {
+	offset, limit, paginateErr := Paginate(filterOptions.Offset, filterOptions.Limit)
+	if paginateErr != nil {
+		return nil, paginateErr
+	}
+	return r.Actions.GetActionsRange(filterOptions.ByTxID, filterOptions.ByActionID, filterOptions.ByAccount, filterOptions.ByTypes, filterOptions.ByStatus, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
+}
+
 // GetAccountBalance is the resolver for the getAccountBalance field.
 func (r *queryResolver) GetAccountBalance(ctx context.Context, account string, height *model.Uint64) (*ledgerDb.BalanceRecord, error) {
 	if account == "" {
@@ -417,6 +446,9 @@ func (r *witnessSlotResolver) Bn(ctx context.Context, obj *stateEngine.WitnessSl
 	return model.Uint64(obj.SlotHeight), nil
 }
 
+// ActionRecord returns ActionRecordResolver implementation.
+func (r *Resolver) ActionRecord() ActionRecordResolver { return &actionRecordResolver{r} }
+
 // BalanceRecord returns BalanceRecordResolver implementation.
 func (r *Resolver) BalanceRecord() BalanceRecordResolver { return &balanceRecordResolver{r} }
 
@@ -458,6 +490,7 @@ func (r *Resolver) Witness() WitnessResolver { return &witnessResolver{r} }
 // WitnessSlot returns WitnessSlotResolver implementation.
 func (r *Resolver) WitnessSlot() WitnessSlotResolver { return &witnessSlotResolver{r} }
 
+type actionRecordResolver struct{ *Resolver }
 type balanceRecordResolver struct{ *Resolver }
 type contractOutputResolver struct{ *Resolver }
 type contractStateResolver struct{ *Resolver }

@@ -91,6 +91,7 @@ type BridgeActions interface {
 	SetStatus(id string, status string)
 	GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error)
 	GetPendingActionsByEpoch(epoch uint64, t ...string) ([]ActionRecord, error)
+	GetActionsRange(txId *string, actionId *string, account *string, byTypes []string, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ActionRecord, error)
 }
 
 type ILedgerExecutor interface {
@@ -119,6 +120,9 @@ type ActionRecord struct {
 	//Extra stored data
 	Params      map[string]interface{} `bson:"data"`
 	BlockHeight uint64                 `bson:"block_height"`
+
+	//For api query
+	Timestamp *string `json:"timestamp" bson:"timestamp"`
 }
 
 type WithdrawalSideEffect struct {

@@ -221,6 +221,20 @@ type LedgerRecord {
   tx_id: String!
 }
 
+type ActionRecord {
+  id: String!
+  status: String!
+  amount: Int64!
+  asset: String!
+  to: String!
+  memo: String!
+  action_id: String!
+  type: String!
+  params: Map
+  block_height: Uint64!
+  timestamp: String!
+}
+
 type ElectionMember {
   key: String!
   account: String!
@@ -244,6 +258,18 @@ input LedgerTxFilter {
   byToFrom: String
   byTxId: String
   byTypes: [String!]
+  fromBlock: Uint64
+  toBlock: Uint64
+  offset: Int
+  limit: Int
+}
+
+input LedgerActionsFilter {
+  byTxId: String
+  byActionId: String
+  byAccount: String
+  byTypes: [String!]
+  byStatus: String
   fromBlock: Uint64
   toBlock: Uint64
   offset: Int
@@ -278,6 +304,7 @@ type Query {
     decodedFilter: JSON
   ): FindContractOutputResult
   findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerRecord!]
+  findLedgerActions(filterOptions: LedgerActionsFilter): [ActionRecord!]
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
   findContract(id: String): FindContractResult
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult

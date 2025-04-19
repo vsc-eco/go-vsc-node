@@ -90,6 +90,18 @@ type JSONPatchOp struct {
 	Value *string `json:"value,omitempty"`
 }
 
+type LedgerActionsFilter struct {
+	ByTxID     *string       `json:"byTxId,omitempty"`
+	ByActionID *string       `json:"byActionId,omitempty"`
+	ByAccount  *string       `json:"byAccount,omitempty"`
+	ByTypes    []string      `json:"byTypes,omitempty"`
+	ByStatus   *string       `json:"byStatus,omitempty"`
+	FromBlock  *model.Uint64 `json:"fromBlock,omitempty"`
+	ToBlock    *model.Uint64 `json:"toBlock,omitempty"`
+	Offset     *int          `json:"offset,omitempty"`
+	Limit      *int          `json:"limit,omitempty"`
+}
+
 type LedgerTxFilter struct {
 	ByToFrom  *string       `json:"byToFrom,omitempty"`
 	ByTxID    *string       `json:"byTxId,omitempty"`
