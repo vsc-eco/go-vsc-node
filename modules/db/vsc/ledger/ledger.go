@@ -2,6 +2,7 @@ package ledgerDb
 
 import (
 	"context"
+	"strings"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
@@ -381,6 +382,70 @@ func (actions *actionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([
 	}
 
 	return actionRecords, nil
+}
+
+func (actions *actionsDb) GetActionsRange(txId *string, actionId *string, account *string, byTypes []string, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ActionRecord, error) {
+	filters := bson.D{}
+	if txId != nil {
+		filters = append(filters, bson.E{Key: "id", Value: *txId})
+	}
+	if actionId != nil {
+		filters = append(filters, bson.E{Key: "action_id", Value: *actionId})
+	}
+	if account != nil {
+		filters = append(filters, bson.E{Key: "to", Value: *account})
+	}
+	if len(byTypes) > 0 {
+		filters = append(filters, bson.E{Key: "type", Value: bson.D{{Key: "$in", Value: byTypes}}})
+	}
+	if status != nil {
+		filters = append(filters, bson.E{Key: "status", Value: strings.ToLower(*status)})
+	}
+	if fromBlock != nil {
+		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$gte", Value: *fromBlock}}})
+	}
+	if toBlock != nil {
+		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$lte", Value: *toBlock}}})
+	}
+	pipe := mongo.Pipeline{
+		{{Key: "$match", Value: filters}},
+		// Join with hive_blocks
+		{{Key: "$lookup", Value: bson.D{
+			{Key: "from", Value: "hive_blocks"},
+			{Key: "localField", Value: "block_height"},
+			{Key: "foreignField", Value: "block.block_number"},
+			{Key: "as", Value: "block_info"},
+		}}},
+		// Unwind the joined array
+		{{Key: "$unwind", Value: "$block_info"}},
+		// Add timestamp field
+		{{Key: "$addFields", Value: bson.D{
+			{Key: "timestamp", Value: "$block_info.block.timestamp"},
+		}}},
+		// Remove temporary field
+		{{Key: "$project", Value: bson.D{
+			{Key: "block_info", Value: 0},
+		}}},
+		// Sorting
+		{{Key: "$sort", Value: bson.D{{Key: "block_height", Value: -1}}}},
+		// Pagination
+		{{Key: "$skip", Value: offset}},
+		{{Key: "$limit", Value: limit}},
+	}
+	cursor, err := actions.Aggregate(context.TODO(), pipe)
+	if err != nil {
+		return []ActionRecord{}, err
+	}
+	defer cursor.Close(context.TODO())
+	var results []ActionRecord
+	for cursor.Next(context.TODO()) {
+		var elem ActionRecord
+		if err := cursor.Decode(&elem); err != nil {
+			return []ActionRecord{}, err
+		}
+		results = append(results, elem)
+	}
+	return results, nil
 }
 
 type interestClaims struct {

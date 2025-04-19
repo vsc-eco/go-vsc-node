@@ -69,6 +69,7 @@ func TestQueryAndMutation(t *testing.T) {
 		txPool,
 		balances,
 		ledgerDbImpl,
+		actionsDb,
 		electionDb,
 		txDb,
 		nonceDb,

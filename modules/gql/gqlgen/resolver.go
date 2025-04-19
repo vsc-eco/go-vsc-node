@@ -21,6 +21,7 @@ type Resolver struct {
 	TxPool       *transactionpool.TransactionPool
 	Balances     ledgerDb.Balances
 	Ledger       ledgerDb.Ledger
+	Actions      ledgerDb.BridgeActions
 	Elections    elections.Elections
 	Transactions transactions.Transactions
 	Nonces       nonces.Nonces

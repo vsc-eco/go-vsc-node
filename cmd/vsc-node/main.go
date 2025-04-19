@@ -135,6 +135,7 @@ func main() {
 		txpool,
 		balanceDb,
 		ledgerDbImpl,
+		actionsDb,
 		electionDb,
 		txDb,
 		nonceDb,
