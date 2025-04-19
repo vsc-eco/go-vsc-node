@@ -268,18 +268,22 @@ func (actionsDb *actionsDb) StoreAction(withdraw ActionRecord) {
 	}, findUpdateOpts)
 }
 
-func (actionsDb *actionsDb) ExecuteComplete(ids ...string) {
+func (actionsDb *actionsDb) ExecuteComplete(actionId *string, ids ...string) {
 	if len(ids) == 0 {
 		return
+	}
+	updated := bson.M{
+		"status": "complete",
+	}
+	if actionId != nil {
+		updated["action_id"] = *actionId
 	}
 	actionsDb.UpdateMany(context.Background(), bson.M{
 		"id": bson.M{
 			"$in": ids,
 		},
 	}, bson.M{
-		"$set": bson.M{
-			"status": "complete",
-		},
+		"$set": updated,
 	})
 }
 

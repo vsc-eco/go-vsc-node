@@ -86,7 +86,7 @@ type LedgerRecord struct {
 type BridgeActions interface {
 	aggregate.Plugin
 	StoreAction(withdraw ActionRecord)
-	ExecuteComplete(ids ...string)
+	ExecuteComplete(actionId *string, ids ...string)
 	Get(id string) (*ActionRecord, error)
 	SetStatus(id string, status string)
 	GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error)
@@ -113,7 +113,7 @@ type ActionRecord struct {
 	Asset  string `bson:"asset"`
 	To     string `bson:"to"`
 	Memo   string `bson:"memo"`
-	TxId   string `bson:"withdraw_id"`
+	TxId   string `bson:"action_id"`
 	Type   string `bson:"type"`
 
 	//Extra stored data
