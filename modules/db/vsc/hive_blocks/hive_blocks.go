@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
@@ -501,6 +502,7 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 					return
 				}
 			}
+			time.Sleep(1 * time.Second)
 		}
 	}()
 	return cancel, errChan
