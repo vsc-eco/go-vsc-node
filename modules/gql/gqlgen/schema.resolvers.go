@@ -226,7 +226,9 @@ func (r *queryResolver) ContractState(ctx context.Context, id *string) (contract
 
 // FindTransaction is the resolver for the findTransaction field.
 func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *TransactionFilter) ([]transactions.TransactionRecord, error) {
-	// panic(fmt.Errorf("not implemented"))
+	if filterOptions == nil {
+		filterOptions = &TransactionFilter{}
+	}
 	offset, limit, paginateErr := Paginate(filterOptions.Offset, filterOptions.Limit)
 	if paginateErr != nil {
 		return nil, paginateErr
@@ -241,6 +243,9 @@ func (r *queryResolver) FindContractOutput(ctx context.Context, filterOptions *F
 
 // FindLedgerTXs is the resolver for the findLedgerTXs field.
 func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) ([]ledgerDb.LedgerRecord, error) {
+	if filterOptions == nil {
+		filterOptions = &LedgerTxFilter{}
+	}
 	offset, limit, paginateErr := Paginate(filterOptions.Offset, filterOptions.Limit)
 	if paginateErr != nil {
 		return nil, paginateErr
@@ -253,6 +258,9 @@ func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *Ledger
 
 // FindLedgerActions is the resolver for the findLedgerActions field.
 func (r *queryResolver) FindLedgerActions(ctx context.Context, filterOptions *LedgerActionsFilter) ([]ledgerDb.ActionRecord, error) {
+	if filterOptions == nil {
+		filterOptions = &LedgerActionsFilter{}
+	}
 	offset, limit, paginateErr := Paginate(filterOptions.Offset, filterOptions.Limit)
 	if paginateErr != nil {
 		return nil, paginateErr
