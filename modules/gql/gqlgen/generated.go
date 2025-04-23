@@ -1736,10 +1736,10 @@ enum TransactionStatus {
 }
 
 enum Asset {
-  HIVE
-  HIVE_CONSENSUS
-  HBD
-  HBD_SAVINGS
+  hive
+  hive_consensus
+  hbd
+  hbd_savings
 }
 
 enum TransactionType {

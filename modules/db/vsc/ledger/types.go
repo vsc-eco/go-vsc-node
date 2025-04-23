@@ -69,10 +69,10 @@ type BalanceRecord struct {
 type Asset string
 
 const (
-	AssetHive          Asset = "HIVE"
-	AssetHiveConsensus Asset = "HIVE_CONSENSUS"
-	AssetHbd           Asset = "HBD"
-	AssetHbdSavings    Asset = "HBD_SAVINGS"
+	AssetHive          Asset = "hive"
+	AssetHiveConsensus Asset = "hive_consensus"
+	AssetHbd           Asset = "hbd"
+	AssetHbdSavings    Asset = "hbd_savings"
 )
 
 type LedgerRecord struct {

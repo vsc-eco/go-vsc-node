@@ -118,7 +118,7 @@ func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes [
 		filters = append(filters, bson.E{Key: "t", Value: bson.D{{Key: "$in", Value: txTypes}}})
 	}
 	if asset != nil {
-		filters = append(filters, bson.E{Key: "tk", Value: strings.ToLower(string(*asset))})
+		filters = append(filters, bson.E{Key: "tk", Value: string(*asset)})
 	}
 	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
 	cursor, err := ledger.Aggregate(context.TODO(), pipe)
@@ -378,7 +378,7 @@ func (actions *actionsDb) GetActionsRange(txId *string, actionId *string, accoun
 		filters = append(filters, bson.E{Key: "type", Value: bson.D{{Key: "$in", Value: byTypes}}})
 	}
 	if asset != nil {
-		filters = append(filters, bson.E{Key: "asset", Value: strings.ToLower(string(*asset))})
+		filters = append(filters, bson.E{Key: "asset", Value: string(*asset)})
 	}
 	if status != nil {
 		filters = append(filters, bson.E{Key: "status", Value: strings.ToLower(*status)})
