@@ -95,6 +95,7 @@ type LedgerActionsFilter struct {
 	ByActionID *string       `json:"byActionId,omitempty"`
 	ByAccount  *string       `json:"byAccount,omitempty"`
 	ByTypes    []string      `json:"byTypes,omitempty"`
+	ByAsset    *string       `json:"byAsset,omitempty"`
 	ByStatus   *string       `json:"byStatus,omitempty"`
 	FromBlock  *model.Uint64 `json:"fromBlock,omitempty"`
 	ToBlock    *model.Uint64 `json:"toBlock,omitempty"`
@@ -106,6 +107,7 @@ type LedgerTxFilter struct {
 	ByToFrom  *string       `json:"byToFrom,omitempty"`
 	ByTxID    *string       `json:"byTxId,omitempty"`
 	ByTypes   []string      `json:"byTypes,omitempty"`
+	ByAsset   *string       `json:"byAsset,omitempty"`
 	FromBlock *model.Uint64 `json:"fromBlock,omitempty"`
 	ToBlock   *model.Uint64 `json:"toBlock,omitempty"`
 	Offset    *int          `json:"offset,omitempty"`
