@@ -9,7 +9,7 @@ type Ledger interface {
 	StoreLedger(...LedgerRecord)
 	GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error)
 	GetLedgerRange(account string, start uint64, end uint64, asset string, options ...LedgerOptions) (*[]LedgerRecord, error)
-	GetLedgersTsRange(account *string, txId *string, txTypes []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error)
+	GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error)
 	//Gets distinct accounts on or after a block height
 	//Used to indicate whether balance has been updated or not
 	GetDistinctAccountsRange(startBlock, endBlock uint64) ([]string, error)
@@ -91,7 +91,7 @@ type BridgeActions interface {
 	SetStatus(id string, status string)
 	GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error)
 	GetPendingActionsByEpoch(epoch uint64, t ...string) ([]ActionRecord, error)
-	GetActionsRange(txId *string, actionId *string, account *string, byTypes []string, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ActionRecord, error)
+	GetActionsRange(txId *string, actionId *string, account *string, byTypes []string, asset *string, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ActionRecord, error)
 }
 
 type ILedgerExecutor interface {

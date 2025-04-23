@@ -1979,6 +1979,7 @@ input LedgerTxFilter {
   byToFrom: String
   byTxId: String
   byTypes: [String!]
+  byAsset: String
   fromBlock: Uint64
   toBlock: Uint64
   offset: Int
@@ -1990,6 +1991,7 @@ input LedgerActionsFilter {
   byActionId: String
   byAccount: String
   byTypes: [String!]
+  byAsset: String
   byStatus: String
   fromBlock: Uint64
   toBlock: Uint64
@@ -11804,7 +11806,7 @@ func (ec *executionContext) unmarshalInputLedgerActionsFilter(ctx context.Contex
 		asMap[k] = v
 	}
 
-	fieldsInOrder := [...]string{"byTxId", "byActionId", "byAccount", "byTypes", "byStatus", "fromBlock", "toBlock", "offset", "limit"}
+	fieldsInOrder := [...]string{"byTxId", "byActionId", "byAccount", "byTypes", "byAsset", "byStatus", "fromBlock", "toBlock", "offset", "limit"}
 	for _, k := range fieldsInOrder {
 		v, ok := asMap[k]
 		if !ok {
@@ -11839,6 +11841,13 @@ func (ec *executionContext) unmarshalInputLedgerActionsFilter(ctx context.Contex
 				return it, err
 			}
 			it.ByTypes = data
+		case "byAsset":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("byAsset"))
+			data, err := ec.unmarshalOString2ᚖstring(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.ByAsset = data
 		case "byStatus":
 			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("byStatus"))
 			data, err := ec.unmarshalOString2ᚖstring(ctx, v)
@@ -11887,7 +11896,7 @@ func (ec *executionContext) unmarshalInputLedgerTxFilter(ctx context.Context, ob
 		asMap[k] = v
 	}
 
-	fieldsInOrder := [...]string{"byToFrom", "byTxId", "byTypes", "fromBlock", "toBlock", "offset", "limit"}
+	fieldsInOrder := [...]string{"byToFrom", "byTxId", "byTypes", "byAsset", "fromBlock", "toBlock", "offset", "limit"}
 	for _, k := range fieldsInOrder {
 		v, ok := asMap[k]
 		if !ok {
@@ -11915,6 +11924,13 @@ func (ec *executionContext) unmarshalInputLedgerTxFilter(ctx context.Context, ob
 				return it, err
 			}
 			it.ByTypes = data
+		case "byAsset":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("byAsset"))
+			data, err := ec.unmarshalOString2ᚖstring(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.ByAsset = data
 		case "fromBlock":
 			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("fromBlock"))
 			data, err := ec.unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, v)

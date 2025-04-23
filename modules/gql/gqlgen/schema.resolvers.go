@@ -248,7 +248,7 @@ func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *Ledger
 	if filterOptions.ByTxID != nil && utf8.RuneCountInString(*filterOptions.ByTxID) < 40 {
 		return nil, fmt.Errorf("invalid tx id")
 	}
-	return r.Ledger.GetLedgersTsRange(filterOptions.ByToFrom, filterOptions.ByTxID, filterOptions.ByTypes, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
+	return r.Ledger.GetLedgersTsRange(filterOptions.ByToFrom, filterOptions.ByTxID, filterOptions.ByTypes, filterOptions.ByAsset, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
 // FindLedgerActions is the resolver for the findLedgerActions field.
@@ -260,7 +260,7 @@ func (r *queryResolver) FindLedgerActions(ctx context.Context, filterOptions *Le
 	if filterOptions.ByTxID != nil && utf8.RuneCountInString(*filterOptions.ByTxID) < 40 {
 		return nil, fmt.Errorf("invalid tx id")
 	}
-	return r.Actions.GetActionsRange(filterOptions.ByTxID, filterOptions.ByActionID, filterOptions.ByAccount, filterOptions.ByTypes, filterOptions.ByStatus, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
+	return r.Actions.GetActionsRange(filterOptions.ByTxID, filterOptions.ByActionID, filterOptions.ByAccount, filterOptions.ByTypes, filterOptions.ByAsset, filterOptions.ByStatus, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
 // GetAccountBalance is the resolver for the getAccountBalance field.

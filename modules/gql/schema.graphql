@@ -264,6 +264,7 @@ input LedgerTxFilter {
   byToFrom: String
   byTxId: String
   byTypes: [String!]
+  byAsset: String
   fromBlock: Uint64
   toBlock: Uint64
   offset: Int
@@ -275,6 +276,7 @@ input LedgerActionsFilter {
   byActionId: String
   byAccount: String
   byTypes: [String!]
+  byAsset: String
   byStatus: String
   fromBlock: Uint64
   toBlock: Uint64
