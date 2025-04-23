@@ -47,7 +47,7 @@ type TransactionRecord struct {
 	AnchoredId     string                     `json:"anchr_id" bson:"anchr_id"`
 	AnchoredIndex  int64                      `json:"anchr_index" bson:"anchr_index"`
 	AnchoredOpIdx  int64                      `json:"anchr_opidx" bson:"anchr_opidx"`
-	AnchoredTs     *string                    `json:"anchr_ts" bson:"anchr_ts"`
+	AnchoredTs     *string                    `json:"anchr_ts,omitempty" bson:"anchr_ts,omitempty"`
 	AnchoredHeight uint64                     `json:"anchr_height" bson:"anchr_height"`
 	FirstSeen      time.Time                  `json:"first_seen" bson:"first_seen"`
 	Ledger         *[]ledgerSystem.OpLogEvent `json:"ledger,omitempty" bson:"ledger,omitempty"`

@@ -71,7 +71,7 @@ type LedgerRecord struct {
 	Id          string  `json:"id" bson:"id"`
 	Amount      int64   `json:"amount" bson:"amount"`
 	BlockHeight uint64  `json:"block_height" bson:"block_height"`
-	Timestamp   *string `json:"timestamp" bson:"timestamp"`
+	Timestamp   *string `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
 	From        string  `json:"from" bson:"from"`
 	Owner       string  `json:"owner" bson:"owner"`
 	Type        string  `json:"t" bson:"t"`
@@ -122,7 +122,7 @@ type ActionRecord struct {
 	BlockHeight uint64                 `bson:"block_height"`
 
 	//For api query
-	Timestamp *string `json:"timestamp" bson:"timestamp"`
+	Timestamp *string `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
 }
 
 type WithdrawalSideEffect struct {
