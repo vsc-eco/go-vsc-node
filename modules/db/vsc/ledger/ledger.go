@@ -97,7 +97,7 @@ func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, a
 	return &results, nil
 }
 
-func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error) {
+func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error) {
 	filters := bson.D{}
 	if account != nil {
 		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
@@ -118,7 +118,7 @@ func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes [
 		filters = append(filters, bson.E{Key: "t", Value: bson.D{{Key: "$in", Value: txTypes}}})
 	}
 	if asset != nil {
-		filters = append(filters, bson.E{Key: "tk", Value: strings.ToLower(*asset)})
+		filters = append(filters, bson.E{Key: "tk", Value: strings.ToLower(string(*asset))})
 	}
 	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
 	cursor, err := ledger.Aggregate(context.TODO(), pipe)
@@ -363,7 +363,7 @@ func (actions *actionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([
 	return actionRecords, nil
 }
 
-func (actions *actionsDb) GetActionsRange(txId *string, actionId *string, account *string, byTypes []string, asset *string, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ActionRecord, error) {
+func (actions *actionsDb) GetActionsRange(txId *string, actionId *string, account *string, byTypes []string, asset *Asset, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ActionRecord, error) {
 	filters := bson.D{}
 	if txId != nil {
 		filters = append(filters, bson.E{Key: "id", Value: *txId})
@@ -378,7 +378,7 @@ func (actions *actionsDb) GetActionsRange(txId *string, actionId *string, accoun
 		filters = append(filters, bson.E{Key: "type", Value: bson.D{{Key: "$in", Value: byTypes}}})
 	}
 	if asset != nil {
-		filters = append(filters, bson.E{Key: "asset", Value: strings.ToLower(*asset)})
+		filters = append(filters, bson.E{Key: "asset", Value: strings.ToLower(string(*asset))})
 	}
 	if status != nil {
 		filters = append(filters, bson.E{Key: "status", Value: strings.ToLower(*status)})

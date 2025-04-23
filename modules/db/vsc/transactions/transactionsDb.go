@@ -2,7 +2,6 @@ package transactions
 
 import (
 	"context"
-	"strings"
 	"time"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
@@ -112,7 +111,7 @@ func (e *transactions) GetTransaction(id string) *TransactionRecord {
 	return &record
 }
 
-func (e *transactions) FindTransactions(id *string, account *string, contract *string, status *string, byType *string, ledgerToFrom *string, ledgerTypes []string, offset int, limit int) ([]TransactionRecord, error) {
+func (e *transactions) FindTransactions(id *string, account *string, contract *string, status *TransactionStatus, byType *string, ledgerToFrom *string, ledgerTypes []string, offset int, limit int) ([]TransactionRecord, error) {
 	filters := bson.D{}
 	if id != nil {
 		filters = append(filters, bson.E{Key: "id", Value: *id})
@@ -124,7 +123,7 @@ func (e *transactions) FindTransactions(id *string, account *string, contract *s
 		filters = append(filters, bson.E{Key: "data.contract_id", Value: *contract})
 	}
 	if status != nil {
-		filters = append(filters, bson.E{Key: "status", Value: strings.ToUpper(*status)})
+		filters = append(filters, bson.E{Key: "status", Value: string(*status)})
 	}
 	if byType != nil {
 		filters = append(filters, bson.E{Key: "data.type", Value: *byType})
