@@ -20,6 +20,13 @@ enum TransactionStatus {
   PROCESSED
 }
 
+enum Asset {
+  HIVE
+  HIVE_CONSENSUS
+  HBD
+  HBD_SAVINGS
+}
+
 enum TransactionType {
   NULL
   INPUT
@@ -264,7 +271,7 @@ input LedgerTxFilter {
   byToFrom: String
   byTxId: String
   byTypes: [String!]
-  byAsset: String
+  byAsset: Asset
   fromBlock: Uint64
   toBlock: Uint64
   offset: Int
@@ -276,7 +283,7 @@ input LedgerActionsFilter {
   byActionId: String
   byAccount: String
   byTypes: [String!]
-  byAsset: String
+  byAsset: Asset
   byStatus: String
   fromBlock: Uint64
   toBlock: Uint64
@@ -288,7 +295,7 @@ input TransactionFilter {
   byId: String
   byAccount: String
   byContract: String
-  byStatus: String
+  byStatus: TransactionStatus
   byType: String
   byLedgerToFrom: String
   byLedgerTypes: [String!]

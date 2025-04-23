@@ -1735,6 +1735,13 @@ enum TransactionStatus {
   PROCESSED
 }
 
+enum Asset {
+  HIVE
+  HIVE_CONSENSUS
+  HBD
+  HBD_SAVINGS
+}
+
 enum TransactionType {
   NULL
   INPUT
@@ -1979,7 +1986,7 @@ input LedgerTxFilter {
   byToFrom: String
   byTxId: String
   byTypes: [String!]
-  byAsset: String
+  byAsset: Asset
   fromBlock: Uint64
   toBlock: Uint64
   offset: Int
@@ -1991,7 +1998,7 @@ input LedgerActionsFilter {
   byActionId: String
   byAccount: String
   byTypes: [String!]
-  byAsset: String
+  byAsset: Asset
   byStatus: String
   fromBlock: Uint64
   toBlock: Uint64
@@ -2003,7 +2010,7 @@ input TransactionFilter {
   byId: String
   byAccount: String
   byContract: String
-  byStatus: String
+  byStatus: TransactionStatus
   byType: String
   byLedgerToFrom: String
   byLedgerTypes: [String!]
@@ -11843,7 +11850,7 @@ func (ec *executionContext) unmarshalInputLedgerActionsFilter(ctx context.Contex
 			it.ByTypes = data
 		case "byAsset":
 			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("byAsset"))
-			data, err := ec.unmarshalOString2ᚖstring(ctx, v)
+			data, err := ec.unmarshalOAsset2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐAsset(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -11926,7 +11933,7 @@ func (ec *executionContext) unmarshalInputLedgerTxFilter(ctx context.Context, ob
 			it.ByTypes = data
 		case "byAsset":
 			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("byAsset"))
-			data, err := ec.unmarshalOString2ᚖstring(ctx, v)
+			data, err := ec.unmarshalOAsset2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐAsset(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -12002,7 +12009,7 @@ func (ec *executionContext) unmarshalInputTransactionFilter(ctx context.Context,
 			it.ByContract = data
 		case "byStatus":
 			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("byStatus"))
-			data, err := ec.unmarshalOString2ᚖstring(ctx, v)
+			data, err := ec.unmarshalOTransactionStatus2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionStatus(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -16606,6 +16613,23 @@ func (ec *executionContext) marshalOAnchorProducer2ᚖvscᚑnodeᚋmodulesᚋgql
 	return ec._AnchorProducer(ctx, sel, v)
 }
 
+func (ec *executionContext) unmarshalOAsset2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐAsset(ctx context.Context, v any) (*ledgerDb.Asset, error) {
+	if v == nil {
+		return nil, nil
+	}
+	tmp, err := graphql.UnmarshalString(v)
+	res := ledgerDb.Asset(tmp)
+	return &res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalOAsset2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐAsset(ctx context.Context, sel ast.SelectionSet, v *ledgerDb.Asset) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	res := graphql.MarshalString(string(*v))
+	return res
+}
+
 func (ec *executionContext) marshalOBalanceRecord2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐBalanceRecord(ctx context.Context, sel ast.SelectionSet, v *ledgerDb.BalanceRecord) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
@@ -17042,6 +17066,23 @@ func (ec *executionContext) marshalOTransactionRecord2ᚕvscᚑnodeᚋmodulesᚋ
 	}
 
 	return ret
+}
+
+func (ec *executionContext) unmarshalOTransactionStatus2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionStatus(ctx context.Context, v any) (*transactions.TransactionStatus, error) {
+	if v == nil {
+		return nil, nil
+	}
+	tmp, err := graphql.UnmarshalString(v)
+	res := transactions.TransactionStatus(tmp)
+	return &res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalOTransactionStatus2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionStatus(ctx context.Context, sel ast.SelectionSet, v *transactions.TransactionStatus) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	res := graphql.MarshalString(string(*v))
+	return res
 }
 
 func (ec *executionContext) marshalOTransactionSubmitResult2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTransactionSubmitResult(ctx context.Context, sel ast.SelectionSet, v *TransactionSubmitResult) graphql.Marshaler {

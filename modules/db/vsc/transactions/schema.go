@@ -33,6 +33,16 @@ type SetResultUpdate struct {
 	}
 }
 
+type TransactionStatus string
+
+const (
+	TransactionStatusUnconfirmed TransactionStatus = "UNCONFIRMED"
+	TransactionStatusConfirmed   TransactionStatus = "CONFIRMED"
+	TransactionStatusFailed      TransactionStatus = "FAILED"
+	TransactionStatusIncluded    TransactionStatus = "INCLUDED"
+	TransactionStatusProcessed   TransactionStatus = "PROCESSED"
+)
+
 type TransactionRecord struct {
 	Id            string   `json:"id" bson:"id"`
 	Status        string   `json:"status" bson:"status"`

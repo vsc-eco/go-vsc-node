@@ -7,6 +7,8 @@ import (
 	"io"
 	"strconv"
 	"vsc-node/modules/db/vsc/contracts"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/gql/model"
 )
 
@@ -91,27 +93,27 @@ type JSONPatchOp struct {
 }
 
 type LedgerActionsFilter struct {
-	ByTxID     *string       `json:"byTxId,omitempty"`
-	ByActionID *string       `json:"byActionId,omitempty"`
-	ByAccount  *string       `json:"byAccount,omitempty"`
-	ByTypes    []string      `json:"byTypes,omitempty"`
-	ByAsset    *string       `json:"byAsset,omitempty"`
-	ByStatus   *string       `json:"byStatus,omitempty"`
-	FromBlock  *model.Uint64 `json:"fromBlock,omitempty"`
-	ToBlock    *model.Uint64 `json:"toBlock,omitempty"`
-	Offset     *int          `json:"offset,omitempty"`
-	Limit      *int          `json:"limit,omitempty"`
+	ByTxID     *string         `json:"byTxId,omitempty"`
+	ByActionID *string         `json:"byActionId,omitempty"`
+	ByAccount  *string         `json:"byAccount,omitempty"`
+	ByTypes    []string        `json:"byTypes,omitempty"`
+	ByAsset    *ledgerDb.Asset `json:"byAsset,omitempty"`
+	ByStatus   *string         `json:"byStatus,omitempty"`
+	FromBlock  *model.Uint64   `json:"fromBlock,omitempty"`
+	ToBlock    *model.Uint64   `json:"toBlock,omitempty"`
+	Offset     *int            `json:"offset,omitempty"`
+	Limit      *int            `json:"limit,omitempty"`
 }
 
 type LedgerTxFilter struct {
-	ByToFrom  *string       `json:"byToFrom,omitempty"`
-	ByTxID    *string       `json:"byTxId,omitempty"`
-	ByTypes   []string      `json:"byTypes,omitempty"`
-	ByAsset   *string       `json:"byAsset,omitempty"`
-	FromBlock *model.Uint64 `json:"fromBlock,omitempty"`
-	ToBlock   *model.Uint64 `json:"toBlock,omitempty"`
-	Offset    *int          `json:"offset,omitempty"`
-	Limit     *int          `json:"limit,omitempty"`
+	ByToFrom  *string         `json:"byToFrom,omitempty"`
+	ByTxID    *string         `json:"byTxId,omitempty"`
+	ByTypes   []string        `json:"byTypes,omitempty"`
+	ByAsset   *ledgerDb.Asset `json:"byAsset,omitempty"`
+	FromBlock *model.Uint64   `json:"fromBlock,omitempty"`
+	ToBlock   *model.Uint64   `json:"toBlock,omitempty"`
+	Offset    *int            `json:"offset,omitempty"`
+	Limit     *int            `json:"limit,omitempty"`
 }
 
 type LocalNodeInfo struct {
@@ -137,15 +139,15 @@ type TransactionData struct {
 }
 
 type TransactionFilter struct {
-	ByID           *string  `json:"byId,omitempty"`
-	ByAccount      *string  `json:"byAccount,omitempty"`
-	ByContract     *string  `json:"byContract,omitempty"`
-	ByStatus       *string  `json:"byStatus,omitempty"`
-	ByType         *string  `json:"byType,omitempty"`
-	ByLedgerToFrom *string  `json:"byLedgerToFrom,omitempty"`
-	ByLedgerTypes  []string `json:"byLedgerTypes,omitempty"`
-	Offset         *int     `json:"offset,omitempty"`
-	Limit          *int     `json:"limit,omitempty"`
+	ByID           *string                         `json:"byId,omitempty"`
+	ByAccount      *string                         `json:"byAccount,omitempty"`
+	ByContract     *string                         `json:"byContract,omitempty"`
+	ByStatus       *transactions.TransactionStatus `json:"byStatus,omitempty"`
+	ByType         *string                         `json:"byType,omitempty"`
+	ByLedgerToFrom *string                         `json:"byLedgerToFrom,omitempty"`
+	ByLedgerTypes  []string                        `json:"byLedgerTypes,omitempty"`
+	Offset         *int                            `json:"offset,omitempty"`
+	Limit          *int                            `json:"limit,omitempty"`
 }
 
 type TransactionOutput struct {
@@ -240,53 +242,6 @@ func (e *BalanceControllerType) UnmarshalGQL(v any) error {
 }
 
 func (e BalanceControllerType) MarshalGQL(w io.Writer) {
-	fmt.Fprint(w, strconv.Quote(e.String()))
-}
-
-type TransactionStatus string
-
-const (
-	TransactionStatusUnconfirmed TransactionStatus = "UNCONFIRMED"
-	TransactionStatusConfirmed   TransactionStatus = "CONFIRMED"
-	TransactionStatusFailed      TransactionStatus = "FAILED"
-	TransactionStatusIncluded    TransactionStatus = "INCLUDED"
-	TransactionStatusProcessed   TransactionStatus = "PROCESSED"
-)
-
-var AllTransactionStatus = []TransactionStatus{
-	TransactionStatusUnconfirmed,
-	TransactionStatusConfirmed,
-	TransactionStatusFailed,
-	TransactionStatusIncluded,
-	TransactionStatusProcessed,
-}
-
-func (e TransactionStatus) IsValid() bool {
-	switch e {
-	case TransactionStatusUnconfirmed, TransactionStatusConfirmed, TransactionStatusFailed, TransactionStatusIncluded, TransactionStatusProcessed:
-		return true
-	}
-	return false
-}
-
-func (e TransactionStatus) String() string {
-	return string(e)
-}
-
-func (e *TransactionStatus) UnmarshalGQL(v any) error {
-	str, ok := v.(string)
-	if !ok {
-		return fmt.Errorf("enums must be strings")
-	}
-
-	*e = TransactionStatus(str)
-	if !e.IsValid() {
-		return fmt.Errorf("%s is not a valid TransactionStatus", str)
-	}
-	return nil
-}
-
-func (e TransactionStatus) MarshalGQL(w io.Writer) {
 	fmt.Fprint(w, strconv.Quote(e.String()))
 }
 
