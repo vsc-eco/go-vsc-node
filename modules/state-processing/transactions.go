@@ -3,9 +3,7 @@ package stateEngine
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"slices"
-	"strconv"
 	"strings"
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/common"
@@ -190,12 +188,12 @@ func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession,
 		}
 	}
 
-	amt, err := common.SafeParseHiveFloat(tx.Amount)
+	amount, err := common.SafeParseHiveFloat(tx.Amount)
 
 	if err != nil {
 		return TxResult{
 			Success: false,
-			Ret:     "Invalid decimal amount",
+			Ret:     fmt.Errorf("Invalid amount: %w", err).Error(),
 			RcUsed:  50,
 		}
 	}
@@ -206,7 +204,7 @@ func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession,
 		OpIdx:       int64(tx.Self.OpIndex),
 		From:        tx.From,
 		To:          tx.To,
-		Amount:      int64(amt),
+		Amount:      amount,
 		Asset:       tx.Asset,
 		Memo:        tx.Memo,
 		BlockHeight: tx.Self.BlockHeight,
@@ -276,7 +274,17 @@ func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession,
 			RcUsed:  50,
 		}
 	}
-	fl, _ := strconv.ParseFloat(t.Amount, 64)
+
+	amount, err := common.SafeParseHiveFloat(t.Amount)
+
+	if err != nil {
+		return TxResult{
+			Success: false,
+			Ret:     fmt.Errorf("Invalid amount: %w", err).Error(),
+			RcUsed:  50,
+		}
+	}
+
 	params := ledgerSystem.WithdrawParams{
 		Id:          MakeTxId(t.Self.TxId, t.Self.OpIndex),
 		BIdx:        int64(t.Self.Index),
@@ -284,7 +292,7 @@ func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession,
 		To:          t.To,
 		Asset:       t.Asset,
 		Memo:        t.Memo,
-		Amount:      int64(fl * math.Pow(10, 3)),
+		Amount:      amount,
 		BlockHeight: t.Self.BlockHeight,
 	}
 	if t.From == "" {
@@ -348,14 +356,24 @@ func (t *TxStakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rc
 			RcUsed:  50,
 		}
 	}
-	fl, _ := strconv.ParseFloat(t.Amount, 64)
+
+	amount, err := common.SafeParseHiveFloat(t.Amount)
+
+	if err != nil {
+		return TxResult{
+			Success: false,
+			Ret:     fmt.Errorf("Invalid amount: %w", err).Error(),
+			RcUsed:  50,
+		}
+	}
+
 	params := StakeOp{
 		OpLogEvent: ledgerSystem.OpLogEvent{
 			Id:          MakeTxId(t.Self.TxId, t.Self.OpIndex),
 			To:          t.To,
 			From:        t.From,
 			Asset:       t.Asset,
-			Amount:      int64(fl * math.Pow(10, 3)),
+			Amount:      amount,
 			Memo:        "",
 			BlockHeight: t.Self.BlockHeight,
 		},
@@ -426,14 +444,24 @@ func (t *TxUnstakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, 
 			RcUsed:  50,
 		}
 	}
-	fl, _ := strconv.ParseFloat(t.Amount, 64)
+
+	amount, err := common.SafeParseHiveFloat(t.Amount)
+
+	if err != nil {
+		return TxResult{
+			Success: false,
+			Ret:     fmt.Errorf("Invalid amount: %w", err).Error(),
+			RcUsed:  50,
+		}
+	}
+
 	params := StakeOp{
 		OpLogEvent: ledgerSystem.OpLogEvent{
 			Id:          MakeTxId(t.Self.TxId, t.Self.OpIndex),
 			To:          t.To,
 			From:        t.From,
 			Asset:       t.Asset,
-			Amount:      int64(fl * math.Pow(10, 3)),
+			Amount:      amount,
 			Memo:        "",
 			BlockHeight: t.Self.BlockHeight,
 			Type:        "unstake",
@@ -532,13 +560,22 @@ func (tx *TxConsensusStake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 			RcUsed:  50,
 		}
 	}
-	fl, _ := strconv.ParseFloat(tx.Amount, 64)
+
+	amount, err := common.SafeParseHiveFloat(tx.Amount)
+
+	if err != nil {
+		return TxResult{
+			Success: false,
+			Ret:     fmt.Errorf("Invalid amount: %w", err).Error(),
+			RcUsed:  50,
+		}
+	}
 
 	params := ledgerSystem.ConsensusParams{
 		Id:          MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
 		From:        tx.From,
 		To:          tx.To,
-		Amount:      int64(fl * math.Pow(10, 3)),
+		Amount:      amount,
 		BlockHeight: tx.Self.BlockHeight,
 		Type:        "stake",
 	}
@@ -610,7 +647,16 @@ func (tx *TxConsensusUnstake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSe
 			RcUsed:  50,
 		}
 	}
-	fl, _ := strconv.ParseFloat(tx.Amount, 64)
+
+	amount, err := common.SafeParseHiveFloat(tx.Amount)
+
+	if err != nil {
+		return TxResult{
+			Success: false,
+			Ret:     fmt.Errorf("Invalid amount: %w", err).Error(),
+			RcUsed:  50,
+		}
+	}
 
 	electionResult, _ := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight - 1)
 
@@ -618,7 +664,7 @@ func (tx *TxConsensusUnstake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSe
 		Id:            MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
 		From:          tx.From,
 		To:            tx.To,
-		Amount:        int64(fl * math.Pow(10, 3)),
+		Amount:        amount,
 		BlockHeight:   tx.Self.BlockHeight,
 		Type:          "unstake",
 		ElectionEpoch: electionResult.Epoch + 5,
