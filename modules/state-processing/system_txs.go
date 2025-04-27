@@ -121,7 +121,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 	res := ledgerSession.ExecuteTransfer(ledgerSystem.OpLogEvent{
 		From:   tx.Self.RequiredAuths[0],
 		To:     "hive:vsc.dao",
-		Amount: 10,
+		Amount: 10_000,
 		Asset:  "hbd",
 		// Memo   string `json:"mo" // TODO add in future
 		Type: "transfer",
