@@ -7,7 +7,7 @@ import (
 	"github.com/vsc-eco/hivego"
 )
 
-func recoverPublicKey(signature string, hash []byte) (string, error) {
+func RecoverPublicKey(signature string, hash []byte) (string, error) {
 	sigBytes, err := hex.DecodeString(signature)
 	if err != nil {
 		return "", err

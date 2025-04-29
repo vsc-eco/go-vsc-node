@@ -81,7 +81,6 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 
 	if bh%ROTATION_INTERVAL == 0 || bh%ACTION_INTERVAL == 0 {
 
-		ms.electionDb.GetElectionByHeight(bh)
 		schedule := ms.se.GetSchedule(bh)
 		slotInfo := stateEngine.CalculateSlotInfo(bh)
 
@@ -97,7 +96,7 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 			return
 		}
 
-		if bh%20 == 0 {
+		if bh%ROTATION_INTERVAL == 0 {
 			fmt.Println("Multisig: Running key rotation")
 			go ms.TickKeyRotation(bh)
 		}
@@ -145,9 +144,9 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 	}
 
 	if weight == uint64(threshold) {
-		rotationId, _ := ms.hiveCreator.Broadcast(tx)
+		rotationId, err := ms.hiveCreator.Broadcast(tx)
 
-		fmt.Println("Rotation txId", rotationId)
+		fmt.Println("Rotation txId", rotationId, err)
 	}
 }
 
@@ -191,9 +190,9 @@ func (ms *MultiSig) TickActions(bh uint64) {
 	}
 
 	if weight == uint64(threshold) {
-		rotationId, _ := ms.hiveCreator.Broadcast(tx)
+		rotationId, err := ms.hiveCreator.Broadcast(tx)
 
-		fmt.Println("Actions txId", rotationId)
+		fmt.Println("Actions txId", rotationId, err)
 	}
 }
 
@@ -201,6 +200,7 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 
 	signPkg, err := ms.syncBalance(bh)
 
+	fmt.Println("signPkg, err", signPkg, err)
 	if err != nil {
 		return
 	}
@@ -213,11 +213,14 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 
 	sigJson, _ := json.Marshal(signReq)
 
-	ms.service.Send(p2pMessage{
-		Type: "sign_request",
-		Op:   "fr_sync",
-		Data: string(sigJson),
-	})
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		ms.service.Send(p2pMessage{
+			Type: "sign_request",
+			Op:   "fr_sync",
+			Data: string(sigJson),
+		})
+	}()
 
 	threshold, _, _, _ := ms.getThreshold()
 	signatures, weight, err := ms.waitForSigs(signPkg.Tx, signPkg.TxId)
@@ -232,9 +235,9 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 	}
 
 	if weight == uint64(threshold) {
-		rotationId, _ := ms.hiveCreator.Broadcast(tx)
+		rotationId, err := ms.hiveCreator.Broadcast(tx)
 
-		fmt.Println("Actions txId", rotationId)
+		fmt.Println("SyncFr txId", rotationId, err)
 	}
 }
 
@@ -254,6 +257,9 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 		witnessData, _ := ms.witnessDb.GetWitnessAtHeight(member.Account, &bh)
 		if witnessData == nil {
 			fmt.Println("No witness data for", member.Account, "at", bh)
+			continue
+		}
+		if witnessData.GatewayKey == "" {
 			continue
 		}
 		var key [2]interface{}
@@ -286,6 +292,10 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	e[0] = "vsc.dao"
 	e[1] = 1
 
+	var eb [2]interface{}
+	eb[0] = "vsc.network"
+	eb[1] = 1
+
 	totalWeight := len(gatewayKeys)
 	weightThreshold := int(totalWeight * 2 / 3)
 
@@ -296,7 +306,7 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	jsonMetadata := map[string]interface{}{
 		"msg":                 "Gateway wallet for the VSC Network",
 		"website":             "https://vsc.network",
-		"epcoh":               electionResult.Epoch,
+		"epoch":               electionResult.Epoch,
 		"last_block_rotation": bh,
 	}
 
@@ -313,11 +323,18 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 		WeightThreshold: 1,
 		AccountAuths: [][2]any{
 			e,
+			eb,
 		},
+		KeyAuths: [][2]any{},
 	}, string(jsonBytes), "STM8buQNWovTcX7H8yLdYNx82xDddQE9R5MzQDNg4mocScnXTGSkE")
 
 	tx := ms.hiveCreator.MakeTransaction([]hivego.HiveOperation{rotationTx})
-	ms.hiveCreator.PopulateSigningProps(&tx, []int{int(bh)})
+	err = ms.hiveCreator.PopulateSigningProps(&tx, []int{int(bh)})
+
+	if err != nil {
+		fmt.Println("Error populating signing props", err)
+		return signingPackage{}, err
+	}
 
 	txId, _ := tx.GenerateTrxId()
 
@@ -479,6 +496,12 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 	//This account is considered a "virtual" account.
 	balRecord, _ := ms.balanceDb.GetBalanceRecord("system:fr_balance", bh)
 
+	if balRecord != nil {
+		if balRecord.BlockHeight < bh-SYNC_INTERVAL {
+			return signingPackage{}, errors.New("no sync to process")
+		}
+	}
+
 	stakedBal := int64(0)
 	if balRecord != nil {
 		stakedBal = balRecord.HBD_SAVINGS
@@ -496,7 +519,7 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 
 			topBalances = append(topBalances, int64(record.HBD))
 
-			fmt.Println("syncBalance - appending", record.Account, record.HBD)
+			// fmt.Println("syncBalance - appending", record.Account, record.HBD)
 		}
 	}
 	sort.Slice(topBalances, func(i, j int) bool {
@@ -619,6 +642,7 @@ func (ms *MultiSig) waitForSigs(tx hivego.HiveTransaction, hivetxId string, time
 
 	go func() {
 		time.Sleep(timeoutz)
+		fmt.Println("waitForSigs Timeout waiting for signatures")
 		if ms.msgChan[txId] != nil {
 			ms.msgChan[txId] <- nil
 		}
@@ -628,7 +652,6 @@ func (ms *MultiSig) waitForSigs(tx hivego.HiveTransaction, hivetxId string, time
 	sigs := make([]string, 0)
 	for uint64(threshold) > signedWeight {
 		msg := <-ms.msgChan[txId]
-		fmt.Println("Receiving tickActions msg", msg)
 		if msg == nil {
 			break
 		}
@@ -638,14 +661,16 @@ func (ms *MultiSig) waitForSigs(tx hivego.HiveTransaction, hivetxId string, time
 
 			if err == nil {
 
-				pubKey, err := recoverPublicKey(sigRes.Sig, txHash)
+				pubKey, err := RecoverPublicKey(sigRes.Sig, txHash)
 				if err != nil {
 					return nil, 0, err
 				}
 				idx := slices.Index(publicList, pubKey)
 				if idx != -1 {
-					sigs = append(sigs, sigRes.Sig)
-					signedWeight = signedWeight + uint64(weights[idx])
+					if !slices.Contains(sigs, sigRes.Sig) {
+						sigs = append(sigs, sigRes.Sig)
+						signedWeight = signedWeight + uint64(weights[idx])
+					}
 				}
 			}
 		}
