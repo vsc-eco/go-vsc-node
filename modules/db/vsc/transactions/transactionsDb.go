@@ -6,6 +6,7 @@ import (
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
+	ledgerSystem "vsc-node/modules/ledger-system"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -51,6 +52,7 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 		"required_auths": offTx.RequiredAuths,
 		"nonce":          offTx.Nonce,
 		"rc_limit":       offTx.RcLimit,
+		"ledger":         offTx.Ledger,
 	}
 	if findResult.Err() != nil {
 		setOp["first_seen"] = time.Now()
@@ -74,23 +76,42 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 }
 
 func (e *transactions) SetOutput(sOut SetResultUpdate) {
-	query := bson.M{
-		"id": sOut.Id,
-	}
-	ctx := context.Background()
-
-	update := bson.M{}
-
-	if sOut.Output != nil {
-		update["output"] = sOut.Output
-	}
+	ledgerMap := make(map[string][]ledgerSystem.OpLogEvent)
 	if sOut.Ledger != nil {
-		update["ledger"] = sOut.Ledger
+		for _, l := range *sOut.Ledger {
+			_, ok := ledgerMap[l.Id]
+			if !ok {
+				ledgerMap[l.Id] = make([]ledgerSystem.OpLogEvent, 0)
+			}
+			ledgerMap[l.Id] = append(ledgerMap[l.Id], l)
+		}
 	}
 
-	e.FindOneAndUpdate(ctx, query, bson.M{
-		"$set": update,
-	})
+	// update ledger
+	for id, l := range ledgerMap {
+		query := bson.M{
+			"id": id,
+		}
+		update := bson.M{
+			"ledger": l,
+		}
+		e.UpdateMany(context.Background(), query, bson.M{
+			"$set": update,
+		})
+	}
+
+	// update output
+	if sOut.Output != nil {
+		query := bson.M{
+			"id": sOut.Id,
+		}
+		update := bson.M{
+			"output": sOut.Output,
+		}
+		e.UpdateMany(context.Background(), query, bson.M{
+			"$set": update,
+		})
+	}
 }
 
 func (e *transactions) GetTransaction(id string) *TransactionRecord {
@@ -114,7 +135,7 @@ func (e *transactions) GetTransaction(id string) *TransactionRecord {
 func (e *transactions) FindTransactions(id *string, account *string, contract *string, status *TransactionStatus, byType *string, ledgerToFrom *string, ledgerTypes []string, offset int, limit int) ([]TransactionRecord, error) {
 	filters := bson.D{}
 	if id != nil {
-		filters = append(filters, bson.E{Key: "id", Value: *id})
+		filters = append(filters, bson.E{Key: "id", Value: bson.D{{Key: "$regex", Value: "^" + (*id)}}})
 	}
 	if account != nil {
 		filters = append(filters, bson.E{Key: "required_auths", Value: *account})
@@ -204,22 +225,37 @@ func (e *transactions) FindUnconfirmedTransactions(height uint64) ([]Transaction
 func (e *transactions) SetStatus(ids []string, status string) {
 
 	for _, id := range ids {
+		filter := bson.M{
+			"id": bson.M{
+				"$regex": "^" + id,
+			},
+			"data.type": bson.M{
+				"$ne": "deposit",
+			},
+		}
 
-		oneResult := e.FindOne(context.Background(), bson.M{
-			"id": id,
-		})
-		var result TransactionRecord
-		err := oneResult.Decode(&result)
-
-		//Transaction not indexed (for some reason!)
+		ctx := context.Background()
+		cursor, err := e.Find(ctx, filter)
 		if err != nil {
 			continue
 		}
+		result := make([]TransactionRecord, 0)
+		for cursor.Next(ctx) {
+			tx := TransactionRecord{}
+			decodeErr := cursor.Decode(&tx)
 
-		e.UpdateMany(context.Background(), bson.M{
-			"anchr_height": result.AnchoredHeight,
-			"anchr_opidx":  result.AnchoredOpIdx,
-		}, bson.M{
+			if decodeErr != nil {
+				continue
+			}
+			result = append(result, tx)
+		}
+
+		//Transaction not indexed (for some reason!)
+		if len(result) == 0 {
+			continue
+		}
+
+		e.UpdateMany(context.Background(), filter, bson.M{
 			"$set": bson.M{
 				"status": status,
 			},

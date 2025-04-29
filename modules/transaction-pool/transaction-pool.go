@@ -8,6 +8,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/transactions"
+	ledgerSystem "vsc-node/modules/ledger-system"
 	libp2p "vsc-node/modules/p2p"
 
 	"github.com/chebyrash/promise"
@@ -202,6 +203,7 @@ func (tp *TransactionPool) indexTx(txId string, txShell VSCTransactionShell) err
 		Version:       txShell.Version,
 		Nonce:         txShell.Headers.Nonce,
 		Tx:            payloadJson,
+		Ledger:        make([]ledgerSystem.OpLogEvent, 0),
 	})
 }
 

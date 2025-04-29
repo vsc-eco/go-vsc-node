@@ -478,13 +478,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				amt := int64(amount)
 
 				if op.Value["to"] == "vsc.gateway" {
-
+					depositedFrom := "hive:" + op.Value["from"].(string)
+					depositMemo := op.Value["memo"].(string)
 					leDeposit := Deposit{
 						Id:     MakeTxId(tx.TransactionID, opIndex),
 						Asset:  token,
 						Amount: amt,
-						From:   "hive:" + op.Value["from"].(string),
-						Memo:   op.Value["memo"].(string),
+						From:   depositedFrom,
+						Memo:   depositMemo,
 
 						BlockHeight: blockInfo.BlockHeight,
 
@@ -492,7 +493,41 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						OpIdx: int64(opIndex),
 					}
 					fmt.Println("Registering deposit!", leDeposit)
-					se.LedgerExecutor.Deposit(leDeposit)
+					depositedTo := se.LedgerExecutor.Deposit(leDeposit)
+
+					// create deposit payload for indexing
+					depositPayload := make(map[string]interface{})
+					depositPayload["from"] = depositedFrom
+					depositPayload["to"] = depositedTo
+					depositPayload["amount"] = amt
+					depositPayload["asset"] = token
+					depositPayload["memo"] = depositMemo
+					depositPayload["type"] = "deposit"
+
+					// ingest into transaction_pool
+					se.txDb.Ingest(transactions.IngestTransactionUpdate{
+						Id:             MakeTxId(tx.TransactionID, opIndex),
+						RequiredAuths:  []string{depositedFrom},
+						Status:         "CONFIRMED",
+						Type:           "hive",
+						Tx:             depositPayload,
+						AnchoredBlock:  &block.BlockID,
+						AnchoredHeight: &block.BlockNumber,
+						AnchoredOpIdx:  &leDeposit.OpIdx,
+						AnchoredIndex:  &leDeposit.BIdx,
+						Ledger: []ledgerSystem.OpLogEvent{{
+							Id:          MakeTxId(tx.TransactionID, opIndex),
+							To:          depositedTo,
+							From:        depositedFrom,
+							Amount:      amt,
+							Asset:       token,
+							Memo:        depositMemo,
+							Type:        "deposit",
+							BIdx:        leDeposit.BIdx,
+							OpIdx:       leDeposit.OpIdx,
+							BlockHeight: block.BlockNumber,
+						}},
+					})
 				}
 			}
 			//# End parsing gateway transfer operations
@@ -613,6 +648,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					AnchoredHeight: &block.BlockNumber,
 					AnchoredOpIdx:  &opIdx,
 					AnchoredIndex:  &blkIdx,
+					Ledger:         make([]ledgerSystem.OpLogEvent, 0),
 				})
 			}
 		}

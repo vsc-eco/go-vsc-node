@@ -981,7 +981,8 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, txSelf TxSelf) {
 		RequiredAuths:  tx.Headers.RequiredAuths,
 		Tx:             data,
 		//Transaction is a VSC transaction
-		Type: "vsc",
+		Type:   "vsc",
+		Ledger: make([]ledgerSystem.OpLogEvent, 0),
 	})
 
 }
