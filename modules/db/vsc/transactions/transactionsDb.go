@@ -2,6 +2,7 @@ package transactions
 
 import (
 	"context"
+	"regexp"
 	"time"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
@@ -135,7 +136,7 @@ func (e *transactions) GetTransaction(id string) *TransactionRecord {
 func (e *transactions) FindTransactions(id *string, account *string, contract *string, status *TransactionStatus, byType *string, ledgerToFrom *string, ledgerTypes []string, offset int, limit int) ([]TransactionRecord, error) {
 	filters := bson.D{}
 	if id != nil {
-		filters = append(filters, bson.E{Key: "id", Value: bson.D{{Key: "$regex", Value: "^" + (*id)}}})
+		filters = append(filters, bson.E{Key: "id", Value: bson.D{{Key: "$regex", Value: "^" + regexp.QuoteMeta(*id)}}})
 	}
 	if account != nil {
 		filters = append(filters, bson.E{Key: "required_auths", Value: *account})
