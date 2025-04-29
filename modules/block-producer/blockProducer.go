@@ -164,9 +164,9 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 
 	// rcMap := bp.MakeRcMap()
 
-	if len(offchainTxs) == 0 {
-		return nil, nil, errors.New("no transactions to include")
-	}
+	// if len(offchainTxs) == 0 {
+	// 	return nil, nil, errors.New("no transactions to include")
+	// }
 
 	mr, err := MerklizeCids(outCids)
 
