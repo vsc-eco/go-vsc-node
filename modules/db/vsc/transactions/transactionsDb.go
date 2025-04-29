@@ -79,7 +79,8 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 
 func (e *transactions) SetOutput(sOut SetResultUpdate) {
 	query := bson.M{
-		"id": sOut.Id,
+		"id":          sOut.Id,
+		"anchr_opidx": sOut.OpIdx,
 		"data.type": bson.M{
 			"$ne": "deposit",
 		},

@@ -858,13 +858,14 @@ func (oplog *Oplog) ExecuteTx(se *StateEngine) {
 		StartHeight: startBlock,
 	})
 
-	for _, v := range oplog.Outputs {
+	for i, v := range oplog.Outputs {
 		ledgerOps := make([]ledgerSystem.OpLogEvent, 0)
 		for _, v2 := range v.LedgerIdx {
 			ledgerOps = append(ledgerOps, oplog.LedgerOps[v2])
 		}
 		se.txDb.SetOutput(transactions.SetResultUpdate{
 			Id:     v.Id,
+			OpIdx:  i,
 			Ledger: &ledgerOps,
 		})
 		if v.Ok {
