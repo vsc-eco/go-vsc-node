@@ -1,7 +1,9 @@
 package cbortypes
 
 import (
+	"vsc-node/modules/common"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
+	transactionpool "vsc-node/modules/transaction-pool"
 
 	cbornode "github.com/ipfs/go-ipld-cbor"
 )
@@ -17,4 +19,6 @@ func RegisterTypes() {
 	cbornode.RegisterCborType(struct {
 		Prevb *string "refmt:\"prevb\""
 	}{})
+	cbornode.RegisterCborType(transactionpool.SignaturePackage{})
+	cbornode.RegisterCborType(common.Sig{})
 }
