@@ -220,6 +220,7 @@ type BlockHeightFunction func(lastBlock uint64, lastSavedBlk uint64) uint64
 
 type BlockParams struct {
 	NeedsVirtualOps bool
+	BlockHeight     uint64
 }
 
 type Streamer struct {
@@ -509,6 +510,7 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 					}
 					blockParams := &BlockParams{
 						NeedsVirtualOps: false,
+						BlockHeight:     uint64(block.BlockNumber),
 					}
 					if filter(op, blockParams) {
 						if blockParams.NeedsVirtualOps {
