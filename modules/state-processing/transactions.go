@@ -863,16 +863,16 @@ func (oplog *Oplog) ExecuteTx(se *StateEngine) {
 		for _, v2 := range v.LedgerIdx {
 			ledgerOps = append(ledgerOps, oplog.LedgerOps[v2])
 		}
+		status := transactions.TransactionStatusConfirmed
+		if !v.Ok {
+			status = transactions.TransactionStatusFailed
+		}
 		se.txDb.SetOutput(transactions.SetResultUpdate{
 			Id:     v.Id,
 			OpIdx:  i,
 			Ledger: &ledgerOps,
+			Status: &status,
 		})
-		if v.Ok {
-			se.txDb.SetStatus([]string{v.Id}, "CONFIRMED")
-		} else {
-			se.txDb.SetStatus([]string{v.Id}, "FAILED")
-		}
 	}
 }
 

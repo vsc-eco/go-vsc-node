@@ -95,6 +95,9 @@ func (e *transactions) SetOutput(sOut SetResultUpdate) {
 	if sOut.Ledger != nil {
 		update["ledger"] = sOut.Ledger
 	}
+	if sOut.Status != nil {
+		update["status"] = sOut.Status
+	}
 
 	e.FindOneAndUpdate(ctx, query, bson.M{
 		"$set": update,
@@ -208,42 +211,43 @@ func (e *transactions) FindUnconfirmedTransactions(height uint64) ([]Transaction
 	return txList, nil
 }
 
+// Out of Date & not used
 // SetStatus of all IDs and ID + Opidx to a specific status
-func (e *transactions) SetStatus(ids []string, status string) {
+// func (e *transactions) SetStatus(ids []string, status string) {
 
-	for _, id := range ids {
-		filter := bson.M{
-			"id": id,
-			"data.type": bson.M{
-				"$ne": "deposit",
-			},
-		}
+// 	for _, id := range ids {
+// 		filter := bson.M{
+// 			"id": id,
+// 			"data.type": bson.M{
+// 				"$ne": "deposit",
+// 			},
+// 		}
 
-		ctx := context.Background()
-		cursor, err := e.Find(ctx, filter)
-		if err != nil {
-			continue
-		}
-		result := make([]TransactionRecord, 0)
-		for cursor.Next(ctx) {
-			tx := TransactionRecord{}
-			decodeErr := cursor.Decode(&tx)
+// 		ctx := context.Background()
+// 		cursor, err := e.Find(ctx, filter)
+// 		if err != nil {
+// 			continue
+// 		}
+// 		result := make([]TransactionRecord, 0)
+// 		for cursor.Next(ctx) {
+// 			tx := TransactionRecord{}
+// 			decodeErr := cursor.Decode(&tx)
 
-			if decodeErr != nil {
-				continue
-			}
-			result = append(result, tx)
-		}
+// 			if decodeErr != nil {
+// 				continue
+// 			}
+// 			result = append(result, tx)
+// 		}
 
-		//Transaction not indexed (for some reason!)
-		if len(result) == 0 {
-			continue
-		}
+// 		//Transaction not indexed (for some reason!)
+// 		if len(result) == 0 {
+// 			continue
+// 		}
 
-		e.UpdateMany(context.Background(), filter, bson.M{
-			"$set": bson.M{
-				"status": status,
-			},
-		})
-	}
-}
+// 		e.UpdateMany(context.Background(), filter, bson.M{
+// 			"$set": bson.M{
+// 				"status": status,
+// 			},
+// 		})
+// 	}
+// }

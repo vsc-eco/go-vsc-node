@@ -9,5 +9,5 @@ type Transactions interface {
 	GetTransaction(id string) *TransactionRecord
 	FindTransactions(id *string, account *string, contract *string, status *TransactionStatus, byType *string, ledgerToFrom *string, ledgerTypes []string, offset int, limit int) ([]TransactionRecord, error)
 	FindUnconfirmedTransactions(height uint64) ([]TransactionRecord, error)
-	SetStatus(ids []string, status string)
+	// SetStatus(ids []string, status string)
 }
