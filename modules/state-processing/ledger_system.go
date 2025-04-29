@@ -706,7 +706,7 @@ type DepositParams struct {
 	To string `json:"to"`
 }
 
-func (le *LedgerExecutor) Deposit(deposit Deposit) {
+func (le *LedgerExecutor) Deposit(deposit Deposit) string {
 	decodedParams := DepositParams{}
 	values, err := url.ParseQuery(deposit.Memo)
 	if err == nil {
@@ -768,6 +768,8 @@ func (le *LedgerExecutor) Deposit(deposit Deposit) {
 		Type:        "deposit",
 		TxId:        deposit.Id,
 	})
+
+	return decodedParams.To
 }
 
 func (le *LedgerExecutor) AppendLedger(update ledgerSystem.LedgerUpdate) {

@@ -19,6 +19,7 @@ type IngestTransactionUpdate struct {
 	AnchoredIndex  *int64
 	AnchoredOpIdx  *int64
 	AnchoredHeight *uint64
+	Ledger         []ledgerSystem.OpLogEvent
 }
 
 type SetResultUpdate struct {
