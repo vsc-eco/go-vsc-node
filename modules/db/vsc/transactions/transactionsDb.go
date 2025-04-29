@@ -128,7 +128,11 @@ func (e *transactions) FindTransactions(id *string, account *string, contract *s
 		filters = append(filters, bson.E{Key: "id", Value: *id})
 	}
 	if account != nil {
-		filters = append(filters, bson.E{Key: "required_auths", Value: *account})
+		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
+			bson.D{{Key: "required_auths", Value: *account}},
+			bson.D{{Key: "required_posting_auths", Value: *account}},
+			bson.D{{Key: "data.to", Value: *account}},
+		}})
 	}
 	if contract != nil {
 		filters = append(filters, bson.E{Key: "data.contract_id", Value: *contract})
