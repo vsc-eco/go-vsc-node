@@ -27,6 +27,7 @@ type SetResultUpdate struct {
 	// OutputId string
 	// Index    int64
 	Id     string
+	OpIdx  int
 	Ledger *[]ledgerSystem.OpLogEvent
 	Output *struct {
 		Id    string `json:"id" bson:"id"`
