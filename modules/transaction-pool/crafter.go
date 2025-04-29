@@ -65,8 +65,8 @@ func (tp *TransactionCrafter) SignFinal(vscOp VSCOperation) (SerializedVSCTransa
 }
 
 type SignaturePackage struct {
-	Type string       `json:"__t"`
-	Sigs []common.Sig `json:"sigs"`
+	Type string       `refmt:"__t" json:"__t"`
+	Sigs []common.Sig `refmt:"sigs" json:"sigs"`
 }
 
 type VSCOperation interface {

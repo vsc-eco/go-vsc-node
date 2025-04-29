@@ -63,11 +63,11 @@ func ArrayToStringArray(arr interface{}) []string {
 }
 
 type Sig struct {
-	Algo string "json:\"alg\""
-	Sig  string "json:\"sig\""
+	Algo string `refmt:"alg" json:"alg"`
+	Sig  string `refmt:"sig" json:"sig"`
 	//Only applies to KeyID
 	//Technically redundant as it's stored in Required_Auths
-	Kid string "json:\"kid\""
+	Kid string `refmt:"kid" json:"kid"`
 }
 
 func VerifySignatures(requiredAuths []string, blk blocks.Block, sigs []Sig) (bool, error) {
