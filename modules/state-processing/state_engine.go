@@ -506,7 +506,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					// ingest into transaction_pool
 					se.txDb.Ingest(transactions.IngestTransactionUpdate{
-						Id:             MakeTxId(tx.TransactionID, opIndex),
+						Id:             tx.TransactionID,
 						RequiredAuths:  []string{depositedFrom},
 						Status:         "CONFIRMED",
 						Type:           "hive",
@@ -551,7 +551,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 
 				txSelf := TxSelf{
-					TxId:                 MakeTxId(tx.TransactionID, opIndex),
+					TxId:                 tx.TransactionID,
 					BlockHeight:          blockInfo.BlockHeight,
 					BlockId:              blockInfo.BlockId,
 					Timestamp:            blockInfo.Timestamp,
@@ -631,7 +631,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				TxId: tx.TransactionID,
 				Ops:  opList,
 			})
-			for idx, vscTx := range opList {
+			for _, vscTx := range opList {
 				txData := vscTx.ToData()
 				txData["type"] = vscTx.Type()
 				fmt.Println("Ingesting Hive tx")
@@ -639,7 +639,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				opIdx := int64(vscTx.TxSelf().OpIndex)
 				blkIdx := int64(vscTx.TxSelf().Index)
 				se.txDb.Ingest(transactions.IngestTransactionUpdate{
-					Id:             MakeTxId(vscTx.TxSelf().TxId, idx),
+					Id:             vscTx.TxSelf().TxId,
 					RequiredAuths:  vscTx.TxSelf().RequiredAuths,
 					Status:         "INCLUDED",
 					Type:           "hive",
