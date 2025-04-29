@@ -101,11 +101,11 @@ func (bp *BlockProducer) BlockTick(bh uint64, headHeight *uint64) {
 
 	if witnessSlot != nil {
 		if witnessSlot.Account == bp.config.Get().HiveUsername && bh%CONSENSUS_SPECS.SlotLength == 0 {
-			canProduce := bp.canProduce(bh)
-			fmt.Println("Can produce", canProduce)
-			if canProduce {
-				bp.ProduceBlock(witnessSlot.SlotHeight)
-			}
+			// canProduce := bp.canProduce(bh)
+			// fmt.Println("Can produce", canProduce)
+			// if canProduce {
+			bp.ProduceBlock(witnessSlot.SlotHeight)
+			// }
 		}
 	}
 }
@@ -599,6 +599,11 @@ func (bp *BlockProducer) canProduce(height uint64) bool {
 	if len(bp.StateEngine.LedgerExecutor.Oplog) > 0 {
 		return true
 	}
+
+	if len(bp.StateEngine.TxOutIds) > 0 {
+		return true
+	}
+
 	return false
 }
 
