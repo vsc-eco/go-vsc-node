@@ -53,6 +53,7 @@ type TransactionRecord struct {
 	Nonce         int64    `json:"nonce" bson:"nonce"`
 	RcLimit       uint64   `json:"rc_limit" bson:"rc_limit"`
 	//VSC or Hive
+	TxId           string                     `json:"tx_id,omitempty" bson:"tx_id,omitempty"`
 	Type           string                     `json:"type" bson:"type"`
 	Version        string                     `json:"__v" bson:"__v"`
 	Data           map[string]interface{}     `json:"data" bson:"data"`

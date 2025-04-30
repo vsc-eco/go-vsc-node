@@ -42,6 +42,7 @@ type TransactionRecord {
   anchr_opidx: Uint64!
   anchr_ts: String!
   type: String!
+  tx_id: String!
   data: Map
   first_seen: DateTime!
   nonce: Uint64!
@@ -293,6 +294,7 @@ input LedgerActionsFilter {
 
 input TransactionFilter {
   byId: String
+  byIds: [String!]
   byAccount: String
   byContract: String
   byStatus: TransactionStatus

@@ -233,7 +233,7 @@ func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *Tran
 	if paginateErr != nil {
 		return nil, paginateErr
 	}
-	return r.Transactions.FindTransactions(filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, filterOptions.ByLedgerToFrom, filterOptions.ByLedgerTypes, offset, limit)
+	return r.Transactions.FindTransactions(filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, filterOptions.ByLedgerToFrom, filterOptions.ByLedgerTypes, offset, limit)
 }
 
 // FindContractOutput is the resolver for the findContractOutput field.
@@ -549,3 +549,15 @@ type rcRecordResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }
+
+// !!! WARNING !!!
+// The code below was going to be deleted when updating resolvers. It has been copied here so you have
+// one last chance to move it out of harms way if you want. There are two reasons this happens:
+//  - When renaming or deleting a resolver the old code will be put in here. You can safely delete
+//    it when you're done.
+//  - You have helper methods in this file. Move them out to keep these resolver files clean.
+/*
+	func (r *transactionRecordResolver) OpID(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
+	return model.Uint64(obj.OpId), nil
+}
+*/

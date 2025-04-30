@@ -285,6 +285,7 @@ type ComplexityRoot struct {
 		RcLimit       func(childComplexity int) int
 		RequiredAuths func(childComplexity int) int
 		Status        func(childComplexity int) int
+		TxId          func(childComplexity int) int
 		Type          func(childComplexity int) int
 	}
 
@@ -1492,6 +1493,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.TransactionRecord.Status(childComplexity), true
 
+	case "TransactionRecord.tx_id":
+		if e.complexity.TransactionRecord.TxId == nil {
+			break
+		}
+
+		return e.complexity.TransactionRecord.TxId(childComplexity), true
+
 	case "TransactionRecord.type":
 		if e.complexity.TransactionRecord.Type == nil {
 			break
@@ -1757,6 +1765,7 @@ type TransactionRecord {
   anchr_opidx: Uint64!
   anchr_ts: String!
   type: String!
+  tx_id: String!
   data: Map
   first_seen: DateTime!
   nonce: Uint64!
@@ -2008,6 +2017,7 @@ input LedgerActionsFilter {
 
 input TransactionFilter {
   byId: String
+  byIds: [String!]
   byAccount: String
   byContract: String
   byStatus: TransactionStatus
@@ -6851,6 +6861,8 @@ func (ec *executionContext) fieldContext_Query_findTransaction(ctx context.Conte
 				return ec.fieldContext_TransactionRecord_anchr_ts(ctx, field)
 			case "type":
 				return ec.fieldContext_TransactionRecord_type(ctx, field)
+			case "tx_id":
+				return ec.fieldContext_TransactionRecord_tx_id(ctx, field)
 			case "data":
 				return ec.fieldContext_TransactionRecord_data(ctx, field)
 			case "first_seen":
@@ -8845,6 +8857,50 @@ func (ec *executionContext) _TransactionRecord_type(ctx context.Context, field g
 }
 
 func (ec *executionContext) fieldContext_TransactionRecord_type(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TransactionRecord",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TransactionRecord_tx_id(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_TransactionRecord_tx_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.TxId, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_TransactionRecord_tx_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "TransactionRecord",
 		Field:      field,
@@ -11979,7 +12035,7 @@ func (ec *executionContext) unmarshalInputTransactionFilter(ctx context.Context,
 		asMap[k] = v
 	}
 
-	fieldsInOrder := [...]string{"byId", "byAccount", "byContract", "byStatus", "byType", "byLedgerToFrom", "byLedgerTypes", "offset", "limit"}
+	fieldsInOrder := [...]string{"byId", "byIds", "byAccount", "byContract", "byStatus", "byType", "byLedgerToFrom", "byLedgerTypes", "offset", "limit"}
 	for _, k := range fieldsInOrder {
 		v, ok := asMap[k]
 		if !ok {
@@ -11993,6 +12049,13 @@ func (ec *executionContext) unmarshalInputTransactionFilter(ctx context.Context,
 				return it, err
 			}
 			it.ByID = data
+		case "byIds":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("byIds"))
+			data, err := ec.unmarshalOString2ᚕstringᚄ(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.ByIds = data
 		case "byAccount":
 			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("byAccount"))
 			data, err := ec.unmarshalOString2ᚖstring(ctx, v)
@@ -15198,6 +15261,11 @@ func (ec *executionContext) _TransactionRecord(ctx context.Context, sel ast.Sele
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
 		case "type":
 			out.Values[i] = ec._TransactionRecord_type(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "tx_id":
+			out.Values[i] = ec._TransactionRecord_tx_id(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&out.Invalids, 1)
 			}

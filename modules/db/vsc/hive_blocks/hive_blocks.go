@@ -560,8 +560,23 @@ func GetAggTimestampPipeline(filters bson.D, localField string, timestampField s
 			{Key: "foreignField", Value: "block.block_number"},
 			{Key: "as", Value: "block_info"},
 		}}},
-		// Unwind the joined array
+		// Unwind the joined array, saving the operation index into opId
 		{{Key: "$unwind", Value: "$block_info"}},
+		{{Key: "$addFields", Value: bson.D{
+			{Key: "tx_id", Value: "$id"},
+		}}},
+		{{Key: "$set", Value: bson.D{
+			{Key: "id", Value: bson.D{
+				{
+					Key: "$concat",
+					Value: bson.A{
+						"$id",
+						"-",
+						bson.D{{Key: "$toString", Value: "$anchr_opidx"}},
+					},
+				},
+			}},
+		}}},
 		// Add timestamp field
 		{{Key: "$addFields", Value: bson.D{
 			{Key: timestampField, Value: "$block_info.block.timestamp"},

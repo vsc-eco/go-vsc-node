@@ -140,6 +140,7 @@ type TransactionData struct {
 
 type TransactionFilter struct {
 	ByID           *string                         `json:"byId,omitempty"`
+	ByIds          []string                        `json:"byIds,omitempty"`
 	ByAccount      *string                         `json:"byAccount,omitempty"`
 	ByContract     *string                         `json:"byContract,omitempty"`
 	ByStatus       *transactions.TransactionStatus `json:"byStatus,omitempty"`
