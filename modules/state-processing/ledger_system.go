@@ -1127,7 +1127,7 @@ func (le *LedgerExecutor) Stake(stakeOp StakeOp, ledgerSession *LedgerSession, o
 	// 	})
 	// }
 
-	le.Oplog = append(le.Oplog, ledgerSystem.OpLogEvent{
+	ledgerSession.AppendOplog(ledgerSystem.OpLogEvent{
 		Id: stakeOp.Id,
 		// Index: 1,
 
