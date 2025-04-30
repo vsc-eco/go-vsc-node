@@ -282,7 +282,6 @@ type ComplexityRoot struct {
 		Id            func(childComplexity int) int
 		Ledger        func(childComplexity int) int
 		Nonce         func(childComplexity int) int
-		OpID          func(childComplexity int) int
 		RcLimit       func(childComplexity int) int
 		RequiredAuths func(childComplexity int) int
 		Status        func(childComplexity int) int
@@ -412,8 +411,6 @@ type TransactionRecordResolver interface {
 	AnchrIndex(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
 	AnchrOpidx(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
 	AnchrTs(ctx context.Context, obj *transactions.TransactionRecord) (string, error)
-
-	OpID(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
 
 	Data(ctx context.Context, obj *transactions.TransactionRecord) (model.Map, error)
 
@@ -1475,13 +1472,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.TransactionRecord.Nonce(childComplexity), true
 
-	case "TransactionRecord.op_id":
-		if e.complexity.TransactionRecord.OpID == nil {
-			break
-		}
-
-		return e.complexity.TransactionRecord.OpID(childComplexity), true
-
 	case "TransactionRecord.rc_limit":
 		if e.complexity.TransactionRecord.RcLimit == nil {
 			break
@@ -1775,7 +1765,6 @@ type TransactionRecord {
   anchr_opidx: Uint64!
   anchr_ts: String!
   type: String!
-  op_id: Uint64!
   tx_id: String!
   data: Map
   first_seen: DateTime!
@@ -6872,8 +6861,6 @@ func (ec *executionContext) fieldContext_Query_findTransaction(ctx context.Conte
 				return ec.fieldContext_TransactionRecord_anchr_ts(ctx, field)
 			case "type":
 				return ec.fieldContext_TransactionRecord_type(ctx, field)
-			case "op_id":
-				return ec.fieldContext_TransactionRecord_op_id(ctx, field)
 			case "tx_id":
 				return ec.fieldContext_TransactionRecord_tx_id(ctx, field)
 			case "data":
@@ -8877,50 +8864,6 @@ func (ec *executionContext) fieldContext_TransactionRecord_type(_ context.Contex
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type String does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _TransactionRecord_op_id(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionRecord) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_TransactionRecord_op_id(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.TransactionRecord().OpID(rctx, obj)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(model.Uint64)
-	fc.Result = res
-	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_TransactionRecord_op_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "TransactionRecord",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Uint64 does not have child fields")
 		},
 	}
 	return fc, nil
@@ -15321,42 +15264,6 @@ func (ec *executionContext) _TransactionRecord(ctx context.Context, sel ast.Sele
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&out.Invalids, 1)
 			}
-		case "op_id":
-			field := field
-
-			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._TransactionRecord_op_id(ctx, field, obj)
-				if res == graphql.Null {
-					atomic.AddUint32(&fs.Invalids, 1)
-				}
-				return res
-			}
-
-			if field.Deferrable != nil {
-				dfs, ok := deferred[field.Deferrable.Label]
-				di := 0
-				if ok {
-					dfs.AddField(field)
-					di = len(dfs.Values) - 1
-				} else {
-					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
-					deferred[field.Deferrable.Label] = dfs
-				}
-				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
-					return innerFunc(ctx, dfs)
-				})
-
-				// don't run the out.Concurrently() call below
-				out.Values[i] = graphql.Null
-				continue
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
 		case "tx_id":
 			out.Values[i] = ec._TransactionRecord_tx_id(ctx, field, obj)
 			if out.Values[i] == graphql.Null {

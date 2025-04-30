@@ -42,7 +42,6 @@ type TransactionRecord {
   anchr_opidx: Uint64!
   anchr_ts: String!
   type: String!
-  op_id: Uint64!
   tx_id: String!
   data: Map
   first_seen: DateTime!

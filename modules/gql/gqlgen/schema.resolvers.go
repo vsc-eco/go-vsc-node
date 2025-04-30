@@ -457,11 +457,6 @@ func (r *transactionRecordResolver) AnchrTs(ctx context.Context, obj *transactio
 	return *obj.AnchoredTs, nil
 }
 
-// OpID is the resolver for the op_id field.
-func (r *transactionRecordResolver) OpID(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
-	return model.Uint64(obj.OpId), nil
-}
-
 // Data is the resolver for the data field.
 func (r *transactionRecordResolver) Data(ctx context.Context, obj *transactions.TransactionRecord) (model.Map, error) {
 	return model.Map(obj.Data), nil
@@ -562,7 +557,7 @@ type witnessSlotResolver struct{ *Resolver }
 //    it when you're done.
 //  - You have helper methods in this file. Move them out to keep these resolver files clean.
 /*
-	func (r *transactionRecordResolver) TxID(ctx context.Context, obj *transactions.TransactionRecord) (string, error) {
-	return obj.TxId, nil
+	func (r *transactionRecordResolver) OpID(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
+	return model.Uint64(obj.OpId), nil
 }
 */
