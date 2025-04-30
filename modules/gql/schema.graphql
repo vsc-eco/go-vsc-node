@@ -293,6 +293,7 @@ input LedgerActionsFilter {
 
 input TransactionFilter {
   byId: String
+  byIds: [String!]
   byAccount: String
   byContract: String
   byStatus: TransactionStatus

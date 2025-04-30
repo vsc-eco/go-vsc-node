@@ -2,6 +2,7 @@ package transactions
 
 import (
 	"context"
+	"errors"
 	"time"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
@@ -122,10 +123,21 @@ func (e *transactions) GetTransaction(id string) *TransactionRecord {
 	return &record
 }
 
-func (e *transactions) FindTransactions(id *string, account *string, contract *string, status *TransactionStatus, byType *string, ledgerToFrom *string, ledgerTypes []string, offset int, limit int) ([]TransactionRecord, error) {
+func (e *transactions) FindTransactions(ids []string, id *string, account *string, contract *string, status *TransactionStatus, byType *string, ledgerToFrom *string, ledgerTypes []string, offset int, limit int) ([]TransactionRecord, error) {
+	if id != nil && ids != nil {
+		return nil, errors.New("Either input a single id or a list of ids.")
+	}
 	filters := bson.D{}
 	if id != nil {
 		filters = append(filters, bson.E{Key: "id", Value: *id})
+	}
+
+	if ids != nil {
+		bsonIds := bson.A{}
+		for _, t := range ids {
+			bsonIds = append(bsonIds, t)
+		}
+		filters = append(filters, bson.E{Key: "id", Value: bson.E{Key: "$in", Value: bsonIds}})
 	}
 	if account != nil {
 		filters = append(filters, bson.E{Key: "$or", Value: bson.A{

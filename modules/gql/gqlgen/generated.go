@@ -2008,6 +2008,7 @@ input LedgerActionsFilter {
 
 input TransactionFilter {
   byId: String
+  byIds: [String!]
   byAccount: String
   byContract: String
   byStatus: TransactionStatus
@@ -11979,7 +11980,7 @@ func (ec *executionContext) unmarshalInputTransactionFilter(ctx context.Context,
 		asMap[k] = v
 	}
 
-	fieldsInOrder := [...]string{"byId", "byAccount", "byContract", "byStatus", "byType", "byLedgerToFrom", "byLedgerTypes", "offset", "limit"}
+	fieldsInOrder := [...]string{"byId", "byIds", "byAccount", "byContract", "byStatus", "byType", "byLedgerToFrom", "byLedgerTypes", "offset", "limit"}
 	for _, k := range fieldsInOrder {
 		v, ok := asMap[k]
 		if !ok {
@@ -11993,6 +11994,13 @@ func (ec *executionContext) unmarshalInputTransactionFilter(ctx context.Context,
 				return it, err
 			}
 			it.ByID = data
+		case "byIds":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("byIds"))
+			data, err := ec.unmarshalOString2ᚕstringᚄ(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.ByIds = data
 		case "byAccount":
 			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("byAccount"))
 			data, err := ec.unmarshalOString2ᚖstring(ctx, v)

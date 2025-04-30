@@ -233,7 +233,7 @@ func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *Tran
 	if paginateErr != nil {
 		return nil, paginateErr
 	}
-	return r.Transactions.FindTransactions(filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, filterOptions.ByLedgerToFrom, filterOptions.ByLedgerTypes, offset, limit)
+	return r.Transactions.FindTransactions(filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, filterOptions.ByLedgerToFrom, filterOptions.ByLedgerTypes, offset, limit)
 }
 
 // FindContractOutput is the resolver for the findContractOutput field.
