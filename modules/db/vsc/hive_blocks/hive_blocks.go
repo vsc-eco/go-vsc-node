@@ -574,8 +574,8 @@ func GetAggTimestampPipeline(filters bson.D, localField string, timestampField s
 					Key: "$concat",
 					Value: bson.A{
 						"$id",
-						"#",
-						bson.D{{Key: "$toString", Value: "$op_id"}},
+						"-",
+						bson.D{{Key: "$toString", Value: "$anchr_opidx"}},
 					},
 				},
 			}},
