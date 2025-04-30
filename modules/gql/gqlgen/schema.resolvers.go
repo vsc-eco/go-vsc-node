@@ -457,6 +457,11 @@ func (r *transactionRecordResolver) AnchrTs(ctx context.Context, obj *transactio
 	return *obj.AnchoredTs, nil
 }
 
+// OpID is the resolver for the op_id field.
+func (r *transactionRecordResolver) OpID(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
+	return model.Uint64(obj.OpId), nil
+}
+
 // Data is the resolver for the data field.
 func (r *transactionRecordResolver) Data(ctx context.Context, obj *transactions.TransactionRecord) (model.Map, error) {
 	return model.Map(obj.Data), nil
@@ -549,3 +554,15 @@ type rcRecordResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }
+
+// !!! WARNING !!!
+// The code below was going to be deleted when updating resolvers. It has been copied here so you have
+// one last chance to move it out of harms way if you want. There are two reasons this happens:
+//  - When renaming or deleting a resolver the old code will be put in here. You can safely delete
+//    it when you're done.
+//  - You have helper methods in this file. Move them out to keep these resolver files clean.
+/*
+	func (r *transactionRecordResolver) TxID(ctx context.Context, obj *transactions.TransactionRecord) (string, error) {
+	return obj.TxId, nil
+}
+*/

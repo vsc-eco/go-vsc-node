@@ -131,9 +131,8 @@ func (e *transactions) FindTransactions(ids []string, id *string, account *strin
 	if id != nil {
 		filters = append(filters, bson.E{Key: "id", Value: *id})
 	}
-
 	if ids != nil {
-		filters = append(filters, bson.E{Key: "id", Value: bson.E{Key: "$in", Value: ids}})
+		filters = append(filters, bson.E{Key: "id", Value: bson.D{{Key: "$in", Value: ids}}})
 	}
 	if account != nil {
 		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
