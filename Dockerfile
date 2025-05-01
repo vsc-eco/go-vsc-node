@@ -23,10 +23,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy the rest of the application code
-COPY . .
+COPY --chown=app:app . .
 
 # Build the application
-RUN go build -buildvcs=false -o vsc-node vsc-node/cmd/vsc-node
+RUN go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o vsc-node vsc-node/cmd/vsc-node
 
 # Build VM Runner
 RUN . /home/app/.wasmedge/env && go build -buildvcs=false -o vm-runner vsc-node/cmd/vm-runner

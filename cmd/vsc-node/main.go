@@ -50,6 +50,7 @@ func main() {
 
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
 	fmt.Println("HIVE_API", hiveApiUrl.Get().HiveURI)
+	fmt.Println("Git Commit", announcements.GitCommit)
 
 	dbImpl := db.New(dbConf)
 	vscDb := vsc.New(dbImpl)
