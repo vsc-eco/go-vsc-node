@@ -148,6 +148,11 @@ type didConsensusKey struct {
 	Key dids.BlsDID `json:"key"`
 }
 
+// ===== git head commit =====
+var (
+	GitCommit string = "" // Default value if not set during build
+)
+
 // ===== announcement impl =====
 
 // example announcement on-chain: https://hivexplorer.com/tx/cad30bcf0891b6b7f9bcf16a05dc084a02acef65
@@ -232,7 +237,7 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 			PeerId:          a.peerInfo.GetPeerId(), //Plz fill in
 			PeerAddrs:       peerAddrs,
 			Ts:              time.Now().Format(time.RFC3339),
-			GitCommit:       "",          //Plz detect
+			GitCommit:       GitCommit,   //Plz detect
 			VersionId:       "go-v0.1.0", //Use standard versioning
 			ProtocolVersion: 0,           //Protocol 0 until protocol 1 is finalized.
 			GatewayKey:      *kp.GetPublicKeyString(),
