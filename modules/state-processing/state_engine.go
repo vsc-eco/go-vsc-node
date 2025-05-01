@@ -758,7 +758,8 @@ func (se *StateEngine) ExecuteBatch() {
 			se.log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
 			fmt.Println("RC Payer is", payer, vscTx.Type(), vscTx, result.RcUsed)
 
-			se.RcMap[payer] = se.RcMap[payer] + result.RcUsed
+			rcUsed, _ := se.RcMap[payer] // don't crash if payer is not in RC map
+			se.RcMap[payer] = rcUsed + result.RcUsed
 
 			if vscTx.Type() == "call_contract" {
 				se.AppendOutput(contractId, TxResultWithId{
@@ -1071,6 +1072,7 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 		rcDb:          rcDb,
 		nonceDb:       nonceDb,
 		rcSystem:      rcSystem.New(rcDb),
+		RcMap:         make(map[string]int64),
 
 		wasm: wasm,
 
