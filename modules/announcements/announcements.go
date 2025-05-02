@@ -151,6 +151,7 @@ type didConsensusKey struct {
 // ===== git head commit =====
 var (
 	GitCommit string = "" // Default value if not set during build
+	VersionId string = "go-v0.1.0"
 )
 
 // ===== announcement impl =====
@@ -237,9 +238,9 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 			PeerId:          a.peerInfo.GetPeerId(), //Plz fill in
 			PeerAddrs:       peerAddrs,
 			Ts:              time.Now().Format(time.RFC3339),
-			GitCommit:       GitCommit,   //Plz detect
-			VersionId:       "go-v0.1.0", //Use standard versioning
-			ProtocolVersion: 0,           //Protocol 0 until protocol 1 is finalized.
+			GitCommit:       GitCommit,
+			VersionId:       VersionId, //Use standard versioning
+			ProtocolVersion: 0,         //Protocol 0 until protocol 1 is finalized.
 			GatewayKey:      *kp.GetPublicKeyString(),
 			Witness: struct {
 				Enabled bool `json:"enabled"`

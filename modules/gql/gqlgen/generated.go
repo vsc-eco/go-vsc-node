@@ -69,11 +69,6 @@ type DirectiveRoot struct {
 }
 
 type ComplexityRoot struct {
-	AccountInfoResult struct {
-		RcCurrent func(childComplexity int) int
-		RcMax     func(childComplexity int) int
-	}
-
 	ActionRecord struct {
 		ActionID    func(childComplexity int) int
 		Amount      func(childComplexity int) int
@@ -90,10 +85,6 @@ type ComplexityRoot struct {
 
 	AnchorProducer struct {
 		NextSlot func(childComplexity int, account *string) int
-	}
-
-	Auth struct {
-		Value func(childComplexity int) int
 	}
 
 	BalanceRecord struct {
@@ -172,16 +163,6 @@ type ComplexityRoot struct {
 		Io func(childComplexity int) int
 	}
 
-	Headers struct {
-		Nonce func(childComplexity int) int
-	}
-
-	JsonPatchOp struct {
-		Op    func(childComplexity int) int
-		Path  func(childComplexity int) int
-		Value func(childComplexity int) int
-	}
-
 	LedgerRecord struct {
 		Amount      func(childComplexity int) int
 		Asset       func(childComplexity int) int
@@ -195,8 +176,10 @@ type ComplexityRoot struct {
 	}
 
 	LocalNodeInfo struct {
-		Did    func(childComplexity int) int
-		PeerID func(childComplexity int) int
+		Epoch              func(childComplexity int) int
+		GitCommit          func(childComplexity int) int
+		LastProcessedBlock func(childComplexity int) int
+		VersionID          func(childComplexity int) int
 	}
 
 	Mutation struct {
@@ -445,20 +428,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 	_ = ec
 	switch typeName + "." + field {
 
-	case "AccountInfoResult.rc_current":
-		if e.complexity.AccountInfoResult.RcCurrent == nil {
-			break
-		}
-
-		return e.complexity.AccountInfoResult.RcCurrent(childComplexity), true
-
-	case "AccountInfoResult.rc_max":
-		if e.complexity.AccountInfoResult.RcMax == nil {
-			break
-		}
-
-		return e.complexity.AccountInfoResult.RcMax(childComplexity), true
-
 	case "ActionRecord.action_id":
 		if e.complexity.ActionRecord.ActionID == nil {
 			break
@@ -547,13 +516,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.AnchorProducer.NextSlot(childComplexity, args["account"].(*string)), true
-
-	case "Auth.value":
-		if e.complexity.Auth.Value == nil {
-			break
-		}
-
-		return e.complexity.Auth.Value(childComplexity), true
 
 	case "BalanceRecord.account":
 		if e.complexity.BalanceRecord.Account == nil {
@@ -892,34 +854,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Gas.Io(childComplexity), true
 
-	case "Headers.nonce":
-		if e.complexity.Headers.Nonce == nil {
-			break
-		}
-
-		return e.complexity.Headers.Nonce(childComplexity), true
-
-	case "JsonPatchOp.op":
-		if e.complexity.JsonPatchOp.Op == nil {
-			break
-		}
-
-		return e.complexity.JsonPatchOp.Op(childComplexity), true
-
-	case "JsonPatchOp.path":
-		if e.complexity.JsonPatchOp.Path == nil {
-			break
-		}
-
-		return e.complexity.JsonPatchOp.Path(childComplexity), true
-
-	case "JsonPatchOp.value":
-		if e.complexity.JsonPatchOp.Value == nil {
-			break
-		}
-
-		return e.complexity.JsonPatchOp.Value(childComplexity), true
-
 	case "LedgerRecord.amount":
 		if e.complexity.LedgerRecord.Amount == nil {
 			break
@@ -983,19 +917,33 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.LedgerRecord.Type(childComplexity), true
 
-	case "LocalNodeInfo.did":
-		if e.complexity.LocalNodeInfo.Did == nil {
+	case "LocalNodeInfo.epoch":
+		if e.complexity.LocalNodeInfo.Epoch == nil {
 			break
 		}
 
-		return e.complexity.LocalNodeInfo.Did(childComplexity), true
+		return e.complexity.LocalNodeInfo.Epoch(childComplexity), true
 
-	case "LocalNodeInfo.peer_id":
-		if e.complexity.LocalNodeInfo.PeerID == nil {
+	case "LocalNodeInfo.git_commit":
+		if e.complexity.LocalNodeInfo.GitCommit == nil {
 			break
 		}
 
-		return e.complexity.LocalNodeInfo.PeerID(childComplexity), true
+		return e.complexity.LocalNodeInfo.GitCommit(childComplexity), true
+
+	case "LocalNodeInfo.last_processed_block":
+		if e.complexity.LocalNodeInfo.LastProcessedBlock == nil {
+			break
+		}
+
+		return e.complexity.LocalNodeInfo.LastProcessedBlock(childComplexity), true
+
+	case "LocalNodeInfo.version_id":
+		if e.complexity.LocalNodeInfo.VersionID == nil {
+			break
+		}
+
+		return e.complexity.LocalNodeInfo.VersionID(childComplexity), true
 
 	case "Mutation.incrementNumber":
 		if e.complexity.Mutation.IncrementNumber == nil {
@@ -1723,12 +1671,6 @@ func (ec *executionContext) introspectType(name string) (*introspection.Type, er
 var sources = []*ast.Source{
 	{Name: "../schema.graphql", Input: `scalar JSON
 
-type JsonPatchOp {
-  op: String
-  path: String
-  value: JSON
-}
-
 type Contract {
   id: String
   code: String
@@ -1783,14 +1725,6 @@ type OpLogEvent {
   memo: String
   type: String!
   params: Map
-}
-
-type Headers {
-  nonce: Int
-}
-
-type Auth {
-  value: String!
 }
 
 type TransactionData {
@@ -1849,14 +1783,11 @@ type NonceRecord {
   nonce: Uint64!
 }
 
-type AccountInfoResult {
-  rc_max: Int
-  rc_current: Int
-}
-
 type LocalNodeInfo {
-  peer_id: String
-  did: String
+  version_id: String!
+  git_commit: String!
+  last_processed_block: Uint64!
+  epoch: Uint64!
 }
 
 type PostingJsonKeys {
@@ -2804,88 +2735,6 @@ func (ec *executionContext) field___Type_fields_argsIncludeDeprecated(
 
 // region    **************************** field.gotpl *****************************
 
-func (ec *executionContext) _AccountInfoResult_rc_max(ctx context.Context, field graphql.CollectedField, obj *AccountInfoResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_AccountInfoResult_rc_max(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.RcMax, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*int)
-	fc.Result = res
-	return ec.marshalOInt2ᚖint(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_AccountInfoResult_rc_max(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "AccountInfoResult",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Int does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _AccountInfoResult_rc_current(ctx context.Context, field graphql.CollectedField, obj *AccountInfoResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_AccountInfoResult_rc_current(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.RcCurrent, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*int)
-	fc.Result = res
-	return ec.marshalOInt2ᚖint(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_AccountInfoResult_rc_current(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "AccountInfoResult",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Int does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
 func (ec *executionContext) _ActionRecord_id(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.ActionRecord) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_ActionRecord_id(ctx, field)
 	if err != nil {
@@ -3415,50 +3264,6 @@ func (ec *executionContext) fieldContext_AnchorProducer_nextSlot(ctx context.Con
 	if fc.Args, err = ec.field_AnchorProducer_nextSlot_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _Auth_value(ctx context.Context, field graphql.CollectedField, obj *Auth) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Auth_value(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Value, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(string)
-	fc.Result = res
-	return ec.marshalNString2string(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_Auth_value(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "Auth",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type String does not have child fields")
-		},
 	}
 	return fc, nil
 }
@@ -5491,170 +5296,6 @@ func (ec *executionContext) fieldContext_Gas_IO(_ context.Context, field graphql
 	return fc, nil
 }
 
-func (ec *executionContext) _Headers_nonce(ctx context.Context, field graphql.CollectedField, obj *Headers) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Headers_nonce(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Nonce, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*int)
-	fc.Result = res
-	return ec.marshalOInt2ᚖint(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_Headers_nonce(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "Headers",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Int does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _JsonPatchOp_op(ctx context.Context, field graphql.CollectedField, obj *JSONPatchOp) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_JsonPatchOp_op(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Op, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_JsonPatchOp_op(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "JsonPatchOp",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type String does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _JsonPatchOp_path(ctx context.Context, field graphql.CollectedField, obj *JSONPatchOp) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_JsonPatchOp_path(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Path, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_JsonPatchOp_path(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "JsonPatchOp",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type String does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _JsonPatchOp_value(ctx context.Context, field graphql.CollectedField, obj *JSONPatchOp) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_JsonPatchOp_value(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Value, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOJSON2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_JsonPatchOp_value(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "JsonPatchOp",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type JSON does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
 func (ec *executionContext) _LedgerRecord_id(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerRecord) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_LedgerRecord_id(ctx, field)
 	if err != nil {
@@ -6051,8 +5692,8 @@ func (ec *executionContext) fieldContext_LedgerRecord_tx_id(_ context.Context, f
 	return fc, nil
 }
 
-func (ec *executionContext) _LocalNodeInfo_peer_id(ctx context.Context, field graphql.CollectedField, obj *LocalNodeInfo) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_LocalNodeInfo_peer_id(ctx, field)
+func (ec *executionContext) _LocalNodeInfo_version_id(ctx context.Context, field graphql.CollectedField, obj *LocalNodeInfo) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LocalNodeInfo_version_id(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -6065,21 +5706,24 @@ func (ec *executionContext) _LocalNodeInfo_peer_id(ctx context.Context, field gr
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return obj.PeerID, nil
+		return obj.VersionID, nil
 	})
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
 	}
 	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
 		return graphql.Null
 	}
-	res := resTmp.(*string)
+	res := resTmp.(string)
 	fc.Result = res
-	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+	return ec.marshalNString2string(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_LocalNodeInfo_peer_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_LocalNodeInfo_version_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "LocalNodeInfo",
 		Field:      field,
@@ -6092,8 +5736,8 @@ func (ec *executionContext) fieldContext_LocalNodeInfo_peer_id(_ context.Context
 	return fc, nil
 }
 
-func (ec *executionContext) _LocalNodeInfo_did(ctx context.Context, field graphql.CollectedField, obj *LocalNodeInfo) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_LocalNodeInfo_did(ctx, field)
+func (ec *executionContext) _LocalNodeInfo_git_commit(ctx context.Context, field graphql.CollectedField, obj *LocalNodeInfo) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LocalNodeInfo_git_commit(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -6106,21 +5750,24 @@ func (ec *executionContext) _LocalNodeInfo_did(ctx context.Context, field graphq
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return obj.Did, nil
+		return obj.GitCommit, nil
 	})
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
 	}
 	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
 		return graphql.Null
 	}
-	res := resTmp.(*string)
+	res := resTmp.(string)
 	fc.Result = res
-	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+	return ec.marshalNString2string(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_LocalNodeInfo_did(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_LocalNodeInfo_git_commit(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "LocalNodeInfo",
 		Field:      field,
@@ -6128,6 +5775,94 @@ func (ec *executionContext) fieldContext_LocalNodeInfo_did(_ context.Context, fi
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _LocalNodeInfo_last_processed_block(ctx context.Context, field graphql.CollectedField, obj *LocalNodeInfo) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LocalNodeInfo_last_processed_block(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.LastProcessedBlock, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_LocalNodeInfo_last_processed_block(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "LocalNodeInfo",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _LocalNodeInfo_epoch(ctx context.Context, field graphql.CollectedField, obj *LocalNodeInfo) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LocalNodeInfo_epoch(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Epoch, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_LocalNodeInfo_epoch(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "LocalNodeInfo",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
 		},
 	}
 	return fc, nil
@@ -7437,10 +7172,14 @@ func (ec *executionContext) fieldContext_Query_localNodeInfo(_ context.Context, 
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			switch field.Name {
-			case "peer_id":
-				return ec.fieldContext_LocalNodeInfo_peer_id(ctx, field)
-			case "did":
-				return ec.fieldContext_LocalNodeInfo_did(ctx, field)
+			case "version_id":
+				return ec.fieldContext_LocalNodeInfo_version_id(ctx, field)
+			case "git_commit":
+				return ec.fieldContext_LocalNodeInfo_git_commit(ctx, field)
+			case "last_processed_block":
+				return ec.fieldContext_LocalNodeInfo_last_processed_block(ctx, field)
+			case "epoch":
+				return ec.fieldContext_LocalNodeInfo_epoch(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type LocalNodeInfo", field.Name)
 		},
@@ -12162,44 +11901,6 @@ func (ec *executionContext) _DepositDrain(ctx context.Context, sel ast.Selection
 
 // region    **************************** object.gotpl ****************************
 
-var accountInfoResultImplementors = []string{"AccountInfoResult"}
-
-func (ec *executionContext) _AccountInfoResult(ctx context.Context, sel ast.SelectionSet, obj *AccountInfoResult) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, accountInfoResultImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("AccountInfoResult")
-		case "rc_max":
-			out.Values[i] = ec._AccountInfoResult_rc_max(ctx, field, obj)
-		case "rc_current":
-			out.Values[i] = ec._AccountInfoResult_rc_current(ctx, field, obj)
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
 var actionRecordImplementors = []string{"ActionRecord"}
 
 func (ec *executionContext) _ActionRecord(ctx context.Context, sel ast.SelectionSet, obj *ledgerDb.ActionRecord) graphql.Marshaler {
@@ -12423,45 +12124,6 @@ func (ec *executionContext) _AnchorProducer(ctx context.Context, sel ast.Selecti
 			out.Values[i] = graphql.MarshalString("AnchorProducer")
 		case "nextSlot":
 			out.Values[i] = ec._AnchorProducer_nextSlot(ctx, field, obj)
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
-var authImplementors = []string{"Auth"}
-
-func (ec *executionContext) _Auth(ctx context.Context, sel ast.SelectionSet, obj *Auth) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, authImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("Auth")
-		case "value":
-			out.Values[i] = ec._Auth_value(ctx, field, obj)
-			if out.Values[i] == graphql.Null {
-				out.Invalids++
-			}
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -13767,82 +13429,6 @@ func (ec *executionContext) _Gas(ctx context.Context, sel ast.SelectionSet, obj 
 	return out
 }
 
-var headersImplementors = []string{"Headers"}
-
-func (ec *executionContext) _Headers(ctx context.Context, sel ast.SelectionSet, obj *Headers) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, headersImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("Headers")
-		case "nonce":
-			out.Values[i] = ec._Headers_nonce(ctx, field, obj)
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
-var jsonPatchOpImplementors = []string{"JsonPatchOp"}
-
-func (ec *executionContext) _JsonPatchOp(ctx context.Context, sel ast.SelectionSet, obj *JSONPatchOp) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, jsonPatchOpImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("JsonPatchOp")
-		case "op":
-			out.Values[i] = ec._JsonPatchOp_op(ctx, field, obj)
-		case "path":
-			out.Values[i] = ec._JsonPatchOp_path(ctx, field, obj)
-		case "value":
-			out.Values[i] = ec._JsonPatchOp_value(ctx, field, obj)
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
 var ledgerRecordImplementors = []string{"LedgerRecord"}
 
 func (ec *executionContext) _LedgerRecord(ctx context.Context, sel ast.SelectionSet, obj *ledgerDb.LedgerRecord) graphql.Marshaler {
@@ -13995,10 +13581,26 @@ func (ec *executionContext) _LocalNodeInfo(ctx context.Context, sel ast.Selectio
 		switch field.Name {
 		case "__typename":
 			out.Values[i] = graphql.MarshalString("LocalNodeInfo")
-		case "peer_id":
-			out.Values[i] = ec._LocalNodeInfo_peer_id(ctx, field, obj)
-		case "did":
-			out.Values[i] = ec._LocalNodeInfo_did(ctx, field, obj)
+		case "version_id":
+			out.Values[i] = ec._LocalNodeInfo_version_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "git_commit":
+			out.Values[i] = ec._LocalNodeInfo_git_commit(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "last_processed_block":
+			out.Values[i] = ec._LocalNodeInfo_last_processed_block(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "epoch":
+			out.Values[i] = ec._LocalNodeInfo_epoch(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}

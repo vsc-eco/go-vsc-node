@@ -39,17 +39,8 @@ type DepositDrain interface {
 	GetOwner() *string
 }
 
-type AccountInfoResult struct {
-	RcMax     *int `json:"rc_max,omitempty"`
-	RcCurrent *int `json:"rc_current,omitempty"`
-}
-
 type AnchorProducer struct {
 	NextSlot *string `json:"nextSlot,omitempty"`
-}
-
-type Auth struct {
-	Value string `json:"value"`
 }
 
 type Contract struct {
@@ -82,16 +73,6 @@ type Gas struct {
 	Io *int `json:"IO,omitempty"`
 }
 
-type Headers struct {
-	Nonce *int `json:"nonce,omitempty"`
-}
-
-type JSONPatchOp struct {
-	Op    *string `json:"op,omitempty"`
-	Path  *string `json:"path,omitempty"`
-	Value *string `json:"value,omitempty"`
-}
-
 type LedgerActionsFilter struct {
 	ByTxID     *string         `json:"byTxId,omitempty"`
 	ByActionID *string         `json:"byActionId,omitempty"`
@@ -117,8 +98,10 @@ type LedgerTxFilter struct {
 }
 
 type LocalNodeInfo struct {
-	PeerID *string `json:"peer_id,omitempty"`
-	Did    *string `json:"did,omitempty"`
+	VersionID          string       `json:"version_id"`
+	GitCommit          string       `json:"git_commit"`
+	LastProcessedBlock model.Uint64 `json:"last_processed_block"`
+	Epoch              model.Uint64 `json:"epoch"`
 }
 
 type Mutation struct {

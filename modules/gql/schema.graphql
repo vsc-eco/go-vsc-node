@@ -1,11 +1,5 @@
 scalar JSON
 
-type JsonPatchOp {
-  op: String
-  path: String
-  value: JSON
-}
-
 type Contract {
   id: String
   code: String
@@ -60,14 +54,6 @@ type OpLogEvent {
   memo: String
   type: String!
   params: Map
-}
-
-type Headers {
-  nonce: Int
-}
-
-type Auth {
-  value: String!
 }
 
 type TransactionData {
@@ -126,14 +112,11 @@ type NonceRecord {
   nonce: Uint64!
 }
 
-type AccountInfoResult {
-  rc_max: Int
-  rc_current: Int
-}
-
 type LocalNodeInfo {
-  peer_id: String
-  did: String
+  version_id: String!
+  git_commit: String!
+  last_processed_block: Uint64!
+  epoch: Uint64!
 }
 
 type PostingJsonKeys {
