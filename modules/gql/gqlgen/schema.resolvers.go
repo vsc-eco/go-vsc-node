@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"unicode/utf8"
+	"vsc-node/modules/announcements"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -344,7 +345,15 @@ func (r *queryResolver) GetAccountNonce(ctx context.Context, account string) (*n
 
 // LocalNodeInfo is the resolver for the localNodeInfo field.
 func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, error) {
-	panic(fmt.Errorf("not implemented"))
+	head, headErr := r.HiveBlocks.GetLastProcessedBlock()
+	if headErr != nil {
+		return nil, headErr
+	}
+	election, electionErr := r.Elections.GetElectionByHeight(head)
+	if electionErr != nil {
+		return nil, electionErr
+	}
+	return &LocalNodeInfo{GitCommit: announcements.GitCommit, VersionID: announcements.VersionId, LastProcessedBlock: model.Uint64(head), Epoch: model.Uint64(election.Epoch)}, nil
 }
 
 // WitnessNodes is the resolver for the witnessNodes field.
@@ -549,15 +558,3 @@ type rcRecordResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }
-
-// !!! WARNING !!!
-// The code below was going to be deleted when updating resolvers. It has been copied here so you have
-// one last chance to move it out of harms way if you want. There are two reasons this happens:
-//  - When renaming or deleting a resolver the old code will be put in here. You can safely delete
-//    it when you're done.
-//  - You have helper methods in this file. Move them out to keep these resolver files clean.
-/*
-	func (r *transactionRecordResolver) OpID(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
-	return model.Uint64(obj.OpId), nil
-}
-*/
