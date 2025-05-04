@@ -26,7 +26,8 @@ type SetResultUpdate struct {
 	// Id       string
 	// OutputId string
 	// Index    int64
-	Id     string
+	Id string
+	// Note: This is referring to index in outputs array in oplog
 	OpIdx  int
 	Ledger *[]ledgerSystem.OpLogEvent
 	Status *TransactionStatus
