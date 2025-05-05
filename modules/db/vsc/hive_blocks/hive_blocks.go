@@ -560,23 +560,8 @@ func GetAggTimestampPipeline(filters bson.D, localField string, timestampField s
 			{Key: "foreignField", Value: "block.block_number"},
 			{Key: "as", Value: "block_info"},
 		}}},
-		// Unwind the joined array, saving the operation index into opId
+		// Unwind the joined array
 		{{Key: "$unwind", Value: "$block_info"}},
-		{{Key: "$addFields", Value: bson.D{
-			{Key: "tx_id", Value: "$id"},
-		}}},
-		{{Key: "$set", Value: bson.D{
-			{Key: "id", Value: bson.D{
-				{
-					Key: "$concat",
-					Value: bson.A{
-						"$id",
-						"-",
-						bson.D{{Key: "$toString", Value: "$anchr_opidx"}},
-					},
-				},
-			}},
-		}}},
 		// Add timestamp field
 		{{Key: "$addFields", Value: bson.D{
 			{Key: timestampField, Value: "$block_info.block.timestamp"},
@@ -591,4 +576,25 @@ func GetAggTimestampPipeline(filters bson.D, localField string, timestampField s
 		{{Key: "$skip", Value: offset}},
 		{{Key: "$limit", Value: limit}},
 	}
+}
+
+// AggTimestampPipeline with anchr_opidx appended to id
+func GetAggTimestampPipeline2(filters bson.D, localField string, timestampField string, offset int, limit int) mongo.Pipeline {
+	pipe := GetAggTimestampPipeline(filters, localField, timestampField, offset, limit)
+	pipe = append(pipe, bson.D{{Key: "$addFields", Value: bson.D{
+		{Key: "tx_id", Value: "$id"},
+	}}})
+	pipe = append(pipe, bson.D{{Key: "$set", Value: bson.D{
+		{Key: "id", Value: bson.D{
+			{
+				Key: "$concat",
+				Value: bson.A{
+					"$id",
+					"-",
+					bson.D{{Key: "$toString", Value: "$anchr_opidx"}},
+				},
+			},
+		}},
+	}}})
+	return pipe
 }
