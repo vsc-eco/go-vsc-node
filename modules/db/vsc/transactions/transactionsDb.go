@@ -162,7 +162,7 @@ func (e *transactions) FindTransactions(ids []string, id *string, account *strin
 		}
 		filters = append(filters, bson.E{Key: "$or", Value: ledgerTypeFilter})
 	}
-	pipe := hive_blocks.GetAggTimestampPipeline(filters, "anchr_height", "anchr_ts", offset, limit)
+	pipe := hive_blocks.GetAggTimestampPipeline2(filters, "anchr_height", "anchr_ts", offset, limit)
 	cursor, err := e.Aggregate(context.TODO(), pipe)
 	if err != nil {
 		return []TransactionRecord{}, err
