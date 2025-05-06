@@ -609,9 +609,10 @@ func (bp *BlockProducer) canProduce(height uint64) bool {
 
 func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBlocks.VscBlockTx {
 	compileResult := bp.StateEngine.LedgerExecutor.Compile(bh)
+	opLog := make([]ledgerSystem.OpLogEvent, 0)
 
-	if compileResult == nil {
-		return nil
+	if compileResult != nil {
+		opLog = compileResult.OpLog
 	}
 
 	outputs := make([]stateEngine.OplogOutputEntry, 0)
@@ -621,7 +622,7 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 
 		LedgerIdx := make([]int, 0)
 		for _, opId := range output.LedgerIds {
-			idx := slices.IndexFunc(compileResult.OpLog, func(i ledgerSystem.OpLogEvent) bool {
+			idx := slices.IndexFunc(opLog, func(i ledgerSystem.OpLogEvent) bool {
 				return i.Id == opId
 			})
 			LedgerIdx = append(LedgerIdx, idx)
@@ -638,7 +639,7 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 	oplogData := map[string]interface{}{
 		"__t":     "vsc-oplog",
 		"__v":     "0.1",
-		"ledger":  compileResult.OpLog,
+		"ledger":  opLog,
 		"outputs": outputs,
 	}
 
