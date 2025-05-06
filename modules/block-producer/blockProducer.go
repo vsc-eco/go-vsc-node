@@ -608,6 +608,7 @@ func (bp *BlockProducer) canProduce(height uint64) bool {
 }
 
 func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBlocks.VscBlockTx {
+	// note: oplog is required, otherwise the StateEngine won't Flush()
 	compileResult := bp.StateEngine.LedgerExecutor.Compile(bh)
 	opLog := make([]ledgerSystem.OpLogEvent, 0)
 
