@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/common"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
@@ -37,7 +38,7 @@ type TxVscCallContract struct {
 	Op         string             `json:"op"`
 	ContractId string             `json:"contract_id"`
 	Action     string             `json:"action"`
-	Payload    string             `json:"payload"`
+	Payload    json.RawMessage    `json:"payload"`
 	RcLimit    uint               `json:"rc_limit"`
 	Intents    []contracts.Intent `json:"intents"`
 }
@@ -94,8 +95,15 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 		t.Self.RequiredPostingAuths,
 	}, int64(gas), t.Intents, ledgerSession, ss, contractSession.GetMetadata())
 
+	validUtf8 := utf8.Valid(t.Payload)
+	if !validUtf8 {
+		return errorToTxResult(fmt.Errorf("payload does not parse to a UTF-8 string"), 100)
+	}
+
+	payload := string(t.Payload)
+
 	res := result.MapOrElse(
-		se.wasm.Execute(ctx, code, gas*common.CYCLE_GAS_PER_RC, t.Action, t.Payload, info.Runtime),
+		se.wasm.Execute(ctx, code, gas*common.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime),
 		func(err error) TxResult {
 			return errorToTxResult(err, int64(gas))
 		},
