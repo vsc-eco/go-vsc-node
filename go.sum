@@ -101,6 +101,10 @@ github.com/crate-crypto/go-ipa v0.0.0-20240223125850-b1e8a79f509c h1:uQYC5Z1mdLR
 github.com/crate-crypto/go-ipa v0.0.0-20240223125850-b1e8a79f509c/go.mod h1:geZJZH3SzKCqnz5VT0q/DyIG/tvu/dZk+VIfXicupJs=
 github.com/crate-crypto/go-kzg-4844 v1.1.0 h1:EN/u9k2TF6OWSHrCCDBBU6GLNMq88OspHHlMnHfoyU4=
 github.com/crate-crypto/go-kzg-4844 v1.1.0/go.mod h1:JolLjpSff1tCCJKaJx4psrlEdlXuJEC996PL3tTAFks=
+github.com/creachadair/jrpc2 v1.3.1 h1:4B2R9050CYdhCKepbFVWQVG0/EFqRa9MuuM1Thd7tZo=
+github.com/creachadair/jrpc2 v1.3.1/go.mod h1:GtMp2RXHMnrdOY8hWWlbBpjWXSVDXhuO/LMRJAtRFno=
+github.com/creachadair/mds v0.23.0 h1:cANHIuKZwbfIoo/zEWA2sn+uGYjqYHuWvpoApkdjGpg=
+github.com/creachadair/mds v0.23.0/go.mod h1:ArfS0vPHoLV/SzuIzoqTEZfoYmac7n9Cj8XPANHocvw=
 github.com/cskr/pubsub v1.0.2 h1:vlOzMhl6PFn60gRlTQQsIfVwaPB/B/8MziK8FhEPt/0=
 github.com/cskr/pubsub v1.0.2/go.mod h1:/8MzYXk/NJAz782G8RPkFzXTZVu63VotefPnR9TIRis=
 github.com/davecgh/go-spew v0.0.0-20171005155431-ecdeabc65495/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
