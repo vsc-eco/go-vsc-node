@@ -223,6 +223,8 @@ type StorageProof struct {
 	Signature dids.SerializedCircuit `json:"signature"`
 }
 
+const STORAGE_PROOF_MINIMUM_SIGNERS = 6
+
 // TODO: Define everything else that'll happen with this
 func (sp *StorageProof) Verify(electionInfo elections.ElectionResult) bool {
 	didMembers := make([]dids.BlsDID, 0)
@@ -241,7 +243,7 @@ func (sp *StorageProof) Verify(electionInfo elections.ElectionResult) bool {
 	}
 	verified, includedDids, err := circuit.Verify()
 
-	if !verified || err != nil || len(includedDids) < 2 {
+	if !verified || err != nil || len(includedDids) < STORAGE_PROOF_MINIMUM_SIGNERS {
 		return false
 	}
 

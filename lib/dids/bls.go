@@ -269,6 +269,36 @@ type partialBlsCircuit struct {
 
 type PartialBlsCircuit = *partialBlsCircuit
 
+func (pbc *partialBlsCircuit) Signers() []BlsDID {
+	dids := make([]BlsDID, 0)
+	pbc.circuit.mutex.Lock()
+	bv := *pbc.circuit.bitVector // dereference to ensure value isn't modified when reading
+	pbc.circuit.mutex.Unlock()
+	for i := range bv.BitLen() {
+		if bv.Bit(i) == 1 {
+			member := pbc.members[i]
+			dids = append(dids, member)
+		}
+	}
+	return dids
+}
+
+func (pbc *partialBlsCircuit) SignerCount() int {
+	count := 0
+	pbc.circuit.mutex.Lock()
+	defer pbc.circuit.mutex.Unlock()
+	if pbc.circuit.bitVector == nil {
+		return 0
+	}
+	bv := *pbc.circuit.bitVector // dereference to ensure value isn't modified when reading
+	for i := range bv.BitLen() {
+		if bv.Bit(i) == 1 {
+			count++
+		}
+	}
+	return count
+}
+
 // get the members of the partial BLS circuit as a list of DIDs
 func (pbc *partialBlsCircuit) CircuitMap() []BlsDID {
 	var dids []BlsDID

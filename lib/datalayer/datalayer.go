@@ -3,6 +3,7 @@ package datalayer
 import (
 	"bytes"
 	"context"
+	"fmt"
 
 	"github.com/chebyrash/promise"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -71,7 +72,7 @@ func (dl *DataLayer) Init() error {
 	var path string
 
 	if len(dl.dbPrefix) > 0 {
-		path = "data/badger-" + dl.dbPrefix[0]
+		path = fmt.Sprint("data-", dl.dbPrefix[0], "/badger")
 	} else {
 		path = "data/badger"
 	}

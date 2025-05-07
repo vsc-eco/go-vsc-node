@@ -1,9 +1,10 @@
-package data_availability
+package data_availability_spec
 
 import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"sync/atomic"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
@@ -18,66 +19,76 @@ type p2pSpec struct {
 	dl   *datalayer.DataLayer
 }
 
+type P2pSpec = *p2pSpec
+
+func New(conf common.IdentityConfig, dl *datalayer.DataLayer) P2pSpec {
+	return &p2pSpec{
+		conf,
+		dl,
+	}
+}
+
+func (s p2pSpec) Conf() common.IdentityConfig {
+	return s.conf
+}
+
+func (s p2pSpec) Datalayer() *datalayer.DataLayer {
+	return s.dl
+}
+
 type p2pMessageType byte
 
 const (
-	p2pMessageData p2pMessageType = iota
-	p2pMessageSignature
+	P2pMessageData p2pMessageType = iota
+	P2pMessageSignature
 )
 
 const signatureLength = 96 // See bls.Signature.Serialize() for details. (github.com/protolambda/bls12-381-util)
 
-type p2pMessage struct {
+type P2pMessage struct {
 	data []byte
 }
 
-func (p p2pMessage) Data() []byte {
+func NewP2pMessage(Type p2pMessageType, data []byte) P2pMessage {
+	return P2pMessage{
+		data: append([]byte{byte(Type)}, data...),
+	}
+}
+
+func (p P2pMessage) Data() []byte {
 	return p.data[1:]
 }
 
-func (p p2pMessage) Type() p2pMessageType {
+func (p P2pMessage) Type() p2pMessageType {
 	return p2pMessageType(p.data[0])
 }
 
-func (p p2pMessage) Valid() bool {
+func (p P2pMessage) Valid() bool {
 	if len(p.data) == 0 {
 		return false
 	}
 	switch p.Type() {
-	case p2pMessageData:
+	case P2pMessageData:
 		return len(p.Data()) > 0
-	case p2pMessageSignature:
+	case P2pMessageSignature:
 		return len(p.Data()) == signatureLength
 	default:
 		return false
 	}
 }
 
-var _ libp2p.PubSubServiceParams[p2pMessage] = p2pSpec{}
-
-func (d *DataAvailability) startP2P() error {
-	var err error
-	d.service, err = libp2p.NewPubSubService(d.p2p, p2pSpec{d.conf, d.dl})
-	return err
-}
-
-func (d *DataAvailability) stopP2P() error {
-	if d.service == nil {
-		return nil
-	}
-	return d.service.Close()
-}
+var _ libp2p.PubSubServiceParams[P2pMessage] = p2pSpec{}
 
 // ValidateMessage implements libp2p.PubSubServiceParams.
-func (p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
+func (p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg P2pMessage) bool {
 	// Can add a blacklist for spammers or ignore previously seen messages.
 	return true
 }
 
 // HandleMessage implements libp2p.PubSubServiceParams.
-func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
+func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg P2pMessage, send libp2p.SendFunc[P2pMessage]) error {
 	switch msg.Type() {
-	case p2pMessageData:
+	case P2pMessageData:
 		blsPrivKey := &dids.BlsPrivKey{}
 		var arr [32]byte
 		blsPrivSeedHex := s.conf.Get().BlsPrivKeySeed
@@ -109,22 +120,25 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 			return fmt.Errorf("failed to sign data: %w", err)
 		}
 
-		sigData := append([]byte{byte(p2pMessageSignature)}, sig[:]...)
+		sigData := append([]byte{byte(P2pMessageSignature)}, sig[:]...)
 
-		return send(p2pMessage{sigData})
+		return send(P2pMessage{sigData})
 	}
 	return nil
 }
 
 // HandleMessage implements libp2p.PubSubServiceParams.
-func (p2pSpec) HandleRawMessage(ctx context.Context, rawMsg *pubsub.Message, send libp2p.SendFunc[p2pMessage]) error {
+func (p2pSpec) HandleRawMessage(ctx context.Context, rawMsg *pubsub.Message, send libp2p.SendFunc[P2pMessage]) error {
 	// Not typically necessary to implement this method.
 	return nil
 }
 
+var count = atomic.Int32{}
+
 // ParseMessage implements libp2p.PubSubServiceParams.
-func (p2pSpec) ParseMessage(data []byte) (p2pMessage, error) {
-	res := p2pMessage{data}
+func (p2pSpec) ParseMessage(data []byte) (P2pMessage, error) {
+	fmt.Println("common message count:", count.Add(1))
+	res := P2pMessage{data}
 	if !res.Valid() {
 		return res, fmt.Errorf("invalid message")
 	}
@@ -132,7 +146,7 @@ func (p2pSpec) ParseMessage(data []byte) (p2pMessage, error) {
 }
 
 // SerializeMessage implements libp2p.PubSubServiceParams.
-func (p2pSpec) SerializeMessage(msg p2pMessage) []byte {
+func (p2pSpec) SerializeMessage(msg P2pMessage) []byte {
 	return msg.data
 }
 

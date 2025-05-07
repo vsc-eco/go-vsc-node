@@ -8,6 +8,7 @@ import (
 	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/witnesses"
+	start_status "vsc-node/modules/start-status"
 
 	"github.com/chebyrash/promise"
 	libp2p "github.com/libp2p/go-libp2p"
@@ -31,10 +32,10 @@ import (
 )
 
 var BOOTSTRAP = []string{
-	"/dnsaddr/api.vsc.eco/tcp/10720/p2p/12D3KooWFVVQ2xG6ohJ3tQrh3V6zZnRnKPVfQWVH5LjJakzBCs7E",
-	"/ip4/149.56.25.168/tcp/10720/p2p/12D3KooWFVVQ2xG6ohJ3tQrh3V6zZnRnKPVfQWVH5LjJakzBCs7E",  // TODO this is api.vsc.eco, but DNS resolution doesn't work?
-	"/ip4/173.211.12.65/tcp/10720/p2p/12D3KooWGpWrBc5pFx5GHWibczTPrazDCfk8GCETB5Ynb4Dq5L5V",  //@vaultec.vsc
-	"/ip4/147.135.15.155/tcp/10720/p2p/12D3KooWCAE4XrkE4NJL3nqYkXXNhte94rdBDGGVQQJewrDXDVJZ", // mengao
+	// "/dnsaddr/api.vsc.eco/tcp/10720/p2p/12D3KooWFVVQ2xG6ohJ3tQrh3V6zZnRnKPVfQWVH5LjJakzBCs7E",
+	// "/ip4/149.56.25.168/tcp/10720/p2p/12D3KooWFVVQ2xG6ohJ3tQrh3V6zZnRnKPVfQWVH5LjJakzBCs7E", // TODO this is api.vsc.eco, but DNS resolution doesn't work?
+	"/ip4/173.211.12.65/tcp/10720/p2p/12D3KooWGpWrBc5pFx5GHWibczTPrazDCfk8GCETB5Ynb4Dq5L5V", //@vaultec.vsc
+	// "/ip4/147.135.15.155/tcp/10720/p2p/12D3KooWCAE4XrkE4NJL3nqYkXXNhte94rdBDGGVQQJewrDXDVJZ", // mengao
 	// "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
 	// "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
 	// "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
@@ -58,17 +59,29 @@ type P2PServer struct {
 
 	subs    []*pubsub.Subscription
 	tickers []*time.Ticker
+
+	startStatus start_status.StartStatus
+
+	port int
 }
 
 // var _ aggregate.Plugin = &Libp2p{}
 // var _ p.PubSub[peer.ID] = &Libp2p{}
+var _ start_status.Starter = &P2PServer{}
 
-func New(witnessDb witnesses.Witnesses, conf common.IdentityConfig) *P2PServer {
+func New(witnessDb witnesses.Witnesses, conf common.IdentityConfig, port ...int) *P2PServer {
+
+	p := 10720
+	if len(port) > 0 {
+		p = port[0]
+	}
 
 	return &P2PServer{
-		witnessDb: witnessDb,
-		conf:      conf,
-		cron:      cron.New(),
+		witnessDb:   witnessDb,
+		conf:        conf,
+		cron:        cron.New(),
+		startStatus: start_status.New(),
+		port:        p,
 	}
 }
 
@@ -108,6 +121,11 @@ func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 	fmt.Println("Bootstrap discovery complete")
 }
 
+// Started implements start_status.Starter.
+func (p2pServer *P2PServer) Started() *promise.Promise[any] {
+	return p2pServer.startStatus.Started()
+}
+
 // =================================
 // ===== Plugin Implementation =====
 // =================================
@@ -128,7 +146,7 @@ func (p2pServer *P2PServer) Init() error {
 
 	var idht *dht.IpfsDHT
 	options := []libp2p.Option{
-		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/10720"),
+		libp2p.ListenAddrStrings(fmt.Sprint("/ip4/0.0.0.0/tcp/", p2pServer.port)),
 		libp2p.Identity(key),
 		libp2p.EnableNATService(),
 		libp2p.EnableRelayService(),
@@ -234,9 +252,11 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 		p2ps.discoverPeers()
 	})
 
+	uniquePeers := make(map[string]struct{})
+
 	for _, peerStr := range BOOTSTRAP {
 		peerId, _ := peer.AddrInfoFromString(peerStr)
-
+		uniquePeers[peerId.ID.String()] = struct{}{}
 		p2ps.Host.Connect(context.Background(), *peerId)
 	}
 
@@ -252,8 +272,8 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 	p2ps.subs = append(p2ps.subs, subscription)
 
 	go func() {
+		time.Sleep(50 * time.Millisecond)
 		for {
-			time.Sleep(5 * time.Second)
 			peerList := ""
 			if len(p2ps.Host.Network().Peers()) > 5 {
 				for idx, peer := range p2ps.Host.Network().Peers() {
@@ -272,7 +292,14 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 				}
 			}
 			peerLen := len(p2ps.Host.Network().Peers())
-			fmt.Println("peers", "["+peerList+"]", "peers.len()="+strconv.Itoa(peerLen))
+			// fmt.Println("peers", "["+peerList+"]", "peers.len()="+strconv.Itoa(peerLen))
+			// fmt.Println("unique peers:", len(uniquePeers)-1)
+			if peerLen >= len(uniquePeers)-1 {
+				p2ps.startStatus.TriggerStart()
+			} else {
+				p2ps.discoverPeers()
+			}
+			time.Sleep(5 * time.Second)
 		}
 	}()
 
@@ -320,13 +347,13 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 
 func (p2p *P2PServer) discoverPeers() {
 
-	if len(p2p.Host.Network().Peers()) < 2 {
-		for _, peerStr := range BOOTSTRAP {
-			peerId, _ := peer.AddrInfoFromString(peerStr)
+	// if len(p2p.Host.Network().Peers()) < 2 {
+	for _, peerStr := range BOOTSTRAP {
+		peerId, _ := peer.AddrInfoFromString(peerStr)
 
-			p2p.Host.Connect(context.Background(), *peerId)
-		}
+		p2p.Host.Connect(context.Background(), *peerId)
 	}
+	// }
 
 	ctx := context.Background()
 
