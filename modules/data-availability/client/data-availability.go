@@ -100,7 +100,7 @@ func (d *DataAvailability) RequestProofWithElection(data []byte, election electi
 		return stateEngine.StorageProof{}, err
 	}
 
-	ctx, cancel := context.WithTimeoutCause(context.Background(), 15*time.Second, errors.New("data availability proof did not collect enough signatures"))
+	ctx, cancel := context.WithTimeoutCause(context.Background(), 15*time.Minute, errors.New("data availability proof did not collect enough signatures"))
 	defer cancel()
 
 	t := time.NewTicker(200 * time.Millisecond)

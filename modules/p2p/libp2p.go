@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/witnesses"
@@ -18,9 +19,11 @@ import (
 	"github.com/libp2p/go-libp2p/core/event"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/core/routing"
 	rhost "github.com/libp2p/go-libp2p/p2p/host/routed"
+	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	"github.com/robfig/cron/v3"
 
 	rpc "github.com/libp2p/go-libp2p-gorpc"
@@ -194,7 +197,10 @@ func (p2pServer *P2PServer) Init() error {
 	p2pServer.rpcClient = rpcClient
 
 	//Setup pubsub
-	ps, _ := pubsub.NewGossipSub(ctx, p2p)
+	ps, err := pubsub.NewGossipSub(ctx, p2p, pubsub.WithDiscovery(drouting.NewRoutingDiscovery(p2pServer.Dht)), pubsub.WithPeerExchange(true))
+	if err != nil {
+		return err
+	}
 
 	p2pServer.pubsub = ps
 
@@ -257,6 +263,7 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 	for _, peerStr := range BOOTSTRAP {
 		peerId, _ := peer.AddrInfoFromString(peerStr)
 		uniquePeers[peerId.ID.String()] = struct{}{}
+		p2ps.Host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
 		p2ps.Host.Connect(context.Background(), *peerId)
 	}
 
@@ -291,14 +298,47 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 					peerList += peer.String() + ", "
 				}
 			}
-			peerLen := len(p2ps.Host.Network().Peers())
+			peers := p2ps.Host.Network().Peers()
+			peerLen := len(peers)
+			ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
+			wg := sync.WaitGroup{}
+			wg.Add(len(uniquePeers) - 1)
+			for _, peer := range p2ps.Host.Network().Peers() {
+				go func() {
+					for {
+						fmt.Println(peer.String(), "connectedness", p2ps.Host.Network().Connectedness(peer).String())
+						select {
+						case <-ctx.Done():
+							wg.Done()
+							return
+						default:
+						}
+						res := <-ping.Ping(ctx, p2ps.Host, peer)
+						if res.Error == nil {
+							break
+						}
+						panic(res.Error)
+						fmt.Println("ping err", res.Error)
+					}
+					wg.Done()
+				}()
+			}
+			wg.Wait()
+			select {
+			case <-ctx.Done():
+				fmt.Println("context timeout")
+			default:
+				fmt.Println("success")
+			}
+			cancel()
 			// fmt.Println("peers", "["+peerList+"]", "peers.len()="+strconv.Itoa(peerLen))
 			// fmt.Println("unique peers:", len(uniquePeers)-1)
 			if peerLen >= len(uniquePeers)-1 {
 				p2ps.startStatus.TriggerStart()
 			} else {
-				p2ps.discoverPeers()
+				// p2ps.discoverPeers()
 			}
+
 			time.Sleep(5 * time.Second)
 		}
 	}()
@@ -350,7 +390,7 @@ func (p2p *P2PServer) discoverPeers() {
 	// if len(p2p.Host.Network().Peers()) < 2 {
 	for _, peerStr := range BOOTSTRAP {
 		peerId, _ := peer.AddrInfoFromString(peerStr)
-
+		p2p.Host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
 		p2p.Host.Connect(context.Background(), *peerId)
 	}
 	// }

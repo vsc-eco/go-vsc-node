@@ -3,6 +3,7 @@ package libp2p
 import (
 	"context"
 	"fmt"
+	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -95,6 +96,19 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 		ctx,
 		cancel,
 	}
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			fmt.Println(p2p.PeerInfo().GetPeerId(), "pubsub peers:",
+				topic.ListPeers())
+			time.Sleep(time.Second)
+		}
+	}()
 
 	go func() {
 		for {

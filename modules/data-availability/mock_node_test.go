@@ -61,6 +61,13 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	datalayer := DataLayer.New(p2p, input.Username)
 
+	/*
+			for _, addr := range node.P2P.Host.Addrs() {
+			peerAddrs = append(peerAddrs, addr.String()+"/p2p/"+node.P2P.Host.ID().String())
+		}
+	*/
+	// id := p2p.Host.Network().Peers()[0]
+	// p2p.Host.Network().Connectedness(id).String()
 	p2p.Init()
 	addrs := utils.Map(
 		p2p.PeerInfo().GetPeerAddrs(),
