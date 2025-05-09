@@ -88,15 +88,16 @@ type ComplexityRoot struct {
 	}
 
 	BalanceRecord struct {
-		Account       func(childComplexity int) int
-		BlockHeight   func(childComplexity int) int
-		Hbd           func(childComplexity int) int
-		HbdAvg        func(childComplexity int) int
-		HbdClaim      func(childComplexity int) int
-		HbdModify     func(childComplexity int) int
-		HbdSavings    func(childComplexity int) int
-		Hive          func(childComplexity int) int
-		HiveConsensus func(childComplexity int) int
+		Account            func(childComplexity int) int
+		BlockHeight        func(childComplexity int) int
+		ConsensusUnstaking func(childComplexity int) int
+		Hbd                func(childComplexity int) int
+		HbdAvg             func(childComplexity int) int
+		HbdClaim           func(childComplexity int) int
+		HbdModify          func(childComplexity int) int
+		HbdSavings         func(childComplexity int) int
+		Hive               func(childComplexity int) int
+		HiveConsensus      func(childComplexity int) int
 	}
 
 	Contract struct {
@@ -314,6 +315,7 @@ type BalanceRecordResolver interface {
 	HbdSavings(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error)
 	Hive(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error)
 	HiveConsensus(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error)
+	ConsensusUnstaking(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error)
 }
 type ContractOutputResolver interface {
 	AnchoredBlock(ctx context.Context, obj *contracts.ContractOutput) (*string, error)
@@ -530,6 +532,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.BalanceRecord.BlockHeight(childComplexity), true
+
+	case "BalanceRecord.consensus_unstaking":
+		if e.complexity.BalanceRecord.ConsensusUnstaking == nil {
+			break
+		}
+
+		return e.complexity.BalanceRecord.ConsensusUnstaking(childComplexity), true
 
 	case "BalanceRecord.hbd":
 		if e.complexity.BalanceRecord.Hbd == nil {
@@ -1861,6 +1870,7 @@ type BalanceRecord {
   hbd_savings: Int64!
   hive: Int64!
   hive_consensus: Int64!
+  consensus_unstaking: Int64!
 }
 
 type RcRecord {
@@ -3649,6 +3659,50 @@ func (ec *executionContext) _BalanceRecord_hive_consensus(ctx context.Context, f
 }
 
 func (ec *executionContext) fieldContext_BalanceRecord_hive_consensus(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BalanceRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BalanceRecord_consensus_unstaking(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.BalanceRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BalanceRecord_consensus_unstaking(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.BalanceRecord().ConsensusUnstaking(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Int64)
+	fc.Result = res
+	return ec.marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BalanceRecord_consensus_unstaking(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "BalanceRecord",
 		Field:      field,
@@ -6888,6 +6942,8 @@ func (ec *executionContext) fieldContext_Query_getAccountBalance(ctx context.Con
 				return ec.fieldContext_BalanceRecord_hive(ctx, field)
 			case "hive_consensus":
 				return ec.fieldContext_BalanceRecord_hive_consensus(ctx, field)
+			case "consensus_unstaking":
+				return ec.fieldContext_BalanceRecord_consensus_unstaking(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type BalanceRecord", field.Name)
 		},
@@ -12422,6 +12478,42 @@ func (ec *executionContext) _BalanceRecord(ctx context.Context, sel ast.Selectio
 					}
 				}()
 				res = ec._BalanceRecord_hive_consensus(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "consensus_unstaking":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._BalanceRecord_consensus_unstaking(ctx, field, obj)
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}
