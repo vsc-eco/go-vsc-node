@@ -283,15 +283,9 @@ func (r *queryResolver) GetAccountBalance(ctx context.Context, account string, h
 	if account == "" {
 		return nil, fmt.Errorf("account parameter cannot be empty")
 	}
-	var blockHeight uint64
-	if height != nil {
-		blockHeight = uint64(*height)
-	} else {
-		head, headErr := r.HiveBlocks.GetLastProcessedBlock()
-		if headErr != nil {
-			return nil, headErr
-		}
-		blockHeight = head
+	blockHeight, err := ParseHeight(r.HiveBlocks, height)
+	if err != nil {
+		return nil, err
 	}
 	return r.Balances.GetBalanceRecord(account, blockHeight)
 }
@@ -301,15 +295,9 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	if account == "" {
 		return nil, fmt.Errorf("account parameter cannot be empty")
 	}
-	var blockHeight uint64
-	if height != nil {
-		blockHeight = uint64(*height)
-	} else {
-		head, headErr := r.HiveBlocks.GetLastProcessedBlock()
-		if headErr != nil {
-			return nil, headErr
-		}
-		blockHeight = head
+	blockHeight, err := ParseHeight(r.HiveBlocks, height)
+	if err != nil {
+		return nil, err
 	}
 	rc, err := r.Rc.GetRecord(account, blockHeight)
 	return &rc, err
@@ -360,6 +348,15 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 		return nil, electionErr
 	}
 	return &LocalNodeInfo{GitCommit: announcements.GitCommit, VersionID: announcements.VersionId, LastProcessedBlock: model.Uint64(head), Epoch: model.Uint64(election.Epoch)}, nil
+}
+
+// GetWitness is the resolver for the getWitness field.
+func (r *queryResolver) GetWitness(ctx context.Context, account string, height *model.Uint64) (*witnesses.Witness, error) {
+	blockHeight, err := ParseHeight(r.HiveBlocks, height)
+	if err != nil {
+		return nil, err
+	}
+	return r.Witnesses.GetWitnessAtHeight(account, &blockHeight)
 }
 
 // WitnessNodes is the resolver for the witnessNodes field.

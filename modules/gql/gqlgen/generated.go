@@ -224,6 +224,7 @@ type ComplexityRoot struct {
 		GetCurrentNumber     func(childComplexity int) int
 		GetDagByCid          func(childComplexity int, cidString string) int
 		GetElection          func(childComplexity int, epoch model.Uint64) int
+		GetWitness           func(childComplexity int, account string, height *model.Uint64) int
 		LocalNodeInfo        func(childComplexity int) int
 		MockGenerateElection func(childComplexity int) int
 		NextWitnessSlot      func(childComplexity int, self *bool) int
@@ -375,6 +376,7 @@ type QueryResolver interface {
 	SubmitTransactionV1(ctx context.Context, tx string, sig string) (*TransactionSubmitResult, error)
 	GetAccountNonce(ctx context.Context, account string) (*nonces.NonceRecord, error)
 	LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, error)
+	GetWitness(ctx context.Context, account string, height *model.Uint64) (*witnesses.Witness, error)
 	WitnessNodes(ctx context.Context, height model.Uint64) ([]witnesses.Witness, error)
 	ActiveWitnessNodes(ctx context.Context) (*string, error)
 	WitnessSchedule(ctx context.Context, height model.Uint64) ([]stateEngine.WitnessSlot, error)
@@ -1210,6 +1212,18 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Query.GetElection(childComplexity, args["epoch"].(model.Uint64)), true
 
+	case "Query.getWitness":
+		if e.complexity.Query.GetWitness == nil {
+			break
+		}
+
+		args, err := ec.field_Query_getWitness_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.GetWitness(childComplexity, args["account"].(string), args["height"].(*model.Uint64)), true
+
 	case "Query.localNodeInfo":
 		if e.complexity.Query.LocalNodeInfo == nil {
 			break
@@ -1992,6 +2006,7 @@ type Query {
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(account: String!): NonceRecord
   localNodeInfo: LocalNodeInfo
+  getWitness(account: String!, height: Uint64): Witness
   witnessNodes(height: Uint64!): [Witness!]!
   activeWitnessNodes: JSON
   witnessSchedule(height: Uint64!): [WitnessSlot!]!
@@ -2486,6 +2501,47 @@ func (ec *executionContext) field_Query_getElection_argsEpoch(
 	}
 
 	var zeroVal model.Uint64
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_getWitness_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_getWitness_argsAccount(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["account"] = arg0
+	arg1, err := ec.field_Query_getWitness_argsHeight(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["height"] = arg1
+	return args, nil
+}
+func (ec *executionContext) field_Query_getWitness_argsAccount(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (string, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("account"))
+	if tmp, ok := rawArgs["account"]; ok {
+		return ec.unmarshalNString2string(ctx, tmp)
+	}
+
+	var zeroVal string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_getWitness_argsHeight(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (*model.Uint64, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("height"))
+	if tmp, ok := rawArgs["height"]; ok {
+		return ec.unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, tmp)
+	}
+
+	var zeroVal *model.Uint64
 	return zeroVal, nil
 }
 
@@ -7239,6 +7295,84 @@ func (ec *executionContext) fieldContext_Query_localNodeInfo(_ context.Context, 
 			}
 			return nil, fmt.Errorf("no field named %q was found under type LocalNodeInfo", field.Name)
 		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_getWitness(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_getWitness(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().GetWitness(rctx, fc.Args["account"].(string), fc.Args["height"].(*model.Uint64))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*witnesses.Witness)
+	fc.Result = res
+	return ec.marshalOWitness2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋwitnessesᚐWitness(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_getWitness(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "account":
+				return ec.fieldContext_Witness_account(ctx, field)
+			case "height":
+				return ec.fieldContext_Witness_height(ctx, field)
+			case "did_keys":
+				return ec.fieldContext_Witness_did_keys(ctx, field)
+			case "enabled":
+				return ec.fieldContext_Witness_enabled(ctx, field)
+			case "git_commit":
+				return ec.fieldContext_Witness_git_commit(ctx, field)
+			case "net_id":
+				return ec.fieldContext_Witness_net_id(ctx, field)
+			case "peer_id":
+				return ec.fieldContext_Witness_peer_id(ctx, field)
+			case "protocol_version":
+				return ec.fieldContext_Witness_protocol_version(ctx, field)
+			case "ts":
+				return ec.fieldContext_Witness_ts(ctx, field)
+			case "tx_id":
+				return ec.fieldContext_Witness_tx_id(ctx, field)
+			case "version_id":
+				return ec.fieldContext_Witness_version_id(ctx, field)
+			case "gateway_key":
+				return ec.fieldContext_Witness_gateway_key(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type Witness", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_getWitness_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
 	}
 	return fc, nil
 }
@@ -14311,6 +14445,25 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "getWitness":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_getWitness(ctx, field)
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "witnessNodes":
 			field := field
 
@@ -16868,6 +17021,13 @@ func (ec *executionContext) marshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodel
 		return graphql.Null
 	}
 	return v
+}
+
+func (ec *executionContext) marshalOWitness2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋwitnessesᚐWitness(ctx context.Context, sel ast.SelectionSet, v *witnesses.Witness) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._Witness(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalO__EnumValue2ᚕgithubᚗcomᚋ99designsᚋgqlgenᚋgraphqlᚋintrospectionᚐEnumValueᚄ(ctx context.Context, sel ast.SelectionSet, v []introspection.EnumValue) graphql.Marshaler {

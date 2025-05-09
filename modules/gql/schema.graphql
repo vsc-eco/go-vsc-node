@@ -312,6 +312,7 @@ type Query {
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(account: String!): NonceRecord
   localNodeInfo: LocalNodeInfo
+  getWitness(account: String!, height: Uint64): Witness
   witnessNodes(height: Uint64!): [Witness!]!
   activeWitnessNodes: JSON
   witnessSchedule(height: Uint64!): [WitnessSlot!]!
