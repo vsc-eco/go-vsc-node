@@ -364,36 +364,11 @@ func (r *queryResolver) WitnessNodes(ctx context.Context, height model.Uint64) (
 	return r.Witnesses.GetWitnessesAtBlockHeight(uint64(height))
 }
 
-// ActiveWitnessNodes is the resolver for the activeWitnessNodes field.
-func (r *queryResolver) ActiveWitnessNodes(ctx context.Context) (*string, error) {
-	panic(fmt.Errorf("not implemented"))
-}
-
 // WitnessSchedule is the resolver for the witnessSchedule field.
 func (r *queryResolver) WitnessSchedule(ctx context.Context, height model.Uint64) ([]stateEngine.WitnessSlot, error) {
 	slotInfo := stateEngine.CalculateSlotInfo(uint64(height))
 	schedule := r.StateEngine.GetSchedule(slotInfo.StartHeight)
 	return schedule, nil
-}
-
-// NextWitnessSlot is the resolver for the nextWitnessSlot field.
-func (r *queryResolver) NextWitnessSlot(ctx context.Context, self *bool) (*string, error) {
-	panic(fmt.Errorf("not implemented"))
-}
-
-// WitnessActiveScore is the resolver for the witnessActiveScore field.
-func (r *queryResolver) WitnessActiveScore(ctx context.Context, height *int) (*string, error) {
-	panic(fmt.Errorf("not implemented"))
-}
-
-// MockGenerateElection is the resolver for the mockGenerateElection field.
-func (r *queryResolver) MockGenerateElection(ctx context.Context) (*string, error) {
-	panic(fmt.Errorf("not implemented"))
-}
-
-// AnchorProducer is the resolver for the anchorProducer field.
-func (r *queryResolver) AnchorProducer(ctx context.Context) (*AnchorProducer, error) {
-	panic(fmt.Errorf("not implemented"))
 }
 
 // GetCurrentNumber is the resolver for the getCurrentNumber field.
