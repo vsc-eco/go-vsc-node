@@ -21,14 +21,6 @@ enum Asset {
   hbd_savings
 }
 
-enum TransactionType {
-  NULL
-  INPUT
-  OUTPUT
-  VIRTUAL
-  CORE
-}
-
 type TransactionRecord {
   id: String!
   anchr_height: Uint64!
@@ -145,41 +137,6 @@ type WitnessSlot {
   bn: Uint64!
 }
 
-interface BalanceController {
-  type: BalanceControllerType
-  authority: String
-  conditions: [BalanceAccessCondition]
-}
-
-enum BalanceControllerType {
-  HIVE
-  DID
-  CONTRACT
-}
-
-interface BalanceAccessCondition {
-  type: BalanceAccessConditionType
-  value: String
-}
-
-enum BalanceAccessConditionType {
-  TIME
-  HASH
-  WITHDRAW
-}
-
-interface DepositDrain {
-  deposit_id: String
-  amount: Float
-  token: String
-  owner: String
-}
-
-interface BlockRef {
-  block_ref: String
-  included_block: Int
-}
-
 type BalanceRecord {
   account: String
   block_height: Uint64!
@@ -201,10 +158,6 @@ type RcRecord {
 
 type FindContractOutputResult {
   outputs: [ContractOutput]
-}
-
-type AnchorProducer {
-  nextSlot(account: String): JSON
 }
 
 type LedgerRecord {
@@ -314,12 +267,7 @@ type Query {
   localNodeInfo: LocalNodeInfo
   getWitness(account: String!, height: Uint64): Witness
   witnessNodes(height: Uint64!): [Witness!]!
-  activeWitnessNodes: JSON
   witnessSchedule(height: Uint64!): [WitnessSlot!]!
-  nextWitnessSlot(self: Boolean): JSON
-  witnessActiveScore(height: Int): JSON
-  mockGenerateElection: JSON
-  anchorProducer: AnchorProducer
   getCurrentNumber: TestResult # TESTING QUERY
   witnessStake(account: String!): Uint64!
   getDagByCID(cidString: String!): JSON!
