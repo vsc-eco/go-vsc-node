@@ -86,6 +86,12 @@ func (r *balanceRecordResolver) HiveConsensus(ctx context.Context, obj *ledgerDb
 	return model.Int64(obj.HIVE_CONSENSUS), nil
 }
 
+// ConsensusUnstaking is the resolver for the consensus_unstaking field.
+func (r *balanceRecordResolver) ConsensusUnstaking(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error) {
+	amt, err := r.Actions.GetAccountPendingConsensusUnstake(obj.Account)
+	return model.Int64(amt), err
+}
+
 // AnchoredBlock is the resolver for the anchored_block field.
 func (r *contractOutputResolver) AnchoredBlock(ctx context.Context, obj *contracts.ContractOutput) (*string, error) {
 	panic(fmt.Errorf("not implemented: AnchoredBlock - anchored_block"))
