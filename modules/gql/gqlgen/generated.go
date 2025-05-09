@@ -83,20 +83,17 @@ type ComplexityRoot struct {
 		Type        func(childComplexity int) int
 	}
 
-	AnchorProducer struct {
-		NextSlot func(childComplexity int, account *string) int
-	}
-
 	BalanceRecord struct {
-		Account       func(childComplexity int) int
-		BlockHeight   func(childComplexity int) int
-		Hbd           func(childComplexity int) int
-		HbdAvg        func(childComplexity int) int
-		HbdClaim      func(childComplexity int) int
-		HbdModify     func(childComplexity int) int
-		HbdSavings    func(childComplexity int) int
-		Hive          func(childComplexity int) int
-		HiveConsensus func(childComplexity int) int
+		Account            func(childComplexity int) int
+		BlockHeight        func(childComplexity int) int
+		ConsensusUnstaking func(childComplexity int) int
+		Hbd                func(childComplexity int) int
+		HbdAvg             func(childComplexity int) int
+		HbdClaim           func(childComplexity int) int
+		HbdModify          func(childComplexity int) int
+		HbdSavings         func(childComplexity int) int
+		Hive               func(childComplexity int) int
+		HiveConsensus      func(childComplexity int) int
 	}
 
 	Contract struct {
@@ -208,29 +205,25 @@ type ComplexityRoot struct {
 	}
 
 	Query struct {
-		ActiveWitnessNodes   func(childComplexity int) int
-		AnchorProducer       func(childComplexity int) int
-		ContractState        func(childComplexity int, id *string) int
-		ContractStateDiff    func(childComplexity int, id *string) int
-		FindContract         func(childComplexity int, id *string) int
-		FindContractOutput   func(childComplexity int, filterOptions *FindContractOutputFilter, decodedFilter *string) int
-		FindLedgerActions    func(childComplexity int, filterOptions *LedgerActionsFilter) int
-		FindLedgerTXs        func(childComplexity int, filterOptions *LedgerTxFilter) int
-		FindTransaction      func(childComplexity int, filterOptions *TransactionFilter) int
-		GetAccountBalance    func(childComplexity int, account string, height *model.Uint64) int
-		GetAccountNonce      func(childComplexity int, account string) int
-		GetAccountRc         func(childComplexity int, account string, height *model.Uint64) int
-		GetCurrentNumber     func(childComplexity int) int
-		GetDagByCid          func(childComplexity int, cidString string) int
-		GetElection          func(childComplexity int, epoch model.Uint64) int
-		LocalNodeInfo        func(childComplexity int) int
-		MockGenerateElection func(childComplexity int) int
-		NextWitnessSlot      func(childComplexity int, self *bool) int
-		SubmitTransactionV1  func(childComplexity int, tx string, sig string) int
-		WitnessActiveScore   func(childComplexity int, height *int) int
-		WitnessNodes         func(childComplexity int, height model.Uint64) int
-		WitnessSchedule      func(childComplexity int, height model.Uint64) int
-		WitnessStake         func(childComplexity int, account string) int
+		ContractState       func(childComplexity int, id *string) int
+		ContractStateDiff   func(childComplexity int, id *string) int
+		FindContract        func(childComplexity int, id *string) int
+		FindContractOutput  func(childComplexity int, filterOptions *FindContractOutputFilter, decodedFilter *string) int
+		FindLedgerActions   func(childComplexity int, filterOptions *LedgerActionsFilter) int
+		FindLedgerTXs       func(childComplexity int, filterOptions *LedgerTxFilter) int
+		FindTransaction     func(childComplexity int, filterOptions *TransactionFilter) int
+		GetAccountBalance   func(childComplexity int, account string, height *model.Uint64) int
+		GetAccountNonce     func(childComplexity int, account string) int
+		GetAccountRc        func(childComplexity int, account string, height *model.Uint64) int
+		GetCurrentNumber    func(childComplexity int) int
+		GetDagByCid         func(childComplexity int, cidString string) int
+		GetElection         func(childComplexity int, epoch model.Uint64) int
+		GetWitness          func(childComplexity int, account string, height *model.Uint64) int
+		LocalNodeInfo       func(childComplexity int) int
+		SubmitTransactionV1 func(childComplexity int, tx string, sig string) int
+		WitnessNodes        func(childComplexity int, height model.Uint64) int
+		WitnessSchedule     func(childComplexity int, height model.Uint64) int
+		WitnessStake        func(childComplexity int, account string) int
 	}
 
 	RcRecord struct {
@@ -314,6 +307,7 @@ type BalanceRecordResolver interface {
 	HbdSavings(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error)
 	Hive(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error)
 	HiveConsensus(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error)
+	ConsensusUnstaking(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error)
 }
 type ContractOutputResolver interface {
 	AnchoredBlock(ctx context.Context, obj *contracts.ContractOutput) (*string, error)
@@ -373,13 +367,9 @@ type QueryResolver interface {
 	SubmitTransactionV1(ctx context.Context, tx string, sig string) (*TransactionSubmitResult, error)
 	GetAccountNonce(ctx context.Context, account string) (*nonces.NonceRecord, error)
 	LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, error)
+	GetWitness(ctx context.Context, account string, height *model.Uint64) (*witnesses.Witness, error)
 	WitnessNodes(ctx context.Context, height model.Uint64) ([]witnesses.Witness, error)
-	ActiveWitnessNodes(ctx context.Context) (*string, error)
 	WitnessSchedule(ctx context.Context, height model.Uint64) ([]stateEngine.WitnessSlot, error)
-	NextWitnessSlot(ctx context.Context, self *bool) (*string, error)
-	WitnessActiveScore(ctx context.Context, height *int) (*string, error)
-	MockGenerateElection(ctx context.Context) (*string, error)
-	AnchorProducer(ctx context.Context) (*AnchorProducer, error)
 	GetCurrentNumber(ctx context.Context) (*TestResult, error)
 	WitnessStake(ctx context.Context, account string) (model.Uint64, error)
 	GetDagByCid(ctx context.Context, cidString string) (string, error)
@@ -505,18 +495,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.ActionRecord.Type(childComplexity), true
 
-	case "AnchorProducer.nextSlot":
-		if e.complexity.AnchorProducer.NextSlot == nil {
-			break
-		}
-
-		args, err := ec.field_AnchorProducer_nextSlot_args(context.TODO(), rawArgs)
-		if err != nil {
-			return 0, false
-		}
-
-		return e.complexity.AnchorProducer.NextSlot(childComplexity, args["account"].(*string)), true
-
 	case "BalanceRecord.account":
 		if e.complexity.BalanceRecord.Account == nil {
 			break
@@ -530,6 +508,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.BalanceRecord.BlockHeight(childComplexity), true
+
+	case "BalanceRecord.consensus_unstaking":
+		if e.complexity.BalanceRecord.ConsensusUnstaking == nil {
+			break
+		}
+
+		return e.complexity.BalanceRecord.ConsensusUnstaking(childComplexity), true
 
 	case "BalanceRecord.hbd":
 		if e.complexity.BalanceRecord.Hbd == nil {
@@ -1036,20 +1021,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.PostingJsonKeys.T(childComplexity), true
 
-	case "Query.activeWitnessNodes":
-		if e.complexity.Query.ActiveWitnessNodes == nil {
-			break
-		}
-
-		return e.complexity.Query.ActiveWitnessNodes(childComplexity), true
-
-	case "Query.anchorProducer":
-		if e.complexity.Query.AnchorProducer == nil {
-			break
-		}
-
-		return e.complexity.Query.AnchorProducer(childComplexity), true
-
 	case "Query.contractState":
 		if e.complexity.Query.ContractState == nil {
 			break
@@ -1201,31 +1172,24 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Query.GetElection(childComplexity, args["epoch"].(model.Uint64)), true
 
+	case "Query.getWitness":
+		if e.complexity.Query.GetWitness == nil {
+			break
+		}
+
+		args, err := ec.field_Query_getWitness_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.GetWitness(childComplexity, args["account"].(string), args["height"].(*model.Uint64)), true
+
 	case "Query.localNodeInfo":
 		if e.complexity.Query.LocalNodeInfo == nil {
 			break
 		}
 
 		return e.complexity.Query.LocalNodeInfo(childComplexity), true
-
-	case "Query.mockGenerateElection":
-		if e.complexity.Query.MockGenerateElection == nil {
-			break
-		}
-
-		return e.complexity.Query.MockGenerateElection(childComplexity), true
-
-	case "Query.nextWitnessSlot":
-		if e.complexity.Query.NextWitnessSlot == nil {
-			break
-		}
-
-		args, err := ec.field_Query_nextWitnessSlot_args(context.TODO(), rawArgs)
-		if err != nil {
-			return 0, false
-		}
-
-		return e.complexity.Query.NextWitnessSlot(childComplexity, args["self"].(*bool)), true
 
 	case "Query.submitTransactionV1":
 		if e.complexity.Query.SubmitTransactionV1 == nil {
@@ -1238,18 +1202,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.Query.SubmitTransactionV1(childComplexity, args["tx"].(string), args["sig"].(string)), true
-
-	case "Query.witnessActiveScore":
-		if e.complexity.Query.WitnessActiveScore == nil {
-			break
-		}
-
-		args, err := ec.field_Query_witnessActiveScore_args(context.TODO(), rawArgs)
-		if err != nil {
-			return 0, false
-		}
-
-		return e.complexity.Query.WitnessActiveScore(childComplexity, args["height"].(*int)), true
 
 	case "Query.witnessNodes":
 		if e.complexity.Query.WitnessNodes == nil {
@@ -1692,14 +1644,6 @@ enum Asset {
   hbd_savings
 }
 
-enum TransactionType {
-  NULL
-  INPUT
-  OUTPUT
-  VIRTUAL
-  CORE
-}
-
 type TransactionRecord {
   id: String!
   anchr_height: Uint64!
@@ -1816,41 +1760,6 @@ type WitnessSlot {
   bn: Uint64!
 }
 
-interface BalanceController {
-  type: BalanceControllerType
-  authority: String
-  conditions: [BalanceAccessCondition]
-}
-
-enum BalanceControllerType {
-  HIVE
-  DID
-  CONTRACT
-}
-
-interface BalanceAccessCondition {
-  type: BalanceAccessConditionType
-  value: String
-}
-
-enum BalanceAccessConditionType {
-  TIME
-  HASH
-  WITHDRAW
-}
-
-interface DepositDrain {
-  deposit_id: String
-  amount: Float
-  token: String
-  owner: String
-}
-
-interface BlockRef {
-  block_ref: String
-  included_block: Int
-}
-
 type BalanceRecord {
   account: String
   block_height: Uint64!
@@ -1861,6 +1770,7 @@ type BalanceRecord {
   hbd_savings: Int64!
   hive: Int64!
   hive_consensus: Int64!
+  consensus_unstaking: Int64!
 }
 
 type RcRecord {
@@ -1871,10 +1781,6 @@ type RcRecord {
 
 type FindContractOutputResult {
   outputs: [ContractOutput]
-}
-
-type AnchorProducer {
-  nextSlot(account: String): JSON
 }
 
 type LedgerRecord {
@@ -1982,13 +1888,9 @@ type Query {
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(account: String!): NonceRecord
   localNodeInfo: LocalNodeInfo
+  getWitness(account: String!, height: Uint64): Witness
   witnessNodes(height: Uint64!): [Witness!]!
-  activeWitnessNodes: JSON
   witnessSchedule(height: Uint64!): [WitnessSlot!]!
-  nextWitnessSlot(self: Boolean): JSON
-  witnessActiveScore(height: Int): JSON
-  mockGenerateElection: JSON
-  anchorProducer: AnchorProducer
   getCurrentNumber: TestResult # TESTING QUERY
   witnessStake(account: String!): Uint64!
   getDagByCID(cidString: String!): JSON!
@@ -2015,29 +1917,6 @@ var parsedSchema = gqlparser.MustLoadSchema(sources...)
 // endregion ************************** generated!.gotpl **************************
 
 // region    ***************************** args.gotpl *****************************
-
-func (ec *executionContext) field_AnchorProducer_nextSlot_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
-	var err error
-	args := map[string]any{}
-	arg0, err := ec.field_AnchorProducer_nextSlot_argsAccount(ctx, rawArgs)
-	if err != nil {
-		return nil, err
-	}
-	args["account"] = arg0
-	return args, nil
-}
-func (ec *executionContext) field_AnchorProducer_nextSlot_argsAccount(
-	ctx context.Context,
-	rawArgs map[string]any,
-) (*string, error) {
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("account"))
-	if tmp, ok := rawArgs["account"]; ok {
-		return ec.unmarshalOString2ᚖstring(ctx, tmp)
-	}
-
-	var zeroVal *string
-	return zeroVal, nil
-}
 
 func (ec *executionContext) field_ContractState_stateKeys_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
 	var err error
@@ -2479,26 +2358,44 @@ func (ec *executionContext) field_Query_getElection_argsEpoch(
 	return zeroVal, nil
 }
 
-func (ec *executionContext) field_Query_nextWitnessSlot_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+func (ec *executionContext) field_Query_getWitness_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
 	var err error
 	args := map[string]any{}
-	arg0, err := ec.field_Query_nextWitnessSlot_argsSelf(ctx, rawArgs)
+	arg0, err := ec.field_Query_getWitness_argsAccount(ctx, rawArgs)
 	if err != nil {
 		return nil, err
 	}
-	args["self"] = arg0
+	args["account"] = arg0
+	arg1, err := ec.field_Query_getWitness_argsHeight(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["height"] = arg1
 	return args, nil
 }
-func (ec *executionContext) field_Query_nextWitnessSlot_argsSelf(
+func (ec *executionContext) field_Query_getWitness_argsAccount(
 	ctx context.Context,
 	rawArgs map[string]any,
-) (*bool, error) {
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("self"))
-	if tmp, ok := rawArgs["self"]; ok {
-		return ec.unmarshalOBoolean2ᚖbool(ctx, tmp)
+) (string, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("account"))
+	if tmp, ok := rawArgs["account"]; ok {
+		return ec.unmarshalNString2string(ctx, tmp)
 	}
 
-	var zeroVal *bool
+	var zeroVal string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_getWitness_argsHeight(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (*model.Uint64, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("height"))
+	if tmp, ok := rawArgs["height"]; ok {
+		return ec.unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, tmp)
+	}
+
+	var zeroVal *model.Uint64
 	return zeroVal, nil
 }
 
@@ -2540,29 +2437,6 @@ func (ec *executionContext) field_Query_submitTransactionV1_argsSig(
 	}
 
 	var zeroVal string
-	return zeroVal, nil
-}
-
-func (ec *executionContext) field_Query_witnessActiveScore_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
-	var err error
-	args := map[string]any{}
-	arg0, err := ec.field_Query_witnessActiveScore_argsHeight(ctx, rawArgs)
-	if err != nil {
-		return nil, err
-	}
-	args["height"] = arg0
-	return args, nil
-}
-func (ec *executionContext) field_Query_witnessActiveScore_argsHeight(
-	ctx context.Context,
-	rawArgs map[string]any,
-) (*int, error) {
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("height"))
-	if tmp, ok := rawArgs["height"]; ok {
-		return ec.unmarshalOInt2ᚖint(ctx, tmp)
-	}
-
-	var zeroVal *int
 	return zeroVal, nil
 }
 
@@ -3216,58 +3090,6 @@ func (ec *executionContext) fieldContext_ActionRecord_timestamp(_ context.Contex
 	return fc, nil
 }
 
-func (ec *executionContext) _AnchorProducer_nextSlot(ctx context.Context, field graphql.CollectedField, obj *AnchorProducer) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_AnchorProducer_nextSlot(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.NextSlot, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOJSON2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_AnchorProducer_nextSlot(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "AnchorProducer",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type JSON does not have child fields")
-		},
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			err = ec.Recover(ctx, r)
-			ec.Error(ctx, err)
-		}
-	}()
-	ctx = graphql.WithFieldContext(ctx, fc)
-	if fc.Args, err = ec.field_AnchorProducer_nextSlot_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
-		ec.Error(ctx, err)
-		return fc, err
-	}
-	return fc, nil
-}
-
 func (ec *executionContext) _BalanceRecord_account(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.BalanceRecord) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_BalanceRecord_account(ctx, field)
 	if err != nil {
@@ -3649,6 +3471,50 @@ func (ec *executionContext) _BalanceRecord_hive_consensus(ctx context.Context, f
 }
 
 func (ec *executionContext) fieldContext_BalanceRecord_hive_consensus(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BalanceRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BalanceRecord_consensus_unstaking(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.BalanceRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BalanceRecord_consensus_unstaking(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.BalanceRecord().ConsensusUnstaking(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Int64)
+	fc.Result = res
+	return ec.marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BalanceRecord_consensus_unstaking(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "BalanceRecord",
 		Field:      field,
@@ -6888,6 +6754,8 @@ func (ec *executionContext) fieldContext_Query_getAccountBalance(ctx context.Con
 				return ec.fieldContext_BalanceRecord_hive(ctx, field)
 			case "hive_consensus":
 				return ec.fieldContext_BalanceRecord_hive_consensus(ctx, field)
+			case "consensus_unstaking":
+				return ec.fieldContext_BalanceRecord_consensus_unstaking(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type BalanceRecord", field.Name)
 		},
@@ -7187,6 +7055,84 @@ func (ec *executionContext) fieldContext_Query_localNodeInfo(_ context.Context, 
 	return fc, nil
 }
 
+func (ec *executionContext) _Query_getWitness(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_getWitness(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().GetWitness(rctx, fc.Args["account"].(string), fc.Args["height"].(*model.Uint64))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*witnesses.Witness)
+	fc.Result = res
+	return ec.marshalOWitness2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋwitnessesᚐWitness(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_getWitness(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "account":
+				return ec.fieldContext_Witness_account(ctx, field)
+			case "height":
+				return ec.fieldContext_Witness_height(ctx, field)
+			case "did_keys":
+				return ec.fieldContext_Witness_did_keys(ctx, field)
+			case "enabled":
+				return ec.fieldContext_Witness_enabled(ctx, field)
+			case "git_commit":
+				return ec.fieldContext_Witness_git_commit(ctx, field)
+			case "net_id":
+				return ec.fieldContext_Witness_net_id(ctx, field)
+			case "peer_id":
+				return ec.fieldContext_Witness_peer_id(ctx, field)
+			case "protocol_version":
+				return ec.fieldContext_Witness_protocol_version(ctx, field)
+			case "ts":
+				return ec.fieldContext_Witness_ts(ctx, field)
+			case "tx_id":
+				return ec.fieldContext_Witness_tx_id(ctx, field)
+			case "version_id":
+				return ec.fieldContext_Witness_version_id(ctx, field)
+			case "gateway_key":
+				return ec.fieldContext_Witness_gateway_key(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type Witness", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_getWitness_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Query_witnessNodes(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_Query_witnessNodes(ctx, field)
 	if err != nil {
@@ -7268,47 +7214,6 @@ func (ec *executionContext) fieldContext_Query_witnessNodes(ctx context.Context,
 	return fc, nil
 }
 
-func (ec *executionContext) _Query_activeWitnessNodes(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Query_activeWitnessNodes(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().ActiveWitnessNodes(rctx)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOJSON2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_Query_activeWitnessNodes(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "Query",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type JSON does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
 func (ec *executionContext) _Query_witnessSchedule(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_Query_witnessSchedule(ctx, field)
 	if err != nil {
@@ -7366,196 +7271,6 @@ func (ec *executionContext) fieldContext_Query_witnessSchedule(ctx context.Conte
 	if fc.Args, err = ec.field_Query_witnessSchedule_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _Query_nextWitnessSlot(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Query_nextWitnessSlot(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().NextWitnessSlot(rctx, fc.Args["self"].(*bool))
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOJSON2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_Query_nextWitnessSlot(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "Query",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type JSON does not have child fields")
-		},
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			err = ec.Recover(ctx, r)
-			ec.Error(ctx, err)
-		}
-	}()
-	ctx = graphql.WithFieldContext(ctx, fc)
-	if fc.Args, err = ec.field_Query_nextWitnessSlot_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
-		ec.Error(ctx, err)
-		return fc, err
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _Query_witnessActiveScore(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Query_witnessActiveScore(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().WitnessActiveScore(rctx, fc.Args["height"].(*int))
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOJSON2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_Query_witnessActiveScore(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "Query",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type JSON does not have child fields")
-		},
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			err = ec.Recover(ctx, r)
-			ec.Error(ctx, err)
-		}
-	}()
-	ctx = graphql.WithFieldContext(ctx, fc)
-	if fc.Args, err = ec.field_Query_witnessActiveScore_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
-		ec.Error(ctx, err)
-		return fc, err
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _Query_mockGenerateElection(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Query_mockGenerateElection(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().MockGenerateElection(rctx)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOJSON2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_Query_mockGenerateElection(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "Query",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type JSON does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _Query_anchorProducer(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Query_anchorProducer(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().AnchorProducer(rctx)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*AnchorProducer)
-	fc.Result = res
-	return ec.marshalOAnchorProducer2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐAnchorProducer(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_Query_anchorProducer(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "Query",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			switch field.Name {
-			case "nextSlot":
-				return ec.fieldContext_AnchorProducer_nextSlot(ctx, field)
-			}
-			return nil, fmt.Errorf("no field named %q was found under type AnchorProducer", field.Name)
-		},
 	}
 	return fc, nil
 }
@@ -11861,42 +11576,6 @@ func (ec *executionContext) unmarshalInputTransactionFilter(ctx context.Context,
 
 // region    ************************** interface.gotpl ***************************
 
-func (ec *executionContext) _BalanceAccessCondition(ctx context.Context, sel ast.SelectionSet, obj BalanceAccessCondition) graphql.Marshaler {
-	switch obj := (obj).(type) {
-	case nil:
-		return graphql.Null
-	default:
-		panic(fmt.Errorf("unexpected type %T", obj))
-	}
-}
-
-func (ec *executionContext) _BalanceController(ctx context.Context, sel ast.SelectionSet, obj BalanceController) graphql.Marshaler {
-	switch obj := (obj).(type) {
-	case nil:
-		return graphql.Null
-	default:
-		panic(fmt.Errorf("unexpected type %T", obj))
-	}
-}
-
-func (ec *executionContext) _BlockRef(ctx context.Context, sel ast.SelectionSet, obj BlockRef) graphql.Marshaler {
-	switch obj := (obj).(type) {
-	case nil:
-		return graphql.Null
-	default:
-		panic(fmt.Errorf("unexpected type %T", obj))
-	}
-}
-
-func (ec *executionContext) _DepositDrain(ctx context.Context, sel ast.SelectionSet, obj DepositDrain) graphql.Marshaler {
-	switch obj := (obj).(type) {
-	case nil:
-		return graphql.Null
-	default:
-		panic(fmt.Errorf("unexpected type %T", obj))
-	}
-}
-
 // endregion ************************** interface.gotpl ***************************
 
 // region    **************************** object.gotpl ****************************
@@ -12088,42 +11767,6 @@ func (ec *executionContext) _ActionRecord(ctx context.Context, sel ast.Selection
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&out.Invalids, 1)
 			}
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
-var anchorProducerImplementors = []string{"AnchorProducer"}
-
-func (ec *executionContext) _AnchorProducer(ctx context.Context, sel ast.SelectionSet, obj *AnchorProducer) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, anchorProducerImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("AnchorProducer")
-		case "nextSlot":
-			out.Values[i] = ec._AnchorProducer_nextSlot(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -12422,6 +12065,42 @@ func (ec *executionContext) _BalanceRecord(ctx context.Context, sel ast.Selectio
 					}
 				}()
 				res = ec._BalanceRecord_hive_consensus(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "consensus_unstaking":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._BalanceRecord_consensus_unstaking(ctx, field, obj)
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}
@@ -14219,6 +13898,25 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "getWitness":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_getWitness(ctx, field)
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "witnessNodes":
 			field := field
 
@@ -14241,25 +13939,6 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
-		case "activeWitnessNodes":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._Query_activeWitnessNodes(ctx, field)
-				return res
-			}
-
-			rrm := func(ctx context.Context) graphql.Marshaler {
-				return ec.OperationContext.RootResolverMiddleware(ctx,
-					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "witnessSchedule":
 			field := field
 
@@ -14273,82 +13952,6 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}
-				return res
-			}
-
-			rrm := func(ctx context.Context) graphql.Marshaler {
-				return ec.OperationContext.RootResolverMiddleware(ctx,
-					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
-		case "nextWitnessSlot":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._Query_nextWitnessSlot(ctx, field)
-				return res
-			}
-
-			rrm := func(ctx context.Context) graphql.Marshaler {
-				return ec.OperationContext.RootResolverMiddleware(ctx,
-					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
-		case "witnessActiveScore":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._Query_witnessActiveScore(ctx, field)
-				return res
-			}
-
-			rrm := func(ctx context.Context) graphql.Marshaler {
-				return ec.OperationContext.RootResolverMiddleware(ctx,
-					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
-		case "mockGenerateElection":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._Query_mockGenerateElection(ctx, field)
-				return res
-			}
-
-			rrm := func(ctx context.Context) graphql.Marshaler {
-				return ec.OperationContext.RootResolverMiddleware(ctx,
-					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
-		case "anchorProducer":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._Query_anchorProducer(ctx, field)
 				return res
 			}
 
@@ -16276,13 +15879,6 @@ func (ec *executionContext) marshalOActionRecord2ᚕvscᚑnodeᚋmodulesᚋdbᚋ
 	return ret
 }
 
-func (ec *executionContext) marshalOAnchorProducer2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐAnchorProducer(ctx context.Context, sel ast.SelectionSet, v *AnchorProducer) graphql.Marshaler {
-	if v == nil {
-		return graphql.Null
-	}
-	return ec._AnchorProducer(ctx, sel, v)
-}
-
 func (ec *executionContext) unmarshalOAsset2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋledgerᚐAsset(ctx context.Context, v any) (*ledgerDb.Asset, error) {
 	if v == nil {
 		return nil, nil
@@ -16776,6 +16372,13 @@ func (ec *executionContext) marshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodel
 		return graphql.Null
 	}
 	return v
+}
+
+func (ec *executionContext) marshalOWitness2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋwitnessesᚐWitness(ctx context.Context, sel ast.SelectionSet, v *witnesses.Witness) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._Witness(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalO__EnumValue2ᚕgithubᚗcomᚋ99designsᚋgqlgenᚋgraphqlᚋintrospectionᚐEnumValueᚄ(ctx context.Context, sel ast.SelectionSet, v []introspection.EnumValue) graphql.Marshaler {

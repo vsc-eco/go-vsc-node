@@ -86,6 +86,12 @@ func (r *balanceRecordResolver) HiveConsensus(ctx context.Context, obj *ledgerDb
 	return model.Int64(obj.HIVE_CONSENSUS), nil
 }
 
+// ConsensusUnstaking is the resolver for the consensus_unstaking field.
+func (r *balanceRecordResolver) ConsensusUnstaking(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error) {
+	amt, err := r.Actions.GetAccountPendingConsensusUnstake(obj.Account)
+	return model.Int64(amt), err
+}
+
 // AnchoredBlock is the resolver for the anchored_block field.
 func (r *contractOutputResolver) AnchoredBlock(ctx context.Context, obj *contracts.ContractOutput) (*string, error) {
 	panic(fmt.Errorf("not implemented: AnchoredBlock - anchored_block"))
@@ -277,15 +283,9 @@ func (r *queryResolver) GetAccountBalance(ctx context.Context, account string, h
 	if account == "" {
 		return nil, fmt.Errorf("account parameter cannot be empty")
 	}
-	var blockHeight uint64
-	if height != nil {
-		blockHeight = uint64(*height)
-	} else {
-		head, headErr := r.HiveBlocks.GetLastProcessedBlock()
-		if headErr != nil {
-			return nil, headErr
-		}
-		blockHeight = head
+	blockHeight, err := ParseHeight(r.HiveBlocks, height)
+	if err != nil {
+		return nil, err
 	}
 	return r.Balances.GetBalanceRecord(account, blockHeight)
 }
@@ -295,15 +295,9 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	if account == "" {
 		return nil, fmt.Errorf("account parameter cannot be empty")
 	}
-	var blockHeight uint64
-	if height != nil {
-		blockHeight = uint64(*height)
-	} else {
-		head, headErr := r.HiveBlocks.GetLastProcessedBlock()
-		if headErr != nil {
-			return nil, headErr
-		}
-		blockHeight = head
+	blockHeight, err := ParseHeight(r.HiveBlocks, height)
+	if err != nil {
+		return nil, err
 	}
 	rc, err := r.Rc.GetRecord(account, blockHeight)
 	return &rc, err
@@ -356,14 +350,18 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 	return &LocalNodeInfo{GitCommit: announcements.GitCommit, VersionID: announcements.VersionId, LastProcessedBlock: model.Uint64(head), Epoch: model.Uint64(election.Epoch)}, nil
 }
 
+// GetWitness is the resolver for the getWitness field.
+func (r *queryResolver) GetWitness(ctx context.Context, account string, height *model.Uint64) (*witnesses.Witness, error) {
+	blockHeight, err := ParseHeight(r.HiveBlocks, height)
+	if err != nil {
+		return nil, err
+	}
+	return r.Witnesses.GetWitnessAtHeight(account, &blockHeight)
+}
+
 // WitnessNodes is the resolver for the witnessNodes field.
 func (r *queryResolver) WitnessNodes(ctx context.Context, height model.Uint64) ([]witnesses.Witness, error) {
 	return r.Witnesses.GetWitnessesAtBlockHeight(uint64(height))
-}
-
-// ActiveWitnessNodes is the resolver for the activeWitnessNodes field.
-func (r *queryResolver) ActiveWitnessNodes(ctx context.Context) (*string, error) {
-	panic(fmt.Errorf("not implemented"))
 }
 
 // WitnessSchedule is the resolver for the witnessSchedule field.
@@ -371,26 +369,6 @@ func (r *queryResolver) WitnessSchedule(ctx context.Context, height model.Uint64
 	slotInfo := stateEngine.CalculateSlotInfo(uint64(height))
 	schedule := r.StateEngine.GetSchedule(slotInfo.StartHeight)
 	return schedule, nil
-}
-
-// NextWitnessSlot is the resolver for the nextWitnessSlot field.
-func (r *queryResolver) NextWitnessSlot(ctx context.Context, self *bool) (*string, error) {
-	panic(fmt.Errorf("not implemented"))
-}
-
-// WitnessActiveScore is the resolver for the witnessActiveScore field.
-func (r *queryResolver) WitnessActiveScore(ctx context.Context, height *int) (*string, error) {
-	panic(fmt.Errorf("not implemented"))
-}
-
-// MockGenerateElection is the resolver for the mockGenerateElection field.
-func (r *queryResolver) MockGenerateElection(ctx context.Context) (*string, error) {
-	panic(fmt.Errorf("not implemented"))
-}
-
-// AnchorProducer is the resolver for the anchorProducer field.
-func (r *queryResolver) AnchorProducer(ctx context.Context) (*AnchorProducer, error) {
-	panic(fmt.Errorf("not implemented"))
 }
 
 // GetCurrentNumber is the resolver for the getCurrentNumber field.

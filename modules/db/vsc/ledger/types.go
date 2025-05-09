@@ -101,6 +101,7 @@ type BridgeActions interface {
 	GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error)
 	GetPendingActionsByEpoch(epoch uint64, t ...string) ([]ActionRecord, error)
 	GetActionsRange(txId *string, actionId *string, account *string, byTypes []string, asset *Asset, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ActionRecord, error)
+	GetAccountPendingConsensusUnstake(account string) (int64, error)
 }
 
 type ILedgerExecutor interface {

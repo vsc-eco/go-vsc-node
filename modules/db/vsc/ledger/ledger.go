@@ -9,6 +9,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -404,6 +405,35 @@ func (actions *actionsDb) GetActionsRange(txId *string, actionId *string, accoun
 		results = append(results, elem)
 	}
 	return results, nil
+}
+
+func (actions *actionsDb) GetAccountPendingConsensusUnstake(account string) (int64, error) {
+	cursor, err := actions.Aggregate(context.TODO(), mongo.Pipeline{
+		{{Key: "$match", Value: bson.D{
+			{Key: "to", Value: account},
+			{Key: "status", Value: "pending"},
+			{Key: "type", Value: "consensus_unstake"},
+		}}},
+		{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: nil},
+			{Key: "totalAmount", Value: bson.M{"$sum": "$amount"}},
+		}}},
+	})
+	if err != nil {
+		return -1, err
+	}
+	defer cursor.Close(context.TODO())
+
+	var result struct {
+		TotalAmount int64 `bson:"totalAmount"`
+	}
+	if cursor.Next(context.TODO()) {
+		if err := cursor.Decode(&result); err != nil {
+			return -1, err
+		}
+		return result.TotalAmount, nil
+	}
+	return 0, nil
 }
 
 type interestClaims struct {
