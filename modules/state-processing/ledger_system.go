@@ -29,7 +29,8 @@ import (
 // In summary:
 // 1. TX execution -> 2. Oplog -> 3. Ledger update (locally calculated value)
 
-var assetTypes = []string{"hive", "hbd", "hbd_savings"}
+var transferableAssetTypes = []string{"hive", "hbd", "hbd_savings"}
+var assetTypes = slices.Concat(transferableAssetTypes, []string{"hive_consensus"})
 
 const ETH_REGEX = "^0x[a-fA-F0-9]{40}$"
 const HIVE_REGEX = `^[a-z][0-9a-z\-]*[0-9a-z](\.[a-z][0-9a-z\-]*[0-9a-z])*$`
@@ -91,6 +92,8 @@ func (ls *LedgerSystem) GetBalance(account string, blockHeight uint64, asset str
 		ls.log.Debug("GetBalance HBD_SAVINGS-BAL", stakeBal, *balRecord, blockHeight)
 
 		return balRecord.HBD_SAVINGS + stakeBal
+	} else if asset == "hive_consensus" {
+		return balRecord.HIVE_CONSENSUS
 	} else {
 		return 0
 	}
@@ -655,7 +658,7 @@ func (ledgerSession *LedgerSession) ExecuteTransfer(opLogEvent ledgerSystem.OpLo
 			Msg: "Invalid destination",
 		}
 	}
-	if !slices.Contains(assetTypes, opLogEvent.Asset) {
+	if !slices.Contains(transferableAssetTypes, opLogEvent.Asset) {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
 			Msg: "Invalid asset",
@@ -892,6 +895,22 @@ func (le *LedgerExecutor) ConsensusStake(params ledgerSystem.ConsensusParams, le
 }
 
 func (le *LedgerExecutor) ConsensusUnstake(params ledgerSystem.ConsensusParams, ledgerSession *LedgerSession) ledgerSystem.LedgerResult {
+	if params.Amount <= 0 {
+		return ledgerSystem.LedgerResult{
+			Ok:  false,
+			Msg: "Invalid amount",
+		}
+	}
+
+	balAmt := ledgerSession.GetBalance(params.From, params.BlockHeight, "hive_consensus")
+
+	if balAmt < params.Amount {
+		return ledgerSystem.LedgerResult{
+			Ok:  false,
+			Msg: "Insufficient balance",
+		}
+	}
+
 	ledgerSession.AppendOplog(ledgerSystem.OpLogEvent{
 		Id:          params.Id,
 		To:          params.To,
