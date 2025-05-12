@@ -8,6 +8,7 @@ import (
 	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/witnesses"
+	start_status "vsc-node/modules/start-status"
 
 	"github.com/chebyrash/promise"
 	libp2p "github.com/libp2p/go-libp2p"
@@ -58,17 +59,29 @@ type P2PServer struct {
 
 	subs    []*pubsub.Subscription
 	tickers []*time.Ticker
+
+	startStatus start_status.StartStatus
+
+	port int
 }
 
 // var _ aggregate.Plugin = &Libp2p{}
 // var _ p.PubSub[peer.ID] = &Libp2p{}
+var _ start_status.Starter = &P2PServer{}
 
-func New(witnessDb witnesses.Witnesses, conf common.IdentityConfig) *P2PServer {
+func New(witnessDb witnesses.Witnesses, conf common.IdentityConfig, port ...int) *P2PServer {
+
+	p := 10720
+	if len(port) > 0 {
+		p = port[0]
+	}
 
 	return &P2PServer{
-		witnessDb: witnessDb,
-		conf:      conf,
-		cron:      cron.New(),
+		witnessDb:   witnessDb,
+		conf:        conf,
+		cron:        cron.New(),
+		startStatus: start_status.New(),
+		port:        p,
 	}
 }
 
@@ -108,6 +121,11 @@ func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 	fmt.Println("Bootstrap discovery complete")
 }
 
+// Started implements start_status.Starter.
+func (p2pServer *P2PServer) Started() *promise.Promise[any] {
+	return p2pServer.startStatus.Started()
+}
+
 // =================================
 // ===== Plugin Implementation =====
 // =================================
@@ -128,7 +146,7 @@ func (p2pServer *P2PServer) Init() error {
 
 	var idht *dht.IpfsDHT
 	options := []libp2p.Option{
-		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/10720"),
+		libp2p.ListenAddrStrings(fmt.Sprint("/ip4/0.0.0.0/tcp/", p2pServer.port)),
 		libp2p.Identity(key),
 		libp2p.EnableNATService(),
 		libp2p.EnableRelayService(),
@@ -176,7 +194,10 @@ func (p2pServer *P2PServer) Init() error {
 	p2pServer.rpcClient = rpcClient
 
 	//Setup pubsub
-	ps, _ := pubsub.NewGossipSub(ctx, p2p)
+	ps, err := pubsub.NewGossipSub(ctx, p2p)
+	if err != nil {
+		return err
+	}
 
 	p2pServer.pubsub = ps
 
@@ -234,9 +255,11 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 		p2ps.discoverPeers()
 	})
 
+	uniquePeers := make(map[string]struct{})
+
 	for _, peerStr := range BOOTSTRAP {
 		peerId, _ := peer.AddrInfoFromString(peerStr)
-
+		uniquePeers[peerId.ID.String()] = struct{}{}
 		p2ps.Host.Connect(context.Background(), *peerId)
 	}
 
@@ -252,8 +275,8 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 	p2ps.subs = append(p2ps.subs, subscription)
 
 	go func() {
+		time.Sleep(50 * time.Millisecond)
 		for {
-			time.Sleep(5 * time.Second)
 			peerList := ""
 			if len(p2ps.Host.Network().Peers()) > 5 {
 				for idx, peer := range p2ps.Host.Network().Peers() {
@@ -273,6 +296,11 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 			}
 			peerLen := len(p2ps.Host.Network().Peers())
 			fmt.Println("peers", "["+peerList+"]", "peers.len()="+strconv.Itoa(peerLen))
+			if peerLen >= len(uniquePeers)-1 {
+				p2ps.startStatus.TriggerStart()
+			}
+
+			time.Sleep(5 * time.Second)
 		}
 	}()
 

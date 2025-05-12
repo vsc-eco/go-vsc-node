@@ -77,7 +77,7 @@ func projectRoot() result.Result[string] {
 
 func (c *Config[T]) filePath() string {
 	name := reflect.TypeFor[T]().Name()
-	if testing.Testing() && UseMainConfigDuringTests {
+	if testing.Testing() && UseMainConfigDuringTests && c.DataDir == CONFIG_DIR {
 		return path.Join(projectRoot().Expect("project root should be easy to find while running a test"), c.DataDir, name+".json")
 	}
 	return path.Join(c.DataDir, name+".json")

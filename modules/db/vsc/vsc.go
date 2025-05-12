@@ -1,8 +1,11 @@
 package vsc
 
 import (
+	"context"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/db"
+
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 type VscDb struct {
@@ -20,4 +23,22 @@ func New(d db.Db, suffix ...string) *VscDb {
 	}
 
 	return &VscDb{db.NewDbInstance(d, dbPath)}
+}
+
+func (db *VscDb) Nuke() error {
+	ctx := context.Background()
+
+	colsNames, err := db.ListCollectionNames(ctx, bson.M{})
+	if err != nil {
+		return err
+	}
+
+	for _, colName := range colsNames {
+		_, err := db.Collection(colName).DeleteMany(ctx, bson.M{})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
