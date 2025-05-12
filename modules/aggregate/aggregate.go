@@ -2,17 +2,20 @@ package aggregate
 
 import (
 	"context"
+	start_status "vsc-node/modules/start-status"
 
 	"github.com/chebyrash/promise"
 )
 
 type Aggregate struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	plugins []Plugin
+	ctx         context.Context
+	cancel      context.CancelFunc
+	plugins     []Plugin
+	startStatus start_status.StartStatus
 }
 
 var _ Plugin = &Aggregate{}
+var _ start_status.Starter = &Aggregate{}
 
 func New(plugins []Plugin) *Aggregate {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -20,6 +23,7 @@ func New(plugins []Plugin) *Aggregate {
 		ctx,
 		cancel,
 		plugins,
+		start_status.New(),
 	}
 }
 
@@ -39,6 +43,11 @@ func (a *Aggregate) Run() error {
 	return nil
 }
 
+// Started implements start_status.Starter.
+func (a *Aggregate) Started() *promise.Promise[any] {
+	return a.startStatus.Started()
+}
+
 // Init implements Plugin.
 func (a *Aggregate) Init() error {
 	for _, p := range a.plugins {
@@ -54,7 +63,12 @@ func (a *Aggregate) Start() *promise.Promise[any] {
 	promises := make([]*promise.Promise[any], len(a.plugins))
 	for i, p := range a.plugins {
 		promises[i] = p.Start()
+		starter, ok := p.(start_status.Starter)
+		if ok {
+			starter.Started().Await(a.ctx)
+		}
 	}
+	a.startStatus.TriggerStart()
 	return promise.Then(
 		promise.All(a.ctx, promises...),
 		a.ctx,

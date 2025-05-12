@@ -3,6 +3,7 @@ package test_utils
 import (
 	"context"
 	"vsc-node/modules/aggregate"
+	start_status "vsc-node/modules/start-status"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -28,5 +29,9 @@ func RunPlugin(t TestingT, plugin aggregate.Plugin, blockUntilComplete ...bool) 
 		run()
 	} else {
 		go run()
+		starter, ok := plugin.(start_status.Starter)
+		if ok {
+			starter.Started().Await(context.Background())
+		}
 	}
 }
