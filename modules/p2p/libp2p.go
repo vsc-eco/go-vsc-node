@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"testing"
 	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/witnesses"
@@ -142,6 +143,10 @@ func (p2pServer *P2PServer) Init() error {
 
 	kadOptions := []kadDht.Option{
 		kadDht.ProtocolPrefix("/vsc.network"),
+	}
+
+	if testing.Testing() {
+		kadOptions = append(kadOptions, kadDht.Mode(kadDht.ModeServer))
 	}
 
 	var idht *dht.IpfsDHT
