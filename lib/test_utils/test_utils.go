@@ -24,6 +24,9 @@ func RunPlugin(t TestingT, plugin aggregate.Plugin, blockUntilComplete ...bool) 
 	run := func() {
 		_, err := plugin.Start().Await(context.Background())
 		assert.NoError(t, err)
+		if err != nil {
+			panic(err)
+		}
 	}
 	if len(blockUntilComplete) >= 1 && blockUntilComplete[0] {
 		run()
