@@ -34,7 +34,7 @@ import (
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 
-	data_availability "vsc-node/modules/data-availability"
+	data_availability "vsc-node/modules/data-availability/server"
 	"vsc-node/modules/vstream"
 	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
 

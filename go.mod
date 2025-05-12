@@ -12,6 +12,7 @@ require (
 	github.com/consensys/gnark-crypto v0.14.0
 	github.com/ethereum/go-ethereum v1.14.12
 	github.com/go-viper/mapstructure/v2 v2.2.1
+	github.com/hasura/go-graphql-client v0.13.1
 	github.com/libp2p/go-libp2p-gorpc v0.6.0
 	github.com/moznion/go-optional v0.12.0
 	github.com/protolambda/bls12-381-util v0.1.0
@@ -56,6 +57,7 @@ require (
 
 require (
 	github.com/agnivade/levenshtein v1.2.1 // indirect
+	github.com/coder/websocket v1.8.13 // indirect
 	github.com/creachadair/mds v0.23.0 // indirect
 	github.com/sosodev/duration v1.3.1 // indirect
 	github.com/urfave/cli/v2 v2.27.6 // indirect
