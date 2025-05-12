@@ -200,24 +200,25 @@ type ComplexityRoot struct {
 	}
 
 	Query struct {
-		ContractState       func(childComplexity int, id *string) int
-		ContractStateDiff   func(childComplexity int, id *string) int
-		FindContract        func(childComplexity int, id *string) int
-		FindContractOutput  func(childComplexity int, filterOptions *FindContractOutputFilter, decodedFilter *string) int
-		FindLedgerActions   func(childComplexity int, filterOptions *LedgerActionsFilter) int
-		FindLedgerTXs       func(childComplexity int, filterOptions *LedgerTxFilter) int
-		FindTransaction     func(childComplexity int, filterOptions *TransactionFilter) int
-		GetAccountBalance   func(childComplexity int, account string, height *model.Uint64) int
-		GetAccountNonce     func(childComplexity int, account string) int
-		GetAccountRc        func(childComplexity int, account string, height *model.Uint64) int
-		GetDagByCid         func(childComplexity int, cidString string) int
-		GetElection         func(childComplexity int, epoch model.Uint64) int
-		GetWitness          func(childComplexity int, account string, height *model.Uint64) int
-		LocalNodeInfo       func(childComplexity int) int
-		SubmitTransactionV1 func(childComplexity int, tx string, sig string) int
-		WitnessNodes        func(childComplexity int, height model.Uint64) int
-		WitnessSchedule     func(childComplexity int, height model.Uint64) int
-		WitnessStake        func(childComplexity int, account string) int
+		ContractState         func(childComplexity int, id *string) int
+		ContractStateDiff     func(childComplexity int, id *string) int
+		ElectionByBlockHeight func(childComplexity int, blockHeight *model.Uint64) int
+		FindContract          func(childComplexity int, id *string) int
+		FindContractOutput    func(childComplexity int, filterOptions *FindContractOutputFilter, decodedFilter *string) int
+		FindLedgerActions     func(childComplexity int, filterOptions *LedgerActionsFilter) int
+		FindLedgerTXs         func(childComplexity int, filterOptions *LedgerTxFilter) int
+		FindTransaction       func(childComplexity int, filterOptions *TransactionFilter) int
+		GetAccountBalance     func(childComplexity int, account string, height *model.Uint64) int
+		GetAccountNonce       func(childComplexity int, account string) int
+		GetAccountRc          func(childComplexity int, account string, height *model.Uint64) int
+		GetDagByCid           func(childComplexity int, cidString string) int
+		GetElection           func(childComplexity int, epoch model.Uint64) int
+		GetWitness            func(childComplexity int, account string, height *model.Uint64) int
+		LocalNodeInfo         func(childComplexity int) int
+		SubmitTransactionV1   func(childComplexity int, tx string, sig string) int
+		WitnessNodes          func(childComplexity int, height model.Uint64) int
+		WitnessSchedule       func(childComplexity int, height model.Uint64) int
+		WitnessStake          func(childComplexity int, account string) int
 	}
 
 	RcRecord struct {
@@ -360,6 +361,7 @@ type QueryResolver interface {
 	WitnessStake(ctx context.Context, account string) (model.Uint64, error)
 	GetDagByCid(ctx context.Context, cidString string) (string, error)
 	GetElection(ctx context.Context, epoch model.Uint64) (*elections.ElectionResult, error)
+	ElectionByBlockHeight(ctx context.Context, blockHeight *model.Uint64) (*elections.ElectionResult, error)
 }
 type RcRecordResolver interface {
 	Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error)
@@ -1023,6 +1025,18 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.Query.ContractStateDiff(childComplexity, args["id"].(*string)), true
+
+	case "Query.electionByBlockHeight":
+		if e.complexity.Query.ElectionByBlockHeight == nil {
+			break
+		}
+
+		args, err := ec.field_Query_electionByBlockHeight_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.ElectionByBlockHeight(childComplexity, args["blockHeight"].(*model.Uint64)), true
 
 	case "Query.findContract":
 		if e.complexity.Query.FindContract == nil {
@@ -1844,6 +1858,7 @@ type Query {
   witnessStake(account: String!): Uint64!
   getDagByCID(cidString: String!): JSON!
   getElection(epoch: Uint64!): ElectionResult
+  electionByBlockHeight(blockHeight: Uint64): ElectionResult!
 }
 
 scalar Uint64
@@ -2011,6 +2026,29 @@ func (ec *executionContext) field_Query_contractState_argsID(
 	}
 
 	var zeroVal *string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_electionByBlockHeight_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_electionByBlockHeight_argsBlockHeight(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["blockHeight"] = arg0
+	return args, nil
+}
+func (ec *executionContext) field_Query_electionByBlockHeight_argsBlockHeight(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (*model.Uint64, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("blockHeight"))
+	if tmp, ok := rawArgs["blockHeight"]; ok {
+		return ec.unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, tmp)
+	}
+
+	var zeroVal *model.Uint64
 	return zeroVal, nil
 }
 
@@ -7350,6 +7388,85 @@ func (ec *executionContext) fieldContext_Query_getElection(ctx context.Context, 
 	}()
 	ctx = graphql.WithFieldContext(ctx, fc)
 	if fc.Args, err = ec.field_Query_getElection_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_electionByBlockHeight(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_electionByBlockHeight(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().ElectionByBlockHeight(rctx, fc.Args["blockHeight"].(*model.Uint64))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*elections.ElectionResult)
+	fc.Result = res
+	return ec.marshalNElectionResult2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋelectionsᚐElectionResult(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_electionByBlockHeight(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "epoch":
+				return ec.fieldContext_ElectionResult_epoch(ctx, field)
+			case "net_id":
+				return ec.fieldContext_ElectionResult_net_id(ctx, field)
+			case "type":
+				return ec.fieldContext_ElectionResult_type(ctx, field)
+			case "data":
+				return ec.fieldContext_ElectionResult_data(ctx, field)
+			case "members":
+				return ec.fieldContext_ElectionResult_members(ctx, field)
+			case "weights":
+				return ec.fieldContext_ElectionResult_weights(ctx, field)
+			case "protocol_version":
+				return ec.fieldContext_ElectionResult_protocol_version(ctx, field)
+			case "total_weight":
+				return ec.fieldContext_ElectionResult_total_weight(ctx, field)
+			case "block_height":
+				return ec.fieldContext_ElectionResult_block_height(ctx, field)
+			case "proposer":
+				return ec.fieldContext_ElectionResult_proposer(ctx, field)
+			case "tx_id":
+				return ec.fieldContext_ElectionResult_tx_id(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ElectionResult", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_electionByBlockHeight_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
 	}
@@ -13787,6 +13904,28 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "electionByBlockHeight":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_electionByBlockHeight(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "__type":
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Query___type(ctx, field)
@@ -14976,6 +15115,20 @@ func (ec *executionContext) marshalNElectionMember2ᚕvscᚑnodeᚋmodulesᚋdb�
 	}
 
 	return ret
+}
+
+func (ec *executionContext) marshalNElectionResult2vscᚑnodeᚋmodulesᚋdbᚋvscᚋelectionsᚐElectionResult(ctx context.Context, sel ast.SelectionSet, v elections.ElectionResult) graphql.Marshaler {
+	return ec._ElectionResult(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNElectionResult2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋelectionsᚐElectionResult(ctx context.Context, sel ast.SelectionSet, v *elections.ElectionResult) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._ElectionResult(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx context.Context, v any) (model.Int64, error) {

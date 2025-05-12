@@ -404,6 +404,16 @@ func (r *queryResolver) GetElection(ctx context.Context, epoch model.Uint64) (*e
 	return result, nil
 }
 
+// ElectionByBlockHeight is the resolver for the electionByBlockHeight field.
+func (r *queryResolver) ElectionByBlockHeight(ctx context.Context, blockHeight *model.Uint64) (*elections.ElectionResult, error) {
+	bh := uint64(math.MaxUint64)
+	if blockHeight != nil {
+		bh = uint64(*blockHeight)
+	}
+	res, err := r.Elections.GetElectionByHeight(bh)
+	return &res, err
+}
+
 // Amount is the resolver for the amount field.
 func (r *rcRecordResolver) Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error) {
 	return model.Int64(obj.Amount), nil

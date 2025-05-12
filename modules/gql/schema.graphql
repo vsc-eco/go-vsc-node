@@ -271,6 +271,7 @@ type Query {
   witnessStake(account: String!): Uint64!
   getDagByCID(cidString: String!): JSON!
   getElection(epoch: Uint64!): ElectionResult
+  electionByBlockHeight(blockHeight: Uint64): ElectionResult!
 }
 
 scalar Uint64
