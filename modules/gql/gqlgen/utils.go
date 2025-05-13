@@ -29,11 +29,9 @@ func Paginate(offset *int, limit *int) (int, int, error) {
 
 // Parse optional height, falling back to last processed block if not specified
 func ParseHeight(height *model.Uint64) (uint64, error) {
-	var blockHeight uint64
-	if height != nil {
+	var blockHeight uint64 = math.MaxInt64
+	if height != nil && *height <= math.MaxInt64 {
 		blockHeight = uint64(*height)
-	} else {
-		blockHeight = math.MaxUint64
 	}
 	return blockHeight, nil
 }
