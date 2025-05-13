@@ -70,14 +70,7 @@ type LocalNodeInfo struct {
 	Epoch              model.Uint64 `json:"epoch"`
 }
 
-type Mutation struct {
-}
-
 type Query struct {
-}
-
-type TestResult struct {
-	CurrentNumber *int `json:"currentNumber,omitempty"`
 }
 
 type TransactionData struct {

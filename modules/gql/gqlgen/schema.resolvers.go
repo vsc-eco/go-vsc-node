@@ -191,11 +191,6 @@ func (r *ledgerRecordResolver) BlockHeight(ctx context.Context, obj *ledgerDb.Le
 	return model.Uint64(obj.BlockHeight), nil
 }
 
-// IncrementNumber is the resolver for the incrementNumber field.
-func (r *mutationResolver) IncrementNumber(ctx context.Context) (*TestResult, error) {
-	panic(fmt.Errorf("not implemented"))
-}
-
 // Nonce is the resolver for the nonce field.
 func (r *nonceRecordResolver) Nonce(ctx context.Context, obj *nonces.NonceRecord) (model.Uint64, error) {
 	return model.Uint64(obj.Nonce), nil
@@ -283,7 +278,7 @@ func (r *queryResolver) GetAccountBalance(ctx context.Context, account string, h
 	if account == "" {
 		return nil, fmt.Errorf("account parameter cannot be empty")
 	}
-	blockHeight, err := ParseHeight(r.HiveBlocks, height)
+	blockHeight, err := ParseHeight(height)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +290,7 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	if account == "" {
 		return nil, fmt.Errorf("account parameter cannot be empty")
 	}
-	blockHeight, err := ParseHeight(r.HiveBlocks, height)
+	blockHeight, err := ParseHeight(height)
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +347,7 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 
 // GetWitness is the resolver for the getWitness field.
 func (r *queryResolver) GetWitness(ctx context.Context, account string, height *model.Uint64) (*witnesses.Witness, error) {
-	blockHeight, err := ParseHeight(r.HiveBlocks, height)
+	blockHeight, err := ParseHeight(height)
 	if err != nil {
 		return nil, err
 	}
@@ -369,11 +364,6 @@ func (r *queryResolver) WitnessSchedule(ctx context.Context, height model.Uint64
 	slotInfo := stateEngine.CalculateSlotInfo(uint64(height))
 	schedule := r.StateEngine.GetSchedule(slotInfo.StartHeight)
 	return schedule, nil
-}
-
-// GetCurrentNumber is the resolver for the getCurrentNumber field.
-func (r *queryResolver) GetCurrentNumber(ctx context.Context) (*TestResult, error) {
-	panic(fmt.Errorf("not implemented"))
 }
 
 // WitnessStake is the resolver for the witnessStake field.
@@ -492,9 +482,6 @@ func (r *Resolver) ElectionResult() ElectionResultResolver { return &electionRes
 // LedgerRecord returns LedgerRecordResolver implementation.
 func (r *Resolver) LedgerRecord() LedgerRecordResolver { return &ledgerRecordResolver{r} }
 
-// Mutation returns MutationResolver implementation.
-func (r *Resolver) Mutation() MutationResolver { return &mutationResolver{r} }
-
 // NonceRecord returns NonceRecordResolver implementation.
 func (r *Resolver) NonceRecord() NonceRecordResolver { return &nonceRecordResolver{r} }
 
@@ -527,7 +514,6 @@ type contractOutputResolver struct{ *Resolver }
 type contractStateResolver struct{ *Resolver }
 type electionResultResolver struct{ *Resolver }
 type ledgerRecordResolver struct{ *Resolver }
-type mutationResolver struct{ *Resolver }
 type nonceRecordResolver struct{ *Resolver }
 type opLogEventResolver struct{ *Resolver }
 type postingJsonKeysResolver struct{ *Resolver }
