@@ -268,7 +268,6 @@ type Query {
   getWitness(account: String!, height: Uint64): Witness
   witnessNodes(height: Uint64!): [Witness!]!
   witnessSchedule(height: Uint64!): [WitnessSlot!]!
-  getCurrentNumber: TestResult # TESTING QUERY
   witnessStake(account: String!): Uint64!
   getDagByCID(cidString: String!): JSON!
   getElection(epoch: Uint64!): ElectionResult
@@ -278,12 +277,3 @@ scalar Uint64
 scalar Int64
 scalar Map
 scalar DateTime
-
-type Mutation {
-  incrementNumber: TestResult # TESTING MUTATION
-}
-
-# TESTING TYPE
-type TestResult {
-  currentNumber: Int
-}

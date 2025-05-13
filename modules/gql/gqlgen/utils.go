@@ -2,7 +2,7 @@ package gqlgen
 
 import (
 	"fmt"
-	"vsc-node/modules/db/vsc/hive_blocks"
+	"math"
 	"vsc-node/modules/gql/model"
 )
 
@@ -28,16 +28,12 @@ func Paginate(offset *int, limit *int) (int, int, error) {
 }
 
 // Parse optional height, falling back to last processed block if not specified
-func ParseHeight(hb hive_blocks.HiveBlocks, height *model.Uint64) (uint64, error) {
+func ParseHeight(height *model.Uint64) (uint64, error) {
 	var blockHeight uint64
 	if height != nil {
 		blockHeight = uint64(*height)
 	} else {
-		head, headErr := hb.GetLastProcessedBlock()
-		if headErr != nil {
-			return 0, headErr
-		}
-		blockHeight = head
+		blockHeight = math.MaxUint64
 	}
 	return blockHeight, nil
 }

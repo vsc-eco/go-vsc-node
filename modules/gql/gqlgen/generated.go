@@ -54,7 +54,6 @@ type ResolverRoot interface {
 	ContractState() ContractStateResolver
 	ElectionResult() ElectionResultResolver
 	LedgerRecord() LedgerRecordResolver
-	Mutation() MutationResolver
 	NonceRecord() NonceRecordResolver
 	OpLogEvent() OpLogEventResolver
 	PostingJsonKeys() PostingJsonKeysResolver
@@ -179,10 +178,6 @@ type ComplexityRoot struct {
 		VersionID          func(childComplexity int) int
 	}
 
-	Mutation struct {
-		IncrementNumber func(childComplexity int) int
-	}
-
 	NonceRecord struct {
 		Account func(childComplexity int) int
 		Nonce   func(childComplexity int) int
@@ -215,7 +210,6 @@ type ComplexityRoot struct {
 		GetAccountBalance   func(childComplexity int, account string, height *model.Uint64) int
 		GetAccountNonce     func(childComplexity int, account string) int
 		GetAccountRc        func(childComplexity int, account string, height *model.Uint64) int
-		GetCurrentNumber    func(childComplexity int) int
 		GetDagByCid         func(childComplexity int, cidString string) int
 		GetElection         func(childComplexity int, epoch model.Uint64) int
 		GetWitness          func(childComplexity int, account string, height *model.Uint64) int
@@ -230,10 +224,6 @@ type ComplexityRoot struct {
 		Account     func(childComplexity int) int
 		Amount      func(childComplexity int) int
 		BlockHeight func(childComplexity int) int
-	}
-
-	TestResult struct {
-		CurrentNumber func(childComplexity int) int
 	}
 
 	TransactionData struct {
@@ -339,9 +329,6 @@ type LedgerRecordResolver interface {
 	Amount(ctx context.Context, obj *ledgerDb.LedgerRecord) (model.Int64, error)
 	BlockHeight(ctx context.Context, obj *ledgerDb.LedgerRecord) (model.Uint64, error)
 }
-type MutationResolver interface {
-	IncrementNumber(ctx context.Context) (*TestResult, error)
-}
 type NonceRecordResolver interface {
 	Nonce(ctx context.Context, obj *nonces.NonceRecord) (model.Uint64, error)
 }
@@ -370,7 +357,6 @@ type QueryResolver interface {
 	GetWitness(ctx context.Context, account string, height *model.Uint64) (*witnesses.Witness, error)
 	WitnessNodes(ctx context.Context, height model.Uint64) ([]witnesses.Witness, error)
 	WitnessSchedule(ctx context.Context, height model.Uint64) ([]stateEngine.WitnessSlot, error)
-	GetCurrentNumber(ctx context.Context) (*TestResult, error)
 	WitnessStake(ctx context.Context, account string) (model.Uint64, error)
 	GetDagByCid(ctx context.Context, cidString string) (string, error)
 	GetElection(ctx context.Context, epoch model.Uint64) (*elections.ElectionResult, error)
@@ -930,13 +916,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.LocalNodeInfo.VersionID(childComplexity), true
 
-	case "Mutation.incrementNumber":
-		if e.complexity.Mutation.IncrementNumber == nil {
-			break
-		}
-
-		return e.complexity.Mutation.IncrementNumber(childComplexity), true
-
 	case "NonceRecord.account":
 		if e.complexity.NonceRecord.Account == nil {
 			break
@@ -1141,13 +1120,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Query.GetAccountRc(childComplexity, args["account"].(string), args["height"].(*model.Uint64)), true
 
-	case "Query.getCurrentNumber":
-		if e.complexity.Query.GetCurrentNumber == nil {
-			break
-		}
-
-		return e.complexity.Query.GetCurrentNumber(childComplexity), true
-
 	case "Query.getDagByCID":
 		if e.complexity.Query.GetDagByCid == nil {
 			break
@@ -1259,13 +1231,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.RcRecord.BlockHeight(childComplexity), true
-
-	case "TestResult.currentNumber":
-		if e.complexity.TestResult.CurrentNumber == nil {
-			break
-		}
-
-		return e.complexity.TestResult.CurrentNumber(childComplexity), true
 
 	case "TransactionData.action":
 		if e.complexity.TransactionData.Action == nil {
@@ -1557,21 +1522,6 @@ func (e *executableSchema) Exec(ctx context.Context) graphql.ResponseHandler {
 			}
 
 			return &response
-		}
-	case ast.Mutation:
-		return func(ctx context.Context) *graphql.Response {
-			if !first {
-				return nil
-			}
-			first = false
-			ctx = graphql.WithUnmarshalerMap(ctx, inputUnmarshalMap)
-			data := ec._Mutation(ctx, opCtx.Operation.SelectionSet)
-			var buf bytes.Buffer
-			data.MarshalGQL(&buf)
-
-			return &graphql.Response{
-				Data: buf.Bytes(),
-			}
 		}
 
 	default:
@@ -1891,7 +1841,6 @@ type Query {
   getWitness(account: String!, height: Uint64): Witness
   witnessNodes(height: Uint64!): [Witness!]!
   witnessSchedule(height: Uint64!): [WitnessSlot!]!
-  getCurrentNumber: TestResult # TESTING QUERY
   witnessStake(account: String!): Uint64!
   getDagByCID(cidString: String!): JSON!
   getElection(epoch: Uint64!): ElectionResult
@@ -1901,15 +1850,6 @@ scalar Uint64
 scalar Int64
 scalar Map
 scalar DateTime
-
-type Mutation {
-  incrementNumber: TestResult # TESTING MUTATION
-}
-
-# TESTING TYPE
-type TestResult {
-  currentNumber: Int
-}
 `, BuiltIn: false},
 }
 var parsedSchema = gqlparser.MustLoadSchema(sources...)
@@ -5734,51 +5674,6 @@ func (ec *executionContext) fieldContext_LocalNodeInfo_epoch(_ context.Context, 
 	return fc, nil
 }
 
-func (ec *executionContext) _Mutation_incrementNumber(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Mutation_incrementNumber(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Mutation().IncrementNumber(rctx)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*TestResult)
-	fc.Result = res
-	return ec.marshalOTestResult2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTestResult(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_Mutation_incrementNumber(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "Mutation",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			switch field.Name {
-			case "currentNumber":
-				return ec.fieldContext_TestResult_currentNumber(ctx, field)
-			}
-			return nil, fmt.Errorf("no field named %q was found under type TestResult", field.Name)
-		},
-	}
-	return fc, nil
-}
-
 func (ec *executionContext) _NonceRecord_account(ctx context.Context, field graphql.CollectedField, obj *nonces.NonceRecord) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_NonceRecord_account(ctx, field)
 	if err != nil {
@@ -7275,51 +7170,6 @@ func (ec *executionContext) fieldContext_Query_witnessSchedule(ctx context.Conte
 	return fc, nil
 }
 
-func (ec *executionContext) _Query_getCurrentNumber(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Query_getCurrentNumber(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().GetCurrentNumber(rctx)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*TestResult)
-	fc.Result = res
-	return ec.marshalOTestResult2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTestResult(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_Query_getCurrentNumber(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "Query",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			switch field.Name {
-			case "currentNumber":
-				return ec.fieldContext_TestResult_currentNumber(ctx, field)
-			}
-			return nil, fmt.Errorf("no field named %q was found under type TestResult", field.Name)
-		},
-	}
-	return fc, nil
-}
-
 func (ec *executionContext) _Query_witnessStake(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_Query_witnessStake(ctx, field)
 	if err != nil {
@@ -7764,47 +7614,6 @@ func (ec *executionContext) fieldContext_RcRecord_block_height(_ context.Context
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Uint64 does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _TestResult_currentNumber(ctx context.Context, field graphql.CollectedField, obj *TestResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_TestResult_currentNumber(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.CurrentNumber, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*int)
-	fc.Result = res
-	return ec.marshalOInt2ᚖint(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_TestResult_currentNumber(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "TestResult",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Int does not have child fields")
 		},
 	}
 	return fc, nil
@@ -13303,52 +13112,6 @@ func (ec *executionContext) _LocalNodeInfo(ctx context.Context, sel ast.Selectio
 	return out
 }
 
-var mutationImplementors = []string{"Mutation"}
-
-func (ec *executionContext) _Mutation(ctx context.Context, sel ast.SelectionSet) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, mutationImplementors)
-	ctx = graphql.WithFieldContext(ctx, &graphql.FieldContext{
-		Object: "Mutation",
-	})
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		innerCtx := graphql.WithRootFieldContext(ctx, &graphql.RootFieldContext{
-			Object: field.Name,
-			Field:  field,
-		})
-
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("Mutation")
-		case "incrementNumber":
-			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
-				return ec._Mutation_incrementNumber(ctx, field)
-			})
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
 var nonceRecordImplementors = []string{"NonceRecord"}
 
 func (ec *executionContext) _NonceRecord(ctx context.Context, sel ast.SelectionSet, obj *nonces.NonceRecord) graphql.Marshaler {
@@ -13961,25 +13724,6 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
-		case "getCurrentNumber":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._Query_getCurrentNumber(ctx, field)
-				return res
-			}
-
-			rrm := func(ctx context.Context) graphql.Marshaler {
-				return ec.OperationContext.RootResolverMiddleware(ctx,
-					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "witnessStake":
 			field := field
 
@@ -14162,42 +13906,6 @@ func (ec *executionContext) _RcRecord(ctx context.Context, sel ast.SelectionSet,
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
-var testResultImplementors = []string{"TestResult"}
-
-func (ec *executionContext) _TestResult(ctx context.Context, sel ast.SelectionSet, obj *TestResult) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, testResultImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("TestResult")
-		case "currentNumber":
-			out.Values[i] = ec._TestResult_currentNumber(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -16270,13 +15978,6 @@ func (ec *executionContext) marshalOString2ᚖstring(ctx context.Context, sel as
 	}
 	res := graphql.MarshalString(*v)
 	return res
-}
-
-func (ec *executionContext) marshalOTestResult2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTestResult(ctx context.Context, sel ast.SelectionSet, v *TestResult) graphql.Marshaler {
-	if v == nil {
-		return graphql.Null
-	}
-	return ec._TestResult(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalOTransactionFilter2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTransactionFilter(ctx context.Context, v any) (*TransactionFilter, error) {
