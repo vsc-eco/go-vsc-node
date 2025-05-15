@@ -203,7 +203,7 @@ func (p2pServer *P2PServer) Init() error {
 	p2pServer.rpcClient = rpcClient
 
 	//Setup pubsub
-	ps, err := pubsub.NewGossipSub(ctx, p2p)
+	ps, err := pubsub.NewGossipSub(ctx, p2p, pubsub.WithDiscovery(drouting.NewRoutingDiscovery(p2pServer.Dht)), pubsub.WithPeerExchange(true))
 	if err != nil {
 		return err
 	}
