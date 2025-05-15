@@ -610,11 +610,11 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 
 			circuit := *ep.signingInfo.circuit
 
-			err = circuit.AddAndVerify(member, sigStr)
+			added, err := circuit.AddAndVerify(member, sigStr)
 
 			fmt.Println("[ep] aggregating signature", sigStr, "from", account)
 			fmt.Println("[ep] agg err", err)
-			if err == nil {
+			if added {
 				signedWeight += election.Weights[index]
 			}
 		}

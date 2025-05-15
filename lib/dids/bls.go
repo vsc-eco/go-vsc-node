@@ -304,7 +304,7 @@ func (pbc *partialBlsCircuit) Msg() cid.Cid {
 // add a sig to the partial BLS circuit and verify it
 
 // from @vaultec note members should be predefined in the structure before AddAndVerify. TH
-func (pbc *partialBlsCircuit) AddAndVerify(member Member, sig string) error {
+func (pbc *partialBlsCircuit) AddAndVerify(member Member, sig string) (bool, error) {
 	// check if member exists
 	found := false
 	for _, m := range pbc.members {
@@ -316,19 +316,19 @@ func (pbc *partialBlsCircuit) AddAndVerify(member Member, sig string) error {
 
 	// if not found, error
 	if !found {
-		return fmt.Errorf("member not found: %s", member)
+		return false, fmt.Errorf("member not found: %s", member)
 	}
 
 	// add and verify the signature and public key
-
-	if err := pbc.circuit.add(member, sig); err != nil {
-		return fmt.Errorf("failed to add and verify signature: %w", err)
+	added, err := pbc.circuit.add(member, sig)
+	if err != nil {
+		return false, fmt.Errorf("failed to add and verify signature: %w", err)
 	}
 
-	return nil
+	return added, nil
 }
 
-func (pbc *partialBlsCircuit) AddAndVerifyRaw(member BlsDID, sig []byte) error {
+func (pbc *partialBlsCircuit) AddAndVerifyRaw(member BlsDID, sig []byte) (bool, error) {
 	// check if member exists
 	found := false
 	for _, m := range pbc.members {
@@ -340,16 +340,16 @@ func (pbc *partialBlsCircuit) AddAndVerifyRaw(member BlsDID, sig []byte) error {
 
 	// if not found, error
 	if !found {
-		return fmt.Errorf("member not found: %s", member)
+		return false, fmt.Errorf("member not found: %s", member)
 	}
 
 	// add and verify the signature and public key
-
-	if err := pbc.circuit.addRaw(member, sig); err != nil {
-		return fmt.Errorf("failed to add and verify signature: %w", err)
+	added, err := pbc.circuit.addRaw(member, sig)
+	if err != nil {
+		return false, fmt.Errorf("failed to add and verify signature: %w", err)
 	}
 
-	return nil
+	return added, nil
 }
 
 // finalize the partial BLS circuit into a full
@@ -418,28 +418,28 @@ func newBlsCircuit(msg *cid.Cid, keyset []BlsDID) (*BlsCircuit, error) {
 }
 
 // internally adds a new sig and pub key to the circuit after verification
-func (b *BlsCircuit) add(member Member, sig string) error {
+func (b *BlsCircuit) add(member Member, sig string) (bool, error) {
 	sigBytes, err := base64.RawURLEncoding.DecodeString(sig)
 	if err != nil {
-		return fmt.Errorf("failed to decode signature: %w", err)
+		return false, fmt.Errorf("failed to decode signature: %w", err)
 	}
 
 	return b.addRaw(member, sigBytes)
 }
 
-func (b *BlsCircuit) addRaw(DID BlsDID, sigBytes []byte) error {
+func (b *BlsCircuit) addRaw(DID BlsDID, sigBytes []byte) (bool, error) {
 	pubKey := DID.Identifier()
 
 	// decompress the sig
 	signature := new(BlsSig)
 	if signature.Deserialize((*[96]byte)(sigBytes)) != nil {
-		return fmt.Errorf("failed to uncompress signature for DID: %s", DID.String())
+		return false, fmt.Errorf("failed to uncompress signature for DID: %s", DID.String())
 	}
 
 	// verify the sig using the pub key and the CID bytes (message)
 	verified := bls.Verify(pubKey, b.msg.Bytes(), signature)
 	if !verified {
-		return fmt.Errorf("signature verification failed for DID: %s", DID.String())
+		return false, nil
 	}
 
 	// store the sig
@@ -449,7 +449,7 @@ func (b *BlsCircuit) addRaw(DID BlsDID, sigBytes []byte) error {
 		b.mutex.Unlock()
 	}
 
-	return nil
+	return true, nil
 }
 
 // finalizes the BLS circuit

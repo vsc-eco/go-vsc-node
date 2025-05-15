@@ -569,11 +569,11 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 
 				circuit := *bp.blockSigning.circuit
 
-				err := circuit.AddAndVerify(member, sigStr)
+				added, err := circuit.AddAndVerify(member, sigStr)
 
 				fmt.Println("[bp] aggregating signature", sigStr, "from", account)
 				fmt.Println("[bp] agg err", err)
-				if err == nil {
+				if added {
 					signedWeight += election.Weights[index]
 				}
 
