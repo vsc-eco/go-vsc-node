@@ -3,7 +3,6 @@ package data_availability_test
 import (
 	"fmt"
 	DataLayer "vsc-node/lib/datalayer"
-	"vsc-node/lib/utils"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	data_availability_client "vsc-node/modules/data-availability/client"
@@ -15,13 +14,14 @@ import (
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 
-	"github.com/multiformats/go-multiaddr"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 type Node struct {
 	*aggregate.Aggregate
-	client *data_availability_client.DataAvailability
-	db     *vsc.VscDb
+	client         *data_availability_client.DataAvailability
+	db             *vsc.VscDb
+	identityConfig common.IdentityConfig
 }
 
 func (n Node) Client() bool {
@@ -36,10 +36,21 @@ func (n *Node) NukeDb() error {
 	return n.db.Nuke()
 }
 
+func (n *Node) ConsensusKey() string {
+	did, err := n.identityConfig.BlsDID()
+	if err != nil {
+		panic(err)
+	}
+
+	return did.String()
+}
+
 type MakeNodeInput struct {
 	Username string
 	Client   bool
 }
+
+var nodeCount = 0
 
 func MakeNode(input MakeNodeInput) *Node {
 	input.Username = "e2e-" + input.Username
@@ -57,27 +68,21 @@ func MakeNode(input MakeNodeInput) *Node {
 	identityConfig.Init()
 	identityConfig.SetUsername(input.Username)
 
-	p2p := p2pInterface.New(witnessesDb, identityConfig, 0)
+	port := 7000 + nodeCount
+	nodeCount++
+	p2p := p2pInterface.New(witnessesDb, identityConfig, port)
 
 	datalayer := DataLayer.New(p2p, input.Username)
 
-	/*
-			for _, addr := range node.P2P.Host.Addrs() {
-			peerAddrs = append(peerAddrs, addr.String()+"/p2p/"+node.P2P.Host.ID().String())
-		}
-	*/
-	// id := p2p.Host.Network().Peers()[0]
-	// p2p.Host.Network().Connectedness(id).String()
-	p2p.Init()
-	addrs := utils.Map(
-		p2p.PeerInfo().GetPeerAddrs(),
-		func(addr multiaddr.Multiaddr) string {
-			b, _ := addr.MarshalText()
-			fmt.Println(string(b))
-			return string(b) + "/p2p/" + p2p.PeerInfo().GetPeerId()
-		},
-	)
-	libp2p.BOOTSTRAP = append(libp2p.BOOTSTRAP, addrs...)
+	key, err := identityConfig.Libp2pPrivateKey()
+	if err != nil {
+		panic(err)
+	}
+	peerId, err := peer.IDFromPrivateKey(key)
+	if err != nil {
+		panic(err)
+	}
+	libp2p.BOOTSTRAP = append(libp2p.BOOTSTRAP, fmt.Sprintf("/ip4/127.0.0.1/tcp/%d/p2p/%s", port, peerId.String()))
 
 	var da aggregate.Plugin
 	if input.Client {
@@ -103,5 +108,6 @@ func MakeNode(input MakeNodeInput) *Node {
 		aggregate.New(plugins),
 		client,
 		vscDb,
+		identityConfig,
 	}
 }

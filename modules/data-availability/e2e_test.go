@@ -16,7 +16,7 @@ import (
 
 func TestBasic(t *testing.T) {
 	config.UseMainConfigDuringTests = true
-	libp2p.BOOTSTRAP = []string{}
+	libp2p.BOOTSTRAP = []string{} // this is popluated by `MakeNode`
 
 	client := MakeNode(MakeNodeInput{
 		Username: "client",
@@ -42,6 +42,13 @@ func TestBasic(t *testing.T) {
 	data := []byte("some random data")
 
 	election := elections.ElectionResult{}
+	election.Members = utils.Map(servers, func(s *Node) elections.ElectionMember {
+		did := s.ConsensusKey()
+		return elections.ElectionMember{
+			Key:     did,
+			Account: "", //FIXME technically username doesn't matter here, but it might in the future
+		}
+	})
 
 	assert.NoError(t, client.NukeDb())
 	for _, server := range servers {
