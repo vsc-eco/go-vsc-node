@@ -1,14 +1,20 @@
 package wasm_runtime
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/JustinKnueppel/go-result"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 type runtime struct{ string }
-
 type Runtime = runtime
+
+var _ json.Marshaler = runtime{}
+var _ json.Unmarshaler = &runtime{}
+var _ bson.Marshaler = runtime{}
+var _ bson.Unmarshaler = &runtime{}
 
 var (
 	AssemblyScript = runtime{"assembly-script"}
@@ -60,4 +66,34 @@ func Execute[Result any](r runtime, action RuntimeAction[Result]) Result {
 	default:
 		panic(fmt.Errorf("BUG: unsupported runtime: %s", r))
 	}
+}
+
+// MarshalJSON implements json.Marshaler.
+func (r runtime) MarshalJSON() ([]byte, error) {
+	return json.Marshal(r.string)
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (r *runtime) UnmarshalJSON(data []byte) error {
+	return json.Unmarshal(data, &r.string)
+}
+
+type serializedBson struct {
+	Value string `bson:"value"`
+}
+
+// MarshalBSON implements bson.Marshaler.
+func (r runtime) MarshalBSON() ([]byte, error) {
+	return bson.Marshal(serializedBson{r.string})
+}
+
+// UnmarshalBSON implements bson.Unmarshaler.
+func (r *runtime) UnmarshalBSON(data []byte) error {
+	b := serializedBson{}
+	err := bson.Unmarshal(data, &b)
+	if err != nil {
+		return err
+	}
+	r.string = b.Value
+	return nil
 }
