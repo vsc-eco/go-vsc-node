@@ -1,6 +1,7 @@
 package data_availability_server
 
 import (
+	"context"
 	"vsc-node/lib/datalayer"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -39,6 +40,14 @@ func (d *DataAvailability) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
 		err := d.startP2P()
 		if err != nil {
+			reject(err)
+			return
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_, err = d.service.Started().Await(ctx)
+		if err != nil {
+			d.startStatus.TriggerStartFailure(err)
 			reject(err)
 			return
 		}

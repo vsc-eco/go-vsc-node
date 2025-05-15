@@ -51,6 +51,14 @@ func (d *DataAvailability) Start() *promise.Promise[any] {
 			reject(err)
 			return
 		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_, err = d.service.Started().Await(ctx)
+		if err != nil {
+			d.startStatus.TriggerStartFailure(err)
+			reject(err)
+			return
+		}
 		d.startStatus.TriggerStart()
 		<-d.service.Context().Done()
 		resolve(nil)
