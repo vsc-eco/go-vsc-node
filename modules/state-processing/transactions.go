@@ -35,7 +35,6 @@ type TxVscCallContract struct {
 	Self  TxSelf
 	NetId string `json:"net_id"`
 
-	Op         string             `json:"op"`
 	ContractId string             `json:"contract_id"`
 	Action     string             `json:"action"`
 	Payload    json.RawMessage    `json:"payload"`
@@ -137,9 +136,11 @@ func (tx TxVscCallContract) TxSelf() TxSelf {
 func (tx TxVscCallContract) ToData() map[string]interface{} {
 	return map[string]interface{}{
 		"type":        "call",
-		"op":          tx.Op,
 		"contract_id": tx.ContractId,
+		"action":      tx.Action,
 		"payload":     tx.Payload,
+		"rc_limit":    tx.RcLimit,
+		"intents":     tx.Intents,
 	}
 }
 
