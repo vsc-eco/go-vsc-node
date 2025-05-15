@@ -736,11 +736,16 @@ func (se *StateEngine) ExecuteBatch() {
 					if contractSessions[contractCall.ContractId] == nil {
 						contractOutput := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
 
+						var cid string
+						if contractOutput != nil {
+							cid = contractOutput.StateMerkle
+						}
+
 						tmpOut := contract_session.TempOutput{
 							Cache:     make(map[string][]byte),
 							Metadata:  make(map[string]interface{}),
 							Deletions: make(map[string]bool),
-							Cid:       contractOutput.StateMerkle,
+							Cid:       cid,
 						}
 
 						sess := contract_session.New(se.da)
