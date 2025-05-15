@@ -33,7 +33,7 @@ type BlsPrivKey = bls.SecretKey
 // ===== interface assertions =====
 
 var _ DID = BlsDID("")
-var _ Provider[cid.Cid] = BlsProvider{}
+var _ Provider[cid.Cid] = &blsProvider{}
 
 // ===== BlsDID =====
 
@@ -154,17 +154,19 @@ func (d BlsDID) Verify(blk blocks.Block, sig string) (bool, error) {
 
 // ===== KeyDIDProvider =====
 
-type BlsProvider struct {
+type blsProvider struct {
 	privKey *BlsPrivKey
 }
+
+type BlsProvider = *blsProvider
 
 // creates a new BLS provider
 func NewBlsProvider(privKey *BlsPrivKey) (BlsProvider, error) {
 	if privKey == nil {
-		return BlsProvider{}, fmt.Errorf("failed to create BLS provider: private key is nil")
+		return nil, fmt.Errorf("failed to create BLS provider: private key is nil")
 	}
 
-	return BlsProvider{privKey}, nil
+	return &blsProvider{privKey}, nil
 }
 
 // signs a block using the BLS priv key
