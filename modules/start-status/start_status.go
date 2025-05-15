@@ -8,9 +8,13 @@ import (
 )
 
 type startStatus struct {
-	started        atomic.Bool
-	startPromise   *promise.Promise[any]
+	started atomic.Bool
+	err     atomic.Pointer[error]
+
+	startPromise *promise.Promise[any]
+
 	resolvePromise func()
+	rejectPromise  func(error)
 }
 
 type StartStatus = *startStatus
@@ -25,6 +29,7 @@ func New() StartStatus {
 	s := &startStatus{}
 	s.startPromise = promise.New(func(resolve func(any), reject func(error)) {
 		s.resolvePromise = func() { resolve(nil) }
+		s.rejectPromise = reject
 	})
 
 	return s
@@ -35,9 +40,17 @@ func (s *startStatus) TriggerStart() {
 	s.resolvePromise()
 }
 
+func (s *startStatus) TriggerStartFailure(err error) {
+	s.err.Store(&err)
+	s.rejectPromise(err)
+}
+
 func (s *startStatus) Started() *promise.Promise[any] {
 	if s.started.Load() {
 		return utils.PromiseResolve[any](nil)
+	}
+	if s.err.Load() != nil {
+		return utils.PromiseReject[any](*s.err.Load())
 	}
 	return s.startPromise
 }
