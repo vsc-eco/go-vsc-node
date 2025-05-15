@@ -406,7 +406,7 @@ func (r *queryResolver) GetElection(ctx context.Context, epoch model.Uint64) (*e
 
 // ElectionByBlockHeight is the resolver for the electionByBlockHeight field.
 func (r *queryResolver) ElectionByBlockHeight(ctx context.Context, blockHeight *model.Uint64) (*elections.ElectionResult, error) {
-	bh := uint64(math.MaxUint64)
+	bh := uint64(math.MaxInt64)
 	if blockHeight != nil {
 		bh = uint64(*blockHeight)
 	}
