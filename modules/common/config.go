@@ -4,9 +4,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"vsc-node/lib/dids"
 	"vsc-node/modules/config"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
+	blsu "github.com/protolambda/bls12-381-util"
 	"github.com/vsc-eco/hivego"
 )
 
@@ -38,6 +40,60 @@ func (ac *identityConfigStruct) Libp2pPrivateKey() (crypto.PrivKey, error) {
 		return nil, err
 	}
 	return crypto.UnmarshalEd25519PrivateKey(b)
+}
+
+func (ac *identityConfigStruct) blsPrivateKey() (*dids.BlsPrivKey, error) {
+	blsPrivKey := &dids.BlsPrivKey{}
+	var arr [32]byte
+	blsPrivSeedHex := ac.Get().BlsPrivKeySeed
+	blsPrivSeed, err := hex.DecodeString(blsPrivSeedHex)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode bls priv seed: %w", err)
+	}
+	if len(blsPrivSeed) != 32 {
+		return nil, fmt.Errorf("bls priv seed must be 32 bytes")
+	}
+
+	copy(arr[:], blsPrivSeed)
+	if err = blsPrivKey.Deserialize(&arr); err != nil {
+		return nil, fmt.Errorf("failed to deserialize bls priv key: %w", err)
+	}
+
+	return blsPrivKey, nil
+}
+
+func (ac *identityConfigStruct) BlsProvider() (dids.BlsProvider, error) {
+	blsPrivKey, err := ac.blsPrivateKey()
+	if err != nil {
+		return nil, err
+	}
+
+	provider, err := dids.NewBlsProvider(blsPrivKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create bls provider: %w", err)
+	}
+
+	return provider, nil
+}
+
+func (ac *identityConfigStruct) BlsDID() (dids.BlsDID, error) {
+	blsPrivKey, err := ac.blsPrivateKey()
+	if err != nil {
+		return "", err
+	}
+
+	pubKey, err := blsu.SkToPk(blsPrivKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to get bls pub key: %w", err)
+	}
+
+	// gens the BlsDID from the pub key
+	blsDid, err := dids.NewBlsDID(pubKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to create bls did: %w", err)
+	}
+
+	return blsDid, nil
 }
 
 type identityConfigStruct struct {
