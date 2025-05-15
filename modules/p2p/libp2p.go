@@ -146,6 +146,7 @@ func (p2pServer *P2PServer) Init() error {
 	}
 
 	if testing.Testing() {
+		fmt.Println("In testing... running DHT in Server Mode")
 		kadOptions = append(kadOptions, kadDht.Mode(kadDht.ModeServer))
 	}
 
