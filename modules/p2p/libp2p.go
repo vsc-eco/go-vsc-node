@@ -19,6 +19,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/event"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/core/routing"
 	rhost "github.com/libp2p/go-libp2p/p2p/host/routed"
@@ -109,6 +110,7 @@ func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 			if peer.ID == h.ID() {
 				continue // No self connection
 			}
+			p2p.Host.Peerstore().AddAddrs(peer.ID, peer.Addrs, peerstore.ConnectedAddrTTL)
 			err := h.Connect(ctx, peer)
 			if err != nil {
 				// fmt.Println("Failed connecting to ", peer.ID.String(), ", error:", err)
@@ -269,6 +271,7 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 	for _, peerStr := range BOOTSTRAP {
 		peerId, _ := peer.AddrInfoFromString(peerStr)
 		uniquePeers[peerId.ID.String()] = struct{}{}
+		p2ps.Host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
 		p2ps.Host.Connect(context.Background(), *peerId)
 	}
 
@@ -348,6 +351,7 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 
 		for _, peer := range p2p.Host.Network().Peers() {
 			if peer.String() == peerId.ID.String() {
+				p2p.Host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
 				p2p.Host.Connect(context.Background(), *peerId)
 			}
 		}
@@ -383,6 +387,7 @@ func (p2p *P2PServer) discoverPeers() {
 		if peer.ID == h.ID() {
 			continue // No self connection
 		}
+		p2p.Host.Peerstore().AddAddrs(peer.ID, peer.Addrs, peerstore.ConnectedAddrTTL)
 		h.Connect(ctx, peer)
 	}
 }
