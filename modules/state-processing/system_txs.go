@@ -15,6 +15,7 @@ import (
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	transactionpool "vsc-node/modules/transaction-pool"
+	wasm_runtime "vsc-node/modules/wasm/runtime"
 
 	"github.com/btcsuite/btcutil/base58"
 	"github.com/ipfs/go-cid"
@@ -96,15 +97,16 @@ type ContractResult struct {
 }
 
 type TxCreateContract struct {
-	Self TxSelf
+	Self TxSelf `json:"-"`
 
-	Version      string       `json:"__v"`
-	NetId        string       `json:"net_id"`
-	Name         string       `json:"name"`
-	Code         string       `json:"code"`
-	Owner        string       `json:"owner"`
-	Description  string       `json:"description"`
-	StorageProof StorageProof `json:"storage_proof"`
+	Version      string               `json:"__v"`
+	NetId        string               `json:"net_id"`
+	Name         string               `json:"name"`
+	Code         string               `json:"code"`
+	Runtime      wasm_runtime.Runtime `json:"runtime"`
+	Owner        string               `json:"owner"`
+	Description  string               `json:"description"`
+	StorageProof StorageProof         `json:"storage_proof"`
 }
 
 func (tx TxCreateContract) Type() string {
@@ -135,6 +137,13 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		return TxResult{
 			Success: false,
 			Ret:     res.Msg,
+		}
+	}
+
+	if wasm_runtime.NewFromString(tx.Runtime.String()).IsErr() {
+		return TxResult{
+			Success: false,
+			Ret:     "runtime name is invalid",
 		}
 	}
 
@@ -190,6 +199,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		Owner:          owner,
 		TxId:           tx.Self.TxId,
 		CreationHeight: tx.Self.BlockHeight,
+		Runtime:        tx.Runtime,
 	})
 
 	// dd := map[string]interface{}{
@@ -215,6 +225,7 @@ func (tx *TxCreateContract) ToData() map[string]interface{} {
 		"owner":         tx.Owner,
 		"description":   tx.Description,
 		"storage_proof": tx.StorageProof,
+		"runtime":       tx.Runtime,
 	}
 }
 
