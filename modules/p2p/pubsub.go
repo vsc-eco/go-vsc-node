@@ -21,11 +21,7 @@ type PubSubServiceParams[Msg any] interface {
 	SerializeMessage(msg Msg) []byte
 }
 
-type PubSubService[Msg any] interface {
-	Send(msg Msg) error
-	Close() error
-	Context() context.Context
-}
+type PubSubService[Msg any] = *pubSubService[Msg]
 
 type pubSubService[Msg any] struct {
 	topic       *pubsub.Topic
@@ -38,7 +34,9 @@ type pubSubService[Msg any] struct {
 	cancelCtx context.CancelFunc
 }
 
-// Close implements PubSubService.
+var _ io.Closer = &pubSubService[any]{}
+
+// Started implements io.Closer.
 func (p *pubSubService[Msg]) Close() error {
 	p.cancelRelay()
 	p.sub.Cancel()
@@ -46,13 +44,11 @@ func (p *pubSubService[Msg]) Close() error {
 	return p.topic.Close()
 }
 
-// Send implements PubSubService.
 func (p *pubSubService[Msg]) Send(msg Msg) error {
 	b := p.params.SerializeMessage(msg)
 	return p.topic.Publish(p.ctx, b)
 }
 
-// Context implements PubSubService.
 func (p *pubSubService[Msg]) Context() context.Context {
 	return p.ctx
 }
