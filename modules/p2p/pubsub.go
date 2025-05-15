@@ -3,7 +3,11 @@ package libp2p
 import (
 	"context"
 	"fmt"
+	"io"
+	"time"
+	start_status "vsc-node/modules/start-status"
 
+	"github.com/chebyrash/promise"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -32,9 +36,12 @@ type pubSubService[Msg any] struct {
 
 	ctx       context.Context
 	cancelCtx context.CancelFunc
+
+	startStatus start_status.StartStatus
 }
 
 var _ io.Closer = &pubSubService[any]{}
+var _ start_status.Starter = &pubSubService[any]{}
 
 // Started implements io.Closer.
 func (p *pubSubService[Msg]) Close() error {
@@ -51,6 +58,11 @@ func (p *pubSubService[Msg]) Send(msg Msg) error {
 
 func (p *pubSubService[Msg]) Context() context.Context {
 	return p.ctx
+}
+
+// Started implements start_status.Starter.
+func (p *pubSubService[Msg]) Started() *promise.Promise[any] {
+	return p.startStatus.Started()
 }
 
 func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg]) (PubSubService[Msg], error) {
@@ -83,6 +95,8 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 
 	ctx, cancel := context.WithCancel(context.TODO())
 
+	startStatus := start_status.New()
+
 	res := &pubSubService[Msg]{
 		topic,
 		cancelRelay,
@@ -90,7 +104,36 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 		service,
 		ctx,
 		cancel,
+		startStatus,
 	}
+
+	go func() {
+		_, err := promise.All(ctx,
+			p2p.Started(),
+			promise.New(func(resolve func(any), reject func(error)) {
+				ticker := time.NewTicker(time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						peers := topic.ListPeers()
+						fmt.Println(p2p.PeerInfo().GetPeerId(), "pubsub", service.Topic(), "peers:", len(peers))
+						if len(peers) > 0 {
+							resolve(nil)
+							return
+						}
+					}
+				}
+			}),
+		).Await(ctx)
+		if err != nil {
+			startStatus.TriggerStartFailure(err)
+			return
+		}
+		startStatus.TriggerStart()
+	}()
 
 	go func() {
 		for {
@@ -125,6 +168,7 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 					err := service.HandleMessage(ctx, msg.GetFrom(), parsedMsg, res.Send)
 					if err != nil {
 						//TODO handle error
+						fmt.Println("pubsub handling error:", err)
 						return
 					}
 				}()
