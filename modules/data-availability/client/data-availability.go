@@ -3,6 +3,7 @@ package data_availability_client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
@@ -108,7 +109,7 @@ func (d *DataAvailability) RequestProofWithElection(data []byte, election electi
 		return stateEngine.StorageProof{}, err
 	}
 
-	ctx, cancel := context.WithTimeoutCause(context.Background(), 15*time.Minute, errors.New("data availability proof did not collect enough signatures"))
+	ctx, cancel := context.WithTimeoutCause(context.Background(), 15*time.Second, errors.New("data availability proof did not collect enough signatures"))
 	defer cancel()
 
 	t := time.NewTicker(200 * time.Millisecond)
@@ -117,6 +118,7 @@ loop:
 	for {
 		select {
 		case <-ctx.Done():
+			fmt.Println("signer count:", circuit.SignerCount())
 			return stateEngine.StorageProof{}, ctx.Err()
 		case <-t.C:
 			if circuit.SignerCount() >= stateEngine.STORAGE_PROOF_MINIMUM_SIGNERS {

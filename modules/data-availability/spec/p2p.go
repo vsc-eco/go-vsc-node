@@ -2,11 +2,8 @@ package data_availability_spec
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
-	"sync/atomic"
 	"vsc-node/lib/datalayer"
-	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
 
@@ -42,6 +39,17 @@ const (
 	P2pMessageData p2pMessageType = iota
 	P2pMessageSignature
 )
+
+func (mt p2pMessageType) String() string {
+	switch mt {
+	case P2pMessageData:
+		return "Data"
+	case P2pMessageSignature:
+		return "Signature"
+	default:
+		panic("unknown message type")
+	}
+}
 
 const signatureLength = 96 // See bls.Signature.Serialize() for details. (github.com/protolambda/bls12-381-util)
 
@@ -87,43 +95,6 @@ func (p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Me
 
 // HandleMessage implements libp2p.PubSubServiceParams.
 func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg P2pMessage, send libp2p.SendFunc[P2pMessage]) error {
-	switch msg.Type() {
-	case P2pMessageData:
-		blsPrivKey := &dids.BlsPrivKey{}
-		var arr [32]byte
-		blsPrivSeedHex := s.conf.Get().BlsPrivKeySeed
-		blsPrivSeed, err := hex.DecodeString(blsPrivSeedHex)
-		if err != nil {
-			return fmt.Errorf("failed to decode bls priv seed: %w", err)
-		}
-		if len(blsPrivSeed) != 32 {
-			return fmt.Errorf("bls priv seed must be 32 bytes")
-		}
-
-		copy(arr[:], blsPrivSeed)
-		if err = blsPrivKey.Deserialize(&arr); err != nil {
-			return fmt.Errorf("failed to deserialize bls priv key: %w", err)
-		}
-
-		provider, err := dids.NewBlsProvider(blsPrivKey)
-		if err != nil {
-			return fmt.Errorf("failed to create bls provider: %w", err)
-		}
-
-		c, err := s.dl.PutRaw(msg.Data(), datalayer.PutRawOptions{Pin: true})
-		if err != nil {
-			return fmt.Errorf("failed to create cid: %w", err)
-		}
-
-		sig, err := provider.SignRaw(*c)
-		if err != nil {
-			return fmt.Errorf("failed to sign data: %w", err)
-		}
-
-		sigData := append([]byte{byte(P2pMessageSignature)}, sig[:]...)
-
-		return send(P2pMessage{sigData})
-	}
 	return nil
 }
 
@@ -133,11 +104,11 @@ func (p2pSpec) HandleRawMessage(ctx context.Context, rawMsg *pubsub.Message, sen
 	return nil
 }
 
-var count = atomic.Int32{}
+// var count = atomic.Int32{}
 
 // ParseMessage implements libp2p.PubSubServiceParams.
 func (p2pSpec) ParseMessage(data []byte) (P2pMessage, error) {
-	fmt.Println("common message count:", count.Add(1))
+	// fmt.Println("common message count:", count.Add(1))
 	res := P2pMessage{data}
 	if !res.Valid() {
 		return res, fmt.Errorf("invalid message")
