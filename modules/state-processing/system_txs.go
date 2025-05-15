@@ -12,7 +12,6 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
-	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	transactionpool "vsc-node/modules/transaction-pool"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
@@ -121,24 +120,24 @@ const CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT = 84162592
 
 // ProcessTx implements VSCTransaction.
 func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
-	res := ledgerSession.ExecuteTransfer(ledgerSystem.OpLogEvent{
-		From:   tx.Self.RequiredAuths[0],
-		To:     "hive:vsc.dao",
-		Amount: 10_000,
-		Asset:  "hbd",
-		// Memo   string `json:"mo" // TODO add in future
-		Type: "transfer",
+	// res := ledgerSession.ExecuteTransfer(ledgerSystem.OpLogEvent{
+	// 	From:   tx.Self.RequiredAuths[0],
+	// 	To:     "hive:vsc.dao",
+	// 	Amount: 10_000,
+	// 	Asset:  "hbd",
+	// 	// Memo   string `json:"mo" // TODO add in future
+	// 	Type: "transfer",
 
-		//Not parted of compiled state
-		// Id          string `json:"id"`
-		BlockHeight: tx.Self.BlockHeight,
-	})
-	if !res.Ok {
-		return TxResult{
-			Success: false,
-			Ret:     res.Msg,
-		}
-	}
+	// 	//Not parted of compiled state
+	// 	// Id          string `json:"id"`
+	// 	BlockHeight: tx.Self.BlockHeight,
+	// })
+	// if !res.Ok {
+	// 	return TxResult{
+	// 		Success: false,
+	// 		Ret:     res.Msg,
+	// 	}
+	// }
 
 	if wasm_runtime.NewFromString(tx.Runtime.String()).IsErr() {
 		return TxResult{
