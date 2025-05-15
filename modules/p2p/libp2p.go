@@ -164,7 +164,10 @@ func (p2pServer *P2PServer) Init() error {
 		}),
 	}
 
-	p2p, _ := libp2p.New(options...)
+	p2p, err := libp2p.New(options...)
+	if err != nil {
+		return err
+	}
 
 	//DHT wrapped host
 
