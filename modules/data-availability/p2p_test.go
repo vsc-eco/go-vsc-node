@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestBasic(t *testing.T) {
+func TestBasicP2P(t *testing.T) {
 	config.UseMainConfigDuringTests = true
 	libp2p.BOOTSTRAP = []string{} // this is popluated by `MakeNode`
 
