@@ -22,7 +22,7 @@ var (
 	ErrDone error = fmt.Errorf("Done")
 )
 
-const DefaultExecPath = "TODO"
+const DefaultExecPath = "./vm-runner"
 
 type Wasm struct {
 	ctx      context.Context
