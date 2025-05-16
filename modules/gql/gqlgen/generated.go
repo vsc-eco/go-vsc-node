@@ -59,6 +59,7 @@ type ResolverRoot interface {
 	PostingJsonKeys() PostingJsonKeysResolver
 	Query() QueryResolver
 	RcRecord() RcRecordResolver
+	SetContractArgs() SetContractArgsResolver
 	TransactionRecord() TransactionRecordResolver
 	Witness() WitnessResolver
 	WitnessSlot() WitnessSlotResolver
@@ -151,10 +152,6 @@ type ComplexityRoot struct {
 		Outputs func(childComplexity int) int
 	}
 
-	FindContractResult struct {
-		Status func(childComplexity int) int
-	}
-
 	Gas struct {
 		Io func(childComplexity int) int
 	}
@@ -203,7 +200,7 @@ type ComplexityRoot struct {
 		ContractState         func(childComplexity int, id *string) int
 		ContractStateDiff     func(childComplexity int, id *string) int
 		ElectionByBlockHeight func(childComplexity int, blockHeight *model.Uint64) int
-		FindContract          func(childComplexity int, id *string) int
+		FindContract          func(childComplexity int, id string) int
 		FindContractOutput    func(childComplexity int, filterOptions *FindContractOutputFilter, decodedFilter *string) int
 		FindLedgerActions     func(childComplexity int, filterOptions *LedgerActionsFilter) int
 		FindLedgerTXs         func(childComplexity int, filterOptions *LedgerTxFilter) int
@@ -225,6 +222,17 @@ type ComplexityRoot struct {
 		Account     func(childComplexity int) int
 		Amount      func(childComplexity int) int
 		BlockHeight func(childComplexity int) int
+	}
+
+	SetContractArgs struct {
+		Code           func(childComplexity int) int
+		CreationHeight func(childComplexity int) int
+		Creator        func(childComplexity int) int
+		Description    func(childComplexity int) int
+		Name           func(childComplexity int) int
+		Owner          func(childComplexity int) int
+		Runtime        func(childComplexity int) int
+		TxId           func(childComplexity int) int
 	}
 
 	TransactionData struct {
@@ -351,7 +359,7 @@ type QueryResolver interface {
 	FindLedgerActions(ctx context.Context, filterOptions *LedgerActionsFilter) ([]ledgerDb.ActionRecord, error)
 	GetAccountBalance(ctx context.Context, account string, height *model.Uint64) (*ledgerDb.BalanceRecord, error)
 	GetAccountRc(ctx context.Context, account string, height *model.Uint64) (*rcDb.RcRecord, error)
-	FindContract(ctx context.Context, id *string) (*FindContractResult, error)
+	FindContract(ctx context.Context, id string) (*contracts.SetContractArgs, error)
 	SubmitTransactionV1(ctx context.Context, tx string, sig string) (*TransactionSubmitResult, error)
 	GetAccountNonce(ctx context.Context, account string) (*nonces.NonceRecord, error)
 	LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, error)
@@ -366,6 +374,10 @@ type QueryResolver interface {
 type RcRecordResolver interface {
 	Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error)
 	BlockHeight(ctx context.Context, obj *rcDb.RcRecord) (model.Uint64, error)
+}
+type SetContractArgsResolver interface {
+	CreationHeight(ctx context.Context, obj *contracts.SetContractArgs) (model.Uint64, error)
+	Runtime(ctx context.Context, obj *contracts.SetContractArgs) (string, error)
 }
 type TransactionRecordResolver interface {
 	AnchrHeight(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
@@ -813,13 +825,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.FindContractOutputResult.Outputs(childComplexity), true
 
-	case "FindContractResult.status":
-		if e.complexity.FindContractResult.Status == nil {
-			break
-		}
-
-		return e.complexity.FindContractResult.Status(childComplexity), true
-
 	case "Gas.IO":
 		if e.complexity.Gas.Io == nil {
 			break
@@ -1048,7 +1053,7 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 			return 0, false
 		}
 
-		return e.complexity.Query.FindContract(childComplexity, args["id"].(*string)), true
+		return e.complexity.Query.FindContract(childComplexity, args["id"].(string)), true
 
 	case "Query.findContractOutput":
 		if e.complexity.Query.FindContractOutput == nil {
@@ -1245,6 +1250,62 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.RcRecord.BlockHeight(childComplexity), true
+
+	case "SetContractArgs.code":
+		if e.complexity.SetContractArgs.Code == nil {
+			break
+		}
+
+		return e.complexity.SetContractArgs.Code(childComplexity), true
+
+	case "SetContractArgs.creation_height":
+		if e.complexity.SetContractArgs.CreationHeight == nil {
+			break
+		}
+
+		return e.complexity.SetContractArgs.CreationHeight(childComplexity), true
+
+	case "SetContractArgs.creator":
+		if e.complexity.SetContractArgs.Creator == nil {
+			break
+		}
+
+		return e.complexity.SetContractArgs.Creator(childComplexity), true
+
+	case "SetContractArgs.description":
+		if e.complexity.SetContractArgs.Description == nil {
+			break
+		}
+
+		return e.complexity.SetContractArgs.Description(childComplexity), true
+
+	case "SetContractArgs.name":
+		if e.complexity.SetContractArgs.Name == nil {
+			break
+		}
+
+		return e.complexity.SetContractArgs.Name(childComplexity), true
+
+	case "SetContractArgs.owner":
+		if e.complexity.SetContractArgs.Owner == nil {
+			break
+		}
+
+		return e.complexity.SetContractArgs.Owner(childComplexity), true
+
+	case "SetContractArgs.runtime":
+		if e.complexity.SetContractArgs.Runtime == nil {
+			break
+		}
+
+		return e.complexity.SetContractArgs.Runtime(childComplexity), true
+
+	case "SetContractArgs.tx_id":
+		if e.complexity.SetContractArgs.TxId == nil {
+			break
+		}
+
+		return e.complexity.SetContractArgs.TxId(childComplexity), true
 
 	case "TransactionData.action":
 		if e.complexity.TransactionData.Action == nil {
@@ -1678,8 +1739,15 @@ type ContractState {
   state_merkle: String
 }
 
-type FindContractResult {
-  status: String
+type SetContractArgs {
+  code: String
+  name: String
+  description: String
+  creator: String
+  owner: String
+  tx_id: String
+  creation_height: Uint64!
+  runtime: String!
 }
 
 type TransactionSubmitResult {
@@ -1848,7 +1916,7 @@ type Query {
   findLedgerActions(filterOptions: LedgerActionsFilter): [ActionRecord!]
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
   getAccountRC(account: String!, height: Uint64): RcRecord
-  findContract(id: String): FindContractResult
+  findContract(id: String!): SetContractArgs
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(account: String!): NonceRecord
   localNodeInfo: LocalNodeInfo
@@ -2106,13 +2174,13 @@ func (ec *executionContext) field_Query_findContract_args(ctx context.Context, r
 func (ec *executionContext) field_Query_findContract_argsID(
 	ctx context.Context,
 	rawArgs map[string]any,
-) (*string, error) {
+) (string, error) {
 	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("id"))
 	if tmp, ok := rawArgs["id"]; ok {
-		return ec.unmarshalOString2ᚖstring(ctx, tmp)
+		return ec.unmarshalNString2string(ctx, tmp)
 	}
 
-	var zeroVal *string
+	var zeroVal string
 	return zeroVal, nil
 }
 
@@ -5058,47 +5126,6 @@ func (ec *executionContext) fieldContext_FindContractOutputResult_outputs(_ cont
 	return fc, nil
 }
 
-func (ec *executionContext) _FindContractResult_status(ctx context.Context, field graphql.CollectedField, obj *FindContractResult) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_FindContractResult_status(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Status, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_FindContractResult_status(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "FindContractResult",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type String does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
 func (ec *executionContext) _Gas_IO(ctx context.Context, field graphql.CollectedField, obj *Gas) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_Gas_IO(ctx, field)
 	if err != nil {
@@ -6781,7 +6808,7 @@ func (ec *executionContext) _Query_findContract(ctx context.Context, field graph
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().FindContract(rctx, fc.Args["id"].(*string))
+		return ec.resolvers.Query().FindContract(rctx, fc.Args["id"].(string))
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -6790,9 +6817,9 @@ func (ec *executionContext) _Query_findContract(ctx context.Context, field graph
 	if resTmp == nil {
 		return graphql.Null
 	}
-	res := resTmp.(*FindContractResult)
+	res := resTmp.(*contracts.SetContractArgs)
 	fc.Result = res
-	return ec.marshalOFindContractResult2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐFindContractResult(ctx, field.Selections, res)
+	return ec.marshalOSetContractArgs2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋcontractsᚐSetContractArgs(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) fieldContext_Query_findContract(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
@@ -6803,10 +6830,24 @@ func (ec *executionContext) fieldContext_Query_findContract(ctx context.Context,
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			switch field.Name {
-			case "status":
-				return ec.fieldContext_FindContractResult_status(ctx, field)
+			case "code":
+				return ec.fieldContext_SetContractArgs_code(ctx, field)
+			case "name":
+				return ec.fieldContext_SetContractArgs_name(ctx, field)
+			case "description":
+				return ec.fieldContext_SetContractArgs_description(ctx, field)
+			case "creator":
+				return ec.fieldContext_SetContractArgs_creator(ctx, field)
+			case "owner":
+				return ec.fieldContext_SetContractArgs_owner(ctx, field)
+			case "tx_id":
+				return ec.fieldContext_SetContractArgs_tx_id(ctx, field)
+			case "creation_height":
+				return ec.fieldContext_SetContractArgs_creation_height(ctx, field)
+			case "runtime":
+				return ec.fieldContext_SetContractArgs_runtime(ctx, field)
 			}
-			return nil, fmt.Errorf("no field named %q was found under type FindContractResult", field.Name)
+			return nil, fmt.Errorf("no field named %q was found under type SetContractArgs", field.Name)
 		},
 	}
 	defer func() {
@@ -7731,6 +7772,340 @@ func (ec *executionContext) fieldContext_RcRecord_block_height(_ context.Context
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SetContractArgs_code(ctx context.Context, field graphql.CollectedField, obj *contracts.SetContractArgs) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_SetContractArgs_code(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Code, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_SetContractArgs_code(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SetContractArgs",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SetContractArgs_name(ctx context.Context, field graphql.CollectedField, obj *contracts.SetContractArgs) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_SetContractArgs_name(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Name, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_SetContractArgs_name(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SetContractArgs",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SetContractArgs_description(ctx context.Context, field graphql.CollectedField, obj *contracts.SetContractArgs) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_SetContractArgs_description(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Description, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_SetContractArgs_description(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SetContractArgs",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SetContractArgs_creator(ctx context.Context, field graphql.CollectedField, obj *contracts.SetContractArgs) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_SetContractArgs_creator(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Creator, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_SetContractArgs_creator(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SetContractArgs",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SetContractArgs_owner(ctx context.Context, field graphql.CollectedField, obj *contracts.SetContractArgs) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_SetContractArgs_owner(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Owner, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_SetContractArgs_owner(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SetContractArgs",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SetContractArgs_tx_id(ctx context.Context, field graphql.CollectedField, obj *contracts.SetContractArgs) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_SetContractArgs_tx_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.TxId, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_SetContractArgs_tx_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SetContractArgs",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SetContractArgs_creation_height(ctx context.Context, field graphql.CollectedField, obj *contracts.SetContractArgs) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_SetContractArgs_creation_height(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.SetContractArgs().CreationHeight(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_SetContractArgs_creation_height(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SetContractArgs",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SetContractArgs_runtime(ctx context.Context, field graphql.CollectedField, obj *contracts.SetContractArgs) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_SetContractArgs_runtime(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.SetContractArgs().Runtime(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_SetContractArgs_runtime(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SetContractArgs",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
 		},
 	}
 	return fc, nil
@@ -12962,42 +13337,6 @@ func (ec *executionContext) _FindContractOutputResult(ctx context.Context, sel a
 	return out
 }
 
-var findContractResultImplementors = []string{"FindContractResult"}
-
-func (ec *executionContext) _FindContractResult(ctx context.Context, sel ast.SelectionSet, obj *FindContractResult) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, findContractResultImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("FindContractResult")
-		case "status":
-			out.Values[i] = ec._FindContractResult_status(ctx, field, obj)
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
 var gasImplementors = []string{"Gas"}
 
 func (ec *executionContext) _Gas(ctx context.Context, sel ast.SelectionSet, obj *Gas) graphql.Marshaler {
@@ -14019,6 +14358,124 @@ func (ec *executionContext) _RcRecord(ctx context.Context, sel ast.SelectionSet,
 					}
 				}()
 				res = ec._RcRecord_block_height(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var setContractArgsImplementors = []string{"SetContractArgs"}
+
+func (ec *executionContext) _SetContractArgs(ctx context.Context, sel ast.SelectionSet, obj *contracts.SetContractArgs) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, setContractArgsImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("SetContractArgs")
+		case "code":
+			out.Values[i] = ec._SetContractArgs_code(ctx, field, obj)
+		case "name":
+			out.Values[i] = ec._SetContractArgs_name(ctx, field, obj)
+		case "description":
+			out.Values[i] = ec._SetContractArgs_description(ctx, field, obj)
+		case "creator":
+			out.Values[i] = ec._SetContractArgs_creator(ctx, field, obj)
+		case "owner":
+			out.Values[i] = ec._SetContractArgs_owner(ctx, field, obj)
+		case "tx_id":
+			out.Values[i] = ec._SetContractArgs_tx_id(ctx, field, obj)
+		case "creation_height":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._SetContractArgs_creation_height(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "runtime":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._SetContractArgs_runtime(ctx, field, obj)
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}
@@ -15874,13 +16331,6 @@ func (ec *executionContext) marshalOFindContractOutputResult2ᚖvscᚑnodeᚋmod
 	return ec._FindContractOutputResult(ctx, sel, v)
 }
 
-func (ec *executionContext) marshalOFindContractResult2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐFindContractResult(ctx context.Context, sel ast.SelectionSet, v *FindContractResult) graphql.Marshaler {
-	if v == nil {
-		return graphql.Null
-	}
-	return ec._FindContractResult(ctx, sel, v)
-}
-
 func (ec *executionContext) marshalOGas2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐGas(ctx context.Context, sel ast.SelectionSet, v *Gas) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
@@ -16069,6 +16519,13 @@ func (ec *executionContext) marshalORcRecord2ᚖvscᚑnodeᚋmodulesᚋdbᚋvsc�
 		return graphql.Null
 	}
 	return ec._RcRecord(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalOSetContractArgs2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋcontractsᚐSetContractArgs(ctx context.Context, sel ast.SelectionSet, v *contracts.SetContractArgs) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._SetContractArgs(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalOString2string(ctx context.Context, v any) (string, error) {

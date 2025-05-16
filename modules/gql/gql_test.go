@@ -77,6 +77,7 @@ func TestQueryAndMutation(t *testing.T) {
 		hiveBlocks,
 		se,
 		da,
+		contractDb,
 	}
 	schema := gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: resolver})
 

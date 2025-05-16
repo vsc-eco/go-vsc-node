@@ -144,6 +144,7 @@ func main() {
 		hiveBlocks,
 		se,
 		da,
+		contractDb,
 	}}), "0.0.0.0:8080")
 
 	plugins := make([]aggregate.Plugin, 0)

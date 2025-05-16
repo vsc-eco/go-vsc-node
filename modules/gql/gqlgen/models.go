@@ -31,10 +31,6 @@ type FindContractOutputResult struct {
 	Outputs []*contracts.ContractOutput `json:"outputs,omitempty"`
 }
 
-type FindContractResult struct {
-	Status *string `json:"status,omitempty"`
-}
-
 type Gas struct {
 	Io *int `json:"IO,omitempty"`
 }
