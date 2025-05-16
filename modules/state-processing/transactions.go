@@ -3,6 +3,7 @@ package stateEngine
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -111,7 +112,7 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 			return TxResult{
 				Success: !res.Error,
 				Ret:     res.Result,
-				RcUsed:  int64(res.Gas / common.CYCLE_GAS_PER_RC),
+				RcUsed:  int64(math.Ceil(float64(res.Gas) / common.CYCLE_GAS_PER_RC)),
 			}
 		},
 	)
