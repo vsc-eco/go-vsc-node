@@ -299,8 +299,9 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 }
 
 // FindContract is the resolver for the findContract field.
-func (r *queryResolver) FindContract(ctx context.Context, id *string) (*FindContractResult, error) {
-	panic(fmt.Errorf("not implemented"))
+func (r *queryResolver) FindContract(ctx context.Context, id string) (*contracts.SetContractArgs, error) {
+	contract, err := r.Contracts.ContractById(id)
+	return &contract, err
 }
 
 // SubmitTransactionV1 is the resolver for the submitTransactionV1 field.
@@ -424,6 +425,16 @@ func (r *rcRecordResolver) BlockHeight(ctx context.Context, obj *rcDb.RcRecord) 
 	return model.Uint64(obj.BlockHeight), nil
 }
 
+// CreationHeight is the resolver for the creation_height field.
+func (r *setContractArgsResolver) CreationHeight(ctx context.Context, obj *contracts.SetContractArgs) (model.Uint64, error) {
+	return model.Uint64(obj.CreationHeight), nil
+}
+
+// Runtime is the resolver for the runtime field.
+func (r *setContractArgsResolver) Runtime(ctx context.Context, obj *contracts.SetContractArgs) (string, error) {
+	return obj.Runtime.String(), nil
+}
+
 // AnchrHeight is the resolver for the anchr_height field.
 func (r *transactionRecordResolver) AnchrHeight(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
 	return model.Uint64(obj.AnchoredHeight), nil
@@ -507,6 +518,9 @@ func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 // RcRecord returns RcRecordResolver implementation.
 func (r *Resolver) RcRecord() RcRecordResolver { return &rcRecordResolver{r} }
 
+// SetContractArgs returns SetContractArgsResolver implementation.
+func (r *Resolver) SetContractArgs() SetContractArgsResolver { return &setContractArgsResolver{r} }
+
 // TransactionRecord returns TransactionRecordResolver implementation.
 func (r *Resolver) TransactionRecord() TransactionRecordResolver {
 	return &transactionRecordResolver{r}
@@ -529,6 +543,7 @@ type opLogEventResolver struct{ *Resolver }
 type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type rcRecordResolver struct{ *Resolver }
+type setContractArgsResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }

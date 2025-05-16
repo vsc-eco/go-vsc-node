@@ -91,8 +91,15 @@ type ContractState {
   state_merkle: String
 }
 
-type FindContractResult {
-  status: String
+type SetContractArgs {
+  code: String
+  name: String
+  description: String
+  creator: String
+  owner: String
+  tx_id: String
+  creation_height: Uint64!
+  runtime: String!
 }
 
 type TransactionSubmitResult {
@@ -261,7 +268,7 @@ type Query {
   findLedgerActions(filterOptions: LedgerActionsFilter): [ActionRecord!]
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
   getAccountRC(account: String!, height: Uint64): RcRecord
-  findContract(id: String): FindContractResult
+  findContract(id: String!): SetContractArgs
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(account: String!): NonceRecord
   localNodeInfo: LocalNodeInfo

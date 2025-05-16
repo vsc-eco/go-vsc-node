@@ -2,6 +2,7 @@ package gqlgen
 
 import (
 	"vsc-node/lib/datalayer"
+	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -30,4 +31,5 @@ type Resolver struct {
 	HiveBlocks   hive_blocks.HiveBlocks
 	StateEngine  *stateEngine.StateEngine
 	Da           *datalayer.DataLayer
+	Contracts    contracts.Contracts
 }
