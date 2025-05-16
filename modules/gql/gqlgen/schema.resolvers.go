@@ -295,7 +295,10 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 // FindContract is the resolver for the findContract field.
 func (r *queryResolver) FindContract(ctx context.Context, id string) (*contracts.SetContractArgs, error) {
 	contract, err := r.Contracts.ContractById(id)
-	return &contract, err
+	if err != nil {
+		return nil, err
+	}
+	return &contract, nil
 }
 
 // SubmitTransactionV1 is the resolver for the submitTransactionV1 field.
