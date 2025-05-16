@@ -278,10 +278,7 @@ func (r *queryResolver) GetAccountBalance(ctx context.Context, account string, h
 	if account == "" {
 		return nil, fmt.Errorf("account parameter cannot be empty")
 	}
-	blockHeight, err := ParseHeight(height)
-	if err != nil {
-		return nil, err
-	}
+	blockHeight := ParseHeight(height)
 	return r.Balances.GetBalanceRecord(account, blockHeight)
 }
 
@@ -290,10 +287,7 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	if account == "" {
 		return nil, fmt.Errorf("account parameter cannot be empty")
 	}
-	blockHeight, err := ParseHeight(height)
-	if err != nil {
-		return nil, err
-	}
+	blockHeight := ParseHeight(height)
 	rc, err := r.Rc.GetRecord(account, blockHeight)
 	return &rc, err
 }
@@ -348,10 +342,7 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 
 // GetWitness is the resolver for the getWitness field.
 func (r *queryResolver) GetWitness(ctx context.Context, account string, height *model.Uint64) (*witnesses.Witness, error) {
-	blockHeight, err := ParseHeight(height)
-	if err != nil {
-		return nil, err
-	}
+	blockHeight := ParseHeight(height)
 	return r.Witnesses.GetWitnessAtHeight(account, &blockHeight)
 }
 
