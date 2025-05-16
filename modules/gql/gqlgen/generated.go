@@ -229,6 +229,7 @@ type ComplexityRoot struct {
 		CreationHeight func(childComplexity int) int
 		Creator        func(childComplexity int) int
 		Description    func(childComplexity int) int
+		Id             func(childComplexity int) int
 		Name           func(childComplexity int) int
 		Owner          func(childComplexity int) int
 		Runtime        func(childComplexity int) int
@@ -1279,6 +1280,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.SetContractArgs.Description(childComplexity), true
 
+	case "SetContractArgs.id":
+		if e.complexity.SetContractArgs.Id == nil {
+			break
+		}
+
+		return e.complexity.SetContractArgs.Id(childComplexity), true
+
 	case "SetContractArgs.name":
 		if e.complexity.SetContractArgs.Name == nil {
 			break
@@ -1740,6 +1748,7 @@ type ContractState {
 }
 
 type SetContractArgs {
+  id: String!
   code: String
   name: String
   description: String
@@ -6830,6 +6839,8 @@ func (ec *executionContext) fieldContext_Query_findContract(ctx context.Context,
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			switch field.Name {
+			case "id":
+				return ec.fieldContext_SetContractArgs_id(ctx, field)
 			case "code":
 				return ec.fieldContext_SetContractArgs_code(ctx, field)
 			case "name":
@@ -7772,6 +7783,50 @@ func (ec *executionContext) fieldContext_RcRecord_block_height(_ context.Context
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SetContractArgs_id(ctx context.Context, field graphql.CollectedField, obj *contracts.SetContractArgs) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_SetContractArgs_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Id, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_SetContractArgs_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SetContractArgs",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
 		},
 	}
 	return fc, nil
@@ -14418,6 +14473,11 @@ func (ec *executionContext) _SetContractArgs(ctx context.Context, sel ast.Select
 		switch field.Name {
 		case "__typename":
 			out.Values[i] = graphql.MarshalString("SetContractArgs")
+		case "id":
+			out.Values[i] = ec._SetContractArgs_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
 		case "code":
 			out.Values[i] = ec._SetContractArgs_code(ctx, field, obj)
 		case "name":

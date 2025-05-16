@@ -3,6 +3,7 @@ package contracts
 import wasm_runtime "vsc-node/modules/wasm/runtime"
 
 type SetContractArgs struct {
+	Id             string               `bson:"id,omitempty"`
 	Code           string               `bson:"code"`
 	Name           string               `bson:"name"`
 	Description    string               `bson:"description"`
