@@ -200,7 +200,7 @@ type ComplexityRoot struct {
 		ContractState         func(childComplexity int, id *string) int
 		ContractStateDiff     func(childComplexity int, id *string) int
 		ElectionByBlockHeight func(childComplexity int, blockHeight *model.Uint64) int
-		FindContract          func(childComplexity int, id string) int
+		FindContract          func(childComplexity int, filterOptions *FindContractFilter) int
 		FindContractOutput    func(childComplexity int, filterOptions *FindContractOutputFilter, decodedFilter *string) int
 		FindLedgerActions     func(childComplexity int, filterOptions *LedgerActionsFilter) int
 		FindLedgerTXs         func(childComplexity int, filterOptions *LedgerTxFilter) int
@@ -227,6 +227,7 @@ type ComplexityRoot struct {
 	SetContractArgs struct {
 		Code           func(childComplexity int) int
 		CreationHeight func(childComplexity int) int
+		CreationTs     func(childComplexity int) int
 		Creator        func(childComplexity int) int
 		Description    func(childComplexity int) int
 		Id             func(childComplexity int) int
@@ -360,7 +361,7 @@ type QueryResolver interface {
 	FindLedgerActions(ctx context.Context, filterOptions *LedgerActionsFilter) ([]ledgerDb.ActionRecord, error)
 	GetAccountBalance(ctx context.Context, account string, height *model.Uint64) (*ledgerDb.BalanceRecord, error)
 	GetAccountRc(ctx context.Context, account string, height *model.Uint64) (*rcDb.RcRecord, error)
-	FindContract(ctx context.Context, id string) (*contracts.SetContractArgs, error)
+	FindContract(ctx context.Context, filterOptions *FindContractFilter) ([]contracts.SetContractArgs, error)
 	SubmitTransactionV1(ctx context.Context, tx string, sig string) (*TransactionSubmitResult, error)
 	GetAccountNonce(ctx context.Context, account string) (*nonces.NonceRecord, error)
 	LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, error)
@@ -378,6 +379,7 @@ type RcRecordResolver interface {
 }
 type SetContractArgsResolver interface {
 	CreationHeight(ctx context.Context, obj *contracts.SetContractArgs) (model.Uint64, error)
+
 	Runtime(ctx context.Context, obj *contracts.SetContractArgs) (string, error)
 }
 type TransactionRecordResolver interface {
@@ -1054,7 +1056,7 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 			return 0, false
 		}
 
-		return e.complexity.Query.FindContract(childComplexity, args["id"].(string)), true
+		return e.complexity.Query.FindContract(childComplexity, args["filterOptions"].(*FindContractFilter)), true
 
 	case "Query.findContractOutput":
 		if e.complexity.Query.FindContractOutput == nil {
@@ -1265,6 +1267,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.SetContractArgs.CreationHeight(childComplexity), true
+
+	case "SetContractArgs.creation_ts":
+		if e.complexity.SetContractArgs.CreationTs == nil {
+			break
+		}
+
+		return e.complexity.SetContractArgs.CreationTs(childComplexity), true
 
 	case "SetContractArgs.creator":
 		if e.complexity.SetContractArgs.Creator == nil {
@@ -1568,6 +1577,7 @@ func (e *executableSchema) Exec(ctx context.Context) graphql.ResponseHandler {
 	opCtx := graphql.GetOperationContext(ctx)
 	ec := executionContext{opCtx, e, 0, 0, make(chan graphql.DeferredResult)}
 	inputUnmarshalMap := graphql.BuildUnmarshalerMap(
+		ec.unmarshalInputFindContractFilter,
 		ec.unmarshalInputFindContractOutputFilter,
 		ec.unmarshalInputLedgerActionsFilter,
 		ec.unmarshalInputLedgerTxFilter,
@@ -1756,6 +1766,7 @@ type SetContractArgs {
   owner: String
   tx_id: String
   creation_height: Uint64!
+  creation_ts: String!
   runtime: String!
 }
 
@@ -1906,6 +1917,13 @@ input TransactionFilter {
   limit: Int
 }
 
+input FindContractFilter {
+  byId: String
+  byCode: String
+  offset: Int
+  limit: Int
+}
+
 input FindContractOutputFilter {
   byInput: String
   byOutput: String
@@ -1925,7 +1943,7 @@ type Query {
   findLedgerActions(filterOptions: LedgerActionsFilter): [ActionRecord!]
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
   getAccountRC(account: String!, height: Uint64): RcRecord
-  findContract(id: String!): SetContractArgs
+  findContract(filterOptions: FindContractFilter): [SetContractArgs!]
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(account: String!): NonceRecord
   localNodeInfo: LocalNodeInfo
@@ -2173,23 +2191,23 @@ func (ec *executionContext) field_Query_findContractOutput_argsDecodedFilter(
 func (ec *executionContext) field_Query_findContract_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
 	var err error
 	args := map[string]any{}
-	arg0, err := ec.field_Query_findContract_argsID(ctx, rawArgs)
+	arg0, err := ec.field_Query_findContract_argsFilterOptions(ctx, rawArgs)
 	if err != nil {
 		return nil, err
 	}
-	args["id"] = arg0
+	args["filterOptions"] = arg0
 	return args, nil
 }
-func (ec *executionContext) field_Query_findContract_argsID(
+func (ec *executionContext) field_Query_findContract_argsFilterOptions(
 	ctx context.Context,
 	rawArgs map[string]any,
-) (string, error) {
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("id"))
-	if tmp, ok := rawArgs["id"]; ok {
-		return ec.unmarshalNString2string(ctx, tmp)
+) (*FindContractFilter, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("filterOptions"))
+	if tmp, ok := rawArgs["filterOptions"]; ok {
+		return ec.unmarshalOFindContractFilter2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐFindContractFilter(ctx, tmp)
 	}
 
-	var zeroVal string
+	var zeroVal *FindContractFilter
 	return zeroVal, nil
 }
 
@@ -6817,7 +6835,7 @@ func (ec *executionContext) _Query_findContract(ctx context.Context, field graph
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().FindContract(rctx, fc.Args["id"].(string))
+		return ec.resolvers.Query().FindContract(rctx, fc.Args["filterOptions"].(*FindContractFilter))
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -6826,9 +6844,9 @@ func (ec *executionContext) _Query_findContract(ctx context.Context, field graph
 	if resTmp == nil {
 		return graphql.Null
 	}
-	res := resTmp.(*contracts.SetContractArgs)
+	res := resTmp.([]contracts.SetContractArgs)
 	fc.Result = res
-	return ec.marshalOSetContractArgs2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋcontractsᚐSetContractArgs(ctx, field.Selections, res)
+	return ec.marshalOSetContractArgs2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋcontractsᚐSetContractArgsᚄ(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) fieldContext_Query_findContract(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
@@ -6855,6 +6873,8 @@ func (ec *executionContext) fieldContext_Query_findContract(ctx context.Context,
 				return ec.fieldContext_SetContractArgs_tx_id(ctx, field)
 			case "creation_height":
 				return ec.fieldContext_SetContractArgs_creation_height(ctx, field)
+			case "creation_ts":
+				return ec.fieldContext_SetContractArgs_creation_ts(ctx, field)
 			case "runtime":
 				return ec.fieldContext_SetContractArgs_runtime(ctx, field)
 			}
@@ -8117,6 +8137,50 @@ func (ec *executionContext) fieldContext_SetContractArgs_creation_height(_ conte
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SetContractArgs_creation_ts(ctx context.Context, field graphql.CollectedField, obj *contracts.SetContractArgs) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_SetContractArgs_creation_ts(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.CreationTs, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalNString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_SetContractArgs_creation_ts(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SetContractArgs",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
 		},
 	}
 	return fc, nil
@@ -11624,6 +11688,54 @@ func (ec *executionContext) fieldContext___Type_isOneOf(_ context.Context, field
 
 // region    **************************** input.gotpl *****************************
 
+func (ec *executionContext) unmarshalInputFindContractFilter(ctx context.Context, obj any) (FindContractFilter, error) {
+	var it FindContractFilter
+	asMap := map[string]any{}
+	for k, v := range obj.(map[string]any) {
+		asMap[k] = v
+	}
+
+	fieldsInOrder := [...]string{"byId", "byCode", "offset", "limit"}
+	for _, k := range fieldsInOrder {
+		v, ok := asMap[k]
+		if !ok {
+			continue
+		}
+		switch k {
+		case "byId":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("byId"))
+			data, err := ec.unmarshalOString2ᚖstring(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.ByID = data
+		case "byCode":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("byCode"))
+			data, err := ec.unmarshalOString2ᚖstring(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.ByCode = data
+		case "offset":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("offset"))
+			data, err := ec.unmarshalOInt2ᚖint(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.Offset = data
+		case "limit":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("limit"))
+			data, err := ec.unmarshalOInt2ᚖint(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.Limit = data
+		}
+	}
+
+	return it, nil
+}
+
 func (ec *executionContext) unmarshalInputFindContractOutputFilter(ctx context.Context, obj any) (FindContractOutputFilter, error) {
 	var it FindContractOutputFilter
 	asMap := map[string]any{}
@@ -14526,6 +14638,11 @@ func (ec *executionContext) _SetContractArgs(ctx context.Context, sel ast.Select
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "creation_ts":
+			out.Values[i] = ec._SetContractArgs_creation_ts(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
 		case "runtime":
 			field := field
 
@@ -15753,6 +15870,10 @@ func (ec *executionContext) marshalNPostingJsonKeys2ᚕvscᚑnodeᚋmodulesᚋdb
 	return ret
 }
 
+func (ec *executionContext) marshalNSetContractArgs2vscᚑnodeᚋmodulesᚋdbᚋvscᚋcontractsᚐSetContractArgs(ctx context.Context, sel ast.SelectionSet, v contracts.SetContractArgs) graphql.Marshaler {
+	return ec._SetContractArgs(ctx, sel, &v)
+}
+
 func (ec *executionContext) unmarshalNString2string(ctx context.Context, v any) (string, error) {
 	res, err := graphql.UnmarshalString(v)
 	return res, graphql.ErrorOnPath(ctx, err)
@@ -16376,6 +16497,14 @@ func (ec *executionContext) marshalOElectionResult2ᚖvscᚑnodeᚋmodulesᚋdb�
 	return ec._ElectionResult(ctx, sel, v)
 }
 
+func (ec *executionContext) unmarshalOFindContractFilter2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐFindContractFilter(ctx context.Context, v any) (*FindContractFilter, error) {
+	if v == nil {
+		return nil, nil
+	}
+	res, err := ec.unmarshalInputFindContractFilter(ctx, v)
+	return &res, graphql.ErrorOnPath(ctx, err)
+}
+
 func (ec *executionContext) unmarshalOFindContractOutputFilter2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐFindContractOutputFilter(ctx context.Context, v any) (*FindContractOutputFilter, error) {
 	if v == nil {
 		return nil, nil
@@ -16581,11 +16710,51 @@ func (ec *executionContext) marshalORcRecord2ᚖvscᚑnodeᚋmodulesᚋdbᚋvsc�
 	return ec._RcRecord(ctx, sel, v)
 }
 
-func (ec *executionContext) marshalOSetContractArgs2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋcontractsᚐSetContractArgs(ctx context.Context, sel ast.SelectionSet, v *contracts.SetContractArgs) graphql.Marshaler {
+func (ec *executionContext) marshalOSetContractArgs2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋcontractsᚐSetContractArgsᚄ(ctx context.Context, sel ast.SelectionSet, v []contracts.SetContractArgs) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
 	}
-	return ec._SetContractArgs(ctx, sel, v)
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNSetContractArgs2vscᚑnodeᚋmodulesᚋdbᚋvscᚋcontractsᚐSetContractArgs(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
 }
 
 func (ec *executionContext) unmarshalOString2string(ctx context.Context, v any) (string, error) {

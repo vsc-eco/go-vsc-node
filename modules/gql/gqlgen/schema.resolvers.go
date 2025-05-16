@@ -293,12 +293,15 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 }
 
 // FindContract is the resolver for the findContract field.
-func (r *queryResolver) FindContract(ctx context.Context, id string) (*contracts.SetContractArgs, error) {
-	contract, err := r.Contracts.ContractById(id)
-	if err != nil {
-		return nil, err
+func (r *queryResolver) FindContract(ctx context.Context, filterOptions *FindContractFilter) ([]contracts.SetContractArgs, error) {
+	if filterOptions == nil {
+		filterOptions = &FindContractFilter{}
 	}
-	return &contract, nil
+	offset, limit, paginateErr := Paginate(filterOptions.Offset, filterOptions.Limit)
+	if paginateErr != nil {
+		return nil, paginateErr
+	}
+	return r.Contracts.FindContracts(filterOptions.ByID, filterOptions.ByCode, offset, limit)
 }
 
 // SubmitTransactionV1 is the resolver for the submitTransactionV1 field.

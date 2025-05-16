@@ -6,6 +6,7 @@ type Contracts interface {
 	a.Plugin
 	RegisterContract(contractId string, args SetContractArgs)
 	ContractById(contractId string) (SetContractArgs, error)
+	FindContracts(contractId *string, code *string, offset int, limit int) ([]SetContractArgs, error)
 }
 
 type ContractState interface {

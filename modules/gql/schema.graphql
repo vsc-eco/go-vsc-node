@@ -100,6 +100,7 @@ type SetContractArgs {
   owner: String
   tx_id: String
   creation_height: Uint64!
+  creation_ts: String!
   runtime: String!
 }
 
@@ -250,6 +251,13 @@ input TransactionFilter {
   limit: Int
 }
 
+input FindContractFilter {
+  byId: String
+  byCode: String
+  offset: Int
+  limit: Int
+}
+
 input FindContractOutputFilter {
   byInput: String
   byOutput: String
@@ -269,7 +277,7 @@ type Query {
   findLedgerActions(filterOptions: LedgerActionsFilter): [ActionRecord!]
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
   getAccountRC(account: String!, height: Uint64): RcRecord
-  findContract(id: String!): SetContractArgs
+  findContract(filterOptions: FindContractFilter): [SetContractArgs!]
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(account: String!): NonceRecord
   localNodeInfo: LocalNodeInfo

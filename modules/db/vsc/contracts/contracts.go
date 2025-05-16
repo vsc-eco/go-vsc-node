@@ -4,6 +4,7 @@ import (
 	"context"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
+	"vsc-node/modules/db/vsc/hive_blocks"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -39,6 +40,31 @@ func (c *contracts) ContractById(contractId string) (SetContractArgs, error) {
 
 	err := qRes.Decode(&res)
 	return res, err
+}
+
+func (c *contracts) FindContracts(contractId *string, code *string, offset int, limit int) ([]SetContractArgs, error) {
+	filters := bson.D{}
+	if contractId != nil {
+		filters = append(filters, bson.E{Key: "id", Value: *contractId})
+	}
+	if code != nil {
+		filters = append(filters, bson.E{Key: "code", Value: *code})
+	}
+	pipe := hive_blocks.GetAggTimestampPipeline(filters, "creation_height", "creation_ts", offset, limit)
+	cursor, err := c.Aggregate(context.TODO(), pipe)
+	if err != nil {
+		return []SetContractArgs{}, err
+	}
+	defer cursor.Close(context.TODO())
+	var results []SetContractArgs
+	for cursor.Next(context.TODO()) {
+		var elem SetContractArgs
+		if err := cursor.Decode(&elem); err != nil {
+			return []SetContractArgs{}, err
+		}
+		results = append(results, elem)
+	}
+	return results, nil
 }
 
 func (c *contracts) RegisterContract(contractId string, args SetContractArgs) {

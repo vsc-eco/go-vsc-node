@@ -20,6 +20,13 @@ type ContractDiff struct {
 	PreviousContractStateID string  `json:"previousContractStateId"`
 }
 
+type FindContractFilter struct {
+	ByID   *string `json:"byId,omitempty"`
+	ByCode *string `json:"byCode,omitempty"`
+	Offset *int    `json:"offset,omitempty"`
+	Limit  *int    `json:"limit,omitempty"`
+}
+
 type FindContractOutputFilter struct {
 	ByInput    *string `json:"byInput,omitempty"`
 	ByOutput   *string `json:"byOutput,omitempty"`
