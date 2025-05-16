@@ -2,10 +2,12 @@ package vscBlocks
 
 import (
 	"context"
+	"fmt"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -15,6 +17,37 @@ type vscBlocks struct {
 
 func New(d *vsc.VscDb) VscBlocks {
 	return &vscBlocks{db.NewCollection(d.DbInstance, "block_headers")}
+}
+
+func (blocks *vscBlocks) Init() error {
+	err := blocks.Collection.Init()
+	if err != nil {
+		return err
+	}
+
+	indexModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "slot_height", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}
+
+	// create index on block.block_number for faster queries
+	err = blocks.CreateIndexIfNotExist(indexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create index: %w", err)
+	}
+
+	indexModel = mongo.IndexModel{
+		Keys:    bson.D{{Key: "id", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}
+
+	// create index on block.block_number for faster queries
+	err = blocks.CreateIndexIfNotExist(indexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create index: %w", err)
+	}
+
+	return nil
 }
 
 func (vblks *vscBlocks) StoreHeader(header VscHeaderRecord) {
