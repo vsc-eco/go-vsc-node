@@ -11,6 +11,7 @@ type SetContractArgs struct {
 	Owner          string               `bson:"owner"`
 	TxId           string               `bson:"tx_id"`
 	CreationHeight uint64               `bson:"creation_height"`
+	CreationTs     *string              `bson:"creation_ts,omitempty"`
 	Runtime        wasm_runtime.Runtime `bson:"runtime"`
 }
 
