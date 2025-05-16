@@ -28,8 +28,8 @@ func (e *contracts) Init() error {
 }
 
 // ContractById implements Contracts.
-func (c *contracts) ContractById(contractId string) (SetContractArgs, error) {
-	res := SetContractArgs{}
+func (c *contracts) ContractById(contractId string) (Contract, error) {
+	res := Contract{}
 	filter := bson.M{
 		"id": contractId,
 	}
@@ -42,7 +42,7 @@ func (c *contracts) ContractById(contractId string) (SetContractArgs, error) {
 	return res, err
 }
 
-func (c *contracts) FindContracts(contractId *string, code *string, offset int, limit int) ([]SetContractArgs, error) {
+func (c *contracts) FindContracts(contractId *string, code *string, offset int, limit int) ([]Contract, error) {
 	filters := bson.D{}
 	if contractId != nil {
 		filters = append(filters, bson.E{Key: "id", Value: *contractId})
@@ -53,21 +53,21 @@ func (c *contracts) FindContracts(contractId *string, code *string, offset int, 
 	pipe := hive_blocks.GetAggTimestampPipeline(filters, "creation_height", "creation_ts", offset, limit)
 	cursor, err := c.Aggregate(context.TODO(), pipe)
 	if err != nil {
-		return []SetContractArgs{}, err
+		return []Contract{}, err
 	}
 	defer cursor.Close(context.TODO())
-	var results []SetContractArgs
+	var results []Contract
 	for cursor.Next(context.TODO()) {
-		var elem SetContractArgs
+		var elem Contract
 		if err := cursor.Decode(&elem); err != nil {
-			return []SetContractArgs{}, err
+			return []Contract{}, err
 		}
 		results = append(results, elem)
 	}
 	return results, nil
 }
 
-func (c *contracts) RegisterContract(contractId string, args SetContractArgs) {
+func (c *contracts) RegisterContract(contractId string, args Contract) {
 	findQuery := bson.M{
 		"id": contractId,
 	}

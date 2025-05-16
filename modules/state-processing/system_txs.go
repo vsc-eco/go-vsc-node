@@ -190,7 +190,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		owner = tx.Owner
 	}
 
-	se.contractDb.RegisterContract(id, contracts.SetContractArgs{
+	se.contractDb.RegisterContract(id, contracts.Contract{
 		Code:           tx.Code,
 		Name:           tx.Name,
 		Description:    tx.Description,

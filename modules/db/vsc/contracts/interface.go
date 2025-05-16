@@ -4,9 +4,9 @@ import a "vsc-node/modules/aggregate"
 
 type Contracts interface {
 	a.Plugin
-	RegisterContract(contractId string, args SetContractArgs)
-	ContractById(contractId string) (SetContractArgs, error)
-	FindContracts(contractId *string, code *string, offset int, limit int) ([]SetContractArgs, error)
+	RegisterContract(contractId string, args Contract)
+	ContractById(contractId string) (Contract, error)
+	FindContracts(contractId *string, code *string, offset int, limit int) ([]Contract, error)
 }
 
 type ContractState interface {
