@@ -92,6 +92,16 @@ func (r *balanceRecordResolver) ConsensusUnstaking(ctx context.Context, obj *led
 	return model.Int64(amt), err
 }
 
+// CreationHeight is the resolver for the creation_height field.
+func (r *contractResolver) CreationHeight(ctx context.Context, obj *contracts.Contract) (model.Uint64, error) {
+	return model.Uint64(obj.CreationHeight), nil
+}
+
+// Runtime is the resolver for the runtime field.
+func (r *contractResolver) Runtime(ctx context.Context, obj *contracts.Contract) (string, error) {
+	return obj.Runtime.String(), nil
+}
+
 // AnchoredBlock is the resolver for the anchored_block field.
 func (r *contractOutputResolver) AnchoredBlock(ctx context.Context, obj *contracts.ContractOutput) (*string, error) {
 	panic(fmt.Errorf("not implemented: AnchoredBlock - anchored_block"))
@@ -293,7 +303,7 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 }
 
 // FindContract is the resolver for the findContract field.
-func (r *queryResolver) FindContract(ctx context.Context, filterOptions *FindContractFilter) ([]contracts.SetContractArgs, error) {
+func (r *queryResolver) FindContract(ctx context.Context, filterOptions *FindContractFilter) ([]contracts.Contract, error) {
 	if filterOptions == nil {
 		filterOptions = &FindContractFilter{}
 	}
@@ -422,16 +432,6 @@ func (r *rcRecordResolver) BlockHeight(ctx context.Context, obj *rcDb.RcRecord) 
 	return model.Uint64(obj.BlockHeight), nil
 }
 
-// CreationHeight is the resolver for the creation_height field.
-func (r *setContractArgsResolver) CreationHeight(ctx context.Context, obj *contracts.SetContractArgs) (model.Uint64, error) {
-	return model.Uint64(obj.CreationHeight), nil
-}
-
-// Runtime is the resolver for the runtime field.
-func (r *setContractArgsResolver) Runtime(ctx context.Context, obj *contracts.SetContractArgs) (string, error) {
-	return obj.Runtime.String(), nil
-}
-
 // AnchrHeight is the resolver for the anchr_height field.
 func (r *transactionRecordResolver) AnchrHeight(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
 	return model.Uint64(obj.AnchoredHeight), nil
@@ -488,6 +488,9 @@ func (r *Resolver) ActionRecord() ActionRecordResolver { return &actionRecordRes
 // BalanceRecord returns BalanceRecordResolver implementation.
 func (r *Resolver) BalanceRecord() BalanceRecordResolver { return &balanceRecordResolver{r} }
 
+// Contract returns ContractResolver implementation.
+func (r *Resolver) Contract() ContractResolver { return &contractResolver{r} }
+
 // ContractOutput returns ContractOutputResolver implementation.
 func (r *Resolver) ContractOutput() ContractOutputResolver { return &contractOutputResolver{r} }
 
@@ -515,9 +518,6 @@ func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 // RcRecord returns RcRecordResolver implementation.
 func (r *Resolver) RcRecord() RcRecordResolver { return &rcRecordResolver{r} }
 
-// SetContractArgs returns SetContractArgsResolver implementation.
-func (r *Resolver) SetContractArgs() SetContractArgsResolver { return &setContractArgsResolver{r} }
-
 // TransactionRecord returns TransactionRecordResolver implementation.
 func (r *Resolver) TransactionRecord() TransactionRecordResolver {
 	return &transactionRecordResolver{r}
@@ -531,6 +531,7 @@ func (r *Resolver) WitnessSlot() WitnessSlotResolver { return &witnessSlotResolv
 
 type actionRecordResolver struct{ *Resolver }
 type balanceRecordResolver struct{ *Resolver }
+type contractResolver struct{ *Resolver }
 type contractOutputResolver struct{ *Resolver }
 type contractStateResolver struct{ *Resolver }
 type electionResultResolver struct{ *Resolver }
@@ -540,7 +541,6 @@ type opLogEventResolver struct{ *Resolver }
 type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type rcRecordResolver struct{ *Resolver }
-type setContractArgsResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }

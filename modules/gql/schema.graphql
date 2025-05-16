@@ -1,11 +1,5 @@
 scalar JSON
 
-type Contract {
-  id: String
-  code: String
-  creation_ts: String
-}
-
 enum TransactionStatus {
   UNCONFIRMED
   CONFIRMED
@@ -91,7 +85,7 @@ type ContractState {
   state_merkle: String
 }
 
-type SetContractArgs {
+type Contract {
   id: String!
   code: String
   name: String
@@ -277,7 +271,7 @@ type Query {
   findLedgerActions(filterOptions: LedgerActionsFilter): [ActionRecord!]
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
   getAccountRC(account: String!, height: Uint64): RcRecord
-  findContract(filterOptions: FindContractFilter): [SetContractArgs!]
+  findContract(filterOptions: FindContractFilter): [Contract!]
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(account: String!): NonceRecord
   localNodeInfo: LocalNodeInfo

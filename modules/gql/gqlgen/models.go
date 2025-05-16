@@ -9,12 +9,6 @@ import (
 	"vsc-node/modules/gql/model"
 )
 
-type Contract struct {
-	ID         *string `json:"id,omitempty"`
-	Code       *string `json:"code,omitempty"`
-	CreationTs *string `json:"creation_ts,omitempty"`
-}
-
 type ContractDiff struct {
 	Diff                    *string `json:"diff,omitempty"`
 	PreviousContractStateID string  `json:"previousContractStateId"`
