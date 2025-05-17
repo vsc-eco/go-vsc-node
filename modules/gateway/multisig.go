@@ -497,7 +497,7 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 	balRecord, _ := ms.balanceDb.GetBalanceRecord("system:fr_balance", bh)
 
 	if balRecord != nil {
-		if balRecord.BlockHeight < bh-SYNC_INTERVAL {
+		if balRecord.BlockHeight > bh-SYNC_INTERVAL {
 			return signingPackage{}, errors.New("no sync to process")
 		}
 	}
@@ -556,7 +556,7 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 
 		ops = append(ops, op)
 	} else if (hbdToUnstake > 10_000 || stakedBal < 10_000) && hbdToUnstake != 0 {
-		op := ms.hiveCreator.TransferFromSavings(common.GATEWAY_WALLET, common.GATEWAY_WALLET, hive.AmountToString(hbdToStake), "HBD", "Staking "+hive.AmountToString(hbdToStake)+" HBD", int(bh+1))
+		op := ms.hiveCreator.TransferFromSavings(common.GATEWAY_WALLET, common.GATEWAY_WALLET, hive.AmountToString(hbdToUnstake), "HBD", "Unstaking "+hive.AmountToString(hbdToStake)+" HBD", int(bh+1))
 
 		ops = append(ops, op)
 	}
