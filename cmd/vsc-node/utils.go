@@ -7,7 +7,7 @@ import (
 	"github.com/vsc-eco/hivego"
 )
 
-var MAINNET_CLAIM_START = uint64(95000000)
+var MAINNET_CLAIM_START = uint64(95900000)
 var filter = func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 	if op.Type == "custom_json" {
 		if strings.HasPrefix(op.Value["id"].(string), "vsc.") {

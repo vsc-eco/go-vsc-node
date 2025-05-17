@@ -82,9 +82,15 @@ func main() {
 	hiveRpcClient := hivego.NewHiveRpc(hiveApiUrl.Get().HiveURI)
 
 	filters := []streamer.FilterFunc{filter}
+	//Default filter don't filter anything
+	vFilters := []streamer.VirtualFilterFunc{
+		func(op hivego.VirtualOp) bool {
+			return op.Op.Type == "interest_operation"
+		},
+	}
 
 	stBlock := uint64(94601000)
-	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, nil, &stBlock) // optional starting block #
+	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
 
 	identityConfig := common.NewIdentityConfig()
 
