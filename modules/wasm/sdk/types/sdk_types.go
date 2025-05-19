@@ -45,22 +45,23 @@ func generateCost(name string, fn reflect.Type) uint {
 }
 
 func generateFunctionResult(name string, fn reflect.Type) []wasmedge.ValType {
+	// functions without a return
 	switch name {
+	case "console.log":
+		fallthrough
+	case "db.setObject":
+		fallthrough
 	case "db.delObject":
+		fallthrough
+	case "hive.draw":
+		fallthrough
+	case "hive.transfer":
+		fallthrough
+	case "hive.withdraw":
 		fallthrough
 	case "ic.link":
 		fallthrough
-	case "console.log":
-		fallthrough
-	case "console.logNumber":
-		fallthrough
-	case "console.logUint8Array":
-		fallthrough
 	case "ic.unlink":
-		fallthrough
-	case "console.logBool":
-		fallthrough
-	case "db.setObject":
 		return nil
 	default:
 		// generate result type
