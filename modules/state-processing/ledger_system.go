@@ -66,18 +66,28 @@ func (ls *LedgerSystem) GetBalance(account string, blockHeight uint64, asset str
 	}
 	if asset == "hbd" {
 		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, balRecord.BlockHeight+1, blockHeight, asset, ledgerDb.LedgerOptions{
-			OpType: []string{"unstake"},
+			OpType: []string{"unstake", "deposit"},
 		})
 
-		unstake := int64(0)
+		balAdjust := int64(0)
 
 		for _, v := range *ledgerResults {
-			unstake += v.Amount
+			balAdjust += v.Amount
 		}
 
-		return balRecord.HBD + unstake
+		return balRecord.HBD + balAdjust
 	} else if asset == "hive" {
-		return balRecord.Hive
+		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, balRecord.BlockHeight+1, blockHeight, asset, ledgerDb.LedgerOptions{
+			OpType: []string{"deposit"},
+		})
+
+		balAdjust := int64(0)
+
+		for _, v := range *ledgerResults {
+			balAdjust += v.Amount
+		}
+
+		return balRecord.Hive + balAdjust
 	} else if asset == "hbd_savings" {
 
 		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, balRecord.BlockHeight+1, blockHeight, asset, ledgerDb.LedgerOptions{
@@ -746,18 +756,18 @@ func (le *LedgerExecutor) Deposit(deposit Deposit) string {
 		le.VirtualLedger = make(map[string][]ledgerSystem.LedgerUpdate)
 	}
 
-	ledgerUpdate := ledgerSystem.LedgerUpdate{
-		Id:          deposit.Id,
-		BIdx:        deposit.BIdx,
-		OpIdx:       deposit.OpIdx,
-		BlockHeight: deposit.BlockHeight,
+	// ledgerUpdate := ledgerSystem.LedgerUpdate{
+	// 	Id:          deposit.Id,
+	// 	BIdx:        deposit.BIdx,
+	// 	OpIdx:       deposit.OpIdx,
+	// 	BlockHeight: deposit.BlockHeight,
 
-		Owner:  decodedParams.To,
-		Amount: deposit.Amount,
-		Asset:  deposit.Asset,
-		Type:   "deposit",
-	}
-	le.VirtualLedger[decodedParams.To] = append(le.VirtualLedger[decodedParams.To], ledgerUpdate)
+	// 	Owner:  decodedParams.To,
+	// 	Amount: deposit.Amount,
+	// 	Asset:  deposit.Asset,
+	// 	Type:   "deposit",
+	// }
+	// le.VirtualLedger[decodedParams.To] = append(le.VirtualLedger[decodedParams.To], ledgerUpdate)
 	// le.AppendLedger(ledgerSystem.LedgerUpdate)
 
 	le.Ls.log.Debug("ledgerExecutor", le.VirtualLedger[decodedParams.To])
@@ -1273,6 +1283,7 @@ func (le *LedgerExecutor) SnapshotForAccount(account string, blockHeight uint64,
 	bal := le.Ls.GetBalance(account, blockHeight, asset)
 
 	//le.Ls.log.Debug("getBalance le.VirtualLedger["+account+"]", le.VirtualLedger[account], blockHeight)
+
 	for _, v := range le.VirtualLedger[account] {
 		//Must be ledger ops with height below or equal to the current block height
 		//Current block height ledger ops are recently executed
