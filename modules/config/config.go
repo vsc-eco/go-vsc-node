@@ -22,7 +22,7 @@ type Config[T any] struct {
 	loaded bool
 	value  T
 
-	DataDir string
+	dataDir string
 }
 
 var UseMainConfigDuringTests = false
@@ -38,7 +38,7 @@ func New[T any](defaultValue T, dataDir *string) *Config[T] {
 
 	return &Config[T]{
 		defaultValue: defaultValue,
-		DataDir:      *dataDir,
+		dataDir:      *dataDir,
 	}
 }
 
@@ -75,16 +75,16 @@ func projectRoot() result.Result[string] {
 	return result.Ok(wd)
 }
 
-func (c *Config[T]) filePath() string {
+func (c *Config[T]) FilePath() string {
 	name := reflect.TypeFor[T]().Name()
-	if testing.Testing() && UseMainConfigDuringTests && c.DataDir == CONFIG_DIR {
-		return path.Join(projectRoot().Expect("project root should be easy to find while running a test"), c.DataDir, name+".json")
+	if testing.Testing() && UseMainConfigDuringTests && c.dataDir == CONFIG_DIR {
+		return path.Join(projectRoot().Expect("project root should be easy to find while running a test"), c.dataDir, name+".json")
 	}
-	return path.Join(c.DataDir, name+".json")
+	return path.Join(c.dataDir, name+".json")
 }
 
 func (c *Config[T]) Init() error {
-	f, err := os.Open(c.filePath())
+	f, err := os.Open(c.FilePath())
 	if err != nil {
 		if os.IsNotExist(err) {
 			err = c.Update(func(t *T) {
@@ -130,14 +130,18 @@ func (c *Config[T]) Update(updater func(*T)) error {
 	if err != nil {
 		return err
 	}
-	err = os.MkdirAll(path.Dir(c.filePath()), 0755)
+	err = os.MkdirAll(path.Dir(c.FilePath()), 0755)
 	if err != nil {
 		return err
 	}
-	err = os.WriteFile(c.filePath(), b, 0644)
+	err = os.WriteFile(c.FilePath(), b, 0644)
 	if err != nil {
 		return err
 	}
 	c.value = temp
 	return nil
+}
+
+func (c *Config[T]) DefaultValue() T {
+	return c.defaultValue
 }
