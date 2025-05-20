@@ -47,7 +47,7 @@ var BOOTSTRAP = []string{
 }
 
 type P2PServer struct {
-	witnessDb witnesses.Witnesses
+	witnessDb WitnessGetter
 	conf      common.IdentityConfig
 
 	Host           host.Host
@@ -71,7 +71,11 @@ type P2PServer struct {
 // var _ p.PubSub[peer.ID] = &Libp2p{}
 var _ start_status.Starter = &P2PServer{}
 
-func New(witnessDb witnesses.Witnesses, conf common.IdentityConfig, port ...int) *P2PServer {
+type WitnessGetter interface {
+	GetLastestWitnesses() ([]witnesses.Witness, error)
+}
+
+func New(witnessDb WitnessGetter, conf common.IdentityConfig, port ...int) *P2PServer {
 
 	p := 10720
 	if len(port) > 0 {
