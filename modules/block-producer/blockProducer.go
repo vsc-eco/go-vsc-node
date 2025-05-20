@@ -665,7 +665,7 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 	contractOutputs := make([]vscBlocks.VscBlockTx, 0)
 	for contractId, output := range bp.StateEngine.ContractOutputs {
 		var db datalayer.DataBin
-		if output.Cid != "" {
+		if output.Cid == "" {
 			db = datalayer.NewDataBin(bp.Datalayer)
 		} else {
 			cidz := cid.MustParse(output.Cid)
