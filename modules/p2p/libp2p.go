@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+	"vsc-node/lib/utils"
+	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/witnesses"
 	start_status "vsc-node/modules/start-status"
@@ -29,7 +31,7 @@ import (
 	multiaddr "github.com/multiformats/go-multiaddr"
 	"github.com/robfig/cron/v3"
 
-	rpc "github.com/libp2p/go-libp2p-gorpc"
+	// rpc "github.com/libp2p/go-libp2p-gorpc"
 	// p "vsc-node/lib/pubsub"
 	// "vsc-node/modules/aggregate"
 
@@ -54,25 +56,17 @@ type P2PServer struct {
 	witnessDb WitnessGetter
 	conf      common.IdentityConfig
 
-	host           host.Host
-	dht            *kadDht.IpfsDHT
-	rpcClient      *rpc.Client
-	pubsub         *pubsub.PubSub
-	multicastTopic *pubsub.Topic
-	cron           *cron.Cron
-
-	topics map[string]*pubsub.Topic
-
-	subs    []*pubsub.Subscription
-	tickers []*time.Ticker
+	host   host.Host
+	dht    *kadDht.IpfsDHT
+	pubsub *pubsub.PubSub
+	cron   *cron.Cron
 
 	startStatus start_status.StartStatus
 
 	port int
 }
 
-// var _ aggregate.Plugin = &Libp2p{}
-// var _ p.PubSub[peer.ID] = &Libp2p{}
+var _ aggregate.Plugin = &P2PServer{}
 var _ start_status.Starter = &P2PServer{}
 
 type WitnessGetter interface {
@@ -187,11 +181,6 @@ func (p2pServer *P2PServer) Init() error {
 	p2pServer.dht = idht
 	fmt.Println("peer ID:", p2pServer.PeerInfo().GetPeerId())
 
-	//Setup GORPC server and client
-	var protocolID = protocol.ID("/vsc.network/rpc")
-	rpcServer := rpc.NewServer(routedHost, protocolID)
-	rpcClient := rpc.NewClientWithServer(routedHost, protocolID, rpcServer)
-
 	go func() {
 		cSub, _ := p2pServer.host.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
 		defer cSub.Close()
@@ -204,13 +193,6 @@ func (p2pServer *P2PServer) Init() error {
 
 		}
 	}()
-	svc := &RPCService{
-		p2pService: p2pServer,
-	}
-
-	//Register associated services. It can be more than one, name must be unique
-	rpcServer.RegisterName("witness", svc)
-	p2pServer.rpcClient = rpcClient
 
 	//Setup pubsub
 	ps, err := pubsub.NewGossipSub(ctx, p2p, pubsub.WithDiscovery(drouting.NewRoutingDiscovery(p2pServer.dht)), pubsub.WithPeerExchange(true))
@@ -219,18 +201,6 @@ func (p2pServer *P2PServer) Init() error {
 	}
 
 	p2pServer.pubsub = ps
-
-	topic, _ := ps.Join("/vsc/mainnet/multicast")
-	topic.Relay()
-
-	ps.RegisterTopicValidator("/vsc/mainnet/multicast", func(ctx context.Context, p peer.ID, msg *pubsub.Message) bool { return true })
-
-	p2pServer.multicastTopic = topic
-
-	// reply := HelloReply{}
-	// err := rpcClient.Call(routedHost.ID(), "witness", "HelloWorld", HelloArgs{
-	// 	Msg: "hello world",
-	// }, reply)
 
 	return nil
 }
@@ -247,25 +217,6 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 
 	// err := p2ps.rpcClient.Stream(ctx, p2ps.host.ID(), "witness", "HelloWorld", send, reply)
 
-	ticker := time.NewTicker(5 * time.Second)
-	p := promise.New(func(resolve func(any), reject func(error)) {
-		for {
-			select {
-			case <-ticker.C:
-				// do stuff
-				// peers := p2ps.host.Network().Peers()
-				pubsubPeers := p2ps.multicastTopic.ListPeers()
-				for _, val := range pubsubPeers {
-					protocols, _ := p2ps.host.Network().Peerstore().GetProtocols(val)
-					for _, protoName := range protocols {
-						if protoName == "/vsc.network/rpc" {
-							//Do connection stuff
-						}
-					}
-				}
-			}
-		}
-	})
 	p2ps.cron.AddFunc("@every 5m", func() {
 		p2ps.connectRegisteredPeers()
 	})
@@ -287,12 +238,6 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 	go bootstrapVSCPeers(context.Background(), p2ps)
 	//First startup to try and get connected to the network
 	go p2ps.connectRegisteredPeers()
-
-	p2ps.tickers = append(p2ps.tickers, ticker)
-
-	subscription, _ := p2ps.multicastTopic.Subscribe()
-
-	p2ps.subs = append(p2ps.subs, subscription)
 
 	go func() {
 		time.Sleep(50 * time.Millisecond)
@@ -324,21 +269,12 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 		}
 	}()
 
-	return p
+	return utils.PromiseResolve[any](nil) //FIXME make this wait sub services to close
 }
 
 // Stop implements aggregate.Plugin.
 func (p2p *P2PServer) Stop() error {
-
-	//Clean up remaining pubsub subscriptions
-	for _, value := range p2p.subs {
-		value.Cancel()
-	}
-
-	for _, value := range p2p.tickers {
-		value.Stop()
-	}
-
+	//FIXME make this clean up sub services
 	return nil
 }
 
