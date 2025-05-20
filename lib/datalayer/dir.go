@@ -250,7 +250,7 @@ func (db *DataBin) Save() cid.Cid {
 	db.DataLayer.blockServ.AddBlock(context.Background(), nodeDir)
 	db.DataLayer.bitswap.NotifyNewBlocks(context.Background(), nodeDir)
 
-	db.DataLayer.dht.Provide(context.Background(), nodeDir.Cid(), true)
+	db.DataLayer.p2pService.BroadcastCid(nodeDir.Cid())
 
 	return nodeDir.Cid()
 }

@@ -12,17 +12,21 @@ import (
 	start_status "vsc-node/modules/start-status"
 
 	"github.com/chebyrash/promise"
+	"github.com/ipfs/go-cid"
 	libp2p "github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	kadDht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/event"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/core/routing"
 	rhost "github.com/libp2p/go-libp2p/p2p/host/routed"
+	multiaddr "github.com/multiformats/go-multiaddr"
 	"github.com/robfig/cron/v3"
 
 	rpc "github.com/libp2p/go-libp2p-gorpc"
@@ -50,8 +54,8 @@ type P2PServer struct {
 	witnessDb WitnessGetter
 	conf      common.IdentityConfig
 
-	Host           host.Host
-	Dht            *kadDht.IpfsDHT
+	host           host.Host
+	dht            *kadDht.IpfsDHT
 	rpcClient      *rpc.Client
 	pubsub         *pubsub.PubSub
 	multicastTopic *pubsub.Topic
@@ -95,9 +99,9 @@ var topicNameFlag = "/vsc/mainnet/multicast"
 
 // Finds VSC peers through DHT
 func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
-	h := p2p.Host
+	h := p2p.host
 
-	routingDiscovery := drouting.NewRoutingDiscovery(p2p.Dht)
+	routingDiscovery := drouting.NewRoutingDiscovery(p2p.dht)
 	dutil.Advertise(ctx, routingDiscovery, topicNameFlag)
 
 	// Look for others who have announced and attempt to connect to them
@@ -114,7 +118,7 @@ func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 			if peer.ID == h.ID() {
 				continue // No self connection
 			}
-			p2p.Host.Peerstore().AddAddrs(peer.ID, peer.Addrs, peerstore.ConnectedAddrTTL)
+			p2p.host.Peerstore().AddAddrs(peer.ID, peer.Addrs, peerstore.ConnectedAddrTTL)
 			err := h.Connect(ctx, peer)
 			if err != nil {
 				// fmt.Println("Failed connecting to ", peer.ID.String(), ", error:", err)
@@ -179,8 +183,8 @@ func (p2pServer *P2PServer) Init() error {
 	//DHT wrapped host
 
 	routedHost := rhost.Wrap(p2p, idht)
-	p2pServer.Host = routedHost
-	p2pServer.Dht = idht
+	p2pServer.host = routedHost
+	p2pServer.dht = idht
 	fmt.Println("peer ID:", p2pServer.PeerInfo().GetPeerId())
 
 	//Setup GORPC server and client
@@ -189,7 +193,7 @@ func (p2pServer *P2PServer) Init() error {
 	rpcClient := rpc.NewClientWithServer(routedHost, protocolID, rpcServer)
 
 	go func() {
-		cSub, _ := p2pServer.Host.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
+		cSub, _ := p2pServer.host.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
 		defer cSub.Close()
 
 		select {
@@ -209,7 +213,7 @@ func (p2pServer *P2PServer) Init() error {
 	p2pServer.rpcClient = rpcClient
 
 	//Setup pubsub
-	ps, err := pubsub.NewGossipSub(ctx, p2p, pubsub.WithDiscovery(drouting.NewRoutingDiscovery(p2pServer.Dht)), pubsub.WithPeerExchange(true))
+	ps, err := pubsub.NewGossipSub(ctx, p2p, pubsub.WithDiscovery(drouting.NewRoutingDiscovery(p2pServer.dht)), pubsub.WithPeerExchange(true))
 	if err != nil {
 		return err
 	}
@@ -252,7 +256,7 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 				// peers := p2ps.host.Network().Peers()
 				pubsubPeers := p2ps.multicastTopic.ListPeers()
 				for _, val := range pubsubPeers {
-					protocols, _ := p2ps.Host.Network().Peerstore().GetProtocols(val)
+					protocols, _ := p2ps.host.Network().Peerstore().GetProtocols(val)
 					for _, protoName := range protocols {
 						if protoName == "/vsc.network/rpc" {
 							//Do connection stuff
@@ -275,11 +279,11 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 	for _, peerStr := range BOOTSTRAP {
 		peerId, _ := peer.AddrInfoFromString(peerStr)
 		uniquePeers[peerId.ID.String()] = struct{}{}
-		p2ps.Host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
-		p2ps.Host.Connect(context.Background(), *peerId)
+		p2ps.host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
+		p2ps.host.Connect(context.Background(), *peerId)
 	}
 
-	p2ps.Dht.Bootstrap(context.Background())
+	p2ps.dht.Bootstrap(context.Background())
 	go bootstrapVSCPeers(context.Background(), p2ps)
 	//First startup to try and get connected to the network
 	go p2ps.connectRegisteredPeers()
@@ -294,8 +298,8 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 		time.Sleep(50 * time.Millisecond)
 		for {
 			peerList := ""
-			if len(p2ps.Host.Network().Peers()) > 5 {
-				for idx, peer := range p2ps.Host.Network().Peers() {
+			if len(p2ps.host.Network().Peers()) > 5 {
+				for idx, peer := range p2ps.host.Network().Peers() {
 					if idx >= 4 {
 						break
 					}
@@ -304,13 +308,13 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 					}
 					peerList += peer.String()
 				}
-				peerList += "..." + strconv.Itoa(len(p2ps.Host.Network().Peers())-4) + " more"
+				peerList += "..." + strconv.Itoa(len(p2ps.host.Network().Peers())-4) + " more"
 			} else {
-				for _, peer := range p2ps.Host.Network().Peers() {
+				for _, peer := range p2ps.host.Network().Peers() {
 					peerList += peer.String() + ", "
 				}
 			}
-			peerLen := len(p2ps.Host.Network().Peers())
+			peerLen := len(p2ps.host.Network().Peers())
 			fmt.Println("peers", "["+peerList+"]", "peers.len()="+strconv.Itoa(peerLen))
 			if peerLen >= len(uniquePeers)-1 {
 				p2ps.startStatus.TriggerStart()
@@ -344,6 +348,93 @@ func (p2p *P2PServer) PeerInfo() common.PeerInfoGetter {
 	}
 }
 
+func (p2p *P2PServer) BroadcastCidWithContext(ctx context.Context, cid cid.Cid) error {
+	return p2p.dht.Provide(ctx, cid, true)
+}
+
+func (p2p *P2PServer) BroadcastCid(cid cid.Cid) error {
+	return p2p.BroadcastCidWithContext(p2p.dht.Context(), cid)
+}
+
+// func (p2p *P2PServer) BroadcastCid(cid cid.Cid) error {
+// 	return p2p.Dht.Provide(p2p.Dht.Context(), cid, true)
+// }
+
+// FindProvidersAsync implements routing.ContentDiscovery.
+func (p2pServer *P2PServer) FindProvidersAsync(ctx context.Context, cid cid.Cid, count int) <-chan peer.AddrInfo {
+	return p2pServer.dht.FindProvidersAsync(ctx, cid, count)
+}
+
+// Provide implements provider.Provide.
+func (p2pServer *P2PServer) Provide(ctx context.Context, cid cid.Cid, broadcast bool) error {
+	return p2pServer.dht.Provide(ctx, cid, broadcast)
+}
+
+// Addrs implements host.Host.
+func (p2pServer *P2PServer) Addrs() []multiaddr.Multiaddr {
+	return p2pServer.host.Addrs()
+}
+
+// Close implements host.Host.
+func (p2pServer *P2PServer) Close() error {
+	return p2pServer.host.Close()
+}
+
+// ConnManager implements host.Host.
+func (p2pServer *P2PServer) ConnManager() connmgr.ConnManager {
+	return p2pServer.host.ConnManager()
+}
+
+// Connect implements host.Host.
+func (p2pServer *P2PServer) Connect(ctx context.Context, pi peer.AddrInfo) error {
+	return p2pServer.host.Connect(ctx, pi)
+}
+
+// EventBus implements host.Host.
+func (p2pServer *P2PServer) EventBus() event.Bus {
+	return p2pServer.host.EventBus()
+}
+
+// ID implements host.Host.
+func (p2pServer *P2PServer) ID() peer.ID {
+	return p2pServer.host.ID()
+}
+
+// Mux implements host.Host.
+func (p2pServer *P2PServer) Mux() protocol.Switch {
+	return p2pServer.host.Mux()
+}
+
+// Network implements host.Host.
+func (p2pServer *P2PServer) Network() network.Network {
+	return p2pServer.host.Network()
+}
+
+// NewStream implements host.Host.
+func (p2pServer *P2PServer) NewStream(ctx context.Context, p peer.ID, pids ...protocol.ID) (network.Stream, error) {
+	return p2pServer.host.NewStream(ctx, p, pids...)
+}
+
+// Peerstore implements host.Host.
+func (p2pServer *P2PServer) Peerstore() peerstore.Peerstore {
+	return p2pServer.host.Peerstore()
+}
+
+// RemoveStreamHandler implements host.Host.
+func (p2pServer *P2PServer) RemoveStreamHandler(pid protocol.ID) {
+	p2pServer.host.RemoveStreamHandler(pid)
+}
+
+// SetStreamHandler implements host.Host.
+func (p2pServer *P2PServer) SetStreamHandler(pid protocol.ID, handler network.StreamHandler) {
+	p2pServer.host.SetStreamHandler(pid, handler)
+}
+
+// SetStreamHandlerMatch implements host.Host.
+func (p2pServer *P2PServer) SetStreamHandlerMatch(pid protocol.ID, matcher func(protocol.ID) bool, handler network.StreamHandler) {
+	p2pServer.host.SetStreamHandlerMatch(pid, matcher, handler)
+}
+
 func (p2p *P2PServer) connectRegisteredPeers() {
 	witnesses, _ := p2p.witnessDb.GetLastestWitnesses()
 
@@ -353,31 +444,31 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 		}
 		peerId, _ := peer.AddrInfoFromString("/p2p/" + witness.PeerId)
 
-		for _, peer := range p2p.Host.Network().Peers() {
+		for _, peer := range p2p.host.Network().Peers() {
 			if peer.String() == peerId.ID.String() {
-				p2p.Host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
-				p2p.Host.Connect(context.Background(), *peerId)
+				p2p.host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
+				p2p.host.Connect(context.Background(), *peerId)
 			}
 		}
-		p2p.Host.Connect(context.Background(), *peerId)
+		p2p.host.Connect(context.Background(), *peerId)
 	}
 }
 
 func (p2p *P2PServer) discoverPeers() {
 
-	if len(p2p.Host.Network().Peers()) < 2 {
+	if len(p2p.host.Network().Peers()) < 2 {
 		for _, peerStr := range BOOTSTRAP {
 			peerId, _ := peer.AddrInfoFromString(peerStr)
 
-			p2p.Host.Connect(context.Background(), *peerId)
+			p2p.host.Connect(context.Background(), *peerId)
 		}
 	}
 
 	ctx := context.Background()
 
-	h := p2p.Host
+	h := p2p.host
 
-	routingDiscovery := drouting.NewRoutingDiscovery(p2p.Dht)
+	routingDiscovery := drouting.NewRoutingDiscovery(p2p.dht)
 	dutil.Advertise(ctx, routingDiscovery, topicNameFlag)
 
 	// Look for others who have announced and attempt to connect to them
@@ -391,7 +482,7 @@ func (p2p *P2PServer) discoverPeers() {
 		if peer.ID == h.ID() {
 			continue // No self connection
 		}
-		p2p.Host.Peerstore().AddAddrs(peer.ID, peer.Addrs, peerstore.ConnectedAddrTTL)
+		p2p.host.Peerstore().AddAddrs(peer.ID, peer.Addrs, peerstore.ConnectedAddrTTL)
 		h.Connect(ctx, peer)
 	}
 }

@@ -458,8 +458,8 @@ func TestE2E(t *testing.T) {
 		peerAddrs := make([]string, 0)
 
 		for _, node := range runningNodes {
-			for _, addr := range node.P2P.Host.Addrs() {
-				peerAddrs = append(peerAddrs, addr.String()+"/p2p/"+node.P2P.Host.ID().String())
+			for _, addr := range node.P2P.Addrs() {
+				peerAddrs = append(peerAddrs, addr.String()+"/p2p/"+node.P2P.ID().String())
 			}
 		}
 
@@ -468,7 +468,7 @@ func TestE2E(t *testing.T) {
 				peerId, _ := peer.AddrInfoFromString(peerStr)
 				ctx := context.Background()
 				ctx, _ = context.WithTimeout(ctx, 5*time.Second)
-				node.P2P.Host.Connect(ctx, *peerId)
+				node.P2P.Connect(ctx, *peerId)
 			}
 		}
 	}()

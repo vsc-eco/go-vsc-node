@@ -26,12 +26,9 @@ import (
 	"vsc-node/lib/utils"
 	libp2p "vsc-node/modules/p2p"
 
-	"github.com/libp2p/go-libp2p/core/host"
-
 	goJson "encoding/json"
 
 	dagCbor "github.com/ipfs/go-ipld-cbor"
-	kadDht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/multiformats/go-multicodec"
 	mh "github.com/multiformats/go-multihash"
 
@@ -42,8 +39,6 @@ type DataLayer struct {
 	// a.Plugin
 	p2pService *libp2p.P2PServer
 	bitswap    *bitswap.Bitswap
-	dht        *kadDht.IpfsDHT
-	host       host.Host
 	blockServ  blockservice.BlockService
 	DagServ    format.DAGService
 	Datastore  *badger.Datastore
@@ -85,16 +80,16 @@ func (dl *DataLayer) Init() error {
 
 	var bstore blockstore.Blockstore = blockstore.NewBlockstore(ds)
 
-	bswapnet := network.NewFromIpfsHost(dl.p2pService.Host)
+	bswapnet := network.NewFromIpfsHost(dl.p2pService)
 
 	// Create Bitswap: a new "discovery" parameter, usually the "contentRouter"
 	// which does both discovery and providing.
-	bswap := bitswap.New(ctx, bswapnet, dl.p2pService.Dht, bstore)
+	bswap := bitswap.New(ctx, bswapnet, dl.p2pService, bstore)
 	// A provider system that handles concurrent provides etc. "contentProvider"
 	// is usually the "contentRouter" which does both discovery and providing.
 	// "contentProvider" could be used directly without wrapping, but it is recommended
 	// to do so to provide more efficiently.
-	provider, err := provider.New(ds, provider.Online(dl.p2pService.Dht))
+	provider, err := provider.New(ds, provider.Online(dl.p2pService))
 	if err != nil {
 		panic(err)
 	}
@@ -295,7 +290,7 @@ func (dl *DataLayer) GetRaw(cid cid.Cid) ([]byte, error) {
 func (dl *DataLayer) notify(ctx context.Context, block blocks.Block) {
 	dl.bitswap.NotifyNewBlocks(ctx, block)
 	//We might need to proactively rebroadcast that we are storing a CID
-	dl.p2pService.Dht.Provide(ctx, block.Cid(), true)
+	dl.p2pService.BroadcastCidWithContext(ctx, block.Cid())
 }
 
 type AddPin struct {
@@ -354,8 +349,6 @@ func New(p2pService *libp2p.P2PServer, dbPrefix ...string) *DataLayer {
 	return &DataLayer{
 
 		p2pService: p2pService,
-		host:       p2pService.Host,
-		dht:        p2pService.Dht,
 		dbPrefix:   dbPrefix,
 	}
 }

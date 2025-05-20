@@ -11,15 +11,15 @@ type peerGetter struct {
 }
 
 func (pg *peerGetter) GetPeerId() string {
-	return pg.server.Host.ID().String()
+	return pg.server.host.ID().String()
 }
 
 func (pg *peerGetter) GetPeerAddr() multiaddr.Multiaddr {
-	addrs := pg.server.Host.Addrs()
+	addrs := pg.server.host.Addrs()
 	return addrs[0]
 }
 func (pg *peerGetter) GetPeerAddrs() []multiaddr.Multiaddr {
-	addrs := pg.server.Host.Addrs()
+	addrs := pg.server.host.Addrs()
 	return addrs
 }
 
