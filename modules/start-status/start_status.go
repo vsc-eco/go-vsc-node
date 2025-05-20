@@ -1,6 +1,7 @@
 package start_status
 
 import (
+	"sync"
 	"sync/atomic"
 	"vsc-node/lib/utils"
 
@@ -27,10 +28,14 @@ var _ Starter = &startStatus{}
 
 func New() StartStatus {
 	s := &startStatus{}
+	wg := sync.WaitGroup{}
+	wg.Add(1)
 	s.startPromise = promise.New(func(resolve func(any), reject func(error)) {
 		s.resolvePromise = func() { resolve(nil) }
 		s.rejectPromise = reject
+		wg.Done()
 	})
+	wg.Wait()
 
 	return s
 }
