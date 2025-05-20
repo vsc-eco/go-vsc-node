@@ -12,6 +12,7 @@ type Aggregate struct {
 	cancel      context.CancelFunc
 	plugins     []Plugin
 	startStatus start_status.StartStatus
+	lastPlugin  *promise.Promise[any]
 }
 
 var _ Plugin = &Aggregate{}
@@ -24,6 +25,7 @@ func New(plugins []Plugin) *Aggregate {
 		cancel,
 		plugins,
 		start_status.New(),
+		nil,
 	}
 }
 
@@ -32,7 +34,8 @@ func (a *Aggregate) Run() error {
 		return err
 	}
 
-	if _, err := a.Start().Await(a.ctx); err != nil {
+	running := a.Start()
+	if _, err := a.lastPlugin.Await(a.ctx); err != nil {
 		return err
 	}
 
@@ -40,7 +43,9 @@ func (a *Aggregate) Run() error {
 		return err
 	}
 
-	return nil
+	_, err := running.Await(a.ctx)
+
+	return err
 }
 
 // Started implements start_status.Starter.
@@ -68,6 +73,7 @@ func (a *Aggregate) Start() *promise.Promise[any] {
 			starter.Started().Await(a.ctx)
 		}
 	}
+	a.lastPlugin = promises[len(promises)-1]
 	a.startStatus.TriggerStart()
 	return promise.Then(
 		promise.All(a.ctx, promises...),
