@@ -730,6 +730,8 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			MhLength: -1,
 		}.Sum(dagBytes)
 
+		session.Put(dagBytes, outputId)
+
 		contractOutputs = append(contractOutputs, vscBlocks.VscBlockTx{
 			Id:   outputId.String(),
 			Type: int(common.BlockTypeOutput),
