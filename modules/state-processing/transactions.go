@@ -102,6 +102,11 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 	payload := string(t.Payload)
 
+	// this will pass in unescaped string to the contract if the payload
+	// is a JSON string, and so, in the case of an error (i.e. not a JSON
+	// string), `payload` will be untouched and errors can be ignored
+	json.Unmarshal([]byte(t.Payload), &payload)
+
 	res := result.MapOrElse(
 		se.wasm.Execute(ctx, code, gas*common.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime),
 		func(err error) TxResult {
