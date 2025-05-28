@@ -246,7 +246,10 @@ func (db *DataBin) Cid() cid.Cid {
 
 func (db *DataBin) Save() cid.Cid {
 	db.Leaf.Compact(true)
-	nodeDir, _ := db.Leaf.Dir.GetNode()
+	nodeDir, err := db.Leaf.Dir.GetNode()
+	if err != nil {
+		panic(err)
+	}
 	db.DataLayer.blockServ.AddBlock(context.Background(), nodeDir)
 	db.DataLayer.bitswap.NotifyNewBlocks(context.Background(), nodeDir)
 
