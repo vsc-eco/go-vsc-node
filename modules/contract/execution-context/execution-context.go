@@ -164,6 +164,16 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 	switch key {
 	case "contract_id":
 		return result.Ok(ctx.env.ContractId)
+	case "tx.origin":
+		fallthrough
+	case "msg.sender":
+		if len(ctx.env.RequiredAuths) > 0 {
+			return result.Ok(ctx.env.RequiredAuths[0])
+		}
+		if len(ctx.env.RequiredPostingAuths) > 0 {
+			return result.Ok(ctx.env.RequiredPostingAuths[0])
+		}
+		return result.Err[string](fmt.Errorf("no value for %s", key))
 	case "msg.required_auths":
 		return result.Map(
 			resultWrap(json.Marshal(ctx.env.RequiredAuths)),
