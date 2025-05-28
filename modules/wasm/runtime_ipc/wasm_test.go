@@ -3,6 +3,7 @@ package wasm_runtime_ipc_test
 import (
 	"context"
 	"encoding/hex"
+	"math"
 	"testing"
 	stdio_ipc "vsc-node/lib/stdio-ipc"
 	ipc_client "vsc-node/lib/stdio-ipc/client"
@@ -945,17 +946,43 @@ func (b *Buffer) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-const ioGas = 11
+const ioGas = 4200000000
 
-const goGas = 604
-const asGas = 14655
+const goGas = 704
+
+const asGas = 14845
+
+// const asGas = 1465500000000
 
 func TestGoCompat(t *testing.T) {
 	w := wasm_runtime_ipc.New()
 
 	test_utils.RunPlugin(t, w)
 
-	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, (goGas+ioGas)/common.CYCLE_GAS_PER_RC, nil, nil, nil, nil)
+	stateStore := test_utils.NewInMemoryStateStore()
+
+	key := "_📝_testing_すし_"
+	value := key
+	stateStore.Set(key, []byte(value))
+
+	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(
+		contract_execution_context.Environment{
+			ContractId:           "",
+			BlockHeight:          0,
+			TxId:                 "",
+			BlockId:              "",
+			Index:                0,
+			OpIndex:              0,
+			Timestamp:            "",
+			RequiredAuths:        []string{},
+			RequiredPostingAuths: []string{},
+		},
+		int64(math.Ceil(float64(goGas+ioGas)/common.CYCLE_GAS_PER_RC)),
+		nil,
+		nil,
+		stateStore,
+		map[string]interface{}{},
+	)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(GO_TEST_CODE))
 
 	in := NewBuffer()
@@ -971,7 +998,7 @@ func TestGoCompat(t *testing.T) {
 		}),
 		promise.New(func(resolve func(wasm_runtime_ipc.WasmResultStruct), reject func(error)) {
 			client := ipc_client.RunWithStdio[wasm_runtime_ipc.WasmResultStruct](in, out)
-			resolve(w.ExecuteWithClient(goGas+uint(ioGas), "entrypoint", "testing-123", wasm_runtime.Go, client).MapErr(func(err error) error {
+			resolve(w.ExecuteWithClient(goGas+uint(ioGas), "entrypoint", key, wasm_runtime.Go, client).MapErr(func(err error) error {
 				reject(err)
 				return nil
 			}).Unwrap())
@@ -982,6 +1009,7 @@ func TestGoCompat(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotNil(t, res)
+	assert.Equal(t, value, (*res)[1].Result)
 }
 
 func TestAssemblyScriptCompat(t *testing.T) {
@@ -989,7 +1017,30 @@ func TestAssemblyScriptCompat(t *testing.T) {
 
 	test_utils.RunPlugin(t, w)
 
-	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, (asGas+ioGas)/common.CYCLE_GAS_PER_RC, nil, nil, nil, nil)
+	stateStore := test_utils.NewInMemoryStateStore()
+
+	key := "_📝_testing_すし_"
+	value := key
+	stateStore.Set(key, []byte(value))
+
+	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(
+		contract_execution_context.Environment{
+			ContractId:           "",
+			BlockHeight:          0,
+			TxId:                 "",
+			BlockId:              "",
+			Index:                0,
+			OpIndex:              0,
+			Timestamp:            "",
+			RequiredAuths:        []string{},
+			RequiredPostingAuths: []string{},
+		},
+		int64(math.Ceil(float64(asGas+ioGas)/common.CYCLE_GAS_PER_RC)),
+		nil,
+		nil,
+		stateStore,
+		map[string]interface{}{},
+	)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(ASSEMBLY_SCRIPT_TEST_CODE))
 
 	in := NewBuffer()
@@ -1005,20 +1056,23 @@ func TestAssemblyScriptCompat(t *testing.T) {
 		}),
 		promise.New(func(resolve func(wasm_runtime_ipc.WasmResultStruct), reject func(error)) {
 			client := ipc_client.RunWithStdio[wasm_runtime_ipc.WasmResultStruct](in, out)
-			resolve(w.ExecuteWithClient(asGas+uint(ioGas), "main", "testing-123", wasm_runtime.AssemblyScript, client).MapErr(func(err error) error {
+			resolve(w.ExecuteWithClient(asGas+uint(ioGas), "main", key, wasm_runtime.AssemblyScript, client).MapErr(func(err error) error {
 				reject(err)
 				return nil
 			}).Unwrap())
 		}),
 	).Await(ctx)
 
-	assert.Equal(t, 11, ctxValue.IOGas())
+	assert.Equal(t, ioGas, ctxValue.IOGas())
 
 	assert.NoError(t, err)
 	assert.NotNil(t, res)
+	assert.Equal(t, value, (*res)[1].Result)
 }
 
+// B/op / ns/op * 1_000_000_000ns/sec
 // i5 8250U => 1.46 billion gas per sec
+// i5 12400 => 6.03 billion gas per sec
 func BenchmarkInstructionsPerSecond(b *testing.B) {
 	tests := []struct {
 		code       []byte
@@ -1046,7 +1100,30 @@ func BenchmarkInstructionsPerSecond(b *testing.B) {
 
 			test_utils.RunPlugin(b, w)
 
-			var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, int64(test.maxGas+ioGas)/common.CYCLE_GAS_PER_RC, nil, nil, nil, nil)
+			stateStore := test_utils.NewInMemoryStateStore()
+
+			key := "_📝_testing_すし_"
+			value := key
+			stateStore.Set(key, []byte(value))
+
+			var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(
+				contract_execution_context.Environment{
+					ContractId:           "",
+					BlockHeight:          0,
+					TxId:                 "",
+					BlockId:              "",
+					Index:                0,
+					OpIndex:              0,
+					Timestamp:            "",
+					RequiredAuths:        []string{},
+					RequiredPostingAuths: []string{},
+				},
+				int64(math.Ceil(float64(goGas+ioGas)/common.CYCLE_GAS_PER_RC)),
+				nil,
+				nil,
+				stateStore,
+				map[string]interface{}{},
+			)
 			ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(test.code))
 
 			in := NewBuffer()
@@ -1062,7 +1139,7 @@ func BenchmarkInstructionsPerSecond(b *testing.B) {
 				}),
 				promise.New(func(resolve func(wasm_runtime_ipc.WasmResultStruct), reject func(error)) {
 					client := ipc_client.RunWithStdio[wasm_runtime_ipc.WasmResultStruct](in, out)
-					resolve(w.ExecuteWithClient(test.maxGas+uint(ioGas), test.entrypoint, "testing-123", test.runtime, client).MapErr(func(err error) error {
+					resolve(w.ExecuteWithClient(test.maxGas+uint(ioGas), test.entrypoint, key, test.runtime, client).MapErr(func(err error) error {
 						reject(err)
 						return nil
 					}).Unwrap())
@@ -4389,11 +4466,31 @@ var SDK_TEST_CODE = []byte{
 const sdkGas = 1_000_000
 
 func TestSdkCompat(t *testing.T) {
+	ioGas := 23900000000
 	w := wasm_runtime_ipc.New()
 
 	test_utils.RunPlugin(t, w)
 
-	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(contract_execution_context.Environment{}, (sdkGas+ioGas)/common.CYCLE_GAS_PER_RC, nil, nil, nil, nil)
+	stateStore := test_utils.NewInMemoryStateStore()
+
+	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(
+		contract_execution_context.Environment{
+			ContractId:           "",
+			BlockHeight:          0,
+			TxId:                 "",
+			BlockId:              "",
+			Index:                0,
+			OpIndex:              0,
+			Timestamp:            "",
+			RequiredAuths:        []string{},
+			RequiredPostingAuths: []string{},
+		},
+		int64(math.Ceil(float64(sdkGas+ioGas)/common.CYCLE_GAS_PER_RC)),
+		nil,
+		nil,
+		stateStore,
+		map[string]interface{}{},
+	)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(SDK_TEST_CODE_2))
 
 	in := NewBuffer()
@@ -4423,10 +4520,14 @@ func TestSdkCompat(t *testing.T) {
 		}),
 	).Await(ctx)
 
-	assert.Equal(t, 11, ctxValue.IOGas())
+	assert.Equal(t, "dbValue", string(stateStore.Get("dbKey")))
 
 	assert.NoError(t, err)
 	assert.NotNil(t, res)
+	assert.True(t, (*res)[1].Error)
+	assert.Equal(t, "INVALID_CALL", (*res)[1].Result)
+	assert.Equal(t, ioGas, ctxValue.IOGas())
+
 }
 
 /*
