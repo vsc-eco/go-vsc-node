@@ -19,7 +19,7 @@ func (s *Session) Commit() []cid.Cid {
 		})
 		out = append(out, block.cid)
 	}
-	return nil
+	return out
 }
 
 func (s *Session) Put(bytes []byte, cid cid.Cid) {
