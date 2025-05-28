@@ -26,7 +26,7 @@ func New(dl *datalayer.DataLayer) *ContractSession {
 // Longer term this should allow for getting from multiple contracts
 // This just does the only contract here
 func (cs *ContractSession) GetStateStore(contractId ...string) *StateStore {
-	ss := NewStateStore(cs.dl, cs.stateMerkle, cs)
+	ss := NewStateStore(cs.dl, cs.stateMerkle, cs, cs.cache)
 	return &ss
 	// if cs.stateSesions[contractId] != nil {
 	// 	txOutput := cs.stateEngine.VirtualOutputs[contractId]
@@ -112,12 +112,12 @@ func (ss *StateStore) Commit() {
 	ss.cs.cache = ss.cache
 }
 
-func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) StateStore {
+func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession, cache map[string][]byte) StateStore {
 	if cids == "" {
 		databin := datalayer.NewDataBin(dl)
 
 		return StateStore{
-			cache:     make(map[string][]byte),
+			cache:     cache,
 			datalayer: dl,
 			databin:   &databin,
 			cs:        cs,
@@ -127,7 +127,7 @@ func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) St
 		databin := datalayer.NewDataBinFromCid(dl, cidz)
 
 		return StateStore{
-			cache:     make(map[string][]byte),
+			cache:     cache,
 			datalayer: dl,
 			databin:   &databin,
 			cs:        cs,
