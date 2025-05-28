@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"vsc-node/modules/common"
-	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	ledgerSystem "vsc-node/modules/ledger-system"
 
@@ -17,7 +16,7 @@ type contractExecutionContext struct {
 	ledger      ledgerSystem.LedgerSession
 	env         Environment
 	rcLimit     int64
-	storage     *contract_session.StateStore
+	storage     StateStore
 	currentSize int
 	maxSize     int
 
@@ -31,6 +30,12 @@ type contractExecutionContext struct {
 }
 
 type ContractExecutionContext = *contractExecutionContext
+
+type StateStore interface {
+	Get(key string) []byte
+	Set(key string, value []byte)
+	Delete(key string)
+}
 
 type Environment struct {
 	ContractId           string
@@ -46,7 +51,14 @@ type Environment struct {
 
 // var _ wasm_context.ExecContextValue = &contractExecutionContext{}
 
-func New(env Environment, rcLimit int64, intents []contracts.Intent, ledger ledgerSystem.LedgerSession, storage *contract_session.StateStore, interalStorage map[string]interface{}) ContractExecutionContext {
+func New(
+	env Environment,
+	rcLimit int64,
+	intents []contracts.Intent,
+	ledger ledgerSystem.LedgerSession,
+	storage StateStore,
+	interalStorage map[string]interface{},
+) ContractExecutionContext {
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
 	for _, intent := range intents {
