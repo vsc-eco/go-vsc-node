@@ -684,6 +684,12 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 				}
 				session.Put(value, cidz)
 
+				//Required to prevent self blocking due to datalayer accessing the DS.
+				//Temp fix, long term create a "databin" session that uses the underlying datalayer session
+				bp.Datalayer.PutRaw(value, datalayer.PutRawOptions{
+					Codec: multicodec.Raw,
+				})
+
 				db.Set(key, cidz)
 			}
 		}
