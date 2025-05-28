@@ -134,7 +134,13 @@ func assemblyScriptReadString(memory *wasmedge.Memory, ptr int32) result.Result[
 			},
 		),
 		func(b []byte) result.Result[string] {
-			return resultWrap(decodeUtf16(b, binary.LittleEndian))
+			return result.Map(
+				resultWrap(decodeUtf16(b, binary.LittleEndian)),
+				func(s string) string {
+					size := len(b) / 2
+					return s[:size]
+				},
+			)
 		},
 	)
 }
