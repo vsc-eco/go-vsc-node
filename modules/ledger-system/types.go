@@ -18,18 +18,18 @@ type LedgerUpdate struct {
 }
 
 type OpLogEvent struct {
-	To     string `json:"to"`
-	From   string `json:"fr"`
-	Amount int64  `json:"am"`
-	Asset  string `json:"as"`
-	Memo   string `json:"mo"`
-	Type   string `json:"ty"`
+	To     string `json:"to" bson:"to"`
+	From   string `json:"fr" bson:"from"`
+	Amount int64  `json:"am" bson:"amount"`
+	Asset  string `json:"as" bson:"asset"`
+	Memo   string `json:"mo" bson:"memo"`
+	Type   string `json:"ty" bson:"type"`
 
 	//Not parted of compiled state
-	Id          string `json:"id"`
-	BIdx        int64  `json:"-"`
-	OpIdx       int64  `json:"-"`
-	BlockHeight uint64 `json:"-"`
+	Id          string `json:"id" bson:"id"`
+	BIdx        int64  `json:"-" bson:"-"`
+	OpIdx       int64  `json:"-" bson:"-"`
+	BlockHeight uint64 `json:"-" bson:"-"`
 
 	//Fee for instant stake unstake
 	// Fee int64 `json:"fee,omitempty"`

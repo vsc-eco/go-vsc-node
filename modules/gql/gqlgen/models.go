@@ -36,6 +36,17 @@ type Gas struct {
 	Io *int `json:"IO,omitempty"`
 }
 
+type LedgerAction struct {
+	ID     *string       `json:"id,omitempty"`
+	Status *string       `json:"status,omitempty"`
+	Type   *string       `json:"type,omitempty"`
+	Data   model.Map     `json:"data,omitempty"`
+	Asset  *string       `json:"asset,omitempty"`
+	Amount *model.Uint64 `json:"amount,omitempty"`
+	Memo   *string       `json:"memo,omitempty"`
+	To     *string       `json:"to,omitempty"`
+}
+
 type LedgerActionsFilter struct {
 	ByTxID     *string         `json:"byTxId,omitempty"`
 	ByActionID *string         `json:"byActionId,omitempty"`
@@ -83,7 +94,7 @@ type TransactionFilter struct {
 	ByAccount      *string                         `json:"byAccount,omitempty"`
 	ByContract     *string                         `json:"byContract,omitempty"`
 	ByStatus       *transactions.TransactionStatus `json:"byStatus,omitempty"`
-	ByType         *string                         `json:"byType,omitempty"`
+	ByType         []string                        `json:"byType,omitempty"`
 	ByLedgerToFrom *string                         `json:"byLedgerToFrom,omitempty"`
 	ByLedgerTypes  []string                        `json:"byLedgerTypes,omitempty"`
 	Offset         *int                            `json:"offset,omitempty"`

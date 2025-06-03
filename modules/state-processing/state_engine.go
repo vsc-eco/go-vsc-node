@@ -504,30 +504,49 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					depositPayload["memo"] = depositMemo
 					depositPayload["type"] = "deposit"
 
-					// ingest into transaction_pool
-					se.txDb.Ingest(transactions.IngestTransactionUpdate{
-						Id:             tx.TransactionID,
-						RequiredAuths:  []string{depositedFrom},
-						Status:         "CONFIRMED",
-						Type:           "hive",
-						Tx:             depositPayload,
-						AnchoredBlock:  &block.BlockID,
-						AnchoredHeight: &block.BlockNumber,
-						AnchoredOpIdx:  &leDeposit.OpIdx,
-						AnchoredIndex:  &leDeposit.BIdx,
-						Ledger: []ledgerSystem.OpLogEvent{{
-							Id:          MakeTxId(tx.TransactionID, opIndex),
-							To:          depositedTo,
-							From:        depositedFrom,
-							Amount:      amt,
-							Asset:       token,
-							Memo:        depositMemo,
-							Type:        "deposit",
-							BIdx:        leDeposit.BIdx,
-							OpIdx:       leDeposit.OpIdx,
-							BlockHeight: block.BlockNumber,
-						}},
+					txSelf := TxSelf{
+						TxId:                 tx.TransactionID,
+						BlockHeight:          blockInfo.BlockHeight,
+						BlockId:              blockInfo.BlockId,
+						Timestamp:            blockInfo.Timestamp,
+						Index:                tx.Index,
+						OpIndex:              opIndex,
+						RequiredAuths:        []string{},
+						RequiredPostingAuths: []string{},
+					}
+					opList = append(opList, TxDeposit{
+						Self:   txSelf,
+						From:   depositedFrom,
+						To:     depositedTo,
+						Amount: amt,
+						Asset:  token,
+						Memo:   depositMemo,
 					})
+
+					// ingest into transaction_pool
+					// se.txDb.Ingest(transactions.IngestTransactionUpdate{
+					// 	Id:             tx.TransactionID,
+					// 	RequiredAuths:  []string{depositedFrom},
+					// 	Status:         "CONFIRMED",
+					// 	Type:           "hive",
+					// 	Tx:             transact,
+					// 	AnchoredBlock:  &block.BlockID,
+					// 	AnchoredHeight: &block.BlockNumber,
+					// 	AnchoredOpIdx:  &leDeposit.OpIdx,
+					// 	AnchoredIndex:  &leDeposit.BIdx,
+					// 	Ledger: []ledgerSystem.OpLogEvent{{
+					// 		Id:          MakeTxId(tx.TransactionID, opIndex),
+					// 		To:          depositedTo,
+					// 		From:        depositedFrom,
+					// 		Amount:      amt,
+					// 		Asset:       token,
+					// 		Memo:        depositMemo,
+					// 		Type:        "deposit",
+					// 		BIdx:        leDeposit.BIdx,
+					// 		OpIdx:       leDeposit.OpIdx,
+					// 		BlockHeight: block.BlockNumber,
+					// 	}},
+					// })
 				}
 			}
 			//# End parsing gateway transfer operations
@@ -631,26 +650,49 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				TxId: tx.TransactionID,
 				Ops:  opList,
 			})
+
+			self := opList[0].TxSelf()
+
+			opDataList := make([]transactions.TransactionOperation, 0)
+			opTypesSet := make(map[string]bool)
 			for _, vscTx := range opList {
 				txData := vscTx.ToData()
-				txData["type"] = vscTx.Type()
-				fmt.Println("Ingesting Hive tx")
 
-				opIdx := int64(vscTx.TxSelf().OpIndex)
-				blkIdx := int64(vscTx.TxSelf().Index)
-				se.txDb.Ingest(transactions.IngestTransactionUpdate{
-					Id:             vscTx.TxSelf().TxId,
-					RequiredAuths:  vscTx.TxSelf().RequiredAuths,
-					Status:         "INCLUDED",
-					Type:           "hive",
-					Tx:             txData,
-					AnchoredBlock:  &block.BlockID,
-					AnchoredHeight: &block.BlockNumber,
-					AnchoredOpIdx:  &opIdx,
-					AnchoredIndex:  &blkIdx,
-					Ledger:         make([]ledgerSystem.OpLogEvent, 0),
+				opDataList = append(opDataList, transactions.TransactionOperation{
+					RequiredAuths: vscTx.TxSelf().RequiredAuths,
+					Type:          vscTx.Type(),
+					Idx:           int64(vscTx.TxSelf().OpIndex),
+					Data:          txData,
 				})
+				opTypesSet[vscTx.Type()] = true
 			}
+
+			opTypes := make([]string, 0)
+
+			for k := range opTypesSet {
+				opTypes = append(opTypes, k)
+			}
+
+			var defaultStatus string
+			if slices.Contains(opTypes, "deposit") && len(opTypes) == 1 {
+				defaultStatus = "CONFIRMED"
+			} else {
+				defaultStatus = "INCLUDED"
+			}
+
+			blkIdx := int64(self.Index)
+			se.txDb.Ingest(transactions.IngestTransactionUpdate{
+				Id:             self.TxId,
+				RequiredAuths:  self.RequiredAuths,
+				Status:         defaultStatus,
+				Type:           "hive",
+				OpTypes:        opTypes,
+				Ops:            opDataList,
+				AnchoredBlock:  &block.BlockID,
+				AnchoredHeight: &block.BlockNumber,
+				AnchoredIndex:  &blkIdx,
+				Ledger:         make([]ledgerSystem.OpLogEvent, 0),
+			})
 		}
 	}
 
@@ -707,9 +749,17 @@ func (se *StateEngine) ExecuteBatch() {
 			contractSessions[k] = sess
 		}
 
+		//Forced ledger operations that is produced irrespective of the output result.
+		//For example, deposit operations.
+		// forcedLedger := make([]ledgerSystem.OpLogEvent, 0)
 		logs := make([]string, 0)
 		ok := true
 		for idx, vscTx := range tx.Ops {
+			// if vscTx.Type() == "deposit" {
+			// 	fOplog := vscTx.(TxDeposit).ToLedger()
+			// 	forcedLedger = append(forcedLedger, fOplog...)
+			// 	continue
+			// }
 			if se.firstTxHeight == 0 {
 				se.firstTxHeight = vscTx.TxSelf().BlockHeight - 1
 			}

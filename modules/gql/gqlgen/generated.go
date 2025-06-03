@@ -60,6 +60,7 @@ type ResolverRoot interface {
 	PostingJsonKeys() PostingJsonKeysResolver
 	Query() QueryResolver
 	RcRecord() RcRecordResolver
+	TransactionOperation() TransactionOperationResolver
 	TransactionRecord() TransactionRecordResolver
 	Witness() WitnessResolver
 	WitnessSlot() WitnessSlotResolver
@@ -163,6 +164,17 @@ type ComplexityRoot struct {
 		Io func(childComplexity int) int
 	}
 
+	LedgerAction struct {
+		Amount func(childComplexity int) int
+		Asset  func(childComplexity int) int
+		Data   func(childComplexity int) int
+		ID     func(childComplexity int) int
+		Memo   func(childComplexity int) int
+		Status func(childComplexity int) int
+		To     func(childComplexity int) int
+		Type   func(childComplexity int) int
+	}
+
 	LedgerRecord struct {
 		Amount      func(childComplexity int) int
 		Asset       func(childComplexity int) int
@@ -238,6 +250,13 @@ type ComplexityRoot struct {
 		Payload    func(childComplexity int) int
 	}
 
+	TransactionOperation struct {
+		Data          func(childComplexity int) int
+		Index         func(childComplexity int) int
+		RequiredAuths func(childComplexity int) int
+		Type          func(childComplexity int) int
+	}
+
 	TransactionOutput struct {
 		ID    func(childComplexity int) int
 		Index func(childComplexity int) int
@@ -246,17 +265,17 @@ type ComplexityRoot struct {
 	TransactionRecord struct {
 		AnchrHeight   func(childComplexity int) int
 		AnchrIndex    func(childComplexity int) int
-		AnchrOpidx    func(childComplexity int) int
 		AnchrTs       func(childComplexity int) int
-		Data          func(childComplexity int) int
 		FirstSeen     func(childComplexity int) int
 		Id            func(childComplexity int) int
 		Ledger        func(childComplexity int) int
+		LedgerActions func(childComplexity int) int
 		Nonce         func(childComplexity int) int
+		OpTypes       func(childComplexity int) int
+		Ops           func(childComplexity int) int
 		RcLimit       func(childComplexity int) int
 		RequiredAuths func(childComplexity int) int
 		Status        func(childComplexity int) int
-		TxId          func(childComplexity int) int
 		Type          func(childComplexity int) int
 	}
 
@@ -376,16 +395,19 @@ type RcRecordResolver interface {
 	Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error)
 	BlockHeight(ctx context.Context, obj *rcDb.RcRecord) (model.Uint64, error)
 }
+type TransactionOperationResolver interface {
+	Index(ctx context.Context, obj *transactions.TransactionOperation) (model.Uint64, error)
+	Data(ctx context.Context, obj *transactions.TransactionOperation) (model.Map, error)
+}
 type TransactionRecordResolver interface {
 	AnchrHeight(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
 	AnchrIndex(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
-	AnchrOpidx(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
 	AnchrTs(ctx context.Context, obj *transactions.TransactionRecord) (string, error)
-
-	Data(ctx context.Context, obj *transactions.TransactionRecord) (model.Map, error)
 
 	Nonce(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
 	RcLimit(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
+
+	LedgerActions(ctx context.Context, obj *transactions.TransactionRecord) ([]*LedgerAction, error)
 }
 type WitnessResolver interface {
 	Height(ctx context.Context, obj *witnesses.Witness) (model.Uint64, error)
@@ -878,6 +900,62 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Gas.Io(childComplexity), true
 
+	case "LedgerAction.amount":
+		if e.complexity.LedgerAction.Amount == nil {
+			break
+		}
+
+		return e.complexity.LedgerAction.Amount(childComplexity), true
+
+	case "LedgerAction.asset":
+		if e.complexity.LedgerAction.Asset == nil {
+			break
+		}
+
+		return e.complexity.LedgerAction.Asset(childComplexity), true
+
+	case "LedgerAction.data":
+		if e.complexity.LedgerAction.Data == nil {
+			break
+		}
+
+		return e.complexity.LedgerAction.Data(childComplexity), true
+
+	case "LedgerAction.id":
+		if e.complexity.LedgerAction.ID == nil {
+			break
+		}
+
+		return e.complexity.LedgerAction.ID(childComplexity), true
+
+	case "LedgerAction.memo":
+		if e.complexity.LedgerAction.Memo == nil {
+			break
+		}
+
+		return e.complexity.LedgerAction.Memo(childComplexity), true
+
+	case "LedgerAction.status":
+		if e.complexity.LedgerAction.Status == nil {
+			break
+		}
+
+		return e.complexity.LedgerAction.Status(childComplexity), true
+
+	case "LedgerAction.to":
+		if e.complexity.LedgerAction.To == nil {
+			break
+		}
+
+		return e.complexity.LedgerAction.To(childComplexity), true
+
+	case "LedgerAction.type":
+		if e.complexity.LedgerAction.Type == nil {
+			break
+		}
+
+		return e.complexity.LedgerAction.Type(childComplexity), true
+
 	case "LedgerRecord.amount":
 		if e.complexity.LedgerRecord.Amount == nil {
 			break
@@ -1325,6 +1403,34 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.TransactionData.Payload(childComplexity), true
 
+	case "TransactionOperation.data":
+		if e.complexity.TransactionOperation.Data == nil {
+			break
+		}
+
+		return e.complexity.TransactionOperation.Data(childComplexity), true
+
+	case "TransactionOperation.index":
+		if e.complexity.TransactionOperation.Index == nil {
+			break
+		}
+
+		return e.complexity.TransactionOperation.Index(childComplexity), true
+
+	case "TransactionOperation.required_auths":
+		if e.complexity.TransactionOperation.RequiredAuths == nil {
+			break
+		}
+
+		return e.complexity.TransactionOperation.RequiredAuths(childComplexity), true
+
+	case "TransactionOperation.type":
+		if e.complexity.TransactionOperation.Type == nil {
+			break
+		}
+
+		return e.complexity.TransactionOperation.Type(childComplexity), true
+
 	case "TransactionOutput.id":
 		if e.complexity.TransactionOutput.ID == nil {
 			break
@@ -1353,26 +1459,12 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.TransactionRecord.AnchrIndex(childComplexity), true
 
-	case "TransactionRecord.anchr_opidx":
-		if e.complexity.TransactionRecord.AnchrOpidx == nil {
-			break
-		}
-
-		return e.complexity.TransactionRecord.AnchrOpidx(childComplexity), true
-
 	case "TransactionRecord.anchr_ts":
 		if e.complexity.TransactionRecord.AnchrTs == nil {
 			break
 		}
 
 		return e.complexity.TransactionRecord.AnchrTs(childComplexity), true
-
-	case "TransactionRecord.data":
-		if e.complexity.TransactionRecord.Data == nil {
-			break
-		}
-
-		return e.complexity.TransactionRecord.Data(childComplexity), true
 
 	case "TransactionRecord.first_seen":
 		if e.complexity.TransactionRecord.FirstSeen == nil {
@@ -1395,12 +1487,33 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.TransactionRecord.Ledger(childComplexity), true
 
+	case "TransactionRecord.ledger_actions":
+		if e.complexity.TransactionRecord.LedgerActions == nil {
+			break
+		}
+
+		return e.complexity.TransactionRecord.LedgerActions(childComplexity), true
+
 	case "TransactionRecord.nonce":
 		if e.complexity.TransactionRecord.Nonce == nil {
 			break
 		}
 
 		return e.complexity.TransactionRecord.Nonce(childComplexity), true
+
+	case "TransactionRecord.op_types":
+		if e.complexity.TransactionRecord.OpTypes == nil {
+			break
+		}
+
+		return e.complexity.TransactionRecord.OpTypes(childComplexity), true
+
+	case "TransactionRecord.ops":
+		if e.complexity.TransactionRecord.Ops == nil {
+			break
+		}
+
+		return e.complexity.TransactionRecord.Ops(childComplexity), true
 
 	case "TransactionRecord.rc_limit":
 		if e.complexity.TransactionRecord.RcLimit == nil {
@@ -1422,13 +1535,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.TransactionRecord.Status(childComplexity), true
-
-	case "TransactionRecord.tx_id":
-		if e.complexity.TransactionRecord.TxId == nil {
-			break
-		}
-
-		return e.complexity.TransactionRecord.TxId(childComplexity), true
 
 	case "TransactionRecord.type":
 		if e.complexity.TransactionRecord.Type == nil {
@@ -1658,17 +1764,35 @@ type TransactionRecord {
   id: String!
   anchr_height: Uint64!
   anchr_index: Uint64!
-  anchr_opidx: Uint64!
   anchr_ts: String!
   type: String!
-  tx_id: String!
-  data: Map
+  ops: [TransactionOperation]
+  op_types: [String!]
   first_seen: DateTime!
   nonce: Uint64!
   rc_limit: Uint64!
   required_auths: [String!]
   status: String!
   ledger: [OpLogEvent!]
+  ledger_actions: [LedgerAction]
+}
+
+type TransactionOperation {
+  required_auths: [String!]
+  type: String
+  index: Uint64!
+  data: Map
+}
+
+type LedgerAction {
+  id: String
+  status: String
+  type: String
+  data: Map
+  asset: String
+  amount: Uint64
+  memo: String
+  to: String
 }
 
 type OpLogEvent {
@@ -1877,7 +2001,7 @@ input TransactionFilter {
   byAccount: String
   byContract: String
   byStatus: TransactionStatus
-  byType: String
+  byType: [String!]
   byLedgerToFrom: String
   byLedgerTypes: [String!]
   offset: Int
@@ -5460,6 +5584,334 @@ func (ec *executionContext) fieldContext_Gas_IO(_ context.Context, field graphql
 	return fc, nil
 }
 
+func (ec *executionContext) _LedgerAction_id(ctx context.Context, field graphql.CollectedField, obj *LedgerAction) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerAction_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_LedgerAction_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "LedgerAction",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _LedgerAction_status(ctx context.Context, field graphql.CollectedField, obj *LedgerAction) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerAction_status(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Status, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_LedgerAction_status(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "LedgerAction",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _LedgerAction_type(ctx context.Context, field graphql.CollectedField, obj *LedgerAction) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerAction_type(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Type, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_LedgerAction_type(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "LedgerAction",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _LedgerAction_data(ctx context.Context, field graphql.CollectedField, obj *LedgerAction) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerAction_data(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Data, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(model.Map)
+	fc.Result = res
+	return ec.marshalOMap2vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐMap(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_LedgerAction_data(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "LedgerAction",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Map does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _LedgerAction_asset(ctx context.Context, field graphql.CollectedField, obj *LedgerAction) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerAction_asset(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Asset, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_LedgerAction_asset(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "LedgerAction",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _LedgerAction_amount(ctx context.Context, field graphql.CollectedField, obj *LedgerAction) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerAction_amount(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Amount, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.Uint64)
+	fc.Result = res
+	return ec.marshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_LedgerAction_amount(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "LedgerAction",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _LedgerAction_memo(ctx context.Context, field graphql.CollectedField, obj *LedgerAction) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerAction_memo(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Memo, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_LedgerAction_memo(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "LedgerAction",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _LedgerAction_to(ctx context.Context, field graphql.CollectedField, obj *LedgerAction) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_LedgerAction_to(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.To, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_LedgerAction_to(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "LedgerAction",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _LedgerRecord_id(ctx context.Context, field graphql.CollectedField, obj *ledgerDb.LedgerRecord) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_LedgerRecord_id(ctx, field)
 	if err != nil {
@@ -6709,16 +7161,14 @@ func (ec *executionContext) fieldContext_Query_findTransaction(ctx context.Conte
 				return ec.fieldContext_TransactionRecord_anchr_height(ctx, field)
 			case "anchr_index":
 				return ec.fieldContext_TransactionRecord_anchr_index(ctx, field)
-			case "anchr_opidx":
-				return ec.fieldContext_TransactionRecord_anchr_opidx(ctx, field)
 			case "anchr_ts":
 				return ec.fieldContext_TransactionRecord_anchr_ts(ctx, field)
 			case "type":
 				return ec.fieldContext_TransactionRecord_type(ctx, field)
-			case "tx_id":
-				return ec.fieldContext_TransactionRecord_tx_id(ctx, field)
-			case "data":
-				return ec.fieldContext_TransactionRecord_data(ctx, field)
+			case "ops":
+				return ec.fieldContext_TransactionRecord_ops(ctx, field)
+			case "op_types":
+				return ec.fieldContext_TransactionRecord_op_types(ctx, field)
 			case "first_seen":
 				return ec.fieldContext_TransactionRecord_first_seen(ctx, field)
 			case "nonce":
@@ -6731,6 +7181,8 @@ func (ec *executionContext) fieldContext_Query_findTransaction(ctx context.Conte
 				return ec.fieldContext_TransactionRecord_status(ctx, field)
 			case "ledger":
 				return ec.fieldContext_TransactionRecord_ledger(ctx, field)
+			case "ledger_actions":
+				return ec.fieldContext_TransactionRecord_ledger_actions(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type TransactionRecord", field.Name)
 		},
@@ -8241,6 +8693,173 @@ func (ec *executionContext) fieldContext_TransactionData_contract_id(_ context.C
 	return fc, nil
 }
 
+func (ec *executionContext) _TransactionOperation_required_auths(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionOperation) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_TransactionOperation_required_auths(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RequiredAuths, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.([]string)
+	fc.Result = res
+	return ec.marshalOString2ᚕstringᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_TransactionOperation_required_auths(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TransactionOperation",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TransactionOperation_type(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionOperation) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_TransactionOperation_type(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Type, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalOString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_TransactionOperation_type(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TransactionOperation",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TransactionOperation_index(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionOperation) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_TransactionOperation_index(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.TransactionOperation().Index(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_TransactionOperation_index(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TransactionOperation",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TransactionOperation_data(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionOperation) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_TransactionOperation_data(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.TransactionOperation().Data(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(model.Map)
+	fc.Result = res
+	return ec.marshalOMap2vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐMap(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_TransactionOperation_data(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TransactionOperation",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Map does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _TransactionOutput_index(ctx context.Context, field graphql.CollectedField, obj *TransactionOutput) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_TransactionOutput_index(ctx, field)
 	if err != nil {
@@ -8455,50 +9074,6 @@ func (ec *executionContext) fieldContext_TransactionRecord_anchr_index(_ context
 	return fc, nil
 }
 
-func (ec *executionContext) _TransactionRecord_anchr_opidx(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionRecord) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_TransactionRecord_anchr_opidx(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.TransactionRecord().AnchrOpidx(rctx, obj)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(model.Uint64)
-	fc.Result = res
-	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_TransactionRecord_anchr_opidx(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "TransactionRecord",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Uint64 does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
 func (ec *executionContext) _TransactionRecord_anchr_ts(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionRecord) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_TransactionRecord_anchr_ts(ctx, field)
 	if err != nil {
@@ -8587,8 +9162,8 @@ func (ec *executionContext) fieldContext_TransactionRecord_type(_ context.Contex
 	return fc, nil
 }
 
-func (ec *executionContext) _TransactionRecord_tx_id(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionRecord) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_TransactionRecord_tx_id(ctx, field)
+func (ec *executionContext) _TransactionRecord_ops(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_TransactionRecord_ops(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -8601,24 +9176,72 @@ func (ec *executionContext) _TransactionRecord_tx_id(ctx context.Context, field 
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return obj.TxId, nil
+		return obj.Ops, nil
 	})
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
 	}
 	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
 		return graphql.Null
 	}
-	res := resTmp.(string)
+	res := resTmp.([]transactions.TransactionOperation)
 	fc.Result = res
-	return ec.marshalNString2string(ctx, field.Selections, res)
+	return ec.marshalOTransactionOperation2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOperation(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_TransactionRecord_tx_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_TransactionRecord_ops(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TransactionRecord",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "required_auths":
+				return ec.fieldContext_TransactionOperation_required_auths(ctx, field)
+			case "type":
+				return ec.fieldContext_TransactionOperation_type(ctx, field)
+			case "index":
+				return ec.fieldContext_TransactionOperation_index(ctx, field)
+			case "data":
+				return ec.fieldContext_TransactionOperation_data(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type TransactionOperation", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TransactionRecord_op_types(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_TransactionRecord_op_types(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.OpTypes, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.([]string)
+	fc.Result = res
+	return ec.marshalOString2ᚕstringᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_TransactionRecord_op_types(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "TransactionRecord",
 		Field:      field,
@@ -8626,47 +9249,6 @@ func (ec *executionContext) fieldContext_TransactionRecord_tx_id(_ context.Conte
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type String does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _TransactionRecord_data(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionRecord) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_TransactionRecord_data(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.TransactionRecord().Data(rctx, obj)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(model.Map)
-	fc.Result = res
-	return ec.marshalOMap2vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐMap(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_TransactionRecord_data(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "TransactionRecord",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Map does not have child fields")
 		},
 	}
 	return fc, nil
@@ -8941,6 +9523,65 @@ func (ec *executionContext) fieldContext_TransactionRecord_ledger(_ context.Cont
 				return ec.fieldContext_OpLogEvent_params(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type OpLogEvent", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TransactionRecord_ledger_actions(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_TransactionRecord_ledger_actions(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.TransactionRecord().LedgerActions(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.([]*LedgerAction)
+	fc.Result = res
+	return ec.marshalOLedgerAction2ᚕᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐLedgerAction(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_TransactionRecord_ledger_actions(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TransactionRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_LedgerAction_id(ctx, field)
+			case "status":
+				return ec.fieldContext_LedgerAction_status(ctx, field)
+			case "type":
+				return ec.fieldContext_LedgerAction_type(ctx, field)
+			case "data":
+				return ec.fieldContext_LedgerAction_data(ctx, field)
+			case "asset":
+				return ec.fieldContext_LedgerAction_asset(ctx, field)
+			case "amount":
+				return ec.fieldContext_LedgerAction_amount(ctx, field)
+			case "memo":
+				return ec.fieldContext_LedgerAction_memo(ctx, field)
+			case "to":
+				return ec.fieldContext_LedgerAction_to(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type LedgerAction", field.Name)
 		},
 	}
 	return fc, nil
@@ -11845,7 +12486,7 @@ func (ec *executionContext) unmarshalInputTransactionFilter(ctx context.Context,
 			it.ByStatus = data
 		case "byType":
 			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("byType"))
-			data, err := ec.unmarshalOString2ᚖstring(ctx, v)
+			data, err := ec.unmarshalOString2ᚕstringᚄ(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -13472,6 +14113,56 @@ func (ec *executionContext) _Gas(ctx context.Context, sel ast.SelectionSet, obj 
 	return out
 }
 
+var ledgerActionImplementors = []string{"LedgerAction"}
+
+func (ec *executionContext) _LedgerAction(ctx context.Context, sel ast.SelectionSet, obj *LedgerAction) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, ledgerActionImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("LedgerAction")
+		case "id":
+			out.Values[i] = ec._LedgerAction_id(ctx, field, obj)
+		case "status":
+			out.Values[i] = ec._LedgerAction_status(ctx, field, obj)
+		case "type":
+			out.Values[i] = ec._LedgerAction_type(ctx, field, obj)
+		case "data":
+			out.Values[i] = ec._LedgerAction_data(ctx, field, obj)
+		case "asset":
+			out.Values[i] = ec._LedgerAction_asset(ctx, field, obj)
+		case "amount":
+			out.Values[i] = ec._LedgerAction_amount(ctx, field, obj)
+		case "memo":
+			out.Values[i] = ec._LedgerAction_memo(ctx, field, obj)
+		case "to":
+			out.Values[i] = ec._LedgerAction_to(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
 var ledgerRecordImplementors = []string{"LedgerRecord"}
 
 func (ec *executionContext) _LedgerRecord(ctx context.Context, sel ast.SelectionSet, obj *ledgerDb.LedgerRecord) graphql.Marshaler {
@@ -14551,6 +15242,113 @@ func (ec *executionContext) _TransactionData(ctx context.Context, sel ast.Select
 	return out
 }
 
+var transactionOperationImplementors = []string{"TransactionOperation"}
+
+func (ec *executionContext) _TransactionOperation(ctx context.Context, sel ast.SelectionSet, obj *transactions.TransactionOperation) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, transactionOperationImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("TransactionOperation")
+		case "required_auths":
+			out.Values[i] = ec._TransactionOperation_required_auths(ctx, field, obj)
+		case "type":
+			out.Values[i] = ec._TransactionOperation_type(ctx, field, obj)
+		case "index":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._TransactionOperation_index(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "data":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._TransactionOperation_data(ctx, field, obj)
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
 var transactionOutputImplementors = []string{"TransactionOutput"}
 
 func (ec *executionContext) _TransactionOutput(ctx context.Context, sel ast.SelectionSet, obj *TransactionOutput) graphql.Marshaler {
@@ -14677,42 +15475,6 @@ func (ec *executionContext) _TransactionRecord(ctx context.Context, sel ast.Sele
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-		case "anchr_opidx":
-			field := field
-
-			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._TransactionRecord_anchr_opidx(ctx, field, obj)
-				if res == graphql.Null {
-					atomic.AddUint32(&fs.Invalids, 1)
-				}
-				return res
-			}
-
-			if field.Deferrable != nil {
-				dfs, ok := deferred[field.Deferrable.Label]
-				di := 0
-				if ok {
-					dfs.AddField(field)
-					di = len(dfs.Values) - 1
-				} else {
-					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
-					deferred[field.Deferrable.Label] = dfs
-				}
-				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
-					return innerFunc(ctx, dfs)
-				})
-
-				// don't run the out.Concurrently() call below
-				out.Values[i] = graphql.Null
-				continue
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
 		case "anchr_ts":
 			field := field
 
@@ -14754,44 +15516,10 @@ func (ec *executionContext) _TransactionRecord(ctx context.Context, sel ast.Sele
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&out.Invalids, 1)
 			}
-		case "tx_id":
-			out.Values[i] = ec._TransactionRecord_tx_id(ctx, field, obj)
-			if out.Values[i] == graphql.Null {
-				atomic.AddUint32(&out.Invalids, 1)
-			}
-		case "data":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._TransactionRecord_data(ctx, field, obj)
-				return res
-			}
-
-			if field.Deferrable != nil {
-				dfs, ok := deferred[field.Deferrable.Label]
-				di := 0
-				if ok {
-					dfs.AddField(field)
-					di = len(dfs.Values) - 1
-				} else {
-					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
-					deferred[field.Deferrable.Label] = dfs
-				}
-				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
-					return innerFunc(ctx, dfs)
-				})
-
-				// don't run the out.Concurrently() call below
-				out.Values[i] = graphql.Null
-				continue
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "ops":
+			out.Values[i] = ec._TransactionRecord_ops(ctx, field, obj)
+		case "op_types":
+			out.Values[i] = ec._TransactionRecord_op_types(ctx, field, obj)
 		case "first_seen":
 			out.Values[i] = ec._TransactionRecord_first_seen(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
@@ -14878,6 +15606,39 @@ func (ec *executionContext) _TransactionRecord(ctx context.Context, sel ast.Sele
 			}
 		case "ledger":
 			out.Values[i] = ec._TransactionRecord_ledger(ctx, field, obj)
+		case "ledger_actions":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._TransactionRecord_ledger_actions(ctx, field, obj)
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -16410,6 +17171,54 @@ func (ec *executionContext) marshalOJSON2ᚖstring(ctx context.Context, sel ast.
 	return res
 }
 
+func (ec *executionContext) marshalOLedgerAction2ᚕᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐLedgerAction(ctx context.Context, sel ast.SelectionSet, v []*LedgerAction) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalOLedgerAction2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐLedgerAction(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	return ret
+}
+
+func (ec *executionContext) marshalOLedgerAction2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐLedgerAction(ctx context.Context, sel ast.SelectionSet, v *LedgerAction) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._LedgerAction(ctx, sel, v)
+}
+
 func (ec *executionContext) unmarshalOLedgerActionsFilter2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐLedgerActionsFilter(ctx context.Context, v any) (*LedgerActionsFilter, error) {
 	if v == nil {
 		return nil, nil
@@ -16629,6 +17438,51 @@ func (ec *executionContext) unmarshalOTransactionFilter2ᚖvscᚑnodeᚋmodules�
 	}
 	res, err := ec.unmarshalInputTransactionFilter(ctx, v)
 	return &res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalOTransactionOperation2vscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOperation(ctx context.Context, sel ast.SelectionSet, v transactions.TransactionOperation) graphql.Marshaler {
+	return ec._TransactionOperation(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalOTransactionOperation2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOperation(ctx context.Context, sel ast.SelectionSet, v []transactions.TransactionOperation) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalOTransactionOperation2vscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOperation(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	return ret
 }
 
 func (ec *executionContext) marshalOTransactionRecord2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionRecordᚄ(ctx context.Context, sel ast.SelectionSet, v []transactions.TransactionRecord) graphql.Marshaler {

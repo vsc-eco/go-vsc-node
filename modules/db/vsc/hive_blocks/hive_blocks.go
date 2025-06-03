@@ -512,17 +512,17 @@ func GetAggTimestampPipeline2(filters bson.D, localField string, timestampField 
 	pipe = append(pipe, bson.D{{Key: "$addFields", Value: bson.D{
 		{Key: "tx_id", Value: "$id"},
 	}}})
-	pipe = append(pipe, bson.D{{Key: "$set", Value: bson.D{
-		{Key: "id", Value: bson.D{
-			{
-				Key: "$concat",
-				Value: bson.A{
-					"$id",
-					"-",
-					bson.D{{Key: "$toString", Value: "$anchr_opidx"}},
-				},
-			},
-		}},
-	}}})
+	// pipe = append(pipe, bson.D{{Key: "$set", Value: bson.D{
+	// 	{Key: "id", Value: bson.D{
+	// 		{
+	// 			Key: "$concat",
+	// 			Value: bson.A{
+	// 				"$id",
+	// 				"-",
+	// 				bson.D{{Key: "$toString", Value: "$anchr_opidx"}},
+	// 			},
+	// 		},
+	// 	}},
+	// }}})
 	return pipe
 }

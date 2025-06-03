@@ -436,6 +436,28 @@ func (actions *actionsDb) GetAccountPendingConsensusUnstake(account string) (int
 	return 0, nil
 }
 
+func (actions *actionsDb) GetActionsByTxId(txId string) ([]ActionRecord, error) {
+	cursor, err := actions.Find(context.Background(), bson.M{
+		"id": bson.M{
+			"$regex": "^" + txId,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	actionRecords := make([]ActionRecord, 0)
+
+	for cursor.Next(context.Background()) {
+		record := ActionRecord{}
+		cursor.Decode(&record)
+
+		actionRecords = append(actionRecords, record)
+	}
+
+	return actionRecords, nil
+}
+
 type interestClaims struct {
 	*db.Collection
 }

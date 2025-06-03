@@ -202,7 +202,7 @@ func (tp *TransactionPool) indexTx(txId string, txShell VSCTransactionShell) err
 		Type:          "vsc",
 		Version:       txShell.Version,
 		Nonce:         txShell.Headers.Nonce,
-		Tx:            payloadJson,
+		Ops:           []transactions.TransactionOperation{},
 		Ledger:        make([]ledgerSystem.OpLogEvent, 0),
 	})
 }

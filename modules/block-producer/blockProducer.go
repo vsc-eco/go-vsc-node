@@ -283,20 +283,23 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 
 		tx := txMap[keyId][0]
 
+		rcLimit := uint64(0)
 		if tx.RcLimit == 0 {
 			//Minimum of 0.05 hbd or 50 integer units
-			if preRecord.Data["type"] == "transfer" {
-				tx.RcLimit = 100
-			} else if preRecord.Data["type"] == "stake_hbd" {
-				tx.RcLimit = 200
-			} else if preRecord.Data["type"] == "unstake_hbd" {
-				tx.RcLimit = 200
-			} else if preRecord.Data["type"] == "withdraw" {
-				tx.RcLimit = 200
-			} else if preRecord.Data["type"] == "call" {
-				tx.RcLimit = 100
-			} else {
-				tx.RcLimit = 50
+			for _, op := range tx.Ops {
+				if op.Type == "transfer" {
+					rcLimit += 100
+				} else if op.Type == "stake_hbd" {
+					rcLimit += 200
+				} else if op.Type == "unstake_hbd" {
+					rcLimit += 200
+				} else if op.Type == "withdraw" {
+					rcLimit += 200
+				} else if op.Type == "call" {
+					rcLimit += 100
+				} else {
+					rcLimit += 50
+				}
 			}
 		}
 
@@ -313,7 +316,7 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 	// rcFinish := rcSession.Done()
 	// fmt.Println("rcFinish", rcFinish)
 	for _, txRecord := range sequencedTxs {
-		op := txRecord.Data["type"].(string)
+		op := txRecord.Ops[0].Type
 		txs = append(txs, vscBlocks.VscBlockTx{
 			Id:   txRecord.Id,
 			Op:   &op,
@@ -485,7 +488,7 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		if txRecord == nil {
 			return "", errors.New("invalid transaction")
 		}
-		op := txRecord.Data["type"].(string)
+		op := txRecord.Ops[0].Type
 		transactions = append(transactions, vscBlocks.VscBlockTx{
 			Id:   txRecord.Id,
 			Op:   &op,

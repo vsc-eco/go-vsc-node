@@ -36,14 +36,12 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 		"id":           offTx.Id,
 		"anchr_height": offTx.AnchoredHeight,
 		"anchr_index":  offTx.AnchoredIndex,
-		"anchr_opidx":  offTx.AnchoredOpIdx,
 	}
 
 	findResult := e.FindOne(ctx, bson.M{
 		"id":           offTx.Id,
 		"anchr_height": offTx.AnchoredHeight,
 		"anchr_index":  offTx.AnchoredIndex,
-		"anchr_opidx":  offTx.AnchoredOpIdx,
 	})
 
 	opts := options.Update().SetUpsert(true)
@@ -51,7 +49,8 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 		"anchr_block":    offTx.AnchoredBlock,
 		"anchr_id":       offTx.AnchoredId,
 		"type":           offTx.Type,
-		"data":           offTx.Tx,
+		"ops":            offTx.Ops,
+		"op_types":       offTx.OpTypes,
 		"required_auths": offTx.RequiredAuths,
 		"nonce":          offTx.Nonce,
 		"rc_limit":       offTx.RcLimit,
@@ -122,7 +121,7 @@ func (e *transactions) GetTransaction(id string) *TransactionRecord {
 	return &record
 }
 
-func (e *transactions) FindTransactions(ids []string, id *string, account *string, contract *string, status *TransactionStatus, byType *string, ledgerToFrom *string, ledgerTypes []string, offset int, limit int) ([]TransactionRecord, error) {
+func (e *transactions) FindTransactions(ids []string, id *string, account *string, contract *string, status *TransactionStatus, byType []string, ledgerToFrom *string, ledgerTypes []string, offset int, limit int) ([]TransactionRecord, error) {
 	if id != nil && ids != nil {
 		return nil, errors.New("either input a single id or a list of ids")
 	}
@@ -137,7 +136,7 @@ func (e *transactions) FindTransactions(ids []string, id *string, account *strin
 		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
 			bson.D{{Key: "required_auths", Value: *account}},
 			bson.D{{Key: "required_posting_auths", Value: *account}},
-			bson.D{{Key: "data.to", Value: *account}},
+			bson.D{{Key: "ops.data.to", Value: *account}},
 		}})
 	}
 	if contract != nil {
@@ -147,7 +146,9 @@ func (e *transactions) FindTransactions(ids []string, id *string, account *strin
 		filters = append(filters, bson.E{Key: "status", Value: string(*status)})
 	}
 	if byType != nil {
-		filters = append(filters, bson.E{Key: "data.type", Value: *byType})
+		filters = append(filters, bson.E{Key: "op_types", Value: bson.M{
+			"$in": byType,
+		}})
 	}
 	if ledgerToFrom != nil {
 		filters = append(filters, bson.E{Key: "$or", Value: bson.A{

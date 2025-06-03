@@ -19,17 +19,35 @@ type TransactionRecord {
   id: String!
   anchr_height: Uint64!
   anchr_index: Uint64!
-  anchr_opidx: Uint64!
   anchr_ts: String!
   type: String!
-  tx_id: String!
-  data: Map
+  ops: [TransactionOperation]
+  op_types: [String!]
   first_seen: DateTime!
   nonce: Uint64!
   rc_limit: Uint64!
   required_auths: [String!]
   status: String!
   ledger: [OpLogEvent!]
+  ledger_actions: [LedgerAction]
+}
+
+type TransactionOperation {
+  required_auths: [String!]
+  type: String
+  index: Uint64!
+  data: Map
+}
+
+type LedgerAction {
+  id: String
+  status: String
+  type: String
+  data: Map
+  asset: String
+  amount: Uint64
+  memo: String
+  to: String
 }
 
 type OpLogEvent {
@@ -238,7 +256,7 @@ input TransactionFilter {
   byAccount: String
   byContract: String
   byStatus: TransactionStatus
-  byType: String
+  byType: [String!]
   byLedgerToFrom: String
   byLedgerTypes: [String!]
   offset: Int

@@ -245,6 +245,7 @@ func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *Tran
 	if paginateErr != nil {
 		return nil, paginateErr
 	}
+
 	return r.Transactions.FindTransactions(filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, filterOptions.ByLedgerToFrom, filterOptions.ByLedgerTypes, offset, limit)
 }
 
@@ -432,6 +433,16 @@ func (r *rcRecordResolver) BlockHeight(ctx context.Context, obj *rcDb.RcRecord) 
 	return model.Uint64(obj.BlockHeight), nil
 }
 
+// Index is the resolver for the index field.
+func (r *transactionOperationResolver) Index(ctx context.Context, obj *transactions.TransactionOperation) (model.Uint64, error) {
+	return model.Uint64(obj.Idx), nil
+}
+
+// Data is the resolver for the data field.
+func (r *transactionOperationResolver) Data(ctx context.Context, obj *transactions.TransactionOperation) (model.Map, error) {
+	return model.Map(obj.Data), nil
+}
+
 // AnchrHeight is the resolver for the anchr_height field.
 func (r *transactionRecordResolver) AnchrHeight(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
 	return model.Uint64(obj.AnchoredHeight), nil
@@ -442,19 +453,9 @@ func (r *transactionRecordResolver) AnchrIndex(ctx context.Context, obj *transac
 	return model.Uint64(obj.AnchoredIndex), nil
 }
 
-// AnchrOpidx is the resolver for the anchr_opidx field.
-func (r *transactionRecordResolver) AnchrOpidx(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
-	return model.Uint64(obj.AnchoredOpIdx), nil
-}
-
 // AnchrTs is the resolver for the anchr_ts field.
 func (r *transactionRecordResolver) AnchrTs(ctx context.Context, obj *transactions.TransactionRecord) (string, error) {
 	return *obj.AnchoredTs, nil
-}
-
-// Data is the resolver for the data field.
-func (r *transactionRecordResolver) Data(ctx context.Context, obj *transactions.TransactionRecord) (model.Map, error) {
-	return model.Map(obj.Data), nil
 }
 
 // Nonce is the resolver for the nonce field.
@@ -465,6 +466,29 @@ func (r *transactionRecordResolver) Nonce(ctx context.Context, obj *transactions
 // RcLimit is the resolver for the rc_limit field.
 func (r *transactionRecordResolver) RcLimit(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
 	return model.Uint64(obj.RcLimit), nil
+}
+
+// LedgerActions is the resolver for the ledger_actions field.
+func (r *transactionRecordResolver) LedgerActions(ctx context.Context, obj *transactions.TransactionRecord) ([]*LedgerAction, error) {
+	lrs, err := r.Actions.GetActionsByTxId(obj.Id)
+	if err != nil {
+		return nil, err
+	}
+	actions := make([]*LedgerAction, len(lrs))
+	for i, lr := range lrs {
+		amt := model.Uint64(lr.Amount)
+		actions[i] = &LedgerAction{
+			ID:     &lr.Id,
+			Status: &lr.Status,
+			Amount: &amt,
+			Asset:  &lr.Asset,
+			To:     &lr.To,
+			Memo:   &lr.Memo,
+			Type:   &lr.Type,
+			Data:   model.Map(lr.Params),
+		}
+	}
+	return actions, nil
 }
 
 // Height is the resolver for the height field.
@@ -518,6 +542,11 @@ func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 // RcRecord returns RcRecordResolver implementation.
 func (r *Resolver) RcRecord() RcRecordResolver { return &rcRecordResolver{r} }
 
+// TransactionOperation returns TransactionOperationResolver implementation.
+func (r *Resolver) TransactionOperation() TransactionOperationResolver {
+	return &transactionOperationResolver{r}
+}
+
 // TransactionRecord returns TransactionRecordResolver implementation.
 func (r *Resolver) TransactionRecord() TransactionRecordResolver {
 	return &transactionRecordResolver{r}
@@ -541,6 +570,19 @@ type opLogEventResolver struct{ *Resolver }
 type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type rcRecordResolver struct{ *Resolver }
+type transactionOperationResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }
+
+// !!! WARNING !!!
+// The code below was going to be deleted when updating resolvers. It has been copied here so you have
+// one last chance to move it out of harms way if you want. There are two reasons this happens:
+//  - When renaming or deleting a resolver the old code will be put in here. You can safely delete
+//    it when you're done.
+//  - You have helper methods in this file. Move them out to keep these resolver files clean.
+/*
+	func (r *transactionOperationResolver) Idx(ctx context.Context, obj *transactions.TransactionOperation) (model.Uint64, error) {
+	return model.Uint64(obj.Idx), nil
+}
+*/

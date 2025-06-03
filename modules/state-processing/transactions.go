@@ -150,6 +150,54 @@ func (tx TxVscCallContract) ToData() map[string]interface{} {
 	}
 }
 
+type TxDeposit struct {
+	Self   TxSelf
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Amount int64  `json:"amount"`
+	Asset  string `json:"asset"`
+	Memo   string `json:"memo"`
+}
+
+func (tx TxDeposit) Type() string {
+	return "deposit"
+}
+
+func (tx TxDeposit) TxSelf() TxSelf {
+	return tx.Self
+}
+
+func (tx TxDeposit) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
+	return TxResult{
+		Success: true,
+		RcUsed:  0,
+	}
+}
+
+func (tx TxDeposit) ToData() map[string]interface{} {
+	return map[string]interface{}{
+		"from":   tx.From,
+		"to":     tx.To,
+		"amount": tx.Amount,
+		"asset":  tx.Asset,
+		"memo":   tx.Memo,
+	}
+}
+
+func (tx TxDeposit) ToLedger() []ledgerSystem.OpLogEvent {
+	return []ledgerSystem.OpLogEvent{
+		{
+			Id:     tx.Self.TxId,
+			From:   tx.From,
+			To:     tx.To,
+			Amount: tx.Amount,
+			Asset:  tx.Asset,
+			Memo:   tx.Memo,
+			Type:   "deposit",
+		},
+	}
+}
+
 // Costs no RCs as it consumes Hive RCs.
 // Only applies if original transaction is Hive
 type TxVSCTransfer struct {
@@ -967,12 +1015,14 @@ func (tx *OffchainTransaction) Cid() cid.Cid {
 func (tx *OffchainTransaction) Ingest(se *StateEngine, txSelf TxSelf) {
 	anchoredHeight := txSelf.BlockHeight
 	anchoredIndex := int64(txSelf.Index)
-	anchoredOpIdx := int64(txSelf.OpIndex)
+	// anchoredOpIdx := int64(txSelf.OpIndex)
 
 	data := make(map[string]interface{})
 	txs := tx.ToTransaction()
 
+	opList := make([]transactions.TransactionOperation, 0)
 	if len(txs) == 0 {
+		opList = append(opList, transactions.TransactionOperation{})
 		data = tx.Tx
 	} else {
 		parsedTx := txs[0]
@@ -982,20 +1032,20 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, txSelf TxSelf) {
 		}
 
 		data["type"] = parsedTx.Type()
+
 	}
 
 	se.txDb.Ingest(transactions.IngestTransactionUpdate{
 		Status:         "INCLUDED",
 		Id:             tx.TxId,
 		AnchoredIndex:  &anchoredIndex,
-		AnchoredOpIdx:  &anchoredOpIdx,
 		AnchoredHeight: &anchoredHeight,
 		AnchoredBlock:  &txSelf.BlockId,
 		AnchoredId:     &txSelf.BlockId,
 		Nonce:          tx.Headers.Nonce,
 		RcLimit:        tx.Headers.RcLimit,
 		RequiredAuths:  tx.Headers.RequiredAuths,
-		Tx:             data,
+		Ops:            opList,
 		//Transaction is a VSC transaction
 		Type:   "vsc",
 		Ledger: make([]ledgerSystem.OpLogEvent, 0),
