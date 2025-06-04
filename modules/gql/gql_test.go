@@ -78,6 +78,7 @@ func TestQueryAndMutation(t *testing.T) {
 		se,
 		da,
 		contractDb,
+		contractState,
 	}
 	schema := gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: resolver})
 

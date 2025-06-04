@@ -19,17 +19,18 @@ import (
 // It serves as dependency injection for your app, add any dependencies you require here.
 
 type Resolver struct {
-	Witnesses    witnesses.Witnesses
-	TxPool       *transactionpool.TransactionPool
-	Balances     ledgerDb.Balances
-	Ledger       ledgerDb.Ledger
-	Actions      ledgerDb.BridgeActions
-	Elections    elections.Elections
-	Transactions transactions.Transactions
-	Nonces       nonces.Nonces
-	Rc           rcDb.RcDb
-	HiveBlocks   hive_blocks.HiveBlocks
-	StateEngine  *stateEngine.StateEngine
-	Da           *datalayer.DataLayer
-	Contracts    contracts.Contracts
+	Witnesses      witnesses.Witnesses
+	TxPool         *transactionpool.TransactionPool
+	Balances       ledgerDb.Balances
+	Ledger         ledgerDb.Ledger
+	Actions        ledgerDb.BridgeActions
+	Elections      elections.Elections
+	Transactions   transactions.Transactions
+	Nonces         nonces.Nonces
+	Rc             rcDb.RcDb
+	HiveBlocks     hive_blocks.HiveBlocks
+	StateEngine    *stateEngine.StateEngine
+	Da             *datalayer.DataLayer
+	Contracts      contracts.Contracts
+	ContractsState contracts.ContractState
 }

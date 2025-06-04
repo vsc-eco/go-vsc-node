@@ -30,11 +30,8 @@ type ContractOutput struct {
 	Metadata   map[string]interface{} `json:"metadata"`
 	//This might not be used
 
-	Results []struct {
-		Ret string `json:"ret" bson:"ret"`
-		Ok  bool   `json:"ok" bson:"ok"`
-	} `json:"results" bson:"results"`
-	StateMerkle string `json:"state_merkle"`
+	Results     []contracts.ContractOutputResult `json:"results" bson:"results"`
+	StateMerkle string                           `json:"state_merkle"`
 }
 
 func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
@@ -85,11 +82,6 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
 		AnchoredId:     txSelf.TxId,
 		AnchoredIndex:  int64(txSelf.Index),
 	})
-}
-
-type ContractResult struct {
-	Ret string `json:"ret" bson:"ret"`
-	Ok  bool   `json:"ok" bson:"ok"`
 }
 
 type TxCreateContract struct {

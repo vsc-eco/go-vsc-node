@@ -66,18 +66,19 @@ type TransactionOutput {
   id: String!
 }
 
+type ContractOutputResult {
+  ret: String!
+  ok: Boolean!
+}
+
 type ContractOutput {
   id: String!
-  anchored_block: String
-  anchored_height: Int
-  anchored_id: String
-  anchored_index: Int
-  contract_id: String
-  gas: Gas
+  block_height: Int64!
+  timestamp: String!
+  contract_id: String!
   inputs: [String!]!
-  results: [JSON]!
-  side_effects: JSON
-  state_merkle: String
+  state_merkle: String!
+  results: [ContractOutputResult!]!
 }
 
 type Gas {
@@ -171,10 +172,6 @@ type RcRecord {
   block_height: Uint64!
 }
 
-type FindContractOutputResult {
-  outputs: [ContractOutput]
-}
-
 type LedgerRecord {
   id: String!
   amount: Int64!
@@ -264,10 +261,11 @@ input FindContractFilter {
   limit: Int
 }
 
-input FindContractOutputFilter {
+input ContractOutputFilter {
+  byId: String
   byInput: String
-  byOutput: String
   byContract: String
+  offset: Int
   limit: Int
 }
 
@@ -275,10 +273,7 @@ type Query {
   contractStateDiff(id: String): ContractDiff
   contractState(id: String): ContractState
   findTransaction(filterOptions: TransactionFilter): [TransactionRecord!]
-  findContractOutput(
-    filterOptions: FindContractOutputFilter
-    decodedFilter: JSON
-  ): FindContractOutputResult
+  findContractOutput(filterOptions: ContractOutputFilter): [ContractOutput!]
   findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerRecord!]
   findLedgerActions(filterOptions: LedgerActionsFilter): [ActionRecord!]
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
