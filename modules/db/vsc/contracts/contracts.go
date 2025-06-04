@@ -132,6 +132,34 @@ func (ch *contractState) GetOutput(outputId string) *ContractOutput {
 	return &contractOutput
 }
 
+func (ch *contractState) FindOutputs(id *string, input *string, contract *string, offset int, limit int) ([]ContractOutput, error) {
+	filters := bson.D{}
+	if id != nil {
+		filters = append(filters, bson.E{Key: "id", Value: *id})
+	}
+	if input != nil {
+		filters = append(filters, bson.E{Key: "inputs", Value: bson.D{{Key: "$in", Value: *input}}})
+	}
+	if contract != nil {
+		filters = append(filters, bson.E{Key: "contract_id", Value: *contract})
+	}
+	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
+	cursor, err := ch.Aggregate(context.TODO(), pipe)
+	if err != nil {
+		return []ContractOutput{}, err
+	}
+	defer cursor.Close(context.TODO())
+	var results []ContractOutput
+	for cursor.Next(context.TODO()) {
+		var elem ContractOutput
+		if err := cursor.Decode(&elem); err != nil {
+			return []ContractOutput{}, err
+		}
+		results = append(results, elem)
+	}
+	return results, nil
+}
+
 func NewContractState(d *vsc.VscDb) ContractState {
 	return &contractState{db.NewCollection(d.DbInstance, "contract_state")}
 }

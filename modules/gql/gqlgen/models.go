@@ -3,7 +3,6 @@
 package gqlgen
 
 import (
-	"vsc-node/modules/db/vsc/contracts"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/gql/model"
@@ -14,22 +13,19 @@ type ContractDiff struct {
 	PreviousContractStateID string  `json:"previousContractStateId"`
 }
 
+type ContractOutputFilter struct {
+	ByID       *string `json:"byId,omitempty"`
+	ByInput    *string `json:"byInput,omitempty"`
+	ByContract *string `json:"byContract,omitempty"`
+	Offset     *int    `json:"offset,omitempty"`
+	Limit      *int    `json:"limit,omitempty"`
+}
+
 type FindContractFilter struct {
 	ByID   *string `json:"byId,omitempty"`
 	ByCode *string `json:"byCode,omitempty"`
 	Offset *int    `json:"offset,omitempty"`
 	Limit  *int    `json:"limit,omitempty"`
-}
-
-type FindContractOutputFilter struct {
-	ByInput    *string `json:"byInput,omitempty"`
-	ByOutput   *string `json:"byOutput,omitempty"`
-	ByContract *string `json:"byContract,omitempty"`
-	Limit      *int    `json:"limit,omitempty"`
-}
-
-type FindContractOutputResult struct {
-	Outputs []*contracts.ContractOutput `json:"outputs,omitempty"`
 }
 
 type Gas struct {

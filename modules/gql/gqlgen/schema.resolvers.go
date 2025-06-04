@@ -102,39 +102,9 @@ func (r *contractResolver) Runtime(ctx context.Context, obj *contracts.Contract)
 	return obj.Runtime.String(), nil
 }
 
-// AnchoredBlock is the resolver for the anchored_block field.
-func (r *contractOutputResolver) AnchoredBlock(ctx context.Context, obj *contracts.ContractOutput) (*string, error) {
-	panic(fmt.Errorf("not implemented: AnchoredBlock - anchored_block"))
-}
-
-// AnchoredHeight is the resolver for the anchored_height field.
-func (r *contractOutputResolver) AnchoredHeight(ctx context.Context, obj *contracts.ContractOutput) (*int, error) {
-	panic(fmt.Errorf("not implemented: AnchoredHeight - anchored_height"))
-}
-
-// AnchoredID is the resolver for the anchored_id field.
-func (r *contractOutputResolver) AnchoredID(ctx context.Context, obj *contracts.ContractOutput) (*string, error) {
-	panic(fmt.Errorf("not implemented: AnchoredID - anchored_id"))
-}
-
-// AnchoredIndex is the resolver for the anchored_index field.
-func (r *contractOutputResolver) AnchoredIndex(ctx context.Context, obj *contracts.ContractOutput) (*int, error) {
-	panic(fmt.Errorf("not implemented: AnchoredIndex - anchored_index"))
-}
-
-// Gas is the resolver for the gas field.
-func (r *contractOutputResolver) Gas(ctx context.Context, obj *contracts.ContractOutput) (*Gas, error) {
-	panic(fmt.Errorf("not implemented: Gas - gas"))
-}
-
-// Results is the resolver for the results field.
-func (r *contractOutputResolver) Results(ctx context.Context, obj *contracts.ContractOutput) ([]*string, error) {
-	panic(fmt.Errorf("not implemented: Results - results"))
-}
-
-// SideEffects is the resolver for the side_effects field.
-func (r *contractOutputResolver) SideEffects(ctx context.Context, obj *contracts.ContractOutput) (*string, error) {
-	panic(fmt.Errorf("not implemented: SideEffects - side_effects"))
+// BlockHeight is the resolver for the block_height field.
+func (r *contractOutputResolver) BlockHeight(ctx context.Context, obj *contracts.ContractOutput) (model.Int64, error) {
+	return model.Int64(obj.BlockHeight), nil
 }
 
 // ID is the resolver for the id field.
@@ -250,8 +220,15 @@ func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *Tran
 }
 
 // FindContractOutput is the resolver for the findContractOutput field.
-func (r *queryResolver) FindContractOutput(ctx context.Context, filterOptions *FindContractOutputFilter, decodedFilter *string) (*FindContractOutputResult, error) {
-	panic(fmt.Errorf("not implemented"))
+func (r *queryResolver) FindContractOutput(ctx context.Context, filterOptions *ContractOutputFilter) ([]contracts.ContractOutput, error) {
+	if filterOptions == nil {
+		filterOptions = &ContractOutputFilter{}
+	}
+	offset, limit, paginateErr := Paginate(filterOptions.Offset, filterOptions.Limit)
+	if paginateErr != nil {
+		return nil, paginateErr
+	}
+	return r.ContractsState.FindOutputs(filterOptions.ByID, filterOptions.ByInput, filterOptions.ByContract, offset, limit)
 }
 
 // FindLedgerTXs is the resolver for the findLedgerTXs field.

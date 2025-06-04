@@ -151,6 +151,7 @@ func main() {
 		se,
 		da,
 		contractDb,
+		contractState,
 	}}), "0.0.0.0:8080")
 
 	plugins := make([]aggregate.Plugin, 0)
