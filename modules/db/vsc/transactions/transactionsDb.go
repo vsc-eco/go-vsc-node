@@ -140,7 +140,7 @@ func (e *transactions) FindTransactions(ids []string, id *string, account *strin
 		}})
 	}
 	if contract != nil {
-		filters = append(filters, bson.E{Key: "data.contract_id", Value: *contract})
+		filters = append(filters, bson.E{Key: "ops.data.contract_id", Value: *contract})
 	}
 	if status != nil {
 		filters = append(filters, bson.E{Key: "status", Value: string(*status)})
