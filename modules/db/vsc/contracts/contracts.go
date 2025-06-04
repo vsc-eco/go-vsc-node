@@ -138,7 +138,7 @@ func (ch *contractState) FindOutputs(id *string, input *string, contract *string
 		filters = append(filters, bson.E{Key: "id", Value: *id})
 	}
 	if input != nil {
-		filters = append(filters, bson.E{Key: "inputs", Value: bson.D{{Key: "$in", Value: *input}}})
+		filters = append(filters, bson.E{Key: "inputs", Value: bson.D{{Key: "$elemMatch", Value: bson.D{{Key: "$eq", Value: *input}}}}})
 	}
 	if contract != nil {
 		filters = append(filters, bson.E{Key: "contract_id", Value: *contract})
