@@ -81,13 +81,6 @@ type LocalNodeInfo struct {
 type Query struct {
 }
 
-type TransactionData struct {
-	Op         string  `json:"op"`
-	Action     *string `json:"action,omitempty"`
-	Payload    *string `json:"payload,omitempty"`
-	ContractID *string `json:"contract_id,omitempty"`
-}
-
 type TransactionFilter struct {
 	ByID           *string                         `json:"byId,omitempty"`
 	ByIds          []string                        `json:"byIds,omitempty"`
@@ -99,11 +92,6 @@ type TransactionFilter struct {
 	ByLedgerTypes  []string                        `json:"byLedgerTypes,omitempty"`
 	Offset         *int                            `json:"offset,omitempty"`
 	Limit          *int                            `json:"limit,omitempty"`
-}
-
-type TransactionOutput struct {
-	Index *int    `json:"index,omitempty"`
-	ID    *string `json:"id,omitempty"`
 }
 
 type TransactionSubmitResult struct {

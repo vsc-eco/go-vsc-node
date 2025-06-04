@@ -44,10 +44,7 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
 		se.txDb.SetOutput(transactions.SetResultUpdate{
 			Id:    InputId,
 			OpIdx: idx,
-			Output: &struct {
-				Id    string `json:"id" bson:"id"`
-				Index int64  `json:"index" bson:"index"`
-			}{
+			Output: &transactions.TransactionOutput{
 				Id:    output.Id,
 				Index: int64(idx),
 			},
