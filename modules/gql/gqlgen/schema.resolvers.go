@@ -443,6 +443,11 @@ func (r *transactionOperationResolver) Data(ctx context.Context, obj *transactio
 	return model.Map(obj.Data), nil
 }
 
+// Index is the resolver for the index field.
+func (r *transactionOutputResolver) Index(ctx context.Context, obj *transactions.TransactionOutput) (model.Int64, error) {
+	return model.Int64(obj.Index), nil
+}
+
 // AnchrHeight is the resolver for the anchr_height field.
 func (r *transactionRecordResolver) AnchrHeight(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
 	return model.Uint64(obj.AnchoredHeight), nil
@@ -547,6 +552,11 @@ func (r *Resolver) TransactionOperation() TransactionOperationResolver {
 	return &transactionOperationResolver{r}
 }
 
+// TransactionOutput returns TransactionOutputResolver implementation.
+func (r *Resolver) TransactionOutput() TransactionOutputResolver {
+	return &transactionOutputResolver{r}
+}
+
 // TransactionRecord returns TransactionRecordResolver implementation.
 func (r *Resolver) TransactionRecord() TransactionRecordResolver {
 	return &transactionRecordResolver{r}
@@ -571,18 +581,7 @@ type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type rcRecordResolver struct{ *Resolver }
 type transactionOperationResolver struct{ *Resolver }
+type transactionOutputResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }
-
-// !!! WARNING !!!
-// The code below was going to be deleted when updating resolvers. It has been copied here so you have
-// one last chance to move it out of harms way if you want. There are two reasons this happens:
-//  - When renaming or deleting a resolver the old code will be put in here. You can safely delete
-//    it when you're done.
-//  - You have helper methods in this file. Move them out to keep these resolver files clean.
-/*
-	func (r *transactionOperationResolver) Idx(ctx context.Context, obj *transactions.TransactionOperation) (model.Uint64, error) {
-	return model.Uint64(obj.Idx), nil
-}
-*/

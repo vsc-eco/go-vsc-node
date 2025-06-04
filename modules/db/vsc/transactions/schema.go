@@ -31,10 +31,7 @@ type SetResultUpdate struct {
 	OpIdx  int
 	Ledger *[]ledgerSystem.OpLogEvent
 	Status *TransactionStatus
-	Output *struct {
-		Id    string `json:"id" bson:"id"`
-		Index int64  `json:"index" bson:"index"`
-	}
+	Output *TransactionOutput
 }
 
 type TransactionStatus string
@@ -52,6 +49,11 @@ type TransactionOperation struct {
 	Type          string                 `json:"type" bson:"type"`
 	Idx           int64                  `json:"idx" bson:"idx"`
 	Data          map[string]interface{} `json:"data" bson:"data"`
+}
+
+type TransactionOutput struct {
+	Id    string `json:"id" bson:"id"`
+	Index int64  `json:"index" bson:"index"`
 }
 
 type TransactionRecord struct {
@@ -82,8 +84,5 @@ type TransactionRecord struct {
 
 	FirstSeen time.Time                  `json:"first_seen" bson:"first_seen"`
 	Ledger    *[]ledgerSystem.OpLogEvent `json:"ledger,omitempty" bson:"ledger,omitempty"`
-	Output    *struct {
-		Id    string `json:"id" bson:"id"`
-		Index int64  `json:"index" bson:"index"`
-	} `json:"output,omitempty" bson:"output,omitempty"`
+	Output    *TransactionOutput         `json:"output,omitempty" bson:"output,omitempty"`
 }

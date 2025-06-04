@@ -30,6 +30,7 @@ type TransactionRecord {
   status: String!
   ledger: [OpLogEvent!]
   ledger_actions: [LedgerAction]
+  output: TransactionOutput
 }
 
 type TransactionOperation {
@@ -60,16 +61,9 @@ type OpLogEvent {
   params: Map
 }
 
-type TransactionData {
-  op: String!
-  action: String
-  payload: JSON
-  contract_id: String
-}
-
 type TransactionOutput {
-  index: Int
-  id: String
+  index: Int64!
+  id: String!
 }
 
 type ContractOutput {
