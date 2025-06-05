@@ -40,8 +40,8 @@ import (
 )
 
 var BOOTSTRAP = []string{
-	"/dnsaddr/api.vsc.eco/tcp/10720/p2p/12D3KooWFVVQ2xG6ohJ3tQrh3V6zZnRnKPVfQWVH5LjJakzBCs7E",
-	"/ip4/149.56.25.168/tcp/10720/p2p/12D3KooWFVVQ2xG6ohJ3tQrh3V6zZnRnKPVfQWVH5LjJakzBCs7E",   // TODO this is api.vsc.eco, but DNS resolution doesn't work?
+	"/dnsaddr/api.vsc.eco/tcp/10720/p2p/12D3KooWPDDBopmMddVe4qvmWjt8WSKsTtrLQPYp8KA9tiWWUcyG",
+	"/ip4/149.56.25.168/tcp/10720/p2p/12D3KooWPDDBopmMddVe4qvmWjt8WSKsTtrLQPYp8KA9tiWWUcyG",   // TODO this is api.vsc.eco, but DNS resolution doesn't work?
 	"/ip4/173.211.12.65/tcp/10720/p2p/12D3KooWGpWrBc5pFx5GHWibczTPrazDCfk8GCETB5Ynb4Dq5L5V",   //@vaultec.vsc
 	"/ip4/147.135.15.155/tcp/10720/p2p/12D3KooWCAE4XrkE4NJL3nqYkXXNhte94rdBDGGVQQJewrDXDVJZ",  // mengao
 	"/ip4/188.40.125.182/tcp/10720/p2p/12D3KooWPzZ9RzsCP6BREUFbY1xyZiJ3PPoCW3DFGDhAwExiUazV",  //@spker
