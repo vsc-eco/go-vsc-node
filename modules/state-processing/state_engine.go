@@ -735,6 +735,19 @@ func (se *StateEngine) ExecuteBatch() {
 	// }
 
 	for idx, tx := range se.TxBatch {
+		var opTypes map[string]bool = make(map[string]bool)
+		for _, vscTx := range tx.Ops {
+			opTypes[vscTx.Type()] = true
+		}
+
+		opTypesList := make([]string, 0)
+		for k := range opTypes {
+			opTypesList = append(opTypesList, k)
+		}
+		if len(opTypesList) == 1 && opTypesList[0] == "deposit" {
+			continue
+		}
+
 		fmt.Println("Executing item in batch", idx, len(se.TxBatch))
 		ledgerSession := se.LedgerExecutor.NewSession(lastBlockBh)
 		rcSession := se.rcSystem.NewSession(ledgerSession)
@@ -760,6 +773,10 @@ func (se *StateEngine) ExecuteBatch() {
 			// 	forcedLedger = append(forcedLedger, fOplog...)
 			// 	continue
 			// }
+
+			if vscTx.Type() == "deposit" {
+				continue;
+			}
 			if se.firstTxHeight == 0 {
 				se.firstTxHeight = vscTx.TxSelf().BlockHeight - 1
 			}
