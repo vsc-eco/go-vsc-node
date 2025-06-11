@@ -9,7 +9,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-var REINDEX_ID = 11
+var REINDEX_ID = 12
 
 var IMMUTABLE_COLLECTIONS = []string{
 	"hive_blocks",

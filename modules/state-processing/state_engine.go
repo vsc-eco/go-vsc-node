@@ -227,13 +227,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			//Ensure it matches our gateway wallet
 			if virtualOp.Op.Value["owner"].(string) == common.GATEWAY_WALLET {
 
-				vInt := virtualOp.Op.Value["interest"].(map[string]any)["interest"].(int)
+				vInt := virtualOp.Op.Value["interest"].(map[string]any)["amount"].(string)
 
-				// if err != nil {
-				// 	//Should we panic here? ...No
-				// 	panic("Invalid Interest Amount. Possible deviation")
-				// }
-				se.claimHBDInterest(blockInfo.BlockHeight, int64(vInt))
+				vInt1, err := strconv.ParseInt(vInt, 10, 64)
+				if err != nil {
+					panic(err)
+				}
+				se.claimHBDInterest(blockInfo.BlockHeight, vInt1)
 			}
 		}
 	}
