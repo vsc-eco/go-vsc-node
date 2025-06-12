@@ -138,6 +138,50 @@ func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes [
 	return results, nil
 }
 
+func (ledger *ledger) GetRawLedgerRange(account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error) {
+	filters := bson.D{}
+	if account != nil {
+		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
+			bson.D{{Key: "from", Value: *account}},
+			bson.D{{Key: "owner", Value: *account}},
+		}})
+	}
+	if txId != nil {
+		filters = append(filters, bson.E{Key: "id", Value: bson.D{{Key: "$regex", Value: "^" + (*txId)}}})
+	}
+	if fromBlock != nil {
+		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$gte", Value: *fromBlock}}})
+	}
+	if toBlock != nil {
+		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$lte", Value: *toBlock}}})
+	}
+	if len(txTypes) > 0 {
+		filters = append(filters, bson.E{Key: "t", Value: bson.D{{Key: "$in", Value: txTypes}}})
+	}
+	if asset != nil {
+		filters = append(filters, bson.E{Key: "tk", Value: string(*asset)})
+	}
+
+	cursor, err := ledger.Aggregate(context.TODO(), mongo.Pipeline{
+		{{Key: "$match", Value: filters}},
+		{{Key: "$skip", Value: offset}},
+		{{Key: "$limit", Value: limit}},
+	})
+	if err != nil {
+		return []LedgerRecord{}, err
+	}
+	defer cursor.Close(context.TODO())
+	var results []LedgerRecord
+	for cursor.Next(context.TODO()) {
+		var elem LedgerRecord
+		if err := cursor.Decode(&elem); err != nil {
+			return []LedgerRecord{}, err
+		}
+		results = append(results, elem)
+	}
+	return results, nil
+}
+
 func (ledger *ledger) GetDistinctAccountsRange(startHeight, endHeight uint64) ([]string, error) {
 	arr, err := ledger.Distinct(context.Background(), "owner", bson.M{
 		"block_height": bson.M{

@@ -92,6 +92,26 @@ func (r *balanceRecordResolver) ConsensusUnstaking(ctx context.Context, obj *led
 	return model.Int64(amt), err
 }
 
+// PendingHbdUnstaking is the resolver for the pending_hbd_unstaking field.
+func (r *balanceRecordResolver) PendingHbdUnstaking(ctx context.Context, obj *ledgerDb.BalanceRecord) (*model.Int64, error) {
+	doc, _ := r.HiveBlocks.GetMetadata()
+
+	startBlk := doc.LastProcessedBlock
+	endBlk := *startBlk + stateEngine.HBD_UNSTAKE_BLOCKS
+	asset := ledgerDb.AssetHbd
+	ledgerRecords, err := r.Ledger.GetRawLedgerRange(&obj.Account, nil, []string{"unstake"}, &asset, startBlk, &endBlk, 0, 900)
+
+	if err != nil {
+		return nil, err
+	}
+	bal := int64(0)
+	for _, record := range ledgerRecords {
+		bal += record.Amount
+	}
+	ret := model.Int64(bal)
+	return &ret, nil
+}
+
 // CreationHeight is the resolver for the creation_height field.
 func (r *contractResolver) CreationHeight(ctx context.Context, obj *contracts.Contract) (model.Uint64, error) {
 	return model.Uint64(obj.CreationHeight), nil
