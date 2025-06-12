@@ -1,6 +1,7 @@
 package contract_session
 
 import (
+	"maps"
 	"vsc-node/lib/datalayer"
 
 	"github.com/ipfs/go-cid"
@@ -26,7 +27,7 @@ func New(dl *datalayer.DataLayer) *ContractSession {
 // Longer term this should allow for getting from multiple contracts
 // This just does the only contract here
 func (cs *ContractSession) GetStateStore(contractId ...string) *StateStore {
-	ss := NewStateStore(cs.dl, cs.stateMerkle, cs, cs.cache)
+	ss := NewStateStore(cs.dl, cs.stateMerkle, cs)
 	return &ss
 	// if cs.stateSesions[contractId] != nil {
 	// 	txOutput := cs.stateEngine.VirtualOutputs[contractId]
@@ -66,6 +67,7 @@ func (cs *ContractSession) FromOutput(output TempOutput) {
 	cs.cache = output.Cache
 	cs.metadata = output.Metadata
 	cs.stateMerkle = output.Cid
+	cs.deletions = make(map[string]bool)
 }
 
 type StateStore struct {
@@ -112,12 +114,13 @@ func (ss *StateStore) Commit() {
 	ss.cs.cache = ss.cache
 }
 
-func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession, cache map[string][]byte) StateStore {
+func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) StateStore {
 	if cids == "" {
 		databin := datalayer.NewDataBin(dl)
 
 		return StateStore{
-			cache:     cache,
+			cache:     maps.Clone(cs.cache),
+			deletions: maps.Clone(cs.deletions),
 			datalayer: dl,
 			databin:   &databin,
 			cs:        cs,
@@ -127,7 +130,8 @@ func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession, ca
 		databin := datalayer.NewDataBinFromCid(dl, cidz)
 
 		return StateStore{
-			cache:     cache,
+			cache:     maps.Clone(cs.cache),
+			deletions: maps.Clone(cs.deletions),
 			datalayer: dl,
 			databin:   &databin,
 			cs:        cs,
