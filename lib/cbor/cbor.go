@@ -63,7 +63,7 @@ type TagDecoder interface {
 	PostDecode(interface{}) (interface{}, error)
 }
 
-type Decoder struct {
+type decoder struct {
 	rin io.Reader
 
 	// tag byte
@@ -75,9 +75,13 @@ type Decoder struct {
 	internalVisitors []Visitor
 	userVisitor      Visitor
 
+	arrayIndexStringer func(index uint64) string
+
 	// Extra processing for CBOR TAG objects.
 	TagDecoders map[uint64]TagDecoder
 }
+
+type Decoder = *decoder
 
 // {tx: {op: "myOp"}} -> []string{"tx", "op"}
 type Visitor struct {
@@ -234,24 +238,41 @@ func JoinVisitorsWithSlice(visitors []Visitor) Visitor {
 
 var pathRoot = []string{}
 
-func NewDecoder(r io.Reader) *Decoder {
-	return &Decoder{
+type DecoderOption func(*decoder)
+
+func CustomArrayIndexStringer(arrayIndexStringer func(index uint64) string) DecoderOption {
+	return func(d *decoder) {
+		d.arrayIndexStringer = arrayIndexStringer
+	}
+}
+
+func NewDecoder(r io.Reader, opts ...DecoderOption) Decoder {
+	res := &decoder{
 		r,
 		make([]byte, 1),
 		make([]byte, 8),
 		make([]Visitor, 0),
 		Visitor{},
+		func(index uint64) string {
+			return fmt.Sprintf("[%d]", index)
+		},
 		make(map[uint64]TagDecoder),
 	}
+
+	for _, opt := range opts {
+		opt(res)
+	}
+
+	return res
 }
-func (dec *Decoder) Decode(v Visitor) error {
+func (dec *decoder) Decode(v Visitor) error {
 	visitorBak := dec.userVisitor
 	dec.userVisitor = v
 	res := dec.reflectDecode(pathRoot)
 	dec.userVisitor = visitorBak
 	return res
 }
-func (dec *Decoder) reflectDecode(path []string) error {
+func (dec *decoder) reflectDecode(path []string) error {
 	var didread int
 	var err error
 
@@ -268,11 +289,11 @@ func (dec *Decoder) reflectDecode(path []string) error {
 	return dec.innerDecodeC(dec.c[0], path)
 }
 
-func (dec *Decoder) groupVisitors() Visitor {
+func (dec *decoder) groupVisitors() Visitor {
 	return JoinVisitorsWithSlice(append(dec.internalVisitors, dec.userVisitor))
 }
 
-func (dec *Decoder) handleInfoBits(cborInfo byte) (uint64, error) {
+func (dec *decoder) handleInfoBits(cborInfo byte) (uint64, error) {
 	var aux uint64
 
 	if cborInfo <= 23 {
@@ -316,7 +337,7 @@ func (dec *Decoder) handleInfoBits(cborInfo byte) (uint64, error) {
 	return 0, nil
 }
 
-func (dec *Decoder) innerDecodeC(c byte, path []string) error {
+func (dec *decoder) innerDecodeC(c byte, path []string) error {
 	cborType := c & typeMask
 	cborInfo := c & infoBits
 
@@ -466,7 +487,7 @@ func (dec *Decoder) innerDecodeC(c byte, path []string) error {
 	return err
 }
 
-func (dec *Decoder) decodeText(cborInfo byte, aux uint64, path []string) error {
+func (dec *decoder) decodeText(cborInfo byte, aux uint64, path []string) error {
 	var err error
 	if cborInfo == varFollows {
 		subc := []byte{0}
@@ -502,7 +523,7 @@ func (dec *Decoder) decodeText(cborInfo byte, aux uint64, path []string) error {
 	}
 }
 
-func (dec *Decoder) setMapKV(key string, path []string) error {
+func (dec *decoder) setMapKV(key string, path []string) error {
 	// parses map value for key
 	err := dec.reflectDecode(append(path, key)) // TODO get result
 	if err != nil {
@@ -512,7 +533,7 @@ func (dec *Decoder) setMapKV(key string, path []string) error {
 	return nil
 }
 
-func (dec *Decoder) decodeMap(cborInfo byte, aux uint64, path []string) error {
+func (dec *decoder) decodeMap(cborInfo byte, aux uint64, path []string) error {
 	var err error
 
 	if cborInfo == varFollows {
@@ -585,11 +606,11 @@ func (dec *Decoder) decodeMap(cborInfo byte, aux uint64, path []string) error {
 	return nil
 }
 
-func (dec *Decoder) decodeArray(cborInfo byte, aux uint64, path []string) error {
+func (dec *decoder) decodeArray(cborInfo byte, aux uint64, path []string) error {
 	var err error
 
 	if cborInfo == varFollows {
-		var arrayPos int = 0
+		var arrayPos uint64 = 0
 		//log.Printf("var array")
 		subc := []byte{0}
 		justStarted := true
@@ -605,7 +626,7 @@ func (dec *Decoder) decodeArray(cborInfo byte, aux uint64, path []string) error 
 					return dec.groupVisitors().EmptyArrayVisitor(path)
 				}
 			} else {
-				err := dec.innerDecodeC(subc[0], append(path, fmt.Sprintf("[%d]", arrayPos))) // TODO get result
+				err := dec.innerDecodeC(subc[0], append(path, dec.arrayIndexStringer(arrayPos)))
 				if err != nil {
 					log.Printf("error decoding array subob")
 					return err
@@ -617,7 +638,7 @@ func (dec *Decoder) decodeArray(cborInfo byte, aux uint64, path []string) error 
 	} else {
 		var i uint64
 		for i = 0; i < aux; i++ {
-			err := dec.reflectDecode(append(path, fmt.Sprintf("[%d]", i))) // TODO get result
+			err := dec.reflectDecode(append(path, dec.arrayIndexStringer(i))) // TODO
 			if err != nil {
 				log.Printf("error decoding array subob")
 				return err
@@ -631,7 +652,7 @@ func (dec *Decoder) decodeArray(cborInfo byte, aux uint64, path []string) error 
 	return nil
 }
 
-func (dec *Decoder) decodeBignum(c byte) (*big.Int, error) {
+func (dec *decoder) decodeBignum(c byte) (*big.Int, error) {
 	cborType := c & typeMask
 	cborInfo := c & infoBits
 

@@ -34,7 +34,7 @@ import (
 // - https://github.com/w3c-ccg/did-pkh/blob/main/did-pkh-method-draft.md
 const EthDIDPrefix = "did:pkh:eip155:1:"
 
-const debug = false
+const debug = true
 
 func runDebug(run func() error) error {
 	if debug {
@@ -113,8 +113,8 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 	// 	return big.NewInt(int64(f)), nil
 	// })
 
-	typeJson, _ := json.Marshal(payload)
-	fmt.Println("ConvertCBORToEIP712TypedData payload", payload, string(typeJson))
+	// typeJson, _ := json.Marshal(payload)
+	// fmt.Println("ConvertCBORToEIP712TypedData payload", payload, string(typeJson))
 	if err != nil {
 		return false, fmt.Errorf("failed to convert block to EIP-712 typed data: %v", err)
 	}
@@ -182,12 +182,26 @@ func convertPathMapToMessage(pathMap []struct {
 		keys[pathInfo.path[0]] = append(keys[pathInfo.path[0]], pathInfo.path[1:])
 	}
 	isArray := false
-	for key, _ := range keys {
+	for key := range keys {
 		isArray = isValidArr(key)
 		break
 	}
+	isObjArray := false
 	if isArray {
+		for _, val := range keys {
+			isObjArray = len(val) > 1
+			if isObjArray {
+				break
+			}
+		}
+	}
+	if isArray && !isObjArray {
 		res := make([]interface{}, len(keys))
+		if len(keys) != len(pathMap) {
+			fmt.Println(keys)
+			fmt.Println(pathMap)
+			panic("BUG")
+		}
 		for i, pathInfo := range pathMap {
 			res[i] = pathInfo.val
 		}
@@ -242,6 +256,9 @@ func filterMap(pathMap []struct {
 	return newPathStructs
 }
 
+const arrayStart = "_"
+const arrayEnd = "_"
+
 // returns true iff array is valid
 //
 // examples:
@@ -251,48 +268,23 @@ func filterMap(pathMap []struct {
 // - "[1" -> false
 // - "[two]" - false
 func isValidArr(s string) bool {
-	if len(s) <= 2 {
+	if len(s) <= len(arrayStart)+len(arrayEnd) {
 		return false
 	}
 
-	if s[0] != '[' || s[len(s)-1] != ']' {
+	if s[:len(arrayStart)] != arrayStart || s[len(s)-len(arrayEnd):] != arrayEnd {
 		return false
 	}
 
-	_, err := strconv.Atoi(s[1 : len(s)-1])
+	_, err := strconv.Atoi(s[len(arrayStart) : len(s)-len(arrayEnd)])
 	return err == nil
-}
-
-// for any list of paths like []string{"headers", "required_auths", "[0]"} will
-// return true once the (0-indexed) 1st element is an array alongside its length
-//
-// examples:
-// - []string{"headers", "required_auths", "[0]"} -> (false, 0)
-// - []string{"required_auths", "[5]"} -> (true, 5)
-// - []string{"required_auths", "[]"} -> (false, 0) (invalid array, also for cases like "[2" or "]")
-// - []string{"[0]"} -> (false, 0)
-func arrayData(strSlice []string) (bool, int) {
-	if len(strSlice) < 2 {
-		return false, 0
-	}
-
-	s := strSlice[1]
-	if len(s) <= 2 {
-		return false, 0
-	}
-	if s[0] != '[' || s[len(s)-1] != ']' {
-		return false, 0
-	}
-	val, err := strconv.Atoi(s[1 : len(s)-1])
-	if err != nil {
-		return false, 0
-	}
-	return true, val
 }
 
 func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeName string, floatHandler func(f float64) (*big.Int, error)) (TypedData, error) {
 	reader := bytes.NewReader(data)
-	decoder := cbor.NewDecoder(reader)
+	decoder := cbor.NewDecoder(reader, cbor.CustomArrayIndexStringer(func(index uint64) string {
+		return fmt.Sprintf("%s%d%s", arrayStart, index, arrayEnd)
+	}))
 
 	pathMap := make([]struct {
 		path []string
@@ -450,9 +442,13 @@ func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeNam
 	// primaryTypeName.path.path.path : []{Name: x, Type: y}
 	types := make(map[string][]apitypes.Type, len(uniqueTypes))
 	for _, partialType := range typeMap {
+		fmt.Println(partialType.typeName)
+		fmt.Println("types:", partialType.val)
 		for i, _ := range partialType.typeName {
 			before := partialType.typeName[:i+1] // [tx_container], [tx_container, tx], [tx_container, tx, payload]
 			after := partialType.typeName[i+1:]
+			fmt.Println("before:", before)
+			fmt.Println("after:", after)
 			typeName := strings.Join(before, "_")
 			if len(after) == 0 {
 				types[typeName] = append(types[typeName], partialType.val)
@@ -463,13 +459,16 @@ func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeNam
 				}) {
 					isArray := isValidArr(partialType.val.Name)
 					if isArray {
+						fmt.Println("array type name:", typeName)
 						typeNameToFind := append(before, after[0])
+						fmt.Println("array type name to find:", typeNameToFind)
 						arrayType := typeMap[slices.IndexFunc(typeMap, func(findType struct {
 							typeName []string
 							val      apitypes.Type
 						}) bool {
 							return slices.Equal(findType.typeName, typeNameToFind)
 						})].val.Type
+						fmt.Println("array type:", arrayType)
 						types[typeName] = append(val, apitypes.Type{Name: after[0], Type: arrayType + "[]"})
 						break
 					} else {

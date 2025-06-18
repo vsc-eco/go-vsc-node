@@ -83,11 +83,13 @@ func TestFullCircuitFlow(t *testing.T) {
 	assert.NoError(t, err)
 
 	// add and verify the first member's signature
-	err = partialCircuit.AddAndVerify(did1, sig1)
+	added, err := partialCircuit.AddAndVerify(did1, sig1)
+	assert.True(t, added, "did1 should be added with sig1")
 	assert.NoError(t, err)
 
 	// add and verify the second member's signature
-	err = partialCircuit.AddAndVerify(did2, sig2)
+	added, err = partialCircuit.AddAndVerify(did2, sig2)
+	assert.True(t, added, "did2 should be added with sig2")
 	assert.NoError(t, err)
 
 	// finalize the circuit after both members have signed
@@ -124,7 +126,8 @@ func TestInvalidSignature(t *testing.T) {
 	invalidSig := sig[:len(sig)-1] + "SOME_INVALID_SIG_SUFFIX"
 
 	// add and verify the invalid signature
-	err = partialCircuit.AddAndVerify(did1, invalidSig)
+	added, err := partialCircuit.AddAndVerify(did1, invalidSig)
+	assert.False(t, added, "did1 should not be added with an invalid sig")
 	// should error out
 	assert.Error(t, err)
 }
@@ -154,7 +157,8 @@ func TestWrongPublicKey(t *testing.T) {
 	assert.NoError(t, err)
 
 	// use wrong DID for verification
-	err = partialCircuit.AddAndVerify(did2, sig)
+	added, err := partialCircuit.AddAndVerify(did2, sig)
+	assert.False(t, added, "did2 did not sign sig and can not be used to add it")
 	// should error out
 	assert.Error(t, err)
 }
@@ -186,7 +190,8 @@ func TestNotAllMembersSigned(t *testing.T) {
 	// add and verify only one signature
 	sig1, err := provider1.Sign(block.Cid())
 	assert.NoError(t, err)
-	err = partialCircuit.AddAndVerify(did1, sig1)
+	added, err := partialCircuit.AddAndVerify(did1, sig1)
+	assert.True(t, added, "did1 should be added with sig1")
 	assert.NoError(t, err)
 
 	// try finalizing without all signatures
