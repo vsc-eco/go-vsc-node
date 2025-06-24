@@ -39,9 +39,9 @@ import (
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 )
 
-var BOOTSTRAP = []string{
-	"/dnsaddr/api.vsc.eco/tcp/10720/p2p/12D3KooWPDDBopmMddVe4qvmWjt8WSKsTtrLQPYp8KA9tiWWUcyG",
-	"/ip4/149.56.25.168/tcp/10720/p2p/12D3KooWPDDBopmMddVe4qvmWjt8WSKsTtrLQPYp8KA9tiWWUcyG",   // TODO this is api.vsc.eco, but DNS resolution doesn't work?
+var MAINNET_BOOTSTRAP = []string{
+	"/dnsaddr/api.vsc.eco/tcp/10720/p2p/12D3KooWFVVQ2xG6ohJ3tQrh3V6zZnRnKPVfQWVH5LjJakzBCs7E",
+	"/ip4/149.56.25.168/tcp/10720/p2p/12D3KooWFVVQ2xG6ohJ3tQrh3V6zZnRnKPVfQWVH5LjJakzBCs7E",   // TODO this is api.vsc.eco, but DNS resolution doesn't work?
 	"/ip4/173.211.12.65/tcp/10720/p2p/12D3KooWGpWrBc5pFx5GHWibczTPrazDCfk8GCETB5Ynb4Dq5L5V",   //@vaultec.vsc
 	"/ip4/147.135.15.155/tcp/10720/p2p/12D3KooWCAE4XrkE4NJL3nqYkXXNhte94rdBDGGVQQJewrDXDVJZ",  // mengao
 	"/ip4/188.40.125.182/tcp/10720/p2p/12D3KooWPzZ9RzsCP6BREUFbY1xyZiJ3PPoCW3DFGDhAwExiUazV",  //@spker
@@ -60,8 +60,9 @@ var BOOTSTRAP = []string{
 }
 
 type P2PServer struct {
-	witnessDb WitnessGetter
-	conf      common.IdentityConfig
+	witnessDb    WitnessGetter
+	conf         common.IdentityConfig
+	systemConfig common.SystemConfig
 
 	host   host.Host
 	dht    *kadDht.IpfsDHT
@@ -80,7 +81,7 @@ type WitnessGetter interface {
 	GetLastestWitnesses() ([]witnesses.Witness, error)
 }
 
-func New(witnessDb WitnessGetter, conf common.IdentityConfig, port ...int) *P2PServer {
+func New(witnessDb WitnessGetter, conf common.IdentityConfig, sconf common.SystemConfig, port ...int) *P2PServer {
 
 	p := 10720
 	if len(port) > 0 {
@@ -88,11 +89,12 @@ func New(witnessDb WitnessGetter, conf common.IdentityConfig, port ...int) *P2PS
 	}
 
 	return &P2PServer{
-		witnessDb:   witnessDb,
-		conf:        conf,
-		cron:        cron.New(),
-		startStatus: start_status.New(),
-		port:        p,
+		witnessDb:    witnessDb,
+		conf:         conf,
+		cron:         cron.New(),
+		startStatus:  start_status.New(),
+		port:         p,
+		systemConfig: sconf,
 	}
 }
 
@@ -234,11 +236,13 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 
 	uniquePeers := make(map[string]struct{})
 
-	for _, peerStr := range BOOTSTRAP {
-		peerId, _ := peer.AddrInfoFromString(peerStr)
-		uniquePeers[peerId.ID.String()] = struct{}{}
-		p2ps.host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
-		p2ps.host.Connect(context.Background(), *peerId)
+	if p2ps.systemConfig.Network == "mainnet" {
+		for _, peerStr := range MAINNET_BOOTSTRAP {
+			peerId, _ := peer.AddrInfoFromString(peerStr)
+			uniquePeers[peerId.ID.String()] = struct{}{}
+			p2ps.host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
+			p2ps.host.Connect(context.Background(), *peerId)
+		}
 	}
 
 	p2ps.dht.Bootstrap(context.Background())
@@ -267,7 +271,7 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 				}
 			}
 			peerLen := len(p2ps.host.Network().Peers())
-			fmt.Println("peers", "["+peerList+"]", "peers.len()="+strconv.Itoa(peerLen))
+			// fmt.Println("peers", "["+peerList+"]", "peers.len()="+strconv.Itoa(peerLen))
 			if peerLen >= len(uniquePeers)-1 {
 				p2ps.startStatus.TriggerStart()
 			}
@@ -400,10 +404,12 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 func (p2p *P2PServer) discoverPeers() {
 
 	if len(p2p.host.Network().Peers()) < 2 {
-		for _, peerStr := range BOOTSTRAP {
-			peerId, _ := peer.AddrInfoFromString(peerStr)
+		if p2p.systemConfig.Network == "mainnet" {
+			for _, peerStr := range MAINNET_BOOTSTRAP {
+				peerId, _ := peer.AddrInfoFromString(peerStr)
 
-			p2p.host.Connect(context.Background(), *peerId)
+				p2p.host.Connect(context.Background(), *peerId)
+			}
 		}
 	}
 

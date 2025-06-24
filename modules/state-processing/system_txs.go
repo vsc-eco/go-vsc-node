@@ -586,8 +586,9 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				OpIndex: idx,
 			})
 
+			fmt.Println("broadcast inject tx", tx.Headers.Nonce, tx.Headers.RequiredAuths)
 			keyId := transactionpool.HashKeyAuths(tx.Headers.RequiredAuths)
-			if nonceUpdates[keyId] < tx.Headers.Nonce {
+			if nonceUpdates[keyId] < tx.Headers.Nonce || nonceUpdates[keyId] == 0 {
 				nonceUpdates[keyId] = tx.Headers.Nonce
 			}
 
@@ -616,6 +617,12 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	for k, v := range nonceUpdates {
 		se.nonceDb.SetNonce(k, v+1)
 	}
+
+	// for _, v := range txsToInjest {
+	// 	se.txDb.Ingest(
+
+	// 	)
+	// }
 
 	se.TxBatch = append(txsToInjest, se.TxBatch...)
 }

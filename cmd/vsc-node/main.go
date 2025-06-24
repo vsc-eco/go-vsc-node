@@ -30,7 +30,6 @@ import (
 	"vsc-node/modules/gql/gqlgen"
 	"vsc-node/modules/hive/streamer"
 	p2pInterface "vsc-node/modules/p2p"
-	rcSystem "vsc-node/modules/rc-system"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 
@@ -102,7 +101,11 @@ func main() {
 		},
 	}
 
-	p2p := p2pInterface.New(witnessesDb, identityConfig)
+	sysConfig := common.SystemConfig{
+		Network: "mainnet",
+	}
+
+	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig)
 
 	peerGetter := p2p.PeerInfo()
 
@@ -121,10 +124,9 @@ func main() {
 	l := logger.PrefixedLogger{
 		"vsc-node",
 	}
-
-	rcSystem := rcSystem.New(rcDb)
-
 	se := stateEngine.New(l, da, witnessDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
+
+	rcSystem := se.RcSystem
 
 	vstream := vstream.New(se)
 	ep := election_proposer.New(p2p, witnessesDb, electionDb, balanceDb, da, &hiveCreator, identityConfig, se, vstream)
@@ -133,7 +135,7 @@ func main() {
 
 	multisig := gateway.New(l, witnessesDb, electionDb, actionsDb, balanceDb, &hiveCreator, vstream, p2p, se, identityConfig, hiveRpcClient)
 
-	txpool := transactionpool.New(p2p, txDb, da, identityConfig)
+	txpool := transactionpool.New(p2p, txDb, nonceDb, hiveBlocks, da, identityConfig, rcSystem)
 
 	sr := streamer.NewStreamReader(hiveBlocks, vstream.ProcessBlock, se.SaveBlockHeight, stBlock)
 

@@ -59,13 +59,18 @@ func (ls *LedgerSystem) GetBalance(account string, blockHeight uint64, asset str
 		return 0
 	}
 
-	balRecord, _ := ls.BalanceDb.GetBalanceRecord(account, blockHeight)
+	balRecordPtr, _ := ls.BalanceDb.GetBalanceRecord(account, blockHeight)
 
-	if balRecord == nil {
-		return 0
+	var recordHeight uint64
+	var balRecord ledgerDb.BalanceRecord
+	if balRecordPtr == nil {
+		recordHeight = 0
+	} else {
+		balRecord = *balRecordPtr
+		recordHeight = balRecord.BlockHeight + 1
 	}
 	if asset == "hbd" {
-		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, balRecord.BlockHeight+1, blockHeight, asset, ledgerDb.LedgerOptions{
+		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, recordHeight, blockHeight, asset, ledgerDb.LedgerOptions{
 			OpType: []string{"unstake", "deposit"},
 		})
 
@@ -77,7 +82,7 @@ func (ls *LedgerSystem) GetBalance(account string, blockHeight uint64, asset str
 
 		return balRecord.HBD + balAdjust
 	} else if asset == "hive" {
-		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, balRecord.BlockHeight+1, blockHeight, asset, ledgerDb.LedgerOptions{
+		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, recordHeight, blockHeight, asset, ledgerDb.LedgerOptions{
 			OpType: []string{"deposit"},
 		})
 
@@ -90,7 +95,7 @@ func (ls *LedgerSystem) GetBalance(account string, blockHeight uint64, asset str
 		return balRecord.Hive + balAdjust
 	} else if asset == "hbd_savings" {
 
-		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, balRecord.BlockHeight+1, blockHeight, asset, ledgerDb.LedgerOptions{
+		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, recordHeight, blockHeight, asset, ledgerDb.LedgerOptions{
 			OpType: []string{"stake"},
 		})
 
@@ -99,7 +104,7 @@ func (ls *LedgerSystem) GetBalance(account string, blockHeight uint64, asset str
 		for _, v := range *ledgerResults {
 			stakeBal += v.Amount
 		}
-		ls.log.Debug("GetBalance HBD_SAVINGS-BAL", stakeBal, *balRecord, blockHeight)
+		ls.log.Debug("GetBalance HBD_SAVINGS-BAL", stakeBal, balRecord, blockHeight)
 
 		return balRecord.HBD_SAVINGS + stakeBal
 	} else if asset == "hive_consensus" {

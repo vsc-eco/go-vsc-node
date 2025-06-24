@@ -14,9 +14,11 @@ import (
 
 type MockHiveDbs struct {
 	blocks map[uint64]*hive_blocks.HiveBlock
+
+	HighestBlock uint64
 }
 
-func (m *MockHiveDbs) StoreBlocks(blocks ...hive_blocks.HiveBlock) error {
+func (m *MockHiveDbs) StoreBlocks(processedBlk uint64, blocks ...hive_blocks.HiveBlock) error {
 	for _, block := range blocks {
 		m.blocks[block.BlockNumber] = &block
 	}
@@ -39,12 +41,12 @@ func (m *MockHiveDbs) FetchStoredBlocks(startBlock uint64, endBlock uint64) ([]h
 	return nil, nil
 }
 
-func (m *MockHiveDbs) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block hive_blocks.HiveBlock) error) (context.CancelFunc, <-chan error) {
+func (m *MockHiveDbs) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block hive_blocks.HiveBlock, heightHead *uint64) error) (context.CancelFunc, <-chan error) {
 	return nil, nil
 }
 
 func (m *MockHiveDbs) GetHighestBlock() (uint64, error) {
-	return 0, nil
+	return m.HighestBlock, nil
 }
 
 func (m *MockHiveDbs) GetBlock(blockNum uint64) (hive_blocks.HiveBlock, error) {
@@ -52,6 +54,14 @@ func (m *MockHiveDbs) GetBlock(blockNum uint64) (hive_blocks.HiveBlock, error) {
 		return hive_blocks.HiveBlock{}, errors.New("block not found")
 	}
 	return *m.blocks[blockNum], nil
+}
+
+func (m *MockHiveDbs) GetMetadata() (hive_blocks.Document, error) {
+	return hive_blocks.Document{}, nil
+}
+
+func (m *MockHiveDbs) SetMetadata(doc hive_blocks.Document) error {
+	return nil
 }
 
 func (m *MockHiveDbs) Init() error {

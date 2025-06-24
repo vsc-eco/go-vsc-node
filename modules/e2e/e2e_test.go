@@ -4,6 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"testing"
@@ -19,6 +22,12 @@ import (
 	"vsc-node/lib/test_utils"
 	stateEngine "vsc-node/modules/state-processing"
 
+	// "github.com/decred/dcrd/dcrec/secp256k1/v2"
+
+	ethCrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/hasura/go-graphql-client"
+
+	// secp256k1 "github.com/ethereum/go-ethereum/crypto/secp256k1"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/vsc-eco/hivego"
 )
@@ -29,6 +38,7 @@ import (
 const NODE_COUNT = 9
 
 func TestE2E(t *testing.T) {
+
 	config.UseMainConfigDuringTests = true
 	cbortypes.RegisterTypes()
 	mockReader := stateEngine.NewMockReader()
@@ -90,6 +100,7 @@ func TestE2E(t *testing.T) {
 		Username:  "e2e-1",
 		BrcstFunc: broadcastFunc,
 		Runner:    r2e,
+		Primary:   true,
 	})
 	runningNodes = append(runningNodes, *primaryNode)
 
@@ -112,8 +123,8 @@ func TestE2E(t *testing.T) {
 	pubKey, privKey, _ := ed25519.GenerateKey(rand.Reader)
 	didKey, _ := dids.NewKeyDID(pubKey)
 
-	pubKey1, privKey1, _ := ed25519.GenerateKey(rand.Reader)
-	didKeyNoRcs, _ := dids.NewKeyDID(pubKey1)
+	// pubKey1, privKey1, _ := ed25519.GenerateKey(rand.Reader)
+	// didKeyNoRcs, _ := dids.NewKeyDID(pubKey1)
 
 	transactionCreator := transactionpool.TransactionCrafter{
 		Identity: dids.NewKeyProvider(privKey),
@@ -124,14 +135,79 @@ func TestE2E(t *testing.T) {
 		},
 	}
 
-	transactionCreatorNoRc := transactionpool.TransactionCrafter{
-		Identity: dids.NewKeyProvider(privKey1),
-		Did:      didKeyNoRcs,
+	// ethKeyHex := "ea3625737c9840af61e95a9fab172a5495b533978ba88cb68723514802119917" // 0x00000E1c8094cAC66CD1adf4C240cd9Cf43B4D46
+	ethKeyHex := "5feac6ad3d3556a3a81bd9d2c881f195b5a8b4a5ce8f7bd4fa32c10bf186575a" // 0xcafe412dC5fb69FD5155a3b63A5AD6d3Bb80738b
+
+	pk, _ := ethCrypto.GenerateKey()
+
+	fmt.Println("eth key", hex.EncodeToString(ethCrypto.FromECDSA(pk)))
+	privBytes, _ := hex.DecodeString(ethKeyHex)
+	fmt.Println("privBytes", privBytes)
+	ethPriv, err := ethCrypto.ToECDSA(privBytes)
+
+	fmt.Println("ethPriv", ethPriv, err)
+
+	ethProvider := dids.NewEthProvider(ethPriv)
+
+	ethAddr := ethCrypto.PubkeyToAddress(ethPriv.PublicKey)
+	ethDid := dids.NewEthDID(ethAddr.Hex())
+	kk, _ := ethCrypto.ToECDSA(privBytes)
+
+	fmt.Println("privBytes", hex.EncodeToString(privBytes))
+
+	fmt.Println(ethCrypto.PubkeyToAddress(kk.PublicKey).Hex(), ethCrypto.PubkeyToAddress(ethPriv.PublicKey).Hex())
+
+	ethCreator := transactionpool.TransactionCrafter{
+		Identity: ethProvider,
+		Did:      ethDid,
 
 		VSCBroadcast: &transactionpool.InternalBroadcast{
 			TxPool: runningNodes[0].TxPool,
 		},
 	}
+	ethCreator.Did.String()
+
+	// fmt.Println("EVM test")
+	// fmt.Println("EVM test")
+	// transferOp := &transactionpool.VSCTransfer{
+	// 	From:   ethDid.String(),
+	// 	To:     "hive:vsc.account",
+	// 	Amount: "0.001",
+	// 	Asset:  "hbd",
+	// 	NetId:  "vsc-mainnet",
+	// 	Nonce:  0,
+	// }
+	// transferOp2 := &transactionpool.VSCTransfer{
+	// 	From:   ethDid.String(),
+	// 	To:     "hive:vsc.account",
+	// 	Amount: "0.001",
+	// 	Asset:  "hbd",
+	// 	NetId:  "vsc-mainnet",
+	// 	Nonce:  0,
+	// }
+	// op, _ := transferOp.SerializeVSC()
+	// op2, _ := transferOp2.SerializeVSC()
+	// tx := transactionpool.VSCTransaction{
+	// 	Ops: []transactionpool.VSCTransactionOp{
+	// 		op,
+	// 		op2,
+	// 	},
+	// }
+	// sTx, err := ethCreator.SignFinal(tx)
+
+	// bbb, _ := json.Marshal(sTx)
+	// fmt.Println("VSCTransfer err", err, string(bbb))
+
+	// transactionCreator.Broadcast(sTx)
+
+	// transactionCreatorNoRc := transactionpool.TransactionCrafter{
+	// 	Identity: dids.NewKeyProvider(privKey1),
+	// 	Did:      didKeyNoRcs,
+
+	// 	VSCBroadcast: &transactionpool.InternalBroadcast{
+	// 		TxPool: runningNodes[0].TxPool,
+	// 	},
+	// }
 
 	r2e.SetSteps([]func() error{
 		r2e.WaitToStart(),
@@ -146,8 +222,10 @@ func TestE2E(t *testing.T) {
 		},
 		func() error {
 			fmt.Println("[Prefix: e2e-1] Executing test transfer from test-account to @vsc.gateway of 50 hbd")
-			mockCreator.Transfer("test-account", "vsc.gateway", "0.2", "HBD", "to="+didKey.String())
+			mockCreator.Transfer("test-account", "vsc.gateway", "1500", "HBD", "to="+didKey.String())
+			mockCreator.Transfer("test-account", "vsc.gateway", "1000", "HBD", "to="+ethDid.String())
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "")
+			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "to=0x25190d9443442765769Fe5CcBc8aA76151932a1A")
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HIVE", "")
 			return nil
 		},
@@ -158,22 +236,50 @@ func TestE2E(t *testing.T) {
 		doWithdraw,
 		func() error {
 			transferOp := &transactionpool.VSCTransfer{
-				From:   didKeyNoRcs.String(),
+				From:   didKey.String(),
 				To:     "hive:vsc.account",
 				Amount: "0.001",
 				Asset:  "hbd",
 				NetId:  "vsc-mainnet",
-				Nonce:  0,
 			}
-			sTx, err := transactionCreatorNoRc.SignFinal(transferOp)
+			op, _ := transferOp.SerializeVSC()
+			tx := transactionpool.VSCTransaction{
+				Ops: []transactionpool.VSCTransactionOp{
+					op,
+				},
+			}
+			sTx, err := transactionCreator.SignFinal(tx)
 
-			fmt.Println("VSCTransfer err", err)
+			bbb, _ := json.Marshal(sTx)
+			fmt.Println("VSCTransfer err", err, string(bbb))
 
-			transactionCreatorNoRc.Broadcast(sTx)
+			transactionCreator.Broadcast(sTx)
 
 			return nil
 		},
+		func() error {
+			transferOp := &transactionpool.VSCTransfer{
+				From:   ethDid.String(),
+				To:     "hive:vsc.account",
+				Amount: "0.001",
+				Asset:  "hbd",
+				NetId:  "vsc-mainnet",
+			}
+			op, _ := transferOp.SerializeVSC()
+			tx := transactionpool.VSCTransaction{
+				Ops: []transactionpool.VSCTransactionOp{
+					op,
+				},
+			}
+			sTx, err := ethCreator.SignFinal(tx)
 
+			bbb, _ := json.Marshal(sTx)
+			fmt.Println("VSCTransfer err", err, string(bbb))
+
+			transactionCreator.Broadcast(sTx)
+
+			return nil
+		},
 		func() error {
 			stakeTx := &transactionpool.VscConsenusStake{
 				Account: "hive:test-account",
@@ -199,39 +305,39 @@ func TestE2E(t *testing.T) {
 			return nil
 		},
 
-		func() error {
-			for i := 0; i < 5; i++ {
-				transferOp := &transactionpool.VSCTransfer{
-					From:   didKey.String(),
-					To:     "hive:vsc.account",
-					Amount: "0.001",
-					Asset:  "hbd",
-					NetId:  "vsc-mainnet",
-					Nonce:  uint64(i),
-				}
-				sTx, _ := transactionCreator.SignFinal(transferOp)
+		// func() error {
+		// 	for i := 0; i < 5; i++ {
+		// 		transferOp := &transactionpool.VSCTransfer{
+		// 			From:   didKey.String(),
+		// 			To:     "hive:vsc.account",
+		// 			Amount: "0.001",
+		// 			Asset:  "hbd",
+		// 			NetId:  "vsc-mainnet",
+		// 			Nonce:  uint64(i),
+		// 		}
+		// 		sTx, _ := transactionCreator.SignFinal(transferOp)
 
-				transactionCreator.Broadcast(sTx)
-			}
+		// 		transactionCreator.Broadcast(sTx)
+		// 	}
 
-			stakeOp := &transactionpool.VSCStake{
-				From:   didKey.String(),
-				To:     didKey.String(),
-				Amount: "0.020",
-				Asset:  "hbd",
-				NetId:  "vsc-mainnet",
-				Type:   "stake",
-				Nonce:  uint64(5),
-			}
-			sTx, err := transactionCreator.SignFinal(stakeOp)
+		// 	stakeOp := &transactionpool.VSCStake{
+		// 		From:   didKey.String(),
+		// 		To:     didKey.String(),
+		// 		Amount: "0.020",
+		// 		Asset:  "hbd",
+		// 		NetId:  "vsc-mainnet",
+		// 		Type:   "stake",
+		// 		Nonce:  uint64(5),
+		// 	}
+		// 	sTx, err := transactionCreator.SignFinal(stakeOp)
 
-			fmt.Println("Sign error", err, sTx)
+		// 	fmt.Println("Sign error", err, sTx)
 
-			stakeId, err := transactionCreator.Broadcast(sTx)
+		// 	stakeId, err := transactionCreator.Broadcast(sTx)
 
-			fmt.Println("stakeId", stakeId, err)
-			return nil
-		},
+		// 	fmt.Println("stakeId", stakeId, err)
+		// 	return nil
+		// },
 		r2e.Wait(40),
 		func() error {
 			stakeTx := &transactionpool.VscConsenusStake{
@@ -257,22 +363,22 @@ func TestE2E(t *testing.T) {
 			fmt.Println("stakeId", unstakeId)
 			return nil
 		},
-		func() error {
-			transferTx := &transactionpool.VSCTransfer{
-				From:   didKey.String(),
-				To:     "hive:vsc.account",
-				Amount: "0.015",
-				Asset:  "hbd_savings",
-				NetId:  "vsc-mainnet",
-				Nonce:  uint64(6),
-			}
-			sTx, _ := transactionCreator.SignFinal(transferTx)
+		// func() error {
+		// 	transferTx := &transactionpool.VSCTransfer{
+		// 		From:   didKey.String(),
+		// 		To:     "hive:vsc.account",
+		// 		Amount: "0.015",
+		// 		Asset:  "hbd_savings",
+		// 		NetId:  "vsc-mainnet",
+		// 		Nonce:  uint64(6),
+		// 	}
+		// 	sTx, _ := transactionCreator.SignFinal(transferTx)
 
-			stakeId, err := transactionCreator.Broadcast(sTx)
+		// 	stakeId, err := transactionCreator.Broadcast(sTx)
 
-			fmt.Println("transferStakeId", stakeId, err)
-			return nil
-		},
+		// 	fmt.Println("transferStakeId", stakeId, err)
+		// 	return nil
+		// },
 		r2e.Wait(10),
 		func() error {
 			unstakeTx := &transactionpool.VSCStake{
@@ -447,9 +553,12 @@ func TestE2E(t *testing.T) {
 
 	test_utils.RunPlugin(t, startupAggregate, true)
 
-	mockReader.ProcessFunction = func(block hive_blocks.HiveBlock) {
+	mockReader.ProcessFunction = func(block hive_blocks.HiveBlock, headHeight *uint64) {
 		for _, node := range runningNodes {
-			node.VStream.ProcessBlock(block)
+			node.MockHiveBlocks.HighestBlock = block.BlockNumber
+		}
+		for _, node := range runningNodes {
+			node.VStream.ProcessBlock(block, headHeight)
 		}
 	}
 
@@ -468,6 +577,7 @@ func TestE2E(t *testing.T) {
 				peerId, _ := peer.AddrInfoFromString(peerStr)
 				ctx := context.Background()
 				ctx, _ = context.WithTimeout(ctx, 5*time.Second)
+				fmt.Println("Trying to connect", peerId)
 				node.P2P.Connect(ctx, *peerId)
 			}
 		}
@@ -483,3 +593,87 @@ func TestE2E(t *testing.T) {
 }
 
 // Mock seed for testing
+
+func TestPostEVM(t *testing.T) {
+	// ethKeyHex := "ea3625737c9840af61e95a9fab172a5495b533978ba88cb68723514802119917" // 0x00000E1c8094cAC66CD1adf4C240cd9Cf43B4D46
+	ethKeyHex := "5feac6ad3d3556a3a81bd9d2c881f195b5a8b4a5ce8f7bd4fa32c10bf186575a" // 0xcafe412dC5fb69FD5155a3b63A5AD6d3Bb80738b
+
+	pk, _ := ethCrypto.GenerateKey()
+
+	fmt.Println("eth key", hex.EncodeToString(ethCrypto.FromECDSA(pk)))
+	privBytes, _ := hex.DecodeString(ethKeyHex)
+	fmt.Println("privBytes", privBytes)
+	ethPriv, err := ethCrypto.ToECDSA(privBytes)
+
+	fmt.Println("ethPriv", ethPriv, err)
+
+	ethProvider := dids.NewEthProvider(ethPriv)
+
+	ethAddr := ethCrypto.PubkeyToAddress(ethPriv.PublicKey)
+	ethDid := dids.NewEthDID(ethAddr.Hex())
+	kk, _ := ethCrypto.ToECDSA(privBytes)
+
+	fmt.Println("privBytes", hex.EncodeToString(privBytes))
+
+	fmt.Println(ethCrypto.PubkeyToAddress(kk.PublicKey).Hex(), ethCrypto.PubkeyToAddress(ethPriv.PublicKey).Hex())
+
+	ethCreator := transactionpool.TransactionCrafter{
+		Identity: ethProvider,
+		Did:      ethDid,
+	}
+
+	gql := graphql.NewClient("http://localhost:7080/api/v1/graphql", nil)
+
+	var nonceQuery struct {
+		GetAccountNonce struct {
+			Nonce graphql.Int `graphql:"nonce"`
+		} `graphql:"getAccountNonce(account: $account)"`
+	}
+
+	err = gql.Query(context.Background(), &nonceQuery, map[string]any{
+		"account": graphql.String(ethDid.String()),
+	})
+
+	if err != nil {
+		fmt.Println("Error fetching nonce", err)
+		return
+	}
+
+	nonce := int(nonceQuery.GetAccountNonce.Nonce)
+	fmt.Println("Current nonce for", ethDid.String(), "is", nonce)
+
+	transferOp := &transactionpool.VSCTransfer{
+		From:   ethDid.String(),
+		To:     "hive:vsc.account",
+		Amount: "0.025",
+		Asset:  "hbd",
+		NetId:  "vsc-mainnet",
+	}
+	op, _ := transferOp.SerializeVSC()
+	tx := transactionpool.VSCTransaction{
+		Ops: []transactionpool.VSCTransactionOp{
+			op,
+		},
+		Nonce: uint64(nonce),
+	}
+	sTx, err := ethCreator.SignFinal(tx)
+
+	bbb, _ := json.Marshal(sTx)
+	fmt.Println("VSCTransfer err", err, string(bbb))
+
+	txStr := base64.StdEncoding.EncodeToString(sTx.Tx)
+	sigStr := base64.StdEncoding.EncodeToString(sTx.Sig)
+
+	var q struct {
+		SubmitTransactionV1 struct {
+			Id graphql.String `graphql:"id"`
+		} `graphql:"submitTransactionV1(tx: $tx, sig: $sig)"`
+	}
+
+	err = gql.Query(context.Background(), &q, map[string]any{
+		"tx":  graphql.String(txStr),
+		"sig": graphql.String(sigStr),
+	})
+
+	fmt.Println("Transaction submitted", q, err)
+}

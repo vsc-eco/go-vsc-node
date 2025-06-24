@@ -56,7 +56,7 @@ type StateEngine struct {
 	//Nonce map similar to what we use before
 	NonceMap map[string]int
 	RcMap    map[string]int64
-	rcSystem *rcSystem.RcSystem
+	RcSystem *rcSystem.RcSystem
 
 	//Unused ideas
 	// AnchoredHeight uint64
@@ -750,7 +750,7 @@ func (se *StateEngine) ExecuteBatch() {
 
 		fmt.Println("Executing item in batch", idx, len(se.TxBatch))
 		ledgerSession := se.LedgerExecutor.NewSession(lastBlockBh)
-		rcSession := se.rcSystem.NewSession(ledgerSession)
+		rcSession := se.RcSystem.NewSession(ledgerSession)
 
 		contractSessions := make(map[string]*contract_session.ContractSession)
 
@@ -775,7 +775,7 @@ func (se *StateEngine) ExecuteBatch() {
 			// }
 
 			if vscTx.Type() == "deposit" {
-				continue;
+				continue
 			}
 			if se.firstTxHeight == 0 {
 				se.firstTxHeight = vscTx.TxSelf().BlockHeight - 1
@@ -1034,7 +1034,10 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 			frozeAmt := rcSystem.CalculateFrozenBal(rcRecord.BlockHeight, blockHeight, rcRecord.Amount)
 
 			rcBal = frozeAmt + v
+			fmt.Println("rcRecord frozeAmt", frozeAmt, rcRecord.BlockHeight, blockHeight, rcRecord.Amount)
 		}
+
+		fmt.Println("rcRecord k", k, rcRecord, rcBal)
 		se.rcDb.SetRecord(k, blockHeight, rcBal)
 	}
 }
@@ -1123,6 +1126,14 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 	nonceDb nonces.Nonces,
 	wasm *wasm_parent_ipc.Wasm,
 ) *StateEngine {
+
+	ls := &LedgerSystem{
+		BalanceDb: balanceDb,
+		LedgerDb:  ledgerDb,
+		ClaimDb:   interestClaims,
+		ActionsDb: actionDb,
+		log:       logger,
+	}
 	return &StateEngine{
 		log:             logger,
 		TxOutput:        make(map[string]TxOutput),
@@ -1143,20 +1154,14 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 		txDb:          txDb,
 		rcDb:          rcDb,
 		nonceDb:       nonceDb,
-		rcSystem:      rcSystem.New(rcDb),
+		RcSystem:      rcSystem.New(rcDb, ls),
 		RcMap:         make(map[string]int64),
 
 		wasm: wasm,
 
 		LedgerExecutor: &LedgerExecutor{
 			VirtualLedger: make(map[string][]ledgerSystem.LedgerUpdate),
-			Ls: &LedgerSystem{
-				BalanceDb: balanceDb,
-				LedgerDb:  ledgerDb,
-				ClaimDb:   interestClaims,
-				ActionsDb: actionDb,
-				log:       logger,
-			},
+			Ls:            ls,
 		},
 	}
 }

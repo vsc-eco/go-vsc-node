@@ -7,3 +7,7 @@ type PeerInfoGetter interface {
 	GetPeerAddrs() []multiaddr.Multiaddr
 	GetPeerAddr() multiaddr.Multiaddr
 }
+
+type SystemConfig struct {
+	Network string
+}

@@ -15,6 +15,7 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
+	transactionpool "vsc-node/modules/transaction-pool"
 	wasm_types "vsc-node/modules/wasm/types"
 
 	"github.com/JustinKnueppel/go-result"
@@ -944,13 +945,15 @@ type OffchainTransaction struct {
 
 	TxId string `json:"-"`
 
-	DataType string `json:"__t" jsonschema:"required"`
-	Version  string `json:"__v" jsonschema:"required"`
+	transactionpool.VSCTransactionShell
 
-	Headers TransactionHeader `json:"headers"`
+	// DataType string `json:"__t" jsonschema:"required"`
+	// Version  string `json:"__v" jsonschema:"required"`
+
+	// Headers TransactionHeader `json:"headers"`
 
 	//This this can be any kind of object.
-	Tx map[string]interface{} `json:"tx"`
+	// Tx []transactionpool.VSCTransactionOp `json:"tx"`
 }
 
 // Verify signature of vsc transaction
@@ -1017,22 +1020,20 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, txSelf TxSelf) {
 	anchoredIndex := int64(txSelf.Index)
 	// anchoredOpIdx := int64(txSelf.OpIndex)
 
-	data := make(map[string]interface{})
+	// data := make(map[string]interface{})
 	txs := tx.ToTransaction()
 
 	opList := make([]transactions.TransactionOperation, 0)
-	if len(txs) == 0 {
-		opList = append(opList, transactions.TransactionOperation{})
-		data = tx.Tx
-	} else {
-		parsedTx := txs[0]
 
-		for k, v := range parsedTx.ToData() {
-			data[k] = v
+	for idx, v := range txs {
+		op := transactions.TransactionOperation{
+			RequiredAuths: txSelf.RequiredAuths,
+			Type:          v.Type(),
+			Data:          v.ToData(),
+			Idx:           int64(idx),
 		}
 
-		data["type"] = parsedTx.Type()
-
+		opList = append(opList, op)
 	}
 
 	se.txDb.Ingest(transactions.IngestTransactionUpdate{
@@ -1062,63 +1063,65 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 	self.RequiredAuths = tx.Headers.RequiredAuths
 
 	// fmt.Println("stakeTx tx.Tx[type].(string)", tx.Tx["type"].(string))
-	var vtx VSCTransaction
-	switch tx.Tx["type"].(string) {
-	case "call":
-		callTx := TxVscCallContract{
-			Self:  self,
-			NetId: tx.Headers.NetId,
+
+	output := make([]VSCTransaction, 0)
+	for _, op := range tx.Tx {
+		var vtx VSCTransaction
+		switch op.Type {
+		case "call":
+			callTx := TxVscCallContract{
+				Self:  self,
+				NetId: tx.Headers.NetId,
+			}
+			transactionpool.DecodeTxCbor(op, &callTx)
+
+			vtx = callTx
+		case "transfer":
+			transferTx := TxVSCTransfer{
+				Self:  self,
+				NetId: tx.Headers.NetId,
+			}
+			transactionpool.DecodeTxCbor(op, &transferTx)
+
+			// bbytes, _ := json.Marshal(transferTx)
+			// fmt.Println("Decoded transfer tx", string(bbytes), decodeErr)
+			vtx = transferTx
+		case "withdraw":
+			withdrawTx := TxVSCWithdraw{
+				Self:  self,
+				NetId: tx.Headers.NetId,
+			}
+			transactionpool.DecodeTxCbor(op, &withdrawTx)
+
+			vtx = &withdrawTx
+		case "stake_hbd":
+			stakeTx := TxStakeHbd{
+				Self: self,
+
+				NetId: tx.Headers.NetId,
+			}
+
+			transactionpool.DecodeTxCbor(op, &stakeTx)
+
+			fmt.Println("stakeTx", stakeTx)
+			vtx = &stakeTx
+		case "unstake_hbd":
+			stakeTx := TxStakeHbd{
+				Self: self,
+
+				NetId: tx.Headers.NetId,
+			}
+
+			transactionpool.DecodeTxCbor(op, &stakeTx)
+
+			fmt.Println("stakeTx", stakeTx)
+			vtx = &stakeTx
 		}
-		vtx = callTx
-	case "transfer":
-		transferTx := TxVSCTransfer{
-			Self:  self,
-			NetId: tx.Headers.NetId,
-		}
-		decodeTxCbor(tx, &transferTx)
 
-		// bbytes, _ := json.Marshal(transferTx)
-		// fmt.Println("Decoded transfer tx", string(bbytes), decodeErr)
-		vtx = transferTx
-	case "withdraw":
-		withdrawTx := TxVSCWithdraw{
-			Self:  self,
-			NetId: tx.Headers.NetId,
-		}
-		decodeTxCbor(tx, &withdrawTx)
-
-		vtx = &withdrawTx
-	case "stake_hbd":
-		stakeTx := TxStakeHbd{
-			Self: self,
-
-			NetId: tx.Headers.NetId,
-		}
-
-		decodeTxCbor(tx, &stakeTx)
-
-		fmt.Println("stakeTx", stakeTx)
-		vtx = &stakeTx
-	case "unstake_hbd":
-		stakeTx := TxStakeHbd{
-			Self: self,
-
-			NetId: tx.Headers.NetId,
-		}
-
-		decodeTxCbor(tx, &stakeTx)
-
-		fmt.Println("stakeTx", stakeTx)
-		vtx = &stakeTx
+		output = append(output, vtx)
 	}
 
-	// fmt.Println("Maybe transfer tx", vtx, tx.Type())
-
-	if vtx == nil {
-		return nil
-	}
-
-	return []VSCTransaction{vtx}
+	return output
 }
 
 func (tx *OffchainTransaction) Type() string {

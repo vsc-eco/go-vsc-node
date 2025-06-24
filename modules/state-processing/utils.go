@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -21,7 +20,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ipfs/go-cid"
-	cbornode "github.com/ipfs/go-ipld-cbor"
 	"github.com/libp2p/go-libp2p"
 	kadDht "github.com/libp2p/go-libp2p-kad-dht"
 	libCrypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -305,14 +303,16 @@ func (mc *MockCreator) AccountUpdate(account string, json string) TxConfirmation
 
 func (mc *MockCreator) ClaimInterest(account string, amount int) TxConfirmation {
 
+	amtStr := strconv.Itoa(amount)
+
 	tx := hive_blocks.Tx{
 		Operations: []hivego.Operation{
 			{
 				Type: "transfer_to_savings",
 				Value: map[string]interface{}{
 
-					"amount": map[string]interface{}{
-						"amount":    amount,
+					"interest": map[string]interface{}{
+						"amount":    amtStr,
 						"nai":       "@@000000013",
 						"precision": 3,
 					},
@@ -335,7 +335,7 @@ func (mc *MockCreator) ClaimInterest(account string, amount int) TxConfirmation 
 				"interest": map[string]interface{}{
 					"nai":       "@@000000013",
 					"precision": 3,
-					"interest":  amount,
+					"amount":    amtStr,
 				},
 				"owner": account,
 			},
@@ -439,15 +439,4 @@ func copyJsonToType(src map[string]interface{}, dest interface{}) error {
 		return err
 	}
 	return json.Unmarshal(bytes, dest)
-}
-
-func decodeTxCbor(tx *OffchainTransaction, input interface{}) error {
-	payloadBytes, err := base64.StdEncoding.DecodeString(tx.Tx["payload"].(string))
-	if err != nil {
-		return nil
-	}
-	node, _ := cbornode.Decode(payloadBytes, mh.SHA2_256, -1)
-	jsonBytes, _ := node.MarshalJSON()
-
-	return json.Unmarshal(jsonBytes, input)
 }

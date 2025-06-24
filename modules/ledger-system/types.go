@@ -75,3 +75,7 @@ type LedgerSession interface {
 	ExecuteTransfer(OpLogEvent OpLogEvent, options ...TransferOptions) LedgerResult
 	Withdraw(withdraw WithdrawParams) LedgerResult
 }
+
+type LedgerSystem interface {
+	GetBalance(account string, blockHeight uint64, asset string) int64
+}

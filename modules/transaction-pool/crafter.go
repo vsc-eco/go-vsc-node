@@ -4,36 +4,60 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 
+	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
+	dagCbor "github.com/ipfs/go-ipld-cbor"
 	"github.com/multiformats/go-multicodec"
-	"github.com/multiformats/go-multihash"
+	multihash "github.com/multiformats/go-multihash/core"
+
 	"github.com/vsc-eco/hivego"
 )
 
 type TransactionCrafter struct {
 	VSCBroadcast
 
-	Identity dids.KeyProvider
+	Identity dids.Provider[blocks.Block]
 	Did      dids.DID
 }
 
-func (tp *TransactionCrafter) Sign(vsOp VSCOperation) (string, error) {
-	cid, _ := vsOp.Hash()
-	return tp.Identity.Sign(cid)
+func (tp *TransactionCrafter) Sign(vsOp VSCTransaction) (string, error) {
+	// _, signableHash, _ := vsOp.Hash()
+
+	// cid, _, err := vsOp.Hash()
+
+	// fmt.Println("sign hash bytes", cid.Bytes(), err)
+
+	fmt.Println("Preparing to sign VSC operation", vsOp)
+	blk, err := vsOp.ToSignableBlock()
+
+	fmt.Println("signable err", err)
+	if err != nil {
+		return "", fmt.Errorf("could not create signable block: %w", err)
+	}
+
+	fmt.Println("signable block", blk)
+	signedRet, err := tp.Identity.Sign(blk)
+
+	fmt.Println("signable block signed", signedRet, err)
+	return signedRet, err
+	// return "", errors.New("Signing not implemented yet")
 }
 
 // TODO: Provide option to supply already existing signature!
-func (tp *TransactionCrafter) SignFinal(vscOp VSCOperation) (SerializedVSCTransaction, error) {
-	sig, err := tp.Sign(vscOp)
+func (tp *TransactionCrafter) SignFinal(vscTx VSCTransaction) (SerializedVSCTransaction, error) {
+	sig, err := tp.Sign(vscTx)
 
 	if err != nil {
 		return SerializedVSCTransaction{}, err
 	}
+
+	fmt.Println("common.Sig", sig)
 
 	sigPackage := SignaturePackage{
 		Type: "vsc-sig",
@@ -46,7 +70,7 @@ func (tp *TransactionCrafter) SignFinal(vscOp VSCOperation) (SerializedVSCTransa
 		},
 	}
 
-	sTx, err := vscOp.SerializeVSC()
+	sTx, err := vscTx.Serialize()
 
 	if err != nil {
 		return SerializedVSCTransaction{}, err
@@ -70,7 +94,7 @@ type SignaturePackage struct {
 }
 
 type VSCOperation interface {
-	SerializeVSC() (SerializedVSCTransaction, error)
+	SerializeVSC() (VSCTransactionOp, error)
 	SerializeHive() ([]hivego.HiveOperation, error)
 	Hash() (cid.Cid, error)
 }
@@ -102,40 +126,30 @@ type VSCTransfer struct {
 	Asset  string `json:"asset"`  //Example: "hbd" or "hive" must be lowercase
 	//NOTE: NetId should be included in headers
 	NetId string `json:"-"` //NetId is included in custom_json as "net_id" if hive transaction; otherwise it's in headers
-	Nonce uint64 `json:"-"` //Used for offchain transactions only
 }
 
-func (vt *VSCTransfer) SerializeVSC() (SerializedVSCTransaction, error) {
+func (vt *VSCTransfer) SerializeVSC() (VSCTransactionOp, error) {
 	recode := map[string]interface{}{}
 	jjsonBytes, err := json.Marshal(vt)
 
 	if err != nil {
-		return SerializedVSCTransaction{}, err
+		return VSCTransactionOp{}, err
 	}
 
 	err = json.Unmarshal(jjsonBytes, &recode)
 
 	encodedBytes, _ := common.EncodeDagCbor(recode)
 
-	txShell := VSCTransactionShell{
-		Type:    "vsc-tx",
-		Version: "0.1",
-		Headers: VSCTransactionHeader{
-			Nonce:         vt.Nonce,
-			RequiredAuths: []string{vt.From},
-			Intents:       []string{},
-			NetId:         vt.NetId,
-		},
-		Tx: VSCTransactionData{
-			Type:    "transfer",
-			Payload: encodedBytes,
-		},
-	}
+	return VSCTransactionOp{
+		Type:    "transfer",
+		Payload: encodedBytes,
 
-	txShellBytes, _ := common.EncodeDagCbor(txShell)
-
-	return SerializedVSCTransaction{
-		Tx: txShellBytes,
+		RequiredAuths: struct {
+			Active  []string
+			Posting []string
+		}{
+			Active: []string{vt.From},
+		},
 	}, nil
 }
 
@@ -164,9 +178,9 @@ func (vt *VSCTransfer) SerializeHive() ([]hivego.HiveOperation, error) {
 	return []hivego.HiveOperation{op}, nil
 }
 
-func (vt *VSCTransfer) Hash() (cid.Cid, error) {
-	return hashVSCOperation(vt)
-}
+// func (vt *VSCTransfer) Hash() (cid.Cid, error) {
+// 	return hashVSCOperation(vt)
+// }
 
 type VSCStake struct {
 	From   string `json:"from"`
@@ -176,49 +190,38 @@ type VSCStake struct {
 	Type   string `json:"type"`
 
 	NetId string `json:"-"`
-	Nonce uint64 `json:"-"`
 }
 
-func (tx *VSCStake) SerializeVSC() (SerializedVSCTransaction, error) {
+func (tx *VSCStake) SerializeVSC() (VSCTransactionOp, error) {
 	recode := map[string]interface{}{}
 	jjsonBytes, err := json.Marshal(tx)
 
 	if err != nil {
-		return SerializedVSCTransaction{}, err
+		return VSCTransactionOp{}, err
 	}
 
 	err = json.Unmarshal(jjsonBytes, &recode)
 
 	if err != nil {
-		return SerializedVSCTransaction{}, err
+		return VSCTransactionOp{}, err
 	}
 
 	valid, err := tx.Validate()
 	if !valid {
-		return SerializedVSCTransaction{}, err
+		return VSCTransactionOp{}, err
 	}
 
 	encodedBytes, _ := common.EncodeDagCbor(recode)
 
-	txShell := VSCTransactionShell{
-		Type:    "vsc-tx",
-		Version: "0.1",
-		Headers: VSCTransactionHeader{
-			Nonce:         tx.Nonce,
-			RequiredAuths: []string{tx.From},
-			Intents:       []string{},
-			NetId:         tx.NetId,
+	return VSCTransactionOp{
+		Type:    tx.Type,
+		Payload: encodedBytes,
+		RequiredAuths: struct {
+			Active  []string
+			Posting []string
+		}{
+			Active: []string{tx.From, tx.To},
 		},
-		Tx: VSCTransactionData{
-			Type:    "stake_hbd",
-			Payload: encodedBytes,
-		},
-	}
-
-	txShellBytes, _ := common.EncodeDagCbor(txShell)
-
-	return SerializedVSCTransaction{
-		Tx: txShellBytes,
 	}, nil
 }
 
@@ -259,9 +262,9 @@ func (tx *VSCStake) SerializeHive() ([]hivego.HiveOperation, error) {
 	return []hivego.HiveOperation{op}, nil
 }
 
-func (tx *VSCStake) Hash() (cid.Cid, error) {
-	return hashVSCOperation(tx)
-}
+// func (tx *VSCStake) Hash() (cid.Cid, error) {
+// 	return hashVSCOperation(tx)
+// }
 
 func (tx *VSCStake) Validate() (bool, error) {
 	fl, err := strconv.ParseFloat(tx.Amount, 64)
@@ -292,7 +295,6 @@ type VscConsenusStake struct {
 	Type    string `json:"type"`
 
 	NetId string `json:"-"`
-	Nonce uint64 `json:"-"`
 }
 
 func (tx *VscConsenusStake) SerializeVSC() (SerializedVSCTransaction, error) {
@@ -334,9 +336,9 @@ func (tx *VscConsenusStake) SerializeHive() ([]hivego.HiveOperation, error) {
 	return []hivego.HiveOperation{op}, nil
 }
 
-func (tx *VscConsenusStake) Hash() (cid.Cid, error) {
-	return hashVSCOperation(tx)
-}
+// func (tx *VscConsenusStake) Hash() (cid.Cid, error) {
+// 	return hashVSCOperation(tx)
+// }
 
 func (tx *VscConsenusStake) Validate() (bool, error) {
 	if tx.NetId == "" {
@@ -363,49 +365,39 @@ type VscWithdraw struct {
 	Type   string `json:"type"`
 
 	NetId string `json:"-"`
-	Nonce uint64 `json:"-"`
 }
 
-func (tx *VscWithdraw) SerializeVSC() (SerializedVSCTransaction, error) {
+func (tx *VscWithdraw) SerializeVSC() (VSCTransactionOp, error) {
 	recode := map[string]interface{}{}
 	jjsonBytes, err := json.Marshal(tx)
 
 	if err != nil {
-		return SerializedVSCTransaction{}, err
+		return VSCTransactionOp{}, err
 	}
 
 	err = json.Unmarshal(jjsonBytes, &recode)
 
 	if err != nil {
-		return SerializedVSCTransaction{}, err
+		return VSCTransactionOp{}, err
 	}
 
 	valid, err := tx.Validate()
 	if !valid {
-		return SerializedVSCTransaction{}, err
+		return VSCTransactionOp{}, err
 	}
 
 	encodedBytes, _ := common.EncodeDagCbor(recode)
 
-	txShell := VSCTransactionShell{
-		Type:    "vsc-tx",
-		Version: "0.1",
-		Headers: VSCTransactionHeader{
-			Nonce:         tx.Nonce,
-			RequiredAuths: []string{tx.From},
-			Intents:       []string{},
-			NetId:         tx.NetId,
-		},
-		Tx: VSCTransactionData{
-			Type:    "withdraw",
-			Payload: encodedBytes,
-		},
-	}
+	return VSCTransactionOp{
+		Type:    "withdraw",
+		Payload: encodedBytes,
 
-	txShellBytes, _ := common.EncodeDagCbor(txShell)
-
-	return SerializedVSCTransaction{
-		Tx: txShellBytes,
+		RequiredAuths: struct {
+			Active  []string
+			Posting []string
+		}{
+			Active: []string{tx.From},
+		},
 	}, nil
 }
 
@@ -439,9 +431,9 @@ func (tx *VscWithdraw) SerializeHive() ([]hivego.HiveOperation, error) {
 	return []hivego.HiveOperation{op}, nil
 }
 
-func (tx *VscWithdraw) Hash() (cid.Cid, error) {
-	return hashVSCOperation(tx)
-}
+// func (tx *VscWithdraw) Hash() (cid.Cid, error) {
+// 	return hashVSCOperation(tx)
+// }
 
 func (tx *VscWithdraw) Validate() (bool, error) {
 	fl, err := strconv.ParseFloat(tx.Amount, 64)
@@ -466,21 +458,22 @@ func (tx *VscWithdraw) Validate() (bool, error) {
 	return valid, nil
 }
 
-func hashVSCOperation(tx VSCOperation) (cid.Cid, error) {
-	serialized, err := tx.SerializeVSC()
+// func hashVSCOperation(tx VSCOperation) (cid.Cid, error) {
+// 	serialized, err := tx.SerializeVSC()
 
-	if err != nil {
-		return cid.Cid{}, err
-	}
+// 	if err != nil {
+// 		return cid.Cid{}, err
+// 	}
 
-	cidPrefix := cid.Prefix{
-		Version:  1,
-		Codec:    uint64(multicodec.DagCbor),
-		MhType:   multihash.SHA2_256,
-		MhLength: -1,
-	}
-	return cidPrefix.Sum(serialized.Tx)
-}
+// 	cidPrefix := cid.Prefix{
+// 		Version:  1,
+// 		Codec:    uint64(multicodec.DagCbor),
+// 		MhType:   multihash.SHA2_256,
+// 		MhLength: -1,
+// 	}
+
+// 	return cidPrefix.Sum(serialized.Tx)
+// }
 
 // {
 //     "__t": "vsc-tx",
@@ -498,21 +491,217 @@ func hashVSCOperation(tx VSCOperation) (cid.Cid, error) {
 //     }
 // }
 
-type VSCTransactionShell struct {
-	Type    string               `json:"__t"`
-	Version string               `json:"__v"`
-	Headers VSCTransactionHeader `json:"headers"`
-	Tx      VSCTransactionData   `json:"tx"`
+type VSCTransaction struct {
+	Ops   []VSCTransactionOp
+	Nonce uint64
+	NetId string // NetId is included in headers
 }
 
-type VSCTransactionHeader struct {
-	Nonce         uint64   `json:"nonce"`
-	RequiredAuths []string `json:"required_auths"`
-	Intents       []string `json:"intents"`
-	NetId         string   `json:"net_id"`
+func (tx *VSCTransaction) Serialize() (SerializedVSCTransaction, error) {
+	txShell := tx.ToShell()
+
+	serialized, err := common.EncodeDagCbor(txShell)
+
+	return SerializedVSCTransaction{
+		Tx: serialized,
+	}, err
 }
 
-type VSCTransactionData struct {
-	Type    string `json:"type"`
-	Payload []byte `json:"payload"`
+func (tx *VSCTransaction) ToShell() VSCTransactionShell {
+	requiredAuthsMap := map[string]bool{}
+
+	for _, op := range tx.Ops {
+		for _, auth := range op.RequiredAuths.Active {
+			requiredAuthsMap[auth] = true
+		}
+	}
+
+	requiredAuths := []string{}
+	for auth := range requiredAuthsMap {
+		requiredAuths = append(requiredAuths, auth)
+	}
+
+	shell := VSCTransactionShell{
+		Type:    "vsc-tx",
+		Version: "0.2",
+		Headers: VSCTransactionHeader{
+			Nonce:         tx.Nonce,
+			RequiredAuths: requiredAuths,
+			NetId:         "vsc-mainnet",
+			RcLimit:       500,
+		},
+		Tx: tx.Ops,
+	}
+
+	return shell
+}
+
+func (tx *VSCTransaction) ToSignableBlock() (blocks.Block, error) {
+	shell := tx.ToShell()
+
+	ops := make([]VSCTransactionSignOp, 0)
+	for _, op := range shell.Tx {
+		var serialized string
+		dagNode, err := dagCbor.Decode(op.Payload, multihash.SHA2_256, -1)
+
+		if err != nil {
+			return &blocks.BasicBlock{}, fmt.Errorf("failed to decode payload: %w", err)
+		}
+
+		jjbytes, err := dagNode.MarshalJSON()
+
+		if err != nil {
+			return &blocks.BasicBlock{}, fmt.Errorf("failed to marshal payload to JSON: %w", err)
+		}
+		serialized = string(jjbytes)
+
+		ops = append(ops, VSCTransactionSignOp{
+			Type:    op.Type,
+			Payload: serialized,
+		})
+	}
+
+	signingShell2 := map[string]interface{}{
+		"__t": shell.Type,
+		"__v": shell.Version,
+		"headers": VSCTransactionHeader{
+			Nonce:         shell.Headers.Nonce,
+			RequiredAuths: shell.Headers.RequiredAuths,
+			NetId:         shell.Headers.NetId,
+			RcLimit:       shell.Headers.RcLimit,
+		},
+		"tx": ops,
+	}
+
+	ssbytes, _ := json.Marshal(signingShell2)
+	fmt.Println("signingShell2", string(ssbytes))
+
+	bytes, _ := common.EncodeDagCbor(signingShell2)
+
+	cidPrefix, _ := cid.Prefix{
+		Version:  1,
+		Codec:    uint64(multicodec.DagCbor),
+		MhType:   multihash.SHA2_256,
+		MhLength: -1,
+	}.Sum(bytes)
+
+	return blocks.NewBlockWithCid(bytes, cidPrefix)
+}
+
+func (tx *VSCTransaction) HashEip712() (cid.Cid, []byte, error) {
+	shell := tx.ToShell()
+
+	ops := make([]VSCTransactionSignOp, 0)
+	for _, op := range shell.Tx {
+		var serialized string
+		dagNode, err := dagCbor.Decode(op.Payload, multihash.SHA2_256, -1)
+
+		if err != nil {
+			return cid.Cid{}, nil, fmt.Errorf("failed to decode payload: %w", err)
+		}
+
+		jjbytes, err := dagNode.MarshalJSON()
+
+		if err != nil {
+			return cid.Cid{}, nil, fmt.Errorf("failed to marshal payload to JSON: %w", err)
+		}
+		serialized = string(jjbytes)
+
+		ops = append(ops, VSCTransactionSignOp{
+			Type:    op.Type,
+			Payload: serialized,
+		})
+	}
+
+	signingShell2 := map[string]interface{}{
+		"__t": shell.Type,
+		"__v": shell.Version,
+		"headers": VSCTransactionHeader{
+			Nonce:         shell.Headers.Nonce,
+			RequiredAuths: shell.Headers.RequiredAuths,
+			NetId:         shell.Headers.NetId,
+			RcLimit:       shell.Headers.RcLimit,
+		},
+		"tx": ops,
+	}
+
+	typedData, err := dids.ConvertToEIP712TypedData("vsc.network", signingShell2, "tx_container_v0", func(f float64) (*big.Int, error) {
+		return big.NewInt(int64(f)), nil
+	})
+
+	if err != nil {
+		return cid.Cid{}, nil, fmt.Errorf("failed to convert to EIP712 typed data: %w", err)
+	}
+
+	bytes, err := typedData.Data.HashStruct("tx_container_v0", signingShell2)
+
+	if err != nil {
+		return cid.Cid{}, nil, fmt.Errorf("failed to hash struct: %w", err)
+	}
+
+	byteArray := append([]byte{multihash.KECCAK_256}, bytes...) // Add multihash prefix byte
+	return cid.NewCidV1(uint64(multicodec.DagCbor), byteArray), bytes, nil
+}
+
+func (tx *VSCTransaction) Hash() (cid.Cid, []byte, error) {
+	shell := tx.ToShell()
+
+	ops := make([]VSCTransactionSignOp, 0)
+	for _, op := range shell.Tx {
+		var serialized string
+		dagNode, err := dagCbor.Decode(op.Payload, multihash.SHA2_256, -1)
+
+		if err != nil {
+			return cid.Cid{}, nil, fmt.Errorf("failed to decode payload: %w", err)
+		}
+
+		jjbytes, err := dagNode.MarshalJSON()
+
+		if err != nil {
+			return cid.Cid{}, nil, fmt.Errorf("failed to marshal payload to JSON: %w", err)
+		}
+		serialized = string(jjbytes)
+
+		ops = append(ops, VSCTransactionSignOp{
+			Type:    op.Type,
+			Payload: serialized,
+		})
+	}
+
+	// signingShell := VSCTransactionSignStruct{
+	// 	Type:    shell.Type,
+	// 	Version: shell.Version,
+	// 	Headers: VSCTransactionHeader{
+	// 		Nonce:         shell.Headers.Nonce,
+	// 		RequiredAuths: shell.Headers.RequiredAuths,
+	// 		NetId:         shell.Headers.NetId,
+	// 	},
+	// 	Tx: ops,
+	// }
+
+	signingShell2 := map[string]interface{}{
+		"__t": shell.Type,
+		"__v": shell.Version,
+		"headers": VSCTransactionHeader{
+			Nonce:         shell.Headers.Nonce,
+			RequiredAuths: shell.Headers.RequiredAuths,
+			NetId:         shell.Headers.NetId,
+			RcLimit:       shell.Headers.RcLimit,
+		},
+		"tx": ops,
+	}
+
+	ssbytes, _ := json.Marshal(signingShell2)
+	fmt.Println("signingShell2", string(ssbytes))
+
+	bytes, _ := common.EncodeDagCbor(signingShell2)
+
+	cidPrefix, _ := cid.Prefix{
+		Version:  1,
+		Codec:    uint64(multicodec.DagCbor),
+		MhType:   multihash.SHA2_256,
+		MhLength: -1,
+	}.Sum(bytes)
+
+	return cidPrefix, cidPrefix.Bytes(), nil
 }

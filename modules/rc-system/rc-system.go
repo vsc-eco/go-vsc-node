@@ -10,7 +10,8 @@ import (
 )
 
 type RcSystem struct {
-	RcDb rcDb.RcDb
+	RcDb         rcDb.RcDb
+	LedgerSystem ledgerSystem.LedgerSystem
 }
 
 // Returns the amount of RCs that are frozen for the given account at the given block height
@@ -26,6 +27,20 @@ func (rcs *RcSystem) GetFrozenAmt(account string, blockHeight uint64) int64 {
 	}
 
 	return rcRecord.Amount - amtRet
+}
+
+func (rcs *RcSystem) GetAvailableRCs(account string, blockHeight uint64) int64 {
+	balAmt := rcs.LedgerSystem.GetBalance(account, blockHeight, "hbd")
+
+	if strings.HasPrefix(account, "hive:") {
+		//Give the user 5 HBD worth of RCs by default
+		//If user is Hive account
+		balAmt = balAmt + 5_000
+	}
+
+	frozeAmt := rcs.GetFrozenAmt(account, blockHeight)
+
+	return balAmt - frozeAmt
 }
 
 func (rcs *RcSystem) NewSession(ledgerSession ledgerSystem.LedgerSession) *RcSession {
@@ -51,9 +66,10 @@ func (rc *RcSystem) Stop() error {
 	return nil
 }
 
-func New(rcDb rcDb.RcDb) *RcSystem {
+func New(rcDb rcDb.RcDb, ledgerSystem ledgerSystem.LedgerSystem) *RcSystem {
 	return &RcSystem{
-		RcDb: rcDb,
+		RcDb:         rcDb,
+		LedgerSystem: ledgerSystem,
 	}
 }
 

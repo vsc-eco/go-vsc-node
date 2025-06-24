@@ -21,4 +21,6 @@ func RegisterTypes() {
 	}{})
 	cbornode.RegisterCborType(transactionpool.SignaturePackage{})
 	cbornode.RegisterCborType(common.Sig{})
+	cbornode.RegisterCborType(transactionpool.VSCTransactionShell{})
+	cbornode.RegisterCborType(transactionpool.VSCTransactionOp{})
 }

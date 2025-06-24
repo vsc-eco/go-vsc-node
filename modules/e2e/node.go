@@ -15,7 +15,6 @@ import (
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
-	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
 	rcDb "vsc-node/modules/db/vsc/rcs"
@@ -24,8 +23,9 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	election_proposer "vsc-node/modules/election-proposer"
 	"vsc-node/modules/gateway"
+	"vsc-node/modules/gql"
+	"vsc-node/modules/gql/gqlgen"
 	p2pInterface "vsc-node/modules/p2p"
-	rcSystem "vsc-node/modules/rc-system"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
@@ -45,6 +45,8 @@ type Node struct {
 	TxPool           *transactionpool.TransactionPool
 
 	announcementsManager *announcements.AnnouncementsManager
+
+	MockHiveBlocks *MockHiveDbs
 }
 
 func (n *Node) Init() error {
@@ -64,6 +66,7 @@ type MakeNodeInput struct {
 	Username  string
 	Runner    *E2ERunner
 	BrcstFunc func(tx hivego.HiveTransaction) error
+	Primary   bool
 }
 
 const SEED_PREFIX = "MOCK_SEED-"
@@ -72,7 +75,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	dbConf := db.NewDbConfig()
 	db := db.New(dbConf)
 	vscDb := vsc.New(db, input.Username)
-	hiveBlocks, _ := hive_blocks.New(vscDb)
+	hiveBlocks := &MockHiveDbs{}
 	vscBlocks := vscBlocks.New(vscDb)
 	witnessesDb := witnesses.New(vscDb)
 	electionDb := elections.New(vscDb)
@@ -110,26 +113,30 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	hrpc := &MockHiveRpcClient{}
 
-	p2p := p2pInterface.New(witnessesDb)
+	sysConfig := common.SystemConfig{
+		Network: "mocknet",
+	}
+
+	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, 0)
 
 	peerGetter := p2p.PeerInfo()
 
 	announcementsManager, _ := announcements.New(hrpc, identityConfig, time.Hour*24, &txCreator, peerGetter)
 
 	datalayer := DataLayer.New(p2p, input.Username)
-	txpool := transactionpool.New(p2p, txDb, datalayer, identityConfig)
-
 	wasm := wasm_parent_ipc.New()
-	rcSystem := rcSystem.New(rcDb)
 
 	se := stateEngine.New(logger, datalayer, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
 
+	txpool := transactionpool.New(p2p, txDb, nonceDb, hiveBlocks, datalayer, identityConfig, se.RcSystem)
+
 	dbNuker := NewDbNuker(vscDb)
 
-	ep := election_proposer.New(p2p, witnessesDb, electionDb, balanceDb, datalayer, &txCreator, identityConfig)
-
 	vstream := vstream.New(se)
-	bp := blockproducer.New(logger, p2p, vstream, se, identityConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
+
+	ep := election_proposer.New(p2p, witnessesDb, electionDb, balanceDb, datalayer, &txCreator, identityConfig, se, vstream)
+
+	bp := blockproducer.New(logger, p2p, vstream, se, identityConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb, se.RcSystem, nonceDb)
 
 	multisig := gateway.New(logger, witnessesDb, electionDb, actionsDb, balanceDb, &txCreator, vstream, p2p, se, identityConfig, hiveClient)
 
@@ -159,13 +166,32 @@ func MakeNode(input MakeNodeInput) *Node {
 		nonceDb,
 		vstream,
 		wasm,
-		rcSystem,
 		se,
 		bp,
 		ep,
 		txpool,
 		multisig,
 	)
+
+	if input.Primary {
+		gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{
+			witnessesDb,
+			txpool,
+			balanceDb,
+			ledgerDbImpl,
+			actionsDb,
+			electionDb,
+			txDb,
+			nonceDb,
+			rcDb,
+			hiveBlocks,
+			se,
+			datalayer,
+			contractDb,
+			contractState,
+		}}), "0.0.0.0:7080")
+		plugins = append(plugins, gqlManager)
+	}
 
 	if input.Runner != nil {
 
@@ -188,5 +214,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		TxPool: txpool,
 
 		announcementsManager: announcementsManager,
+
+		MockHiveBlocks: hiveBlocks,
 	}
 }

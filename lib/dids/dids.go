@@ -18,6 +18,7 @@ type DID interface {
 
 type Provider[V any] interface {
 	Sign(data V) (string, error)
+	Type() string
 }
 
 func Parse(did string, includeBLS ...bool) (DID, error) {
@@ -52,6 +53,7 @@ func ParseMany(dids []string, includeBLS ...bool) ([]DID, error) {
 	res := make([]DID, len(dids))
 	var err error
 
+	fmt.Println("dids", dids)
 	for i, did := range dids {
 		res[i], err = Parse(did, includeBLS...)
 		if err != nil {
@@ -63,6 +65,7 @@ func ParseMany(dids []string, includeBLS ...bool) ([]DID, error) {
 }
 
 func VerifyMany(dids []DID, blk blocks.Block, sigs []string) (bool, []bool, error) {
+	fmt.Println("dids", dids, "sigs", sigs)
 	if len(dids) != len(sigs) {
 		return false, nil, fmt.Errorf("len(dids) != len(sigs)")
 	}

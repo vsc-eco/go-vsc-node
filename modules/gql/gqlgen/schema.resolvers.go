@@ -11,6 +11,7 @@ import (
 	"math"
 	"unicode/utf8"
 	"vsc-node/modules/announcements"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -24,6 +25,7 @@ import (
 	transactionpool "vsc-node/modules/transaction-pool"
 
 	"github.com/ipfs/go-cid"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // Amount is the resolver for the amount field.
@@ -296,8 +298,50 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 		return nil, fmt.Errorf("account parameter cannot be empty")
 	}
 	blockHeight := ParseHeight(height)
-	rc, err := r.Rc.GetRecord(account, blockHeight)
-	return &rc, err
+	rcRecord, err := r.Rc.GetRecord(account, blockHeight)
+	highestBlock, _ := r.HiveBlocks.GetHighestBlock()
+
+	var qheight uint64
+	if height == nil {
+		qheight = highestBlock
+	} else {
+		qheight = uint64(*height)
+	}
+
+	if err == mongo.ErrNoDocuments {
+		return &rcDb.RcRecord{
+			Account:     account,
+			Amount:      0,
+			BlockHeight: blockHeight,
+		}, nil
+	}
+
+	balRecord, err := r.Balances.GetBalanceRecord(account, blockHeight)
+
+	if err == mongo.ErrNoDocuments {
+		return &rcDb.RcRecord{
+			Account:     account,
+			Amount:      0,
+			BlockHeight: blockHeight,
+		}, nil
+	}
+
+	startBal := uint64(balRecord.HBD)
+
+	diff := qheight - rcRecord.BlockHeight
+
+	amtRet := int64(diff * uint64(rcRecord.Amount) / common.RC_RETURN_PERIOD)
+
+	if amtRet > rcRecord.Amount {
+		amtRet = rcRecord.Amount
+	}
+
+	amt := rcRecord.Amount - amtRet
+	//Subtract frozen RCs - regenerated RCs
+	startBal -= uint64(amt)
+	//Assign the amount of total RCs available for the account
+	rcRecord.Amount = int64(startBal)
+	return &rcRecord, err
 }
 
 // FindContract is the resolver for the findContract field.
@@ -338,6 +382,13 @@ func (r *queryResolver) SubmitTransactionV1(ctx context.Context, tx string, sig 
 // GetAccountNonce is the resolver for the getAccountNonce field.
 func (r *queryResolver) GetAccountNonce(ctx context.Context, account string) (*nonces.NonceRecord, error) {
 	record, err := r.Nonces.GetNonce(account)
+
+	if err == mongo.ErrNoDocuments {
+		return &nonces.NonceRecord{
+			Account: account,
+			Nonce:   0,
+		}, nil
+	}
 	return &record, err
 }
 

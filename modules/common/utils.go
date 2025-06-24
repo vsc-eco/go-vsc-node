@@ -12,6 +12,7 @@ import (
 
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
+	cbornode "github.com/ipfs/go-ipld-cbor"
 	"github.com/ipld/go-ipld-prime/codec/dagcbor"
 	"github.com/ipld/go-ipld-prime/node/basicnode"
 	"github.com/multiformats/go-multicodec"
@@ -33,6 +34,24 @@ func EncodeDagCbor(obj interface{}) ([]byte, error) {
 	var bbuf bytes.Buffer
 	dagcbor.Encode(node, &bbuf)
 	return bbuf.Bytes(), nil
+}
+
+func DecodeCbor(data []byte, obj interface{}) error {
+	node, err := cbornode.Decode(data, multihash.SHA2_256, -1)
+
+	if err != nil {
+		return fmt.Errorf("failed to decode CBOR: %w", err)
+	}
+	jjson, err := node.MarshalJSON()
+	if err != nil {
+		return fmt.Errorf("failed to decode CBOR: %w", err)
+	}
+
+	if err := json.Unmarshal(jjson, obj); err != nil {
+		return fmt.Errorf("failed to unmarshal CBOR to object: %w", err)
+	}
+
+	return nil
 }
 
 func HashBytes(data []byte, mf multicodec.Code) (cid.Cid, error) {

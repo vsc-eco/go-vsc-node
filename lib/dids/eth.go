@@ -64,7 +64,7 @@ func ParseEthDID(did string) (EthDID, error) {
 		return "", fmt.Errorf("can not represent valid eth address")
 	}
 
-	return EthDID(addr), nil
+	return EthDID(did), nil
 }
 
 func NewEthDID(ethAddr string) EthDID {
@@ -82,6 +82,7 @@ func (d EthDID) Identifier() string {
 	// 0x123...
 	//
 	// remove "did:ethr:" prefix
+
 	return string(d)[len(EthDIDPrefix):]
 }
 
@@ -543,9 +544,19 @@ func (e *EthProvider) Sign(block blocks.Block) (string, error) {
 
 	sig, err := ethCrypto.Sign(dataHash, e.Priv)
 
+	if err != nil {
+		return "", fmt.Errorf("failed to sign data hash: %v", err)
+	}
+
 	fmt.Println("Hex sig", hex.EncodeToString(sig))
 
+	fmt.Println("EthProvider signer err", err)
+
 	return "0x" + hex.EncodeToString(sig), nil
+}
+
+func (e *EthProvider) Type() string {
+	return "eth"
 }
 
 // ===== utils =====

@@ -66,8 +66,8 @@ func (ms *MultiSig) Stop() error {
 
 var ROTATION_INTERVAL = uint64(20 * 60) //One hour of Hive blocks
 // var ROTATION_INTERVAL = uint64(20) //Test interval for e2e; TODO: Make this modifiable through env variables.
-var ACTION_INTERVAL = uint64(20)   // One minute of Hive blocks
-var SYNC_INTERVAL = uint64(28_800) // One day of Hive blocks
+var ACTION_INTERVAL = uint64(20) // One minute of Hive blocks
+var SYNC_INTERVAL = uint64(7200) // Every 6 hours
 // var SYNC_INTERVAL = uint64(20) // Use during e2e testing
 
 func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
@@ -556,7 +556,7 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 
 		ops = append(ops, op)
 	} else if (hbdToUnstake > 10_000 || stakedBal < 10_000) && hbdToUnstake != 0 {
-		op := ms.hiveCreator.TransferFromSavings(common.GATEWAY_WALLET, common.GATEWAY_WALLET, hive.AmountToString(hbdToUnstake), "HBD", "Unstaking "+hive.AmountToString(hbdToStake)+" HBD", int(bh+1))
+		op := ms.hiveCreator.TransferFromSavings(common.GATEWAY_WALLET, common.GATEWAY_WALLET, hive.AmountToString(hbdToUnstake), "HBD", "Unstaking "+hive.AmountToString(hbdToUnstake)+" HBD", int(bh+1))
 
 		ops = append(ops, op)
 	}

@@ -1,9 +1,11 @@
 package transactionpool
 
 import (
+	"encoding/json"
 	"vsc-node/modules/common"
 
 	"github.com/ipfs/go-cid"
+	cbornode "github.com/ipfs/go-ipld-cbor"
 	"github.com/multiformats/go-multicodec"
 	"github.com/multiformats/go-multihash"
 )
@@ -29,4 +31,11 @@ func HashKeyAuths(keyAuths []string) string {
 
 		return cidz.String()
 	}
+}
+
+func DecodeTxCbor(op VSCTransactionOp, input interface{}) error {
+	node, _ := cbornode.Decode(op.Payload, multihash.SHA2_256, -1)
+	jsonBytes, _ := node.MarshalJSON()
+
+	return json.Unmarshal(jsonBytes, input)
 }

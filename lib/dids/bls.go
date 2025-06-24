@@ -182,6 +182,10 @@ func (b BlsProvider) Sign(cid cid.Cid) (string, error) {
 	return encodedSig, nil
 }
 
+func (b BlsProvider) Type() string {
+	return "bls"
+}
+
 // signs a block using the BLS priv key
 func (b BlsProvider) SignRaw(cid cid.Cid) ([96]byte, error) {
 

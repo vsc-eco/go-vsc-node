@@ -217,9 +217,11 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 	//Get transactions here!
 
 	prefilteredTxs, _ := bp.TxDb.FindUnconfirmedTransactions(slotHeight)
+
+	fmt.Println("prefilteredTxs", prefilteredTxs)
 	txRecords := make([]transactions.TransactionRecord, 0)
 
-	nonceMap := make(map[string]int64)
+	nonceMap := make(map[string]int64, len(prefilteredTxs))
 
 	for _, txRecord := range prefilteredTxs {
 		keyId := transactionpool.HashKeyAuths(txRecord.RequiredAuths)
@@ -227,12 +229,12 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 			nonceRecord, _ := bp.nonceDb.GetNonce(keyId)
 			nonceMap[keyId] = int64(nonceRecord.Nonce)
 		}
-		if txRecord.Nonce >= nonceMap[keyId] && txRecord.RcLimit < 50 {
+		if txRecord.Nonce >= nonceMap[keyId] && txRecord.RcLimit >= common.MINIMUM_RC_LIMIT {
 			txRecords = append(txRecords, txRecord)
 		}
 	}
 
-	if len(prefilteredTxs) == 0 {
+	if len(txRecords) == 0 {
 		return []vscBlocks.VscBlockTx{}
 	}
 
@@ -247,6 +249,8 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 		ids = append(ids, txRecord.Id)
 	}
 
+	fmt.Println("txRecords", txRecords)
+	fmt.Println("ids", ids)
 	seedStr := []byte(transactionpool.HashKeyAuths(ids))
 
 	data := binary.BigEndian.Uint64(seedStr[:])
@@ -455,6 +459,10 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	producer := msg.Data["producer"].(string)
 
 	slot := bp.getSlot(msg.SlotHeight)
+
+	if slot == nil {
+		return "", errors.New("no slot found for height")
+	}
 
 	// fmt.Println("[bp] maybe bad producer", producer, slot.Account, producer == slot.Account)
 	if producer != slot.Account {

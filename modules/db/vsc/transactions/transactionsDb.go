@@ -33,15 +33,11 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 	ctx := context.Background()
 
 	queryy := bson.M{
-		"id":           offTx.Id,
-		"anchr_height": offTx.AnchoredHeight,
-		"anchr_index":  offTx.AnchoredIndex,
+		"id": offTx.Id,
 	}
 
 	findResult := e.FindOne(ctx, bson.M{
-		"id":           offTx.Id,
-		"anchr_height": offTx.AnchoredHeight,
-		"anchr_index":  offTx.AnchoredIndex,
+		"id": offTx.Id,
 	})
 
 	opts := options.Update().SetUpsert(true)
@@ -70,6 +66,7 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 			setOp["status"] = offTx.Status
 		}
 	}
+
 	_, err := e.UpdateOne(ctx, queryy, bson.M{
 		"$set": setOp,
 	}, opts)
