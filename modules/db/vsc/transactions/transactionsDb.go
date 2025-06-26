@@ -42,7 +42,9 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 
 	opts := options.Update().SetUpsert(true)
 	setOp := bson.M{
+		"anchr_height":   offTx.AnchoredHeight,
 		"anchr_block":    offTx.AnchoredBlock,
+		"anchr_index":    offTx.AnchoredIndex,
 		"anchr_id":       offTx.AnchoredId,
 		"type":           offTx.Type,
 		"ops":            offTx.Ops,
