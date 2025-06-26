@@ -294,7 +294,7 @@ func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) res
 		}
 	}
 	res := ctx.ledger.ExecuteTransfer(ledgerSystem.OpLogEvent{
-		To:     ctx.env.ContractId,
+		To:     "contract:" + ctx.env.ContractId,
 		From:   ctx.env.RequiredAuths[0],
 		Amount: amount,
 		Asset:  asset,
@@ -303,6 +303,7 @@ func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) res
 
 		//Not parted of compiled state
 		// Id          string `json:"id"`
+		Id:          ctx.env.TxId,
 		BlockHeight: ctx.env.BlockHeight,
 	}, transferOptions...)
 	if !res.Ok {
@@ -313,7 +314,7 @@ func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) res
 
 func (ctx *contractExecutionContext) SendBalance(to string, amount int64, asset string) result.Result[struct{}] {
 	res := ctx.ledger.ExecuteTransfer(ledgerSystem.OpLogEvent{
-		From:   ctx.env.ContractId,
+		From:   "contract:" + ctx.env.ContractId,
 		To:     to,
 		Amount: amount,
 		Asset:  asset,
@@ -322,6 +323,7 @@ func (ctx *contractExecutionContext) SendBalance(to string, amount int64, asset 
 
 		//Not parted of compiled state
 		// Id          string `json:"id"`
+		Id:          ctx.env.TxId,
 		BlockHeight: ctx.env.BlockHeight,
 	})
 	if !res.Ok {
@@ -332,7 +334,7 @@ func (ctx *contractExecutionContext) SendBalance(to string, amount int64, asset 
 
 func (ctx *contractExecutionContext) WithdrawBalance(to string, amount int64, asset string) result.Result[struct{}] {
 	res := ctx.ledger.Withdraw(ledgerSystem.WithdrawParams{
-		From:   ctx.env.ContractId,
+		From:   "contract:" + ctx.env.ContractId,
 		To:     to,
 		Amount: amount,
 		Asset:  asset,
@@ -340,6 +342,7 @@ func (ctx *contractExecutionContext) WithdrawBalance(to string, amount int64, as
 
 		//Not parted of compiled state
 		// Id          string `json:"id"`
+		Id:          ctx.env.TxId,
 		BlockHeight: ctx.env.BlockHeight,
 	})
 	if !res.Ok {
