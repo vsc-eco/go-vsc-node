@@ -471,7 +471,7 @@ func (t *TxStakeHbd) ToData() map[string]interface{} {
 		"to":     t.To,
 		"amount": t.Amount,
 		"asset":  t.Asset,
-		"type":   t.Type,
+		"type":   t.Type(),
 	}
 }
 
@@ -561,7 +561,7 @@ func (t *TxUnstakeHbd) ToData() map[string]interface{} {
 		"to":     t.To,
 		"amount": t.Amount,
 		"asset":  t.Asset,
-		"type":   t.Type,
+		"type":   t.Type(),
 	}
 }
 
