@@ -32,6 +32,6 @@ type VSCTransactionSignStruct struct {
 }
 
 type VSCTransactionSignOp struct {
-	Type    string `json:"type"`
-	Payload string `json:"payload"`
+	Type    string      `json:"type"`
+	Payload interface{} `json:"payload"`
 }

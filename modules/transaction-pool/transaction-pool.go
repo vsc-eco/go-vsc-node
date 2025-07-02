@@ -92,15 +92,14 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 			fmt.Println("decode error3", err)
 			return nil, err
 		}
-		jsonPayload, err := json.Marshal(payload)
 
-		if err != nil {
-			return nil, err
-		}
+		block, _ := cbornode.Decode(op.Payload, uint64(multihash.SHA2_256), -1)
+
+		jsonBytes, _ := block.MarshalJSON()
 
 		ops = append(ops, VSCTransactionSignOp{
 			Type:    op.Type,
-			Payload: string(jsonPayload),
+			Payload: string(jsonBytes),
 		})
 	}
 
@@ -127,7 +126,8 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		return nil, err
 	}
 
-	nonceRecord, err := tp.nonceDb.GetNonce(HashKeyAuths(txShell.Headers.RequiredAuths))
+	hashAuths := HashKeyAuths(txShell.Headers.RequiredAuths)
+	nonceRecord, err := tp.nonceDb.GetNonce(hashAuths)
 
 	if err != mongo.ErrNoDocuments && err != nil {
 		return nil, fmt.Errorf("failed to get nonce: %w", err)
@@ -263,15 +263,14 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 		if err := cbornode.DecodeInto(op.Payload, &payload); err != nil {
 			return
 		}
-		jsonPayload, err := json.Marshal(payload)
 
-		if err != nil {
-			return
-		}
+		block, _ := cbornode.Decode(op.Payload, uint64(multihash.SHA2_256), -1)
+
+		jsonBytes, _ := block.MarshalJSON()
 
 		ops = append(ops, VSCTransactionSignOp{
 			Type:    op.Type,
-			Payload: string(jsonPayload),
+			Payload: string(jsonBytes),
 		})
 	}
 

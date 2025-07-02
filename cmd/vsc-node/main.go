@@ -179,6 +179,7 @@ func main() {
 		actionsDb,
 		balanceDb,
 		rcDb,
+		nonceDb,
 		interestClaims,
 		contractState,
 
