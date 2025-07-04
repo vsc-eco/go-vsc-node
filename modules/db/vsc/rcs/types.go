@@ -9,7 +9,8 @@ type RcDb interface {
 }
 
 type RcRecord struct {
-	Account     string `json:"account" bson:"account"`
-	Amount      int64  `json:"amount" bson:"amount"`
-	BlockHeight uint64 `json:"block_height" bson:"block_height"`
+	Account      string `json:"account" bson:"account"`
+	Amount       int64  `json:"amount" bson:"amount"`
+	BlockHeight  uint64 `json:"block_height" bson:"block_height"`
+	AvailableRcs int64  `json:"available_rcs" bson:"-"` // The amount of RCs available for use at the given block height
 }

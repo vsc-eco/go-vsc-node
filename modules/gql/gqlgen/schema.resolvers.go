@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math"
+	"strings"
 	"unicode/utf8"
 	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
@@ -341,6 +342,12 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	startBal -= uint64(amt)
 	//Assign the amount of total RCs available for the account
 	rcRecord.Amount = int64(startBal)
+	rcRecord.Account = account
+
+	if strings.HasPrefix(account, "hive:") {
+		rcRecord.Amount += 5000
+	}
+	rcRecord.AvailableRcs = balRecord.HBD
 	return &rcRecord, err
 }
 
