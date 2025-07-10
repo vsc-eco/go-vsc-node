@@ -514,8 +514,8 @@ func (r *transactionRecordResolver) AnchrIndex(ctx context.Context, obj *transac
 }
 
 // AnchrTs is the resolver for the anchr_ts field.
-func (r *transactionRecordResolver) AnchrTs(ctx context.Context, obj *transactions.TransactionRecord) (string, error) {
-	return *obj.AnchoredTs, nil
+func (r *transactionRecordResolver) AnchrTs(ctx context.Context, obj *transactions.TransactionRecord) (*string, error) {
+	return obj.AnchoredTs, nil
 }
 
 // Nonce is the resolver for the nonce field.

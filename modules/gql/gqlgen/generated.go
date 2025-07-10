@@ -391,7 +391,7 @@ type TransactionOutputResolver interface {
 type TransactionRecordResolver interface {
 	AnchrHeight(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
 	AnchrIndex(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
-	AnchrTs(ctx context.Context, obj *transactions.TransactionRecord) (string, error)
+	AnchrTs(ctx context.Context, obj *transactions.TransactionRecord) (*string, error)
 
 	Nonce(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
 	RcLimit(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
@@ -1718,7 +1718,7 @@ type TransactionRecord {
   id: String!
   anchr_height: Uint64!
   anchr_index: Uint64!
-  anchr_ts: String!
+  anchr_ts: String
   type: String!
   ops: [TransactionOperation]
   op_types: [String!]
@@ -8790,14 +8790,11 @@ func (ec *executionContext) _TransactionRecord_anchr_ts(ctx context.Context, fie
 		return graphql.Null
 	}
 	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
 		return graphql.Null
 	}
-	res := resTmp.(string)
+	res := resTmp.(*string)
 	fc.Result = res
-	return ec.marshalNString2string(ctx, field.Selections, res)
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) fieldContext_TransactionRecord_anchr_ts(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
@@ -15078,16 +15075,13 @@ func (ec *executionContext) _TransactionRecord(ctx context.Context, sel ast.Sele
 		case "anchr_ts":
 			field := field
 
-			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
 				defer func() {
 					if r := recover(); r != nil {
 						ec.Error(ctx, ec.Recover(ctx, r))
 					}
 				}()
 				res = ec._TransactionRecord_anchr_ts(ctx, field, obj)
-				if res == graphql.Null {
-					atomic.AddUint32(&fs.Invalids, 1)
-				}
 				return res
 			}
 

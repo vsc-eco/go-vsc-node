@@ -38,12 +38,15 @@ func TestQueryAndMutation(t *testing.T) {
 	l := logger.PrefixedLogger{
 		Prefix: "vsc-node",
 	}
+	sysConfig := common.SystemConfig{
+		Network: "mainnet",
+	}
 	dbConfg := db.NewDbConfig()
 	identityConfig := common.NewIdentityConfig()
 	d := db.New(dbConfg)
 	vscDb := vsc.New(d)
 	witnesses := witnesses.New(vscDb)
-	p2p := libp2p.New(witnesses, identityConfig)
+	p2p := libp2p.New(witnesses, identityConfig, sysConfig)
 	hiveBlocks, hiveBlocksErr := hive_blocks.New(vscDb)
 	electionDb := elections.New(vscDb)
 	contractDb := contracts.New(vscDb)
@@ -58,12 +61,12 @@ func TestQueryAndMutation(t *testing.T) {
 	rcDb := rcDb.New(vscDb)
 	da := datalayer.New(p2p)
 	conf := common.NewIdentityConfig()
-	txPool := transactionpool.New(p2p, txDb, da, conf)
 	balances := ledgerDb.NewBalances(vscDb)
 	wasm := wasm_parent_ipc.New()
 
 	assert.NoError(t, hiveBlocksErr)
 	se := stateEngine.New(l, da, witnesses, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
+	txPool := transactionpool.New(p2p, txDb, nonceDb, hiveBlocks, da, conf, se.RcSystem)
 	resolver := &gqlgen.Resolver{
 		witnesses,
 		txPool,
