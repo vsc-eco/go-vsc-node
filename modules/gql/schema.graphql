@@ -19,7 +19,7 @@ type TransactionRecord {
   id: String!
   anchr_height: Uint64!
   anchr_index: Uint64!
-  anchr_ts: String!
+  anchr_ts: String
   type: String!
   ops: [TransactionOperation]
   op_types: [String!]
