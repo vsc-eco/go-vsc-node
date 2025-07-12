@@ -171,6 +171,7 @@ type RcRecord {
   account: String!
   amount: Int64!
   block_height: Uint64!
+  max_rcs: Int64!
 }
 
 type LedgerRecord {

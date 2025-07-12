@@ -35,7 +35,7 @@ func (rcs *RcSystem) GetAvailableRCs(account string, blockHeight uint64) int64 {
 	if strings.HasPrefix(account, "hive:") {
 		//Give the user 5 HBD worth of RCs by default
 		//If user is Hive account
-		balAmt = balAmt + 5_000
+		balAmt = balAmt + common.RC_HIVE_FREE_AMOUNT
 	}
 
 	frozeAmt := rcs.GetFrozenAmt(account, blockHeight)

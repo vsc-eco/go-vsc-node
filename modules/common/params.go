@@ -30,6 +30,7 @@ var FR_VIRTUAL_ACCOUNT = "system:fr_balance"
 var DAO_WALLET = "hive:vsc.dao"
 
 var RC_RETURN_PERIOD uint64 = 120 * 60 * 20 // 5 day cool down period for RCs
+var RC_HIVE_FREE_AMOUNT int64 = 5_000       // 5 HBD worth of RCs for Hive accounts
 var MINIMUM_RC_LIMIT uint64 = 50
 
 type BLOCKTXTYPE int

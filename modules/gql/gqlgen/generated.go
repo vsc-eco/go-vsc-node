@@ -240,6 +240,7 @@ type ComplexityRoot struct {
 		Account     func(childComplexity int) int
 		Amount      func(childComplexity int) int
 		BlockHeight func(childComplexity int) int
+		MaxRcs      func(childComplexity int) int
 	}
 
 	TransactionOperation struct {
@@ -380,6 +381,7 @@ type QueryResolver interface {
 type RcRecordResolver interface {
 	Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error)
 	BlockHeight(ctx context.Context, obj *rcDb.RcRecord) (model.Uint64, error)
+	MaxRcs(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error)
 }
 type TransactionOperationResolver interface {
 	Index(ctx context.Context, obj *transactions.TransactionOperation) (model.Uint64, error)
@@ -1350,6 +1352,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.RcRecord.BlockHeight(childComplexity), true
 
+	case "RcRecord.max_rcs":
+		if e.complexity.RcRecord.MaxRcs == nil {
+			break
+		}
+
+		return e.complexity.RcRecord.MaxRcs(childComplexity), true
+
 	case "TransactionOperation.data":
 		if e.complexity.TransactionOperation.Data == nil {
 			break
@@ -1870,6 +1879,7 @@ type RcRecord {
   account: String!
   amount: Int64!
   block_height: Uint64!
+  max_rcs: Int64!
 }
 
 type LedgerRecord {
@@ -7377,6 +7387,8 @@ func (ec *executionContext) fieldContext_Query_getAccountRC(ctx context.Context,
 				return ec.fieldContext_RcRecord_amount(ctx, field)
 			case "block_height":
 				return ec.fieldContext_RcRecord_block_height(ctx, field)
+			case "max_rcs":
+				return ec.fieldContext_RcRecord_max_rcs(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type RcRecord", field.Name)
 		},
@@ -8377,6 +8389,50 @@ func (ec *executionContext) fieldContext_RcRecord_block_height(_ context.Context
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _RcRecord_max_rcs(ctx context.Context, field graphql.CollectedField, obj *rcDb.RcRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_RcRecord_max_rcs(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.RcRecord().MaxRcs(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Int64)
+	fc.Result = res
+	return ec.marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_RcRecord_max_rcs(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "RcRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
 		},
 	}
 	return fc, nil
@@ -14753,6 +14809,42 @@ func (ec *executionContext) _RcRecord(ctx context.Context, sel ast.SelectionSet,
 					}
 				}()
 				res = ec._RcRecord_block_height(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "max_rcs":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._RcRecord_max_rcs(ctx, field, obj)
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}

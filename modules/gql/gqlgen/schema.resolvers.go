@@ -299,22 +299,25 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 		return nil, fmt.Errorf("account parameter cannot be empty")
 	}
 	blockHeight := ParseHeight(height)
-	rcRecord, err := r.Rc.GetRecord(account, blockHeight)
-	highestBlock, _ := r.HiveBlocks.GetHighestBlock()
 
-	var qheight uint64
+	var highestHeight uint64
 	if height == nil {
-		qheight = highestBlock
+		highestBlock, err := r.HiveBlocks.GetHighestBlock()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get highest block: %w", err)
+		}
+		highestHeight = highestBlock
 	} else {
-		qheight = uint64(*height)
+		highestHeight = uint64(*height)
 	}
 
-	if err == mongo.ErrNoDocuments {
-		return &rcDb.RcRecord{
-			Account:     account,
-			Amount:      0,
-			BlockHeight: blockHeight,
-		}, nil
+	maxRcs := int64(0)
+	amount := int64(0)
+
+	if strings.HasPrefix(account, "hive:") {
+		fmt.Println("account", account, "is hive account")
+		maxRcs = maxRcs + common.RC_HIVE_FREE_AMOUNT
+		amount = common.RC_HIVE_FREE_AMOUNT
 	}
 
 	balRecord, err := r.Balances.GetBalanceRecord(account, blockHeight)
@@ -322,33 +325,50 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	if err == mongo.ErrNoDocuments {
 		return &rcDb.RcRecord{
 			Account:     account,
-			Amount:      0,
+			Amount:      amount,
+			MaxRcs:      maxRcs,
 			BlockHeight: blockHeight,
 		}, nil
 	}
 
-	startBal := uint64(balRecord.HBD)
+	rcRecord, err := r.Rc.GetRecord(account, blockHeight)
 
-	diff := qheight - rcRecord.BlockHeight
+	if err == mongo.ErrNoDocuments {
+		return &rcDb.RcRecord{
+			Account:     account,
+			Amount:      amount,
+			MaxRcs:      maxRcs,
+			BlockHeight: blockHeight,
+		}, nil
+	}
 
+	//Add MAX RC balance from HBD
+	maxRcs = maxRcs + balRecord.HBD
+	//Add available RCs from HBD; this may be changed later
+	amount = amount + balRecord.HBD
+
+	//Get number of blocks that have elapsed since the last RC update
+	diff := highestHeight - rcRecord.BlockHeight
+
+	//Total amount of RCs (i.e amount unfrozen)
 	amtRet := int64(diff * uint64(rcRecord.Amount) / common.RC_RETURN_PERIOD)
 
+	//Prevent overflow when the return period is greater than RC_RETURN_PERIOD
 	if amtRet > rcRecord.Amount {
 		amtRet = rcRecord.Amount
 	}
 
-	amt := rcRecord.Amount - amtRet
+	//Subject the returned amount from the currently frozen RCs
+	frozenAmount := rcRecord.Amount - amtRet
 	//Subtract frozen RCs - regenerated RCs
-	startBal -= uint64(amt)
-	//Assign the amount of total RCs available for the account
-	rcRecord.Amount = int64(startBal)
-	rcRecord.Account = account
+	amount = amount - frozenAmount
 
-	if strings.HasPrefix(account, "hive:") {
-		rcRecord.Amount += 5000
-	}
-	rcRecord.AvailableRcs = balRecord.HBD
-	return &rcRecord, err
+	return &rcDb.RcRecord{
+		Account:     account,
+		Amount:      amount,
+		MaxRcs:      maxRcs,
+		BlockHeight: blockHeight,
+	}, nil
 }
 
 // FindContract is the resolver for the findContract field.
@@ -486,6 +506,11 @@ func (r *rcRecordResolver) Amount(ctx context.Context, obj *rcDb.RcRecord) (mode
 // BlockHeight is the resolver for the block_height field.
 func (r *rcRecordResolver) BlockHeight(ctx context.Context, obj *rcDb.RcRecord) (model.Uint64, error) {
 	return model.Uint64(obj.BlockHeight), nil
+}
+
+// MaxRcs is the resolver for the max_rcs field.
+func (r *rcRecordResolver) MaxRcs(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error) {
+	return model.Int64(obj.MaxRcs), nil
 }
 
 // Index is the resolver for the index field.
