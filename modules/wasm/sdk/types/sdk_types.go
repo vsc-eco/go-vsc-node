@@ -59,10 +59,10 @@ func generateFunctionResult(name string, fn reflect.Type) []wasmedge.ValType {
 		fallthrough
 	case "hive.withdraw":
 		fallthrough
-	case "ic.link":
+	case "contracts.read":
 		fallthrough
-	case "ic.unlink":
-		return nil
+	case "contracts.call":
+		fallthrough
 	default:
 		// generate result type
 	}

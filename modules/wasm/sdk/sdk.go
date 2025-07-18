@@ -293,7 +293,7 @@ var SdkModule = map[string]sdkFunc{
 		)
 	},
 	//Intercontract read
-	"ic.read": func(ctx context.Context, a any) SdkResult {
+	"contracts.read": func(ctx context.Context, a any) SdkResult {
 		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 		// if(this.state[contractId]) {
 		// 	state := this.state[contractId]
@@ -325,7 +325,7 @@ var SdkModule = map[string]sdkFunc{
 		return ErrUnimplemented
 	},
 	//Intercontract write
-	"ic.call": func(ctx context.Context, a any) SdkResult {
+	"contracts.call": func(ctx context.Context, a any) SdkResult {
 		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 		return ErrUnimplemented
 	},
@@ -333,13 +333,13 @@ var SdkModule = map[string]sdkFunc{
 	//It is required to link a contract first to allow for VM loading
 	//In the future, links can be dynamically set within the sending TX itself to ensure proper gas is allocated
 	//..and vm is loaded properly
-	"ic.link": func(ctx context.Context, a any) SdkResult {
-		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
-		return ErrUnimplemented
-	},
-	//Unlinks intercontract call
-	"ic.unlink": func(ctx context.Context, a any) SdkResult {
-		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
-		return ErrUnimplemented
-	},
+	// 	"ic.link": func(ctx context.Context, a any) SdkResult {
+	// 		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+	// 		return ErrUnimplemented
+	// 	},
+	// 	//Unlinks intercontract call
+	// 	"ic.unlink": func(ctx context.Context, a any) SdkResult {
+	// 		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+	// 		return ErrUnimplemented
+	// 	},
 }

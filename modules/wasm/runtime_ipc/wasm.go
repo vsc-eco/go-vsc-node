@@ -425,6 +425,7 @@ func (w *Wasm) ExecuteWithClient(gas uint, entrypoint string, args string, runti
 	conf.SetStatisticsCostMeasuring(true)
 	conf.SetStatisticsInstructionCounting(true)
 	conf.SetStatisticsTimeMeasuring(true)
+	// conf.AddConfig(wasmedge.WASI)
 	vm := wasmedge.NewVMWithConfig(conf)
 	defer vm.Release()
 	type initResult struct {

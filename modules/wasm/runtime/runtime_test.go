@@ -2,6 +2,7 @@ package wasm_runtime_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
 
@@ -31,6 +32,7 @@ func TestBSON(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Contains(t, string(b), "assembly-script")
 
+	fmt.Println(string(b), "assembly-script")
 	var r Container
 	err = bson.Unmarshal(b, &r)
 	assert.NoError(t, err)
