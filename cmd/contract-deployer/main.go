@@ -96,7 +96,11 @@ func main() {
 			}
 
 			txData := tx.ToData()
-			j, _ := json.Marshal(txData)
+			j, err := json.Marshal(txData)
+			if err != nil {
+				fmt.Println("failed to marshal tx json data", err)
+				os.Exit(1)
+			}
 			fmt.Println(string(j))
 
 			txid, err := hiveClient.BroadcastJson([]string{user}, []string{}, "vsc.create_contract", string(j), &wif)
