@@ -10,6 +10,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/lib/utils"
 
+	"github.com/btcsuite/btcutil/base58"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	cbornode "github.com/ipfs/go-ipld-cbor"
@@ -113,4 +114,18 @@ func SafeParseHiveFloat(amount string) (int64, error) {
 	}
 
 	return strconv.ParseInt(strings.Join(parts, ""), 10, 64)
+}
+
+func ContractId(txid string, opidx int) string {
+	idObj := map[string]interface{}{
+		"ref_id": txid,
+		"index":  strconv.Itoa(opidx),
+	}
+	bytes, _ := EncodeDagCbor(idObj)
+	idCid, _ := HashBytes(bytes, multicodec.DagCbor)
+	b58 := idCid.Bytes()
+	trunkb58 := b58[len(b58)-20:]
+	id := "vsc1" + base58.CheckEncode(trunkb58, 0x1a)
+
+	return id
 }

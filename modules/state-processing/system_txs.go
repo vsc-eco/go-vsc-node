@@ -3,7 +3,6 @@ package stateEngine
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
@@ -16,7 +15,6 @@ import (
 	transactionpool "vsc-node/modules/transaction-pool"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
 
-	"github.com/btcsuite/btcutil/base58"
 	"github.com/ipfs/go-cid"
 	dagCbor "github.com/ipfs/go-ipld-cbor"
 	"github.com/multiformats/go-multicodec"
@@ -155,22 +153,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		se.da.Get(cidz, &datalayer.GetOptions{})
 	}()
 
-	idObj := map[string]interface{}{
-		"ref_id": tx.Self.TxId,
-		"index":  strconv.Itoa(tx.Self.OpIndex),
-	}
-	bytes, _ := common.EncodeDagCbor(idObj)
-
-	idCid, _ := cid.Prefix{
-		Version:  1,
-		Codec:    uint64(multicodec.DagCbor),
-		MhType:   mh.SHA2_256,
-		MhLength: -1,
-	}.Sum(bytes)
-
-	b58 := idCid.Bytes()
-	trunkb58 := b58[len(b58)-20:]
-	id := "vsc1" + base58.CheckEncode(trunkb58, 0x1a)
+	id := common.ContractId(tx.Self.TxId, tx.Self.OpIndex)
 
 	var owner string
 	if tx.Owner == "" {
