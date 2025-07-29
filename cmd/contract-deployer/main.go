@@ -58,19 +58,23 @@ func main() {
 		plugins,
 	)
 
+	initErr := a.Init()
+	if initErr != nil {
+		fmt.Println("failed to init plugins", err)
+		os.Exit(1)
+	}
+	if args.isInit {
+		fmt.Println("generated config files successfully")
+		os.Exit(0)
+	}
+
 	WASM_CODE, err := os.ReadFile(args.wasmPath)
 	if err != nil {
 		fmt.Println("failed to read WASM file", err)
 		os.Exit(1)
 	}
-
 	fmt.Println("WASM_CODE:", len(WASM_CODE), WASM_CODE[:10], "...")
 
-	err = a.Init()
-	if err != nil {
-		fmt.Println("failed to init plugins", err)
-		os.Exit(1)
-	}
 	a.Start()
 
 	proof, proofError := client.RequestProof(WASM_CODE)

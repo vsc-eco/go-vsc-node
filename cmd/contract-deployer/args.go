@@ -11,6 +11,7 @@ type args struct {
 	wasmPath    string
 	name        string
 	description string
+	isInit      bool
 }
 
 func ParseArgs() (args, error) {
@@ -23,6 +24,7 @@ func ParseArgs() (args, error) {
 	wasmPath := flag.String("wasmPath", "main.wasm", "Path to compiled WASM bytecode")
 	name := flag.String("name", "", "Name of the contract")
 	desc := flag.String("description", "", "Description of the contract")
+	isInit := flag.Bool("init", false, "Generate credentials config files")
 	flag.Parse()
 
 	return args{
@@ -30,5 +32,6 @@ func ParseArgs() (args, error) {
 		*wasmPath,
 		*name,
 		*desc,
+		*isInit,
 	}, nil
 }
