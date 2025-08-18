@@ -11,15 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-const topic = "/vsc/mainet/oracle/v1"
-
-type Msg = *OracleMessage
-
-type Oracle struct {
-	service libp2p.PubSubService[OracleMessage]
-}
-
-type OracleMessage struct{}
+var _ libp2p.PubSubServiceParams[Msg] = &p2pSpec{}
 
 type p2pSpec struct {
 	conf   common.IdentityConfig
