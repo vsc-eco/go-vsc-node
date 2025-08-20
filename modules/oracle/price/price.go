@@ -1,8 +1,10 @@
 package price
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 type (
@@ -31,7 +33,24 @@ func (pricepoint *PricePoint) UnmarshalJSON(data []byte) error {
 }
 
 func New() PriceOracle {
-	// TODO: initialize this thing
-	fmt.Println("alskdjfkljdsf")
-	return PriceOracle{}
+	return PriceOracle{
+		c:           make(chan PricePoint, 1),
+		avgPriceMap: make(priceMap),
+	}
+}
+
+func (p *PriceOracle) Poll(ctx context.Context, pollInterval time.Duration) {
+	ticker := time.NewTicker(pollInterval)
+
+	select {
+	case <-ctx.Done():
+		return
+
+	case <-ticker.C:
+		p.fetchPrices()
+	}
+}
+
+func (p *PriceOracle) fetchPrices() {
+	fmt.Println("TODO: implement PriceOracle.fetchPrices()")
 }

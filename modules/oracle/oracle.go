@@ -15,11 +15,13 @@ import (
 type MsgType string
 
 const (
-	topic                 = "/vsc/mainet/oracle/v1"
-	btcChainRelayInterval = time.Minute * 10
+	topic = "/vsc/mainet/oracle/v1"
 
-	msgPriceObserve = MsgType("price-observed")
-	msgBtcChain     = MsgType("btc-chain-relay")
+	btcChainRelayInterval = time.Minute * 10
+	btcChainRelayMsgType  = MsgType("btc-chain-relay")
+
+	priceOracleUpdateInterval = time.Hour
+	priceOracleMsgType        = MsgType("price-orcale")
 )
 
 type (
@@ -54,7 +56,7 @@ func New(p2pServer *libp2p.P2PServer, conf common.IdentityConfig) *Oracle {
 
 		priceOracle: price.New(),
 
-		btcChainRelayer: btcrelay.New(btcChainRelayInterval),
+		btcChainRelayer: btcrelay.New(),
 	}
 }
 
@@ -67,7 +69,8 @@ func (o *Oracle) Init() error {
 // Start implements aggregate.Plugin.
 // Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
-	go o.btcChainRelayer.Poll(o.ctx)
+	go o.btcChainRelayer.Poll(o.ctx, btcChainRelayInterval)
+	go o.priceOracle.Poll(o.ctx, priceOracleUpdateInterval)
 
 	return promise.New(func(resolve func(any), reject func(error)) {
 		var err error
