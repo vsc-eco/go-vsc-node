@@ -1,13 +1,26 @@
 package oracle
 
 import (
+	"context"
+	"encoding/json"
+	"time"
 	"vsc-node/modules/common"
+	btcrelay "vsc-node/modules/oracle/btc-relay"
+	"vsc-node/modules/oracle/price"
 	libp2p "vsc-node/modules/p2p"
 
 	"github.com/chebyrash/promise"
 )
 
-const topic = "/vsc/mainet/oracle/v1"
+type MsgType string
+
+const (
+	topic                 = "/vsc/mainet/oracle/v1"
+	btcChainRelayInterval = time.Minute * 10
+
+	msgPriceObserve = MsgType("price-observed")
+	msgBtcChain     = MsgType("btc-chain-relay")
+)
 
 type (
 	Msg    *oracleMessage
@@ -15,10 +28,35 @@ type (
 		p2p     *libp2p.P2PServer
 		service libp2p.PubSubService[Msg]
 		conf    common.IdentityConfig
+
+		ctx        context.Context
+		cancelFunc context.CancelFunc
+
+		priceOracle     price.PriceOracle
+		btcChainRelayer btcrelay.BtcChainRelay
 	}
 
-	oracleMessage struct{}
+	oracleMessage struct {
+		Type MsgType `validate:"required"`
+		Data json.Unmarshaler
+	}
 )
+
+func New(p2pServer *libp2p.P2PServer, conf common.IdentityConfig) *Oracle {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Oracle{
+		p2p:     p2pServer,
+		service: nil,
+		conf:    conf,
+
+		ctx:        ctx,
+		cancelFunc: cancel,
+
+		priceOracle: price.New(),
+
+		btcChainRelayer: btcrelay.New(btcChainRelayInterval),
+	}
+}
 
 // Init implements aggregate.Plugin.
 // Runs initialization in order of how they are passed in to `Aggregate`
@@ -29,6 +67,8 @@ func (o *Oracle) Init() error {
 // Start implements aggregate.Plugin.
 // Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
+	go o.btcChainRelayer.Poll(o.ctx)
+
 	return promise.New(func(resolve func(any), reject func(error)) {
 		var err error
 
@@ -37,6 +77,7 @@ func (o *Oracle) Start() *promise.Promise[any] {
 			oracle: o,
 		})
 		if err != nil {
+			o.cancelFunc()
 			reject(err)
 			return
 		}
@@ -48,17 +89,10 @@ func (o *Oracle) Start() *promise.Promise[any] {
 // Stop implements aggregate.Plugin.
 // Runs cleanup once the `Aggregate` is finished
 func (o *Oracle) Stop() error {
+	o.cancelFunc()
+
 	if o.service == nil {
 		return nil
 	}
 	return o.service.Close()
-}
-
-func New(p2pServer *libp2p.P2PServer, conf common.IdentityConfig) *Oracle {
-	out := &Oracle{
-		p2p:     p2pServer,
-		service: nil,
-		conf:    conf,
-	}
-	return out
 }
