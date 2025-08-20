@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/go-playground/validator/v10"
 )
+
+var priceValidator = validator.New(validator.WithRequiredStructEnabled())
 
 type (
 	PriceOracle struct {
@@ -14,8 +18,10 @@ type (
 	}
 
 	PricePoint struct {
-		Symbol string  `validate:"required" json:"symbol,omitempty"`
-		Price  float64 `validate:"required" json:"price,omitempty"`
+		// length: range from 1-9 chars.
+		// format: uppercase letters, may include numbers.
+		Symbol string  `json:"symbol" validate:"required,min=1,max=9,uppercase,alphanum"`
+		Price  float64 `json:"price"  validate:"required,gt=0.0"`
 	}
 
 	priceMap      map[string]avgPricePoint
@@ -26,10 +32,15 @@ type (
 )
 
 // UnmarshalJSON implements json.Unmarshaler
-func (pricepoint *PricePoint) UnmarshalJSON(data []byte) error {
+func (p *PricePoint) UnmarshalJSON(data []byte) error {
 	type alias *PricePoint
-	buf := (alias)(pricepoint)
-	return json.Unmarshal(data, buf)
+	buf := (alias)(p)
+
+	if err := json.Unmarshal(data, buf); err != nil {
+		return err
+	}
+
+	return priceValidator.Struct(p)
 }
 
 func New() PriceOracle {

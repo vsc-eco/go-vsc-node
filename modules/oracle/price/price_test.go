@@ -4,16 +4,76 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/go-playground/validator/v10"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestPricePointJsonUnmarshaler(t *testing.T) {
-	var (
-		raw = []byte(`{"symbol": "BTC","price": 1234.56}`)
-		buf PricePoint
-	)
+	t.Run("ummarshal data", func(t *testing.T) {
+		testCases := [][]byte{
+			[]byte(`{"price":1.0,"symbol":"A"}`),
+			[]byte(`{"price":1.0,"symbol":"ABCDEFGHI"}`),
+			[]byte(`{"price":1.0,"symbol":"ABC123"}`),
 
-	assert.NoError(t, json.Unmarshal(raw, &buf))
-	assert.Equal(t, "BTC", buf.Symbol)
-	assert.Equal(t, 1234.56, buf.Price)
+			[]byte(`{"symbol":"BTC","price":0.01}`),
+			[]byte(`{"symbol":"BTC","price":123}`),
+			[]byte(`{"symbol":"BTC","price":123.456}`),
+		}
+
+		for _, raw := range testCases {
+			t.Logf("unmarshaling json: %s", string(raw))
+			assert.NoError(t, json.Unmarshal(raw, &PricePoint{}))
+		}
+	})
+
+	t.Run("nil byte", func(t *testing.T) {
+		err := json.Unmarshal(nil, &PricePoint{})
+
+		assert.Error(t, err)
+
+		_, ok := err.(*json.SyntaxError)
+		assert.True(t, ok)
+	})
+
+	t.Run("data validation", func(t *testing.T) {
+		t.Run("with invalid json data", func(t *testing.T) {
+			testCases := [][]byte{
+				// empty json
+				[]byte(`{}`),
+
+				// invalid prices
+				[]byte(`{"symbol":"BTC","price":0.0}`),
+				[]byte(`{"symbol":"BTC","price":0}`),
+				[]byte(`{"symbol":"BTC","price":-0.0}`),
+				[]byte(`{"symbol":"BTC","price":-0.0000001}`),
+
+				// invalid symbols
+				[]byte(`{"price":123.45,"symbol":""}`),
+				[]byte(`{"price":123.45,"symbol":"abc"}`),
+				[]byte(`{"price":123.45,"symbol":"ABCDEFGHIJ"}`),
+				[]byte(`{"price":123.45,"symbol":"ABC;"}`),
+
+				// valid symbols, invalid prices
+				[]byte(`{"symbol":"BTC","price":0}`),
+				[]byte(`{"symbol":"BTC","price":0.0}`),
+				[]byte(`{"symbol":"BTC","price":-0.0}`),
+				[]byte(`{"symbol":"BTC","price":-0.00001}`),
+
+				// invalid symbols, valid prices
+				[]byte(`{"price":1234.56,"symbol":"abc"}`),
+				[]byte(`{"price":1234.56,"symbol":"ABC;"}`),
+				[]byte(`{"price":1234.56,"symbol":""}`),
+			}
+
+			for _, raw := range testCases {
+				t.Logf("unmarshaling json: %s", string(raw))
+
+				err := json.Unmarshal(raw, &PricePoint{})
+				assert.Error(t, err)
+
+				_, ok := err.(validator.ValidationErrors)
+				assert.True(t, ok)
+			}
+		})
+	})
 }
