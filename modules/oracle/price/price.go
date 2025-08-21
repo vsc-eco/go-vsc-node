@@ -19,13 +19,15 @@ type (
 	PriceOracle struct {
 		c           chan PricePoint
 		avgPriceMap priceMap
+		coinGecko   coinGeckoHandler
 	}
 
 	PricePoint struct {
 		// length: range from 1-9 chars.
 		// format: uppercase letters, may include numbers.
-		Symbol string  `json:"symbol"        validate:"required,min=1,max=9,alphanum"`
-		Price  float64 `json:"current_price" validate:"required,gt=0.0"`
+		Symbol        string  `json:"symbol"          validate:"required,min=1,max=9,alphanum"`
+		Price         float64 `json:"current_price"   validate:"required,gt=0.0"`
+		UnixTimeStamp int64   `json:"unix_time_stamp"`
 	}
 )
 
@@ -38,7 +40,8 @@ func (p *PricePoint) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	return priceValidator.Struct(p)
+	// return priceValidator.Struct(p)
+	return nil
 }
 
 func New() PriceOracle {
