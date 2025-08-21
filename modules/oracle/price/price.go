@@ -23,12 +23,6 @@ type (
 		Symbol string  `json:"symbol" validate:"required,min=1,max=9,uppercase,alphanum"`
 		Price  float64 `json:"price"  validate:"required,gt=0.0"`
 	}
-
-	priceMap      map[string]avgPricePoint
-	avgPricePoint struct {
-		average float64
-		counter uint64
-	}
 )
 
 // UnmarshalJSON implements json.Unmarshaler
@@ -46,7 +40,7 @@ func (p *PricePoint) UnmarshalJSON(data []byte) error {
 func New() PriceOracle {
 	return PriceOracle{
 		c:           make(chan PricePoint, 1),
-		avgPriceMap: make(priceMap),
+		avgPriceMap: priceMap{},
 	}
 }
 
