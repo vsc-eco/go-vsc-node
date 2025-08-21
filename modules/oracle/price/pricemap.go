@@ -6,14 +6,14 @@ var (
 	errSymbolNotFound = errors.New("symbol not found")
 )
 
-type (
-	priceMap       struct{ priceSymbolMap }
-	priceSymbolMap map[string]avgPricePoint
-	avgPricePoint  struct {
-		average float64
-		counter uint64
-	}
-)
+type priceMap struct{ priceSymbolMap }
+type priceSymbolMap map[string]avgPricePoint
+type avgPricePoint struct {
+	average     float64
+	medianPrice float64
+	volume      float64 // TODO: keep track of this
+	counter     uint64
+}
 
 func makePriceMap() priceMap {
 	return priceMap{make(priceSymbolMap)}
@@ -28,6 +28,8 @@ func (pm *priceMap) getAveragePrice(symbol string) (float64, error) {
 	return price.average, nil
 }
 
+// query the price over the hour and drop off things outside the hour mark
+// at the hour mark, broadcast the price
 func (pm *priceMap) observe(pricePoint PricePoint) {
 	avg, ok := pm.priceSymbolMap[pricePoint.Symbol]
 

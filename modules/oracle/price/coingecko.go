@@ -1,6 +1,7 @@
 package price
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -31,6 +32,9 @@ func makeCoinGeckoHandler(
 ) coinGeckoHandler {
 	var baseUrl string
 	if demoMode {
+		// CoinGecko requires attribution on free tier
+		// https://brand.coingecko.com/resources/attribution-guide
+		fmt.Println("Price data by [CoinGecko](https://www.coingecko.com)")
 		baseUrl = "https://api.coingecko.com/api/v3"
 	} else {
 		baseUrl = "https://pro-api.coingecko.com/api/v3"
@@ -48,6 +52,7 @@ func makeCoinGeckoHandler(
 }
 
 func (c *coinGeckoHandler) queryCoins(
+	ctx context.Context,
 	pc chan<- PricePoint,
 	queryInterval time.Duration,
 ) error {
@@ -55,37 +60,46 @@ func (c *coinGeckoHandler) queryCoins(
 		page    = 1
 		paths   = [...]string{"coins", "markets"}
 		queries = map[string]string{
-			"vs_currency": c.vsCurrency,
+			"vs_currency": c.vsCurrency, // NOTE: should always be `usd`
 			"per_page":    fmt.Sprintf("%d", pageLimit),
 			"precision":   "full",
+			"ids":         "btc",
 		}
 	)
 
 	ticker := time.NewTicker(queryInterval)
 	defer ticker.Stop()
 
+	// query bitcoin only for now, but have it in a slice fo rlater
+
 	for {
-		queries["page"] = fmt.Sprintf("%d", page)
+		select {
+		case <-ctx.Done():
+			return nil
 
-		buf, err := c.fetchPrices(paths[:], queries, pageLimit)
-		if err != nil {
-			return err
+		case <-ticker.C:
+			queries["page"] = fmt.Sprintf("%d", page)
+
+			buf, err := c.fetchPrices(paths[:], queries, pageLimit)
+			if err != nil {
+				return err
+			}
+
+			now := time.Now().UTC().UnixMilli()
+			for _, p := range buf {
+				p.UnixTimeStamp = now
+				pc <- p
+			}
+
+			if len(buf) != pageLimit {
+				// end of symbols
+				// all coins queried, restart the process
+				page = 1
+			} else {
+				page += 1
+			}
+
 		}
-
-		now := time.Now().UTC().UnixMilli()
-		for _, p := range buf {
-			p.UnixTimeStamp = now
-			pc <- p
-		}
-
-		// end of symbols
-		if len(buf) != pageLimit {
-			page = 1 // all coins queried, restart the process
-		} else {
-			page += 1
-		}
-
-		<-ticker.C
 	}
 }
 
@@ -96,7 +110,6 @@ func (c *coinGeckoHandler) fetchPrices(
 	queries map[string]string,
 	pageLimit int,
 ) ([]PricePoint, error) {
-
 	url, err := c.makeUrl(urlPaths, queries)
 	if err != nil {
 		return nil, err

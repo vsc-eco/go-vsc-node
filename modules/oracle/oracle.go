@@ -25,7 +25,6 @@ const (
 )
 
 type (
-	Msg    *oracleMessage
 	Oracle struct {
 		p2p     *libp2p.P2PServer
 		service libp2p.PubSubService[Msg]
@@ -37,6 +36,8 @@ type (
 		priceOracle     price.PriceOracle
 		btcChainRelayer btcrelay.BtcChainRelay
 	}
+
+	Msg *oracleMessage
 
 	oracleMessage struct {
 		Type MsgType `validate:"required"`

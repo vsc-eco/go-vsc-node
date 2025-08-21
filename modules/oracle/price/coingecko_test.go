@@ -1,6 +1,7 @@
 package price
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
@@ -14,7 +15,7 @@ func TestCoinGeckoHandlerQueryCoins(t *testing.T) {
 		demoMode = true
 	)
 
-	cgHandler := makeCoinGeckoHandler(apiKey, demoMode, "cad")
+	cgHandler := makeCoinGeckoHandler(apiKey, demoMode, "usd")
 	c := make(chan PricePoint, 10)
 
 	go func() {
@@ -23,5 +24,11 @@ func TestCoinGeckoHandlerQueryCoins(t *testing.T) {
 		}
 	}()
 
-	assert.NoError(t, cgHandler.queryCoins(c, 30*time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	assert.NoError(
+		t,
+		cgHandler.queryCoins(ctx, c, 30*time.Second),
+	)
 }
