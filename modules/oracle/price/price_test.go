@@ -11,13 +11,13 @@ import (
 func TestPricePointJsonUnmarshaler(t *testing.T) {
 	t.Run("ummarshal data", func(t *testing.T) {
 		testCases := [][]byte{
-			[]byte(`{"price":1.0,"symbol":"A"}`),
-			[]byte(`{"price":1.0,"symbol":"ABCDEFGHI"}`),
-			[]byte(`{"price":1.0,"symbol":"ABC123"}`),
+			[]byte(`{"current_price":1.0,"symbol":"A"}`),
+			[]byte(`{"current_price":1.0,"symbol":"ABCDEFGHI"}`),
+			[]byte(`{"current_price":1.0,"symbol":"ABC123"}`),
 
-			[]byte(`{"symbol":"BTC","price":0.01}`),
-			[]byte(`{"symbol":"BTC","price":123}`),
-			[]byte(`{"symbol":"BTC","price":123.456}`),
+			[]byte(`{"symbol":"BTC","current_price":0.01}`),
+			[]byte(`{"symbol":"BTC","current_price":123}`),
+			[]byte(`{"symbol":"BTC","current_price":123.456}`),
 		}
 
 		for _, raw := range testCases {
@@ -42,27 +42,27 @@ func TestPricePointJsonUnmarshaler(t *testing.T) {
 				[]byte(`{}`),
 
 				// invalid prices
-				[]byte(`{"symbol":"BTC","price":0.0}`),
-				[]byte(`{"symbol":"BTC","price":0}`),
-				[]byte(`{"symbol":"BTC","price":-0.0}`),
-				[]byte(`{"symbol":"BTC","price":-0.0000001}`),
+				[]byte(`{"symbol":"BTC","current_price":0.0}`),
+				[]byte(`{"symbol":"BTC","current_price":0}`),
+				[]byte(`{"symbol":"BTC","current_price":-0.0}`),
+				[]byte(`{"symbol":"BTC","current_price":-0.0000001}`),
 
 				// invalid symbols
-				[]byte(`{"price":123.45,"symbol":""}`),
-				[]byte(`{"price":123.45,"symbol":"abc"}`),
-				[]byte(`{"price":123.45,"symbol":"ABCDEFGHIJ"}`),
-				[]byte(`{"price":123.45,"symbol":"ABC;"}`),
+				[]byte(`{"current_price":123.45,"symbol":""}`),
+				[]byte(`{"current_price":123.45,"symbol":"abc"}`),
+				[]byte(`{"current_price":123.45,"symbol":"ABCDEFGHIJ"}`),
+				[]byte(`{"current_price":123.45,"symbol":"ABC;"}`),
 
 				// valid symbols, invalid prices
-				[]byte(`{"symbol":"BTC","price":0}`),
-				[]byte(`{"symbol":"BTC","price":0.0}`),
-				[]byte(`{"symbol":"BTC","price":-0.0}`),
-				[]byte(`{"symbol":"BTC","price":-0.00001}`),
+				[]byte(`{"symbol":"BTC","current_price":0}`),
+				[]byte(`{"symbol":"BTC","current_price":0.0}`),
+				[]byte(`{"symbol":"BTC","current_price":-0.0}`),
+				[]byte(`{"symbol":"BTC","current_price":-0.00001}`),
 
 				// invalid symbols, valid prices
-				[]byte(`{"price":1234.56,"symbol":"abc"}`),
-				[]byte(`{"price":1234.56,"symbol":"ABC;"}`),
-				[]byte(`{"price":1234.56,"symbol":""}`),
+				[]byte(`{"current_price":1234.56,"symbol":"abc"}`),
+				[]byte(`{"current_price":1234.56,"symbol":"ABC;"}`),
+				[]byte(`{"current_price":1234.56,"symbol":""}`),
 			}
 
 			for _, raw := range testCases {
