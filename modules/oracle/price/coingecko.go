@@ -8,6 +8,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
+	"time"
 	"vsc-node/lib/utils"
 )
 
@@ -65,7 +66,7 @@ func (c *coinGeckoHandler) QueryMarketPrice(
 		"vs_currency": c.vsCurrency,
 		"per_page":    fmt.Sprintf("%d", pageLimit),
 		"precision":   "full",
-		"ids":         strings.Join(symLowerCase, ","),
+		"symbols":     strings.Join(symLowerCase, ","),
 	}
 	paths := [...]string{"coins", "markets"}
 
@@ -119,9 +120,15 @@ func (c *coinGeckoHandler) fetchPrices(
 		)
 	}
 
-	buf := make([]PricePoint, pageLimit)
+	buf := make([]PricePoint, 0, pageLimit)
 	if err := json.NewDecoder(res.Body).Decode(&buf); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %s", err)
+	}
+
+	now := time.Now().UTC().UnixMilli()
+	for i := range buf {
+		buf[i].Symbol = strings.ToUpper(buf[i].Symbol)
+		buf[i].UnixTimeStamp = now
 	}
 
 	return buf, nil
