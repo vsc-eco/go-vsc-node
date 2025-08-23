@@ -9,3 +9,16 @@ type WasmResultStruct struct {
 }
 
 type WasmResult = result.Result[WasmResultStruct]
+
+type BasicErrorResult struct {
+	Result    *WasmResultStruct
+	Error     *string
+	ErrorCode ErrorSymbol
+}
+
+// MISC: @TODO cleanup
+type ErrorSymbol string
+
+const (
+	REVERT ErrorSymbol = "revert"
+)

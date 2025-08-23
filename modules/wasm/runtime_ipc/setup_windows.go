@@ -1,6 +1,6 @@
 //go:build windows
 
-package wasm_parent_ipc
+package wasm_runtime
 
 import (
 	"io"

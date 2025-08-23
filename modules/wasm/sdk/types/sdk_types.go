@@ -49,9 +49,9 @@ func generateFunctionResult(name string, fn reflect.Type) []wasmedge.ValType {
 	switch name {
 	case "console.log":
 		fallthrough
-	case "db.setObject":
+	case "db.set_object":
 		fallthrough
-	case "db.delObject":
+	case "db.rm_object":
 		fallthrough
 	case "hive.draw":
 		fallthrough

@@ -440,3 +440,35 @@ func copyJsonToType(src map[string]interface{}, dest interface{}) error {
 	}
 	return json.Unmarshal(bytes, dest)
 }
+
+type Buffer struct {
+	c chan byte
+	// *io.PipeReader
+	// *io.PipeWriter
+}
+
+func NewBuffer() *Buffer {
+	return &Buffer{c: make(chan byte, 8*1024*1024)} // TODO by making the buffer size very large, the test will no longer be flaky. Does this indicate a likely problem in production?
+	// r, w := io.Pipe()
+	// return &Buffer{r, w}
+}
+
+func (b *Buffer) Read(p []byte) (n int, err error) {
+	for i := 0; i < len(p); i++ {
+		if len(b.c) == 0 {
+			return i, nil
+		}
+		p[i] = <-b.c
+	}
+	return len(p), nil
+}
+
+func (b *Buffer) Write(p []byte) (n int, err error) {
+	for i, v := range p {
+		if len(b.c) == cap(b.c) {
+			return i, nil
+		}
+		b.c <- v
+	}
+	return len(p), nil
+}

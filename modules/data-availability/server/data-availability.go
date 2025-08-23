@@ -1,7 +1,6 @@
 package data_availability_server
 
 import (
-	"context"
 	"vsc-node/lib/datalayer"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -43,16 +42,20 @@ func (d *DataAvailability) Start() *promise.Promise[any] {
 			reject(err)
 			return
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		_, err = d.service.Started().Await(ctx)
-		if err != nil {
-			d.startStatus.TriggerStartFailure(err)
-			reject(err)
-			return
-		}
+		// ctx, cancel := context.WithCancel(context.Background())
+		// defer cancel()
+
+		// fmt.Println("Metroid 2")
+		// _, err = d.service.Started().Await(ctx)
+		// fmt.Println("Metroid 3")
+		// if err != nil {
+		// 	d.startStatus.TriggerStartFailure(err)
+		// 	reject(err)
+		// 	return
+		// }
 		d.startStatus.TriggerStart()
-		<-d.service.Context().Done()
+		// fmt.Println("Metroid 4")
+		// <-d.service.Context().Done()
 		resolve(nil)
 	})
 }

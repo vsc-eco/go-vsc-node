@@ -71,6 +71,7 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
 		Id:         output.Id,
 		ContractId: output.ContractId,
 
+		Metadata:    output.Metadata,
 		StateMerkle: output.StateMerkle,
 		Inputs:      output.Inputs,
 		Results:     output.Results,
@@ -134,7 +135,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 	}
 
 	fmt.Println("Must validate storage proof")
-	// tx.StorageProof.
+
 	election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
 
 	if err != nil {

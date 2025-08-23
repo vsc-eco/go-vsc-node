@@ -28,7 +28,10 @@ import (
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
-	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
+
+	data_availability "vsc-node/modules/data-availability/server"
+
+	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
 	"vsc-node/modules/vstream"
 
@@ -124,7 +127,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	announcementsManager, _ := announcements.New(hrpc, identityConfig, time.Hour*24, &txCreator, peerGetter)
 
 	datalayer := DataLayer.New(p2p, input.Username)
-	wasm := wasm_parent_ipc.New()
+	wasm := wasm_runtime.New()
 
 	se := stateEngine.New(logger, datalayer, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
 
@@ -139,6 +142,8 @@ func MakeNode(input MakeNodeInput) *Node {
 	bp := blockproducer.New(logger, p2p, vstream, se, identityConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb, se.RcSystem, nonceDb)
 
 	multisig := gateway.New(logger, witnessesDb, electionDb, actionsDb, balanceDb, &txCreator, vstream, p2p, se, identityConfig, hiveClient)
+
+	dataAvailability := data_availability.New(p2p, identityConfig, datalayer)
 
 	plugins := make([]aggregate.Plugin, 0)
 
@@ -164,6 +169,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		contractState,
 		rcDb,
 		nonceDb,
+		dataAvailability,
 		vstream,
 		wasm,
 		se,
@@ -202,6 +208,9 @@ func MakeNode(input MakeNodeInput) *Node {
 
 		input.Runner.ElectionProposer = ep
 		input.Runner.VStream = vstream
+		input.Runner.P2pService = p2p
+		input.Runner.IdentityConfig = identityConfig
+		input.Runner.TxDb = txDb
 	}
 
 	return &Node{
@@ -216,5 +225,40 @@ func MakeNode(input MakeNodeInput) *Node {
 		announcementsManager: announcementsManager,
 
 		MockHiveBlocks: hiveBlocks,
+	}
+}
+
+type MakeClientInput struct {
+	BrcstFunc func(tx hivego.HiveTransaction) error
+}
+
+type NodeClient struct {
+	Plugins    []aggregate.Plugin
+	P2PService *p2pInterface.P2PServer
+	Identity   common.IdentityConfig
+}
+
+func MakeClient(input MakeClientInput) NodeClient {
+	identityConfig := common.NewIdentityConfig("data-mock-client/config")
+
+	identityConfig.Init()
+	identityConfig.SetUsername("mock-client")
+
+	sysConfig := common.SystemConfig{
+		Network: "mocknet",
+	}
+	wits := witnesses.NewEmptyWitnesses()
+	p2p := p2pInterface.New(wits, identityConfig, sysConfig, 0)
+
+	plugins := make([]aggregate.Plugin, 0)
+	plugins = append(plugins,
+		identityConfig,
+		p2p,
+	)
+
+	return NodeClient{
+		Plugins:    plugins,
+		P2PService: p2p,
+		Identity:   identityConfig,
 	}
 }

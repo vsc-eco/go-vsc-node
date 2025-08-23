@@ -9,6 +9,7 @@ import (
 	"strings"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
+	"vsc-node/modules/db/vsc/contracts"
 
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
@@ -456,6 +457,119 @@ func (tx *VscWithdraw) Validate() (bool, error) {
 	}
 
 	return valid, nil
+}
+
+type VscContractCall struct {
+	ContractId string             `json:"contract_id"`
+	Action     string             `json:"action"`
+	Payload    string             `json:"payload"`
+	RcLimit    uint               `json:"rc_limit"`
+	Intents    []contracts.Intent `json:"intents"`
+
+	Caller string `json:"caller"`
+
+	NetId string `json:"-"`
+}
+
+func (tx *VscContractCall) SerializeVSC() (VSCTransactionOp, error) {
+	recode := map[string]interface{}{}
+	jjsonBytes, err := json.Marshal(tx)
+
+	if err != nil {
+		return VSCTransactionOp{}, err
+	}
+
+	err = json.Unmarshal(jjsonBytes, &recode)
+
+	if err != nil {
+		return VSCTransactionOp{}, err
+	}
+
+	valid, err := tx.Validate()
+	if !valid {
+		return VSCTransactionOp{}, err
+	}
+
+	encodedBytes, _ := common.EncodeDagCbor(recode)
+
+	return VSCTransactionOp{
+		Type:    "call",
+		Payload: encodedBytes,
+
+		RequiredAuths: struct {
+			Active  []string
+			Posting []string
+		}{
+			Active: []string{tx.Caller},
+		},
+	}, nil
+}
+
+func (tx *VscContractCall) SerializeHive() ([]hivego.HiveOperation, error) {
+	serializedJson := map[string]interface{}{
+		"contract_id": tx.ContractId,
+		"action":      tx.Action,
+		"payload":     tx.Payload,
+		"rc_limit":    tx.RcLimit,
+		"intents":     tx.Intents,
+		"caller":      tx.Caller,
+		"net_id":      tx.NetId,
+	}
+
+	jsonBytes, _ := json.Marshal(serializedJson)
+
+	valid, err := tx.Validate()
+	if !valid {
+		return nil, err
+	}
+
+	postingMap := make(map[string]bool, 0)
+	activeMap := make(map[string]bool, 0)
+
+	for _, intent := range tx.Intents {
+		fmt.Println("intent", intent)
+		if intent.Type == "transfer.allow" {
+			activeMap[tx.Caller] = true
+		}
+	}
+
+	if !activeMap[tx.Caller] {
+		postingMap[tx.Caller] = true
+	}
+
+	posting := make([]string, 0)
+	active := make([]string, 0)
+	for k := range postingMap {
+		posting = append(posting, strings.Split(k, ":")[1])
+	}
+	for k := range activeMap {
+		active = append(active, strings.Split(k, ":")[1])
+	}
+
+	op := hivego.CustomJsonOperation{
+		RequiredAuths:        active,
+		RequiredPostingAuths: posting,
+		Id:                   "vsc.call",
+		Json:                 string(jsonBytes),
+	}
+
+	return []hivego.HiveOperation{op}, nil
+}
+
+func (tx *VscContractCall) Validate() (bool, error) {
+	if !strings.HasPrefix(tx.Caller, "did:") && !strings.HasPrefix(tx.Caller, "hive:") {
+		return false, fmt.Errorf("failed validation - caller must be set")
+	}
+	if !strings.HasPrefix(tx.ContractId, "vsc1") {
+		return false, fmt.Errorf("failed validation - contract_id must be set")
+	}
+	if tx.Action == "" {
+		return false, fmt.Errorf("failed validation - action must be set")
+	}
+	if tx.Payload == "" {
+		return false, fmt.Errorf("failed validation - payload must be set")
+	}
+	return true, nil
 }
 
 // func hashVSCOperation(tx VSCOperation) (cid.Cid, error) {

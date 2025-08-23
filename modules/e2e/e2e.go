@@ -12,8 +12,10 @@ import (
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	election_proposer "vsc-node/modules/election-proposer"
+	libp2p "vsc-node/modules/p2p"
 	"vsc-node/modules/vstream"
 
 	a "vsc-node/modules/aggregate"
@@ -78,6 +80,9 @@ type E2ERunner struct {
 	Datalayer        *datalayer.DataLayer
 	Witnesses        witnesses.Witnesses
 	ElectionProposer election_proposer.ElectionProposer
+	P2pService       *libp2p.P2PServer
+	IdentityConfig   common.IdentityConfig
+	TxDb             transactions.Transactions
 
 	BlockHeight uint64
 
@@ -119,33 +124,40 @@ func (e2e *E2ERunner) SetSteps(steps []func() error) {
 	e2e.steps = steps
 }
 
-func (e2e *E2ERunner) Wait(blocks uint64) func() error {
-	return func() error {
+func (e2e *E2ERunner) Wait(blocks uint64) Step {
+	return Step{
+		Name: "Wait for Blocks",
+		TestFunc: func(ctx StepCtx) (EvaluateFunc, error) {
 
-		// fmt.Println("e2e.BlockHeight", e2e.BlockHeight)
+			// fmt.Println("e2e.BlockHeight", e2e.BlockHeight)
 
-		bh := e2e.BlockHeight + blocks
+			bh := e2e.BlockHeight + blocks
 
-		for {
-			bhx := <-e2e.BlockEvent
-			// fmt.Println("e2e.Wait Waiting for", bhx)
-			if bhx >= bh {
-				break
+			for {
+				bhx := <-e2e.BlockEvent
+				// fmt.Println("e2e.Wait Waiting for", bhx)
+				if bhx >= bh {
+					break
+				}
 			}
-		}
 
-		// for e2e.BlockHeight < bh {
-		// 	time.Sleep(500 * time.Millisecond)
-		// }
-		return nil
+			// for e2e.BlockHeight < bh {
+			// 	time.Sleep(500 * time.Millisecond)
+			// }
+			return nil, nil
+		},
 	}
 }
 
-func (e2e *E2ERunner) WaitToStart() func() error {
-	return func() error {
-		//Wait till first block is produced
-		<-e2e.BlockEvent
-		return nil
+func (e2e *E2ERunner) WaitToStart() Step {
+	return Step{
+		Name: "Wait To Start",
+		TestFunc: func(ctx StepCtx) (EvaluateFunc, error) {
+
+			//Wait till first block is produced
+			<-e2e.BlockEvent
+			return nil, nil
+		},
 	}
 }
 
@@ -157,71 +169,76 @@ func (e2e *E2ERunner) Sleep(seconds uint64) func() error {
 }
 
 // Creates and broadcasts a mock election using predefined list of validator user names
-func (e2e *E2ERunner) BroadcastMockElection(witnessListS []string) func() error {
-	return func() error {
-		da := e2e.Datalayer
-		members := []elections.ElectionMember{}
-		witnessList := []witnesses.Witness{}
-		//TODO detect current height
-		for _, wStr := range witnessListS {
-			w, err := e2e.Witnesses.GetWitnessAtHeight(wStr, nil)
-			if err != nil {
-				continue
-			}
-			witnessList = append(witnessList, *w)
-		}
+func (e2e *E2ERunner) BroadcastElection() Step {
+	return Step{
+		Name: "Broadcast Election",
+		TestFunc: func(ctx StepCtx) (EvaluateFunc, error) {
+			witnessListS := ctx.Container.nodeNames
 
-		var weights []uint64
-		//Finish this when I can!
-		for _, w := range witnessList {
-			var key string
-			for _, dk := range w.DidKeys {
-				if dk.Type == "consensus" {
-					key = dk.Key
-					break
+			da := e2e.Datalayer
+			members := []elections.ElectionMember{}
+			witnessList := []witnesses.Witness{}
+			//TODO detect current height
+			for _, wStr := range witnessListS {
+				w, err := e2e.Witnesses.GetWitnessAtHeight(wStr, nil)
+				if err != nil {
+					continue
 				}
+				witnessList = append(witnessList, *w)
 			}
-			if key == "" {
-				//Don't do witness
-				continue
+
+			var weights []uint64
+			//Finish this when I can!
+			for _, w := range witnessList {
+				var key string
+				for _, dk := range w.DidKeys {
+					if dk.Type == "consensus" {
+						key = dk.Key
+						break
+					}
+				}
+				if key == "" {
+					//Don't do witness
+					continue
+				}
+				members = append(members, elections.ElectionMember{
+					Key:     key,
+					Account: w.Account,
+				})
+				weights = append(weights, 10)
 			}
-			members = append(members, elections.ElectionMember{
-				Key:     key,
-				Account: w.Account,
-			})
-			weights = append(weights, 10)
-		}
 
-		if len(members) == 0 {
-			panic("No members found")
-		}
-		electionData := elections.ElectionData{
-			ElectionCommonInfo: elections.ElectionCommonInfo{
-				Epoch: 0,
-				NetId: common.NETWORK_ID,
-				Type:  "initial",
-			},
-			ElectionDataInfo: elections.ElectionDataInfo{
-				Weights:         weights,
-				Members:         members,
-				ProtocolVersion: 0,
-			},
-		}
-		cid, err := da.PutObject(electionData)
-		if err != nil {
-			return err
-		}
-		electionHeader := map[string]interface{}{
-			"epoch":  0,
-			"data":   cid.String(),
-			"net_id": common.NETWORK_ID,
-		}
-		bbyes, _ := json.Marshal(electionHeader)
-		op := e2e.HiveCreator.CustomJson([]string{"e2e.mocks"}, []string{}, "vsc.election_result", string(bbyes))
-		tx := e2e.HiveCreator.MakeTransaction([]hivego.HiveOperation{op})
-		e2e.HiveCreator.Broadcast(tx)
+			if len(members) == 0 {
+				panic("No members found")
+			}
+			electionData := elections.ElectionData{
+				ElectionCommonInfo: elections.ElectionCommonInfo{
+					Epoch: 0,
+					NetId: common.NETWORK_ID,
+					Type:  "initial",
+				},
+				ElectionDataInfo: elections.ElectionDataInfo{
+					Weights:         weights,
+					Members:         members,
+					ProtocolVersion: 0,
+				},
+			}
+			cid, err := da.PutObject(electionData)
+			if err != nil {
+				return nil, err
+			}
+			electionHeader := map[string]interface{}{
+				"epoch":  0,
+				"data":   cid.String(),
+				"net_id": common.NETWORK_ID,
+			}
+			bbyes, _ := json.Marshal(electionHeader)
+			op := e2e.HiveCreator.CustomJson([]string{"e2e.mocks"}, []string{}, "vsc.election_result", string(bbyes))
+			tx := e2e.HiveCreator.MakeTransaction([]hivego.HiveOperation{op})
+			e2e.HiveCreator.Broadcast(tx)
 
-		return nil
+			return nil, nil
+		},
 	}
 }
 

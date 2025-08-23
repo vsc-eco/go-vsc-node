@@ -44,7 +44,7 @@ var MAX_TX_SIZE = 16384
 // Ingests and verifies a transaction
 func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...IngestOptions) (*cid.Cid, error) {
 	if sTx.Sig == nil {
-		return nil, errors.New("No signature provided")
+		return nil, errors.New("no signature provided")
 	}
 
 	prefix := cid.Prefix{
@@ -312,7 +312,7 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 		return
 	}
 
-	fmt.Println("broadcast verify result", verified)
+	// fmt.Println("broadcast verify result", verified)
 	if err != nil {
 		return
 	}
