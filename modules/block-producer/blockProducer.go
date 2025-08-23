@@ -14,12 +14,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/logger"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/transactions"
@@ -184,10 +186,10 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 		MerkleRoot:   &mr,
 	}
 
-	fmt.Println("vsc Block", blockData)
+	// fmt.Println("vsc Block", blockData)
 
 	blockCid, err := bp.Datalayer.PutObject(blockData)
-	fmt.Println("vsc Block", blockCid, err)
+	// fmt.Println("vsc Block", blockCid, err)
 
 	if err != nil {
 		return nil, nil, err
@@ -504,7 +506,7 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		})
 	}
 
-	fmt.Println("Received msg to create block", msg)
+	// fmt.Println("Received msg to create block", msg)
 	blockHeader, _, err := bp.GenerateBlock(msg.SlotHeight, generateBlockParams{
 		Transactions: transactions,
 	})
@@ -655,9 +657,9 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 		"outputs": outputs,
 	}
 
-	outputJson, _ := json.Marshal(oplogData)
+	// outputJson, _ := json.Marshal(oplogData)
 
-	fmt.Println("outputJson", string(outputJson))
+	// fmt.Println("outputJson", string(outputJson))
 
 	cborBytes, _ := common.EncodeDagCbor(oplogData)
 
@@ -674,7 +676,7 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.VscBlockTx {
 
 	contractOutputs := make([]vscBlocks.VscBlockTx, 0)
-	for contractId, output := range bp.StateEngine.ContractOutputs {
+	for contractId, output := range bp.StateEngine.TempOutputs {
 		var db datalayer.DataBin
 		if output.Cid == "" {
 			db = datalayer.NewDataBin(bp.Datalayer)
@@ -710,20 +712,26 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			continue
 		}
 
-		results := make([]struct {
-			Ret string `json:"ret" bson:"ret"`
-			Ok  bool   `json:"ok" bson:"ok"`
-		}, 0)
+		// results := make([]struct {
+		// 	Ret string `json:"ret" bson:"ret"`
+		// 	Ok  bool   `json:"ok" bson:"ok"`
+		// }, 0)
+		results := make([]contracts.ContractOutputResult, 0)
 
 		inputIds := make([]string, 0)
 
 		for _, v := range bp.StateEngine.ContractResults[contractId] {
-			results = append(results, struct {
-				Ret string "json:\"ret\" bson:\"ret\""
-				Ok  bool   "json:\"ok\" bson:\"ok\""
-			}{
-				Ret: v.Ret,
+			var ret string
+			if utf8.ValidString(v.Ret) {
+				ret = v.Ret
+			} else {
+				ret = base64.RawStdEncoding.EncodeToString([]byte(v.Ret))
+			}
+
+			results = append(results, contracts.ContractOutputResult{
+				Ret: ret,
 				Ok:  v.Success,
+				Err: v.Err,
 			})
 			inputIds = append(inputIds, v.TxId)
 		}

@@ -49,10 +49,10 @@ func (w *Wasm) Init() error {
 		return fmt.Errorf("gas calculations require `uint` to 64-bit. This isn't supported on your machine")
 	}
 
-	err := setup()
-	if err != nil {
-		return err
-	}
+	// err := setup()
+	// if err != nil {
+	// 	return err
+	// }
 	return nil
 }
 

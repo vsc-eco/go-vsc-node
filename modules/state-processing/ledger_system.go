@@ -658,25 +658,25 @@ func (ledgerSession *LedgerSession) ExecuteTransfer(opLogEvent ledgerSystem.OpLo
 	if opLogEvent.Amount <= 0 {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Invalid amount",
+			Msg: "invalid amount",
 		}
 	}
 	if opLogEvent.To == opLogEvent.From {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Cannot send to self",
+			Msg: "cannot send to self",
 		}
 	}
 	if strings.HasPrefix(opLogEvent.To, "system:") {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Invalid destination",
+			Msg: "invalid destination",
 		}
 	}
 	if !slices.Contains(transferableAssetTypes, opLogEvent.Asset) {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Invalid asset",
+			Msg: "invalid asset",
 		}
 	}
 	fromBal := ledgerSession.GetBalance(opLogEvent.From, opLogEvent.BlockHeight, opLogEvent.Asset)
@@ -689,11 +689,11 @@ func (ledgerSession *LedgerSession) ExecuteTransfer(opLogEvent ledgerSystem.OpLo
 
 	le.Ls.log.Debug("ledgerSession.StartHeight", ledgerSession.StartHeight, "ledgerSystem.OpLogEvent.BlockHeight", opLogEvent.BlockHeight)
 
-	fmt.Println("Ledger.Status", fromBal, opLogEvent.Amount)
+	fmt.Println("Ledger.Status", opLogEvent.From, fromBal, opLogEvent.Amount)
 	if (fromBal - exclusion) < opLogEvent.Amount {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Insufficient balance",
+			Msg: "insufficient balance",
 		}
 	}
 	opLogEvent.Type = "transfer"
@@ -702,7 +702,7 @@ func (ledgerSession *LedgerSession) ExecuteTransfer(opLogEvent ledgerSystem.OpLo
 
 	return ledgerSystem.LedgerResult{
 		Ok:  true,
-		Msg: "Success",
+		Msg: "success",
 	}
 }
 
@@ -761,21 +761,10 @@ func (le *LedgerExecutor) Deposit(deposit Deposit) string {
 		le.VirtualLedger = make(map[string][]ledgerSystem.LedgerUpdate)
 	}
 
-	// ledgerUpdate := ledgerSystem.LedgerUpdate{
-	// 	Id:          deposit.Id,
-	// 	BIdx:        deposit.BIdx,
-	// 	OpIdx:       deposit.OpIdx,
-	// 	BlockHeight: deposit.BlockHeight,
+	if le.VirtualLedger[decodedParams.To] != nil {
+		le.Ls.log.Debug("ledgerExecutor", le.VirtualLedger[decodedParams.To])
+	}
 
-	// 	Owner:  decodedParams.To,
-	// 	Amount: deposit.Amount,
-	// 	Asset:  deposit.Asset,
-	// 	Type:   "deposit",
-	// }
-	// le.VirtualLedger[decodedParams.To] = append(le.VirtualLedger[decodedParams.To], ledgerUpdate)
-	// le.AppendLedger(ledgerSystem.LedgerUpdate)
-
-	le.Ls.log.Debug("ledgerExecutor", le.VirtualLedger[decodedParams.To])
 	le.Ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
 		Id:          deposit.Id,
 		BlockHeight: deposit.BlockHeight,
@@ -802,14 +791,14 @@ func (ledgerSession *LedgerSession) Withdraw(withdraw ledgerSystem.WithdrawParam
 	if withdraw.Amount <= 0 {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Invalid amount",
+			Msg: "invalid amount",
 		}
 	}
 
 	if !slices.Contains([]string{"hive", "hbd"}, withdraw.Asset) {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Invalid asset",
+			Msg: "invalid asset",
 		}
 	}
 
@@ -827,13 +816,13 @@ func (ledgerSession *LedgerSession) Withdraw(withdraw ledgerSystem.WithdrawParam
 		} else {
 			return ledgerSystem.LedgerResult{
 				Ok:  false,
-				Msg: "Invalid destination",
+				Msg: "invalid destination",
 			}
 		}
 	} else {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Invalid destination",
+			Msg: "invalid destination",
 		}
 	}
 
@@ -844,7 +833,7 @@ func (ledgerSession *LedgerSession) Withdraw(withdraw ledgerSystem.WithdrawParam
 	if balAmt < withdraw.Amount {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Insufficient balance",
+			Msg: "insufficient balance",
 		}
 	}
 
@@ -863,7 +852,7 @@ func (ledgerSession *LedgerSession) Withdraw(withdraw ledgerSystem.WithdrawParam
 
 	return ledgerSystem.LedgerResult{
 		Ok:  true,
-		Msg: "Success",
+		Msg: "success",
 	}
 }
 
@@ -872,7 +861,7 @@ func (le *LedgerExecutor) ConsensusStake(params ledgerSystem.ConsensusParams, le
 	if params.Amount <= 0 {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Invalid amount",
+			Msg: "invalid amount",
 		}
 	}
 
@@ -888,7 +877,7 @@ func (le *LedgerExecutor) ConsensusStake(params ledgerSystem.ConsensusParams, le
 	if balAmt < params.Amount {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Insufficient balance",
+			Msg: "insufficient balance",
 		}
 	}
 
@@ -905,7 +894,7 @@ func (le *LedgerExecutor) ConsensusStake(params ledgerSystem.ConsensusParams, le
 
 	return ledgerSystem.LedgerResult{
 		Ok:  true,
-		Msg: "Success",
+		Msg: "success",
 	}
 }
 
@@ -913,7 +902,7 @@ func (le *LedgerExecutor) ConsensusUnstake(params ledgerSystem.ConsensusParams, 
 	if params.Amount <= 0 {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Invalid amount",
+			Msg: "invalid amount",
 		}
 	}
 
@@ -922,7 +911,7 @@ func (le *LedgerExecutor) ConsensusUnstake(params ledgerSystem.ConsensusParams, 
 	if balAmt < params.Amount {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Insufficient balance",
+			Msg: "insufficient balance",
 		}
 	}
 
@@ -943,7 +932,7 @@ func (le *LedgerExecutor) ConsensusUnstake(params ledgerSystem.ConsensusParams, 
 
 	return ledgerSystem.LedgerResult{
 		Ok:  true,
-		Msg: "Success",
+		Msg: "success",
 	}
 }
 
@@ -1072,14 +1061,14 @@ func (le *LedgerExecutor) Stake(stakeOp StakeOp, ledgerSession *LedgerSession, o
 	if stakeOp.Amount <= 0 || (stakeOp.Instant && stakeOp.Amount < 2) {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Invalid amount",
+			Msg: "invalid amount",
 		}
 	}
 
 	if stakeOp.Asset != "hbd" {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Invalid asset",
+			Msg: "invalid asset",
 		}
 	}
 
@@ -1091,7 +1080,7 @@ func (le *LedgerExecutor) Stake(stakeOp StakeOp, ledgerSession *LedgerSession, o
 	if (exclusion + fromBal) < stakeOp.Amount {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Insufficient balance",
+			Msg: "insufficient balance",
 		}
 	}
 
@@ -1180,7 +1169,7 @@ func (le *LedgerExecutor) Stake(stakeOp StakeOp, ledgerSession *LedgerSession, o
 
 	return ledgerSystem.LedgerResult{
 		Ok:  true,
-		Msg: "Success",
+		Msg: "success",
 	}
 }
 
@@ -1190,14 +1179,14 @@ func (le *LedgerExecutor) Unstake(stakeOp StakeOp, ledgerSession *LedgerSession)
 	if stakeOp.Amount <= 0 || (stakeOp.Instant && stakeOp.Amount < 2) {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Invalid amount",
+			Msg: "invalid amount",
 		}
 	}
 
 	if stakeOp.Asset != "hbd" && stakeOp.Asset != "hbd_savings" {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Invalid asset",
+			Msg: "invalid asset",
 		}
 	}
 
@@ -1207,7 +1196,7 @@ func (le *LedgerExecutor) Unstake(stakeOp StakeOp, ledgerSession *LedgerSession)
 	if fromBal < stakeOp.Amount {
 		return ledgerSystem.LedgerResult{
 			Ok:  false,
-			Msg: "Insufficient balance",
+			Msg: "insufficient balance",
 		}
 	}
 
@@ -1280,7 +1269,7 @@ func (le *LedgerExecutor) Unstake(stakeOp StakeOp, ledgerSession *LedgerSession)
 
 	return ledgerSystem.LedgerResult{
 		Ok:  true,
-		Msg: "Success",
+		Msg: "success",
 	}
 }
 

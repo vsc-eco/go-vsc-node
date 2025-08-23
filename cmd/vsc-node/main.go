@@ -35,7 +35,7 @@ import (
 
 	data_availability "vsc-node/modules/data-availability/server"
 	"vsc-node/modules/vstream"
-	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
+	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
 	"github.com/vsc-eco/hivego"
 )
@@ -115,7 +115,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	wasm := wasm_parent_ipc.New() // TODO set proper cmd path
+	wasm := wasm_runtime.New()
 
 	da := datalayer.New(p2p)
 

@@ -3,6 +3,7 @@ package contract_session
 import (
 	"maps"
 	"vsc-node/lib/datalayer"
+	"vsc-node/modules/db/vsc/contracts"
 
 	"github.com/ipfs/go-cid"
 )
@@ -10,7 +11,7 @@ import (
 type ContractSession struct {
 	dl *datalayer.DataLayer
 
-	metadata    map[string]interface{}
+	metadata    contracts.ContractMetadata
 	cache       map[string][]byte
 	deletions   map[string]bool
 	stateMerkle string
@@ -46,11 +47,11 @@ func (cs *ContractSession) GetStateStore(contractId ...string) *StateStore {
 	// }
 }
 
-func (cs *ContractSession) GetMetadata() map[string]interface{} {
+func (cs *ContractSession) GetMetadata() contracts.ContractMetadata {
 	return cs.metadata
 }
 
-func (cs *ContractSession) SetMetadata(meta map[string]interface{}) {
+func (cs *ContractSession) SetMetadata(meta contracts.ContractMetadata) {
 	cs.metadata = meta
 }
 
@@ -79,6 +80,9 @@ type StateStore struct {
 }
 
 func (ss *StateStore) Get(key string) []byte {
+	if ss.deletions[key] {
+		return []byte{}
+	}
 	// return ss.cache[key]
 	if ss.cache[key] == nil {
 		cidz, err := ss.databin.Get(key)
@@ -142,7 +146,7 @@ func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) St
 type TempOutput struct {
 	Cache map[string][]byte
 
-	Metadata  map[string]interface{}
+	Metadata  contracts.ContractMetadata
 	Deletions map[string]bool
 	Cid       string
 }

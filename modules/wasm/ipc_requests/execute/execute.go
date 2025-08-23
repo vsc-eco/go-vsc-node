@@ -3,7 +3,6 @@ package execute
 import (
 	"context"
 	"fmt"
-	"os"
 	"reflect"
 	"vsc-node/lib/utils"
 	wasm_context "vsc-node/modules/wasm/context"
@@ -29,7 +28,7 @@ func (s *SdkCallRequest[Result]) Process(ctx context.Context) result.Result[ipc_
 	if !ok {
 		return result.Err[ipc_requests.ProcessedMessage[Result]](fmt.Errorf("vm requested non-existing function: %s", s.Function))
 	}
-	fmt.Fprintln(os.Stderr, s.Function, s.Argument, fn)
+	// fmt.Fprintln(os.Stderr, s.Function, s.Argument, fn)
 	res := result.MapOrElse(
 		reflect.ValueOf(fn).Call(
 			append(
