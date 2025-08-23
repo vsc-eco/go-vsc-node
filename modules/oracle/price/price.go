@@ -3,6 +3,7 @@ package price
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -59,10 +60,12 @@ func New() PriceOracle {
 		vsCurrency string
 	)
 
+	fmt.Println(demoMode, apiKey, vsCurrency)
+
 	return PriceOracle{
 		c:           make(chan PricePoint, 1),
 		avgPriceMap: makePriceMap(),
-		coinGecko:   makeCoinGeckoHandler(apiKey, demoMode, vsCurrency),
+		// coinGecko:   makeCoinGeckoHandler(apiKey, demoMode, vsCurrency),
 	}
 }
 

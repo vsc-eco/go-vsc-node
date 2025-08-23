@@ -1,14 +1,13 @@
 package price
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
-	"time"
 	"vsc-node/lib/utils"
 )
 
@@ -59,76 +58,24 @@ func (c *coinGeckoHandler) QueryMarketPrice(
 ) {
 	symLowerCase := make([]string, len(symbols))
 	copy(symLowerCase, symbols)
+
 	symLowerCase = utils.Map(symLowerCase, strings.ToLower)
 
-	// partioning symbols into pages of `pageLimit` symbols at a time
-	// TODO: write a function for this + test it
-	ids := make([][]string, 0, 10)
+	queries := map[string]string{
+		"vs_currency": c.vsCurrency,
+		"per_page":    fmt.Sprintf("%d", pageLimit),
+		"precision":   "full",
+		"ids":         strings.Join(symLowerCase, ","),
+	}
+	paths := [...]string{"coins", "markets"}
 
-	var (
-		out     = make([]PricePoint, len(symbols))
-		paths   = [...]string{"coins", "markets"}
-		queries = map[string]string{
-			"vs_currency": c.vsCurrency,
-			"per_page":    fmt.Sprintf("%d", pageLimit),
-			"precision":   "full",
-			"ids":         strings.Join(symLowerCase, ","),
-		}
-	)
+	out, err := c.fetchPrices(paths[:], queries)
+	if err != nil {
+		log.Println("failed to fetch market price", err)
+		return
+	}
 
 	pricePointChan <- out
-}
-
-func (c *coinGeckoHandler) queryCoins(
-	ctx context.Context,
-	pc chan<- PricePoint,
-	queryInterval time.Duration,
-) error {
-	var (
-		page    = 1
-		paths   = [...]string{"coins", "markets"}
-		queries = map[string]string{
-			"vs_currency": c.vsCurrency,
-			"per_page":    fmt.Sprintf("%d", pageLimit),
-			"precision":   "full",
-			"ids":         "btc",
-		}
-	)
-
-	ticker := time.NewTicker(queryInterval)
-	defer ticker.Stop()
-
-	// query bitcoin only for now, but have it in a slice fo rlater
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-
-		case <-ticker.C:
-			queries["page"] = fmt.Sprintf("%d", page)
-
-			buf, err := c.fetchPrices(paths[:], queries, pageLimit)
-			if err != nil {
-				return err
-			}
-
-			now := time.Now().UTC().UnixMilli()
-			for _, p := range buf {
-				p.UnixTimeStamp = now
-				pc <- p
-			}
-
-			if len(buf) != pageLimit {
-				// end of symbols
-				// all coins queried, restart the process
-				page = 1
-			} else {
-				page += 1
-			}
-
-		}
-	}
 }
 
 // market values queried from
@@ -136,7 +83,6 @@ func (c *coinGeckoHandler) queryCoins(
 func (c *coinGeckoHandler) fetchPrices(
 	urlPaths []string,
 	queries map[string]string,
-	pageLimit int,
 ) ([]PricePoint, error) {
 	url, err := c.makeUrl(urlPaths, queries)
 	if err != nil {
