@@ -3,6 +3,7 @@ package oracle
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"time"
 	"vsc-node/modules/common"
 	btcrelay "vsc-node/modules/oracle/btc-relay"
@@ -20,30 +21,28 @@ const (
 	btcChainRelayInterval = time.Minute * 10
 	btcChainRelayMsgType  = MsgType("btc-chain-relay")
 
-	priceOracleUpdateInterval = time.Hour
-	priceOracleMsgType        = MsgType("price-orcale")
+	priceOracleBroadcastInterval = time.Hour
+	priceOracleMsgType           = MsgType("price-orcale")
 )
 
-type (
-	Oracle struct {
-		p2p     *libp2p.P2PServer
-		service libp2p.PubSubService[Msg]
-		conf    common.IdentityConfig
+type Oracle struct {
+	p2p     *libp2p.P2PServer
+	service libp2p.PubSubService[Msg]
+	conf    common.IdentityConfig
 
-		ctx        context.Context
-		cancelFunc context.CancelFunc
+	ctx        context.Context
+	cancelFunc context.CancelFunc
 
-		priceOracle     price.PriceOracle
-		btcChainRelayer btcrelay.BtcChainRelay
-	}
+	priceOracle     price.PriceOracle
+	btcChainRelayer btcrelay.BtcChainRelay
+}
 
-	Msg *oracleMessage
+type Msg *oracleMessage
 
-	oracleMessage struct {
-		Type MsgType `validate:"required"`
-		Data json.Unmarshaler
-	}
-)
+type oracleMessage struct {
+	Type MsgType        `json:"type,omitempty" validate:"required"`
+	Data json.Marshaler `json:"data,omitempty" validate:"required"`
+}
 
 func New(p2pServer *libp2p.P2PServer, conf common.IdentityConfig) *Oracle {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -71,7 +70,8 @@ func (o *Oracle) Init() error {
 // Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
 	go o.btcChainRelayer.Poll(o.ctx, btcChainRelayInterval)
-	go o.priceOracle.Poll(o.ctx, priceOracleUpdateInterval)
+
+	go o.marketObserve()
 
 	return promise.New(func(resolve func(any), reject func(error)) {
 		var err error
@@ -99,4 +99,33 @@ func (o *Oracle) Stop() error {
 		return nil
 	}
 	return o.service.Close()
+}
+
+func (o *Oracle) marketObserve() {
+	pricePointChan := make(chan []price.PricePoint, 10)
+	go o.priceOracle.Poll(o.ctx, priceOracleBroadcastInterval, pricePointChan)
+
+	for {
+		select {
+		case <-o.ctx.Done():
+			return
+
+		case pricePoints := <-pricePointChan:
+			msg := oracleMessage{
+				Type: priceOracleMsgType,
+				Data: &jsonSerializer[[]price.PricePoint]{pricePoints},
+			}
+			if err := o.service.Send(&msg); err != nil {
+				log.Println("[oracle] failed to send price points", err)
+			}
+		}
+	}
+}
+
+type jsonSerializer[T any] struct {
+	data T
+}
+
+func (js *jsonSerializer[any]) MarshalJSON() ([]byte, error) {
+	return json.Marshal(js.data)
 }

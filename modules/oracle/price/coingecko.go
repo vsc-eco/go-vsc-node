@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strings"
 	"time"
+	"vsc-node/lib/utils"
 )
 
 const (
@@ -51,6 +53,32 @@ func makeCoinGeckoHandler(
 	}
 }
 
+func (c *coinGeckoHandler) QueryMarketPrice(
+	symbols []string,
+	pricePointChan chan<- []PricePoint,
+) {
+	symLowerCase := make([]string, len(symbols))
+	copy(symLowerCase, symbols)
+	symLowerCase = utils.Map(symLowerCase, strings.ToLower)
+
+	// partioning symbols into pages of `pageLimit` symbols at a time
+	// TODO: write a function for this + test it
+	ids := make([][]string, 0, 10)
+
+	var (
+		out     = make([]PricePoint, len(symbols))
+		paths   = [...]string{"coins", "markets"}
+		queries = map[string]string{
+			"vs_currency": c.vsCurrency,
+			"per_page":    fmt.Sprintf("%d", pageLimit),
+			"precision":   "full",
+			"ids":         strings.Join(symLowerCase, ","),
+		}
+	)
+
+	pricePointChan <- out
+}
+
 func (c *coinGeckoHandler) queryCoins(
 	ctx context.Context,
 	pc chan<- PricePoint,
@@ -60,7 +88,7 @@ func (c *coinGeckoHandler) queryCoins(
 		page    = 1
 		paths   = [...]string{"coins", "markets"}
 		queries = map[string]string{
-			"vs_currency": c.vsCurrency, // NOTE: should always be `usd`
+			"vs_currency": c.vsCurrency,
 			"per_page":    fmt.Sprintf("%d", pageLimit),
 			"precision":   "full",
 			"ids":         "btc",

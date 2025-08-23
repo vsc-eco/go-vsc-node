@@ -3,35 +3,39 @@ package price
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"log"
 	"time"
 
 	"github.com/go-playground/validator/v10"
 )
 
-var priceValidator = validator.New(validator.WithRequiredStructEnabled())
+var (
+	priceValidator = validator.New(validator.WithRequiredStructEnabled())
+	watchSymbols   = [...]string{"BTC", "ETH", "LTC"}
+)
 
 const (
 	coingeckoApiRootUrl = "https://pro-api.coingecko.com/api/v3"
 )
 
-type (
-	PriceOracle struct {
-		c           chan PricePoint
-		avgPriceMap priceMap
-		coinGecko   coinGeckoHandler // TODO: make this into an interface for coinmarketcap
-		// TODO: query both coinmarketcap and coingecko then average them
-	}
+type PriceQuery interface {
+	QueryMarketPrice([]string, chan<- []PricePoint)
+}
 
-	PricePoint struct {
-		// length: range from 1-9 chars.
-		// format: uppercase letters, may include numbers.
-		Symbol        string  `json:"symbol"          validate:"required,min=1,max=9,alphanum"` // no need to validate
-		Price         float64 `json:"current_price"   validate:"required,gt=0.0"`
-		UnixTimeStamp int64   `json:"unix_time_stamp"`
-	}
-)
+type PriceOracle struct {
+	c             chan PricePoint
+	avgPriceMap   priceMap
+	coinGecko     PriceQuery // TODO: make this into an interface for coinmarketcap
+	coinMarketCap PriceQuery
+	// TODO: query both coinmarketcap and coingecko then average them
+}
+
+type PricePoint struct {
+	// length: range from 1-9 chars.
+	// format: uppercase letters, may include numbers.
+	Symbol        string  `json:"symbol"                    validate:"required,min=1,max=9,alphanum"` // no need to validate
+	Price         float64 `json:"current_price"             validate:"required,gt=0.0"`
+	UnixTimeStamp int64   `json:"unix_time_stamp,omitempty"`
+}
 
 // UnmarshalJSON implements json.Unmarshaler
 func (p *PricePoint) UnmarshalJSON(data []byte) error {
@@ -63,25 +67,45 @@ func New() PriceOracle {
 }
 
 // poll eveyr 10mins
-func (p *PriceOracle) Poll(ctx context.Context, pollInterval time.Duration) {
-	ticker := time.NewTicker(pollInterval)
+func (p *PriceOracle) Poll(
+	ctx context.Context,
+	broadcastInterval time.Duration,
+	broadcastChannel chan<- []PricePoint,
+) {
+	priceBroadcastTicker := time.NewTicker(broadcastInterval)
+	pricePollTicker := time.NewTimer(time.Hour)
 
-	c := make(chan PricePoint, 10)
-	go func() {
-		if err := p.coinGecko.queryCoins(ctx, c, pollInterval); err != nil {
-			log.Println(err)
+	priceChan := make(chan []PricePoint, 10)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-pricePollTicker.C:
+			go p.coinGecko.QueryMarketPrice(watchSymbols[:], priceChan)
+			go p.coinMarketCap.QueryMarketPrice(watchSymbols[:], priceChan)
+
+		case pricePoints := <-priceChan:
+			for _, pricePoint := range pricePoints {
+				p.avgPriceMap.observe(pricePoint)
+			}
+
+		case <-priceBroadcastTicker.C:
+			now := time.Now().UTC().Unix()
+			pp := make([]PricePoint, 0, len(watchSymbols))
+
+			for symbol, avgPrice := range p.avgPriceMap.priceSymbolMap {
+				p := PricePoint{
+					Symbol:        symbol,
+					Price:         avgPrice.average,
+					UnixTimeStamp: now,
+				}
+				pp = append(pp, p)
+			}
+
+			broadcastChannel <- pp
+			p.avgPriceMap.priceSymbolMap = make(priceSymbolMap)
 		}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return
-
-	case <-ticker.C:
-		p.fetchPrices()
 	}
-}
-
-func (p *PriceOracle) fetchPrices() {
-	fmt.Println("TODO: implement PriceOracle.fetchPrices()")
 }
