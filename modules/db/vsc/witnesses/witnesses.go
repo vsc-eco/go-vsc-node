@@ -298,3 +298,17 @@ func (w *witnesses) GetWitnessAtHeight(account string, bh *uint64) (*Witness, er
 
 	return &witness, nil
 }
+
+type EmptyWitnesses struct {
+	witnesses []Witness
+}
+
+func NewEmptyWitnesses() *EmptyWitnesses {
+	return &EmptyWitnesses{
+		witnesses: make([]Witness, 0),
+	}
+}
+
+func (w *EmptyWitnesses) GetLastestWitnesses() ([]Witness, error) {
+	return w.witnesses, nil
+}

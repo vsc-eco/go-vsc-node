@@ -33,19 +33,28 @@ type IngestOutputArgs struct {
 }
 
 type ContractOutputResult struct {
-	Ret string `json:"ret" bson:"ret"`
-	Ok  bool   `json:"ok" bson:"ok"`
+	Ret string               `json:"ret" bson:"ret"`
+	Ok  bool                 `json:"ok" bson:"ok"`
+	Err *ContractOutputError `json:"err,omitempty" bson:"err,omitempty"`
 }
 
 type ContractOutput struct {
-	Id          string                 `json:"id"`
-	BlockHeight int64                  `json:"block_height" bson:"block_height"`
-	Timestamp   *string                `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
-	ContractId  string                 `json:"contract_id" bson:"contract_id"`
-	Inputs      []string               `json:"inputs"`
-	Metadata    map[string]interface{} `json:"metadata"`
+	Id          string           `json:"id"`
+	BlockHeight int64            `json:"block_height" bson:"block_height"`
+	Timestamp   *string          `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
+	ContractId  string           `json:"contract_id" bson:"contract_id"`
+	Inputs      []string         `json:"inputs"`
+	Metadata    ContractMetadata `json:"metadata"`
 	//This might not be used
 
 	Results     []ContractOutputResult `json:"results" bson:"results"`
 	StateMerkle string                 `json:"state_merkle" bson:"state_merkle"`
+}
+
+type ContractOutputError struct {
+}
+
+type ContractMetadata struct {
+	CurrentSize int `json:"currentSize,omitempty"`
+	MaxSize     int `json:"maxSize,omitempty"`
 }
