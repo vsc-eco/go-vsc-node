@@ -11,6 +11,7 @@ import (
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/common"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
+	"vsc-node/modules/db/vsc/contracts"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
 	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
@@ -153,7 +154,7 @@ func TestGoCompat(t *testing.T) {
 		nil,
 		nil,
 		stateStore,
-		map[string]interface{}{},
+		contracts.ContractMetadata{},
 	)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(GO_TEST_CODE))
 
@@ -214,7 +215,7 @@ func TestAssemblyScriptCompat(t *testing.T) {
 		nil,
 		nil,
 		stateStore,
-		map[string]interface{}{},
+		contracts.ContractMetadata{},
 	)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(ASSEMBLY_SCRIPT_TEST_CODE))
 
@@ -300,7 +301,7 @@ func BenchmarkInstructionsPerSecond(b *testing.B) {
 				nil,
 				nil,
 				stateStore,
-				map[string]interface{}{},
+				contracts.ContractMetadata{},
 			)
 			ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(test.code))
 
@@ -362,7 +363,7 @@ func TestSdkCompat(t *testing.T) {
 		nil,
 		nil,
 		stateStore,
-		map[string]interface{}{},
+		contracts.ContractMetadata{},
 	)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(SDK_TEST_CODE_2))
 
