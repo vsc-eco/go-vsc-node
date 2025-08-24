@@ -16,7 +16,7 @@ import (
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/hive/streamer"
-	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
+	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/test_utils"
@@ -94,7 +94,7 @@ func TestStateEngine(t *testing.T) {
 	p2p := p2p.New(witnessesDb)
 	dl := DataLayer.New(p2p, "state-engine")
 
-	wasm := wasm_parent_ipc.New()
+	wasm := wasm_runtime.New()
 
 	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionDb, wasm)
 
@@ -156,7 +156,7 @@ func TestMockEngine(t *testing.T) {
 
 	dl := DataLayer.New(p2p, "state-engine")
 
-	wasm := wasm_parent_ipc.New()
+	wasm := wasm_runtime.New()
 
 	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, wasm)
 

@@ -1,7 +1,7 @@
 // https://github.com/tinygo-org/tinygo/blob/2a76ceb7dd5ea5a834ec470b724882564d9681b3/src/runtime/arch_tinygowasm.go#L42
 // https://github.com/tinygo-org/tinygo/blob/2a76ceb7dd5ea5a834ec470b724882564d9681b3/src/runtime/gc_leaking.go
 
-//// go:build gc.custom
+//go:build gc.custom
 
 package runtime
 

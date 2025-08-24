@@ -13,12 +13,11 @@ import (
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/common"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
+	"vsc-node/modules/db/vsc/contracts"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
 	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
 )
-
-const MAIN_PATH = "vsc-node/cmd/vm-runner"
 
 type Buffer struct {
 	c chan byte
@@ -111,7 +110,7 @@ func TestCompileAndExecute(t *testing.T) {
 		nil,
 		nil,
 		stateStore,
-		map[string]interface{}{},
+		contracts.ContractMetadata{},
 	)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(WASM_TEST_CODE))
 

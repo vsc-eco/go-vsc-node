@@ -28,7 +28,7 @@ import (
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
-	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
+	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -62,7 +62,7 @@ func TestQueryAndMutation(t *testing.T) {
 	da := datalayer.New(p2p)
 	conf := common.NewIdentityConfig()
 	balances := ledgerDb.NewBalances(vscDb)
-	wasm := wasm_parent_ipc.New()
+	wasm := wasm_runtime.New()
 
 	assert.NoError(t, hiveBlocksErr)
 	se := stateEngine.New(l, da, witnesses, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
