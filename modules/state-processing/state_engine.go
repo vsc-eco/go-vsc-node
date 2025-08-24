@@ -797,16 +797,16 @@ func (se *StateEngine) ExecuteBatch() {
 				contractCall, ok := vscTx.(TxVscCallContract)
 				if ok {
 					contractId = contractCall.ContractId
-					contractOutput, err := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
+					contractOutput := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
 
 					testJson, _ := json.Marshal(contractOutput)
-					fmt.Println("GetLastOutput Notice", string(testJson), err)
+					fmt.Println("GetLastOutput Notice", string(testJson))
 					// fmt.Println("output json", string(testJson))
 					if contractSessions[contractCall.ContractId] == nil {
 						var cid string
 						metadata := contracts.ContractMetadata{}
 
-						if err == nil {
+						if contractOutput != nil {
 							cid = contractOutput.StateMerkle
 							metadata = contractOutput.Metadata
 						}
