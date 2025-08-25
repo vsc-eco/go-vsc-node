@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -19,28 +20,30 @@ const (
 )
 
 type PriceQuery interface {
-	QueryMarketPrice([]string, chan<- []PricePoint)
+	QueryMarketPrice([]string, chan<- []observePricePoint)
 }
 
 type PriceOracle struct {
-	c             chan PricePoint
+	c             chan AveragePricePoint
 	avgPriceMap   priceMap
 	coinGecko     PriceQuery // TODO: make this into an interface for coinmarketcap
 	coinMarketCap PriceQuery
 	// TODO: query both coinmarketcap and coingecko then average them
 }
 
-type PricePoint struct {
+type AveragePricePoint struct {
 	// length: range from 1-9 chars.
 	// format: uppercase letters, may include numbers.
 	Symbol        string  `json:"symbol"                    validate:"required,min=1,max=9,alphanum"` // no need to validate
-	Price         float64 `json:"current_price"             validate:"required,gt=0.0"`
-	UnixTimeStamp int64   `json:"unix_time_stamp,omitempty"`
+	Price         float64 `json:"average_price"             validate:"required,gt=0.0"`
+	MedianPrice   float64 `json:"median_price"              validate:"required,gt=0.0"`
+	Volume        float64 `json:"average_volume"            validate:"required,gt=0.0"`
+	UnixTimeStamp int64   `json:"unix_time_stamp,omitempty" validate:"required,gt=0"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler
-func (p *PricePoint) UnmarshalJSON(data []byte) error {
-	type alias *PricePoint
+func (p *AveragePricePoint) UnmarshalJSON(data []byte) error {
+	type alias *AveragePricePoint
 	buf := (alias)(p)
 
 	if err := json.Unmarshal(data, buf); err != nil {
@@ -63,22 +66,21 @@ func New() PriceOracle {
 	fmt.Println(demoMode, apiKey, vsCurrency)
 
 	return PriceOracle{
-		c:           make(chan PricePoint, 1),
+		c:           make(chan AveragePricePoint, 1),
 		avgPriceMap: makePriceMap(),
 		// coinGecko:   makeCoinGeckoHandler(apiKey, demoMode, vsCurrency),
 	}
 }
 
-// poll eveyr 10mins
 func (p *PriceOracle) Poll(
 	ctx context.Context,
 	broadcastInterval time.Duration,
-	broadcastChannel chan<- []PricePoint,
+	broadcastChannel chan<- []*AveragePricePoint,
 ) {
 	priceBroadcastTicker := time.NewTicker(broadcastInterval)
 	pricePollTicker := time.NewTimer(time.Hour)
 
-	priceChan := make(chan []PricePoint, 10)
+	priceChan := make(chan []observePricePoint, 10)
 
 	for {
 		select {
@@ -95,20 +97,19 @@ func (p *PriceOracle) Poll(
 			}
 
 		case <-priceBroadcastTicker.C:
-			now := time.Now().UTC().Unix()
-			pp := make([]PricePoint, 0, len(watchSymbols))
+			buf := make([]*AveragePricePoint, len(watchSymbols))
 
-			for symbol, avgPrice := range p.avgPriceMap.priceSymbolMap {
-				p := PricePoint{
-					Symbol:        symbol,
-					Price:         avgPrice.average,
-					UnixTimeStamp: now,
+			var err error
+			for i, symbol := range watchSymbols {
+				buf[i], err = p.avgPriceMap.getAveragePrice(symbol)
+				if err != nil {
+					log.Println("symbol not found in map:", symbol)
+					continue
 				}
-				pp = append(pp, p)
 			}
 
-			broadcastChannel <- pp
-			p.avgPriceMap.priceSymbolMap = make(priceSymbolMap)
+			broadcastChannel <- buf
+			p.avgPriceMap.priceSymbolMap = make(priceSymbolMap) // clear cache
 		}
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
-	"time"
 	"vsc-node/lib/utils"
 )
 
@@ -25,6 +24,12 @@ type coinGeckoHandler struct {
 	// since CoinGecko has 2 types of API key (demo and pro), both have
 	// different base url and the header for the API key
 	demoMode bool
+}
+
+type coinGeckoPriceQueryResponse struct {
+	Symbol       string  `json:"symbol,omitempty"`
+	CurrentPrice float64 `json:"current_price,omitempty"`
+	TotalVolume  uint64  `json:"total_volume,omitempty"`
 }
 
 func makeCoinGeckoHandler(
@@ -55,7 +60,7 @@ func makeCoinGeckoHandler(
 
 func (c *coinGeckoHandler) QueryMarketPrice(
 	symbols []string,
-	pricePointChan chan<- []PricePoint,
+	pricePointChan chan<- []observePricePoint,
 ) {
 	symLowerCase := make([]string, len(symbols))
 	copy(symLowerCase, symbols)
@@ -70,13 +75,21 @@ func (c *coinGeckoHandler) QueryMarketPrice(
 	}
 	paths := [...]string{"coins", "markets"}
 
-	out, err := c.fetchPrices(paths[:], queries)
+	fetchedPrice, err := c.fetchPrices(paths[:], queries)
 	if err != nil {
 		log.Println("failed to fetch market price", err)
 		return
 	}
 
-	pricePointChan <- out
+	pricePointChan <- utils.Map(fetchedPrice, mapCgResponse)
+}
+
+func mapCgResponse(p coinGeckoPriceQueryResponse) observePricePoint {
+	return observePricePoint{
+		symbol: strings.ToUpper(p.Symbol),
+		price:  p.CurrentPrice,
+		volume: float64(p.TotalVolume),
+	}
 }
 
 // market values queried from
@@ -84,7 +97,7 @@ func (c *coinGeckoHandler) QueryMarketPrice(
 func (c *coinGeckoHandler) fetchPrices(
 	urlPaths []string,
 	queries map[string]string,
-) ([]PricePoint, error) {
+) ([]coinGeckoPriceQueryResponse, error) {
 	url, err := c.makeUrl(urlPaths, queries)
 	if err != nil {
 		return nil, err
@@ -120,15 +133,9 @@ func (c *coinGeckoHandler) fetchPrices(
 		)
 	}
 
-	buf := make([]PricePoint, 0, pageLimit)
+	buf := make([]coinGeckoPriceQueryResponse, 0, pageLimit)
 	if err := json.NewDecoder(res.Body).Decode(&buf); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %s", err)
-	}
-
-	now := time.Now().UTC().UnixMilli()
-	for i := range buf {
-		buf[i].Symbol = strings.ToUpper(buf[i].Symbol)
-		buf[i].UnixTimeStamp = now
 	}
 
 	return buf, nil

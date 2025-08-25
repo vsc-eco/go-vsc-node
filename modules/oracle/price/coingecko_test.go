@@ -15,7 +15,7 @@ func TestCoinGeckoHandlerQueryCoins(t *testing.T) {
 	)
 
 	cgHandler := makeCoinGeckoHandler(apiKey, demoMode, "usd")
-	c := make(chan []PricePoint, 10)
+	c := make(chan []observePricePoint, 10)
 
 	symbols := []string{"BTC", "eth", "lTc"}
 
@@ -25,7 +25,8 @@ func TestCoinGeckoHandlerQueryCoins(t *testing.T) {
 	assert.Equal(t, len(symbols), len(result))
 
 	for i, symbol := range symbols {
+		t.Log(result[i])
 		expectedSymbol := strings.ToUpper(symbol)
-		assert.Equal(t, expectedSymbol, result[i].Symbol)
+		assert.Equal(t, expectedSymbol, result[i].symbol)
 	}
 }

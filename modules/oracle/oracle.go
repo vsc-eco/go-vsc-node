@@ -102,7 +102,7 @@ func (o *Oracle) Stop() error {
 }
 
 func (o *Oracle) marketObserve() {
-	pricePointChan := make(chan []price.PricePoint, 10)
+	pricePointChan := make(chan []*price.AveragePricePoint, 10)
 	go o.priceOracle.Poll(o.ctx, priceOracleBroadcastInterval, pricePointChan)
 
 	for {
@@ -113,7 +113,7 @@ func (o *Oracle) marketObserve() {
 		case pricePoints := <-pricePointChan:
 			msg := oracleMessage{
 				Type: priceOracleMsgType,
-				Data: &jsonSerializer[[]price.PricePoint]{pricePoints},
+				Data: &jsonSerializer[[]*price.AveragePricePoint]{pricePoints},
 			}
 			if err := o.service.Send(&msg); err != nil {
 				log.Println("[oracle] failed to send price points", err)
