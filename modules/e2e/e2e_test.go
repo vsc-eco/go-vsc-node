@@ -515,6 +515,60 @@ func TestE2E(t *testing.T) {
 		},
 	})
 
+	container.AddStep(e2e.Step{
+		Name: "Execute Contract - Test 6",
+		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
+			transferOp := &transactionpool.VscContractCall{
+				Caller:     didKey.String(),
+				ContractId: contractId,
+				RcLimit:    200,
+				Action:     "does_not_exist",
+				Payload:    "test",
+				NetId:      "vsc-mainnet",
+
+				Intents: []contracts.Intent{},
+			}
+			op, err := transferOp.SerializeVSC()
+
+			if err != nil {
+				return nil, err
+			}
+			tx := transactionpool.VSCTransaction{
+				Ops: []transactionpool.VSCTransactionOp{
+					op,
+				},
+				Nonce: 5,
+			}
+			sTx, _ := transactionCreator.SignFinal(tx)
+
+			txId, err := transactionCreator.Broadcast(sTx)
+
+			if err != nil {
+				return nil, err
+			}
+
+			fmt.Println("txId", txId)
+			return func(ctx e2e.StepCtx) error {
+				time.Sleep(60 * time.Second)
+
+				runner := ctx.Container.Runner()
+
+				getTransaction := runner.TxDb.GetTransaction(txId)
+
+				fmt.Println("txId", txId)
+				if getTransaction == nil {
+					return errors.New("non-existent transaction")
+				}
+				tx := *getTransaction
+				if tx.Status != "FAILED" {
+					return fmt.Errorf("incorrect status should be FAILED status is: %s", tx.Status)
+				}
+				fmt.Println("transactions", getTransaction)
+				return nil
+			}, nil
+		},
+	})
+
 	container.RunSteps(t)
 
 	container.Stop()

@@ -838,12 +838,23 @@ func (se *StateEngine) ExecuteBatch() {
 			se.RcMap[payer] = rcUsed + result.RcUsed
 
 			if vscTx.Type() == "call_contract" {
-				se.AppendOutput(contractId, ContractResult{
-					TxId:    MakeTxId(tx.TxId, idx),
-					Ret:     result.Ret,
-					Success: result.Success,
-					Err:     nil,
-				})
+				if !result.Success {
+					se.AppendOutput(contractId, ContractResult{
+						TxId:    MakeTxId(tx.TxId, idx),
+						Ret:     "",
+						Success: result.Success,
+						Err:     &result.Ret,
+						RcUsed:  result.RcUsed,
+					})
+				} else {
+					se.AppendOutput(contractId, ContractResult{
+						TxId:    MakeTxId(tx.TxId, idx),
+						Ret:     result.Ret,
+						Success: result.Success,
+						Err:     nil,
+						RcUsed:  result.RcUsed,
+					})
+				}
 			}
 			if !result.Success {
 				se.log.Debug("TRANSACTION REVERTING")
@@ -852,11 +863,9 @@ func (se *StateEngine) ExecuteBatch() {
 				break
 			}
 		}
-		if ok {
-			for k, v := range contractSessions {
-				tmpOut := v.ToOutput()
-				se.TempOutputs[k] = &tmpOut
-			}
+		for k, v := range contractSessions {
+			tmpOut := v.ToOutput()
+			se.TempOutputs[k] = &tmpOut
 		}
 		ledgerIds := ledgerSession.Done()
 
@@ -1047,7 +1056,7 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 	}
 }
 
-// Appends an output to the output map
+// Append a contract output to the output map
 func (se *StateEngine) AppendOutput(contractId string, out ContractResult) {
 	if se.ContractResults[contractId] == nil {
 		se.ContractResults[contractId] = make([]ContractResult, 0)
