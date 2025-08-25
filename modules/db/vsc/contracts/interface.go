@@ -33,9 +33,10 @@ type IngestOutputArgs struct {
 }
 
 type ContractOutputResult struct {
-	Ret string               `json:"ret" bson:"ret"`
-	Ok  bool                 `json:"ok" bson:"ok"`
-	Err *ContractOutputError `json:"err,omitempty" bson:"err,omitempty"`
+	Ret    string               `json:"ret" bson:"ret"`
+	Ok     bool                 `json:"ok" bson:"ok"`
+	Err    *ContractOutputError `json:"err,omitempty" bson:"err,omitempty"`
+	RcUsed int64                `json:"rcUsed" bson:"rcUsed"`
 }
 
 type ContractOutput struct {
@@ -51,8 +52,7 @@ type ContractOutput struct {
 	StateMerkle string                 `json:"state_merkle" bson:"state_merkle"`
 }
 
-type ContractOutputError struct {
-}
+type ContractOutputError = string
 
 type ContractMetadata struct {
 	CurrentSize int `json:"currentSize,omitempty"`
