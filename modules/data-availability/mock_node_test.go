@@ -1,7 +1,6 @@
 package data_availability_test
 
 import (
-	"fmt"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -10,11 +9,8 @@ import (
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/witnesses"
-	libp2p "vsc-node/modules/p2p"
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
-
-	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 type Node struct {
@@ -29,7 +25,7 @@ func (n Node) Client() bool {
 }
 
 func (n *Node) RequestProof(data []byte) (stateEngine.StorageProof, error) {
-	return n.client.RequestProof(data)
+	return n.client.RequestProof("http://localhost:7080/api/v1/graphql", data)
 }
 
 func (n *Node) NukeDb() error {
@@ -68,21 +64,25 @@ func MakeNode(input MakeNodeInput) *Node {
 	identityConfig.Init()
 	identityConfig.SetUsername(input.Username)
 
-	port := 7000 + nodeCount
+	sysConfig := common.SystemConfig{
+		Network: "mocknet",
+	}
+
+	port := 7001 + nodeCount
 	nodeCount++
-	p2p := p2pInterface.New(witnessesDb, identityConfig, port)
+	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, port)
 
 	datalayer := DataLayer.New(p2p, input.Username)
 
-	key, err := identityConfig.Libp2pPrivateKey()
-	if err != nil {
-		panic(err)
-	}
-	peerId, err := peer.IDFromPrivateKey(key)
-	if err != nil {
-		panic(err)
-	}
-	libp2p.BOOTSTRAP = append(libp2p.BOOTSTRAP, fmt.Sprintf("/ip4/127.0.0.1/tcp/%d/p2p/%s", port, peerId.String()))
+	// key, err := identityConfig.Libp2pPrivateKey()
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// peerId, err := peer.IDFromPrivateKey(key)
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// libp2p.BOOTSTRAP = append(libp2p.BOOTSTRAP, fmt.Sprintf("/ip4/127.0.0.1/tcp/%d/p2p/%s", port, peerId.String()))
 
 	var da aggregate.Plugin
 	if input.Client {

@@ -63,7 +63,7 @@ func main() {
 
 	a.Start()
 
-	proof, proofError := client.RequestProof(WASM_CODE)
+	proof, proofError := client.RequestProof(args.gqlUrl, WASM_CODE)
 	if proofError != nil {
 		fmt.Println("failed to request storage proof", proofError)
 	} else {
