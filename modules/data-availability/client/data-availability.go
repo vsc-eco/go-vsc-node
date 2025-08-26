@@ -81,9 +81,8 @@ func (d *DataAvailability) Started() *promise.Promise[any] {
 	return d.startStatus.Started()
 }
 
-func FetchElection() (elections.ElectionResult, error) {
-	//client := graphql.NewClient("https://api.vsc.eco/api/v1/graphql", nil).WithDebug(true)
-	client := graphql.NewClient("http://localhost:7080/api/v1/graphql", nil).WithDebug(true)
+func FetchElection(gqlUrl string) (elections.ElectionResult, error) {
+	client := graphql.NewClient(gqlUrl, nil).WithDebug(true)
 	var q struct {
 		ElectionByBlockHeight elections.ElectionResult `graphql:"electionByBlockHeight"`
 	}
@@ -91,8 +90,8 @@ func FetchElection() (elections.ElectionResult, error) {
 	return q.ElectionByBlockHeight, err
 }
 
-func (d *DataAvailability) RequestProof(data []byte) (stateEngine.StorageProof, error) {
-	election, err := FetchElection()
+func (d *DataAvailability) RequestProof(gqlUrl string, data []byte) (stateEngine.StorageProof, error) {
+	election, err := FetchElection(gqlUrl)
 	if err != nil {
 		return stateEngine.StorageProof{}, err
 	}

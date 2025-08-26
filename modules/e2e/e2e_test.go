@@ -188,7 +188,7 @@ func TestE2E(t *testing.T) {
 			// fmt.Println("ContractWasm:", CONTRACT_WASM)'
 
 			fmt.Println("Deploying contract with dataClient", dataClient)
-			storageProof, err := dataClient.RequestProof(CONTRACT_WASM)
+			storageProof, err := dataClient.RequestProof("http://localhost:7080/api/v1/graphql", CONTRACT_WASM)
 
 			if err != nil {
 				return nil, err

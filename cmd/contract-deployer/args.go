@@ -12,6 +12,7 @@ type args struct {
 	name        string
 	description string
 	isInit      bool
+	gqlUrl      string
 }
 
 func ParseArgs() (args, error) {
@@ -25,6 +26,7 @@ func ParseArgs() (args, error) {
 	name := flag.String("name", "", "Name of the contract")
 	desc := flag.String("description", "", "Description of the contract")
 	isInit := flag.Bool("init", false, "Generate credentials config files")
+	gqlUrl := flag.String("gqlUrl", "https://api.vsc.eco/api/v1/graphql", "GraphQL API URL for fetching latest election")
 	flag.Parse()
 
 	return args{
@@ -33,5 +35,6 @@ func ParseArgs() (args, error) {
 		*name,
 		*desc,
 		*isInit,
+		*gqlUrl,
 	}, nil
 }
