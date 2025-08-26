@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/http/cookiejar"
-	"net/url"
 	"strings"
 	"vsc-node/lib/utils"
 )
@@ -19,7 +17,6 @@ type coinGeckoHandler struct {
 	baseUrl    string
 	apiKey     string
 	vsCurrency string
-	httpClient *http.Client
 
 	// since CoinGecko has 2 types of API key (demo and pro), both have
 	// different base url and the header for the API key
@@ -47,14 +44,11 @@ func makeCoinGeckoHandler(
 		baseUrl = "https://pro-api.coingecko.com/api/v3"
 	}
 
-	jar, _ := cookiejar.New(nil)
-
 	return coinGeckoHandler{
 		baseUrl:    baseUrl,
 		apiKey:     apiKey,
 		vsCurrency: vsCurrency,
 		demoMode:   demoMode,
-		httpClient: &http.Client{Jar: jar},
 	}
 }
 
@@ -98,7 +92,7 @@ func (c *coinGeckoHandler) fetchPrices(
 	urlPaths []string,
 	queries map[string]string,
 ) ([]coinGeckoPriceQueryResponse, error) {
-	url, err := c.makeUrl(urlPaths, queries)
+	url, err := makeUrl(c.baseUrl, urlPaths, queries)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +108,7 @@ func (c *coinGeckoHandler) fetchPrices(
 		req.Header.Add("x-cg-pro-api-key", c.apiKey)
 	}
 
-	res, err := c.httpClient.Do(req)
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %s", err)
 	}
@@ -139,29 +133,4 @@ func (c *coinGeckoHandler) fetchPrices(
 	}
 
 	return buf, nil
-}
-
-func (c *coinGeckoHandler) makeUrl(
-	pathParams []string,
-	queryParams map[string]string,
-) (*url.URL, error) {
-	url, err := url.Parse(c.baseUrl)
-	if err != nil {
-		return nil, err
-	}
-
-	if pathParams != nil {
-		url = url.JoinPath(pathParams...)
-	}
-
-	if queryParams != nil {
-		q := url.Query()
-		for key, val := range queryParams {
-			q.Add(key, val)
-		}
-
-		url.RawQuery = q.Encode()
-	}
-
-	return url, nil
 }

@@ -54,7 +54,7 @@ func (p *AveragePricePoint) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func New() PriceOracle {
+func New() (*PriceOracle, error) {
 	var (
 		demoMode bool = false
 
@@ -65,11 +65,22 @@ func New() PriceOracle {
 
 	fmt.Println(demoMode, apiKey, vsCurrency)
 
-	return PriceOracle{
+	coinMarketCapHanlder, err := makeCoinMarketCapHandler()
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to initialized coinmarketcap api handler: %s",
+			err,
+		)
+	}
+
+	p := &PriceOracle{
 		c:           make(chan AveragePricePoint, 1),
 		avgPriceMap: makePriceMap(),
 		// coinGecko:   makeCoinGeckoHandler(apiKey, demoMode, vsCurrency),
+		coinMarketCap: coinMarketCapHanlder,
 	}
+
+	return p, nil
 }
 
 func (p *PriceOracle) Poll(
