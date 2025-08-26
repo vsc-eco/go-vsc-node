@@ -3,6 +3,7 @@ package price
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -11,8 +12,9 @@ import (
 )
 
 var (
-	priceValidator = validator.New(validator.WithRequiredStructEnabled())
-	watchSymbols   = [...]string{"BTC", "ETH", "LTC"}
+	errApiKeyNotFound = errors.New("API key not exported")
+	priceValidator    = validator.New(validator.WithRequiredStructEnabled())
+	watchSymbols      = [...]string{"BTC", "ETH", "LTC"}
 )
 
 type PriceQuery interface {
