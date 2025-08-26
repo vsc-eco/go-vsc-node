@@ -95,22 +95,17 @@ func (c *coinGeckoHandler) fetchPrices(
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodGet, url.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
+	header := map[string]string{}
 	if c.demoMode {
-		req.Header.Add("x-cg-api-key", c.apiKey)
+		header["x-cg-api-key"] = c.apiKey
 	} else {
-		req.Header.Add("x-cg-pro-api-key", c.apiKey)
+		header["x-cg-pro-api-key"] = c.apiKey
 	}
 
-	res, err := httpClient.Do(req)
+	res, err := makeRequest(http.MethodGet, url, header)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %s", err)
 	}
-
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {

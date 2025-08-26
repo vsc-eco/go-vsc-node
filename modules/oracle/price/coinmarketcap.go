@@ -37,14 +37,86 @@ func makeCoinMarketCapHandler() (*coinMarketCapHandler, error) {
 }
 
 type coinMarketCapApiResponse struct {
-	Data   map[string]coinMarketCapData `json:"data"`
-	Status coinMarketCapStatus          `json:"status"`
+	Data map[string]coinMarketCapData `json:"data"`
 }
 
 type coinMarketCapData struct {
 	Name   string                        `json:"name,omitempty"`
 	Symbol string                        `json:"symbol,omitempty"`
 	Quote  map[string]coinMarketCapQuote `json:"quote,omitempty"`
+}
+
+type coinMarketCapQuote struct {
+	Price  float64 `json:"price,omitempty"`
+	Volume float64 `json:"volume_24h,omitempty"`
+}
+
+// QueryMarketPrice implements PriceQuery
+func (c *coinMarketCapHandler) QueryMarketPrice(
+	watchSymbols []string,
+	observePricePointChan chan<- []observePricePoint,
+) {
+	symbols := make([]string, len(watchSymbols))
+	copy(symbols, watchSymbols)
+	symbols = utils.Map(watchSymbols, strings.ToUpper)
+
+	marketPrices, err := c.fetchPrices(symbols)
+	if err != nil {
+		log.Println("[coinmarketcap] failed to query market data:", err)
+	}
+
+	observePricePoints := make([]observePricePoint, 0, len(watchSymbols))
+	for symbol, marketData := range marketPrices.Data {
+		o, err := marketData.makeObservePricePoint(c.currency)
+		if err != nil {
+			log.Printf("failed to parse symbol [%s]: %e", symbol, err)
+			continue
+		}
+		observePricePoints = append(observePricePoints, *o)
+	}
+
+	observePricePointChan <- observePricePoints
+}
+
+func (c *coinMarketCapHandler) fetchPrices(
+	symbols []string,
+) (*coinMarketCapApiResponse, error) {
+	queryParams := map[string]string{
+		"symbol":  strings.Join(symbols, ","),
+		"convert": c.currency,
+	}
+
+	url, err := makeUrl(c.baseUrl, queryParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build url: %e", err)
+	}
+
+	header := map[string]string{"X-CMC_PRO_API_KEY": c.apiKey}
+
+	resp, err := makeRequest(http.MethodGet, url, header)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %e", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		buf := make(map[string]any)
+		if err := json.NewDecoder(resp.Body).Decode(&buf); err != nil {
+			return nil, fmt.Errorf("failed to decode error messages: %s", err)
+		}
+
+		return nil, fmt.Errorf(
+			"request failed, http status: %s, error: %s",
+			resp.Status, buf,
+		)
+	}
+
+	buf := &coinMarketCapApiResponse{}
+	if err := json.NewDecoder(resp.Body).Decode(buf); err != nil {
+		return nil, fmt.Errorf("failed to deserialize json data: %e", err)
+	}
+
+	return buf, nil
 }
 
 func (c *coinMarketCapData) makeObservePricePoint(
@@ -62,61 +134,4 @@ func (c *coinMarketCapData) makeObservePricePoint(
 	}
 
 	return out, nil
-}
-
-type coinMarketCapQuote struct {
-	Price  float64 `json:"price,omitempty"`
-	Volume float64 `json:"volume_24h,omitempty"`
-}
-
-type coinMarketCapStatus struct {
-	ErrorCode    int    `json:"error_code,omitempty"`
-	ErrorMessage string `json:"error_message,omitempty"`
-}
-
-// QueryMarketPrice implements PriceQuery
-func (c *coinMarketCapHandler) QueryMarketPrice(
-	watchSymbols []string,
-	observePricePointChan chan<- []observePricePoint,
-) {
-	symbols := make([]string, len(watchSymbols))
-	copy(symbols, watchSymbols)
-	symbols = utils.Map(watchSymbols, strings.ToUpper)
-
-	queryParams := map[string]string{
-		"symbol":  strings.Join(symbols, ","),
-		"convert": c.currency,
-	}
-	url, err := makeUrl(c.baseUrl, queryParams)
-	if err != nil {
-		log.Println("[coinmarketcap] invalid url:", err)
-		return
-	}
-
-	header := map[string]string{"X-CMC_PRO_API_KEY": c.apiKey}
-	resp, err := makeRequest(http.MethodGet, url, header)
-	if err != nil {
-		log.Println("invalid failed to build request:", err)
-		return
-	}
-
-	defer resp.Body.Close()
-
-	buf := coinMarketCapApiResponse{}
-	if err := json.NewDecoder(resp.Body).Decode(&buf); err != nil {
-		log.Println("invalid json body response:", err)
-		return
-	}
-
-	observePricePoints := make([]observePricePoint, 0, len(watchSymbols))
-	for symbol, marketData := range buf.Data {
-		o, err := marketData.makeObservePricePoint(c.currency)
-		if err != nil {
-			log.Printf("failed to parse symbol [%s]: %e", symbol, err)
-			continue
-		}
-		observePricePoints = append(observePricePoints, *o)
-	}
-
-	observePricePointChan <- observePricePoints
 }

@@ -2,31 +2,31 @@ package price
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
+	"vsc-node/lib/utils"
 
 	"github.com/stretchr/testify/assert"
 )
 
 func TestCoinGeckoHandlerQueryCoins(t *testing.T) {
 	var (
-		apiKey   = os.Getenv("COINGECKO_API_KEY")
-		demoMode = true
+		apiKey          = os.Getenv("COINGECKO_API_KEY")
+		demoMode        = true
+		cgHandler       = makeCoinGeckoHandler(apiKey, demoMode, "usd")
+		c               = make(chan []observePricePoint, 10)
+		symbols         = [...]string{"BTC", "eth", "lTc"}
+		expectedSymbols = utils.Map(symbols[:], strings.ToUpper)
 	)
 
-	cgHandler := makeCoinGeckoHandler(apiKey, demoMode, "usd")
-	c := make(chan []observePricePoint, 10)
+	cgHandler.QueryMarketPrice(symbols[:], c)
 
-	symbols := []string{"BTC", "eth", "lTc"}
+	results := <-c
+	assert.Equal(t, len(expectedSymbols), len(results))
 
-	cgHandler.QueryMarketPrice(symbols, c)
-
-	result := <-c
-	assert.Equal(t, len(symbols), len(result))
-
-	for i, symbol := range symbols {
-		t.Log(result[i])
-		expectedSymbol := strings.ToUpper(symbol)
-		assert.Equal(t, expectedSymbol, result[i].symbol)
+	for _, observed := range results {
+		t.Log(observed)
+		assert.True(t, slices.Contains(expectedSymbols, observed.symbol))
 	}
 }

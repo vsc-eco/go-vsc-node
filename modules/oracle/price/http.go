@@ -1,7 +1,6 @@
 package price
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -50,14 +49,5 @@ func makeRequest(
 		req.Header.Add(k, v)
 	}
 
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("request failed: %s", resp.Status)
-	}
-
-	return resp, nil
+	return httpClient.Do(req)
 }

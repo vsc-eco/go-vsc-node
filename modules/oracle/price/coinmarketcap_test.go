@@ -1,8 +1,10 @@
 package price
 
 import (
+	"slices"
 	"strings"
 	"testing"
+	"vsc-node/lib/utils"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -11,16 +13,19 @@ func TestCoinMarketCapQueryPrice(t *testing.T) {
 	cmc, err := makeCoinMarketCapHandler()
 	assert.NoError(t, err)
 
-	watchSymbols := [...]string{"BTC", "ETH", "LTC"}
-	c := make(chan []observePricePoint, 10)
+	var (
+		watchSymbols    = [...]string{"BTC", "ETH", "LTC"}
+		expectedSymbols = utils.Map(watchSymbols[:], strings.ToUpper)
+		c               = make(chan []observePricePoint, 10)
+	)
 
 	cmc.QueryMarketPrice(watchSymbols[:], c)
 
-	result := <-c
-	assert.Equal(t, len(watchSymbols), len(result))
-	for i, symbol := range watchSymbols {
-		t.Log(result[i])
-		expectedSymbol := strings.ToUpper(symbol)
-		assert.Equal(t, expectedSymbol, result[i].symbol)
+	results := <-c
+	assert.Equal(t, len(watchSymbols), len(results))
+
+	for _, observed := range results {
+		t.Log(observed)
+		assert.True(t, slices.Contains(expectedSymbols, observed.symbol))
 	}
 }
