@@ -2,7 +2,6 @@ package price
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,16 +10,14 @@ import (
 	"vsc-node/lib/utils"
 )
 
-var (
-	errApiKeyNotFound = errors.New("API key not exported")
-)
-
 type coinMarketCapHandler struct {
 	baseUrl  string
 	apiKey   string
 	currency string
 }
 
+// returns an error if the environment variable `COINMARKETCAP_API_KEY` is not
+// set
 func makeCoinMarketCapHandler(currency string) (*coinMarketCapHandler, error) {
 	apiKey, ok := os.LookupEnv("COINMARKETCAP_API_KEY")
 	if !ok {

@@ -30,6 +30,11 @@ type coinGeckoPriceQueryResponse struct {
 	TotalVolume  uint64  `json:"total_volume,omitempty"`
 }
 
+// returns an error if the environment variable `COINGECKO_API_KEY` is not set.
+// Since CoinGecko has 2 different types of API key (pro vs demo, or paid vs
+// free) and their conrresponding url + header key. Assume the suppplied key
+// is a pro key by default, otherwise `COINGECKO_API_DEMO` needs to be exported
+// with the value '1', and attributions is required on demo keys.
 func makeCoinGeckoHandler(currency string) (*coinGeckoHandler, error) {
 	apiKey, ok := os.LookupEnv("COINGECKO_API_KEY")
 	if !ok {
@@ -38,7 +43,7 @@ func makeCoinGeckoHandler(currency string) (*coinGeckoHandler, error) {
 
 	var (
 		baseUrl  string
-		demoMode = os.Getenv("COINGECKO_API_PRO") != "1"
+		demoMode = os.Getenv("COINGECKO_API_DEMO") == "1"
 	)
 
 	if demoMode {
