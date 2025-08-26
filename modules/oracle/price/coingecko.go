@@ -39,9 +39,9 @@ func makeCoinGeckoHandler(
 		// CoinGecko requires attribution on free tier
 		// https://brand.coingecko.com/resources/attribution-guide
 		fmt.Println("Price data by [CoinGecko](https://www.coingecko.com)")
-		baseUrl = "https://api.coingecko.com/api/v3"
+		baseUrl = "https://api.coingecko.com/api/v3/coins/markets"
 	} else {
-		baseUrl = "https://pro-api.coingecko.com/api/v3"
+		baseUrl = "https://pro-api.coingecko.com/api/v3/coins/markets"
 	}
 
 	return coinGeckoHandler{
@@ -67,9 +67,8 @@ func (c *coinGeckoHandler) QueryMarketPrice(
 		"precision":   "full",
 		"symbols":     strings.Join(symLowerCase, ","),
 	}
-	paths := [...]string{"coins", "markets"}
 
-	fetchedPrice, err := c.fetchPrices(paths[:], queries)
+	fetchedPrice, err := c.fetchPrices(queries)
 	if err != nil {
 		log.Println("failed to fetch market price", err)
 		return
@@ -89,10 +88,9 @@ func mapCgResponse(p coinGeckoPriceQueryResponse) observePricePoint {
 // market values queried from
 // https://docs.coingecko.com/reference/coins-markets
 func (c *coinGeckoHandler) fetchPrices(
-	urlPaths []string,
 	queries map[string]string,
 ) ([]coinGeckoPriceQueryResponse, error) {
-	url, err := makeUrl(c.baseUrl, urlPaths, queries)
+	url, err := makeUrl(c.baseUrl, queries)
 	if err != nil {
 		return nil, err
 	}

@@ -15,7 +15,7 @@ type priceSymbolMap map[string][]observePricePoint
 type observePricePoint struct {
 	symbol string
 	price  float64
-	volume float64 // TODO: keep track of this
+	volume float64
 }
 
 func makePriceMap() priceMap {
