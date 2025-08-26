@@ -180,8 +180,7 @@ var SdkModule = map[string]sdkFunc{
 		)
 	},
 
-	//Gets current balance of contract account or tag
-	//Cannot be used to get balance of other accounts (or generally shouldn"t)
+	//Gets current balance of an account
 	"hive.get_balance": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
 		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 		account, ok := arg1.(string)

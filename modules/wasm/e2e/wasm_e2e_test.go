@@ -55,8 +55,6 @@ const ioGas = 4200000000
 
 const goGas = 704
 
-const asGas = 14845
-
 func TestCompileAndExecute(t *testing.T) {
 	w := wasm_runtime_ipc.New()
 	w.Init()
