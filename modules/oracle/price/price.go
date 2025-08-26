@@ -84,7 +84,7 @@ func (p *PriceOracle) Poll(
 	broadcastChannel chan<- []*AveragePricePoint,
 ) {
 	priceBroadcastTicker := time.NewTicker(broadcastInterval)
-	pricePollTicker := time.NewTimer(time.Hour)
+	pricePollTicker := time.NewTimer(time.Second * 15)
 
 	priceChan := make(chan []observePricePoint, 10)
 
