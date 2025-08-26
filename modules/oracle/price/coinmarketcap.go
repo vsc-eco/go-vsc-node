@@ -21,7 +21,7 @@ type coinMarketCapHandler struct {
 	currency string
 }
 
-func makeCoinMarketCapHandler() (*coinMarketCapHandler, error) {
+func makeCoinMarketCapHandler(currency string) (*coinMarketCapHandler, error) {
 	apiKey, ok := os.LookupEnv("COINMARKETCAP_API_KEY")
 	if !ok {
 		return nil, errApiKeyNotFound
@@ -30,7 +30,7 @@ func makeCoinMarketCapHandler() (*coinMarketCapHandler, error) {
 	h := &coinMarketCapHandler{
 		apiKey:   apiKey,
 		baseUrl:  "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest",
-		currency: "USD",
+		currency: strings.ToUpper(currency),
 	}
 
 	return h, nil

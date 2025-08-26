@@ -10,7 +10,7 @@ import (
 )
 
 func TestCoinMarketCapQueryPrice(t *testing.T) {
-	cmc, err := makeCoinMarketCapHandler()
+	cmc, err := makeCoinMarketCapHandler("usd")
 	assert.NoError(t, err)
 
 	var (

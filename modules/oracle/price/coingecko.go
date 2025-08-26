@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"vsc-node/lib/utils"
 )
@@ -14,9 +15,9 @@ const (
 )
 
 type coinGeckoHandler struct {
-	baseUrl    string
-	apiKey     string
-	vsCurrency string
+	baseUrl  string
+	apiKey   string
+	currency string
 
 	// since CoinGecko has 2 types of API key (demo and pro), both have
 	// different base url and the header for the API key
@@ -29,12 +30,17 @@ type coinGeckoPriceQueryResponse struct {
 	TotalVolume  uint64  `json:"total_volume,omitempty"`
 }
 
-func makeCoinGeckoHandler(
-	apiKey string,
-	demoMode bool,
-	vsCurrency string, // likely have to load from user's config
-) coinGeckoHandler {
-	var baseUrl string
+func makeCoinGeckoHandler(currency string) (*coinGeckoHandler, error) {
+	apiKey, ok := os.LookupEnv("COINGECKO_API_KEY")
+	if !ok {
+		return nil, errApiKeyNotFound
+	}
+
+	var (
+		baseUrl  string
+		demoMode = os.Getenv("COINGECKO_API_PRO") != "1"
+	)
+
 	if demoMode {
 		// CoinGecko requires attribution on free tier
 		// https://brand.coingecko.com/resources/attribution-guide
@@ -44,12 +50,14 @@ func makeCoinGeckoHandler(
 		baseUrl = "https://pro-api.coingecko.com/api/v3/coins/markets"
 	}
 
-	return coinGeckoHandler{
-		baseUrl:    baseUrl,
-		apiKey:     apiKey,
-		vsCurrency: vsCurrency,
-		demoMode:   demoMode,
+	h := &coinGeckoHandler{
+		baseUrl:  baseUrl,
+		apiKey:   apiKey,
+		currency: strings.ToLower(currency),
+		demoMode: demoMode,
 	}
+
+	return h, nil
 }
 
 func (c *coinGeckoHandler) QueryMarketPrice(
@@ -62,7 +70,7 @@ func (c *coinGeckoHandler) QueryMarketPrice(
 	symLowerCase = utils.Map(symLowerCase, strings.ToLower)
 
 	queries := map[string]string{
-		"vs_currency": c.vsCurrency,
+		"vs_currency": c.currency,
 		"per_page":    fmt.Sprintf("%d", pageLimit),
 		"precision":   "full",
 		"symbols":     strings.Join(symLowerCase, ","),

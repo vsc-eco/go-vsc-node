@@ -15,10 +15,6 @@ var (
 	watchSymbols   = [...]string{"BTC", "ETH", "LTC"}
 )
 
-const (
-	coingeckoApiRootUrl = "https://pro-api.coingecko.com/api/v3"
-)
-
 type PriceQuery interface {
 	QueryMarketPrice([]string, chan<- []observePricePoint)
 }
@@ -50,33 +46,30 @@ func (p *AveragePricePoint) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// return priceValidator.Struct(p)
-	return nil
+	return priceValidator.Struct(p)
 }
 
-func New() (*PriceOracle, error) {
-	var (
-		demoMode bool = false
-
-		// these need to be loaded from user config
-		apiKey     string
-		vsCurrency string
-	)
-
-	fmt.Println(demoMode, apiKey, vsCurrency)
-
-	coinMarketCapHanlder, err := makeCoinMarketCapHandler()
+func New(userCurrency string) (*PriceOracle, error) {
+	coinMarketCapHanlder, err := makeCoinMarketCapHandler(userCurrency)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"failed to initialized coinmarketcap api handler: %s",
+			"failed to initialized coinmarketcap api handler: %w",
+			err,
+		)
+	}
+
+	coinGeckoHandler, err := makeCoinGeckoHandler(userCurrency)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to initialize CoinGecko handler: %w",
 			err,
 		)
 	}
 
 	p := &PriceOracle{
-		c:           make(chan AveragePricePoint, 1),
-		avgPriceMap: makePriceMap(),
-		// coinGecko:   makeCoinGeckoHandler(apiKey, demoMode, vsCurrency),
+		c:             make(chan AveragePricePoint, 1),
+		avgPriceMap:   makePriceMap(),
+		coinGecko:     coinGeckoHandler,
 		coinMarketCap: coinMarketCapHanlder,
 	}
 

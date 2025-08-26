@@ -12,13 +12,14 @@ import (
 
 func TestCoinGeckoHandlerQueryCoins(t *testing.T) {
 	var (
-		apiKey          = os.Getenv("COINGECKO_API_KEY")
-		demoMode        = true
-		cgHandler       = makeCoinGeckoHandler(apiKey, demoMode, "usd")
 		c               = make(chan []observePricePoint, 10)
 		symbols         = [...]string{"BTC", "eth", "lTc"}
 		expectedSymbols = utils.Map(symbols[:], strings.ToUpper)
 	)
+
+	os.Setenv("COINGECKO_API_PRO", "0")
+	cgHandler, err := makeCoinGeckoHandler("usd")
+	assert.NoError(t, err)
 
 	cgHandler.QueryMarketPrice(symbols[:], c)
 

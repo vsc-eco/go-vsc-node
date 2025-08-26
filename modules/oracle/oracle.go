@@ -3,6 +3,7 @@ package oracle
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 	"vsc-node/modules/common"
@@ -33,7 +34,7 @@ type Oracle struct {
 	ctx        context.Context
 	cancelFunc context.CancelFunc
 
-	priceOracle     price.PriceOracle
+	priceOracle     *price.PriceOracle
 	btcChainRelayer btcrelay.BtcChainRelay
 }
 
@@ -44,25 +45,31 @@ type oracleMessage struct {
 	Data json.Marshaler `json:"data,omitempty" validate:"required"`
 }
 
-func New(p2pServer *libp2p.P2PServer, conf common.IdentityConfig) *Oracle {
-	ctx, cancel := context.WithCancel(context.Background())
+func New(
+	p2pServer *libp2p.P2PServer,
+	conf common.IdentityConfig,
+) *Oracle {
 	return &Oracle{
-		p2p:     p2pServer,
-		service: nil,
-		conf:    conf,
-
-		ctx:        ctx,
-		cancelFunc: cancel,
-
-		priceOracle: price.New(),
-
-		btcChainRelayer: btcrelay.New(),
+		p2p:  p2pServer,
+		conf: conf,
 	}
 }
 
 // Init implements aggregate.Plugin.
 // Runs initialization in order of how they are passed in to `Aggregate`
 func (o *Oracle) Init() error {
+	const userCurrency = "usd" // NOTE: only supporting USD for now
+	var err error
+
+	o.priceOracle, err = price.New(userCurrency)
+	if err != nil {
+		return fmt.Errorf("failed to initialize price oracle: %w", err)
+	}
+
+	o.btcChainRelayer = btcrelay.New()
+
+	o.ctx, o.cancelFunc = context.WithCancel(context.Background())
+
 	return nil
 }
 
