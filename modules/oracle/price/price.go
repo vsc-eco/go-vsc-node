@@ -24,9 +24,8 @@ type PriceQuery interface {
 type PriceOracle struct {
 	c             chan AveragePricePoint
 	avgPriceMap   priceMap
-	coinGecko     PriceQuery // TODO: make this into an interface for coinmarketcap
+	coinGecko     PriceQuery
 	coinMarketCap PriceQuery
-	// TODO: query both coinmarketcap and coingecko then average them
 }
 
 type AveragePricePoint struct {
