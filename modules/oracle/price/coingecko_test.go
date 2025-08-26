@@ -17,7 +17,7 @@ func TestCoinGeckoHandlerQueryCoins(t *testing.T) {
 		expectedSymbols = utils.Map(symbols[:], strings.ToUpper)
 	)
 
-	os.Setenv("COINGECKO_API_PRO", "0")
+	os.Setenv("COINGECKO_API_DEMO", "1")
 	cgHandler, err := makeCoinGeckoHandler("usd")
 	assert.NoError(t, err)
 
