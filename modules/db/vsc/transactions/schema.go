@@ -6,20 +6,21 @@ import (
 )
 
 type IngestTransactionUpdate struct {
-	Id             string
-	Status         string
-	RequiredAuths  []string
-	Type           string
-	Version        string
-	Nonce          uint64
-	OpTypes        []string
-	Ops            []TransactionOperation
-	RcLimit        uint64
-	AnchoredBlock  *string
-	AnchoredId     *string
-	AnchoredIndex  *int64
-	AnchoredHeight *uint64
-	Ledger         []ledgerSystem.OpLogEvent
+	Id                   string
+	Status               string
+	RequiredAuths        []string
+	RequiredPostingAuths []string
+	Type                 string
+	Version              string
+	Nonce                uint64
+	OpTypes              []string
+	Ops                  []TransactionOperation
+	RcLimit              uint64
+	AnchoredBlock        *string
+	AnchoredId           *string
+	AnchoredIndex        *int64
+	AnchoredHeight       *uint64
+	Ledger               []ledgerSystem.OpLogEvent
 }
 
 type SetResultUpdate struct {
@@ -61,9 +62,9 @@ type TransactionRecord struct {
 	Status string `json:"status" bson:"status"`
 
 	//Auths involved in the transaction
-	RequiredAuths []string `json:"required_auths" bson:"required_auths"`
-	// RequiredAuths []string `json:"required_auths" bson:"required_auths"`
-	Nonce int64 `json:"nonce" bson:"nonce"`
+	RequiredAuths        []string `json:"required_auths" bson:"required_auths"`
+	RequiredPostingAuths []string `json:"required_posting_auths,omitempty" bson:"required_posting_auths,omitempty"`
+	Nonce                int64    `json:"nonce" bson:"nonce"`
 
 	RcLimit uint64 `json:"rc_limit" bson:"rc_limit"`
 
