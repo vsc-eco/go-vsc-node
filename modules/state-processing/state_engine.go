@@ -679,16 +679,17 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 			blkIdx := int64(self.Index)
 			se.txDb.Ingest(transactions.IngestTransactionUpdate{
-				Id:             self.TxId,
-				RequiredAuths:  self.RequiredAuths,
-				Status:         defaultStatus,
-				Type:           "hive",
-				OpTypes:        opTypes,
-				Ops:            opDataList,
-				AnchoredBlock:  &block.BlockID,
-				AnchoredHeight: &block.BlockNumber,
-				AnchoredIndex:  &blkIdx,
-				Ledger:         make([]ledgerSystem.OpLogEvent, 0),
+				Id:                   self.TxId,
+				RequiredAuths:        self.RequiredAuths,
+				RequiredPostingAuths: self.RequiredPostingAuths,
+				Status:               defaultStatus,
+				Type:                 "hive",
+				OpTypes:              opTypes,
+				Ops:                  opDataList,
+				AnchoredBlock:        &block.BlockID,
+				AnchoredHeight:       &block.BlockNumber,
+				AnchoredIndex:        &blkIdx,
+				Ledger:               make([]ledgerSystem.OpLogEvent, 0),
 			})
 		}
 	}

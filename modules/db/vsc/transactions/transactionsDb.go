@@ -42,17 +42,18 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 
 	opts := options.Update().SetUpsert(true)
 	setOp := bson.M{
-		"anchr_height":   offTx.AnchoredHeight,
-		"anchr_block":    offTx.AnchoredBlock,
-		"anchr_index":    offTx.AnchoredIndex,
-		"anchr_id":       offTx.AnchoredId,
-		"type":           offTx.Type,
-		"ops":            offTx.Ops,
-		"op_types":       offTx.OpTypes,
-		"required_auths": offTx.RequiredAuths,
-		"nonce":          offTx.Nonce,
-		"rc_limit":       offTx.RcLimit,
-		"ledger":         offTx.Ledger,
+		"anchr_height":           offTx.AnchoredHeight,
+		"anchr_block":            offTx.AnchoredBlock,
+		"anchr_index":            offTx.AnchoredIndex,
+		"anchr_id":               offTx.AnchoredId,
+		"type":                   offTx.Type,
+		"ops":                    offTx.Ops,
+		"op_types":               offTx.OpTypes,
+		"required_auths":         offTx.RequiredAuths,
+		"required_posting_auths": offTx.RequiredPostingAuths,
+		"nonce":                  offTx.Nonce,
+		"rc_limit":               offTx.RcLimit,
+		"ledger":                 offTx.Ledger,
 	}
 	if findResult.Err() != nil {
 		setOp["first_seen"] = time.Now()
