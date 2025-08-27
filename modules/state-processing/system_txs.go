@@ -133,6 +133,13 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		}
 	}
 
+	if len(tx.Self.RequiredAuths) == 0 {
+		return TxResult{
+			Success: false,
+			Ret:     "cannot create contract with posting auths",
+		}
+	}
+
 	fmt.Println("Must validate storage proof")
 	// tx.StorageProof.
 	election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
