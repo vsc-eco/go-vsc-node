@@ -106,7 +106,7 @@ func (tx TxCreateContract) TxSelf() TxSelf {
 const CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT = 84162592
 
 // ProcessTx implements VSCTransaction.
-func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
+func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession, rcPayer string) TxResult {
 	// res := ledgerSession.ExecuteTransfer(ledgerSystem.OpLogEvent{
 	// 	From:   tx.Self.RequiredAuths[0],
 	// 	To:     "hive:vsc.dao",
