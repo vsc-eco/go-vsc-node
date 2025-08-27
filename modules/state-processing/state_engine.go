@@ -424,7 +424,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 				json.Unmarshal(cj.Json, &parsedTx)
 
-				parsedTx.ExecuteTx(se, session, nil, nil)
+				parsedTx.ExecuteTx(se, session, nil, nil, "")
 				continue
 			} else if cj.Id == "vsc.election_result" {
 				parsedTx := &TxElectionResult{
@@ -828,7 +828,7 @@ func (se *StateEngine) ExecuteBatch() {
 				}
 			}
 
-			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, contractSession)
+			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, contractSession, payer)
 			logs = append(logs, result.Ret)
 
 			se.log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
