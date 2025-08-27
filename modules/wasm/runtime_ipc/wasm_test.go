@@ -152,7 +152,6 @@ func TestGoCompat(t *testing.T) {
 		},
 		int64(math.Ceil(float64(goGas+ioGas)/common.CYCLE_GAS_PER_RC)),
 		nil,
-		nil,
 		stateStore,
 		contracts.ContractMetadata{},
 	)
@@ -212,7 +211,6 @@ func TestAssemblyScriptCompat(t *testing.T) {
 			RequiredPostingAuths: []string{},
 		},
 		int64(math.Ceil(float64(asGas+ioGas)/common.CYCLE_GAS_PER_RC)),
-		nil,
 		nil,
 		stateStore,
 		contracts.ContractMetadata{},
@@ -299,7 +297,6 @@ func BenchmarkInstructionsPerSecond(b *testing.B) {
 				},
 				int64(math.Ceil(float64(goGas+ioGas)/common.CYCLE_GAS_PER_RC)),
 				nil,
-				nil,
 				stateStore,
 				contracts.ContractMetadata{},
 			)
@@ -360,7 +357,6 @@ func TestSdkCompat(t *testing.T) {
 			RequiredPostingAuths: []string{},
 		},
 		int64(math.Ceil(float64(sdkGas+ioGas)/common.CYCLE_GAS_PER_RC)),
-		nil,
 		nil,
 		stateStore,
 		contracts.ContractMetadata{},

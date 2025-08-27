@@ -21,4 +21,6 @@ type Env struct {
 	//Who pays for the RC fee. Can be used in other contexts.
 	//Proper RC payer support is not implemented yet.
 	Payer Address `json:"payer"`
+
+	Intents []Intent `json:"intents"`
 }
