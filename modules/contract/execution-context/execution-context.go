@@ -57,14 +57,13 @@ type Environment struct {
 func New(
 	env Environment,
 	rcLimit int64,
-	intents []contracts.Intent,
 	ledger ledgerSystem.LedgerSession,
 	storage StateStore,
 	metadata contracts.ContractMetadata,
 ) ContractExecutionContext {
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
-	for _, intent := range intents {
+	for _, intent := range env.Intents {
 		if intent.Type == "transfer.allow" {
 			limit, ok := intent.Args["limit"]
 			if !ok {
@@ -86,7 +85,7 @@ func New(
 	}
 	// ensureInternalStorageInitialized(interalStorage)
 	return &contractExecutionContext{
-		intents,
+		env.Intents,
 		ledger,
 		env,
 		rcLimit,

@@ -103,9 +103,15 @@ func TestCompileAndExecute(t *testing.T) {
 			},
 			RequiredPostingAuths: []string{},
 			Caller:               "hive:vaultec.test",
+			Intents: []contracts.Intent{{
+				Type: "transfer.allow",
+				Args: map[string]string{
+					"limit": "1.000",
+					"token": "hive",
+				},
+			}},
 		},
 		int64(math.Ceil(float64(goGas+ioGas)/common.CYCLE_GAS_PER_RC)),
-		nil,
 		nil,
 		stateStore,
 		contracts.ContractMetadata{},

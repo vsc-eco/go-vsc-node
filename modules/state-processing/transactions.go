@@ -112,7 +112,8 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 		RequiredAuths:        t.Self.RequiredAuths,
 		RequiredPostingAuths: t.Self.RequiredPostingAuths,
 		Caller:               caller,
-	}, int64(gas), t.Intents, ledgerSession, ss, metadata)
+		Intents:              t.Intents,
+	}, int64(gas), ledgerSession, ss, metadata)
 
 	validUtf8 := utf8.Valid(t.Payload)
 	if !validUtf8 {
