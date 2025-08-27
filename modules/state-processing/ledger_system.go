@@ -571,10 +571,12 @@ func (lss *LedgerSession) Revert() {
 // Appends an Oplog with no validation
 func (lss *LedgerSession) AppendOplog(event ledgerSystem.OpLogEvent) {
 	//Maybe this should be calculated upon indexing rather than before
-	if lss.idCache[event.Id] > 0 {
-		event.Id = event.Id + ":" + strconv.Itoa(lss.idCache[event.Id])
+	id2 := event.Id
+	if lss.idCache[id2] > 0 {
+		event.Id = id2 + ":" + strconv.Itoa(lss.idCache[id2])
 	}
-	lss.idCache[event.Id]++
+	// lss.le.Ls.log.Debug("AppendOplog event ID", event, lss.idCache[id2])
+	lss.idCache[id2]++
 
 	result := lss.le.Ls.ExecuteOplog([]ledgerSystem.OpLogEvent{event}, lss.StartHeight, event.BlockHeight)
 
