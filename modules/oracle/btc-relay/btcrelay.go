@@ -19,12 +19,14 @@ type BtcChainRelay struct {
 	httpClient *http.Client
 }
 
+// https://www.blockcypher.com/dev/bitcoin/#block
 type BtcHeadBlock struct {
 	Hash       string `json:"hash,omitempty"       validate:"hexadecimal"`
 	Height     uint32 `json:"height,omitempty"`
 	PrevBlock  string `json:"prev_block,omitempty" validate:"hexadecimal"`
 	MerkleRoot string `json:"mrkl_root,omitempty"  validate:"hexadecimal"`
 	Timestamp  string `json:"time,omitempty"`
+	Fees       uint32 `json:"fees,omitempty"`
 }
 
 type btcChainMetadata struct {
