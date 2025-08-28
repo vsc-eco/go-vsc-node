@@ -111,6 +111,10 @@ func New(
 // 	}
 // }
 
+func (ctx *contractExecutionContext) Logs() []string {
+	return ctx.logs
+}
+
 func (ctx *contractExecutionContext) InternalStorage() contracts.ContractMetadata {
 	return contracts.ContractMetadata{
 		CurrentSize: ctx.currentSize,
@@ -215,6 +219,15 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 		} else if len(ctx.env.RequiredPostingAuths) > 0 {
 			return result.Ok(ctx.env.RequiredPostingAuths[0])
 		}
+	case "msg.caller":
+		return result.Ok(ctx.env.Caller)
+	case "intents":
+		return result.Map(
+			resultWrap(json.Marshal(ctx.env.Intents)),
+			func(b []byte) string {
+				return string(b)
+			},
+		)
 	case "block.id": // block ID
 		return result.Ok(ctx.env.BlockId)
 	case "block.height":
@@ -222,7 +235,7 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 	case "block.timestamp":
 		return result.Ok(ctx.env.Timestamp)
 	}
-	return result.Err[string](fmt.Errorf("environemnt does not contain value for \"%s\"", key))
+	return result.Err[string](fmt.Errorf("environment does not contain value for \"%s\"", key))
 }
 
 // GetEnv returns the environment variables in a standard contract format

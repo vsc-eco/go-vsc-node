@@ -15,13 +15,15 @@ type ContractSession struct {
 	cache       map[string][]byte
 	deletions   map[string]bool
 	stateMerkle string
+	logs        []string
 
 	// stateSesions map[string]*StateStore
 }
 
 func New(dl *datalayer.DataLayer) *ContractSession {
 	return &ContractSession{
-		dl: dl,
+		dl:   dl,
+		logs: make([]string, 0),
 	}
 }
 
@@ -69,6 +71,17 @@ func (cs *ContractSession) FromOutput(output TempOutput) {
 	cs.metadata = output.Metadata
 	cs.stateMerkle = output.Cid
 	cs.deletions = make(map[string]bool)
+}
+
+func (cs *ContractSession) AppendLogs(logs []string) {
+	cs.logs = append(cs.logs, logs...)
+}
+
+func (cs *ContractSession) PopLogs() []string {
+	// TODO: walk through inter-contract call sessions and return their logs
+	popped := cs.logs
+	cs.logs = make([]string, 0)
+	return popped
 }
 
 type StateStore struct {

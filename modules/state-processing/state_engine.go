@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	DataLayer "vsc-node/lib/datalayer"
@@ -70,6 +71,7 @@ type StateEngine struct {
 
 	//Temporary output state as things are being processed.
 	TempOutputs     map[string]*contract_session.TempOutput
+	TempLogs        map[string]map[string][]string
 	ContractResults map[string][]ContractResult
 
 	//First Tx of batch
@@ -763,7 +765,7 @@ func (se *StateEngine) ExecuteBatch() {
 		//Forced ledger operations that is produced irrespective of the output result.
 		//For example, deposit operations.
 		// forcedLedger := make([]ledgerSystem.OpLogEvent, 0)
-		logs := make([]string, 0)
+		logs := make(map[string]map[string][]string)
 		ok := true
 		for idx, vscTx := range tx.Ops {
 			// if vscTx.Type() == "deposit" {
@@ -800,9 +802,6 @@ func (se *StateEngine) ExecuteBatch() {
 					contractId = contractCall.ContractId
 					contractOutput := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
 
-					testJson, _ := json.Marshal(contractOutput)
-					fmt.Println("GetLastOutput Notice", string(testJson))
-					// fmt.Println("output json", string(testJson))
 					if contractSessions[contractCall.ContractId] == nil {
 						var cid string
 						metadata := contracts.ContractMetadata{}
@@ -830,7 +829,6 @@ func (se *StateEngine) ExecuteBatch() {
 			}
 
 			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, contractSession, payer)
-			logs = append(logs, result.Ret)
 
 			se.log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
 			fmt.Println("RC Payer is", payer, vscTx.Type(), vscTx, result.RcUsed)
@@ -839,9 +837,11 @@ func (se *StateEngine) ExecuteBatch() {
 			se.RcMap[payer] = rcUsed + result.RcUsed
 
 			if vscTx.Type() == "call_contract" {
+				txId := MakeTxId(tx.TxId, idx)
+				// TODO: should we output successful ops even if the transaction fails in a multiop tx due to an error halfway?
 				if !result.Success {
 					se.AppendOutput(contractId, ContractResult{
-						TxId:    MakeTxId(tx.TxId, idx),
+						TxId:    txId,
 						Ret:     "",
 						Success: result.Success,
 						Err:     &result.Ret,
@@ -849,12 +849,16 @@ func (se *StateEngine) ExecuteBatch() {
 					})
 				} else {
 					se.AppendOutput(contractId, ContractResult{
-						TxId:    MakeTxId(tx.TxId, idx),
+						TxId:    txId,
 						Ret:     result.Ret,
 						Success: result.Success,
 						Err:     nil,
 						RcUsed:  result.RcUsed,
 					})
+					if logs[contractId] == nil {
+						logs[contractId] = make(map[string][]string)
+					}
+					logs[contractId][txId] = contractSession.PopLogs()
 				}
 			}
 			if !result.Success {
@@ -864,15 +868,24 @@ func (se *StateEngine) ExecuteBatch() {
 				break
 			}
 		}
+		// Both success and failed transactions will be outputed regardless in order to output error messages if any
 		for k, v := range contractSessions {
 			tmpOut := v.ToOutput()
 			se.TempOutputs[k] = &tmpOut
+		}
+		// However logs are only added to the output for successful transactions as external indexers may depend on it being not reverted
+		if ok {
+			for k, v := range logs {
+				if se.TempLogs[k] == nil {
+					se.TempLogs[k] = make(map[string][]string)
+				}
+				maps.Copy(se.TempLogs[k], v)
+			}
 		}
 		ledgerIds := ledgerSession.Done()
 
 		se.TxOutput[tx.TxId] = TxOutput{
 			Ok:        ok,
-			Logs:      logs,
 			LedgerIds: ledgerIds,
 		}
 		se.TxOutIds = append(se.TxOutIds, tx.TxId)
@@ -1068,6 +1081,7 @@ func (se *StateEngine) AppendOutput(contractId string, out ContractResult) {
 func (se *StateEngine) Flush() {
 	se.ContractResults = make(map[string][]ContractResult)
 	se.TempOutputs = make(map[string]*contract_session.TempOutput)
+	se.TempLogs = make(map[string]map[string][]string)
 	se.TxOutput = make(map[string]TxOutput)
 	se.TxOutIds = make([]string, 0)
 	se.firstTxHeight = 0
@@ -1154,6 +1168,7 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 		TxOutput:        make(map[string]TxOutput),
 		ContractResults: make(map[string][]ContractResult),
 		TempOutputs:     make(map[string]*contract_session.TempOutput),
+		TempLogs:        make(map[string]map[string][]string),
 		TxOutIds:        make([]string, 0),
 
 		da: da,

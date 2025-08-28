@@ -16,11 +16,11 @@ type Env struct {
 	//Original creator of the transaction triggering this operation; Must be a user address
 	Sender Sender `json:"sender"`
 	//The address that is calling the contract; It can be contract address or user address
-	Caller Caller `json:"caller"`
+	Caller Address `json:"msg.caller"`
 
 	//Who pays for the RC fee. Can be used in other contexts.
 	//Proper RC payer support is not implemented yet.
-	Payer Address `json:"payer"`
+	Payer Address `json:"msg.payer"`
 
 	Intents []Intent `json:"intents"`
 }
