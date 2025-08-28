@@ -127,7 +127,7 @@ func (o *Oracle) observe() {
 				Data: &jsonSerializer[[]*price.AveragePricePoint]{pricePoints},
 			}
 			if err := o.service.Send(&msg); err != nil {
-				log.Println("[oracle] failed to send price points", err)
+				log.Println("[oracle] failed to send price points:", err)
 			}
 
 		case btcHeadBlock := <-btcChainRelayChan:
@@ -136,7 +136,7 @@ func (o *Oracle) observe() {
 				Data: &jsonSerializer[*btcrelay.BtcHeadBlock]{btcHeadBlock},
 			}
 			if err := o.service.Send(&msg); err != nil {
-				log.Println("[oracle] failed to send price points", err)
+				log.Println("[oracle] failed relay bitcoin head block:", err)
 			}
 		}
 	}
