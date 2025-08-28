@@ -2,10 +2,6 @@ package sdk
 
 import "strings"
 
-type Caller struct {
-	Address Address `json:"-"`
-}
-
 type Intent struct {
 	Type string            `json:"type"`
 	Args map[string]string `json:"args"`

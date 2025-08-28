@@ -143,6 +143,7 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 	fmt.Println("basicResult:", res)
 
 	contractSession.SetMetadata(ctxValue.InternalStorage())
+	contractSession.AppendLogs(ctxValue.Logs())
 
 	// res := result.MapOrElse(
 	// 	se.wasm.Execute(gas*common.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime),

@@ -727,12 +727,19 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			} else {
 				ret = base64.RawStdEncoding.EncodeToString([]byte(v.Ret))
 			}
+			var logs []string
+			if cl, e := bp.StateEngine.TempLogs[contractId]; e {
+				if l, f := cl[v.TxId]; f && len(l) > 0 {
+					logs = l
+				}
+			}
 
 			results = append(results, contracts.ContractOutputResult{
 				Ret:    ret,
 				Ok:     v.Success,
 				Err:    v.Err,
 				RcUsed: v.RcUsed,
+				Logs:   logs,
 			})
 			inputIds = append(inputIds, v.TxId)
 		}

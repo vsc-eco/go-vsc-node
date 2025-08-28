@@ -9,7 +9,6 @@ type TxPacket struct {
 
 type TxOutput struct {
 	Ok        bool
-	Logs      []string
 	RcUsed    int64
 	LedgerIds []string
 }
