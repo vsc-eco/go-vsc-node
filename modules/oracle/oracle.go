@@ -59,6 +59,7 @@ func New(
 // Runs initialization in order of how they are passed in to `Aggregate`
 func (o *Oracle) Init() error {
 	const userCurrency = "usd" // NOTE: only supporting USD for now
+
 	var err error
 
 	o.priceOracle, err = price.New(userCurrency)
@@ -76,9 +77,7 @@ func (o *Oracle) Init() error {
 // Start implements aggregate.Plugin.
 // Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
-	go o.btcChainRelayer.Poll(o.ctx, btcChainRelayInterval)
-
-	go o.marketObserve()
+	go o.observe()
 
 	return promise.New(func(resolve func(any), reject func(error)) {
 		var err error
@@ -108,9 +107,14 @@ func (o *Oracle) Stop() error {
 	return o.service.Close()
 }
 
-func (o *Oracle) marketObserve() {
-	pricePointChan := make(chan []*price.AveragePricePoint, 10)
+func (o *Oracle) observe() {
+	var (
+		pricePointChan    = make(chan []*price.AveragePricePoint, 10)
+		btcChainRelayChan = make(chan *btcrelay.BtcHeadBlock)
+	)
+
 	go o.priceOracle.Poll(o.ctx, priceOracleBroadcastInterval, pricePointChan)
+	go o.btcChainRelayer.Poll(o.ctx, btcChainRelayInterval, btcChainRelayChan)
 
 	for {
 		select {
@@ -121,6 +125,15 @@ func (o *Oracle) marketObserve() {
 			msg := oracleMessage{
 				Type: priceOracleMsgType,
 				Data: &jsonSerializer[[]*price.AveragePricePoint]{pricePoints},
+			}
+			if err := o.service.Send(&msg); err != nil {
+				log.Println("[oracle] failed to send price points", err)
+			}
+
+		case btcHeadBlock := <-btcChainRelayChan:
+			msg := oracleMessage{
+				Type: btcChainRelayMsgType,
+				Data: &jsonSerializer[*btcrelay.BtcHeadBlock]{btcHeadBlock},
 			}
 			if err := o.service.Send(&msg); err != nil {
 				log.Println("[oracle] failed to send price points", err)
