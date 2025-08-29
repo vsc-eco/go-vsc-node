@@ -70,15 +70,14 @@ func (b *BtcChainRelay) fetchChain(broadcastChan chan<- *BtcHeadBlock) {
 	}
 
 	// query head block
-	blockUrl, err := url.Parse("https://api.blockcypher.com/v1/btc/main/blocks")
-	if err != nil {
-		panic(err) // this shouldn't be executed at all
-	}
+	// valid hard coded url, no need to handle error
+	blockUrl, _ := url.Parse("https://api.blockcypher.com/v1/btc/main/blocks")
 
 	apiUrl = blockUrl.JoinPath(chain.Hash).String()
 	headBlock, err := fetchData[BtcHeadBlock](b.httpClient, apiUrl)
 	if err != nil {
 		log.Println("failed to query for head block:", err)
+		return
 	}
 
 	broadcastChan <- headBlock
