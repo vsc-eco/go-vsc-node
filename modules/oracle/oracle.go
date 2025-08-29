@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 	"vsc-node/modules/common"
+	"vsc-node/modules/db/vsc/elections"
 	btcrelay "vsc-node/modules/oracle/btc-relay"
 	"vsc-node/modules/oracle/price"
 	libp2p "vsc-node/modules/p2p"
@@ -30,6 +31,7 @@ type Oracle struct {
 	p2p     *libp2p.P2PServer
 	service libp2p.PubSubService[Msg]
 	conf    common.IdentityConfig
+	electionDb elections.Elections
 
 	ctx        context.Context
 	cancelFunc context.CancelFunc
@@ -48,10 +50,12 @@ type oracleMessage struct {
 func New(
 	p2pServer *libp2p.P2PServer,
 	conf common.IdentityConfig,
+	electionDb elections.Elections,
 ) *Oracle {
 	return &Oracle{
 		p2p:  p2pServer,
 		conf: conf,
+		electionDb: electionDb,
 	}
 }
 

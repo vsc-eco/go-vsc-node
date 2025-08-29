@@ -133,7 +133,7 @@ func main() {
 	ep := election_proposer.New(p2p, witnessesDb, electionDb, balanceDb, da, &hiveCreator, identityConfig, se, vstream)
 
 	bp := blockproducer.New(l, p2p, vstream, se, identityConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
-	oracle := oracle.New(p2p, identityConfig)
+	oracle := oracle.New(p2p, identityConfig, electionDb)
 
 	multisig := gateway.New(l, witnessesDb, electionDb, actionsDb, balanceDb, &hiveCreator, vstream, p2p, se, identityConfig, hiveRpcClient)
 
