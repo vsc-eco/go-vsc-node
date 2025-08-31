@@ -845,7 +845,6 @@ func (se *StateEngine) ExecuteBatch() {
 						Ret:     "",
 						Success: result.Success,
 						Err:     &result.Ret,
-						RcUsed:  result.RcUsed,
 					})
 				} else {
 					se.AppendOutput(contractId, ContractResult{
@@ -853,7 +852,6 @@ func (se *StateEngine) ExecuteBatch() {
 						Ret:     result.Ret,
 						Success: result.Success,
 						Err:     nil,
-						RcUsed:  result.RcUsed,
 					})
 					if logs[contractId] == nil {
 						logs[contractId] = make(map[string][]string)
