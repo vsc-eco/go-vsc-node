@@ -24,7 +24,6 @@ type ContractResult struct {
 	Ret     string
 	Err     *contracts.ContractOutputError
 	TxId    string
-	RcUsed  int64
 }
 
 // More information about the TX
