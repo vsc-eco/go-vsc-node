@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"time"
 	"vsc-node/modules/oracle/httputils"
+	"vsc-node/modules/oracle/p2p"
 
 	"github.com/go-playground/validator/v10"
 )
@@ -44,7 +45,7 @@ func New() BtcChainRelay {
 func (b *BtcChainRelay) Poll(
 	ctx context.Context,
 	relayInterval time.Duration,
-	broadcastChan chan<- *BtcHeadBlock,
+	broadcastChan chan<- p2p.Msg,
 ) {
 	ticker := time.NewTicker(relayInterval)
 
@@ -54,51 +55,53 @@ func (b *BtcChainRelay) Poll(
 			return
 
 		case <-ticker.C:
-			go b.fetchChain(broadcastChan)
+			headBlock, err := b.fetchChain()
+			if err != nil {
+				log.Println("failed to fetch BTC head block.", err)
+				continue
+			}
+
+			broadcastChan <- &p2p.OracleMessage{
+				Type: p2p.MsgBtcChainRelay,
+				Data: headBlock,
+			}
 		}
 	}
 }
 
-func (b *BtcChainRelay) fetchChain(broadcastChan chan<- *BtcHeadBlock) {
+func (b *BtcChainRelay) fetchChain() (*BtcHeadBlock, error) {
 	// query chain metadata
+
+	// valid url, no error returns
 	apiUrl, _ := httputils.MakeUrl(
 		"https://api.blockcypher.com/v1/btc/main",
 		nil,
-	) // valid url, no error returns
+	)
 
 	req, err := httputils.MakeRequest(http.MethodGet, apiUrl, nil)
 	if err != nil {
-		log.Println("invalid request", err)
-		return
+		return nil, err
 	}
 
 	chain, err := httputils.SendRequest[btcChainMetadata](req)
 	if err != nil {
-		log.Println("failed to query for chain metadata:", err)
-		return
+		return nil, err
 	}
 
 	// query head block
+
 	// valid hard coded url, no need to handle error
 	blockUrl, _ := url.Parse("https://api.blockcypher.com/v1/btc/main/blocks")
 
 	apiUrl, err = httputils.MakeUrl(blockUrl.JoinPath(chain.Hash).String(), nil)
 	if err != nil {
-		log.Println("invalid url", err)
-		return
+		return nil, err
 	}
 
 	req, err = httputils.MakeRequest(http.MethodGet, apiUrl, nil)
 	if err != nil {
-		log.Println("invalid request", err)
-		return
+		return nil, err
 	}
 
-	headBlock, err := httputils.SendRequest[BtcHeadBlock](req, v)
-	if err != nil {
-		log.Println("failed to query for head block:", err)
-		return
-	}
-
-	broadcastChan <- headBlock
+	return httputils.SendRequest[BtcHeadBlock](req, v)
 }

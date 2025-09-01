@@ -1,4 +1,4 @@
-package oracle
+package p2p
 
 import (
 	"context"
@@ -11,11 +11,31 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-var _ libp2p.PubSubServiceParams[Msg] = &p2pSpec{}
+const (
+	topic            = "/vsc/mainet/oracle/v1"
+	MsgBtcChainRelay = MsgType("btc-chain-relay")
+	MsgPriceOracle   = MsgType("price-orcale")
+)
+
+type MsgType string
+
+type Msg *OracleMessage
+
+type OracleMessage struct {
+	Type MsgType `json:"type,omitempty" validate:"required"`
+	Data any     `json:"data,omitempty" validate:"required"`
+}
 
 type p2pSpec struct {
-	conf   common.IdentityConfig
-	oracle *Oracle
+	conf common.IdentityConfig
+}
+
+var _ libp2p.PubSubServiceParams[Msg] = &p2pSpec{}
+
+func New(conf common.IdentityConfig) *p2pSpec {
+	return &p2pSpec{
+		conf,
+	}
 }
 
 // Topic implements PubSubServiceParams[Msg]
@@ -44,7 +64,7 @@ func (p *p2pSpec) HandleMessage(
 	return nil
 }
 
-// HandleRawMessage implements PubSubServiceParams[Msg]
+// HandleRawMessage implements PubSubServiceParams[OracleMessage]
 func (p *p2pSpec) HandleRawMessage(
 	ctx context.Context,
 	rawMsg *pubsub.Message,
@@ -64,7 +84,7 @@ func (p *p2pSpec) ParseMessage(data []byte) (Msg, error) {
 	return msg, nil
 }
 
-// SerializeMessage implements PubSubServiceParams[Msg]
+// SerializeMessage implements PubSubServiceParams[OracleMessage]
 func (p *p2pSpec) SerializeMessage(msg Msg) []byte {
 	jsonBytes, err := json.Marshal(msg)
 	if err != nil {

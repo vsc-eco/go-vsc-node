@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"time"
+	"vsc-node/modules/oracle/p2p"
 
 	"github.com/go-playground/validator/v10"
 )
@@ -80,12 +81,13 @@ func New(userCurrency string) (*PriceOracle, error) {
 func (p *PriceOracle) Poll(
 	ctx context.Context,
 	broadcastInterval time.Duration,
-	broadcastChannel chan<- []*AveragePricePoint,
+	msgChan chan<- p2p.Msg,
 ) {
-	priceBroadcastTicker := time.NewTicker(broadcastInterval)
-	pricePollTicker := time.NewTimer(time.Second * 15)
-
-	priceChan := make(chan []observePricePoint, 10)
+	var (
+		priceBroadcastTicker = time.NewTicker(broadcastInterval)
+		pricePollTicker      = time.NewTimer(time.Second * 15)
+		priceChan            = make(chan []observePricePoint, 10)
+	)
 
 	for {
 		select {
@@ -113,7 +115,11 @@ func (p *PriceOracle) Poll(
 				}
 			}
 
-			broadcastChannel <- buf
+			msgChan <- &p2p.OracleMessage{
+				Type: p2p.MsgPriceOracle,
+				Data: buf,
+			}
+
 			p.avgPriceMap.priceSymbolMap = make(priceSymbolMap) // clear cache
 		}
 	}
