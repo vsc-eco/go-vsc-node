@@ -1,13 +1,13 @@
 package price
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"vsc-node/lib/utils"
+	"vsc-node/modules/oracle/httputils"
 )
 
 type coinMarketCapHandler struct {
@@ -83,37 +83,19 @@ func (c *coinMarketCapHandler) fetchPrices(
 		"convert": c.currency,
 	}
 
-	url, err := makeUrl(c.baseUrl, queryParams)
+	url, err := httputils.MakeUrl(c.baseUrl, queryParams)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build url: %e", err)
 	}
 
 	header := map[string]string{"X-CMC_PRO_API_KEY": c.apiKey}
 
-	resp, err := makeRequest(http.MethodGet, url, header)
+	req, err := httputils.MakeRequest(http.MethodGet, url, header)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request: %e", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		buf := make(map[string]any)
-		if err := json.NewDecoder(resp.Body).Decode(&buf); err != nil {
-			return nil, fmt.Errorf("failed to decode error messages: %s", err)
-		}
-
-		return nil, fmt.Errorf(
-			"request failed, http status: %s, error: %s",
-			resp.Status, buf,
-		)
-	}
-
-	buf := &coinMarketCapApiResponse{}
-	if err := json.NewDecoder(resp.Body).Decode(buf); err != nil {
-		return nil, fmt.Errorf("failed to deserialize json data: %e", err)
-	}
-
-	return buf, nil
+	return httputils.SendRequest[coinMarketCapApiResponse](req)
 }
 
 func (c *coinMarketCapData) makeObservePricePoint(

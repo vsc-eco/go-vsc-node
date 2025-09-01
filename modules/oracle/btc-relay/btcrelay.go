@@ -2,13 +2,12 @@ package btcrelay
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"time"
+	"vsc-node/modules/oracle/httputils"
 
 	"github.com/go-playground/validator/v10"
 )
@@ -62,8 +61,18 @@ func (b *BtcChainRelay) Poll(
 
 func (b *BtcChainRelay) fetchChain(broadcastChan chan<- *BtcHeadBlock) {
 	// query chain metadata
-	apiUrl := "https://api.blockcypher.com/v1/btc/main"
-	chain, err := fetchData[btcChainMetadata](b.httpClient, apiUrl)
+	apiUrl, _ := httputils.MakeUrl(
+		"https://api.blockcypher.com/v1/btc/main",
+		nil,
+	) // valid url, no error returns
+
+	req, err := httputils.MakeRequest(http.MethodGet, apiUrl, nil)
+	if err != nil {
+		log.Println("invalid request", err)
+		return
+	}
+
+	chain, err := httputils.SendRequest[btcChainMetadata](req)
 	if err != nil {
 		log.Println("failed to query for chain metadata:", err)
 		return
@@ -73,35 +82,23 @@ func (b *BtcChainRelay) fetchChain(broadcastChan chan<- *BtcHeadBlock) {
 	// valid hard coded url, no need to handle error
 	blockUrl, _ := url.Parse("https://api.blockcypher.com/v1/btc/main/blocks")
 
-	apiUrl = blockUrl.JoinPath(chain.Hash).String()
-	headBlock, err := fetchData[BtcHeadBlock](b.httpClient, apiUrl)
+	apiUrl, err = httputils.MakeUrl(blockUrl.JoinPath(chain.Hash).String(), nil)
+	if err != nil {
+		log.Println("invalid url", err)
+		return
+	}
+
+	req, err = httputils.MakeRequest(http.MethodGet, apiUrl, nil)
+	if err != nil {
+		log.Println("invalid request", err)
+		return
+	}
+
+	headBlock, err := httputils.SendRequest[BtcHeadBlock](req, v)
 	if err != nil {
 		log.Println("failed to query for head block:", err)
 		return
 	}
 
 	broadcastChan <- headBlock
-}
-
-func fetchData[T any](httpClient *http.Client, url string) (*T, error) {
-	res, err := httpClient.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("request failed with status %s", res.Status)
-	}
-
-	buf := new(T)
-	if err := json.NewDecoder(res.Body).Decode(buf); err != nil {
-		return nil, err
-	}
-
-	if err := v.Struct(buf); err != nil {
-		return nil, err
-	}
-
-	return buf, nil
 }

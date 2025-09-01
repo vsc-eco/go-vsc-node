@@ -1,13 +1,13 @@
 package price
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"vsc-node/lib/utils"
+	"vsc-node/modules/oracle/httputils"
 )
 
 const (
@@ -103,7 +103,7 @@ func mapCgResponse(p coinGeckoPriceQueryResponse) observePricePoint {
 func (c *coinGeckoHandler) fetchPrices(
 	queries map[string]string,
 ) ([]coinGeckoPriceQueryResponse, error) {
-	url, err := makeUrl(c.baseUrl, queries)
+	url, err := httputils.MakeUrl(c.baseUrl, queries)
 	if err != nil {
 		return nil, err
 	}
@@ -115,28 +115,12 @@ func (c *coinGeckoHandler) fetchPrices(
 		header["x-cg-pro-api-key"] = c.apiKey
 	}
 
-	res, err := makeRequest(http.MethodGet, url, header)
+	req, err := httputils.MakeRequest(http.MethodGet, url, header)
+
+	buf, err := httputils.SendRequest[[]coinGeckoPriceQueryResponse](req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %s", err)
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		buf := make(map[string]any)
-		if err := json.NewDecoder(res.Body).Decode(&buf); err != nil {
-			return nil, fmt.Errorf("failed to decode error messages: %s", err)
-		}
-
-		return nil, fmt.Errorf(
-			"request failed, http status: %s, error: %s",
-			res.Status, buf,
-		)
+		return nil, err
 	}
 
-	buf := make([]coinGeckoPriceQueryResponse, 0, pageLimit)
-	if err := json.NewDecoder(res.Body).Decode(&buf); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %s", err)
-	}
-
-	return buf, nil
+	return *buf, nil
 }
