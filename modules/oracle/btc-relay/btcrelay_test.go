@@ -1,6 +1,9 @@
 package btcrelay
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestFetchChain(t *testing.T) {
 	bcr := New()
@@ -9,5 +12,6 @@ func TestFetchChain(t *testing.T) {
 	bcr.fetchChain(c)
 
 	headBlock := <-c
-	t.Log(*headBlock)
+	jsonBytes, _ := json.MarshalIndent(headBlock, "", "  ")
+	t.Log(string(jsonBytes))
 }

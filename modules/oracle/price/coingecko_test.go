@@ -27,7 +27,7 @@ func TestCoinGeckoHandlerQueryCoins(t *testing.T) {
 	assert.Equal(t, len(expectedSymbols), len(results))
 
 	for _, observed := range results {
-		t.Log(observed)
+		t.Log(observed.String())
 		assert.True(t, slices.Contains(expectedSymbols, observed.symbol))
 	}
 }

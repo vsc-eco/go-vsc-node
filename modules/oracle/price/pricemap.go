@@ -1,6 +1,7 @@
 package price
 
 import (
+	"encoding/json"
 	"errors"
 	"slices"
 	"time"
@@ -16,6 +17,16 @@ type observePricePoint struct {
 	symbol string
 	price  float64
 	volume float64
+}
+
+func (o *observePricePoint) String() string {
+	buf := map[string]any{
+		"symbol": o.symbol,
+		"price":  o.price,
+		"volume": o.volume,
+	}
+	jbytes, _ := json.MarshalIndent(buf, "", "  ")
+	return string(jbytes)
 }
 
 func makePriceMap() priceMap {
