@@ -27,6 +27,7 @@ type TransactionRecord {
   nonce: Uint64!
   rc_limit: Uint64!
   required_auths: [String!]
+  required_posting_auths: [String!]
   status: String!
   ledger: [OpLogEvent!]
   ledger_actions: [LedgerAction]

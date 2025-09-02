@@ -256,21 +256,22 @@ type ComplexityRoot struct {
 	}
 
 	TransactionRecord struct {
-		AnchrHeight   func(childComplexity int) int
-		AnchrIndex    func(childComplexity int) int
-		AnchrTs       func(childComplexity int) int
-		FirstSeen     func(childComplexity int) int
-		Id            func(childComplexity int) int
-		Ledger        func(childComplexity int) int
-		LedgerActions func(childComplexity int) int
-		Nonce         func(childComplexity int) int
-		OpTypes       func(childComplexity int) int
-		Ops           func(childComplexity int) int
-		Output        func(childComplexity int) int
-		RcLimit       func(childComplexity int) int
-		RequiredAuths func(childComplexity int) int
-		Status        func(childComplexity int) int
-		Type          func(childComplexity int) int
+		AnchrHeight          func(childComplexity int) int
+		AnchrIndex           func(childComplexity int) int
+		AnchrTs              func(childComplexity int) int
+		FirstSeen            func(childComplexity int) int
+		Id                   func(childComplexity int) int
+		Ledger               func(childComplexity int) int
+		LedgerActions        func(childComplexity int) int
+		Nonce                func(childComplexity int) int
+		OpTypes              func(childComplexity int) int
+		Ops                  func(childComplexity int) int
+		Output               func(childComplexity int) int
+		RcLimit              func(childComplexity int) int
+		RequiredAuths        func(childComplexity int) int
+		RequiredPostingAuths func(childComplexity int) int
+		Status               func(childComplexity int) int
+		Type                 func(childComplexity int) int
 	}
 
 	TransactionSubmitResult struct {
@@ -1492,6 +1493,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.TransactionRecord.RequiredAuths(childComplexity), true
 
+	case "TransactionRecord.required_posting_auths":
+		if e.complexity.TransactionRecord.RequiredPostingAuths == nil {
+			break
+		}
+
+		return e.complexity.TransactionRecord.RequiredPostingAuths(childComplexity), true
+
 	case "TransactionRecord.status":
 		if e.complexity.TransactionRecord.Status == nil {
 			break
@@ -1735,6 +1743,7 @@ type TransactionRecord {
   nonce: Uint64!
   rc_limit: Uint64!
   required_auths: [String!]
+  required_posting_auths: [String!]
   status: String!
   ledger: [OpLogEvent!]
   ledger_actions: [LedgerAction]
@@ -7027,6 +7036,8 @@ func (ec *executionContext) fieldContext_Query_findTransaction(ctx context.Conte
 				return ec.fieldContext_TransactionRecord_rc_limit(ctx, field)
 			case "required_auths":
 				return ec.fieldContext_TransactionRecord_required_auths(ctx, field)
+			case "required_posting_auths":
+				return ec.fieldContext_TransactionRecord_required_posting_auths(ctx, field)
 			case "status":
 				return ec.fieldContext_TransactionRecord_status(ctx, field)
 			case "ledger":
@@ -9163,6 +9174,47 @@ func (ec *executionContext) _TransactionRecord_required_auths(ctx context.Contex
 }
 
 func (ec *executionContext) fieldContext_TransactionRecord_required_auths(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TransactionRecord",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TransactionRecord_required_posting_auths(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_TransactionRecord_required_posting_auths(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RequiredPostingAuths, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.([]string)
+	fc.Result = res
+	return ec.marshalOString2ᚕstringᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_TransactionRecord_required_posting_auths(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "TransactionRecord",
 		Field:      field,
@@ -15285,6 +15337,8 @@ func (ec *executionContext) _TransactionRecord(ctx context.Context, sel ast.Sele
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
 		case "required_auths":
 			out.Values[i] = ec._TransactionRecord_required_auths(ctx, field, obj)
+		case "required_posting_auths":
+			out.Values[i] = ec._TransactionRecord_required_posting_auths(ctx, field, obj)
 		case "status":
 			out.Values[i] = ec._TransactionRecord_status(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
