@@ -27,7 +27,7 @@ func TestCoinMarketCapQueryPrice(t *testing.T) {
 	assert.Equal(t, len(watchSymbols), len(results))
 
 	for _, observed := range results {
-		t.Log(observed)
+		t.Log(observed.String())
 		assert.True(t, slices.Contains(expectedSymbols, observed.Symbol))
 	}
 }

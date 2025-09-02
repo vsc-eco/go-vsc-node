@@ -33,7 +33,7 @@ type Oracle struct {
 	observePriceChan chan []p2p.ObservePricePoint
 
 	btcChainRelayer btcrelay.BtcChainRelay
-	btcChan         chan *btcrelay.BtcHeadBlock
+	btcChan         chan *p2p.BtcHeadBlock
 
 	msgChan chan p2p.Msg
 }
@@ -47,7 +47,7 @@ func New(
 		p2p:              p2pServer,
 		conf:             conf,
 		electionDb:       electionDb,
-		btcChan:          make(chan *btcrelay.BtcHeadBlock),
+		btcChan:          make(chan *p2p.BtcHeadBlock),
 		msgChan:          make(chan p2p.Msg),
 		observePriceChan: make(chan []p2p.ObservePricePoint, 10),
 	}
@@ -65,7 +65,7 @@ func (o *Oracle) Init() error {
 		return fmt.Errorf("failed to initialize price oracle: %w", err)
 	}
 
-	o.btcChainRelayer = btcrelay.New()
+	o.btcChainRelayer = btcrelay.New(o.btcChan)
 
 	o.ctx, o.cancelFunc = context.WithCancel(context.Background())
 
@@ -80,7 +80,7 @@ func (o *Oracle) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
 		var (
 			err    error
-			p2pSrv = p2p.New(o.conf, o.observePriceChan)
+			p2pSrv = p2p.New(o.conf, o.observePriceChan, o.btcChan)
 		)
 
 		o.service, err = libp2p.NewPubSubService(o.p2p, p2pSrv)

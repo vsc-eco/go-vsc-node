@@ -2,9 +2,9 @@ package btcrelay
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"time"
 	"vsc-node/modules/oracle/httputils"
@@ -15,30 +15,19 @@ import (
 
 var v = validator.New()
 
-type BtcChainRelay struct {
-	httpClient *http.Client
-}
+const blockcypherUrl = "https://api.blockcypher.com/v1/btc/main"
 
-// https://www.blockcypher.com/dev/bitcoin/#block
-type BtcHeadBlock struct {
-	Hash       string `json:"hash,omitempty"       validate:"hexadecimal"`
-	Height     uint32 `json:"height,omitempty"`
-	PrevBlock  string `json:"prev_block,omitempty" validate:"hexadecimal"`
-	MerkleRoot string `json:"mrkl_root,omitempty"  validate:"hexadecimal"`
-	Timestamp  string `json:"time,omitempty"`
-	Fees       uint32 `json:"fees,omitempty"`
+type BtcChainRelay struct {
+	btcChan chan *p2p.BtcHeadBlock
 }
 
 type btcChainMetadata struct {
 	Hash string `json:"hash" validate:"hexadecimal"`
 }
 
-func New() BtcChainRelay {
-	httpClient := http.DefaultClient
-	httpClient.Jar, _ = cookiejar.New(nil)
-
+func New(btcChan chan *p2p.BtcHeadBlock) BtcChainRelay {
 	return BtcChainRelay{
-		httpClient: httpClient,
+		btcChan: btcChan,
 	}
 }
 
@@ -65,16 +54,19 @@ func (b *BtcChainRelay) Poll(
 				Type: p2p.MsgBtcChainRelay,
 				Data: headBlock,
 			}
+
+		case headBlock := <-b.btcChan:
+			fmt.Println(headBlock)
 		}
 	}
 }
 
-func (b *BtcChainRelay) fetchChain() (*BtcHeadBlock, error) {
+func (b *BtcChainRelay) fetchChain() (*p2p.BtcHeadBlock, error) {
 	// query chain metadata
 
 	// valid url, no error returns
 	apiUrl, _ := httputils.MakeUrl(
-		"https://api.blockcypher.com/v1/btc/main",
+		blockcypherUrl,
 		nil,
 	)
 
@@ -103,5 +95,5 @@ func (b *BtcChainRelay) fetchChain() (*BtcHeadBlock, error) {
 		return nil, err
 	}
 
-	return httputils.SendRequest[BtcHeadBlock](req, v)
+	return httputils.SendRequest[p2p.BtcHeadBlock](req, v)
 }

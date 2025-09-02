@@ -24,6 +24,7 @@ type OracleMessage struct {
 type p2pSpec struct {
 	conf             common.IdentityConfig
 	observePriceChan chan<- []ObservePricePoint
+	btcHeadBlockChan chan<- *BtcHeadBlock
 }
 
 var _ libp2p.PubSubServiceParams[Msg] = &p2pSpec{}
@@ -31,10 +32,9 @@ var _ libp2p.PubSubServiceParams[Msg] = &p2pSpec{}
 func New(
 	conf common.IdentityConfig,
 	priceChan chan<- []ObservePricePoint,
+	btcHeadBlockChan chan<- *BtcHeadBlock,
 ) *p2pSpec {
-	return &p2pSpec{
-		conf, priceChan,
-	}
+	return &p2pSpec{conf, priceChan, btcHeadBlockChan}
 }
 
 // Topic implements PubSubServiceParams[Msg]
@@ -73,7 +73,11 @@ func (p *p2pSpec) HandleMessage(
 		p.observePriceChan <- *observePrice
 
 	case MsgBtcChainRelay:
-		panic("not implemented")
+		headBlock, err := parseMsg[BtcHeadBlock](msg.Data)
+		if err != nil {
+			return err
+		}
+		p.btcHeadBlockChan <- headBlock
 
 	default:
 		panic("invalid message type")
