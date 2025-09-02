@@ -11,9 +11,9 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-const (
-	topic = "/vsc/mainet/oracle/v1"
+const oracleTopic = "/vsc/mainet/oracle/v1"
 
+const (
 	MsgBtcChainRelay MsgType = iota
 	MsgOraclePriceObserve
 	MsgOraclePriceBroadcast
@@ -42,7 +42,7 @@ func New(conf common.IdentityConfig) *p2pSpec {
 
 // Topic implements PubSubServiceParams[Msg]
 func (*p2pSpec) Topic() string {
-	return topic
+	return oracleTopic
 }
 
 // ValidateMessage implements PubSubServiceParams[Msg]
@@ -62,8 +62,23 @@ func (p *p2pSpec) HandleMessage(
 	msg Msg,
 	send libp2p.SendFunc[Msg],
 ) error {
-	// TODO: implement this
-	return nil
+	var err error
+
+	switch msg.Type {
+	case MsgOraclePriceBroadcast:
+		panic("not implemented")
+
+	case MsgOraclePriceObserve:
+		panic("not implemented")
+
+	case MsgBtcChainRelay:
+		panic("not implemented")
+
+	default:
+		panic("invalid message type")
+	}
+
+	return err
 }
 
 // HandleRawMessage implements PubSubServiceParams[OracleMessage]
