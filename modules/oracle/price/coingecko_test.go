@@ -13,7 +13,8 @@ import (
 
 func TestCoinGeckoHandlerQueryCoins(t *testing.T) {
 	var (
-		c               = make(chan []p2p.ObservePricePoint, 10)
+		priceChan       = make(chan []p2p.ObservePricePoint, 10)
+		msgChan         = make(chan p2p.Msg, 10)
 		symbols         = [...]string{"BTC", "eth", "lTc"}
 		expectedSymbols = utils.Map(symbols[:], strings.ToUpper)
 	)
@@ -22,9 +23,13 @@ func TestCoinGeckoHandlerQueryCoins(t *testing.T) {
 	cgHandler, err := makeCoinGeckoHandler("usd")
 	assert.NoError(t, err)
 
-	cgHandler.QueryMarketPrice(symbols[:], c)
+	cgHandler.QueryMarketPrice(symbols[:], priceChan, msgChan)
 
-	results := <-c
+	msg := <-msgChan
+	assert.Equal(t, p2p.MsgOraclePriceObserve, msg.Type)
+	assert.Equal(t, len(symbols), len(msg.Data.([]p2p.ObservePricePoint)))
+
+	results := <-priceChan
 	assert.Equal(t, len(expectedSymbols), len(results))
 
 	for _, observed := range results {

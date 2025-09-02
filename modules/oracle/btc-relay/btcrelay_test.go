@@ -3,15 +3,16 @@ package btcrelay
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestFetchChain(t *testing.T) {
 	bcr := New()
 
-	c := make(chan *BtcHeadBlock, 1)
-	bcr.fetchChain(c)
+	headBlock, err := bcr.fetchChain()
+	assert.NoError(t, err)
 
-	headBlock := <-c
 	jsonBytes, _ := json.MarshalIndent(headBlock, "", "  ")
 	t.Log(string(jsonBytes))
 }
