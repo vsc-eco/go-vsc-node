@@ -12,12 +12,14 @@ import (
 )
 
 const (
-	topic            = "/vsc/mainet/oracle/v1"
-	MsgBtcChainRelay = MsgType("btc-chain-relay")
-	MsgPriceOracle   = MsgType("price-orcale")
+	topic = "/vsc/mainet/oracle/v1"
+
+	MsgBtcChainRelay MsgType = iota
+	MsgOraclePriceObserve
+	MsgOraclePriceBroadcast
 )
 
-type MsgType string
+type MsgType int
 
 type Msg *OracleMessage
 
