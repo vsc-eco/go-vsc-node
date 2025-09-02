@@ -8,6 +8,7 @@ import (
 	"strings"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/oracle/httputils"
+	"vsc-node/modules/oracle/p2p"
 )
 
 type coinMarketCapHandler struct {
@@ -52,6 +53,7 @@ type coinMarketCapQuote struct {
 func (c *coinMarketCapHandler) QueryMarketPrice(
 	watchSymbols []string,
 	observePricePointChan chan<- []ObservePricePoint,
+	msgChan chan<- p2p.Msg,
 ) {
 	symbols := make([]string, len(watchSymbols))
 	copy(symbols, watchSymbols)
@@ -73,6 +75,10 @@ func (c *coinMarketCapHandler) QueryMarketPrice(
 	}
 
 	observePricePointChan <- observePricePoints
+	msgChan <- &p2p.OracleMessage{
+		Type: p2p.MsgOraclePriceObserve,
+		Data: observePricePointChan,
+	}
 }
 
 func (c *coinMarketCapHandler) fetchPrices(

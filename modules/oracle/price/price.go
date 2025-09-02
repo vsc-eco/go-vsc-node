@@ -19,7 +19,7 @@ var (
 )
 
 type PriceQuery interface {
-	QueryMarketPrice([]string, chan<- []ObservePricePoint)
+	QueryMarketPrice([]string, chan<- []ObservePricePoint, chan<- p2p.Msg)
 }
 
 type PriceOracle struct {
@@ -95,8 +95,12 @@ func (p *PriceOracle) Poll(
 			return
 
 		case <-pricePollTicker.C:
-			go p.coinGecko.QueryMarketPrice(watchSymbols[:], priceChan)
-			go p.coinMarketCap.QueryMarketPrice(watchSymbols[:], priceChan)
+			go p.coinGecko.QueryMarketPrice(watchSymbols[:], priceChan, msgChan)
+			go p.coinMarketCap.QueryMarketPrice(
+				watchSymbols[:],
+				priceChan,
+				msgChan,
+			)
 
 		case pricePoints := <-priceChan:
 			for _, pricePoint := range pricePoints {
@@ -104,6 +108,7 @@ func (p *PriceOracle) Poll(
 			}
 
 		case <-priceBroadcastTicker.C:
+			// TODO: if this node is do an early continue and clear the cache
 			buf := make([]*AveragePricePoint, len(watchSymbols))
 
 			var err error
@@ -116,7 +121,7 @@ func (p *PriceOracle) Poll(
 			}
 
 			msgChan <- &p2p.OracleMessage{
-				Type: p2p.MsgOraclePriceObserve,
+				Type: p2p.MsgOraclePriceBroadcast,
 				Data: buf,
 			}
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/oracle/httputils"
+	"vsc-node/modules/oracle/p2p"
 )
 
 const (
@@ -68,6 +69,7 @@ func makeCoinGeckoHandler(currency string) (*coinGeckoHandler, error) {
 func (c *coinGeckoHandler) QueryMarketPrice(
 	symbols []string,
 	pricePointChan chan<- []ObservePricePoint,
+	msgChan chan<- p2p.Msg,
 ) {
 	symLowerCase := make([]string, len(symbols))
 	copy(symLowerCase, symbols)
@@ -87,7 +89,13 @@ func (c *coinGeckoHandler) QueryMarketPrice(
 		return
 	}
 
-	pricePointChan <- utils.Map(fetchedPrice, mapCgResponse)
+	observedPrices := utils.Map(fetchedPrice, mapCgResponse)
+
+	pricePointChan <- observedPrices
+	msgChan <- &p2p.OracleMessage{
+		Type: p2p.MsgOraclePriceObserve,
+		Data: observedPrices,
+	}
 }
 
 func mapCgResponse(p coinGeckoPriceQueryResponse) ObservePricePoint {
