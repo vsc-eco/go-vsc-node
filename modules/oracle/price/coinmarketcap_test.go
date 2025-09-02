@@ -16,7 +16,7 @@ func TestCoinMarketCapQueryPrice(t *testing.T) {
 	var (
 		watchSymbols    = [...]string{"BTC", "ETH", "LTC"}
 		expectedSymbols = utils.Map(watchSymbols[:], strings.ToUpper)
-		c               = make(chan []observePricePoint, 10)
+		c               = make(chan []ObservePricePoint, 10)
 	)
 
 	cmc.QueryMarketPrice(watchSymbols[:], c)
@@ -26,6 +26,6 @@ func TestCoinMarketCapQueryPrice(t *testing.T) {
 
 	for _, observed := range results {
 		t.Log(observed)
-		assert.True(t, slices.Contains(expectedSymbols, observed.symbol))
+		assert.True(t, slices.Contains(expectedSymbols, observed.Symbol))
 	}
 }

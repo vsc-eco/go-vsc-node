@@ -67,7 +67,7 @@ func makeCoinGeckoHandler(currency string) (*coinGeckoHandler, error) {
 
 func (c *coinGeckoHandler) QueryMarketPrice(
 	symbols []string,
-	pricePointChan chan<- []observePricePoint,
+	pricePointChan chan<- []ObservePricePoint,
 ) {
 	symLowerCase := make([]string, len(symbols))
 	copy(symLowerCase, symbols)
@@ -90,11 +90,11 @@ func (c *coinGeckoHandler) QueryMarketPrice(
 	pricePointChan <- utils.Map(fetchedPrice, mapCgResponse)
 }
 
-func mapCgResponse(p coinGeckoPriceQueryResponse) observePricePoint {
-	return observePricePoint{
-		symbol: strings.ToUpper(p.Symbol),
-		price:  p.CurrentPrice,
-		volume: float64(p.TotalVolume),
+func mapCgResponse(p coinGeckoPriceQueryResponse) ObservePricePoint {
+	return ObservePricePoint{
+		Symbol: strings.ToUpper(p.Symbol),
+		Price:  p.CurrentPrice,
+		Volume: float64(p.TotalVolume),
 	}
 }
 

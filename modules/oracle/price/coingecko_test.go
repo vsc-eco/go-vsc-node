@@ -12,7 +12,7 @@ import (
 
 func TestCoinGeckoHandlerQueryCoins(t *testing.T) {
 	var (
-		c               = make(chan []observePricePoint, 10)
+		c               = make(chan []ObservePricePoint, 10)
 		symbols         = [...]string{"BTC", "eth", "lTc"}
 		expectedSymbols = utils.Map(symbols[:], strings.ToUpper)
 	)
@@ -28,6 +28,6 @@ func TestCoinGeckoHandlerQueryCoins(t *testing.T) {
 
 	for _, observed := range results {
 		t.Log(observed.String())
-		assert.True(t, slices.Contains(expectedSymbols, observed.symbol))
+		assert.True(t, slices.Contains(expectedSymbols, observed.Symbol))
 	}
 }

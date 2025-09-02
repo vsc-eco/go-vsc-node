@@ -34,10 +34,10 @@ func TestPriceMap(t *testing.T) {
 		for range testPricePointCount {
 			pt := rand.Float64() * priceLimit
 			sum += pt
-			pm.observe(observePricePoint{
-				symbol: symbol,
-				price:  pt,
-				volume: pt,
+			pm.observe(ObservePricePoint{
+				Symbol: symbol,
+				Price:  pt,
+				Volume: pt,
 			})
 		}
 
@@ -73,10 +73,10 @@ func TestPriceMap(t *testing.T) {
 			)
 
 			for _, price := range prices {
-				pm.observe(observePricePoint{
-					symbol: symbol,
-					price:  price,
-					volume: 0,
+				pm.observe(ObservePricePoint{
+					Symbol: symbol,
+					Price:  price,
+					Volume: 0,
 				})
 			}
 
@@ -92,10 +92,10 @@ func TestPriceMap(t *testing.T) {
 			)
 
 			for _, price := range prices {
-				pm.observe(observePricePoint{
-					symbol: symbol,
-					price:  price,
-					volume: 0,
+				pm.observe(ObservePricePoint{
+					Symbol: symbol,
+					Price:  price,
+					Volume: 0,
 				})
 			}
 

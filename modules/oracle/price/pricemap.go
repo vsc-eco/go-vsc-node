@@ -12,18 +12,19 @@ var (
 )
 
 type priceMap struct{ priceSymbolMap }
-type priceSymbolMap map[string][]observePricePoint
-type observePricePoint struct {
-	symbol string
-	price  float64
-	volume float64
+type priceSymbolMap map[string][]ObservePricePoint
+
+type ObservePricePoint struct {
+	Symbol string  `json:"symbol,omitempty"`
+	Price  float64 `json:"price,omitempty"`
+	Volume float64 `json:"volume,omitempty"`
 }
 
-func (o *observePricePoint) String() string {
+func (o *ObservePricePoint) String() string {
 	buf := map[string]any{
-		"symbol": o.symbol,
-		"price":  o.price,
-		"volume": o.volume,
+		"symbol": o.Symbol,
+		"price":  o.Price,
+		"volume": o.Volume,
 	}
 	jbytes, _ := json.MarshalIndent(buf, "", "  ")
 	return string(jbytes)
@@ -43,12 +44,12 @@ func (pm *priceMap) getAveragePrice(symbol string) (*AveragePricePoint, error) {
 	slices.SortFunc(pricePoints, cmpObservePricePoint)
 	var (
 		medianIndex        = len(pricePoints) / 2
-		medianPrice        = pricePoints[medianIndex].price
+		medianPrice        = pricePoints[medianIndex].Price
 		evenNumPricePoints = len(pricePoints)&1 == 0
 	)
 
 	if evenNumPricePoints {
-		medianPrice = (medianPrice + pricePoints[medianIndex-1].price) / 2
+		medianPrice = (medianPrice + pricePoints[medianIndex-1].Price) / 2
 	}
 
 	// average price + volume
@@ -58,8 +59,8 @@ func (pm *priceMap) getAveragePrice(symbol string) (*AveragePricePoint, error) {
 	)
 
 	for _, pricePoint := range pricePoints {
-		priceSum += pricePoint.price
-		volumeSum += pricePoint.volume
+		priceSum += pricePoint.Price
+		volumeSum += pricePoint.Volume
 	}
 
 	out := &AveragePricePoint{
@@ -74,20 +75,20 @@ func (pm *priceMap) getAveragePrice(symbol string) (*AveragePricePoint, error) {
 }
 
 // compare function argument to slices.SortFunc to sort observePricePoint
-func cmpObservePricePoint(a observePricePoint, b observePricePoint) int {
-	if a.price < b.price {
+func cmpObservePricePoint(a ObservePricePoint, b ObservePricePoint) int {
+	if a.Price < b.Price {
 		return -1
 	}
 	return 1
 }
 
-func (pm *priceMap) observe(pricePoint observePricePoint) {
-	avg, ok := pm.priceSymbolMap[pricePoint.symbol]
+func (pm *priceMap) observe(pricePoint ObservePricePoint) {
+	avg, ok := pm.priceSymbolMap[pricePoint.Symbol]
 
 	if !ok {
-		avg = make([]observePricePoint, 0, 32)
+		avg = make([]ObservePricePoint, 0, 32)
 	}
 
 	avg = append(avg, pricePoint)
-	pm.priceSymbolMap[pricePoint.symbol] = avg
+	pm.priceSymbolMap[pricePoint.Symbol] = avg
 }

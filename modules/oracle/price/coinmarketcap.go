@@ -51,7 +51,7 @@ type coinMarketCapQuote struct {
 // QueryMarketPrice implements PriceQuery
 func (c *coinMarketCapHandler) QueryMarketPrice(
 	watchSymbols []string,
-	observePricePointChan chan<- []observePricePoint,
+	observePricePointChan chan<- []ObservePricePoint,
 ) {
 	symbols := make([]string, len(watchSymbols))
 	copy(symbols, watchSymbols)
@@ -62,7 +62,7 @@ func (c *coinMarketCapHandler) QueryMarketPrice(
 		log.Println("[coinmarketcap] failed to query market data:", err)
 	}
 
-	observePricePoints := make([]observePricePoint, 0, len(watchSymbols))
+	observePricePoints := make([]ObservePricePoint, 0, len(watchSymbols))
 	for symbol, marketData := range marketPrices.Data {
 		o, err := marketData.makeObservePricePoint(c.currency)
 		if err != nil {
@@ -100,16 +100,16 @@ func (c *coinMarketCapHandler) fetchPrices(
 
 func (c *coinMarketCapData) makeObservePricePoint(
 	currency string,
-) (*observePricePoint, error) {
+) (*ObservePricePoint, error) {
 	quote, ok := c.Quote[currency]
 	if !ok {
 		return nil, fmt.Errorf("currency not converted: %s", currency)
 	}
 
-	out := &observePricePoint{
-		symbol: c.Symbol,
-		price:  quote.Price,
-		volume: quote.Volume,
+	out := &ObservePricePoint{
+		Symbol: c.Symbol,
+		Price:  quote.Price,
+		Volume: quote.Volume,
 	}
 
 	return out, nil

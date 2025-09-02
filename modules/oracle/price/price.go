@@ -19,7 +19,7 @@ var (
 )
 
 type PriceQuery interface {
-	QueryMarketPrice([]string, chan<- []observePricePoint)
+	QueryMarketPrice([]string, chan<- []ObservePricePoint)
 }
 
 type PriceOracle struct {
@@ -86,7 +86,7 @@ func (p *PriceOracle) Poll(
 	var (
 		priceBroadcastTicker = time.NewTicker(broadcastInterval)
 		pricePollTicker      = time.NewTimer(time.Second * 15)
-		priceChan            = make(chan []observePricePoint, 10)
+		priceChan            = make(chan []ObservePricePoint, 10)
 	)
 
 	for {
@@ -116,7 +116,7 @@ func (p *PriceOracle) Poll(
 			}
 
 			msgChan <- &p2p.OracleMessage{
-				Type: p2p.MsgPriceOracle,
+				Type: p2p.MsgOraclePriceObserve,
 				Data: buf,
 			}
 
