@@ -4,6 +4,7 @@ import (
 	"math"
 	"math/rand"
 	"testing"
+	"vsc-node/modules/oracle/p2p"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -34,7 +35,7 @@ func TestPriceMap(t *testing.T) {
 		for range testPricePointCount {
 			pt := rand.Float64() * priceLimit
 			sum += pt
-			pm.observe(ObservePricePoint{
+			pm.observe(p2p.ObservePricePoint{
 				Symbol: symbol,
 				Price:  pt,
 				Volume: pt,
@@ -73,7 +74,7 @@ func TestPriceMap(t *testing.T) {
 			)
 
 			for _, price := range prices {
-				pm.observe(ObservePricePoint{
+				pm.observe(p2p.ObservePricePoint{
 					Symbol: symbol,
 					Price:  price,
 					Volume: 0,
@@ -92,7 +93,7 @@ func TestPriceMap(t *testing.T) {
 			)
 
 			for _, price := range prices {
-				pm.observe(ObservePricePoint{
+				pm.observe(p2p.ObservePricePoint{
 					Symbol: symbol,
 					Price:  price,
 					Volume: 0,

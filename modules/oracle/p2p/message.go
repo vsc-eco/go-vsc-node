@@ -1,0 +1,55 @@
+package p2p
+
+import (
+	"encoding/json"
+
+	"github.com/go-playground/validator/v10"
+)
+
+const (
+	MsgBtcChainRelay MsgType = iota
+	MsgOraclePriceObserve
+	MsgOraclePriceBroadcast
+)
+
+var priceValidator = validator.New(validator.WithRequiredStructEnabled())
+
+type MsgType int
+
+type ObservePricePoint struct {
+	Symbol string  `json:"symbol,omitempty"`
+	Price  float64 `json:"price,omitempty"`
+	Volume float64 `json:"volume,omitempty"`
+}
+
+func (o *ObservePricePoint) String() string {
+	buf := map[string]any{
+		"symbol": o.Symbol,
+		"price":  o.Price,
+		"volume": o.Volume,
+	}
+	jbytes, _ := json.MarshalIndent(buf, "", "  ")
+	return string(jbytes)
+}
+
+type AveragePricePoint struct {
+	// length: range from 1-9 chars.
+	// format: uppercase letters, may include numbers.
+	Symbol        string  `json:"symbol"                    validate:"required,min=1,max=9,alphanum"` // no need to validate
+	Price         float64 `json:"average_price"             validate:"required,gt=0.0"`
+	MedianPrice   float64 `json:"median_price"              validate:"required,gt=0.0"`
+	Volume        float64 `json:"average_volume"            validate:"required,gt=0.0"`
+	UnixTimeStamp int64   `json:"unix_time_stamp,omitempty" validate:"required,gt=0"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler
+func (p *AveragePricePoint) UnmarshalJSON(data []byte) error {
+	type alias *AveragePricePoint
+	buf := (alias)(p)
+
+	if err := json.Unmarshal(data, buf); err != nil {
+		return err
+	}
+
+	return priceValidator.Struct(p)
+}

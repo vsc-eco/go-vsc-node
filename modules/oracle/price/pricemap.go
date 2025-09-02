@@ -1,10 +1,10 @@
 package price
 
 import (
-	"encoding/json"
 	"errors"
 	"slices"
 	"time"
+	"vsc-node/modules/oracle/p2p"
 )
 
 var (
@@ -12,29 +12,15 @@ var (
 )
 
 type priceMap struct{ priceSymbolMap }
-type priceSymbolMap map[string][]ObservePricePoint
-
-type ObservePricePoint struct {
-	Symbol string  `json:"symbol,omitempty"`
-	Price  float64 `json:"price,omitempty"`
-	Volume float64 `json:"volume,omitempty"`
-}
-
-func (o *ObservePricePoint) String() string {
-	buf := map[string]any{
-		"symbol": o.Symbol,
-		"price":  o.Price,
-		"volume": o.Volume,
-	}
-	jbytes, _ := json.MarshalIndent(buf, "", "  ")
-	return string(jbytes)
-}
+type priceSymbolMap map[string][]p2p.ObservePricePoint
 
 func makePriceMap() priceMap {
 	return priceMap{make(priceSymbolMap)}
 }
 
-func (pm *priceMap) getAveragePrice(symbol string) (*AveragePricePoint, error) {
+func (pm *priceMap) getAveragePrice(
+	symbol string,
+) (*p2p.AveragePricePoint, error) {
 	pricePoints, ok := pm.priceSymbolMap[symbol]
 	if !ok {
 		return nil, errSymbolNotFound
@@ -63,7 +49,7 @@ func (pm *priceMap) getAveragePrice(symbol string) (*AveragePricePoint, error) {
 		volumeSum += pricePoint.Volume
 	}
 
-	out := &AveragePricePoint{
+	out := &p2p.AveragePricePoint{
 		Symbol:        symbol,
 		MedianPrice:   medianPrice,
 		Price:         priceSum / float64(len(pricePoints)),
@@ -75,18 +61,21 @@ func (pm *priceMap) getAveragePrice(symbol string) (*AveragePricePoint, error) {
 }
 
 // compare function argument to slices.SortFunc to sort observePricePoint
-func cmpObservePricePoint(a ObservePricePoint, b ObservePricePoint) int {
+func cmpObservePricePoint(
+	a p2p.ObservePricePoint,
+	b p2p.ObservePricePoint,
+) int {
 	if a.Price < b.Price {
 		return -1
 	}
 	return 1
 }
 
-func (pm *priceMap) observe(pricePoint ObservePricePoint) {
+func (pm *priceMap) observe(pricePoint p2p.ObservePricePoint) {
 	avg, ok := pm.priceSymbolMap[pricePoint.Symbol]
 
 	if !ok {
-		avg = make([]ObservePricePoint, 0, 32)
+		avg = make([]p2p.ObservePricePoint, 0, 32)
 	}
 
 	avg = append(avg, pricePoint)

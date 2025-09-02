@@ -3,6 +3,7 @@ package p2p
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
@@ -13,14 +14,6 @@ import (
 
 const oracleTopic = "/vsc/mainet/oracle/v1"
 
-const (
-	MsgBtcChainRelay MsgType = iota
-	MsgOraclePriceObserve
-	MsgOraclePriceBroadcast
-)
-
-type MsgType int
-
 type Msg *OracleMessage
 
 type OracleMessage struct {
@@ -29,14 +22,18 @@ type OracleMessage struct {
 }
 
 type p2pSpec struct {
-	conf common.IdentityConfig
+	conf             common.IdentityConfig
+	observePriceChan chan<- []ObservePricePoint
 }
 
 var _ libp2p.PubSubServiceParams[Msg] = &p2pSpec{}
 
-func New(conf common.IdentityConfig) *p2pSpec {
+func New(
+	conf common.IdentityConfig,
+	priceChan chan<- []ObservePricePoint,
+) *p2pSpec {
 	return &p2pSpec{
-		conf,
+		conf, priceChan,
 	}
 }
 
@@ -69,7 +66,11 @@ func (p *p2pSpec) HandleMessage(
 		panic("not implemented")
 
 	case MsgOraclePriceObserve:
-		panic("not implemented")
+		observePrice, err := parseMsg[[]ObservePricePoint](msg.Data)
+		if err != nil {
+			return err
+		}
+		p.observePriceChan <- *observePrice
 
 	case MsgBtcChainRelay:
 		panic("not implemented")
@@ -79,6 +80,14 @@ func (p *p2pSpec) HandleMessage(
 	}
 
 	return err
+}
+
+func parseMsg[T any](data any) (*T, error) {
+	v, ok := data.(T)
+	if !ok {
+		return nil, errors.New("invalid type")
+	}
+	return &v, nil
 }
 
 // HandleRawMessage implements PubSubServiceParams[OracleMessage]

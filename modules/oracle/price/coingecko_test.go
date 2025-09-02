@@ -6,13 +6,14 @@ import (
 	"strings"
 	"testing"
 	"vsc-node/lib/utils"
+	"vsc-node/modules/oracle/p2p"
 
 	"github.com/stretchr/testify/assert"
 )
 
 func TestCoinGeckoHandlerQueryCoins(t *testing.T) {
 	var (
-		c               = make(chan []ObservePricePoint, 10)
+		c               = make(chan []p2p.ObservePricePoint, 10)
 		symbols         = [...]string{"BTC", "eth", "lTc"}
 		expectedSymbols = utils.Map(symbols[:], strings.ToUpper)
 	)

@@ -2,53 +2,27 @@ package price
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"time"
 	"vsc-node/modules/oracle/p2p"
-
-	"github.com/go-playground/validator/v10"
 )
 
 var (
 	errApiKeyNotFound = errors.New("API key not exported")
-	priceValidator    = validator.New(validator.WithRequiredStructEnabled())
 	watchSymbols      = [...]string{"BTC", "ETH", "LTC"}
 )
 
 type PriceQuery interface {
-	QueryMarketPrice([]string, chan<- []ObservePricePoint, chan<- p2p.Msg)
+	QueryMarketPrice([]string, chan<- []p2p.ObservePricePoint, chan<- p2p.Msg)
 }
 
 type PriceOracle struct {
-	c             chan AveragePricePoint
+	c             chan p2p.AveragePricePoint
 	avgPriceMap   priceMap
 	coinGecko     PriceQuery
 	coinMarketCap PriceQuery
-}
-
-type AveragePricePoint struct {
-	// length: range from 1-9 chars.
-	// format: uppercase letters, may include numbers.
-	Symbol        string  `json:"symbol"                    validate:"required,min=1,max=9,alphanum"` // no need to validate
-	Price         float64 `json:"average_price"             validate:"required,gt=0.0"`
-	MedianPrice   float64 `json:"median_price"              validate:"required,gt=0.0"`
-	Volume        float64 `json:"average_volume"            validate:"required,gt=0.0"`
-	UnixTimeStamp int64   `json:"unix_time_stamp,omitempty" validate:"required,gt=0"`
-}
-
-// UnmarshalJSON implements json.Unmarshaler
-func (p *AveragePricePoint) UnmarshalJSON(data []byte) error {
-	type alias *AveragePricePoint
-	buf := (alias)(p)
-
-	if err := json.Unmarshal(data, buf); err != nil {
-		return err
-	}
-
-	return priceValidator.Struct(p)
 }
 
 func New(userCurrency string) (*PriceOracle, error) {
@@ -69,7 +43,7 @@ func New(userCurrency string) (*PriceOracle, error) {
 	}
 
 	p := &PriceOracle{
-		c:             make(chan AveragePricePoint, 1),
+		c:             make(chan p2p.AveragePricePoint, 1),
 		avgPriceMap:   makePriceMap(),
 		coinGecko:     coinGeckoHandler,
 		coinMarketCap: coinMarketCapHanlder,
@@ -82,11 +56,11 @@ func (p *PriceOracle) Poll(
 	ctx context.Context,
 	broadcastInterval time.Duration,
 	msgChan chan<- p2p.Msg,
+	observePriceChan chan []p2p.ObservePricePoint,
 ) {
 	var (
 		priceBroadcastTicker = time.NewTicker(broadcastInterval)
 		pricePollTicker      = time.NewTimer(time.Second * 15)
-		priceChan            = make(chan []ObservePricePoint, 10)
 	)
 
 	for {
@@ -95,21 +69,25 @@ func (p *PriceOracle) Poll(
 			return
 
 		case <-pricePollTicker.C:
-			go p.coinGecko.QueryMarketPrice(watchSymbols[:], priceChan, msgChan)
+			go p.coinGecko.QueryMarketPrice(
+				watchSymbols[:],
+				observePriceChan,
+				msgChan,
+			)
 			go p.coinMarketCap.QueryMarketPrice(
 				watchSymbols[:],
-				priceChan,
+				observePriceChan,
 				msgChan,
 			)
 
-		case pricePoints := <-priceChan:
+		case pricePoints := <-observePriceChan:
 			for _, pricePoint := range pricePoints {
 				p.avgPriceMap.observe(pricePoint)
 			}
 
 		case <-priceBroadcastTicker.C:
 			// TODO: if this node is do an early continue and clear the cache
-			buf := make([]*AveragePricePoint, len(watchSymbols))
+			buf := make([]*p2p.AveragePricePoint, len(watchSymbols))
 
 			var err error
 			for i, symbol := range watchSymbols {

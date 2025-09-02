@@ -25,10 +25,12 @@ type Oracle struct {
 	service    libp2p.PubSubService[p2p.Msg]
 	conf       common.IdentityConfig
 	electionDb elections.Elections
+
 	ctx        context.Context
 	cancelFunc context.CancelFunc
 
-	priceOracle *price.PriceOracle
+	priceOracle      *price.PriceOracle
+	observePriceChan chan []p2p.ObservePricePoint
 
 	btcChainRelayer btcrelay.BtcChainRelay
 	btcChan         chan *btcrelay.BtcHeadBlock
@@ -42,11 +44,12 @@ func New(
 	electionDb elections.Elections,
 ) *Oracle {
 	return &Oracle{
-		p2p:        p2pServer,
-		conf:       conf,
-		electionDb: electionDb,
-		btcChan:    make(chan *btcrelay.BtcHeadBlock),
-		msgChan:    make(chan p2p.Msg),
+		p2p:              p2pServer,
+		conf:             conf,
+		electionDb:       electionDb,
+		btcChan:          make(chan *btcrelay.BtcHeadBlock),
+		msgChan:          make(chan p2p.Msg),
+		observePriceChan: make(chan []p2p.ObservePricePoint, 10),
 	}
 }
 
@@ -77,7 +80,7 @@ func (o *Oracle) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
 		var (
 			err    error
-			p2pSrv = p2p.New(o.conf)
+			p2pSrv = p2p.New(o.conf, o.observePriceChan)
 		)
 
 		o.service, err = libp2p.NewPubSubService(o.p2p, p2pSrv)
@@ -103,7 +106,12 @@ func (o *Oracle) Stop() error {
 }
 
 func (o *Oracle) observe() {
-	go o.priceOracle.Poll(o.ctx, priceOracleBroadcastInterval, o.msgChan)
+	go o.priceOracle.Poll(
+		o.ctx,
+		priceOracleBroadcastInterval,
+		o.msgChan,
+		o.observePriceChan,
+	)
 	go o.btcChainRelayer.Poll(o.ctx, btcChainRelayInterval, o.msgChan)
 
 	for {

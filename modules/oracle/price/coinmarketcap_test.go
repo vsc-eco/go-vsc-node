@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"vsc-node/lib/utils"
+	"vsc-node/modules/oracle/p2p"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -16,7 +17,7 @@ func TestCoinMarketCapQueryPrice(t *testing.T) {
 	var (
 		watchSymbols    = [...]string{"BTC", "ETH", "LTC"}
 		expectedSymbols = utils.Map(watchSymbols[:], strings.ToUpper)
-		c               = make(chan []ObservePricePoint, 10)
+		c               = make(chan []p2p.ObservePricePoint, 10)
 	)
 
 	cmc.QueryMarketPrice(watchSymbols[:], c)
