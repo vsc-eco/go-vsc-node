@@ -131,6 +131,10 @@ func (ss *StateStore) Commit() {
 	ss.cs.cache = ss.cache
 }
 
+func (ss *StateStore) Rollback() {
+	// Method only used in mocks for testing
+}
+
 func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) StateStore {
 	if cids == "" {
 		databin := datalayer.NewDataBin(dl)

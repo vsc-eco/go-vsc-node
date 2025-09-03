@@ -45,14 +45,22 @@ type LedgerSystem struct {
 	//Anything that requires on chain processing to complete
 	ActionsDb ledgerDb.BridgeActions
 
-	GatewayLedgerDb ledgerDb.GatewayLedger
-
 	log logger.Logger
 }
 
 // func (ls *LedgerSystem) ApplyOp(op LedgerOp) {
 
 // }
+
+func NewLedgerSystem(logger logger.Logger, balanceDb ledgerDb.Balances, ledgerDb ledgerDb.Ledger, claimsDb ledgerDb.InterestClaims, actionsDb ledgerDb.BridgeActions) LedgerSystem {
+	return LedgerSystem{
+		BalanceDb: balanceDb,
+		LedgerDb:  ledgerDb,
+		ClaimDb:   claimsDb,
+		ActionsDb: actionsDb,
+		log:       logger,
+	}
+}
 
 func (ls *LedgerSystem) GetBalance(account string, blockHeight uint64, asset string) int64 {
 	if !slices.Contains(assetTypes, asset) {
