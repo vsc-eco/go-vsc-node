@@ -8,6 +8,7 @@ import (
 	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/db/vsc/witnesses"
 	btcrelay "vsc-node/modules/oracle/btc-relay"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/price"
@@ -31,6 +32,7 @@ type Oracle struct {
 	service    libp2p.PubSubService[p2p.Msg]
 	conf       common.IdentityConfig
 	electionDb elections.Elections
+	witness    witnesses.Witnesses
 
 	ctx        context.Context
 	cancelFunc context.CancelFunc
@@ -48,11 +50,13 @@ func New(
 	p2pServer *libp2p.P2PServer,
 	conf common.IdentityConfig,
 	electionDb elections.Elections,
+	witness witnesses.Witnesses,
 ) *Oracle {
 	return &Oracle{
 		p2p:              p2pServer,
 		conf:             conf,
 		electionDb:       electionDb,
+		witness:          witness,
 		btcChan:          make(chan *p2p.BtcHeadBlock),
 		msgChan:          make(chan p2p.Msg),
 		observePriceChan: make(chan []p2p.ObservePricePoint, 10),
@@ -166,6 +170,16 @@ func (o *Oracle) marketObserve() {
 }
 
 func (o *Oracle) broadcastPricePoints() {
+	// TODO: how do i get the latest witnesses?
+	witnesses, err := o.witness.GetLastestWitnesses()
+	if err != nil {
+		log.Println("failed to wet latest witnesses", err)
+		return
+	}
+	log.Println(witnesses)
+
+	// TODO: how to determine if this node is a witness
+
 	// TODO: if this node is do an early continue and clear the cache
 	buf := make([]*p2p.AveragePricePoint, 0, len(watchSymbols))
 

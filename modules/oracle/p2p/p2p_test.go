@@ -11,7 +11,7 @@ import (
 func TestP2PSpec(t *testing.T) {
 	t.Run("topic", func(t *testing.T) {
 		srv := &p2pSpec{}
-		assert.Equal(t, oracleTopic, srv.Topic())
+		assert.Equal(t, OracleTopic, srv.Topic())
 	})
 
 	t.Run("p2pSpec.HandleMessage", testHandleMessage)

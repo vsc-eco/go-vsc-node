@@ -23,12 +23,7 @@ type ObservePricePoint struct {
 }
 
 func (o *ObservePricePoint) String() string {
-	buf := map[string]any{
-		"symbol": o.Symbol,
-		"price":  o.Price,
-		"volume": o.Volume,
-	}
-	jbytes, _ := json.MarshalIndent(buf, "", "  ")
+	jbytes, _ := json.MarshalIndent(o, "", "  ")
 	return string(jbytes)
 }
 
