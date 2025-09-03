@@ -2,6 +2,7 @@ package oracle
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -18,6 +19,11 @@ import (
 const (
 	btcChainRelayInterval        = time.Minute * 10
 	priceOracleBroadcastInterval = time.Hour
+	priceOraclePollInterval      = time.Second * 15
+)
+
+var (
+	watchSymbols = []string{"BTC", "ETH", "LTC"}
 )
 
 type Oracle struct {
@@ -75,15 +81,15 @@ func (o *Oracle) Init() error {
 // Start implements aggregate.Plugin.
 // Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
-	go o.observe()
+	go o.marketObserve()
 
 	return promise.New(func(resolve func(any), reject func(error)) {
-		var (
-			err    error
-			p2pSrv = p2p.New(o.conf, o.observePriceChan, o.btcChan)
-		)
+		var err error
 
-		o.service, err = libp2p.NewPubSubService(o.p2p, p2pSrv)
+		o.service, err = libp2p.NewPubSubService(
+			o.p2p,
+			p2p.New(o.conf, o.observePriceChan, o.btcChan),
+		)
 		if err != nil {
 			o.cancelFunc()
 			reject(err)
@@ -105,24 +111,88 @@ func (o *Oracle) Stop() error {
 	return o.service.Close()
 }
 
-func (o *Oracle) observe() {
-	go o.priceOracle.Poll(
-		o.ctx,
-		priceOracleBroadcastInterval,
-		o.msgChan,
-		o.observePriceChan,
+func (o *Oracle) marketObserve() {
+	var (
+		priceBroadcastTicker = time.NewTicker(priceOracleBroadcastInterval)
+		pricePollTicker      = time.NewTicker(priceOraclePollInterval)
+		btcChainRelayTicker  = time.NewTicker(btcChainRelayInterval)
 	)
-	go o.btcChainRelayer.Poll(o.ctx, btcChainRelayInterval, o.msgChan)
 
 	for {
 		select {
 		case <-o.ctx.Done():
 			return
 
+		case <-pricePollTicker.C:
+			go o.priceOracle.CoinGecko.QueryMarketPrice(
+				watchSymbols,
+				o.observePriceChan,
+				o.msgChan,
+			)
+
+			go o.priceOracle.CoinMarketCap.QueryMarketPrice(
+				watchSymbols,
+				o.observePriceChan,
+				o.msgChan,
+			)
+
+		case <-priceBroadcastTicker.C:
+			go o.broadcastPricePoints()
+
+		case <-btcChainRelayTicker.C:
+			go o.relayBtcHeadBlock()
+
 		case msg := <-o.msgChan:
+			// TODO: which one to send broadcast within the network?
 			if err := o.service.Send(msg); err != nil {
 				log.Println("[oracle] failed broadcast message", msg, err)
+				continue
 			}
+
+			jbytes, err := json.Marshal(msg)
+			if err != nil {
+				log.Println("[oracle] failed serialize message", msg, err)
+				continue
+			}
+			o.p2p.SendToAll(p2p.OracleTopic, jbytes)
+
+		case pricePoints := <-o.observePriceChan:
+			o.priceOracle.ObservePricePoint(pricePoints)
+
+		case btcHeadBlock := <-o.btcChan:
+			fmt.Println("TODO: validate btcHeadBlock", btcHeadBlock)
 		}
+	}
+}
+
+func (o *Oracle) broadcastPricePoints() {
+	// TODO: if this node is do an early continue and clear the cache
+	buf := make([]*p2p.AveragePricePoint, 0, len(watchSymbols))
+
+	for _, symbol := range watchSymbols {
+		avgPricePoint, err := o.priceOracle.GetAveragePrice(symbol)
+		if err != nil {
+			log.Println("symbol not found in map:", symbol)
+			continue
+		}
+		buf = append(buf, avgPricePoint)
+	}
+
+	o.msgChan <- &p2p.OracleMessage{
+		Type: p2p.MsgOraclePriceBroadcast,
+		Data: buf,
+	}
+}
+
+func (o *Oracle) relayBtcHeadBlock() {
+	headBlock, err := o.btcChainRelayer.FetchChain()
+	if err != nil {
+		log.Println("failed to fetch BTC head block.", err)
+		return
+	}
+
+	o.msgChan <- &p2p.OracleMessage{
+		Type: p2p.MsgBtcChainRelay,
+		Data: headBlock,
 	}
 }

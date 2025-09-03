@@ -12,7 +12,7 @@ func TestFetchChain(t *testing.T) {
 	c := make(chan *p2p.BtcHeadBlock, 1)
 	bcr := New(c)
 
-	headBlock, err := bcr.fetchChain()
+	headBlock, err := bcr.FetchChain()
 	assert.NoError(t, err)
 
 	jsonBytes, _ := json.MarshalIndent(headBlock, "", "  ")

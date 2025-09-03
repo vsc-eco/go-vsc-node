@@ -12,7 +12,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-const oracleTopic = "/vsc/mainet/oracle/v1"
+const OracleTopic = "/vsc/mainet/oracle/v1"
 
 type Msg *OracleMessage
 
@@ -39,7 +39,7 @@ func New(
 
 // Topic implements PubSubServiceParams[Msg]
 func (*p2pSpec) Topic() string {
-	return oracleTopic
+	return OracleTopic
 }
 
 // ValidateMessage implements PubSubServiceParams[Msg]

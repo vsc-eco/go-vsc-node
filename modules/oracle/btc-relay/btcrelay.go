@@ -1,12 +1,7 @@
 package btcrelay
 
 import (
-	"context"
-	"fmt"
-	"log"
 	"net/http"
-	"net/url"
-	"time"
 	"vsc-node/modules/oracle/httputils"
 	"vsc-node/modules/oracle/p2p"
 
@@ -14,8 +9,6 @@ import (
 )
 
 var v = validator.New()
-
-const blockcypherUrl = "https://api.blockcypher.com/v1/btc/main"
 
 type BtcChainRelay struct {
 	btcChan chan *p2p.BtcHeadBlock
@@ -31,42 +24,12 @@ func New(btcChan chan *p2p.BtcHeadBlock) BtcChainRelay {
 	}
 }
 
-func (b *BtcChainRelay) Poll(
-	ctx context.Context,
-	relayInterval time.Duration,
-	broadcastChan chan<- p2p.Msg,
-) {
-	ticker := time.NewTicker(relayInterval)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-
-		case <-ticker.C:
-			headBlock, err := b.fetchChain()
-			if err != nil {
-				log.Println("failed to fetch BTC head block.", err)
-				continue
-			}
-
-			broadcastChan <- &p2p.OracleMessage{
-				Type: p2p.MsgBtcChainRelay,
-				Data: headBlock,
-			}
-
-		case headBlock := <-b.btcChan:
-			fmt.Println(headBlock)
-		}
-	}
-}
-
-func (b *BtcChainRelay) fetchChain() (*p2p.BtcHeadBlock, error) {
+func (b *BtcChainRelay) FetchChain() (*p2p.BtcHeadBlock, error) {
 	// query chain metadata
 
 	// valid url, no error returns
 	apiUrl, _ := httputils.MakeUrl(
-		blockcypherUrl,
+		"https://api.blockcypher.com/v1/btc/main",
 		nil,
 	)
 
@@ -75,7 +38,7 @@ func (b *BtcChainRelay) fetchChain() (*p2p.BtcHeadBlock, error) {
 		return nil, err
 	}
 
-	chain, err := httputils.SendRequest[btcChainMetadata](req)
+	chain, err := httputils.SendRequest[btcChainMetadata](req, v)
 	if err != nil {
 		return nil, err
 	}
@@ -83,12 +46,11 @@ func (b *BtcChainRelay) fetchChain() (*p2p.BtcHeadBlock, error) {
 	// query head block
 
 	// valid hard coded url, no need to handle error
-	blockUrl, _ := url.Parse("https://api.blockcypher.com/v1/btc/main/blocks")
-
-	apiUrl, err = httputils.MakeUrl(blockUrl.JoinPath(chain.Hash).String(), nil)
-	if err != nil {
-		return nil, err
-	}
+	apiUrl, _ = httputils.MakeUrl(
+		"https://api.blockcypher.com/v1/btc/main/blocks",
+		nil,
+	)
+	apiUrl = apiUrl.JoinPath(chain.Hash)
 
 	req, err = httputils.MakeRequest(http.MethodGet, apiUrl, nil)
 	if err != nil {
