@@ -35,6 +35,8 @@ type StateStore interface {
 	Get(key string) []byte
 	Set(key string, value []byte)
 	Delete(key string)
+	Commit()
+	Rollback()
 }
 
 type Environment struct {
