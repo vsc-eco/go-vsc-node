@@ -27,10 +27,11 @@ func randomHex(n int) string {
 
 // Contract testing environment
 type ContractTest struct {
-	BlockHeight uint64
-	Contracts   map[string][]byte
-	State       contract_execution_context.StateStore
-	StateEngine *stateEngine.StateEngine
+	BlockHeight   uint64
+	Contracts     map[string][]byte
+	LedgerSession *stateEngine.LedgerSession
+	State         contract_execution_context.StateStore
+	StateEngine   *stateEngine.StateEngine
 }
 
 func NewContractTest() ContractTest {
@@ -40,32 +41,29 @@ func NewContractTest() ContractTest {
 	interestClaims := MockInterestClaimsDb{Claims: make([]ledgerDb.ClaimRecord, 0)}
 	actions := MockActionsDb{Actions: make(map[string]ledgerDb.ActionRecord)}
 	elections := MockElectionDb{}
-	// ls := stateEngine.NewLedgerSystem(logr, &balances, &ledgers, &interestClaims, &actions)
 	se := stateEngine.New(logr, nil, nil, &elections, nil, nil, nil, &ledgers, &balances, nil, &interestClaims, nil, &actions, nil, nil, nil)
 	return ContractTest{
-		BlockHeight: 0,
-		Contracts:   make(map[string][]byte),
-		// LedgerExecutor: &stateEngine.LedgerExecutor{
-		// 	VirtualLedger: make(map[string][]ledgerSystem.LedgerUpdate),
-		// 	Ls:            &ls,
-		// },
-		State:       NewInMemoryStateStore(),
-		StateEngine: se,
+		BlockHeight:   0,
+		Contracts:     make(map[string][]byte),
+		LedgerSession: se.LedgerExecutor.NewSession(0),
+		State:         NewInMemoryStateStore(),
+		StateEngine:   se,
 	}
 }
 
 func (ct *ContractTest) IncrementBlocks(count uint64) {
 	currentSlot := ct.BlockHeight - (ct.BlockHeight % common.CONSENSUS_SPECS.SlotLength)
-	nextSlot := currentSlot + common.CONSENSUS_SPECS.SlotLength
 	newHeight := ct.BlockHeight + count
-	if newHeight >= nextSlot {
+	newSlot := newHeight - (newHeight % common.CONSENSUS_SPECS.SlotLength)
+	if newSlot > currentSlot {
 		compiled := ct.StateEngine.LedgerExecutor.Compile(currentSlot)
 		if compiled != nil {
-			ct.executeLedgerOpLogs(compiled.OpLog, currentSlot, nextSlot-1)
+			ct.executeLedgerOpLogs(compiled.OpLog, currentSlot, newSlot-1)
 		}
-		ct.StateEngine.UpdateBalances(currentSlot, nextSlot-1)
+		ct.StateEngine.UpdateBalances(currentSlot, newSlot-1)
+		ct.LedgerSession = ct.StateEngine.LedgerExecutor.NewSession(newSlot)
 	}
-	ct.BlockHeight = ct.BlockHeight + count
+	ct.BlockHeight = newHeight
 }
 
 func (ct *ContractTest) RegisterContract(contractId string, bytecode []byte) {
@@ -85,7 +83,6 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 
 	w := wasm_runtime_ipc.New()
 	w.Init()
-	ledgerSession := ct.StateEngine.LedgerExecutor.NewSession(ct.BlockHeight)
 
 	caller := ""
 	if len(tx.Self.RequiredAuths) > 0 {
@@ -108,13 +105,13 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 			Caller:               caller,
 			Intents:              tx.Intents,
 		},
-		int64(tx.RcLimit), ledgerSession, ct.State, contracts.ContractMetadata{},
+		int64(tx.RcLimit), ct.LedgerSession, ct.State, contracts.ContractMetadata{},
 	)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(bytecode))
 	res := w.Execute(ctx, tx.RcLimit*common.CYCLE_GAS_PER_RC, tx.Action, string(tx.Payload), wasm_runtime.Go)
 
 	if res.Error != nil {
-		ledgerSession.Revert()
+		ct.LedgerSession.Revert()
 		ct.State.Rollback()
 		return stateEngine.TxResult{
 			Success: false,
@@ -122,7 +119,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 			RcUsed:  10,
 		}, []string{}
 	}
-	ledgerSession.Done()
+	ct.LedgerSession.Done()
 	ct.State.Commit()
 
 	rcUsed := int64(math.Max(math.Ceil(float64(res.Result.Gas)/common.CYCLE_GAS_PER_RC), 100))
