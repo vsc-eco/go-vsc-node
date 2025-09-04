@@ -846,6 +846,10 @@ func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args st
 		errStr := fmt.Errorf("failed to register wasm buffer: %w", err).Error()
 		return wasm_types.BasicErrorResult{
 			Error: &errStr,
+			Result: &wasm_types.WasmResultStruct{
+				Gas:   vm.GetStatistics().GetTotalCost(),
+				Error: true,
+			},
 		}
 	}
 
@@ -874,12 +878,19 @@ func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args st
 			fmt.Println(*retVal.Result, *retVal.Error)
 			return wasm_types.BasicErrorResult{
 				Error: retVal.Error,
+				Result: &wasm_types.WasmResultStruct{
+					Gas:   vm.GetStatistics().GetTotalCost(),
+					Error: true,
+				},
 			}
 		}
 
-		fmt.Println("Error has occurred!", errStr)
 		return wasm_types.BasicErrorResult{
 			Error: &errStr,
+			Result: &wasm_types.WasmResultStruct{
+				Gas:   vm.GetStatistics().GetTotalCost(),
+				Error: true,
+			},
 		}
 	}
 	res := callResult.Unwrap()
@@ -887,6 +898,10 @@ func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args st
 		errStr := fmt.Errorf("not exactly 1 return value").Error()
 		return wasm_types.BasicErrorResult{
 			Error: &errStr,
+			Result: &wasm_types.WasmResultStruct{
+				Gas:   vm.GetStatistics().GetTotalCost(),
+				Error: true,
+			},
 		}
 	}
 
