@@ -92,7 +92,7 @@ func (o *Oracle) Start() *promise.Promise[any] {
 
 		o.service, err = libp2p.NewPubSubService(
 			o.p2p,
-			p2p.New(o.conf, o.observePriceChan, o.btcChan),
+			p2p.New(o.conf, o.btcChan),
 		)
 		if err != nil {
 			o.cancelFunc()
@@ -117,9 +117,11 @@ func (o *Oracle) Stop() error {
 
 func (o *Oracle) marketObserve() {
 	var (
+		pricePollTicker     = time.NewTicker(priceOraclePollInterval)
+		btcChainRelayTicker = time.NewTicker(btcChainRelayInterval)
+
+		// need to use blokci nterval
 		priceBroadcastTicker = time.NewTicker(priceOracleBroadcastInterval)
-		pricePollTicker      = time.NewTicker(priceOraclePollInterval)
-		btcChainRelayTicker  = time.NewTicker(btcChainRelayInterval)
 	)
 
 	for {
@@ -128,22 +130,19 @@ func (o *Oracle) marketObserve() {
 			return
 
 		case <-pricePollTicker.C:
-			go o.priceOracle.CoinGecko.QueryMarketPrice(
-				watchSymbols,
-				o.observePriceChan,
-				o.msgChan,
-			)
-
-			go o.priceOracle.CoinMarketCap.QueryMarketPrice(
-				watchSymbols,
-				o.observePriceChan,
-				o.msgChan,
-			)
+			for _, api := range o.priceOracle.PriceAPIs {
+				go api.QueryMarketPrice(
+					watchSymbols,
+					o.observePriceChan,
+				)
+			}
 
 		case <-priceBroadcastTicker.C:
+			//@TODO Use block tick interval
 			go o.broadcastPricePoints()
 
 		case <-btcChainRelayTicker.C:
+			//@TODO: Use block ticket interval as well for 10 minute intervals
 			go o.relayBtcHeadBlock()
 
 		case msg := <-o.msgChan:

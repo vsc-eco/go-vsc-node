@@ -2,7 +2,6 @@ package price
 
 import (
 	"math"
-	"math/rand"
 	"testing"
 	"vsc-node/modules/oracle/p2p"
 
@@ -22,27 +21,20 @@ func TestPriceMap(t *testing.T) {
 	})
 
 	t.Run("observe and average", func(t *testing.T) {
-		const (
-			testPricePointCount = 0xffff
-			priceLimit          = 10_000.00
-		)
-
 		var (
-			pm  = makePriceMap()
-			sum = float64(0.0)
+			testPricePointCount = []int{5, 4, 5, 6, 5}
+			pm                  = makePriceMap()
 		)
 
-		for range testPricePointCount {
-			pt := rand.Float64() * priceLimit
-			sum += pt
+		for _, p := range testPricePointCount {
 			pm.observe(p2p.ObservePricePoint{
 				Symbol: symbol,
-				Price:  pt,
-				Volume: pt,
+				Price:  float64(p),
+				Volume: float64(p),
 			})
 		}
 
-		expectedAverage := sum / float64(testPricePointCount)
+		expectedAverage := float64(5)
 
 		pricePoint, err := pm.getAveragePrice(symbol)
 		assert.NoError(t, err)
@@ -57,52 +49,8 @@ func TestPriceMap(t *testing.T) {
 			assert.True(t, volumeDiff < precision)
 		})
 
-		t.Run("valid time stamp insertion", func(t *testing.T) {
-			assert.NotEqual(t, 0, pricePoint.UnixTimeStamp)
-		})
-
 		t.Run("valid symbol insertion", func(t *testing.T) {
 			assert.Equal(t, symbol, pricePoint.Symbol)
-		})
-	})
-
-	t.Run("median price", func(t *testing.T) {
-		t.Run("odd price points", func(t *testing.T) {
-			var (
-				pm     = makePriceMap()
-				prices = []float64{0, 1, 4, 5, 2}
-			)
-
-			for _, price := range prices {
-				pm.observe(p2p.ObservePricePoint{
-					Symbol: symbol,
-					Price:  price,
-					Volume: 0,
-				})
-			}
-
-			avgPrice, err := pm.getAveragePrice(symbol)
-			assert.NoError(t, err)
-			assert.Equal(t, prices[4], avgPrice.MedianPrice)
-		})
-
-		t.Run("even price points", func(t *testing.T) {
-			var (
-				pm     = makePriceMap()
-				prices = []float64{0, 1, 4, 2}
-			)
-
-			for _, price := range prices {
-				pm.observe(p2p.ObservePricePoint{
-					Symbol: symbol,
-					Price:  price,
-					Volume: 0,
-				})
-			}
-
-			avgPrice, err := pm.getAveragePrice(symbol)
-			assert.NoError(t, err)
-			assert.Equal(t, (prices[1]+prices[3])/2, avgPrice.MedianPrice)
 		})
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"log/slog"
 	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
@@ -23,7 +24,6 @@ type OracleMessage struct {
 
 type p2pSpec struct {
 	conf             common.IdentityConfig
-	observePriceChan chan<- []ObservePricePoint
 	btcHeadBlockChan chan<- *BtcHeadBlock
 }
 
@@ -31,10 +31,9 @@ var _ libp2p.PubSubServiceParams[Msg] = &p2pSpec{}
 
 func New(
 	conf common.IdentityConfig,
-	priceChan chan<- []ObservePricePoint,
 	btcHeadBlockChan chan<- *BtcHeadBlock,
 ) *p2pSpec {
-	return &p2pSpec{conf, priceChan, btcHeadBlockChan}
+	return &p2pSpec{conf, btcHeadBlockChan}
 }
 
 // Topic implements PubSubServiceParams[Msg]
@@ -59,18 +58,9 @@ func (p *p2pSpec) HandleMessage(
 	msg Msg,
 	send libp2p.SendFunc[Msg],
 ) error {
-	var err error
-
 	switch msg.Type {
 	case MsgOraclePriceBroadcast:
-		panic("not implemented")
-
-	case MsgOraclePriceObserve:
-		observePrice, err := parseMsg[[]ObservePricePoint](msg.Data)
-		if err != nil {
-			return err
-		}
-		p.observePriceChan <- *observePrice
+		log.Println("not implemented")
 
 	case MsgBtcChainRelay:
 		headBlock, err := parseMsg[BtcHeadBlock](msg.Data)
@@ -80,10 +70,10 @@ func (p *p2pSpec) HandleMessage(
 		p.btcHeadBlockChan <- headBlock
 
 	default:
-		panic("invalid message type")
+		return errors.New("invalid message type")
 	}
 
-	return err
+	return nil
 }
 
 func parseMsg[T any](data any) (*T, error) {

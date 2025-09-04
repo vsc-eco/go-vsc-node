@@ -11,7 +11,7 @@ var (
 )
 
 type PriceQuery interface {
-	QueryMarketPrice([]string, chan<- []p2p.ObservePricePoint, chan<- p2p.Msg)
+	QueryMarketPrice([]string, chan<- []p2p.ObservePricePoint)
 }
 
 type PriceOracle struct {

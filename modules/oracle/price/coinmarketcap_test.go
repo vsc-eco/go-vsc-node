@@ -18,10 +18,9 @@ func TestCoinMarketCapQueryPrice(t *testing.T) {
 		watchSymbols    = [...]string{"BTC", "ETH", "LTC"}
 		expectedSymbols = utils.Map(watchSymbols[:], strings.ToUpper)
 		priceChan       = make(chan []p2p.ObservePricePoint, 10)
-		msgChan         = make(chan p2p.Msg, 10)
 	)
 
-	cmc.QueryMarketPrice(watchSymbols[:], priceChan, msgChan)
+	cmc.QueryMarketPrice(watchSymbols[:], priceChan)
 
 	results := <-priceChan
 	assert.Equal(t, len(watchSymbols), len(results))

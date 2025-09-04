@@ -69,7 +69,6 @@ func makeCoinGeckoHandler(currency string) (*coinGeckoHandler, error) {
 func (c *coinGeckoHandler) QueryMarketPrice(
 	symbols []string,
 	pricePointChan chan<- []p2p.ObservePricePoint,
-	msgChan chan<- p2p.Msg,
 ) {
 	symLowerCase := make([]string, len(symbols))
 	copy(symLowerCase, symbols)
@@ -92,10 +91,6 @@ func (c *coinGeckoHandler) QueryMarketPrice(
 	observedPrices := utils.Map(fetchedPrice, mapCgResponse)
 
 	pricePointChan <- observedPrices
-	msgChan <- &p2p.OracleMessage{
-		Type: p2p.MsgOraclePriceObserve,
-		Data: observedPrices,
-	}
 }
 
 func mapCgResponse(p coinGeckoPriceQueryResponse) p2p.ObservePricePoint {

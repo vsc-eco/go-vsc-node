@@ -53,7 +53,6 @@ type coinMarketCapQuote struct {
 func (c *coinMarketCapHandler) QueryMarketPrice(
 	watchSymbols []string,
 	observePricePointChan chan<- []p2p.ObservePricePoint,
-	msgChan chan<- p2p.Msg,
 ) {
 	symbols := make([]string, len(watchSymbols))
 	copy(symbols, watchSymbols)
@@ -75,10 +74,6 @@ func (c *coinMarketCapHandler) QueryMarketPrice(
 	}
 
 	observePricePointChan <- observePricePoints
-	msgChan <- &p2p.OracleMessage{
-		Type: p2p.MsgOraclePriceObserve,
-		Data: observePricePointChan,
-	}
 }
 
 func (c *coinMarketCapHandler) fetchPrices(

@@ -2,8 +2,7 @@ package price
 
 import (
 	"errors"
-	"slices"
-	"time"
+	"strings"
 	"vsc-node/modules/oracle/p2p"
 )
 
@@ -12,7 +11,12 @@ var (
 )
 
 type priceMap struct{ priceSymbolMap }
-type priceSymbolMap map[string][]p2p.ObservePricePoint
+type priceSymbolMap map[string]pricePointData
+type pricePointData struct {
+	avgPrice  float64
+	avgVolume float64
+	counter   uint32
+}
 
 func makePriceMap() priceMap {
 	return priceMap{make(priceSymbolMap)}
@@ -21,63 +25,46 @@ func makePriceMap() priceMap {
 func (pm *priceMap) getAveragePrice(
 	symbol string,
 ) (*p2p.AveragePricePoint, error) {
-	pricePoints, ok := pm.priceSymbolMap[symbol]
+	symbol = strings.ToUpper(symbol)
+
+	p, ok := pm.priceSymbolMap[symbol]
 	if !ok {
 		return nil, errSymbolNotFound
 	}
 
-	// median price
-	slices.SortFunc(pricePoints, cmpObservePricePoint)
-	var (
-		medianIndex        = len(pricePoints) / 2
-		medianPrice        = pricePoints[medianIndex].Price
-		evenNumPricePoints = len(pricePoints)&1 == 0
-	)
-
-	if evenNumPricePoints {
-		medianPrice = (medianPrice + pricePoints[medianIndex-1].Price) / 2
-	}
-
-	// average price + volume
-	var (
-		priceSum  = float64(0)
-		volumeSum = float64(0)
-	)
-
-	for _, pricePoint := range pricePoints {
-		priceSum += pricePoint.Price
-		volumeSum += pricePoint.Volume
-	}
-
 	out := &p2p.AveragePricePoint{
-		Symbol:        symbol,
-		MedianPrice:   medianPrice,
-		Price:         priceSum / float64(len(pricePoints)),
-		Volume:        volumeSum / float64(len(pricePoints)),
-		UnixTimeStamp: time.Now().UTC().UnixMilli(),
+		Symbol: symbol,
+		Price:  p.avgPrice,
+		Volume: p.avgVolume,
 	}
 
 	return out, nil
 }
 
-// compare function argument to slices.SortFunc to sort observePricePoint
-func cmpObservePricePoint(
-	a p2p.ObservePricePoint,
-	b p2p.ObservePricePoint,
-) int {
-	if a.Price < b.Price {
-		return -1
-	}
-	return 1
-}
-
 func (pm *priceMap) observe(pricePoint p2p.ObservePricePoint) {
-	avg, ok := pm.priceSymbolMap[pricePoint.Symbol]
+	symbol := strings.ToUpper(pricePoint.Symbol)
+	avg, ok := pm.priceSymbolMap[symbol]
 
 	if !ok {
-		avg = make([]p2p.ObservePricePoint, 0, 32)
+		avg = pricePointData{
+			avgPrice:  pricePoint.Price,
+			avgVolume: pricePoint.Volume,
+			counter:   1,
+		}
+	} else {
+		avg.avgPrice = calcNextAvg(avg.avgPrice, pricePoint.Price, avg.counter)
+		avg.avgVolume = calcNextAvg(avg.avgVolume, pricePoint.Volume, avg.counter)
+		avg.counter += 1
 	}
 
-	avg = append(avg, pricePoint)
-	pm.priceSymbolMap[pricePoint.Symbol] = avg
+	pm.priceSymbolMap[symbol] = avg
+}
+
+func calcNextAvg(
+	currentAverage, newValue float64,
+	currentCounter uint32,
+) float64 {
+	currentTotal := currentAverage * float64(currentCounter)
+	newTotal := currentTotal + newValue
+	return newTotal / float64(currentCounter+1)
 }
