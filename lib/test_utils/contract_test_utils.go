@@ -34,6 +34,7 @@ type ContractTest struct {
 	StateEngine   *stateEngine.StateEngine
 }
 
+// Create a new contract testing environment with mock databases.
 func NewContractTest() ContractTest {
 	logr := logger.PrefixedLogger{Prefix: "contract-test"}
 	ledgers := MockLedgerDb{LedgerRecords: make(map[string][]ledgerDb.LedgerRecord)}
@@ -51,6 +52,7 @@ func NewContractTest() ContractTest {
 	}
 }
 
+// Increment a specified number of L1 blocks in the contract testing environment.
 func (ct *ContractTest) IncrementBlocks(count uint64) {
 	currentSlot := ct.BlockHeight - (ct.BlockHeight % common.CONSENSUS_SPECS.SlotLength)
 	newHeight := ct.BlockHeight + count
@@ -66,19 +68,20 @@ func (ct *ContractTest) IncrementBlocks(count uint64) {
 	ct.BlockHeight = newHeight
 }
 
+// Register a contract from bytecode.
 func (ct *ContractTest) RegisterContract(contractId string, bytecode []byte) {
 	ct.Contracts[contractId] = bytecode
 }
 
-// Execute contract call transactions
-func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxResult, []string) {
+// Executes a contract call transaction. Returns the call result, gas used and logs emitted.
+func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxResult, uint, []string) {
 	bytecode, exists := ct.Contracts[tx.ContractId]
 	if !exists {
 		return stateEngine.TxResult{
 			Success: false,
 			Ret:     "contract not found",
 			RcUsed:  100,
-		}, []string{}
+		}, 0, []string{}
 	}
 
 	w := wasm_runtime_ipc.New()
@@ -117,7 +120,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 			Success: false,
 			Ret:     *res.Error,
 			RcUsed:  10,
-		}, []string{}
+		}, res.Result.Gas, []string{}
 	}
 	ct.LedgerSession.Done()
 	ct.State.Commit()
@@ -128,9 +131,10 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 		Success: true,
 		Ret:     res.Result.Result,
 		RcUsed:  rcUsed,
-	}, ctxValue.Logs()
+	}, res.Result.Gas, ctxValue.Logs()
 }
 
+// Add funds to an account in the ledger.
 func (ct *ContractTest) Deposit(toAccount string, amount int64, asset ledgerDb.Asset) {
 	randomTxId := randomHex(40)
 	ct.StateEngine.LedgerExecutor.Deposit(stateEngine.Deposit{
@@ -143,19 +147,28 @@ func (ct *ContractTest) Deposit(toAccount string, amount int64, asset ledgerDb.A
 	})
 }
 
+// Retrieve the current balance of an account.
 func (ct *ContractTest) GetBalance(account string, asset ledgerDb.Asset) int64 {
+	return ct.LedgerSession.GetBalance(account, ct.BlockHeight, string(asset))
+}
+
+// Retrieve the balance of an account at the start of the slot.
+func (ct *ContractTest) GetBalanceAtSlotStart(account string, asset ledgerDb.Asset) int64 {
 	return ct.StateEngine.LedgerExecutor.Ls.GetBalance(account, ct.BlockHeight, string(asset))
 }
 
+// Set the value of a key in the contract state storage
 func (ct *ContractTest) StateSet(key string, value string) {
 	ct.State.Set(key, []byte(value))
 	ct.State.Commit()
 }
 
+// Retrieve the value of a key from the contract state storage
 func (ct *ContractTest) StateGet(key string) string {
 	return string(ct.State.Get(key))
 }
 
+// Unset the value of a key in the contract state storage
 func (ct *ContractTest) StateDelete(key string) {
 	ct.State.Delete(key)
 	ct.State.Commit()
