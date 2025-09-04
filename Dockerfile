@@ -26,10 +26,7 @@ RUN go mod download
 COPY --chown=app:app . .
 
 # Build the application
-RUN go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o vsc-node vsc-node/cmd/vsc-node
-
-# Build VM Runner
-RUN . /home/app/.wasmedge/env && go build -buildvcs=false -o vm-runner vsc-node/cmd/vm-runner
+RUN . /home/app/.wasmedge/env && go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o vsc-node vsc-node/cmd/vsc-node
 
 
 
@@ -44,9 +41,6 @@ WORKDIR /home/app/app
 
 # Copy the binary from the build stage
 COPY --from=build /home/app/app/vsc-node .
-
-# Copy the binary from the build stage
-COPY --from=build /home/app/app/vm-runner .
 
 # Copy the WasmEdge from the build stage
 COPY --from=build /home/app/.wasmedge /home/app/.wasmedge
