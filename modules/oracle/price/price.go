@@ -8,7 +8,6 @@ import (
 
 var (
 	errApiKeyNotFound = errors.New("API key not exported")
-	watchSymbols      = [...]string{"BTC", "ETH", "LTC"}
 )
 
 type PriceQuery interface {
@@ -16,10 +15,10 @@ type PriceQuery interface {
 }
 
 type PriceOracle struct {
-	c             chan p2p.AveragePricePoint
-	avgPriceMap   priceMap
-	CoinGecko     PriceQuery
-	CoinMarketCap PriceQuery
+	c           chan p2p.AveragePricePoint
+	avgPriceMap priceMap
+
+	PriceAPIs []PriceQuery
 }
 
 func New(userCurrency string) (*PriceOracle, error) {
@@ -39,11 +38,12 @@ func New(userCurrency string) (*PriceOracle, error) {
 		)
 	}
 
+	priceQueries := []PriceQuery{coinGeckoHandler, coinMarketCapHanlder}
+
 	p := &PriceOracle{
-		c:             make(chan p2p.AveragePricePoint, 1),
-		avgPriceMap:   makePriceMap(),
-		CoinGecko:     coinGeckoHandler,
-		CoinMarketCap: coinMarketCapHanlder,
+		c:           make(chan p2p.AveragePricePoint, 1),
+		avgPriceMap: makePriceMap(),
+		PriceAPIs:   priceQueries,
 	}
 
 	return p, nil
