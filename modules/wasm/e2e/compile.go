@@ -7,10 +7,6 @@ import (
 )
 
 func Compile(wkdir string) (string, error) {
-	//Add support for the following:
-	// . /home/app/.wasmedge/env && go build -buildvcs=false -o vm-runner vsc-node/cmd/vm-runner
-
-	exec.Command("go", "build", "-buildvcs=false", "-o", "vm-runner", "vsc-node/cmd/vm-runner")
 	prefix := wkdir + "/modules/wasm/e2e/tmp/"
 	path := prefix + "main.wasm"
 	//-no-debug
