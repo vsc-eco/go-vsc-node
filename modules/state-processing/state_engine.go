@@ -723,13 +723,6 @@ func (se *StateEngine) ExecuteBatch() {
 		lastBlockBh = uint64(lastBlock.EndBlock)
 	}
 
-	types := make([]string, 0)
-	for _, tx := range se.TxBatch {
-		for _, vscTx := range tx.Ops {
-			types = append(types, vscTx.Type())
-		}
-	}
-
 	// if len(se.TxOutput) > 0 {
 	// 	se.log.Debug("TxOutput pending", se.TxOutput, len(se.TxBatch))
 	// }
@@ -833,7 +826,7 @@ func (se *StateEngine) ExecuteBatch() {
 			se.log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
 			fmt.Println("RC Payer is", payer, vscTx.Type(), vscTx, result.RcUsed)
 
-			rcUsed, _ := se.RcMap[payer] // don't crash if payer is not in RC map
+			rcUsed := se.RcMap[payer] // don't crash if payer is not in RC map
 			se.RcMap[payer] = rcUsed + result.RcUsed
 
 			if vscTx.Type() == "call_contract" {
