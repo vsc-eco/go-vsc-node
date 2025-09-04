@@ -52,16 +52,6 @@ type LedgerSystem struct {
 
 // }
 
-func NewLedgerSystem(logger logger.Logger, balanceDb ledgerDb.Balances, ledgerDb ledgerDb.Ledger, claimsDb ledgerDb.InterestClaims, actionsDb ledgerDb.BridgeActions) LedgerSystem {
-	return LedgerSystem{
-		BalanceDb: balanceDb,
-		LedgerDb:  ledgerDb,
-		ClaimDb:   claimsDb,
-		ActionsDb: actionsDb,
-		log:       logger,
-	}
-}
-
 func (ls *LedgerSystem) GetBalance(account string, blockHeight uint64, asset string) int64 {
 	if !slices.Contains(assetTypes, asset) {
 		return 0
