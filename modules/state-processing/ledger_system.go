@@ -692,11 +692,6 @@ func (ledgerSession *LedgerSession) ExecuteTransfer(opLogEvent ledgerSystem.OpLo
 	fromBal := ledgerSession.GetBalance(opLogEvent.From, opLogEvent.BlockHeight, opLogEvent.Asset)
 
 	le.Ls.log.Debug("Transfer - balAmt", fromBal, "bh="+strconv.Itoa(int(opLogEvent.BlockHeight)))
-
-	results, _ := le.Ls.LedgerDb.GetLedgerRange(opLogEvent.From, ledgerSession.StartHeight, opLogEvent.BlockHeight, opLogEvent.Asset)
-
-	le.Ls.log.Debug("Ledger results", *results)
-
 	le.Ls.log.Debug("ledgerSession.StartHeight", ledgerSession.StartHeight, "ledgerSystem.OpLogEvent.BlockHeight", opLogEvent.BlockHeight)
 
 	fmt.Println("Ledger.Status", opLogEvent.From, fromBal, opLogEvent.Amount)
