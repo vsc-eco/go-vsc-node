@@ -40,6 +40,18 @@ services:
     volumes:
       - db:/data/db
 
+  btcd:
+    container_name: btcd
+    build:
+      dockerfile: dockerfiles/btcd.Dockerfile
+      context: .
+    command: btcd --rpcuser=${BTCD_RPC_USER} --rpcpass=${BTCD_RPC_PASS} --${BTCD_NETWORK}
+    ports:
+      - 8333:8333
+      - 8334:8334
+    networks:
+      - go-vsc-node
+
 volumes:
   db: {}
 
