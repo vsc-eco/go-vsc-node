@@ -33,11 +33,10 @@ type IngestOutputArgs struct {
 }
 
 type ContractOutputResult struct {
-	Ret    string               `json:"ret" bson:"ret"`
-	Ok     bool                 `json:"ok" bson:"ok"`
-	Err    *ContractOutputError `json:"err,omitempty" bson:"err,omitempty"`
-	RcUsed int64                `json:"rcUsed" bson:"rcUsed"`
-	Logs   []string             `json:"logs,omitempty" bson:"logs,omitempty"`
+	Ret  string               `json:"ret" bson:"ret"`
+	Ok   bool                 `json:"ok" bson:"ok"`
+	Err  *ContractOutputError `json:"err,omitempty" bson:"err,omitempty"`
+	Logs []string             `json:"logs,omitempty" bson:"logs,omitempty"`
 }
 
 type ContractOutput struct {

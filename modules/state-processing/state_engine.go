@@ -4,7 +4,6 @@ import (
 	"crypto"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"slices"
 	"strconv"
 	DataLayer "vsc-node/lib/datalayer"
@@ -71,7 +70,6 @@ type StateEngine struct {
 
 	//Temporary output state as things are being processed.
 	TempOutputs     map[string]*contract_session.TempOutput
-	TempLogs        map[string]map[string][]string
 	ContractResults map[string][]ContractResult
 
 	//First Tx of batch
@@ -758,7 +756,10 @@ func (se *StateEngine) ExecuteBatch() {
 		//Forced ledger operations that is produced irrespective of the output result.
 		//For example, deposit operations.
 		// forcedLedger := make([]ledgerSystem.OpLogEvent, 0)
-		logs := make(map[string]map[string][]string)
+		outputs := make([]struct {
+			ContractId string
+			Output     ContractResult
+		}, 0)
 		ok := true
 		for idx, vscTx := range tx.Ops {
 			// if vscTx.Type() == "deposit" {
@@ -831,25 +832,34 @@ func (se *StateEngine) ExecuteBatch() {
 
 			if vscTx.Type() == "call_contract" {
 				txId := MakeTxId(tx.TxId, idx)
-				// TODO: should we output successful ops even if the transaction fails in a multiop tx due to an error halfway?
 				if !result.Success {
-					se.AppendOutput(contractId, ContractResult{
-						TxId:    txId,
-						Ret:     "",
-						Success: result.Success,
-						Err:     &result.Ret,
-					})
+					// If failed, output the error message only
+					outputs = []struct {
+						ContractId string
+						Output     ContractResult
+					}{{
+						ContractId: contractId,
+						Output: ContractResult{
+							TxId:    txId,
+							Ret:     "",
+							Success: result.Success,
+							Err:     &result.Ret,
+						},
+					}}
 				} else {
-					se.AppendOutput(contractId, ContractResult{
-						TxId:    txId,
-						Ret:     result.Ret,
-						Success: result.Success,
-						Err:     nil,
+					outputs = append(outputs, struct {
+						ContractId string
+						Output     ContractResult
+					}{
+						ContractId: contractId,
+						Output: ContractResult{
+							TxId:    txId,
+							Ret:     result.Ret,
+							Success: result.Success,
+							Err:     nil,
+							Logs:    contractSession.PopLogs(),
+						},
 					})
-					if logs[contractId] == nil {
-						logs[contractId] = make(map[string][]string)
-					}
-					logs[contractId][txId] = contractSession.PopLogs()
 				}
 			}
 			if !result.Success {
@@ -860,18 +870,12 @@ func (se *StateEngine) ExecuteBatch() {
 			}
 		}
 		// Both success and failed transactions will be outputed regardless in order to output error messages if any
+		for _, out := range outputs {
+			se.AppendOutput(out.ContractId, out.Output)
+		}
 		for k, v := range contractSessions {
 			tmpOut := v.ToOutput()
 			se.TempOutputs[k] = &tmpOut
-		}
-		// However logs are only added to the output for successful transactions as external indexers may depend on it being not reverted
-		if ok {
-			for k, v := range logs {
-				if se.TempLogs[k] == nil {
-					se.TempLogs[k] = make(map[string][]string)
-				}
-				maps.Copy(se.TempLogs[k], v)
-			}
 		}
 		ledgerIds := ledgerSession.Done()
 
@@ -1072,7 +1076,6 @@ func (se *StateEngine) AppendOutput(contractId string, out ContractResult) {
 func (se *StateEngine) Flush() {
 	se.ContractResults = make(map[string][]ContractResult)
 	se.TempOutputs = make(map[string]*contract_session.TempOutput)
-	se.TempLogs = make(map[string]map[string][]string)
 	se.TxOutput = make(map[string]TxOutput)
 	se.TxOutIds = make([]string, 0)
 	se.firstTxHeight = 0
@@ -1159,7 +1162,6 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 		TxOutput:        make(map[string]TxOutput),
 		ContractResults: make(map[string][]ContractResult),
 		TempOutputs:     make(map[string]*contract_session.TempOutput),
-		TempLogs:        make(map[string]map[string][]string),
 		TxOutIds:        make([]string, 0),
 
 		da: da,
