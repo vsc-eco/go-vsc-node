@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"log/slog"
 	"vsc-node/modules/common"
+	"vsc-node/modules/oracle/p2p"
 	libp2p "vsc-node/modules/p2p"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -23,8 +23,9 @@ type OracleMessage struct {
 }
 
 type p2pSpec struct {
-	conf             common.IdentityConfig
-	btcHeadBlockChan chan<- *BtcHeadBlock
+	conf               common.IdentityConfig
+	btcHeadBlockChan   chan<- *BtcHeadBlock
+	broadcastPriceChan chan<- []p2p.AveragePricePoint
 }
 
 var _ libp2p.PubSubServiceParams[Msg] = &p2pSpec{}
@@ -32,8 +33,9 @@ var _ libp2p.PubSubServiceParams[Msg] = &p2pSpec{}
 func New(
 	conf common.IdentityConfig,
 	btcHeadBlockChan chan<- *BtcHeadBlock,
+	broadcastPriceChan chan<- []AveragePricePoint,
 ) *p2pSpec {
-	return &p2pSpec{conf, btcHeadBlockChan}
+	return &p2pSpec{conf, btcHeadBlockChan, broadcastPriceChan}
 }
 
 // Topic implements PubSubServiceParams[Msg]
@@ -59,8 +61,12 @@ func (p *p2pSpec) HandleMessage(
 	send libp2p.SendFunc[Msg],
 ) error {
 	switch msg.Type {
-	case MsgOraclePriceBroadcast:
-		log.Println("not implemented")
+	case MsgPriceOracleBroadcast:
+		pricePoints, err := parseMsg[[]AveragePricePoint](msg.Data)
+		if err != nil {
+			return err
+		}
+		p.broadcastPriceChan <- *pricePoints
 
 	case MsgBtcChainRelay:
 		headBlock, err := parseMsg[BtcHeadBlock](msg.Data)

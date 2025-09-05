@@ -18,3 +18,8 @@ func TestFetchChain(t *testing.T) {
 	jsonBytes, _ := json.MarshalIndent(headBlock, "", "  ")
 	t.Log(string(jsonBytes))
 }
+
+func TestFetchChainBtcd(t *testing.T) {
+	// url := "http://127.0.0.1:8334"
+
+}

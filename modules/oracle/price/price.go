@@ -60,3 +60,7 @@ func (p *PriceOracle) GetAveragePrice(
 ) (*p2p.AveragePricePoint, error) {
 	return p.avgPriceMap.getAveragePrice(symbol)
 }
+
+func (p *PriceOracle) ResetPriceCache() {
+	p.avgPriceMap.priceSymbolMap = make(priceSymbolMap)
+}

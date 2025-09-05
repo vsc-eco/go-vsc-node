@@ -1,10 +1,14 @@
 package btcrelay
 
 import (
+	// "log"
 	"net/http"
+	// "os"
+	// "path/filepath"
 	"vsc-node/modules/oracle/httputils"
 	"vsc-node/modules/oracle/p2p"
 
+	// "github.com/btcsuite/btcd/rpcclient"
 	"github.com/go-playground/validator/v10"
 )
 
@@ -19,6 +23,36 @@ type btcChainMetadata struct {
 }
 
 func New(btcChan chan *p2p.BtcHeadBlock) BtcChainRelay {
+	/*
+		// btcdHomeDir := btcutil.AppDataDir(".btcd", false)
+
+		certs, err := os.ReadFile(filepath.Join("../../../.btcd", "rpc.cert"))
+		if err != nil {
+			panic(err)
+		}
+
+		connCfg := &rpcclient.ConnConfig{
+			Host:         "0.0.0.0:8334",
+			Endpoint:     "",
+			User:         "myuser",
+			Pass:         "mypass",
+			Certificates: certs,
+		}
+
+		client, err := rpcclient.New(connCfg, nil)
+		if err != nil {
+			log.Fatal("failed to connect to rprc server", err)
+		}
+		defer client.Shutdown()
+
+		// Query the RPC server for the current block count and display it.
+		blockCount, err := client.GetBlockCount()
+		if err != nil {
+			log.Fatal("failed to get blocks", err)
+		}
+		log.Printf("Block count: %d", blockCount)
+
+	*/
 	return BtcChainRelay{
 		btcChan: btcChan,
 	}

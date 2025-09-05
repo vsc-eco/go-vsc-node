@@ -8,7 +8,8 @@ import (
 
 const (
 	MsgBtcChainRelay MsgType = iota
-	MsgOraclePriceBroadcast
+	MsgPriceOracleBroadcast
+	MsgPriceOracleNewBlock
 )
 
 var priceValidator = validator.New(validator.WithRequiredStructEnabled())
@@ -56,4 +57,9 @@ type BtcHeadBlock struct {
 	MerkleRoot string `json:"mrkl_root,omitempty"  validate:"hexadecimal"`
 	Timestamp  string `json:"time,omitempty"`
 	Fees       uint32 `json:"fees,omitempty"`
+}
+
+type VSCBlock struct {
+	Signatures []string `json:"signatures"`
+	Data       string   `json:"data"       validate:"json"`
 }
