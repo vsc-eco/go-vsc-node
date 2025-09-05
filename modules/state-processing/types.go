@@ -24,6 +24,7 @@ type ContractResult struct {
 	Ret     string
 	Err     *contracts.ContractOutputError
 	TxId    string
+	Logs    []string
 }
 
 // More information about the TX
