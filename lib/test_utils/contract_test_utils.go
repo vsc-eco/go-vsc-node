@@ -30,7 +30,7 @@ type ContractTest struct {
 	BlockHeight   uint64
 	Contracts     map[string][]byte
 	LedgerSession *stateEngine.LedgerSession
-	State         contract_execution_context.StateStore
+	State         map[string]contract_execution_context.StateStore
 	StateEngine   *stateEngine.StateEngine
 }
 
@@ -47,7 +47,7 @@ func NewContractTest() ContractTest {
 		BlockHeight:   0,
 		Contracts:     make(map[string][]byte),
 		LedgerSession: se.LedgerExecutor.NewSession(0),
-		State:         NewInMemoryStateStore(),
+		State:         make(map[string]contract_execution_context.StateStore),
 		StateEngine:   se,
 	}
 }
@@ -94,6 +94,11 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 		caller = tx.Self.RequiredPostingAuths[0]
 	}
 
+	_, stateExists := ct.State[tx.ContractId]
+	if !stateExists {
+		ct.State[tx.ContractId] = NewInMemoryStateStore()
+	}
+
 	ctxValue := contract_execution_context.New(
 		contract_execution_context.Environment{
 			ContractId:           tx.ContractId,
@@ -108,14 +113,14 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 			Caller:               caller,
 			Intents:              tx.Intents,
 		},
-		int64(tx.RcLimit), ct.LedgerSession, ct.State, contracts.ContractMetadata{},
+		int64(tx.RcLimit), ct.LedgerSession, ct.State[tx.ContractId], contracts.ContractMetadata{},
 	)
 	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(bytecode))
 	res := w.Execute(ctx, tx.RcLimit*common.CYCLE_GAS_PER_RC, tx.Action, string(tx.Payload), wasm_runtime.Go)
 
 	if res.Error != nil {
 		ct.LedgerSession.Revert()
-		ct.State.Rollback()
+		ct.State[tx.ContractId].Rollback()
 		return stateEngine.TxResult{
 			Success: false,
 			Ret:     *res.Error,
@@ -123,7 +128,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 		}, res.Result.Gas, []string{}
 	}
 	ct.LedgerSession.Done()
-	ct.State.Commit()
+	ct.State[tx.ContractId].Commit()
 
 	rcUsed := int64(math.Max(math.Ceil(float64(res.Result.Gas)/common.CYCLE_GAS_PER_RC), 100))
 
@@ -158,20 +163,29 @@ func (ct *ContractTest) GetBalanceAtSlotStart(account string, asset ledgerDb.Ass
 }
 
 // Set the value of a key in the contract state storage
-func (ct *ContractTest) StateSet(key string, value string) {
-	ct.State.Set(key, []byte(value))
-	ct.State.Commit()
+func (ct *ContractTest) StateSet(contractId string, key string, value string) {
+	if _, exists := ct.State[contractId]; !exists {
+		ct.State[contractId] = NewInMemoryStateStore()
+	}
+	ct.State[contractId].Set(key, []byte(value))
+	ct.State[contractId].Commit()
 }
 
 // Retrieve the value of a key from the contract state storage
-func (ct *ContractTest) StateGet(key string) string {
-	return string(ct.State.Get(key))
+func (ct *ContractTest) StateGet(contractId string, key string) string {
+	if _, exists := ct.State[contractId]; !exists {
+		return ""
+	}
+	return string(ct.State[contractId].Get(key))
 }
 
 // Unset the value of a key in the contract state storage
-func (ct *ContractTest) StateDelete(key string) {
-	ct.State.Delete(key)
-	ct.State.Commit()
+func (ct *ContractTest) StateDelete(contractId string, key string) {
+	if _, exists := ct.State[contractId]; !exists {
+		return
+	}
+	ct.State[contractId].Delete(key)
+	ct.State[contractId].Commit()
 }
 
 func (ct *ContractTest) executeLedgerOpLogs(ledgerOps []ledgerSystem.OpLogEvent, startBlock uint64, endBlock uint64) {
