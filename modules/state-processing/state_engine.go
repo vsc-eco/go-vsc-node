@@ -486,7 +486,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					fmt.Println("create_contract txResult", txResult, secondOp)
 				}
-
 				continue
 			} else if cj.Id == "vsc.election_result" {
 				parsedTx := &TxElectionResult{
@@ -887,6 +886,9 @@ func (se *StateEngine) ExecuteBatch() {
 			}
 
 			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, contractSession, payer)
+
+			logs = append(logs, result.Ret)
+
 
 			se.log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
 			fmt.Println("RC Payer is", payer, vscTx.Type(), vscTx, result.RcUsed)
