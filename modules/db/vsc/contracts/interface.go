@@ -62,7 +62,7 @@ type ContractMetadata struct {
 const (
 	RUNTIME_ERROR       ContractOutputError = "runtime_error"
 	RUNTIME_ABORT       ContractOutputError = "runtime_abort"
-	RUNTIME_INVALID     ContractOutputError = "runtime_error"
+	RUNTIME_INVALID     ContractOutputError = "runtime_invalid"
 	GAS_LIMIT_HIT       ContractOutputError = "gas_limit_hit"
 	SDK_ERROR           ContractOutputError = "sdk_error"
 	LEDGER_ERROR        ContractOutputError = "ledger_error"

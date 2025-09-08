@@ -887,8 +887,7 @@ func (se *StateEngine) ExecuteBatch() {
 
 			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, contractSession, payer)
 
-			logs = append(logs, result.Ret)
-
+			// logs = append(logs, result.Ret)
 
 			se.log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
 			fmt.Println("RC Payer is", payer, vscTx.Type(), vscTx, result.RcUsed)
