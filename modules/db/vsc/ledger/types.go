@@ -29,10 +29,6 @@ type InterestClaims interface {
 	SaveClaim(claimRecord ClaimRecord)
 }
 
-type GatewayLedger interface {
-	aggregate.Plugin
-}
-
 type ClaimRecord struct {
 	BlockHeight uint64 `bson:"block_height"`
 	Amount      int64  `bson:"amount"`

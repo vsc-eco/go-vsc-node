@@ -47,21 +47,27 @@ func (d *DataAvailability) Init() error {
 // Start implements aggregate.Plugin.
 func (d *DataAvailability) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
+		fmt.Println("Starting data availability client")
 		err := d.startP2P()
 		if err != nil {
 			reject(err)
 			return
 		}
+		fmt.Println("Started p2p")
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		_, err = d.service.Started().Await(ctx)
+		fmt.Println("Started Service")
 		if err != nil {
 			d.startStatus.TriggerStartFailure(err)
 			reject(err)
 			return
 		}
 		d.startStatus.TriggerStart()
-		<-d.service.Context().Done()
+		fmt.Println("Done TriggerStart")
+		// <-d.service.Context().Done()
+
+		fmt.Println("Finished starting data availability client")
 		resolve(nil)
 	})
 }
@@ -75,8 +81,8 @@ func (d *DataAvailability) Started() *promise.Promise[any] {
 	return d.startStatus.Started()
 }
 
-func FetchElection() (elections.ElectionResult, error) {
-	client := graphql.NewClient("https://api.vsc.eco/api/v1/graphql", nil).WithDebug(true)
+func FetchElection(gqlUrl string) (elections.ElectionResult, error) {
+	client := graphql.NewClient(gqlUrl, nil).WithDebug(true)
 	var q struct {
 		ElectionByBlockHeight elections.ElectionResult `graphql:"electionByBlockHeight"`
 	}
@@ -84,8 +90,8 @@ func FetchElection() (elections.ElectionResult, error) {
 	return q.ElectionByBlockHeight, err
 }
 
-func (d *DataAvailability) RequestProof(data []byte) (stateEngine.StorageProof, error) {
-	election, err := FetchElection()
+func (d *DataAvailability) RequestProof(gqlUrl string, data []byte) (stateEngine.StorageProof, error) {
+	election, err := FetchElection(gqlUrl)
 	if err != nil {
 		return stateEngine.StorageProof{}, err
 	}
@@ -104,7 +110,8 @@ func (d *DataAvailability) RequestProofWithElection(data []byte, election electi
 		return stateEngine.StorageProof{}, err
 	}
 	d.circuit = circuit
-	err = d.service.Send(data_availability_spec.NewP2pMessage(data_availability_spec.P2pMessageData, data))
+	msg1 := data_availability_spec.NewP2pMessage(data_availability_spec.P2pMessageData, data)
+	err = d.service.Send(msg1)
 	if err != nil {
 		return stateEngine.StorageProof{}, err
 	}

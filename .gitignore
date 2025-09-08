@@ -1,3 +1,4 @@
 data
 data-e2e-*
 .env
+.DS_Store

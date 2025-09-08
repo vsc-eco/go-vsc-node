@@ -865,9 +865,9 @@ func generateTypedDataWithPath(
 
 		case reflect.Map:
 			// nested maps gen new type names and processes recursively
-			fmt.Println("VAL: ", reflect.ValueOf(fieldValue).Kind())
+			// fmt.Println("VAL: ", reflect.ValueOf(fieldValue).Kind())
 			nestedTypeName := fmt.Sprintf("%s.%s", typeName, fieldName)
-			fmt.Println("pre-NESTED: ", fieldValue)
+			// fmt.Println("pre-NESTED: ", fieldValue)
 			nestedData, ok := fieldValue.(map[any]interface{})
 			if !ok {
 				fmt.Println(nestedTypeName, fieldValue)

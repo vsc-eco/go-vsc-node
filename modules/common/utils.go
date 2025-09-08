@@ -72,6 +72,8 @@ func ArrayToStringArray(arr interface{}) []string {
 		for _, v := range arr.(primitive.A) {
 			out = append(out, v.(string))
 		}
+	} else if reflect.TypeOf(arr).String() == "[]string" {
+		out = append(out, arr.([]string)...)
 	} else {
 		//Assume []interface{}
 		for _, v := range arr.([]interface{}) {

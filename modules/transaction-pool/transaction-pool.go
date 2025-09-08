@@ -44,7 +44,7 @@ var MAX_TX_SIZE = 16384
 // Ingests and verifies a transaction
 func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...IngestOptions) (*cid.Cid, error) {
 	if sTx.Sig == nil {
-		return nil, errors.New("No signature provided")
+		return nil, errors.New("no signature provided")
 	}
 
 	prefix := cid.Prefix{
@@ -110,8 +110,8 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		Tx:      ops,
 	}
 
-	ssbytes, _ := json.Marshal(txSignStruct)
-	fmt.Println("signingShell2", string(ssbytes))
+	// ssbytes, _ := json.Marshal(txSignStruct)
+	// fmt.Println("signingShell2", string(ssbytes))
 
 	bytes, err := common.EncodeDagCbor(txSignStruct)
 	cidz1, _ := cid.Prefix{
@@ -211,7 +211,6 @@ func (tp *TransactionPool) Broadcast(id string, serializedTx SerializedVSCTransa
 
 func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 
-	fmt.Println("Receiving broadcasted transaction", p2pMsg.Type, p2pMsg.Data)
 	if p2pMsg.Type != "announce_tx" {
 		return
 	}
@@ -312,7 +311,7 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 		return
 	}
 
-	fmt.Println("broadcast verify result", verified)
+	// fmt.Println("broadcast verify result", verified)
 	if err != nil {
 		return
 	}

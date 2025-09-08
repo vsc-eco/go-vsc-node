@@ -8,7 +8,6 @@ import (
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/config"
 	"vsc-node/modules/db/vsc/elections"
-	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,7 +15,7 @@ import (
 
 func TestBasicP2P(t *testing.T) {
 	config.UseMainConfigDuringTests = true
-	libp2p.BOOTSTRAP = []string{} // this is popluated by `MakeNode`
+	// libp2p.BOOTSTRAP = []string{} // this is popluated by `MakeNode`
 
 	client := MakeNode(MakeNodeInput{
 		Username: "client",

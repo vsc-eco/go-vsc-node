@@ -32,3 +32,21 @@ func HashSeed(seed []byte) *hivego.KeyPair {
 func TimeToBlocks(time time.Duration) uint64 {
 	return uint64(time.Seconds() / 3)
 }
+
+func StepWaitStart() Step {
+	return Step{
+		Name: "Wait To Start",
+	}
+}
+
+func StepElectionStart() Step {
+	return Step{
+		Name: "Creating Election",
+	}
+}
+
+func StepWait() Step {
+	return Step{
+		Name: "Wait",
+	}
+}

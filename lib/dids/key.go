@@ -104,7 +104,7 @@ func (d KeyDID) Verify(blk blocks.Block, sig string) (bool, error) {
 		return false, fmt.Errorf("error marshalling header: %w", err)
 	}
 
-	fmt.Println("Verifying sig hash", cid.Bytes())
+	// fmt.Println("Verifying sig hash", cid.Bytes())
 	// encode header as raw url base 64
 	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
 	signingInput := encodedHeader + "." + base64.RawURLEncoding.EncodeToString(cid.Bytes())
