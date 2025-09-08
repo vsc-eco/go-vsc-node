@@ -12,7 +12,7 @@ type Contracts interface {
 type ContractState interface {
 	a.Plugin
 	IngestOutput(inputArgs IngestOutputArgs)
-	GetLastOutput(contractId string, height uint64) *ContractOutput
+	GetLastOutput(contractId string, height uint64) (ContractOutput, error)
 	FindOutputs(id *string, input *string, contract *string, offset int, limit int) ([]ContractOutput, error)
 }
 
@@ -58,3 +58,13 @@ type ContractMetadata struct {
 	CurrentSize int `json:"currentSize,omitempty"`
 	MaxSize     int `json:"maxSize,omitempty"`
 }
+
+const (
+	RUNTIME_ERROR       ContractOutputError = "runtime_error"
+	RUNTIME_ABORT       ContractOutputError = "runtime_abort"
+	RUNTIME_INVALID     ContractOutputError = "runtime_error"
+	GAS_LIMIT_HIT       ContractOutputError = "gas_limit_hit"
+	SDK_ERROR           ContractOutputError = "sdk_error"
+	LEDGER_ERROR        ContractOutputError = "ledger_error"
+	LEDGER_INTENT_ERROR ContractOutputError = "ledger_intent_error"
+)

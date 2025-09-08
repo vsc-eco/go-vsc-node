@@ -34,18 +34,18 @@ func (tp *TransactionCrafter) Sign(vsOp VSCTransaction) (string, error) {
 
 	// fmt.Println("sign hash bytes", cid.Bytes(), err)
 
-	fmt.Println("Preparing to sign VSC operation", vsOp)
+	// fmt.Println("Preparing to sign VSC operation", vsOp)
 	blk, err := vsOp.ToSignableBlock()
 
-	fmt.Println("signable err", err)
+	// fmt.Println("signable err", err)
 	if err != nil {
 		return "", fmt.Errorf("could not create signable block: %w", err)
 	}
 
-	fmt.Println("signable block", blk)
+	// fmt.Println("signable block", blk)
 	signedRet, err := tp.Identity.Sign(blk)
 
-	fmt.Println("signable block signed", signedRet, err)
+	// fmt.Println("signable block signed", signedRet, err)
 	return signedRet, err
 	// return "", errors.New("Signing not implemented yet")
 }
@@ -687,8 +687,8 @@ func (tx *VSCTransaction) ToSignableBlock() (blocks.Block, error) {
 		"tx": ops,
 	}
 
-	ssbytes, _ := json.Marshal(signingShell2)
-	fmt.Println("signingShell2", string(ssbytes))
+	// ssbytes, _ := json.Marshal(signingShell2)
+	// fmt.Println("signingShell2", string(ssbytes))
 
 	bytes, _ := common.EncodeDagCbor(signingShell2)
 

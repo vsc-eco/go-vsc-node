@@ -623,56 +623,6 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 	}
 }
 
-// {drain} :=  this.self.p2pService.multicastChannel.call("hold_election", {
-//     mode: "stream",
-//     payload: {
-//         block_height: blk
-//     },
-//     streamTimeout: 20_000
-// })
-
-//     let votedWeight = 0;
-//     let totalWeight = 0;
-//     if(electionResult?.weights) {
-//         //Vote based off weight
-//         for(let key of pubKeys) {
-//             member := members.find(e => e.key === key)
-//             if(member) {
-//                 votedWeight += electionResult.weights[members.indexOf(member)]
-//             }
-//         }
-//         totalWeight = electionResult.weight_total
-//     } else {
-//         //Vote based off signer count
-//         votedWeight = pubKeys.length
-//         totalWeight = members.length
-//     }
-
-//     voteMajority := minimalRequiredElectionVotes(electionHeader.epoch === 0 || !electionResult ? blk : blk - electionResult.block_height, totalWeight); //Hardcode for 0 until the future
-
-//     if(((votedWeight >= voteMajority) || electionHeader.epoch === 0)) {
-//         //Must be valid
-
-//         if (!process.env.HIVE_ACCOUNT) {
-//             throw new Error("no hive account... will not broadcast election result")
-//         }
-
-//         if (!process.env.HIVE_ACCOUNT_ACTIVE) {
-//             throw new Error("no hive account active key... will not broadcast election result")
-//         }
-
-//          HiveClient.broadcast.json({
-//             id: "vsc.election_result",
-//             required_auths: [process.env.HIVE_ACCOUNT],
-//             required_posting_auths: [],
-//             json: JSON.stringify({
-//                 ...electionHeader,
-//                 signature: circuit.serialize(members.map(e => e.key))
-//             })
-//         }, PrivateKey.fromString(process.env.HIVE_ACCOUNT_ACTIVE))
-//     }
-// }
-
 func resultWrap[T any](res T, err error) result.Result[T] {
 	if err != nil {
 		return result.Err[T](err)

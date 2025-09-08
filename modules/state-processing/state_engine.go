@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strconv"
 	DataLayer "vsc-node/lib/datalayer"
@@ -361,13 +362,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			}
 
 			txSelf := TxSelf{
-				BlockHeight:   blockInfo.BlockHeight,
-				BlockId:       blockInfo.BlockId,
-				Timestamp:     blockInfo.Timestamp,
-				Index:         blkIdx,
-				OpIndex:       0,
-				TxId:          tx.TransactionID,
-				RequiredAuths: cj.RequiredAuths,
+				BlockHeight:          blockInfo.BlockHeight,
+				BlockId:              blockInfo.BlockId,
+				Timestamp:            blockInfo.Timestamp,
+				Index:                blkIdx,
+				OpIndex:              0,
+				TxId:                 tx.TransactionID,
+				RequiredAuths:        cj.RequiredAuths,
+				RequiredPostingAuths: cj.RequiredPostingAuths,
 			}
 			//Start parsing block
 			if cj.Id == "vsc.produce_block" {
@@ -419,12 +421,72 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 			//# Start parsing system transactions
 			if cj.Id == "vsc.create_contract" {
-				parsedTx := TxCreateContract{
-					Self: txSelf,
+				for idx, auth := range txSelf.RequiredAuths {
+					txSelf.RequiredAuths[idx] = "hive:" + auth
 				}
-				json.Unmarshal(cj.Json, &parsedTx)
 
-				parsedTx.ExecuteTx(se, session, nil, nil, "")
+				for idx, auth := range txSelf.RequiredPostingAuths {
+					txSelf.RequiredPostingAuths[idx] = "hive:" + auth
+				}
+
+				if len(tx.Operations) != 2 {
+					continue
+				}
+
+				secondOp := tx.Operations[1]
+
+				if secondOp.Type == "transfer" {
+
+					fmt.Println(secondOp.Value["amount"].(map[string]any)["amount"], reflect.TypeOf(secondOp.Value["amount"].(map[string]any)["amount"]))
+					amountData := secondOp.Value["amount"].(map[string]any)
+					amount, err := strconv.ParseInt(amountData["amount"].(string), 10, 64)
+
+					if err != nil {
+						panic(err)
+					}
+
+					if amount < 10_000 {
+						continue
+					}
+
+					if amountData["nai"] != "@@000000013" {
+						continue
+					}
+
+					if secondOp.Value["to"] != common.GATEWAY_WALLET {
+						continue
+					}
+
+					leDeposit := Deposit{
+						Id:      MakeTxId(tx.TransactionID, 1),
+						Asset:   "hbd",
+						Amount:  amount,
+						Account: "hive:vsc.dao",
+						From:    "hive:" + secondOp.Value["from"].(string),
+						Memo:    "to=vsc.dao",
+
+						BlockHeight: blockInfo.BlockHeight,
+
+						BIdx:  int64(tx.Index),
+						OpIdx: int64(1),
+					}
+					// fmt.Println("Registering deposit!", leDeposit)
+					se.LedgerExecutor.Deposit(leDeposit)
+
+					fmt.Println("amountData", amountData)
+					// if amountData["amount"] == "hello" && secondOp.Value["asset"].(string) == "hbd" {
+
+					// }
+					parsedTx := TxCreateContract{
+						Self: txSelf,
+					}
+					json.Unmarshal(cj.Json, &parsedTx)
+
+					txResult := parsedTx.ExecuteTx(se, session, nil, nil, "")
+
+					fmt.Println("create_contract txResult", txResult, secondOp)
+				}
+
 				continue
 			} else if cj.Id == "vsc.election_result" {
 				parsedTx := &TxElectionResult{
@@ -576,6 +638,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					RequiredAuths:        cj.RequiredAuths,
 					RequiredPostingAuths: cj.RequiredPostingAuths,
 				}
+
+				fmt.Println("RR gr86", txSelf)
 
 				var vscTx VSCTransaction
 				if cj.Id == "vsc.withdraw" {
@@ -794,13 +858,13 @@ func (se *StateEngine) ExecuteBatch() {
 				contractCall, ok := vscTx.(TxVscCallContract)
 				if ok {
 					contractId = contractCall.ContractId
-					contractOutput := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
+					contractOutput, err := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
 
 					if contractSessions[contractCall.ContractId] == nil {
 						var cid string
 						metadata := contracts.ContractMetadata{}
 
-						if contractOutput != nil {
+						if err == nil {
 							cid = contractOutput.StateMerkle
 							metadata = contractOutput.Metadata
 						}

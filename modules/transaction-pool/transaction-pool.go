@@ -110,8 +110,8 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		Tx:      ops,
 	}
 
-	ssbytes, _ := json.Marshal(txSignStruct)
-	fmt.Println("signingShell2", string(ssbytes))
+	// ssbytes, _ := json.Marshal(txSignStruct)
+	// fmt.Println("signingShell2", string(ssbytes))
 
 	bytes, err := common.EncodeDagCbor(txSignStruct)
 	cidz1, _ := cid.Prefix{
@@ -211,7 +211,6 @@ func (tp *TransactionPool) Broadcast(id string, serializedTx SerializedVSCTransa
 
 func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 
-	fmt.Println("Receiving broadcasted transaction", p2pMsg.Type, p2pMsg.Data)
 	if p2pMsg.Type != "announce_tx" {
 		return
 	}

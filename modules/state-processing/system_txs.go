@@ -108,25 +108,8 @@ const CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT = 84162592
 
 // ProcessTx implements VSCTransaction.
 func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession, rcPayer string) TxResult {
-	// res := ledgerSession.ExecuteTransfer(ledgerSystem.OpLogEvent{
-	// 	From:   tx.Self.RequiredAuths[0],
-	// 	To:     "hive:vsc.dao",
-	// 	Amount: 10_000,
-	// 	Asset:  "hbd",
-	// 	// Memo   string `json:"mo" // TODO add in future
-	// 	Type: "transfer",
 
-	// 	//Not parted of compiled state
-	// 	// Id          string `json:"id"`
-	// 	BlockHeight: tx.Self.BlockHeight,
-	// })
-	// if !res.Ok {
-	// 	return TxResult{
-	// 		Success: false,
-	// 		Ret:     res.Msg,
-	// 	}
-	// }
-
+	fmt.Println("tx.Runtime", tx.Runtime)
 	if wasm_runtime.NewFromString(tx.Runtime.String()).IsErr() {
 		return TxResult{
 			Success: false,
@@ -152,6 +135,13 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 	verified := tx.StorageProof.Verify(election)
 
 	fmt.Println("Storage proof verify result", verified)
+
+	if !verified {
+		return TxResult{
+			Success: false,
+			Ret:     "invalid storage proof",
+		}
+	}
 
 	// panic("not implemented yet")
 
@@ -577,7 +567,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				OpIndex: idx,
 			})
 
-			fmt.Println("broadcast inject tx", tx.Headers.Nonce, tx.Headers.RequiredAuths)
+			// fmt.Println("broadcast inject tx", tx.Headers.Nonce, tx.Headers.RequiredAuths)
 			keyId := transactionpool.HashKeyAuths(tx.Headers.RequiredAuths)
 			if nonceUpdates[keyId] < tx.Headers.Nonce || nonceUpdates[keyId] == 0 {
 				nonceUpdates[keyId] = tx.Headers.Nonce
