@@ -15,14 +15,14 @@ import (
 var v = validator.New()
 
 type BtcChainRelay struct {
-	btcChan chan *p2p.BtcHeadBlock
+	btcChan chan *p2p.BlockRelay
 }
 
 type btcChainMetadata struct {
 	Hash string `json:"hash" validate:"hexadecimal"`
 }
 
-func New(btcChan chan *p2p.BtcHeadBlock) BtcChainRelay {
+func New(btcChan chan *p2p.BlockRelay) BtcChainRelay {
 	/*
 		// btcdHomeDir := btcutil.AppDataDir(".btcd", false)
 
@@ -58,7 +58,7 @@ func New(btcChan chan *p2p.BtcHeadBlock) BtcChainRelay {
 	}
 }
 
-func (b *BtcChainRelay) FetchChain() (*p2p.BtcHeadBlock, error) {
+func (b *BtcChainRelay) FetchChain() (*p2p.BlockRelay, error) {
 	// query chain metadata
 
 	// valid url, no error returns
@@ -91,5 +91,5 @@ func (b *BtcChainRelay) FetchChain() (*p2p.BtcHeadBlock, error) {
 		return nil, err
 	}
 
-	return httputils.SendRequest[p2p.BtcHeadBlock](req, v)
+	return httputils.SendRequest[p2p.BlockRelay](req, v)
 }

@@ -9,7 +9,7 @@ import (
 )
 
 func TestFetchChain(t *testing.T) {
-	c := make(chan *p2p.BtcHeadBlock, 1)
+	c := make(chan *p2p.BlockRelay, 1)
 	bcr := New(c)
 
 	headBlock, err := bcr.FetchChain()

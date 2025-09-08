@@ -41,7 +41,7 @@ type Oracle struct {
 
 	priceOracle *price.PriceOracle
 
-	btcChainRelayer btcrelay.BtcChainRelay
+	blockRelay btcrelay.BtcChainRelay
 
 	// to be used within a node, for price querying from API endpoints
 	observePriceChan chan []p2p.ObservePricePoint
@@ -49,7 +49,7 @@ type Oracle struct {
 	// to be used within the network, for broadcasting average prices
 	broadcastPriceChan chan []p2p.AveragePricePoint
 
-	btcChan chan *p2p.BtcHeadBlock
+	blockRelayChan chan *p2p.BlockRelay
 
 	// for communication between nodes in a network
 	msgChan chan p2p.Msg
@@ -66,7 +66,7 @@ func New(
 		conf:               conf,
 		electionDb:         electionDb,
 		witness:            witness,
-		btcChan:            make(chan *p2p.BtcHeadBlock),
+		blockRelayChan:     make(chan *p2p.BlockRelay),
 		msgChan:            make(chan p2p.Msg),
 		observePriceChan:   make(chan []p2p.ObservePricePoint, 10),
 		broadcastPriceChan: make(chan []p2p.AveragePricePoint, 100),
@@ -85,7 +85,7 @@ func (o *Oracle) Init() error {
 		return fmt.Errorf("failed to initialize price oracle: %w", err)
 	}
 
-	o.btcChainRelayer = btcrelay.New(o.btcChan)
+	o.blockRelay = btcrelay.New(o.blockRelayChan)
 
 	o.ctx, o.cancelFunc = context.WithCancel(context.Background())
 
@@ -102,7 +102,7 @@ func (o *Oracle) Start() *promise.Promise[any] {
 
 		o.service, err = libp2p.NewPubSubService(
 			o.p2p,
-			p2p.New(o.conf, o.btcChan, o.broadcastPriceChan),
+			p2p.New(o.conf, o.blockRelayChan, o.broadcastPriceChan),
 		)
 		if err != nil {
 			o.cancelFunc()
@@ -147,6 +147,15 @@ func (o *Oracle) marketObserve() {
 		case <-priceBroadcastTicker.C:
 			//@TODO Use block tick interval
 			o.broadcastPricePoints()
+			isBlockProducer := true
+			if isBlockProducer {
+				vscBlock, err := o.broadcastMedianPrice()
+				if err != nil {
+					log.Println(err)
+					continue
+				}
+				o.pollMedianPriceSignature(vscBlock)
+			}
 
 		case <-btcChainRelayTicker.C:
 			//@TODO: Use block ticket interval as well for 10 minute intervals
@@ -169,24 +178,38 @@ func (o *Oracle) marketObserve() {
 		case pricePoints := <-o.observePriceChan:
 			o.priceOracle.ObservePricePoint(pricePoints)
 
-		case btcHeadBlock := <-o.btcChan:
+		case btcHeadBlock := <-o.blockRelayChan:
 			fmt.Println("TODO: validate btcHeadBlock", btcHeadBlock)
 
 		}
 	}
 }
 
+func (o *Oracle) pollMedianPriceSignature(block *p2p.VSCBlock) {
+	/*
+		// collect signatures
+		// TODO: how do i get the latest witnesses?
+		witnesses, err := o.witness.GetLastestWitnesses()
+		if err != nil {
+			log.Println("failed to get latest witnesses", err)
+			return
+		}
+		log.Println(witnesses)
+	*/
+
+	// TODO: validate 2/3 of witness signatures
+	o.msgChan <- &p2p.OracleMessage{
+		Type: p2p.MsgPriceOracleSignedBlock,
+		Data: *block,
+	}
+}
+
+// returns nil if the node is not the block producer
 func (o *Oracle) broadcastPricePoints() {
 	defer o.priceOracle.ResetPriceCache()
 
-	blockChan := make(chan *p2p.VSCBlock, 1)
-	defer close(blockChan)
-
-	go o.pollAveragePrice(blockChan)
-
 	// local price
 
-	// TODO: if this node is do an early continue and clear the cache
 	buf := make([]p2p.AveragePricePoint, 0, len(watchSymbols))
 
 	for _, symbol := range watchSymbols {
@@ -210,27 +233,10 @@ func (o *Oracle) broadcastPricePoints() {
 			- calculate the median of each symbols
 			- compare with the broadcasted block
 			- sign and broadcast the signature
-			return
+			return nil
 		}
 	*/
 
-	// broadcast new block
-	// TODO: how to determine if this node is a witness
-	block := <-blockChan
-
-	o.msgChan <- &p2p.OracleMessage{
-		Type: p2p.MsgPriceOracleNewBlock,
-		Data: block,
-	}
-
-	// collect signatures
-	// TODO: how do i get the latest witnesses?
-	witnesses, err := o.witness.GetLastestWitnesses()
-	if err != nil {
-		log.Println("failed to get latest witnesses", err)
-		return
-	}
-	log.Println(witnesses)
 }
 
 type pricePoints struct {
@@ -240,19 +246,21 @@ type pricePoints struct {
 
 type medianPricePointMap = map[string]pricePoints
 
-func (o *Oracle) pollAveragePrice(
-	vscBlockChan chan<- *p2p.VSCBlock,
-) {
+func (o *Oracle) broadcastMedianPrice() (*p2p.VSCBlock, error) {
 	medPriceMap := make(medianPricePointMap)
 
 	// listen on this channel for 10 seconds, room for network latency
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
+	observeAvgPriceCtx, observeAvgPriceCtxCancel := context.WithTimeout(
+		context.Background(),
+		time.Second*10,
+	)
+	defer observeAvgPriceCtxCancel()
 
+observeAvgPrice:
 	for {
 		select {
-		case <-ctx.Done():
-			break
+		case <-observeAvgPriceCtx.Done():
+			break observeAvgPrice
 
 		case avgPriceBroadcasted := <-o.broadcastPriceChan:
 			for _, p := range avgPriceBroadcasted {
@@ -289,14 +297,23 @@ func (o *Oracle) pollAveragePrice(
 
 	jsonData, err := json.Marshal(medianPricePoint)
 	if err != nil {
-		log.Println(err)
-		return
+		return nil, err
 	}
 
-	vscBlockChan <- &p2p.VSCBlock{
+	// broadcast new unsigned block
+	block := p2p.VSCBlock{
 		Signatures: []string{},
 		Data:       string(jsonData),
 	}
+
+	msg := &p2p.OracleMessage{
+		Type: p2p.MsgPriceOracleNewBlock,
+		Data: block,
+	}
+
+	o.msgChan <- msg
+
+	return &block, nil
 }
 
 func getMedian(buf []float64) float64 {
@@ -312,7 +329,7 @@ func getMedian(buf []float64) float64 {
 }
 
 func (o *Oracle) relayBtcHeadBlock() {
-	headBlock, err := o.btcChainRelayer.FetchChain()
+	headBlock, err := o.blockRelay.FetchChain()
 	if err != nil {
 		log.Println("failed to fetch BTC head block.", err)
 		return

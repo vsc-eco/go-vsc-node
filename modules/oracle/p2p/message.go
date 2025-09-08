@@ -10,6 +10,7 @@ const (
 	MsgBtcChainRelay MsgType = iota
 	MsgPriceOracleBroadcast
 	MsgPriceOracleNewBlock
+	MsgPriceOracleSignedBlock
 )
 
 var priceValidator = validator.New(validator.WithRequiredStructEnabled())
@@ -50,7 +51,7 @@ func (p *AveragePricePoint) UnmarshalJSON(data []byte) error {
 }
 
 // https://www.blockcypher.com/dev/bitcoin/#block
-type BtcHeadBlock struct {
+type BlockRelay struct {
 	Hash       string `json:"hash,omitempty"       validate:"hexadecimal"`
 	Height     uint32 `json:"height,omitempty"`
 	PrevBlock  string `json:"prev_block,omitempty" validate:"hexadecimal"`
