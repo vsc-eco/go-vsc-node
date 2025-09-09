@@ -262,15 +262,3 @@ func (o *Oracle) relayBtcHeadBlock() {
 		Data: headBlock,
 	}
 }
-func (o *Oracle) BlockTick(bh uint64, headHeight *uint64) {
-	if headHeight == nil {
-		return
-	}
-
-	if *headHeight%priceOracleBroadcastInterval == 0 {
-		o.broadcastPriceSignal <- struct{}{}
-	}
-	if *headHeight%btcChainRelayInterval == 0 {
-		o.blockRelaySignal <- struct{}{}
-	}
-}
