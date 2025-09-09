@@ -15,14 +15,17 @@ import (
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/price"
 	libp2p "vsc-node/modules/p2p"
+	"vsc-node/modules/vstream"
 
 	"github.com/chebyrash/promise"
 )
 
 const (
 	btcChainRelayInterval        = time.Minute * 10
-	priceOracleBroadcastInterval = time.Minute * 10
-	priceOraclePollInterval      = time.Second * 15
+	priceOracleBroadcastInterval = uint64(
+		600 / 3,
+	) // 10 minutes = 600 seconds, 3s for every new block
+	priceOraclePollInterval = time.Second * 15
 )
 
 var (
@@ -35,6 +38,7 @@ type Oracle struct {
 	conf       common.IdentityConfig
 	electionDb elections.Elections
 	witness    witnesses.Witnesses
+	VStream    *vstream.VStream
 
 	ctx        context.Context
 	cancelFunc context.CancelFunc
@@ -47,7 +51,8 @@ type Oracle struct {
 	observePriceChan chan []p2p.ObservePricePoint
 
 	// to be used within the network, for broadcasting average prices
-	broadcastPriceChan chan []p2p.AveragePricePoint
+	broadcastPriceChan   chan []p2p.AveragePricePoint
+	broadcastPriceSignal chan struct{}
 
 	blockRelayChan chan *p2p.BlockRelay
 
@@ -60,16 +65,19 @@ func New(
 	conf common.IdentityConfig,
 	electionDb elections.Elections,
 	witness witnesses.Witnesses,
+	vstream *vstream.VStream,
 ) *Oracle {
 	return &Oracle{
-		p2p:                p2pServer,
-		conf:               conf,
-		electionDb:         electionDb,
-		witness:            witness,
-		blockRelayChan:     make(chan *p2p.BlockRelay),
-		msgChan:            make(chan p2p.Msg),
-		observePriceChan:   make(chan []p2p.ObservePricePoint, 10),
-		broadcastPriceChan: make(chan []p2p.AveragePricePoint, 100),
+		p2p:                  p2pServer,
+		conf:                 conf,
+		electionDb:           electionDb,
+		witness:              witness,
+		VStream:              vstream,
+		blockRelayChan:       make(chan *p2p.BlockRelay),
+		msgChan:              make(chan p2p.Msg),
+		observePriceChan:     make(chan []p2p.ObservePricePoint, 10),
+		broadcastPriceChan:   make(chan []p2p.AveragePricePoint, 100),
+		broadcastPriceSignal: make(chan struct{}, 1),
 	}
 }
 
@@ -95,6 +103,7 @@ func (o *Oracle) Init() error {
 // Start implements aggregate.Plugin.
 // Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
+	o.VStream.RegisterBlockTick("oracle", o.BlockTick, false)
 	go o.marketObserve()
 
 	return promise.New(func(resolve func(any), reject func(error)) {
@@ -129,9 +138,6 @@ func (o *Oracle) marketObserve() {
 	var (
 		pricePollTicker     = time.NewTicker(priceOraclePollInterval)
 		btcChainRelayTicker = time.NewTicker(btcChainRelayInterval)
-
-		// need to use blokci nterval
-		priceBroadcastTicker = time.NewTicker(priceOracleBroadcastInterval)
 	)
 
 	for {
@@ -144,8 +150,7 @@ func (o *Oracle) marketObserve() {
 				go api.QueryMarketPrice(watchSymbols, o.observePriceChan)
 			}
 
-		case <-priceBroadcastTicker.C:
-			//@TODO Use block tick interval
+		case <-o.broadcastPriceSignal:
 			o.broadcastPricePoints()
 			isBlockProducer := true
 			if isBlockProducer {
@@ -338,5 +343,15 @@ func (o *Oracle) relayBtcHeadBlock() {
 	o.msgChan <- &p2p.OracleMessage{
 		Type: p2p.MsgBtcChainRelay,
 		Data: headBlock,
+	}
+}
+
+func (o *Oracle) BlockTick(bh uint64, headHeight *uint64) {
+	if headHeight == nil {
+		return
+	}
+
+	if *headHeight%priceOracleBroadcastInterval == 0 {
+		o.broadcastPriceSignal <- struct{}{}
 	}
 }
