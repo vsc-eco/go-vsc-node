@@ -21,11 +21,12 @@ import (
 )
 
 const (
-	btcChainRelayInterval        = time.Minute * 10
-	priceOracleBroadcastInterval = uint64(
-		600 / 3,
-	) // 10 minutes = 600 seconds, 3s for every new block
-	priceOraclePollInterval = time.Second * 15
+	// 10 minutes = 600 seconds, 3s for every new block
+	priceOracleBroadcastInterval = uint64(600 / 3)
+	priceOraclePollInterval      = time.Second * 15
+
+	// 10 minutes = 600 seconds, 3s for every new block
+	btcChainRelayInterval = uint64(600 / 3)
 )
 
 var (
@@ -45,7 +46,8 @@ type Oracle struct {
 
 	priceOracle *price.PriceOracle
 
-	blockRelay btcrelay.BtcChainRelay
+	blockRelay       btcrelay.BtcChainRelay
+	blockRelaySignal chan struct{}
 
 	// to be used within a node, for price querying from API endpoints
 	observePriceChan chan []p2p.ObservePricePoint
@@ -74,6 +76,7 @@ func New(
 		witness:              witness,
 		VStream:              vstream,
 		blockRelayChan:       make(chan *p2p.BlockRelay),
+		blockRelaySignal:     make(chan struct{}, 1),
 		msgChan:              make(chan p2p.Msg),
 		observePriceChan:     make(chan []p2p.ObservePricePoint, 10),
 		broadcastPriceChan:   make(chan []p2p.AveragePricePoint, 100),
@@ -136,8 +139,7 @@ func (o *Oracle) Stop() error {
 
 func (o *Oracle) marketObserve() {
 	var (
-		pricePollTicker     = time.NewTicker(priceOraclePollInterval)
-		btcChainRelayTicker = time.NewTicker(btcChainRelayInterval)
+		pricePollTicker = time.NewTicker(priceOraclePollInterval)
 	)
 
 	for {
@@ -162,8 +164,7 @@ func (o *Oracle) marketObserve() {
 				o.pollMedianPriceSignature(vscBlock)
 			}
 
-		case <-btcChainRelayTicker.C:
-			//@TODO: Use block ticket interval as well for 10 minute intervals
+		case <-o.blockRelaySignal:
 			go o.relayBtcHeadBlock()
 
 		case msg := <-o.msgChan:
@@ -353,5 +354,8 @@ func (o *Oracle) BlockTick(bh uint64, headHeight *uint64) {
 
 	if *headHeight%priceOracleBroadcastInterval == 0 {
 		o.broadcastPriceSignal <- struct{}{}
+	}
+	if *headHeight%btcChainRelayInterval == 0 {
+		o.blockRelaySignal <- struct{}{}
 	}
 }
