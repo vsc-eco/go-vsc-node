@@ -15,6 +15,7 @@ import (
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/price"
 	libp2p "vsc-node/modules/p2p"
+	stateEngine "vsc-node/modules/state-processing"
 	"vsc-node/modules/vstream"
 
 	"github.com/chebyrash/promise"
@@ -39,7 +40,9 @@ type Oracle struct {
 	conf       common.IdentityConfig
 	electionDb elections.Elections
 	witness    witnesses.Witnesses
-	VStream    *vstream.VStream
+
+	vStream     *vstream.VStream
+	stateEngine *stateEngine.StateEngine
 
 	ctx        context.Context
 	cancelFunc context.CancelFunc
@@ -47,14 +50,14 @@ type Oracle struct {
 	priceOracle *price.PriceOracle
 
 	blockRelay       btcrelay.BtcChainRelay
-	blockRelaySignal chan struct{}
+	blockRelaySignal chan blockTickSignal
 
 	// to be used within a node, for price querying from API endpoints
 	observePriceChan chan []p2p.ObservePricePoint
 
 	// to be used within the network, for broadcasting average prices
 	broadcastPriceChan   chan []p2p.AveragePricePoint
-	broadcastPriceSignal chan struct{}
+	broadcastPriceSignal chan broadcastPriceSignal
 
 	blockRelayChan chan *p2p.BlockRelay
 
@@ -68,19 +71,21 @@ func New(
 	electionDb elections.Elections,
 	witness witnesses.Witnesses,
 	vstream *vstream.VStream,
+	stateEngine *stateEngine.StateEngine,
 ) *Oracle {
 	return &Oracle{
 		p2p:                  p2pServer,
 		conf:                 conf,
 		electionDb:           electionDb,
 		witness:              witness,
-		VStream:              vstream,
-		blockRelayChan:       make(chan *p2p.BlockRelay),
-		blockRelaySignal:     make(chan struct{}, 1),
-		msgChan:              make(chan p2p.Msg),
-		observePriceChan:     make(chan []p2p.ObservePricePoint, 10),
-		broadcastPriceChan:   make(chan []p2p.AveragePricePoint, 100),
-		broadcastPriceSignal: make(chan struct{}, 1),
+		vStream:              vstream,
+		stateEngine:          stateEngine,
+		blockRelayChan:       make(chan *p2p.BlockRelay, 1),
+		blockRelaySignal:     make(chan blockTickSignal, 1),
+		msgChan:              make(chan p2p.Msg, 128),
+		observePriceChan:     make(chan []p2p.ObservePricePoint, 128),
+		broadcastPriceChan:   make(chan []p2p.AveragePricePoint, 128),
+		broadcastPriceSignal: make(chan blockTickSignal, 1),
 	}
 }
 
@@ -106,7 +111,7 @@ func (o *Oracle) Init() error {
 // Start implements aggregate.Plugin.
 // Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
-	o.VStream.RegisterBlockTick("oracle", o.BlockTick, false)
+	o.vStream.RegisterBlockTick("oracle", o.blockTick, false)
 	go o.marketObserve()
 
 	return promise.New(func(resolve func(any), reject func(error)) {
@@ -137,60 +142,6 @@ func (o *Oracle) Stop() error {
 	return o.service.Close()
 }
 
-func (o *Oracle) marketObserve() {
-	var (
-		pricePollTicker = time.NewTicker(priceOraclePollInterval)
-	)
-
-	for {
-		select {
-		case <-o.ctx.Done():
-			return
-
-		case <-pricePollTicker.C:
-			for _, api := range o.priceOracle.PriceAPIs {
-				go api.QueryMarketPrice(watchSymbols, o.observePriceChan)
-			}
-
-		case <-o.broadcastPriceSignal:
-			o.broadcastPricePoints()
-			isBlockProducer := true
-			if isBlockProducer {
-				vscBlock, err := o.broadcastMedianPrice()
-				if err != nil {
-					log.Println(err)
-					continue
-				}
-				o.pollMedianPriceSignature(vscBlock)
-			}
-
-		case <-o.blockRelaySignal:
-			go o.relayBtcHeadBlock()
-
-		case msg := <-o.msgChan:
-			// TODO: which one to send broadcast within the network?
-			if err := o.service.Send(msg); err != nil {
-				log.Println("[oracle] failed broadcast message", msg, err)
-				continue
-			}
-
-			jbytes, err := json.Marshal(msg)
-			if err != nil {
-				log.Println("[oracle] failed serialize message", msg, err)
-				continue
-			}
-			o.p2p.SendToAll(p2p.OracleTopic, jbytes)
-
-		case pricePoints := <-o.observePriceChan:
-			o.priceOracle.ObservePricePoint(pricePoints)
-
-		case btcHeadBlock := <-o.blockRelayChan:
-			fmt.Println("TODO: validate btcHeadBlock", btcHeadBlock)
-
-		}
-	}
-}
-
 func (o *Oracle) pollMedianPriceSignature(block *p2p.VSCBlock) {
 	/*
 		// collect signatures
@@ -208,41 +159,6 @@ func (o *Oracle) pollMedianPriceSignature(block *p2p.VSCBlock) {
 		Type: p2p.MsgPriceOracleSignedBlock,
 		Data: *block,
 	}
-}
-
-// returns nil if the node is not the block producer
-func (o *Oracle) broadcastPricePoints() {
-	defer o.priceOracle.ResetPriceCache()
-
-	// local price
-
-	buf := make([]p2p.AveragePricePoint, 0, len(watchSymbols))
-
-	for _, symbol := range watchSymbols {
-		avgPricePoint, err := o.priceOracle.GetAveragePrice(symbol)
-		if err != nil {
-			log.Println("symbol not found in map:", symbol)
-			continue
-		}
-		buf = append(buf, *avgPricePoint)
-	}
-
-	o.broadcastPriceChan <- buf
-
-	o.msgChan <- &p2p.OracleMessage{
-		Type: p2p.MsgPriceOracleBroadcast,
-		Data: buf,
-	}
-
-	/*
-		if node is not a block producer {
-			- calculate the median of each symbols
-			- compare with the broadcasted block
-			- sign and broadcast the signature
-			return nil
-		}
-	*/
-
 }
 
 type pricePoints struct {
@@ -346,7 +262,6 @@ func (o *Oracle) relayBtcHeadBlock() {
 		Data: headBlock,
 	}
 }
-
 func (o *Oracle) BlockTick(bh uint64, headHeight *uint64) {
 	if headHeight == nil {
 		return

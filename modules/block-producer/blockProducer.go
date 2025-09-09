@@ -100,7 +100,8 @@ func (bp *BlockProducer) BlockTick(bh uint64, headHeight *uint64) {
 	}
 
 	if witnessSlot != nil {
-		if witnessSlot.Account == bp.config.Get().HiveUsername && bh%CONSENSUS_SPECS.SlotLength == 0 {
+		if witnessSlot.Account == bp.config.Get().HiveUsername &&
+			bh%CONSENSUS_SPECS.SlotLength == 0 {
 			// canProduce := bp.canProduce(bh)
 			// fmt.Println("Can produce", canProduce)
 			// if canProduce {
@@ -117,7 +118,10 @@ type generateBlockParams struct {
 
 // This function should generate a deterministically generated block
 // In the future we should apply protocol versioning to this
-func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlockParams) (*vscBlocks.VscHeader, []string, error) {
+func (bp *BlockProducer) GenerateBlock(
+	slotHeight uint64,
+	options ...generateBlockParams,
+) (*vscBlocks.VscHeader, []string, error) {
 	prevBlock, err := bp.VscBlocks.GetBlockByHeight(slotHeight)
 	daSession := datalayer.NewSession(bp.Datalayer)
 
@@ -212,7 +216,9 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 	return &blockHeader, outTxs, nil
 }
 
-func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.VscBlockTx {
+func (bp *BlockProducer) generateTransactions(
+	slotHeight uint64,
+) []vscBlocks.VscBlockTx {
 	txs := make([]vscBlocks.VscBlockTx, 0)
 	//Get transactions here!
 
@@ -229,7 +235,8 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 			nonceRecord, _ := bp.nonceDb.GetNonce(keyId)
 			nonceMap[keyId] = int64(nonceRecord.Nonce)
 		}
-		if txRecord.Nonce >= nonceMap[keyId] && txRecord.RcLimit >= common.MINIMUM_RC_LIMIT {
+		if txRecord.Nonce >= nonceMap[keyId] &&
+			txRecord.RcLimit >= common.MINIMUM_RC_LIMIT {
 			txRecords = append(txRecords, txRecord)
 		}
 	}
@@ -272,9 +279,12 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 	}
 
 	for k, _ := range txMap {
-		slices.SortFunc(txMap[k], func(i, j transactions.TransactionRecord) int {
-			return int(i.Nonce) - int(j.Nonce)
-		})
+		slices.SortFunc(
+			txMap[k],
+			func(i, j transactions.TransactionRecord) int {
+				return int(i.Nonce) - int(j.Nonce)
+			},
+		)
 	}
 
 	ledgerSession := bp.StateEngine.LedgerExecutor.NewSession(slotHeight)
@@ -331,7 +341,9 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 	return txs
 }
 
-func (bp *BlockProducer) sortTransactions(slotHeight uint64) []transactions.TransactionRecord {
+func (bp *BlockProducer) sortTransactions(
+	slotHeight uint64,
+) []transactions.TransactionRecord {
 
 	return nil
 }
@@ -366,7 +378,8 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 		return
 	}
 
-	circuit, err := dids.NewBlsCircuitGenerator(electionResult.MemberKeys()).Generate(*cid)
+	circuit, err := dids.NewBlsCircuitGenerator(electionResult.MemberKeys()).
+		Generate(*cid)
 
 	go func() {
 		// 4 ms
@@ -394,7 +407,11 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	// fmt.Println("CircuitMap", circuit.CircuitMap())
 
 	if !(signedWeight > (electionResult.TotalWeight * 2 / 3)) {
-		fmt.Println("[bp] not enough signatures", "signedW="+strconv.Itoa(int(signedWeight)), "totalW="+strconv.Itoa(int(electionResult.TotalWeight*2/3)))
+		fmt.Println(
+			"[bp] not enough signatures",
+			"signedW="+strconv.Itoa(int(signedWeight)),
+			"totalW="+strconv.Itoa(int(electionResult.TotalWeight*2/3)),
+		)
 		return
 	}
 
@@ -420,7 +437,12 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	}
 	bbytes, _ := json.Marshal(blockHeader)
 
-	op := bp.HiveCreator.CustomJson([]string{bp.config.Config.Get().HiveUsername}, []string{}, "vsc.produce_block", string(bbytes))
+	op := bp.HiveCreator.CustomJson(
+		[]string{bp.config.Config.Get().HiveUsername},
+		[]string{},
+		"vsc.produce_block",
+		string(bbytes),
+	)
 
 	tx := bp.HiveCreator.MakeTransaction([]hivego.HiveOperation{op})
 
@@ -533,7 +555,10 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	return sigStr, nil
 }
 
-func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.ElectionResult) (uint64, error) {
+func (bp *BlockProducer) waitForSigs(
+	ctx context.Context,
+	election *elections.ElectionResult,
+) (uint64, error) {
 	if bp.blockSigning == nil {
 		return 0, errors.New("no block signing info")
 	}
@@ -582,7 +607,12 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 
 				added, err := circuit.AddAndVerify(member, sigStr)
 
-				fmt.Println("[bp] aggregating signature", sigStr, "from", account)
+				fmt.Println(
+					"[bp] aggregating signature",
+					sigStr,
+					"from",
+					account,
+				)
 				fmt.Println("[bp] agg err", err)
 				if added {
 					signedWeight += election.Weights[index]
@@ -618,7 +648,10 @@ func (bp *BlockProducer) canProduce(height uint64) bool {
 	return false
 }
 
-func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBlocks.VscBlockTx {
+func (bp *BlockProducer) MakeOplog(
+	bh uint64,
+	session *datalayer.Session,
+) *vscBlocks.VscBlockTx {
 	// note: oplog is required, otherwise the StateEngine won't Flush()
 	compileResult := bp.StateEngine.LedgerExecutor.Compile(bh)
 	opLog := make([]ledgerSystem.OpLogEvent, 0)
@@ -634,9 +667,12 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 
 		LedgerIdx := make([]int, 0)
 		for _, opId := range output.LedgerIds {
-			idx := slices.IndexFunc(opLog, func(i ledgerSystem.OpLogEvent) bool {
-				return i.Id == opId
-			})
+			idx := slices.IndexFunc(
+				opLog,
+				func(i ledgerSystem.OpLogEvent) bool {
+					return i.Id == opId
+				},
+			)
 			LedgerIdx = append(LedgerIdx, idx)
 		}
 
@@ -671,7 +707,9 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 	}
 }
 
-func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.VscBlockTx {
+func (bp *BlockProducer) MakeOutputs(
+	session *datalayer.Session,
+) []vscBlocks.VscBlockTx {
 
 	contractOutputs := make([]vscBlocks.VscBlockTx, 0)
 	for contractId, output := range bp.StateEngine.ContractOutputs {
@@ -762,7 +800,9 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 	return contractOutputs
 }
 
-func (bp *BlockProducer) MakeRcMap(session *datalayer.Session) *vscBlocks.VscBlockTx {
+func (bp *BlockProducer) MakeRcMap(
+	session *datalayer.Session,
+) *vscBlocks.VscBlockTx {
 	rcMap := bp.StateEngine.RcMap
 
 	var exists bool
@@ -830,7 +870,20 @@ func (bp *BlockProducer) Stop() error {
 	return bp.stopP2P()
 }
 
-func New(logger logger.Logger, p2p *libp2p.P2PServer, vstream *vstream.VStream, se *stateEngine.StateEngine, conf common.IdentityConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions, rcSystem *rcSystem.RcSystem, nonceDb nonces.Nonces) *BlockProducer {
+func New(
+	logger logger.Logger,
+	p2p *libp2p.P2PServer,
+	vstream *vstream.VStream,
+	se *stateEngine.StateEngine,
+	conf common.IdentityConfig,
+	hiveCreator hive.HiveTransactionCreator,
+	da *datalayer.DataLayer,
+	electionsDb elections.Elections,
+	vscBlocks vscBlocks.VscBlocks,
+	txDb transactions.Transactions,
+	rcSystem *rcSystem.RcSystem,
+	nonceDb nonces.Nonces,
+) *BlockProducer {
 	return &BlockProducer{
 		log:         logger,
 		sigChannels: make(map[uint64]chan sigMsg),
