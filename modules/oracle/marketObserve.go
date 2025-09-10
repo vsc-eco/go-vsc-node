@@ -1,6 +1,7 @@
 package oracle
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,10 +9,12 @@ import (
 	"vsc-node/modules/oracle/p2p"
 )
 
+var (
+	pricePollTicker   = time.NewTicker(priceOraclePollInterval)
+	broadcastPriceBuf = make([]p2p.AveragePricePoint, 0, 256)
+)
+
 func (o *Oracle) marketObserve() {
-	var (
-		pricePollTicker = time.NewTicker(priceOraclePollInterval)
-	)
 
 	for {
 		select {
@@ -24,17 +27,15 @@ func (o *Oracle) marketObserve() {
 			}
 
 		case broadcastSignal := <-o.broadcastPriceSignal:
-			fmt.Println(broadcastSignal)
-			o.broadcastPricePoints()
-			isBlockProducer := true
-			if isBlockProducer {
-				vscBlock, err := o.broadcastMedianPrice()
-				if err != nil {
-					log.Println(err)
-					continue
-				}
-				o.pollMedianPriceSignature(vscBlock)
+			o.handleBroadcastSignal(broadcastSignal)
+			broadcastPriceBuf = broadcastPriceBuf[:0]
+
+		case avgPricePoints := <-o.broadcastPriceChan:
+			now := time.Now().UTC().Unix()
+			for i := range avgPricePoints {
+				avgPricePoints[i].UnixTimeStamp = now
 			}
+			broadcastPriceBuf = append(broadcastPriceBuf, avgPricePoints...)
 
 		case blockRelaySignal := <-o.blockRelaySignal:
 			fmt.Println(blockRelaySignal)
@@ -61,5 +62,54 @@ func (o *Oracle) marketObserve() {
 			fmt.Println("TODO: validate btcHeadBlock", btcHeadBlock)
 
 		}
+	}
+}
+
+func (o *Oracle) handleBroadcastSignal(sig blockTickSignal) {
+	// broadcast average prices
+	defer o.priceOracle.ResetPriceCache()
+
+	// local price
+	medianPriceBuf := make([]p2p.AveragePricePoint, 0, len(watchSymbols))
+
+	for _, symbol := range watchSymbols {
+		avgPricePoint, err := o.priceOracle.GetAveragePrice(symbol)
+		if err != nil {
+			log.Println("symbol not found in map:", symbol)
+			continue
+		}
+		medianPriceBuf = append(medianPriceBuf, *avgPricePoint)
+	}
+
+	o.broadcastPriceChan <- medianPriceBuf
+
+	o.msgChan <- &p2p.OracleMessage{
+		Type: p2p.MsgPriceOracleBroadcast,
+		Data: medianPriceBuf,
+	}
+
+	if !sig.isWitness && !sig.isBlockProducer {
+		return
+	}
+
+	if sig.isBlockProducer {
+		// room for network latency
+		ctx, cancel := context.WithTimeout(context.Background(), listenDuration)
+		defer cancel()
+		<-ctx.Done()
+
+		medianPricePoints := makeMedianPrices(medianPriceBuf)
+		vscBlock := p2p.VSCBlock{
+			Data:       medianPricePoints,
+			Signatures: []string{},
+		}
+
+		o.msgChan <- &p2p.OracleMessage{
+			Type: p2p.MsgPriceOracleNewBlock,
+			Data: vscBlock,
+		}
+
+		o.pollMedianPriceSignature(&vscBlock)
+	} else if sig.isWitness {
 	}
 }

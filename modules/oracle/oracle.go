@@ -2,11 +2,8 @@ package oracle
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"slices"
-	"strings"
 	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
@@ -57,7 +54,7 @@ type Oracle struct {
 
 	// to be used within the network, for broadcasting average prices
 	broadcastPriceChan   chan []p2p.AveragePricePoint
-	broadcastPriceSignal chan broadcastPriceSignal
+	broadcastPriceSignal chan blockTickSignal
 
 	blockRelayChan chan *p2p.BlockRelay
 
@@ -82,7 +79,7 @@ func New(
 		stateEngine:          stateEngine,
 		blockRelayChan:       make(chan *p2p.BlockRelay, 1),
 		blockRelaySignal:     make(chan blockTickSignal, 1),
-		msgChan:              make(chan p2p.Msg, 128),
+		msgChan:              make(chan p2p.Msg, 1),
 		observePriceChan:     make(chan []p2p.ObservePricePoint, 128),
 		broadcastPriceChan:   make(chan []p2p.AveragePricePoint, 128),
 		broadcastPriceSignal: make(chan blockTickSignal, 1),
@@ -158,95 +155,6 @@ func (o *Oracle) pollMedianPriceSignature(block *p2p.VSCBlock) {
 	o.msgChan <- &p2p.OracleMessage{
 		Type: p2p.MsgPriceOracleSignedBlock,
 		Data: *block,
-	}
-}
-
-type pricePoints struct {
-	prices  []float64
-	volumes []float64
-}
-
-type medianPricePointMap = map[string]pricePoints
-
-func (o *Oracle) broadcastMedianPrice() (*p2p.VSCBlock, error) {
-	medPriceMap := make(medianPricePointMap)
-
-	// listen on this channel for 10 seconds, room for network latency
-	observeAvgPriceCtx, observeAvgPriceCtxCancel := context.WithTimeout(
-		context.Background(),
-		time.Second*10,
-	)
-	defer observeAvgPriceCtxCancel()
-
-observeAvgPrice:
-	for {
-		select {
-		case <-observeAvgPriceCtx.Done():
-			break observeAvgPrice
-
-		case avgPriceBroadcasted := <-o.broadcastPriceChan:
-			for _, p := range avgPriceBroadcasted {
-				/*
-					if out of time frame {
-						continue
-					}
-				*/
-				symbol := strings.ToUpper(p.Symbol)
-
-				medPrice, ok := medPriceMap[symbol]
-				if !ok {
-					medPrice = pricePoints{[]float64{}, []float64{}}
-				}
-				medPrice.prices = append(medPrice.prices, p.Price)
-				medPrice.volumes = append(medPrice.prices, p.Volume)
-
-				medPriceMap[symbol] = medPrice
-			}
-		}
-	}
-
-	//
-	medianPricePoint := make([]p2p.AveragePricePoint, 0, 16)
-	for symbol, pricePoints := range medPriceMap {
-		m := p2p.AveragePricePoint{
-			Symbol: symbol,
-			Price:  getMedian(pricePoints.prices),
-			Volume: getMedian(pricePoints.volumes),
-		}
-
-		medianPricePoint = append(medianPricePoint, m)
-	}
-
-	jsonData, err := json.Marshal(medianPricePoint)
-	if err != nil {
-		return nil, err
-	}
-
-	// broadcast new unsigned block
-	block := p2p.VSCBlock{
-		Signatures: []string{},
-		Data:       string(jsonData),
-	}
-
-	msg := &p2p.OracleMessage{
-		Type: p2p.MsgPriceOracleNewBlock,
-		Data: block,
-	}
-
-	o.msgChan <- msg
-
-	return &block, nil
-}
-
-func getMedian(buf []float64) float64 {
-	slices.Sort(buf)
-
-	evenCount := len(buf)&1 == 0
-	if evenCount {
-		i := len(buf) / 2
-		return (buf[i] + buf[i-1]) / 2
-	} else {
-		return buf[len(buf)/2]
 	}
 }
 

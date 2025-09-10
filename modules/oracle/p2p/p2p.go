@@ -61,11 +61,11 @@ func (p *p2pSpec) HandleMessage(
 ) error {
 	switch msg.Type {
 	case MsgPriceOracleBroadcast:
-		pricePoints, err := parseMsg[[]AveragePricePoint](msg.Data)
+		b, err := parseMsg[[]AveragePricePoint](msg.Data)
 		if err != nil {
 			return err
 		}
-		p.broadcastPriceChan <- *pricePoints
+		p.broadcastPriceChan <- *b
 
 	case MsgBtcChainRelay:
 		headBlock, err := parseMsg[BlockRelay](msg.Data)

@@ -29,13 +29,10 @@ func (o *ObservePricePoint) String() string {
 }
 
 type AveragePricePoint struct {
-	// length: range from 1-9 chars.
-	// format: uppercase letters, may include numbers.
-	Symbol string  `json:"symbol"         validate:"required,min=1,max=9,alphanum"` // no need to validate
-	Price  float64 `json:"average_price"  validate:"required,gt=0.0"`
-	// MedianPrice   float64 `json:"median_price"              validate:"required,gt=0.0"`
-	Volume float64 `json:"average_volume" validate:"required,gt=0.0"`
-	// UnixTimeStamp int64   `json:"unix_time_stamp,omitempty" validate:"required,gt=0"`
+	Symbol        string  `json:"symbol"                    validate:"required,min=1,max=9,alphanum"` // no need to validate
+	Price         float64 `json:"average_price"             validate:"required,gt=0.0"`
+	Volume        float64 `json:"average_volume"            validate:"required,gt=0.0"`
+	UnixTimeStamp int64   `json:"unix_time_stamp,omitempty" validate:"required,gt=0"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler
@@ -62,5 +59,5 @@ type BlockRelay struct {
 
 type VSCBlock struct {
 	Signatures []string `json:"signatures"`
-	Data       string   `json:"data"       validate:"json"`
+	Data       any      `json:"data"       validate:"json"`
 }
