@@ -1,7 +1,11 @@
 package oracle
 
 import (
+	"log"
+	"slices"
+	"vsc-node/lib/utils"
 	"vsc-node/modules/common"
+	"vsc-node/modules/db/vsc/elections"
 	stateEngine "vsc-node/modules/state-processing"
 )
 
@@ -21,16 +25,30 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 		}
 	}
 
-	var (
-		isAveragePriceBroadcastTick = *headHeight%priceOracleBroadcastInterval == 0
-		isChainRelayTick            = *headHeight%btcChainRelayInterval == 0
-		isBlockProducer             = witnessSlot != nil &&
-			witnessSlot.Account == o.conf.Get().HiveUsername &&
-			bh%common.CONSENSUS_SPECS.SlotLength == 0
-		isWitness bool
+	// get elected members
+	result, err := o.electionDb.GetElectionByHeight(*headHeight)
+	if err != nil {
+		log.Println("[oracle] failed to get currently elected members.", err)
+		return
+	}
+
+	members := result.ElectionDataInfo.Members
+	memberAccounts := utils.Map(
+		members,
+		func(e elections.ElectionMember) string { return e.Account },
 	)
 
-	blockTickSignal := makeBlockTickSignal(isBlockProducer, isWitness)
+	var (
+		username                    = o.conf.Get().HiveUsername
+		isAveragePriceBroadcastTick = *headHeight%priceOracleBroadcastInterval == 0
+		isChainRelayTick            = *headHeight%btcChainRelayInterval == 0
+		isWitness                   = slices.Contains(memberAccounts, username)
+		isBlockProducer             = witnessSlot != nil &&
+			witnessSlot.Account == username &&
+			bh%common.CONSENSUS_SPECS.SlotLength == 0
+	)
+
+	blockTickSignal := makeBlockTickSignal(isBlockProducer, isWitness, members)
 
 	if isAveragePriceBroadcastTick {
 		o.broadcastPriceSignal <- blockTickSignal

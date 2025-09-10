@@ -139,25 +139,6 @@ func (o *Oracle) Stop() error {
 	return o.service.Close()
 }
 
-func (o *Oracle) pollMedianPriceSignature(block *p2p.VSCBlock) {
-	/*
-		// collect signatures
-		// TODO: how do i get the latest witnesses?
-		witnesses, err := o.witness.GetLastestWitnesses()
-		if err != nil {
-			log.Println("failed to get latest witnesses", err)
-			return
-		}
-		log.Println(witnesses)
-	*/
-
-	// TODO: validate 2/3 of witness signatures
-	o.msgChan <- &p2p.OracleMessage{
-		Type: p2p.MsgPriceOracleSignedBlock,
-		Data: *block,
-	}
-}
-
 func (o *Oracle) relayBtcHeadBlock() {
 	headBlock, err := o.blockRelay.FetchChain()
 	if err != nil {

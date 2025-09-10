@@ -110,7 +110,29 @@ func (o *Oracle) handleBroadcastSignal(sig blockTickSignal) {
 			Data: vscBlock,
 		}
 
-		o.pollMedianPriceSignature(&vscBlock)
+		o.pollMedianPriceSignature(vscBlock, sig)
 	} else if sig.isWitness {
+	}
+}
+
+func (o *Oracle) pollMedianPriceSignature(
+	block p2p.VSCBlock,
+	sig blockTickSignal,
+) {
+	/*
+		// collect signatures
+		// TODO: how do i get the latest witnesses?
+		witnesses, err := o.witness.GetLastestWitnesses()
+		if err != nil {
+			log.Println("failed to get latest witnesses", err)
+			return
+		}
+		log.Println(witnesses)
+	*/
+
+	// TODO: validate 2/3 of witness signatures
+	o.msgChan <- &p2p.OracleMessage{
+		Type: p2p.MsgPriceOracleSignedBlock,
+		Data: block,
 	}
 }
