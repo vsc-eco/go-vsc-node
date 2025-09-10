@@ -29,6 +29,7 @@ func (o *Oracle) marketObserve() {
 		case broadcastSignal := <-o.broadcastPriceSignal:
 			o.handleBroadcastSignal(broadcastSignal)
 			broadcastPriceBuf = broadcastPriceBuf[:0]
+			o.priceOracle.ResetPriceCache()
 
 		case avgPricePoints := <-o.broadcastPriceChan:
 			now := time.Now().UTC().Unix()
@@ -66,9 +67,6 @@ func (o *Oracle) marketObserve() {
 }
 
 func (o *Oracle) handleBroadcastSignal(sig blockTickSignal) {
-	// broadcast average prices
-	defer o.priceOracle.ResetPriceCache()
-
 	// local price
 	medianPriceBuf := make([]p2p.AveragePricePoint, 0, len(watchSymbols))
 
@@ -81,8 +79,6 @@ func (o *Oracle) handleBroadcastSignal(sig blockTickSignal) {
 		medianPriceBuf = append(medianPriceBuf, *avgPricePoint)
 	}
 
-	o.broadcastPriceChan <- medianPriceBuf
-
 	o.msgChan <- &p2p.OracleMessage{
 		Type: p2p.MsgPriceOracleBroadcast,
 		Data: medianPriceBuf,
@@ -93,6 +89,11 @@ func (o *Oracle) handleBroadcastSignal(sig blockTickSignal) {
 	}
 
 	if sig.isBlockProducer {
+		ts := time.Now().UTC().Unix()
+		for i := range medianPriceBuf {
+			medianPriceBuf[i].UnixTimeStamp = ts
+		}
+
 		// room for network latency
 		ctx, cancel := context.WithTimeout(context.Background(), listenDuration)
 		defer cancel()

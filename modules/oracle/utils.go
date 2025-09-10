@@ -44,16 +44,15 @@ func makeMedianPrices(
 		medPriceMap[symbol] = medPrice
 	}
 
-	//
 	medianPricePoint := make([]p2p.AveragePricePoint, 0)
 	for symbol, pricePoints := range medPriceMap {
 		medianPricePoint = append(
 			medianPricePoint,
-			p2p.AveragePricePoint{
-				Symbol: symbol,
-				Price:  getMedian(pricePoints.prices),
-				Volume: getMedian(pricePoints.volumes),
-			},
+			p2p.MakeAveragePricePoint(
+				symbol,
+				getMedian(pricePoints.prices),
+				getMedian(pricePoints.volumes),
+			),
 		)
 	}
 

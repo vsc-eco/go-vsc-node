@@ -32,13 +32,9 @@ func (pm *priceMap) getAveragePrice(
 		return nil, errSymbolNotFound
 	}
 
-	out := &p2p.AveragePricePoint{
-		Symbol: symbol,
-		Price:  p.avgPrice,
-		Volume: p.avgVolume,
-	}
+	out := p2p.MakeAveragePricePoint(symbol, p.avgPrice, p.avgVolume)
 
-	return out, nil
+	return &out, nil
 }
 
 func (pm *priceMap) observe(pricePoint p2p.ObservePricePoint) {
