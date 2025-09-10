@@ -3,12 +3,10 @@ package oracle
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/witnesses"
-	btcrelay "vsc-node/modules/oracle/btc-relay"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/price"
 	libp2p "vsc-node/modules/p2p"
@@ -44,19 +42,17 @@ type Oracle struct {
 	ctx        context.Context
 	cancelFunc context.CancelFunc
 
-	priceOracle *price.PriceOracle
-
-	blockRelay       btcrelay.BtcChainRelay
-	blockRelaySignal chan blockTickSignal
+	priceOracle          *price.PriceOracle
+	broadcastPriceSignal chan blockTickSignal
 
 	// to be used within a node, for price querying from API endpoints
 	observePriceChan chan []p2p.ObservePricePoint
 
 	// to be used within the network, for broadcasting average prices
-	broadcastPriceChan   chan []p2p.AveragePricePoint
-	broadcastPriceSignal chan blockTickSignal
+	broadcastPriceChan chan []p2p.AveragePricePoint
 
-	blockRelayChan chan *p2p.BlockRelay
+	// for block signatures
+	priceBlockSignatureChan chan p2p.VSCBlock
 
 	// for communication between nodes in a network
 	msgChan chan p2p.Msg
@@ -71,18 +67,17 @@ func New(
 	stateEngine *stateEngine.StateEngine,
 ) *Oracle {
 	return &Oracle{
-		p2p:                  p2pServer,
-		conf:                 conf,
-		electionDb:           electionDb,
-		witness:              witness,
-		vStream:              vstream,
-		stateEngine:          stateEngine,
-		blockRelayChan:       make(chan *p2p.BlockRelay, 1),
-		blockRelaySignal:     make(chan blockTickSignal, 1),
-		msgChan:              make(chan p2p.Msg, 1),
-		observePriceChan:     make(chan []p2p.ObservePricePoint, 128),
-		broadcastPriceChan:   make(chan []p2p.AveragePricePoint, 128),
-		broadcastPriceSignal: make(chan blockTickSignal, 1),
+		p2p:                     p2pServer,
+		conf:                    conf,
+		electionDb:              electionDb,
+		witness:                 witness,
+		vStream:                 vstream,
+		stateEngine:             stateEngine,
+		msgChan:                 make(chan p2p.Msg, 1),
+		observePriceChan:        make(chan []p2p.ObservePricePoint, 128),
+		broadcastPriceChan:      make(chan []p2p.AveragePricePoint, 128),
+		broadcastPriceSignal:    make(chan blockTickSignal, 1),
+		priceBlockSignatureChan: make(chan p2p.VSCBlock, 1024),
 	}
 }
 
@@ -98,7 +93,7 @@ func (o *Oracle) Init() error {
 		return fmt.Errorf("failed to initialize price oracle: %w", err)
 	}
 
-	o.blockRelay = btcrelay.New(o.blockRelayChan)
+	// o.blockRelay = btcrelay.New(o.blockRelayChan)
 
 	o.ctx, o.cancelFunc = context.WithCancel(context.Background())
 
@@ -114,10 +109,8 @@ func (o *Oracle) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
 		var err error
 
-		o.service, err = libp2p.NewPubSubService(
-			o.p2p,
-			p2p.New(o.conf, o.blockRelayChan, o.broadcastPriceChan),
-		)
+		srv := p2p.New(o.conf, o.broadcastPriceChan, o.priceBlockSignatureChan)
+		o.service, err = libp2p.NewPubSubService(o.p2p, srv)
 		if err != nil {
 			o.cancelFunc()
 			reject(err)
@@ -140,14 +133,16 @@ func (o *Oracle) Stop() error {
 }
 
 func (o *Oracle) relayBtcHeadBlock() {
-	headBlock, err := o.blockRelay.FetchChain()
-	if err != nil {
-		log.Println("failed to fetch BTC head block.", err)
-		return
-	}
+	/*
+		headBlock, err := o.blockRelay.FetchChain()
+		if err != nil {
+			log.Println("failed to fetch BTC head block.", err)
+			return
+		}
 
-	o.msgChan <- &p2p.OracleMessage{
-		Type: p2p.MsgBtcChainRelay,
-		Data: headBlock,
-	}
+		o.msgChan <- &p2p.OracleMessage{
+			Type: p2p.MsgBtcChainRelay,
+			Data: headBlock,
+		}
+	*/
 }

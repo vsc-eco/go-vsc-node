@@ -55,6 +55,6 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	}
 
 	if isBlockProducer && isChainRelayTick {
-		o.blockRelaySignal <- blockTickSignal
+		// o.blockRelaySignal <- blockTickSignal
 	}
 }

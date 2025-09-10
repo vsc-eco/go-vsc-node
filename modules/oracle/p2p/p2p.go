@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"log/slog"
 	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
@@ -22,19 +23,19 @@ type OracleMessage struct {
 }
 
 type p2pSpec struct {
-	conf               common.IdentityConfig
-	btcHeadBlockChan   chan<- *BlockRelay
-	broadcastPriceChan chan<- []AveragePricePoint
+	conf                    common.IdentityConfig
+	broadcastPriceChan      chan<- []AveragePricePoint
+	priceBlockSignatureChan chan<- VSCBlock
 }
 
 var _ libp2p.PubSubServiceParams[Msg] = &p2pSpec{}
 
 func New(
 	conf common.IdentityConfig,
-	btcHeadBlockChan chan<- *BlockRelay,
 	broadcastPriceChan chan<- []AveragePricePoint,
+	priceBlockSignatureChan chan<- VSCBlock,
 ) *p2pSpec {
-	return &p2pSpec{conf, btcHeadBlockChan, broadcastPriceChan}
+	return &p2pSpec{conf, broadcastPriceChan, priceBlockSignatureChan}
 }
 
 // Topic implements PubSubServiceParams[Msg]
@@ -60,6 +61,17 @@ func (p *p2pSpec) HandleMessage(
 	send libp2p.SendFunc[Msg],
 ) error {
 	switch msg.Type {
+	case MsgPriceOracleSignature:
+		b, err := parseMsg[VSCBlock](msg.Data)
+		if err != nil {
+			return err
+		}
+		select {
+		case p.priceBlockSignatureChan <- *b:
+		default:
+			log.Println("channel full")
+		}
+
 	case MsgPriceOracleBroadcast:
 		b, err := parseMsg[[]AveragePricePoint](msg.Data)
 		if err != nil {
@@ -67,12 +79,14 @@ func (p *p2pSpec) HandleMessage(
 		}
 		p.broadcastPriceChan <- *b
 
-	case MsgBtcChainRelay:
-		headBlock, err := parseMsg[BlockRelay](msg.Data)
-		if err != nil {
-			return err
-		}
-		p.btcHeadBlockChan <- headBlock
+		/*
+			case MsgBtcChainRelay:
+				headBlock, err := parseMsg[BlockRelay](msg.Data)
+				if err != nil {
+					return err
+				}
+				p.btcHeadBlockChan <- headBlock
+		*/
 
 	case MsgPriceOracleSignedBlock:
 		return errors.New("not implemented")

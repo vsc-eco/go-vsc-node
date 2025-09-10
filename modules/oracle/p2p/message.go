@@ -1,7 +1,11 @@
 package p2p
 
 import (
+	"crypto/rand"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"strings"
 	"time"
 
@@ -12,6 +16,7 @@ const (
 	MsgBtcChainRelay MsgType = iota
 	MsgPriceOracleBroadcast
 	MsgPriceOracleNewBlock
+	MsgPriceOracleSignature
 	MsgPriceOracleSignedBlock
 )
 
@@ -73,6 +78,28 @@ type BlockRelay struct {
 }
 
 type VSCBlock struct {
+	ID         string   `json:"id"         validate:"hexadecimal"`
 	Signatures []string `json:"signatures"`
-	Data       any      `json:"data"       validate:"json"`
+	Data       any      `json:"data"`
+}
+
+func MakeVscBlock(data any) (*VSCBlock, error) {
+	// block id: 8 byte timestamp for UTC ms, followed 8 random bytes
+	idBuf := [16]byte{}
+
+	ts := uint64(time.Now().UTC().UnixMilli())
+	binary.BigEndian.PutUint64(idBuf[:8], ts)
+
+	_, err := io.ReadFull(rand.Reader, idBuf[8:])
+	if err != nil {
+		return nil, err
+	}
+
+	block := &VSCBlock{
+		ID:         hex.EncodeToString(idBuf[:]),
+		Signatures: []string{},
+		Data:       data,
+	}
+
+	return block, nil
 }
