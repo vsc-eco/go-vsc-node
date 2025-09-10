@@ -11,6 +11,7 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
+	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	transactionpool "vsc-node/modules/transaction-pool"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
@@ -121,6 +122,21 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		return TxResult{
 			Success: false,
 			Ret:     "cannot create contract with posting auths",
+		}
+	}
+
+	res := ledgerSession.ExecuteTransfer(ledgerSystem.OpLogEvent{
+		From:        tx.Self.RequiredAuths[0],
+		To:          common.DAO_WALLET,
+		Amount:      common.CONTRACT_DEPLOYMENT_FEE,
+		Asset:       "hbd",
+		Type:        "transfer",
+		BlockHeight: tx.Self.BlockHeight,
+	})
+	if !res.Ok {
+		return TxResult{
+			Success: false,
+			Ret:     res.Msg,
 		}
 	}
 
