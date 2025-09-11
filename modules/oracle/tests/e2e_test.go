@@ -3,16 +3,25 @@ package tests
 import (
 	"context"
 	"testing"
+	"time"
 	"vsc-node/modules/oracle"
-	"vsc-node/modules/oracle/p2p"
 
 	"github.com/stretchr/testify/assert"
 )
 
 func TestE2E(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute*5)
+	defer cancel()
+
 	var (
 		p2pSrv         = &stubP2pServer{nil, t}
-		oracleP2pParam = &p2p.OracleP2pSpec{}
+		oracleP2pParam = &stubOracleP2pSpec{nil, t}
+		blockScheduler = &stubBlockScheduler{}
+		vStreamStub    = &stubVStream{
+			funck:  nil,
+			ticker: time.NewTicker(500 * time.Millisecond),
+			ctx:    ctx,
+		}
 	)
 	oracleSrv := oracle.New(
 		p2pSrv.P2PServer,
@@ -20,13 +29,15 @@ func TestE2E(t *testing.T) {
 		conf,
 		electionDb,
 		witnessDb,
-		vStream,
-		state,
+		vStreamStub,
+		blockScheduler,
 	)
 
 	assert.NoError(t, oracleSrv.Init())
 	defer oracleSrv.Stop()
 
-	_, err := oracleSrv.Start().Await(context.Background())
-	assert.NoError(t, err)
+	p := oracleSrv.Start()
+
+	_, err := p.Await(ctx)
+	assert.Nil(t, err)
 }
