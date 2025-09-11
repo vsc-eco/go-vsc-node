@@ -2,6 +2,7 @@ package contract_execution_context
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"vsc-node/modules/common"
@@ -199,7 +200,7 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 		if len(ctx.env.RequiredPostingAuths) > 0 {
 			return result.Ok(ctx.env.RequiredPostingAuths[0])
 		}
-		return result.Err[string](fmt.Errorf("no value for %s", key))
+		return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), fmt.Errorf("no value for %s", key)))
 	case "msg.required_auths":
 		return result.Map(
 			resultWrap(json.Marshal(ctx.env.RequiredAuths)),
@@ -237,7 +238,7 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 	case "block.timestamp":
 		return result.Ok(ctx.env.Timestamp)
 	}
-	return result.Err[string](fmt.Errorf("environment does not contain value for \"%s\"", key))
+	return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), fmt.Errorf("environment does not contain value for \"%s\"", key)))
 }
 
 // GetEnv returns the environment variables in a standard contract format
@@ -284,7 +285,7 @@ func (ctx *contractExecutionContext) GetEnv() result.Result[string] {
 
 	envBytes, err := json.Marshal(envMap)
 	if err != nil {
-		return result.Err[string](fmt.Errorf("failed to marshal env map: %w", err))
+		return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), fmt.Errorf("failed to marshal env map: %w", err)))
 	}
 	return result.Ok(string(envBytes))
 }
@@ -326,7 +327,6 @@ func (ctx *contractExecutionContext) GetState(key string) result.Result[string] 
 	res := ctx.storage.Get(key)
 	if res == nil {
 		return result.Ok("")
-		// return result.Err[string](fmt.Errorf("key does not exist"))
 	}
 	ctx.doIO(len(string(res)))
 	return result.Ok(string(res))
@@ -348,14 +348,14 @@ func (ctx *contractExecutionContext) GetBalance(account string, asset string) in
 
 func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) result.Result[struct{}] {
 	if len(ctx.env.RequiredAuths) == 0 {
-		return result.Err[struct{}](fmt.Errorf("no active authority"))
+		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.MISSING_REQ_AUTH), fmt.Errorf("no active authority")))
 	}
 	tokenLimit, ok := ctx.tokenLimits[asset]
 	if !ok {
-		return result.Err[struct{}](fmt.Errorf("no user intent for: %s", asset))
+		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_INTENT_ERROR), fmt.Errorf("no user intent for: %s", asset)))
 	}
 	if amount > *tokenLimit {
-		return result.Err[struct{}](fmt.Errorf("amount (%d) is over remaining token limit (%d)", amount, *tokenLimit))
+		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_INTENT_ERROR), fmt.Errorf("amount (%d) is over remaining token limit (%d)", amount, *tokenLimit)))
 	}
 	*tokenLimit -= amount
 
@@ -381,7 +381,7 @@ func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) res
 		BlockHeight: ctx.env.BlockHeight,
 	}, transferOptions...)
 	if !res.Ok {
-		return result.Err[struct{}](fmt.Errorf("%s", res.Msg))
+		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_ERROR), fmt.Errorf("%s", res.Msg)))
 	}
 	return result.Ok(struct{}{})
 }
@@ -401,7 +401,7 @@ func (ctx *contractExecutionContext) SendBalance(to string, amount int64, asset 
 		BlockHeight: ctx.env.BlockHeight,
 	})
 	if !res.Ok {
-		return result.Err[struct{}](fmt.Errorf("%s", res.Msg))
+		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_ERROR), fmt.Errorf("%s", res.Msg)))
 	}
 	return result.Ok(struct{}{})
 }
@@ -420,14 +420,15 @@ func (ctx *contractExecutionContext) WithdrawBalance(to string, amount int64, as
 		BlockHeight: ctx.env.BlockHeight,
 	})
 	if !res.Ok {
-		return result.Err[struct{}](fmt.Errorf("%s", res.Msg))
+		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_ERROR), fmt.Errorf("%s", res.Msg)))
 	}
 	return result.Ok(struct{}{})
 }
 
+// wrap the result of json.Marshal as used by EnvVar(), joins with ENV_VAR_ERROR symbol if Err
 func resultWrap[T any](res T, err error) result.Result[T] {
 	if err != nil {
-		return result.Err[T](err)
+		return result.Err[T](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), err))
 	}
 	return result.Ok(res)
 }

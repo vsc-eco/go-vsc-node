@@ -3,8 +3,10 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
+	"vsc-node/modules/db/vsc/contracts"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_types "vsc-node/modules/wasm/types"
 
@@ -15,8 +17,8 @@ type SdkResultStruct = wasm_types.WasmResultStruct
 type SdkResult = result.Result[SdkResultStruct]
 
 var (
-	ErrInvalidArgument = result.Err[SdkResultStruct](fmt.Errorf("invalid argument"))
-	ErrUnimplemented   = result.Err[SdkResultStruct](fmt.Errorf("unimplemented"))
+	ErrInvalidArgument = result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid argument")))
+	ErrUnimplemented   = result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("unimplemented")))
 )
 
 var sdkModuleRef *map[string]sdkFunc
@@ -131,7 +133,7 @@ var SdkModule = map[string]sdkFunc{
 				),
 			)
 		} else {
-			return result.Err[SdkResultStruct](fmt.Errorf("INVALID_CALL"))
+			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("INVALID_CALL")))
 		}
 	},
 	"system.get_env_key": func(ctx context.Context, a any) SdkResult {
@@ -205,7 +207,7 @@ var SdkModule = map[string]sdkFunc{
 		}
 		amount, err := strconv.ParseInt(amountString, 10, 64)
 		if err != nil {
-			return result.Err[SdkResultStruct](err)
+			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), err))
 		}
 		asset, ok := arg2.(string)
 		if !ok {
@@ -235,10 +237,10 @@ var SdkModule = map[string]sdkFunc{
 		}
 		amount, err := strconv.ParseInt(amountString, 10, 64)
 		if amount < 0 {
-			return result.Err[SdkResultStruct](fmt.Errorf("amount cannot be negative"))
+			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("amount cannot be negative")))
 		}
 		if err != nil {
-			return result.Err[SdkResultStruct](err)
+			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), err))
 		}
 		asset, ok := arg3.(string)
 		if !ok {
@@ -268,10 +270,10 @@ var SdkModule = map[string]sdkFunc{
 		}
 		amount, err := strconv.ParseInt(amountString, 10, 64)
 		if amount < 0 {
-			return result.Err[SdkResultStruct](fmt.Errorf("amount cannot be negative"))
+			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("amount cannot be negative")))
 		}
 		if err != nil {
-			return result.Err[SdkResultStruct](err)
+			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), err))
 		}
 		asset, ok := arg3.(string)
 		if !ok {
