@@ -7,7 +7,6 @@ import (
 	"log"
 	"log/slog"
 	"time"
-	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -23,23 +22,25 @@ type OracleMessage struct {
 	Data any     `json:"data,omitempty" validate:"required"`
 }
 
-type p2pSpec struct {
-	conf                    common.IdentityConfig
+type OracleP2pParams interface {
+	libp2p.PubSubServiceParams[Msg]
+	Initialize(chan<- []AveragePricePoint, chan<- VSCBlock, chan<- VSCBlock)
+}
+
+type OracleP2pSpec struct {
 	broadcastPriceChan      chan<- []AveragePricePoint
 	priceBlockSignatureChan chan<- VSCBlock
 	broadcastNewBlockChan   chan<- VSCBlock
 }
 
-var _ libp2p.PubSubServiceParams[Msg] = &p2pSpec{}
+var _ OracleP2pParams = &OracleP2pSpec{}
 
-func New(
-	conf common.IdentityConfig,
+func (p *OracleP2pSpec) Initialize(
 	broadcastPriceChan chan<- []AveragePricePoint,
 	priceBlockSignatureChan chan<- VSCBlock,
 	broadcastPriceBlockChan chan<- VSCBlock,
-) *p2pSpec {
-	return &p2pSpec{
-		conf,
+) {
+	*p = OracleP2pSpec{
 		broadcastPriceChan,
 		priceBlockSignatureChan,
 		broadcastPriceBlockChan,
@@ -47,12 +48,12 @@ func New(
 }
 
 // Topic implements PubSubServiceParams[Msg]
-func (*p2pSpec) Topic() string {
+func (*OracleP2pSpec) Topic() string {
 	return OracleTopic
 }
 
 // ValidateMessage implements PubSubServiceParams[Msg]
-func (p *p2pSpec) ValidateMessage(
+func (p *OracleP2pSpec) ValidateMessage(
 	ctx context.Context,
 	from peer.ID,
 	msg *pubsub.Message,
@@ -62,7 +63,7 @@ func (p *p2pSpec) ValidateMessage(
 }
 
 // HandleMessage implements PubSubServiceParams[Msg]
-func (p *p2pSpec) HandleMessage(
+func (p *OracleP2pSpec) HandleMessage(
 	ctx context.Context,
 	from peer.ID,
 	msg Msg,
@@ -130,7 +131,7 @@ func parseMsg[T any](data any) (*T, error) {
 }
 
 // HandleRawMessage implements PubSubServiceParams[OracleMessage]
-func (p *p2pSpec) HandleRawMessage(
+func (p *OracleP2pSpec) HandleRawMessage(
 	ctx context.Context,
 	rawMsg *pubsub.Message,
 	send libp2p.SendFunc[Msg],
@@ -140,7 +141,7 @@ func (p *p2pSpec) HandleRawMessage(
 }
 
 // ParseMessage implements PubSubServiceParams[Msg]
-func (p *p2pSpec) ParseMessage(data []byte) (Msg, error) {
+func (p *OracleP2pSpec) ParseMessage(data []byte) (Msg, error) {
 	var msg Msg
 	if err := json.Unmarshal(data, msg); err != nil {
 		return nil, err
@@ -150,7 +151,7 @@ func (p *p2pSpec) ParseMessage(data []byte) (Msg, error) {
 }
 
 // SerializeMessage implements PubSubServiceParams[OracleMessage]
-func (p *p2pSpec) SerializeMessage(msg Msg) []byte {
+func (p *OracleP2pSpec) SerializeMessage(msg Msg) []byte {
 	jsonBytes, err := json.Marshal(msg)
 	if err != nil {
 		slog.Error(

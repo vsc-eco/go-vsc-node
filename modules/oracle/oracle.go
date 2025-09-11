@@ -30,7 +30,8 @@ var (
 )
 
 type Oracle struct {
-	p2p        *libp2p.P2PServer
+	p2pServer  *libp2p.P2PServer
+	oracleP2P  p2p.OracleP2pParams
 	service    libp2p.PubSubService[p2p.Msg]
 	conf       common.IdentityConfig
 	electionDb elections.Elections
@@ -63,6 +64,7 @@ type Oracle struct {
 
 func New(
 	p2pServer *libp2p.P2PServer,
+	oracleP2P p2p.OracleP2pParams,
 	conf common.IdentityConfig,
 	electionDb elections.Elections,
 	witness witnesses.Witnesses,
@@ -70,7 +72,7 @@ func New(
 	stateEngine *stateEngine.StateEngine,
 ) *Oracle {
 	return &Oracle{
-		p2p:         p2pServer,
+		p2pServer:   p2pServer,
 		conf:        conf,
 		electionDb:  electionDb,
 		witness:     witness,
@@ -115,13 +117,12 @@ func (o *Oracle) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
 		var err error
 
-		srv := p2p.New(
-			o.conf,
+		o.oracleP2P.Initialize(
 			o.broadcastPriceChan,
 			o.priceBlockSignatureReceiver,
 			o.broadcastPriceBlockChan,
 		)
-		o.service, err = libp2p.NewPubSubService(o.p2p, srv)
+		o.service, err = libp2p.NewPubSubService(o.p2pServer, o.oracleP2P)
 		if err != nil {
 			o.cancelFunc()
 			reject(err)

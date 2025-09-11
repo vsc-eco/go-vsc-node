@@ -65,7 +65,7 @@ func (o *Oracle) marketObserve() {
 				log.Println("[oracle] failed serialize message", msg, err)
 				continue
 			}
-			o.p2p.SendToAll(p2p.OracleTopic, jbytes)
+			o.p2pServer.SendToAll(p2p.OracleTopic, jbytes)
 
 		case pricePoints := <-o.observePriceChan:
 			o.priceOracle.ObservePricePoint(pricePoints)
