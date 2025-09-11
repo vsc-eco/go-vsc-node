@@ -861,7 +861,8 @@ func (se *StateEngine) ExecuteBatch() {
 							TxId:    txId,
 							Ret:     "",
 							Success: result.Success,
-							Err:     &result.Ret,
+							Err:     result.Err,
+							ErrMsg:  result.Ret,
 						},
 					}}
 				} else {
@@ -874,7 +875,6 @@ func (se *StateEngine) ExecuteBatch() {
 							TxId:    txId,
 							Ret:     result.Ret,
 							Success: result.Success,
-							Err:     nil,
 							Logs:    contractSession.PopLogs(),
 						},
 					})

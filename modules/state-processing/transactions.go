@@ -136,6 +136,7 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 		return TxResult{
 			Success: false,
+			Err:     &res.ErrorCode,
 			Ret:     *res.Error,
 			RcUsed:  10,
 		}
