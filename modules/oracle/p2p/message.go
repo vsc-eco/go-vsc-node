@@ -81,6 +81,8 @@ type VSCBlock struct {
 	ID         string   `json:"id"         validate:"hexadecimal"`
 	Signatures []string `json:"signatures"`
 	Data       any      `json:"data"`
+	// in ms
+	TimeStamp int64 `json:"timestamp"`
 }
 
 func MakeVscBlock(data any) (*VSCBlock, error) {
@@ -99,6 +101,7 @@ func MakeVscBlock(data any) (*VSCBlock, error) {
 		ID:         hex.EncodeToString(idBuf[:]),
 		Signatures: []string{},
 		Data:       data,
+		TimeStamp:  time.Now().UTC().UnixMilli(),
 	}
 
 	return block, nil

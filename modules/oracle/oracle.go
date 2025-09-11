@@ -52,7 +52,10 @@ type Oracle struct {
 	broadcastPriceChan chan []p2p.AveragePricePoint
 
 	// for block signatures
-	priceBlockSignatureChan chan p2p.VSCBlock
+	priceBlockSignatureReceiver chan p2p.VSCBlock
+
+	// for new block
+	broadcastPriceBlockChan chan p2p.VSCBlock
 
 	// for communication between nodes in a network
 	msgChan chan p2p.Msg
@@ -67,17 +70,20 @@ func New(
 	stateEngine *stateEngine.StateEngine,
 ) *Oracle {
 	return &Oracle{
-		p2p:                     p2pServer,
-		conf:                    conf,
-		electionDb:              electionDb,
-		witness:                 witness,
-		vStream:                 vstream,
-		stateEngine:             stateEngine,
-		msgChan:                 make(chan p2p.Msg, 1),
-		observePriceChan:        make(chan []p2p.ObservePricePoint, 128),
-		broadcastPriceChan:      make(chan []p2p.AveragePricePoint, 128),
-		broadcastPriceSignal:    make(chan blockTickSignal, 1),
-		priceBlockSignatureChan: make(chan p2p.VSCBlock, 1024),
+		p2p:         p2pServer,
+		conf:        conf,
+		electionDb:  electionDb,
+		witness:     witness,
+		vStream:     vstream,
+		stateEngine: stateEngine,
+
+		msgChan: make(chan p2p.Msg, 1),
+
+		observePriceChan:            make(chan []p2p.ObservePricePoint, 128),
+		broadcastPriceChan:          make(chan []p2p.AveragePricePoint, 128),
+		broadcastPriceSignal:        make(chan blockTickSignal, 1),
+		priceBlockSignatureReceiver: make(chan p2p.VSCBlock, 1024),
+		broadcastPriceBlockChan:     make(chan p2p.VSCBlock, 1024),
 	}
 }
 
@@ -109,7 +115,12 @@ func (o *Oracle) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
 		var err error
 
-		srv := p2p.New(o.conf, o.broadcastPriceChan, o.priceBlockSignatureChan)
+		srv := p2p.New(
+			o.conf,
+			o.broadcastPriceChan,
+			o.priceBlockSignatureReceiver,
+			o.broadcastPriceBlockChan,
+		)
 		o.service, err = libp2p.NewPubSubService(o.p2p, srv)
 		if err != nil {
 			o.cancelFunc()

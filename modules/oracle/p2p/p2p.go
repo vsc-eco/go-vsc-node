@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"log/slog"
+	"time"
 	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
 
@@ -26,6 +27,7 @@ type p2pSpec struct {
 	conf                    common.IdentityConfig
 	broadcastPriceChan      chan<- []AveragePricePoint
 	priceBlockSignatureChan chan<- VSCBlock
+	broadcastNewBlockChan   chan<- VSCBlock
 }
 
 var _ libp2p.PubSubServiceParams[Msg] = &p2pSpec{}
@@ -34,8 +36,14 @@ func New(
 	conf common.IdentityConfig,
 	broadcastPriceChan chan<- []AveragePricePoint,
 	priceBlockSignatureChan chan<- VSCBlock,
+	broadcastPriceBlockChan chan<- VSCBlock,
 ) *p2pSpec {
-	return &p2pSpec{conf, broadcastPriceChan, priceBlockSignatureChan}
+	return &p2pSpec{
+		conf,
+		broadcastPriceChan,
+		priceBlockSignatureChan,
+		broadcastPriceBlockChan,
+	}
 }
 
 // Topic implements PubSubServiceParams[Msg]
@@ -66,8 +74,23 @@ func (p *p2pSpec) HandleMessage(
 		if err != nil {
 			return err
 		}
+		b.TimeStamp = time.Now().UTC().UnixMilli()
+
 		select {
 		case p.priceBlockSignatureChan <- *b:
+		default:
+			log.Println("channel full")
+		}
+
+	case MsgPriceOracleNewBlock:
+		b, err := parseMsg[VSCBlock](msg.Data)
+		if err != nil {
+			return err
+		}
+		b.TimeStamp = time.Now().UTC().UnixMilli()
+
+		select {
+		case p.broadcastNewBlockChan <- *b:
 		default:
 			log.Println("channel full")
 		}
@@ -89,9 +112,6 @@ func (p *p2pSpec) HandleMessage(
 		*/
 
 	case MsgPriceOracleSignedBlock:
-		return errors.New("not implemented")
-
-	case MsgPriceOracleNewBlock:
 		return errors.New("not implemented")
 
 	default:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"math"
 	"time"
@@ -13,8 +14,15 @@ import (
 )
 
 var (
-	pricePollTicker   = time.NewTicker(priceOraclePollInterval)
+	v               = validator.New(validator.WithRequiredStructEnabled())
+	pricePollTicker = time.NewTicker(priceOraclePollInterval)
+
+	// to be processed by the block producer, calculating median price
+	// and creating new block
 	broadcastPriceBuf = make([]p2p.AveragePricePoint, 0, 256)
+
+	// to be signed by the witness
+	newBlockBuf = make([]p2p.VSCBlock, 0, 256)
 )
 
 func (o *Oracle) marketObserve() {
@@ -32,7 +40,11 @@ func (o *Oracle) marketObserve() {
 		case broadcastSignal := <-o.broadcastPriceSignal:
 			o.handleBroadcastSignal(broadcastSignal)
 			broadcastPriceBuf = broadcastPriceBuf[:0]
+			newBlockBuf = newBlockBuf[:0]
 			o.priceOracle.ResetPriceCache()
+
+		case newBlock := <-o.broadcastPriceBlockChan:
+			newBlockBuf = append(newBlockBuf, newBlock)
 
 		case avgPricePoints := <-o.broadcastPriceChan:
 			now := time.Now().UTC().Unix()
@@ -117,6 +129,16 @@ func (o *Oracle) handleBroadcastSignal(sig blockTickSignal) {
 
 		o.pollMedianPriceSignature(*vscBlock, sig)
 	} else if sig.isWitness {
+		timeThreshold := time.Now().UTC().UnixMilli()
+
+		for _, block := range newBlockBuf {
+			if block.TimeStamp < timeThreshold {
+				continue
+			}
+
+			// TODO: sign and broadcast
+			fmt.Println(block)
+		}
 	}
 }
 
@@ -124,7 +146,6 @@ func (o *Oracle) pollMedianPriceSignature(
 	block p2p.VSCBlock,
 	sig blockTickSignal,
 ) error {
-	var blockValidator = validator.New(validator.WithRequiredStructEnabled())
 
 	// poll signatures for 10 seconds
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -140,17 +161,15 @@ func (o *Oracle) pollMedianPriceSignature(
 		case <-ctx.Done():
 			return errors.New("operation timed out")
 
-		case signedBlock := <-o.priceBlockSignatureChan:
-			wrongID := signedBlock.ID != block.ID
-			invalidSigCount := len(signedBlock.Signatures) != 1
-			if wrongID || invalidSigCount {
+		case signedBlock := <-o.priceBlockSignatureReceiver:
+			if signedBlock.ID != block.ID {
 				continue
 			}
-			if err := blockValidator.Struct(signedBlock); err != nil {
-				log.Println("invalid block", err)
+
+			if !validateSignedBlock(&signedBlock) {
 				continue
 			}
-			// TODO: validate signature
+
 			block.Signatures = append(
 				block.Signatures,
 				signedBlock.Signatures[0],
@@ -167,4 +186,17 @@ func (o *Oracle) pollMedianPriceSignature(
 	}
 
 	return nil
+}
+
+func validateSignedBlock(block *p2p.VSCBlock) bool {
+	if len(block.Signatures) != 1 {
+		return false
+	}
+
+	if err := v.Struct(block); err != nil {
+		return false
+	}
+
+	// TODO: validate signature
+	return true
 }
