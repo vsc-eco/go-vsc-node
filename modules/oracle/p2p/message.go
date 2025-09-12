@@ -1,11 +1,12 @@
 package p2p
 
 import (
-	"crypto/rand"
+	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -78,30 +79,42 @@ type BlockRelay struct {
 }
 
 type VSCBlock struct {
-	ID         string   `json:"id"         validate:"hexadecimal"`
-	Signatures []string `json:"signatures"`
-	Data       any      `json:"data"`
+	ID            string   `json:"id"             validate:"hexadecimal"`
+	BlockProducer string   `json:"block_producer"`
+	Signatures    []string `json:"signatures"`
+	Data          any      `json:"data"`
 	// in ms
 	TimeStamp int64 `json:"timestamp"`
 }
 
-func MakeVscBlock(data any) (*VSCBlock, error) {
-	// block id: 8 byte timestamp for UTC ms, followed 8 random bytes
-	idBuf := [16]byte{}
+// VSCBlock.ID construction:
+// hex(timestamp + sha256.Sum256(username + activeKey + json(data))).
+// results in 40 byte ID (80 char hex string).
+func MakeVscBlock(username, activeKey string, data any) (*VSCBlock, error) {
+	timestamp := time.Now().UTC().UnixMilli()
 
-	ts := uint64(time.Now().UTC().UnixMilli())
-	binary.BigEndian.PutUint64(idBuf[:8], ts)
+	tsBuf := [8]byte{}
+	binary.BigEndian.PutUint64(tsBuf[:], uint64(timestamp))
 
-	_, err := io.ReadFull(rand.Reader, idBuf[8:])
-	if err != nil {
+	buf := bytes.NewBuffer(
+		slices.Concat(
+			[]byte(username),
+			[]byte(activeKey),
+		),
+	)
+	if err := json.NewEncoder(buf).Encode(data); err != nil {
 		return nil, err
 	}
 
+	idParts := sha256.Sum256(buf.Bytes())
+	idBytes := slices.Concat(tsBuf[:], idParts[:])
+
 	block := &VSCBlock{
-		ID:         hex.EncodeToString(idBuf[:]),
-		Signatures: []string{},
-		Data:       data,
-		TimeStamp:  time.Now().UTC().UnixMilli(),
+		ID:            hex.EncodeToString(idBytes),
+		BlockProducer: username,
+		Signatures:    []string{},
+		Data:          data,
+		TimeStamp:     timestamp,
 	}
 
 	return block, nil

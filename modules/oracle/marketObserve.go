@@ -117,11 +117,17 @@ func (o *Oracle) handleBroadcastSignal(sig blockTickSignal) {
 		<-ctx.Done()
 
 		medianPricePoints := makeMedianPrices(medianPriceBuf)
-		vscBlock, err := p2p.MakeVscBlock(medianPricePoints)
+		nodeId := o.conf.Get()
+		vscBlock, err := p2p.MakeVscBlock(
+			nodeId.HiveUsername,
+			nodeId.HiveActiveKey,
+			medianPricePoints,
+		)
 		if err != nil {
 			log.Println("[oracle] failed to make new vsc block", err)
 			return
 		}
+
 		o.msgChan <- &p2p.OracleMessage{
 			Type: p2p.MsgPriceOracleNewBlock,
 			Data: *vscBlock,
