@@ -62,7 +62,7 @@ type Oracle struct {
 	broadcastPriceChan chan []p2p.AveragePricePoint
 
 	// for block signatures
-	priceBlockSignatureReceiver chan p2p.VSCBlock
+	priceBlockSignatureChan chan p2p.VSCBlock
 
 	// for new block
 	broadcastPriceBlockChan chan p2p.VSCBlock
@@ -91,11 +91,11 @@ func New(
 
 		msgChan: make(chan p2p.Msg, 1),
 
-		observePriceChan:            make(chan []p2p.ObservePricePoint, 128),
-		broadcastPriceChan:          make(chan []p2p.AveragePricePoint, 128),
-		broadcastPriceSignal:        make(chan blockTickSignal, 1),
-		priceBlockSignatureReceiver: make(chan p2p.VSCBlock, 1024),
-		broadcastPriceBlockChan:     make(chan p2p.VSCBlock, 1024),
+		observePriceChan:        make(chan []p2p.ObservePricePoint, 128),
+		broadcastPriceChan:      make(chan []p2p.AveragePricePoint, 128),
+		broadcastPriceSignal:    make(chan blockTickSignal, 1),
+		priceBlockSignatureChan: make(chan p2p.VSCBlock, 1024),
+		broadcastPriceBlockChan: make(chan p2p.VSCBlock, 1024),
 	}
 }
 
@@ -129,11 +129,10 @@ func (o *Oracle) Start() *promise.Promise[any] {
 
 		o.oracleP2P.Initialize(
 			o.broadcastPriceChan,
-			o.priceBlockSignatureReceiver,
+			o.priceBlockSignatureChan,
 			o.broadcastPriceBlockChan,
 		)
 		o.service, err = libp2p.NewPubSubService(o.p2pServer, o.oracleP2P)
-		panic("made it here")
 		if err != nil {
 			o.cancelFunc()
 			reject(err)

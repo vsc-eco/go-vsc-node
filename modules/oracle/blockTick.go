@@ -39,22 +39,22 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	)
 
 	var (
-		username                    = o.conf.Get().HiveUsername
-		isAveragePriceBroadcastTick = *headHeight%priceOracleBroadcastInterval == 0
-		isChainRelayTick            = *headHeight%btcChainRelayInterval == 0
-		isWitness                   = slices.Contains(memberAccounts, username)
-		isBlockProducer             = witnessSlot != nil &&
+		username              = o.conf.Get().HiveUsername
+		avgPriceBroadcastTick = *headHeight%priceOracleBroadcastInterval == 0
+		chainRelayTick        = *headHeight%btcChainRelayInterval == 0
+		isWitness             = slices.Contains(memberAccounts, username)
+		isBlockProducer       = witnessSlot != nil &&
 			witnessSlot.Account == username &&
 			bh%common.CONSENSUS_SPECS.SlotLength == 0
 	)
 
 	blockTickSignal := makeBlockTickSignal(isBlockProducer, isWitness, members)
 
-	if isAveragePriceBroadcastTick {
+	if avgPriceBroadcastTick {
 		o.broadcastPriceSignal <- blockTickSignal
 	}
 
-	if isBlockProducer && isChainRelayTick {
+	if isBlockProducer && chainRelayTick {
 		// o.blockRelaySignal <- blockTickSignal
 	}
 }

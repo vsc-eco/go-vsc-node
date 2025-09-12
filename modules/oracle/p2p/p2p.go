@@ -30,7 +30,7 @@ type OracleP2pParams interface {
 type OracleP2pSpec struct {
 	broadcastPriceChan      chan<- []AveragePricePoint
 	priceBlockSignatureChan chan<- VSCBlock
-	broadcastNewBlockChan   chan<- VSCBlock
+	broadcastPriceBlockChan chan<- VSCBlock
 }
 
 var _ OracleP2pParams = &OracleP2pSpec{}
@@ -91,7 +91,7 @@ func (p *OracleP2pSpec) HandleMessage(
 		b.TimeStamp = time.Now().UTC().UnixMilli()
 
 		select {
-		case p.broadcastNewBlockChan <- *b:
+		case p.broadcastPriceBlockChan <- *b:
 		default:
 			log.Println("channel full")
 		}

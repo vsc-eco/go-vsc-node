@@ -14,8 +14,7 @@ import (
 )
 
 var (
-	v               = validator.New(validator.WithRequiredStructEnabled())
-	pricePollTicker = time.NewTicker(priceOraclePollInterval)
+	v = validator.New(validator.WithRequiredStructEnabled())
 
 	// to be processed by the block producer, calculating median price
 	// and creating new block
@@ -26,6 +25,7 @@ var (
 )
 
 func (o *Oracle) marketObserve() {
+	pricePollTicker := time.NewTicker(priceOraclePollInterval)
 
 	for {
 		select {
@@ -44,6 +44,7 @@ func (o *Oracle) marketObserve() {
 			o.priceOracle.ResetPriceCache()
 
 		case newBlock := <-o.broadcastPriceBlockChan:
+			// TODO: move this channel to witness processing
 			newBlockBuf = append(newBlockBuf, newBlock)
 
 		case avgPricePoints := <-o.broadcastPriceChan:
@@ -112,10 +113,6 @@ func (o *Oracle) handleBroadcastSignal(sig blockTickSignal) {
 		}
 
 		// room for network latency
-		ctx, cancel := context.WithTimeout(context.Background(), listenDuration)
-		defer cancel()
-		<-ctx.Done()
-
 		medianPricePoints := makeMedianPrices(medianPriceBuf)
 		nodeId := o.conf.Get()
 		vscBlock, err := p2p.MakeVscBlock(
@@ -152,22 +149,21 @@ func (o *Oracle) pollMedianPriceSignature(
 	block p2p.VSCBlock,
 	sig blockTickSignal,
 ) error {
-
-	// poll signatures for 10 seconds
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	sigThreshold := int(math.Ceil(float64(len(sig.electedMembers) * 2 / 3)))
 	block.Signatures = make([]string, 0, sigThreshold)
 
 	sigCount := 0
+
+	// poll signatures for 10 seconds
+	ctx, cancel := context.WithTimeout(context.Background(), listenDuration)
+	defer cancel()
 
 	for sigCount < sigThreshold {
 		select {
 		case <-ctx.Done():
 			return errors.New("operation timed out")
 
-		case signedBlock := <-o.priceBlockSignatureReceiver:
+		case signedBlock := <-o.priceBlockSignatureChan:
 			if signedBlock.ID != block.ID {
 				continue
 			}
