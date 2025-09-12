@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	// 10 minutes = 600 seconds, 3s for every new block
+	// 10 minutes = 600 seconds, 3s for every new block.
+	// A tick is broadcasted every 200 blocks produced.
 	priceOracleBroadcastInterval = uint64(600 / 3)
 	priceOraclePollInterval      = time.Second * 15
 
@@ -29,6 +30,14 @@ var (
 	watchSymbols = []string{"BTC", "ETH", "LTC"}
 )
 
+type BlockSync interface {
+	RegisterBlockTick(string, vstream.BTFunc, bool)
+}
+
+type BlockSchedule interface {
+	GetSchedule(slotHeight uint64) []stateEngine.WitnessSlot
+}
+
 type Oracle struct {
 	p2pServer  *libp2p.P2PServer
 	oracleP2P  p2p.OracleP2pParams
@@ -37,8 +46,8 @@ type Oracle struct {
 	electionDb elections.Elections
 	witness    witnesses.Witnesses
 
-	vStream     *vstream.VStream
-	stateEngine *stateEngine.StateEngine
+	vStream     BlockSync
+	stateEngine BlockSchedule
 
 	ctx        context.Context
 	cancelFunc context.CancelFunc
@@ -68,11 +77,12 @@ func New(
 	conf common.IdentityConfig,
 	electionDb elections.Elections,
 	witness witnesses.Witnesses,
-	vstream *vstream.VStream,
-	stateEngine *stateEngine.StateEngine,
+	vstream BlockSync,
+	stateEngine BlockSchedule,
 ) *Oracle {
 	return &Oracle{
 		p2pServer:   p2pServer,
+		oracleP2P:   oracleP2P,
 		conf:        conf,
 		electionDb:  electionDb,
 		witness:     witness,
@@ -123,6 +133,7 @@ func (o *Oracle) Start() *promise.Promise[any] {
 			o.broadcastPriceBlockChan,
 		)
 		o.service, err = libp2p.NewPubSubService(o.p2pServer, o.oracleP2P)
+		panic("made it here")
 		if err != nil {
 			o.cancelFunc()
 			reject(err)

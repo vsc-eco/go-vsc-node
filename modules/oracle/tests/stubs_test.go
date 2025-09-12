@@ -17,11 +17,9 @@ import (
 )
 
 var (
-	conf           common.IdentityConfig
-	electionDb     elections.Elections
-	witnessDb      witnesses.Witnesses
-	vStreamStub    *stubVStream
-	blockScheduler *stubBlockScheduler
+	conf       common.IdentityConfig
+	electionDb elections.Elections
+	witnessDb  witnesses.Witnesses
 )
 
 type stubP2pServer struct {

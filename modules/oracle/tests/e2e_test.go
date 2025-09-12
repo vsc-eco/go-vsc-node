@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 	"vsc-node/modules/oracle"
+	"vsc-node/modules/oracle/p2p"
+	libp2p "vsc-node/modules/p2p"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -14,8 +16,8 @@ func TestE2E(t *testing.T) {
 	defer cancel()
 
 	var (
-		p2pSrv         = &stubP2pServer{nil, t}
-		oracleP2pParam = &stubOracleP2pSpec{nil, t}
+		p2pSrv         = &stubP2pServer{&libp2p.P2PServer{}, t}
+		oracleP2pParam = &stubOracleP2pSpec{&p2p.OracleP2pSpec{}, t}
 		blockScheduler = &stubBlockScheduler{}
 		vStreamStub    = &stubVStream{
 			funck:  nil,
