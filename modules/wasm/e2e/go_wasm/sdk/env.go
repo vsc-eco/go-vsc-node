@@ -1,7 +1,8 @@
 package sdk
 
 type Env struct {
-	ContractId string `json:"contract.id"`
+	ContractId    string `json:"contract.id"`
+	ContractOwner string `json:"contract.owner"`
 
 	//About the calling tx & operation
 	TxId    string `json:"tx.id"`

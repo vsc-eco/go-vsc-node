@@ -25,10 +25,15 @@ func randomHex(n int) string {
 	return hex.EncodeToString(bytes)
 }
 
+type mockContractRegistry struct {
+	Owner string
+	Code  []byte
+}
+
 // Contract testing environment
 type ContractTest struct {
 	BlockHeight   uint64
-	Contracts     map[string][]byte
+	Contracts     map[string]mockContractRegistry
 	LedgerSession *stateEngine.LedgerSession
 	State         map[string]contract_execution_context.StateStore
 	StateEngine   *stateEngine.StateEngine
@@ -45,7 +50,7 @@ func NewContractTest() ContractTest {
 	se := stateEngine.New(logr, nil, nil, &elections, nil, nil, nil, &ledgers, &balances, nil, &interestClaims, nil, &actions, nil, nil, nil)
 	return ContractTest{
 		BlockHeight:   0,
-		Contracts:     make(map[string][]byte),
+		Contracts:     make(map[string]mockContractRegistry),
 		LedgerSession: se.LedgerExecutor.NewSession(0),
 		State:         make(map[string]contract_execution_context.StateStore),
 		StateEngine:   se,
@@ -69,13 +74,16 @@ func (ct *ContractTest) IncrementBlocks(count uint64) {
 }
 
 // Register a contract from bytecode.
-func (ct *ContractTest) RegisterContract(contractId string, bytecode []byte) {
-	ct.Contracts[contractId] = bytecode
+func (ct *ContractTest) RegisterContract(contractId string, owner string, bytecode []byte) {
+	ct.Contracts[contractId] = mockContractRegistry{
+		Owner: owner,
+		Code:  bytecode,
+	}
 }
 
 // Executes a contract call transaction. Returns the call result, gas used and logs emitted.
 func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxResult, uint, []string) {
-	bytecode, exists := ct.Contracts[tx.ContractId]
+	contract, exists := ct.Contracts[tx.ContractId]
 	if !exists {
 		return stateEngine.TxResult{
 			Success: false,
@@ -102,6 +110,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 	ctxValue := contract_execution_context.New(
 		contract_execution_context.Environment{
 			ContractId:           tx.ContractId,
+			ContractOwner:        contract.Owner,
 			BlockHeight:          ct.BlockHeight,
 			TxId:                 tx.Self.TxId,
 			BlockId:              tx.Self.BlockId,
@@ -115,7 +124,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 		},
 		int64(tx.RcLimit), ct.LedgerSession, ct.State[tx.ContractId], contracts.ContractMetadata{},
 	)
-	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(bytecode))
+	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(contract.Code))
 	res := w.Execute(ctx, tx.RcLimit*common.CYCLE_GAS_PER_RC, tx.Action, string(tx.Payload), wasm_runtime.Go)
 
 	if res.Error != nil {

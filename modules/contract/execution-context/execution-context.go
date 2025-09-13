@@ -42,6 +42,7 @@ type StateStore interface {
 
 type Environment struct {
 	ContractId           string
+	ContractOwner        string
 	BlockHeight          uint64
 	TxId                 string
 	BlockId              string
@@ -185,6 +186,8 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 	switch key {
 	case "contract.id":
 		return result.Ok(ctx.env.ContractId)
+	case "contract.owner":
+		return result.Ok(ctx.env.ContractOwner)
 	case "tx.id": // tx ID
 		return result.Ok(ctx.env.TxId)
 	case "tx.index":
@@ -260,9 +263,8 @@ func (ctx *contractExecutionContext) GetEnv() result.Result[string] {
 
 	envMap := map[string]interface{}{
 		// contract section
-		"contract.id": ctx.env.ContractId,
-		// "contract.creator": // implement
-		// "contract.admin": // implement
+		"contract.id":    ctx.env.ContractId,
+		"contract.owner": ctx.env.ContractOwner,
 
 		// tx section
 		"tx.id":       ctx.env.TxId,

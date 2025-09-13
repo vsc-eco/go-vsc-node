@@ -103,6 +103,7 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 	fmt.Println("Contract Metadata", metadata)
 	ctxValue := contract_execution_context.New(contract_execution_context.Environment{
 		ContractId:           t.ContractId,
+		ContractOwner:        info.Owner,
 		BlockHeight:          t.Self.BlockHeight,
 		TxId:                 t.Self.TxId,
 		BlockId:              t.Self.BlockId,

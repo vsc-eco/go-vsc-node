@@ -70,6 +70,10 @@ func main() {
 		fmt.Println(proof)
 		user := identityConfig.Get().HiveUsername
 		wif := identityConfig.Get().HiveActiveKey
+		owner := args.owner
+		if owner == "" {
+			owner = user
+		}
 
 		if len(user) > 0 && len(wif) > 0 {
 			hiveClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURI)
@@ -79,7 +83,7 @@ func main() {
 				NetId:        "vsc-mainnet",
 				Name:         args.name,
 				Description:  args.description,
-				Owner:        user,
+				Owner:        owner,
 				Code:         proof.Hash,
 				Runtime:      wasm_runtime.Go,
 				StorageProof: proof,
