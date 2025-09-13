@@ -17,6 +17,8 @@ type coinMarketCapHandler struct {
 	currency string
 }
 
+var _ PriceQuery = &coinMarketCapHandler{}
+
 // returns an error if the environment variable `COINMARKETCAP_API_KEY` is not
 // set
 func makeCoinMarketCapHandler(currency string) (*coinMarketCapHandler, error) {
@@ -51,9 +53,7 @@ type coinMarketCapQuote struct {
 
 // QueryMarketPrice implements PriceQuery
 func (c *coinMarketCapHandler) QueryMarketPrice(
-	watchSymbols []string,
-	observePricePointChan chan<- []p2p.ObservePricePoint,
-) {
+	watchSymbols []string) (map[string]p2p.ObservePricePoint, error) {
 	symbols := make([]string, len(watchSymbols))
 	copy(symbols, watchSymbols)
 	symbols = utils.Map(watchSymbols, strings.ToUpper)
@@ -63,17 +63,20 @@ func (c *coinMarketCapHandler) QueryMarketPrice(
 		log.Println("[coinmarketcap] failed to query market data:", err)
 	}
 
-	observePricePoints := make([]p2p.ObservePricePoint, 0, len(watchSymbols))
+	observePricePoints := make(map[string]p2p.ObservePricePoint)
 	for symbol, marketData := range marketPrices.Data {
 		o, err := marketData.makeObservePricePoint(c.currency)
 		if err != nil {
-			log.Printf("failed to parse symbol [%s]: %e", symbol, err)
-			continue
+			return nil, fmt.Errorf(
+				"failed to parse symbol [%s]: %e",
+				symbol,
+				err,
+			)
 		}
-		observePricePoints = append(observePricePoints, *o)
+		observePricePoints[symbol] = *o
 	}
 
-	observePricePointChan <- observePricePoints
+	return observePricePoints, nil
 }
 
 func (c *coinMarketCapHandler) fetchPrices(

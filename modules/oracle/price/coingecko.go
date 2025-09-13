@@ -2,7 +2,6 @@ package price
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -24,6 +23,8 @@ type coinGeckoHandler struct {
 	// different base url and the header for the API key
 	demoMode bool
 }
+
+var _ PriceQuery = &coinGeckoHandler{}
 
 type coinGeckoPriceQueryResponse struct {
 	Symbol       string  `json:"symbol,omitempty"`
@@ -67,9 +68,7 @@ func makeCoinGeckoHandler(currency string) (*coinGeckoHandler, error) {
 }
 
 func (c *coinGeckoHandler) QueryMarketPrice(
-	symbols []string,
-	pricePointChan chan<- []p2p.ObservePricePoint,
-) {
+	symbols []string) (map[string]p2p.ObservePricePoint, error) {
 	symLowerCase := make([]string, len(symbols))
 	copy(symLowerCase, symbols)
 
@@ -84,21 +83,19 @@ func (c *coinGeckoHandler) QueryMarketPrice(
 
 	fetchedPrice, err := c.fetchPrices(queries)
 	if err != nil {
-		log.Println("failed to fetch market price", err)
-		return
+		return nil, fmt.Errorf("failed to fetch market price: %w", err)
 	}
 
-	observedPrices := utils.Map(fetchedPrice, mapCgResponse)
-
-	pricePointChan <- observedPrices
-}
-
-func mapCgResponse(p coinGeckoPriceQueryResponse) p2p.ObservePricePoint {
-	return p2p.ObservePricePoint{
-		Symbol: strings.ToUpper(p.Symbol),
-		Price:  p.CurrentPrice,
-		Volume: float64(p.TotalVolume),
+	buf := make(map[string]p2p.ObservePricePoint)
+	for _, p := range fetchedPrice {
+		buf[p.Symbol] = p2p.ObservePricePoint{
+			Symbol: p.Symbol,
+			Price:  p.CurrentPrice,
+			Volume: float64(p.TotalVolume),
+		}
 	}
+
+	return buf, nil
 }
 
 // market values queried from

@@ -55,9 +55,6 @@ type Oracle struct {
 	priceOracle          *price.PriceOracle
 	broadcastPriceSignal chan blockTickSignal
 
-	// to be used within a node, for price querying from API endpoints
-	observePriceChan chan []p2p.ObservePricePoint
-
 	// to be used within the network, for broadcasting average prices
 	broadcastPriceChan chan []p2p.AveragePricePoint
 
@@ -91,7 +88,6 @@ func New(
 
 		msgChan: make(chan p2p.Msg, 1),
 
-		observePriceChan:        make(chan []p2p.ObservePricePoint, 128),
 		broadcastPriceChan:      make(chan []p2p.AveragePricePoint, 128),
 		broadcastPriceSignal:    make(chan blockTickSignal, 1),
 		priceBlockSignatureChan: make(chan p2p.VSCBlock, 1024),

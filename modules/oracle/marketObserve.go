@@ -34,7 +34,14 @@ func (o *Oracle) marketObserve() {
 
 		case <-pricePollTicker.C:
 			for _, api := range o.priceOracle.PriceAPIs {
-				go api.QueryMarketPrice(watchSymbols, o.observePriceChan)
+				go func() {
+					pricePoints, err := api.QueryMarketPrice(watchSymbols)
+					if err != nil {
+						log.Println("failed to query for market price:", err)
+						return
+					}
+				}()
+
 			}
 
 		case broadcastSignal := <-o.broadcastPriceSignal:
