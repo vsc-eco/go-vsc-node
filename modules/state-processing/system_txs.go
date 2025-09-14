@@ -3,6 +3,7 @@ package stateEngine
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
@@ -159,8 +160,6 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		}
 	}
 
-	// panic("not implemented yet")
-
 	fmt.Println("tx.Code", tx)
 	cidz := cid.MustParse(tx.Code)
 	go func() {
@@ -174,6 +173,9 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		owner = tx.Self.RequiredAuths[0]
 	} else {
 		owner = tx.Owner
+		if !strings.HasPrefix(owner, "hive:") && !strings.HasPrefix(owner, "did:") {
+			owner = "hive:" + owner
+		}
 	}
 
 	se.contractDb.RegisterContract(id, contracts.Contract{

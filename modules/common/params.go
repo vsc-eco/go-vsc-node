@@ -34,6 +34,7 @@ var RC_HIVE_FREE_AMOUNT int64 = 5_000       // 5 HBD worth of RCs for Hive accou
 var MINIMUM_RC_LIMIT uint64 = 50
 
 var CONTRACT_DEPLOYMENT_FEE int64 = 10_000 // 10 HBD per contract
+var CONTRACT_DEPLOYMENT_FEE_START_HEIGHT uint64 = 99410000
 
 type BLOCKTXTYPE int
 

@@ -428,16 +428,66 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					txSelf.RequiredPostingAuths[idx] = "hive:" + auth
 				}
 
-				parsedTx := TxCreateContract{
-					Self: txSelf,
+				if len(tx.Operations) != 2 {
+					continue
 				}
-				json.Unmarshal(cj.Json, &parsedTx)
 
-				txResult := parsedTx.ExecuteTx(se, session, nil, nil, "")
-				if !txResult.Success {
-					session.Revert()
-				} else {
-					session.Done()
+				secondOp := tx.Operations[1]
+
+				if secondOp.Type == "transfer" {
+					amountData := secondOp.Value["amount"].(map[string]any)
+					amount, err := strconv.ParseInt(amountData["amount"].(string), 10, 64)
+
+					if err != nil {
+						panic(err)
+					}
+
+					if amount < common.CONTRACT_DEPLOYMENT_FEE {
+						continue
+					}
+
+					if amountData["nai"] != "@@000000013" {
+						continue
+					}
+
+					if secondOp.Value["to"] != common.GATEWAY_WALLET {
+						continue
+					}
+
+					parsedTx := TxCreateContract{
+						Self: txSelf,
+					}
+					json.Unmarshal(cj.Json, &parsedTx)
+
+					txResult := parsedTx.ExecuteTx(se, session, nil, nil, "")
+
+					if txResult.Success {
+						se.LedgerExecutor.Deposit(Deposit{
+							Id:          MakeTxId(tx.TransactionID, 1),
+							Asset:       "hbd",
+							Amount:      amount,
+							Account:     common.DAO_WALLET,
+							From:        "hive:" + secondOp.Value["from"].(string),
+							Memo:        "to=vsc.dao",
+							BlockHeight: blockInfo.BlockHeight,
+							BIdx:        int64(tx.Index),
+							OpIdx:       int64(1),
+						})
+					} else {
+						se.LedgerExecutor.Deposit(Deposit{
+							Id:          MakeTxId(tx.TransactionID, 1),
+							Asset:       "hbd",
+							Amount:      amount,
+							Account:     "hive:" + secondOp.Value["from"].(string),
+							From:        "hive:" + secondOp.Value["from"].(string),
+							Memo:        "to=" + secondOp.Value["from"].(string),
+							BlockHeight: blockInfo.BlockHeight,
+							BIdx:        int64(tx.Index),
+							OpIdx:       int64(1),
+						})
+					}
+
+					fmt.Println("create_contract txResult", txResult, secondOp)
 				}
 				continue
 			} else if cj.Id == "vsc.election_result" {

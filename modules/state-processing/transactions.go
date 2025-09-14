@@ -146,26 +146,6 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 	contractSession.SetMetadata(ctxValue.InternalStorage())
 	contractSession.AppendLogs(ctxValue.Logs())
-
-	// res := result.MapOrElse(
-	// 	se.wasm.Execute(gas*common.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime),
-	// 	func(err error) TxResult {
-	// 		return errorToTxResult(err, int64(gas))
-	// 	},
-	// 	func(res wasm_types.WasmResultStruct) TxResult {
-	// 		contractSession.SetMetadata(ctx.InternalStorage())
-	// 		return TxResult{
-	// 			Success: !res.Error,
-	// 			Ret:     res.Result,
-	// 			RcUsed:  int64(math.Ceil(float64(res.Gas) / common.CYCLE_GAS_PER_RC)),
-	// 		}
-	// 	},
-	// )
-
-	// if !res.Success {
-	// 	ctx.Revert()
-	// }
-
 	ss.Commit()
 
 	rcUsed := int64(math.Max(math.Ceil(float64(res.Result.Gas)/common.CYCLE_GAS_PER_RC), 100))
