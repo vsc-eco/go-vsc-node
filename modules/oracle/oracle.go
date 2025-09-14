@@ -106,24 +106,20 @@ func (o *Oracle) Init() error {
 // Start implements aggregate.Plugin.
 // Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
-	o.vStream.RegisterBlockTick("oracle", o.blockTick, false)
-	go o.marketObserve()
+	o.vStream.RegisterBlockTick("oracle", o.blockTick, true)
 
 	return promise.New(func(resolve func(any), reject func(error)) {
 		var err error
 
-		o.oracleP2P.Initialize(
-			o.broadcastPriceChan,
-			o.priceBlockSignatureChan,
-			o.broadcastPriceBlockChan,
-		)
-		o.service, err = libp2p.NewPubSubService(o.p2pServer, o.oracleP2P)
+		p2pSpec := &p2p.OracleP2pSpec{} // TODO initialize this struct
+		o.service, err = libp2p.NewPubSubService(o.p2pServer, p2pSpec)
 		if err != nil {
 			o.cancelFunc()
 			reject(err)
 			return
 		}
 
+		go o.marketObserve()
 		resolve(nil)
 	})
 }
