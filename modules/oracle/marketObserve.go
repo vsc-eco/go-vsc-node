@@ -2,9 +2,7 @@ package oracle
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"math"
 	"time"
@@ -45,11 +43,25 @@ func (o *Oracle) marketObserve() {
 
 			}
 
-		case broadcastSignal := <-o.broadcastPriceSignal:
-			o.handleBroadcastSignal(broadcastSignal)
-			broadcastPriceBuf = broadcastPriceBuf[:0]
-			newBlockBuf = newBlockBuf[:0]
+		case sig := <-o.broadcastPriceSignal:
+			// broadcast local average price
+			localAvgPrices := o.priceOracle.AvgPriceMap.GetAveragePrices()
+			o.BroadcastMessage(&p2p.OracleMessage{
+				Type: p2p.MsgPriceOracleBroadcast,
+				Data: localAvgPrices,
+			})
+
+			if sig.isBlockProducer {
+				o.pollMedianPriceSignature(sig, localAvgPrices)
+			} else if sig.isWitness {
+			}
 			o.priceOracle.AvgPriceMap.Flush()
+
+			/*
+				o.handleBroadcastSignal(broadcastSignal)
+				broadcastPriceBuf = broadcastPriceBuf[:0]
+				newBlockBuf = newBlockBuf[:0]
+			*/
 
 		case newBlock := <-o.broadcastPriceBlockChan:
 			// TODO: move this channel to witness processing
@@ -61,20 +73,6 @@ func (o *Oracle) marketObserve() {
 				avgPricePoints[i].UnixTimeStamp = now
 			}
 			broadcastPriceBuf = append(broadcastPriceBuf, avgPricePoints...)
-
-		case msg := <-o.msgChan:
-			// TODO: which one to send broadcast within the network?
-			if err := o.service.Send(msg); err != nil {
-				log.Println("[oracle] failed broadcast message", msg, err)
-				continue
-			}
-
-			jbytes, err := json.Marshal(msg)
-			if err != nil {
-				log.Println("[oracle] failed serialize message", msg, err)
-				continue
-			}
-			o.p2pServer.SendToAll(p2p.OracleTopic, jbytes)
 
 			/*
 				case btcHeadBlock := <-o.blockRelayChan:
@@ -90,69 +88,56 @@ func (o *Oracle) marketObserve() {
 }
 
 func (o *Oracle) handleBroadcastSignal(sig blockTickSignal) {
-	// local price
-	medianPriceBuf := make([]p2p.AveragePricePoint, 0, len(watchSymbols))
-
-	for _, symbol := range watchSymbols {
-		avgPricePoint, err := o.priceOracle.GetAveragePrice(symbol)
-		if err != nil {
-			log.Println("symbol not found in map:", symbol)
-			continue
-		}
-		medianPriceBuf = append(medianPriceBuf, *avgPricePoint)
-	}
-
-	o.msgChan <- &p2p.OracleMessage{
-		Type: p2p.MsgPriceOracleBroadcast,
-		Data: medianPriceBuf,
-	}
 
 	if !sig.isWitness && !sig.isBlockProducer {
 		return
 	}
 
-	if sig.isBlockProducer {
-		ts := time.Now().UTC().Unix()
-		for i := range medianPriceBuf {
-			medianPriceBuf[i].UnixTimeStamp = ts
-		}
-
-		// room for network latency
-		medianPricePoints := makeMedianPrices(medianPriceBuf)
-		nodeId := o.conf.Get()
-		vscBlock, err := p2p.MakeVscBlock(
-			nodeId.HiveUsername,
-			nodeId.HiveActiveKey,
-			medianPricePoints,
-		)
-		if err != nil {
-			log.Println("[oracle] failed to make new vsc block", err)
-			return
-		}
-
-		o.msgChan <- &p2p.OracleMessage{
-			Type: p2p.MsgPriceOracleNewBlock,
-			Data: *vscBlock,
-		}
-
-		o.pollMedianPriceSignature(*vscBlock, sig)
-	} else if sig.isWitness {
-		timeThreshold := time.Now().UTC().UnixMilli()
-
-		for _, block := range newBlockBuf {
-			if block.TimeStamp < timeThreshold {
-				continue
+	/*
+		if sig.isBlockProducer {
+			ts := time.Now().UTC().Unix()
+			for i := range medianPriceBuf {
+				medianPriceBuf[i].UnixTimeStamp = ts
 			}
 
-			// TODO: sign and broadcast
-			fmt.Println(block)
+			// room for network latency
+			medianPricePoints := makeMedianPrices(medianPriceBuf)
+			nodeId := o.conf.Get()
+			vscBlock, err := p2p.MakeVscBlock(
+				nodeId.HiveUsername,
+				nodeId.HiveActiveKey,
+				medianPricePoints,
+			)
+			if err != nil {
+				log.Println("[oracle] failed to make new vsc block", err)
+				return
+			}
+
+			o.msgChan <- &p2p.OracleMessage{
+				Type: p2p.MsgPriceOracleNewBlock,
+				Data: *vscBlock,
+			}
+
+			o.pollMedianPriceSignature(*vscBlock, sig)
+		} else if sig.isWitness {
+			timeThreshold := time.Now().UTC().UnixMilli()
+
+			for _, block := range newBlockBuf {
+				if block.TimeStamp < timeThreshold {
+					continue
+				}
+
+				// TODO: sign and broadcast
+				fmt.Println(block)
+			}
 		}
-	}
+	*/
 }
 
+// TODO: reimplement
 func (o *Oracle) pollMedianPriceSignature(
-	block p2p.VSCBlock,
 	sig blockTickSignal,
+	localAvgPrices map[string]p2p.AveragePricePoint,
 ) error {
 	sigThreshold := int(math.Ceil(float64(len(sig.electedMembers) * 2 / 3)))
 	block.Signatures = make([]string, 0, sigThreshold)

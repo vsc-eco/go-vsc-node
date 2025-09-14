@@ -2,6 +2,7 @@ package oracle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 	"vsc-node/modules/common"
@@ -54,9 +55,6 @@ type Oracle struct {
 
 	// for new block
 	broadcastPriceBlockChan chan p2p.VSCBlock
-
-	// for communication between nodes in a network
-	msgChan chan p2p.Msg
 }
 
 func New(
@@ -74,8 +72,6 @@ func New(
 		witness:     witness,
 		vStream:     vstream,
 		stateEngine: stateEngine,
-
-		msgChan: make(chan p2p.Msg, 1),
 
 		broadcastPriceChan:      make(chan []p2p.AveragePricePoint, 128),
 		broadcastPriceSignal:    make(chan blockTickSignal, 1),
@@ -133,6 +129,18 @@ func (o *Oracle) Stop() error {
 		return nil
 	}
 	return o.service.Close()
+}
+
+func (o *Oracle) BroadcastMessage(msg p2p.Msg) error {
+	if o.service == nil {
+		return errors.New("o.service uninitialized")
+	}
+
+	if msg == nil {
+		return nil
+	}
+
+	return o.service.Send(msg)
 }
 
 func (o *Oracle) relayBtcHeadBlock() {
