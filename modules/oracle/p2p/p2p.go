@@ -13,7 +13,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-const OracleTopic = "/vsc/mainet/oracle/v1"
+const OracleTopic = "/vsc/mainnet/oracle/v1"
 
 type Msg *OracleMessage
 
