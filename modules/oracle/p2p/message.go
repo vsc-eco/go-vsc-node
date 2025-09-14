@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -37,19 +36,16 @@ func (o *ObservePricePoint) String() string {
 }
 
 type AveragePricePoint struct {
-	Symbol        string  `json:"symbol"                    validate:"required,min=1,max=9,alphanum"` // no need to validate
 	Price         float64 `json:"average_price"             validate:"required,gt=0.0"`
 	Volume        float64 `json:"average_volume"            validate:"required,gt=0.0"`
 	UnixTimeStamp int64   `json:"unix_time_stamp,omitempty" validate:"required,gt=0"`
 }
 
 func MakeAveragePricePoint(
-	symbol string,
 	price, volume float64,
 ) AveragePricePoint {
 	now := time.Now().UTC().Unix()
 	return AveragePricePoint{
-		Symbol:        strings.ToUpper(symbol),
 		Price:         price,
 		Volume:        volume,
 		UnixTimeStamp: now,

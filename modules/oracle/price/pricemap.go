@@ -1,14 +1,9 @@
 package price
 
 import (
-	"errors"
 	"strings"
 	"sync"
 	"vsc-node/modules/oracle/p2p"
-)
-
-var (
-	errSymbolNotFound = errors.New("symbol not found")
 )
 
 type priceMap struct {
@@ -56,22 +51,22 @@ func (pm *priceMap) Observe(pricePoints map[string]p2p.ObservePricePoint) {
 func (pm *priceMap) Flush() {
 	pm.mtx.Lock()
 	defer pm.mtx.Unlock()
+
 	pm.buf = make(map[string]pricePointData)
 }
 
-func (pm *priceMap) getAveragePrice(
-	symbol string,
-) (*p2p.AveragePricePoint, error) {
-	symbol = strings.ToUpper(symbol)
+func (pm *priceMap) GetAveragePrices() map[string]p2p.AveragePricePoint {
+	pm.mtx.Lock()
+	defer pm.mtx.Unlock()
 
-	p, ok := pm.buf[symbol]
-	if !ok {
-		return nil, errSymbolNotFound
+	out := make(map[string]p2p.AveragePricePoint)
+
+	for symbol, p := range pm.buf {
+		symbol = strings.ToUpper(symbol)
+		out[symbol] = p2p.MakeAveragePricePoint(p.avgPrice, p.avgVolume)
 	}
 
-	out := p2p.MakeAveragePricePoint(symbol, p.avgPrice, p.avgVolume)
-
-	return &out, nil
+	return out
 }
 
 func calcNextAvg(
