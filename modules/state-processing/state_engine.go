@@ -343,13 +343,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			continue
 		}
 
-		var lastblock uint64
-		vscBlock, _ := se.vscBlocks.GetBlockByHeight(blockInfo.BlockHeight)
-		if vscBlock != nil {
-			lastblock = uint64(vscBlock.EndBlock)
-		}
-
-		session := se.LedgerExecutor.NewSession(lastblock)
 		if singleOp.Type == "custom_json" {
 			// fmt.Println(op.Type)
 			opVal := singleOp.Value
@@ -459,7 +452,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 					json.Unmarshal(cj.Json, &parsedTx)
 
-					txResult := parsedTx.ExecuteTx(se, session, nil, nil, "")
+					txResult := parsedTx.ExecuteTx(se)
 
 					if txResult.Success {
 						se.LedgerExecutor.Deposit(Deposit{
@@ -495,7 +488,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					Self: txSelf,
 				}
 				json.Unmarshal(cj.Json, &parsedTx)
-				parsedTx.ExecuteTx(se, session, nil)
+				parsedTx.ExecuteTx(se)
 				continue
 			}
 			//# End parsing system transactions

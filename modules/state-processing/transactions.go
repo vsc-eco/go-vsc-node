@@ -1155,13 +1155,6 @@ func (tx *OffchainTransaction) Type() string {
 	return "offchain"
 }
 
-// var _ VSCTransaction = &TxElectionResult{}
-
-// var _ VSCTransaction = &TxProposeBlock{}
-
-// This would probably be the only one to be considered a tx, since we can apply pulling of balance for deployment
-var _ VSCTransaction = &TxCreateContract{}
-
 var _ VscTxContainer = &OffchainTransaction{}
 
 type VSCTransaction interface {
