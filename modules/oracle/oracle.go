@@ -30,24 +30,15 @@ var (
 	watchSymbols = []string{"BTC", "ETH", "LTC"}
 )
 
-type BlockSync interface {
-	RegisterBlockTick(string, vstream.BTFunc, bool)
-}
-
-type BlockSchedule interface {
-	GetSchedule(slotHeight uint64) []stateEngine.WitnessSlot
-}
-
 type Oracle struct {
 	p2pServer  *libp2p.P2PServer
-	oracleP2P  p2p.OracleP2pParams
 	service    libp2p.PubSubService[p2p.Msg]
 	conf       common.IdentityConfig
 	electionDb elections.Elections
 	witness    witnesses.Witnesses
 
-	vStream     BlockSync
-	stateEngine BlockSchedule
+	vStream     *vstream.VStream
+	stateEngine *stateEngine.StateEngine
 
 	ctx        context.Context
 	cancelFunc context.CancelFunc
@@ -70,16 +61,14 @@ type Oracle struct {
 
 func New(
 	p2pServer *libp2p.P2PServer,
-	oracleP2P p2p.OracleP2pParams,
 	conf common.IdentityConfig,
 	electionDb elections.Elections,
 	witness witnesses.Witnesses,
-	vstream BlockSync,
-	stateEngine BlockSchedule,
+	vstream *vstream.VStream,
+	stateEngine *stateEngine.StateEngine,
 ) *Oracle {
 	return &Oracle{
 		p2pServer:   p2pServer,
-		oracleP2P:   oracleP2P,
 		conf:        conf,
 		electionDb:  electionDb,
 		witness:     witness,
