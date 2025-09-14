@@ -40,6 +40,7 @@ func (o *Oracle) marketObserve() {
 						log.Println("failed to query for market price:", err)
 						return
 					}
+					o.priceOracle.AvgPriceMap.Observe(pricePoints)
 				}()
 
 			}
@@ -48,7 +49,7 @@ func (o *Oracle) marketObserve() {
 			o.handleBroadcastSignal(broadcastSignal)
 			broadcastPriceBuf = broadcastPriceBuf[:0]
 			newBlockBuf = newBlockBuf[:0]
-			o.priceOracle.ResetPriceCache()
+			o.priceOracle.AvgPriceMap.Flush()
 
 		case newBlock := <-o.broadcastPriceBlockChan:
 			// TODO: move this channel to witness processing
@@ -74,9 +75,6 @@ func (o *Oracle) marketObserve() {
 				continue
 			}
 			o.p2pServer.SendToAll(p2p.OracleTopic, jbytes)
-
-		case pricePoints := <-o.observePriceChan:
-			o.priceOracle.ObservePricePoint(pricePoints)
 
 			/*
 				case btcHeadBlock := <-o.blockRelayChan:

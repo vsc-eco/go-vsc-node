@@ -16,7 +16,7 @@ type PriceQuery interface {
 
 type PriceOracle struct {
 	c           chan p2p.AveragePricePoint
-	avgPriceMap priceMap
+	AvgPriceMap priceMap
 
 	PriceAPIs []PriceQuery
 }
@@ -42,25 +42,9 @@ func New(userCurrency string) (*PriceOracle, error) {
 
 	p := &PriceOracle{
 		c:           make(chan p2p.AveragePricePoint, 1),
-		avgPriceMap: makePriceMap(),
+		AvgPriceMap: makePriceMap(),
 		PriceAPIs:   priceQueries,
 	}
 
 	return p, nil
-}
-
-func (p *PriceOracle) ObservePricePoint(pricePoints []p2p.ObservePricePoint) {
-	for _, pricePoint := range pricePoints {
-		p.avgPriceMap.observe(pricePoint)
-	}
-}
-
-func (p *PriceOracle) GetAveragePrice(
-	symbol string,
-) (*p2p.AveragePricePoint, error) {
-	return p.avgPriceMap.getAveragePrice(symbol)
-}
-
-func (p *PriceOracle) ResetPriceCache() {
-	p.avgPriceMap.priceSymbolMap = make(priceSymbolMap)
 }

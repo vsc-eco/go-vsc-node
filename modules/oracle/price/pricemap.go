@@ -3,6 +3,7 @@ package price
 import (
 	"errors"
 	"strings"
+	"sync"
 	"vsc-node/modules/oracle/p2p"
 )
 
@@ -10,8 +11,11 @@ var (
 	errSymbolNotFound = errors.New("symbol not found")
 )
 
-type priceMap struct{ priceSymbolMap }
-type priceSymbolMap map[string]pricePointData
+type priceMap struct {
+	buf map[string]pricePointData
+	mtx *sync.Mutex
+}
+
 type pricePointData struct {
 	avgPrice  float64
 	avgVolume float64
@@ -19,7 +23,40 @@ type pricePointData struct {
 }
 
 func makePriceMap() priceMap {
-	return priceMap{make(priceSymbolMap)}
+	return priceMap{
+		buf: make(map[string]pricePointData),
+		mtx: new(sync.Mutex),
+	}
+}
+
+func (pm *priceMap) Observe(pricePoints map[string]p2p.ObservePricePoint) {
+	pm.mtx.Lock()
+	defer pm.mtx.Unlock()
+
+	for priceSymbol, pricePoint := range pricePoints {
+		symbol := strings.ToUpper(priceSymbol)
+		avg, ok := pm.buf[symbol]
+
+		if !ok {
+			avg = pricePointData{
+				avgPrice:  pricePoint.Price,
+				avgVolume: pricePoint.Volume,
+				counter:   1,
+			}
+		} else {
+			avg.avgPrice = calcNextAvg(avg.avgPrice, pricePoint.Price, avg.counter)
+			avg.avgVolume = calcNextAvg(avg.avgVolume, pricePoint.Volume, avg.counter)
+			avg.counter += 1
+		}
+
+		pm.buf[symbol] = avg
+	}
+}
+
+func (pm *priceMap) Flush() {
+	pm.mtx.Lock()
+	defer pm.mtx.Unlock()
+	pm.buf = make(map[string]pricePointData)
 }
 
 func (pm *priceMap) getAveragePrice(
@@ -27,7 +64,7 @@ func (pm *priceMap) getAveragePrice(
 ) (*p2p.AveragePricePoint, error) {
 	symbol = strings.ToUpper(symbol)
 
-	p, ok := pm.priceSymbolMap[symbol]
+	p, ok := pm.buf[symbol]
 	if !ok {
 		return nil, errSymbolNotFound
 	}
@@ -35,25 +72,6 @@ func (pm *priceMap) getAveragePrice(
 	out := p2p.MakeAveragePricePoint(symbol, p.avgPrice, p.avgVolume)
 
 	return &out, nil
-}
-
-func (pm *priceMap) observe(pricePoint p2p.ObservePricePoint) {
-	symbol := strings.ToUpper(pricePoint.Symbol)
-	avg, ok := pm.priceSymbolMap[symbol]
-
-	if !ok {
-		avg = pricePointData{
-			avgPrice:  pricePoint.Price,
-			avgVolume: pricePoint.Volume,
-			counter:   1,
-		}
-	} else {
-		avg.avgPrice = calcNextAvg(avg.avgPrice, pricePoint.Price, avg.counter)
-		avg.avgVolume = calcNextAvg(avg.avgVolume, pricePoint.Volume, avg.counter)
-		avg.counter += 1
-	}
-
-	pm.priceSymbolMap[symbol] = avg
 }
 
 func calcNextAvg(
