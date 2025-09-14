@@ -97,7 +97,23 @@ func main() {
 			}
 			fmt.Println(string(j))
 
-			txid, err := hiveClient.BroadcastJson([]string{user}, []string{}, "vsc.create_contract", string(j), &wif)
+			deployOp := hivego.CustomJsonOperation{
+				RequiredAuths:        []string{user},
+				RequiredPostingAuths: []string{},
+				Id:                   "vsc.create_contract",
+				Json:                 string(j),
+			}
+			feeOp := hivego.TransferOperation{
+				From:   user,
+				To:     common.GATEWAY_WALLET,
+				Amount: "10.000 HBD",
+				Memo:   "",
+			}
+
+			txid, err := hiveClient.Broadcast([]hivego.HiveOperation{
+				deployOp,
+				feeOp,
+			}, &wif)
 			if err != nil {
 				fmt.Println("failed to broadcast contract creation tx", err)
 			} else {
