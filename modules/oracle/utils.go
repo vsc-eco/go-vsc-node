@@ -39,7 +39,7 @@ func makeMedianPrices(
 		}
 
 		medPrice.prices = append(medPrice.prices, p.Price)
-		medPrice.volumes = append(medPrice.prices, p.Volume)
+		medPrice.volumes = append(medPrice.volumes, p.Volume)
 
 		medPriceMap[symbol] = medPrice
 	}
@@ -60,6 +60,10 @@ func makeMedianPrices(
 }
 
 func getMedian(buf []float64) float64 {
+	if len(buf) == 0 {
+		return 0
+	}
+
 	slices.Sort(buf)
 
 	evenCount := len(buf)&1 == 0
