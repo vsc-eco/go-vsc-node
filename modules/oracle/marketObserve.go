@@ -75,4 +75,6 @@ func (o *Oracle) marketObserve() {
 	}
 }
 
+func (p *Oracle) submitToContract(data any) {
+	fmt.Println("not implemented")
 }
