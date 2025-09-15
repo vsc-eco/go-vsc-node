@@ -21,10 +21,10 @@ import (
 )
 
 type ContractOutput struct {
-	Id         string                 `json:"id"`
-	ContractId string                 `json:"contract_id"`
-	Inputs     []string               `json:"inputs"`
-	Metadata   map[string]interface{} `json:"metadata"`
+	Id         string                     `json:"id"`
+	ContractId string                     `json:"contract_id"`
+	Inputs     []string                   `json:"inputs"`
+	Metadata   contracts.ContractMetadata `json:"metadata"`
 	//This might not be used
 
 	Results     []contracts.ContractOutputResult `json:"results" bson:"results"`

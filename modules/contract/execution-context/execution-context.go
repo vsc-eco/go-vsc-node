@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"vsc-node/modules/common"
+	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	ledgerSystem "vsc-node/modules/ledger-system"
 
@@ -17,11 +18,14 @@ type contractExecutionContext struct {
 	ledger      ledgerSystem.LedgerSession
 	env         Environment
 	rcLimit     int64
-	storage     StateStore
-	currentSize int
-	maxSize     int
+	callSession *contract_session.CallSession
 
-	logs []string
+	// current metadatas of other contracts called by this contract
+	recursiveMetas map[string]contracts.ContractMetadata
+	currentSize    int
+	maxSize        int
+
+	logs map[string][]string
 
 	ioReadGas  int
 	ioWriteGas int
@@ -62,8 +66,7 @@ func New(
 	env Environment,
 	rcLimit int64,
 	ledger ledgerSystem.LedgerSession,
-	storage StateStore,
-	metadata contracts.ContractMetadata,
+	callSession *contract_session.CallSession,
 ) ContractExecutionContext {
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
@@ -87,16 +90,17 @@ func New(
 			tokenLimits[token] = &val
 		}
 	}
-	// ensureInternalStorageInitialized(interalStorage)
+	metadata := callSession.GetMetadata(env.ContractId)
 	return &contractExecutionContext{
 		env.Intents,
 		ledger,
 		env,
 		rcLimit,
-		storage,
+		callSession,
+		make(map[string]contracts.ContractMetadata),
 		metadata.CurrentSize,
 		metadata.MaxSize,
-		nil,
+		make(map[string][]string),
 		0,
 		0,
 		nil,
@@ -104,26 +108,24 @@ func New(
 	}
 }
 
-// func ensureInternalStorageInitialized(internalStorage map[string]interface{}) {
-// 	_, ok := internalStorage["current_size"]
-// 	if !ok {
-// 		internalStorage["current_size"] = 0
-// 	}
-// 	_, ok = internalStorage["max_size"]
-// 	if !ok {
-// 		internalStorage["max_size"] = 0
-// 	}
-// }
-
-func (ctx *contractExecutionContext) Logs() []string {
+func (ctx *contractExecutionContext) Logs() map[string][]string {
 	return ctx.logs
 }
 
-func (ctx *contractExecutionContext) InternalStorage() contracts.ContractMetadata {
-	return contracts.ContractMetadata{
-		CurrentSize: ctx.currentSize,
-		MaxSize:     ctx.maxSize,
+func (ctx *contractExecutionContext) InternalStorage() map[string]contracts.ContractMetadata {
+	meta, exists := ctx.recursiveMetas[ctx.env.ContractId]
+	if !exists {
+		ctx.recursiveMetas[ctx.env.ContractId] = contracts.ContractMetadata{
+			CurrentSize: ctx.currentSize,
+			MaxSize:     ctx.maxSize,
+		}
+	} else {
+		ctx.recursiveMetas[ctx.env.ContractId] = contracts.ContractMetadata{
+			CurrentSize: ctx.currentSize + meta.CurrentSize,
+			MaxSize:     max(ctx.maxSize, meta.MaxSize),
+		}
 	}
+	return ctx.recursiveMetas
 }
 
 func (ctx *contractExecutionContext) IOGas() int {
@@ -178,7 +180,12 @@ func (ctx *contractExecutionContext) Revert() {
 }
 
 func (ctx *contractExecutionContext) Log(msg string) {
-	ctx.logs = append(ctx.logs, msg)
+	currentLogs, exists := ctx.logs[ctx.env.ContractId]
+	if !exists {
+		currentLogs = make([]string, 0)
+	}
+	currentLogs = append(currentLogs, msg)
+	ctx.logs[ctx.env.ContractId] = currentLogs
 	ctx.doIO(len(msg))
 }
 
@@ -320,13 +327,13 @@ func (ctx *contractExecutionContext) SetState(key string, value string) result.R
 	newWriteGas := max(0, ctx.currentSize-ctx.maxSize)
 	ctx.maxSize = max(ctx.currentSize, ctx.maxSize)
 	ctx.doIO(newWriteToAdd-newWriteGas, newWriteGas)
-	ctx.storage.Set(key, []byte(value))
+	ctx.callSession.GetStateStore(ctx.env.ContractId).Set(key, []byte(value))
 	return result.Ok(struct{}{})
 }
 
 func (ctx *contractExecutionContext) GetState(key string) result.Result[string] {
 	ctx.doIO(len(key))
-	res := ctx.storage.Get(key)
+	res := ctx.callSession.GetStateStore(ctx.env.ContractId).Get(key)
 	if res == nil {
 		return result.Ok("")
 	}
@@ -338,7 +345,7 @@ func (ctx *contractExecutionContext) DeleteState(key string) result.Result[struc
 	ctx.doIO(len(key))
 	value := ctx.GetState(key).Unwrap()
 	ctx.currentSize -= len(value) + len(key)
-	ctx.storage.Delete(key)
+	ctx.callSession.GetStateStore(ctx.env.ContractId).Delete(key)
 	return result.Ok(struct{}{})
 }
 

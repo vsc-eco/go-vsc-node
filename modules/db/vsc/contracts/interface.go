@@ -24,7 +24,7 @@ type IngestOutputArgs struct {
 	Inputs  []string
 	Results []ContractOutputResult `bson:"results"`
 
-	Metadata map[string]interface{} `bson:"metadata"`
+	Metadata ContractMetadata `bson:"metadata"`
 
 	AnchoredBlock  string
 	AnchoredHeight int64
