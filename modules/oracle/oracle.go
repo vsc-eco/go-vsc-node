@@ -52,7 +52,7 @@ type Oracle struct {
 	priceOracle *price.PriceOracle
 
 	// to be used within the network, for broadcasting average prices
-	broadcastPricePoints *threadSafeMap[string, []pricePoints]
+	broadcastPricePoints *threadSafeMap[string, []pricePoint]
 	broadcastPriceSignal chan blockTickSignal
 
 	// for block signatures
@@ -78,7 +78,7 @@ func New(
 		vStream:     vstream,
 		stateEngine: stateEngine,
 
-		broadcastPricePoints: makeThreadSafeMap[string, []pricePoints](),
+		broadcastPricePoints: makeThreadSafeMap[string, []pricePoint](),
 		broadcastPriceSignal: make(chan blockTickSignal, 1),
 
 		priceBlockSignatureChan: make(chan p2p.VSCBlock, 1024),
@@ -150,8 +150,6 @@ func (o *Oracle) BroadcastMessage(msg p2p.Msg) error {
 func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 	var responseMsg p2p.Msg = nil
 
-	recvTimeStamp := time.Now().UTC().Unix()
-
 	switch msg.Type {
 	case p2p.MsgPriceBroadcast:
 		data, err := parseMsg[map[string]p2p.AveragePricePoint](msg.Data)
@@ -159,31 +157,40 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 			return nil, err
 		}
 
-		o.broadcastPricePoints.Update(func(m map[string][]pricePoints) {
-			for symbol, avgPricePoint := range *data {
-				sym := strings.ToUpper(symbol)
-
-				pricePoint := pricePoints{
-					price:       avgPricePoint.Price,
-					volume:      avgPricePoint.Volume,
-					peerID:      peerID,
-					collectedAt: recvTimeStamp,
-				}
-
-				v, ok := m[sym]
-				if !ok {
-					v = []pricePoints{pricePoint}
-				} else {
-					v = append(v, pricePoint)
-				}
-
-				m[sym] = v
-			}
-		})
+		o.broadcastPricePoints.Update(collectPricePoint(peerID, *data))
 
 	default:
 		return nil, errors.New("invalid message type")
 	}
 
 	return responseMsg, nil
+}
+
+func collectPricePoint(
+	peerID peer.ID,
+	data map[string]p2p.AveragePricePoint,
+) updateFunc[string, []pricePoint] {
+	return func(m map[string][]pricePoint) {
+		recvTimeStamp := time.Now().UTC()
+
+		for symbol, avgPricePoint := range data {
+			sym := strings.ToUpper(symbol)
+
+			pp := pricePoint{
+				price:       avgPricePoint.Price,
+				volume:      avgPricePoint.Volume,
+				peerID:      peerID,
+				collectedAt: recvTimeStamp,
+			}
+
+			v, ok := m[sym]
+			if !ok {
+				v = []pricePoint{pp}
+			} else {
+				v = append(v, pp)
+			}
+
+			m[sym] = v
+		}
+	}
 }

@@ -5,7 +5,6 @@ import (
 	"slices"
 	"sync"
 	"time"
-	"vsc-node/modules/oracle/p2p"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -15,57 +14,13 @@ const (
 	hourInSecond   = 3600
 )
 
-type pricePoints struct {
+type pricePoint struct {
 	price  float64
 	volume float64
 	peerID peer.ID
 
 	// unix UTC timestamp
-	collectedAt int64
-}
-
-type medianPricePointMap = map[string]pricePoints
-
-func makeMedianPrices(
-	avgPricePoints map[string]p2p.AveragePricePoint,
-) map[string]p2p.AveragePricePoint {
-	/*
-		var (
-			timeFrame   = time.Now().UTC().Unix() - hourInSecond
-			medPriceMap = make(medianPricePointMap)
-		)
-
-		for _, p := range avgPricePoints {
-			if p.UnixTimeStamp < timeFrame {
-				continue
-			}
-
-			symbol := strings.ToUpper(p.Symbol)
-			medPrice, ok := medPriceMap[symbol]
-			if !ok {
-				medPrice = pricePoints{[]float64{}, []float64{}}
-			}
-
-			medPrice.prices = append(medPrice.prices, p.Price)
-			medPrice.volumes = append(medPrice.volumes, p.Volume)
-
-			medPriceMap[symbol] = medPrice
-		}
-
-		medianPricePoint := make([]p2p.AveragePricePoint, 0)
-		for symbol, pricePoints := range medPriceMap {
-			medianPricePoint = append(
-				medianPricePoint,
-				p2p.MakeAveragePricePoint(
-					getMedian(pricePoints.prices),
-					getMedian(pricePoints.volumes),
-				),
-			)
-		}
-
-		return medianPricePoint
-	*/
-	return nil
+	collectedAt time.Time
 }
 
 func getMedian(buf []float64) float64 {
@@ -111,4 +66,17 @@ func (t *threadSafeMap[K, V]) Update(updateFunc updateFunc[K, V]) {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	updateFunc(t.buf)
+}
+
+// returns a copy of the internal map
+func (t threadSafeMap[K, V]) GetMap() map[K]V {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+
+	bufCpy := make(map[K]V)
+	for k, v := range t.buf {
+		bufCpy[k] = v
+	}
+
+	return bufCpy
 }

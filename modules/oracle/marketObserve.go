@@ -1,7 +1,11 @@
 package oracle
 
 import (
+	"context"
+	"errors"
 	"log"
+	"math"
+	"strings"
 	"time"
 	"vsc-node/modules/oracle/p2p"
 
@@ -45,7 +49,7 @@ func (o *Oracle) marketObserve() {
 			})
 
 			if sig.isBlockProducer {
-				o.pollMedianPriceSignature(sig, localAvgPrices)
+				o.blockProducerHandler(&sig, localAvgPrices)
 			} else if sig.isWitness {
 			}
 			o.priceOracle.AvgPriceMap.Flush()
@@ -73,91 +77,130 @@ func (o *Oracle) marketObserve() {
 	}
 }
 
-func (o *Oracle) handleBroadcastSignal(sig blockTickSignal) {
+func (o *Oracle) blockProducerHandler(
+	sig *blockTickSignal,
+	localAvgPrices map[string]p2p.AveragePricePoint,
+) error {
+	medianPricePoints := o.getMedianPricePoint(localAvgPrices)
 
-	if !sig.isWitness && !sig.isBlockProducer {
-		return
+	block, err := p2p.MakeVscBlock(
+		o.conf.Get().HiveUsername,
+		o.conf.Get().HiveActiveKey,
+		medianPricePoints,
+	)
+	if err != nil {
+		return err
 	}
 
-	/*
-		if sig.isBlockProducer {
-			ts := time.Now().UTC().Unix()
-			for i := range medianPriceBuf {
-				medianPriceBuf[i].UnixTimeStamp = ts
-			}
+	msg := p2p.OracleMessage{Type: p2p.MsgPriceOracleNewBlock, Data: *block}
+	if err := o.BroadcastMessage(&msg); err != nil {
+		return err
+	}
 
-			// room for network latency
-			medianPricePoints := makeMedianPrices(medianPriceBuf)
-			nodeId := o.conf.Get()
-			vscBlock, err := p2p.MakeVscBlock(
-				nodeId.HiveUsername,
-				nodeId.HiveActiveKey,
-				medianPricePoints,
-			)
-			if err != nil {
-				log.Println("[oracle] failed to make new vsc block", err)
-				return
-			}
+	return o.pollMedianPriceSignature(sig, block)
+}
 
-			o.msgChan <- &p2p.OracleMessage{
-				Type: p2p.MsgPriceOracleNewBlock,
-				Data: *vscBlock,
-			}
+func (o *Oracle) getMedianPricePoint(
+	localAvgPrices map[string]p2p.AveragePricePoint,
+) map[string]pricePoint {
+	// room for network latency
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-			o.pollMedianPriceSignature(*vscBlock, sig)
-		} else if sig.isWitness {
-			timeThreshold := time.Now().UTC().UnixMilli()
+	<-ctx.Done()
 
-			for _, block := range newBlockBuf {
-				if block.TimeStamp < timeThreshold {
-					continue
-				}
+	type aggregatedPricePoints struct {
+		prices  []float64
+		volumes []float64
+	}
 
-				// TODO: sign and broadcast
-				fmt.Println(block)
-			}
+	appBuf := make(map[string]aggregatedPricePoints)
+
+	// updating with local price points
+	for k, v := range localAvgPrices {
+		sym := strings.ToUpper(k)
+		appBuf[sym] = aggregatedPricePoints{
+			prices:  []float64{v.Price},
+			volumes: []float64{v.Volume},
 		}
-	*/
+	}
+
+	// updating with broadcasted price points
+	timeThreshold := time.Now().UTC().Add(-time.Hour)
+	broadcastedPricePoints := o.broadcastPricePoints.GetMap()
+
+	for sym, pricePoints := range broadcastedPricePoints {
+		sym = strings.ToUpper(sym)
+
+		for _, pricePoint := range pricePoints {
+			v, ok := appBuf[sym]
+			if !ok {
+				log.Println("unsupported symbol", sym)
+			}
+
+			if pricePoint.collectedAt.Compare(timeThreshold) == 1 {
+				continue
+			}
+
+			v.volumes = append(appBuf[sym].volumes, pricePoint.volume)
+			v.prices = append(appBuf[sym].prices, pricePoint.price)
+
+			appBuf[sym] = v
+		}
+	}
+
+	// calculating the median volumes + prices
+	medianPricePoint := make(map[string]pricePoint)
+	for sym, app := range appBuf {
+		medianPricePoint[sym] = pricePoint{
+			price:  getMedian(app.prices),
+			volume: getMedian(app.volumes),
+			// peerID:      "",
+			collectedAt: time.Now().UTC(),
+		}
+	}
+
+	return medianPricePoint
 }
 
 // TODO: reimplement
 func (o *Oracle) pollMedianPriceSignature(
-	sig blockTickSignal,
-	localAvgPrices map[string]p2p.AveragePricePoint,
+	sig *blockTickSignal,
+	block *p2p.VSCBlock,
 ) error {
-	/*
-		sigThreshold := int(math.Ceil(float64(len(sig.electedMembers) * 2 / 3)))
-		block.Signatures = make([]string, 0, sigThreshold)
+	sigThreshold := int(math.Ceil(float64(len(sig.electedMembers) * 2 / 3)))
+	block.Signatures = make([]string, 0, sigThreshold)
 
-		sigCount := 0
+	sigCount := 0
 
-		// poll signatures for 10 seconds
-		ctx, cancel := context.WithTimeout(context.Background(), listenDuration)
-		defer cancel()
+	// poll signatures for 10 seconds
+	ctx, cancel := context.WithTimeout(context.Background(), listenDuration)
+	defer cancel()
 
-		for sigCount < sigThreshold {
-			select {
-			case <-ctx.Done():
-				return errors.New("operation timed out")
+	for sigCount < sigThreshold {
+		select {
+		case <-ctx.Done():
+			return errors.New("operation timed out")
 
-			case signedBlock := <-o.priceBlockSignatureChan:
-				if signedBlock.ID != block.ID {
-					continue
-				}
-
-				if !validateSignedBlock(&signedBlock) {
-					continue
-				}
-
-				block.Signatures = append(
-					block.Signatures,
-					signedBlock.Signatures[0],
-				)
-				sigCount += 1
+		case signedBlock := <-o.priceBlockSignatureChan:
+			if signedBlock.ID != block.ID {
+				continue
 			}
 
+			if !validateSignedBlock(&signedBlock) {
+				continue
+			}
+
+			block.Signatures = append(
+				block.Signatures,
+				signedBlock.Signatures[0],
+			)
+			sigCount += 1
 		}
 
+	}
+
+	/*
 		// TODO: submit block to contract
 		o.msgChan <- &p2p.OracleMessage{
 			Type: p2p.MsgPriceOracleSignedBlock,
