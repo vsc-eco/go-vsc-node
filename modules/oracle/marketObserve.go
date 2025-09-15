@@ -40,7 +40,7 @@ func (o *Oracle) marketObserve() {
 
 			}
 
-		case sig := <-o.broadcastPriceSignal:
+		case sig := <-o.broadcastPriceTick:
 			// broadcast local average price
 			localAvgPrices := o.priceOracle.AvgPriceMap.GetAveragePrices()
 			o.BroadcastMessage(&p2p.OracleMessage{

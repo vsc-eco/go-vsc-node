@@ -51,7 +51,7 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	blockTickSignal := makeBlockTickSignal(isBlockProducer, isWitness, members)
 
 	if isAvgPriceBroadcastTick {
-		o.broadcastPriceSignal <- blockTickSignal
+		o.broadcastPriceTick <- blockTickSignal
 	}
 
 	if isBlockProducer && isChainRelayTick {

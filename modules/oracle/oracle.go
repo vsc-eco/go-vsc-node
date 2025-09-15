@@ -53,7 +53,7 @@ type Oracle struct {
 
 	// to be used within the network, for broadcasting average prices
 	broadcastPricePoints *threadSafeMap[string, []pricePoint]
-	broadcastPriceSignal chan blockTickSignal
+	broadcastPriceTick   chan blockTickSignal
 
 	// for block signatures
 	priceBlockSignatureChan chan p2p.VSCBlock
