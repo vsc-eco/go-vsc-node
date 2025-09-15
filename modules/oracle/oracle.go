@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
@@ -15,9 +16,13 @@ import (
 	"vsc-node/modules/vstream"
 
 	"github.com/chebyrash/promise"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 const (
+	// NOTE: only supporting USD for now
+	userCurrency = "usd"
+
 	// 10 minutes = 600 seconds, 3s for every new block.
 	// A tick is broadcasted every 200 blocks produced.
 	priceOracleBroadcastInterval = uint64(600 / 3)
@@ -44,11 +49,11 @@ type Oracle struct {
 	ctx        context.Context
 	cancelFunc context.CancelFunc
 
-	priceOracle          *price.PriceOracle
-	broadcastPriceSignal chan blockTickSignal
+	priceOracle *price.PriceOracle
 
 	// to be used within the network, for broadcasting average prices
-	broadcastPriceChan chan []p2p.AveragePricePoint
+	broadcastPricePoints *threadSafeMap[string, []pricePoints]
+	broadcastPriceSignal chan blockTickSignal
 
 	// for block signatures
 	priceBlockSignatureChan chan p2p.VSCBlock
@@ -73,8 +78,9 @@ func New(
 		vStream:     vstream,
 		stateEngine: stateEngine,
 
-		broadcastPriceChan:      make(chan []p2p.AveragePricePoint, 128),
-		broadcastPriceSignal:    make(chan blockTickSignal, 1),
+		broadcastPricePoints: makeThreadSafeMap[string, []pricePoints](),
+		broadcastPriceSignal: make(chan blockTickSignal, 1),
+
 		priceBlockSignatureChan: make(chan p2p.VSCBlock, 1024),
 		broadcastPriceBlockChan: make(chan p2p.VSCBlock, 1024),
 	}
@@ -83,7 +89,7 @@ func New(
 // Init implements aggregate.Plugin.
 // Runs initialization in order of how they are passed in to `Aggregate`
 func (o *Oracle) Init() error {
-	const userCurrency = "usd" // NOTE: only supporting USD for now
+	o.ctx, o.cancelFunc = context.WithCancel(context.Background())
 
 	var err error
 
@@ -93,8 +99,6 @@ func (o *Oracle) Init() error {
 	}
 
 	// o.blockRelay = btcrelay.New(o.blockRelayChan)
-
-	o.ctx, o.cancelFunc = context.WithCancel(context.Background())
 
 	return nil
 }
@@ -107,8 +111,7 @@ func (o *Oracle) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
 		var err error
 
-		p2pSpec := &p2p.OracleP2pSpec{} // TODO initialize this struct
-		o.service, err = libp2p.NewPubSubService(o.p2pServer, p2pSpec)
+		o.service, err = libp2p.NewPubSubService(o.p2pServer, p2p.NewP2pSpec(o))
 		if err != nil {
 			o.cancelFunc()
 			reject(err)
@@ -143,17 +146,44 @@ func (o *Oracle) BroadcastMessage(msg p2p.Msg) error {
 	return o.service.Send(msg)
 }
 
-func (o *Oracle) relayBtcHeadBlock() {
-	/*
-		headBlock, err := o.blockRelay.FetchChain()
+// Handle implements p2p.MessageHandler
+func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
+	var responseMsg p2p.Msg = nil
+
+	recvTimeStamp := time.Now().UTC().Unix()
+
+	switch msg.Type {
+	case p2p.MsgPriceBroadcast:
+		data, err := parseMsg[map[string]p2p.AveragePricePoint](msg.Data)
 		if err != nil {
-			log.Println("failed to fetch BTC head block.", err)
-			return
+			return nil, err
 		}
 
-		o.msgChan <- &p2p.OracleMessage{
-			Type: p2p.MsgBtcChainRelay,
-			Data: headBlock,
-		}
-	*/
+		o.broadcastPricePoints.Update(func(m map[string][]pricePoints) {
+			for symbol, avgPricePoint := range *data {
+				sym := strings.ToUpper(symbol)
+
+				pricePoint := pricePoints{
+					price:       avgPricePoint.Price,
+					volume:      avgPricePoint.Volume,
+					peerID:      peerID,
+					collectedAt: recvTimeStamp,
+				}
+
+				v, ok := m[sym]
+				if !ok {
+					v = []pricePoints{pricePoint}
+				} else {
+					v = append(v, pricePoint)
+				}
+
+				m[sym] = v
+			}
+		})
+
+	default:
+		return nil, errors.New("invalid message type")
+	}
+
+	return responseMsg, nil
 }

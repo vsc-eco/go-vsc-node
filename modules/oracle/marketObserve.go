@@ -1,10 +1,7 @@
 package oracle
 
 import (
-	"context"
-	"errors"
 	"log"
-	"math"
 	"time"
 	"vsc-node/modules/oracle/p2p"
 
@@ -13,10 +10,6 @@ import (
 
 var (
 	v = validator.New(validator.WithRequiredStructEnabled())
-
-	// to be processed by the block producer, calculating median price
-	// and creating new block
-	broadcastPriceBuf = make([]p2p.AveragePricePoint, 0, 256)
 
 	// to be signed by the witness
 	newBlockBuf = make([]p2p.VSCBlock, 0, 256)
@@ -47,7 +40,7 @@ func (o *Oracle) marketObserve() {
 			// broadcast local average price
 			localAvgPrices := o.priceOracle.AvgPriceMap.GetAveragePrices()
 			o.BroadcastMessage(&p2p.OracleMessage{
-				Type: p2p.MsgPriceOracleBroadcast,
+				Type: p2p.MsgPriceBroadcast,
 				Data: localAvgPrices,
 			})
 
@@ -66,13 +59,6 @@ func (o *Oracle) marketObserve() {
 		case newBlock := <-o.broadcastPriceBlockChan:
 			// TODO: move this channel to witness processing
 			newBlockBuf = append(newBlockBuf, newBlock)
-
-		case avgPricePoints := <-o.broadcastPriceChan:
-			now := time.Now().UTC().Unix()
-			for i := range avgPricePoints {
-				avgPricePoints[i].UnixTimeStamp = now
-			}
-			broadcastPriceBuf = append(broadcastPriceBuf, avgPricePoints...)
 
 			/*
 				case btcHeadBlock := <-o.blockRelayChan:
@@ -139,43 +125,45 @@ func (o *Oracle) pollMedianPriceSignature(
 	sig blockTickSignal,
 	localAvgPrices map[string]p2p.AveragePricePoint,
 ) error {
-	sigThreshold := int(math.Ceil(float64(len(sig.electedMembers) * 2 / 3)))
-	block.Signatures = make([]string, 0, sigThreshold)
+	/*
+		sigThreshold := int(math.Ceil(float64(len(sig.electedMembers) * 2 / 3)))
+		block.Signatures = make([]string, 0, sigThreshold)
 
-	sigCount := 0
+		sigCount := 0
 
-	// poll signatures for 10 seconds
-	ctx, cancel := context.WithTimeout(context.Background(), listenDuration)
-	defer cancel()
+		// poll signatures for 10 seconds
+		ctx, cancel := context.WithTimeout(context.Background(), listenDuration)
+		defer cancel()
 
-	for sigCount < sigThreshold {
-		select {
-		case <-ctx.Done():
-			return errors.New("operation timed out")
+		for sigCount < sigThreshold {
+			select {
+			case <-ctx.Done():
+				return errors.New("operation timed out")
 
-		case signedBlock := <-o.priceBlockSignatureChan:
-			if signedBlock.ID != block.ID {
-				continue
+			case signedBlock := <-o.priceBlockSignatureChan:
+				if signedBlock.ID != block.ID {
+					continue
+				}
+
+				if !validateSignedBlock(&signedBlock) {
+					continue
+				}
+
+				block.Signatures = append(
+					block.Signatures,
+					signedBlock.Signatures[0],
+				)
+				sigCount += 1
 			}
 
-			if !validateSignedBlock(&signedBlock) {
-				continue
-			}
-
-			block.Signatures = append(
-				block.Signatures,
-				signedBlock.Signatures[0],
-			)
-			sigCount += 1
 		}
 
-	}
-
-	// TODO: submit block to contract
-	o.msgChan <- &p2p.OracleMessage{
-		Type: p2p.MsgPriceOracleSignedBlock,
-		Data: block,
-	}
+		// TODO: submit block to contract
+		o.msgChan <- &p2p.OracleMessage{
+			Type: p2p.MsgPriceOracleSignedBlock,
+			Data: block,
+		}
+	*/
 
 	return nil
 }

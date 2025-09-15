@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"log/slog"
-	"time"
 	libp2p "vsc-node/modules/p2p"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -22,29 +20,26 @@ type OracleMessage struct {
 	Data any     `json:"data,omitempty" validate:"required"`
 }
 
-type OracleP2pParams interface {
-	libp2p.PubSubServiceParams[Msg]
-	Initialize(chan<- []AveragePricePoint, chan<- VSCBlock, chan<- VSCBlock)
+type MessageHandler interface {
+	Handle(peer.ID, Msg) (Msg, error)
 }
 
 type OracleP2pSpec struct {
-	broadcastPriceChan      chan<- []AveragePricePoint
-	priceBlockSignatureChan chan<- VSCBlock
-	broadcastPriceBlockChan chan<- VSCBlock
+	handler MessageHandler
+	// broadcastPriceChan      chan<- []AveragePricePoint
+	// priceBlockSignatureChan chan<- VSCBlock
+	// broadcastPriceBlockChan chan<- VSCBlock
 }
 
-var _ OracleP2pParams = &OracleP2pSpec{}
+var _ libp2p.PubSubServiceParams[Msg] = &OracleP2pSpec{}
 
-func (p *OracleP2pSpec) Initialize(
-	broadcastPriceChan chan<- []AveragePricePoint,
-	priceBlockSignatureChan chan<- VSCBlock,
-	broadcastPriceBlockChan chan<- VSCBlock,
-) {
-	*p = OracleP2pSpec{
-		broadcastPriceChan,
-		priceBlockSignatureChan,
-		broadcastPriceBlockChan,
-	}
+func NewP2pSpec(
+	msgHandler MessageHandler,
+	// broadcastPriceChan chan<- []AveragePricePoint,
+	// priceBlockSignatureChan chan<- VSCBlock,
+	// broadcastPriceBlockChan chan<- VSCBlock,
+) *OracleP2pSpec {
+	return &OracleP2pSpec{msgHandler}
 }
 
 // Topic implements PubSubServiceParams[Msg]
@@ -62,6 +57,10 @@ func (p *OracleP2pSpec) ValidateMessage(
 	return false
 }
 
+var errTimeout = errors.New(
+	"[oracle] PubSubServiceParams[Msg].HandleMessage timed out.",
+)
+
 // HandleMessage implements PubSubServiceParams[Msg]
 func (p *OracleP2pSpec) HandleMessage(
 	ctx context.Context,
@@ -69,65 +68,72 @@ func (p *OracleP2pSpec) HandleMessage(
 	msg Msg,
 	send libp2p.SendFunc[Msg],
 ) error {
-	switch msg.Type {
-	case MsgPriceOracleSignature:
-		b, err := parseMsg[VSCBlock](msg.Data)
-		if err != nil {
-			return err
-		}
-		b.TimeStamp = time.Now().UTC().UnixMilli()
-
-		select {
-		case p.priceBlockSignatureChan <- *b:
-		default:
-			log.Println("channel full")
-		}
-
-	case MsgPriceOracleNewBlock:
-		b, err := parseMsg[VSCBlock](msg.Data)
-		if err != nil {
-			return err
-		}
-		b.TimeStamp = time.Now().UTC().UnixMilli()
-
-		select {
-		case p.broadcastPriceBlockChan <- *b:
-		default:
-			log.Println("channel full")
-		}
-
-	case MsgPriceOracleBroadcast:
-		b, err := parseMsg[[]AveragePricePoint](msg.Data)
-		if err != nil {
-			return err
-		}
-		p.broadcastPriceChan <- *b
-
-		/*
-			case MsgBtcChainRelay:
-				headBlock, err := parseMsg[BlockRelay](msg.Data)
-				if err != nil {
-					return err
-				}
-				p.btcHeadBlockChan <- headBlock
-		*/
-
-	case MsgPriceOracleSignedBlock:
-		return errors.New("not implemented")
+	select {
+	case <-ctx.Done():
+		return errTimeout
 
 	default:
-		return errors.New("invalid message type")
+		response, err := p.handler.Handle(from, msg)
+		if err != nil {
+			return err
+		}
+
+		if response != nil {
+			return send(response)
+		}
 	}
+
+	/*
+		switch msg.Type {
+		case MsgPriceOracleSignature:
+			b, err := parseMsg[VSCBlock](msg.Data)
+			if err != nil {
+				return err
+			}
+			b.TimeStamp = time.Now().UTC().UnixMilli()
+
+			select {
+			case p.priceBlockSignatureChan <- *b:
+			default:
+				log.Println("channel full")
+			}
+
+		case MsgPriceOracleNewBlock:
+			b, err := parseMsg[VSCBlock](msg.Data)
+			if err != nil {
+				return err
+			}
+			b.TimeStamp = time.Now().UTC().UnixMilli()
+
+			select {
+			case p.broadcastPriceBlockChan <- *b:
+			default:
+				log.Println("channel full")
+			}
+
+		case MsgPriceOracleBroadcast:
+			b, err := parseMsg[[]AveragePricePoint](msg.Data)
+			if err != nil {
+				return err
+			}
+			p.broadcastPriceChan <- *b
+
+				case MsgBtcChainRelay:
+					headBlock, err := parseMsg[BlockRelay](msg.Data)
+					if err != nil {
+						return err
+					}
+					p.btcHeadBlockChan <- headBlock
+
+		case MsgPriceOracleSignedBlock:
+			return errors.New("not implemented")
+
+		default:
+			return errors.New("invalid message type")
+		}
+	*/
 
 	return nil
-}
-
-func parseMsg[T any](data any) (*T, error) {
-	v, ok := data.(T)
-	if !ok {
-		return nil, errors.New("invalid type")
-	}
-	return &v, nil
 }
 
 // HandleRawMessage implements PubSubServiceParams[OracleMessage]

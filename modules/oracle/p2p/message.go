@@ -14,7 +14,7 @@ import (
 
 const (
 	MsgBtcChainRelay MsgType = iota
-	MsgPriceOracleBroadcast
+	MsgPriceBroadcast
 	MsgPriceOracleNewBlock
 	MsgPriceOracleSignature
 	MsgPriceOracleSignedBlock
