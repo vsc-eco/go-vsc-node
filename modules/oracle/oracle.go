@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
@@ -49,13 +50,19 @@ type Oracle struct {
 	ctx        context.Context
 	cancelFunc context.CancelFunc
 
-	priceOracle *price.PriceOracle
-
-	// to be used within the network, for broadcasting average prices
+	priceOracle          *price.PriceOracle
 	broadcastPricePoints *threadSafeMap[string, []pricePoint]
 	broadcastPriceTick   chan blockTickSignal
 	broadcastPriceSig    *threadSafeSlice[p2p.VSCBlock]
 	broadcastPriceBlocks *threadSafeSlice[p2p.VSCBlock]
+	broadcastPriceFlags  broadcastPriceFlags
+}
+
+type broadcastPriceFlags struct {
+	isBroadcastTickInterval  bool
+	isCollectingAveragePrice bool
+	isCollectingSignatures   bool
+	lock                     *sync.RWMutex
 }
 
 func New(
@@ -78,6 +85,12 @@ func New(
 		broadcastPriceSig:    makeThreadSafeSlice[p2p.VSCBlock](512),
 		broadcastPriceTick:   make(chan blockTickSignal, 1),
 		broadcastPriceBlocks: makeThreadSafeSlice[p2p.VSCBlock](512),
+		broadcastPriceFlags: broadcastPriceFlags{
+			isBroadcastTickInterval:  false,
+			isCollectingAveragePrice: false,
+			isCollectingSignatures:   false,
+			lock:                     new(sync.RWMutex),
+		},
 	}
 }
 
@@ -147,6 +160,13 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 
 	switch msg.Type {
 	case p2p.MsgPriceBroadcast:
+		o.broadcastPriceFlags.lock.RLock()
+		defer o.broadcastPriceFlags.lock.RUnlock()
+
+		if !o.broadcastPriceFlags.isCollectingAveragePrice {
+			return nil, nil
+		}
+
 		data, err := parseMsg[map[string]p2p.AveragePricePoint](msg.Data)
 		if err != nil {
 			return nil, err
@@ -155,20 +175,36 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 		o.broadcastPricePoints.Update(collectPricePoint(peerID, *data))
 
 	case p2p.MsgPriceSignature:
-		b, err := parseMsg[p2p.VSCBlock](msg.Data)
+		o.broadcastPriceFlags.lock.RLock()
+		defer o.broadcastPriceFlags.lock.RUnlock()
+
+		if !o.broadcastPriceFlags.isCollectingSignatures {
+			return nil, nil
+		}
+
+		block, err := parseMsg[p2p.VSCBlock](msg.Data)
 		if err != nil {
 			return nil, err
 		}
-		b.TimeStamp = time.Now().UTC()
-		o.broadcastPriceSig.Append(*b)
+
+		block.TimeStamp = time.Now().UTC()
+		o.broadcastPriceSig.Append(*block)
 
 	case p2p.MsgPriceBlock:
-		b, err := parseMsg[p2p.VSCBlock](msg.Data)
+		o.broadcastPriceFlags.lock.RLock()
+		defer o.broadcastPriceFlags.lock.RUnlock()
+
+		if !o.broadcastPriceFlags.isBroadcastTickInterval {
+			return nil, nil
+		}
+
+		block, err := parseMsg[p2p.VSCBlock](msg.Data)
 		if err != nil {
 			return nil, err
 		}
-		b.TimeStamp = time.Now().UTC()
-		o.broadcastPriceBlocks.Append(*b)
+
+		block.TimeStamp = time.Now().UTC()
+		o.broadcastPriceBlocks.Append(*block)
 
 	default:
 		return nil, errors.New("invalid message type")

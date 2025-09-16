@@ -37,9 +37,18 @@ func (p *priceBlockProducer) handleSignal(
 func (p *priceBlockProducer) getMedianPricePoint(
 	localAvgPrices map[string]p2p.AveragePricePoint,
 ) map[string]pricePoint {
+	p.broadcastPriceFlags.lock.Lock()
+	p.broadcastPriceFlags.isCollectingAveragePrice = true
+	p.broadcastPriceFlags.lock.Unlock()
+
 	// room for network latency
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	defer func() {
+		cancel()
+		p.broadcastPriceFlags.lock.Lock()
+		p.broadcastPriceFlags.isCollectingAveragePrice = false
+		p.broadcastPriceFlags.lock.Unlock()
+	}()
 
 	<-ctx.Done()
 
@@ -102,14 +111,23 @@ func (p *priceBlockProducer) pollMedianPriceSignature(
 	sig *blockTickSignal,
 	block *p2p.VSCBlock,
 ) error {
-	sigThreshold := int(math.Ceil(float64(len(sig.electedMembers) * 2 / 3)))
-	block.Signatures = make([]string, 0, sigThreshold)
+	p.broadcastPriceFlags.lock.Lock()
+	p.broadcastPriceFlags.isCollectingSignatures = true
+	p.broadcastPriceFlags.lock.Unlock()
 
 	// room for network latency
 	ctx, cancel := context.WithTimeout(context.Background(), listenDuration)
-	defer cancel()
+	defer func() {
+		p.broadcastPriceFlags.lock.Lock()
+		p.broadcastPriceFlags.isCollectingSignatures = false
+		p.broadcastPriceFlags.lock.Unlock()
+		cancel()
+	}()
 
 	<-ctx.Done()
+
+	sigThreshold := int(math.Ceil(float64(len(sig.electedMembers) * 2 / 3)))
+	block.Signatures = make([]string, 0, sigThreshold)
 
 	signedBlocks := p.broadcastPriceSig.Slice()
 	for i := range signedBlocks {

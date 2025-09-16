@@ -45,7 +45,15 @@ func (o *Oracle) marketObserve() {
 }
 
 func (o *Oracle) handlePriceTickInterval(sig blockTickSignal) error {
+	o.broadcastPriceFlags.lock.Lock()
+	o.broadcastPriceFlags.isBroadcastTickInterval = true
+	o.broadcastPriceFlags.lock.Unlock()
+
 	defer func() {
+		o.broadcastPriceFlags.lock.Lock()
+		o.broadcastPriceFlags.isBroadcastTickInterval = false
+		o.broadcastPriceFlags.lock.Unlock()
+
 		o.priceOracle.AvgPriceMap.Clear()
 		o.broadcastPricePoints.Clear()
 		o.broadcastPriceSig.Clear()
@@ -61,6 +69,7 @@ func (o *Oracle) handlePriceTickInterval(sig blockTickSignal) error {
 
 	// make block / sign block
 	var err error
+
 	if sig.isBlockProducer {
 		priceBlockProducer := &priceBlockProducer{o}
 		err = priceBlockProducer.handleSignal(&sig, localAvgPrices)
