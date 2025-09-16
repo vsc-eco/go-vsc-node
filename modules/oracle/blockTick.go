@@ -48,13 +48,19 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 			bh%common.CONSENSUS_SPECS.SlotLength == 0
 	)
 
-	blockTickSignal := makeBlockTickSignal(isBlockProducer, isWitness, members)
+	sig := makeBlockTickSignal(isBlockProducer, isWitness, members)
 
 	if isAvgPriceBroadcastTick {
-		o.broadcastPriceTick <- blockTickSignal
+		err := o.handleBroadcastPriceTickInterval(sig)
+		if err != nil {
+			log.Println(
+				"[oracle] error on broadcastPriceTick interval.",
+				err,
+			)
+		}
 	}
 
-	if isBlockProducer && isChainRelayTick {
+	if isChainRelayTick {
 		// o.blockRelaySignal <- blockTickSignal
 	}
 }

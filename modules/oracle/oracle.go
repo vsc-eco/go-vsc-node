@@ -52,7 +52,6 @@ type Oracle struct {
 
 	priceOracle          *price.PriceOracle
 	broadcastPricePoints *threadSafeMap[string, []pricePoint]
-	broadcastPriceTick   chan blockTickSignal
 	broadcastPriceSig    *threadSafeSlice[p2p.VSCBlock]
 	broadcastPriceBlocks *threadSafeSlice[p2p.VSCBlock]
 	broadcastPriceFlags  broadcastPriceFlags
@@ -83,7 +82,6 @@ func New(
 
 		broadcastPricePoints: makeThreadSafeMap[string, []pricePoint](),
 		broadcastPriceSig:    makeThreadSafeSlice[p2p.VSCBlock](512),
-		broadcastPriceTick:   make(chan blockTickSignal, 1),
 		broadcastPriceBlocks: makeThreadSafeSlice[p2p.VSCBlock](512),
 		broadcastPriceFlags: broadcastPriceFlags{
 			isBroadcastTickInterval:  false,

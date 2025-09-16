@@ -32,14 +32,6 @@ func (o *Oracle) marketObserve() {
 					o.priceOracle.AvgPriceMap.Observe(pricePoints)
 				}()
 			}
-
-		case sig := <-o.broadcastPriceTick:
-			if err := o.handlePriceTickInterval(sig); err != nil {
-				log.Println(
-					"[oracle] error on broadcastPriceTick interval.",
-					err,
-				)
-			}
 		}
 	}
 }

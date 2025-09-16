@@ -17,7 +17,6 @@ const (
 	MsgPriceBroadcast
 	MsgPriceBlock
 	MsgPriceSignature
-	MsgPriceOracleSignedBlock
 )
 
 var priceValidator = validator.New(validator.WithRequiredStructEnabled())
