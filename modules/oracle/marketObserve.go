@@ -5,12 +5,6 @@ import (
 	"log"
 	"time"
 	"vsc-node/modules/oracle/p2p"
-
-	"github.com/go-playground/validator/v10"
-)
-
-var (
-	v = validator.New(validator.WithRequiredStructEnabled())
 )
 
 func (o *Oracle) marketObserve() {
@@ -36,7 +30,7 @@ func (o *Oracle) marketObserve() {
 	}
 }
 
-func (o *Oracle) handlePriceTickInterval(sig blockTickSignal) error {
+func (o *Oracle) handleBroadcastPriceTickInterval(sig blockTickSignal) error {
 	o.broadcastPriceFlags.lock.Lock()
 	o.broadcastPriceFlags.isBroadcastTickInterval = true
 	o.broadcastPriceFlags.lock.Unlock()
