@@ -11,9 +11,6 @@ import (
 
 var (
 	v = validator.New(validator.WithRequiredStructEnabled())
-
-	// to be signed by the witness
-	newBlockBuf = make([]p2p.VSCBlock, 0, 256)
 )
 
 func (o *Oracle) marketObserve() {
@@ -37,54 +34,44 @@ func (o *Oracle) marketObserve() {
 			}
 
 		case sig := <-o.broadcastPriceTick:
-			// broadcast local average price
-			localAvgPrices := o.priceOracle.AvgPriceMap.GetAveragePrices()
-			o.BroadcastMessage(&p2p.OracleMessage{
-				Type: p2p.MsgPriceBroadcast,
-				Data: localAvgPrices,
-			})
-
-			var err error
-			if sig.isBlockProducer {
-				priceBlockProducer := &priceBlockProducer{o}
-				err = priceBlockProducer.handleSignal(&sig, localAvgPrices)
-			} else if sig.isWitness {
-			}
-
-			if err != nil {
+			if err := o.handlePriceTickInterval(sig); err != nil {
 				log.Println(
 					"[oracle] error on broadcastPriceTick interval.",
 					err,
 				)
 			}
-
-			o.priceOracle.AvgPriceMap.Clear()
-			o.broadcastPricePoints.Clear()
-			o.broadcastPriceSig.Clear()
-
-			/*
-				o.handleBroadcastSignal(broadcastSignal)
-				broadcastPriceBuf = broadcastPriceBuf[:0]
-				newBlockBuf = newBlockBuf[:0]
-			*/
-
-		case newBlock := <-o.broadcastPriceBlockChan:
-			// TODO: move this channel to witness processing
-			newBlockBuf = append(newBlockBuf, newBlock)
-
-			/*
-				case btcHeadBlock := <-o.blockRelayChan:
-					fmt.Println("TODO: validate btcHeadBlock", btcHeadBlock)
-
-				case blockRelaySignal := <-o.blockRelaySignal:
-					fmt.Println(blockRelaySignal)
-					go o.relayBtcHeadBlock()
-			*/
-
 		}
 	}
 }
 
-func (p *Oracle) submitToContract(data any) {
+func (o *Oracle) handlePriceTickInterval(sig blockTickSignal) error {
+	defer func() {
+		o.priceOracle.AvgPriceMap.Clear()
+		o.broadcastPricePoints.Clear()
+		o.broadcastPriceSig.Clear()
+		o.broadcastPriceBlocks.Clear()
+	}()
+
+	// broadcast local average price
+	localAvgPrices := o.priceOracle.AvgPriceMap.GetAveragePrices()
+	o.BroadcastMessage(&p2p.OracleMessage{
+		Type: p2p.MsgPriceBroadcast,
+		Data: localAvgPrices,
+	})
+
+	// make block / sign block
+	var err error
+	if sig.isBlockProducer {
+		priceBlockProducer := &priceBlockProducer{o}
+		err = priceBlockProducer.handleSignal(&sig, localAvgPrices)
+	} else if sig.isWitness {
+		priceBlockWitness := &priceBlockWitness{o}
+		err = priceBlockWitness.handleSignal(&sig)
+	}
+
+	return err
+}
+
+func (o *Oracle) submitToContract(data any) {
 	fmt.Println("not implemented")
 }
