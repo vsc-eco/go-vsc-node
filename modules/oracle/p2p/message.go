@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	MsgBtcChainRelay MsgType = iota
+	MsgBtcChainRelay MsgCode = iota
 	MsgPriceBroadcast
 	MsgPriceBlock
 	MsgPriceSignature
@@ -21,7 +21,7 @@ const (
 
 var priceValidator = validator.New(validator.WithRequiredStructEnabled())
 
-type MsgType int
+type MsgCode int
 
 type ObservePricePoint struct {
 	Symbol string  `json:"symbol,omitempty"`
@@ -74,22 +74,21 @@ type BlockRelay struct {
 }
 
 type VSCBlock struct {
-	ID            string   `json:"id"             validate:"hexadecimal"`
-	BlockProducer string   `json:"block_producer"`
-	Signatures    []string `json:"signatures"`
-	Data          any      `json:"data"`
-	// in ms
-	TimeStamp time.Time `json:"timestamp"`
+	ID            string    `json:"id"             validate:"hexadecimal"`
+	BlockProducer string    `json:"block_producer"`
+	Signatures    []string  `json:"signatures"`
+	Data          any       `json:"data"`
+	TimeStamp     time.Time `json:"timestamp"`
 }
 
 // VSCBlock.ID construction:
 // hex(timestamp + sha256.Sum256(username + activeKey + json(data))).
 // results in 40 byte ID (80 char hex string).
 func MakeVscBlock(username, activeKey string, data any) (*VSCBlock, error) {
-	timestamp := time.Now().UTC().UnixMilli()
+	timestamp := time.Now().UTC()
 
 	tsBuf := [8]byte{}
-	binary.BigEndian.PutUint64(tsBuf[:], uint64(timestamp))
+	binary.BigEndian.PutUint64(tsBuf[:], uint64(timestamp.UnixMilli()))
 
 	buf := bytes.NewBuffer(
 		slices.Concat(
