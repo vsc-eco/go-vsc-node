@@ -163,6 +163,14 @@ func ContractStateGet(contractId string, key string) *string {
 }
 
 // Call another contract
-func ContractCall(contractId string, method string, payload string, options string) *string {
-	return contractCall(&contractId, &method, &payload, &options)
+func ContractCall(contractId string, method string, payload string, options *ContractCallOptions) *string {
+	optStr := ""
+	if options != nil {
+		optByte, err := json.Marshal(&options)
+		if err != nil {
+			Revert("could not serialize options", "sdk_error")
+		}
+		optStr = string(optByte)
+	}
+	return contractCall(&contractId, &method, &payload, &optStr)
 }

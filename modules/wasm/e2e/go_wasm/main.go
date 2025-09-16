@@ -221,8 +221,7 @@ func DrawHbd(a *string) *string {
 func TransferHive(a *string) *string {
 	params := strings.Split((*a), ",")
 	if len(params) < 2 {
-		err := "invalid payload"
-		return &err
+		sdk.Abort("invalid payload")
 	}
 	amt, err := strconv.ParseInt(params[1], 10, 64)
 	if err != nil {
@@ -236,8 +235,7 @@ func TransferHive(a *string) *string {
 func TransferHbd(a *string) *string {
 	params := strings.Split((*a), ",")
 	if len(params) < 2 {
-		err := "invalid payload"
-		return &err
+		sdk.Abort("invalid payload")
 	}
 	amt, err := strconv.ParseInt(params[1], 10, 64)
 	if err != nil {
@@ -251,8 +249,7 @@ func TransferHbd(a *string) *string {
 func WithdrawHive(a *string) *string {
 	params := strings.Split((*a), ",")
 	if len(params) < 2 {
-		err := "invalid payload"
-		return &err
+		sdk.Abort("invalid payload")
 	}
 	amt, err := strconv.ParseInt(params[1], 10, 64)
 	if err != nil {
@@ -266,8 +263,7 @@ func WithdrawHive(a *string) *string {
 func WithdrawHbd(a *string) *string {
 	params := strings.Split((*a), ",")
 	if len(params) < 2 {
-		err := "invalid payload"
-		return &err
+		sdk.Abort("invalid payload")
 	}
 	amt, err := strconv.ParseInt(params[1], 10, 64)
 	if err != nil {
@@ -306,11 +302,19 @@ func ContractCall(a *string) *string {
 	if len(params) < 3 {
 		sdk.Revert("invalid payload", "invalid_payload")
 	}
-	return sdk.ContractCall(params[0], params[1], params[2], "")
+	return sdk.ContractCall(params[0], params[1], params[2], &sdk.ContractCallOptions{
+		Intents: []sdk.Intent{{
+			Type: "transfer.allow",
+			Args: map[string]string{
+				"token": "hive",
+				"limit": "1.000",
+			},
+		}},
+	})
 }
 
 //go:wasmexport infiniteRecursion
 func InfRecursion(a *string) *string {
 	contractId := sdk.GetEnvKey("contract.id")
-	return sdk.ContractCall(*contractId, "infiniteRecursion", "a", "")
+	return sdk.ContractCall(*contractId, "infiniteRecursion", "a", nil)
 }

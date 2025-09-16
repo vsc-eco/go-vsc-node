@@ -427,6 +427,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 				json.Unmarshal(cj.Json, &parsedTx)
 
+				// Contract deployment now requires two operations:
+				// 1. custom_json with the contract details
+				// 2. transfer operation with deployment fee to GATEWAY_WALLET
+				//
+				// The fee is refunded to the deployer's ledger balance if deployment fails.
+				// This pattern is active when testing or after CONTRACT_DEPLOYMENT_FEE_START_HEIGHT.
 				if testing.Testing() || txSelf.BlockHeight >= common.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
 					if len(tx.Operations) != 2 {
 						continue

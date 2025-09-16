@@ -186,4 +186,26 @@ func TestContractTestUtil(t *testing.T) {
 	})
 	assert.False(t, icRevert.Success)
 	assert.Equal(t, "symbol_here", *icRevert.Err)
+
+	failedContractPull, _, _ := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId2,
+		Action:     "contractCall",
+		Payload:    json.RawMessage([]byte(contractId + ",drawHive,20")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.False(t, failedContractPull.Success)
+	assert.Equal(t, contracts.LEDGER_ERROR, *failedContractPull.Err)
+
+	ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "contractCall",
+		Payload:    json.RawMessage([]byte(contractId2 + ",drawHive,20")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.Equal(t, ct.GetBalance("contract:vscmycontract", ledgerDb.AssetHive), int64(980))
+	assert.Equal(t, ct.GetBalance("contract:vscmycontract2", ledgerDb.AssetHive), int64(20))
 }
