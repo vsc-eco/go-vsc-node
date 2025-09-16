@@ -1,8 +1,11 @@
 package oracle
 
 import (
+	"context"
 	"log"
 	"slices"
+	"strings"
+	"time"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
@@ -64,6 +67,8 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 }
 
 func (o *Oracle) handleBroadcastPriceTickInterval(sig blockTickSignal) error {
+	o.logger.Debug("broadcast price block tick.")
+
 	o.broadcastPriceFlags.lock.Lock()
 	o.broadcastPriceFlags.isBroadcastTickInterval = true
 	o.broadcastPriceFlags.lock.Unlock()
@@ -86,16 +91,89 @@ func (o *Oracle) handleBroadcastPriceTickInterval(sig blockTickSignal) error {
 		return err
 	}
 
+	// get median prices
+	medianPricePoints := o.getMedianPricePoint(localAvgPrices)
+
 	// make block / sign block
 	var err error
 
 	if sig.isBlockProducer {
 		priceBlockProducer := &priceBlockProducer{o}
-		err = priceBlockProducer.handleSignal(&sig, localAvgPrices)
+		err = priceBlockProducer.handleSignal(&sig, medianPricePoints)
 	} else if sig.isWitness {
 		priceBlockWitness := &priceBlockWitness{o}
-		err = priceBlockWitness.handleSignal(&sig)
+		err = priceBlockWitness.handleSignal(&sig, medianPricePoints)
 	}
 
 	return err
+}
+
+func (o *Oracle) getMedianPricePoint(
+	localAvgPrices map[string]p2p.AveragePricePoint,
+) map[string]pricePoint {
+	o.broadcastPriceFlags.lock.Lock()
+	o.broadcastPriceFlags.isCollectingAveragePrice = true
+	o.broadcastPriceFlags.lock.Unlock()
+
+	// room for network latency
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer func() {
+		cancel()
+		o.broadcastPriceFlags.lock.Lock()
+		o.broadcastPriceFlags.isCollectingAveragePrice = false
+		o.broadcastPriceFlags.lock.Unlock()
+	}()
+
+	<-ctx.Done()
+
+	o.logger.Debug("collecting average prices")
+
+	appBuf := make(map[string]aggregatedPricePoints)
+
+	// updating with local price points
+	for k, v := range localAvgPrices {
+		sym := strings.ToUpper(k)
+		appBuf[sym] = aggregatedPricePoints{
+			prices:  []float64{v.Price},
+			volumes: []float64{v.Volume},
+		}
+	}
+
+	// updating with broadcasted price points
+	timeThreshold := time.Now().UTC().Add(-time.Hour)
+	broadcastedPricePoints := o.broadcastPricePoints.GetMap()
+
+	for sym, pricePoints := range broadcastedPricePoints {
+		sym = strings.ToUpper(sym)
+
+		for _, pricePoint := range pricePoints {
+			v, ok := appBuf[sym]
+			if !ok {
+				log.Println("unsupported symbol", sym)
+			}
+
+			pricePointExpired := timeThreshold.After(pricePoint.collectedAt)
+			if pricePointExpired {
+				continue
+			}
+
+			v.volumes = append(appBuf[sym].volumes, pricePoint.volume)
+			v.prices = append(appBuf[sym].prices, pricePoint.price)
+
+			appBuf[sym] = v
+		}
+	}
+
+	// calculating the median volumes + prices
+	medianPricePoint := make(map[string]pricePoint)
+	for sym, app := range appBuf {
+		medianPricePoint[sym] = pricePoint{
+			price:  getMedian(app.prices),
+			volume: getMedian(app.volumes),
+			// peerID:      "",
+			collectedAt: time.Now().UTC(),
+		}
+	}
+
+	return medianPricePoint
 }

@@ -74,11 +74,11 @@ type BlockRelay struct {
 }
 
 type OracleBlock struct {
-	ID            string    `json:"id"             validate:"hexadecimal"`
-	BlockProducer string    `json:"block_producer"`
-	Signatures    []string  `json:"signatures"`
-	Data          any       `json:"data"`
-	TimeStamp     time.Time `json:"timestamp"`
+	ID            string          `json:"id"             validate:"hexadecimal"`
+	BlockProducer string          `json:"block_producer"`
+	Signatures    []string        `json:"signatures"`
+	Data          json.RawMessage `json:"data"`
+	TimeStamp     time.Time       `json:"timestamp"`
 }
 
 // VSCBlock.ID construction:
@@ -103,11 +103,16 @@ func MakeVscBlock(username, activeKey string, data any) (*OracleBlock, error) {
 	idParts := sha256.Sum256(buf.Bytes())
 	idBytes := slices.Concat(tsBuf[:], idParts[:])
 
+	jbytes, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+
 	block := &OracleBlock{
 		ID:            hex.EncodeToString(idBytes),
 		BlockProducer: username,
 		Signatures:    []string{},
-		Data:          data,
+		Data:          jbytes,
 		TimeStamp:     timestamp,
 	}
 
