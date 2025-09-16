@@ -85,19 +85,6 @@ func (p *OracleP2pSpec) HandleMessage(
 
 	/*
 		switch msg.Type {
-		case MsgPriceOracleSignature:
-			b, err := parseMsg[VSCBlock](msg.Data)
-			if err != nil {
-				return err
-			}
-			b.TimeStamp = time.Now().UTC().UnixMilli()
-
-			select {
-			case p.priceBlockSignatureChan <- *b:
-			default:
-				log.Println("channel full")
-			}
-
 		case MsgPriceOracleNewBlock:
 			b, err := parseMsg[VSCBlock](msg.Data)
 			if err != nil {

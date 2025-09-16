@@ -9,9 +9,7 @@ import (
 	"vsc-node/modules/oracle/p2p"
 )
 
-type priceBlockProducer struct {
-	*Oracle
-}
+type priceBlockProducer struct{ *Oracle }
 
 func (p *priceBlockProducer) handleSignal(
 	sig *blockTickSignal,
@@ -28,7 +26,7 @@ func (p *priceBlockProducer) handleSignal(
 		return err
 	}
 
-	msg := p2p.OracleMessage{Type: p2p.MsgPriceOracleNewBlock, Data: *block}
+	msg := p2p.OracleMessage{Type: p2p.MsgPriceBlock, Data: *block}
 	if err := p.BroadcastMessage(&msg); err != nil {
 		return err
 	}

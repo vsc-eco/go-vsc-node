@@ -34,7 +34,6 @@ func (o *Oracle) marketObserve() {
 					}
 					o.priceOracle.AvgPriceMap.Observe(pricePoints)
 				}()
-
 			}
 
 		case sig := <-o.broadcastPriceTick:
@@ -45,12 +44,23 @@ func (o *Oracle) marketObserve() {
 				Data: localAvgPrices,
 			})
 
+			var err error
 			if sig.isBlockProducer {
 				priceBlockProducer := &priceBlockProducer{o}
-				priceBlockProducer.handleSignal(&sig, localAvgPrices)
+				err = priceBlockProducer.handleSignal(&sig, localAvgPrices)
 			} else if sig.isWitness {
 			}
-			o.priceOracle.AvgPriceMap.Flush()
+
+			if err != nil {
+				log.Println(
+					"[oracle] error on broadcastPriceTick interval.",
+					err,
+				)
+			}
+
+			o.priceOracle.AvgPriceMap.Clear()
+			o.broadcastPricePoints.Clear()
+			o.broadcastPriceSig.Clear()
 
 			/*
 				o.handleBroadcastSignal(broadcastSignal)
