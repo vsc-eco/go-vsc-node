@@ -72,10 +72,8 @@ func (p *priceBlockProducer) getMedianPricePoint(
 				log.Println("unsupported symbol", sym)
 			}
 
-			priceCollectedPreThreshold := pricePoint.collectedAt.Compare(
-				timeThreshold,
-			) == -1
-			if priceCollectedPreThreshold {
+			pricePointExpired := timeThreshold.After(pricePoint.collectedAt)
+			if pricePointExpired {
 				continue
 			}
 
