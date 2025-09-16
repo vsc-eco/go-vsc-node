@@ -69,7 +69,7 @@ func (t *threadSafeMap[K, V]) Update(updateFunc updateFunc[K, V]) {
 }
 
 // returns a copy of the internal map
-func (t threadSafeMap[K, V]) GetMap() map[K]V {
+func (t *threadSafeMap[K, V]) GetMap() map[K]V {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 
@@ -79,6 +79,13 @@ func (t threadSafeMap[K, V]) GetMap() map[K]V {
 	}
 
 	return bufCpy
+}
+
+func (t *threadSafeMap[K, V]) Clear() {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+
+	t.buf = make(map[K]V)
 }
 
 type threadSafeSlice[T any] struct {
@@ -107,4 +114,10 @@ func (t *threadSafeSlice[T]) Slice() []T {
 	copy(bufCpy, t.buf)
 
 	return bufCpy
+}
+
+func (t *threadSafeSlice[T]) Clear() {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	t.buf = t.buf[:0]
 }

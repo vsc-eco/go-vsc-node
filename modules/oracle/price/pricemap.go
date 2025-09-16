@@ -48,7 +48,7 @@ func (pm *priceMap) Observe(pricePoints map[string]p2p.ObservePricePoint) {
 	}
 }
 
-func (pm *priceMap) Flush() {
+func (pm *priceMap) Clear() {
 	pm.mtx.Lock()
 	defer pm.mtx.Unlock()
 
