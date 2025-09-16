@@ -156,14 +156,28 @@ func (o *Oracle) BroadcastMessage(msg p2p.Msg) error {
 
 // Handle implements p2p.MessageHandler
 func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
-	var responseMsg p2p.Msg = nil
-
 	switch msg.Type {
-	case p2p.MsgPriceBroadcast:
+	case p2p.MsgPriceBroadcast, p2p.MsgPriceSignature, p2p.MsgPriceBlock:
 		o.broadcastPriceFlags.lock.RLock()
 		defer o.broadcastPriceFlags.lock.RUnlock()
 
-		if !o.broadcastPriceFlags.isCollectingAveragePrice {
+		return o.handlePriceMsg(peerID, msg, o.broadcastPriceFlags)
+
+	default:
+		return nil, errors.New("invalid message type")
+	}
+}
+
+func (o *Oracle) handlePriceMsg(
+	peerID peer.ID,
+	msg p2p.Msg,
+	oracleState broadcastPriceFlags,
+) (p2p.Msg, error) {
+	var response p2p.Msg
+
+	switch msg.Type {
+	case p2p.MsgPriceBroadcast:
+		if !oracleState.isCollectingAveragePrice {
 			return nil, nil
 		}
 
@@ -175,10 +189,7 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 		o.broadcastPricePoints.Update(collectPricePoint(peerID, *data))
 
 	case p2p.MsgPriceSignature:
-		o.broadcastPriceFlags.lock.RLock()
-		defer o.broadcastPriceFlags.lock.RUnlock()
-
-		if !o.broadcastPriceFlags.isCollectingSignatures {
+		if !oracleState.isCollectingSignatures {
 			return nil, nil
 		}
 
@@ -191,10 +202,7 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 		o.broadcastPriceSig.Append(*block)
 
 	case p2p.MsgPriceBlock:
-		o.broadcastPriceFlags.lock.RLock()
-		defer o.broadcastPriceFlags.lock.RUnlock()
-
-		if !o.broadcastPriceFlags.isBroadcastTickInterval {
+		if !oracleState.isBroadcastTickInterval {
 			return nil, nil
 		}
 
@@ -205,12 +213,9 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 
 		block.TimeStamp = time.Now().UTC()
 		o.broadcastPriceBlocks.Append(*block)
-
-	default:
-		return nil, errors.New("invalid message type")
 	}
 
-	return responseMsg, nil
+	return response, nil
 }
 
 func collectPricePoint(
