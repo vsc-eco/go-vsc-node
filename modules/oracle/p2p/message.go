@@ -16,7 +16,7 @@ const (
 	MsgBtcChainRelay MsgType = iota
 	MsgPriceBroadcast
 	MsgPriceOracleNewBlock
-	MsgPriceOracleSignature
+	MsgPriceSignature
 	MsgPriceOracleSignedBlock
 )
 
