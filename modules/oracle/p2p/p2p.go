@@ -54,7 +54,18 @@ func (p *OracleP2pSpec) ValidateMessage(
 	msg *pubsub.Message,
 	parsedMsg Msg,
 ) bool {
-	return false
+	if parsedMsg == nil {
+		return false
+	}
+
+	switch parsedMsg.Code {
+	case MsgBtcChainRelay, MsgPriceBroadcast, MsgPriceBlock, MsgPriceSignature:
+
+	default:
+		return false
+	}
+
+	return len(parsedMsg.Data) > 0
 }
 
 var errTimeout = errors.New(
