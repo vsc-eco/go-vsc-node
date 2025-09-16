@@ -434,7 +434,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				// The fee is refunded to the deployer's ledger balance if deployment fails.
 				// This pattern is active when testing or after CONTRACT_DEPLOYMENT_FEE_START_HEIGHT.
 				if testing.Testing() || txSelf.BlockHeight >= common.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
-					if len(tx.Operations) != 2 {
+					if len(tx.Operations) < 2 {
 						continue
 					}
 
