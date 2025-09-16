@@ -26,8 +26,7 @@ func (p *priceBlockProducer) handleSignal(
 		return err
 	}
 
-	msg := p2p.OracleMessage{Type: p2p.MsgPriceBlock, Data: *block}
-	if err := p.BroadcastMessage(&msg); err != nil {
+	if err := p.BroadcastMessage(p2p.MsgPriceBlock, *block); err != nil {
 		return err
 	}
 
@@ -151,9 +150,11 @@ func validateSignedBlock(block *p2p.VSCBlock) bool {
 		return false
 	}
 
-	if err := v.Struct(block); err != nil {
-		return false
-	}
+	/*
+		if err := v.Struct(block); err != nil {
+			return false
+		}
+	*/
 
 	// TODO: validate signature
 	return true

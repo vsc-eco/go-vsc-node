@@ -48,10 +48,10 @@ func (o *Oracle) handleBroadcastPriceTickInterval(sig blockTickSignal) error {
 
 	// broadcast local average price
 	localAvgPrices := o.priceOracle.AvgPriceMap.GetAveragePrices()
-	o.BroadcastMessage(&p2p.OracleMessage{
-		Type: p2p.MsgPriceBroadcast,
-		Data: localAvgPrices,
-	})
+
+	if err := o.BroadcastMessage(p2p.MsgPriceBroadcast, localAvgPrices); err != nil {
+		return err
+	}
 
 	// make block / sign block
 	var err error

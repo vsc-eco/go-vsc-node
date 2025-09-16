@@ -1,7 +1,7 @@
 package oracle
 
 import (
-	"errors"
+	"encoding/json"
 	"slices"
 	"sync"
 	"time"
@@ -39,12 +39,12 @@ func getMedian(buf []float64) float64 {
 	}
 }
 
-func parseMsg[T any](data any) (*T, error) {
-	v, ok := data.(T)
-	if !ok {
-		return nil, errors.New("invalid type")
+func parseMsg[T any](data json.RawMessage) (*T, error) {
+	v := new(T)
+	if err := json.Unmarshal(data, v); err != nil {
+		return nil, err
 	}
-	return &v, nil
+	return v, nil
 }
 
 type threadSafeMap[K comparable, V any] struct {

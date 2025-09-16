@@ -28,8 +28,7 @@ func (p *priceBlockWitness) handleSignal(sig *blockTickSignal) error {
 
 		block.Signatures = append(block.Signatures, sig)
 
-		msg := p2p.OracleMessage{Type: p2p.MsgPriceSignature, Data: block}
-		if err := p.BroadcastMessage(&msg); err != nil {
+		if err := p.BroadcastMessage(p2p.MsgPriceSignature, block); err != nil {
 			return err
 		}
 	}

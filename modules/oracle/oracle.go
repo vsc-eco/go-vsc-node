@@ -140,13 +140,14 @@ func (o *Oracle) Stop() error {
 	return o.service.Close()
 }
 
-func (o *Oracle) BroadcastMessage(msg p2p.Msg) error {
+func (o *Oracle) BroadcastMessage(msgCode p2p.MsgCode, data any) error {
 	if o.service == nil {
 		return errors.New("o.service uninitialized")
 	}
 
-	if msg == nil {
-		return nil
+	msg, err := p2p.MakeOracleMessage(msgCode, data)
+	if err != nil {
+		return err
 	}
 
 	return o.service.Send(msg)
@@ -154,7 +155,7 @@ func (o *Oracle) BroadcastMessage(msg p2p.Msg) error {
 
 // Handle implements p2p.MessageHandler
 func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
-	switch msg.Type {
+	switch msg.Code {
 	case p2p.MsgPriceBroadcast, p2p.MsgPriceSignature, p2p.MsgPriceBlock:
 		o.broadcastPriceFlags.lock.RLock()
 		defer o.broadcastPriceFlags.lock.RUnlock()
@@ -173,7 +174,7 @@ func (o *Oracle) handlePriceMsg(
 ) (p2p.Msg, error) {
 	var response p2p.Msg
 
-	switch msg.Type {
+	switch msg.Code {
 	case p2p.MsgPriceBroadcast:
 		if !oracleState.isCollectingAveragePrice {
 			return nil, nil

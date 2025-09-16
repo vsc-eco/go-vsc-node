@@ -13,11 +13,19 @@ import (
 
 const OracleTopic = "/vsc/mainnet/oracle/v1"
 
-type Msg *OracleMessage
+type Msg *oracleMessage
 
-type OracleMessage struct {
-	Type MsgType `json:"type,omitempty" validate:"required"`
-	Data any     `json:"data,omitempty" validate:"required"`
+type oracleMessage struct {
+	Code MsgCode         `json:"type,omitempty" validate:"required"`
+	Data json.RawMessage `json:"data,omitempty" validate:"required"`
+}
+
+func MakeOracleMessage(code MsgCode, data any) (Msg, error) {
+	jbytes, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	return &oracleMessage{code, jbytes}, nil
 }
 
 type MessageHandler interface {
@@ -26,19 +34,11 @@ type MessageHandler interface {
 
 type OracleP2pSpec struct {
 	handler MessageHandler
-	// broadcastPriceChan      chan<- []AveragePricePoint
-	// priceBlockSignatureChan chan<- VSCBlock
-	// broadcastPriceBlockChan chan<- VSCBlock
 }
 
 var _ libp2p.PubSubServiceParams[Msg] = &OracleP2pSpec{}
 
-func NewP2pSpec(
-	msgHandler MessageHandler,
-	// broadcastPriceChan chan<- []AveragePricePoint,
-	// priceBlockSignatureChan chan<- VSCBlock,
-	// broadcastPriceBlockChan chan<- VSCBlock,
-) *OracleP2pSpec {
+func NewP2pSpec(msgHandler MessageHandler) *OracleP2pSpec {
 	return &OracleP2pSpec{msgHandler}
 }
 
@@ -82,43 +82,6 @@ func (p *OracleP2pSpec) HandleMessage(
 			return send(response)
 		}
 	}
-
-	/*
-		switch msg.Type {
-		case MsgPriceOracleNewBlock:
-			b, err := parseMsg[VSCBlock](msg.Data)
-			if err != nil {
-				return err
-			}
-			b.TimeStamp = time.Now().UTC().UnixMilli()
-
-			select {
-			case p.broadcastPriceBlockChan <- *b:
-			default:
-				log.Println("channel full")
-			}
-
-		case MsgPriceOracleBroadcast:
-			b, err := parseMsg[[]AveragePricePoint](msg.Data)
-			if err != nil {
-				return err
-			}
-			p.broadcastPriceChan <- *b
-
-				case MsgBtcChainRelay:
-					headBlock, err := parseMsg[BlockRelay](msg.Data)
-					if err != nil {
-						return err
-					}
-					p.btcHeadBlockChan <- headBlock
-
-		case MsgPriceOracleSignedBlock:
-			return errors.New("not implemented")
-
-		default:
-			return errors.New("invalid message type")
-		}
-	*/
 
 	return nil
 }
