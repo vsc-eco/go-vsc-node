@@ -36,7 +36,7 @@ func (p *priceBlockWitness) handleSignal(sig *blockTickSignal) error {
 	return nil
 }
 
-func (p *priceBlockWitness) signBlock(b *p2p.VSCBlock) (string, error) {
+func (p *priceBlockWitness) signBlock(b *p2p.OracleBlock) (string, error) {
 	timeThreshold := time.Now().UTC().Add(-20 * time.Second)
 
 	blockExpired := timeThreshold.After(b.TimeStamp)

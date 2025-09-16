@@ -38,8 +38,8 @@ type stubOracleP2pSpec struct {
 
 func (p *stubOracleP2pSpec) Initialize(
 	broadcastPriceChan chan<- []p2p.AveragePricePoint,
-	priceBlockSignatureChan chan<- p2p.VSCBlock,
-	broadcastPriceBlockSignatureChan chan<- p2p.VSCBlock,
+	priceBlockSignatureChan chan<- p2p.OracleBlock,
+	broadcastPriceBlockSignatureChan chan<- p2p.OracleBlock,
 ) {
 	p.OracleP2pSpec.Initialize(
 		broadcastPriceChan,

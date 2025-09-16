@@ -108,7 +108,7 @@ func (p *priceBlockProducer) getMedianPricePoint(
 
 func (p *priceBlockProducer) pollMedianPriceSignature(
 	sig *blockTickSignal,
-	block *p2p.VSCBlock,
+	block *p2p.OracleBlock,
 ) error {
 	p.broadcastPriceFlags.lock.Lock()
 	p.broadcastPriceFlags.isCollectingSignatures = true
@@ -145,7 +145,7 @@ func (p *priceBlockProducer) pollMedianPriceSignature(
 	return nil
 }
 
-func validateSignedBlock(block *p2p.VSCBlock) bool {
+func validateSignedBlock(block *p2p.OracleBlock) bool {
 	if len(block.Signatures) != 1 {
 		return false
 	}

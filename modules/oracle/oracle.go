@@ -52,8 +52,8 @@ type Oracle struct {
 
 	priceOracle          *price.PriceOracle
 	broadcastPricePoints *threadSafeMap[string, []pricePoint]
-	broadcastPriceSig    *threadSafeSlice[p2p.VSCBlock]
-	broadcastPriceBlocks *threadSafeSlice[p2p.VSCBlock]
+	broadcastPriceSig    *threadSafeSlice[p2p.OracleBlock]
+	broadcastPriceBlocks *threadSafeSlice[p2p.OracleBlock]
 	broadcastPriceFlags  broadcastPriceFlags
 }
 
@@ -81,8 +81,8 @@ func New(
 		stateEngine: stateEngine,
 
 		broadcastPricePoints: makeThreadSafeMap[string, []pricePoint](),
-		broadcastPriceSig:    makeThreadSafeSlice[p2p.VSCBlock](512),
-		broadcastPriceBlocks: makeThreadSafeSlice[p2p.VSCBlock](512),
+		broadcastPriceSig:    makeThreadSafeSlice[p2p.OracleBlock](512),
+		broadcastPriceBlocks: makeThreadSafeSlice[p2p.OracleBlock](512),
 		broadcastPriceFlags: broadcastPriceFlags{
 			isBroadcastTickInterval:  false,
 			isCollectingAveragePrice: false,
@@ -192,7 +192,7 @@ func (o *Oracle) handlePriceMsg(
 			return nil, nil
 		}
 
-		block, err := parseMsg[p2p.VSCBlock](msg.Data)
+		block, err := parseMsg[p2p.OracleBlock](msg.Data)
 		if err != nil {
 			return nil, err
 		}
@@ -205,7 +205,7 @@ func (o *Oracle) handlePriceMsg(
 			return nil, nil
 		}
 
-		block, err := parseMsg[p2p.VSCBlock](msg.Data)
+		block, err := parseMsg[p2p.OracleBlock](msg.Data)
 		if err != nil {
 			return nil, err
 		}
