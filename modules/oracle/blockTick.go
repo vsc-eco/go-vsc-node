@@ -6,6 +6,7 @@ import (
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/oracle/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 )
 
@@ -53,14 +54,48 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	if isAvgPriceBroadcastTick {
 		err := o.handleBroadcastPriceTickInterval(sig)
 		if err != nil {
-			log.Println(
-				"[oracle] error on broadcastPriceTick interval.",
-				err,
-			)
+			log.Println("[oracle] error on broadcastPriceTick interval.", err)
 		}
 	}
 
 	if isChainRelayTick {
 		// o.blockRelaySignal <- blockTickSignal
 	}
+}
+
+func (o *Oracle) handleBroadcastPriceTickInterval(sig blockTickSignal) error {
+	o.broadcastPriceFlags.lock.Lock()
+	o.broadcastPriceFlags.isBroadcastTickInterval = true
+	o.broadcastPriceFlags.lock.Unlock()
+
+	defer func() {
+		o.broadcastPriceFlags.lock.Lock()
+		o.broadcastPriceFlags.isBroadcastTickInterval = false
+		o.broadcastPriceFlags.lock.Unlock()
+
+		o.priceOracle.AvgPriceMap.Clear()
+		o.broadcastPricePoints.Clear()
+		o.broadcastPriceSig.Clear()
+		o.broadcastPriceBlocks.Clear()
+	}()
+
+	// broadcast local average price
+	localAvgPrices := o.priceOracle.AvgPriceMap.GetAveragePrices()
+
+	if err := o.BroadcastMessage(p2p.MsgPriceBroadcast, localAvgPrices); err != nil {
+		return err
+	}
+
+	// make block / sign block
+	var err error
+
+	if sig.isBlockProducer {
+		priceBlockProducer := &priceBlockProducer{o}
+		err = priceBlockProducer.handleSignal(&sig, localAvgPrices)
+	} else if sig.isWitness {
+		priceBlockWitness := &priceBlockWitness{o}
+		err = priceBlockWitness.handleSignal(&sig)
+	}
+
+	return err
 }
