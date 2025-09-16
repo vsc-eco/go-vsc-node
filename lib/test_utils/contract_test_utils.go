@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"math"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/logger"
+	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
@@ -19,6 +21,8 @@ import (
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
 	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
+
+	"github.com/ipfs/go-cid"
 )
 
 func randomHex(n int) string {
@@ -29,15 +33,10 @@ func randomHex(n int) string {
 	return hex.EncodeToString(bytes)
 }
 
-type mockContractRegistry struct {
-	Owner string
-	Code  []byte
-}
-
 // Contract testing environment
 type ContractTest struct {
 	BlockHeight   uint64
-	Contracts     map[string]mockContractRegistry
+	ContractDb    contracts.Contracts
 	LedgerSession *stateEngine.LedgerSession
 	CallSession   *contract_session.CallSession
 	StateEngine   *stateEngine.StateEngine
@@ -47,7 +46,7 @@ type ContractTest struct {
 // Create a new contract testing environment with mock databases.
 func NewContractTest() ContractTest {
 	logr := logger.PrefixedLogger{Prefix: "contract-test"}
-	identityConfig := common.NewIdentityConfig()
+	idConfig := common.NewIdentityConfig()
 	sysConfig := common.SystemConfig{
 		Network: "mocknet",
 	}
@@ -56,16 +55,21 @@ func NewContractTest() ContractTest {
 	interestClaims := MockInterestClaimsDb{Claims: make([]ledgerDb.ClaimRecord, 0)}
 	actions := MockActionsDb{Actions: make(map[string]ledgerDb.ActionRecord)}
 	elections := MockElectionDb{}
-	contractState := MockContractStateDb{Outputs: make([]contracts.ContractOutput, 0)}
+	contractDb := MockContractDb{Contracts: make(map[string]contracts.Contract)}
+	contractState := MockContractStateDb{Outputs: make(map[string]contracts.ContractOutput)}
 	witnessesDb := witnesses.NewEmptyWitnesses()
-	se := stateEngine.New(logr, nil, nil, &elections, nil, nil, nil, &ledgers, &balances, nil, &interestClaims, nil, &actions, nil, nil, nil)
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig)
+	se := stateEngine.New(logr, nil, nil, &elections, &contractDb, nil, nil, &ledgers, &balances, nil, &interestClaims, nil, &actions, nil, nil, nil)
+	p2p := p2pInterface.New(witnessesDb, idConfig, sysConfig)
 	dl := datalayer.New(p2p)
+	a := aggregate.New([]aggregate.Plugin{idConfig, p2p, dl})
+	if err := a.Init(); err != nil {
+		panic(err)
+	}
 	return ContractTest{
 		BlockHeight:   0,
-		Contracts:     make(map[string]mockContractRegistry),
+		ContractDb:    &contractDb,
 		LedgerSession: se.LedgerExecutor.NewSession(0),
-		CallSession:   contract_session.NewCallSession(dl, &contractState, 0),
+		CallSession:   contract_session.NewCallSession(dl, &contractDb, &contractState, 0),
 		DataLayer:     dl,
 		StateEngine:   se,
 	}
@@ -89,22 +93,49 @@ func (ct *ContractTest) IncrementBlocks(count uint64) {
 
 // Register a contract from bytecode.
 func (ct *ContractTest) RegisterContract(contractId string, owner string, bytecode []byte) {
-	ct.Contracts[contractId] = mockContractRegistry{
-		Owner: owner,
-		Code:  bytecode,
+	cid, err := ct.DataLayer.PutRaw(bytecode, datalayer.PutRawOptions{Pin: true})
+	if err != nil {
+		panic(fmt.Errorf("failed to create cid for contract %s", contractId))
 	}
+	ct.ContractDb.RegisterContract(contractId, contracts.Contract{
+		Id:             contractId,
+		Owner:          owner,
+		Code:           cid.String(),
+		CreationHeight: ct.BlockHeight,
+		Runtime:        wasm_runtime.Go,
+	})
 }
 
 // Executes a contract call transaction. Returns the call result, gas used and logs emitted.
 func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxResult, uint, map[string][]string) {
-	contract, exists := ct.Contracts[tx.ContractId]
-	if !exists {
+	info, err := ct.ContractDb.ContractById(tx.ContractId)
+	if err != nil {
 		return stateEngine.TxResult{
 			Success: false,
-			Ret:     "contract not found",
+			Ret:     err.Error(),
 			RcUsed:  100,
 		}, 0, map[string][]string{}
 	}
+
+	c, err := cid.Decode(info.Code)
+	if err != nil {
+		return stateEngine.TxResult{
+			Success: false,
+			Ret:     err.Error(),
+			RcUsed:  100,
+		}, 0, map[string][]string{}
+	}
+
+	node, err := ct.DataLayer.Get(c, nil)
+	if err != nil {
+		return stateEngine.TxResult{
+			Success: false,
+			Ret:     err.Error(),
+			RcUsed:  100,
+		}, 0, map[string][]string{}
+	}
+
+	code := node.RawData()
 
 	w := wasm_runtime_ipc.New()
 	w.Init()
@@ -119,7 +150,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 	ctxValue := contract_execution_context.New(
 		contract_execution_context.Environment{
 			ContractId:           tx.ContractId,
-			ContractOwner:        contract.Owner,
+			ContractOwner:        info.Owner,
 			BlockHeight:          ct.BlockHeight,
 			TxId:                 tx.Self.TxId,
 			BlockId:              tx.Self.BlockId,
@@ -129,12 +160,14 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 			RequiredAuths:        tx.Self.RequiredAuths,
 			RequiredPostingAuths: tx.Self.RequiredPostingAuths,
 			Caller:               caller,
+			Sender:               caller,
 			Intents:              tx.Intents,
 		},
-		int64(tx.RcLimit), ct.LedgerSession, ct.CallSession,
+		int64(tx.RcLimit), tx.RcLimit*common.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
 	)
-	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(contract.Code))
+	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(code))
 	res := w.Execute(ctx, tx.RcLimit*common.CYCLE_GAS_PER_RC, tx.Action, string(tx.Payload), wasm_runtime.Go)
+	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/common.CYCLE_GAS_PER_RC), 100))
 
 	if res.Error != nil {
 		ct.LedgerSession.Revert()
@@ -143,19 +176,17 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 			Success: false,
 			Err:     &res.ErrorCode,
 			Ret:     *res.Error,
-			RcUsed:  10,
-		}, res.Result.Gas, map[string][]string{}
+			RcUsed:  rcUsed,
+		}, res.Gas, map[string][]string{}
 	}
 	ct.LedgerSession.Done()
 	ct.CallSession.Commit()
 
-	rcUsed := int64(math.Max(math.Ceil(float64(res.Result.Gas)/common.CYCLE_GAS_PER_RC), 100))
-
 	return stateEngine.TxResult{
 		Success: true,
-		Ret:     res.Result.Result,
+		Ret:     res.Result,
 		RcUsed:  rcUsed,
-	}, res.Result.Gas, ctxValue.Logs()
+	}, res.Gas, ct.CallSession.PopLogs()
 }
 
 // Add funds to an account in the ledger.

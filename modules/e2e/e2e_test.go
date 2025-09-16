@@ -139,9 +139,9 @@ func TestE2E(t *testing.T) {
 		Name: "Hold election and transfer",
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
 
-			mockCreator.Transfer("test-account", "vsc.gateway", "1500", "HBD", "to="+didKey.String())
+			mockCreator.Transfer("test-account", "vsc.gateway", "15000", "HBD", "to="+didKey.String())
 			mockCreator.Transfer("test-account", "vsc.gateway", "1500", "HIVE", "to="+didKey.String())
-			mockCreator.Transfer("test-account", "vsc.gateway", "1000", "HBD", "to="+ethDid.String())
+			mockCreator.Transfer("test-account", "vsc.gateway", "10000", "HBD", "to="+ethDid.String())
 			mockCreator.Transfer("test-account", "vsc.gateway", "1000", "HIVE", "to="+ethDid.String())
 			//Balance goes to 0x25190d9443442765769Fe5CcBc8aA76151932a1A
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "to=0x25190d9443442765769Fe5CcBc8aA76151932a1A")

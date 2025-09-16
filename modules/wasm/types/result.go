@@ -7,15 +7,10 @@ import (
 )
 
 type WasmResultStruct struct {
-	Result string
-	Gas    uint
-	Error  bool
-}
-
-type WasmResult = result.Result[WasmResultStruct]
-
-type BasicErrorResult struct {
-	Result    *WasmResultStruct
+	Result    string
+	Gas       uint
 	Error     *string
 	ErrorCode contracts.ContractOutputError
 }
+
+type WasmResult = result.Result[WasmResultStruct]

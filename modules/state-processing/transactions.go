@@ -115,8 +115,9 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 		RequiredAuths:        t.Self.RequiredAuths,
 		RequiredPostingAuths: t.Self.RequiredPostingAuths,
 		Caller:               caller,
+		Sender:               caller,
 		Intents:              t.Intents,
-	}, int64(gas), ledgerSession, callSession)
+	}, int64(gas), gas*common.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0)
 
 	validUtf8 := utf8.Valid(t.Payload)
 	if !validUtf8 {
@@ -134,6 +135,8 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 	res := w.Execute(wasmCtx, gas*common.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime)
 
+	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/common.CYCLE_GAS_PER_RC), 100))
+
 	if res.Error != nil {
 		fmt.Println("WASM execution error:", *res.Error)
 
@@ -141,24 +144,15 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 			Success: false,
 			Err:     &res.ErrorCode,
 			Ret:     *res.Error,
-			RcUsed:  10,
+			RcUsed:  rcUsed,
 		}
 	}
 	fmt.Println("basicResult:", res)
 
-	for id, meta := range ctxValue.InternalStorage() {
-		callSession.SetMetadata(id, meta)
-	}
-	for id, logs := range ctxValue.Logs() {
-		callSession.AppendLogs(id, logs)
-	}
-
-	rcUsed := int64(math.Max(math.Ceil(float64(res.Result.Gas)/common.CYCLE_GAS_PER_RC), 100))
-
 	fmt.Println("rcUsed", rcUsed)
 	return TxResult{
 		Success: true,
-		Ret:     res.Result.Result,
+		Ret:     res.Result,
 		RcUsed:  rcUsed,
 	}
 }

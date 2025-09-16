@@ -795,7 +795,7 @@ func (se *StateEngine) ExecuteBatch() {
 		fmt.Println("Executing item in batch", idx, len(se.TxBatch))
 		ledgerSession := se.LedgerExecutor.NewSession(lastBlockBh)
 		rcSession := se.RcSystem.NewSession(ledgerSession)
-		callSession := contract_session.NewCallSession(se.da, se.contractState, lastBlockBh)
+		callSession := contract_session.NewCallSession(se.da, se.contractDb, se.contractState, lastBlockBh)
 
 		for k, v := range se.TempOutputs {
 			callSession.FromOutput(k, *v)
@@ -874,10 +874,12 @@ func (se *StateEngine) ExecuteBatch() {
 							ErrMsg:  result.Ret,
 						},
 					}}
-					// Append previous output here to make sure the error symbol and message is included in contract output
-					se.TempOutputs[contractId] = &contract_session.TempOutput{
-						Metadata: lastContractMeta,
-						Cid:      lastStateCid,
+					// Append previous output here if not already to make sure the error symbol and message is included in contract output
+					if _, exist := se.TempOutputs[contractId]; !exist {
+						se.TempOutputs[contractId] = &contract_session.TempOutput{
+							Metadata: lastContractMeta,
+							Cid:      lastStateCid,
+						}
 					}
 				} else {
 					logs := callSession.PopLogs()

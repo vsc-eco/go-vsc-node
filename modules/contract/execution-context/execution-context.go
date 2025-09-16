@@ -1,14 +1,21 @@
 package contract_execution_context
 
 import (
+	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"unicode/utf8"
 	"vsc-node/modules/common"
 	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	ledgerSystem "vsc-node/modules/ledger-system"
+
+	wasm_context "vsc-node/modules/wasm/context"
+	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
+	wasm_types "vsc-node/modules/wasm/types"
 
 	"github.com/JustinKnueppel/go-result"
 )
@@ -18,18 +25,14 @@ type contractExecutionContext struct {
 	ledger      ledgerSystem.LedgerSession
 	env         Environment
 	rcLimit     int64
+	gasRemain   uint
 	callSession *contract_session.CallSession
-
-	// current metadatas of other contracts called by this contract
-	recursiveMetas map[string]contracts.ContractMetadata
-	currentSize    int
-	maxSize        int
-
-	logs map[string][]string
+	recursion   int
+	gasUsage    uint
 
 	ioReadGas  int
 	ioWriteGas int
-	ioSessions []IOSession
+	ioSessions []*ioSession
 
 	tokenLimits map[string]*int64
 }
@@ -60,13 +63,15 @@ type Environment struct {
 	Intents              []contracts.Intent
 }
 
-// var _ wasm_context.ExecContextValue = &contractExecutionContext{}
+var _ wasm_context.ExecContextValue = &contractExecutionContext{}
 
 func New(
 	env Environment,
 	rcLimit int64,
+	gasRemain uint,
 	ledger ledgerSystem.LedgerSession,
 	callSession *contract_session.CallSession,
+	recursionDepth int,
 ) ContractExecutionContext {
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
@@ -81,7 +86,7 @@ func New(
 				continue
 			}
 			key := intent.Type + "-" + token
-			seen, _ := seenTypes[key]
+			seen := seenTypes[key]
 			if seen {
 				continue
 			}
@@ -90,42 +95,20 @@ func New(
 			tokenLimits[token] = &val
 		}
 	}
-	metadata := callSession.GetMetadata(env.ContractId)
 	return &contractExecutionContext{
 		env.Intents,
 		ledger,
 		env,
 		rcLimit,
+		gasRemain,
 		callSession,
-		make(map[string]contracts.ContractMetadata),
-		metadata.CurrentSize,
-		metadata.MaxSize,
-		make(map[string][]string),
+		recursionDepth,
+		0,
 		0,
 		0,
 		nil,
 		tokenLimits,
 	}
-}
-
-func (ctx *contractExecutionContext) Logs() map[string][]string {
-	return ctx.logs
-}
-
-func (ctx *contractExecutionContext) InternalStorage() map[string]contracts.ContractMetadata {
-	meta, exists := ctx.recursiveMetas[ctx.env.ContractId]
-	if !exists {
-		ctx.recursiveMetas[ctx.env.ContractId] = contracts.ContractMetadata{
-			CurrentSize: ctx.currentSize,
-			MaxSize:     ctx.maxSize,
-		}
-	} else {
-		ctx.recursiveMetas[ctx.env.ContractId] = contracts.ContractMetadata{
-			CurrentSize: ctx.currentSize + meta.CurrentSize,
-			MaxSize:     max(ctx.maxSize, meta.MaxSize),
-		}
-	}
-	return ctx.recursiveMetas
 }
 
 func (ctx *contractExecutionContext) IOGas() int {
@@ -138,9 +121,7 @@ type ioSession struct {
 	end        func() int
 }
 
-type IOSession = *ioSession
-
-func (ctx *contractExecutionContext) IOSession() IOSession {
+func (ctx *contractExecutionContext) IOSession() wasm_context.IOSession {
 	session := &ioSession{}
 	session.end = func() int {
 		i := slices.Index(ctx.ioSessions, session)
@@ -177,16 +158,16 @@ func (ctx *contractExecutionContext) doIO(readGas int, WriteGas ...int) {
 
 func (ctx *contractExecutionContext) Revert() {
 	ctx.ledger.Revert()
+	ctx.callSession.Rollback()
+}
+
+func (ctx *contractExecutionContext) SetGasUsage(gasUsed uint) {
+	ctx.gasUsage = gasUsed
 }
 
 func (ctx *contractExecutionContext) Log(msg string) {
-	currentLogs, exists := ctx.logs[ctx.env.ContractId]
-	if !exists {
-		currentLogs = make([]string, 0)
-	}
-	currentLogs = append(currentLogs, msg)
-	ctx.logs[ctx.env.ContractId] = currentLogs
 	ctx.doIO(len(msg))
+	ctx.callSession.AppendLogs(ctx.env.ContractId, msg)
 }
 
 func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
@@ -323,9 +304,7 @@ func (ctx *contractExecutionContext) SetState(key string, value string) result.R
 			return nil
 		},
 	)
-	ctx.currentSize += newWriteToAdd
-	newWriteGas := max(0, ctx.currentSize-ctx.maxSize)
-	ctx.maxSize = max(ctx.currentSize, ctx.maxSize)
+	newWriteGas := ctx.callSession.IncSize(ctx.env.ContractId, newWriteToAdd)
 	ctx.doIO(newWriteToAdd-newWriteGas, newWriteGas)
 	ctx.callSession.GetStateStore(ctx.env.ContractId).Set(key, []byte(value))
 	return result.Ok(struct{}{})
@@ -344,7 +323,7 @@ func (ctx *contractExecutionContext) GetState(key string) result.Result[string] 
 func (ctx *contractExecutionContext) DeleteState(key string) result.Result[struct{}] {
 	ctx.doIO(len(key))
 	value := ctx.GetState(key).Unwrap()
-	ctx.currentSize -= len(value) + len(key)
+	ctx.callSession.IncSize(ctx.env.ContractId, len(key)-len(value))
 	ctx.callSession.GetStateStore(ctx.env.ContractId).Delete(key)
 	return result.Ok(struct{}{})
 }
@@ -368,8 +347,9 @@ func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) res
 	}
 	*tokenLimit -= amount
 
+	// assuming sender is the RC payer
 	var transferOptions []ledgerSystem.TransferOptions
-	if asset == "hbd" {
+	if asset == "hbd" && ctx.env.Caller == ctx.env.Sender {
 		transferOptions = []ledgerSystem.TransferOptions{
 			{
 				Exclusion: ctx.rcLimit,
@@ -378,7 +358,7 @@ func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) res
 	}
 	res := ctx.ledger.ExecuteTransfer(ledgerSystem.OpLogEvent{
 		To:     "contract:" + ctx.env.ContractId,
-		From:   ctx.env.RequiredAuths[0],
+		From:   ctx.env.Caller,
 		Amount: amount,
 		Asset:  asset,
 		// Memo   string `json:"mo" // TODO add in future
@@ -432,6 +412,67 @@ func (ctx *contractExecutionContext) WithdrawBalance(to string, amount int64, as
 		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_ERROR), fmt.Errorf("%s", res.Msg)))
 	}
 	return result.Ok(struct{}{})
+}
+
+func (ctx *contractExecutionContext) ContractStateGet(contractId string, key string) result.Result[string] {
+	ctx.doIO(len(contractId) + len(key))
+	res := ctx.callSession.GetStateStore(contractId).Get(key)
+	if res == nil {
+		return result.Ok("")
+	}
+	resStr := string(res)
+	ctx.doIO(len(resStr))
+	return result.Ok(resStr)
+}
+
+func (ctx *contractExecutionContext) ContractCall(contractId string, method string, payload string, options string) wasm_types.WasmResult {
+	nextRecursion := ctx.recursion + 1
+	if nextRecursion > common.CONTRACT_CALL_MAX_RECURSION_DEPTH {
+		return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf(contracts.IC_RCSE_LIMIT_HIT), fmt.Errorf("call recursion limit hit")))
+	}
+	payloadJson := json.RawMessage(payload)
+	if !utf8.Valid(payloadJson) {
+		return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf(contracts.IC_INVALD_PAYLD), fmt.Errorf("payload does not parse to a UTF-8 string")))
+	}
+	opts := contracts.ICCallOptions{
+		Intents: []contracts.Intent{},
+	}
+	json.Unmarshal([]byte(options), &opts)
+
+	return result.Flatten(result.Map(
+		ctx.callSession.GetContractFromDb(contractId),
+		func(ct contract_session.ContractWithCode) wasm_types.WasmResult {
+			w := wasm_runtime_ipc.New()
+			w.Init()
+			gasRemaining := ctx.gasRemain - ctx.gasUsage
+
+			ctxValue := New(Environment{
+				ContractId:           contractId,
+				ContractOwner:        ct.Info.Owner,
+				BlockHeight:          ctx.env.BlockHeight,
+				TxId:                 ctx.env.TxId,
+				BlockId:              ctx.env.BlockId,
+				Index:                ctx.env.Index,
+				OpIndex:              ctx.env.OpIndex,
+				Timestamp:            ctx.env.Timestamp,
+				RequiredAuths:        ctx.env.RequiredAuths,
+				RequiredPostingAuths: ctx.env.RequiredPostingAuths,
+				Caller:               "contract:" + ctx.env.ContractId,
+				Sender:               ctx.env.Sender,
+				Intents:              opts.Intents,
+			}, ctx.rcLimit, gasRemaining, ctx.ledger, ctx.callSession, nextRecursion)
+
+			callPayload := payload
+			json.Unmarshal([]byte(payloadJson), &callPayload)
+
+			wasmCtx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(ct.Code))
+			res := w.Execute(wasmCtx, gasRemaining, method, callPayload, ct.Info.Runtime)
+			if res.Error != nil {
+				return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf(res.ErrorCode), fmt.Errorf(*res.Error), fmt.Errorf("%d", res.Gas)))
+			}
+			return result.Ok(res)
+		},
+	))
 }
 
 // wrap the result of json.Marshal as used by EnvVar(), joins with ENV_VAR_ERROR symbol if Err

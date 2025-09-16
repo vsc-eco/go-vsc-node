@@ -60,10 +60,20 @@ type ContractMetadata struct {
 	MaxSize     int `json:"maxSize,omitempty"`
 }
 
+type ICCallOptions struct {
+	Intents []Intent `json:"intents,omitempty"`
+}
+
 const (
 	RUNTIME_ERROR       ContractOutputError = "runtime_error"
 	RUNTIME_ABORT       ContractOutputError = "runtime_abort"
 	RUNTIME_INVALID     ContractOutputError = "runtime_invalid"
+	IC_INVALD_PAYLD     ContractOutputError = "ic_invalid_payload"
+	IC_CONTRT_NOT_FND   ContractOutputError = "ic_contract_not_found"
+	IC_CONTRT_GET_ERR   ContractOutputError = "ic_contract_get_error"
+	IC_CODE_FET_ERR     ContractOutputError = "ic_code_fetch_error"
+	IC_CID_DEC_ERR      ContractOutputError = "ic_cid_decode_error"
+	IC_RCSE_LIMIT_HIT   ContractOutputError = "ic_recursion_limit_hit"
 	GAS_LIMIT_HIT       ContractOutputError = "gas_limit_hit"
 	SDK_ERROR           ContractOutputError = "sdk_error"
 	MISSING_REQ_AUTH    ContractOutputError = "missing_required_auth"

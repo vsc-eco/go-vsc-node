@@ -1,28 +1,39 @@
 package contract_session
 
 import (
+	"errors"
+	"fmt"
 	"maps"
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/db/vsc/contracts"
 
+	"github.com/JustinKnueppel/go-result"
 	"github.com/ipfs/go-cid"
+	"go.mongodb.org/mongo-driver/mongo"
 )
+
+type ContractWithCode struct {
+	Info contracts.Contract
+	Code []byte
+}
 
 // Session for transaction with contract calls
 type CallSession struct {
-	dl       *datalayer.DataLayer
-	stateDb  contracts.ContractState
-	lastBh   uint64
-	sessions map[string]*ContractSession
+	dl         *datalayer.DataLayer
+	contractDb contracts.Contracts
+	stateDb    contracts.ContractState
+	lastBh     uint64
+	sessions   map[string]*ContractSession
 }
 
 // Create a new contract call session for a transaction.
-func NewCallSession(dl *datalayer.DataLayer, stateDb contracts.ContractState, lastBh uint64) *CallSession {
+func NewCallSession(dl *datalayer.DataLayer, contractDb contracts.Contracts, stateDb contracts.ContractState, lastBh uint64) *CallSession {
 	return &CallSession{
-		dl:       dl,
-		stateDb:  stateDb,
-		lastBh:   lastBh,
-		sessions: make(map[string]*ContractSession),
+		dl:         dl,
+		contractDb: contractDb,
+		stateDb:    stateDb,
+		lastBh:     lastBh,
+		sessions:   make(map[string]*ContractSession),
 	}
 }
 
@@ -77,6 +88,12 @@ func (cs *CallSession) SetMetadata(contractId string, meta contracts.ContractMet
 	sess.SetMetadata(meta)
 }
 
+// Increment current size of a contract in metadata. Returns an int of any increases of max size.
+func (cs *CallSession) IncSize(contractId string, size int) int {
+	sess := cs.GetContractSession(contractId)
+	return sess.IncSize(size)
+}
+
 // Retrieve all contract outputs in the contract call.
 func (cs *CallSession) ToOutputs() map[string]TempOutput {
 	result := make(map[string]TempOutput)
@@ -87,7 +104,7 @@ func (cs *CallSession) ToOutputs() map[string]TempOutput {
 }
 
 // Append logs for a contract
-func (cs *CallSession) AppendLogs(contractId string, logs []string) {
+func (cs *CallSession) AppendLogs(contractId string, logs ...string) {
 	sess := cs.GetContractSession(contractId)
 	sess.AppendLogs(logs)
 }
@@ -112,7 +129,27 @@ func (cs *CallSession) Commit() {
 func (cs *CallSession) Rollback() {
 	for _, session := range cs.sessions {
 		session.state.Rollback()
+		session.PopLogs()
 	}
+}
+
+func (cs *CallSession) GetContractFromDb(contractId string) result.Result[ContractWithCode] {
+	info, err := cs.contractDb.ContractById(contractId)
+	if err == mongo.ErrNoDocuments {
+		return result.Err[ContractWithCode](errors.Join(fmt.Errorf(contracts.IC_CONTRT_NOT_FND), fmt.Errorf("contract not found")))
+	} else if err != nil {
+		return result.Err[ContractWithCode](errors.Join(fmt.Errorf(contracts.IC_CONTRT_GET_ERR), err))
+	}
+	c, err := cid.Decode(info.Code)
+	if err != nil {
+		return result.Err[ContractWithCode](errors.Join(fmt.Errorf(contracts.IC_CID_DEC_ERR), err))
+	}
+	node, err := cs.dl.Get(c, nil)
+	if err != nil {
+		return result.Err[ContractWithCode](errors.Join(fmt.Errorf(contracts.IC_CODE_FET_ERR), err))
+	}
+	code := node.RawData()
+	return result.Ok(ContractWithCode{info, code})
 }
 
 // Session for a contract
@@ -161,6 +198,13 @@ func (cs *ContractSession) GetMetadata() contracts.ContractMetadata {
 
 func (cs *ContractSession) SetMetadata(meta contracts.ContractMetadata) {
 	cs.metadata = meta
+}
+
+func (cs *ContractSession) IncSize(size int) int {
+	cs.metadata.CurrentSize += size
+	newWriteGas := max(0, cs.metadata.CurrentSize-cs.metadata.MaxSize)
+	cs.metadata.MaxSize = max(cs.metadata.MaxSize, cs.metadata.CurrentSize)
+	return newWriteGas
 }
 
 func (cs *ContractSession) ToOutput() TempOutput {

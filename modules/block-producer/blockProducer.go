@@ -685,26 +685,27 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			db = datalayer.NewDataBinFromCid(bp.Datalayer, cidz)
 		}
 
+		for key := range output.Deletions {
+			db.Delete(key)
+		}
+
 		for key, value := range output.Cache {
 			if output.Deletions[key] {
-				db.Delete(key)
 				continue
 			}
-			if len(value) > 0 {
-				cidz, err := common.HashBytes(value, multicodec.Raw)
-				if err != nil {
-					continue
-				}
-				session.Put(value, cidz)
-
-				//Required to prevent self blocking due to datalayer accessing the DS.
-				//Temp fix, long term create a "databin" session that uses the underlying datalayer session
-				bp.Datalayer.PutRaw(value, datalayer.PutRawOptions{
-					Codec: multicodec.Raw,
-				})
-
-				db.Set(key, cidz)
+			cidz, err := common.HashBytes(value, multicodec.Raw)
+			if err != nil {
+				continue
 			}
+			session.Put(value, cidz)
+
+			//Required to prevent self blocking due to datalayer accessing the DS.
+			//Temp fix, long term create a "databin" session that uses the underlying datalayer session
+			bp.Datalayer.PutRaw(value, datalayer.PutRawOptions{
+				Codec: multicodec.Raw,
+			})
+
+			db.Set(key, cidz)
 		}
 		savedCid := db.Save()
 

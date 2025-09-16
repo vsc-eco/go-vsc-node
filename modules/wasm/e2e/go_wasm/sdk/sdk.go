@@ -40,12 +40,10 @@ func hiveTransfer(arg1 *string, arg2 *string, arg3 *string) *string
 //go:wasmimport sdk hive.withdraw
 func hiveWithdraw(arg1 *string, arg2 *string, arg3 *string) *string
 
-// /TODO: this is not implemented yet
-// /go:wasmimport sdk contracts.read
+//go:wasmimport sdk contracts.read
 func contractRead(contractId *string, key *string) *string
 
-// /TODO: this is not implemented yet
-// /go:wasmimport sdk contracts.call
+//go:wasmimport sdk contracts.call
 func contractCall(contractId *string, method *string, payload *string, options *string) *string
 
 //go:wasmimport env abort
@@ -81,37 +79,42 @@ func StateDeleteObject(key string) {
 
 // Get current execution environment variables
 func GetEnv() Env {
-	Log("test 1")
+	// Log("test 1")
 	envStr := *getEnv(nil)
-	Log("test 2")
+	// Log("test 2")
 	env := Env{}
-	Log("test 3")
+	// Log("test 3")
 	// envMap := map[string]interface{}{}
 	json.Unmarshal([]byte(envStr), &env)
 	envMap := map[string]interface{}{}
 	json.Unmarshal([]byte(envStr), &envMap)
-	Log("test 4 " + envStr)
+	// Log("test 4 " + envStr)
 
 	requiredAuths := make([]Address, 0)
 	for _, auth := range envMap["msg.required_auths"].([]interface{}) {
 		addr := auth.(string)
 		requiredAuths = append(requiredAuths, Address(addr))
 	}
-	Log("test 4.5")
+	// Log("test 4.5")
 	requiredPostingAuths := make([]Address, 0)
 	for _, auth := range envMap["msg.required_posting_auths"].([]interface{}) {
 		addr := auth.(string)
 		requiredPostingAuths = append(requiredPostingAuths, Address(addr))
 	}
-	Log("test 5")
+	// Log("test 5")
 	env.Sender = Sender{
 		Address:              Address(envMap["msg.sender"].(string)),
 		RequiredAuths:        requiredAuths,
 		RequiredPostingAuths: requiredPostingAuths,
 	}
-	Log("test 6")
+	// Log("test 6")
 
 	return env
+}
+
+// Get current execution environment variables as json string
+func GetEnvStr() string {
+	return *getEnv(nil)
 }
 
 // Get current execution environment variable by a key
@@ -152,4 +155,14 @@ func HiveWithdraw(to Address, amount int64, asset Asset) {
 	amt := strconv.FormatInt(amount, 10)
 	as := asset.String()
 	hiveWithdraw(&toaddr, &amt, &as)
+}
+
+// Get a value by key from the contract state of another contract
+func ContractStateGet(contractId string, key string) *string {
+	return contractRead(&contractId, &key)
+}
+
+// Call another contract
+func ContractCall(contractId string, method string, payload string, options string) *string {
+	return contractCall(&contractId, &method, &payload, &options)
 }

@@ -142,12 +142,6 @@ var SdkModule = map[string]sdkFunc{
 		if !ok {
 			return ErrInvalidArgument
 		}
-
-		fmt.Println("Let's get env", envArg)
-		res := eCtx.EnvVar(envArg)
-
-		fmt.Println("system.getEnv 50", envArg, eCtx.EnvVar(envArg), res.Unwrap())
-
 		session := eCtx.IOSession()
 		return result.Map(
 			eCtx.EnvVar(envArg),
@@ -290,41 +284,47 @@ var SdkModule = map[string]sdkFunc{
 		)
 	},
 	//Intercontract read
-	"contracts.read": func(ctx context.Context, a any) SdkResult {
-		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
-		// if(this.state[contractId]) {
-		// 	state := this.state[contractId]
-		// 	{stateCache} := state
-		// 	result := stateCache.get(key)
-		// 	return result
-		// } else {
-		// 	contractOutput := this.contractOuputs.findOne({
-		// 		contractId: contractId,
-		// 		anchored_height: {
-		// 			$lte: this.op.block_height
-		// 		}
-		// 	}, {
-		// 		//Latest height
-		// 		sort: {
-		// 			anchored_height: -1
-		// 		}
-		// 	})
-		// 	console.log("contractOutput", contractOutput)
-
-		// 	stateCache := new StateCache(contractOutput.state_merkle)
-		// 	this.state[contractId] = {
-		// 		stateCache,
-		// 		stateCid: contractOutput.state_merkle
-		// 	}
-		// 	result := stateCache.get(key)
-		// 	return result
-		// }
-		return ErrUnimplemented
+	"contracts.read": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+		contractId, ok := arg1.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		key, ok := arg2.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		session := eCtx.IOSession()
+		return result.Map(
+			eCtx.ContractStateGet(contractId, key),
+			func(r string) SdkResultStruct {
+				return SdkResultStruct{
+					Result: r,
+					Gas:    session.End(),
+				}
+			},
+		)
 	},
-	//Intercontract write
-	"contracts.call": func(ctx context.Context, a any) SdkResult {
-		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
-		return ErrUnimplemented
+	//Intercontract call
+	"contracts.call": func(ctx context.Context, arg1 any, arg2 any, arg3 any, arg4 any) SdkResult {
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+		contractId, ok := arg1.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		method, ok := arg2.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		payload, ok := arg3.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		options, ok := arg4.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		return eCtx.ContractCall(contractId, method, payload, options)
 	},
 	//Links contract for writes in the future
 	//It is required to link a contract first to allow for VM loading
