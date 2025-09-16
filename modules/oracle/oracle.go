@@ -55,12 +55,7 @@ type Oracle struct {
 	broadcastPricePoints *threadSafeMap[string, []pricePoint]
 	broadcastPriceTick   chan blockTickSignal
 	broadcastPriceSig    *threadSafeSlice[p2p.VSCBlock]
-
-	// for block signatures
-	priceBlockSignatureChan chan p2p.VSCBlock
-
-	// for new block
-	broadcastPriceBlockChan chan p2p.VSCBlock
+	broadcastPriceBlocks *threadSafeSlice[p2p.VSCBlock]
 }
 
 func New(
@@ -82,9 +77,7 @@ func New(
 		broadcastPricePoints: makeThreadSafeMap[string, []pricePoint](),
 		broadcastPriceSig:    makeThreadSafeSlice[p2p.VSCBlock](512),
 		broadcastPriceTick:   make(chan blockTickSignal, 1),
-
-		priceBlockSignatureChan: make(chan p2p.VSCBlock, 1024),
-		broadcastPriceBlockChan: make(chan p2p.VSCBlock, 1024),
+		broadcastPriceBlocks: makeThreadSafeSlice[p2p.VSCBlock](512),
 	}
 }
 

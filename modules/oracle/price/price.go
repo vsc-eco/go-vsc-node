@@ -15,7 +15,6 @@ type PriceQuery interface {
 }
 
 type PriceOracle struct {
-	c           chan p2p.AveragePricePoint
 	AvgPriceMap priceMap
 
 	PriceAPIs []PriceQuery
@@ -41,7 +40,6 @@ func New(userCurrency string) (*PriceOracle, error) {
 	priceQueries := []PriceQuery{coinGeckoHandler, coinMarketCapHanlder}
 
 	p := &PriceOracle{
-		c:           make(chan p2p.AveragePricePoint, 1),
 		AvgPriceMap: makePriceMap(),
 		PriceAPIs:   priceQueries,
 	}
