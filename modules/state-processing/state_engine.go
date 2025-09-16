@@ -928,7 +928,8 @@ func (se *StateEngine) ExecuteBatch() {
 			callSession.Commit()
 			callOutputs := callSession.ToOutputs()
 			for k, v := range callOutputs {
-				se.TempOutputs[k] = &v
+				vv := v
+				se.TempOutputs[k] = &vv
 			}
 		}
 		ledgerIds := ledgerSession.Done()
