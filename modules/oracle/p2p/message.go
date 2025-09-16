@@ -15,7 +15,7 @@ import (
 const (
 	MsgBtcChainRelay MsgType = iota
 	MsgPriceBroadcast
-	MsgPriceOracleNewBlock
+	MsgPriceBlock
 	MsgPriceSignature
 	MsgPriceOracleSignedBlock
 )
@@ -80,7 +80,7 @@ type VSCBlock struct {
 	Signatures    []string `json:"signatures"`
 	Data          any      `json:"data"`
 	// in ms
-	TimeStamp int64 `json:"timestamp"`
+	TimeStamp time.Time `json:"timestamp"`
 }
 
 // VSCBlock.ID construction:

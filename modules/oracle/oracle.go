@@ -159,8 +159,16 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 		if err != nil {
 			return nil, err
 		}
-		b.TimeStamp = time.Now().UTC().UnixMilli()
+		b.TimeStamp = time.Now().UTC()
 		o.broadcastPriceSig.Append(*b)
+
+	case p2p.MsgPriceBlock:
+		b, err := parseMsg[p2p.VSCBlock](msg.Data)
+		if err != nil {
+			return nil, err
+		}
+		b.TimeStamp = time.Now().UTC()
+		o.broadcastPriceBlocks.Append(*b)
 
 	default:
 		return nil, errors.New("invalid message type")
