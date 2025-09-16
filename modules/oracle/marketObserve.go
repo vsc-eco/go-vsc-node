@@ -2,12 +2,12 @@ package oracle
 
 import (
 	"fmt"
-	"log"
 	"time"
 )
 
 func (o *Oracle) marketObserve() {
 	pricePollTicker := time.NewTicker(priceOraclePollInterval)
+	o.logger.Debug("observing market")
 
 	for {
 		select {
@@ -15,11 +15,15 @@ func (o *Oracle) marketObserve() {
 			return
 
 		case <-pricePollTicker.C:
+			o.logger.Debug("pricePollTicker interval ticked")
 			for _, api := range o.priceOracle.PriceAPIs {
 				go func() {
 					pricePoints, err := api.QueryMarketPrice(watchSymbols)
 					if err != nil {
-						log.Println("failed to query for market price:", err)
+						o.logger.Error(
+							"failed to query for market price",
+							"err", err,
+						)
 						return
 					}
 					o.priceOracle.AvgPriceMap.Observe(pricePoints)

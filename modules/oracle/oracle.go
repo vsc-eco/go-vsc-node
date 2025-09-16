@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -38,14 +40,15 @@ var (
 )
 
 type Oracle struct {
-	p2pServer  *libp2p.P2PServer
-	service    libp2p.PubSubService[p2p.Msg]
-	conf       common.IdentityConfig
-	electionDb elections.Elections
-	witness    witnesses.Witnesses
-
+	p2pServer   *libp2p.P2PServer
+	service     libp2p.PubSubService[p2p.Msg]
+	conf        common.IdentityConfig
+	electionDb  elections.Elections
+	witness     witnesses.Witnesses
 	vStream     *vstream.VStream
 	stateEngine *stateEngine.StateEngine
+
+	logger *slog.Logger
 
 	ctx        context.Context
 	cancelFunc context.CancelFunc
@@ -72,6 +75,14 @@ func New(
 	vstream *vstream.VStream,
 	stateEngine *stateEngine.StateEngine,
 ) *Oracle {
+	logLevel := slog.LevelInfo
+	if os.Getenv("DEBUG") == "1" {
+		logLevel = slog.LevelDebug
+	}
+
+	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: logLevel,
+	})
 	return &Oracle{
 		p2pServer:   p2pServer,
 		conf:        conf,
@@ -79,6 +90,7 @@ func New(
 		witness:     witness,
 		vStream:     vstream,
 		stateEngine: stateEngine,
+		logger:      slog.New(logHandler).With("service", "oracle"),
 
 		broadcastPricePoints: makeThreadSafeMap[string, []pricePoint](),
 		broadcastPriceSig:    makeThreadSafeSlice[p2p.OracleBlock](512),
@@ -115,10 +127,13 @@ func (o *Oracle) Start() *promise.Promise[any] {
 	o.vStream.RegisterBlockTick("oracle", o.blockTick, true)
 
 	return promise.New(func(resolve func(any), reject func(error)) {
+		o.logger.Debug("starting Oracle service")
 		var err error
 
 		o.service, err = libp2p.NewPubSubService(o.p2pServer, p2p.NewP2pSpec(o))
+		// panic("alskjdflkj")
 		if err != nil {
+			o.logger.Error("failed to initialize o.service", "err", err)
 			o.cancelFunc()
 			reject(err)
 			return

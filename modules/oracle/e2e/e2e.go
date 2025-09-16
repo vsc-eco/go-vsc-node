@@ -51,50 +51,26 @@ func MakeNode(nodeName string) *Node {
 		"oracle-test_" + nodeName + "/config",
 	)
 	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, 0)
-
 	logger := logger.PrefixedLogger{
 		Prefix: "oracle-test_" + nodeName,
 	}
-
 	dataLayer := datalayer.New(p2p, nodeName)
-
 	se := stateEngine.New(
-		logger, dataLayer, witnessesDb, electionDb,
-		contractDb, contractState, txDb, ledgerDbImpl,
-		balanceDb, hiveBlocks, interestClaims, vscBlocks,
+		logger, dataLayer, witnessesDb, electionDb, contractDb, contractState,
+		txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks,
 		actionsDb, rcDb, nonceDb, wasm,
 	)
 	vstream := vstream.New(se)
 
 	oracle := oracle.New(
-		p2p, identityConfig, electionDb,
-		witnessesDb, vstream, se,
+		p2p, identityConfig, electionDb, witnessesDb, vstream, se,
 	)
 
 	plugins := []aggregate.Plugin{
-		dbConf,
-		db,
-		identityConfig,
-		vscDb,
-		e2e.NewDbNuker(vscDb),
-		witnessesDb,
-		p2p,
-		dataLayer,
-		electionDb,
-		contractDb,
-		hiveBlocks,
-		vscBlocks,
-		txDb,
-		ledgerDbImpl,
-		actionsDb,
-		balanceDb,
-		interestClaims,
-		contractState,
-		rcDb,
-		nonceDb,
-		vstream,
-		wasm,
-		se,
+		dbConf, db, identityConfig, vscDb, e2e.NewDbNuker(vscDb), witnessesDb,
+		p2p, dataLayer, electionDb, contractDb, hiveBlocks, vscBlocks, txDb,
+		ledgerDbImpl, actionsDb, balanceDb, interestClaims, contractState, rcDb,
+		nonceDb, vstream, wasm, se,
 	}
 
 	out := Node{oracle, plugins}
