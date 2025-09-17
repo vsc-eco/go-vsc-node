@@ -46,7 +46,7 @@ services:
       - 8333:8333 # p2p port
       - 8332:8332 # jsonrpc port
     volumes:
-      - ./btc-data:/home/bitcoin/.bitcoin
+      - ./.btc-data:/home/bitcoin/.bitcoin
 volumes:
   db: {}
 networks:
