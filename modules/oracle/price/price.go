@@ -3,6 +3,7 @@ package price
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"vsc-node/modules/oracle/p2p"
 )
 
@@ -15,12 +16,12 @@ type PriceQuery interface {
 }
 
 type PriceOracle struct {
+	Logger      *slog.Logger
 	AvgPriceMap priceMap
-
-	PriceAPIs []PriceQuery
+	PriceAPIs   []PriceQuery
 }
 
-func New(userCurrency string) (*PriceOracle, error) {
+func New(logger *slog.Logger, userCurrency string) (*PriceOracle, error) {
 	coinMarketCapHanlder, err := makeCoinMarketCapHandler(userCurrency)
 	if err != nil {
 		return nil, fmt.Errorf(
@@ -40,6 +41,7 @@ func New(userCurrency string) (*PriceOracle, error) {
 	priceQueries := []PriceQuery{coinGeckoHandler, coinMarketCapHanlder}
 
 	p := &PriceOracle{
+		Logger:      logger.With("sub-service", "price-oracle"),
 		AvgPriceMap: makePriceMap(),
 		PriceAPIs:   priceQueries,
 	}

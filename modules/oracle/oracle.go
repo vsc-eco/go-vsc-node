@@ -118,7 +118,7 @@ func (o *Oracle) Init() error {
 
 	var err error
 
-	o.priceOracle, err = price.New(userCurrency)
+	o.priceOracle, err = price.New(o.logger, userCurrency)
 	if err != nil {
 		return fmt.Errorf("failed to initialize price oracle: %w", err)
 	}
