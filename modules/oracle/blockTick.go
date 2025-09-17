@@ -3,6 +3,7 @@ package oracle
 import (
 	"log"
 	"slices"
+	"sync"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
@@ -55,15 +56,23 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	)
 
 	sig := blockTickSignal{isBlockProducer, isWitness, members}
+	wg := &sync.WaitGroup{}
 
 	if isAvgPriceBroadcastTick {
-		err := o.handleBroadcastPriceTickInterval(sig)
-		if err != nil {
-			log.Println("[oracle] error on broadcastPriceTick interval.", err)
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.handleBroadcastPriceTickInterval(sig)
+		}()
 	}
 
 	if isChainRelayTick {
-		// o.blockRelaySignal <- blockTickSignal
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.handleChainRelayTickInterval(sig)
+		}()
 	}
+
+	wg.Wait()
 }
