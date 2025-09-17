@@ -2,6 +2,7 @@ package oracle
 
 import (
 	"encoding/json"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -12,6 +13,8 @@ import (
 const (
 	listenDuration = time.Second * 10
 	hourInSecond   = 3600
+
+	float64Epsilon = 1e-9
 )
 
 type pricePoint struct {
@@ -120,4 +123,8 @@ func (t *threadSafeSlice[T]) Clear() {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	t.buf = t.buf[:0]
+}
+
+func float64Eq(a, b float64) bool {
+	return math.Abs(a-b) < float64Epsilon
 }
