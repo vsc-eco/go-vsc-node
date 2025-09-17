@@ -26,7 +26,13 @@ func (t *Map[K, V]) Update(updateFunc MapUpdateFunc[K, V]) {
 	updateFunc(t.buf)
 }
 
-// returns a copy of the internal map
+func (t *Map[K, V]) Insert(k K, v V) {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	t.buf[k] = v
+}
+
+// returns a deep copy of the internal map
 func (t *Map[K, V]) Get() map[K]V {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
