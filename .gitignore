@@ -1,3 +1,7 @@
 data
 data-e2e-*
 .env
+modules/oracle/e2e/data-testnode-*
+modules/oracle/e2e/oracle-test_testnode-*
+!btc-data/bitcoin.conf
+btc-data/*

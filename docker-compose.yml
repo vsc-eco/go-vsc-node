@@ -39,24 +39,16 @@ services:
       - go-vsc-node
     volumes:
       - db:/data/db
-
   btcd:
+    image: ruimarinho/bitcoin-core:latest
     container_name: btcd
-    build:
-      dockerfile: dockerfiles/btcd.Dockerfile
-      context: .
-    command: btcd --rpcuser=${BTCD_RPC_USER} --rpcpass=${BTCD_RPC_PASS} --${BTCD_NETWORK}
     ports:
-      - 8333:8333
-      - 8334:8334
-    networks:
-      - go-vsc-node
+      - 8333:8333 # p2p port
+      - 8332:8332 # jsonrpc port
     volumes:
-      - .btcd:/root/.btcd
-
+      - ./btc-data:/home/bitcoin/.bitcoin
 volumes:
   db: {}
-
 networks:
   go-vsc-node:
     driver: bridge
