@@ -50,47 +50,6 @@ func parseMsg[T any](data json.RawMessage) (*T, error) {
 	return v, nil
 }
 
-type threadSafeMap[K comparable, V any] struct {
-	buf map[K]V
-	mtx *sync.Mutex
-}
-
-func makeThreadSafeMap[K comparable, V any]() *threadSafeMap[K, V] {
-	return &threadSafeMap[K, V]{
-		buf: make(map[K]V),
-		mtx: new(sync.Mutex),
-	}
-}
-
-// argument is nil if the key does not exist in internal map
-type updateFunc[K comparable, V any] func(map[K]V)
-
-func (t *threadSafeMap[K, V]) Update(updateFunc updateFunc[K, V]) {
-	t.mtx.Lock()
-	defer t.mtx.Unlock()
-	updateFunc(t.buf)
-}
-
-// returns a copy of the internal map
-func (t *threadSafeMap[K, V]) GetMap() map[K]V {
-	t.mtx.Lock()
-	defer t.mtx.Unlock()
-
-	bufCpy := make(map[K]V)
-	for k, v := range t.buf {
-		bufCpy[k] = v
-	}
-
-	return bufCpy
-}
-
-func (t *threadSafeMap[K, V]) Clear() {
-	t.mtx.Lock()
-	defer t.mtx.Unlock()
-
-	t.buf = make(map[K]V)
-}
-
 type threadSafeSlice[T any] struct {
 	buf []T
 	mtx *sync.Mutex

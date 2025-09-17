@@ -14,6 +14,7 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/price"
+	"vsc-node/modules/oracle/threadsafe"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	"vsc-node/modules/vstream"
@@ -54,7 +55,7 @@ type Oracle struct {
 	cancelFunc context.CancelFunc
 
 	priceOracle          *price.PriceOracle
-	broadcastPricePoints *threadSafeMap[string, []pricePoint]
+	broadcastPricePoints *threadsafe.Map[string, []pricePoint]
 	broadcastPriceSig    *threadSafeSlice[p2p.OracleBlock]
 	broadcastPriceBlocks *threadSafeSlice[p2p.OracleBlock]
 	broadcastPriceFlags  broadcastPriceFlags
@@ -92,7 +93,7 @@ func New(
 		stateEngine: stateEngine,
 		logger:      slog.New(logHandler).With("service", "oracle"),
 
-		broadcastPricePoints: makeThreadSafeMap[string, []pricePoint](),
+		broadcastPricePoints: threadsafe.NewMap[string, []pricePoint](),
 		broadcastPriceSig:    makeThreadSafeSlice[p2p.OracleBlock](512),
 		broadcastPriceBlocks: makeThreadSafeSlice[p2p.OracleBlock](512),
 		broadcastPriceFlags: broadcastPriceFlags{
@@ -235,7 +236,7 @@ func (o *Oracle) handlePriceMsg(
 func collectPricePoint(
 	peerID peer.ID,
 	data map[string]p2p.AveragePricePoint,
-) updateFunc[string, []pricePoint] {
+) threadsafe.MapUpdateFunc[string, []pricePoint] {
 	return func(m map[string][]pricePoint) {
 		recvTimeStamp := time.Now().UTC()
 
