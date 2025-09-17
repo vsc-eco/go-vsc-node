@@ -56,8 +56,8 @@ type Oracle struct {
 
 	priceOracle          *price.PriceOracle
 	broadcastPricePoints *threadsafe.Map[string, []pricePoint]
-	broadcastPriceSig    *threadSafeSlice[p2p.OracleBlock]
-	broadcastPriceBlocks *threadSafeSlice[p2p.OracleBlock]
+	broadcastPriceSig    *threadsafe.Slice[p2p.OracleBlock]
+	broadcastPriceBlocks *threadsafe.Slice[p2p.OracleBlock]
 	broadcastPriceFlags  broadcastPriceFlags
 }
 
@@ -94,8 +94,8 @@ func New(
 		logger:      slog.New(logHandler).With("service", "oracle"),
 
 		broadcastPricePoints: threadsafe.NewMap[string, []pricePoint](),
-		broadcastPriceSig:    makeThreadSafeSlice[p2p.OracleBlock](512),
-		broadcastPriceBlocks: makeThreadSafeSlice[p2p.OracleBlock](512),
+		broadcastPriceSig:    threadsafe.NewSlice[p2p.OracleBlock](512),
+		broadcastPriceBlocks: threadsafe.NewSlice[p2p.OracleBlock](512),
 		broadcastPriceFlags: broadcastPriceFlags{
 			isBroadcastTickInterval:  false,
 			isCollectingAveragePrice: false,
