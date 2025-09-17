@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"math"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -48,40 +47,6 @@ func parseMsg[T any](data json.RawMessage) (*T, error) {
 		return nil, err
 	}
 	return v, nil
-}
-
-type threadSafeSlice[T any] struct {
-	buf []T
-	mtx *sync.Mutex
-}
-
-func makeThreadSafeSlice[T any](cap int) *threadSafeSlice[T] {
-	return &threadSafeSlice[T]{
-		buf: make([]T, 0, cap),
-		mtx: new(sync.Mutex),
-	}
-}
-
-func (t *threadSafeSlice[T]) Append(v T) {
-	t.mtx.Lock()
-	defer t.mtx.Unlock()
-	t.buf = append(t.buf, v)
-}
-
-func (t *threadSafeSlice[T]) Slice() []T {
-	t.mtx.Lock()
-	defer t.mtx.Unlock()
-
-	bufCpy := make([]T, len(t.buf))
-	copy(bufCpy, t.buf)
-
-	return bufCpy
-}
-
-func (t *threadSafeSlice[T]) Clear() {
-	t.mtx.Lock()
-	defer t.mtx.Unlock()
-	t.buf = t.buf[:0]
 }
 
 func float64Eq(a, b float64) bool {
