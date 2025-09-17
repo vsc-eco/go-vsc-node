@@ -4,11 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"vsc-node/modules/aggregate"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/threadsafe"
-
-	"github.com/chebyrash/promise"
 )
 
 type chainRelay interface {
@@ -19,38 +16,30 @@ type chainRelay interface {
 }
 
 type ChainRelayer struct {
+	Logger *slog.Logger
 	chains []chainRelay
 }
 
-var _ aggregate.Plugin = &ChainRelayer{}
-
-func New() *ChainRelayer {
+func New(logger *slog.Logger) (*ChainRelayer, error) {
 	chainRelayers := []chainRelay{
 		&bitcoinRelayer{},
 	}
-	return &ChainRelayer{chainRelayers}
-}
 
-// Init implements aggregate.Plugin
-func (c *ChainRelayer) Init() error {
+	c := &ChainRelayer{
+		Logger: logger.With("sub-service", "chain-relay"),
+		chains: chainRelayers,
+	}
+
 	for i := range c.chains {
 		if err := c.chains[i].Init(); err != nil {
-			return fmt.Errorf(
+			return nil, fmt.Errorf(
 				"failed to initialize chainrelayer %s: %w",
 				c.chains[i].Symbol(), err,
 			)
 		}
 	}
 
-	return nil
-}
-
-// Start implements aggregate.Plugin
-// Runs startup and should be non blocking
-func (c *ChainRelayer) Start() *promise.Promise[any] {
-	return promise.New(func(resolve func(any), _ func(error)) {
-		resolve(nil)
-	})
+	return c, nil
 }
 
 // Stop implements aggregate.Plugin
@@ -75,7 +64,16 @@ func (c *ChainRelayer) FetchBlocks() map[string]p2p.BlockRelay {
 	wg.Add(len(c.chains))
 
 	for i := range c.chains {
-		go getChainBlock(wg, chainMap, c.chains[i])
+		go func(chain chainRelay) {
+			defer wg.Done()
+			if err := getChainBlock(chainMap, chain); err != nil {
+				c.Logger.Error(
+					"failed to get chain",
+					"symbol", c.chains[i].Symbol(),
+					"err", err,
+				)
+			}
+		}(c.chains[i])
 	}
 
 	wg.Wait()
@@ -84,17 +82,14 @@ func (c *ChainRelayer) FetchBlocks() map[string]p2p.BlockRelay {
 }
 
 func getChainBlock(
-	wg *sync.WaitGroup,
 	buf *threadsafe.Map[string, p2p.BlockRelay],
 	chain chainRelay,
-) {
-	defer wg.Done()
-
+) error {
 	block, err := chain.GetBlock()
 	if err != nil {
-		slog.Error("failed to get block", "chain", chain.Symbol(), "err", err)
-		return
+		return err
 	}
 
 	buf.Insert(chain.Symbol(), *block)
+	return nil
 }

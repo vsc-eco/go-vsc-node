@@ -12,6 +12,7 @@ import (
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/witnesses"
+	chainrelay "vsc-node/modules/oracle/chain-relay"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/price"
 	"vsc-node/modules/oracle/threadsafe"
@@ -33,7 +34,7 @@ const (
 	priceOraclePollInterval      = time.Second * 15
 
 	// 10 minutes = 600 seconds, 3s for every new block
-	btcChainRelayInterval = uint64(600 / 3)
+	chainRelayInterval = uint64(600 / 3)
 )
 
 var (
@@ -59,6 +60,8 @@ type Oracle struct {
 	broadcastPriceSig    *threadsafe.Slice[p2p.OracleBlock]
 	broadcastPriceBlocks *threadsafe.Slice[p2p.OracleBlock]
 	broadcastPriceFlags  broadcastPriceFlags
+
+	chainOracle *chainrelay.ChainRelayer
 }
 
 type broadcastPriceFlags struct {
@@ -84,6 +87,9 @@ func New(
 	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: logLevel,
 	})
+
+	logger := slog.New(logHandler).With("service", "oracle")
+
 	return &Oracle{
 		p2pServer:   p2pServer,
 		conf:        conf,
@@ -91,7 +97,7 @@ func New(
 		witness:     witness,
 		vStream:     vstream,
 		stateEngine: stateEngine,
-		logger:      slog.New(logHandler).With("service", "oracle"),
+		logger:      logger,
 
 		broadcastPricePoints: threadsafe.NewMap[string, []pricePoint](),
 		broadcastPriceSig:    threadsafe.NewSlice[p2p.OracleBlock](512),
@@ -117,7 +123,10 @@ func (o *Oracle) Init() error {
 		return fmt.Errorf("failed to initialize price oracle: %w", err)
 	}
 
-	// o.blockRelay = btcrelay.New(o.blockRelayChan)
+	o.chainOracle, err = chainrelay.New(o.logger)
+	if err != nil {
+		return fmt.Errorf("failed to initialize chain relay oracle: %w", err)
+	}
 
 	return nil
 }
