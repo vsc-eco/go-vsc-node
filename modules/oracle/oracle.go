@@ -62,6 +62,12 @@ type Oracle struct {
 	broadcastPriceFlags  broadcastPriceFlags
 
 	chainOracle *chainrelay.ChainRelayer
+	chainFlags  chainFlags
+}
+
+type chainFlags struct {
+	*sync.RWMutex
+	isBroadcastTickInterval bool
 }
 
 type broadcastPriceFlags struct {

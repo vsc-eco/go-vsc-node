@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	MsgBtcChainRelay MsgCode = iota
-	MsgPriceBroadcast
+	MsgPriceBroadcast MsgCode = iota
 	MsgPriceBlock
 	MsgPriceSignature
+	MsgChainRelayBlock
 )
 
 var priceValidator = validator.New(validator.WithRequiredStructEnabled())
@@ -65,12 +65,12 @@ func (p *AveragePricePoint) UnmarshalJSON(data []byte) error {
 
 // https://www.blockcypher.com/dev/bitcoin/#block
 type BlockRelay struct {
-	Hash       string    `json:"hash,omitempty"       validate:"hexadecimal"`
-	Height     int64     `json:"height,omitempty"`
-	PrevBlock  string    `json:"prev_block,omitempty" validate:"hexadecimal"`
-	MerkleRoot string    `json:"mrkl_root,omitempty"  validate:"hexadecimal"`
-	Timestamp  time.Time `json:"time,omitempty"`
-	Fees       int64     `json:"fees,omitempty"`
+	Hash       string    `json:"hash"        validate:"hexadecimal"`
+	Height     int64     `json:"height"`
+	PrevBlock  string    `json:"prev_block"  validate:"hexadecimal"`
+	MerkleRoot string    `json:"merkle_root" validate:"hexadecimal"`
+	Timestamp  time.Time `json:"time"`
+	AverageFee int64     `json:"average_fee"`
 }
 
 type OracleBlock struct {
