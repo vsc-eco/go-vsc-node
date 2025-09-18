@@ -11,6 +11,7 @@ import (
 	"math"
 	"strings"
 	"unicode/utf8"
+	"vsc-node/lib/datalayer"
 	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/contracts"
@@ -130,31 +131,6 @@ func (r *contractOutputResolver) BlockHeight(ctx context.Context, obj *contracts
 	return model.Int64(obj.BlockHeight), nil
 }
 
-// ID is the resolver for the id field.
-func (r *contractStateResolver) ID(ctx context.Context, obj contracts.ContractState) (*string, error) {
-	panic(fmt.Errorf("not implemented: ID - id"))
-}
-
-// State is the resolver for the state field.
-func (r *contractStateResolver) State(ctx context.Context, obj contracts.ContractState, key *string) (*string, error) {
-	panic(fmt.Errorf("not implemented: State - state"))
-}
-
-// StateQuery is the resolver for the stateQuery field.
-func (r *contractStateResolver) StateQuery(ctx context.Context, obj contracts.ContractState, key *string, query *string) (*string, error) {
-	panic(fmt.Errorf("not implemented: StateQuery - stateQuery"))
-}
-
-// StateKeys is the resolver for the stateKeys field.
-func (r *contractStateResolver) StateKeys(ctx context.Context, obj contracts.ContractState, key *string) (*string, error) {
-	panic(fmt.Errorf("not implemented: StateKeys - stateKeys"))
-}
-
-// StateMerkle is the resolver for the state_merkle field.
-func (r *contractStateResolver) StateMerkle(ctx context.Context, obj contracts.ContractState) (*string, error) {
-	panic(fmt.Errorf("not implemented: StateMerkle - state_merkle"))
-}
-
 // Epoch is the resolver for the epoch field.
 func (r *electionResultResolver) Epoch(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error) {
 	return model.Uint64(obj.Epoch), nil
@@ -219,14 +195,27 @@ func (r *postingJsonKeysResolver) T(ctx context.Context, obj *witnesses.PostingJ
 	return &obj.Type, nil
 }
 
-// ContractStateDiff is the resolver for the contractStateDiff field.
-func (r *queryResolver) ContractStateDiff(ctx context.Context, id *string) (*ContractDiff, error) {
-	panic(fmt.Errorf("not implemented"))
-}
-
-// ContractState is the resolver for the contractState field.
-func (r *queryResolver) ContractState(ctx context.Context, id *string) (contracts.ContractState, error) {
-	panic(fmt.Errorf("not implemented"))
+// GetStateObjectByKey is the resolver for the getStateObjectByKey field.
+func (r *queryResolver) GetStateObjectByKey(ctx context.Context, contractID string, key string) (*string, error) {
+	output, err := r.ContractsState.GetLastOutput(contractID, math.MaxInt64)
+	if err != nil {
+		return nil, err
+	}
+	cidz, err := cid.Parse(output.StateMerkle)
+	if err != nil {
+		return nil, err
+	}
+	databin := datalayer.NewDataBinFromCid(r.Da, cidz)
+	cidVal, err := databin.Get(key)
+	if err != nil {
+		return nil, err
+	}
+	rawVal, err := r.Da.GetRaw(*cidVal)
+	if err != nil {
+		return nil, err
+	}
+	val := string(rawVal)
+	return &val, nil
 }
 
 // FindTransaction is the resolver for the findTransaction field.
@@ -523,11 +512,6 @@ func (r *transactionOperationResolver) Data(ctx context.Context, obj *transactio
 	return model.Map(obj.Data), nil
 }
 
-// Index is the resolver for the index field.
-func (r *transactionOutputResolver) Index(ctx context.Context, obj *transactions.TransactionOutput) (model.Int64, error) {
-	return model.Int64(obj.Index), nil
-}
-
 // AnchrHeight is the resolver for the anchr_height field.
 func (r *transactionRecordResolver) AnchrHeight(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
 	return model.Uint64(obj.AnchoredHeight), nil
@@ -603,9 +587,6 @@ func (r *Resolver) Contract() ContractResolver { return &contractResolver{r} }
 // ContractOutput returns ContractOutputResolver implementation.
 func (r *Resolver) ContractOutput() ContractOutputResolver { return &contractOutputResolver{r} }
 
-// ContractState returns ContractStateResolver implementation.
-func (r *Resolver) ContractState() ContractStateResolver { return &contractStateResolver{r} }
-
 // ElectionResult returns ElectionResultResolver implementation.
 func (r *Resolver) ElectionResult() ElectionResultResolver { return &electionResultResolver{r} }
 
@@ -632,11 +613,6 @@ func (r *Resolver) TransactionOperation() TransactionOperationResolver {
 	return &transactionOperationResolver{r}
 }
 
-// TransactionOutput returns TransactionOutputResolver implementation.
-func (r *Resolver) TransactionOutput() TransactionOutputResolver {
-	return &transactionOutputResolver{r}
-}
-
 // TransactionRecord returns TransactionRecordResolver implementation.
 func (r *Resolver) TransactionRecord() TransactionRecordResolver {
 	return &transactionRecordResolver{r}
@@ -652,7 +628,6 @@ type actionRecordResolver struct{ *Resolver }
 type balanceRecordResolver struct{ *Resolver }
 type contractResolver struct{ *Resolver }
 type contractOutputResolver struct{ *Resolver }
-type contractStateResolver struct{ *Resolver }
 type electionResultResolver struct{ *Resolver }
 type ledgerRecordResolver struct{ *Resolver }
 type nonceRecordResolver struct{ *Resolver }
@@ -661,7 +636,6 @@ type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type rcRecordResolver struct{ *Resolver }
 type transactionOperationResolver struct{ *Resolver }
-type transactionOutputResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }

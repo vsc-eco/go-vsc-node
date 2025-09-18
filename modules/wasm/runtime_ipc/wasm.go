@@ -543,8 +543,6 @@ func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args st
 
 	code, _ := hex.DecodeString(strCode)
 
-	fmt.Println("wasm code:", code[:20], "len:", len(code))
-
 	retChan := make(chan wasm_types.WasmResultStruct, 1)
 	importGm := NewImportGasMeter()
 
@@ -644,7 +642,7 @@ func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args st
 	}
 
 	totalGasCost := vm.GetStatistics().GetTotalCost() + importGm.GetGasUsed()
-	fmt.Println("total gas cost:", totalGasCost)
+	// fmt.Println("total gas cost:", totalGasCost)
 
 	return wasm_types.WasmResultStruct{
 		Error:  nil,

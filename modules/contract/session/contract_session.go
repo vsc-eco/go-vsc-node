@@ -221,7 +221,6 @@ func (cs *ContractSession) AppendLogs(logs []string) {
 }
 
 func (cs *ContractSession) PopLogs() []string {
-	// TODO: walk through inter-contract call sessions and return their logs
 	popped := cs.logs
 	cs.logs = make([]string, 0)
 	return popped

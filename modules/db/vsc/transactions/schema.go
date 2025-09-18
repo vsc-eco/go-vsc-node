@@ -24,12 +24,7 @@ type IngestTransactionUpdate struct {
 }
 
 type SetResultUpdate struct {
-	// Id       string
-	// OutputId string
-	// Index    int64
-	Id string
-	// Note: This is referring to index in outputs array in oplog
-	OpIdx  int
+	Id     string
 	Ledger *[]ledgerSystem.OpLogEvent
 	Status *TransactionStatus
 	Output *TransactionOutput
@@ -54,7 +49,7 @@ type TransactionOperation struct {
 
 type TransactionOutput struct {
 	Id    string `json:"id" bson:"id"`
-	Index int64  `json:"index" bson:"index"`
+	Index []int  `json:"index" bson:"index"`
 }
 
 type TransactionRecord struct {
@@ -85,5 +80,5 @@ type TransactionRecord struct {
 
 	FirstSeen time.Time                  `json:"first_seen" bson:"first_seen"`
 	Ledger    *[]ledgerSystem.OpLogEvent `json:"ledger,omitempty" bson:"ledger,omitempty"`
-	Output    *TransactionOutput         `json:"output,omitempty" bson:"output,omitempty"`
+	Output    *[]TransactionOutput       `json:"output,omitempty" bson:"output,omitempty"`
 }

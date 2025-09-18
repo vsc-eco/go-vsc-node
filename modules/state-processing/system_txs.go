@@ -34,20 +34,21 @@ type ContractOutput struct {
 func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
 	se.Flush()
 
-	for idx, InputId := range output.Inputs {
+	txOuts := make(map[string][]int)
+
+	for idx, inputId := range output.Inputs {
+		inputTxId := strings.Split(inputId, "-")[0]
+		txOuts[inputTxId] = append(txOuts[inputTxId], idx)
+	}
+
+	for txId, txOutIdxs := range txOuts {
 		se.txDb.SetOutput(transactions.SetResultUpdate{
-			Id:    InputId,
-			OpIdx: idx,
+			Id: txId,
 			Output: &transactions.TransactionOutput{
 				Id:    output.Id,
-				Index: int64(idx),
+				Index: txOutIdxs,
 			},
 		})
-		// if output.Results[idx].Ok {
-		// 	se.txDb.SetStatus([]string{InputId}, "CONFIRMED")
-		// } else {
-		// 	se.txDb.SetStatus([]string{InputId}, "FAILED")
-		// }
 	}
 
 	go func() {
