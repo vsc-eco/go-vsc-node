@@ -1047,6 +1047,8 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSe
 	// data := make(map[string]interface{})
 	txs := tx.ToTransaction()
 
+	opTypes := make([]string, 0)
+	opTypesM := make(map[string]bool, 0)
 	opList := make([]transactions.TransactionOperation, 0)
 
 	for idx, v := range txs {
@@ -1057,7 +1059,11 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSe
 			Idx:           int64(idx),
 		}
 
+		opTypesM[op.Type] = true
 		opList = append(opList, op)
+	}
+	for opType := range opTypesM {
+		opTypes = append(opTypes, opType)
 	}
 
 	se.txDb.Ingest(transactions.IngestTransactionUpdate{
@@ -1070,6 +1076,7 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSe
 		Nonce:          tx.Headers.Nonce,
 		RcLimit:        tx.Headers.RcLimit,
 		RequiredAuths:  tx.Headers.RequiredAuths,
+		OpTypes:        opTypes,
 		Ops:            opList,
 		//Transaction is a VSC transaction
 		Type:   "vsc",
