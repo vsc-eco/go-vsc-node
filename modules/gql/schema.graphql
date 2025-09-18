@@ -19,6 +19,7 @@ type TransactionRecord {
   id: String!
   anchr_height: Uint64!
   anchr_index: Uint64!
+  anchr_id: String
   anchr_ts: String
   type: String!
   ops: [TransactionOperation]
@@ -256,7 +257,7 @@ input ContractOutputFilter {
 }
 
 type Query {
-  getStateObjectByKey(contractId: String!, key: String!): String
+  getStateByKeys(contractId: String!, keys: [String!]!): Map
   findTransaction(filterOptions: TransactionFilter): [TransactionRecord!]
   findContractOutput(filterOptions: ContractOutputFilter): [ContractOutput!]
   findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerRecord!]

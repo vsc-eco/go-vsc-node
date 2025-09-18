@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"unicode/utf8"
 	"vsc-node/lib/datalayer"
@@ -195,8 +196,11 @@ func (r *postingJsonKeysResolver) T(ctx context.Context, obj *witnesses.PostingJ
 	return &obj.Type, nil
 }
 
-// GetStateObjectByKey is the resolver for the getStateObjectByKey field.
-func (r *queryResolver) GetStateObjectByKey(ctx context.Context, contractID string, key string) (*string, error) {
+// GetStateByKeys is the resolver for the getStateByKeys field.
+func (r *queryResolver) GetStateByKeys(ctx context.Context, contractID string, keys []string) (model.Map, error) {
+	if len(keys) < 1 || len(keys) > 100 {
+		return nil, fmt.Errorf("number of state keys to query must be between 1 and 100")
+	}
 	output, err := r.ContractsState.GetLastOutput(contractID, math.MaxInt64)
 	if err != nil {
 		return nil, err
@@ -206,16 +210,26 @@ func (r *queryResolver) GetStateObjectByKey(ctx context.Context, contractID stri
 		return nil, err
 	}
 	databin := datalayer.NewDataBinFromCid(r.Da, cidz)
-	cidVal, err := databin.Get(key)
-	if err != nil {
-		return nil, err
+	result := make(map[string]interface{})
+	var keyErr error
+	for _, key := range keys {
+		cidVal, err := databin.Get(key)
+		if err != nil {
+			if err == os.ErrNotExist {
+				result[key] = nil
+			} else {
+				keyErr = err
+			}
+			continue
+		}
+		rawVal, err := r.Da.GetRaw(*cidVal)
+		if err != nil {
+			keyErr = err
+			continue
+		}
+		result[key] = string(rawVal)
 	}
-	rawVal, err := r.Da.GetRaw(*cidVal)
-	if err != nil {
-		return nil, err
-	}
-	val := string(rawVal)
-	return &val, nil
+	return model.Map(result), keyErr
 }
 
 // FindTransaction is the resolver for the findTransaction field.
@@ -520,6 +534,11 @@ func (r *transactionRecordResolver) AnchrHeight(ctx context.Context, obj *transa
 // AnchrIndex is the resolver for the anchr_index field.
 func (r *transactionRecordResolver) AnchrIndex(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
 	return model.Uint64(obj.AnchoredIndex), nil
+}
+
+// AnchrID is the resolver for the anchr_id field.
+func (r *transactionRecordResolver) AnchrID(ctx context.Context, obj *transactions.TransactionRecord) (*string, error) {
+	return obj.AnchoredId, nil
 }
 
 // AnchrTs is the resolver for the anchr_ts field.

@@ -207,7 +207,7 @@ type ComplexityRoot struct {
 		GetAccountRc          func(childComplexity int, account string, height *model.Uint64) int
 		GetDagByCid           func(childComplexity int, cidString string) int
 		GetElection           func(childComplexity int, epoch model.Uint64) int
-		GetStateObjectByKey   func(childComplexity int, contractID string, key string) int
+		GetStateByKeys        func(childComplexity int, contractID string, keys []string) int
 		GetWitness            func(childComplexity int, account string, height *model.Uint64) int
 		LocalNodeInfo         func(childComplexity int) int
 		SubmitTransactionV1   func(childComplexity int, tx string, sig string) int
@@ -237,6 +237,7 @@ type ComplexityRoot struct {
 
 	TransactionRecord struct {
 		AnchrHeight          func(childComplexity int) int
+		AnchrID              func(childComplexity int) int
 		AnchrIndex           func(childComplexity int) int
 		AnchrTs              func(childComplexity int) int
 		FirstSeen            func(childComplexity int) int
@@ -332,7 +333,7 @@ type PostingJsonKeysResolver interface {
 	T(ctx context.Context, obj *witnesses.PostingJsonKeys) (*string, error)
 }
 type QueryResolver interface {
-	GetStateObjectByKey(ctx context.Context, contractID string, key string) (*string, error)
+	GetStateByKeys(ctx context.Context, contractID string, keys []string) (model.Map, error)
 	FindTransaction(ctx context.Context, filterOptions *TransactionFilter) ([]transactions.TransactionRecord, error)
 	FindContractOutput(ctx context.Context, filterOptions *ContractOutputFilter) ([]contracts.ContractOutput, error)
 	FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) ([]ledgerDb.LedgerRecord, error)
@@ -363,6 +364,7 @@ type TransactionOperationResolver interface {
 type TransactionRecordResolver interface {
 	AnchrHeight(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
 	AnchrIndex(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
+	AnchrID(ctx context.Context, obj *transactions.TransactionRecord) (*string, error)
 	AnchrTs(ctx context.Context, obj *transactions.TransactionRecord) (*string, error)
 
 	Nonce(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
@@ -1139,17 +1141,17 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Query.GetElection(childComplexity, args["epoch"].(model.Uint64)), true
 
-	case "Query.getStateObjectByKey":
-		if e.complexity.Query.GetStateObjectByKey == nil {
+	case "Query.getStateByKeys":
+		if e.complexity.Query.GetStateByKeys == nil {
 			break
 		}
 
-		args, err := ec.field_Query_getStateObjectByKey_args(context.TODO(), rawArgs)
+		args, err := ec.field_Query_getStateByKeys_args(context.TODO(), rawArgs)
 		if err != nil {
 			return 0, false
 		}
 
-		return e.complexity.Query.GetStateObjectByKey(childComplexity, args["contractId"].(string), args["key"].(string)), true
+		return e.complexity.Query.GetStateByKeys(childComplexity, args["contractId"].(string), args["keys"].([]string)), true
 
 	case "Query.getWitness":
 		if e.complexity.Query.GetWitness == nil {
@@ -1294,6 +1296,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.TransactionRecord.AnchrHeight(childComplexity), true
+
+	case "TransactionRecord.anchr_id":
+		if e.complexity.TransactionRecord.AnchrID == nil {
+			break
+		}
+
+		return e.complexity.TransactionRecord.AnchrID(childComplexity), true
 
 	case "TransactionRecord.anchr_index":
 		if e.complexity.TransactionRecord.AnchrIndex == nil {
@@ -1621,6 +1630,7 @@ type TransactionRecord {
   id: String!
   anchr_height: Uint64!
   anchr_index: Uint64!
+  anchr_id: String
   anchr_ts: String
   type: String!
   ops: [TransactionOperation]
@@ -1858,7 +1868,7 @@ input ContractOutputFilter {
 }
 
 type Query {
-  getStateObjectByKey(contractId: String!, key: String!): String
+  getStateByKeys(contractId: String!, keys: [String!]!): Map
   findTransaction(filterOptions: TransactionFilter): [TransactionRecord!]
   findContractOutput(filterOptions: ContractOutputFilter): [ContractOutput!]
   findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerRecord!]
@@ -2202,22 +2212,22 @@ func (ec *executionContext) field_Query_getElection_argsEpoch(
 	return zeroVal, nil
 }
 
-func (ec *executionContext) field_Query_getStateObjectByKey_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+func (ec *executionContext) field_Query_getStateByKeys_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
 	var err error
 	args := map[string]any{}
-	arg0, err := ec.field_Query_getStateObjectByKey_argsContractID(ctx, rawArgs)
+	arg0, err := ec.field_Query_getStateByKeys_argsContractID(ctx, rawArgs)
 	if err != nil {
 		return nil, err
 	}
 	args["contractId"] = arg0
-	arg1, err := ec.field_Query_getStateObjectByKey_argsKey(ctx, rawArgs)
+	arg1, err := ec.field_Query_getStateByKeys_argsKeys(ctx, rawArgs)
 	if err != nil {
 		return nil, err
 	}
-	args["key"] = arg1
+	args["keys"] = arg1
 	return args, nil
 }
-func (ec *executionContext) field_Query_getStateObjectByKey_argsContractID(
+func (ec *executionContext) field_Query_getStateByKeys_argsContractID(
 	ctx context.Context,
 	rawArgs map[string]any,
 ) (string, error) {
@@ -2230,16 +2240,16 @@ func (ec *executionContext) field_Query_getStateObjectByKey_argsContractID(
 	return zeroVal, nil
 }
 
-func (ec *executionContext) field_Query_getStateObjectByKey_argsKey(
+func (ec *executionContext) field_Query_getStateByKeys_argsKeys(
 	ctx context.Context,
 	rawArgs map[string]any,
-) (string, error) {
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("key"))
-	if tmp, ok := rawArgs["key"]; ok {
-		return ec.unmarshalNString2string(ctx, tmp)
+) ([]string, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("keys"))
+	if tmp, ok := rawArgs["keys"]; ok {
+		return ec.unmarshalNString2ᚕstringᚄ(ctx, tmp)
 	}
 
-	var zeroVal string
+	var zeroVal []string
 	return zeroVal, nil
 }
 
@@ -6268,8 +6278,8 @@ func (ec *executionContext) fieldContext_PostingJsonKeys_key(_ context.Context, 
 	return fc, nil
 }
 
-func (ec *executionContext) _Query_getStateObjectByKey(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Query_getStateObjectByKey(ctx, field)
+func (ec *executionContext) _Query_getStateByKeys(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_getStateByKeys(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -6282,7 +6292,7 @@ func (ec *executionContext) _Query_getStateObjectByKey(ctx context.Context, fiel
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().GetStateObjectByKey(rctx, fc.Args["contractId"].(string), fc.Args["key"].(string))
+		return ec.resolvers.Query().GetStateByKeys(rctx, fc.Args["contractId"].(string), fc.Args["keys"].([]string))
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -6291,19 +6301,19 @@ func (ec *executionContext) _Query_getStateObjectByKey(ctx context.Context, fiel
 	if resTmp == nil {
 		return graphql.Null
 	}
-	res := resTmp.(*string)
+	res := resTmp.(model.Map)
 	fc.Result = res
-	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+	return ec.marshalOMap2vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐMap(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_Query_getStateObjectByKey(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_Query_getStateByKeys(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "Query",
 		Field:      field,
 		IsMethod:   true,
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type String does not have child fields")
+			return nil, errors.New("field of type Map does not have child fields")
 		},
 	}
 	defer func() {
@@ -6313,7 +6323,7 @@ func (ec *executionContext) fieldContext_Query_getStateObjectByKey(ctx context.C
 		}
 	}()
 	ctx = graphql.WithFieldContext(ctx, fc)
-	if fc.Args, err = ec.field_Query_getStateObjectByKey_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+	if fc.Args, err = ec.field_Query_getStateByKeys_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
 	}
@@ -6362,6 +6372,8 @@ func (ec *executionContext) fieldContext_Query_findTransaction(ctx context.Conte
 				return ec.fieldContext_TransactionRecord_anchr_height(ctx, field)
 			case "anchr_index":
 				return ec.fieldContext_TransactionRecord_anchr_index(ctx, field)
+			case "anchr_id":
+				return ec.fieldContext_TransactionRecord_anchr_id(ctx, field)
 			case "anchr_ts":
 				return ec.fieldContext_TransactionRecord_anchr_ts(ctx, field)
 			case "type":
@@ -8175,6 +8187,47 @@ func (ec *executionContext) fieldContext_TransactionRecord_anchr_index(_ context
 	return fc, nil
 }
 
+func (ec *executionContext) _TransactionRecord_anchr_id(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_TransactionRecord_anchr_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.TransactionRecord().AnchrID(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_TransactionRecord_anchr_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TransactionRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _TransactionRecord_anchr_ts(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionRecord) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_TransactionRecord_anchr_ts(ctx, field)
 	if err != nil {
@@ -8749,9 +8802,9 @@ func (ec *executionContext) _TransactionRecord_output(ctx context.Context, field
 	if resTmp == nil {
 		return graphql.Null
 	}
-	res := resTmp.(*[]transactions.TransactionOutput)
+	res := resTmp.([]transactions.TransactionOutput)
 	fc.Result = res
-	return ec.marshalOTransactionOutput2ᚖᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOutputᚄ(ctx, field.Selections, res)
+	return ec.marshalOTransactionOutput2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOutputᚄ(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) fieldContext_TransactionRecord_output(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
@@ -13455,7 +13508,7 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 		switch field.Name {
 		case "__typename":
 			out.Values[i] = graphql.MarshalString("Query")
-		case "getStateObjectByKey":
+		case "getStateByKeys":
 			field := field
 
 			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
@@ -13464,7 +13517,7 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 						ec.Error(ctx, ec.Recover(ctx, r))
 					}
 				}()
-				res = ec._Query_getStateObjectByKey(ctx, field)
+				res = ec._Query_getStateByKeys(ctx, field)
 				return res
 			}
 
@@ -14203,6 +14256,39 @@ func (ec *executionContext) _TransactionRecord(ctx context.Context, sel ast.Sele
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "anchr_id":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._TransactionRecord_anchr_id(ctx, field, obj)
 				return res
 			}
 
@@ -16336,10 +16422,6 @@ func (ec *executionContext) marshalOTransactionOutput2ᚕvscᚑnodeᚋmodulesᚋ
 	}
 
 	return ret
-}
-
-func (ec *executionContext) marshalOTransactionOutput2ᚖᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOutputᚄ(ctx context.Context, sel ast.SelectionSet, v *[]transactions.TransactionOutput) graphql.Marshaler {
-	return ec.marshalOTransactionOutput2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOutputᚄ(ctx, sel, *v)
 }
 
 func (ec *executionContext) marshalOTransactionRecord2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionRecordᚄ(ctx context.Context, sel ast.SelectionSet, v []transactions.TransactionRecord) graphql.Marshaler {
