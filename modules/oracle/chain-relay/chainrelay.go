@@ -10,31 +10,29 @@ import (
 
 type chainRelay interface {
 	Init() error
-	Shutdown() error
-	Symbol() string
 	GetBlock() (*p2p.BlockRelay, error)
 }
 
+type chainMap map[string]chainRelay
+
 type ChainRelayer struct {
-	Logger *slog.Logger
-	chains []chainRelay
+	Logger   *slog.Logger
+	chainMap chainMap
 }
 
 func New(logger *slog.Logger) (*ChainRelayer, error) {
-	chainRelayers := []chainRelay{
-		&bitcoinRelayer{},
-	}
-
 	c := &ChainRelayer{
 		Logger: logger.With("sub-service", "chain-relay"),
-		chains: chainRelayers,
+		chainMap: map[string]chainRelay{
+			"BTC": &bitcoinRelayer{},
+		},
 	}
 
-	for i := range c.chains {
-		if err := c.chains[i].Init(); err != nil {
+	for symbol, chainRelayer := range c.chainMap {
+		if err := chainRelayer.Init(); err != nil {
 			return nil, fmt.Errorf(
 				"failed to initialize chainrelayer %s: %w",
-				c.chains[i].Symbol(), err,
+				symbol, err,
 			)
 		}
 	}
@@ -45,15 +43,6 @@ func New(logger *slog.Logger) (*ChainRelayer, error) {
 // Stop implements aggregate.Plugin
 // Runs cleanup once the `Aggregate` is finished
 func (c *ChainRelayer) Stop() error {
-	for i := range c.chains {
-		if err := c.chains[i].Shutdown(); err != nil {
-			return fmt.Errorf(
-				"failed to shutdown chainrelayer %s: %w",
-				c.chains[i].Symbol(), err,
-			)
-		}
-	}
-
 	return nil
 }
 
@@ -61,35 +50,25 @@ func (c *ChainRelayer) FetchBlocks() map[string]p2p.BlockRelay {
 	chainMap := threadsafe.NewMap[string, p2p.BlockRelay]()
 
 	wg := &sync.WaitGroup{}
-	wg.Add(len(c.chains))
+	wg.Add(len(c.chainMap))
 
-	for i := range c.chains {
-		go func(chain chainRelay) {
+	for symbol, chain := range c.chainMap {
+		go func(symbol string, chain chainRelay) {
 			defer wg.Done()
-			if err := getChainBlock(chainMap, chain); err != nil {
+
+			block, err := chain.GetBlock()
+			if err != nil {
 				c.Logger.Error(
-					"failed to get chain",
-					"symbol", c.chains[i].Symbol(),
-					"err", err,
+					"failed to get chain data.",
+					"symbol", symbol, "err", err,
 				)
+			} else {
+				chainMap.Insert(symbol, *block)
 			}
-		}(c.chains[i])
+		}(symbol, chain)
 	}
 
 	wg.Wait()
 
 	return chainMap.Get()
-}
-
-func getChainBlock(
-	buf *threadsafe.Map[string, p2p.BlockRelay],
-	chain chainRelay,
-) error {
-	block, err := chain.GetBlock()
-	if err != nil {
-		return err
-	}
-
-	buf.Insert(chain.Symbol(), *block)
-	return nil
 }

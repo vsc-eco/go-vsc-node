@@ -13,8 +13,6 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-const bitcoinSymbol = "BTC"
-
 type bitcoinRelayer struct {
 	rpcConfig rpcclient.ConnConfig
 }
@@ -48,16 +46,6 @@ func (b *bitcoinRelayer) Init() error {
 	return nil
 }
 
-// Stop implements chainRelay.
-func (b *bitcoinRelayer) Shutdown() error {
-	return nil
-}
-
-// Symbol implements chainRelay.
-func (b *bitcoinRelayer) Symbol() string {
-	return bitcoinSymbol
-}
-
 // GetBlock implements chainRelay.
 // Get the block of depth 6
 func (b *bitcoinRelayer) GetBlock() (*p2p.BlockRelay, error) {
@@ -68,12 +56,12 @@ func (b *bitcoinRelayer) GetBlock() (*p2p.BlockRelay, error) {
 
 	defer btcdClient.Shutdown()
 
-	headblock, err := btcdClient.GetBlockCount()
+	headBlockHeight, err := btcdClient.GetBlockCount()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get headblock: %w", err)
 	}
 
-	blockHeight := headblock - 6 // depth 6
+	blockHeight := headBlockHeight - 6 // depth 6
 
 	blockHash, err := btcdClient.GetBlockHash(blockHeight)
 	if err != nil {
@@ -102,23 +90,22 @@ func (b *bitcoinRelayer) GetBlock() (*p2p.BlockRelay, error) {
 	}
 
 	if blockStatsQueryResult.err != nil {
-		return nil, blockQueryResult.err
+		return nil, blockStatsQueryResult.err
 	}
 
-	// make block relay
 	var (
-		btcBlock    = blockQueryResult.ok
-		blockHeader = btcBlock.Header
+		blockHeader = blockQueryResult.ok.Header
 		avgFee      = blockStatsQueryResult.ok.AverageFee
 	)
 
+	// make block relay
 	p2pBlockRelay := &p2p.BlockRelay{
 		Hash:       blockHash.String(),
 		Height:     blockHeight,
 		PrevBlock:  blockHeader.PrevBlock.String(),
 		MerkleRoot: blockHeader.MerkleRoot.String(),
 		Timestamp:  blockHeader.Timestamp.UTC(),
-		Fees:       avgFee * int64(len(btcBlock.Transactions)),
+		AverageFee: avgFee,
 	}
 
 	return p2pBlockRelay, nil
