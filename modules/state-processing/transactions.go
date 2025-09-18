@@ -1039,7 +1039,7 @@ func (tx *OffchainTransaction) Cid() cid.Cid {
 	return txId
 }
 
-func (tx *OffchainTransaction) Ingest(se *StateEngine, txSelf TxSelf) {
+func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSelf TxSelf) {
 	anchoredHeight := txSelf.BlockHeight
 	anchoredIndex := int64(txSelf.Index)
 	// anchoredOpIdx := int64(txSelf.OpIndex)
@@ -1066,7 +1066,7 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, txSelf TxSelf) {
 		AnchoredIndex:  &anchoredIndex,
 		AnchoredHeight: &anchoredHeight,
 		AnchoredBlock:  &txSelf.BlockId,
-		AnchoredId:     &txSelf.BlockId,
+		AnchoredId:     &vscBlockTxId,
 		Nonce:          tx.Headers.Nonce,
 		RcLimit:        tx.Headers.RcLimit,
 		RequiredAuths:  tx.Headers.RequiredAuths,

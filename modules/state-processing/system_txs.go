@@ -550,8 +550,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 		txContainer := tx.Decode(se.da, TxSelf{
 			TxId:        txInfo.Id,
-			Index:       -1,
-			OpIndex:     idx,
+			Index:       idx,
 			BlockHeight: uint64(t.SignedBlock.Headers.Br[1]),
 			BlockId:     t.Self.BlockId,
 		})
@@ -560,12 +559,11 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			//Note: sig verification has already happened
 			tx := txContainer.AsTransaction()
 
-			tx.Ingest(se, TxSelf{
+			tx.Ingest(se, t.Self.TxId, TxSelf{
 				BlockId:     t.Self.BlockId,
 				BlockHeight: uint64(t.SignedBlock.Headers.Br[1]),
 				//
-				Index:   -1,
-				OpIndex: idx,
+				Index: idx,
 			})
 
 			// fmt.Println("broadcast inject tx", tx.Headers.Nonce, tx.Headers.RequiredAuths)
