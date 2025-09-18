@@ -84,7 +84,10 @@ type OracleBlock struct {
 // VSCBlock.ID construction:
 // hex(timestamp + sha256.Sum256(username + activeKey + json(data))).
 // results in 40 byte ID (80 char hex string).
-func MakeVscBlock(username, activeKey string, data any) (*OracleBlock, error) {
+func MakeOracleBlock(
+	username, activeKey string,
+	data any,
+) (*OracleBlock, error) {
 	timestamp := time.Now().UTC()
 
 	tsBuf := [8]byte{}

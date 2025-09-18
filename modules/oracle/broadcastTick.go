@@ -146,7 +146,7 @@ func (p *priceBlockProducer) handleSignal(
 ) error {
 	p.logger.Debug("broadcasting new oracle block with median prices")
 
-	block, err := p2p.MakeVscBlock(
+	block, err := p2p.MakeOracleBlock(
 		p.conf.Get().HiveUsername,
 		p.conf.Get().HiveActiveKey,
 		medianPricePoints,
