@@ -415,7 +415,7 @@ func (ctx *contractExecutionContext) WithdrawBalance(to string, amount int64, as
 }
 
 func (ctx *contractExecutionContext) ContractStateGet(contractId string, key string) result.Result[string] {
-	ctx.doIO(len(contractId) + len(key))
+	ctx.doIO(len(key))
 	res := ctx.callSession.GetStateStore(contractId).Get(key)
 	if res == nil {
 		return result.Ok("")
