@@ -59,7 +59,10 @@ func (p *OracleP2pSpec) ValidateMessage(
 	}
 
 	switch parsedMsg.Code {
-	case MsgBtcChainRelay, MsgPriceBroadcast, MsgPriceBlock, MsgPriceSignature:
+	case MsgPriceBroadcast,
+		MsgPriceBlock,
+		MsgPriceSignature,
+		MsgChainRelayBlock:
 
 	default:
 		return false

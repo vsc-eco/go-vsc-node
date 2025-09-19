@@ -10,8 +10,7 @@ import (
 )
 
 const (
-	listenDuration = time.Second * 10
-	hourInSecond   = 3600
+	hourInSecond = 3600
 
 	float64Epsilon = 1e-9
 )
@@ -41,7 +40,7 @@ func getMedian(buf []float64) float64 {
 	}
 }
 
-func parseMsg[T any](data json.RawMessage) (*T, error) {
+func parseRawJson[T any](data json.RawMessage) (*T, error) {
 	v := new(T)
 	if err := json.Unmarshal(data, v); err != nil {
 		return nil, err

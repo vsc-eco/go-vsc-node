@@ -2,13 +2,12 @@ package price
 
 import (
 	"strings"
-	"sync"
 	"vsc-node/modules/oracle/p2p"
+	"vsc-node/modules/oracle/threadsafe"
 )
 
 type priceMap struct {
-	buf map[string]pricePointData
-	mtx *sync.Mutex
+	*threadsafe.Map[string, pricePointData]
 }
 
 type pricePointData struct {
@@ -19,49 +18,49 @@ type pricePointData struct {
 
 func makePriceMap() priceMap {
 	return priceMap{
-		buf: make(map[string]pricePointData),
-		mtx: new(sync.Mutex),
+		threadsafe.NewMap[string, pricePointData](),
 	}
 }
 
 func (pm *priceMap) Observe(pricePoints map[string]p2p.ObservePricePoint) {
-	pm.mtx.Lock()
-	defer pm.mtx.Unlock()
+	const threadBlocking = true
 
-	for priceSymbol, pricePoint := range pricePoints {
-		symbol := strings.ToUpper(priceSymbol)
-		avg, ok := pm.buf[symbol]
+	pm.Update(threadBlocking, func(m map[string]pricePointData) {
+		for priceSymbol, pricePoint := range pricePoints {
+			symbol := strings.ToUpper(priceSymbol)
+			avg, ok := m[symbol]
 
-		if !ok {
-			avg = pricePointData{
-				avgPrice:  pricePoint.Price,
-				avgVolume: pricePoint.Volume,
-				counter:   1,
+			if !ok {
+				avg = pricePointData{
+					avgPrice:  pricePoint.Price,
+					avgVolume: pricePoint.Volume,
+					counter:   1,
+				}
+			} else {
+				avg.avgPrice = calcNextAvg(avg.avgPrice, pricePoint.Price, avg.counter)
+				avg.avgVolume = calcNextAvg(avg.avgVolume, pricePoint.Volume, avg.counter)
+				avg.counter += 1
 			}
-		} else {
-			avg.avgPrice = calcNextAvg(avg.avgPrice, pricePoint.Price, avg.counter)
-			avg.avgVolume = calcNextAvg(avg.avgVolume, pricePoint.Volume, avg.counter)
-			avg.counter += 1
-		}
 
-		pm.buf[symbol] = avg
-	}
+			m[symbol] = avg
+		}
+	})
 }
 
 func (pm *priceMap) Clear() {
-	pm.mtx.Lock()
-	defer pm.mtx.Unlock()
+	pm.Lock()
+	defer pm.Unlock()
 
-	pm.buf = make(map[string]pricePointData)
+	pm.Map.Clear()
 }
 
 func (pm *priceMap) GetAveragePrices() map[string]p2p.AveragePricePoint {
-	pm.mtx.Lock()
-	defer pm.mtx.Unlock()
+	pm.Lock()
+	defer pm.Unlock()
 
 	out := make(map[string]p2p.AveragePricePoint)
 
-	for symbol, p := range pm.buf {
+	for symbol, p := range pm.Get() {
 		symbol = strings.ToUpper(symbol)
 		out[symbol] = p2p.MakeAveragePricePoint(p.avgPrice, p.avgVolume)
 	}

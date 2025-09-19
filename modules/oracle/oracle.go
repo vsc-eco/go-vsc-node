@@ -38,7 +38,8 @@ const (
 )
 
 var (
-	watchSymbols = []string{"BTC", "ETH", "LTC"}
+	watchSymbols          = []string{"BTC", "ETH", "LTC"}
+	errInvalidMessageType = errors.New("invalid message type")
 )
 
 type Oracle struct {
@@ -55,26 +56,18 @@ type Oracle struct {
 	ctx        context.Context
 	cancelFunc context.CancelFunc
 
-	priceOracle          *price.PriceOracle
+	priceOracle *price.PriceOracle
+
+	// unlocks during block ticks interval
 	broadcastPricePoints *threadsafe.Map[string, []pricePoint]
 	broadcastPriceSig    *threadsafe.Slice[p2p.OracleBlock]
 	broadcastPriceBlocks *threadsafe.Slice[p2p.OracleBlock]
-	broadcastPriceFlags  broadcastPriceFlags
 
 	chainOracle *chainrelay.ChainRelayer
-	chainFlags  chainFlags
-}
-
-type chainFlags struct {
-	*sync.RWMutex
-	isBroadcastTickInterval bool
 }
 
 type broadcastPriceFlags struct {
-	isBroadcastTickInterval  bool
-	isCollectingAveragePrice bool
-	isCollectingSignatures   bool
-	lock                     *sync.RWMutex
+	lock *sync.RWMutex
 }
 
 func New(
@@ -108,12 +101,6 @@ func New(
 		broadcastPricePoints: threadsafe.NewMap[string, []pricePoint](),
 		broadcastPriceSig:    threadsafe.NewSlice[p2p.OracleBlock](512),
 		broadcastPriceBlocks: threadsafe.NewSlice[p2p.OracleBlock](512),
-		broadcastPriceFlags: broadcastPriceFlags{
-			isBroadcastTickInterval:  false,
-			isCollectingAveragePrice: false,
-			isCollectingSignatures:   false,
-			lock:                     new(sync.RWMutex),
-		},
 	}
 }
 
@@ -134,6 +121,19 @@ func (o *Oracle) Init() error {
 		return fmt.Errorf("failed to initialize chain relay oracle: %w", err)
 	}
 
+	// locking states
+	if !o.broadcastPricePoints.TryLock() {
+		return errors.New("failed to lock broadcastPricePoints mutex")
+	}
+
+	if !o.broadcastPriceSig.TryLock() {
+		return errors.New("failed to lock broadcastPriceSig mutex")
+	}
+
+	if !o.broadcastPriceBlocks.TryLock() {
+		return errors.New("failed to lock broadcastPriceBlocks mutex")
+	}
+
 	return nil
 }
 
@@ -147,7 +147,6 @@ func (o *Oracle) Start() *promise.Promise[any] {
 		var err error
 
 		o.service, err = libp2p.NewPubSubService(o.p2pServer, p2p.NewP2pSpec(o))
-		// panic("alskjdflkj")
 		if err != nil {
 			o.logger.Error("failed to initialize o.service", "err", err)
 			o.cancelFunc()
@@ -188,61 +187,63 @@ func (o *Oracle) BroadcastMessage(msgCode p2p.MsgCode, data any) error {
 func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 	switch msg.Code {
 	case p2p.MsgPriceBroadcast, p2p.MsgPriceSignature, p2p.MsgPriceBlock:
-		o.broadcastPriceFlags.lock.RLock()
-		defer o.broadcastPriceFlags.lock.RUnlock()
-
-		return o.handlePriceMsg(peerID, msg, o.broadcastPriceFlags)
+		return o.handlePriceMsg(peerID, msg)
 
 	default:
-		return nil, errors.New("invalid message type")
+		return nil, errInvalidMessageType
 	}
 }
 
 func (o *Oracle) handlePriceMsg(
 	peerID peer.ID,
 	msg p2p.Msg,
-	oracleState broadcastPriceFlags,
 ) (p2p.Msg, error) {
-	var response p2p.Msg
+	const threadBlocking = false
 
+	var response p2p.Msg
 	switch msg.Code {
 	case p2p.MsgPriceBroadcast:
-		if !oracleState.isCollectingAveragePrice {
-			return nil, nil
-		}
-
-		data, err := parseMsg[map[string]p2p.AveragePricePoint](msg.Data)
+		data, err := parseRawJson[map[string]p2p.AveragePricePoint](msg.Data)
 		if err != nil {
 			return nil, err
 		}
 
-		o.broadcastPricePoints.Update(collectPricePoint(peerID, *data))
+		pricePointCollector := collectPricePoint(peerID, data)
+		if !o.broadcastPricePoints.Update(threadBlocking, pricePointCollector) {
+			o.logger.Debug(
+				"unable to collect broadcasted average price points in the current block interval.",
+			)
+		}
 
 	case p2p.MsgPriceSignature:
-		if !oracleState.isCollectingSignatures {
-			return nil, nil
-		}
-
-		block, err := parseMsg[p2p.OracleBlock](msg.Data)
+		block, err := parseRawJson[p2p.OracleBlock](msg.Data)
 		if err != nil {
 			return nil, err
 		}
 
 		block.TimeStamp = time.Now().UTC()
-		o.broadcastPriceSig.Append(*block)
+
+		if !o.broadcastPriceSig.Append(threadBlocking, *block) {
+			o.logger.Debug(
+				"unable to collect signature in the current block interval.",
+			)
+		}
 
 	case p2p.MsgPriceBlock:
-		if !oracleState.isBroadcastTickInterval {
-			return nil, nil
-		}
-
-		block, err := parseMsg[p2p.OracleBlock](msg.Data)
+		block, err := parseRawJson[p2p.OracleBlock](msg.Data)
 		if err != nil {
 			return nil, err
 		}
 
 		block.TimeStamp = time.Now().UTC()
-		o.broadcastPriceBlocks.Append(*block)
+		if !o.broadcastPriceBlocks.Append(threadBlocking, *block) {
+			o.logger.Debug(
+				"unable to collect and verify price block in the current block interval.",
+			)
+		}
+
+	default:
+		return nil, errInvalidMessageType
 	}
 
 	return response, nil
@@ -250,12 +251,12 @@ func (o *Oracle) handlePriceMsg(
 
 func collectPricePoint(
 	peerID peer.ID,
-	data map[string]p2p.AveragePricePoint,
+	data *map[string]p2p.AveragePricePoint,
 ) threadsafe.MapUpdateFunc[string, []pricePoint] {
 	return func(m map[string][]pricePoint) {
 		recvTimeStamp := time.Now().UTC()
 
-		for symbol, avgPricePoint := range data {
+		for symbol, avgPricePoint := range *data {
 			sym := strings.ToUpper(symbol)
 
 			pp := pricePoint{

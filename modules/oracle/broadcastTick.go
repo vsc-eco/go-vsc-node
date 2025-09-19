@@ -1,7 +1,6 @@
 package oracle
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -11,19 +10,21 @@ import (
 	"vsc-node/modules/oracle/p2p"
 )
 
+// assumed to be locked:
+//   - `o.broadcastPricePoints *threadsafe.Map[string, []pricePoint]`
+//   - `o.broadcastPriceSig    *threadsafe.Slice[p2p.OracleBlock]`
+//   - `o.broadcastPriceBlocks *threadsafe.Slice[p2p.OracleBlock]`
+//
+// these will be briefly unlocked during data collection period, at the end of
+// the function call, these will be locked
 func (o *Oracle) handleBroadcastPriceTickInterval(sig blockTickSignal) {
 	o.logger.Debug("broadcast price block tick.")
 
-	o.broadcastPriceFlags.lock.Lock()
-	o.broadcastPriceFlags.isBroadcastTickInterval = true
-	o.broadcastPriceFlags.lock.Unlock()
-
 	defer func() {
-		o.broadcastPriceFlags.lock.Lock()
-		o.broadcastPriceFlags.isBroadcastTickInterval = false
-		o.broadcastPriceFlags.lock.Unlock()
-
+		o.priceOracle.AvgPriceMap.Lock()
 		o.priceOracle.AvgPriceMap.Clear()
+		o.priceOracle.AvgPriceMap.Unlock()
+
 		o.broadcastPricePoints.Clear()
 		o.broadcastPriceSig.Clear()
 		o.broadcastPriceBlocks.Clear()
@@ -34,6 +35,10 @@ func (o *Oracle) handleBroadcastPriceTickInterval(sig blockTickSignal) {
 
 	if err := o.BroadcastMessage(p2p.MsgPriceBroadcast, localAvgPrices); err != nil {
 		o.logger.Error("failed to broadcast local average price", "err", err)
+		return
+	}
+
+	if !sig.isWitness && !sig.isBlockProducer {
 		return
 	}
 
@@ -64,22 +69,10 @@ func (o *Oracle) handleBroadcastPriceTickInterval(sig blockTickSignal) {
 func (o *Oracle) getMedianPricePoint(
 	localAvgPrices map[string]p2p.AveragePricePoint,
 ) map[string]pricePoint {
-	o.broadcastPriceFlags.lock.Lock()
-	o.broadcastPriceFlags.isCollectingAveragePrice = true
-	o.broadcastPriceFlags.lock.Unlock()
+	o.logger.Debug("collecting average prices")
 
 	// room for network latency
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer func() {
-		cancel()
-		o.broadcastPriceFlags.lock.Lock()
-		o.broadcastPriceFlags.isCollectingAveragePrice = false
-		o.broadcastPriceFlags.lock.Unlock()
-	}()
-
-	<-ctx.Done()
-
-	o.logger.Debug("collecting average prices")
+	o.broadcastPricePoints.UnlockTimeout(10 * time.Second)
 
 	appBuf := make(map[string]aggregatedPricePoints)
 
@@ -144,6 +137,7 @@ func (p *priceBlockProducer) handleSignal(
 	sig *blockTickSignal,
 	medianPricePoints map[string]pricePoint,
 ) error {
+	// make block with median price + broadcast
 	p.logger.Debug("broadcasting new oracle block with median prices")
 
 	block, err := p2p.MakeOracleBlock(
@@ -159,36 +153,25 @@ func (p *priceBlockProducer) handleSignal(
 		return err
 	}
 
-	return p.pollMedianPriceSignature(sig, block)
-}
-
-func (p *priceBlockProducer) pollMedianPriceSignature(
-	sig *blockTickSignal,
-	block *p2p.OracleBlock,
-) error {
-	p.broadcastPriceFlags.lock.Lock()
-	p.broadcastPriceFlags.isCollectingSignatures = true
-	p.broadcastPriceFlags.lock.Unlock()
-
-	// room for network latency
-	ctx, cancel := context.WithTimeout(context.Background(), listenDuration)
-	defer func() {
-		p.broadcastPriceFlags.lock.Lock()
-		p.broadcastPriceFlags.isCollectingSignatures = false
-		p.broadcastPriceFlags.lock.Unlock()
-		cancel()
-	}()
-
-	<-ctx.Done()
-
+	// collecting signature and submit to contract
 	p.logger.Debug("collecting signature", "block-id", block.ID)
 
-	sigThreshold := int(math.Ceil(float64(len(sig.electedMembers) * 2 / 3)))
+	// room for network latency
+	p.broadcastPriceSig.UnlockTimeout(10 * time.Second)
+
+	sigThreshold := int(math.Ceil(float64(len(sig.electedMembers)) * 2.0 / 3.0))
 	block.Signatures = make([]string, 0, sigThreshold)
 
 	signedBlocks := p.broadcastPriceSig.Slice()
 	for i := range signedBlocks {
 		signedBlock := &signedBlocks[i]
+		if block.ID != signedBlock.ID {
+			p.logger.Debug(
+				"invalid block id, rejecting",
+				"block-id", signedBlock.ID,
+			)
+			continue
+		}
 
 		if p.validateSignedBlock(signedBlock) {
 			block.Signatures = append(
@@ -198,9 +181,7 @@ func (p *priceBlockProducer) pollMedianPriceSignature(
 		}
 	}
 
-	p.submitToContract(block)
-
-	return nil
+	return p.submitToContract(block)
 }
 
 func (p *priceBlockProducer) validateSignedBlock(block *p2p.OracleBlock) bool {
@@ -229,10 +210,7 @@ func (p *priceBlockWitness) handleSignal(
 	medianPricePoints map[string]pricePoint,
 ) error {
 	// room for network latency
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	<-ctx.Done()
+	p.broadcastPriceBlocks.UnlockTimeout(10 * time.Second)
 
 	blocks := p.broadcastPriceBlocks.Slice()
 

@@ -33,6 +33,7 @@ func (o *Oracle) marketObserve() {
 	}
 }
 
-func (o *Oracle) submitToContract(data any) {
+func (o *Oracle) submitToContract(data any) error {
 	fmt.Println("not implemented")
+	return nil
 }

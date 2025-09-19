@@ -63,7 +63,7 @@ func (c *ChainRelayer) FetchBlocks() map[string]p2p.BlockRelay {
 					"symbol", symbol, "err", err,
 				)
 			} else {
-				chainMap.Insert(symbol, *block)
+				chainMap.Insert(true, symbol, *block)
 			}
 		}(symbol, chain)
 	}

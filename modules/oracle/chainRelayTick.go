@@ -16,15 +16,17 @@ func (o *Oracle) handleChainRelayTickInterval(sig blockTickSignal) {
 		return
 	}
 
-	o.chainFlags.Lock()
-	o.chainFlags.isBroadcastTickInterval = true
-	o.chainFlags.Unlock()
-
-	defer func() {
+	/*
 		o.chainFlags.Lock()
-		o.chainFlags.isBroadcastTickInterval = false
+		o.chainFlags.isBroadcastTickInterval = true
 		o.chainFlags.Unlock()
-	}()
+
+		defer func() {
+			o.chainFlags.Lock()
+			o.chainFlags.isBroadcastTickInterval = false
+			o.chainFlags.Unlock()
+		}()
+	*/
 
 	blockMap := o.chainOracle.FetchBlocks()
 

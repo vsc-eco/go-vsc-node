@@ -1,51 +1,77 @@
 package threadsafe
 
 import (
+	"context"
 	"maps"
 	"sync"
+	"time"
 )
 
 type Map[K comparable, V any] struct {
+	*sync.Mutex
 	buf map[K]V
-	mtx *sync.Mutex
 }
 
 func NewMap[K comparable, V any]() *Map[K, V] {
 	return &Map[K, V]{
-		buf: make(map[K]V),
-		mtx: &sync.Mutex{},
+		Mutex: &sync.Mutex{},
+		buf:   make(map[K]V),
 	}
 }
 
-// argument is nil if the key does not exist in internal map
-type MapUpdateFunc[K comparable, V any] func(map[K]V)
+// unlock the mutex
+func (t *Map[K, V]) UnlockTimeout(dur time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), dur)
+	defer cancel()
 
-func (t *Map[K, V]) Update(updateFunc MapUpdateFunc[K, V]) {
-	t.mtx.Lock()
-	defer t.mtx.Unlock()
-	updateFunc(t.buf)
+	t.Unlock()
+	<-ctx.Done()
+	t.Lock()
 }
 
-func (t *Map[K, V]) Insert(k K, v V) {
-	t.mtx.Lock()
-	defer t.mtx.Unlock()
+type MapUpdateFunc[K comparable, V any] func(map[K]V)
+
+func (t *Map[K, V]) Update(
+	threadBlocking bool,
+	mapUpdateFunc MapUpdateFunc[K, V],
+) bool {
+	if threadBlocking {
+		t.Lock()
+	} else if !t.TryLock() {
+		return false
+	}
+
+	defer t.Unlock()
+
+	mapUpdateFunc(t.buf)
+
+	return true
+}
+
+func (t *Map[K, V]) Insert(threadBlocking bool, k K, v V) bool {
+	if threadBlocking {
+		t.Lock()
+	} else if !t.TryLock() {
+		return false
+	}
+
+	defer t.Unlock()
+
 	t.buf[k] = v
+
+	return true
 }
 
 // returns a deep copy of the internal map
+// not thread safe
 func (t *Map[K, V]) Get() map[K]V {
-	t.mtx.Lock()
-	defer t.mtx.Unlock()
-
 	bufCpy := make(map[K]V)
 	maps.Copy(bufCpy, t.buf)
 
 	return bufCpy
 }
 
+// not thread safe
 func (t *Map[K, V]) Clear() {
-	t.mtx.Lock()
-	defer t.mtx.Unlock()
-
 	t.buf = make(map[K]V)
 }
