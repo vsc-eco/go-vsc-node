@@ -104,7 +104,7 @@ func TestBasicSignVerify(t *testing.T) {
 	block := blocks.NewBlock([]byte("hello world"))
 	assert.NotNil(t, block)
 
-	jws1, err := provider.Sign(block.Cid())
+	jws1, err := provider.Sign(block)
 	assert.Nil(t, err)
 
 	// create DID from the pub key

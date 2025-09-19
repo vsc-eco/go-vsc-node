@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"testing"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/logger"
@@ -343,13 +344,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			continue
 		}
 
-		var lastblock uint64
-		vscBlock, _ := se.vscBlocks.GetBlockByHeight(blockInfo.BlockHeight)
-		if vscBlock != nil {
-			lastblock = uint64(vscBlock.EndBlock)
-		}
-
-		session := se.LedgerExecutor.NewSession(lastblock)
 		if singleOp.Type == "custom_json" {
 			// fmt.Println(op.Type)
 			opVal := singleOp.Value
@@ -433,11 +427,60 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 				json.Unmarshal(cj.Json, &parsedTx)
 
-				txResult := parsedTx.ExecuteTx(se, session, nil, nil, "")
-				if !txResult.Success {
-					session.Revert()
+				// Contract deployment now requires two operations:
+				// 1. custom_json with the contract details
+				// 2. transfer operation with deployment fee to GATEWAY_WALLET
+				//
+				// The fee is refunded to the deployer's ledger balance if deployment fails.
+				// This pattern is active when testing or after CONTRACT_DEPLOYMENT_FEE_START_HEIGHT.
+				if testing.Testing() || txSelf.BlockHeight >= common.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
+					if len(tx.Operations) < 2 {
+						continue
+					}
+
+					secondOp := tx.Operations[1]
+					if secondOp.Type == "transfer" {
+						amountData := secondOp.Value["amount"].(map[string]any)
+						amount, err := strconv.ParseInt(amountData["amount"].(string), 10, 64)
+
+						if err != nil {
+							panic(err)
+						}
+
+						if amount < common.CONTRACT_DEPLOYMENT_FEE || amountData["nai"] != "@@000000013" || secondOp.Value["to"] != common.GATEWAY_WALLET {
+							continue
+						}
+
+						txResult := parsedTx.ExecuteTx(se)
+
+						if txResult.Success {
+							se.LedgerExecutor.Deposit(Deposit{
+								Id:          MakeTxId(tx.TransactionID, 1),
+								Asset:       "hbd",
+								Amount:      amount,
+								Account:     common.DAO_WALLET,
+								From:        "hive:" + secondOp.Value["from"].(string),
+								Memo:        "to=vsc.dao",
+								BlockHeight: blockInfo.BlockHeight,
+								BIdx:        int64(tx.Index),
+								OpIdx:       int64(1),
+							})
+						} else {
+							se.LedgerExecutor.Deposit(Deposit{
+								Id:          MakeTxId(tx.TransactionID, 1),
+								Asset:       "hbd",
+								Amount:      amount,
+								Account:     "hive:" + secondOp.Value["from"].(string),
+								From:        "hive:" + secondOp.Value["from"].(string),
+								Memo:        "to=" + secondOp.Value["from"].(string),
+								BlockHeight: blockInfo.BlockHeight,
+								BIdx:        int64(tx.Index),
+								OpIdx:       int64(1),
+							})
+						}
+					}
 				} else {
-					session.Done()
+					parsedTx.ExecuteTx(se)
 				}
 				continue
 			} else if cj.Id == "vsc.election_result" {
@@ -445,7 +488,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					Self: txSelf,
 				}
 				json.Unmarshal(cj.Json, &parsedTx)
-				parsedTx.ExecuteTx(se, session, nil)
+				parsedTx.ExecuteTx(se)
 				continue
 			}
 			//# End parsing system transactions
@@ -758,24 +801,16 @@ func (se *StateEngine) ExecuteBatch() {
 		fmt.Println("Executing item in batch", idx, len(se.TxBatch))
 		ledgerSession := se.LedgerExecutor.NewSession(lastBlockBh)
 		rcSession := se.RcSystem.NewSession(ledgerSession)
-
-		contractSessions := make(map[string]*contract_session.ContractSession)
+		callSession := contract_session.NewCallSession(se.da, se.contractDb, se.contractState, lastBlockBh)
 
 		for k, v := range se.TempOutputs {
-			val := *v
-
-			sess := contract_session.New(se.da)
-			sess.FromOutput(val)
-			contractSessions[k] = sess
+			callSession.FromOutput(k, *v)
 		}
 
 		//Forced ledger operations that is produced irrespective of the output result.
 		//For example, deposit operations.
 		// forcedLedger := make([]ledgerSystem.OpLogEvent, 0)
-		outputs := make([]struct {
-			ContractId string
-			Output     ContractResult
-		}, 0)
+		outputs := make([]ContractIdResult, 0)
 		ok := true
 		for idx, vscTx := range tx.Ops {
 			// if vscTx.Type() == "deposit" {
@@ -804,43 +839,26 @@ func (se *StateEngine) ExecuteBatch() {
 				payer = vscTx.TxSelf().RequiredAuths[0]
 			}
 
-			var contractSession *contract_session.ContractSession
 			var contractId string
+			lastContractMeta := contracts.ContractMetadata{}
+			lastStateCid := ""
 			if vscTx.Type() == "call_contract" {
 				contractCall, ok := vscTx.(TxVscCallContract)
 				if ok {
 					contractId = contractCall.ContractId
-					contractOutput, err := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
-
-					if contractSessions[contractCall.ContractId] == nil {
-						var cid string
-						metadata := contracts.ContractMetadata{}
-
+					if lastTmpOut, exist := se.TempOutputs[contractId]; !exist {
+						contractOutput, err := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
 						if err == nil {
-							cid = contractOutput.StateMerkle
-							metadata = contractOutput.Metadata
+							lastContractMeta = contractOutput.Metadata
+							lastStateCid = contractOutput.StateMerkle
 						}
-
-						tmpOut := contract_session.TempOutput{
-							Cache:     make(map[string][]byte),
-							Metadata:  metadata,
-							Deletions: make(map[string]bool),
-							Cid:       cid,
-						}
-
-						// fmt.Println("No contract session available output is", contractOutput)
-						sess := contract_session.New(se.da)
-
-						sess.FromOutput(tmpOut)
-						contractSessions[contractCall.ContractId] = sess
+					} else {
+						lastContractMeta = lastTmpOut.Metadata
+						lastStateCid = lastTmpOut.Cid
 					}
-					contractSession = contractSessions[contractCall.ContractId]
 				}
 			}
-
-			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, contractSession, payer)
-
-			// logs = append(logs, result.Ret)
+			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, callSession, payer)
 
 			se.log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
 			fmt.Println("RC Payer is", payer, vscTx.Type(), vscTx, result.RcUsed)
@@ -852,10 +870,7 @@ func (se *StateEngine) ExecuteBatch() {
 				txId := MakeTxId(tx.TxId, idx)
 				if !result.Success {
 					// If failed, output the error message only
-					outputs = []struct {
-						ContractId string
-						Output     ContractResult
-					}{{
+					outputs = []ContractIdResult{{
 						ContractId: contractId,
 						Output: ContractResult{
 							TxId:    txId,
@@ -865,19 +880,38 @@ func (se *StateEngine) ExecuteBatch() {
 							ErrMsg:  result.Ret,
 						},
 					}}
+					// Append previous output here if not already to make sure the error symbol and message is included in contract output
+					if _, exist := se.TempOutputs[contractId]; !exist {
+						se.TempOutputs[contractId] = &contract_session.TempOutput{
+							Metadata: lastContractMeta,
+							Cid:      lastStateCid,
+						}
+					}
 				} else {
-					outputs = append(outputs, struct {
-						ContractId string
-						Output     ContractResult
-					}{
-						ContractId: contractId,
-						Output: ContractResult{
-							TxId:    txId,
-							Ret:     result.Ret,
-							Success: result.Success,
-							Logs:    contractSession.PopLogs(),
-						},
-					})
+					logs := callSession.PopLogs()
+					for id, log := range logs {
+						if id == contractId {
+							outputs = append(outputs, ContractIdResult{
+								ContractId: contractId,
+								Output: ContractResult{
+									TxId:    txId,
+									Ret:     result.Ret,
+									Success: result.Success,
+									Logs:    log,
+								},
+							})
+						} else {
+							outputs = append(outputs, ContractIdResult{
+								ContractId: id,
+								Output: ContractResult{
+									TxId:    txId,
+									Ret:     "",
+									Success: result.Success,
+									Logs:    log,
+								},
+							})
+						}
+					}
 				}
 			}
 			if !result.Success {
@@ -887,13 +921,16 @@ func (se *StateEngine) ExecuteBatch() {
 				break
 			}
 		}
-		// Both success and failed transactions will be outputed regardless in order to output error messages if any
 		for _, out := range outputs {
 			se.AppendOutput(out.ContractId, out.Output)
 		}
-		for k, v := range contractSessions {
-			tmpOut := v.ToOutput()
-			se.TempOutputs[k] = &tmpOut
+		if ok {
+			callSession.Commit()
+			callOutputs := callSession.ToOutputs()
+			for k, v := range callOutputs {
+				vv := v
+				se.TempOutputs[k] = &vv
+			}
 		}
 		ledgerIds := ledgerSession.Done()
 

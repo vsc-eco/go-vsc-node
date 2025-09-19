@@ -24,12 +24,7 @@ type IngestTransactionUpdate struct {
 }
 
 type SetResultUpdate struct {
-	// Id       string
-	// OutputId string
-	// Index    int64
-	Id string
-	// Note: This is referring to index in outputs array in oplog
-	OpIdx  int
+	Id     string
 	Ledger *[]ledgerSystem.OpLogEvent
 	Status *TransactionStatus
 	Output *TransactionOutput
@@ -54,7 +49,7 @@ type TransactionOperation struct {
 
 type TransactionOutput struct {
 	Id    string `json:"id" bson:"id"`
-	Index int64  `json:"index" bson:"index"`
+	Index []int  `json:"index" bson:"index"`
 }
 
 type TransactionRecord struct {
@@ -76,14 +71,13 @@ type TransactionRecord struct {
 	Ops     []TransactionOperation `json:"ops" bson:"ops"`
 	OpTypes []string               `json:"op_types" bson:"op_types"`
 
-	AnchoredBlock string `json:"anchr_block" bson:"anchr_block"`
-	AnchoredId    string `json:"anchr_id" bson:"anchr_id"`
-	AnchoredIndex int64  `json:"anchr_index" bson:"anchr_index"`
-	// AnchoredOpIdx  int64                      `json:"anchr_opidx" bson:"anchr_opidx"`
+	AnchoredBlock  string  `json:"anchr_block" bson:"anchr_block"`               // L1 block ID
+	AnchoredId     *string `json:"anchr_id,omitempty" bson:"anchr_id,omitempty"` // Tx ID of the L2 block proposal in which the offfchain transaction was included in
+	AnchoredIndex  int64   `json:"anchr_index" bson:"anchr_index"`               // Transaction position in L1 or L2 block
 	AnchoredTs     *string `json:"anchr_ts,omitempty" bson:"anchr_ts,omitempty"`
 	AnchoredHeight uint64  `json:"anchr_height" bson:"anchr_height"`
 
 	FirstSeen time.Time                  `json:"first_seen" bson:"first_seen"`
 	Ledger    *[]ledgerSystem.OpLogEvent `json:"ledger,omitempty" bson:"ledger,omitempty"`
-	Output    *TransactionOutput         `json:"output,omitempty" bson:"output,omitempty"`
+	Output    []TransactionOutput        `json:"output,omitempty" bson:"output,omitempty"`
 }

@@ -19,6 +19,7 @@ type TransactionRecord {
   id: String!
   anchr_height: Uint64!
   anchr_index: Uint64!
+  anchr_id: String
   anchr_ts: String
   type: String!
   ops: [TransactionOperation]
@@ -31,7 +32,7 @@ type TransactionRecord {
   status: String!
   ledger: [OpLogEvent!]
   ledger_actions: [LedgerAction]
-  output: TransactionOutput
+  output: [TransactionOutput!]
 }
 
 type TransactionOperation {
@@ -63,7 +64,7 @@ type OpLogEvent {
 }
 
 type TransactionOutput {
-  index: Int64!
+  index: [Int!]
   id: String!
 }
 
@@ -80,23 +81,6 @@ type ContractOutput {
   inputs: [String!]!
   state_merkle: String!
   results: [ContractOutputResult!]!
-}
-
-type Gas {
-  IO: Int
-}
-
-type ContractDiff {
-  diff: JSON
-  previousContractStateId: String!
-}
-
-type ContractState {
-  id: String
-  state(key: String): JSON
-  stateQuery(key: String, query: JSON): JSON
-  stateKeys(key: String): JSON
-  state_merkle: String
 }
 
 type Contract {
@@ -273,8 +257,7 @@ input ContractOutputFilter {
 }
 
 type Query {
-  contractStateDiff(id: String): ContractDiff
-  contractState(id: String): ContractState
+  getStateByKeys(contractId: String!, keys: [String!]!): Map
   findTransaction(filterOptions: TransactionFilter): [TransactionRecord!]
   findContractOutput(filterOptions: ContractOutputFilter): [ContractOutput!]
   findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerRecord!]

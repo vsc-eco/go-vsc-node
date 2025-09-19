@@ -80,16 +80,14 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 func (e *transactions) SetOutput(sOut SetResultUpdate) {
 	query := bson.M{
 		"id": sOut.Id,
-		"data.type": bson.M{
-			"$ne": "deposit",
-		},
 	}
 	ctx := context.Background()
 
 	update := bson.M{}
+	push := bson.M{}
 
 	if sOut.Output != nil {
-		update["output"] = sOut.Output
+		push["output"] = sOut.Output
 	}
 	if sOut.Ledger != nil {
 		update["ledger"] = sOut.Ledger
@@ -98,8 +96,9 @@ func (e *transactions) SetOutput(sOut SetResultUpdate) {
 		update["status"] = sOut.Status
 	}
 
-	e.UpdateMany(ctx, query, bson.M{
-		"$set": update,
+	e.UpdateOne(ctx, query, bson.M{
+		"$set":  update,
+		"$push": push,
 	})
 }
 

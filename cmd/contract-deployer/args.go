@@ -11,6 +11,7 @@ type args struct {
 	wasmPath    string
 	name        string
 	description string
+	owner       string
 	isInit      bool
 	gqlUrl      string
 }
@@ -25,6 +26,7 @@ func ParseArgs() (args, error) {
 	wasmPath := flag.String("wasmPath", "main.wasm", "Path to compiled WASM bytecode")
 	name := flag.String("name", "", "Name of the contract")
 	desc := flag.String("description", "", "Description of the contract")
+	owner := flag.String("owner", "", "Owner of the contract (defaults to contract deployer)")
 	isInit := flag.Bool("init", false, "Generate credentials config files")
 	gqlUrl := flag.String("gqlUrl", "https://api.vsc.eco/api/v1/graphql", "GraphQL API URL for fetching latest election")
 	flag.Parse()
@@ -34,6 +36,7 @@ func ParseArgs() (args, error) {
 		*wasmPath,
 		*name,
 		*desc,
+		*owner,
 		*isInit,
 		*gqlUrl,
 	}, nil

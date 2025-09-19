@@ -10,7 +10,9 @@ var CONSENSUS_SPECS = struct {
 	ScheduleLength: 1_200, // 60 * 20 = 1 hour - length of a schedule before it's recalcualted
 }
 
-const CYCLE_GAS_PER_RC = 100_000_000
+// A transaction consuming 1000 RC (1 HBD equivalent) would generate ~0.002 HBD interest for the protocol
+// At 10K gas/RC and 100 RC minimum cost it would take at least 1M gas for a tx to consume more
+const CYCLE_GAS_PER_RC = 10_000
 
 // Areweave does $10.5 per GB we can use less b/c we charge for reads and modifications as well
 // 19 RCs per new written byte ($4/GB)
@@ -34,6 +36,8 @@ var RC_HIVE_FREE_AMOUNT int64 = 5_000       // 5 HBD worth of RCs for Hive accou
 var MINIMUM_RC_LIMIT uint64 = 50
 
 var CONTRACT_DEPLOYMENT_FEE int64 = 10_000 // 10 HBD per contract
+var CONTRACT_DEPLOYMENT_FEE_START_HEIGHT uint64 = 99410000
+var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
 type BLOCKTXTYPE int
 

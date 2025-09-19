@@ -48,7 +48,7 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 	case data_availability_spec.P2pMessageSignature:
 		d := s.Value()
 		if d == nil || d.circuit == nil {
-			return nil
+			return fmt.Errorf("did not receive any signatures from peer %s", from.String())
 		}
 
 		added, err := promise.All(ctx, utils.Map(d.circuit.CircuitMap(), func(member dids.BlsDID) *promise.Promise[bool] {
