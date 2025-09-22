@@ -16,13 +16,18 @@ type chainRelay interface {
 type chainMap map[string]chainRelay
 
 type ChainRelayer struct {
-	Logger   *slog.Logger
+	Logger       *slog.Logger
+	SignBlockBuf *threadsafe.Slice[p2p.OracleBlock]
+	NewBlockBuf  *threadsafe.Slice[p2p.OracleBlock]
+
 	chainMap chainMap
 }
 
 func New(logger *slog.Logger) (*ChainRelayer, error) {
 	c := &ChainRelayer{
-		Logger: logger.With("sub-service", "chain-relay"),
+		Logger:       logger.With("sub-service", "chain-relay"),
+		SignBlockBuf: threadsafe.NewSlice[p2p.OracleBlock](2),
+		NewBlockBuf:  threadsafe.NewSlice[p2p.OracleBlock](2),
 		chainMap: map[string]chainRelay{
 			"BTC": &bitcoinRelayer{},
 		},
@@ -37,16 +42,14 @@ func New(logger *slog.Logger) (*ChainRelayer, error) {
 		}
 	}
 
+	c.SignBlockBuf.Lock()
+	c.NewBlockBuf.Lock()
+
 	return c, nil
 }
 
-// Stop implements aggregate.Plugin
-// Runs cleanup once the `Aggregate` is finished
-func (c *ChainRelayer) Stop() error {
-	return nil
-}
-
 func (c *ChainRelayer) FetchBlocks() map[string]p2p.BlockRelay {
+	const threadBlocking = true
 	chainMap := threadsafe.NewMap[string, p2p.BlockRelay]()
 
 	wg := &sync.WaitGroup{}
@@ -62,9 +65,10 @@ func (c *ChainRelayer) FetchBlocks() map[string]p2p.BlockRelay {
 					"failed to get chain data.",
 					"symbol", symbol, "err", err,
 				)
-			} else {
-				chainMap.Insert(true, symbol, *block)
+				return
 			}
+
+			chainMap.Insert(threadBlocking, symbol, *block)
 		}(symbol, chain)
 	}
 

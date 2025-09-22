@@ -189,6 +189,9 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 	case p2p.MsgPriceBroadcast, p2p.MsgPriceSignature, p2p.MsgPriceBlock:
 		return o.handlePriceMsg(peerID, msg)
 
+	case p2p.MsgChainRelayBlock:
+		return o.handleChainRelayMsg(peerID, msg)
+
 	default:
 		return nil, errInvalidMessageType
 	}
@@ -276,4 +279,31 @@ func collectPricePoint(
 			m[sym] = v
 		}
 	}
+}
+
+func (o *Oracle) handleChainRelayMsg(
+	peerID peer.ID,
+	msg p2p.Msg,
+) (p2p.Msg, error) {
+	const threadBlocking = false
+	var response p2p.Msg = nil
+
+	switch msg.Code {
+	case p2p.MsgChainRelayBlock:
+		block, err := parseRawJson[p2p.OracleBlock](msg.Data)
+		if err != nil {
+			return nil, err
+		}
+
+		if !o.chainOracle.SignBlockBuf.Append(threadBlocking, *block) {
+			o.logger.Debug(
+				"unable to collect and verify price block in the current block interval.",
+			)
+		}
+
+	default:
+		return nil, errInvalidMessageType
+	}
+
+	return response, nil
 }
