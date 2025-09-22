@@ -13,9 +13,14 @@ import (
 )
 
 const (
+	// broadcasted average price
 	MsgPriceBroadcast MsgCode = iota
+	// broadcasted unsigned block with median prices
 	MsgPriceBlock
+	// broadcasted signed block with median prices
 	MsgPriceSignature
+
+	// broadcasted chain relay block
 	MsgChainRelayBlock
 )
 
