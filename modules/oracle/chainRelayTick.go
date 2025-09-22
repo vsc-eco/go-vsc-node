@@ -1,8 +1,9 @@
 package oracle
 
 import (
-	"context"
+	"errors"
 	"fmt"
+	"math"
 	"time"
 	"vsc-node/modules/oracle/p2p"
 )
@@ -15,18 +16,6 @@ func (o *Oracle) handleChainRelayTickInterval(sig blockTickSignal) {
 	if !sig.isBlockProducer && !sig.isWitness {
 		return
 	}
-
-	/*
-		o.chainFlags.Lock()
-		o.chainFlags.isBroadcastTickInterval = true
-		o.chainFlags.Unlock()
-
-		defer func() {
-			o.chainFlags.Lock()
-			o.chainFlags.isBroadcastTickInterval = false
-			o.chainFlags.Unlock()
-		}()
-	*/
 
 	blockMap := o.chainOracle.FetchBlocks()
 
@@ -70,13 +59,28 @@ func (c *chainRelayProducer) handle(
 	}
 
 	// collect and verify signatures
+	c.logger.Debug("collecting signature", "block-id", oracleBlock.ID)
 
 	// room for network latency
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	c.chainOracle.SignBlockBuf.UnlockTimeout(10 * time.Second)
 
-	<-ctx.Done()
-	return nil
+	sigThreshold := int(math.Ceil(float64(len(sig.electedMembers)) * 2.0 / 3.0))
+	oracleBlock.Signatures = make([]string, 0, sigThreshold)
+
+	signedBlocks := c.chainOracle.SignBlockBuf.Slice()
+	for _, signedBlock := range signedBlocks {
+		// if sig not valid, continue
+		signature := signedBlock.Signatures[0]
+
+		// if signature not valid, continue
+		oracleBlock.Signatures = append(oracleBlock.Signatures, signature)
+	}
+
+	if len(oracleBlock.Signatures) < sigThreshold {
+		return errors.New("failed to meet signature threshold")
+	}
+
+	return c.submitToContract(oracleBlock)
 }
 
 // chain relay witness
@@ -87,8 +91,11 @@ type chainRelayWitness struct {
 
 // handle implements chainRelayHandler.
 func (c *chainRelayWitness) handle(
-	blockTickSignal,
-	map[string]p2p.BlockRelay,
+	sig blockTickSignal,
+	localBlockMap map[string]p2p.BlockRelay,
 ) error {
+	// room for network latency
+	c.chainOracle.NewBlockBuf.UnlockTimeout(10 * time.Second)
+
 	panic("unimplemented")
 }

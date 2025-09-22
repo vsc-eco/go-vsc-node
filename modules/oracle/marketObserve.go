@@ -3,6 +3,7 @@ package oracle
 import (
 	"fmt"
 	"time"
+	"vsc-node/modules/oracle/p2p"
 )
 
 func (o *Oracle) marketObserve() {
@@ -33,7 +34,7 @@ func (o *Oracle) marketObserve() {
 	}
 }
 
-func (o *Oracle) submitToContract(data any) error {
+func (o *Oracle) submitToContract(data *p2p.OracleBlock) error {
 	fmt.Println("not implemented")
 	return nil
 }

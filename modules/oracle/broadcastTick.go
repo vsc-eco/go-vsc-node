@@ -181,6 +181,10 @@ func (p *priceBlockProducer) handleSignal(
 		}
 	}
 
+	if len(block.Signatures) < sigThreshold {
+		return errors.New("failed to meet signature threshold")
+	}
+
 	return p.submitToContract(block)
 }
 
