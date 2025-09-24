@@ -49,7 +49,6 @@ func New(logger *slog.Logger) (*ChainRelayer, error) {
 }
 
 func (c *ChainRelayer) FetchBlocks() map[string]p2p.BlockRelay {
-	const threadBlocking = true
 	chainMap := threadsafe.NewMap[string, p2p.BlockRelay]()
 
 	wg := &sync.WaitGroup{}
@@ -68,7 +67,7 @@ func (c *ChainRelayer) FetchBlocks() map[string]p2p.BlockRelay {
 				return
 			}
 
-			chainMap.Insert(threadBlocking, symbol, *block)
+			chainMap.Insert(symbol, *block)
 		}(symbol, chain)
 	}
 

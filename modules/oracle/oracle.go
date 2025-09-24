@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"sync"
 	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
@@ -66,10 +65,6 @@ type Oracle struct {
 	chainOracle *chainrelay.ChainRelayer
 }
 
-type broadcastPriceFlags struct {
-	lock *sync.RWMutex
-}
-
 func New(
 	p2pServer *libp2p.P2PServer,
 	conf common.IdentityConfig,
@@ -122,17 +117,9 @@ func (o *Oracle) Init() error {
 	}
 
 	// locking states
-	if !o.broadcastPricePoints.TryLock() {
-		return errors.New("failed to lock broadcastPricePoints mutex")
-	}
-
-	if !o.broadcastPriceSig.TryLock() {
-		return errors.New("failed to lock broadcastPriceSig mutex")
-	}
-
-	if !o.broadcastPriceBlocks.TryLock() {
-		return errors.New("failed to lock broadcastPriceBlocks mutex")
-	}
+	o.broadcastPricePoints.Lock()
+	o.broadcastPriceSig.Lock()
+	o.broadcastPriceBlocks.Lock()
 
 	return nil
 }
@@ -201,7 +188,6 @@ func (o *Oracle) handlePriceMsg(
 	peerID peer.ID,
 	msg p2p.Msg,
 ) (p2p.Msg, error) {
-	const threadBlocking = false
 
 	var response p2p.Msg
 	switch msg.Code {
@@ -212,7 +198,7 @@ func (o *Oracle) handlePriceMsg(
 		}
 
 		pricePointCollector := collectPricePoint(peerID, data)
-		if !o.broadcastPricePoints.Update(threadBlocking, pricePointCollector) {
+		if !o.broadcastPricePoints.Update(pricePointCollector) {
 			o.logger.Debug(
 				"unable to collect broadcasted average price points in the current block interval.",
 			)
@@ -226,7 +212,7 @@ func (o *Oracle) handlePriceMsg(
 
 		block.TimeStamp = time.Now().UTC()
 
-		if !o.broadcastPriceSig.Append(threadBlocking, *block) {
+		if !o.broadcastPriceSig.Append(*block) {
 			o.logger.Debug(
 				"unable to collect signature in the current block interval.",
 			)
@@ -239,7 +225,7 @@ func (o *Oracle) handlePriceMsg(
 		}
 
 		block.TimeStamp = time.Now().UTC()
-		if !o.broadcastPriceBlocks.Append(threadBlocking, *block) {
+		if !o.broadcastPriceBlocks.Append(*block) {
 			o.logger.Debug(
 				"unable to collect and verify price block in the current block interval.",
 			)
@@ -295,7 +281,7 @@ func (o *Oracle) handleChainRelayMsg(
 			return nil, err
 		}
 
-		if !o.chainOracle.SignBlockBuf.Append(threadBlocking, *block) {
+		if !o.chainOracle.SignBlockBuf.Append(*block) {
 			o.logger.Debug(
 				"unable to collect and verify price block in the current block interval.",
 			)
