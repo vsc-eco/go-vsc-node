@@ -17,23 +17,24 @@ type coinMarketCapHandler struct {
 	currency string
 }
 
-var _ PriceQuery = &coinMarketCapHandler{}
+var _ priceQuery = &coinMarketCapHandler{}
 
+// initialize implements priceQuery
 // returns an error if the environment variable `COINMARKETCAP_API_KEY` is not
 // set
-func makeCoinMarketCapHandler(currency string) (*coinMarketCapHandler, error) {
+func (c *coinMarketCapHandler) initialize(currency string) error {
 	apiKey, ok := os.LookupEnv("COINMARKETCAP_API_KEY")
 	if !ok {
-		return nil, errApiKeyNotFound
+		return errApiKeyNotFound
 	}
 
-	h := &coinMarketCapHandler{
+	c = &coinMarketCapHandler{
 		apiKey:   apiKey,
 		baseUrl:  "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest",
 		currency: strings.ToUpper(currency),
 	}
 
-	return h, nil
+	return nil
 }
 
 type coinMarketCapApiResponse struct {
@@ -51,8 +52,8 @@ type coinMarketCapQuote struct {
 	Volume float64 `json:"volume_24h,omitempty"`
 }
 
-// QueryMarketPrice implements PriceQuery
-func (c *coinMarketCapHandler) QueryMarketPrice(
+// queryMarketPrice implements priceQuery
+func (c *coinMarketCapHandler) queryMarketPrice(
 	watchSymbols []string) (map[string]p2p.ObservePricePoint, error) {
 	symbols := make([]string, len(watchSymbols))
 	copy(symbols, watchSymbols)

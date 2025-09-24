@@ -1,11 +1,13 @@
 package oracle
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
 	"time"
 	"vsc-node/modules/oracle/p2p"
+	"vsc-node/modules/oracle/threadsafe"
 )
 
 type chainRelayHandler interface {
@@ -61,33 +63,51 @@ func (c *chainRelayProducer) handle(
 	// collect and verify signatures
 	c.logger.Debug("collecting signature", "block-id", oracleBlock.ID)
 
-	// room for network latency
-	c.chainOracle.SignBlockBuf.UnlockTimeout(10 * time.Second)
-
 	sigThreshold := int(math.Ceil(float64(len(sig.electedMembers)) * 2.0 / 3.0))
 	oracleBlock.Signatures = make([]string, 0, sigThreshold)
+	collector := c.signatureCollector(oracleBlock, sigThreshold)
 
-	signedBlocks := c.chainOracle.SignBlockBuf.Slice()
-	for _, signedBlock := range signedBlocks {
-		// if sig not valid, continue
-		signature := signedBlock.Signatures[0]
+	// room for network latency
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-		// if signature not valid, continue
-		oracleBlock.Signatures = append(oracleBlock.Signatures, signature)
-	}
-
-	if len(oracleBlock.Signatures) < sigThreshold {
+	if err = c.chainOracle.SignBlockBuf.Collect(ctx, collector); err != nil {
 		return errors.New("failed to meet signature threshold")
 	}
 
 	return c.submitToContract(oracleBlock)
 }
 
+func (c *chainRelayProducer) signatureCollector(
+	oracleBlock *p2p.OracleBlock,
+	sigThreshold int,
+) threadsafe.CollectFunc[*p2p.OracleBlock] {
+	const earlyReturn = false
+
+	return func(ob *p2p.OracleBlock) bool {
+		if len(ob.Signatures) != 1 {
+			return earlyReturn
+		}
+
+		sig := ob.Signatures[0]
+
+		if err := c.validateSignature(oracleBlock, ob.Signatures[0]); err != nil {
+			c.logger.Error(
+				"failed to validate signature",
+				"block-id", oracleBlock.ID,
+				"err", err, "signature", sig,
+			)
+			return earlyReturn
+		}
+		oracleBlock.Signatures = append(oracleBlock.Signatures, sig)
+
+		return len(oracleBlock.Signatures) >= sigThreshold
+	}
+}
+
 // chain relay witness
 
-type chainRelayWitness struct {
-	*Oracle
-}
+type chainRelayWitness struct{ *Oracle }
 
 // handle implements chainRelayHandler.
 func (c *chainRelayWitness) handle(
@@ -95,7 +115,12 @@ func (c *chainRelayWitness) handle(
 	localBlockMap map[string]p2p.BlockRelay,
 ) error {
 	// room for network latency
-	c.chainOracle.NewBlockBuf.UnlockTimeout(10 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	panic("unimplemented")
+	c.chainOracle.NewBlockBuf.Collect(ctx, func(ob *p2p.OracleBlock) bool {
+		return false
+	})
+
+	return nil
 }

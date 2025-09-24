@@ -1,38 +1,32 @@
 package oracle
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
 	"math"
 	"strings"
 	"time"
+	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
+	"vsc-node/modules/oracle/price"
+	"vsc-node/modules/oracle/threadsafe"
 )
 
-// assumed to be locked:
-//   - `o.broadcastPricePoints *threadsafe.Map[string, []pricePoint]`
-//   - `o.broadcastPriceSig    *threadsafe.Slice[p2p.OracleBlock]`
-//   - `o.broadcastPriceBlocks *threadsafe.Slice[p2p.OracleBlock]`
-//
-// these will be briefly unlocked during data collection period, at the end of
-// the function call, these will be locked
+type blockTickSignal struct {
+	isBlockProducer bool
+	isWitness       bool
+	electedMembers  []elections.ElectionMember
+}
+
 func (o *Oracle) handleBroadcastPriceTickInterval(sig blockTickSignal) {
 	o.logger.Debug("broadcast price block tick.")
 
-	defer func() {
-		o.priceOracle.AvgPriceMap.Lock()
-		o.priceOracle.AvgPriceMap.Clear()
-		o.priceOracle.AvgPriceMap.Unlock()
-
-		o.broadcastPricePoints.Clear()
-		o.broadcastPriceSig.Clear()
-		o.broadcastPriceBlocks.Clear()
-	}()
+	defer o.priceOracle.ClearPriceCache()
 
 	// broadcast local average price
-	localAvgPrices := o.priceOracle.AvgPriceMap.GetAveragePrices()
-
+	localAvgPrices := o.priceOracle.GetLocalQueriedAveragePrices()
 	if err := o.BroadcastMessage(p2p.MsgPriceBroadcast, localAvgPrices); err != nil {
 		o.logger.Error("failed to broadcast local average price", "err", err)
 		return
@@ -68,15 +62,11 @@ func (o *Oracle) handleBroadcastPriceTickInterval(sig blockTickSignal) {
 
 func (o *Oracle) getMedianPricePoint(
 	localAvgPrices map[string]p2p.AveragePricePoint,
-) map[string]pricePoint {
+) map[string]price.PricePoint {
 	o.logger.Debug("collecting average prices")
 
-	// room for network latency
-	o.broadcastPricePoints.UnlockTimeout(10 * time.Second)
-
-	appBuf := make(map[string]aggregatedPricePoints)
-
 	// updating with local price points
+	appBuf := make(map[string]aggregatedPricePoints)
 	for k, v := range localAvgPrices {
 		sym := strings.ToUpper(k)
 		appBuf[sym] = aggregatedPricePoints{
@@ -85,43 +75,60 @@ func (o *Oracle) getMedianPricePoint(
 		}
 	}
 
-	// updating with broadcasted price points
+	// collect broadcastPriceBlocks
 	timeThreshold := time.Now().UTC().Add(-time.Hour)
-	broadcastedPricePoints := o.broadcastPricePoints.Get()
+	collector := pricePointCollector(appBuf, &timeThreshold)
 
-	for sym, pricePoints := range broadcastedPricePoints {
-		sym = strings.ToUpper(sym)
+	// room for network latency
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-		for _, pricePoint := range pricePoints {
-			v, ok := appBuf[sym]
-			if !ok {
-				log.Println("unsupported symbol", sym)
-			}
-
-			pricePointExpired := timeThreshold.After(pricePoint.collectedAt)
-			if pricePointExpired {
-				continue
-			}
-
-			v.volumes = append(appBuf[sym].volumes, pricePoint.volume)
-			v.prices = append(appBuf[sym].prices, pricePoint.price)
-
-			appBuf[sym] = v
-		}
-	}
+	o.priceOracle.PricePoints.Collect(ctx, collector)
 
 	// calculating the median volumes + prices
-	medianPricePoint := make(map[string]pricePoint)
+	medianPricePoint := make(map[string]price.PricePoint)
 	for sym, app := range appBuf {
-		medianPricePoint[sym] = pricePoint{
-			price:  getMedian(app.prices),
-			volume: getMedian(app.volumes),
+		medianPricePoint[sym] = price.PricePoint{
+			Price:  getMedian(app.prices),
+			Volume: getMedian(app.volumes),
 			// peerID:      "",
-			collectedAt: time.Now().UTC(),
+			CollectedAt: time.Now().UTC(),
 		}
 	}
 
 	return medianPricePoint
+}
+
+func pricePointCollector(
+	appBuf map[string]aggregatedPricePoints,
+	timeThreshold *time.Time,
+) threadsafe.CollectFunc[price.PricePointMap] {
+	const earlyReturn = false
+
+	return func(ppm price.PricePointMap) bool {
+		for sym, pricePoints := range ppm {
+			sym = strings.ToUpper(sym)
+
+			for _, pp := range pricePoints {
+				v, ok := appBuf[sym]
+				if !ok {
+					log.Println("unsupported symbol", sym)
+				}
+
+				pricePointExpired := timeThreshold.After(pp.CollectedAt)
+				if pricePointExpired {
+					continue
+				}
+
+				v.volumes = append(appBuf[sym].volumes, pp.Volume)
+				v.prices = append(appBuf[sym].prices, pp.Price)
+
+				appBuf[sym] = v
+			}
+		}
+
+		return earlyReturn
+	}
 }
 
 // price block producer
@@ -135,7 +142,7 @@ type aggregatedPricePoints struct {
 
 func (p *priceBlockProducer) handleSignal(
 	sig *blockTickSignal,
-	medianPricePoints map[string]pricePoint,
+	medianPricePoints map[string]price.PricePoint,
 ) error {
 	// make block with median price + broadcast
 	p.logger.Debug("broadcasting new oracle block with median prices")
@@ -156,30 +163,22 @@ func (p *priceBlockProducer) handleSignal(
 	// collecting signature and submit to contract
 	p.logger.Debug("collecting signature", "block-id", block.ID)
 
-	// room for network latency
-	p.broadcastPriceSig.UnlockTimeout(10 * time.Second)
-
 	sigThreshold := int(math.Ceil(float64(len(sig.electedMembers)) * 2.0 / 3.0))
 	block.Signatures = make([]string, 0, sigThreshold)
 
-	signedBlocks := p.broadcastPriceSig.Slice()
-	for i := range signedBlocks {
-		signedBlock := &signedBlocks[i]
-		if block.ID != signedBlock.ID {
-			p.logger.Debug(
-				"invalid block id, rejecting",
-				"block-id", signedBlock.ID,
-			)
-			continue
+	// room for network latency
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	p.priceOracle.SignedBlocks.Collect(ctx, func(ob p2p.OracleBlock) bool {
+		if err := p.validateSignedBlock(&ob); err != nil {
+			p.logger.Error("failed to validate block signature")
+			return false
 		}
 
-		if p.validateSignedBlock(signedBlock) {
-			block.Signatures = append(
-				block.Signatures,
-				signedBlock.Signatures[0],
-			)
-		}
-	}
+		block.Signatures = append(block.Signatures, ob.Signatures[0])
+		return len(block.Signatures) >= sigThreshold
+	})
 
 	if len(block.Signatures) < sigThreshold {
 		return errors.New("failed to meet signature threshold")
@@ -188,9 +187,9 @@ func (p *priceBlockProducer) handleSignal(
 	return p.submitToContract(block)
 }
 
-func (p *priceBlockProducer) validateSignedBlock(block *p2p.OracleBlock) bool {
+func (p *priceBlockProducer) validateSignedBlock(block *p2p.OracleBlock) error {
 	if len(block.Signatures) != 1 {
-		return false
+		return errors.New("missing signature")
 	}
 
 	/*
@@ -200,7 +199,7 @@ func (p *priceBlockProducer) validateSignedBlock(block *p2p.OracleBlock) bool {
 	*/
 
 	// TODO: validate signature
-	return true
+	return nil
 }
 
 // price block witness
@@ -211,12 +210,18 @@ type priceBlockWitness struct{ *Oracle }
 
 func (p *priceBlockWitness) handleSignal(
 	sig *blockTickSignal,
-	medianPricePoints map[string]pricePoint,
+	medianPricePoints map[string]price.PricePoint,
 ) error {
-	// room for network latency
-	p.broadcastPriceBlocks.UnlockTimeout(10 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	blocks := p.broadcastPriceBlocks.Slice()
+	blocks := make([]p2p.OracleBlock, 0, 2)
+
+	// room for network latency
+	p.priceOracle.ProducerBlocks.Collect(ctx, func(ob p2p.OracleBlock) bool {
+		blocks = append(blocks, ob)
+		return false
+	})
 
 	for _, block := range blocks {
 		ok := p.validateBlock(&block, medianPricePoints)
@@ -247,9 +252,9 @@ func (p *priceBlockWitness) handleSignal(
 // TODO: what do i need to validate?
 func (p *priceBlockWitness) validateBlock(
 	block *p2p.OracleBlock,
-	localMedianPrice map[string]pricePoint,
+	localMedianPrice map[string]price.PricePoint,
 ) bool {
-	broadcastedMedianPrices := make(map[string]pricePoint)
+	broadcastedMedianPrices := make(map[string]price.PricePoint)
 	if err := json.Unmarshal(block.Data, &broadcastedMedianPrices); err != nil {
 		return false
 	}
@@ -261,8 +266,8 @@ func (p *priceBlockWitness) validateBlock(
 		}
 
 		var (
-			priceOk  = float64Eq(pricePoint.price, bpp.price)
-			volumeOk = float64Eq(pricePoint.volume, bpp.volume)
+			priceOk  = float64Eq(pricePoint.Price, bpp.Price)
+			volumeOk = float64Eq(pricePoint.Volume, bpp.Volume)
 		)
 
 		if !priceOk || !volumeOk {

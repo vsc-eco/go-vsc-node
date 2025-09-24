@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
@@ -14,7 +13,6 @@ import (
 	chainrelay "vsc-node/modules/oracle/chain-relay"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/price"
-	"vsc-node/modules/oracle/threadsafe"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	"vsc-node/modules/vstream"
@@ -57,11 +55,6 @@ type Oracle struct {
 
 	priceOracle *price.PriceOracle
 
-	// unlocks during block ticks interval
-	broadcastPricePoints *threadsafe.Map[string, []pricePoint]
-	broadcastPriceSig    *threadsafe.Slice[p2p.OracleBlock]
-	broadcastPriceBlocks *threadsafe.Slice[p2p.OracleBlock]
-
 	chainOracle *chainrelay.ChainRelayer
 }
 
@@ -92,10 +85,6 @@ func New(
 		vStream:     vstream,
 		stateEngine: stateEngine,
 		logger:      logger,
-
-		broadcastPricePoints: threadsafe.NewMap[string, []pricePoint](),
-		broadcastPriceSig:    threadsafe.NewSlice[p2p.OracleBlock](512),
-		broadcastPriceBlocks: threadsafe.NewSlice[p2p.OracleBlock](512),
 	}
 }
 
@@ -115,11 +104,6 @@ func (o *Oracle) Init() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize chain relay oracle: %w", err)
 	}
-
-	// locking states
-	o.broadcastPricePoints.Lock()
-	o.broadcastPriceSig.Lock()
-	o.broadcastPriceBlocks.Lock()
 
 	return nil
 }
@@ -141,7 +125,12 @@ func (o *Oracle) Start() *promise.Promise[any] {
 			return
 		}
 
-		go o.marketObserve()
+		go o.priceOracle.MarketObserve(
+			o.ctx,
+			priceOraclePollInterval,
+			watchSymbols,
+		)
+
 		resolve(nil)
 	})
 }
@@ -172,124 +161,30 @@ func (o *Oracle) BroadcastMessage(msgCode p2p.MsgCode, data any) error {
 
 // Handle implements p2p.MessageHandler
 func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
+	var handler p2p.MessageHandler
+
 	switch msg.Code {
 	case p2p.MsgPriceBroadcast, p2p.MsgPriceSignature, p2p.MsgPriceBlock:
-		return o.handlePriceMsg(peerID, msg)
+		handler = o.priceOracle
 
 	case p2p.MsgChainRelayBlock:
-		return o.handleChainRelayMsg(peerID, msg)
-
-	default:
-		return nil, errInvalidMessageType
-	}
-}
-
-func (o *Oracle) handlePriceMsg(
-	peerID peer.ID,
-	msg p2p.Msg,
-) (p2p.Msg, error) {
-
-	var response p2p.Msg
-	switch msg.Code {
-	case p2p.MsgPriceBroadcast:
-		data, err := parseRawJson[map[string]p2p.AveragePricePoint](msg.Data)
-		if err != nil {
-			return nil, err
-		}
-
-		pricePointCollector := collectPricePoint(peerID, data)
-		if !o.broadcastPricePoints.Update(pricePointCollector) {
-			o.logger.Debug(
-				"unable to collect broadcasted average price points in the current block interval.",
-			)
-		}
-
-	case p2p.MsgPriceSignature:
-		block, err := parseRawJson[p2p.OracleBlock](msg.Data)
-		if err != nil {
-			return nil, err
-		}
-
-		block.TimeStamp = time.Now().UTC()
-
-		if !o.broadcastPriceSig.Append(*block) {
-			o.logger.Debug(
-				"unable to collect signature in the current block interval.",
-			)
-		}
-
-	case p2p.MsgPriceBlock:
-		block, err := parseRawJson[p2p.OracleBlock](msg.Data)
-		if err != nil {
-			return nil, err
-		}
-
-		block.TimeStamp = time.Now().UTC()
-		if !o.broadcastPriceBlocks.Append(*block) {
-			o.logger.Debug(
-				"unable to collect and verify price block in the current block interval.",
-			)
-		}
+		handler = o.chainOracle
 
 	default:
 		return nil, errInvalidMessageType
 	}
 
-	return response, nil
+	return handler.Handle(peerID, msg)
 }
 
-func collectPricePoint(
-	peerID peer.ID,
-	data *map[string]p2p.AveragePricePoint,
-) threadsafe.MapUpdateFunc[string, []pricePoint] {
-	return func(m map[string][]pricePoint) {
-		recvTimeStamp := time.Now().UTC()
-
-		for symbol, avgPricePoint := range *data {
-			sym := strings.ToUpper(symbol)
-
-			pp := pricePoint{
-				price:       avgPricePoint.Price,
-				volume:      avgPricePoint.Volume,
-				peerID:      peerID,
-				collectedAt: recvTimeStamp,
-			}
-
-			v, ok := m[sym]
-			if !ok {
-				v = []pricePoint{pp}
-			} else {
-				v = append(v, pp)
-			}
-
-			m[sym] = v
-		}
-	}
+func (o *Oracle) submitToContract(data *p2p.OracleBlock) error {
+	fmt.Println("not implemented")
+	return nil
 }
 
-func (o *Oracle) handleChainRelayMsg(
-	peerID peer.ID,
-	msg p2p.Msg,
-) (p2p.Msg, error) {
-	const threadBlocking = false
-	var response p2p.Msg = nil
-
-	switch msg.Code {
-	case p2p.MsgChainRelayBlock:
-		block, err := parseRawJson[p2p.OracleBlock](msg.Data)
-		if err != nil {
-			return nil, err
-		}
-
-		if !o.chainOracle.SignBlockBuf.Append(*block) {
-			o.logger.Debug(
-				"unable to collect and verify price block in the current block interval.",
-			)
-		}
-
-	default:
-		return nil, errInvalidMessageType
-	}
-
-	return response, nil
+func (o *Oracle) validateSignature(
+	block *p2p.OracleBlock,
+	signature string,
+) error {
+	return nil
 }

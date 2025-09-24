@@ -16,13 +16,6 @@ type pricePointData struct {
 	counter   uint32
 }
 
-func makePriceMap() priceMap {
-	tsMap := threadsafe.NewMap[string, pricePointData]()
-	tsMap.Unlock()
-
-	return priceMap{tsMap}
-}
-
 func (pm *priceMap) Observe(pricePoints map[string]p2p.ObservePricePoint) {
 	const threadBlocking = true
 
@@ -46,17 +39,6 @@ func (pm *priceMap) Observe(pricePoints map[string]p2p.ObservePricePoint) {
 			m[symbol] = avg
 		}
 	})
-}
-
-func (pm *priceMap) GetAveragePrices() map[string]p2p.AveragePricePoint {
-	out := make(map[string]p2p.AveragePricePoint)
-
-	for symbol, p := range pm.Get() {
-		symbol = strings.ToUpper(symbol)
-		out[symbol] = p2p.MakeAveragePricePoint(p.avgPrice, p.avgVolume)
-	}
-
-	return out
 }
 
 func calcNextAvg(

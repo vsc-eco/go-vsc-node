@@ -10,12 +10,6 @@ import (
 	stateEngine "vsc-node/modules/state-processing"
 )
 
-type blockTickSignal struct {
-	isBlockProducer bool
-	isWitness       bool
-	electedMembers  []elections.ElectionMember
-}
-
 func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	if headHeight == nil {
 		return
@@ -55,7 +49,11 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 			bh%common.CONSENSUS_SPECS.SlotLength == 0
 	)
 
-	sig := blockTickSignal{isBlockProducer, isWitness, members}
+	sig := blockTickSignal{
+		isBlockProducer: isBlockProducer,
+		isWitness:       isWitness,
+		electedMembers:  members,
+	}
 	wg := &sync.WaitGroup{}
 
 	if isAvgPriceBroadcastTick {

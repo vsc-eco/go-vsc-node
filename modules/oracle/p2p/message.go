@@ -28,15 +28,25 @@ var priceValidator = validator.New(validator.WithRequiredStructEnabled())
 
 type MsgCode int
 
+type Msg *oracleMessage
+
+type oracleMessage struct {
+	Code MsgCode         `json:"type,omitempty" validate:"required"`
+	Data json.RawMessage `json:"data,omitempty" validate:"required"`
+}
+
+func MakeOracleMessage(code MsgCode, data any) (Msg, error) {
+	jbytes, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	return &oracleMessage{code, jbytes}, nil
+}
+
 type ObservePricePoint struct {
 	Symbol string  `json:"symbol,omitempty"`
 	Price  float64 `json:"price,omitempty"`
 	Volume float64 `json:"volume,omitempty"`
-}
-
-func (o *ObservePricePoint) String() string {
-	jbytes, _ := json.MarshalIndent(o, "", "  ")
-	return string(jbytes)
 }
 
 type AveragePricePoint struct {

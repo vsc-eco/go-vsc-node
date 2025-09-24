@@ -93,3 +93,11 @@ func MakeRequest(
 
 	return req, nil
 }
+
+func JsonUnmarshal[T any](data json.RawMessage) (*T, error) {
+	buf := new(T)
+	if err := json.Unmarshal(data, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}

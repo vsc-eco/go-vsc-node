@@ -13,20 +13,9 @@ import (
 
 const OracleTopic = "/vsc/mainnet/oracle/v1"
 
-type Msg *oracleMessage
-
-type oracleMessage struct {
-	Code MsgCode         `json:"type,omitempty" validate:"required"`
-	Data json.RawMessage `json:"data,omitempty" validate:"required"`
-}
-
-func MakeOracleMessage(code MsgCode, data any) (Msg, error) {
-	jbytes, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
-	}
-	return &oracleMessage{code, jbytes}, nil
-}
+var (
+	ErrInvalidMessageType = errors.New("invalid message type")
+)
 
 type MessageHandler interface {
 	Handle(peer.ID, Msg) (Msg, error)

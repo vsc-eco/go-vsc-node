@@ -24,7 +24,7 @@ type coinGeckoHandler struct {
 	demoMode bool
 }
 
-var _ PriceQuery = &coinGeckoHandler{}
+var _ priceQuery = &coinGeckoHandler{}
 
 type coinGeckoPriceQueryResponse struct {
 	Symbol       string  `json:"symbol,omitempty"`
@@ -37,10 +37,10 @@ type coinGeckoPriceQueryResponse struct {
 // free) and their conrresponding url + header key. Assume the suppplied key
 // is a pro key by default, otherwise `COINGECKO_API_DEMO` needs to be exported
 // with the value '1', and attributions is required on demo keys.
-func makeCoinGeckoHandler(currency string) (*coinGeckoHandler, error) {
+func (c *coinGeckoHandler) initialize(currency string) error {
 	apiKey, ok := os.LookupEnv("COINGECKO_API_KEY")
 	if !ok {
-		return nil, errApiKeyNotFound
+		return errApiKeyNotFound
 	}
 
 	var (
@@ -57,17 +57,17 @@ func makeCoinGeckoHandler(currency string) (*coinGeckoHandler, error) {
 		baseUrl = "https://pro-api.coingecko.com/api/v3/coins/markets"
 	}
 
-	h := &coinGeckoHandler{
+	c = &coinGeckoHandler{
 		baseUrl:  baseUrl,
 		apiKey:   apiKey,
 		currency: strings.ToLower(currency),
 		demoMode: demoMode,
 	}
 
-	return h, nil
+	return nil
 }
 
-func (c *coinGeckoHandler) QueryMarketPrice(
+func (c *coinGeckoHandler) queryMarketPrice(
 	symbols []string) (map[string]p2p.ObservePricePoint, error) {
 	symLowerCase := make([]string, len(symbols))
 	copy(symLowerCase, symbols)
