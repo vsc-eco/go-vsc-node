@@ -3,48 +3,67 @@ package oraclee2e
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 	"vsc-node/modules/aggregate"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestE2E(t *testing.T) {
+	nodes := []*Node{}
 	plugins := []aggregate.Plugin{}
+
 	for i := range 10 {
 		nodeName := fmt.Sprintf("testnode-%d", i)
 		node := MakeNode(nodeName)
 		plugins = append(plugins, append(node.plugins, node.oracle)...)
+		nodes = append(nodes, node)
 	}
 
 	p := aggregate.New(plugins)
 	assert.NoError(t, p.Init())
-	/* line 565 e2e_test.go
 
-	func() {
-
-			peerAddrs := make([]string, 0)
-
-			for _, node := range runningNodes {
-				for _, addr := range node.P2P.Addrs() {
-					peerAddrs = append(peerAddrs, addr.String()+"/p2p/"+node.P2P.ID().String())
-				}
-			}
-
-			for _, node := range runningNodes {
-				for _, peerStr := range peerAddrs {
-					peerId, _ := peer.AddrInfoFromString(peerStr)
-					ctx := context.Background()
-					ctx, _ = context.WithTimeout(ctx, 5*time.Second)
-					fmt.Println("Trying to connect", peerId)
-					node.P2P.Connect(ctx, *peerId)
-				}
-			}
-		}()
-
-
-	*/
+	connectP2p(nodes)
 
 	_, err := p.Start().Await(context.Background())
 	assert.NoError(t, err)
+}
+
+func connectP2p(runningNodes []*Node) {
+	wg := &sync.WaitGroup{}
+	peerAddrs := make([]string, 0)
+
+	for _, node := range runningNodes {
+		for _, addr := range node.p2p.Addrs() {
+			peerAddrs = append(
+				peerAddrs,
+				addr.String()+"/p2p/"+node.p2p.ID().String(),
+			)
+		}
+	}
+
+	for _, node := range runningNodes {
+		for _, peerStr := range peerAddrs {
+			wg.Add(1)
+
+			go func() {
+				defer wg.Done()
+				peerId, _ := peer.AddrInfoFromString(peerStr)
+
+				ctx, cancel := context.WithTimeout(
+					context.Background(),
+					5*time.Second,
+				)
+				defer cancel()
+
+				fmt.Println("Trying to connect", peerId)
+				node.p2p.Connect(ctx, *peerId)
+			}()
+		}
+	}
+
+	wg.Wait()
 }

@@ -1,6 +1,8 @@
 package oraclee2e
 
 import (
+	"log"
+	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/logger"
 	"vsc-node/modules/aggregate"
@@ -9,6 +11,7 @@ import (
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
 	rcDb "vsc-node/modules/db/vsc/rcs"
@@ -25,10 +28,38 @@ import (
 
 type Node struct {
 	oracle  *oracle.Oracle
+	p2p     *p2pInterface.P2PServer
 	plugins []aggregate.Plugin
 }
 
+type stubVstream struct {
+	*vstream.VStream
+
+	name  string
+	funck vstream.BTFunc
+	async bool
+}
+
+func (s *stubVstream) RegisterBlockTick(
+	name string,
+	funck vstream.BTFunc,
+	async bool,
+) {
+	// s.VStream.RegisterBlockTick(name, funck, async)
+	s.name = name
+	s.funck = funck
+	s.async = async
+}
+
+func (s *stubVstream) ProccessBlock(
+	_ hive_blocks.HiveBlocks,
+	headHeight *uint64,
+) {
+	s.funck(1, headHeight)
+}
+
 func MakeNode(nodeName string) *Node {
+
 	dbConf := db.NewDbConfig()
 	db := db.New(dbConf)
 	vscDb := vsc.New(db, nodeName)
@@ -50,29 +81,47 @@ func MakeNode(nodeName string) *Node {
 	identityConfig := common.NewIdentityConfig(
 		"oracle-test_" + nodeName + "/config",
 	)
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, 0)
+	p2pSpec := p2pInterface.New(witnessesDb, identityConfig, sysConfig, 0)
 	logger := logger.PrefixedLogger{
 		Prefix: "oracle-test_" + nodeName,
 	}
-	dataLayer := datalayer.New(p2p, nodeName)
+	dataLayer := datalayer.New(p2pSpec, nodeName)
 	se := stateEngine.New(
 		logger, dataLayer, witnessesDb, electionDb, contractDb, contractState,
 		txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks,
 		actionsDb, rcDb, nonceDb, wasm,
 	)
-	vstream := vstream.New(se)
+	vstream := stubVstream{VStream: vstream.New(se)}
 
 	oracle := oracle.New(
-		p2p, identityConfig, electionDb, witnessesDb, vstream, se,
+		p2pSpec, identityConfig, electionDb, witnessesDb, vstream.VStream, se,
 	)
 
 	plugins := []aggregate.Plugin{
 		dbConf, db, identityConfig, vscDb, e2e.NewDbNuker(vscDb), witnessesDb,
-		p2p, dataLayer, electionDb, contractDb, hiveBlocks, vscBlocks, txDb,
+		p2pSpec, dataLayer, electionDb, contractDb, hiveBlocks, vscBlocks, txDb,
 		ledgerDbImpl, actionsDb, balanceDb, interestClaims, contractState, rcDb,
 		nonceDb, vstream, wasm, se,
 	}
 
-	out := Node{oracle, plugins}
+	out := Node{
+		oracle:  oracle,
+		p2p:     p2pSpec,
+		plugins: plugins,
+	}
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		bh := uint64(0)
+		for {
+			select {
+			case <-ticker.C:
+				log.Println("ticker event", bh)
+				vstream.ProcessBlock(hive_blocks.HiveBlock{}, &bh)
+				bh += 1
+			}
+		}
+	}()
+
 	return &out
 }
