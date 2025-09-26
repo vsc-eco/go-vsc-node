@@ -1,10 +1,11 @@
-package oracle
+package chain
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/threadsafe"
@@ -14,18 +15,25 @@ type chainRelayHandler interface {
 	handle(p2p.BlockTickSignal, map[string]p2p.BlockRelay) error
 }
 
-func (o *Oracle) handleChainRelayTickInterval(sig p2p.BlockTickSignal) {
+// HandleBlockTick implements oracle.BlockTickHandler.
+func (o *ChainOracle) HandleBlockTick(
+	wg *sync.WaitGroup,
+	sig p2p.BlockTickSignal,
+	p2pSpec p2p.OracleVscSpec,
+) {
+	defer wg.Done()
+
 	if !sig.IsBlockProducer && !sig.IsWitness {
 		return
 	}
 
-	blockMap := o.chainOracle.FetchBlocks()
+	blockMap := o.FetchBlocks()
 
 	var handler chainRelayHandler
 	if sig.IsBlockProducer {
-		handler = &chainRelayProducer{o}
+		handler = &chainRelayProducer{o, p2pSpec}
 	} else {
-		handler = &chainRelayWitness{o}
+		handler = &chainRelayWitness{o, p2pSpec}
 	}
 
 	if err := handler.handle(sig, blockMap); err != nil {
@@ -39,7 +47,10 @@ func (o *Oracle) handleChainRelayTickInterval(sig p2p.BlockTickSignal) {
 
 // chain relay producer
 
-type chainRelayProducer struct{ *Oracle }
+type chainRelayProducer struct {
+	*ChainOracle
+	p2p.OracleVscSpec
+}
 
 // handle implements chainRelayHandler.
 func (c *chainRelayProducer) handle(
@@ -56,7 +67,7 @@ func (c *chainRelayProducer) handle(
 		return fmt.Errorf("failed to create oracle block")
 	}
 
-	if err := c.broadcastMessage(p2p.MsgChainRelayBlock, oracleBlock); err != nil {
+	if err := c.Broadcast(p2p.MsgChainRelayBlock, oracleBlock); err != nil {
 		return fmt.Errorf("failed to broadcast oracle block: %w", err)
 	}
 
@@ -71,11 +82,11 @@ func (c *chainRelayProducer) handle(
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err = c.chainOracle.SignBlockBuf.Collect(ctx, collector); err != nil {
+	if err = c.signedBlockBuf.Collect(ctx, collector); err != nil {
 		return errors.New("failed to meet signature threshold")
 	}
 
-	return c.submitToContract(oracleBlock)
+	return c.SubmitToContract(oracleBlock)
 }
 
 func (c *chainRelayProducer) signatureCollector(
@@ -90,8 +101,7 @@ func (c *chainRelayProducer) signatureCollector(
 		}
 
 		sig := ob.Signatures[0]
-
-		if err := c.validateSignature(oracleBlock, ob.Signatures[0]); err != nil {
+		if err := c.ValidateSignature(oracleBlock, sig); err != nil {
 			c.logger.Error(
 				"failed to validate signature",
 				"block-id", oracleBlock.ID,
@@ -99,6 +109,7 @@ func (c *chainRelayProducer) signatureCollector(
 			)
 			return earlyReturn
 		}
+
 		oracleBlock.Signatures = append(oracleBlock.Signatures, sig)
 
 		return len(oracleBlock.Signatures) >= sigThreshold
@@ -107,7 +118,10 @@ func (c *chainRelayProducer) signatureCollector(
 
 // chain relay witness
 
-type chainRelayWitness struct{ *Oracle }
+type chainRelayWitness struct {
+	*ChainOracle
+	p2p.OracleVscSpec
+}
 
 // handle implements chainRelayHandler.
 func (c *chainRelayWitness) handle(
@@ -118,7 +132,7 @@ func (c *chainRelayWitness) handle(
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	c.chainOracle.NewBlockBuf.Collect(ctx, func(ob *p2p.OracleBlock) bool {
+	c.newBlockBuf.Collect(ctx, func(ob *p2p.OracleBlock) bool {
 		return false
 	})
 

@@ -39,12 +39,8 @@ var (
 	watchSymbols          = []string{"BTC", "ETH", "LTC"}
 	errInvalidMessageType = errors.New("invalid message type")
 
-	_ BlockTickHandler = &price.PriceOracle{}
+	_ p2p.OracleVscSpec = &Oracle{}
 )
-
-type BlockTickHandler interface {
-	HandleBlockTick(p2p.BlockTickSignal, func(p2p.MsgCode, any) error)
-}
 
 type Oracle struct {
 	ctx         context.Context
@@ -92,7 +88,7 @@ func New(
 		conf,
 	)
 
-	chainRelayer := chain.New(logger)
+	chainRelayer := chain.New(logger, conf)
 
 	return &Oracle{
 		ctx:         ctx,
@@ -139,8 +135,7 @@ func (o *Oracle) Start() *promise.Promise[any] {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		p := []aggregate.Plugin{o.chainOracle, o.priceOracle}
-		srv := aggregate.New(p)
+		srv := aggregate.New([]aggregate.Plugin{o.chainOracle, o.priceOracle})
 
 		if _, err := srv.Start().Await(ctx); err != nil {
 			reject(err)
@@ -170,7 +165,8 @@ func (o *Oracle) Stop() error {
 	return o.pubSubSrv.Close()
 }
 
-func (o *Oracle) broadcastMessage(msgCode p2p.MsgCode, data any) error {
+// Broadcast implements p2p.OracleVscSpec.
+func (o *Oracle) Broadcast(msgCode p2p.MsgCode, data any) error {
 	if o.pubSubSrv == nil {
 		return errors.New("o.service uninitialized")
 	}
@@ -201,14 +197,14 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 	return handler.Handle(peerID, msg)
 }
 
-func (o *Oracle) submitToContract(data *p2p.OracleBlock) error {
-	fmt.Println("not implemented")
+// SubmitToContract implements p2p.OracleVscSpec.
+func (o *Oracle) SubmitToContract(*p2p.OracleBlock) error {
+	fmt.Println("Oracle.SubmitToContract not implemented")
 	return nil
 }
 
-func (o *Oracle) validateSignature(
-	block *p2p.OracleBlock,
-	signature string,
-) error {
+// ValidateSignature implements p2p.OracleVscSpec.
+func (o *Oracle) ValidateSignature(*p2p.OracleBlock, string) error {
+	fmt.Println("Oracle.ValidateSignature not implemented")
 	return nil
 }

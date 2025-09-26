@@ -8,6 +8,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/threadsafe"
@@ -17,16 +18,18 @@ const float64Epsilon = 1e-9
 
 // HandleBlockTick implements oracle.BlockTickHandler.
 func (o *PriceOracle) HandleBlockTick(
+	wg *sync.WaitGroup,
 	sig p2p.BlockTickSignal,
-	broadcastFunc func(p2p.MsgCode, any) error,
+	p2pSpec p2p.OracleVscSpec,
 ) {
+	defer wg.Done()
 	o.logger.Debug("broadcast price block tick.")
 
 	defer o.ClearPriceCache()
 
 	// broadcast local average price
 	localAvgPrices := o.GetLocalQueriedAveragePrices()
-	if err := broadcastFunc(p2p.MsgPriceBroadcast, localAvgPrices); err != nil {
+	if err := p2pSpec.Broadcast(p2p.MsgPriceBroadcast, localAvgPrices); err != nil {
 		o.logger.Error("failed to broadcast local average price", "err", err)
 		return
 	}
@@ -42,10 +45,10 @@ func (o *PriceOracle) HandleBlockTick(
 	var err error
 
 	if sig.IsBlockProducer {
-		priceBlockProducer := &priceBlockProducer{o, broadcastFunc}
+		priceBlockProducer := &priceBlockProducer{o, p2pSpec}
 		err = priceBlockProducer.handleSignal(&sig, medianPricePoints)
 	} else if sig.IsWitness {
-		priceBlockWitness := &priceBlockWitness{o, broadcastFunc}
+		priceBlockWitness := &priceBlockWitness{o, p2pSpec}
 		err = priceBlockWitness.handleSignal(&sig, medianPricePoints)
 	}
 
@@ -134,7 +137,7 @@ func pricePointCollector(
 
 type priceBlockProducer struct {
 	*PriceOracle
-	broadcast func(p2p.MsgCode, any) error
+	p2p.OracleVscSpec
 }
 
 type aggregatedPricePoints struct {
@@ -158,7 +161,7 @@ func (p *priceBlockProducer) handleSignal(
 		return err
 	}
 
-	if err := p.broadcast(p2p.MsgPriceBlock, *block); err != nil {
+	if err := p.Broadcast(p2p.MsgPriceBlock, *block); err != nil {
 		return err
 	}
 
@@ -186,7 +189,7 @@ func (p *priceBlockProducer) handleSignal(
 		return errors.New("failed to meet signature threshold")
 	}
 
-	return p.submitToContract(block)
+	return p.SubmitToContract(block)
 }
 
 func (p *priceBlockProducer) validateSignedBlock(block *p2p.OracleBlock) error {
@@ -210,7 +213,7 @@ var errBlockExpired = errors.New("block expired")
 
 type priceBlockWitness struct {
 	*PriceOracle
-	broadcast func(p2p.MsgCode, any) error
+	p2p.OracleVscSpec
 }
 
 func (p *priceBlockWitness) handleSignal(
@@ -246,7 +249,7 @@ func (p *priceBlockWitness) handleSignal(
 
 		block.Signatures = append(block.Signatures, sig)
 
-		if err := p.broadcast(p2p.MsgPriceSignature, block); err != nil {
+		if err := p.Broadcast(p2p.MsgPriceSignature, block); err != nil {
 			return err
 		}
 	}

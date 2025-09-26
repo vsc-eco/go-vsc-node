@@ -7,9 +7,20 @@ import (
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/oracle/chain"
 	"vsc-node/modules/oracle/p2p"
+	"vsc-node/modules/oracle/price"
 	stateEngine "vsc-node/modules/state-processing"
 )
+
+var (
+	_ BlockTickHandler = &price.PriceOracle{}
+	_ BlockTickHandler = &chain.ChainOracle{}
+)
+
+type BlockTickHandler interface {
+	HandleBlockTick(*sync.WaitGroup, p2p.BlockTickSignal, p2p.OracleVscSpec)
+}
 
 func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	if headHeight == nil {
@@ -59,18 +70,12 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 
 	if isAvgPriceBroadcastTick {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			o.priceOracle.HandleBlockTick(sig, o.broadcastMessage)
-		}()
+		go o.priceOracle.HandleBlockTick(wg, sig, o)
 	}
 
 	if isChainRelayTick {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			o.handleChainRelayTickInterval(sig)
-		}()
+		go o.chainOracle.HandleBlockTick(wg, sig, o)
 	}
 
 	wg.Wait()

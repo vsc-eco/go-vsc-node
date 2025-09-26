@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"sync"
 	"vsc-node/modules/aggregate"
+	"vsc-node/modules/common"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/threadsafe"
 
@@ -19,16 +20,16 @@ type chainRelay interface {
 type chainMap map[string]chainRelay
 
 type ChainOracle struct {
-	Logger       *slog.Logger
-	SignBlockBuf *threadsafe.LockedConsumer[*p2p.OracleBlock]
-	NewBlockBuf  *threadsafe.LockedConsumer[*p2p.OracleBlock]
-
-	chainMap chainMap
+	logger         *slog.Logger
+	signedBlockBuf *threadsafe.LockedConsumer[*p2p.OracleBlock]
+	newBlockBuf    *threadsafe.LockedConsumer[*p2p.OracleBlock]
+	chainMap       chainMap
+	conf           common.IdentityConfig
 }
 
 var _ aggregate.Plugin = &ChainOracle{}
 
-func New(oracleLogger *slog.Logger) *ChainOracle {
+func New(oracleLogger *slog.Logger, conf common.IdentityConfig) *ChainOracle {
 	var (
 		logger      = oracleLogger.With("sub-service", "chain-relay")
 		blockRelay  = threadsafe.NewLockedConsumer[*p2p.OracleBlock](2)
@@ -39,18 +40,19 @@ func New(oracleLogger *slog.Logger) *ChainOracle {
 	)
 
 	return &ChainOracle{
-		Logger:       logger,
-		SignBlockBuf: signedBlock,
-		NewBlockBuf:  blockRelay,
-		chainMap:     chainMap,
+		logger:         logger,
+		signedBlockBuf: signedBlock,
+		newBlockBuf:    blockRelay,
+		chainMap:       chainMap,
+		conf:           conf,
 	}
 }
 
 // Init implements aggregate.Plugin.
 func (c *ChainOracle) Init() error {
 	// locking states
-	c.SignBlockBuf.Lock()
-	c.NewBlockBuf.Lock()
+	c.signedBlockBuf.Lock()
+	c.newBlockBuf.Lock()
 
 	// initializes market api's
 	for symbol, chainRelayer := range c.chainMap {
@@ -87,7 +89,7 @@ func (c *ChainOracle) FetchBlocks() map[string]p2p.BlockRelay {
 
 			block, err := chain.GetBlock()
 			if err != nil {
-				c.Logger.Error(
+				c.logger.Error(
 					"failed to get chain data.",
 					"symbol", symbol, "err", err,
 				)

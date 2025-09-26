@@ -20,13 +20,13 @@ func (c *ChainOracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 			return nil, err
 		}
 
-		if err := c.NewBlockBuf.Consume(block); err != nil {
+		if err := c.newBlockBuf.Consume(block); err != nil {
 			if errors.Is(err, threadsafe.ErrLockedChannel) {
-				c.Logger.Debug(
+				c.logger.Debug(
 					"unable to collect and verify chain relay block in the current block interval.",
 				)
 			} else {
-				c.Logger.Error("failed to collect price block", "err", err)
+				c.logger.Error("failed to collect price block", "err", err)
 			}
 		}
 

@@ -15,29 +15,38 @@ const OracleTopic = "/vsc/mainnet/oracle/v1"
 
 var (
 	ErrInvalidMessageType = errors.New("invalid message type")
+	errTimeout            = errors.New(
+		"[oracle] PubSubServiceParams[Msg].HandleMessage timed out.",
+	)
 )
+
+type OracleVscSpec interface {
+	Broadcast(MsgCode, any) error
+	SubmitToContract(*OracleBlock) error
+	ValidateSignature(*OracleBlock, string) error
+}
 
 type MessageHandler interface {
 	Handle(peer.ID, Msg) (Msg, error)
 }
 
-type OracleP2pSpec struct {
+type OracleP2PMessageHandler struct {
 	handler MessageHandler
 }
 
-var _ libp2p.PubSubServiceParams[Msg] = &OracleP2pSpec{}
+var _ libp2p.PubSubServiceParams[Msg] = &OracleP2PMessageHandler{}
 
-func NewP2pSpec(msgHandler MessageHandler) *OracleP2pSpec {
-	return &OracleP2pSpec{msgHandler}
+func NewP2pSpec(msgHandler MessageHandler) *OracleP2PMessageHandler {
+	return &OracleP2PMessageHandler{msgHandler}
 }
 
 // Topic implements PubSubServiceParams[Msg]
-func (*OracleP2pSpec) Topic() string {
+func (*OracleP2PMessageHandler) Topic() string {
 	return OracleTopic
 }
 
 // ValidateMessage implements PubSubServiceParams[Msg]
-func (p *OracleP2pSpec) ValidateMessage(
+func (p *OracleP2PMessageHandler) ValidateMessage(
 	ctx context.Context,
 	from peer.ID,
 	msg *pubsub.Message,
@@ -60,12 +69,8 @@ func (p *OracleP2pSpec) ValidateMessage(
 	return len(parsedMsg.Data) > 0
 }
 
-var errTimeout = errors.New(
-	"[oracle] PubSubServiceParams[Msg].HandleMessage timed out.",
-)
-
 // HandleMessage implements PubSubServiceParams[Msg]
-func (p *OracleP2pSpec) HandleMessage(
+func (p *OracleP2PMessageHandler) HandleMessage(
 	ctx context.Context,
 	from peer.ID,
 	msg Msg,
@@ -90,7 +95,7 @@ func (p *OracleP2pSpec) HandleMessage(
 }
 
 // HandleRawMessage implements PubSubServiceParams[OracleMessage]
-func (p *OracleP2pSpec) HandleRawMessage(
+func (p *OracleP2PMessageHandler) HandleRawMessage(
 	ctx context.Context,
 	rawMsg *pubsub.Message,
 	send libp2p.SendFunc[Msg],
@@ -100,7 +105,7 @@ func (p *OracleP2pSpec) HandleRawMessage(
 }
 
 // ParseMessage implements PubSubServiceParams[Msg]
-func (p *OracleP2pSpec) ParseMessage(data []byte) (Msg, error) {
+func (p *OracleP2PMessageHandler) ParseMessage(data []byte) (Msg, error) {
 	var msg Msg
 	if err := json.Unmarshal(data, msg); err != nil {
 		return nil, err
@@ -110,7 +115,7 @@ func (p *OracleP2pSpec) ParseMessage(data []byte) (Msg, error) {
 }
 
 // SerializeMessage implements PubSubServiceParams[OracleMessage]
-func (p *OracleP2pSpec) SerializeMessage(msg Msg) []byte {
+func (p *OracleP2PMessageHandler) SerializeMessage(msg Msg) []byte {
 	jsonBytes, err := json.Marshal(msg)
 	if err != nil {
 		slog.Error(
