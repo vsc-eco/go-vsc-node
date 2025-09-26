@@ -11,18 +11,18 @@ import (
 )
 
 type chainRelayHandler interface {
-	handle(blockTickSignal, map[string]p2p.BlockRelay) error
+	handle(p2p.BlockTickSignal, map[string]p2p.BlockRelay) error
 }
 
-func (o *Oracle) handleChainRelayTickInterval(sig blockTickSignal) {
-	if !sig.isBlockProducer && !sig.isWitness {
+func (o *Oracle) handleChainRelayTickInterval(sig p2p.BlockTickSignal) {
+	if !sig.IsBlockProducer && !sig.IsWitness {
 		return
 	}
 
 	blockMap := o.chainOracle.FetchBlocks()
 
 	var handler chainRelayHandler
-	if sig.isBlockProducer {
+	if sig.IsBlockProducer {
 		handler = &chainRelayProducer{o}
 	} else {
 		handler = &chainRelayWitness{o}
@@ -31,8 +31,8 @@ func (o *Oracle) handleChainRelayTickInterval(sig blockTickSignal) {
 	if err := handler.handle(sig, blockMap); err != nil {
 		o.logger.Error(
 			"failed to process chain relay tick interval",
-			"is-producer", sig.isBlockProducer,
-			"is-witness", sig.isWitness,
+			"is-producer", sig.IsBlockProducer,
+			"is-witness", sig.IsWitness,
 		)
 	}
 }
@@ -43,7 +43,7 @@ type chainRelayProducer struct{ *Oracle }
 
 // handle implements chainRelayHandler.
 func (c *chainRelayProducer) handle(
-	sig blockTickSignal,
+	sig p2p.BlockTickSignal,
 	blockMap map[string]p2p.BlockRelay,
 ) error {
 	// broadcast block
@@ -56,14 +56,14 @@ func (c *chainRelayProducer) handle(
 		return fmt.Errorf("failed to create oracle block")
 	}
 
-	if err := c.BroadcastMessage(p2p.MsgChainRelayBlock, oracleBlock); err != nil {
+	if err := c.broadcastMessage(p2p.MsgChainRelayBlock, oracleBlock); err != nil {
 		return fmt.Errorf("failed to broadcast oracle block: %w", err)
 	}
 
 	// collect and verify signatures
 	c.logger.Debug("collecting signature", "block-id", oracleBlock.ID)
 
-	sigThreshold := int(math.Ceil(float64(len(sig.electedMembers)) * 2.0 / 3.0))
+	sigThreshold := int(math.Ceil(float64(len(sig.ElectedMembers)) * 2.0 / 3.0))
 	oracleBlock.Signatures = make([]string, 0, sigThreshold)
 	collector := c.signatureCollector(oracleBlock, sigThreshold)
 
@@ -111,7 +111,7 @@ type chainRelayWitness struct{ *Oracle }
 
 // handle implements chainRelayHandler.
 func (c *chainRelayWitness) handle(
-	sig blockTickSignal,
+	sig p2p.BlockTickSignal,
 	localBlockMap map[string]p2p.BlockRelay,
 ) error {
 	// room for network latency

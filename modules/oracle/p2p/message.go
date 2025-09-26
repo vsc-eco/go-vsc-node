@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"slices"
 	"time"
+	"vsc-node/modules/db/vsc/elections"
 
 	"github.com/go-playground/validator/v10"
 )
@@ -135,4 +136,10 @@ func MakeOracleBlock(
 	}
 
 	return block, nil
+}
+
+type BlockTickSignal struct {
+	IsBlockProducer bool
+	IsWitness       bool
+	ElectedMembers  []elections.ElectionMember
 }

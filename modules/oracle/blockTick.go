@@ -7,6 +7,7 @@ import (
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/oracle/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 )
 
@@ -49,10 +50,10 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 			bh%common.CONSENSUS_SPECS.SlotLength == 0
 	)
 
-	sig := blockTickSignal{
-		isBlockProducer: isBlockProducer,
-		isWitness:       isWitness,
-		electedMembers:  members,
+	sig := p2p.BlockTickSignal{
+		IsBlockProducer: isBlockProducer,
+		IsWitness:       isWitness,
+		ElectedMembers:  members,
 	}
 	wg := &sync.WaitGroup{}
 
@@ -60,7 +61,7 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			o.handleBroadcastPriceTickInterval(sig)
+			o.priceOracle.HandleBlockTick(sig, o.broadcastMessage)
 		}()
 	}
 

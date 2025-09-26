@@ -1,4 +1,4 @@
-package oracle
+package price
 
 import (
 	"context"
@@ -6,33 +6,32 @@ import (
 	"errors"
 	"log"
 	"math"
+	"slices"
 	"strings"
 	"time"
-	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
-	"vsc-node/modules/oracle/price"
 	"vsc-node/modules/oracle/threadsafe"
 )
 
-type blockTickSignal struct {
-	isBlockProducer bool
-	isWitness       bool
-	electedMembers  []elections.ElectionMember
-}
+const float64Epsilon = 1e-9
 
-func (o *Oracle) handleBroadcastPriceTickInterval(sig blockTickSignal) {
+// HandleBlockTick implements oracle.BlockTickHandler.
+func (o *PriceOracle) HandleBlockTick(
+	sig p2p.BlockTickSignal,
+	broadcastFunc func(p2p.MsgCode, any) error,
+) {
 	o.logger.Debug("broadcast price block tick.")
 
-	defer o.priceOracle.ClearPriceCache()
+	defer o.ClearPriceCache()
 
 	// broadcast local average price
-	localAvgPrices := o.priceOracle.GetLocalQueriedAveragePrices()
-	if err := o.BroadcastMessage(p2p.MsgPriceBroadcast, localAvgPrices); err != nil {
+	localAvgPrices := o.GetLocalQueriedAveragePrices()
+	if err := broadcastFunc(p2p.MsgPriceBroadcast, localAvgPrices); err != nil {
 		o.logger.Error("failed to broadcast local average price", "err", err)
 		return
 	}
 
-	if !sig.isWitness && !sig.isBlockProducer {
+	if !sig.IsWitness && !sig.IsBlockProducer {
 		return
 	}
 
@@ -42,11 +41,11 @@ func (o *Oracle) handleBroadcastPriceTickInterval(sig blockTickSignal) {
 	// make block / sign block
 	var err error
 
-	if sig.isBlockProducer {
-		priceBlockProducer := &priceBlockProducer{o}
+	if sig.IsBlockProducer {
+		priceBlockProducer := &priceBlockProducer{o, broadcastFunc}
 		err = priceBlockProducer.handleSignal(&sig, medianPricePoints)
-	} else if sig.isWitness {
-		priceBlockWitness := &priceBlockWitness{o}
+	} else if sig.IsWitness {
+		priceBlockWitness := &priceBlockWitness{o, broadcastFunc}
 		err = priceBlockWitness.handleSignal(&sig, medianPricePoints)
 	}
 
@@ -54,15 +53,15 @@ func (o *Oracle) handleBroadcastPriceTickInterval(sig blockTickSignal) {
 		o.logger.Error(
 			"error on broadcast price tick interval",
 			"err", err,
-			"isProducer", sig.isBlockProducer,
-			"isWitness", sig.isWitness,
+			"isProducer", sig.IsBlockProducer,
+			"isWitness", sig.IsWitness,
 		)
 	}
 }
 
-func (o *Oracle) getMedianPricePoint(
+func (o *PriceOracle) getMedianPricePoint(
 	localAvgPrices map[string]p2p.AveragePricePoint,
-) map[string]price.PricePoint {
+) map[string]PricePoint {
 	o.logger.Debug("collecting average prices")
 
 	// updating with local price points
@@ -83,12 +82,12 @@ func (o *Oracle) getMedianPricePoint(
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	o.priceOracle.PricePoints.Collect(ctx, collector)
+	o.pricePoints.Collect(ctx, collector)
 
 	// calculating the median volumes + prices
-	medianPricePoint := make(map[string]price.PricePoint)
+	medianPricePoint := make(map[string]PricePoint)
 	for sym, app := range appBuf {
-		medianPricePoint[sym] = price.PricePoint{
+		medianPricePoint[sym] = PricePoint{
 			Price:  getMedian(app.prices),
 			Volume: getMedian(app.volumes),
 			// peerID:      "",
@@ -102,10 +101,10 @@ func (o *Oracle) getMedianPricePoint(
 func pricePointCollector(
 	appBuf map[string]aggregatedPricePoints,
 	timeThreshold *time.Time,
-) threadsafe.CollectFunc[price.PricePointMap] {
+) threadsafe.CollectFunc[PricePointMap] {
 	const earlyReturn = false
 
-	return func(ppm price.PricePointMap) bool {
+	return func(ppm PricePointMap) bool {
 		for sym, pricePoints := range ppm {
 			sym = strings.ToUpper(sym)
 
@@ -133,7 +132,10 @@ func pricePointCollector(
 
 // price block producer
 
-type priceBlockProducer struct{ *Oracle }
+type priceBlockProducer struct {
+	*PriceOracle
+	broadcast func(p2p.MsgCode, any) error
+}
 
 type aggregatedPricePoints struct {
 	prices  []float64
@@ -141,8 +143,8 @@ type aggregatedPricePoints struct {
 }
 
 func (p *priceBlockProducer) handleSignal(
-	sig *blockTickSignal,
-	medianPricePoints map[string]price.PricePoint,
+	sig *p2p.BlockTickSignal,
+	medianPricePoints map[string]PricePoint,
 ) error {
 	// make block with median price + broadcast
 	p.logger.Debug("broadcasting new oracle block with median prices")
@@ -156,21 +158,21 @@ func (p *priceBlockProducer) handleSignal(
 		return err
 	}
 
-	if err := p.BroadcastMessage(p2p.MsgPriceBlock, *block); err != nil {
+	if err := p.broadcast(p2p.MsgPriceBlock, *block); err != nil {
 		return err
 	}
 
 	// collecting signature and submit to contract
 	p.logger.Debug("collecting signature", "block-id", block.ID)
 
-	sigThreshold := int(math.Ceil(float64(len(sig.electedMembers)) * 2.0 / 3.0))
+	sigThreshold := int(math.Ceil(float64(len(sig.ElectedMembers)) * 2.0 / 3.0))
 	block.Signatures = make([]string, 0, sigThreshold)
 
 	// room for network latency
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	p.priceOracle.SignedBlocks.Collect(ctx, func(ob p2p.OracleBlock) bool {
+	p.signedBlocks.Collect(ctx, func(ob p2p.OracleBlock) bool {
 		if err := p.validateSignedBlock(&ob); err != nil {
 			p.logger.Error("failed to validate block signature")
 			return false
@@ -206,11 +208,14 @@ func (p *priceBlockProducer) validateSignedBlock(block *p2p.OracleBlock) error {
 
 var errBlockExpired = errors.New("block expired")
 
-type priceBlockWitness struct{ *Oracle }
+type priceBlockWitness struct {
+	*PriceOracle
+	broadcast func(p2p.MsgCode, any) error
+}
 
 func (p *priceBlockWitness) handleSignal(
-	sig *blockTickSignal,
-	medianPricePoints map[string]price.PricePoint,
+	sig *p2p.BlockTickSignal,
+	medianPricePoints map[string]PricePoint,
 ) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -218,7 +223,7 @@ func (p *priceBlockWitness) handleSignal(
 	blocks := make([]p2p.OracleBlock, 0, 2)
 
 	// room for network latency
-	p.priceOracle.ProducerBlocks.Collect(ctx, func(ob p2p.OracleBlock) bool {
+	p.producerBlocks.Collect(ctx, func(ob p2p.OracleBlock) bool {
 		blocks = append(blocks, ob)
 		return false
 	})
@@ -241,7 +246,7 @@ func (p *priceBlockWitness) handleSignal(
 
 		block.Signatures = append(block.Signatures, sig)
 
-		if err := p.BroadcastMessage(p2p.MsgPriceSignature, block); err != nil {
+		if err := p.broadcast(p2p.MsgPriceSignature, block); err != nil {
 			return err
 		}
 	}
@@ -252,9 +257,9 @@ func (p *priceBlockWitness) handleSignal(
 // TODO: what do i need to validate?
 func (p *priceBlockWitness) validateBlock(
 	block *p2p.OracleBlock,
-	localMedianPrice map[string]price.PricePoint,
+	localMedianPrice map[string]PricePoint,
 ) bool {
-	broadcastedMedianPrices := make(map[string]price.PricePoint)
+	broadcastedMedianPrices := make(map[string]PricePoint)
 	if err := json.Unmarshal(block.Data, &broadcastedMedianPrices); err != nil {
 		return false
 	}
@@ -288,4 +293,24 @@ func (p *priceBlockWitness) signBlock(b *p2p.OracleBlock) (string, error) {
 
 	// TODO: implement block verification + signing
 	return "signature", nil
+}
+
+func float64Eq(a, b float64) bool {
+	return math.Abs(a-b) < float64Epsilon
+}
+
+func getMedian(buf []float64) float64 {
+	if len(buf) == 0 {
+		return 0
+	}
+
+	slices.Sort(buf)
+
+	evenCount := len(buf)&1 == 0
+	if evenCount {
+		i := len(buf) / 2
+		return (buf[i] + buf[i-1]) / 2
+	} else {
+		return buf[len(buf)/2]
+	}
 }

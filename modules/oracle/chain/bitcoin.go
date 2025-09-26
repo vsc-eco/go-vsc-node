@@ -1,4 +1,4 @@
-package chainrelay
+package chain
 
 import (
 	"errors"

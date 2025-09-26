@@ -7,10 +7,11 @@ import (
 	"log/slog"
 	"os"
 	"time"
+	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/witnesses"
-	chainrelay "vsc-node/modules/oracle/chain-relay"
+	"vsc-node/modules/oracle/chain"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/price"
 	libp2p "vsc-node/modules/p2p"
@@ -37,25 +38,28 @@ const (
 var (
 	watchSymbols          = []string{"BTC", "ETH", "LTC"}
 	errInvalidMessageType = errors.New("invalid message type")
+
+	_ BlockTickHandler = &price.PriceOracle{}
 )
 
+type BlockTickHandler interface {
+	HandleBlockTick(p2p.BlockTickSignal, func(p2p.MsgCode, any) error)
+}
+
 type Oracle struct {
+	ctx         context.Context
+	cancelFunc  context.CancelFunc
+	logger      *slog.Logger
 	p2pServer   *libp2p.P2PServer
-	service     libp2p.PubSubService[p2p.Msg]
+	pubSubSrv   libp2p.PubSubService[p2p.Msg]
 	conf        common.IdentityConfig
 	electionDb  elections.Elections
 	witness     witnesses.Witnesses
 	vStream     *vstream.VStream
 	stateEngine *stateEngine.StateEngine
 
-	logger *slog.Logger
-
-	ctx        context.Context
-	cancelFunc context.CancelFunc
-
 	priceOracle *price.PriceOracle
-
-	chainOracle *chainrelay.ChainRelayer
+	chainOracle *chain.ChainOracle
 }
 
 func New(
@@ -77,7 +81,22 @@ func New(
 
 	logger := slog.New(logHandler).With("service", "oracle")
 
+	ctx, cancel := context.WithCancel(context.Background())
+
+	priceOracle := price.New(
+		ctx,
+		logger,
+		userCurrency,
+		priceOraclePollInterval,
+		watchSymbols,
+		conf,
+	)
+
+	chainRelayer := chain.New(logger)
+
 	return &Oracle{
+		ctx:         ctx,
+		cancelFunc:  cancel,
 		p2pServer:   p2pServer,
 		conf:        conf,
 		electionDb:  electionDb,
@@ -85,27 +104,16 @@ func New(
 		vStream:     vstream,
 		stateEngine: stateEngine,
 		logger:      logger,
+		priceOracle: priceOracle,
+		chainOracle: chainRelayer,
 	}
 }
 
 // Init implements aggregate.Plugin.
 // Runs initialization in order of how they are passed in to `Aggregate`
 func (o *Oracle) Init() error {
-	o.ctx, o.cancelFunc = context.WithCancel(context.Background())
-
-	var err error
-
-	o.priceOracle, err = price.New(o.logger, userCurrency)
-	if err != nil {
-		return fmt.Errorf("failed to initialize price oracle: %w", err)
-	}
-
-	o.chainOracle, err = chainrelay.New(o.logger)
-	if err != nil {
-		return fmt.Errorf("failed to initialize chain relay oracle: %w", err)
-	}
-
-	return nil
+	p := []aggregate.Plugin{o.chainOracle, o.priceOracle}
+	return aggregate.New(p).Init()
 }
 
 // Start implements aggregate.Plugin.
@@ -117,7 +125,10 @@ func (o *Oracle) Start() *promise.Promise[any] {
 		o.logger.Debug("starting Oracle service")
 		var err error
 
-		o.service, err = libp2p.NewPubSubService(o.p2pServer, p2p.NewP2pSpec(o))
+		o.pubSubSrv, err = libp2p.NewPubSubService(
+			o.p2pServer,
+			p2p.NewP2pSpec(o),
+		)
 		if err != nil {
 			o.logger.Error("failed to initialize o.service", "err", err)
 			o.cancelFunc()
@@ -125,11 +136,16 @@ func (o *Oracle) Start() *promise.Promise[any] {
 			return
 		}
 
-		go o.priceOracle.MarketObserve(
-			o.ctx,
-			priceOraclePollInterval,
-			watchSymbols,
-		)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		p := []aggregate.Plugin{o.chainOracle, o.priceOracle}
+		srv := aggregate.New(p)
+
+		if _, err := srv.Start().Await(ctx); err != nil {
+			reject(err)
+			return
+		}
 
 		resolve(nil)
 	})
@@ -140,14 +156,22 @@ func (o *Oracle) Start() *promise.Promise[any] {
 func (o *Oracle) Stop() error {
 	o.cancelFunc()
 
-	if o.service == nil {
+	p := []aggregate.Plugin{o.chainOracle, o.priceOracle}
+	srv := aggregate.New(p)
+
+	if err := srv.Stop(); err != nil {
+		return err
+	}
+
+	if o.pubSubSrv == nil {
 		return nil
 	}
-	return o.service.Close()
+
+	return o.pubSubSrv.Close()
 }
 
-func (o *Oracle) BroadcastMessage(msgCode p2p.MsgCode, data any) error {
-	if o.service == nil {
+func (o *Oracle) broadcastMessage(msgCode p2p.MsgCode, data any) error {
+	if o.pubSubSrv == nil {
 		return errors.New("o.service uninitialized")
 	}
 
@@ -156,7 +180,7 @@ func (o *Oracle) BroadcastMessage(msgCode p2p.MsgCode, data any) error {
 		return err
 	}
 
-	return o.service.Send(msg)
+	return o.pubSubSrv.Send(msg)
 }
 
 // Handle implements p2p.MessageHandler
