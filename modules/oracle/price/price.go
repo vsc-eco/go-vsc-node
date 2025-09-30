@@ -41,7 +41,7 @@ type PricePointMap map[string][]PricePoint
 
 type PriceOracle struct {
 	pricePoints    *threadsafe.LockedConsumer[PricePointMap]
-	signedBlocks   *threadsafe.LockedConsumer[p2p.OracleBlock]
+	signatures     *threadsafe.LockedConsumer[p2p.OracleBlock]
 	producerBlocks *threadsafe.LockedConsumer[p2p.OracleBlock]
 
 	userCurrency      string
@@ -77,7 +77,7 @@ func New(
 
 	return &PriceOracle{
 		pricePoints:       pricePoints,
-		signedBlocks:      signedBlocks,
+		signatures:        signedBlocks,
 		producerBlocks:    producerBlocks,
 		userCurrency:      userCurrency,
 		pricePollInterval: pricePollInterval,
@@ -92,7 +92,7 @@ func New(
 func (p *PriceOracle) Init() error {
 	// locking states
 	p.pricePoints.Lock()
-	p.signedBlocks.Lock()
+	p.signatures.Lock()
 	p.producerBlocks.Lock()
 
 	// initializes market api's

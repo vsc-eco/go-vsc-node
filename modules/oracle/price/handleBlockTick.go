@@ -175,7 +175,7 @@ func (p *priceBlockProducer) handleSignal(
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	p.signedBlocks.Collect(ctx, func(ob p2p.OracleBlock) bool {
+	p.signatures.Collect(ctx, func(ob p2p.OracleBlock) bool {
 		if err := p.validateSignedBlock(&ob); err != nil {
 			p.logger.Error("failed to validate block signature")
 			return false

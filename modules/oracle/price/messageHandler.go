@@ -41,7 +41,7 @@ func (o *PriceOracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 		}
 
 		block.TimeStamp = time.Now().UTC()
-		if err := o.signedBlocks.Consume(*block); err != nil {
+		if err := o.signatures.Consume(*block); err != nil {
 			if errors.Is(err, threadsafe.ErrLockedChannel) {
 				o.logger.Debug(
 					"unable to collect broadcasted signatures in the current block interval.",
