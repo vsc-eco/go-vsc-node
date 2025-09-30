@@ -42,17 +42,17 @@ func (o *PriceOracle) HandleBlockTick(
 	medianPricePoints := o.getMedianPricePoint(localAvgPrices)
 
 	// make block / sign block
-	var err error
+	var signalHandler func(*p2p.BlockTickSignal, map[string]PricePoint) error
 
 	if sig.IsBlockProducer {
 		priceBlockProducer := &priceBlockProducer{o, p2pSpec}
-		err = priceBlockProducer.handleSignal(&sig, medianPricePoints)
+		signalHandler = priceBlockProducer.handleSignal
 	} else if sig.IsWitness {
 		priceBlockWitness := &priceBlockWitness{o, p2pSpec}
-		err = priceBlockWitness.handleSignal(&sig, medianPricePoints)
+		signalHandler = priceBlockWitness.handleSignal
 	}
 
-	if err != nil {
+	if err := signalHandler(&sig, medianPricePoints); err != nil {
 		o.logger.Error(
 			"error on broadcast price tick interval",
 			"err", err,
@@ -175,7 +175,7 @@ func (p *priceBlockProducer) handleSignal(
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	p.signatures.Collect(ctx, func(ob p2p.OracleBlock) bool {
+	err = p.signatures.Collect(ctx, func(ob p2p.OracleBlock) bool {
 		if err := p.validateSignedBlock(&ob); err != nil {
 			p.logger.Error("failed to validate block signature")
 			return false
@@ -185,13 +185,14 @@ func (p *priceBlockProducer) handleSignal(
 		return len(block.Signatures) >= sigThreshold
 	})
 
-	if len(block.Signatures) < sigThreshold {
+	if err != nil {
 		return errors.New("failed to meet signature threshold")
 	}
 
 	return p.SubmitToContract(block)
 }
 
+// TODO: implement block validation
 func (p *priceBlockProducer) validateSignedBlock(block *p2p.OracleBlock) error {
 	if len(block.Signatures) != 1 {
 		return errors.New("missing signature")
@@ -247,7 +248,7 @@ func (p *priceBlockWitness) handleSignal(
 			return err
 		}
 
-		block.Signatures = append(block.Signatures, sig)
+		block.Signatures = []string{sig}
 
 		if err := p.Broadcast(p2p.MsgPriceSignature, block); err != nil {
 			return err

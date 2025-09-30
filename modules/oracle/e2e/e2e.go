@@ -1,8 +1,6 @@
 package oraclee2e
 
 import (
-	"log"
-	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/logger"
 	"vsc-node/modules/aggregate"
@@ -11,7 +9,6 @@ import (
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
-	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
 	rcDb "vsc-node/modules/db/vsc/rcs"
@@ -32,34 +29,7 @@ type Node struct {
 	plugins []aggregate.Plugin
 }
 
-type stubVstream struct {
-	*vstream.VStream
-
-	name  string
-	funck vstream.BTFunc
-	async bool
-}
-
-func (s *stubVstream) RegisterBlockTick(
-	name string,
-	funck vstream.BTFunc,
-	async bool,
-) {
-	// s.VStream.RegisterBlockTick(name, funck, async)
-	s.name = name
-	s.funck = funck
-	s.async = async
-}
-
-func (s *stubVstream) ProccessBlock(
-	_ hive_blocks.HiveBlocks,
-	headHeight *uint64,
-) {
-	s.funck(1, headHeight)
-}
-
 func MakeNode(nodeName string) *Node {
-
 	dbConf := db.NewDbConfig()
 	db := db.New(dbConf)
 	vscDb := vsc.New(db, nodeName)
@@ -91,10 +61,10 @@ func MakeNode(nodeName string) *Node {
 		txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks,
 		actionsDb, rcDb, nonceDb, wasm,
 	)
-	vstream := stubVstream{VStream: vstream.New(se)}
+	vstream := vstream.New(se)
 
 	oracle := oracle.New(
-		p2pSpec, identityConfig, electionDb, witnessesDb, vstream.VStream, se,
+		p2pSpec, identityConfig, electionDb, witnessesDb, vstream, se,
 	)
 
 	plugins := []aggregate.Plugin{
@@ -109,19 +79,6 @@ func MakeNode(nodeName string) *Node {
 		p2p:     p2pSpec,
 		plugins: plugins,
 	}
-
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		bh := uint64(0)
-		for {
-			select {
-			case <-ticker.C:
-				log.Println("ticker event", bh)
-				vstream.ProcessBlock(hive_blocks.HiveBlock{}, &bh)
-				bh += 1
-			}
-		}
-	}()
 
 	return &out
 }

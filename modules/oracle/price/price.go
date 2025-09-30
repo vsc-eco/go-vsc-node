@@ -76,6 +76,7 @@ func New(
 	)
 
 	return &PriceOracle{
+		ctx:               ctx,
 		pricePoints:       pricePoints,
 		signatures:        signedBlocks,
 		producerBlocks:    producerBlocks,

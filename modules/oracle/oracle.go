@@ -75,7 +75,9 @@ func New(
 		Level: logLevel,
 	})
 
-	logger := slog.New(logHandler).With("service", "oracle")
+	logger := slog.New(logHandler).
+		With("service", "oracle").
+		With("id", conf.Get().HiveUsername)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
