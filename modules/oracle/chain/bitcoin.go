@@ -1,10 +1,8 @@
 package chain
 
 import (
-	"errors"
 	"fmt"
 	"log"
-	"os"
 	"vsc-node/modules/oracle/p2p"
 
 	"github.com/btcsuite/btcd/btcjson"
@@ -19,26 +17,20 @@ type bitcoinRelayer struct {
 
 var (
 	_ chainRelay = &bitcoinRelayer{}
+)
 
-	errInvalidConf = errors.New("invalid config")
+const (
+	btcdRpcUsername = "vsc-node-user"
+	btcdRpcPassword = "vsc-node-pass"
+	bctdRpcHost     = "0.0.0.0:8332"
 )
 
 // Init implements chainRelay.
 func (b *bitcoinRelayer) Init() error {
-	var (
-		rpcUsername, rpcUsernameOk = os.LookupEnv("BTCD_RPC_USERNAME")
-		rpcPassword, rpcPasswordOk = os.LookupEnv("BTCD_RPC_PASSWORD")
-		rpcHost, rpcHostOk         = os.LookupEnv("BTCD_RPC_HOST")
-	)
-
-	if !rpcUsernameOk || !rpcPasswordOk || !rpcHostOk {
-		return errInvalidConf
-	}
-
 	b.rpcConfig = rpcclient.ConnConfig{
-		Host:         rpcHost,
-		User:         rpcUsername,
-		Pass:         rpcPassword,
+		Host:         bctdRpcHost,
+		User:         btcdRpcUsername,
+		Pass:         btcdRpcPassword,
 		HTTPPostMode: true,
 		DisableTLS:   true,
 	}
