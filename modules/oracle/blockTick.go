@@ -12,6 +12,8 @@ import (
 	stateEngine "vsc-node/modules/state-processing"
 )
 
+const blockHeightThreshold = 10
+
 var (
 	_ BlockTickHandler = &price.PriceOracle{}
 	_ BlockTickHandler = &chain.ChainOracle{}
@@ -23,6 +25,11 @@ type BlockTickHandler interface {
 
 func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	if headHeight == nil {
+		return
+	}
+
+	blockDiff := *headHeight - bh
+	if blockDiff > blockHeightThreshold {
 		return
 	}
 
