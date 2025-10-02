@@ -3,7 +3,6 @@ package oracle
 import (
 	"log"
 	"slices"
-	"sync"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
@@ -19,7 +18,7 @@ var (
 )
 
 type BlockTickHandler interface {
-	HandleBlockTick(*sync.WaitGroup, p2p.BlockTickSignal, p2p.OracleVscSpec)
+	HandleBlockTick(p2p.BlockTickSignal, p2p.OracleVscSpec)
 }
 
 func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
@@ -66,17 +65,12 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 		IsWitness:       isWitness,
 		ElectedMembers:  members,
 	}
-	wg := &sync.WaitGroup{}
 
 	if isAvgPriceBroadcastTick {
-		wg.Add(1)
-		go o.priceOracle.HandleBlockTick(wg, sig, o)
+		go o.priceOracle.HandleBlockTick(sig, o)
 	}
 
 	if isChainRelayTick {
-		wg.Add(1)
-		go o.chainOracle.HandleBlockTick(wg, sig, o)
+		go o.chainOracle.HandleBlockTick(sig, o)
 	}
-
-	wg.Wait()
 }

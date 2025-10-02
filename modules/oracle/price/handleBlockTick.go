@@ -8,7 +8,6 @@ import (
 	"math"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/threadsafe"
@@ -18,11 +17,9 @@ const float64Epsilon = 1e-9
 
 // HandleBlockTick implements oracle.BlockTickHandler.
 func (o *PriceOracle) HandleBlockTick(
-	wg *sync.WaitGroup,
 	sig p2p.BlockTickSignal,
 	p2pSpec p2p.OracleVscSpec,
 ) {
-	defer wg.Done()
 	o.logger.Debug("broadcast price block tick.")
 
 	defer o.ClearPriceCache()

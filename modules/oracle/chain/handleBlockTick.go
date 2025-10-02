@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sync"
 	"time"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/threadsafe"
@@ -17,12 +16,9 @@ type chainRelayHandler interface {
 
 // HandleBlockTick implements oracle.BlockTickHandler.
 func (o *ChainOracle) HandleBlockTick(
-	wg *sync.WaitGroup,
 	sig p2p.BlockTickSignal,
 	p2pSpec p2p.OracleVscSpec,
 ) {
-	defer wg.Done()
-
 	if !sig.IsBlockProducer && !sig.IsWitness {
 		return
 	}
