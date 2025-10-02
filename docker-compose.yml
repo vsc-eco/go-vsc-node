@@ -42,9 +42,7 @@ services:
   btcd:
     image: ruimarinho/bitcoin-core:latest
     container_name: btcd
-    ports:
-      - 8333:8333 # p2p port
-      - 8332:8332 # jsonrpc port
+    command: -rpcuser='vsc-node-user' -rpcpassword='vsc-node-pass' -rpcallowip=0.0.0.0/0 -rpcbind=0.0.0.0 -prune=550 -dbcache=2048 -server=1 -listen=1
     volumes:
       - ./.btc-data:/home/bitcoin/.bitcoin
 volumes:
