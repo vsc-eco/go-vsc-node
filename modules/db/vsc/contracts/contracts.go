@@ -105,7 +105,6 @@ func (ch *contractState) IngestOutput(output IngestOutputArgs) {
 			"results":  output.Results,
 		},
 	}, options)
-
 }
 
 func (ch *contractState) GetLastOutput(contractId string, height uint64) (ContractOutput, error) {

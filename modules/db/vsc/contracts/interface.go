@@ -1,6 +1,8 @@
 package contracts
 
-import a "vsc-node/modules/aggregate"
+import (
+	a "vsc-node/modules/aggregate"
+)
 
 type Contracts interface {
 	a.Plugin

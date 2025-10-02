@@ -20,6 +20,7 @@ import (
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
+	"vsc-node/modules/gql/logstream"
 	"vsc-node/modules/gql/model"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	stateEngine "vsc-node/modules/state-processing"
@@ -513,6 +514,57 @@ func (r *rcRecordResolver) MaxRcs(ctx context.Context, obj *rcDb.RcRecord) (mode
 	return model.Int64(obj.MaxRcs), nil
 }
 
+// Logs is the resolver for the logs subscription.
+func (r *subscriptionResolver) Logs(ctx context.Context, filter *LogFilter) (<-chan *Log, error) {
+	out := make(chan *Log, 256)
+
+	// Convert GraphQL filter → internal filter
+	var f logstream.LogFilterInternal
+	if filter != nil {
+		if filter.FromBlock != nil {
+			val := uint64(*filter.FromBlock)
+			f.FromBlock = &val
+		}
+		if len(filter.ContractAddresses) > 0 {
+			f.ContractAddresses = make(map[string]struct{}, len(filter.ContractAddresses))
+			for _, addr := range filter.ContractAddresses {
+				f.ContractAddresses[addr] = struct{}{}
+			}
+		}
+	}
+
+	sub := r.LogStream.Subscribe(f)
+
+	fmt.Printf("[subscription] new subscriber %d created with filter %+v\n", sub.Id, sub.Filter)
+
+	// Clean up when client disconnects
+	go func() {
+		<-ctx.Done()
+		fmt.Printf("[subscription] subscriber %d disconnected\n", sub.Id)
+		r.LogStream.Unsubscribe(sub)
+		close(out)
+	}()
+
+	// Forward internal logs to GraphQL
+	go func() {
+		for l := range sub.Ch {
+			fmt.Printf("[subscription] subscriber %d forwarding log: height=%d addr=%s tx=%s log=%s\n",
+				sub.Id, l.BlockHeight, l.ContractAddress, l.TxHash, l.Log)
+
+			out <- &Log{
+				BlockHeight:     model.Uint64(l.BlockHeight),
+				TxHash:          l.TxHash,
+				ContractAddress: l.ContractAddress,
+				Log:             l.Log,
+				Timestamp:       l.Timestamp,
+			}
+		}
+		fmt.Printf("[subscription] subscriber %d channel closed\n", sub.Id)
+	}()
+
+	return out, nil
+}
+
 // Index is the resolver for the index field.
 func (r *transactionOperationResolver) Index(ctx context.Context, obj *transactions.TransactionOperation) (model.Uint64, error) {
 	return model.Uint64(obj.Idx), nil
@@ -627,6 +679,9 @@ func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 // RcRecord returns RcRecordResolver implementation.
 func (r *Resolver) RcRecord() RcRecordResolver { return &rcRecordResolver{r} }
 
+// Subscription returns SubscriptionResolver implementation.
+func (r *Resolver) Subscription() SubscriptionResolver { return &subscriptionResolver{r} }
+
 // TransactionOperation returns TransactionOperationResolver implementation.
 func (r *Resolver) TransactionOperation() TransactionOperationResolver {
 	return &transactionOperationResolver{r}
@@ -660,6 +715,7 @@ type opLogEventResolver struct{ *Resolver }
 type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type rcRecordResolver struct{ *Resolver }
+type subscriptionResolver struct{ *Resolver }
 type transactionOperationResolver struct{ *Resolver }
 type transactionOutputResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }

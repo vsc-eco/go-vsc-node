@@ -10,6 +10,7 @@ import (
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
+	"vsc-node/modules/gql/logstream"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 )
@@ -33,4 +34,5 @@ type Resolver struct {
 	Da             *datalayer.DataLayer
 	Contracts      contracts.Contracts
 	ContractsState contracts.ContractState
+	LogStream      logstream.LogStream
 }
