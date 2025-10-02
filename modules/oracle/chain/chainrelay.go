@@ -20,11 +20,11 @@ type chainRelay interface {
 type chainMap map[string]chainRelay
 
 type ChainOracle struct {
-	logger         *slog.Logger
-	signedBlockBuf *threadsafe.LockedConsumer[*p2p.OracleBlock]
-	newBlockBuf    *threadsafe.LockedConsumer[*p2p.OracleBlock]
-	chainMap       chainMap
-	conf           common.IdentityConfig
+	logger       *slog.Logger
+	signatureBuf *threadsafe.LockedConsumer[*p2p.OracleBlock]
+	newBlockBuf  *threadsafe.LockedConsumer[*p2p.OracleBlock]
+	chainMap     chainMap
+	conf         common.IdentityConfig
 }
 
 var _ aggregate.Plugin = &ChainOracle{}
@@ -40,18 +40,18 @@ func New(oracleLogger *slog.Logger, conf common.IdentityConfig) *ChainOracle {
 	)
 
 	return &ChainOracle{
-		logger:         logger,
-		signedBlockBuf: signedBlock,
-		newBlockBuf:    blockRelay,
-		chainMap:       chainMap,
-		conf:           conf,
+		logger:       logger,
+		signatureBuf: signedBlock,
+		newBlockBuf:  blockRelay,
+		chainMap:     chainMap,
+		conf:         conf,
 	}
 }
 
 // Init implements aggregate.Plugin.
 func (c *ChainOracle) Init() error {
 	// locking states
-	c.signedBlockBuf.Lock()
+	c.signatureBuf.Lock()
 	c.newBlockBuf.Lock()
 
 	// initializes market api's
@@ -77,7 +77,7 @@ func (c *ChainOracle) Stop() error {
 	return nil
 }
 
-func (c *ChainOracle) FetchBlocks() map[string]p2p.BlockRelay {
+func (c *ChainOracle) fetchBlocks() map[string]p2p.BlockRelay {
 	blockMap := threadsafe.NewMap[string, p2p.BlockRelay]()
 
 	wg := &sync.WaitGroup{}

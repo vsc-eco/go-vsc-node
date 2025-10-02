@@ -27,7 +27,7 @@ func (o *ChainOracle) HandleBlockTick(
 		return
 	}
 
-	blockMap := o.FetchBlocks()
+	blockMap := o.fetchBlocks()
 
 	var handler chainRelayHandler
 	if sig.IsBlockProducer {
@@ -82,7 +82,7 @@ func (c *chainRelayProducer) handle(
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err = c.signedBlockBuf.Collect(ctx, collector); err != nil {
+	if err = c.signatureBuf.Collect(ctx, collector); err != nil {
 		return errors.New("failed to meet signature threshold")
 	}
 
