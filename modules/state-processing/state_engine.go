@@ -20,6 +20,7 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
+	"vsc-node/modules/gql/logstream"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
@@ -80,6 +81,8 @@ type StateEngine struct {
 	slotStatus *SlotStatus
 
 	BlockHeight int
+
+	LogStream *logstream.LogStream
 }
 
 //Transaction
@@ -1166,6 +1169,7 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 	rcDb rcDb.RcDb,
 	nonceDb nonces.Nonces,
 	wasm *wasm_runtime.Wasm,
+	logstream *logstream.LogStream,
 ) *StateEngine {
 
 	ls := &LedgerSystem{
@@ -1204,5 +1208,6 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 			VirtualLedger: make(map[string][]ledgerSystem.LedgerUpdate),
 			Ls:            ls,
 		},
+		LogStream: logstream,
 	}
 }

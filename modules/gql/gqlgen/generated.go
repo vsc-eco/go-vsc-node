@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -60,6 +61,7 @@ type ResolverRoot interface {
 	PostingJsonKeys() PostingJsonKeysResolver
 	Query() QueryResolver
 	RcRecord() RcRecordResolver
+	Subscription() SubscriptionResolver
 	TransactionOperation() TransactionOperationResolver
 	TransactionOutput() TransactionOutputResolver
 	TransactionRecord() TransactionRecordResolver
@@ -128,8 +130,9 @@ type ComplexityRoot struct {
 	}
 
 	ContractOutputResult struct {
-		Ok  func(childComplexity int) int
-		Ret func(childComplexity int) int
+		Logs func(childComplexity int) int
+		Ok   func(childComplexity int) int
+		Ret  func(childComplexity int) int
 	}
 
 	ContractState struct {
@@ -193,6 +196,14 @@ type ComplexityRoot struct {
 		VersionID          func(childComplexity int) int
 	}
 
+	Log struct {
+		BlockHeight     func(childComplexity int) int
+		ContractAddress func(childComplexity int) int
+		Log             func(childComplexity int) int
+		Timestamp       func(childComplexity int) int
+		TxHash          func(childComplexity int) int
+	}
+
 	NonceRecord struct {
 		Account func(childComplexity int) int
 		Nonce   func(childComplexity int) int
@@ -241,6 +252,10 @@ type ComplexityRoot struct {
 		Amount      func(childComplexity int) int
 		BlockHeight func(childComplexity int) int
 		MaxRcs      func(childComplexity int) int
+	}
+
+	Subscription struct {
+		Logs func(childComplexity int, filter *LogFilter) int
 	}
 
 	TransactionOperation struct {
@@ -383,6 +398,9 @@ type RcRecordResolver interface {
 	Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error)
 	BlockHeight(ctx context.Context, obj *rcDb.RcRecord) (model.Uint64, error)
 	MaxRcs(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error)
+}
+type SubscriptionResolver interface {
+	Logs(ctx context.Context, filter *LogFilter) (<-chan *Log, error)
 }
 type TransactionOperationResolver interface {
 	Index(ctx context.Context, obj *transactions.TransactionOperation) (model.Uint64, error)
@@ -716,6 +734,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.ContractOutput.Timestamp(childComplexity), true
 
+	case "ContractOutputResult.logs":
+		if e.complexity.ContractOutputResult.Logs == nil {
+			break
+		}
+
+		return e.complexity.ContractOutputResult.Logs(childComplexity), true
+
 	case "ContractOutputResult.ok":
 		if e.complexity.ContractOutputResult.Ok == nil {
 			break
@@ -1024,6 +1049,41 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.LocalNodeInfo.VersionID(childComplexity), true
+
+	case "Log.blockHeight":
+		if e.complexity.Log.BlockHeight == nil {
+			break
+		}
+
+		return e.complexity.Log.BlockHeight(childComplexity), true
+
+	case "Log.contractAddress":
+		if e.complexity.Log.ContractAddress == nil {
+			break
+		}
+
+		return e.complexity.Log.ContractAddress(childComplexity), true
+
+	case "Log.log":
+		if e.complexity.Log.Log == nil {
+			break
+		}
+
+		return e.complexity.Log.Log(childComplexity), true
+
+	case "Log.timestamp":
+		if e.complexity.Log.Timestamp == nil {
+			break
+		}
+
+		return e.complexity.Log.Timestamp(childComplexity), true
+
+	case "Log.txHash":
+		if e.complexity.Log.TxHash == nil {
+			break
+		}
+
+		return e.complexity.Log.TxHash(childComplexity), true
 
 	case "NonceRecord.account":
 		if e.complexity.NonceRecord.Account == nil {
@@ -1360,6 +1420,18 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.RcRecord.MaxRcs(childComplexity), true
 
+	case "Subscription.logs":
+		if e.complexity.Subscription.Logs == nil {
+			break
+		}
+
+		args, err := ec.field_Subscription_logs_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Subscription.Logs(childComplexity, args["filter"].(*LogFilter)), true
+
 	case "TransactionOperation.data":
 		if e.complexity.TransactionOperation.Data == nil {
 			break
@@ -1631,6 +1703,7 @@ func (e *executableSchema) Exec(ctx context.Context) graphql.ResponseHandler {
 		ec.unmarshalInputFindContractFilter,
 		ec.unmarshalInputLedgerActionsFilter,
 		ec.unmarshalInputLedgerTxFilter,
+		ec.unmarshalInputLogFilter,
 		ec.unmarshalInputTransactionFilter,
 	)
 	first := true
@@ -1665,6 +1738,23 @@ func (e *executableSchema) Exec(ctx context.Context) graphql.ResponseHandler {
 			}
 
 			return &response
+		}
+	case ast.Subscription:
+		next := ec._Subscription(ctx, opCtx.Operation.SelectionSet)
+
+		var buf bytes.Buffer
+		return func(ctx context.Context) *graphql.Response {
+			buf.Reset()
+			data := next(ctx)
+
+			if data == nil {
+				return nil
+			}
+			data.MarshalGQL(&buf)
+
+			return &graphql.Response{
+				Data: buf.Bytes(),
+			}
 		}
 
 	default:
@@ -1786,6 +1876,7 @@ type TransactionOutput {
 type ContractOutputResult {
   ret: String!
   ok: Boolean!
+  logs: [String!] 
 }
 
 type ContractOutput {
@@ -2009,6 +2100,24 @@ type Query {
   getElection(epoch: Uint64!): ElectionResult
   electionByBlockHeight(blockHeight: Uint64): ElectionResult!
 }
+
+type Log {
+  blockHeight: Uint64!
+  txHash: String!
+  contractAddress: String!
+  log: String!        # raw string from sdk.Log()
+  timestamp: String!  # consistent with other timestamps
+}
+
+input LogFilter {
+  fromBlock: Uint64
+  contractAddresses: [String!]
+}
+
+type Subscription {
+  logs(filter: LogFilter): Log!
+}
+
 
 scalar Uint64
 scalar Int64
@@ -2615,6 +2724,29 @@ func (ec *executionContext) field_Query_witnessStake_argsAccount(
 	}
 
 	var zeroVal string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Subscription_logs_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Subscription_logs_argsFilter(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["filter"] = arg0
+	return args, nil
+}
+func (ec *executionContext) field_Subscription_logs_argsFilter(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (*LogFilter, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("filter"))
+	if tmp, ok := rawArgs["filter"]; ok {
+		return ec.unmarshalOLogFilter2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐLogFilter(ctx, tmp)
+	}
+
+	var zeroVal *LogFilter
 	return zeroVal, nil
 }
 
@@ -4491,6 +4623,8 @@ func (ec *executionContext) fieldContext_ContractOutput_results(_ context.Contex
 				return ec.fieldContext_ContractOutputResult_ret(ctx, field)
 			case "ok":
 				return ec.fieldContext_ContractOutputResult_ok(ctx, field)
+			case "logs":
+				return ec.fieldContext_ContractOutputResult_logs(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type ContractOutputResult", field.Name)
 		},
@@ -4581,6 +4715,47 @@ func (ec *executionContext) fieldContext_ContractOutputResult_ok(_ context.Conte
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ContractOutputResult_logs(ctx context.Context, field graphql.CollectedField, obj *contracts.ContractOutputResult) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ContractOutputResult_logs(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Logs, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.([]string)
+	fc.Result = res
+	return ec.marshalOString2ᚕstringᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ContractOutputResult_logs(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ContractOutputResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
 		},
 	}
 	return fc, nil
@@ -6338,6 +6513,226 @@ func (ec *executionContext) fieldContext_LocalNodeInfo_epoch(_ context.Context, 
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Log_blockHeight(ctx context.Context, field graphql.CollectedField, obj *Log) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Log_blockHeight(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.BlockHeight, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(model.Uint64)
+	fc.Result = res
+	return ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Log_blockHeight(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Log",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Log_txHash(ctx context.Context, field graphql.CollectedField, obj *Log) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Log_txHash(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.TxHash, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Log_txHash(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Log",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Log_contractAddress(ctx context.Context, field graphql.CollectedField, obj *Log) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Log_contractAddress(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ContractAddress, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Log_contractAddress(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Log",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Log_log(ctx context.Context, field graphql.CollectedField, obj *Log) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Log_log(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Log, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Log_log(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Log",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Log_timestamp(ctx context.Context, field graphql.CollectedField, obj *Log) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Log_timestamp(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Timestamp, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Log_timestamp(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Log",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
 		},
 	}
 	return fc, nil
@@ -8445,6 +8840,87 @@ func (ec *executionContext) fieldContext_RcRecord_max_rcs(_ context.Context, fie
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Int64 does not have child fields")
 		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Subscription_logs(ctx context.Context, field graphql.CollectedField) (ret func(ctx context.Context) graphql.Marshaler) {
+	fc, err := ec.fieldContext_Subscription_logs(ctx, field)
+	if err != nil {
+		return nil
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = nil
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Subscription().Logs(rctx, fc.Args["filter"].(*LogFilter))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return nil
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return nil
+	}
+	return func(ctx context.Context) graphql.Marshaler {
+		select {
+		case res, ok := <-resTmp.(<-chan *Log):
+			if !ok {
+				return nil
+			}
+			return graphql.WriterFunc(func(w io.Writer) {
+				w.Write([]byte{'{'})
+				graphql.MarshalString(field.Alias).MarshalGQL(w)
+				w.Write([]byte{':'})
+				ec.marshalNLog2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐLog(ctx, field.Selections, res).MarshalGQL(w)
+				w.Write([]byte{'}'})
+			})
+		case <-ctx.Done():
+			return nil
+		}
+	}
+}
+
+func (ec *executionContext) fieldContext_Subscription_logs(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Subscription",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "blockHeight":
+				return ec.fieldContext_Log_blockHeight(ctx, field)
+			case "txHash":
+				return ec.fieldContext_Log_txHash(ctx, field)
+			case "contractAddress":
+				return ec.fieldContext_Log_contractAddress(ctx, field)
+			case "log":
+				return ec.fieldContext_Log_log(ctx, field)
+			case "timestamp":
+				return ec.fieldContext_Log_timestamp(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type Log", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Subscription_logs_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
 	}
 	return fc, nil
 }
@@ -12289,6 +12765,40 @@ func (ec *executionContext) unmarshalInputLedgerTxFilter(ctx context.Context, ob
 	return it, nil
 }
 
+func (ec *executionContext) unmarshalInputLogFilter(ctx context.Context, obj any) (LogFilter, error) {
+	var it LogFilter
+	asMap := map[string]any{}
+	for k, v := range obj.(map[string]any) {
+		asMap[k] = v
+	}
+
+	fieldsInOrder := [...]string{"fromBlock", "contractAddresses"}
+	for _, k := range fieldsInOrder {
+		v, ok := asMap[k]
+		if !ok {
+			continue
+		}
+		switch k {
+		case "fromBlock":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("fromBlock"))
+			data, err := ec.unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.FromBlock = data
+		case "contractAddresses":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("contractAddresses"))
+			data, err := ec.unmarshalOString2ᚕstringᚄ(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.ContractAddresses = data
+		}
+	}
+
+	return it, nil
+}
+
 func (ec *executionContext) unmarshalInputTransactionFilter(ctx context.Context, obj any) (TransactionFilter, error) {
 	var it TransactionFilter
 	asMap := map[string]any{}
@@ -13280,6 +13790,8 @@ func (ec *executionContext) _ContractOutputResult(ctx context.Context, sel ast.S
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
+		case "logs":
+			out.Values[i] = ec._ContractOutputResult_logs(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -14045,6 +14557,65 @@ func (ec *executionContext) _LocalNodeInfo(ctx context.Context, sel ast.Selectio
 			}
 		case "epoch":
 			out.Values[i] = ec._LocalNodeInfo_epoch(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var logImplementors = []string{"Log"}
+
+func (ec *executionContext) _Log(ctx context.Context, sel ast.SelectionSet, obj *Log) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, logImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("Log")
+		case "blockHeight":
+			out.Values[i] = ec._Log_blockHeight(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "txHash":
+			out.Values[i] = ec._Log_txHash(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "contractAddress":
+			out.Values[i] = ec._Log_contractAddress(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "log":
+			out.Values[i] = ec._Log_log(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "timestamp":
+			out.Values[i] = ec._Log_timestamp(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
@@ -14944,6 +15515,26 @@ func (ec *executionContext) _RcRecord(ctx context.Context, sel ast.SelectionSet,
 	}
 
 	return out
+}
+
+var subscriptionImplementors = []string{"Subscription"}
+
+func (ec *executionContext) _Subscription(ctx context.Context, sel ast.SelectionSet) func(ctx context.Context) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, subscriptionImplementors)
+	ctx = graphql.WithFieldContext(ctx, &graphql.FieldContext{
+		Object: "Subscription",
+	})
+	if len(fields) != 1 {
+		ec.Errorf(ctx, "must subscribe to exactly one stream")
+		return nil
+	}
+
+	switch fields[0].Name {
+	case "logs":
+		return ec._Subscription_logs(ctx, fields[0])
+	default:
+		panic("unknown field " + strconv.Quote(fields[0].Name))
+	}
 }
 
 var transactionOperationImplementors = []string{"TransactionOperation"}
@@ -16157,6 +16748,20 @@ func (ec *executionContext) marshalNLedgerRecord2vscᚑnodeᚋmodulesᚋdbᚋvsc
 	return ec._LedgerRecord(ctx, sel, &v)
 }
 
+func (ec *executionContext) marshalNLog2vscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐLog(ctx context.Context, sel ast.SelectionSet, v Log) graphql.Marshaler {
+	return ec._Log(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNLog2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐLog(ctx context.Context, sel ast.SelectionSet, v *Log) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._Log(ctx, sel, v)
+}
+
 func (ec *executionContext) marshalNOpLogEvent2vscᚑnodeᚋmodulesᚋledgerᚑsystemᚐOpLogEvent(ctx context.Context, sel ast.SelectionSet, v ledgerSystem.OpLogEvent) graphql.Marshaler {
 	return ec._OpLogEvent(ctx, sel, &v)
 }
@@ -17058,6 +17663,14 @@ func (ec *executionContext) marshalOLocalNodeInfo2ᚖvscᚑnodeᚋmodulesᚋgql�
 		return graphql.Null
 	}
 	return ec._LocalNodeInfo(ctx, sel, v)
+}
+
+func (ec *executionContext) unmarshalOLogFilter2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐLogFilter(ctx context.Context, v any) (*LogFilter, error) {
+	if v == nil {
+		return nil, nil
+	}
+	res, err := ec.unmarshalInputLogFilter(ctx, v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalOMap2vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐMap(ctx context.Context, v any) (model.Map, error) {

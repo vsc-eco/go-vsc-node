@@ -28,6 +28,7 @@ import (
 	"vsc-node/modules/gateway"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
+	"vsc-node/modules/gql/logstream"
 	"vsc-node/modules/hive/streamer"
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
@@ -50,7 +51,6 @@ func main() {
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
 	fmt.Println("HIVE_API", hiveApiUrl.Get().HiveURI)
 	fmt.Println("Git Commit", announcements.GitCommit)
-
 	dbImpl := db.New(dbConf)
 	vscDb := vsc.New(dbImpl)
 	reindexDb := db.NewReindex(vscDb.DbInstance)
@@ -124,7 +124,9 @@ func main() {
 	l := logger.PrefixedLogger{
 		"vsc-node",
 	}
-	se := stateEngine.New(l, da, witnessDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
+
+	ls := logstream.NewLogStream()
+	se := stateEngine.New(l, da, witnessDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm, ls)
 
 	rcSystem := se.RcSystem
 
@@ -154,6 +156,7 @@ func main() {
 		da,
 		contractDb,
 		contractState,
+		*ls,
 	}}), "0.0.0.0:8080")
 
 	plugins := make([]aggregate.Plugin, 0)

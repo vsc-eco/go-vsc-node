@@ -11,6 +11,8 @@ import (
 	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/99designs/gqlgen/graphql/handler/extension"
@@ -50,16 +52,26 @@ func New(schema graphql.ExecutableSchema, addr string) *gqlManager {
 func (g *gqlManager) Init() error {
 	mux := http.NewServeMux()
 
-	// creates GraphQL server with Apollo
+	// Create GraphQL server with Apollo transports.
+	// Note: CheckOrigin is left open (always true) to match the current go-vsc-node setup.
+	// Also this enables people to run indexers without any vsc-node
+	// It is the responsibility of node operators to secure access (e.g. via nginx/apache),
+	// if they don’t want to expose their GraphQL endpoint (including ws://) publicly.
 	gqlServer := handler.New(g.schema)
 	gqlServer.AddTransport(transport.POST{})
+	gqlServer.AddTransport(&transport.Websocket{
+		KeepAlivePingInterval: 10 * time.Second,
+		Upgrader: websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				return true
+			},
+		},
+	})
+
 	gqlServer.Use(extension.Introspection{})
 
-	// OPTIONAL, UNCOMMENT TO ENABLE TRACING
-	// gqlServer.Use(apollotracing.Tracer{})
-
 	// adds handlers for GraphQL and Apollo sandbox environment
-	mux.Handle("POST /api/v1/graphql", gqlServer)
+	mux.Handle("/api/v1/graphql", gqlServer) // accepts querries and subscriptions
 	mux.Handle("GET /sandbox", pg.ApolloSandboxHandler("Apollo Sandbox", "/api/v1/graphql"))
 
 	// Configure CORS

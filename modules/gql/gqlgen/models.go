@@ -74,7 +74,23 @@ type LocalNodeInfo struct {
 	Epoch              model.Uint64 `json:"epoch"`
 }
 
+type Log struct {
+	BlockHeight     model.Uint64 `json:"blockHeight"`
+	TxHash          string       `json:"txHash"`
+	ContractAddress string       `json:"contractAddress"`
+	Log             string       `json:"log"`
+	Timestamp       string       `json:"timestamp"`
+}
+
+type LogFilter struct {
+	FromBlock         *model.Uint64 `json:"fromBlock,omitempty"`
+	ContractAddresses []string      `json:"contractAddresses,omitempty"`
+}
+
 type Query struct {
+}
+
+type Subscription struct {
 }
 
 type TransactionFilter struct {
