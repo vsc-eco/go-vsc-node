@@ -86,6 +86,7 @@ func New(
 		avgPriceMap:       avgPriceMap,
 		priceAPIs:         priceQueryMap,
 		conf:              conf,
+		watchSymbols:      watchSymbols,
 	}
 }
 

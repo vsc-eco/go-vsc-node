@@ -28,7 +28,7 @@ func (c *coinMarketCapHandler) initialize(currency string) error {
 		return errApiKeyNotFound
 	}
 
-	c = &coinMarketCapHandler{
+	*c = coinMarketCapHandler{
 		apiKey:   apiKey,
 		baseUrl:  "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest",
 		currency: strings.ToUpper(currency),
@@ -54,7 +54,8 @@ type coinMarketCapQuote struct {
 
 // queryMarketPrice implements priceQuery
 func (c *coinMarketCapHandler) queryMarketPrice(
-	watchSymbols []string) (map[string]p2p.ObservePricePoint, error) {
+	watchSymbols []string,
+) (map[string]p2p.ObservePricePoint, error) {
 	symbols := make([]string, len(watchSymbols))
 	copy(symbols, watchSymbols)
 	symbols = utils.Map(watchSymbols, strings.ToUpper)

@@ -57,7 +57,7 @@ func (c *coinGeckoHandler) initialize(currency string) error {
 		baseUrl = "https://pro-api.coingecko.com/api/v3/coins/markets"
 	}
 
-	c = &coinGeckoHandler{
+	*c = coinGeckoHandler{
 		baseUrl:  baseUrl,
 		apiKey:   apiKey,
 		currency: strings.ToLower(currency),
