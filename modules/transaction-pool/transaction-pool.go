@@ -144,7 +144,17 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	}
 
 	fmt.Println("sigPack.Sigs", sigPack.Sigs)
-	verified, err := common.VerifySignatures(txShell.Headers.RequiredAuths, blk, sigPack.Sigs)
+
+	// filter (non)VSC DIDs
+	didBuf, err := common.MakeDIDs(txShell.Headers.RequiredAuths, sigPack.Sigs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse DIDs: %w", err)
+	}
+
+	//Modify VerifySignatures to accept DID interface
+	// I.E looking for Bitvector and supplying list of elected members to the struct
+	//Also: if transaction is signed by VSC DID, then ignore RCs
+	verified, err := common.VerifySignatures(didBuf, blk, sigPack.Sigs)
 	if err != nil {
 		return nil, err
 	}

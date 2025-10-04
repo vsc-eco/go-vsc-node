@@ -3,8 +3,10 @@ package common
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"vsc-node/lib/dids"
@@ -87,21 +89,15 @@ func ArrayToStringArray(arr interface{}) []string {
 type Sig struct {
 	Algo string `refmt:"alg" json:"alg"`
 	Sig  string `refmt:"sig" json:"sig"`
+	Bv   string `refmt:"bv" json:"bv,omitempty"`
 	//Only applies to KeyID
 	//Technically redundant as it's stored in Required_Auths
 	Kid string `refmt:"kid" json:"kid"`
 }
 
-func VerifySignatures(requiredAuths []string, blk blocks.Block, sigs []Sig) (bool, error) {
-	auths, err := dids.ParseMany(requiredAuths)
-	if err != nil {
-		return false, err
-	}
-
-	verified, _, err := dids.VerifyMany(auths, blk, utils.Map(sigs, func(sig Sig) string {
-		return sig.Sig
-	}))
-
+func VerifySignatures(auths []dids.DID, blk blocks.Block, sigs []Sig) (bool, error) {
+	sigStrs := utils.Map(sigs, func(sig Sig) string { return sig.Sig })
+	verified, _, err := dids.VerifyMany(auths, blk, sigStrs)
 	return verified, err
 }
 
@@ -130,4 +126,46 @@ func ContractId(txid string, opidx int) string {
 	id := "vsc1" + base58.CheckEncode(trunkb58, 0x1a)
 
 	return id
+}
+
+func MakeDIDs(requiredAuths []string, sigs []Sig) ([]dids.DID, error) {
+	var (
+		buf = make([]dids.DID, len(requiredAuths))
+		err error
+	)
+
+	for i, authKID := range requiredAuths {
+		isVscDID := strings.HasPrefix(authKID, dids.VscDIDPrefix)
+
+		if !isVscDID {
+			buf[i], err = dids.Parse(authKID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse DID: %w", err)
+			}
+			continue
+		}
+
+		// matching authKID with sig.Kid
+		sigIndex := slices.IndexFunc(sigs, func(s Sig) bool { return authKID == s.Kid })
+		notFound := sigIndex == -1
+		if notFound {
+			return nil, errors.New("BV not found")
+		}
+
+		sig := &sigs[sigIndex]
+		thresHold := 0
+
+		buf[i], err = dids.NewVscDID(
+			[]dids.BlsDID{}, // TODO
+			[]int{},         // TODO
+			sig.Bv,
+			thresHold,
+		)
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse VSC DID: %w", err)
+		}
+	}
+
+	return buf, nil
 }
