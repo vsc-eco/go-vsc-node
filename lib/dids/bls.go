@@ -59,6 +59,7 @@ func NewBlsDID(pubKey *BlsPubKey) (BlsDID, error) {
 	return BlsDID(BlsDIDPrefix + string(base58Encoded)), nil
 }
 
+// ParseBlsDID takes in the election member key
 func ParseBlsDID(did string) (BlsDID, error) {
 	if !strings.HasPrefix(did, BlsDIDPrefix) {
 		return "", fmt.Errorf("invalid BLS DID: %s", did)
