@@ -37,7 +37,12 @@ func (o *ChainOracle) HandleBlockTick(
 	// - Producer node will aggregate those signatures into a single BLS circuit
 	//   for submission on mainnet
 
-	for _, chainSession := range o.fetchAllBlocks() {
+	// make chainDataPool and signature requests
+	var (
+		chainDataPool     = o.fetchAllBlocks()
+		signatureRequests = make([]chainRelayMessage, 0, len(chainDataPool))
+	)
+	for _, chainSession := range chainDataPool {
 		signatureRequest, err := makeSignatureRequestMessage(
 			signatureRequest,
 			chainSession.sessionID,
@@ -45,15 +50,21 @@ func (o *ChainOracle) HandleBlockTick(
 		)
 
 		if err != nil {
-			fmt.Println(err) // TODO: log this
+			o.logger.Error(
+				"failed to create signature requests",
+				"sessionID", chainSession.sessionID,
+				"err", err,
+			)
 			continue
 		}
 
-		// make a channel to collect signatures
+		signatureRequests = append(signatureRequests, *signatureRequest)
+	}
 
-		if err := p2pSpec.Broadcast(p2p.MsgChainRelay, signatureRequest); err != nil {
-			fmt.Println(err) // TODO: log this
-		}
+	// broadcast signature requests + collect signatures
+	signatureResponses := make([]any , len(signatureRequests))
+	for i, signatureRequest := range signatureRequests {
+		if err := p2pSpec.Broadcast(p2p.MsgChainRelay, signatureRequest)
 	}
 
 	var handler chainRelayHandler
