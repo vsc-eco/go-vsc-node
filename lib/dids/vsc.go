@@ -24,16 +24,16 @@ var (
 // consensus DID for VSC internal
 type VscDID struct {
 	members   []BlsDID
-	weightMap []int
-	threshold int
+	weightMap []uint64
+	threshold uint64
 	bitvector string
 }
 
 func NewVscDID(
 	members []BlsDID,
-	weightMap []int,
+	weightMap []uint64,
 	bitVector string,
-	threshold int,
+	threshold uint64,
 ) (*VscDID, error) {
 	if len(members) != len(weightMap) {
 		return nil, ErrInvalidWeightMap
@@ -81,7 +81,7 @@ func (v *VscDID) Verify(data blocks.Block, sig string) (bool, error) {
 	}
 
 	// calculate + verify signed weights
-	signedWeight := 0
+	signedWeight := uint64(0)
 	for i := range includedDids {
 		memberDidIndex := slices.Index(v.members, includedDids[i])
 		if memberDidIndex == -1 {

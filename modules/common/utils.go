@@ -3,10 +3,8 @@ package common
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 	"vsc-node/lib/dids"
@@ -126,46 +124,4 @@ func ContractId(txid string, opidx int) string {
 	id := "vsc1" + base58.CheckEncode(trunkb58, 0x1a)
 
 	return id
-}
-
-func MakeDIDs(requiredAuths []string, sigs []Sig) ([]dids.DID, error) {
-	var (
-		buf = make([]dids.DID, len(requiredAuths))
-		err error
-	)
-
-	for i, authKID := range requiredAuths {
-		isVscDID := strings.HasPrefix(authKID, dids.VscDIDPrefix)
-
-		if !isVscDID {
-			buf[i], err = dids.Parse(authKID)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse DID: %w", err)
-			}
-			continue
-		}
-
-		// matching authKID with sig.Kid
-		sigIndex := slices.IndexFunc(sigs, func(s Sig) bool { return authKID == s.Kid })
-		notFound := sigIndex == -1
-		if notFound {
-			return nil, errors.New("BV not found")
-		}
-
-		sig := &sigs[sigIndex]
-		thresHold := 0
-
-		buf[i], err = dids.NewVscDID(
-			[]dids.BlsDID{}, // TODO
-			[]int{},         // TODO
-			sig.Bv,
-			thresHold,
-		)
-
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse VSC DID: %w", err)
-		}
-	}
-
-	return buf, nil
 }
