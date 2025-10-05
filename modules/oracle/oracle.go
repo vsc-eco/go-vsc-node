@@ -26,12 +26,12 @@ const (
 	// NOTE: only supporting USD for now
 	userCurrency = "usd"
 
-	// 10 minutes = 600 seconds, 3s for every new block.
+	// 10 minutes = 600 seconds or 200 blocks, 3s for every new block.
 	// A tick is broadcasted every 200 blocks produced.
 	priceOracleBroadcastInterval = uint64(600 / 3)
 	priceOraclePollInterval      = time.Second * 15
 
-	// 10 minutes = 600 seconds, 3s for every new block
+	// 10 minutes = 600 seconds or 200 blocks, 3s for every new block
 	chainRelayInterval = uint64(600 / 3)
 )
 
@@ -50,7 +50,7 @@ type Oracle struct {
 	pubSubSrv   libp2p.PubSubService[p2p.Msg]
 	conf        common.IdentityConfig
 	electionDb  elections.Elections
-	witness     witnesses.Witnesses
+	witnessDb   witnesses.Witnesses
 	vStream     *vstream.VStream
 	stateEngine *stateEngine.StateEngine
 
@@ -62,7 +62,7 @@ func New(
 	p2pServer *libp2p.P2PServer,
 	conf common.IdentityConfig,
 	electionDb elections.Elections,
-	witness witnesses.Witnesses,
+	witnessDb witnesses.Witnesses,
 	vstream *vstream.VStream,
 	stateEngine *stateEngine.StateEngine,
 ) *Oracle {
@@ -98,7 +98,7 @@ func New(
 		p2pServer:   p2pServer,
 		conf:        conf,
 		electionDb:  electionDb,
-		witness:     witness,
+		witnessDb:   witnessDb,
 		vStream:     vstream,
 		stateEngine: stateEngine,
 		logger:      logger,
@@ -189,7 +189,7 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 	case p2p.MsgPriceBroadcast, p2p.MsgPriceSignature, p2p.MsgPriceBlock:
 		handler = o.priceOracle
 
-	case p2p.MsgChainRelayBlock:
+	case p2p.MsgChainRelay:
 		handler = o.chainOracle
 
 	default:
@@ -210,3 +210,9 @@ func (o *Oracle) ValidateSignature(*p2p.OracleBlock, string) error {
 	fmt.Println("Oracle.ValidateSignature not implemented")
 	return nil
 }
+
+//BIG
+// - Fix oracle block format. It must be a Bitcoin block header or preferably interface that allows for general purpose construction of block header ingestion
+// - Combine producer & witness modules into one
+// - Contract state interface. Pull contract state information and provide it to the chain relay module for processing
+// -

@@ -4,7 +4,6 @@ import (
 	"log"
 	"slices"
 	"vsc-node/lib/utils"
-	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/chain"
 	"vsc-node/modules/oracle/p2p"
@@ -62,22 +61,21 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 		isAvgPriceBroadcastTick = *headHeight%priceOracleBroadcastInterval == 0
 		isChainRelayTick        = *headHeight%chainRelayInterval == 0
 		isWitness               = slices.Contains(memberAccounts, username)
-		isBlockProducer         = witnessSlot != nil &&
-			witnessSlot.Account == username &&
-			bh%common.CONSENSUS_SPECS.SlotLength == 0
+		isProducer              = witnessSlot != nil &&
+			witnessSlot.Account == username
 	)
 
-	sig := p2p.BlockTickSignal{
-		IsBlockProducer: isBlockProducer,
-		IsWitness:       isWitness,
-		ElectedMembers:  members,
+	signal := p2p.BlockTickSignal{
+		IsProducer:     isProducer,
+		IsWitness:      isWitness,
+		ElectedMembers: members,
 	}
 
 	if isAvgPriceBroadcastTick {
-		go o.priceOracle.HandleBlockTick(sig, o)
+		go o.priceOracle.HandleBlockTick(signal, o)
 	}
 
 	if isChainRelayTick {
-		go o.chainOracle.HandleBlockTick(sig, o)
+		go o.chainOracle.HandleBlockTick(signal, o)
 	}
 }

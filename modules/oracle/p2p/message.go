@@ -13,6 +13,8 @@ import (
 	"github.com/go-playground/validator/v10"
 )
 
+type MsgCode int
+
 const (
 	// broadcasted average price
 	MsgPriceBroadcast MsgCode = iota
@@ -22,12 +24,10 @@ const (
 	MsgPriceSignature
 
 	// broadcasted chain relay block
-	MsgChainRelayBlock
+	MsgChainRelay
 )
 
 var priceValidator = validator.New(validator.WithRequiredStructEnabled())
-
-type MsgCode int
 
 type Msg *oracleMessage
 
@@ -139,7 +139,7 @@ func MakeOracleBlock(
 }
 
 type BlockTickSignal struct {
-	IsBlockProducer bool
-	IsWitness       bool
-	ElectedMembers  []elections.ElectionMember
+	IsProducer     bool
+	IsWitness      bool
+	ElectedMembers []elections.ElectionMember
 }

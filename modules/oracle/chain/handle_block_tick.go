@@ -10,33 +10,64 @@ import (
 	"vsc-node/modules/oracle/threadsafe"
 )
 
-type chainRelayHandler interface {
-	handle(p2p.BlockTickSignal, map[string]p2p.BlockRelay) error
-}
-
 // HandleBlockTick implements oracle.BlockTickHandler.
 func (o *ChainOracle) HandleBlockTick(
-	sig p2p.BlockTickSignal,
+	signal p2p.BlockTickSignal,
 	p2pSpec p2p.OracleVscSpec,
 ) {
-	if !sig.IsBlockProducer && !sig.IsWitness {
+	// NOTE: when the node is the not the producer, it is not a witness. The
+	// action of witness is triggered for incoming p2p message.
+	if !signal.IsProducer {
 		return
 	}
+	// ## Process end to end ##
+	// - Node is witness & producer
+	// - Using the contract state of latest block in combination with latest
+	//   block on Bitcoin mainnet
+	// - Assuming this is true.
+	// - That means the latest block on BTC mainnet is atleast 3 confirmations
+	//   higher
+	// - Create the transaction structure with the block headers to submit
+	// - Ask P2P channels for signatures for the transaction
+	// - Receiving node will receive request to create transaction on VSC mainnet
+	// - Receiving node will do the same check as above, aka verify that new
+	//   blocks must be submitted
+	// - If true, then sign the exact same transaction and return signature
+	// - Producer node will receive signatures through the p2p channel
+	// - Producer node will aggregate those signatures into a single BLS circuit
+	//   for submission on mainnet
 
-	blockMap := o.fetchBlocks()
+	for _, chainSession := range o.fetchAllBlocks() {
+		signatureRequest, err := makeSignatureRequestMessage(
+			signatureRequest,
+			chainSession.sessionID,
+			chainSession.chainData,
+		)
+
+		if err != nil {
+			fmt.Println(err) // TODO: log this
+			continue
+		}
+
+		// make a channel to collect signatures
+
+		if err := p2pSpec.Broadcast(p2p.MsgChainRelay, signatureRequest); err != nil {
+			fmt.Println(err) // TODO: log this
+		}
+	}
 
 	var handler chainRelayHandler
-	if sig.IsBlockProducer {
+	if signal.IsProducer {
 		handler = &chainRelayProducer{o, p2pSpec}
 	} else {
 		handler = &chainRelayWitness{o, p2pSpec}
 	}
 
-	if err := handler.handle(sig, blockMap); err != nil {
+	if err := handler.handle(signal, chainSessions); err != nil {
 		o.logger.Error(
 			"failed to process chain relay tick interval",
-			"is-producer", sig.IsBlockProducer,
-			"is-witness", sig.IsWitness,
+			"is-producer", signal.IsProducer,
+			"is-witness", signal.IsWitness,
 		)
 	}
 }
@@ -53,6 +84,8 @@ func (c *chainRelayProducer) handle(
 	sig p2p.BlockTickSignal,
 	blockMap map[string]p2p.BlockRelay,
 ) error {
+
+	// endnlsadflkdsjflksjdlf
 	// broadcast block
 	oracleBlock, err := p2p.MakeOracleBlock(
 		c.conf.Get().HiveUsername,
@@ -63,7 +96,7 @@ func (c *chainRelayProducer) handle(
 		return fmt.Errorf("failed to create oracle block")
 	}
 
-	if err := c.Broadcast(p2p.MsgChainRelayBlock, oracleBlock); err != nil {
+	if err := c.Broadcast(p2p.MsgChainRelay, oracleBlock); err != nil {
 		return fmt.Errorf("failed to broadcast oracle block: %w", err)
 	}
 
@@ -133,4 +166,12 @@ func (c *chainRelayWitness) handle(
 	})
 
 	return nil
+}
+
+// Fetches state from smart contract or other source to see if there are any actions required
+type ChainStateFetcher interface {
+	//blockHash, blockHeight uint64
+	LastBlock() (string, uint64)
+	//Returns contract ID of the chain relay contract
+	ContractId() string
 }

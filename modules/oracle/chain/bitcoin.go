@@ -2,17 +2,14 @@ package chain
 
 import (
 	"fmt"
-	"log"
 	"vsc-node/modules/oracle/p2p"
 
-	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcd/wire"
 )
 
 type bitcoinRelayer struct {
-	rpcConfig rpcclient.ConnConfig
+	rpcConfig    rpcclient.ConnConfig
+	highestBlock uint64
 }
 
 var (
@@ -20,88 +17,11 @@ var (
 )
 
 const (
-	btcdRpcUsername = "vsc-node-user"
-	btcdRpcPassword = "vsc-node-pass"
-	bctdRpcHost     = "0.0.0.0:8332"
+	btcdRpcUsername    = "vsc-node-user"
+	btcdRpcPassword    = "vsc-node-pass"
+	bctdRpcHost        = "0.0.0.0:8332"
+	headBlockThreshold = 6
 )
-
-// Init implements chainRelay.
-func (b *bitcoinRelayer) Init() error {
-	b.rpcConfig = rpcclient.ConnConfig{
-		Host:         bctdRpcHost,
-		User:         btcdRpcUsername,
-		Pass:         btcdRpcPassword,
-		HTTPPostMode: true,
-		DisableTLS:   true,
-	}
-
-	return nil
-}
-
-// GetBlock implements chainRelay.
-// Get the block of depth 6
-func (b *bitcoinRelayer) GetBlock() (*p2p.BlockRelay, error) {
-	btcdClient, err := b.connect(&b.rpcConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	defer btcdClient.Shutdown()
-
-	headBlockHeight, err := btcdClient.GetBlockCount()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get headblock: %w", err)
-	}
-
-	blockHeight := headBlockHeight - 6 // depth 6
-
-	blockHash, err := btcdClient.GetBlockHash(blockHeight)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// get block header + total fees
-	var (
-		blockChan      = make(chan result[*wire.MsgBlock], 1)
-		blockStatsChan = make(chan result[*btcjson.GetBlockStatsResult], 1)
-	)
-	defer close(blockChan)
-	defer close(blockStatsChan)
-
-	// get block header + average fee
-	go btcdClient.getBlock(blockHash, blockChan)
-	go btcdClient.getBlockStats(blockHash, blockStatsChan)
-
-	var (
-		blockQueryResult      = <-blockChan
-		blockStatsQueryResult = <-blockStatsChan
-	)
-
-	if blockQueryResult.err != nil {
-		return nil, blockQueryResult.err
-	}
-
-	if blockStatsQueryResult.err != nil {
-		return nil, blockStatsQueryResult.err
-	}
-
-	var (
-		blockHeader = blockQueryResult.ok.Header
-		avgFee      = blockStatsQueryResult.ok.AverageFee
-	)
-
-	// make block relay
-	p2pBlockRelay := &p2p.BlockRelay{
-		Hash:       blockHash.String(),
-		Height:     blockHeight,
-		PrevBlock:  blockHeader.PrevBlock.String(),
-		MerkleRoot: blockHeader.MerkleRoot.String(),
-		Timestamp:  blockHeader.Timestamp.UTC(),
-		AverageFee: avgFee,
-	}
-
-	return p2pBlockRelay, nil
-}
 
 type btcdClient struct {
 	*rpcclient.Client
@@ -117,28 +37,83 @@ func (b *bitcoinRelayer) connect(
 	return &btcdClient{cx}, nil
 }
 
-type result[T any] struct {
-	ok  T
-	err error
+// Init implements chainRelay.
+func (b *bitcoinRelayer) Init() error {
+	b.rpcConfig = rpcclient.ConnConfig{
+		Host:         bctdRpcHost,
+		User:         btcdRpcUsername,
+		Pass:         btcdRpcPassword,
+		HTTPPostMode: true,
+		DisableTLS:   true,
+	}
+	b.highestBlock = 0
+
+	return nil
 }
 
-func (b *btcdClient) getBlock(
-	blockHash *chainhash.Hash,
-	c chan<- result[*wire.MsgBlock],
-) {
-	r := result[*wire.MsgBlock]{nil, nil}
-	r.ok, r.err = b.GetBlock(blockHash)
-	c <- r
+func (b *bitcoinRelayer) TickCheck() (*chainState, error) {
+	latestBlock := uint64(1)
+	if latestBlock <= b.highestBlock {
+		return nil, nil
+	}
+	// TODO implement this:
+	// - State is fetched from contract
+	// - Node determines that there are new blocks to fetch
+
+	return &chainState{blockHeight: b.highestBlock + 1}, nil
 }
 
-func (b *btcdClient) getBlockStats(
-	blockHash *chainhash.Hash,
-	c chan<- result[*btcjson.GetBlockStatsResult],
-) {
-	var (
-		blockStatsFilter = []string{"avgfee"}
-		r                = result[*btcjson.GetBlockStatsResult]{nil, nil}
-	)
-	r.ok, r.err = b.GetBlockStats(blockHash, &blockStatsFilter)
-	c <- r
+// GetBlock implements chainRelay.
+// Get the block of depth 6
+func (b *bitcoinRelayer) GetBlock() (*p2p.BlockRelay, error) {
+	btcdClient, err := b.connect(&b.rpcConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to btcd client: %w", err)
+	}
+
+	defer btcdClient.Shutdown()
+
+	headBlockHeight, err := btcdClient.GetBlockCount()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get headblock: %w", err)
+	}
+
+	blockHeight := headBlockHeight - headBlockThreshold
+	blockHash, err := btcdClient.GetBlockHash(blockHeight)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to get block hash: blockHeight [%d], err [%w]",
+			blockHeight, err,
+		)
+	}
+
+	// get block header + average fee
+	block, err := btcdClient.GetBlock(blockHash)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to get block: hash [%s], err [%w]",
+			blockHash.String(), err,
+		)
+	}
+
+	blockStats, err := btcdClient.GetBlockStats(blockHash, &[]string{"avgfee"})
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to get block stats: hash [%s] , err [%w]",
+			blockHash.String(), err,
+		)
+	}
+
+	// make block relay
+	blockHeader := block.Header
+	p2pBlockRelay := &p2p.BlockRelay{
+		Hash:       blockHash.String(),
+		Height:     blockHeight,
+		PrevBlock:  blockHeader.PrevBlock.String(),
+		MerkleRoot: blockHeader.MerkleRoot.String(),
+		Timestamp:  blockHeader.Timestamp.UTC(),
+		AverageFee: blockStats.AverageFee,
+	}
+
+	return p2pBlockRelay, nil
 }
