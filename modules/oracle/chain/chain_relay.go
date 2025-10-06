@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -29,6 +30,7 @@ type chainState struct {
 type chainMap map[string]chainRelay
 
 type ChainOracle struct {
+	ctx    context.Context
 	logger *slog.Logger
 	//sign-btc-900000
 	//sign-ltc-81239
@@ -40,7 +42,11 @@ type ChainOracle struct {
 
 var _ aggregate.Plugin = &ChainOracle{}
 
-func New(oracleLogger *slog.Logger, conf common.IdentityConfig) *ChainOracle {
+func New(
+	ctx context.Context,
+	oracleLogger *slog.Logger,
+	conf common.IdentityConfig,
+) *ChainOracle {
 	var (
 		logger = oracleLogger.With("sub-service", "chain-relay")
 
@@ -50,6 +56,7 @@ func New(oracleLogger *slog.Logger, conf common.IdentityConfig) *ChainOracle {
 	)
 
 	return &ChainOracle{
+		ctx:               ctx,
 		logger:            logger,
 		signatureChannels: makeSignatureChannels(),
 		chainRelayers:     chainRelayers,

@@ -90,7 +90,7 @@ func New(
 		conf,
 	)
 
-	chainRelayer := chain.New(logger, conf)
+	chainRelayer := chain.New(ctx, logger, conf)
 
 	return &Oracle{
 		ctx:         ctx,

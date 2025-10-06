@@ -8,7 +8,7 @@ import (
 var errChannelExists = errors.New("channel exists")
 
 type signatureMessage struct {
-	sig string
+	signature string
 }
 
 type signatureChannels struct {
@@ -36,4 +36,14 @@ func (s *signatureChannels) makeSession(
 	s.chanMap[sessionID] = make(chan signatureMessage, 8)
 
 	return s.chanMap[sessionID], nil
+}
+
+func (s *signatureChannels) clearMap() {
+	s.rwLock.Lock()
+	defer s.rwLock.Unlock()
+
+	for k := range s.chanMap {
+		close(s.chanMap[k])
+	}
+	s.chanMap = make(map[string]chan signatureMessage)
 }
