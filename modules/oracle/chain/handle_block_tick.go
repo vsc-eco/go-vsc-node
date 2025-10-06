@@ -2,12 +2,9 @@ package chain
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"math"
+	"sync"
 	"time"
 	"vsc-node/modules/oracle/p2p"
-	"vsc-node/modules/oracle/threadsafe"
 )
 
 // HandleBlockTick implements oracle.BlockTickHandler.
@@ -28,8 +25,6 @@ func (o *ChainOracle) HandleBlockTick(
 	// - That means the latest block on BTC mainnet is atleast 3 confirmations
 	//   higher
 	// - Create the transaction structure with the block headers to submit
-	// - Ask P2P channels for signatures for the transaction
-	// - Receiving node will receive request to create transaction on VSC mainnet
 	// - Receiving node will do the same check as above, aka verify that new
 	//   blocks must be submitted
 	// - If true, then sign the exact same transaction and return signature
@@ -41,6 +36,7 @@ func (o *ChainOracle) HandleBlockTick(
 	var (
 		chainDataPool     = o.fetchAllBlocks()
 		signatureRequests = make([]chainRelayMessage, 0, len(chainDataPool))
+		signatureMap      = make(map[string][]signatureMessage)
 	)
 	for _, chainSession := range chainDataPool {
 		signatureRequest, err := makeSignatureRequestMessage(
@@ -59,130 +55,70 @@ func (o *ChainOracle) HandleBlockTick(
 		}
 
 		signatureRequests = append(signatureRequests, *signatureRequest)
+		signatureMap[chainSession.sessionID] = make([]signatureMessage, 0)
 	}
 
 	// broadcast signature requests + collect signatures
-	signatureResponses := make([]any , len(signatureRequests))
-	for i, signatureRequest := range signatureRequests {
-		if err := p2pSpec.Broadcast(p2p.MsgChainRelay, signatureRequest)
-	}
+	// - Ask P2P channels for signatures for the transaction
+	// - Receiving node will receive request to create transaction on VSC mainnet
+	signatureMapMtx := &sync.Mutex{}
+	ctx, cancel := context.WithTimeout(o.ctx, 10*time.Second)
+	defer cancel()
 
-	var handler chainRelayHandler
-	if signal.IsProducer {
-		handler = &chainRelayProducer{o, p2pSpec}
-	} else {
-		handler = &chainRelayWitness{o, p2pSpec}
-	}
+	for i := range signatureRequests {
+		sigRequest := &signatureRequests[i]
+		sigChan, err := o.signatureChannels.makeSession(sigRequest.SessionID)
+		if err != nil {
+			o.logger.Error("fialed to make signature session",
+				"sessionID", sigRequest.SessionID,
+				"err", err,
+			)
+			continue
+		}
 
-	if err := handler.handle(signal, chainSessions); err != nil {
-		o.logger.Error(
-			"failed to process chain relay tick interval",
-			"is-producer", signal.IsProducer,
-			"is-witness", signal.IsWitness,
+		if err := p2pSpec.Broadcast(p2p.MsgChainRelay, sigRequest); err != nil {
+			o.logger.Error(
+				"failed to broadcast signature request",
+				"sessionID", sigRequest.SessionID,
+				"err", err,
+			)
+			continue
+		}
+
+		go collectSignature(
+			ctx,
+			signatureMapMtx,
+			sigChan,
+			sigRequest.SessionID,
+			signatureMap,
 		)
 	}
-}
 
-// chain relay producer
-
-type chainRelayProducer struct {
-	*ChainOracle
-	p2p.OracleVscSpec
-}
-
-// handle implements chainRelayHandler.
-func (c *chainRelayProducer) handle(
-	sig p2p.BlockTickSignal,
-	blockMap map[string]p2p.BlockRelay,
-) error {
-
-	// endnlsadflkdsjflksjdlf
-	// broadcast block
-	oracleBlock, err := p2p.MakeOracleBlock(
-		c.conf.Get().HiveUsername,
-		c.conf.Get().HiveActiveKey,
-		blockMap,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create oracle block")
+	<-ctx.Done()
+	if err := ctx.Err(); err != nil {
+		o.logger.Error("chainOracle context error", "err", err)
+		return
 	}
 
-	if err := c.Broadcast(p2p.MsgChainRelay, oracleBlock); err != nil {
-		return fmt.Errorf("failed to broadcast oracle block: %w", err)
-	}
-
-	// collect and verify signatures
-	c.logger.Debug("collecting signature", "block-id", oracleBlock.ID)
-
-	sigThreshold := int(math.Ceil(float64(len(sig.ElectedMembers)) * 2.0 / 3.0))
-	oracleBlock.Signatures = make([]string, 0, sigThreshold)
-	collector := c.signatureCollector(oracleBlock, sigThreshold)
-
-	// room for network latency
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err = c.signatureBuf.Collect(ctx, collector); err != nil {
-		return errors.New("failed to meet signature threshold")
-	}
-
-	return c.SubmitToContract(oracleBlock)
+	o.signatureChannels.clearMap()
 }
 
-func (c *chainRelayProducer) signatureCollector(
-	oracleBlock *p2p.OracleBlock,
-	sigThreshold int,
-) threadsafe.CollectFunc[*p2p.OracleBlock] {
-	const earlyReturn = false
+func collectSignature(
+	ctx context.Context,
+	mtx *sync.Mutex,
+	sigChan <-chan signatureMessage,
+	sessionID string,
+	signatureMap map[string][]signatureMessage,
+) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
 
-	return func(ob *p2p.OracleBlock) bool {
-		if len(ob.Signatures) != 1 {
-			return earlyReturn
+		case msg := <-sigChan:
+			mtx.Lock()
+			signatureMap[sessionID] = append(signatureMap[sessionID], msg)
+			mtx.Unlock()
 		}
-
-		sig := ob.Signatures[0]
-		if err := c.ValidateSignature(oracleBlock, sig); err != nil {
-			c.logger.Error(
-				"failed to validate signature",
-				"block-id", oracleBlock.ID,
-				"err", err, "signature", sig,
-			)
-			return earlyReturn
-		}
-
-		oracleBlock.Signatures = append(oracleBlock.Signatures, sig)
-
-		return len(oracleBlock.Signatures) >= sigThreshold
 	}
-}
-
-// chain relay witness
-
-type chainRelayWitness struct {
-	*ChainOracle
-	p2p.OracleVscSpec
-}
-
-// handle implements chainRelayHandler.
-func (c *chainRelayWitness) handle(
-	sig p2p.BlockTickSignal,
-	localBlockMap map[string]p2p.BlockRelay,
-) error {
-	// room for network latency
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	c.newBlockBuf.Collect(ctx, func(ob *p2p.OracleBlock) bool {
-		return false
-	})
-
-	return nil
-}
-
-// Fetches state from smart contract or other source to see if there are any actions required
-type ChainStateFetcher interface {
-	//blockHash, blockHeight uint64
-	LastBlock() (string, uint64)
-	//Returns contract ID of the chain relay contract
-	ContractId() string
 }
