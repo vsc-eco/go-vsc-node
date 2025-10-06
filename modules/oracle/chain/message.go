@@ -28,7 +28,7 @@ var (
 	errInvalidSessionID = errors.New("invalid session ID")
 )
 
-type chainRelayMessage struct {
+type chainOracleMessage struct {
 	MessageType messageType     `json:"message_type"`
 	SessionID   string          `json:"session_id"`
 	Payload     json.RawMessage `json:"data"`
@@ -38,7 +38,7 @@ func makeSignatureRequestMessage(
 	msgType messageType,
 	sessionID string,
 	chainData any,
-) (*chainRelayMessage, error) {
+) (*chainOracleMessage, error) {
 	if len(sessionID) == 0 {
 		return nil, errInvalidSessionID
 	}
@@ -48,7 +48,7 @@ func makeSignatureRequestMessage(
 		return nil, err
 	}
 
-	msg := &chainRelayMessage{
+	msg := &chainOracleMessage{
 		MessageType: msgType,
 		SessionID:   sessionID,
 		Payload:     dataBytes,

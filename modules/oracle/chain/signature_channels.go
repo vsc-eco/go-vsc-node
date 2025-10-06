@@ -5,10 +5,14 @@ import (
 	"sync"
 )
 
-var errChannelExists = errors.New("channel exists")
+var (
+	errChannelExists  = errors.New("channel exists")
+	errInvalidSession = errors.New("invalid session")
+	errChannelFull    = errors.New("channel full")
+)
 
 type signatureMessage struct {
-	signature string
+	Signature string `json:"signature,omitempty"`
 }
 
 type signatureChannels struct {
@@ -36,6 +40,26 @@ func (s *signatureChannels) makeSession(
 	s.chanMap[sessionID] = make(chan signatureMessage, 8)
 
 	return s.chanMap[sessionID], nil
+}
+
+func (s *signatureChannels) receiveSignature(
+	sessionID string,
+	msg signatureMessage,
+) error {
+	s.rwLock.RLock()
+	defer s.rwLock.RUnlock()
+
+	c, ok := s.chanMap[sessionID]
+	if !ok {
+		return errInvalidSession
+	}
+
+	select {
+	case c <- msg:
+		return nil
+	default:
+		return errChannelFull
+	}
 }
 
 func (s *signatureChannels) clearMap() {

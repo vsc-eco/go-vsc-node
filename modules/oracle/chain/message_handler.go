@@ -1,42 +1,66 @@
 package chain
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"vsc-node/modules/oracle/httputils"
 	"vsc-node/modules/oracle/p2p"
-	"vsc-node/modules/oracle/threadsafe"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+var (
+	ErrInvalidChainOracleMessage = errors.New(
+		"invalid chain oracle message",
+	)
+	ErrInvalidChainOracleMessageType = errors.New(
+		"invalid chain oracle message type",
+	)
+)
+
 // Handle implements p2p.MessageHandler.
-func (c *ChainOracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
-	var response p2p.Msg = nil
+func (c *ChainOracle) Handle(peerID peer.ID, p2pMsg p2p.Msg) (p2p.Msg, error) {
 
-	switch msg.Code {
-	case p2p.MsgChainRelay:
-		block, err := httputils.JsonUnmarshal[p2p.OracleBlock](msg.Data)
-		if err != nil {
-			return nil, err
-		}
+	if p2pMsg.Code != p2p.MsgChainRelay {
+		return nil, ErrInvalidChainOracleMessage
+	}
 
-		if c.signatureChannels["something"] != nil {
-			ended := <-c.signatureChannels["s"]
-			//do something
-		}
-		if err := c.newBlockBuf.Consume(block); err != nil {
-			if errors.Is(err, threadsafe.ErrLockedChannel) {
-				c.logger.Debug(
-					"unable to collect and verify chain relay block in the current block interval.",
-				)
-			} else {
-				c.logger.Error("failed to collect price block", "err", err)
-			}
+	msg, err := httputils.JsonUnmarshal[chainOracleMessage](p2pMsg.Data)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to deserialize chain oracle message: from [%s], err [%e]",
+			peerID, err,
+		)
+	}
+
+	switch msg.MessageType {
+	case signatureRequest:
+		return nil, nil
+
+	case signatureResponse:
+		if err := receiveSignature(c, msg); err != nil {
+			return nil, fmt.Errorf(
+				"failed to receive signature: session ID [%s], err [%w]",
+				msg.SessionID, err,
+			)
 		}
 
 	default:
-		return nil, p2p.ErrInvalidMessageType
+		return nil, ErrInvalidChainOracleMessageType
 	}
 
-	return response, nil
+	return nil, nil
+}
+
+func receiveSignature(c *ChainOracle, msg *chainOracleMessage) error {
+	var signatureResponse signatureMessage
+	if err := json.Unmarshal(msg.Payload, &signatureResponse); err != nil {
+		return err
+	}
+
+	return c.signatureChannels.receiveSignature(
+		msg.SessionID,
+		signatureResponse,
+	)
 }

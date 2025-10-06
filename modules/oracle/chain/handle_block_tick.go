@@ -35,7 +35,7 @@ func (o *ChainOracle) HandleBlockTick(
 	// make chainDataPool and signature requests
 	var (
 		chainDataPool     = o.fetchAllBlocks()
-		signatureRequests = make([]chainRelayMessage, 0, len(chainDataPool))
+		signatureRequests = make([]chainOracleMessage, 0, len(chainDataPool))
 		signatureMap      = make(map[string][]signatureMessage)
 	)
 	for _, chainSession := range chainDataPool {
