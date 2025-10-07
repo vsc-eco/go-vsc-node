@@ -21,7 +21,7 @@ type bitcoinRelayer struct {
 const (
 	btcdRpcUsername          = "vsc-node-user"
 	btcdRpcPassword          = "vsc-node-pass"
-	btcdBlockHeightThreshold = 6
+	btcdBlockHeightThreshold = 3
 )
 
 type btcChainData struct {
@@ -140,13 +140,15 @@ func (b *bitcoinRelayer) VerifyChainData(data json.RawMessage) error {
 	}
 	defer btcdClient.Shutdown()
 
-	/*
-		// get valid block height
-		validBlockHeight, err := b.getLatestValidBlockHeight(btcdClient)
-		if err != nil {
-			return fmt.Errorf("failed to get block height: %w", err)
-		}
-	*/
+	// get valid block height, verify the peerBtcChainData has a depth of 3
+	validBlockHeight, err := b.getLatestValidBlockHeight(btcdClient)
+	if err != nil {
+		return fmt.Errorf("failed to get block height: %w", err)
+	}
+
+	if peerBtcChainData.Height > validBlockHeight {
+		return fmt.Errorf("failed to meet block threshold")
+	}
 
 	// fetch block by hash then verify peerBtcChainData
 	localBtcChainData, err := b.getBlockByHash(btcdClient, &blockHash)
