@@ -34,7 +34,7 @@ func (c *ChainOracle) Handle(peerID peer.ID, p2pMsg p2p.Msg) (p2p.Msg, error) {
 
 	switch msg.MessageType {
 	case signatureRequest:
-		signature, err := witnessChainData(&msg)
+		signature, err := witnessChainData(c, &msg)
 		if err != nil {
 			return nil, err
 		}

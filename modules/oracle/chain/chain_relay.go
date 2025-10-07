@@ -3,6 +3,7 @@ package chain
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,22 +14,34 @@ import (
 	"github.com/chebyrash/promise"
 )
 
+var (
+	// only usage is to build chain map with proper key-value for ChainOracle.chainMap
+	_chains = [...]chainRelay{
+		&bitcoinRelayer{},
+	}
+
+	_ aggregate.Plugin = &ChainOracle{}
+
+	errInvalidChainData = errors.New("invalid chain data")
+)
+
 type chainRelay interface {
 	Init() error
+	// Returns the ticker of the chain (ie, BTC for bitcoin).
 	Symbol() string
-	// checks for (optional) latest  chain state
+	// Checks for (optional) latest chain state.
 	TickCheck() (*chainState, error)
-	// fetches chaindata and serializes to raw bytes
-	ChainData() ([]byte, error)
-	// deserializes raw bytes and verify chain data from chain state
-	VerifyChainData(json.RawMessage, *chainState) error
+	// Fetches chaindata and serializes to raw bytes.
+	ChainData() (json.RawMessage, error)
+	// Deserializes and verifies the received raw bytes of the chain data.
+	// Returns errInvalidChainData to reject the received chain data, otherwise
+	// it is treated as operation error.
+	VerifyChainData(json.RawMessage) error
 }
 
 type chainState struct {
 	blockHeight uint64
 }
-
-type chainMap map[string]chainRelay
 
 type ChainOracle struct {
 	ctx    context.Context
@@ -40,14 +53,6 @@ type ChainOracle struct {
 	chainRelayers     map[string]chainRelay
 	conf              common.IdentityConfig
 }
-
-var (
-	_chains = []chainRelay{
-		&bitcoinRelayer{},
-	}
-
-	_ aggregate.Plugin = &ChainOracle{}
-)
 
 func New(
 	ctx context.Context,

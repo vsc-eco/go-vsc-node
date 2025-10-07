@@ -8,7 +8,7 @@ import (
 
 // signs off chain data and returns a signature
 func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (string, error) {
-	chainSymbol, chainState, err := parseChainSession(msg.SessionID)
+	chainSymbol, _, err := parseChainSession(msg.SessionID)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse session id: %w", err)
 	}
@@ -18,7 +18,7 @@ func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (string, error) {
 		return "", errInvalidChainSymbol
 	}
 
-	if err := chain.VerifyChainData(msg.Payload, chainState); err != nil {
+	if err := chain.VerifyChainData(msg.Payload); err != nil {
 		return "", fmt.Errorf("failed to verify chain data: %w", err)
 	}
 

@@ -31,7 +31,7 @@ func (o *PriceOracle) HandleBlockTick(
 		return
 	}
 
-	if !sig.IsWitness && !sig.IsBlockProducer {
+	if !sig.IsWitness && !sig.IsProducer {
 		return
 	}
 
@@ -41,7 +41,7 @@ func (o *PriceOracle) HandleBlockTick(
 	// make block / sign block
 	var signalHandler func(*p2p.BlockTickSignal, map[string]PricePoint) error
 
-	if sig.IsBlockProducer {
+	if sig.IsProducer {
 		priceBlockProducer := &priceBlockProducer{o, p2pSpec}
 		signalHandler = priceBlockProducer.handleSignal
 	} else if sig.IsWitness {
@@ -53,7 +53,7 @@ func (o *PriceOracle) HandleBlockTick(
 		o.logger.Error(
 			"error on broadcast price tick interval",
 			"err", err,
-			"isProducer", sig.IsBlockProducer,
+			"isProducer", sig.IsProducer,
 			"isWitness", sig.IsWitness,
 		)
 	}

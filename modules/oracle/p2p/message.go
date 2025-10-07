@@ -79,16 +79,6 @@ func (p *AveragePricePoint) UnmarshalJSON(data []byte) error {
 	return priceValidator.Struct(p)
 }
 
-// https://www.blockcypher.com/dev/bitcoin/#block
-type BlockRelay struct {
-	Hash       string    `json:"hash"        validate:"hexadecimal"`
-	Height     int64     `json:"height"`
-	PrevBlock  string    `json:"prev_block"  validate:"hexadecimal"`
-	MerkleRoot string    `json:"merkle_root" validate:"hexadecimal"`
-	Timestamp  time.Time `json:"time"`
-	AverageFee int64     `json:"average_fee"`
-}
-
 type OracleBlock struct {
 	ID            string          `json:"id"             validate:"hexadecimal"`
 	BlockProducer string          `json:"block_producer"`
