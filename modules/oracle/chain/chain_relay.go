@@ -2,6 +2,7 @@ package chain
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -19,8 +20,8 @@ type chainRelay interface {
 	TickCheck() (*chainState, error)
 	// fetches chaindata and serializes to raw bytes
 	ChainData() ([]byte, error)
-	// deserializes raw bytes and verify chain data
-	VerifyChainData([]byte) error
+	// deserializes raw bytes and verify chain data from chain state
+	VerifyChainData(json.RawMessage, *chainState) error
 }
 
 type chainState struct {
@@ -36,11 +37,17 @@ type ChainOracle struct {
 	//sign-ltc-81239
 	//sign-doge-12309245
 	signatureChannels *signatureChannels
-	chainRelayers     []chainRelay
+	chainRelayers     map[string]chainRelay
 	conf              common.IdentityConfig
 }
 
-var _ aggregate.Plugin = &ChainOracle{}
+var (
+	_chains = []chainRelay{
+		&bitcoinRelayer{},
+	}
+
+	_ aggregate.Plugin = &ChainOracle{}
+)
 
 func New(
 	ctx context.Context,
@@ -48,12 +55,13 @@ func New(
 	conf common.IdentityConfig,
 ) *ChainOracle {
 	var (
-		logger = oracleLogger.With("sub-service", "chain-relay")
-
-		chainRelayers = []chainRelay{
-			&bitcoinRelayer{},
-		}
+		logger        = oracleLogger.With("sub-service", "chain-relay")
+		chainRelayers = make(map[string]chainRelay)
 	)
+
+	for _, c := range _chains {
+		chainRelayers[strings.ToUpper(c.Symbol())] = c
+	}
 
 	return &ChainOracle{
 		ctx:               ctx,
@@ -151,14 +159,8 @@ func fetchChain(chain chainRelay) (*chainSession, error) {
 		return nil, fmt.Errorf("failed to get chain data: %w", err)
 	}
 
-	sessionID := fmt.Sprintf(
-		"%s-%d",
-		strings.ToLower(chain.Symbol()),
-		latestChainState.blockHeight,
-	)
-
 	chainSession := &chainSession{
-		sessionID: sessionID,
+		sessionID: makeChainSession(chain, latestChainState),
 		chainData: chainData,
 	}
 

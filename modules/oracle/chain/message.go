@@ -34,7 +34,7 @@ type chainOracleMessage struct {
 	Payload     json.RawMessage `json:"data"`
 }
 
-func makeSignatureRequestMessage(
+func makeChainOracleMessage(
 	msgType messageType,
 	sessionID string,
 	chainData any,

@@ -39,7 +39,7 @@ func (o *ChainOracle) HandleBlockTick(
 		signatureMap      = make(map[string][]signatureMessage)
 	)
 	for _, chainSession := range chainDataPool {
-		signatureRequest, err := makeSignatureRequestMessage(
+		signatureRequest, err := makeChainOracleMessage(
 			signatureRequest,
 			chainSession.sessionID,
 			chainSession.chainData,
@@ -62,8 +62,9 @@ func (o *ChainOracle) HandleBlockTick(
 	// - Ask P2P channels for signatures for the transaction
 	// - Receiving node will receive request to create transaction on VSC mainnet
 	signatureMapMtx := &sync.Mutex{}
-	ctx, cancel := context.WithTimeout(o.ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(o.ctx, 30*time.Second)
 	defer cancel()
+	defer o.signatureChannels.clearMap()
 
 	for i := range signatureRequests {
 		sigRequest := &signatureRequests[i]
@@ -100,7 +101,6 @@ func (o *ChainOracle) HandleBlockTick(
 		return
 	}
 
-	o.signatureChannels.clearMap()
 }
 
 func collectSignature(
