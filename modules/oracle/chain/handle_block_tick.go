@@ -61,10 +61,11 @@ func (o *ChainOracle) HandleBlockTick(
 	// broadcast signature requests + collect signatures
 	// - Ask P2P channels for signatures for the transaction
 	// - Receiving node will receive request to create transaction on VSC mainnet
+	defer o.signatureChannels.clearMap()
+
 	signatureMapMtx := &sync.Mutex{}
 	ctx, cancel := context.WithTimeout(o.ctx, 30*time.Second)
 	defer cancel()
-	defer o.signatureChannels.clearMap()
 
 	for i := range signatureRequests {
 		sigRequest := &signatureRequests[i]

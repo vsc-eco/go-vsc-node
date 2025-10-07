@@ -45,6 +45,8 @@ services:
     command: -rpcuser='vsc-node-user' -rpcpassword='vsc-node-pass' -rpcallowip=0.0.0.0/0 -rpcbind=0.0.0.0 -prune=550 -dbcache=2048 -server=1 -listen=1
     volumes:
       - ./.btc-data:/home/bitcoin/.bitcoin
+    ports:
+      - 8332:8332 # rpc port
 volumes:
   db: {}
 networks:

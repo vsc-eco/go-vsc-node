@@ -22,7 +22,8 @@ var (
 
 	_ aggregate.Plugin = &ChainOracle{}
 
-	errInvalidChainData = errors.New("invalid chain data")
+	errInvalidChainData   = errors.New("invalid chain data")
+	errInvalidChainSymbol = errors.New("invalid chain symbol")
 )
 
 type chainRelay interface {
@@ -32,10 +33,8 @@ type chainRelay interface {
 	// Checks for (optional) latest chain state.
 	TickCheck() (*chainState, error)
 	// Fetches chaindata and serializes to raw bytes.
-	ChainData() (json.RawMessage, error)
+	ChainData(*chainState) (json.RawMessage, error)
 	// Deserializes and verifies the received raw bytes of the chain data.
-	// Returns errInvalidChainData to reject the received chain data, otherwise
-	// it is treated as operation error.
 	VerifyChainData(json.RawMessage) error
 }
 
@@ -159,15 +158,37 @@ func fetchChain(chain chainRelay) (*chainSession, error) {
 		return nil, nil
 	}
 
-	chainData, err := chain.ChainData()
+	chainData, err := chain.ChainData(latestChainState)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get chain data: %w", err)
 	}
 
 	chainSession := &chainSession{
-		sessionID: makeChainSession(chain, latestChainState),
+		sessionID: makeChainSessionID(chain, latestChainState),
 		chainData: chainData,
 	}
 
 	return chainSession, nil
+}
+
+func makeChainSessionID(chain chainRelay, chainState *chainState) string {
+	return fmt.Sprintf("%s-%d", chain.Symbol(), chainState.blockHeight)
+
+}
+
+func parseChainSessionID(sessionID string) (string, *chainState, error) {
+	var (
+		chainSymbol string
+		blockHeight uint64
+	)
+
+	if _, err := fmt.Sscanf(sessionID, "%s-%d", &chainSymbol, &blockHeight); err != nil {
+		return "", nil, err
+	}
+
+	chainState := &chainState{
+		blockHeight: blockHeight,
+	}
+
+	return chainSymbol, chainState, nil
 }
