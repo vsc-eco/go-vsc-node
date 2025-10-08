@@ -20,10 +20,8 @@ var (
 	)
 )
 
-type OracleVscSpec interface {
+type OracleP2PSpec interface {
 	Broadcast(MsgCode, any) error
-	SubmitToContract(*OracleBlock) error
-	ValidateSignature(*OracleBlock, string) error
 }
 
 type MessageHandler interface {

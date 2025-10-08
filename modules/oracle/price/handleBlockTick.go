@@ -18,7 +18,7 @@ const float64Epsilon = 1e-9
 // HandleBlockTick implements oracle.BlockTickHandler.
 func (o *PriceOracle) HandleBlockTick(
 	sig p2p.BlockTickSignal,
-	p2pSpec p2p.OracleVscSpec,
+	p2pSpec p2p.OracleP2PSpec,
 ) {
 	o.logger.Debug("broadcast price block tick.")
 
@@ -134,7 +134,7 @@ func pricePointCollector(
 
 type priceBlockProducer struct {
 	*PriceOracle
-	p2p.OracleVscSpec
+	p2p.OracleP2PSpec
 }
 
 type aggregatedPricePoints struct {
@@ -211,7 +211,7 @@ var errBlockExpired = errors.New("block expired")
 
 type priceBlockWitness struct {
 	*PriceOracle
-	p2p.OracleVscSpec
+	p2p.OracleP2PSpec
 }
 
 func (p *priceBlockWitness) handleSignal(

@@ -3,7 +3,6 @@ package oracle
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -13,7 +12,6 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/oracle/chain"
 	"vsc-node/modules/oracle/p2p"
-	"vsc-node/modules/oracle/price"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	"vsc-node/modules/vstream"
@@ -39,7 +37,7 @@ var (
 	watchSymbols          = []string{"BTC", "ETH", "LTC"}
 	errInvalidMessageType = errors.New("invalid message type")
 
-	_ p2p.OracleVscSpec = &Oracle{}
+	_ p2p.OracleP2PSpec = &Oracle{}
 )
 
 type Oracle struct {
@@ -54,7 +52,7 @@ type Oracle struct {
 	vStream     *vstream.VStream
 	stateEngine *stateEngine.StateEngine
 
-	priceOracle *price.PriceOracle
+	// priceOracle *price.PriceOracle
 	chainOracle *chain.ChainOracle
 }
 
@@ -81,14 +79,14 @@ func New(
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	priceOracle := price.New(
-		ctx,
-		logger,
-		userCurrency,
-		priceOraclePollInterval,
-		watchSymbols,
-		conf,
-	)
+	// priceOracle := price.New(
+	// 	ctx,
+	// 	logger,
+	// 	userCurrency,
+	// 	priceOraclePollInterval,
+	// 	watchSymbols,
+	// 	conf,
+	// )
 
 	chainRelayer := chain.New(ctx, logger, conf)
 
@@ -102,7 +100,7 @@ func New(
 		vStream:     vstream,
 		stateEngine: stateEngine,
 		logger:      logger,
-		priceOracle: priceOracle,
+		// priceOracle: priceOracle,
 		chainOracle: chainRelayer,
 	}
 }
@@ -196,8 +194,8 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 	var handler p2p.MessageHandler
 
 	switch msg.Code {
-	case p2p.MsgPriceBroadcast, p2p.MsgPriceSignature, p2p.MsgPriceBlock:
-		handler = o.priceOracle
+	// case p2p.MsgPriceBroadcast, p2p.MsgPriceSignature, p2p.MsgPriceBlock:
+	// 	handler = o.priceOracle
 
 	case p2p.MsgChainRelay:
 		handler = o.chainOracle
@@ -207,16 +205,4 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 	}
 
 	return handler.Handle(peerID, msg)
-}
-
-// SubmitToContract implements p2p.OracleVscSpec.
-func (o *Oracle) SubmitToContract(*p2p.OracleBlock) error {
-	fmt.Println("Oracle.SubmitToContract not implemented")
-	return nil
-}
-
-// ValidateSignature implements p2p.OracleVscSpec.
-func (o *Oracle) ValidateSignature(*p2p.OracleBlock, string) error {
-	fmt.Println("Oracle.ValidateSignature not implemented")
-	return nil
 }
