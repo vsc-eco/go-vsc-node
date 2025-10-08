@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"vsc-node/modules/oracle/p2p"
 
+	"github.com/go-playground/validator/v10"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -15,6 +16,10 @@ var (
 	)
 	ErrInvalidChainOracleMessageType = errors.New(
 		"invalid chain oracle message type",
+	)
+
+	signatureMessageValidator = validator.New(
+		validator.WithRequiredStructEnabled(),
 	)
 )
 
@@ -68,7 +73,9 @@ func receiveSignature(c *ChainOracle, msg *chainOracleMessage) error {
 		return err
 	}
 
-	// TODO: validate the signature message (adding a validator)
+	if err := signatureMessageValidator.Struct(&signatureResponse); err != nil {
+		return fmt.Errorf("invalid signature message: %w", err)
+	}
 
 	return c.signatureChannels.receiveSignature(
 		msg.SessionID,

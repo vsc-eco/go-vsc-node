@@ -41,7 +41,7 @@ func MakeOracleMessage(code MsgCode, data any) (Msg, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &oracleMessage{code, jbytes}, nil
+	return &oracleMessage{Code: code, Data: json.RawMessage(jbytes)}, nil
 }
 
 type ObservePricePoint struct {

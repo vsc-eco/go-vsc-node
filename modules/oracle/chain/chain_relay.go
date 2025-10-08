@@ -43,11 +43,8 @@ type chainState struct {
 }
 
 type ChainOracle struct {
-	ctx    context.Context
-	logger *slog.Logger
-	//sign-btc-900000
-	//sign-ltc-81239
-	//sign-doge-12309245
+	ctx               context.Context
+	logger            *slog.Logger
 	signatureChannels *signatureChannels
 	chainRelayers     map[string]chainRelay
 	conf              common.IdentityConfig
@@ -58,11 +55,9 @@ func New(
 	oracleLogger *slog.Logger,
 	conf common.IdentityConfig,
 ) *ChainOracle {
-	var (
-		logger        = oracleLogger.With("sub-service", "chain-relay")
-		chainRelayers = make(map[string]chainRelay)
-	)
+	logger := oracleLogger.With("sub-service", "chain-relay")
 
+	chainRelayers := make(map[string]chainRelay)
 	for _, c := range _chains {
 		chainRelayers[strings.ToUpper(c.Symbol())] = c
 	}
@@ -78,10 +73,9 @@ func New(
 
 // Init implements aggregate.Plugin.
 func (c *ChainOracle) Init() error {
-	// locking states
-
 	// initializes market api's
 	for symbol, chainRelayer := range c.chainRelayers {
+		c.logger.Debug("initializing chain relay: " + symbol)
 		if err := chainRelayer.Init(); err != nil {
 			return fmt.Errorf(
 				"failed to initialize chainrelayer %s: %w",
