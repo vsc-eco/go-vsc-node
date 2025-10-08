@@ -19,7 +19,7 @@ var (
 )
 
 type BlockTickHandler interface {
-	HandleBlockTick(p2p.BlockTickSignal, p2p.OracleVscSpec)
+	HandleBlockTick(p2p.BlockTickSignal, p2p.OracleP2PSpec)
 }
 
 func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
@@ -57,11 +57,11 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	)
 
 	var (
-		username                = o.conf.Get().HiveUsername
-		isAvgPriceBroadcastTick = *headHeight%priceOracleBroadcastInterval == 0
-		isChainRelayTick        = *headHeight%chainRelayInterval == 0
-		isWitness               = slices.Contains(memberAccounts, username)
-		isProducer              = witnessSlot != nil &&
+		username = o.conf.Get().HiveUsername
+		// isAvgPriceBroadcastTick = *headHeight%priceOracleBroadcastInterval == 0
+		isChainRelayTick = *headHeight%chainRelayInterval == 0
+		isWitness        = slices.Contains(memberAccounts, username)
+		isProducer       = witnessSlot != nil &&
 			witnessSlot.Account == username
 	)
 
@@ -71,9 +71,9 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 		ElectedMembers: members,
 	}
 
-	if isAvgPriceBroadcastTick {
-		go o.priceOracle.HandleBlockTick(signal, o)
-	}
+	// if isAvgPriceBroadcastTick {
+	// 	go o.priceOracle.HandleBlockTick(signal, o)
+	// }
 
 	if isChainRelayTick {
 		go o.chainOracle.HandleBlockTick(signal, o)
