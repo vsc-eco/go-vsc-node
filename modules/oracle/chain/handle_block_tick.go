@@ -2,10 +2,22 @@ package chain
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 	"vsc-node/modules/oracle/p2p"
 )
+
+type session struct {
+	chainData  []byte
+	signatures []string
+}
+
+type vscTransaction struct {
+	sessionID  string
+	chainData  []byte
+	signatures []string
+}
 
 // HandleBlockTick implements oracle.BlockTickHandler.
 func (o *ChainOracle) HandleBlockTick(
@@ -22,8 +34,6 @@ func (o *ChainOracle) HandleBlockTick(
 	// - Using the contract state of latest block in combination with latest
 	//   block on Bitcoin mainnet
 	// - Assuming this is true.
-	// - That means the latest block on BTC mainnet is atleast 3 confirmations
-	//   higher
 	// - Create the transaction structure with the block headers to submit
 	// - Receiving node will do the same check as above, aka verify that new
 	//   blocks must be submitted
@@ -36,7 +46,7 @@ func (o *ChainOracle) HandleBlockTick(
 	var (
 		chainDataPool     = o.fetchAllBlocks()
 		signatureRequests = make([]chainOracleMessage, 0, len(chainDataPool))
-		signatureMap      = make(map[string][]signatureMessage)
+		sessionMap        = make(map[string]session)
 	)
 	for _, chainSession := range chainDataPool {
 		signatureRequest, err := makeChainOracleMessage(
@@ -55,7 +65,10 @@ func (o *ChainOracle) HandleBlockTick(
 		}
 
 		signatureRequests = append(signatureRequests, *signatureRequest)
-		signatureMap[chainSession.sessionID] = make([]signatureMessage, 0)
+		sessionMap[chainSession.sessionID] = session{
+			chainData:  chainSession.chainData,
+			signatures: make([]string, 0, 128),
+		}
 	}
 
 	// broadcast signature requests + collect signatures
@@ -63,7 +76,7 @@ func (o *ChainOracle) HandleBlockTick(
 	// - Receiving node will receive request to create transaction on VSC mainnet
 	defer o.signatureChannels.clearMap()
 
-	signatureMapMtx := &sync.Mutex{}
+	sessionMapMtx := &sync.Mutex{}
 	ctx, cancel := context.WithTimeout(o.ctx, 30*time.Second)
 	defer cancel()
 
@@ -89,19 +102,64 @@ func (o *ChainOracle) HandleBlockTick(
 
 		go collectSignature(
 			ctx,
-			signatureMapMtx,
+			sessionMapMtx,
 			sigChan,
 			sigRequest.SessionID,
-			signatureMap,
+			sessionMap,
 		)
 	}
 
 	<-ctx.Done()
-	if err := ctx.Err(); err != nil {
-		o.logger.Error("chainOracle context error", "err", err)
-		return
+
+	// validate signatures + submit transaction
+	for sessionID, session := range sessionMap {
+		tx, err := makeTransaction(sessionID, &session)
+		if err != nil {
+			o.logger.Error(
+				"failed to create VSC transaction",
+				"session", sessionID,
+				"err", err,
+			)
+			continue
+		}
+
+		if err := submitToContract(tx); err != nil {
+			o.logger.Error(
+				"failed to submit contract",
+				"session", sessionID,
+				"err", err,
+			)
+			continue
+		}
 	}
 
+}
+
+func submitToContract(tx *vscTransaction) error {
+	if tx == nil {
+		return errors.New("nil transaction")
+	}
+
+	// TODO: submit transaction
+
+	return nil
+}
+
+// validate signatures + make transaction
+func makeTransaction(
+	sessionID string,
+	session *session,
+) (*vscTransaction, error) {
+	// TODO: verify signatures with bls circuit
+
+	// create transaction
+	tx := &vscTransaction{
+		sessionID:  sessionID,
+		chainData:  session.chainData,
+		signatures: session.signatures,
+	}
+
+	return tx, nil
 }
 
 func collectSignature(
@@ -109,7 +167,7 @@ func collectSignature(
 	mtx *sync.Mutex,
 	sigChan <-chan signatureMessage,
 	sessionID string,
-	signatureMap map[string][]signatureMessage,
+	sessionMap map[string]session,
 ) {
 	for {
 		select {
@@ -118,7 +176,9 @@ func collectSignature(
 
 		case msg := <-sigChan:
 			mtx.Lock()
-			signatureMap[sessionID] = append(signatureMap[sessionID], msg)
+			session := sessionMap[sessionID]
+			session.signatures = append(session.signatures, msg.Signature)
+			sessionMap[sessionID] = session
 			mtx.Unlock()
 		}
 	}
