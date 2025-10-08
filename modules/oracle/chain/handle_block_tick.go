@@ -2,14 +2,16 @@ package chain
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"sync"
 	"time"
 	"vsc-node/modules/oracle/p2p"
+	transactionpool "vsc-node/modules/transaction-pool"
 )
 
 type session struct {
-	chainData  []byte
+	vscTxShell transactionpool.VSCTransactionShell
+	chainData  []string
 	signatures []string
 }
 
@@ -19,10 +21,28 @@ type vscTransaction struct {
 	signatures []string
 }
 
+func makeTransaction(
+	contractId *string,
+	payload []string,
+) transactionpool.VSCTransactionShell {
+	ops := make([]transactionpool.VSCTransactionOp, 0)
+	return transactionpool.VSCTransactionShell{
+		Headers: transactionpool.VSCTransactionHeader{
+			Nonce:         0,
+			RequiredAuths: []string{"did:vsc:consensus"},
+			RcLimit:       500,
+			NetId:         "vsc-mainnet",
+		},
+		Type:    "vsc-tx",
+		Version: "0.2",
+		Tx:      ops,
+	}
+}
+
 // HandleBlockTick implements oracle.BlockTickHandler.
 func (o *ChainOracle) HandleBlockTick(
 	signal p2p.BlockTickSignal,
-	p2pSpec p2p.OracleVscSpec,
+	p2pSpec p2p.OracleP2PSpec,
 ) {
 	// NOTE: when the node is the not the producer, it is not a witness. The
 	// action of witness is triggered for incoming p2p message.
@@ -43,30 +63,56 @@ func (o *ChainOracle) HandleBlockTick(
 	//   for submission on mainnet
 
 	// make chainDataPool and signature requests
-	var (
-		chainDataPool     = o.fetchAllBlocks()
-		signatureRequests = make([]chainOracleMessage, 0, len(chainDataPool))
-		sessionMap        = make(map[string]session)
-	)
-	for _, chainSession := range chainDataPool {
-		signatureRequest, err := makeChainOracleMessage(
-			signatureRequest,
-			chainSession.sessionID,
-			chainSession.chainData,
-		)
 
+	chainStatuses := o.fetchAllStatuses()
+	signatureRequests := make([]chainOracleMessage, 0, len(chainStatuses))
+	sessionMap := make(map[string]session)
+
+	for _, chainStatus := range chainStatuses {
+		if !chainStatus.newBlocksToSubmit {
+			continue
+		}
+
+		sessionID, err := makeChainSessionID(&chainStatus)
 		if err != nil {
 			o.logger.Error(
-				"failed to create signature requests",
-				"sessionID", chainSession.sessionID,
+				"failed to create session ID",
+				"block count", len(chainStatus.chainData),
 				"err", err,
 			)
 			continue
 		}
 
+		signatureRequest, err := makeChainOracleMessage(
+			signatureRequest,
+			sessionID,
+			chainStatus.chainData,
+		)
+		if err != nil {
+			o.logger.Error(
+				"failed to create signature requests",
+				"sessionID", sessionID,
+				"err", err,
+			)
+			continue
+		}
+
+		payload, err := makeTransactionPayload(chainStatus.chainData)
+		if err != nil {
+			o.logger.Error(
+				"failed to make transaction payload",
+				"sessionID", sessionID,
+				"err", err,
+			)
+			continue
+		}
+
+		tx := makeTransaction(chainStatus.contractId, payload)
 		signatureRequests = append(signatureRequests, *signatureRequest)
-		sessionMap[chainSession.sessionID] = session{
-			chainData:  chainSession.chainData,
+
+		sessionMap[sessionID] = session{
+			vscTxShell: tx,
+			chainData:  payload,
 			signatures: make([]string, 0, 128),
 		}
 	}
@@ -113,53 +159,24 @@ func (o *ChainOracle) HandleBlockTick(
 
 	// validate signatures + submit transaction
 	for sessionID, session := range sessionMap {
-		tx, err := makeTransaction(sessionID, &session)
-		if err != nil {
-			o.logger.Error(
-				"failed to create VSC transaction",
-				"session", sessionID,
-				"err", err,
-			)
-			continue
-		}
-
-		if err := submitToContract(tx); err != nil {
-			o.logger.Error(
-				"failed to submit contract",
-				"session", sessionID,
-				"err", err,
-			)
-			continue
-		}
+		fmt.Println(sessionID, session)
 	}
 
-}
-
-func submitToContract(tx *vscTransaction) error {
-	if tx == nil {
-		return errors.New("nil transaction")
-	}
-
-	// TODO: submit transaction
-
-	return nil
 }
 
 // validate signatures + make transaction
-func makeTransaction(
-	sessionID string,
-	session *session,
-) (*vscTransaction, error) {
-	// TODO: verify signatures with bls circuit
+func makeTransactionPayload(blocks []chainBlock) ([]string, error) {
+	payload := make([]string, len(blocks))
+	var err error
 
-	// create transaction
-	tx := &vscTransaction{
-		sessionID:  sessionID,
-		chainData:  session.chainData,
-		signatures: session.signatures,
+	for i, block := range blocks {
+		payload[i], err = block.Serialize()
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	return tx, nil
+	return payload, nil
 }
 
 func collectSignature(

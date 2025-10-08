@@ -2,12 +2,10 @@ package chain
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 
@@ -31,11 +29,18 @@ type chainRelay interface {
 	// Returns the ticker of the chain (ie, BTC for bitcoin).
 	Symbol() string
 	// Checks for (optional) latest chain state.
-	TickCheck() (*chainState, error)
+	GetLatestValidHeight() (chainState, error)
+	GetContractState() (chainState, error)
 	// Fetches chaindata and serializes to raw bytes.
-	ChainData(*chainState) (json.RawMessage, error)
+	ChainData(startBlockHeight uint64, count uint64) ([]chainBlock, error)
 	// Deserializes and verifies the received raw bytes of the chain data.
-	VerifyChainData(json.RawMessage) error
+	// VerifyChainData(json.RawMessage) error
+}
+
+type chainBlock interface {
+	Type() string //symbol of block network
+	Serialize() (string, error)
+	BlockHeight() uint64
 }
 
 type chainState struct {
@@ -99,90 +104,96 @@ func (c *ChainOracle) Stop() error {
 	return nil
 }
 
-func (c *ChainOracle) fetchAllBlocks() []chainSession {
-	chainSessionChan := make(chan chainSession, len(c.chainRelayers))
-	defer close(chainSessionChan)
-
-	wg := &sync.WaitGroup{}
-	wg.Add(len(c.chainRelayers))
+func (c *ChainOracle) fetchAllStatuses() []chainSession {
+	chainSessions := make([]chainSession, 0)
 
 	for _, chain := range c.chainRelayers {
-		go func(chain chainRelay) {
-			defer wg.Done()
+		chainSession, err := fetchChainStatus(chain)
+		if err != nil {
+			c.logger.Error(
+				"failed to get chain data.",
+				"symbol", chain.Symbol(), "err", err,
+			)
+			continue
+		}
 
-			chainSession, err := fetchChain(chain)
-			if err != nil {
-				c.logger.Error(
-					"failed to get chain data.",
-					"symbol", chain.Symbol(), "err", err,
-				)
-				return
-			}
-
-			if chainSession != nil {
-				chainSessionChan <- *chainSession
-			}
-		}(chain)
+		if chainSession != nil {
+			chainSessions = append(chainSessions, *chainSession)
+		}
 	}
 
-	wg.Wait()
-
-	// collection chainSession
-	buf := make([]chainSession, 0, len(c.chainRelayers))
-	for session := range chainSessionChan {
-		buf = append(buf, session)
-	}
-
-	return buf
+	return chainSessions
 }
 
 type chainSession struct {
-	sessionID string
-	chainData []byte
+	symbol            string
+	contractId        *string
+	chainData         []chainBlock
+	newBlocksToSubmit bool
 }
 
-// returns nil if no new state exists
-func fetchChain(chain chainRelay) (*chainSession, error) {
-	latestChainState, err := chain.TickCheck()
+func fetchChainStatus(chain chainRelay) (*chainSession, error) {
+	latestChainState, err := chain.GetLatestValidHeight()
 	if err != nil {
 		return nil, fmt.Errorf("failed to check latest state: %w", err)
 	}
+	//
 
-	if latestChainState == nil {
+	contractState, err := chain.GetContractState()
+	if err != nil {
+		return nil, err
+	}
+
+	if latestChainState.blockHeight <= contractState.blockHeight {
 		return nil, nil
 	}
 
-	chainData, err := chain.ChainData(latestChainState)
+	chainData, err := chain.ChainData(contractState.blockHeight+1, 100)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get chain data: %w", err)
 	}
 
+	c := "vsc1BRZLx1"
 	chainSession := &chainSession{
-		sessionID: makeChainSessionID(chain, latestChainState),
-		chainData: chainData,
+		symbol:            chain.Symbol(),
+		contractId:        &c,
+		chainData:         chainData,
+		newBlocksToSubmit: true,
 	}
 
 	return chainSession, nil
 }
 
-func makeChainSessionID(chain chainRelay, chainState *chainState) string {
-	return fmt.Sprintf("%s-%d", chain.Symbol(), chainState.blockHeight)
+func makeChainSessionID(c *chainSession) (string, error) {
+	if len(c.chainData) == 0 {
+		return "", errors.New("chainData not supplied")
+	}
 
+	startBlock := c.chainData[0].BlockHeight()
+	endBlock := c.chainData[len(c.chainData)-1].BlockHeight()
+
+	id := fmt.Sprintf("%s-%d-%d", c.symbol, startBlock, endBlock)
+	return id, nil
 }
 
-func parseChainSessionID(sessionID string) (string, *chainState, error) {
+// symbol - startBlock - endBlock
+func parseChainSessionID(sessionID string) (string, uint64, uint64, error) {
 	var (
 		chainSymbol string
-		blockHeight uint64
+		startBlock  uint64
+		endBlock    uint64
 	)
 
-	if _, err := fmt.Sscanf(sessionID, "%s-%d", &chainSymbol, &blockHeight); err != nil {
-		return "", nil, err
+	_, err := fmt.Sscanf(
+		sessionID,
+		"%s-%d-%d",
+		&chainSymbol,
+		&startBlock,
+		&endBlock,
+	)
+	if err != nil {
+		return "", 0, 0, err
 	}
 
-	chainState := &chainState{
-		blockHeight: blockHeight,
-	}
-
-	return chainSymbol, chainState, nil
+	return chainSymbol, startBlock, endBlock, nil
 }

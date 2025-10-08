@@ -12,26 +12,38 @@ const rawBlsSignatureLength = 96
 
 // signs off chain data and returns a signature
 func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (string, error) {
-	chainSymbol, _, err := parseChainSessionID(msg.SessionID)
+	chainSymbol, startBlock, endBlock, err := parseChainSessionID(msg.SessionID)
 	if err != nil {
 		return "", fmt.Errorf("invalid session id: %w", err)
 	}
+
+	fmt.Println(
+		"TODO: fetch %s block from %d to %d",
+		chainSymbol, startBlock, endBlock,
+	)
 
 	chain, ok := c.chainRelayers[strings.ToUpper(chainSymbol)]
 	if !ok {
 		return "", errInvalidChainSymbol
 	}
+	count := (endBlock - startBlock) + 1
 
-	if err := chain.VerifyChainData(msg.Payload); err != nil {
-		return "", fmt.Errorf("invalid chain data: %w", err)
-	}
+	blocks, err := chain.ChainData(startBlock, count)
+	fmt.Println("verify blocks", len(blocks), err)
 
-	signature, err := signChainData(msg.Payload)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign chain data: %w", err)
-	}
+	/*
+		if err := chain.VerifyChainData(msg.Payload); err != nil {
+			return "", fmt.Errorf("invalid chain data: %w", err)
+		}
 
-	return signature, nil
+			signature, err := signChainData(msg.Payload)
+			if err != nil {
+				return "", fmt.Errorf("failed to sign chain data: %w", err)
+			}
+
+			return signature, nil
+	*/
+	return "", nil
 }
 
 // TODO: sign chain data, 96 bytes signature with base64.RawStdEncoding
