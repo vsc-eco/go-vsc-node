@@ -8,7 +8,7 @@ import (
 )
 
 func TestFetchElection(t *testing.T) {
-	res, err := data_availability_client.FetchElection()
+	res, err := data_availability_client.FetchElection("https://api.vsc.eco/api/v1/graphql")
 	assert.NoError(t, err)
 	assert.GreaterOrEqual(t, len(res.Members), 9)
 }

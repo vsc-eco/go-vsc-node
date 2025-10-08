@@ -11,7 +11,6 @@ import (
 	"vsc-node/lib/logger"
 	"vsc-node/modules/common"
 	contract_session "vsc-node/modules/contract/session"
-	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
@@ -23,7 +22,7 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
-	wasm_parent_ipc "vsc-node/modules/wasm/parent_ipc"
+	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
 	"github.com/chebyrash/promise"
 )
@@ -38,7 +37,6 @@ type StateResult struct {
 }
 
 type StateEngine struct {
-	db            *vsc.VscDb
 	da            *DataLayer.DataLayer
 	witnessDb     witnesses.Witnesses
 	electionDb    elections.Elections
@@ -51,18 +49,15 @@ type StateEngine struct {
 	rcDb          rcDb.RcDb
 	nonceDb       nonces.Nonces
 
-	wasm *wasm_parent_ipc.Wasm
+	wasm *wasm_runtime.Wasm
 
 	//Nonce map similar to what we use before
 	NonceMap map[string]int
 	RcMap    map[string]int64
 	RcSystem *rcSystem.RcSystem
 
-	//Unused ideas
-	// AnchoredHeight uint64
 	// VirtualRoot    []byte
 	// VirtualState   []byte
-	// VirtualOps     uint64
 
 	LedgerExecutor *LedgerExecutor
 
@@ -71,9 +66,11 @@ type StateEngine struct {
 	TxOutIds []string
 
 	//Map of txId --> output
-	TxOutput        map[string]TxOutput
-	ContractOutputs map[string]*contract_session.TempOutput
-	ContractResults map[string][]TxResultWithId
+	TxOutput map[string]TxOutput
+
+	//Temporary output state as things are being processed.
+	TempOutputs     map[string]*contract_session.TempOutput
+	ContractResults map[string][]ContractResult
 
 	//First Tx of batch
 	firstTxHeight uint64
@@ -364,13 +361,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			}
 
 			txSelf := TxSelf{
-				BlockHeight:   blockInfo.BlockHeight,
-				BlockId:       blockInfo.BlockId,
-				Timestamp:     blockInfo.Timestamp,
-				Index:         blkIdx,
-				OpIndex:       0,
-				TxId:          tx.TransactionID,
-				RequiredAuths: cj.RequiredAuths,
+				BlockHeight:          blockInfo.BlockHeight,
+				BlockId:              blockInfo.BlockId,
+				Timestamp:            blockInfo.Timestamp,
+				Index:                blkIdx,
+				OpIndex:              0,
+				TxId:                 tx.TransactionID,
+				RequiredAuths:        cj.RequiredAuths,
+				RequiredPostingAuths: cj.RequiredPostingAuths,
 			}
 			//Start parsing block
 			if cj.Id == "vsc.produce_block" {
@@ -422,12 +420,25 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 			//# Start parsing system transactions
 			if cj.Id == "vsc.create_contract" {
+				for idx, auth := range txSelf.RequiredAuths {
+					txSelf.RequiredAuths[idx] = "hive:" + auth
+				}
+
+				for idx, auth := range txSelf.RequiredPostingAuths {
+					txSelf.RequiredPostingAuths[idx] = "hive:" + auth
+				}
+
 				parsedTx := TxCreateContract{
 					Self: txSelf,
 				}
 				json.Unmarshal(cj.Json, &parsedTx)
 
-				parsedTx.ExecuteTx(se, session, nil, nil)
+				txResult := parsedTx.ExecuteTx(se, session, nil, nil, "")
+				if !txResult.Success {
+					session.Revert()
+				} else {
+					session.Done()
+				}
 				continue
 			} else if cj.Id == "vsc.election_result" {
 				parsedTx := &TxElectionResult{
@@ -492,7 +503,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						BIdx:  int64(tx.Index),
 						OpIdx: int64(opIndex),
 					}
-					fmt.Println("Registering deposit!", leDeposit)
+					// fmt.Println("Registering deposit!", leDeposit)
 					depositedTo := se.LedgerExecutor.Deposit(leDeposit)
 
 					// create deposit payload for indexing
@@ -579,6 +590,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					RequiredAuths:        cj.RequiredAuths,
 					RequiredPostingAuths: cj.RequiredPostingAuths,
 				}
+
+				fmt.Println("RR gr86", txSelf)
 
 				var vscTx VSCTransaction
 				if cj.Id == "vsc.withdraw" {
@@ -682,16 +695,17 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 			blkIdx := int64(self.Index)
 			se.txDb.Ingest(transactions.IngestTransactionUpdate{
-				Id:             self.TxId,
-				RequiredAuths:  self.RequiredAuths,
-				Status:         defaultStatus,
-				Type:           "hive",
-				OpTypes:        opTypes,
-				Ops:            opDataList,
-				AnchoredBlock:  &block.BlockID,
-				AnchoredHeight: &block.BlockNumber,
-				AnchoredIndex:  &blkIdx,
-				Ledger:         make([]ledgerSystem.OpLogEvent, 0),
+				Id:                   self.TxId,
+				RequiredAuths:        self.RequiredAuths,
+				RequiredPostingAuths: self.RequiredPostingAuths,
+				Status:               defaultStatus,
+				Type:                 "hive",
+				OpTypes:              opTypes,
+				Ops:                  opDataList,
+				AnchoredBlock:        &block.BlockID,
+				AnchoredHeight:       &block.BlockNumber,
+				AnchoredIndex:        &blkIdx,
+				Ledger:               make([]ledgerSystem.OpLogEvent, 0),
 			})
 		}
 	}
@@ -723,13 +737,6 @@ func (se *StateEngine) ExecuteBatch() {
 		lastBlockBh = uint64(lastBlock.EndBlock)
 	}
 
-	types := make([]string, 0)
-	for _, tx := range se.TxBatch {
-		for _, vscTx := range tx.Ops {
-			types = append(types, vscTx.Type())
-		}
-	}
-
 	// if len(se.TxOutput) > 0 {
 	// 	se.log.Debug("TxOutput pending", se.TxOutput, len(se.TxBatch))
 	// }
@@ -754,7 +761,7 @@ func (se *StateEngine) ExecuteBatch() {
 
 		contractSessions := make(map[string]*contract_session.ContractSession)
 
-		for k, v := range se.ContractOutputs {
+		for k, v := range se.TempOutputs {
 			val := *v
 
 			sess := contract_session.New(se.da)
@@ -765,7 +772,10 @@ func (se *StateEngine) ExecuteBatch() {
 		//Forced ledger operations that is produced irrespective of the output result.
 		//For example, deposit operations.
 		// forcedLedger := make([]ledgerSystem.OpLogEvent, 0)
-		logs := make([]string, 0)
+		outputs := make([]struct {
+			ContractId string
+			Output     ContractResult
+		}, 0)
 		ok := true
 		for idx, vscTx := range tx.Ops {
 			// if vscTx.Type() == "deposit" {
@@ -800,21 +810,25 @@ func (se *StateEngine) ExecuteBatch() {
 				contractCall, ok := vscTx.(TxVscCallContract)
 				if ok {
 					contractId = contractCall.ContractId
-					if contractSessions[contractCall.ContractId] == nil {
-						contractOutput := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
+					contractOutput, err := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
 
+					if contractSessions[contractCall.ContractId] == nil {
 						var cid string
-						if contractOutput != nil {
+						metadata := contracts.ContractMetadata{}
+
+						if err == nil {
 							cid = contractOutput.StateMerkle
+							metadata = contractOutput.Metadata
 						}
 
 						tmpOut := contract_session.TempOutput{
 							Cache:     make(map[string][]byte),
-							Metadata:  make(map[string]interface{}),
+							Metadata:  metadata,
 							Deletions: make(map[string]bool),
 							Cid:       cid,
 						}
 
+						// fmt.Println("No contract session available output is", contractOutput)
 						sess := contract_session.New(se.da)
 
 						sess.FromOutput(tmpOut)
@@ -824,21 +838,47 @@ func (se *StateEngine) ExecuteBatch() {
 				}
 			}
 
-			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, contractSession)
-			logs = append(logs, result.Ret)
+			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, contractSession, payer)
+
+			// logs = append(logs, result.Ret)
 
 			se.log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
 			fmt.Println("RC Payer is", payer, vscTx.Type(), vscTx, result.RcUsed)
 
-			rcUsed, _ := se.RcMap[payer] // don't crash if payer is not in RC map
+			rcUsed := se.RcMap[payer] // don't crash if payer is not in RC map
 			se.RcMap[payer] = rcUsed + result.RcUsed
 
 			if vscTx.Type() == "call_contract" {
-				se.AppendOutput(contractId, TxResultWithId{
-					TxId:    MakeTxId(tx.TxId, idx),
-					Ret:     result.Ret,
-					Success: result.Success,
-				})
+				txId := MakeTxId(tx.TxId, idx)
+				if !result.Success {
+					// If failed, output the error message only
+					outputs = []struct {
+						ContractId string
+						Output     ContractResult
+					}{{
+						ContractId: contractId,
+						Output: ContractResult{
+							TxId:    txId,
+							Ret:     "",
+							Success: result.Success,
+							Err:     result.Err,
+							ErrMsg:  result.Ret,
+						},
+					}}
+				} else {
+					outputs = append(outputs, struct {
+						ContractId string
+						Output     ContractResult
+					}{
+						ContractId: contractId,
+						Output: ContractResult{
+							TxId:    txId,
+							Ret:     result.Ret,
+							Success: result.Success,
+							Logs:    contractSession.PopLogs(),
+						},
+					})
+				}
 			}
 			if !result.Success {
 				se.log.Debug("TRANSACTION REVERTING")
@@ -847,17 +887,18 @@ func (se *StateEngine) ExecuteBatch() {
 				break
 			}
 		}
-		if ok {
-			for k, v := range contractSessions {
-				tmpOut := v.ToOutput()
-				se.ContractOutputs[k] = &tmpOut
-			}
+		// Both success and failed transactions will be outputed regardless in order to output error messages if any
+		for _, out := range outputs {
+			se.AppendOutput(out.ContractId, out.Output)
+		}
+		for k, v := range contractSessions {
+			tmpOut := v.ToOutput()
+			se.TempOutputs[k] = &tmpOut
 		}
 		ledgerIds := ledgerSession.Done()
 
 		se.TxOutput[tx.TxId] = TxOutput{
 			Ok:        ok,
-			Logs:      logs,
 			LedgerIds: ledgerIds,
 		}
 		se.TxOutIds = append(se.TxOutIds, tx.TxId)
@@ -1034,25 +1075,25 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 			frozeAmt := rcSystem.CalculateFrozenBal(rcRecord.BlockHeight, blockHeight, rcRecord.Amount)
 
 			rcBal = frozeAmt + v
-			fmt.Println("rcRecord frozeAmt", frozeAmt, rcRecord.BlockHeight, blockHeight, rcRecord.Amount)
+			// fmt.Println("rcRecord frozeAmt", frozeAmt, rcRecord.BlockHeight, blockHeight, rcRecord.Amount)
 		}
 
-		fmt.Println("rcRecord k", k, rcRecord, rcBal)
+		// fmt.Println("rcRecord k", k, rcRecord, rcBal)
 		se.rcDb.SetRecord(k, blockHeight, rcBal)
 	}
 }
 
-// Appends an output to the output map
-func (se *StateEngine) AppendOutput(contractId string, out TxResultWithId) {
+// Append a contract output to the output map
+func (se *StateEngine) AppendOutput(contractId string, out ContractResult) {
 	if se.ContractResults[contractId] == nil {
-		se.ContractResults[contractId] = make([]TxResultWithId, 0)
+		se.ContractResults[contractId] = make([]ContractResult, 0)
 	}
 	se.ContractResults[contractId] = append(se.ContractResults[contractId], out)
 }
 
 func (se *StateEngine) Flush() {
-	se.ContractResults = make(map[string][]TxResultWithId)
-	se.ContractOutputs = make(map[string]*contract_session.TempOutput)
+	se.ContractResults = make(map[string][]ContractResult)
+	se.TempOutputs = make(map[string]*contract_session.TempOutput)
 	se.TxOutput = make(map[string]TxOutput)
 	se.TxOutIds = make([]string, 0)
 	se.firstTxHeight = 0
@@ -1124,7 +1165,7 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 	actionDb ledgerDb.BridgeActions,
 	rcDb rcDb.RcDb,
 	nonceDb nonces.Nonces,
-	wasm *wasm_parent_ipc.Wasm,
+	wasm *wasm_runtime.Wasm,
 ) *StateEngine {
 
 	ls := &LedgerSystem{
@@ -1137,8 +1178,8 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 	return &StateEngine{
 		log:             logger,
 		TxOutput:        make(map[string]TxOutput),
-		ContractResults: make(map[string][]TxResultWithId),
-		ContractOutputs: make(map[string]*contract_session.TempOutput),
+		ContractResults: make(map[string][]ContractResult),
+		TempOutputs:     make(map[string]*contract_session.TempOutput),
 		TxOutIds:        make([]string, 0),
 
 		da: da,

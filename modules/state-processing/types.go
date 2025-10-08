@@ -1,5 +1,7 @@
 package stateEngine
 
+import "vsc-node/modules/db/vsc/contracts"
+
 type TxPacket struct {
 	TxId string
 	Ops  []VSCTransaction
@@ -7,22 +9,24 @@ type TxPacket struct {
 
 type TxOutput struct {
 	Ok        bool
-	Logs      []string
 	RcUsed    int64
 	LedgerIds []string
 }
 
 type TxResult struct {
 	Success bool
+	Err     *contracts.ContractOutputError
 	Ret     string
 	RcUsed  int64
 }
 
-type TxResultWithId struct {
+type ContractResult struct {
 	Success bool
 	Ret     string
+	Err     *contracts.ContractOutputError
+	ErrMsg  string
 	TxId    string
-	RcUsed  int64
+	Logs    []string
 }
 
 // More information about the TX

@@ -12,7 +12,7 @@ type Contracts interface {
 type ContractState interface {
 	a.Plugin
 	IngestOutput(inputArgs IngestOutputArgs)
-	GetLastOutput(contractId string, height uint64) *ContractOutput
+	GetLastOutput(contractId string, height uint64) (ContractOutput, error)
 	FindOutputs(id *string, input *string, contract *string, offset int, limit int) ([]ContractOutput, error)
 }
 
@@ -33,19 +33,45 @@ type IngestOutputArgs struct {
 }
 
 type ContractOutputResult struct {
-	Ret string `json:"ret" bson:"ret"`
-	Ok  bool   `json:"ok" bson:"ok"`
+	Ret    string               `json:"ret" bson:"ret"`
+	Ok     bool                 `json:"ok" bson:"ok"`
+	Err    *ContractOutputError `json:"err,omitempty" bson:"err,omitempty"`
+	ErrMsg string               `json:"errMsg,omitempty" bson:"errMsg,omitempty"`
+	Logs   []string             `json:"logs,omitempty" bson:"logs,omitempty"`
 }
 
 type ContractOutput struct {
-	Id          string                 `json:"id"`
-	BlockHeight int64                  `json:"block_height" bson:"block_height"`
-	Timestamp   *string                `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
-	ContractId  string                 `json:"contract_id" bson:"contract_id"`
-	Inputs      []string               `json:"inputs"`
-	Metadata    map[string]interface{} `json:"metadata"`
+	Id          string           `json:"id"`
+	BlockHeight int64            `json:"block_height" bson:"block_height"`
+	Timestamp   *string          `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
+	ContractId  string           `json:"contract_id" bson:"contract_id"`
+	Inputs      []string         `json:"inputs"`
+	Metadata    ContractMetadata `json:"metadata"`
 	//This might not be used
 
 	Results     []ContractOutputResult `json:"results" bson:"results"`
 	StateMerkle string                 `json:"state_merkle" bson:"state_merkle"`
 }
+
+type ContractOutputError = string
+
+type ContractMetadata struct {
+	CurrentSize int `json:"currentSize,omitempty"`
+	MaxSize     int `json:"maxSize,omitempty"`
+}
+
+const (
+	RUNTIME_ERROR       ContractOutputError = "runtime_error"
+	RUNTIME_ABORT       ContractOutputError = "runtime_abort"
+	RUNTIME_INVALID     ContractOutputError = "runtime_invalid"
+	GAS_LIMIT_HIT       ContractOutputError = "gas_limit_hit"
+	SDK_ERROR           ContractOutputError = "sdk_error"
+	MISSING_REQ_AUTH    ContractOutputError = "missing_required_auth"
+	ENV_VAR_ERROR       ContractOutputError = "env_var_error"
+	LEDGER_ERROR        ContractOutputError = "ledger_error"
+	LEDGER_INTENT_ERROR ContractOutputError = "ledger_intent_error"
+	WASM_INIT_ERROR     ContractOutputError = "wasm_init_error"
+	WASM_RET_ERROR      ContractOutputError = "wasm_ret_error"
+	WASM_FUNC_NOT_FND   ContractOutputError = "wasm_function_not_found"
+	UNK_ERROR           ContractOutputError = "unknown_error"
+)

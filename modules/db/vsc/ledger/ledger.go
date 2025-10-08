@@ -236,16 +236,6 @@ func (balances *balances) GetBalanceRecord(account string, blockHeight uint64) (
 	return &balRecord, nil
 }
 
-func (balances *balances) PutBalanceRecord(balRecord BalanceRecord) {
-	findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
-	balances.FindOneAndUpdate(context.Background(), bson.M{
-		"account":      balRecord.Account,
-		"block_height": balRecord.BlockHeight,
-	}, bson.M{
-		"$set": balRecord,
-	}, findUpdateOpts)
-}
-
 // FIX ME!!
 func (balances *balances) UpdateBalanceRecord(record BalanceRecord) error {
 	findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)

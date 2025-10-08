@@ -5,8 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
+	"strings"
 	"vsc-node/lib/datalayer"
+	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
+	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/transactions"
@@ -24,13 +29,15 @@ import (
 )
 
 type TransactionPool struct {
-	TxDb       transactions.Transactions
-	nonceDb    nonces.Nonces
-	rcs        *rcSystem.RcSystem
-	hiveBlocks hive_blocks.HiveBlocks
-	p2p        *libp2p.P2PServer
-	service    libp2p.PubSubService[p2pMessage]
-	datalayer  *datalayer.DataLayer
+	TxDb             transactions.Transactions
+	nonceDb          nonces.Nonces
+	rcs              *rcSystem.RcSystem
+	hiveBlocks       hive_blocks.HiveBlocks
+	p2p              *libp2p.P2PServer
+	service          libp2p.PubSubService[p2pMessage]
+	datalayer        *datalayer.DataLayer
+	electionDataInfo elections.ElectionDataInfo
+	// TODO: adding election members
 
 	conf common.IdentityConfig
 }
@@ -44,7 +51,7 @@ var MAX_TX_SIZE = 16384
 // Ingests and verifies a transaction
 func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...IngestOptions) (*cid.Cid, error) {
 	if sTx.Sig == nil {
-		return nil, errors.New("No signature provided")
+		return nil, errors.New("no signature provided")
 	}
 
 	prefix := cid.Prefix{
@@ -110,8 +117,8 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		Tx:      ops,
 	}
 
-	ssbytes, _ := json.Marshal(txSignStruct)
-	fmt.Println("signingShell2", string(ssbytes))
+	// ssbytes, _ := json.Marshal(txSignStruct)
+	// fmt.Println("signingShell2", string(ssbytes))
 
 	bytes, err := common.EncodeDagCbor(txSignStruct)
 	cidz1, _ := cid.Prefix{
@@ -144,7 +151,19 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	}
 
 	fmt.Println("sigPack.Sigs", sigPack.Sigs)
-	verified, err := common.VerifySignatures(txShell.Headers.RequiredAuths, blk, sigPack.Sigs)
+
+	// make DIDs + verify signatures
+	didBuf, hasVscDID, err := makeDIDs(
+		tp.electionDataInfo.Members,
+		tp.electionDataInfo.Weights,
+		txShell.Headers.RequiredAuths,
+		sigPack.Sigs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse DIDs: %w", err)
+	}
+
+	verified, err := common.VerifySignatures(didBuf, blk, sigPack.Sigs)
 	if err != nil {
 		return nil, err
 	}
@@ -160,12 +179,15 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		return nil, fmt.Errorf("failed to get latest block: %w", err)
 	}
 
-	rcsAvailable := tp.rcs.GetAvailableRCs(txShell.Headers.RequiredAuths[0], latestBlk)
+	// if transaction is signed by VSC DID, then ignore RCs
+	if !hasVscDID {
+		rcsAvailable := tp.rcs.GetAvailableRCs(txShell.Headers.RequiredAuths[0], latestBlk)
 
-	fmt.Println("RCS available for", txShell.Headers.RequiredAuths[0], ":", rcsAvailable)
-	//Note: RcLimit is user defined input
-	if uint64(rcsAvailable) < txShell.Headers.RcLimit || txShell.Headers.RcLimit == 0 {
-		return nil, fmt.Errorf("not enough RCS available: %d < %d", rcsAvailable, txShell.Headers.RcLimit)
+		fmt.Println("RCS available for", txShell.Headers.RequiredAuths[0], ":", rcsAvailable)
+		//Note: RcLimit is user defined input
+		if uint64(rcsAvailable) < txShell.Headers.RcLimit || txShell.Headers.RcLimit == 0 {
+			return nil, fmt.Errorf("not enough RCS available: %d < %d", rcsAvailable, txShell.Headers.RcLimit)
+		}
 	}
 
 	//VALIDATION COMPLETE
@@ -211,7 +233,6 @@ func (tp *TransactionPool) Broadcast(id string, serializedTx SerializedVSCTransa
 
 func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 
-	fmt.Println("Receiving broadcasted transaction", p2pMsg.Type, p2pMsg.Data)
 	if p2pMsg.Type != "announce_tx" {
 		return
 	}
@@ -297,7 +318,18 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 
 	json.Unmarshal(sigJson, &sigPack)
 
-	verified, err := common.VerifySignatures(txShell.Headers.RequiredAuths, blk, sigPack.Sigs)
+	didBuf, hasVscDID, err := makeDIDs(
+		tp.electionDataInfo.Members,
+		tp.electionDataInfo.Weights,
+		txShell.Headers.RequiredAuths,
+		sigPack.Sigs,
+	)
+	if err != nil {
+		fmt.Println(fmt.Errorf("failed to parse DIDs: %w", err))
+		return
+	}
+
+	verified, err := common.VerifySignatures(didBuf, blk, sigPack.Sigs)
 
 	latestBlk, err := tp.hiveBlocks.GetHighestBlock()
 
@@ -305,14 +337,18 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 		return
 	}
 
-	rcsAvailable := tp.rcs.GetAvailableRCs(txShell.Headers.RequiredAuths[0], latestBlk)
+	// if transaction is signed by VSC DID, then ignore RCs
+	if !hasVscDID {
+		rcsAvailable := tp.rcs.GetAvailableRCs(txShell.Headers.RequiredAuths[0], latestBlk)
 
-	//Note: RcLimit is user defined input
-	if uint64(rcsAvailable) < txShell.Headers.RcLimit || txShell.Headers.RcLimit == 0 {
-		return
+		//Note: RcLimit is user defined input
+		if uint64(rcsAvailable) < txShell.Headers.RcLimit || txShell.Headers.RcLimit == 0 {
+			fmt.Println(errors.New("insufficient RCs"))
+			return
+		}
 	}
 
-	fmt.Println("broadcast verify result", verified)
+	// fmt.Println("broadcast verify result", verified)
 	if err != nil {
 		return
 	}
@@ -397,4 +433,93 @@ func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, nonceDb nonces.N
 		hiveBlocks: hiveBlocks,
 		rcs:        rcSystem,
 	}
+}
+
+// MakeDIDs parses the requiredAuths into DIDs.
+// Returns slice of parsed DIDs and a bool for if any of the signatures were
+// signed by a VSC DID
+func makeDIDs(
+	electionMembers []elections.ElectionMember,
+	electionMemberWeights []uint64,
+	requiredAuths []string,
+	signatures []common.Sig,
+) ([]dids.DID, bool, error) {
+	if len(electionMembers) == 0 {
+		return nil, false, errors.New("no election member provided")
+	}
+
+	if len(electionMembers) != len(electionMemberWeights) {
+		return nil, false, errors.New("invalid number of member weights provided")
+	}
+
+	// collecting member BlsDID
+	var (
+		electionMemberDIDs = make([]dids.BlsDID, len(electionMembers))
+		err                error
+	)
+
+	for i, member := range electionMembers {
+		electionMemberDIDs[i], err = dids.ParseBlsDID(member.Key)
+
+		if err != nil {
+			return nil, false, fmt.Errorf(
+				"failed to parse election member DID: Account [%s], Key [%s], err [%w]",
+				member.Account, member.Key, err,
+			)
+		}
+	}
+
+	// make network DID
+	var (
+		threshold      = uint64(0)
+		signedByVscDID = false
+		didBuf         = make([]dids.DID, len(requiredAuths))
+	)
+
+	// get threshold
+	for _, w := range electionMemberWeights {
+		threshold += w
+	}
+	threshold = uint64(math.Floor(float64(threshold) * (2.0 / 3.0)))
+
+	for i, authKID := range requiredAuths {
+		isVscDID := strings.HasPrefix(authKID, dids.VscDIDPrefix)
+
+		if !isVscDID {
+			didBuf[i], err = dids.Parse(authKID)
+			if err != nil {
+				return nil, signedByVscDID, fmt.Errorf("failed to parse DID: %w", err)
+			}
+			continue
+		}
+
+		// has VSC DID
+		signedByVscDID = true
+
+		// matching authKID with sig.Kid
+		sigIndex := slices.IndexFunc(signatures, func(s common.Sig) bool { return authKID == s.Kid })
+		notFound := sigIndex == -1
+		if notFound {
+			return nil, signedByVscDID, errors.New("valid signature not found")
+		}
+
+		sig := &signatures[sigIndex]
+
+		if len(sig.Bv) == 0 {
+			return nil, signedByVscDID, errors.New("signature's bitvector not found")
+		}
+
+		didBuf[i], err = dids.NewVscDID(
+			electionMemberDIDs,
+			electionMemberWeights,
+			sig.Bv,
+			threshold,
+		)
+
+		if err != nil {
+			return nil, signedByVscDID, fmt.Errorf("failed to parse VSC DID: %w", err)
+		}
+	}
+
+	return didBuf, signedByVscDID, nil
 }

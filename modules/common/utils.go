@@ -72,6 +72,8 @@ func ArrayToStringArray(arr interface{}) []string {
 		for _, v := range arr.(primitive.A) {
 			out = append(out, v.(string))
 		}
+	} else if reflect.TypeOf(arr).String() == "[]string" {
+		out = append(out, arr.([]string)...)
 	} else {
 		//Assume []interface{}
 		for _, v := range arr.([]interface{}) {
@@ -85,21 +87,15 @@ func ArrayToStringArray(arr interface{}) []string {
 type Sig struct {
 	Algo string `refmt:"alg" json:"alg"`
 	Sig  string `refmt:"sig" json:"sig"`
+	Bv   string `refmt:"bv" json:"bv,omitempty"`
 	//Only applies to KeyID
 	//Technically redundant as it's stored in Required_Auths
 	Kid string `refmt:"kid" json:"kid"`
 }
 
-func VerifySignatures(requiredAuths []string, blk blocks.Block, sigs []Sig) (bool, error) {
-	auths, err := dids.ParseMany(requiredAuths)
-	if err != nil {
-		return false, err
-	}
-
-	verified, _, err := dids.VerifyMany(auths, blk, utils.Map(sigs, func(sig Sig) string {
-		return sig.Sig
-	}))
-
+func VerifySignatures(auths []dids.DID, blk blocks.Block, sigs []Sig) (bool, error) {
+	sigStrs := utils.Map(sigs, func(sig Sig) string { return sig.Sig })
+	verified, _, err := dids.VerifyMany(auths, blk, sigStrs)
 	return verified, err
 }
 

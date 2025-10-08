@@ -1,6 +1,8 @@
 package stateEngine
 
 import (
+	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -11,15 +13,17 @@ import (
 	"vsc-node/modules/common"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
+	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
+
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/transactions"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	transactionpool "vsc-node/modules/transaction-pool"
-	wasm_types "vsc-node/modules/wasm/types"
+	wasm_context "vsc-node/modules/wasm/context"
 
-	"github.com/JustinKnueppel/go-result"
 	blocks "github.com/ipfs/go-block-format"
+	"go.mongodb.org/mongo-driver/mongo"
 
 	"github.com/ipfs/go-cid"
 	dagCbor "github.com/ipfs/go-ipld-cbor"
@@ -37,6 +41,7 @@ type TxVscCallContract struct {
 	Self  TxSelf
 	NetId string `json:"net_id"`
 
+	Caller     string             `json:"caller"`
 	ContractId string             `json:"contract_id"`
 	Action     string             `json:"action"`
 	Payload    json.RawMessage    `json:"payload"`
@@ -53,11 +58,15 @@ func errorToTxResult(err error, RCs int64) TxResult {
 }
 
 // ExecuteTx implements VSCTransaction.
-func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
+func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession, rcPayer string) TxResult {
 	if t.NetId != common.NETWORK_ID {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 100)
 	}
 	info, err := se.contractDb.ContractById(t.ContractId)
+
+	if err == mongo.ErrNoDocuments {
+		return errorToTxResult(fmt.Errorf("contract not found"), 100)
+	}
 	if err != nil {
 		return errorToTxResult(err, 100)
 	}
@@ -74,7 +83,7 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 	code := node.RawData()
 
-	hasMinRCs, availableGas, _ := rcSession.CanConsume(t.Self.RequiredAuths[0], t.Self.BlockHeight, 100)
+	hasMinRCs, availableGas, _ := rcSession.CanConsume(rcPayer, t.Self.BlockHeight, 100)
 
 	if !hasMinRCs {
 		return errorToTxResult(fmt.Errorf("minimum RC requirement is not met. RCs available: %d", availableGas), 100)
@@ -84,17 +93,27 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 
 	ss := contractSession.GetStateStore()
 
-	ctx := contract_execution_context.New(contract_execution_context.Environment{
-		t.ContractId,
-		t.Self.BlockHeight,
-		t.Self.TxId,
-		t.Self.BlockId,
-		t.Self.Index,
-		t.Self.OpIndex,
-		t.Self.Timestamp,
-		t.Self.RequiredAuths,
-		t.Self.RequiredPostingAuths,
-	}, int64(gas), t.Intents, ledgerSession, ss, contractSession.GetMetadata())
+	var caller string = t.Caller
+
+	w := wasm_runtime_ipc.New()
+	w.Init()
+
+	metadata := contractSession.GetMetadata()
+
+	fmt.Println("Contract Metadata", metadata)
+	ctxValue := contract_execution_context.New(contract_execution_context.Environment{
+		ContractId:           t.ContractId,
+		BlockHeight:          t.Self.BlockHeight,
+		TxId:                 t.Self.TxId,
+		BlockId:              t.Self.BlockId,
+		Index:                t.Self.Index,
+		OpIndex:              t.Self.OpIndex,
+		Timestamp:            t.Self.Timestamp,
+		RequiredAuths:        t.Self.RequiredAuths,
+		RequiredPostingAuths: t.Self.RequiredPostingAuths,
+		Caller:               caller,
+		Intents:              t.Intents,
+	}, int64(gas), ledgerSession, ss, metadata)
 
 	validUtf8 := utf8.Valid(t.Payload)
 	if !validUtf8 {
@@ -108,28 +127,54 @@ func (t TxVscCallContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSessi
 	// string), `payload` will be untouched and errors can be ignored
 	json.Unmarshal([]byte(t.Payload), &payload)
 
-	res := result.MapOrElse(
-		se.wasm.Execute(ctx, code, gas*common.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime),
-		func(err error) TxResult {
-			return errorToTxResult(err, int64(gas))
-		},
-		func(res wasm_types.WasmResultStruct) TxResult {
-			contractSession.SetMetadata(ctx.InternalStorage())
-			return TxResult{
-				Success: !res.Error,
-				Ret:     res.Result,
-				RcUsed:  int64(math.Ceil(float64(res.Gas) / common.CYCLE_GAS_PER_RC)),
-			}
-		},
-	)
+	wasmCtx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(code))
 
-	if !res.Success {
-		ctx.Revert()
+	res := w.Execute(wasmCtx, gas*common.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime)
+
+	if res.Error != nil {
+		fmt.Println("WASM execution error:", *res.Error)
+
+		return TxResult{
+			Success: false,
+			Err:     &res.ErrorCode,
+			Ret:     *res.Error,
+			RcUsed:  10,
+		}
 	}
+	fmt.Println("basicResult:", res)
+
+	contractSession.SetMetadata(ctxValue.InternalStorage())
+	contractSession.AppendLogs(ctxValue.Logs())
+
+	// res := result.MapOrElse(
+	// 	se.wasm.Execute(gas*common.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime),
+	// 	func(err error) TxResult {
+	// 		return errorToTxResult(err, int64(gas))
+	// 	},
+	// 	func(res wasm_types.WasmResultStruct) TxResult {
+	// 		contractSession.SetMetadata(ctx.InternalStorage())
+	// 		return TxResult{
+	// 			Success: !res.Error,
+	// 			Ret:     res.Result,
+	// 			RcUsed:  int64(math.Ceil(float64(res.Gas) / common.CYCLE_GAS_PER_RC)),
+	// 		}
+	// 	},
+	// )
+
+	// if !res.Success {
+	// 	ctx.Revert()
+	// }
 
 	ss.Commit()
 
-	return res
+	rcUsed := int64(math.Max(math.Ceil(float64(res.Result.Gas)/common.CYCLE_GAS_PER_RC), 100))
+
+	fmt.Println("rcUsed", rcUsed)
+	return TxResult{
+		Success: true,
+		Ret:     res.Result.Result,
+		RcUsed:  rcUsed,
+	}
 }
 
 func (tx TxVscCallContract) Type() string {
@@ -168,7 +213,7 @@ func (tx TxDeposit) TxSelf() TxSelf {
 	return tx.Self
 }
 
-func (tx TxDeposit) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
+func (tx TxDeposit) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession, rcPayer string) TxResult {
 	return TxResult{
 		Success: true,
 		RcUsed:  0,
@@ -220,7 +265,7 @@ func (tx TxVSCTransfer) TxSelf() TxSelf {
 	return tx.Self
 }
 
-func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
+func (tx TxVSCTransfer) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession, rcPayer string) TxResult {
 	if tx.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
@@ -322,7 +367,7 @@ func (tx TxVSCWithdraw) TxSelf() TxSelf {
 // Note: this function does the work of translating any and all VSC transactions to the ledger compatible formats
 // ledgerExecutor will then do the heavy lifting of executing the input ops
 // as LedgerExecutor may be called within other contexts, such as the contract executor
-func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
+func (t *TxVSCWithdraw) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession, rcPayer string) TxResult {
 	if t.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
@@ -406,7 +451,7 @@ type TxStakeHbd struct {
 	NetId string `json:"net_id"`
 }
 
-func (t *TxStakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
+func (t *TxStakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession, rcPayer string) TxResult {
 	if t.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
@@ -492,7 +537,7 @@ type TxUnstakeHbd struct {
 	NetId  string `json:"net_id"`
 }
 
-func (t *TxUnstakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
+func (t *TxUnstakeHbd) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession, rcPayer string) TxResult {
 	se.log.Debug("TxUnstakeHbd", t.Self.BlockHeight, t.Self.TxId, t.Self.OpIndex, t.NetId, common.NETWORK_ID)
 	if t.NetId != common.NETWORK_ID {
 		return TxResult{
@@ -592,7 +637,7 @@ type TxConsensusStake struct {
 	NetId  string `json:"net_id"`
 }
 
-func (tx *TxConsensusStake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
+func (tx *TxConsensusStake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession, rcPayer string) TxResult {
 	if tx.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
@@ -681,7 +726,7 @@ type TxConsensusUnstake struct {
 	NetId  string `json:"net_id"`
 }
 
-func (tx *TxConsensusUnstake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult {
+func (tx *TxConsensusUnstake) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession, rcPayer string) TxResult {
 	if tx.NetId != common.NETWORK_ID {
 		return TxResult{
 			Success: false,
@@ -821,7 +866,7 @@ func (tx *TransactionContainer) AsContractOutput() *ContractOutput {
 
 	bJson, _ := dag.MarshalJSON()
 
-	fmt.Println("Marshelled JSON from contract output", bJson)
+	// fmt.Println("Marshelled JSON from contract output", string(bJson))
 	json.Unmarshal(bJson, &output)
 
 	return &output
@@ -916,7 +961,7 @@ func (oplog *Oplog) ExecuteTx(se *StateEngine) {
 		startBlock = uint64(vscBlock.EndBlock)
 	}
 
-	se.log.Debug("Execute Oplog", oplog.EndBlock)
+	// se.log.Debug("Execute Oplog", oplog.EndBlock)
 	se.LedgerExecutor.Ls.IngestOplog(aoplog, OplogInjestOptions{
 		EndHeight:   oplog.EndBlock,
 		StartHeight: startBlock,
@@ -1139,7 +1184,7 @@ var _ VSCTransaction = &TxCreateContract{}
 var _ VscTxContainer = &OffchainTransaction{}
 
 type VSCTransaction interface {
-	ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession) TxResult
+	ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession, rcPayer string) TxResult
 	TxSelf() TxSelf
 	ToData() map[string]interface{}
 	Type() string

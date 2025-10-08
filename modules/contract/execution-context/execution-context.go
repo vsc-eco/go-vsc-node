@@ -2,6 +2,7 @@ package contract_execution_context
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"vsc-node/modules/common"
@@ -35,6 +36,8 @@ type StateStore interface {
 	Get(key string) []byte
 	Set(key string, value []byte)
 	Delete(key string)
+	Commit()
+	Rollback()
 }
 
 type Environment struct {
@@ -47,6 +50,9 @@ type Environment struct {
 	Timestamp            string
 	RequiredAuths        []string
 	RequiredPostingAuths []string
+	Caller               string
+	Sender               string
+	Intents              []contracts.Intent
 }
 
 // var _ wasm_context.ExecContextValue = &contractExecutionContext{}
@@ -54,14 +60,13 @@ type Environment struct {
 func New(
 	env Environment,
 	rcLimit int64,
-	intents []contracts.Intent,
 	ledger ledgerSystem.LedgerSession,
 	storage StateStore,
-	interalStorage map[string]interface{},
+	metadata contracts.ContractMetadata,
 ) ContractExecutionContext {
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
-	for _, intent := range intents {
+	for _, intent := range env.Intents {
 		if intent.Type == "transfer.allow" {
 			limit, ok := intent.Args["limit"]
 			if !ok {
@@ -81,15 +86,15 @@ func New(
 			tokenLimits[token] = &val
 		}
 	}
-	ensureInternalStorageInitialized(interalStorage)
+	// ensureInternalStorageInitialized(interalStorage)
 	return &contractExecutionContext{
-		intents,
+		env.Intents,
 		ledger,
 		env,
 		rcLimit,
 		storage,
-		interalStorage["current_size"].(int),
-		interalStorage["max_size"].(int),
+		metadata.CurrentSize,
+		metadata.MaxSize,
 		nil,
 		0,
 		0,
@@ -98,21 +103,25 @@ func New(
 	}
 }
 
-func ensureInternalStorageInitialized(internalStorage map[string]interface{}) {
-	_, ok := internalStorage["current_size"]
-	if !ok {
-		internalStorage["current_size"] = 0
-	}
-	_, ok = internalStorage["max_size"]
-	if !ok {
-		internalStorage["max_size"] = 0
-	}
+// func ensureInternalStorageInitialized(internalStorage map[string]interface{}) {
+// 	_, ok := internalStorage["current_size"]
+// 	if !ok {
+// 		internalStorage["current_size"] = 0
+// 	}
+// 	_, ok = internalStorage["max_size"]
+// 	if !ok {
+// 		internalStorage["max_size"] = 0
+// 	}
+// }
+
+func (ctx *contractExecutionContext) Logs() []string {
+	return ctx.logs
 }
 
-func (ctx *contractExecutionContext) InternalStorage() map[string]interface{} {
-	return map[string]interface{}{
-		"current_size": ctx.currentSize,
-		"max_size":     ctx.maxSize,
+func (ctx *contractExecutionContext) InternalStorage() contracts.ContractMetadata {
+	return contracts.ContractMetadata{
+		CurrentSize: ctx.currentSize,
+		MaxSize:     ctx.maxSize,
 	}
 }
 
@@ -174,8 +183,14 @@ func (ctx *contractExecutionContext) Log(msg string) {
 
 func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 	switch key {
-	case "contract_id":
+	case "contract.id":
 		return result.Ok(ctx.env.ContractId)
+	case "tx.id": // tx ID
+		return result.Ok(ctx.env.TxId)
+	case "tx.index":
+		return result.Ok(fmt.Sprint(ctx.env.Index))
+	case "tx.op_index":
+		return result.Ok(fmt.Sprint(ctx.env.OpIndex))
 	case "tx.origin":
 		fallthrough
 	case "msg.sender":
@@ -185,7 +200,7 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 		if len(ctx.env.RequiredPostingAuths) > 0 {
 			return result.Ok(ctx.env.RequiredPostingAuths[0])
 		}
-		return result.Err[string](fmt.Errorf("no value for %s", key))
+		return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), fmt.Errorf("no value for %s", key)))
 	case "msg.required_auths":
 		return result.Map(
 			resultWrap(json.Marshal(ctx.env.RequiredAuths)),
@@ -200,22 +215,79 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 				return string(b)
 			},
 		)
-	case "anchor.id": // tx ID
-		return result.Ok(ctx.env.TxId)
-	case "anchor.block": // block ID
+	case "msg.payer":
+		//TODO: implement payer logic
+		if len(ctx.env.RequiredAuths) > 0 {
+			return result.Ok(ctx.env.RequiredAuths[0])
+		} else if len(ctx.env.RequiredPostingAuths) > 0 {
+			return result.Ok(ctx.env.RequiredPostingAuths[0])
+		}
+	case "msg.caller":
+		return result.Ok(ctx.env.Caller)
+	case "intents":
+		return result.Map(
+			resultWrap(json.Marshal(ctx.env.Intents)),
+			func(b []byte) string {
+				return string(b)
+			},
+		)
+	case "block.id": // block ID
 		return result.Ok(ctx.env.BlockId)
-	case "anchor.height":
+	case "block.height":
 		return result.Ok(fmt.Sprint(ctx.env.BlockHeight))
-	case "anchor.timestamp":
+	case "block.timestamp":
 		return result.Ok(ctx.env.Timestamp)
-	case "anchor.tx_index":
-		return result.Ok(fmt.Sprint(ctx.env.Index))
-	case "anchor.op_index":
-		return result.Ok(fmt.Sprint(ctx.env.OpIndex))
-	case "anchor.included_index":
-		return result.Ok("0") // TODO add for VSC txs
 	}
-	return result.Err[string](fmt.Errorf("environemnt does not contain value for \"%s\"", key))
+	return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), fmt.Errorf("environment does not contain value for \"%s\"", key)))
+}
+
+// GetEnv returns the environment variables in a standard contract format
+func (ctx *contractExecutionContext) GetEnv() result.Result[string] {
+	var payer string
+	if len(ctx.env.RequiredAuths) > 0 {
+		payer = ctx.env.RequiredAuths[0]
+	} else if len(ctx.env.RequiredPostingAuths) > 0 {
+		payer = ctx.env.RequiredPostingAuths[0]
+	}
+
+	if ctx.env.RequiredAuths == nil {
+		ctx.env.RequiredAuths = []string{}
+	}
+
+	if ctx.env.RequiredPostingAuths == nil {
+		ctx.env.RequiredPostingAuths = []string{}
+	}
+
+	envMap := map[string]interface{}{
+		// contract section
+		"contract.id": ctx.env.ContractId,
+		// "contract.creator": // implement
+		// "contract.admin": // implement
+
+		// tx section
+		"tx.id":       ctx.env.TxId,
+		"tx.index":    ctx.env.Index,
+		"tx.op_index": ctx.env.OpIndex,
+
+		// block section
+		"block.id":        ctx.env.BlockId,
+		"block.height":    ctx.env.BlockHeight,
+		"block.timestamp": ctx.env.Timestamp,
+
+		//msg section
+		"msg.sender":                 ctx.env.Sender,
+		"msg.required_auths":         ctx.env.RequiredAuths,
+		"msg.required_posting_auths": ctx.env.RequiredPostingAuths,
+		"msg.payer":                  payer,
+		"msg.caller":                 ctx.env.Caller,
+		"intents":                    ctx.env.Intents,
+	}
+
+	envBytes, err := json.Marshal(envMap)
+	if err != nil {
+		return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), fmt.Errorf("failed to marshal env map: %w", err)))
+	}
+	return result.Ok(string(envBytes))
 }
 
 func (ctx *contractExecutionContext) SetState(key string, value string) result.Result[struct{}] {
@@ -254,7 +326,7 @@ func (ctx *contractExecutionContext) GetState(key string) result.Result[string] 
 	ctx.doIO(len(key))
 	res := ctx.storage.Get(key)
 	if res == nil {
-		return result.Err[string](fmt.Errorf("key does not exist"))
+		return result.Ok("")
 	}
 	ctx.doIO(len(string(res)))
 	return result.Ok(string(res))
@@ -269,19 +341,21 @@ func (ctx *contractExecutionContext) DeleteState(key string) result.Result[struc
 }
 
 func (ctx *contractExecutionContext) GetBalance(account string, asset string) int64 {
-	return ctx.ledger.GetBalance(account, ctx.env.BlockHeight, asset)
+	getBal := ctx.ledger.GetBalance(account, ctx.env.BlockHeight, asset)
+
+	return getBal
 }
 
 func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) result.Result[struct{}] {
 	if len(ctx.env.RequiredAuths) == 0 {
-		return result.Err[struct{}](fmt.Errorf("no active authority"))
+		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.MISSING_REQ_AUTH), fmt.Errorf("no active authority")))
 	}
 	tokenLimit, ok := ctx.tokenLimits[asset]
 	if !ok {
-		return result.Err[struct{}](fmt.Errorf("no user intent for: %s", asset))
+		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_INTENT_ERROR), fmt.Errorf("no user intent for: %s", asset)))
 	}
 	if amount > *tokenLimit {
-		return result.Err[struct{}](fmt.Errorf("amount (%d) is over remaining token limit (%d)", amount, *tokenLimit))
+		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_INTENT_ERROR), fmt.Errorf("amount (%d) is over remaining token limit (%d)", amount, *tokenLimit)))
 	}
 	*tokenLimit -= amount
 
@@ -307,7 +381,7 @@ func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) res
 		BlockHeight: ctx.env.BlockHeight,
 	}, transferOptions...)
 	if !res.Ok {
-		return result.Err[struct{}](fmt.Errorf("%s", res.Msg))
+		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_ERROR), fmt.Errorf("%s", res.Msg)))
 	}
 	return result.Ok(struct{}{})
 }
@@ -327,7 +401,7 @@ func (ctx *contractExecutionContext) SendBalance(to string, amount int64, asset 
 		BlockHeight: ctx.env.BlockHeight,
 	})
 	if !res.Ok {
-		return result.Err[struct{}](fmt.Errorf("%s", res.Msg))
+		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_ERROR), fmt.Errorf("%s", res.Msg)))
 	}
 	return result.Ok(struct{}{})
 }
@@ -346,14 +420,15 @@ func (ctx *contractExecutionContext) WithdrawBalance(to string, amount int64, as
 		BlockHeight: ctx.env.BlockHeight,
 	})
 	if !res.Ok {
-		return result.Err[struct{}](fmt.Errorf("%s", res.Msg))
+		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_ERROR), fmt.Errorf("%s", res.Msg)))
 	}
 	return result.Ok(struct{}{})
 }
 
+// wrap the result of json.Marshal as used by EnvVar(), joins with ENV_VAR_ERROR symbol if Err
 func resultWrap[T any](res T, err error) result.Result[T] {
 	if err != nil {
-		return result.Err[T](err)
+		return result.Err[T](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), err))
 	}
 	return result.Ok(res)
 }

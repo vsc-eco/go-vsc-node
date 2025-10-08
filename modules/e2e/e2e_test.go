@@ -4,33 +4,35 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"strconv"
 	"testing"
 	"time"
-	"vsc-node/modules/aggregate"
+	"vsc-node/modules/common"
 	"vsc-node/modules/config"
-	"vsc-node/modules/db/vsc/hive_blocks"
+	data_availability_client "vsc-node/modules/data-availability/client"
+	"vsc-node/modules/db/vsc/contracts"
+	wasm_runtime "vsc-node/modules/wasm/runtime"
+
 	"vsc-node/modules/e2e"
+	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 
-	cbortypes "vsc-node/lib/cbor-types"
 	"vsc-node/lib/dids"
-	"vsc-node/lib/test_utils"
-	stateEngine "vsc-node/modules/state-processing"
 
 	// "github.com/decred/dcrd/dcrec/secp256k1/v2"
 
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/hasura/go-graphql-client"
-
 	// secp256k1 "github.com/ethereum/go-ethereum/crypto/secp256k1"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/vsc-eco/hivego"
 )
+
+//go:embed artifacts/contract_test.wasm
+var CONTRACT_WASM []byte
 
 //End to end test environment of VSC network
 
@@ -38,134 +40,48 @@ import (
 const NODE_COUNT = 9
 
 func TestE2E(t *testing.T) {
-
 	config.UseMainConfigDuringTests = true
-	cbortypes.RegisterTypes()
-	mockReader := stateEngine.NewMockReader()
-
-	mockCreator := stateEngine.MockCreator{
-		Mr: mockReader,
-	}
-
-	broadcastFunc := func(tx hivego.HiveTransaction) error {
-		insertOps := e2e.TransformTx(tx)
-
-		txId, _ := tx.GenerateTrxId()
-
-		mockCreator.BroadcastOps(insertOps, txId)
-
-		return nil
-	}
-	runningNodes := make([]e2e.Node, 0)
-
-	//Make primary node
-
-	r2e := &e2e.E2ERunner{
-		BlockEvent: make(chan uint64),
-	}
-
-	doWithdraw := func() error {
-		withdrawalRequest := transactionpool.VscWithdraw{
-			Amount: "0.020",
-			Asset:  "hbd",
-			From:   "hive:test-account",
-			To:     "hive:test-account",
-			NetId:  "vsc-mainnet",
-		}
-
-		ops, _ := withdrawalRequest.SerializeHive()
-
-		tx := r2e.HiveCreator.MakeTransaction(ops)
-		r2e.HiveCreator.PopulateSigningProps(&tx, nil)
-		sig, _ := r2e.HiveCreator.Sign(tx)
-
-		tx.AddSig(sig)
-
-		r2e.HiveCreator.Broadcast(tx)
-
-		withdrawTxId, err := tx.GenerateTrxId()
-		fmt.Println("[Prefix: e2e-1] Withdraw tx id", withdrawTxId, err)
-
-		return nil
-	}
-
-	nodeNames := make([]string, 0)
-	nodeNames = append(nodeNames, "e2e-1")
-	for i := 2; i < NODE_COUNT+1; i++ {
-		name := "e2e-" + strconv.Itoa(i)
-		nodeNames = append(nodeNames, name)
-	}
-
-	primaryNode := e2e.MakeNode(e2e.MakeNodeInput{
-		Username:  "e2e-1",
-		BrcstFunc: broadcastFunc,
-		Runner:    r2e,
-		Primary:   true,
-	})
-	runningNodes = append(runningNodes, *primaryNode)
-
-	//Make the remaining 3 nodes for consensus operation
-	for i := 2; i < NODE_COUNT+1; i++ {
-		name := "e2e-" + strconv.Itoa(i)
-		runningNodes = append(runningNodes, *e2e.MakeNode(e2e.MakeNodeInput{
-			Username:  name,
-			BrcstFunc: broadcastFunc,
-			Runner:    nil,
-		}))
-	}
-
-	plugs := make([]aggregate.Plugin, 0)
-
-	for _, node := range runningNodes {
-		plugs = append(plugs, node.Aggregate)
-	}
 
 	pubKey, privKey, _ := ed25519.GenerateKey(rand.Reader)
 	didKey, _ := dids.NewKeyDID(pubKey)
 
-	// pubKey1, privKey1, _ := ed25519.GenerateKey(rand.Reader)
-	// didKeyNoRcs, _ := dids.NewKeyDID(pubKey1)
+	container := e2e.NewContainer(NODE_COUNT)
+
+	container.Init()
+	container.Start(t)
 
 	transactionCreator := transactionpool.TransactionCrafter{
 		Identity: dids.NewKeyProvider(privKey),
 		Did:      didKey,
 
-		VSCBroadcast: &transactionpool.InternalBroadcast{
-			TxPool: runningNodes[0].TxPool,
-		},
+		VSCBroadcast: container.VSCBroadcast(),
 	}
-
-	// ethKeyHex := "ea3625737c9840af61e95a9fab172a5495b533978ba88cb68723514802119917" // 0x00000E1c8094cAC66CD1adf4C240cd9Cf43B4D46
-	ethKeyHex := "5feac6ad3d3556a3a81bd9d2c881f195b5a8b4a5ce8f7bd4fa32c10bf186575a" // 0xcafe412dC5fb69FD5155a3b63A5AD6d3Bb80738b
 
 	pk, _ := ethCrypto.GenerateKey()
 
 	fmt.Println("eth key", hex.EncodeToString(ethCrypto.FromECDSA(pk)))
-	privBytes, _ := hex.DecodeString(ethKeyHex)
+	privBytes, _ := hex.DecodeString(e2e.EVM_KEY)
 	fmt.Println("privBytes", privBytes)
-	ethPriv, err := ethCrypto.ToECDSA(privBytes)
-
-	fmt.Println("ethPriv", ethPriv, err)
+	ethPriv, _ := ethCrypto.ToECDSA(privBytes)
 
 	ethProvider := dids.NewEthProvider(ethPriv)
 
 	ethAddr := ethCrypto.PubkeyToAddress(ethPriv.PublicKey)
 	ethDid := dids.NewEthDID(ethAddr.Hex())
-	kk, _ := ethCrypto.ToECDSA(privBytes)
+	// kk, _ := ethCrypto.ToECDSA(privBytes)
 
-	fmt.Println("privBytes", hex.EncodeToString(privBytes))
+	// fmt.Println("privBytes", hex.EncodeToString(privBytes))
 
-	fmt.Println(ethCrypto.PubkeyToAddress(kk.PublicKey).Hex(), ethCrypto.PubkeyToAddress(ethPriv.PublicKey).Hex())
+	// fmt.Println(ethCrypto.PubkeyToAddress(kk.PublicKey).Hex(), ethCrypto.PubkeyToAddress(ethPriv.PublicKey).Hex())
 
 	ethCreator := transactionpool.TransactionCrafter{
 		Identity: ethProvider,
 		Did:      ethDid,
 
-		VSCBroadcast: &transactionpool.InternalBroadcast{
-			TxPool: runningNodes[0].TxPool,
-		},
+		VSCBroadcast: container.VSCBroadcast(),
 	}
-	ethCreator.Did.String()
+
+	fmt.Println("s", ethCreator)
 
 	// fmt.Println("EVM test")
 	// fmt.Println("EVM test")
@@ -209,387 +125,791 @@ func TestE2E(t *testing.T) {
 	// 	},
 	// }
 
-	r2e.SetSteps([]func() error{
-		r2e.WaitToStart(),
-		func() error {
-			return nil
-		},
-		r2e.Wait(10),
-		// r2e.BroadcastMockElection(nodeNames),
-		func() error {
-			r2e.ElectionProposer.HoldElection(10)
-			return nil
-		},
-		func() error {
-			fmt.Println("[Prefix: e2e-1] Executing test transfer from test-account to @vsc.gateway of 50 hbd")
+	graphClient := graphql.NewClient("http://localhost:7080/api/v1/graphql", nil)
+
+	mockCreator := container.HiveCreator
+
+	r2e := container.Runner()
+	container.AddStep(r2e.WaitToStart())
+	container.AddStep(r2e.Wait(10))
+	container.AddStep(r2e.BroadcastElection())
+
+	container.AddStep(e2e.Step{
+		Name: "Hold election and transfer",
+		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
+
 			mockCreator.Transfer("test-account", "vsc.gateway", "1500", "HBD", "to="+didKey.String())
+			mockCreator.Transfer("test-account", "vsc.gateway", "1500", "HIVE", "to="+didKey.String())
 			mockCreator.Transfer("test-account", "vsc.gateway", "1000", "HBD", "to="+ethDid.String())
-			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "")
+			mockCreator.Transfer("test-account", "vsc.gateway", "1000", "HIVE", "to="+ethDid.String())
+			//Balance goes to 0x25190d9443442765769Fe5CcBc8aA76151932a1A
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "to=0x25190d9443442765769Fe5CcBc8aA76151932a1A")
+			//Balance goes to @test-account
+			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "")
+			mockCreator.Transfer("test-account", "vsc.gateway", "50000", "HBD", "to=vaultec")
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HIVE", "")
-			return nil
+			return func(ctx e2e.StepCtx) error {
+				time.Sleep(40 * time.Second)
+				var rcQuery struct {
+					GetAccountRc struct {
+						Amount graphql.Int `graphql:"amount"`
+					} `graphql:"getAccountRC(account: $account)"`
+					GetAccountBalance struct {
+						Hbd  graphql.Int `graphql:"hbd"`
+						Hive graphql.Int `graphql:"hive"`
+					} `graphql:"getAccountBalance(account: $account)"`
+				}
+				graphClient.Query(context.Background(), &rcQuery, map[string]any{
+					"account": graphql.String(didKey.String()),
+				})
+
+				fmt.Println("EVALUATE Account RC", rcQuery)
+				return nil
+			}, nil
 		},
-		r2e.Wait(3),
-		doWithdraw,
-		doWithdraw,
-		r2e.Wait(11),
-		doWithdraw,
-		func() error {
-			transferOp := &transactionpool.VSCTransfer{
-				From:   didKey.String(),
-				To:     "hive:vsc.account",
-				Amount: "0.001",
-				Asset:  "hbd",
-				NetId:  "vsc-mainnet",
+	})
+	container.AddStep(r2e.Wait(10))
+
+	var contractId string
+	container.AddStep(e2e.Step{
+		Name: "Deploy Contract",
+		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
+
+			client := ctx.Container.Client()
+			runner := ctx.Container.Runner()
+			dataClient := data_availability_client.New(client.P2PService, client.Identity, runner.Datalayer)
+
+			err := dataClient.Init()
+
+			fmt.Println("Start err", err)
+			any1, err := dataClient.Start().Await(context.Background())
+			fmt.Println("Start await", any1, err)
+
+			// time.Sleep(25 * time.Second)
+			// fmt.Println("ContractWasm:", CONTRACT_WASM)'
+
+			fmt.Println("Deploying contract with dataClient", dataClient)
+			storageProof, err := dataClient.RequestProof("http://localhost:7080/api/v1/graphql", CONTRACT_WASM)
+
+			if err != nil {
+				return nil, err
 			}
-			op, _ := transferOp.SerializeVSC()
+
+			fmt.Println("storageProof", storageProof)
+
+			tx := stateEngine.TxCreateContract{
+				Version:      "0.1",
+				NetId:        "vsc-mainnet",
+				Name:         "test-contract",
+				Description:  "A test contract",
+				Owner:        "hive:vaultec",
+				Code:         storageProof.Hash,
+				Runtime:      wasm_runtime.Go,
+				StorageProof: storageProof,
+			}
+
+			j, err := json.Marshal(tx.ToData())
+
+			txConfirm := container.HiveCreator.CustomJson(stateEngine.MockJson{
+				RequiredAuths:        []string{"vaultec"},
+				RequiredPostingAuths: []string{},
+				Id:                   "vsc.create_contract",
+				Json:                 string(j),
+			})
+			contractId = common.ContractId(txConfirm.Id, 0)
+
+			fmt.Println("ContractId Is:", contractId)
+			return func(ctx e2e.StepCtx) error {
+
+				return nil
+			}, nil
+		},
+	})
+
+	container.AddStep(r2e.Wait(40))
+
+	container.AddStep(e2e.Step{
+		Name: "Execute Contract - Test 1",
+		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
+			transferOp := &transactionpool.VscContractCall{
+				Caller:     didKey.String(),
+				ContractId: contractId,
+				RcLimit:    200,
+				Action:     "test1",
+				Payload:    "test",
+				NetId:      "vsc-mainnet",
+			}
+			op, err := transferOp.SerializeVSC()
+
+			if err != nil {
+				return nil, err
+			}
 			tx := transactionpool.VSCTransaction{
 				Ops: []transactionpool.VSCTransactionOp{
 					op,
 				},
+				Nonce: 0,
 			}
 			sTx, err := transactionCreator.SignFinal(tx)
 
-			bbb, _ := json.Marshal(sTx)
-			fmt.Println("VSCTransfer err", err, string(bbb))
+			txId, err := transactionCreator.Broadcast(sTx)
 
-			transactionCreator.Broadcast(sTx)
-
-			return nil
-		},
-		func() error {
-			transferOp := &transactionpool.VSCTransfer{
-				From:   ethDid.String(),
-				To:     "hive:vsc.account",
-				Amount: "0.001",
-				Asset:  "hbd",
-				NetId:  "vsc-mainnet",
+			if err != nil {
+				return nil, err
 			}
-			op, _ := transferOp.SerializeVSC()
+
+			fmt.Println("txId", txId)
+			return func(ctx e2e.StepCtx) error {
+				time.Sleep(60 * time.Second)
+
+				runner := ctx.Container.Runner()
+
+				getTransaction := runner.TxDb.GetTransaction(txId)
+
+				fmt.Println("txId", txId)
+				if getTransaction == nil {
+					return errors.New("non-existent transaction")
+				}
+				tx := *getTransaction
+				if tx.Status != "CONFIRMED" {
+					return fmt.Errorf("incorrect status should be CONFIRMED status is: %s", tx.Status)
+				}
+				fmt.Println("transactions", getTransaction)
+				return nil
+			}, nil
+		},
+	})
+	container.AddStep(e2e.Step{
+		Name: "Execute Contract - Test 2",
+		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
+			transferOp := &transactionpool.VscContractCall{
+				Caller:     didKey.String(),
+				ContractId: contractId,
+				RcLimit:    200,
+				Action:     "test2",
+				Payload:    "test",
+				NetId:      "vsc-mainnet",
+			}
+			op, err := transferOp.SerializeVSC()
+
+			if err != nil {
+				return nil, err
+			}
 			tx := transactionpool.VSCTransaction{
 				Ops: []transactionpool.VSCTransactionOp{
 					op,
 				},
+				Nonce: 1,
 			}
-			sTx, err := ethCreator.SignFinal(tx)
+			sTx, err := transactionCreator.SignFinal(tx)
 
-			bbb, _ := json.Marshal(sTx)
-			fmt.Println("VSCTransfer err", err, string(bbb))
-
-			transactionCreator.Broadcast(sTx)
-
-			return nil
-		},
-		func() error {
-			stakeTx := &transactionpool.VscConsenusStake{
-				Account: "hive:test-account",
-				Amount:  "0.025",
-				Type:    "stake",
-				NetId:   "vsc-mainnet",
-			}
-
-			ops, err := stakeTx.SerializeHive()
-
-			fmt.Println("consensus stake err", err)
+			txId, err := transactionCreator.Broadcast(sTx)
 
 			if err != nil {
-				panic(err)
+				return nil, err
 			}
 
-			tx := r2e.HiveCreator.MakeTransaction(ops)
-			r2e.HiveCreator.PopulateSigningProps(&tx, nil)
-			sig, _ := r2e.HiveCreator.Sign(tx)
-			tx.AddSig(sig)
-			unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
-			fmt.Println("stakeId", unstakeId)
-			return nil
+			fmt.Println("txId", txId)
+			return func(ctx e2e.StepCtx) error {
+				time.Sleep(60 * time.Second)
+
+				runner := ctx.Container.Runner()
+
+				getTransaction := runner.TxDb.GetTransaction(txId)
+
+				fmt.Println("txId", txId)
+				if getTransaction == nil {
+					return errors.New("non-existent transaction")
+				}
+				tx := *getTransaction
+				if tx.Status != "CONFIRMED" {
+					return fmt.Errorf("incorrect status should be CONFIRMED status is: %s", tx.Status)
+				}
+				fmt.Println("transactions", getTransaction)
+				return nil
+			}, nil
 		},
+	})
+	container.AddStep(e2e.Step{
+		Name: "Execute Contract - Test 3",
+		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
+			transferOp := &transactionpool.VscContractCall{
+				Caller:     didKey.String(),
+				ContractId: contractId,
+				RcLimit:    200,
+				Action:     "test3",
+				Payload:    "test",
+				NetId:      "vsc-mainnet",
 
-		// func() error {
-		// 	for i := 0; i < 5; i++ {
-		// 		transferOp := &transactionpool.VSCTransfer{
-		// 			From:   didKey.String(),
-		// 			To:     "hive:vsc.account",
-		// 			Amount: "0.001",
-		// 			Asset:  "hbd",
-		// 			NetId:  "vsc-mainnet",
-		// 			Nonce:  uint64(i),
-		// 		}
-		// 		sTx, _ := transactionCreator.SignFinal(transferOp)
-
-		// 		transactionCreator.Broadcast(sTx)
-		// 	}
-
-		// 	stakeOp := &transactionpool.VSCStake{
-		// 		From:   didKey.String(),
-		// 		To:     didKey.String(),
-		// 		Amount: "0.020",
-		// 		Asset:  "hbd",
-		// 		NetId:  "vsc-mainnet",
-		// 		Type:   "stake",
-		// 		Nonce:  uint64(5),
-		// 	}
-		// 	sTx, err := transactionCreator.SignFinal(stakeOp)
-
-		// 	fmt.Println("Sign error", err, sTx)
-
-		// 	stakeId, err := transactionCreator.Broadcast(sTx)
-
-		// 	fmt.Println("stakeId", stakeId, err)
-		// 	return nil
-		// },
-		r2e.Wait(40),
-		func() error {
-			stakeTx := &transactionpool.VscConsenusStake{
-				Account: "hive:test-account",
-				Amount:  "0.025",
-				Type:    "unstake",
-				NetId:   "vsc-mainnet",
+				Intents: []contracts.Intent{
+					{
+						Type: "transfer.allow",
+						Args: map[string]string{
+							"limit": "1.000",
+							"token": "hive",
+						},
+					},
+				},
 			}
-
-			ops, err := stakeTx.SerializeHive()
-
-			fmt.Println("consensus stake erro", err)
-			if err != nil {
-				panic(err)
-			}
-
-			tx := r2e.HiveCreator.MakeTransaction(ops)
-			r2e.HiveCreator.PopulateSigningProps(&tx, nil)
-			sig, _ := r2e.HiveCreator.Sign(tx)
-			tx.AddSig(sig)
-
-			unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
-			fmt.Println("stakeId", unstakeId)
-			return nil
-		},
-		// func() error {
-		// 	transferTx := &transactionpool.VSCTransfer{
-		// 		From:   didKey.String(),
-		// 		To:     "hive:vsc.account",
-		// 		Amount: "0.015",
-		// 		Asset:  "hbd_savings",
-		// 		NetId:  "vsc-mainnet",
-		// 		Nonce:  uint64(6),
-		// 	}
-		// 	sTx, _ := transactionCreator.SignFinal(transferTx)
-
-		// 	stakeId, err := transactionCreator.Broadcast(sTx)
-
-		// 	fmt.Println("transferStakeId", stakeId, err)
-		// 	return nil
-		// },
-		r2e.Wait(10),
-		func() error {
-			unstakeTx := &transactionpool.VSCStake{
-				From:   "hive:vsc.account",
-				To:     "hive:vsc.account",
-				Amount: "0.001",
-				Asset:  "hbd_savings",
-				Type:   "unstake",
-				NetId:  "vsc-mainnet",
-			}
-
-			ops, err := unstakeTx.SerializeHive()
+			op, err := transferOp.SerializeVSC()
 
 			if err != nil {
-
-				panic(err)
+				return nil, err
 			}
-
-			fmt.Println("Prefix: e2e-1] Unstake ops", ops, err)
-			tx := r2e.HiveCreator.MakeTransaction(ops)
-			r2e.HiveCreator.PopulateSigningProps(&tx, nil)
-			sig, _ := r2e.HiveCreator.Sign(tx)
-			tx.AddSig(sig)
-			unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
-			fmt.Println("unstakeId", unstakeId)
-
-			return nil
-		},
-		r2e.Wait(20),
-		func() error {
-			unstakeTx := &transactionpool.VSCStake{
-				From:   "hive:vsc.account",
-				To:     "hive:vsc.account",
-				Amount: "0.001",
-				Asset:  "hbd_savings",
-				Type:   "unstake",
-				NetId:  "vsc-mainnet",
+			tx := transactionpool.VSCTransaction{
+				Ops: []transactionpool.VSCTransactionOp{
+					op,
+				},
+				Nonce: 2,
 			}
+			sTx, err := transactionCreator.SignFinal(tx)
 
-			ops, err := unstakeTx.SerializeHive()
+			txId, err := transactionCreator.Broadcast(sTx)
 
 			if err != nil {
-
-				panic(err)
+				return nil, err
 			}
 
-			fmt.Println("Prefix: e2e-1] Unstake ops", ops, err)
-			tx := r2e.HiveCreator.MakeTransaction(ops)
-			r2e.HiveCreator.PopulateSigningProps(&tx, nil)
-			sig, _ := r2e.HiveCreator.Sign(tx)
-			tx.AddSig(sig)
-			unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
-			fmt.Println("unstakeId", unstakeId)
+			fmt.Println("txId", txId)
+			return func(ctx e2e.StepCtx) error {
+				time.Sleep(60 * time.Second)
 
-			return nil
+				runner := ctx.Container.Runner()
+
+				getTransaction := runner.TxDb.GetTransaction(txId)
+
+				fmt.Println("txId", txId)
+				if getTransaction == nil {
+					return errors.New("non-existent transaction")
+				}
+				tx := *getTransaction
+				if tx.Status != "CONFIRMED" {
+					return fmt.Errorf("incorrect status should be CONFIRMED status is: %s", tx.Status)
+				}
+				fmt.Println("transactions", getTransaction)
+				return nil
+			}, nil
 		},
-		r2e.Wait(40),
-		func() error {
-			// mockCreator.Mr.MineNullBlocks(200)
-			return nil
-		},
-
-		func() error {
-			unstakeTx := &transactionpool.VSCStake{
-				From:   "hive:vsc.account",
-				To:     "hive:vsc.account",
-				Amount: "0.001",
-				Asset:  "hbd_savings",
-				Type:   "unstake",
-				NetId:  "vsc-mainnet",
-			}
-
-			ops, err := unstakeTx.SerializeHive()
-
-			if err != nil {
-
-				panic(err)
-			}
-
-			fmt.Println("Prefix: e2e-1] Unstake ops", ops, err)
-			tx := r2e.HiveCreator.MakeTransaction(ops)
-			r2e.HiveCreator.PopulateSigningProps(&tx, nil)
-			sig, _ := r2e.HiveCreator.Sign(tx)
-			tx.AddSig(sig)
-			unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
-			fmt.Println("unstakeId", unstakeId)
-
-			return nil
-		},
-		r2e.Wait(20),
-		func() error {
-			mockCreator.ClaimInterest("vsc.gateway", 100)
-			return nil
-		},
-
-		r2e.Wait(20),
-		func() error {
-
-			fmt.Println("syncBalance depositing")
-
-			var demoAccounts = []string{
-				"vsc.staker1",
-				"vsc.staker2",
-				"vsc.staker3",
-				"vsc.staker4",
-				"vsc.staker5",
-				"vsc.staker6",
-			}
-
-			for _, account := range demoAccounts {
-				mockCreator.Transfer(account, "vsc.gateway", "100", "HBD", "")
-			}
-
-			return nil
-		},
-		r2e.Wait(90),
-		func() error {
-			mockCreator.ClaimInterest("vsc.gateway", 50)
-			return nil
-		},
-		// func() error {
-		// 	fmt.Println("Preparing atomicId")
-		// 	withdrawTx := &transactionpool.VscWithdraw{
-		// 		From:   "hive:test-account",
-		// 		To:     "hive:test-account",
-		// 		Amount: "0.030",
-		// 		Asset:  "hbd",
-		// 		NetId:  "vsc-mainnet",
-		// 		Type:   "withdraw",
-		// 	}
-		// 	withdrawTx2 := &transactionpool.VscWithdraw{
-		// 		From:   "hive:test-account",
-		// 		To:     "hive:test-account",
-		// 		Amount: "0.060",
-		// 		Asset:  "hbd",
-		// 		NetId:  "vsc-mainnet",
-		// 		Type:   "withdraw",
-		// 	}
-
-		// 	ops, _ := withdrawTx.SerializeHive()
-		// 	ops2, _ := withdrawTx2.SerializeHive()
-		// 	totalOps := []hivego.HiveOperation{}
-		// 	totalOps = append(totalOps, ops...)
-		// 	totalOps = append(totalOps, ops2...)
-
-		// 	tx := r2e.HiveCreator.MakeTransaction(totalOps)
-
-		// 	r2e.HiveCreator.PopulateSigningProps(&tx, nil)
-		// 	sig, _ := r2e.HiveCreator.Sign(tx)
-
-		// 	tx.AddSig(sig)
-
-		// 	atomicId, _ := r2e.HiveCreator.Broadcast(tx)
-		// 	fmt.Println("atomicId", atomicId)
-
-		// 	return nil
-		// },
-
-		// r2e.Produce(e2e.TimeToBlocks(time.Duration(time.Hour * 24 * 3))),
 	})
 
-	mainAggregate := aggregate.New(plugs)
+	container.AddStep(e2e.Step{
+		Name: "Execute Contract - Test 4",
+		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
+			transferOp := &transactionpool.VscContractCall{
+				Caller:     didKey.String(),
+				ContractId: contractId,
+				RcLimit:    200,
+				Action:     "test4",
+				Payload:    "test",
+				NetId:      "vsc-mainnet",
 
-	test_utils.RunPlugin(t, mainAggregate)
-
-	plugsz := make([]aggregate.Plugin, 0)
-
-	for _, node := range runningNodes {
-		plugsz = append(plugsz, &node)
-	}
-	startupAggregate := aggregate.New(plugsz)
-
-	test_utils.RunPlugin(t, startupAggregate, true)
-
-	mockReader.ProcessFunction = func(block hive_blocks.HiveBlock, headHeight *uint64) {
-		for _, node := range runningNodes {
-			node.MockHiveBlocks.HighestBlock = block.BlockNumber
-		}
-		for _, node := range runningNodes {
-			node.VStream.ProcessBlock(block, headHeight)
-		}
-	}
-
-	func() {
-
-		peerAddrs := make([]string, 0)
-
-		for _, node := range runningNodes {
-			for _, addr := range node.P2P.Addrs() {
-				peerAddrs = append(peerAddrs, addr.String()+"/p2p/"+node.P2P.ID().String())
+				Intents: []contracts.Intent{
+					{
+						Type: "transfer.allow",
+						Args: map[string]string{
+							"limit": "1.000",
+							"token": "hive",
+						},
+					},
+				},
 			}
-		}
+			op, err := transferOp.SerializeVSC()
 
-		for _, node := range runningNodes {
-			for _, peerStr := range peerAddrs {
-				peerId, _ := peer.AddrInfoFromString(peerStr)
-				ctx := context.Background()
-				ctx, _ = context.WithTimeout(ctx, 5*time.Second)
-				fmt.Println("Trying to connect", peerId)
-				node.P2P.Connect(ctx, *peerId)
+			if err != nil {
+				return nil, err
 			}
-		}
-	}()
+			tx := transactionpool.VSCTransaction{
+				Ops: []transactionpool.VSCTransactionOp{
+					op,
+				},
+				Nonce: 3,
+			}
+			sTx, err := transactionCreator.SignFinal(tx)
 
-	mockReader.StartRealtime()
+			txId, err := transactionCreator.Broadcast(sTx)
 
-	// mockCreator.Transfer("test-account", "vsc.gateway", "10", "HBD", "test transfer")
+			if err != nil {
+				return nil, err
+			}
 
-	test_utils.RunPlugin(t, r2e, true)
+			fmt.Println("txId", txId)
+			return func(ctx e2e.StepCtx) error {
+				time.Sleep(60 * time.Second)
 
-	select {}
+				runner := ctx.Container.Runner()
+
+				getTransaction := runner.TxDb.GetTransaction(txId)
+
+				fmt.Println("txId", txId)
+				if getTransaction == nil {
+					return errors.New("non-existent transaction")
+				}
+				tx := *getTransaction
+				if tx.Status != "CONFIRMED" {
+					return fmt.Errorf("incorrect status should be CONFIRMED status is: %s", tx.Status)
+				}
+				fmt.Println("transactions", getTransaction)
+				return nil
+			}, nil
+		},
+	})
+
+	container.AddStep(e2e.Step{
+		Name: "Execute Contract - Test 5",
+		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
+			transferOp := &transactionpool.VscContractCall{
+				Caller:     didKey.String(),
+				ContractId: contractId,
+				RcLimit:    200,
+				Action:     "test5",
+				Payload:    "test",
+				NetId:      "vsc-mainnet",
+
+				Intents: []contracts.Intent{
+					{
+						Type: "transfer.allow",
+						Args: map[string]string{
+							"limit": "1.000",
+							"token": "hive",
+						},
+					},
+				},
+			}
+			op, err := transferOp.SerializeVSC()
+
+			if err != nil {
+				return nil, err
+			}
+			tx := transactionpool.VSCTransaction{
+				Ops: []transactionpool.VSCTransactionOp{
+					op,
+				},
+				Nonce: 4,
+			}
+			sTx, err := transactionCreator.SignFinal(tx)
+
+			txId, err := transactionCreator.Broadcast(sTx)
+
+			if err != nil {
+				return nil, err
+			}
+
+			fmt.Println("txId", txId)
+			return func(ctx e2e.StepCtx) error {
+				time.Sleep(60 * time.Second)
+
+				runner := ctx.Container.Runner()
+
+				getTransaction := runner.TxDb.GetTransaction(txId)
+
+				fmt.Println("txId", txId)
+				if getTransaction == nil {
+					return errors.New("non-existent transaction")
+				}
+				tx := *getTransaction
+				if tx.Status != "CONFIRMED" {
+					return fmt.Errorf("incorrect status should be CONFIRMED status is: %s", tx.Status)
+				}
+				fmt.Println("transactions", getTransaction)
+				return nil
+			}, nil
+		},
+	})
+
+	container.AddStep(e2e.Step{
+		Name: "Execute Contract - Test 6",
+		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
+			transferOp := &transactionpool.VscContractCall{
+				Caller:     didKey.String(),
+				ContractId: contractId,
+				RcLimit:    200,
+				Action:     "does_not_exist",
+				Payload:    "test",
+				NetId:      "vsc-mainnet",
+
+				Intents: []contracts.Intent{},
+			}
+			op, err := transferOp.SerializeVSC()
+
+			if err != nil {
+				return nil, err
+			}
+			tx := transactionpool.VSCTransaction{
+				Ops: []transactionpool.VSCTransactionOp{
+					op,
+				},
+				Nonce: 5,
+			}
+			sTx, _ := transactionCreator.SignFinal(tx)
+
+			txId, err := transactionCreator.Broadcast(sTx)
+
+			if err != nil {
+				return nil, err
+			}
+
+			fmt.Println("txId", txId)
+			return func(ctx e2e.StepCtx) error {
+				time.Sleep(60 * time.Second)
+
+				runner := ctx.Container.Runner()
+
+				getTransaction := runner.TxDb.GetTransaction(txId)
+
+				fmt.Println("txId", txId)
+				if getTransaction == nil {
+					return errors.New("non-existent transaction")
+				}
+				tx := *getTransaction
+				if tx.Status != "FAILED" {
+					return fmt.Errorf("incorrect status should be FAILED status is: %s", tx.Status)
+				}
+				fmt.Println("transactions", getTransaction)
+				return nil
+			}, nil
+		},
+	})
+
+	time.Sleep(30 * time.Second)
+
+	container.RunSteps(t)
+
+	container.Stop()
+
+	// time.Sleep(5 * time.Minute)
+	// container.Stop()
+
+	// r2e.SetSteps([]func() error{
+	// 	r2e.WaitToStart(),
+	// 	func() error {
+	// 		return nil
+	// 	},
+	// 	r2e.Wait(10),
+	// 	// r2e.BroadcastMockElection(nodeNames),
+	// 	func() error {
+	// 		r2e.ElectionProposer.HoldElection(10)
+	// 		return nil
+	// 	},
+	// 	func() error {
+	// 		fmt.Println("[Prefix: e2e-1] Executing test transfer from test-account to @vsc.gateway of 50 hbd")
+	// 		mockCreator.Transfer("test-account", "vsc.gateway", "1500", "HBD", "to="+didKey.String())
+	// 		mockCreator.Transfer("test-account", "vsc.gateway", "1000", "HBD", "to="+ethDid.String())
+	// 		mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "")
+	// 		mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "to=0x25190d9443442765769Fe5CcBc8aA76151932a1A")
+	// 		mockCreator.Transfer("test-account", "vsc.gateway", "50", "HIVE", "")
+	// 		return nil
+	// 	},
+	// 	r2e.Wait(3),
+	// 	doWithdraw,
+	// 	doWithdraw,
+	// 	r2e.Wait(11),
+	// 	doWithdraw,
+	// 	func() error {
+	// 		transferOp := &transactionpool.VSCTransfer{
+	// 			From:   didKey.String(),
+	// 			To:     "hive:vsc.account",
+	// 			Amount: "0.001",
+	// 			Asset:  "hbd",
+	// 			NetId:  "vsc-mainnet",
+	// 		}
+	// 		op, _ := transferOp.SerializeVSC()
+	// 		tx := transactionpool.VSCTransaction{
+	// 			Ops: []transactionpool.VSCTransactionOp{
+	// 				op,
+	// 			},
+	// 		}
+	// 		sTx, err := transactionCreator.SignFinal(tx)
+
+	// 		bbb, _ := json.Marshal(sTx)
+	// 		fmt.Println("VSCTransfer err", err, string(bbb))
+
+	// 		transactionCreator.Broadcast(sTx)
+
+	// 		return nil
+	// 	},
+	// 	func() error {
+	// 		transferOp := &transactionpool.VSCTransfer{
+	// 			From:   ethDid.String(),
+	// 			To:     "hive:vsc.account",
+	// 			Amount: "0.001",
+	// 			Asset:  "hbd",
+	// 			NetId:  "vsc-mainnet",
+	// 		}
+	// 		op, _ := transferOp.SerializeVSC()
+	// 		tx := transactionpool.VSCTransaction{
+	// 			Ops: []transactionpool.VSCTransactionOp{
+	// 				op,
+	// 			},
+	// 		}
+	// 		sTx, err := ethCreator.SignFinal(tx)
+
+	// 		bbb, _ := json.Marshal(sTx)
+	// 		fmt.Println("VSCTransfer err", err, string(bbb))
+
+	// 		transactionCreator.Broadcast(sTx)
+
+	// 		return nil
+	// 	},
+	// 	func() error {
+	// 		stakeTx := &transactionpool.VscConsenusStake{
+	// 			Account: "hive:test-account",
+	// 			Amount:  "0.025",
+	// 			Type:    "stake",
+	// 			NetId:   "vsc-mainnet",
+	// 		}
+
+	// 		ops, err := stakeTx.SerializeHive()
+
+	// 		fmt.Println("consensus stake err", err)
+
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+
+	// 		tx := r2e.HiveCreator.MakeTransaction(ops)
+	// 		r2e.HiveCreator.PopulateSigningProps(&tx, nil)
+	// 		sig, _ := r2e.HiveCreator.Sign(tx)
+	// 		tx.AddSig(sig)
+	// 		unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
+	// 		fmt.Println("stakeId", unstakeId)
+	// 		return nil
+	// 	},
+
+	// 	// func() error {
+	// 	// 	for i := 0; i < 5; i++ {
+	// 	// 		transferOp := &transactionpool.VSCTransfer{
+	// 	// 			From:   didKey.String(),
+	// 	// 			To:     "hive:vsc.account",
+	// 	// 			Amount: "0.001",
+	// 	// 			Asset:  "hbd",
+	// 	// 			NetId:  "vsc-mainnet",
+	// 	// 			Nonce:  uint64(i),
+	// 	// 		}
+	// 	// 		sTx, _ := transactionCreator.SignFinal(transferOp)
+
+	// 	// 		transactionCreator.Broadcast(sTx)
+	// 	// 	}
+
+	// 	// 	stakeOp := &transactionpool.VSCStake{
+	// 	// 		From:   didKey.String(),
+	// 	// 		To:     didKey.String(),
+	// 	// 		Amount: "0.020",
+	// 	// 		Asset:  "hbd",
+	// 	// 		NetId:  "vsc-mainnet",
+	// 	// 		Type:   "stake",
+	// 	// 		Nonce:  uint64(5),
+	// 	// 	}
+	// 	// 	sTx, err := transactionCreator.SignFinal(stakeOp)
+
+	// 	// 	fmt.Println("Sign error", err, sTx)
+
+	// 	// 	stakeId, err := transactionCreator.Broadcast(sTx)
+
+	// 	// 	fmt.Println("stakeId", stakeId, err)
+	// 	// 	return nil
+	// 	// },
+	// 	r2e.Wait(40),
+	// 	func() error {
+	// 		stakeTx := &transactionpool.VscConsenusStake{
+	// 			Account: "hive:test-account",
+	// 			Amount:  "0.025",
+	// 			Type:    "unstake",
+	// 			NetId:   "vsc-mainnet",
+	// 		}
+
+	// 		ops, err := stakeTx.SerializeHive()
+
+	// 		fmt.Println("consensus stake erro", err)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+
+	// 		tx := r2e.HiveCreator.MakeTransaction(ops)
+	// 		r2e.HiveCreator.PopulateSigningProps(&tx, nil)
+	// 		sig, _ := r2e.HiveCreator.Sign(tx)
+	// 		tx.AddSig(sig)
+
+	// 		unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
+	// 		fmt.Println("stakeId", unstakeId)
+	// 		return nil
+	// 	},
+	// 	// func() error {
+	// 	// 	transferTx := &transactionpool.VSCTransfer{
+	// 	// 		From:   didKey.String(),
+	// 	// 		To:     "hive:vsc.account",
+	// 	// 		Amount: "0.015",
+	// 	// 		Asset:  "hbd_savings",
+	// 	// 		NetId:  "vsc-mainnet",
+	// 	// 		Nonce:  uint64(6),
+	// 	// 	}
+	// 	// 	sTx, _ := transactionCreator.SignFinal(transferTx)
+
+	// 	// 	stakeId, err := transactionCreator.Broadcast(sTx)
+
+	// 	// 	fmt.Println("transferStakeId", stakeId, err)
+	// 	// 	return nil
+	// 	// },
+	// 	r2e.Wait(10),
+	// 	func() error {
+	// 		unstakeTx := &transactionpool.VSCStake{
+	// 			From:   "hive:vsc.account",
+	// 			To:     "hive:vsc.account",
+	// 			Amount: "0.001",
+	// 			Asset:  "hbd_savings",
+	// 			Type:   "unstake",
+	// 			NetId:  "vsc-mainnet",
+	// 		}
+
+	// 		ops, err := unstakeTx.SerializeHive()
+
+	// 		if err != nil {
+
+	// 			panic(err)
+	// 		}
+
+	// 		fmt.Println("Prefix: e2e-1] Unstake ops", ops, err)
+	// 		tx := r2e.HiveCreator.MakeTransaction(ops)
+	// 		r2e.HiveCreator.PopulateSigningProps(&tx, nil)
+	// 		sig, _ := r2e.HiveCreator.Sign(tx)
+	// 		tx.AddSig(sig)
+	// 		unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
+	// 		fmt.Println("unstakeId", unstakeId)
+
+	// 		return nil
+	// 	},
+	// 	r2e.Wait(20),
+	// 	func() error {
+	// 		unstakeTx := &transactionpool.VSCStake{
+	// 			From:   "hive:vsc.account",
+	// 			To:     "hive:vsc.account",
+	// 			Amount: "0.001",
+	// 			Asset:  "hbd_savings",
+	// 			Type:   "unstake",
+	// 			NetId:  "vsc-mainnet",
+	// 		}
+
+	// 		ops, err := unstakeTx.SerializeHive()
+
+	// 		if err != nil {
+
+	// 			panic(err)
+	// 		}
+
+	// 		fmt.Println("Prefix: e2e-1] Unstake ops", ops, err)
+	// 		tx := r2e.HiveCreator.MakeTransaction(ops)
+	// 		r2e.HiveCreator.PopulateSigningProps(&tx, nil)
+	// 		sig, _ := r2e.HiveCreator.Sign(tx)
+	// 		tx.AddSig(sig)
+	// 		unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
+	// 		fmt.Println("unstakeId", unstakeId)
+
+	// 		return nil
+	// 	},
+	// 	r2e.Wait(40),
+	// 	func() error {
+	// 		// mockCreator.Mr.MineNullBlocks(200)
+	// 		return nil
+	// 	},
+
+	// 	func() error {
+	// 		unstakeTx := &transactionpool.VSCStake{
+	// 			From:   "hive:vsc.account",
+	// 			To:     "hive:vsc.account",
+	// 			Amount: "0.001",
+	// 			Asset:  "hbd_savings",
+	// 			Type:   "unstake",
+	// 			NetId:  "vsc-mainnet",
+	// 		}
+
+	// 		ops, err := unstakeTx.SerializeHive()
+
+	// 		if err != nil {
+
+	// 			panic(err)
+	// 		}
+
+	// 		fmt.Println("Prefix: e2e-1] Unstake ops", ops, err)
+	// 		tx := r2e.HiveCreator.MakeTransaction(ops)
+	// 		r2e.HiveCreator.PopulateSigningProps(&tx, nil)
+	// 		sig, _ := r2e.HiveCreator.Sign(tx)
+	// 		tx.AddSig(sig)
+	// 		unstakeId, _ := r2e.HiveCreator.Broadcast(tx)
+	// 		fmt.Println("unstakeId", unstakeId)
+
+	// 		return nil
+	// 	},
+	// 	r2e.Wait(20),
+	// 	func() error {
+	// 		mockCreator.ClaimInterest("vsc.gateway", 100)
+	// 		return nil
+	// 	},
+
+	// 	r2e.Wait(20),
+	// 	func() error {
+
+	// 		fmt.Println("syncBalance depositing")
+
+	// 		var demoAccounts = []string{
+	// 			"vsc.staker1",
+	// 			"vsc.staker2",
+	// 			"vsc.staker3",
+	// 			"vsc.staker4",
+	// 			"vsc.staker5",
+	// 			"vsc.staker6",
+	// 		}
+
+	// 		for _, account := range demoAccounts {
+	// 			mockCreator.Transfer(account, "vsc.gateway", "100", "HBD", "")
+	// 		}
+
+	// 		return nil
+	// 	},
+	// 	r2e.Wait(90),
+	// 	func() error {
+	// 		mockCreator.ClaimInterest("vsc.gateway", 50)
+	// 		return nil
+	// 	},
+	// 	// func() error {
+	// 	// 	fmt.Println("Preparing atomicId")
+	// 	// 	withdrawTx := &transactionpool.VscWithdraw{
+	// 	// 		From:   "hive:test-account",
+	// 	// 		To:     "hive:test-account",
+	// 	// 		Amount: "0.030",
+	// 	// 		Asset:  "hbd",
+	// 	// 		NetId:  "vsc-mainnet",
+	// 	// 		Type:   "withdraw",
+	// 	// 	}
+	// 	// 	withdrawTx2 := &transactionpool.VscWithdraw{
+	// 	// 		From:   "hive:test-account",
+	// 	// 		To:     "hive:test-account",
+	// 	// 		Amount: "0.060",
+	// 	// 		Asset:  "hbd",
+	// 	// 		NetId:  "vsc-mainnet",
+	// 	// 		Type:   "withdraw",
+	// 	// 	}
+
+	// 	// 	ops, _ := withdrawTx.SerializeHive()
+	// 	// 	ops2, _ := withdrawTx2.SerializeHive()
+	// 	// 	totalOps := []hivego.HiveOperation{}
+	// 	// 	totalOps = append(totalOps, ops...)
+	// 	// 	totalOps = append(totalOps, ops2...)
+
+	// 	// 	tx := r2e.HiveCreator.MakeTransaction(totalOps)
+
+	// 	// 	r2e.HiveCreator.PopulateSigningProps(&tx, nil)
+	// 	// 	sig, _ := r2e.HiveCreator.Sign(tx)
+
+	// 	// 	tx.AddSig(sig)
+
+	// 	// 	atomicId, _ := r2e.HiveCreator.Broadcast(tx)
+	// 	// 	fmt.Println("atomicId", atomicId)
+
+	// 	// 	return nil
+	// 	// },
+
+	// 	// r2e.Produce(e2e.TimeToBlocks(time.Duration(time.Hour * 24 * 3))),
+	// })
+
 }
 
 // Mock seed for testing

@@ -2,24 +2,23 @@ package sdk
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
+	"vsc-node/modules/db/vsc/contracts"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_types "vsc-node/modules/wasm/types"
 
 	"github.com/JustinKnueppel/go-result"
-	"golang.org/x/crypto/ripemd160"
 )
 
 type SdkResultStruct = wasm_types.WasmResultStruct
 type SdkResult = result.Result[SdkResultStruct]
 
 var (
-	ErrInvalidArgument = result.Err[SdkResultStruct](fmt.Errorf("invalid argument"))
-	ErrUnimplemented   = result.Err[SdkResultStruct](fmt.Errorf("unimplemented"))
+	ErrInvalidArgument = result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid argument")))
+	ErrUnimplemented   = result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("unimplemented")))
 )
 
 var sdkModuleRef *map[string]sdkFunc
@@ -39,6 +38,8 @@ var SdkModule = map[string]sdkFunc{
 		if !ok {
 			return ErrInvalidArgument
 		}
+
+		fmt.Println("console.log(s):", s)
 		session := eCtx.IOSession()
 		eCtx.Log(s)
 		gas := session.End()
@@ -46,7 +47,7 @@ var SdkModule = map[string]sdkFunc{
 			Gas: gas,
 		})
 	},
-	"db.setObject": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+	"db.set_object": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
 		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 		key, ok := arg1.(string)
 		if !ok {
@@ -67,7 +68,7 @@ var SdkModule = map[string]sdkFunc{
 			},
 		)
 	},
-	"db.getObject": func(ctx context.Context, a any) SdkResult {
+	"db.get_object": func(ctx context.Context, a any) SdkResult {
 		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 		key, ok := a.(string)
 		if !ok {
@@ -85,7 +86,7 @@ var SdkModule = map[string]sdkFunc{
 			},
 		)
 	},
-	"db.delObject": func(ctx context.Context, a any) SdkResult {
+	"db.rm_object": func(ctx context.Context, a any) SdkResult {
 		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 		key, ok := a.(string)
 		if !ok {
@@ -132,21 +133,29 @@ var SdkModule = map[string]sdkFunc{
 				),
 			)
 		} else {
-			return result.Err[SdkResultStruct](fmt.Errorf("INVALID_CALL"))
+			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("INVALID_CALL")))
 		}
 	},
-	"system.getEnv": func(ctx context.Context, a any) SdkResult {
+	"system.get_env_key": func(ctx context.Context, a any) SdkResult {
 		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 		envArg, ok := a.(string)
 		if !ok {
 			return ErrInvalidArgument
 		}
 
+		fmt.Println("Let's get env", envArg)
+		res := eCtx.EnvVar(envArg)
+
+		fmt.Println("system.getEnv 50", envArg, eCtx.EnvVar(envArg), res.Unwrap())
+
 		session := eCtx.IOSession()
 		return result.Map(
 			eCtx.EnvVar(envArg),
+			// data,
 			func(s string) SdkResultStruct {
 				gas := session.End()
+
+				// fmt.Println("system.getEnv", envArg, s, gas)
 				return SdkResultStruct{
 					Result: s,
 					Gas:    gas,
@@ -154,45 +163,27 @@ var SdkModule = map[string]sdkFunc{
 			},
 		)
 	},
-	"crypto.sha256": func(ctx context.Context, a any) SdkResult {
-		value, ok := a.(string)
-		if !ok {
-			return ErrInvalidArgument
-		}
+	"system.get_env": func(ctx context.Context, a any) SdkResult {
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 
-		b, err := hex.DecodeString(value)
-		if err != nil {
-			return result.Err[SdkResultStruct](err)
-		}
+		session := eCtx.IOSession()
+		return result.Map(
+			eCtx.GetEnv(),
+			// data,
+			func(s string) SdkResultStruct {
+				gas := session.End()
 
-		res := sha256.Sum256(b)
-
-		return result.Ok(SdkResultStruct{
-			Result: hex.EncodeToString(res[:]),
-			Gas:    uint(150*len(b) + 300), // TODO set a more fair value
-		})
+				// fmt.Println("system.getEnv", envArg, s, gas)
+				return SdkResultStruct{
+					Result: s,
+					Gas:    gas,
+				}
+			},
+		)
 	},
-	"crypto.ripemd160": func(ctx context.Context, a any) SdkResult {
-		value, ok := a.(string)
-		if !ok {
-			return ErrInvalidArgument
-		}
 
-		b, err := hex.DecodeString(value)
-		if err != nil {
-			return result.Err[SdkResultStruct](err)
-		}
-
-		res := ripemd160.New().Sum(b)
-
-		return result.Ok(SdkResultStruct{
-			Result: hex.EncodeToString(res[:]),
-			Gas:    uint(150*len(b) + 300), // TODO set a more fair value
-		})
-	},
-	//Gets current balance of contract account or tag
-	//Cannot be used to get balance of other accounts (or generally shouldn"t)
-	"hive.getbalance": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+	//Gets current balance of an account
+	"hive.get_balance": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
 		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 		account, ok := arg1.(string)
 		if !ok {
@@ -216,7 +207,7 @@ var SdkModule = map[string]sdkFunc{
 		}
 		amount, err := strconv.ParseInt(amountString, 10, 64)
 		if err != nil {
-			return result.Err[SdkResultStruct](err)
+			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), err))
 		}
 		asset, ok := arg2.(string)
 		if !ok {
@@ -245,8 +236,11 @@ var SdkModule = map[string]sdkFunc{
 			return ErrInvalidArgument
 		}
 		amount, err := strconv.ParseInt(amountString, 10, 64)
+		if amount < 0 {
+			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("amount cannot be negative")))
+		}
 		if err != nil {
-			return result.Err[SdkResultStruct](err)
+			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), err))
 		}
 		asset, ok := arg3.(string)
 		if !ok {
@@ -275,8 +269,11 @@ var SdkModule = map[string]sdkFunc{
 			return ErrInvalidArgument
 		}
 		amount, err := strconv.ParseInt(amountString, 10, 64)
+		if amount < 0 {
+			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("amount cannot be negative")))
+		}
 		if err != nil {
-			return result.Err[SdkResultStruct](err)
+			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), err))
 		}
 		asset, ok := arg3.(string)
 		if !ok {

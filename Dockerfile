@@ -4,7 +4,7 @@
 FROM golang:1.24.1 AS build
 
 # Wasmedge Install Dependencies
-RUN apt install -y git python3
+RUN apt update && apt install -y git python3
 
 RUN useradd -m app
 
@@ -25,11 +25,8 @@ RUN go mod download
 # Copy the rest of the application code
 COPY --chown=app:app . .
 
-# Build the application
-RUN go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o vsc-node vsc-node/cmd/vsc-node
-
-# Build VM Runner
-RUN . /home/app/.wasmedge/env && go build -buildvcs=false -o vm-runner vsc-node/cmd/vm-runner
+# Source the WasmEdge environment and build the application
+RUN . /home/app/.wasmedge/env && go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o vsc-node vsc-node/cmd/vsc-node
 
 
 
@@ -45,11 +42,18 @@ WORKDIR /home/app/app
 # Copy the binary from the build stage
 COPY --from=build /home/app/app/vsc-node .
 
-# Copy the binary from the build stage
-COPY --from=build /home/app/app/vm-runner .
-
 # Copy the WasmEdge from the build stage
 COPY --from=build /home/app/.wasmedge /home/app/.wasmedge
 
+# Set environment variables for WasmEdge
+ENV LD_LIBRARY_PATH=/home/app/.wasmedge/lib:$LD_LIBRARY_PATH
+ENV PATH=/home/app/.wasmedge/bin:$PATH
+
+# Create entrypoint script using sh instead of bash
+RUN printf '#!/bin/sh\n\
+. /home/app/.wasmedge/env\n\
+exec "$@"\n' > /home/app/app/entrypoint.sh && \
+chmod +x /home/app/app/entrypoint.sh
+
 # Command to run when the container starts
-ENTRYPOINT ["./vsc-node"]
+ENTRYPOINT ["/home/app/app/entrypoint.sh", "./vsc-node"]

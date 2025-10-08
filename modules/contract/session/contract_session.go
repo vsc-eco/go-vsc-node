@@ -3,6 +3,7 @@ package contract_session
 import (
 	"maps"
 	"vsc-node/lib/datalayer"
+	"vsc-node/modules/db/vsc/contracts"
 
 	"github.com/ipfs/go-cid"
 )
@@ -10,17 +11,19 @@ import (
 type ContractSession struct {
 	dl *datalayer.DataLayer
 
-	metadata    map[string]interface{}
+	metadata    contracts.ContractMetadata
 	cache       map[string][]byte
 	deletions   map[string]bool
 	stateMerkle string
+	logs        []string
 
 	// stateSesions map[string]*StateStore
 }
 
 func New(dl *datalayer.DataLayer) *ContractSession {
 	return &ContractSession{
-		dl: dl,
+		dl:   dl,
+		logs: make([]string, 0),
 	}
 }
 
@@ -46,11 +49,11 @@ func (cs *ContractSession) GetStateStore(contractId ...string) *StateStore {
 	// }
 }
 
-func (cs *ContractSession) GetMetadata() map[string]interface{} {
+func (cs *ContractSession) GetMetadata() contracts.ContractMetadata {
 	return cs.metadata
 }
 
-func (cs *ContractSession) SetMetadata(meta map[string]interface{}) {
+func (cs *ContractSession) SetMetadata(meta contracts.ContractMetadata) {
 	cs.metadata = meta
 }
 
@@ -70,6 +73,17 @@ func (cs *ContractSession) FromOutput(output TempOutput) {
 	cs.deletions = make(map[string]bool)
 }
 
+func (cs *ContractSession) AppendLogs(logs []string) {
+	cs.logs = append(cs.logs, logs...)
+}
+
+func (cs *ContractSession) PopLogs() []string {
+	// TODO: walk through inter-contract call sessions and return their logs
+	popped := cs.logs
+	cs.logs = make([]string, 0)
+	return popped
+}
+
 type StateStore struct {
 	cache     map[string][]byte
 	deletions map[string]bool
@@ -79,6 +93,9 @@ type StateStore struct {
 }
 
 func (ss *StateStore) Get(key string) []byte {
+	if ss.deletions[key] {
+		return []byte{}
+	}
 	// return ss.cache[key]
 	if ss.cache[key] == nil {
 		cidz, err := ss.databin.Get(key)
@@ -114,6 +131,10 @@ func (ss *StateStore) Commit() {
 	ss.cs.cache = ss.cache
 }
 
+func (ss *StateStore) Rollback() {
+	// Method only used in mocks for testing
+}
+
 func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) StateStore {
 	if cids == "" {
 		databin := datalayer.NewDataBin(dl)
@@ -142,7 +163,7 @@ func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) St
 type TempOutput struct {
 	Cache map[string][]byte
 
-	Metadata  map[string]interface{}
+	Metadata  contracts.ContractMetadata
 	Deletions map[string]bool
 	Cid       string
 }

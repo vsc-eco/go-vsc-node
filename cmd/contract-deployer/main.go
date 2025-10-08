@@ -17,20 +17,6 @@ import (
 	"github.com/vsc-eco/hivego"
 )
 
-type EmptyWitnesses struct {
-	witnesses []witnesses.Witness
-}
-
-func NewEmptyWitnesses() *EmptyWitnesses {
-	return &EmptyWitnesses{
-		witnesses: make([]witnesses.Witness, 0),
-	}
-}
-
-func (w *EmptyWitnesses) GetLastestWitnesses() ([]witnesses.Witness, error) {
-	return w.witnesses, nil
-}
-
 func main() {
 	args, err := ParseArgs()
 	if err != nil {
@@ -42,7 +28,7 @@ func main() {
 	sysConfig := common.SystemConfig{
 		Network: args.network,
 	}
-	wits := NewEmptyWitnesses()
+	wits := witnesses.NewEmptyWitnesses()
 	p2p := p2pInterface.New(wits, identityConfig, sysConfig)
 	da := datalayer.New(p2p)
 	client := data_availability_client.New(p2p, identityConfig, da)
@@ -77,7 +63,7 @@ func main() {
 
 	a.Start()
 
-	proof, proofError := client.RequestProof(WASM_CODE)
+	proof, proofError := client.RequestProof(args.gqlUrl, WASM_CODE)
 	if proofError != nil {
 		fmt.Println("failed to request storage proof", proofError)
 	} else {
