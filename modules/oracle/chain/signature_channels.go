@@ -13,7 +13,7 @@ var (
 
 type signatureMessage struct {
 	// base64 encoded string of 96 bytes is 128
-	Signature string `json:"signature,omitempty" validate:"base64rawurl,required,len=128"`
+	Signature string `json:"signature,omitempty" validate:"base64,required,len=128"`
 }
 
 type signatureChannels struct {

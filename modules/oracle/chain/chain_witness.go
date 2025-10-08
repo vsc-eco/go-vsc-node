@@ -1,10 +1,14 @@
 package chain
 
 import (
-	"encoding/hex"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"strings"
 )
+
+const rawBlsSignatureLength = 96
 
 // signs off chain data and returns a signature
 func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (string, error) {
@@ -22,8 +26,22 @@ func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (string, error) {
 		return "", fmt.Errorf("invalid chain data: %w", err)
 	}
 
-	// TODO: sign chain data
-	signature := hex.EncodeToString(msg.Payload)
+	signature, err := signChainData(msg.Payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign chain data: %w", err)
+	}
 
+	return signature, nil
+}
+
+// TODO: sign chain data, 96 bytes signature with base64.RawStdEncoding
+func signChainData(payload []byte) (string, error) {
+	var buf [rawBlsSignatureLength]byte
+	n := copy(buf[:], payload)
+	if _, err := io.ReadFull(rand.Reader, buf[n:]); err != nil {
+		return "", err
+	}
+
+	signature := base64.RawStdEncoding.EncodeToString(buf[:])
 	return signature, nil
 }
