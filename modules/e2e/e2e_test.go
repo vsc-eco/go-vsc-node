@@ -28,6 +28,7 @@ import (
 
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/hasura/go-graphql-client"
+	"github.com/vsc-eco/hivego"
 	// secp256k1 "github.com/ethereum/go-ethereum/crypto/secp256k1"
 )
 
@@ -138,9 +139,9 @@ func TestE2E(t *testing.T) {
 		Name: "Hold election and transfer",
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
 
-			mockCreator.Transfer("test-account", "vsc.gateway", "1500", "HBD", "to="+didKey.String())
+			mockCreator.Transfer("test-account", "vsc.gateway", "15000", "HBD", "to="+didKey.String())
 			mockCreator.Transfer("test-account", "vsc.gateway", "1500", "HIVE", "to="+didKey.String())
-			mockCreator.Transfer("test-account", "vsc.gateway", "1000", "HBD", "to="+ethDid.String())
+			mockCreator.Transfer("test-account", "vsc.gateway", "10000", "HBD", "to="+ethDid.String())
 			mockCreator.Transfer("test-account", "vsc.gateway", "1000", "HIVE", "to="+ethDid.String())
 			//Balance goes to 0x25190d9443442765769Fe5CcBc8aA76151932a1A
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HBD", "to=0x25190d9443442765769Fe5CcBc8aA76151932a1A")
@@ -210,13 +211,21 @@ func TestE2E(t *testing.T) {
 
 			j, err := json.Marshal(tx.ToData())
 
-			txConfirm := container.HiveCreator.CustomJson(stateEngine.MockJson{
-				RequiredAuths:        []string{"vaultec"},
-				RequiredPostingAuths: []string{},
-				Id:                   "vsc.create_contract",
-				Json:                 string(j),
+			transferOp := r2e.HiveCreator.Transfer("vaultec", "vsc.gateway", "10", "HBD", "contract_deployment")
+
+			deployContract := r2e.HiveCreator.CustomJson([]string{"vaultec"}, []string{}, "vsc.create_contract", string(j))
+
+			hiveTx := r2e.HiveCreator.MakeTransaction([]hivego.HiveOperation{
+				deployContract,
+				transferOp,
 			})
-			contractId = common.ContractId(txConfirm.Id, 0)
+			r2e.HiveCreator.PopulateSigningProps(&hiveTx, nil)
+
+			txId, err := r2e.HiveCreator.Broadcast(hiveTx)
+
+			fmt.Println("txId err", txId, err)
+
+			contractId = common.ContractId(txId, 0)
 
 			fmt.Println("ContractId Is:", contractId)
 			return func(ctx e2e.StepCtx) error {

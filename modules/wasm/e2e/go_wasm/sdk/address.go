@@ -13,6 +13,10 @@ type Sender struct {
 	RequiredPostingAuths []Address `json:"required_posting_auths"`
 }
 
+type ContractCallOptions struct {
+	Intents []Intent `json:"intents,omitempty"`
+}
+
 type AddressDomain string
 
 const (

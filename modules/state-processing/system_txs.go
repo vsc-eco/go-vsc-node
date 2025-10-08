@@ -3,16 +3,14 @@ package stateEngine
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
-	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
-	ledgerSystem "vsc-node/modules/ledger-system"
-	rcSystem "vsc-node/modules/rc-system"
 	transactionpool "vsc-node/modules/transaction-pool"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
 
@@ -23,10 +21,10 @@ import (
 )
 
 type ContractOutput struct {
-	Id         string                 `json:"id"`
-	ContractId string                 `json:"contract_id"`
-	Inputs     []string               `json:"inputs"`
-	Metadata   map[string]interface{} `json:"metadata"`
+	Id         string                     `json:"id"`
+	ContractId string                     `json:"contract_id"`
+	Inputs     []string                   `json:"inputs"`
+	Metadata   contracts.ContractMetadata `json:"metadata"`
 	//This might not be used
 
 	Results     []contracts.ContractOutputResult `json:"results" bson:"results"`
@@ -36,20 +34,21 @@ type ContractOutput struct {
 func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
 	se.Flush()
 
-	for idx, InputId := range output.Inputs {
+	txOuts := make(map[string][]int)
+
+	for idx, inputId := range output.Inputs {
+		inputTxId := strings.Split(inputId, "-")[0]
+		txOuts[inputTxId] = append(txOuts[inputTxId], idx)
+	}
+
+	for txId, txOutIdxs := range txOuts {
 		se.txDb.SetOutput(transactions.SetResultUpdate{
-			Id:    InputId,
-			OpIdx: idx,
+			Id: txId,
 			Output: &transactions.TransactionOutput{
 				Id:    output.Id,
-				Index: int64(idx),
+				Index: txOutIdxs,
 			},
 		})
-		// if output.Results[idx].Ok {
-		// 	se.txDb.SetStatus([]string{InputId}, "CONFIRMED")
-		// } else {
-		// 	se.txDb.SetStatus([]string{InputId}, "FAILED")
-		// }
 	}
 
 	go func() {
@@ -108,7 +107,7 @@ func (tx TxCreateContract) TxSelf() TxSelf {
 const CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT = 84162592
 
 // ProcessTx implements VSCTransaction.
-func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession, contractSession *contract_session.ContractSession, rcPayer string) TxResult {
+func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 
 	fmt.Println("tx.Runtime", tx.Runtime)
 	if wasm_runtime.NewFromString(tx.Runtime.String()).IsErr() {
@@ -122,21 +121,6 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		return TxResult{
 			Success: false,
 			Ret:     "cannot create contract with posting auths",
-		}
-	}
-
-	res := ledgerSession.ExecuteTransfer(ledgerSystem.OpLogEvent{
-		From:        tx.Self.RequiredAuths[0],
-		To:          common.DAO_WALLET,
-		Amount:      common.CONTRACT_DEPLOYMENT_FEE,
-		Asset:       "hbd",
-		Type:        "transfer",
-		BlockHeight: tx.Self.BlockHeight,
-	})
-	if !res.Ok {
-		return TxResult{
-			Success: false,
-			Ret:     res.Msg,
 		}
 	}
 
@@ -159,8 +143,6 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		}
 	}
 
-	// panic("not implemented yet")
-
 	fmt.Println("tx.Code", tx)
 	cidz := cid.MustParse(tx.Code)
 	go func() {
@@ -174,6 +156,9 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		owner = tx.Self.RequiredAuths[0]
 	} else {
 		owner = tx.Owner
+		if !strings.HasPrefix(owner, "hive:") && !strings.HasPrefix(owner, "did:") {
+			owner = "hive:" + owner
+		}
 	}
 
 	se.contractDb.RegisterContract(id, contracts.Contract{
@@ -266,7 +251,7 @@ func (tx TxElectionResult) TxSelf() TxSelf {
 }
 
 // ProcessTx implements VSCTransaction.
-func (tx *TxElectionResult) ExecuteTx(se *StateEngine, ledgerSession *LedgerSession, rcSession *rcSystem.RcSession) {
+func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 	// ctx := context.Background()
 	if tx.Epoch == 0 {
 		electionResult := se.electionDb.GetElection(0)
@@ -564,8 +549,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 		txContainer := tx.Decode(se.da, TxSelf{
 			TxId:        txInfo.Id,
-			Index:       -1,
-			OpIndex:     idx,
+			Index:       idx,
 			BlockHeight: uint64(t.SignedBlock.Headers.Br[1]),
 			BlockId:     t.Self.BlockId,
 		})
@@ -574,12 +558,11 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			//Note: sig verification has already happened
 			tx := txContainer.AsTransaction()
 
-			tx.Ingest(se, TxSelf{
+			tx.Ingest(se, t.Self.TxId, TxSelf{
 				BlockId:     t.Self.BlockId,
 				BlockHeight: uint64(t.SignedBlock.Headers.Br[1]),
 				//
-				Index:   -1,
-				OpIndex: idx,
+				Index: idx,
 			})
 
 			// fmt.Println("broadcast inject tx", tx.Headers.Nonce, tx.Headers.RequiredAuths)

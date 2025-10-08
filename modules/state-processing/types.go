@@ -20,6 +20,11 @@ type TxResult struct {
 	RcUsed  int64
 }
 
+type ContractIdResult struct {
+	ContractId string
+	Output     ContractResult
+}
+
 type ContractResult struct {
 	Success bool
 	Ret     string

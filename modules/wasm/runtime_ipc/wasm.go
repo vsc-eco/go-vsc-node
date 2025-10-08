@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"unicode/utf16"
 	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
@@ -316,7 +317,7 @@ func allocString(runtime wasm_runtime.Runtime, vm *wasmedge.VM, memory *wasmedge
 	})
 }
 
-func registerImportV2(ctx context.Context, runtime wasm_runtime.Runtime, vm *wasmedge.VM, gas *uint, modname string, funcs []sdkTypes.SdkType, retChan chan wasm_types.BasicErrorResult) *wasmedge.Module {
+func registerImportV2(ctx context.Context, runtime wasm_runtime.Runtime, vm *wasmedge.VM, gas *uint, modname string, funcs []sdkTypes.SdkType, retChan chan wasm_types.WasmResultStruct, importGm *wasmImportGasMeter) *wasmedge.Module {
 	mod := wasmedge.NewModule(modname)
 
 	for _, f := range funcs {
@@ -338,17 +339,10 @@ func registerImportV2(ctx context.Context, runtime wasm_runtime.Runtime, vm *was
 					file := readString(runtime, memory, filePtr).UnwrapOr("unknown-file")
 					errStr := fmt.Sprintf("msg: %s\nfile: %s:%d:%d", msg, file, line, column)
 
-					// fmt.Println("errStr:", errStr)
-					// client.Send(&execute.ExecutionFinish[WasmResultStruct]{Result: &wasm_types.WasmResultStruct{
-					// 	Gas: vm.GetStatistics().GetTotalCost(),
-					// }, Error: &errStr}).Expect("exec finish failed")
-
-					retChan <- wasm_types.BasicErrorResult{
+					retChan <- wasm_types.WasmResultStruct{
 						Error:     &errStr,
 						ErrorCode: contracts.RUNTIME_ABORT,
-						Result: &wasm_types.WasmResultStruct{
-							Gas: vm.GetStatistics().GetTotalCost(),
-						},
+						Gas:       vm.GetStatistics().GetTotalCost() + importGm.GetGasUsed(),
 					}
 
 					return []any{}, wasmedge.Result_Fail
@@ -363,12 +357,10 @@ func registerImportV2(ctx context.Context, runtime wasm_runtime.Runtime, vm *was
 
 					fmt.Println("reverting execution:", msg, symbol)
 
-					retChan <- wasm_types.BasicErrorResult{
+					retChan <- wasm_types.WasmResultStruct{
 						Error:     &msg,
 						ErrorCode: symbol,
-						Result: &wasm_types.WasmResultStruct{
-							Gas: vm.GetStatistics().GetTotalCost(),
-						},
+						Gas:       vm.GetStatistics().GetTotalCost() + importGm.GetGasUsed(),
 					}
 
 					return []any{}, wasmedge.Result_Fail
@@ -395,6 +387,10 @@ func registerImportV2(ctx context.Context, runtime wasm_runtime.Runtime, vm *was
 				}
 				args := parsed.Unwrap()
 
+				// pass current gas usage into the execution context
+				eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+				eCtx.SetGasUsage(vm.GetStatistics().GetTotalCost() + importGm.GetGasUsed())
+
 				res := executeImport(ctx, f.Name, args)
 
 				// res := client.Request(&execute.SdkCallRequest[WasmResultStruct]{
@@ -417,30 +413,25 @@ func registerImportV2(ctx context.Context, runtime wasm_runtime.Runtime, vm *was
 					result.Map(
 						result.AndThen(
 							res,
-							func(pm wasm_types.BasicErrorResult) result.Result[wasm_types.WasmResultStruct] {
+							func(pm wasm_types.WasmResultStruct) result.Result[wasm_types.WasmResultStruct] {
 
 								if pm.Error != nil {
-									fmt.Println("Definite error!", *pm.Error)
+									// fmt.Println("Definite error!", *pm.Error)
 									err := errors.New(*pm.Error)
 
-									retChan <- wasm_types.BasicErrorResult{
+									retChan <- wasm_types.WasmResultStruct{
 										Error:     pm.Error,
 										ErrorCode: pm.ErrorCode,
-										Result: &wasm_types.WasmResultStruct{
-											Gas: vm.GetStatistics().GetTotalCost(),
-										},
+										Gas:       vm.GetStatistics().GetTotalCost() + importGm.GetGasUsed() + pm.Gas,
 									}
 									return result.Err[wasm_types.WasmResultStruct](err)
 								}
 								// fmt.Println("Possible error maybe!!", pm.Result)
-								return result.Ok(wasm_types.WasmResultStruct{
-									Result: pm.Result.Result,
-									Gas:    pm.Result.Gas,
-									Error:  pm.Error != nil,
-								})
+								return result.Ok(pm)
 							},
 						),
 						func(res wasm_types.WasmResultStruct) string {
+							importGm.Consume(res.Gas)
 							*gas -= uint(res.Gas)
 							vm.GetStatistics().SetCostLimit(*gas)
 							return res.Result
@@ -475,10 +466,10 @@ func registerImportV2(ctx context.Context, runtime wasm_runtime.Runtime, vm *was
 	return mod
 }
 
-func executeImport(ctx context.Context, name string, args []any) result.Result[wasm_types.BasicErrorResult] {
+func executeImport(ctx context.Context, name string, args []any) result.Result[wasm_types.WasmResultStruct] {
 	fn, ok := sdk.SdkModule[name]
 	if !ok {
-		return result.Err[wasm_types.BasicErrorResult](fmt.Errorf("vm requested non-existing function: %s", name))
+		return result.Err[wasm_types.WasmResultStruct](fmt.Errorf("vm requested non-existing function: %s", name))
 	}
 	// fmt.Fprintln(os.Stderr, s.Function, s.Argument, fn)
 	res := result.MapOrElse(
@@ -493,8 +484,9 @@ func executeImport(ctx context.Context, name string, args []any) result.Result[w
 				)...,
 			),
 		)[0].Interface().(sdk.SdkResult),
-		func(err error) *wasm_types.BasicErrorResult {
+		func(err error) *wasm_types.WasmResultStruct {
 			// SDK errors should be joined with contracts.ContractOutputError symbol
+			// Optionally a 3rd item indicating gas consumed of the failing SDK call
 			var joinedErr interface{ Unwrap() []error }
 			wasJoined := errors.As(err, &joinedErr)
 			if wasJoined {
@@ -502,31 +494,36 @@ func executeImport(ctx context.Context, name string, args []any) result.Result[w
 				if len(unjoined) > 1 {
 					symb := unjoined[0].Error()
 					msg := unjoined[1].Error()
-					return &wasm_types.BasicErrorResult{
+					gas := uint(0)
+					if len(unjoined) > 2 {
+						if g, parseErr := strconv.ParseUint(unjoined[2].Error(), 10, 64); parseErr == nil {
+							gas = uint(g)
+						}
+					}
+					return &wasm_types.WasmResultStruct{
 						Error:     &msg,
 						ErrorCode: symb,
+						Gas:       gas,
 					}
 				}
 			}
 			str := err.Error()
-			return &wasm_types.BasicErrorResult{
+			return &wasm_types.WasmResultStruct{
 				Error:     &str,
 				ErrorCode: contracts.UNK_ERROR, // error symbols not joined somewhere if it ever reaches here
 			}
 		},
-		func(res sdk.SdkResultStruct) *wasm_types.BasicErrorResult {
-			return &wasm_types.BasicErrorResult{
-				Result: &wasm_types.WasmResultStruct{
-					Result: res.Result,
-					Gas:    res.Gas,
-				},
+		func(res sdk.SdkResultStruct) *wasm_types.WasmResultStruct {
+			return &wasm_types.WasmResultStruct{
+				Result: res.Result,
+				Gas:    res.Gas,
 			}
 		},
 	)
 	return result.Ok(*res)
 }
 
-func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime) wasm_types.BasicErrorResult {
+func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime) wasm_types.WasmResultStruct {
 	conf := wasmedge.NewConfigure()
 	defer conf.Release()
 	conf.SetStatisticsCostMeasuring(true)
@@ -546,13 +543,12 @@ func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args st
 
 	code, _ := hex.DecodeString(strCode)
 
-	fmt.Println("wasm code:", code[:20], "len:", len(code))
-
-	retChan := make(chan wasm_types.BasicErrorResult, 1)
+	retChan := make(chan wasm_types.WasmResultStruct, 1)
+	importGm := NewImportGasMeter()
 
 	//Register imports
 	mods := make([]*wasmedge.Module, 0)
-	mods = append(mods, registerImportV2(ctx, runtime, vm, &gas, "sdk", sdkTypes.SdkTypes, retChan))
+	mods = append(mods, registerImportV2(ctx, runtime, vm, &gas, "sdk", sdkTypes.SdkTypes, retChan, importGm))
 	mods = append(mods, registerImportV2(ctx, runtime, vm, &gas, "env", []sdkTypes.SdkType{
 		{
 			Name: "abort",
@@ -566,7 +562,7 @@ func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args st
 				Parameters: []wasmedge.ValType{wasmedge.ValType_I32, wasmedge.ValType_I32},
 			},
 		},
-	}, retChan))
+	}, retChan, importGm))
 
 	init := initResult{
 		mods:     mods,
@@ -583,13 +579,10 @@ func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args st
 
 	if err != nil {
 		errStr := fmt.Errorf("failed to register wasm buffer: %w", err).Error()
-		return wasm_types.BasicErrorResult{
+		return wasm_types.WasmResultStruct{
 			Error:     &errStr,
 			ErrorCode: contracts.WASM_INIT_ERROR,
-			Result: &wasm_types.WasmResultStruct{
-				Gas:   vm.GetStatistics().GetTotalCost(),
-				Error: true,
-			},
+			Gas:       vm.GetStatistics().GetTotalCost(),
 		}
 	}
 
@@ -608,42 +601,30 @@ func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args st
 	})
 	callResult := resultWrap(vm.ExecuteRegistered("contract", entrypoint, argsAlloc.Unwrap()))
 
-	// errStr := callResult.UnwrapErr()
-	// fmt.Println("callErr:", errStr.Error())
-
 	if callResult.IsErr() {
 		errStr := callResult.UnwrapErr().Error()
 		if len(retChan) > 0 {
 			retVal := <-retChan
-			return wasm_types.BasicErrorResult{
+			return wasm_types.WasmResultStruct{
 				Error:     retVal.Error,
 				ErrorCode: retVal.ErrorCode,
-				Result: &wasm_types.WasmResultStruct{
-					Gas:   vm.GetStatistics().GetTotalCost(),
-					Error: true,
-				},
+				Gas:       retVal.Gas,
 			}
 		}
 
-		return wasm_types.BasicErrorResult{
+		return wasm_types.WasmResultStruct{
 			Error:     &errStr,
 			ErrorCode: errorStrToSymbol(errStr),
-			Result: &wasm_types.WasmResultStruct{
-				Gas:   vm.GetStatistics().GetTotalCost(),
-				Error: true,
-			},
+			Gas:       vm.GetStatistics().GetTotalCost() + importGm.GetGasUsed(),
 		}
 	}
 	res := callResult.Unwrap()
 	if len(res) != 1 {
 		errStr := fmt.Errorf("not exactly 1 return value").Error()
-		return wasm_types.BasicErrorResult{
+		return wasm_types.WasmResultStruct{
 			Error:     &errStr,
 			ErrorCode: contracts.WASM_RET_ERROR,
-			Result: &wasm_types.WasmResultStruct{
-				Gas:   vm.GetStatistics().GetTotalCost(),
-				Error: true,
-			},
+			Gas:       vm.GetStatistics().GetTotalCost() + importGm.GetGasUsed(),
 		}
 	}
 
@@ -660,17 +641,31 @@ func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args st
 		resultStr = readString(runtime, memory, v)
 	}
 
-	totalGasCost := vm.GetStatistics().GetTotalCost()
-	fmt.Println("total gas cost:", totalGasCost)
+	totalGasCost := vm.GetStatistics().GetTotalCost() + importGm.GetGasUsed()
+	// fmt.Println("total gas cost:", totalGasCost)
 
-	return wasm_types.BasicErrorResult{
-		Error: nil,
-		Result: &wasm_types.WasmResultStruct{
-			Result: resultStr.Unwrap(),
-			Gas:    totalGasCost,
-			Error:  false,
-		},
+	return wasm_types.WasmResultStruct{
+		Error:  nil,
+		Result: resultStr.Unwrap(),
+		Gas:    totalGasCost,
 	}
+}
+
+// Gas meter for wasm imports (i.e. SDK)
+type wasmImportGasMeter struct {
+	gasUsed uint
+}
+
+func NewImportGasMeter() *wasmImportGasMeter {
+	return &wasmImportGasMeter{gasUsed: 0}
+}
+
+func (gm *wasmImportGasMeter) Consume(gas uint) {
+	gm.gasUsed += gas
+}
+
+func (gm *wasmImportGasMeter) GetGasUsed() uint {
+	return gm.gasUsed
 }
 
 var ErrResultTypeCast = fmt.Errorf("type cast")

@@ -52,7 +52,6 @@ type ResolverRoot interface {
 	BalanceRecord() BalanceRecordResolver
 	Contract() ContractResolver
 	ContractOutput() ContractOutputResolver
-	ContractState() ContractStateResolver
 	ElectionResult() ElectionResultResolver
 	LedgerRecord() LedgerRecordResolver
 	NonceRecord() NonceRecordResolver
@@ -61,7 +60,6 @@ type ResolverRoot interface {
 	Query() QueryResolver
 	RcRecord() RcRecordResolver
 	TransactionOperation() TransactionOperationResolver
-	TransactionOutput() TransactionOutputResolver
 	TransactionRecord() TransactionRecordResolver
 	Witness() WitnessResolver
 	WitnessSlot() WitnessSlotResolver
@@ -112,11 +110,6 @@ type ComplexityRoot struct {
 		TxId           func(childComplexity int) int
 	}
 
-	ContractDiff struct {
-		Diff                    func(childComplexity int) int
-		PreviousContractStateID func(childComplexity int) int
-	}
-
 	ContractOutput struct {
 		BlockHeight func(childComplexity int) int
 		ContractId  func(childComplexity int) int
@@ -130,14 +123,6 @@ type ComplexityRoot struct {
 	ContractOutputResult struct {
 		Ok  func(childComplexity int) int
 		Ret func(childComplexity int) int
-	}
-
-	ContractState struct {
-		ID          func(childComplexity int) int
-		State       func(childComplexity int, key *string) int
-		StateKeys   func(childComplexity int, key *string) int
-		StateMerkle func(childComplexity int) int
-		StateQuery  func(childComplexity int, key *string, query *string) int
 	}
 
 	ElectionMember struct {
@@ -157,10 +142,6 @@ type ComplexityRoot struct {
 		TxId            func(childComplexity int) int
 		Type            func(childComplexity int) int
 		Weights         func(childComplexity int) int
-	}
-
-	Gas struct {
-		Io func(childComplexity int) int
 	}
 
 	LedgerAction struct {
@@ -215,8 +196,6 @@ type ComplexityRoot struct {
 	}
 
 	Query struct {
-		ContractState         func(childComplexity int, id *string) int
-		ContractStateDiff     func(childComplexity int, id *string) int
 		ElectionByBlockHeight func(childComplexity int, blockHeight *model.Uint64) int
 		FindContract          func(childComplexity int, filterOptions *FindContractFilter) int
 		FindContractOutput    func(childComplexity int, filterOptions *ContractOutputFilter) int
@@ -228,6 +207,7 @@ type ComplexityRoot struct {
 		GetAccountRc          func(childComplexity int, account string, height *model.Uint64) int
 		GetDagByCid           func(childComplexity int, cidString string) int
 		GetElection           func(childComplexity int, epoch model.Uint64) int
+		GetStateByKeys        func(childComplexity int, contractID string, keys []string) int
 		GetWitness            func(childComplexity int, account string, height *model.Uint64) int
 		LocalNodeInfo         func(childComplexity int) int
 		SubmitTransactionV1   func(childComplexity int, tx string, sig string) int
@@ -257,6 +237,7 @@ type ComplexityRoot struct {
 
 	TransactionRecord struct {
 		AnchrHeight          func(childComplexity int) int
+		AnchrID              func(childComplexity int) int
 		AnchrIndex           func(childComplexity int) int
 		AnchrTs              func(childComplexity int) int
 		FirstSeen            func(childComplexity int) int
@@ -327,13 +308,6 @@ type ContractResolver interface {
 type ContractOutputResolver interface {
 	BlockHeight(ctx context.Context, obj *contracts.ContractOutput) (model.Int64, error)
 }
-type ContractStateResolver interface {
-	ID(ctx context.Context, obj contracts.ContractState) (*string, error)
-	State(ctx context.Context, obj contracts.ContractState, key *string) (*string, error)
-	StateQuery(ctx context.Context, obj contracts.ContractState, key *string, query *string) (*string, error)
-	StateKeys(ctx context.Context, obj contracts.ContractState, key *string) (*string, error)
-	StateMerkle(ctx context.Context, obj contracts.ContractState) (*string, error)
-}
 type ElectionResultResolver interface {
 	Epoch(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error)
 
@@ -359,8 +333,7 @@ type PostingJsonKeysResolver interface {
 	T(ctx context.Context, obj *witnesses.PostingJsonKeys) (*string, error)
 }
 type QueryResolver interface {
-	ContractStateDiff(ctx context.Context, id *string) (*ContractDiff, error)
-	ContractState(ctx context.Context, id *string) (contracts.ContractState, error)
+	GetStateByKeys(ctx context.Context, contractID string, keys []string) (model.Map, error)
 	FindTransaction(ctx context.Context, filterOptions *TransactionFilter) ([]transactions.TransactionRecord, error)
 	FindContractOutput(ctx context.Context, filterOptions *ContractOutputFilter) ([]contracts.ContractOutput, error)
 	FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) ([]ledgerDb.LedgerRecord, error)
@@ -388,12 +361,10 @@ type TransactionOperationResolver interface {
 	Index(ctx context.Context, obj *transactions.TransactionOperation) (model.Uint64, error)
 	Data(ctx context.Context, obj *transactions.TransactionOperation) (model.Map, error)
 }
-type TransactionOutputResolver interface {
-	Index(ctx context.Context, obj *transactions.TransactionOutput) (model.Int64, error)
-}
 type TransactionRecordResolver interface {
 	AnchrHeight(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
 	AnchrIndex(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
+	AnchrID(ctx context.Context, obj *transactions.TransactionRecord) (*string, error)
 	AnchrTs(ctx context.Context, obj *transactions.TransactionRecord) (*string, error)
 
 	Nonce(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error)
@@ -653,20 +624,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Contract.TxId(childComplexity), true
 
-	case "ContractDiff.diff":
-		if e.complexity.ContractDiff.Diff == nil {
-			break
-		}
-
-		return e.complexity.ContractDiff.Diff(childComplexity), true
-
-	case "ContractDiff.previousContractStateId":
-		if e.complexity.ContractDiff.PreviousContractStateID == nil {
-			break
-		}
-
-		return e.complexity.ContractDiff.PreviousContractStateID(childComplexity), true
-
 	case "ContractOutput.block_height":
 		if e.complexity.ContractOutput.BlockHeight == nil {
 			break
@@ -729,56 +686,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.ContractOutputResult.Ret(childComplexity), true
-
-	case "ContractState.id":
-		if e.complexity.ContractState.ID == nil {
-			break
-		}
-
-		return e.complexity.ContractState.ID(childComplexity), true
-
-	case "ContractState.state":
-		if e.complexity.ContractState.State == nil {
-			break
-		}
-
-		args, err := ec.field_ContractState_state_args(context.TODO(), rawArgs)
-		if err != nil {
-			return 0, false
-		}
-
-		return e.complexity.ContractState.State(childComplexity, args["key"].(*string)), true
-
-	case "ContractState.stateKeys":
-		if e.complexity.ContractState.StateKeys == nil {
-			break
-		}
-
-		args, err := ec.field_ContractState_stateKeys_args(context.TODO(), rawArgs)
-		if err != nil {
-			return 0, false
-		}
-
-		return e.complexity.ContractState.StateKeys(childComplexity, args["key"].(*string)), true
-
-	case "ContractState.state_merkle":
-		if e.complexity.ContractState.StateMerkle == nil {
-			break
-		}
-
-		return e.complexity.ContractState.StateMerkle(childComplexity), true
-
-	case "ContractState.stateQuery":
-		if e.complexity.ContractState.StateQuery == nil {
-			break
-		}
-
-		args, err := ec.field_ContractState_stateQuery_args(context.TODO(), rawArgs)
-		if err != nil {
-			return 0, false
-		}
-
-		return e.complexity.ContractState.StateQuery(childComplexity, args["key"].(*string), args["query"].(*string)), true
 
 	case "ElectionMember.account":
 		if e.complexity.ElectionMember.Account == nil {
@@ -870,13 +777,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.ElectionResult.Weights(childComplexity), true
-
-	case "Gas.IO":
-		if e.complexity.Gas.Io == nil {
-			break
-		}
-
-		return e.complexity.Gas.Io(childComplexity), true
 
 	case "LedgerAction.amount":
 		if e.complexity.LedgerAction.Amount == nil {
@@ -1109,30 +1009,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.PostingJsonKeys.T(childComplexity), true
 
-	case "Query.contractState":
-		if e.complexity.Query.ContractState == nil {
-			break
-		}
-
-		args, err := ec.field_Query_contractState_args(context.TODO(), rawArgs)
-		if err != nil {
-			return 0, false
-		}
-
-		return e.complexity.Query.ContractState(childComplexity, args["id"].(*string)), true
-
-	case "Query.contractStateDiff":
-		if e.complexity.Query.ContractStateDiff == nil {
-			break
-		}
-
-		args, err := ec.field_Query_contractStateDiff_args(context.TODO(), rawArgs)
-		if err != nil {
-			return 0, false
-		}
-
-		return e.complexity.Query.ContractStateDiff(childComplexity, args["id"].(*string)), true
-
 	case "Query.electionByBlockHeight":
 		if e.complexity.Query.ElectionByBlockHeight == nil {
 			break
@@ -1264,6 +1140,18 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.Query.GetElection(childComplexity, args["epoch"].(model.Uint64)), true
+
+	case "Query.getStateByKeys":
+		if e.complexity.Query.GetStateByKeys == nil {
+			break
+		}
+
+		args, err := ec.field_Query_getStateByKeys_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.GetStateByKeys(childComplexity, args["contractId"].(string), args["keys"].([]string)), true
 
 	case "Query.getWitness":
 		if e.complexity.Query.GetWitness == nil {
@@ -1408,6 +1296,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.TransactionRecord.AnchrHeight(childComplexity), true
+
+	case "TransactionRecord.anchr_id":
+		if e.complexity.TransactionRecord.AnchrID == nil {
+			break
+		}
+
+		return e.complexity.TransactionRecord.AnchrID(childComplexity), true
 
 	case "TransactionRecord.anchr_index":
 		if e.complexity.TransactionRecord.AnchrIndex == nil {
@@ -1735,6 +1630,7 @@ type TransactionRecord {
   id: String!
   anchr_height: Uint64!
   anchr_index: Uint64!
+  anchr_id: String
   anchr_ts: String
   type: String!
   ops: [TransactionOperation]
@@ -1747,7 +1643,7 @@ type TransactionRecord {
   status: String!
   ledger: [OpLogEvent!]
   ledger_actions: [LedgerAction]
-  output: TransactionOutput
+  output: [TransactionOutput!]
 }
 
 type TransactionOperation {
@@ -1779,7 +1675,7 @@ type OpLogEvent {
 }
 
 type TransactionOutput {
-  index: Int64!
+  index: [Int!]
   id: String!
 }
 
@@ -1796,23 +1692,6 @@ type ContractOutput {
   inputs: [String!]!
   state_merkle: String!
   results: [ContractOutputResult!]!
-}
-
-type Gas {
-  IO: Int
-}
-
-type ContractDiff {
-  diff: JSON
-  previousContractStateId: String!
-}
-
-type ContractState {
-  id: String
-  state(key: String): JSON
-  stateQuery(key: String, query: JSON): JSON
-  stateKeys(key: String): JSON
-  state_merkle: String
 }
 
 type Contract {
@@ -1989,8 +1868,7 @@ input ContractOutputFilter {
 }
 
 type Query {
-  contractStateDiff(id: String): ContractDiff
-  contractState(id: String): ContractState
+  getStateByKeys(contractId: String!, keys: [String!]!): Map
   findTransaction(filterOptions: TransactionFilter): [TransactionRecord!]
   findContractOutput(filterOptions: ContractOutputFilter): [ContractOutput!]
   findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerRecord!]
@@ -2022,93 +1900,6 @@ var parsedSchema = gqlparser.MustLoadSchema(sources...)
 
 // region    ***************************** args.gotpl *****************************
 
-func (ec *executionContext) field_ContractState_stateKeys_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
-	var err error
-	args := map[string]any{}
-	arg0, err := ec.field_ContractState_stateKeys_argsKey(ctx, rawArgs)
-	if err != nil {
-		return nil, err
-	}
-	args["key"] = arg0
-	return args, nil
-}
-func (ec *executionContext) field_ContractState_stateKeys_argsKey(
-	ctx context.Context,
-	rawArgs map[string]any,
-) (*string, error) {
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("key"))
-	if tmp, ok := rawArgs["key"]; ok {
-		return ec.unmarshalOString2ᚖstring(ctx, tmp)
-	}
-
-	var zeroVal *string
-	return zeroVal, nil
-}
-
-func (ec *executionContext) field_ContractState_stateQuery_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
-	var err error
-	args := map[string]any{}
-	arg0, err := ec.field_ContractState_stateQuery_argsKey(ctx, rawArgs)
-	if err != nil {
-		return nil, err
-	}
-	args["key"] = arg0
-	arg1, err := ec.field_ContractState_stateQuery_argsQuery(ctx, rawArgs)
-	if err != nil {
-		return nil, err
-	}
-	args["query"] = arg1
-	return args, nil
-}
-func (ec *executionContext) field_ContractState_stateQuery_argsKey(
-	ctx context.Context,
-	rawArgs map[string]any,
-) (*string, error) {
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("key"))
-	if tmp, ok := rawArgs["key"]; ok {
-		return ec.unmarshalOString2ᚖstring(ctx, tmp)
-	}
-
-	var zeroVal *string
-	return zeroVal, nil
-}
-
-func (ec *executionContext) field_ContractState_stateQuery_argsQuery(
-	ctx context.Context,
-	rawArgs map[string]any,
-) (*string, error) {
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("query"))
-	if tmp, ok := rawArgs["query"]; ok {
-		return ec.unmarshalOJSON2ᚖstring(ctx, tmp)
-	}
-
-	var zeroVal *string
-	return zeroVal, nil
-}
-
-func (ec *executionContext) field_ContractState_state_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
-	var err error
-	args := map[string]any{}
-	arg0, err := ec.field_ContractState_state_argsKey(ctx, rawArgs)
-	if err != nil {
-		return nil, err
-	}
-	args["key"] = arg0
-	return args, nil
-}
-func (ec *executionContext) field_ContractState_state_argsKey(
-	ctx context.Context,
-	rawArgs map[string]any,
-) (*string, error) {
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("key"))
-	if tmp, ok := rawArgs["key"]; ok {
-		return ec.unmarshalOString2ᚖstring(ctx, tmp)
-	}
-
-	var zeroVal *string
-	return zeroVal, nil
-}
-
 func (ec *executionContext) field_Query___type_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
 	var err error
 	args := map[string]any{}
@@ -2129,52 +1920,6 @@ func (ec *executionContext) field_Query___type_argsName(
 	}
 
 	var zeroVal string
-	return zeroVal, nil
-}
-
-func (ec *executionContext) field_Query_contractStateDiff_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
-	var err error
-	args := map[string]any{}
-	arg0, err := ec.field_Query_contractStateDiff_argsID(ctx, rawArgs)
-	if err != nil {
-		return nil, err
-	}
-	args["id"] = arg0
-	return args, nil
-}
-func (ec *executionContext) field_Query_contractStateDiff_argsID(
-	ctx context.Context,
-	rawArgs map[string]any,
-) (*string, error) {
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("id"))
-	if tmp, ok := rawArgs["id"]; ok {
-		return ec.unmarshalOString2ᚖstring(ctx, tmp)
-	}
-
-	var zeroVal *string
-	return zeroVal, nil
-}
-
-func (ec *executionContext) field_Query_contractState_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
-	var err error
-	args := map[string]any{}
-	arg0, err := ec.field_Query_contractState_argsID(ctx, rawArgs)
-	if err != nil {
-		return nil, err
-	}
-	args["id"] = arg0
-	return args, nil
-}
-func (ec *executionContext) field_Query_contractState_argsID(
-	ctx context.Context,
-	rawArgs map[string]any,
-) (*string, error) {
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("id"))
-	if tmp, ok := rawArgs["id"]; ok {
-		return ec.unmarshalOString2ᚖstring(ctx, tmp)
-	}
-
-	var zeroVal *string
 	return zeroVal, nil
 }
 
@@ -2464,6 +2209,47 @@ func (ec *executionContext) field_Query_getElection_argsEpoch(
 	}
 
 	var zeroVal model.Uint64
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_getStateByKeys_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_getStateByKeys_argsContractID(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["contractId"] = arg0
+	arg1, err := ec.field_Query_getStateByKeys_argsKeys(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["keys"] = arg1
+	return args, nil
+}
+func (ec *executionContext) field_Query_getStateByKeys_argsContractID(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (string, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("contractId"))
+	if tmp, ok := rawArgs["contractId"]; ok {
+		return ec.unmarshalNString2string(ctx, tmp)
+	}
+
+	var zeroVal string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_getStateByKeys_argsKeys(
+	ctx context.Context,
+	rawArgs map[string]any,
+) ([]string, error) {
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("keys"))
+	if tmp, ok := rawArgs["keys"]; ok {
+		return ec.unmarshalNString2ᚕstringᚄ(ctx, tmp)
+	}
+
+	var zeroVal []string
 	return zeroVal, nil
 }
 
@@ -4099,91 +3885,6 @@ func (ec *executionContext) fieldContext_Contract_runtime(_ context.Context, fie
 	return fc, nil
 }
 
-func (ec *executionContext) _ContractDiff_diff(ctx context.Context, field graphql.CollectedField, obj *ContractDiff) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_ContractDiff_diff(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Diff, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOJSON2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_ContractDiff_diff(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "ContractDiff",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type JSON does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _ContractDiff_previousContractStateId(ctx context.Context, field graphql.CollectedField, obj *ContractDiff) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_ContractDiff_previousContractStateId(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.PreviousContractStateID, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(string)
-	fc.Result = res
-	return ec.marshalNString2string(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_ContractDiff_previousContractStateId(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "ContractDiff",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type String does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
 func (ec *executionContext) _ContractOutput_id(ctx context.Context, field graphql.CollectedField, obj *contracts.ContractOutput) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_ContractOutput_id(ctx, field)
 	if err != nil {
@@ -4581,244 +4282,6 @@ func (ec *executionContext) fieldContext_ContractOutputResult_ok(_ context.Conte
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Boolean does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _ContractState_id(ctx context.Context, field graphql.CollectedField, obj contracts.ContractState) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_ContractState_id(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.ContractState().ID(rctx, obj)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_ContractState_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "ContractState",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type String does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _ContractState_state(ctx context.Context, field graphql.CollectedField, obj contracts.ContractState) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_ContractState_state(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.ContractState().State(rctx, obj, fc.Args["key"].(*string))
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOJSON2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_ContractState_state(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "ContractState",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type JSON does not have child fields")
-		},
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			err = ec.Recover(ctx, r)
-			ec.Error(ctx, err)
-		}
-	}()
-	ctx = graphql.WithFieldContext(ctx, fc)
-	if fc.Args, err = ec.field_ContractState_state_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
-		ec.Error(ctx, err)
-		return fc, err
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _ContractState_stateQuery(ctx context.Context, field graphql.CollectedField, obj contracts.ContractState) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_ContractState_stateQuery(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.ContractState().StateQuery(rctx, obj, fc.Args["key"].(*string), fc.Args["query"].(*string))
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOJSON2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_ContractState_stateQuery(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "ContractState",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type JSON does not have child fields")
-		},
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			err = ec.Recover(ctx, r)
-			ec.Error(ctx, err)
-		}
-	}()
-	ctx = graphql.WithFieldContext(ctx, fc)
-	if fc.Args, err = ec.field_ContractState_stateQuery_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
-		ec.Error(ctx, err)
-		return fc, err
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _ContractState_stateKeys(ctx context.Context, field graphql.CollectedField, obj contracts.ContractState) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_ContractState_stateKeys(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.ContractState().StateKeys(rctx, obj, fc.Args["key"].(*string))
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOJSON2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_ContractState_stateKeys(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "ContractState",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type JSON does not have child fields")
-		},
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			err = ec.Recover(ctx, r)
-			ec.Error(ctx, err)
-		}
-	}()
-	ctx = graphql.WithFieldContext(ctx, fc)
-	if fc.Args, err = ec.field_ContractState_stateKeys_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
-		ec.Error(ctx, err)
-		return fc, err
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _ContractState_state_merkle(ctx context.Context, field graphql.CollectedField, obj contracts.ContractState) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_ContractState_state_merkle(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.ContractState().StateMerkle(rctx, obj)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*string)
-	fc.Result = res
-	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_ContractState_state_merkle(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "ContractState",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type String does not have child fields")
 		},
 	}
 	return fc, nil
@@ -5397,47 +4860,6 @@ func (ec *executionContext) fieldContext_ElectionResult_tx_id(_ context.Context,
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type String does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _Gas_IO(ctx context.Context, field graphql.CollectedField, obj *Gas) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Gas_IO(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Io, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(*int)
-	fc.Result = res
-	return ec.marshalOInt2ᚖint(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_Gas_IO(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "Gas",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Int does not have child fields")
 		},
 	}
 	return fc, nil
@@ -6856,8 +6278,8 @@ func (ec *executionContext) fieldContext_PostingJsonKeys_key(_ context.Context, 
 	return fc, nil
 }
 
-func (ec *executionContext) _Query_contractStateDiff(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Query_contractStateDiff(ctx, field)
+func (ec *executionContext) _Query_getStateByKeys(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_getStateByKeys(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -6870,7 +6292,7 @@ func (ec *executionContext) _Query_contractStateDiff(ctx context.Context, field 
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().ContractStateDiff(rctx, fc.Args["id"].(*string))
+		return ec.resolvers.Query().GetStateByKeys(rctx, fc.Args["contractId"].(string), fc.Args["keys"].([]string))
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -6879,25 +6301,19 @@ func (ec *executionContext) _Query_contractStateDiff(ctx context.Context, field 
 	if resTmp == nil {
 		return graphql.Null
 	}
-	res := resTmp.(*ContractDiff)
+	res := resTmp.(model.Map)
 	fc.Result = res
-	return ec.marshalOContractDiff2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐContractDiff(ctx, field.Selections, res)
+	return ec.marshalOMap2vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐMap(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_Query_contractStateDiff(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_Query_getStateByKeys(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "Query",
 		Field:      field,
 		IsMethod:   true,
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			switch field.Name {
-			case "diff":
-				return ec.fieldContext_ContractDiff_diff(ctx, field)
-			case "previousContractStateId":
-				return ec.fieldContext_ContractDiff_previousContractStateId(ctx, field)
-			}
-			return nil, fmt.Errorf("no field named %q was found under type ContractDiff", field.Name)
+			return nil, errors.New("field of type Map does not have child fields")
 		},
 	}
 	defer func() {
@@ -6907,71 +6323,7 @@ func (ec *executionContext) fieldContext_Query_contractStateDiff(ctx context.Con
 		}
 	}()
 	ctx = graphql.WithFieldContext(ctx, fc)
-	if fc.Args, err = ec.field_Query_contractStateDiff_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
-		ec.Error(ctx, err)
-		return fc, err
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _Query_contractState(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Query_contractState(ctx, field)
-	if err != nil {
-		return graphql.Null
-	}
-	ctx = graphql.WithFieldContext(ctx, fc)
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().ContractState(rctx, fc.Args["id"].(*string))
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		return graphql.Null
-	}
-	res := resTmp.(contracts.ContractState)
-	fc.Result = res
-	return ec.marshalOContractState2vscᚑnodeᚋmodulesᚋdbᚋvscᚋcontractsᚐContractState(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) fieldContext_Query_contractState(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "Query",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			switch field.Name {
-			case "id":
-				return ec.fieldContext_ContractState_id(ctx, field)
-			case "state":
-				return ec.fieldContext_ContractState_state(ctx, field)
-			case "stateQuery":
-				return ec.fieldContext_ContractState_stateQuery(ctx, field)
-			case "stateKeys":
-				return ec.fieldContext_ContractState_stateKeys(ctx, field)
-			case "state_merkle":
-				return ec.fieldContext_ContractState_state_merkle(ctx, field)
-			}
-			return nil, fmt.Errorf("no field named %q was found under type ContractState", field.Name)
-		},
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			err = ec.Recover(ctx, r)
-			ec.Error(ctx, err)
-		}
-	}()
-	ctx = graphql.WithFieldContext(ctx, fc)
-	if fc.Args, err = ec.field_Query_contractState_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+	if fc.Args, err = ec.field_Query_getStateByKeys_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
 	}
@@ -7020,6 +6372,8 @@ func (ec *executionContext) fieldContext_Query_findTransaction(ctx context.Conte
 				return ec.fieldContext_TransactionRecord_anchr_height(ctx, field)
 			case "anchr_index":
 				return ec.fieldContext_TransactionRecord_anchr_index(ctx, field)
+			case "anchr_id":
+				return ec.fieldContext_TransactionRecord_anchr_id(ctx, field)
 			case "anchr_ts":
 				return ec.fieldContext_TransactionRecord_anchr_ts(ctx, field)
 			case "type":
@@ -8630,31 +7984,28 @@ func (ec *executionContext) _TransactionOutput_index(ctx context.Context, field 
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.TransactionOutput().Index(rctx, obj)
+		return obj.Index, nil
 	})
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
 	}
 	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
 		return graphql.Null
 	}
-	res := resTmp.(model.Int64)
+	res := resTmp.([]int)
 	fc.Result = res
-	return ec.marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx, field.Selections, res)
+	return ec.marshalOInt2ᚕintᚄ(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) fieldContext_TransactionOutput_index(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "TransactionOutput",
 		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
+		IsMethod:   false,
+		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Int64 does not have child fields")
+			return nil, errors.New("field of type Int does not have child fields")
 		},
 	}
 	return fc, nil
@@ -8831,6 +8182,47 @@ func (ec *executionContext) fieldContext_TransactionRecord_anchr_index(_ context
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TransactionRecord_anchr_id(ctx context.Context, field graphql.CollectedField, obj *transactions.TransactionRecord) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_TransactionRecord_anchr_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.TransactionRecord().AnchrID(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_TransactionRecord_anchr_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TransactionRecord",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
 		},
 	}
 	return fc, nil
@@ -9410,9 +8802,9 @@ func (ec *executionContext) _TransactionRecord_output(ctx context.Context, field
 	if resTmp == nil {
 		return graphql.Null
 	}
-	res := resTmp.(*transactions.TransactionOutput)
+	res := resTmp.([]transactions.TransactionOutput)
 	fc.Result = res
-	return ec.marshalOTransactionOutput2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOutput(ctx, field.Selections, res)
+	return ec.marshalOTransactionOutput2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOutputᚄ(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) fieldContext_TransactionRecord_output(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
@@ -13118,47 +12510,6 @@ func (ec *executionContext) _Contract(ctx context.Context, sel ast.SelectionSet,
 	return out
 }
 
-var contractDiffImplementors = []string{"ContractDiff"}
-
-func (ec *executionContext) _ContractDiff(ctx context.Context, sel ast.SelectionSet, obj *ContractDiff) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, contractDiffImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("ContractDiff")
-		case "diff":
-			out.Values[i] = ec._ContractDiff_diff(ctx, field, obj)
-		case "previousContractStateId":
-			out.Values[i] = ec._ContractDiff_previousContractStateId(ctx, field, obj)
-			if out.Values[i] == graphql.Null {
-				out.Invalids++
-			}
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
 var contractOutputImplementors = []string{"ContractOutput"}
 
 func (ec *executionContext) _ContractOutput(ctx context.Context, sel ast.SelectionSet, obj *contracts.ContractOutput) graphql.Marshaler {
@@ -13280,205 +12631,6 @@ func (ec *executionContext) _ContractOutputResult(ctx context.Context, sel ast.S
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
-var contractStateImplementors = []string{"ContractState"}
-
-func (ec *executionContext) _ContractState(ctx context.Context, sel ast.SelectionSet, obj contracts.ContractState) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, contractStateImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("ContractState")
-		case "id":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._ContractState_id(ctx, field, obj)
-				return res
-			}
-
-			if field.Deferrable != nil {
-				dfs, ok := deferred[field.Deferrable.Label]
-				di := 0
-				if ok {
-					dfs.AddField(field)
-					di = len(dfs.Values) - 1
-				} else {
-					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
-					deferred[field.Deferrable.Label] = dfs
-				}
-				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
-					return innerFunc(ctx, dfs)
-				})
-
-				// don't run the out.Concurrently() call below
-				out.Values[i] = graphql.Null
-				continue
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-		case "state":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._ContractState_state(ctx, field, obj)
-				return res
-			}
-
-			if field.Deferrable != nil {
-				dfs, ok := deferred[field.Deferrable.Label]
-				di := 0
-				if ok {
-					dfs.AddField(field)
-					di = len(dfs.Values) - 1
-				} else {
-					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
-					deferred[field.Deferrable.Label] = dfs
-				}
-				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
-					return innerFunc(ctx, dfs)
-				})
-
-				// don't run the out.Concurrently() call below
-				out.Values[i] = graphql.Null
-				continue
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-		case "stateQuery":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._ContractState_stateQuery(ctx, field, obj)
-				return res
-			}
-
-			if field.Deferrable != nil {
-				dfs, ok := deferred[field.Deferrable.Label]
-				di := 0
-				if ok {
-					dfs.AddField(field)
-					di = len(dfs.Values) - 1
-				} else {
-					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
-					deferred[field.Deferrable.Label] = dfs
-				}
-				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
-					return innerFunc(ctx, dfs)
-				})
-
-				// don't run the out.Concurrently() call below
-				out.Values[i] = graphql.Null
-				continue
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-		case "stateKeys":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._ContractState_stateKeys(ctx, field, obj)
-				return res
-			}
-
-			if field.Deferrable != nil {
-				dfs, ok := deferred[field.Deferrable.Label]
-				di := 0
-				if ok {
-					dfs.AddField(field)
-					di = len(dfs.Values) - 1
-				} else {
-					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
-					deferred[field.Deferrable.Label] = dfs
-				}
-				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
-					return innerFunc(ctx, dfs)
-				})
-
-				// don't run the out.Concurrently() call below
-				out.Values[i] = graphql.Null
-				continue
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-		case "state_merkle":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._ContractState_state_merkle(ctx, field, obj)
-				return res
-			}
-
-			if field.Deferrable != nil {
-				dfs, ok := deferred[field.Deferrable.Label]
-				di := 0
-				if ok {
-					dfs.AddField(field)
-					di = len(dfs.Values) - 1
-				} else {
-					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
-					deferred[field.Deferrable.Label] = dfs
-				}
-				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
-					return innerFunc(ctx, dfs)
-				})
-
-				// don't run the out.Concurrently() call below
-				out.Values[i] = graphql.Null
-				continue
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -13767,42 +12919,6 @@ func (ec *executionContext) _ElectionResult(ctx context.Context, sel ast.Selecti
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&out.Invalids, 1)
 			}
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch(ctx)
-	if out.Invalids > 0 {
-		return graphql.Null
-	}
-
-	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
-
-	for label, dfs := range deferred {
-		ec.processDeferredGroup(graphql.DeferredGroup{
-			Label:    label,
-			Path:     graphql.GetPath(ctx),
-			FieldSet: dfs,
-			Context:  ctx,
-		})
-	}
-
-	return out
-}
-
-var gasImplementors = []string{"Gas"}
-
-func (ec *executionContext) _Gas(ctx context.Context, sel ast.SelectionSet, obj *Gas) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, gasImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	deferred := make(map[string]*graphql.FieldSet)
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("Gas")
-		case "IO":
-			out.Values[i] = ec._Gas_IO(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -14392,7 +13508,7 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 		switch field.Name {
 		case "__typename":
 			out.Values[i] = graphql.MarshalString("Query")
-		case "contractStateDiff":
+		case "getStateByKeys":
 			field := field
 
 			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
@@ -14401,26 +13517,7 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 						ec.Error(ctx, ec.Recover(ctx, r))
 					}
 				}()
-				res = ec._Query_contractStateDiff(ctx, field)
-				return res
-			}
-
-			rrm := func(ctx context.Context) graphql.Marshaler {
-				return ec.OperationContext.RootResolverMiddleware(ctx,
-					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
-		case "contractState":
-			field := field
-
-			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._Query_contractState(ctx, field)
+				res = ec._Query_getStateByKeys(ctx, field)
 				return res
 			}
 
@@ -15065,45 +14162,11 @@ func (ec *executionContext) _TransactionOutput(ctx context.Context, sel ast.Sele
 		case "__typename":
 			out.Values[i] = graphql.MarshalString("TransactionOutput")
 		case "index":
-			field := field
-
-			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._TransactionOutput_index(ctx, field, obj)
-				if res == graphql.Null {
-					atomic.AddUint32(&fs.Invalids, 1)
-				}
-				return res
-			}
-
-			if field.Deferrable != nil {
-				dfs, ok := deferred[field.Deferrable.Label]
-				di := 0
-				if ok {
-					dfs.AddField(field)
-					di = len(dfs.Values) - 1
-				} else {
-					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
-					deferred[field.Deferrable.Label] = dfs
-				}
-				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
-					return innerFunc(ctx, dfs)
-				})
-
-				// don't run the out.Concurrently() call below
-				out.Values[i] = graphql.Null
-				continue
-			}
-
-			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			out.Values[i] = ec._TransactionOutput_index(ctx, field, obj)
 		case "id":
 			out.Values[i] = ec._TransactionOutput_id(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
-				atomic.AddUint32(&out.Invalids, 1)
+				out.Invalids++
 			}
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
@@ -15193,6 +14256,39 @@ func (ec *executionContext) _TransactionRecord(ctx context.Context, sel ast.Sele
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "anchr_id":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._TransactionRecord_anchr_id(ctx, field, obj)
 				return res
 			}
 
@@ -16128,6 +15224,21 @@ func (ec *executionContext) marshalNElectionResult2ᚖvscᚑnodeᚋmodulesᚋdb�
 	return ec._ElectionResult(ctx, sel, v)
 }
 
+func (ec *executionContext) unmarshalNInt2int(ctx context.Context, v any) (int, error) {
+	res, err := graphql.UnmarshalInt(v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalNInt2int(ctx context.Context, sel ast.SelectionSet, v int) graphql.Marshaler {
+	res := graphql.MarshalInt(v)
+	if res == graphql.Null {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+	}
+	return res
+}
+
 func (ec *executionContext) unmarshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64(ctx context.Context, v any) (model.Int64, error) {
 	var res model.Int64
 	err := res.UnmarshalGQL(v)
@@ -16273,6 +15384,10 @@ func (ec *executionContext) marshalNString2ᚖstring(ctx context.Context, sel as
 		}
 	}
 	return res
+}
+
+func (ec *executionContext) marshalNTransactionOutput2vscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOutput(ctx context.Context, sel ast.SelectionSet, v transactions.TransactionOutput) graphql.Marshaler {
+	return ec._TransactionOutput(ctx, sel, &v)
 }
 
 func (ec *executionContext) marshalNTransactionRecord2vscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionRecord(ctx context.Context, sel ast.SelectionSet, v transactions.TransactionRecord) graphql.Marshaler {
@@ -16810,13 +15925,6 @@ func (ec *executionContext) marshalOContract2ᚕvscᚑnodeᚋmodulesᚋdbᚋvsc�
 	return ret
 }
 
-func (ec *executionContext) marshalOContractDiff2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐContractDiff(ctx context.Context, sel ast.SelectionSet, v *ContractDiff) graphql.Marshaler {
-	if v == nil {
-		return graphql.Null
-	}
-	return ec._ContractDiff(ctx, sel, v)
-}
-
 func (ec *executionContext) marshalOContractOutput2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋcontractsᚐContractOutputᚄ(ctx context.Context, sel ast.SelectionSet, v []contracts.ContractOutput) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
@@ -16872,13 +15980,6 @@ func (ec *executionContext) unmarshalOContractOutputFilter2ᚖvscᚑnodeᚋmodul
 	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
-func (ec *executionContext) marshalOContractState2vscᚑnodeᚋmodulesᚋdbᚋvscᚋcontractsᚐContractState(ctx context.Context, sel ast.SelectionSet, v contracts.ContractState) graphql.Marshaler {
-	if v == nil {
-		return graphql.Null
-	}
-	return ec._ContractState(ctx, sel, v)
-}
-
 func (ec *executionContext) marshalOElectionResult2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋelectionsᚐElectionResult(ctx context.Context, sel ast.SelectionSet, v *elections.ElectionResult) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
@@ -16892,6 +15993,42 @@ func (ec *executionContext) unmarshalOFindContractFilter2ᚖvscᚑnodeᚋmodules
 	}
 	res, err := ec.unmarshalInputFindContractFilter(ctx, v)
 	return &res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) unmarshalOInt2ᚕintᚄ(ctx context.Context, v any) ([]int, error) {
+	if v == nil {
+		return nil, nil
+	}
+	var vSlice []any
+	vSlice = graphql.CoerceList(v)
+	var err error
+	res := make([]int, len(vSlice))
+	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
+		res[i], err = ec.unmarshalNInt2int(ctx, vSlice[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+func (ec *executionContext) marshalOInt2ᚕintᚄ(ctx context.Context, sel ast.SelectionSet, v []int) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	ret := make(graphql.Array, len(v))
+	for i := range v {
+		ret[i] = ec.marshalNInt2int(ctx, sel, v[i])
+	}
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
 }
 
 func (ec *executionContext) unmarshalOInt2ᚖint(ctx context.Context, v any) (*int, error) {
@@ -16924,22 +16061,6 @@ func (ec *executionContext) marshalOInt642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodel�
 		return graphql.Null
 	}
 	return v
-}
-
-func (ec *executionContext) unmarshalOJSON2ᚖstring(ctx context.Context, v any) (*string, error) {
-	if v == nil {
-		return nil, nil
-	}
-	res, err := graphql.UnmarshalString(v)
-	return &res, graphql.ErrorOnPath(ctx, err)
-}
-
-func (ec *executionContext) marshalOJSON2ᚖstring(ctx context.Context, sel ast.SelectionSet, v *string) graphql.Marshaler {
-	if v == nil {
-		return graphql.Null
-	}
-	res := graphql.MarshalString(*v)
-	return res
 }
 
 func (ec *executionContext) marshalOLedgerAction2ᚕᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐLedgerAction(ctx context.Context, sel ast.SelectionSet, v []*LedgerAction) graphql.Marshaler {
@@ -17256,11 +16377,51 @@ func (ec *executionContext) marshalOTransactionOperation2ᚕvscᚑnodeᚋmodules
 	return ret
 }
 
-func (ec *executionContext) marshalOTransactionOutput2ᚖvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOutput(ctx context.Context, sel ast.SelectionSet, v *transactions.TransactionOutput) graphql.Marshaler {
+func (ec *executionContext) marshalOTransactionOutput2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOutputᚄ(ctx context.Context, sel ast.SelectionSet, v []transactions.TransactionOutput) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
 	}
-	return ec._TransactionOutput(ctx, sel, v)
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNTransactionOutput2vscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionOutput(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
 }
 
 func (ec *executionContext) marshalOTransactionRecord2ᚕvscᚑnodeᚋmodulesᚋdbᚋvscᚋtransactionsᚐTransactionRecordᚄ(ctx context.Context, sel ast.SelectionSet, v []transactions.TransactionRecord) graphql.Marshaler {

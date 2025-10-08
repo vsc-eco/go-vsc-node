@@ -1,64 +1,20 @@
 package wasm_e2e
 
 import (
-	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
-	"strconv"
 	"testing"
 
 	"vsc-node/lib/test_utils"
-	"vsc-node/modules/common"
-	contract_execution_context "vsc-node/modules/contract/execution-context"
 	"vsc-node/modules/db/vsc/contracts"
-	wasm_context "vsc-node/modules/wasm/context"
-	wasm_runtime "vsc-node/modules/wasm/runtime"
-	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	stateEngine "vsc-node/modules/state-processing"
+
+	"github.com/stretchr/testify/assert"
 )
 
-type Buffer struct {
-	c chan byte
-	// *io.PipeReader
-	// *io.PipeWriter
-}
-
-func NewBuffer() *Buffer {
-	return &Buffer{c: make(chan byte, 8*1024*1024)} // TODO by making the buffer size very large, the test will no longer be flaky. Does this indicate a likely problem in production?
-	// r, w := io.Pipe()
-	// return &Buffer{r, w}
-}
-
-func (b *Buffer) Read(p []byte) (n int, err error) {
-	for i := 0; i < len(p); i++ {
-		if len(b.c) == 0 {
-			return i, nil
-		}
-		p[i] = <-b.c
-	}
-	return len(p), nil
-}
-
-func (b *Buffer) Write(p []byte) (n int, err error) {
-	for i, v := range p {
-		if len(b.c) == cap(b.c) {
-			return i, nil
-		}
-		b.c <- v
-	}
-	return len(p), nil
-}
-
-const ioGas = 4200000000
-
-const goGas = 704
-
-func TestCompileAndExecute(t *testing.T) {
-	w := wasm_runtime_ipc.New()
-	w.Init()
-
+func TestContractTestUtil(t *testing.T) {
 	fmt.Println("os.Chdir(projectRoot(t))", projectRoot(t), os.Chdir(projectRoot(t)))
 	wkdir := projectRoot(t)
 	WASM_PATH, err := Compile(wkdir)
@@ -68,65 +24,188 @@ func TestCompileAndExecute(t *testing.T) {
 	fmt.Println("WASM file compiled successfully:", WASM_PATH)
 	WASM_TEST_CODE, err := os.ReadFile(WASM_PATH) // This is just to ensure the file exists and can be read.
 	if err != nil {
-		fmt.Println("Failed to read it")
 		t.Fatalf("Failed to read WASM file: %v", err)
 	}
 
 	fmt.Println("WASM_TEST_CODE:", len(WASM_TEST_CODE), WASM_TEST_CODE[:10], "...")
 
-	entrypoint := "callfunc"
-
-	stateStore := test_utils.NewInMemoryStateStore()
-
-	key := "_📝_testing_すし_"
-	value := key
-	stateStore.Set(key, []byte(value))
-
-	radicalStructure := map[string]any{
-		"key":   key,
-		"value": value,
+	contractId := "vscmycontract"
+	contractId2 := "vscmycontract2"
+	txSelf := stateEngine.TxSelf{
+		TxId:                 "sometxid",
+		BlockId:              "abcdef",
+		Index:                69,
+		OpIndex:              0,
+		Timestamp:            "2025-09-03T00:00:00",
+		RequiredAuths:        []string{"hive:someone"},
+		RequiredPostingAuths: []string{},
 	}
-	// meh, _ := common.EncodeDagCbor(radicalStructure)
-	meh, _ := json.Marshal(radicalStructure)
 
-	var ctxValue wasm_context.ExecContextValue = contract_execution_context.New(
-		contract_execution_context.Environment{
-			ContractId:  "vsc1Bak1RGMgUxvLriSCoLJWZ5Ghp26ci2CiSk",
-			BlockHeight: 97939313,
-			TxId:        "1b041f35ae729198375551b77d9ec20d00b3bc9b",
-			BlockId:     "05d66f716d4573aeb74d8b6533d3c804a5e98cae",
-			Index:       23,
-			OpIndex:     2,
-			Timestamp:   "2025-07-25T00:44:24",
-			RequiredAuths: []string{
-				"hive:vaultec.test",
+	ct := test_utils.NewContractTest()
+	ct.Deposit("hive:someone", 10000, ledgerDb.AssetHive)
+	ct.Deposit("hive:someone", 20000, ledgerDb.AssetHbd)
+	assert.Equal(t, ct.GetBalance("hive:someone", ledgerDb.AssetHive), int64(10000))
+	ct.RegisterContract(contractId, "hive:someone", WASM_TEST_CODE[:])
+	ct.RegisterContract(contractId2, "hive:someone", WASM_TEST_CODE[:])
+	assert.Equal(t, "", ct.StateGet(contractId, "doesnotexist"))
+	ct.StateSet(contractId, "manuallyset", "hi")
+	assert.Equal(t, "hi", ct.StateGet(contractId, "manuallyset"))
+	ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "drawHive",
+		Payload:    json.RawMessage([]byte("1000")),
+		RcLimit:    1000,
+		Intents: []contracts.Intent{{
+			Type: "transfer.allow",
+			Args: map[string]string{
+				"limit": "1.000",
+				"token": "hive",
 			},
-			RequiredPostingAuths: []string{},
-			Caller:               "hive:vaultec.test",
-			Intents: []contracts.Intent{{
-				Type: "transfer.allow",
-				Args: map[string]string{
-					"limit": "1.000",
-					"token": "hive",
-				},
-			}},
-		},
-		int64(math.Ceil(float64(goGas+ioGas)/common.CYCLE_GAS_PER_RC)),
-		nil,
-		stateStore,
-		contracts.ContractMetadata{},
-	)
-	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(WASM_TEST_CODE))
+		}},
+	})
+	assert.Equal(t, ct.GetBalance("hive:someone", ledgerDb.AssetHive), int64(9000))
+	assert.Equal(t, ct.GetBalance("contract:vscmycontract", ledgerDb.AssetHive), int64(1000))
 
-	w.Execute(ctx, goGas+uint(ioGas), entrypoint, string(meh), wasm_runtime.Go)
-	basicErrorResult := w.Execute(ctx, 5000+uint(ioGas), entrypoint, "testing-123", wasm_runtime.Go)
+	ledgerErr, _, _ := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "drawHive",
+		Payload:    json.RawMessage([]byte("1000")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.False(t, ledgerErr.Success)
+	assert.Equal(t, *ledgerErr.Err, contracts.LEDGER_INTENT_ERROR)
 
-	if basicErrorResult.Error != nil {
-		fmt.Println("Error executing WASM:", *basicErrorResult.Error)
-	} else {
-		fmt.Println("basicErrorResult:", basicErrorResult.Result, "gas="+strconv.Itoa(int(basicErrorResult.Result.Gas)))
-	}
+	abortResult, _, _ := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "abortMe",
+		Payload:    json.RawMessage([]byte("aborted successfully")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.False(t, abortResult.Success)
+	assert.GreaterOrEqual(t, abortResult.RcUsed, int64(100))
 
-	fmt.Println("hello world!")
+	revertResult, _, _ := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "revertMe",
+		Payload:    json.RawMessage([]byte("reverted successfully")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.False(t, revertResult.Success)
+	assert.GreaterOrEqual(t, revertResult.RcUsed, int64(100))
 
+	nonExistent, _, _ := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "doesNotExist",
+		Payload:    json.RawMessage([]byte("1000")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.False(t, nonExistent.Success)
+	assert.Equal(t, *nonExistent.Err, contracts.WASM_FUNC_NOT_FND)
+
+	dumpEnvResult, _, dumpEnvLogs := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "dumpEnv",
+		Payload:    json.RawMessage([]byte("")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.GreaterOrEqual(t, len(dumpEnvLogs[contractId]), 1)
+	assert.LessOrEqual(t, dumpEnvResult.RcUsed, int64(500))
+	assert.True(t, dumpEnvResult.Success)
+
+	dumpEnvKeyResult, _, _ := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "dumpEnvKey",
+		Payload:    json.RawMessage([]byte("contract.id")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.True(t, dumpEnvKeyResult.Success)
+
+	ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "setString",
+		Payload:    json.RawMessage([]byte("myString,hello world")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.Equal(t, ct.StateGet(contractId, "myString"), "hello world")
+
+	icGetStr, _, _ := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId2,
+		Action:     "contractGetString",
+		Payload:    json.RawMessage([]byte(contractId + ",myString")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.True(t, icGetStr.Success)
+	assert.Equal(t, "hello world", icGetStr.Ret)
+
+	icCall, _, icLogs := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "contractCall",
+		Payload:    json.RawMessage([]byte(contractId2 + ",dumpEnv,a")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.True(t, icCall.Success)
+	assert.GreaterOrEqual(t, len(icLogs[contractId2]), 1)
+
+	icInfCall, _, _ := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "infiniteRecursion",
+		Payload:    json.RawMessage([]byte("a")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.False(t, icInfCall.Success)
+	assert.Equal(t, contracts.IC_RCSE_LIMIT_HIT, *icInfCall.Err)
+
+	icRevert, _, _ := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "contractCall",
+		Payload:    json.RawMessage([]byte(contractId2 + ",revertMe,a")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.False(t, icRevert.Success)
+	assert.Equal(t, "symbol_here", *icRevert.Err)
+
+	failedContractPull, _, _ := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId2,
+		Action:     "contractCall",
+		Payload:    json.RawMessage([]byte(contractId + ",drawHive,20")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.False(t, failedContractPull.Success)
+	assert.Equal(t, contracts.LEDGER_ERROR, *failedContractPull.Err)
+
+	ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "contractCall",
+		Payload:    json.RawMessage([]byte(contractId2 + ",drawHive,20")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.Equal(t, ct.GetBalance("contract:vscmycontract", ledgerDb.AssetHive), int64(980))
+	assert.Equal(t, ct.GetBalance("contract:vscmycontract2", ledgerDb.AssetHive), int64(20))
 }
