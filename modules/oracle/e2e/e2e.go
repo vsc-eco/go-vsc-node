@@ -48,9 +48,7 @@ func MakeNode(nodeName string) *Node {
 	nonceDb := nonces.New(vscDb)
 	wasm := wasm_parent_ipc.New()
 	sysConfig := common.SystemConfig{Network: "mocknet"}
-	identityConfig := common.NewIdentityConfig(
-		"oracle-test_" + nodeName + "/config",
-	)
+	identityConfig := common.NewIdentityConfig("test_" + nodeName + "/config")
 	p2pSpec := p2pInterface.New(witnessesDb, identityConfig, sysConfig, 0)
 	logger := logger.PrefixedLogger{
 		Prefix: "oracle-test_" + nodeName,

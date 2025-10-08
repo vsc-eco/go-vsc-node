@@ -3,6 +3,7 @@ package oraclee2e
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,10 @@ import (
 )
 
 func TestE2E(t *testing.T) {
+	if err := os.Setenv("DEBUG", "1"); err != nil {
+		t.Fatal(err)
+	}
+
 	nodes := []*Node{}
 	plugins := []aggregate.Plugin{}
 

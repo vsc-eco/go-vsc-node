@@ -110,8 +110,11 @@ func New(
 // Init implements aggregate.Plugin.
 // Runs initialization in order of how they are passed in to `Aggregate`
 func (o *Oracle) Init() error {
-	p := []aggregate.Plugin{o.chainOracle, o.priceOracle}
-	return aggregate.New(p).Init()
+	services := []aggregate.Plugin{
+		o.chainOracle,
+		// o.priceOracle,
+	}
+	return aggregate.New(services).Init()
 }
 
 // Start implements aggregate.Plugin.
@@ -137,9 +140,13 @@ func (o *Oracle) Start() *promise.Promise[any] {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		srv := aggregate.New([]aggregate.Plugin{o.chainOracle, o.priceOracle})
+		services := []aggregate.Plugin{
+			o.chainOracle,
+			// o.priceOracle,
+		}
 
-		if _, err := srv.Start().Await(ctx); err != nil {
+		s := aggregate.New(services)
+		if _, err := s.Start().Await(ctx); err != nil {
 			reject(err)
 			return
 		}
@@ -153,10 +160,13 @@ func (o *Oracle) Start() *promise.Promise[any] {
 func (o *Oracle) Stop() error {
 	o.cancelFunc()
 
-	p := []aggregate.Plugin{o.chainOracle, o.priceOracle}
-	srv := aggregate.New(p)
+	services := []aggregate.Plugin{
+		o.chainOracle,
+		// o.priceOracle,
+	}
 
-	if err := srv.Stop(); err != nil {
+	s := aggregate.New(services)
+	if err := s.Stop(); err != nil {
 		return err
 	}
 
@@ -210,9 +220,3 @@ func (o *Oracle) ValidateSignature(*p2p.OracleBlock, string) error {
 	fmt.Println("Oracle.ValidateSignature not implemented")
 	return nil
 }
-
-//BIG
-// - Fix oracle block format. It must be a Bitcoin block header or preferably interface that allows for general purpose construction of block header ingestion
-// - Combine producer & witness modules into one
-// - Contract state interface. Pull contract state information and provide it to the chain relay module for processing
-// -
