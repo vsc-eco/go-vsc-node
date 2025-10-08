@@ -346,7 +346,6 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine, ledgerSession *LedgerSess
 		parsedCid, _ := cid.Parse(tx.Data)
 
 		blsCircuit, err := dids.DeserializeBlsCircuit(tx.Signature, memberDids, verifyHash)
-
 		if err != nil {
 			return
 		}

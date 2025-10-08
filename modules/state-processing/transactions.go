@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 	"vsc-node/lib/datalayer"
+	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
@@ -1018,7 +1019,15 @@ func (tx *OffchainTransaction) Verify(txSig TransactionSig, nonce int) (bool, er
 		return false, err
 	}
 
-	return common.VerifySignatures(tx.Headers.RequiredAuths, blk, txSig.Sigs)
+	didBufs := make([]dids.DID, len(tx.Headers.RequiredAuths))
+	for i, auth := range tx.Headers.RequiredAuths {
+		didBufs[i], err = dids.Parse(auth)
+		if err != nil {
+			return false, err
+		}
+	}
+
+	return common.VerifySignatures(didBufs, blk, txSig.Sigs)
 }
 
 func (tx *OffchainTransaction) Encode() ([]byte, error) {
