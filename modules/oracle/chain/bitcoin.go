@@ -169,6 +169,7 @@ func (b *btcChainData) Type() string {
 
 // GetContractState implements chainRelay.
 func (b *bitcoinRelayer) GetContractState() (chainState, error) {
+	//Pull from VSC graphql API
 	panic("unimplemented")
 }
 

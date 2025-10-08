@@ -117,9 +117,7 @@ func (c *ChainOracle) fetchAllStatuses() []chainSession {
 			continue
 		}
 
-		if chainSession != nil {
-			chainSessions = append(chainSessions, *chainSession)
-		}
+		chainSessions = append(chainSessions, chainSession)
 	}
 
 	return chainSessions
@@ -132,29 +130,33 @@ type chainSession struct {
 	newBlocksToSubmit bool
 }
 
-func fetchChainStatus(chain chainRelay) (*chainSession, error) {
+func fetchChainStatus(chain chainRelay) (chainSession, error) {
 	latestChainState, err := chain.GetLatestValidHeight()
 	if err != nil {
-		return nil, fmt.Errorf("failed to check latest state: %w", err)
+		return chainSession{
+			newBlocksToSubmit: false,
+		}, fmt.Errorf("failed to check latest state: %w", err)
 	}
 	//
 
 	contractState, err := chain.GetContractState()
 	if err != nil {
-		return nil, err
+		return chainSession{
+			newBlocksToSubmit: false,
+		}, err
 	}
 
 	if latestChainState.blockHeight <= contractState.blockHeight {
-		return nil, nil
+		return chainSession{}, nil
 	}
 
 	chainData, err := chain.ChainData(contractState.blockHeight+1, 100)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get chain data: %w", err)
+		return chainSession{}, fmt.Errorf("failed to get chain data: %w", err)
 	}
 
 	c := "vsc1BRZLx1"
-	chainSession := &chainSession{
+	chainSession := chainSession{
 		symbol:            chain.Symbol(),
 		contractId:        &c,
 		chainData:         chainData,
