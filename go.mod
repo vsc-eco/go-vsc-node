@@ -7,12 +7,14 @@ toolchain go1.24.0
 require (
 	github.com/99designs/gqlgen v0.17.68
 	github.com/JustinKnueppel/go-result v1.0.0
-	github.com/btcsuite/btcutil v1.0.2
+	github.com/bnb-chain/tss-lib/v2 v2.0.2
+	github.com/btcsuite/btcutil v1.0.3-0.20201208143702-a53e38424cce
 	github.com/chebyrash/promise v0.0.0-20230709133807-42ec49ba1459
 	github.com/consensys/gnark-crypto v0.14.0
 	github.com/ethereum/go-ethereum v1.14.12
 	github.com/go-viper/mapstructure/v2 v2.2.1
 	github.com/hasura/go-graphql-client v0.13.1
+	github.com/ipfs/go-ds-flatfs v0.5.4
 	github.com/libp2p/go-libp2p-gorpc v0.6.0
 	github.com/moznion/go-optional v0.12.0
 	github.com/protolambda/bls12-381-util v0.1.0
@@ -21,16 +23,24 @@ require (
 	github.com/vektah/gqlparser/v2 v2.5.23
 	github.com/vsc-eco/go-ethereum v0.0.1
 	github.com/vsc-eco/hivego v0.0.0-20250604205027-fa6c9e2c8be7
-	github.com/zealic/go2node v0.1.0
-	github.com/zyedidia/generic v1.2.1
-	gitlab.com/NebulousLabs/go-upnp v0.0.0-20211002182029-11da932010b6
 	go.mongodb.org/mongo-driver v1.16.0
 )
 
+replace (
+	github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
+// github.com/bnb-chain/tss-lib => github.com/ChainSafe/tss-lib v1.4.2
+
+)
+
 require (
+	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
 	github.com/VictoriaMetrics/fastcache v1.12.2 // indirect
+	github.com/alexbrainman/goissue34681 v0.0.0-20191006012335-3fc7a47baff5 // indirect
 	github.com/bits-and-blooms/bitset v1.14.2 // indirect
+	github.com/bnb-chain/tss-lib/v2 v2.0.2 // indirect
+	github.com/btcsuite/btcd v0.23.4 // indirect
+	github.com/btcsuite/btcd/btcec/v2 v2.3.4 // indirect
 	github.com/consensys/bavard v0.1.13 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.6 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240223125850-b1e8a79f509c // indirect
@@ -56,9 +66,17 @@ require (
 )
 
 require (
+	github.com/agl/ed25519 v0.0.0-20200225211852-fd4d107ace12 // indirect
 	github.com/agnivade/levenshtein v1.2.1 // indirect
+	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0 // indirect
 	github.com/coder/websocket v1.8.13 // indirect
-	github.com/creachadair/mds v0.23.0 // indirect
+	github.com/deckarep/golang-set/v2 v2.6.0 // indirect
+	github.com/decred/dcrd/dcrec/edwards/v2 v2.0.3
+	github.com/eager7/dogd v0.0.0-20200427085516-2caf59f59dbb
+	github.com/fsnotify/fsnotify v1.6.0 // indirect
+	github.com/ipfs/go-log v1.0.5 // indirect
+	github.com/opentracing/opentracing-go v1.2.0 // indirect
+	github.com/otiai10/primes v0.0.0-20210501021515-f1b2be525a11 // indirect
 	github.com/sosodev/duration v1.3.1 // indirect
 	github.com/urfave/cli/v2 v2.27.6 // indirect
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
@@ -75,7 +93,7 @@ require (
 	github.com/decred/base58 v1.0.5 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v2 v2.0.1
-	github.com/dgraph-io/badger/v2 v2.2007.3 // indirect
+	github.com/dgraph-io/badger/v2 v2.2007.4 // indirect
 	github.com/dgraph-io/ristretto v0.0.3-0.20200630154024-f66de99634de // indirect
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -94,8 +112,8 @@ require (
 	github.com/ipfs/boxo v0.27.2
 	github.com/ipfs/go-bitfield v1.1.0 // indirect
 	github.com/ipfs/go-block-format v0.2.0
-	github.com/ipfs/go-datastore v0.6.0
-	github.com/ipfs/go-ds-badger2 v0.1.3
+	github.com/ipfs/go-datastore v0.8.2
+	github.com/ipfs/go-ds-badger2 v0.1.5
 	github.com/ipfs/go-ipfs-delay v0.0.1 // indirect
 	github.com/ipfs/go-ipfs-pq v0.0.3 // indirect
 	github.com/ipfs/go-ipfs-util v0.0.3 // indirect
@@ -139,7 +157,6 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/cgroups v1.1.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
-	github.com/creachadair/jrpc2 v1.3.1
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.3.0 // indirect
@@ -222,11 +239,9 @@ require (
 	github.com/quic-go/webtransport-go v0.8.1-0.20241018022711-4ac2c9250e66 // indirect
 	github.com/raulk/go-watchdog v1.3.0 // indirect
 	github.com/second-state/WasmEdge-go v0.13.4
-	github.com/segmentio/fasthash v1.0.3 // indirect
 	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/stretchr/testify v1.10.0
-	gitlab.com/NebulousLabs/fastrand v0.0.0-20181126182046-603482d69e40 // indirect
 	go.uber.org/dig v1.18.0 // indirect
 	go.uber.org/fx v1.23.0 // indirect
 	go.uber.org/mock v0.5.0 // indirect
