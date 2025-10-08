@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 	"vsc-node/modules/oracle/p2p"
-	"vsc-node/modules/oracle/threadsafe"
 )
 
 const float64Epsilon = 1e-9

@@ -7,14 +7,13 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/chain"
 	"vsc-node/modules/oracle/p2p"
-	"vsc-node/modules/oracle/price"
 	stateEngine "vsc-node/modules/state-processing"
 )
 
 const blockHeightThreshold = 10
 
 var (
-	_ BlockTickHandler = &price.PriceOracle{}
+	// _ BlockTickHandler = &price.PriceOracle{}
 	_ BlockTickHandler = &chain.ChainOracle{}
 )
 

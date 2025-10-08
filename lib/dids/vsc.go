@@ -98,7 +98,3 @@ func (v *VscDID) Verify(data blocks.Block, sig string) (bool, error) {
 
 	return blockOk, err
 }
-
-//Things to do:
-// - Transaction pool: verify incoming transactions
-// - Parse DIDs from []string

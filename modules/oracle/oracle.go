@@ -118,7 +118,7 @@ func (o *Oracle) Init() error {
 // Start implements aggregate.Plugin.
 // Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
-	o.vStream.RegisterBlockTick("oracle", o.blockTick, true)
+	// o.vStream.RegisterBlockTick("oracle", o.blockTick, true)
 
 	return promise.New(func(resolve func(any), reject func(error)) {
 		o.logger.Debug("starting Oracle service")

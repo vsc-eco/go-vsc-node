@@ -2,14 +2,17 @@ package chain
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 
 	"github.com/chebyrash/promise"
+	"github.com/vsc-eco/hivego"
 )
 
 var (
@@ -80,6 +83,7 @@ func New(
 func (c *ChainOracle) Init() error {
 	// initializes market api's
 	for symbol, chainRelayer := range c.chainRelayers {
+
 		c.logger.Debug("initializing chain relay: " + symbol)
 		if err := chainRelayer.Init(); err != nil {
 			return fmt.Errorf(
@@ -94,6 +98,24 @@ func (c *ChainOracle) Init() error {
 
 // Start implements aggregate.Plugin.
 func (c *ChainOracle) Start() *promise.Promise[any] {
+
+	startSymbols := make(map[string]string)
+	for symbol, chainRelayer := range c.chainRelayers {
+
+		fcl, err := chainRelayer.GetLatestValidHeight()
+
+		fmt.Println("fcl", fcl, symbol)
+		if err != nil {
+			startSymbols[symbol] = err.Error()
+		} else {
+			startSymbols[symbol] = strconv.Itoa(int(fcl.blockHeight))
+		}
+	}
+	hiveClient := hivego.NewHiveRpc("https://api.hive.blog")
+
+	jsonBytes, _ := json.Marshal(startSymbols)
+	wif := c.conf.Get().HiveActiveKey
+	hiveClient.BroadcastJson([]string{c.conf.Get().HiveUsername}, []string{}, "dev_vsc.chain_oracle", string(jsonBytes), &wif)
 	return promise.New(func(resolve func(any), _ func(error)) {
 		resolve(nil)
 	})

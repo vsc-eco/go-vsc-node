@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/oracle/p2p"
 	transactionpool "vsc-node/modules/transaction-pool"
 )
 
 type session struct {
-	vscTxShell transactionpool.VSCTransactionShell
-	chainData  []string
-	signatures []string
+	vscTransaction transactionpool.SerializedVSCTransaction
+	chainData      []string
+	signatures     []string
 }
 
 type vscTransaction struct {
@@ -24,18 +25,34 @@ type vscTransaction struct {
 func makeTransaction(
 	contractId *string,
 	payload []string,
-) transactionpool.VSCTransactionShell {
+	symbol string,
+) transactionpool.VSCTransaction {
 	ops := make([]transactionpool.VSCTransactionOp, 0)
-	return transactionpool.VSCTransactionShell{
-		Headers: transactionpool.VSCTransactionHeader{
-			Nonce:         0,
-			RequiredAuths: []string{"did:vsc:consensus"},
-			RcLimit:       500,
-			NetId:         "vsc-mainnet",
-		},
-		Type:    "vsc-tx",
-		Version: "0.2",
-		Tx:      ops,
+	op := transactionpool.VscContractCall{
+		ContractId: *contractId,
+		Action:     "add_blocks",
+		Payload:    "",
+		Intents:    []contracts.Intent{},
+		RcLimit:    1000,
+		Caller:     "did:vsc:oracle:" + symbol,
+		NetId:      "vsc-mainnet",
+	}
+	vOp, _ := op.SerializeVSC()
+	ops = append(ops, vOp)
+	return transactionpool.VSCTransaction{
+		Ops:   ops,
+		Nonce: 0,
+		NetId: "vsc-mainnet",
+		// Headers: transactionpool.VSCTransactionHeader{
+		// 	Nonce:         0,
+		// 	RequiredAuths: []string{"did:vsc:oracle:" + symbol},
+
+		// 	NetId: "vsc-mainnet",
+		// },
+		// Type:    "vsc-tx",
+		// Version: "0.2",
+
+		// Tx: ops,
 	}
 }
 
@@ -107,13 +124,16 @@ func (o *ChainOracle) HandleBlockTick(
 			continue
 		}
 
-		tx := makeTransaction(chainStatus.contractId, payload)
+		tx := makeTransaction(chainStatus.contractId, payload, chainStatus.symbol)
+
 		signatureRequests = append(signatureRequests, *signatureRequest)
 
+		serializedTx, _ := tx.Serialize()
+
 		sessionMap[sessionID] = session{
-			vscTxShell: tx,
-			chainData:  payload,
-			signatures: make([]string, 0, 128),
+			vscTransaction: serializedTx,
+			chainData:      payload,
+			signatures:     make([]string, 0, 128),
 		}
 	}
 

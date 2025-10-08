@@ -118,12 +118,12 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 					case <-ctx.Done():
 						return
 					case <-ticker.C:
-						peers := topic.ListPeers()
-						fmt.Println(p2p.PeerInfo().GetPeerId(), "pubsub", service.Topic(), "peers:", len(peers))
-						if len(peers) > 0 {
-							resolve(nil)
-							return
-						}
+						// peers := topic.ListPeers()
+						resolve(nil)
+						// fmt.Println(p2p.PeerInfo().GetPeerId(), "pubsub", service.Topic(), "peers:", len(peers))
+						// if len(peers) > 0 {
+						// 	return
+						// }
 					}
 				}
 			}),

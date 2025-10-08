@@ -13,10 +13,6 @@ import (
 
 type Msg = *OracleMessage
 
-type Oracle struct {
-	service libp2p.PubSubService[OracleMessage]
-}
-
 type OracleMessage struct{}
 
 type p2pSpec struct {
