@@ -33,10 +33,11 @@ type IngestOutputArgs struct {
 }
 
 type ContractOutputResult struct {
-	Ret  string               `json:"ret" bson:"ret"`
-	Ok   bool                 `json:"ok" bson:"ok"`
-	Err  *ContractOutputError `json:"err,omitempty" bson:"err,omitempty"`
-	Logs []string             `json:"logs,omitempty" bson:"logs,omitempty"`
+	Ret    string               `json:"ret" bson:"ret"`
+	Ok     bool                 `json:"ok" bson:"ok"`
+	Err    *ContractOutputError `json:"err,omitempty" bson:"err,omitempty"`
+	ErrMsg string               `json:"errMsg,omitempty" bson:"errMsg,omitempty"`
+	Logs   []string             `json:"logs,omitempty" bson:"logs,omitempty"`
 }
 
 type ContractOutput struct {
@@ -65,6 +66,12 @@ const (
 	RUNTIME_INVALID     ContractOutputError = "runtime_invalid"
 	GAS_LIMIT_HIT       ContractOutputError = "gas_limit_hit"
 	SDK_ERROR           ContractOutputError = "sdk_error"
+	MISSING_REQ_AUTH    ContractOutputError = "missing_required_auth"
+	ENV_VAR_ERROR       ContractOutputError = "env_var_error"
 	LEDGER_ERROR        ContractOutputError = "ledger_error"
 	LEDGER_INTENT_ERROR ContractOutputError = "ledger_intent_error"
+	WASM_INIT_ERROR     ContractOutputError = "wasm_init_error"
+	WASM_RET_ERROR      ContractOutputError = "wasm_ret_error"
+	WASM_FUNC_NOT_FND   ContractOutputError = "wasm_function_not_found"
+	UNK_ERROR           ContractOutputError = "unknown_error"
 )

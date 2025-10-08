@@ -729,10 +729,11 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			}
 
 			results = append(results, contracts.ContractOutputResult{
-				Ret:  ret,
-				Ok:   v.Success,
-				Err:  v.Err,
-				Logs: v.Logs,
+				Ret:    ret,
+				Ok:     v.Success,
+				Err:    v.Err,
+				ErrMsg: v.ErrMsg,
+				Logs:   v.Logs,
 			})
 			inputIds = append(inputIds, v.TxId)
 		}

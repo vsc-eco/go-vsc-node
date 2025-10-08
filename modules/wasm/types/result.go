@@ -1,6 +1,10 @@
 package wasm_types
 
-import "github.com/JustinKnueppel/go-result"
+import (
+	"vsc-node/modules/db/vsc/contracts"
+
+	"github.com/JustinKnueppel/go-result"
+)
 
 type WasmResultStruct struct {
 	Result string
@@ -13,12 +17,5 @@ type WasmResult = result.Result[WasmResultStruct]
 type BasicErrorResult struct {
 	Result    *WasmResultStruct
 	Error     *string
-	ErrorCode ErrorSymbol
+	ErrorCode contracts.ContractOutputError
 }
-
-// MISC: @TODO cleanup
-type ErrorSymbol string
-
-const (
-	REVERT ErrorSymbol = "revert"
-)

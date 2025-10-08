@@ -123,6 +123,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 		ct.State[tx.ContractId].Rollback()
 		return stateEngine.TxResult{
 			Success: false,
+			Err:     &res.ErrorCode,
 			Ret:     *res.Error,
 			RcUsed:  10,
 		}, res.Result.Gas, []string{}

@@ -15,6 +15,7 @@ type TxOutput struct {
 
 type TxResult struct {
 	Success bool
+	Err     *contracts.ContractOutputError
 	Ret     string
 	RcUsed  int64
 }
@@ -23,6 +24,7 @@ type ContractResult struct {
 	Success bool
 	Ret     string
 	Err     *contracts.ContractOutputError
+	ErrMsg  string
 	TxId    string
 	Logs    []string
 }

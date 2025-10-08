@@ -4,7 +4,6 @@ import (
 	"crypto"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"slices"
 	"strconv"
 	DataLayer "vsc-node/lib/datalayer"
@@ -429,62 +428,16 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					txSelf.RequiredPostingAuths[idx] = "hive:" + auth
 				}
 
-				if len(tx.Operations) != 2 {
-					continue
+				parsedTx := TxCreateContract{
+					Self: txSelf,
 				}
+				json.Unmarshal(cj.Json, &parsedTx)
 
-				secondOp := tx.Operations[1]
-
-				if secondOp.Type == "transfer" {
-
-					fmt.Println(secondOp.Value["amount"].(map[string]any)["amount"], reflect.TypeOf(secondOp.Value["amount"].(map[string]any)["amount"]))
-					amountData := secondOp.Value["amount"].(map[string]any)
-					amount, err := strconv.ParseInt(amountData["amount"].(string), 10, 64)
-
-					if err != nil {
-						panic(err)
-					}
-
-					if amount < 10_000 {
-						continue
-					}
-
-					if amountData["nai"] != "@@000000013" {
-						continue
-					}
-
-					if secondOp.Value["to"] != common.GATEWAY_WALLET {
-						continue
-					}
-
-					leDeposit := Deposit{
-						Id:      MakeTxId(tx.TransactionID, 1),
-						Asset:   "hbd",
-						Amount:  amount,
-						Account: "hive:vsc.dao",
-						From:    "hive:" + secondOp.Value["from"].(string),
-						Memo:    "to=vsc.dao",
-
-						BlockHeight: blockInfo.BlockHeight,
-
-						BIdx:  int64(tx.Index),
-						OpIdx: int64(1),
-					}
-					// fmt.Println("Registering deposit!", leDeposit)
-					se.LedgerExecutor.Deposit(leDeposit)
-
-					fmt.Println("amountData", amountData)
-					// if amountData["amount"] == "hello" && secondOp.Value["asset"].(string) == "hbd" {
-
-					// }
-					parsedTx := TxCreateContract{
-						Self: txSelf,
-					}
-					json.Unmarshal(cj.Json, &parsedTx)
-
-					txResult := parsedTx.ExecuteTx(se, session, nil, nil, "")
-
-					fmt.Println("create_contract txResult", txResult, secondOp)
+				txResult := parsedTx.ExecuteTx(se, session, nil, nil, "")
+				if !txResult.Success {
+					session.Revert()
+				} else {
+					session.Done()
 				}
 				continue
 			} else if cj.Id == "vsc.election_result" {
@@ -908,7 +861,8 @@ func (se *StateEngine) ExecuteBatch() {
 							TxId:    txId,
 							Ret:     "",
 							Success: result.Success,
-							Err:     &result.Ret,
+							Err:     result.Err,
+							ErrMsg:  result.Ret,
 						},
 					}}
 				} else {
@@ -921,7 +875,6 @@ func (se *StateEngine) ExecuteBatch() {
 							TxId:    txId,
 							Ret:     result.Ret,
 							Success: result.Success,
-							Err:     nil,
 							Logs:    contractSession.PopLogs(),
 						},
 					})
