@@ -539,3 +539,10 @@ func (l *P2PServer) SendTo(topic string, message []byte, recipients []peer.ID) {
 func (l *P2PServer) SendToAll(topic string, message []byte) {
 	panic("unimplemented")
 }
+
+func (l *P2PServer) Host() host.Host {
+	if l.host == nil {
+		panic("Host is not initialized")
+	}
+	return l.host
+}

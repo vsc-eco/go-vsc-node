@@ -45,7 +45,9 @@ func (v *VStream) ProcessBlock(blk hive_blocks.HiveBlock, headHeight *uint64) {
 			tick.funck(blk.BlockNumber, headHeight)
 		}
 	}
-	v.StateEngine.ProcessBlock(blk)
+	if v.StateEngine != nil {
+		v.StateEngine.ProcessBlock(blk)
+	}
 }
 
 type BlockTick struct {
