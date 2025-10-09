@@ -12,8 +12,7 @@ import (
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
-	"vsc-node/modules/db/vsc/tss_keys"
-	"vsc-node/modules/db/vsc/tss_requests"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
 	libp2p "vsc-node/modules/p2p"
 	tss_helpers "vsc-node/modules/tss/helpers"
@@ -44,8 +43,9 @@ type TssManager struct {
 
 	sigChannels map[string]chan sigMsg
 
-	tssRequests tss_requests.TssRequests
-	tssKeys     tss_keys.TssKeys
+	tssRequests    tss_db.TssRequests
+	tssKeys        tss_db.TssKeys
+	tssCommitments tss_db.TssCommitments
 
 	keyStore *flatfs.Datastore
 
@@ -407,7 +407,7 @@ func (tssMgr *TssManager) KeyReshare(keyId string, algo tss_helpers.SigningAlgo)
 	return len(tssMgr.queuedActions)
 }
 
-func (tss *TssManager) SendMsg(sessionId string, participant Participant, moniker string, msg []byte, isBroadcast bool, commiteeType string) error {
+func (tss *TssManager) SendMsg(sessionId string, participant Participant, moniker string, msg []byte, isBroadcast bool, commiteeType string, cmtFrom string) error {
 	witness, err := tss.witnessDb.GetWitnessAtHeight(participant.Account, nil)
 
 	// fmt.Println("participant.Account", participant.Account)
@@ -428,6 +428,7 @@ func (tss *TssManager) SendMsg(sessionId string, participant Participant, monike
 		Type:        "msg",
 		Data:        msg,
 		Cmt:         commiteeType,
+		CmtFrom:     cmtFrom,
 	}
 	tRes := TRes{}
 
@@ -482,8 +483,9 @@ func (tssMgr *TssManager) Stop() error {
 
 func New(
 	p2p *libp2p.P2PServer,
-	tssKeys tss_keys.TssKeys,
-	tssRequests tss_requests.TssRequests,
+	tssKeys tss_db.TssKeys,
+	tssRequests tss_db.TssRequests,
+	tssCommitments tss_db.TssCommitments,
 	witnessDb witnesses.Witnesses,
 	electionDb elections.Elections,
 	vstream *vstream.VStream,
@@ -504,8 +506,9 @@ func New(
 		preParams: preParams,
 		p2p:       p2p,
 
-		tssKeys:     tssKeys,
-		tssRequests: tssRequests,
+		tssKeys:        tssKeys,
+		tssRequests:    tssRequests,
+		tssCommitments: tssCommitments,
 
 		witnessDb:  witnessDb,
 		electionDb: electionDb,

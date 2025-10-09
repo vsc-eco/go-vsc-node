@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"slices"
 	"strings"
 	"time"
 
@@ -51,7 +52,7 @@ type Dispatcher interface {
 
 	SessionId() string
 	KeyId() string
-	HandleP2P(msg []byte, from string, isBrcst bool, cmt string)
+	HandleP2P(msg []byte, from string, isBrcst bool, cmt string, fromCmt string)
 	Done() *promise.Promise[DispatcherResult]
 }
 
@@ -298,35 +299,29 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 	})
 }
 
-func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isBrcst bool, cmt string) {
+func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isBrcst bool, cmt string, fromCmt string) {
 	sortedIds, _, _ := dispatcher.baseInfo()
 
-	// msg, _ := tss.ParseWireMessage()
-
 	var from *btss.PartyID
-	for _, p := range sortedIds {
-		if p.Id == fromStr {
-			from = p
-			break
+
+	if fromCmt == "old" {
+		for _, p := range sortedIds {
+			if p.Id == fromStr {
+				from = p
+				break
+			}
+		}
+	} else if fromCmt == "new" {
+
+		for _, p := range dispatcher.newParticipants {
+			if p.PartyId.Id == fromStr {
+				from = p.PartyId
+				break
+			}
 		}
 	}
 
-	fmt.Println("from", from)
-
-	var newFrom *btss.PartyID
-	for _, p := range dispatcher.newParticipants {
-		if p.PartyId.Id == fromStr {
-			newFrom = p.PartyId
-			break
-		}
-	}
-
-	newFrom.GetId()
-
-	fmt.Println("dispatcher.party", dispatcher.party.PartyID(), cmt)
 	if cmt == "both" || cmt == "old" {
-		fmt.Println("UPDATING OLD", from.Id, from.Index, newFrom.Index, dispatcher.party)
-
 		ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
 		if err != nil {
 			fmt.Println("UpdateFromBytes", ok, err)
@@ -335,8 +330,8 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 	}
 	if cmt == "both" || cmt == "new" {
 		if dispatcher.newParty != nil {
-			fmt.Println("UPDATING NEW", from.Id, from.Index, newFrom.Index, dispatcher.party)
-			ok, err := dispatcher.newParty.UpdateFromBytes(input, newFrom, isBrcst)
+			//fmt.Println("UPDATING NEW", from.Id, from.Index, newFrom.Index, dispatcher.party)
+			ok, err := dispatcher.newParty.UpdateFromBytes(input, from, isBrcst)
 
 			if err != nil {
 				fmt.Println("UpdateFromBytes", ok, err)
@@ -361,6 +356,21 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 				commiteeType = "new"
 			}
 
+			var cmtFrom string
+			for _, old := range dispatcher.participants {
+				if slices.Compare(old.PartyId.GetKey(), msg.GetFrom().GetKey()) == 0 {
+					cmtFrom = "old"
+					break
+				}
+			}
+
+			for _, newP := range dispatcher.participants {
+				if slices.Compare(newP.PartyId.GetKey(), msg.GetFrom().GetKey()) == 0 {
+					cmtFrom = "old"
+					break
+				}
+			}
+
 			for _, to := range msg.GetTo() {
 				bytes, _, err := msg.WireBytes()
 
@@ -371,13 +381,12 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 				fmt.Println("Sending direct to", string(to.Id), err)
 				err = dispatcher.tssMgr.SendMsg(dispatcher.sessionId, Participant{
 					Account: to.Id,
-				}, to.Moniker, bytes, msg.IsBroadcast(), commiteeType)
+				}, to.Moniker, bytes, msg.IsBroadcast(), commiteeType, cmtFrom)
 				if err != nil {
 					fmt.Println("SendMsg direct err", err)
 					dispatcher.err = err
 				}
 			}
-			// }
 		}
 	}()
 }
@@ -586,7 +595,7 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 						continue
 					}
 
-					err := dispatcher.tssMgr.SendMsg(dispatcher.sessionId, p, msg.WireMsg().From.Moniker, bytes, true, commiteeType)
+					err := dispatcher.tssMgr.SendMsg(dispatcher.sessionId, p, msg.WireMsg().From.Moniker, bytes, true, commiteeType, "")
 					if err != nil {
 						fmt.Println("SendMsg err", err)
 						dispatcher.err = err
@@ -603,7 +612,7 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 					fmt.Println("Sending direct to", string(to.Id))
 					err = dispatcher.tssMgr.SendMsg(dispatcher.sessionId, Participant{
 						Account: string(to.Id),
-					}, to.Moniker, bytes, false, commiteeType)
+					}, to.Moniker, bytes, false, commiteeType, "")
 					if err != nil {
 						fmt.Println("SendMsg direct err", err)
 						dispatcher.err = err
@@ -614,7 +623,7 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 	}()
 }
 
-func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcst bool, cmt string) {
+func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcst bool, cmt string, cmtFrom string) {
 	sortedIds, _, _ := dispatcher.baseInfo()
 
 	var from *btss.PartyID
@@ -623,8 +632,6 @@ func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcs
 			from = p
 		}
 	}
-
-	fmt.Println("from", from)
 
 	//Filter out any messages to self
 	if dispatcher.party.PartyID().Id == from.Id {

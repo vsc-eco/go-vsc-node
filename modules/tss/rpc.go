@@ -20,6 +20,7 @@ type TMsg struct {
 	KeyId       string
 	Data        []byte
 	Cmt         string
+	CmtFrom     string
 }
 
 type TRes struct {
@@ -44,7 +45,7 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 			i.SetBytes([]byte(act))
 
 			// fmt.Println("Received act", act, "on", tss.mgr.config.Get().HiveUsername, req.IsBroadcast, req.Cmt)
-			tss.mgr.actionMap[req.SessionId].HandleP2P(req.Data, act, req.IsBroadcast, req.Cmt)
+			tss.mgr.actionMap[req.SessionId].HandleP2P(req.Data, act, req.IsBroadcast, req.Cmt, req.CmtFrom)
 		} else {
 			fmt.Println("Dropping message", req.SessionId)
 		}
