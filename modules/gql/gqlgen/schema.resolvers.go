@@ -501,6 +501,55 @@ func (r *queryResolver) ElectionByBlockHeight(ctx context.Context, blockHeight *
 	return &res, err
 }
 
+// GetTssKey is the resolver for the getTssKey field.
+func (r *queryResolver) GetTssKey(ctx context.Context, keyID string) (*TssKey, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+
+	default:
+		t, err := r.TssKeys.FindKey(keyID)
+		if err != nil {
+			return nil, err
+		}
+
+		tssKey := &TssKey{
+			ID:            keyID,
+			Status:        t.Status,
+			PublicKey:     t.PublicKey,
+			Owner:         t.Owner,
+			Type:          string(t.Type),
+			CreatedHeight: int(t.CreatedHeight),
+		}
+
+		return tssKey, nil
+	}
+}
+
+// GetTssRequest is the resolver for the getTssRequest field.
+func (r *queryResolver) GetTssRequest(ctx context.Context, keyID string, msgHex string) (*TssRequest, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+
+	default:
+		t, err := r.TssRequests.FindRequest(keyID, msgHex)
+		if err != nil {
+			return nil, err
+		}
+
+		tssRequest := &TssRequest{
+			ID:     keyID,
+			Status: string(t.Status),
+			KeyID:  keyID,
+			Msg:    msgHex,
+			Sig:    t.Sig,
+		}
+
+		return tssRequest, nil
+	}
+}
+
 // Amount is the resolver for the amount field.
 func (r *rcRecordResolver) Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error) {
 	return model.Int64(obj.Amount), nil
