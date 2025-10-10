@@ -1,15 +1,14 @@
-package ingest
+package mapper
 
 import (
 	"context"
 	"encoding/json"
-	"vsc-node/cmd/mapping-bot/mapper"
 
 	"github.com/hasura/go-graphql-client"
 )
 
-const obserbedKey = "observed_txs"
-const txSpendsKey = "tx_spends"
+const observedContractKey = "observed_txs"
+const txSpendsContractKey = "tx_spends"
 
 const contractId = ""
 
@@ -17,11 +16,11 @@ type GetContractStateQuery struct {
 	GetStateByKeys map[string]string `graphql:"getStateByKeys(contractId: $contractId, keys: $keys)"`
 }
 
-func FetchContractData(client *graphql.Client) (map[string]bool, map[string]*mapper.SigningData, error) {
+func FetchContractData(client *graphql.Client) (map[string]bool, map[string]*SigningData, error) {
 	var query GetContractStateQuery
 	variables := map[string]any{
 		"contractId": contractId,
-		"keys":       []string{obserbedKey, txSpendsKey},
+		"keys":       []string{observedContractKey, txSpendsContractKey},
 	}
 	err := client.Query(context.TODO(), &query, variables)
 	if err != nil {
@@ -29,14 +28,14 @@ func FetchContractData(client *graphql.Client) (map[string]bool, map[string]*map
 	}
 
 	var obserbedTxs map[string]bool
-	observedTxsJson := query.GetStateByKeys[obserbedKey]
+	observedTxsJson := query.GetStateByKeys[observedContractKey]
 	err = json.Unmarshal([]byte(observedTxsJson), &obserbedTxs)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	var txSpends map[string]*mapper.SigningData
-	txSpendsJson := query.GetStateByKeys[txSpendsKey]
+	var txSpends map[string]*SigningData
+	txSpendsJson := query.GetStateByKeys[txSpendsContractKey]
 	err = json.Unmarshal([]byte(txSpendsJson), &txSpendsJson)
 	if err != nil {
 		return nil, nil, err

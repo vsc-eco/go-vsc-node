@@ -1,6 +1,7 @@
-package ingest
+package mempool
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -58,4 +59,14 @@ func (m *MempoolClient) GetRawBlock(hash string) ([]byte, error) {
 	}
 
 	return rawBytes, nil
+}
+
+func (m *MempoolClient) PostTx(rawTx string) error {
+	url := fmt.Sprintf("%s/tx", m.baseURL)
+	resp, err := m.client.Post(url, "test/plain", bytes.NewReader([]byte(rawTx)))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
 }
