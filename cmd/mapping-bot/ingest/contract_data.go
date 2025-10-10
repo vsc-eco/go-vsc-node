@@ -17,7 +17,7 @@ type GetContractStateQuery struct {
 	GetStateByKeys map[string]string `graphql:"getStateByKeys(contractId: $contractId, keys: $keys)"`
 }
 
-func FetchLatest(client *graphql.Client) (map[string]bool, map[string]*mapper.SigningData, error) {
+func FetchContractData(client *graphql.Client) (map[string]bool, map[string]*mapper.SigningData, error) {
 	var query GetContractStateQuery
 	variables := map[string]any{
 		"contractId": contractId,
