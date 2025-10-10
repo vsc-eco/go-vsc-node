@@ -293,7 +293,7 @@ type Query {
   getElection(epoch: Uint64!): ElectionResult
   electionByBlockHeight(blockHeight: Uint64): ElectionResult!
   getTssKey(keyId: String!): TssKey
-  getTssRequest(keyId: String!, msgHex: String!): TssRequest
+  getTssRequests(keyId: String!, msgHex: [String!]): [TssRequest!]
 }
 
 scalar Uint64
