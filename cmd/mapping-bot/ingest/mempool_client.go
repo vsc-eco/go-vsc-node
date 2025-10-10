@@ -1,0 +1,61 @@
+package ingest
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+)
+
+const MempoolAPIBase = "https://mempool.space/api"
+
+type MempoolClient struct {
+	baseURL string
+	client  *http.Client
+}
+
+func NewMempoolClient() *MempoolClient {
+	return &MempoolClient{
+		baseURL: MempoolAPIBase,
+		client:  &http.Client{},
+	}
+}
+
+func (m *MempoolClient) GetBlockHashAtHeight(height uint32) (string, int, error) {
+	url := fmt.Sprintf("%s/block-height/%d", m.baseURL, height)
+	resp, err := m.client.Get(url)
+	if err != nil {
+		return "", 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", resp.StatusCode, fmt.Errorf("mempool API returned status %d", resp.StatusCode)
+	}
+
+	blockHash, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", resp.StatusCode, err
+	}
+
+	return string(blockHash), resp.StatusCode, nil
+}
+
+func (m *MempoolClient) GetRawBlock(hash string) ([]byte, error) {
+	url := fmt.Sprintf("%s/block/%s/raw", m.baseURL, hash)
+	resp, err := m.client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("mempool API returned status %d", resp.StatusCode)
+	}
+
+	rawBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return rawBytes, nil
+}

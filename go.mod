@@ -10,6 +10,7 @@ require (
 	github.com/bnb-chain/tss-lib/v2 v2.0.2
 	github.com/btcsuite/btcd v0.24.2
 	github.com/btcsuite/btcutil v1.0.3-0.20201208143702-a53e38424cce
+	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/chebyrash/promise v0.0.0-20230709133807-42ec49ba1459
 	github.com/consensys/gnark-crypto v0.14.0
 	github.com/ethereum/go-ethereum v1.14.12
@@ -70,7 +71,10 @@ require (
 	github.com/agl/ed25519 v0.0.0-20200225211852-fd4d107ace12 // indirect
 	github.com/agnivade/levenshtein v1.2.1 // indirect
 	github.com/btcsuite/btcd/btcutil v1.1.6 // indirect
+<<<<<<< HEAD
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
+=======
+>>>>>>> 8257d5e (start of mapping bot)
 	github.com/btcsuite/btclog v1.0.0 // indirect
 	github.com/btcsuite/go-socks v0.0.0-20170105172521-4720035b7bfd // indirect
 	github.com/btcsuite/websocket v0.0.0-20150119174127-31079b680792 // indirect
