@@ -204,6 +204,23 @@ type ElectionResult {
   tx_id: String!
 }
 
+type TssKey {
+	id: String!
+	status: String!
+	PublicKey: String!
+	Owner: String!
+	Type: String!
+	CreatedHeight: Int!
+}
+
+type TssRequest {
+	id: String!
+	status: String!
+	keyId: String!
+	msg: String!  
+	sig: String! 
+}
+
 input LedgerTxFilter {
   byToFrom: String
   byTxId: String
@@ -275,6 +292,8 @@ type Query {
   getDagByCID(cidString: String!): JSON!
   getElection(epoch: Uint64!): ElectionResult
   electionByBlockHeight(blockHeight: Uint64): ElectionResult!
+  getTssKey(keyId: String!): TssKey
+  getTssRequest(keyId: String!, msgHex: String!): TssRequest
 }
 
 scalar Uint64
