@@ -506,48 +506,53 @@ func (r *queryResolver) GetTssKey(ctx context.Context, keyID string) (*TssKey, e
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-
 	default:
-		t, err := r.TssKeys.FindKey(keyID)
-		if err != nil {
-			return nil, err
-		}
-
-		tssKey := &TssKey{
-			ID:            keyID,
-			Status:        t.Status,
-			PublicKey:     t.PublicKey,
-			Owner:         t.Owner,
-			Type:          string(t.Type),
-			CreatedHeight: int(t.CreatedHeight),
-		}
-
-		return tssKey, nil
 	}
+
+	t, err := r.TssKeys.FindKey(keyID)
+	if err != nil {
+		return nil, err
+	}
+
+	tssKey := &TssKey{
+		ID:            keyID,
+		Status:        t.Status,
+		PublicKey:     t.PublicKey,
+		Owner:         t.Owner,
+		Type:          string(t.Type),
+		CreatedHeight: int(t.CreatedHeight),
+	}
+
+	return tssKey, nil
 }
 
-// GetTssRequest is the resolver for the getTssRequest field.
-func (r *queryResolver) GetTssRequest(ctx context.Context, keyID string, msgHex string) (*TssRequest, error) {
+// GetTssRequests is the resolver for the getTssRequests field.
+func (r *queryResolver) GetTssRequests(ctx context.Context, keyID string, msgHex []string) ([]TssRequest, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-
 	default:
-		t, err := r.TssRequests.FindRequest(keyID, msgHex)
-		if err != nil {
-			return nil, err
-		}
-
-		tssRequest := &TssRequest{
-			ID:     keyID,
-			Status: string(t.Status),
-			KeyID:  keyID,
-			Msg:    msgHex,
-			Sig:    t.Sig,
-		}
-
-		return tssRequest, nil
 	}
+
+	t, err := r.TssRequests.FindRequests(keyID, msgHex)
+	if err != nil {
+		return nil, err
+	}
+
+	tssRequests := make([]TssRequest, len(t))
+	for i := range t {
+		tr := &t[i]
+
+		tssRequests[i] = TssRequest{
+			ID:     tr.Id,
+			Status: string(tr.Status),
+			KeyID:  keyID,
+			Msg:    tr.Msg,
+			Sig:    tr.Sig,
+		}
+	}
+
+	return tssRequests, nil
 }
 
 // Amount is the resolver for the amount field.

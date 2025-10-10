@@ -15,27 +15,35 @@ type tssRequests struct {
 	*db.Collection
 }
 
-// FindRequest implements TssRequests.
-func (tssReq *tssRequests) FindRequest(keyID string, msgHex string) (*TssRequest, error) {
+// FindRequests implements TssRequests.
+// to get all msgHex associated with keyID, pass in nil for msgHex, or empty slice
+func (tssReq *tssRequests) FindRequests(
+	keyID string,
+	msgHex []string,
+) ([]TssRequest, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	filter := bson.D{
-		{Key: "id", Value: keyID},
-		{Key: "msg", Value: msgHex},
+	filter := bson.D{{Key: "key_id", Value: keyID}}
+
+	if len(msgHex) != 0 {
+		filter = append(filter, bson.E{
+			Key:   "msg",
+			Value: bson.M{"$in": msgHex},
+		})
 	}
 
-	result := tssReq.FindOne(ctx, filter)
-	if err := result.Err(); err != nil {
+	result, err := tssReq.Find(ctx, filter)
+	if err != nil {
 		return nil, fmt.Errorf("failed query: %w", err)
 	}
 
-	var tssRequest TssRequest
-	if err := result.Decode(&tssRequest); err != nil {
-		return nil, fmt.Errorf("failed to decode to struct: %w", err)
+	var tssRequest []TssRequest
+	if err := result.All(ctx, &tssRequest); err != nil {
+		return nil, fmt.Errorf("failed to decode to result: %w", err)
 	}
 
-	return &tssRequest, nil
+	return tssRequest, nil
 }
 
 func (tssReq *tssRequests) SetSignedRequest(req TssRequest) error {

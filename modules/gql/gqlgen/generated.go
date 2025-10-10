@@ -209,7 +209,7 @@ type ComplexityRoot struct {
 		GetElection           func(childComplexity int, epoch model.Uint64) int
 		GetStateByKeys        func(childComplexity int, contractID string, keys []string) int
 		GetTssKey             func(childComplexity int, keyID string) int
-		GetTssRequest         func(childComplexity int, keyID string, msgHex string) int
+		GetTssRequests        func(childComplexity int, keyID string, msgHex []string) int
 		GetWitness            func(childComplexity int, account string, height *model.Uint64) int
 		LocalNodeInfo         func(childComplexity int) int
 		SubmitTransactionV1   func(childComplexity int, tx string, sig string) int
@@ -371,7 +371,7 @@ type QueryResolver interface {
 	GetElection(ctx context.Context, epoch model.Uint64) (*elections.ElectionResult, error)
 	ElectionByBlockHeight(ctx context.Context, blockHeight *model.Uint64) (*elections.ElectionResult, error)
 	GetTssKey(ctx context.Context, keyID string) (*TssKey, error)
-	GetTssRequest(ctx context.Context, keyID string, msgHex string) (*TssRequest, error)
+	GetTssRequests(ctx context.Context, keyID string, msgHex []string) ([]TssRequest, error)
 }
 type RcRecordResolver interface {
 	Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error)
@@ -1099,17 +1099,17 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.Query.GetTssKey(childComplexity, args["keyId"].(string)), true
-	case "Query.getTssRequest":
-		if e.complexity.Query.GetTssRequest == nil {
+	case "Query.getTssRequests":
+		if e.complexity.Query.GetTssRequests == nil {
 			break
 		}
 
-		args, err := ec.field_Query_getTssRequest_args(ctx, rawArgs)
+		args, err := ec.field_Query_getTssRequests_args(ctx, rawArgs)
 		if err != nil {
 			return 0, false
 		}
 
-		return e.complexity.Query.GetTssRequest(childComplexity, args["keyId"].(string), args["msgHex"].(string)), true
+		return e.complexity.Query.GetTssRequests(childComplexity, args["keyId"].(string), args["msgHex"].([]string)), true
 	case "Query.getWitness":
 		if e.complexity.Query.GetWitness == nil {
 			break
@@ -1889,7 +1889,7 @@ type Query {
   getElection(epoch: Uint64!): ElectionResult
   electionByBlockHeight(blockHeight: Uint64): ElectionResult!
   getTssKey(keyId: String!): TssKey
-  getTssRequest(keyId: String!, msgHex: String!): TssRequest
+  getTssRequests(keyId: String!, msgHex: [String!]): [TssRequest!]
 }
 
 scalar Uint64
@@ -2073,7 +2073,7 @@ func (ec *executionContext) field_Query_getTssKey_args(ctx context.Context, rawA
 	return args, nil
 }
 
-func (ec *executionContext) field_Query_getTssRequest_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+func (ec *executionContext) field_Query_getTssRequests_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
 	var err error
 	args := map[string]any{}
 	arg0, err := graphql.ProcessArgField(ctx, rawArgs, "keyId", ec.unmarshalNString2string)
@@ -2081,7 +2081,7 @@ func (ec *executionContext) field_Query_getTssRequest_args(ctx context.Context, 
 		return nil, err
 	}
 	args["keyId"] = arg0
-	arg1, err := graphql.ProcessArgField(ctx, rawArgs, "msgHex", ec.unmarshalNString2string)
+	arg1, err := graphql.ProcessArgField(ctx, rawArgs, "msgHex", ec.unmarshalOString2ᚕstringᚄ)
 	if err != nil {
 		return nil, err
 	}
@@ -5800,24 +5800,24 @@ func (ec *executionContext) fieldContext_Query_getTssKey(ctx context.Context, fi
 	return fc, nil
 }
 
-func (ec *executionContext) _Query_getTssRequest(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+func (ec *executionContext) _Query_getTssRequests(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	return graphql.ResolveField(
 		ctx,
 		ec.OperationContext,
 		field,
-		ec.fieldContext_Query_getTssRequest,
+		ec.fieldContext_Query_getTssRequests,
 		func(ctx context.Context) (any, error) {
 			fc := graphql.GetFieldContext(ctx)
-			return ec.resolvers.Query().GetTssRequest(ctx, fc.Args["keyId"].(string), fc.Args["msgHex"].(string))
+			return ec.resolvers.Query().GetTssRequests(ctx, fc.Args["keyId"].(string), fc.Args["msgHex"].([]string))
 		},
 		nil,
-		ec.marshalOTssRequest2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTssRequest,
+		ec.marshalOTssRequest2ᚕvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTssRequestᚄ,
 		true,
 		false,
 	)
 }
 
-func (ec *executionContext) fieldContext_Query_getTssRequest(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_Query_getTssRequests(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "Query",
 		Field:      field,
@@ -5846,7 +5846,7 @@ func (ec *executionContext) fieldContext_Query_getTssRequest(ctx context.Context
 		}
 	}()
 	ctx = graphql.WithFieldContext(ctx, fc)
-	if fc.Args, err = ec.field_Query_getTssRequest_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+	if fc.Args, err = ec.field_Query_getTssRequests_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
 	}
@@ -11474,7 +11474,7 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
-		case "getTssRequest":
+		case "getTssRequests":
 			field := field
 
 			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
@@ -11483,7 +11483,7 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 						ec.Error(ctx, ec.Recover(ctx, r))
 					}
 				}()
-				res = ec._Query_getTssRequest(ctx, field)
+				res = ec._Query_getTssRequests(ctx, field)
 				return res
 			}
 
@@ -13151,6 +13151,10 @@ func (ec *executionContext) marshalNTransactionRecord2vscᚑnodeᚋmodulesᚋdb�
 	return ec._TransactionRecord(ctx, sel, &v)
 }
 
+func (ec *executionContext) marshalNTssRequest2vscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTssRequest(ctx context.Context, sel ast.SelectionSet, v TssRequest) graphql.Marshaler {
+	return ec._TssRequest(ctx, sel, &v)
+}
+
 func (ec *executionContext) unmarshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx context.Context, v any) (model.Uint64, error) {
 	var res model.Uint64
 	err := res.UnmarshalGQL(v)
@@ -14275,11 +14279,51 @@ func (ec *executionContext) marshalOTssKey2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlge
 	return ec._TssKey(ctx, sel, v)
 }
 
-func (ec *executionContext) marshalOTssRequest2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTssRequest(ctx context.Context, sel ast.SelectionSet, v *TssRequest) graphql.Marshaler {
+func (ec *executionContext) marshalOTssRequest2ᚕvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTssRequestᚄ(ctx context.Context, sel ast.SelectionSet, v []TssRequest) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
 	}
-	return ec._TssRequest(ctx, sel, v)
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNTssRequest2vscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTssRequest(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
 }
 
 func (ec *executionContext) unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx context.Context, v any) (*model.Uint64, error) {
