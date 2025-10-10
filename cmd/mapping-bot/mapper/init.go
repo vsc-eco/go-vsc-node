@@ -3,16 +3,19 @@ package mapper
 import "sync"
 
 type MapperState struct {
-	mutex           sync.Mutex
+	Mutex           sync.Mutex
 	LastBlockHeight uint32
 	ObservedTxs     map[string]bool
-	TxSpends        map[string]SigningData
+	TxSpends        map[string]*SigningData
 	LimboTxs        map[string]bool // set for fast lookup
 }
 
 func NewMapperState() *MapperState {
 	return &MapperState{
-		mutex:           sync.Mutex{},
+		Mutex:           sync.Mutex{},
 		LastBlockHeight: 918397,
+		ObservedTxs:     make(map[string]bool),
+		TxSpends:        make(map[string]*SigningData),
+		LimboTxs:        make(map[string]bool),
 	}
 }
