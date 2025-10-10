@@ -16,7 +16,8 @@ type tssRequests struct {
 }
 
 // FindRequests implements TssRequests.
-// to get all msgHex associated with keyID, pass in nil for msgHex, or empty slice
+// To get all msgHex associated with keyID, pass in nil for msgHex, or empty slice.
+// Returns only the matching hex, if no matching element, nil value is returned.
 func (tssReq *tssRequests) FindRequests(
 	keyID string,
 	msgHex []string,
@@ -41,6 +42,10 @@ func (tssReq *tssRequests) FindRequests(
 	var tssRequest []TssRequest
 	if err := result.All(ctx, &tssRequest); err != nil {
 		return nil, fmt.Errorf("failed to decode to result: %w", err)
+	}
+
+	if len(tssRequest) == 0 {
+		return nil, nil
 	}
 
 	return tssRequest, nil
