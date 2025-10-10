@@ -205,20 +205,20 @@ type ElectionResult {
 }
 
 type TssKey {
-	id: String!
-	status: String!
-	PublicKey: String!
-	Owner: String!
-	Algo: String!
-	CreatedHeight: Int!
+  id: String!
+  status: String!
+  PublicKey: String!
+  Owner: String!
+  Algo: String!
+  CreatedHeight: Int!
 }
 
 type TssRequest {
-	id: String!
-	status: String!
-	keyId: String!
-	msg: String!  
-	sig: String! 
+  id: String!
+  status: String!
+  keyId: String!
+  msg: String!
+  sig: String!
 }
 
 input LedgerTxFilter {

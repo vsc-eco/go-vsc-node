@@ -52,13 +52,13 @@ type TssRequest struct {
 
 type TssCommitment struct {
 	//type = blame, reshare
-	Type        string  `json:"type" bson:"type"`
+	Type        string  `json:"type"         bson:"type"`
 	BlockHeight uint64  `json:"block_height" bson:"block_height"`
-	Epoch       uint64  `json:"epoch" bson:"epoch"`
-	Commitment  string  `json:"commitment" bson:"commitment"`
-	KeyId       string  `json:"key_id" bson:"key_id"`
-	TxId        string  `json:"tx_id" bson:"tx_id"`
-	PublicKey   *string `json:"public_key" bson:"public_key"`
+	Epoch       uint64  `json:"epoch"        bson:"epoch"`
+	Commitment  string  `json:"commitment"   bson:"commitment"`
+	KeyId       string  `json:"key_id"       bson:"key_id"`
+	TxId        string  `json:"tx_id"        bson:"tx_id"`
+	PublicKey   *string `json:"public_key"   bson:"public_key"`
 }
 
 type TssKeyAlgo string
