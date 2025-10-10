@@ -18,6 +18,16 @@ type UnsignedSigHash struct {
 	WitnessScript []byte `json:"witness_script"`
 }
 
+func (ms *MapperState) HandleNewUnmaps(txSpends map[string]*SigningData) {
+	for index, signingData := range txSpends {
+		_, ok := ms.TxSpends[index]
+		if ok {
+			continue
+		}
+
+	}
+}
+
 func attachSignatures(signingData *SigningData, signatures map[uint32][]byte) (string, error) {
 	var tx wire.MsgTx
 	txBytes, err := hex.DecodeString(signingData.Tx)
