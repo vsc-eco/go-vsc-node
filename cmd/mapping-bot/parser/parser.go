@@ -3,12 +3,21 @@ package parser
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 )
+
+const depositInstruction = "deposit_to"
+
+type MappingInputData struct {
+	TxData *VerificationRequest `json:"tx_data"`
+	// strings should be valid URL search params, to be decoded later
+	Instructions []string `json:"instructions"`
+}
 
 type VerificationRequest struct {
 	BlockHeight    uint32 `json:"block_height"`
@@ -18,14 +27,14 @@ type VerificationRequest struct {
 }
 
 type BlockParser struct {
-	targetBtcAddresses map[string]bool
+	targetBtcAddresses map[string]string
 	chainParams        *chaincfg.Params
 }
 
 func NewBlockParser(addresses map[string]string, params *chaincfg.Params) *BlockParser {
-	btcAddrMap := make(map[string]bool, len(addresses))
-	for _, btcAddr := range addresses {
-		btcAddrMap[btcAddr] = true
+	btcAddrMap := make(map[string]string, len(addresses))
+	for vscAddr, btcAddr := range addresses {
+		btcAddrMap[btcAddr] = vscAddr
 	}
 
 	return &BlockParser{
@@ -34,34 +43,36 @@ func NewBlockParser(addresses map[string]string, params *chaincfg.Params) *Block
 	}
 }
 
-func (bp *BlockParser) ParseBlock(rawBlockBytes []byte, blockHeight uint32) ([]VerificationRequest, error) {
+func (bp *BlockParser) ParseBlock(rawBlockBytes []byte, blockHeight uint32, observedTxs map[string]bool) ([]*MappingInputData, error) {
 	var msgBlock wire.MsgBlock
 	err := msgBlock.Deserialize(bytes.NewReader(rawBlockBytes))
 	if err != nil {
 		return nil, err
 	}
 
-	matchedTxIndices := make(map[int]bool)
+	// map of indices to their deposit instructions
+	matchedTxIndices := make(map[int][]string)
 
-	for txIdx, tx := range msgBlock.Transactions {
+	for txIndex, tx := range msgBlock.Transactions {
+		if observedTxs[tx.TxID()] {
+			continue
+		}
 		for _, txOut := range tx.TxOut {
 			addresses := bp.extractAddresses(txOut.PkScript)
 
+			// this loop should never be longer than one cycle, only happens with multisig
 			for _, addr := range addresses {
-				if bp.targetBtcAddresses[addr] {
-					matchedTxIndices[txIdx] = true
-					break
+				if vscAddr, ok := bp.targetBtcAddresses[addr]; ok {
+					instruction := fmt.Sprintf("%s=%s", depositInstruction, vscAddr)
+					matchedTxIndices[txIndex] = append(matchedTxIndices[txIndex], instruction)
 				}
-			}
-			if matchedTxIndices[txIdx] {
-				break
 			}
 		}
 	}
 
-	var verificationRequests []VerificationRequest
+	var mapInputs []*MappingInputData
 
-	for txIdx := range matchedTxIndices {
+	for txIdx, instructions := range matchedTxIndices {
 		tx := msgBlock.Transactions[txIdx]
 
 		var txBuf bytes.Buffer
@@ -76,15 +87,18 @@ func (bp *BlockParser) ParseBlock(rawBlockBytes []byte, blockHeight uint32) ([]V
 			return nil, err
 		}
 
-		verificationRequests = append(verificationRequests, VerificationRequest{
-			BlockHeight:    blockHeight,
-			RawTxHex:       rawTxHex,
-			MerkleProofHex: merkleProofHex,
-			TxIndex:        uint32(txIdx),
+		mapInputs = append(mapInputs, &MappingInputData{
+			TxData: &VerificationRequest{
+				BlockHeight:    blockHeight,
+				RawTxHex:       rawTxHex,
+				MerkleProofHex: merkleProofHex,
+				TxIndex:        uint32(txIdx),
+			},
+			Instructions: instructions,
 		})
 	}
 
-	return verificationRequests, nil
+	return mapInputs, nil
 }
 
 func (bp *BlockParser) extractAddresses(pkScript []byte) []string {
