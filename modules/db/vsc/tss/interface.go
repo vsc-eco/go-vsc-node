@@ -13,7 +13,7 @@ type TssRequests interface {
 	a.Plugin
 	SetSignedRequest(req TssRequest) error
 	FindUnsignedRequests(blockHeight uint64) ([]TssRequest, error)
-	FindRequest(keyID string, msgHex string) (*TssRequest, error)
+	FindRequests(keyID string, msgHex []string) ([]TssRequest, error)
 }
 
 type TssCommitments interface {
