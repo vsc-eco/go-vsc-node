@@ -208,6 +208,8 @@ type ComplexityRoot struct {
 		GetDagByCid           func(childComplexity int, cidString string) int
 		GetElection           func(childComplexity int, epoch model.Uint64) int
 		GetStateByKeys        func(childComplexity int, contractID string, keys []string) int
+		GetTssKey             func(childComplexity int, keyID string) int
+		GetTssRequest         func(childComplexity int, keyID string, msgHex string) int
 		GetWitness            func(childComplexity int, account string, height *model.Uint64) int
 		LocalNodeInfo         func(childComplexity int) int
 		SubmitTransactionV1   func(childComplexity int, tx string, sig string) int
@@ -257,6 +259,23 @@ type ComplexityRoot struct {
 
 	TransactionSubmitResult struct {
 		ID func(childComplexity int) int
+	}
+
+	TssKey struct {
+		CreatedHeight func(childComplexity int) int
+		ID            func(childComplexity int) int
+		Owner         func(childComplexity int) int
+		PublicKey     func(childComplexity int) int
+		Status        func(childComplexity int) int
+		Type          func(childComplexity int) int
+	}
+
+	TssRequest struct {
+		ID     func(childComplexity int) int
+		KeyID  func(childComplexity int) int
+		Msg    func(childComplexity int) int
+		Sig    func(childComplexity int) int
+		Status func(childComplexity int) int
 	}
 
 	Witness struct {
@@ -351,6 +370,8 @@ type QueryResolver interface {
 	GetDagByCid(ctx context.Context, cidString string) (string, error)
 	GetElection(ctx context.Context, epoch model.Uint64) (*elections.ElectionResult, error)
 	ElectionByBlockHeight(ctx context.Context, blockHeight *model.Uint64) (*elections.ElectionResult, error)
+	GetTssKey(ctx context.Context, keyID string) (*TssKey, error)
+	GetTssRequest(ctx context.Context, keyID string, msgHex string) (*TssRequest, error)
 }
 type RcRecordResolver interface {
 	Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error)
@@ -1067,6 +1088,28 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.Query.GetStateByKeys(childComplexity, args["contractId"].(string), args["keys"].([]string)), true
+	case "Query.getTssKey":
+		if e.complexity.Query.GetTssKey == nil {
+			break
+		}
+
+		args, err := ec.field_Query_getTssKey_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.GetTssKey(childComplexity, args["keyId"].(string)), true
+	case "Query.getTssRequest":
+		if e.complexity.Query.GetTssRequest == nil {
+			break
+		}
+
+		args, err := ec.field_Query_getTssRequest_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.GetTssRequest(childComplexity, args["keyId"].(string), args["msgHex"].(string)), true
 	case "Query.getWitness":
 		if e.complexity.Query.GetWitness == nil {
 			break
@@ -1301,6 +1344,74 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.TransactionSubmitResult.ID(childComplexity), true
+
+	case "TssKey.CreatedHeight":
+		if e.complexity.TssKey.CreatedHeight == nil {
+			break
+		}
+
+		return e.complexity.TssKey.CreatedHeight(childComplexity), true
+	case "TssKey.id":
+		if e.complexity.TssKey.ID == nil {
+			break
+		}
+
+		return e.complexity.TssKey.ID(childComplexity), true
+	case "TssKey.Owner":
+		if e.complexity.TssKey.Owner == nil {
+			break
+		}
+
+		return e.complexity.TssKey.Owner(childComplexity), true
+	case "TssKey.PublicKey":
+		if e.complexity.TssKey.PublicKey == nil {
+			break
+		}
+
+		return e.complexity.TssKey.PublicKey(childComplexity), true
+	case "TssKey.status":
+		if e.complexity.TssKey.Status == nil {
+			break
+		}
+
+		return e.complexity.TssKey.Status(childComplexity), true
+	case "TssKey.Type":
+		if e.complexity.TssKey.Type == nil {
+			break
+		}
+
+		return e.complexity.TssKey.Type(childComplexity), true
+
+	case "TssRequest.id":
+		if e.complexity.TssRequest.ID == nil {
+			break
+		}
+
+		return e.complexity.TssRequest.ID(childComplexity), true
+	case "TssRequest.keyId":
+		if e.complexity.TssRequest.KeyID == nil {
+			break
+		}
+
+		return e.complexity.TssRequest.KeyID(childComplexity), true
+	case "TssRequest.msg":
+		if e.complexity.TssRequest.Msg == nil {
+			break
+		}
+
+		return e.complexity.TssRequest.Msg(childComplexity), true
+	case "TssRequest.sig":
+		if e.complexity.TssRequest.Sig == nil {
+			break
+		}
+
+		return e.complexity.TssRequest.Sig(childComplexity), true
+	case "TssRequest.status":
+		if e.complexity.TssRequest.Status == nil {
+			break
+		}
+
+		return e.complexity.TssRequest.Status(childComplexity), true
 
 	case "Witness.account":
 		if e.complexity.Witness.Account == nil {
@@ -1689,6 +1800,23 @@ type ElectionResult {
   tx_id: String!
 }
 
+type TssKey {
+	id: String!
+	status: String!
+	PublicKey: String!
+	Owner: String!
+	Type: String!
+	CreatedHeight: Int!
+}
+
+type TssRequest {
+	id: String!
+	status: String!
+	keyId: String!
+	msg: String!  
+	sig: String! 
+}
+
 input LedgerTxFilter {
   byToFrom: String
   byTxId: String
@@ -1760,6 +1888,8 @@ type Query {
   getDagByCID(cidString: String!): JSON!
   getElection(epoch: Uint64!): ElectionResult
   electionByBlockHeight(blockHeight: Uint64): ElectionResult!
+  getTssKey(keyId: String!): TssKey
+  getTssRequest(keyId: String!, msgHex: String!): TssRequest
 }
 
 scalar Uint64
@@ -1929,6 +2059,33 @@ func (ec *executionContext) field_Query_getStateByKeys_args(ctx context.Context,
 		return nil, err
 	}
 	args["keys"] = arg1
+	return args, nil
+}
+
+func (ec *executionContext) field_Query_getTssKey_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := graphql.ProcessArgField(ctx, rawArgs, "keyId", ec.unmarshalNString2string)
+	if err != nil {
+		return nil, err
+	}
+	args["keyId"] = arg0
+	return args, nil
+}
+
+func (ec *executionContext) field_Query_getTssRequest_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := graphql.ProcessArgField(ctx, rawArgs, "keyId", ec.unmarshalNString2string)
+	if err != nil {
+		return nil, err
+	}
+	args["keyId"] = arg0
+	arg1, err := graphql.ProcessArgField(ctx, rawArgs, "msgHex", ec.unmarshalNString2string)
+	if err != nil {
+		return nil, err
+	}
+	args["msgHex"] = arg1
 	return args, nil
 }
 
@@ -5588,6 +5745,114 @@ func (ec *executionContext) fieldContext_Query_electionByBlockHeight(ctx context
 	return fc, nil
 }
 
+func (ec *executionContext) _Query_getTssKey(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_Query_getTssKey,
+		func(ctx context.Context) (any, error) {
+			fc := graphql.GetFieldContext(ctx)
+			return ec.resolvers.Query().GetTssKey(ctx, fc.Args["keyId"].(string))
+		},
+		nil,
+		ec.marshalOTssKey2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTssKey,
+		true,
+		false,
+	)
+}
+
+func (ec *executionContext) fieldContext_Query_getTssKey(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_TssKey_id(ctx, field)
+			case "status":
+				return ec.fieldContext_TssKey_status(ctx, field)
+			case "PublicKey":
+				return ec.fieldContext_TssKey_PublicKey(ctx, field)
+			case "Owner":
+				return ec.fieldContext_TssKey_Owner(ctx, field)
+			case "Type":
+				return ec.fieldContext_TssKey_Type(ctx, field)
+			case "CreatedHeight":
+				return ec.fieldContext_TssKey_CreatedHeight(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type TssKey", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_getTssKey_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_getTssRequest(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_Query_getTssRequest,
+		func(ctx context.Context) (any, error) {
+			fc := graphql.GetFieldContext(ctx)
+			return ec.resolvers.Query().GetTssRequest(ctx, fc.Args["keyId"].(string), fc.Args["msgHex"].(string))
+		},
+		nil,
+		ec.marshalOTssRequest2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTssRequest,
+		true,
+		false,
+	)
+}
+
+func (ec *executionContext) fieldContext_Query_getTssRequest(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_TssRequest_id(ctx, field)
+			case "status":
+				return ec.fieldContext_TssRequest_status(ctx, field)
+			case "keyId":
+				return ec.fieldContext_TssRequest_keyId(ctx, field)
+			case "msg":
+				return ec.fieldContext_TssRequest_msg(ctx, field)
+			case "sig":
+				return ec.fieldContext_TssRequest_sig(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type TssRequest", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_getTssRequest_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Query___type(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	return graphql.ResolveField(
 		ctx,
@@ -6548,6 +6813,325 @@ func (ec *executionContext) _TransactionSubmitResult_id(ctx context.Context, fie
 func (ec *executionContext) fieldContext_TransactionSubmitResult_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "TransactionSubmitResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TssKey_id(ctx context.Context, field graphql.CollectedField, obj *TssKey) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_TssKey_id,
+		func(ctx context.Context) (any, error) {
+			return obj.ID, nil
+		},
+		nil,
+		ec.marshalNString2string,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_TssKey_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TssKey",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TssKey_status(ctx context.Context, field graphql.CollectedField, obj *TssKey) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_TssKey_status,
+		func(ctx context.Context) (any, error) {
+			return obj.Status, nil
+		},
+		nil,
+		ec.marshalNString2string,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_TssKey_status(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TssKey",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TssKey_PublicKey(ctx context.Context, field graphql.CollectedField, obj *TssKey) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_TssKey_PublicKey,
+		func(ctx context.Context) (any, error) {
+			return obj.PublicKey, nil
+		},
+		nil,
+		ec.marshalNString2string,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_TssKey_PublicKey(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TssKey",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TssKey_Owner(ctx context.Context, field graphql.CollectedField, obj *TssKey) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_TssKey_Owner,
+		func(ctx context.Context) (any, error) {
+			return obj.Owner, nil
+		},
+		nil,
+		ec.marshalNString2string,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_TssKey_Owner(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TssKey",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TssKey_Type(ctx context.Context, field graphql.CollectedField, obj *TssKey) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_TssKey_Type,
+		func(ctx context.Context) (any, error) {
+			return obj.Type, nil
+		},
+		nil,
+		ec.marshalNString2string,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_TssKey_Type(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TssKey",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TssKey_CreatedHeight(ctx context.Context, field graphql.CollectedField, obj *TssKey) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_TssKey_CreatedHeight,
+		func(ctx context.Context) (any, error) {
+			return obj.CreatedHeight, nil
+		},
+		nil,
+		ec.marshalNInt2int,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_TssKey_CreatedHeight(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TssKey",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TssRequest_id(ctx context.Context, field graphql.CollectedField, obj *TssRequest) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_TssRequest_id,
+		func(ctx context.Context) (any, error) {
+			return obj.ID, nil
+		},
+		nil,
+		ec.marshalNString2string,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_TssRequest_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TssRequest",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TssRequest_status(ctx context.Context, field graphql.CollectedField, obj *TssRequest) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_TssRequest_status,
+		func(ctx context.Context) (any, error) {
+			return obj.Status, nil
+		},
+		nil,
+		ec.marshalNString2string,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_TssRequest_status(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TssRequest",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TssRequest_keyId(ctx context.Context, field graphql.CollectedField, obj *TssRequest) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_TssRequest_keyId,
+		func(ctx context.Context) (any, error) {
+			return obj.KeyID, nil
+		},
+		nil,
+		ec.marshalNString2string,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_TssRequest_keyId(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TssRequest",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TssRequest_msg(ctx context.Context, field graphql.CollectedField, obj *TssRequest) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_TssRequest_msg,
+		func(ctx context.Context) (any, error) {
+			return obj.Msg, nil
+		},
+		nil,
+		ec.marshalNString2string,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_TssRequest_msg(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TssRequest",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _TssRequest_sig(ctx context.Context, field graphql.CollectedField, obj *TssRequest) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_TssRequest_sig,
+		func(ctx context.Context) (any, error) {
+			return obj.Sig, nil
+		},
+		nil,
+		ec.marshalNString2string,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_TssRequest_sig(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "TssRequest",
 		Field:      field,
 		IsMethod:   false,
 		IsResolver: false,
@@ -10871,6 +11455,44 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "getTssKey":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_getTssKey(ctx, field)
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "getTssRequest":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_getTssRequest(ctx, field)
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "__type":
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Query___type(ctx, field)
@@ -11519,6 +12141,129 @@ func (ec *executionContext) _TransactionSubmitResult(ctx context.Context, sel as
 			out.Values[i] = graphql.MarshalString("TransactionSubmitResult")
 		case "id":
 			out.Values[i] = ec._TransactionSubmitResult_id(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var tssKeyImplementors = []string{"TssKey"}
+
+func (ec *executionContext) _TssKey(ctx context.Context, sel ast.SelectionSet, obj *TssKey) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, tssKeyImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("TssKey")
+		case "id":
+			out.Values[i] = ec._TssKey_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "status":
+			out.Values[i] = ec._TssKey_status(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "PublicKey":
+			out.Values[i] = ec._TssKey_PublicKey(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "Owner":
+			out.Values[i] = ec._TssKey_Owner(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "Type":
+			out.Values[i] = ec._TssKey_Type(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "CreatedHeight":
+			out.Values[i] = ec._TssKey_CreatedHeight(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var tssRequestImplementors = []string{"TssRequest"}
+
+func (ec *executionContext) _TssRequest(ctx context.Context, sel ast.SelectionSet, obj *TssRequest) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, tssRequestImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("TssRequest")
+		case "id":
+			out.Values[i] = ec._TssRequest_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "status":
+			out.Values[i] = ec._TssRequest_status(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "keyId":
+			out.Values[i] = ec._TssRequest_keyId(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "msg":
+			out.Values[i] = ec._TssRequest_msg(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "sig":
+			out.Values[i] = ec._TssRequest_sig(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -13521,6 +14266,20 @@ func (ec *executionContext) marshalOTransactionSubmitResult2ᚖvscᚑnodeᚋmodu
 		return graphql.Null
 	}
 	return ec._TransactionSubmitResult(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalOTssKey2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTssKey(ctx context.Context, sel ast.SelectionSet, v *TssKey) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._TssKey(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalOTssRequest2ᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐTssRequest(ctx context.Context, sel ast.SelectionSet, v *TssRequest) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._TssRequest(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx context.Context, v any) (*model.Uint64, error) {

@@ -2,6 +2,8 @@ package tss_db
 
 import (
 	"context"
+	"fmt"
+	"time"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
@@ -11,6 +13,29 @@ import (
 
 type tssRequests struct {
 	*db.Collection
+}
+
+// FindRequest implements TssRequests.
+func (tssReq *tssRequests) FindRequest(keyID string, msgHex string) (*TssRequest, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	filter := bson.D{
+		{Key: "id", Value: keyID},
+		{Key: "msg", Value: msgHex},
+	}
+
+	result := tssReq.FindOne(ctx, filter)
+	if err := result.Err(); err != nil {
+		return nil, fmt.Errorf("failed query: %w", err)
+	}
+
+	var tssRequest TssRequest
+	if err := result.Decode(&tssRequest); err != nil {
+		return nil, fmt.Errorf("failed to decode to struct: %w", err)
+	}
+
+	return &tssRequest, nil
 }
 
 func (tssReq *tssRequests) SetSignedRequest(req TssRequest) error {
