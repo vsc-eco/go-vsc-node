@@ -11,7 +11,10 @@ import (
 const rawBlsSignatureLength = 96
 
 // signs off chain data and returns a signature
-func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (string, error) {
+func witnessChainData(
+	c *ChainOracle,
+	msg *chainOracleMessage,
+) (string, error) {
 	chainSymbol, startBlock, endBlock, err := parseChainSessionID(msg.SessionID)
 	if err != nil {
 		return "", fmt.Errorf("invalid session id: %w", err)

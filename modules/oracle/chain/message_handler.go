@@ -67,8 +67,11 @@ func (c *ChainOracle) Handle(peerID peer.ID, p2pMsg p2p.Msg) (p2p.Msg, error) {
 	return nil, nil
 }
 
-func receiveSignature(c *ChainOracle, msg *chainOracleMessage) error {
-	var signatureResponse signatureMessage
+func receiveSignature(
+	c *ChainOracle,
+	msg *chainOracleMessage,
+) error {
+	var signatureResponse chainOracleWitnessMessage
 	if err := json.Unmarshal(msg.Payload, &signatureResponse); err != nil {
 		return err
 	}

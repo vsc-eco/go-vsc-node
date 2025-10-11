@@ -13,18 +13,18 @@ var (
 
 type signatureChannels struct {
 	rwLock  *sync.RWMutex
-	chanMap map[string]chan signatureMessage
+	chanMap map[string]chan chainOracleWitnessMessage
 }
 
 func makeSignatureChannels() *signatureChannels {
 	rwLock := &sync.RWMutex{}
-	chanMap := make(map[string]chan signatureMessage)
+	chanMap := make(map[string]chan chainOracleWitnessMessage)
 	return &signatureChannels{rwLock, chanMap}
 }
 
 func (s *signatureChannels) makeSession(
 	sessionID string,
-) (<-chan signatureMessage, error) {
+) (<-chan chainOracleWitnessMessage, error) {
 	s.rwLock.Lock()
 	defer s.rwLock.Unlock()
 
@@ -33,14 +33,14 @@ func (s *signatureChannels) makeSession(
 		return nil, errChannelExists
 	}
 
-	s.chanMap[sessionID] = make(chan signatureMessage, 8)
+	s.chanMap[sessionID] = make(chan chainOracleWitnessMessage, 8)
 
 	return s.chanMap[sessionID], nil
 }
 
 func (s *signatureChannels) receiveSignature(
 	sessionID string,
-	msg signatureMessage,
+	msg chainOracleWitnessMessage,
 ) error {
 	s.rwLock.RLock()
 	defer s.rwLock.RUnlock()
@@ -65,5 +65,5 @@ func (s *signatureChannels) clearMap() {
 	for k := range s.chanMap {
 		close(s.chanMap[k])
 	}
-	s.chanMap = make(map[string]chan signatureMessage)
+	s.chanMap = make(map[string]chan chainOracleWitnessMessage)
 }

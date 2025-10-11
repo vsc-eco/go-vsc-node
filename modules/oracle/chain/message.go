@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"encoding/json"
 	"errors"
 )
 
@@ -28,12 +29,17 @@ var (
 )
 
 type chainOracleMessage struct {
-	MessageType messageType `json:"message_type"`
-	SessionID   string      `json:"session_id"`
-	Payload     []string    `json:"payload"`
+	MessageType messageType     `json:"message_type"`
+	SessionID   string          `json:"session_id"`
+	Payload     json.RawMessage `json:"payload"`
 }
 
-type signatureMessage struct {
+type chainOracleBlockProducerMessage struct {
+	BlockProducer string   `json:"block_producer"`
+	BlockHash     []string `json:"block_hashes"`
+}
+
+type chainOracleWitnessMessage struct {
 	// base64 encoded string of 96 bytes is 128
 	Signature string `json:"signature,omitempty" validate:"base64,required,len=128"`
 	Signer    string `json:"signer,omitempty"    validate:"required"`

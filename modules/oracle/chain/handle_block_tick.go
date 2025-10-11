@@ -2,6 +2,7 @@ package chain
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -78,6 +79,7 @@ func (o *ChainOracle) HandleBlockTick(
 	defer o.signatureChannels.clearMap()
 
 	blockProducer := &blockProducer{
+		username:       o.conf.Get().HiveUsername,
 		p2pSpec:        p2pSpec,
 		sigChan:        o.signatureChannels,
 		electedMembers: signal.ElectedMembers,
@@ -106,6 +108,7 @@ func (o *ChainOracle) HandleBlockTick(
 }
 
 type blockProducer struct {
+	username       string
 	p2pSpec        p2p.OracleP2PSpec
 	sigChan        *signatureChannels
 	electedMembers []elections.ElectionMember
@@ -129,10 +132,20 @@ func (bp *blockProducer) handleChainSession(chain chainSession) error {
 		}
 	}
 
+	blockProducerMsg := chainOracleBlockProducerMessage{
+		BlockProducer: bp.username,
+		BlockHash:     payload,
+	}
+
+	msgJsonBytes, err := json.Marshal(&blockProducerMsg)
+	if err != nil {
+		return fmt.Errorf("failed to serialize block producer message: %w", err)
+	}
+
 	signatureRequestMsg := chainOracleMessage{
 		MessageType: signatureRequest,
 		SessionID:   sessionID,
-		Payload:     payload,
+		Payload:     json.RawMessage(msgJsonBytes),
 	}
 
 	if err := bp.p2pSpec.Broadcast(p2p.MsgChainRelay, &signatureRequestMsg); err != nil {
