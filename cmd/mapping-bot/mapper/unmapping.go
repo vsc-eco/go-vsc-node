@@ -31,7 +31,7 @@ type HashMetadata struct {
 type SignedData struct {
 	Tx                string
 	UnsignedSigHashes []UnsignedSigHash
-	Signatures        [][32]byte
+	Signatures        [][]byte
 	TotalSignatures   uint32
 	CurrentSignatures uint32
 }
@@ -95,7 +95,7 @@ func (ms *MapperState) ProcessTxSpends(incomingTxSpends map[string]*SigningData)
 		ms.AwaitingSignatureTxs.Txs[txId] = &SignedData{
 			Tx:                signingData.Tx,
 			UnsignedSigHashes: signingData.UnsignedSigHashes,
-			Signatures:        make([][32]byte, len(signingData.UnsignedSigHashes)),
+			Signatures:        make([][]byte, len(signingData.UnsignedSigHashes)),
 			TotalSignatures:   uint32(len(signingData.UnsignedSigHashes)),
 			CurrentSignatures: 0,
 		}
