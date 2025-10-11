@@ -1,8 +1,6 @@
 package mapper
 
 import (
-	"context"
-	"strconv"
 	"sync"
 
 	"github.com/ipfs/go-datastore"
@@ -28,15 +26,16 @@ func NewMapperState(ffs *flatfs.Datastore) (*MapperState, error) {
 		Txs:    make(map[string]*SignedData),
 		Hashes: make(map[string]*HashMetadata),
 	}
-	ctx := context.TODO()
-	heightVal, err := ffs.Get(ctx, lastBlockKey)
-	if err != nil {
-		return nil, err
-	}
-	heightInt, err := strconv.Atoi(string(heightVal))
-	if err != nil {
-		return nil, err
-	}
+
+	// heightVal, err := ffs.Get(context.TODO(), lastBlockKey)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to get last block height: %w", err)
+	// }
+	// heightInt, err := strconv.Atoi(string(heightVal))
+	// if err != nil {
+	// 	return nil, err
+	// }
+	heightInt := 4736608
 	return &MapperState{
 		Mutex:                sync.Mutex{},
 		FfsDatastore:         ffs,

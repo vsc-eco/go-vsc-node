@@ -15,7 +15,7 @@ func (ms *MapperState) HandleMap(blockBytes []byte, blockHeight uint32) {
 	// map of vsc to btc addresses
 	// addressRegistry := make(map[string]string)
 	addressRegistry := map[string]string{
-		"hive:milo-hpr": "bc1qmk308hkyav7s6fd37y28ajhc22q4xeg3e24caa",
+		"hive:milo-hpr": "tb1q9gxwgzzxs7d597nh8843tndtwl9qrdup02tc0xcltrlt2tjyg7xqhat2zx",
 	}
 
 	blockParser := parser.NewBlockParser(addressRegistry, &chaincfg.MainNetParams)
@@ -41,6 +41,7 @@ func (ms *MapperState) HandleMap(blockBytes []byte, blockHeight uint32) {
 	for _, tx := range jsonMessages {
 		// TODO: input username and contract ID
 		callContract("username", "contract_id", tx, "map")
+		fmt.Printf("===\n\n%s\n\n===\n", string(tx))
 	}
 
 	ms.Mutex.Lock()
