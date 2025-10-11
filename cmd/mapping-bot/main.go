@@ -45,7 +45,7 @@ func main() {
 		observedTxs, txSpends, err := mapper.FetchContractData(graphQlClient)
 		if err != nil {
 			fmt.Println(err.Error())
-			time.Sleep(time.Minute)
+			return
 		} else {
 			bot.Mutex.Lock()
 			bot.ObservedTxs = observedTxs
@@ -62,18 +62,21 @@ func main() {
 			continue
 		} else if err != nil {
 			fmt.Println(err.Error())
+			return
 			time.Sleep(time.Minute)
 			continue
 		}
 		blockBytes, err := mempoolClient.GetRawBlock(hash)
 		if err != nil {
 			fmt.Println(err.Error())
+			return
 			time.Sleep(time.Minute)
 			continue
 		}
 
 		go bot.HandleMap(blockBytes, blockHeight)
+		// TODO: for prod
+		return
 		time.Sleep(time.Minute)
 	}
-
 }
