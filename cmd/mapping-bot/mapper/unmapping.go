@@ -119,7 +119,9 @@ func (ms *MapperState) CheckSignagures() []*SignedData {
 	}
 	ms.Mutex.Unlock()
 
-	newSignagutes := FetchSignatures(allHashes)
+	// TODO: need graphql client
+	newSignagutes, err := FetchSignatures(nil, allHashes)
+	fmt.Println("TODO: handle err", err)
 
 	ms.Mutex.Lock()
 	defer ms.Mutex.Unlock()
