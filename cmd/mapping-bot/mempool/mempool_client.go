@@ -7,7 +7,8 @@ import (
 	"net/http"
 )
 
-const MempoolAPIBase = "https://mempool.space/api"
+// TODO: change back to mainnet
+const MempoolAPIBase = "https://mempool.space/testnet/api"
 
 type MempoolClient struct {
 	baseURL string
@@ -22,6 +23,7 @@ func NewMempoolClient() *MempoolClient {
 }
 
 func (m *MempoolClient) GetBlockHashAtHeight(height uint32) (string, int, error) {
+	fmt.Println("getting hash for block at height", height)
 	url := fmt.Sprintf("%s/block-height/%d", m.baseURL, height)
 	resp, err := m.client.Get(url)
 	if err != nil {
@@ -42,6 +44,7 @@ func (m *MempoolClient) GetBlockHashAtHeight(height uint32) (string, int, error)
 }
 
 func (m *MempoolClient) GetRawBlock(hash string) ([]byte, error) {
+	fmt.Println("getting raw data for block with hash", hash)
 	url := fmt.Sprintf("%s/block/%s/raw", m.baseURL, hash)
 	resp, err := m.client.Get(url)
 	if err != nil {
