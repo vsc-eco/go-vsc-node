@@ -30,19 +30,12 @@ func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (string, error) {
 
 	blocks, err := chain.ChainData(startBlock, count)
 	fmt.Println("verify blocks", len(blocks), err)
+	// verify producer
+	// -- get schedule, then
+	// -- get the current slot information that has the producer username
+	//
+	// verify the hashes of the chain data
 
-	/*
-		if err := chain.VerifyChainData(msg.Payload); err != nil {
-			return "", fmt.Errorf("invalid chain data: %w", err)
-		}
-
-			signature, err := signChainData(msg.Payload)
-			if err != nil {
-				return "", fmt.Errorf("failed to sign chain data: %w", err)
-			}
-
-			return signature, nil
-	*/
 	return "", nil
 }
 

@@ -2,10 +2,13 @@ package chain
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"sync"
+	"math"
+	"slices"
 	"time"
 	"vsc-node/modules/db/vsc/contracts"
+	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
 	transactionpool "vsc-node/modules/transaction-pool"
 )
@@ -66,157 +69,127 @@ func (o *ChainOracle) HandleBlockTick(
 	if !signal.IsProducer {
 		return
 	}
-	// ## Process end to end ##
-	// - Node is witness & producer
-	// - Using the contract state of latest block in combination with latest
-	//   block on Bitcoin mainnet
-	// - Assuming this is true.
-	// - Create the transaction structure with the block headers to submit
-	// - Receiving node will do the same check as above, aka verify that new
-	//   blocks must be submitted
-	// - If true, then sign the exact same transaction and return signature
-	// - Producer node will receive signatures through the p2p channel
-	// - Producer node will aggregate those signatures into a single BLS circuit
-	//   for submission on mainnet
 
 	// make chainDataPool and signature requests
-
 	chainStatuses := o.fetchAllStatuses()
-	signatureRequests := make([]chainOracleMessage, 0, len(chainStatuses))
-	sessionMap := make(map[string]session)
 
-	for _, chainStatus := range chainStatuses {
-		if !chainStatus.newBlocksToSubmit {
-			continue
-		}
-
-		sessionID, err := makeChainSessionID(&chainStatus)
-		if err != nil {
-			o.logger.Error(
-				"failed to create session ID",
-				"block count", len(chainStatus.chainData),
-				"err", err,
-			)
-			continue
-		}
-
-		signatureRequest, err := makeChainOracleMessage(
-			signatureRequest,
-			sessionID,
-			chainStatus.chainData,
-		)
-		if err != nil {
-			o.logger.Error(
-				"failed to create signature requests",
-				"sessionID", sessionID,
-				"err", err,
-			)
-			continue
-		}
-
-		payload, err := makeTransactionPayload(chainStatus.chainData)
-		if err != nil {
-			o.logger.Error(
-				"failed to make transaction payload",
-				"sessionID", sessionID,
-				"err", err,
-			)
-			continue
-		}
-
-		tx := makeTransaction(chainStatus.contractId, payload, chainStatus.symbol)
-
-		signatureRequests = append(signatureRequests, *signatureRequest)
-
-		serializedTx, _ := tx.Serialize()
-
-		sessionMap[sessionID] = session{
-			vscTransaction: serializedTx,
-			chainData:      payload,
-			signatures:     make([]string, 0, 128),
-		}
-	}
-
-	// broadcast signature requests + collect signatures
-	// - Ask P2P channels for signatures for the transaction
-	// - Receiving node will receive request to create transaction on VSC mainnet
+	// reset signatureChannels
+	o.signatureChannels.clearMap()
 	defer o.signatureChannels.clearMap()
 
-	sessionMapMtx := &sync.Mutex{}
-	ctx, cancel := context.WithTimeout(o.ctx, 30*time.Second)
-	defer cancel()
+	blockProducer := &blockProducer{
+		p2pSpec:        p2pSpec,
+		sigChan:        o.signatureChannels,
+		electedMembers: signal.ElectedMembers,
+	}
 
-	for i := range signatureRequests {
-		sigRequest := &signatureRequests[i]
-		sigChan, err := o.signatureChannels.makeSession(sigRequest.SessionID)
-		if err != nil {
-			o.logger.Error("fialed to make signature session",
-				"sessionID", sigRequest.SessionID,
-				"err", err,
-			)
+	for _, chain := range chainStatuses {
+		if !chain.newBlocksToSubmit {
 			continue
 		}
 
-		if err := p2pSpec.Broadcast(p2p.MsgChainRelay, sigRequest); err != nil {
+		if err := blockProducer.handleChainSession(chain); err != nil {
 			o.logger.Error(
-				"failed to broadcast signature request",
-				"sessionID", sigRequest.SessionID,
-				"err", err,
+				"failed to process chain session",
+				"network", chain.symbol, "err", err,
 			)
-			continue
 		}
-
-		go collectSignature(
-			ctx,
-			sessionMapMtx,
-			sigChan,
-			sigRequest.SessionID,
-			sessionMap,
-		)
 	}
 
-	<-ctx.Done()
-
-	// validate signatures + submit transaction
-	for sessionID, session := range sessionMap {
-		fmt.Println(sessionID, session)
-	}
-
+	// verify witnesses signaure:
+	// -- get schedule, then
+	// -- get the current slot inforation
+	// -- get the current election
+	// -- verify the signature witnesses
+	// --- need the username + pubkey of the witnesses
+	// --- ^ spencer will write this function
 }
 
-// validate signatures + make transaction
-func makeTransactionPayload(blocks []chainBlock) ([]string, error) {
-	payload := make([]string, len(blocks))
-	var err error
+type blockProducer struct {
+	p2pSpec        p2p.OracleP2PSpec
+	sigChan        *signatureChannels
+	electedMembers []elections.ElectionMember
+}
 
-	for i, block := range blocks {
+func (bp *blockProducer) handleChainSession(chain chainSession) error {
+	// make + broadcast a signature request
+	sessionID, err := makeChainSessionID(&chain)
+	if err != nil {
+		return fmt.Errorf("failed to make chain session: %w", err)
+	}
+
+	payload := make([]string, len(chain.chainData))
+	for i, block := range chain.chainData {
 		payload[i], err = block.Serialize()
 		if err != nil {
-			return nil, err
+			return fmt.Errorf(
+				"failed to serialize block %d: %w",
+				block.BlockHeight(), err,
+			)
 		}
 	}
 
-	return payload, nil
-}
+	signatureRequestMsg := chainOracleMessage{
+		MessageType: signatureRequest,
+		SessionID:   sessionID,
+		Payload:     payload,
+	}
 
-func collectSignature(
-	ctx context.Context,
-	mtx *sync.Mutex,
-	sigChan <-chan signatureMessage,
-	sessionID string,
-	sessionMap map[string]session,
-) {
-	for {
+	if err := bp.p2pSpec.Broadcast(p2p.MsgChainRelay, &signatureRequestMsg); err != nil {
+		return fmt.Errorf("failed to broadcast message: %w", err)
+	}
+
+	// collect witness accounts, pubkeys and signatures
+	sigChan, err := bp.sigChan.makeSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to make signature session: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.TODO(), time.Minute)
+	defer cancel()
+
+	witnessAccounts := make([]string, len(bp.electedMembers))
+	for i, member := range bp.electedMembers {
+		witnessAccounts[i] = member.Account
+	}
+
+	type WitnessSignature struct {
+		elections.ElectionMember
+		Signatures string
+	}
+
+	threshold := int(math.Floor((2.0 / 3.0) * float64(len(bp.electedMembers))))
+	witnessSigned := make([]WitnessSignature, 0, threshold)
+	for len(witnessSigned) < threshold {
 		select {
 		case <-ctx.Done():
-			return
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("context error: %w", err)
+			} else {
+				return errors.New("signature collection timed out.")
+			}
 
 		case msg := <-sigChan:
-			mtx.Lock()
-			session := sessionMap[sessionID]
-			session.signatures = append(session.signatures, msg.Signature)
-			sessionMap[sessionID] = session
-			mtx.Unlock()
+			i := slices.Index(witnessAccounts, msg.Signer)
+			if i == -1 {
+				continue
+			}
+
+			witnessSigned = append(witnessSigned, WitnessSignature{
+				ElectionMember: bp.electedMembers[i],
+				Signatures:     msg.Signature,
+			})
 		}
 	}
+
+	// make transaction + submit to contract
+	tx := makeTransaction(chain.contractId, payload, chain.symbol)
+	serializedTx, err := tx.Serialize()
+	if err != nil {
+		return fmt.Errorf("failed to make transaction: %w", err)
+	}
+
+	fmt.Println("submit to contract, etc etc.:", serializedTx)
+
+	return nil
 }

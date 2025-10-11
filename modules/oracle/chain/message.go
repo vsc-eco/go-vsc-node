@@ -1,7 +1,6 @@
 package chain
 
 import (
-	"encoding/json"
 	"errors"
 )
 
@@ -29,30 +28,13 @@ var (
 )
 
 type chainOracleMessage struct {
-	MessageType messageType     `json:"message_type"`
-	SessionID   string          `json:"session_id"`
-	Payload     json.RawMessage `json:"data"`
+	MessageType messageType `json:"message_type"`
+	SessionID   string      `json:"session_id"`
+	Payload     []string    `json:"payload"`
 }
 
-func makeChainOracleMessage(
-	msgType messageType,
-	sessionID string,
-	chainData any,
-) (*chainOracleMessage, error) {
-	if len(sessionID) == 0 {
-		return nil, errInvalidSessionID
-	}
-
-	dataBytes, err := json.Marshal(chainData)
-	if err != nil {
-		return nil, err
-	}
-
-	msg := &chainOracleMessage{
-		MessageType: msgType,
-		SessionID:   sessionID,
-		Payload:     dataBytes,
-	}
-
-	return msg, nil
+type signatureMessage struct {
+	// base64 encoded string of 96 bytes is 128
+	Signature string `json:"signature,omitempty" validate:"base64,required,len=128"`
+	Signer    string `json:"signer,omitempty"    validate:"required"`
 }

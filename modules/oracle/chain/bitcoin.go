@@ -47,7 +47,6 @@ func (b *bitcoinRelayer) Init() error {
 	} else {
 		btcdRpcHost = "btcd:8332"
 	}
-	
 
 	b.rpcConfig = rpcclient.ConnConfig{
 		Host:         btcdRpcHost,
@@ -170,6 +169,8 @@ func (b *btcChainData) Type() string {
 
 // GetContractState implements chainRelay.
 func (b *bitcoinRelayer) GetContractState() (chainState, error) {
+	//graphql pull from contract
+
 	//Pull from VSC graphql API
 	panic("unimplemented")
 }
