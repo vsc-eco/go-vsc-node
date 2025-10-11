@@ -58,6 +58,16 @@ func FetchContractData(client *graphql.Client) (map[string]bool, map[string]*Sig
 	return observedTxs, txSpends, nil
 }
 
-func FetchSignatures([]string) map[string][]byte {
+const keyId = ""
+
+func FetchSignatures(client *graphql.Client, msgHex []string) map[string][]byte {
+	var query struct {
+		GetTssRequests json.RawMessage `graphql:"getTssRequests(keyId: $keyId, msgHex: $msgHex)"`
+	}
+
+	variables := map[string]any{
+		"keyId":  keyId,
+		"msgHex": msgHex,
+	}
 	return nil
 }
