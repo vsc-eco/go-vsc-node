@@ -10,7 +10,11 @@ import (
 	"os"
 	"time"
 	"vsc-node/cmd/mapping-bot/database"
+
+	"github.com/go-playground/validator/v10"
 )
+
+var requestValidator = validator.New(validator.WithRequiredStructEnabled())
 
 func mapBotHttpServer(
 	ctx context.Context,
@@ -27,7 +31,7 @@ func mapBotHttpServer(
 }
 
 type requestBody struct {
-	VscAddr string `json:"vsc_addr"`
+	VscAddr string `json:"vsc_addr,omitempty" validate:"required"`
 }
 
 func requestHandler(
@@ -35,6 +39,7 @@ func requestHandler(
 	db *database.MappingBotDatabase,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// validate incoming request + parse for vsc address
 		if r.Method != http.MethodPost {
 			writeResponse(w, http.StatusMethodNotAllowed, "only POST allowed")
 			return
@@ -47,6 +52,14 @@ func requestHandler(
 			return
 		}
 
+		if err := requestValidator.Struct(&requestBody); err != nil {
+			writeResponse(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+
+		vscAddr := requestBody.VscAddr
+
+		// make btc address
 		btcAddr, err := makeBtcAddress(requestBody.VscAddr)
 		if err != nil {
 			writeResponse(w, http.StatusInternalServerError, "")
@@ -54,14 +67,13 @@ func requestHandler(
 			return
 		}
 
-		vscAddr := requestBody.VscAddr
-
+		// insert mapping
 		ctx, cancel := context.WithTimeout(globalCtx, 15*time.Second)
 		defer cancel()
 
 		if err := db.InsertAddressMap(ctx, btcAddr, vscAddr); err != nil {
 			if errors.Is(err, database.ErrAddrExists) {
-				writeResponse(w, http.StatusBadRequest, "address map exists")
+				writeResponse(w, http.StatusConflict, "address map exists")
 			} else {
 				writeResponse(w, http.StatusInternalServerError, "")
 				writeError(err)
