@@ -92,6 +92,7 @@ func main() {
 
 		go bot.HandleMap(blockBytes, blockHeight)
 		// TODO: for prod
+		time.Sleep(3 * time.Second)
 		return
 		time.Sleep(time.Minute)
 	}

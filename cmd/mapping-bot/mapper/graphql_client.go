@@ -58,6 +58,6 @@ func FetchContractData(client *graphql.Client) (map[string]bool, map[string]*Sig
 	return observedTxs, txSpends, nil
 }
 
-func FetchSignatures([]string) map[string][32]byte {
+func FetchSignatures([]string) map[string][]byte {
 	return nil
 }

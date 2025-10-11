@@ -18,7 +18,7 @@ func (ms *MapperState) HandleMap(blockBytes []byte, blockHeight uint32) {
 		"hive:milo-hpr": "tb1q9gxwgzzxs7d597nh8843tndtwl9qrdup02tc0xcltrlt2tjyg7xqhat2zx",
 	}
 
-	blockParser := parser.NewBlockParser(addressRegistry, &chaincfg.MainNetParams)
+	blockParser := parser.NewBlockParser(addressRegistry, &chaincfg.TestNet3Params)
 
 	foundTxs, err := blockParser.ParseBlock(blockBytes, blockHeight, ms.ObservedTxs)
 	if err != nil {
