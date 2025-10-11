@@ -189,6 +189,8 @@ func main() {
 		nonceDb,
 		interestClaims,
 		contractState,
+		tssRequestDb,
+		tssKeyDb,
 
 		p2p,
 		da,                   //Deps: [p2p]
