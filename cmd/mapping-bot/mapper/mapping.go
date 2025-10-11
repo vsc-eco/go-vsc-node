@@ -5,20 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/parser"
 
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-func (ms *MapperState) HandleMap(blockBytes []byte, blockHeight uint32) {
-
-	// map of vsc to btc addresses
-	// addressRegistry := make(map[string]string)
-	addressRegistry := map[string]string{
-		"hive:milo-hpr": "tb1q9gxwgzzxs7d597nh8843tndtwl9qrdup02tc0xcltrlt2tjyg7xqhat2zx",
-	}
-
-	blockParser := parser.NewBlockParser(addressRegistry, &chaincfg.TestNet3Params)
+func (ms *MapperState) HandleMap(blockBytes []byte, blockHeight uint32, addressDb *database.MappingBotDatabase) {
+	blockParser := parser.NewBlockParser(addressDb, &chaincfg.MainNetParams)
 
 	foundTxs, err := blockParser.ParseBlock(blockBytes, blockHeight, ms.ObservedTxs)
 	if err != nil {
@@ -41,7 +35,6 @@ func (ms *MapperState) HandleMap(blockBytes []byte, blockHeight uint32) {
 	for _, tx := range jsonMessages {
 		// TODO: input username and contract ID
 		callContract("username", "contract_id", tx, "map")
-		fmt.Printf("===\n\n%s\n\n===\n", string(tx))
 	}
 
 	ms.Mutex.Lock()
