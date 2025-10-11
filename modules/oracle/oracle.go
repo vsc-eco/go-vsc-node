@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -40,6 +41,11 @@ var (
 	_ p2p.OracleP2PSpec = &Oracle{}
 )
 
+type currentElectionData struct {
+	Witnesses     []elections.ElectionMember
+	BlockProducer string
+}
+
 type Oracle struct {
 	ctx         context.Context
 	cancelFunc  context.CancelFunc
@@ -54,6 +60,9 @@ type Oracle struct {
 
 	// priceOracle *price.PriceOracle
 	chainOracle *chain.ChainOracle
+
+	currentElectionData    *currentElectionData
+	currentElectionDataMtx *sync.RWMutex
 }
 
 func New(
@@ -101,7 +110,9 @@ func New(
 		stateEngine: stateEngine,
 		logger:      logger,
 		// priceOracle: priceOracle,
-		chainOracle: chainRelayer,
+		chainOracle:            chainRelayer,
+		currentElectionData:    nil,
+		currentElectionDataMtx: &sync.RWMutex{},
 	}
 }
 
@@ -118,7 +129,7 @@ func (o *Oracle) Init() error {
 // Start implements aggregate.Plugin.
 // Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
-	// o.vStream.RegisterBlockTick("oracle", o.blockTick, true)
+	o.vStream.RegisterBlockTick("oracle", o.blockTick, true)
 
 	return promise.New(func(resolve func(any), reject func(error)) {
 		o.logger.Debug("starting Oracle service")
@@ -190,8 +201,27 @@ func (o *Oracle) Broadcast(msgCode p2p.MsgCode, data any) error {
 }
 
 // Handle implements p2p.MessageHandler
-func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
-	var handler p2p.MessageHandler
+func (o *Oracle) Handle(
+	peerID peer.ID,
+	msg p2p.Msg,
+	// the following 2 arguments are ignored, the interface is meant to be
+	// passed down to chainOracle + priceOracle.
+	_ string,
+	_ []elections.ElectionMember,
+) (p2p.Msg, error) {
+	o.currentElectionDataMtx.RLock()
+	defer o.currentElectionDataMtx.RUnlock()
+
+	if o.currentElectionData == nil {
+		return nil, errors.New("invalid current election data")
+	}
+
+	var (
+		handler p2p.MessageHandler
+
+		blockProducer = o.currentElectionData.BlockProducer
+		witnesses     = o.currentElectionData.Witnesses
+	)
 
 	switch msg.Code {
 	// case p2p.MsgPriceBroadcast, p2p.MsgPriceSignature, p2p.MsgPriceBlock:
@@ -204,5 +234,5 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 		return nil, errInvalidMessageType
 	}
 
-	return handler.Handle(peerID, msg)
+	return handler.Handle(peerID, msg, blockProducer, witnesses)
 }

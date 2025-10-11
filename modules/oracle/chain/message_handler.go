@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
 
 	"github.com/go-playground/validator/v10"
@@ -24,7 +25,12 @@ var (
 )
 
 // Handle implements p2p.MessageHandler.
-func (c *ChainOracle) Handle(peerID peer.ID, p2pMsg p2p.Msg) (p2p.Msg, error) {
+func (c *ChainOracle) Handle(
+	peerID peer.ID,
+	p2pMsg p2p.Msg,
+	blockProducer string,
+	_ []elections.ElectionMember,
+) (p2p.Msg, error) {
 	if p2pMsg.Code != p2p.MsgChainRelay {
 		return nil, ErrInvalidChainOracleMessage
 	}
@@ -39,18 +45,49 @@ func (c *ChainOracle) Handle(peerID peer.ID, p2pMsg p2p.Msg) (p2p.Msg, error) {
 
 	switch msg.MessageType {
 	case signatureRequest:
-		signature, err := witnessChainData(c, &msg)
+		blockProducerSigRequest := chainOracleBlockProducerMessage{}
+		if err := json.Unmarshal(msg.Payload, &blockProducerSigRequest); err != nil {
+			return nil, fmt.Errorf(
+				"failed to deserialize block producer message: %w",
+				err,
+			)
+		}
+
+		w := chainOracleWitness{
+			username:      c.conf.Get().HiveUsername,
+			privateKey:    c.conf.Get().BlsPrivKeySeed,
+			sessionID:     msg.SessionID,
+			chainRelayMap: c.chainRelayers,
+			blockProducer: blockProducer,
+		}
+
+		signatureMsg, err := w.witnessChainData(&blockProducerSigRequest)
 		if err != nil {
+			if errors.Is(err, errInvalidBlockProducer) {
+				c.logger.Debug(
+					"dropping signature request not from block producer",
+				)
+				return nil, nil
+			}
+
 			return nil, err
 		}
 
-		response := chainOracleMessage{
-			MessageType: signatureResponse,
-			SessionID:   msg.SessionID,
-			Payload:     json.RawMessage(signature),
+		payload, err := json.Marshal(signatureMsg)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to serialize signature response: %w",
+				err,
+			)
 		}
 
-		return p2p.MakeOracleMessage(p2p.MsgChainRelay, &response)
+		msg := chainOracleMessage{
+			MessageType: signatureResponse,
+			SessionID:   msg.SessionID,
+			Payload:     json.RawMessage(payload),
+		}
+
+		return p2p.MakeOracleMessage(p2p.MsgChainRelay, &msg)
 
 	case signatureResponse:
 		if err := receiveSignature(c, &msg); err != nil {
