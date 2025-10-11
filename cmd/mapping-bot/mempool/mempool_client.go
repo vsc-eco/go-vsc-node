@@ -7,8 +7,7 @@ import (
 	"net/http"
 )
 
-// TODO: change back to mainnet
-const MempoolAPIBase = "https://mempool.space/testnet/api"
+const MempoolAPIBase = "https://mempool.space/api"
 
 type MempoolClient struct {
 	baseURL string

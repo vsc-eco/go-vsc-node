@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"vsc-node/cmd/mapping-bot/mempool"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/hasura/go-graphql-client"
 )
 
 // SigningData and UnsignedSigHash structs same as contract
@@ -19,8 +21,8 @@ type SigningData struct {
 
 type UnsignedSigHash struct {
 	Index         uint32 `json:"index"`
-	SigHash       []byte `json:"sig_hash"`
-	WitnessScript []byte `json:"witness_script"`
+	SigHash       string `json:"sig_hash"`
+	WitnessScript string `json:"witness_script"`
 }
 
 type HashMetadata struct {
@@ -46,9 +48,13 @@ type TxRawIdPair struct {
 	TxId  string
 }
 
-func (ms *MapperState) HandleUnmap(client *mempool.MempoolClient, txSpends map[string]*SigningData) {
+func (ms *MapperState) HandleUnmap(memPoolClient *mempool.MempoolClient, graphQlClient *graphql.Client, txSpends map[string]*SigningData) {
 	ms.ProcessTxSpends(txSpends)
-	finishedTxs := ms.CheckSignagures()
+	finishedTxs, err := ms.CheckSignagures(graphQlClient)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error fetching signatures from the database: %s", err.Error())
+		return
+	}
 
 	if len(finishedTxs) > 0 {
 		txPairs := make([]*TxRawIdPair, len(finishedTxs))
@@ -56,11 +62,13 @@ func (ms *MapperState) HandleUnmap(client *mempool.MempoolClient, txSpends map[s
 			txPair, err := attachSignatures(signedData)
 			// can just log the error and continue, because it will just refetch from contract
 			// state and try to compile it again
-			fmt.Printf("Error attaching signatures to transaction with ID %s.\n", err.Error())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error attaching signatures to transaction with id: %s\n", err.Error())
+			}
 			txPairs[i] = txPair
 		}
 		for _, tx := range txPairs {
-			client.PostTx(tx.RawTx)
+			memPoolClient.PostTx(tx.RawTx)
 			ms.SentTxs[tx.TxId] = true
 		}
 	}
@@ -84,6 +92,7 @@ func (ms *MapperState) ProcessTxSpends(incomingTxSpends map[string]*SigningData)
 	ms.Mutex.Lock()
 	defer ms.Mutex.Unlock()
 	for txId, signingData := range incomingTxSpends {
+		// already in the system
 		_, ok := ms.ObservedTxs[txId]
 		if ok {
 			continue
@@ -100,8 +109,7 @@ func (ms *MapperState) ProcessTxSpends(incomingTxSpends map[string]*SigningData)
 			CurrentSignatures: 0,
 		}
 		for _, hash := range signingData.UnsignedSigHashes {
-			hashHex := hex.EncodeToString(hash.SigHash)
-			ms.AwaitingSignatureTxs.Hashes[hashHex] = &HashMetadata{
+			ms.AwaitingSignatureTxs.Hashes[hash.SigHash] = &HashMetadata{
 				TxId:  txId,
 				Index: hash.Index,
 			}
@@ -109,7 +117,7 @@ func (ms *MapperState) ProcessTxSpends(incomingTxSpends map[string]*SigningData)
 	}
 }
 
-func (ms *MapperState) CheckSignagures() []*SignedData {
+func (ms *MapperState) CheckSignagures(graphQlClient *graphql.Client) ([]*SignedData, error) {
 	ms.Mutex.Lock()
 	allHashes := make([]string, len(ms.AwaitingSignatureTxs.Hashes))
 	i := 0
@@ -119,9 +127,10 @@ func (ms *MapperState) CheckSignagures() []*SignedData {
 	}
 	ms.Mutex.Unlock()
 
-	// TODO: need graphql client
-	newSignagutes, err := FetchSignatures(nil, allHashes)
-	fmt.Println("TODO: handle err", err)
+	newSignagutes, err := FetchSignatures(graphQlClient, allHashes)
+	if err != nil {
+		return nil, err
+	}
 
 	ms.Mutex.Lock()
 	defer ms.Mutex.Unlock()
@@ -141,7 +150,7 @@ func (ms *MapperState) CheckSignagures() []*SignedData {
 		}
 	}
 
-	return fullySignedTxs
+	return fullySignedTxs, nil
 }
 
 func attachSignatures(signedData *SignedData) (*TxRawIdPair, error) {
@@ -155,9 +164,14 @@ func attachSignatures(signedData *SignedData) (*TxRawIdPair, error) {
 	for _, inputData := range signedData.UnsignedSigHashes {
 		signature := signedData.Signatures[inputData.Index]
 
+		witnessScriptBytes, err := hex.DecodeString(inputData.WitnessScript)
+		if err != nil {
+			return nil, err
+		}
+
 		witness := wire.TxWitness{
 			signature[:],
-			inputData.WitnessScript,
+			witnessScriptBytes,
 		}
 
 		tx.TxIn[inputData.Index].Witness = witness

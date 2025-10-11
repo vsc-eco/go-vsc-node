@@ -10,13 +10,11 @@ import (
 )
 
 var (
-	network   = &chaincfg.TestNet3Params
+	network   = &chaincfg.MainNetParams
 	pubKeyHex = ""
 )
 
 func makeBtcAddress(vscAddr string) (string, error) {
-	// TODO: add validation to vsc addr
-
 	pubKeyBytes, err := hex.DecodeString(pubKeyHex)
 	if err != nil {
 		return "", err
