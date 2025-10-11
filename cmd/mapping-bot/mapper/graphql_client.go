@@ -2,7 +2,9 @@ package mapper
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 
 	"github.com/hasura/go-graphql-client"
 )
@@ -60,14 +62,35 @@ func FetchContractData(client *graphql.Client) (map[string]bool, map[string]*Sig
 
 const keyId = ""
 
-func FetchSignatures(client *graphql.Client, msgHex []string) map[string][]byte {
+func FetchSignatures(client *graphql.Client, msgHex []string) (map[string][]byte, error) {
 	var query struct {
-		GetTssRequests json.RawMessage `graphql:"getTssRequests(keyId: $keyId, msgHex: $msgHex)"`
+		Tss []struct {
+			Msg string `graphql:"msg"`
+			Sig string `graphql:"sig"`
+		} `graphql:"getTssRequests(keyId: $keyId, msgHex: $msgHex)"`
 	}
 
 	variables := map[string]any{
 		"keyId":  keyId,
 		"msgHex": msgHex,
 	}
-	return nil
+
+	opName := graphql.OperationName("GetTssRequests")
+	if err := client.Query(context.Background(), &query, variables, opName); err != nil {
+		return nil, fmt.Errorf("failed graphql query: %w", err)
+	}
+
+	out := make(map[string][]byte)
+	for _, tss := range query.Tss {
+		buf, err := hex.DecodeString(tss.Sig)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to decode signature [signature:%s]: %w",
+				tss.Sig, err,
+			)
+		}
+		out[tss.Msg] = buf
+	}
+
+	return nil, nil
 }
