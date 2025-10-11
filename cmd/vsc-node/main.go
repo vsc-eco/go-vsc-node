@@ -22,6 +22,7 @@ import (
 	"vsc-node/modules/db/vsc/nonces"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	election_proposer "vsc-node/modules/election-proposer"
@@ -69,6 +70,8 @@ func main() {
 	contractState := contracts.NewContractState(vscDb)
 	nonceDb := nonces.New(vscDb)
 	rcDb := rcDb.New(vscDb)
+	tssRequestDb := tss_db.NewRequests(vscDb)
+	tssKeyDb := tss_db.NewKeys(vscDb)
 
 	if err != nil {
 		fmt.Println("error is", err)
@@ -123,7 +126,7 @@ func main() {
 	dataAvailability := data_availability.New(p2p, identityConfig, da)
 
 	l := logger.PrefixedLogger{
-		"vsc-node",
+		Prefix: "vsc-node",
 	}
 	se := stateEngine.New(l, da, witnessDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
 
@@ -142,20 +145,22 @@ func main() {
 	sr := streamer.NewStreamReader(hiveBlocks, vstream.ProcessBlock, se.SaveBlockHeight, stBlock)
 
 	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{
-		witnessDb,
-		txpool,
-		balanceDb,
-		ledgerDbImpl,
-		actionsDb,
-		electionDb,
-		txDb,
-		nonceDb,
-		rcDb,
-		hiveBlocks,
-		se,
-		da,
-		contractDb,
-		contractState,
+		Witnesses:      witnessDb,
+		TxPool:         txpool,
+		Balances:       balanceDb,
+		Ledger:         ledgerDbImpl,
+		Actions:        actionsDb,
+		Elections:      electionDb,
+		Transactions:   txDb,
+		Nonces:         nonceDb,
+		Rc:             rcDb,
+		HiveBlocks:     hiveBlocks,
+		StateEngine:    se,
+		Da:             da,
+		Contracts:      contractDb,
+		ContractsState: contractState,
+		TssKeys:        tssKeyDb,
+		TssRequests:    tssRequestDb,
 	}}), "0.0.0.0:8080")
 
 	plugins := make([]aggregate.Plugin, 0)
