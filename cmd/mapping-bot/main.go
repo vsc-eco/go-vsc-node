@@ -38,20 +38,20 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	db, err := database.New("./wallet_address")
+	addressDb, err := database.New("./wallet-address-datastore")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create datastore: %s\n", err.Error())
 		os.Exit(1)
 	}
 
-	go mapBotHttpServer(ctx, db, httpPort)
+	go mapBotHttpServer(ctx, addressDb, httpPort)
 
-	datastore, err := newDataStore("./map-bot-data")
+	generalDb, err := newDataStore("./map-bot-datastore")
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
 
-	bot, err := mapper.NewMapperState(datastore)
+	bot, err := mapper.NewMapperState(generalDb)
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
@@ -60,13 +60,13 @@ func main() {
 	for {
 		observedTxs, txSpends, err := mapper.FetchContractData(graphQlClient)
 		if err != nil {
-			fmt.Println(err.Error())
+			fmt.Fprintln(os.Stderr, err.Error())
 			return
 		} else {
 			bot.Mutex.Lock()
 			bot.ObservedTxs = observedTxs
 			bot.Mutex.Unlock()
-			go bot.HandleUnmap(mempoolClient, txSpends)
+			go bot.HandleUnmap(mempoolClient, graphQlClient, txSpends)
 		}
 
 		blockHeight := bot.LastBlockHeight + 1
@@ -77,21 +77,21 @@ func main() {
 			time.Sleep(time.Minute)
 			continue
 		} else if err != nil {
-			fmt.Println(err.Error())
+			fmt.Fprintln(os.Stderr, err.Error())
 			return
 			time.Sleep(time.Minute)
 			continue
 		}
 		blockBytes, err := mempoolClient.GetRawBlock(hash)
 		if err != nil {
-			fmt.Println(err.Error())
+			fmt.Fprintln(os.Stderr, err.Error())
 			return
 			time.Sleep(time.Minute)
 			continue
 		}
 
-		go bot.HandleMap(blockBytes, blockHeight)
-		// TODO: for prod
+		go bot.HandleMap(blockBytes, blockHeight, addressDb)
+		// TODO: remove for prod
 		time.Sleep(3 * time.Second)
 		return
 		time.Sleep(time.Minute)

@@ -37,8 +37,7 @@ func FetchContractData(client *graphql.Client) (map[string]bool, map[string]*Sig
 
 	var observedTxs map[string]bool
 	if observedData, exists := stateMap[observedContractKey]; exists && observedData != nil {
-		observedTxsJson, _ := json.Marshal(observedData)
-		err = json.Unmarshal(observedTxsJson, &observedTxs)
+		err = json.Unmarshal(observedData, &observedTxs)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -48,8 +47,7 @@ func FetchContractData(client *graphql.Client) (map[string]bool, map[string]*Sig
 
 	var txSpends map[string]*SigningData
 	if txSpendsData, exists := stateMap[txSpendsContractKey]; exists && txSpendsData != nil {
-		txSpendsJson, _ := json.Marshal(txSpendsData)
-		err = json.Unmarshal(txSpendsJson, &txSpends)
+		err = json.Unmarshal(txSpendsData, &txSpends)
 		if err != nil {
 			return nil, nil, err
 		}

@@ -2,8 +2,11 @@ package parser
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"fmt"
+
+	"vsc-node/cmd/mapping-bot/database"
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -27,19 +30,14 @@ type VerificationRequest struct {
 }
 
 type BlockParser struct {
-	targetBtcAddresses map[string]string
-	chainParams        *chaincfg.Params
+	addressDb   *database.MappingBotDatabase
+	chainParams *chaincfg.Params
 }
 
-func NewBlockParser(addresses map[string]string, params *chaincfg.Params) *BlockParser {
-	btcAddrMap := make(map[string]string, len(addresses))
-	for vscAddr, btcAddr := range addresses {
-		btcAddrMap[btcAddr] = vscAddr
-	}
-
+func NewBlockParser(addressDb *database.MappingBotDatabase, params *chaincfg.Params) *BlockParser {
 	return &BlockParser{
-		targetBtcAddresses: btcAddrMap,
-		chainParams:        params,
+		addressDb:   addressDb,
+		chainParams: params,
 	}
 }
 
@@ -60,11 +58,13 @@ func (bp *BlockParser) ParseBlock(rawBlockBytes []byte, blockHeight uint32, obse
 		for _, txOut := range tx.TxOut {
 			addresses := bp.extractAddresses(txOut.PkScript)
 
-			// this loop should never be longer than one cycle, only happens with multisig
+			// this loop should never be longer than one cycle, only happens with multisig which is outdated
 			for _, addr := range addresses {
-				if vscAddr, ok := bp.targetBtcAddresses[addr]; ok {
+				if vscAddr, err := bp.addressDb.GetVscAddress(context.TODO(), addr); err == nil {
 					instruction := fmt.Sprintf("%s=%s", depositInstruction, vscAddr)
 					matchedTxIndices[txIndex] = append(matchedTxIndices[txIndex], instruction)
+				} else if err != database.ErrAddrNotFound {
+					return nil, err
 				}
 			}
 		}
