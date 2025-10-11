@@ -119,7 +119,7 @@ func (ms *MapperState) CheckSignagures() []*SignedData {
 	}
 	ms.Mutex.Unlock()
 
-	newSignagutes := FetchSignatures(allHashes)
+	newSignagutes, _ := FetchSignatures(nil, allHashes)
 
 	ms.Mutex.Lock()
 	defer ms.Mutex.Unlock()
