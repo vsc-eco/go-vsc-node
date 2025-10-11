@@ -1,7 +1,9 @@
 package database
 
 import (
+	"bytes"
 	"context"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"os"
@@ -46,13 +48,19 @@ func (m *MappingBotDatabase) InsertAddressMap(
 	ctx context.Context,
 	btcAddr, vscAddr string,
 ) error {
-	key := datastore.NewKey(btcAddr)
+	key, err := makeFlatFsKey(btcAddr)
+	if err != nil {
+		return fmt.Errorf(
+			"failed to make flat fs key [btcAddr:%s]: %w",
+			btcAddr, err,
+		)
+	}
 
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
 
 	// checks for address existence
-	exists, err := m.db.Has(ctx, key)
+	exists, err := m.db.Has(ctx, *key)
 	if err != nil {
 		return fmt.Errorf("failed to query key [%s]: %w", btcAddr, err)
 	}
@@ -62,7 +70,7 @@ func (m *MappingBotDatabase) InsertAddressMap(
 	}
 
 	// value encoding
-	if err := m.db.Put(ctx, key, []byte(vscAddr)); err != nil {
+	if err := m.db.Put(ctx, *key, []byte(vscAddr)); err != nil {
 		return fmt.Errorf("failed to put key [%s]: %w", btcAddr, err)
 	}
 
@@ -75,12 +83,18 @@ func (m *MappingBotDatabase) GetVscAddress(
 	ctx context.Context,
 	btcAddr string,
 ) (string, error) {
-	key := datastore.NewKey(btcAddr)
+	key, err := makeFlatFsKey(btcAddr)
+	if err != nil {
+		return "", fmt.Errorf(
+			"failed to make flat fs key [btcAddr:%s]: %w",
+			btcAddr, err,
+		)
+	}
 
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
 
-	vscAddr, err := m.db.Get(ctx, key)
+	vscAddr, err := m.db.Get(ctx, *key)
 	if err != nil {
 		if errors.Is(err, datastore.ErrNotFound) {
 			return "", ErrAddrNotFound
@@ -93,4 +107,19 @@ func (m *MappingBotDatabase) GetVscAddress(
 	}
 
 	return string(vscAddr), nil
+}
+
+func makeFlatFsKey(k string) (*datastore.Key, error) {
+	buf := &bytes.Buffer{}
+	enc := base32.StdEncoding.WithPadding(base32.NoPadding)
+
+	encoder := base32.NewEncoder(enc, buf)
+	if _, err := encoder.Write([]byte(k)); err != nil {
+		return nil, err
+	}
+	encoder.Close()
+
+	datastoreKey := datastore.NewKey(buf.String())
+
+	return &datastoreKey, nil
 }
