@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"time"
+	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
 	"vsc-node/cmd/mapping-bot/mempool"
 
@@ -13,7 +15,10 @@ import (
 	flatfs "github.com/ipfs/go-ds-flatfs"
 )
 
-const graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
+const (
+	graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
+	httpPort   = 8000
+)
 
 func newDataStore(path string) (*flatfs.Datastore, error) {
 	if err := os.MkdirAll(path, 0755); err != nil {
@@ -30,6 +35,17 @@ func newDataStore(path string) (*flatfs.Datastore, error) {
 }
 
 func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	db, err := database.New("./wallet_address")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create datastore: %s\n", err.Error())
+		os.Exit(1)
+	}
+
+	go mapBotHttpServer(ctx, db, httpPort)
+
 	datastore, err := newDataStore("./map-bot-data")
 	if err != nil {
 		log.Fatalln(err.Error())
