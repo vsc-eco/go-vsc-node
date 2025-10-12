@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"slices"
 	"time"
@@ -74,6 +75,8 @@ func (o *ChainOracle) HandleBlockTick(
 	// make chainDataPool and signature requests
 	chainStatuses := o.fetchAllStatuses()
 
+	o.logger.Debug("fetched all chain statuses", "chainStatuses", chainStatuses)
+
 	// reset signatureChannels
 	o.signatureChannels.clearMap()
 	defer o.signatureChannels.clearMap()
@@ -85,12 +88,14 @@ func (o *ChainOracle) HandleBlockTick(
 		electedMembers: signal.ElectedMembers,
 	}
 
+	o.logger.Debug("created blockProducer", "blockProducer", blockProducer)
+
 	for _, chain := range chainStatuses {
 		if !chain.newBlocksToSubmit {
 			continue
 		}
 
-		if err := blockProducer.handleChainSession(chain); err != nil {
+		if err := blockProducer.handleChainSession(chain, o.logger); err != nil {
 			o.logger.Error(
 				"failed to process chain session",
 				"network", chain.symbol, "err", err,
@@ -114,12 +119,15 @@ type blockProducer struct {
 	electedMembers []elections.ElectionMember
 }
 
-func (bp *blockProducer) handleChainSession(chain chainSession) error {
+func (bp *blockProducer) handleChainSession(chain chainSession, logger *slog.Logger) error {
+	logger.Debug("handling chain session", "chain", chain)
 	// make + broadcast a signature request
 	sessionID, err := makeChainSessionID(&chain)
 	if err != nil {
 		return fmt.Errorf("failed to make chain session: %w", err)
 	}
+
+	logger.Debug("created session ID", "sessionID", sessionID)
 
 	payload := make([]string, len(chain.chainData))
 	for i, block := range chain.chainData {
@@ -131,6 +139,8 @@ func (bp *blockProducer) handleChainSession(chain chainSession) error {
 			)
 		}
 	}
+
+	logger.Debug("created payload", "payload", payload)
 
 	blockProducerMsg := chainOracleBlockProducerMessage{
 		BlockProducer: bp.username,
@@ -147,6 +157,8 @@ func (bp *blockProducer) handleChainSession(chain chainSession) error {
 		SessionID:   sessionID,
 		Payload:     json.RawMessage(msgJsonBytes),
 	}
+
+	logger.Debug("created signature request message", "message", signatureRequestMsg)
 
 	if err := bp.p2pSpec.Broadcast(p2p.MsgChainRelay, &signatureRequestMsg); err != nil {
 		return fmt.Errorf("failed to broadcast message: %w", err)
@@ -172,6 +184,7 @@ func (bp *blockProducer) handleChainSession(chain chainSession) error {
 	}
 
 	threshold := int(math.Floor((2.0 / 3.0) * float64(len(bp.electedMembers))))
+	logger.Debug("set threshold", "threshold", threshold)
 	witnessSigned := make([]WitnessSignature, 0, threshold)
 	for len(witnessSigned) < threshold {
 		select {
@@ -188,10 +201,14 @@ func (bp *blockProducer) handleChainSession(chain chainSession) error {
 				continue
 			}
 
-			witnessSigned = append(witnessSigned, WitnessSignature{
+			witnessSignature := WitnessSignature{
 				ElectionMember: bp.electedMembers[i],
 				Signatures:     msg.Signature,
-			})
+			}
+
+			logger.Debug("received witness signature, appending to witnessSigned", "signature", witnessSignature)
+
+			witnessSigned = append(witnessSigned, witnessSignature)
 		}
 	}
 
@@ -201,6 +218,8 @@ func (bp *blockProducer) handleChainSession(chain chainSession) error {
 	if err != nil {
 		return fmt.Errorf("failed to make transaction: %w", err)
 	}
+
+	logger.Debug("created and serialized tx", "tx", tx, "serializedTx", serializedTx)
 
 	fmt.Println("submit to contract, etc etc.:", serializedTx)
 

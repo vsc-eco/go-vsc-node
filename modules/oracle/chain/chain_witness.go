@@ -3,6 +3,7 @@ package chain
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -16,6 +17,7 @@ type chainOracleWitness struct {
 	sessionID     string
 	chainRelayMap map[string]chainRelay
 	blockProducer string
+	logger        *slog.Logger
 }
 
 // signs off chain data and returns a signature
@@ -32,10 +34,14 @@ func (o *chainOracleWitness) witnessChainData(
 		return nil, fmt.Errorf("invalid session id: %w", err)
 	}
 
+	o.logger.Debug("got blocks from btcd", "chainSymbol", chainSymbol, "startBlock", startBlock, "endBlock", endBlock)
+
 	chain, ok := o.chainRelayMap[strings.ToUpper(chainSymbol)]
 	if !ok {
 		return nil, errInvalidChainSymbol
 	}
+
+	o.logger.Debug("got chain from map", "chain", chain)
 
 	count := (endBlock - startBlock) + 1
 	blocks, err := chain.ChainData(startBlock, count)
@@ -48,6 +54,8 @@ func (o *chainOracleWitness) witnessChainData(
 			err,
 		)
 	}
+
+	o.logger.Debug("got blocks from chain data", "blocks", blocks, "count", count)
 
 	// verify blocks against block producer's hashes
 	ok, err = o.verifyBlockHashes(blocks, msg.BlockHash)
@@ -89,6 +97,7 @@ func (w *chainOracleWitness) verifyBlockHashes(
 		}
 
 		if blockHash != b[i] {
+			w.logger.Debug("failed to verify block", "block symbol", block.Type(), "block height", block.BlockHeight())
 			return false, nil
 		}
 	}
