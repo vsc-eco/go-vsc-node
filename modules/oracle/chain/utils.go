@@ -1,12 +1,14 @@
 package chain
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"vsc-node/modules/db/vsc/contracts"
 	transactionpool "vsc-node/modules/transaction-pool"
 
+	"github.com/hasura/go-graphql-client"
 	blocks "github.com/ipfs/go-block-format"
 
 	"encoding/json"
@@ -122,4 +124,26 @@ func callContract(
 	}
 
 	return json.RawMessage(deployOpJsonBytes), nil
+}
+
+func getAccountNonce(symbol string) (uint64, error) {
+	client := graphql.NewClient("https://api.vsc.eco/api/v1/graphql", nil)
+
+	username := baseOracleDid + symbol
+	var query struct {
+		Data struct {
+			Nonce uint64 `graphql:"nonce"`
+		} `graphql:"getAccountNonce(account: $account)"`
+	}
+
+	variables := map[string]any{
+		"account": username,
+	}
+
+	opName := graphql.OperationName("GetAccountNonce")
+	if err := client.Query(context.Background(), &query, variables, opName); err != nil {
+		return 0, fmt.Errorf("failed graphql query: %w", err)
+	}
+
+	return query.Data.Nonce, nil
 }
