@@ -29,7 +29,7 @@ var (
 
 type chainRelay interface {
 	Init(context.Context) error
-	// Returns the ticker of the chain (ie, BTC for bitcoin).
+	// Returns the (lowercase) ticker of the chain (ie, btc for bitcoin).
 	Symbol() string
 	// Get the deployed contract ID
 	ContractID() string

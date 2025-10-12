@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"strings"
 
+	blocks "github.com/ipfs/go-block-format"
 	blsu "github.com/protolambda/bls12-381-util"
 )
 
-const rawBlsSignatureLength = 96
-
-var errInvalidBlockProducer = errors.New("invalid block producer")
+var (
+	errInvalidBlockProducer = errors.New("invalid block producer")
+	errInvalidChainHash     = errors.New("invalid chain hash")
+)
 
 type chainOracleWitness struct {
 	logger            *slog.Logger
@@ -65,17 +67,18 @@ func (o *chainOracleWitness) witnessChainData(
 	)
 
 	// verify blocks against block producer's hashes
-	ok, err = o.verifyBlockHashes(blocks, msg.BlockHash)
+	tx, err := makeChainTx(chain, blocks)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create tx: %w", err)
+	}
+
+	chainHashMatch := tx.Cid().String() == msg.SigHash
+	if !chainHashMatch {
+		return nil, errInvalidChainHash
 	}
 
 	// sign and respond
-	signature, err := o.signChainData(
-		chainSymbol,
-		chain.ContractID(),
-		msg.BlockHash,
-	)
+	signature, err := o.signChainData(tx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign producer block: %w", err)
 	}
@@ -88,43 +91,8 @@ func (o *chainOracleWitness) witnessChainData(
 	return &response, nil
 }
 
-func (w *chainOracleWitness) verifyBlockHashes(
-	chainBlocks []chainBlock,
-	blockHashes []string,
-) (bool, error) {
-	if len(chainBlocks) != len(blockHashes) {
-		return false, nil
-	}
-
-	for i, block := range chainBlocks {
-		blockHash, err := block.Serialize()
-		if err != nil {
-			return false, fmt.Errorf(
-				"failed to serialize block: symbol %s, blockHeight %d, err %w",
-				block.Type(),
-				block.BlockHeight(),
-				err,
-			)
-		}
-
-		if blockHash != blockHashes[i] {
-			w.logger.Debug(
-				"failed to verify block",
-				"block symbol", block.Type(),
-				"block height", block.BlockHeight(),
-			)
-			return false, nil
-		}
-	}
-
-	return true, nil
-}
-
-// TODO: sign chain data, 96 bytes signature with base64.RawStdEncoding
 func (w *chainOracleWitness) signChainData(
-	symbol string,
-	contractID string,
-	payload []string,
+	payload blocks.Block,
 ) (string, error) {
 	// decode bls key seed
 	blsKeyDecoded, err := hex.DecodeString(w.privateBlsKeySeed)
@@ -144,14 +112,7 @@ func (w *chainOracleWitness) signChainData(
 		return "", fmt.Errorf("failed to deserialize bls priv key: %w", err)
 	}
 
-	nonce, err := getAccountNonce(strings.ToLower(symbol))
-	if err != nil {
-		return "", fmt.Errorf("failed to nonce value: %w", err)
-	}
-
-	block, err := makeSignableBlock(symbol, contractID, payload, nonce)
-
-	sigBytes := blsu.Sign(blsSecretKey, block.Cid().Hash()).Serialize()
+	sigBytes := blsu.Sign(blsSecretKey, payload.Cid().Bytes()).Serialize()
 
 	sig := base64.RawURLEncoding.EncodeToString(sigBytes[:])
 	return sig, nil

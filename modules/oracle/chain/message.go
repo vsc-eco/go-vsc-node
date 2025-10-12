@@ -35,8 +35,8 @@ type chainOracleMessage struct {
 }
 
 type chainOracleBlockProducerMessage struct {
-	BlockProducer string   `json:"block_producer"`
-	BlockHash     []string `json:"block_hashes"`
+	BlockProducer string `json:"block_producer"`
+	SigHash       string `json:"chain_hash"`
 }
 
 type chainOracleWitnessMessage struct {

@@ -38,6 +38,20 @@ func (s *signatureChannels) makeSession(
 	return s.chanMap[sessionID], nil
 }
 
+func (s *signatureChannels) removeSession(sessionID string) error {
+	s.rwLock.Lock()
+	defer s.rwLock.Unlock()
+
+	_, ok := s.chanMap[sessionID]
+	if ok {
+		return errInvalidSession
+	}
+
+	delete(s.chanMap, sessionID)
+
+	return nil
+}
+
 func (s *signatureChannels) receiveSignature(
 	sessionID string,
 	msg chainOracleWitnessMessage,

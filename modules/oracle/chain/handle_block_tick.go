@@ -2,11 +2,11 @@ package chain
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"slices"
 	"strings"
 	"time"
@@ -15,6 +15,10 @@ import (
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
+	stateEngine "vsc-node/modules/state-processing"
+	transactionpool "vsc-node/modules/transaction-pool"
+
+	"github.com/hasura/go-graphql-client"
 )
 
 type blockProducer struct {
@@ -85,13 +89,14 @@ func (bp *blockProducer) handleChainSession(
 	chain chainSession,
 	logger *slog.Logger,
 ) error {
+	logger.Debug("handling chain session", "chain", chain)
+
 	if len(bp.electedMemberWeightMap) != len(bp.electedMembers) {
 		return errors.New(
 			"invalid weightMap or members of the current election",
 		)
 	}
 
-	logger.Debug("handling chain session", "chain", chain)
 	// make + broadcast a signature request
 	sessionID, err := makeChainSessionID(&chain)
 	if err != nil {
@@ -100,6 +105,7 @@ func (bp *blockProducer) handleChainSession(
 
 	logger.Debug("created session ID", "sessionID", sessionID)
 
+	// create tx + chain hash
 	payload := make([]string, len(chain.chainData))
 	for i, block := range chain.chainData {
 		payload[i], err = block.Serialize()
@@ -111,11 +117,20 @@ func (bp *blockProducer) handleChainSession(
 		}
 	}
 
-	logger.Debug("created payload", "payload", payload)
+	nonce, err := getAccountNonce(strings.ToLower(chain.symbol))
+	if err != nil {
+		return fmt.Errorf("failed to get nonce value: %w", err)
+	}
+
+	tx, err := makeSignableBlock(chain.contractId, chain.symbol, payload, nonce)
+	if err != nil {
+		return fmt.Errorf("failed to make transaction: %w", err)
+	}
+	txCid := tx.Cid()
 
 	blockProducerMsg := chainOracleBlockProducerMessage{
 		BlockProducer: bp.username,
-		BlockHash:     payload,
+		SigHash:       txCid.String(),
 	}
 
 	msgJsonBytes, err := json.Marshal(&blockProducerMsg)
@@ -140,16 +155,6 @@ func (bp *blockProducer) handleChainSession(
 	}
 
 	// create transaction + bls circuit
-	nonce, err := getAccountNonce(strings.ToLower(chain.symbol))
-	if err != nil {
-		return fmt.Errorf("failed to get nonce value: %w", err)
-	}
-
-	tx, err := makeSignableBlock(chain.contractId, chain.symbol, payload, nonce)
-	if err != nil {
-		return fmt.Errorf("failed to make transaction: %w", err)
-	}
-
 	witnessDIDs := utils.Map(
 		bp.electedMembers,
 		func(w elections.ElectionMember) dids.Member {
@@ -157,7 +162,7 @@ func (bp *blockProducer) handleChainSession(
 		},
 	)
 
-	circuit, err := dids.NewBlsCircuitGenerator(witnessDIDs).Generate(tx.Cid())
+	circuit, err := dids.NewBlsCircuitGenerator(witnessDIDs).Generate(txCid)
 	if err != nil {
 		return fmt.Errorf("failed to generate bls circuit: %w", err)
 	}
@@ -167,6 +172,7 @@ func (bp *blockProducer) handleChainSession(
 	if err != nil {
 		return fmt.Errorf("failed to make signature session: %w", err)
 	}
+	defer bp.sigChan.removeSession(sessionID)
 
 	ctx, cancel := context.WithTimeout(bp.ctx, time.Minute)
 	defer cancel()
@@ -176,12 +182,7 @@ func (bp *blockProducer) handleChainSession(
 		witnessAccounts[i] = member.Account
 	}
 
-	type WitnessSignature struct {
-		elections.ElectionMember
-		Signatures string
-	}
-
-	weightThreshold := uint64(math.Floor((2.0 / 3.0) * float64(bp.totalWeight)))
+	weightThreshold := (bp.totalWeight * 2) / 3
 	signedWeight := uint64(0)
 	logger.Debug("set threshold", "threshold", weightThreshold)
 
@@ -241,19 +242,59 @@ func (bp *blockProducer) handleChainSession(
 		return fmt.Errorf("failed to finalize circuit: %w", err)
 	}
 
-	bpSig := common.Sig{
-		Algo: "bls.agg",
-		Sig:  serializedCircuit.Signature,
-		Bv:   serializedCircuit.BitVector,
-		Kid:  "",
+	sigPackage := stateEngine.TransactionSig{
+		Type: "vsc-sig",
+		Sigs: []common.Sig{
+			{
+				Algo: "bls-agg",
+				Sig:  serializedCircuit.Signature,
+				Bv:   serializedCircuit.BitVector,
+				Kid:  "",
+			},
+		},
 	}
 
-	// TODO: sign bpSig + submit to contract
+	sigBytes, err := common.EncodeDagCbor(sigPackage)
+	if err != nil {
+		return fmt.Errorf("failed encode DagCbor: %w", err)
+	}
 
-	logger.Debug(
-		"created and serialized tx",
-		"tx", tx,
-	)
+	//Submit to graphql SubmitTransaction()
+	vscTx := transactionpool.SerializedVSCTransaction{
+		Tx:  tx.Cid().Bytes(),
+		Sig: sigBytes,
+	}
+
+	if err := bp.submitToContract(vscTx); err != nil {
+		return fmt.Errorf("failed to submit to contract: %w", err)
+	}
+
+	return nil
+}
+
+func (bp *blockProducer) submitToContract(
+	vscTx transactionpool.SerializedVSCTransaction,
+) error {
+	client := graphql.NewClient("https://api.vsc.eco/api/v1/graphql", nil)
+
+	var query struct {
+		Result struct{} `graphql:"submitTransactionV1(tx: $tx, sig: $sig)"`
+	}
+
+	enc := base64.StdEncoding.EncodeToString
+	variables := map[string]any{
+		"tx":  graphql.String(enc(vscTx.Tx)),
+		"sig": graphql.String(enc(vscTx.Sig)),
+	}
+
+	opName := graphql.OperationName("SubmitContract")
+
+	ctx, cancel := context.WithTimeout(bp.ctx, 15*time.Second)
+	defer cancel()
+
+	if err := client.Query(ctx, &query, variables, opName); err != nil {
+		return fmt.Errorf("failed graphql query: %w", err)
+	}
 
 	return nil
 }

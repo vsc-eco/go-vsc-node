@@ -147,3 +147,37 @@ func getAccountNonce(symbol string) (uint64, error) {
 
 	return query.Data.Nonce, nil
 }
+
+func makeChainTx(
+	chain chainRelay,
+	chainData []chainBlock,
+) (blocks.Block, error) {
+	var err error
+	payload := make([]string, len(chainData))
+	for i, block := range chainData {
+		payload[i], err = block.Serialize()
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to serialize block %d: %w",
+				block.BlockHeight(), err,
+			)
+		}
+	}
+
+	nonce, err := getAccountNonce(chain.Symbol())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get nonce value: %w", err)
+	}
+
+	tx, err := makeSignableBlock(
+		chain.ContractID(),
+		chain.Symbol(),
+		payload,
+		nonce,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make transaction: %w", err)
+	}
+
+	return tx, nil
+}

@@ -77,9 +77,12 @@ func (c *ChainOracle) Handle(
 					"dropping signature request not from block producer",
 				)
 				return nil, nil
+			} else if errors.Is(err, errInvalidChainHash) {
+				c.logger.Debug("invalid chain hash")
+				return nil, nil
 			}
-			c.logger.Debug("error witnessing chain data", "err", err)
 
+			c.logger.Debug("error witnessing chain data", "err", err)
 			return nil, err
 		}
 
