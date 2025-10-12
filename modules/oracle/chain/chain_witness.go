@@ -148,8 +148,6 @@ func (w *chainOracleWitness) signChainData(
 	nonce := uint64(0) // TODO: pull this from contract graphql
 	block, err := makeSignableBlock(symbol, contractID, payload, nonce)
 
-	// tx :=
-
 	sigBytes := blsu.Sign(blsSecretKey, block.Cid().Hash()).Serialize()
 
 	sig := base64.RawURLEncoding.EncodeToString(sigBytes[:])

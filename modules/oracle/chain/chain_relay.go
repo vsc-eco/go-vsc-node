@@ -177,12 +177,16 @@ func fetchChainStatus(chain chainRelay) (chainSession, error) {
 	}
 
 	if latestChainState.blockHeight <= contractState.blockHeight {
-		return chainSession{}, nil
+		return chainSession{
+			newBlocksToSubmit: false,
+		}, nil
 	}
 
 	chainData, err := chain.ChainData(contractState.blockHeight+1, 100)
 	if err != nil {
-		return chainSession{}, fmt.Errorf("failed to get chain data: %w", err)
+		return chainSession{
+			newBlocksToSubmit: false,
+		}, fmt.Errorf("failed to get chain data: %w", err)
 	}
 
 	chainSession := chainSession{

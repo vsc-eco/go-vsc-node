@@ -34,6 +34,7 @@ func (o *ChainOracle) HandleBlockTick(
 	defer o.signatureChannels.clearMap()
 
 	blockProducer := &blockProducer{
+		ctx:            o.ctx,
 		username:       o.conf.Get().HiveUsername,
 		p2pSpec:        p2pSpec,
 		sigChan:        o.signatureChannels,
@@ -65,6 +66,7 @@ func (o *ChainOracle) HandleBlockTick(
 }
 
 type blockProducer struct {
+	ctx            context.Context
 	username       string
 	p2pSpec        p2p.OracleP2PSpec
 	sigChan        *signatureChannels
@@ -129,7 +131,7 @@ func (bp *blockProducer) handleChainSession(
 		return fmt.Errorf("failed to make signature session: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.TODO(), time.Minute)
+	ctx, cancel := context.WithTimeout(bp.ctx, time.Minute)
 	defer cancel()
 
 	witnessAccounts := make([]string, len(bp.electedMembers))
@@ -157,6 +159,10 @@ func (bp *blockProducer) handleChainSession(
 		case msg := <-sigChan:
 			i := slices.Index(witnessAccounts, msg.Signer)
 			if i == -1 {
+				logger.Debug(
+					"invalid witness signature, dropping.",
+					"signer", msg.Signer,
+				)
 				continue
 			}
 
@@ -167,8 +173,8 @@ func (bp *blockProducer) handleChainSession(
 
 			logger.Debug(
 				"received witness signature, appending to witnessSigned",
-				"signature",
-				witnessSignature,
+				"signer", witnessSignature.Account,
+				"signature", witnessSignature.Signatures,
 			)
 
 			witnessSigned = append(witnessSigned, witnessSignature)
@@ -176,17 +182,14 @@ func (bp *blockProducer) handleChainSession(
 	}
 
 	// make transaction + submit to contract
-	tx, err := makeSignableBlock(chain.contractId, payload, chain.symbol, 0)
+	tx, err := makeSignableBlock(chain.contractId, chain.symbol, payload, 0)
 	if err != nil {
 		return fmt.Errorf("failed to make transaction: %w", err)
 	}
 
 	logger.Debug(
 		"created and serialized tx",
-		"tx",
-		tx,
-		"serializedTx",
-		serializedTx,
+		"tx", tx,
 	)
 
 	tx.Cid().Hash() // TODO: sign this with bls private key
