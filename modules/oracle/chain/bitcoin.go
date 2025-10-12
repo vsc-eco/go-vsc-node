@@ -18,6 +18,11 @@ import (
 	"github.com/hasura/go-graphql-client"
 )
 
+const (
+	contractId = "vsc1BonkE2CtHqjnkFdH8hoAEMP25bbWhSr3UA" // TODO: need to update this once the contract is deployed
+	graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
+)
+
 var (
 	_ chainRelay = &bitcoinRelayer{}
 	_ chainBlock = &btcChainData{}
@@ -177,11 +182,7 @@ func (b *btcChainData) Type() string {
 
 // GetContractState implements chainRelay.
 func (b *bitcoinRelayer) GetContractState() (chainState, error) {
-	const (
-		contractId = "" // TODO: need this before the thing is deploy
-		graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
-		queryKey   = "blocklist"
-	)
+	const queryKey = "blocklist"
 
 	var query struct {
 		GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys)"`
@@ -218,14 +219,16 @@ func (b *bitcoinRelayer) GetContractState() (chainState, error) {
 	}
 
 	var blockData struct {
-		BlockMap   map[uint32]string `json:"block_map"` // maps block heights to raw 80 byte block headers
-		LastHeight uint32            `json:"last_height"`
+		LastHeight uint32 `json:"last_height"`
 	}
-
 	if err := json.Unmarshal(observedData, &blockData); err != nil {
 		return chainState{}, fmt.Errorf(
 			"failed to deserialize blockData: %w", err,
 		)
+	}
+
+	if blockData.LastHeight == 0 {
+		blockData.LastHeight++
 	}
 
 	return chainState{blockHeight: uint64(blockData.LastHeight)}, nil

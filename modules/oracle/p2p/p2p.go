@@ -85,7 +85,7 @@ func (p *OracleP2PMessageHandler) HandleMessage(
 		return errTimeout
 
 	default:
-		response, err := p.handler.Handle(from, msg)
+		response, err := p.handler.Handle(from, msg, "", nil)
 		if err != nil {
 			return err
 		}
