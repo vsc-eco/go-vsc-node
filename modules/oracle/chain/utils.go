@@ -8,7 +8,14 @@ import (
 	transactionpool "vsc-node/modules/transaction-pool"
 
 	blocks "github.com/ipfs/go-block-format"
+
+	"encoding/json"
+	stateEngine "vsc-node/modules/state-processing"
+
+	"github.com/vsc-eco/hivego"
 )
+
+const baseOracleDid = "did:vsc:oracle:"
 
 func makeSignableBlock(
 	symbol string,
@@ -22,7 +29,7 @@ func makeSignableBlock(
 		Payload:    strings.Join(payload, ""),
 		Intents:    []contracts.Intent{},
 		RcLimit:    1000,
-		Caller:     "did:vsc:oracle:" + symbol,
+		Caller:     baseOracleDid + symbol,
 		NetId:      "vsc-mainnet",
 	}
 
@@ -77,4 +84,42 @@ func parseChainSessionID(sessionID string) (string, uint64, uint64, error) {
 	}
 
 	return chainSymbol, startBlock, endBlock, nil
+}
+
+func callContract(
+	symbol string,
+	contractID string,
+	contractInput json.RawMessage,
+	action string,
+) (json.RawMessage, error) {
+	username := baseOracleDid + symbol
+	tx := stateEngine.TxVscCallContract{
+		NetId:      "vsc-mainnet",
+		Caller:     username,
+		ContractId: contractID,
+		Action:     action,
+		Payload:    contractInput,
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	}
+
+	txData := tx.ToData()
+	txJson, err := json.Marshal(&txData)
+	if err != nil {
+		return nil, err
+	}
+
+	deployOp := hivego.CustomJsonOperation{
+		RequiredAuths:        []string{username},
+		RequiredPostingAuths: []string{username},
+		Id:                   contractID,
+		Json:                 string(txJson),
+	}
+
+	deployOpJsonBytes, err := json.Marshal(&deployOp)
+	if err != nil {
+		return nil, err
+	}
+
+	return json.RawMessage(deployOpJsonBytes), nil
 }
