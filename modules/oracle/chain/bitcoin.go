@@ -19,7 +19,6 @@ import (
 )
 
 const (
-	contractId = "vsc1BonkE2CtHqjnkFdH8hoAEMP25bbWhSr3UA" // TODO: need to update this once the contract is deployed
 	graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
 )
 
@@ -76,6 +75,11 @@ func (b *bitcoinRelayer) Init(ctx context.Context) error {
 // Symbol implements chainRelay.
 func (b *bitcoinRelayer) Symbol() string {
 	return "BTC"
+}
+
+// ContractID implements chainRelay.
+func (b *bitcoinRelayer) ContractID() string {
+	return "vsc1BonkE2CtHqjnkFdH8hoAEMP25bbWhSr3UA"
 }
 
 // TickCheck implements chainRelay.
@@ -160,26 +164,6 @@ func (b *bitcoinRelayer) ChainData(
 	return blocks, nil
 }
 
-// Height implements chainBlock.
-func (b *btcChainData) BlockHeight() uint64 {
-	return b.Height
-}
-
-// Serialize implements chainBlock.
-func (b *btcChainData) Serialize() (string, error) {
-	buf := &bytes.Buffer{}
-	if err := b.blockHeader.Serialize(buf); err != nil {
-		return "", err
-	}
-
-	return hex.EncodeToString(buf.Bytes()), nil
-}
-
-// Type implements chainBlock.
-func (b *btcChainData) Type() string {
-	return "BTC"
-}
-
 // GetContractState implements chainRelay.
 func (b *bitcoinRelayer) GetContractState() (chainState, error) {
 	const queryKey = "blocklist"
@@ -189,7 +173,7 @@ func (b *bitcoinRelayer) GetContractState() (chainState, error) {
 	}
 
 	variables := map[string]any{
-		"contractId": contractId,
+		"contractId": b.ContractID(),
 		"keys":       []string{queryKey},
 	}
 
@@ -232,6 +216,26 @@ func (b *bitcoinRelayer) GetContractState() (chainState, error) {
 	}
 
 	return chainState{blockHeight: uint64(blockData.LastHeight)}, nil
+}
+
+// Height implements chainBlock.
+func (b *btcChainData) BlockHeight() uint64 {
+	return b.Height
+}
+
+// Serialize implements chainBlock.
+func (b *btcChainData) Serialize() (string, error) {
+	buf := &bytes.Buffer{}
+	if err := b.blockHeader.Serialize(buf); err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(buf.Bytes()), nil
+}
+
+// Type implements chainBlock.
+func (b *btcChainData) Type() string {
+	return "BTC"
 }
 
 // UTILS STUFF

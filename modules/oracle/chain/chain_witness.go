@@ -1,10 +1,14 @@
 package chain
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+
+	blsu "github.com/protolambda/bls12-381-util"
 )
 
 const rawBlsSignatureLength = 96
@@ -12,12 +16,12 @@ const rawBlsSignatureLength = 96
 var errInvalidBlockProducer = errors.New("invalid block producer")
 
 type chainOracleWitness struct {
-	username      string
-	privateKey    string
-	sessionID     string
-	chainRelayMap map[string]chainRelay
-	blockProducer string
-	logger        *slog.Logger
+	logger            *slog.Logger
+	username          string
+	privateBlsKeySeed string
+	sessionID         string
+	chainRelayMap     map[string]chainRelay
+	blockProducer     string
 }
 
 // signs off chain data and returns a signature
@@ -33,15 +37,12 @@ func (o *chainOracleWitness) witnessChainData(
 	if err != nil {
 		return nil, fmt.Errorf("invalid session id: %w", err)
 	}
+	chainSymbol = strings.ToUpper(chainSymbol)
 
-	o.logger.Debug("got blocks from btcd", "chainSymbol", chainSymbol, "startBlock", startBlock, "endBlock", endBlock)
-
-	chain, ok := o.chainRelayMap[strings.ToUpper(chainSymbol)]
+	chain, ok := o.chainRelayMap[chainSymbol]
 	if !ok {
 		return nil, errInvalidChainSymbol
 	}
-
-	o.logger.Debug("got chain from map", "chain", chain)
 
 	count := (endBlock - startBlock) + 1
 	blocks, err := chain.ChainData(startBlock, count)
@@ -55,7 +56,13 @@ func (o *chainOracleWitness) witnessChainData(
 		)
 	}
 
-	o.logger.Debug("got blocks from chain data", "blocks", blocks, "count", count)
+	o.logger.Debug(
+		"got blocks from btcd",
+		"chainSymbol", chainSymbol,
+		"startBlock", startBlock,
+		"endBlock", endBlock,
+		"blocksCount", len(blocks),
+	)
 
 	// verify blocks against block producer's hashes
 	ok, err = o.verifyBlockHashes(blocks, msg.BlockHash)
@@ -64,7 +71,11 @@ func (o *chainOracleWitness) witnessChainData(
 	}
 
 	// sign and respond
-	signature, err := o.signChainData(msg.BlockHash)
+	signature, err := o.signChainData(
+		chainSymbol,
+		chain.ContractID(),
+		msg.BlockHash,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign producer block: %w", err)
 	}
@@ -78,14 +89,14 @@ func (o *chainOracleWitness) witnessChainData(
 }
 
 func (w *chainOracleWitness) verifyBlockHashes(
-	a []chainBlock,
-	b []string,
+	chainBlocks []chainBlock,
+	blockHashes []string,
 ) (bool, error) {
-	if len(a) != len(b) {
+	if len(chainBlocks) != len(blockHashes) {
 		return false, nil
 	}
 
-	for i, block := range a {
+	for i, block := range chainBlocks {
 		blockHash, err := block.Serialize()
 		if err != nil {
 			return false, fmt.Errorf(
@@ -96,8 +107,12 @@ func (w *chainOracleWitness) verifyBlockHashes(
 			)
 		}
 
-		if blockHash != b[i] {
-			w.logger.Debug("failed to verify block", "block symbol", block.Type(), "block height", block.BlockHeight())
+		if blockHash != blockHashes[i] {
+			w.logger.Debug(
+				"failed to verify block",
+				"block symbol", block.Type(),
+				"block height", block.BlockHeight(),
+			)
 			return false, nil
 		}
 	}
@@ -106,6 +121,37 @@ func (w *chainOracleWitness) verifyBlockHashes(
 }
 
 // TODO: sign chain data, 96 bytes signature with base64.RawStdEncoding
-func (w *chainOracleWitness) signChainData(payload []string) (string, error) {
-	return "", nil
+func (w *chainOracleWitness) signChainData(
+	symbol string,
+	contractID string,
+	payload []string,
+) (string, error) {
+	// decode bls key seed
+	blsKeyDecoded, err := hex.DecodeString(w.privateBlsKeySeed)
+	if err != nil {
+		return "", fmt.Errorf("failed to deserialize bsl key seed: %w", err)
+	}
+
+	if len(blsKeyDecoded) != 32 {
+		return "", errors.New("bls priv seed must be 32 bytes")
+	}
+
+	var blsKeyBuf [32]byte
+	copy(blsKeyBuf[:], blsKeyDecoded)
+
+	blsSecretKey := &blsu.SecretKey{}
+	if err := blsSecretKey.Deserialize(&blsKeyBuf); err != nil {
+		return "", fmt.Errorf("failed to deserialize bls priv key: %w", err)
+	}
+
+	// hash payload + sign the digest
+	nonce := uint64(0) // TODO: pull this from contract graphql
+	block, err := makeSignableBlock(symbol, contractID, payload, nonce)
+
+	// tx :=
+
+	sigBytes := blsu.Sign(blsSecretKey, block.Cid().Hash()).Serialize()
+
+	sig := base64.RawURLEncoding.EncodeToString(sigBytes[:])
+	return sig, nil
 }

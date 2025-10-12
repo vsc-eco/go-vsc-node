@@ -9,57 +9,9 @@ import (
 	"math"
 	"slices"
 	"time"
-	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
-	transactionpool "vsc-node/modules/transaction-pool"
 )
-
-type session struct {
-	vscTransaction transactionpool.SerializedVSCTransaction
-	chainData      []string
-	signatures     []string
-}
-
-type vscTransaction struct {
-	sessionID  string
-	chainData  []byte
-	signatures []string
-}
-
-func makeTransaction(
-	contractId *string,
-	payload []string,
-	symbol string,
-) transactionpool.VSCTransaction {
-	ops := make([]transactionpool.VSCTransactionOp, 0)
-	op := transactionpool.VscContractCall{
-		ContractId: *contractId,
-		Action:     "add_blocks",
-		Payload:    "",
-		Intents:    []contracts.Intent{},
-		RcLimit:    1000,
-		Caller:     "did:vsc:oracle:" + symbol,
-		NetId:      "vsc-mainnet",
-	}
-	vOp, _ := op.SerializeVSC()
-	ops = append(ops, vOp)
-	return transactionpool.VSCTransaction{
-		Ops:   ops,
-		Nonce: 0,
-		NetId: "vsc-mainnet",
-		// Headers: transactionpool.VSCTransactionHeader{
-		// 	Nonce:         0,
-		// 	RequiredAuths: []string{"did:vsc:oracle:" + symbol},
-
-		// 	NetId: "vsc-mainnet",
-		// },
-		// Type:    "vsc-tx",
-		// Version: "0.2",
-
-		// Tx: ops,
-	}
-}
 
 // HandleBlockTick implements oracle.BlockTickHandler.
 func (o *ChainOracle) HandleBlockTick(
@@ -119,7 +71,10 @@ type blockProducer struct {
 	electedMembers []elections.ElectionMember
 }
 
-func (bp *blockProducer) handleChainSession(chain chainSession, logger *slog.Logger) error {
+func (bp *blockProducer) handleChainSession(
+	chain chainSession,
+	logger *slog.Logger,
+) error {
 	logger.Debug("handling chain session", "chain", chain)
 	// make + broadcast a signature request
 	sessionID, err := makeChainSessionID(&chain)
@@ -158,7 +113,11 @@ func (bp *blockProducer) handleChainSession(chain chainSession, logger *slog.Log
 		Payload:     json.RawMessage(msgJsonBytes),
 	}
 
-	logger.Debug("created signature request message", "message", signatureRequestMsg)
+	logger.Debug(
+		"created signature request message",
+		"message",
+		signatureRequestMsg,
+	)
 
 	if err := bp.p2pSpec.Broadcast(p2p.MsgChainRelay, &signatureRequestMsg); err != nil {
 		return fmt.Errorf("failed to broadcast message: %w", err)
@@ -206,22 +165,33 @@ func (bp *blockProducer) handleChainSession(chain chainSession, logger *slog.Log
 				Signatures:     msg.Signature,
 			}
 
-			logger.Debug("received witness signature, appending to witnessSigned", "signature", witnessSignature)
+			logger.Debug(
+				"received witness signature, appending to witnessSigned",
+				"signature",
+				witnessSignature,
+			)
 
 			witnessSigned = append(witnessSigned, witnessSignature)
 		}
 	}
 
 	// make transaction + submit to contract
-	tx := makeTransaction(chain.contractId, payload, chain.symbol)
-	serializedTx, err := tx.Serialize()
+	tx, err := makeSignableBlock(chain.contractId, payload, chain.symbol, 0)
 	if err != nil {
 		return fmt.Errorf("failed to make transaction: %w", err)
 	}
 
-	logger.Debug("created and serialized tx", "tx", tx, "serializedTx", serializedTx)
+	logger.Debug(
+		"created and serialized tx",
+		"tx",
+		tx,
+		"serializedTx",
+		serializedTx,
+	)
 
-	fmt.Println("submit to contract, etc etc.:", serializedTx)
+	tx.Cid().Hash() // TODO: sign this with bls private key
+
+	fmt.Println("submit to contract, etc etc.:", tx)
 
 	return nil
 }

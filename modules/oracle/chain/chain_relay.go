@@ -31,11 +31,13 @@ type chainRelay interface {
 	Init(context.Context) error
 	// Returns the ticker of the chain (ie, BTC for bitcoin).
 	Symbol() string
+	// Get the deployed contract ID
+	ContractID() string
 	// Checks for (optional) latest chain state.
 	GetLatestValidHeight() (chainState, error)
 	// Get the lastest state on contract
 	GetContractState() (chainState, error)
-	// Fetches chaindata and serializes to raw bytes.
+	// Fetch chaindata
 	ChainData(startBlockHeight uint64, count uint64) ([]chainBlock, error)
 }
 
@@ -144,6 +146,7 @@ func (c *ChainOracle) fetchAllStatuses() []chainSession {
 			continue
 		}
 
+		chainSession.contractId = chain.ContractID()
 		chainSessions = append(chainSessions, chainSession)
 	}
 
@@ -152,7 +155,7 @@ func (c *ChainOracle) fetchAllStatuses() []chainSession {
 
 type chainSession struct {
 	symbol            string
-	contractId        *string
+	contractId        string
 	chainData         []chainBlock
 	newBlocksToSubmit bool
 }
@@ -182,47 +185,12 @@ func fetchChainStatus(chain chainRelay) (chainSession, error) {
 		return chainSession{}, fmt.Errorf("failed to get chain data: %w", err)
 	}
 
-	c := "vsc1BRZLx1"
 	chainSession := chainSession{
 		symbol:            chain.Symbol(),
-		contractId:        &c,
+		contractId:        chain.ContractID(),
 		chainData:         chainData,
 		newBlocksToSubmit: true,
 	}
 
 	return chainSession, nil
-}
-
-func makeChainSessionID(c *chainSession) (string, error) {
-	if len(c.chainData) == 0 {
-		return "", errors.New("chainData not supplied")
-	}
-
-	startBlock := c.chainData[0].BlockHeight()
-	endBlock := c.chainData[len(c.chainData)-1].BlockHeight()
-
-	id := fmt.Sprintf("%s-%d-%d", c.symbol, startBlock, endBlock)
-	return id, nil
-}
-
-// symbol - startBlock - endBlock
-func parseChainSessionID(sessionID string) (string, uint64, uint64, error) {
-	var (
-		chainSymbol string
-		startBlock  uint64
-		endBlock    uint64
-	)
-
-	_, err := fmt.Sscanf(
-		sessionID,
-		"%s-%d-%d",
-		&chainSymbol,
-		&startBlock,
-		&endBlock,
-	)
-	if err != nil {
-		return "", 0, 0, err
-	}
-
-	return chainSymbol, startBlock, endBlock, nil
 }
