@@ -53,13 +53,18 @@ func (c *ChainOracle) Handle(
 			)
 		}
 
+		c.logger.Debug("received message of type signatureRequest", "blockProducerSigRequest", blockProducerSigRequest)
+
 		w := chainOracleWitness{
 			username:      c.conf.Get().HiveUsername,
 			privateKey:    c.conf.Get().BlsPrivKeySeed,
 			sessionID:     msg.SessionID,
 			chainRelayMap: c.chainRelayers,
 			blockProducer: blockProducer,
+			logger:        c.logger,
 		}
+
+		c.logger.Debug("created chain oracle witness", "witness (w)", w)
 
 		signatureMsg, err := w.witnessChainData(&blockProducerSigRequest)
 		if err != nil {
@@ -69,6 +74,7 @@ func (c *ChainOracle) Handle(
 				)
 				return nil, nil
 			}
+			c.logger.Debug("error witnessing chain data", "err", err)
 
 			return nil, err
 		}
@@ -80,6 +86,8 @@ func (c *ChainOracle) Handle(
 				err,
 			)
 		}
+
+		c.logger.Debug("got signature back from witnessChainData", "signatureMsg", signatureMsg, "marshalled payload", payload)
 
 		msg := chainOracleMessage{
 			MessageType: signatureResponse,
@@ -112,6 +120,8 @@ func receiveSignature(
 	if err := json.Unmarshal(msg.Payload, &signatureResponse); err != nil {
 		return err
 	}
+
+	c.logger.Debug("received message of type signatureResponse", "signatureResponse", signatureResponse)
 
 	if err := signatureMessageValidator.Struct(&signatureResponse); err != nil {
 		return fmt.Errorf("invalid signature message: %w", err)
