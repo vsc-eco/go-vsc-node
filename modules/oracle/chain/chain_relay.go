@@ -28,16 +28,15 @@ var (
 )
 
 type chainRelay interface {
-	Init() error
+	Init(context.Context) error
 	// Returns the ticker of the chain (ie, BTC for bitcoin).
 	Symbol() string
 	// Checks for (optional) latest chain state.
 	GetLatestValidHeight() (chainState, error)
+	// Get the lastest state on contract
 	GetContractState() (chainState, error)
 	// Fetches chaindata and serializes to raw bytes.
 	ChainData(startBlockHeight uint64, count uint64) ([]chainBlock, error)
-	// Deserializes and verifies the received raw bytes of the chain data.
-	// VerifyChainData(json.RawMessage) error
 }
 
 type chainBlock interface {
@@ -85,7 +84,7 @@ func (c *ChainOracle) Init() error {
 	for symbol, chainRelayer := range c.chainRelayers {
 
 		c.logger.Debug("initializing chain relay: " + symbol)
-		if err := chainRelayer.Init(); err != nil {
+		if err := chainRelayer.Init(c.ctx); err != nil {
 			return fmt.Errorf(
 				"failed to initialize chainrelayer %s: %w",
 				symbol, err,
@@ -115,7 +114,13 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 
 	jsonBytes, _ := json.Marshal(startSymbols)
 	wif := c.conf.Get().HiveActiveKey
-	hiveClient.BroadcastJson([]string{c.conf.Get().HiveUsername}, []string{}, "dev_vsc.chain_oracle", string(jsonBytes), &wif)
+	hiveClient.BroadcastJson(
+		[]string{c.conf.Get().HiveUsername},
+		[]string{},
+		"dev_vsc.chain_oracle",
+		string(jsonBytes),
+		&wif,
+	)
 	return promise.New(func(resolve func(any), _ func(error)) {
 		resolve(nil)
 	})
