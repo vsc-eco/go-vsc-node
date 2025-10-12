@@ -68,7 +68,7 @@ func New(
 
 	chainRelayers := make(map[string]chainRelay)
 	for _, c := range _chains {
-		chainRelayers[strings.ToUpper(c.Symbol())] = c
+		chainRelayers[strings.ToLower(c.Symbol())] = c
 	}
 
 	return &ChainOracle{

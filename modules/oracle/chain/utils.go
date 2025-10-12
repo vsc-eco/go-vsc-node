@@ -94,7 +94,7 @@ func callContract(
 	contractInput json.RawMessage,
 	action string,
 ) (json.RawMessage, error) {
-	username := baseOracleDid + symbol
+	username := baseOracleDid + strings.ToLower(symbol)
 	tx := stateEngine.TxVscCallContract{
 		NetId:      "vsc-mainnet",
 		Caller:     username,
@@ -129,7 +129,7 @@ func callContract(
 func getAccountNonce(symbol string) (uint64, error) {
 	client := graphql.NewClient("https://api.vsc.eco/api/v1/graphql", nil)
 
-	username := baseOracleDid + symbol
+	username := baseOracleDid + strings.ToLower(symbol)
 	var query struct {
 		Data struct {
 			Nonce uint64 `graphql:"nonce"`

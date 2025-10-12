@@ -8,10 +8,24 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"strings"
 	"time"
+	"vsc-node/lib/dids"
+	"vsc-node/lib/utils"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
 )
+
+type blockProducer struct {
+	ctx                    context.Context
+	username               string
+	p2pSpec                p2p.OracleP2PSpec
+	sigChan                *signatureChannels
+	electedMembers         []elections.ElectionMember
+	totalWeight            uint64
+	electedMemberWeightMap []uint64
+}
 
 // HandleBlockTick implements oracle.BlockTickHandler.
 func (o *ChainOracle) HandleBlockTick(
@@ -34,11 +48,13 @@ func (o *ChainOracle) HandleBlockTick(
 	defer o.signatureChannels.clearMap()
 
 	blockProducer := &blockProducer{
-		ctx:            o.ctx,
-		username:       o.conf.Get().HiveUsername,
-		p2pSpec:        p2pSpec,
-		sigChan:        o.signatureChannels,
-		electedMembers: signal.ElectedMembers,
+		ctx:                    o.ctx,
+		username:               o.conf.Get().HiveUsername,
+		p2pSpec:                p2pSpec,
+		sigChan:                o.signatureChannels,
+		electedMembers:         signal.ElectedMembers,
+		totalWeight:            signal.TotalElectionWeight,
+		electedMemberWeightMap: signal.WeightMap,
 	}
 
 	o.logger.Debug("created blockProducer", "blockProducer", blockProducer)
@@ -65,18 +81,16 @@ func (o *ChainOracle) HandleBlockTick(
 	// --- ^ spencer will write this function
 }
 
-type blockProducer struct {
-	ctx            context.Context
-	username       string
-	p2pSpec        p2p.OracleP2PSpec
-	sigChan        *signatureChannels
-	electedMembers []elections.ElectionMember
-}
-
 func (bp *blockProducer) handleChainSession(
 	chain chainSession,
 	logger *slog.Logger,
 ) error {
+	if len(bp.electedMemberWeightMap) != len(bp.electedMembers) {
+		return errors.New(
+			"invalid weightMap or members of the current election",
+		)
+	}
+
 	logger.Debug("handling chain session", "chain", chain)
 	// make + broadcast a signature request
 	sessionID, err := makeChainSessionID(&chain)
@@ -125,6 +139,29 @@ func (bp *blockProducer) handleChainSession(
 		return fmt.Errorf("failed to broadcast message: %w", err)
 	}
 
+	// create transaction + bls circuit
+	nonce, err := getAccountNonce(strings.ToLower(chain.symbol))
+	if err != nil {
+		return fmt.Errorf("failed to get nonce value: %w", err)
+	}
+
+	tx, err := makeSignableBlock(chain.contractId, chain.symbol, payload, nonce)
+	if err != nil {
+		return fmt.Errorf("failed to make transaction: %w", err)
+	}
+
+	witnessDIDs := utils.Map(
+		bp.electedMembers,
+		func(w elections.ElectionMember) dids.Member {
+			return dids.BlsDID(w.Key)
+		},
+	)
+
+	circuit, err := dids.NewBlsCircuitGenerator(witnessDIDs).Generate(tx.Cid())
+	if err != nil {
+		return fmt.Errorf("failed to generate bls circuit: %w", err)
+	}
+
 	// collect witness accounts, pubkeys and signatures
 	sigChan, err := bp.sigChan.makeSession(sessionID)
 	if err != nil {
@@ -144,10 +181,11 @@ func (bp *blockProducer) handleChainSession(
 		Signatures string
 	}
 
-	threshold := int(math.Floor((2.0 / 3.0) * float64(len(bp.electedMembers))))
-	logger.Debug("set threshold", "threshold", threshold)
-	witnessSigned := make([]WitnessSignature, 0, threshold)
-	for len(witnessSigned) < threshold {
+	weightThreshold := uint64(math.Floor((2.0 / 3.0) * float64(bp.totalWeight)))
+	signedWeight := uint64(0)
+	logger.Debug("set threshold", "threshold", weightThreshold)
+
+	for signedWeight < weightThreshold {
 		select {
 		case <-ctx.Done():
 			if err := ctx.Err(); err != nil {
@@ -157,8 +195,8 @@ func (bp *blockProducer) handleChainSession(
 			}
 
 		case msg := <-sigChan:
-			i := slices.Index(witnessAccounts, msg.Signer)
-			if i == -1 {
+			memberIndex := slices.Index(witnessAccounts, msg.Signer)
+			if memberIndex == -1 {
 				logger.Debug(
 					"invalid witness signature, dropping.",
 					"signer", msg.Signer,
@@ -166,35 +204,56 @@ func (bp *blockProducer) handleChainSession(
 				continue
 			}
 
-			witnessSignature := WitnessSignature{
-				ElectionMember: bp.electedMembers[i],
-				Signatures:     msg.Signature,
+			member := bp.electedMembers[memberIndex]
+			memberDID := dids.BlsDID(member.Key)
+
+			signature := msg.Signature
+
+			added, err := circuit.AddAndVerify(memberDID, signature)
+			if err != nil {
+				logger.Error("failed to add member to circuit.", "err", err)
+				continue
 			}
+
+			if !added {
+				logger.Debug("invalid member, signature not added to circuit")
+				continue
+			}
+
+			signedWeight += bp.electedMemberWeightMap[memberIndex]
 
 			logger.Debug(
 				"received witness signature, appending to witnessSigned",
-				"signer", witnessSignature.Account,
-				"signature", witnessSignature.Signatures,
+				"signer", member.Account,
+				"signature", signature,
 			)
-
-			witnessSigned = append(witnessSigned, witnessSignature)
 		}
 	}
 
 	// make transaction + submit to contract
-	tx, err := makeSignableBlock(chain.contractId, chain.symbol, payload, 0)
+	blsCircuit, err := circuit.Finalize()
 	if err != nil {
-		return fmt.Errorf("failed to make transaction: %w", err)
+		return fmt.Errorf("failed to finalize circuit: %w", err)
 	}
+
+	serializedCircuit, err := blsCircuit.Serialize()
+	if err != nil {
+		return fmt.Errorf("failed to finalize circuit: %w", err)
+	}
+
+	bpSig := common.Sig{
+		Algo: "bls.agg",
+		Sig:  serializedCircuit.Signature,
+		Bv:   serializedCircuit.BitVector,
+		Kid:  "",
+	}
+
+	// TODO: sign bpSig + submit to contract
 
 	logger.Debug(
 		"created and serialized tx",
 		"tx", tx,
 	)
-
-	tx.Cid().Hash() // TODO: sign this with bls private key
-
-	fmt.Println("submit to contract, etc etc.:", tx)
 
 	return nil
 }

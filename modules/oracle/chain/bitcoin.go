@@ -74,7 +74,7 @@ func (b *bitcoinRelayer) Init(ctx context.Context) error {
 
 // Symbol implements chainRelay.
 func (b *bitcoinRelayer) Symbol() string {
-	return "BTC"
+	return "btc"
 }
 
 // ContractID implements chainRelay.

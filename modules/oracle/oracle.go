@@ -42,8 +42,10 @@ var (
 )
 
 type currentElectionData struct {
-	Witnesses     []elections.ElectionMember
-	BlockProducer string
+	witnesses     []elections.ElectionMember
+	blockProducer string
+	totalWeight   uint64
+	weightMap     []uint64
 }
 
 type Oracle struct {
@@ -219,8 +221,8 @@ func (o *Oracle) Handle(
 	var (
 		handler p2p.MessageHandler
 
-		blockProducer = o.currentElectionData.BlockProducer
-		witnesses     = o.currentElectionData.Witnesses
+		blockProducer = o.currentElectionData.blockProducer
+		witnesses     = o.currentElectionData.witnesses
 	)
 
 	switch msg.Code {

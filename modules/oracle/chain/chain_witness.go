@@ -37,7 +37,7 @@ func (o *chainOracleWitness) witnessChainData(
 	if err != nil {
 		return nil, fmt.Errorf("invalid session id: %w", err)
 	}
-	chainSymbol = strings.ToUpper(chainSymbol)
+	chainSymbol = strings.ToLower(chainSymbol)
 
 	chain, ok := o.chainRelayMap[chainSymbol]
 	if !ok {
@@ -144,8 +144,11 @@ func (w *chainOracleWitness) signChainData(
 		return "", fmt.Errorf("failed to deserialize bls priv key: %w", err)
 	}
 
-	// hash payload + sign the digest
-	nonce := uint64(0) // TODO: pull this from contract graphql
+	nonce, err := getAccountNonce(strings.ToLower(symbol))
+	if err != nil {
+		return "", fmt.Errorf("failed to nonce value: %w", err)
+	}
+
 	block, err := makeSignableBlock(symbol, contractID, payload, nonce)
 
 	sigBytes := blsu.Sign(blsSecretKey, block.Cid().Hash()).Serialize()
