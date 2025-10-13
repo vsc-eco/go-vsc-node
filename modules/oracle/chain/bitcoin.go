@@ -238,6 +238,10 @@ func (b *btcChainData) Type() string {
 	return "BTC"
 }
 
+func (b *btcChainData) AverageFee() int64 {
+	return b.AverageFeeRate
+}
+
 // UTILS STUFF
 
 type loggingTransport struct {

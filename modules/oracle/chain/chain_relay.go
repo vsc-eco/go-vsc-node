@@ -52,6 +52,7 @@ type chainBlock interface {
 	Type() string //symbol of block network
 	Serialize() (string, error)
 	BlockHeight() uint64
+	AverageFee() int64
 }
 
 type chainState struct {

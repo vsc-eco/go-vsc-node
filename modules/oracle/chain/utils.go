@@ -2,6 +2,7 @@ package chain
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -17,13 +18,13 @@ const baseOracleDid = "did:vsc:oracle:"
 func makeSignableBlock(
 	symbol string,
 	contractID string,
-	payload []string,
+	payload string,
 	nonce uint64,
 ) (blocks.Block, error) {
 	op := transactionpool.VscContractCall{
 		ContractId: contractID,
 		Action:     "add_blocks",
-		Payload:    strings.Join(payload, ""),
+		Payload:    payload,
 		Intents:    []contracts.Intent{},
 		RcLimit:    1000,
 		Caller:     baseOracleDid + symbol,
@@ -111,15 +112,24 @@ func makeChainTx(
 	chainData []chainBlock,
 ) (blocks.Block, error) {
 	var err error
-	payload := make([]string, len(chainData))
+	payloadBlocks := make([]string, len(chainData))
 	for i, block := range chainData {
-		payload[i], err = block.Serialize()
+		payloadBlocks[i], err = block.Serialize()
 		if err != nil {
 			return nil, fmt.Errorf(
 				"failed to serialize block %d: %w",
 				block.BlockHeight(), err,
 			)
 		}
+	}
+	latestFeeRate := chainData[len(chainData)-1].AverageFee()
+	payloadStruct := AddBlocksInput{
+		Blocks:    strings.Join(payloadBlocks, ""),
+		LatestFee: latestFeeRate,
+	}
+	payload, err := json.Marshal(payloadStruct)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal tx payload: %w", err)
 	}
 
 	nonce, err := getAccountNonce(chain.Symbol())
@@ -130,7 +140,7 @@ func makeChainTx(
 	tx, err := makeSignableBlock(
 		chain.ContractID(),
 		chain.Symbol(),
-		payload,
+		string(payload),
 		nonce,
 	)
 	if err != nil {
