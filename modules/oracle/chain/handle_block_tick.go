@@ -48,8 +48,6 @@ func (o *ChainOracle) HandleBlockTick(
 	o.logger.Debug("fetched all chain statuses", "chainStatuses", chainStatuses)
 
 	// reset signatureChannels
-	o.signatureChannels.clearMap()
-	defer o.signatureChannels.clearMap()
 
 	blockProducer := &blockProducer{
 		ctx:                    o.ctx,
@@ -75,14 +73,6 @@ func (o *ChainOracle) HandleBlockTick(
 			)
 		}
 	}
-
-	// verify witnesses signaure:
-	// -- get schedule, then
-	// -- get the current slot inforation
-	// -- get the current election
-	// -- verify the signature witnesses
-	// --- need the username + pubkey of the witnesses
-	// --- ^ spencer will write this function
 }
 
 func (bp *blockProducer) handleChainSession(

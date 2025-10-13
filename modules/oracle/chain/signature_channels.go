@@ -42,11 +42,12 @@ func (s *signatureChannels) removeSession(sessionID string) error {
 	s.rwLock.Lock()
 	defer s.rwLock.Unlock()
 
-	_, ok := s.chanMap[sessionID]
+	c, ok := s.chanMap[sessionID]
 	if ok {
 		return errInvalidSession
 	}
 
+	close(c)
 	delete(s.chanMap, sessionID)
 
 	return nil
@@ -70,14 +71,4 @@ func (s *signatureChannels) receiveSignature(
 	default:
 		return errChannelFull
 	}
-}
-
-func (s *signatureChannels) clearMap() {
-	s.rwLock.Lock()
-	defer s.rwLock.Unlock()
-
-	for k := range s.chanMap {
-		close(s.chanMap[k])
-	}
-	s.chanMap = make(map[string]chan chainOracleWitnessMessage)
 }
