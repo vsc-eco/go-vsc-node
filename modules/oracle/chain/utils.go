@@ -10,11 +10,6 @@ import (
 
 	"github.com/hasura/go-graphql-client"
 	blocks "github.com/ipfs/go-block-format"
-
-	"encoding/json"
-	stateEngine "vsc-node/modules/state-processing"
-
-	"github.com/vsc-eco/hivego"
 )
 
 const baseOracleDid = "did:vsc:oracle:"
@@ -54,15 +49,16 @@ func makeSignableBlock(
 	return signableBlock, nil
 }
 
-func makeChainSessionID(c *chainSession) (string, error) {
-	if len(c.chainData) == 0 {
-		return "", errors.New("chainData not supplied")
+func makeChainSessionID(
+	symbol string,
+	startBlock, endBlock uint64,
+) (string, error) {
+	if endBlock <= startBlock {
+		return "", errors.New("invalid bound")
 	}
 
-	startBlock := c.chainData[0].BlockHeight()
-	endBlock := c.chainData[len(c.chainData)-1].BlockHeight()
+	id := fmt.Sprintf("%s-%d-%d", symbol, startBlock, endBlock)
 
-	id := fmt.Sprintf("%s-%d-%d", c.symbol, startBlock, endBlock)
 	return id, nil
 }
 
@@ -86,44 +82,6 @@ func parseChainSessionID(sessionID string) (string, uint64, uint64, error) {
 	}
 
 	return chainSymbol, startBlock, endBlock, nil
-}
-
-func callContract(
-	symbol string,
-	contractID string,
-	contractInput json.RawMessage,
-	action string,
-) (json.RawMessage, error) {
-	username := baseOracleDid + strings.ToLower(symbol)
-	tx := stateEngine.TxVscCallContract{
-		NetId:      "vsc-mainnet",
-		Caller:     username,
-		ContractId: contractID,
-		Action:     action,
-		Payload:    contractInput,
-		RcLimit:    1000,
-		Intents:    []contracts.Intent{},
-	}
-
-	txData := tx.ToData()
-	txJson, err := json.Marshal(&txData)
-	if err != nil {
-		return nil, err
-	}
-
-	deployOp := hivego.CustomJsonOperation{
-		RequiredAuths:        []string{username},
-		RequiredPostingAuths: []string{username},
-		Id:                   contractID,
-		Json:                 string(txJson),
-	}
-
-	deployOpJsonBytes, err := json.Marshal(&deployOp)
-	if err != nil {
-		return nil, err
-	}
-
-	return json.RawMessage(deployOpJsonBytes), nil
 }
 
 func getAccountNonce(symbol string) (uint64, error) {
@@ -180,4 +138,87 @@ func makeChainTx(
 	}
 
 	return tx, nil
+}
+
+func (c *ChainOracle) makeChainSession(
+	symbol string,
+) (chainSession, error) {
+	symbol = strings.ToLower(symbol)
+
+	chain, ok := c.chainRelayers[symbol]
+	if !ok {
+		return chainSession{}, errInvalidChainSymbol
+	}
+
+	latestChainState, err := chain.GetLatestValidHeight()
+	if err != nil {
+		return chainSession{}, fmt.Errorf(
+			"failed to get latest chain height: %s",
+			err,
+		)
+	}
+
+	contractState, err := chain.GetContractState()
+	if err != nil {
+		return chainSession{}, fmt.Errorf(
+			"failed to get vsc contract state: %s",
+			err,
+		)
+	}
+
+	hasNewBlock := latestChainState.blockHeight > contractState.blockHeight
+	if !hasNewBlock {
+		return chainSession{}, nil
+	}
+
+	const heightLimit = 100
+	startBlock := contractState.blockHeight + 1
+	endBlock := min(startBlock+heightLimit, startBlock+heightLimit)
+
+	sessionID, err := makeChainSessionID(symbol, startBlock, endBlock)
+	if err != nil {
+		return chainSession{}, fmt.Errorf("failed to make sessionID: %w", err)
+	}
+
+	_, chainData, err := getSessionData(c.chainRelayers, sessionID)
+	if err != nil {
+		return chainSession{}, fmt.Errorf("failed to get chainData: %w", err)
+	}
+
+	session := chainSession{
+		sessionID:         sessionID,
+		symbol:            chain.Symbol(),
+		contractId:        chain.ContractID(),
+		chainData:         chainData,
+		newBlocksToSubmit: hasNewBlock,
+	}
+
+	return session, nil
+}
+
+func getSessionData(
+	chainMap map[string]chainRelay,
+	sessionID string,
+) (chainRelay, []chainBlock, error) {
+	symbol, startBlock, endBlock, err := parseChainSessionID(sessionID)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"failed to parse chainSessionID [%s]: %w",
+			sessionID,
+			err,
+		)
+	}
+
+	chain, ok := chainMap[strings.ToLower(symbol)]
+	if !ok {
+		return nil, nil, fmt.Errorf("invalid symbol %s", symbol)
+	}
+
+	count := (endBlock - startBlock) + 1
+	chainData, err := chain.ChainData(startBlock, count)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get chainData: %w", err)
+	}
+
+	return chain, chainData, nil
 }

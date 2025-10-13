@@ -23,9 +23,16 @@ var (
 
 	_ aggregate.Plugin = &ChainOracle{}
 
-	errInvalidChainData   = errors.New("invalid chain data")
 	errInvalidChainSymbol = errors.New("invalid chain symbol")
 )
+
+type ChainOracle struct {
+	ctx               context.Context
+	logger            *slog.Logger
+	signatureChannels *signatureChannels
+	chainRelayers     map[string]chainRelay
+	conf              common.IdentityConfig
+}
 
 type chainRelay interface {
 	Init(context.Context) error
@@ -51,12 +58,12 @@ type chainState struct {
 	blockHeight uint64
 }
 
-type ChainOracle struct {
-	ctx               context.Context
-	logger            *slog.Logger
-	signatureChannels *signatureChannels
-	chainRelayers     map[string]chainRelay
-	conf              common.IdentityConfig
+type chainSession struct {
+	sessionID         string
+	symbol            string
+	contractId        string
+	chainData         []chainBlock
+	newBlocksToSubmit bool
 }
 
 func New(
@@ -131,70 +138,4 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 // Stop implements aggregate.Plugin.
 func (c *ChainOracle) Stop() error {
 	return nil
-}
-
-func (c *ChainOracle) fetchAllStatuses() []chainSession {
-	chainSessions := make([]chainSession, 0)
-
-	for _, chain := range c.chainRelayers {
-		chainSession, err := fetchChainStatus(chain)
-		if err != nil {
-			c.logger.Error(
-				"failed to get chain data.",
-				"symbol", chain.Symbol(), "err", err,
-			)
-			continue
-		}
-
-		chainSession.contractId = chain.ContractID()
-		chainSessions = append(chainSessions, chainSession)
-	}
-
-	return chainSessions
-}
-
-type chainSession struct {
-	symbol            string
-	contractId        string
-	chainData         []chainBlock
-	newBlocksToSubmit bool
-}
-
-func fetchChainStatus(chain chainRelay) (chainSession, error) {
-	latestChainState, err := chain.GetLatestValidHeight()
-	if err != nil {
-		return chainSession{
-			newBlocksToSubmit: false,
-		}, fmt.Errorf("failed to check latest state: %w", err)
-	}
-	//
-
-	contractState, err := chain.GetContractState()
-	if err != nil {
-		return chainSession{
-			newBlocksToSubmit: false,
-		}, err
-	}
-
-	if latestChainState.blockHeight <= contractState.blockHeight {
-		return chainSession{
-			newBlocksToSubmit: false,
-		}, nil
-	}
-
-	chainData, err := chain.ChainData(contractState.blockHeight+1, 100)
-	if err != nil {
-		return chainSession{
-			newBlocksToSubmit: false,
-		}, fmt.Errorf("failed to get chain data: %w", err)
-	}
-
-	chainSession := chainSession{
-		symbol:            chain.Symbol(),
-		contractId:        chain.ContractID(),
-		chainData:         chainData,
-		newBlocksToSubmit: true,
-	}
-
-	return chainSession, nil
 }
