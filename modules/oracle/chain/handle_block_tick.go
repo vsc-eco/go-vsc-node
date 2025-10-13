@@ -32,6 +32,12 @@ type blockProducer struct {
 	electedMemberWeightMap []uint64
 }
 
+// input expected by the contract
+type AddBlocksInput struct {
+	Blocks    string `json:"blocks"`
+	LatestFee int64  `json:"latest_fee"`
+}
+
 // HandleBlockTick implements oracle.BlockTickHandler.
 func (o *ChainOracle) HandleBlockTick(
 	signal p2p.BlockTickSignal,
@@ -96,9 +102,9 @@ func (bp *blockProducer) handleChainSession(
 	defer bp.sigChan.removeSession(sessionID)
 
 	// create tx + chain hash
-	payload := make([]string, len(chain.chainData))
+	payloadBlocks := make([]string, len(chain.chainData))
 	for i, block := range chain.chainData {
-		payload[i], err = block.Serialize()
+		payloadBlocks[i], err = block.Serialize()
 		if err != nil {
 			return fmt.Errorf(
 				"failed to serialize block %d: %w",
@@ -106,13 +112,22 @@ func (bp *blockProducer) handleChainSession(
 			)
 		}
 	}
+	latestFeeRate := chain.chainData[len(chain.chainData)-1].AverageFee()
+	payloadStruct := AddBlocksInput{
+		Blocks:    strings.Join(payloadBlocks, ""),
+		LatestFee: latestFeeRate,
+	}
+	payload, err := json.Marshal(payloadStruct)
+	if err != nil {
+		return fmt.Errorf("failed to marshal tx payload: %w", err)
+	}
 
 	nonce, err := getAccountNonce(strings.ToLower(chain.symbol))
 	if err != nil {
 		return fmt.Errorf("failed to get nonce value: %w", err)
 	}
 
-	tx, err := makeSignableBlock(chain.contractId, chain.symbol, payload, nonce)
+	tx, err := makeSignableBlock(chain.contractId, chain.symbol, string(payload), nonce)
 	if err != nil {
 		return fmt.Errorf("failed to make transaction: %w", err)
 	}
@@ -178,7 +193,7 @@ func (bp *blockProducer) handleChainSession(
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("context error: %w", err)
 			} else {
-				return errors.New("signature collection timed out.")
+				return errors.New("signature collection timed out")
 			}
 
 		case msg := <-sigChan:
