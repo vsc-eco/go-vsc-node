@@ -61,6 +61,7 @@ func (c *ChainOracle) Handle(
 
 		w := chainOracleWitness{
 			logger:            c.logger,
+			chainMap:          c.chainRelayers,
 			username:          c.conf.Get().HiveUsername,
 			privateBlsKeySeed: c.conf.Get().BlsPrivKeySeed,
 			sessionID:         msg.SessionID,

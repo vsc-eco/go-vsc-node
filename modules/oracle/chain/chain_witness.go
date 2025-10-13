@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	blocks "github.com/ipfs/go-block-format"
 	blsu "github.com/protolambda/bls12-381-util"
@@ -19,6 +18,7 @@ var (
 
 type chainOracleWitness struct {
 	logger            *slog.Logger
+	chainMap          map[string]chainRelay
 	username          string
 	privateBlsKeySeed string
 	sessionID         string
@@ -34,35 +34,14 @@ func (o *chainOracleWitness) witnessChainData(
 		return nil, errInvalidBlockProducer
 	}
 
-	// get blocks from btcd
-	chainSymbol, startBlock, endBlock, err := parseChainSessionID(o.sessionID)
+	// get blocks from chain
+	chain, blocks, err := getSessionData(o.chainMap, o.sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("invalid session id: %w", err)
-	}
-	chainSymbol = strings.ToLower(chainSymbol)
-
-	chain, ok := o.chainRelayMap[chainSymbol]
-	if !ok {
-		return nil, errInvalidChainSymbol
-	}
-
-	count := (endBlock - startBlock) + 1
-	blocks, err := chain.ChainData(startBlock, count)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"failed to fetch blocks: symbol %s startBlock %d, endBlock %d, err %w",
-			chainSymbol,
-			startBlock,
-			endBlock,
-			err,
-		)
+		return nil, fmt.Errorf("failed to get blocks from chain: %w", err)
 	}
 
 	o.logger.Debug(
 		"got blocks from btcd",
-		"chainSymbol", chainSymbol,
-		"startBlock", startBlock,
-		"endBlock", endBlock,
 		"blocksCount", len(blocks),
 	)
 
