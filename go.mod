@@ -28,11 +28,7 @@ require (
 	go.mongodb.org/mongo-driver v1.16.0
 )
 
-replace (
-	github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
-// github.com/bnb-chain/tss-lib => github.com/ChainSafe/tss-lib v1.4.2
-
-)
+replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 
 require (
 	github.com/StackExchange/wmi v1.2.1 // indirect

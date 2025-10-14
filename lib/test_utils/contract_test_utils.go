@@ -58,7 +58,27 @@ func NewContractTest() ContractTest {
 	contractDb := MockContractDb{Contracts: make(map[string]contracts.Contract)}
 	contractState := MockContractStateDb{Outputs: make(map[string]contracts.ContractOutput)}
 	witnessesDb := witnesses.NewEmptyWitnesses()
-	se := stateEngine.New(logr, nil, nil, &elections, &contractDb, nil, nil, &ledgers, &balances, nil, &interestClaims, nil, &actions, nil, nil, nil)
+	se := stateEngine.New(
+		logr,
+		nil,
+		nil,
+		&elections,
+		&contractDb,
+		nil,
+		nil,
+		&ledgers,
+		&balances,
+		nil,
+		&interestClaims,
+		nil,
+		&actions,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
 	p2p := p2pInterface.New(witnessesDb, idConfig, sysConfig)
 	dl := datalayer.New(p2p)
 	a := aggregate.New([]aggregate.Plugin{idConfig, p2p, dl})
@@ -69,7 +89,7 @@ func NewContractTest() ContractTest {
 		BlockHeight:   0,
 		ContractDb:    &contractDb,
 		LedgerSession: se.LedgerExecutor.NewSession(0),
-		CallSession:   contract_session.NewCallSession(dl, &contractDb, &contractState, 0),
+		CallSession:   contract_session.NewCallSession(dl, &contractDb, &contractState, nil, 0),
 		DataLayer:     dl,
 		StateEngine:   se,
 	}
@@ -165,7 +185,11 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 		},
 		int64(tx.RcLimit), tx.RcLimit*common.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
 	)
-	ctx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(code))
+	ctx := context.WithValue(
+		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
+		wasm_context.WasmExecCodeCtxKey,
+		hex.EncodeToString(code),
+	)
 	res := w.Execute(ctx, tx.RcLimit*common.CYCLE_GAS_PER_RC, tx.Action, string(tx.Payload), wasm_runtime.Go)
 	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/common.CYCLE_GAS_PER_RC), 100))
 
