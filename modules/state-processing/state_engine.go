@@ -2,8 +2,12 @@ package stateEngine
 
 import (
 	"crypto"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"slices"
 	"strconv"
 	"testing"
@@ -19,13 +23,17 @@ import (
 	"vsc-node/modules/db/vsc/nonces"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
+	tss_helpers "vsc-node/modules/tss/helpers"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
 	"github.com/chebyrash/promise"
+	"github.com/eager7/dogd/btcec"
+	"github.com/multiformats/go-multicodec"
 )
 
 type ProcessExtraInfo struct {
@@ -38,17 +46,20 @@ type StateResult struct {
 }
 
 type StateEngine struct {
-	da            *DataLayer.DataLayer
-	witnessDb     witnesses.Witnesses
-	electionDb    elections.Elections
-	contractDb    contracts.Contracts
-	contractState contracts.ContractState
-	txDb          transactions.Transactions
-	hiveBlocks    hive_blocks.HiveBlocks
-	vscBlocks     vscBlocks.VscBlocks
-	claimDb       ledgerDb.InterestClaims
-	rcDb          rcDb.RcDb
-	nonceDb       nonces.Nonces
+	da             *DataLayer.DataLayer
+	witnessDb      witnesses.Witnesses
+	electionDb     elections.Elections
+	contractDb     contracts.Contracts
+	contractState  contracts.ContractState
+	txDb           transactions.Transactions
+	hiveBlocks     hive_blocks.HiveBlocks
+	vscBlocks      vscBlocks.VscBlocks
+	claimDb        ledgerDb.InterestClaims
+	rcDb           rcDb.RcDb
+	nonceDb        nonces.Nonces
+	tssRequests    tss_db.TssRequests
+	tssKeys        tss_db.TssKeys
+	tssCommitments tss_db.TssCommitments
 
 	wasm *wasm_runtime.Wasm
 
@@ -634,7 +645,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					RequiredPostingAuths: cj.RequiredPostingAuths,
 				}
 
-				fmt.Println("RR gr86", txSelf)
+				fmt.Println("RR gr86", txSelf, cj, string(cj.Json))
 
 				var vscTx VSCTransaction
 				if cj.Id == "vsc.withdraw" {
@@ -692,6 +703,152 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					json.Unmarshal(cj.Json, &parsedTx)
 
 					vscTx = &parsedTx
+				} else if cj.Id == "vsc.tss_sign" {
+
+					signedData := struct {
+						Packet []struct {
+							KeyId string `json:"key_id"`
+							Msg   string `json:"msg"`
+							Sig   string `json:"sig"`
+						} `json:"packet"`
+					}{}
+
+					err := json.Unmarshal(cj.Json, &signedData)
+
+					keyCache := make(map[string]*tss_db.TssKey)
+					fmt.Println("err 718", err)
+					if err == nil {
+						for _, sigPack := range signedData.Packet {
+							if keyCache[sigPack.KeyId] == nil {
+								fmt.Println("Fetch key 123")
+								tssKey, _ := se.tssKeys.FindKey(sigPack.KeyId)
+								keyCache[sigPack.KeyId] = &tssKey
+							}
+							if keyCache[sigPack.KeyId] != nil {
+								publicKey, err := hex.DecodeString(keyCache[sigPack.KeyId].PublicKey)
+								sigBytes, err1 := hex.DecodeString(sigPack.Sig)
+								msgBytes, _ := hex.DecodeString(sigPack.Msg)
+								fmt.Println("err", err, err1)
+								if err == nil && err1 == nil {
+									if keyCache[sigPack.KeyId].Algo == tss_db.EcdsaType {
+										pubKey, err1 := btcec.ParsePubKey(publicKey, btcec.S256())
+
+										fmt.Println("err", err1)
+
+										signature, err := btcec.ParseDERSignature(sigBytes, btcec.S256())
+
+										verified := signature.Verify(msgBytes, pubKey)
+
+										fmt.Println("signature, err", signature, err, verified)
+										if verified {
+
+											fmt.Println("NEED TO SAVE SIGNATURE")
+											// se.tssRequests.SetSignedRequest()
+											se.tssRequests.UpdateRequest(tss_db.TssRequest{
+												KeyId:  sigPack.KeyId,
+												Msg:    sigPack.Msg,
+												Sig:    sigPack.Sig,
+												Status: tss_db.SignComplete,
+											})
+										}
+									} else if keyCache[sigPack.KeyId].Algo == tss_db.EddsaType {
+										pk := ed25519.PublicKey(publicKey)
+
+										edVerify := ed25519.Verify(pk, msgBytes, sigBytes)
+
+										fmt.Println("edVerify", edVerify)
+										if edVerify {
+											se.tssRequests.UpdateRequest(tss_db.TssRequest{
+												KeyId:  sigPack.KeyId,
+												Msg:    sigPack.Msg,
+												Sig:    sigPack.Sig,
+												Status: tss_db.SignComplete,
+											})
+										}
+									}
+								}
+							}
+						}
+					}
+				} else if cj.Id == "vsc.tss_commitment" {
+
+					commitmentData := make(map[string]tss_helpers.SignedCommitment)
+
+					err := json.Unmarshal(cj.Json, &commitmentData)
+
+					fmt.Println("vsc.tss_commitment <err>", err, commitmentData, string(cj.Json))
+
+					for _, commitment := range commitmentData {
+						savedCommitment, err := se.tssCommitments.GetCommitmentByHeight(commitment.KeyId, block.BlockNumber, "reshare")
+
+						var newKey bool
+						members := make([]dids.BlsDID, 0)
+						if err != nil {
+							electionData, err := se.electionDb.GetElectionByHeight(block.BlockNumber)
+
+							if err != nil {
+								continue
+							}
+							newKey = true
+							for _, mbr := range electionData.Members {
+								members = append(members, dids.BlsDID(mbr.Key))
+							}
+						}
+
+						electionData, _ := se.electionDb.GetElectionByHeight(savedCommitment.Epoch)
+
+						decodedCommitment, _ := base64.URLEncoding.DecodeString(savedCommitment.Commitment)
+
+						bitset := &big.Int{}
+						bitset.SetBytes(decodedCommitment)
+						for idx, mbr := range electionData.Members {
+							if bitset.Bit(idx) == 1 {
+								members = append(members, dids.BlsDID(mbr.Key))
+							}
+						}
+
+						// savedCommitment
+						baseComment := tss_helpers.BaseCommitment{
+							Type:       commitment.Type,
+							SessionId:  commitment.SessionId,
+							KeyId:      commitment.KeyId,
+							Commitment: commitment.Commitment,
+							PublicKey:  commitment.PublicKey,
+							// Metadata:    commitment.Metadata,
+							BlockHeight: commitment.BlockHeight,
+							Epoch:       commitment.Epoch,
+						}
+
+						data, _ := common.EncodeDagCbor(baseComment)
+
+						commitmentCid, err := common.HashBytes(data, multicodec.DagCbor)
+
+						circuit, _ := dids.DeserializeBlsCircuit(dids.SerializedCircuit{
+							Signature: commitment.Signature,
+							BitVector: commitment.BitSet,
+						}, members, commitmentCid)
+
+						testJson, err := json.Marshal(baseComment)
+						fmt.Println("verify commitmentCid", commitmentCid, string(testJson))
+						verified, _, _ := circuit.Verify()
+
+						fmt.Println("verified commitment", verified)
+						if verified {
+							// commitment.
+							se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+								Type:        commitment.Type,
+								BlockHeight: commitment.BlockHeight,
+								Epoch:       commitment.Epoch,
+								Commitment:  commitment.Commitment,
+								KeyId:       commitment.KeyId,
+								PublicKey:   commitment.PublicKey,
+								TxId:        tx.TransactionID,
+							})
+							if newKey && commitment.PublicKey != nil {
+								se.tssKeys.SetKey(commitment.KeyId, *commitment.PublicKey)
+							}
+						}
+					}
 				}
 
 				if vscTx != nil {
@@ -801,7 +958,7 @@ func (se *StateEngine) ExecuteBatch() {
 		fmt.Println("Executing item in batch", idx, len(se.TxBatch))
 		ledgerSession := se.LedgerExecutor.NewSession(lastBlockBh)
 		rcSession := se.RcSystem.NewSession(ledgerSession)
-		callSession := contract_session.NewCallSession(se.da, se.contractDb, se.contractState, lastBlockBh)
+		callSession := contract_session.NewCallSession(se.da, se.contractDb, se.contractState, se.tssKeys, lastBlockBh)
 
 		for k, v := range se.TempOutputs {
 			callSession.FromOutput(k, *v)
@@ -1202,6 +1359,9 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 	actionDb ledgerDb.BridgeActions,
 	rcDb rcDb.RcDb,
 	nonceDb nonces.Nonces,
+	tssKeys tss_db.TssKeys,
+	tssCommitments tss_db.TssCommitments,
+	tssRequests tss_db.TssRequests,
 	wasm *wasm_runtime.Wasm,
 ) *StateEngine {
 
@@ -1222,18 +1382,21 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 		da: da,
 		// db: db,
 
-		witnessDb:     witnessesDb,
-		electionDb:    electionsDb,
-		contractDb:    contractDb,
-		contractState: contractStateDb,
-		hiveBlocks:    hiveBlocks,
-		vscBlocks:     vscBlocks,
-		claimDb:       interestClaims,
-		txDb:          txDb,
-		rcDb:          rcDb,
-		nonceDb:       nonceDb,
-		RcSystem:      rcSystem.New(rcDb, ls),
-		RcMap:         make(map[string]int64),
+		witnessDb:      witnessesDb,
+		electionDb:     electionsDb,
+		contractDb:     contractDb,
+		contractState:  contractStateDb,
+		hiveBlocks:     hiveBlocks,
+		vscBlocks:      vscBlocks,
+		claimDb:        interestClaims,
+		txDb:           txDb,
+		rcDb:           rcDb,
+		nonceDb:        nonceDb,
+		RcSystem:       rcSystem.New(rcDb, ls),
+		RcMap:          make(map[string]int64),
+		tssRequests:    tssRequests,
+		tssCommitments: tssCommitments,
+		tssKeys:        tssKeys,
 
 		wasm: wasm,
 

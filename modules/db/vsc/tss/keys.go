@@ -6,19 +6,24 @@ import (
 	"vsc-node/modules/db/vsc"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type tssKeys struct {
 	*db.Collection
 }
 
-func (tssKeys *tssKeys) InsertKey(id string, t TssKeyType, owner string) error {
+func (tssKeys *tssKeys) InsertKey(id string, t TssKeyAlgo) error {
+	opts := options.FindOneAndUpdate().SetUpsert(true)
 	tssKeys.FindOneAndUpdate(context.Background(), bson.M{
 		"id": id,
 	}, bson.M{
-		"type":  t,
-		"owner": owner,
-	})
+		"$set": bson.M{
+			"algo":   t,
+			"status": "created",
+		},
+	}, opts)
+
 	return nil
 }
 
@@ -42,9 +47,49 @@ func (tssKeys *tssKeys) FindKey(id string) (TssKey, error) {
 	return tssKey, nil
 }
 
-func (tssKeys) SetKey(id string, publicKey string) error {
+func (tssKeys *tssKeys) SetKey(id string, publicKey string) error {
+	res := tssKeys.FindOneAndUpdate(context.Background(), bson.M{
+		"id": id,
+	}, bson.M{
+		"$set": bson.M{
+			"status":     "active",
+			"public_key": publicKey,
+		},
+	})
 
-	return nil
+	return res.Err()
+}
+
+func (tssKeys *tssKeys) FindNewKeys(bh uint64) ([]TssKey, error) {
+	findCursor, _ := tssKeys.Find(context.Background(), bson.M{
+		"status": "created",
+	})
+
+	keys := make([]TssKey, 0)
+	if findCursor.Next(context.Background()) {
+		var k TssKey
+		findCursor.Decode(&k)
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
+// Find keys with al ower
+func (tssKeys *tssKeys) FindEpochKeys(epoch uint64) ([]TssKey, error) {
+	findCursor, _ := tssKeys.Find(context.Background(), bson.M{
+		"status": "active",
+		"epoch": bson.M{
+			"$lt": epoch,
+		},
+	})
+
+	keys := make([]TssKey, 0)
+	if findCursor.Next(context.Background()) {
+		var k TssKey
+		findCursor.Decode(&k)
+		keys = append(keys, k)
+	}
+	return keys, nil
 }
 
 func NewKeys(d *vsc.VscDb) TssKeys {

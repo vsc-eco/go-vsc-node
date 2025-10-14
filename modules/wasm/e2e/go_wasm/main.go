@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -317,4 +318,31 @@ func ContractCall(a *string) *string {
 func InfRecursion(a *string) *string {
 	contractId := sdk.GetEnvKey("contract.id")
 	return sdk.ContractCall(*contractId, "infiniteRecursion", "a", nil)
+}
+
+//go:wasmexport createKey
+func CreateKey(a *string) *string {
+	status := sdk.TssCreateKey("main", "eddsa")
+
+	return &status
+}
+
+//go:wasmexport getKey
+func GetKey(a *string) *string {
+	ret := "result="
+
+	keyData := sdk.TssGetKey("main")
+
+	ret = ret + keyData
+	return &ret
+}
+
+//go:wasmexport signKey
+func SignKey(a *string) *string {
+	msg, _ := hex.DecodeString("89d7d1a68f8edd0cc1f961dce816422055d1ab69a0623954b834c95c1cdd7ed0")
+
+	sdk.TssSignKey("main", msg)
+
+	ret := ""
+	return &ret
 }

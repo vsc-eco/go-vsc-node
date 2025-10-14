@@ -11,7 +11,7 @@ var CONSENSUS_SPECS = struct {
 }
 
 // A transaction consuming 1000 RC (1 HBD equivalent) would generate ~0.002 HBD interest for the protocol
-// At 10K gas/RC and 100 RC minimum cost it would take at least 1M gas for a tx to consume more
+// At 100K gas/RC and 100 RC minimum cost it would take at least 10M gas for a tx to consume more
 const CYCLE_GAS_PER_RC = 100_000
 
 // Areweave does $10.5 per GB we can use less b/c we charge for reads and modifications as well

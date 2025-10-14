@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"strconv"
 	_ "vsc-node/modules/wasm/e2e/go_wasm/sdk/runtime"
@@ -51,6 +52,15 @@ func abort(msg, file *string, line, column *int32)
 
 //go:wasmimport env revert
 func revert(msg, symbol *string)
+
+//go:wasmimport sdk tss.create_key
+func tssCreateKey(keyId *string, algo *string) *string
+
+//go:wasmimport sdk tss.sign_key
+func tssSignKey(keyId *string, msgId *string) *string
+
+//go:wasmimport sdk tss.get_key
+func tssGetKey(keyId *string) *string
 
 func Abort(msg string) {
 	ln := int32(0)
@@ -173,4 +183,22 @@ func ContractCall(contractId string, method string, payload string, options *Con
 		optStr = string(optByte)
 	}
 	return contractCall(&contractId, &method, &payload, &optStr)
+}
+
+func TssCreateKey(keyId string, algo string) string {
+	if algo != "ecdsa" && algo != "eddsa" {
+		Abort("algo must be ecdsa or eddsa")
+	}
+
+	return *tssCreateKey(&keyId, &algo)
+}
+
+func TssGetKey(keyId string) string {
+	return *tssGetKey(&keyId)
+}
+
+func TssSignKey(keyId string, bytes []byte) {
+	byteStr := hex.EncodeToString(bytes)
+
+	tssSignKey(&keyId, &byteStr)
 }

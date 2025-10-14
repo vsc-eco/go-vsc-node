@@ -18,10 +18,15 @@ func (tsc *tssCommitments) SetCommitmentData(commitment TssCommitment) error {
 	updateResult := tsc.FindOneAndUpdate(context.Background(), bson.M{
 		"tx_id": commitment.TxId,
 	}, bson.M{
-		"type":         commitment.Type,
-		"block_height": commitment.BlockHeight,
-		"epoch":        commitment.Epoch,
-		"key_id":       commitment.KeyId,
+		"$set": bson.M{
+			"type":         commitment.Type,
+			"block_height": commitment.BlockHeight,
+			"epoch":        commitment.Epoch,
+			"key_id":       commitment.KeyId,
+			"commitment":   commitment.Commitment,
+			"public_key":   commitment.PublicKey,
+			"tx_id":        commitment.TxId,
+		},
 	}, options)
 
 	return updateResult.Err()
@@ -46,13 +51,14 @@ func (tsc *tssCommitments) GetCommitment(keyId string, epoch uint64) (TssCommitm
 	return record, nil
 }
 
-func (tsc *tssCommitments) GetLatestCommitment(keyId string) (TssCommitment, error) {
+func (tsc *tssCommitments) GetLatestCommitment(keyId string, qtype string) (TssCommitment, error) {
 	findOpts := options.FindOne().SetSort(bson.M{
 		"epoch": -1,
 	})
 
 	findResult := tsc.FindOne(context.Background(), bson.M{
 		"key_id": keyId,
+		"type":   qtype,
 	}, findOpts)
 
 	if findResult.Err() != nil {
@@ -66,6 +72,35 @@ func (tsc *tssCommitments) GetLatestCommitment(keyId string) (TssCommitment, err
 	}
 
 	return record, nil
+}
+
+func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qtype ...string) (TssCommitment, error) {
+	findOpts := options.FindOne().SetSort(bson.M{
+		"block_height": -1,
+	})
+
+	query := bson.M{
+		"key_id": keyId,
+		"block_height": bson.M{
+			"$lt": height,
+		},
+	}
+
+	if len(qtype) > 0 {
+		query["type"] = bson.M{
+			"$in": qtype,
+		}
+	}
+
+	findResult := tsc.FindOne(context.Background(), query, findOpts)
+
+	if findResult.Err() != nil {
+		return TssCommitment{}, findResult.Err()
+	}
+	var commitment TssCommitment
+	findResult.Decode(commitment)
+
+	return commitment, nil
 }
 
 func NewCommitments(d *vsc.VscDb) TssCommitments {

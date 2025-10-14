@@ -11,6 +11,7 @@ import (
 	"vsc-node/modules/common"
 	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	ledgerSystem "vsc-node/modules/ledger-system"
 
 	wasm_context "vsc-node/modules/wasm/context"
@@ -18,6 +19,7 @@ import (
 	wasm_types "vsc-node/modules/wasm/types"
 
 	"github.com/JustinKnueppel/go-result"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type contractExecutionContext struct {
@@ -473,6 +475,67 @@ func (ctx *contractExecutionContext) ContractCall(contractId string, method stri
 			return result.Ok(res)
 		},
 	))
+}
+
+func (ctx *contractExecutionContext) TssCreateKey(keyId string, keyType string) result.Result[string] {
+	fullKey := ctx.env.ContractId + "-" + keyId
+	_, err := ctx.callSession.TssKeys.FindKey(fullKey)
+
+	if err == mongo.ErrNoDocuments {
+		ctx.callSession.AppendTssLog(ctx.env.ContractId, tss_db.TssOp{
+			Type:  "create",
+			KeyId: fullKey,
+			Args:  keyType,
+		})
+		return result.Ok("created")
+	}
+	if err == nil {
+		return result.Ok("already_exists")
+	}
+	fmt.Println("err", err)
+	return result.Err[string](errors.New("runtime error"))
+}
+
+func (ctx *contractExecutionContext) TssGetKey(keyId string) result.Result[string] {
+	fullKey := ctx.env.ContractId + "-" + keyId
+
+	tssKey, err := ctx.callSession.TssKeys.FindKey(fullKey)
+
+	var status string
+	if err == mongo.ErrNoDocuments {
+		status = "null"
+	}
+
+	status = tssKey.Status
+
+	res := status
+	if status == "active" || status == "deleted" {
+		res += "," + tssKey.PublicKey
+		res += "," + string(tssKey.Algo)
+	}
+
+	return result.Ok("")
+}
+
+func (ctx *contractExecutionContext) TssKeySign(keyId string, msg string) result.Result[string] {
+	fullKey := ctx.env.ContractId + "-" + keyId
+
+	keyInfo, err := ctx.callSession.TssKeys.FindKey(fullKey)
+
+	if err == mongo.ErrNoDocuments {
+		return result.Ok("fail")
+	}
+
+	if keyInfo.Status != "active" {
+		return result.Ok("fail")
+	}
+
+	ctx.callSession.AppendTssLog(ctx.env.ContractId, tss_db.TssOp{
+		Type:  "sign",
+		KeyId: fullKey,
+		Args:  msg,
+	})
+	return result.Ok("ok")
 }
 
 // wrap the result of json.Marshal as used by EnvVar(), joins with ENV_VAR_ERROR symbol if Err

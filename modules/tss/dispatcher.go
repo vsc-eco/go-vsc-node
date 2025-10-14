@@ -2,17 +2,16 @@ package tss
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"slices"
-	"strings"
 	"time"
 
 	// "github.com/btcsuite/btcd/btcec"
 
+	"vsc-node/lib/utils"
 	tss_helpers "vsc-node/modules/tss/helpers"
 
 	"github.com/bnb-chain/tss-lib/v2/common"
@@ -22,21 +21,12 @@ import (
 	keyGenEddsa "github.com/bnb-chain/tss-lib/v2/eddsa/keygen"
 	reshareEddsa "github.com/bnb-chain/tss-lib/v2/eddsa/resharing"
 	keySignEddsa "github.com/bnb-chain/tss-lib/v2/eddsa/signing"
-	"github.com/bnb-chain/tss-lib/v2/tss"
 	btss "github.com/bnb-chain/tss-lib/v2/tss"
 	"github.com/chebyrash/promise"
-	"github.com/davidlazar/go-crypto/encoding/base32"
 	"github.com/decred/dcrd/dcrec/edwards/v2"
 	"github.com/eager7/dogd/btcec"
 	"github.com/ipfs/go-datastore"
 )
-
-func makeKey(t string, id string) datastore.Key {
-	k1 := base32.EncodeToString([]byte(t + "-" + base64.RawURLEncoding.EncodeToString([]byte(id))))
-	k := datastore.NewKey(strings.ToUpper(k1))
-
-	return k
-}
 
 type Participant struct {
 	Account string
@@ -58,13 +48,15 @@ type Dispatcher interface {
 
 type ReshareDispatcher struct {
 	BaseDispatcher
-	Algo tss_helpers.SigningAlgo
 
-	result          *ReshareResult
+	//Filled externally
 	newParticipants []Participant
-	newParty        btss.Party
-	newPids         btss.SortedPartyIDs
-	epoch           uint64
+	newEpoch        uint64
+
+	//Filled internally
+	newParty btss.Party
+	newPids  btss.SortedPartyIDs
+	result   *ReshareResult
 }
 
 func (dispatcher *ReshareDispatcher) Start() error {
@@ -72,7 +64,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 	userId := dispatcher.tssMgr.config.Get().HiveUsername
 
-	epochIdx := dispatcher.epoch % 3
+	epochIdx := makeEpochIdx(int(dispatcher.newEpoch))
 	newPids := make([]*btss.PartyID, 0)
 	for idx, p := range dispatcher.newParticipants {
 		i := big.NewInt(0)
@@ -84,26 +76,25 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			i = i.Mul(i, big.NewInt(int64(epochIdx+1)))
 		}
 
-		// fmt.Println("bytes", i)
-
 		pi := btss.NewPartyID(p.Account, dispatcher.sessionId+"-new", i)
 		dispatcher.newParticipants[idx].PartyId = pi
 
-		fmt.Println("pi", pi)
 		newPids = append(newPids, pi)
 	}
 
+	//@todo add fail case when node is not in next party
+	//@todo add fail case when node is not in old party
 	var myNewParty *btss.PartyID
 	dispatcher.newPids = btss.SortPartyIDs(newPids)
-	fmt.Println("dispatcher.newPids", dispatcher.newPids, dispatcher.participants)
 	for _, p := range dispatcher.newPids {
 		if p.Id == userId {
 			myNewParty = p
 		}
 	}
-	fmt.Println("newSortedPids", newPids, "sortedPids", sortedPids, "myNewParty", myNewParty)
 
 	newP2pCtx := btss.NewPeerContext(dispatcher.newPids)
+
+	//@todo double check threshold calculation is correct
 	threshold, _ := tss_helpers.GetThreshold(len(sortedPids))
 	threshold++ //Add one
 
@@ -111,14 +102,16 @@ func (dispatcher *ReshareDispatcher) Start() error {
 	// newThreshold++
 
 	fmt.Println("newSortedPids", len(dispatcher.newPids), newThreshold, threshold)
-	savedKeyData, err := dispatcher.keystore.Get(context.Background(), makeKey("key", dispatcher.keyId))
+	//epoch: 5 <-- actual data
+	//epoch: 7 <-- likely empty
+	savedKeyData, err := dispatcher.keystore.Get(context.Background(), makeKey("key", dispatcher.keyId, int(dispatcher.epoch)))
 
 	fmt.Println("mem", err, len(savedKeyData))
 	if err != nil {
 		return err
 	}
 
-	if dispatcher.Algo == tss_helpers.SigningAlgoSecp256k1 {
+	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
 		keydata := keyGenSecp256k1.LocalPartySaveData{}
 
 		err = json.Unmarshal(savedKeyData, &keydata)
@@ -128,7 +121,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			return err
 		}
 
-		params := tss.NewReSharingParameters(tss.S256(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
+		params := btss.NewReSharingParameters(btss.S256(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 		end := make(chan *keyGenSecp256k1.LocalPartySaveData)
 		// endNew := make(chan *keyGenEddsa.LocalPartySaveData)
 
@@ -136,13 +129,13 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 		save := keyGenSecp256k1.NewLocalPartySaveData(len(dispatcher.newPids))
 
-		fmt.Println("savedData", save)
-
-		newParams := tss.NewReSharingParameters(tss.S256(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
+		newParams := btss.NewReSharingParameters(btss.S256(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 
 		dispatcher.newParty = reshareSecp256k1.NewLocalParty(newParams, save, dispatcher.p2pMsg, end)
 
 		go dispatcher.reshareMsgs()
+
+		time.Sleep(15 * time.Second)
 		go func() {
 			err := dispatcher.party.Start()
 
@@ -163,22 +156,27 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			for {
 				reshareResult := <-end
 
-				fmt.Println("ECDSA reshareResult", reshareResult, reshareResult.ECDSAPub != nil)
+				// fmt.Println("ECDSA reshareResult", reshareResult, reshareResult.ECDSAPub != nil)
 				if reshareResult.ECDSAPub != nil {
 
 					keydata, _ := json.Marshal(reshareResult)
 
-					k := makeKey("key", dispatcher.keyId)
+					k := makeKey("key", dispatcher.keyId, int(dispatcher.newEpoch))
 					dispatcher.keystore.Put(context.Background(), k, keydata)
 
 					dispatcher.result = &ReshareResult{
-						NewSet: []Participant{},
+						Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch),
+						KeyId:       dispatcher.keyId,
+						SessionId:   dispatcher.sessionId,
+						NewEpoch:    dispatcher.newEpoch,
+						BlockHeight: dispatcher.blockHeight,
 					}
+
 					dispatcher.done <- struct{}{}
 				}
 			}
 		}()
-	} else if dispatcher.Algo == tss_helpers.SigningAlgoEd25519 {
+	} else if dispatcher.algo == tss_helpers.SigningAlgoEddsa {
 		keydata := keyGenEddsa.LocalPartySaveData{}
 
 		err = json.Unmarshal(savedKeyData, &keydata)
@@ -188,7 +186,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			return err
 		}
 
-		params := tss.NewReSharingParameters(tss.Edwards(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
+		params := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 		end := make(chan *keyGenEddsa.LocalPartySaveData)
 		// endNew := make(chan *keyGenEddsa.LocalPartySaveData)
 
@@ -196,13 +194,13 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 		save := keyGenEddsa.NewLocalPartySaveData(len(dispatcher.newPids))
 
-		fmt.Println("savedData", save)
-
-		newParams := tss.NewReSharingParameters(tss.Edwards(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
+		newParams := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 
 		dispatcher.newParty = reshareEddsa.NewLocalParty(newParams, save, dispatcher.p2pMsg, end)
 
 		go dispatcher.reshareMsgs()
+
+		time.Sleep(15 * time.Second)
 		go func() {
 			err := dispatcher.party.Start()
 
@@ -224,26 +222,22 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			for {
 				reshareResult := <-end
 
-				fmt.Println("pre-check reshareResult", reshareResult, dispatcher.newParty.PartyID().Id)
+				// fmt.Println("pre-check reshareResult", reshareResult, dispatcher.newParty.PartyID().Id)
 				if reshareResult.EDDSAPub == nil {
 					continue
 				}
 
 				keydata, _ := json.Marshal(reshareResult)
 
-				k := makeKey("key", dispatcher.keyId)
+				k := makeKey("key", dispatcher.keyId, int(dispatcher.newEpoch))
 				dispatcher.keystore.Put(context.Background(), k, keydata)
 
-				publicKey := edwards.NewPublicKey(reshareResult.EDDSAPub.X(), reshareResult.EDDSAPub.Y())
-
-				pubHex := publicKey.SerializeCompressed()
-
-				fmt.Println("pubHex ed25519", hex.EncodeToString(pubHex))
-				fmt.Println("DONE reshare", reshareResult, reshareResult.EDDSAPub)
-				// dispatcher.signature = sigResult.Signature
-
 				dispatcher.result = &ReshareResult{
-					NewSecret: keydata,
+					Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch),
+					KeyId:       dispatcher.keyId,
+					SessionId:   dispatcher.sessionId,
+					NewEpoch:    dispatcher.newEpoch,
+					BlockHeight: dispatcher.blockHeight,
 				}
 
 				dispatcher.done <- struct{}{}
@@ -270,12 +264,13 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 			for _, p := range dispatcher.newParty.WaitingFor() {
 				newCulprits = append(newCulprits, p.Id)
 			}
-			a, _, _ := dispatcher.baseInfo()
+			// a, _, _ := dispatcher.baseInfo()
 
-			fmt.Println("oldCulprits, newCulprits", oldCulprits, newCulprits, dispatcher.party.PartyID().Id)
-			fmt.Println(dispatcher.newParticipants, dispatcher.newPids, "partyList", a)
+			// fmt.Println("oldCulprits, newCulprits", oldCulprits, newCulprits, dispatcher.party.PartyID().Id)
+			// fmt.Println(dispatcher.newParticipants, dispatcher.newPids, "partyList", a)
 
 			resolve(TimeoutResult{
+				tssMgr:   dispatcher.tssMgr,
 				Culprits: append(oldCulprits, newCulprits...),
 			})
 			return
@@ -330,7 +325,6 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 	}
 	if cmt == "both" || cmt == "new" {
 		if dispatcher.newParty != nil {
-			//fmt.Println("UPDATING NEW", from.Id, from.Index, newFrom.Index, dispatcher.party)
 			ok, err := dispatcher.newParty.UpdateFromBytes(input, from, isBrcst)
 
 			if err != nil {
@@ -346,7 +340,6 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 		for {
 			msg := <-dispatcher.p2pMsg
 
-			fmt.Println("msg", msg.IsToOldCommittee(), msg.IsToOldAndNewCommittees())
 			var commiteeType string
 			if msg.IsToOldAndNewCommittees() {
 				commiteeType = "both"
@@ -364,9 +357,9 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 				}
 			}
 
-			for _, newP := range dispatcher.participants {
+			for _, newP := range dispatcher.newParticipants {
 				if slices.Compare(newP.PartyId.GetKey(), msg.GetFrom().GetKey()) == 0 {
-					cmtFrom = "old"
+					cmtFrom = "new"
 					break
 				}
 			}
@@ -378,7 +371,6 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 					dispatcher.err = err
 				}
 
-				fmt.Println("Sending direct to", string(to.Id), err)
 				err = dispatcher.tssMgr.SendMsg(dispatcher.sessionId, Participant{
 					Account: to.Id,
 				}, to.Moniker, bytes, msg.IsBroadcast(), commiteeType, cmtFrom)
@@ -394,12 +386,7 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 type SignDispatcher struct {
 	BaseDispatcher
 
-	Algo tss_helpers.SigningAlgo
-
-	savedKeyData []byte
-	msg          []byte
-
-	signature []byte
+	msg []byte
 
 	result *KeySignResult
 }
@@ -408,55 +395,81 @@ func (dispatcher *SignDispatcher) Start() error {
 
 	sortedPids, myParty, p2pCtx := dispatcher.baseInfo()
 
-	if dispatcher.Algo == tss_helpers.SigningAlgoSecp256k1 {
-		m, err := tss_helpers.MsgToHashInt(dispatcher.msg, tss_helpers.SigningAlgoSecp256k1)
+	fmt.Println("Dispatcher sign start", dispatcher, dispatcher.algo, tss_helpers.SigningAlgoEcdsa)
+	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
+		m, err := tss_helpers.MsgToHashInt(dispatcher.msg, tss_helpers.SigningAlgoEcdsa)
 
 		if err != nil {
+			fmt.Println("sign.<err> 1", err)
+
 			return err
 		}
 		keydata := keyGenSecp256k1.LocalPartySaveData{}
+		k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
 
-		json.Unmarshal(dispatcher.savedKeyData, &keydata)
+		rawKey, err := dispatcher.keystore.Get(context.Background(), k)
+
+		if err != nil {
+			fmt.Println("sign.<err> 2", err)
+
+			return err
+		}
+		json.Unmarshal(rawKey, &keydata)
 		threshold, err := tss_helpers.GetThreshold(len(sortedPids))
 		threshold++ //Add one
 
 		if err != nil {
+
+			fmt.Println("sign.<err> 3", err)
 			return nil
 		}
 
-		params := tss.NewParameters(tss.S256(), p2pCtx, myParty, len(sortedPids), threshold)
-		end := make(chan *common.SignatureData, 0)
+		params := btss.NewParameters(btss.S256(), p2pCtx, myParty, len(sortedPids), threshold)
+		end := make(chan *common.SignatureData)
 
 		dispatcher.party = keySignSecp256k1.NewLocalParty(m, params, keydata, dispatcher.p2pMsg, end)
 
 		go dispatcher.handleMsgs()
+		time.Sleep(15 * time.Second)
 		go func() {
+			fmt.Println("Starting Sign ECDSA")
 			err := dispatcher.party.Start()
 
 			if err != nil {
 				fmt.Println("err", err)
+				dispatcher.err = err
 			}
 		}()
 		go func() {
 			sigResult := <-end
-			// fmt.Println("sigResult", sigResult.GetSignature())
 
-			dispatcher.signature = sigResult.Signature
+			fmt.Println("sigResult.Signature", sigResult.Signature)
+
+			// sigResult.R
+
+			derSig := btcec.Signature{
+				R: new(big.Int).SetBytes(sigResult.R),
+				S: new(big.Int).SetBytes(sigResult.S),
+			}
+
+			dispatcher.result = &KeySignResult{
+				Msg:       dispatcher.msg,
+				Signature: derSig.Serialize(),
+				KeyId:     dispatcher.keyId,
+			}
 
 			dispatcher.done <- struct{}{}
 		}()
 
-	} else if dispatcher.Algo == tss_helpers.SigningAlgoEd25519 {
-		m, err := tss_helpers.MsgToHashInt(dispatcher.msg, tss_helpers.SigningAlgoEd25519)
+	} else if dispatcher.algo == tss_helpers.SigningAlgoEddsa {
+		m, err := tss_helpers.MsgToHashInt(dispatcher.msg, tss_helpers.SigningAlgoEddsa)
 
 		if err != nil {
 			return err
 		}
 		keydata := keyGenEddsa.LocalPartySaveData{}
 
-		k := makeKey("key", dispatcher.keyId)
-
-		fmt.Println("key", dispatcher.keyId, string(k.Bytes()))
+		k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
 
 		rawKey, err := dispatcher.keystore.Get(context.Background(), k)
 
@@ -478,27 +491,28 @@ func (dispatcher *SignDispatcher) Start() error {
 			return nil
 		}
 
-		params := tss.NewParameters(tss.Edwards(), p2pCtx, myParty, len(sortedPids), threshold)
+		params := btss.NewParameters(btss.Edwards(), p2pCtx, myParty, len(sortedPids), threshold)
 		end := make(chan *common.SignatureData)
 
 		dispatcher.party = keySignEddsa.NewLocalParty(m, params, keydata, dispatcher.p2pMsg, end)
 
 		go dispatcher.handleMsgs()
+		time.Sleep(15 * time.Second)
 		go func() {
 			err := dispatcher.party.Start()
 
 			if err != nil {
 				fmt.Println("err", err)
+				dispatcher.err = err
 			}
 		}()
 		go func() {
 			sigResult := <-end
 
-			dispatcher.signature = sigResult.Signature
-
 			dispatcher.result = &KeySignResult{
 				Msg:       dispatcher.msg,
 				Signature: sigResult.Signature,
+				KeyId:     dispatcher.keyId,
 			}
 
 			dispatcher.done <- struct{}{}
@@ -513,14 +527,14 @@ func (dispatcher *SignDispatcher) Done() *promise.Promise[DispatcherResult] {
 	return promise.New(func(resolve func(DispatcherResult), reject func(error)) {
 		<-dispatcher.done
 
-		fmt.Println("DONE")
-
 		if dispatcher.timeout {
 			culprits := make([]string, 0)
 			for _, p := range dispatcher.party.WaitingFor() {
 				culprits = append(culprits, string(p.Key))
 			}
 			resolve(TimeoutResult{
+				tssMgr: dispatcher.tssMgr,
+
 				Culprits: culprits,
 			})
 			return
@@ -538,10 +552,7 @@ func (dispatcher *SignDispatcher) Done() *promise.Promise[DispatcherResult] {
 			return
 		}
 
-		resolve(KeySignResult{
-			Msg:       dispatcher.msg,
-			Signature: dispatcher.signature,
-		})
+		resolve(*dispatcher.result)
 	})
 }
 
@@ -566,6 +577,10 @@ type BaseDispatcher struct {
 	done chan struct{}
 
 	keystore datastore.Datastore
+
+	epoch       uint64
+	algo        tss_helpers.SigningAlgo
+	blockHeight uint64
 }
 
 func (dispatcher *BaseDispatcher) handleMsgs() {
@@ -573,7 +588,6 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 		for {
 			msg := <-dispatcher.p2pMsg
 
-			fmt.Println("msg", msg.IsToOldCommittee(), msg.IsToOldAndNewCommittees())
 			var commiteeType string
 			if msg.IsToOldAndNewCommittees() {
 				commiteeType = "both"
@@ -591,7 +605,6 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 				}
 				for _, p := range dispatcher.participants {
 					if p.Account == dispatcher.tssMgr.config.Get().HiveUsername {
-						fmt.Println("SHOCKING")
 						continue
 					}
 
@@ -609,7 +622,7 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 						dispatcher.err = err
 					}
 
-					fmt.Println("Sending direct to", string(to.Id))
+					// fmt.Println("", string(to.Id))
 					err = dispatcher.tssMgr.SendMsg(dispatcher.sessionId, Participant{
 						Account: string(to.Id),
 					}, to.Moniker, bytes, false, commiteeType, "")
@@ -633,6 +646,7 @@ func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcs
 		}
 	}
 
+	// fmt.Println("dispatcher.party", dispatcher.party, from)
 	//Filter out any messages to self
 	if dispatcher.party.PartyID().Id == from.Id {
 		return
@@ -679,18 +693,18 @@ func (dispatcher *BaseDispatcher) baseStart() {
 }
 
 func (dispatcher *BaseDispatcher) baseInfo() (btss.SortedPartyIDs, *btss.PartyID, *btss.PeerContext) {
-
 	pIds := make([]*btss.PartyID, 0)
-	for _, p := range dispatcher.participants {
+	for idx, p := range dispatcher.participants {
 		i := big.NewInt(0)
 		i = i.SetBytes([]byte(p.Account))
 
 		pi := btss.NewPartyID(p.Account, dispatcher.sessionId, i)
+		dispatcher.participants[idx].PartyId = pi
 
 		pIds = append(pIds, pi)
 	}
 	sortedPids := btss.SortPartyIDs(pIds)
-	p2pCtx := tss.NewPeerContext(sortedPids)
+	p2pCtx := btss.NewPeerContext(sortedPids)
 
 	userId := dispatcher.tssMgr.config.Get().HiveUsername
 
@@ -708,9 +722,7 @@ func (dispatcher *BaseDispatcher) baseInfo() (btss.SortedPartyIDs, *btss.PartyID
 type KeyGenDispatcher struct {
 	BaseDispatcher
 
-	Algo tss_helpers.SigningAlgo
-
-	secretChan chan tss_helpers.KeygenLocalState
+	// secretChan chan tss_helpers.KeygenLocalState
 
 	result *KeyGenResult
 	// party      btss.Party
@@ -729,8 +741,9 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 
 	_, selfId, p2pCtx := dispatcher.baseInfo()
 
-	if dispatcher.Algo == tss_helpers.SigningAlgoSecp256k1 {
+	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
 		end := make(chan *keyGenSecp256k1.LocalPartySaveData)
+		dispatcher.tssMgr.GeneratePreParams()
 		preParams := <-dispatcher.tssMgr.preParams
 		parameters := btss.NewParameters(btss.S256(), p2pCtx, selfId, pl, threshold)
 		party := keyGenSecp256k1.NewLocalParty(parameters, dispatcher.p2pMsg, end, preParams)
@@ -738,6 +751,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		dispatcher.party = party
 
 		go dispatcher.handleMsgs()
+		time.Sleep(15 * time.Second)
 		go func() {
 
 			err := party.Start()
@@ -757,21 +771,25 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 				X:     pk.X(),
 				Y:     pk.Y(),
 			}
-			hexPubKey := pubKey.SerializeCompressed()
+			pubBytes := pubKey.SerializeCompressed()
 
-			fmt.Println("Hex public key", hex.EncodeToString(hexPubKey))
+			fmt.Println("Hex public key", hex.EncodeToString(pubBytes))
 
 			bytes, _ := json.Marshal(savedOutput)
 
-			fmt.Println("localSecrets", string(bytes), len(bytes))
+			k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
+			dispatcher.tssMgr.keyStore.Put(context.Background(), k, bytes)
 
 			dispatcher.result = &KeyGenResult{
-				PublicKey:   hexPubKey,
+				PublicKey:   pubBytes,
+				Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.participants, dispatcher.epoch),
 				SavedSecret: bytes,
+				SessionId:   dispatcher.sessionId,
+				KeyId:       dispatcher.keyId,
 			}
 			dispatcher.done <- struct{}{}
 		}()
-	} else if dispatcher.Algo == tss_helpers.SigningAlgoEd25519 {
+	} else if dispatcher.algo == tss_helpers.SigningAlgoEddsa {
 		end := make(chan *keyGenEddsa.LocalPartySaveData)
 		parameters := btss.NewParameters(btss.Edwards(), p2pCtx, selfId, pl, threshold)
 		party := keyGenEddsa.NewLocalParty(parameters, dispatcher.p2pMsg, end)
@@ -779,6 +797,8 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		dispatcher.party = party
 
 		go dispatcher.handleMsgs()
+		time.Sleep(15 * time.Second)
+
 		go func() {
 			err := party.Start()
 			if err != nil {
@@ -791,14 +811,20 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 
 			publicKey := edwards.NewPublicKey(savedOutput.EDDSAPub.X(), savedOutput.EDDSAPub.Y())
 
-			pubHex := publicKey.SerializeCompressed()
+			pubBytes := publicKey.SerializeCompressed()
 
-			fmt.Println("pubHex ed25519", hex.EncodeToString(pubHex))
+			// fmt.Println("pubHex ed25519", hex.EncodeToString(pubHex))
 			bytes, _ := json.Marshal(savedOutput)
 
+			k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
+			dispatcher.tssMgr.keyStore.Put(context.Background(), k, bytes)
+
 			dispatcher.result = &KeyGenResult{
-				PublicKey:   pubHex,
+				PublicKey:   pubBytes,
+				Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.participants, dispatcher.epoch),
 				SavedSecret: bytes,
+				SessionId:   dispatcher.sessionId,
+				KeyId:       dispatcher.keyId,
 			}
 			dispatcher.done <- struct{}{}
 		}()
@@ -817,6 +843,8 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 				culprits = append(culprits, string(p.Key))
 			}
 			resolve(TimeoutResult{
+				tssMgr: dispatcher.tssMgr,
+
 				Culprits: culprits,
 			})
 			return
@@ -840,7 +868,7 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 
 type DispatcherResult interface {
 	Type() DispatcherType
-	Serialize() SignableResult
+	Serialize() tss_helpers.BaseCommitment
 }
 
 type DispatcherType string
@@ -854,106 +882,180 @@ const (
 )
 
 type KeyGenResult struct {
+	tssMgr *TssManager
+
 	PublicKey   []byte
 	SavedSecret []byte
+	SessionId   string
+	KeyId       string
+	BlockHeight uint64
+	Epoch       uint64
+	Commitment  string
 }
 
 func (KeyGenResult) Type() DispatcherType {
 	return KeyGenResultType
 }
 
-func (result KeyGenResult) Serialize() SignableResult {
-	return SignableResult{
-		Type: "keygen_result",
-		Data: hex.EncodeToString(result.PublicKey),
+func (result KeyGenResult) Serialize() tss_helpers.BaseCommitment {
+	pubKey := hex.EncodeToString(result.PublicKey)
+
+	return tss_helpers.BaseCommitment{
+		Type:        "keygen",
+		SessionId:   result.SessionId,
+		KeyId:       result.KeyId,
+		Commitment:  result.Commitment,
+		PublicKey:   &pubKey,
+		Metadata:    nil,
+		BlockHeight: result.BlockHeight,
+		Epoch:       result.Epoch,
 	}
 }
 
 type KeySignResult struct {
 	Msg       []byte
 	Signature []byte
+
+	KeyId       string
+	SessionId   string
+	BlockHeight uint64
+	Epoch       uint64
 }
 
 func (KeySignResult) Type() DispatcherType {
 	return KeySignResultType
 }
 
-func (result KeySignResult) Serialize() SignableResult {
-
-	return SignableResult{
-		Type: "sign_result",
-		Data: hex.EncodeToString(result.Signature),
+func (result KeySignResult) Serialize() tss_helpers.BaseCommitment {
+	// result.tssMgr.electionDb.GetElectionByHeight()
+	return tss_helpers.BaseCommitment{
+		Type:        "sign_result",
+		SessionId:   result.SessionId,
+		KeyId:       result.KeyId,
+		Commitment:  "",
+		PublicKey:   nil,
+		Metadata:    nil,
+		BlockHeight: result.BlockHeight,
+		Epoch:       result.Epoch,
 	}
 }
 
 type ReshareResult struct {
-	NewSecret []byte
-	NewSet    []Participant
-	KeyId     string
+	// NewSecret []byte
+	// NewSet      []Participant
+	Commitment  string
+	KeyId       string
+	SessionId   string
+	NewEpoch    uint64
+	BlockHeight uint64
 }
 
 func (ReshareResult) Type() DispatcherType {
 	return ReshareResultType
 }
 
-func (result ReshareResult) Serialize() SignableResult {
-	return SignableResult{
-		Type: "reshare_result",
-		Data: "complete",
+func (result ReshareResult) Serialize() tss_helpers.BaseCommitment {
+	return tss_helpers.BaseCommitment{
+		Type:        "reshare",
+		SessionId:   result.SessionId,
+		KeyId:       result.KeyId,
+		Commitment:  result.Commitment,
+		PublicKey:   nil,
+		Metadata:    nil,
+		BlockHeight: result.BlockHeight,
+		Epoch:       result.NewEpoch,
 	}
 }
 
 type ErrorResult struct {
+	tssMgr *TssManager `json:"-"`
 	err    error
 	tssErr *btss.Error
+
+	SessionId   string
+	KeyId       string
+	BlockHeight uint64
+	Epoch       uint64
 }
 
 func (ErrorResult) Type() DispatcherType {
 	return ErrorType
 }
 
-func (eres ErrorResult) Serialize() SignableResult {
-
+func (eres ErrorResult) Serialize() tss_helpers.BaseCommitment {
 	if eres.tssErr != nil {
 		blameNodes := make([]string, 0)
 		for _, n := range eres.tssErr.Culprits() {
-			blameNodes = append(blameNodes, string(n.GetKey()))
+			blameNodes = append(blameNodes, string(n.GetId()))
 		}
-		x := map[string]interface{}{
-			"culprits": blameNodes,
-			"msg":      eres.tssErr.Error(),
-		}
-		serialized, _ := json.Marshal(x)
-		return SignableResult{
-			Type: "blame",
-			Data: string(serialized),
+
+		fmt.Println(blameNodes)
+
+		err := eres.tssErr.Error()
+		// serialized, _ := json.Marshal(x)
+
+		commitment := eres.tssMgr.setToCommitment(utils.Map(blameNodes, func(arg string) Participant {
+			return Participant{
+				Account: arg,
+			}
+		}), eres.Epoch)
+
+		return tss_helpers.BaseCommitment{
+			Type:       "blame",
+			SessionId:  eres.SessionId,
+			KeyId:      eres.KeyId,
+			Commitment: commitment,
+			Metadata: &tss_helpers.CommitmentMetadata{
+				Error: &err,
+			},
+			BlockHeight: eres.BlockHeight,
+			Epoch:       eres.Epoch,
 		}
 	} else {
-		return SignableResult{
-			Type: "error",
-			Data: eres.err.Error(),
+		err := eres.err.Error()
+		return tss_helpers.BaseCommitment{
+			Type:       "blame",
+			SessionId:  eres.SessionId,
+			KeyId:      eres.KeyId,
+			Commitment: "",
+			Metadata: &tss_helpers.CommitmentMetadata{
+				Error: &err,
+			},
+			BlockHeight: eres.BlockHeight,
+			Epoch:       eres.Epoch,
 		}
 	}
 }
 
 type TimeoutResult struct {
-	Culprits []string `json:"culprits"`
+	tssMgr *TssManager `json:"-"`
+
+	Culprits    []string `json:"culprits"`
+	SessionId   string   `json:"session_id"`
+	KeyId       string   `json:"key_id"`
+	BlockHeight uint64
+	Epoch       uint64 `json:"epoch"`
 }
 
 func (TimeoutResult) Type() DispatcherType {
 	return TimeoutType
 }
 
-func (result TimeoutResult) Serialize() SignableResult {
-	s, _ := json.Marshal(result)
-	return SignableResult{
-		Type: "blame_timeout",
-		Data: string(s),
-	}
-}
+func (result TimeoutResult) Serialize() tss_helpers.BaseCommitment {
+	commitment := result.tssMgr.setToCommitment(utils.Map(result.Culprits, func(arg string) Participant {
+		return Participant{
+			Account: arg,
+		}
+	}), result.Epoch)
 
-type SignableResult struct {
-	Type      string `json:"type"`
-	SessionId string `json:"session_id"`
-	Data      string `json:"data"`
+	return tss_helpers.BaseCommitment{
+		Type:        "blame",
+		KeyId:       result.KeyId,
+		SessionId:   result.SessionId,
+		Commitment:  commitment,
+		PublicKey:   nil,
+		Metadata:    nil,
+		BlockHeight: result.BlockHeight,
+		Epoch:       result.Epoch,
+	}
 }

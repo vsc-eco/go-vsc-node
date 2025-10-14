@@ -8,6 +8,7 @@ import (
 	"vsc-node/modules/db/vsc"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -51,9 +52,9 @@ func (tssReq *tssRequests) FindRequests(
 	return tssRequest, nil
 }
 
-func (tssReq *tssRequests) SetSignedRequest(req TssRequest) error {
+func (tssReqs *tssRequests) SetSignedRequest(req TssRequest) error {
 	ctx := context.Background()
-	singleResult := tssReq.FindOne(ctx, bson.M{
+	singleResult := tssReqs.FindOne(ctx, bson.M{
 		"key_id": req.KeyId,
 		"msg":    req.Msg,
 	})
@@ -63,15 +64,58 @@ func (tssReq *tssRequests) SetSignedRequest(req TssRequest) error {
 	}
 
 	updateOptions := options.FindOneAndUpdate().SetUpsert(true)
-	singeResult := tssReq.FindOneAndUpdate(context.Background(), bson.M{
+	singeResult := tssReqs.FindOneAndUpdate(context.Background(), bson.M{
 		"key_id": req.KeyId,
 		"msg":    req.Msg,
-	}, bson.M{}, updateOptions)
+	}, bson.M{
+		"$set": bson.M{
+			"status": "unsigned",
+		},
+	}, updateOptions)
 	return singeResult.Err()
 }
 
-func (tss *tssRequests) FindUnsignedRequests(blockHeight uint64) ([]TssRequest, error) {
-	return nil, nil
+func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64) ([]TssRequest, error) {
+	requests := make([]TssRequest, 0)
+	findResult, err := tssReqs.Find(context.Background(), bson.M{
+		"status": "unsigned",
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	for findResult.Next(context.Background()) {
+		var req TssRequest
+		findResult.Decode(&req)
+		requests = append(requests, req)
+	}
+	return requests, nil
+}
+
+func (tssReqs *tssRequests) UpdateRequest(req TssRequest) error {
+	ctx := context.Background()
+	singleResult := tssReqs.FindOne(ctx, bson.M{
+		"key_id": req.KeyId,
+		"msg":    req.Msg,
+	})
+
+	//If there is no signing request then don't update
+	if singleResult.Err() == mongo.ErrNoDocuments {
+		return nil
+	}
+
+	res := tssReqs.FindOneAndUpdate(context.Background(), bson.M{
+		"key_id": req.KeyId,
+		"msg":    req.Msg,
+	}, bson.M{
+		"$set": bson.M{
+			"sig":    req.Sig,
+			"status": req.Status,
+		},
+	})
+
+	return res.Err()
 }
 
 func NewRequests(d *vsc.VscDb) TssRequests {

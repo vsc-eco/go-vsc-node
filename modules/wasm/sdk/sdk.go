@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/contracts"
@@ -40,7 +41,7 @@ var SdkModule = map[string]sdkFunc{
 			return ErrInvalidArgument
 		}
 
-		fmt.Println("console.log(s):", s)
+		// fmt.Println("console.log(s):", s)
 		session := eCtx.IOSession()
 		eCtx.Log(s)
 		gas := session.End()
@@ -326,6 +327,80 @@ var SdkModule = map[string]sdkFunc{
 			return ErrInvalidArgument
 		}
 		return eCtx.ContractCall(contractId, method, payload, options)
+	},
+	"tss.create_key": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+		keyName, ok := arg1.(string)
+
+		if !ok {
+			return ErrInvalidArgument
+		}
+
+		matched, _ := regexp.Match("^[a-zA-Z0-9]+$", []byte(keyName))
+
+		if !matched {
+			return ErrInvalidArgument
+		}
+
+		keyType, ok := arg2.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+
+		if keyType != "eddsa" && keyType != "ecdsa" {
+			return ErrInvalidArgument
+		}
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+
+		res := eCtx.TssCreateKey(keyName, keyType)
+
+		if res.IsOk() {
+			return result.Ok(SdkResultStruct{
+				Result: res.Unwrap(),
+
+				//TODO: Pull atleast 100 HBD from caller wait in order to create key
+				Gas: 1_000_000,
+			})
+		} else {
+			err := res.UnwrapErr()
+
+			return result.Err[SdkResultStruct](err)
+		}
+	},
+	"tss.sign_key": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+		keyId, ok := arg1.(string)
+
+		if !ok {
+			return ErrInvalidArgument
+		}
+
+		signPayload, ok := arg2.(string)
+
+		if !ok {
+			return ErrInvalidArgument
+		}
+
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+
+		res := eCtx.TssKeySign(keyId, signPayload)
+
+		return result.Ok(SdkResultStruct{
+			Result: res.Unwrap(),
+			Gas:    100_000,
+		})
+	},
+	"tss.get_key": func(ctx context.Context, arg1 any) SdkResult {
+		keyId, ok := arg1.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+
+		res := eCtx.TssGetKey(keyId)
+
+		return result.Ok(SdkResultStruct{
+			Result: res.Unwrap(),
+			Gas:    10_000,
+		})
 	},
 	//Links contract for writes in the future
 	//It is required to link a contract first to allow for VM loading

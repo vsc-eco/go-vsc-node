@@ -2,13 +2,16 @@ package tss
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
-	"math"
-	"slices"
+	"math/big"
 	"strconv"
 	"sync"
 	"time"
 	"vsc-node/lib/dids"
+	"vsc-node/lib/hive"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
@@ -23,17 +26,23 @@ import (
 	ecKeyGen "github.com/bnb-chain/tss-lib/v2/ecdsa/keygen"
 	btss "github.com/bnb-chain/tss-lib/v2/tss"
 	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multicodec"
+	"github.com/vsc-eco/hivego"
 
 	"github.com/chebyrash/promise"
 	gorpc "github.com/libp2p/go-libp2p-gorpc"
 	rpc "github.com/libp2p/go-libp2p-gorpc"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/protocol"
 
 	flatfs "github.com/ipfs/go-ds-flatfs"
 )
 
-const TSS_INTERVAL = 20 //* 2
+const TSS_SIGN_INTERVAL = 20 //* 2
+
+// 5 minutes in blocks
+const TSS_ROTATE_INTERVAL = 20 * 5
+
+// 24 hour blame
+var BLAME_EXPIRE = uint64(24 * 60 * 20)
 
 type TssManager struct {
 	p2p    *libp2p.P2PServer
@@ -58,30 +67,29 @@ type TssManager struct {
 	config     common.IdentityConfig
 	VStream    *vstream.VStream
 	scheduler  GetScheduler
+	hiveClient hive.HiveTransactionCreator
 
 	//Active list of actions occurring
 	queuedActions []QueuedAction
 	lock          sync.Mutex
+	preParamsLock sync.Mutex
 
 	actionMap      map[string]Dispatcher
 	sessionMap     map[string]sessionInfo
 	sessionResults map[string]DispatcherResult
 }
 
-type sessionInfo struct {
-	leader string
-	bh     uint64
-}
-
 func (tssMgr *TssManager) Receive() {}
 
 func (tssMgr *TssManager) GeneratePreParams() {
-	if len(tssMgr.preParams) == 0 {
+	locked := tssMgr.preParamsLock.TryLock()
+	if len(tssMgr.preParams) == 0 && locked {
 		fmt.Println("Need to generate preparams")
 		preParams, err := ecKeyGen.GeneratePreParams(time.Minute)
 		if err == nil {
 			tssMgr.preParams <- *preParams
 		}
+		tssMgr.preParamsLock.Unlock()
 	}
 }
 
@@ -102,7 +110,6 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		}
 	}
 
-	// fmt.Println("witnessSlot", witnessSlot, schedule)
 	// tssMgr.activeActions
 	if witnessSlot != nil {
 		// fmt.Println("witnessSlot expression", witnessSlot.Account, tssMgr.config.Get().HiveUsername, bh%TSS_INTERVAL == 0)
@@ -112,13 +119,59 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 
 		isWitness := witnessSlot.Account == tssMgr.config.Get().HiveUsername
 
-		if bh%TSS_INTERVAL == 0 {
-			cl := min(len(tssMgr.queuedActions), 5)
-			top5Actions := tssMgr.queuedActions[:cl]
-			tssMgr.RunActions(top5Actions, witnessSlot.Account, isWitness, bh)
+		keyLocks := make(map[string]bool)
+		generatedActions := make([]QueuedAction, 0)
+		if bh%TSS_ROTATE_INTERVAL == 0 {
+			electionData, _ := tssMgr.electionDb.GetElectionByHeight(bh)
 
-			tssMgr.queuedActions = slices.Delete(tssMgr.queuedActions, 0, cl)
+			epoch := electionData.Epoch
+			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(epoch)
+
+			for _, key := range reshareKeys {
+				generatedActions = append(generatedActions, QueuedAction{
+					Type:  KeyGenAction,
+					KeyId: key.Id,
+					Algo:  tss_helpers.SigningAlgo(key.Algo),
+				})
+				keyLocks[key.Id] = true
+			}
+			newKeys, _ := tssMgr.tssKeys.FindNewKeys(bh)
+
+			for _, key := range newKeys {
+				generatedActions = append(generatedActions, QueuedAction{
+					Type:  KeyGenAction,
+					KeyId: key.Id,
+					Algo:  tss_helpers.SigningAlgo(key.Algo),
+				})
+				keyLocks[key.Id] = true
+			}
 		}
+		if bh%TSS_SIGN_INTERVAL == 0 {
+			signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh)
+
+			for _, signReq := range signingRequests {
+				keyInfo, _ := tssMgr.tssKeys.FindKey(signReq.KeyId)
+				if !keyLocks[signReq.KeyId] {
+					rawMsg, err := hex.DecodeString(signReq.Msg)
+					fmt.Println("err", err)
+					if err == nil {
+						generatedActions = append(generatedActions, QueuedAction{
+							Type:  SignAction,
+							KeyId: signReq.KeyId,
+							Args:  rawMsg,
+							Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
+						})
+					}
+				}
+			}
+
+			// cl := min(len(tssMgr.queuedActions), 5)
+			// top5Actions := tssMgr.queuedActions[:cl]
+			// tssMgr.RunActions(top5Actions, witnessSlot.Account, isWitness, bh)
+
+			// tssMgr.queuedActions = slices.Delete(tssMgr.queuedActions, 0, cl)
+		}
+		tssMgr.RunActions(generatedActions, witnessSlot.Account, isWitness, bh)
 	}
 }
 
@@ -135,26 +188,45 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		return
 	}
 
-	election, err := tssMgr.electionDb.GetElectionByHeight(uint64(bh))
+	currentElection, err := tssMgr.electionDb.GetElectionByHeight(uint64(bh))
 
+	// fmt.Println("currentElection, err", currentElection, err)
 	if err != nil {
+		fmt.Println("err", err)
 		return
 	}
 
 	participants := make([]Participant, 0)
 
-	for _, member := range election.Members {
-		participants = append(participants, Participant{
-			Account: member.Account,
-		})
-	}
-
 	dispatchers := make([]Dispatcher, 0)
 	for idx, action := range actions {
 		var sessionId string
 		if action.Type == KeyGenAction {
-
 			sessionId = "keygen-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
+			lastBlame, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "blame")
+
+			var isBlame bool
+			bitset := big.NewInt(0)
+			if err == nil {
+				if lastBlame.BlockHeight > bh-BLAME_EXPIRE {
+					bitBytes, _ := base64.RawURLEncoding.DecodeString(lastBlame.Commitment)
+					bitset.SetBytes(bitBytes)
+					isBlame = true
+				}
+			}
+
+			fmt.Println("bitset", bitset, isBlame)
+			for idx, member := range currentElection.Members {
+				if isBlame {
+					if bitset.Bit(idx) == 1 {
+						continue
+					}
+				}
+				participants = append(participants, Participant{
+					Account: member.Account,
+				})
+			}
+
 			dispatcher := &KeyGenDispatcher{
 				BaseDispatcher: BaseDispatcher{
 					tssMgr:       tssMgr,
@@ -164,31 +236,45 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					done:         make(chan struct{}),
 
 					keyId: action.KeyId,
+					algo:  action.Algo,
+
+					epoch: currentElection.Epoch,
 				},
-				Algo:       action.Algo,
-				secretChan: make(chan tss_helpers.KeygenLocalState),
 			}
 
 			dispatchers = append(dispatchers, dispatcher)
 			tssMgr.actionMap[sessionId] = dispatcher
 
 		} else if action.Type == SignAction {
-
 			sessionId = "sign-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
+
+			// commitment, _ := tssMgr.tssCommitments.GetLatestCommitment(action.KeyId, "reshare")
+
+			keyInfo, _ := tssMgr.tssKeys.FindKey(action.KeyId)
+
+			participants := make([]Participant, 0)
+
+			for _, member := range currentElection.Members {
+				participants = append(participants, Participant{
+					Account: member.Account,
+				})
+			}
 
 			dispatcher := &SignDispatcher{
 				BaseDispatcher: BaseDispatcher{
+					algo:         action.Algo,
 					tssMgr:       tssMgr,
 					participants: participants,
 					p2pMsg:       make(chan btss.Message, 2*len(participants)),
 					sessionId:    sessionId,
 					done:         make(chan struct{}),
-
-					keyId: action.KeyId,
+					keyId:        action.KeyId,
 
 					keystore: tssMgr.keyStore,
+
+					epoch: keyInfo.Epoch,
 				},
-				Algo: action.Algo,
+				msg: action.Args,
 			}
 
 			dispatchers = append(dispatchers, dispatcher)
@@ -196,22 +282,81 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		} else if action.Type == ReshareAction {
 			sessionId = "reshare-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
-			fmt.Println("reshare", action.KeyId)
+			commitment, _ := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "keygen", "reshare")
+			lastBlame, _ := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "blame")
+
+			//This should either be equal but never less in practical terms
+			//However, we can add further checks
+			if commitment.Epoch >= currentElection.Epoch {
+				continue
+			}
+
+			var isBlame bool
+			blameBits := big.NewInt(0)
+			if lastBlame.Type == "blame" {
+				if lastBlame.BlockHeight > commitment.BlockHeight && lastBlame.BlockHeight > bh-BLAME_EXPIRE {
+					isBlame = true
+					blameBytes, _ := base64.RawURLEncoding.DecodeString(lastBlame.Commitment)
+					blameBits.SetBytes(blameBytes)
+				}
+			}
+			//No idea what was happening here
+			// if commitment.Type != "reshare" {
+			// 	if lastBlame.BlockHeight > commitment.BlockHeight && lastBlame.BlockHeight > bh-BLAME_EXPIRE {
+			// 		isBlame = true
+			// 	}
+			// }
+
+			commitmentElection := tssMgr.electionDb.GetElection(commitment.Epoch)
+
+			commitmentBytes, _ := base64.URLEncoding.DecodeString(commitment.Commitment)
+
+			bitset := big.NewInt(0)
+			bitset.SetBytes(commitmentBytes)
+
+			commitedMembers := make([]Participant, 0)
+
+			for idx, member := range commitmentElection.Members {
+				if bitset.Bit(idx) == 1 {
+					commitedMembers = append(commitedMembers, Participant{
+						Account: member.Account,
+					})
+				}
+			}
+
+			newParticipants := make([]Participant, 0)
+
+			for idx, member := range currentElection.Members {
+				if isBlame {
+					if blameBits.Bit(idx) == 1 {
+						//Deny inclusion into next commitee due to previous blame
+						continue
+					}
+				}
+				newParticipants = append(newParticipants, Participant{
+					Account: member.Account,
+				})
+			}
+
+			// fmt.Println("reshare", action.KeyId)
+			// newParticipants := make([]Participant, len(participants))
+			// copy(newParticipants, participants)
+
 			dispatcher := &ReshareDispatcher{
 				BaseDispatcher: BaseDispatcher{
+					algo:         tss_helpers.SigningAlgo(action.Algo),
 					tssMgr:       tssMgr,
-					participants: participants,
-					p2pMsg:       make(chan btss.Message, 2*len(participants)),
+					participants: commitedMembers,
+					p2pMsg:       make(chan btss.Message, 4*len(participants)),
 					sessionId:    sessionId,
 					done:         make(chan struct{}),
-
-					keyId: action.KeyId,
+					keyId:        action.KeyId,
+					epoch:        commitment.Epoch,
 
 					keystore: tssMgr.keyStore,
 				},
-				epoch:           4,
-				Algo:            action.Algo,
-				newParticipants: participants,
+				newParticipants: newParticipants,
+				newEpoch:        currentElection.Epoch,
 			}
 
 			dispatchers = append(dispatchers, dispatcher)
@@ -224,16 +369,17 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	}
 
 	for _, dispatcher := range dispatchers {
-
 		fmt.Println("dispatcher started!")
 		dispatcher.Start()
 	}
 
 	go func() {
 
+		signedResults := make([]KeySignResult, 0)
+		commitableResults := make([]tss_helpers.BaseCommitment, 0)
 		for _, dsc := range dispatchers {
 			resultPtr, err := dsc.Done().Await(context.Background())
-			fmt.Println("result, err", resultPtr, err)
+			// fmt.Println("result, err", resultPtr, err)
 
 			if err != nil {
 				//handle error
@@ -244,61 +390,264 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			if result.Type() == KeyGenResultType {
 				res := result.(KeyGenResult)
 
-				k := makeKey("key", dsc.KeyId())
-
-				fmt.Println("k is", string(k.Bytes()))
-
-				err := tssMgr.keyStore.Put(context.Background(), k, res.SavedSecret)
-
-				if err != nil {
-					fmt.Println("<err>", err)
-					return
-				}
-
-				tssMgr.AskForSigs(dsc.SessionId())
+				res.BlockHeight = bh
 				tssMgr.sessionResults[dsc.SessionId()] = res
+
+				commitment := result.Serialize()
+				commitableResults = append(commitableResults, commitment)
 			} else if result.Type() == KeySignResultType {
 				res := result.(KeySignResult)
 
-				res.Type()
-
-				tssMgr.AskForSigs(dsc.SessionId())
+				res.BlockHeight = bh
 				tssMgr.sessionResults[dsc.SessionId()] = res
+
+				signedResults = append(signedResults, res)
 			} else if result.Type() == ReshareResultType {
 				res := result.(ReshareResult)
 
-				k := makeKey("key", dsc.KeyId())
-				fmt.Println("key saved", dsc.KeyId())
-				err := tssMgr.keyStore.Put(context.Background(), k, res.NewSecret)
-
-				fmt.Println("<err>", err)
-
-				tssMgr.AskForSigs(dsc.SessionId())
+				res.BlockHeight = bh
 				tssMgr.sessionResults[dsc.SessionId()] = res
+				commitment := result.Serialize()
+				commitment.BlockHeight = bh
+				commitableResults = append(commitableResults, commitment)
+
 			} else if result.Type() == ErrorType {
 				res := result.(ErrorResult)
 
-				res.Type()
-
-				badNodes := make([]string, 0)
-				for _, p := range res.tssErr.Culprits() {
-					badNodes = append(badNodes, string(p.Key))
-				}
-
-				fmt.Println("badNodes", badNodes)
+				res.BlockHeight = bh
 				tssMgr.sessionResults[dsc.SessionId()] = res
+				commitment := result.Serialize()
+				commitment.BlockHeight = bh
+				commitableResults = append(commitableResults, commitment)
 			} else if result.Type() == TimeoutType {
 				res := result.(TimeoutResult)
 
-				res.Type()
-
-				fmt.Println("culprits", res.Culprits)
-
+				res.BlockHeight = bh
 				tssMgr.sessionResults[dsc.SessionId()] = res
+
+				fmt.Println("Timeout Result")
+				commitment := result.Serialize()
+				commitment.BlockHeight = bh
+				commitableResults = append(commitableResults, commitment)
 			}
 		}
+		if isLeader {
+			go func() {
+				if len(signedResults) > 0 {
+
+					//Signed Results submission
+					sigPacket := make([]map[string]any, 0)
+					for _, signResult := range signedResults {
+						sigPacket = append(sigPacket, map[string]any{
+							"key_id": signResult.KeyId,
+							"msg":    hex.EncodeToString(signResult.Msg),
+							"sig":    hex.EncodeToString(signResult.Signature),
+						})
+					}
+
+					rawJson, _ := json.Marshal(map[string]any{
+						"packet": sigPacket,
+					})
+					deployOp := hivego.CustomJsonOperation{
+						RequiredAuths:        []string{},
+						RequiredPostingAuths: []string{tssMgr.config.Get().HiveUsername},
+						Id:                   "vsc.tss_sign",
+						Json:                 string(rawJson),
+					}
+
+					// wif := tssMgr.config.Get().HiveActiveKey
+
+					hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
+						deployOp,
+					})
+					sig, _ := tssMgr.hiveClient.Sign(hiveTx)
+					hiveTx.AddSig(sig)
+					tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
+					tssMgr.hiveClient.Broadcast(hiveTx)
+					// tssMgr.hiveClient.Broadcast([]hivego.HiveOperation{
+					// 	deployOp,
+					// }, &wif)
+				}
+			}()
+
+			if len(commitableResults) > 0 {
+				time.Sleep(5 * time.Second)
+
+				commitedResults := make(map[string]struct {
+					err        error
+					circuit    *dids.SerializedCircuit
+					commitment tss_helpers.BaseCommitment
+				})
+				var wg sync.WaitGroup
+				for _, commitResult := range commitableResults {
+					wg.Add(1)
+					go func() {
+						commitResult.BlockHeight = bh
+
+						jj, _ := json.Marshal(commitResult)
+						fmt.Println("Sign commitResult", commitResult, string(jj))
+						bytes, _ := common.EncodeDagCbor(commitResult)
+
+						signableCid, _ := common.HashBytes(bytes, multicodec.DagCbor)
+
+						ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
+						fmt.Println("commitResult", bytes, err)
+
+						serializedCircuit, err := tssMgr.waitForSigs(ctx, signableCid, commitResult.SessionId, &currentElection)
+
+						fmt.Println("serializedCircuit, err", serializedCircuit, err)
+
+						commitedResults[commitResult.SessionId] = struct {
+							err        error
+							circuit    *dids.SerializedCircuit
+							commitment tss_helpers.BaseCommitment
+						}{
+							err:        err,
+							circuit:    serializedCircuit,
+							commitment: commitResult,
+						}
+
+						wg.Done()
+					}()
+				}
+				wg.Wait()
+
+				sigPacket := make(map[string]any, 0)
+				for _, signResult := range commitedResults {
+					if signResult.err == nil {
+						sigPacket[signResult.commitment.SessionId] = map[string]any{
+							"type":         signResult.commitment.Type,
+							"session_id":   signResult.commitment.SessionId,
+							"key_id":       signResult.commitment.KeyId,
+							"commitment":   signResult.commitment.Commitment,
+							"epoch":        signResult.commitment.Epoch,
+							"pub_key":      signResult.commitment.PublicKey,
+							"block_height": signResult.commitment.BlockHeight,
+
+							"signature": signResult.circuit.Signature,
+							"bv":        signResult.circuit.BitVector,
+						}
+					}
+				}
+
+				rawJson, err := json.Marshal(sigPacket)
+
+				fmt.Println("json.Marshal <err>", err)
+				deployOp := hivego.CustomJsonOperation{
+					RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
+					RequiredPostingAuths: []string{},
+					Id:                   "vsc.tss_commitment",
+					Json:                 string(rawJson),
+				}
+
+				hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
+					deployOp,
+				})
+				sig, _ := tssMgr.hiveClient.Sign(hiveTx)
+				hiveTx.AddSig(sig)
+				tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
+				tssMgr.hiveClient.Broadcast(hiveTx)
+			}
+		}
+
 		tssMgr.lock.Unlock()
 	}()
+}
+
+func (tssMgr *TssManager) setToCommitment(participants []Participant, epoch uint64) string {
+	electionData := tssMgr.electionDb.GetElection(epoch)
+
+	bitset := &big.Int{}
+	for _, p := range participants {
+		for nIdx, mbr := range electionData.Members {
+			if mbr.Account == p.Account {
+				bitset = bitset.SetBit(bitset, nIdx, 1)
+				break
+			}
+		}
+	}
+
+	return base64.RawURLEncoding.EncodeToString(bitset.Bytes())
+}
+
+func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionId string, election *elections.ElectionResult) (*dids.SerializedCircuit, error) {
+	weightTotal := uint64(0)
+	for _, weight := range election.Weights {
+		weightTotal += weight
+	}
+
+	members := make([]dids.Member, 0)
+
+	for _, member := range election.Members {
+		members = append(members, dids.BlsDID(member.Key))
+	}
+	fmt.Println("waitForSigs.members", members)
+	blsCircuit := dids.NewBlsCircuitGenerator(members)
+
+	tssMgr.sigChannels[sessionId] = make(chan sigMsg)
+
+	tssMgr.pubsub.Send(p2pMessage{
+		Type:    "ask_sigs",
+		Account: tssMgr.config.Get().HiveUsername,
+		Data: map[string]interface{}{
+			"session_id": sessionId,
+		},
+	})
+
+	fmt.Println("WAITING FOR SIGS commitedCid", cid)
+	circuit, _ := blsCircuit.Generate(cid)
+
+	select {
+	case <-ctx.Done():
+		fmt.Println("[bp] ctx done")
+		return nil, ctx.Err() // Return error if canceled
+	default:
+		signedWeight := uint64(0)
+
+		// common.has
+		sigChan := tssMgr.sigChannels[sessionId]
+
+		signedMap := make(map[string]bool)
+		for signedWeight < (weightTotal * 2 / 3) {
+			msg := <-sigChan
+
+			fmt.Println("EMT", msg)
+			var member dids.Member
+			var memberAccount string
+			var index int = -1
+			for i, data := range election.Members {
+				if data.Account == msg.Account {
+					member = dids.BlsDID(data.Key)
+					index = i
+					break
+				}
+			}
+
+			if index == -1 {
+				continue
+			}
+
+			added, err := circuit.AddAndVerify(member, msg.Sig)
+
+			fmt.Println("added, err", added, err)
+
+			if added {
+				signedWeight += election.Weights[index]
+				signedMap[memberAccount] = true
+			}
+		}
+		finalizedCiruit, err := circuit.Finalize()
+
+		fmt.Println("finalizedCiruit, err", finalizedCiruit, err)
+
+		serialized, err := finalizedCiruit.Serialize()
+
+		if err != nil {
+			return nil, err
+		}
+
+		return serialized, nil
+	}
 }
 
 //Remaining important things to do:
@@ -310,66 +659,68 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 // - Signing return sig through Done()
 // - BLS sign output results
 
-func (tssMgr *TssManager) AskForSigs(sessionId string) {
-	electionData, err := tssMgr.electionDb.GetElectionByHeight(math.MaxInt64)
+// func (tssMgr *TssManager) AskForSigs(sessionId string) {
+// 	result := tssMgr.sessionResults[sessionId]
 
-	if err != nil {
-		return
-	}
+// 	result.Serialize()
+// 	electionData, err := tssMgr.electionDb.GetElectionByHeight(math.MaxInt64)
 
-	didList := make([]dids.BlsDID, 0)
+// 	if err != nil {
+// 		return
+// 	}
 
-	for _, member := range electionData.Members {
-		didList = append(didList, dids.BlsDID(member.Key))
-	}
+// 	didList := make([]dids.BlsDID, 0)
 
-	circuit := dids.NewBlsCircuitGenerator(didList)
+// 	for _, member := range electionData.Members {
+// 		didList = append(didList, dids.BlsDID(member.Key))
+// 	}
 
-	var signedMembers = make(map[dids.BlsDID]bool, 0)
-	var msgCid cid.Cid
-	partialCircuit, err := circuit.Generate(msgCid)
+// 	circuit := dids.NewBlsCircuitGenerator(didList)
 
-	signedWeight := 0
-	if tssMgr.sigChannels[sessionId] != nil {
-		go func() {
-			for {
-				sig := <-tssMgr.sigChannels[sessionId]
+// 	var signedMembers = make(map[dids.BlsDID]bool, 0)
+// 	var msgCid cid.Cid
+// 	partialCircuit, _ := circuit.Generate(msgCid)
 
-				var member dids.BlsDID
-				var index int
-				for idx, mbr := range electionData.Members {
-					if mbr.Account == sig.Account {
-						member = dids.BlsDID(mbr.Key)
-						index = idx
-						break
-					}
-				}
+// 	signedWeight := 0
+// 	if tssMgr.sigChannels[sessionId] != nil {
+// 		go func() {
+// 			for {
+// 				sig := <-tssMgr.sigChannels[sessionId]
 
-				fmt.Println("sig", sig)
+// 				var member dids.BlsDID
+// 				var index int
+// 				for idx, mbr := range electionData.Members {
+// 					if mbr.Account == sig.Account {
+// 						member = dids.BlsDID(mbr.Key)
+// 						index = idx
+// 						break
+// 					}
+// 				}
 
-				//Prevent replay attacks / double aggregation
-				if !signedMembers[member] {
-					verified, err := partialCircuit.AddAndVerify(member, sig.Sig)
+// 				// fmt.Println("sig", sig)
+// 				//Prevent replay attacks / double aggregation
+// 				if !signedMembers[member] {
+// 					verified, _ := partialCircuit.AddAndVerify(member, sig.Sig)
 
-					fmt.Println("verified <err>", verified, err)
-					if verified {
-						signedMembers[member] = true
-						signedWeight += int(electionData.Weights[index])
-					}
-				}
-			}
-		}()
+// 					if verified {
+// 						signedMembers[member] = true
+// 						signedWeight += int(electionData.Weights[index])
+// 					}
+// 				}
+// 			}
+// 		}()
 
-		tssMgr.sigChannels[sessionId] = make(chan sigMsg, 0)
+// 		tssMgr.sigChannels[sessionId] = make(chan sigMsg)
 
-		tssMgr.pubsub.Send(p2pMessage{
-			Type: "ask_sigs",
-			Data: map[string]interface{}{
-				"session_id": sessionId,
-			},
-		})
-	}
-}
+// 		tssMgr.pubsub.Send(p2pMessage{
+// 			Type:    "ask_sigs",
+// 			Account: tssMgr.config.Get().HiveUsername,
+// 			Data: map[string]interface{}{
+// 				"session_id": sessionId,
+// 			},
+// 		})
+// 	}
+// }
 
 func (tssMgr *TssManager) Init() error {
 	tssMgr.VStream.RegisterBlockTick("tss-mgr", tssMgr.BlockTick, true)
@@ -387,56 +738,35 @@ func (tssMgr *TssManager) KeyGen(keyId string, algo tss_helpers.SigningAlgo) int
 	return len(tssMgr.queuedActions)
 }
 
-func (tssMgr *TssManager) KeySign(msgs []byte, keyId string, algo tss_helpers.SigningAlgo) int {
+func (tssMgr *TssManager) KeySign(msgs []byte, keyId string) (int, error) {
+	keyInfo, err := tssMgr.tssKeys.FindKey(keyId)
+
+	if err != nil {
+		return 0, err
+	}
 	tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
 		Type:  SignAction,
 		KeyId: keyId,
-		Algo:  algo,
-		Args:  [][]byte{msgs},
+		Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
+		Args:  msgs,
 	})
-	return len(tssMgr.queuedActions)
+	return len(tssMgr.queuedActions), nil
 }
 
-func (tssMgr *TssManager) KeyReshare(keyId string, algo tss_helpers.SigningAlgo) int {
+func (tssMgr *TssManager) KeyReshare(keyId string) (int, error) {
+	keyInfo, err := tssMgr.tssKeys.FindKey(keyId)
+
+	if err != nil {
+		return 0, err
+	}
 	tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
 		Type:  ReshareAction,
 		KeyId: keyId,
-		Algo:  algo,
+		Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
 		Args:  nil,
 	})
-	return len(tssMgr.queuedActions)
+	return len(tssMgr.queuedActions), nil
 }
-
-func (tss *TssManager) SendMsg(sessionId string, participant Participant, moniker string, msg []byte, isBroadcast bool, commiteeType string, cmtFrom string) error {
-	witness, err := tss.witnessDb.GetWitnessAtHeight(participant.Account, nil)
-
-	// fmt.Println("participant.Account", participant.Account)
-	if err != nil {
-		fmt.Println("GetWitnessAtHeight", err)
-		return err
-	}
-
-	peerId, err := peer.Decode(witness.PeerId)
-
-	if err != nil {
-		return err
-	}
-
-	tMsg := TMsg{
-		IsBroadcast: isBroadcast,
-		SessionId:   sessionId,
-		Type:        "msg",
-		Data:        msg,
-		Cmt:         commiteeType,
-		CmtFrom:     cmtFrom,
-	}
-	tRes := TRes{}
-
-	fmt.Println("Sending message from", tss.config.Get().HiveUsername, "to", participant.Account, "isBroadcast", isBroadcast)
-	return tss.client.Call(peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
-}
-
-var protocolId = protocol.ID("/vsc.network/tss/1.0.0")
 
 func (tssMgr *TssManager) Start() *promise.Promise[any] {
 	tssRpc := TssRpc{
@@ -492,19 +822,21 @@ func New(
 	se GetScheduler,
 	config common.IdentityConfig,
 	keystore *flatfs.Datastore,
+	hiveClient hive.HiveTransactionCreator,
 ) *TssManager {
 	preParams := make(chan ecKeyGen.LocalPreParams, 1)
 
 	return &TssManager{
-
-		sigChannels: make(map[string]chan sigMsg),
+		preParamsLock: sync.Mutex{},
+		sigChannels:   make(map[string]chan sigMsg),
 
 		keyStore: keystore,
 
-		config:    config,
-		scheduler: se,
-		preParams: preParams,
-		p2p:       p2p,
+		config:     config,
+		scheduler:  se,
+		preParams:  preParams,
+		p2p:        p2p,
+		hiveClient: hiveClient,
 
 		tssKeys:        tssKeys,
 		tssRequests:    tssRequests,

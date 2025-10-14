@@ -34,11 +34,13 @@ import (
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
+	"vsc-node/modules/tss"
 
 	data_availability "vsc-node/modules/data-availability/server"
 	"vsc-node/modules/vstream"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
+	flatfs "github.com/ipfs/go-ds-flatfs"
 	"github.com/vsc-eco/hivego"
 )
 
@@ -70,8 +72,9 @@ func main() {
 	contractState := contracts.NewContractState(vscDb)
 	nonceDb := nonces.New(vscDb)
 	rcDb := rcDb.New(vscDb)
-	tssRequestDb := tss_db.NewRequests(vscDb)
-	tssKeyDb := tss_db.NewKeys(vscDb)
+	tssKeys := tss_db.NewKeys(vscDb)
+	tssCommitments := tss_db.NewCommitments(vscDb)
+	tssRequests := tss_db.NewRequests(vscDb)
 
 	if err != nil {
 		fmt.Println("error is", err)
@@ -128,7 +131,7 @@ func main() {
 	l := logger.PrefixedLogger{
 		Prefix: "vsc-node",
 	}
-	se := stateEngine.New(l, da, witnessDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
+	se := stateEngine.New(l, da, witnessDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
 
 	rcSystem := se.RcSystem
 
@@ -140,9 +143,16 @@ func main() {
 
 	multisig := gateway.New(l, witnessesDb, electionDb, actionsDb, balanceDb, &hiveCreator, vstream, p2p, se, identityConfig, hiveRpcClient)
 
-	txpool := transactionpool.New(p2p, txDb, nonceDb, hiveBlocks, da, identityConfig, rcSystem)
+	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, identityConfig, rcSystem)
 
 	sr := streamer.NewStreamReader(hiveBlocks, vstream.ProcessBlock, se.SaveBlockHeight, stBlock)
+
+	flatDb, err := flatfs.CreateOrOpen("data/tss-keys", flatfs.Prefix(1), false)
+	if err != nil {
+		panic(err)
+	}
+
+	tssMgr := tss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessDb, electionDb, vstream, se, identityConfig, flatDb, &hiveCreator)
 
 	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{
 		Witnesses:      witnessDb,
@@ -159,8 +169,8 @@ func main() {
 		Da:             da,
 		Contracts:      contractDb,
 		ContractsState: contractState,
-		TssKeys:        tssKeyDb,
-		TssRequests:    tssRequestDb,
+		TssKeys:        tssKeys,
+		TssRequests:    tssRequests,
 	}}), "0.0.0.0:8080")
 
 	plugins := make([]aggregate.Plugin, 0)
@@ -189,8 +199,9 @@ func main() {
 		nonceDb,
 		interestClaims,
 		contractState,
-		tssRequestDb,
-		tssKeyDb,
+		tssKeys,
+		tssCommitments,
+		tssRequests,
 
 		p2p,
 		da,                   //Deps: [p2p]
@@ -210,6 +221,8 @@ func main() {
 		//WASM execution environment
 		wasm,
 		txpool,
+
+		tssMgr,
 
 		//Setup graphql manager after everything is initialized
 		gqlManager,

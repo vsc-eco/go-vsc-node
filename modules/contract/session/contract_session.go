@@ -6,6 +6,7 @@ import (
 	"maps"
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/db/vsc/contracts"
+	tss_db "vsc-node/modules/db/vsc/tss"
 
 	"github.com/JustinKnueppel/go-result"
 	"github.com/ipfs/go-cid"
@@ -24,16 +25,19 @@ type CallSession struct {
 	stateDb    contracts.ContractState
 	lastBh     uint64
 	sessions   map[string]*ContractSession
+
+	TssKeys tss_db.TssKeys
 }
 
 // Create a new contract call session for a transaction.
-func NewCallSession(dl *datalayer.DataLayer, contractDb contracts.Contracts, stateDb contracts.ContractState, lastBh uint64) *CallSession {
+func NewCallSession(dl *datalayer.DataLayer, contractDb contracts.Contracts, stateDb contracts.ContractState, tssKeys tss_db.TssKeys, lastBh uint64) *CallSession {
 	return &CallSession{
 		dl:         dl,
 		contractDb: contractDb,
 		stateDb:    stateDb,
 		lastBh:     lastBh,
 		sessions:   make(map[string]*ContractSession),
+		TssKeys:    tssKeys,
 	}
 }
 
@@ -100,6 +104,7 @@ func (cs *CallSession) ToOutputs() map[string]TempOutput {
 	for id, session := range cs.sessions {
 		result[id] = session.ToOutput()
 	}
+
 	return result
 }
 
@@ -118,6 +123,15 @@ func (cs *CallSession) PopLogs() map[string][]string {
 	return result
 }
 
+func (cs *CallSession) AppendTssLog(contractId string, op tss_db.TssOp) {
+	session := cs.GetContractSession(contractId)
+	session.tssOps = append(session.tssOps, op)
+}
+
+// func (cs *CallSession) TssLogs() []TssOp {
+// 	return cs.tssOps
+// }
+
 // Commit state changes to contract sessions
 func (cs *CallSession) Commit() {
 	for _, session := range cs.sessions {
@@ -127,6 +141,7 @@ func (cs *CallSession) Commit() {
 
 // Rollback state changes
 func (cs *CallSession) Rollback() {
+
 	for _, session := range cs.sessions {
 		session.state.Rollback()
 		session.PopLogs()
@@ -162,6 +177,8 @@ type ContractSession struct {
 	stateMerkle string
 	state       *StateStore
 	logs        []string
+
+	tssOps []tss_db.TssOp
 }
 
 func NewContractSession(dl *datalayer.DataLayer, output TempOutput) *ContractSession {
@@ -213,6 +230,7 @@ func (cs *ContractSession) ToOutput() TempOutput {
 		Cid:       cs.stateMerkle,
 		Metadata:  cs.metadata,
 		Deletions: cs.deletions,
+		TssLog:    cs.tssOps,
 	}
 }
 
@@ -312,4 +330,5 @@ type TempOutput struct {
 	Metadata  contracts.ContractMetadata
 	Deletions map[string]bool
 	Cid       string
+	TssLog    []tss_db.TssOp
 }

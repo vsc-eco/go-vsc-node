@@ -84,4 +84,6 @@ const (
 	WASM_RET_ERROR      ContractOutputError = "wasm_ret_error"
 	WASM_FUNC_NOT_FND   ContractOutputError = "wasm_function_not_found"
 	UNK_ERROR           ContractOutputError = "unknown_error"
+	TSS_KEY_NOT_FOUND   ContractOutputError = "tss_key_not_found"
+	TSS_KEY_DUPLICATE   ContractOutputError = "tss_key_duplicate"
 )

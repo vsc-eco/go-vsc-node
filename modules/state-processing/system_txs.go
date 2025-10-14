@@ -10,6 +10,7 @@ import (
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	transactionpool "vsc-node/modules/transaction-pool"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
@@ -18,6 +19,7 @@ import (
 	dagCbor "github.com/ipfs/go-ipld-cbor"
 	"github.com/multiformats/go-multicodec"
 	mh "github.com/multiformats/go-multihash"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type ContractOutput struct {
@@ -29,6 +31,7 @@ type ContractOutput struct {
 
 	Results     []contracts.ContractOutputResult `json:"results" bson:"results"`
 	StateMerkle string                           `json:"state_merkle"`
+	TssOps      []tss_db.TssOp                   `json:"tss_ops"`
 }
 
 func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
@@ -49,6 +52,27 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
 				Index: txOutIdxs,
 			},
 		})
+	}
+
+	for _, tssOp := range output.TssOps {
+		if tssOp.Type == "create" {
+			fmt.Println("CREATING TSS KEY", tssOp)
+			_, err := se.tssKeys.FindKey(tssOp.KeyId)
+
+			// fmt.Println("err", err)
+			if err == mongo.ErrNoDocuments {
+				se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args))
+			}
+		} else if tssOp.Type == "sign" {
+			se.tssRequests.SetSignedRequest(tss_db.TssRequest{
+				KeyId:  tssOp.KeyId,
+				Status: "unsigned",
+				Msg:    tssOp.Args,
+			})
+			// if err == mongo.ErrNoDocuments {
+			// 	se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args))
+			// }
+		}
 	}
 
 	go func() {
@@ -109,7 +133,7 @@ const CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT = 84162592
 // ProcessTx implements VSCTransaction.
 func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 
-	fmt.Println("tx.Runtime", tx.Runtime)
+	// fmt.Println("tx.Runtime", tx.Runtime)
 	if wasm_runtime.NewFromString(tx.Runtime.String()).IsErr() {
 		return TxResult{
 			Success: false,
@@ -124,7 +148,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 		}
 	}
 
-	fmt.Println("Must validate storage proof")
+	// fmt.Println("Must validate storage proof")
 
 	election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
 
@@ -134,7 +158,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 
 	verified := tx.StorageProof.Verify(election)
 
-	fmt.Println("Storage proof verify result", verified)
+	// fmt.Println("Storage proof verify result", verified)
 
 	if !verified {
 		return TxResult{
@@ -143,7 +167,6 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 		}
 	}
 
-	fmt.Println("tx.Code", tx)
 	cidz := cid.MustParse(tx.Code)
 	go func() {
 		se.da.Get(cidz, &datalayer.GetOptions{})
@@ -585,6 +608,8 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				BlockHeight: t.Self.BlockHeight,
 				TxId:        t.Self.TxId,
 			})
+
+			fmt.Println("OUTPUT CONTAINER", contractOutput)
 
 		} else if txContainer.Type() == "oplog" {
 			oplog := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))

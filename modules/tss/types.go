@@ -1,5 +1,10 @@
 package tss
 
+type sessionInfo struct {
+	leader string
+	bh     uint64
+}
+
 // id = "vsc.tss_sign"
 type CommitedSignedData struct {
 	KeyId string

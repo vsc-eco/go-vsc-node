@@ -13,9 +13,9 @@ import (
 
 func MsgToHashInt(msg []byte, algo SigningAlgo) (*big.Int, error) {
 	switch algo {
-	case SigningAlgoSecp256k1:
+	case SigningAlgoEcdsa:
 		return hashToInt(msg, btcec.S256()), nil
-	case SigningAlgoEd25519:
+	case SigningAlgoEddsa:
 		// directly convert the byte array to big int
 		return new(big.Int).SetBytes(msg), nil
 	default:
@@ -86,3 +86,8 @@ func (pm *PartyMember) PartyId() *tss.PartyID {
 
 	return tss.NewPartyID("", "", new(big.Int).SetBytes(bytes))
 }
+
+// func SelectCommitment(keyId string, blockHeight uint64, commitments tss_db.TssCommitments) (tss_db.TssCommitment, error) {
+
+// 	commitments.GetCommitment()
+// }

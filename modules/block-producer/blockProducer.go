@@ -567,9 +567,14 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 
 			if msg.Type == "sig" {
 				sig := msg.Msg
-				sigStr := sig.Data["sig"].(string)
-				account := sig.Data["account"].(string)
-
+				sigStr, ok := sig.Data["sig"].(string)
+				if !ok {
+					continue
+				}
+				account, ok := sig.Data["account"].(string)
+				if !ok {
+					continue
+				}
 				var member dids.Member
 				var index int
 				for i, data := range election.Members {
@@ -747,6 +752,7 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			"state_merkle": savedCid.String(),
 			"inputs":       inputIds,
 			"results":      results,
+			"tss_ops":      output.TssLog,
 		}
 
 		dagBytes, _ := common.EncodeDagCbor(outputObj)

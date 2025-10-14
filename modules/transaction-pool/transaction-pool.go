@@ -29,15 +29,15 @@ import (
 )
 
 type TransactionPool struct {
-	TxDb             transactions.Transactions
-	nonceDb          nonces.Nonces
-	rcs              *rcSystem.RcSystem
-	hiveBlocks       hive_blocks.HiveBlocks
-	p2p              *libp2p.P2PServer
-	service          libp2p.PubSubService[p2pMessage]
-	datalayer        *datalayer.DataLayer
-	electionDataInfo elections.ElectionDataInfo
-	// TODO: adding election members
+	TxDb       transactions.Transactions
+	nonceDb    nonces.Nonces
+	rcs        *rcSystem.RcSystem
+	hiveBlocks hive_blocks.HiveBlocks
+	p2p        *libp2p.P2PServer
+	service    libp2p.PubSubService[p2pMessage]
+	datalayer  *datalayer.DataLayer
+	// electionDataInfo elections.ElectionDataInfo
+	electionDb elections.Elections
 
 	conf common.IdentityConfig
 }
@@ -150,12 +150,12 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		return nil, fmt.Errorf("nonce incrementing too fast: %d > %d", txShell.Headers.Nonce, nonce+100)
 	}
 
-	fmt.Println("sigPack.Sigs", sigPack.Sigs)
+	electionData, err := tp.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
 
 	// make DIDs + verify signatures
 	didBuf, hasVscDID, err := makeDIDs(
-		tp.electionDataInfo.Members,
-		tp.electionDataInfo.Weights,
+		electionData.Members,
+		electionData.Weights,
 		txShell.Headers.RequiredAuths,
 		sigPack.Sigs,
 	)
@@ -318,9 +318,11 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 
 	json.Unmarshal(sigJson, &sigPack)
 
+	electionData, err := tp.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
+
 	didBuf, hasVscDID, err := makeDIDs(
-		tp.electionDataInfo.Members,
-		tp.electionDataInfo.Weights,
+		electionData.Members,
+		electionData.Weights,
 		txShell.Headers.RequiredAuths,
 		sigPack.Sigs,
 	)
@@ -423,7 +425,7 @@ func (tp *TransactionPool) Stop() error {
 	return tp.stopP2P()
 }
 
-func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, nonceDb nonces.Nonces, hiveBlocks hive_blocks.HiveBlocks, da *datalayer.DataLayer, conf common.IdentityConfig, rcSystem *rcSystem.RcSystem) *TransactionPool {
+func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, nonceDb nonces.Nonces, electionDb elections.Elections, hiveBlocks hive_blocks.HiveBlocks, da *datalayer.DataLayer, conf common.IdentityConfig, rcSystem *rcSystem.RcSystem) *TransactionPool {
 	return &TransactionPool{
 		TxDb:       txDb,
 		nonceDb:    nonceDb,
@@ -432,6 +434,7 @@ func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, nonceDb nonces.N
 		conf:       conf,
 		hiveBlocks: hiveBlocks,
 		rcs:        rcSystem,
+		electionDb: electionDb,
 	}
 }
 

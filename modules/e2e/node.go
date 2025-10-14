@@ -19,6 +19,7 @@ import (
 	"vsc-node/modules/db/vsc/nonces"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	election_proposer "vsc-node/modules/election-proposer"
@@ -28,6 +29,7 @@ import (
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
+	"vsc-node/modules/tss"
 
 	data_availability "vsc-node/modules/data-availability/server"
 
@@ -36,6 +38,7 @@ import (
 	"vsc-node/modules/vstream"
 
 	"github.com/chebyrash/promise"
+	flatfs "github.com/ipfs/go-ds-flatfs"
 	"github.com/vsc-eco/hivego"
 )
 
@@ -92,6 +95,10 @@ func MakeNode(input MakeNodeInput) *Node {
 	rcDb := rcDb.New(vscDb)
 	nonceDb := nonces.New(vscDb)
 
+	tssRequests := tss_db.NewRequests(vscDb)
+	tssCommitments := tss_db.NewCommitments(vscDb)
+	tssKeys := tss_db.NewKeys(vscDb)
+
 	logger := logger.PrefixedLogger{
 		Prefix: input.Username,
 	}
@@ -129,9 +136,29 @@ func MakeNode(input MakeNodeInput) *Node {
 	datalayer := DataLayer.New(p2p, input.Username)
 	wasm := wasm_runtime.New()
 
-	se := stateEngine.New(logger, datalayer, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
+	se := stateEngine.New(
+		logger,
+		datalayer,
+		witnessesDb,
+		electionDb,
+		contractDb,
+		contractState,
+		txDb,
+		ledgerDbImpl,
+		balanceDb,
+		hiveBlocks,
+		interestClaims,
+		vscBlocks,
+		actionsDb,
+		rcDb,
+		nonceDb,
+		tssKeys,
+		tssCommitments,
+		tssRequests,
+		wasm,
+	)
 
-	txpool := transactionpool.New(p2p, txDb, nonceDb, hiveBlocks, datalayer, identityConfig, se.RcSystem)
+	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, datalayer, identityConfig, se.RcSystem)
 
 	dbNuker := NewDbNuker(vscDb)
 
@@ -145,8 +172,15 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	dataAvailability := data_availability.New(p2p, identityConfig, datalayer)
 
+	ds, err := flatfs.CreateOrOpen("data-"+input.Username+"/keys", flatfs.Prefix(1), false)
+	if err != nil {
+		panic(err)
+	}
+	tssManager := tss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessesDb, electionDb, vstream, se, identityConfig, ds, &txCreator)
+
 	plugins := make([]aggregate.Plugin, 0)
 
+	fmt.Println("dbNuke", dbNuker)
 	plugins = append(plugins,
 		dbConf,
 		db,
@@ -169,6 +203,9 @@ func MakeNode(input MakeNodeInput) *Node {
 		contractState,
 		rcDb,
 		nonceDb,
+		tssCommitments,
+		tssKeys,
+		tssRequests,
 		dataAvailability,
 		vstream,
 		wasm,
@@ -177,6 +214,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		ep,
 		txpool,
 		multisig,
+		tssManager,
 	)
 
 	if input.Primary {

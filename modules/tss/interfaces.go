@@ -39,7 +39,7 @@ type ActiveAction struct {
 type QueuedAction struct {
 	Type  actionType
 	KeyId string
-	Args  [][]byte
+	Args  []byte
 	Algo  tss_helpers.SigningAlgo
 }
 

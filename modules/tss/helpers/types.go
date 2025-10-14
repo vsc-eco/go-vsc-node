@@ -1,8 +1,8 @@
 package tss_helpers
 
 const (
-	SigningAlgoSecp256k1 = SigningAlgo("secp256k1")
-	SigningAlgoEd25519   = SigningAlgo("ed25519")
+	SigningAlgoEcdsa = SigningAlgo("ecdsa")
+	SigningAlgoEddsa = SigningAlgo("eddsa")
 )
 
 type SigningAlgo string
@@ -18,4 +18,26 @@ type KeygenLocalState struct {
 	LocalData       []byte   `json:"local_data"`
 	ParticipantKeys []string `json:"participant_keys"` // the participant of last key gen
 	LocalPartyKey   string   `json:"local_party_key"`
+}
+
+type BaseCommitment struct {
+	Type        string              `json:"type"`
+	SessionId   string              `json:"session_id"`
+	KeyId       string              `json:"key_id"`
+	Commitment  string              `json:"commitment"`
+	PublicKey   *string             `json:"pub_key"`
+	Metadata    *CommitmentMetadata `json:"-"`
+	BlockHeight uint64              `json:"block_height"`
+	Epoch       uint64              `json:"epoch"`
+}
+
+type CommitmentMetadata struct {
+	Error  *string `json:"err"`
+	Reason *string `json:"reason"`
+}
+
+type SignedCommitment struct {
+	BaseCommitment
+	Signature string `json:"signature"`
+	BitSet    string `json:"bv"`
 }
