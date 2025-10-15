@@ -1042,6 +1042,10 @@ func (se *StateEngine) ExecuteBatch() {
 						se.TempOutputs[contractId] = &contract_session.TempOutput{
 							Metadata: lastContractMeta,
 							Cid:      lastStateCid,
+
+							Deletions: make(map[string]bool),
+							TssLog:    make([]tss_db.TssOp, 0),
+							Cache:     make(map[string][]byte),
 						}
 					}
 				} else {
