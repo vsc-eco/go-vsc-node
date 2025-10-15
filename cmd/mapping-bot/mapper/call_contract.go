@@ -36,7 +36,7 @@ func callContract(
 	deployOp := hivego.CustomJsonOperation{
 		RequiredAuths:        []string{username},
 		RequiredPostingAuths: []string{username},
-		Id:                   contractID,
+		Id:                   "vsc.call",
 		Json:                 string(txJson),
 	}
 
