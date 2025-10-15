@@ -262,12 +262,12 @@ type ComplexityRoot struct {
 	}
 
 	TssKey struct {
+		Algo          func(childComplexity int) int
 		CreatedHeight func(childComplexity int) int
 		ID            func(childComplexity int) int
 		Owner         func(childComplexity int) int
 		PublicKey     func(childComplexity int) int
 		Status        func(childComplexity int) int
-		Type          func(childComplexity int) int
 	}
 
 	TssRequest struct {
@@ -1345,6 +1345,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.TransactionSubmitResult.ID(childComplexity), true
 
+	case "TssKey.Algo":
+		if e.complexity.TssKey.Algo == nil {
+			break
+		}
+
+		return e.complexity.TssKey.Algo(childComplexity), true
 	case "TssKey.CreatedHeight":
 		if e.complexity.TssKey.CreatedHeight == nil {
 			break
@@ -1375,12 +1381,6 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.TssKey.Status(childComplexity), true
-	case "TssKey.Type":
-		if e.complexity.TssKey.Type == nil {
-			break
-		}
-
-		return e.complexity.TssKey.Type(childComplexity), true
 
 	case "TssRequest.id":
 		if e.complexity.TssRequest.ID == nil {
@@ -1805,7 +1805,7 @@ type TssKey {
 	status: String!
 	PublicKey: String!
 	Owner: String!
-	Type: String!
+	Algo: String!
 	CreatedHeight: Int!
 }
 
@@ -5778,8 +5778,8 @@ func (ec *executionContext) fieldContext_Query_getTssKey(ctx context.Context, fi
 				return ec.fieldContext_TssKey_PublicKey(ctx, field)
 			case "Owner":
 				return ec.fieldContext_TssKey_Owner(ctx, field)
-			case "Type":
-				return ec.fieldContext_TssKey_Type(ctx, field)
+			case "Algo":
+				return ec.fieldContext_TssKey_Algo(ctx, field)
 			case "CreatedHeight":
 				return ec.fieldContext_TssKey_CreatedHeight(ctx, field)
 			}
@@ -6939,14 +6939,14 @@ func (ec *executionContext) fieldContext_TssKey_Owner(_ context.Context, field g
 	return fc, nil
 }
 
-func (ec *executionContext) _TssKey_Type(ctx context.Context, field graphql.CollectedField, obj *TssKey) (ret graphql.Marshaler) {
+func (ec *executionContext) _TssKey_Algo(ctx context.Context, field graphql.CollectedField, obj *TssKey) (ret graphql.Marshaler) {
 	return graphql.ResolveField(
 		ctx,
 		ec.OperationContext,
 		field,
-		ec.fieldContext_TssKey_Type,
+		ec.fieldContext_TssKey_Algo,
 		func(ctx context.Context) (any, error) {
-			return obj.Type, nil
+			return obj.Algo, nil
 		},
 		nil,
 		ec.marshalNString2string,
@@ -6955,7 +6955,7 @@ func (ec *executionContext) _TssKey_Type(ctx context.Context, field graphql.Coll
 	)
 }
 
-func (ec *executionContext) fieldContext_TssKey_Type(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_TssKey_Algo(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "TssKey",
 		Field:      field,
@@ -12195,8 +12195,8 @@ func (ec *executionContext) _TssKey(ctx context.Context, sel ast.SelectionSet, o
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
-		case "Type":
-			out.Values[i] = ec._TssKey_Type(ctx, field, obj)
+		case "Algo":
+			out.Values[i] = ec._TssKey_Algo(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}

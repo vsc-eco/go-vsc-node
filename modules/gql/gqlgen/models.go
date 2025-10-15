@@ -90,7 +90,7 @@ type TssKey struct {
 	Status        string `json:"status"`
 	PublicKey     string `json:"PublicKey"`
 	Owner         string `json:"Owner"`
-	Type          string `json:"Type"`
+	Algo          string `json:"Algo"`
 	CreatedHeight int    `json:"CreatedHeight"`
 }
 

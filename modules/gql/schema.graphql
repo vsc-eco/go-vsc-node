@@ -209,7 +209,7 @@ type TssKey {
 	status: String!
 	PublicKey: String!
 	Owner: String!
-	Type: String!
+	Algo: String!
 	CreatedHeight: Int!
 }
 

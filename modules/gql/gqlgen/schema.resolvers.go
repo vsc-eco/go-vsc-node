@@ -519,7 +519,7 @@ func (r *queryResolver) GetTssKey(ctx context.Context, keyID string) (*TssKey, e
 		Status:        t.Status,
 		PublicKey:     t.PublicKey,
 		Owner:         t.Owner,
-		Type:          string(t.Type),
+		Algo:          string(t.Algo),
 		CreatedHeight: int(t.CreatedHeight),
 	}
 
