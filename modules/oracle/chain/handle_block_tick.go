@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 	"time"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/utils"
@@ -60,9 +59,9 @@ func (o *ChainOracle) HandleBlockTick(
 		electedMemberWeightMap: signal.WeightMap,
 	}
 
-	for symbol := range o.chainRelayers {
+	for symbol, chain := range o.chainRelayers {
 		o.logger.Debug("block tick event", "symbol", symbol)
-		chainSession, err := o.makeChainSession(symbol)
+		session, err := o.makeChainSession(symbol)
 		if err != nil {
 			o.logger.Error("failed to get chain session",
 				"symbol", symbol,
@@ -71,7 +70,7 @@ func (o *ChainOracle) HandleBlockTick(
 			continue
 		}
 
-		if err := blockProducer.handleChainSession(chainSession); err != nil {
+		if err := blockProducer.handleChainSession(chain, session); err != nil {
 			o.logger.Error(
 				"failed to process chain session",
 				"network", symbol, "err", err,
@@ -81,9 +80,10 @@ func (o *ChainOracle) HandleBlockTick(
 }
 
 func (bp *blockProducer) handleChainSession(
-	chain chainSession,
+	chain chainRelay,
+	chainSession chainSession,
 ) error {
-	bp.logger.Debug("handling chain session", "sessionID", chain.sessionID)
+	bp.logger.Debug("handling chain session", "sessionID", chainSession.sessionID)
 
 	if len(bp.electedMemberWeightMap) != len(bp.electedMembers) {
 		return errors.New(
@@ -91,7 +91,7 @@ func (bp *blockProducer) handleChainSession(
 		)
 	}
 
-	sessionID := chain.sessionID
+	sessionID := chainSession.sessionID
 	bp.logger.Debug("created session ID", "sessionID", sessionID)
 
 	// make signature receiver
@@ -102,35 +102,7 @@ func (bp *blockProducer) handleChainSession(
 	defer bp.sigChan.removeSession(sessionID)
 
 	// create tx + chain hash
-	payloadBlocks := make([]string, len(chain.chainData))
-	for i, block := range chain.chainData {
-		payloadBlocks[i], err = block.Serialize()
-		if err != nil {
-			return fmt.Errorf(
-				"failed to serialize block %d: %w",
-				block.BlockHeight(), err,
-			)
-		}
-	}
-	latestFeeRate := chain.chainData[len(chain.chainData)-1].AverageFee()
-	payloadStruct := AddBlocksInput{
-		Blocks:    strings.Join(payloadBlocks, ""),
-		LatestFee: latestFeeRate,
-	}
-	payload, err := json.Marshal(payloadStruct)
-	if err != nil {
-		return fmt.Errorf("failed to marshal tx payload: %w", err)
-	}
-
-	nonce, err := getAccountNonce(strings.ToLower(chain.symbol))
-	if err != nil {
-		return fmt.Errorf("failed to get nonce value: %w", err)
-	}
-
-	tx, err := makeSignableBlock(chain.contractId, chain.symbol, string(payload), nonce)
-	if err != nil {
-		return fmt.Errorf("failed to make transaction: %w", err)
-	}
+	tx, err := makeChainTx(chain, chainSession.chainData)
 	txCid := tx.Cid()
 
 	// create transaction + bls circuit

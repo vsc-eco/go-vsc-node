@@ -111,6 +111,10 @@ func makeChainTx(
 	chain chainRelay,
 	chainData []chainBlock,
 ) (blocks.Block, error) {
+	if len(chainData) == 0 {
+		return nil, fmt.Errorf("empty chainData")
+	}
+
 	var err error
 	payloadBlocks := make([]string, len(chainData))
 	for i, block := range chainData {
@@ -122,11 +126,13 @@ func makeChainTx(
 			)
 		}
 	}
+
 	latestFeeRate := chainData[len(chainData)-1].AverageFee()
 	payloadStruct := AddBlocksInput{
 		Blocks:    strings.Join(payloadBlocks, ""),
 		LatestFee: latestFeeRate,
 	}
+
 	payload, err := json.Marshal(payloadStruct)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal tx payload: %w", err)
