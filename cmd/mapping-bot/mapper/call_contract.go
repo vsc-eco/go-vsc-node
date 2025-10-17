@@ -3,8 +3,12 @@ package mapper
 import (
 	"encoding/json"
 	"fmt"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/contracts"
+	"vsc-node/modules/hive/streamer"
 	stateEngine "vsc-node/modules/state-processing"
+
+	"vsc-node/lib/hive"
 
 	"github.com/vsc-eco/hivego"
 )
@@ -16,8 +20,21 @@ func callContract(
 	username, contractID string,
 	contractInput json.RawMessage,
 	action string,
-) (json.RawMessage, error) {
-	tx := stateEngine.TxVscCallContract{
+) error {
+
+	hiveApiUrl := streamer.NewHiveConfig()
+	hiveRpcClient := hivego.NewHiveRpc(hiveApiUrl.Get().HiveURI)
+	identityConfig := common.NewIdentityConfig()
+
+	hiveCreator := hive.LiveTransactionCreator{
+		TransactionCrafter: hive.TransactionCrafter{},
+		TransactionBroadcaster: hive.TransactionBroadcaster{
+			Client:  hiveRpcClient,
+			KeyPair: identityConfig.HiveActiveKeyPair,
+		},
+	}
+
+	txObj := stateEngine.TxVscCallContract{
 		NetId:      "vsc-mainnet",
 		Caller:     fmt.Sprintf("hive:%s", username), // hive:username
 		ContractId: contractID,
@@ -27,23 +44,25 @@ func callContract(
 		Intents:    []contracts.Intent{},
 	}
 
-	txData := tx.ToData()
+	txData := txObj.ToData()
 	txJson, err := json.Marshal(&txData)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	deployOp := hivego.CustomJsonOperation{
-		RequiredAuths:        []string{username},
-		RequiredPostingAuths: []string{username},
-		Id:                   "vsc.call",
-		Json:                 string(txJson),
-	}
+	op := hiveCreator.CustomJson([]string{username}, nil, "vsc.call", string(txJson))
+	tx := hiveCreator.MakeTransaction([]hivego.HiveOperation{op})
 
-	deployOpJsonBytes, err := json.Marshal(&deployOp)
+	hiveCreator.PopulateSigningProps(&tx, nil)
+	sig, err := hiveCreator.Sign(tx)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return json.RawMessage(deployOpJsonBytes), nil
+	tx.AddSig(sig)
+	_, err = hiveCreator.Broadcast(tx)
+	if err != nil {
+		return err
+	}
+	return nil
 }

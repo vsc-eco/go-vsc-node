@@ -78,22 +78,22 @@ func main() {
 			continue
 		} else if err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
-			return
+			// return
 			time.Sleep(time.Minute)
 			continue
 		}
 		blockBytes, err := mempoolClient.GetRawBlock(hash)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
-			return
+			// return
 			time.Sleep(time.Minute)
 			continue
 		}
 
 		go bot.HandleMap(blockBytes, blockHeight, addressDb)
 		// TODO: remove for prod
-		time.Sleep(3 * time.Second)
-		return
+		// time.Sleep(3 * time.Second)
+		// return
 		time.Sleep(time.Minute)
 	}
 }
