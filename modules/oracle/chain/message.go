@@ -31,28 +31,16 @@ var (
 type chainOracleMessage struct {
 	MessageType messageType     `json:"message_type"`
 	SessionID   string          `json:"session_id"`
-	Payload     json.RawMessage `json:"data"`
+	Payload     json.RawMessage `json:"payload"`
 }
 
-func makeChainOracleMessage(
-	msgType messageType,
-	sessionID string,
-	chainData any,
-) (*chainOracleMessage, error) {
-	if len(sessionID) == 0 {
-		return nil, errInvalidSessionID
-	}
+type chainOracleBlockProducerMessage struct {
+	BlockProducer string `json:"block_producer"`
+	SigHash       string `json:"chain_hash"`
+}
 
-	dataBytes, err := json.Marshal(chainData)
-	if err != nil {
-		return nil, err
-	}
-
-	msg := &chainOracleMessage{
-		MessageType: msgType,
-		SessionID:   sessionID,
-		Payload:     dataBytes,
-	}
-
-	return msg, nil
+type chainOracleWitnessMessage struct {
+	// base64 encoded string of 96 bytes is 128
+	Signature string `json:"signature,omitempty" validate:"base64,required,len=128"`
+	Signer    string `json:"signer,omitempty"    validate:"required"`
 }

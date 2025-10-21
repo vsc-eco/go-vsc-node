@@ -11,25 +11,20 @@ var (
 	errChannelFull    = errors.New("channel full")
 )
 
-type signatureMessage struct {
-	// base64 encoded string of 96 bytes is 128
-	Signature string `json:"signature,omitempty" validate:"base64,required,len=128"`
-}
-
 type signatureChannels struct {
 	rwLock  *sync.RWMutex
-	chanMap map[string]chan signatureMessage
+	chanMap map[string]chan chainOracleWitnessMessage
 }
 
 func makeSignatureChannels() *signatureChannels {
 	rwLock := &sync.RWMutex{}
-	chanMap := make(map[string]chan signatureMessage)
+	chanMap := make(map[string]chan chainOracleWitnessMessage)
 	return &signatureChannels{rwLock, chanMap}
 }
 
 func (s *signatureChannels) makeSession(
 	sessionID string,
-) (<-chan signatureMessage, error) {
+) (<-chan chainOracleWitnessMessage, error) {
 	s.rwLock.Lock()
 	defer s.rwLock.Unlock()
 
@@ -38,14 +33,29 @@ func (s *signatureChannels) makeSession(
 		return nil, errChannelExists
 	}
 
-	s.chanMap[sessionID] = make(chan signatureMessage, 8)
+	s.chanMap[sessionID] = make(chan chainOracleWitnessMessage, 8)
 
 	return s.chanMap[sessionID], nil
 }
 
+func (s *signatureChannels) removeSession(sessionID string) error {
+	s.rwLock.Lock()
+	defer s.rwLock.Unlock()
+
+	c, ok := s.chanMap[sessionID]
+	if ok {
+		return errInvalidSession
+	}
+
+	close(c)
+	delete(s.chanMap, sessionID)
+
+	return nil
+}
+
 func (s *signatureChannels) receiveSignature(
 	sessionID string,
-	msg signatureMessage,
+	msg chainOracleWitnessMessage,
 ) error {
 	s.rwLock.RLock()
 	defer s.rwLock.RUnlock()
@@ -61,14 +71,4 @@ func (s *signatureChannels) receiveSignature(
 	default:
 		return errChannelFull
 	}
-}
-
-func (s *signatureChannels) clearMap() {
-	s.rwLock.Lock()
-	defer s.rwLock.Unlock()
-
-	for k := range s.chanMap {
-		close(s.chanMap[k])
-	}
-	s.chanMap = make(map[string]chan signatureMessage)
 }

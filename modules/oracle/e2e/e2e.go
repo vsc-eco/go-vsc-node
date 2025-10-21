@@ -1,0 +1,104 @@
+package oraclee2e
+
+import (
+	"vsc-node/lib/datalayer"
+	"vsc-node/lib/logger"
+	"vsc-node/modules/aggregate"
+	"vsc-node/modules/common"
+	"vsc-node/modules/db"
+	"vsc-node/modules/db/vsc"
+	"vsc-node/modules/db/vsc/contracts"
+	"vsc-node/modules/db/vsc/elections"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/nonces"
+	rcDb "vsc-node/modules/db/vsc/rcs"
+	"vsc-node/modules/db/vsc/transactions"
+	tss_db "vsc-node/modules/db/vsc/tss"
+	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
+	"vsc-node/modules/db/vsc/witnesses"
+	"vsc-node/modules/e2e"
+	"vsc-node/modules/oracle"
+	p2pInterface "vsc-node/modules/p2p"
+	stateEngine "vsc-node/modules/state-processing"
+	"vsc-node/modules/vstream"
+	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
+)
+
+type Node struct {
+	oracle  *oracle.Oracle
+	p2p     *p2pInterface.P2PServer
+	plugins []aggregate.Plugin
+	db      *vsc.VscDb
+}
+
+func MakeNode(nodeName string) *Node {
+	dbConf := db.NewDbConfig()
+	db := db.New(dbConf)
+	vscDb := vsc.New(db, nodeName)
+	witnessesDb := witnesses.New(vscDb)
+	electionDb := elections.New(vscDb)
+	contractDb := contracts.New(vscDb)
+	contractState := contracts.NewContractState(vscDb)
+	txDb := transactions.New(vscDb)
+	ledgerDbImpl := ledgerDb.New(vscDb)
+	balanceDb := ledgerDb.NewBalances(vscDb)
+	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
+	hiveBlocks := &e2e.MockHiveDbs{}
+	vscBlocks := vscBlocks.New(vscDb)
+	actionsDb := ledgerDb.NewActionsDb(vscDb)
+	rcDb := rcDb.New(vscDb)
+	nonceDb := nonces.New(vscDb)
+	wasm := wasm_runtime.New()
+	sysConfig := common.SystemConfig{Network: "mocknet"}
+	identityConfig := common.NewIdentityConfig("test_" + nodeName + "/config")
+	p2pSpec := p2pInterface.New(witnessesDb, identityConfig, sysConfig, 0)
+	logger := logger.PrefixedLogger{
+		Prefix: "oracle-test_" + nodeName,
+	}
+	dataLayer := datalayer.New(p2pSpec, nodeName)
+	tssRequests := tss_db.NewRequests(vscDb)
+	tssCommitments := tss_db.NewCommitments(vscDb)
+	tssKeys := tss_db.NewKeys(vscDb)
+	se := stateEngine.New(
+		logger,
+		dataLayer,
+		witnessesDb,
+		electionDb,
+		contractDb,
+		contractState,
+		txDb,
+		ledgerDbImpl,
+		balanceDb,
+		hiveBlocks,
+		interestClaims,
+		vscBlocks,
+		actionsDb,
+		rcDb,
+		nonceDb,
+		tssKeys,
+		tssCommitments,
+		tssRequests,
+		wasm,
+	)
+	vstream := vstream.New(se)
+
+	oracle := oracle.New(
+		p2pSpec, identityConfig, electionDb, witnessesDb, vstream, se,
+	)
+
+	plugins := []aggregate.Plugin{
+		dbConf, db, identityConfig, vscDb, e2e.NewDbNuker(vscDb), witnessesDb,
+		p2pSpec, dataLayer, electionDb, contractDb, hiveBlocks, vscBlocks, txDb,
+		ledgerDbImpl, actionsDb, balanceDb, interestClaims, contractState, rcDb,
+		nonceDb, vstream, wasm, se,
+	}
+
+	out := Node{
+		oracle:  oracle,
+		p2p:     p2pSpec,
+		plugins: plugins,
+		db:      vscDb,
+	}
+
+	return &out
+}

@@ -233,6 +233,8 @@ func MakeNode(input MakeNodeInput) *Node {
 			datalayer,
 			contractDb,
 			contractState,
+			tssKeys,
+			tssRequests,
 		}}), "0.0.0.0:7080")
 		plugins = append(plugins, gqlManager)
 	}

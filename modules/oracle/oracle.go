@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -40,9 +41,15 @@ var (
 	_ p2p.OracleP2PSpec = &Oracle{}
 )
 
+type currentElectionData struct {
+	witnesses     []elections.ElectionMember
+	blockProducer string
+	totalWeight   uint64
+	weightMap     []uint64
+}
+
 type Oracle struct {
 	ctx         context.Context
-	cancelFunc  context.CancelFunc
 	logger      *slog.Logger
 	p2pServer   *libp2p.P2PServer
 	pubSubSrv   libp2p.PubSubService[p2p.Msg]
@@ -54,6 +61,9 @@ type Oracle struct {
 
 	// priceOracle *price.PriceOracle
 	chainOracle *chain.ChainOracle
+
+	currentElectionData    *currentElectionData
+	currentElectionDataMtx *sync.RWMutex
 }
 
 func New(
@@ -64,21 +74,33 @@ func New(
 	vstream *vstream.VStream,
 	stateEngine *stateEngine.StateEngine,
 ) *Oracle {
-	logLevel := slog.LevelInfo
+	// TODO: passsing in context from main thread
+	ctx := context.TODO()
+
+	return &Oracle{
+		ctx:         ctx,
+		p2pServer:   p2pServer,
+		conf:        conf,
+		electionDb:  electionDb,
+		witnessDb:   witnessDb,
+		vStream:     vstream,
+		stateEngine: stateEngine,
+		// priceOracle: priceOracle,
+		logger:                 nil,
+		chainOracle:            nil,
+		currentElectionData:    nil,
+		currentElectionDataMtx: &sync.RWMutex{},
+	}
+}
+
+// Init implements aggregate.Plugin.
+// Runs initialization in order of how they are passed in to `Aggregate`
+func (o *Oracle) Init() error {
 	if os.Getenv("DEBUG") == "1" {
-		logLevel = slog.LevelDebug
+		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
 
-	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel,
-	})
-
-	logger := slog.New(logHandler).
-		With("service", "oracle").
-		With("id", conf.Get().HiveUsername)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
+	logger := slog.Default().With("id", o.p2pServer.PeerInfo().GetPeerId())
 	// priceOracle := price.New(
 	// 	ctx,
 	// 	logger,
@@ -88,37 +110,21 @@ func New(
 	// 	conf,
 	// )
 
-	chainRelayer := chain.New(ctx, logger, conf)
+	o.logger = logger.With("service", "oracle")
 
-	return &Oracle{
-		ctx:         ctx,
-		cancelFunc:  cancel,
-		p2pServer:   p2pServer,
-		conf:        conf,
-		electionDb:  electionDb,
-		witnessDb:   witnessDb,
-		vStream:     vstream,
-		stateEngine: stateEngine,
-		logger:      logger,
-		// priceOracle: priceOracle,
-		chainOracle: chainRelayer,
-	}
-}
-
-// Init implements aggregate.Plugin.
-// Runs initialization in order of how they are passed in to `Aggregate`
-func (o *Oracle) Init() error {
-	services := []aggregate.Plugin{
+	o.chainOracle = chain.New(o.ctx, logger, o.conf)
+	subServices := aggregate.New([]aggregate.Plugin{
 		o.chainOracle,
 		// o.priceOracle,
-	}
-	return aggregate.New(services).Init()
+	})
+
+	return subServices.Init()
 }
 
 // Start implements aggregate.Plugin.
 // Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
-	// o.vStream.RegisterBlockTick("oracle", o.blockTick, true)
+	o.vStream.RegisterBlockTick("oracle", o.blockTick, true)
 
 	return promise.New(func(resolve func(any), reject func(error)) {
 		o.logger.Debug("starting Oracle service")
@@ -130,7 +136,6 @@ func (o *Oracle) Start() *promise.Promise[any] {
 		)
 		if err != nil {
 			o.logger.Error("failed to initialize o.service", "err", err)
-			o.cancelFunc()
 			reject(err)
 			return
 		}
@@ -144,6 +149,7 @@ func (o *Oracle) Start() *promise.Promise[any] {
 		}
 
 		s := aggregate.New(services)
+
 		if _, err := s.Start().Await(ctx); err != nil {
 			reject(err)
 			return
@@ -156,8 +162,6 @@ func (o *Oracle) Start() *promise.Promise[any] {
 // Stop implements aggregate.Plugin.
 // Runs cleanup once the `Aggregate` is finished
 func (o *Oracle) Stop() error {
-	o.cancelFunc()
-
 	services := []aggregate.Plugin{
 		o.chainOracle,
 		// o.priceOracle,
@@ -190,8 +194,27 @@ func (o *Oracle) Broadcast(msgCode p2p.MsgCode, data any) error {
 }
 
 // Handle implements p2p.MessageHandler
-func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
-	var handler p2p.MessageHandler
+func (o *Oracle) Handle(
+	peerID peer.ID,
+	msg p2p.Msg,
+	// the following 2 arguments are ignored, the interface is meant to be
+	// passed down to chainOracle + priceOracle.
+	_ string,
+	_ []elections.ElectionMember,
+) (p2p.Msg, error) {
+	o.currentElectionDataMtx.RLock()
+	defer o.currentElectionDataMtx.RUnlock()
+
+	if o.currentElectionData == nil {
+		return nil, errors.New("invalid current election data")
+	}
+
+	var (
+		handler p2p.MessageHandler
+
+		blockProducer = o.currentElectionData.blockProducer
+		witnesses     = o.currentElectionData.witnesses
+	)
 
 	switch msg.Code {
 	// case p2p.MsgPriceBroadcast, p2p.MsgPriceSignature, p2p.MsgPriceBlock:
@@ -204,5 +227,5 @@ func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
 		return nil, errInvalidMessageType
 	}
 
-	return handler.Handle(peerID, msg)
+	return handler.Handle(peerID, msg, blockProducer, witnesses)
 }

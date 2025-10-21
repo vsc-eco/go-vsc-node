@@ -22,6 +22,7 @@ type BlockTickHandler interface {
 }
 
 func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
+	o.logger.Debug("block tick event", "bh", bh, "headHeight", headHeight)
 	if headHeight == nil {
 		return
 	}
@@ -42,7 +43,7 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 		}
 	}
 
-	// get elected members
+	// get elected members + producer
 	result, err := o.electionDb.GetElectionByHeight(*headHeight)
 	if err != nil {
 		log.Println("[oracle] failed to get currently elected members.", err)
@@ -64,10 +65,22 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 			witnessSlot.Account == username
 	)
 
+	// setting current election data + handle block tick
+	o.currentElectionDataMtx.Lock()
+	o.currentElectionData = &currentElectionData{
+		witnesses:     members,
+		blockProducer: witnessSlot.Account,
+		totalWeight:   result.TotalWeight,
+		weightMap:     result.Weights,
+	}
+	o.currentElectionDataMtx.Unlock()
+
 	signal := p2p.BlockTickSignal{
-		IsProducer:     isProducer,
-		IsWitness:      isWitness,
-		ElectedMembers: members,
+		IsProducer:          isProducer,
+		IsWitness:           isWitness,
+		ElectedMembers:      members,
+		TotalElectionWeight: result.TotalWeight,
+		WeightMap:           result.Weights,
 	}
 
 	// if isAvgPriceBroadcastTick {

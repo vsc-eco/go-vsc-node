@@ -23,32 +23,8 @@ var (
 
 	_ aggregate.Plugin = &ChainOracle{}
 
-	errInvalidChainData   = errors.New("invalid chain data")
 	errInvalidChainSymbol = errors.New("invalid chain symbol")
 )
-
-type chainRelay interface {
-	Init() error
-	// Returns the ticker of the chain (ie, BTC for bitcoin).
-	Symbol() string
-	// Checks for (optional) latest chain state.
-	GetLatestValidHeight() (chainState, error)
-	GetContractState() (chainState, error)
-	// Fetches chaindata and serializes to raw bytes.
-	ChainData(startBlockHeight uint64, count uint64) ([]chainBlock, error)
-	// Deserializes and verifies the received raw bytes of the chain data.
-	// VerifyChainData(json.RawMessage) error
-}
-
-type chainBlock interface {
-	Type() string //symbol of block network
-	Serialize() (string, error)
-	BlockHeight() uint64
-}
-
-type chainState struct {
-	blockHeight uint64
-}
 
 type ChainOracle struct {
 	ctx               context.Context
@@ -58,21 +34,53 @@ type ChainOracle struct {
 	conf              common.IdentityConfig
 }
 
+type chainRelay interface {
+	Init(context.Context) error
+	// Returns the (lowercase) ticker of the chain (ie, btc for bitcoin).
+	Symbol() string
+	// Get the deployed contract ID
+	ContractID() string
+	// Checks for (optional) latest chain state.
+	GetLatestValidHeight() (chainState, error)
+	// Get the lastest state on contract
+	GetContractState() (chainState, error)
+	// Fetch chaindata
+	ChainData(startBlockHeight uint64, count uint64) ([]chainBlock, error)
+}
+
+type chainBlock interface {
+	Type() string //symbol of block network
+	Serialize() (string, error)
+	BlockHeight() uint64
+	AverageFee() int64
+}
+
+type chainState struct {
+	blockHeight uint64
+}
+
+type chainSession struct {
+	sessionID         string
+	symbol            string
+	contractId        string
+	chainData         []chainBlock
+	newBlocksToSubmit bool
+}
+
 func New(
 	ctx context.Context,
 	oracleLogger *slog.Logger,
 	conf common.IdentityConfig,
 ) *ChainOracle {
-	logger := oracleLogger.With("sub-service", "chain-relay")
 
 	chainRelayers := make(map[string]chainRelay)
 	for _, c := range _chains {
-		chainRelayers[strings.ToUpper(c.Symbol())] = c
+		chainRelayers[strings.ToLower(c.Symbol())] = c
 	}
 
 	return &ChainOracle{
 		ctx:               ctx,
-		logger:            logger,
+		logger:            oracleLogger,
 		signatureChannels: makeSignatureChannels(),
 		chainRelayers:     chainRelayers,
 		conf:              conf,
@@ -81,11 +89,12 @@ func New(
 
 // Init implements aggregate.Plugin.
 func (c *ChainOracle) Init() error {
+	c.logger = c.logger.With("service", "chain-oracle")
 	// initializes market api's
 	for symbol, chainRelayer := range c.chainRelayers {
 
 		c.logger.Debug("initializing chain relay: " + symbol)
-		if err := chainRelayer.Init(); err != nil {
+		if err := chainRelayer.Init(c.ctx); err != nil {
 			return fmt.Errorf(
 				"failed to initialize chainrelayer %s: %w",
 				symbol, err,
@@ -98,6 +107,7 @@ func (c *ChainOracle) Init() error {
 
 // Start implements aggregate.Plugin.
 func (c *ChainOracle) Start() *promise.Promise[any] {
+	c.logger = c.logger.With("sub-service", "chain-relay")
 
 	startSymbols := make(map[string]string)
 	for symbol, chainRelayer := range c.chainRelayers {
@@ -115,7 +125,13 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 
 	jsonBytes, _ := json.Marshal(startSymbols)
 	wif := c.conf.Get().HiveActiveKey
-	hiveClient.BroadcastJson([]string{c.conf.Get().HiveUsername}, []string{}, "dev_vsc.chain_oracle", string(jsonBytes), &wif)
+	hiveClient.BroadcastJson(
+		[]string{c.conf.Get().HiveUsername},
+		[]string{},
+		"dev_vsc.chain_oracle",
+		string(jsonBytes),
+		&wif,
+	)
 	return promise.New(func(resolve func(any), _ func(error)) {
 		resolve(nil)
 	})
@@ -124,100 +140,4 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 // Stop implements aggregate.Plugin.
 func (c *ChainOracle) Stop() error {
 	return nil
-}
-
-func (c *ChainOracle) fetchAllStatuses() []chainSession {
-	chainSessions := make([]chainSession, 0)
-
-	for _, chain := range c.chainRelayers {
-		chainSession, err := fetchChainStatus(chain)
-		if err != nil {
-			c.logger.Error(
-				"failed to get chain data.",
-				"symbol", chain.Symbol(), "err", err,
-			)
-			continue
-		}
-
-		chainSessions = append(chainSessions, chainSession)
-	}
-
-	return chainSessions
-}
-
-type chainSession struct {
-	symbol            string
-	contractId        *string
-	chainData         []chainBlock
-	newBlocksToSubmit bool
-}
-
-func fetchChainStatus(chain chainRelay) (chainSession, error) {
-	latestChainState, err := chain.GetLatestValidHeight()
-	if err != nil {
-		return chainSession{
-			newBlocksToSubmit: false,
-		}, fmt.Errorf("failed to check latest state: %w", err)
-	}
-	//
-
-	contractState, err := chain.GetContractState()
-	if err != nil {
-		return chainSession{
-			newBlocksToSubmit: false,
-		}, err
-	}
-
-	if latestChainState.blockHeight <= contractState.blockHeight {
-		return chainSession{}, nil
-	}
-
-	chainData, err := chain.ChainData(contractState.blockHeight+1, 100)
-	if err != nil {
-		return chainSession{}, fmt.Errorf("failed to get chain data: %w", err)
-	}
-
-	c := "vsc1BRZLx1"
-	chainSession := chainSession{
-		symbol:            chain.Symbol(),
-		contractId:        &c,
-		chainData:         chainData,
-		newBlocksToSubmit: true,
-	}
-
-	return chainSession, nil
-}
-
-func makeChainSessionID(c *chainSession) (string, error) {
-	if len(c.chainData) == 0 {
-		return "", errors.New("chainData not supplied")
-	}
-
-	startBlock := c.chainData[0].BlockHeight()
-	endBlock := c.chainData[len(c.chainData)-1].BlockHeight()
-
-	id := fmt.Sprintf("%s-%d-%d", c.symbol, startBlock, endBlock)
-	return id, nil
-}
-
-// symbol - startBlock - endBlock
-func parseChainSessionID(sessionID string) (string, uint64, uint64, error) {
-	var (
-		chainSymbol string
-		startBlock  uint64
-		endBlock    uint64
-	)
-
-	_, err := fmt.Sscanf(
-		sessionID,
-		"%s-%d-%d",
-		&chainSymbol,
-		&startBlock,
-		&endBlock,
-	)
-	if err != nil {
-		return "", 0, 0, err
-	}
-
-	return chainSymbol, startBlock, endBlock, nil
 }

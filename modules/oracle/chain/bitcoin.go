@@ -2,15 +2,24 @@ package chain
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httputil"
 	"os"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/hasura/go-graphql-client"
+)
+
+const (
+	graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
 )
 
 var (
@@ -21,6 +30,7 @@ var (
 type bitcoinRelayer struct {
 	rpcConfig         rpcclient.ConnConfig
 	validityThreshold uint64
+	ctx               context.Context
 }
 
 type btcChainData struct {
@@ -40,14 +50,14 @@ const (
 )
 
 // Init implements chainRelay.
-func (b *bitcoinRelayer) Init() error {
+func (b *bitcoinRelayer) Init(ctx context.Context) error {
 	var btcdRpcHost string
 	if os.Getenv("DEBUG") == "1" {
-		btcdRpcHost = "173.211.12.65:8332"
+		// btcdRpcHost = "173.211.12.65:8332"
+		btcdRpcHost = "0.0.0.0:8332"
 	} else {
 		btcdRpcHost = "btcd:8332"
 	}
-	
 
 	b.rpcConfig = rpcclient.ConnConfig{
 		Host:         btcdRpcHost,
@@ -57,13 +67,19 @@ func (b *bitcoinRelayer) Init() error {
 		DisableTLS:   true,
 	}
 	b.validityThreshold = 3
+	b.ctx = ctx
 
 	return nil
 }
 
 // Symbol implements chainRelay.
 func (b *bitcoinRelayer) Symbol() string {
-	return "BTC"
+	return "btc"
+}
+
+// ContractID implements chainRelay.
+func (b *bitcoinRelayer) ContractID() string {
+	return "vsc1BonkE2CtHqjnkFdH8hoAEMP25bbWhSr3UA"
 }
 
 // TickCheck implements chainRelay.
@@ -148,6 +164,60 @@ func (b *bitcoinRelayer) ChainData(
 	return blocks, nil
 }
 
+// GetContractState implements chainRelay.
+func (b *bitcoinRelayer) GetContractState() (chainState, error) {
+	const queryKey = "blocklist"
+
+	var query struct {
+		GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys)"`
+	}
+
+	variables := map[string]any{
+		"contractId": b.ContractID(),
+		"keys":       []string{queryKey},
+	}
+
+	var debugClient *http.Client
+	if os.Getenv("DEBUG") == "1" {
+		debugClient = &http.Client{
+			Transport: &loggingTransport{http.DefaultTransport},
+		}
+	}
+
+	client := graphql.NewClient(graphQLUrl, debugClient)
+	opName := graphql.OperationName("GetContractState")
+	if err := client.Query(b.ctx, &query, variables, opName); err != nil {
+		return chainState{}, fmt.Errorf("failed to query graphQL: %w", err)
+	}
+
+	var stateMap map[string]json.RawMessage
+	if err := json.Unmarshal(query.GetStateByKeys, &stateMap); err != nil {
+		return chainState{}, fmt.Errorf(
+			"failed to deserialize stateMap: %w", err,
+		)
+	}
+
+	observedData, exists := stateMap[queryKey]
+	if !exists {
+		return chainState{blockHeight: 1}, nil
+	}
+
+	var blockData struct {
+		LastHeight uint32 `json:"last_height"`
+	}
+	if err := json.Unmarshal(observedData, &blockData); err != nil {
+		return chainState{}, fmt.Errorf(
+			"failed to deserialize blockData: %w", err,
+		)
+	}
+
+	if blockData.LastHeight == 0 {
+		blockData.LastHeight++
+	}
+
+	return chainState{blockHeight: uint64(blockData.LastHeight)}, nil
+}
+
 // Height implements chainBlock.
 func (b *btcChainData) BlockHeight() uint64 {
 	return b.Height
@@ -168,59 +238,32 @@ func (b *btcChainData) Type() string {
 	return "BTC"
 }
 
-// GetContractState implements chainRelay.
-func (b *bitcoinRelayer) GetContractState() (chainState, error) {
-	//Pull from VSC graphql API
-	panic("unimplemented")
+func (b *btcChainData) AverageFee() int64 {
+	return b.AverageFeeRate
 }
 
-// VerifyChainData implements chainRelay.
-// func (b *bitcoinRelayer) VerifyChainData(data json.RawMessage) error {
-// 	var peerBtcChainData btcChainData
-// 	if err := json.Unmarshal(data, &peerBtcChainData); err != nil {
-// 		return fmt.Errorf("failed to deserialize bitcoin chain data: %w", err)
-// 	}
-
-// 	var blockHash chainhash.Hash
-// 	if err := chainhash.Decode(&blockHash, peerBtcChainData.Hash); err != nil {
-// 		return fmt.Errorf("failed to decode chain data hash: %w", err)
-// 	}
-
-// 	// connect to btcd
-// 	btcdClient, err := b.connect()
-// 	if err != nil {
-// 		return fmt.Errorf("failed to connect to btcd server: %w", err)
-// 	}
-// 	defer btcdClient.Shutdown()
-
-// 	// get valid block height, verify the peerBtcChainData has a depth of 3
-// 	validBlockHeight, err := b.getLatestValidBlockHeight(btcdClient)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to get block height: %w", err)
-// 	}
-
-// 	if peerBtcChainData.Height > validBlockHeight {
-// 		return fmt.Errorf("failed to meet block threshold")
-// 	}
-
-// 	// fetch block by hash then verify peerBtcChainData
-// 	localBtcChainData, err := b.getBlockByHash(btcdClient, &blockHash)
-// 	if err != nil {
-// 		return fmt.Errorf(
-// 			"failed to get chain data: block hash [%s], err [%w]",
-// 			blockHash.String(), err,
-// 		)
-// 	}
-
-// 	validChainData := reflect.DeepEqual(&peerBtcChainData, localBtcChainData)
-// 	if !validChainData {
-// 		return errInvalidChainData
-// 	}
-
-// 	return nil
-// }
-
 // UTILS STUFF
+
+type loggingTransport struct {
+	transport http.RoundTripper
+}
+
+func (t *loggingTransport) RoundTrip(
+	req *http.Request,
+) (*http.Response, error) {
+	reqDump, _ := httputil.DumpRequestOut(req, true)
+	fmt.Printf("\nRequest:\n%s\n\n", reqDump)
+
+	resp, err := t.transport.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
+
+	respDump, _ := httputil.DumpResponse(resp, true)
+	fmt.Printf("\nResponse:\n%s\n\n", respDump)
+
+	return resp, err
+}
 
 func (b *bitcoinRelayer) getLatestValidBlockHeight(
 	btcdClient *rpcclient.Client,

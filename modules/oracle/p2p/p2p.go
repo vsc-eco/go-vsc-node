@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"vsc-node/modules/db/vsc/elections"
 	libp2p "vsc-node/modules/p2p"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -25,7 +26,12 @@ type OracleP2PSpec interface {
 }
 
 type MessageHandler interface {
-	Handle(peer.ID, Msg) (Msg, error)
+	Handle(
+		peer peer.ID,
+		inboundMsg Msg,
+		blockProducer string,
+		electedMembers []elections.ElectionMember,
+	) (Msg, error)
 }
 
 type OracleP2PMessageHandler struct {
@@ -79,7 +85,7 @@ func (p *OracleP2PMessageHandler) HandleMessage(
 		return errTimeout
 
 	default:
-		response, err := p.handler.Handle(from, msg)
+		response, err := p.handler.Handle(from, msg, "", nil)
 		if err != nil {
 			return err
 		}

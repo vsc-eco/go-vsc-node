@@ -2,58 +2,39 @@ package chain
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"sync"
+	"log/slog"
+	"slices"
 	"time"
-	"vsc-node/modules/db/vsc/contracts"
+	"vsc-node/lib/dids"
+	"vsc-node/lib/utils"
+	"vsc-node/modules/common"
+	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
+	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
+
+	"github.com/hasura/go-graphql-client"
 )
 
-type session struct {
-	vscTransaction transactionpool.SerializedVSCTransaction
-	chainData      []string
-	signatures     []string
+type blockProducer struct {
+	ctx                    context.Context
+	logger                 *slog.Logger
+	username               string
+	p2pSpec                p2p.OracleP2PSpec
+	sigChan                *signatureChannels
+	electedMembers         []elections.ElectionMember
+	totalWeight            uint64
+	electedMemberWeightMap []uint64
 }
 
-type vscTransaction struct {
-	sessionID  string
-	chainData  []byte
-	signatures []string
-}
-
-func makeTransaction(
-	contractId *string,
-	payload []string,
-	symbol string,
-) transactionpool.VSCTransaction {
-	ops := make([]transactionpool.VSCTransactionOp, 0)
-	op := transactionpool.VscContractCall{
-		ContractId: *contractId,
-		Action:     "add_blocks",
-		Payload:    "",
-		Intents:    []contracts.Intent{},
-		RcLimit:    1000,
-		Caller:     "did:vsc:oracle:" + symbol,
-		NetId:      "vsc-mainnet",
-	}
-	vOp, _ := op.SerializeVSC()
-	ops = append(ops, vOp)
-	return transactionpool.VSCTransaction{
-		Ops:   ops,
-		Nonce: 0,
-		NetId: "vsc-mainnet",
-		// Headers: transactionpool.VSCTransactionHeader{
-		// 	Nonce:         0,
-		// 	RequiredAuths: []string{"did:vsc:oracle:" + symbol},
-
-		// 	NetId: "vsc-mainnet",
-		// },
-		// Type:    "vsc-tx",
-		// Version: "0.2",
-
-		// Tx: ops,
-	}
+// input expected by the contract
+type AddBlocksInput struct {
+	Blocks    string `json:"blocks"`
+	LatestFee int64  `json:"latest_fee"`
 }
 
 // HandleBlockTick implements oracle.BlockTickHandler.
@@ -66,157 +47,229 @@ func (o *ChainOracle) HandleBlockTick(
 	if !signal.IsProducer {
 		return
 	}
-	// ## Process end to end ##
-	// - Node is witness & producer
-	// - Using the contract state of latest block in combination with latest
-	//   block on Bitcoin mainnet
-	// - Assuming this is true.
-	// - Create the transaction structure with the block headers to submit
-	// - Receiving node will do the same check as above, aka verify that new
-	//   blocks must be submitted
-	// - If true, then sign the exact same transaction and return signature
-	// - Producer node will receive signatures through the p2p channel
-	// - Producer node will aggregate those signatures into a single BLS circuit
-	//   for submission on mainnet
 
-	// make chainDataPool and signature requests
-
-	chainStatuses := o.fetchAllStatuses()
-	signatureRequests := make([]chainOracleMessage, 0, len(chainStatuses))
-	sessionMap := make(map[string]session)
-
-	for _, chainStatus := range chainStatuses {
-		if !chainStatus.newBlocksToSubmit {
-			continue
-		}
-
-		sessionID, err := makeChainSessionID(&chainStatus)
-		if err != nil {
-			o.logger.Error(
-				"failed to create session ID",
-				"block count", len(chainStatus.chainData),
-				"err", err,
-			)
-			continue
-		}
-
-		signatureRequest, err := makeChainOracleMessage(
-			signatureRequest,
-			sessionID,
-			chainStatus.chainData,
-		)
-		if err != nil {
-			o.logger.Error(
-				"failed to create signature requests",
-				"sessionID", sessionID,
-				"err", err,
-			)
-			continue
-		}
-
-		payload, err := makeTransactionPayload(chainStatus.chainData)
-		if err != nil {
-			o.logger.Error(
-				"failed to make transaction payload",
-				"sessionID", sessionID,
-				"err", err,
-			)
-			continue
-		}
-
-		tx := makeTransaction(chainStatus.contractId, payload, chainStatus.symbol)
-
-		signatureRequests = append(signatureRequests, *signatureRequest)
-
-		serializedTx, _ := tx.Serialize()
-
-		sessionMap[sessionID] = session{
-			vscTransaction: serializedTx,
-			chainData:      payload,
-			signatures:     make([]string, 0, 128),
-		}
+	blockProducer := &blockProducer{
+		ctx:                    o.ctx,
+		logger:                 o.logger,
+		username:               o.conf.Get().HiveUsername,
+		p2pSpec:                p2pSpec,
+		sigChan:                o.signatureChannels,
+		electedMembers:         signal.ElectedMembers,
+		totalWeight:            signal.TotalElectionWeight,
+		electedMemberWeightMap: signal.WeightMap,
 	}
 
-	// broadcast signature requests + collect signatures
-	// - Ask P2P channels for signatures for the transaction
-	// - Receiving node will receive request to create transaction on VSC mainnet
-	defer o.signatureChannels.clearMap()
+	for symbol, chain := range o.chainRelayers {
+		o.logger.Debug("block tick event", "symbol", symbol)
+		session, err := o.makeChainSession(symbol)
+		if err != nil {
+			o.logger.Error("failed to get chain session",
+				"symbol", symbol,
+				"err", err,
+			)
+			continue
+		}
 
-	sessionMapMtx := &sync.Mutex{}
-	ctx, cancel := context.WithTimeout(o.ctx, 30*time.Second)
+		if err := blockProducer.handleChainSession(chain, session); err != nil {
+			o.logger.Error(
+				"failed to process chain session",
+				"network", symbol, "err", err,
+			)
+		}
+	}
+}
+
+func (bp *blockProducer) handleChainSession(
+	chain chainRelay,
+	chainSession chainSession,
+) error {
+	bp.logger.Debug("handling chain session", "sessionID", chainSession.sessionID)
+
+	if len(bp.electedMemberWeightMap) != len(bp.electedMembers) {
+		return errors.New(
+			"invalid weightMap or members of the current election",
+		)
+	}
+
+	sessionID := chainSession.sessionID
+	bp.logger.Debug("created session ID", "sessionID", sessionID)
+
+	// make signature receiver
+	sigChan, err := bp.sigChan.makeSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to make signature session: %w", err)
+	}
+	defer bp.sigChan.removeSession(sessionID)
+
+	// create tx + chain hash
+	tx, err := makeChainTx(chain, chainSession.chainData)
+	txCid := tx.Cid()
+
+	// create transaction + bls circuit
+	witnessDIDs := utils.Map(
+		bp.electedMembers,
+		func(w elections.ElectionMember) dids.Member {
+			return dids.BlsDID(w.Key)
+		},
+	)
+
+	circuit, err := dids.NewBlsCircuitGenerator(witnessDIDs).Generate(txCid)
+	if err != nil {
+		return fmt.Errorf("failed to generate bls circuit: %w", err)
+	}
+
+	// collect witness data
+	witnessAccounts := make([]string, len(bp.electedMembers))
+	for i := range bp.electedMembers {
+		member := &bp.electedMembers[i]
+		witnessAccounts[i] = member.Account
+	}
+
+	weightThreshold := (bp.totalWeight * 2) / 3
+	signedWeight := uint64(0)
+	bp.logger.Debug("set threshold", "threshold", weightThreshold)
+
+	// broadcast signature request
+	blockProducerMsg := chainOracleBlockProducerMessage{
+		BlockProducer: bp.username,
+		SigHash:       txCid.String(),
+	}
+
+	msgJsonBytes, err := json.Marshal(&blockProducerMsg)
+	if err != nil {
+		return fmt.Errorf("failed to serialize block producer message: %w", err)
+	}
+
+	signatureRequestMsg := chainOracleMessage{
+		MessageType: signatureRequest,
+		SessionID:   sessionID,
+		Payload:     json.RawMessage(msgJsonBytes),
+	}
+
+	if err := bp.p2pSpec.Broadcast(p2p.MsgChainRelay, &signatureRequestMsg); err != nil {
+		return fmt.Errorf("failed to broadcast message: %w", err)
+	}
+
+	bp.logger.Debug(
+		"broadcasted signature request message",
+		"message", signatureRequestMsg,
+	)
+
+	// collect witness signatures
+	ctx, cancel := context.WithTimeout(bp.ctx, time.Minute)
 	defer cancel()
 
-	for i := range signatureRequests {
-		sigRequest := &signatureRequests[i]
-		sigChan, err := o.signatureChannels.makeSession(sigRequest.SessionID)
-		if err != nil {
-			o.logger.Error("fialed to make signature session",
-				"sessionID", sigRequest.SessionID,
-				"err", err,
-			)
-			continue
-		}
-
-		if err := p2pSpec.Broadcast(p2p.MsgChainRelay, sigRequest); err != nil {
-			o.logger.Error(
-				"failed to broadcast signature request",
-				"sessionID", sigRequest.SessionID,
-				"err", err,
-			)
-			continue
-		}
-
-		go collectSignature(
-			ctx,
-			sessionMapMtx,
-			sigChan,
-			sigRequest.SessionID,
-			sessionMap,
-		)
-	}
-
-	<-ctx.Done()
-
-	// validate signatures + submit transaction
-	for sessionID, session := range sessionMap {
-		fmt.Println(sessionID, session)
-	}
-
-}
-
-// validate signatures + make transaction
-func makeTransactionPayload(blocks []chainBlock) ([]string, error) {
-	payload := make([]string, len(blocks))
-	var err error
-
-	for i, block := range blocks {
-		payload[i], err = block.Serialize()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return payload, nil
-}
-
-func collectSignature(
-	ctx context.Context,
-	mtx *sync.Mutex,
-	sigChan <-chan signatureMessage,
-	sessionID string,
-	sessionMap map[string]session,
-) {
-	for {
+	for signedWeight < weightThreshold {
 		select {
 		case <-ctx.Done():
-			return
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("context error: %w", err)
+			} else {
+				return errors.New("signature collection timed out")
+			}
 
 		case msg := <-sigChan:
-			mtx.Lock()
-			session := sessionMap[sessionID]
-			session.signatures = append(session.signatures, msg.Signature)
-			sessionMap[sessionID] = session
-			mtx.Unlock()
+			memberIndex := slices.Index(witnessAccounts, msg.Signer)
+			if memberIndex == -1 {
+				bp.logger.Debug(
+					"invalid witness signature, dropping.",
+					"signer", msg.Signer,
+				)
+				continue
+			}
+
+			member := &bp.electedMembers[memberIndex]
+			memberDID := dids.BlsDID(member.Key)
+
+			signature := msg.Signature
+
+			added, err := circuit.AddAndVerify(memberDID, signature)
+			if err != nil {
+				bp.logger.Error("failed to add member to circuit.", "err", err)
+				continue
+			}
+
+			if !added {
+				bp.logger.Debug(
+					"invalid member, signature not added to circuit",
+				)
+				continue
+			}
+
+			signedWeight += bp.electedMemberWeightMap[memberIndex]
+
+			bp.logger.Debug(
+				"received witness signature, appending to witnessSigned",
+				"signer", member.Account,
+				"signature", signature,
+			)
 		}
 	}
+
+	// make transaction + submit to contract
+	blsCircuit, err := circuit.Finalize()
+	if err != nil {
+		return fmt.Errorf("failed to finalize circuit: %w", err)
+	}
+
+	serializedCircuit, err := blsCircuit.Serialize()
+	if err != nil {
+		return fmt.Errorf("failed to finalize circuit: %w", err)
+	}
+
+	sigPackage := stateEngine.TransactionSig{
+		Type: "vsc-sig",
+		Sigs: []common.Sig{
+			{
+				Algo: "bls-agg",
+				Sig:  serializedCircuit.Signature,
+				Bv:   serializedCircuit.BitVector,
+				Kid:  "",
+			},
+		},
+	}
+
+	sigBytes, err := common.EncodeDagCbor(sigPackage)
+	if err != nil {
+		return fmt.Errorf("failed encode DagCbor: %w", err)
+	}
+
+	//Submit to graphql SubmitTransaction()
+	vscTx := transactionpool.SerializedVSCTransaction{
+		Tx:  tx.Cid().Bytes(),
+		Sig: sigBytes,
+	}
+
+	if err := bp.submitToContract(vscTx); err != nil {
+		return fmt.Errorf("failed to submit to contract: %w", err)
+	}
+
+	return nil
+}
+
+func (bp *blockProducer) submitToContract(
+	vscTx transactionpool.SerializedVSCTransaction,
+) error {
+	client := graphql.NewClient("https://api.vsc.eco/api/v1/graphql", nil)
+
+	var query struct {
+		Result struct{} `graphql:"submitTransactionV1(tx: $tx, sig: $sig)"`
+	}
+
+	enc := base64.StdEncoding.EncodeToString
+	variables := map[string]any{
+		"tx":  graphql.String(enc(vscTx.Tx)),
+		"sig": graphql.String(enc(vscTx.Sig)),
+	}
+
+	opName := graphql.OperationName("SubmitContract")
+
+	ctx, cancel := context.WithTimeout(bp.ctx, 15*time.Second)
+	defer cancel()
+
+	if err := client.Query(ctx, &query, variables, opName); err != nil {
+		return fmt.Errorf("failed graphql query: %w", err)
+	}
+
+	return nil
 }

@@ -1,59 +1,98 @@
 package chain
 
 import (
-	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"fmt"
-	"io"
-	"strings"
+	"log/slog"
+
+	blocks "github.com/ipfs/go-block-format"
+	blsu "github.com/protolambda/bls12-381-util"
 )
 
-const rawBlsSignatureLength = 96
+var (
+	errInvalidBlockProducer = errors.New("invalid block producer")
+	errInvalidChainHash     = errors.New("invalid chain hash")
+)
 
-// signs off chain data and returns a signature
-func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (string, error) {
-	chainSymbol, startBlock, endBlock, err := parseChainSessionID(msg.SessionID)
-	if err != nil {
-		return "", fmt.Errorf("invalid session id: %w", err)
-	}
-
-	fmt.Println(
-		"TODO: fetch %s block from %d to %d",
-		chainSymbol, startBlock, endBlock,
-	)
-
-	chain, ok := c.chainRelayers[strings.ToUpper(chainSymbol)]
-	if !ok {
-		return "", errInvalidChainSymbol
-	}
-	count := (endBlock - startBlock) + 1
-
-	blocks, err := chain.ChainData(startBlock, count)
-	fmt.Println("verify blocks", len(blocks), err)
-
-	/*
-		if err := chain.VerifyChainData(msg.Payload); err != nil {
-			return "", fmt.Errorf("invalid chain data: %w", err)
-		}
-
-			signature, err := signChainData(msg.Payload)
-			if err != nil {
-				return "", fmt.Errorf("failed to sign chain data: %w", err)
-			}
-
-			return signature, nil
-	*/
-	return "", nil
+type chainOracleWitness struct {
+	logger            *slog.Logger
+	chainMap          map[string]chainRelay
+	username          string
+	privateBlsKeySeed string
+	sessionID         string
+	chainRelayMap     map[string]chainRelay
+	blockProducer     string
 }
 
-// TODO: sign chain data, 96 bytes signature with base64.RawStdEncoding
-func signChainData(payload []byte) (string, error) {
-	var buf [rawBlsSignatureLength]byte
-	n := copy(buf[:], payload)
-	if _, err := io.ReadFull(rand.Reader, buf[n:]); err != nil {
-		return "", err
+// signs off chain data and returns a signature
+func (o *chainOracleWitness) witnessChainData(
+	msg *chainOracleBlockProducerMessage,
+) (*chainOracleWitnessMessage, error) {
+	if o.blockProducer != msg.BlockProducer {
+		return nil, errInvalidBlockProducer
 	}
 
-	signature := base64.RawStdEncoding.EncodeToString(buf[:])
-	return signature, nil
+	// get blocks from chain
+	chain, blocks, err := getSessionData(o.chainMap, o.sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get blocks from chain: %w", err)
+	}
+
+	o.logger.Debug(
+		"got blocks from btcd",
+		"blocksCount", len(blocks),
+	)
+
+	// verify blocks against block producer's hashes
+	tx, err := makeChainTx(chain, blocks)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tx: %w", err)
+	}
+
+	chainHashMatch := tx.Cid().String() == msg.SigHash
+	if !chainHashMatch {
+		return nil, errInvalidChainHash
+	}
+
+	// sign and respond
+	signature, err := o.signChainData(tx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign producer block: %w", err)
+	}
+
+	response := chainOracleWitnessMessage{
+		Signature: signature,
+		Signer:    o.username,
+	}
+
+	return &response, nil
+}
+
+func (w *chainOracleWitness) signChainData(
+	payload blocks.Block,
+) (string, error) {
+	// decode bls key seed
+	blsKeyDecoded, err := hex.DecodeString(w.privateBlsKeySeed)
+	if err != nil {
+		return "", fmt.Errorf("failed to deserialize bsl key seed: %w", err)
+	}
+
+	if len(blsKeyDecoded) != 32 {
+		return "", errors.New("bls priv seed must be 32 bytes")
+	}
+
+	var blsKeyBuf [32]byte
+	copy(blsKeyBuf[:], blsKeyDecoded)
+
+	blsSecretKey := &blsu.SecretKey{}
+	if err := blsSecretKey.Deserialize(&blsKeyBuf); err != nil {
+		return "", fmt.Errorf("failed to deserialize bls priv key: %w", err)
+	}
+
+	sigBytes := blsu.Sign(blsSecretKey, payload.Cid().Bytes()).Serialize()
+
+	sig := base64.RawURLEncoding.EncodeToString(sigBytes[:])
+	return sig, nil
 }
