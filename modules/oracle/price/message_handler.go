@@ -2,20 +2,17 @@ package price
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"strings"
-	"time"
 	"vsc-node/modules/db/vsc/elections"
-	"vsc-node/modules/oracle/httputils"
 	"vsc-node/modules/oracle/p2p"
-	"vsc-node/modules/oracle/threadsafe"
+	"vsc-node/modules/oracle/price/api"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 const (
 	averagePriceCode messageCode = iota
+	signatureRequestCode
 )
 
 type messageCode int
@@ -23,6 +20,11 @@ type messageCode int
 type PriceOracleMessage struct {
 	MessageCode messageCode     `json:"message_code"`
 	Payload     json.RawMessage `json:"payload"`
+}
+
+type SignatureRequestMessage struct {
+	TxCid       string                    `json:"tx_cid"`
+	MedianPrice map[string]api.PricePoint `json:"median_price"`
 }
 
 func makePriceOracleMessage(code messageCode, data any) (*PriceOracleMessage, error) {
@@ -53,93 +55,12 @@ func (o *PriceOracle) Handle(
 	}
 
 	var response p2p.Msg
-	switch msg.Code {
-	case p2p.MsgPriceBroadcast:
-		data, err := httputils.JsonUnmarshal[map[string]p2p.AveragePricePoint](
-			msg.Data,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		pricePoints := collectPricePoint(peerID, data)
-		if err := o.pricePoints.Consume(pricePoints); err != nil {
-			if errors.Is(err, threadsafe.ErrLockedChannel) {
-				o.logger.Debug(
-					"unable to collect broadcasted average price points in the current block interval.",
-				)
-			} else {
-				o.logger.Error("failed to collect pricePoint", "err", err)
-			}
-		}
-
-	case p2p.MsgPriceSignature:
-		block, err := httputils.JsonUnmarshal[p2p.OracleBlock](msg.Data)
-		if err != nil {
-			return nil, err
-		}
-
-		block.TimeStamp = time.Now().UTC()
-		if err := o.signatures.Consume(*block); err != nil {
-			if errors.Is(err, threadsafe.ErrLockedChannel) {
-				o.logger.Debug(
-					"unable to collect broadcasted signatures in the current block interval.",
-				)
-			} else {
-				o.logger.Error("failed to collect signatures", "err", err)
-			}
-		}
-
-	case p2p.MsgPriceBlock:
-		block, err := httputils.JsonUnmarshal[p2p.OracleBlock](msg.Data)
-		if err != nil {
-			return nil, err
-		}
-
-		block.TimeStamp = time.Now().UTC()
-		if err := o.producerBlocks.Consume(*block); err != nil {
-			if errors.Is(err, threadsafe.ErrLockedChannel) {
-				o.logger.Debug(
-					"unable to collect and verify price block in the current block interval.",
-				)
-			} else {
-				o.logger.Error("failed to collect price block", "err", err)
-			}
-		}
+	switch msg.MessageCode {
+	case averagePriceCode:
 
 	default:
 		return nil, p2p.ErrInvalidMessageType
 	}
 
 	return response, nil
-}
-
-func collectPricePoint(
-	peerID peer.ID,
-	data *map[string]p2p.AveragePricePoint,
-) PricePointMap {
-	recvTimeStamp := time.Now().UTC()
-
-	m := make(PricePointMap)
-	for symbol, avgPricePoint := range *data {
-		sym := strings.ToUpper(symbol)
-
-		pp := PricePoint{
-			Price:       avgPricePoint.Price,
-			Volume:      avgPricePoint.Volume,
-			PeerID:      peerID,
-			CollectedAt: recvTimeStamp,
-		}
-
-		v, ok := m[sym]
-		if !ok {
-			v = []PricePoint{pp}
-		} else {
-			v = append(v, pp)
-		}
-
-		m[sym] = v
-	}
-
-	return m
 }

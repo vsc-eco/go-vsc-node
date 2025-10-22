@@ -2,15 +2,17 @@ package price
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"log"
+	"fmt"
 	"math"
 	"slices"
 	"strings"
 	"time"
+	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/price/api"
+
+	blocks "github.com/ipfs/go-block-format"
 )
 
 const float64Epsilon = 1e-9
@@ -38,287 +40,165 @@ func (o *PriceOracle) HandleBlockTick(
 		return
 	}
 
-	if !sig.IsWitness && !sig.IsProducer {
+	if !sig.IsWitness {
+		return
+	}
+
+	// collect average prices from the network
+	ctx, cancel := context.WithTimeout(o.ctx, 15*time.Second)
+	defer cancel()
+
+	priceChan := o.priceChannel.Open()
+
+	type CollectedPricePoint struct {
+		prices  []float64
+		volumes []float64
+	}
+
+	collectedPricePoint := make(map[string]CollectedPricePoint)
+	err = nil
+
+avgPricePoll:
+	for {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+
+			// if timed out, ignore the error
+			if errors.Is(err, context.DeadlineExceeded) {
+				err = nil
+			}
+
+			break avgPricePoll
+
+		case priceMap := <-priceChan:
+			for symbol, pp := range priceMap {
+				if math.IsNaN(pp.Volume) || math.IsNaN(pp.Volume) {
+					o.logger.Debug("NaN values dropped", "price", pp.Price, "volume", pp.Volume)
+					continue
+				}
+
+				symbol = strings.ToLower(symbol)
+
+				p, ok := collectedPricePoint[symbol]
+				if !ok {
+					p = CollectedPricePoint{
+						prices:  []float64{pp.Price},
+						volumes: []float64{pp.Volume},
+					}
+				} else {
+					p.prices = append(p.prices, pp.Price)
+					p.volumes = append(p.volumes, pp.Volume)
+				}
+
+				collectedPricePoint[symbol] = p
+			}
+		}
+	}
+
+	o.priceChannel.Close()
+	if err != nil {
+		o.logger.Error("failed collect average prices from network")
 		return
 	}
 
 	// get median prices
-	medianPricePoints := o.getMedianPricePoint(localAvgPrices)
-
-	// make block / sign block
-	var signalHandler func(*p2p.BlockTickSignal, map[string]api.PricePoint) error
-
-	if sig.IsProducer {
-		priceBlockProducer := &priceBlockProducer{o, p2pSpec}
-		signalHandler = priceBlockProducer.handleSignal
-	} else if sig.IsWitness {
-		priceBlockWitness := &priceBlockWitness{o, p2pSpec}
-		signalHandler = priceBlockWitness.handleSignal
-	}
-
-	if err := signalHandler(&sig, medianPricePoints); err != nil {
-		o.logger.Error(
-			"error on broadcast price tick interval",
-			"err", err,
-			"isProducer", sig.IsProducer,
-			"isWitness", sig.IsWitness,
-		)
-	}
-}
-
-func (o *PriceOracle) getMedianPricePoint(
-	localAvgPrices map[string]p2p.AveragePricePoint,
-) map[string]api.PricePoint {
-	o.logger.Debug("collecting average prices")
-
-	// updating with local price points
-	appBuf := make(map[string]aggregatedPricePoints)
-	for k, v := range localAvgPrices {
-		sym := strings.ToUpper(k)
-		appBuf[sym] = aggregatedPricePoints{
-			prices:  []float64{v.Price},
-			volumes: []float64{v.Volume},
-		}
-	}
-
-	// collect broadcastPriceBlocks
-	timeThreshold := time.Now().UTC().Add(-time.Hour)
-	collector := pricePointCollector(appBuf, &timeThreshold)
-
-	// room for network latency
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	o.pricePoints.Collect(ctx, collector)
-
-	// calculating the median volumes + prices
-	medianPricePoint := make(map[string]api.PricePoint)
-	for sym, app := range appBuf {
-		medianPricePoint[sym] = api.PricePoint{
-			Price:  getMedian(app.prices),
-			Volume: getMedian(app.volumes),
-			// peerID:      "",
-			CollectedAt: time.Now().UTC(),
-		}
-	}
-
-	return medianPricePoint
-}
-
-func pricePointCollector(
-	appBuf map[string]aggregatedPricePoints,
-	timeThreshold *time.Time,
-) threadsafe.CollectFunc[PricePointMap] {
-	const earlyReturn = false
-
-	return func(ppm PricePointMap) bool {
-		for sym, pricePoints := range ppm {
-			sym = strings.ToUpper(sym)
-
-			for _, pp := range pricePoints {
-				v, ok := appBuf[sym]
-				if !ok {
-					log.Println("unsupported symbol", sym)
-				}
-
-				pricePointExpired := timeThreshold.After(pp.CollectedAt)
-				if pricePointExpired {
-					continue
-				}
-
-				v.volumes = append(appBuf[sym].volumes, pp.Volume)
-				v.prices = append(appBuf[sym].prices, pp.Price)
-
-				appBuf[sym] = v
-			}
-		}
-
-		return earlyReturn
-	}
-}
-
-// price block producer
-
-type priceBlockProducer struct {
-	*PriceOracle
-	p2p.OracleP2PSpec
-}
-
-type aggregatedPricePoints struct {
-	prices  []float64
-	volumes []float64
-}
-
-func (p *priceBlockProducer) handleSignal(
-	sig *p2p.BlockTickSignal,
-	medianPricePoints map[string]PricePoint,
-) error {
-	// make block with median price + broadcast
-	p.logger.Debug("broadcasting new oracle block with median prices")
-
-	block, err := p2p.MakeOracleBlock(
-		p.conf.Get().HiveUsername,
-		p.conf.Get().HiveActiveKey,
-		medianPricePoints,
-	)
-	if err != nil {
-		return err
-	}
-
-	if err := p.Broadcast(p2p.MsgPriceBlock, *block); err != nil {
-		return err
-	}
-
-	// collecting signature and submit to contract
-	p.logger.Debug("collecting signature", "block-id", block.ID)
-
-	sigThreshold := int(math.Ceil(float64(len(sig.ElectedMembers)) * 2.0 / 3.0))
-	block.Signatures = make([]string, 0, sigThreshold)
-
-	// room for network latency
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	err = p.signatures.Collect(ctx, func(ob p2p.OracleBlock) bool {
-		if err := p.validateSignedBlock(&ob); err != nil {
-			p.logger.Error("failed to validate block signature")
-			return false
-		}
-
-		block.Signatures = append(block.Signatures, ob.Signatures[0])
-		return len(block.Signatures) >= sigThreshold
-	})
-
-	if err != nil {
-		return errors.New("failed to meet signature threshold")
-	}
-
-	return p.SubmitToContract(block)
-}
-
-// TODO: implement block validation
-func (p *priceBlockProducer) validateSignedBlock(block *p2p.OracleBlock) error {
-	if len(block.Signatures) != 1 {
-		return errors.New("missing signature")
-	}
-
-	/*
-		if err := v.Struct(block); err != nil {
-			return false
-		}
-	*/
-
-	// TODO: validate signature
-	return nil
-}
-
-// price block witness
-
-var errBlockExpired = errors.New("block expired")
-
-type priceBlockWitness struct {
-	*PriceOracle
-	p2p.OracleP2PSpec
-}
-
-func (p *priceBlockWitness) handleSignal(
-	sig *p2p.BlockTickSignal,
-	medianPricePoints map[string]PricePoint,
-) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	blocks := make([]p2p.OracleBlock, 0, 2)
-
-	// room for network latency
-	p.producerBlocks.Collect(ctx, func(ob p2p.OracleBlock) bool {
-		blocks = append(blocks, ob)
-		return false
-	})
-
-	for _, block := range blocks {
-		ok := p.validateBlock(&block, medianPricePoints)
-		if !ok {
-			p.logger.Debug(
-				"block rejected",
-				"block-id", block.ID,
-				"block-data", block.Data,
-			)
+	medianPriceMap := make(map[string]api.PricePoint, len(collectedPricePoint))
+	for symbol, pp := range collectedPricePoint {
+		if len(pp.prices) == 0 || len(pp.volumes) == 0 {
+			o.logger.Debug("skipping symbol, no prices or volumes supplied", "symbol", symbol)
 			continue
 		}
 
-		sig, err := p.signBlock(&block)
-		if err != nil {
-			return err
+		medianPriceMap[symbol] = api.PricePoint{
+			Price:  getMedianValue(pp.prices),
+			Volume: getMedianValue(pp.volumes),
 		}
+	}
 
-		block.Signatures = []string{sig}
+	// make transaction
+	tx, err := makeTx(medianPriceMap)
+	if err != nil {
+		o.logger.Error("failed to make transaction", "err", err)
+	}
 
-		if err := p.Broadcast(p2p.MsgPriceSignature, block); err != nil {
-			return err
+	var handler interface {
+		handle(blocks.Block, map[string]api.PricePoint) error
+	}
+
+	if sig.IsProducer {
+		handler = &Producer{
+			OracleP2PSpec:   p2pSpec,
+			electionMembers: sig.ElectedMembers,
 		}
+	} else {
+		handler = &Witness{p2pSpec}
+	}
+
+	if err := handler.handle(tx, medianPriceMap); err != nil {
+		o.logger.Error(
+			"failed to handle block tick",
+			"is-producer", sig.IsProducer,
+			"is-witness", sig.IsWitness,
+			"err", err,
+		)
+	}
+}
+
+// block producer
+type Producer struct {
+	p2p.OracleP2PSpec
+	electionMembers []elections.ElectionMember
+}
+
+func (p *Producer) handle(tx blocks.Block, medianPriceMap map[string]api.PricePoint) error {
+	if tx == nil {
+		return errors.New("nil tx")
+	}
+
+	// broadcast signature request
+	sigRequestMsg := SignatureRequestMessage{
+		TxCid:       tx.String(),
+		MedianPrice: medianPriceMap,
+	}
+
+	msg, err := makePriceOracleMessage(signatureRequestCode, &sigRequestMsg)
+	if err != nil {
+		return fmt.Errorf("failed to make message: %w", err)
+	}
+
+	if err := p.Broadcast(p2p.MsgPriceOracle, msg); err != nil {
+		return fmt.Errorf("failed to broadcast signature request: %w", err)
+	}
+
+	// TODO: make bls circuit
+
+	// TODO: collect and verify signatures with bls circuit
+
+	return nil
+}
+
+// witness
+type Witness struct{ p2p.OracleP2PSpec }
+
+func (w *Witness) handle(tx blocks.Block, medianPriceMap map[string]api.PricePoint) error {
+	if tx == nil {
+		return errors.New("nil tx")
 	}
 
 	return nil
 }
 
-// TODO: what do i need to validate?
-func (p *priceBlockWitness) validateBlock(
-	block *p2p.OracleBlock,
-	localMedianPrice map[string]PricePoint,
-) bool {
-	broadcastedMedianPrices := make(map[string]PricePoint)
-	if err := json.Unmarshal(block.Data, &broadcastedMedianPrices); err != nil {
-		return false
+// sort b and returns the median:
+// - if b has odd elements, returns the mid value
+// - if b has even elements, returns the mean of the 2 mid values
+func getMedianValue(b []float64) float64 {
+	slices.Sort(b)
+
+	if len(b)&1 == 1 {
+		return b[len(b)/2]
 	}
 
-	for sym, pricePoint := range localMedianPrice {
-		bpp, ok := broadcastedMedianPrices[sym]
-		if !ok {
-			return false
-		}
-
-		var (
-			priceOk  = float64Eq(pricePoint.Price, bpp.Price)
-			volumeOk = float64Eq(pricePoint.Volume, bpp.Volume)
-		)
-
-		if !priceOk || !volumeOk {
-			return false
-		}
-	}
-
-	return false
-}
-
-func (p *priceBlockWitness) signBlock(b *p2p.OracleBlock) (string, error) {
-	timeThreshold := time.Now().UTC().Add(-20 * time.Second)
-
-	blockExpired := timeThreshold.After(b.TimeStamp)
-	if blockExpired {
-		return "", errBlockExpired
-	}
-
-	// TODO: implement block verification + signing
-	return "signature", nil
-}
-
-func float64Eq(a, b float64) bool {
-	return math.Abs(a-b) < float64Epsilon
-}
-
-func getMedian(buf []float64) float64 {
-	if len(buf) == 0 {
-		return 0
-	}
-
-	slices.Sort(buf)
-
-	evenCount := len(buf)&1 == 0
-	if evenCount {
-		i := len(buf) / 2
-		return (buf[i] + buf[i-1]) / 2
-	} else {
-		return buf[len(buf)/2]
-	}
+	i := len(b) / 2
+	return (b[i] + b[i-1]) / 2.0
 }

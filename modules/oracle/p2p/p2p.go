@@ -61,11 +61,7 @@ func (p *OracleP2PMessageHandler) ValidateMessage(
 	}
 
 	switch parsedMsg.Code {
-	case MsgPriceBroadcast,
-		MsgPriceBlock,
-		MsgPriceSignature,
-		MsgChainOracle:
-
+	case MsgPriceOracle, MsgChainOracle:
 	default:
 		return false
 	}
