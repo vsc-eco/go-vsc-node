@@ -13,6 +13,7 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/oracle/chain"
 	"vsc-node/modules/oracle/p2p"
+	"vsc-node/modules/oracle/price"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	"vsc-node/modules/vstream"
@@ -59,7 +60,7 @@ type Oracle struct {
 	vStream     *vstream.VStream
 	stateEngine *stateEngine.StateEngine
 
-	// priceOracle *price.PriceOracle
+	priceOracle *price.PriceOracle
 	chainOracle *chain.ChainOracle
 
 	currentElectionData    *currentElectionData
@@ -78,16 +79,16 @@ func New(
 	ctx := context.TODO()
 
 	return &Oracle{
-		ctx:         ctx,
-		p2pServer:   p2pServer,
-		conf:        conf,
-		electionDb:  electionDb,
-		witnessDb:   witnessDb,
-		vStream:     vstream,
-		stateEngine: stateEngine,
-		// priceOracle: priceOracle,
+		ctx:                    ctx,
+		p2pServer:              p2pServer,
+		conf:                   conf,
+		electionDb:             electionDb,
+		witnessDb:              witnessDb,
+		vStream:                vstream,
+		stateEngine:            stateEngine,
 		logger:                 nil,
 		chainOracle:            nil,
+		priceOracle:            nil,
 		currentElectionData:    nil,
 		currentElectionDataMtx: &sync.RWMutex{},
 	}
@@ -101,21 +102,22 @@ func (o *Oracle) Init() error {
 	}
 
 	logger := slog.Default().With("id", o.p2pServer.PeerInfo().GetPeerId())
-	// priceOracle := price.New(
-	// 	ctx,
-	// 	logger,
-	// 	userCurrency,
-	// 	priceOraclePollInterval,
-	// 	watchSymbols,
-	// 	conf,
-	// )
 
 	o.logger = logger.With("service", "oracle")
 
 	o.chainOracle = chain.New(o.ctx, logger, o.conf)
+	o.priceOracle = price.New(
+		o.ctx,
+		logger,
+		userCurrency,
+		priceOraclePollInterval,
+		watchSymbols,
+		o.conf,
+	)
+
 	subServices := aggregate.New([]aggregate.Plugin{
 		o.chainOracle,
-		// o.priceOracle,
+		o.priceOracle,
 	})
 
 	return subServices.Init()
@@ -143,14 +145,12 @@ func (o *Oracle) Start() *promise.Promise[any] {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		services := []aggregate.Plugin{
+		services := aggregate.New([]aggregate.Plugin{
 			o.chainOracle,
-			// o.priceOracle,
-		}
+			o.priceOracle,
+		})
 
-		s := aggregate.New(services)
-
-		if _, err := s.Start().Await(ctx); err != nil {
+		if _, err := services.Start().Await(ctx); err != nil {
 			reject(err)
 			return
 		}
@@ -162,13 +162,12 @@ func (o *Oracle) Start() *promise.Promise[any] {
 // Stop implements aggregate.Plugin.
 // Runs cleanup once the `Aggregate` is finished
 func (o *Oracle) Stop() error {
-	services := []aggregate.Plugin{
+	services := aggregate.New([]aggregate.Plugin{
 		o.chainOracle,
-		// o.priceOracle,
-	}
+		o.priceOracle,
+	})
 
-	s := aggregate.New(services)
-	if err := s.Stop(); err != nil {
+	if err := services.Stop(); err != nil {
 		return err
 	}
 
@@ -217,10 +216,10 @@ func (o *Oracle) Handle(
 	)
 
 	switch msg.Code {
-	// case p2p.MsgPriceBroadcast, p2p.MsgPriceSignature, p2p.MsgPriceBlock:
-	// 	handler = o.priceOracle
+	case p2p.MsgPriceOracle:
+		handler = o.priceOracle
 
-	case p2p.MsgChainRelay:
+	case p2p.MsgChainOracle:
 		handler = o.chainOracle
 
 	default:

@@ -139,7 +139,7 @@ func (bp *blockProducer) handleChainSession(
 		Payload:     json.RawMessage(msgJsonBytes),
 	}
 
-	if err := bp.p2pSpec.Broadcast(p2p.MsgChainRelay, &signatureRequestMsg); err != nil {
+	if err := bp.p2pSpec.Broadcast(p2p.MsgChainOracle, &signatureRequestMsg); err != nil {
 		return fmt.Errorf("failed to broadcast message: %w", err)
 	}
 

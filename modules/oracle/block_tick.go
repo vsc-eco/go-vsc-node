@@ -57,11 +57,11 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	)
 
 	var (
-		username = o.conf.Get().HiveUsername
-		// isAvgPriceBroadcastTick = *headHeight%priceOracleBroadcastInterval == 0
-		isChainRelayTick = *headHeight%chainRelayInterval == 0
-		isWitness        = slices.Contains(memberAccounts, username)
-		isProducer       = witnessSlot != nil &&
+		username             = o.conf.Get().HiveUsername
+		isPriceBroadcastTick = *headHeight%priceBroadcastInterval == 0
+		isChainRelayTick     = *headHeight%chainRelayInterval == 0
+		isWitness            = slices.Contains(memberAccounts, username)
+		isProducer           = witnessSlot != nil &&
 			witnessSlot.Account == username
 	)
 
@@ -83,9 +83,9 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 		WeightMap:           result.Weights,
 	}
 
-	// if isAvgPriceBroadcastTick {
-	// 	go o.priceOracle.HandleBlockTick(signal, o)
-	// }
+	if isPriceBroadcastTick {
+		go o.priceOracle.HandleBlockTick(signal, o)
+	}
 
 	if isChainRelayTick {
 		go o.chainOracle.HandleBlockTick(signal, o)

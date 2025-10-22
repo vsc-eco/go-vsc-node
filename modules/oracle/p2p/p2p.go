@@ -64,7 +64,7 @@ func (p *OracleP2PMessageHandler) ValidateMessage(
 	case MsgPriceBroadcast,
 		MsgPriceBlock,
 		MsgPriceSignature,
-		MsgChainRelay:
+		MsgChainOracle:
 
 	default:
 		return false

@@ -1,9 +1,12 @@
 package price
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
+	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/httputils"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/threadsafe"
@@ -11,8 +14,44 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+const (
+	averagePriceCode messageCode = iota
+)
+
+type messageCode int
+
+type PriceOracleMessage struct {
+	MessageCode messageCode     `json:"message_code"`
+	Payload     json.RawMessage `json:"payload"`
+}
+
+func makePriceOracleMessage(code messageCode, data any) (*PriceOracleMessage, error) {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize data: %w", err)
+	}
+
+	msg := &PriceOracleMessage{
+		MessageCode: code,
+		Payload:     payload,
+	}
+
+	return msg, nil
+}
+
 // Handle implements p2p.MessageHandler.
-func (o *PriceOracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
+func (o *PriceOracle) Handle(
+	peerID peer.ID,
+	incomingMsg p2p.Msg,
+	blockProducerID string,
+	electionsMembers []elections.ElectionMember,
+) (p2p.Msg, error) {
+
+	msg := PriceOracleMessage{}
+	if err := json.Unmarshal(incomingMsg.Data, &msg); err != nil {
+		return nil, fmt.Errorf("failed to deserialize message: %w", err)
+	}
+
 	var response p2p.Msg
 	switch msg.Code {
 	case p2p.MsgPriceBroadcast:

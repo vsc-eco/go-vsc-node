@@ -21,11 +21,18 @@ func (o *PriceOracle) HandleBlockTick(
 ) {
 	o.logger.Debug("broadcast price block tick.")
 
-	defer o.ClearPriceCache()
+	defer o.priceMap.Clear()
 
 	// broadcast local average price
-	localAvgPrices := o.GetLocalQueriedAveragePrices()
-	if err := p2pSpec.Broadcast(p2p.MsgPriceBroadcast, localAvgPrices); err != nil {
+	localAvgPrices := o.priceMap.GetAveragePricePoints()
+
+	msg, err := makePriceOracleMessage(averagePriceCode, localAvgPrices)
+	if err != nil {
+		o.logger.Error("failed to make message", "err", err)
+		return
+	}
+
+	if err := p2pSpec.Broadcast(p2p.MsgPriceOracle, msg); err != nil {
 		o.logger.Error("failed to broadcast local average price", "err", err)
 		return
 	}

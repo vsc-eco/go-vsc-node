@@ -16,15 +16,8 @@ import (
 type MsgCode int
 
 const (
-	// broadcasted average price
-	MsgPriceBroadcast MsgCode = iota
-	// broadcasted unsigned block with median prices
-	MsgPriceBlock
-	// broadcasted signed block with median prices
-	MsgPriceSignature
-
-	// broadcasted chain relay block
-	MsgChainRelay
+	MsgPriceOracle MsgCode = iota
+	MsgChainOracle
 )
 
 var priceValidator = validator.New(validator.WithRequiredStructEnabled())

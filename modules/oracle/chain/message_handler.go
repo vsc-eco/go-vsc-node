@@ -31,8 +31,7 @@ func (c *ChainOracle) Handle(
 	blockProducer string,
 	_ []elections.ElectionMember,
 ) (p2p.Msg, error) {
-	if p2pMsg.Code != p2p.MsgChainRelay {
-		c.logger.Debug("invalid message type")
+	if p2pMsg.Code != p2p.MsgChainOracle {
 		return nil, ErrInvalidChainOracleMessage
 	}
 
@@ -100,7 +99,7 @@ func (c *ChainOracle) Handle(
 			Payload:     json.RawMessage(payload),
 		}
 
-		return p2p.MakeOracleMessage(p2p.MsgChainRelay, &msg)
+		return p2p.MakeOracleMessage(p2p.MsgChainOracle, &msg)
 
 	case signatureResponse:
 		payload := chainOracleWitnessMessage{}

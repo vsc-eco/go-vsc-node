@@ -1,4 +1,4 @@
-package httputils
+package price
 
 import (
 	"bytes"
@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-
-	"github.com/go-playground/validator/v10"
 )
 
 var httpClient *http.Client
@@ -21,13 +19,12 @@ func init() {
 	}
 }
 
-func SendRequest[T any](
+func httpRequest[T any](
 	request *http.Request,
-	validators ...*validator.Validate,
 ) (*T, error) {
 	res, err := httpClient.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer res.Body.Close()
 
@@ -38,7 +35,7 @@ func SendRequest[T any](
 		}
 
 		return nil, fmt.Errorf(
-			"request failed\n\tstatus: %s\n\tresponse: %s",
+			"request failed: [status:%s] [msg:%s]",
 			res.Status, buf.String(),
 		)
 	}
@@ -48,16 +45,10 @@ func SendRequest[T any](
 		return nil, err
 	}
 
-	for _, v := range validators {
-		if err := v.Struct(buf); err != nil {
-			return nil, err
-		}
-	}
-
 	return buf, nil
 }
 
-func MakeUrl(
+func makeUrl(
 	baseUrl string,
 	queryParams map[string]string,
 ) (*url.URL, error) {
@@ -78,7 +69,7 @@ func MakeUrl(
 	return url, nil
 }
 
-func MakeRequest(
+func makeRequest(
 	method string, url *url.URL,
 	header map[string]string,
 ) (*http.Request, error) {
@@ -92,12 +83,4 @@ func MakeRequest(
 	}
 
 	return req, nil
-}
-
-func JsonUnmarshal[T any](data json.RawMessage) (*T, error) {
-	buf := new(T)
-	if err := json.Unmarshal(data, buf); err != nil {
-		return nil, err
-	}
-	return buf, nil
 }
