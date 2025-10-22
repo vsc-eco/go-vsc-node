@@ -3,6 +3,7 @@ package price
 import (
 	"strings"
 	"sync"
+	"vsc-node/modules/oracle/price/api"
 )
 
 type PriceMap struct {
@@ -10,13 +11,8 @@ type PriceMap struct {
 	mtx *sync.Mutex
 }
 
-type PricePoint struct {
-	Price  float64 `json:"price"`
-	Volume float64 `json:"volume"`
-}
-
 type AveragePricePoint struct {
-	PricePoint
+	api.PricePoint
 	counter uint32
 }
 
@@ -27,7 +23,7 @@ func MakePriceMap() *PriceMap {
 	}
 }
 
-func (pm *PriceMap) Observe(pricePoints map[string]PricePoint) {
+func (pm *PriceMap) Observe(pricePoints map[string]api.PricePoint) {
 	pm.mtx.Lock()
 	defer pm.mtx.Unlock()
 
@@ -46,7 +42,7 @@ func (pm *PriceMap) Observe(pricePoints map[string]PricePoint) {
 			nextCounter := p.counter + 1
 
 			p = AveragePricePoint{
-				PricePoint: PricePoint{
+				PricePoint: api.PricePoint{
 					Price:  nextAvgPrice,
 					Volume: nextAvgVolume,
 				},
@@ -64,11 +60,11 @@ func (pm *PriceMap) Clear() {
 	pm.buf = make(map[string]AveragePricePoint)
 }
 
-func (pm *PriceMap) GetAveragePricePoints() map[string]PricePoint {
+func (pm *PriceMap) GetAveragePricePoints() map[string]api.PricePoint {
 	pm.mtx.Lock()
 	defer pm.mtx.Unlock()
 
-	buf := make(map[string]PricePoint, len(pm.buf))
+	buf := make(map[string]api.PricePoint, len(pm.buf))
 	for symbol, pricePoint := range pm.buf {
 		buf[symbol] = pricePoint.PricePoint
 	}

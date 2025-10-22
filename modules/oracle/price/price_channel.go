@@ -1,6 +1,9 @@
 package price
 
-import "errors"
+import (
+	"errors"
+	"vsc-node/modules/oracle/price/api"
+)
 
 var (
 	errPriceChannelFull = errors.New("price channel full")
@@ -8,7 +11,7 @@ var (
 )
 
 type PriceChannel struct {
-	c chan map[string]PricePoint
+	c chan map[string]api.PricePoint
 }
 
 func makePriceChannel() *PriceChannel {
@@ -18,7 +21,7 @@ func makePriceChannel() *PriceChannel {
 }
 
 func (p *PriceChannel) Open() {
-	p.c = make(chan map[string]PricePoint, 128)
+	p.c = make(chan map[string]api.PricePoint, 128)
 }
 
 func (p *PriceChannel) Close() {
@@ -26,7 +29,7 @@ func (p *PriceChannel) Close() {
 	p.c = nil
 }
 
-func (p *PriceChannel) Receive(data map[string]PricePoint) error {
+func (p *PriceChannel) Receive(data map[string]api.PricePoint) error {
 	if p.c == nil {
 		return errPriceChannelNil
 	}

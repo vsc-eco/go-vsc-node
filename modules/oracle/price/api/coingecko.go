@@ -1,4 +1,4 @@
-package price
+package api
 
 import (
 	"fmt"
@@ -22,7 +22,7 @@ type CoinGecko struct {
 	demoMode bool
 }
 
-var _ PriceQuery = &CoinGecko{}
+// var _ PriceQuery = &CoinGecko{}
 
 // Source implements PriceQuery
 func (c *CoinGecko) Source() string {
@@ -38,7 +38,7 @@ func (c *CoinGecko) Source() string {
 func (c *CoinGecko) Initialize(currency string) error {
 	apiKey, ok := os.LookupEnv("COINGECKO_API_KEY")
 	if !ok {
-		return errApiKeyNotFound
+		return ErrApiKeyNotFound
 	}
 
 	var (
@@ -66,18 +66,14 @@ func (c *CoinGecko) Initialize(currency string) error {
 }
 
 // Query implements PriceQuery
-func (c *CoinGecko) Query(
-	symbols []string) (map[string]PricePoint, error) {
-	symLowerCase := make([]string, len(symbols))
-	copy(symLowerCase, symbols)
-
-	symLowerCase = utils.Map(symLowerCase, strings.ToLower)
+func (c *CoinGecko) Query(symbols []string) (map[string]PricePoint, error) {
+	symbols = utils.Map(symbols, strings.ToLower)
 
 	queries := map[string]string{
 		"vs_currency": c.currency,
 		"per_page":    fmt.Sprintf("%d", pageLimit),
 		"precision":   "full",
-		"symbols":     strings.Join(symLowerCase, ","),
+		"symbols":     strings.Join(symbols, ","),
 	}
 
 	fetchedPrice, err := c.fetchPrices(queries)
@@ -87,7 +83,8 @@ func (c *CoinGecko) Query(
 
 	buf := make(map[string]PricePoint)
 	for _, p := range fetchedPrice {
-		buf[p.Symbol] = PricePoint{
+		s := strings.ToLower(p.Symbol)
+		buf[s] = PricePoint{
 			Price:  p.CurrentPrice,
 			Volume: float64(p.TotalVolume),
 		}

@@ -2,7 +2,6 @@ package price
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -10,22 +9,18 @@ import (
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/oracle/p2p"
+	"vsc-node/modules/oracle/price/api"
 
 	"github.com/chebyrash/promise"
 )
 
 var (
-	errApiKeyNotFound = errors.New("API key not exported")
-
 	_ p2p.MessageHandler = &PriceOracle{}
 	_ aggregate.Plugin   = &PriceOracle{}
-)
 
-type PriceQuery interface {
-	Source() string
-	Initialize(string) error
-	Query([]string) (map[string]PricePoint, error)
-}
+	_ api.PriceQuery = &api.CoinGecko{}
+	_ api.PriceQuery = &api.CoinMarketCap{}
+)
 
 type PriceOracle struct {
 	ctx               context.Context
@@ -34,7 +29,7 @@ type PriceOracle struct {
 	watchSymbols      []string
 	logger            *slog.Logger
 	priceMap          *PriceMap
-	priceAPIs         map[string]PriceQuery
+	priceAPIs         map[string]api.PriceQuery
 	priceChannel      *PriceChannel
 	conf              common.IdentityConfig
 }
@@ -71,9 +66,9 @@ func (p *PriceOracle) Init() error {
 
 	p.priceChannel = makePriceChannel()
 
-	p.priceAPIs = map[string]PriceQuery{
-		"CoinMarketCap": &CoinMarketCap{},
-		"CoinGecko":     &CoinGecko{},
+	p.priceAPIs = map[string]api.PriceQuery{
+		"CoinMarketCap": &api.CoinMarketCap{},
+		"CoinGecko":     &api.CoinGecko{},
 	}
 
 	// initializes market api's
@@ -104,8 +99,8 @@ func (p *PriceOracle) Start() *promise.Promise[any] {
 					return
 
 				case <-pricePollTicker.C:
-					for src, api := range p.priceAPIs {
-						go func(src string, api PriceQuery) {
+					for name, src := range p.priceAPIs {
+						go func(src string, api api.PriceQuery) {
 
 							pricePoints, err := api.Query(p.watchSymbols)
 							if err != nil {
@@ -115,7 +110,7 @@ func (p *PriceOracle) Start() *promise.Promise[any] {
 
 							p.priceMap.Observe(pricePoints)
 							p.logger.Debug("market price fetched", "src", src)
-						}(src, api)
+						}(name, src)
 					}
 				}
 			}

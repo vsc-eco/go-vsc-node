@@ -1,20 +1,21 @@
-package price
+package api
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"strings"
 	"vsc-node/lib/utils"
 )
 
+const coinMarketCapQuoteUrl = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+
 type CoinMarketCap struct {
 	apiKey   string
 	currency string
 }
 
-var _ PriceQuery = &CoinMarketCap{}
+// var _ PriceQuery = &CoinMarketCap{}
 
 // Source implements PriceQuery
 func (c *CoinMarketCap) Source() string {
@@ -26,7 +27,7 @@ func (c *CoinMarketCap) Source() string {
 func (c *CoinMarketCap) Initialize(currency string) error {
 	apiKey, ok := os.LookupEnv("COINMARKETCAP_API_KEY")
 	if !ok {
-		return errApiKeyNotFound
+		return ErrApiKeyNotFound
 	}
 
 	*c = CoinMarketCap{
@@ -60,7 +61,7 @@ func (c *CoinMarketCap) Query(
 
 	marketPrices, err := c.fetchPrices(symbols)
 	if err != nil {
-		log.Println("[coinmarketcap] failed to query market data:", err)
+		return nil, fmt.Errorf("failed to query market data: %w", err)
 	}
 
 	observePricePoints := make(map[string]PricePoint)
@@ -79,17 +80,13 @@ func (c *CoinMarketCap) Query(
 	return observePricePoints, nil
 }
 
-func (c *CoinMarketCap) fetchPrices(
-	symbols []string,
-) (*coinMarketCapApiResponse, error) {
-	const baseUrl = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
-
+func (c *CoinMarketCap) fetchPrices(symbols []string) (*coinMarketCapApiResponse, error) {
 	queryParams := map[string]string{
 		"symbol":  strings.Join(symbols, ","),
 		"convert": c.currency,
 	}
 
-	url, err := makeUrl(baseUrl, queryParams)
+	url, err := makeUrl(coinMarketCapQuoteUrl, queryParams)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build url: %w", err)
 	}

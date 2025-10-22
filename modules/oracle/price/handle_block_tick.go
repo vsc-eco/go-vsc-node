@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"vsc-node/modules/oracle/p2p"
+	"vsc-node/modules/oracle/price/api"
 )
 
 const float64Epsilon = 1e-9
@@ -45,7 +46,7 @@ func (o *PriceOracle) HandleBlockTick(
 	medianPricePoints := o.getMedianPricePoint(localAvgPrices)
 
 	// make block / sign block
-	var signalHandler func(*p2p.BlockTickSignal, map[string]PricePoint) error
+	var signalHandler func(*p2p.BlockTickSignal, map[string]api.PricePoint) error
 
 	if sig.IsProducer {
 		priceBlockProducer := &priceBlockProducer{o, p2pSpec}
@@ -67,7 +68,7 @@ func (o *PriceOracle) HandleBlockTick(
 
 func (o *PriceOracle) getMedianPricePoint(
 	localAvgPrices map[string]p2p.AveragePricePoint,
-) map[string]PricePoint {
+) map[string]api.PricePoint {
 	o.logger.Debug("collecting average prices")
 
 	// updating with local price points
@@ -91,9 +92,9 @@ func (o *PriceOracle) getMedianPricePoint(
 	o.pricePoints.Collect(ctx, collector)
 
 	// calculating the median volumes + prices
-	medianPricePoint := make(map[string]PricePoint)
+	medianPricePoint := make(map[string]api.PricePoint)
 	for sym, app := range appBuf {
-		medianPricePoint[sym] = PricePoint{
+		medianPricePoint[sym] = api.PricePoint{
 			Price:  getMedian(app.prices),
 			Volume: getMedian(app.volumes),
 			// peerID:      "",
