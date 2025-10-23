@@ -145,6 +145,52 @@ avgPricePoll:
 	}
 }
 
+func (o *PriceOracle) collectAveragePricePoints(
+	ctx context.Context,
+) (map[string]CollectedPricePoint, error) {
+	out := make(map[string]CollectedPricePoint)
+
+	priceReceiver := o.priceChannel.Open()
+	defer o.priceChannel.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			err := ctx.Err()
+
+			// if timed out, ignore the error
+			if err == nil || errors.Is(err, context.DeadlineExceeded) {
+				return out, nil
+			}
+
+			return nil, err
+
+		case priceMap := <-priceReceiver:
+			for symbol, pp := range priceMap {
+				if math.IsNaN(pp.Volume) || math.IsNaN(pp.Price) {
+					o.logger.Debug("NaN values dropped", "price", pp.Price, "volume", pp.Volume)
+					continue
+				}
+
+				symbol = strings.ToLower(symbol)
+
+				p, ok := out[symbol]
+				if !ok {
+					p = CollectedPricePoint{
+						prices:  []float64{pp.Price},
+						volumes: []float64{pp.Volume},
+					}
+				} else {
+					p.prices = append(p.prices, pp.Price)
+					p.volumes = append(p.volumes, pp.Volume)
+				}
+
+				out[symbol] = p
+			}
+		}
+	}
+}
+
 // block producer
 type Producer struct {
 	p2p.OracleP2PSpec
