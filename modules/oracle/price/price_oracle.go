@@ -28,10 +28,14 @@ type PriceOracle struct {
 	pricePollInterval time.Duration
 	watchSymbols      []string
 	logger            *slog.Logger
-	priceMap          *PriceMap
-	priceAPIs         map[string]api.PriceQuery
-	priceChannel      *PriceChannel
 	conf              common.IdentityConfig
+
+	priceMap  *PriceMap
+	priceAPIs map[string]api.PriceQuery
+
+	priceChannel       *PriceChannel
+	sigRequestChannel  *SignatureRequestChannel
+	sigResponseChannel *SignatureResponseChannel
 }
 
 func New(
@@ -50,10 +54,15 @@ func New(
 		pricePollInterval: pricePollInterval,
 		watchSymbols:      watchSymbols,
 		logger:            logger,
-		priceMap:          nil,
-		priceAPIs:         nil,
-		priceChannel:      nil,
 		conf:              conf,
+		priceMap:          nil,
+		priceAPIs: map[string]api.PriceQuery{
+			"CoinMarketCap": &api.CoinMarketCap{},
+			"CoinGecko":     &api.CoinGecko{},
+		},
+		priceChannel:       MakeThreadChan[map[string]api.PricePoint](),
+		sigRequestChannel:  MakeThreadChan[SignatureRequestMessage](),
+		sigResponseChannel: MakeThreadChan[SignatureResponseMessage](),
 	}
 }
 
@@ -62,13 +71,6 @@ func (p *PriceOracle) Init() error {
 	p.priceMap = &PriceMap{
 		buf: make(map[string]AveragePricePoint),
 		mtx: &sync.Mutex{},
-	}
-
-	p.priceChannel = makePriceChannel()
-
-	p.priceAPIs = map[string]api.PriceQuery{
-		"CoinMarketCap": &api.CoinMarketCap{},
-		"CoinGecko":     &api.CoinGecko{},
 	}
 
 	// initializes market api's

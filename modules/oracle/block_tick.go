@@ -58,7 +58,7 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 
 	var (
 		username             = o.conf.Get().HiveUsername
-		isPriceBroadcastTick = *headHeight%priceBroadcastInterval == 0
+		isPriceBroadcastTick = *headHeight%priceOracleBroadcastInterval == 0
 		isChainRelayTick     = *headHeight%chainRelayInterval == 0
 		isWitness            = slices.Contains(memberAccounts, username)
 		isProducer           = witnessSlot != nil &&

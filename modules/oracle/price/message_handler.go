@@ -27,6 +27,11 @@ type SignatureRequestMessage struct {
 	MedianPrice map[string]api.PricePoint `json:"median_price"`
 }
 
+type SignatureResponseMessage struct {
+	Signer    string `json:"signer"`
+	Signature string `json:"signature"`
+}
+
 func makePriceOracleMessage(code messageCode, data any) (*PriceOracleMessage, error) {
 	payload, err := json.Marshal(data)
 	if err != nil {
