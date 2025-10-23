@@ -4,18 +4,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"slices"
 	"strings"
 	"time"
+	"vsc-node/lib/dids"
+	"vsc-node/lib/utils"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
 	"vsc-node/modules/oracle/price/api"
+	stateEngine "vsc-node/modules/state-processing"
+	transactionpool "vsc-node/modules/transaction-pool"
 
 	blocks "github.com/ipfs/go-block-format"
 )
 
 const float64Epsilon = 1e-9
+
+type CollectedPricePoint struct {
+	prices  []float64
+	volumes []float64
+}
 
 // HandleBlockTick implements oracle.BlockTickHandler.
 func (o *PriceOracle) HandleBlockTick(
@@ -44,65 +55,16 @@ func (o *PriceOracle) HandleBlockTick(
 		return
 	}
 
-	// collect average prices from the network
+	// collect average prices from the network + get median prices
 	ctx, cancel := context.WithTimeout(o.ctx, 15*time.Second)
 	defer cancel()
 
-	priceChan := o.priceChannel.Open()
-
-	type CollectedPricePoint struct {
-		prices  []float64
-		volumes []float64
-	}
-
-	collectedPricePoint := make(map[string]CollectedPricePoint)
-	err = nil
-
-avgPricePoll:
-	for {
-		select {
-		case <-ctx.Done():
-			err = ctx.Err()
-
-			// if timed out, ignore the error
-			if errors.Is(err, context.DeadlineExceeded) {
-				err = nil
-			}
-
-			break avgPricePoll
-
-		case priceMap := <-priceChan:
-			for symbol, pp := range priceMap {
-				if math.IsNaN(pp.Volume) || math.IsNaN(pp.Volume) {
-					o.logger.Debug("NaN values dropped", "price", pp.Price, "volume", pp.Volume)
-					continue
-				}
-
-				symbol = strings.ToLower(symbol)
-
-				p, ok := collectedPricePoint[symbol]
-				if !ok {
-					p = CollectedPricePoint{
-						prices:  []float64{pp.Price},
-						volumes: []float64{pp.Volume},
-					}
-				} else {
-					p.prices = append(p.prices, pp.Price)
-					p.volumes = append(p.volumes, pp.Volume)
-				}
-
-				collectedPricePoint[symbol] = p
-			}
-		}
-	}
-
-	o.priceChannel.Close()
+	collectedPricePoint, err := o.collectAveragePricePoints(ctx)
 	if err != nil {
-		o.logger.Error("failed collect average prices from network")
+		o.logger.Error("failed collect average prices from network", "err", err)
 		return
 	}
 
-	// get median prices
 	medianPriceMap := make(map[string]api.PricePoint, len(collectedPricePoint))
 	for symbol, pp := range collectedPricePoint {
 		if len(pp.prices) == 0 || len(pp.volumes) == 0 {
@@ -128,11 +90,16 @@ avgPricePoll:
 
 	if sig.IsProducer {
 		handler = &Producer{
-			OracleP2PSpec:   p2pSpec,
-			electionMembers: sig.ElectedMembers,
+			OracleP2PSpec:    p2pSpec,
+			ctx:              o.ctx,
+			logger:           o.logger,
+			blockTickSignal:  sig,
+			signatureChannel: o.sigResponseChannel,
 		}
 	} else {
-		handler = &Witness{p2pSpec}
+		handler = &Witness{
+			OracleP2PSpec: p2pSpec,
+		}
 	}
 
 	if err := handler.handle(tx, medianPriceMap); err != nil {
@@ -194,7 +161,10 @@ func (o *PriceOracle) collectAveragePricePoints(
 // block producer
 type Producer struct {
 	p2p.OracleP2PSpec
-	electionMembers []elections.ElectionMember
+	ctx              context.Context
+	logger           *slog.Logger
+	blockTickSignal  p2p.BlockTickSignal
+	signatureChannel *SignatureResponseChannel
 }
 
 func (p *Producer) handle(tx blocks.Block, medianPriceMap map[string]api.PricePoint) error {
@@ -217,15 +187,131 @@ func (p *Producer) handle(tx blocks.Block, medianPriceMap map[string]api.PricePo
 		return fmt.Errorf("failed to broadcast signature request: %w", err)
 	}
 
-	// TODO: make bls circuit
+	// make bls circuit
+	txCid := tx.Cid()
 
-	// TODO: collect and verify signatures with bls circuit
+	witnessDIDs := utils.Map(
+		p.blockTickSignal.ElectedMembers,
+		func(w elections.ElectionMember) dids.Member {
+			return dids.BlsDID(w.Key)
+		},
+	)
+
+	circuit, err := dids.NewBlsCircuitGenerator(witnessDIDs).Generate(txCid)
+	if err != nil {
+		return fmt.Errorf("failed to generate bls circuit: %w", err)
+	}
+
+	// collect and verify signatures with bls circuit
+	signedWeight := uint64(0)
+	weightThreshold := (p.blockTickSignal.TotalElectionWeight * 2) / 3
+
+	receiver := p.signatureChannel.Open()
+	defer p.signatureChannel.Close()
+
+	ctx, cancel := context.WithTimeout(p.ctx, 15*time.Second)
+	defer cancel()
+
+	for signedWeight < weightThreshold {
+		select {
+		case <-ctx.Done():
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("context error: %w", err)
+			} else {
+				return errors.New("signature collection timed out")
+			}
+
+		case msg := <-receiver:
+			memberIndex := slices.IndexFunc(
+				p.blockTickSignal.ElectedMembers,
+				func(e elections.ElectionMember) bool {
+					return e.Account == msg.Signer
+				},
+			)
+
+			if memberIndex == -1 {
+				p.logger.Debug(
+					"invalid witness signature, dropping.",
+					"signer", msg.Signer,
+				)
+				continue
+			}
+
+			member := &p.blockTickSignal.ElectedMembers[memberIndex]
+			memberDID := dids.BlsDID(member.Key)
+
+			added, err := circuit.AddAndVerify(memberDID, msg.Signature)
+			if err != nil {
+				p.logger.Error("failed to add member to circuit.", "err", err)
+				continue
+			}
+
+			if !added {
+				p.logger.Debug(
+					"invalid member, signature not added to circuit",
+				)
+				continue
+			}
+
+			signedWeight += p.blockTickSignal.WeightMap[memberIndex]
+
+			p.logger.Debug(
+				"received witness signature, appending to witnessSigned",
+				"signer", member.Account, "signature", msg.Signature,
+			)
+		}
+	}
+
+	// make transaction + submit to contract
+	blsCircuit, err := circuit.Finalize()
+	if err != nil {
+		return fmt.Errorf("failed to finalize circuit: %w", err)
+	}
+
+	serializedCircuit, err := blsCircuit.Serialize()
+	if err != nil {
+		return fmt.Errorf("failed to finalize circuit: %w", err)
+	}
+
+	sigPackage := stateEngine.TransactionSig{
+		Type: "vsc-sig",
+		Sigs: []common.Sig{
+			{
+				Algo: "bls-agg",
+				Sig:  serializedCircuit.Signature,
+				Bv:   serializedCircuit.BitVector,
+				Kid:  "",
+			},
+		},
+	}
+
+	sigBytes, err := common.EncodeDagCbor(sigPackage)
+	if err != nil {
+		return fmt.Errorf("failed encode DagCbor: %w", err)
+	}
+
+	// submit contract
+	vscTx := transactionpool.SerializedVSCTransaction{
+		Tx:  txCid.Bytes(),
+		Sig: sigBytes,
+	}
+
+	if err := p.submitToContract(vscTx); err != nil {
+		return fmt.Errorf("failed to submit to contract: %w", err)
+	}
 
 	return nil
 }
 
+// TODO: implement this function
+func (p *Producer) submitToContract(transactionpool.SerializedVSCTransaction) error {
+	return nil
+}
+
 // witness
-type Witness struct{ p2p.OracleP2PSpec }
+type Witness struct {
+	p2p.OracleP2PSpec
+}
 
 func (w *Witness) handle(tx blocks.Block, medianPriceMap map[string]api.PricePoint) error {
 	if tx == nil {
