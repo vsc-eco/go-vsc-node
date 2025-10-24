@@ -33,7 +33,7 @@ func (o *PriceOracle) HandleBlockTick(
 	sig p2p.BlockTickSignal,
 	p2pSpec p2p.OracleP2PSpec,
 ) {
-	o.logger.Debug("broadcast price block tick.")
+	o.logger.Debug("block tick event")
 
 	defer o.priceMap.Clear()
 
@@ -50,6 +50,10 @@ func (o *PriceOracle) HandleBlockTick(
 		o.logger.Error("failed to broadcast local average price", "err", err)
 		return
 	}
+	o.logger.Debug(
+		"average prices broadcasted",
+		"avg-prices", string(msg.Payload),
+	)
 
 	if !sig.IsWitness {
 		return
@@ -94,7 +98,7 @@ func (o *PriceOracle) HandleBlockTick(
 	} else {
 		handler = &Witness{
 			OracleP2PSpec:           p2pSpec,
-			ctx:                     ctx,
+			ctx:                     o.ctx,
 			logger:                  o.logger,
 			blockTickSignal:         sig,
 			signatureRequestChannel: o.sigRequestChannel,
@@ -115,6 +119,8 @@ func (o *PriceOracle) HandleBlockTick(
 func (o *PriceOracle) collectAveragePricePoints(
 	ctx context.Context,
 ) (map[string]CollectedPricePoint, error) {
+	o.logger.Debug("collecting average prices")
+
 	out := make(map[string]CollectedPricePoint)
 
 	priceReceiver := o.priceChannel.Open()
@@ -168,6 +174,8 @@ type Producer struct {
 }
 
 func (p *Producer) handle(medianPriceMap map[string]api.PricePoint) error {
+	p.logger.Debug("making block", "median-prices", medianPriceMap)
+
 	tx, err := makeTx(medianPriceMap)
 	if err != nil {
 		return fmt.Errorf("failed to create tx: %w", err)
@@ -175,7 +183,7 @@ func (p *Producer) handle(medianPriceMap map[string]api.PricePoint) error {
 
 	// broadcast signature request
 	sigRequestMsg := SignatureRequestMessage{
-		TxCid:       tx.String(),
+		SigHash:     tx.String(),
 		MedianPrice: medianPriceMap,
 	}
 
@@ -187,6 +195,11 @@ func (p *Producer) handle(medianPriceMap map[string]api.PricePoint) error {
 	if err := p.Broadcast(p2p.MsgPriceOracle, msg); err != nil {
 		return fmt.Errorf("failed to broadcast signature request: %w", err)
 	}
+	p.logger.Debug(
+		"signature request broadcasted",
+		"sig-hash", sigRequestMsg.SigHash,
+		"median-price", sigRequestMsg.MedianPrice,
+	)
 
 	// make bls circuit
 	txCid := tx.Cid()
@@ -204,16 +217,70 @@ func (p *Producer) handle(medianPriceMap map[string]api.PricePoint) error {
 	}
 
 	// collect and verify signatures with bls circuit
-	signedWeight := uint64(0)
 	weightThreshold := (p.blockTickSignal.TotalElectionWeight * 2) / 3
-
-	receiver := p.signatureChannel.Open()
-	defer p.signatureChannel.Close()
 
 	ctx, cancel := context.WithTimeout(p.ctx, 15*time.Second)
 	defer cancel()
 
-	for signedWeight < weightThreshold {
+	if err := p.collectSignature(ctx, circuit, weightThreshold); err != nil {
+		return fmt.Errorf("failed to collect signatures: %w", err)
+	}
+
+	// make transaction + submit to contract
+	blsCircuit, err := circuit.Finalize()
+	if err != nil {
+		return fmt.Errorf("failed to finalize circuit: %w", err)
+	}
+
+	serializedCircuit, err := blsCircuit.Serialize()
+	if err != nil {
+		return fmt.Errorf("failed to finalize circuit: %w", err)
+	}
+
+	sigPackage := stateEngine.TransactionSig{
+		Type: "vsc-sig",
+		Sigs: []common.Sig{{
+			Algo: "bls-agg",
+			Sig:  serializedCircuit.Signature,
+			Bv:   serializedCircuit.BitVector,
+			Kid:  "",
+		}},
+	}
+
+	sigBytes, err := common.EncodeDagCbor(sigPackage)
+	if err != nil {
+		return fmt.Errorf("failed encode DagCbor: %w", err)
+	}
+
+	// submit contract
+	vscTx := transactionpool.SerializedVSCTransaction{
+		Tx:  txCid.Bytes(),
+		Sig: sigBytes,
+	}
+
+	if err := p.submitToContract(vscTx); err != nil {
+		return fmt.Errorf("failed to submit to contract: %w", err)
+	}
+
+	return nil
+}
+
+func (p *Producer) collectSignature(
+	ctx context.Context,
+	circuit dids.PartialBlsCircuit,
+	signatureThreshold uint64,
+) error {
+	p.logger.Debug(
+		"collecting signatures",
+		"signature-threshold", signatureThreshold,
+	)
+
+	signedWeight := uint64(0)
+
+	receiver := p.signatureChannel.Open()
+	defer p.signatureChannel.Close()
+
+	for signedWeight < signatureThreshold {
 		select {
 		case <-ctx.Done():
 			if err := ctx.Err(); err != nil {
@@ -243,62 +310,21 @@ func (p *Producer) handle(medianPriceMap map[string]api.PricePoint) error {
 
 			added, err := circuit.AddAndVerify(memberDID, msg.Signature)
 			if err != nil {
-				p.logger.Error("failed to add member to circuit.", "err", err)
+				p.logger.Error("failed to verify signature", "err", err)
 				continue
 			}
 
 			if !added {
-				p.logger.Debug(
-					"invalid member, signature not added to circuit",
-				)
+				p.logger.Debug("invalid signature, signature not added to circuit")
 				continue
 			}
 
 			signedWeight += p.blockTickSignal.WeightMap[memberIndex]
-
 			p.logger.Debug(
 				"received witness signature, appending to witnessSigned",
 				"signer", member.Account, "signature", msg.Signature,
 			)
 		}
-	}
-
-	// make transaction + submit to contract
-	blsCircuit, err := circuit.Finalize()
-	if err != nil {
-		return fmt.Errorf("failed to finalize circuit: %w", err)
-	}
-
-	serializedCircuit, err := blsCircuit.Serialize()
-	if err != nil {
-		return fmt.Errorf("failed to finalize circuit: %w", err)
-	}
-
-	sigPackage := stateEngine.TransactionSig{
-		Type: "vsc-sig",
-		Sigs: []common.Sig{
-			{
-				Algo: "bls-agg",
-				Sig:  serializedCircuit.Signature,
-				Bv:   serializedCircuit.BitVector,
-				Kid:  "",
-			},
-		},
-	}
-
-	sigBytes, err := common.EncodeDagCbor(sigPackage)
-	if err != nil {
-		return fmt.Errorf("failed encode DagCbor: %w", err)
-	}
-
-	// submit contract
-	vscTx := transactionpool.SerializedVSCTransaction{
-		Tx:  txCid.Bytes(),
-		Sig: sigBytes,
-	}
-
-	if err := p.submitToContract(vscTx); err != nil {
-		return fmt.Errorf("failed to submit to contract: %w", err)
 	}
 
 	return nil
@@ -320,6 +346,11 @@ type Witness struct {
 }
 
 func (w *Witness) handle(medianPriceMap map[string]api.PricePoint) error {
+	w.logger.Debug(
+		"witness median prices",
+		"median-prices", medianPriceMap,
+	)
+
 	var signatureRequest SignatureRequestMessage
 
 	receiver := w.signatureRequestChannel.Open()
@@ -333,6 +364,7 @@ func (w *Witness) handle(medianPriceMap map[string]api.PricePoint) error {
 		return ctx.Err()
 
 	case signatureRequest = <-receiver:
+		w.logger.Debug("signature request received")
 	}
 
 	for sym, pricePoint := range signatureRequest.MedianPrice {
@@ -352,6 +384,8 @@ func (w *Witness) handle(medianPriceMap map[string]api.PricePoint) error {
 		}
 	}
 
+	w.logger.Debug("median price verified", "broadcasted-median-price", signatureRequest.MedianPrice)
+
 	// make tx + verify incoming sig hash
 	tx, err := makeTx(signatureRequest.MedianPrice)
 	if err != nil {
@@ -359,10 +393,12 @@ func (w *Witness) handle(medianPriceMap map[string]api.PricePoint) error {
 	}
 
 	txCid := tx.Cid()
-	sigHashOk := signatureRequest.TxCid == txCid.String()
+	sigHashOk := signatureRequest.SigHash == txCid.String()
 	if !sigHashOk {
 		return fmt.Errorf("invalid signature hash")
 	}
+
+	w.logger.Debug("signature hash verified", "sig-hash", signatureRequest.SigHash)
 
 	// sign data
 	blsKeyDecoded, err := hex.DecodeString(w.identity.Get().BlsPrivKeySeed)
@@ -397,6 +433,10 @@ func (w *Witness) handle(medianPriceMap map[string]api.PricePoint) error {
 	if err := w.Broadcast(p2p.MsgPriceOracle, msg); err != nil {
 		return fmt.Errorf("failed to broadcast signature response: %w", err)
 	}
+	w.logger.Debug(
+		"signature response broadcasted",
+		"signature", signatureResponse.Signature,
+	)
 
 	return nil
 }

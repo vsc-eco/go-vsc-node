@@ -24,7 +24,7 @@ type PriceOracleMessage struct {
 }
 
 type SignatureRequestMessage struct {
-	TxCid       string                    `json:"tx_cid"`
+	SigHash     string                    `json:"tx_cid"`
 	MedianPrice map[string]api.PricePoint `json:"median_price"`
 }
 
@@ -54,19 +54,47 @@ func (o *PriceOracle) Handle(
 	blockProducerID string,
 	electionsMembers []elections.ElectionMember,
 ) (p2p.Msg, error) {
+	o.logger.Debug("message received", "data", string(incomingMsg.Data))
 
 	msg := PriceOracleMessage{}
 	if err := json.Unmarshal(incomingMsg.Data, &msg); err != nil {
 		return nil, fmt.Errorf("failed to deserialize message: %w", err)
 	}
 
-	var response p2p.Msg
 	switch msg.MessageCode {
 	case averagePriceCode:
+		buf := make(map[string]api.PricePoint)
+		if err := json.Unmarshal(msg.Payload, &buf); err != nil {
+			return nil, fmt.Errorf("failed to deserialize average price message: %w", err)
+		}
+
+		if err := o.priceChannel.Send(buf); err != nil {
+			return nil, fmt.Errorf("failed to consume average price: %w", err)
+		}
+
+	case signatureRequestCode:
+		buf := SignatureRequestMessage{}
+		if err := json.Unmarshal(msg.Payload, &buf); err != nil {
+			return nil, fmt.Errorf("failed to deserialize signature request message: %w", err)
+		}
+
+		if err := o.sigRequestChannel.Send(buf); err != nil {
+			return nil, fmt.Errorf("failed to consume signature request: %w", err)
+		}
+
+	case signatureResponseCode:
+		buf := SignatureResponseMessage{}
+		if err := json.Unmarshal(msg.Payload, &buf); err != nil {
+			return nil, fmt.Errorf("failed to deserialize signature response message: %w", err)
+		}
+
+		if err := o.sigResponseChannel.Send(buf); err != nil {
+			return nil, fmt.Errorf("failed to consume signature response: %w", err)
+		}
 
 	default:
 		return nil, p2p.ErrInvalidMessageType
 	}
 
-	return response, nil
+	return nil, nil
 }
