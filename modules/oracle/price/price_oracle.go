@@ -103,6 +103,7 @@ func (p *PriceOracle) Start() *promise.Promise[any] {
 				case <-pricePollTicker.C:
 					for name, src := range p.priceAPIs {
 						go func(src string, api api.PriceQuery) {
+							p.logger.Debug("fetching price", "src", src)
 
 							pricePoints, err := api.Query(p.watchSymbols)
 							if err != nil {
@@ -111,7 +112,7 @@ func (p *PriceOracle) Start() *promise.Promise[any] {
 							}
 
 							p.priceMap.Observe(pricePoints)
-							p.logger.Debug("market price fetched", "src", src)
+							p.logger.Debug("market price fetched", "src", src, "prices", p.priceMap.buf)
 						}(name, src)
 					}
 				}

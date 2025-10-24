@@ -3,6 +3,8 @@ package oraclee2e
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"sync"
 	"testing"
@@ -14,6 +16,19 @@ import (
 )
 
 func TestE2E(t *testing.T) {
+	outputLogFile, err := os.OpenFile("/tmp/oracle-e2e-test.log", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logWriter := io.MultiWriter(
+		os.Stdout,
+		outputLogFile,
+	)
+
+	loggerHandler := slog.NewTextHandler(logWriter, nil)
+	slog.SetDefault(slog.New(loggerHandler))
+
 	if err := os.Setenv("DEBUG", "1"); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +58,7 @@ func TestE2E(t *testing.T) {
 
 	connectP2p(nodes)
 
-	_, err := p.Start().Await(context.Background())
+	_, err = p.Start().Await(context.Background())
 	assert.NoError(t, err)
 }
 
