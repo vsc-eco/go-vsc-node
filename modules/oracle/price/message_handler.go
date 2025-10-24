@@ -13,6 +13,7 @@ import (
 const (
 	averagePriceCode messageCode = iota
 	signatureRequestCode
+	signatureResponseCode
 )
 
 type messageCode int
