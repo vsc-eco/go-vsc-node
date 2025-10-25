@@ -1,6 +1,7 @@
 package oraclee2e
 
 import (
+	"log/slog"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/logger"
 	"vsc-node/modules/aggregate"
@@ -99,6 +100,8 @@ func MakeNode(nodeName string) *Node {
 		plugins: plugins,
 		db:      vscDb,
 	}
+
+	slog.Debug("node made", "node-name", nodeName, "user-name", identityConfig.Get().HiveUsername)
 
 	return &out
 }

@@ -15,19 +15,26 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const testNodeCount = 5
+
 func TestE2E(t *testing.T) {
 	outputLogFile, err := os.OpenFile("/tmp/oracle-e2e-test.log", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer outputLogFile.Close()
 
 	logWriter := io.MultiWriter(
 		os.Stdout,
 		outputLogFile,
 	)
 
-	loggerHandler := slog.NewTextHandler(logWriter, nil)
-	slog.SetDefault(slog.New(loggerHandler))
+	loggerHandler := slog.NewTextHandler(logWriter, &slog.HandlerOptions{
+		Level:     slog.LevelDebug,
+		AddSource: true,
+	})
+	logger := slog.New(loggerHandler)
+	slog.SetDefault(logger)
 
 	if err := os.Setenv("DEBUG", "1"); err != nil {
 		t.Fatal(err)
@@ -36,29 +43,27 @@ func TestE2E(t *testing.T) {
 	nodes := []*Node{}
 	plugins := []aggregate.Plugin{}
 
-	for i := range 10 {
+	for i := range testNodeCount {
 		nodeName := fmt.Sprintf("testnode-%d", i)
+
 		node := MakeNode(nodeName)
+
 		plugins = append(plugins, append(node.plugins, node.oracle)...)
 		nodes = append(nodes, node)
 	}
 
-	defer func() {
-		for _, node := range nodes {
-			if node == nil {
-				continue
-			}
-
-			_ = node.db.Drop(t.Context())
-		}
-	}()
-
 	p := aggregate.New(plugins)
 	assert.NoError(t, p.Init())
+	for _, node := range nodes {
+		node.db.Drop(t.Context())
+	}
 
 	connectP2p(nodes)
 
-	_, err = p.Start().Await(context.Background())
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Minute)
+	defer cancel()
+
+	_, err = p.Start().Await(ctx)
 	assert.NoError(t, err)
 }
 

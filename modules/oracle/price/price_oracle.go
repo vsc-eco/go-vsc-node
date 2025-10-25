@@ -95,12 +95,15 @@ func (p *PriceOracle) Start() *promise.Promise[any] {
 		go func() {
 			pricePollTicker := time.NewTicker(p.pricePollInterval)
 
+			p.logger.Debug("observing market price", "symbols", p.watchSymbols)
 			for {
 				select {
 				case <-p.ctx.Done():
 					return
 
 				case <-pricePollTicker.C:
+					p.logger.Debug("price query ticker")
+
 					for name, src := range p.priceAPIs {
 						go func(src string, api api.PriceQuery) {
 							p.logger.Debug("fetching price", "src", src)

@@ -29,7 +29,8 @@ const (
 	// 10 minutes = 600 seconds or 200 blocks, 3s for every new block.
 	// A tick is broadcasted every 200 blocks produced.
 	priceOracleBroadcastInterval = uint64(600 / 3)
-	priceOraclePollInterval      = time.Second * 15
+	// priceOraclePollInterval      = time.Second * 15
+	priceOraclePollInterval = time.Minute
 
 	// 10 minutes = 600 seconds or 200 blocks, 3s for every new block
 	chainRelayInterval = uint64(600 / 3)
@@ -97,18 +98,20 @@ func New(
 // Init implements aggregate.Plugin.
 // Runs initialization in order of how they are passed in to `Aggregate`
 func (o *Oracle) Init() error {
+	o.logger = slog.Default()
 	if os.Getenv("DEBUG") == "1" {
-		slog.SetLogLoggerLevel(slog.LevelDebug)
+		// slog.SetLogLoggerLevel(slog.LevelDebug)
+		o.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		}))
+
+		o.logger = slog.Default().With("id", o.p2pServer.PeerInfo().GetPeerId())
 	}
 
-	logger := slog.Default().With("id", o.p2pServer.PeerInfo().GetPeerId())
-
-	o.logger = logger.With("service", "oracle")
-
-	o.chainOracle = chain.New(o.ctx, logger, o.conf)
+	o.chainOracle = chain.New(o.ctx, o.logger, o.conf)
 	o.priceOracle = price.New(
 		o.ctx,
-		logger,
+		o.logger,
 		userCurrency,
 		priceOraclePollInterval,
 		watchSymbols,
@@ -196,8 +199,6 @@ func (o *Oracle) Broadcast(msgCode p2p.MsgCode, data any) error {
 func (o *Oracle) Handle(
 	peerID peer.ID,
 	msg p2p.Msg,
-	// the following 2 arguments are ignored, the interface is meant to be
-	// passed down to chainOracle + priceOracle.
 	_ string,
 	_ []elections.ElectionMember,
 ) (p2p.Msg, error) {
