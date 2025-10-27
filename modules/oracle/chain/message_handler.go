@@ -32,6 +32,7 @@ func (c *ChainOracle) Handle(
 	_ []elections.ElectionMember,
 ) (p2p.Msg, error) {
 	if p2pMsg.Code != p2p.MsgChainRelay {
+		c.logger.Debug("invalid message type")
 		return nil, ErrInvalidChainOracleMessage
 	}
 
@@ -45,8 +46,8 @@ func (c *ChainOracle) Handle(
 
 	switch msg.MessageType {
 	case signatureRequest:
-		blockProducerSigRequest := chainOracleBlockProducerMessage{}
-		if err := json.Unmarshal(msg.Payload, &blockProducerSigRequest); err != nil {
+		signatureRequest := chainOracleBlockProducerMessage{}
+		if err := json.Unmarshal(msg.Payload, &signatureRequest); err != nil {
 			return nil, fmt.Errorf(
 				"failed to deserialize block producer message: %w",
 				err,
@@ -54,9 +55,9 @@ func (c *ChainOracle) Handle(
 		}
 
 		c.logger.Debug(
-			"received message of type signatureRequest",
-			"blockProducerSigRequest",
-			blockProducerSigRequest,
+			"signature request received",
+			"block-producer", signatureRequest.BlockProducer,
+			"signature-hash", signatureRequest.SigHash,
 		)
 
 		w := chainOracleWitness{
@@ -69,23 +70,21 @@ func (c *ChainOracle) Handle(
 			blockProducer:     blockProducer,
 		}
 
-		c.logger.Debug("created chain oracle witness", "witness (w)", w)
-
-		signatureMsg, err := w.witnessChainData(&blockProducerSigRequest)
+		signatureMsg, err := w.witnessChainData(&signatureRequest)
 		if err != nil {
 			if errors.Is(err, errInvalidBlockProducer) {
-				c.logger.Debug(
-					"dropping signature request not from block producer",
-				)
-				return nil, nil
-			} else if errors.Is(err, errInvalidChainHash) {
-				c.logger.Debug("invalid chain hash")
+				c.logger.Debug("not block producer, dropping message")
 				return nil, nil
 			}
 
 			c.logger.Debug("error witnessing chain data", "err", err)
 			return nil, err
 		}
+
+		c.logger.Debug(
+			"chain data verified, chain hash signed",
+			"signature", signatureMsg.Signature,
+		)
 
 		payload, err := json.Marshal(signatureMsg)
 		if err != nil {
@@ -94,14 +93,6 @@ func (c *ChainOracle) Handle(
 				err,
 			)
 		}
-
-		c.logger.Debug(
-			"got signature back from witnessChainData",
-			"signatureMsg",
-			signatureMsg,
-			"marshalled payload",
-			payload,
-		)
 
 		msg := chainOracleMessage{
 			MessageType: signatureResponse,
@@ -112,41 +103,34 @@ func (c *ChainOracle) Handle(
 		return p2p.MakeOracleMessage(p2p.MsgChainRelay, &msg)
 
 	case signatureResponse:
-		if err := receiveSignature(c, &msg); err != nil {
-			return nil, fmt.Errorf(
-				"failed to receive signature: session ID [%s], err [%w]",
-				msg.SessionID, err,
-			)
+		payload := chainOracleWitnessMessage{}
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			return nil, fmt.Errorf("failed to deserialize payload: %w", err)
 		}
+
+		c.logger.Debug(
+			"signature response received",
+			"signature", payload.Signature,
+			"signer", payload.Signer,
+		)
+
+		if err := signatureMessageValidator.Struct(&payload); err != nil {
+			return nil, fmt.Errorf("failed to validate signature response: %w", err)
+		}
+
+		if err := c.signatureChannels.receiveSignature(msg.SessionID, payload); err != nil {
+			return nil, fmt.Errorf("failed to receive signature: %w", err)
+		}
+
+		c.logger.Debug(
+			"signature received",
+			"signature", payload.Signature,
+			"signer", payload.Signer,
+		)
 
 	default:
 		return nil, ErrInvalidChainOracleMessageType
 	}
 
 	return nil, nil
-}
-
-func receiveSignature(
-	c *ChainOracle,
-	msg *chainOracleMessage,
-) error {
-	var signatureResponse chainOracleWitnessMessage
-	if err := json.Unmarshal(msg.Payload, &signatureResponse); err != nil {
-		return err
-	}
-
-	c.logger.Debug(
-		"received message of type signatureResponse",
-		"signatureResponse",
-		signatureResponse,
-	)
-
-	if err := signatureMessageValidator.Struct(&signatureResponse); err != nil {
-		return fmt.Errorf("invalid signature message: %w", err)
-	}
-
-	return c.signatureChannels.receiveSignature(
-		msg.SessionID,
-		signatureResponse,
-	)
 }
