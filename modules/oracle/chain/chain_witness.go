@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	blocks "github.com/ipfs/go-block-format"
+	"github.com/ipfs/go-cid"
 	blsu "github.com/protolambda/bls12-381-util"
 )
 
@@ -41,7 +41,7 @@ func (o *chainOracleWitness) witnessChainData(
 	}
 
 	o.logger.Debug(
-		"got blocks from btcd",
+		"got blocks",
 		"blocksCount", len(blocks),
 	)
 
@@ -50,14 +50,15 @@ func (o *chainOracleWitness) witnessChainData(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tx: %w", err)
 	}
+	txCid := tx.Cid()
 
-	chainHashMatch := tx.Cid().String() == msg.SigHash
+	chainHashMatch := txCid.String() == msg.SigHash
 	if !chainHashMatch {
 		return nil, errInvalidChainHash
 	}
 
 	// sign and respond
-	signature, err := o.signChainData(tx)
+	signature, err := o.signChainData(&txCid)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign producer block: %w", err)
 	}
@@ -71,7 +72,7 @@ func (o *chainOracleWitness) witnessChainData(
 }
 
 func (w *chainOracleWitness) signChainData(
-	payload blocks.Block,
+	txCid *cid.Cid,
 ) (string, error) {
 	// decode bls key seed
 	blsKeyDecoded, err := hex.DecodeString(w.privateBlsKeySeed)
@@ -91,8 +92,8 @@ func (w *chainOracleWitness) signChainData(
 		return "", fmt.Errorf("failed to deserialize bls priv key: %w", err)
 	}
 
-	sigBytes := blsu.Sign(blsSecretKey, payload.Cid().Bytes()).Serialize()
-
+	sigBytes := blsu.Sign(blsSecretKey, txCid.Bytes()).Serialize()
 	sig := base64.RawURLEncoding.EncodeToString(sigBytes[:])
+
 	return sig, nil
 }

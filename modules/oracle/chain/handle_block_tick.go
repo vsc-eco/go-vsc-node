@@ -7,10 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"time"
 	"vsc-node/lib/dids"
-	"vsc-node/lib/utils"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
@@ -42,13 +42,13 @@ func (o *ChainOracle) HandleBlockTick(
 	signal p2p.BlockTickSignal,
 	p2pSpec p2p.OracleP2PSpec,
 ) {
-	// NOTE: when the node is the not the producer, it is not a witness. The
-	// action of witness is triggered for incoming p2p message.
+	o.logger.Debug("block tick event")
+
 	if !signal.IsProducer {
 		return
 	}
 
-	blockProducer := &blockProducer{
+	bp := &blockProducer{
 		ctx:                    o.ctx,
 		logger:                 o.logger,
 		username:               o.conf.Get().HiveUsername,
@@ -60,7 +60,6 @@ func (o *ChainOracle) HandleBlockTick(
 	}
 
 	for symbol, chain := range o.chainRelayers {
-		o.logger.Debug("block tick event", "symbol", symbol)
 		session, err := o.makeChainSession(symbol)
 		if err != nil {
 			o.logger.Error("failed to get chain session",
@@ -70,7 +69,7 @@ func (o *ChainOracle) HandleBlockTick(
 			continue
 		}
 
-		if err := blockProducer.handleChainSession(chain, session); err != nil {
+		if err := bp.handleChainSession(chain, session); err != nil {
 			o.logger.Error(
 				"failed to process chain session",
 				"network", symbol, "err", err,
@@ -83,7 +82,11 @@ func (bp *blockProducer) handleChainSession(
 	chain chainRelay,
 	chainSession chainSession,
 ) error {
-	bp.logger.Debug("handling chain session", "sessionID", chainSession.sessionID)
+	bp.logger.Debug(
+		"chain session",
+		"symbol", chain.Symbol(),
+		"session-id", chainSession.sessionID,
+	)
 
 	if len(bp.electedMemberWeightMap) != len(bp.electedMembers) {
 		return errors.New(
@@ -91,27 +94,22 @@ func (bp *blockProducer) handleChainSession(
 		)
 	}
 
-	sessionID := chainSession.sessionID
-	bp.logger.Debug("created session ID", "sessionID", sessionID)
-
 	// make signature receiver
-	sigChan, err := bp.sigChan.makeSession(sessionID)
+	sigChan, err := bp.sigChan.makeSession(chainSession.sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to make signature session: %w", err)
 	}
-	defer bp.sigChan.removeSession(sessionID)
+	defer bp.sigChan.removeSession(chainSession.sessionID)
 
 	// create tx + chain hash
 	tx, err := makeChainTx(chain, chainSession.chainData)
 	txCid := tx.Cid()
 
 	// create transaction + bls circuit
-	witnessDIDs := utils.Map(
-		bp.electedMembers,
-		func(w elections.ElectionMember) dids.Member {
-			return dids.BlsDID(w.Key)
-		},
-	)
+	witnessDIDs := make([]dids.Member, len(bp.electedMembers))
+	for i := range bp.electedMembers {
+		witnessDIDs[i] = dids.BlsDID(bp.electedMembers[i].Key)
+	}
 
 	circuit, err := dids.NewBlsCircuitGenerator(witnessDIDs).Generate(txCid)
 	if err != nil {
@@ -121,13 +119,8 @@ func (bp *blockProducer) handleChainSession(
 	// collect witness data
 	witnessAccounts := make([]string, len(bp.electedMembers))
 	for i := range bp.electedMembers {
-		member := &bp.electedMembers[i]
-		witnessAccounts[i] = member.Account
+		witnessAccounts[i] = bp.electedMembers[i].Account
 	}
-
-	weightThreshold := (bp.totalWeight * 2) / 3
-	signedWeight := uint64(0)
-	bp.logger.Debug("set threshold", "threshold", weightThreshold)
 
 	// broadcast signature request
 	blockProducerMsg := chainOracleBlockProducerMessage{
@@ -142,7 +135,7 @@ func (bp *blockProducer) handleChainSession(
 
 	signatureRequestMsg := chainOracleMessage{
 		MessageType: signatureRequest,
-		SessionID:   sessionID,
+		SessionID:   chainSession.sessionID,
 		Payload:     json.RawMessage(msgJsonBytes),
 	}
 
@@ -159,51 +152,8 @@ func (bp *blockProducer) handleChainSession(
 	ctx, cancel := context.WithTimeout(bp.ctx, time.Minute)
 	defer cancel()
 
-	for signedWeight < weightThreshold {
-		select {
-		case <-ctx.Done():
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("context error: %w", err)
-			} else {
-				return errors.New("signature collection timed out")
-			}
-
-		case msg := <-sigChan:
-			memberIndex := slices.Index(witnessAccounts, msg.Signer)
-			if memberIndex == -1 {
-				bp.logger.Debug(
-					"invalid witness signature, dropping.",
-					"signer", msg.Signer,
-				)
-				continue
-			}
-
-			member := &bp.electedMembers[memberIndex]
-			memberDID := dids.BlsDID(member.Key)
-
-			signature := msg.Signature
-
-			added, err := circuit.AddAndVerify(memberDID, signature)
-			if err != nil {
-				bp.logger.Error("failed to add member to circuit.", "err", err)
-				continue
-			}
-
-			if !added {
-				bp.logger.Debug(
-					"invalid member, signature not added to circuit",
-				)
-				continue
-			}
-
-			signedWeight += bp.electedMemberWeightMap[memberIndex]
-
-			bp.logger.Debug(
-				"received witness signature, appending to witnessSigned",
-				"signer", member.Account,
-				"signature", signature,
-			)
-		}
+	if err := bp.collectSignature(ctx, circuit, sigChan); err != nil {
+		return fmt.Errorf("failed to collect signature: %w", err)
 	}
 
 	// make transaction + submit to contract
@@ -219,14 +169,12 @@ func (bp *blockProducer) handleChainSession(
 
 	sigPackage := stateEngine.TransactionSig{
 		Type: "vsc-sig",
-		Sigs: []common.Sig{
-			{
-				Algo: "bls-agg",
-				Sig:  serializedCircuit.Signature,
-				Bv:   serializedCircuit.BitVector,
-				Kid:  "",
-			},
-		},
+		Sigs: []common.Sig{{
+			Algo: "bls-agg",
+			Sig:  serializedCircuit.Signature,
+			Bv:   serializedCircuit.BitVector,
+			Kid:  "",
+		}},
 	}
 
 	sigBytes, err := common.EncodeDagCbor(sigPackage)
@@ -247,10 +195,69 @@ func (bp *blockProducer) handleChainSession(
 	return nil
 }
 
+func (bp *blockProducer) collectSignature(
+	ctx context.Context,
+	circuit dids.PartialBlsCircuit,
+	sigChan <-chan chainOracleWitnessMessage,
+) error {
+	weightThreshold := (bp.totalWeight * 2) / 3
+	signedWeight := uint64(0)
+
+	for signedWeight < weightThreshold {
+		select {
+		case <-ctx.Done():
+			err := ctx.Err()
+			if errors.Is(err, context.DeadlineExceeded) {
+				return errors.New("signature collection timed out")
+			}
+			return err
+
+		case msg := <-sigChan:
+			memberIndex := slices.IndexFunc(
+				bp.electedMembers,
+				func(m elections.ElectionMember) bool {
+					return m.Account == msg.Signer
+				},
+			)
+
+			if memberIndex == -1 {
+				bp.logger.Debug(
+					"invalid witness signature, dropping.",
+					"signer", msg.Signer,
+				)
+				continue
+			}
+
+			memberDID := dids.BlsDID(bp.electedMembers[memberIndex].Key)
+
+			added, err := circuit.AddAndVerify(memberDID, msg.Signature)
+			if err != nil {
+				bp.logger.Error("failed to add member to circuit.", "err", err)
+				continue
+			}
+
+			if !added {
+				bp.logger.Debug("invalid member, signature not added to circuit")
+				continue
+			}
+
+			signedWeight += bp.electedMemberWeightMap[memberIndex]
+
+			bp.logger.Debug(
+				"witness signature verified",
+				"progress", float32(signedWeight)/float32(weightThreshold),
+				"signer", msg.Signer, "signature", msg.Signature,
+			)
+		}
+	}
+
+	return nil
+}
+
 func (bp *blockProducer) submitToContract(
 	vscTx transactionpool.SerializedVSCTransaction,
 ) error {
-	client := graphql.NewClient("https://api.vsc.eco/api/v1/graphql", nil)
+	const timer = time.Minute
 
 	var query struct {
 		Result struct{} `graphql:"submitTransactionV1(tx: $tx, sig: $sig)"`
@@ -264,7 +271,12 @@ func (bp *blockProducer) submitToContract(
 
 	opName := graphql.OperationName("SubmitContract")
 
-	ctx, cancel := context.WithTimeout(bp.ctx, 15*time.Second)
+	client := graphql.NewClient(
+		"https://api.vsc.eco/api/v1/graphql",
+		&http.Client{Timeout: timer},
+	)
+
+	ctx, cancel := context.WithTimeout(bp.ctx, timer)
 	defer cancel()
 
 	if err := client.Query(ctx, &query, variables, opName); err != nil {
