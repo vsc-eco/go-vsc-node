@@ -3,6 +3,7 @@ package price
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"vsc-node/modules/db/vsc/contracts"
@@ -81,4 +82,23 @@ func makeTx(priceMap map[string]api.PricePoint) (blocks.Block, error) {
 func getNonce() (uint64, error) {
 	// TODO: implement getNonce function
 	return 0, nil
+}
+
+func floatEqual(a, b float64) bool {
+	const epsilon = 1e-9
+	return math.Abs(a-b) < epsilon
+}
+
+// sorts b, returns the median:
+//   - if b has odd elements, returns the mid value
+//   - if b has even elements, returns the mean of the 2 mid values
+func getMedianValue(b []float64) float64 {
+	slices.Sort(b)
+
+	if len(b)&1 == 1 {
+		return b[len(b)/2]
+	}
+
+	i := len(b) / 2
+	return (b[i] + b[i-1]) / 2.0
 }

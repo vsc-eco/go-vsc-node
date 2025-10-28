@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 	"vsc-node/lib/dids"
-	"vsc-node/lib/utils"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
@@ -141,7 +140,11 @@ func (o *PriceOracle) collectAveragePricePoints(
 		case priceMap := <-priceReceiver:
 			for symbol, pp := range priceMap {
 				if math.IsNaN(pp.Volume) || math.IsNaN(pp.Price) {
-					o.logger.Debug("NaN values dropped", "price", pp.Price, "volume", pp.Volume)
+					o.logger.Debug(
+						"NaN values, price point dropped",
+						"price", pp.Price,
+						"volume", pp.Volume,
+					)
 					continue
 				}
 
@@ -204,12 +207,10 @@ func (p *Producer) handle(medianPriceMap map[string]api.PricePoint) error {
 	// make bls circuit
 	txCid := tx.Cid()
 
-	witnessDIDs := utils.Map(
-		p.blockTickSignal.ElectedMembers,
-		func(w elections.ElectionMember) dids.Member {
-			return dids.BlsDID(w.Key)
-		},
-	)
+	witnessDIDs := make([]dids.Member, len(p.blockTickSignal.ElectedMembers))
+	for i := range p.blockTickSignal.ElectedMembers {
+		witnessDIDs[i] = dids.BlsDID(p.blockTickSignal.ElectedMembers[i].Key)
+	}
 
 	circuit, err := dids.NewBlsCircuitGenerator(witnessDIDs).Generate(txCid)
 	if err != nil {
@@ -217,12 +218,11 @@ func (p *Producer) handle(medianPriceMap map[string]api.PricePoint) error {
 	}
 
 	// collect and verify signatures with bls circuit
-	weightThreshold := (p.blockTickSignal.TotalElectionWeight * 2) / 3
 
 	ctx, cancel := context.WithTimeout(p.ctx, 15*time.Second)
 	defer cancel()
 
-	if err := p.collectSignature(ctx, circuit, weightThreshold); err != nil {
+	if err := p.collectSignature(ctx, circuit); err != nil {
 		return fmt.Errorf("failed to collect signatures: %w", err)
 	}
 
@@ -268,14 +268,14 @@ func (p *Producer) handle(medianPriceMap map[string]api.PricePoint) error {
 func (p *Producer) collectSignature(
 	ctx context.Context,
 	circuit dids.PartialBlsCircuit,
-	signatureThreshold uint64,
 ) error {
+	signatureThreshold := (p.blockTickSignal.TotalElectionWeight * 2) / 3
+	signedWeight := uint64(0)
+
 	p.logger.Debug(
 		"collecting signatures",
 		"signature-threshold", signatureThreshold,
 	)
-
-	signedWeight := uint64(0)
 
 	receiver := p.signatureChannel.Open()
 	defer p.signatureChannel.Close()
@@ -332,6 +332,7 @@ func (p *Producer) collectSignature(
 
 // TODO: implement this function
 func (p *Producer) submitToContract(transactionpool.SerializedVSCTransaction) error {
+	p.logger.Error("submit to contract not implemented")
 	return nil
 }
 
@@ -351,14 +352,14 @@ func (w *Witness) handle(medianPriceMap map[string]api.PricePoint) error {
 		"median-prices", medianPriceMap,
 	)
 
-	var signatureRequest SignatureRequestMessage
-
+	//  receiving median price
 	receiver := w.signatureRequestChannel.Open()
 	defer w.signatureRequestChannel.Close()
 
 	ctx, cancel := context.WithTimeout(w.ctx, 30*time.Second)
 	defer cancel()
 
+	var signatureRequest SignatureRequestMessage
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -367,6 +368,12 @@ func (w *Witness) handle(medianPriceMap map[string]api.PricePoint) error {
 		w.logger.Debug("signature request received")
 	}
 
+	w.logger.Debug("signature request received",
+		"median-price", signatureRequest.MedianPrice,
+		"signature-hash", signatureRequest.SigHash,
+	)
+
+	// compare broadcasted vs local median price
 	for sym, pricePoint := range signatureRequest.MedianPrice {
 		localPricePoint, ok := medianPriceMap[sym]
 		if !ok {
@@ -420,6 +427,7 @@ func (w *Witness) handle(medianPriceMap map[string]api.PricePoint) error {
 
 	sigBytes := blsu.Sign(blsSecretKey, txCid.Bytes()).Serialize()
 
+	// broadcast signature
 	signatureResponse := &SignatureResponseMessage{
 		Signer:    w.identity.Get().HiveUsername,
 		Signature: base64.RawURLEncoding.EncodeToString(sigBytes[:]),
@@ -439,23 +447,4 @@ func (w *Witness) handle(medianPriceMap map[string]api.PricePoint) error {
 	)
 
 	return nil
-}
-
-func floatEqual(a, b float64) bool {
-	const epsilon = 1e-9
-	return math.Abs(a-b) < epsilon
-}
-
-// sort b and returns the median:
-// - if b has odd elements, returns the mid value
-// - if b has even elements, returns the mean of the 2 mid values
-func getMedianValue(b []float64) float64 {
-	slices.Sort(b)
-
-	if len(b)&1 == 1 {
-		return b[len(b)/2]
-	}
-
-	i := len(b) / 2
-	return (b[i] + b[i-1]) / 2.0
 }
