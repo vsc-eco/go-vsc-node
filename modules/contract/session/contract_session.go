@@ -295,8 +295,9 @@ func (ss *StateStore) Commit() {
 }
 
 func (ss *StateStore) Rollback() {
-	ss.deletions = make(map[string]bool)
-	ss.cache = make(map[string][]byte)
+	// revert to last committed state
+	ss.deletions = maps.Clone(ss.cs.deletions)
+	ss.cache = maps.Clone(ss.cs.cache)
 }
 
 func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) *StateStore {
