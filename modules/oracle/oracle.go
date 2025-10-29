@@ -130,6 +130,7 @@ func (o *Oracle) Init() error {
 // Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
 	o.vStream.RegisterBlockTick("oracle", o.blockTick, true)
+	o.logger.Debug("block tick registered")
 
 	return promise.New(func(resolve func(any), reject func(error)) {
 		o.logger.Debug("starting Oracle service")
@@ -191,6 +192,8 @@ func (o *Oracle) Broadcast(msgCode p2p.MsgCode, data any) error {
 	if err != nil {
 		return err
 	}
+
+	o.logger.Debug("broadcasting message", "msg-code", msgCode, "msg", string(msg.Data))
 
 	return o.pubSubSrv.Send(msg)
 }
