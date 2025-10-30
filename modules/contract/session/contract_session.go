@@ -1,6 +1,7 @@
 package contract_session
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"maps"
@@ -173,6 +174,14 @@ func (cs *CallSession) Rollback() {
 	}
 }
 
+func (cs *CallSession) GetStateDiff() map[string]StateDiff {
+	res := make(map[string]StateDiff)
+	for id, session := range cs.sessions {
+		res[id] = session.state.GetDiff()
+	}
+	return res
+}
+
 func (cs *CallSession) GetContractFromDb(contractId string) result.Result[ContractWithCode] {
 	info, err := cs.contractDb.ContractById(contractId)
 	if err == mongo.ErrNoDocuments {
@@ -277,6 +286,16 @@ type StateStore struct {
 	cs        *ContractSession
 }
 
+type stateKeyDiff struct {
+	Previous []byte
+	Current  []byte
+}
+
+type StateDiff struct {
+	Deletions map[string]bool
+	KeyDiff   map[string]stateKeyDiff
+}
+
 func (ss *StateStore) Get(key string) []byte {
 	if ss.deletions[key] {
 		return []byte{}
@@ -315,14 +334,39 @@ func (ss *StateStore) Delete(key string) {
 
 func (ss *StateStore) Commit() {
 	// commit the changes to the underlying storage
-	ss.cs.deletions = ss.deletions
-	ss.cs.cache = ss.cache
+	ss.cs.deletions = maps.Clone(ss.deletions)
+	ss.cs.cache = maps.Clone(ss.cache)
 }
 
 func (ss *StateStore) Rollback() {
 	// revert to last committed state
 	ss.deletions = maps.Clone(ss.cs.deletions)
 	ss.cache = maps.Clone(ss.cs.cache)
+}
+
+// Return a summary of uncommitted state diff
+func (ss *StateStore) GetDiff() StateDiff {
+	dels := make(map[string]bool)
+	diffs := make(map[string]stateKeyDiff)
+
+	for key := range ss.deletions {
+		if !ss.cs.deletions[key] {
+			dels[key] = true
+		}
+	}
+	for key, val := range ss.cache {
+		if !bytes.Equal(val, ss.cs.cache[key]) {
+			diffs[key] = stateKeyDiff{
+				Previous: ss.cs.cache[key],
+				Current:  val,
+			}
+		}
+	}
+
+	return StateDiff{
+		Deletions: dels,
+		KeyDiff:   diffs,
+	}
 }
 
 func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) *StateStore {
