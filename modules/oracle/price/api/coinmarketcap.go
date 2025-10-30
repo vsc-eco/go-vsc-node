@@ -15,7 +15,7 @@ type CoinMarketCap struct {
 	currency string
 }
 
-// var _ PriceQuery = &CoinMarketCap{}
+var _ PriceQuery = &CoinMarketCap{}
 
 // Source implements PriceQuery
 func (c *CoinMarketCap) Source() string {

@@ -12,6 +12,8 @@ const (
 	pageLimit = 250
 )
 
+var _ PriceQuery = &CoinGecko{}
+
 type CoinGecko struct {
 	baseUrl  string
 	apiKey   string

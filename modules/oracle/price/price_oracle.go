@@ -17,9 +17,6 @@ import (
 var (
 	_ p2p.MessageHandler = &PriceOracle{}
 	_ aggregate.Plugin   = &PriceOracle{}
-
-	_ api.PriceQuery = &api.CoinGecko{}
-	_ api.PriceQuery = &api.CoinMarketCap{}
 )
 
 type PriceOracle struct {
