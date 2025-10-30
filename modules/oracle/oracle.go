@@ -96,11 +96,9 @@ func New(
 }
 
 // Init implements aggregate.Plugin.
-// Runs initialization in order of how they are passed in to `Aggregate`
 func (o *Oracle) Init() error {
 	o.logger = slog.Default()
 	if os.Getenv("DEBUG") == "1" {
-		// slog.SetLogLoggerLevel(slog.LevelDebug)
 		o.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 			Level: slog.LevelDebug,
 		}))
@@ -118,16 +116,15 @@ func (o *Oracle) Init() error {
 		o.conf,
 	)
 
-	subServices := aggregate.New([]aggregate.Plugin{
+	services := aggregate.New([]aggregate.Plugin{
 		o.chainOracle,
-		o.priceOracle,
+		// o.priceOracle,
 	})
 
-	return subServices.Init()
+	return services.Init()
 }
 
 // Start implements aggregate.Plugin.
-// Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
 	o.vStream.RegisterBlockTick("oracle", o.blockTick, true)
 	o.logger.Debug("block tick registered")
@@ -151,7 +148,7 @@ func (o *Oracle) Start() *promise.Promise[any] {
 
 		services := aggregate.New([]aggregate.Plugin{
 			o.chainOracle,
-			o.priceOracle,
+			// o.priceOracle,
 		})
 
 		if _, err := services.Start().Await(ctx); err != nil {
@@ -164,11 +161,10 @@ func (o *Oracle) Start() *promise.Promise[any] {
 }
 
 // Stop implements aggregate.Plugin.
-// Runs cleanup once the `Aggregate` is finished
 func (o *Oracle) Stop() error {
 	services := aggregate.New([]aggregate.Plugin{
 		o.chainOracle,
-		o.priceOracle,
+		// o.priceOracle,
 	})
 
 	if err := services.Stop(); err != nil {
