@@ -17,6 +17,7 @@ import (
 	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	p2pInterface "vsc-node/modules/p2p"
@@ -79,6 +80,10 @@ func NewContractTest() ContractTest {
 	contractState := MockContractStateDb{Outputs: make(map[string]contracts.ContractOutput)}
 	witnessesDb := witnesses.NewEmptyWitnesses()
 
+	tssKeys := MockTssKeysDb{Keys: make(map[string]tss_db.TssKey)}
+	tssCommitments := MockTssCommitmentsDb{Commitments: make(map[string]tss_db.TssCommitment)}
+	tssRequests := MockTssRequestsDb{Requests: make(map[string]tss_db.TssRequest)}
+
 	se := stateEngine.New(
 		logr,
 		sysConfig,
@@ -96,9 +101,9 @@ func NewContractTest() ContractTest {
 		&actions,
 		nil,
 		nil,
-		nil,
-		nil,
-		nil,
+		&tssKeys,
+		&tssCommitments,
+		&tssRequests,
 		nil,
 	)
 	var blockStatus common_types.BlockStatusGetter
@@ -114,7 +119,7 @@ func NewContractTest() ContractTest {
 		BlockHeight:   0,
 		ContractDb:    &contractDb,
 		LedgerSession: se.LedgerSystem.NewEmptySession(state, 0),
-		CallSession:   contract_session.NewCallSession(dl, &contractDb, &contractState, nil, 0, nil),
+		CallSession:   contract_session.NewCallSession(dl, &contractDb, &contractState, &tssKeys, 0, nil),
 		DataLayer:     dl,
 		StateEngine:   se,
 		Tss: TssState{
@@ -245,6 +250,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 
 	if res.Error != nil {
 		ct.LedgerSession.Revert()
+		logs := ct.CallSession.PopLogs()
 		ct.CallSession.Rollback()
 		return ContractTestCallResult{
 			Success: false,
@@ -252,7 +258,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 			ErrMsg:  *res.Error,
 			RcUsed:  rcUsed,
 			GasUsed: res.Gas,
-			Logs:    map[string]contract_session.LogOutput{},
+			Logs:    logs,
 		}
 	}
 	diff := ct.CallSession.GetStateDiff()
