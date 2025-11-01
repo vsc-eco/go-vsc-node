@@ -25,7 +25,8 @@ func (e *Ethereum) ChainData(startBlockHeight uint64, count uint64) ([]ChainBloc
 
 // ContractID implements ChainRelay.
 func (e *Ethereum) ContractID() string {
-	panic("unimplemented")
+	// TODO: update ETH contract ID
+	return "eth-contract-id"
 }
 
 // GetContractState implements ChainRelay.
@@ -64,5 +65,24 @@ func (e *Ethereum) Symbol() string {
 	return "eth"
 }
 
+type ethereumBlock struct{}
+
+// AverageFee implements ChainBlock.
+func (e *ethereumBlock) AverageFee() int64 {
+	panic("unimplemented")
+}
+
+// BlockHeight implements ChainBlock.
+func (e *ethereumBlock) BlockHeight() uint64 {
+	panic("unimplemented")
+}
+
+// Serialize implements ChainBlock.
+func (e *ethereumBlock) Serialize() (string, error) {
+	panic("unimplemented")
+}
+
+// Type implements ChainBlock.
+func (e *ethereumBlock) Type() string {
 	panic("unimplemented")
 }
