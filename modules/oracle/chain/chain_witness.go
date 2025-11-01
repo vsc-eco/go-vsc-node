@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"vsc-node/modules/oracle/chain/api"
 
 	"github.com/ipfs/go-cid"
 	blsu "github.com/protolambda/bls12-381-util"
@@ -18,11 +19,11 @@ var (
 
 type chainOracleWitness struct {
 	logger            *slog.Logger
-	chainMap          map[string]chainRelay
+	chainMap          map[string]api.ChainRelay
 	username          string
 	privateBlsKeySeed string
 	sessionID         string
-	chainRelayMap     map[string]chainRelay
+	chainRelayMap     map[string]api.ChainRelay
 	blockProducer     string
 }
 

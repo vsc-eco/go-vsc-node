@@ -1,4 +1,4 @@
-package chain
+package api
 
 import (
 	"os"
@@ -10,7 +10,7 @@ func TestBitcoinRelayer(t *testing.T) {
 		t.Fatal("failed to set DEBUG environment", err)
 	}
 
-	btc := &bitcoinRelayer{}
+	btc := &Bitcoin{}
 	if err := btc.Init(t.Context()); err != nil {
 		t.Fatal(err)
 	}

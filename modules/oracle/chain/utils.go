@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"vsc-node/modules/db/vsc/contracts"
+	"vsc-node/modules/oracle/chain/api"
 	transactionpool "vsc-node/modules/transaction-pool"
 
 	"github.com/hasura/go-graphql-client"
@@ -108,8 +109,8 @@ func getAccountNonce(symbol string) (uint64, error) {
 }
 
 func makeChainTx(
-	chain chainRelay,
-	chainData []chainBlock,
+	chain api.ChainRelay,
+	chainData []api.ChainBlock,
 ) (blocks.Block, error) {
 	if len(chainData) == 0 {
 		return nil, fmt.Errorf("empty chainData")
@@ -158,17 +159,17 @@ func makeChainTx(
 
 func (c *ChainOracle) makeChainSession(
 	symbol string,
-) (chainSession, error) {
+) (api.ChainSession, error) {
 	symbol = strings.ToLower(symbol)
 
 	chain, ok := c.chainRelayers[symbol]
 	if !ok {
-		return chainSession{}, errInvalidChainSymbol
+		return api.ChainSession{}, errInvalidChainSymbol
 	}
 
 	latestChainState, err := chain.GetLatestValidHeight()
 	if err != nil {
-		return chainSession{}, fmt.Errorf(
+		return api.ChainSession{}, fmt.Errorf(
 			"failed to get latest chain height: %s",
 			err,
 		)
@@ -176,46 +177,46 @@ func (c *ChainOracle) makeChainSession(
 
 	contractState, err := chain.GetContractState()
 	if err != nil {
-		return chainSession{}, fmt.Errorf(
+		return api.ChainSession{}, fmt.Errorf(
 			"failed to get vsc contract state: %s",
 			err,
 		)
 	}
 
-	hasNewBlock := latestChainState.blockHeight > contractState.blockHeight
+	hasNewBlock := latestChainState.BlockHeight > contractState.BlockHeight
 	if !hasNewBlock {
-		return chainSession{}, nil
+		return api.ChainSession{}, nil
 	}
 
 	const heightLimit = 100
-	startBlock := contractState.blockHeight + 1
+	startBlock := contractState.BlockHeight + 1
 	endBlock := min(startBlock+heightLimit, startBlock+heightLimit)
 
 	sessionID, err := makeChainSessionID(symbol, startBlock, endBlock)
 	if err != nil {
-		return chainSession{}, fmt.Errorf("failed to make sessionID: %w", err)
+		return api.ChainSession{}, fmt.Errorf("failed to make sessionID: %w", err)
 	}
 
 	_, chainData, err := getSessionData(c.chainRelayers, sessionID)
 	if err != nil {
-		return chainSession{}, fmt.Errorf("failed to get chainData: %w", err)
+		return api.ChainSession{}, fmt.Errorf("failed to get chainData: %w", err)
 	}
 
-	session := chainSession{
-		sessionID:         sessionID,
-		symbol:            chain.Symbol(),
-		contractId:        chain.ContractID(),
-		chainData:         chainData,
-		newBlocksToSubmit: hasNewBlock,
+	session := api.ChainSession{
+		SessionID:         sessionID,
+		Symbol:            chain.Symbol(),
+		ContractId:        chain.ContractID(),
+		ChainData:         chainData,
+		NewBlocksToSubmit: hasNewBlock,
 	}
 
 	return session, nil
 }
 
 func getSessionData(
-	chainMap map[string]chainRelay,
+	chainMap map[string]api.ChainRelay,
 	sessionID string,
-) (chainRelay, []chainBlock, error) {
+) (api.ChainRelay, []api.ChainBlock, error) {
 	symbol, startBlock, endBlock, err := parseChainSessionID(sessionID)
 	if err != nil {
 		return nil, nil, fmt.Errorf(

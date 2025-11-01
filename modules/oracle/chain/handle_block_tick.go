@@ -13,6 +13,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/oracle/chain/api"
 	"vsc-node/modules/oracle/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
@@ -79,13 +80,13 @@ func (o *ChainOracle) HandleBlockTick(
 }
 
 func (bp *blockProducer) handleChainSession(
-	chain chainRelay,
-	chainSession chainSession,
+	chain api.ChainRelay,
+	chainSession api.ChainSession,
 ) error {
 	bp.logger.Debug(
 		"chain session",
 		"symbol", chain.Symbol(),
-		"session-id", chainSession.sessionID,
+		"session-id", chainSession.SessionID,
 	)
 
 	if len(bp.electedMemberWeightMap) != len(bp.electedMembers) {
@@ -95,14 +96,14 @@ func (bp *blockProducer) handleChainSession(
 	}
 
 	// make signature receiver
-	sigChan, err := bp.sigChan.makeSession(chainSession.sessionID)
+	sigChan, err := bp.sigChan.makeSession(chainSession.SessionID)
 	if err != nil {
 		return fmt.Errorf("failed to make signature session: %w", err)
 	}
-	defer bp.sigChan.removeSession(chainSession.sessionID)
+	defer bp.sigChan.removeSession(chainSession.SessionID)
 
 	// create tx + chain hash
-	tx, err := makeChainTx(chain, chainSession.chainData)
+	tx, err := makeChainTx(chain, chainSession.ChainData)
 	txCid := tx.Cid()
 
 	// create transaction + bls circuit
@@ -135,7 +136,7 @@ func (bp *blockProducer) handleChainSession(
 
 	signatureRequestMsg := chainOracleMessage{
 		MessageType: signatureRequest,
-		SessionID:   chainSession.sessionID,
+		SessionID:   chainSession.SessionID,
 		Payload:     json.RawMessage(msgJsonBytes),
 	}
 

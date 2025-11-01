@@ -10,6 +10,7 @@ import (
 	"strings"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/oracle/chain/api"
 
 	"github.com/chebyrash/promise"
 	"github.com/vsc-eco/hivego"
@@ -17,8 +18,9 @@ import (
 
 var (
 	// only usage is to build chain map with proper key-value for ChainOracle.chainMap
-	_chains = [...]chainRelay{
-		&bitcoinRelayer{},
+	_chains = [...]api.ChainRelay{
+		&api.Bitcoin{},
+		&api.Ethereum{},
 	}
 
 	_ aggregate.Plugin = &ChainOracle{}
@@ -30,41 +32,8 @@ type ChainOracle struct {
 	ctx               context.Context
 	logger            *slog.Logger
 	signatureChannels *signatureChannels
-	chainRelayers     map[string]chainRelay
+	chainRelayers     map[string]api.ChainRelay
 	conf              common.IdentityConfig
-}
-
-type chainRelay interface {
-	Init(context.Context) error
-	// Returns the (lowercase) ticker of the chain (ie, btc for bitcoin).
-	Symbol() string
-	// Get the deployed contract ID
-	ContractID() string
-	// Checks for (optional) latest chain state.
-	GetLatestValidHeight() (chainState, error)
-	// Get the lastest state on contract
-	GetContractState() (chainState, error)
-	// Fetch chaindata
-	ChainData(startBlockHeight uint64, count uint64) ([]chainBlock, error)
-}
-
-type chainBlock interface {
-	Type() string //symbol of block network
-	Serialize() (string, error)
-	BlockHeight() uint64
-	AverageFee() int64
-}
-
-type chainState struct {
-	blockHeight uint64
-}
-
-type chainSession struct {
-	sessionID         string
-	symbol            string
-	contractId        string
-	chainData         []chainBlock
-	newBlocksToSubmit bool
 }
 
 func New(
@@ -73,7 +42,7 @@ func New(
 	conf common.IdentityConfig,
 ) *ChainOracle {
 
-	chainRelayers := make(map[string]chainRelay)
+	chainRelayers := make(map[string]api.ChainRelay)
 	for _, c := range _chains {
 		chainRelayers[strings.ToLower(c.Symbol())] = c
 	}
@@ -118,7 +87,7 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 		if err != nil {
 			startSymbols[symbol] = err.Error()
 		} else {
-			startSymbols[symbol] = strconv.Itoa(int(fcl.blockHeight))
+			startSymbols[symbol] = strconv.Itoa(int(fcl.BlockHeight))
 		}
 	}
 	hiveClient := hivego.NewHiveRpc("https://api.hive.blog")

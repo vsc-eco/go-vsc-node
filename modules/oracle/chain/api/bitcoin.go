@@ -1,4 +1,4 @@
-package chain
+package api
 
 import (
 	"bytes"
@@ -18,22 +18,18 @@ import (
 	"github.com/hasura/go-graphql-client"
 )
 
-const (
-	graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
-)
-
 var (
-	_ chainRelay = &bitcoinRelayer{}
-	_ chainBlock = &btcChainData{}
+	_ ChainRelay = &Bitcoin{}
+	_ ChainBlock = &BtcChainData{}
 )
 
-type bitcoinRelayer struct {
+type Bitcoin struct {
 	rpcConfig         rpcclient.ConnConfig
 	validityThreshold uint64
 	ctx               context.Context
 }
 
-type btcChainData struct {
+type BtcChainData struct {
 	Hash           string    `json:"hash"             validate:"hexadecimal"`
 	Height         uint64    `json:"height"`
 	PrevBlock      string    `json:"prev_block"       validate:"hexadecimal"`
@@ -50,7 +46,7 @@ const (
 )
 
 // Init implements chainRelay.
-func (b *bitcoinRelayer) Init(ctx context.Context) error {
+func (b *Bitcoin) Init(ctx context.Context) error {
 	var btcdRpcHost string
 	if os.Getenv("DEBUG") == "1" {
 		// btcdRpcHost = "173.211.12.65:8332"
@@ -73,21 +69,21 @@ func (b *bitcoinRelayer) Init(ctx context.Context) error {
 }
 
 // Symbol implements chainRelay.
-func (b *bitcoinRelayer) Symbol() string {
+func (b *Bitcoin) Symbol() string {
 	return "btc"
 }
 
 // ContractID implements chainRelay.
-func (b *bitcoinRelayer) ContractID() string {
+func (b *Bitcoin) ContractID() string {
 	return "vsc1BonkE2CtHqjnkFdH8hoAEMP25bbWhSr3UA"
 }
 
 // TickCheck implements chainRelay.
-func (b *bitcoinRelayer) GetLatestValidHeight() (chainState, error) {
+func (b *Bitcoin) GetLatestValidHeight() (ChainState, error) {
 	// connect to btcd
 	btcdClient, err := b.connect()
 	if err != nil {
-		return chainState{}, fmt.Errorf(
+		return ChainState{}, fmt.Errorf(
 			"failed to connect to btcd server: %w",
 			err,
 		)
@@ -97,7 +93,7 @@ func (b *bitcoinRelayer) GetLatestValidHeight() (chainState, error) {
 	// latest chain state check
 	latestBlockHeight, err := b.getLatestValidBlockHeight(btcdClient)
 	if err != nil {
-		return chainState{}, fmt.Errorf("failed to get block count: %w", err)
+		return ChainState{}, fmt.Errorf("failed to get block count: %w", err)
 	}
 
 	// // TODO: get latestSubmittedBlockHeight
@@ -109,14 +105,14 @@ func (b *bitcoinRelayer) GetLatestValidHeight() (chainState, error) {
 	// 	return nil, nil
 	// }
 
-	return chainState{blockHeight: latestBlockHeight}, nil
+	return ChainState{BlockHeight: latestBlockHeight}, nil
 }
 
 // GetBlock implements chainRelay.
-func (b *bitcoinRelayer) ChainData(
+func (b *Bitcoin) ChainData(
 	startHeight uint64,
 	count uint64,
-) ([]chainBlock, error) {
+) ([]ChainBlock, error) {
 	if startHeight == 0 {
 		return nil, errors.New("start height not provided")
 	}
@@ -134,13 +130,10 @@ func (b *bitcoinRelayer) ChainData(
 		return nil, err
 	}
 
-	stopHeight := startHeight + count
-	if stopHeight > uint64(latestBlock) {
-		stopHeight = uint64(latestBlock)
-	}
+	stopHeight := min(startHeight+count, uint64(latestBlock))
 
 	// get all blocks from startHeight to stopHeight
-	blocks := make([]chainBlock, 0, stopHeight-startHeight)
+	blocks := make([]ChainBlock, 0, stopHeight-startHeight)
 	for blockHeight := startHeight; blockHeight <= stopHeight; blockHeight++ {
 		blockHash, err := btcdClient.GetBlockHash(int64(blockHeight))
 		if err != nil {
@@ -165,7 +158,7 @@ func (b *bitcoinRelayer) ChainData(
 }
 
 // GetContractState implements chainRelay.
-func (b *bitcoinRelayer) GetContractState() (chainState, error) {
+func (b *Bitcoin) GetContractState() (ChainState, error) {
 	const queryKey = "blocklist"
 
 	var query struct {
@@ -187,26 +180,26 @@ func (b *bitcoinRelayer) GetContractState() (chainState, error) {
 	client := graphql.NewClient(graphQLUrl, debugClient)
 	opName := graphql.OperationName("GetContractState")
 	if err := client.Query(b.ctx, &query, variables, opName); err != nil {
-		return chainState{}, fmt.Errorf("failed to query graphQL: %w", err)
+		return ChainState{}, fmt.Errorf("failed to query graphQL: %w", err)
 	}
 
 	var stateMap map[string]json.RawMessage
 	if err := json.Unmarshal(query.GetStateByKeys, &stateMap); err != nil {
-		return chainState{}, fmt.Errorf(
+		return ChainState{}, fmt.Errorf(
 			"failed to deserialize stateMap: %w", err,
 		)
 	}
 
 	observedData, exists := stateMap[queryKey]
 	if !exists {
-		return chainState{blockHeight: 1}, nil
+		return ChainState{BlockHeight: 1}, nil
 	}
 
 	var blockData struct {
 		LastHeight uint32 `json:"last_height"`
 	}
 	if err := json.Unmarshal(observedData, &blockData); err != nil {
-		return chainState{}, fmt.Errorf(
+		return ChainState{}, fmt.Errorf(
 			"failed to deserialize blockData: %w", err,
 		)
 	}
@@ -215,16 +208,16 @@ func (b *bitcoinRelayer) GetContractState() (chainState, error) {
 		blockData.LastHeight++
 	}
 
-	return chainState{blockHeight: uint64(blockData.LastHeight)}, nil
+	return ChainState{BlockHeight: uint64(blockData.LastHeight)}, nil
 }
 
 // Height implements chainBlock.
-func (b *btcChainData) BlockHeight() uint64 {
+func (b *BtcChainData) BlockHeight() uint64 {
 	return b.Height
 }
 
 // Serialize implements chainBlock.
-func (b *btcChainData) Serialize() (string, error) {
+func (b *BtcChainData) Serialize() (string, error) {
 	buf := &bytes.Buffer{}
 	if err := b.blockHeader.Serialize(buf); err != nil {
 		return "", err
@@ -234,11 +227,11 @@ func (b *btcChainData) Serialize() (string, error) {
 }
 
 // Type implements chainBlock.
-func (b *btcChainData) Type() string {
+func (b *BtcChainData) Type() string {
 	return "BTC"
 }
 
-func (b *btcChainData) AverageFee() int64 {
+func (b *BtcChainData) AverageFee() int64 {
 	return b.AverageFeeRate
 }
 
@@ -265,7 +258,7 @@ func (t *loggingTransport) RoundTrip(
 	return resp, err
 }
 
-func (b *bitcoinRelayer) getLatestValidBlockHeight(
+func (b *Bitcoin) getLatestValidBlockHeight(
 	btcdClient *rpcclient.Client,
 ) (uint64, error) {
 	blockCount, err := btcdClient.GetBlockCount()
@@ -280,7 +273,7 @@ func (b *bitcoinRelayer) getLatestValidBlockHeight(
 func getBlockByHash(
 	btcdClient *rpcclient.Client,
 	blockHash *chainhash.Hash,
-) (*btcChainData, error) {
+) (*BtcChainData, error) {
 	// get block header + average fee
 	block, err := btcdClient.GetBlock(blockHash)
 	if err != nil {
@@ -296,7 +289,7 @@ func getBlockByHash(
 	}
 
 	blockHeader := &block.Header
-	btcBlock := btcChainData{
+	btcBlock := BtcChainData{
 		Hash:           blockHash.String(),
 		Height:         uint64(blockStats.Height),
 		PrevBlock:      blockHeader.PrevBlock.String(),
@@ -309,6 +302,6 @@ func getBlockByHash(
 	return &btcBlock, nil
 }
 
-func (b *bitcoinRelayer) connect() (*rpcclient.Client, error) {
+func (b *Bitcoin) connect() (*rpcclient.Client, error) {
 	return rpcclient.New(&b.rpcConfig, nil)
 }
