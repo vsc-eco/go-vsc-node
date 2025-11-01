@@ -106,6 +106,9 @@ func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession 
 	w := wasm_runtime_ipc.New()
 	w.Init()
 
+	// ensure entrypoint contract is appended to outputs regardless of state access or logs
+	callSession.GetContractSession(t.ContractId)
+
 	ctxValue := contract_execution_context.New(contract_execution_context.Environment{
 		ContractId:           t.ContractId,
 		ContractOwner:        info.Owner,
