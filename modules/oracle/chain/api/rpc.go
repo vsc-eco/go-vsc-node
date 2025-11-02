@@ -9,6 +9,8 @@ import (
 	"net/http"
 )
 
+var rpcClient = &http.Client{}
+
 type jsonRPCRequest struct {
 	JsonRPC string          `json:"jsonrpc"`
 	Method  string          `json:"method"`
@@ -16,6 +18,8 @@ type jsonRPCRequest struct {
 	Params  json.RawMessage `json:"params"`
 }
 
+// making a http POST request for a jsonrpc method at endpoint, result is written
+// to resultBuf
 func postRPC(
 	ctx context.Context,
 	endpoint, method string,
@@ -28,35 +32,33 @@ func postRPC(
 		return fmt.Errorf("failed to serialize params: %w", err)
 	}
 
-	reqBody := jsonRPCRequest{
+	rpcRequest := jsonRPCRequest{
 		JsonRPC: "2.0",
 		Method:  method,
 		ID:      1,
 		Params:  paramBytes,
 	}
 
-	buf := &bytes.Buffer{}
-	if err := json.NewEncoder(buf).Encode(&reqBody); err != nil {
+	requestBody := &bytes.Buffer{}
+	if err := json.NewEncoder(requestBody).Encode(&rpcRequest); err != nil {
 		return fmt.Errorf("failed to serialize request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, buf)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, requestBody)
 	if err != nil {
 		return fmt.Errorf("failed to create new request: %w", err)
 	}
 	req.Header.Add("content-type", "application/json")
 
 	// send post request
-	httpClient := http.Client{}
-
-	response, err := httpClient.Do(req)
+	response, err := rpcClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to send HTTP request: %w", err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		buf.Reset()
+		buf := &bytes.Buffer{}
 		if _, err := io.Copy(buf, response.Body); err != nil {
 			return fmt.Errorf("failed to read response error: %w", err)
 		}

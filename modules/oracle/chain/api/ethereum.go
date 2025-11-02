@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/cookiejar"
 	"time"
 )
 
@@ -15,7 +17,30 @@ var (
 )
 
 type Ethereum struct {
-	ctx context.Context
+	ctx        context.Context
+	httpClient *http.Client
+}
+
+// Init implements ChainRelay.
+func (e *Ethereum) Init(ctx context.Context) error {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return err
+	}
+
+	e.httpClient = &http.Client{
+		Jar:     jar,
+		Timeout: 15 * time.Second,
+	}
+
+	e.ctx = ctx
+
+	return nil
+}
+
+// Symbol implements ChainRelay.
+func (e *Ethereum) Symbol() string {
+	return "eth"
 }
 
 // ChainData implements ChainRelay.
@@ -36,13 +61,11 @@ func (e *Ethereum) GetContractState() (ChainState, error) {
 
 // GetLatestValidHeight implements ChainRelay.
 func (e *Ethereum) GetLatestValidHeight() (ChainState, error) {
-	const method = "eth_blockNumber"
-
 	ctx, cancel := context.WithTimeout(e.ctx, 5*time.Second)
 	defer cancel()
 
 	var blockNumHex string
-	if err := postRPC(ctx, ethRpcApi, method, []any{}, &blockNumHex); err != nil {
+	if err := postRPC(ctx, ethRpcApi, "eth_blockNumber", []any{}, &blockNumHex); err != nil {
 		return ChainState{}, fmt.Errorf("failed to post rpc method: %w", err)
 	}
 
@@ -52,17 +75,6 @@ func (e *Ethereum) GetLatestValidHeight() (ChainState, error) {
 	}
 
 	return cs, nil
-}
-
-// Init implements ChainRelay.
-func (e *Ethereum) Init(ctx context.Context) error {
-	e.ctx = ctx
-	return nil
-}
-
-// Symbol implements ChainRelay.
-func (e *Ethereum) Symbol() string {
-	return "eth"
 }
 
 type ethereumBlock struct{}
