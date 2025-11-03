@@ -242,6 +242,46 @@ func (e2e *E2ERunner) BroadcastElection() Step {
 	}
 }
 
+func (e2e *E2ERunner) DupElection(delay ...time.Duration) Step {
+	return Step{
+		Name: "Broadcast Election",
+		TestFunc: func(ctx StepCtx) (EvaluateFunc, error) {
+			if len(delay) > 0 {
+				fmt.Println("Sleeping broadcast election")
+				time.Sleep(delay[0])
+			}
+			electionResult, err := ctx.Container.runningNodes[0].electionDb.GetElectionByHeight(500_000_000)
+
+			fmt.Println("DupElection", err)
+			electionResult.BlockHeight = uint64(ctx.Container.runningNodes[0].StateEngine.BlockHeight + 20)
+
+			for _, n := range ctx.Container.runningNodes {
+				n.electionDb.StoreElection(elections.ElectionResult{
+					ElectionCommonInfo: elections.ElectionCommonInfo{
+						Epoch: electionResult.Epoch + 1,
+						NetId: "vsc-mainnet",
+						Type:  "initial",
+					},
+					ElectionHeaderInfo: elections.ElectionHeaderInfo{
+						Data: electionResult.Data,
+					},
+					ElectionDataInfo: elections.ElectionDataInfo{
+						Members:         electionResult.Members,
+						Weights:         electionResult.Weights,
+						ProtocolVersion: electionResult.ProtocolVersion,
+					},
+					TotalWeight: electionResult.TotalWeight,
+					BlockHeight: electionResult.BlockHeight,
+					Proposer:    "mockup",
+				})
+
+			}
+			return nil, nil
+		},
+	}
+
+}
+
 func (e2e *E2ERunner) BlockTick(bh uint64, headHeight *uint64) {
 	e2e.BlockEvent <- bh
 	e2e.BlockHeight = bh

@@ -9,6 +9,7 @@ import (
 	"vsc-node/lib/dids"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/common_types"
 	data_availability_spec "vsc-node/modules/data-availability/spec"
 	"vsc-node/modules/db/vsc/elections"
 	libp2p "vsc-node/modules/p2p"
@@ -101,7 +102,7 @@ func (d *DataAvailability) RequestProof(gqlUrl string, data []byte) (stateEngine
 
 func (d *DataAvailability) RequestProofWithElection(data []byte, election elections.ElectionResult) (stateEngine.StorageProof, error) {
 	gen := dids.NewBlsCircuitGenerator(election.MemberKeys())
-	c, err := d.dl.PutRaw(data, datalayer.PutRawOptions{})
+	c, err := d.dl.PutRaw(data, common_types.PutRawOptions{})
 	if err != nil {
 		return stateEngine.StorageProof{}, err
 	}

@@ -68,14 +68,63 @@ type TransferOptions struct {
 	//Excluded HBD amount that cannot be sent
 	Exclusion int64
 }
+type CompiledResult struct {
+	OpLog []OpLogEvent
+}
+
+type StakeOp struct {
+	OpLogEvent
+	Instant bool
+	//If true, if stake/unstake fails, then regular op will occurr
+	NoFail bool
+}
+
+type Deposit struct {
+	Id          string
+	OpIdx       int64
+	BIdx        int64
+	BlockHeight uint64
+
+	Account string
+	Amount  int64
+	Asset   string
+	Memo    string
+	From    string
+}
+
+// Add more fields as necessary
+type DepositParams struct {
+	To string `json:"to"`
+}
+
+type OplogInjestOptions struct {
+	StartHeight uint64
+	EndHeight   uint64
+}
+
+type ExtraInfo struct {
+	BlockHeight uint64
+	ActionId    string
+}
 
 type LedgerSession interface {
-	Revert()
 	GetBalance(account string, blockHeight uint64, asset string) int64
 	ExecuteTransfer(OpLogEvent OpLogEvent, options ...TransferOptions) LedgerResult
 	Withdraw(withdraw WithdrawParams) LedgerResult
+	Stake(StakeOp, ...TransferOptions) LedgerResult
+	Unstake(StakeOp) LedgerResult
+	ConsensusStake(ConsensusParams) LedgerResult
+	ConsensusUnstake(ConsensusParams) LedgerResult
+	Done() []string
+	Revert()
 }
 
 type LedgerSystem interface {
 	GetBalance(account string, blockHeight uint64, asset string) int64
+	ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64)
+	IndexActions(actionUpdate map[string]interface{}, extraInfo ExtraInfo)
+	Deposit(deposit Deposit) string
+	IngestOplog(oplog []OpLogEvent, options OplogInjestOptions)
+	NewEmptySession(state *LedgerState, startHeight uint64) LedgerSession
+	NewEmptyState() *LedgerState
 }

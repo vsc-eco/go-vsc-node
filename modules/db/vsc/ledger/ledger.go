@@ -1,4 +1,4 @@
-package ledgerDb
+package ledger_db
 
 import (
 	"context"

@@ -21,6 +21,7 @@ import (
 	"vsc-node/lib/logger"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/common_types"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/nonces"
@@ -279,7 +280,17 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 		})
 	}
 
-	ledgerSession := bp.StateEngine.LedgerExecutor.NewSession(slotHeight)
+	ledgerSession := ledgerSystem.NewSession(&ledgerSystem.LedgerState{
+		Oplog:           make([]ledgerSystem.OpLogEvent, 0),
+		VirtualLedger:   make(map[string][]ledgerSystem.LedgerUpdate),
+		GatewayBalances: make(map[string]uint64),
+
+		BlockHeight: slotHeight,
+		LedgerDb:    bp.StateEngine.LedgerState.LedgerDb,
+		ActionDb:    bp.StateEngine.LedgerState.ActionDb,
+		BalanceDb:   bp.StateEngine.LedgerState.BalanceDb,
+	})
+	// ledgerSession := bp.StateEngine.LedgerSystem.NewSession(slotHeight)
 	rcSession := bp.rcSystem.NewSession(ledgerSession)
 
 	sequencedTxs := make([]transactions.TransactionRecord, 0)
@@ -614,7 +625,7 @@ func (bp *BlockProducer) canProduce(height uint64) bool {
 		return true
 	}
 
-	if len(bp.StateEngine.LedgerExecutor.Oplog) > 0 {
+	if len(bp.StateEngine.LedgerState.Oplog) > 0 {
 		return true
 	}
 
@@ -627,7 +638,7 @@ func (bp *BlockProducer) canProduce(height uint64) bool {
 
 func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBlocks.VscBlockTx {
 	// note: oplog is required, otherwise the StateEngine won't Flush()
-	compileResult := bp.StateEngine.LedgerExecutor.Compile(bh)
+	compileResult := bp.StateEngine.LedgerState.Compile(bh)
 	opLog := make([]ledgerSystem.OpLogEvent, 0)
 
 	if compileResult != nil {
@@ -706,7 +717,7 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 
 			//Required to prevent self blocking due to datalayer accessing the DS.
 			//Temp fix, long term create a "databin" session that uses the underlying datalayer session
-			bp.Datalayer.PutRaw(value, datalayer.PutRawOptions{
+			bp.Datalayer.PutRaw(value, common_types.PutRawOptions{
 				Codec: multicodec.Raw,
 			})
 

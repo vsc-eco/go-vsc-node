@@ -123,9 +123,9 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 		params := btss.NewReSharingParameters(btss.S256(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 		end := make(chan *keyGenSecp256k1.LocalPartySaveData)
-		// endNew := make(chan *keyGenEddsa.LocalPartySaveData)
+		endOld := make(chan *keyGenSecp256k1.LocalPartySaveData)
 
-		dispatcher.party = reshareSecp256k1.NewLocalParty(params, keydata, dispatcher.p2pMsg, end)
+		dispatcher.party = reshareSecp256k1.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
 
 		save := keyGenSecp256k1.NewLocalPartySaveData(len(dispatcher.newPids))
 
@@ -153,8 +153,12 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			}
 		}()
 		go func() {
+			<-endOld
+		}()
+		go func() {
 			for {
 				reshareResult := <-end
+				fmt.Println("reshareResult ECDSA", reshareResult, dispatcher.newParty.PartyID().Id)
 
 				// fmt.Println("ECDSA reshareResult", reshareResult, reshareResult.ECDSAPub != nil)
 				if reshareResult.ECDSAPub != nil {
@@ -177,6 +181,11 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			}
 		}()
 	} else if dispatcher.algo == tss_helpers.SigningAlgoEddsa {
+		fmt.Println("Starting reshareDispatcher!!")
+		fmt.Println("dispatcher.newParticipants", dispatcher.newParticipants)
+		fmt.Println("dispatcher.newEpoch", dispatcher.newEpoch)
+		fmt.Println("dispatcher.algo", dispatcher.participants)
+
 		keydata := keyGenEddsa.LocalPartySaveData{}
 
 		err = json.Unmarshal(savedKeyData, &keydata)
@@ -188,9 +197,9 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 		params := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 		end := make(chan *keyGenEddsa.LocalPartySaveData)
-		// endNew := make(chan *keyGenEddsa.LocalPartySaveData)
+		endOld := make(chan *keyGenEddsa.LocalPartySaveData)
 
-		dispatcher.party = reshareEddsa.NewLocalParty(params, keydata, dispatcher.p2pMsg, end)
+		dispatcher.party = reshareEddsa.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
 
 		save := keyGenEddsa.NewLocalPartySaveData(len(dispatcher.newPids))
 
@@ -202,6 +211,8 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 		time.Sleep(15 * time.Second)
 		go func() {
+			fmt.Println("dispatcher.party", dispatcher.party)
+
 			err := dispatcher.party.Start()
 
 			if err != nil {
@@ -211,6 +222,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		}()
 
 		go func() {
+			fmt.Println("dispatcher.newParty", dispatcher.newParty)
 			err := dispatcher.newParty.Start()
 
 			if err != nil {
@@ -218,11 +230,17 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				dispatcher.err = err
 			}
 		}()
+
+		go func() {
+			<-endOld
+		}()
 		go func() {
 			for {
 				reshareResult := <-end
 
 				// fmt.Println("pre-check reshareResult", reshareResult, dispatcher.newParty.PartyID().Id)
+
+				fmt.Println("reshareResult EDDSA", reshareResult, dispatcher.newParty.PartyID().Id)
 				if reshareResult.EDDSAPub == nil {
 					continue
 				}
@@ -256,29 +274,41 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 
 		fmt.Println("OKAYISH", dispatcher.timeout, dispatcher.tssErr, dispatcher.err)
 		if dispatcher.timeout {
-			oldCulprits := make([]string, 0)
+			culprits := make(map[string]bool, 0)
 			for _, p := range dispatcher.party.WaitingFor() {
-				oldCulprits = append(oldCulprits, p.Id)
+				culprits[p.Id] = true
 			}
-			newCulprits := make([]string, 0)
 			for _, p := range dispatcher.newParty.WaitingFor() {
-				newCulprits = append(newCulprits, p.Id)
+				culprits[p.Id] = true
 			}
 			// a, _, _ := dispatcher.baseInfo()
 
 			// fmt.Println("oldCulprits, newCulprits", oldCulprits, newCulprits, dispatcher.party.PartyID().Id)
 			// fmt.Println(dispatcher.newParticipants, dispatcher.newPids, "partyList", a)
 
+			culpritsList := make([]string, 0)
+			for c := range culprits {
+				culpritsList = append(culpritsList, c)
+			}
 			resolve(TimeoutResult{
 				tssMgr:   dispatcher.tssMgr,
-				Culprits: append(oldCulprits, newCulprits...),
+				Culprits: culpritsList,
+
+				SessionId:   dispatcher.sessionId,
+				KeyId:       dispatcher.keyId,
+				BlockHeight: dispatcher.blockHeight,
+				Epoch:       dispatcher.epoch,
 			})
 			return
 		}
 
 		if dispatcher.tssErr != nil {
 			resolve(ErrorResult{
-				tssErr: dispatcher.tssErr,
+				tssErr:      dispatcher.tssErr,
+				SessionId:   dispatcher.sessionId,
+				KeyId:       dispatcher.keyId,
+				BlockHeight: dispatcher.blockHeight,
+				Epoch:       dispatcher.epoch,
 			})
 			return
 		}
@@ -317,20 +347,28 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 	}
 
 	if cmt == "both" || cmt == "old" {
-		ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
-		if err != nil {
-			fmt.Println("UpdateFromBytes", ok, err)
-			dispatcher.tssErr = err
-		}
-	}
-	if cmt == "both" || cmt == "new" {
-		if dispatcher.newParty != nil {
-			ok, err := dispatcher.newParty.UpdateFromBytes(input, from, isBrcst)
-
+		go func() {
+			ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
 			if err != nil {
 				fmt.Println("UpdateFromBytes", ok, err)
 				dispatcher.tssErr = err
+			} else {
+				dispatcher.lastMsg = time.Now()
 			}
+		}()
+	}
+	if cmt == "both" || cmt == "new" {
+		if dispatcher.newParty != nil {
+			go func() {
+				ok, err := dispatcher.newParty.UpdateFromBytes(input, from, isBrcst)
+
+				if err != nil {
+					fmt.Println("UpdateFromBytes", ok, err)
+					dispatcher.tssErr = err
+				} else {
+					dispatcher.lastMsg = time.Now()
+				}
+			}()
 		}
 	}
 }
@@ -371,13 +409,15 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 					dispatcher.err = err
 				}
 
-				err = dispatcher.tssMgr.SendMsg(dispatcher.sessionId, Participant{
-					Account: to.Id,
-				}, to.Moniker, bytes, msg.IsBroadcast(), commiteeType, cmtFrom)
-				if err != nil {
-					fmt.Println("SendMsg direct err", err)
-					dispatcher.err = err
-				}
+				go func() {
+					err = dispatcher.tssMgr.SendMsg(dispatcher.sessionId, Participant{
+						Account: to.Id,
+					}, to.Moniker, bytes, msg.IsBroadcast(), commiteeType, cmtFrom)
+					if err != nil {
+						fmt.Println("SendMsg direct err", err)
+						dispatcher.err = err
+					}
+				}()
 			}
 		}
 	}()
@@ -535,7 +575,11 @@ func (dispatcher *SignDispatcher) Done() *promise.Promise[DispatcherResult] {
 			resolve(TimeoutResult{
 				tssMgr: dispatcher.tssMgr,
 
-				Culprits: culprits,
+				Culprits:    culprits,
+				SessionId:   dispatcher.sessionId,
+				KeyId:       dispatcher.keyId,
+				BlockHeight: dispatcher.blockHeight,
+				Epoch:       dispatcher.epoch,
 			})
 			return
 		}
@@ -543,6 +587,11 @@ func (dispatcher *SignDispatcher) Done() *promise.Promise[DispatcherResult] {
 		if dispatcher.tssErr != nil {
 			resolve(ErrorResult{
 				tssErr: dispatcher.tssErr,
+
+				SessionId:   dispatcher.sessionId,
+				KeyId:       dispatcher.keyId,
+				BlockHeight: dispatcher.blockHeight,
+				Epoch:       dispatcher.epoch,
 			})
 			return
 		}
@@ -581,6 +630,8 @@ type BaseDispatcher struct {
 	epoch       uint64
 	algo        tss_helpers.SigningAlgo
 	blockHeight uint64
+
+	lastMsg time.Time
 }
 
 func (dispatcher *BaseDispatcher) handleMsgs() {
@@ -608,11 +659,13 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 						continue
 					}
 
-					err := dispatcher.tssMgr.SendMsg(dispatcher.sessionId, p, msg.WireMsg().From.Moniker, bytes, true, commiteeType, "")
-					if err != nil {
-						fmt.Println("SendMsg err", err)
-						dispatcher.err = err
-					}
+					go func() {
+						err := dispatcher.tssMgr.SendMsg(dispatcher.sessionId, p, msg.WireMsg().From.Moniker, bytes, true, commiteeType, "")
+						if err != nil {
+							fmt.Println("SendMsg err", err)
+							dispatcher.err = err
+						}
+					}()
 				}
 			} else {
 				for _, to := range msg.GetTo() {
@@ -623,13 +676,15 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 					}
 
 					// fmt.Println("", string(to.Id))
-					err = dispatcher.tssMgr.SendMsg(dispatcher.sessionId, Participant{
-						Account: string(to.Id),
-					}, to.Moniker, bytes, false, commiteeType, "")
-					if err != nil {
-						fmt.Println("SendMsg direct err", err)
-						dispatcher.err = err
-					}
+					go func() {
+						err = dispatcher.tssMgr.SendMsg(dispatcher.sessionId, Participant{
+							Account: string(to.Id),
+						}, to.Moniker, bytes, false, commiteeType, "")
+						if err != nil {
+							fmt.Println("SendMsg direct err", err)
+							dispatcher.err = err
+						}
+					}()
 				}
 			}
 		}
@@ -658,11 +713,16 @@ func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcs
 	// 	fmt.Println("Updating old", from)
 
 	// }
-	ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
-	if err != nil {
-		fmt.Println("UpdateFromBytes", ok, err)
-		dispatcher.tssErr = err
-	}
+	go func() {
+		ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
+
+		if err != nil {
+			fmt.Println("UpdateFromBytes", ok, err)
+			dispatcher.tssErr = err
+		} else {
+			dispatcher.lastMsg = time.Now()
+		}
+	}()
 	// if cmt == "both" || cmt == "new" {
 	// 	if dispatcher.newParty != nil {
 	// 		fmt.Println("UPDATING NEW")
@@ -684,11 +744,20 @@ func (dsc *BaseDispatcher) KeyId() string {
 }
 
 func (dispatcher *BaseDispatcher) baseStart() {
+	timeout := 1 * time.Minute
+	dispatcher.lastMsg = time.Now()
 	go func() {
-		time.Sleep(1 * time.Minute)
-		dispatcher.timeout = true
+		fmt.Println("baseStart lastMsg", dispatcher.lastMsg)
+		for {
+			if time.Since(dispatcher.lastMsg) > timeout {
+				dispatcher.timeout = true
 
-		dispatcher.done <- struct{}{}
+				dispatcher.done <- struct{}{}
+				break
+			}
+
+			time.Sleep(time.Millisecond)
+		}
 	}()
 }
 
@@ -845,7 +914,11 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 			resolve(TimeoutResult{
 				tssMgr: dispatcher.tssMgr,
 
-				Culprits: culprits,
+				Culprits:    culprits,
+				SessionId:   dispatcher.sessionId,
+				KeyId:       dispatcher.keyId,
+				BlockHeight: dispatcher.blockHeight,
+				Epoch:       dispatcher.epoch,
 			})
 			return
 		}
@@ -853,6 +926,11 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 		if dispatcher.tssErr != nil {
 			resolve(ErrorResult{
 				tssErr: dispatcher.tssErr,
+
+				SessionId:   dispatcher.sessionId,
+				KeyId:       dispatcher.keyId,
+				BlockHeight: dispatcher.blockHeight,
+				Epoch:       dispatcher.epoch,
 			})
 			return
 		}

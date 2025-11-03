@@ -3,7 +3,7 @@ package data_availability_server
 import (
 	"context"
 	"fmt"
-	"vsc-node/lib/datalayer"
+	"vsc-node/modules/common/common_types"
 	data_availability_spec "vsc-node/modules/data-availability/spec"
 	libp2p "vsc-node/modules/p2p"
 
@@ -43,7 +43,7 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 			return err
 		}
 
-		c, err := s.Datalayer().PutRaw(msg.Data(), datalayer.PutRawOptions{Pin: true})
+		c, err := s.Datalayer().PutRaw(msg.Data(), common_types.PutRawOptions{Pin: true})
 		if err != nil {
 			return fmt.Errorf("failed to create cid: %w", err)
 		}

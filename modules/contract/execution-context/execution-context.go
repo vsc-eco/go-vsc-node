@@ -514,7 +514,7 @@ func (ctx *contractExecutionContext) TssGetKey(keyId string) result.Result[strin
 		res += "," + string(tssKey.Algo)
 	}
 
-	return result.Ok("")
+	return result.Ok(res)
 }
 
 func (ctx *contractExecutionContext) TssKeySign(keyId string, msg string) result.Result[string] {

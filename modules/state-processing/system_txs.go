@@ -1,4 +1,4 @@
-package stateEngine
+package state_engine
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/common_types"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
@@ -84,7 +85,7 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
 				for _, v := range *list {
 					cidz, err := db.Get(v)
 					if err == nil {
-						se.da.Get(*cidz, &datalayer.GetOptions{})
+						se.da.Get(*cidz, &common_types.GetOptions{})
 					}
 				}
 			}
@@ -169,7 +170,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 
 	cidz := cid.MustParse(tx.Code)
 	go func() {
-		se.da.Get(cidz, &datalayer.GetOptions{})
+		se.da.Get(cidz, &common_types.GetOptions{})
 	}()
 
 	id := common.ContractId(tx.Self.TxId, tx.Self.OpIndex)
@@ -521,7 +522,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	blockContentC := vscBlocks.VscBlock{}
 	// json.Unmarshal(jsonBytes, &blockContent)
 
-	se.da.GetObject(blockCid, &blockContentC, datalayer.GetOptions{})
+	se.da.GetObject(blockCid, &blockContentC, common_types.GetOptions{})
 
 	slotInfo := CalculateSlotInfo(t.Self.BlockHeight)
 

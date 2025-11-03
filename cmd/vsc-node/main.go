@@ -13,6 +13,7 @@ import (
 	"vsc-node/modules/announcements"
 	blockproducer "vsc-node/modules/block-producer"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/common_types"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
@@ -108,7 +109,7 @@ func main() {
 		},
 	}
 
-	sysConfig := common.SystemConfig{
+	sysConfig := common_types.SystemConfig{
 		Network: "mainnet",
 	}
 

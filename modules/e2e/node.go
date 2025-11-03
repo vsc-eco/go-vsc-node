@@ -11,13 +11,14 @@ import (
 	"vsc-node/modules/announcements"
 	blockproducer "vsc-node/modules/block-producer"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/common_types"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
-	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	ledger_db "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
-	rcDb "vsc-node/modules/db/vsc/rcs"
+	rc_db "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
@@ -43,16 +44,29 @@ import (
 )
 
 type Node struct {
-	Aggregate        *aggregate.Aggregate
+	Aggregate *aggregate.Aggregate
+
 	StateEngine      *stateEngine.StateEngine
 	P2P              *p2pInterface.P2PServer
 	VStream          *vstream.VStream
 	ElectionProposer election_proposer.ElectionProposer
-	TxPool           *transactionpool.TransactionPool
+
+	TxPool *transactionpool.TransactionPool
 
 	announcementsManager *announcements.AnnouncementsManager
 
-	MockHiveBlocks *MockHiveDbs
+	MockHiveBlocks   *MockHiveDbs
+	electionDb       elections.Elections
+	contractsDb      contracts.Contracts
+	balanceDb        ledger_db.Balances
+	ledgerDb         ledger_db.Ledger
+	interestClaimsDb ledger_db.InterestClaims
+	nonceDb          nonces.Nonces
+	rcDb             rc_db.RcDb
+	transactionDb    transactions.Transactions
+	tssCommitmentsDb tss_db.TssCommitments
+	tssKeysDb        tss_db.TssKeys
+	tssRequestsDb    tss_db.TssRequests
 }
 
 func (n *Node) Init() error {
@@ -87,12 +101,12 @@ func MakeNode(input MakeNodeInput) *Node {
 	electionDb := elections.New(vscDb)
 	contractDb := contracts.New(vscDb)
 	txDb := transactions.New(vscDb)
-	ledgerDbImpl := ledgerDb.New(vscDb)
-	balanceDb := ledgerDb.NewBalances(vscDb)
-	actionsDb := ledgerDb.NewActionsDb(vscDb)
-	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
+	ledgerDb := ledger_db.New(vscDb)
+	balanceDb := ledger_db.NewBalances(vscDb)
+	actionsDb := ledger_db.NewActionsDb(vscDb)
+	interestClaims := ledger_db.NewInterestClaimDb(vscDb)
 	contractState := contracts.NewContractState(vscDb)
-	rcDb := rcDb.New(vscDb)
+	rcDb := rc_db.New(vscDb)
 	nonceDb := nonces.New(vscDb)
 
 	tssRequests := tss_db.NewRequests(vscDb)
@@ -123,7 +137,7 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	hrpc := &MockHiveRpcClient{}
 
-	sysConfig := common.SystemConfig{
+	sysConfig := common_types.SystemConfig{
 		Network: "mocknet",
 	}
 
@@ -144,7 +158,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		contractDb,
 		contractState,
 		txDb,
-		ledgerDbImpl,
+		ledgerDb,
 		balanceDb,
 		hiveBlocks,
 		interestClaims,
@@ -196,7 +210,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		hiveBlocks,
 		vscBlocks,
 		txDb,
-		ledgerDbImpl,
+		ledgerDb,
 		actionsDb,
 		balanceDb,
 		interestClaims,
@@ -222,7 +236,7 @@ func MakeNode(input MakeNodeInput) *Node {
 			witnessesDb,
 			txpool,
 			balanceDb,
-			ledgerDbImpl,
+			ledgerDb,
 			actionsDb,
 			electionDb,
 			txDb,
@@ -233,6 +247,8 @@ func MakeNode(input MakeNodeInput) *Node {
 			datalayer,
 			contractDb,
 			contractState,
+			tssKeys,
+			tssRequests,
 		}}), "0.0.0.0:7080")
 		plugins = append(plugins, gqlManager)
 	}
@@ -262,7 +278,18 @@ func MakeNode(input MakeNodeInput) *Node {
 
 		announcementsManager: announcementsManager,
 
-		MockHiveBlocks: hiveBlocks,
+		MockHiveBlocks:   hiveBlocks,
+		electionDb:       electionDb,
+		contractsDb:      contractDb,
+		balanceDb:        balanceDb,
+		ledgerDb:         ledgerDb,
+		interestClaimsDb: interestClaims,
+		nonceDb:          nonceDb,
+		rcDb:             rcDb,
+		transactionDb:    txDb,
+		tssCommitmentsDb: tssCommitments,
+		tssKeysDb:        tssKeys,
+		tssRequestsDb:    tssRequests,
 	}
 }
 
@@ -282,7 +309,7 @@ func MakeClient(input MakeClientInput) NodeClient {
 	identityConfig.Init()
 	identityConfig.SetUsername("mock-client")
 
-	sysConfig := common.SystemConfig{
+	sysConfig := common_types.SystemConfig{
 		Network: "mocknet",
 	}
 	wits := witnesses.NewEmptyWitnesses()

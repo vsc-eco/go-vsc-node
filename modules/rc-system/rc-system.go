@@ -1,4 +1,4 @@
-package rcSystem
+package rc_system
 
 import (
 	"strings"
@@ -43,8 +43,8 @@ func (rcs *RcSystem) GetAvailableRCs(account string, blockHeight uint64) int64 {
 	return balAmt - frozeAmt
 }
 
-func (rcs *RcSystem) NewSession(ledgerSession ledgerSystem.LedgerSession) *RcSession {
-	return &RcSession{
+func (rcs *RcSystem) NewSession(ledgerSession ledgerSystem.LedgerSession) RcSession {
+	return &rcSession{
 		ledgerSession: ledgerSession,
 		rcSystem:      rcs,
 
@@ -73,14 +73,14 @@ func New(rcDb rcDb.RcDb, ledgerSystem ledgerSystem.LedgerSystem) *RcSystem {
 	}
 }
 
-type RcSession struct {
+type rcSession struct {
 	ledgerSession ledgerSystem.LedgerSession
 	rcSystem      *RcSystem
 
 	rcMap map[string]int64
 }
 
-func (rss *RcSession) Consume(account string, blockHeight uint64, rcAmt int64) (bool, int64) {
+func (rss *rcSession) Consume(account string, blockHeight uint64, rcAmt int64) (bool, int64) {
 	canConsume, _, _ := rss.CanConsume(account, blockHeight, rcAmt)
 
 	if canConsume {
@@ -91,7 +91,7 @@ func (rss *RcSession) Consume(account string, blockHeight uint64, rcAmt int64) (
 	}
 }
 
-func (rss *RcSession) CanConsume(account string, blockHeight uint64, rcAmt int64) (bool, int64, int64) {
+func (rss *rcSession) CanConsume(account string, blockHeight uint64, rcAmt int64) (bool, int64, int64) {
 	balAmt := rss.ledgerSession.GetBalance(account, blockHeight, "hbd")
 
 	if strings.HasPrefix(account, "hive:") {
@@ -111,16 +111,12 @@ func (rss *RcSession) CanConsume(account string, blockHeight uint64, rcAmt int64
 	}
 }
 
-func (rss *RcSession) Revert() {
+func (rss *rcSession) Revert() {
 	rss.rcMap = make(map[string]int64)
 }
 
-func (rss *RcSession) Done() struct {
-	RcMap map[string]int64
-} {
-	return struct {
-		RcMap map[string]int64
-	}{
+func (rss *rcSession) Done() RcMapResult {
+	return RcMapResult{
 		RcMap: rss.rcMap,
 	}
 }

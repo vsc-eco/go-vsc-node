@@ -1,4 +1,4 @@
-package stateEngine_test
+package state_engine_test
 
 import (
 	"encoding/json"

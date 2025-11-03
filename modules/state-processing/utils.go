@@ -1,4 +1,4 @@
-package stateEngine
+package state_engine
 
 import (
 	"bytes"

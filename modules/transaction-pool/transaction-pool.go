@@ -11,6 +11,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/common_types"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/db/vsc/nonces"
@@ -196,7 +197,7 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	if err != nil {
 		return nil, err
 	}
-	cidc, err := tp.datalayer.PutRaw(sTx.Tx, datalayer.PutRawOptions{
+	cidc, err := tp.datalayer.PutRaw(sTx.Tx, common_types.PutRawOptions{
 		Codec: multicodec.DagCbor,
 	})
 	if err != nil {

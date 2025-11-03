@@ -2,6 +2,7 @@ package tss_db
 
 import (
 	"context"
+	"fmt"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
@@ -92,15 +93,17 @@ func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qt
 		}
 	}
 
+	fmt.Println("getCommitmentByHeight", query)
+
 	findResult := tsc.FindOne(context.Background(), query, findOpts)
 
 	if findResult.Err() != nil {
 		return TssCommitment{}, findResult.Err()
 	}
 	var commitment TssCommitment
-	findResult.Decode(commitment)
+	err := findResult.Decode(&commitment)
 
-	return commitment, nil
+	return commitment, err
 }
 
 func NewCommitments(d *vsc.VscDb) TssCommitments {

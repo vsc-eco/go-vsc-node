@@ -24,6 +24,7 @@ import (
 	format "github.com/ipfs/go-ipld-format"
 
 	"vsc-node/lib/utils"
+	"vsc-node/modules/common/common_types"
 	libp2p "vsc-node/modules/p2p"
 
 	goJson "encoding/json"
@@ -116,7 +117,7 @@ func (dl *DataLayer) Stop() error {
 }
 
 // Will always hash using sha256
-func (dl *DataLayer) PutRaw(rawData []byte, options PutRawOptions) (*cid.Cid, error) {
+func (dl *DataLayer) PutRaw(rawData []byte, options common_types.PutRawOptions) (*cid.Cid, error) {
 
 	prefix := cid.Prefix{
 		Version:  1,
@@ -138,7 +139,7 @@ func (dl *DataLayer) PutRaw(rawData []byte, options PutRawOptions) (*cid.Cid, er
 	return &cid, nil
 }
 
-func (dl *DataLayer) PutObject(data interface{}, options ...PutOptions) (*cid.Cid, error) {
+func (dl *DataLayer) PutObject(data interface{}, options ...common_types.PutOptions) (*cid.Cid, error) {
 	ctx := context.Background()
 	cborBytes, err := cbornode.Encode(data)
 
@@ -180,7 +181,7 @@ func (dl *DataLayer) PutObject(data interface{}, options ...PutOptions) (*cid.Ci
 	return &cid, nil
 }
 
-func (dl *DataLayer) PutJson(data interface{}, options ...PutOptions) (*cid.Cid, error) {
+func (dl *DataLayer) PutJson(data interface{}, options ...common_types.PutOptions) (*cid.Cid, error) {
 	jsonBytes, err := goJson.Marshal(data)
 
 	if err != nil {
@@ -222,7 +223,7 @@ func (dl *DataLayer) HashObject(data interface{}) (*cid.Cid, error) {
 	return &cid, err
 }
 
-func (dl *DataLayer) Get(cid cid.Cid, options *GetOptions) (format.Node, error) {
+func (dl *DataLayer) Get(cid cid.Cid, options *common_types.GetOptions) (format.Node, error) {
 	//This is using direct bitswap access which may not use a block store.
 	//Thus, it will not store anything upon request.
 	block, err := dl.blockServ.GetBlock(context.Background(), cid)
@@ -246,7 +247,7 @@ func (dl *DataLayer) Get(cid cid.Cid, options *GetOptions) (format.Node, error) 
 }
 
 // Gets Object then converts it to Golang type seemlessly
-func (dl *DataLayer) GetObject(cid cid.Cid, v interface{}, options GetOptions) error {
+func (dl *DataLayer) GetObject(cid cid.Cid, v interface{}, options common_types.GetOptions) error {
 	dataNode, err := dl.Get(cid, &options)
 
 	if err != nil {

@@ -108,6 +108,7 @@ func (e *elections) GetElectionByHeight(height uint64) (ElectionResult, error) {
 	} else {
 		electionRecord := ElectionResultRecord{}
 		err := findResult.Decode(&electionRecord)
+
 		if err != nil {
 			return ElectionResult{}, err
 		}

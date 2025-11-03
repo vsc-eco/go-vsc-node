@@ -47,13 +47,15 @@ func (tssKeys *tssKeys) FindKey(id string) (TssKey, error) {
 	return tssKey, nil
 }
 
-func (tssKeys *tssKeys) SetKey(id string, publicKey string) error {
+func (tssKeys *tssKeys) SetKey(key TssKey) error {
 	res := tssKeys.FindOneAndUpdate(context.Background(), bson.M{
-		"id": id,
+		"id": key.Id,
 	}, bson.M{
 		"$set": bson.M{
-			"status":     "active",
-			"public_key": publicKey,
+			"status":         key.Status,
+			"public_key":     key.PublicKey,
+			"epoch":          key.Epoch,
+			"created_height": key.CreatedHeight,
 		},
 	})
 

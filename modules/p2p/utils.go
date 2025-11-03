@@ -1,7 +1,7 @@
 package libp2p
 
 import (
-	"vsc-node/modules/common"
+	"vsc-node/modules/common/common_types"
 
 	"github.com/multiformats/go-multiaddr"
 )
@@ -23,4 +23,4 @@ func (pg *peerGetter) GetPeerAddrs() []multiaddr.Multiaddr {
 	return addrs
 }
 
-var _ common.PeerInfoGetter = &peerGetter{}
+var _ common_types.PeerInfoGetter = &peerGetter{}

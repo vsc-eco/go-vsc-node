@@ -1,4 +1,4 @@
-package ledgerDb
+package ledger_db
 
 import (
 	"vsc-node/modules/aggregate"
@@ -102,18 +102,10 @@ type BridgeActions interface {
 	GetActionsByTxId(txId string) ([]ActionRecord, error)
 }
 
-type ILedgerExecutor interface {
-}
-
-type SideEffect interface {
-	Type() string
-	Execute(le *ILedgerExecutor)
-}
-
 // TODO: Flesh out to build more modular op creation
-type IAction interface {
-	Craft()
-}
+// type IAction interface {
+// 	Craft()
+// }
 
 type ActionRecord struct {
 	Id     string `bson:"id"`

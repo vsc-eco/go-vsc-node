@@ -44,11 +44,18 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 			i := big.NewInt(0)
 			i.SetBytes([]byte(act))
 
-			// fmt.Println("Received act", act, "on", tss.mgr.config.Get().HiveUsername, req.IsBroadcast, req.Cmt)
+			// fmt.Println("Received act", req.SessionId, act, "on", tss.mgr.config.Get().HiveUsername, req.IsBroadcast, req.Cmt)
 
 			// fmt.Println("req.SessionId", req.SessionId, tss.mgr.actionMap[req.SessionId])
 			tss.mgr.actionMap[req.SessionId].HandleP2P(req.Data, act, req.IsBroadcast, req.Cmt, req.CmtFrom)
 		} else {
+
+			keys := make([]string, 0)
+
+			for k := range tss.mgr.actionMap {
+				keys = append(keys, k)
+			}
+			fmt.Println("actionMap.keys()", keys, tss.mgr.config.Get().HiveUsername, req.SessionId)
 			fmt.Println("Dropping message", req.SessionId)
 		}
 	}

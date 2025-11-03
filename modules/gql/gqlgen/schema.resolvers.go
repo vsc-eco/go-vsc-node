@@ -102,7 +102,7 @@ func (r *balanceRecordResolver) PendingHbdUnstaking(ctx context.Context, obj *le
 	doc, _ := r.HiveBlocks.GetMetadata()
 
 	startBlk := doc.LastProcessedBlock
-	endBlk := *startBlk + stateEngine.HBD_UNSTAKE_BLOCKS
+	endBlk := *startBlk + common.HBD_UNSTAKE_BLOCKS
 	asset := ledgerDb.AssetHbd
 	ledgerRecords, err := r.Ledger.GetRawLedgerRange(&obj.Account, nil, []string{"unstake"}, &asset, startBlk, &endBlk, 0, 900)
 

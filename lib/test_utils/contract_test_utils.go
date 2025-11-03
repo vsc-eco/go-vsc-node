@@ -10,6 +10,7 @@ import (
 	"vsc-node/lib/logger"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/common_types"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
@@ -37,7 +38,7 @@ func randomHex(n int) string {
 type ContractTest struct {
 	BlockHeight   uint64
 	ContractDb    contracts.Contracts
-	LedgerSession *stateEngine.LedgerSession
+	LedgerSession ledgerSystem.LedgerSession
 	CallSession   *contract_session.CallSession
 	StateEngine   *stateEngine.StateEngine
 	DataLayer     *datalayer.DataLayer
@@ -47,7 +48,7 @@ type ContractTest struct {
 func NewContractTest() ContractTest {
 	logr := logger.PrefixedLogger{Prefix: "contract-test"}
 	idConfig := common.NewIdentityConfig()
-	sysConfig := common.SystemConfig{
+	sysConfig := common_types.SystemConfig{
 		Network: "mocknet",
 	}
 	ledgers := MockLedgerDb{LedgerRecords: make(map[string][]ledgerDb.LedgerRecord)}
@@ -85,10 +86,12 @@ func NewContractTest() ContractTest {
 	if err := a.Init(); err != nil {
 		panic(err)
 	}
+
+	state := se.LedgerSystem.NewEmptyState()
 	return ContractTest{
 		BlockHeight:   0,
 		ContractDb:    &contractDb,
-		LedgerSession: se.LedgerExecutor.NewSession(0),
+		LedgerSession: se.LedgerSystem.NewEmptySession(state, 0),
 		CallSession:   contract_session.NewCallSession(dl, &contractDb, &contractState, nil, 0),
 		DataLayer:     dl,
 		StateEngine:   se,
@@ -101,19 +104,30 @@ func (ct *ContractTest) IncrementBlocks(count uint64) {
 	newHeight := ct.BlockHeight + count
 	newSlot := newHeight - (newHeight % common.CONSENSUS_SPECS.SlotLength)
 	if newSlot > currentSlot {
-		compiled := ct.StateEngine.LedgerExecutor.Compile(currentSlot)
+		compiled := ct.StateEngine.LedgerState.Compile(currentSlot)
 		if compiled != nil {
 			ct.executeLedgerOpLogs(compiled.OpLog, currentSlot, newSlot-1)
 		}
 		ct.StateEngine.UpdateBalances(currentSlot, newSlot-1)
-		ct.LedgerSession = ct.StateEngine.LedgerExecutor.NewSession(newSlot)
+
+		ct.LedgerSession = ledgerSystem.NewSession(&ledgerSystem.LedgerState{
+			Oplog:           make([]ledgerSystem.OpLogEvent, 0),
+			VirtualLedger:   make(map[string][]ledgerSystem.LedgerUpdate),
+			GatewayBalances: make(map[string]uint64),
+
+			BlockHeight: newSlot,
+			LedgerDb:    ct.StateEngine.LedgerState.LedgerDb,
+			BalanceDb:   ct.StateEngine.LedgerState.BalanceDb,
+			ActionDb:    ct.StateEngine.LedgerState.ActionDb,
+		})
+		// ct.LedgerSession = ct.StateEngine.LedgerExecutor.NewSession(newSlot)
 	}
 	ct.BlockHeight = newHeight
 }
 
 // Register a contract from bytecode.
 func (ct *ContractTest) RegisterContract(contractId string, owner string, bytecode []byte) {
-	cid, err := ct.DataLayer.PutRaw(bytecode, datalayer.PutRawOptions{Pin: true})
+	cid, err := ct.DataLayer.PutRaw(bytecode, common_types.PutRawOptions{Pin: true})
 	if err != nil {
 		panic(fmt.Errorf("failed to create cid for contract %s", contractId))
 	}
@@ -216,7 +230,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 // Add funds to an account in the ledger.
 func (ct *ContractTest) Deposit(toAccount string, amount int64, asset ledgerDb.Asset) {
 	randomTxId := randomHex(40)
-	ct.StateEngine.LedgerExecutor.Deposit(stateEngine.Deposit{
+	ct.StateEngine.LedgerSystem.Deposit(ledgerSystem.Deposit{
 		Id:          randomTxId,
 		BlockHeight: ct.BlockHeight,
 		From:        "contract-test-account",
@@ -233,7 +247,7 @@ func (ct *ContractTest) GetBalance(account string, asset ledgerDb.Asset) int64 {
 
 // Retrieve the balance of an account at the start of the slot.
 func (ct *ContractTest) GetBalanceAtSlotStart(account string, asset ledgerDb.Asset) int64 {
-	return ct.StateEngine.LedgerExecutor.Ls.GetBalance(account, ct.BlockHeight, string(asset))
+	return ct.StateEngine.LedgerSystem.GetBalance(account, ct.BlockHeight, string(asset))
 }
 
 // Set the value of a key in the contract state storage
@@ -254,7 +268,7 @@ func (ct *ContractTest) StateDelete(contractId string, key string) {
 }
 
 func (ct *ContractTest) executeLedgerOpLogs(ledgerOps []ledgerSystem.OpLogEvent, startBlock uint64, endBlock uint64) {
-	ct.StateEngine.LedgerExecutor.Flush()
+	ct.StateEngine.LedgerState.Flush()
 	ct.StateEngine.Flush()
 
 	aoplog := make([]ledgerSystem.OpLogEvent, 0)
@@ -263,7 +277,7 @@ func (ct *ContractTest) executeLedgerOpLogs(ledgerOps []ledgerSystem.OpLogEvent,
 		aoplog = append(aoplog, v)
 	}
 
-	ct.StateEngine.LedgerExecutor.Ls.IngestOplog(aoplog, stateEngine.OplogInjestOptions{
+	ct.StateEngine.LedgerSystem.IngestOplog(aoplog, ledgerSystem.OplogInjestOptions{
 		EndHeight:   endBlock,
 		StartHeight: startBlock,
 	})

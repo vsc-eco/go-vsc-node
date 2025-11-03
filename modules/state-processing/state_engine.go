@@ -1,4 +1,4 @@
-package stateEngine
+package state_engine
 
 import (
 	"crypto"
@@ -15,6 +15,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/lib/logger"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/common_types"
 	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -34,6 +35,7 @@ import (
 	"github.com/chebyrash/promise"
 	"github.com/eager7/dogd/btcec"
 	"github.com/multiformats/go-multicodec"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type ProcessExtraInfo struct {
@@ -46,7 +48,9 @@ type StateResult struct {
 }
 
 type StateEngine struct {
-	da             *DataLayer.DataLayer
+	da *DataLayer.DataLayer
+
+	//db access
 	witnessDb      witnesses.Witnesses
 	electionDb     elections.Elections
 	contractDb     contracts.Contracts
@@ -71,7 +75,9 @@ type StateEngine struct {
 	// VirtualRoot    []byte
 	// VirtualState   []byte
 
-	LedgerExecutor *LedgerExecutor
+	// LedgerExecutor *LedgerExecutor
+	LedgerState  *ledgerSystem.LedgerState
+	LedgerSystem ledgerSystem.LedgerSystem
 
 	//Atomic packet; aka -> array of transactions with ops in each
 	TxBatch  []TxPacket
@@ -123,7 +129,7 @@ func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64) {
 		claimHeight = lastClaim.BlockHeight
 	}
 
-	se.LedgerExecutor.Ls.ClaimHBDInterest(claimHeight, blockHeight, amount)
+	se.LedgerSystem.ClaimHBDInterest(claimHeight, blockHeight, amount)
 }
 
 // Gets ranomized schedule of witnesses
@@ -183,6 +189,7 @@ func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 // In other words, it adds complexity to the state engine while being less efficient.
 // This model is more efficient and best yet, it prevents MEV potential by locking the block execution time to the witness slot.
 func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
+	se.BlockHeight = int(block.BlockNumber)
 	blockInfo := struct {
 		BlockHeight uint64
 		BlockId     string
@@ -282,7 +289,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					amt = -frSync.UnstakedAmount
 				}
 
-				se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+				se.LedgerState.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
 					Id:          MakeTxId(tx.TransactionID, 0),
 					Amount:      amt,
 					BlockHeight: blockInfo.BlockHeight + 1,
@@ -291,6 +298,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					Asset: "hbd_savings",
 					Type:  "fr_sync",
 				})
+				// se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+				// 	Id:          MakeTxId(tx.TransactionID, 0),
+				// 	Amount:      amt,
+				// 	BlockHeight: blockInfo.BlockHeight + 1,
+				// 	Owner:       common.FR_VIRTUAL_ACCOUNT,
+				// 	//Fractional reserve update
+				// 	Asset: "hbd_savings",
+				// 	Type:  "fr_sync",
+				// })
 			}
 
 			if (Id == "vsc.actions") && RequiredAuths[0] == common.GATEWAY_WALLET {
@@ -306,12 +322,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				// }
 
 				actionUpdate := map[string]interface{}{}
-				json.Unmarshal(cj.Json, &actionUpdate)
+				err := json.Unmarshal(cj.Json, &actionUpdate)
 
-				se.LedgerExecutor.Ls.IndexActions(actionUpdate, ExtraInfo{
-					block.BlockNumber,
-					tx.TransactionID,
-				})
+				if err == nil {
+					se.LedgerSystem.IndexActions(actionUpdate, ledgerSystem.ExtraInfo{
+						block.BlockNumber,
+						tx.TransactionID,
+					})
+				}
 
 				// if tx.Operations[1].Type == "transfer" {
 				// 	//Process withdraw
@@ -465,7 +483,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						txResult := parsedTx.ExecuteTx(se)
 
 						if txResult.Success {
-							se.LedgerExecutor.Deposit(Deposit{
+							se.LedgerSystem.Deposit(ledgerSystem.Deposit{
 								Id:          MakeTxId(tx.TransactionID, 1),
 								Asset:       "hbd",
 								Amount:      amount,
@@ -477,7 +495,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								OpIdx:       int64(1),
 							})
 						} else {
-							se.LedgerExecutor.Deposit(Deposit{
+							se.LedgerSystem.Deposit(ledgerSystem.Deposit{
 								Id:          MakeTxId(tx.TransactionID, 1),
 								Asset:       "hbd",
 								Amount:      amount,
@@ -545,7 +563,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				if op.Value["to"] == "vsc.gateway" {
 					depositedFrom := "hive:" + op.Value["from"].(string)
 					depositMemo := op.Value["memo"].(string)
-					leDeposit := Deposit{
+					leDeposit := ledgerSystem.Deposit{
 						Id:     MakeTxId(tx.TransactionID, opIndex),
 						Asset:  token,
 						Amount: amt,
@@ -558,7 +576,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						OpIdx: int64(opIndex),
 					}
 					// fmt.Println("Registering deposit!", leDeposit)
-					depositedTo := se.LedgerExecutor.Deposit(leDeposit)
+					depositedTo := se.LedgerSystem.Deposit(leDeposit)
 
 					// create deposit payload for indexing
 					depositPayload := make(map[string]interface{})
@@ -645,7 +663,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					RequiredPostingAuths: cj.RequiredPostingAuths,
 				}
 
-				fmt.Println("RR gr86", txSelf, cj, string(cj.Json))
+				// fmt.Println("RR gr86", txSelf, cj, string(cj.Json))
 
 				var vscTx VSCTransaction
 				if cj.Id == "vsc.withdraw" {
@@ -779,35 +797,37 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					fmt.Println("vsc.tss_commitment <err>", err, commitmentData, string(cj.Json))
 
 					for _, commitment := range commitmentData {
-						savedCommitment, err := se.tssCommitments.GetCommitmentByHeight(commitment.KeyId, block.BlockNumber, "reshare")
+						savedCommitment, err := se.tssCommitments.GetCommitmentByHeight(commitment.KeyId, block.BlockNumber, "reshare", "keygen")
 
+						fmt.Println("commitment.KeyId, block.BlockNumber", commitment.KeyId, block.BlockNumber)
 						var newKey bool
 						members := make([]dids.BlsDID, 0)
 						if err != nil {
+							newKey = true
 							electionData, err := se.electionDb.GetElectionByHeight(block.BlockNumber)
 
 							if err != nil {
 								continue
 							}
-							newKey = true
 							for _, mbr := range electionData.Members {
 								members = append(members, dids.BlsDID(mbr.Key))
 							}
 						}
 
-						electionData, _ := se.electionDb.GetElectionByHeight(savedCommitment.Epoch)
+						// electionData, _ := se.electionDb.GetElectionByHeight(savedCommitment.Epoch)
 
-						decodedCommitment, _ := base64.URLEncoding.DecodeString(savedCommitment.Commitment)
+						decodedCommitment, _ := base64.RawURLEncoding.DecodeString(savedCommitment.Commitment)
 
 						bitset := &big.Int{}
 						bitset.SetBytes(decodedCommitment)
-						for idx, mbr := range electionData.Members {
-							if bitset.Bit(idx) == 1 {
-								members = append(members, dids.BlsDID(mbr.Key))
-							}
-						}
 
+						// for idx, mbr := range electionData.Members {
+						// 	if bitset.Bit(idx) == 1 {
+						// 		members = append(members, dids.BlsDID(mbr.Key))
+						// 	}
+						// }
 						// savedCommitment
+
 						baseComment := tss_helpers.BaseCommitment{
 							Type:       commitment.Type,
 							SessionId:  commitment.SessionId,
@@ -844,8 +864,22 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								PublicKey:   commitment.PublicKey,
 								TxId:        tx.TransactionID,
 							})
-							if newKey && commitment.PublicKey != nil {
-								se.tssKeys.SetKey(commitment.KeyId, *commitment.PublicKey)
+
+							if commitment.Type == "keygen" || commitment.Type == "reshare" {
+								keyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
+								if newKey && commitment.PublicKey != nil {
+									keyInfo.PublicKey = *commitment.PublicKey
+									keyInfo.CreatedHeight = int64(block.BlockNumber)
+									keyInfo.Status = "active"
+
+									keyInfo.Epoch = commitment.Epoch
+									se.tssKeys.SetKey(keyInfo)
+								} else if newKey {
+
+								} else {
+									keyInfo.Epoch = commitment.Epoch
+									se.tssKeys.SetKey(keyInfo)
+								}
 							}
 						}
 					}
@@ -956,7 +990,9 @@ func (se *StateEngine) ExecuteBatch() {
 		}
 
 		fmt.Println("Executing item in batch", idx, len(se.TxBatch))
-		ledgerSession := se.LedgerExecutor.NewSession(lastBlockBh)
+		se.LedgerState.BlockHeight = lastBlockBh
+		ledgerSession := ledgerSystem.NewSession(se.LedgerState)
+		// ledgerSession := se.LedgerSystem.NewSession(lastBlockBh)
 		rcSession := se.RcSystem.NewSession(ledgerSession)
 		callSession := contract_session.NewCallSession(se.da, se.contractDb, se.contractState, se.tssKeys, lastBlockBh)
 
@@ -1116,7 +1152,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	}
 
 	election, _ := se.electionDb.GetElectionByHeight(endBlock)
-	records, _ := se.LedgerExecutor.Ls.ActionsDb.GetPendingActionsByEpoch(election.Epoch, "consensus_unstake")
+	records, _ := se.LedgerState.ActionDb.GetPendingActionsByEpoch(election.Epoch, "consensus_unstake")
 
 	completeIds := make([]string, 0)
 	ledgerRecords := make([]ledgerDb.LedgerRecord, 0)
@@ -1132,18 +1168,20 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			Type:        "consensus_unstake",
 		})
 	}
-	se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)
-	se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(nil, completeIds...)
+	se.LedgerState.LedgerDb.StoreLedger(ledgerRecords...)
+	se.LedgerState.ActionDb.ExecuteComplete(nil, completeIds...)
+	// se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)
+	// se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(nil, completeIds...)
 
 	//se.log.Debug("stBlock, endBlock", stBlock, endBlock)
-	distinctAccounts, _ := se.LedgerExecutor.Ls.LedgerDb.GetDistinctAccountsRange(stBlock, endBlock)
+	distinctAccounts, _ := se.LedgerState.LedgerDb.GetDistinctAccountsRange(stBlock, endBlock)
 
 	assets := []string{"hbd", "hive", "hbd_savings", "hive_consensus"}
 
 	//Cleanup!
 	for _, k := range distinctAccounts {
 		ledgerBalances := map[string]int64{}
-		prevBalRecord, _ := se.LedgerExecutor.Ls.BalanceDb.GetBalanceRecord(k, endBlock)
+		prevBalRecord, _ := se.LedgerState.BalanceDb.GetBalanceRecord(k, endBlock)
 		var balanceR ledgerDb.BalanceRecord
 		var stHeight uint64
 		if prevBalRecord != nil {
@@ -1166,7 +1204,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		//As of block X or below
 		// se.LedgerExecutor.Ls.log.Debug("GetBalance for account", stBlock, stHeight, endBlock)
 
-		ledgerUpdates, _ := se.LedgerExecutor.Ls.LedgerDb.GetLedgerRange(k, stHeight, endBlock, "")
+		ledgerUpdates, _ := se.LedgerState.LedgerDb.GetLedgerRange(k, stHeight, endBlock, "")
 
 		if len(*ledgerUpdates) == 0 {
 			continue
@@ -1253,9 +1291,9 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		newRecord.HBD_CLAIM_HEIGHT = claimHeight
 
-		se.LedgerExecutor.Ls.BalanceDb.UpdateBalanceRecord(newRecord)
+		se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord)
 
-		se.LedgerExecutor.VirtualLedger[k] = slices.DeleteFunc(se.LedgerExecutor.VirtualLedger[k], func(v ledgerSystem.LedgerUpdate) bool {
+		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(se.LedgerState.VirtualLedger[k], func(v ledgerSystem.LedgerUpdate) bool {
 			return v.Type == "deposit"
 		})
 	}
@@ -1332,6 +1370,39 @@ func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint
 	// }
 }
 
+func (se *StateEngine) Log() logger.Logger {
+	return se.log
+}
+
+func (se *StateEngine) DataLayer() common_types.DataLayer {
+	return se.da
+}
+
+func (se *StateEngine) GetContractInfo(id string) (contracts.Contract, bool) {
+	contractInfo, err := se.contractDb.ContractById(id)
+
+	if err == mongo.ErrNoDocuments {
+		return contracts.Contract{}, false
+	} else if err != nil {
+		panic(err)
+	}
+
+	return contractInfo, true
+}
+
+func (se *StateEngine) GetElectionInfo(height ...uint64) elections.ElectionResult {
+	var heightf uint64
+
+	if len(height) > 0 {
+		heightf = height[0]
+	} else {
+		heightf = uint64(se.BlockHeight)
+	}
+	electionResult, _ := se.electionDb.GetElectionByHeight(heightf)
+
+	return electionResult
+}
+
 func (se *StateEngine) Commit() {
 
 }
@@ -1369,13 +1440,26 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 	wasm *wasm_runtime.Wasm,
 ) *StateEngine {
 
-	ls := &LedgerSystem{
-		BalanceDb: balanceDb,
-		LedgerDb:  ledgerDb,
-		ClaimDb:   interestClaims,
-		ActionsDb: actionDb,
-		log:       logger,
+	ls := ledgerSystem.New(balanceDb, ledgerDb, interestClaims, actionDb, logger)
+
+	// {
+	// 	BalanceDb: balanceDb,
+	// 	LedgerDb:  ledgerDb,
+	// 	ClaimDb:   interestClaims,
+	// 	ActionsDb: actionDb,
+	// 	log:       logger,
+	// }
+
+	ledgerState := &ledgerSystem.LedgerState{
+		Oplog:           make([]ledgerSystem.OpLogEvent, 0),
+		VirtualLedger:   make(map[string][]ledgerSystem.LedgerUpdate),
+		GatewayBalances: make(map[string]uint64),
+		BlockHeight:     0,
+		LedgerDb:        ledgerDb,
+		ActionDb:        actionDb,
+		BalanceDb:       balanceDb,
 	}
+
 	return &StateEngine{
 		log:             logger,
 		TxOutput:        make(map[string]TxOutput),
@@ -1404,9 +1488,11 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 
 		wasm: wasm,
 
-		LedgerExecutor: &LedgerExecutor{
-			VirtualLedger: make(map[string][]ledgerSystem.LedgerUpdate),
-			Ls:            ls,
-		},
+		// LedgerExecutor: &ledgerSystem.LedgerExecutor{
+		// 	VirtualLedger: make(map[string][]ledgerSystem.LedgerUpdate),
+		// 	Ls:            ls,
+		// },
+		LedgerSystem: ls,
+		LedgerState:  ledgerState,
 	}
 }

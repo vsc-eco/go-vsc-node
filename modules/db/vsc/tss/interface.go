@@ -6,7 +6,7 @@ type TssKeys interface {
 	a.Plugin
 	InsertKey(id string, t TssKeyAlgo) error
 	FindKey(id string) (TssKey, error)
-	SetKey(id string, publicKey string) error
+	SetKey(key TssKey) error
 	FindNewKeys(blockHeight uint64) ([]TssKey, error)
 	FindEpochKeys(epoch uint64) ([]TssKey, error)
 }
@@ -34,7 +34,7 @@ type TssKey struct {
 	Owner         string     `bson:"owner"`
 	Algo          TssKeyAlgo `bson:"algo"`
 	CreatedHeight int64      `bson:"created_height"`
-	Epoch         uint64
+	Epoch         uint64     `bson:"epoch"`
 }
 
 type TssRequest struct {
@@ -53,7 +53,7 @@ type TssCommitment struct {
 	Commitment  string  `json:"commitment" bson:"commitment"`
 	KeyId       string  `json:"key_id" bson:"key_id"`
 	TxId        string  `json:"tx_id" bson:"tx_id"`
-	PublicKey   *string `json:"pub_key" bson:"pub_key"`
+	PublicKey   *string `json:"public_key" bson:"public_key"`
 }
 
 type TssKeyAlgo string

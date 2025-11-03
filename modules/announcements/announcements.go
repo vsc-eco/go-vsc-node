@@ -11,6 +11,7 @@ import (
 	"vsc-node/lib/hive"
 	agg "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/common_types"
 
 	"github.com/minio/sha256-simd"
 	"github.com/robfig/cron/v3"
@@ -30,7 +31,7 @@ type AnnouncementsManager struct {
 	client       HiveRpcClient
 	hiveCreator  hive.HiveTransactionCreator
 	cronDuration time.Duration
-	peerInfo     common.PeerInfoGetter
+	peerInfo     common_types.PeerInfoGetter
 }
 
 type HiveRpcClient interface {
@@ -44,7 +45,7 @@ var _ agg.Plugin = &AnnouncementsManager{}
 
 // ===== constructor =====
 
-func New(client HiveRpcClient, conf common.IdentityConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator, peerInfo common.PeerInfoGetter) (*AnnouncementsManager, error) {
+func New(client HiveRpcClient, conf common.IdentityConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator, peerInfo common_types.PeerInfoGetter) (*AnnouncementsManager, error) {
 
 	// sanity checks
 

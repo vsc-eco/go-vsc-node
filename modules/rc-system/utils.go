@@ -1,4 +1,4 @@
-package rcSystem
+package rc_system
 
 import "vsc-node/modules/common"
 

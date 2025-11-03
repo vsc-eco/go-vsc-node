@@ -10,6 +10,7 @@ import (
 	"vsc-node/lib/utils"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/common_types"
 	"vsc-node/modules/db/vsc/witnesses"
 	start_status "vsc-node/modules/start-status"
 
@@ -62,7 +63,7 @@ var MAINNET_BOOTSTRAP = []string{
 type P2PServer struct {
 	witnessDb    WitnessGetter
 	conf         common.IdentityConfig
-	systemConfig common.SystemConfig
+	systemConfig common_types.SystemConfig
 
 	host   host.Host
 	dht    *kadDht.IpfsDHT
@@ -81,7 +82,7 @@ type WitnessGetter interface {
 	GetLastestWitnesses() ([]witnesses.Witness, error)
 }
 
-func New(witnessDb WitnessGetter, conf common.IdentityConfig, sconf common.SystemConfig, port ...int) *P2PServer {
+func New(witnessDb WitnessGetter, conf common.IdentityConfig, sconf common_types.SystemConfig, port ...int) *P2PServer {
 
 	p := 10720
 	if len(port) > 0 {
@@ -289,7 +290,7 @@ func (p2p *P2PServer) Stop() error {
 	return nil
 }
 
-func (p2p *P2PServer) PeerInfo() common.PeerInfoGetter {
+func (p2p *P2PServer) PeerInfo() common_types.PeerInfoGetter {
 	return &peerGetter{
 		server: p2p,
 	}

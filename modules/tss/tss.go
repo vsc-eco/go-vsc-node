@@ -31,7 +31,6 @@ import (
 
 	"github.com/chebyrash/promise"
 	gorpc "github.com/libp2p/go-libp2p-gorpc"
-	rpc "github.com/libp2p/go-libp2p-gorpc"
 
 	flatfs "github.com/ipfs/go-ds-flatfs"
 )
@@ -40,6 +39,8 @@ const TSS_SIGN_INTERVAL = 20 //* 2
 
 // 5 minutes in blocks
 const TSS_ROTATE_INTERVAL = 20 * 5
+
+const TSS_ACTIVATE_HEIGHT = 100_870_050
 
 // 24 hour blame
 var BLAME_EXPIRE = uint64(24 * 60 * 20)
@@ -83,11 +84,13 @@ func (tssMgr *TssManager) Receive() {}
 
 func (tssMgr *TssManager) GeneratePreParams() {
 	locked := tssMgr.preParamsLock.TryLock()
-	if len(tssMgr.preParams) == 0 && locked {
-		fmt.Println("Need to generate preparams")
-		preParams, err := ecKeyGen.GeneratePreParams(time.Minute)
-		if err == nil {
-			tssMgr.preParams <- *preParams
+	if locked {
+		if len(tssMgr.preParams) == 0 {
+			fmt.Println("Need to generate preparams")
+			preParams, err := ecKeyGen.GeneratePreParams(time.Minute)
+			if err == nil {
+				tssMgr.preParams <- *preParams
+			}
 		}
 		tssMgr.preParamsLock.Unlock()
 	}
@@ -98,6 +101,11 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	if bh < *headHeight-10 {
 		return
 	}
+
+	if bh > TSS_ACTIVATE_HEIGHT {
+		return
+	}
+
 	slotInfo := stateEngine.CalculateSlotInfo(bh)
 
 	schedule := tssMgr.scheduler.GetSchedule(slotInfo.StartHeight)
@@ -117,7 +125,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		// 	fmt.Println("ME slot")
 		// }
 
-		isWitness := witnessSlot.Account == tssMgr.config.Get().HiveUsername
+		isLeader := witnessSlot.Account == tssMgr.config.Get().HiveUsername
 
 		keyLocks := make(map[string]bool)
 		generatedActions := make([]QueuedAction, 0)
@@ -129,7 +137,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 
 			for _, key := range reshareKeys {
 				generatedActions = append(generatedActions, QueuedAction{
-					Type:  KeyGenAction,
+					Type:  ReshareAction,
 					KeyId: key.Id,
 					Algo:  tss_helpers.SigningAlgo(key.Algo),
 				})
@@ -167,11 +175,13 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 
 			// cl := min(len(tssMgr.queuedActions), 5)
 			// top5Actions := tssMgr.queuedActions[:cl]
-			// tssMgr.RunActions(top5Actions, witnessSlot.Account, isWitness, bh)
+			// tssMgr.RunActions(top5Actions, witnessSlot.Account, isLeader, bh)
 
 			// tssMgr.queuedActions = slices.Delete(tssMgr.queuedActions, 0, cl)
 		}
-		tssMgr.RunActions(generatedActions, witnessSlot.Account, isWitness, bh)
+		if len(generatedActions) > 0 {
+			tssMgr.RunActions(generatedActions, witnessSlot.Account, isLeader, bh)
+		}
 	}
 }
 
@@ -184,15 +194,19 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 
 func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLeader bool, bh uint64) {
 	locked := tssMgr.lock.TryLock()
+
+	fmt.Println("Running Actions", tssMgr.config.Get().HiveUsername, bh, "isLeader", isLeader, "locked", locked)
 	if !locked {
 		return
 	}
 
 	currentElection, err := tssMgr.electionDb.GetElectionByHeight(uint64(bh))
 
-	// fmt.Println("currentElection, err", currentElection, err)
+	fmt.Println("err (197)", currentElection, err)
 	if err != nil {
 		fmt.Println("err", err)
+		// tssMgr
+		tssMgr.lock.Unlock()
 		return
 	}
 
@@ -208,7 +222,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			var isBlame bool
 			bitset := big.NewInt(0)
 			if err == nil {
-				if lastBlame.BlockHeight > bh-BLAME_EXPIRE {
+				if int64(lastBlame.BlockHeight) > int64(bh)-int64(BLAME_EXPIRE) {
 					bitBytes, _ := base64.RawURLEncoding.DecodeString(lastBlame.Commitment)
 					bitset.SetBytes(bitBytes)
 					isBlame = true
@@ -216,6 +230,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 
 			fmt.Println("bitset", bitset, isBlame)
+			fmt.Println("lastBlame, err", lastBlame, err)
+			fmt.Println("lastBlame.BlockHeight", lastBlame.BlockHeight, bh-BLAME_EXPIRE)
 			for idx, member := range currentElection.Members {
 				if isBlame {
 					if bitset.Bit(idx) == 1 {
@@ -227,6 +243,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				})
 			}
 
+			fmt.Println("keygen dispatcher", participants)
 			dispatcher := &KeyGenDispatcher{
 				BaseDispatcher: BaseDispatcher{
 					tssMgr:       tssMgr,
@@ -282,22 +299,24 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		} else if action.Type == ReshareAction {
 			sessionId = "reshare-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
-			commitment, _ := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "keygen", "reshare")
+			fmt.Println("reshare sessionId", sessionId)
+			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "keygen", "reshare")
 			lastBlame, _ := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "blame")
 
 			//This should either be equal but never less in practical terms
 			//However, we can add further checks
 			if commitment.Epoch >= currentElection.Epoch {
+				fmt.Println("reshare skipping")
 				continue
 			}
 
 			var isBlame bool
 			blameBits := big.NewInt(0)
 			if lastBlame.Type == "blame" {
-				if lastBlame.BlockHeight > commitment.BlockHeight && lastBlame.BlockHeight > bh-BLAME_EXPIRE {
+				if lastBlame.BlockHeight > commitment.BlockHeight && int64(lastBlame.BlockHeight) > int64(bh)-int64(BLAME_EXPIRE) {
 					isBlame = true
 					blameBytes, _ := base64.RawURLEncoding.DecodeString(lastBlame.Commitment)
-					blameBits.SetBytes(blameBytes)
+					blameBits = blameBits.SetBytes(blameBytes)
 				}
 			}
 			//No idea what was happening here
@@ -309,13 +328,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			commitmentElection := tssMgr.electionDb.GetElection(commitment.Epoch)
 
-			commitmentBytes, _ := base64.URLEncoding.DecodeString(commitment.Commitment)
+			commitmentBytes, err := base64.RawURLEncoding.DecodeString(commitment.Commitment)
 
 			bitset := big.NewInt(0)
-			bitset.SetBytes(commitmentBytes)
+			bitset = bitset.SetBytes(commitmentBytes)
 
 			commitedMembers := make([]Participant, 0)
 
+			fmt.Println("commitment, err", commitment, err)
+			fmt.Println("bitset", bitset, commitmentBytes)
 			for idx, member := range commitmentElection.Members {
 				if bitset.Bit(idx) == 1 {
 					commitedMembers = append(commitedMembers, Participant{
@@ -327,6 +348,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			newParticipants := make([]Participant, 0)
 
 			for idx, member := range currentElection.Members {
+				fmt.Println("isBlame", isBlame, idx, blameBits.Bit(idx))
 				if isBlame {
 					if blameBits.Bit(idx) == 1 {
 						//Deny inclusion into next commitee due to previous blame
@@ -353,7 +375,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					keyId:        action.KeyId,
 					epoch:        commitment.Epoch,
 
-					keystore: tssMgr.keyStore,
+					keystore:    tssMgr.keyStore,
+					blockHeight: bh,
 				},
 				newParticipants: newParticipants,
 				newEpoch:        currentElection.Epoch,
@@ -370,7 +393,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 	for _, dispatcher := range dispatchers {
 		fmt.Println("dispatcher started!")
-		dispatcher.Start()
+		err := dispatcher.Start()
+
+		fmt.Println("Start() err", err)
 	}
 
 	go func() {
@@ -382,6 +407,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// fmt.Println("result, err", resultPtr, err)
 
 			if err != nil {
+
+				fmt.Println("Done() err", err)
 				//handle error
 				continue
 			}
@@ -490,7 +517,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 						signableCid, _ := common.HashBytes(bytes, multicodec.DagCbor)
 
-						ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
+						ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+						defer cancel()
 						fmt.Println("commitResult", bytes, err)
 
 						serializedCircuit, err := tssMgr.waitForSigs(ctx, signableCid, commitResult.SessionId, &currentElection)
@@ -550,6 +578,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 		}
 
+		// fmt.Println("UNLOCKING!!!", tssMgr.config.Get().HiveUsername)
 		tssMgr.lock.Unlock()
 	}()
 }
@@ -599,7 +628,7 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 
 	select {
 	case <-ctx.Done():
-		fmt.Println("[bp] ctx done")
+		fmt.Println("CONTEXT EXPIRED!!")
 		return nil, ctx.Err() // Return error if canceled
 	default:
 		signedWeight := uint64(0)
@@ -611,7 +640,7 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 		for signedWeight < (weightTotal * 2 / 3) {
 			msg := <-sigChan
 
-			fmt.Println("EMT", msg)
+			// fmt.Println("EMT", msg)
 			var member dids.Member
 			var memberAccount string
 			var index int = -1
@@ -772,14 +801,14 @@ func (tssMgr *TssManager) Start() *promise.Promise[any] {
 	tssRpc := TssRpc{
 		mgr: tssMgr,
 	}
-	server := rpc.NewServer(tssMgr.p2p.Host(), protocolId)
+	server := gorpc.NewServer(tssMgr.p2p.Host(), protocolId)
 	err := server.RegisterName("vsc.tss", &tssRpc)
 
 	if err != nil {
 		return utils.PromiseReject[any](err)
 	}
 
-	client := rpc.NewClientWithServer(tssMgr.p2p.Host(), protocolId, server)
+	client := gorpc.NewClientWithServer(tssMgr.p2p.Host(), protocolId, server)
 
 	tssMgr.client = client
 	tssMgr.server = server
