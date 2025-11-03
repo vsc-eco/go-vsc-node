@@ -40,7 +40,7 @@ const TSS_SIGN_INTERVAL = 20 //* 2
 // 5 minutes in blocks
 const TSS_ROTATE_INTERVAL = 20 * 5
 
-const TSS_ACTIVATE_HEIGHT = 100_870_050
+const TSS_ACTIVATE_HEIGHT = 100_871_105
 
 // 24 hour blame
 var BLAME_EXPIRE = uint64(24 * 60 * 20)
@@ -102,7 +102,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		return
 	}
 
-	if bh > TSS_ACTIVATE_HEIGHT {
+	if TSS_ACTIVATE_HEIGHT > bh {
 		return
 	}
 
@@ -439,20 +439,22 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				commitableResults = append(commitableResults, commitment)
 
 			} else if result.Type() == ErrorType {
-				res := result.(ErrorResult)
+				//TODO: Handle errors better. For now, ignore them
 
-				res.BlockHeight = bh
-				tssMgr.sessionResults[dsc.SessionId()] = res
-				commitment := result.Serialize()
-				commitment.BlockHeight = bh
-				commitableResults = append(commitableResults, commitment)
+				// res := result.(ErrorResult)
+
+				// res.BlockHeight = bh
+				// tssMgr.sessionResults[dsc.SessionId()] = res
+				// commitment := result.Serialize()
+				// commitment.BlockHeight = bh
+				// commitableResults = append(commitableResults, commitment)
 			} else if result.Type() == TimeoutType {
 				res := result.(TimeoutResult)
 
 				res.BlockHeight = bh
 				tssMgr.sessionResults[dsc.SessionId()] = res
 
-				fmt.Println("Timeout Result")
+				fmt.Println("Timeout Result", res)
 				commitment := result.Serialize()
 				commitment.BlockHeight = bh
 				commitableResults = append(commitableResults, commitment)

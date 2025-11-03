@@ -414,8 +414,7 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 						Account: to.Id,
 					}, to.Moniker, bytes, msg.IsBroadcast(), commiteeType, cmtFrom)
 					if err != nil {
-						fmt.Println("SendMsg direct err", err)
-						dispatcher.err = err
+						fmt.Println("SendMsg direct info", err)
 					}
 				}()
 			}
@@ -662,8 +661,7 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 					go func() {
 						err := dispatcher.tssMgr.SendMsg(dispatcher.sessionId, p, msg.WireMsg().From.Moniker, bytes, true, commiteeType, "")
 						if err != nil {
-							fmt.Println("SendMsg err", err)
-							dispatcher.err = err
+							fmt.Println("SendMsg direct info", err)
 						}
 					}()
 				}
@@ -677,12 +675,11 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 
 					// fmt.Println("", string(to.Id))
 					go func() {
-						err = dispatcher.tssMgr.SendMsg(dispatcher.sessionId, Participant{
+						err := dispatcher.tssMgr.SendMsg(dispatcher.sessionId, Participant{
 							Account: string(to.Id),
 						}, to.Moniker, bytes, false, commiteeType, "")
 						if err != nil {
-							fmt.Println("SendMsg direct err", err)
-							dispatcher.err = err
+							fmt.Println("SendMsg direct info", err)
 						}
 					}()
 				}
