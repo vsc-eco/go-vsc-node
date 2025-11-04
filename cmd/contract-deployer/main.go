@@ -7,6 +7,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/common_types"
 	data_availability_client "vsc-node/modules/data-availability/client"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/hive/streamer"
@@ -25,7 +26,7 @@ func main() {
 	}
 	identityConfig := common.NewIdentityConfig()
 	hiveConfig := streamer.NewHiveConfig()
-	sysConfig := common.SystemConfig{
+	sysConfig := common_types.SystemConfig{
 		Network: args.network,
 	}
 	wits := witnesses.NewEmptyWitnesses()
