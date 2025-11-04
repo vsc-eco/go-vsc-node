@@ -173,6 +173,19 @@ func (p2pServer *P2PServer) Init() error {
 		libp2p.NATPortMap(),
 		libp2p.EnableAutoNATv2(),
 		libp2p.EnableHolePunching(),
+		//@TODO: make this no longer deprecated
+		libp2p.EnableAutoRelayWithPeerSource(func(ctx context.Context, numPeers int) <-chan peer.AddrInfo {
+			c := make(chan peer.AddrInfo, numPeers)
+
+			if p2pServer.host != nil {
+				for _, peer := range p2pServer.host.Network().Peers() {
+					addrInfo := p2pServer.host.Peerstore().PeerInfo(peer)
+					c <- addrInfo
+				}
+			}
+
+			return c
+		}),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			idht, err = kadDht.New(context.Background(), h, kadOptions...)
 			return idht, err

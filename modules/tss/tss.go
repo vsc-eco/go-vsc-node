@@ -40,7 +40,7 @@ const TSS_SIGN_INTERVAL = 20 //* 2
 // 5 minutes in blocks
 const TSS_ROTATE_INTERVAL = 20 * 5
 
-const TSS_ACTIVATE_HEIGHT = 100_871_105
+const TSS_ACTIVATE_HEIGHT = 100_889_500
 
 // 24 hour blame
 var BLAME_EXPIRE = uint64(24 * 60 * 20)
@@ -628,11 +628,11 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 	fmt.Println("WAITING FOR SIGS commitedCid", cid)
 	circuit, _ := blsCircuit.Generate(cid)
 
-	select {
-	case <-ctx.Done():
-		fmt.Println("CONTEXT EXPIRED!!")
-		return nil, ctx.Err() // Return error if canceled
-	default:
+	var errRes error
+	var res *dids.SerializedCircuit
+
+	proc1 := make(chan struct{})
+	go func() {
 		signedWeight := uint64(0)
 
 		// common.has
@@ -674,10 +674,19 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 		serialized, err := finalizedCiruit.Serialize()
 
 		if err != nil {
-			return nil, err
+			errRes = err
 		}
 
-		return serialized, nil
+		res = serialized
+		proc1 <- struct{}{}
+	}()
+
+	select {
+	case <-ctx.Done():
+		fmt.Println("CONTEXT EXPIRED!!")
+		return nil, ctx.Err() // Return error if canceled
+	case <-proc1:
+		return res, errRes
 	}
 }
 
