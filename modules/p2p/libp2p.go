@@ -29,6 +29,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/core/routing"
 	rhost "github.com/libp2p/go-libp2p/p2p/host/routed"
+	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	multiaddr "github.com/multiformats/go-multiaddr"
 	"github.com/robfig/cron/v3"
 
@@ -169,7 +170,7 @@ func (p2pServer *P2PServer) Init() error {
 		libp2p.ListenAddrStrings(fmt.Sprint("/ip4/0.0.0.0/tcp/", p2pServer.port)),
 		libp2p.Identity(key),
 		libp2p.EnableNATService(),
-		libp2p.EnableRelayService(),
+		libp2p.EnableRelayService(relay.WithInfiniteLimits()),
 		libp2p.NATPortMap(),
 		libp2p.EnableAutoNATv2(),
 		libp2p.EnableHolePunching(),
