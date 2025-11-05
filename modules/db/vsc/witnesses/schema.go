@@ -13,6 +13,7 @@ type Witness struct {
 	TxId            string            `json:"tx_id" bson:"tx_id"`
 	VersionId       string            `json:"version_id" bson:"version_id"`
 	GatewayKey      string            `json:"gateway_key" bson:"gateway_key"`
+	PeerAddrs       []string          `json:"peer_addrs" bson:"peer_addrs"`
 }
 
 type PostingJsonMetadata struct {

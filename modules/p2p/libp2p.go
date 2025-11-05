@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"testing"
 	"time"
@@ -404,6 +405,37 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 		if witness.PeerId == "" {
 			continue
 		}
+		witnessTime, _ := time.Parse(time.RFC3339, witness.Ts)
+		//Check if witnessTime is 4 days old or longer
+		if time.Since(witnessTime) > time.Hour*24*4 {
+			continue
+		}
+		mp, err := multiaddr.NewMultiaddr("/p2p/" + witness.PeerId)
+
+		if err != nil {
+			continue
+		}
+
+		var selectedAddr []multiaddr.Multiaddr
+		//Select
+		for _, peer := range witness.PeerAddrs {
+			m, _ := multiaddr.NewMultiaddr(peer)
+			_, err := m.ValueForProtocol(multiaddr.P_CIRCUIT)
+
+			// fmt.Println("circuitAddress", circuitAddress, err)
+			if err == nil {
+				selectedAddr = append(selectedAddr, m.Encapsulate(mp))
+				continue
+			}
+			ipv4Address, err := m.ValueForProtocol(multiaddr.P_IP4)
+
+			ip := net.ParseIP(ipv4Address)
+			if !ip.IsPrivate() && err != nil {
+				selectedAddr = append(selectedAddr, m.Encapsulate(mp))
+				continue
+			}
+		}
+
 		peerId, _ := peer.AddrInfoFromString("/p2p/" + witness.PeerId)
 
 		for _, peer := range p2p.host.Network().Peers() {
@@ -412,7 +444,10 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 				p2p.host.Connect(context.Background(), *peerId)
 			}
 		}
-		p2p.host.Connect(context.Background(), *peerId)
+		addrInfo, err := peer.AddrInfosFromP2pAddrs(selectedAddr...)
+		if err != nil && len(addrInfo) > 0 {
+			p2p.host.Connect(context.Background(), addrInfo[0])
+		}
 	}
 }
 

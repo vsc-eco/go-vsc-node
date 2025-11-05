@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"slices"
+	"sync"
 	"time"
 
 	// "github.com/btcsuite/btcd/btcec"
@@ -325,6 +326,8 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 }
 
 func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isBrcst bool, cmt string, fromCmt string) {
+	dispatcher.startWait()
+
 	sortedIds, _, _ := dispatcher.baseInfo()
 
 	var from *btss.PartyID
@@ -630,6 +633,9 @@ type BaseDispatcher struct {
 	algo        tss_helpers.SigningAlgo
 	blockHeight uint64
 
+	started   bool
+	startLock sync.Mutex
+
 	lastMsg time.Time
 }
 
@@ -688,7 +694,15 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 	}()
 }
 
+func (dispatcher *BaseDispatcher) startWait() {
+	if !dispatcher.started {
+		dispatcher.startLock.Lock()
+		dispatcher.startLock.Unlock()
+	}
+}
+
 func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcst bool, cmt string, cmtFrom string) {
+	dispatcher.startWait()
 	sortedIds, _, _ := dispatcher.baseInfo()
 
 	var from *btss.PartyID
@@ -696,6 +710,10 @@ func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcs
 		if p.Id == fromStr {
 			from = p
 		}
+	}
+
+	if from == nil || dispatcher.party == nil {
+		return
 	}
 
 	// fmt.Println("dispatcher.party", dispatcher.party, from)
@@ -756,6 +774,9 @@ func (dispatcher *BaseDispatcher) baseStart() {
 			time.Sleep(time.Millisecond)
 		}
 	}()
+
+	dispatcher.started = true
+	dispatcher.startLock.Unlock()
 }
 
 func (dispatcher *BaseDispatcher) baseInfo() (btss.SortedPartyIDs, *btss.PartyID, *btss.PeerContext) {

@@ -40,7 +40,7 @@ const TSS_SIGN_INTERVAL = 20 //* 2
 // 5 minutes in blocks
 const TSS_ROTATE_INTERVAL = 20 * 5
 
-const TSS_ACTIVATE_HEIGHT = 100_889_500
+const TSS_ACTIVATE_HEIGHT = 100_897_115
 
 // 24 hour blame
 var BLAME_EXPIRE = uint64(24 * 60 * 20)
@@ -246,6 +246,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			fmt.Println("keygen dispatcher", participants)
 			dispatcher := &KeyGenDispatcher{
 				BaseDispatcher: BaseDispatcher{
+					startLock:    sync.Mutex{},
 					tssMgr:       tssMgr,
 					participants: participants,
 					p2pMsg:       make(chan btss.Message, 2*len(participants)),
@@ -258,6 +259,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					epoch: currentElection.Epoch,
 				},
 			}
+			dispatcher.startLock.TryLock()
 
 			dispatchers = append(dispatchers, dispatcher)
 			tssMgr.actionMap[sessionId] = dispatcher
@@ -279,6 +281,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			dispatcher := &SignDispatcher{
 				BaseDispatcher: BaseDispatcher{
+					startLock:    sync.Mutex{},
 					algo:         action.Algo,
 					tssMgr:       tssMgr,
 					participants: participants,
@@ -293,6 +296,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				},
 				msg: action.Args,
 			}
+			dispatcher.startLock.TryLock()
 
 			dispatchers = append(dispatchers, dispatcher)
 			tssMgr.actionMap[sessionId] = dispatcher
@@ -366,6 +370,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			dispatcher := &ReshareDispatcher{
 				BaseDispatcher: BaseDispatcher{
+					startLock:    sync.Mutex{},
 					algo:         tss_helpers.SigningAlgo(action.Algo),
 					tssMgr:       tssMgr,
 					participants: commitedMembers,
@@ -381,6 +386,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				newParticipants: newParticipants,
 				newEpoch:        currentElection.Epoch,
 			}
+			dispatcher.startLock.TryLock()
 
 			dispatchers = append(dispatchers, dispatcher)
 			tssMgr.actionMap[sessionId] = dispatcher
