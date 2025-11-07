@@ -1,4 +1,4 @@
-package parser
+package mapper
 
 import (
 	"bytes"
@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/hasura/go-graphql-client"
 )
 
 const depositInstruction = "deposit_to"
@@ -41,7 +42,11 @@ func NewBlockParser(addressDb *database.MappingBotDatabase, params *chaincfg.Par
 	}
 }
 
-func (bp *BlockParser) ParseBlock(rawBlockBytes []byte, blockHeight uint32, observedTxs map[string]bool) ([]*MappingInputData, error) {
+func (bp *BlockParser) ParseBlock(
+	gqlClient *graphql.Client,
+	rawBlockBytes []byte,
+	blockHeight uint32,
+) ([]*MappingInputData, error) {
 	var msgBlock wire.MsgBlock
 	err := msgBlock.Deserialize(bytes.NewReader(rawBlockBytes))
 	if err != nil {
@@ -52,15 +57,15 @@ func (bp *BlockParser) ParseBlock(rawBlockBytes []byte, blockHeight uint32, obse
 	matchedTxIndices := make(map[int][]string)
 
 	for txIndex, tx := range msgBlock.Transactions {
-		if observedTxs[tx.TxID()] {
-			continue
-		}
-		for _, txOut := range tx.TxOut {
+		for i, txOut := range tx.TxOut {
 			addresses := bp.extractAddresses(txOut.PkScript)
 
 			// this loop should never be longer than one cycle, only happens with multisig which is outdated
 			for _, addr := range addresses {
 				if vscAddr, err := bp.addressDb.GetVscAddress(context.TODO(), addr); err == nil {
+					if exists, err := FetchObservedTx(gqlClient, tx.TxID(), i); exists || err != nil {
+						break
+					}
 					instruction := fmt.Sprintf("%s=%s", depositInstruction, vscAddr)
 					matchedTxIndices[txIndex] = append(matchedTxIndices[txIndex], instruction)
 				} else if err != database.ErrAddrNotFound {

@@ -11,8 +11,6 @@ import (
 
 // const graphQLUrl = "http://0.0.0.0:8080"
 
-const graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
-
 func TestClient(t *testing.T) {
 	// Create a custom HTTP client with logging
 	httpClient := &http.Client{

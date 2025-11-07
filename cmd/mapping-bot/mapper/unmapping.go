@@ -48,9 +48,12 @@ type TxRawIdPair struct {
 	TxId  string
 }
 
-func (ms *MapperState) HandleUnmap(memPoolClient *mempool.MempoolClient, graphQlClient *graphql.Client, txSpends map[string]*SigningData) {
-	ms.ProcessTxSpends(txSpends)
-	finishedTxs, err := ms.CheckSignagures(graphQlClient)
+func (ms *MapperState) HandleUnmap(
+	memPoolClient *mempool.MempoolClient,
+	txSpends map[string]*SigningData,
+) {
+	ms.ProcessTxSpends(ms.GqlClient, txSpends)
+	finishedTxs, err := ms.CheckSignagures(ms.GqlClient)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error fetching signatures from the database: %s", err.Error())
 		return
@@ -76,11 +79,6 @@ func (ms *MapperState) HandleUnmap(memPoolClient *mempool.MempoolClient, graphQl
 	// store data to datastore
 	ms.Mutex.Lock()
 	defer ms.Mutex.Unlock()
-	observedTxsJson, err := json.Marshal(ms.ObservedTxs)
-	if err != nil {
-		return
-	}
-	ms.FfsDatastore.Put(context.TODO(), observedTxsKey, observedTxsJson)
 	sentTxsJson, err := json.Marshal(ms.SentTxs)
 	if err != nil {
 		return
@@ -88,31 +86,44 @@ func (ms *MapperState) HandleUnmap(memPoolClient *mempool.MempoolClient, graphQl
 	ms.FfsDatastore.Put(context.TODO(), sentTxsKey, sentTxsJson)
 }
 
-func (ms *MapperState) ProcessTxSpends(incomingTxSpends map[string]*SigningData) {
+func (ms *MapperState) ProcessTxSpends(gqlClient *graphql.Client, incomingTxSpends map[string]*SigningData) {
 	ms.Mutex.Lock()
 	defer ms.Mutex.Unlock()
 	for txId, signingData := range incomingTxSpends {
 		// already in the system
-		_, ok := ms.ObservedTxs[txId]
+		_, ok := ms.AwaitingSignatureTxs.Txs[txId]
 		if ok {
 			continue
 		}
-		_, ok = ms.AwaitingSignatureTxs.Txs[txId]
-		if ok {
-			continue
+
+		// could re-enable this, but it does a lot of gql requests for probably no reason
+		// make sure none of the tx's utxos are observed before adding to the system
+		// this should never happen
+		// exists := false
+		// for i := range signingData.UnsignedSigHashes {
+		// 	ok, err := FetchObservedTx(gqlClient, txId, i)
+		// 	if ok || err != nil {
+		// 		exists = true
+		// 		break
+		// 	}
+		// }
+		// if exists {
+		// 	continue
+		// }
+
+		for _, hash := range signingData.UnsignedSigHashes {
+			ms.AwaitingSignatureTxs.Hashes[hash.SigHash] = &HashMetadata{
+				TxId:  txId,
+				Index: hash.Index,
+			}
 		}
+
 		ms.AwaitingSignatureTxs.Txs[txId] = &SignedData{
 			Tx:                signingData.Tx,
 			UnsignedSigHashes: signingData.UnsignedSigHashes,
 			Signatures:        make([][]byte, len(signingData.UnsignedSigHashes)),
 			TotalSignatures:   uint32(len(signingData.UnsignedSigHashes)),
 			CurrentSignatures: 0,
-		}
-		for _, hash := range signingData.UnsignedSigHashes {
-			ms.AwaitingSignatureTxs.Hashes[hash.SigHash] = &HashMetadata{
-				TxId:  txId,
-				Index: hash.Index,
-			}
 		}
 	}
 }
