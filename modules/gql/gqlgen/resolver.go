@@ -11,6 +11,7 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
+	"vsc-node/modules/gql/logstream"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 )
@@ -36,4 +37,5 @@ type Resolver struct {
 	ContractsState contracts.ContractState
 	TssKeys        tss_db.TssKeys
 	TssRequests    tss_db.TssRequests
+	LogStream      *logstream.LogStream
 }

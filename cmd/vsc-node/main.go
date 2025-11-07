@@ -30,6 +30,7 @@ import (
 	"vsc-node/modules/gateway"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
+	"vsc-node/modules/gql/logstream"
 	"vsc-node/modules/hive/streamer"
 	"vsc-node/modules/oracle"
 	p2pInterface "vsc-node/modules/p2p"
@@ -132,7 +133,8 @@ func main() {
 	l := logger.PrefixedLogger{
 		Prefix: "vsc-node",
 	}
-	se := stateEngine.New(l, da, witnessDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
+	ls := logstream.NewLogStream()
+	se := stateEngine.New(l, da, witnessDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm, ls)
 
 	rcSystem := se.RcSystem
 
@@ -172,6 +174,7 @@ func main() {
 		ContractsState: contractState,
 		TssKeys:        tssKeys,
 		TssRequests:    tssRequests,
+		LogStream:      ls,
 	}}), "0.0.0.0:8080")
 
 	plugins := make([]aggregate.Plugin, 0)
