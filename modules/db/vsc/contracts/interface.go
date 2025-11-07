@@ -17,7 +17,7 @@ type ContractState interface {
 	IngestOutput(inputArgs IngestOutputArgs)
 	GetLastOutput(contractId string, height uint64) (ContractOutput, error)
 	FindOutputs(id *string, input *string, contract *string, offset int, limit int) ([]ContractOutput, error)
-	LoadLogsInRange(fromBlock, toBlock uint64) ([]logstream.ContractLog, error)
+	StreamLogsInRange(fromBlock, toBlock uint64, fn func(logstream.ContractLog) error) error
 }
 
 type IngestOutputArgs struct {

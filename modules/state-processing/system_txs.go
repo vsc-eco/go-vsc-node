@@ -114,7 +114,7 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
 				for _, logStr := range res.Logs {
 					se.LogStream.Publish(logstream.ContractLog{
 						BlockHeight:     uint64(txSelf.BlockHeight),
-						TxHash:          txSelf.TxId,
+						TxID:            txSelf.TxId,
 						ContractAddress: output.ContractId,
 						Log:             logStr,
 						Timestamp:       txSelf.Timestamp,

@@ -571,13 +571,12 @@ func (r *rcRecordResolver) MaxRcs(ctx context.Context, obj *rcDb.RcRecord) (mode
 	return model.Int64(obj.MaxRcs), nil
 }
 
-// Logs sets up a GraphQL subscription that streams contract logs.
+// Logs starts a GraphQL subscription that streams contract logs.
 //
-// If a fromBlock is provided, it first replays all past logs starting from that block,
-// then continues streaming new logs in real time. The filter can also limit logs
-// to specific contract addresses.
-//
-// The subscription automatically stops when the client disconnects or the context is canceled.
+// If FromBlock is set, it first replays old logs from that block
+// and then streams new ones in real time.
+// The filter can also limit logs to certain contract addresses.
+// The stream stops when the client disconnects or the context ends.
 func (r *subscriptionResolver) Logs(ctx context.Context, filter *LogFilter) (<-chan *Log, error) {
 	if r.LogStream == nil {
 		return nil, fmt.Errorf("log stream not initialized")
@@ -585,7 +584,7 @@ func (r *subscriptionResolver) Logs(ctx context.Context, filter *LogFilter) (<-c
 
 	out := make(chan *Log, 256)
 
-	// Build internal filter
+	// Build internal filter from GraphQL input.
 	var f logstream.LogFilterInternal
 	if filter != nil {
 		if filter.FromBlock != nil {
@@ -600,7 +599,7 @@ func (r *subscriptionResolver) Logs(ctx context.Context, filter *LogFilter) (<-c
 		}
 	}
 
-	// Subscribe for live logs
+	// Register subscriber for live logs.
 	sub := r.LogStream.Subscribe(f)
 	fmt.Printf("[subscription] new subscriber %d created with filter %+v\n", sub.Id, sub.Filter)
 
@@ -611,11 +610,11 @@ func (r *subscriptionResolver) Logs(ctx context.Context, filter *LogFilter) (<-c
 			close(out)
 		}()
 
-		// Replay historical logs if fromBlock is set
+		// Replay historical logs if requested.
 		if f.FromBlock != nil {
 			currentHeight := r.LogStream.CurrentHeight()
 
-			// Fallback if LogStream hasn't seen any logs yet
+			// If no height yet, fall back to DB.
 			if currentHeight == 0 {
 				var latestHeight int64
 				for addr := range f.ContractAddresses {
@@ -630,7 +629,7 @@ func (r *subscriptionResolver) Logs(ctx context.Context, filter *LogFilter) (<-c
 				fmt.Printf("[subscription] fallback currentHeight from DB = %d\n", currentHeight)
 			}
 
-			// Edge case: still no data found — fetch everything from fromBlock onward
+			// Handle missing data edge case.
 			if currentHeight < *f.FromBlock {
 				currentHeight = uint64(math.MaxInt64)
 			}
@@ -639,15 +638,15 @@ func (r *subscriptionResolver) Logs(ctx context.Context, filter *LogFilter) (<-c
 				sub.Id, *f.FromBlock, currentHeight)
 
 			err := r.LogStream.Replay(*f.FromBlock, currentHeight,
-				func(from, to uint64) ([]logstream.ContractLog, error) {
-					return r.ContractsState.LoadLogsInRange(from, to)
+				func(from, to uint64, emit func(logstream.ContractLog) error) error {
+					return r.ContractsState.StreamLogsInRange(from, to, emit)
 				})
 			if err != nil {
 				fmt.Printf("[subscription] replay error: %v\n", err)
 			}
 		}
 
-		// Stream live logs
+		// Forward live logs to the GraphQL stream.
 		for {
 			select {
 			case <-ctx.Done():
@@ -657,10 +656,9 @@ func (r *subscriptionResolver) Logs(ctx context.Context, filter *LogFilter) (<-c
 				if !ok {
 					return
 				}
-
 				out <- &Log{
 					BlockHeight:     model.Uint64(l.BlockHeight),
-					TxHash:          l.TxHash,
+					TxHash:          l.TxID,
 					ContractAddress: l.ContractAddress,
 					Log:             l.Log,
 					Timestamp:       l.Timestamp,

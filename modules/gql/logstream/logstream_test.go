@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+// TestSubscribeAndUnsubscribe verifies that subscribing and unsubscribing
+// works correctly and that published logs are received while subscribed.
 func TestSubscribeAndUnsubscribe(t *testing.T) {
 	ls := NewLogStream()
 	sub := ls.Subscribe(LogFilterInternal{})
@@ -34,6 +36,8 @@ func TestSubscribeAndUnsubscribe(t *testing.T) {
 	}
 }
 
+// TestFilterByBlockAndAddress ensures that FromBlock and ContractAddresses filters
+// are respected — only matching logs should be delivered.
 func TestFilterByBlockAndAddress(t *testing.T) {
 	minBlock := uint64(5)
 	filter := LogFilterInternal{
@@ -61,6 +65,7 @@ func TestFilterByBlockAndAddress(t *testing.T) {
 	}
 }
 
+// TestConcurrentPublish stresses the Publish function under concurrent load.
 func TestConcurrentPublish(t *testing.T) {
 	ls := NewLogStream()
 	sub := ls.Subscribe(LogFilterInternal{})
@@ -79,6 +84,7 @@ func TestConcurrentPublish(t *testing.T) {
 	ls.Unsubscribe(sub)
 }
 
+// TestChannelOverflow ensures that Publish never blocks even when a channel is full.
 func TestChannelOverflow(t *testing.T) {
 	ls := NewLogStream()
 	sub := ls.Subscribe(LogFilterInternal{})
@@ -104,18 +110,25 @@ func TestChannelOverflow(t *testing.T) {
 	}
 }
 
+// TestReplayPublishesLogs checks that Replay calls its source and publishes logs in order.
 func TestReplayPublishesLogs(t *testing.T) {
 	ls := NewLogStream()
 	sub := ls.Subscribe(LogFilterInternal{})
 	defer ls.Unsubscribe(sub)
 
 	called := false
-	source := func(from, to uint64) ([]ContractLog, error) {
+	source := func(from, to uint64, fn func(ContractLog) error) error {
 		called = true
-		return []ContractLog{
+		logs := []ContractLog{
 			{BlockHeight: 1, Log: "L1"},
 			{BlockHeight: 2, Log: "L2"},
-		}, nil
+		}
+		for _, l := range logs {
+			if err := fn(l); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	err := ls.Replay(1, 2, source)
@@ -140,6 +153,8 @@ func TestReplayPublishesLogs(t *testing.T) {
 		t.Errorf("unexpected replay order: %v", received)
 	}
 }
+
+// TestCurrentHeight verifies that the latest block height increases correctly.
 func TestCurrentHeight(t *testing.T) {
 	ls := NewLogStream()
 	ls.Publish(ContractLog{BlockHeight: 10})
@@ -148,5 +163,42 @@ func TestCurrentHeight(t *testing.T) {
 
 	if got := ls.CurrentHeight(); got != 15 {
 		t.Errorf("expected height 15, got %d", got)
+	}
+}
+
+// TestReplayEmptySource ensures Replay handles an empty source without error.
+func TestReplayEmptySource(t *testing.T) {
+	ls := NewLogStream()
+
+	// Updated mock source for streaming form
+	source := func(from, to uint64, fn func(ContractLog) error) error {
+		// simulate no logs at all
+		return nil
+	}
+
+	if err := ls.Replay(0, 10, source); err != nil {
+		t.Fatalf("expected no error on empty source, got %v", err)
+	}
+
+	if ls.CurrentHeight() != 0 {
+		t.Errorf("expected no update to height, got %d", ls.CurrentHeight())
+	}
+}
+
+// TestTimestampPropagation ensures timestamps are forwarded correctly.
+func TestTimestampPropagation(t *testing.T) {
+	ls := NewLogStream()
+	sub := ls.Subscribe(LogFilterInternal{})
+	defer ls.Unsubscribe(sub)
+
+	ls.Publish(ContractLog{BlockHeight: 42, Log: "log", Timestamp: "2025-11-07T12:00:00Z"})
+
+	select {
+	case l := <-sub.Ch:
+		if l.Timestamp != "2025-11-07T12:00:00Z" {
+			t.Errorf("expected timestamp propagation, got %s", l.Timestamp)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for log with timestamp")
 	}
 }
