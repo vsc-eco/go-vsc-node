@@ -13,6 +13,7 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
+	"vsc-node/modules/gql/logstream"
 	transactionpool "vsc-node/modules/transaction-pool"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
 
@@ -106,6 +107,22 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
 		AnchoredId:     txSelf.TxId,
 		AnchoredIndex:  int64(txSelf.Index),
 	})
+	// forward logs to GraphQL subscribers
+	if se.LogStream != nil {
+		for _, res := range output.Results {
+			if res.Ok && len(res.Logs) > 0 {
+				for _, logStr := range res.Logs {
+					se.LogStream.Publish(logstream.ContractLog{
+						BlockHeight:     uint64(txSelf.BlockHeight),
+						TxHash:          txSelf.TxId,
+						ContractAddress: output.ContractId,
+						Log:             logStr,
+						Timestamp:       txSelf.Timestamp,
+					})
+				}
+			}
+		}
+	}
 }
 
 type TxCreateContract struct {
@@ -608,6 +625,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				BlockId:     t.Self.BlockId,
 				BlockHeight: t.Self.BlockHeight,
 				TxId:        t.Self.TxId,
+				Timestamp:   t.Self.Timestamp,
 			})
 
 			fmt.Println("OUTPUT CONTAINER", contractOutput)

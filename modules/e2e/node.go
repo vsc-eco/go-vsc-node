@@ -151,7 +151,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	datalayer := DataLayer.New(p2p, input.Username)
 	wasm := wasm_runtime.New()
 
-	ls := logstream.NewLogStream()
+	ls := logstream.NewLogStream() // shared log stream for state + gql
 
 	se := stateEngine.New(
 		logger,

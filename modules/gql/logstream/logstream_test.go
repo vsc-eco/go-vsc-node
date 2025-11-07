@@ -78,3 +78,75 @@ func TestConcurrentPublish(t *testing.T) {
 	wg.Wait()
 	ls.Unsubscribe(sub)
 }
+
+func TestChannelOverflow(t *testing.T) {
+	ls := NewLogStream()
+	sub := ls.Subscribe(LogFilterInternal{})
+	defer ls.Unsubscribe(sub)
+
+	// Fill up the subscriber channel
+	for i := 0; i < cap(sub.Ch); i++ {
+		ls.Publish(ContractLog{BlockHeight: uint64(i), Log: "fill"})
+	}
+
+	// This one should be dropped, not block or panic
+	done := make(chan struct{})
+	go func() {
+		ls.Publish(ContractLog{BlockHeight: 999, Log: "overflow"})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// success — Publish returned quickly
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Publish blocked when channel full")
+	}
+}
+
+func TestReplayPublishesLogs(t *testing.T) {
+	ls := NewLogStream()
+	sub := ls.Subscribe(LogFilterInternal{})
+	defer ls.Unsubscribe(sub)
+
+	called := false
+	source := func(from, to uint64) ([]ContractLog, error) {
+		called = true
+		return []ContractLog{
+			{BlockHeight: 1, Log: "L1"},
+			{BlockHeight: 2, Log: "L2"},
+		}, nil
+	}
+
+	err := ls.Replay(1, 2, source)
+	if err != nil {
+		t.Fatalf("Replay returned error: %v", err)
+	}
+	if !called {
+		t.Error("Replay did not call logsSource")
+	}
+
+	var received []string
+	for i := 0; i < 2; i++ {
+		select {
+		case l := <-sub.Ch:
+			received = append(received, l.Log)
+		case <-time.After(time.Second):
+			t.Fatal("timeout waiting for replayed logs")
+		}
+	}
+
+	if received[0] != "L1" || received[1] != "L2" {
+		t.Errorf("unexpected replay order: %v", received)
+	}
+}
+func TestCurrentHeight(t *testing.T) {
+	ls := NewLogStream()
+	ls.Publish(ContractLog{BlockHeight: 10})
+	ls.Publish(ContractLog{BlockHeight: 15})
+	ls.Publish(ContractLog{BlockHeight: 5}) // should not decrease
+
+	if got := ls.CurrentHeight(); got != 15 {
+		t.Errorf("expected height 15, got %d", got)
+	}
+}

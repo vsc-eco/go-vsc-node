@@ -1,6 +1,9 @@
 package contracts
 
-import a "vsc-node/modules/aggregate"
+import (
+	a "vsc-node/modules/aggregate"
+	logstream "vsc-node/modules/gql/logstream"
+)
 
 type Contracts interface {
 	a.Plugin
@@ -14,6 +17,7 @@ type ContractState interface {
 	IngestOutput(inputArgs IngestOutputArgs)
 	GetLastOutput(contractId string, height uint64) (ContractOutput, error)
 	FindOutputs(id *string, input *string, contract *string, offset int, limit int) ([]ContractOutput, error)
+	LoadLogsInRange(fromBlock, toBlock uint64) ([]logstream.ContractLog, error)
 }
 
 type IngestOutputArgs struct {
