@@ -3,22 +3,24 @@ package mapper
 import (
 	"sync"
 
+	"github.com/hasura/go-graphql-client"
 	"github.com/ipfs/go-datastore"
 	flatfs "github.com/ipfs/go-ds-flatfs"
 )
 
 var lastBlockKey = datastore.NewKey("lastblock")
-var observedTxsKey = datastore.NewKey("observed")
 var sentTxsKey = datastore.NewKey("senttxs")
+
+const graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
 
 type MapperState struct {
 	Mutex                sync.Mutex
 	FfsDatastore         *flatfs.Datastore
 	LastBlockHeight      uint32
-	ObservedTxs          map[string]bool
 	AwaitingSignatureTxs *AwaitingSignature
 	// txs that have been posted, but haven't been seen in a block yet
-	SentTxs map[string]bool
+	SentTxs   map[string]bool
+	GqlClient *graphql.Client
 }
 
 func NewMapperState(ffs *flatfs.Datastore) (*MapperState, error) {
@@ -40,8 +42,8 @@ func NewMapperState(ffs *flatfs.Datastore) (*MapperState, error) {
 		Mutex:                sync.Mutex{},
 		FfsDatastore:         ffs,
 		LastBlockHeight:      uint32(heightInt),
-		ObservedTxs:          make(map[string]bool),
 		SentTxs:              make(map[string]bool),
 		AwaitingSignatureTxs: unsignedTxs,
+		GqlClient:            graphql.NewClient(graphQLUrl, nil),
 	}, nil
 }

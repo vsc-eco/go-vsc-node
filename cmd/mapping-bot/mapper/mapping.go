@@ -6,15 +6,18 @@ import (
 	"fmt"
 	"strconv"
 	"vsc-node/cmd/mapping-bot/database"
-	"vsc-node/cmd/mapping-bot/parser"
 
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-func (ms *MapperState) HandleMap(blockBytes []byte, blockHeight uint32, addressDb *database.MappingBotDatabase) {
-	blockParser := parser.NewBlockParser(addressDb, &chaincfg.MainNetParams)
+func (ms *MapperState) HandleMap(
+	blockBytes []byte,
+	blockHeight uint32,
+	addressDb *database.MappingBotDatabase,
+) {
+	blockParser := NewBlockParser(addressDb, &chaincfg.MainNetParams)
 
-	foundTxs, err := blockParser.ParseBlock(blockBytes, blockHeight, ms.ObservedTxs)
+	foundTxs, err := blockParser.ParseBlock(ms.GqlClient, blockBytes, blockHeight)
 	if err != nil {
 		return
 	}

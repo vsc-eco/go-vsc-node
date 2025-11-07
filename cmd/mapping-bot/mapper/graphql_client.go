@@ -9,7 +9,7 @@ import (
 	"github.com/hasura/go-graphql-client"
 )
 
-const observedContractKey = "observed_txs"
+const observedContractPrefix = "observed_txs"
 const txSpendsContractKey = "tx_spends"
 
 const contractId = "vsc1BonkE2CtHqjnkFdH8hoAEMP25bbWhSr3UA"
@@ -18,44 +18,60 @@ type GetContractStateQuery struct {
 	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys)"`
 }
 
-func FetchContractData(client *graphql.Client) (map[string]bool, map[string]*SigningData, error) {
+func (m *MapperState) FetchTxSpends() (map[string]*SigningData, error) {
 	var query GetContractStateQuery
+
 	variables := map[string]any{
 		"contractId": contractId,
-		"keys":       []string{observedContractKey, txSpendsContractKey},
+		"keys":       []string{txSpendsContractKey},
 	}
-	err := client.Query(context.TODO(), &query, variables, graphql.OperationName("GetContractState"))
+	err := m.GqlClient.Query(context.TODO(), &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	var stateMap map[string]json.RawMessage
 	err = json.Unmarshal(query.GetStateByKeys, &stateMap)
 	if err != nil {
-		return nil, nil, err
-	}
-
-	var observedTxs map[string]bool
-	if observedData, exists := stateMap[observedContractKey]; exists && observedData != nil {
-		err = json.Unmarshal(observedData, &observedTxs)
-		if err != nil {
-			return nil, nil, err
-		}
-	} else {
-		observedTxs = make(map[string]bool)
+		return nil, err
 	}
 
 	var txSpends map[string]*SigningData
 	if txSpendsData, exists := stateMap[txSpendsContractKey]; exists && txSpendsData != nil {
 		err = json.Unmarshal(txSpendsData, &txSpends)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	} else {
 		txSpends = make(map[string]*SigningData)
 	}
 
-	return observedTxs, txSpends, nil
+	return txSpends, nil
+}
+
+// TODO: use individual utxos (txid:vout) instead of just txids
+func FetchObservedTx(client *graphql.Client, txId string, vout int) (bool, error) {
+	var query GetContractStateQuery
+
+	key := observedContractPrefix + fmt.Sprintf("%s:%d", txId, vout)
+
+	variables := map[string]any{
+		"contractId": contractId,
+		"keys":       []string{key},
+	}
+	err := client.Query(context.TODO(), &query, variables, graphql.OperationName("GetContractState"))
+	if err != nil {
+		return false, err
+	}
+
+	var stateMap map[string]json.RawMessage
+	err = json.Unmarshal(query.GetStateByKeys, &stateMap)
+	if err != nil {
+		return false, err
+	}
+
+	_, exists := stateMap[key]
+	return exists, nil
 }
 
 const keyId = ""

@@ -11,14 +11,10 @@ import (
 	"vsc-node/cmd/mapping-bot/mapper"
 	"vsc-node/cmd/mapping-bot/mempool"
 
-	"github.com/hasura/go-graphql-client"
 	flatfs "github.com/ipfs/go-ds-flatfs"
 )
 
-const (
-	graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
-	httpPort   = 8000
-)
+const httpPort = 8000
 
 func newDataStore(path string) (*flatfs.Datastore, error) {
 	if err := os.MkdirAll(path, 0755); err != nil {
@@ -56,17 +52,13 @@ func main() {
 		log.Fatalln(err.Error())
 	}
 	mempoolClient := mempool.NewMempoolClient()
-	graphQlClient := graphql.NewClient(graphQLUrl, nil)
 	for {
-		observedTxs, txSpends, err := mapper.FetchContractData(graphQlClient)
+		txSpends, err := bot.FetchTxSpends()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			return
 		} else {
-			bot.Mutex.Lock()
-			bot.ObservedTxs = observedTxs
-			bot.Mutex.Unlock()
-			go bot.HandleUnmap(mempoolClient, graphQlClient, txSpends)
+			go bot.HandleUnmap(mempoolClient, txSpends)
 		}
 
 		blockHeight := bot.LastBlockHeight + 1
