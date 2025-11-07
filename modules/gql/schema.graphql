@@ -71,6 +71,7 @@ type TransactionOutput {
 type ContractOutputResult {
   ret: String!
   ok: Boolean!
+  logs: [String!] 
 }
 
 type ContractOutput {
@@ -272,6 +273,25 @@ input ContractOutputFilter {
   offset: Int
   limit: Int
 }
+
+
+type Log {
+  blockHeight: Uint64!
+  txHash: String!
+  contractAddress: String!
+  log: String!        # raw string from sdk.Log()
+  timestamp: String!  # consistent with other timestamps
+}
+
+input LogFilter {
+  fromBlock: Uint64
+  contractAddresses: [String!]
+}
+
+type Subscription {
+  logs(filter: LogFilter): Log!
+}
+
 
 type Query {
   getStateByKeys(contractId: String!, keys: [String!]!): Map

@@ -570,6 +570,11 @@ func (r *rcRecordResolver) MaxRcs(ctx context.Context, obj *rcDb.RcRecord) (mode
 	return model.Int64(obj.MaxRcs), nil
 }
 
+// Logs is the resolver for the logs field.
+func (r *subscriptionResolver) Logs(ctx context.Context, filter *LogFilter) (<-chan *Log, error) {
+	panic(fmt.Errorf("not implemented: Logs - logs"))
+}
+
 // Index is the resolver for the index field.
 func (r *transactionOperationResolver) Index(ctx context.Context, obj *transactions.TransactionOperation) (model.Uint64, error) {
 	return model.Uint64(obj.Idx), nil
@@ -681,6 +686,9 @@ func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 // RcRecord returns RcRecordResolver implementation.
 func (r *Resolver) RcRecord() RcRecordResolver { return &rcRecordResolver{r} }
 
+// Subscription returns SubscriptionResolver implementation.
+func (r *Resolver) Subscription() SubscriptionResolver { return &subscriptionResolver{r} }
+
 // TransactionOperation returns TransactionOperationResolver implementation.
 func (r *Resolver) TransactionOperation() TransactionOperationResolver {
 	return &transactionOperationResolver{r}
@@ -708,6 +716,7 @@ type opLogEventResolver struct{ *Resolver }
 type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type rcRecordResolver struct{ *Resolver }
+type subscriptionResolver struct{ *Resolver }
 type transactionOperationResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
