@@ -212,8 +212,8 @@ func (b *Bitcoin) GetContractState() (ChainState, error) {
 }
 
 // Height implements chainBlock.
-func (b *BtcChainData) BlockHeight() uint64 {
-	return b.Height
+func (b *BtcChainData) BlockHeight() (uint64, error) {
+	return b.Height, nil
 }
 
 // Serialize implements chainBlock.

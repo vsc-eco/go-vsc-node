@@ -9,8 +9,8 @@ const (
 type ChainBlock interface {
 	Type() string //symbol of block network
 	Serialize() (string, error)
-	BlockHeight() uint64
-	AverageFee() int64
+	BlockHeight() (uint64, error)
+	AverageFee() (uint64, error)
 }
 
 type ChainState struct {
