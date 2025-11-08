@@ -40,7 +40,7 @@ const TSS_SIGN_INTERVAL = 20 //* 2
 // 5 minutes in blocks
 const TSS_ROTATE_INTERVAL = 20 * 5
 
-const TSS_ACTIVATE_HEIGHT = 100_897_115
+const TSS_ACTIVATE_HEIGHT = 100_997_304
 
 // 24 hour blame
 var BLAME_EXPIRE = uint64(24 * 60 * 20)
@@ -330,6 +330,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// 	}
 			// }
 
+			fmt.Println("commitment", commitment)
+			if commitment.KeyId == "vsc1BcS12fD42kKqL2SMLeBzaEKtd9QbBWC1dt-main" {
+				commitment.Epoch = uint64(809)
+			}
 			commitmentElection := tssMgr.electionDb.GetElection(commitment.Epoch)
 
 			commitmentBytes, err := base64.RawURLEncoding.DecodeString(commitment.Commitment)
@@ -397,10 +401,16 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		}
 	}
 
+	startedDispatcher := make([]Dispatcher, 0)
 	for _, dispatcher := range dispatchers {
 		fmt.Println("dispatcher started!")
+		//If start fails then done is never possible
+		//todo: handle this better
 		err := dispatcher.Start()
 
+		if err == nil {
+			startedDispatcher = append(startedDispatcher, dispatcher)
+		}
 		fmt.Println("Start() err", err)
 	}
 
@@ -408,7 +418,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 		signedResults := make([]KeySignResult, 0)
 		commitableResults := make([]tss_helpers.BaseCommitment, 0)
-		for _, dsc := range dispatchers {
+		for _, dsc := range startedDispatcher {
 			resultPtr, err := dsc.Done().Await(context.Background())
 			// fmt.Println("result, err", resultPtr, err)
 

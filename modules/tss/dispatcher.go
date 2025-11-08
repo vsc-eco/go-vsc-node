@@ -105,6 +105,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 	fmt.Println("newSortedPids", len(dispatcher.newPids), newThreshold, threshold)
 	//epoch: 5 <-- actual data
 	//epoch: 7 <-- likely empty
+
 	savedKeyData, err := dispatcher.keystore.Get(context.Background(), makeKey("key", dispatcher.keyId, int(dispatcher.epoch)))
 
 	fmt.Println("mem", err, len(savedKeyData))
@@ -873,6 +874,9 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 				SavedSecret: bytes,
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
+
+				BlockHeight: dispatcher.blockHeight,
+				Epoch:       dispatcher.epoch,
 			}
 			dispatcher.done <- struct{}{}
 		}()
@@ -912,6 +916,9 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 				SavedSecret: bytes,
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
+
+				BlockHeight: dispatcher.blockHeight,
+				Epoch:       dispatcher.epoch,
 			}
 			dispatcher.done <- struct{}{}
 		}()
