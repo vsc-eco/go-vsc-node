@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"strconv"
 	"testing"
 	"time"
@@ -182,7 +181,16 @@ func (p2pServer *P2PServer) Init() error {
 			if p2pServer.host != nil {
 				for _, peer := range p2pServer.host.Network().Peers() {
 					addrInfo := p2pServer.host.Peerstore().PeerInfo(peer)
-					c <- addrInfo
+					var goodPeer bool
+					for _, a := range addrInfo.Addrs {
+						if isPublicAddr(a) {
+							goodPeer = true
+						}
+					}
+
+					if goodPeer {
+						c <- addrInfo
+					}
 				}
 			}
 
@@ -192,6 +200,7 @@ func (p2pServer *P2PServer) Init() error {
 			idht, err = kadDht.New(context.Background(), h, kadOptions...)
 			return idht, err
 		}),
+		libp2p.AddrsFactory(p2pServer.addrFactory),
 	}
 
 	p2p, err := libp2p.New(options...)
@@ -398,6 +407,16 @@ func (p2pServer *P2PServer) SetStreamHandlerMatch(pid protocol.ID, matcher func(
 	p2pServer.host.SetStreamHandlerMatch(pid, matcher, handler)
 }
 
+func (p2p *P2PServer) addrFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
+	filteredAddrs := make([]multiaddr.Multiaddr, 0)
+	for _, addr := range addrs {
+		if isPublicAddr(addr) || isCircuitAddr(addr) {
+			filteredAddrs = append(filteredAddrs, addr)
+		}
+	}
+	return filteredAddrs
+}
+
 func (p2p *P2PServer) connectRegisteredPeers() {
 	witnesses, _ := p2p.witnessDb.GetLastestWitnesses()
 
@@ -420,17 +439,14 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 		//Select
 		for _, peer := range witness.PeerAddrs {
 			m, _ := multiaddr.NewMultiaddr(peer)
-			_, err := m.ValueForProtocol(multiaddr.P_CIRCUIT)
 
 			// fmt.Println("circuitAddress", circuitAddress, err)
-			if err == nil {
+			if isCircuitAddr(m) {
 				selectedAddr = append(selectedAddr, m.Encapsulate(mp))
 				continue
 			}
-			ipv4Address, err := m.ValueForProtocol(multiaddr.P_IP4)
 
-			ip := net.ParseIP(ipv4Address)
-			if !ip.IsPrivate() && err != nil {
+			if isPublicAddr(m) {
 				selectedAddr = append(selectedAddr, m.Encapsulate(mp))
 				continue
 			}

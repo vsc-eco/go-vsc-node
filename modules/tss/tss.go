@@ -505,10 +505,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
 						deployOp,
 					})
+					tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
 					sig, _ := tssMgr.hiveClient.Sign(hiveTx)
 					hiveTx.AddSig(sig)
-					tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
-					tssMgr.hiveClient.Broadcast(hiveTx)
+					_, err = tssMgr.hiveClient.Broadcast(hiveTx)
+					if err != nil {
+						fmt.Println("Broadcast err", err)
+					}
+
 					// tssMgr.hiveClient.Broadcast([]hivego.HiveOperation{
 					// 	deployOp,
 					// }, &wif)
@@ -543,14 +547,16 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 						fmt.Println("serializedCircuit, err", serializedCircuit, err)
 
-						commitedResults[commitResult.SessionId] = struct {
-							err        error
-							circuit    *dids.SerializedCircuit
-							commitment tss_helpers.BaseCommitment
-						}{
-							err:        err,
-							circuit:    serializedCircuit,
-							commitment: commitResult,
+						if err == nil {
+							commitedResults[commitResult.SessionId] = struct {
+								err        error
+								circuit    *dids.SerializedCircuit
+								commitment tss_helpers.BaseCommitment
+							}{
+								err:        err,
+								circuit:    serializedCircuit,
+								commitment: commitResult,
+							}
 						}
 
 						wg.Done()
@@ -558,9 +564,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 				wg.Wait()
 
+				var canCommit bool = false
 				sigPacket := make(map[string]any, 0)
 				for _, signResult := range commitedResults {
 					if signResult.err == nil {
+						canCommit = true
 						sigPacket[signResult.commitment.SessionId] = map[string]any{
 							"type":         signResult.commitment.Type,
 							"session_id":   signResult.commitment.SessionId,
@@ -579,20 +587,25 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				rawJson, err := json.Marshal(sigPacket)
 
 				fmt.Println("json.Marshal <err>", err)
-				deployOp := hivego.CustomJsonOperation{
-					RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
-					RequiredPostingAuths: []string{},
-					Id:                   "vsc.tss_commitment",
-					Json:                 string(rawJson),
-				}
+				if canCommit {
+					deployOp := hivego.CustomJsonOperation{
+						RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
+						RequiredPostingAuths: []string{},
+						Id:                   "vsc.tss_commitment",
+						Json:                 string(rawJson),
+					}
 
-				hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
-					deployOp,
-				})
-				sig, _ := tssMgr.hiveClient.Sign(hiveTx)
-				hiveTx.AddSig(sig)
-				tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
-				tssMgr.hiveClient.Broadcast(hiveTx)
+					hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
+						deployOp,
+					})
+					tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
+					sig, _ := tssMgr.hiveClient.Sign(hiveTx)
+					hiveTx.AddSig(sig)
+					_, err = tssMgr.hiveClient.Broadcast(hiveTx)
+					if err != nil {
+						fmt.Println("Broadcast err", err)
+					}
+				}
 			}
 		}
 
