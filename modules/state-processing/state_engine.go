@@ -27,6 +27,7 @@ import (
 	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
+	"vsc-node/modules/gql/logstream"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	tss_helpers "vsc-node/modules/tss/helpers"
@@ -98,6 +99,7 @@ type StateEngine struct {
 	slotStatus *SlotStatus
 
 	BlockHeight int
+	LogStream   *logstream.LogStream
 }
 
 //Transaction
@@ -1438,6 +1440,7 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 	tssCommitments tss_db.TssCommitments,
 	tssRequests tss_db.TssRequests,
 	wasm *wasm_runtime.Wasm,
+	logstream *logstream.LogStream,
 ) *StateEngine {
 
 	ls := ledgerSystem.New(balanceDb, ledgerDb, interestClaims, actionDb, logger)
@@ -1494,5 +1497,6 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 		// },
 		LedgerSystem: ls,
 		LedgerState:  ledgerState,
+		LogStream:    logstream,
 	}
 }

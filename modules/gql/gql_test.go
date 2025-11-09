@@ -67,6 +67,7 @@ func TestQueryAndMutation(t *testing.T) {
 	assert.NoError(t, hiveBlocksErr)
 	se := stateEngine.New(l, da, witnesses, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
 	txPool := transactionpool.New(p2p, txDb, nonceDb, hiveBlocks, da, conf, se.RcSystem)
+
 	resolver := &gqlgen.Resolver{
 		witnesses,
 		txPool,
