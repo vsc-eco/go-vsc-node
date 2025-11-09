@@ -52,12 +52,7 @@ func (ls *LogStream) Publish(log ContractLog) {
 	}
 	defer ls.mu.Unlock()
 
-	fmt.Printf("[logstream] Publish called: height=%d, addr=%s, tx=%s, log=%s\n",
-		log.BlockHeight, log.ContractAddress, log.TxID, log.Log)
-
-	for idx, sub := range ls.subscribers {
-		fmt.Printf("[logstream] checking subscriber %d: filter.FromBlock=%v filter.Contracts=%v\n",
-			idx, sub.Filter.FromBlock, sub.Filter.ContractAddresses)
+	for _, sub := range ls.subscribers {
 
 		// Skip blocks below FromBlock.
 		if sub.Filter.FromBlock != nil && log.BlockHeight < *sub.Filter.FromBlock {
@@ -74,9 +69,7 @@ func (ls *LogStream) Publish(log ContractLog) {
 		// Send log or drop if channel is full.
 		select {
 		case sub.Ch <- log:
-			fmt.Printf("[logstream] subscriber %d received log\n", idx)
 		default:
-			fmt.Printf("[logstream] subscriber %d channel full, dropped log!\n", idx)
 		}
 	}
 }
@@ -113,13 +106,13 @@ func (ls *LogStream) Unsubscribe(sub *logSubscriber) {
 //
 //	ls.Replay(100, 200, db.StreamLogsInRange)
 func (ls *LogStream) Replay(fromBlock, toBlock uint64, logsSource func(uint64, uint64, func(ContractLog) error) error) error {
-	fmt.Printf("[logstream] replaying logs from %d to %d\n", fromBlock, toBlock)
+	// fmt.Printf("[logstream] replaying logs from %d to %d\n", fromBlock, toBlock)
 
 	count := 0
 	err := logsSource(fromBlock, toBlock, func(l ContractLog) error {
 		count++
-		fmt.Printf("[logstream] replay [%d]: block=%d addr=%s tx=%s\n",
-			count, l.BlockHeight, l.ContractAddress, l.TxID)
+		// fmt.Printf("[logstream] replay [%d]: block=%d addr=%s tx=%s\n",
+			// count, l.BlockHeight, l.ContractAddress, l.TxID)
 		ls.Publish(l)
 		return nil
 	})
@@ -127,7 +120,7 @@ func (ls *LogStream) Replay(fromBlock, toBlock uint64, logsSource func(uint64, u
 		return fmt.Errorf("logstream replay: failed to load logs: %w", err)
 	}
 
-	fmt.Printf("[logstream] replay complete: %d logs published\n", count)
+	// fmt.Printf("[logstream] replay complete: %d logs published\n", count)
 	return nil
 }
 
