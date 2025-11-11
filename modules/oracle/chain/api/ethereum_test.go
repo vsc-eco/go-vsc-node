@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,7 +29,23 @@ func (e *ethTestRunner) testChainData(t *testing.T) {
 
 	for _, block := range chainData {
 		blockHeight, err := block.BlockHeight()
-		t.Log("block height", blockHeight, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		avgGas, err := block.AverageFee()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		b := map[string]any{
+			"block height": blockHeight,
+			"avgerage fee": fmt.Sprintf("%f", float64(avgGas)/1e18),
+		}
+
+		bb, _ := json.MarshalIndent(b, "", "  ")
+
+		t.Log(string(bb))
 	}
 }
 

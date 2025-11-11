@@ -13,11 +13,9 @@ import (
 	"time"
 )
 
-/*
 const (
-	ethRpcApi =
+	etherGasCost = 1e18 // 1 gas costs 0.0000000001 ether
 )
-*/
 
 var (
 	_ ChainBlock = &ethereumBlock{}
@@ -251,9 +249,23 @@ type ethereumBlock struct {
 }
 
 // AverageFee implements ChainBlock.
-func (e *ethereumBlock) AverageFee() int64 {
-	baseFeePerGas := e.BaseFeePerGas
-	panic("unimplemented")
+// returns the average gas per transaction
+// TODO: ask Spencer if he wants the average gas per transaction of if he wants the fee.
+// returned average gas per transaction (gwei). See https://ethereum.org/developers/docs/gas/#what-is-gas
+func (e *ethereumBlock) AverageFee() (uint64, error) {
+	totalGas := uint64(0)
+
+	for _, tx := range e.Transactions {
+		txGas, err := tx.gasFee(e.BaseFeePerGas)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get transaction %s total fee: %w", tx.BlockNumber, err)
+		}
+		totalGas += txGas
+	}
+
+	avgGasPerTx := totalGas / uint64(len(e.Transactions))
+
+	return avgGasPerTx, nil
 }
 
 // BlockHeight implements ChainBlock.
@@ -294,6 +306,59 @@ type ethTransaction struct {
 	YParity              string `json:"yParity"`
 	R                    string `json:"r"`
 	S                    string `json:"s"`
+}
+
+// See: https://ethereum.org/developers/docs/gas/#how-are-gas-fees-calculated
+// gasUsed * gasPrice
+func (eTx *ethTransaction) gasFee(baseFeeHex string) (uint64, error) {
+	var (
+		gasPrice uint64
+		err      error
+	)
+
+	switch eTx.Type {
+	case "0x0", "0x1":
+		_, err = fmt.Sscanf(eTx.GasPrice, "0x%x", &gasPrice)
+
+	case "0x2", "0x3": // EIP-1559 transactions
+		var maxFeePerGas, priorityFee, baseFee uint64
+		_, err = fmt.Sscanf(baseFeeHex, "0x%x", &baseFee)
+		if err != nil {
+			err = fmt.Errorf("invalid base fee hex: %w", err)
+			break
+		}
+
+		_, err = fmt.Sscanf(eTx.MaxFeePerGas, "0x%x", &maxFeePerGas)
+		if err != nil {
+			err = fmt.Errorf("invalid max fee per gas hex - %w", err)
+			break
+		}
+
+		_, err = fmt.Sscanf(eTx.MaxPriorityFeePerGas, "0x%x", &priorityFee)
+		if err != nil {
+			err = fmt.Errorf("invalid max priority fee per gas hex - %w", err)
+			break
+		}
+
+		gasPrice = min(maxFeePerGas, baseFee+priorityFee)
+		if eTx.Type == "0x3" {
+			// TODO: need to add in blob fee
+		}
+
+	default:
+		return 0, fmt.Errorf("unparsed transaction type: %s", eTx.Type)
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse gas price: %w", err)
+	}
+
+	var gasUsed uint64
+	if _, err := fmt.Sscanf(eTx.Gas, "0x%x", &gasUsed); err != nil {
+		return 0, fmt.Errorf("failed to parse gas used: %w", err)
+	}
+
+	return gasUsed * gasPrice, nil
 }
 
 type ethWithdrawal struct {

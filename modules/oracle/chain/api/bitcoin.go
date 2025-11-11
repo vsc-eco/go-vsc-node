@@ -231,8 +231,8 @@ func (b *BtcChainData) Type() string {
 	return "BTC"
 }
 
-func (b *BtcChainData) AverageFee() int64 {
-	return b.AverageFeeRate
+func (b *BtcChainData) AverageFee() (uint64, error) {
+	return uint64(b.AverageFeeRate), nil
 }
 
 // UTILS STUFF
