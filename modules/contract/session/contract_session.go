@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/db/vsc/contracts"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -27,10 +28,13 @@ type CallSession struct {
 	sessions   map[string]*ContractSession
 
 	TssKeys tss_db.TssKeys
+
+	// pending carries the temp contract outputs already produced earlier in the slot.
+	pending map[string]*TempOutput
 }
 
 // Create a new contract call session for a transaction.
-func NewCallSession(dl *datalayer.DataLayer, contractDb contracts.Contracts, stateDb contracts.ContractState, tssKeys tss_db.TssKeys, lastBh uint64) *CallSession {
+func NewCallSession(dl *datalayer.DataLayer, contractDb contracts.Contracts, stateDb contracts.ContractState, tssKeys tss_db.TssKeys, lastBh uint64, pending map[string]*TempOutput) *CallSession {
 	return &CallSession{
 		dl:         dl,
 		contractDb: contractDb,
@@ -38,6 +42,7 @@ func NewCallSession(dl *datalayer.DataLayer, contractDb contracts.Contracts, sta
 		lastBh:     lastBh,
 		sessions:   make(map[string]*ContractSession),
 		TssKeys:    tssKeys,
+		pending:    cloneTempOutputs(pending), // Copy temp outputs so mutations here never leak back to the caller.
 	}
 }
 
@@ -51,24 +56,29 @@ func (cs *CallSession) FromOutput(contractId string, out TempOutput) {
 func (cs *CallSession) GetContractSession(contractId string) *ContractSession {
 	_, exists := cs.sessions[contractId]
 	if !exists {
-		lastOutput, err := cs.stateDb.GetLastOutput(contractId, cs.lastBh)
+		// Prefer the latest in-memory output before falling back to Mongo.
+		if tmpOut := cs.takePending(contractId); tmpOut != nil {
+			cs.FromOutput(contractId, *tmpOut)
+		} else {
+			lastOutput, err := cs.stateDb.GetLastOutput(contractId, cs.lastBh)
 
-		var cid string
-		metadata := contracts.ContractMetadata{}
+			var cid string
+			metadata := contracts.ContractMetadata{}
 
-		if err == nil {
-			cid = lastOutput.StateMerkle
-			metadata = lastOutput.Metadata
+			if err == nil {
+				cid = lastOutput.StateMerkle
+				metadata = lastOutput.Metadata
+			}
+
+			tmpOut := TempOutput{
+				Cache:     make(map[string][]byte),
+				Metadata:  metadata,
+				Deletions: make(map[string]bool),
+				Cid:       cid,
+			}
+
+			cs.FromOutput(contractId, tmpOut)
 		}
-
-		tmpOut := TempOutput{
-			Cache:     make(map[string][]byte),
-			Metadata:  metadata,
-			Deletions: make(map[string]bool),
-			Cid:       cid,
-		}
-
-		cs.FromOutput(contractId, tmpOut)
 	}
 	sess := cs.sessions[contractId]
 	return sess
@@ -126,6 +136,21 @@ func (cs *CallSession) PopLogs() map[string][]string {
 func (cs *CallSession) AppendTssLog(contractId string, op tss_db.TssOp) {
 	session := cs.GetContractSession(contractId)
 	session.tssOps = append(session.tssOps, op)
+}
+
+// pulls (and removes) the latest in-memory temp output for a contract
+// so the session can read the freshest state of the slot before hitting the DB.
+func (cs *CallSession) takePending(contractId string) *TempOutput {
+	if cs.pending == nil {
+		return nil
+	}
+	tmp, exists := cs.pending[contractId]
+	if !exists {
+		return nil
+	}
+	// Drop the entry so later DB loads pick up the newest committed state instead.
+	delete(cs.pending, contractId)
+	return cloneTempOutput(tmp)
 }
 
 // func (cs *CallSession) TssLogs() []TssOp {
@@ -332,4 +357,46 @@ type TempOutput struct {
 	Deletions map[string]bool
 	Cid       string
 	TssLog    []tss_db.TssOp
+}
+
+func cloneTempOutputs(src map[string]*TempOutput) map[string]*TempOutput {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]*TempOutput, len(src))
+	for k, v := range src {
+		dst[k] = cloneTempOutput(v)
+	}
+	return dst
+}
+
+func cloneTempOutput(src *TempOutput) *TempOutput {
+	if src == nil {
+		return nil
+	}
+	cloned := TempOutput{
+		Metadata: src.Metadata,
+		Cid:      src.Cid,
+	}
+	if len(src.Cache) > 0 {
+		cloned.Cache = make(map[string][]byte, len(src.Cache))
+		for k, v := range src.Cache {
+			if v == nil {
+				cloned.Cache[k] = nil
+				continue
+			}
+			cloned.Cache[k] = slices.Clone(v)
+		}
+	} else {
+		cloned.Cache = make(map[string][]byte)
+	}
+	if len(src.Deletions) > 0 {
+		cloned.Deletions = maps.Clone(src.Deletions)
+	} else {
+		cloned.Deletions = make(map[string]bool)
+	}
+	if len(src.TssLog) > 0 {
+		cloned.TssLog = append([]tss_db.TssOp(nil), src.TssLog...)
+	}
+	return &cloned
 }

@@ -92,7 +92,7 @@ func NewContractTest() ContractTest {
 		BlockHeight:   0,
 		ContractDb:    &contractDb,
 		LedgerSession: se.LedgerSystem.NewEmptySession(state, 0),
-		CallSession:   contract_session.NewCallSession(dl, &contractDb, &contractState, nil, 0),
+		CallSession:   contract_session.NewCallSession(dl, &contractDb, &contractState, nil, 0, nil),
 		DataLayer:     dl,
 		StateEngine:   se,
 	}

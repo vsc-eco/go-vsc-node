@@ -994,11 +994,9 @@ func (se *StateEngine) ExecuteBatch() {
 		ledgerSession := ledgerSystem.NewSession(se.LedgerState)
 		// ledgerSession := se.LedgerSystem.NewSession(lastBlockBh)
 		rcSession := se.RcSystem.NewSession(ledgerSession)
-		callSession := contract_session.NewCallSession(se.da, se.contractDb, se.contractState, se.tssKeys, lastBlockBh)
-
-		for k, v := range se.TempOutputs {
-			callSession.FromOutput(k, *v)
-		}
+		// Pass the current temp outputs so calls within this slot see the
+		// latest in-memory state instead of the latest contract state
+		callSession := contract_session.NewCallSession(se.da, se.contractDb, se.contractState, se.tssKeys, lastBlockBh, se.TempOutputs)
 
 		//Forced ledger operations that is produced irrespective of the output result.
 		//For example, deposit operations.
