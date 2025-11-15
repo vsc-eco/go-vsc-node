@@ -975,6 +975,11 @@ func (se *StateEngine) ExecuteBatch() {
 	// 	se.log.Debug("TxOutput pending", se.TxOutput, len(se.TxBatch))
 	// }
 
+	// instead of recreating the ledger session for every Hive transaction,
+	// we reuse one session for the whole slot so balance checks see prior ops
+	se.LedgerState.BlockHeight = lastBlockBh
+	ledgerSession := ledgerSystem.NewSession(se.LedgerState)
+
 	for idx, tx := range se.TxBatch {
 		var opTypes map[string]bool = make(map[string]bool)
 		for _, vscTx := range tx.Ops {
@@ -990,8 +995,6 @@ func (se *StateEngine) ExecuteBatch() {
 		}
 
 		fmt.Println("Executing item in batch", idx, len(se.TxBatch))
-		se.LedgerState.BlockHeight = lastBlockBh
-		ledgerSession := ledgerSystem.NewSession(se.LedgerState)
 		// ledgerSession := se.LedgerSystem.NewSession(lastBlockBh)
 		rcSession := se.RcSystem.NewSession(ledgerSession)
 		// Pass the current temp outputs so calls within this slot see the

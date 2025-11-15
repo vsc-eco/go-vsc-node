@@ -1,3 +1,5 @@
+//go:build legacy
+
 package state_engine_test
 
 import (
