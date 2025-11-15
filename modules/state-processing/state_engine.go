@@ -975,6 +975,11 @@ func (se *StateEngine) ExecuteBatch() {
 	// 	se.log.Debug("TxOutput pending", se.TxOutput, len(se.TxBatch))
 	// }
 
+	// instead of recreating the ledger session for every Hive transaction,
+	// we reuse one session for the whole slot so balance checks see prior ops
+	se.LedgerState.BlockHeight = lastBlockBh
+	ledgerSession := ledgerSystem.NewSession(se.LedgerState)
+
 	for idx, tx := range se.TxBatch {
 		var opTypes map[string]bool = make(map[string]bool)
 		for _, vscTx := range tx.Ops {
@@ -990,15 +995,11 @@ func (se *StateEngine) ExecuteBatch() {
 		}
 
 		fmt.Println("Executing item in batch", idx, len(se.TxBatch))
-		se.LedgerState.BlockHeight = lastBlockBh
-		ledgerSession := ledgerSystem.NewSession(se.LedgerState)
 		// ledgerSession := se.LedgerSystem.NewSession(lastBlockBh)
 		rcSession := se.RcSystem.NewSession(ledgerSession)
-		callSession := contract_session.NewCallSession(se.da, se.contractDb, se.contractState, se.tssKeys, lastBlockBh)
-
-		for k, v := range se.TempOutputs {
-			callSession.FromOutput(k, *v)
-		}
+		// Pass the current temp outputs so calls within this slot see the
+		// latest in-memory state instead of the latest contract state
+		callSession := contract_session.NewCallSession(se.da, se.contractDb, se.contractState, se.tssKeys, lastBlockBh, se.TempOutputs)
 
 		//Forced ledger operations that is produced irrespective of the output result.
 		//For example, deposit operations.
