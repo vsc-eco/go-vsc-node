@@ -47,59 +47,46 @@ services:
       - ./.btc-data:/home/bitcoin/.bitcoin
     ports:
       - 8332:8332 # rpc port
+
   helios:
     build: 
       dockerfile: dockerfiles/helios_eth.Dockerfile
-    container_name: helios
+    container_name: vsc/helios
     networks:
       - go-vsc-node
+    ports:
+      - 8545:8545
     command: >
       helios ethereum 
-      --execution-rpc https://ethereum-rpc.publicnode.com
-      --consensus-rpc http://nimbus:8551
-      --checkpoint 0xae9af9d71cd0ce04fb3d276ffaf0036ca706a67e6bcd597fb0dd6a2ea96ed10b
-  nimbus:
-    build: 
-      dockerfile: dockerfiles/nimbus_consensus.Dockerfile
-    container_name: nimbus
+      --execution-rpc https://mainnet.infura.io/v3/$METAMASK_API_KEY
+      --consensus-rpc http://nimbus_beacon_node:5052
+      --rpc-bind-ip 0.0.0.0
+      --rpc-port 8545
+    depends_on:
+      - nimbus_beacon_node
+
+  nimbus_beacon_node:
+    image: statusim/nimbus-eth2:amd64-v25.11.0
+    container_name: vsc/nimbus_beacon_node
+    restart: unless-stopped
+    stop_grace_period: 1m
     networks:
       - go-vsc-node
     ports:
-      - 8551:9000
-    # command: >
-      # ./nimbus --help
-
-    command: >
-      ./nimbus
-      --web3-url="https://ethereum-rpc.publicnode.com"
-      --jwt-secret="./jwt.hex"
-      --trusted-block-root="0xae9af9d71cd0ce04fb3d276ffaf0036ca706a67e6bcd597fb0dd6a2ea96ed10b"
-
-  nimbus_beacon_node:
-    image: statusim/nimbus-eth2:amd64-latest
-    container_name: nimbus-eth2-amd64-latest
-    restart: unless-stopped
-    stop_grace_period: 1m
-    ports:
-      - 9000:9000/tcp
-      - 9000:9000/udp
+      - 9000:9000
       - 127.0.0.1:5052:5052/tcp
-      - 127.0.0.1:8008:8008/tcp
     volumes:
       - ./data:/home/user/nimbus-eth2/build/data
-    command: >-
+    command: >- 
       --network=mainnet
       --data-dir=/home/user/nimbus-eth2/build/data/shared_hoodi_0
-      --web3-url=wss://mainnet.infura.io/v3/
+      --web3-url=wss://mainnet.infura.io/v3/$METAMASK_API_KEY
       --log-level=info
       --tcp-port=9000
       --udp-port=9000
       --rest
       --rest-address=0.0.0.0
       --rest-port=5052
-      --metrics
-      --metrics-address=0.0.0.0
-      --metrics-port=8008
 
 volumes:
   db: {}
