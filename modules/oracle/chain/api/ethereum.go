@@ -24,17 +24,19 @@ var (
 type Ethereum struct {
 	ctx        context.Context
 	httpClient *http.Client
-	infuraURL  url.URL
+	execRpcUrl *url.URL
 }
 
 // Init implements ChainRelay.
 func (e *Ethereum) Init(ctx context.Context) error {
-	apiKey, ok := os.LookupEnv("METAMASK_API_KEY")
-	if !ok {
-		return fmt.Errorf("env `METAMASK_API_KEY` not set")
+	var rpcAddr string
+	if os.Getenv("DEBUG") == "1" {
+		rpcAddr = "http://localhost:8545"
+	} else {
+		rpcAddr = "http://helios:8545"
 	}
 
-	infuraURL, err := url.Parse("https://mainnet.infura.io/v3/")
+	execRpcUrl, err := url.Parse(rpcAddr)
 	if err != nil {
 		return fmt.Errorf("failed to parse infura URL: %w", err)
 	}
@@ -50,7 +52,7 @@ func (e *Ethereum) Init(ctx context.Context) error {
 			Jar:     jar,
 			Timeout: 15 * time.Second,
 		},
-		infuraURL: *infuraURL.JoinPath(apiKey),
+		execRpcUrl: execRpcUrl,
 	}
 
 	return nil
@@ -92,7 +94,7 @@ func (e *Ethereum) ChainData(startBlockHeight uint64, count uint64) ([]ChainBloc
 	ctx, cancel := context.WithTimeout(e.ctx, 15*time.Second)
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, e.infuraURL.String(), body)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, e.execRpcUrl.String(), body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make http request: %w", err)
 	}
@@ -183,7 +185,7 @@ func (e *Ethereum) sendRpc(rpcRequest jsonRPCRequest) (*jsonRPCResponse, error) 
 	defer cancel()
 
 	// ethRPC := "https://ethereum-rpc.publicnode.com"
-	ethRPC := e.infuraURL.String()
+	ethRPC := e.execRpcUrl.String()
 
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, ethRPC, reqBody)
 	if err != nil {
