@@ -18,13 +18,13 @@ func TestTTTT(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sigMsg := signatureMessage{
+	sigMsg := chainOracleWitnessMessage{
 		Signature: base64.RawStdEncoding.EncodeToString(buf[:]),
 	}
 
 	assert.NoError(t, signatureMessageValidator.Struct(&sigMsg))
 
-	sigMsg = signatureMessage{
+	sigMsg = chainOracleWitnessMessage{
 		Signature: base64.RawStdEncoding.EncodeToString(buf[:90]),
 	}
 	assert.Error(t, signatureMessageValidator.Struct(&sigMsg))

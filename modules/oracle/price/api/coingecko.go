@@ -1,4 +1,4 @@
-package price
+package api
 
 import (
 	"fmt"
@@ -6,15 +6,15 @@ import (
 	"os"
 	"strings"
 	"vsc-node/lib/utils"
-	"vsc-node/modules/oracle/httputils"
-	"vsc-node/modules/oracle/p2p"
 )
 
 const (
 	pageLimit = 250
 )
 
-type coinGeckoHandler struct {
+var _ PriceQuery = &CoinGecko{}
+
+type CoinGecko struct {
 	baseUrl  string
 	apiKey   string
 	currency string
@@ -24,23 +24,23 @@ type coinGeckoHandler struct {
 	demoMode bool
 }
 
-var _ priceQuery = &coinGeckoHandler{}
+// var _ PriceQuery = &CoinGecko{}
 
-type coinGeckoPriceQueryResponse struct {
-	Symbol       string  `json:"symbol,omitempty"`
-	CurrentPrice float64 `json:"current_price,omitempty"`
-	TotalVolume  uint64  `json:"total_volume,omitempty"`
+// Source implements PriceQuery
+func (c *CoinGecko) Source() string {
+	return "CoinGecko"
 }
 
+// Initialize implements PriceQuery
 // returns an error if the environment variable `COINGECKO_API_KEY` is not set.
 // Since CoinGecko has 2 different types of API key (pro vs demo, or paid vs
 // free) and their conrresponding url + header key. Assume the suppplied key
 // is a pro key by default, otherwise `COINGECKO_API_DEMO` needs to be exported
 // with the value '1', and attributions is required on demo keys.
-func (c *coinGeckoHandler) initialize(currency string) error {
+func (c *CoinGecko) Initialize(currency string) error {
 	apiKey, ok := os.LookupEnv("COINGECKO_API_KEY")
 	if !ok {
-		return errApiKeyNotFound
+		return ErrApiKeyNotFound
 	}
 
 	var (
@@ -57,7 +57,7 @@ func (c *coinGeckoHandler) initialize(currency string) error {
 		baseUrl = "https://pro-api.coingecko.com/api/v3/coins/markets"
 	}
 
-	*c = coinGeckoHandler{
+	*c = CoinGecko{
 		baseUrl:  baseUrl,
 		apiKey:   apiKey,
 		currency: strings.ToLower(currency),
@@ -67,18 +67,15 @@ func (c *coinGeckoHandler) initialize(currency string) error {
 	return nil
 }
 
-func (c *coinGeckoHandler) queryMarketPrice(
-	symbols []string) (map[string]p2p.ObservePricePoint, error) {
-	symLowerCase := make([]string, len(symbols))
-	copy(symLowerCase, symbols)
-
-	symLowerCase = utils.Map(symLowerCase, strings.ToLower)
+// Query implements PriceQuery
+func (c *CoinGecko) Query(symbols []string) (map[string]PricePoint, error) {
+	symbols = utils.Map(symbols, strings.ToLower)
 
 	queries := map[string]string{
 		"vs_currency": c.currency,
 		"per_page":    fmt.Sprintf("%d", pageLimit),
 		"precision":   "full",
-		"symbols":     strings.Join(symLowerCase, ","),
+		"symbols":     strings.Join(symbols, ","),
 	}
 
 	fetchedPrice, err := c.fetchPrices(queries)
@@ -86,10 +83,10 @@ func (c *coinGeckoHandler) queryMarketPrice(
 		return nil, fmt.Errorf("failed to fetch market price: %w", err)
 	}
 
-	buf := make(map[string]p2p.ObservePricePoint)
+	buf := make(map[string]PricePoint)
 	for _, p := range fetchedPrice {
-		buf[p.Symbol] = p2p.ObservePricePoint{
-			Symbol: p.Symbol,
+		s := strings.ToLower(p.Symbol)
+		buf[s] = PricePoint{
 			Price:  p.CurrentPrice,
 			Volume: float64(p.TotalVolume),
 		}
@@ -98,12 +95,18 @@ func (c *coinGeckoHandler) queryMarketPrice(
 	return buf, nil
 }
 
+type coinGeckoPriceQueryResponse struct {
+	Symbol       string  `json:"symbol,omitempty"`
+	CurrentPrice float64 `json:"current_price,omitempty"`
+	TotalVolume  uint64  `json:"total_volume,omitempty"`
+}
+
 // market values queried from
 // https://docs.coingecko.com/reference/coins-markets
-func (c *coinGeckoHandler) fetchPrices(
+func (c *CoinGecko) fetchPrices(
 	queries map[string]string,
 ) ([]coinGeckoPriceQueryResponse, error) {
-	url, err := httputils.MakeUrl(c.baseUrl, queries)
+	url, err := makeUrl(c.baseUrl, queries)
 	if err != nil {
 		return nil, err
 	}
@@ -115,9 +118,9 @@ func (c *coinGeckoHandler) fetchPrices(
 		header["x-cg-pro-api-key"] = c.apiKey
 	}
 
-	req, err := httputils.MakeRequest(http.MethodGet, url, header)
+	req, err := makeRequest(http.MethodGet, url, header)
 
-	buf, err := httputils.SendRequest[[]coinGeckoPriceQueryResponse](req)
+	buf, err := httpRequest[[]coinGeckoPriceQueryResponse](req)
 	if err != nil {
 		return nil, err
 	}

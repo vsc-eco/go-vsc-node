@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -12,6 +13,7 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/oracle/chain"
 	"vsc-node/modules/oracle/p2p"
+	"vsc-node/modules/oracle/price"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	"vsc-node/modules/vstream"
@@ -27,7 +29,8 @@ const (
 	// 10 minutes = 600 seconds or 200 blocks, 3s for every new block.
 	// A tick is broadcasted every 200 blocks produced.
 	priceOracleBroadcastInterval = uint64(600 / 3)
-	priceOraclePollInterval      = time.Second * 15
+	// priceOraclePollInterval      = time.Second * 15
+	priceOraclePollInterval = time.Minute
 
 	// 10 minutes = 600 seconds or 200 blocks, 3s for every new block
 	chainRelayInterval = uint64(600 / 3)
@@ -40,9 +43,15 @@ var (
 	_ p2p.OracleP2PSpec = &Oracle{}
 )
 
+type currentElectionData struct {
+	witnesses     []elections.ElectionMember
+	blockProducer string
+	totalWeight   uint64
+	weightMap     []uint64
+}
+
 type Oracle struct {
 	ctx         context.Context
-	cancelFunc  context.CancelFunc
 	logger      *slog.Logger
 	p2pServer   *libp2p.P2PServer
 	pubSubSrv   libp2p.PubSubService[p2p.Msg]
@@ -52,8 +61,11 @@ type Oracle struct {
 	vStream     *vstream.VStream
 	stateEngine *stateEngine.StateEngine
 
-	// priceOracle *price.PriceOracle
+	priceOracle *price.PriceOracle
 	chainOracle *chain.ChainOracle
+
+	currentElectionData    *currentElectionData
+	currentElectionDataMtx *sync.RWMutex
 }
 
 func New(
@@ -64,61 +76,58 @@ func New(
 	vstream *vstream.VStream,
 	stateEngine *stateEngine.StateEngine,
 ) *Oracle {
-	logLevel := slog.LevelInfo
-	if os.Getenv("DEBUG") == "1" {
-		logLevel = slog.LevelDebug
-	}
-
-	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel,
-	})
-
-	logger := slog.New(logHandler).
-		With("service", "oracle").
-		With("id", conf.Get().HiveUsername)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// priceOracle := price.New(
-	// 	ctx,
-	// 	logger,
-	// 	userCurrency,
-	// 	priceOraclePollInterval,
-	// 	watchSymbols,
-	// 	conf,
-	// )
-
-	chainRelayer := chain.New(ctx, logger, conf)
+	// TODO: passsing in context from main thread
+	ctx := context.TODO()
 
 	return &Oracle{
-		ctx:         ctx,
-		cancelFunc:  cancel,
-		p2pServer:   p2pServer,
-		conf:        conf,
-		electionDb:  electionDb,
-		witnessDb:   witnessDb,
-		vStream:     vstream,
-		stateEngine: stateEngine,
-		logger:      logger,
-		// priceOracle: priceOracle,
-		chainOracle: chainRelayer,
+		ctx:                    ctx,
+		p2pServer:              p2pServer,
+		conf:                   conf,
+		electionDb:             electionDb,
+		witnessDb:              witnessDb,
+		vStream:                vstream,
+		stateEngine:            stateEngine,
+		logger:                 nil,
+		chainOracle:            nil,
+		priceOracle:            nil,
+		currentElectionData:    nil,
+		currentElectionDataMtx: &sync.RWMutex{},
 	}
 }
 
 // Init implements aggregate.Plugin.
-// Runs initialization in order of how they are passed in to `Aggregate`
 func (o *Oracle) Init() error {
-	services := []aggregate.Plugin{
+	o.logger = slog.Default()
+	if os.Getenv("DEBUG") == "1" {
+		o.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		}))
+
+		o.logger = slog.Default().With("id", o.p2pServer.PeerInfo().GetPeerId())
+	}
+
+	o.chainOracle = chain.New(o.ctx, o.logger, o.conf)
+	o.priceOracle = price.New(
+		o.ctx,
+		o.logger,
+		userCurrency,
+		priceOraclePollInterval,
+		watchSymbols,
+		o.conf,
+	)
+
+	services := aggregate.New([]aggregate.Plugin{
 		o.chainOracle,
 		// o.priceOracle,
-	}
-	return aggregate.New(services).Init()
+	})
+
+	return services.Init()
 }
 
 // Start implements aggregate.Plugin.
-// Runs startup and should be non blocking
 func (o *Oracle) Start() *promise.Promise[any] {
-	// o.vStream.RegisterBlockTick("oracle", o.blockTick, true)
+	o.vStream.RegisterBlockTick("oracle", o.blockTick, true)
+	o.logger.Debug("block tick registered")
 
 	return promise.New(func(resolve func(any), reject func(error)) {
 		o.logger.Debug("starting Oracle service")
@@ -130,7 +139,6 @@ func (o *Oracle) Start() *promise.Promise[any] {
 		)
 		if err != nil {
 			o.logger.Error("failed to initialize o.service", "err", err)
-			o.cancelFunc()
 			reject(err)
 			return
 		}
@@ -138,13 +146,12 @@ func (o *Oracle) Start() *promise.Promise[any] {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		services := []aggregate.Plugin{
+		services := aggregate.New([]aggregate.Plugin{
 			o.chainOracle,
 			// o.priceOracle,
-		}
+		})
 
-		s := aggregate.New(services)
-		if _, err := s.Start().Await(ctx); err != nil {
+		if _, err := services.Start().Await(ctx); err != nil {
 			reject(err)
 			return
 		}
@@ -154,17 +161,13 @@ func (o *Oracle) Start() *promise.Promise[any] {
 }
 
 // Stop implements aggregate.Plugin.
-// Runs cleanup once the `Aggregate` is finished
 func (o *Oracle) Stop() error {
-	o.cancelFunc()
-
-	services := []aggregate.Plugin{
+	services := aggregate.New([]aggregate.Plugin{
 		o.chainOracle,
 		// o.priceOracle,
-	}
+	})
 
-	s := aggregate.New(services)
-	if err := s.Stop(); err != nil {
+	if err := services.Stop(); err != nil {
 		return err
 	}
 
@@ -186,23 +189,42 @@ func (o *Oracle) Broadcast(msgCode p2p.MsgCode, data any) error {
 		return err
 	}
 
+	o.logger.Debug("broadcasting message", "msg-code", msgCode, "msg", string(msg.Data))
+
 	return o.pubSubSrv.Send(msg)
 }
 
 // Handle implements p2p.MessageHandler
-func (o *Oracle) Handle(peerID peer.ID, msg p2p.Msg) (p2p.Msg, error) {
-	var handler p2p.MessageHandler
+func (o *Oracle) Handle(
+	peerID peer.ID,
+	msg p2p.Msg,
+	_ string,
+	_ []elections.ElectionMember,
+) (p2p.Msg, error) {
+	o.currentElectionDataMtx.RLock()
+	defer o.currentElectionDataMtx.RUnlock()
+
+	if o.currentElectionData == nil {
+		return nil, errors.New("invalid current election data")
+	}
+
+	var (
+		handler p2p.MessageHandler
+
+		blockProducer = o.currentElectionData.blockProducer
+		witnesses     = o.currentElectionData.witnesses
+	)
 
 	switch msg.Code {
-	// case p2p.MsgPriceBroadcast, p2p.MsgPriceSignature, p2p.MsgPriceBlock:
-	// 	handler = o.priceOracle
+	case p2p.MsgPriceOracle:
+		handler = o.priceOracle
 
-	case p2p.MsgChainRelay:
+	case p2p.MsgChainOracle:
 		handler = o.chainOracle
 
 	default:
 		return nil, errInvalidMessageType
 	}
 
-	return handler.Handle(peerID, msg)
+	return handler.Handle(peerID, msg, blockProducer, witnesses)
 }
