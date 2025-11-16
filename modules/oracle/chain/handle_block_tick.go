@@ -35,7 +35,7 @@ type blockProducer struct {
 // input expected by the contract
 type AddBlocksInput struct {
 	Blocks    string `json:"blocks"`
-	LatestFee int64  `json:"latest_fee"`
+	LatestFee uint64 `json:"latest_fee"`
 }
 
 // HandleBlockTick implements oracle.BlockTickHandler.

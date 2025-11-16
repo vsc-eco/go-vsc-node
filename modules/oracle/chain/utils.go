@@ -121,14 +121,15 @@ func makeChainTx(
 	for i, block := range chainData {
 		payloadBlocks[i], err = block.Serialize()
 		if err != nil {
-			return nil, fmt.Errorf(
-				"failed to serialize block %d: %w",
-				block.BlockHeight(), err,
-			)
+			return nil, fmt.Errorf("failed to serialize block: %w", err)
 		}
 	}
 
-	latestFeeRate := chainData[len(chainData)-1].AverageFee()
+	latestFeeRate, err := chainData[len(chainData)-1].AverageFee()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get latest fee: %w", err)
+	}
+
 	payloadStruct := AddBlocksInput{
 		Blocks:    strings.Join(payloadBlocks, ""),
 		LatestFee: latestFeeRate,
