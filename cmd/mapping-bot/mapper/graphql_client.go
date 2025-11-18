@@ -12,7 +12,7 @@ import (
 const observedContractPrefix = "observed_txs"
 const txSpendsContractKey = "tx_spends"
 
-const contractId = "vsc1BonkE2CtHqjnkFdH8hoAEMP25bbWhSr3UA"
+const contractId = "vsc1BVgE4NL3nZwtoDn82XMymNPriRUp9UVAGU"
 
 type GetContractStateQuery struct {
 	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys)"`
