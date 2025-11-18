@@ -37,7 +37,7 @@ func (ms *MapperState) HandleMap(
 	}
 	for _, tx := range jsonMessages {
 		// TODO: input username and contract ID
-		callContract("username", "contract_id", tx, "map")
+		callContract("milo-hpr", "vsc1BVgE4NL3nZwtoDn82XMymNPriRUp9UVAGU", tx, "map")
 	}
 
 	ms.Mutex.Lock()

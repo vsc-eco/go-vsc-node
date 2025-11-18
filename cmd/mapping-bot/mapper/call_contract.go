@@ -50,8 +50,12 @@ func callContract(
 		return err
 	}
 
+	fmt.Println("txjson", string(txJson))
+
 	op := hiveCreator.CustomJson([]string{username}, nil, "vsc.call", string(txJson))
 	tx := hiveCreator.MakeTransaction([]hivego.HiveOperation{op})
+
+	fmt.Println("tx created")
 
 	hiveCreator.PopulateSigningProps(&tx, nil)
 	sig, err := hiveCreator.Sign(tx)
@@ -64,5 +68,7 @@ func callContract(
 	if err != nil {
 		return err
 	}
+
+	fmt.Println("tx broadcast")
 	return nil
 }

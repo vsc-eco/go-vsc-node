@@ -1,7 +1,11 @@
 package mapper
 
 import (
+	"context"
+	"log"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/hasura/go-graphql-client"
 	"github.com/ipfs/go-datastore"
@@ -37,7 +41,21 @@ func NewMapperState(ffs *flatfs.Datastore) (*MapperState, error) {
 	// if err != nil {
 	// 	return nil, err
 	// }
-	heightInt := 4736608
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	height, err := ffs.Get(ctx, lastBlockKey)
+	var heightInt uint64
+	if err != nil {
+		heightInt = 4778047
+		log.Printf("error fetching last block height: %s", err.Error())
+	} else {
+		heightInt, err = strconv.ParseUint(string(height), 10, 32)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return &MapperState{
 		Mutex:                sync.Mutex{},
 		FfsDatastore:         ffs,
