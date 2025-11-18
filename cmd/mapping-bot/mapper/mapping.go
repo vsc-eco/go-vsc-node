@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"vsc-node/cmd/mapping-bot/database"
 
@@ -15,10 +16,11 @@ func (ms *MapperState) HandleMap(
 	blockHeight uint32,
 	addressDb *database.MappingBotDatabase,
 ) {
-	blockParser := NewBlockParser(addressDb, &chaincfg.MainNetParams)
+	blockParser := NewBlockParser(addressDb, &chaincfg.TestNet3Params)
 
 	foundTxs, err := blockParser.ParseBlock(ms.GqlClient, blockBytes, blockHeight)
 	if err != nil {
+		log.Printf("error parsing block: %s", err.Error())
 		return
 	}
 
@@ -37,7 +39,10 @@ func (ms *MapperState) HandleMap(
 	}
 	for _, tx := range jsonMessages {
 		// TODO: input username and contract ID
-		callContract("milo-hpr", "vsc1BVgE4NL3nZwtoDn82XMymNPriRUp9UVAGU", tx, "map")
+		err := callContract("milo-hpr", "vsc1BVgE4NL3nZwtoDn82XMymNPriRUp9UVAGU", tx, "map")
+		if err != nil {
+			log.Printf("error calling contract: %s", err.Error())
+		}
 	}
 
 	ms.Mutex.Lock()

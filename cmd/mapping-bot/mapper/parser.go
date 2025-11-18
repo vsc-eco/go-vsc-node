@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"log"
 
 	"vsc-node/cmd/mapping-bot/database"
 
@@ -63,7 +64,10 @@ func (bp *BlockParser) ParseBlock(
 			// this loop should never be longer than one cycle, only happens with multisig which is outdated
 			for _, addr := range addresses {
 				if vscAddr, err := bp.addressDb.GetVscAddress(context.TODO(), addr); err == nil {
-					if exists, err := FetchObservedTx(gqlClient, tx.TxID(), i); exists || err != nil {
+					fmt.Printf("vsc address found: %s", vscAddr)
+					exists, err := FetchObservedTx(gqlClient, tx.TxID(), i)
+					if exists || err != nil {
+						log.Printf("error fetching observed tx. exits: %t, error: %s", exists, err)
 						break
 					}
 					instruction := fmt.Sprintf("%s=%s", depositInstruction, vscAddr)
@@ -74,6 +78,8 @@ func (bp *BlockParser) ParseBlock(
 			}
 		}
 	}
+
+	log.Printf("length of matchtxindices: %d", len(matchedTxIndices))
 
 	var mapInputs []*MappingInputData
 
