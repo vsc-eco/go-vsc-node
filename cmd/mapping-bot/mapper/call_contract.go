@@ -13,6 +13,16 @@ import (
 	"github.com/vsc-eco/hivego"
 )
 
+type txVscCallContractJSON struct {
+	NetId      string             `json:"net_id"`
+	Caller     string             `json:"caller"`
+	ContractId string             `json:"contract_id"`
+	Action     string             `json:"action"`
+	Payload    json.RawMessage    `json:"payload"`
+	RcLimit    uint               `json:"rc_limit"`
+	Intents    []contracts.Intent `json:"intents"`
+}
+
 // need a contract id
 // call a contract with 3 arguments a contract id, an input string, actions (function name)
 // returning (json RawMessage, error)
@@ -44,8 +54,17 @@ func callContract(
 		Intents:    []contracts.Intent{},
 	}
 
-	txData := txObj.ToData()
-	txJson, err := json.Marshal(&txData)
+	wrapper := txVscCallContractJSON{
+		NetId:      txObj.NetId,
+		Caller:     txObj.Caller,
+		ContractId: txObj.ContractId,
+		Action:     txObj.Action,
+		Payload:    txObj.Payload,
+		RcLimit:    txObj.RcLimit,
+		Intents:    txObj.Intents,
+	}
+
+	txJson, err := json.Marshal(wrapper)
 	if err != nil {
 		return err
 	}
@@ -60,13 +79,13 @@ func callContract(
 	hiveCreator.PopulateSigningProps(&tx, nil)
 	sig, err := hiveCreator.Sign(tx)
 	if err != nil {
-		return err
+		return fmt.Errorf("error creating signature: %w", err)
 	}
 
 	tx.AddSig(sig)
 	_, err = hiveCreator.Broadcast(tx)
 	if err != nil {
-		return err
+		return fmt.Errorf("error broadcasting tx: %w", err)
 	}
 
 	fmt.Println("tx broadcast")

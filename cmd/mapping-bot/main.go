@@ -40,6 +40,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	err = addressDb.InsertAddressMap(
+		context.TODO(),
+		"tb1q9gxwgzzxs7d597nh8843tndtwl9qrdup02tc0xcltrlt2tjyg7xqhat2zx",
+		"milo-hpr",
+	)
+	if err != nil {
+		if err != database.ErrAddrExists {
+			fmt.Fprintf(os.Stderr, "failed to add default address")
+			os.Exit(1)
+		}
+	}
+
 	go mapBotHttpServer(ctx, addressDb, httpPort)
 
 	generalDb, err := newDataStore("./map-bot-datastore")
@@ -84,8 +96,8 @@ func main() {
 
 		go bot.HandleMap(blockBytes, blockHeight, addressDb)
 		// TODO: remove for prod
-		// time.Sleep(3 * time.Second)
-		// return
+		time.Sleep(3 * time.Second)
+		return
 		time.Sleep(time.Minute)
 	}
 }

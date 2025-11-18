@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"github.com/hasura/go-graphql-client"
 )
@@ -70,7 +71,10 @@ func FetchObservedTx(client *graphql.Client, txId string, vout int) (bool, error
 		return false, err
 	}
 
-	_, exists := stateMap[key]
+	log.Println("statemap", stateMap)
+
+	value := string(stateMap[key])
+	exists := value != "null"
 	return exists, nil
 }
 
