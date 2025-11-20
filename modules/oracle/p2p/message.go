@@ -16,15 +16,8 @@ import (
 type MsgCode int
 
 const (
-	// broadcasted average price
-	MsgPriceBroadcast MsgCode = iota
-	// broadcasted unsigned block with median prices
-	MsgPriceBlock
-	// broadcasted signed block with median prices
-	MsgPriceSignature
-
-	// broadcasted chain relay block
-	MsgChainRelay
+	MsgPriceOracle MsgCode = iota
+	MsgChainOracle
 )
 
 var priceValidator = validator.New(validator.WithRequiredStructEnabled())
@@ -129,7 +122,9 @@ func MakeOracleBlock(
 }
 
 type BlockTickSignal struct {
-	IsProducer     bool
-	IsWitness      bool
-	ElectedMembers []elections.ElectionMember
+	IsProducer          bool
+	IsWitness           bool
+	ElectedMembers      []elections.ElectionMember
+	TotalElectionWeight uint64
+	WeightMap           []uint64
 }
