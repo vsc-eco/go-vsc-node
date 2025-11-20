@@ -319,7 +319,11 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 		AccountAuths: [][2]any{
 			o,
 		},
-	}, nil, &hivego.Auths{
+	}, &hivego.Auths{
+		WeightThreshold: weightThreshold,
+		KeyAuths:        gatewayKeys,
+		AccountAuths:    [][2]any{},
+	}, &hivego.Auths{
 		WeightThreshold: 1,
 		AccountAuths: [][2]any{
 			e,
