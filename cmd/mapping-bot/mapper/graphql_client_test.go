@@ -11,8 +11,26 @@ import (
 
 // const graphQLUrl = "http://0.0.0.0:8080"
 
-func TestClient(t *testing.T) {
+func TestSignatures(t *testing.T) {
 	// Create a custom HTTP client with logging
+	httpClient := &http.Client{
+		Transport: &loggingTransport{http.DefaultTransport},
+	}
+
+	cx := graphql.NewClient(graphQLUrl, httpClient)
+
+	msgHex := []string{}
+
+	t.Log("FetchSignatures")
+	result, err := FetchSignatures(cx, msgHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Log(result)
+}
+
+func TestTxSpends(t *testing.T) {
 	httpClient := &http.Client{
 		Transport: &loggingTransport{http.DefaultTransport},
 	}
@@ -25,15 +43,13 @@ func TestClient(t *testing.T) {
 		t.Log(r, d, err)
 	*/
 
-	msgHex := []string{}
-
-	t.Log("FetchSignatures")
-	result, err := FetchSignatures(cx, msgHex)
+	t.Log("FetchTxSpends")
+	result, err := FetchTxSpends(cx)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	t.Log(result)
+	t.Log("result", result)
 }
 
 // client := graphql.NewClient("https://your-api-endpoint.com/graphql", httpClient)
