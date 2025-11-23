@@ -11,35 +11,87 @@ import (
 )
 
 const observedContractPrefix = "observed_txs"
-const txSpendsContractKey = "tx_spends"
+const txSpendRegistryContractKey = "tx_spend_registry"
+const txSpendContractPrefix = "tx_spend"
 
-const contractId = "vsc1BVgE4NL3nZwtoDn82XMymNPriRUp9UVAGU"
+const contractId = "vsc1BTpUPXMyvc6LNe38w5UNCNAURZHH6esBic"
 
 type GetContractStateQuery struct {
 	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys)"`
 }
 
-func (m *MapperState) FetchTxSpends() (map[string]*SigningData, error) {
-	var query GetContractStateQuery
+func fetchMultipleTxSpendKeys(client *graphql.Client, registry []string) (map[string]*SigningData, error) {
+	var query2 GetContractStateQuery
 
-	variables := map[string]any{
-		"contractId": contractId,
-		"keys":       []string{txSpendsContractKey},
+	keys := make([]string, len(registry))
+	for i, txId := range registry {
+		keys[i] = txSpendContractPrefix + txId
 	}
-	err := m.GqlClient.Query(context.TODO(), &query, variables, graphql.OperationName("GetContractState"))
+
+	vars2 := map[string]any{
+		"contractId": contractId,
+		"keys":       keys,
+	}
+
+	err := client.Query(context.TODO(), &query2, vars2, graphql.OperationName("GetContractState"))
 	if err != nil {
 		return nil, err
 	}
 
 	var stateMap map[string]json.RawMessage
-	err = json.Unmarshal(query.GetStateByKeys, &stateMap)
+	err = json.Unmarshal(query2.GetStateByKeys, &stateMap)
 	if err != nil {
 		return nil, err
 	}
 
+	var txSpends = make(map[string]*SigningData, len(registry))
+	for i, txId := range registry {
+		spendJson, ok := stateMap[keys[i]]
+		if !ok {
+			log.Printf("tx spend registry data does not match listed spends")
+		} else {
+			var spend *SigningData
+			err := json.Unmarshal(spendJson, spend)
+			if err != nil {
+				return nil, fmt.Errorf("error unmarshalling tx spend for tx id %s: %w", txId, err)
+			}
+			txSpends[txId] = spend
+		}
+	}
+
+	return txSpends, nil
+}
+
+// returns a map of transaction Ids to unsigned data that was submitted to be signed
+func FetchTxSpends(client *graphql.Client) (map[string]*SigningData, error) {
+	var query1 GetContractStateQuery
+
+	vars1 := map[string]any{
+		"contractId": contractId,
+		"keys":       []string{txSpendRegistryContractKey},
+	}
+	err := client.Query(context.TODO(), &query1, vars1, graphql.OperationName("GetContractState"))
+	if err != nil {
+		return nil, err
+	}
+
+	var stateMap map[string]json.RawMessage
+	err = json.Unmarshal(query1.GetStateByKeys, &stateMap)
+	if err != nil {
+		return nil, err
+	}
+
+	var txSpendsRegistry []string
+	if txSpendsData, exists := stateMap[txSpendRegistryContractKey]; exists && string(txSpendsData) != `"null"` {
+		err = json.Unmarshal(txSpendsData, &txSpendsRegistry)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	var txSpends map[string]*SigningData
-	if txSpendsData, exists := stateMap[txSpendsContractKey]; exists && txSpendsData != nil {
-		err = json.Unmarshal(txSpendsData, &txSpends)
+	if len(txSpendsRegistry) > 0 {
+		txSpends, err = fetchMultipleTxSpendKeys(client, txSpendsRegistry)
 		if err != nil {
 			return nil, err
 		}

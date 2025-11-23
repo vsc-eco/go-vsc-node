@@ -6,5 +6,4 @@ modules/oracle/e2e/oracle-test_testnode-*
 !btc-data/bitcoin.conf
 btc-data/*
 .DS_Store
-cmd/mapping-bot/map-bot-data
-cmd/mapping-bot/wallet-address
+cmd/mapping-bot/*datastore

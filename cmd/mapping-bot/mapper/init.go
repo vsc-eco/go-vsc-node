@@ -47,7 +47,7 @@ func NewMapperState(ffs *flatfs.Datastore) (*MapperState, error) {
 	height, err := ffs.Get(ctx, lastBlockKey)
 	var heightInt uint64
 	if err != nil {
-		heightInt = 4782782
+		heightInt = 4782848
 		log.Printf("error fetching last block height: %s", err.Error())
 	} else {
 		heightInt, err = strconv.ParseUint(string(height), 10, 32)

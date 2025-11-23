@@ -3,6 +3,7 @@ package mapper
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/hive/streamer"
@@ -32,9 +33,12 @@ func callContract(
 	action string,
 ) error {
 
-	hiveApiUrl := streamer.NewHiveConfig()
-	hiveRpcClient := hivego.NewHiveRpc(hiveApiUrl.Get().HiveURI)
 	identityConfig := common.NewIdentityConfig()
+	identityConfig.Init()
+	hiveConfig := streamer.NewHiveConfig()
+	hiveConfig.Init()
+
+	hiveRpcClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURI)
 
 	hiveCreator := hive.LiveTransactionCreator{
 		TransactionCrafter: hive.TransactionCrafter{},
@@ -43,6 +47,8 @@ func callContract(
 			KeyPair: identityConfig.HiveActiveKeyPair,
 		},
 	}
+
+	log.Println("identity config", identityConfig)
 
 	txObj := stateEngine.TxVscCallContract{
 		NetId:      "vsc-mainnet",
@@ -71,7 +77,7 @@ func callContract(
 
 	fmt.Println("txjson", string(txJson))
 
-	op := hiveCreator.CustomJson([]string{username}, nil, "vsc.call", string(txJson))
+	op := hiveCreator.CustomJson([]string{username}, []string{}, "vsc.call", string(txJson))
 	tx := hiveCreator.MakeTransaction([]hivego.HiveOperation{op})
 
 	fmt.Println("tx created")

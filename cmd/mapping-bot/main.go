@@ -42,8 +42,8 @@ func main() {
 
 	err = addressDb.InsertAddressMap(
 		context.TODO(),
-		"tb1q9gxwgzzxs7d597nh8843tndtwl9qrdup02tc0xcltrlt2tjyg7xqhat2zx",
-		"milo-hpr",
+		"tb1qvzwxaadfvqrc4n50yam2clw3hdvj2s6028vfmf0t3725yj0q0ftsq589fm",
+		"hive:milo-hpr",
 	)
 	if err != nil {
 		if err != database.ErrAddrExists {
@@ -65,7 +65,7 @@ func main() {
 	}
 	mempoolClient := mempool.NewMempoolClient()
 	for {
-		txSpends, err := bot.FetchTxSpends()
+		txSpends, err := mapper.FetchTxSpends(bot.GqlClient)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			return
@@ -95,9 +95,9 @@ func main() {
 		}
 
 		go bot.HandleMap(blockBytes, blockHeight, addressDb)
-		// TODO: remove for prod
-		time.Sleep(3 * time.Second)
-		return
+		// // TODO: remove for prod
+		// time.Sleep(3 * time.Second)
+		// return
 		time.Sleep(time.Minute)
 	}
 }
