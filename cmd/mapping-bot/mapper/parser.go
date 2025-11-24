@@ -63,14 +63,13 @@ func (bp *BlockParser) ParseBlock(
 
 			// this loop should never be longer than one cycle, only happens with multisig which is outdated
 			for _, addr := range addresses {
-				if vscAddr, err := bp.addressDb.GetVscAddress(context.TODO(), addr); err == nil {
-					fmt.Printf("vsc address found: %s", vscAddr)
+				if instruction, err := bp.addressDb.GetInstruction(context.TODO(), addr); err == nil {
+					fmt.Printf("instruction address found: %s", instruction)
 					exists, err := FetchObservedTx(gqlClient, tx.TxID(), i)
 					if exists || err != nil {
 						log.Printf("error fetching observed tx. exits: %t, error: %s", exists, err)
 						break
 					}
-					instruction := fmt.Sprintf("%s=%s", depositInstruction, vscAddr)
 					matchedTxIndices[txIndex] = append(matchedTxIndices[txIndex], instruction)
 				} else if err != database.ErrAddrNotFound {
 					return nil, err

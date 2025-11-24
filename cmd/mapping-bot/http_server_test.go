@@ -2,10 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"vsc-node/cmd/mapping-bot/database"
 
@@ -13,19 +13,25 @@ import (
 )
 
 func TestHttpServer(t *testing.T) {
-	const path = "/tmp/vscdb"
-	db, err := database.New(path)
+	const dbName = "mappingbottest"
+	ctx := context.TODO()
+	db, err := database.New(ctx, "mongodb://localhost:27017", dbName, "address_mappings")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	defer os.RemoveAll(path)
+	defer db.Close(ctx)
+	defer func() {
+		if err := db.DropDatabase(ctx); err != nil {
+			t.Logf("failed to drop test database: %s", err.Error())
+		}
+	}()
 
 	requestBody := requestBody{
-		VscAddr: "deposit_to=sudo-sandwich",
+		Instruction: "deposit_to=hive:sudo-sandwich",
 	}
 
-	btcAddr, err := makeBtcAddress(requestBody.VscAddr)
+	btcAddr, err := makeBtcAddress(requestBody.Instruction)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,12 +54,12 @@ func TestHttpServer(t *testing.T) {
 		result := w.Result()
 		assert.Equal(t, http.StatusCreated, result.StatusCode)
 
-		vscAddr, err := db.GetVscAddress(t.Context(), btcAddr)
+		instruction, err := db.GetInstruction(t.Context(), btcAddr)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		assert.Equal(t, requestBody.VscAddr, vscAddr)
+		assert.Equal(t, requestBody.Instruction, instruction)
 	})
 
 	t.Run("409 conflict", func(t *testing.T) {

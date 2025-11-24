@@ -31,7 +31,7 @@ func mapBotHttpServer(
 }
 
 type requestBody struct {
-	VscAddr string `json:"vsc_addr,omitempty" validate:"required"`
+	Instruction string `json:"instruction,omitempty" validate:"required"`
 }
 
 func requestHandler(
@@ -57,10 +57,10 @@ func requestHandler(
 			return
 		}
 
-		vscAddr := requestBody.VscAddr
+		vscAddr := requestBody.Instruction
 
 		// make btc address
-		btcAddr, err := makeBtcAddress(requestBody.VscAddr)
+		btcAddr, err := makeBtcAddress(requestBody.Instruction)
 		if err != nil {
 			writeResponse(w, http.StatusInternalServerError, "")
 			writeError(err)

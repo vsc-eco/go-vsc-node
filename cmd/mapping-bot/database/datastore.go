@@ -1,16 +1,14 @@
 package database
 
 import (
-	"bytes"
 	"context"
-	"encoding/base32"
 	"errors"
 	"fmt"
-	"os"
-	"sync"
+	"time"
 
-	"github.com/ipfs/go-datastore"
-	flatfs "github.com/ipfs/go-ds-flatfs"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 var (
@@ -18,108 +16,179 @@ var (
 	ErrAddrNotFound = errors.New("address not found")
 )
 
-type MappingBotDatabase struct {
-	db  *flatfs.Datastore
-	mtx *sync.Mutex
+// AddressMapping represents a BTC to VSC address mapping document
+type AddressMapping struct {
+	BtcAddr     string    `bson:"_id"` // Use btcAddr as primary key
+	Instruction string    `bson:"instruction"`
+	CreatedAt   time.Time `bson:"createdAt"`
 }
 
-func New(path string) (*MappingBotDatabase, error) {
-	if err := os.MkdirAll(path, 0755); err != nil {
-		return nil, err
+type MappingBotDatabase struct {
+	client     *mongo.Client
+	collection *mongo.Collection
+}
+
+// New creates a new MongoDB-backed database
+func New(ctx context.Context, connString, dbName, collectionName string) (*MappingBotDatabase, error) {
+	// Create client
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(connString))
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
 
-	// uses default sharding
-	fs, err := flatfs.CreateOrOpen(path, flatfs.NextToLast(2), false)
+	// Ping to verify connection
+	if err := client.Ping(ctx, nil); err != nil {
+		return nil, fmt.Errorf("failed to ping MongoDB: %w", err)
+	}
+
+	collection := client.Database(dbName).Collection(collectionName)
+
+	// Create unique index on btcAddr (which is _id, so automatically unique)
+	// This is just for documentation - _id is always unique
+	// But you might want indexes on other fields later
+	indexModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "createdAt", Value: 1}},
+		Options: options.Index().SetName("createdAt_idx"),
+	}
+
+	_, err = collection.Indexes().CreateOne(ctx, indexModel)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create index: %w", err)
 	}
 
 	mdb := &MappingBotDatabase{
-		db:  fs,
-		mtx: &sync.Mutex{},
+		client:     client,
+		collection: collection,
 	}
 
 	return mdb, nil
 }
 
-// store key in datastore, returns any operational error, or ErrAddrExists if
-// key exists in datastore.
+// Close cleanly disconnects from MongoDB
+func (m *MappingBotDatabase) Close(ctx context.Context) error {
+	return m.client.Disconnect(ctx)
+}
+
+// DropCollection deletes the entire collection and all its data
+// Use with caution! This is irreversible.
+func (m *MappingBotDatabase) DropCollection(ctx context.Context) error {
+	return m.collection.Drop(ctx)
+}
+
+// DropDatabase deletes the entire database and all its collections
+// Use with caution! This is irreversible.
+// Useful for test cleanup.
+func (m *MappingBotDatabase) DropDatabase(ctx context.Context) error {
+	dbName := m.collection.Database().Name()
+	err := m.client.Database(dbName).Drop(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to drop database %s: %w", dbName, err)
+	}
+	return nil
+}
+
+// ClearAllMappings removes all documents but keeps the collection and indexes
+func (m *MappingBotDatabase) ClearAllMappings(ctx context.Context) error {
+	_, err := m.collection.DeleteMany(ctx, bson.M{})
+	if err != nil {
+		return fmt.Errorf("failed to clear mappings: %w", err)
+	}
+	return nil
+}
+
+// InsertAddressMap stores a BTC to VSC address mapping
+// Returns ErrAddrExists if the btcAddr already exists
 func (m *MappingBotDatabase) InsertAddressMap(
 	ctx context.Context,
-	btcAddr, vscAddr string,
+	btcAddr, instruction string,
 ) error {
-	key, err := makeFlatFsKey(btcAddr)
+	doc := AddressMapping{
+		BtcAddr:     btcAddr,
+		Instruction: instruction,
+		CreatedAt:   time.Now().UTC(),
+	}
+
+	_, err := m.collection.InsertOne(ctx, doc)
 	if err != nil {
-		return fmt.Errorf(
-			"failed to make flat fs key [btcAddr:%s]: %w",
-			btcAddr, err,
-		)
-	}
-
-	m.mtx.Lock()
-	defer m.mtx.Unlock()
-
-	// checks for address existence
-	exists, err := m.db.Has(ctx, *key)
-	if err != nil {
-		return fmt.Errorf("failed to query key [%s]: %w", btcAddr, err)
-	}
-
-	if exists {
-		return ErrAddrExists
-	}
-
-	// value encoding
-	if err := m.db.Put(ctx, *key, []byte(vscAddr)); err != nil {
-		return fmt.Errorf("failed to put key [%s]: %w", btcAddr, err)
+		// Check if it's a duplicate key error
+		if mongo.IsDuplicateKeyError(err) {
+			return ErrAddrExists
+		}
+		return fmt.Errorf("failed to insert address mapping [btcAddr:%s]: %w", btcAddr, err)
 	}
 
 	return nil
 }
 
-// return vsc address from btcAddr, if vsc address not found, returns
-// ErrAddrNotFound, otherwise any operational error
-func (m *MappingBotDatabase) GetVscAddress(
+// GetInstruction retrieves the VSC address for a given BTC address
+// Returns ErrAddrNotFound if the btcAddr doesn't exist
+func (m *MappingBotDatabase) GetInstruction(
 	ctx context.Context,
 	btcAddr string,
 ) (string, error) {
-	key, err := makeFlatFsKey(btcAddr)
-	if err != nil {
-		return "", fmt.Errorf(
-			"failed to make flat fs key [btcAddr:%s]: %w",
-			btcAddr, err,
-		)
-	}
+	var result AddressMapping
 
-	m.mtx.Lock()
-	defer m.mtx.Unlock()
-
-	vscAddr, err := m.db.Get(ctx, *key)
+	err := m.collection.FindOne(ctx, bson.M{"_id": btcAddr}).Decode(&result)
 	if err != nil {
-		if errors.Is(err, datastore.ErrNotFound) {
+		if errors.Is(err, mongo.ErrNoDocuments) {
 			return "", ErrAddrNotFound
 		}
-
-		return "", fmt.Errorf(
-			"failed to get vscAddress [btcAddr: %s]: %w",
-			btcAddr, err,
-		)
+		return "", fmt.Errorf("failed to get vscAddress [btcAddr: %s]: %w", btcAddr, err)
 	}
 
-	return string(vscAddr), nil
+	return result.Instruction, nil
 }
 
-func makeFlatFsKey(k string) (*datastore.Key, error) {
-	buf := &bytes.Buffer{}
-	enc := base32.StdEncoding.WithPadding(base32.NoPadding)
+// Example additional query methods you might want later:
 
-	encoder := base32.NewEncoder(enc, buf)
-	if _, err := encoder.Write([]byte(k)); err != nil {
-		return nil, err
+// GetMappingsByDateRange retrieves all mappings created within a date range
+func (m *MappingBotDatabase) GetMappingsByDateRange(
+	ctx context.Context,
+	start, end time.Time,
+) ([]AddressMapping, error) {
+	filter := bson.M{
+		"createdAt": bson.M{
+			"$gte": start,
+			"$lte": end,
+		},
 	}
-	encoder.Close()
 
-	datastoreKey := datastore.NewKey(buf.String())
+	cursor, err := m.collection.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query by date range: %w", err)
+	}
+	defer cursor.Close(ctx)
 
-	return &datastoreKey, nil
+	var results []AddressMapping
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("failed to decode results: %w", err)
+	}
+
+	return results, nil
+}
+
+// SearchByVscAddr finds mappings where vscAddr contains the given substring
+func (m *MappingBotDatabase) SearchByVscAddr(
+	ctx context.Context,
+	vscAddrPattern string,
+) ([]AddressMapping, error) {
+	filter := bson.M{
+		"vscAddr": bson.M{
+			"$regex":   vscAddrPattern,
+			"$options": "i", // case-insensitive
+		},
+	}
+
+	cursor, err := m.collection.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search by vscAddr: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var results []AddressMapping
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("failed to decode results: %w", err)
+	}
+
+	return results, nil
 }

@@ -76,6 +76,7 @@ func callContract(
 	}
 
 	fmt.Println("txjson", string(txJson))
+	return nil
 
 	op := hiveCreator.CustomJson([]string{username}, []string{}, "vsc.call", string(txJson))
 	tx := hiveCreator.MakeTransaction([]hivego.HiveOperation{op})
