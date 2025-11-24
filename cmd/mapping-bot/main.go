@@ -34,7 +34,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	addressDb, err := database.New("./wallet-address-datastore")
+	addressDb, err := database.New(context.TODO(), "mongodb://localhost:27017", "mappingbot", "address_mappings")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create datastore: %s\n", err.Error())
 		os.Exit(1)
@@ -43,7 +43,7 @@ func main() {
 	err = addressDb.InsertAddressMap(
 		context.TODO(),
 		"tb1qvzwxaadfvqrc4n50yam2clw3hdvj2s6028vfmf0t3725yj0q0ftsq589fm",
-		"hive:milo-hpr",
+		"deposit_to=hive:milo-hpr",
 	)
 	if err != nil {
 		if err != database.ErrAddrExists {

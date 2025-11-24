@@ -14,13 +14,13 @@ var (
 	pubKeyHex = ""
 )
 
-func makeBtcAddress(vscAddr string) (string, error) {
+func makeBtcAddress(instruction string) (string, error) {
 	pubKeyBytes, err := hex.DecodeString(pubKeyHex)
 	if err != nil {
 		return "", err
 	}
 
-	tag := sha256.Sum256([]byte(vscAddr))
+	tag := sha256.Sum256([]byte(instruction))
 
 	scriptBuilder := txscript.NewScriptBuilder()
 	scriptBuilder.AddData(pubKeyBytes)              // Push pubkey
