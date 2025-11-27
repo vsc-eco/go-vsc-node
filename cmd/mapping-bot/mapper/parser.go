@@ -16,8 +16,6 @@ import (
 	"github.com/hasura/go-graphql-client"
 )
 
-const depositInstruction = "deposit_to"
-
 type MappingInputData struct {
 	TxData *VerificationRequest `json:"tx_data"`
 	// strings should be valid URL search params, to be decoded later
@@ -44,6 +42,7 @@ func NewBlockParser(addressDb *database.MappingBotDatabase, params *chaincfg.Par
 }
 
 func (bp *BlockParser) ParseBlock(
+	ctx context.Context,
 	gqlClient *graphql.Client,
 	rawBlockBytes []byte,
 	blockHeight uint32,
@@ -63,9 +62,9 @@ func (bp *BlockParser) ParseBlock(
 
 			// this loop should never be longer than one cycle, only happens with multisig which is outdated
 			for _, addr := range addresses {
-				if instruction, err := bp.addressDb.GetInstruction(context.TODO(), addr); err == nil {
+				if instruction, err := bp.addressDb.GetInstruction(ctx, addr); err == nil {
 					fmt.Printf("instruction address found: %s", instruction)
-					exists, err := FetchObservedTx(gqlClient, tx.TxID(), i)
+					exists, err := FetchObservedTx(ctx, gqlClient, tx.TxID(), i)
 					if exists || err != nil {
 						log.Printf("error fetching observed tx. exits: %t, error: %s", exists, err)
 						break

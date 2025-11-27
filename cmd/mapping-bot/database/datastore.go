@@ -96,6 +96,25 @@ func (m *MappingBotDatabase) ClearAllMappings(ctx context.Context) error {
 	return nil
 }
 
+// DeleteOlderThan removes all mappings created before the specified duration ago
+// Returns the number of documents deleted
+func (m *MappingBotDatabase) DeleteOlderThan(ctx context.Context, age time.Duration) (int64, error) {
+	cutoffTime := time.Now().UTC().Add(-age)
+
+	filter := bson.M{
+		"createdAt": bson.M{
+			"$lt": cutoffTime,
+		},
+	}
+
+	result, err := m.collection.DeleteMany(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete old mappings: %w", err)
+	}
+
+	return result.DeletedCount, nil
+}
+
 // InsertAddressMap stores a BTC to VSC address mapping
 // Returns ErrAddrExists if the btcAddr already exists
 func (m *MappingBotDatabase) InsertAddressMap(

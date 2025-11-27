@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 	"vsc-node/cmd/mapping-bot/database"
+	"vsc-node/cmd/mapping-bot/mapper"
 
 	"github.com/go-playground/validator/v10"
 )
@@ -20,13 +21,14 @@ func mapBotHttpServer(
 	ctx context.Context,
 	db *database.MappingBotDatabase,
 	port int,
+	bot *mapper.MapperState,
 ) {
 	if db == nil {
 		fmt.Fprintf(os.Stderr, "datastore or mutext not providred\n")
 		return
 	}
 
-	http.Handle("/", requestHandler(ctx, db))
+	http.Handle("/", requestHandler(ctx, db, bot))
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
 }
 
@@ -37,6 +39,7 @@ type requestBody struct {
 func requestHandler(
 	globalCtx context.Context,
 	db *database.MappingBotDatabase,
+	bot *mapper.MapperState,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// validate incoming request + parse for vsc address
@@ -80,6 +83,13 @@ func requestHandler(
 			}
 		} else {
 			writeResponse(w, http.StatusCreated, "address mapping created")
+		}
+
+		// handle this error, also allows test scripts witout bot
+		if bot != nil {
+			go bot.HandleExistingTxs(btcAddr)
+		} else {
+			fmt.Fprintf(os.Stderr, "no mapper state passed to http server, skipping check for previous txs")
 		}
 	}
 }

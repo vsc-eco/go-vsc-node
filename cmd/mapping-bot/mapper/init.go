@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"vsc-node/cmd/mapping-bot/database"
 
 	"github.com/hasura/go-graphql-client"
 	"github.com/ipfs/go-datastore"
@@ -20,6 +21,7 @@ const graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
 type MapperState struct {
 	Mutex                sync.Mutex
 	FfsDatastore         *flatfs.Datastore
+	AddressDb            *database.MappingBotDatabase
 	LastBlockHeight      uint32
 	AwaitingSignatureTxs *AwaitingSignature
 	// txs that have been posted, but haven't been seen in a block yet
@@ -27,7 +29,7 @@ type MapperState struct {
 	GqlClient *graphql.Client
 }
 
-func NewMapperState(ffs *flatfs.Datastore) (*MapperState, error) {
+func NewMapperState(ffs *flatfs.Datastore, addresses *database.MappingBotDatabase) (*MapperState, error) {
 	unsignedTxs := &AwaitingSignature{
 		Txs:    make(map[string]*SignedData),
 		Hashes: make(map[string]*HashMetadata),
@@ -59,6 +61,7 @@ func NewMapperState(ffs *flatfs.Datastore) (*MapperState, error) {
 	return &MapperState{
 		Mutex:                sync.Mutex{},
 		FfsDatastore:         ffs,
+		AddressDb:            addresses,
 		LastBlockHeight:      uint32(heightInt),
 		SentTxs:              make(map[string]bool),
 		AwaitingSignatureTxs: unsignedTxs,
