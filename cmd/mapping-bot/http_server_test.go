@@ -14,7 +14,7 @@ import (
 
 func TestHttpServer(t *testing.T) {
 	const dbName = "mappingbottest"
-	ctx := context.TODO()
+	ctx := context.Background()
 	db, err := database.New(ctx, "mongodb://localhost:27017", dbName, "address_mappings")
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +48,7 @@ func TestHttpServer(t *testing.T) {
 		}
 		w := &httptest.ResponseRecorder{}
 
-		handler := requestHandler(t.Context(), db).ServeHTTP
+		handler := requestHandler(t.Context(), db, nil).ServeHTTP
 		handler(w, req)
 
 		result := w.Result()
@@ -74,7 +74,7 @@ func TestHttpServer(t *testing.T) {
 		}
 		w := &httptest.ResponseRecorder{}
 
-		handler := requestHandler(t.Context(), db).ServeHTTP
+		handler := requestHandler(t.Context(), db, nil).ServeHTTP
 		handler(w, req)
 
 		result := w.Result()
@@ -94,7 +94,7 @@ func TestHttpServer(t *testing.T) {
 		}
 		w := &httptest.ResponseRecorder{}
 
-		handler := requestHandler(t.Context(), db).ServeHTTP
+		handler := requestHandler(t.Context(), db, nil).ServeHTTP
 		handler(w, req)
 
 		result := w.Result()

@@ -1,10 +1,12 @@
 package mapper
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"testing"
+	"time"
 
 	"github.com/hasura/go-graphql-client"
 )
@@ -22,7 +24,9 @@ func TestSignatures(t *testing.T) {
 	msgHex := []string{}
 
 	t.Log("FetchSignatures")
-	result, err := FetchSignatures(cx, msgHex)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := FetchSignatures(ctx, cx, msgHex)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +48,27 @@ func TestTxSpends(t *testing.T) {
 	*/
 
 	t.Log("FetchTxSpends")
-	result, err := FetchTxSpends(cx)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := FetchTxSpends(ctx, cx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Log("result", result)
+}
+
+func TestLastHeight(t *testing.T) {
+	httpClient := &http.Client{
+		Transport: &loggingTransport{http.DefaultTransport},
+	}
+
+	cx := graphql.NewClient(graphQLUrl, httpClient)
+
+	t.Log("FetchTxSpends")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := FetchLastHeight(ctx, cx)
 	if err != nil {
 		t.Fatal(err)
 	}

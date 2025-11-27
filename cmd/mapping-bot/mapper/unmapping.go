@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 	"vsc-node/cmd/mapping-bot/mempool"
 
 	"github.com/btcsuite/btcd/wire"
@@ -52,8 +53,11 @@ func (ms *MapperState) HandleUnmap(
 	memPoolClient *mempool.MempoolClient,
 	txSpends map[string]*SigningData,
 ) {
+	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+	defer cancel()
+
 	ms.ProcessTxSpends(ms.GqlClient, txSpends)
-	finishedTxs, err := ms.CheckSignagures(ms.GqlClient)
+	finishedTxs, err := ms.CheckSignagures(ctx, ms.GqlClient)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error fetching signatures from the database: %s", err.Error())
 		return
@@ -83,7 +87,8 @@ func (ms *MapperState) HandleUnmap(
 	if err != nil {
 		return
 	}
-	ms.FfsDatastore.Put(context.TODO(), sentTxsKey, sentTxsJson)
+
+	ms.FfsDatastore.Put(ctx, sentTxsKey, sentTxsJson)
 }
 
 func (ms *MapperState) ProcessTxSpends(gqlClient *graphql.Client, incomingTxSpends map[string]*SigningData) {
@@ -128,7 +133,7 @@ func (ms *MapperState) ProcessTxSpends(gqlClient *graphql.Client, incomingTxSpen
 	}
 }
 
-func (ms *MapperState) CheckSignagures(graphQlClient *graphql.Client) ([]*SignedData, error) {
+func (ms *MapperState) CheckSignagures(ctx context.Context, graphQlClient *graphql.Client) ([]*SignedData, error) {
 	ms.Mutex.Lock()
 	allHashes := make([]string, len(ms.AwaitingSignatureTxs.Hashes))
 	i := 0
@@ -138,7 +143,7 @@ func (ms *MapperState) CheckSignagures(graphQlClient *graphql.Client) ([]*Signed
 	}
 	ms.Mutex.Unlock()
 
-	newSignagutes, err := FetchSignatures(graphQlClient, allHashes)
+	newSignagutes, err := FetchSignatures(ctx, graphQlClient, allHashes)
 	if err != nil {
 		return nil, err
 	}

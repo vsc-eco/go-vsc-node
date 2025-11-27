@@ -13,14 +13,22 @@ import (
 const observedContractPrefix = "observed_txs"
 const txSpendRegistryContractKey = "tx_spend_registry"
 const txSpendContractPrefix = "tx_spend"
+const lastHeightContractKey = "last_block_height"
 
-const contractId = "vsc1BTpUPXMyvc6LNe38w5UNCNAURZHH6esBic"
+// new contract
+// const contractId = "vsc1BTpUPXMyvc6LNe38w5UNCNAURZHH6esBic"
+// old contract
+const contractId = "vsc1BVgE4NL3nZwtoDn82XMymNPriRUp9UVAGU"
 
 type GetContractStateQuery struct {
 	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys)"`
 }
 
-func fetchMultipleTxSpendKeys(client *graphql.Client, registry []string) (map[string]*SigningData, error) {
+func fetchMultipleTxSpendKeys(
+	ctx context.Context,
+	client *graphql.Client,
+	registry []string,
+) (map[string]*SigningData, error) {
 	var query2 GetContractStateQuery
 
 	keys := make([]string, len(registry))
@@ -33,7 +41,7 @@ func fetchMultipleTxSpendKeys(client *graphql.Client, registry []string) (map[st
 		"keys":       keys,
 	}
 
-	err := client.Query(context.TODO(), &query2, vars2, graphql.OperationName("GetContractState"))
+	err := client.Query(ctx, &query2, vars2, graphql.OperationName("GetContractState"))
 	if err != nil {
 		return nil, err
 	}
@@ -63,14 +71,14 @@ func fetchMultipleTxSpendKeys(client *graphql.Client, registry []string) (map[st
 }
 
 // returns a map of transaction Ids to unsigned data that was submitted to be signed
-func FetchTxSpends(client *graphql.Client) (map[string]*SigningData, error) {
+func FetchTxSpends(ctx context.Context, client *graphql.Client) (map[string]*SigningData, error) {
 	var query1 GetContractStateQuery
 
 	vars1 := map[string]any{
 		"contractId": contractId,
 		"keys":       []string{txSpendRegistryContractKey},
 	}
-	err := client.Query(context.TODO(), &query1, vars1, graphql.OperationName("GetContractState"))
+	err := client.Query(ctx, &query1, vars1, graphql.OperationName("GetContractState"))
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +99,7 @@ func FetchTxSpends(client *graphql.Client) (map[string]*SigningData, error) {
 
 	var txSpends map[string]*SigningData
 	if len(txSpendsRegistry) > 0 {
-		txSpends, err = fetchMultipleTxSpendKeys(client, txSpendsRegistry)
+		txSpends, err = fetchMultipleTxSpendKeys(ctx, client, txSpendsRegistry)
 		if err != nil {
 			return nil, err
 		}
@@ -103,7 +111,7 @@ func FetchTxSpends(client *graphql.Client) (map[string]*SigningData, error) {
 }
 
 // TODO: use individual utxos (txid:vout) instead of just txids
-func FetchObservedTx(client *graphql.Client, txId string, vout int) (bool, error) {
+func FetchObservedTx(ctx context.Context, client *graphql.Client, txId string, vout int) (bool, error) {
 	var query GetContractStateQuery
 
 	key := observedContractPrefix + fmt.Sprintf("%s:%d", txId, vout)
@@ -112,7 +120,7 @@ func FetchObservedTx(client *graphql.Client, txId string, vout int) (bool, error
 		"contractId": contractId,
 		"keys":       []string{key},
 	}
-	err := client.Query(context.TODO(), &query, variables, graphql.OperationName("GetContractState"))
+	err := client.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
 		return false, err
 	}
@@ -123,8 +131,6 @@ func FetchObservedTx(client *graphql.Client, txId string, vout int) (bool, error
 		return false, err
 	}
 
-	log.Println("statemap", stateMap)
-
 	value := string(stateMap[key])
 	exists := value != "null"
 	return exists, nil
@@ -132,7 +138,7 @@ func FetchObservedTx(client *graphql.Client, txId string, vout int) (bool, error
 
 const keyId = ""
 
-func FetchSignatures(client *graphql.Client, msgHex []string) (map[string][]byte, error) {
+func FetchSignatures(ctx context.Context, client *graphql.Client, msgHex []string) (map[string][]byte, error) {
 	var query struct {
 		Tss []struct {
 			Msg string `graphql:"msg"`
@@ -146,7 +152,7 @@ func FetchSignatures(client *graphql.Client, msgHex []string) (map[string][]byte
 	}
 
 	opName := graphql.OperationName("GetTssRequests")
-	if err := client.Query(context.Background(), &query, variables, opName); err != nil {
+	if err := client.Query(ctx, &query, variables, opName); err != nil {
 		return nil, fmt.Errorf("failed graphql query: %w", err)
 	}
 
@@ -163,4 +169,27 @@ func FetchSignatures(client *graphql.Client, msgHex []string) (map[string][]byte
 	}
 
 	return nil, nil
+}
+
+// gets last height recorded in contract state
+func FetchLastHeight(ctx context.Context, client *graphql.Client) (string, error) {
+	var query GetContractStateQuery
+
+	variables := map[string]any{
+		"contractId": contractId,
+		"keys":       []string{lastHeightContractKey},
+	}
+	err := client.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
+	if err != nil {
+		return "", err
+	}
+
+	var stateMap map[string]json.RawMessage
+	err = json.Unmarshal(query.GetStateByKeys, &stateMap)
+	if err != nil {
+		return "", err
+	}
+
+	value := string(stateMap[lastHeightContractKey])
+	return value, nil
 }
