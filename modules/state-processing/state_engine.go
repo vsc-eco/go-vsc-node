@@ -16,6 +16,8 @@ import (
 	"vsc-node/lib/logger"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/common/params"
+	systemconfig "vsc-node/modules/common/system-config"
 	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -48,7 +50,8 @@ type StateResult struct {
 }
 
 type StateEngine struct {
-	da *DataLayer.DataLayer
+	sconf systemconfig.SystemConfig
+	da    *DataLayer.DataLayer
 
 	//db access
 	witnessDb      witnesses.Witnesses
@@ -210,29 +213,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			SlotHeight: slotInfo.StartHeight,
 			Done:       false,
 		}
-	} else {
-		if se.slotStatus.SlotHeight != slotInfo.StartHeight {
-			//Updates balances index before next batch can execute
-			vscBlock, _ := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight - 1)
 
-			startBlock := uint64(0)
-			if vscBlock != nil {
-				startBlock = uint64(vscBlock.EndBlock)
-			}
-
-			se.UpdateBalances(startBlock, se.slotStatus.SlotHeight)
-
-			se.UpdateRcMap(se.slotStatus.SlotHeight)
-
-			se.RcMap = make(map[string]int64)
-
-			se.ExecuteBatch()
-
-			se.slotStatus = &SlotStatus{
-				SlotHeight: slotInfo.StartHeight,
-				Done:       false,
-			}
-		}
 	}
 
 	for _, virtualOp := range block.VirtualOps {
@@ -241,7 +222,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		fmt.Println("block.VirtualOps", block.VirtualOps)
 		if virtualOp.Op.Type == "interest_operation" {
 			//Ensure it matches our gateway wallet
-			if virtualOp.Op.Value["owner"].(string) == common.GATEWAY_WALLET {
+			if virtualOp.Op.Value["owner"].(string) == se.sconf.GatewayWallet() {
 
 				vInt := virtualOp.Op.Value["interest"].(map[string]any)["amount"].(string)
 
@@ -269,7 +250,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				Json:                 []byte(opVal["json"].(string)),
 			}
 
-			if Id == "vsc.fr_sync" && RequiredAuths[0] == common.GATEWAY_WALLET {
+			if Id == "vsc.fr_sync" && RequiredAuths[0] == se.sconf.GatewayWallet() {
 				se.log.Debug("vsc.fr_sync", opVal)
 
 				frSync := struct {
@@ -293,7 +274,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					Id:          MakeTxId(tx.TransactionID, 0),
 					Amount:      amt,
 					BlockHeight: blockInfo.BlockHeight + 1,
-					Owner:       common.FR_VIRTUAL_ACCOUNT,
+					Owner:       params.FR_VIRTUAL_ACCOUNT,
 					//Fractional reserve update
 					Asset: "hbd_savings",
 					Type:  "fr_sync",
@@ -309,7 +290,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				// })
 			}
 
-			if (Id == "vsc.actions") && RequiredAuths[0] == common.GATEWAY_WALLET {
+			if (Id == "vsc.actions") && RequiredAuths[0] == se.sconf.GatewayWallet() {
 
 				// txSelf := TxSelf{
 				// 	BlockHeight:   blockInfo.BlockHeight,
@@ -462,7 +443,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				//
 				// The fee is refunded to the deployer's ledger balance if deployment fails.
 				// This pattern is active when testing or after CONTRACT_DEPLOYMENT_FEE_START_HEIGHT.
-				if testing.Testing() || txSelf.BlockHeight >= common.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
+				if testing.Testing() || txSelf.BlockHeight >= params.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
 					if len(tx.Operations) < 2 {
 						continue
 					}
@@ -476,7 +457,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							panic(err)
 						}
 
-						if amount < common.CONTRACT_DEPLOYMENT_FEE || amountData["nai"] != "@@000000013" || secondOp.Value["to"] != common.GATEWAY_WALLET {
+						if amount < params.CONTRACT_DEPLOYMENT_FEE || amountData["nai"] != "@@000000013" || secondOp.Value["to"] != params.GATEWAY_WALLET {
 							continue
 						}
 
@@ -487,7 +468,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								Id:          MakeTxId(tx.TransactionID, 1),
 								Asset:       "hbd",
 								Amount:      amount,
-								Account:     common.DAO_WALLET,
+								Account:     se.sconf.GatewayWallet(),
 								From:        "hive:" + secondOp.Value["from"].(string),
 								Memo:        "to=vsc.dao",
 								BlockHeight: blockInfo.BlockHeight,
@@ -530,7 +511,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			//# Start parsing gateway transfer operations
 			if op.Type == "transfer" {
 
-				if op.Value["from"] == common.GATEWAY_WALLET {
+				if op.Value["from"] == se.sconf.GatewayWallet() {
 					continue
 				}
 
@@ -944,6 +925,29 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		}
 	}
 
+	//Detects new slot and executes batch if so
+	if se.slotStatus.SlotHeight != slotInfo.StartHeight {
+		//Updates balances index before next batch can execute
+		vscBlock, _ := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight - 1)
+
+		startBlock := uint64(0)
+		if vscBlock != nil {
+			startBlock = uint64(vscBlock.EndBlock)
+		}
+
+		se.UpdateBalances(startBlock, se.slotStatus.SlotHeight)
+
+		se.UpdateRcMap(se.slotStatus.SlotHeight)
+
+		se.RcMap = make(map[string]int64)
+
+		se.slotStatus = &SlotStatus{
+			SlotHeight: slotInfo.StartHeight,
+			Done:       false,
+		}
+		se.ExecuteBatch()
+	}
+
 	//Executes user action when the slot has been completed
 	if se.slotStatus.Done {
 		// vscBlock, _ := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight - 1)
@@ -1007,6 +1011,17 @@ func (se *StateEngine) ExecuteBatch() {
 		outputs := make([]ContractIdResult, 0)
 		ok := true
 		for idx, vscTx := range tx.Ops {
+			fmt.Println("Execute tx.bh", vscTx.TxSelf().BlockHeight)
+			// debugJson := map[string]interface{}{
+			// 	"EndBlock":    lastBlock.EndBlock,
+			// 	"StartBlock":  lastBlock.StartBlock,
+			// 	"lastBlockBh": lastBlockBh,
+			// 	"SlotHeight":  se.slotStatus.SlotHeight,
+			// 	"BlockHeight": se.BlockHeight,
+			// }
+			// jsonBytes, _ := json.MarshalIndent(debugJson, "", "  ")
+			// fmt.Println(string(jsonBytes))
+
 			// if vscTx.Type() == "deposit" {
 			// 	fOplog := vscTx.(TxDeposit).ToLedger()
 			// 	forcedLedger = append(forcedLedger, fOplog...)
@@ -1409,6 +1424,7 @@ func (se *StateEngine) Commit() {
 }
 
 func (se *StateEngine) Init() error {
+
 	return nil
 }
 
@@ -1421,7 +1437,11 @@ func (se *StateEngine) Stop() error {
 	return nil
 }
 
-func New(logger logger.Logger, da *DataLayer.DataLayer,
+func (se *StateEngine) SystemConfig() systemconfig.SystemConfig {
+	return se.sconf
+}
+
+func New(logger logger.Logger, sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	witnessesDb witnesses.Witnesses,
 	electionsDb elections.Elections,
 	contractDb contracts.Contracts,
@@ -1462,6 +1482,7 @@ func New(logger logger.Logger, da *DataLayer.DataLayer,
 	}
 
 	return &StateEngine{
+		sconf:           sconf,
 		log:             logger,
 		TxOutput:        make(map[string]TxOutput),
 		ContractResults: make(map[string][]ContractResult),

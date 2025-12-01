@@ -13,6 +13,8 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+const WITNESS_EXPIRE_BLOCKS = 86_400
+
 type witnesses struct {
 	*db.Collection
 }
@@ -43,6 +45,43 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 	bbytes, _ := json.Marshal(requestIn)
 	request := SetWitnessUpdateType{}
 	json.Unmarshal(bbytes, &request)
+
+	//Find duplicate registered node
+
+	var consensusKey string
+
+	for _, key := range request.Metadata.DidKeys {
+		if key.Type == "consensus" {
+			consensusKey = key.Key
+			break
+		}
+	}
+
+	if consensusKey == "" {
+		return fmt.Errorf("no consensus key found in did keys")
+	}
+
+	// qq := bson.M{
+	// 	"$or": []bson.M{
+	// 		{
+	// 			"peer_id": request.Metadata.VscNode.PeerId,
+	// 		},
+	// 		{
+	// 			"gateway_key": request.Metadata.VscNode.GatewayKey,
+	// 		},
+	// 		{
+	// 			"gateway_active_key": request.Metadata.VscNode.GatewayActiveKey,
+	// 		},
+	// 		{
+	// 			"did_keys.key": consensusKey,
+	// 		},
+	// 	},
+	// }
+
+	// qq2 := bson.M{
+	// 	"account": requestIn.Account,
+	// }
+
 	query := bson.M{
 		"account": request.Account,
 		"height":  request.Height,
@@ -131,7 +170,7 @@ func (w *witnesses) GetWitnessNode(account string, blockHeight *int64) {
 	// fmt.Println("Vaultec decoded data from mongo query result", result)
 }
 
-func (w *witnesses) GetLastestWitnesses() ([]Witness, error) {
+func (w *witnesses) GetLastestWitnesses(searchOptions ...SearchOption) ([]Witness, error) {
 	ctx := context.Background()
 	findOptions := options.Find().SetSort(bson.D{{
 		Key:   "height",
@@ -160,7 +199,7 @@ func (w *witnesses) GetLastestWitnesses() ([]Witness, error) {
 const maxSignedDiff = (3 * 24 * 60 * 20)
 
 // Deterministically sorted (alphetical) list of witnesses at a given block height
-func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64) ([]Witness, error) {
+func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) ([]Witness, error) {
 	ctx := context.Background()
 
 	var gte uint64
@@ -234,7 +273,7 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64) ([]Witness, error) {
 	return outWit, nil
 }
 
-func (w *witnesses) GetWitnessesByPeerId(PeerIds ...string) ([]Witness, error) {
+func (w *witnesses) GetWitnessesByPeerId(PeerIds []string, options ...SearchOption) ([]Witness, error) {
 	findResult, err := w.Find(context.Background(), bson.M{
 		"peer_id": bson.M{
 			"$in": PeerIds,

@@ -11,6 +11,7 @@ type VscBlocks interface {
 	StoreHeader(header VscHeaderRecord)
 	GetBlockByHeight(height uint64) (*VscHeaderRecord, error)
 	GetBlockById(id string) (*VscHeaderRecord, error)
+	GetBlocksByElection(epoch uint64) ([]VscHeaderRecord, error)
 }
 
 type VscHeaderRecord struct {
@@ -18,6 +19,7 @@ type VscHeaderRecord struct {
 	//CID of content
 	BlockContent string   `bson:"block"`
 	EndBlock     int      `bson:"end_block"`
+	Epoch        uint64   `bson:"epoch"`
 	MerkleRoot   *string  `bson:"merkle_root"`
 	Proposer     string   `bson:"proposer"`
 	SigRoot      *string  `bson:"sig_root"`

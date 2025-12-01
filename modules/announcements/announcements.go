@@ -12,6 +12,7 @@ import (
 	agg "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	systemconfig "vsc-node/modules/common/system-config"
 
 	"github.com/minio/sha256-simd"
 	"github.com/robfig/cron/v3"
@@ -25,6 +26,7 @@ import (
 
 type AnnouncementsManager struct {
 	conf         common.IdentityConfig
+	sconf        systemconfig.SystemConfig
 	cron         *cron.Cron
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -45,7 +47,7 @@ var _ agg.Plugin = &AnnouncementsManager{}
 
 // ===== constructor =====
 
-func New(client HiveRpcClient, conf common.IdentityConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator, peerInfo common_types.PeerInfoGetter) (*AnnouncementsManager, error) {
+func New(client HiveRpcClient, conf common.IdentityConfig, sconf systemconfig.SystemConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator, peerInfo common_types.PeerInfoGetter) (*AnnouncementsManager, error) {
 
 	// sanity checks
 
@@ -57,8 +59,9 @@ func New(client HiveRpcClient, conf common.IdentityConfig, cronDuration time.Dur
 	}
 
 	return &AnnouncementsManager{
-		cron:         cron.New(),
 		conf:         conf,
+		sconf:        sconf,
+		cron:         cron.New(),
 		client:       client,
 		hiveCreator:  creator,
 		cronDuration: cronDuration,
@@ -140,7 +143,7 @@ type payloadVscNode struct {
 	GatewayKey      string   `json:"gateway_key"`
 	Witness         struct {
 		Enabled bool `json:"enabled"`
-	}
+	} `json:"witness"`
 }
 
 type didConsensusKey struct {
@@ -217,7 +220,7 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 	salt := []byte("gateway_key")
 	gatewayKey := sha256.Sum256(append(blsPrivSeed, salt...))
 
-	kp := hivego.KeyPairFromBytes(gatewayKey[:])
+	gatewayKP := hivego.KeyPairFromBytes(gatewayKey[:])
 
 	peerAddrs := make([]string, 0)
 
@@ -235,14 +238,14 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 		},
 		VscNode: payloadVscNode{
 			//Potentially use specific net ID for E2E tests
-			NetId:           common.NETWORK_ID,
+			NetId:           a.sconf.NetId(),
 			PeerId:          a.peerInfo.GetPeerId(), //Plz fill in
 			PeerAddrs:       peerAddrs,
 			Ts:              time.Now().Format(time.RFC3339),
 			GitCommit:       GitCommit,
 			VersionId:       VersionId, //Use standard versioning
 			ProtocolVersion: 0,         //Protocol 0 until protocol 1 is finalized.
-			GatewayKey:      *kp.GetPublicKeyString(),
+			GatewayKey:      *gatewayKP.GetPublicKeyString(),
 			Witness: struct {
 				Enabled bool `json:"enabled"`
 			}{

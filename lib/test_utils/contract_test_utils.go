@@ -11,6 +11,8 @@ import (
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/common/params"
+	systemconfig "vsc-node/modules/common/system-config"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
@@ -48,9 +50,7 @@ type ContractTest struct {
 func NewContractTest() ContractTest {
 	logr := logger.PrefixedLogger{Prefix: "contract-test"}
 	idConfig := common.NewIdentityConfig()
-	sysConfig := common_types.SystemConfig{
-		Network: "mocknet",
-	}
+	sysConfig := systemconfig.MocknetConfig()
 	ledgers := MockLedgerDb{LedgerRecords: make(map[string][]ledgerDb.LedgerRecord)}
 	balances := MockBalanceDb{BalanceRecords: make(map[string][]ledgerDb.BalanceRecord)}
 	interestClaims := MockInterestClaimsDb{Claims: make([]ledgerDb.ClaimRecord, 0)}
@@ -59,8 +59,10 @@ func NewContractTest() ContractTest {
 	contractDb := MockContractDb{Contracts: make(map[string]contracts.Contract)}
 	contractState := MockContractStateDb{Outputs: make(map[string]contracts.ContractOutput)}
 	witnessesDb := witnesses.NewEmptyWitnesses()
+
 	se := stateEngine.New(
 		logr,
+		sysConfig,
 		nil,
 		nil,
 		&elections,
@@ -80,7 +82,8 @@ func NewContractTest() ContractTest {
 		nil,
 		nil,
 	)
-	p2p := p2pInterface.New(witnessesDb, idConfig, sysConfig)
+	var blockStatus common_types.BlockStatusGetter
+	p2p := p2pInterface.New(witnessesDb, idConfig, sysConfig, blockStatus)
 	dl := datalayer.New(p2p)
 	a := aggregate.New([]aggregate.Plugin{idConfig, p2p, dl})
 	if err := a.Init(); err != nil {
@@ -197,15 +200,15 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 			Sender:               caller,
 			Intents:              tx.Intents,
 		},
-		int64(tx.RcLimit), tx.RcLimit*common.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
+		int64(tx.RcLimit), tx.RcLimit*params.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
 	)
 	ctx := context.WithValue(
 		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
 		wasm_context.WasmExecCodeCtxKey,
 		hex.EncodeToString(code),
 	)
-	res := w.Execute(ctx, tx.RcLimit*common.CYCLE_GAS_PER_RC, tx.Action, string(tx.Payload), wasm_runtime.Go)
-	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/common.CYCLE_GAS_PER_RC), 100))
+	res := w.Execute(ctx, tx.RcLimit*params.CYCLE_GAS_PER_RC, tx.Action, string(tx.Payload), wasm_runtime.Go)
+	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
 
 	if res.Error != nil {
 		ct.LedgerSession.Revert()

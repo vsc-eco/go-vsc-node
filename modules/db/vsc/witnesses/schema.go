@@ -1,19 +1,20 @@
 package witnesses
 
 type Witness struct {
-	Account         string            `json:"account" bson:"account"`
-	Height          uint64            `json:"height" bson:"height"`
-	DidKeys         []PostingJsonKeys `json:"did_keys" bson:"did_keys"`
-	Enabled         bool              `json:"enabled" bson:"enabled"`
-	GitCommit       string            `json:"git_commit" bson:"git_commit"`
-	NetId           string            `json:"net_id" bson:"net_id"`
-	PeerId          string            `json:"peer_id" bson:"peer_id"`
-	ProtocolVersion uint64            `json:"protocol_version" bson:"protocol_version"`
-	Ts              string            `json:"ts" bson:"ts"`
-	TxId            string            `json:"tx_id" bson:"tx_id"`
-	VersionId       string            `json:"version_id" bson:"version_id"`
-	GatewayKey      string            `json:"gateway_key" bson:"gateway_key"`
-	PeerAddrs       []string          `json:"peer_addrs" bson:"peer_addrs"`
+	Account          string            `json:"account" bson:"account"`
+	Height           uint64            `json:"height" bson:"height"`
+	DidKeys          []PostingJsonKeys `json:"did_keys" bson:"did_keys"`
+	Enabled          bool              `json:"enabled" bson:"enabled"`
+	GitCommit        string            `json:"git_commit" bson:"git_commit"`
+	NetId            string            `json:"net_id" bson:"net_id"`
+	PeerId           string            `json:"peer_id" bson:"peer_id"`
+	ProtocolVersion  uint64            `json:"protocol_version" bson:"protocol_version"`
+	Ts               string            `json:"ts" bson:"ts"`
+	TxId             string            `json:"tx_id" bson:"tx_id"`
+	VersionId        string            `json:"version_id" bson:"version_id"`
+	GatewayKey       string            `json:"gateway_key" bson:"gateway_key"`
+	GatewayActiveKey string            `json:"gateway_active_key" bson:"gateway_active_key"`
+	PeerAddrs        []string          `json:"peer_addrs" bson:"peer_addrs"`
 }
 
 type PostingJsonMetadata struct {
@@ -42,14 +43,16 @@ type PostingJsonMetadataVscNode struct {
 		// DelayNotch  int      `json:"delay_notch"`
 		// SigningKeys []string `json:"signing_keys"`
 	} `json:"witness"`
-	GatewayKey string `json:"gateway_key"`
+	GatewayKey       string `json:"gateway_key"`
+	GatewayActiveKey string `json:"gateway_active_key"`
 }
 
 type SetWitnessUpdateType struct {
-	Metadata   PostingJsonMetadata
-	Account    string
-	Height     uint64
-	TxId       string
-	BlockId    string
-	GatewayKey string
+	Metadata         PostingJsonMetadata
+	Account          string
+	Height           uint64
+	TxId             string
+	BlockId          string
+	GatewayKey       string
+	GatewayActiveKey string
 }

@@ -154,6 +154,21 @@ func (mr *MockReader) MineNullBlocks(count int) {
 	}
 }
 
+func (mr *MockReader) CreateBlockWithOps(txs []hive_blocks.Tx, ops []hivego.VirtualOp) {
+	for _, tx := range txs {
+		mr.IngestTx(tx)
+	}
+	for _, vop := range ops {
+		mr.VMempool = append(mr.VMempool, vop)
+	}
+
+	mr.witnessBlock()
+}
+
+func (mr *MockReader) CreateBlock() {
+	mr.witnessBlock()
+}
+
 func (mr *MockReader) BroadcastTx() {
 
 }
@@ -221,9 +236,16 @@ func (mr *MockReader) IngestTx(tx hive_blocks.Tx) {
 	mr.mutex.Unlock()
 }
 
-func NewMockReader() *MockReader {
+func NewMockReader(processFunc streamer.ProcessFunction) *MockReader {
 	return &MockReader{
-		mutex: &sync.Mutex{},
+		mutex:           &sync.Mutex{},
+		ProcessFunction: processFunc,
+	}
+}
+
+func NewMockCreator(mr *MockReader) *MockCreator {
+	return &MockCreator{
+		Mr: mr,
 	}
 }
 

@@ -16,12 +16,14 @@ import (
 	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
-	"vsc-node/modules/vstream"
 
 	"github.com/JustinKnueppel/go-result"
 	"github.com/chebyrash/promise"
@@ -34,7 +36,8 @@ import (
 var ELECTION_INTERVAL = uint64(6 * 60 * 20)
 
 type electionProposer struct {
-	conf common.IdentityConfig
+	conf  common.IdentityConfig
+	sconf systemconfig.SystemConfig
 
 	p2p     *libp2p.P2PServer
 	service libp2p.PubSubService[p2pMessage]
@@ -42,15 +45,16 @@ type electionProposer struct {
 	witnesses witnesses.Witnesses
 	elections elections.Elections
 	balanceDb ledgerDb.Balances
+	vscBlocks vscBlocks.VscBlocks
 
 	da *datalayer.DataLayer
 
 	txCreator hive.HiveTransactionCreator
 
-	vstream    *vstream.VStream
-	se         *stateEngine.StateEngine
-	bh         uint64
-	headHeight *uint64
+	hiveConsumer *blockconsumer.HiveConsumer
+	se           *stateEngine.StateEngine
+	bh           uint64
+	headHeight   *uint64
 
 	sigChannels map[uint64]chan *signResponse
 	signingInfo *struct {
@@ -69,30 +73,34 @@ func New(
 	p2p *libp2p.P2PServer,
 	witnesses witnesses.Witnesses,
 	elections elections.Elections,
+	vscBlocks vscBlocks.VscBlocks,
 	balanceDb ledgerDb.Balances,
 	da *datalayer.DataLayer,
 	txCreator hive.HiveTransactionCreator,
 	conf common.IdentityConfig,
+	sconf systemconfig.SystemConfig,
 	se *stateEngine.StateEngine,
-	vstream *vstream.VStream,
+	hiveConsumer *blockconsumer.HiveConsumer,
 ) ElectionProposer {
 	return &electionProposer{
-		conf:        conf,
-		p2p:         p2p,
-		witnesses:   witnesses,
-		elections:   elections,
-		balanceDb:   balanceDb,
-		da:          da,
-		txCreator:   txCreator,
-		se:          se,
-		vstream:     vstream,
-		sigChannels: make(map[uint64]chan *signResponse),
+		conf:         conf,
+		p2p:          p2p,
+		witnesses:    witnesses,
+		elections:    elections,
+		vscBlocks:    vscBlocks,
+		balanceDb:    balanceDb,
+		da:           da,
+		txCreator:    txCreator,
+		sconf:        sconf,
+		se:           se,
+		hiveConsumer: hiveConsumer,
+		sigChannels:  make(map[uint64]chan *signResponse),
 	}
 }
 
 // Init implements aggregate.Plugin.
 func (e *electionProposer) Init() error {
-	e.vstream.RegisterBlockTick("election-proposer", e.blockTick, true)
+	e.hiveConsumer.RegisterBlockTick("election-proposer", e.blockTick, true)
 	return nil
 }
 
@@ -114,6 +122,8 @@ func (e *electionProposer) blockTick(bh uint64, headHeight *uint64) {
 	e.bh = bh
 	e.headHeight = headHeight
 
+	// scoreMap, err := e.scoreMap()
+	// fmt.Println(err, scoreMap.BannedNodes)
 	if e.canHold() {
 
 		slotInfo := stateEngine.CalculateSlotInfo(bh)
@@ -232,7 +242,7 @@ func (e *electionProposer) GenerateFullElection(
 			return elections.ElectionHeader{}, elections.ElectionData{}, err
 		}
 		if balRecord != nil {
-			if balRecord.HIVE_CONSENSUS >= common.CONSENSUS_STAKE_MIN {
+			if balRecord.HIVE_CONSENSUS >= e.sconf.ConsensusParams().MinStake {
 				nodesWithStake++
 				stakedMap[w.Account] = uint64(balRecord.HIVE_CONSENSUS)
 			}
@@ -300,7 +310,7 @@ func (e *electionProposer) GenerateFullElection(
 		electionData.Epoch = previousEpoch + 1
 	}
 	electionData.Members = members
-	electionData.NetId = common.NETWORK_ID
+	electionData.NetId = e.sconf.NetId()
 	electionData.ProtocolVersion = consensusVersion
 	electionData.Weights = weights
 	electionData.Type = pType
@@ -465,8 +475,15 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		ep.sigChannels[ep.signingInfo.epoch] = make(chan *signResponse)
 
 		fmt.Println("[ep] waiting for signatures", blk, electionHeader.Epoch)
-		ep.waitForSigs(context.Background(), &electionResult)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		signedWeight, err := ep.waitForSigs(ctx, &electionResult)
 
+		if err != nil {
+			return err
+		}
+
+		fmt.Println("signedWeight", signedWeight)
 		ep.signingInfo = nil
 
 		finalCircuit, err := circuit.Finalize()
@@ -536,6 +553,76 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 	}
 }
 
+type ScoreMap struct {
+	Map         map[string]uint64
+	BannedNodes []string
+	Members     []string
+	Samples     uint64
+}
+
+func (ep *electionProposer) scoreMap() (ScoreMap, error) {
+	const electionCount = 4
+
+	elections := make([]elections.ElectionResult, electionCount)
+	election, err := ep.elections.GetElectionByHeight(math.MaxInt64)
+	if err != nil {
+		return ScoreMap{}, err
+	}
+
+	elections = append(elections, election)
+
+	for i := uint64(1); i < electionCount; i++ {
+
+		prevElection := ep.elections.GetElection(election.Epoch - i)
+
+		if prevElection == nil {
+			break
+		}
+		elections = append(elections, *prevElection)
+
+	}
+	samples := uint64(0)
+	witnessMap := map[string]bool{}
+	scoreMap := map[string]uint64{}
+
+	for _, election := range elections {
+		blocks, err := ep.vscBlocks.GetBlocksByElection(election.Epoch)
+		if err != nil {
+			return ScoreMap{}, err
+		}
+
+		for _, block := range blocks {
+			for _, member := range block.Signers {
+				scoreMap[member] += 1
+			}
+		}
+		for _, mbr := range election.Members {
+			witnessMap[mbr.Account] = true
+		}
+		samples += uint64(len(blocks))
+	}
+
+	members := make([]string, 0, len(witnessMap))
+
+	for member := range witnessMap {
+		members = append(members, member)
+	}
+
+	bannedNodes := []string{}
+	for _, member := range members {
+		if scoreMap[member] < samples*75/100 {
+			bannedNodes = append(bannedNodes, member)
+		}
+	}
+
+	return ScoreMap{
+		Map:         scoreMap,
+		Members:     members,
+		Samples:     samples,
+		BannedNodes: bannedNodes,
+	}, nil
+}
+
 func (ep *electionProposer) makeElection(blk uint64) (elections.ElectionHeader, error) {
 	electionResult, err := ep.elections.GetElectionByHeight(blk - 1)
 
@@ -555,22 +642,23 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 	if ep.signingInfo == nil {
 		return 0, errors.New("no block signing info")
 	}
-	go func() {
-		time.Sleep(30 * time.Second)
-		if ep.signingInfo != nil {
-			ep.sigChannels[ep.signingInfo.epoch] <- nil
-		}
-	}()
+	// go func() {
+	// 	time.Sleep(30 * time.Second)
+	// 	if ep.signingInfo != nil {
+	// 		ep.sigChannels[ep.signingInfo.epoch] <- nil
+	// 	}
+	// }()
+
 	weightTotal := uint64(0)
 	for _, weight := range election.Weights {
 		weightTotal += weight
 	}
 
-	select {
-	case <-ctx.Done():
-		fmt.Println("[bp] ctx done")
-		return 0, ctx.Err() // Return error if canceled
-	default:
+	end := make(chan struct{})
+
+	var err error
+	var signedWeight uint64
+	go func() {
 		signedWeight := uint64(0)
 
 		for signedWeight < (weightTotal * 8 / 10) {
@@ -584,17 +672,18 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 			sigBytes, err := base64.URLEncoding.DecodeString(signResp.Sig)
 
 			if err != nil {
-				return 0, nil
+				continue
 			}
 
 			sig := blsu.Signature{}
 			sig96 := [96]byte{}
 			copy(sig96[:], sigBytes[:])
-			sig.Deserialize(&sig96)
+			err = sig.Deserialize(&sig96)
 
 			if err != nil {
-				return 0, nil
+				continue
 			}
+
 			sigStr := signResp.Sig
 			account := signResp.Account
 
@@ -619,7 +708,16 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 			}
 		}
 		fmt.Println("Done waittt")
-		return signedWeight, nil
+		// res = signedWeight
+		end <- struct{}{}
+	}()
+
+	select {
+	case <-ctx.Done():
+		fmt.Println("[ep] collect sigs timeout")
+		return signedWeight, nil // Return error if canceled
+	case <-end:
+		return signedWeight, err
 	}
 }
 

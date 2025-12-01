@@ -106,6 +106,26 @@ func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qt
 	return commitment, err
 }
 
+func (tsc *tssCommitments) GetBlames() ([]TssCommitment, error) {
+	findResult, err := tsc.Find(context.Background(), bson.M{
+		"type": "blame",
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	commitments := make([]TssCommitment, 0)
+	for findResult.Next(context.Background()) {
+		var commitment TssCommitment
+		if err := findResult.Decode(&commitment); err != nil {
+			return nil, fmt.Errorf("failed to decode commitment: %w", err)
+		}
+		commitments = append(commitments, commitment)
+	}
+
+	return commitments, nil
+}
+
 func NewCommitments(d *vsc.VscDb) TssCommitments {
 	return &tssCommitments{db.NewCollection(d.DbInstance, "tss_commitments")}
 }

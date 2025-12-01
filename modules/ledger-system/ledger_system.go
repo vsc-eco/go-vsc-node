@@ -12,6 +12,7 @@ import (
 	"strings"
 	"vsc-node/lib/logger"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/params"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
 )
 
@@ -92,7 +93,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 			var owner string
 			if strings.HasPrefix(balance.Account, "system:") {
 				if balance.Account == "system:fr_balance" {
-					owner = common.DAO_WALLET
+					owner = params.DAO_WALLET
 				} else {
 					//Filter
 					continue

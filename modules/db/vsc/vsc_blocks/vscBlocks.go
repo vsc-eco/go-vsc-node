@@ -106,3 +106,26 @@ func (vblks *vscBlocks) GetBlockById(id string) (*VscHeaderRecord, error) {
 
 	return &header, nil
 }
+
+func (vblks *vscBlocks) GetBlocksByElection(epoch uint64) ([]VscHeaderRecord, error) {
+	// Get all VSC blocks for a given election epoch
+	ctx := context.Background()
+
+	cursor, err := vblks.Find(ctx, bson.M{
+		"epoch": bson.M{
+			"$eq": epoch,
+		},
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	var headers []VscHeaderRecord
+	err = cursor.All(ctx, &headers)
+	if err != nil {
+		return nil, err
+	}
+
+	return headers, nil
+}

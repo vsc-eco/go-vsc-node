@@ -22,17 +22,18 @@ import (
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	libp2p "vsc-node/modules/p2p"
 	rcSystem "vsc-node/modules/rc-system"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
-	"vsc-node/modules/vstream"
 
 	"github.com/chebyrash/promise"
 	"github.com/ipfs/go-cid"
@@ -46,15 +47,16 @@ var CONSENSUS_SPECS = common.CONSENSUS_SPECS
 type BlockProducer struct {
 	a.Plugin
 
-	config      common.IdentityConfig
-	StateEngine *stateEngine.StateEngine
-	VscBlocks   vscBlocks.VscBlocks
-	VStream     *vstream.VStream
-	HiveCreator hive.HiveTransactionCreator
-	Datalayer   *datalayer.DataLayer
-	TxDb        transactions.Transactions
-	rcSystem    *rcSystem.RcSystem
-	nonceDb     nonces.Nonces
+	config       common.IdentityConfig
+	sconf        systemconfig.SystemConfig
+	StateEngine  *stateEngine.StateEngine
+	VscBlocks    vscBlocks.VscBlocks
+	hiveConsumer *blockconsumer.HiveConsumer
+	HiveCreator  hive.HiveTransactionCreator
+	Datalayer    *datalayer.DataLayer
+	TxDb         transactions.Transactions
+	rcSystem     *rcSystem.RcSystem
+	nonceDb      nonces.Nonces
 
 	p2p     *libp2p.P2PServer
 	service libp2p.PubSubService[p2pMessage]
@@ -103,6 +105,7 @@ func (bp *BlockProducer) BlockTick(bh uint64, headHeight *uint64) {
 	}
 
 	if witnessSlot != nil {
+
 		if witnessSlot.Account == bp.config.Get().HiveUsername && bh%CONSENSUS_SPECS.SlotLength == 0 {
 			// canProduce := bp.canProduce(bh)
 			// fmt.Println("Can produce", canProduce)
@@ -232,7 +235,7 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 			nonceRecord, _ := bp.nonceDb.GetNonce(keyId)
 			nonceMap[keyId] = int64(nonceRecord.Nonce)
 		}
-		if txRecord.Nonce >= nonceMap[keyId] && txRecord.RcLimit >= common.MINIMUM_RC_LIMIT {
+		if txRecord.Nonce >= nonceMap[keyId] && txRecord.RcLimit >= bp.sconf.ConsensusParams().MinRcLimit {
 			txRecords = append(txRecords, txRecord)
 		}
 	}
@@ -368,6 +371,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	})
 
 	if err != nil {
+		fmt.Println("Error generating block", err)
 		return
 	}
 
@@ -376,6 +380,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	electionResult, err := bp.electionsDb.GetElectionByHeight(bh)
 
 	if err != nil {
+		fmt.Println("Error generating block", err)
 		return
 	}
 
@@ -403,6 +408,11 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	signedWeight, err := bp.waitForSigs(context.Background(), &electionResult)
 
+	if err != nil {
+		fmt.Println("Error waiting for signatures", err)
+		return
+	}
+
 	// fmt.Println("signedWeight", signedWeight, err)
 	// fmt.Println("CircuitMap", circuit.CircuitMap())
 
@@ -427,8 +437,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	}
 
 	blockHeader := map[string]interface{}{
-		"net_id": common.NETWORK_ID,
-
+		"net_id":       bp.sconf.NetId(),
 		"signed_block": signedBlock,
 	}
 	bbytes, _ := json.Marshal(blockHeader)
@@ -560,6 +569,10 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 	for _, weight := range election.Weights {
 		weightTotal += weight
 	}
+
+	go func() {
+
+	}()
 
 	select {
 	case <-ctx.Done():
@@ -837,7 +850,7 @@ func (bp *BlockProducer) getSlot(bh uint64) *stateEngine.WitnessSlot {
 }
 
 func (bp *BlockProducer) Init() error {
-	bp.VStream.RegisterBlockTick("block-producer", bp.BlockTick, false)
+	bp.hiveConsumer.RegisterBlockTick("block-producer", bp.BlockTick, false)
 	return nil
 }
 
@@ -858,20 +871,21 @@ func (bp *BlockProducer) Stop() error {
 	return bp.stopP2P()
 }
 
-func New(logger logger.Logger, p2p *libp2p.P2PServer, vstream *vstream.VStream, se *stateEngine.StateEngine, conf common.IdentityConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions, rcSystem *rcSystem.RcSystem, nonceDb nonces.Nonces) *BlockProducer {
+func New(logger logger.Logger, p2p *libp2p.P2PServer, hiveConsumer *blockconsumer.HiveConsumer, se *stateEngine.StateEngine, conf common.IdentityConfig, sconf systemconfig.SystemConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions, rcSystem *rcSystem.RcSystem, nonceDb nonces.Nonces) *BlockProducer {
 	return &BlockProducer{
-		log:         logger,
-		sigChannels: make(map[uint64]chan sigMsg),
-		StateEngine: se,
-		VStream:     vstream,
-		config:      conf,
-		HiveCreator: hiveCreator,
-		p2p:         p2p,
-		Datalayer:   da,
-		electionsDb: electionsDb,
-		VscBlocks:   vscBlocks,
-		TxDb:        txDb,
-		rcSystem:    rcSystem,
-		nonceDb:     nonceDb,
+		log:          logger,
+		sigChannels:  make(map[uint64]chan sigMsg),
+		StateEngine:  se,
+		hiveConsumer: hiveConsumer,
+		config:       conf,
+		sconf:        sconf,
+		HiveCreator:  hiveCreator,
+		p2p:          p2p,
+		Datalayer:    da,
+		electionsDb:  electionsDb,
+		VscBlocks:    vscBlocks,
+		TxDb:         txDb,
+		rcSystem:     rcSystem,
+		nonceDb:      nonceDb,
 	}
 }

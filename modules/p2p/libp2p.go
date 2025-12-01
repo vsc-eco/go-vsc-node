@@ -2,7 +2,6 @@ package libp2p
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/witnesses"
 	start_status "vsc-node/modules/start-status"
 
@@ -28,6 +28,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/core/routing"
+	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
 	rhost "github.com/libp2p/go-libp2p/p2p/host/routed"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	multiaddr "github.com/multiformats/go-multiaddr"
@@ -41,30 +42,10 @@ import (
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 )
 
-var MAINNET_BOOTSTRAP = []string{
-	"/dnsaddr/api.vsc.eco/tcp/10720/p2p/12D3KooWFVVQ2xG6ohJ3tQrh3V6zZnRnKPVfQWVH5LjJakzBCs7E",
-	"/ip4/149.56.25.168/tcp/10720/p2p/12D3KooWFVVQ2xG6ohJ3tQrh3V6zZnRnKPVfQWVH5LjJakzBCs7E",   // TODO this is api.vsc.eco, but DNS resolution doesn't work?
-	"/ip4/173.211.12.65/tcp/10720/p2p/12D3KooWGpWrBc5pFx5GHWibczTPrazDCfk8GCETB5Ynb4Dq5L5V",   //@vaultec.vsc
-	"/ip4/147.135.15.155/tcp/10720/p2p/12D3KooWCAE4XrkE4NJL3nqYkXXNhte94rdBDGGVQQJewrDXDVJZ",  // mengao
-	"/ip4/188.40.125.182/tcp/10720/p2p/12D3KooWPzZ9RzsCP6BREUFbY1xyZiJ3PPoCW3DFGDhAwExiUazV",  //@spker
-	"/ip4/37.27.190.82/tcp/10720/p2p/12D3KooWDEruPNvPqWc1DN7Fnj6euCZ5QN98YbK9v81wXA9aZqZr",    //@actifit.vsc
-	"/ip4/51.75.151.131/tcp/10720/p2p/12D3KooWQnA1VE8H4QKAkeaEaXd7n1GpLxQXq1MoURn4Lnqhqe3X",   //@arcange.vsc
-	"/ip4/185.130.45.196/tcp/10720/p2p/12D3KooWKUmixKkURVEktxNkn6Keb8LUPk4FdGXM6uAPGsiURw9z",  //@dalz.vsc
-	"/ip4/5.78.133.3/tcp/10720/p2p/12D3KooWA8s64sSSbRLGGXspuU2hkfEkB7tKrcNDBWWjL6V8dC6o",      //@blocktrades.vsc
-	"/ip4/185.130.45.154/tcp/10720/p2p/12D3KooWG4N5gCzbrX2k87baWtcYu2GgRxHvXJ1jmecx5cdxzohH",  //@v4vapp.vsc
-	"/ip4/138.199.230.214/tcp/10720/p2p/12D3KooWHyT797hmbLjgbFjYFpbHrre1EPWzFo876FDhdcbPVG8p", //@tibfox.vsc
-	// "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-	// "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
-	// "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
-	// "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
-	// "/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",         // mars.i.ipfs.io
-	// "/ip4/104.131.131.82/udp/4001/quic-v1/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ", // mars.i.ipfs.io
-}
-
 type P2PServer struct {
 	witnessDb    WitnessGetter
 	conf         common.IdentityConfig
-	systemConfig common_types.SystemConfig
+	systemConfig systemconfig.SystemConfig
 
 	host   host.Host
 	dht    *kadDht.IpfsDHT
@@ -72,6 +53,7 @@ type P2PServer struct {
 	cron   *cron.Cron
 
 	startStatus start_status.StartStatus
+	blockStatus common_types.BlockStatusGetter
 
 	port int
 }
@@ -80,10 +62,10 @@ var _ aggregate.Plugin = &P2PServer{}
 var _ start_status.Starter = &P2PServer{}
 
 type WitnessGetter interface {
-	GetLastestWitnesses() ([]witnesses.Witness, error)
+	GetLastestWitnesses(...witnesses.SearchOption) ([]witnesses.Witness, error)
 }
 
-func New(witnessDb WitnessGetter, conf common.IdentityConfig, sconf common_types.SystemConfig, port ...int) *P2PServer {
+func New(witnessDb WitnessGetter, conf common.IdentityConfig, sconf systemconfig.SystemConfig, blockStatus common_types.BlockStatusGetter, port ...int) *P2PServer {
 
 	p := 10720
 	if len(port) > 0 {
@@ -95,6 +77,7 @@ func New(witnessDb WitnessGetter, conf common.IdentityConfig, sconf common_types
 		conf:         conf,
 		cron:         cron.New(),
 		startStatus:  start_status.New(),
+		blockStatus:  blockStatus,
 		port:         p,
 		systemConfig: sconf,
 	}
@@ -123,7 +106,7 @@ func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 			if peer.ID == h.ID() {
 				continue // No self connection
 			}
-			p2p.host.Peerstore().AddAddrs(peer.ID, peer.Addrs, peerstore.ConnectedAddrTTL)
+			// p2p.host.Peerstore().AddAddrs(peer.ID, peer.Addrs, peerstore.ConnectedAddrTTL)
 			err := h.Connect(ctx, peer)
 			if err != nil {
 				// fmt.Println("Failed connecting to ", peer.ID.String(), ", error:", err)
@@ -156,8 +139,19 @@ func (p2pServer *P2PServer) Init() error {
 
 	ctx := context.Background()
 
+	bootstrapPeers := []peer.AddrInfo{}
+	//fill it up from system config
+	for _, peerStr := range p2pServer.systemConfig.BootstrapPeers() {
+		peerId, err := peer.AddrInfoFromString(peerStr)
+		if err != nil {
+			fmt.Println("Error parsing bootstrap peer:", peerStr, err)
+			continue
+		}
+		bootstrapPeers = append(bootstrapPeers, *peerId)
+	}
 	kadOptions := []kadDht.Option{
 		kadDht.ProtocolPrefix("/vsc.network"),
+		kadDht.BootstrapPeers(bootstrapPeers...),
 	}
 
 	if testing.Testing() {
@@ -168,8 +162,8 @@ func (p2pServer *P2PServer) Init() error {
 	var idht *dht.IpfsDHT
 	options := []libp2p.Option{
 		libp2p.ListenAddrStrings(
-			fmt.Sprint("/ip4/0.0.0.0/tcp/", p2pServer.port),
 			fmt.Sprint("/ip4/0.0.0.0/udp/", p2pServer.port, "/quic-v1"),
+			fmt.Sprint("/ip4/0.0.0.0/tcp/", p2pServer.port),
 		),
 		libp2p.Identity(key),
 		libp2p.EnableNATService(),
@@ -177,7 +171,6 @@ func (p2pServer *P2PServer) Init() error {
 		libp2p.NATPortMap(),
 		libp2p.EnableAutoNATv2(),
 		libp2p.EnableHolePunching(),
-		//@TODO: make this no longer deprecated
 		libp2p.EnableAutoRelayWithPeerSource(func(ctx context.Context, numPeers int) <-chan peer.AddrInfo {
 			c := make(chan peer.AddrInfo, numPeers)
 
@@ -198,7 +191,7 @@ func (p2pServer *P2PServer) Init() error {
 			}
 
 			return c
-		}),
+		}, autorelay.WithMaxCandidateAge(5*time.Minute)),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			idht, err = kadDht.New(context.Background(), h, kadOptions...)
 			return idht, err
@@ -210,8 +203,6 @@ func (p2pServer *P2PServer) Init() error {
 	if err != nil {
 		return err
 	}
-
-	//DHT wrapped host
 
 	routedHost := rhost.Wrap(p2p, idht)
 	p2pServer.host = routedHost
@@ -244,39 +235,89 @@ func (p2pServer *P2PServer) Init() error {
 
 // Start implements aggregate.Plugin.
 func (p2ps *P2PServer) Start() *promise.Promise[any] {
-	//What would we "start" for P2P?
 
-	//Ask for P2P profiling from other nodes
+	// go func() {
+	// 	for {
+	// 		time.Sleep(10 * time.Second)
+	// 		p2ps.host.ID()
 
-	// send := make(chan HelloArgs)
-	// reply := make(chan HelloReply)
-	// ctx := context.Background()
+	// 		pps := p2ps.host.Mux().Protocols()
 
-	// err := p2ps.rpcClient.Stream(ctx, p2ps.host.ID(), "witness", "HelloWorld", send, reply)
+	// 		fmt.Println("pps, err", pps, p2ps.host.Peerstore().PeerInfo(p2ps.host.ID()))
+	// 		peers := p2ps.host.Network().Peers()
+	// 		fmt.Println("Connected Peers:", peers)
+	// 		fmt.Println("IGV", len(peers))
 
-	p2ps.cron.AddFunc("@every 5m", func() {
-		p2ps.connectRegisteredPeers()
-	})
+	// 		peerID, _ := peer.Decode("12D3KooWRnteMca3kEjGeSB7hDQNhD4RaVK8Ls5cJkzimmpo8VK6")
+	// 		pps2, err := p2ps.dht.FindPeer(context.Background(), peerID)
 
-	p2ps.cron.AddFunc("@every 5m", func() {
+	// 		fmt.Println("FindPeer", pps2, err)
+	// 		peerInfo := p2ps.host.Peerstore().PeerInfo(peerID)
+	// 		fmt.Println("PeerInfo", peerInfo)
+	// 		err = p2ps.host.Connect(context.Background(), peerInfo)
+
+	// 		fmt.Println("Connect", err)
+	// 		protocols, _ := p2ps.host.Peerstore().GetProtocols(peerID)
+	// 		fmt.Println("Protocols", protocols)
+	// 		ctx, cancel := context.WithCancel(context.Background())
+	// 		res := ping.NewPingService(p2ps.host).Ping(ctx, peerID)
+
+	// 		go func() {
+	// 			for {
+	// 				pong, ok := <-res
+	// 				if !ok {
+	// 					return
+	// 				}
+	// 				if pong.Error == nil {
+	// 					fmt.Println("Pinged", peerID.String(), "in", pong.RTT.Nanoseconds(), ok, pong.Error)
+	// 					cancel()
+	// 					break
+	// 				} else {
+	// 					fmt.Println("Ping error", pong.Error)
+	// 				}
+	// 			}
+	// 		}()
+
+	// 		fmt.Println("My addresses", p2ps.host.Addrs())
+	// 		fmt.Println("Registered addresses", p2ps.host.Peerstore().Addrs(p2ps.host.ID()))
+	//
+	// 	}
+	// }()
+
+	// p2ps.cron.AddFunc("@every 5m", func() {
+	// 	p2ps.connectRegisteredPeers()
+	// })
+
+	p2ps.cron.AddFunc("@every 30m", func() {
 		p2ps.discoverPeers()
 	})
 
+	p2ps.cron.AddFunc("@every 15m", func() {
+		p2ps.advertiseSelf()
+
+	})
+
+	go func() {
+		time.Sleep(1 * time.Minute)
+		p2ps.advertiseSelf()
+	}()
+
 	uniquePeers := make(map[string]struct{})
 
-	if p2ps.systemConfig.Network == "mainnet" {
-		for _, peerStr := range MAINNET_BOOTSTRAP {
+	if p2ps.systemConfig.OnMainnet() {
+		for _, peerStr := range p2ps.systemConfig.BootstrapPeers() {
 			peerId, _ := peer.AddrInfoFromString(peerStr)
-			uniquePeers[peerId.ID.String()] = struct{}{}
-			p2ps.host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
-			p2ps.host.Connect(context.Background(), *peerId)
+			err := p2ps.host.Connect(context.Background(), *peerId)
+			if err == nil {
+				uniquePeers[peerId.ID.String()] = struct{}{}
+				p2ps.host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
+
+			}
 		}
 	}
 
-	p2ps.dht.Bootstrap(context.Background())
-	go bootstrapVSCPeers(context.Background(), p2ps)
-	//First startup to try and get connected to the network
-	go p2ps.connectRegisteredPeers()
+	err := p2ps.dht.Bootstrap(context.Background())
+	fmt.Println("DHT Bootstrap error:", err)
 
 	go func() {
 		time.Sleep(50 * time.Millisecond)
@@ -307,6 +348,8 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 			time.Sleep(5 * time.Second)
 		}
 	}()
+
+	p2ps.cron.Start()
 
 	return utils.PromiseResolve[any](nil) //FIXME make this wait sub services to close
 }
@@ -421,7 +464,17 @@ func (p2p *P2PServer) addrFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multi
 }
 
 func (p2p *P2PServer) connectRegisteredPeers() {
-	witnesses, _ := p2p.witnessDb.GetLastestWitnesses()
+	opts := []witnesses.SearchOption{}
+
+	if p2p.blockStatus != nil {
+		currentBlockHeight := p2p.blockStatus.BlockHeight()
+		opts = append(opts, witnesses.SearchHeight(currentBlockHeight))
+		opts = append(opts, witnesses.SearchExpiration(witnesses.WITNESS_EXPIRE_BLOCKS))
+	}
+
+	fmt.Println("connectRegisteredPeers opts", opts)
+
+	witnesses, _ := p2p.witnessDb.GetLastestWitnesses(opts...)
 
 	for _, witness := range witnesses {
 		if witness.PeerId == "" {
@@ -471,10 +524,10 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 }
 
 func (p2p *P2PServer) discoverPeers() {
-
+	fmt.Println("Discovering peers...")
 	if len(p2p.host.Network().Peers()) < 2 {
-		if p2p.systemConfig.Network == "mainnet" {
-			for _, peerStr := range MAINNET_BOOTSTRAP {
+		if p2p.systemConfig.OnMainnet() {
+			for _, peerStr := range p2p.systemConfig.BootstrapPeers() {
 				peerId, _ := peer.AddrInfoFromString(peerStr)
 
 				p2p.host.Connect(context.Background(), *peerId)
@@ -487,7 +540,6 @@ func (p2p *P2PServer) discoverPeers() {
 	h := p2p.host
 
 	routingDiscovery := drouting.NewRoutingDiscovery(p2p.dht)
-	dutil.Advertise(ctx, routingDiscovery, topicNameFlag)
 
 	// Look for others who have announced and attempt to connect to them
 	// fmt.Println("Searching for peers via dht...")
@@ -496,98 +548,26 @@ func (p2p *P2PServer) discoverPeers() {
 	if err != nil {
 		panic(err)
 	}
-	for peer := range peerChan {
+	for {
+		peer := <-peerChan
 		if peer.ID == h.ID() {
 			continue // No self connection
 		}
-		p2p.host.Peerstore().AddAddrs(peer.ID, peer.Addrs, peerstore.ConnectedAddrTTL)
-		h.Connect(ctx, peer)
-	}
-}
-
-type RPCService struct {
-	p2pService *P2PServer
-}
-
-type HelloArgs struct {
-	Msg string
-}
-
-type HelloReply struct {
-	Msg string
-}
-
-func (svc *RPCService) HelloWorld(ctx context.Context, argType <-chan HelloArgs, HelloArgs chan<- HelloReply) error {
-
-	fmt.Println("Being called Hello World")
-
-	for {
-		m, more := <-argType
-		if more {
-			fmt.Println(m, more)
-		} else {
+		if peer.ID == "" {
 			break
 		}
-		// var message *HelloArgs
-		// message <- argType
-		// fmt.Println("Through Stream", message)
-		// replyType <- &HelloReply{
-		// 	Msg: message.Msg,
-		// }
+
+		err := h.Connect(ctx, peer)
+		if err == nil {
+			p2p.host.Peerstore().AddAddrs(peer.ID, peer.Addrs, peerstore.ConnectedAddrTTL)
+		}
 	}
 
-	return errors.New("uh oh")
 }
 
-type SignBlockAsk struct {
-	SlotHeight int64
-}
-
-type SignBlockResponse struct {
-	Hash      []byte
-	Signature string
-}
-
-func (svc *RPCService) SignBlock(ctx context.Context, signAsk SignBlockAsk, signResponse *SignBlockResponse) error {
-	return nil
-}
-
-type GetBlockSigsAsk struct {
-	SlotHeight int64
-}
-
-type Signature struct {
-	Username string
-	Sig      string
-}
-
-type GetBlockSigsResponse struct {
-	Signatures []Signature
-	BitVector  []byte
-}
-
-func (svc *RPCService) GetBlockSignatures(ctx context.Context, ask GetBlockSigsAsk, res *GetBlockSigsResponse) error {
-
-	return nil
-}
-
-type PushBlockSignatureAsk struct {
-	SlotHeight int64
-	Signatures []Signature
-}
-
-type PushBlockSignatureResponse struct {
-	ok bool
-}
-
-/**
-* Push block signatures to node.
-* If not asking for signatures of a specific slot height, then apushes will be rejected
-*
- */
-func (svc *RPCService) PushBlockSignature(ctx context.Context, ask PushBlockSignatureAsk, res *PushBlockSignatureResponse) error {
-
-	return nil
+func (p2p *P2PServer) advertiseSelf() {
+	routingDiscovery := drouting.NewRoutingDiscovery(p2p.dht)
+	routingDiscovery.Advertise(context.Background(), topicNameFlag)
 }
 
 // =================================
