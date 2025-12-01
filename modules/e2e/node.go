@@ -27,6 +27,7 @@ import (
 	"vsc-node/modules/gateway"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
+	"vsc-node/modules/gql/logstream"
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
@@ -150,6 +151,8 @@ func MakeNode(input MakeNodeInput) *Node {
 	datalayer := DataLayer.New(p2p, input.Username)
 	wasm := wasm_runtime.New()
 
+	ls := logstream.NewLogStream() // shared log stream for state + gql
+
 	se := stateEngine.New(
 		logger,
 		datalayer,
@@ -170,6 +173,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		tssCommitments,
 		tssRequests,
 		wasm,
+		ls,
 	)
 
 	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, datalayer, identityConfig, se.RcSystem)
@@ -249,6 +253,7 @@ func MakeNode(input MakeNodeInput) *Node {
 			contractState,
 			tssKeys,
 			tssRequests,
+			ls,
 		}}), "0.0.0.0:7080")
 		plugins = append(plugins, gqlManager)
 	}
