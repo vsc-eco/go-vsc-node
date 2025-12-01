@@ -167,7 +167,10 @@ func (p2pServer *P2PServer) Init() error {
 
 	var idht *dht.IpfsDHT
 	options := []libp2p.Option{
-		libp2p.ListenAddrStrings(fmt.Sprint("/ip4/0.0.0.0/tcp/", p2pServer.port)),
+		libp2p.ListenAddrStrings(
+			fmt.Sprint("/ip4/0.0.0.0/tcp/", p2pServer.port),
+			fmt.Sprint("/ip4/0.0.0.0/udp/", p2pServer.port, "/quic-v1"),
+		),
 		libp2p.Identity(key),
 		libp2p.EnableNATService(),
 		libp2p.EnableRelayService(relay.WithInfiniteLimits()),
