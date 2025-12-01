@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -18,12 +19,13 @@ import (
 	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/witnesses"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
-	"vsc-node/modules/vstream"
 
 	"github.com/chebyrash/promise"
 	"github.com/vsc-eco/hivego"
@@ -31,6 +33,7 @@ import (
 
 // VSC On chain gateway wallet
 type MultiSig struct {
+	sconf         systemconfig.SystemConfig
 	identity      common.IdentityConfig
 	ledgerActions ledgerDb.BridgeActions
 	hiveCreator   hive.HiveTransactionCreator
@@ -38,7 +41,7 @@ type MultiSig struct {
 	electionDb    elections.Elections
 	witnessDb     witnesses.Witnesses
 	balanceDb     ledgerDb.Balances
-	VStream       *vstream.VStream
+	hiveConsumer  *blockconsumer.HiveConsumer
 
 	service libp2p.PubSubService[p2pMessage]
 	p2p     *libp2p.P2PServer
@@ -50,7 +53,7 @@ type MultiSig struct {
 }
 
 func (ms *MultiSig) Init() error {
-	ms.VStream.RegisterBlockTick("multisig.tick", ms.BlockTick, false)
+	ms.hiveConsumer.RegisterBlockTick("multisig.tick", ms.BlockTick, false)
 	return nil
 }
 
@@ -132,7 +135,10 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 	})
 
 	threshold, _, _, _ := ms.getThreshold()
-	signatures, weight, err := ms.waitForSigs(signPkg.Tx, signPkg.TxId)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
 
 	if err != nil {
 		return
@@ -177,7 +183,9 @@ func (ms *MultiSig) TickActions(bh uint64) {
 
 	fmt.Println("TickActions getThreshold()")
 	threshold, _, _, _ := ms.getThreshold()
-	signatures, weight, err := ms.waitForSigs(signPkg.Tx, signPkg.TxId)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
 
 	fmt.Println("TickActions signatures", signatures, weight, err)
 	if err != nil {
@@ -223,7 +231,10 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 	}()
 
 	threshold, _, _, _ := ms.getThreshold()
-	signatures, weight, err := ms.waitForSigs(signPkg.Tx, signPkg.TxId)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
 
 	if err != nil {
 		return
@@ -312,7 +323,7 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 
 	jsonBytes, _ := json.Marshal(jsonMetadata)
 
-	rotationTx := ms.hiveCreator.UpdateAccount(common.GATEWAY_WALLET, &hivego.Auths{
+	rotationTx := ms.hiveCreator.UpdateAccount(ms.sconf.GatewayWallet(), &hivego.Auths{
 		WeightThreshold: weightThreshold,
 		// AccountAuths:    weightMap,
 		KeyAuths: gatewayKeys,
@@ -387,7 +398,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 			}
 			amt := action.Amount
 
-			op := ms.hiveCreator.Transfer(common.GATEWAY_WALLET, to, hive.AmountToString(amt), strings.ToUpper(action.Asset), "Withdrawal from vsc.network")
+			op := ms.hiveCreator.Transfer(ms.sconf.GatewayWallet(), to, hive.AmountToString(amt), strings.ToUpper(action.Asset), "Withdrawal from vsc.network")
 
 			ops = append(ops, op)
 		}
@@ -408,7 +419,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 
 		amtStr := hive.AmountToString(mustStakeBal)
 
-		op := ms.hiveCreator.TransferToSavings(common.GATEWAY_WALLET, common.GATEWAY_WALLET, amtStr, "HBD", "Staking "+amtStr+" HBD from "+strconv.Itoa(stakeTxCount)+" transactions")
+		op := ms.hiveCreator.TransferToSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), amtStr, "HBD", "Staking "+amtStr+" HBD from "+strconv.Itoa(stakeTxCount)+" transactions")
 
 		ops = append(ops, op)
 	} else if unstakeBal > stakeBal {
@@ -417,7 +428,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 
 		amtStr := hive.AmountToString(mustUnstakeBal)
 
-		op := ms.hiveCreator.TransferFromSavings(common.GATEWAY_WALLET, common.GATEWAY_WALLET, amtStr, "HBD", "Unstaking "+amtStr+" HBD from "+strconv.Itoa(unstakeTxCount)+" transactions", int(bh))
+		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), amtStr, "HBD", "Unstaking "+amtStr+" HBD from "+strconv.Itoa(unstakeTxCount)+" transactions", int(bh))
 
 		ops = append(ops, op)
 	}
@@ -472,7 +483,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 	headerBytes, _ := json.Marshal(actionHeader)
 	headerStr := string(headerBytes)
 
-	headerOp := ms.hiveCreator.CustomJson([]string{common.GATEWAY_WALLET}, []string{}, "vsc.actions", headerStr)
+	headerOp := ms.hiveCreator.CustomJson([]string{ms.sconf.GatewayWallet()}, []string{}, "vsc.actions", headerStr)
 
 	ops = append([]hivego.HiveOperation{headerOp}, ops...)
 	tx := ms.hiveCreator.MakeTransaction(ops)
@@ -556,11 +567,11 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 	//Adjust minimums as necessary
 	var ops []hivego.HiveOperation
 	if (hbdToStake > 100_000 || stakedBal < 150_000) && hbdToStake != 0 {
-		op := ms.hiveCreator.TransferToSavings(common.GATEWAY_WALLET, common.GATEWAY_WALLET, hive.AmountToString(hbdToStake), "HBD", "Staking "+hive.AmountToString(hbdToStake)+" HBD")
+		op := ms.hiveCreator.TransferToSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), hive.AmountToString(hbdToStake), "HBD", "Staking "+hive.AmountToString(hbdToStake)+" HBD")
 
 		ops = append(ops, op)
 	} else if (hbdToUnstake > 10_000 || stakedBal < 10_000) && hbdToUnstake != 0 {
-		op := ms.hiveCreator.TransferFromSavings(common.GATEWAY_WALLET, common.GATEWAY_WALLET, hive.AmountToString(hbdToUnstake), "HBD", "Unstaking "+hive.AmountToString(hbdToUnstake)+" HBD", int(bh+1))
+		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), hive.AmountToString(hbdToUnstake), "HBD", "Unstaking "+hive.AmountToString(hbdToUnstake)+" HBD", int(bh+1))
 
 		ops = append(ops, op)
 	}
@@ -573,7 +584,7 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 
 		headerBytes, _ := json.Marshal(header)
 
-		headerOp := ms.hiveCreator.CustomJson([]string{common.GATEWAY_WALLET}, []string{}, "vsc.fr_sync", string(headerBytes))
+		headerOp := ms.hiveCreator.CustomJson([]string{ms.sconf.GatewayWallet()}, []string{}, "vsc.fr_sync", string(headerBytes))
 
 		ops = append([]hivego.HiveOperation{headerOp}, ops...)
 
@@ -600,7 +611,7 @@ func (ms *MultiSig) ClaimHBDInterest() {
 }
 
 func (ms *MultiSig) getThreshold() (int, []string, []int, error) {
-	accountData, err := ms.hiveClient.GetAccount([]string{common.GATEWAY_WALLET})
+	accountData, err := ms.hiveClient.GetAccount([]string{ms.sconf.GatewayWallet()})
 
 	if err != nil {
 		return 0, nil, nil, err
@@ -620,7 +631,7 @@ func (ms *MultiSig) getThreshold() (int, []string, []int, error) {
 	return gatewayAccount.Owner.WeightThreshold, publicKeys, weights, nil
 }
 
-func (ms *MultiSig) waitForSigs(tx hivego.HiveTransaction, hivetxId string, timeout ...time.Duration) ([]string, uint64, error) {
+func (ms *MultiSig) waitForSigs(ctx context.Context, tx hivego.HiveTransaction, hivetxId string) ([]string, uint64, error) {
 	threshold, publicList, weights, _ := ms.getThreshold()
 	txId, err := tx.GenerateTrxId()
 	if err != nil {
@@ -637,50 +648,62 @@ func (ms *MultiSig) waitForSigs(tx hivego.HiveTransaction, hivetxId string, time
 	}
 	txHash := hivego.HashTxForSig(txBytes)
 
-	var timeoutz time.Duration
-	if len(timeout) > 0 {
-		timeoutz = timeout[0]
-	} else {
-		timeoutz = 20 * time.Second
-	}
+	// var timeoutz time.Duration
+	// if len(timeout) > 0 {
+	// 	timeoutz = timeout[0]
+	// } else {
+	// 	timeoutz = 20 * time.Second
+	// }
 
-	go func() {
-		time.Sleep(timeoutz)
-		fmt.Println("waitForSigs Timeout waiting for signatures")
-		if ms.msgChan[txId] != nil {
-			ms.msgChan[txId] <- nil
-		}
-	}()
+	// go func() {
+	// 	time.Sleep(timeoutz)
+	// 	fmt.Println("waitForSigs Timeout waiting for signatures")
+	// 	if ms.msgChan[txId] != nil {
+	// 		ms.msgChan[txId] <- nil
+	// 	}
+	// }()
+
+	end := make(chan struct{})
 
 	signedWeight := uint64(0)
 	sigs := make([]string, 0)
-	for uint64(threshold) > signedWeight {
-		msg := <-ms.msgChan[txId]
-		if msg == nil {
-			break
-		}
-		if msg.Type == "sign_response" {
-			sigRes := signResponse{}
-			err := json.Unmarshal([]byte(msg.Data), &sigRes)
+	go func() {
+		for uint64(threshold) > signedWeight {
+			msg := <-ms.msgChan[txId]
 
-			if err == nil {
+			if msg.Type == "sign_response" {
+				sigRes := signResponse{}
+				err := json.Unmarshal([]byte(msg.Data), &sigRes)
 
-				pubKey, err := RecoverPublicKey(sigRes.Sig, txHash)
-				if err != nil {
-					return nil, 0, err
-				}
-				idx := slices.Index(publicList, pubKey)
-				if idx != -1 {
-					if !slices.Contains(sigs, sigRes.Sig) {
-						sigs = append(sigs, sigRes.Sig)
-						signedWeight = signedWeight + uint64(weights[idx])
+				if err == nil {
+
+					pubKey, err := RecoverPublicKey(sigRes.Sig, txHash)
+					if err != nil {
+						continue
+						// return nil, 0, err
+					}
+					idx := slices.Index(publicList, pubKey)
+					if idx != -1 {
+						if !slices.Contains(sigs, sigRes.Sig) {
+							sigs = append(sigs, sigRes.Sig)
+							signedWeight = signedWeight + uint64(weights[idx])
+						}
 					}
 				}
 			}
 		}
-	}
 
-	return sigs, signedWeight, nil
+		end <- struct{}{}
+	}()
+
+	select {
+	case <-ctx.Done():
+		fmt.Println("[ms] collect sigs timeout")
+		return sigs, signedWeight, nil
+	case <-end:
+		fmt.Println("[ms] collected needed sigs")
+		return sigs, signedWeight, nil
+	}
 }
 
 func (ms *MultiSig) waitCheckBh(INTERVAL uint64, blockHeight uint64) error {
@@ -727,17 +750,18 @@ func (ms *MultiSig) getSigningKp() *hivego.KeyPair {
 
 var _ a.Plugin = &MultiSig{}
 
-func New(logger logger.Logger, witnessDb witnesses.Witnesses, electionDb elections.Elections, ledgerActions ledgerDb.BridgeActions, balanceDb ledgerDb.Balances, hiveCreator hive.HiveTransactionCreator, vstream *vstream.VStream, p2p *libp2p.P2PServer, se *stateEngine.StateEngine, identityConfig common.IdentityConfig, hiveClient *hivego.HiveRpcNode) *MultiSig {
+func New(logger logger.Logger, sconf systemconfig.SystemConfig, witnessDb witnesses.Witnesses, electionDb elections.Elections, ledgerActions ledgerDb.BridgeActions, balanceDb ledgerDb.Balances, hiveCreator hive.HiveTransactionCreator, hiveConsumer *blockconsumer.HiveConsumer, p2p *libp2p.P2PServer, se *stateEngine.StateEngine, identityConfig common.IdentityConfig, hiveClient *hivego.HiveRpcNode) *MultiSig {
 	return &MultiSig{
 		witnessDb:     witnessDb,
 		electionDb:    electionDb,
 		ledgerActions: ledgerActions,
 		balanceDb:     balanceDb,
 		hiveCreator:   hiveCreator,
-		VStream:       vstream,
+		hiveConsumer:  hiveConsumer,
 		p2p:           p2p,
 		se:            se,
 		identity:      identityConfig,
+		sconf:         sconf,
 		log:           logger,
 		hiveClient:    hiveClient,
 

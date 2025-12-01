@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
-	"vsc-node/modules/common"
+	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/contracts"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_types "vsc-node/modules/wasm/types"
@@ -191,7 +191,7 @@ var SdkModule = map[string]sdkFunc{
 		}
 		return result.Ok(SdkResultStruct{
 			Result: fmt.Sprint(eCtx.GetBalance(account, asset)),
-			Gas:    common.CYCLE_GAS_PER_RC / 2,
+			Gas:    params.CYCLE_GAS_PER_RC / 2,
 		})
 	},
 	//Pulls token balance from user transction
@@ -214,7 +214,7 @@ var SdkModule = map[string]sdkFunc{
 			eCtx.PullBalance(amount, asset),
 			func(struct{}) SdkResultStruct {
 				return SdkResultStruct{
-					Gas: common.CYCLE_GAS_PER_RC,
+					Gas: params.CYCLE_GAS_PER_RC,
 				}
 			},
 		)
@@ -247,7 +247,7 @@ var SdkModule = map[string]sdkFunc{
 			eCtx.SendBalance(to, amount, asset),
 			func(struct{}) SdkResultStruct {
 				return SdkResultStruct{
-					Gas: common.CYCLE_GAS_PER_RC,
+					Gas: params.CYCLE_GAS_PER_RC,
 				}
 			},
 		)
@@ -280,7 +280,7 @@ var SdkModule = map[string]sdkFunc{
 			eCtx.WithdrawBalance(to, amount, asset),
 			func(struct{}) SdkResultStruct {
 				return SdkResultStruct{
-					Gas: 5 * common.CYCLE_GAS_PER_RC,
+					Gas: 5 * params.CYCLE_GAS_PER_RC,
 				}
 			},
 		)

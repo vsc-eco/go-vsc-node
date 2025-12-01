@@ -25,6 +25,7 @@ type TssCommitments interface {
 	GetCommitment(keyId string, epoch uint64) (TssCommitment, error)
 	GetLatestCommitment(keyId string, qtype string) (TssCommitment, error)
 	GetCommitmentByHeight(keyId string, height uint64, qtype ...string) (TssCommitment, error)
+	GetBlames() ([]TssCommitment, error)
 }
 
 type TssKey struct {

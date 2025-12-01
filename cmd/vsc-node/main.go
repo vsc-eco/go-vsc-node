@@ -14,6 +14,7 @@ import (
 	blockproducer "vsc-node/modules/block-producer"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
@@ -30,6 +31,7 @@ import (
 	"vsc-node/modules/gateway"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
 	"vsc-node/modules/hive/streamer"
 	"vsc-node/modules/oracle"
 	p2pInterface "vsc-node/modules/p2p"
@@ -38,7 +40,6 @@ import (
 	"vsc-node/modules/tss"
 
 	data_availability "vsc-node/modules/data-availability/server"
-	"vsc-node/modules/vstream"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
 	flatfs "github.com/ipfs/go-ds-flatfs"
@@ -109,15 +110,15 @@ func main() {
 		},
 	}
 
-	sysConfig := common_types.SystemConfig{
-		Network: "mainnet",
-	}
+	sysConfig := systemconfig.MainnetConfig()
 
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig)
+	//Set below from vstream
+	var blockStatus common_types.BlockStatusGetter = nil
+	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus)
 
 	peerGetter := p2p.PeerInfo()
 
-	announcementsManager, err := announcements.New(hiveRpcClient, identityConfig, time.Hour*24, &hiveCreator, peerGetter)
+	announcementsManager, err := announcements.New(hiveRpcClient, identityConfig, sysConfig, time.Hour*24, &hiveCreator, peerGetter)
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)
@@ -132,28 +133,30 @@ func main() {
 	l := logger.PrefixedLogger{
 		Prefix: "vsc-node",
 	}
-	se := stateEngine.New(l, da, witnessDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
+	se := stateEngine.New(l, sysConfig, da, witnessDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
 
 	rcSystem := se.RcSystem
 
-	vstream := vstream.New(se)
-	ep := election_proposer.New(p2p, witnessesDb, electionDb, balanceDb, da, &hiveCreator, identityConfig, se, vstream)
+	blockConsumer := blockconsumer.New(se)
 
-	bp := blockproducer.New(l, p2p, vstream, se, identityConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
-	oracle := oracle.New(p2p, identityConfig, electionDb, witnessDb, vstream, se)
+	blockStatus = blockConsumer.BlockStatus()
+	ep := election_proposer.New(p2p, witnessesDb, electionDb, vscBlocks, balanceDb, da, &hiveCreator, identityConfig, sysConfig, se, blockConsumer)
 
-	multisig := gateway.New(l, witnessesDb, electionDb, actionsDb, balanceDb, &hiveCreator, vstream, p2p, se, identityConfig, hiveRpcClient)
+	bp := blockproducer.New(l, p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
+	oracle := oracle.New(p2p, identityConfig, electionDb, witnessDb, blockConsumer, se)
+
+	multisig := gateway.New(l, sysConfig, witnessesDb, electionDb, actionsDb, balanceDb, &hiveCreator, blockConsumer, p2p, se, identityConfig, hiveRpcClient)
 
 	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, identityConfig, rcSystem)
 
-	sr := streamer.NewStreamReader(hiveBlocks, vstream.ProcessBlock, se.SaveBlockHeight, stBlock)
+	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
 
 	flatDb, err := flatfs.CreateOrOpen("data/tss-keys", flatfs.Prefix(1), false)
 	if err != nil {
 		panic(err)
 	}
 
-	tssMgr := tss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessDb, electionDb, vstream, se, identityConfig, flatDb, &hiveCreator)
+	tssMgr := tss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessDb, electionDb, blockConsumer, se, identityConfig, flatDb, &hiveCreator)
 
 	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{
 		Witnesses:      witnessDb,
@@ -209,7 +212,7 @@ func main() {
 		dataAvailability,     //Deps: [p2p]
 		announcementsManager, // Deps: [p2p]
 
-		vstream,
+		blockConsumer,
 		//Startup main state processing pipeline
 		streamerPlugin,
 		se,

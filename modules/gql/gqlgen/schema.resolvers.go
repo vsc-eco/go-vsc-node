@@ -15,6 +15,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -319,8 +320,8 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 
 	if strings.HasPrefix(account, "hive:") {
 		fmt.Println("account", account, "is hive account")
-		maxRcs = maxRcs + common.RC_HIVE_FREE_AMOUNT
-		amount = common.RC_HIVE_FREE_AMOUNT
+		maxRcs = maxRcs + params.RC_HIVE_FREE_AMOUNT
+		amount = params.RC_HIVE_FREE_AMOUNT
 	}
 
 	balRecord, err := r.Balances.GetBalanceRecord(account, blockHeight)
@@ -354,7 +355,7 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	diff := highestHeight - rcRecord.BlockHeight
 
 	//Total amount of RCs (i.e amount unfrozen)
-	amtRet := int64(diff * uint64(rcRecord.Amount) / common.RC_RETURN_PERIOD)
+	amtRet := int64(diff * uint64(rcRecord.Amount) / params.RC_RETURN_PERIOD)
 
 	//Prevent overflow when the return period is greater than RC_RETURN_PERIOD
 	if amtRet > rcRecord.Amount {

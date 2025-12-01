@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -17,9 +18,9 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
 	libp2p "vsc-node/modules/p2p"
 	tss_helpers "vsc-node/modules/tss/helpers"
-	"vsc-node/modules/vstream"
 
 	stateEngine "vsc-node/modules/state-processing"
 
@@ -66,7 +67,7 @@ type TssManager struct {
 	witnessDb  witnesses.Witnesses
 	electionDb elections.Elections
 	config     common.IdentityConfig
-	VStream    *vstream.VStream
+	VStream    *blockconsumer.HiveConsumer
 	scheduler  GetScheduler
 	hiveClient hive.HiveTransactionCreator
 
@@ -103,8 +104,9 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	}
 
 	if TSS_ACTIVATE_HEIGHT > bh {
-		return
+		// return
 	}
+	// tssMgr.BlameScore()
 
 	slotInfo := stateEngine.CalculateSlotInfo(bh)
 
@@ -130,6 +132,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		keyLocks := make(map[string]bool)
 		generatedActions := make([]QueuedAction, 0)
 		if bh%TSS_ROTATE_INTERVAL == 0 {
+
 			electionData, _ := tssMgr.electionDb.GetElectionByHeight(bh)
 
 			epoch := electionData.Epoch
@@ -183,6 +186,71 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			tssMgr.RunActions(generatedActions, witnessSlot.Account, isLeader, bh)
 		}
 	}
+}
+
+func (tss *TssManager) BlameScore() {
+	blames, _ := tss.tssCommitments.GetBlames()
+	scoreMap := make(map[string]int)
+	accountMap := make(map[string]bool)
+	totalBlames := len(blames)
+	for _, blame := range blames {
+		// Process each blame
+		electionResult := tss.electionDb.GetElection(blame.Epoch)
+
+		bv := big.NewInt(0)
+		blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
+		bv = bv.SetBytes(blameBytes)
+
+		for idx, member := range electionResult.Members {
+			if bv.Bit(idx) == 1 {
+				scoreMap[member.Account]++
+			}
+			accountMap[member.Account] = true
+		}
+	}
+	sortedArray := make([]struct {
+		Account    string
+		BlameScore int
+	}, 0)
+	for account, score := range scoreMap {
+		sortedArray = append(sortedArray, struct {
+			Account    string
+			BlameScore int
+		}{
+			Account:    account,
+			BlameScore: score,
+		})
+	}
+	for account := range accountMap {
+		_, exists := scoreMap[account]
+		if !exists {
+			sortedArray = append(sortedArray, struct {
+				Account    string
+				BlameScore int
+			}{
+				Account:    account,
+				BlameScore: 0,
+			})
+			scoreMap[account] = 0
+		}
+		// if val == 0 {
+		// 	sortedArray = append(sortedArray, struct {
+		// 		Account    string
+		// 		BlameScore int
+		// 	}{
+		// 		Account:    account,
+		// 		BlameScore: 0,
+		// 	})
+		// }
+	}
+	slices.SortFunc(sortedArray, func(a, b struct {
+		Account    string
+		BlameScore int
+	}) int {
+		return b.BlameScore - a.BlameScore
+	})
+	scoreMapBytes, _ := json.MarshalIndent(scoreMap, "", "  ")
+	fmt.Println("scoreMap", string(scoreMapBytes), sortedArray[:5], sortedArray[10:], totalBlames)
 }
 
 //Call process
@@ -244,6 +312,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 
 			fmt.Println("keygen dispatcher", participants)
+
 			dispatcher := &KeyGenDispatcher{
 				BaseDispatcher: BaseDispatcher{
 					startLock:    sync.Mutex{},
@@ -470,7 +539,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				res.BlockHeight = bh
 				tssMgr.sessionResults[dsc.SessionId()] = res
 
-				fmt.Println("Timeout Result", res)
+				fmt.Println("Timeout Result", res, time.Now().String())
 				commitment := result.Serialize()
 				commitment.BlockHeight = bh
 				commitableResults = append(commitableResults, commitment)
@@ -887,7 +956,7 @@ func New(
 	tssCommitments tss_db.TssCommitments,
 	witnessDb witnesses.Witnesses,
 	electionDb elections.Elections,
-	vstream *vstream.VStream,
+	vstream *blockconsumer.HiveConsumer,
 	se GetScheduler,
 	config common.IdentityConfig,
 	keystore *flatfs.Datastore,

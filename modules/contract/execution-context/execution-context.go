@@ -9,6 +9,7 @@ import (
 	"slices"
 	"unicode/utf8"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/params"
 	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -114,7 +115,7 @@ func New(
 }
 
 func (ctx *contractExecutionContext) IOGas() int {
-	return (ctx.ioReadGas*common.READ_IO_GAS_RC_COST + ctx.ioWriteGas*common.WRITE_IO_GAS_RC_COST) * common.CYCLE_GAS_PER_RC
+	return (ctx.ioReadGas*params.READ_IO_GAS_RC_COST + ctx.ioWriteGas*params.WRITE_IO_GAS_RC_COST) * params.CYCLE_GAS_PER_RC
 }
 
 type ioSession struct {
@@ -128,7 +129,7 @@ func (ctx *contractExecutionContext) IOSession() wasm_context.IOSession {
 	session.end = func() int {
 		i := slices.Index(ctx.ioSessions, session)
 		ctx.ioSessions[i] = nil
-		return (session.ioReadGas*common.READ_IO_GAS_RC_COST + session.ioWriteGas*common.WRITE_IO_GAS_RC_COST) * common.CYCLE_GAS_PER_RC
+		return (session.ioReadGas*params.READ_IO_GAS_RC_COST + session.ioWriteGas*params.WRITE_IO_GAS_RC_COST) * params.CYCLE_GAS_PER_RC
 	}
 
 	i := slices.Index(ctx.ioSessions, nil)
@@ -429,7 +430,7 @@ func (ctx *contractExecutionContext) ContractStateGet(contractId string, key str
 
 func (ctx *contractExecutionContext) ContractCall(contractId string, method string, payload string, options string) wasm_types.WasmResult {
 	nextRecursion := ctx.recursion + 1
-	if nextRecursion > common.CONTRACT_CALL_MAX_RECURSION_DEPTH {
+	if nextRecursion > params.CONTRACT_CALL_MAX_RECURSION_DEPTH {
 		return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf(contracts.IC_RCSE_LIMIT_HIT), fmt.Errorf("call recursion limit hit")))
 	}
 	payloadJson := json.RawMessage(payload)

@@ -39,7 +39,8 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 	if req.Type == "msg" {
 		// fmt.Println("type is msg", tss.mgr.actionMap[req.SessionId])
 		if tss.mgr.actionMap[req.SessionId] != nil {
-			witness, _ := tss.mgr.witnessDb.GetWitnessesByPeerId(peerId.String())
+			peerIds := []string{peerId.String()}
+			witness, _ := tss.mgr.witnessDb.GetWitnessesByPeerId(peerIds)
 			act := witness[0].Account
 			i := big.NewInt(0)
 			i.SetBytes([]byte(act))

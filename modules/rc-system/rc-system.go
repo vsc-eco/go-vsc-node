@@ -2,7 +2,7 @@ package rc_system
 
 import (
 	"strings"
-	"vsc-node/modules/common"
+	"vsc-node/modules/common/params"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	ledgerSystem "vsc-node/modules/ledger-system"
 
@@ -20,7 +20,7 @@ func (rcs *RcSystem) GetFrozenAmt(account string, blockHeight uint64) int64 {
 
 	diff := blockHeight - rcRecord.BlockHeight
 
-	amtRet := int64(diff * uint64(rcRecord.Amount) / common.RC_RETURN_PERIOD)
+	amtRet := int64(diff * uint64(rcRecord.Amount) / params.RC_RETURN_PERIOD)
 
 	if amtRet > rcRecord.Amount {
 		amtRet = rcRecord.Amount
@@ -35,7 +35,7 @@ func (rcs *RcSystem) GetAvailableRCs(account string, blockHeight uint64) int64 {
 	if strings.HasPrefix(account, "hive:") {
 		//Give the user 5 HBD worth of RCs by default
 		//If user is Hive account
-		balAmt = balAmt + common.RC_HIVE_FREE_AMOUNT
+		balAmt = balAmt + params.RC_HIVE_FREE_AMOUNT
 	}
 
 	frozeAmt := rcs.GetFrozenAmt(account, blockHeight)

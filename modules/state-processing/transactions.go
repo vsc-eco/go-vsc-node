@@ -13,6 +13,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
 	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
@@ -60,7 +61,7 @@ func errorToTxResult(err error, RCs int64) TxResult {
 
 // ExecuteTx implements VSCTransaction.
 func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
-	if t.NetId != common.NETWORK_ID {
+	if t.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 100)
 	}
 	info, exists := se.GetContractInfo(t.ContractId)
@@ -119,7 +120,7 @@ func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession 
 		Caller:               caller,
 		Sender:               caller,
 		Intents:              t.Intents,
-	}, int64(gas), gas*common.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0)
+	}, int64(gas), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0)
 
 	validUtf8 := utf8.Valid(t.Payload)
 	if !validUtf8 {
@@ -135,9 +136,9 @@ func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession 
 
 	wasmCtx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(code))
 
-	res := w.Execute(wasmCtx, gas*common.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime)
+	res := w.Execute(wasmCtx, gas*params.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime)
 
-	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/common.CYCLE_GAS_PER_RC), 100))
+	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
 
 	if res.Error != nil {
 		fmt.Println("WASM execution error:", *res.Error)
@@ -248,12 +249,13 @@ func (tx TxVSCTransfer) TxSelf() TxSelf {
 }
 
 func (tx TxVSCTransfer) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
-	if tx.NetId != common.NETWORK_ID {
-		return TxResult{
-			Success: false,
-			Ret:     "Invalid network id",
-			RcUsed:  50,
-		}
+	if tx.NetId != se.SystemConfig().NetId() {
+		fmt.Println("Invalid network id:", tx.NetId, se.SystemConfig().NetId())
+		// return TxResult{
+		// 	Success: false,
+		// 	Ret:     "Invalid network id",
+		// 	RcUsed:  50,
+		// }
 	}
 	if tx.To == "" || tx.From == "" {
 		return TxResult{
@@ -350,12 +352,14 @@ func (tx TxVSCWithdraw) TxSelf() TxSelf {
 // ledgerExecutor will then do the heavy lifting of executing the input ops
 // as LedgerExecutor may be called within other contexts, such as the contract executor
 func (t *TxVSCWithdraw) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
-	if t.NetId != common.NETWORK_ID {
-		return TxResult{
-			Success: false,
-			Ret:     "Invalid network id",
-			RcUsed:  50,
-		}
+	if t.NetId != se.SystemConfig().NetId() {
+		fmt.Println("Invalid network id:", t.NetId, se.SystemConfig().NetId())
+
+		// return TxResult{
+		// 	Success: false,
+		// 	Ret:     "Invalid network id",
+		// 	RcUsed:  50,
+		// }
 	}
 	if t.To == "" {
 		//Maybe default to self later?
@@ -434,11 +438,13 @@ type TxStakeHbd struct {
 }
 
 func (t *TxStakeHbd) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
-	if t.NetId != common.NETWORK_ID {
-		return TxResult{
-			Success: false,
-			Ret:     "Invalid network id",
-		}
+	if t.NetId != se.SystemConfig().NetId() {
+		fmt.Println("Invalid network id:", t.NetId, se.SystemConfig().NetId())
+
+		// return TxResult{
+		// 	Success: false,
+		// 	Ret:     "Invalid network id",
+		// }
 	}
 	if t.To == "" || t.From == "" {
 		return TxResult{
@@ -520,13 +526,15 @@ type TxUnstakeHbd struct {
 }
 
 func (t *TxUnstakeHbd) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
-	se.Log().Debug("TxUnstakeHbd", t.Self.BlockHeight, t.Self.TxId, t.Self.OpIndex, t.NetId, common.NETWORK_ID)
-	if t.NetId != common.NETWORK_ID {
-		return TxResult{
-			Success: false,
-			Ret:     "Invalid network id",
-			RcUsed:  50,
-		}
+	se.Log().Debug("TxUnstakeHbd", t.Self.BlockHeight, t.Self.TxId, t.Self.OpIndex, t.NetId, se.SystemConfig().NetId())
+	if t.NetId != se.SystemConfig().NetId() {
+		fmt.Println("Invalid network id:", t.NetId, se.SystemConfig().NetId())
+
+		// return TxResult{
+		// 	Success: false,
+		// 	Ret:     "Invalid network id",
+		// 	RcUsed:  50,
+		// }
 	}
 	if t.To == "" || t.From == "" {
 		return TxResult{
@@ -620,12 +628,14 @@ type TxConsensusStake struct {
 }
 
 func (tx *TxConsensusStake) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
-	if tx.NetId != common.NETWORK_ID {
-		return TxResult{
-			Success: false,
-			Ret:     "Invalid network id",
-			RcUsed:  50,
-		}
+	if tx.NetId != se.SystemConfig().NetId() {
+		fmt.Println("Invalid network id:", tx.NetId, se.SystemConfig().NetId())
+
+		// return TxResult{
+		// 	Success: false,
+		// 	Ret:     "Invalid network id",
+		// 	RcUsed:  50,
+		// }
 	}
 
 	if tx.To == "" || tx.From == "" {
@@ -709,12 +719,14 @@ type TxConsensusUnstake struct {
 }
 
 func (tx *TxConsensusUnstake) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
-	if tx.NetId != common.NETWORK_ID {
-		return TxResult{
-			Success: false,
-			Ret:     "Invalid network id",
-			RcUsed:  50,
-		}
+	if tx.NetId != se.SystemConfig().NetId() {
+		fmt.Println("Invalid network id:", tx.NetId, se.SystemConfig().NetId())
+
+		// return TxResult{
+		// 	Success: false,
+		// 	Ret:     "Invalid network id",
+		// 	RcUsed:  50,
+		// }
 	}
 
 	if tx.To == "" || tx.From == "" {

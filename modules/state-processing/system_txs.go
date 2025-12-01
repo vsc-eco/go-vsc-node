@@ -35,7 +35,7 @@ type ContractOutput struct {
 	TssOps      []tss_db.TssOp                   `json:"tss_ops"`
 }
 
-func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
+func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight int64) {
 	se.Flush()
 
 	txOuts := make(map[string][]int)
@@ -102,7 +102,7 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf) {
 		Results:     output.Results,
 
 		AnchoredBlock:  txSelf.BlockId,
-		AnchoredHeight: int64(txSelf.BlockHeight),
+		AnchoredHeight: slotHeight,
 		AnchoredId:     txSelf.TxId,
 		AnchoredIndex:  int64(txSelf.Index),
 	})
@@ -434,17 +434,20 @@ type TxProposeBlock struct {
 	//ReplayId should be deprecated soon
 	NetId       string            `json:"net_id"`
 	SignedBlock SignedBlockHeader `json:"signed_block"`
+
+	Signers []string `json:"-"`
+	Epoch   uint64   `json:"-"`
 }
 
-func (tx TxProposeBlock) Type() string {
+func (tx *TxProposeBlock) Type() string {
 	return "propose_block"
 }
 
-func (tx TxProposeBlock) TxSelf() TxSelf {
+func (tx *TxProposeBlock) TxSelf() TxSelf {
 	return tx.Self
 }
 
-func (t TxProposeBlock) Validate(se *StateEngine) bool {
+func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 	elecResult, err := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
 	if err != nil {
 		//Cannot process block due to missing election
@@ -490,7 +493,7 @@ func (t TxProposeBlock) Validate(se *StateEngine) bool {
 	// fmt.Println("MemberDids", memberDids)
 	circuit, err := dids.DeserializeBlsCircuit(t.SignedBlock.Signature, memberDids, *cid)
 
-	verified, _, err := circuit.Verify()
+	verified, includedDids, err := circuit.Verify()
 
 	// fmt.Println("circuit.Verify()", err)
 
@@ -511,11 +514,21 @@ func (t TxProposeBlock) Validate(se *StateEngine) bool {
 
 	verifiedR := signingScore > ((total * 2) / 3)
 
+	for _, did := range includedDids {
+		for _, member := range elecResult.Members {
+			if did.String() == member.Key {
+				t.Signers = append(t.Signers, member.Account)
+			}
+		}
+	}
+	t.Epoch = elecResult.Epoch
+
 	return verifiedR
 }
 
 // ProcessTx implements VSCTransaction.
 func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
+
 	blockCid, _ := cid.Parse(t.SignedBlock.Block)
 	node, _ := se.da.GetDag(blockCid)
 	jsonBytes, _ := node.MarshalJSON()
@@ -539,6 +552,8 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 		// SlotHeight: ,
 
+		Signers:    t.Signers,
+		Epoch:      t.Epoch,
 		SlotHeight: int(slotInfo.StartHeight),
 		Stats: struct {
 			Size uint64 `bson:"size"`
@@ -608,7 +623,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				BlockId:     t.Self.BlockId,
 				BlockHeight: t.Self.BlockHeight,
 				TxId:        t.Self.TxId,
-			})
+			}, int64(se.slotStatus.SlotHeight))
 
 			fmt.Println("OUTPUT CONTAINER", contractOutput)
 

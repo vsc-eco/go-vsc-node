@@ -73,7 +73,6 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 		//modify the key value to trick tss-lib into thinking the ID is different
 		if epochIdx != 0 {
-			fmt.Println("epochIdx", epochIdx+1)
 			i = i.Mul(i, big.NewInt(int64(epochIdx+1)))
 		}
 
@@ -418,7 +417,7 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 						Account: to.Id,
 					}, to.Moniker, bytes, msg.IsBroadcast(), commiteeType, cmtFrom)
 					if err != nil {
-						fmt.Println("SendMsg direct info", err)
+						fmt.Println("SendMsg direct info", err, to.Id, len(bytes))
 					}
 				}()
 			}
@@ -668,7 +667,7 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 					go func() {
 						err := dispatcher.tssMgr.SendMsg(dispatcher.sessionId, p, msg.WireMsg().From.Moniker, bytes, true, commiteeType, "")
 						if err != nil {
-							fmt.Println("SendMsg direct info", err)
+							fmt.Println("SendMsg direct info", err, p.Account, len(bytes))
 						}
 					}()
 				}
@@ -686,7 +685,7 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 							Account: string(to.Id),
 						}, to.Moniker, bytes, false, commiteeType, "")
 						if err != nil {
-							fmt.Println("SendMsg direct info", err)
+							fmt.Println("SendMsg direct info", err, string(to.Id), len(bytes))
 						}
 					}()
 				}
@@ -732,6 +731,7 @@ func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcs
 	go func() {
 		ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
 
+		fmt.Println("Update party", ok, len(input), from.Id, time.Now().String())
 		if err != nil {
 			fmt.Println("UpdateFromBytes", ok, err)
 			dispatcher.tssErr = err

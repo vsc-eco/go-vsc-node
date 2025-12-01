@@ -10,11 +10,11 @@ import (
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/witnesses"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
 	"vsc-node/modules/oracle/chain"
 	"vsc-node/modules/oracle/p2p"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
-	"vsc-node/modules/vstream"
 
 	"github.com/chebyrash/promise"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -41,16 +41,16 @@ var (
 )
 
 type Oracle struct {
-	ctx         context.Context
-	cancelFunc  context.CancelFunc
-	logger      *slog.Logger
-	p2pServer   *libp2p.P2PServer
-	pubSubSrv   libp2p.PubSubService[p2p.Msg]
-	conf        common.IdentityConfig
-	electionDb  elections.Elections
-	witnessDb   witnesses.Witnesses
-	vStream     *vstream.VStream
-	stateEngine *stateEngine.StateEngine
+	ctx          context.Context
+	cancelFunc   context.CancelFunc
+	logger       *slog.Logger
+	p2pServer    *libp2p.P2PServer
+	pubSubSrv    libp2p.PubSubService[p2p.Msg]
+	conf         common.IdentityConfig
+	electionDb   elections.Elections
+	witnessDb    witnesses.Witnesses
+	hiveConsumer *blockconsumer.HiveConsumer
+	stateEngine  *stateEngine.StateEngine
 
 	// priceOracle *price.PriceOracle
 	chainOracle *chain.ChainOracle
@@ -61,7 +61,7 @@ func New(
 	conf common.IdentityConfig,
 	electionDb elections.Elections,
 	witnessDb witnesses.Witnesses,
-	vstream *vstream.VStream,
+	hiveConsumer *blockconsumer.HiveConsumer,
 	stateEngine *stateEngine.StateEngine,
 ) *Oracle {
 	logLevel := slog.LevelInfo
@@ -91,15 +91,15 @@ func New(
 	chainRelayer := chain.New(ctx, logger, conf)
 
 	return &Oracle{
-		ctx:         ctx,
-		cancelFunc:  cancel,
-		p2pServer:   p2pServer,
-		conf:        conf,
-		electionDb:  electionDb,
-		witnessDb:   witnessDb,
-		vStream:     vstream,
-		stateEngine: stateEngine,
-		logger:      logger,
+		ctx:          ctx,
+		cancelFunc:   cancel,
+		p2pServer:    p2pServer,
+		conf:         conf,
+		electionDb:   electionDb,
+		witnessDb:    witnessDb,
+		hiveConsumer: hiveConsumer,
+		stateEngine:  stateEngine,
+		logger:       logger,
 		// priceOracle: priceOracle,
 		chainOracle: chainRelayer,
 	}
