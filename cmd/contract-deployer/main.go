@@ -7,7 +7,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
-	"vsc-node/modules/common/common_types"
+	systemconfig "vsc-node/modules/common/system-config"
 	data_availability_client "vsc-node/modules/data-availability/client"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/hive/streamer"
@@ -26,11 +26,9 @@ func main() {
 	}
 	identityConfig := common.NewIdentityConfig()
 	hiveConfig := streamer.NewHiveConfig()
-	sysConfig := common_types.SystemConfig{
-		Network: args.network,
-	}
+	sysConfig := systemconfig.FromNetwork(args.network)
 	wits := witnesses.NewEmptyWitnesses()
-	p2p := p2pInterface.New(wits, identityConfig, sysConfig)
+	p2p := p2pInterface.New(wits, identityConfig, sysConfig, nil)
 	da := datalayer.New(p2p)
 	client := data_availability_client.New(p2p, identityConfig, da)
 
@@ -106,7 +104,7 @@ func main() {
 			}
 			feeOp := hivego.TransferOperation{
 				From:   user,
-				To:     common.GATEWAY_WALLET,
+				To:     sysConfig.GatewayWallet(),
 				Amount: "10.000 HBD",
 				Memo:   "",
 			}
