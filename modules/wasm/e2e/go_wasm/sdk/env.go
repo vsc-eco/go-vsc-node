@@ -25,3 +25,9 @@ type Env struct {
 
 	Intents []Intent `json:"intents"`
 }
+
+type Env2 struct {
+	Auths        []string `json:"msg.required_auths"`
+	PostingAuths []string `json:"msg.required_posting_auths"`
+	Sender       string   `json:"msg.sender"`
+}
