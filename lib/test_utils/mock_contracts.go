@@ -1,9 +1,10 @@
 package test_utils
 
 import (
-	"fmt"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db/vsc/contracts"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type MockContractDb struct {
@@ -18,7 +19,7 @@ func (m *MockContractDb) RegisterContract(contractId string, args contracts.Cont
 func (m *MockContractDb) ContractById(contractId string) (contracts.Contract, error) {
 	info, exists := m.Contracts[contractId]
 	if !exists {
-		return contracts.Contract{}, fmt.Errorf("contract %s does not exist", contractId)
+		return contracts.Contract{}, mongo.ErrNoDocuments
 	}
 	return info, nil
 }
