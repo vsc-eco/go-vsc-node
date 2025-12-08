@@ -25,7 +25,12 @@ type txVscCallContractJSON struct {
 }
 
 // need a contract id
-// call a contract with 3 arguments a contract id, an input string, actions (function name)
+// call a contract from L1 (hive account) with 4 arguments:
+//   - hive username
+//   - contract id
+//   - raw json message input
+//   - action (function name/contract entrypoint)
+//
 // returning (json RawMessage, error)
 func callContract(
 	username, contractID string,
