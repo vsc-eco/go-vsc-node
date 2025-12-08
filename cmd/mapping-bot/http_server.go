@@ -19,16 +19,16 @@ var requestValidator = validator.New(validator.WithRequiredStructEnabled())
 
 func mapBotHttpServer(
 	ctx context.Context,
-	db *database.MappingBotDatabase,
+	addressStore *database.AddressStore,
 	port int,
 	bot *mapper.MapperState,
 ) {
-	if db == nil {
+	if addressStore == nil {
 		fmt.Fprintf(os.Stderr, "datastore or mutext not providred\n")
 		return
 	}
 
-	http.Handle("/", requestHandler(ctx, db, bot))
+	http.Handle("/", requestHandler(ctx, addressStore, bot))
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
 }
 
@@ -38,7 +38,7 @@ type requestBody struct {
 
 func requestHandler(
 	globalCtx context.Context,
-	db *database.MappingBotDatabase,
+	addressStore *database.AddressStore,
 	bot *mapper.MapperState,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +74,7 @@ func requestHandler(
 		ctx, cancel := context.WithTimeout(globalCtx, 15*time.Second)
 		defer cancel()
 
-		if err := db.InsertAddressMap(ctx, btcAddr, vscAddr); err != nil {
+		if err := addressStore.Insert(ctx, btcAddr, vscAddr); err != nil {
 			if errors.Is(err, database.ErrAddrExists) {
 				writeResponse(w, http.StatusConflict, "address map exists")
 			} else {

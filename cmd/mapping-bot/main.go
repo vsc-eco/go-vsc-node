@@ -31,12 +31,12 @@ func newDataStore(path string) (*flatfs.Datastore, error) {
 }
 
 func main() {
-	addressDb, err := database.New(context.Background(), "mongodb://localhost:27017", "mappingbot", "address_mappings")
+	db, err := database.New(context.Background(), "mongodb://localhost:27017", "mappingbot")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create datastore: %s\n", err.Error())
 		os.Exit(1)
 	}
-	defer addressDb.Close(context.Background())
+	defer db.Close(context.Background())
 	lastClear := time.Now()
 
 	// remove for prod
@@ -54,19 +54,14 @@ func main() {
 		}
 	}
 
-	generalDb, err := newDataStore("./map-bot-datastore")
-	if err != nil {
-		log.Fatalln(err.Error())
-	}
-
-	bot, err := mapper.NewMapperState(generalDb, addressDb)
+	bot, err := mapper.NewMapperState(db)
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
 
 	httpCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go mapBotHttpServer(httpCtx, addressDb, httpPort, bot)
+	go mapBotHttpServer(httpCtx, db.Addresses, httpPort, bot)
 
 	mempoolClient := mempool.NewMempoolClient()
 	for {
@@ -74,7 +69,7 @@ func main() {
 
 		// clear address db if it's been 24 hours
 		if time.Since(lastClear).Hours() > 24 {
-			_, err := addressDb.DeleteOlderThan(ctx, 24*30*time.Hour)
+			_, err := db.Addresses.DeleteOlderThan(ctx, 24*30*time.Hour)
 			if err != nil {
 				// don't need to break/continue since it's not a critical error
 				fmt.Fprintf(os.Stderr, "error deleting expired addresses: %s\n", err.Error())
@@ -92,7 +87,11 @@ func main() {
 			go bot.HandleUnmap(mempoolClient, txSpends)
 		}
 
-		blockHeight := bot.LastBlockHeight + 1
+		blockHeight, err := bot.Db.State.GetBlockHeight(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error fetching block height from db: %s", err.Error())
+			continue
+		}
 
 		hash, status, err := mempoolClient.GetBlockHashAtHeight(blockHeight)
 		if status == http.StatusNotFound {

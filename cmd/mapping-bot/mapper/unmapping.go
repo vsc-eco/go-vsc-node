@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -76,19 +75,9 @@ func (ms *MapperState) HandleUnmap(
 		}
 		for _, tx := range txPairs {
 			memPoolClient.PostTx(tx.RawTx)
-			ms.SentTxs[tx.TxId] = true
+			ms.Db.State.MarkTransactionSent(ctx, tx.TxId)
 		}
 	}
-
-	// store data to datastore
-	ms.Mutex.Lock()
-	defer ms.Mutex.Unlock()
-	sentTxsJson, err := json.Marshal(ms.SentTxs)
-	if err != nil {
-		return
-	}
-
-	ms.FfsDatastore.Put(ctx, sentTxsKey, sentTxsJson)
 }
 
 func (ms *MapperState) ProcessTxSpends(gqlClient *graphql.Client, incomingTxSpends map[string]*SigningData) {

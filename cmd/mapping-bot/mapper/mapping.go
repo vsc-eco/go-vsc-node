@@ -38,7 +38,7 @@ func (ms *MapperState) HandleMap(
 		return
 	}
 
-	blockParser := NewBlockParser(ms.AddressDb, &chaincfg.TestNet3Params)
+	blockParser := NewBlockParser(ms.Db.Addresses, &chaincfg.TestNet3Params)
 
 	foundTxs, err := blockParser.ParseBlock(ctx, ms.GqlClient, blockBytes, blockHeight)
 	if err != nil {

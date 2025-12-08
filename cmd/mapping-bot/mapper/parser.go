@@ -30,11 +30,11 @@ type VerificationRequest struct {
 }
 
 type BlockParser struct {
-	addressDb   *database.MappingBotDatabase
+	addressDb   *database.AddressStore
 	chainParams *chaincfg.Params
 }
 
-func NewBlockParser(addressDb *database.MappingBotDatabase, params *chaincfg.Params) *BlockParser {
+func NewBlockParser(addressDb *database.AddressStore, params *chaincfg.Params) *BlockParser {
 	return &BlockParser{
 		addressDb:   addressDb,
 		chainParams: params,
