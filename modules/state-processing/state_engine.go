@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"testing"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/logger"
@@ -432,39 +431,70 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 				json.Unmarshal(cj.Json, &parsedTx)
 
-				// Contract deployment now requires two operations:
-				// 1. custom_json with the contract details
-				// 2. transfer operation with deployment fee to GATEWAY_WALLET
-				//
-				// The fee is refunded to the deployer's ledger balance if deployment fails.
-				// This pattern is active when testing or after CONTRACT_DEPLOYMENT_FEE_START_HEIGHT.
-				if testing.Testing() || txSelf.BlockHeight >= params.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
-					if len(tx.Operations) < 2 {
+				if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
+					hasFee, feeAmt, feePayer := hasFeePaymentOp(tx.Operations, params.CONTRACT_DEPLOYMENT_FEE, "hbd")
+					if !hasFee {
 						continue
 					}
 
-					secondOp := tx.Operations[1]
-					if secondOp.Type == "transfer" {
-						amountData := secondOp.Value["amount"].(map[string]any)
-						amount, err := strconv.ParseInt(amountData["amount"].(string), 10, 64)
+					txResult := parsedTx.ExecuteTx(se)
 
-						if err != nil {
-							panic(err)
-						}
+					if txResult.Success {
+						se.LedgerSystem.Deposit(ledgerSystem.Deposit{
+							Id:          MakeTxId(tx.TransactionID, 1),
+							Asset:       "hbd",
+							Amount:      feeAmt,
+							Account:     se.sconf.GatewayWallet(),
+							From:        "hive:" + feePayer,
+							Memo:        "to=vsc.dao",
+							BlockHeight: blockInfo.BlockHeight,
+							BIdx:        int64(tx.Index),
+							OpIdx:       int64(1),
+						})
+					} else {
+						se.LedgerSystem.Deposit(ledgerSystem.Deposit{
+							Id:          MakeTxId(tx.TransactionID, 1),
+							Asset:       "hbd",
+							Amount:      feeAmt,
+							Account:     "hive:" + feePayer,
+							From:        "hive:" + feePayer,
+							Memo:        "to=" + feePayer,
+							BlockHeight: blockInfo.BlockHeight,
+							BIdx:        int64(tx.Index),
+							OpIdx:       int64(1),
+						})
+					}
 
-						if amount < params.CONTRACT_DEPLOYMENT_FEE || amountData["nai"] != "@@000000013" || secondOp.Value["to"] != params.GATEWAY_WALLET {
-							continue
-						}
+				} else {
+					parsedTx.ExecuteTx(se)
+				}
+				continue
+			} else if cj.Id == "vsc.update_contract" {
+				if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_UPDATE_HEIGHT {
+					for idx, auth := range txSelf.RequiredAuths {
+						txSelf.RequiredAuths[idx] = "hive:" + auth
+					}
 
-						txResult := parsedTx.ExecuteTx(se)
+					for idx, auth := range txSelf.RequiredPostingAuths {
+						txSelf.RequiredPostingAuths[idx] = "hive:" + auth
+					}
 
+					parsedTx := TxUpdateContract{
+						Self: txSelf,
+					}
+					json.Unmarshal(cj.Json, &parsedTx)
+
+					hasFee, feeAmt, feePayer := hasFeePaymentOp(tx.Operations, params.CONTRACT_DEPLOYMENT_FEE, "hbd")
+					txResult := parsedTx.ExecuteTx(se, hasFee)
+
+					if hasFee {
 						if txResult.Success {
 							se.LedgerSystem.Deposit(ledgerSystem.Deposit{
 								Id:          MakeTxId(tx.TransactionID, 1),
 								Asset:       "hbd",
-								Amount:      amount,
+								Amount:      feeAmt,
 								Account:     se.sconf.GatewayWallet(),
-								From:        "hive:" + secondOp.Value["from"].(string),
+								From:        "hive:" + feePayer,
 								Memo:        "to=vsc.dao",
 								BlockHeight: blockInfo.BlockHeight,
 								BIdx:        int64(tx.Index),
@@ -474,18 +504,16 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							se.LedgerSystem.Deposit(ledgerSystem.Deposit{
 								Id:          MakeTxId(tx.TransactionID, 1),
 								Asset:       "hbd",
-								Amount:      amount,
-								Account:     "hive:" + secondOp.Value["from"].(string),
-								From:        "hive:" + secondOp.Value["from"].(string),
-								Memo:        "to=" + secondOp.Value["from"].(string),
+								Amount:      feeAmt,
+								Account:     "hive:" + feePayer,
+								From:        "hive:" + feePayer,
+								Memo:        "to=" + feePayer,
 								BlockHeight: blockInfo.BlockHeight,
 								BIdx:        int64(tx.Index),
 								OpIdx:       int64(1),
 							})
 						}
 					}
-				} else {
-					parsedTx.ExecuteTx(se)
 				}
 				continue
 			} else if cj.Id == "vsc.election_result" {
