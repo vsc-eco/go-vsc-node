@@ -255,6 +255,108 @@ func (sp *StorageProof) Verify(electionInfo elections.ElectionResult) bool {
 	return true
 }
 
+type TxUpdateContract struct {
+	Self         TxSelf               `json:"-"`
+	NetId        string               `json:"net_id"`
+	Id           string               `json:"id"`
+	Name         string               `json:"name"`
+	Description  string               `json:"description"`
+	Owner        string               `json:"owner"`
+	Runtime      wasm_runtime.Runtime `json:"runtime"`
+	Code         string               `json:"code"`
+	StorageProof StorageProof         `json:"storage_proof"`
+}
+
+func (tx TxUpdateContract) Type() string {
+	return "update_contract"
+}
+
+func (tx TxUpdateContract) TxSelf() TxSelf {
+	return tx.Self
+}
+
+func (tx *TxUpdateContract) ToData() map[string]interface{} {
+	return map[string]interface{}{
+		"net_id":        tx.NetId,
+		"name":          tx.Name,
+		"description":   tx.Description,
+		"owner":         tx.Owner,
+		"runtime":       tx.Runtime,
+		"code":          tx.Code,
+		"storage_proof": tx.StorageProof,
+	}
+}
+
+func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) TxResult {
+	if len(tx.Self.RequiredAuths) == 0 {
+		return TxResult{
+			Success: false,
+			Ret:     "cannot update contract with posting auths",
+		}
+	}
+	existing, err := se.contractDb.ContractById(tx.Id)
+	if err != nil {
+		return TxResult{
+			Success: false,
+			Ret:     "failed to retrieve contract to update",
+		}
+	}
+	if tx.Self.RequiredAuths[0] != existing.Owner {
+		return TxResult{
+			Success: false,
+			Ret:     "not owner",
+		}
+	}
+	updatedContract := contracts.Contract{
+		Name:        tx.Name,
+		Description: tx.Description,
+		Owner:       existing.Owner,
+		Runtime:     existing.Runtime,
+		Code:        existing.Code,
+	}
+	if tx.Owner != "" {
+		// update owner
+		if !strings.HasPrefix(tx.Owner, "hive:") && !strings.HasPrefix(tx.Owner, "did:") {
+			updatedContract.Owner = "hive:" + tx.Owner
+		} else {
+			updatedContract.Owner = tx.Owner
+		}
+	}
+	if hasFee && tx.Code != "" && tx.Code != existing.Code {
+		// update contract code
+		if wasm_runtime.NewFromString(tx.Runtime.String()).IsErr() {
+			return TxResult{
+				Success: false,
+				Ret:     "runtime name is invalid",
+			}
+		}
+		election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
+		if err != nil {
+			return TxResult{
+				Success: false,
+				Ret:     "failed to get election",
+			}
+		}
+		verified := tx.StorageProof.Verify(election)
+		if !verified {
+			return TxResult{
+				Success: false,
+				Ret:     "invalid storage proof",
+			}
+		}
+		cidz := cid.MustParse(tx.Code)
+		go func() {
+			se.da.Get(cidz, &common_types.GetOptions{})
+		}()
+		updatedContract.Code = tx.Code
+	}
+	se.contractDb.UpdateContract(tx.Id, updatedContract)
+
+	return TxResult{
+		Success: true,
+	}
+}
+
 type TxElectionResult struct {
 	Self TxSelf
 

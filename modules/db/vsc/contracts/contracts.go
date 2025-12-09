@@ -87,6 +87,23 @@ func (c *contracts) RegisterContract(contractId string, args Contract) {
 	c.FindOneAndUpdate(context.Background(), findQuery, updateQuery, opts)
 }
 
+func (c *contracts) UpdateContract(contractId string, args Contract) {
+	findQuery := bson.M{
+		"id": contractId,
+	}
+	updateQuery := bson.M{
+		"$set": bson.M{
+			"code":        args.Code,
+			"name":        args.Name,
+			"description": args.Description,
+			"owner":       args.Owner,
+			"runtime":     args.Runtime,
+		},
+	}
+	opts := options.FindOneAndUpdate().SetUpsert(true)
+	c.FindOneAndUpdate(context.Background(), findQuery, updateQuery, opts)
+}
+
 type contractState struct {
 	*db.Collection
 }
