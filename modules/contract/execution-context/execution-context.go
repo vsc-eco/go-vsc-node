@@ -471,7 +471,7 @@ func (ctx *contractExecutionContext) ContractCall(contractId string, method stri
 			wasmCtx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(ct.Code))
 			res := w.Execute(wasmCtx, gasRemaining, method, callPayload, ct.Info.Runtime)
 			if res.Error != nil {
-				return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf(res.ErrorCode), fmt.Errorf(*res.Error), fmt.Errorf("%d", res.Gas)))
+				return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf("%s", res.ErrorCode), fmt.Errorf("%s", *res.Error), fmt.Errorf("%d", res.Gas)))
 			}
 			return result.Ok(res)
 		},
