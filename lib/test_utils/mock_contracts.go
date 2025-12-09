@@ -16,6 +16,10 @@ func (m *MockContractDb) RegisterContract(contractId string, args contracts.Cont
 	m.Contracts[contractId] = args
 }
 
+func (m *MockContractDb) UpdateContract(contractId string, args contracts.Contract) {
+	m.Contracts[contractId] = args
+}
+
 func (m *MockContractDb) ContractById(contractId string) (contracts.Contract, error) {
 	info, exists := m.Contracts[contractId]
 	if !exists {
