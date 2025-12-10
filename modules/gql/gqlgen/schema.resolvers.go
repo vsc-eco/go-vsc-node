@@ -23,6 +23,7 @@ import (
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
+	"vsc-node/modules/gql/logstream"
 	"vsc-node/modules/gql/model"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	stateEngine "vsc-node/modules/state-processing"
@@ -571,6 +572,105 @@ func (r *rcRecordResolver) MaxRcs(ctx context.Context, obj *rcDb.RcRecord) (mode
 	return model.Int64(obj.MaxRcs), nil
 }
 
+// Logs starts a GraphQL subscription that streams contract logs.
+//
+// If FromBlock is set, it first replays old logs from that block
+// and then streams new ones in real time.
+// The filter can also limit logs to certain contract addresses.
+// The stream stops when the client disconnects or the context ends.
+func (r *subscriptionResolver) Logs(ctx context.Context, filter *LogFilter) (<-chan *Log, error) {
+	if r.LogStream == nil {
+		return nil, fmt.Errorf("log stream not initialized")
+	}
+
+	out := make(chan *Log, 256)
+
+	// Build internal filter from GraphQL input.
+	var f logstream.LogFilterInternal
+	if filter != nil {
+		if filter.FromBlock != nil {
+			val := uint64(*filter.FromBlock)
+			f.FromBlock = &val
+		}
+		if len(filter.ContractAddresses) > 0 {
+			f.ContractAddresses = make(map[string]struct{}, len(filter.ContractAddresses))
+			for _, addr := range filter.ContractAddresses {
+				f.ContractAddresses[addr] = struct{}{}
+			}
+		}
+	}
+
+	// Register subscriber for live logs.
+	sub := r.LogStream.Subscribe(f)
+	fmt.Printf("[subscription] new subscriber %d created with filter %+v\n", sub.Id, sub.Filter)
+
+	go func() {
+		defer func() {
+			fmt.Printf("[subscription] subscriber %d channel closed\n", sub.Id)
+			r.LogStream.Unsubscribe(sub)
+			close(out)
+		}()
+
+		// Replay historical logs if requested.
+		if f.FromBlock != nil {
+			currentHeight := r.LogStream.CurrentHeight()
+
+			// If no height yet, fall back to DB.
+			if currentHeight == 0 {
+				var latestHeight int64
+				for addr := range f.ContractAddresses {
+					lastOutput, err := r.ContractsState.GetLastOutput(addr, ^uint64(0))
+					if err == nil && lastOutput.BlockHeight > 0 {
+						if lastOutput.BlockHeight > latestHeight {
+							latestHeight = int64(lastOutput.BlockHeight)
+						}
+					}
+				}
+				currentHeight = uint64(latestHeight)
+				fmt.Printf("[subscription] fallback currentHeight from DB = %d\n", currentHeight)
+			}
+
+			// Handle missing data edge case.
+			if currentHeight < *f.FromBlock {
+				currentHeight = uint64(math.MaxInt64)
+			}
+
+			fmt.Printf("[subscription] subscriber %d replaying logs from %d to %d\n",
+				sub.Id, *f.FromBlock, currentHeight)
+
+			err := r.LogStream.Replay(*f.FromBlock, currentHeight,
+				func(from, to uint64, emit func(logstream.ContractLog) error) error {
+					return r.ContractsState.StreamLogsInRange(from, to, emit)
+				})
+			if err != nil {
+				fmt.Printf("[subscription] replay error: %v\n", err)
+			}
+		}
+
+		// Forward live logs to the GraphQL stream.
+		for {
+			select {
+			case <-ctx.Done():
+				fmt.Printf("[subscription] subscriber %d disconnected\n", sub.Id)
+				return
+			case l, ok := <-sub.Ch:
+				if !ok {
+					return
+				}
+				out <- &Log{
+					BlockHeight:     model.Uint64(l.BlockHeight),
+					TxHash:          l.TxID,
+					ContractAddress: l.ContractAddress,
+					Log:             l.Log,
+					Timestamp:       l.Timestamp,
+				}
+			}
+		}
+	}()
+
+	return out, nil
+}
+
 // Index is the resolver for the index field.
 func (r *transactionOperationResolver) Index(ctx context.Context, obj *transactions.TransactionOperation) (model.Uint64, error) {
 	return model.Uint64(obj.Idx), nil
@@ -682,6 +782,9 @@ func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 // RcRecord returns RcRecordResolver implementation.
 func (r *Resolver) RcRecord() RcRecordResolver { return &rcRecordResolver{r} }
 
+// Subscription returns SubscriptionResolver implementation.
+func (r *Resolver) Subscription() SubscriptionResolver { return &subscriptionResolver{r} }
+
 // TransactionOperation returns TransactionOperationResolver implementation.
 func (r *Resolver) TransactionOperation() TransactionOperationResolver {
 	return &transactionOperationResolver{r}
@@ -709,6 +812,7 @@ type opLogEventResolver struct{ *Resolver }
 type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type rcRecordResolver struct{ *Resolver }
+type subscriptionResolver struct{ *Resolver }
 type transactionOperationResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }

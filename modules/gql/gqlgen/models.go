@@ -3,7 +3,7 @@
 package gqlgen
 
 import (
-	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	ledger_db "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/gql/model"
 )
@@ -35,27 +35,27 @@ type LedgerAction struct {
 }
 
 type LedgerActionsFilter struct {
-	ByTxID     *string         `json:"byTxId,omitempty"`
-	ByActionID *string         `json:"byActionId,omitempty"`
-	ByAccount  *string         `json:"byAccount,omitempty"`
-	ByTypes    []string        `json:"byTypes,omitempty"`
-	ByAsset    *ledgerDb.Asset `json:"byAsset,omitempty"`
-	ByStatus   *string         `json:"byStatus,omitempty"`
-	FromBlock  *model.Uint64   `json:"fromBlock,omitempty"`
-	ToBlock    *model.Uint64   `json:"toBlock,omitempty"`
-	Offset     *int            `json:"offset,omitempty"`
-	Limit      *int            `json:"limit,omitempty"`
+	ByTxID     *string          `json:"byTxId,omitempty"`
+	ByActionID *string          `json:"byActionId,omitempty"`
+	ByAccount  *string          `json:"byAccount,omitempty"`
+	ByTypes    []string         `json:"byTypes,omitempty"`
+	ByAsset    *ledger_db.Asset `json:"byAsset,omitempty"`
+	ByStatus   *string          `json:"byStatus,omitempty"`
+	FromBlock  *model.Uint64    `json:"fromBlock,omitempty"`
+	ToBlock    *model.Uint64    `json:"toBlock,omitempty"`
+	Offset     *int             `json:"offset,omitempty"`
+	Limit      *int             `json:"limit,omitempty"`
 }
 
 type LedgerTxFilter struct {
-	ByToFrom  *string         `json:"byToFrom,omitempty"`
-	ByTxID    *string         `json:"byTxId,omitempty"`
-	ByTypes   []string        `json:"byTypes,omitempty"`
-	ByAsset   *ledgerDb.Asset `json:"byAsset,omitempty"`
-	FromBlock *model.Uint64   `json:"fromBlock,omitempty"`
-	ToBlock   *model.Uint64   `json:"toBlock,omitempty"`
-	Offset    *int            `json:"offset,omitempty"`
-	Limit     *int            `json:"limit,omitempty"`
+	ByToFrom  *string          `json:"byToFrom,omitempty"`
+	ByTxID    *string          `json:"byTxId,omitempty"`
+	ByTypes   []string         `json:"byTypes,omitempty"`
+	ByAsset   *ledger_db.Asset `json:"byAsset,omitempty"`
+	FromBlock *model.Uint64    `json:"fromBlock,omitempty"`
+	ToBlock   *model.Uint64    `json:"toBlock,omitempty"`
+	Offset    *int             `json:"offset,omitempty"`
+	Limit     *int             `json:"limit,omitempty"`
 }
 
 type LocalNodeInfo struct {
@@ -65,7 +65,23 @@ type LocalNodeInfo struct {
 	Epoch              model.Uint64 `json:"epoch"`
 }
 
+type Log struct {
+	BlockHeight     model.Uint64 `json:"blockHeight"`
+	TxHash          string       `json:"txHash"`
+	ContractAddress string       `json:"contractAddress"`
+	Log             string       `json:"log"`
+	Timestamp       string       `json:"timestamp"`
+}
+
+type LogFilter struct {
+	FromBlock         *model.Uint64 `json:"fromBlock,omitempty"`
+	ContractAddresses []string      `json:"contractAddresses,omitempty"`
+}
+
 type Query struct {
+}
+
+type Subscription struct {
 }
 
 type TransactionFilter struct {
