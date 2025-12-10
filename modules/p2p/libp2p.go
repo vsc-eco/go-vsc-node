@@ -56,6 +56,8 @@ type P2PServer struct {
 	blockStatus common_types.BlockStatusGetter
 
 	port int
+
+	reachabilityStatus network.Reachability
 }
 
 var _ aggregate.Plugin = &P2PServer{}
@@ -159,6 +161,10 @@ func (p2pServer *P2PServer) Init() error {
 		kadOptions = append(kadOptions, kadDht.Mode(kadDht.ModeServer))
 	}
 
+	relayResources := relay.DefaultResources()
+	relayResources.MaxCircuits = 128
+	relayResources.ReservationTTL = 8 * time.Hour
+
 	var idht *dht.IpfsDHT
 	options := []libp2p.Option{
 		libp2p.ListenAddrStrings(
@@ -167,7 +173,7 @@ func (p2pServer *P2PServer) Init() error {
 		),
 		libp2p.Identity(key),
 		libp2p.EnableNATService(),
-		libp2p.EnableRelayService(relay.WithInfiniteLimits()),
+		libp2p.EnableRelayService(relay.WithInfiniteLimits(), relay.WithResources(relayResources)),
 		libp2p.NATPortMap(),
 		libp2p.EnableAutoNATv2(),
 		libp2p.EnableHolePunching(),
@@ -207,7 +213,7 @@ func (p2pServer *P2PServer) Init() error {
 	routedHost := rhost.Wrap(p2p, idht)
 	p2pServer.host = routedHost
 	p2pServer.dht = idht
-	fmt.Println("peer ID:", p2pServer.PeerInfo().GetPeerId())
+	fmt.Println("peer ID:", p2pServer.GetPeerId())
 
 	go func() {
 		cSub, _ := p2pServer.host.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
@@ -217,6 +223,7 @@ func (p2pServer *P2PServer) Init() error {
 		case stat := <-cSub.Out():
 
 			fmt.Println("NAT Status", stat)
+			p2pServer.reachabilityStatus = stat.(event.EvtLocalReachabilityChanged).Reachability
 		case <-time.After(30 * time.Second):
 
 		}
@@ -360,10 +367,21 @@ func (p2p *P2PServer) Stop() error {
 	return nil
 }
 
-func (p2p *P2PServer) PeerInfo() common_types.PeerInfoGetter {
-	return &peerGetter{
-		server: p2p,
-	}
+func (pg *P2PServer) GetPeerId() string {
+	return pg.host.ID().String()
+}
+
+func (pg *P2PServer) GetPeerAddr() multiaddr.Multiaddr {
+	addrs := pg.host.Addrs()
+	return addrs[0]
+}
+func (pg *P2PServer) GetPeerAddrs() []multiaddr.Multiaddr {
+	addrs := pg.host.Addrs()
+	return addrs
+}
+
+func (p2p *P2PServer) GetStatus() network.Reachability {
+	return p2p.reachabilityStatus
 }
 
 func (p2p *P2PServer) BroadcastCidWithContext(ctx context.Context, cid cid.Cid) error {
@@ -455,22 +473,37 @@ func (p2pServer *P2PServer) SetStreamHandlerMatch(pid protocol.ID, matcher func(
 
 func (p2p *P2PServer) addrFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
 	filteredAddrs := make([]multiaddr.Multiaddr, 0)
+	var publicAddr multiaddr.Multiaddr
 	for _, addr := range addrs {
-		if isPublicAddr(addr) || isCircuitAddr(addr) {
+		if isCircuitAddr(addr) {
 			filteredAddrs = append(filteredAddrs, addr)
 		}
+		if isPublicAddr(addr) {
+			publicAddr = addr
+		}
 	}
+
+	if publicAddr != nil {
+		ipAddr, err := publicAddr.ValueForProtocol(multiaddr.P_IP4)
+		if err == nil {
+			ma1, _ := multiaddr.NewMultiaddr("/ip4/" + ipAddr + "/tcp/" + strconv.Itoa(p2p.port))
+			filteredAddrs = append(filteredAddrs, ma1)
+			ma2, _ := multiaddr.NewMultiaddr("/ip4/" + ipAddr + "/udp/" + strconv.Itoa(p2p.port) + "/quic-v1")
+			filteredAddrs = append(filteredAddrs, ma2)
+		}
+	}
+
 	return filteredAddrs
 }
 
 func (p2p *P2PServer) connectRegisteredPeers() {
 	opts := []witnesses.SearchOption{}
 
-	if p2p.blockStatus != nil {
-		currentBlockHeight := p2p.blockStatus.BlockHeight()
-		opts = append(opts, witnesses.SearchHeight(currentBlockHeight))
-		opts = append(opts, witnesses.SearchExpiration(witnesses.WITNESS_EXPIRE_BLOCKS))
-	}
+	// if p2p.blockStatus != nil {
+	// 	currentBlockHeight := p2p.blockStatus.BlockHeight()
+	// 	opts = append(opts, witnesses.SearchHeight(currentBlockHeight))
+	// 	opts = append(opts, witnesses.SearchExpiration(witnesses.WITNESS_EXPIRE_BLOCKS))
+	// }
 
 	fmt.Println("connectRegisteredPeers opts", opts)
 

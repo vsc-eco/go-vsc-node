@@ -1,6 +1,10 @@
 package witnesses
 
-import a "vsc-node/modules/aggregate"
+import (
+	a "vsc-node/modules/aggregate"
+
+	"go.mongodb.org/mongo-driver/bson"
+)
 
 type Witnesses interface {
 	a.Plugin
@@ -15,20 +19,29 @@ type Witnesses interface {
 type SearchConfig struct {
 	ExpirationBlocks uint64
 	BlockHeight      uint64
+	Enabled          bool
 }
 
-type SearchOption func(cfg *SearchConfig) error
+type SearchOption func(cfg *bson.M) error
 
-func SearchExpiration(blocks uint64) SearchOption {
-	return func(cfg *SearchConfig) error {
-		cfg.ExpirationBlocks = blocks
-		return nil
-	}
-}
+// func SearchExpiration(blocks uint64) SearchOption {
+// 	return func(cfg *bson.M) error {
+// 		(*cfg)["expiration_blocks"] = blocks
+// 		return nil
+// 	}
+// }
 
-func SearchHeight(bh uint64) SearchOption {
-	return func(cfg *SearchConfig) error {
-		cfg.BlockHeight = bh
+// func SearchHeight(bh uint64) SearchOption {
+// 	return func(cfg *bson.M) error {
+// 		(*cfg)["block_height"] = bh
+// 		return nil
+// 	}
+// }
+
+// Only returns witnesses that are enabled
+func EnabledOnly() SearchOption {
+	return func(cfg *bson.M) error {
+		(*cfg)["enabled"] = true
 		return nil
 	}
 }

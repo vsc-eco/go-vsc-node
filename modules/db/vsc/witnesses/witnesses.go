@@ -220,18 +220,25 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) (
 		return nil, err
 	}
 
-	findOptions := options.Find().SetSort(bson.D{{
-		Key:   "height",
-		Value: -1,
-	}})
-	cursor, err := w.Find(ctx, bson.M{
+	query := bson.M{
 		"height": bson.M{
 			"$gte": gte,
 			"$lt":  bh,
 		},
 
 		"account": bson.M{"$in": distinctAccounts},
-	}, findOptions)
+	}
+
+	// cfg := SearchConfig{}
+	for _, opt := range opts {
+		opt(&query)
+	}
+
+	findOptions := options.Find().SetSort(bson.D{{
+		Key:   "height",
+		Value: -1,
+	}})
+	cursor, err := w.Find(ctx, query, findOptions)
 	if err != nil {
 		return nil, err
 	}

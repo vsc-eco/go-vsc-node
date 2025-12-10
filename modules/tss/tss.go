@@ -99,7 +99,7 @@ func (tssMgr *TssManager) GeneratePreParams() {
 
 func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	//First check if we are in sync or not
-	if bh < *headHeight-10 {
+	if bh < *headHeight-20 {
 		return
 	}
 
@@ -479,6 +479,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 		if err == nil {
 			startedDispatcher = append(startedDispatcher, dispatcher)
+		} else {
+			delete(tssMgr.sigChannels, dispatcher.SessionId())
+			delete(tssMgr.actionMap, dispatcher.SessionId())
+			delete(tssMgr.sessionMap, dispatcher.SessionId())
 		}
 		fmt.Println("Start() err", err)
 	}
@@ -491,6 +495,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			resultPtr, err := dsc.Done().Await(context.Background())
 			// fmt.Println("result, err", resultPtr, err)
 
+			delete(tssMgr.sigChannels, dsc.SessionId())
+			delete(tssMgr.actionMap, dsc.SessionId())
+			delete(tssMgr.sessionMap, dsc.SessionId())
 			if err != nil {
 
 				fmt.Println("Done() err", err)

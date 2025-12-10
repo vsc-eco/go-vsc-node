@@ -116,9 +116,7 @@ func main() {
 	var blockStatus common_types.BlockStatusGetter = nil
 	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus)
 
-	peerGetter := p2p.PeerInfo()
-
-	announcementsManager, err := announcements.New(hiveRpcClient, identityConfig, sysConfig, time.Hour*24, &hiveCreator, peerGetter)
+	announcementsManager, err := announcements.New(hiveRpcClient, identityConfig, sysConfig, time.Hour*24, &hiveCreator, p2p)
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)

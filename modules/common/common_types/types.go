@@ -9,6 +9,7 @@ import (
 	"github.com/ipfs/go-cid"
 	dagCbor "github.com/ipfs/go-ipld-cbor"
 	format "github.com/ipfs/go-ipld-format"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/multiformats/go-multicodec"
 )
@@ -17,6 +18,7 @@ type PeerInfoGetter interface {
 	GetPeerId() string
 	GetPeerAddrs() []multiaddr.Multiaddr
 	GetPeerAddr() multiaddr.Multiaddr
+	GetStatus() network.Reachability
 }
 
 type PutRawOptions struct {

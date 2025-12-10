@@ -2,7 +2,6 @@ package libp2p
 
 import (
 	"net"
-	"vsc-node/modules/common/common_types"
 
 	"github.com/multiformats/go-multiaddr"
 )
@@ -24,7 +23,11 @@ func (pg *peerGetter) GetPeerAddrs() []multiaddr.Multiaddr {
 	return addrs
 }
 
-var _ common_types.PeerInfoGetter = &peerGetter{}
+func (pg *peerGetter) GetStatus() {
+
+}
+
+// var _ common_types.PeerInfoGetter = &peerGetter{}
 
 func isPublicAddr(addr multiaddr.Multiaddr) bool {
 	ipv4Address, err := addr.ValueForProtocol(multiaddr.P_IP4)
