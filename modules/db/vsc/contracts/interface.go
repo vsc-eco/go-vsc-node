@@ -7,6 +7,7 @@ type Contracts interface {
 	RegisterContract(contractId string, args Contract)
 	ContractById(contractId string) (Contract, error)
 	FindContracts(contractId *string, code *string, offset int, limit int) ([]Contract, error)
+	UpdateContract(contractId string, args Contract)
 }
 
 type ContractState interface {

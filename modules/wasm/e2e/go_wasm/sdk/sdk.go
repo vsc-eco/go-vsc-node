@@ -2,9 +2,10 @@ package sdk
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"strconv"
 	_ "vsc-node/modules/wasm/e2e/go_wasm/sdk/runtime"
+
+	"github.com/CosmWasm/tinyjson"
 )
 
 //go:wasmimport sdk console.log
@@ -47,12 +48,6 @@ func contractRead(contractId *string, key *string) *string
 //go:wasmimport sdk contracts.call
 func contractCall(contractId *string, method *string, payload *string, options *string) *string
 
-//go:wasmimport env abort
-func abort(msg, file *string, line, column *int32)
-
-//go:wasmimport env revert
-func revert(msg, symbol *string)
-
 //go:wasmimport sdk tss.create_key
 func tssCreateKey(keyId *string, algo *string) *string
 
@@ -62,12 +57,20 @@ func tssSignKey(keyId *string, msgId *string) *string
 //go:wasmimport sdk tss.get_key
 func tssGetKey(keyId *string) *string
 
+//go:wasmimport env abort
+func abort(msg, file *string, line, column *int32)
+
+//go:wasmimport env revert
+func revert(msg, symbol *string)
+
+// Aborts the contract execution
 func Abort(msg string) {
 	ln := int32(0)
 	abort(&msg, nil, &ln, &ln)
 	panic(msg)
 }
 
+// Reverts the transaction and abort execution in the same way as Abort().
 func Revert(msg string, symbol string) {
 	revert(&msg, &symbol)
 }
@@ -89,35 +92,26 @@ func StateDeleteObject(key string) {
 
 // Get current execution environment variables
 func GetEnv() Env {
-	// Log("test 1")
 	envStr := *getEnv(nil)
-	// Log("test 2")
 	env := Env{}
-	// Log("test 3")
-	// envMap := map[string]interface{}{}
-	json.Unmarshal([]byte(envStr), &env)
-	envMap := map[string]interface{}{}
-	json.Unmarshal([]byte(envStr), &envMap)
-	// Log("test 4 " + envStr)
+	tinyjson.Unmarshal([]byte(envStr), &env)
+	env2 := Env2{}
+	tinyjson.Unmarshal([]byte(envStr), &env2)
 
 	requiredAuths := make([]Address, 0)
-	for _, auth := range envMap["msg.required_auths"].([]interface{}) {
-		addr := auth.(string)
+	for _, addr := range env2.Auths {
 		requiredAuths = append(requiredAuths, Address(addr))
 	}
-	// Log("test 4.5")
 	requiredPostingAuths := make([]Address, 0)
-	for _, auth := range envMap["msg.required_posting_auths"].([]interface{}) {
-		addr := auth.(string)
+	for _, addr := range env2.PostingAuths {
 		requiredPostingAuths = append(requiredPostingAuths, Address(addr))
 	}
-	// Log("test 5")
+
 	env.Sender = Sender{
-		Address:              Address(envMap["msg.sender"].(string)),
+		Address:              Address(env2.Sender),
 		RequiredAuths:        requiredAuths,
 		RequiredPostingAuths: requiredPostingAuths,
 	}
-	// Log("test 6")
 
 	return env
 }
@@ -176,7 +170,7 @@ func ContractStateGet(contractId string, key string) *string {
 func ContractCall(contractId string, method string, payload string, options *ContractCallOptions) *string {
 	optStr := ""
 	if options != nil {
-		optByte, err := json.Marshal(&options)
+		optByte, err := tinyjson.Marshal(options)
 		if err != nil {
 			Revert("could not serialize options", "sdk_error")
 		}
