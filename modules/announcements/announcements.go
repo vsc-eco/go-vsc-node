@@ -14,6 +14,7 @@ import (
 	"vsc-node/modules/common/common_types"
 	systemconfig "vsc-node/modules/common/system-config"
 
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/minio/sha256-simd"
 	"github.com/robfig/cron/v3"
 	"github.com/vsc-eco/hivego"
@@ -227,6 +228,9 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 	for _, addr := range a.peerInfo.GetPeerAddrs() {
 		peerAddrs = append(peerAddrs, addr.String())
 	}
+
+	enabled := int(a.peerInfo.GetStatus()) == int(network.ReachabilityPublic)
+
 	payload := payload{
 		Services: []string{"vsc.network"},
 		DidKeys: []didConsensusKey{
@@ -251,7 +255,7 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 			}{
 				//Put a proper toggle / on chain configuration option
 				//Witness should be enabled/disabled by making a transaction on chain.
-				Enabled: true,
+				Enabled: enabled,
 			},
 		},
 	}
