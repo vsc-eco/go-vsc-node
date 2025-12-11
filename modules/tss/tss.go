@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"slices"
 	"strconv"
@@ -106,7 +107,6 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	if TSS_ACTIVATE_HEIGHT > bh {
 		return
 	}
-	// tssMgr.BlameScore()
 
 	slotInfo := stateEngine.CalculateSlotInfo(bh)
 
@@ -188,69 +188,82 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	}
 }
 
-func (tss *TssManager) BlameScore() {
-	blames, _ := tss.tssCommitments.GetBlames()
-	scoreMap := make(map[string]int)
-	accountMap := make(map[string]bool)
-	totalBlames := len(blames)
-	for _, blame := range blames {
-		// Process each blame
-		electionResult := tss.electionDb.GetElection(blame.Epoch)
+type score struct {
+	Account string
+	Score   int
+	Weight  int
+}
 
-		bv := big.NewInt(0)
-		blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
-		bv = bv.SetBytes(blameBytes)
+type scoreMap struct {
+	bannedNodes map[string]bool
+}
 
-		for idx, member := range electionResult.Members {
-			if bv.Bit(idx) == 1 {
-				scoreMap[member.Account]++
+func (tss *TssManager) BlameScore() scoreMap {
+	weightMap := make(map[string]int)
+
+	initialElection, _ := tss.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
+	elections := make(map[uint64]elections.ElectionResult, 0)
+	elections[initialElection.Epoch] = initialElection
+
+	epoch := initialElection.Epoch
+	//Pull the last 7 days worth of elections
+	epochCount := (4 * 7) - 1
+	for i := 0; i < epochCount; i++ {
+		epoch--
+		election := tss.electionDb.GetElection(epoch)
+		if election == nil {
+			break
+		}
+		elections[epoch] = *election
+	}
+
+	blameMap := make(map[string]int)
+	for _, election := range elections {
+		blames, _ := tss.tssCommitments.GetBlames(tss_db.ByEpoch(election.Epoch), tss_db.ByType("blame"))
+		for _, member := range election.Members {
+			weightMap[member.Account] += len(blames)
+		}
+
+		for _, blame := range blames {
+			bv := big.NewInt(0)
+			blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
+			bv = bv.SetBytes(blameBytes)
+
+			for idx, member := range election.Members {
+				if bv.Bit(idx) == 1 {
+					blameMap[member.Account] += 1
+				}
 			}
-			accountMap[member.Account] = true
 		}
 	}
-	sortedArray := make([]struct {
-		Account    string
-		BlameScore int
-	}, 0)
-	for account, score := range scoreMap {
-		sortedArray = append(sortedArray, struct {
-			Account    string
-			BlameScore int
-		}{
-			Account:    account,
-			BlameScore: score,
+
+	sortedArray := make([]score, 0)
+	for account, weight := range weightMap {
+		sortedArray = append(sortedArray, score{
+			Account: account,
+			Score:   blameMap[account],
+			Weight:  weight,
 		})
 	}
-	for account := range accountMap {
-		_, exists := scoreMap[account]
-		if !exists {
-			sortedArray = append(sortedArray, struct {
-				Account    string
-				BlameScore int
-			}{
-				Account:    account,
-				BlameScore: 0,
-			})
-			scoreMap[account] = 0
-		}
-		// if val == 0 {
-		// 	sortedArray = append(sortedArray, struct {
-		// 		Account    string
-		// 		BlameScore int
-		// 	}{
-		// 		Account:    account,
-		// 		BlameScore: 0,
-		// 	})
-		// }
-	}
-	slices.SortFunc(sortedArray, func(a, b struct {
-		Account    string
-		BlameScore int
-	}) int {
-		return b.BlameScore - a.BlameScore
+
+	slices.SortFunc(sortedArray, func(a, b score) int {
+		return b.Score - a.Score
 	})
-	scoreMapBytes, _ := json.MarshalIndent(scoreMap, "", "  ")
-	fmt.Println("scoreMap", string(scoreMapBytes), sortedArray[:5], sortedArray[10:], totalBlames)
+
+	bannedNodes := make(map[string]bool)
+	for _, entry := range sortedArray {
+		//Failure rate of 25% or more results in ban
+		if entry.Score > entry.Weight*25/100 {
+			bannedNodes[entry.Account] = true
+		}
+	}
+	// scoreMapBytes, _ := json.MarshalIndent(blameMap, "", "  ")
+	// fmt.Println("scoreMap", string(scoreMapBytes), sortedArray)
+	// fmt.Println("BlamedNodes", bannedNodes)
+
+	return scoreMap{
+		bannedNodes: bannedNodes,
+	}
 }
 
 //Call process
@@ -278,6 +291,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		return
 	}
 
+	blameMap := tssMgr.BlameScore()
+
 	participants := make([]Participant, 0)
 
 	dispatchers := make([]Dispatcher, 0)
@@ -300,11 +315,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			fmt.Println("bitset", bitset, isBlame)
 			fmt.Println("lastBlame, err", lastBlame, err)
 			fmt.Println("lastBlame.BlockHeight", lastBlame.BlockHeight, bh-BLAME_EXPIRE)
-			for idx, member := range currentElection.Members {
-				if isBlame {
-					if bitset.Bit(idx) == 1 {
-						continue
-					}
+			for _, member := range currentElection.Members {
+				// if isBlame {
+				// 	if bitset.Bit(idx) == 1 {
+				// 		continue
+				// 	}
+				// }
+				//if node is banned
+				if blameMap.bannedNodes[member.Account] {
+					continue
 				}
 				participants = append(participants, Participant{
 					Account: member.Account,
@@ -426,20 +445,20 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			for idx, member := range currentElection.Members {
 				fmt.Println("isBlame", isBlame, idx, blameBits.Bit(idx))
-				if isBlame {
-					if blameBits.Bit(idx) == 1 {
-						//Deny inclusion into next commitee due to previous blame
-						continue
-					}
+				// if isBlame {
+				// 	if blameBits.Bit(idx) == 1 {
+				// 		//Deny inclusion into next commitee due to previous blame
+				// 		continue
+				// 	}
+				// }
+				//if node is banned
+				if blameMap.bannedNodes[member.Account] {
+					continue
 				}
 				newParticipants = append(newParticipants, Participant{
 					Account: member.Account,
 				})
 			}
-
-			// fmt.Println("reshare", action.KeyId)
-			// newParticipants := make([]Participant, len(participants))
-			// copy(newParticipants, participants)
 
 			dispatcher := &ReshareDispatcher{
 				BaseDispatcher: BaseDispatcher{

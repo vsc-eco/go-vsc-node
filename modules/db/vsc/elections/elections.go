@@ -2,6 +2,7 @@ package elections
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/db"
@@ -10,6 +11,7 @@ import (
 	cbornode "github.com/ipfs/go-ipld-cbor"
 	"github.com/polydawn/refmt"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -25,6 +27,28 @@ func (e *elections) Init() error {
 	err := e.Collection.Init()
 	if err != nil {
 		return err
+	}
+
+	indexModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "block_height", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}
+
+	// create index on block.block_number for faster queries
+	err = e.CreateIndexIfNotExist(indexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create index: %w", err)
+	}
+
+	indexModel2 := mongo.IndexModel{
+		Keys:    bson.D{{Key: "epoch", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}
+
+	// create index on block.block_number for faster queries
+	err = e.CreateIndexIfNotExist(indexModel2)
+	if err != nil {
+		return fmt.Errorf("failed to create index: %w", err)
 	}
 
 	return nil
