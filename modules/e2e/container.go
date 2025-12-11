@@ -14,6 +14,7 @@ import (
 
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db/vsc/hive_blocks"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 )
@@ -30,6 +31,7 @@ type E2EContainer struct {
 	aggregateNodes *aggregate.Aggregate
 	nodeNames      []string
 	mockReader     *stateEngine.MockReader
+	hiveConsumer   blockconsumer.HiveConsumer
 	r2e            *E2ERunner
 	client         NodeClient
 }
@@ -110,7 +112,7 @@ func (c *E2EContainer) initClient() {
 func (c *E2EContainer) Init() error {
 	cbortypes.RegisterTypes()
 
-	c.mockReader = stateEngine.NewMockReader()
+	c.mockReader = stateEngine.NewMockReader(c.hiveConsumer.ProcessBlock)
 
 	mockCreator := stateEngine.MockCreator{
 		Mr: c.mockReader,
@@ -191,7 +193,7 @@ func (c *E2EContainer) Start(t *testing.T) error {
 			node.MockHiveBlocks.HighestBlock = block.BlockNumber
 		}
 		for _, node := range c.runningNodes {
-			node.VStream.ProcessBlock(block, headHeight)
+			node.HiveConsumer.ProcessBlock(block, headHeight)
 		}
 	}
 
