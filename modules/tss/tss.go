@@ -41,7 +41,7 @@ const TSS_SIGN_INTERVAL = 20 //* 2
 // 5 minutes in blocks
 const TSS_ROTATE_INTERVAL = 20 * 5
 
-const TSS_ACTIVATE_HEIGHT = 100_997_304
+const TSS_ACTIVATE_HEIGHT = 101_943_260
 
 // 24 hour blame
 var BLAME_EXPIRE = uint64(24 * 60 * 20)
@@ -104,7 +104,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	}
 
 	if TSS_ACTIVATE_HEIGHT > bh {
-		// return
+		return
 	}
 	// tssMgr.BlameScore()
 
@@ -500,7 +500,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			delete(tssMgr.sessionMap, dsc.SessionId())
 			if err != nil {
 
-				fmt.Println("Done() err", err)
+				fmt.Println("Done() err", err, dsc.SessionId())
 				//handle error
 				continue
 			}

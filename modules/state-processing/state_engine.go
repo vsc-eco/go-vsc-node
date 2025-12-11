@@ -3,11 +3,9 @@ package state_engine
 import (
 	"crypto"
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"slices"
 	"strconv"
 	"testing"
@@ -778,29 +776,26 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					fmt.Println("vsc.tss_commitment <err>", err, commitmentData, string(cj.Json))
 
 					for _, commitment := range commitmentData {
-						savedCommitment, err := se.tssCommitments.GetCommitmentByHeight(commitment.KeyId, block.BlockNumber, "reshare", "keygen")
+						// savedCommitment, err := se.tssCommitments.GetCommitmentByHeight(commitment.KeyId, block.BlockNumber, "reshare", "keygen")
 
 						fmt.Println("commitment.KeyId, block.BlockNumber", commitment.KeyId, block.BlockNumber)
 						var newKey bool
 						members := make([]dids.BlsDID, 0)
-						if err != nil {
-							newKey = true
-							electionData, err := se.electionDb.GetElectionByHeight(block.BlockNumber)
+						electionData, err := se.electionDb.GetElectionByHeight(block.BlockNumber)
 
-							if err != nil {
-								continue
-							}
-							for _, mbr := range electionData.Members {
-								members = append(members, dids.BlsDID(mbr.Key))
-							}
+						if err != nil {
+							continue
+						}
+						for _, mbr := range electionData.Members {
+							members = append(members, dids.BlsDID(mbr.Key))
 						}
 
 						// electionData, _ := se.electionDb.GetElectionByHeight(savedCommitment.Epoch)
 
-						decodedCommitment, _ := base64.RawURLEncoding.DecodeString(savedCommitment.Commitment)
+						// decodedCommitment, _ := base64.RawURLEncoding.DecodeString(savedCommitment.Commitment)
 
-						bitset := &big.Int{}
-						bitset.SetBytes(decodedCommitment)
+						// bitset := &big.Int{}
+						// bitset.SetBytes(decodedCommitment)
 
 						// for idx, mbr := range electionData.Members {
 						// 	if bitset.Bit(idx) == 1 {
@@ -824,12 +819,17 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 						commitmentCid, err := common.HashBytes(data, multicodec.DagCbor)
 
+						if err != nil {
+							fmt.Println("error hashing commitment cid", err)
+							continue
+						}
+
 						circuit, _ := dids.DeserializeBlsCircuit(dids.SerializedCircuit{
 							Signature: commitment.Signature,
 							BitVector: commitment.BitSet,
 						}, members, commitmentCid)
 
-						testJson, err := json.Marshal(baseComment)
+						testJson, _ := json.Marshal(baseComment)
 						fmt.Println("verify commitmentCid", commitmentCid, string(testJson))
 						verified, _, _ := circuit.Verify()
 
