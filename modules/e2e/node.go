@@ -12,6 +12,7 @@ import (
 	blockproducer "vsc-node/modules/block-producer"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
@@ -27,6 +28,7 @@ import (
 	"vsc-node/modules/gateway"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
@@ -35,8 +37,6 @@ import (
 	data_availability "vsc-node/modules/data-availability/server"
 
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
-
-	"vsc-node/modules/vstream"
 
 	"github.com/chebyrash/promise"
 	flatfs "github.com/ipfs/go-ds-flatfs"
@@ -48,7 +48,7 @@ type Node struct {
 
 	StateEngine      *stateEngine.StateEngine
 	P2P              *p2pInterface.P2PServer
-	VStream          *vstream.VStream
+	HiveConsumer     *blockconsumer.HiveConsumer
 	ElectionProposer election_proposer.ElectionProposer
 
 	TxPool *transactionpool.TransactionPool
@@ -137,21 +137,19 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	hrpc := &MockHiveRpcClient{}
 
-	sysConfig := common_types.SystemConfig{
-		Network: "mocknet",
-	}
+	sysConfig := systemconfig.MocknetConfig()
 
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, 0)
+	var blockStatus common_types.BlockStatusGetter = nil
+	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus, 0)
 
-	peerGetter := p2p.PeerInfo()
-
-	announcementsManager, _ := announcements.New(hrpc, identityConfig, time.Hour*24, &txCreator, peerGetter)
+	announcementsManager, _ := announcements.New(hrpc, identityConfig, sysConfig, time.Hour*24, &txCreator, p2p)
 
 	datalayer := DataLayer.New(p2p, input.Username)
 	wasm := wasm_runtime.New()
 
 	se := stateEngine.New(
 		logger,
+		sysConfig,
 		datalayer,
 		witnessesDb,
 		electionDb,
@@ -172,17 +170,17 @@ func MakeNode(input MakeNodeInput) *Node {
 		wasm,
 	)
 
+	blockConsumer := blockconsumer.New(se)
+
 	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, datalayer, identityConfig, se.RcSystem)
 
 	dbNuker := NewDbNuker(vscDb)
 
-	vstream := vstream.New(se)
+	ep := election_proposer.New(p2p, witnessesDb, electionDb, vscBlocks, balanceDb, datalayer, &txCreator, identityConfig, sysConfig, se, blockConsumer)
 
-	ep := election_proposer.New(p2p, witnessesDb, electionDb, balanceDb, datalayer, &txCreator, identityConfig, se, vstream)
+	bp := blockproducer.New(logger, p2p, blockConsumer, se, identityConfig, sysConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb, se.RcSystem, nonceDb)
 
-	bp := blockproducer.New(logger, p2p, vstream, se, identityConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb, se.RcSystem, nonceDb)
-
-	multisig := gateway.New(logger, witnessesDb, electionDb, actionsDb, balanceDb, &txCreator, vstream, p2p, se, identityConfig, hiveClient)
+	multisig := gateway.New(logger, sysConfig, witnessesDb, electionDb, actionsDb, balanceDb, &txCreator, blockConsumer, p2p, se, identityConfig, hiveClient)
 
 	dataAvailability := data_availability.New(p2p, identityConfig, datalayer)
 
@@ -190,7 +188,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	if err != nil {
 		panic(err)
 	}
-	tssManager := tss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessesDb, electionDb, vstream, se, identityConfig, ds, &txCreator)
+	tssManager := tss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessesDb, electionDb, blockConsumer, se, identityConfig, ds, &txCreator)
 
 	plugins := make([]aggregate.Plugin, 0)
 
@@ -221,7 +219,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		tssKeys,
 		tssRequests,
 		dataAvailability,
-		vstream,
+		blockConsumer,
 		wasm,
 		se,
 		bp,
@@ -261,9 +259,10 @@ func MakeNode(input MakeNodeInput) *Node {
 		input.Runner.HiveCreator = &txCreator
 
 		input.Runner.ElectionProposer = ep
-		input.Runner.VStream = vstream
+		input.Runner.HiveConsumer = blockConsumer
 		input.Runner.P2pService = p2p
 		input.Runner.IdentityConfig = identityConfig
+		input.Runner.SystemConfig = systemconfig.MocknetConfig()
 		input.Runner.TxDb = txDb
 	}
 
@@ -271,7 +270,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		Aggregate:        aggregate.New(plugins),
 		StateEngine:      se,
 		P2P:              p2p,
-		VStream:          vstream,
+		HiveConsumer:     blockConsumer,
 		ElectionProposer: ep,
 
 		TxPool: txpool,
@@ -309,11 +308,9 @@ func MakeClient(input MakeClientInput) NodeClient {
 	identityConfig.Init()
 	identityConfig.SetUsername("mock-client")
 
-	sysConfig := common_types.SystemConfig{
-		Network: "mocknet",
-	}
+	sysConfig := systemconfig.MocknetConfig()
 	wits := witnesses.NewEmptyWitnesses()
-	p2p := p2pInterface.New(wits, identityConfig, sysConfig, 0)
+	p2p := p2pInterface.New(wits, identityConfig, sysConfig, nil, 0)
 
 	plugins := make([]aggregate.Plugin, 0)
 	plugins = append(plugins,
