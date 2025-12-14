@@ -29,6 +29,7 @@ import (
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
+	"vsc-node/modules/hive/streamer"
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
@@ -87,6 +88,7 @@ type MakeNodeInput struct {
 	Runner    *E2ERunner
 	BrcstFunc func(tx hivego.HiveTransaction) error
 	Primary   bool
+	Port      int
 }
 
 const SEED_PREFIX = "MOCK_SEED-"
@@ -140,7 +142,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	sysConfig := systemconfig.MocknetConfig()
 
 	var blockStatus common_types.BlockStatusGetter = nil
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus, 0)
+	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus, input.Port)
 
 	announcementsManager, _ := announcements.New(hrpc, identityConfig, sysConfig, time.Hour*24, &txCreator, p2p)
 
@@ -184,6 +186,8 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	dataAvailability := data_availability.New(p2p, identityConfig, datalayer)
 
+	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, 0)
+
 	ds, err := flatfs.CreateOrOpen("data-"+input.Username+"/keys", flatfs.Prefix(1), false)
 	if err != nil {
 		panic(err)
@@ -226,6 +230,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		ep,
 		txpool,
 		multisig,
+		sr,
 		tssManager,
 	)
 

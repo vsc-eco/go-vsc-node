@@ -269,10 +269,9 @@ func (mr *MockReader) IngestTx(tx hive_blocks.Tx) {
 	mr.mutex.Unlock()
 }
 
-func NewMockReader(processFunc streamer.ProcessFunction) *MockReader {
+func NewMockReader() *MockReader {
 	return &MockReader{
-		mutex:           &sync.Mutex{},
-		ProcessFunction: processFunc,
+		mutex: &sync.Mutex{},
 	}
 }
 
