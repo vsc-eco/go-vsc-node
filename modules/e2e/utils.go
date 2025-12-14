@@ -2,7 +2,10 @@ package e2e
 
 import (
 	"crypto"
+	"errors"
+	"fmt"
 	"time"
+	"vsc-node/modules/db/vsc/transactions"
 
 	"github.com/vsc-eco/hivego"
 )
@@ -48,5 +51,24 @@ func StepElectionStart() Step {
 func StepWait() Step {
 	return Step{
 		Name: "Wait",
+	}
+}
+
+func TxStatusAssertion(txId string, expectedStatus transactions.TransactionStatus, waitTimeSec uint) EvaluateFunc {
+	return func(ctx StepCtx) error {
+		time.Sleep(time.Duration(waitTimeSec) * time.Second)
+
+		runner := ctx.Container.Runner()
+
+		getTransaction := runner.TxDb.GetTransaction(txId)
+		if getTransaction == nil {
+			return errors.New("non-existent transaction")
+		}
+		tx := *getTransaction
+		if tx.Status != string(expectedStatus) {
+			return fmt.Errorf("incorrect status should be %s status is: %s", expectedStatus, tx.Status)
+		}
+		fmt.Println("transactions", getTransaction)
+		return nil
 	}
 }

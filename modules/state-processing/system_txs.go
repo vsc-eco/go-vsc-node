@@ -278,6 +278,7 @@ func (tx TxUpdateContract) TxSelf() TxSelf {
 func (tx *TxUpdateContract) ToData() map[string]interface{} {
 	return map[string]interface{}{
 		"net_id":        tx.NetId,
+		"id":            tx.Id,
 		"name":          tx.Name,
 		"description":   tx.Description,
 		"owner":         tx.Owner,
