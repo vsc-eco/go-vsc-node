@@ -175,7 +175,6 @@ func (e2e *E2ERunner) BroadcastElection() Step {
 	return Step{
 		Name: "Broadcast Election",
 		TestFunc: func(ctx StepCtx) (EvaluateFunc, error) {
-			fmt.Println("Broadcasting election...")
 			witnessListS := ctx.Container.nodeNames
 
 			da := e2e.Datalayer

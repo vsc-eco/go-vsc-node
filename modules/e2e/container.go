@@ -14,7 +14,6 @@ import (
 
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db/vsc/hive_blocks"
-	blockconsumer "vsc-node/modules/hive/block-consumer"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 )
@@ -31,7 +30,6 @@ type E2EContainer struct {
 	aggregateNodes *aggregate.Aggregate
 	nodeNames      []string
 	mockReader     *stateEngine.MockReader
-	hiveConsumer   blockconsumer.HiveConsumer
 	r2e            *E2ERunner
 	client         NodeClient
 }
@@ -112,7 +110,7 @@ func (c *E2EContainer) initClient() {
 func (c *E2EContainer) Init() error {
 	cbortypes.RegisterTypes()
 
-	c.mockReader = stateEngine.NewMockReader(c.hiveConsumer.ProcessBlock)
+	c.mockReader = stateEngine.NewMockReader()
 
 	mockCreator := stateEngine.MockCreator{
 		Mr: c.mockReader,
@@ -146,16 +144,18 @@ func (c *E2EContainer) Init() error {
 		BrcstFunc: broadcastFunc,
 		Runner:    c.r2e,
 		Primary:   true,
+		Port:      45001,
 	})
 	c.runningNodes = append(c.runningNodes, *primaryNode)
 
-	//Make the remaining 3 nodes for consensus operation
+	//Make the remaining nodes for consensus operation
 	for i := 2; i < c.NodeCount+1; i++ {
 		name := "e2e-" + strconv.Itoa(i)
 		c.runningNodes = append(c.runningNodes, *MakeNode(MakeNodeInput{
 			Username:  name,
 			BrcstFunc: broadcastFunc,
 			Runner:    nil,
+			Port:      45000 + i,
 		}))
 	}
 
