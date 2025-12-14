@@ -13,6 +13,7 @@ import (
 	"github.com/vsc-eco/hivego"
 
 	"vsc-node/modules/aggregate"
+	data_availability_client "vsc-node/modules/data-availability/client"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
@@ -32,6 +33,7 @@ type E2EContainer struct {
 	mockReader     *stateEngine.MockReader
 	r2e            *E2ERunner
 	client         NodeClient
+	daClient       *data_availability_client.DataAvailability
 }
 
 func (c *E2EContainer) VSCBroadcast() *transactionpool.InternalBroadcast {
@@ -74,8 +76,8 @@ func (c *E2EContainer) Runner() *E2ERunner {
 	return c.r2e
 }
 
-func (c *E2EContainer) Client() NodeClient {
-	return c.client
+func (c *E2EContainer) Client() *data_availability_client.DataAvailability {
+	return c.daClient
 }
 
 func (c *E2EContainer) initClient() {
@@ -105,6 +107,9 @@ func (c *E2EContainer) initClient() {
 	}
 
 	c.client = client
+	c.daClient = data_availability_client.New(c.client.P2PService, c.client.Identity, c.r2e.Datalayer)
+	c.daClient.Init()
+	c.daClient.Start().Await(context.Background())
 }
 
 func (c *E2EContainer) Init() error {

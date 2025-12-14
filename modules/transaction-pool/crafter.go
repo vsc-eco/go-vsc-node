@@ -641,7 +641,7 @@ func (tx *VSCTransaction) ToShell() VSCTransactionShell {
 		Headers: VSCTransactionHeader{
 			Nonce:         tx.Nonce,
 			RequiredAuths: requiredAuths,
-			NetId:         "vsc-mainnet",
+			NetId:         tx.NetId,
 			RcLimit:       500,
 		},
 		Tx: tx.Ops,
