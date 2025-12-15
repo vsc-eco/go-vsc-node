@@ -488,7 +488,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					txResult := parsedTx.ExecuteTx(se, hasFee)
 
 					if hasFee {
-						if txResult.Success {
+						if txResult.Success && txResult.CodeUpdated {
 							se.LedgerSystem.Deposit(ledgerSystem.Deposit{
 								Id:          MakeTxId(tx.TransactionID, 1),
 								Asset:       "hbd",

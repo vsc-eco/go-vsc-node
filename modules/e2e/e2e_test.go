@@ -13,6 +13,7 @@ import (
 	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/config"
+	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/transactions"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
 
@@ -196,7 +197,7 @@ func TestE2E(t *testing.T) {
 				StorageProof: storageProof,
 			}
 
-			j, err := json.Marshal(tx.ToData())
+			j, err := json.Marshal(tx)
 
 			transferOp := r2e.HiveCreator.Transfer("vaultec", "vsc.gateway", "10", "HBD", "contract_deployment")
 
@@ -221,7 +222,7 @@ func TestE2E(t *testing.T) {
 		},
 	})
 
-	container.AddStep(r2e.DupElection(20 * time.Second))
+	container.AddStep(r2e.DupElection(10 * time.Second))
 	container.AddStep(e2e.Step{
 		Name: "Update Contract",
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
@@ -239,13 +240,12 @@ func TestE2E(t *testing.T) {
 				Id:           contractId,
 				Name:         "test-contract",
 				Description:  "A test contract being updated",
-				Owner:        "hive:vaultec",
 				Code:         storageProof.Hash,
-				Runtime:      wasm_runtime.Go,
-				StorageProof: storageProof,
+				Runtime:      &wasm_runtime.Go,
+				StorageProof: &storageProof,
 			}
 
-			j, err := json.Marshal(tx.ToData())
+			j, err := json.Marshal(tx)
 
 			transferOp := r2e.HiveCreator.Transfer("vaultec", "vsc.gateway", "10", "HBD", "contract_deployment")
 
@@ -269,27 +269,49 @@ func TestE2E(t *testing.T) {
 	container.AddStep(e2e.Step{
 		Name: "Execute Contract - Test 1",
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
-			transferOp := &transactionpool.VscContractCall{
+			statePut := &transactionpool.VscContractCall{
+				Caller:     didKey.String(),
+				ContractId: contractId,
+				RcLimit:    200,
+				Action:     "test1",
+				Payload:    "test",
+			}
+			createTssKey := &transactionpool.VscContractCall{
 				Caller:     didKey.String(),
 				ContractId: contractId,
 				RcLimit:    200,
 				Action:     "createKey",
 				Payload:    "test",
 			}
-			op, err := transferOp.SerializeVSC()
+			tokenDraw := &transactionpool.VscContractCall{
+				Caller:     didKey.String(),
+				ContractId: contractId,
+				RcLimit:    200,
+				Action:     "test3",
+				Payload:    "test",
+				Intents: []contracts.Intent{
+					{
+						Type: "transfer.allow",
+						Args: map[string]string{
+							"limit": "1.000",
+							"token": "hive",
+						},
+					},
+				},
+			}
+			op1, err := statePut.SerializeVSC()
+			op2, err := createTssKey.SerializeVSC()
+			op3, err := tokenDraw.SerializeVSC()
 
 			if err != nil {
 				return nil, err
 			}
 			tx := transactionpool.VSCTransaction{
-				Ops: []transactionpool.VSCTransactionOp{
-					op,
-				},
+				Ops:   []transactionpool.VSCTransactionOp{op1, op2, op3},
 				Nonce: 0,
 				NetId: "vsc-mocknet",
 			}
 			sTx, err := transactionCreator.SignFinal(tx)
-
 			txId, err := transactionCreator.Broadcast(sTx)
 
 			if err != nil {
@@ -301,27 +323,75 @@ func TestE2E(t *testing.T) {
 		},
 	})
 
-	container.AddStep(r2e.DupElection(45 * time.Second))
+	container.AddStep(e2e.Step{
+		Name: "Update Contract Metadata",
+		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
+			fmt.Println("Updating contract metadata...")
+
+			tx := stateEngine.TxUpdateContract{
+				NetId:       "vsc-mocknet",
+				Id:          contractId,
+				Name:        "New test contract",
+				Description: "A test contract being updated again",
+			}
+
+			j, err := json.Marshal(tx)
+			updateContract := r2e.HiveCreator.CustomJson([]string{"vaultec"}, []string{}, "vsc.update_contract", string(j))
+			hiveTx := r2e.HiveCreator.MakeTransaction([]hivego.HiveOperation{updateContract})
+			r2e.HiveCreator.PopulateSigningProps(&hiveTx, nil)
+			txId, err := r2e.HiveCreator.Broadcast(hiveTx)
+
+			fmt.Println("txId err", txId, err)
+			return func(ctx e2e.StepCtx) error {
+				return nil
+			}, nil
+		},
+	})
+
+	container.AddStep(r2e.DupElection(30 * time.Second))
 
 	container.AddStep(e2e.Step{
 		Name: "Execute Contract - Test 2",
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
-			transferOp := &transactionpool.VscContractCall{
+			stateGetMod := &transactionpool.VscContractCall{
+				Caller:     didKey.String(),
+				ContractId: contractId,
+				RcLimit:    200,
+				Action:     "test2",
+				Payload:    "test",
+			}
+			signTssKeyOp := &transactionpool.VscContractCall{
 				Caller:     didKey.String(),
 				ContractId: contractId,
 				RcLimit:    200,
 				Action:     "signKey",
 				Payload:    "test",
 			}
-			op, err := transferOp.SerializeVSC()
+			tokenSend := &transactionpool.VscContractCall{
+				Caller:     didKey.String(),
+				ContractId: contractId,
+				RcLimit:    200,
+				Action:     "test4",
+				Payload:    "test",
+				Intents: []contracts.Intent{
+					{
+						Type: "transfer.allow",
+						Args: map[string]string{
+							"limit": "1.000",
+							"token": "hive",
+						},
+					},
+				},
+			}
+			op1, err := stateGetMod.SerializeVSC()
+			op2, err := signTssKeyOp.SerializeVSC()
+			op3, err := tokenSend.SerializeVSC()
 
 			if err != nil {
 				return nil, err
 			}
 			tx := transactionpool.VSCTransaction{
-				Ops: []transactionpool.VSCTransactionOp{
-					op,
-				},
+				Ops:   []transactionpool.VSCTransactionOp{op1, op2, op3},
 				Nonce: 1,
 				NetId: "vsc-mocknet",
 			}
@@ -337,246 +407,42 @@ func TestE2E(t *testing.T) {
 		},
 	})
 
-	// container.AddStep(e2e.Gener)
-	// container.AddStep(e2e.Step{
-	// 	Name: "Execute Contract - Test 3",
-	// 	TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
-	// 		transferOp := &transactionpool.VscContractCall{
-	// 			Caller:     didKey.String(),
-	// 			ContractId: contractId,
-	// 			RcLimit:    200,
-	// 			Action:     "test3",
-	// 			Payload:    "test",
-	// 			NetId:      "vsc-mocknet",
+	container.AddStep(e2e.Step{
+		Name: "Execute Contract - Test 3",
+		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
+			transferOp := &transactionpool.VscContractCall{
+				Caller:     didKey.String(),
+				ContractId: contractId,
+				RcLimit:    200,
+				Action:     "does_not_exist",
+				Payload:    "test",
+				Intents:    []contracts.Intent{},
+			}
+			op, err := transferOp.SerializeVSC()
 
-	// 			Intents: []contracts.Intent{
-	// 				{
-	// 					Type: "transfer.allow",
-	// 					Args: map[string]string{
-	// 						"limit": "1.000",
-	// 						"token": "hive",
-	// 					},
-	// 				},
-	// 			},
-	// 		}
-	// 		op, err := transferOp.SerializeVSC()
+			if err != nil {
+				return nil, err
+			}
+			tx := transactionpool.VSCTransaction{
+				Ops: []transactionpool.VSCTransactionOp{
+					op,
+				},
+				Nonce: 3,
+				NetId: "vsc-mocknet",
+			}
+			sTx, _ := transactionCreator.SignFinal(tx)
 
-	// 		if err != nil {
-	// 			return nil, err
-	// 		}
-	// 		tx := transactionpool.VSCTransaction{
-	// 			Ops: []transactionpool.VSCTransactionOp{
-	// 				op,
-	// 			},
-	// 			Nonce: 2,
-	// 		}
-	// 		sTx, err := transactionCreator.SignFinal(tx)
+			txId, err := transactionCreator.Broadcast(sTx)
 
-	// 		txId, err := transactionCreator.Broadcast(sTx)
+			if err != nil {
+				return nil, err
+			}
 
-	// 		if err != nil {
-	// 			return nil, err
-	// 		}
-
-	// 		fmt.Println("txId", txId)
-	// 		return func(ctx e2e.StepCtx) error {
-	// 			time.Sleep(60 * time.Second)
-
-	// 			runner := ctx.Container.Runner()
-
-	// 			getTransaction := runner.TxDb.GetTransaction(txId)
-
-	// 			fmt.Println("txId", txId)
-	// 			if getTransaction == nil {
-	// 				return errors.New("non-existent transaction")
-	// 			}
-	// 			tx := *getTransaction
-	// 			if tx.Status != "CONFIRMED" {
-	// 				return fmt.Errorf("incorrect status should be CONFIRMED status is: %s", tx.Status)
-	// 			}
-	// 			fmt.Println("transactions", getTransaction)
-	// 			return nil
-	// 		}, nil
-	// 	},
-	// })
-
-	// container.AddStep(e2e.Step{
-	// 	Name: "Execute Contract - Test 4",
-	// 	TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
-	// 		transferOp := &transactionpool.VscContractCall{
-	// 			Caller:     didKey.String(),
-	// 			ContractId: contractId,
-	// 			RcLimit:    200,
-	// 			Action:     "test4",
-	// 			Payload:    "test",
-	// 			NetId:      "vsc-mocknet",
-
-	// 			Intents: []contracts.Intent{
-	// 				{
-	// 					Type: "transfer.allow",
-	// 					Args: map[string]string{
-	// 						"limit": "1.000",
-	// 						"token": "hive",
-	// 					},
-	// 				},
-	// 			},
-	// 		}
-	// 		op, err := transferOp.SerializeVSC()
-
-	// 		if err != nil {
-	// 			return nil, err
-	// 		}
-	// 		tx := transactionpool.VSCTransaction{
-	// 			Ops: []transactionpool.VSCTransactionOp{
-	// 				op,
-	// 			},
-	// 			Nonce: 3,
-	// 		}
-	// 		sTx, err := transactionCreator.SignFinal(tx)
-
-	// 		txId, err := transactionCreator.Broadcast(sTx)
-
-	// 		if err != nil {
-	// 			return nil, err
-	// 		}
-
-	// 		fmt.Println("txId", txId)
-	// 		return func(ctx e2e.StepCtx) error {
-	// 			time.Sleep(60 * time.Second)
-
-	// 			runner := ctx.Container.Runner()
-
-	// 			getTransaction := runner.TxDb.GetTransaction(txId)
-
-	// 			fmt.Println("txId", txId)
-	// 			if getTransaction == nil {
-	// 				return errors.New("non-existent transaction")
-	// 			}
-	// 			tx := *getTransaction
-	// 			if tx.Status != "CONFIRMED" {
-	// 				return fmt.Errorf("incorrect status should be CONFIRMED status is: %s", tx.Status)
-	// 			}
-	// 			fmt.Println("transactions", getTransaction)
-	// 			return nil
-	// 		}, nil
-	// 	},
-	// })
-
-	// container.AddStep(e2e.Step{
-	// 	Name: "Execute Contract - Test 5",
-	// 	TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
-	// 		transferOp := &transactionpool.VscContractCall{
-	// 			Caller:     didKey.String(),
-	// 			ContractId: contractId,
-	// 			RcLimit:    200,
-	// 			Action:     "test5",
-	// 			Payload:    "test",
-	// 			NetId:      "vsc-mocknet",
-
-	// 			Intents: []contracts.Intent{
-	// 				{
-	// 					Type: "transfer.allow",
-	// 					Args: map[string]string{
-	// 						"limit": "1.000",
-	// 						"token": "hive",
-	// 					},
-	// 				},
-	// 			},
-	// 		}
-	// 		op, err := transferOp.SerializeVSC()
-
-	// 		if err != nil {
-	// 			return nil, err
-	// 		}
-	// 		tx := transactionpool.VSCTransaction{
-	// 			Ops: []transactionpool.VSCTransactionOp{
-	// 				op,
-	// 			},
-	// 			Nonce: 4,
-	// 		}
-	// 		sTx, err := transactionCreator.SignFinal(tx)
-
-	// 		txId, err := transactionCreator.Broadcast(sTx)
-
-	// 		if err != nil {
-	// 			return nil, err
-	// 		}
-
-	// 		fmt.Println("txId", txId)
-	// 		return func(ctx e2e.StepCtx) error {
-	// 			time.Sleep(60 * time.Second)
-
-	// 			runner := ctx.Container.Runner()
-
-	// 			getTransaction := runner.TxDb.GetTransaction(txId)
-
-	// 			fmt.Println("txId", txId)
-	// 			if getTransaction == nil {
-	// 				return errors.New("non-existent transaction")
-	// 			}
-	// 			tx := *getTransaction
-	// 			if tx.Status != "CONFIRMED" {
-	// 				return fmt.Errorf("incorrect status should be CONFIRMED status is: %s", tx.Status)
-	// 			}
-	// 			fmt.Println("transactions", getTransaction)
-	// 			return nil
-	// 		}, nil
-	// 	},
-	// })
-
-	// container.AddStep(e2e.Step{
-	// 	Name: "Execute Contract - Test 6",
-	// 	TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
-	// 		transferOp := &transactionpool.VscContractCall{
-	// 			Caller:     didKey.String(),
-	// 			ContractId: contractId,
-	// 			RcLimit:    200,
-	// 			Action:     "does_not_exist",
-	// 			Payload:    "test",
-	// 			NetId:      "vsc-mocknet",
-
-	// 			Intents: []contracts.Intent{},
-	// 		}
-	// 		op, err := transferOp.SerializeVSC()
-
-	// 		if err != nil {
-	// 			return nil, err
-	// 		}
-	// 		tx := transactionpool.VSCTransaction{
-	// 			Ops: []transactionpool.VSCTransactionOp{
-	// 				op,
-	// 			},
-	// 			Nonce: 5,
-	// 		}
-	// 		sTx, _ := transactionCreator.SignFinal(tx)
-
-	// 		txId, err := transactionCreator.Broadcast(sTx)
-
-	// 		if err != nil {
-	// 			return nil, err
-	// 		}
-
-	// 		fmt.Println("txId", txId)
-	// 		return func(ctx e2e.StepCtx) error {
-	// 			time.Sleep(60 * time.Second)
-
-	// 			runner := ctx.Container.Runner()
-
-	// 			getTransaction := runner.TxDb.GetTransaction(txId)
-
-	// 			fmt.Println("txId", txId)
-	// 			if getTransaction == nil {
-	// 				return errors.New("non-existent transaction")
-	// 			}
-	// 			tx := *getTransaction
-	// 			if tx.Status != "FAILED" {
-	// 				return fmt.Errorf("incorrect status should be FAILED status is: %s", tx.Status)
-	// 			}
-	// 			fmt.Println("transactions", getTransaction)
-	// 			return nil
-	// 		}, nil
-	// 	},
-	// })
+			fmt.Println("txId", txId)
+			return e2e.TxStatusAssertion(txId, transactions.TransactionStatusFailed, 60), nil
+		},
+	})
+	container.AddStep(r2e.Wait(30))
 
 	err := container.RunSteps(t)
 
@@ -584,11 +450,7 @@ func TestE2E(t *testing.T) {
 		return
 	}
 
-	// time.Sleep(30 * time.Minute)
 	container.Stop()
-
-	// time.Sleep(5 * time.Minute)
-	// container.Stop()
 
 	// r2e.SetSteps([]func() error{
 	// 	r2e.WaitToStart(),
