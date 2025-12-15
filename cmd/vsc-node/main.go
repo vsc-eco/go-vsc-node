@@ -72,6 +72,7 @@ func main() {
 	actionsDb := ledgerDb.NewActionsDb(vscDb)
 	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
 	contractState := contracts.NewContractState(vscDb)
+	contractUpdates := contracts.NewContractUpdates(vscDb)
 	nonceDb := nonces.New(vscDb)
 	rcDb := rcDb.New(vscDb)
 	tssKeys := tss_db.NewKeys(vscDb)
@@ -131,7 +132,7 @@ func main() {
 	l := logger.PrefixedLogger{
 		Prefix: "vsc-node",
 	}
-	se := stateEngine.New(l, sysConfig, da, witnessDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
+	se := stateEngine.New(l, sysConfig, da, witnessDb, electionDb, contractDb, contractState, contractUpdates, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
 
 	rcSystem := se.RcSystem
 
@@ -201,6 +202,7 @@ func main() {
 		nonceDb,
 		interestClaims,
 		contractState,
+		contractUpdates,
 		tssKeys,
 		tssCommitments,
 		tssRequests,
