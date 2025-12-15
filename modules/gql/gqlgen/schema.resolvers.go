@@ -133,6 +133,11 @@ func (r *contractOutputResolver) BlockHeight(ctx context.Context, obj *contracts
 	return model.Int64(obj.BlockHeight), nil
 }
 
+// BlockHeight is the resolver for the block_height field.
+func (r *contractUpdateResolver) BlockHeight(ctx context.Context, obj *contracts.ContractUpdate) (model.Int64, error) {
+	return model.Int64(obj.BlockHeight), nil
+}
+
 // Epoch is the resolver for the epoch field.
 func (r *electionResultResolver) Epoch(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error) {
 	return model.Uint64(obj.Epoch), nil
@@ -385,6 +390,18 @@ func (r *queryResolver) FindContract(ctx context.Context, filterOptions *FindCon
 		return nil, paginateErr
 	}
 	return r.Contracts.FindContracts(filterOptions.ByID, filterOptions.ByCode, offset, limit)
+}
+
+// GetContractUpdates is the resolver for the getContractUpdates field.
+func (r *queryResolver) GetContractUpdates(ctx context.Context, filterOptions *ContractUpdatesFilter) ([]contracts.ContractUpdate, error) {
+	if filterOptions == nil {
+		filterOptions = &ContractUpdatesFilter{}
+	}
+	offset, limit, paginateErr := Paginate(filterOptions.Offset, filterOptions.Limit)
+	if paginateErr != nil {
+		return nil, paginateErr
+	}
+	return r.ContractUpds.GetUpdatesByContractId(*filterOptions.ByID, offset, limit)
 }
 
 // SubmitTransactionV1 is the resolver for the submitTransactionV1 field.
@@ -661,6 +678,9 @@ func (r *Resolver) Contract() ContractResolver { return &contractResolver{r} }
 // ContractOutput returns ContractOutputResolver implementation.
 func (r *Resolver) ContractOutput() ContractOutputResolver { return &contractOutputResolver{r} }
 
+// ContractUpdate returns ContractUpdateResolver implementation.
+func (r *Resolver) ContractUpdate() ContractUpdateResolver { return &contractUpdateResolver{r} }
+
 // ElectionResult returns ElectionResultResolver implementation.
 func (r *Resolver) ElectionResult() ElectionResultResolver { return &electionResultResolver{r} }
 
@@ -702,6 +722,7 @@ type actionRecordResolver struct{ *Resolver }
 type balanceRecordResolver struct{ *Resolver }
 type contractResolver struct{ *Resolver }
 type contractOutputResolver struct{ *Resolver }
+type contractUpdateResolver struct{ *Resolver }
 type electionResultResolver struct{ *Resolver }
 type ledgerRecordResolver struct{ *Resolver }
 type nonceRecordResolver struct{ *Resolver }

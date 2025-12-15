@@ -172,6 +172,7 @@ func main() {
 		Da:             da,
 		Contracts:      contractDb,
 		ContractsState: contractState,
+		ContractUpds:   contractUpdates,
 		TssKeys:        tssKeys,
 		TssRequests:    tssRequests,
 	}}), "0.0.0.0:8080")
