@@ -86,6 +86,7 @@ func TestQueryAndMutation(t *testing.T) {
 		da,
 		contractDb,
 		contractState,
+		contractUpdates,
 		tssKeys,
 		tssRequests,
 	}

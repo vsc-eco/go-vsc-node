@@ -253,6 +253,7 @@ func MakeNode(input MakeNodeInput) *Node {
 			datalayer,
 			contractDb,
 			contractState,
+			contractUpdates,
 			tssKeys,
 			tssRequests,
 		}}), "0.0.0.0:7080")
