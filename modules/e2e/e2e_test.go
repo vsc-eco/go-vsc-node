@@ -319,7 +319,7 @@ func TestE2E(t *testing.T) {
 			}
 
 			fmt.Println("txId", txId)
-			return e2e.TxStatusAssertion(txId, transactions.TransactionStatusConfirmed, 60), nil
+			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}}, 60), nil
 		},
 	})
 
@@ -353,6 +353,7 @@ func TestE2E(t *testing.T) {
 	container.AddStep(e2e.Step{
 		Name: "Execute Contract - Test 2",
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
+			// Tx 1
 			stateGetMod := &transactionpool.VscContractCall{
 				Caller:     didKey.String(),
 				ContractId: contractId,
@@ -403,14 +404,9 @@ func TestE2E(t *testing.T) {
 			}
 
 			fmt.Println("txId", txId)
-			return e2e.TxStatusAssertion(txId, transactions.TransactionStatusConfirmed, 60), nil
-		},
-	})
 
-	container.AddStep(e2e.Step{
-		Name: "Execute Contract - Test 3",
-		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
-			transferOp := &transactionpool.VscContractCall{
+			// Tx 2
+			notExist := &transactionpool.VscContractCall{
 				Caller:     didKey.String(),
 				ContractId: contractId,
 				RcLimit:    200,
@@ -418,28 +414,27 @@ func TestE2E(t *testing.T) {
 				Payload:    "test",
 				Intents:    []contracts.Intent{},
 			}
-			op, err := transferOp.SerializeVSC()
+			op4, err := notExist.SerializeVSC()
 
 			if err != nil {
 				return nil, err
 			}
-			tx := transactionpool.VSCTransaction{
+			tx2 := transactionpool.VSCTransaction{
 				Ops: []transactionpool.VSCTransactionOp{
-					op,
+					op4,
 				},
-				Nonce: 3,
+				Nonce: 2,
 				NetId: "vsc-mocknet",
 			}
-			sTx, _ := transactionCreator.SignFinal(tx)
-
-			txId, err := transactionCreator.Broadcast(sTx)
+			sTx2, _ := transactionCreator.SignFinal(tx2)
+			txId2, err := transactionCreator.Broadcast(sTx2)
 
 			if err != nil {
 				return nil, err
 			}
 
-			fmt.Println("txId", txId)
-			return e2e.TxStatusAssertion(txId, transactions.TransactionStatusFailed, 60), nil
+			fmt.Println("txId2", txId2)
+			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}, {txId2, transactions.TransactionStatusFailed}}, 60), nil
 		},
 	})
 	container.AddStep(r2e.Wait(30))
