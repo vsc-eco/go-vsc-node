@@ -78,6 +78,7 @@ func NewContractTest() ContractTest {
 		nil,
 		&elections,
 		&contractDb,
+		&contractState,
 		nil,
 		nil,
 		&ledgers,

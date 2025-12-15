@@ -195,6 +195,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 		CreationHeight: tx.Self.BlockHeight,
 		Runtime:        tx.Runtime,
 	})
+	se.contractUpds.Append(id, tx.Self.TxId, int64(tx.Self.BlockHeight), owner, tx.Code)
 
 	// dd := map[string]interface{}{
 	// 	"bytes": []byte("HELLO WORLD LOLLL"),
@@ -320,6 +321,10 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 		Owner:       existing.Owner,
 		Runtime:     existing.Runtime,
 		Code:        existing.Code,
+
+		// contract update history
+		TxId:           tx.Self.TxId,
+		CreationHeight: tx.Self.BlockHeight,
 	}
 	if tx.Owner != "" {
 		// update owner
@@ -359,6 +364,7 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 		updatedContract.Runtime = *tx.Runtime
 	}
 	se.contractDb.UpdateContract(tx.Id, updatedContract)
+	se.contractUpds.Append(tx.Id, tx.Self.TxId, int64(tx.Self.BlockHeight), updatedContract.Owner, updatedContract.Code)
 
 	return UpdateContractResult{
 		Success:     true,

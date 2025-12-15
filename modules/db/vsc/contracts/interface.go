@@ -17,6 +17,11 @@ type ContractState interface {
 	FindOutputs(id *string, input *string, contract *string, offset int, limit int) ([]ContractOutput, error)
 }
 
+type ContractUpdates interface {
+	a.Plugin
+	Append(contractId string, txId string, height int64, owner string, code string)
+}
+
 type IngestOutputArgs struct {
 	Id          string
 	ContractId  string

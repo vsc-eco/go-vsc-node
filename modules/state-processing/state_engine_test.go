@@ -49,6 +49,7 @@ func TestStateEngine(t *testing.T) {
 	balanceDb := ledgerDb.NewBalances(vscDb)
 	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
 	contractState := contracts.NewContractState(vscDb)
+	contractUpdates := contracts.NewContractUpdates(vscDb)
 	vscBlocks := vscBlocks.New(vscDb)
 	actionDb := ledgerDb.NewActionsDb(vscDb)
 	rcDb := rcDb.New(vscDb)
@@ -115,7 +116,7 @@ func TestStateEngine(t *testing.T) {
 
 	wasm := wasm_runtime.New()
 
-	se := stateEngine.New(l, sysConfig, dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
+	se := stateEngine.New(l, sysConfig, dl, witnessesDb, electionDb, contractDb, contractState, contractUpdates, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
 
 	blockConsumer := blockconsumer.New(se)
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, streamer.DefaultBlockStart)
@@ -127,6 +128,8 @@ func TestStateEngine(t *testing.T) {
 		electionDb,
 		witnessesDb,
 		contractDb,
+		contractState,
+		contractUpdates,
 		txDb,
 		ledgerDbImpl,
 		balanceDb,
@@ -159,6 +162,7 @@ func TestMockEngine(t *testing.T) {
 	balanceDb := ledgerDb.NewBalances(vscDb)
 	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
 	contractState := contracts.NewContractState(vscDb)
+	contractUpdates := contracts.NewContractUpdates(vscDb)
 	vscBlocks := vscBlocks.New(vscDb)
 	actionsDb := ledgerDb.NewActionsDb(vscDb)
 	rcDb := rcDb.New(vscDb)
@@ -188,7 +192,7 @@ func TestMockEngine(t *testing.T) {
 
 	wasm := wasm_runtime.New()
 
-	se := stateEngine.New(l, sysConfig, dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
+	se := stateEngine.New(l, sysConfig, dl, witnessesDb, electionDb, contractDb, contractState, contractUpdates, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
 
 	process := func(block hive_blocks.HiveBlock, headHeight *uint64) {
 		se.ProcessBlock(block)
@@ -201,6 +205,8 @@ func TestMockEngine(t *testing.T) {
 		electionDb,
 		witnessesDb,
 		contractDb,
+		contractState,
+		contractUpdates,
 		txDb,
 		ledgerDbImpl,
 		balanceDb,

@@ -182,3 +182,27 @@ func (ch *contractState) FindOutputs(id *string, input *string, contract *string
 func NewContractState(d *vsc.VscDb) ContractState {
 	return &contractState{db.NewCollection(d.DbInstance, "contract_state")}
 }
+
+type contractUpdates struct {
+	*db.Collection
+}
+
+func NewContractUpdates(d *vsc.VscDb) ContractUpdates {
+	return &contractUpdates{db.NewCollection(d.DbInstance, "contract_updates")}
+}
+
+func (c *contractUpdates) Append(contractId string, txId string, height int64, owner string, code string) {
+	findQuery := bson.M{
+		"_id": txId,
+	}
+	updateQuery := bson.M{
+		"$set": bson.M{
+			"contract_id":  contractId,
+			"block_height": height,
+			"owner":        owner,
+			"code":         code,
+		},
+	}
+	opts := options.FindOneAndUpdate().SetUpsert(true)
+	c.FindOneAndUpdate(context.Background(), findQuery, updateQuery, opts)
+}
