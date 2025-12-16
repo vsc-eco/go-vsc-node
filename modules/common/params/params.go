@@ -32,7 +32,11 @@ var CONTRACT_DEPLOYMENT_FEE int64 = 10_000 // 10 HBD per contract
 var CONTRACT_DEPLOYMENT_FEE_START_HEIGHT uint64 = 99410000
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
+// Mainnet TSS key indexing
+var TSS_INDEX_HEIGHT uint64 = 102_083_000
+
 type ConsensusParams struct {
-	MinStake   int64
-	MinRcLimit uint64
+	MinStake       int64
+	MinRcLimit     uint64
+	TssIndexHeight uint64
 }

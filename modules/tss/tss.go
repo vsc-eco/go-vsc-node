@@ -42,7 +42,7 @@ const TSS_SIGN_INTERVAL = 20 //* 2
 // 5 minutes in blocks
 const TSS_ROTATE_INTERVAL = 20 * 5
 
-const TSS_ACTIVATE_HEIGHT = 101_943_260
+const TSS_ACTIVATE_HEIGHT = 102_083_000
 
 // 24 hour blame
 var BLAME_EXPIRE = uint64(24 * 60 * 20)

@@ -44,9 +44,6 @@ type ProcessExtraInfo struct {
 	Timestamp   string
 }
 
-type StateResult struct {
-}
-
 type StateEngine struct {
 	sconf systemconfig.SystemConfig
 	da    *DataLayer.DataLayer
@@ -779,7 +776,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						// savedCommitment, err := se.tssCommitments.GetCommitmentByHeight(commitment.KeyId, block.BlockNumber, "reshare", "keygen")
 
 						fmt.Println("commitment.KeyId, block.BlockNumber", commitment.KeyId, block.BlockNumber)
-						var newKey bool
+
 						members := make([]dids.BlsDID, 0)
 						electionData, err := se.electionDb.GetElectionByHeight(block.BlockNumber)
 
@@ -834,7 +831,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						verified, _, _ := circuit.Verify()
 
 						fmt.Println("verified commitment", verified)
-						if verified {
+						if verified && block.BlockNumber > se.SystemConfig().ConsensusParams().TssIndexHeight {
 							// commitment.
 							se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
 								Type:        commitment.Type,
@@ -845,6 +842,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								PublicKey:   commitment.PublicKey,
 								TxId:        tx.TransactionID,
 							})
+
+							var newKey bool
+							savedKeyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
+							if savedKeyInfo.Status == "created" {
+								newKey = true
+							}
 
 							if commitment.Type == "keygen" || commitment.Type == "reshare" {
 								keyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
