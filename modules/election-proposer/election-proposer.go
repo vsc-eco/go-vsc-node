@@ -172,7 +172,7 @@ func (e *electionProposer) GenerateElection() (elections.ElectionHeader, electio
 
 // Generates a raw election graph from local data
 func (e *electionProposer) GenerateElectionAtBlock(blk uint64) (elections.ElectionHeader, elections.ElectionData, error) {
-	witnesses, err := e.witnesses.GetWitnessesAtBlockHeight(blk)
+	witnesses, err := e.witnesses.GetWitnessesAtBlockHeight(blk, witnesses.EnabledOnly())
 	if err != nil {
 		return elections.ElectionHeader{}, elections.ElectionData{}, err
 	}

@@ -499,11 +499,11 @@ func (p2p *P2PServer) addrFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multi
 func (p2p *P2PServer) connectRegisteredPeers() {
 	opts := []witnesses.SearchOption{}
 
-	if p2p.blockStatus != nil {
-		currentBlockHeight := p2p.blockStatus.BlockHeight()
-		opts = append(opts, witnesses.SearchHeight(currentBlockHeight))
-		opts = append(opts, witnesses.SearchExpiration(witnesses.WITNESS_EXPIRE_BLOCKS))
-	}
+	// if p2p.blockStatus != nil {
+	// 	currentBlockHeight := p2p.blockStatus.BlockHeight()
+	// 	opts = append(opts, witnesses.SearchHeight(currentBlockHeight))
+	// 	opts = append(opts, witnesses.SearchExpiration(witnesses.WITNESS_EXPIRE_BLOCKS))
+	// }
 
 	fmt.Println("connectRegisteredPeers opts", opts)
 

@@ -1,6 +1,10 @@
 package tss_db
 
-import a "vsc-node/modules/aggregate"
+import (
+	a "vsc-node/modules/aggregate"
+
+	"go.mongodb.org/mongo-driver/bson"
+)
 
 type TssKeys interface {
 	a.Plugin
@@ -25,7 +29,7 @@ type TssCommitments interface {
 	GetCommitment(keyId string, epoch uint64) (TssCommitment, error)
 	GetLatestCommitment(keyId string, qtype string) (TssCommitment, error)
 	GetCommitmentByHeight(keyId string, height uint64, qtype ...string) (TssCommitment, error)
-	GetBlames() ([]TssCommitment, error)
+	GetBlames(...SearchOption) ([]TssCommitment, error)
 }
 
 type TssKey struct {
@@ -82,4 +86,27 @@ type TssOp struct {
 	Type  string `json:"type"`
 	KeyId string `json:"key_id"`
 	Args  string `json:"args"`
+}
+
+type SearchOption func(m *bson.M) error
+
+func HeightGt(height uint64) SearchOption {
+	return func(m *bson.M) error {
+		(*m)["block_height"] = bson.M{"$gt": height}
+		return nil
+	}
+}
+
+func ByEpoch(epoch uint64) SearchOption {
+	return func(m *bson.M) error {
+		(*m)["epoch"] = epoch
+		return nil
+	}
+}
+
+func ByType(typ ...string) SearchOption {
+	return func(m *bson.M) error {
+		(*m)["type"] = bson.M{"$in": typ}
+		return nil
+	}
 }

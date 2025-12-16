@@ -49,8 +49,9 @@ func MainnetConfig() SystemConfig {
 		netId:          "vsc-mainnet",
 		gatewayWallet:  "vsc.gateway",
 		consensusParams: params.ConsensusParams{
-			MinStake:   params.MAINNET_CONSENSUS_MINIMUM,
-			MinRcLimit: params.MINIMUM_RC_LIMIT,
+			MinStake:       params.MAINNET_CONSENSUS_MINIMUM,
+			MinRcLimit:     params.MINIMUM_RC_LIMIT,
+			TssIndexHeight: params.TSS_INDEX_HEIGHT,
 		},
 	}
 	return conf
@@ -63,8 +64,9 @@ func TestnetConfig() SystemConfig {
 		netId:         "vsc-testnet",
 		gatewayWallet: "vsc.testnet",
 		consensusParams: params.ConsensusParams{
-			MinStake:   params.TESTNET_CONSENSUS_MINIMUM,
-			MinRcLimit: params.MINIMUM_RC_LIMIT,
+			MinStake:       params.TESTNET_CONSENSUS_MINIMUM,
+			MinRcLimit:     params.MINIMUM_RC_LIMIT,
+			TssIndexHeight: 0,
 		},
 	}
 	return conf
@@ -76,8 +78,9 @@ func MocknetConfig() SystemConfig {
 		netId:         "vsc-mocknet",
 		gatewayWallet: "vsc.mocknet",
 		consensusParams: params.ConsensusParams{
-			MinStake:   1,
-			MinRcLimit: 1,
+			MinStake:       1,
+			MinRcLimit:     1,
+			TssIndexHeight: 0,
 		},
 	}
 	return conf

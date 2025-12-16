@@ -106,10 +106,17 @@ func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qt
 	return commitment, err
 }
 
-func (tsc *tssCommitments) GetBlames() ([]TssCommitment, error) {
-	findResult, err := tsc.Find(context.Background(), bson.M{
+func (tsc *tssCommitments) GetBlames(opts ...SearchOption) ([]TssCommitment, error) {
+	query := bson.M{
 		"type": "blame",
-	})
+	}
+	for _, opt := range opts {
+		if err := opt(&query); err != nil {
+			return nil, err
+		}
+	}
+
+	findResult, err := tsc.Find(context.Background(), query)
 
 	if err != nil {
 		return nil, err

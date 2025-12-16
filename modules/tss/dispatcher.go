@@ -112,6 +112,10 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		return err
 	}
 
+	if myParty == nil && myNewParty == nil {
+		return fmt.Errorf("node not part of old or new committee")
+	}
+
 	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
 		keydata := keyGenSecp256k1.LocalPartySaveData{}
 
@@ -122,35 +126,43 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			return err
 		}
 
-		params := btss.NewReSharingParameters(btss.S256(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 		end := make(chan *keyGenSecp256k1.LocalPartySaveData)
 		endOld := make(chan *keyGenSecp256k1.LocalPartySaveData)
 
-		dispatcher.party = reshareSecp256k1.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
-
 		save := keyGenSecp256k1.NewLocalPartySaveData(len(dispatcher.newPids))
-
-		newParams := btss.NewReSharingParameters(btss.S256(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
-
-		dispatcher.newParty = reshareSecp256k1.NewLocalParty(newParams, save, dispatcher.p2pMsg, end)
 
 		go dispatcher.reshareMsgs()
 
 		time.Sleep(15 * time.Second)
-		go func() {
-			err := dispatcher.party.Start()
 
-			if err != nil {
-				fmt.Println("err", err)
-				dispatcher.err = err
+		go func() {
+			//Check if old party is not nil (ie node is part of old committee)
+			if myParty != nil {
+				params := btss.NewReSharingParameters(btss.S256(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
+
+				dispatcher.party = reshareSecp256k1.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
+
+				err := dispatcher.party.Start()
+
+				if err != nil {
+					fmt.Println("err", err)
+					dispatcher.err = err
+				}
 			}
 		}()
 		go func() {
-			err := dispatcher.newParty.Start()
+			//Check if new party is not nil (ie will be in new committee)
+			if myNewParty != nil {
+				newParams := btss.NewReSharingParameters(btss.S256(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 
-			if err != nil {
-				fmt.Println("err", err)
-				dispatcher.err = err
+				dispatcher.newParty = reshareSecp256k1.NewLocalParty(newParams, save, dispatcher.p2pMsg, end)
+
+				err := dispatcher.newParty.Start()
+
+				if err != nil {
+					fmt.Println("err", err)
+					dispatcher.err = err
+				}
 			}
 		}()
 		go func() {
@@ -196,39 +208,44 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			return err
 		}
 
-		params := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 		end := make(chan *keyGenEddsa.LocalPartySaveData)
 		endOld := make(chan *keyGenEddsa.LocalPartySaveData)
 
-		dispatcher.party = reshareEddsa.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
-
 		save := keyGenEddsa.NewLocalPartySaveData(len(dispatcher.newPids))
-
-		newParams := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
-
-		dispatcher.newParty = reshareEddsa.NewLocalParty(newParams, save, dispatcher.p2pMsg, end)
 
 		go dispatcher.reshareMsgs()
 
 		time.Sleep(15 * time.Second)
+
 		go func() {
-			fmt.Println("dispatcher.party", dispatcher.party)
+			if myParty != nil {
+				params := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
+				dispatcher.party = reshareEddsa.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
 
-			err := dispatcher.party.Start()
+				fmt.Println("dispatcher.party", dispatcher.party)
 
-			if err != nil {
-				fmt.Println("err", err)
-				dispatcher.err = err
+				err := dispatcher.party.Start()
+
+				if err != nil {
+					fmt.Println("err", err)
+					dispatcher.err = err
+				}
 			}
 		}()
 
 		go func() {
-			fmt.Println("dispatcher.newParty", dispatcher.newParty)
-			err := dispatcher.newParty.Start()
+			if myNewParty != nil {
+				newParams := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 
-			if err != nil {
-				fmt.Println("newParty.start()err", err)
-				dispatcher.err = err
+				dispatcher.newParty = reshareEddsa.NewLocalParty(newParams, save, dispatcher.p2pMsg, end)
+
+				fmt.Println("dispatcher.newParty", dispatcher.newParty)
+				err := dispatcher.newParty.Start()
+
+				if err != nil {
+					fmt.Println("newParty.start()err", err)
+					dispatcher.err = err
+				}
 			}
 		}()
 
@@ -276,11 +293,15 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 		fmt.Println("OKAYISH", dispatcher.timeout, dispatcher.tssErr, dispatcher.err)
 		if dispatcher.timeout {
 			culprits := make(map[string]bool, 0)
-			for _, p := range dispatcher.party.WaitingFor() {
-				culprits[p.Id] = true
+			if dispatcher.party != nil {
+				for _, p := range dispatcher.party.WaitingFor() {
+					culprits[p.Id] = true
+				}
 			}
-			for _, p := range dispatcher.newParty.WaitingFor() {
-				culprits[p.Id] = true
+			if dispatcher.newParty != nil {
+				for _, p := range dispatcher.newParty.WaitingFor() {
+					culprits[p.Id] = true
+				}
 			}
 			// a, _, _ := dispatcher.baseInfo()
 
@@ -436,6 +457,9 @@ type SignDispatcher struct {
 func (dispatcher *SignDispatcher) Start() error {
 
 	sortedPids, myParty, p2pCtx := dispatcher.baseInfo()
+	if myParty == nil {
+		return fmt.Errorf("node not part of keygen committee")
+	}
 
 	fmt.Println("Dispatcher sign start", dispatcher, dispatcher.algo, tss_helpers.SigningAlgoEcdsa)
 	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
@@ -827,22 +851,23 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		return err
 	}
 
-	_, selfId, p2pCtx := dispatcher.baseInfo()
+	_, myParty, p2pCtx := dispatcher.baseInfo()
+
+	if myParty == nil {
+		return fmt.Errorf("node not part of keygen committee")
+	}
 
 	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
 		end := make(chan *keyGenSecp256k1.LocalPartySaveData)
 		dispatcher.tssMgr.GeneratePreParams()
 		preParams := <-dispatcher.tssMgr.preParams
-		parameters := btss.NewParameters(btss.S256(), p2pCtx, selfId, pl, threshold)
-		party := keyGenSecp256k1.NewLocalParty(parameters, dispatcher.p2pMsg, end, preParams)
-
-		dispatcher.party = party
+		parameters := btss.NewParameters(btss.S256(), p2pCtx, myParty, pl, threshold)
+		dispatcher.party = keyGenSecp256k1.NewLocalParty(parameters, dispatcher.p2pMsg, end, preParams)
 
 		go dispatcher.handleMsgs()
 		time.Sleep(15 * time.Second)
 		go func() {
-
-			err := party.Start()
+			err := dispatcher.party.Start()
 			if err != nil {
 				fmt.Println("party.Start() err", err)
 				dispatcher.err = err
@@ -882,7 +907,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		}()
 	} else if dispatcher.algo == tss_helpers.SigningAlgoEddsa {
 		end := make(chan *keyGenEddsa.LocalPartySaveData)
-		parameters := btss.NewParameters(btss.Edwards(), p2pCtx, selfId, pl, threshold)
+		parameters := btss.NewParameters(btss.Edwards(), p2pCtx, myParty, pl, threshold)
 		party := keyGenEddsa.NewLocalParty(parameters, dispatcher.p2pMsg, end)
 
 		dispatcher.party = party
