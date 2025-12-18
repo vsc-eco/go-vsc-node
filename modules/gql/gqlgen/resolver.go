@@ -34,6 +34,7 @@ type Resolver struct {
 	Da             *datalayer.DataLayer
 	Contracts      contracts.Contracts
 	ContractsState contracts.ContractState
+	ContractUpds   contracts.ContractUpdates
 	TssKeys        tss_db.TssKeys
 	TssRequests    tss_db.TssRequests
 }
