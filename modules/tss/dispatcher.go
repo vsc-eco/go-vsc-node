@@ -370,6 +370,10 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 		}
 	}
 
+	if from == nil {
+		return
+	}
+
 	if cmt == "both" || cmt == "old" {
 		go func() {
 			ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
