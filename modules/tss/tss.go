@@ -37,7 +37,7 @@ import (
 	flatfs "github.com/ipfs/go-ds-flatfs"
 )
 
-const TSS_SIGN_INTERVAL = 20 //* 2
+const TSS_SIGN_INTERVAL = 50 //* 2
 
 // 5 minutes in blocks
 const TSS_ROTATE_INTERVAL = 20 * 5
@@ -293,12 +293,13 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 	blameMap := tssMgr.BlameScore()
 
-	participants := make([]Participant, 0)
-
 	dispatchers := make([]Dispatcher, 0)
 	for idx, action := range actions {
+
 		var sessionId string
 		if action.Type == KeyGenAction {
+			participants := make([]Participant, 0)
+
 			sessionId = "keygen-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 			lastBlame, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "blame")
 
@@ -355,16 +356,25 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		} else if action.Type == SignAction {
 			sessionId = "sign-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
-			// commitment, _ := tssMgr.tssCommitments.GetLatestCommitment(action.KeyId, "reshare")
+			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "reshare", "keygen")
+
+			bv := big.NewInt(0)
+
+			if err == nil {
+				commitmentBytes, _ := base64.RawURLEncoding.DecodeString(commitment.Commitment)
+				bv = bv.SetBytes(commitmentBytes)
+			}
 
 			keyInfo, _ := tssMgr.tssKeys.FindKey(action.KeyId)
 
 			participants := make([]Participant, 0)
 
-			for _, member := range currentElection.Members {
-				participants = append(participants, Participant{
-					Account: member.Account,
-				})
+			for midx, member := range currentElection.Members {
+				if bv.Bit(midx) == 1 {
+					participants = append(participants, Participant{
+						Account: member.Account,
+					})
+				}
 			}
 
 			dispatcher := &SignDispatcher{
@@ -389,6 +399,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			dispatchers = append(dispatchers, dispatcher)
 			tssMgr.actionMap[sessionId] = dispatcher
 		} else if action.Type == ReshareAction {
+
+			participants := make([]Participant, 0)
 			sessionId = "reshare-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
 			fmt.Println("reshare sessionId", sessionId)
@@ -397,7 +409,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			//This should either be equal but never less in practical terms
 			//However, we can add further checks
-			if commitment.Epoch >= currentElection.Epoch {
+			if commitment.Epoch >= currentElection.Epoch || err != nil {
 				fmt.Println("reshare skipping")
 				continue
 			}
@@ -419,9 +431,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// }
 
 			fmt.Println("commitment", commitment)
-			if commitment.KeyId == "vsc1BcS12fD42kKqL2SMLeBzaEKtd9QbBWC1dt-main" {
-				commitment.Epoch = uint64(809)
-			}
 			commitmentElection := tssMgr.electionDb.GetElection(commitment.Epoch)
 
 			commitmentBytes, err := base64.RawURLEncoding.DecodeString(commitment.Commitment)
@@ -459,6 +468,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					Account: member.Account,
 				})
 			}
+			fmt.Println("newParticipants", newParticipants)
 
 			dispatcher := &ReshareDispatcher{
 				BaseDispatcher: BaseDispatcher{
@@ -589,8 +599,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						"packet": sigPacket,
 					})
 					deployOp := hivego.CustomJsonOperation{
-						RequiredAuths:        []string{},
-						RequiredPostingAuths: []string{tssMgr.config.Get().HiveUsername},
+						RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
+						RequiredPostingAuths: []string{},
 						Id:                   "vsc.tss_sign",
 						Json:                 string(rawJson),
 					}
@@ -603,11 +613,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
 					sig, _ := tssMgr.hiveClient.Sign(hiveTx)
 					hiveTx.AddSig(sig)
-					_, err = tssMgr.hiveClient.Broadcast(hiveTx)
+					txId, err := tssMgr.hiveClient.Broadcast(hiveTx)
 					if err != nil {
 						fmt.Println("Broadcast err", err)
 					}
-
+					fmt.Println("signature.txId", txId)
 					// tssMgr.hiveClient.Broadcast([]hivego.HiveOperation{
 					// 	deployOp,
 					// }, &wif)
