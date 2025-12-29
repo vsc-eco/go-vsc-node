@@ -2,11 +2,13 @@ package contracts
 
 import (
 	"context"
+	"fmt"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -81,6 +83,23 @@ func (c *contracts) RegisterContract(contractId string, args Contract) {
 			"tx_id":           args.TxId,
 			"creation_height": args.CreationHeight,
 			"runtime":         args.Runtime,
+		},
+	}
+	opts := options.FindOneAndUpdate().SetUpsert(true)
+	c.FindOneAndUpdate(context.Background(), findQuery, updateQuery, opts)
+}
+
+func (c *contracts) UpdateContract(contractId string, args Contract) {
+	findQuery := bson.M{
+		"id": contractId,
+	}
+	updateQuery := bson.M{
+		"$set": bson.M{
+			"code":        args.Code,
+			"name":        args.Name,
+			"description": args.Description,
+			"owner":       args.Owner,
+			"runtime":     args.Runtime,
 		},
 	}
 	opts := options.FindOneAndUpdate().SetUpsert(true)
@@ -164,4 +183,70 @@ func (ch *contractState) FindOutputs(id *string, input *string, contract *string
 
 func NewContractState(d *vsc.VscDb) ContractState {
 	return &contractState{db.NewCollection(d.DbInstance, "contract_state")}
+}
+
+type contractUpdates struct {
+	*db.Collection
+}
+
+func NewContractUpdates(d *vsc.VscDb) ContractUpdates {
+	return &contractUpdates{db.NewCollection(d.DbInstance, "contract_updates")}
+}
+
+func (c *contractUpdates) Init() error {
+	err := c.Collection.Init()
+	if err != nil {
+		return err
+	}
+
+	indexModel := mongo.IndexModel{
+		Keys: bson.D{{Key: "contract_id", Value: 1}, {Key: "block_height", Value: -1}},
+	}
+
+	// create index on block.block_number for faster queries
+	err = c.CreateIndexIfNotExist(indexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create index: %w", err)
+	}
+
+	return nil
+}
+
+func (c *contractUpdates) Append(contractId string, txId string, height int64, owner string, code string) {
+	// TODO: provide an option in config to skip this for most nodes that don't need to query it
+	findQuery := bson.M{
+		"_id": txId,
+	}
+	updateQuery := bson.M{
+		"$set": bson.M{
+			"contract_id":  contractId,
+			"block_height": height,
+			"owner":        owner,
+			"code":         code,
+		},
+	}
+	opts := options.FindOneAndUpdate().SetUpsert(true)
+	c.FindOneAndUpdate(context.Background(), findQuery, updateQuery, opts)
+}
+
+func (c *contractUpdates) GetUpdatesByContractId(contractId string, offset int, limit int) ([]ContractUpdate, error) {
+	if contractId == "" {
+		return nil, fmt.Errorf("contract id must be specified")
+	}
+	filters := bson.D{{Key: "contract_id", Value: contractId}}
+	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "ts", offset, limit)
+	cursor, err := c.Aggregate(context.TODO(), pipe)
+	if err != nil {
+		return []ContractUpdate{}, err
+	}
+	defer cursor.Close(context.TODO())
+	var results []ContractUpdate
+	for cursor.Next(context.TODO()) {
+		var elem ContractUpdate
+		if err := cursor.Decode(&elem); err != nil {
+			return []ContractUpdate{}, err
+		}
+		results = append(results, elem)
+	}
+	return results, nil
 }

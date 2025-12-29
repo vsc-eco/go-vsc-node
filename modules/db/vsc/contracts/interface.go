@@ -7,6 +7,7 @@ type Contracts interface {
 	RegisterContract(contractId string, args Contract)
 	ContractById(contractId string) (Contract, error)
 	FindContracts(contractId *string, code *string, offset int, limit int) ([]Contract, error)
+	UpdateContract(contractId string, args Contract)
 }
 
 type ContractState interface {
@@ -14,6 +15,12 @@ type ContractState interface {
 	IngestOutput(inputArgs IngestOutputArgs)
 	GetLastOutput(contractId string, height uint64) (ContractOutput, error)
 	FindOutputs(id *string, input *string, contract *string, offset int, limit int) ([]ContractOutput, error)
+}
+
+type ContractUpdates interface {
+	a.Plugin
+	Append(contractId string, txId string, height int64, owner string, code string)
+	GetUpdatesByContractId(contractId string, offset int, limit int) ([]ContractUpdate, error)
 }
 
 type IngestOutputArgs struct {
@@ -51,6 +58,15 @@ type ContractOutput struct {
 
 	Results     []ContractOutputResult `json:"results" bson:"results"`
 	StateMerkle string                 `json:"state_merkle" bson:"state_merkle"`
+}
+
+type ContractUpdate struct {
+	Id          string  `json:"id" bson:"_id"`
+	ContractId  string  `json:"contract_id" bson:"contract_id"`
+	BlockHeight int64   `json:"block_height" bson:"block_height"`
+	Ts          *string `json:"ts,omitempty" bson:"ts,omitempty"`
+	Owner       string  `json:"owner" bson:"owner"`
+	Code        string  `json:"code" bson:"code"`
 }
 
 type ContractOutputError = string

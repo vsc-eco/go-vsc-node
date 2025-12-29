@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/hive/streamer"
 
@@ -74,6 +75,38 @@ func NormalizeAddress(address string, addressType string) (*string, error) {
 	}
 
 	return nil, errors.New("unsupported address type")
+}
+
+// Checks if the system transaction contains a fee payment transfer to gateway wallet at the second operation
+//
+// TODO: We should find a way to execute contract deployments in ExecuteBatch() where ledgerSession is accessible
+// before regular ops so that fees can be paid from Magi balance alternatively
+func hasFeePaymentOp(ops []hivego.Operation, feeAmt int64, feeAsset string) (bool, int64, string) {
+	if len(ops) < 2 {
+		return false, 0, ""
+	}
+
+	secondOp := ops[1]
+	if secondOp.Type == "transfer" {
+		amountData := secondOp.Value["amount"].(map[string]any)
+		amount, err := strconv.ParseInt(amountData["amount"].(string), 10, 64)
+
+		if err != nil {
+			return false, 0, ""
+		}
+
+		feeNai := "@@000000013"
+		if feeAsset != "hbd" {
+			feeNai = "@@000000021"
+		}
+
+		if amount < feeAmt || amountData["nai"] != feeNai || secondOp.Value["to"] != params.GATEWAY_WALLET {
+			return false, 0, ""
+		}
+		return true, amount, secondOp.Value["from"].(string)
+	} else {
+		return false, 0, ""
+	}
 }
 
 var BOOTSTRAP = []string{
@@ -236,10 +269,9 @@ func (mr *MockReader) IngestTx(tx hive_blocks.Tx) {
 	mr.mutex.Unlock()
 }
 
-func NewMockReader(processFunc streamer.ProcessFunction) *MockReader {
+func NewMockReader() *MockReader {
 	return &MockReader{
-		mutex:           &sync.Mutex{},
-		ProcessFunction: processFunc,
+		mutex: &sync.Mutex{},
 	}
 }
 

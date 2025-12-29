@@ -4,6 +4,7 @@ import (
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
 	data_availability_client "vsc-node/modules/data-availability/client"
 	data_availability_server "vsc-node/modules/data-availability/server"
 	"vsc-node/modules/db"
@@ -18,6 +19,7 @@ type Node struct {
 	client         *data_availability_client.DataAvailability
 	db             *vsc.VscDb
 	identityConfig common.IdentityConfig
+	p2p            *p2pInterface.P2PServer
 }
 
 func (n Node) Client() bool {
@@ -64,13 +66,11 @@ func MakeNode(input MakeNodeInput) *Node {
 	identityConfig.Init()
 	identityConfig.SetUsername(input.Username)
 
-	sysConfig := common.SystemConfig{
-		Network: "mocknet",
-	}
+	sysConfig := systemconfig.MocknetConfig()
 
 	port := 7001 + nodeCount
 	nodeCount++
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, port)
+	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, nil, port)
 
 	datalayer := DataLayer.New(p2p, input.Username)
 
@@ -109,5 +109,6 @@ func MakeNode(input MakeNodeInput) *Node {
 		client,
 		vscDb,
 		identityConfig,
+		p2p,
 	}
 }

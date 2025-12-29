@@ -2,10 +2,11 @@ package main
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"strconv"
 	"strings"
 	"vsc-node/modules/wasm/e2e/go_wasm/sdk"
+
+	"github.com/CosmWasm/tinyjson"
 )
 
 func main() {
@@ -34,7 +35,7 @@ func TestStatePut(arg *string) *string {
 
 	sdk.Log("hello world")
 
-	bytes, _ := json.Marshal(env)
+	bytes, _ := tinyjson.Marshal(env)
 
 	ret := "env: " + string(bytes)
 	return &ret
@@ -166,7 +167,7 @@ func ClearString(a *string) *string {
 //go:wasmexport dumpEnv
 func DumpEnv(a *string) *string {
 	env := sdk.GetEnv()
-	envJson, err := json.Marshal(env)
+	envJson, err := tinyjson.Marshal(env)
 	if err != nil {
 		sdk.Abort("failed to stringify env vars")
 	}
