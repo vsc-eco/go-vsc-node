@@ -12,9 +12,10 @@ import (
 )
 
 var (
-	ErrAddrExists   = errors.New("key exists in datastore")
-	ErrAddrNotFound = errors.New("address not found")
-	ErrTxNotFound   = errors.New("transaction not found")
+	ErrAddrExists      = errors.New("address key exists in datastore")
+	ErrAddrNotFound    = errors.New("address not found")
+	ErrTxNotFound      = errors.New("transaction not found")
+	ErrPendingTxExists = errors.New("pending tx key exists in datastore")
 )
 
 // AddressMapping represents a BTC to VSC address mapping document
@@ -43,8 +44,9 @@ type AddressStore struct {
 
 // StateStore handles block height and transaction tracking
 type StateStore struct {
-	heightCollection *mongo.Collection
-	txCollection     *mongo.Collection
+	heightCollection    *mongo.Collection
+	txCollection        *mongo.Collection
+	pendingTxCollection *mongo.Collection
 }
 
 // Database represents the complete database with organized sub-stores
@@ -69,6 +71,7 @@ func New(ctx context.Context, connString, dbName string) (*Database, error) {
 	addrCollection := db.Collection("address_mappings")
 	heightCollection := db.Collection("block_height")
 	txCollection := db.Collection("sent_transactions")
+	pendingTxCollection := db.Collection("pending_transactions")
 
 	// Create index on createdAt for address mappings
 	addrIndexModel := mongo.IndexModel{
@@ -88,14 +91,33 @@ func New(ctx context.Context, connString, dbName string) (*Database, error) {
 		return nil, fmt.Errorf("failed to create transaction index: %w", err)
 	}
 
+	// Create index on signatures.sigHash for fast hash lookups
+	pendingSigHashIndexModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "signatures.sigHash", Value: 1}},
+		Options: options.Index().SetName("sigHash_idx"),
+	}
+	if _, err := pendingTxCollection.Indexes().CreateOne(ctx, pendingSigHashIndexModel); err != nil {
+		return nil, fmt.Errorf("failed to create pending tx sigHash index: %w", err)
+	}
+
+	// Create index on createdAt for cleanup of old pending transactions
+	pendingCreatedAtIndexModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "createdAt", Value: 1}},
+		Options: options.Index().SetName("pending_createdAt_idx"),
+	}
+	if _, err := pendingTxCollection.Indexes().CreateOne(ctx, pendingCreatedAtIndexModel); err != nil {
+		return nil, fmt.Errorf("failed to create pending tx createdAt index: %w", err)
+	}
+
 	return &Database{
 		client: client,
 		Addresses: &AddressStore{
 			collection: addrCollection,
 		},
 		State: &StateStore{
-			heightCollection: heightCollection,
-			txCollection:     txCollection,
+			heightCollection:    heightCollection,
+			txCollection:        txCollection,
+			pendingTxCollection: pendingTxCollection,
 		},
 	}, nil
 }
@@ -115,6 +137,9 @@ func (d *Database) DropAllCollections(ctx context.Context) error {
 	}
 	if err := d.State.txCollection.Drop(ctx); err != nil {
 		return fmt.Errorf("failed to drop tx collection: %w", err)
+	}
+	if err := d.State.pendingTxCollection.Drop(ctx); err != nil {
+		return fmt.Errorf("failed to drop pending tx collection: %w", err)
 	}
 	return nil
 }
@@ -238,15 +263,42 @@ func (s *StateStore) GetBlockHeight(ctx context.Context) (uint32, error) {
 	return result.Height, nil
 }
 
+// IncrementBlockHeight atomically increments the block height by 1
+// Returns the new height after increment
+// If no height exists, initializes to 1
+func (s *StateStore) IncrementBlockHeight(ctx context.Context) (uint32, error) {
+	filter := bson.M{"_id": "current"}
+	update := bson.M{
+		"$inc": bson.M{"height": 1},
+	}
+
+	opts := options.FindOneAndUpdate().
+		SetUpsert(true).
+		SetReturnDocument(options.After)
+
+	var result BlockHeight
+	err := s.heightCollection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result)
+	if err != nil {
+		return 0, fmt.Errorf("failed to increment block height: %w", err)
+	}
+
+	return result.Height, nil
+}
+
 // MarkTransactionSent marks a transaction ID as sent
 // Returns ErrAddrExists if the transaction was already marked as sent
 func (s *StateStore) MarkTransactionSent(ctx context.Context, txID string) error {
+	err := s.DeletePendingTransaction(ctx, txID)
+	if err != nil {
+		return err
+	}
+
 	doc := SentTransaction{
 		TxID:   txID,
 		SentAt: time.Now().UTC(),
 	}
 
-	_, err := s.txCollection.InsertOne(ctx, doc)
+	_, err = s.txCollection.InsertOne(ctx, doc)
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
 			return ErrAddrExists // Reusing this error, or create ErrTxExists

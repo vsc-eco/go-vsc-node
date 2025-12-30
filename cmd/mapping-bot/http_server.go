@@ -28,7 +28,7 @@ func mapBotHttpServer(
 		return
 	}
 
-	http.Handle("/", requestHandler(ctx, addressStore, bot))
+	http.Handle("/", requestHandler(ctx, bot))
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
 }
 
@@ -38,7 +38,6 @@ type requestBody struct {
 
 func requestHandler(
 	globalCtx context.Context,
-	addressStore *database.AddressStore,
 	bot *mapper.MapperState,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +73,7 @@ func requestHandler(
 		ctx, cancel := context.WithTimeout(globalCtx, 15*time.Second)
 		defer cancel()
 
-		if err := addressStore.Insert(ctx, btcAddr, vscAddr); err != nil {
+		if err := bot.Db.Addresses.Insert(ctx, btcAddr, vscAddr); err != nil {
 			if errors.Is(err, database.ErrAddrExists) {
 				writeResponse(w, http.StatusConflict, "address map exists")
 			} else {

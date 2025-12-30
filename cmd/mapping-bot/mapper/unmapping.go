@@ -5,42 +5,26 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
+	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mempool"
 
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/hasura/go-graphql-client"
 )
 
 // SigningData and UnsignedSigHash structs same as contract
 type SigningData struct {
-	Tx                string            `json:"tx"`
-	UnsignedSigHashes []UnsignedSigHash `json:"unsigned_sig_hashes"`
-}
-
-type UnsignedSigHash struct {
-	Index         uint32 `json:"index"`
-	SigHash       string `json:"sig_hash"`
-	WitnessScript string `json:"witness_script"`
+	RawTx             string                     `json:"tx"`
+	UnsignedSigHashes []database.UnsignedSigHash `json:"unsigned_sig_hashes"`
 }
 
 type HashMetadata struct {
 	TxId  string
 	Index uint32
-}
-
-type SignedData struct {
-	Tx                string
-	UnsignedSigHashes []UnsignedSigHash
-	Signatures        [][]byte
-	TotalSignatures   uint32
-	CurrentSignatures uint32
-}
-
-type AwaitingSignature struct {
-	Txs    map[string]*SignedData
-	Hashes map[string]*HashMetadata
 }
 
 type TxRawIdPair struct {
@@ -50,12 +34,15 @@ type TxRawIdPair struct {
 
 func (ms *MapperState) HandleUnmap(
 	memPoolClient *mempool.MempoolClient,
-	txSpends map[string]*SigningData,
 ) {
+	ms.L.Debug("handling unmap")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
 	defer cancel()
 
-	ms.ProcessTxSpends(ms.GqlClient, txSpends)
+	txSpends, err := FetchTxSpends(ctx, ms.GqlClient)
+
+	ms.ProcessTxSpends(ctx, ms.GqlClient, txSpends)
 	finishedTxs, err := ms.CheckSignagures(ctx, ms.GqlClient)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error fetching signatures from the database: %s", err.Error())
@@ -74,21 +61,26 @@ func (ms *MapperState) HandleUnmap(
 			txPairs[i] = txPair
 		}
 		for _, tx := range txPairs {
-			memPoolClient.PostTx(tx.RawTx)
+			slog.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
+			if !slog.Default().Enabled(ctx, slog.LevelDebug) {
+				err := memPoolClient.PostTx(tx.RawTx)
+				if err != nil {
+					slog.Warn("transaction failed to post", "txId", tx.TxId)
+					continue
+				}
+			}
 			ms.Db.State.MarkTransactionSent(ctx, tx.TxId)
 		}
 	}
 }
 
-func (ms *MapperState) ProcessTxSpends(gqlClient *graphql.Client, incomingTxSpends map[string]*SigningData) {
-	ms.Mutex.Lock()
-	defer ms.Mutex.Unlock()
+func (ms *MapperState) ProcessTxSpends(
+	ctx context.Context,
+	gqlClient *graphql.Client,
+	incomingTxSpends map[string]*SigningData,
+) {
 	for txId, signingData := range incomingTxSpends {
 		// already in the system
-		_, ok := ms.AwaitingSignatureTxs.Txs[txId]
-		if ok {
-			continue
-		}
 
 		// could re-enable this, but it does a lot of gql requests for probably no reason
 		// make sure none of the tx's utxos are observed before adding to the system
@@ -105,69 +97,45 @@ func (ms *MapperState) ProcessTxSpends(gqlClient *graphql.Client, incomingTxSpen
 		// 	continue
 		// }
 
-		for _, hash := range signingData.UnsignedSigHashes {
-			ms.AwaitingSignatureTxs.Hashes[hash.SigHash] = &HashMetadata{
-				TxId:  txId,
-				Index: hash.Index,
-			}
-		}
+		err := ms.Db.State.AddPendingTransaction(ctx, txId, signingData.RawTx, signingData.UnsignedSigHashes)
+		if err != nil && err != database.ErrPendingTxExists {
 
-		ms.AwaitingSignatureTxs.Txs[txId] = &SignedData{
-			Tx:                signingData.Tx,
-			UnsignedSigHashes: signingData.UnsignedSigHashes,
-			Signatures:        make([][]byte, len(signingData.UnsignedSigHashes)),
-			TotalSignatures:   uint32(len(signingData.UnsignedSigHashes)),
-			CurrentSignatures: 0,
 		}
 	}
 }
 
-func (ms *MapperState) CheckSignagures(ctx context.Context, graphQlClient *graphql.Client) ([]*SignedData, error) {
-	ms.Mutex.Lock()
-	allHashes := make([]string, len(ms.AwaitingSignatureTxs.Hashes))
-	i := 0
-	for hash := range ms.AwaitingSignatureTxs.Hashes {
-		allHashes[i] = hash
-		i++
+func (ms *MapperState) CheckSignagures(
+	ctx context.Context,
+	graphQlClient *graphql.Client,
+) ([]*database.PendingTransaction, error) {
+	allHashes, err := ms.Db.State.GetAllPendingSigHashes(ctx)
+	if err != nil {
+		return nil, err
 	}
-	ms.Mutex.Unlock()
 
 	newSignagutes, err := FetchSignatures(ctx, graphQlClient, allHashes)
 	if err != nil {
 		return nil, err
 	}
 
-	ms.Mutex.Lock()
-	defer ms.Mutex.Unlock()
-
-	fullySignedTxs := make([]*SignedData, 0)
-	for hash, sig := range newSignagutes {
-		metadata := ms.AwaitingSignatureTxs.Hashes[hash]
-		signedData := ms.AwaitingSignatureTxs.Txs[metadata.TxId]
-		signedData.Signatures[metadata.Index] = sig
-		signedData.CurrentSignatures++
-		delete(ms.AwaitingSignatureTxs.Hashes, hash)
-
-		// should never be greater but just in case
-		if signedData.CurrentSignatures >= signedData.TotalSignatures {
-			fullySignedTxs = append(fullySignedTxs, signedData)
-			delete(ms.AwaitingSignatureTxs.Txs, metadata.TxId)
-		}
+	fullySignedTxs, err := ms.Db.State.UpdateSignatures(ctx, newSignagutes)
+	if err != nil {
+		return nil, err
 	}
 
 	return fullySignedTxs, nil
 }
 
-func attachSignatures(signedData *SignedData) (*TxRawIdPair, error) {
+func attachSignatures(signedData *database.PendingTransaction) (*TxRawIdPair, error) {
 	var tx wire.MsgTx
-	txBytes, err := hex.DecodeString(signedData.Tx)
+	txBytes, err := hex.DecodeString(signedData.RawTx)
 	if err != nil {
 		return nil, err
 	}
 	tx.Deserialize(bytes.NewReader(txBytes))
 
-	for _, inputData := range signedData.UnsignedSigHashes {
-		signature := signedData.Signatures[inputData.Index]
+	for _, inputData := range signedData.Signatures {
+		signature := append(signedData.Signatures[inputData.Index].Signature, byte(txscript.SigHashAll))
 
 		witnessScriptBytes, err := hex.DecodeString(inputData.WitnessScript)
 		if err != nil {

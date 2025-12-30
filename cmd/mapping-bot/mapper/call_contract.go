@@ -1,9 +1,11 @@
 package mapper
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/hive/streamer"
@@ -33,6 +35,7 @@ type txVscCallContractJSON struct {
 //
 // returning (json RawMessage, error)
 func callContract(
+	ctx context.Context,
 	username, contractID string,
 	contractInput json.RawMessage,
 	action string,
@@ -81,7 +84,9 @@ func callContract(
 	}
 
 	fmt.Println("txjson", string(txJson))
-	// return nil
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		return nil
+	}
 
 	op := hiveCreator.CustomJson([]string{username}, []string{}, "vsc.call", string(txJson))
 	tx := hiveCreator.MakeTransaction([]hivego.HiveOperation{op})

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
+	"net/http"
 	"strconv"
 	"time"
 	"vsc-node/cmd/mapping-bot/mempool"
@@ -29,7 +29,7 @@ func (ms *MapperState) HandleMap(
 	}
 	lastContractHeight, err := strconv.ParseUint(lastContractHeightStr, 10, 32)
 	if err != nil {
-		log.Printf("response recieved for last contract height is not an integer")
+		log.Printf("response recieved for last contract height is not an integer: %s", lastContractHeightStr)
 		return
 	}
 
@@ -38,7 +38,7 @@ func (ms *MapperState) HandleMap(
 		return
 	}
 
-	blockParser := NewBlockParser(ms.Db.Addresses, &chaincfg.TestNet3Params)
+	blockParser := NewBlockParser(ms.Db.Addresses, &chaincfg.TestNet4Params)
 
 	foundTxs, err := blockParser.ParseBlock(ctx, ms.GqlClient, blockBytes, blockHeight)
 	if err != nil {
@@ -61,17 +61,17 @@ func (ms *MapperState) HandleMap(
 	}
 	for _, tx := range jsonMessages {
 		// TODO: input username and contract ID
-		err := callContract("milo-hpr", "vsc1BVgE4NL3nZwtoDn82XMymNPriRUp9UVAGU", tx, "map")
+		err := callContract(ctx, "milo-hpr", "vsc1BTpUPXMyvc6LNe38w5UNCNAURZHH6esBic", tx, "map")
 		if err != nil {
 			log.Printf("error calling contract: %s", err.Error())
 		}
 	}
 
-	ms.Mutex.Lock()
-	defer ms.Mutex.Unlock()
-	ms.LastBlockHeight++
-	lastBlockBytes := []byte(strconv.FormatUint(uint64(ms.LastBlockHeight), 10))
-	ms.FfsDatastore.Put(ctx, lastBlockKey, lastBlockBytes)
+	_, err = ms.Db.State.IncrementBlockHeight(ctx)
+	if err != nil {
+		log.Printf("error incrementing last block height: %s", err.Error())
+		return
+	}
 }
 
 func groupTxsByBlock(transactions []mempool.Transaction, lastHeight uint32) map[string][]mempool.Transaction {
@@ -95,22 +95,30 @@ func groupTxsByBlock(transactions []mempool.Transaction, lastHeight uint32) map[
 
 // checks for existing txs for new addresses being registered
 func (ms *MapperState) HandleExistingTxs(btcAddress string) {
-	mempoolClient := mempool.NewMempoolClient()
+	mempoolClient := mempool.NewMempoolClient(http.DefaultClient)
 	txHistory, err := mempoolClient.GetAddressTxs(btcAddress)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to fetch transaction history for address %s: %s", btcAddress, err)
+		log.Printf("failed to fetch transaction history for address %s: %s", btcAddress, err)
 		return
 	}
 	if len(txHistory) == 0 {
 		return
 	}
-	txMap := groupTxsByBlock(txHistory, ms.LastBlockHeight)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	lastHeight, err := ms.Db.State.GetBlockHeight(ctx)
+	if err != nil {
+		log.Printf("failed to retrieve last height from database")
+		return
+	}
+
+	txMap := groupTxsByBlock(txHistory, lastHeight)
 
 	for blockHash, txs := range txMap {
 		blockHeight := txs[0].Status.BlockHeight
 		blockBytes, err := mempoolClient.GetRawBlock(blockHash)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error getting block with hash %s: %s", blockHash, err.Error())
+			log.Printf("error getting block with hash %s: %s", blockHash, err.Error())
 		}
 		ms.HandleMap(blockBytes, uint32(blockHeight))
 	}

@@ -8,7 +8,7 @@ require (
 	github.com/99designs/gqlgen v0.17.81
 	github.com/JustinKnueppel/go-result v1.0.0
 	github.com/bnb-chain/tss-lib/v2 v2.0.2
-	github.com/btcsuite/btcd v0.24.2
+	github.com/btcsuite/btcd v0.25.0
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/btcsuite/btcutil v1.0.3-0.20201208143702-a53e38424cce
 	github.com/chebyrash/promise v0.0.0-20230709133807-42ec49ba1459

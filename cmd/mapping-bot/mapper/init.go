@@ -1,7 +1,7 @@
 package mapper
 
 import (
-	"sync"
+	"log/slog"
 	"vsc-node/cmd/mapping-bot/database"
 
 	"github.com/hasura/go-graphql-client"
@@ -10,23 +10,16 @@ import (
 const graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
 
 type MapperState struct {
-	Mutex                sync.Mutex
-	Db                   *database.Database
-	AwaitingSignatureTxs *AwaitingSignature
+	Db *database.Database
 	// txs that have been posted, but haven't been seen in a block yet
 	GqlClient *graphql.Client
+	L         *slog.Logger
 }
 
 func NewMapperState(db *database.Database) (*MapperState, error) {
-	unsignedTxs := &AwaitingSignature{
-		Txs:    make(map[string]*SignedData),
-		Hashes: make(map[string]*HashMetadata),
-	}
-
 	return &MapperState{
-		Mutex:                sync.Mutex{},
-		Db:                   db,
-		AwaitingSignatureTxs: unsignedTxs,
-		GqlClient:            graphql.NewClient(graphQLUrl, nil),
+		Db:        db,
+		GqlClient: graphql.NewClient(graphQLUrl, nil),
+		L:         slog.Default(),
 	}, nil
 }
