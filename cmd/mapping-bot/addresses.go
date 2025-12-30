@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	network   = &chaincfg.TestNet3Params
+	network   = &chaincfg.TestNet4Params
 	pubKeyHex = ""
 )
 

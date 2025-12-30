@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 )
 
-const MempoolAPIBase = "https://mempool.space/testnet/api"
+const MempoolAPIBase = "https://mempool.space/testnet4/api"
 
 type MempoolClient struct {
 	baseURL string
@@ -64,15 +65,15 @@ type Status struct {
 	BlockTime   int64  `json:"block_time"`
 }
 
-func NewMempoolClient() *MempoolClient {
+func NewMempoolClient(httpClient *http.Client) *MempoolClient {
 	return &MempoolClient{
 		baseURL: MempoolAPIBase,
-		client:  &http.Client{},
+		client:  httpClient,
 	}
 }
 
 func (m *MempoolClient) GetBlockHashAtHeight(height uint32) (string, int, error) {
-	fmt.Println("getting hash for block at height", height)
+	slog.Info("getting hash for block", "height", height)
 	url := fmt.Sprintf("%s/block-height/%d", m.baseURL, height)
 	resp, err := m.client.Get(url)
 	if err != nil {
@@ -93,7 +94,7 @@ func (m *MempoolClient) GetBlockHashAtHeight(height uint32) (string, int, error)
 }
 
 func (m *MempoolClient) GetRawBlock(hash string) ([]byte, error) {
-	fmt.Println("getting raw data for block with hash", hash)
+	slog.Info("getting raw data for block", "hash", hash)
 	url := fmt.Sprintf("%s/block/%s/raw", m.baseURL, hash)
 	resp, err := m.client.Get(url)
 	if err != nil {

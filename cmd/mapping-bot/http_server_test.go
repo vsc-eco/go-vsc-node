@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 	"vsc-node/cmd/mapping-bot/database"
+	"vsc-node/cmd/mapping-bot/mapper"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -15,7 +16,7 @@ import (
 func TestHttpServer(t *testing.T) {
 	const dbName = "mappingbottest"
 	ctx := context.Background()
-	db, err := database.New(ctx, "mongodb://localhost:27017", dbName, "address_mappings")
+	db, err := database.New(ctx, "mongodb://localhost:27017", dbName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,6 +27,11 @@ func TestHttpServer(t *testing.T) {
 			t.Logf("failed to drop test database: %s", err.Error())
 		}
 	}()
+
+	bot, err := mapper.NewMapperState(db)
+	if err != nil {
+		t.Fatalf("error creating bot: %s", err.Error())
+	}
 
 	requestBody := requestBody{
 		Instruction: "deposit_to=hive:sudo-sandwich",
@@ -48,13 +54,13 @@ func TestHttpServer(t *testing.T) {
 		}
 		w := &httptest.ResponseRecorder{}
 
-		handler := requestHandler(t.Context(), db, nil).ServeHTTP
+		handler := requestHandler(t.Context(), bot).ServeHTTP
 		handler(w, req)
 
 		result := w.Result()
 		assert.Equal(t, http.StatusCreated, result.StatusCode)
 
-		instruction, err := db.GetInstruction(t.Context(), btcAddr)
+		instruction, err := db.Addresses.GetInstruction(t.Context(), btcAddr)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -74,7 +80,7 @@ func TestHttpServer(t *testing.T) {
 		}
 		w := &httptest.ResponseRecorder{}
 
-		handler := requestHandler(t.Context(), db, nil).ServeHTTP
+		handler := requestHandler(t.Context(), bot).ServeHTTP
 		handler(w, req)
 
 		result := w.Result()
@@ -94,7 +100,7 @@ func TestHttpServer(t *testing.T) {
 		}
 		w := &httptest.ResponseRecorder{}
 
-		handler := requestHandler(t.Context(), db, nil).ServeHTTP
+		handler := requestHandler(t.Context(), bot).ServeHTTP
 		handler(w, req)
 
 		result := w.Result()

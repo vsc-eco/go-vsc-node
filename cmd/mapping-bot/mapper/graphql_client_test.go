@@ -3,6 +3,7 @@ package mapper
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"testing"
@@ -35,6 +36,7 @@ func TestSignatures(t *testing.T) {
 }
 
 func TestTxSpends(t *testing.T) {
+	slog.SetLogLoggerLevel(slog.LevelDebug)
 	httpClient := &http.Client{
 		Transport: &loggingTransport{http.DefaultTransport},
 	}

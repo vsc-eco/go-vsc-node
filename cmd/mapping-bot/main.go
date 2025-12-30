@@ -10,25 +10,9 @@ import (
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
 	"vsc-node/cmd/mapping-bot/mempool"
-
-	flatfs "github.com/ipfs/go-ds-flatfs"
 )
 
 const httpPort = 8000
-
-func newDataStore(path string) (*flatfs.Datastore, error) {
-	if err := os.MkdirAll(path, 0755); err != nil {
-		return nil, err
-	}
-
-	// uses default sharding
-	fs, err := flatfs.CreateOrOpen(path, flatfs.NextToLast(2), false)
-	if err != nil {
-		return nil, err
-	}
-
-	return fs, nil
-}
 
 func main() {
 	db, err := database.New(context.Background(), "mongodb://localhost:27017", "mappingbot")
@@ -40,18 +24,21 @@ func main() {
 	lastClear := time.Now()
 
 	// remove for prod
-	// err = addressDb.InsertAddressMap(
-	// 	context.TODO(),
-	// 	"tb1qvzwxaadfvqrc4n50yam2clw3hdvj2s6028vfmf0t3725yj0q0ftsq589fm",
-	// 	"deposit_to=hive:milo-hpr",
-	// )
-	//
-
+	err = db.Addresses.Insert(
+		context.TODO(),
+		"tb1qeej59j0rjgkdh9kae4hjpljevzr3tjlndn33aywncs5uhf8swe2s67hvfy",
+		"deposit_to=hive:milo-hpr",
+	)
 	if err != nil {
 		if err != database.ErrAddrExists {
 			fmt.Fprintf(os.Stderr, "failed to add default address\n")
 			os.Exit(1)
 		}
+	}
+	err = db.State.SetBlockHeight(context.TODO(), 4806875)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to add default block height\n")
+		os.Exit(1)
 	}
 
 	bot, err := mapper.NewMapperState(db)
@@ -63,7 +50,7 @@ func main() {
 	defer cancel()
 	go mapBotHttpServer(httpCtx, db.Addresses, httpPort, bot)
 
-	mempoolClient := mempool.NewMempoolClient()
+	mempoolClient := mempool.NewMempoolClient(http.DefaultClient)
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
@@ -76,15 +63,13 @@ func main() {
 			}
 		}
 
-		txSpends, err := mapper.FetchTxSpends(ctx, bot.GqlClient)
-		// cancel context before handling error since it has to be cleaned up either way
-		cancel()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error fetching tx spends: %s\n", err.Error())
+			cancel()
 			time.Sleep(time.Minute)
 			continue
 		} else {
-			go bot.HandleUnmap(mempoolClient, txSpends)
+			go bot.HandleUnmap(mempoolClient)
 		}
 
 		blockHeight, err := bot.Db.State.GetBlockHeight(ctx)
@@ -114,10 +99,10 @@ func main() {
 
 		go bot.HandleMap(blockBytes, blockHeight)
 
-		cancel()
 		// // TODO: remove for prod
 		// time.Sleep(3 * time.Second)
 		// return
+		cancel()
 		time.Sleep(time.Minute)
 	}
 }
