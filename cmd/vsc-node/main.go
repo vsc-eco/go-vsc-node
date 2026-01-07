@@ -53,8 +53,11 @@ func main() {
 	hiveApiUrl := streamer.NewHiveConfig()
 	hiveApiUrlErr := hiveApiUrl.Init()
 
+	// hiveURI := hiveApiUrl.Get().HiveURI
+	hiveURI := "https://hive-api.3speak.tv"
+
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
-	fmt.Println("HIVE_API", hiveApiUrl.Get().HiveURI)
+	fmt.Println("HIVE_API", hiveURI)
 	fmt.Println("Git Commit", announcements.GitCommit)
 
 	dbImpl := db.New(dbConf)
@@ -87,7 +90,7 @@ func main() {
 	}
 
 	// choose the source
-	hiveRpcClient := hivego.NewHiveRpc(hiveApiUrl.Get().HiveURI)
+	hiveRpcClient := hivego.NewHiveRpc(hiveURI)
 
 	filters := []streamer.FilterFunc{filter}
 	//Default filter don't filter anything
@@ -98,7 +101,13 @@ func main() {
 	}
 
 	stBlock := uint64(94601000)
-	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
+	streamerPlugin := streamer.NewStreamer(
+		hiveRpcClient,
+		hiveBlocks,
+		filters,
+		vFilters,
+		&stBlock,
+	) // optional starting block #
 
 	identityConfig := common.NewIdentityConfig()
 
@@ -116,7 +125,14 @@ func main() {
 	var blockStatus common_types.BlockStatusGetter = nil
 	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus)
 
-	announcementsManager, err := announcements.New(hiveRpcClient, identityConfig, sysConfig, time.Hour*24, &hiveCreator, p2p)
+	announcementsManager, err := announcements.New(
+		hiveRpcClient,
+		identityConfig,
+		sysConfig,
+		time.Hour*24,
+		&hiveCreator,
+		p2p,
+	)
 	if err != nil {
 		fmt.Println("error is", err)
 		os.Exit(1)
@@ -131,19 +147,79 @@ func main() {
 	l := logger.PrefixedLogger{
 		Prefix: "vsc-node",
 	}
-	se := stateEngine.New(l, sysConfig, da, witnessDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
+	se := stateEngine.New(
+		l,
+		sysConfig,
+		da,
+		witnessDb,
+		electionDb,
+		contractDb,
+		contractState,
+		txDb,
+		ledgerDbImpl,
+		balanceDb,
+		hiveBlocks,
+		interestClaims,
+		vscBlocks,
+		actionsDb,
+		rcDb,
+		nonceDb,
+		tssKeys,
+		tssCommitments,
+		tssRequests,
+		wasm,
+	)
 
 	rcSystem := se.RcSystem
 
 	blockConsumer := blockconsumer.New(se)
 
 	blockStatus = blockConsumer.BlockStatus()
-	ep := election_proposer.New(p2p, witnessesDb, electionDb, vscBlocks, balanceDb, da, &hiveCreator, identityConfig, sysConfig, se, blockConsumer)
+	ep := election_proposer.New(
+		p2p,
+		witnessesDb,
+		electionDb,
+		vscBlocks,
+		balanceDb,
+		da,
+		&hiveCreator,
+		identityConfig,
+		sysConfig,
+		se,
+		blockConsumer,
+	)
 
-	bp := blockproducer.New(l, p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
+	bp := blockproducer.New(
+		l,
+		p2p,
+		blockConsumer,
+		se,
+		identityConfig,
+		sysConfig,
+		&hiveCreator,
+		da,
+		electionDb,
+		vscBlocks,
+		txDb,
+		rcSystem,
+		nonceDb,
+	)
 	oracle := oracle.New(p2p, identityConfig, electionDb, witnessDb, blockConsumer, se)
 
-	multisig := gateway.New(l, sysConfig, witnessesDb, electionDb, actionsDb, balanceDb, &hiveCreator, blockConsumer, p2p, se, identityConfig, hiveRpcClient)
+	multisig := gateway.New(
+		l,
+		sysConfig,
+		witnessesDb,
+		electionDb,
+		actionsDb,
+		balanceDb,
+		&hiveCreator,
+		blockConsumer,
+		p2p,
+		se,
+		identityConfig,
+		hiveRpcClient,
+	)
 
 	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, identityConfig, rcSystem)
 
@@ -154,7 +230,19 @@ func main() {
 		panic(err)
 	}
 
-	tssMgr := tss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessDb, electionDb, blockConsumer, se, identityConfig, flatDb, &hiveCreator)
+	tssMgr := tss.New(
+		p2p,
+		tssKeys,
+		tssRequests,
+		tssCommitments,
+		witnessDb,
+		electionDb,
+		blockConsumer,
+		se,
+		identityConfig,
+		flatDb,
+		&hiveCreator,
+	)
 
 	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{
 		Witnesses:      witnessDb,
