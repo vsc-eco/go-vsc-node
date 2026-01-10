@@ -101,6 +101,8 @@ func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession 
 		} else if len(t.Self.RequiredPostingAuths) > 0 {
 			caller = t.Self.RequiredPostingAuths[0]
 		}
+	} else if !slices.Contains(t.Self.RequiredAuths, t.Caller) && !slices.Contains(t.Self.RequiredPostingAuths, t.Caller) {
+		return errorToTxResult(fmt.Errorf("caller is not in required_auths or required_posting_auths"), 100)
 	}
 
 	w := wasm_runtime_ipc.New()
