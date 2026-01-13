@@ -10,7 +10,6 @@ import (
 
 	uio "github.com/ipfs/boxo/ipld/unixfs/io"
 	"github.com/ipfs/go-cid"
-	format "github.com/ipfs/go-ipld-format"
 	"github.com/multiformats/go-multicodec"
 )
 
@@ -254,17 +253,20 @@ func (db *DataBin) Save() cid.Cid {
 	}
 
 	go func() {
-		links, _ := db.Leaf.Dir.Links(context.Background())
+		// links, _ := db.Leaf.Dir.Links(context.Background())
 		var wg sync.WaitGroup
-		for _, link := range links {
+		// for _, link := range links {
 
-			wg.Add(1)
-			go func(link *format.Link) {
-				blk, _ := db.DataLayer.blockServ.GetBlock(context.Background(), link.Cid)
-				db.DataLayer.notify(context.Background(), blk)
-				wg.Done()
-			}(link)
-		}
+		// 	wg.Add(1)
+		// 	go func(link *format.Link) {
+		// 		fmt.Println("Getting block", link.Cid)
+		// 		blk, _ := db.DataLayer.blockServ.GetBlock(context.Background(), link.Cid)
+		// 		fmt.Println("Notifying block", link.Cid)
+		// 		db.DataLayer.notify(context.Background(), blk)
+		// 		fmt.Println("Done block", link.Cid)
+		// 		wg.Done()
+		// 	}(link)
+		// }
 		wg.Wait()
 		db.DataLayer.blockServ.AddBlock(context.Background(), nodeDir)
 		db.DataLayer.bitswap.NotifyNewBlocks(context.Background(), nodeDir)
