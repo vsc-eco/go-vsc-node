@@ -8,31 +8,145 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// PendingTransaction represents a transaction awaiting signatures
-type PendingTransaction struct {
-	TxID              string          `bson:"_id"`
-	RawTx             string          `bson:"rawTx"`
-	TotalSignatures   uint32          `bson:"totalSignatures"`
-	CurrentSignatures uint32          `bson:"currentSignatures"`
-	CreatedAt         time.Time       `bson:"createdAt"`
-	Signatures        []SignatureSlot `bson:"signatures"`
+// === StateStore Methods ===
+
+// SetBlockHeight sets the last processed block height
+func (s *StateStore) SetBlockHeight(ctx context.Context, height uint32) error {
+	doc := BlockHeight{
+		ID:     "current",
+		Height: height,
+	}
+
+	opts := options.Replace().SetUpsert(true)
+	_, err := s.heightCollection.ReplaceOne(ctx, bson.M{"_id": "current"}, doc, opts)
+	if err != nil {
+		return fmt.Errorf("failed to set block height: %w", err)
+	}
+	return nil
 }
 
-// SignatureSlot represents a signature slot in a transaction
-type SignatureSlot struct {
-	Index         uint32 `bson:"index"`
-	SigHash       string `bson:"sigHash"`
-	WitnessScript string `bson:"witnessScript"`
-	Signature     []byte `bson:"signature,omitempty"` // omitempty keeps it null when empty
+// GetBlockHeight retrieves the last processed block height
+// Returns 0 if no height has been set yet
+func (s *StateStore) GetBlockHeight(ctx context.Context) (uint32, error) {
+	var result BlockHeight
+	err := s.heightCollection.FindOne(ctx, bson.M{"_id": "current"}).Decode(&result)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return 0, nil // Return 0 if no height has been set
+		}
+		return 0, fmt.Errorf("failed to get block height: %w", err)
+	}
+	return result.Height, nil
 }
 
-// UnsignedSigHash is a helper struct for adding transactions
-type UnsignedSigHash struct {
-	Index         uint32 `json:"index"`
-	SigHash       string `json:"sig_hash"`
-	WitnessScript string `json:"witness_script"`
+// IncrementBlockHeight atomically increments the block height by 1
+// Returns the new height after increment
+// If no height exists, initializes to 1
+func (s *StateStore) IncrementBlockHeight(ctx context.Context) (uint32, error) {
+	filter := bson.M{"_id": "current"}
+	update := bson.M{
+		"$inc": bson.M{"height": 1},
+	}
+
+	opts := options.FindOneAndUpdate().
+		SetUpsert(true).
+		SetReturnDocument(options.After)
+
+	var result BlockHeight
+	err := s.heightCollection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result)
+	if err != nil {
+		return 0, fmt.Errorf("failed to increment block height: %w", err)
+	}
+
+	return result.Height, nil
+}
+
+// MarkTransactionSent marks a transaction ID as sent
+// Returns ErrAddrExists if the transaction was already marked as sent
+func (s *StateStore) MarkTransactionSent(ctx context.Context, txID string) error {
+	err := s.DeletePendingTransaction(ctx, txID)
+	if err != nil {
+		return err
+	}
+
+	doc := SentTransaction{
+		TxID:   txID,
+		SentAt: time.Now().UTC(),
+	}
+
+	_, err = s.txCollection.InsertOne(ctx, doc)
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return ErrAddrExists // Reusing this error, or create ErrTxExists
+		}
+		return fmt.Errorf("failed to mark transaction as sent [txID:%s]: %w", txID, err)
+	}
+	return nil
+}
+
+// IsTransactionSent checks if a transaction ID has been marked as sent
+func (s *StateStore) IsTransactionSent(ctx context.Context, txID string) (bool, error) {
+	var result SentTransaction
+	err := s.txCollection.FindOne(ctx, bson.M{"_id": txID}).Decode(&result)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check transaction [txID:%s]: %w", txID, err)
+	}
+	return true, nil
+}
+
+// DeleteTransaction removes a transaction from the sent list
+func (s *StateStore) DeleteTransaction(ctx context.Context, txID string) error {
+	result, err := s.txCollection.DeleteOne(ctx, bson.M{"_id": txID})
+	if err != nil {
+		return fmt.Errorf("failed to delete transaction [txID:%s]: %w", txID, err)
+	}
+	if result.DeletedCount == 0 {
+		return ErrTxNotFound
+	}
+	return nil
+}
+
+// DeleteOldTransactions removes transactions sent before the specified duration ago
+func (s *StateStore) DeleteOldTransactions(ctx context.Context, age time.Duration) (int64, error) {
+	cutoffTime := time.Now().UTC().Add(-age)
+	filter := bson.M{"sentAt": bson.M{"$lt": cutoffTime}}
+	result, err := s.txCollection.DeleteMany(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete old transactions: %w", err)
+	}
+	return result.DeletedCount, nil
+}
+
+// GetAllTransactions retrieves all sent transaction IDs
+func (s *StateStore) GetAllTransactions(ctx context.Context) ([]string, error) {
+	cursor, err := s.txCollection.Find(ctx, bson.M{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sent transactions: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var results []SentTransaction
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("failed to decode results: %w", err)
+	}
+
+	txIDs := make([]string, len(results))
+	for i, tx := range results {
+		txIDs[i] = tx.TxID
+	}
+	return txIDs, nil
+}
+
+// ClearAllTransactions removes all sent transaction records
+func (s *StateStore) ClearAllTransactions(ctx context.Context) error {
+	_, err := s.txCollection.DeleteMany(ctx, bson.M{})
+	return err
 }
 
 // === Pending Transaction Methods ===

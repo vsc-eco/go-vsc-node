@@ -35,11 +35,13 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
 	err = db.State.SetBlockHeight(context.TODO(), 4806875)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to add default block height\n")
 		os.Exit(1)
 	}
+	// end remove
 
 	bot, err := mapper.NewMapperState(db)
 	if err != nil {
