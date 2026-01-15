@@ -23,26 +23,6 @@ func main() {
 	defer db.Close(context.Background())
 	lastClear := time.Now()
 
-	// remove for prod
-	err = db.Addresses.Insert(
-		context.TODO(),
-		"tb1qeej59j0rjgkdh9kae4hjpljevzr3tjlndn33aywncs5uhf8swe2s67hvfy",
-		"deposit_to=hive:milo-hpr",
-	)
-	if err != nil {
-		if err != database.ErrAddrExists {
-			fmt.Fprintf(os.Stderr, "failed to add default address\n")
-			os.Exit(1)
-		}
-	}
-
-	err = db.State.SetBlockHeight(context.TODO(), 4806875)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to add default block height\n")
-		os.Exit(1)
-	}
-	// end remove
-
 	bot, err := mapper.NewMapperState(db)
 	if err != nil {
 		log.Fatalln(err.Error())
@@ -67,8 +47,8 @@ func main() {
 
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error fetching tx spends: %s\n", err.Error())
-			cancel()
 			time.Sleep(time.Minute)
+			cancel()
 			continue
 		} else {
 			go bot.HandleUnmap(mempoolClient)
@@ -77,6 +57,7 @@ func main() {
 		blockHeight, err := bot.Db.State.GetBlockHeight(ctx)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error fetching block height from db: %s", err.Error())
+			cancel()
 			continue
 		}
 
@@ -84,11 +65,13 @@ func main() {
 		if status == http.StatusNotFound {
 			fmt.Println("No new block.")
 			time.Sleep(time.Minute)
+			cancel()
 			continue
 		} else if err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			// return
 			time.Sleep(time.Minute)
+			cancel()
 			continue
 		}
 		blockBytes, err := mempoolClient.GetRawBlock(hash)
@@ -96,6 +79,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, err.Error())
 			// return
 			time.Sleep(time.Minute)
+			cancel()
 			continue
 		}
 
