@@ -57,7 +57,6 @@ func TestQueryAndMutation(t *testing.T) {
 	actionsDb := ledgerDb.NewActionsDb(vscDb)
 	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
 	contractState := contracts.NewContractState(vscDb)
-	contractUpdates := contracts.NewContractUpdates(vscDb)
 	nonceDb := nonces.New(vscDb)
 	rcDb := rcDb.New(vscDb)
 	tssKeys := tss_db.NewKeys(vscDb)
@@ -69,7 +68,7 @@ func TestQueryAndMutation(t *testing.T) {
 	wasm := wasm_runtime.New()
 
 	assert.NoError(t, hiveBlocksErr)
-	se := stateEngine.New(l, sysConfig, da, witnesses, electionDb, contractDb, contractState, contractUpdates, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
+	se := stateEngine.New(l, sysConfig, da, witnesses, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
 	txPool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, conf, se.RcSystem)
 	resolver := &gqlgen.Resolver{
 		witnesses,
@@ -86,7 +85,6 @@ func TestQueryAndMutation(t *testing.T) {
 		da,
 		contractDb,
 		contractState,
-		contractUpdates,
 		tssKeys,
 		tssRequests,
 	}

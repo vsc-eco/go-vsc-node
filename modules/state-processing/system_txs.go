@@ -195,7 +195,6 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 		CreationHeight: tx.Self.BlockHeight,
 		Runtime:        tx.Runtime,
 	})
-	se.contractUpds.Append(id, tx.Self.TxId, int64(tx.Self.BlockHeight), owner, tx.Code)
 
 	// dd := map[string]interface{}{
 	// 	"bytes": []byte("HELLO WORLD LOLLL"),
@@ -302,7 +301,7 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 			Err:     "cannot update contract with posting auths",
 		}
 	}
-	existing, err := se.contractDb.ContractById(tx.Id)
+	existing, err := se.contractDb.ContractById(tx.Id, tx.Self.BlockHeight)
 	if err != nil {
 		return UpdateContractResult{
 			Success: false,
@@ -318,6 +317,7 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 	updatedContract := contracts.Contract{
 		Name:        tx.Name,
 		Description: tx.Description,
+		Creator:     existing.Creator,
 		Owner:       existing.Owner,
 		Runtime:     existing.Runtime,
 		Code:        existing.Code,
@@ -363,8 +363,7 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 		updatedContract.Code = tx.Code
 		updatedContract.Runtime = *tx.Runtime
 	}
-	se.contractDb.UpdateContract(tx.Id, updatedContract)
-	se.contractUpds.Append(tx.Id, tx.Self.TxId, int64(tx.Self.BlockHeight), updatedContract.Owner, updatedContract.Code)
+	se.contractDb.RegisterContract(tx.Id, updatedContract)
 
 	return UpdateContractResult{
 		Success:     true,

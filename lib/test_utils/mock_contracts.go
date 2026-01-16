@@ -16,11 +16,7 @@ func (m *MockContractDb) RegisterContract(contractId string, args contracts.Cont
 	m.Contracts[contractId] = args
 }
 
-func (m *MockContractDb) UpdateContract(contractId string, args contracts.Contract) {
-	m.Contracts[contractId] = args
-}
-
-func (m *MockContractDb) ContractById(contractId string) (contracts.Contract, error) {
+func (m *MockContractDb) ContractById(contractId string, height uint64) (contracts.Contract, error) {
 	info, exists := m.Contracts[contractId]
 	if !exists {
 		return contracts.Contract{}, mongo.ErrNoDocuments
@@ -29,7 +25,7 @@ func (m *MockContractDb) ContractById(contractId string) (contracts.Contract, er
 }
 
 // GraphQL use only, not implemented in mocks
-func (m *MockContractDb) FindContracts(contractId *string, code *string, offset int, limit int) ([]contracts.Contract, error) {
+func (m *MockContractDb) FindContracts(contractId *string, code *string, historical *bool, offset int, limit int) ([]contracts.Contract, error) {
 	return []contracts.Contract{}, nil
 }
 

@@ -108,7 +108,6 @@ func MakeNode(input MakeNodeInput) *Node {
 	actionsDb := ledger_db.NewActionsDb(vscDb)
 	interestClaims := ledger_db.NewInterestClaimDb(vscDb)
 	contractState := contracts.NewContractState(vscDb)
-	contractUpdates := contracts.NewContractUpdates(vscDb)
 	rcDb := rc_db.New(vscDb)
 	nonceDb := nonces.New(vscDb)
 
@@ -158,7 +157,6 @@ func MakeNode(input MakeNodeInput) *Node {
 		electionDb,
 		contractDb,
 		contractState,
-		contractUpdates,
 		txDb,
 		ledgerDb,
 		balanceDb,
@@ -219,7 +217,6 @@ func MakeNode(input MakeNodeInput) *Node {
 		balanceDb,
 		interestClaims,
 		contractState,
-		contractUpdates,
 		rcDb,
 		nonceDb,
 		tssCommitments,
@@ -253,7 +250,6 @@ func MakeNode(input MakeNodeInput) *Node {
 			datalayer,
 			contractDb,
 			contractState,
-			contractUpdates,
 			tssKeys,
 			tssRequests,
 		}}), "0.0.0.0:7080")

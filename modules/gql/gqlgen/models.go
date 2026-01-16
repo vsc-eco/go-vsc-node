@@ -16,17 +16,12 @@ type ContractOutputFilter struct {
 	Limit      *int    `json:"limit,omitempty"`
 }
 
-type ContractUpdatesFilter struct {
-	ByID   *string `json:"byId,omitempty"`
-	Offset *int    `json:"offset,omitempty"`
-	Limit  *int    `json:"limit,omitempty"`
-}
-
 type FindContractFilter struct {
-	ByID   *string `json:"byId,omitempty"`
-	ByCode *string `json:"byCode,omitempty"`
-	Offset *int    `json:"offset,omitempty"`
-	Limit  *int    `json:"limit,omitempty"`
+	ByID       *string `json:"byId,omitempty"`
+	ByCode     *string `json:"byCode,omitempty"`
+	Historical *bool   `json:"historical,omitempty"`
+	Offset     *int    `json:"offset,omitempty"`
+	Limit      *int    `json:"limit,omitempty"`
 }
 
 type LedgerAction struct {

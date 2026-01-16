@@ -80,7 +80,6 @@ func NewContractTest() ContractTest {
 		&contractDb,
 		&contractState,
 		nil,
-		nil,
 		&ledgers,
 		&balances,
 		nil,
@@ -157,7 +156,7 @@ func (ct *ContractTest) RegisterContract(contractId string, owner string, byteco
 
 // Executes a contract call transaction. Returns the call result, gas used and logs emitted.
 func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallResult {
-	info, err := ct.ContractDb.ContractById(tx.ContractId)
+	info, err := ct.ContractDb.ContractById(tx.ContractId, tx.Self.BlockHeight)
 	if err != nil {
 		return ContractTestCallResult{
 			Success: false,

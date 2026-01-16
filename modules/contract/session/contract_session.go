@@ -182,8 +182,8 @@ func (cs *CallSession) GetStateDiff() map[string]StateDiff {
 	return res
 }
 
-func (cs *CallSession) GetContractFromDb(contractId string) result.Result[ContractWithCode] {
-	info, err := cs.contractDb.ContractById(contractId)
+func (cs *CallSession) GetContractFromDb(contractId string, height uint64) result.Result[ContractWithCode] {
+	info, err := cs.contractDb.ContractById(contractId, height)
 	if err == mongo.ErrNoDocuments {
 		return result.Err[ContractWithCode](errors.Join(fmt.Errorf(contracts.IC_CONTRT_NOT_FND), fmt.Errorf("contract not found")))
 	} else if err != nil {

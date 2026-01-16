@@ -443,7 +443,7 @@ func (ctx *contractExecutionContext) ContractCall(contractId string, method stri
 	json.Unmarshal([]byte(options), &opts)
 
 	return result.Flatten(result.Map(
-		ctx.callSession.GetContractFromDb(contractId),
+		ctx.callSession.GetContractFromDb(contractId, ctx.env.BlockHeight),
 		func(ct contract_session.ContractWithCode) wasm_types.WasmResult {
 			w := wasm_runtime_ipc.New()
 			w.Init()

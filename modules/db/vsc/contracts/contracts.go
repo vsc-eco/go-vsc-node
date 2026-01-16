@@ -26,16 +26,39 @@ func (e *contracts) Init() error {
 		return err
 	}
 
+	// Index for update history of a contract
+	indexModel := mongo.IndexModel{
+		Keys: bson.D{{Key: "id", Value: 1}, {Key: "creation_height", Value: -1}},
+	}
+	err = e.CreateIndexIfNotExist(indexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create index: %w", err)
+	}
+
+	// Index for getting single latest contract by ID
+	latestContractModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "id", Value: 1}, {Key: "latest", Value: 1}},
+		Options: options.Index().SetPartialFilterExpression(bson.M{"latest": true}),
+	}
+	err = e.CreateIndexIfNotExist(latestContractModel)
+	if err != nil {
+		return fmt.Errorf("failed to create index: %w", err)
+	}
+
 	return nil
 }
 
 // ContractById implements Contracts.
-func (c *contracts) ContractById(contractId string) (Contract, error) {
+func (c *contracts) ContractById(contractId string, height uint64) (Contract, error) {
 	res := Contract{}
 	filter := bson.M{
 		"id": contractId,
+		"creation_height": bson.M{
+			"$lte": height,
+		},
 	}
-	qRes := c.FindOne(context.TODO(), filter)
+	opts := options.FindOne().SetSort(bson.M{"creation_height": -1})
+	qRes := c.FindOne(context.TODO(), filter, opts)
 	if err := qRes.Err(); err != nil {
 		return res, err
 	}
@@ -44,13 +67,16 @@ func (c *contracts) ContractById(contractId string) (Contract, error) {
 	return res, err
 }
 
-func (c *contracts) FindContracts(contractId *string, code *string, offset int, limit int) ([]Contract, error) {
+func (c *contracts) FindContracts(contractId *string, code *string, historical *bool, offset int, limit int) ([]Contract, error) {
 	filters := bson.D{}
 	if contractId != nil {
 		filters = append(filters, bson.E{Key: "id", Value: *contractId})
 	}
 	if code != nil {
 		filters = append(filters, bson.E{Key: "code", Value: *code})
+	}
+	if historical == nil || !*historical {
+		filters = append(filters, bson.E{Key: "latest", Value: true})
 	}
 	pipe := hive_blocks.GetAggTimestampPipeline(filters, "creation_height", "creation_ts", offset, limit)
 	cursor, err := c.Aggregate(context.TODO(), pipe)
@@ -70,39 +96,34 @@ func (c *contracts) FindContracts(contractId *string, code *string, offset int, 
 }
 
 func (c *contracts) RegisterContract(contractId string, args Contract) {
+	// TODO: config to prune old versions
 	findQuery := bson.M{
-		"id": contractId,
-	}
-	updateQuery := bson.M{
-		"$set": bson.M{
-			"code":            args.Code,
-			"name":            args.Name,
-			"description":     args.Description,
-			"creator":         args.Creator,
-			"owner":           args.Owner,
-			"tx_id":           args.TxId,
-			"creation_height": args.CreationHeight,
-			"runtime":         args.Runtime,
-		},
-	}
-	opts := options.FindOneAndUpdate().SetUpsert(true)
-	c.FindOneAndUpdate(context.Background(), findQuery, updateQuery, opts)
-}
-
-func (c *contracts) UpdateContract(contractId string, args Contract) {
-	findQuery := bson.M{
-		"id": contractId,
+		"id":              contractId,
+		"creation_height": args.CreationHeight,
 	}
 	updateQuery := bson.M{
 		"$set": bson.M{
 			"code":        args.Code,
 			"name":        args.Name,
 			"description": args.Description,
+			"creator":     args.Creator,
 			"owner":       args.Owner,
+			"tx_id":       args.TxId,
 			"runtime":     args.Runtime,
+			"latest":      true,
 		},
 	}
 	opts := options.FindOneAndUpdate().SetUpsert(true)
+
+	oldVersionsFilter := bson.M{
+		"id": contractId,
+	}
+	oldVersionsUpdate := bson.M{
+		"$unset": bson.M{
+			"latest": "",
+		},
+	}
+	c.UpdateMany(context.Background(), oldVersionsFilter, oldVersionsUpdate)
 	c.FindOneAndUpdate(context.Background(), findQuery, updateQuery, opts)
 }
 
@@ -183,70 +204,4 @@ func (ch *contractState) FindOutputs(id *string, input *string, contract *string
 
 func NewContractState(d *vsc.VscDb) ContractState {
 	return &contractState{db.NewCollection(d.DbInstance, "contract_state")}
-}
-
-type contractUpdates struct {
-	*db.Collection
-}
-
-func NewContractUpdates(d *vsc.VscDb) ContractUpdates {
-	return &contractUpdates{db.NewCollection(d.DbInstance, "contract_updates")}
-}
-
-func (c *contractUpdates) Init() error {
-	err := c.Collection.Init()
-	if err != nil {
-		return err
-	}
-
-	indexModel := mongo.IndexModel{
-		Keys: bson.D{{Key: "contract_id", Value: 1}, {Key: "block_height", Value: -1}},
-	}
-
-	// create index on block.block_number for faster queries
-	err = c.CreateIndexIfNotExist(indexModel)
-	if err != nil {
-		return fmt.Errorf("failed to create index: %w", err)
-	}
-
-	return nil
-}
-
-func (c *contractUpdates) Append(contractId string, txId string, height int64, owner string, code string) {
-	// TODO: provide an option in config to skip this for most nodes that don't need to query it
-	findQuery := bson.M{
-		"_id": txId,
-	}
-	updateQuery := bson.M{
-		"$set": bson.M{
-			"contract_id":  contractId,
-			"block_height": height,
-			"owner":        owner,
-			"code":         code,
-		},
-	}
-	opts := options.FindOneAndUpdate().SetUpsert(true)
-	c.FindOneAndUpdate(context.Background(), findQuery, updateQuery, opts)
-}
-
-func (c *contractUpdates) GetUpdatesByContractId(contractId string, offset int, limit int) ([]ContractUpdate, error) {
-	if contractId == "" {
-		return nil, fmt.Errorf("contract id must be specified")
-	}
-	filters := bson.D{{Key: "contract_id", Value: contractId}}
-	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "ts", offset, limit)
-	cursor, err := c.Aggregate(context.TODO(), pipe)
-	if err != nil {
-		return []ContractUpdate{}, err
-	}
-	defer cursor.Close(context.TODO())
-	var results []ContractUpdate
-	for cursor.Next(context.TODO()) {
-		var elem ContractUpdate
-		if err := cursor.Decode(&elem); err != nil {
-			return []ContractUpdate{}, err
-		}
-		results = append(results, elem)
-	}
-	return results, nil
 }

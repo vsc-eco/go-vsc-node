@@ -64,7 +64,7 @@ func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession 
 	if t.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 100)
 	}
-	info, exists := se.GetContractInfo(t.ContractId)
+	info, exists := se.GetContractInfo(t.ContractId, t.Self.BlockHeight)
 
 	if !exists {
 		fmt.Println("Contract not found:", t.ContractId, info, exists)

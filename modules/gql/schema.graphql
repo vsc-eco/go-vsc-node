@@ -83,15 +83,6 @@ type ContractOutput {
   results: [ContractOutputResult!]!
 }
 
-type ContractUpdate {
-  id: String!
-  contract_id: String!
-  block_height: Int64!
-  ts: String!
-  owner: String!
-  code: String!
-}
-
 type Contract {
   id: String!
   code: String
@@ -270,6 +261,7 @@ input TransactionFilter {
 input FindContractFilter {
   byId: String
   byCode: String
+  historical: Boolean
   offset: Int
   limit: Int
 }
@@ -278,12 +270,6 @@ input ContractOutputFilter {
   byId: String
   byInput: String
   byContract: String
-  offset: Int
-  limit: Int
-}
-
-input ContractUpdatesFilter {
-  byId: String
   offset: Int
   limit: Int
 }
@@ -297,7 +283,6 @@ type Query {
   getAccountBalance(account: String!, height: Uint64): BalanceRecord
   getAccountRC(account: String!, height: Uint64): RcRecord
   findContract(filterOptions: FindContractFilter): [Contract!]
-  getContractUpdates(filterOptions: ContractUpdatesFilter): [ContractUpdate!]
   submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
   getAccountNonce(account: String!): NonceRecord
   localNodeInfo: LocalNodeInfo

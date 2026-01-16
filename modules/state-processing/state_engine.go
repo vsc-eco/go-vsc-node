@@ -52,7 +52,6 @@ type StateEngine struct {
 	electionDb     elections.Elections
 	contractDb     contracts.Contracts
 	contractState  contracts.ContractState
-	contractUpds   contracts.ContractUpdates
 	txDb           transactions.Transactions
 	hiveBlocks     hive_blocks.HiveBlocks
 	vscBlocks      vscBlocks.VscBlocks
@@ -1426,8 +1425,8 @@ func (se *StateEngine) DataLayer() common_types.DataLayer {
 	return se.da
 }
 
-func (se *StateEngine) GetContractInfo(id string) (contracts.Contract, bool) {
-	contractInfo, err := se.contractDb.ContractById(id)
+func (se *StateEngine) GetContractInfo(id string, height uint64) (contracts.Contract, bool) {
+	contractInfo, err := se.contractDb.ContractById(id, height)
 
 	if err == mongo.ErrNoDocuments {
 		return contracts.Contract{}, false
@@ -1478,7 +1477,6 @@ func New(logger logger.Logger, sconf systemconfig.SystemConfig, da *DataLayer.Da
 	electionsDb elections.Elections,
 	contractDb contracts.Contracts,
 	contractStateDb contracts.ContractState,
-	contractUpdatesDb contracts.ContractUpdates,
 	txDb transactions.Transactions,
 	ledgerDb ledgerDb.Ledger,
 	balanceDb ledgerDb.Balances,
@@ -1529,7 +1527,6 @@ func New(logger logger.Logger, sconf systemconfig.SystemConfig, da *DataLayer.Da
 		electionDb:     electionsDb,
 		contractDb:     contractDb,
 		contractState:  contractStateDb,
-		contractUpds:   contractUpdatesDb,
 		hiveBlocks:     hiveBlocks,
 		vscBlocks:      vscBlocks,
 		claimDb:        interestClaims,
