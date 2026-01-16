@@ -10,6 +10,9 @@ import (
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
+	"vsc-node/modules/db/vsc/witnesses"
+	p2pInterface "vsc-node/modules/p2p"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vsc-eco/hivego"
@@ -37,11 +40,18 @@ func (m *mockHiveRpcClient) UpdateAccount(account string, owner *hivego.Auths, a
 	return "", nil // indicates success, despite looking unimplemented
 }
 
+func mockPeer(sysConf systemconfig.SystemConfig, idConf common.IdentityConfig) *p2pInterface.P2PServer {
+	wits := witnesses.NewEmptyWitnesses()
+	p2p := p2pInterface.New(wits, idConf, sysConf, nil)
+	return p2p
+}
+
 // ===== tests =====
 
 func TestImmediateExecution(t *testing.T) {
 	// create new clients
 	hiveRpcClient := &mockHiveRpcClient{}
+	sysConfig := systemconfig.MocknetConfig()
 	conf := common.NewIdentityConfig()
 
 	txCreator := hive.LiveTransactionCreator{
@@ -51,12 +61,14 @@ func TestImmediateExecution(t *testing.T) {
 		},
 		TransactionCrafter: hive.TransactionCrafter{},
 	}
+	p2p := mockPeer(sysConfig, conf)
 
-	anouncementsManager, err := announcements.New(hiveRpcClient, conf, time.Second*15, &txCreator)
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, time.Second*15, &txCreator, p2p)
 	assert.NoError(t, err)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
+		p2p,
 		anouncementsManager,
 	})
 	test_utils.RunPlugin(t, agg)
@@ -72,6 +84,7 @@ func TestImmediateExecution(t *testing.T) {
 func TestCronExecutions(t *testing.T) {
 	// create new clients
 	hiveRpcClient := &mockHiveRpcClient{}
+	sysConfig := systemconfig.MocknetConfig()
 	conf := common.NewIdentityConfig()
 
 	txCreator := hive.LiveTransactionCreator{
@@ -81,7 +94,7 @@ func TestCronExecutions(t *testing.T) {
 		},
 		TransactionCrafter: hive.TransactionCrafter{},
 	}
-	anouncementsManager, err := announcements.New(hiveRpcClient, conf, time.Second*2, &txCreator)
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, time.Second*2, &txCreator, mockPeer(sysConfig, conf))
 	assert.NoError(t, err)
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
@@ -106,6 +119,7 @@ func TestCronExecutions(t *testing.T) {
 func TestStopAnnouncer(t *testing.T) {
 	// create new clients
 	hiveRpcClient := &mockHiveRpcClient{}
+	sysConfig := systemconfig.MocknetConfig()
 	conf := common.NewIdentityConfig()
 
 	txCreator := hive.LiveTransactionCreator{
@@ -115,10 +129,12 @@ func TestStopAnnouncer(t *testing.T) {
 		},
 		TransactionCrafter: hive.TransactionCrafter{},
 	}
-	anouncementsManager, err := announcements.New(hiveRpcClient, conf, time.Second*2, &txCreator)
+	p2p := mockPeer(sysConfig, conf)
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, time.Second*2, &txCreator, p2p)
 	assert.NoError(t, err)
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
+		p2p,
 		anouncementsManager,
 	})
 	// init and start
@@ -142,19 +158,22 @@ func TestInvalidAnnouncementsFrequencySetup(t *testing.T) {
 	// create new clients
 
 	hiveRpcClient := &mockHiveRpcClient{}
+	sysConfig := systemconfig.MocknetConfig()
 	conf := common.NewIdentityConfig()
-	_, err := announcements.New(hiveRpcClient, conf, time.Second*0, nil)
+	peerGetter := mockPeer(sysConfig, conf)
+	_, err := announcements.New(hiveRpcClient, conf, sysConfig, time.Second*0, nil, peerGetter)
 	assert.Error(t, err)
-	_, err = announcements.New(hiveRpcClient, conf, time.Second*-1, nil)
+	_, err = announcements.New(hiveRpcClient, conf, sysConfig, time.Second*-1, nil, peerGetter)
 	assert.Error(t, err)
-	_, err = announcements.New(hiveRpcClient, conf, time.Second*-2, nil)
+	_, err = announcements.New(hiveRpcClient, conf, sysConfig, time.Second*-2, nil, peerGetter)
 	assert.Error(t, err)
-	_, err = announcements.New(hiveRpcClient, conf, time.Second*3, nil)
+	_, err = announcements.New(hiveRpcClient, conf, sysConfig, time.Second*3, nil, peerGetter)
 	assert.NoError(t, err)
 }
 
 func TestInvalidRpcClient(t *testing.T) {
+	sysConfig := systemconfig.MocknetConfig()
 	conf := common.NewIdentityConfig()
-	_, err := announcements.New(nil, conf, time.Second*2, nil)
+	_, err := announcements.New(nil, conf, sysConfig, time.Second*2, nil, mockPeer(sysConfig, conf))
 	assert.Error(t, err)
 }
