@@ -32,7 +32,9 @@ type ContractOutput struct {
 
 	Results     []contracts.ContractOutputResult `json:"results" bson:"results"`
 	StateMerkle string                           `json:"state_merkle"`
-	TssOps      []tss_db.TssOp                   `json:"tss_ops"`
+
+	// Legacy, moved to results array
+	TssOps []tss_db.TssOp `json:"tss_ops"`
 }
 
 func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight int64) {
@@ -55,7 +57,12 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 		})
 	}
 
-	for _, tssOp := range output.TssOps {
+	tssOps := output.TssOps
+	for _, res := range output.Results {
+		tssOps = append(tssOps, res.TssOps...)
+	}
+
+	for _, tssOp := range tssOps {
 		if tssOp.Type == "create" {
 			fmt.Println("CREATING TSS KEY", tssOp)
 			_, err := se.tssKeys.FindKey(tssOp.KeyId)

@@ -1,6 +1,9 @@
 package contracts
 
-import a "vsc-node/modules/aggregate"
+import (
+	a "vsc-node/modules/aggregate"
+	tss_db "vsc-node/modules/db/vsc/tss"
+)
 
 type Contracts interface {
 	a.Plugin
@@ -38,6 +41,7 @@ type ContractOutputResult struct {
 	Err    *ContractOutputError `json:"err,omitempty" bson:"err,omitempty"`
 	ErrMsg string               `json:"errMsg,omitempty" bson:"errMsg,omitempty"`
 	Logs   []string             `json:"logs,omitempty" bson:"logs,omitempty"`
+	TssOps []tss_db.TssOp       `json:"tss_ops,omitempty" bson:"tss_ops,omitempty"`
 }
 
 type ContractOutput struct {

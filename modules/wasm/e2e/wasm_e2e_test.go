@@ -119,7 +119,7 @@ func TestContractTestUtil(t *testing.T) {
 		RcLimit:    1000,
 		Intents:    []contracts.Intent{},
 	})
-	assert.GreaterOrEqual(t, len(dumpEnvResult.Logs[contractId]), 1)
+	assert.GreaterOrEqual(t, len(dumpEnvResult.Logs[contractId].Logs), 1)
 	assert.LessOrEqual(t, dumpEnvResult.RcUsed, int64(500))
 	assert.True(t, dumpEnvResult.Success)
 
@@ -189,7 +189,7 @@ func TestContractTestUtil(t *testing.T) {
 		Intents:    []contracts.Intent{},
 	})
 	assert.True(t, icCall.Success)
-	assert.GreaterOrEqual(t, len(icCall.Logs[contractId2]), 1)
+	assert.GreaterOrEqual(t, len(icCall.Logs[contractId2].Logs), 1)
 
 	icInfCall := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,

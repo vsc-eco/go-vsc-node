@@ -53,7 +53,7 @@ type ContractTestCallResult struct {
 	Ret       string
 	RcUsed    int64
 	GasUsed   uint
-	Logs      map[string][]string
+	Logs      map[string]contract_session.LogOutput
 	StateDiff map[string]contract_session.StateDiff
 }
 
@@ -163,7 +163,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 			ErrMsg:  err.Error(),
 			RcUsed:  100,
 			GasUsed: 0,
-			Logs:    map[string][]string{},
+			Logs:    map[string]contract_session.LogOutput{},
 		}
 	}
 
@@ -174,7 +174,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 			ErrMsg:  err.Error(),
 			RcUsed:  100,
 			GasUsed: 0,
-			Logs:    map[string][]string{},
+			Logs:    map[string]contract_session.LogOutput{},
 		}
 	}
 
@@ -185,7 +185,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 			ErrMsg:  err.Error(),
 			RcUsed:  100,
 			GasUsed: 0,
-			Logs:    map[string][]string{},
+			Logs:    map[string]contract_session.LogOutput{},
 		}
 	}
 
@@ -236,7 +236,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 			ErrMsg:  *res.Error,
 			RcUsed:  rcUsed,
 			GasUsed: res.Gas,
-			Logs:    map[string][]string{},
+			Logs:    map[string]contract_session.LogOutput{},
 		}
 	}
 	diff := ct.CallSession.GetStateDiff()

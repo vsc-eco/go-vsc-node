@@ -1127,7 +1127,6 @@ func (se *StateEngine) ExecuteBatch() {
 							Cid:      lastStateCid,
 
 							Deletions: make(map[string]bool),
-							TssLog:    make([]tss_db.TssOp, 0),
 							Cache:     make(map[string][]byte),
 						}
 					}
@@ -1141,7 +1140,8 @@ func (se *StateEngine) ExecuteBatch() {
 									TxId:    txId,
 									Ret:     result.Ret,
 									Success: result.Success,
-									Logs:    log,
+									Logs:    log.Logs,
+									TssOps:  log.TssOps,
 								},
 							})
 						} else {
@@ -1151,7 +1151,8 @@ func (se *StateEngine) ExecuteBatch() {
 									TxId:    txId,
 									Ret:     "",
 									Success: result.Success,
-									Logs:    log,
+									Logs:    log.Logs,
+									TssOps:  log.TssOps,
 								},
 							})
 						}

@@ -20,6 +20,11 @@ type ContractWithCode struct {
 	Code []byte
 }
 
+type LogOutput struct {
+	Logs   []string
+	TssOps []tss_db.TssOp
+}
+
 // Session for transaction with contract calls
 type CallSession struct {
 	dl         *datalayer.DataLayer
@@ -126,10 +131,13 @@ func (cs *CallSession) AppendLogs(contractId string, logs ...string) {
 }
 
 // Pop all logs from contract sessions and return them
-func (cs *CallSession) PopLogs() map[string][]string {
-	result := make(map[string][]string)
+func (cs *CallSession) PopLogs() map[string]LogOutput {
+	result := make(map[string]LogOutput)
 	for id, session := range cs.sessions {
-		result[id] = session.PopLogs()
+		result[id] = LogOutput{
+			Logs:   session.PopLogs(),
+			TssOps: session.PopTssLogs(),
+		}
 	}
 	return result
 }
@@ -264,7 +272,6 @@ func (cs *ContractSession) ToOutput() TempOutput {
 		Cid:       cs.stateMerkle,
 		Metadata:  cs.metadata,
 		Deletions: cs.deletions,
-		TssLog:    cs.tssOps,
 	}
 }
 
@@ -275,6 +282,12 @@ func (cs *ContractSession) AppendLogs(logs []string) {
 func (cs *ContractSession) PopLogs() []string {
 	popped := cs.logs
 	cs.logs = make([]string, 0)
+	return popped
+}
+
+func (cs *ContractSession) PopTssLogs() []tss_db.TssOp {
+	popped := cs.tssOps
+	cs.tssOps = make([]tss_db.TssOp, 0)
 	return popped
 }
 
@@ -400,7 +413,6 @@ type TempOutput struct {
 	Metadata  contracts.ContractMetadata
 	Deletions map[string]bool
 	Cid       string
-	TssLog    []tss_db.TssOp
 }
 
 func cloneTempOutputs(src map[string]*TempOutput) map[string]*TempOutput {
@@ -438,9 +450,6 @@ func cloneTempOutput(src *TempOutput) *TempOutput {
 		cloned.Deletions = maps.Clone(src.Deletions)
 	} else {
 		cloned.Deletions = make(map[string]bool)
-	}
-	if len(src.TssLog) > 0 {
-		cloned.TssLog = append([]tss_db.TssOp(nil), src.TssLog...)
 	}
 	return &cloned
 }
