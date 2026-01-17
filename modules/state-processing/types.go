@@ -1,6 +1,9 @@
 package state_engine
 
-import "vsc-node/modules/db/vsc/contracts"
+import (
+	"vsc-node/modules/db/vsc/contracts"
+	tss_db "vsc-node/modules/db/vsc/tss"
+)
 
 type TxPacket struct {
 	TxId string
@@ -32,6 +35,7 @@ type ContractResult struct {
 	ErrMsg  string
 	TxId    string
 	Logs    []string
+	TssOps  []tss_db.TssOp
 }
 
 // More information about the TX

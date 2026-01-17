@@ -67,7 +67,7 @@ func TestContractTestUtil(t *testing.T) {
 	assert.Equal(t, ct.GetBalance("hive:someone", ledgerDb.AssetHive), int64(9000))
 	assert.Equal(t, ct.GetBalance("contract:vscmycontract", ledgerDb.AssetHive), int64(1000))
 
-	ledgerErr, _, _ := ct.Call(stateEngine.TxVscCallContract{
+	ledgerErr := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId,
 		Action:     "drawHive",
@@ -76,9 +76,9 @@ func TestContractTestUtil(t *testing.T) {
 		Intents:    []contracts.Intent{},
 	})
 	assert.False(t, ledgerErr.Success)
-	assert.Equal(t, *ledgerErr.Err, contracts.LEDGER_INTENT_ERROR)
+	assert.Equal(t, ledgerErr.Err, contracts.LEDGER_INTENT_ERROR)
 
-	abortResult, _, _ := ct.Call(stateEngine.TxVscCallContract{
+	abortResult := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId,
 		Action:     "abortMe",
@@ -89,7 +89,7 @@ func TestContractTestUtil(t *testing.T) {
 	assert.False(t, abortResult.Success)
 	assert.GreaterOrEqual(t, abortResult.RcUsed, int64(100))
 
-	revertResult, _, _ := ct.Call(stateEngine.TxVscCallContract{
+	revertResult := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId,
 		Action:     "revertMe",
@@ -100,7 +100,7 @@ func TestContractTestUtil(t *testing.T) {
 	assert.False(t, revertResult.Success)
 	assert.GreaterOrEqual(t, revertResult.RcUsed, int64(100))
 
-	nonExistent, _, _ := ct.Call(stateEngine.TxVscCallContract{
+	nonExistent := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId,
 		Action:     "doesNotExist",
@@ -109,9 +109,9 @@ func TestContractTestUtil(t *testing.T) {
 		Intents:    []contracts.Intent{},
 	})
 	assert.False(t, nonExistent.Success)
-	assert.Equal(t, *nonExistent.Err, contracts.WASM_FUNC_NOT_FND)
+	assert.Equal(t, nonExistent.Err, contracts.WASM_FUNC_NOT_FND)
 
-	dumpEnvResult, _, dumpEnvLogs := ct.Call(stateEngine.TxVscCallContract{
+	dumpEnvResult := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId,
 		Action:     "dumpEnv",
@@ -119,11 +119,11 @@ func TestContractTestUtil(t *testing.T) {
 		RcLimit:    1000,
 		Intents:    []contracts.Intent{},
 	})
-	assert.GreaterOrEqual(t, len(dumpEnvLogs[contractId]), 1)
+	assert.GreaterOrEqual(t, len(dumpEnvResult.Logs[contractId].Logs), 1)
 	assert.LessOrEqual(t, dumpEnvResult.RcUsed, int64(500))
 	assert.True(t, dumpEnvResult.Success)
 
-	dumpEnvKeyResult, _, _ := ct.Call(stateEngine.TxVscCallContract{
+	dumpEnvKeyResult := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId,
 		Action:     "dumpEnvKey",
@@ -133,7 +133,7 @@ func TestContractTestUtil(t *testing.T) {
 	})
 	assert.True(t, dumpEnvKeyResult.Success)
 
-	ct.Call(stateEngine.TxVscCallContract{
+	setStr := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId,
 		Action:     "setString",
@@ -142,8 +142,34 @@ func TestContractTestUtil(t *testing.T) {
 		Intents:    []contracts.Intent{},
 	})
 	assert.Equal(t, ct.StateGet(contractId, "myString"), "hello world")
+	assert.Equal(t, "hello world", string(setStr.StateDiff[contractId].KeyDiff["myString"].Current))
 
-	icGetStr, _, _ := ct.Call(stateEngine.TxVscCallContract{
+	ct.StateSet(contractId, "myString2", "changethis")
+	assert.Equal(t, ct.StateGet(contractId, "myString2"), "changethis")
+
+	setStr2 := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "setString",
+		Payload:    json.RawMessage([]byte("myString2,clearthis")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.Equal(t, "changethis", string(setStr2.StateDiff[contractId].KeyDiff["myString2"].Previous))
+	assert.Equal(t, "clearthis", string(setStr2.StateDiff[contractId].KeyDiff["myString2"].Current))
+
+	clearStr := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "clearString",
+		Payload:    json.RawMessage([]byte("myString2")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.Equal(t, ct.StateGet(contractId, "myString2"), "")
+	assert.True(t, clearStr.StateDiff[contractId].Deletions["myString2"])
+
+	icGetStr := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId2,
 		Action:     "contractGetString",
@@ -154,7 +180,7 @@ func TestContractTestUtil(t *testing.T) {
 	assert.True(t, icGetStr.Success)
 	assert.Equal(t, "hello world", icGetStr.Ret)
 
-	icCall, _, icLogs := ct.Call(stateEngine.TxVscCallContract{
+	icCall := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId,
 		Action:     "contractCall",
@@ -163,9 +189,9 @@ func TestContractTestUtil(t *testing.T) {
 		Intents:    []contracts.Intent{},
 	})
 	assert.True(t, icCall.Success)
-	assert.GreaterOrEqual(t, len(icLogs[contractId2]), 1)
+	assert.GreaterOrEqual(t, len(icCall.Logs[contractId2].Logs), 1)
 
-	icInfCall, _, _ := ct.Call(stateEngine.TxVscCallContract{
+	icInfCall := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId,
 		Action:     "infiniteRecursion",
@@ -174,9 +200,9 @@ func TestContractTestUtil(t *testing.T) {
 		Intents:    []contracts.Intent{},
 	})
 	assert.False(t, icInfCall.Success)
-	assert.Equal(t, contracts.IC_RCSE_LIMIT_HIT, *icInfCall.Err)
+	assert.Equal(t, contracts.IC_RCSE_LIMIT_HIT, icInfCall.Err)
 
-	icRevert, _, _ := ct.Call(stateEngine.TxVscCallContract{
+	icRevert := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId,
 		Action:     "contractCall",
@@ -185,9 +211,9 @@ func TestContractTestUtil(t *testing.T) {
 		Intents:    []contracts.Intent{},
 	})
 	assert.False(t, icRevert.Success)
-	assert.Equal(t, "symbol_here", *icRevert.Err)
+	assert.Equal(t, "symbol_here", icRevert.Err)
 
-	failedContractPull, _, _ := ct.Call(stateEngine.TxVscCallContract{
+	failedContractPull := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId2,
 		Action:     "contractCall",
@@ -196,7 +222,7 @@ func TestContractTestUtil(t *testing.T) {
 		Intents:    []contracts.Intent{},
 	})
 	assert.False(t, failedContractPull.Success)
-	assert.Equal(t, contracts.LEDGER_ERROR, *failedContractPull.Err)
+	assert.Equal(t, contracts.LEDGER_ERROR, failedContractPull.Err)
 
 	ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,

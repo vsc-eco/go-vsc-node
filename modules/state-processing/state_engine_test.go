@@ -1,5 +1,3 @@
-//go:build legacy
-
 package state_engine_test
 
 import (
@@ -8,19 +6,27 @@ import (
 	"testing"
 	"time"
 	"vsc-node/modules/aggregate"
+	"vsc-node/modules/common"
+	"vsc-node/modules/common/common_types"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/nonces"
+	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
 	"vsc-node/modules/hive/streamer"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
 	DataLayer "vsc-node/lib/datalayer"
+	"vsc-node/lib/logger"
 	"vsc-node/lib/test_utils"
 	p2p "vsc-node/modules/p2p"
 
@@ -45,6 +51,16 @@ func TestStateEngine(t *testing.T) {
 	contractState := contracts.NewContractState(vscDb)
 	vscBlocks := vscBlocks.New(vscDb)
 	actionDb := ledgerDb.NewActionsDb(vscDb)
+	rcDb := rcDb.New(vscDb)
+	nonceDb := nonces.New(vscDb)
+	tssKeys := tss_db.NewKeys(vscDb)
+	tssCommitments := tss_db.NewCommitments(vscDb)
+	tssRequests := tss_db.NewRequests(vscDb)
+	identityConfig := common.NewIdentityConfig()
+	sysConfig := systemconfig.MocknetConfig()
+	l := logger.PrefixedLogger{
+		Prefix: "vsc-node",
+	}
 
 	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		if op.Type == "custom_json" {
@@ -76,7 +92,7 @@ func TestStateEngine(t *testing.T) {
 		return false
 	}
 
-	client := hivego.NewHiveRpc("https://api.hive.blog")
+	client := hivego.NewHiveRpc("https://techcoderx.com")
 	s := streamer.NewStreamer(client, hiveBlocks, []streamer.FilterFunc{filter}, []streamer.VirtualFilterFunc{
 		func(op hivego.VirtualOp) bool {
 			return op.Op.Type == "interest_operation"
@@ -86,23 +102,23 @@ func TestStateEngine(t *testing.T) {
 	// slow down the streamer a bit for real data
 	streamer.AcceptableBlockLag = 0
 	streamer.BlockBatchSize = 500
-	streamer.DefaultBlockStart = 81614028
+	streamer.DefaultBlockStart = 94601000
 	streamer.HeadBlockCheckPollIntervalBeforeFirstUpdate = time.Millisecond * 250
 	streamer.MinTimeBetweenBlockBatchFetches = time.Millisecond * 250
 	streamer.DbPollInterval = time.Millisecond * 500
 
 	assert.NoError(t, err)
 
-	p2p := p2p.New(witnessesDb)
+	var blockStatus common_types.BlockStatusGetter = nil
+	p2p := p2p.New(witnessesDb, identityConfig, sysConfig, blockStatus)
 	dl := DataLayer.New(p2p, "state-engine")
 
 	wasm := wasm_runtime.New()
 
-	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionDb, wasm)
+	se := stateEngine.New(l, sysConfig, dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
 
-	se.Commit()
-
-	sr := streamer.NewStreamReader(hiveBlocks, se.ProcessBlock, se.SaveBlockHeight)
+	blockConsumer := blockconsumer.New(se)
+	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, streamer.DefaultBlockStart)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
@@ -111,13 +127,16 @@ func TestStateEngine(t *testing.T) {
 		electionDb,
 		witnessesDb,
 		contractDb,
+		contractState,
 		txDb,
 		ledgerDbImpl,
 		balanceDb,
 		hiveBlocks,
 		interestClaims,
 		wasm,
+		blockConsumer,
 		s,
+		se,
 		sr,
 	})
 
@@ -143,6 +162,16 @@ func TestMockEngine(t *testing.T) {
 	contractState := contracts.NewContractState(vscDb)
 	vscBlocks := vscBlocks.New(vscDb)
 	actionsDb := ledgerDb.NewActionsDb(vscDb)
+	rcDb := rcDb.New(vscDb)
+	nonceDb := nonces.New(vscDb)
+	tssKeys := tss_db.NewKeys(vscDb)
+	tssCommitments := tss_db.NewCommitments(vscDb)
+	tssRequests := tss_db.NewRequests(vscDb)
+	identityConfig := common.NewIdentityConfig()
+	sysConfig := systemconfig.MocknetConfig()
+	l := logger.PrefixedLogger{
+		Prefix: "vsc-node",
+	}
 
 	// slow down the streamer a bit for real data
 	streamer.AcceptableBlockLag = 0
@@ -154,15 +183,15 @@ func TestMockEngine(t *testing.T) {
 
 	assert.NoError(t, err)
 
-	p2p := p2p.New(witnessesDb)
+	p2p := p2p.New(witnessesDb, identityConfig, sysConfig, nil)
 
 	dl := DataLayer.New(p2p, "state-engine")
 
 	wasm := wasm_runtime.New()
 
-	se := stateEngine.New(dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, wasm)
+	se := stateEngine.New(l, sysConfig, dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
 
-	process := func(block hive_blocks.HiveBlock) {
+	process := func(block hive_blocks.HiveBlock, headHeight *uint64) {
 		se.ProcessBlock(block)
 	}
 
@@ -173,6 +202,7 @@ func TestMockEngine(t *testing.T) {
 		electionDb,
 		witnessesDb,
 		contractDb,
+		contractState,
 		txDb,
 		ledgerDbImpl,
 		balanceDb,
@@ -208,7 +238,7 @@ func TestMockEngine(t *testing.T) {
 
 	time.Sleep(10 * time.Second)
 
-	bal := se.LedgerExecutor.Ls.GetBalance("hive:test-account", mockReader.LastBlock, "hbd")
+	bal := se.LedgerSystem.GetBalance("hive:test-account", mockReader.LastBlock, "hbd")
 
 	fmt.Println("guaranteed bal", bal)
 

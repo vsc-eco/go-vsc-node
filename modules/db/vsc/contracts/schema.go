@@ -13,6 +13,7 @@ type Contract struct {
 	CreationHeight uint64               `bson:"creation_height"`
 	CreationTs     *string              `bson:"creation_ts,omitempty"`
 	Runtime        wasm_runtime.Runtime `bson:"runtime"`
+	Latest         bool                 `bson:"latest,omitempty"`
 }
 
 type Intent struct {

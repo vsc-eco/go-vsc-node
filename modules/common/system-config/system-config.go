@@ -1,6 +1,9 @@
 package systemconfig
 
-import "vsc-node/modules/common/params"
+import (
+	"fmt"
+	"vsc-node/modules/common/params"
+)
 
 type SystemConfig interface {
 	OnMainnet() bool
@@ -84,4 +87,17 @@ func MocknetConfig() SystemConfig {
 		},
 	}
 	return conf
+}
+
+func FromNetwork(network string) SystemConfig {
+	switch network {
+	case "mainnet":
+		return MainnetConfig()
+	case "testnet":
+		return TestnetConfig()
+	case "mocknet":
+		return MocknetConfig()
+	default:
+		panic(fmt.Errorf("invalid network"))
+	}
 }

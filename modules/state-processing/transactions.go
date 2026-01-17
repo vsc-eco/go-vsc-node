@@ -64,7 +64,7 @@ func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession 
 	if t.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 100)
 	}
-	info, exists := se.GetContractInfo(t.ContractId)
+	info, exists := se.GetContractInfo(t.ContractId, t.Self.BlockHeight)
 
 	if !exists {
 		fmt.Println("Contract not found:", t.ContractId, info, exists)
@@ -101,10 +101,15 @@ func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession 
 		} else if len(t.Self.RequiredPostingAuths) > 0 {
 			caller = t.Self.RequiredPostingAuths[0]
 		}
+	} else if !slices.Contains(t.Self.RequiredAuths, t.Caller) && !slices.Contains(t.Self.RequiredPostingAuths, t.Caller) {
+		return errorToTxResult(fmt.Errorf("caller is not in required_auths or required_posting_auths"), 100)
 	}
 
 	w := wasm_runtime_ipc.New()
 	w.Init()
+
+	// ensure entrypoint contract is appended to outputs regardless of state access or logs
+	callSession.GetContractSession(t.ContractId)
 
 	ctxValue := contract_execution_context.New(contract_execution_context.Environment{
 		ContractId:           t.ContractId,

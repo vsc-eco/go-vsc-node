@@ -261,6 +261,7 @@ input TransactionFilter {
 input FindContractFilter {
   byId: String
   byCode: String
+  historical: Boolean
   offset: Int
   limit: Int
 }

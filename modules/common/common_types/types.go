@@ -48,7 +48,7 @@ type StateEngine interface {
 	Log() logger.Logger
 	DataLayer() DataLayer
 	//returns: contract information (contracts.Contract) contract exists (bool)
-	GetContractInfo(id string) (contracts.Contract, bool)
+	GetContractInfo(id string, height uint64) (contracts.Contract, bool)
 	GetElectionInfo(height ...uint64) elections.ElectionResult
 	SystemConfig() systemconfig.SystemConfig
 }

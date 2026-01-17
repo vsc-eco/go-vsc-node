@@ -384,7 +384,7 @@ func (r *queryResolver) FindContract(ctx context.Context, filterOptions *FindCon
 	if paginateErr != nil {
 		return nil, paginateErr
 	}
-	return r.Contracts.FindContracts(filterOptions.ByID, filterOptions.ByCode, offset, limit)
+	return r.Contracts.FindContracts(filterOptions.ByID, filterOptions.ByCode, filterOptions.Historical, offset, limit)
 }
 
 // SubmitTransactionV1 is the resolver for the submitTransactionV1 field.

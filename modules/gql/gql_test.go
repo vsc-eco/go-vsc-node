@@ -12,6 +12,7 @@ import (
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/contracts"
@@ -21,6 +22,7 @@ import (
 	"vsc-node/modules/db/vsc/nonces"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql"
@@ -38,15 +40,13 @@ func TestQueryAndMutation(t *testing.T) {
 	l := logger.PrefixedLogger{
 		Prefix: "vsc-node",
 	}
-	sysConfig := common.SystemConfig{
-		Network: "mainnet",
-	}
+	sysConfig := systemconfig.MocknetConfig()
 	dbConfg := db.NewDbConfig()
 	identityConfig := common.NewIdentityConfig()
 	d := db.New(dbConfg)
 	vscDb := vsc.New(d)
 	witnesses := witnesses.New(vscDb)
-	p2p := libp2p.New(witnesses, identityConfig, sysConfig)
+	p2p := libp2p.New(witnesses, identityConfig, sysConfig, nil)
 	hiveBlocks, hiveBlocksErr := hive_blocks.New(vscDb)
 	electionDb := elections.New(vscDb)
 	contractDb := contracts.New(vscDb)
@@ -59,14 +59,17 @@ func TestQueryAndMutation(t *testing.T) {
 	contractState := contracts.NewContractState(vscDb)
 	nonceDb := nonces.New(vscDb)
 	rcDb := rcDb.New(vscDb)
+	tssKeys := tss_db.NewKeys(vscDb)
+	tssCommitments := tss_db.NewCommitments(vscDb)
+	tssRequests := tss_db.NewRequests(vscDb)
 	da := datalayer.New(p2p)
 	conf := common.NewIdentityConfig()
 	balances := ledgerDb.NewBalances(vscDb)
 	wasm := wasm_runtime.New()
 
 	assert.NoError(t, hiveBlocksErr)
-	se := stateEngine.New(l, da, witnesses, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, wasm)
-	txPool := transactionpool.New(p2p, txDb, nonceDb, hiveBlocks, da, conf, se.RcSystem)
+	se := stateEngine.New(l, sysConfig, da, witnesses, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
+	txPool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, conf, se.RcSystem)
 	resolver := &gqlgen.Resolver{
 		witnesses,
 		txPool,
@@ -82,6 +85,8 @@ func TestQueryAndMutation(t *testing.T) {
 		da,
 		contractDb,
 		contractState,
+		tssKeys,
+		tssRequests,
 	}
 	schema := gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: resolver})
 

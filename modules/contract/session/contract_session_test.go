@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"vsc-node/modules/db/vsc/contracts"
-	tss_db "vsc-node/modules/db/vsc/tss"
 )
 
 func TestCallSessionTakePendingClonesAndDeletes(t *testing.T) {
@@ -15,9 +14,6 @@ func TestCallSessionTakePendingClonesAndDeletes(t *testing.T) {
 		Deletions: map[string]bool{"foo": true},
 		Metadata:  contracts.ContractMetadata{CurrentSize: 1, MaxSize: 10},
 		Cid:       "cid-1",
-		TssLog: []tss_db.TssOp{
-			{Type: "create", KeyId: "k1", Args: "args"},
-		},
 	}
 	cs := &CallSession{
 		pending: map[string]*TempOutput{
@@ -41,10 +37,6 @@ func TestCallSessionTakePendingClonesAndDeletes(t *testing.T) {
 	if !orig.Deletions["foo"] {
 		t.Fatalf("deletions map should have been cloned")
 	}
-	cloned.TssLog[0].Args = "mutated"
-	if orig.TssLog[0].Args == "mutated" {
-		t.Fatalf("tss log slice should have been cloned")
-	}
 }
 
 func TestCloneTempOutputsNilWhenEmpty(t *testing.T) {
@@ -63,7 +55,6 @@ func TestCloneTempOutputsDeepCopy(t *testing.T) {
 			Deletions: map[string]bool{
 				"k": true,
 			},
-			TssLog: []tss_db.TssOp{{Type: "sign", KeyId: "k", Args: "msg"}},
 		},
 		"b": {
 			Cache: map[string][]byte{"z": {5}},
@@ -83,10 +74,5 @@ func TestCloneTempOutputsDeepCopy(t *testing.T) {
 	cloned["a"].Deletions["k"] = false
 	if !src["a"].Deletions["k"] {
 		t.Fatalf("deletions map should have been deep cloned")
-	}
-
-	cloned["a"].TssLog[0].Args = "changed"
-	if src["a"].TssLog[0].Args == "changed" {
-		t.Fatalf("tss log slice should have been cloned")
 	}
 }
