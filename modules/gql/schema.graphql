@@ -254,6 +254,8 @@ input TransactionFilter {
   byType: [String!]
   byLedgerToFrom: String
   byLedgerTypes: [String!]
+  fromBlock: Uint64
+  toBlock: Uint64
   offset: Int
   limit: Int
 }
@@ -270,6 +272,8 @@ input ContractOutputFilter {
   byId: String
   byInput: String
   byContract: String
+  fromBlock: Uint64
+  toBlock: Uint64
   offset: Int
   limit: Int
 }

@@ -1850,6 +1850,8 @@ input TransactionFilter {
   byType: [String!]
   byLedgerToFrom: String
   byLedgerTypes: [String!]
+  fromBlock: Uint64
+  toBlock: Uint64
   offset: Int
   limit: Int
 }
@@ -1866,6 +1868,8 @@ input ContractOutputFilter {
   byId: String
   byInput: String
   byContract: String
+  fromBlock: Uint64
+  toBlock: Uint64
   offset: Int
   limit: Int
 }
@@ -9010,7 +9014,7 @@ func (ec *executionContext) unmarshalInputContractOutputFilter(ctx context.Conte
 		asMap[k] = v
 	}
 
-	fieldsInOrder := [...]string{"byId", "byInput", "byContract", "offset", "limit"}
+	fieldsInOrder := [...]string{"byId", "byInput", "byContract", "fromBlock", "toBlock", "offset", "limit"}
 	for _, k := range fieldsInOrder {
 		v, ok := asMap[k]
 		if !ok {
@@ -9038,6 +9042,20 @@ func (ec *executionContext) unmarshalInputContractOutputFilter(ctx context.Conte
 				return it, err
 			}
 			it.ByContract = data
+		case "fromBlock":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("fromBlock"))
+			data, err := ec.unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.FromBlock = data
+		case "toBlock":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("toBlock"))
+			data, err := ec.unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.ToBlock = data
 		case "offset":
 			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("offset"))
 			data, err := ec.unmarshalOInt2ᚖint(ctx, v)
@@ -9286,7 +9304,7 @@ func (ec *executionContext) unmarshalInputTransactionFilter(ctx context.Context,
 		asMap[k] = v
 	}
 
-	fieldsInOrder := [...]string{"byId", "byIds", "byAccount", "byContract", "byStatus", "byType", "byLedgerToFrom", "byLedgerTypes", "offset", "limit"}
+	fieldsInOrder := [...]string{"byId", "byIds", "byAccount", "byContract", "byStatus", "byType", "byLedgerToFrom", "byLedgerTypes", "fromBlock", "toBlock", "offset", "limit"}
 	for _, k := range fieldsInOrder {
 		v, ok := asMap[k]
 		if !ok {
@@ -9349,6 +9367,20 @@ func (ec *executionContext) unmarshalInputTransactionFilter(ctx context.Context,
 				return it, err
 			}
 			it.ByLedgerTypes = data
+		case "fromBlock":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("fromBlock"))
+			data, err := ec.unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.FromBlock = data
+		case "toBlock":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("toBlock"))
+			data, err := ec.unmarshalOUint642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.ToBlock = data
 		case "offset":
 			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("offset"))
 			data, err := ec.unmarshalOInt2ᚖint(ctx, v)

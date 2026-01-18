@@ -174,7 +174,7 @@ func (ch *contractState) GetOutput(outputId string) *ContractOutput {
 	return &contractOutput
 }
 
-func (ch *contractState) FindOutputs(id *string, input *string, contract *string, offset int, limit int) ([]ContractOutput, error) {
+func (ch *contractState) FindOutputs(id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ContractOutput, error) {
 	filters := bson.D{}
 	if id != nil {
 		filters = append(filters, bson.E{Key: "id", Value: *id})
@@ -184,6 +184,12 @@ func (ch *contractState) FindOutputs(id *string, input *string, contract *string
 	}
 	if contract != nil {
 		filters = append(filters, bson.E{Key: "contract_id", Value: *contract})
+	}
+	if fromBlock != nil {
+		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$gte", Value: *fromBlock}}})
+	}
+	if toBlock != nil {
+		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$lte", Value: *toBlock}}})
 	}
 	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
 	cursor, err := ch.Aggregate(context.TODO(), pipe)

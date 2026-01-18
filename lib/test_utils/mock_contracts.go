@@ -75,6 +75,6 @@ func (m *MockContractStateDb) GetOutput(outputId string) *contracts.ContractOutp
 }
 
 // GraphQL use only, not implemented in mocks
-func (m *MockContractStateDb) FindOutputs(id *string, input *string, contract *string, offset int, limit int) ([]contracts.ContractOutput, error) {
+func (m *MockContractStateDb) FindOutputs(id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]contracts.ContractOutput, error) {
 	return []contracts.ContractOutput{}, nil
 }

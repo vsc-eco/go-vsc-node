@@ -9,11 +9,13 @@ import (
 )
 
 type ContractOutputFilter struct {
-	ByID       *string `json:"byId,omitempty"`
-	ByInput    *string `json:"byInput,omitempty"`
-	ByContract *string `json:"byContract,omitempty"`
-	Offset     *int    `json:"offset,omitempty"`
-	Limit      *int    `json:"limit,omitempty"`
+	ByID       *string       `json:"byId,omitempty"`
+	ByInput    *string       `json:"byInput,omitempty"`
+	ByContract *string       `json:"byContract,omitempty"`
+	FromBlock  *model.Uint64 `json:"fromBlock,omitempty"`
+	ToBlock    *model.Uint64 `json:"toBlock,omitempty"`
+	Offset     *int          `json:"offset,omitempty"`
+	Limit      *int          `json:"limit,omitempty"`
 }
 
 type FindContractFilter struct {
@@ -78,6 +80,8 @@ type TransactionFilter struct {
 	ByType         []string                        `json:"byType,omitempty"`
 	ByLedgerToFrom *string                         `json:"byLedgerToFrom,omitempty"`
 	ByLedgerTypes  []string                        `json:"byLedgerTypes,omitempty"`
+	FromBlock      *model.Uint64                   `json:"fromBlock,omitempty"`
+	ToBlock        *model.Uint64                   `json:"toBlock,omitempty"`
 	Offset         *int                            `json:"offset,omitempty"`
 	Limit          *int                            `json:"limit,omitempty"`
 }

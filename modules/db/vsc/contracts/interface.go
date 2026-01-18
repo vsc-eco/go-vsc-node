@@ -16,7 +16,7 @@ type ContractState interface {
 	a.Plugin
 	IngestOutput(inputArgs IngestOutputArgs)
 	GetLastOutput(contractId string, height uint64) (ContractOutput, error)
-	FindOutputs(id *string, input *string, contract *string, offset int, limit int) ([]ContractOutput, error)
+	FindOutputs(id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ContractOutput, error)
 }
 
 type IngestOutputArgs struct {
