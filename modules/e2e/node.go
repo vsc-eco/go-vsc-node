@@ -125,7 +125,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	identityConfig.SetUsername(input.Username)
 	kp := HashSeed([]byte(SEED_PREFIX + input.Username))
 
-	hiveClient := hivego.NewHiveRpc("https://api.hive.blog")
+	hiveClient := hivego.NewHiveRpc([]string{"https://api.hive.blog"})
 
 	brcst := hive.MockTransactionBroadcaster{
 		KeyPair:  kp,

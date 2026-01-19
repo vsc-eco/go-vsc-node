@@ -14,7 +14,7 @@ const wif = ""
 
 func TestSavingsWithdraw(t *testing.T) {
 	// goenv := os.Getenv("GOENV")
-	hiveClient := hivego.NewHiveRpc("https://api.hive.blog")
+	hiveClient := hivego.NewHiveRpc([]string{"https://api.hive.blog"})
 
 	txCrafter := hive.TransactionCrafter{}
 	txBroadcaster := hive.TransactionBroadcaster{

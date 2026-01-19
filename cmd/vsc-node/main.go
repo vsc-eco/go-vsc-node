@@ -52,9 +52,7 @@ func main() {
 	dbConf := db.NewDbConfig()
 	hiveApiUrl := streamer.NewHiveConfig()
 	hiveApiUrlErr := hiveApiUrl.Init()
-
-	// hiveURI := hiveApiUrl.Get().HiveURI
-	hiveURI := "https://hive-api.3speak.tv"
+	hiveURI := hiveApiUrl.Get().HiveURI
 
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
 	fmt.Println("HIVE_API", hiveURI)
@@ -90,7 +88,7 @@ func main() {
 	}
 
 	// choose the source
-	hiveRpcClient := hivego.NewHiveRpc(hiveURI)
+	hiveRpcClient := hivego.NewHiveRpc([]string{hiveURI})
 
 	filters := []streamer.FilterFunc{filter}
 	//Default filter don't filter anything

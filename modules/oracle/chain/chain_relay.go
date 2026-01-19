@@ -111,7 +111,7 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 			startSymbols[symbol] = strconv.Itoa(int(fcl.blockHeight))
 		}
 	}
-	hiveClient := hivego.NewHiveRpc("https://api.hive.blog")
+	hiveClient := hivego.NewHiveRpc([]string{"https://api.hive.blog"})
 
 	jsonBytes, _ := json.Marshal(startSymbols)
 	wif := c.conf.Get().HiveActiveKey
