@@ -185,7 +185,7 @@ func (p2pServer *P2PServer) Init() error {
 					addrInfo := p2pServer.host.Peerstore().PeerInfo(peer)
 					var goodPeer bool
 					for _, a := range addrInfo.Addrs {
-						if isPublicAddr(a) {
+						if isPublicAddr(p2pServer.systemConfig, a) {
 							goodPeer = true
 						}
 					}
@@ -478,7 +478,7 @@ func (p2p *P2PServer) addrFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multi
 		if isCircuitAddr(addr) {
 			filteredAddrs = append(filteredAddrs, addr)
 		}
-		if isPublicAddr(addr) {
+		if isPublicAddr(p2p.systemConfig, addr) {
 			publicAddr = addr
 		}
 	}
@@ -535,7 +535,7 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 				continue
 			}
 
-			if isPublicAddr(m) {
+			if isPublicAddr(p2p.systemConfig, m) {
 				selectedAddr = append(selectedAddr, m.Encapsulate(mp))
 				continue
 			}

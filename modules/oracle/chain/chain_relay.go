@@ -10,6 +10,7 @@ import (
 	"strings"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
 
 	"github.com/chebyrash/promise"
 	"github.com/vsc-eco/hivego"
@@ -56,12 +57,14 @@ type ChainOracle struct {
 	signatureChannels *signatureChannels
 	chainRelayers     map[string]chainRelay
 	conf              common.IdentityConfig
+	sconf             systemconfig.SystemConfig
 }
 
 func New(
 	ctx context.Context,
 	oracleLogger *slog.Logger,
 	conf common.IdentityConfig,
+	sconf systemconfig.SystemConfig,
 ) *ChainOracle {
 	logger := oracleLogger.With("sub-service", "chain-relay")
 
@@ -76,6 +79,7 @@ func New(
 		signatureChannels: makeSignatureChannels(),
 		chainRelayers:     chainRelayers,
 		conf:              conf,
+		sconf:             sconf,
 	}
 }
 
@@ -112,6 +116,7 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 		}
 	}
 	hiveClient := hivego.NewHiveRpc([]string{"https://api.hive.blog"})
+	hiveClient.ChainID = c.sconf.HiveChainId()
 
 	jsonBytes, _ := json.Marshal(startSymbols)
 	wif := c.conf.Get().HiveActiveKey

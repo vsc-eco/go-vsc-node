@@ -2,7 +2,7 @@ package libp2p
 
 import (
 	"net"
-	"testing"
+	systemconfig "vsc-node/modules/common/system-config"
 
 	"github.com/multiformats/go-multiaddr"
 )
@@ -30,9 +30,9 @@ func (pg *peerGetter) GetStatus() {
 
 // var _ common_types.PeerInfoGetter = &peerGetter{}
 
-func isPublicAddr(addr multiaddr.Multiaddr) bool {
-	if testing.Testing() {
-		// assume nodes in e2e tests are reachable regardless
+func isPublicAddr(sysConf systemconfig.SystemConfig, addr multiaddr.Multiaddr) bool {
+	if !sysConf.OnMainnet() {
+		// assume nodes in e2e tests or other testnets are reachable regardless
 		return true
 	}
 	ipv4Address, err := addr.ValueForProtocol(multiaddr.P_IP4)

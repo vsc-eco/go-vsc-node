@@ -93,6 +93,7 @@ func TestStateEngine(t *testing.T) {
 	}
 
 	client := hivego.NewHiveRpc([]string{"https://techcoderx.com"})
+	client.ChainID = sysConfig.HiveChainId()
 	s := streamer.NewStreamer(client, hiveBlocks, []streamer.FilterFunc{filter}, []streamer.VirtualFilterFunc{
 		func(op hivego.VirtualOp) bool {
 			return op.Op.Type == "interest_operation"
