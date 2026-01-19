@@ -646,7 +646,7 @@ func (ms *MultiSig) waitForSigs(ctx context.Context, tx hivego.HiveTransaction, 
 	if err != nil {
 		return nil, 0, err
 	}
-	txHash := hivego.HashTxForSig(txBytes)
+	txHash := hivego.HashTxForSig(txBytes, ms.sconf.HiveChainId())
 
 	// var timeoutz time.Duration
 	// if len(timeout) > 0 {

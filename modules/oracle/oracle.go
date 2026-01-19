@@ -8,6 +8,7 @@ import (
 	"time"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/witnesses"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
@@ -59,6 +60,7 @@ type Oracle struct {
 func New(
 	p2pServer *libp2p.P2PServer,
 	conf common.IdentityConfig,
+	sconf systemconfig.SystemConfig,
 	electionDb elections.Elections,
 	witnessDb witnesses.Witnesses,
 	hiveConsumer *blockconsumer.HiveConsumer,
@@ -88,7 +90,7 @@ func New(
 	// 	conf,
 	// )
 
-	chainRelayer := chain.New(ctx, logger, conf)
+	chainRelayer := chain.New(ctx, logger, conf, sconf)
 
 	return &Oracle{
 		ctx:          ctx,

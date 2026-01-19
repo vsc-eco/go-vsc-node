@@ -119,6 +119,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		Prefix: input.Username,
 	}
 
+	sysConfig := systemconfig.MocknetConfig()
 	identityConfig := common.NewIdentityConfig("data-" + input.Username + "/config")
 
 	identityConfig.Init()
@@ -126,6 +127,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	kp := HashSeed([]byte(SEED_PREFIX + input.Username))
 
 	hiveClient := hivego.NewHiveRpc([]string{"https://api.hive.blog"})
+	hiveClient.ChainID = sysConfig.HiveChainId()
 
 	brcst := hive.MockTransactionBroadcaster{
 		KeyPair:  kp,
@@ -138,8 +140,6 @@ func MakeNode(input MakeNodeInput) *Node {
 	}
 
 	hrpc := &MockHiveRpcClient{}
-
-	sysConfig := systemconfig.MocknetConfig()
 
 	var blockStatus common_types.BlockStatusGetter = nil
 	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus, input.Port)

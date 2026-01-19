@@ -48,7 +48,11 @@ import (
 
 func main() {
 	cbortypes.RegisterTypes()
-	init := os.Args[len(os.Args)-1] == "--init"
+	parsedArgs, err := ParseArgs()
+	if err != nil {
+		fmt.Println("Error parsing arguments:", err)
+		os.Exit(1)
+	}
 	dbConf := db.NewDbConfig()
 	hiveApiUrl := streamer.NewHiveConfig()
 	hiveApiUrlErr := hiveApiUrl.Init()
@@ -78,6 +82,7 @@ func main() {
 	tssKeys := tss_db.NewKeys(vscDb)
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
+	sysConfig := systemconfig.FromNetwork(parsedArgs.network)
 
 	if err != nil {
 		fmt.Println("error is", err)
@@ -89,6 +94,7 @@ func main() {
 
 	// choose the source
 	hiveRpcClient := hivego.NewHiveRpc([]string{hiveURI})
+	hiveRpcClient.ChainID = sysConfig.HiveChainId()
 
 	filters := []streamer.FilterFunc{filter}
 	//Default filter don't filter anything
@@ -116,8 +122,6 @@ func main() {
 			KeyPair: identityConfig.HiveActiveKeyPair,
 		},
 	}
-
-	sysConfig := systemconfig.MainnetConfig()
 
 	//Set below from vstream
 	var blockStatus common_types.BlockStatusGetter = nil
@@ -187,22 +191,8 @@ func main() {
 		blockConsumer,
 	)
 
-	bp := blockproducer.New(
-		l,
-		p2p,
-		blockConsumer,
-		se,
-		identityConfig,
-		sysConfig,
-		&hiveCreator,
-		da,
-		electionDb,
-		vscBlocks,
-		txDb,
-		rcSystem,
-		nonceDb,
-	)
-	oracle := oracle.New(p2p, identityConfig, electionDb, witnessDb, blockConsumer, se)
+	bp := blockproducer.New(l, p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
+	oracle := oracle.New(p2p, identityConfig, sysConfig, electionDb, witnessDb, blockConsumer, se)
 
 	multisig := gateway.New(
 		l,
@@ -320,7 +310,7 @@ func main() {
 		plugins,
 	)
 
-	if init {
+	if parsedArgs.isInit {
 		fmt.Println("initing")
 		err = a.Init()
 	} else {

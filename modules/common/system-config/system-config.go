@@ -10,6 +10,7 @@ type SystemConfig interface {
 	OnMocknet() bool
 	BootstrapPeers() []string
 	NetId() string
+	HiveChainId() string
 	GatewayWallet() string
 	ConsensusParams() params.ConsensusParams
 }
@@ -18,6 +19,7 @@ type config struct {
 	network         string
 	bootstrapPeers  []string
 	netId           string
+	hiveChainId     string
 	gatewayWallet   string
 	consensusParams params.ConsensusParams
 }
@@ -38,6 +40,10 @@ func (c *config) NetId() string {
 	return c.netId
 }
 
+func (c *config) HiveChainId() string {
+	return c.hiveChainId
+}
+
 func (c *config) GatewayWallet() string {
 	return c.gatewayWallet
 }
@@ -50,6 +56,7 @@ func MainnetConfig() SystemConfig {
 		bootstrapPeers: MAINNET_BOOTSTRAP,
 		network:        "mainnet",
 		netId:          "vsc-mainnet",
+		hiveChainId:    "beeab0de00000000000000000000000000000000000000000000000000000000",
 		gatewayWallet:  "vsc.gateway",
 		consensusParams: params.ConsensusParams{
 			MinStake:       params.MAINNET_CONSENSUS_MINIMUM,
@@ -65,6 +72,7 @@ func TestnetConfig() SystemConfig {
 	conf := &config{
 		network:       "testnet",
 		netId:         "vsc-testnet",
+		hiveChainId:   "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
 		gatewayWallet: "vsc.testnet",
 		consensusParams: params.ConsensusParams{
 			MinStake:       params.TESTNET_CONSENSUS_MINIMUM,
@@ -79,6 +87,7 @@ func MocknetConfig() SystemConfig {
 	conf := &config{
 		network:       "mocknet",
 		netId:         "vsc-mocknet",
+		hiveChainId:   "123456789abcdef000000000000000000000000000000000000000000000000",
 		gatewayWallet: "vsc.mocknet",
 		consensusParams: params.ConsensusParams{
 			MinStake:       1,

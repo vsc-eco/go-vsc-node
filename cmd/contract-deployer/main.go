@@ -94,6 +94,7 @@ func deployNewContract(sysConfig systemconfig.SystemConfig, identityConfig commo
 
 	if len(user) > 0 && len(wif) > 0 {
 		hiveClient := hivego.NewHiveRpc([]string{hiveConfig.Get().HiveURI})
+		hiveClient.ChainID = sysConfig.HiveChainId()
 
 		tx := stateEngine.TxCreateContract{
 			Version:      "0.1",
@@ -147,6 +148,7 @@ func updateContract(sysConfig systemconfig.SystemConfig, identityConfig common.I
 
 	if len(user) > 0 && len(wif) > 0 {
 		hiveClient := hivego.NewHiveRpc([]string{hiveConfig.Get().HiveURI})
+		hiveClient.ChainID = sysConfig.HiveChainId()
 
 		tx := stateEngine.TxUpdateContract{
 			NetId:       sysConfig.NetId(),
