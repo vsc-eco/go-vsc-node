@@ -7,8 +7,9 @@ import (
 )
 
 type args struct {
-	isInit  bool
-	network string
+	isInit   bool
+	network  string
+	dbSuffix string
 }
 
 func ParseArgs() (args, error) {
@@ -19,11 +20,13 @@ func ParseArgs() (args, error) {
 	}
 	isInit := flag.Bool("init", false, "Initialize the node (run init instead of run)")
 	network := flag.String("network", "mainnet", "Network to deploy contract to")
+	dbSuffix := flag.String("db-suffix", "", "Optional database name suffix")
 
 	flag.Parse()
 
 	return args{
 		*isInit,
 		*network,
+		*dbSuffix,
 	}, nil
 }
