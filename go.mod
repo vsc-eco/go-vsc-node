@@ -31,8 +31,6 @@ require (
 
 replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 
-replace github.com/vsc-eco/hivego => github.com/techcoderx/hivego v0.0.0-20260119130404-79aab595edd3
-
 require (
 	github.com/StackExchange/wmi v1.2.1 // indirect
 	github.com/VictoriaMetrics/fastcache v1.12.2 // indirect
