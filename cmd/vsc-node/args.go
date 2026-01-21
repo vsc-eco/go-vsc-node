@@ -10,6 +10,7 @@ type args struct {
 	isInit   bool
 	network  string
 	dbSuffix string
+	dataDir  string
 }
 
 func ParseArgs() (args, error) {
@@ -21,6 +22,7 @@ func ParseArgs() (args, error) {
 	isInit := flag.Bool("init", false, "Initialize the node (run init instead of run)")
 	network := flag.String("network", "mainnet", "Network to deploy contract to")
 	dbSuffix := flag.String("db-suffix", "", "Optional database name suffix")
+	dataDir := flag.String("data-dir", "data", "Data directory for config and storage")
 
 	flag.Parse()
 
@@ -28,5 +30,6 @@ func ParseArgs() (args, error) {
 		*isInit,
 		*network,
 		*dbSuffix,
+		*dataDir,
 	}, nil
 }

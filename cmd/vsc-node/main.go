@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path"
 	"time"
 
 	cbortypes "vsc-node/lib/cbor-types"
@@ -53,8 +54,8 @@ func main() {
 		fmt.Println("Error parsing arguments:", err)
 		os.Exit(1)
 	}
-	dbConf := db.NewDbConfig()
-	hiveApiUrl := streamer.NewHiveConfig()
+	dbConf := db.NewDbConfig(parsedArgs.dataDir)
+	hiveApiUrl := streamer.NewHiveConfig(parsedArgs.dataDir)
 	hiveApiUrlErr := hiveApiUrl.Init()
 
 	hiveURIs := hiveApiUrl.Get().HiveURIs
@@ -114,7 +115,7 @@ func main() {
 		&stBlock,
 	) // optional starting block #
 
-	identityConfig := common.NewIdentityConfig()
+	identityConfig := common.NewIdentityConfig(parsedArgs.dataDir)
 
 	hiveCreator := hive.LiveTransactionCreator{
 		TransactionCrafter: hive.TransactionCrafter{},
@@ -143,7 +144,7 @@ func main() {
 
 	wasm := wasm_runtime.New()
 
-	da := datalayer.New(p2p)
+	da := datalayer.New(p2p, parsedArgs.dataDir)
 
 	dataAvailability := data_availability.New(p2p, identityConfig, da)
 
@@ -214,7 +215,7 @@ func main() {
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
 
-	flatDb, err := flatfs.CreateOrOpen("data/tss-keys", flatfs.Prefix(1), false)
+	flatDb, err := flatfs.CreateOrOpen(path.Join(parsedArgs.dataDir, "tss-keys"), flatfs.Prefix(1), false)
 	if err != nil {
 		panic(err)
 	}
