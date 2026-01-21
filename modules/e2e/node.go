@@ -146,7 +146,7 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	announcementsManager, _ := announcements.New(hrpc, identityConfig, sysConfig, time.Hour*24, &txCreator, p2p)
 
-	datalayer := DataLayer.New(p2p, input.Username)
+	datalayer := DataLayer.New(p2p, "data-"+input.Username)
 	wasm := wasm_runtime.New()
 
 	se := stateEngine.New(

@@ -44,7 +44,7 @@ type DataLayer struct {
 	DagServ    format.DAGService
 	Datastore  *badger.Datastore
 
-	dbPrefix []string
+	dataDir []string
 }
 
 type MetricsCtx context.Context
@@ -67,8 +67,8 @@ func (dl *DataLayer) Init() error {
 
 	var path string
 
-	if len(dl.dbPrefix) > 0 {
-		path = fmt.Sprint("data-", dl.dbPrefix[0], "/badger")
+	if len(dl.dataDir) > 0 && dl.dataDir[0] != "" {
+		path = fmt.Sprint(dl.dataDir[0], "/badger")
 	} else {
 		path = "data/badger"
 	}
@@ -345,11 +345,11 @@ func (dl *DataLayer) FindProviders(cid.Cid) []peer.ID {
 
 var _ a.Plugin = &DataLayer{}
 
-func New(p2pService *libp2p.P2PServer, dbPrefix ...string) *DataLayer {
+func New(p2pService *libp2p.P2PServer, dataDir ...string) *DataLayer {
 
 	return &DataLayer{
 
 		p2pService: p2pService,
-		dbPrefix:   dbPrefix,
+		dataDir:    dataDir,
 	}
 }

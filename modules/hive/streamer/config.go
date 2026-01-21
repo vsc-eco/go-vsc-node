@@ -19,10 +19,15 @@ type hiveConfigStruct struct {
 
 type HiveConfig = *hiveConfigStruct
 
-func NewHiveConfig() HiveConfig {
+func NewHiveConfig(dataDir ...string) HiveConfig {
+	var dataDirPtr *string
+	if len(dataDir) > 0 {
+		dataDirPtr = &dataDir[0]
+	}
+
 	return &hiveConfigStruct{config.New(hiveConfig{
 		HiveURI: DefaultHiveURI,
-	}, nil)}
+	}, dataDirPtr)}
 }
 
 func (hc *hiveConfigStruct) Init() error {

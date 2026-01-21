@@ -72,7 +72,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	nodeCount++
 	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, nil, port)
 
-	datalayer := DataLayer.New(p2p, input.Username)
+	datalayer := DataLayer.New(p2p, "data-"+input.Username)
 
 	// key, err := identityConfig.Libp2pPrivateKey()
 	// if err != nil {
