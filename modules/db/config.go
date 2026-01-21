@@ -18,10 +18,15 @@ type dbConfigStruct struct {
 
 type DbConfig = *dbConfigStruct
 
-func NewDbConfig() DbConfig {
+func NewDbConfig(dataDir ...string) DbConfig {
+	var dataDirPtr *string
+	if len(dataDir) > 0 {
+		dataDirPtr = &dataDir[0]
+	}
+
 	return &dbConfigStruct{config.New(dbConfig{
 		DbURI: "mongodb://localhost:27017",
-	}, nil)}
+	}, dataDirPtr)}
 }
 
 func (dc *dbConfigStruct) Init() error {
