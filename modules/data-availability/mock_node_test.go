@@ -54,7 +54,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	input.Username = "e2e-" + input.Username
 	dbConf := db.NewDbConfig()
 	db := db.New(dbConf)
-	vscDb := vsc.New(db, input.Username)
+	vscDb := vsc.New(db, "go-vsc-"+input.Username)
 	witnessesDb := witnesses.New(vscDb)
 
 	// logger := logger.PrefixedLogger{

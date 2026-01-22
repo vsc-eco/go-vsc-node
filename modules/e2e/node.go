@@ -96,7 +96,7 @@ const SEED_PREFIX = "MOCK_SEED-"
 func MakeNode(input MakeNodeInput) *Node {
 	dbConf := db.NewDbConfig()
 	db := db.New(dbConf)
-	vscDb := vsc.New(db, input.Username)
+	vscDb := vsc.New(db, "go-vsc-"+input.Username)
 	hiveBlocks := &MockHiveDbs{}
 	vscBlocks := vscBlocks.New(vscDb)
 	witnessesDb := witnesses.New(vscDb)
