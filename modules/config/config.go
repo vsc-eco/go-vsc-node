@@ -27,18 +27,17 @@ type Config[T any] struct {
 
 var UseMainConfigDuringTests = false
 
-const DATA_DIR = "data"
-
-var CONFIG_DIR string = DATA_DIR + "/config"
+const DEFAULT_CONFIG_DIR string = "data/config"
 
 func New[T any](defaultValue T, dataDir *string) *Config[T] {
-	if dataDir == nil {
-		dataDir = &CONFIG_DIR
+	confDir := DEFAULT_CONFIG_DIR
+	if dataDir != nil && *dataDir != "" {
+		confDir = *dataDir + "/config"
 	}
 
 	return &Config[T]{
 		defaultValue: defaultValue,
-		dataDir:      *dataDir,
+		dataDir:      confDir,
 	}
 }
 
@@ -77,7 +76,7 @@ func projectRoot() result.Result[string] {
 
 func (c *Config[T]) FilePath() string {
 	name := reflect.TypeFor[T]().Name()
-	if testing.Testing() && UseMainConfigDuringTests && c.dataDir == CONFIG_DIR {
+	if testing.Testing() && UseMainConfigDuringTests && c.dataDir == DEFAULT_CONFIG_DIR {
 		return path.Join(projectRoot().Expect("project root should be easy to find while running a test"), c.dataDir, name+".json")
 	}
 	return path.Join(c.dataDir, name+".json")
