@@ -65,7 +65,7 @@ func main() {
 	fmt.Println("Git Commit", announcements.GitCommit)
 
 	dbImpl := db.New(dbConf)
-	vscDb := vsc.New(dbImpl, parsedArgs.dbSuffix)
+	vscDb := vsc.New(dbImpl, parsedArgs.dbName)
 	reindexDb := db.NewReindex(vscDb.DbInstance)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)

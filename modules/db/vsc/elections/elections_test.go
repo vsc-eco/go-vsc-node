@@ -36,7 +36,7 @@ func TestGetElectionByHeight(t *testing.T) {
 	config.UseMainConfigDuringTests = true
 	dbConfig := db.NewDbConfig()
 	db := db.New(dbConfig)
-	vsc := vsc.New(db, "election-test")
+	vsc := vsc.New(db, "go-vsc-election-test")
 	e := elections.New(vsc)
 
 	test_utils.RunPlugin(t, aggregate.New([]aggregate.Plugin{

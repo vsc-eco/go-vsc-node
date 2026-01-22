@@ -66,7 +66,7 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 	}
 
 	db := db.New(dbConf)
-	vscDb := vsc.New(db, "vsc-tss-test-"+strconv.Itoa(index))
+	vscDb := vsc.New(db, "go-vsc-tss-test-"+strconv.Itoa(index))
 	tssKeys := tss_db.NewKeys(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
 	tssCommitments := tss_db.NewCommitments(vscDb)
