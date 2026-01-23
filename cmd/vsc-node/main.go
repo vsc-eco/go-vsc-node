@@ -106,14 +106,8 @@ func main() {
 		},
 	}
 
-	stBlock := uint64(94601000)
-	streamerPlugin := streamer.NewStreamer(
-		hiveRpcClient,
-		hiveBlocks,
-		filters,
-		vFilters,
-		&stBlock,
-	) // optional starting block #
+	stBlock := sysConfig.StartHeight()
+	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
 
 	identityConfig := common.NewIdentityConfig(parsedArgs.dataDir)
 
