@@ -66,7 +66,7 @@ func MainnetConfig() SystemConfig {
 		gatewayWallet:  "vsc.gateway",
 		startHeight:    94601000,
 		consensusParams: params.ConsensusParams{
-			MinStake:       params.MAINNET_CONSENSUS_MINIMUM,
+			MinStake:       params.CONSENSUS_MINIMUM,
 			MinRcLimit:     params.MINIMUM_RC_LIMIT,
 			TssIndexHeight: params.TSS_INDEX_HEIGHT,
 		},
@@ -82,7 +82,7 @@ func TestnetConfig() SystemConfig {
 		gatewayWallet: "vsc.testnet",
 		startHeight:   0,
 		consensusParams: params.ConsensusParams{
-			MinStake:       params.TESTNET_CONSENSUS_MINIMUM,
+			MinStake:       params.CONSENSUS_MINIMUM,
 			MinRcLimit:     params.MINIMUM_RC_LIMIT,
 			TssIndexHeight: 0,
 		},
