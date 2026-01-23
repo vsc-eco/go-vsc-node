@@ -1,9 +1,10 @@
 package test_utils
 
 import (
-	"fmt"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db/vsc/contracts"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type MockContractDb struct {
@@ -15,16 +16,16 @@ func (m *MockContractDb) RegisterContract(contractId string, args contracts.Cont
 	m.Contracts[contractId] = args
 }
 
-func (m *MockContractDb) ContractById(contractId string) (contracts.Contract, error) {
+func (m *MockContractDb) ContractById(contractId string, height uint64) (contracts.Contract, error) {
 	info, exists := m.Contracts[contractId]
 	if !exists {
-		return contracts.Contract{}, fmt.Errorf("contract %s does not exist", contractId)
+		return contracts.Contract{}, mongo.ErrNoDocuments
 	}
 	return info, nil
 }
 
 // GraphQL use only, not implemented in mocks
-func (m *MockContractDb) FindContracts(contractId *string, code *string, offset int, limit int) ([]contracts.Contract, error) {
+func (m *MockContractDb) FindContracts(contractId *string, code *string, historical *bool, offset int, limit int) ([]contracts.Contract, error) {
 	return []contracts.Contract{}, nil
 }
 
@@ -74,6 +75,6 @@ func (m *MockContractStateDb) GetOutput(outputId string) *contracts.ContractOutp
 }
 
 // GraphQL use only, not implemented in mocks
-func (m *MockContractStateDb) FindOutputs(id *string, input *string, contract *string, offset int, limit int) ([]contracts.ContractOutput, error) {
+func (m *MockContractStateDb) FindOutputs(id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]contracts.ContractOutput, error) {
 	return []contracts.ContractOutput{}, nil
 }

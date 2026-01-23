@@ -120,7 +120,7 @@ func (e *transactions) GetTransaction(id string) *TransactionRecord {
 	return &record
 }
 
-func (e *transactions) FindTransactions(ids []string, id *string, account *string, contract *string, status *TransactionStatus, byType []string, ledgerToFrom *string, ledgerTypes []string, offset int, limit int) ([]TransactionRecord, error) {
+func (e *transactions) FindTransactions(ids []string, id *string, account *string, contract *string, status *TransactionStatus, byType []string, ledgerToFrom *string, ledgerTypes []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TransactionRecord, error) {
 	if id != nil && ids != nil {
 		return nil, errors.New("either input a single id or a list of ids")
 	}
@@ -161,6 +161,12 @@ func (e *transactions) FindTransactions(ids []string, id *string, account *strin
 			ledgerTypeFilter = append(ledgerTypeFilter, bson.D{{Key: "ledger.type", Value: t}})
 		}
 		filters = append(filters, bson.E{Key: "$or", Value: ledgerTypeFilter})
+	}
+	if fromBlock != nil {
+		filters = append(filters, bson.E{Key: "anchr_height", Value: bson.D{{Key: "$gte", Value: *fromBlock}}})
+	}
+	if toBlock != nil {
+		filters = append(filters, bson.E{Key: "anchr_height", Value: bson.D{{Key: "$lte", Value: *toBlock}}})
 	}
 	pipe := hive_blocks.GetAggTimestampPipeline2(filters, "anchr_height", "anchr_ts", offset, limit)
 	cursor, err := e.Aggregate(context.TODO(), pipe)

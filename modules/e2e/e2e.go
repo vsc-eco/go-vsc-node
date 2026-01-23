@@ -10,13 +10,14 @@ import (
 	"vsc-node/lib/hive"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	election_proposer "vsc-node/modules/election-proposer"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
 	libp2p "vsc-node/modules/p2p"
-	"vsc-node/modules/vstream"
 
 	a "vsc-node/modules/aggregate"
 
@@ -82,16 +83,17 @@ type E2ERunner struct {
 	ElectionProposer election_proposer.ElectionProposer
 	P2pService       *libp2p.P2PServer
 	IdentityConfig   common.IdentityConfig
+	SystemConfig     systemconfig.SystemConfig
 	TxDb             transactions.Transactions
 
 	BlockHeight uint64
 
-	VStream    *vstream.VStream
-	BlockEvent chan uint64
+	HiveConsumer *blockconsumer.HiveConsumer
+	BlockEvent   chan uint64
 }
 
 func (e2e *E2ERunner) Init() error {
-	e2e.VStream.RegisterBlockTick("e2e.runner", e2e.BlockTick, true)
+	e2e.HiveConsumer.RegisterBlockTick("e2e.runner", e2e.BlockTick, true)
 	return nil
 }
 
@@ -214,7 +216,7 @@ func (e2e *E2ERunner) BroadcastElection() Step {
 			electionData := elections.ElectionData{
 				ElectionCommonInfo: elections.ElectionCommonInfo{
 					Epoch: 0,
-					NetId: common.NETWORK_ID,
+					NetId: e2e.SystemConfig.NetId(),
 					Type:  "initial",
 				},
 				ElectionDataInfo: elections.ElectionDataInfo{
@@ -230,7 +232,7 @@ func (e2e *E2ERunner) BroadcastElection() Step {
 			electionHeader := map[string]interface{}{
 				"epoch":  0,
 				"data":   cid.String(),
-				"net_id": common.NETWORK_ID,
+				"net_id": e2e.SystemConfig.NetId(),
 			}
 			bbyes, _ := json.Marshal(electionHeader)
 			op := e2e.HiveCreator.CustomJson([]string{"e2e.mocks"}, []string{}, "vsc.election_result", string(bbyes))

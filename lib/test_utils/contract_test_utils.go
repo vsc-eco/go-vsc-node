@@ -46,6 +46,17 @@ type ContractTest struct {
 	DataLayer     *datalayer.DataLayer
 }
 
+type ContractTestCallResult struct {
+	Success   bool
+	Err       contracts.ContractOutputError
+	ErrMsg    string
+	Ret       string
+	RcUsed    int64
+	GasUsed   uint
+	Logs      map[string]contract_session.LogOutput
+	StateDiff map[string]contract_session.StateDiff
+}
+
 // Create a new contract testing environment with mock databases.
 func NewContractTest() ContractTest {
 	logr := logger.PrefixedLogger{Prefix: "contract-test"}
@@ -67,7 +78,7 @@ func NewContractTest() ContractTest {
 		nil,
 		&elections,
 		&contractDb,
-		nil,
+		&contractState,
 		nil,
 		&ledgers,
 		&balances,
@@ -144,32 +155,38 @@ func (ct *ContractTest) RegisterContract(contractId string, owner string, byteco
 }
 
 // Executes a contract call transaction. Returns the call result, gas used and logs emitted.
-func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxResult, uint, map[string][]string) {
-	info, err := ct.ContractDb.ContractById(tx.ContractId)
+func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallResult {
+	info, err := ct.ContractDb.ContractById(tx.ContractId, tx.Self.BlockHeight)
 	if err != nil {
-		return stateEngine.TxResult{
+		return ContractTestCallResult{
 			Success: false,
-			Ret:     err.Error(),
+			ErrMsg:  err.Error(),
 			RcUsed:  100,
-		}, 0, map[string][]string{}
+			GasUsed: 0,
+			Logs:    map[string]contract_session.LogOutput{},
+		}
 	}
 
 	c, err := cid.Decode(info.Code)
 	if err != nil {
-		return stateEngine.TxResult{
+		return ContractTestCallResult{
 			Success: false,
-			Ret:     err.Error(),
+			ErrMsg:  err.Error(),
 			RcUsed:  100,
-		}, 0, map[string][]string{}
+			GasUsed: 0,
+			Logs:    map[string]contract_session.LogOutput{},
+		}
 	}
 
 	node, err := ct.DataLayer.Get(c, nil)
 	if err != nil {
-		return stateEngine.TxResult{
+		return ContractTestCallResult{
 			Success: false,
-			Ret:     err.Error(),
+			ErrMsg:  err.Error(),
 			RcUsed:  100,
-		}, 0, map[string][]string{}
+			GasUsed: 0,
+			Logs:    map[string]contract_session.LogOutput{},
+		}
 	}
 
 	code := node.RawData()
@@ -213,21 +230,27 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) (stateEngine.TxRe
 	if res.Error != nil {
 		ct.LedgerSession.Revert()
 		ct.CallSession.Rollback()
-		return stateEngine.TxResult{
+		return ContractTestCallResult{
 			Success: false,
-			Err:     &res.ErrorCode,
-			Ret:     *res.Error,
+			Err:     res.ErrorCode,
+			ErrMsg:  *res.Error,
 			RcUsed:  rcUsed,
-		}, res.Gas, map[string][]string{}
+			GasUsed: res.Gas,
+			Logs:    map[string]contract_session.LogOutput{},
+		}
 	}
+	diff := ct.CallSession.GetStateDiff()
 	ct.LedgerSession.Done()
 	ct.CallSession.Commit()
 
-	return stateEngine.TxResult{
-		Success: true,
-		Ret:     res.Result,
-		RcUsed:  rcUsed,
-	}, res.Gas, ct.CallSession.PopLogs()
+	return ContractTestCallResult{
+		Success:   true,
+		Ret:       res.Result,
+		RcUsed:    rcUsed,
+		GasUsed:   res.Gas,
+		Logs:      ct.CallSession.PopLogs(),
+		StateDiff: diff,
+	}
 }
 
 // Add funds to an account in the ledger.

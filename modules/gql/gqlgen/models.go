@@ -3,24 +3,27 @@
 package gqlgen
 
 import (
-	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	ledger_db "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/gql/model"
 )
 
 type ContractOutputFilter struct {
-	ByID       *string `json:"byId,omitempty"`
-	ByInput    *string `json:"byInput,omitempty"`
-	ByContract *string `json:"byContract,omitempty"`
-	Offset     *int    `json:"offset,omitempty"`
-	Limit      *int    `json:"limit,omitempty"`
+	ByID       *string       `json:"byId,omitempty"`
+	ByInput    *string       `json:"byInput,omitempty"`
+	ByContract *string       `json:"byContract,omitempty"`
+	FromBlock  *model.Uint64 `json:"fromBlock,omitempty"`
+	ToBlock    *model.Uint64 `json:"toBlock,omitempty"`
+	Offset     *int          `json:"offset,omitempty"`
+	Limit      *int          `json:"limit,omitempty"`
 }
 
 type FindContractFilter struct {
-	ByID   *string `json:"byId,omitempty"`
-	ByCode *string `json:"byCode,omitempty"`
-	Offset *int    `json:"offset,omitempty"`
-	Limit  *int    `json:"limit,omitempty"`
+	ByID       *string `json:"byId,omitempty"`
+	ByCode     *string `json:"byCode,omitempty"`
+	Historical *bool   `json:"historical,omitempty"`
+	Offset     *int    `json:"offset,omitempty"`
+	Limit      *int    `json:"limit,omitempty"`
 }
 
 type LedgerAction struct {
@@ -35,27 +38,27 @@ type LedgerAction struct {
 }
 
 type LedgerActionsFilter struct {
-	ByTxID     *string         `json:"byTxId,omitempty"`
-	ByActionID *string         `json:"byActionId,omitempty"`
-	ByAccount  *string         `json:"byAccount,omitempty"`
-	ByTypes    []string        `json:"byTypes,omitempty"`
-	ByAsset    *ledgerDb.Asset `json:"byAsset,omitempty"`
-	ByStatus   *string         `json:"byStatus,omitempty"`
-	FromBlock  *model.Uint64   `json:"fromBlock,omitempty"`
-	ToBlock    *model.Uint64   `json:"toBlock,omitempty"`
-	Offset     *int            `json:"offset,omitempty"`
-	Limit      *int            `json:"limit,omitempty"`
+	ByTxID     *string          `json:"byTxId,omitempty"`
+	ByActionID *string          `json:"byActionId,omitempty"`
+	ByAccount  *string          `json:"byAccount,omitempty"`
+	ByTypes    []string         `json:"byTypes,omitempty"`
+	ByAsset    *ledger_db.Asset `json:"byAsset,omitempty"`
+	ByStatus   *string          `json:"byStatus,omitempty"`
+	FromBlock  *model.Uint64    `json:"fromBlock,omitempty"`
+	ToBlock    *model.Uint64    `json:"toBlock,omitempty"`
+	Offset     *int             `json:"offset,omitempty"`
+	Limit      *int             `json:"limit,omitempty"`
 }
 
 type LedgerTxFilter struct {
-	ByToFrom  *string         `json:"byToFrom,omitempty"`
-	ByTxID    *string         `json:"byTxId,omitempty"`
-	ByTypes   []string        `json:"byTypes,omitempty"`
-	ByAsset   *ledgerDb.Asset `json:"byAsset,omitempty"`
-	FromBlock *model.Uint64   `json:"fromBlock,omitempty"`
-	ToBlock   *model.Uint64   `json:"toBlock,omitempty"`
-	Offset    *int            `json:"offset,omitempty"`
-	Limit     *int            `json:"limit,omitempty"`
+	ByToFrom  *string          `json:"byToFrom,omitempty"`
+	ByTxID    *string          `json:"byTxId,omitempty"`
+	ByTypes   []string         `json:"byTypes,omitempty"`
+	ByAsset   *ledger_db.Asset `json:"byAsset,omitempty"`
+	FromBlock *model.Uint64    `json:"fromBlock,omitempty"`
+	ToBlock   *model.Uint64    `json:"toBlock,omitempty"`
+	Offset    *int             `json:"offset,omitempty"`
+	Limit     *int             `json:"limit,omitempty"`
 }
 
 type LocalNodeInfo struct {
@@ -77,6 +80,8 @@ type TransactionFilter struct {
 	ByType         []string                        `json:"byType,omitempty"`
 	ByLedgerToFrom *string                         `json:"byLedgerToFrom,omitempty"`
 	ByLedgerTypes  []string                        `json:"byLedgerTypes,omitempty"`
+	FromBlock      *model.Uint64                   `json:"fromBlock,omitempty"`
+	ToBlock        *model.Uint64                   `json:"toBlock,omitempty"`
 	Offset         *int                            `json:"offset,omitempty"`
 	Limit          *int                            `json:"limit,omitempty"`
 }

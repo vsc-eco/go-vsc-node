@@ -443,7 +443,7 @@ func (ctx *contractExecutionContext) ContractCall(contractId string, method stri
 	json.Unmarshal([]byte(options), &opts)
 
 	return result.Flatten(result.Map(
-		ctx.callSession.GetContractFromDb(contractId),
+		ctx.callSession.GetContractFromDb(contractId, ctx.env.BlockHeight),
 		func(ct contract_session.ContractWithCode) wasm_types.WasmResult {
 			w := wasm_runtime_ipc.New()
 			w.Init()
@@ -471,7 +471,7 @@ func (ctx *contractExecutionContext) ContractCall(contractId string, method stri
 			wasmCtx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(ct.Code))
 			res := w.Execute(wasmCtx, gasRemaining, method, callPayload, ct.Info.Runtime)
 			if res.Error != nil {
-				return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf(res.ErrorCode), fmt.Errorf(*res.Error), fmt.Errorf("%d", res.Gas)))
+				return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf("%s", res.ErrorCode), fmt.Errorf("%s", *res.Error), fmt.Errorf("%d", res.Gas)))
 			}
 			return result.Ok(res)
 		},

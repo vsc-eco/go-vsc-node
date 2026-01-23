@@ -243,7 +243,7 @@ func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *Tran
 		return nil, paginateErr
 	}
 
-	return r.Transactions.FindTransactions(filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, filterOptions.ByLedgerToFrom, filterOptions.ByLedgerTypes, offset, limit)
+	return r.Transactions.FindTransactions(filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, filterOptions.ByLedgerToFrom, filterOptions.ByLedgerTypes, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
 // FindContractOutput is the resolver for the findContractOutput field.
@@ -255,7 +255,7 @@ func (r *queryResolver) FindContractOutput(ctx context.Context, filterOptions *C
 	if paginateErr != nil {
 		return nil, paginateErr
 	}
-	return r.ContractsState.FindOutputs(filterOptions.ByID, filterOptions.ByInput, filterOptions.ByContract, offset, limit)
+	return r.ContractsState.FindOutputs(filterOptions.ByID, filterOptions.ByInput, filterOptions.ByContract, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
 // FindLedgerTXs is the resolver for the findLedgerTXs field.
@@ -384,7 +384,7 @@ func (r *queryResolver) FindContract(ctx context.Context, filterOptions *FindCon
 	if paginateErr != nil {
 		return nil, paginateErr
 	}
-	return r.Contracts.FindContracts(filterOptions.ByID, filterOptions.ByCode, offset, limit)
+	return r.Contracts.FindContracts(filterOptions.ByID, filterOptions.ByCode, filterOptions.Historical, offset, limit)
 }
 
 // SubmitTransactionV1 is the resolver for the submitTransactionV1 field.

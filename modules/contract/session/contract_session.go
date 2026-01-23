@@ -1,6 +1,7 @@
 package contract_session
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"maps"
@@ -17,6 +18,11 @@ import (
 type ContractWithCode struct {
 	Info contracts.Contract
 	Code []byte
+}
+
+type LogOutput struct {
+	Logs   []string
+	TssOps []tss_db.TssOp
 }
 
 // Session for transaction with contract calls
@@ -125,10 +131,13 @@ func (cs *CallSession) AppendLogs(contractId string, logs ...string) {
 }
 
 // Pop all logs from contract sessions and return them
-func (cs *CallSession) PopLogs() map[string][]string {
-	result := make(map[string][]string)
+func (cs *CallSession) PopLogs() map[string]LogOutput {
+	result := make(map[string]LogOutput)
 	for id, session := range cs.sessions {
-		result[id] = session.PopLogs()
+		result[id] = LogOutput{
+			Logs:   session.PopLogs(),
+			TssOps: session.PopTssLogs(),
+		}
 	}
 	return result
 }
@@ -173,8 +182,16 @@ func (cs *CallSession) Rollback() {
 	}
 }
 
-func (cs *CallSession) GetContractFromDb(contractId string) result.Result[ContractWithCode] {
-	info, err := cs.contractDb.ContractById(contractId)
+func (cs *CallSession) GetStateDiff() map[string]StateDiff {
+	res := make(map[string]StateDiff)
+	for id, session := range cs.sessions {
+		res[id] = session.state.GetDiff()
+	}
+	return res
+}
+
+func (cs *CallSession) GetContractFromDb(contractId string, height uint64) result.Result[ContractWithCode] {
+	info, err := cs.contractDb.ContractById(contractId, height)
 	if err == mongo.ErrNoDocuments {
 		return result.Err[ContractWithCode](errors.Join(fmt.Errorf(contracts.IC_CONTRT_NOT_FND), fmt.Errorf("contract not found")))
 	} else if err != nil {
@@ -255,7 +272,6 @@ func (cs *ContractSession) ToOutput() TempOutput {
 		Cid:       cs.stateMerkle,
 		Metadata:  cs.metadata,
 		Deletions: cs.deletions,
-		TssLog:    cs.tssOps,
 	}
 }
 
@@ -269,12 +285,28 @@ func (cs *ContractSession) PopLogs() []string {
 	return popped
 }
 
+func (cs *ContractSession) PopTssLogs() []tss_db.TssOp {
+	popped := cs.tssOps
+	cs.tssOps = make([]tss_db.TssOp, 0)
+	return popped
+}
+
 type StateStore struct {
 	cache     map[string][]byte
 	deletions map[string]bool
 	datalayer *datalayer.DataLayer
 	databin   *datalayer.DataBin
 	cs        *ContractSession
+}
+
+type stateKeyDiff struct {
+	Previous []byte
+	Current  []byte
+}
+
+type StateDiff struct {
+	Deletions map[string]bool
+	KeyDiff   map[string]stateKeyDiff
 }
 
 func (ss *StateStore) Get(key string) []byte {
@@ -315,14 +347,39 @@ func (ss *StateStore) Delete(key string) {
 
 func (ss *StateStore) Commit() {
 	// commit the changes to the underlying storage
-	ss.cs.deletions = ss.deletions
-	ss.cs.cache = ss.cache
+	ss.cs.deletions = maps.Clone(ss.deletions)
+	ss.cs.cache = maps.Clone(ss.cache)
 }
 
 func (ss *StateStore) Rollback() {
 	// revert to last committed state
 	ss.deletions = maps.Clone(ss.cs.deletions)
 	ss.cache = maps.Clone(ss.cs.cache)
+}
+
+// Return a summary of uncommitted state diff
+func (ss *StateStore) GetDiff() StateDiff {
+	dels := make(map[string]bool)
+	diffs := make(map[string]stateKeyDiff)
+
+	for key := range ss.deletions {
+		if !ss.cs.deletions[key] {
+			dels[key] = true
+		}
+	}
+	for key, val := range ss.cache {
+		if !bytes.Equal(val, ss.cs.cache[key]) {
+			diffs[key] = stateKeyDiff{
+				Previous: ss.cs.cache[key],
+				Current:  val,
+			}
+		}
+	}
+
+	return StateDiff{
+		Deletions: dels,
+		KeyDiff:   diffs,
+	}
 }
 
 func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) *StateStore {
@@ -356,7 +413,6 @@ type TempOutput struct {
 	Metadata  contracts.ContractMetadata
 	Deletions map[string]bool
 	Cid       string
-	TssLog    []tss_db.TssOp
 }
 
 func cloneTempOutputs(src map[string]*TempOutput) map[string]*TempOutput {
@@ -394,9 +450,6 @@ func cloneTempOutput(src *TempOutput) *TempOutput {
 		cloned.Deletions = maps.Clone(src.Deletions)
 	} else {
 		cloned.Deletions = make(map[string]bool)
-	}
-	if len(src.TssLog) > 0 {
-		cloned.TssLog = append([]tss_db.TssOp(nil), src.TssLog...)
 	}
 	return &cloned
 }

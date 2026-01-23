@@ -764,6 +764,7 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 				Err:    v.Err,
 				ErrMsg: v.ErrMsg,
 				Logs:   v.Logs,
+				TssOps: v.TssOps,
 			})
 			inputIds = append(inputIds, v.TxId)
 		}
@@ -776,7 +777,6 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			"state_merkle": savedCid.String(),
 			"inputs":       inputIds,
 			"results":      results,
-			"tss_ops":      output.TssLog,
 		}
 
 		dagBytes, _ := common.EncodeDagCbor(outputObj)

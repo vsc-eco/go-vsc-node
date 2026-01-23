@@ -1,19 +1,22 @@
 package contracts
 
-import a "vsc-node/modules/aggregate"
+import (
+	a "vsc-node/modules/aggregate"
+	tss_db "vsc-node/modules/db/vsc/tss"
+)
 
 type Contracts interface {
 	a.Plugin
 	RegisterContract(contractId string, args Contract)
-	ContractById(contractId string) (Contract, error)
-	FindContracts(contractId *string, code *string, offset int, limit int) ([]Contract, error)
+	ContractById(contractId string, height uint64) (Contract, error)
+	FindContracts(contractId *string, code *string, historical *bool, offset int, limit int) ([]Contract, error)
 }
 
 type ContractState interface {
 	a.Plugin
 	IngestOutput(inputArgs IngestOutputArgs)
 	GetLastOutput(contractId string, height uint64) (ContractOutput, error)
-	FindOutputs(id *string, input *string, contract *string, offset int, limit int) ([]ContractOutput, error)
+	FindOutputs(id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ContractOutput, error)
 }
 
 type IngestOutputArgs struct {
@@ -38,6 +41,7 @@ type ContractOutputResult struct {
 	Err    *ContractOutputError `json:"err,omitempty" bson:"err,omitempty"`
 	ErrMsg string               `json:"errMsg,omitempty" bson:"errMsg,omitempty"`
 	Logs   []string             `json:"logs,omitempty" bson:"logs,omitempty"`
+	TssOps []tss_db.TssOp       `json:"tss_ops,omitempty" bson:"tss_ops,omitempty"`
 }
 
 type ContractOutput struct {
@@ -51,6 +55,15 @@ type ContractOutput struct {
 
 	Results     []ContractOutputResult `json:"results" bson:"results"`
 	StateMerkle string                 `json:"state_merkle" bson:"state_merkle"`
+}
+
+type ContractUpdate struct {
+	Id          string  `json:"id" bson:"_id"`
+	ContractId  string  `json:"contract_id" bson:"contract_id"`
+	BlockHeight int64   `json:"block_height" bson:"block_height"`
+	Ts          *string `json:"ts,omitempty" bson:"ts,omitempty"`
+	Owner       string  `json:"owner" bson:"owner"`
+	Code        string  `json:"code" bson:"code"`
 }
 
 type ContractOutputError = string

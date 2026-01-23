@@ -2,11 +2,13 @@ package contracts
 
 import (
 	"context"
+	"fmt"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -24,16 +26,39 @@ func (e *contracts) Init() error {
 		return err
 	}
 
+	// Index for update history of a contract
+	indexModel := mongo.IndexModel{
+		Keys: bson.D{{Key: "id", Value: 1}, {Key: "creation_height", Value: -1}},
+	}
+	err = e.CreateIndexIfNotExist(indexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create index: %w", err)
+	}
+
+	// Index for getting single latest contract by ID
+	latestContractModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "id", Value: 1}, {Key: "latest", Value: 1}},
+		Options: options.Index().SetPartialFilterExpression(bson.M{"latest": true}),
+	}
+	err = e.CreateIndexIfNotExist(latestContractModel)
+	if err != nil {
+		return fmt.Errorf("failed to create index: %w", err)
+	}
+
 	return nil
 }
 
 // ContractById implements Contracts.
-func (c *contracts) ContractById(contractId string) (Contract, error) {
+func (c *contracts) ContractById(contractId string, height uint64) (Contract, error) {
 	res := Contract{}
 	filter := bson.M{
 		"id": contractId,
+		"creation_height": bson.M{
+			"$lte": height,
+		},
 	}
-	qRes := c.FindOne(context.TODO(), filter)
+	opts := options.FindOne().SetSort(bson.M{"creation_height": -1})
+	qRes := c.FindOne(context.TODO(), filter, opts)
 	if err := qRes.Err(); err != nil {
 		return res, err
 	}
@@ -42,13 +67,16 @@ func (c *contracts) ContractById(contractId string) (Contract, error) {
 	return res, err
 }
 
-func (c *contracts) FindContracts(contractId *string, code *string, offset int, limit int) ([]Contract, error) {
+func (c *contracts) FindContracts(contractId *string, code *string, historical *bool, offset int, limit int) ([]Contract, error) {
 	filters := bson.D{}
 	if contractId != nil {
 		filters = append(filters, bson.E{Key: "id", Value: *contractId})
 	}
 	if code != nil {
 		filters = append(filters, bson.E{Key: "code", Value: *code})
+	}
+	if historical == nil || !*historical {
+		filters = append(filters, bson.E{Key: "latest", Value: true})
 	}
 	pipe := hive_blocks.GetAggTimestampPipeline(filters, "creation_height", "creation_ts", offset, limit)
 	cursor, err := c.Aggregate(context.TODO(), pipe)
@@ -68,22 +96,34 @@ func (c *contracts) FindContracts(contractId *string, code *string, offset int, 
 }
 
 func (c *contracts) RegisterContract(contractId string, args Contract) {
+	// TODO: config to prune old versions
 	findQuery := bson.M{
-		"id": contractId,
+		"id":              contractId,
+		"creation_height": args.CreationHeight,
 	}
 	updateQuery := bson.M{
 		"$set": bson.M{
-			"code":            args.Code,
-			"name":            args.Name,
-			"description":     args.Description,
-			"creator":         args.Creator,
-			"owner":           args.Owner,
-			"tx_id":           args.TxId,
-			"creation_height": args.CreationHeight,
-			"runtime":         args.Runtime,
+			"code":        args.Code,
+			"name":        args.Name,
+			"description": args.Description,
+			"creator":     args.Creator,
+			"owner":       args.Owner,
+			"tx_id":       args.TxId,
+			"runtime":     args.Runtime,
+			"latest":      true,
 		},
 	}
 	opts := options.FindOneAndUpdate().SetUpsert(true)
+
+	oldVersionsFilter := bson.M{
+		"id": contractId,
+	}
+	oldVersionsUpdate := bson.M{
+		"$unset": bson.M{
+			"latest": "",
+		},
+	}
+	c.UpdateMany(context.Background(), oldVersionsFilter, oldVersionsUpdate)
 	c.FindOneAndUpdate(context.Background(), findQuery, updateQuery, opts)
 }
 
@@ -134,7 +174,7 @@ func (ch *contractState) GetOutput(outputId string) *ContractOutput {
 	return &contractOutput
 }
 
-func (ch *contractState) FindOutputs(id *string, input *string, contract *string, offset int, limit int) ([]ContractOutput, error) {
+func (ch *contractState) FindOutputs(id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ContractOutput, error) {
 	filters := bson.D{}
 	if id != nil {
 		filters = append(filters, bson.E{Key: "id", Value: *id})
@@ -144,6 +184,12 @@ func (ch *contractState) FindOutputs(id *string, input *string, contract *string
 	}
 	if contract != nil {
 		filters = append(filters, bson.E{Key: "contract_id", Value: *contract})
+	}
+	if fromBlock != nil {
+		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$gte", Value: *fromBlock}}})
+	}
+	if toBlock != nil {
+		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$lte", Value: *toBlock}}})
 	}
 	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
 	cursor, err := ch.Aggregate(context.TODO(), pipe)
