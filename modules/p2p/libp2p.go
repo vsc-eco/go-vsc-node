@@ -311,7 +311,7 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 
 	uniquePeers := make(map[string]struct{})
 
-	if p2ps.systemConfig.OnMainnet() {
+	if !p2ps.systemConfig.OnMocknet() {
 		for _, peerStr := range p2ps.systemConfig.BootstrapPeers() {
 			peerId, _ := peer.AddrInfoFromString(peerStr)
 			err := p2ps.host.Connect(context.Background(), *peerId)
@@ -559,7 +559,7 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 func (p2p *P2PServer) discoverPeers() {
 	fmt.Println("Discovering peers...")
 	if len(p2p.host.Network().Peers()) < 2 {
-		if p2p.systemConfig.OnMainnet() {
+		if !p2p.systemConfig.OnMocknet() {
 			for _, peerStr := range p2p.systemConfig.BootstrapPeers() {
 				peerId, _ := peer.AddrInfoFromString(peerStr)
 
