@@ -18,3 +18,15 @@ var MAINNET_BOOTSTRAP = []string{
 	"/ip4/138.199.230.214/tcp/10720/p2p/12D3KooWHyT797hmbLjgbFjYFpbHrre1EPWzFo876FDhdcbPVG8p",        //@tibfox.vsc
 
 }
+
+var TESTNET_BOOTSTRAP = []string{
+	"/ip4/192.168.1.102/udp/20271/quic-v1/p2p/12D3KooWDrd23cThkAQxCQQunSjyGK1emHVSgq8PwhhjdDYKYxt7",
+	"/ip4/192.168.1.102/udp/20272/quic-v1/p2p/12D3KooWJb42uHPJeqH9tirZXe9HvjtaEfoCjnCVPiYhJh1GRwTH",
+	"/ip4/192.168.1.102/udp/20273/quic-v1/p2p/12D3KooWEMYQToTsb86iRG9T5G8owwZx5hRv6SZDsNz5pbKTwyHF",
+	"/ip4/192.168.1.102/udp/20274/quic-v1/p2p/12D3KooW9qD8VSX2EP3QSzaGQzmEghV1gbQhM3YsVghSyy9PuVek",
+	"/ip4/192.168.1.102/udp/20275/quic-v1/p2p/12D3KooWK5iHmqZWHYQBYNmoe2i3RXppdksmqPXSBAKCvmNJpcAP",
+	"/ip4/192.168.1.102/udp/20276/quic-v1/p2p/12D3KooWKV2nHar4kBW3ft3KsiQTCSAVydfA7uzzY3Su3Uoabuuv",
+	"/ip4/192.168.1.102/udp/20277/quic-v1/p2p/12D3KooWMkE6UTuKwgn2ommSvjr1VMjsXt9R5cxSi85h34wzyawt",
+	"/ip4/192.168.1.102/udp/20278/quic-v1/p2p/12D3KooWJBdtk2GUiqtG4zmreUqggUnYrVHPshF6xEosUJhiRFxw",
+	"/ip4/192.168.1.102/udp/20279/quic-v1/p2p/12D3KooWF7MMHYE2o5BVibWd5hxjFzpxVhzsxNgg1gUB38YH6T6w",
+}
