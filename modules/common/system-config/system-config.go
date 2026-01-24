@@ -76,11 +76,12 @@ func MainnetConfig() SystemConfig {
 
 func TestnetConfig() SystemConfig {
 	conf := &config{
-		network:       "testnet",
-		netId:         "vsc-testnet",
-		hiveChainId:   "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
-		gatewayWallet: "vsc.testnet",
-		startHeight:   0,
+		bootstrapPeers: TESTNET_BOOTSTRAP,
+		network:        "testnet",
+		netId:          "vsc-testnet",
+		hiveChainId:    "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
+		gatewayWallet:  "vsc.testnet",
+		startHeight:    0,
 		consensusParams: params.ConsensusParams{
 			MinStake:       params.CONSENSUS_MINIMUM,
 			MinRcLimit:     params.MINIMUM_RC_LIMIT,
