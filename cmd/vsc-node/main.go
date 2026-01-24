@@ -122,7 +122,7 @@ func main() {
 
 	//Set below from vstream
 	var blockStatus common_types.BlockStatusGetter = nil
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus)
+	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus, parsedArgs.p2pPort)
 
 	announcementsManager, err := announcements.New(
 		hiveRpcClient,
@@ -246,7 +246,7 @@ func main() {
 		ContractsState: contractState,
 		TssKeys:        tssKeys,
 		TssRequests:    tssRequests,
-	}}), "0.0.0.0:8080")
+	}}), parsedArgs.gqlHost)
 
 	plugins := make([]aggregate.Plugin, 0)
 
