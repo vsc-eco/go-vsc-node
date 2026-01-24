@@ -60,6 +60,7 @@ func main() {
 
 	hiveURIs := hiveApiUrl.Get().HiveURIs
 
+	fmt.Println("Network:", parsedArgs.network)
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
 	fmt.Println("HIVE_APIs", hiveURIs)
 	fmt.Println("Git Commit", announcements.GitCommit)
