@@ -7,6 +7,7 @@ import (
 
 type SystemConfig interface {
 	OnMainnet() bool
+	OnTestnet() bool
 	OnMocknet() bool
 	BootstrapPeers() []string
 	NetId() string
@@ -28,6 +29,10 @@ type config struct {
 
 func (c *config) OnMainnet() bool {
 	return c.network == "mainnet"
+}
+
+func (c *config) OnTestnet() bool {
+	return c.network == "testnet"
 }
 
 func (c *config) OnMocknet() bool {
