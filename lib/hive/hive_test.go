@@ -27,7 +27,7 @@ func TestSavingsWithdraw(t *testing.T) {
 	kp, _ := hivego.KeyPairFromWif(wif)
 	tx := txCrafter.MakeTransaction([]hivego.HiveOperation{op})
 	txBroadcaster.PopulateSigningProps(&tx, nil)
-	sig, err := tx.Sign(*kp)
+	sig, err := tx.Sign(*kp, hiveClient.ChainID)
 	fmt.Println("Signature for TX:", sig, "error", err)
 	tx.AddSig(sig)
 
