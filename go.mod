@@ -25,13 +25,13 @@ require (
 	github.com/rs/cors v1.11.1
 	github.com/vektah/gqlparser/v2 v2.5.30
 	github.com/vsc-eco/go-ethereum v0.0.1
-	github.com/vsc-eco/hivego v0.0.0-20260123043941-dd3219d91c9d
+	github.com/vsc-eco/hivego v0.0.0-20260124071132-a0119c90411e
 	go.mongodb.org/mongo-driver v1.16.0
 )
 
 replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 
-replace github.com/vsc-eco/hivego => github.com/techcoderx/hivego v0.0.0-20260123043941-dd3219d91c9d
+replace github.com/vsc-eco/hivego => github.com/techcoderx/hivego v0.0.0-20260124071132-a0119c90411e
 
 require (
 	github.com/StackExchange/wmi v1.2.1 // indirect
