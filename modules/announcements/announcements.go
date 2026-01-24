@@ -229,7 +229,7 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 		peerAddrs = append(peerAddrs, addr.String())
 	}
 
-	enabled := int(a.peerInfo.GetStatus()) == int(network.ReachabilityPublic)
+	enabled := a.sconf.OnTestnet() || int(a.peerInfo.GetStatus()) == int(network.ReachabilityPublic)
 
 	payload := payload{
 		Services: []string{"vsc.network"},
