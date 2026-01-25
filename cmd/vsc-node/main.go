@@ -49,24 +49,25 @@ import (
 
 func main() {
 	cbortypes.RegisterTypes()
-	parsedArgs, err := ParseArgs()
+	args, err := ParseArgs()
 	if err != nil {
 		fmt.Println("Error parsing arguments:", err)
 		os.Exit(1)
 	}
-	dbConf := db.NewDbConfig(parsedArgs.dataDir)
-	hiveApiUrl := streamer.NewHiveConfig(parsedArgs.dataDir)
+	dbConf := db.NewDbConfig(args.dataDir)
+	p2pConf := p2pInterface.NewConfig(args.dataDir)
+	hiveApiUrl := streamer.NewHiveConfig(args.dataDir)
 	hiveApiUrlErr := hiveApiUrl.Init()
 
 	hiveURIs := hiveApiUrl.Get().HiveURIs
 
-	fmt.Println("Network:", parsedArgs.network)
+	fmt.Println("Network:", args.network)
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
 	fmt.Println("HIVE_APIs", hiveURIs)
 	fmt.Println("Git Commit", announcements.GitCommit)
 
 	dbImpl := db.New(dbConf)
-	vscDb := vsc.New(dbImpl, parsedArgs.dbName)
+	vscDb := vsc.New(dbImpl, args.dbName)
 	reindexDb := db.NewReindex(vscDb.DbInstance)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)
@@ -85,7 +86,7 @@ func main() {
 	tssKeys := tss_db.NewKeys(vscDb)
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
-	sysConfig := systemconfig.FromNetwork(parsedArgs.network)
+	sysConfig := systemconfig.FromNetwork(args.network)
 
 	if err != nil {
 		fmt.Println("error is", err)
@@ -110,7 +111,7 @@ func main() {
 	stBlock := sysConfig.StartHeight()
 	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
 
-	identityConfig := common.NewIdentityConfig(parsedArgs.dataDir)
+	identityConfig := common.NewIdentityConfig(args.dataDir)
 
 	hiveCreator := hive.LiveTransactionCreator{
 		TransactionCrafter: hive.TransactionCrafter{},
@@ -122,7 +123,7 @@ func main() {
 
 	//Set below from vstream
 	var blockStatus common_types.BlockStatusGetter = nil
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus, parsedArgs.p2pPort)
+	p2p := p2pInterface.New(witnessesDb, p2pConf, identityConfig, sysConfig, blockStatus)
 
 	announcementsManager, err := announcements.New(
 		hiveRpcClient,
@@ -139,7 +140,7 @@ func main() {
 
 	wasm := wasm_runtime.New()
 
-	da := datalayer.New(p2p, parsedArgs.dataDir)
+	da := datalayer.New(p2p, args.dataDir)
 
 	dataAvailability := data_availability.New(p2p, identityConfig, da)
 
@@ -210,7 +211,7 @@ func main() {
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
 
-	flatDb, err := flatfs.CreateOrOpen(path.Join(parsedArgs.dataDir, "tss-keys"), flatfs.Prefix(1), false)
+	flatDb, err := flatfs.CreateOrOpen(path.Join(args.dataDir, "tss-keys"), flatfs.Prefix(1), false)
 	if err != nil {
 		panic(err)
 	}
@@ -246,13 +247,14 @@ func main() {
 		ContractsState: contractState,
 		TssKeys:        tssKeys,
 		TssRequests:    tssRequests,
-	}}), parsedArgs.gqlHost)
+	}}), args.gqlHost)
 
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
 		//Configuration init
 		dbConf,
+		p2pConf,
 		identityConfig,
 
 		//DB plugin initialization
@@ -307,7 +309,7 @@ func main() {
 		plugins,
 	)
 
-	if parsedArgs.isInit {
+	if args.isInit {
 		fmt.Println("initing")
 		err = a.Init()
 	} else {

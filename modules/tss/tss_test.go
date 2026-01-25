@@ -11,6 +11,7 @@ import (
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/elections"
@@ -60,10 +61,15 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 	identity := common.NewIdentityConfig(path)
 	identity.Init()
 	identity.SetUsername("e2e-" + strconv.Itoa(index))
+	p2pConf := libp2p.NewConfig(path)
+	p2pConf.Init()
+	p2pConf.SetOptions(libp2p.P2POpts{
+		Port:         22222 + index,
+		ServerMode:   true,
+		AllowPrivate: true,
+	})
 	dbConf := db.NewDbConfig()
-	csonf := common.SystemConfig{
-		Network: "mocknet",
-	}
+	csonf := systemconfig.MocknetConfig()
 
 	db := db.New(dbConf)
 	vscDb := vsc.New(db, "go-vsc-tss-test-"+strconv.Itoa(index))
@@ -74,7 +80,7 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 	witnesses := witnesses.New(vscDb)
 	vstream := vstream.New(nil)
 
-	p2p := libp2p.New(witnesses, identity, csonf, 22222+index)
+	p2p := libp2p.New(witnesses, p2pConf, identity, csonf, nil)
 
 	keystore, err := flatfs.CreateOrOpen(path+"/keys", flatfs.Prefix(1), false)
 
@@ -101,7 +107,7 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 
 	go func() {
 		keyId := "test-key"
-		tssMgr.KeyGen(keyId, tss_helpers.SigningAlgoSecp256k1)
+		tssMgr.KeyGen(keyId, tss_helpers.SigningAlgoEcdsa)
 
 		time.Sleep(2 * time.Minute)
 		msg, _ := hex.DecodeString("89d7d1a68f8edd0cc1f961dce816422055d1ab69a0623954b834c95c1cdd7ed0")
@@ -110,7 +116,7 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 
 		// tssMgr.KeySign(msg, keyId, tss_helpers.SigningAlgoEd25519)
 
-		tssMgr.KeyReshare(keyId, tss_helpers.SigningAlgoSecp256k1)
+		tssMgr.KeyReshare(keyId)
 	}()
 
 	return agg, *vstream, witnesses, p2p, electionDb
