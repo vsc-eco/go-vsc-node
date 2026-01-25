@@ -43,8 +43,9 @@ import (
 
 type P2PServer struct {
 	witnessDb    WitnessGetter
-	conf         common.IdentityConfig
+	idConfig     common.IdentityConfig
 	systemConfig systemconfig.SystemConfig
+	config       P2PConfig
 
 	host   host.Host
 	dht    *kadDht.IpfsDHT
@@ -53,8 +54,6 @@ type P2PServer struct {
 
 	startStatus start_status.StartStatus
 	blockStatus common_types.BlockStatusGetter
-
-	port int
 
 	reachabilityStatus network.Reachability
 }
@@ -66,20 +65,14 @@ type WitnessGetter interface {
 	GetLastestWitnesses(...witnesses.SearchOption) ([]witnesses.Witness, error)
 }
 
-func New(witnessDb WitnessGetter, conf common.IdentityConfig, sconf systemconfig.SystemConfig, blockStatus common_types.BlockStatusGetter, port ...int) *P2PServer {
-
-	p := 10720
-	if len(port) > 0 {
-		p = port[0]
-	}
-
+func New(witnessDb WitnessGetter, config P2PConfig, idConfig common.IdentityConfig, sconf systemconfig.SystemConfig, blockStatus common_types.BlockStatusGetter) *P2PServer {
 	return &P2PServer{
 		witnessDb:    witnessDb,
-		conf:         conf,
+		idConfig:     idConfig,
 		cron:         cron.New(),
 		startStatus:  start_status.New(),
 		blockStatus:  blockStatus,
-		port:         p,
+		config:       config,
 		systemConfig: sconf,
 	}
 }
@@ -133,7 +126,7 @@ func (p2pServer *P2PServer) Started() *promise.Promise[any] {
 // Init implements aggregate.Plugin.
 func (p2pServer *P2PServer) Init() error {
 	//Future initialize using a configuration object with more detailed info
-	key, err := p2pServer.conf.Libp2pPrivateKey()
+	key, err := p2pServer.idConfig.Libp2pPrivateKey()
 	if err != nil {
 		return err
 	}
@@ -153,25 +146,24 @@ func (p2pServer *P2PServer) Init() error {
 	kadOptions := []kadDht.Option{
 		kadDht.ProtocolPrefix("/vsc.network"),
 		kadDht.BootstrapPeers(bootstrapPeers...),
-		kadDht.Mode(kadDht.ModeServer),
 	}
 
-	// if testing.Testing() {
-	// 	fmt.Println("In testing... running DHT in Server Mode")
-	// 	kadOptions = append(kadOptions, kadDht.Mode(kadDht.ModeServer))
-	// }
+	if p2pServer.config.Get().ServerMode {
+		kadOptions = append(kadOptions, kadDht.Mode(kadDht.ModeServer))
+	}
 
 	relayResources := relay.DefaultResources()
 	relayResources.MaxCircuits = 128
 	relayResources.ReservationTTL = 8 * time.Hour
 
+	port := p2pServer.config.Get().Port
 	var idht *dht.IpfsDHT
 	options := []libp2p.Option{
 		libp2p.ListenAddrStrings(
-			fmt.Sprint("/ip4/0.0.0.0/udp/", p2pServer.port, "/quic-v1"),
-			fmt.Sprint("/ip4/0.0.0.0/tcp/", p2pServer.port),
-			fmt.Sprint("/ip6/::/udp/", p2pServer.port, "/quic-v1"),
-			fmt.Sprint("/ip6/::/tcp/", p2pServer.port),
+			fmt.Sprint("/ip4/0.0.0.0/udp/", port, "/quic-v1"),
+			fmt.Sprint("/ip4/0.0.0.0/tcp/", port),
+			fmt.Sprint("/ip6/::/udp/", port, "/quic-v1"),
+			fmt.Sprint("/ip6/::/tcp/", port),
 		),
 		libp2p.Identity(key),
 		libp2p.EnableNATService(),
@@ -187,7 +179,7 @@ func (p2pServer *P2PServer) Init() error {
 					addrInfo := p2pServer.host.Peerstore().PeerInfo(peer)
 					var goodPeer bool
 					for _, a := range addrInfo.Addrs {
-						if isPublicAddr(p2pServer.systemConfig, a) {
+						if p2pServer.config.Get().AllowPrivate || isPublicAddr(a) {
 							goodPeer = true
 						}
 					}
@@ -476,6 +468,7 @@ func (p2pServer *P2PServer) SetStreamHandlerMatch(pid protocol.ID, matcher func(
 
 func (p2p *P2PServer) addrFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
 	filteredAddrs := make([]multiaddr.Multiaddr, 0)
+	port := p2p.config.Get().Port
 
 	for _, addr := range addrs {
 		// Always include circuit addresses
@@ -484,22 +477,22 @@ func (p2p *P2PServer) addrFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multi
 		}
 
 		// Check if we have any public addresses and add both IPv4 and IPv6 listen addresses
-		if isPublicAddr(p2p.systemConfig, addr) {
+		if p2p.config.Get().AllowPrivate || isPublicAddr(addr) {
 			// Check for IPv4
 			ipAddr, err := addr.ValueForProtocol(multiaddr.P_IP4)
 			if err == nil {
-				ma1, _ := multiaddr.NewMultiaddr("/ip4/" + ipAddr + "/tcp/" + strconv.Itoa(p2p.port))
+				ma1, _ := multiaddr.NewMultiaddr("/ip4/" + ipAddr + "/tcp/" + strconv.Itoa(port))
 				filteredAddrs = append(filteredAddrs, ma1)
-				ma2, _ := multiaddr.NewMultiaddr("/ip4/" + ipAddr + "/udp/" + strconv.Itoa(p2p.port) + "/quic-v1")
+				ma2, _ := multiaddr.NewMultiaddr("/ip4/" + ipAddr + "/udp/" + strconv.Itoa(port) + "/quic-v1")
 				filteredAddrs = append(filteredAddrs, ma2)
 			}
 
 			// Check for IPv6
 			ipAddr6, err := addr.ValueForProtocol(multiaddr.P_IP6)
 			if err == nil {
-				ma1, _ := multiaddr.NewMultiaddr("/ip6/" + ipAddr6 + "/tcp/" + strconv.Itoa(p2p.port))
+				ma1, _ := multiaddr.NewMultiaddr("/ip6/" + ipAddr6 + "/tcp/" + strconv.Itoa(port))
 				filteredAddrs = append(filteredAddrs, ma1)
-				ma2, _ := multiaddr.NewMultiaddr("/ip6/" + ipAddr6 + "/udp/" + strconv.Itoa(p2p.port) + "/quic-v1")
+				ma2, _ := multiaddr.NewMultiaddr("/ip6/" + ipAddr6 + "/udp/" + strconv.Itoa(port) + "/quic-v1")
 				filteredAddrs = append(filteredAddrs, ma2)
 			}
 		}
@@ -547,7 +540,7 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 				continue
 			}
 
-			if isPublicAddr(p2p.systemConfig, m) {
+			if p2p.config.Get().AllowPrivate || isPublicAddr(m) {
 				selectedAddr = append(selectedAddr, m.Encapsulate(mp))
 				continue
 			}

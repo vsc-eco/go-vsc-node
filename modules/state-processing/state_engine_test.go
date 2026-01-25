@@ -57,6 +57,7 @@ func TestStateEngine(t *testing.T) {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
 	identityConfig := common.NewIdentityConfig()
+	p2pConfig := p2p.NewConfig()
 	sysConfig := systemconfig.MocknetConfig()
 	l := logger.PrefixedLogger{
 		Prefix: "vsc-node",
@@ -111,7 +112,7 @@ func TestStateEngine(t *testing.T) {
 	assert.NoError(t, err)
 
 	var blockStatus common_types.BlockStatusGetter = nil
-	p2p := p2p.New(witnessesDb, identityConfig, sysConfig, blockStatus)
+	p2p := p2p.New(witnessesDb, p2pConfig, identityConfig, sysConfig, blockStatus)
 	dl := DataLayer.New(p2p, "state-engine")
 
 	wasm := wasm_runtime.New()
@@ -169,6 +170,7 @@ func TestMockEngine(t *testing.T) {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
 	identityConfig := common.NewIdentityConfig()
+	p2pConfig := p2p.NewConfig()
 	sysConfig := systemconfig.MocknetConfig()
 	l := logger.PrefixedLogger{
 		Prefix: "vsc-node",
@@ -184,7 +186,7 @@ func TestMockEngine(t *testing.T) {
 
 	assert.NoError(t, err)
 
-	p2p := p2p.New(witnessesDb, identityConfig, sysConfig, nil)
+	p2p := p2p.New(witnessesDb, p2pConfig, identityConfig, sysConfig, nil)
 
 	dl := DataLayer.New(p2p, "state-engine")
 

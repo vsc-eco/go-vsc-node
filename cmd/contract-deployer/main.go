@@ -26,14 +26,16 @@ func main() {
 	}
 	identityConfig := common.NewIdentityConfig(args.dataDir)
 	hiveConfig := streamer.NewHiveConfig(args.dataDir)
+	p2pConf := p2pInterface.NewConfig(args.dataDir)
 	sysConfig := systemconfig.FromNetwork(args.network)
 	wits := witnesses.NewEmptyWitnesses()
-	p2p := p2pInterface.New(wits, identityConfig, sysConfig, nil)
+	p2p := p2pInterface.New(wits, p2pConf, identityConfig, sysConfig, nil)
 	da := datalayer.New(p2p, args.dataDir)
 	client := data_availability_client.New(p2p, identityConfig, da)
 
 	plugins := []aggregate.Plugin{
 		identityConfig,
+		p2pConf,
 		hiveConfig,
 		p2p,
 		da,
