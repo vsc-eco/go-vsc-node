@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"testing"
 	"time"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/aggregate"
@@ -154,12 +153,13 @@ func (p2pServer *P2PServer) Init() error {
 	kadOptions := []kadDht.Option{
 		kadDht.ProtocolPrefix("/vsc.network"),
 		kadDht.BootstrapPeers(bootstrapPeers...),
+		kadDht.Mode(kadDht.ModeServer),
 	}
 
-	if testing.Testing() {
-		fmt.Println("In testing... running DHT in Server Mode")
-		kadOptions = append(kadOptions, kadDht.Mode(kadDht.ModeServer))
-	}
+	// if testing.Testing() {
+	// 	fmt.Println("In testing... running DHT in Server Mode")
+	// 	kadOptions = append(kadOptions, kadDht.Mode(kadDht.ModeServer))
+	// }
 
 	relayResources := relay.DefaultResources()
 	relayResources.MaxCircuits = 128
@@ -170,6 +170,8 @@ func (p2pServer *P2PServer) Init() error {
 		libp2p.ListenAddrStrings(
 			fmt.Sprint("/ip4/0.0.0.0/udp/", p2pServer.port, "/quic-v1"),
 			fmt.Sprint("/ip4/0.0.0.0/tcp/", p2pServer.port),
+			fmt.Sprint("/ip6/::/udp/", p2pServer.port, "/quic-v1"),
+			fmt.Sprint("/ip6/::/tcp/", p2pServer.port),
 		),
 		libp2p.Identity(key),
 		libp2p.EnableNATService(),
@@ -214,6 +216,7 @@ func (p2pServer *P2PServer) Init() error {
 	p2pServer.host = routedHost
 	p2pServer.dht = idht
 	fmt.Println("peer ID:", p2pServer.GetPeerId())
+	fmt.Println("peer addrs:", p2pServer.GetPeerAddrs())
 
 	go func() {
 		cSub, _ := p2pServer.host.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
@@ -347,7 +350,7 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 				}
 			}
 			peerLen := len(p2ps.host.Network().Peers())
-			// fmt.Println("peers", "["+peerList+"]", "peers.len()="+strconv.Itoa(peerLen))
+			fmt.Println("peers", "["+peerList+"]", "peers.len()="+strconv.Itoa(peerLen))
 			if peerLen >= len(uniquePeers)-1 {
 				p2ps.startStatus.TriggerStart()
 			}
@@ -473,23 +476,32 @@ func (p2pServer *P2PServer) SetStreamHandlerMatch(pid protocol.ID, matcher func(
 
 func (p2p *P2PServer) addrFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
 	filteredAddrs := make([]multiaddr.Multiaddr, 0)
-	var publicAddr multiaddr.Multiaddr
+
 	for _, addr := range addrs {
+		// Always include circuit addresses
 		if isCircuitAddr(addr) {
 			filteredAddrs = append(filteredAddrs, addr)
 		}
-		if isPublicAddr(p2p.systemConfig, addr) {
-			publicAddr = addr
-		}
-	}
 
-	if publicAddr != nil {
-		ipAddr, err := publicAddr.ValueForProtocol(multiaddr.P_IP4)
-		if err == nil {
-			ma1, _ := multiaddr.NewMultiaddr("/ip4/" + ipAddr + "/tcp/" + strconv.Itoa(p2p.port))
-			filteredAddrs = append(filteredAddrs, ma1)
-			ma2, _ := multiaddr.NewMultiaddr("/ip4/" + ipAddr + "/udp/" + strconv.Itoa(p2p.port) + "/quic-v1")
-			filteredAddrs = append(filteredAddrs, ma2)
+		// Check if we have any public addresses and add both IPv4 and IPv6 listen addresses
+		if isPublicAddr(p2p.systemConfig, addr) {
+			// Check for IPv4
+			ipAddr, err := addr.ValueForProtocol(multiaddr.P_IP4)
+			if err == nil {
+				ma1, _ := multiaddr.NewMultiaddr("/ip4/" + ipAddr + "/tcp/" + strconv.Itoa(p2p.port))
+				filteredAddrs = append(filteredAddrs, ma1)
+				ma2, _ := multiaddr.NewMultiaddr("/ip4/" + ipAddr + "/udp/" + strconv.Itoa(p2p.port) + "/quic-v1")
+				filteredAddrs = append(filteredAddrs, ma2)
+			}
+
+			// Check for IPv6
+			ipAddr6, err := addr.ValueForProtocol(multiaddr.P_IP6)
+			if err == nil {
+				ma1, _ := multiaddr.NewMultiaddr("/ip6/" + ipAddr6 + "/tcp/" + strconv.Itoa(p2p.port))
+				filteredAddrs = append(filteredAddrs, ma1)
+				ma2, _ := multiaddr.NewMultiaddr("/ip6/" + ipAddr6 + "/udp/" + strconv.Itoa(p2p.port) + "/quic-v1")
+				filteredAddrs = append(filteredAddrs, ma2)
+			}
 		}
 	}
 
