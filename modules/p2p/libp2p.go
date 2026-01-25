@@ -208,7 +208,6 @@ func (p2pServer *P2PServer) Init() error {
 	p2pServer.host = routedHost
 	p2pServer.dht = idht
 	fmt.Println("peer ID:", p2pServer.GetPeerId())
-	fmt.Println("peer addrs:", p2pServer.GetPeerAddrs())
 
 	go func() {
 		cSub, _ := p2pServer.host.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
@@ -347,7 +346,7 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 				p2ps.startStatus.TriggerStart()
 			}
 
-			time.Sleep(5 * time.Second)
+			time.Sleep(60 * time.Second)
 		}
 	}()
 
