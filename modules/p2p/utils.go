@@ -35,10 +35,22 @@ func isPublicAddr(sysConf systemconfig.SystemConfig, addr multiaddr.Multiaddr) b
 		// assume nodes in e2e tests or other testnets are reachable regardless
 		return true
 	}
-	ipv4Address, err := addr.ValueForProtocol(multiaddr.P_IP4)
 
-	ip := net.ParseIP(ipv4Address)
-	return !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalMulticast() && !ip.IsLinkLocalUnicast() && err == nil
+	// Check IPv4 address
+	ipv4Address, err := addr.ValueForProtocol(multiaddr.P_IP4)
+	if err == nil {
+		ip := net.ParseIP(ipv4Address)
+		return ip != nil && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalMulticast() && !ip.IsLinkLocalUnicast()
+	}
+
+	// Check IPv6 address
+	ipv6Address, err := addr.ValueForProtocol(multiaddr.P_IP6)
+	if err == nil {
+		ip := net.ParseIP(ipv6Address)
+		return ip != nil && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalMulticast() && !ip.IsLinkLocalUnicast()
+	}
+
+	return false
 }
 
 func isCircuitAddr(addr multiaddr.Multiaddr) bool {
