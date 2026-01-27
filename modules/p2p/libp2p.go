@@ -135,7 +135,7 @@ func (p2pServer *P2PServer) Init() error {
 
 	bootstrapPeers := []peer.AddrInfo{}
 	//fill it up from system config
-	for _, peerStr := range p2pServer.systemConfig.BootstrapPeers() {
+	for _, peerStr := range p2pServer.GetBootnodes() {
 		peerId, err := peer.AddrInfoFromString(peerStr)
 		if err != nil {
 			fmt.Println("Error parsing bootstrap peer:", peerStr, err)
@@ -306,7 +306,7 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 	uniquePeers := make(map[string]struct{})
 
 	if !p2ps.systemConfig.OnMocknet() {
-		for _, peerStr := range p2ps.systemConfig.BootstrapPeers() {
+		for _, peerStr := range p2ps.GetBootnodes() {
 			peerId, _ := peer.AddrInfoFromString(peerStr)
 			err := p2ps.host.Connect(context.Background(), *peerId)
 			if err == nil {
@@ -376,6 +376,14 @@ func (pg *P2PServer) GetPeerAddrs() []multiaddr.Multiaddr {
 
 func (p2p *P2PServer) GetStatus() network.Reachability {
 	return p2p.reachabilityStatus
+}
+
+func (p2p *P2PServer) GetBootnodes() []string {
+	confNodes := p2p.config.Get().Bootnodes
+	if len(confNodes) > 0 {
+		return confNodes
+	}
+	return p2p.systemConfig.BootstrapPeers()
 }
 
 func (p2p *P2PServer) BroadcastCidWithContext(ctx context.Context, cid cid.Cid) error {
@@ -564,7 +572,7 @@ func (p2p *P2PServer) discoverPeers() {
 	fmt.Println("Discovering peers...")
 	if len(p2p.host.Network().Peers()) < 2 {
 		if !p2p.systemConfig.OnMocknet() {
-			for _, peerStr := range p2p.systemConfig.BootstrapPeers() {
+			for _, peerStr := range p2p.GetBootnodes() {
 				peerId, _ := peer.AddrInfoFromString(peerStr)
 
 				p2p.host.Connect(context.Background(), *peerId)
