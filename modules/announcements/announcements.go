@@ -13,6 +13,7 @@ import (
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
 	systemconfig "vsc-node/modules/common/system-config"
+	p2p "vsc-node/modules/p2p"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/minio/sha256-simd"
@@ -226,7 +227,9 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 	peerAddrs := make([]string, 0)
 
 	for _, addr := range a.peerInfo.GetPeerAddrs() {
-		peerAddrs = append(peerAddrs, addr.String())
+		if p2p.IsPublicAddr(addr) {
+			peerAddrs = append(peerAddrs, addr.String())
+		}
 	}
 
 	enabled := a.sconf.OnTestnet() || int(a.peerInfo.GetStatus()) == int(network.ReachabilityPublic)

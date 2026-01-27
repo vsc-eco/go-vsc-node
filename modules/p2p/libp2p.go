@@ -179,7 +179,7 @@ func (p2pServer *P2PServer) Init() error {
 					addrInfo := p2pServer.host.Peerstore().PeerInfo(peer)
 					var goodPeer bool
 					for _, a := range addrInfo.Addrs {
-						if p2pServer.config.Get().AllowPrivate || isPublicAddr(a) {
+						if p2pServer.config.Get().AllowPrivate || IsPublicAddr(a) {
 							goodPeer = true
 						}
 					}
@@ -476,7 +476,7 @@ func (p2p *P2PServer) addrFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multi
 		}
 
 		// Check if we have any public addresses and add both IPv4 and IPv6 listen addresses
-		if p2p.config.Get().AllowPrivate || isPublicAddr(addr) {
+		if p2p.config.Get().AllowPrivate || IsPublicAddr(addr) {
 			// Check for IPv4
 			ipAddr, err := addr.ValueForProtocol(multiaddr.P_IP4)
 			if err == nil {
@@ -539,7 +539,7 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 				continue
 			}
 
-			if p2p.config.Get().AllowPrivate || isPublicAddr(m) {
+			if p2p.config.Get().AllowPrivate || IsPublicAddr(m) {
 				selectedAddr = append(selectedAddr, m.Encapsulate(mp))
 				continue
 			}
