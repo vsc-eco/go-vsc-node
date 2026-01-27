@@ -29,7 +29,7 @@ func (pg *peerGetter) GetStatus() {
 
 // var _ common_types.PeerInfoGetter = &peerGetter{}
 
-func isPublicAddr(addr multiaddr.Multiaddr) bool {
+func IsPublicAddr(addr multiaddr.Multiaddr) bool {
 	// Check IPv4 address
 	ipv4Address, err := addr.ValueForProtocol(multiaddr.P_IP4)
 	if err == nil {
