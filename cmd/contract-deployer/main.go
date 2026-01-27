@@ -24,16 +24,18 @@ func main() {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	identityConfig := common.NewIdentityConfig()
-	hiveConfig := streamer.NewHiveConfig()
+	identityConfig := common.NewIdentityConfig(args.dataDir)
+	hiveConfig := streamer.NewHiveConfig(args.dataDir)
+	p2pConf := p2pInterface.NewConfig(args.dataDir)
 	sysConfig := systemconfig.FromNetwork(args.network)
 	wits := witnesses.NewEmptyWitnesses()
-	p2p := p2pInterface.New(wits, identityConfig, sysConfig, nil)
-	da := datalayer.New(p2p)
+	p2p := p2pInterface.New(wits, p2pConf, identityConfig, sysConfig, nil)
+	da := datalayer.New(p2p, args.dataDir)
 	client := data_availability_client.New(p2p, identityConfig, da)
 
 	plugins := []aggregate.Plugin{
 		identityConfig,
+		p2pConf,
 		hiveConfig,
 		p2p,
 		da,
@@ -93,7 +95,8 @@ func deployNewContract(sysConfig systemconfig.SystemConfig, identityConfig commo
 	wif := identityConfig.Get().HiveActiveKey
 
 	if len(user) > 0 && len(wif) > 0 {
-		hiveClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURI)
+		hiveClient := hivego.NewHiveRpc([]string{hiveConfig.Get().HiveURI})
+		hiveClient.ChainID = sysConfig.HiveChainId()
 
 		tx := stateEngine.TxCreateContract{
 			Version:      "0.1",
@@ -146,7 +149,8 @@ func updateContract(sysConfig systemconfig.SystemConfig, identityConfig common.I
 	wif := identityConfig.Get().HiveActiveKey
 
 	if len(user) > 0 && len(wif) > 0 {
-		hiveClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURI)
+		hiveClient := hivego.NewHiveRpc([]string{hiveConfig.Get().HiveURI})
+		hiveClient.ChainID = sysConfig.HiveChainId()
 
 		tx := stateEngine.TxUpdateContract{
 			NetId:       sysConfig.NetId(),

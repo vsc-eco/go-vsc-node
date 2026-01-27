@@ -6,3 +6,4 @@ modules/oracle/e2e/oracle-test_testnode-*
 !btc-data/bitcoin.conf
 btc-data/*
 .DS_Store
+build

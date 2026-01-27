@@ -61,6 +61,7 @@ type ContractTestCallResult struct {
 func NewContractTest() ContractTest {
 	logr := logger.PrefixedLogger{Prefix: "contract-test"}
 	idConfig := common.NewIdentityConfig()
+	p2pConfig := p2pInterface.NewConfig()
 	sysConfig := systemconfig.MocknetConfig()
 	ledgers := MockLedgerDb{LedgerRecords: make(map[string][]ledgerDb.LedgerRecord)}
 	balances := MockBalanceDb{BalanceRecords: make(map[string][]ledgerDb.BalanceRecord)}
@@ -94,9 +95,9 @@ func NewContractTest() ContractTest {
 		nil,
 	)
 	var blockStatus common_types.BlockStatusGetter
-	p2p := p2pInterface.New(witnessesDb, idConfig, sysConfig, blockStatus)
+	p2p := p2pInterface.New(witnessesDb, p2pConfig, idConfig, sysConfig, blockStatus)
 	dl := datalayer.New(p2p)
-	a := aggregate.New([]aggregate.Plugin{idConfig, p2p, dl})
+	a := aggregate.New([]aggregate.Plugin{idConfig, p2pConfig, p2p, dl})
 	if err := a.Init(); err != nil {
 		panic(err)
 	}

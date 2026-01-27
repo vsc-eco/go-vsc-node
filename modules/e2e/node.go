@@ -96,7 +96,7 @@ const SEED_PREFIX = "MOCK_SEED-"
 func MakeNode(input MakeNodeInput) *Node {
 	dbConf := db.NewDbConfig()
 	db := db.New(dbConf)
-	vscDb := vsc.New(db, input.Username)
+	vscDb := vsc.New(db, "go-vsc-"+input.Username)
 	hiveBlocks := &MockHiveDbs{}
 	vscBlocks := vscBlocks.New(vscDb)
 	witnessesDb := witnesses.New(vscDb)
@@ -119,13 +119,24 @@ func MakeNode(input MakeNodeInput) *Node {
 		Prefix: input.Username,
 	}
 
-	identityConfig := common.NewIdentityConfig("data-" + input.Username + "/config")
+	dataDir := "data-" + input.Username
 
+	sysConfig := systemconfig.MocknetConfig()
+	identityConfig := common.NewIdentityConfig(dataDir)
 	identityConfig.Init()
 	identityConfig.SetUsername(input.Username)
+
+	p2pConfig := p2pInterface.NewConfig(dataDir)
+	p2pConfig.Init()
+	p2pConfig.SetOptions(p2pInterface.P2POpts{
+		Port:         input.Port,
+		ServerMode:   true,
+		AllowPrivate: true,
+	})
 	kp := HashSeed([]byte(SEED_PREFIX + input.Username))
 
-	hiveClient := hivego.NewHiveRpc("https://api.hive.blog")
+	hiveClient := hivego.NewHiveRpc([]string{"https://api.hive.blog"})
+	hiveClient.ChainID = sysConfig.HiveChainId()
 
 	brcst := hive.MockTransactionBroadcaster{
 		KeyPair:  kp,
@@ -139,14 +150,12 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	hrpc := &MockHiveRpcClient{}
 
-	sysConfig := systemconfig.MocknetConfig()
-
 	var blockStatus common_types.BlockStatusGetter = nil
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus, input.Port)
+	p2p := p2pInterface.New(witnessesDb, p2pConfig, identityConfig, sysConfig, blockStatus)
 
 	announcementsManager, _ := announcements.New(hrpc, identityConfig, sysConfig, time.Hour*24, &txCreator, p2p)
 
-	datalayer := DataLayer.New(p2p, input.Username)
+	datalayer := DataLayer.New(p2p, dataDir)
 	wasm := wasm_runtime.New()
 
 	se := stateEngine.New(
@@ -188,7 +197,7 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, 0)
 
-	ds, err := flatfs.CreateOrOpen("data-"+input.Username+"/keys", flatfs.Prefix(1), false)
+	ds, err := flatfs.CreateOrOpen(dataDir+"/keys", flatfs.Prefix(1), false)
 	if err != nil {
 		panic(err)
 	}
@@ -308,14 +317,23 @@ type NodeClient struct {
 }
 
 func MakeClient(input MakeClientInput) NodeClient {
-	identityConfig := common.NewIdentityConfig("data-mock-client/config")
+	dataDir := "data-mock-client"
+	identityConfig := common.NewIdentityConfig(dataDir)
 
 	identityConfig.Init()
 	identityConfig.SetUsername("mock-client")
 
+	p2pConfig := p2pInterface.NewConfig(dataDir)
+	p2pConfig.Init()
+	p2pConfig.SetOptions(p2pInterface.P2POpts{
+		Port:         0,
+		ServerMode:   false,
+		AllowPrivate: true,
+	})
+
 	sysConfig := systemconfig.MocknetConfig()
 	wits := witnesses.NewEmptyWitnesses()
-	p2p := p2pInterface.New(wits, identityConfig, sysConfig, nil, 0)
+	p2p := p2pInterface.New(wits, p2pConfig, identityConfig, sysConfig, nil)
 
 	plugins := make([]aggregate.Plugin, 0)
 	plugins = append(plugins,
