@@ -9,6 +9,7 @@ type p2pConfig struct {
 	Port         int
 	ServerMode   bool
 	AllowPrivate bool
+	Bootnodes    []string
 }
 
 type p2pConfigStruct struct {
@@ -28,9 +29,11 @@ func NewConfig(dataDir ...string) P2PConfig {
 		Port:         10720,
 		ServerMode:   false,
 		AllowPrivate: false,
+		Bootnodes:    []string{},
 	}, dataDirPtr)}
 }
 
+// Set p2p config options **for mocknet/e2e/unit tests only**
 func (pc *p2pConfigStruct) SetOptions(conf p2pConfig) error {
 	if conf.Port < 0 || conf.Port > 65535 {
 		return fmt.Errorf("port must be between 1024 and 65535")
