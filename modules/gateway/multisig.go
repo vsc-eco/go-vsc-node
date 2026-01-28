@@ -398,7 +398,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 			}
 			amt := action.Amount
 
-			op := ms.hiveCreator.Transfer(ms.sconf.GatewayWallet(), to, hive.AmountToString(amt), strings.ToUpper(action.Asset), "Withdrawal from vsc.network")
+			op := ms.hiveCreator.Transfer(ms.sconf.GatewayWallet(), to, hive.AmountToString(amt), ms.toHiveAssetName(action.Asset), "Withdrawal from vsc.network")
 
 			ops = append(ops, op)
 		}
@@ -419,7 +419,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 
 		amtStr := hive.AmountToString(mustStakeBal)
 
-		op := ms.hiveCreator.TransferToSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), amtStr, "HBD", "Staking "+amtStr+" HBD from "+strconv.Itoa(stakeTxCount)+" transactions")
+		op := ms.hiveCreator.TransferToSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), amtStr, ms.toHiveAssetName("hbd"), "Staking "+amtStr+" HBD from "+strconv.Itoa(stakeTxCount)+" transactions")
 
 		ops = append(ops, op)
 	} else if unstakeBal > stakeBal {
@@ -428,7 +428,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 
 		amtStr := hive.AmountToString(mustUnstakeBal)
 
-		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), amtStr, "HBD", "Unstaking "+amtStr+" HBD from "+strconv.Itoa(unstakeTxCount)+" transactions", int(bh))
+		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), amtStr, ms.toHiveAssetName("hbd"), "Unstaking "+amtStr+" HBD from "+strconv.Itoa(unstakeTxCount)+" transactions", int(bh))
 
 		ops = append(ops, op)
 	}
@@ -567,11 +567,11 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 	//Adjust minimums as necessary
 	var ops []hivego.HiveOperation
 	if (hbdToStake > 100_000 || stakedBal < 150_000) && hbdToStake != 0 {
-		op := ms.hiveCreator.TransferToSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), hive.AmountToString(hbdToStake), "HBD", "Staking "+hive.AmountToString(hbdToStake)+" HBD")
+		op := ms.hiveCreator.TransferToSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), hive.AmountToString(hbdToStake), ms.toHiveAssetName("hbd"), "Staking "+hive.AmountToString(hbdToStake)+" HBD")
 
 		ops = append(ops, op)
 	} else if (hbdToUnstake > 10_000 || stakedBal < 10_000) && hbdToUnstake != 0 {
-		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), hive.AmountToString(hbdToUnstake), "HBD", "Unstaking "+hive.AmountToString(hbdToUnstake)+" HBD", int(bh+1))
+		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), hive.AmountToString(hbdToUnstake), ms.toHiveAssetName("hbd"), "Unstaking "+hive.AmountToString(hbdToUnstake)+" HBD", int(bh+1))
 
 		ops = append(ops, op)
 	}
@@ -746,6 +746,22 @@ func (ms *MultiSig) getSigningKp() *hivego.KeyPair {
 
 	kp := hivego.KeyPairFromBytes(gatewayKey[:])
 	return kp
+}
+
+func (ms *MultiSig) toHiveAssetName(asset string) string {
+	// TODO: transition to NAI format instead of strings
+	if ms.sconf.OnTestnet() {
+		switch asset {
+		case "hive":
+			return "TESTS"
+		case "hbd":
+			return "TBD"
+		default:
+			return ""
+		}
+	} else {
+		return strings.ToUpper(asset)
+	}
 }
 
 var _ a.Plugin = &MultiSig{}
