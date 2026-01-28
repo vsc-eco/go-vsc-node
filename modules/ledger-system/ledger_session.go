@@ -85,7 +85,6 @@ func (session *ledgerSession) GetBalance(account string, blockHeight uint64, ass
 	if session.balances[session.key(account, asset)] == nil {
 		bal := session.state.SnapshotForAccount(account, blockHeight, asset)
 		session.balances[session.key(account, asset)] = &bal
-		fmt.Println("Ledger get Current lol")
 	}
 
 	return *session.balances[session.key(account, asset)]

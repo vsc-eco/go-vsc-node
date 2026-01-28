@@ -36,6 +36,12 @@ func randomHex(n int) string {
 	return hex.EncodeToString(bytes)
 }
 
+type TssState struct {
+	Keys        *MockTssKeysDb
+	Commitments *MockTssCommitmentsDb
+	Requests    *MockTssRequestsDb
+}
+
 // Contract testing environment
 type ContractTest struct {
 	BlockHeight   uint64
@@ -44,6 +50,7 @@ type ContractTest struct {
 	CallSession   *contract_session.CallSession
 	StateEngine   *stateEngine.StateEngine
 	DataLayer     *datalayer.DataLayer
+	Tss           TssState
 }
 
 type ContractTestCallResult struct {
@@ -110,6 +117,11 @@ func NewContractTest() ContractTest {
 		CallSession:   contract_session.NewCallSession(dl, &contractDb, &contractState, nil, 0, nil),
 		DataLayer:     dl,
 		StateEngine:   se,
+		Tss: TssState{
+			Keys:        &tssKeys,
+			Commitments: &tssCommitments,
+			Requests:    &tssRequests,
+		},
 	}
 }
 

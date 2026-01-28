@@ -65,7 +65,12 @@ func modCleanup(mod *wasmedge.Module) {
 	mod.Release()
 }
 
-func resultToWasmEdgeResult(runtime wasm_runtime.Runtime, vm *wasmedge.VM, memory *wasmedge.Memory, res result.Result[string]) ([]interface{}, wasmedge.Result) {
+func resultToWasmEdgeResult(
+	runtime wasm_runtime.Runtime,
+	vm *wasmedge.VM,
+	memory *wasmedge.Memory,
+	res result.Result[string],
+) ([]interface{}, wasmedge.Result) {
 	// res.InspectErr(func(err error) {
 	// 	fmt.Println("err:", err)
 	// })
@@ -306,7 +311,12 @@ func readString(runtime wasm_runtime.Runtime, memory *wasmedge.Memory, ptr int32
 	})
 }
 
-func allocString(runtime wasm_runtime.Runtime, vm *wasmedge.VM, memory *wasmedge.Memory, t string) result.Result[int32] {
+func allocString(
+	runtime wasm_runtime.Runtime,
+	vm *wasmedge.VM,
+	memory *wasmedge.Memory,
+	t string,
+) result.Result[int32] {
 	return wasm_runtime.Execute(runtime, wasm_runtime.RuntimeAction[result.Result[int32]]{
 		AssemblyScript: func() result.Result[int32] {
 			return assemblyScriptAllocString(vm, memory, t)
@@ -317,7 +327,16 @@ func allocString(runtime wasm_runtime.Runtime, vm *wasmedge.VM, memory *wasmedge
 	})
 }
 
-func registerImportV2(ctx context.Context, runtime wasm_runtime.Runtime, vm *wasmedge.VM, gas *uint, modname string, funcs []sdkTypes.SdkType, retChan chan wasm_types.WasmResultStruct, importGm *wasmImportGasMeter) *wasmedge.Module {
+func registerImportV2(
+	ctx context.Context,
+	runtime wasm_runtime.Runtime,
+	vm *wasmedge.VM,
+	gas *uint,
+	modname string,
+	funcs []sdkTypes.SdkType,
+	retChan chan wasm_types.WasmResultStruct,
+	importGm *wasmImportGasMeter,
+) *wasmedge.Module {
 	mod := wasmedge.NewModule(modname)
 
 	for _, f := range funcs {
@@ -523,7 +542,13 @@ func executeImport(ctx context.Context, name string, args []any) result.Result[w
 	return result.Ok(*res)
 }
 
-func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args string, runtime wasm_runtime.Runtime) wasm_types.WasmResultStruct {
+func (w *Wasm) Execute(
+	ctx context.Context,
+	gas uint,
+	entrypoint string,
+	args string,
+	runtime wasm_runtime.Runtime,
+) wasm_types.WasmResultStruct {
 	conf := wasmedge.NewConfigure()
 	defer conf.Release()
 	conf.SetStatisticsCostMeasuring(true)
@@ -553,7 +578,12 @@ func (w *Wasm) Execute(ctx context.Context, gas uint, entrypoint string, args st
 		{
 			Name: "abort",
 			Type: sdkTypes.VmType{
-				Parameters: []wasmedge.ValType{wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32, wasmedge.ValType_I32},
+				Parameters: []wasmedge.ValType{
+					wasmedge.ValType_I32,
+					wasmedge.ValType_I32,
+					wasmedge.ValType_I32,
+					wasmedge.ValType_I32,
+				},
 			},
 		},
 		{
