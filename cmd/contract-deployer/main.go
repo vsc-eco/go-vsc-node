@@ -116,6 +116,11 @@ func deployNewContract(sysConfig systemconfig.SystemConfig, identityConfig commo
 		}
 		fmt.Println(string(j))
 
+		currency := "HBD"
+		if sysConfig.OnTestnet() {
+			currency = "TBD"
+		}
+
 		deployOp := hivego.CustomJsonOperation{
 			RequiredAuths:        []string{user},
 			RequiredPostingAuths: []string{},
@@ -125,7 +130,7 @@ func deployNewContract(sysConfig systemconfig.SystemConfig, identityConfig commo
 		feeOp := hivego.TransferOperation{
 			From:   user,
 			To:     sysConfig.GatewayWallet(),
-			Amount: "10.000 HBD",
+			Amount: "10.000 " + currency,
 			Memo:   "",
 		}
 
@@ -174,6 +179,11 @@ func updateContract(sysConfig systemconfig.SystemConfig, identityConfig common.I
 		}
 		fmt.Println(string(j))
 
+		currency := "HBD"
+		if sysConfig.OnTestnet() {
+			currency = "TBD"
+		}
+
 		updateOp := hivego.CustomJsonOperation{
 			RequiredAuths:        []string{user},
 			RequiredPostingAuths: []string{},
@@ -183,7 +193,7 @@ func updateContract(sysConfig systemconfig.SystemConfig, identityConfig common.I
 		feeOp := hivego.TransferOperation{
 			From:   user,
 			To:     sysConfig.GatewayWallet(),
-			Amount: "10.000 HBD",
+			Amount: "10.000 " + currency,
 			Memo:   "",
 		}
 		ops := []hivego.HiveOperation{updateOp}
