@@ -331,6 +331,21 @@ func (ctx *contractExecutionContext) DeleteState(key string) result.Result[struc
 	return result.Ok(struct{}{})
 }
 
+func (ctx *contractExecutionContext) GetEphemState(contractId string, key string) result.Result[string] {
+	res := ctx.callSession.GetStateStore(contractId).GetEphem(key)
+	return result.Ok(string(res))
+}
+
+func (ctx *contractExecutionContext) SetEphemState(key string, value string) result.Result[struct{}] {
+	ctx.callSession.GetStateStore(ctx.env.ContractId).SetEphem(key, []byte(value))
+	return result.Ok(struct{}{})
+}
+
+func (ctx *contractExecutionContext) DeleteEphemState(key string) result.Result[struct{}] {
+	ctx.callSession.GetStateStore(ctx.env.ContractId).DeleteEphem(key)
+	return result.Ok(struct{}{})
+}
+
 func (ctx *contractExecutionContext) GetBalance(account string, asset string) int64 {
 	getBal := ctx.ledger.GetBalance(account, ctx.env.BlockHeight, asset)
 

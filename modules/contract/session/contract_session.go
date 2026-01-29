@@ -218,8 +218,8 @@ type ContractSession struct {
 	deletions   map[string]bool
 	stateMerkle string
 	state       *StateStore
-	logs        []string
 
+	logs   []string
 	tssOps []tss_db.TssOp
 }
 
@@ -297,6 +297,9 @@ type StateStore struct {
 	datalayer *datalayer.DataLayer
 	databin   *datalayer.DataBin
 	cs        *ContractSession
+
+	// ephemeral state that only exists throughout the transaction
+	ephem map[string][]byte
 }
 
 type stateKeyDiff struct {
@@ -343,6 +346,26 @@ func (ss *StateStore) Set(key string, value []byte) {
 func (ss *StateStore) Delete(key string) {
 	delete(ss.cache, key)
 	ss.deletions[key] = true
+}
+
+func (ss *StateStore) GetEphem(key string) []byte {
+	return ss.ephem[key]
+}
+
+func (ss *StateStore) SetEphem(key string, value []byte) {
+	ss.ephem[key] = value
+}
+
+func (ss *StateStore) DeleteEphem(key string) {
+	delete(ss.ephem, key)
+}
+
+func (ss *StateStore) ClearEphem() {
+	ss.ephem = make(map[string][]byte)
+}
+
+func (ss *StateStore) EphemGetAll() map[string][]byte {
+	return maps.Clone(ss.ephem)
 }
 
 func (ss *StateStore) Commit() {
