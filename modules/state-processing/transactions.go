@@ -255,12 +255,7 @@ func (tx TxVSCTransfer) TxSelf() TxSelf {
 
 func (tx TxVSCTransfer) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
 	if tx.NetId != se.SystemConfig().NetId() {
-		fmt.Println("Invalid network id:", tx.NetId, se.SystemConfig().NetId())
-		// return TxResult{
-		// 	Success: false,
-		// 	Ret:     "Invalid network id",
-		// 	RcUsed:  50,
-		// }
+		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
 	if tx.To == "" || tx.From == "" {
 		return TxResult{
@@ -358,13 +353,7 @@ func (tx TxVSCWithdraw) TxSelf() TxSelf {
 // as LedgerExecutor may be called within other contexts, such as the contract executor
 func (t *TxVSCWithdraw) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
 	if t.NetId != se.SystemConfig().NetId() {
-		fmt.Println("Invalid network id:", t.NetId, se.SystemConfig().NetId())
-
-		// return TxResult{
-		// 	Success: false,
-		// 	Ret:     "Invalid network id",
-		// 	RcUsed:  50,
-		// }
+		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
 	if t.To == "" {
 		//Maybe default to self later?
@@ -444,12 +433,7 @@ type TxStakeHbd struct {
 
 func (t *TxStakeHbd) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
 	if t.NetId != se.SystemConfig().NetId() {
-		fmt.Println("Invalid network id:", t.NetId, se.SystemConfig().NetId())
-
-		// return TxResult{
-		// 	Success: false,
-		// 	Ret:     "Invalid network id",
-		// }
+		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
 	if t.To == "" || t.From == "" {
 		return TxResult{
@@ -531,15 +515,8 @@ type TxUnstakeHbd struct {
 }
 
 func (t *TxUnstakeHbd) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
-	se.Log().Debug("TxUnstakeHbd", t.Self.BlockHeight, t.Self.TxId, t.Self.OpIndex, t.NetId, se.SystemConfig().NetId())
 	if t.NetId != se.SystemConfig().NetId() {
-		fmt.Println("Invalid network id:", t.NetId, se.SystemConfig().NetId())
-
-		// return TxResult{
-		// 	Success: false,
-		// 	Ret:     "Invalid network id",
-		// 	RcUsed:  50,
-		// }
+		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
 	if t.To == "" || t.From == "" {
 		return TxResult{
@@ -634,13 +611,7 @@ type TxConsensusStake struct {
 
 func (tx *TxConsensusStake) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
 	if tx.NetId != se.SystemConfig().NetId() {
-		fmt.Println("Invalid network id:", tx.NetId, se.SystemConfig().NetId())
-
-		// return TxResult{
-		// 	Success: false,
-		// 	Ret:     "Invalid network id",
-		// 	RcUsed:  50,
-		// }
+		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
 
 	if tx.To == "" || tx.From == "" {
@@ -725,13 +696,7 @@ type TxConsensusUnstake struct {
 
 func (tx *TxConsensusUnstake) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
 	if tx.NetId != se.SystemConfig().NetId() {
-		fmt.Println("Invalid network id:", tx.NetId, se.SystemConfig().NetId())
-
-		// return TxResult{
-		// 	Success: false,
-		// 	Ret:     "Invalid network id",
-		// 	RcUsed:  50,
-		// }
+		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
 
 	if tx.To == "" || tx.From == "" {
