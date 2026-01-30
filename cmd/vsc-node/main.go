@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path"
 	"time"
 
 	cbortypes "vsc-node/lib/cbor-types"
@@ -48,20 +49,24 @@ import (
 
 func main() {
 	cbortypes.RegisterTypes()
-	init := os.Args[len(os.Args)-1] == "--init"
-	dbConf := db.NewDbConfig()
-	hiveApiUrl := streamer.NewHiveConfig()
+	args, err := ParseArgs()
+	if err != nil {
+		fmt.Println("Error parsing arguments:", err)
+		os.Exit(1)
+	}
+	dbConf := db.NewDbConfig(args.dataDir)
+	p2pConf := p2pInterface.NewConfig(args.dataDir)
+	hiveApiUrl := streamer.NewHiveConfig(args.dataDir)
 	hiveApiUrlErr := hiveApiUrl.Init()
+	hiveURI := hiveApiUrl.Get().HiveURI
 
-	// hiveURI := hiveApiUrl.Get().HiveURI
-	hiveURI := "https://hive-api.3speak.tv"
-
+	fmt.Println("Network:", args.network)
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
 	fmt.Println("HIVE_API", hiveURI)
 	fmt.Println("Git Commit", announcements.GitCommit)
 
 	dbImpl := db.New(dbConf)
-	vscDb := vsc.New(dbImpl)
+	vscDb := vsc.New(dbImpl, args.dbName)
 	reindexDb := db.NewReindex(vscDb.DbInstance)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)
@@ -80,6 +85,7 @@ func main() {
 	tssKeys := tss_db.NewKeys(vscDb)
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
+	sysConfig := systemconfig.FromNetwork(args.network)
 
 	if err != nil {
 		fmt.Println("error is", err)
@@ -90,7 +96,8 @@ func main() {
 	}
 
 	// choose the source
-	hiveRpcClient := hivego.NewHiveRpc(hiveURI)
+	hiveRpcClient := hivego.NewHiveRpc([]string{hiveURI})
+	hiveRpcClient.ChainID = sysConfig.HiveChainId()
 
 	filters := []streamer.FilterFunc{filter}
 	//Default filter don't filter anything
@@ -100,16 +107,10 @@ func main() {
 		},
 	}
 
-	stBlock := uint64(94601000)
-	streamerPlugin := streamer.NewStreamer(
-		hiveRpcClient,
-		hiveBlocks,
-		filters,
-		vFilters,
-		&stBlock,
-	) // optional starting block #
+	stBlock := sysConfig.StartHeight()
+	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
 
-	identityConfig := common.NewIdentityConfig()
+	identityConfig := common.NewIdentityConfig(args.dataDir)
 
 	hiveCreator := hive.LiveTransactionCreator{
 		TransactionCrafter: hive.TransactionCrafter{},
@@ -119,11 +120,9 @@ func main() {
 		},
 	}
 
-	sysConfig := systemconfig.MainnetConfig()
-
 	//Set below from vstream
 	var blockStatus common_types.BlockStatusGetter = nil
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus)
+	p2p := p2pInterface.New(witnessesDb, p2pConf, identityConfig, sysConfig, blockStatus)
 
 	announcementsManager, err := announcements.New(
 		hiveRpcClient,
@@ -140,7 +139,7 @@ func main() {
 
 	wasm := wasm_runtime.New()
 
-	da := datalayer.New(p2p)
+	da := datalayer.New(p2p, args.dataDir)
 
 	dataAvailability := data_availability.New(p2p, identityConfig, da)
 
@@ -189,22 +188,8 @@ func main() {
 		blockConsumer,
 	)
 
-	bp := blockproducer.New(
-		l,
-		p2p,
-		blockConsumer,
-		se,
-		identityConfig,
-		sysConfig,
-		&hiveCreator,
-		da,
-		electionDb,
-		vscBlocks,
-		txDb,
-		rcSystem,
-		nonceDb,
-	)
-	oracle := oracle.New(p2p, identityConfig, electionDb, witnessDb, blockConsumer, se)
+	bp := blockproducer.New(l, p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
+	oracle := oracle.New(p2p, identityConfig, sysConfig, electionDb, witnessDb, blockConsumer, se)
 
 	multisig := gateway.New(
 		l,
@@ -225,7 +210,7 @@ func main() {
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
 
-	flatDb, err := flatfs.CreateOrOpen("data/tss-keys", flatfs.Prefix(1), false)
+	flatDb, err := flatfs.CreateOrOpen(path.Join(args.dataDir, "tss-keys"), flatfs.Prefix(1), false)
 	if err != nil {
 		panic(err)
 	}
@@ -261,13 +246,14 @@ func main() {
 		ContractsState: contractState,
 		TssKeys:        tssKeys,
 		TssRequests:    tssRequests,
-	}}), "0.0.0.0:8080")
+	}}), args.gqlHost)
 
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
 		//Configuration init
 		dbConf,
+		p2pConf,
 		identityConfig,
 
 		//DB plugin initialization
@@ -322,7 +308,7 @@ func main() {
 		plugins,
 	)
 
-	if init {
+	if args.isInit {
 		fmt.Println("initing")
 		err = a.Init()
 	} else {

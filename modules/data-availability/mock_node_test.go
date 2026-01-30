@@ -54,25 +54,35 @@ func MakeNode(input MakeNodeInput) *Node {
 	input.Username = "e2e-" + input.Username
 	dbConf := db.NewDbConfig()
 	db := db.New(dbConf)
-	vscDb := vsc.New(db, input.Username)
+	vscDb := vsc.New(db, "go-vsc-"+input.Username)
 	witnessesDb := witnesses.New(vscDb)
 
 	// logger := logger.PrefixedLogger{
 	// 	Prefix: input.Username,
 	// }
 
-	identityConfig := common.NewIdentityConfig("data-" + input.Username + "/config")
+	dataDir := "data-" + input.Username
+
+	identityConfig := common.NewIdentityConfig(dataDir)
 
 	identityConfig.Init()
 	identityConfig.SetUsername(input.Username)
 
+	p2pConfig := p2pInterface.NewConfig(dataDir)
+	p2pConfig.Init()
+	p2pConfig.SetOptions(p2pInterface.P2POpts{
+		Port:         7001 + nodeCount,
+		ServerMode:   !input.Client,
+		AllowPrivate: true,
+		Bootnodes:    []string{},
+	})
+	nodeCount++
+
 	sysConfig := systemconfig.MocknetConfig()
 
-	port := 7001 + nodeCount
-	nodeCount++
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, nil, port)
+	p2p := p2pInterface.New(witnessesDb, p2pConfig, identityConfig, sysConfig, nil)
 
-	datalayer := DataLayer.New(p2p, input.Username)
+	datalayer := DataLayer.New(p2p, dataDir)
 
 	// key, err := identityConfig.Libp2pPrivateKey()
 	// if err != nil {
