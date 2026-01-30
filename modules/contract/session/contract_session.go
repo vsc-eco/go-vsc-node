@@ -147,6 +147,17 @@ func (cs *CallSession) AppendTssLog(contractId string, op tss_db.TssOp) {
 	session.tssOps = append(session.tssOps, op)
 }
 
+// Clear ephemeral contract state. Used in contract tests only.
+func (cs *CallSession) ClearEphemState(contractId ...string) {
+	if len(contractId) > 0 {
+		cs.GetStateStore(contractId[0]).ClearEphem()
+	} else {
+		for _, c := range cs.sessions {
+			c.GetStateStore().ClearEphem()
+		}
+	}
+}
+
 // pulls (and removes) the latest in-memory temp output for a contract
 // so the session can read the freshest state of the slot before hitting the DB.
 func (cs *CallSession) takePending(contractId string) *TempOutput {
@@ -415,6 +426,7 @@ func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) *S
 			datalayer: dl,
 			databin:   &databin,
 			cs:        cs,
+			ephem:     make(map[string][]byte),
 		}
 	} else {
 		cidz := cid.MustParse(cids)
@@ -426,6 +438,7 @@ func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) *S
 			datalayer: dl,
 			databin:   &databin,
 			cs:        cs,
+			ephem:     make(map[string][]byte),
 		}
 	}
 }
