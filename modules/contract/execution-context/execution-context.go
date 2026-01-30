@@ -332,7 +332,11 @@ func (ctx *contractExecutionContext) DeleteState(key string) result.Result[struc
 }
 
 func (ctx *contractExecutionContext) GetEphemState(contractId string, key string) result.Result[string] {
-	res := ctx.callSession.GetStateStore(contractId).GetEphem(key)
+	c := contractId
+	if c == "" {
+		c = ctx.env.ContractId
+	}
+	res := ctx.callSession.GetStateStore(c).GetEphem(key)
 	return result.Ok(string(res))
 }
 

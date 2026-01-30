@@ -294,6 +294,26 @@ func (ct *ContractTest) StateDelete(contractId string, key string) {
 	ct.CallSession.Commit()
 }
 
+// Set the value of a key in the ephemeral contract state
+func (ct *ContractTest) EphemStateSet(contractId string, key string, value string) {
+	ct.CallSession.GetStateStore(contractId).SetEphem(key, []byte(value))
+}
+
+// Retrieve the value of a key from the ephemeral contract state
+func (ct *ContractTest) EphemStateGet(contractId string, key string) string {
+	return string(ct.CallSession.GetStateStore(contractId).GetEphem(key))
+}
+
+// Unset the value of a key in the ephemeral contract state
+func (ct *ContractTest) EphemStateDelete(contractId string, key string) {
+	ct.CallSession.GetStateStore(contractId).DeleteEphem(key)
+}
+
+// Clear the ephemeral state of the contract if contract ID specified, or entire call session otherwise
+func (ct *ContractTest) EphemStateClear(contractId ...string) {
+	ct.CallSession.ClearEphemState(contractId...)
+}
+
 func (ct *ContractTest) executeLedgerOpLogs(ledgerOps []ledgerSystem.OpLogEvent, startBlock uint64, endBlock uint64) {
 	ct.StateEngine.LedgerState.Flush()
 	ct.StateEngine.Flush()

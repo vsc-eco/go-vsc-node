@@ -105,6 +105,60 @@ var SdkModule = map[string]sdkFunc{
 			},
 		)
 	},
+	"ephem_db.get_object": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+		contractId, ok := arg1.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		key, ok := arg2.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		return result.Map(
+			eCtx.GetEphemState(contractId, key),
+			func(s string) SdkResultStruct {
+				return SdkResultStruct{
+					Result: s,
+					Gas:    uint(params.EPHEM_IO_GAS * (len(key) + len(s))),
+				}
+			},
+		)
+	},
+	"ephem_db.set_object": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+		key, ok := arg1.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		val, ok := arg2.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		return result.Map(
+			eCtx.SetEphemState(key, val),
+			func(struct{}) SdkResultStruct {
+				return SdkResultStruct{
+					Gas: uint(params.EPHEM_IO_GAS * (len(key) + len(val))),
+				}
+			},
+		)
+	},
+	"ephem_db.rm_object": func(ctx context.Context, a any) SdkResult {
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+		key, ok := a.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		return result.Map(
+			eCtx.DeleteEphemState(key),
+			func(struct{}) SdkResultStruct {
+				return SdkResultStruct{
+					Gas: uint(params.EPHEM_IO_GAS * len(key)),
+				}
+			},
+		)
+	},
 	"system.call": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
 		/*eCtx :*/ _ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 		callArg, ok := arg1.(string)

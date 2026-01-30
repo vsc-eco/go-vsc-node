@@ -67,6 +67,7 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 		Port:         22222 + index,
 		ServerMode:   true,
 		AllowPrivate: true,
+		Bootnodes:    []string{},
 	})
 	dbConf := db.NewDbConfig()
 	csonf := systemconfig.MocknetConfig()

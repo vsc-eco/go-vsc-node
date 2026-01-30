@@ -74,6 +74,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		Port:         7001 + nodeCount,
 		ServerMode:   !input.Client,
 		AllowPrivate: true,
+		Bootnodes:    []string{},
 	})
 	nodeCount++
 

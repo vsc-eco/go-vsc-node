@@ -132,6 +132,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		Port:         input.Port,
 		ServerMode:   true,
 		AllowPrivate: true,
+		Bootnodes:    []string{},
 	})
 	kp := HashSeed([]byte(SEED_PREFIX + input.Username))
 
@@ -329,6 +330,7 @@ func MakeClient(input MakeClientInput) NodeClient {
 		Port:         0,
 		ServerMode:   false,
 		AllowPrivate: true,
+		Bootnodes:    []string{},
 	})
 
 	sysConfig := systemconfig.MocknetConfig()

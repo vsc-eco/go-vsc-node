@@ -24,6 +24,15 @@ func stateGetObject(key *string) *string
 //go:wasmimport sdk db.rm_object
 func stateDeleteObject(key *string) *string
 
+//go:wasmimport sdk ephem_db.set_object
+func ephemStateSetObject(key *string, value *string) *string
+
+//go:wasmimport sdk ephem_db.get_object
+func ephemStateGetObject(contractId *string, key *string) *string
+
+//go:wasmimport sdk ephem_db.rm_object
+func ephemStateDeleteObject(key *string) *string
+
 //go:wasmimport sdk system.get_env
 func getEnv(arg *string) *string
 
@@ -88,6 +97,21 @@ func StateGetObject(key string) *string {
 // Delete or unset a value by key in the contract state
 func StateDeleteObject(key string) {
 	stateDeleteObject(&key)
+}
+
+// Set a value by key in the ephemeral contract state
+func EphemStateSetObject(key string, value string) {
+	ephemStateSetObject(&key, &value)
+}
+
+// Get a value by key from the ephemeral contract state
+func EphemStateGetObject(contractId string, key string) *string {
+	return ephemStateGetObject(&contractId, &key)
+}
+
+// Delete or unset a value by key in the ephemeral contract state
+func EphemStateDeleteObject(key string) {
+	ephemStateDeleteObject(&key)
 }
 
 // Get current execution environment variables

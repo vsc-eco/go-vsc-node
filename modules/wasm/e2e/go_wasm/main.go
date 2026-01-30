@@ -33,6 +33,12 @@ func TestStatePut(arg *string) *string {
 		sdk.Abort("invalid state access")
 	}
 
+	sdk.EphemStateSetObject("tempkey", "tempvalue")
+	tempVal := sdk.EphemStateGetObject("", "tempkey")
+	if *tempVal != "tempvalue" {
+		sdk.Abort("invalid ephem state access")
+	}
+
 	sdk.Log("hello world")
 
 	bytes, _ := tinyjson.Marshal(env)
@@ -43,6 +49,7 @@ func TestStatePut(arg *string) *string {
 
 // - Access Saved State
 // - Delete a saved key
+// - Verify non-existence of ephemeral state
 //
 //go:wasmexport test2
 func TestStateGetModify(arg *string) *string {
@@ -65,11 +72,18 @@ func TestStateGetModify(arg *string) *string {
 		sdk.Abort("invalid state access")
 	}
 
+	tempVal := sdk.EphemStateGetObject("", "tempkey")
+	if *tempVal == "tempvalue" {
+		sdk.Abort("ephem state should be empty at start of new tx")
+	}
+
 	return &ret
 }
 
 // - Draw user balance to contract
 // - Verify pulled balance
+// - Verify ephemeral state
+// - Runs after test1 and createKey
 //
 //go:wasmexport test3
 func TestTokenDraw(arg *string) *string {
@@ -87,6 +101,11 @@ func TestTokenDraw(arg *string) *string {
 	sdk.Log("test3: step 4")
 	balStr := strconv.FormatInt(bal, 10)
 	ret := "bal: " + balStr
+
+	tempVal := sdk.EphemStateGetObject("", "tempkey")
+	if *tempVal != "tempvalue" {
+		sdk.Abort("incorrect ephem state access")
+	}
 
 	return &ret
 }
@@ -161,6 +180,32 @@ func GetString(a *string) *string {
 //go:wasmexport clearString
 func ClearString(a *string) *string {
 	sdk.StateDeleteObject(*a)
+	return nil
+}
+
+//go:wasmexport getEphemStr
+func EphemGetStr(a *string) *string {
+	params := strings.Split((*a), ",")
+	if len(params) < 2 {
+		return sdk.EphemStateGetObject("", params[0])
+	} else {
+		return sdk.EphemStateGetObject(params[0], params[1])
+	}
+}
+
+//go:wasmexport setEphemStr
+func EphemSetStr(a *string) *string {
+	params := strings.Split((*a), ",")
+	if len(params) < 2 {
+		sdk.Abort("invalid payload")
+	}
+	sdk.EphemStateSetObject(params[0], params[1])
+	return a
+}
+
+//go:wasmexport clearEphemStr
+func EphemClearStr(a *string) *string {
+	sdk.EphemStateDeleteObject(*a)
 	return nil
 }
 

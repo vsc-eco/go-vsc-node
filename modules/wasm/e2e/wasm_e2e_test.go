@@ -169,6 +169,18 @@ func TestContractTestUtil(t *testing.T) {
 	assert.Equal(t, ct.StateGet(contractId, "myString2"), "")
 	assert.True(t, clearStr.StateDiff[contractId].Deletions["myString2"])
 
+	ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "setEphemStr",
+		Payload:    json.RawMessage([]byte("foo,bar")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.Equal(t, ct.EphemStateGet(contractId, "foo"), "bar")
+	ct.EphemStateClear()
+	assert.Equal(t, ct.EphemStateGet(contractId, "foo"), "")
+
 	icGetStr := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId2,
