@@ -162,7 +162,10 @@ func (db *DataBin) Set(path string, link cid.Cid) error {
 func (db *DataBin) Get(path string) (*cid.Cid, error) {
 	splitPath := strings.Split(path, "/")
 
-	wrkDir, _ := db.resolveWrkDir(strings.Join(splitPath[:len(splitPath)-1], "/"))
+	wrkDir, err := db.resolveWrkDir(strings.Join(splitPath[:len(splitPath)-1], "/"))
+	if err != nil {
+		return nil, os.ErrNotExist
+	}
 
 	endPath := splitPath[len(splitPath)-1]
 
