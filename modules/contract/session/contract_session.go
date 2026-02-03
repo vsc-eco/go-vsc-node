@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"vsc-node/lib/datalayer"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/contracts"
 	tss_db "vsc-node/modules/db/vsc/tss"
 
@@ -36,11 +37,19 @@ type CallSession struct {
 	TssKeys tss_db.TssKeys
 
 	// pending carries the temp contract outputs already produced earlier in the slot.
-	pending map[string]*TempOutput
+	pending           map[string]*TempOutput
+	senderTokenLimits map[string]*int64
 }
 
 // Create a new contract call session for a transaction.
-func NewCallSession(dl *datalayer.DataLayer, contractDb contracts.Contracts, stateDb contracts.ContractState, tssKeys tss_db.TssKeys, lastBh uint64, pending map[string]*TempOutput) *CallSession {
+func NewCallSession(
+	dl *datalayer.DataLayer,
+	contractDb contracts.Contracts,
+	stateDb contracts.ContractState,
+	tssKeys tss_db.TssKeys,
+	lastBh uint64,
+	pending map[string]*TempOutput,
+) *CallSession {
 	return &CallSession{
 		dl:         dl,
 		contractDb: contractDb,
@@ -48,7 +57,10 @@ func NewCallSession(dl *datalayer.DataLayer, contractDb contracts.Contracts, sta
 		lastBh:     lastBh,
 		sessions:   make(map[string]*ContractSession),
 		TssKeys:    tssKeys,
-		pending:    cloneTempOutputs(pending), // Copy temp outputs so mutations here never leak back to the caller.
+		pending: cloneTempOutputs(
+			pending,
+		), // Copy temp outputs so mutations here never leak back to the caller.
+		senderTokenLimits: make(map[string]*int64),
 	}
 }
 
@@ -204,7 +216,9 @@ func (cs *CallSession) GetStateDiff() map[string]StateDiff {
 func (cs *CallSession) GetContractFromDb(contractId string, height uint64) result.Result[ContractWithCode] {
 	info, err := cs.contractDb.ContractById(contractId, height)
 	if err == mongo.ErrNoDocuments {
-		return result.Err[ContractWithCode](errors.Join(fmt.Errorf(contracts.IC_CONTRT_NOT_FND), fmt.Errorf("contract not found")))
+		return result.Err[ContractWithCode](
+			errors.Join(fmt.Errorf(contracts.IC_CONTRT_NOT_FND), fmt.Errorf("contract not found")),
+		)
 	} else if err != nil {
 		return result.Err[ContractWithCode](errors.Join(fmt.Errorf(contracts.IC_CONTRT_GET_ERR), err))
 	}
@@ -218,6 +232,55 @@ func (cs *CallSession) GetContractFromDb(contractId string, height uint64) resul
 	}
 	code := node.RawData()
 	return result.Ok(ContractWithCode{info, code})
+}
+
+// InitializeSenderLimits sets up the sender's token limits from intents.
+// This should be called once at the start of the transaction.
+func (cs *CallSession) InitializeSenderLimits(senderIntents []contracts.Intent) {
+	// Only initialize if not already set
+	if len(cs.senderTokenLimits) > 0 {
+		return
+	}
+
+	seenTypes := make(map[string]bool)
+	for _, intent := range senderIntents {
+		if intent.Type == "transfer.allow" {
+			limit, ok := intent.Args["limit"]
+			if !ok {
+				continue
+			}
+			token, ok := intent.Args["token"]
+			if !ok {
+				continue
+			}
+			key := intent.Type + "-" + token
+			if seenTypes[key] {
+				continue
+			}
+			seenTypes[key] = true
+			val, _ := common.SafeParseHiveFloat(limit)
+			cs.senderTokenLimits[token] = &val
+		}
+	}
+}
+
+// GetSenderTokenLimit returns the remaining limit for a token, or nil if no limit exists
+func (cs *CallSession) GetSenderTokenLimit(token string) *int64 {
+	return cs.senderTokenLimits[token]
+}
+
+// DecrementSenderTokenLimit reduces the sender's token limit by the specified amount
+// Returns error if limit doesn't exist or would be exceeded
+func (cs *CallSession) DecrementSenderTokenLimit(token string, amount int64) error {
+	limit, ok := cs.senderTokenLimits[token]
+	if !ok {
+		return fmt.Errorf("no sender intent for token: %s", token)
+	}
+	if amount > *limit {
+		return fmt.Errorf("amount (%d) exceeds remaining sender limit (%d) for token: %s", amount, *limit, token)
+	}
+	*limit -= amount
+	return nil
 }
 
 // Session for a contract
