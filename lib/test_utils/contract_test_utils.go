@@ -61,6 +61,7 @@ type ContractTestCallResult struct {
 func NewContractTest() ContractTest {
 	logr := logger.PrefixedLogger{Prefix: "contract-test"}
 	idConfig := common.NewIdentityConfig()
+	p2pConfig := p2pInterface.NewConfig()
 	sysConfig := systemconfig.MocknetConfig()
 	ledgers := MockLedgerDb{LedgerRecords: make(map[string][]ledgerDb.LedgerRecord)}
 	balances := MockBalanceDb{BalanceRecords: make(map[string][]ledgerDb.BalanceRecord)}
@@ -94,9 +95,9 @@ func NewContractTest() ContractTest {
 		nil,
 	)
 	var blockStatus common_types.BlockStatusGetter
-	p2p := p2pInterface.New(witnessesDb, idConfig, sysConfig, blockStatus)
+	p2p := p2pInterface.New(witnessesDb, p2pConfig, idConfig, sysConfig, blockStatus)
 	dl := datalayer.New(p2p)
-	a := aggregate.New([]aggregate.Plugin{idConfig, p2p, dl})
+	a := aggregate.New([]aggregate.Plugin{idConfig, p2pConfig, p2p, dl})
 	if err := a.Init(); err != nil {
 		panic(err)
 	}
@@ -291,6 +292,26 @@ func (ct *ContractTest) StateGet(contractId string, key string) string {
 func (ct *ContractTest) StateDelete(contractId string, key string) {
 	ct.CallSession.GetStateStore(contractId).Delete(key)
 	ct.CallSession.Commit()
+}
+
+// Set the value of a key in the ephemeral contract state
+func (ct *ContractTest) EphemStateSet(contractId string, key string, value string) {
+	ct.CallSession.GetStateStore(contractId).SetEphem(key, []byte(value))
+}
+
+// Retrieve the value of a key from the ephemeral contract state
+func (ct *ContractTest) EphemStateGet(contractId string, key string) string {
+	return string(ct.CallSession.GetStateStore(contractId).GetEphem(key))
+}
+
+// Unset the value of a key in the ephemeral contract state
+func (ct *ContractTest) EphemStateDelete(contractId string, key string) {
+	ct.CallSession.GetStateStore(contractId).DeleteEphem(key)
+}
+
+// Clear the ephemeral state of the contract if contract ID specified, or entire call session otherwise
+func (ct *ContractTest) EphemStateClear(contractId ...string) {
+	ct.CallSession.ClearEphemState(contractId...)
 }
 
 func (ct *ContractTest) executeLedgerOpLogs(ledgerOps []ledgerSystem.OpLogEvent, startBlock uint64, endBlock uint64) {

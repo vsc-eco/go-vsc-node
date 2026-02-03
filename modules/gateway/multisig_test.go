@@ -294,7 +294,7 @@ func TestMultisigKeys(t *testing.T) {
 	// 	},
 	// }
 
-	client := hivego.NewHiveRpc("https://api.hive.blog")
+	client := hivego.NewHiveRpc([]string{"https://api.hive.blog"})
 
 	accounts, _ := client.GetAccount([]string{"vsc.go-testnet"})
 	account := accounts[0]

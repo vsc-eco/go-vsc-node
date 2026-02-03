@@ -147,6 +147,17 @@ func (cs *CallSession) AppendTssLog(contractId string, op tss_db.TssOp) {
 	session.tssOps = append(session.tssOps, op)
 }
 
+// Clear ephemeral contract state. Used in contract tests only.
+func (cs *CallSession) ClearEphemState(contractId ...string) {
+	if len(contractId) > 0 {
+		cs.GetStateStore(contractId[0]).ClearEphem()
+	} else {
+		for _, c := range cs.sessions {
+			c.GetStateStore().ClearEphem()
+		}
+	}
+}
+
 // pulls (and removes) the latest in-memory temp output for a contract
 // so the session can read the freshest state of the slot before hitting the DB.
 func (cs *CallSession) takePending(contractId string) *TempOutput {
@@ -218,8 +229,8 @@ type ContractSession struct {
 	deletions   map[string]bool
 	stateMerkle string
 	state       *StateStore
-	logs        []string
 
+	logs   []string
 	tssOps []tss_db.TssOp
 }
 
@@ -297,6 +308,9 @@ type StateStore struct {
 	datalayer *datalayer.DataLayer
 	databin   *datalayer.DataBin
 	cs        *ContractSession
+
+	// ephemeral state that only exists throughout the transaction
+	ephem map[string][]byte
 }
 
 type stateKeyDiff struct {
@@ -343,6 +357,26 @@ func (ss *StateStore) Set(key string, value []byte) {
 func (ss *StateStore) Delete(key string) {
 	delete(ss.cache, key)
 	ss.deletions[key] = true
+}
+
+func (ss *StateStore) GetEphem(key string) []byte {
+	return ss.ephem[key]
+}
+
+func (ss *StateStore) SetEphem(key string, value []byte) {
+	ss.ephem[key] = value
+}
+
+func (ss *StateStore) DeleteEphem(key string) {
+	delete(ss.ephem, key)
+}
+
+func (ss *StateStore) ClearEphem() {
+	ss.ephem = make(map[string][]byte)
+}
+
+func (ss *StateStore) EphemGetAll() map[string][]byte {
+	return maps.Clone(ss.ephem)
 }
 
 func (ss *StateStore) Commit() {
@@ -392,6 +426,7 @@ func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) *S
 			datalayer: dl,
 			databin:   &databin,
 			cs:        cs,
+			ephem:     make(map[string][]byte),
 		}
 	} else {
 		cidz := cid.MustParse(cids)
@@ -403,6 +438,7 @@ func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) *S
 			datalayer: dl,
 			databin:   &databin,
 			cs:        cs,
+			ephem:     make(map[string][]byte),
 		}
 	}
 }
