@@ -202,6 +202,8 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		caller = tx.Self.RequiredPostingAuths[0]
 	}
 
+	// fmt.Println("tx intents:", tx.Intents)
+
 	ctxValue := contract_execution_context.New(
 		contract_execution_context.Environment{
 			ContractId:           tx.ContractId,
@@ -216,7 +218,8 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 			RequiredPostingAuths: tx.Self.RequiredPostingAuths,
 			Caller:               caller,
 			Sender:               caller,
-			Intents:              tx.Intents,
+			CallerIntents:        tx.Intents,
+			SenderIntents:        tx.Intents,
 		},
 		int64(tx.RcLimit), tx.RcLimit*params.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
 	)

@@ -60,7 +60,13 @@ func errorToTxResult(err error, RCs int64) TxResult {
 }
 
 // ExecuteTx implements VSCTransaction.
-func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (t TxVscCallContract) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if t.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 100)
 	}
@@ -124,7 +130,8 @@ func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession 
 		RequiredPostingAuths: t.Self.RequiredPostingAuths,
 		Caller:               caller,
 		Sender:               caller,
-		Intents:              t.Intents,
+		CallerIntents:        t.Intents,
+		SenderIntents:        t.Intents,
 	}, int64(gas), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0)
 
 	validUtf8 := utf8.Valid(t.Payload)
@@ -139,7 +146,11 @@ func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession 
 	// string), `payload` will be untouched and errors can be ignored
 	json.Unmarshal([]byte(t.Payload), &payload)
 
-	wasmCtx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(code))
+	wasmCtx := context.WithValue(
+		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
+		wasm_context.WasmExecCodeCtxKey,
+		hex.EncodeToString(code),
+	)
 
 	res := w.Execute(wasmCtx, gas*params.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime)
 
@@ -201,7 +212,13 @@ func (tx TxDeposit) TxSelf() TxSelf {
 	return tx.Self
 }
 
-func (tx TxDeposit) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (tx TxDeposit) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	return TxResult{
 		Success: true,
 		RcUsed:  0,
@@ -253,7 +270,13 @@ func (tx TxVSCTransfer) TxSelf() TxSelf {
 	return tx.Self
 }
 
-func (tx TxVSCTransfer) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (tx TxVSCTransfer) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if tx.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
@@ -265,7 +288,8 @@ func (tx TxVSCTransfer) ExecuteTx(se common_types.StateEngine, ledgerSession led
 		}
 	}
 
-	if (!strings.HasPrefix(tx.To, "did:") && !strings.HasPrefix(tx.To, "hive:")) || (!strings.HasPrefix(tx.From, "did:") && !strings.HasPrefix(tx.From, "hive:")) {
+	if (!strings.HasPrefix(tx.To, "did:") && !strings.HasPrefix(tx.To, "hive:")) ||
+		(!strings.HasPrefix(tx.From, "did:") && !strings.HasPrefix(tx.From, "hive:")) {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
@@ -351,7 +375,13 @@ func (tx TxVSCWithdraw) TxSelf() TxSelf {
 // Note: this function does the work of translating any and all VSC transactions to the ledger compatible formats
 // ledgerExecutor will then do the heavy lifting of executing the input ops
 // as LedgerExecutor may be called within other contexts, such as the contract executor
-func (t *TxVSCWithdraw) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (t *TxVSCWithdraw) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if t.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
@@ -431,7 +461,13 @@ type TxStakeHbd struct {
 	NetId string `json:"net_id"`
 }
 
-func (t *TxStakeHbd) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (t *TxStakeHbd) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if t.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
@@ -514,7 +550,13 @@ type TxUnstakeHbd struct {
 	NetId  string `json:"net_id"`
 }
 
-func (t *TxUnstakeHbd) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (t *TxUnstakeHbd) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if t.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
@@ -609,7 +651,13 @@ type TxConsensusStake struct {
 	NetId  string `json:"net_id"`
 }
 
-func (tx *TxConsensusStake) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (tx *TxConsensusStake) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if tx.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
@@ -630,7 +678,8 @@ func (tx *TxConsensusStake) ExecuteTx(se common_types.StateEngine, ledgerSession
 		}
 	}
 
-	if (strings.HasPrefix(tx.To, "did:") || !strings.HasPrefix(tx.To, "hive:")) || (!strings.HasPrefix(tx.From, "did:") && !strings.HasPrefix(tx.From, "hive:")) {
+	if (strings.HasPrefix(tx.To, "did:") || !strings.HasPrefix(tx.To, "hive:")) ||
+		(!strings.HasPrefix(tx.From, "did:") && !strings.HasPrefix(tx.From, "hive:")) {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
@@ -694,7 +743,13 @@ type TxConsensusUnstake struct {
 	NetId  string `json:"net_id"`
 }
 
-func (tx *TxConsensusUnstake) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (tx *TxConsensusUnstake) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if tx.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
@@ -713,7 +768,8 @@ func (tx *TxConsensusUnstake) ExecuteTx(se common_types.StateEngine, ledgerSessi
 			RcUsed:  50,
 		}
 	}
-	if (strings.HasPrefix(tx.To, "did:") && !strings.HasPrefix(tx.To, "hive:")) || (strings.HasPrefix(tx.From, "did:") || !strings.HasPrefix(tx.From, "hive:")) {
+	if (strings.HasPrefix(tx.To, "did:") && !strings.HasPrefix(tx.To, "hive:")) ||
+		(strings.HasPrefix(tx.From, "did:") || !strings.HasPrefix(tx.From, "hive:")) {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
@@ -1153,7 +1209,13 @@ func (tx *OffchainTransaction) Type() string {
 var _ VscTxContainer = &OffchainTransaction{}
 
 type VSCTransaction interface {
-	ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult
+	ExecuteTx(
+		se common_types.StateEngine,
+		ledgerSession ledgerSystem.LedgerSession,
+		rcSession rcSystem.RcSession,
+		callSession *contract_session.CallSession,
+		rcPayer string,
+	) TxResult
 	TxSelf() TxSelf
 	ToData() map[string]interface{}
 	Type() string

@@ -15,254 +15,7 @@ var (
 	_ tinyjson.Marshaler
 )
 
-func tinyjson223cdf42DecodeContractTemplateSdk(in *jlexer.Lexer, out *Sender) {
-	isTopLevel := in.IsStart()
-	if in.IsNull() {
-		if isTopLevel {
-			in.Consumed()
-		}
-		in.Skip()
-		return
-	}
-	in.Delim('{')
-	for !in.IsDelim('}') {
-		key := in.UnsafeFieldName(false)
-		in.WantColon()
-		if in.IsNull() {
-			in.Skip()
-			in.WantComma()
-			continue
-		}
-		switch key {
-		case "id":
-			out.Address = Address(in.String())
-		case "required_auths":
-			if in.IsNull() {
-				in.Skip()
-				out.RequiredAuths = nil
-			} else {
-				in.Delim('[')
-				if out.RequiredAuths == nil {
-					if !in.IsDelim(']') {
-						out.RequiredAuths = make([]Address, 0, 4)
-					} else {
-						out.RequiredAuths = []Address{}
-					}
-				} else {
-					out.RequiredAuths = (out.RequiredAuths)[:0]
-				}
-				for !in.IsDelim(']') {
-					var v1 Address
-					v1 = Address(in.String())
-					out.RequiredAuths = append(out.RequiredAuths, v1)
-					in.WantComma()
-				}
-				in.Delim(']')
-			}
-		case "required_posting_auths":
-			if in.IsNull() {
-				in.Skip()
-				out.RequiredPostingAuths = nil
-			} else {
-				in.Delim('[')
-				if out.RequiredPostingAuths == nil {
-					if !in.IsDelim(']') {
-						out.RequiredPostingAuths = make([]Address, 0, 4)
-					} else {
-						out.RequiredPostingAuths = []Address{}
-					}
-				} else {
-					out.RequiredPostingAuths = (out.RequiredPostingAuths)[:0]
-				}
-				for !in.IsDelim(']') {
-					var v2 Address
-					v2 = Address(in.String())
-					out.RequiredPostingAuths = append(out.RequiredPostingAuths, v2)
-					in.WantComma()
-				}
-				in.Delim(']')
-			}
-		default:
-			in.SkipRecursive()
-		}
-		in.WantComma()
-	}
-	in.Delim('}')
-	if isTopLevel {
-		in.Consumed()
-	}
-}
-func tinyjson223cdf42EncodeContractTemplateSdk(out *jwriter.Writer, in Sender) {
-	out.RawByte('{')
-	first := true
-	_ = first
-	{
-		const prefix string = ",\"id\":"
-		out.RawString(prefix[1:])
-		out.String(string(in.Address))
-	}
-	{
-		const prefix string = ",\"required_auths\":"
-		out.RawString(prefix)
-		if in.RequiredAuths == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
-			out.RawString("null")
-		} else {
-			out.RawByte('[')
-			for v3, v4 := range in.RequiredAuths {
-				if v3 > 0 {
-					out.RawByte(',')
-				}
-				out.String(string(v4))
-			}
-			out.RawByte(']')
-		}
-	}
-	{
-		const prefix string = ",\"required_posting_auths\":"
-		out.RawString(prefix)
-		if in.RequiredPostingAuths == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
-			out.RawString("null")
-		} else {
-			out.RawByte('[')
-			for v5, v6 := range in.RequiredPostingAuths {
-				if v5 > 0 {
-					out.RawByte(',')
-				}
-				out.String(string(v6))
-			}
-			out.RawByte(']')
-		}
-	}
-	out.RawByte('}')
-}
-
-// MarshalJSON supports json.Marshaler interface
-func (v Sender) MarshalJSON() ([]byte, error) {
-	w := jwriter.Writer{}
-	tinyjson223cdf42EncodeContractTemplateSdk(&w, v)
-	return w.Buffer.BuildBytes(), w.Error
-}
-
-// MarshalTinyJSON supports tinyjson.Marshaler interface
-func (v Sender) MarshalTinyJSON(w *jwriter.Writer) {
-	tinyjson223cdf42EncodeContractTemplateSdk(w, v)
-}
-
-// UnmarshalJSON supports json.Unmarshaler interface
-func (v *Sender) UnmarshalJSON(data []byte) error {
-	r := jlexer.Lexer{Data: data}
-	tinyjson223cdf42DecodeContractTemplateSdk(&r, v)
-	return r.Error()
-}
-
-// UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
-func (v *Sender) UnmarshalTinyJSON(l *jlexer.Lexer) {
-	tinyjson223cdf42DecodeContractTemplateSdk(l, v)
-}
-func tinyjson223cdf42DecodeContractTemplateSdk1(in *jlexer.Lexer, out *Intent) {
-	isTopLevel := in.IsStart()
-	if in.IsNull() {
-		if isTopLevel {
-			in.Consumed()
-		}
-		in.Skip()
-		return
-	}
-	in.Delim('{')
-	for !in.IsDelim('}') {
-		key := in.UnsafeFieldName(false)
-		in.WantColon()
-		if in.IsNull() {
-			in.Skip()
-			in.WantComma()
-			continue
-		}
-		switch key {
-		case "type":
-			out.Type = string(in.String())
-		case "args":
-			if in.IsNull() {
-				in.Skip()
-			} else {
-				in.Delim('{')
-				out.Args = make(map[string]string)
-				for !in.IsDelim('}') {
-					key := string(in.String())
-					in.WantColon()
-					var v7 string
-					v7 = string(in.String())
-					(out.Args)[key] = v7
-					in.WantComma()
-				}
-				in.Delim('}')
-			}
-		default:
-			in.SkipRecursive()
-		}
-		in.WantComma()
-	}
-	in.Delim('}')
-	if isTopLevel {
-		in.Consumed()
-	}
-}
-func tinyjson223cdf42EncodeContractTemplateSdk1(out *jwriter.Writer, in Intent) {
-	out.RawByte('{')
-	first := true
-	_ = first
-	{
-		const prefix string = ",\"type\":"
-		out.RawString(prefix[1:])
-		out.String(string(in.Type))
-	}
-	{
-		const prefix string = ",\"args\":"
-		out.RawString(prefix)
-		if in.Args == nil && (out.Flags&jwriter.NilMapAsEmpty) == 0 {
-			out.RawString(`null`)
-		} else {
-			out.RawByte('{')
-			v8First := true
-			for v8Name, v8Value := range in.Args {
-				if v8First {
-					v8First = false
-				} else {
-					out.RawByte(',')
-				}
-				out.String(string(v8Name))
-				out.RawByte(':')
-				out.String(string(v8Value))
-			}
-			out.RawByte('}')
-		}
-	}
-	out.RawByte('}')
-}
-
-// MarshalJSON supports json.Marshaler interface
-func (v Intent) MarshalJSON() ([]byte, error) {
-	w := jwriter.Writer{}
-	tinyjson223cdf42EncodeContractTemplateSdk1(&w, v)
-	return w.Buffer.BuildBytes(), w.Error
-}
-
-// MarshalTinyJSON supports tinyjson.Marshaler interface
-func (v Intent) MarshalTinyJSON(w *jwriter.Writer) {
-	tinyjson223cdf42EncodeContractTemplateSdk1(w, v)
-}
-
-// UnmarshalJSON supports json.Unmarshaler interface
-func (v *Intent) UnmarshalJSON(data []byte) error {
-	r := jlexer.Lexer{Data: data}
-	tinyjson223cdf42DecodeContractTemplateSdk1(&r, v)
-	return r.Error()
-}
-
-// UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
-func (v *Intent) UnmarshalTinyJSON(l *jlexer.Lexer) {
-	tinyjson223cdf42DecodeContractTemplateSdk1(l, v)
-}
-func tinyjson223cdf42DecodeContractTemplateSdk2(in *jlexer.Lexer, out *Env2) {
+func tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk(in *jlexer.Lexer, out *Env2) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -297,9 +50,9 @@ func tinyjson223cdf42DecodeContractTemplateSdk2(in *jlexer.Lexer, out *Env2) {
 					out.Auths = (out.Auths)[:0]
 				}
 				for !in.IsDelim(']') {
-					var v9 string
-					v9 = string(in.String())
-					out.Auths = append(out.Auths, v9)
+					var v1 string
+					v1 = string(in.String())
+					out.Auths = append(out.Auths, v1)
 					in.WantComma()
 				}
 				in.Delim(']')
@@ -320,9 +73,9 @@ func tinyjson223cdf42DecodeContractTemplateSdk2(in *jlexer.Lexer, out *Env2) {
 					out.PostingAuths = (out.PostingAuths)[:0]
 				}
 				for !in.IsDelim(']') {
-					var v10 string
-					v10 = string(in.String())
-					out.PostingAuths = append(out.PostingAuths, v10)
+					var v2 string
+					v2 = string(in.String())
+					out.PostingAuths = append(out.PostingAuths, v2)
 					in.WantComma()
 				}
 				in.Delim(']')
@@ -339,7 +92,7 @@ func tinyjson223cdf42DecodeContractTemplateSdk2(in *jlexer.Lexer, out *Env2) {
 		in.Consumed()
 	}
 }
-func tinyjson223cdf42EncodeContractTemplateSdk2(out *jwriter.Writer, in Env2) {
+func tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk(out *jwriter.Writer, in Env2) {
 	out.RawByte('{')
 	first := true
 	_ = first
@@ -350,11 +103,11 @@ func tinyjson223cdf42EncodeContractTemplateSdk2(out *jwriter.Writer, in Env2) {
 			out.RawString("null")
 		} else {
 			out.RawByte('[')
-			for v11, v12 := range in.Auths {
-				if v11 > 0 {
+			for v3, v4 := range in.Auths {
+				if v3 > 0 {
 					out.RawByte(',')
 				}
-				out.String(string(v12))
+				out.String(string(v4))
 			}
 			out.RawByte(']')
 		}
@@ -366,11 +119,11 @@ func tinyjson223cdf42EncodeContractTemplateSdk2(out *jwriter.Writer, in Env2) {
 			out.RawString("null")
 		} else {
 			out.RawByte('[')
-			for v13, v14 := range in.PostingAuths {
-				if v13 > 0 {
+			for v5, v6 := range in.PostingAuths {
+				if v5 > 0 {
 					out.RawByte(',')
 				}
-				out.String(string(v14))
+				out.String(string(v6))
 			}
 			out.RawByte(']')
 		}
@@ -383,30 +136,16 @@ func tinyjson223cdf42EncodeContractTemplateSdk2(out *jwriter.Writer, in Env2) {
 	out.RawByte('}')
 }
 
-// MarshalJSON supports json.Marshaler interface
-func (v Env2) MarshalJSON() ([]byte, error) {
-	w := jwriter.Writer{}
-	tinyjson223cdf42EncodeContractTemplateSdk2(&w, v)
-	return w.Buffer.BuildBytes(), w.Error
-}
-
 // MarshalTinyJSON supports tinyjson.Marshaler interface
 func (v Env2) MarshalTinyJSON(w *jwriter.Writer) {
-	tinyjson223cdf42EncodeContractTemplateSdk2(w, v)
-}
-
-// UnmarshalJSON supports json.Unmarshaler interface
-func (v *Env2) UnmarshalJSON(data []byte) error {
-	r := jlexer.Lexer{Data: data}
-	tinyjson223cdf42DecodeContractTemplateSdk2(&r, v)
-	return r.Error()
+	tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
 func (v *Env2) UnmarshalTinyJSON(l *jlexer.Lexer) {
-	tinyjson223cdf42DecodeContractTemplateSdk2(l, v)
+	tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk(l, v)
 }
-func tinyjson223cdf42DecodeContractTemplateSdk3(in *jlexer.Lexer, out *Env) {
+func tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk1(in *jlexer.Lexer, out *Env) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -442,30 +181,53 @@ func tinyjson223cdf42DecodeContractTemplateSdk3(in *jlexer.Lexer, out *Env) {
 		case "block.timestamp":
 			out.Timestamp = string(in.String())
 		case "sender":
-			(out.Sender).UnmarshalTinyJSON(in)
+			tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk2(in, &out.Sender)
 		case "msg.caller":
 			out.Caller = Address(in.String())
 		case "msg.payer":
 			out.Payer = Address(in.String())
-		case "intents":
+		case "intents.caller":
 			if in.IsNull() {
 				in.Skip()
-				out.Intents = nil
+				out.CallerIntents = nil
 			} else {
 				in.Delim('[')
-				if out.Intents == nil {
+				if out.CallerIntents == nil {
 					if !in.IsDelim(']') {
-						out.Intents = make([]Intent, 0, 2)
+						out.CallerIntents = make([]Intent, 0, 2)
 					} else {
-						out.Intents = []Intent{}
+						out.CallerIntents = []Intent{}
 					}
 				} else {
-					out.Intents = (out.Intents)[:0]
+					out.CallerIntents = (out.CallerIntents)[:0]
 				}
 				for !in.IsDelim(']') {
-					var v15 Intent
-					(v15).UnmarshalTinyJSON(in)
-					out.Intents = append(out.Intents, v15)
+					var v7 Intent
+					tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk3(in, &v7)
+					out.CallerIntents = append(out.CallerIntents, v7)
+					in.WantComma()
+				}
+				in.Delim(']')
+			}
+		case "intents.sender":
+			if in.IsNull() {
+				in.Skip()
+				out.SenderIntents = nil
+			} else {
+				in.Delim('[')
+				if out.SenderIntents == nil {
+					if !in.IsDelim(']') {
+						out.SenderIntents = make([]Intent, 0, 2)
+					} else {
+						out.SenderIntents = []Intent{}
+					}
+				} else {
+					out.SenderIntents = (out.SenderIntents)[:0]
+				}
+				for !in.IsDelim(']') {
+					var v8 Intent
+					tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk3(in, &v8)
+					out.SenderIntents = append(out.SenderIntents, v8)
 					in.WantComma()
 				}
 				in.Delim(']')
@@ -480,7 +242,7 @@ func tinyjson223cdf42DecodeContractTemplateSdk3(in *jlexer.Lexer, out *Env) {
 		in.Consumed()
 	}
 }
-func tinyjson223cdf42EncodeContractTemplateSdk3(out *jwriter.Writer, in Env) {
+func tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk1(out *jwriter.Writer, in Env) {
 	out.RawByte('{')
 	first := true
 	_ = first
@@ -527,7 +289,7 @@ func tinyjson223cdf42EncodeContractTemplateSdk3(out *jwriter.Writer, in Env) {
 	{
 		const prefix string = ",\"sender\":"
 		out.RawString(prefix)
-		(in.Sender).MarshalTinyJSON(out)
+		tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk2(out, in.Sender)
 	}
 	{
 		const prefix string = ",\"msg.caller\":"
@@ -540,17 +302,33 @@ func tinyjson223cdf42EncodeContractTemplateSdk3(out *jwriter.Writer, in Env) {
 		out.String(string(in.Payer))
 	}
 	{
-		const prefix string = ",\"intents\":"
+		const prefix string = ",\"intents.caller\":"
 		out.RawString(prefix)
-		if in.Intents == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
+		if in.CallerIntents == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
 			out.RawString("null")
 		} else {
 			out.RawByte('[')
-			for v16, v17 := range in.Intents {
-				if v16 > 0 {
+			for v9, v10 := range in.CallerIntents {
+				if v9 > 0 {
 					out.RawByte(',')
 				}
-				(v17).MarshalTinyJSON(out)
+				tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk3(out, v10)
+			}
+			out.RawByte(']')
+		}
+	}
+	{
+		const prefix string = ",\"intents.sender\":"
+		out.RawString(prefix)
+		if in.SenderIntents == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
+			out.RawString("null")
+		} else {
+			out.RawByte('[')
+			for v11, v12 := range in.SenderIntents {
+				if v11 > 0 {
+					out.RawByte(',')
+				}
+				tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk3(out, v12)
 			}
 			out.RawByte(']')
 		}
@@ -558,30 +336,215 @@ func tinyjson223cdf42EncodeContractTemplateSdk3(out *jwriter.Writer, in Env) {
 	out.RawByte('}')
 }
 
-// MarshalJSON supports json.Marshaler interface
-func (v Env) MarshalJSON() ([]byte, error) {
-	w := jwriter.Writer{}
-	tinyjson223cdf42EncodeContractTemplateSdk3(&w, v)
-	return w.Buffer.BuildBytes(), w.Error
-}
-
 // MarshalTinyJSON supports tinyjson.Marshaler interface
 func (v Env) MarshalTinyJSON(w *jwriter.Writer) {
-	tinyjson223cdf42EncodeContractTemplateSdk3(w, v)
-}
-
-// UnmarshalJSON supports json.Unmarshaler interface
-func (v *Env) UnmarshalJSON(data []byte) error {
-	r := jlexer.Lexer{Data: data}
-	tinyjson223cdf42DecodeContractTemplateSdk3(&r, v)
-	return r.Error()
+	tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk1(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
 func (v *Env) UnmarshalTinyJSON(l *jlexer.Lexer) {
-	tinyjson223cdf42DecodeContractTemplateSdk3(l, v)
+	tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk1(l, v)
 }
-func tinyjson223cdf42DecodeContractTemplateSdk4(in *jlexer.Lexer, out *ContractCallOptions) {
+func tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk3(in *jlexer.Lexer, out *Intent) {
+	isTopLevel := in.IsStart()
+	if in.IsNull() {
+		if isTopLevel {
+			in.Consumed()
+		}
+		in.Skip()
+		return
+	}
+	in.Delim('{')
+	for !in.IsDelim('}') {
+		key := in.UnsafeFieldName(false)
+		in.WantColon()
+		if in.IsNull() {
+			in.Skip()
+			in.WantComma()
+			continue
+		}
+		switch key {
+		case "type":
+			out.Type = string(in.String())
+		case "args":
+			if in.IsNull() {
+				in.Skip()
+			} else {
+				in.Delim('{')
+				out.Args = make(map[string]string)
+				for !in.IsDelim('}') {
+					key := string(in.String())
+					in.WantColon()
+					var v13 string
+					v13 = string(in.String())
+					(out.Args)[key] = v13
+					in.WantComma()
+				}
+				in.Delim('}')
+			}
+		default:
+			in.SkipRecursive()
+		}
+		in.WantComma()
+	}
+	in.Delim('}')
+	if isTopLevel {
+		in.Consumed()
+	}
+}
+func tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk3(out *jwriter.Writer, in Intent) {
+	out.RawByte('{')
+	first := true
+	_ = first
+	{
+		const prefix string = ",\"type\":"
+		out.RawString(prefix[1:])
+		out.String(string(in.Type))
+	}
+	{
+		const prefix string = ",\"args\":"
+		out.RawString(prefix)
+		if in.Args == nil && (out.Flags&jwriter.NilMapAsEmpty) == 0 {
+			out.RawString(`null`)
+		} else {
+			out.RawByte('{')
+			v14First := true
+			for v14Name, v14Value := range in.Args {
+				if v14First {
+					v14First = false
+				} else {
+					out.RawByte(',')
+				}
+				out.String(string(v14Name))
+				out.RawByte(':')
+				out.String(string(v14Value))
+			}
+			out.RawByte('}')
+		}
+	}
+	out.RawByte('}')
+}
+func tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk2(in *jlexer.Lexer, out *Sender) {
+	isTopLevel := in.IsStart()
+	if in.IsNull() {
+		if isTopLevel {
+			in.Consumed()
+		}
+		in.Skip()
+		return
+	}
+	in.Delim('{')
+	for !in.IsDelim('}') {
+		key := in.UnsafeFieldName(false)
+		in.WantColon()
+		if in.IsNull() {
+			in.Skip()
+			in.WantComma()
+			continue
+		}
+		switch key {
+		case "id":
+			out.Address = Address(in.String())
+		case "required_auths":
+			if in.IsNull() {
+				in.Skip()
+				out.RequiredAuths = nil
+			} else {
+				in.Delim('[')
+				if out.RequiredAuths == nil {
+					if !in.IsDelim(']') {
+						out.RequiredAuths = make([]Address, 0, 4)
+					} else {
+						out.RequiredAuths = []Address{}
+					}
+				} else {
+					out.RequiredAuths = (out.RequiredAuths)[:0]
+				}
+				for !in.IsDelim(']') {
+					var v15 Address
+					v15 = Address(in.String())
+					out.RequiredAuths = append(out.RequiredAuths, v15)
+					in.WantComma()
+				}
+				in.Delim(']')
+			}
+		case "required_posting_auths":
+			if in.IsNull() {
+				in.Skip()
+				out.RequiredPostingAuths = nil
+			} else {
+				in.Delim('[')
+				if out.RequiredPostingAuths == nil {
+					if !in.IsDelim(']') {
+						out.RequiredPostingAuths = make([]Address, 0, 4)
+					} else {
+						out.RequiredPostingAuths = []Address{}
+					}
+				} else {
+					out.RequiredPostingAuths = (out.RequiredPostingAuths)[:0]
+				}
+				for !in.IsDelim(']') {
+					var v16 Address
+					v16 = Address(in.String())
+					out.RequiredPostingAuths = append(out.RequiredPostingAuths, v16)
+					in.WantComma()
+				}
+				in.Delim(']')
+			}
+		default:
+			in.SkipRecursive()
+		}
+		in.WantComma()
+	}
+	in.Delim('}')
+	if isTopLevel {
+		in.Consumed()
+	}
+}
+func tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk2(out *jwriter.Writer, in Sender) {
+	out.RawByte('{')
+	first := true
+	_ = first
+	{
+		const prefix string = ",\"id\":"
+		out.RawString(prefix[1:])
+		out.String(string(in.Address))
+	}
+	{
+		const prefix string = ",\"required_auths\":"
+		out.RawString(prefix)
+		if in.RequiredAuths == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
+			out.RawString("null")
+		} else {
+			out.RawByte('[')
+			for v17, v18 := range in.RequiredAuths {
+				if v17 > 0 {
+					out.RawByte(',')
+				}
+				out.String(string(v18))
+			}
+			out.RawByte(']')
+		}
+	}
+	{
+		const prefix string = ",\"required_posting_auths\":"
+		out.RawString(prefix)
+		if in.RequiredPostingAuths == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
+			out.RawString("null")
+		} else {
+			out.RawByte('[')
+			for v19, v20 := range in.RequiredPostingAuths {
+				if v19 > 0 {
+					out.RawByte(',')
+				}
+				out.String(string(v20))
+			}
+			out.RawByte(']')
+		}
+	}
+	out.RawByte('}')
+}
+func tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk4(in *jlexer.Lexer, out *ContractCallOptions) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -616,9 +579,9 @@ func tinyjson223cdf42DecodeContractTemplateSdk4(in *jlexer.Lexer, out *ContractC
 					out.Intents = (out.Intents)[:0]
 				}
 				for !in.IsDelim(']') {
-					var v18 Intent
-					(v18).UnmarshalTinyJSON(in)
-					out.Intents = append(out.Intents, v18)
+					var v21 Intent
+					tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk3(in, &v21)
+					out.Intents = append(out.Intents, v21)
 					in.WantComma()
 				}
 				in.Delim(']')
@@ -633,7 +596,7 @@ func tinyjson223cdf42DecodeContractTemplateSdk4(in *jlexer.Lexer, out *ContractC
 		in.Consumed()
 	}
 }
-func tinyjson223cdf42EncodeContractTemplateSdk4(out *jwriter.Writer, in ContractCallOptions) {
+func tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk4(out *jwriter.Writer, in ContractCallOptions) {
 	out.RawByte('{')
 	first := true
 	_ = first
@@ -643,11 +606,11 @@ func tinyjson223cdf42EncodeContractTemplateSdk4(out *jwriter.Writer, in Contract
 		out.RawString(prefix[1:])
 		{
 			out.RawByte('[')
-			for v19, v20 := range in.Intents {
-				if v19 > 0 {
+			for v22, v23 := range in.Intents {
+				if v22 > 0 {
 					out.RawByte(',')
 				}
-				(v20).MarshalTinyJSON(out)
+				tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk3(out, v23)
 			}
 			out.RawByte(']')
 		}
@@ -655,26 +618,12 @@ func tinyjson223cdf42EncodeContractTemplateSdk4(out *jwriter.Writer, in Contract
 	out.RawByte('}')
 }
 
-// MarshalJSON supports json.Marshaler interface
-func (v ContractCallOptions) MarshalJSON() ([]byte, error) {
-	w := jwriter.Writer{}
-	tinyjson223cdf42EncodeContractTemplateSdk4(&w, v)
-	return w.Buffer.BuildBytes(), w.Error
-}
-
 // MarshalTinyJSON supports tinyjson.Marshaler interface
 func (v ContractCallOptions) MarshalTinyJSON(w *jwriter.Writer) {
-	tinyjson223cdf42EncodeContractTemplateSdk4(w, v)
-}
-
-// UnmarshalJSON supports json.Unmarshaler interface
-func (v *ContractCallOptions) UnmarshalJSON(data []byte) error {
-	r := jlexer.Lexer{Data: data}
-	tinyjson223cdf42DecodeContractTemplateSdk4(&r, v)
-	return r.Error()
+	tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk4(w, v)
 }
 
 // UnmarshalTinyJSON supports tinyjson.Unmarshaler interface
 func (v *ContractCallOptions) UnmarshalTinyJSON(l *jlexer.Lexer) {
-	tinyjson223cdf42DecodeContractTemplateSdk4(l, v)
+	tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk4(l, v)
 }

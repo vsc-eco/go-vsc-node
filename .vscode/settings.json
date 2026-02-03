@@ -1,6 +1,8 @@
 {
   "go.testTimeout": "300s",
-  "go.testFlags": ["-count=1"], // disable test cache
+  "go.testFlags": [
+    "-count=1"
+  ], // disable test cache
   "filewatcher.commands": [
     {
       "match": "[^\/]*/modules/gql/.*\\.graphql",
@@ -8,5 +10,6 @@
       "cmd": "cd ${workspaceRoot}; go run github.com/99designs/gqlgen generate",
       "event": "onFileChange"
     },
-  ]
+  ],
+  "go.buildTags": "gc.custom",
 }

@@ -19,8 +19,12 @@ type SdkResultStruct = wasm_types.WasmResultStruct
 type SdkResult = result.Result[SdkResultStruct]
 
 var (
-	ErrInvalidArgument = result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid argument")))
-	ErrUnimplemented   = result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("unimplemented")))
+	ErrInvalidArgument = result.Err[SdkResultStruct](
+		errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid argument")),
+	)
+	ErrUnimplemented = result.Err[SdkResultStruct](
+		errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("unimplemented")),
+	)
 )
 
 var sdkModuleRef *map[string]sdkFunc
@@ -287,7 +291,9 @@ var SdkModule = map[string]sdkFunc{
 		}
 		amount, err := strconv.ParseInt(amountString, 10, 64)
 		if amount < 0 {
-			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("amount cannot be negative")))
+			return result.Err[SdkResultStruct](
+				errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("amount cannot be negative")),
+			)
 		}
 		if err != nil {
 			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), err))
@@ -320,7 +326,9 @@ var SdkModule = map[string]sdkFunc{
 		}
 		amount, err := strconv.ParseInt(amountString, 10, 64)
 		if amount < 0 {
-			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("amount cannot be negative")))
+			return result.Err[SdkResultStruct](
+				errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("amount cannot be negative")),
+			)
 		}
 		if err != nil {
 			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), err))

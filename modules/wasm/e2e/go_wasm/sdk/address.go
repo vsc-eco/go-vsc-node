@@ -13,6 +13,7 @@ type Sender struct {
 	RequiredPostingAuths []Address `json:"required_posting_auths"`
 }
 
+//tinyjson:json
 type ContractCallOptions struct {
 	Intents []Intent `json:"intents,omitempty"`
 }

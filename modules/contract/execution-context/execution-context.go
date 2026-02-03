@@ -24,14 +24,15 @@ import (
 )
 
 type contractExecutionContext struct {
-	intents     []contracts.Intent
-	ledger      ledgerSystem.LedgerSession
-	env         Environment
-	rcLimit     int64
-	gasRemain   uint
-	callSession *contract_session.CallSession
-	recursion   int
-	gasUsage    uint
+	callerIntents []contracts.Intent
+	senderIntents []contracts.Intent
+	ledger        ledgerSystem.LedgerSession
+	env           Environment
+	rcLimit       int64
+	gasRemain     uint
+	callSession   *contract_session.CallSession
+	recursion     int
+	gasUsage      uint
 
 	ioReadGas  int
 	ioWriteGas int
@@ -63,7 +64,8 @@ type Environment struct {
 	RequiredPostingAuths []string
 	Caller               string
 	Sender               string
-	Intents              []contracts.Intent
+	CallerIntents        []contracts.Intent
+	SenderIntents        []contracts.Intent
 }
 
 var _ wasm_context.ExecContextValue = &contractExecutionContext{}
@@ -78,7 +80,8 @@ func New(
 ) ContractExecutionContext {
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
-	for _, intent := range env.Intents {
+	//TODO: pass these through for sender
+	for _, intent := range env.CallerIntents {
 		if intent.Type == "transfer.allow" {
 			limit, ok := intent.Args["limit"]
 			if !ok {
@@ -98,8 +101,10 @@ func New(
 			tokenLimits[token] = &val
 		}
 	}
+	fmt.Println("tokenLimits", tokenLimits, "depth", recursionDepth)
 	return &contractExecutionContext{
-		env.Intents,
+		env.CallerIntents,
+		env.SenderIntents,
 		ledger,
 		env,
 		rcLimit,
@@ -218,9 +223,16 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 		}
 	case "msg.caller":
 		return result.Ok(ctx.env.Caller)
-	case "intents":
+	case "intents.caller":
 		return result.Map(
-			resultWrap(json.Marshal(ctx.env.Intents)),
+			resultWrap(json.Marshal(ctx.env.CallerIntents)),
+			func(b []byte) string {
+				return string(b)
+			},
+		)
+	case "intents.sender":
+		return result.Map(
+			resultWrap(json.Marshal(ctx.senderIntents)),
 			func(b []byte) string {
 				return string(b)
 			},
@@ -232,7 +244,12 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 	case "block.timestamp":
 		return result.Ok(ctx.env.Timestamp)
 	}
-	return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), fmt.Errorf("environment does not contain value for \"%s\"", key)))
+	return result.Err[string](
+		errors.Join(
+			fmt.Errorf(contracts.ENV_VAR_ERROR),
+			fmt.Errorf("environment does not contain value for \"%s\"", key),
+		),
+	)
 }
 
 // GetEnv returns the environment variables in a standard contract format
@@ -273,12 +290,15 @@ func (ctx *contractExecutionContext) GetEnv() result.Result[string] {
 		"msg.required_posting_auths": ctx.env.RequiredPostingAuths,
 		"msg.payer":                  payer,
 		"msg.caller":                 ctx.env.Caller,
-		"intents":                    ctx.env.Intents,
+		"intents.caller":             ctx.env.CallerIntents,
+		"intents.sender":             ctx.env.SenderIntents,
 	}
 
 	envBytes, err := json.Marshal(envMap)
 	if err != nil {
-		return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), fmt.Errorf("failed to marshal env map: %w", err)))
+		return result.Err[string](
+			errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), fmt.Errorf("failed to marshal env map: %w", err)),
+		)
 	}
 	return result.Ok(string(envBytes))
 }
@@ -358,14 +378,23 @@ func (ctx *contractExecutionContext) GetBalance(account string, asset string) in
 
 func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) result.Result[struct{}] {
 	if len(ctx.env.RequiredAuths) == 0 {
-		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.MISSING_REQ_AUTH), fmt.Errorf("no active authority")))
+		return result.Err[struct{}](
+			errors.Join(fmt.Errorf(contracts.MISSING_REQ_AUTH), fmt.Errorf("no active authority")),
+		)
 	}
 	tokenLimit, ok := ctx.tokenLimits[asset]
 	if !ok {
-		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_INTENT_ERROR), fmt.Errorf("no user intent for: %s", asset)))
+		return result.Err[struct{}](
+			errors.Join(fmt.Errorf(contracts.LEDGER_INTENT_ERROR), fmt.Errorf("no user intent for: %s", asset)),
+		)
 	}
 	if amount > *tokenLimit {
-		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_INTENT_ERROR), fmt.Errorf("amount (%d) is over remaining token limit (%d)", amount, *tokenLimit)))
+		return result.Err[struct{}](
+			errors.Join(
+				fmt.Errorf(contracts.LEDGER_INTENT_ERROR),
+				fmt.Errorf("amount (%d) is over remaining token limit (%d)", amount, *tokenLimit),
+			),
+		)
 	}
 	*tokenLimit -= amount
 
@@ -447,14 +476,23 @@ func (ctx *contractExecutionContext) ContractStateGet(contractId string, key str
 	return result.Ok(resStr)
 }
 
-func (ctx *contractExecutionContext) ContractCall(contractId string, method string, payload string, options string) wasm_types.WasmResult {
+func (ctx *contractExecutionContext) ContractCall(
+	contractId string,
+	method string,
+	payload string,
+	options string,
+) wasm_types.WasmResult {
 	nextRecursion := ctx.recursion + 1
 	if nextRecursion > params.CONTRACT_CALL_MAX_RECURSION_DEPTH {
-		return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf(contracts.IC_RCSE_LIMIT_HIT), fmt.Errorf("call recursion limit hit")))
+		return result.Err[wasm_types.WasmResultStruct](
+			errors.Join(fmt.Errorf(contracts.IC_RCSE_LIMIT_HIT), fmt.Errorf("call recursion limit hit")),
+		)
 	}
 	payloadJson := json.RawMessage(payload)
 	if !utf8.Valid(payloadJson) {
-		return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf(contracts.IC_INVALD_PAYLD), fmt.Errorf("payload does not parse to a UTF-8 string")))
+		return result.Err[wasm_types.WasmResultStruct](
+			errors.Join(fmt.Errorf(contracts.IC_INVALD_PAYLD), fmt.Errorf("payload does not parse to a UTF-8 string")),
+		)
 	}
 	opts := contracts.ICCallOptions{
 		Intents: []contracts.Intent{},
@@ -481,16 +519,27 @@ func (ctx *contractExecutionContext) ContractCall(contractId string, method stri
 				RequiredPostingAuths: ctx.env.RequiredPostingAuths,
 				Caller:               "contract:" + ctx.env.ContractId,
 				Sender:               ctx.env.Sender,
-				Intents:              opts.Intents,
+				CallerIntents:        opts.Intents,
+				SenderIntents:        ctx.senderIntents,
 			}, ctx.rcLimit, gasRemaining, ctx.ledger, ctx.callSession, nextRecursion)
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)
 
-			wasmCtx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(ct.Code))
+			wasmCtx := context.WithValue(
+				context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
+				wasm_context.WasmExecCodeCtxKey,
+				hex.EncodeToString(ct.Code),
+			)
 			res := w.Execute(wasmCtx, gasRemaining, method, callPayload, ct.Info.Runtime)
 			if res.Error != nil {
-				return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf("%s", res.ErrorCode), fmt.Errorf("%s", *res.Error), fmt.Errorf("%d", res.Gas)))
+				return result.Err[wasm_types.WasmResultStruct](
+					errors.Join(
+						fmt.Errorf("%s", res.ErrorCode),
+						fmt.Errorf("%s", *res.Error),
+						fmt.Errorf("%d", res.Gas),
+					),
+				)
 			}
 			return result.Ok(res)
 		},
