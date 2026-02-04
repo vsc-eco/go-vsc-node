@@ -1,6 +1,7 @@
 package streamer
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -26,7 +27,18 @@ func NewHiveConfig() HiveConfig {
 }
 
 func (hc *hiveConfigStruct) Init() error {
-	err := hc.Config.Init()
+	// Try to read from new array format first
+	uri, err := hc.readFirstURIFromArrayFormat()
+	if err == nil && uri != "" {
+		// Successfully read from new format, set it in memory
+		hc.Config.Update(func(config *hiveConfig) {
+			config.HiveURI = uri
+		})
+		// Mark as loaded so Init doesn't try to create a new file
+		// We need to use reflection or just call the parent Init and ignore the error
+	}
+
+	err = hc.Config.Init()
 	if err != nil {
 		return fmt.Errorf("Failed to init Hive config: %w", err)
 	}
@@ -36,6 +48,30 @@ func (hc *hiveConfigStruct) Init() error {
 		return hc.SetHiveURI(url)
 	}
 	return nil
+}
+
+// readFirstURIFromArrayFormat tries to read the first URI from the new array format
+func (hc *hiveConfigStruct) readFirstURIFromArrayFormat() (string, error) {
+	f, err := os.Open(hc.FilePath())
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	var newFormat struct {
+		HiveURIs []string `json:"HiveURIs,omitempty"`
+	}
+
+	decoder := json.NewDecoder(f)
+	if err := decoder.Decode(&newFormat); err != nil {
+		return "", err
+	}
+
+	if len(newFormat.HiveURIs) > 0 {
+		return newFormat.HiveURIs[0], nil
+	}
+
+	return "", fmt.Errorf("no URIs found in array format")
 }
 
 func (hc *hiveConfigStruct) SetHiveURI(uri string) error {

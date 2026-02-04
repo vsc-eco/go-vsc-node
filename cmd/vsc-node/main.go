@@ -53,8 +53,7 @@ func main() {
 	hiveApiUrl := streamer.NewHiveConfig()
 	hiveApiUrlErr := hiveApiUrl.Init()
 
-	// hiveURI := hiveApiUrl.Get().HiveURI
-	hiveURI := "https://hive-api.3speak.tv"
+	hiveURI := hiveApiUrl.Get().HiveURI
 
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
 	fmt.Println("HIVE_API", hiveURI)
