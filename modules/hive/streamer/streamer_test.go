@@ -18,11 +18,10 @@ import (
 
 	"vsc-node/lib/test_utils"
 
-	rand "math/rand/v2"
-
 	"github.com/chebyrash/promise"
 	"github.com/stretchr/testify/assert"
 	"github.com/vsc-eco/hivego"
+	"golang.org/x/exp/rand"
 )
 
 // ===== constants =====
@@ -106,11 +105,7 @@ func (m *MockHiveBlockDb) GetBlock(blockNum uint64) (hive_blocks.HiveBlock, erro
 }
 
 // ListenToBlockUpdates implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) ListenToBlockUpdates(
-	ctx context.Context,
-	startBlock uint64,
-	listener func(block hive_blocks.HiveBlock, headHeight *uint64) error,
-) (context.CancelFunc, <-chan error) {
+func (m *MockHiveBlockDb) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block hive_blocks.HiveBlock, headHeight *uint64) error) (context.CancelFunc, <-chan error) {
 	ctx, cancel := context.WithCancel(ctx)
 	errChan := make(chan error)
 	if m.Blocks == nil {
@@ -230,7 +225,7 @@ func (m *MockBlockClient) GetDynamicGlobalProps() ([]byte, error) {
 	// await for random duration to simulate real-world scenario
 	//
 	// to contribute to innate thread randomness since these tests because of that can't be 100% deterministic anyway
-	time.Sleep(time.Millisecond * time.Duration(10+rand.IntN(90)))
+	time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(90)))
 	props, _ := json.Marshal(map[string]interface{}{
 		"head_block_number": float64(dummyBlockHead), // dummy head, whatever it may be
 	})
@@ -267,11 +262,7 @@ func (m *MockBlockClient) GetBlockRange(startBlock, count int) ([]hivego.Block, 
 	return blockChannel, nil
 }
 
-func (m *MockBlockClient) FetchVirtualOps(
-	block int,
-	onlyVirtual bool,
-	includeReversible bool,
-) ([]hivego.VirtualOp, error) {
+func (m *MockBlockClient) FetchVirtualOps(block int, onlyVirtual bool, includeReversible bool) ([]hivego.VirtualOp, error) {
 
 	return nil, nil
 }
@@ -284,16 +275,10 @@ func TestFetchStoreBlocks(t *testing.T) {
 
 	startBlock := uint64(0)
 	blockClient := &MockBlockClient{}
-	s := streamer.NewStreamer(
-		blockClient,
-		mockHiveBlocks,
-		[]streamer.FilterFunc{func(tx hivego.Operation, blockParams *streamer.BlockParams) bool {
-			// s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{func(tx hivego.Operation) bool {
-			return true
-		}},
-		nil,
-		nil,
-	)
+	s := streamer.NewStreamer(blockClient, mockHiveBlocks, []streamer.FilterFunc{func(tx hivego.Operation, blockParams *streamer.BlockParams) bool {
+		// s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{func(tx hivego.Operation) bool {
+		return true
+	}}, nil, nil)
 
 	totalBlksReceived := 0
 

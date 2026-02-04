@@ -111,17 +111,11 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 			startSymbols[symbol] = strconv.Itoa(int(fcl.blockHeight))
 		}
 	}
-	hiveClient := hivego.NewHiveRpc([]string{"https://api.hive.blog"})
+	hiveClient := hivego.NewHiveRpc("https://api.hive.blog")
 
 	jsonBytes, _ := json.Marshal(startSymbols)
 	wif := c.conf.Get().HiveActiveKey
-	hiveClient.BroadcastJson(
-		[]string{c.conf.Get().HiveUsername},
-		[]string{},
-		"dev_vsc.chain_oracle",
-		string(jsonBytes),
-		&wif,
-	)
+	hiveClient.BroadcastJson([]string{c.conf.Get().HiveUsername}, []string{}, "dev_vsc.chain_oracle", string(jsonBytes), &wif)
 	return promise.New(func(resolve func(any), _ func(error)) {
 		resolve(nil)
 	})
