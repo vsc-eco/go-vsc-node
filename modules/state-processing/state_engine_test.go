@@ -39,7 +39,7 @@ import (
 func TestStateEngine(t *testing.T) {
 	conf := db.NewDbConfig()
 	db := db.New(conf)
-	vscDb := vsc.New(db)
+	vscDb := vsc.New(db, conf)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	electionDb := elections.New(vscDb)
 	witnessesDb := witnesses.New(vscDb)
@@ -152,7 +152,7 @@ func TestStateEngine(t *testing.T) {
 func TestMockEngine(t *testing.T) {
 	conf := db.NewDbConfig()
 	db := db.New(conf)
-	vscDb := vsc.New(db)
+	vscDb := vsc.New(db, conf)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	electionDb := elections.New(vscDb)
 	witnessesDb := witnesses.New(vscDb)

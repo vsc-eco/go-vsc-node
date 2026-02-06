@@ -14,13 +14,8 @@ type VscDb struct {
 
 var _ a.Plugin = &VscDb{}
 
-func New(d db.Db, dbName ...string) *VscDb {
-	name := "go-vsc"
-	if len(dbName) > 0 && dbName[0] != "" {
-		name = dbName[0]
-	}
-
-	return &VscDb{db.NewDbInstance(d, name)}
+func New(d db.Db, dbConf db.DbConfig) *VscDb {
+	return &VscDb{db.NewDbInstance(d, dbConf)}
 }
 
 func (db *VscDb) Nuke() error {

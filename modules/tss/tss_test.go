@@ -58,22 +58,22 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 	path := "data-dir-" + strconv.Itoa(index)
 
 	os.Mkdir(path, os.ModePerm)
+	dbConf := db.NewDbConfig()
 	identity := common.NewIdentityConfig(path)
-	identity.Init()
-	identity.SetUsername("e2e-" + strconv.Itoa(index))
 	p2pConf := libp2p.NewConfig(path)
-	p2pConf.Init()
+	aggregate.New([]aggregate.Plugin{dbConf, identity, p2pConf}).Init()
+	dbConf.SetDbName("go-vsc-tss-test-" + strconv.Itoa(index))
+	identity.SetUsername("e2e-" + strconv.Itoa(index))
 	p2pConf.SetOptions(libp2p.P2POpts{
 		Port:         22222 + index,
 		ServerMode:   true,
 		AllowPrivate: true,
 		Bootnodes:    []string{},
 	})
-	dbConf := db.NewDbConfig()
 	csonf := systemconfig.MocknetConfig()
 
 	db := db.New(dbConf)
-	vscDb := vsc.New(db, "go-vsc-tss-test-"+strconv.Itoa(index))
+	vscDb := vsc.New(db, dbConf)
 	tssKeys := tss_db.NewKeys(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
 	tssCommitments := tss_db.NewCommitments(vscDb)

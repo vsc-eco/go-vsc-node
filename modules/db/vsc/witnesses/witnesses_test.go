@@ -16,7 +16,7 @@ import (
 func TestWitness(t *testing.T) {
 	conf := db.NewDbConfig()
 	db := db.New(conf)
-	vscDb := vsc.New(db)
+	vscDb := vsc.New(db, conf)
 	witness := witnesses.New(vscDb)
 
 	agg := aggregate.New([]aggregate.Plugin{

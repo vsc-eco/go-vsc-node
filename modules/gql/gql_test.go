@@ -45,7 +45,7 @@ func TestQueryAndMutation(t *testing.T) {
 	identityConfig := common.NewIdentityConfig()
 	p2pConfig := libp2p.NewConfig()
 	d := db.New(dbConfg)
-	vscDb := vsc.New(d)
+	vscDb := vsc.New(d, dbConfg)
 	witnesses := witnesses.New(vscDb)
 	p2p := libp2p.New(witnesses, p2pConfig, identityConfig, sysConfig, nil)
 	hiveBlocks, hiveBlocksErr := hive_blocks.New(vscDb)

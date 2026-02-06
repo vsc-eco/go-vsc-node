@@ -62,12 +62,11 @@ func main() {
 	hiveURIs := hiveApiUrl.Get().HiveURIs
 
 	fmt.Println("Network:", args.network)
-	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
-	fmt.Println("HIVE_APIs", hiveURIs)
+	fmt.Println("Hive Nodes", hiveURIs)
 	fmt.Println("Git Commit", announcements.GitCommit)
 
 	dbImpl := db.New(dbConf)
-	vscDb := vsc.New(dbImpl, args.dbName)
+	vscDb := vsc.New(dbImpl, dbConf)
 	reindexDb := db.NewReindex(vscDb.DbInstance)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)

@@ -94,9 +94,22 @@ type MakeNodeInput struct {
 const SEED_PREFIX = "MOCK_SEED-"
 
 func MakeNode(input MakeNodeInput) *Node {
-	dbConf := db.NewDbConfig()
+	dataDir := "data-" + input.Username
+	dbConf := db.NewDbConfig(dataDir)
+	identityConfig := common.NewIdentityConfig(dataDir)
+	p2pConfig := p2pInterface.NewConfig(dataDir)
+	aggregate.New([]aggregate.Plugin{dbConf, identityConfig, p2pConfig}).Init()
+	dbConf.SetDbName("go-vsc-" + input.Username)
+	identityConfig.SetUsername(input.Username)
+	p2pConfig.SetOptions(p2pInterface.P2POpts{
+		Port:         input.Port,
+		ServerMode:   true,
+		AllowPrivate: true,
+		Bootnodes:    []string{},
+	})
+
 	db := db.New(dbConf)
-	vscDb := vsc.New(db, "go-vsc-"+input.Username)
+	vscDb := vsc.New(db, dbConf)
 	hiveBlocks := &MockHiveDbs{}
 	vscBlocks := vscBlocks.New(vscDb)
 	witnessesDb := witnesses.New(vscDb)
@@ -119,21 +132,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		Prefix: input.Username,
 	}
 
-	dataDir := "data-" + input.Username
-
 	sysConfig := systemconfig.MocknetConfig()
-	identityConfig := common.NewIdentityConfig(dataDir)
-	identityConfig.Init()
-	identityConfig.SetUsername(input.Username)
-
-	p2pConfig := p2pInterface.NewConfig(dataDir)
-	p2pConfig.Init()
-	p2pConfig.SetOptions(p2pInterface.P2POpts{
-		Port:         input.Port,
-		ServerMode:   true,
-		AllowPrivate: true,
-		Bootnodes:    []string{},
-	})
 	kp := HashSeed([]byte(SEED_PREFIX + input.Username))
 
 	hiveClient := hivego.NewHiveRpc([]string{"https://api.hive.blog"})

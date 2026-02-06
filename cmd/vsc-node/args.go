@@ -10,7 +10,6 @@ type args struct {
 	isInit  bool
 	network string
 	gqlHost string
-	dbName  string
 	dataDir string
 }
 
@@ -21,9 +20,8 @@ func ParseArgs() (args, error) {
 		flag.PrintDefaults()
 	}
 	isInit := flag.Bool("init", false, "Initialize the node (run init instead of run)")
-	network := flag.String("network", "mainnet", "Network to deploy contract to")
+	network := flag.String("network", "mainnet", "Name of the network (mainnet or testnet)")
 	gqlHost := flag.String("gql-host", "0.0.0.0:8080", "GraphQL endpoint host")
-	dbName := flag.String("db-name", "go-vsc", "Database name")
 	dataDir := flag.String("data-dir", "data", "Data directory for config and storage")
 
 	flag.Parse()
@@ -32,7 +30,6 @@ func ParseArgs() (args, error) {
 		*isInit,
 		*network,
 		*gqlHost,
-		*dbName,
 		*dataDir,
 	}, nil
 }

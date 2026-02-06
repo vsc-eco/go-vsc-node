@@ -9,7 +9,6 @@ import (
 type args struct {
 	isInit  bool
 	network string
-	dbName  string
 	dataDir string
 }
 
@@ -20,8 +19,7 @@ func ParseArgs() (args, error) {
 		flag.PrintDefaults()
 	}
 	isInit := flag.Bool("init", false, "Initialize the node (run init instead of run)")
-	network := flag.String("network", "testnet", "Network to deploy contract to")
-	dbName := flag.String("db-name", "go-vsc", "Database name")
+	network := flag.String("network", "testnet", "Network to create genesis election for")
 	dataDir := flag.String("data-dir", "data", "Data directory for config and storage")
 
 	flag.Parse()
@@ -29,7 +27,6 @@ func ParseArgs() (args, error) {
 	return args{
 		*isInit,
 		*network,
-		*dbName,
 		*dataDir,
 	}, nil
 }

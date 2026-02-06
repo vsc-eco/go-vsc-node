@@ -36,7 +36,7 @@ func main() {
 	fmt.Println("Network:", args.network)
 
 	dbImpl := db.New(dbConf)
-	vscDb := vsc.New(dbImpl, args.dbName)
+	vscDb := vsc.New(dbImpl, dbConf)
 	hiveBlocks, _ := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)
 	electionDb := elections.New(vscDb)

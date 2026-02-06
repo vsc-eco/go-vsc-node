@@ -2,14 +2,18 @@ package db
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"vsc-node/modules/config"
 )
 
 var ErrEmptyURI = errors.New("empty MongoDB URI")
 
+const DefaultDbName = "go-vsc"
+
 type dbConfig struct {
-	DbURI string
+	DbURI  string
+	DbName string
 }
 
 type dbConfigStruct struct {
@@ -25,7 +29,8 @@ func NewDbConfig(dataDir ...string) DbConfig {
 	}
 
 	return &dbConfigStruct{config.New(dbConfig{
-		DbURI: "mongodb://localhost:27017",
+		DbURI:  "mongodb://localhost:27017",
+		DbName: DefaultDbName,
 	}, dataDirPtr)}
 }
 
@@ -37,7 +42,15 @@ func (dc *dbConfigStruct) Init() error {
 
 	url := os.Getenv("MONGO_URL")
 	if url != "" {
-		return dc.SetDbURI(url)
+		err = dc.SetDbURI(url)
+	}
+
+	if dc.GetDbName() == "" {
+		err = dc.SetDbName(DefaultDbName)
+	}
+
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -50,4 +63,17 @@ func (dc *dbConfigStruct) SetDbURI(uri string) error {
 	return dc.Update(func(dc *dbConfig) {
 		dc.DbURI = uri
 	})
+}
+
+func (dc *dbConfigStruct) SetDbName(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty db name")
+	}
+	return dc.Update(func(dc *dbConfig) {
+		dc.DbName = name
+	})
+}
+
+func (dc *dbConfigStruct) GetDbName() string {
+	return dc.Get().DbName
 }
