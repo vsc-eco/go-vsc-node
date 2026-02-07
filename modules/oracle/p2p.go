@@ -22,7 +22,7 @@ type p2pSpec struct {
 
 // p2pSpec implements PubSubServiceParams
 func (*p2pSpec) Topic() string {
-	return "oracle"
+	return "/oracle/v1"
 }
 
 // ValidateMessage implements PubSubServiceParams[Msg any]

@@ -10,6 +10,7 @@ type SystemConfig interface {
 	OnTestnet() bool
 	OnMocknet() bool
 	BootstrapPeers() []string
+	PubSubTopicPrefix() string
 	NetId() string
 	HiveChainId() string
 	GatewayWallet() string
@@ -41,6 +42,10 @@ func (c *config) OnMocknet() bool {
 
 func (c *config) BootstrapPeers() []string {
 	return c.bootstrapPeers
+}
+
+func (c *config) PubSubTopicPrefix() string {
+	return "/vsc/" + c.network
 }
 
 func (c *config) NetId() string {

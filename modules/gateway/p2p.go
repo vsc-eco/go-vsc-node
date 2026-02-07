@@ -224,7 +224,7 @@ func (p2pSpec) SerializeMessage(msg p2pMessage) []byte {
 }
 
 func (p2pSpec) Topic() string {
-	return "/vsc/mainnet/gateway/v1"
+	return "/gateway/v1"
 }
 
 var _ libp2p.PubSubServiceParams[p2pMessage] = p2pSpec{}

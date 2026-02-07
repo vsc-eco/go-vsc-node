@@ -66,7 +66,8 @@ func (p *pubSubService[Msg]) Started() *promise.Promise[any] {
 }
 
 func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg]) (PubSubService[Msg], error) {
-	topic, err := p2p.pubsub.Join(service.Topic())
+	topicName := p2p.systemConfig.PubSubTopicPrefix() + service.Topic()
+	topic, err := p2p.pubsub.Join(topicName)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +78,7 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 	}
 
 	// Invalid messages are not relayed nor processed by subscribers
-	err = p2p.pubsub.RegisterTopicValidator(service.Topic(), func(ctx context.Context, from peer.ID, msg *pubsub.Message) bool {
+	err = p2p.pubsub.RegisterTopicValidator(topicName, func(ctx context.Context, from peer.ID, msg *pubsub.Message) bool {
 		parsedMsg, err := service.ParseMessage(msg.GetData())
 		if err != nil {
 			return false

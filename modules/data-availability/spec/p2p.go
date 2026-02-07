@@ -123,5 +123,5 @@ func (p2pSpec) SerializeMessage(msg P2pMessage) []byte {
 
 // Topic implements libp2p.PubSubServiceParams.
 func (p2pSpec) Topic() string {
-	return "/vsc/mainnet/data-availability/v1"
+	return "/data-availability/v1"
 }
