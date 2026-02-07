@@ -9,7 +9,6 @@ import (
 type args struct {
 	isInit  bool
 	network string
-	gqlHost string
 	dataDir string
 }
 
@@ -21,7 +20,6 @@ func ParseArgs() (args, error) {
 	}
 	isInit := flag.Bool("init", false, "Initialize the node (run init instead of run)")
 	network := flag.String("network", "mainnet", "Name of the network (mainnet or testnet)")
-	gqlHost := flag.String("gql-host", "0.0.0.0:8080", "GraphQL endpoint host")
 	dataDir := flag.String("data-dir", "data", "Data directory for config and storage")
 
 	flag.Parse()
@@ -29,7 +27,6 @@ func ParseArgs() (args, error) {
 	return args{
 		*isInit,
 		*network,
-		*gqlHost,
 		*dataDir,
 	}, nil
 }

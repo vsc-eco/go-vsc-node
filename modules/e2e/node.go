@@ -98,7 +98,8 @@ func MakeNode(input MakeNodeInput) *Node {
 	dbConf := db.NewDbConfig(dataDir)
 	identityConfig := common.NewIdentityConfig(dataDir)
 	p2pConfig := p2pInterface.NewConfig(dataDir)
-	aggregate.New([]aggregate.Plugin{dbConf, identityConfig, p2pConfig}).Init()
+	gqlConfig := gql.NewGqlConfig(dataDir)
+	aggregate.New([]aggregate.Plugin{dbConf, identityConfig, p2pConfig, gqlConfig}).Init()
 	dbConf.SetDbName("go-vsc-" + input.Username)
 	identityConfig.SetUsername(input.Username)
 	p2pConfig.SetOptions(p2pInterface.P2POpts{
@@ -107,6 +108,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		AllowPrivate: true,
 		Bootnodes:    []string{},
 	})
+	gqlConfig.SetHostAddr("0.0.0.0:7080")
 
 	db := db.New(dbConf)
 	vscDb := vsc.New(db, dbConf)
@@ -261,7 +263,7 @@ func MakeNode(input MakeNodeInput) *Node {
 			contractState,
 			tssKeys,
 			tssRequests,
-		}}), "0.0.0.0:7080")
+		}}), gqlConfig)
 		plugins = append(plugins, gqlManager)
 	}
 

@@ -44,6 +44,7 @@ func TestQueryAndMutation(t *testing.T) {
 	dbConfg := db.NewDbConfig()
 	identityConfig := common.NewIdentityConfig()
 	p2pConfig := libp2p.NewConfig()
+	gqlConfig := gql.NewGqlConfig()
 	d := db.New(dbConfg)
 	vscDb := vsc.New(d, dbConfg)
 	witnesses := witnesses.New(vscDb)
@@ -91,7 +92,11 @@ func TestQueryAndMutation(t *testing.T) {
 	}
 	schema := gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: resolver})
 
-	g := gql.New(schema, "localhost:8081")
+	// set host address to localhost:8081
+	gqlConfig.Init()
+	gqlConfig.SetHostAddr("127.0.0.1:8081")
+
+	g := gql.New(schema, gqlConfig)
 	agg := aggregate.New([]aggregate.Plugin{
 		dbConfg,
 		d,
@@ -113,7 +118,7 @@ func TestQueryAndMutation(t *testing.T) {
 
 	// test get current number query
 	query := `{"query": "query { witnessNodes(height: 52) { net_id } }"}`
-	resp := performGraphQLRequest(t, "http://"+g.Addr+"/api/v1/graphql", query)
+	resp := performGraphQLRequest(t, "http://"+gqlConfig.GetHostAddr()+"/api/v1/graphql", query)
 
 	expectedQuery := map[string]interface{}{
 		"data": map[string]interface{}{

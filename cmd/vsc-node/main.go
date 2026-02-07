@@ -56,6 +56,7 @@ func main() {
 	}
 	dbConf := db.NewDbConfig(args.dataDir)
 	p2pConf := p2pInterface.NewConfig(args.dataDir)
+	gqlConf := gql.NewGqlConfig(args.dataDir)
 	hiveApiUrl := streamer.NewHiveConfig(args.dataDir)
 	hiveApiUrlErr := hiveApiUrl.Init()
 
@@ -246,7 +247,7 @@ func main() {
 		ContractsState: contractState,
 		TssKeys:        tssKeys,
 		TssRequests:    tssRequests,
-	}}), args.gqlHost)
+	}}), gqlConf)
 
 	plugins := make([]aggregate.Plugin, 0)
 
@@ -255,6 +256,7 @@ func main() {
 		dbConf,
 		p2pConf,
 		identityConfig,
+		gqlConf,
 
 		//DB plugin initialization
 		dbImpl,
