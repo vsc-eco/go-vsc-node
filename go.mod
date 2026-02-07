@@ -25,7 +25,7 @@ require (
 	github.com/rs/cors v1.11.1
 	github.com/vektah/gqlparser/v2 v2.5.30
 	github.com/vsc-eco/go-ethereum v0.0.1
-	github.com/vsc-eco/hivego v0.0.0-20260201234744-6577fbe1908b
+	github.com/vsc-eco/hivego v0.0.0-20260206224142-4da8383a9a7a
 	go.mongodb.org/mongo-driver v1.16.0
 )
 
