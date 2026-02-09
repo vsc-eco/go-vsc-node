@@ -10,6 +10,8 @@ type args struct {
 	isInit  bool
 	network string
 	dataDir string
+
+	disableTss bool
 }
 
 func ParseArgs() (args, error) {
@@ -21,6 +23,7 @@ func ParseArgs() (args, error) {
 	isInit := flag.Bool("init", false, "Initialize the node (run init instead of run)")
 	network := flag.String("network", "mainnet", "Name of the network (mainnet or testnet)")
 	dataDir := flag.String("data-dir", "data", "Data directory for config and storage")
+	disableTss := flag.Bool("disable-tss", false, "Disable TSS plugin (testnet only)")
 
 	flag.Parse()
 
@@ -28,5 +31,6 @@ func ParseArgs() (args, error) {
 		*isInit,
 		*network,
 		*dataDir,
+		*disableTss,
 	}, nil
 }

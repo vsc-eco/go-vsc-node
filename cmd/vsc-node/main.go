@@ -96,6 +96,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if sysConfig.OnMainnet() && args.disableTss {
+		fmt.Println("cannot disable TSS plugin on mainnet")
+		os.Exit(1)
+	}
+
 	// choose the source
 	hiveRpcClient := hivego.NewHiveRpc(hiveURIs)
 	hiveRpcClient.ChainID = sysConfig.HiveChainId()
@@ -301,11 +306,13 @@ func main() {
 		wasm,
 		txpool,
 
-		tssMgr,
-
 		//Setup graphql manager after everything is initialized
 		gqlManager,
 	)
+
+	if !args.disableTss {
+		plugins = append(plugins, tssMgr)
+	}
 
 	a := aggregate.New(
 		plugins,
