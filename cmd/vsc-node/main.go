@@ -226,6 +226,7 @@ func main() {
 		blockConsumer,
 		se,
 		identityConfig,
+		sysConfig,
 		flatDb,
 		&hiveCreator,
 	)

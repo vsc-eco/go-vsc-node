@@ -203,7 +203,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	if err != nil {
 		panic(err)
 	}
-	tssManager := tss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessesDb, electionDb, blockConsumer, se, identityConfig, ds, &txCreator)
+	tssManager := tss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessesDb, electionDb, blockConsumer, se, identityConfig, sysConfig, ds, &txCreator)
 
 	plugins := make([]aggregate.Plugin, 0)
 

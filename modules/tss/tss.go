@@ -16,6 +16,7 @@ import (
 	"vsc-node/lib/hive"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
@@ -42,8 +43,6 @@ const TSS_SIGN_INTERVAL = 50 //* 2
 // 5 minutes in blocks
 const TSS_ROTATE_INTERVAL = 20 * 5
 
-const TSS_ACTIVATE_HEIGHT = 102_083_000
-
 // 24 hour blame
 var BLAME_EXPIRE = uint64(24 * 60 * 20)
 
@@ -68,6 +67,7 @@ type TssManager struct {
 	witnessDb  witnesses.Witnesses
 	electionDb elections.Elections
 	config     common.IdentityConfig
+	sconf      systemconfig.SystemConfig
 	VStream    *blockconsumer.HiveConsumer
 	scheduler  GetScheduler
 	hiveClient hive.HiveTransactionCreator
@@ -104,7 +104,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		return
 	}
 
-	if TSS_ACTIVATE_HEIGHT > bh {
+	if tssMgr.sconf.ConsensusParams().TssIndexHeight > bh {
 		return
 	}
 
@@ -995,6 +995,7 @@ func New(
 	vstream *blockconsumer.HiveConsumer,
 	se GetScheduler,
 	config common.IdentityConfig,
+	sconf systemconfig.SystemConfig,
 	keystore *flatfs.Datastore,
 	hiveClient hive.HiveTransactionCreator,
 ) *TssManager {
@@ -1007,6 +1008,7 @@ func New(
 		keyStore: keystore,
 
 		config:     config,
+		sconf:      sconf,
 		scheduler:  se,
 		preParams:  preParams,
 		p2p:        p2p,
