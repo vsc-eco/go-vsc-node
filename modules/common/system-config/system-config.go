@@ -77,6 +77,7 @@ func MainnetConfig() SystemConfig {
 		startHeight:    94601000,
 		consensusParams: params.ConsensusParams{
 			MinStake:       params.CONSENSUS_MINIMUM,
+			MinMembers:     7,
 			MinRcLimit:     params.MINIMUM_RC_LIMIT,
 			TssIndexHeight: params.TSS_INDEX_HEIGHT,
 		},
@@ -94,6 +95,7 @@ func TestnetConfig() SystemConfig {
 		startHeight:    2,
 		consensusParams: params.ConsensusParams{
 			MinStake:       params.CONSENSUS_MINIMUM,
+			MinMembers:     3,
 			MinRcLimit:     params.MINIMUM_RC_LIMIT,
 			TssIndexHeight: 0,
 		},
@@ -110,6 +112,7 @@ func MocknetConfig() SystemConfig {
 		startHeight:   0,
 		consensusParams: params.ConsensusParams{
 			MinStake:       1,
+			MinMembers:     3,
 			MinRcLimit:     1,
 			TssIndexHeight: 0,
 		},

@@ -189,7 +189,6 @@ func (e *electionProposer) GenerateElectionAtBlock(blk uint64) (elections.Electi
 }
 
 const DEFAULT_NEW_NODE_WEIGHT = uint64(10)
-const MINIMUM_ELECTION_MEMBER_COUNT = int(7)
 
 var REQUIRED_ELECTION_MEMBERS = []string{
 	// "vaultec.vsc",
@@ -252,7 +251,7 @@ func (e *electionProposer) GenerateFullElection(
 
 	var pType string
 	weightMap := map[string]uint64{}
-	if nodesWithStake >= uint64(MINIMUM_ELECTION_MEMBER_COUNT) || etype == "staked" {
+	if nodesWithStake >= uint64(e.sconf.ConsensusParams().MinMembers) || etype == "staked" {
 		pType = "staked"
 		weightMap = stakedMap
 	} else {
@@ -402,7 +401,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		if len(options) > 0 {
 			minimumMemberCount = options[0].OverrideMinimumMemberCount
 		} else {
-			minimumMemberCount = MINIMUM_ELECTION_MEMBER_COUNT
+			minimumMemberCount = ep.sconf.ConsensusParams().MinMembers
 		}
 
 		if len(electionData.Members) < minimumMemberCount {

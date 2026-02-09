@@ -37,6 +37,7 @@ var TSS_INDEX_HEIGHT uint64 = 102_083_000
 
 type ConsensusParams struct {
 	MinStake       int64
+	MinMembers     int
 	MinRcLimit     uint64
 	TssIndexHeight uint64
 }
