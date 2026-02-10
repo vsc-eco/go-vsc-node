@@ -43,11 +43,11 @@ type TssKey struct {
 }
 
 type TssRequest struct {
-	Id     string     `bson:"id"`
-	Status SignStatus `bson:"status"`
-	KeyId  string     `bson:"key_id"`
-	Msg    string     `bson:"msg"`
-	Sig    string     `bson:"sig"`
+	Id     string        `bson:"id"`
+	Status TssSignStatus `bson:"status"`
+	KeyId  string        `bson:"key_id"`
+	Msg    string        `bson:"msg"`
+	Sig    string        `bson:"sig"`
 }
 
 type TssCommitment struct {
@@ -75,11 +75,11 @@ const (
 	TssKeyNew    string = "new"
 )
 
-type SignStatus string
+type TssSignStatus string
 
 const (
-	SignComplete SignStatus = "complete"
-	SignPending  SignStatus = "pending"
+	SignComplete TssSignStatus = "complete"
+	SignPending  TssSignStatus = "unsigned"
 )
 
 type TssOp struct {

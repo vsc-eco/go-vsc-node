@@ -49,7 +49,7 @@ func TestTssRequests(t *testing.T) {
 
 		mockData[i] = TssRequest{
 			Id:     fmt.Sprintf("tss-id-%d", i),
-			Status: SignStatus(fmt.Sprintf("tss-status-%d", i)),
+			Status: TssSignStatus(fmt.Sprintf("tss-status-%d", i)),
 			KeyId:  testTssKeyID,
 			Msg:    hex.EncodeToString(msgHex),
 			Sig:    hex.EncodeToString(msgSig),

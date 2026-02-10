@@ -204,21 +204,31 @@ type ElectionResult {
   tx_id: String!
 }
 
+enum TssKeyAlgo {
+  ecdsa
+  eddsa
+}
+
+enum TssSignStatus {
+  complete
+  unsigned
+}
+
 type TssKey {
-	id: String!
-	status: String!
-	PublicKey: String!
-	Owner: String!
-	Algo: String!
-	CreatedHeight: Int!
+  id: String!
+  status: String!
+  public_key: String!
+  owner: String!
+  algo: TssKeyAlgo!
+  created_height: Int64!
+  epoch: Uint64!
 }
 
 type TssRequest {
-	id: String!
-	status: String!
-	keyId: String!
-	msg: String!  
-	sig: String! 
+  key_id: String!
+  status: TssSignStatus!
+  msg: String!
+  sig: String!
 }
 
 input LedgerTxFilter {

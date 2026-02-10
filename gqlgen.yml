@@ -19,6 +19,7 @@ autobind:
   - vsc-node/modules/db/vsc/transactions
   - vsc-node/modules/db/vsc/vsc_blocks
   - vsc-node/modules/db/vsc/witnesses
+  - vsc-node/modules/db/vsc/tss
 
 resolver:
   layout: follow-schema

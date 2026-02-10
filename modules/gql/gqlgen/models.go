@@ -89,20 +89,3 @@ type TransactionFilter struct {
 type TransactionSubmitResult struct {
 	ID *string `json:"id,omitempty"`
 }
-
-type TssKey struct {
-	ID            string `json:"id"`
-	Status        string `json:"status"`
-	PublicKey     string `json:"PublicKey"`
-	Owner         string `json:"Owner"`
-	Algo          string `json:"Algo"`
-	CreatedHeight int    `json:"CreatedHeight"`
-}
-
-type TssRequest struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	KeyID  string `json:"keyId"`
-	Msg    string `json:"msg"`
-	Sig    string `json:"sig"`
-}

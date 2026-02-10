@@ -22,6 +22,7 @@ import (
 	"vsc-node/modules/db/vsc/nonces"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
 	ledgerSystem "vsc-node/modules/ledger-system"
@@ -503,57 +504,17 @@ func (r *queryResolver) ElectionByBlockHeight(ctx context.Context, blockHeight *
 }
 
 // GetTssKey is the resolver for the getTssKey field.
-func (r *queryResolver) GetTssKey(ctx context.Context, keyID string) (*TssKey, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
-
+func (r *queryResolver) GetTssKey(ctx context.Context, keyID string) (*tss_db.TssKey, error) {
 	t, err := r.TssKeys.FindKey(keyID)
 	if err != nil {
 		return nil, err
 	}
-
-	tssKey := &TssKey{
-		ID:            keyID,
-		Status:        t.Status,
-		PublicKey:     t.PublicKey,
-		Owner:         t.Owner,
-		Algo:          string(t.Algo),
-		CreatedHeight: int(t.CreatedHeight),
-	}
-
-	return tssKey, nil
+	return &t, nil
 }
 
 // GetTssRequests is the resolver for the getTssRequests field.
-func (r *queryResolver) GetTssRequests(ctx context.Context, keyID string, msgHex []string) ([]TssRequest, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
-
-	t, err := r.TssRequests.FindRequests(keyID, msgHex)
-	if err != nil {
-		return nil, err
-	}
-
-	tssRequests := make([]TssRequest, len(t))
-	for i := range t {
-		tr := &t[i]
-
-		tssRequests[i] = TssRequest{
-			ID:     tr.Id,
-			Status: string(tr.Status),
-			KeyID:  keyID,
-			Msg:    tr.Msg,
-			Sig:    tr.Sig,
-		}
-	}
-
-	return tssRequests, nil
+func (r *queryResolver) GetTssRequests(ctx context.Context, keyID string, msgHex []string) ([]tss_db.TssRequest, error) {
+	return r.TssRequests.FindRequests(keyID, msgHex)
 }
 
 // Amount is the resolver for the amount field.
@@ -634,6 +595,16 @@ func (r *transactionRecordResolver) LedgerActions(ctx context.Context, obj *tran
 	return actions, nil
 }
 
+// CreatedHeight is the resolver for the created_height field.
+func (r *tssKeyResolver) CreatedHeight(ctx context.Context, obj *tss_db.TssKey) (model.Int64, error) {
+	return model.Int64(obj.CreatedHeight), nil
+}
+
+// Epoch is the resolver for the epoch field.
+func (r *tssKeyResolver) Epoch(ctx context.Context, obj *tss_db.TssKey) (model.Uint64, error) {
+	return model.Uint64(obj.Epoch), nil
+}
+
 // Height is the resolver for the height field.
 func (r *witnessResolver) Height(ctx context.Context, obj *witnesses.Witness) (model.Uint64, error) {
 	return model.Uint64(obj.Height), nil
@@ -692,6 +663,9 @@ func (r *Resolver) TransactionRecord() TransactionRecordResolver {
 	return &transactionRecordResolver{r}
 }
 
+// TssKey returns TssKeyResolver implementation.
+func (r *Resolver) TssKey() TssKeyResolver { return &tssKeyResolver{r} }
+
 // Witness returns WitnessResolver implementation.
 func (r *Resolver) Witness() WitnessResolver { return &witnessResolver{r} }
 
@@ -711,5 +685,6 @@ type queryResolver struct{ *Resolver }
 type rcRecordResolver struct{ *Resolver }
 type transactionOperationResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
+type tssKeyResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }
