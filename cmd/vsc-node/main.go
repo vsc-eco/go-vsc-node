@@ -305,14 +305,14 @@ func main() {
 		//WASM execution environment
 		wasm,
 		txpool,
-
-		//Setup graphql manager after everything is initialized
-		gqlManager,
 	)
 
 	if !args.disableTss {
 		plugins = append(plugins, tssMgr)
 	}
+
+	//Setup graphql manager after everything is initialized
+	plugins = append(plugins, gqlManager)
 
 	a := aggregate.New(
 		plugins,
