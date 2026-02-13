@@ -61,9 +61,16 @@ type ReshareDispatcher struct {
 }
 
 func (dispatcher *ReshareDispatcher) Start() error {
+	startTime := time.Now()
+	fmt.Printf("[TSS] [RESHARE] Starting reshare sessionId=%s keyId=%s epoch=%d newEpoch=%d blockHeight=%d\n",
+		dispatcher.sessionId, dispatcher.keyId, dispatcher.epoch, dispatcher.newEpoch, dispatcher.blockHeight)
+
 	sortedPids, myParty, p2pCtx := dispatcher.baseInfo()
 
 	userId := dispatcher.tssMgr.config.Get().HiveUsername
+
+	fmt.Printf("[TSS] [RESHARE] Reshare participants: old=%d new=%d sessionId=%s\n",
+		len(sortedPids), len(dispatcher.newParticipants), dispatcher.sessionId)
 
 	epochIdx := makeEpochIdx(int(dispatcher.newEpoch))
 	newPids := make([]*btss.PartyID, 0)
@@ -101,20 +108,31 @@ func (dispatcher *ReshareDispatcher) Start() error {
 	newThreshold, _ := tss_helpers.GetThreshold(len(dispatcher.newPids))
 	// newThreshold++
 
+	fmt.Printf("[TSS] [RESHARE] Thresholds: old=%d/%d new=%d/%d sessionId=%s\n",
+		threshold, len(sortedPids), newThreshold, len(dispatcher.newPids), dispatcher.sessionId)
 	fmt.Println("newSortedPids", len(dispatcher.newPids), newThreshold, threshold)
 	//epoch: 5 <-- actual data
 	//epoch: 7 <-- likely empty
 
 	savedKeyData, err := dispatcher.keystore.Get(context.Background(), makeKey("key", dispatcher.keyId, int(dispatcher.epoch)))
 
+	fmt.Printf("[TSS] [RESHARE] Key retrieval: keyId=%s epoch=%d err=%v dataLen=%d sessionId=%s\n",
+		dispatcher.keyId, dispatcher.epoch, err, len(savedKeyData), dispatcher.sessionId)
 	fmt.Println("mem", err, len(savedKeyData))
 	if err != nil {
+		fmt.Printf("[TSS] [RESHARE] ERROR: Failed to retrieve key data: keyId=%s epoch=%d err=%v sessionId=%s\n",
+			dispatcher.keyId, dispatcher.epoch, err, dispatcher.sessionId)
 		return err
 	}
 
 	if myParty == nil && myNewParty == nil {
-		return fmt.Errorf("node not part of old or new committee")
+		err := fmt.Errorf("node not part of old or new committee")
+		fmt.Printf("[TSS] [RESHARE] ERROR: %v sessionId=%s userId=%s\n", err, dispatcher.sessionId, userId)
+		return err
 	}
+
+	fmt.Printf("[TSS] [RESHARE] Party membership: oldParty=%v newParty=%v sessionId=%s\n",
+		myParty != nil, myNewParty != nil, dispatcher.sessionId)
 
 	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
 		keydata := keyGenSecp256k1.LocalPartySaveData{}
@@ -133,11 +151,14 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 		go dispatcher.reshareMsgs()
 
+		fmt.Printf("[TSS] [RESHARE] Waiting 15s before starting parties sessionId=%s\n", dispatcher.sessionId)
 		time.Sleep(15 * time.Second)
 
 		go func() {
 			//Check if old party is not nil (ie node is part of old committee)
 			if myParty != nil {
+				fmt.Printf("[TSS] [RESHARE] Starting old party ECDSA sessionId=%s partyId=%s\n",
+					dispatcher.sessionId, myParty.Id)
 				params := btss.NewReSharingParameters(btss.S256(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 
 				dispatcher.party = reshareSecp256k1.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
@@ -145,14 +166,20 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				err := dispatcher.party.Start()
 
 				if err != nil {
+					fmt.Printf("[TSS] [RESHARE] ERROR: Old party start failed sessionId=%s err=%v\n",
+						dispatcher.sessionId, err)
 					fmt.Println("err", err)
 					dispatcher.err = err
+				} else {
+					fmt.Printf("[TSS] [RESHARE] Old party started successfully sessionId=%s\n", dispatcher.sessionId)
 				}
 			}
 		}()
 		go func() {
 			//Check if new party is not nil (ie will be in new committee)
 			if myNewParty != nil {
+				fmt.Printf("[TSS] [RESHARE] Starting new party ECDSA sessionId=%s partyId=%s\n",
+					dispatcher.sessionId, myNewParty.Id)
 				newParams := btss.NewReSharingParameters(btss.S256(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 
 				dispatcher.newParty = reshareSecp256k1.NewLocalParty(newParams, save, dispatcher.p2pMsg, end)
@@ -160,8 +187,12 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				err := dispatcher.newParty.Start()
 
 				if err != nil {
+					fmt.Printf("[TSS] [RESHARE] ERROR: New party start failed sessionId=%s err=%v\n",
+						dispatcher.sessionId, err)
 					fmt.Println("err", err)
 					dispatcher.err = err
+				} else {
+					fmt.Printf("[TSS] [RESHARE] New party started successfully sessionId=%s\n", dispatcher.sessionId)
 				}
 			}
 		}()
@@ -171,10 +202,15 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		go func() {
 			for {
 				reshareResult := <-end
+				fmt.Printf("[TSS] [RESHARE] Reshare result received ECDSA sessionId=%s partyId=%s hasPubKey=%v\n",
+					dispatcher.sessionId, dispatcher.newParty.PartyID().Id, reshareResult.ECDSAPub != nil)
 				fmt.Println("reshareResult ECDSA", reshareResult, dispatcher.newParty.PartyID().Id)
 
 				// fmt.Println("ECDSA reshareResult", reshareResult, reshareResult.ECDSAPub != nil)
 				if reshareResult.ECDSAPub != nil {
+					duration := time.Since(startTime)
+					fmt.Printf("[TSS] [RESHARE] Reshare completed successfully ECDSA sessionId=%s duration=%v keyId=%s newEpoch=%d\n",
+						dispatcher.sessionId, duration, dispatcher.keyId, dispatcher.newEpoch)
 
 					keydata, _ := json.Marshal(reshareResult)
 
@@ -290,23 +326,28 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 	return promise.New(func(resolve func(DispatcherResult), reject func(error)) {
 		<-dispatcher.done
 
+		fmt.Printf("[TSS] [RESHARE] Done() called sessionId=%s timeout=%v hasTssErr=%v hasErr=%v\n",
+			dispatcher.sessionId, dispatcher.timeout, dispatcher.tssErr != nil, dispatcher.err != nil)
 		fmt.Println("OKAYISH", dispatcher.timeout, dispatcher.tssErr, dispatcher.err)
 		if dispatcher.timeout {
 			culprits := make(map[string]bool, 0)
+			oldCulprits := make([]string, 0)
+			newCulprits := make([]string, 0)
 			if dispatcher.party != nil {
 				for _, p := range dispatcher.party.WaitingFor() {
 					culprits[p.Id] = true
+					oldCulprits = append(oldCulprits, p.Id)
 				}
 			}
 			if dispatcher.newParty != nil {
 				for _, p := range dispatcher.newParty.WaitingFor() {
 					culprits[p.Id] = true
+					newCulprits = append(newCulprits, p.Id)
 				}
 			}
-			// a, _, _ := dispatcher.baseInfo()
 
-			// fmt.Println("oldCulprits, newCulprits", oldCulprits, newCulprits, dispatcher.party.PartyID().Id)
-			// fmt.Println(dispatcher.newParticipants, dispatcher.newPids, "partyList", a)
+			fmt.Printf("[TSS] [RESHARE] TIMEOUT: sessionId=%s keyId=%s oldCulprits=%v newCulprits=%v totalCulprits=%d\n",
+				dispatcher.sessionId, dispatcher.keyId, oldCulprits, newCulprits, len(culprits))
 
 			culpritsList := make([]string, 0)
 			for c := range culprits {
@@ -325,6 +366,8 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 		}
 
 		if dispatcher.tssErr != nil {
+			fmt.Printf("[TSS] [RESHARE] ERROR: TSS error occurred sessionId=%s keyId=%s err=%v\n",
+				dispatcher.sessionId, dispatcher.keyId, dispatcher.tssErr)
 			resolve(ErrorResult{
 				tssErr:      dispatcher.tssErr,
 				SessionId:   dispatcher.sessionId,
@@ -336,11 +379,14 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 		}
 
 		if dispatcher.err != nil {
-
+			fmt.Printf("[TSS] [RESHARE] ERROR: Dispatcher error occurred sessionId=%s keyId=%s err=%v\n",
+				dispatcher.sessionId, dispatcher.keyId, dispatcher.err)
 			fmt.Println("dispatcher.err", dispatcher.err)
 			reject(dispatcher.err)
 			return
 		}
+		fmt.Printf("[TSS] [RESHARE] SUCCESS: Reshare completed sessionId=%s keyId=%s newEpoch=%d\n",
+			dispatcher.sessionId, dispatcher.keyId, dispatcher.newEpoch)
 		fmt.Println("dispatcher.result", dispatcher.result)
 		resolve(*dispatcher.result)
 	})
@@ -371,17 +417,26 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 	}
 
 	if from == nil {
+		fmt.Printf("[TSS] [RESHARE] WARN: Received message from unknown participant sessionId=%s from=%s fromCmt=%s\n",
+			dispatcher.sessionId, fromStr, fromCmt)
 		return
 	}
+
+	fmt.Printf("[TSS] [RESHARE] Received message sessionId=%s from=%s isBroadcast=%v cmt=%s fromCmt=%s msgLen=%d\n",
+		dispatcher.sessionId, fromStr, isBrcst, cmt, fromCmt, len(input))
 
 	if cmt == "both" || cmt == "old" {
 		go func() {
 			ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
 			if err != nil {
+				fmt.Printf("[TSS] [RESHARE] ERROR: UpdateFromBytes failed (old party) sessionId=%s from=%s ok=%v err=%v\n",
+					dispatcher.sessionId, fromStr, ok, err)
 				fmt.Println("UpdateFromBytes", ok, err)
 				dispatcher.tssErr = err
 			} else {
 				dispatcher.lastMsg = time.Now()
+				fmt.Printf("[TSS] [RESHARE] Message processed successfully (old party) sessionId=%s from=%s\n",
+					dispatcher.sessionId, fromStr)
 			}
 		}()
 	}
@@ -391,10 +446,14 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 				ok, err := dispatcher.newParty.UpdateFromBytes(input, from, isBrcst)
 
 				if err != nil {
+					fmt.Printf("[TSS] [RESHARE] ERROR: UpdateFromBytes failed (new party) sessionId=%s from=%s ok=%v err=%v\n",
+						dispatcher.sessionId, fromStr, ok, err)
 					fmt.Println("UpdateFromBytes", ok, err)
 					dispatcher.tssErr = err
 				} else {
 					dispatcher.lastMsg = time.Now()
+					fmt.Printf("[TSS] [RESHARE] Message processed successfully (new party) sessionId=%s from=%s\n",
+						dispatcher.sessionId, fromStr)
 				}
 			}()
 		}
@@ -434,17 +493,26 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 				bytes, _, err := msg.WireBytes()
 
 				if err != nil {
+					fmt.Printf("[TSS] [RESHARE] ERROR: WireBytes failed sessionId=%s to=%s err=%v\n",
+						dispatcher.sessionId, to.Id, err)
 					dispatcher.err = err
 				}
 
-				go func() {
+				go func(targetId string, msgBytes []byte) {
+					sendStart := time.Now()
 					err = dispatcher.tssMgr.SendMsg(dispatcher.sessionId, Participant{
-						Account: to.Id,
-					}, to.Moniker, bytes, msg.IsBroadcast(), commiteeType, cmtFrom)
+						Account: targetId,
+					}, "", msgBytes, msg.IsBroadcast(), commiteeType, cmtFrom)
+					sendDuration := time.Since(sendStart)
 					if err != nil {
-						fmt.Println("SendMsg direct info", err, to.Id, len(bytes))
+						fmt.Printf("[TSS] [RESHARE] ERROR: SendMsg failed sessionId=%s to=%s isBroadcast=%v msgLen=%d duration=%v err=%v\n",
+							dispatcher.sessionId, targetId, msg.IsBroadcast(), len(msgBytes), sendDuration, err)
+						fmt.Println("SendMsg direct info", err, targetId, len(msgBytes))
+					} else {
+						fmt.Printf("[TSS] [RESHARE] SendMsg success sessionId=%s to=%s isBroadcast=%v msgLen=%d duration=%v\n",
+							dispatcher.sessionId, targetId, msg.IsBroadcast(), len(msgBytes), sendDuration)
 					}
-				}()
+				}(to.Id, bytes)
 			}
 		}
 	}()
@@ -790,12 +858,16 @@ func (dsc *BaseDispatcher) KeyId() string {
 func (dispatcher *BaseDispatcher) baseStart() {
 	timeout := 1 * time.Minute
 	dispatcher.lastMsg = time.Now()
+	fmt.Printf("[TSS] [BASE] Starting timeout monitor sessionId=%s timeout=%v lastMsg=%v\n",
+		dispatcher.sessionId, timeout, dispatcher.lastMsg)
+	fmt.Println("baseStart lastMsg", dispatcher.lastMsg)
 	go func() {
-		fmt.Println("baseStart lastMsg", dispatcher.lastMsg)
 		for {
-			if time.Since(dispatcher.lastMsg) > timeout {
+			elapsed := time.Since(dispatcher.lastMsg)
+			if elapsed > timeout {
 				dispatcher.timeout = true
-
+				fmt.Printf("[TSS] [BASE] TIMEOUT: sessionId=%s elapsed=%v timeout=%v lastMsg=%v\n",
+					dispatcher.sessionId, elapsed, timeout, dispatcher.lastMsg)
 				dispatcher.done <- struct{}{}
 				break
 			}

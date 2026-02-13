@@ -251,11 +251,26 @@ func (tss *TssManager) BlameScore() scoreMap {
 	})
 
 	bannedNodes := make(map[string]bool)
+	bannedList := make([]string, 0)
 	for _, entry := range sortedArray {
 		//Failure rate of 25% or more results in ban
+		failureRate := float64(entry.Score) / float64(entry.Weight) * 100.0
 		if entry.Score > entry.Weight*25/100 {
 			bannedNodes[entry.Account] = true
+			bannedList = append(bannedList, entry.Account)
+			fmt.Printf("[TSS] [BLAME] Node banned: account=%s score=%d weight=%d failureRate=%.2f%%\n",
+				entry.Account, entry.Score, entry.Weight, failureRate)
+		} else {
+			fmt.Printf("[TSS] [BLAME] Node not banned: account=%s score=%d weight=%d failureRate=%.2f%%\n",
+				entry.Account, entry.Score, entry.Weight, failureRate)
 		}
+	}
+	
+	if len(bannedList) > 0 {
+		fmt.Printf("[TSS] [BLAME] Ban summary: totalBanned=%d bannedNodes=%v\n",
+			len(bannedList), bannedList)
+	} else {
+		fmt.Printf("[TSS] [BLAME] Ban summary: no nodes banned\n")
 	}
 	// scoreMapBytes, _ := json.MarshalIndent(blameMap, "", "  ")
 	// fmt.Println("scoreMap", string(scoreMapBytes), sortedArray)
@@ -292,6 +307,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	}
 
 	blameMap := tssMgr.BlameScore()
+	
+	fmt.Printf("[TSS] [ACTIONS] Running actions blockHeight=%d isLeader=%v actionCount=%d bannedNodes=%d\n",
+		bh, isLeader, len(actions), len(blameMap.bannedNodes))
 
 	dispatchers := make([]Dispatcher, 0)
 	for idx, action := range actions {
@@ -403,6 +421,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			participants := make([]Participant, 0)
 			sessionId = "reshare-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
+			fmt.Printf("[TSS] [RESHARE] Creating reshare action sessionId=%s keyId=%s blockHeight=%d\n",
+				sessionId, action.KeyId, bh)
 			fmt.Println("reshare sessionId", sessionId)
 			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "keygen", "reshare")
 			lastBlame, _ := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "blame")
@@ -410,6 +430,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			//This should either be equal but never less in practical terms
 			//However, we can add further checks
 			if commitment.Epoch >= currentElection.Epoch || err != nil {
+				fmt.Printf("[TSS] [RESHARE] Skipping reshare sessionId=%s keyId=%s commitmentEpoch=%d currentEpoch=%d err=%v\n",
+					sessionId, action.KeyId, commitment.Epoch, currentElection.Epoch, err)
 				fmt.Println("reshare skipping")
 				continue
 			}
@@ -451,6 +473,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 
 			newParticipants := make([]Participant, 0)
+			excludedNodes := make([]string, 0)
 
 			for idx, member := range currentElection.Members {
 				fmt.Println("isBlame", isBlame, idx, blameBits.Bit(idx))
@@ -462,12 +485,18 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				// }
 				//if node is banned
 				if blameMap.bannedNodes[member.Account] {
+					excludedNodes = append(excludedNodes, member.Account)
+					fmt.Printf("[TSS] [RESHARE] Excluding banned node from reshare sessionId=%s account=%s\n",
+						sessionId, member.Account)
 					continue
 				}
 				newParticipants = append(newParticipants, Participant{
 					Account: member.Account,
 				})
 			}
+			
+			fmt.Printf("[TSS] [RESHARE] Participant selection sessionId=%s oldParticipants=%d newParticipants=%d excluded=%d excludedNodes=%v\n",
+				sessionId, len(commitedMembers), len(newParticipants), len(excludedNodes), excludedNodes)
 			fmt.Println("newParticipants", newParticipants)
 
 			dispatcher := &ReshareDispatcher{
@@ -575,6 +604,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				res.BlockHeight = bh
 				tssMgr.sessionResults[dsc.SessionId()] = res
 
+				fmt.Printf("[TSS] [TIMEOUT] Timeout result sessionId=%s keyId=%s blockHeight=%d epoch=%d culprits=%v\n",
+					res.SessionId, res.KeyId, res.BlockHeight, res.Epoch, res.Culprits)
 				fmt.Println("Timeout Result", res, time.Now().String())
 				commitment := result.Serialize()
 				commitment.BlockHeight = bh

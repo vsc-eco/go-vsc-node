@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
 	"vsc-node/modules/common"
 
 	libp2p "vsc-node/modules/p2p"
@@ -154,10 +155,14 @@ func (txp *TssManager) stopP2P() error {
 }
 
 func (tss *TssManager) SendMsg(sessionId string, participant Participant, moniker string, msg []byte, isBroadcast bool, commiteeType string, cmtFrom string) error {
+	startTime := time.Now()
+	fromAccount := tss.config.Get().HiveUsername
+
 	witness, err := tss.witnessDb.GetWitnessAtHeight(participant.Account, nil)
 
-	// fmt.Println("participant.Account", participant.Account)
 	if err != nil {
+		fmt.Printf("[TSS] [P2P] ERROR: GetWitnessAtHeight failed sessionId=%s from=%s to=%s err=%v\n",
+			sessionId, fromAccount, participant.Account, err)
 		fmt.Println("GetWitnessAtHeight", err)
 		return err
 	}
@@ -165,6 +170,8 @@ func (tss *TssManager) SendMsg(sessionId string, participant Participant, monike
 	peerId, err := peer.Decode(witness.PeerId)
 
 	if err != nil {
+		fmt.Printf("[TSS] [P2P] ERROR: PeerId decode failed sessionId=%s from=%s to=%s peerId=%s err=%v\n",
+			sessionId, fromAccount, participant.Account, witness.PeerId, err)
 		return err
 	}
 
@@ -178,6 +185,19 @@ func (tss *TssManager) SendMsg(sessionId string, participant Participant, monike
 	}
 	tRes := TRes{}
 
-	// fmt.Println("Sending message from", tss.config.Get().HiveUsername, "to", participant.Account, "isBroadcast", isBroadcast)
-	return tss.client.Call(peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
+	fmt.Printf("[TSS] [P2P] Sending message sessionId=%s from=%s to=%s isBroadcast=%v cmt=%s cmtFrom=%s msgLen=%d\n",
+		sessionId, fromAccount, participant.Account, isBroadcast, commiteeType, cmtFrom, len(msg))
+
+	err = tss.client.Call(peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
+	duration := time.Since(startTime)
+
+	if err != nil {
+		fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed sessionId=%s from=%s to=%s peerId=%s duration=%v err=%v\n",
+			sessionId, fromAccount, participant.Account, peerId.String(), duration, err)
+	} else {
+		fmt.Printf("[TSS] [P2P] RPC Call success sessionId=%s from=%s to=%s duration=%v\n",
+			sessionId, fromAccount, participant.Account, duration)
+	}
+
+	return err
 }
