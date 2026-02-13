@@ -211,9 +211,11 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 }
 
 type score struct {
-	Account string
-	Score   int
-	Weight  int
+	Account          string
+	Score            int
+	Weight           int
+	FirstEpoch       uint64
+	EpochsSinceFirst uint64
 }
 
 type scoreMap struct {
@@ -222,6 +224,7 @@ type scoreMap struct {
 
 func (tss *TssManager) BlameScore() scoreMap {
 	weightMap := make(map[string]int)
+	nodeFirstEpoch := make(map[string]uint64) // Track first epoch each node appeared
 
 	initialElection, _ := tss.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
 	elections := make(map[uint64]elections.ElectionResult, 0)
@@ -237,9 +240,20 @@ func (tss *TssManager) BlameScore() scoreMap {
 			break
 		}
 		elections[epoch] = *election
+		
+		// Track first appearance of each node
+		for _, member := range election.Members {
+			if _, exists := nodeFirstEpoch[member.Account]; !exists {
+				nodeFirstEpoch[member.Account] = epoch
+			}
+		}
 	}
 
+	currentEpoch := initialElection.Epoch
 	blameMap := make(map[string]int)
+	timeoutBlameMap := make(map[string]int)  // Separate tracking for timeouts vs errors
+	errorBlameMap := make(map[string]int)
+
 	for _, election := range elections {
 		blames, _ := tss.tssCommitments.GetBlames(tss_db.ByEpoch(election.Epoch), tss_db.ByType("blame"))
 		for _, member := range election.Members {
@@ -251,9 +265,22 @@ func (tss *TssManager) BlameScore() scoreMap {
 			blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
 			bv = bv.SetBytes(blameBytes)
 
+			// Determine if this is a timeout or error based on metadata
+			isTimeout := false
+			if blame.Metadata != nil && blame.Metadata.Error != nil {
+				// Check if error indicates timeout
+				errMsg := *blame.Metadata.Error
+				isTimeout = len(errMsg) > 0 && (errMsg == "timeout" || errMsg == "TIMEOUT")
+			}
+
 			for idx, member := range election.Members {
 				if bv.Bit(idx) == 1 {
 					blameMap[member.Account] += 1
+					if isTimeout {
+						timeoutBlameMap[member.Account] += 1
+					} else {
+						errorBlameMap[member.Account] += 1
+					}
 				}
 			}
 		}
@@ -261,10 +288,18 @@ func (tss *TssManager) BlameScore() scoreMap {
 
 	sortedArray := make([]score, 0)
 	for account, weight := range weightMap {
+		firstEpoch, exists := nodeFirstEpoch[account]
+		epochsSinceFirst := uint64(0)
+		if exists && currentEpoch >= firstEpoch {
+			epochsSinceFirst = currentEpoch - firstEpoch
+		}
+		
 		sortedArray = append(sortedArray, score{
 			Account: account,
 			Score:   blameMap[account],
 			Weight:  weight,
+			FirstEpoch: firstEpoch,
+			EpochsSinceFirst: epochsSinceFirst,
 		})
 	}
 
@@ -274,25 +309,41 @@ func (tss *TssManager) BlameScore() scoreMap {
 
 	bannedNodes := make(map[string]bool)
 	bannedList := make([]string, 0)
+	gracePeriodExemptions := make([]string, 0)
+	
 	for _, entry := range sortedArray {
-		//Failure rate of 25% or more results in ban
+		// Check grace period for new nodes
+		if entry.EpochsSinceFirst < TSS_BAN_GRACE_PERIOD_EPOCHS {
+			gracePeriodExemptions = append(gracePeriodExemptions, entry.Account)
+			fmt.Printf("[TSS] [BLAME] Node in grace period (exempt from ban): account=%s score=%d weight=%d epochsSinceFirst=%d gracePeriod=%d\n",
+				entry.Account, entry.Score, entry.Weight, entry.EpochsSinceFirst, TSS_BAN_GRACE_PERIOD_EPOCHS)
+			continue
+		}
+		
+		// Use configurable threshold instead of hardcoded 25%
+		thresholdPercent := TSS_BAN_THRESHOLD_PERCENT
 		failureRate := float64(entry.Score) / float64(entry.Weight) * 100.0
-		if entry.Score > entry.Weight*25/100 {
+		
+		if entry.Weight > 0 && entry.Score > entry.Weight*thresholdPercent/100 {
 			bannedNodes[entry.Account] = true
 			bannedList = append(bannedList, entry.Account)
-			fmt.Printf("[TSS] [BLAME] Node banned: account=%s score=%d weight=%d failureRate=%.2f%%\n",
-				entry.Account, entry.Score, entry.Weight, failureRate)
+			
+			timeoutCount := timeoutBlameMap[entry.Account]
+			errorCount := errorBlameMap[entry.Account]
+			
+			fmt.Printf("[TSS] [BLAME] Node banned: account=%s score=%d weight=%d failureRate=%.2f%% threshold=%d%% timeoutBlames=%d errorBlames=%d epochsSinceFirst=%d\n",
+				entry.Account, entry.Score, entry.Weight, failureRate, thresholdPercent, timeoutCount, errorCount, entry.EpochsSinceFirst)
 		} else {
-			fmt.Printf("[TSS] [BLAME] Node not banned: account=%s score=%d weight=%d failureRate=%.2f%%\n",
-				entry.Account, entry.Score, entry.Weight, failureRate)
+			fmt.Printf("[TSS] [BLAME] Node not banned: account=%s score=%d weight=%d failureRate=%.2f%% threshold=%d%%\n",
+				entry.Account, entry.Score, entry.Weight, failureRate, thresholdPercent)
 		}
 	}
 	
 	if len(bannedList) > 0 {
-		fmt.Printf("[TSS] [BLAME] Ban summary: totalBanned=%d bannedNodes=%v\n",
-			len(bannedList), bannedList)
+		fmt.Printf("[TSS] [BLAME] Ban summary: totalBanned=%d bannedNodes=%v gracePeriodExemptions=%d\n",
+			len(bannedList), bannedList, len(gracePeriodExemptions))
 	} else {
-		fmt.Printf("[TSS] [BLAME] Ban summary: no nodes banned\n")
+		fmt.Printf("[TSS] [BLAME] Ban summary: no nodes banned gracePeriodExemptions=%d\n", len(gracePeriodExemptions))
 	}
 	// scoreMapBytes, _ := json.MarshalIndent(blameMap, "", "  ")
 	// fmt.Println("scoreMap", string(scoreMapBytes), sortedArray)

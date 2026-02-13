@@ -350,21 +350,61 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 			culprits := make(map[string]bool, 0)
 			oldCulprits := make([]string, 0)
 			newCulprits := make([]string, 0)
+			
+			// Check connection status for each culprit to provide context
+			culpritContext := make(map[string]string)
+			
 			if dispatcher.party != nil {
 				for _, p := range dispatcher.party.WaitingFor() {
 					culprits[p.Id] = true
 					oldCulprits = append(oldCulprits, p.Id)
+					
+					// Check if culprit is connected
+					witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(p.Id, nil)
+					if err == nil {
+						peerId, err := peer.Decode(witness.PeerId)
+						if err == nil {
+							host := dispatcher.tssMgr.p2p.Host()
+							connState := host.Network().Connectedness(peerId)
+							if connState != network.Connected {
+								culpritContext[p.Id] = "not_connected"
+							} else {
+								culpritContext[p.Id] = "connected_but_no_response"
+							}
+						}
+					} else {
+						culpritContext[p.Id] = "witness_not_found"
+					}
 				}
 			}
 			if dispatcher.newParty != nil {
 				for _, p := range dispatcher.newParty.WaitingFor() {
 					culprits[p.Id] = true
 					newCulprits = append(newCulprits, p.Id)
+					
+					// Check if culprit is connected
+					if _, exists := culpritContext[p.Id]; !exists {
+						witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(p.Id, nil)
+						if err == nil {
+							peerId, err := peer.Decode(witness.PeerId)
+							if err == nil {
+								host := dispatcher.tssMgr.p2p.Host()
+								connState := host.Network().Connectedness(peerId)
+								if connState != network.Connected {
+									culpritContext[p.Id] = "not_connected"
+								} else {
+									culpritContext[p.Id] = "connected_but_no_response"
+								}
+							}
+						} else {
+							culpritContext[p.Id] = "witness_not_found"
+						}
+					}
 				}
 			}
 
-			fmt.Printf("[TSS] [RESHARE] TIMEOUT: sessionId=%s keyId=%s oldCulprits=%v newCulprits=%v totalCulprits=%d\n",
-				dispatcher.sessionId, dispatcher.keyId, oldCulprits, newCulprits, len(culprits))
+			fmt.Printf("[TSS] [RESHARE] TIMEOUT: sessionId=%s keyId=%s oldCulprits=%v newCulprits=%v totalCulprits=%d contexts=%v\n",
+				dispatcher.sessionId, dispatcher.keyId, oldCulprits, newCulprits, len(culprits), culpritContext)
 
 			culpritsList := make([]string, 0)
 			for c := range culprits {
@@ -1338,13 +1378,20 @@ func (result TimeoutResult) Serialize() tss_helpers.BaseCommitment {
 		}
 	}), result.Epoch)
 
+	// Mark timeout in metadata so we can distinguish from errors
+	timeoutErr := "timeout"
+	timeoutReason := fmt.Sprintf("Timeout waiting for %d nodes: %v", len(result.Culprits), result.Culprits)
+	
 	return tss_helpers.BaseCommitment{
 		Type:        "blame",
 		KeyId:       result.KeyId,
 		SessionId:   result.SessionId,
 		Commitment:  commitment,
 		PublicKey:   nil,
-		Metadata:    nil,
+		Metadata: &tss_helpers.CommitmentMetadata{
+			Error:  &timeoutErr,
+			Reason: &timeoutReason,
+		},
 		BlockHeight: result.BlockHeight,
 		Epoch:       result.Epoch,
 	}
