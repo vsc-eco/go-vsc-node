@@ -204,6 +204,109 @@ func TestVtss(t *testing.T) {
 	select {}
 }
 
+// TestReshareSingleNodeFailure tests reshare behavior when one node fails mid-process
+// Steps:
+// 1. Start 5-node cluster
+// 2. Trigger reshare
+// 3. Kill 1 node mid-reshare
+// 4. Observe behavior: timeout, blame, retry
+// Expected: Reshare completes with remaining 4 nodes, failed node blamed
+func TestReshareSingleNodeFailure(t *testing.T) {
+	t.Skip("Integration test - requires local testnet setup")
+	// TODO: Implement with local testnet
+	// - Set up 5-node cluster
+	// - Trigger reshare via KeyReshare
+	// - Kill one node process
+	// - Verify reshare completes
+	// - Check blame commitments for failed node
+	// - Verify automatic retry scheduled
+}
+
+// TestReshareNetworkPartition tests reshare behavior during network partition
+// Steps:
+// 1. Start 5-node cluster
+// 2. Partition network: 2 nodes isolated from 3 nodes
+// 3. Trigger reshare
+// 4. Observe both partitions
+// Expected: Larger partition completes, smaller partition times out and blames
+func TestReshareNetworkPartition(t *testing.T) {
+	t.Skip("Integration test - requires local testnet setup")
+	// TODO: Implement with network simulation
+	// - Use iptables or network namespace to partition nodes
+	// - Trigger reshare
+	// - Verify behavior in both partitions
+}
+
+// TestReshareStaggeredNodeStartup tests message buffering for late-arriving nodes
+// Steps:
+// 1. Start 3 nodes
+// 2. Trigger reshare
+// 3. Start 2 more nodes during reshare
+// 4. Observe message handling
+// Expected: Late nodes receive buffered messages or reshare completes without them
+func TestReshareStaggeredNodeStartup(t *testing.T) {
+	t.Skip("Integration test - requires local testnet setup")
+	// TODO: Implement staggered startup
+	// - Start subset of nodes
+	// - Trigger reshare
+	// - Start remaining nodes
+	// - Verify message buffering/replay works
+}
+
+// TestReshareHighLatencyNetwork tests reshare with network delays
+// Steps:
+// 1. Configure network delay (100-500ms) between nodes
+// 2. Trigger reshare
+// 3. Observe timeout behavior
+// Expected: Reshare completes despite delays, or timeout increases appropriately
+func TestReshareHighLatencyNetwork(t *testing.T) {
+	t.Skip("Integration test - requires network delay simulation")
+	// TODO: Implement with tc (traffic control) or similar
+	// - Add network delay between nodes
+	// - Trigger reshare
+	// - Verify completion or appropriate timeout
+}
+
+// TestReshareRapidNodeChurn tests stability during node restarts
+// Steps:
+// 1. Start 5-node cluster
+// 2. Rapidly restart nodes (1 at a time, every 10 seconds)
+// 3. Trigger reshare during churn
+// 4. Observe stability
+// Expected: System handles churn gracefully, reshares succeed eventually
+func TestReshareRapidNodeChurn(t *testing.T) {
+	t.Skip("Integration test - requires local testnet setup")
+	// TODO: Implement node restart simulation
+	// - Restart nodes in sequence
+	// - Trigger reshare during churn
+	// - Verify eventual success
+}
+
+// TestReshareMessageRetry tests retry mechanism for failed messages
+func TestReshareMessageRetry(t *testing.T) {
+	// Unit test for retry logic
+	// This can be tested without full testnet
+	t.Skip("TODO: Implement unit test for retry logic")
+}
+
+// TestReshareMessageBuffering tests message buffering for early messages
+func TestReshareMessageBuffering(t *testing.T) {
+	// Unit test for message buffering
+	t.Skip("TODO: Implement unit test for message buffering")
+}
+
+// TestReshareParticipantReadiness tests readiness check logic
+func TestReshareParticipantReadiness(t *testing.T) {
+	// Unit test for readiness checks
+	t.Skip("TODO: Implement unit test for participant readiness")
+}
+
+// TestBanProtocolGracePeriod tests grace period for new nodes
+func TestBanProtocolGracePeriod(t *testing.T) {
+	// Unit test for ban protocol
+	t.Skip("TODO: Implement unit test for ban grace period")
+}
+
 // func TestP2p(t *testing.T) {
 // 	fmt.Println("P2P Test started")
 // 	dbConfig := db.NewDbConfig()
