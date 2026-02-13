@@ -47,6 +47,15 @@ const TSS_ACTIVATE_HEIGHT = 102_083_000
 // 24 hour blame
 var BLAME_EXPIRE = uint64(24 * 60 * 20)
 
+// TSS Reshare configuration constants
+const TSS_RESHARE_SYNC_DELAY = 5 * time.Second      // Reduced from 15s to 5s
+const TSS_RESHARE_TIMEOUT = 2 * time.Minute         // Increased from 1 minute to 2 minutes
+const TSS_MESSAGE_RETRY_COUNT = 3                   // Number of retries for failed messages
+const TSS_MESSAGE_RETRY_DELAY = 1 * time.Second     // Base delay for retries
+const TSS_BAN_THRESHOLD_PERCENT = 25                // Failure rate threshold for bans (25%)
+const TSS_BAN_GRACE_PERIOD_EPOCHS = 4               // Epochs before new nodes can be banned
+const TSS_BUFFERED_MESSAGE_MAX_AGE = 1 * time.Minute // Maximum age for buffered messages
+
 type TssManager struct {
 	p2p    *libp2p.P2PServer
 	pubsub libp2p.PubSubService[p2pMessage]

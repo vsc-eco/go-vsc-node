@@ -27,6 +27,8 @@ import (
 	"github.com/decred/dcrd/dcrec/edwards/v2"
 	"github.com/eager7/dogd/btcec"
 	"github.com/ipfs/go-datastore"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 type Participant struct {
@@ -151,8 +153,15 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 		go dispatcher.reshareMsgs()
 
-		fmt.Printf("[TSS] [RESHARE] Waiting 15s before starting parties sessionId=%s\n", dispatcher.sessionId)
-		time.Sleep(15 * time.Second)
+		// Wait for sync delay (reduced from 15s to configurable 5s)
+		syncDelay := TSS_RESHARE_SYNC_DELAY
+		fmt.Printf("[TSS] [RESHARE] Waiting %v before starting parties sessionId=%s\n", syncDelay, dispatcher.sessionId)
+		
+		// Check participant readiness before starting
+		ready := dispatcher.waitForParticipantReadiness(sortedPids, dispatcher.newPids, syncDelay)
+		if !ready {
+			fmt.Printf("[TSS] [RESHARE] WARN: Not all participants ready, proceeding anyway sessionId=%s\n", dispatcher.sessionId)
+		}
 
 		go func() {
 			//Check if old party is not nil (ie node is part of old committee)
@@ -251,7 +260,15 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 		go dispatcher.reshareMsgs()
 
-		time.Sleep(15 * time.Second)
+		// Wait for sync delay (reduced from 15s to configurable 5s)
+		syncDelay := TSS_RESHARE_SYNC_DELAY
+		fmt.Printf("[TSS] [RESHARE] Waiting %v before starting parties (EDDSA) sessionId=%s\n", syncDelay, dispatcher.sessionId)
+		
+		// Check participant readiness before starting
+		ready := dispatcher.waitForParticipantReadiness(sortedPids, dispatcher.newPids, syncDelay)
+		if !ready {
+			fmt.Printf("[TSS] [RESHARE] WARN: Not all participants ready, proceeding anyway (EDDSA) sessionId=%s\n", dispatcher.sessionId)
+		}
 
 		go func() {
 			if myParty != nil {
@@ -518,6 +535,68 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 	}()
 }
 
+// waitForParticipantReadiness checks if participants are connected before starting reshare
+func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(oldPids btss.SortedPartyIDs, newPids btss.SortedPartyIDs, maxWait time.Duration) bool {
+	startTime := time.Now()
+	checkInterval := 500 * time.Millisecond
+	maxChecks := int(maxWait / checkInterval)
+	
+	allParticipants := make(map[string]bool)
+	for _, p := range oldPids {
+		allParticipants[p.Id] = true
+	}
+	for _, p := range newPids {
+		allParticipants[p.Id] = true
+	}
+	
+	connectedCount := 0
+	totalCount := len(allParticipants)
+	
+	fmt.Printf("[TSS] [RESHARE] Checking participant readiness sessionId=%s totalParticipants=%d\n",
+		dispatcher.sessionId, totalCount)
+	
+	for i := 0; i < maxChecks; i++ {
+		connectedCount = 0
+		for account := range allParticipants {
+			witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(account, nil)
+			if err != nil {
+				continue
+			}
+			
+			peerId, err := peer.Decode(witness.PeerId)
+			if err != nil {
+				continue
+			}
+			
+			host := dispatcher.tssMgr.p2p.Host()
+			connState := host.Network().Connectedness(peerId)
+			if connState == network.Connected {
+				connectedCount++
+			}
+		}
+		
+		readinessPercent := float64(connectedCount) / float64(totalCount) * 100.0
+		fmt.Printf("[TSS] [RESHARE] Readiness check sessionId=%s connected=%d/%d (%.1f%%) elapsed=%v\n",
+			dispatcher.sessionId, connectedCount, totalCount, readinessPercent, time.Since(startTime))
+		
+		// Require at least threshold+1 participants to be connected
+		threshold, _ := tss_helpers.GetThreshold(totalCount)
+		minRequired := threshold + 1
+		
+		if connectedCount >= minRequired {
+			fmt.Printf("[TSS] [RESHARE] Sufficient participants ready sessionId=%s connected=%d required=%d\n",
+				dispatcher.sessionId, connectedCount, minRequired)
+			return true
+		}
+		
+		time.Sleep(checkInterval)
+	}
+	
+	fmt.Printf("[TSS] [RESHARE] WARN: Readiness check timeout sessionId=%s connected=%d/%d after=%v\n",
+		dispatcher.sessionId, connectedCount, totalCount, time.Since(startTime))
+	return false
+}
+
 type SignDispatcher struct {
 	BaseDispatcher
 
@@ -568,7 +647,7 @@ func (dispatcher *SignDispatcher) Start() error {
 		dispatcher.party = keySignSecp256k1.NewLocalParty(m, params, keydata, dispatcher.p2pMsg, end)
 
 		go dispatcher.handleMsgs()
-		time.Sleep(15 * time.Second)
+		time.Sleep(TSS_RESHARE_SYNC_DELAY)
 		go func() {
 			fmt.Println("Starting Sign ECDSA")
 			err := dispatcher.party.Start()
@@ -635,7 +714,7 @@ func (dispatcher *SignDispatcher) Start() error {
 		dispatcher.party = keySignEddsa.NewLocalParty(m, params, keydata, dispatcher.p2pMsg, end)
 
 		go dispatcher.handleMsgs()
-		time.Sleep(15 * time.Second)
+		time.Sleep(TSS_RESHARE_SYNC_DELAY)
 		go func() {
 			err := dispatcher.party.Start()
 
@@ -856,7 +935,14 @@ func (dsc *BaseDispatcher) KeyId() string {
 }
 
 func (dispatcher *BaseDispatcher) baseStart() {
-	timeout := 1 * time.Minute
+	// Use configurable timeout, longer for reshare operations
+	var timeout time.Duration
+	if _, isReshare := dispatcher.(*ReshareDispatcher); isReshare {
+		timeout = TSS_RESHARE_TIMEOUT
+	} else {
+		timeout = 1 * time.Minute // Default timeout for other operations
+	}
+	
 	dispatcher.lastMsg = time.Now()
 	fmt.Printf("[TSS] [BASE] Starting timeout monitor sessionId=%s timeout=%v lastMsg=%v\n",
 		dispatcher.sessionId, timeout, dispatcher.lastMsg)
@@ -941,7 +1027,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		dispatcher.party = keyGenSecp256k1.NewLocalParty(parameters, dispatcher.p2pMsg, end, preParams)
 
 		go dispatcher.handleMsgs()
-		time.Sleep(15 * time.Second)
+		time.Sleep(TSS_RESHARE_SYNC_DELAY)
 		go func() {
 			err := dispatcher.party.Start()
 			if err != nil {
@@ -989,7 +1075,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		dispatcher.party = party
 
 		go dispatcher.handleMsgs()
-		time.Sleep(15 * time.Second)
+		time.Sleep(TSS_RESHARE_SYNC_DELAY)
 
 		go func() {
 			err := party.Start()
