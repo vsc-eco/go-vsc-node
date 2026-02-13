@@ -234,27 +234,30 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 	}
 	duration := time.Since(startTime)
 
-	if err != nil {
-		if attempt < maxRetries {
-			retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt))
-			fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed, will retry sessionId=%s from=%s to=%s peerId=%s duration=%v attempt=%d/%d delay=%v err=%v\n",
-				sessionId, fromAccount, participant.Account, peerId.String(), duration, attempt+1, maxRetries, retryDelay, err)
-			time.Sleep(retryDelay)
-			return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, attempt+1)
+		if err != nil {
+			if attempt < maxRetries {
+				retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt))
+				fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed, will retry sessionId=%s from=%s to=%s peerId=%s duration=%v attempt=%d/%d delay=%v err=%v\n",
+					sessionId, fromAccount, participant.Account, peerId.String(), duration, attempt+1, maxRetries, retryDelay, err)
+				tss.metrics.IncrementMessageRetry()
+				time.Sleep(retryDelay)
+				return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, attempt+1)
+			} else {
+				fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed after %d attempts sessionId=%s from=%s to=%s peerId=%s duration=%v err=%v\n",
+					maxRetries, sessionId, fromAccount, participant.Account, peerId.String(), duration, err)
+				tss.metrics.IncrementMessageSendFailure()
+				return err
+			}
 		} else {
-			fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed after %d attempts sessionId=%s from=%s to=%s peerId=%s duration=%v err=%v\n",
-				maxRetries, sessionId, fromAccount, participant.Account, peerId.String(), duration, err)
-			return err
+			if attempt > 0 {
+				fmt.Printf("[TSS] [P2P] RPC Call succeeded on retry sessionId=%s from=%s to=%s attempt=%d duration=%v\n",
+					sessionId, fromAccount, participant.Account, attempt+1, duration)
+			} else {
+				fmt.Printf("[TSS] [P2P] RPC Call success sessionId=%s from=%s to=%s duration=%v\n",
+					sessionId, fromAccount, participant.Account, duration)
+			}
+			tss.metrics.RecordMessageSendLatency(duration)
 		}
-	} else {
-		if attempt > 0 {
-			fmt.Printf("[TSS] [P2P] RPC Call succeeded on retry sessionId=%s from=%s to=%s attempt=%d duration=%v\n",
-				sessionId, fromAccount, participant.Account, attempt+1, duration)
-		} else {
-			fmt.Printf("[TSS] [P2P] RPC Call success sessionId=%s from=%s to=%s duration=%v\n",
-				sessionId, fromAccount, participant.Account, duration)
-		}
-	}
 
 	return nil
 }

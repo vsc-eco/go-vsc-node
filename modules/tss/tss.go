@@ -93,6 +93,9 @@ type TssManager struct {
 	// Message buffer for early-arriving messages before dispatcher registration
 	messageBuffer map[string][]bufferedMessage
 	bufferLock    sync.RWMutex
+
+	// Metrics for observability
+	metrics *Metrics
 }
 
 type bufferedMessage struct {
@@ -276,6 +279,7 @@ func (tss *TssManager) BlameScore() scoreMap {
 			for idx, member := range election.Members {
 				if bv.Bit(idx) == 1 {
 					blameMap[member.Account] += 1
+					tss.metrics.IncrementBlameCount(member.Account)
 					if isTimeout {
 						timeoutBlameMap[member.Account] += 1
 					} else {
@@ -1172,6 +1176,7 @@ func New(
 		hiveClient: hiveClient,
 
 		tssKeys:        tssKeys,
+		metrics:        GetMetrics(),
 		tssRequests:    tssRequests,
 		tssCommitments: tssCommitments,
 

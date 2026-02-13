@@ -220,6 +220,8 @@ func (dispatcher *ReshareDispatcher) Start() error {
 					duration := time.Since(startTime)
 					fmt.Printf("[TSS] [RESHARE] Reshare completed successfully ECDSA sessionId=%s duration=%v keyId=%s newEpoch=%d\n",
 						dispatcher.sessionId, duration, dispatcher.keyId, dispatcher.newEpoch)
+					dispatcher.tssMgr.metrics.IncrementReshareSuccess()
+					dispatcher.tssMgr.metrics.RecordReshareDuration(duration)
 
 					keydata, _ := json.Marshal(reshareResult)
 
@@ -315,6 +317,12 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				if reshareResult.EDDSAPub == nil {
 					continue
 				}
+
+				duration := time.Since(startTime)
+				fmt.Printf("[TSS] [RESHARE] Reshare completed successfully EDDSA sessionId=%s duration=%v keyId=%s newEpoch=%d\n",
+					dispatcher.sessionId, duration, dispatcher.keyId, dispatcher.newEpoch)
+				dispatcher.tssMgr.metrics.IncrementReshareSuccess()
+				dispatcher.tssMgr.metrics.RecordReshareDuration(duration)
 
 				keydata, _ := json.Marshal(reshareResult)
 
@@ -425,6 +433,7 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 		if dispatcher.tssErr != nil {
 			fmt.Printf("[TSS] [RESHARE] ERROR: TSS error occurred sessionId=%s keyId=%s err=%v\n",
 				dispatcher.sessionId, dispatcher.keyId, dispatcher.tssErr)
+			dispatcher.tssMgr.metrics.IncrementReshareFailure()
 			resolve(ErrorResult{
 				tssErr:      dispatcher.tssErr,
 				SessionId:   dispatcher.sessionId,
@@ -438,6 +447,7 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 		if dispatcher.err != nil {
 			fmt.Printf("[TSS] [RESHARE] ERROR: Dispatcher error occurred sessionId=%s keyId=%s err=%v\n",
 				dispatcher.sessionId, dispatcher.keyId, dispatcher.err)
+			dispatcher.tssMgr.metrics.IncrementReshareFailure()
 			fmt.Println("dispatcher.err", dispatcher.err)
 			reject(dispatcher.err)
 			return

@@ -105,6 +105,7 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 				req.SessionId, myAccount, peerId.String(), len(keys), bufferSize)
 			fmt.Println("actionMap.keys()", keys, tss.mgr.config.Get().HiveUsername, req.SessionId)
 			fmt.Println("Buffering message", req.SessionId)
+			tss.mgr.metrics.IncrementMessageDrop()
 		}
 	}
 
