@@ -32,9 +32,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-// 6 hours of  hive blocks
-var ELECTION_INTERVAL = uint64(6 * 60 * 20)
-
 type electionProposer struct {
 	conf  common.IdentityConfig
 	sconf systemconfig.SystemConfig
@@ -161,7 +158,7 @@ func (e *electionProposer) canHold() bool {
 	result, _ := e.elections.GetElectionByHeight(e.bh)
 
 	// fmt.Println("Last check", result.BlockHeight < e.bh-ELECTION_INTERVAL)
-	return result.BlockHeight < e.bh-ELECTION_INTERVAL
+	return result.BlockHeight < e.bh-e.sconf.ConsensusParams().ElectionInterval
 }
 
 func (e *electionProposer) GenerateElection() (elections.ElectionHeader, elections.ElectionData, error) {
@@ -629,7 +626,7 @@ func (ep *electionProposer) makeElection(blk uint64) (elections.ElectionHeader, 
 		return elections.ElectionHeader{}, err
 	}
 
-	if blk-electionResult.BlockHeight < ELECTION_INTERVAL {
+	if blk-electionResult.BlockHeight < ep.sconf.ConsensusParams().ElectionInterval {
 		return elections.ElectionHeader{}, errors.New("next election not ready")
 	}
 	electionHeader, _, err := ep.GenerateElectionAtBlock(blk)

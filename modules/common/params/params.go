@@ -35,9 +35,13 @@ var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 // Mainnet TSS key indexing
 var TSS_INDEX_HEIGHT uint64 = 102_083_000
 
+// Election once every 6 hours on mainnet
+var ELECTION_INTERVAL = uint64(6 * 60 * 20)
+
 type ConsensusParams struct {
-	MinStake       int64
-	MinMembers     int
-	MinRcLimit     uint64
-	TssIndexHeight uint64
+	MinStake         int64
+	MinMembers       int
+	MinRcLimit       uint64
+	TssIndexHeight   uint64
+	ElectionInterval uint64
 }

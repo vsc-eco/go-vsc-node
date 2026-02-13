@@ -76,10 +76,11 @@ func MainnetConfig() SystemConfig {
 		gatewayWallet:  "vsc.gateway",
 		startHeight:    94601000,
 		consensusParams: params.ConsensusParams{
-			MinStake:       params.CONSENSUS_MINIMUM,
-			MinMembers:     7,
-			MinRcLimit:     params.MINIMUM_RC_LIMIT,
-			TssIndexHeight: params.TSS_INDEX_HEIGHT,
+			MinStake:         params.CONSENSUS_MINIMUM,
+			MinMembers:       7,
+			MinRcLimit:       params.MINIMUM_RC_LIMIT,
+			TssIndexHeight:   params.TSS_INDEX_HEIGHT,
+			ElectionInterval: params.ELECTION_INTERVAL,
 		},
 	}
 	return conf
@@ -94,10 +95,11 @@ func TestnetConfig() SystemConfig {
 		gatewayWallet:  "vsc.gateway",
 		startHeight:    2,
 		consensusParams: params.ConsensusParams{
-			MinStake:       params.CONSENSUS_MINIMUM,
-			MinMembers:     3,
-			MinRcLimit:     params.MINIMUM_RC_LIMIT,
-			TssIndexHeight: 0,
+			MinStake:         params.CONSENSUS_MINIMUM,
+			MinMembers:       3,
+			MinRcLimit:       params.MINIMUM_RC_LIMIT,
+			TssIndexHeight:   0,
+			ElectionInterval: params.ELECTION_INTERVAL,
 		},
 	}
 	return conf
@@ -111,10 +113,11 @@ func MocknetConfig() SystemConfig {
 		gatewayWallet: "vsc.mocknet",
 		startHeight:   0,
 		consensusParams: params.ConsensusParams{
-			MinStake:       1,
-			MinMembers:     3,
-			MinRcLimit:     1,
-			TssIndexHeight: 0,
+			MinStake:         1,
+			MinMembers:       3,
+			MinRcLimit:       1,
+			TssIndexHeight:   0,
+			ElectionInterval: 1000,
 		},
 	}
 	return conf
