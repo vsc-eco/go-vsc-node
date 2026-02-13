@@ -576,6 +576,25 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				sessionId, len(commitedMembers), len(newParticipants), len(excludedNodes), excludedNodes)
 			fmt.Println("newParticipants", newParticipants)
 
+			// Pre-flight checks: validate participant set meets minimum threshold
+			threshold, _ := tss_helpers.GetThreshold(len(newParticipants))
+			minRequired := threshold + 1
+			if len(newParticipants) < minRequired {
+				fmt.Printf("[TSS] [RESHARE] ERROR: Insufficient participants sessionId=%s participants=%d required=%d threshold=%d\n",
+					sessionId, len(newParticipants), minRequired, threshold)
+				continue
+			}
+			
+			// Pre-flight check: verify old participants are available
+			if len(commitedMembers) < threshold+1 {
+				fmt.Printf("[TSS] [RESHARE] ERROR: Insufficient old participants sessionId=%s oldParticipants=%d required=%d threshold=%d\n",
+					sessionId, len(commitedMembers), threshold+1, threshold)
+				continue
+			}
+			
+			fmt.Printf("[TSS] [RESHARE] Pre-flight checks passed sessionId=%s oldParticipants=%d newParticipants=%d\n",
+				sessionId, len(commitedMembers), len(newParticipants))
+
 			dispatcher := &ReshareDispatcher{
 				BaseDispatcher: BaseDispatcher{
 					startLock:    sync.Mutex{},
@@ -704,6 +723,21 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				commitment := result.Serialize()
 				commitment.BlockHeight = bh
 				commitableResults = append(commitableResults, commitment)
+				
+				// Schedule automatic retry for reshare timeouts
+				if dsc.KeyId() != "" {
+					keyInfo, err := tssMgr.tssKeys.FindKey(dsc.KeyId())
+					if err == nil {
+						fmt.Printf("[TSS] [RECOVERY] Scheduling reshare retry for timeout sessionId=%s keyId=%s\n",
+							dsc.SessionId(), dsc.KeyId())
+						// Add to queue for retry (will be picked up in next rotation interval)
+						tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
+							Type:  ReshareAction,
+							KeyId: dsc.KeyId(),
+							Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
+						})
+					}
+				}
 			}
 		}
 		if isLeader {
