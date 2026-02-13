@@ -80,6 +80,19 @@ type TssManager struct {
 	actionMap      map[string]Dispatcher
 	sessionMap     map[string]sessionInfo
 	sessionResults map[string]DispatcherResult
+
+	// Message buffer for early-arriving messages before dispatcher registration
+	messageBuffer map[string][]bufferedMessage
+	bufferLock    sync.RWMutex
+}
+
+type bufferedMessage struct {
+	Data    []byte
+	From    string
+	IsBrcst bool
+	Cmt     string
+	CmtFrom string
+	Time    time.Time
 }
 
 func (tssMgr *TssManager) Receive() {}
@@ -369,7 +382,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			dispatcher.startLock.TryLock()
 
 			dispatchers = append(dispatchers, dispatcher)
+			tssMgr.bufferLock.Lock()
 			tssMgr.actionMap[sessionId] = dispatcher
+			tssMgr.bufferLock.Unlock()
 
 		} else if action.Type == SignAction {
 			sessionId = "sign-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
@@ -415,7 +430,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			dispatcher.startLock.TryLock()
 
 			dispatchers = append(dispatchers, dispatcher)
+			tssMgr.bufferLock.Lock()
 			tssMgr.actionMap[sessionId] = dispatcher
+			tssMgr.bufferLock.Unlock()
 		} else if action.Type == ReshareAction {
 
 			participants := make([]Participant, 0)
@@ -520,7 +537,16 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			dispatcher.startLock.TryLock()
 
 			dispatchers = append(dispatchers, dispatcher)
+			tssMgr.bufferLock.Lock()
 			tssMgr.actionMap[sessionId] = dispatcher
+			bufferSize := len(tssMgr.messageBuffer[sessionId])
+			tssMgr.bufferLock.Unlock()
+
+			// Trigger replay of any buffered messages for this session
+			if bufferSize > 0 {
+				fmt.Printf("[TSS] [RESHARE] Dispatcher registered, will replay buffered messages sessionId=%s bufferSize=%d\n",
+					sessionId, bufferSize)
+			}
 		}
 		tssMgr.sessionMap[sessionId] = sessionInfo{
 			leader: leader,
@@ -538,9 +564,13 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		if err == nil {
 			startedDispatcher = append(startedDispatcher, dispatcher)
 		} else {
-			delete(tssMgr.sigChannels, dispatcher.SessionId())
-			delete(tssMgr.actionMap, dispatcher.SessionId())
-			delete(tssMgr.sessionMap, dispatcher.SessionId())
+			sessionId := dispatcher.SessionId()
+			delete(tssMgr.sigChannels, sessionId)
+			tssMgr.bufferLock.Lock()
+			delete(tssMgr.actionMap, sessionId)
+			delete(tssMgr.messageBuffer, sessionId)
+			tssMgr.bufferLock.Unlock()
+			delete(tssMgr.sessionMap, sessionId)
 		}
 		fmt.Println("Start() err", err)
 	}
@@ -553,9 +583,13 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			resultPtr, err := dsc.Done().Await(context.Background())
 			// fmt.Println("result, err", resultPtr, err)
 
-			delete(tssMgr.sigChannels, dsc.SessionId())
-			delete(tssMgr.actionMap, dsc.SessionId())
-			delete(tssMgr.sessionMap, dsc.SessionId())
+			sessionId := dsc.SessionId()
+			delete(tssMgr.sigChannels, sessionId)
+			tssMgr.bufferLock.Lock()
+			delete(tssMgr.actionMap, sessionId)
+			delete(tssMgr.messageBuffer, sessionId)
+			tssMgr.bufferLock.Unlock()
+			delete(tssMgr.sessionMap, sessionId)
 			if err != nil {
 
 				fmt.Println("Done() err", err, dsc.SessionId())
@@ -1053,6 +1087,7 @@ func New(
 
 		queuedActions:  make([]QueuedAction, 0),
 		actionMap:      make(map[string]Dispatcher),
+		messageBuffer:  make(map[string][]bufferedMessage),
 		sessionMap:     make(map[string]sessionInfo),
 		sessionResults: make(map[string]DispatcherResult),
 	}

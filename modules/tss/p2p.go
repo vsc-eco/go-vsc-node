@@ -12,6 +12,7 @@ import (
 	libp2p "vsc-node/modules/p2p"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/multiformats/go-multicodec"
@@ -154,7 +155,16 @@ func (txp *TssManager) stopP2P() error {
 	return nil
 }
 
+// SendMsg sends a TSS message to a participant with retry logic and connection health checks
 func (tss *TssManager) SendMsg(sessionId string, participant Participant, moniker string, msg []byte, isBroadcast bool, commiteeType string, cmtFrom string) error {
+	return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, 0)
+}
+
+// sendMsgWithRetry implements retry logic with exponential backoff
+func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participant, moniker string, msg []byte, isBroadcast bool, commiteeType string, cmtFrom string, attempt int) error {
+	const maxRetries = 3
+	const baseRetryDelay = 1 * time.Second
+
 	startTime := time.Now()
 	fromAccount := tss.config.Get().HiveUsername
 
@@ -175,6 +185,21 @@ func (tss *TssManager) SendMsg(sessionId string, participant Participant, monike
 		return err
 	}
 
+	// Check connection health before sending
+	if !tss.isPeerConnected(peerId) {
+		if attempt < maxRetries {
+			retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt)) // Exponential backoff: 1s, 2s, 4s
+			fmt.Printf("[TSS] [P2P] WARN: Peer not connected, will retry sessionId=%s to=%s peerId=%s attempt=%d/%d delay=%v\n",
+				sessionId, participant.Account, peerId.String(), attempt+1, maxRetries, retryDelay)
+			time.Sleep(retryDelay)
+			return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, attempt+1)
+		} else {
+			fmt.Printf("[TSS] [P2P] ERROR: Peer not connected after %d attempts sessionId=%s to=%s peerId=%s\n",
+				maxRetries, sessionId, participant.Account, peerId.String())
+			return fmt.Errorf("peer %s not connected after %d retries", peerId.String(), maxRetries)
+		}
+	}
+
 	tMsg := TMsg{
 		IsBroadcast: isBroadcast,
 		SessionId:   sessionId,
@@ -185,19 +210,62 @@ func (tss *TssManager) SendMsg(sessionId string, participant Participant, monike
 	}
 	tRes := TRes{}
 
-	fmt.Printf("[TSS] [P2P] Sending message sessionId=%s from=%s to=%s isBroadcast=%v cmt=%s cmtFrom=%s msgLen=%d\n",
-		sessionId, fromAccount, participant.Account, isBroadcast, commiteeType, cmtFrom, len(msg))
+	if attempt == 0 {
+		fmt.Printf("[TSS] [P2P] Sending message sessionId=%s from=%s to=%s isBroadcast=%v cmt=%s cmtFrom=%s msgLen=%d\n",
+			sessionId, fromAccount, participant.Account, isBroadcast, commiteeType, cmtFrom, len(msg))
+	} else {
+		fmt.Printf("[TSS] [P2P] Retrying message sessionId=%s from=%s to=%s attempt=%d/%d msgLen=%d\n",
+			sessionId, fromAccount, participant.Account, attempt+1, maxRetries, len(msg))
+	}
 
-	err = tss.client.Call(peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
+	// Add timeout to RPC call using a channel
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- tss.client.Call(peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
+	}()
+
+	select {
+	case err = <-errChan:
+		// RPC call completed
+	case <-time.After(30 * time.Second):
+		err = fmt.Errorf("RPC call timeout after 30s")
+		fmt.Printf("[TSS] [P2P] ERROR: RPC call timeout sessionId=%s to=%s peerId=%s\n",
+			sessionId, participant.Account, peerId.String())
+	}
 	duration := time.Since(startTime)
 
 	if err != nil {
-		fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed sessionId=%s from=%s to=%s peerId=%s duration=%v err=%v\n",
-			sessionId, fromAccount, participant.Account, peerId.String(), duration, err)
+		if attempt < maxRetries {
+			retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt))
+			fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed, will retry sessionId=%s from=%s to=%s peerId=%s duration=%v attempt=%d/%d delay=%v err=%v\n",
+				sessionId, fromAccount, participant.Account, peerId.String(), duration, attempt+1, maxRetries, retryDelay, err)
+			time.Sleep(retryDelay)
+			return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, attempt+1)
+		} else {
+			fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed after %d attempts sessionId=%s from=%s to=%s peerId=%s duration=%v err=%v\n",
+				maxRetries, sessionId, fromAccount, participant.Account, peerId.String(), duration, err)
+			return err
+		}
 	} else {
-		fmt.Printf("[TSS] [P2P] RPC Call success sessionId=%s from=%s to=%s duration=%v\n",
-			sessionId, fromAccount, participant.Account, duration)
+		if attempt > 0 {
+			fmt.Printf("[TSS] [P2P] RPC Call succeeded on retry sessionId=%s from=%s to=%s attempt=%d duration=%v\n",
+				sessionId, fromAccount, participant.Account, attempt+1, duration)
+		} else {
+			fmt.Printf("[TSS] [P2P] RPC Call success sessionId=%s from=%s to=%s duration=%v\n",
+				sessionId, fromAccount, participant.Account, duration)
+		}
 	}
 
-	return err
+	return nil
+}
+
+// isPeerConnected checks if a peer is currently connected
+func (tss *TssManager) isPeerConnected(peerId peer.ID) bool {
+	host := tss.p2p.Host()
+	connState := host.Network().Connectedness(peerId)
+	connected := connState == network.Connected
+	if !connected {
+		fmt.Printf("[TSS] [P2P] Peer connection check: peerId=%s state=%v\n", peerId.String(), connState)
+	}
+	return connected
 }
