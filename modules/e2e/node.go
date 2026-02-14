@@ -155,7 +155,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	var blockStatus common_types.BlockStatusGetter = nil
 	p2p := p2pInterface.New(witnessesDb, p2pConfig, identityConfig, sysConfig, blockStatus)
 
-	announcementsManager, _ := announcements.New(hrpc, identityConfig, sysConfig, time.Hour*24, &txCreator, p2p)
+	announcementsManager, _ := announcements.New(hrpc, identityConfig, sysConfig, p2pConfig, time.Hour*24, &txCreator, p2p)
 
 	datalayer := DataLayer.New(p2p, dataDir)
 	wasm := wasm_runtime.New()

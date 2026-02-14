@@ -29,6 +29,7 @@ import (
 type AnnouncementsManager struct {
 	conf         common.IdentityConfig
 	sconf        systemconfig.SystemConfig
+	p2pconf      p2p.P2PConfig
 	cron         *cron.Cron
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -49,7 +50,7 @@ var _ agg.Plugin = &AnnouncementsManager{}
 
 // ===== constructor =====
 
-func New(client HiveRpcClient, conf common.IdentityConfig, sconf systemconfig.SystemConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator, peerInfo common_types.PeerInfoGetter) (*AnnouncementsManager, error) {
+func New(client HiveRpcClient, conf common.IdentityConfig, sconf systemconfig.SystemConfig, p2pconf p2p.P2PConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator, peerInfo common_types.PeerInfoGetter) (*AnnouncementsManager, error) {
 
 	// sanity checks
 
@@ -63,6 +64,7 @@ func New(client HiveRpcClient, conf common.IdentityConfig, sconf systemconfig.Sy
 	return &AnnouncementsManager{
 		conf:         conf,
 		sconf:        sconf,
+		p2pconf:      p2pconf,
 		cron:         cron.New(),
 		client:       client,
 		hiveCreator:  creator,
@@ -226,8 +228,10 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 
 	peerAddrs := make([]string, 0)
 
-	for _, addr := range a.peerInfo.GetPeerAddrs() {
-		if p2p.IsPublicAddr(addr) {
+	if len(a.p2pconf.Get().AnnounceAddrs) > 0 {
+		peerAddrs = append(peerAddrs, a.p2pconf.Get().AnnounceAddrs...)
+	} else {
+		for _, addr := range a.peerInfo.GetPeerAddrs() {
 			peerAddrs = append(peerAddrs, addr.String())
 		}
 	}

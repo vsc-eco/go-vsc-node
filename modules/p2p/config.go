@@ -6,10 +6,11 @@ import (
 )
 
 type p2pConfig struct {
-	Port         int
-	ServerMode   bool
-	AllowPrivate bool
-	Bootnodes    []string
+	Port          int
+	ServerMode    bool
+	AllowPrivate  bool
+	Bootnodes     []string
+	AnnounceAddrs []string
 }
 
 type p2pConfigStruct struct {
@@ -26,10 +27,11 @@ func NewConfig(dataDir ...string) P2PConfig {
 	}
 
 	return &p2pConfigStruct{config.New(p2pConfig{
-		Port:         10720,
-		ServerMode:   false,
-		AllowPrivate: false,
-		Bootnodes:    []string{},
+		Port:          10720,
+		ServerMode:    false,
+		AllowPrivate:  false,
+		Bootnodes:     []string{},
+		AnnounceAddrs: []string{},
 	}, dataDirPtr)}
 }
 

@@ -134,6 +134,7 @@ func main() {
 		hiveRpcClient,
 		identityConfig,
 		sysConfig,
+		p2pConf,
 		time.Hour*24,
 		&hiveCreator,
 		p2p,
