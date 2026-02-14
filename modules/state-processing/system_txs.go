@@ -714,6 +714,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			Index:       idx,
 			BlockHeight: uint64(t.SignedBlock.Headers.Br[1]),
 			BlockId:     t.Self.BlockId,
+			Timestamp:   t.Self.Timestamp,
 		})
 
 		if txContainer.Type() == "transaction" {

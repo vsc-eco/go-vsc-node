@@ -845,10 +845,7 @@ func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
 
 	offchainTx := OffchainTransaction{
 		TxId: tx.Id,
-		Self: TxSelf{
-			TxId:        tx.Id,
-			BlockHeight: tx.Self.BlockHeight,
-		},
+		Self: tx.Self,
 	}
 	json.Unmarshal(bJson, &offchainTx)
 
@@ -1088,7 +1085,7 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 	// fmt.Println("stakeTx tx.Tx[type].(string)", tx.Tx["type"].(string))
 
 	output := make([]VSCTransaction, 0)
-	for _, op := range tx.Tx {
+	for idx, op := range tx.Tx {
 		var vtx VSCTransaction
 		switch op.Type {
 		case "call":
@@ -1096,6 +1093,7 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 				Self:  self,
 				NetId: tx.Headers.NetId,
 			}
+			callTx.Self.OpIndex = idx
 			transactionpool.DecodeTxCbor(op, &callTx)
 
 			vtx = callTx
