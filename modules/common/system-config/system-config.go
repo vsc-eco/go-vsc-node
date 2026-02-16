@@ -33,7 +33,7 @@ func (c *config) OnMainnet() bool {
 }
 
 func (c *config) OnTestnet() bool {
-	return c.network == "testnet"
+	return c.network == "testnet" || c.network == "devnet"
 }
 
 func (c *config) OnMocknet() bool {
@@ -105,6 +105,24 @@ func TestnetConfig() SystemConfig {
 	return conf
 }
 
+func DevnetConfig() SystemConfig {
+	conf := &config{
+		network:       "devnet",
+		netId:         "vsc-devnet",
+		hiveChainId:   "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
+		gatewayWallet: "vsc.gateway",
+		startHeight:   2,
+		consensusParams: params.ConsensusParams{
+			MinStake:         1000,
+			MinMembers:       3,
+			MinRcLimit:       params.MINIMUM_RC_LIMIT,
+			TssIndexHeight:   0,
+			ElectionInterval: 40,
+		},
+	}
+	return conf
+}
+
 func MocknetConfig() SystemConfig {
 	conf := &config{
 		network:       "mocknet",
@@ -129,6 +147,8 @@ func FromNetwork(network string) SystemConfig {
 		return MainnetConfig()
 	case "testnet":
 		return TestnetConfig()
+	case "devnet":
+		return DevnetConfig()
 	case "mocknet":
 		return MocknetConfig()
 	default:
