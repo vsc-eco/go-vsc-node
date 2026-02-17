@@ -28,7 +28,7 @@ type ExecContextValue interface {
 	IOGas() int
 	IOSession() IOSession
 	Log(msg string)
-	PullBalance(amount int64, asset string) result.Result[struct{}]
+	PullBalance(from string, amount int64, asset string) result.Result[struct{}]
 	Revert()
 	SendBalance(to string, amount int64, asset string) result.Result[struct{}]
 	SetGasUsage(gasUsed uint)

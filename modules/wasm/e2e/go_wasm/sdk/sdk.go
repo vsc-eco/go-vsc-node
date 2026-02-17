@@ -43,7 +43,7 @@ func getEnvKey(arg *string) *string
 func getBalance(arg1 *string, arg2 *string) *string
 
 //go:wasmimport sdk hive.draw
-func hiveDraw(arg1 *string, arg2 *string) *string
+func hiveDraw(arg1 *string, arg2 *string, arg3 *string) *string
 
 //go:wasmimport sdk hive.transfer
 func hiveTransfer(arg1 *string, arg2 *string, arg3 *string) *string
@@ -163,10 +163,11 @@ func GetBalance(address Address, asset Asset) int64 {
 }
 
 // Transfer assets from caller account to the contract up to the limit specified in `intents`. The transaction must be signed using active authority for Hive accounts.
-func HiveDraw(amount int64, asset Asset) {
+func HiveDraw(from Address, amount int64, asset Asset) {
+	frm := from.String()
 	amt := strconv.FormatInt(amount, 10)
 	as := asset.String()
-	hiveDraw(&amt, &as)
+	hiveDraw(&frm, &amt, &as)
 }
 
 // Transfer assets from the contract to another account.

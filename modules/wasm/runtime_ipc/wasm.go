@@ -374,8 +374,6 @@ func registerImportV2(
 					msg := readString(runtime, memory, msgPtr).UnwrapOr("no message")
 					symbol := readString(runtime, memory, symbolPtr).UnwrapOr("no symbol")
 
-					fmt.Println("reverting execution:", msg, symbol)
-
 					retChan <- wasm_types.WasmResultStruct{
 						Error:     &msg,
 						ErrorCode: symbol,

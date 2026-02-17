@@ -376,27 +376,41 @@ func (ctx *contractExecutionContext) GetBalance(account string, asset string) in
 	return getBal
 }
 
-func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) result.Result[struct{}] {
+func (ctx *contractExecutionContext) PullBalance(from string, amount int64, asset string) result.Result[struct{}] {
 	if len(ctx.env.RequiredAuths) == 0 {
 		return result.Err[struct{}](
 			errors.Join(fmt.Errorf(contracts.MISSING_REQ_AUTH), fmt.Errorf("no active authority")),
 		)
 	}
-	tokenLimit, ok := ctx.tokenLimits[asset]
-	if !ok {
+	switch from {
+	case ctx.env.Caller:
+		tokenLimit, ok := ctx.tokenLimits[asset]
+		if !ok {
+			return result.Err[struct{}](
+				errors.Join(fmt.Errorf(contracts.LEDGER_INTENT_ERROR), fmt.Errorf("no caller intent for: %s", asset)),
+			)
+		}
+		if amount > *tokenLimit {
+			return result.Err[struct{}](
+				errors.Join(
+					fmt.Errorf(contracts.LEDGER_INTENT_ERROR),
+					fmt.Errorf("amount (%d) is over remaining token limit (%d)", amount, *tokenLimit),
+				),
+			)
+		}
+		*tokenLimit -= amount
+	case ctx.env.Sender:
+		err := ctx.callSession.DecrementSenderTokenLimit(asset, amount)
+		if err != nil {
+			return result.Err[struct{}](
+				errors.Join(errors.New(contracts.LEDGER_INTENT_ERROR), err),
+			)
+		}
+	default:
 		return result.Err[struct{}](
-			errors.Join(fmt.Errorf(contracts.LEDGER_INTENT_ERROR), fmt.Errorf("no user intent for: %s", asset)),
+			errors.Join(errors.New(contracts.LEDGER_INTENT_ERROR), errors.New("user does not match caller or sender")),
 		)
 	}
-	if amount > *tokenLimit {
-		return result.Err[struct{}](
-			errors.Join(
-				fmt.Errorf(contracts.LEDGER_INTENT_ERROR),
-				fmt.Errorf("amount (%d) is over remaining token limit (%d)", amount, *tokenLimit),
-			),
-		)
-	}
-	*tokenLimit -= amount
 
 	// assuming sender is the RC payer
 	var transferOptions []ledgerSystem.TransferOptions
