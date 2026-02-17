@@ -66,8 +66,10 @@ func main() {
 	hiveApiUrl := streamer.NewHiveConfig()
 	hiveApiUrlErr := hiveApiUrl.Init()
 
-	// hiveURI := hiveApiUrl.Get().HiveURI
-	hiveURI := "https://hive-api.3speak.tv"
+	hiveURI := os.Getenv("HIVE_API")
+	if hiveURI == "" {
+		hiveURI = "https://hive-api.3speak.tv"
+	}
 
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
 	fmt.Println("HIVE_API", hiveURI)
@@ -114,7 +116,11 @@ func main() {
 		},
 	}
 
+	// Default start blocks - mainnet uses ~94M, testnet should use a much lower value
 	stBlock := uint64(94601000)
+	if network == "testnet" {
+		stBlock = uint64(100000) // Testnet starts much lower
+	}
 	streamerPlugin := streamer.NewStreamer(
 		hiveRpcClient,
 		hiveBlocks,

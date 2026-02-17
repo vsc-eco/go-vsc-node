@@ -1,0 +1,47 @@
+# Local testnet node - uses pre-built vsc-node binary
+# Use with: docker compose -f docker-compose.yml -f docker-compose.testnet-local.yml up -d
+
+version: "3.9"
+services:
+  init:
+    profiles: ["init"]
+    image: golang:1.24.1
+    command: /bin/sh -c "cp /local-bin/vsc-node /home/app/app/vsc-node && chmod +x /home/app/app/vsc-node && /home/app/app/vsc-node --init"
+    environment:
+      - MONGO_URL=mongodb://db:27017
+      - LD_LIBRARY_PATH=/home/app/.wasmedge/lib:$LD_LIBRARY_PATH
+    depends_on:
+      - db
+    networks:
+      - go-vsc-node
+    volumes:
+      - ./data:/home/app/app/data
+      - ./vsc-node:/local-bin/vsc-node:ro
+      - /home/jr/.wasmedge:/home/app/.wasmedge:ro
+  app:
+    profiles: ["default"]
+    image: golang:1.24.1
+    command: /bin/sh -c "cp /local-bin/vsc-node /home/app/app/vsc-node && chmod +x /home/app/app/vsc-node && /home/app/app/vsc-node"
+    ports:
+      - "${VSC_GRAPHQL_PORT:-6600}:${VSC_GRAPHQL_PORT:-6600}"
+      - "${VSC_P2P_PORT:-6610}:${VSC_P2P_PORT:-6610}"
+      - "${VSC_P2P_PORT:-6610}:${VSC_P2P_PORT:-6610}/udp"
+    environment:
+      - MONGO_URL=mongodb://db:27017
+      - VSC_NETWORK=testnet
+      - VSC_DATA_DIR=data
+      - VSC_GRAPHQL_PORT=${VSC_GRAPHQL_PORT:-6600}
+      - VSC_P2P_PORT=${VSC_P2P_PORT:-6610}
+      - HIVE_API=${HIVE_API:-}
+      - LD_LIBRARY_PATH=/home/app/.wasmedge/lib:$LD_LIBRARY_PATH
+    depends_on:
+      - db
+    networks:
+      - go-vsc-node
+    volumes:
+      - ./data:/home/app/app/data
+      - ./vsc-node:/local-bin/vsc-node:ro
+      - /home/jr/.wasmedge:/home/app/.wasmedge:ro
+  db:
+    ports:
+      - "127.0.0.1:${MONGO_PORT:-6620}:27017"

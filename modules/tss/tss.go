@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"os"
 	"slices"
 	"strconv"
 	"sync"
@@ -110,9 +111,7 @@ func getEnvInt(name string) int {
 }
 
 func getEnvString(name string) string {
-	// This function reads from environment variables
-	// For production use, implement proper os.Getenv or use viper/config
-	return ""
+	return os.Getenv(name)
 }
 
 type TssManager struct {

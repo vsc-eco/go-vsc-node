@@ -7,3 +7,4 @@ modules/oracle/e2e/oracle-test_testnode-*
 btc-data/*
 .DS_Store
 cmd/mapping-bot/*datastore
+vsc-node

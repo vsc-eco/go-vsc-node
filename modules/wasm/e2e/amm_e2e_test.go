@@ -29,7 +29,7 @@ func buildAMM(t *testing.T) string {
 	_ = os.MkdirAll(filepath.Dir(out), 0o755)
 
 	// Compile the AMM example using TinyGo
-	ammDir := filepath.Clean(filepath.Join(root, "..", "go-contract-template", "examples", "v2-amm"))
+	ammDir := filepath.Clean(filepath.Join(root, "..", "my-contract-template", "examples", "v2-amm"))
 	cmd := exec.Command("bash", "-lc", "tinygo build -no-debug -gc=custom -scheduler=none -panic=trap -target=wasm-unknown -o "+out+" .")
 	cmd.Dir = ammDir // run from the contract package directory
 	b, err := cmd.CombinedOutput()
@@ -48,7 +48,7 @@ func TestAMM_Wasm_Init_Add_Swap_Claim(t *testing.T) {
 
 	ct := test_utils.NewContractTest()
 	contractId := "v2amm"
-	ct.RegisterContract(contractId, code)
+	ct.RegisterContract(contractId, "hive:admin", code)
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
