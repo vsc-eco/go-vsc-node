@@ -57,12 +57,16 @@ func MainnetConfig() SystemConfig {
 	return conf
 }
 
-// TODO: Define a testnet config
+// TESTNET_BOOTSTRAP can be populated with testnet peer multiaddrs as they become available
+var TESTNET_BOOTSTRAP = []string{}
+
+// TestnetConfig returns system config for Magi/VSC testnet
 func TestnetConfig() SystemConfig {
 	conf := &config{
-		network:       "testnet",
-		netId:         "vsc-testnet",
-		gatewayWallet: "vsc.testnet",
+		bootstrapPeers: TESTNET_BOOTSTRAP,
+		network:        "testnet",
+		netId:          "vsc-testnet",
+		gatewayWallet:  "vsc.testnet",
 		consensusParams: params.ConsensusParams{
 			MinStake:       params.TESTNET_CONSENSUS_MINIMUM,
 			MinRcLimit:     params.MINIMUM_RC_LIMIT,

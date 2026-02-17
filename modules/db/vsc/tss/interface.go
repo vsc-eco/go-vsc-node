@@ -50,15 +50,22 @@ type TssRequest struct {
 	Sig    string     `bson:"sig"`
 }
 
+// CommitmentMetadata optionally stores error/reason for blame commitments (e.g. timeout vs error).
+type CommitmentMetadata struct {
+	Error  *string `json:"err"    bson:"err,omitempty"`
+	Reason *string `json:"reason" bson:"reason,omitempty"`
+}
+
 type TssCommitment struct {
 	//type = blame, reshare
-	Type        string  `json:"type"         bson:"type"`
-	BlockHeight uint64  `json:"block_height" bson:"block_height"`
-	Epoch       uint64  `json:"epoch"        bson:"epoch"`
-	Commitment  string  `json:"commitment"   bson:"commitment"`
-	KeyId       string  `json:"key_id"       bson:"key_id"`
-	TxId        string  `json:"tx_id"        bson:"tx_id"`
-	PublicKey   *string `json:"public_key"   bson:"public_key"`
+	Type        string               `json:"type"         bson:"type"`
+	BlockHeight uint64               `json:"block_height" bson:"block_height"`
+	Epoch       uint64               `json:"epoch"        bson:"epoch"`
+	Commitment  string               `json:"commitment"   bson:"commitment"`
+	KeyId       string               `json:"key_id"       bson:"key_id"`
+	TxId        string               `json:"tx_id"        bson:"tx_id"`
+	PublicKey   *string              `json:"public_key"   bson:"public_key"`
+	Metadata    *CommitmentMetadata  `json:"metadata"     bson:"metadata,omitempty"`
 }
 
 type TssKeyAlgo string

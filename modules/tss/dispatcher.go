@@ -861,7 +861,8 @@ type BaseDispatcher struct {
 	started   bool
 	startLock sync.Mutex
 
-	lastMsg time.Time
+	lastMsg  time.Time
+	isReshare bool // true when this is a ReshareDispatcher (use longer timeout)
 }
 
 func (dispatcher *BaseDispatcher) handleMsgs() {
@@ -987,7 +988,7 @@ func (dsc *BaseDispatcher) KeyId() string {
 func (dispatcher *BaseDispatcher) baseStart() {
 	// Use configurable timeout, longer for reshare operations
 	var timeout time.Duration
-	if _, isReshare := dispatcher.(*ReshareDispatcher); isReshare {
+	if dispatcher.isReshare {
 		timeout = TSS_RESHARE_TIMEOUT
 	} else {
 		timeout = 1 * time.Minute // Default timeout for other operations

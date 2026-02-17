@@ -98,7 +98,7 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 			for k := range tss.mgr.actionMap {
 				keys = append(keys, k)
 			}
-			bufferSize := len(tss.mgr.messageBuffer[req.SessionId])
+			bufferSize = len(tss.mgr.messageBuffer[req.SessionId])
 			tss.mgr.bufferLock.RUnlock()
 
 			fmt.Printf("[TSS] [RPC] WARN: Buffering message - dispatcher not found sessionId=%s myAccount=%s peerId=%s activeSessions=%d bufferSize=%d (maxAge=1m)\n",

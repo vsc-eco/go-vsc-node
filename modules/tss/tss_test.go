@@ -1,3 +1,8 @@
+// TSS tests: run in isolation (no full VSC node) with:
+//
+//	go test -short ./modules/tss/helpers/...   # unit tests only (GetThreshold, MsgToHashInt)
+//	go test -short ./modules/tss/...           # same + tss package unit tests (e.g. makeEpochIdx); skips TestVtss
+//	go test ./modules/tss/... -run TestVtss    # full 3-node integration (no -short); requires full build
 package tss_test
 
 import (
@@ -12,19 +17,22 @@ import (
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	vtss "vsc-node/modules/tss"
 	tss_helpers "vsc-node/modules/tss/helpers"
-	"vsc-node/modules/vstream"
 
 	flatfs "github.com/ipfs/go-ds-flatfs"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	// "vsc-node/modules/tss"
 )
 
@@ -53,7 +61,7 @@ func (mes *MockElectionSystem) GetSchedule(blockHeight uint64) []stateEngine.Wit
 	return list
 }
 
-func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream.VStream, witnesses.Witnesses, *libp2p.P2PServer, elections.Elections) {
+func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, *blockconsumer.HiveConsumer, witnesses.Witnesses, *libp2p.P2PServer, elections.Elections) {
 	path := "data-dir-" + strconv.Itoa(index)
 
 	os.Mkdir(path, os.ModePerm)
@@ -61,9 +69,7 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 	identity.Init()
 	identity.SetUsername("e2e-" + strconv.Itoa(index))
 	dbConf := db.NewDbConfig()
-	csonf := common.SystemConfig{
-		Network: "mocknet",
-	}
+	sconf := systemconfig.MocknetConfig()
 
 	db := db.New(dbConf)
 	vscDb := vsc.New(db, "vsc-tss-test-"+strconv.Itoa(index))
@@ -72,16 +78,16 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	electionDb := elections.New(vscDb)
 	witnesses := witnesses.New(vscDb)
-	vstream := vstream.New(nil)
+	hiveConsumer := blockconsumer.New(nil)
 
-	p2p := libp2p.New(witnesses, identity, csonf, 22222+index)
+	p2p := libp2p.New(witnesses, identity, sconf, nil, 22222+index)
 
 	keystore, err := flatfs.CreateOrOpen(path+"/keys", flatfs.Prefix(1), false)
 
 	if err != nil {
 		panic(err)
 	}
-	tssMgr := vtss.New(p2p, tssKeys, tssRequests, tssCommitments, witnesses, electionDb, vstream, mes, identity, keystore)
+	tssMgr := vtss.New(p2p, tssKeys, tssRequests, tssCommitments, witnesses, electionDb, hiveConsumer, mes, identity, keystore, nil)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		identity,
@@ -101,23 +107,39 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 
 	go func() {
 		keyId := "test-key"
-		tssMgr.KeyGen(keyId, tss_helpers.SigningAlgoSecp256k1)
+		tssMgr.KeyGen(keyId, tss_helpers.SigningAlgoEcdsa)
 
 		time.Sleep(2 * time.Minute)
 		msg, _ := hex.DecodeString("89d7d1a68f8edd0cc1f961dce816422055d1ab69a0623954b834c95c1cdd7ed0")
 
 		fmt.Println("msg hex is", hex.EncodeToString(msg))
 
-		// tssMgr.KeySign(msg, keyId, tss_helpers.SigningAlgoEd25519)
+		// tssMgr.KeySign(msg, keyId, tss_helpers.SigningAlgoEddsa)
 
-		tssMgr.KeyReshare(keyId, tss_helpers.SigningAlgoSecp256k1)
+		tssMgr.KeyReshare(keyId)
 	}()
 
-	return agg, *vstream, witnesses, p2p, electionDb
+	return agg, hiveConsumer, witnesses, p2p, electionDb
 }
 
 func TestVtss(t *testing.T) {
-
+	if testing.Short() {
+		t.Skip("skipping full TSS integration test in short mode (use: go test ./modules/tss/... without -short)")
+	}
+	// Full integration test requires MongoDB (aggregate uses db plugin)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	mongoClient, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://127.0.0.1:27017"))
+	if err != nil {
+		cancel()
+		t.Skipf("TestVtss requires MongoDB on 127.0.0.1:27017: %v", err)
+	}
+	if err := mongoClient.Ping(ctx, nil); err != nil {
+		_ = mongoClient.Disconnect(context.Background())
+		cancel()
+		t.Skipf("TestVtss requires MongoDB on 127.0.0.1:27017: %v", err)
+	}
+	_ = mongoClient.Disconnect(context.Background())
+	cancel()
 	mes := &MockElectionSystem{
 		ActiveWitnesses: map[string]stateEngine.Witness{
 			"e2e-1": stateEngine.Witness{},
@@ -126,7 +148,7 @@ func TestVtss(t *testing.T) {
 		},
 	}
 
-	vstrs := make([]vstream.VStream, 0)
+	vstrs := make([]*blockconsumer.HiveConsumer, 0)
 	wts := make([]witnesses.Witnesses, 0)
 	ets := make([]elections.Elections, 0)
 	pts := make([]*libp2p.P2PServer, 0)
@@ -139,7 +161,16 @@ func TestVtss(t *testing.T) {
 		go test_utils.RunPlugin(t, agg)
 	}
 
-	time.Sleep(5 * time.Second)
+	// Wait for all P2P servers to be started (host set) before using ID()/Addrs()
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	for _, p := range pts {
+		if _, err := p.Started().Await(waitCtx); err != nil {
+			waitCancel()
+			t.Fatalf("p2p started: %v", err)
+		}
+	}
+	waitCancel()
+	time.Sleep(2 * time.Second) // allow peer discovery
 	for _, w := range wts {
 		for i, n := range pts {
 			w.SetWitnessUpdate(witnesses.SetWitnessUpdateType{

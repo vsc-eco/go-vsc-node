@@ -55,6 +55,7 @@ const TSS_MESSAGE_RETRY_DELAY = 1 * time.Second      // Base delay for retries
 const TSS_BAN_THRESHOLD_PERCENT = 25                 // Failure rate threshold for bans (25%)
 const TSS_BAN_GRACE_PERIOD_EPOCHS = 4                // Epochs before new nodes can be banned
 const TSS_BUFFERED_MESSAGE_MAX_AGE = 1 * time.Minute // Maximum age for buffered messages
+const MAX_RESHARE_RETRIES = 3                        // Maximum number of reshare retries on timeout
 
 type TssManager struct {
 	p2p    *libp2p.P2PServer
@@ -94,8 +95,26 @@ type TssManager struct {
 	messageBuffer map[string][]bufferedMessage
 	bufferLock    sync.RWMutex
 
+	// Retry count for reshare operations (in-memory to avoid DB dependency)
+	retryCounts   map[string]int
+	retryCountsMu sync.Mutex
+
 	// Metrics for observability
 	metrics *Metrics
+}
+
+// getRetryCount returns the retry count for a given key ID
+func (tssMgr *TssManager) getRetryCount(keyId string) int {
+	tssMgr.retryCountsMu.Lock()
+	defer tssMgr.retryCountsMu.Unlock()
+	return tssMgr.retryCounts[keyId]
+}
+
+// incrementRetryCount increments the retry count for a given key ID
+func (tssMgr *TssManager) incrementRetryCount(keyId string) {
+	tssMgr.retryCountsMu.Lock()
+	defer tssMgr.retryCountsMu.Unlock()
+	tssMgr.retryCounts[keyId]++
 }
 
 type bufferedMessage struct {
@@ -613,6 +632,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 					keystore:    tssMgr.keyStore,
 					blockHeight: bh,
+					isReshare:   true,
 				},
 				newParticipants: newParticipants,
 				newEpoch:        currentElection.Epoch,
@@ -742,18 +762,36 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				commitment.BlockHeight = bh
 				commitableResults = append(commitableResults, commitment)
 
-				// Schedule automatic retry for reshare timeouts
+				// Schedule automatic retry for reshare timeouts with retry limit
 				if dsc.KeyId() != "" {
 					keyInfo, err := tssMgr.tssKeys.FindKey(dsc.KeyId())
 					if err == nil {
-						fmt.Printf("[TSS] [RECOVERY] Scheduling reshare retry for timeout sessionId=%s keyId=%s\n",
-							dsc.SessionId(), dsc.KeyId())
-						// Add to queue for retry (will be picked up in next rotation interval)
-						tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
-							Type:  ReshareAction,
-							KeyId: dsc.KeyId(),
-							Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
-						})
+						// Check retry count from session (in-memory) to avoid DB dependency
+						retryCount := tssMgr.getRetryCount(dsc.KeyId())
+						if retryCount < MAX_RESHARE_RETRIES {
+							// Calculate exponential backoff delay based on retry count
+							retryDelay := time.Duration(retryCount+1) * TSS_RESHARE_SYNC_DELAY
+
+							fmt.Printf("[TSS] [RECOVERY] Scheduling reshare retry for timeout sessionId=%s keyId=%s retryCount=%d/%d delay=%v\n",
+								dsc.SessionId(), dsc.KeyId(), retryCount+1, MAX_RESHARE_RETRIES, retryDelay)
+
+							// Increment retry count
+							tssMgr.incrementRetryCount(dsc.KeyId())
+
+							// Schedule retry with delay
+							go func() {
+								time.Sleep(retryDelay)
+								tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
+									Type:  ReshareAction,
+									KeyId: dsc.KeyId(),
+									Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
+								})
+							}()
+						} else {
+							fmt.Printf("[TSS] [RECOVERY] Max reshare retries exceeded sessionId=%s keyId=%s maxRetries=%d\n",
+								dsc.SessionId(), dsc.KeyId(), MAX_RESHARE_RETRIES)
+							// Could trigger alert or manual intervention here
+						}
 					}
 				}
 			}
@@ -1203,6 +1241,7 @@ func New(
 		messageBuffer:  make(map[string][]bufferedMessage),
 		sessionMap:     make(map[string]sessionInfo),
 		sessionResults: make(map[string]DispatcherResult),
+		retryCounts:    make(map[string]int),
 	}
 }
 

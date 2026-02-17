@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 	"vsc-node/lib/utils"
@@ -85,21 +86,26 @@ func New(witnessDb WitnessGetter, conf common.IdentityConfig, sconf systemconfig
 	}
 }
 
-var topicNameFlag = "/vsc/mainnet/multicast"
+// topicName returns the pubsub topic for this network (e.g. /vsc/mainnet/multicast or /vsc/testnet/multicast)
+func (p2p *P2PServer) topicName() string {
+	net := strings.TrimPrefix(p2p.systemConfig.NetId(), "vsc-")
+	return "/vsc/" + net + "/multicast"
+}
 
 // Finds VSC peers through DHT
 func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 	h := p2p.host
+	topic := p2p.topicName()
 
 	routingDiscovery := drouting.NewRoutingDiscovery(p2p.dht)
-	dutil.Advertise(ctx, routingDiscovery, topicNameFlag)
+	dutil.Advertise(ctx, routingDiscovery, topic)
 
 	// Look for others who have announced and attempt to connect to them
 	anyConnected := false
 	for !anyConnected {
 
 		// fmt.Println("Bootstraping peers via dht... PeerId: " + h.ID().String())
-		peerChan, err := routingDiscovery.FindPeers(ctx, topicNameFlag)
+		peerChan, err := routingDiscovery.FindPeers(ctx, topic)
 		if err != nil {
 			panic(err)
 		}
@@ -577,7 +583,7 @@ func (p2p *P2PServer) discoverPeers() {
 	// Look for others who have announced and attempt to connect to them
 	// fmt.Println("Searching for peers via dht...")
 
-	peerChan, err := routingDiscovery.FindPeers(ctx, topicNameFlag)
+	peerChan, err := routingDiscovery.FindPeers(ctx, p2p.topicName())
 	if err != nil {
 		panic(err)
 	}
@@ -600,7 +606,7 @@ func (p2p *P2PServer) discoverPeers() {
 
 func (p2p *P2PServer) advertiseSelf() {
 	routingDiscovery := drouting.NewRoutingDiscovery(p2p.dht)
-	routingDiscovery.Advertise(context.Background(), topicNameFlag)
+	routingDiscovery.Advertise(context.Background(), p2p.topicName())
 }
 
 // =================================

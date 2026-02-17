@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	cbortypes "vsc-node/lib/cbor-types"
@@ -49,6 +50,18 @@ import (
 func main() {
 	cbortypes.RegisterTypes()
 	init := os.Args[len(os.Args)-1] == "--init"
+
+	// Config from environment (for testnet / multi-node: ports 6600-6700, VSC_DATA_DIR, VSC_NETWORK=testnet)
+	dataDir := getEnv("VSC_DATA_DIR", "data")
+	network := getEnv("VSC_NETWORK", "mainnet")
+	graphqlPort := getEnv("VSC_GRAPHQL_PORT", "8080")
+	p2pPort := 10720
+	if p := getEnv("VSC_P2P_PORT", ""); p != "" {
+		if v, err := strconv.Atoi(p); err == nil {
+			p2pPort = v
+		}
+	}
+
 	dbConf := db.NewDbConfig()
 	hiveApiUrl := streamer.NewHiveConfig()
 	hiveApiUrlErr := hiveApiUrl.Init()
@@ -58,6 +71,7 @@ func main() {
 
 	fmt.Println("MONGO_URL", os.Getenv("MONGO_URL"))
 	fmt.Println("HIVE_API", hiveURI)
+	fmt.Println("VSC_DATA_DIR", dataDir, "VSC_NETWORK", network, "GRAPHQL_PORT", graphqlPort, "P2P_PORT", p2pPort)
 	fmt.Println("Git Commit", announcements.GitCommit)
 
 	dbImpl := db.New(dbConf)
@@ -109,7 +123,7 @@ func main() {
 		&stBlock,
 	) // optional starting block #
 
-	identityConfig := common.NewIdentityConfig()
+	identityConfig := common.NewIdentityConfig(dataDir + "/config")
 
 	hiveCreator := hive.LiveTransactionCreator{
 		TransactionCrafter: hive.TransactionCrafter{},
@@ -119,11 +133,16 @@ func main() {
 		},
 	}
 
-	sysConfig := systemconfig.MainnetConfig()
+	var sysConfig systemconfig.SystemConfig
+	if network == "testnet" {
+		sysConfig = systemconfig.TestnetConfig()
+	} else {
+		sysConfig = systemconfig.MainnetConfig()
+	}
 
 	//Set below from vstream
 	var blockStatus common_types.BlockStatusGetter = nil
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus)
+	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus, p2pPort)
 
 	announcementsManager, err := announcements.New(
 		hiveRpcClient,
@@ -225,7 +244,7 @@ func main() {
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
 
-	flatDb, err := flatfs.CreateOrOpen("data/tss-keys", flatfs.Prefix(1), false)
+	flatDb, err := flatfs.CreateOrOpen(dataDir+"/tss-keys", flatfs.Prefix(1), false)
 	if err != nil {
 		panic(err)
 	}
@@ -261,7 +280,7 @@ func main() {
 		ContractsState: contractState,
 		TssKeys:        tssKeys,
 		TssRequests:    tssRequests,
-	}}), "0.0.0.0:8080")
+	}}), "0.0.0.0:"+graphqlPort)
 
 	plugins := make([]aggregate.Plugin, 0)
 
@@ -332,4 +351,11 @@ func main() {
 		fmt.Println("error is", err)
 		os.Exit(1)
 	}
+}
+
+func getEnv(key, defaultVal string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return defaultVal
 }

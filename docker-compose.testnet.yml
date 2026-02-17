@@ -1,0 +1,31 @@
+# Magi/VSC testnet node - single node with ports in 6600-6700 range.
+# Use with: docker compose -f docker-compose.yml -f docker-compose.testnet.yml up -d
+#
+# For multiple test nodes side by side, run with different env and project name, e.g.:
+#   VSC_GRAPHQL_PORT=6601 VSC_P2P_PORT=6611 MONGO_PORT=6621 docker compose -f docker-compose.yml -f docker-compose.testnet.yml -p vsc-testnet-2 up -d
+
+version: "3.9"
+services:
+  init:
+    profiles: ["init"]
+    environment:
+      - VSC_NETWORK=testnet
+      - VSC_DATA_DIR=data
+      - VSC_GRAPHQL_PORT=6600
+      - VSC_P2P_PORT=6610
+  app:
+    profiles: ["default"]
+    ports:
+      - "${VSC_GRAPHQL_PORT:-6600}:${VSC_GRAPHQL_PORT:-6600}"
+      - "${VSC_P2P_PORT:-6610}:${VSC_P2P_PORT:-6610}"
+      - "${VSC_P2P_PORT:-6610}:${VSC_P2P_PORT:-6610}/udp"
+    environment:
+      - MONGO_URL=mongodb://db:27017
+      - VSC_NETWORK=testnet
+      - VSC_DATA_DIR=data
+      - VSC_GRAPHQL_PORT=${VSC_GRAPHQL_PORT:-6600}
+      - VSC_P2P_PORT=${VSC_P2P_PORT:-6610}
+      - HIVE_API=${HIVE_API:-}
+  db:
+    ports:
+      - "127.0.0.1:${MONGO_PORT:-6620}:27017"
