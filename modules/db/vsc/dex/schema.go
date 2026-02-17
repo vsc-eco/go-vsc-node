@@ -2,6 +2,65 @@ package dex
 
 import "time"
 
+// PoolStatus represents the status of a liquidity pool
+type PoolStatus string
+
+const (
+	PoolStatusLocked   PoolStatus = "locked"
+	PoolStatusUnlocked PoolStatus = "unlocked"
+)
+
+// BridgeDirection represents the direction of a bridge action
+type BridgeDirection string
+
+const (
+	BridgeDirectionCreate   BridgeDirection = "create"
+	BridgeDirectionTransfer BridgeDirection = "transfer"
+	BridgeDirectionWithdraw BridgeDirection = "withdraw"
+)
+
+// BridgeActionStatus represents the status of a bridge action
+type BridgeActionStatus string
+
+const (
+	BridgeActionStatusPending    BridgeActionStatus = "pending"
+	BridgeActionStatusProcessing BridgeActionStatus = "processing"
+	BridgeActionStatusComplete   BridgeActionStatus = "complete"
+	BridgeActionStatusFailed     BridgeActionStatus = "failed"
+)
+
+// PoolStatus methods
+func (ps PoolStatus) IsValid() bool {
+	return ps == PoolStatusLocked || ps == PoolStatusUnlocked
+}
+
+func (ps PoolStatus) String() string {
+	return string(ps)
+}
+
+// BridgeDirection methods
+func (bd BridgeDirection) IsValid() bool {
+	return bd == BridgeDirectionCreate ||
+		bd == BridgeDirectionTransfer ||
+		bd == BridgeDirectionWithdraw
+}
+
+func (bd BridgeDirection) String() string {
+	return string(bd)
+}
+
+// BridgeActionStatus methods
+func (bs BridgeActionStatus) IsValid() bool {
+	return bs == BridgeActionStatusPending ||
+		bs == BridgeActionStatusProcessing ||
+		bs == BridgeActionStatusComplete ||
+		bs == BridgeActionStatusFailed
+}
+
+func (bs BridgeActionStatus) String() string {
+	return string(bs)
+}
+
 type TokenMetadata struct {
 	Symbol      string    `bson:"symbol" json:"symbol"`
 	Decimals    uint8     `bson:"decimals" json:"decimals"`
@@ -12,15 +71,15 @@ type TokenMetadata struct {
 }
 
 type PoolInfo struct {
-	ContractId     string `bson:"contract_id" json:"contract_id"`
-	Asset0         string `bson:"asset0" json:"asset0"`
-	Asset1         string `bson:"asset1" json:"asset1"`
-	Creator        string `bson:"creator" json:"creator"`
-	CreationHeight uint64 `bson:"creation_height" json:"creation_height"`
-	LockedLPAmount uint64 `bson:"locked_lp_amount" json:"locked_lp_amount"`
-	BondingMetric  uint64 `bson:"bonding_metric" json:"bonding_metric"`
-	BondingTarget  uint64 `bson:"bonding_target" json:"bonding_target"`
-	Status         string `bson:"status" json:"status"` // "locked", "unlocked"
+	ContractId     string     `bson:"contract_id" json:"contract_id"`
+	Asset0         string     `bson:"asset0" json:"asset0"`
+	Asset1         string     `bson:"asset1" json:"asset1"`
+	Creator        string     `bson:"creator" json:"creator"`
+	CreationHeight uint64     `bson:"creation_height" json:"creation_height"`
+	LockedLPAmount uint64     `bson:"locked_lp_amount" json:"locked_lp_amount"`
+	BondingMetric  uint64     `bson:"bonding_metric" json:"bonding_metric"`
+	BondingTarget  uint64     `bson:"bonding_target" json:"bonding_target"`
+	Status         PoolStatus `bson:"status" json:"status"` // Use PoolStatus type
 	// Cross-chain support
 	TargetChains []string          `bson:"target_chains" json:"target_chains"` // ["ethereum", "polygon", etc.]
 	PairAccounts map[string]string `bson:"pair_accounts" json:"pair_accounts"` // chain -> account mapping
@@ -58,10 +117,10 @@ type SwapResult struct {
 
 type PairBridgeAction struct {
 	Id          string                 `bson:"id"`
-	Status      string                 `bson:"status"`
+	Status      BridgeActionStatus     `bson:"status"`    // Use BridgeActionStatus type
 	PairId      string                 `bson:"pair_id"`   // "hbd-hive"
 	Chain       string                 `bson:"chain"`     // "ethereum", "polygon", etc.
-	Direction   string                 `bson:"direction"` // "create", "transfer", "withdraw"
+	Direction   BridgeDirection        `bson:"direction"` // Use BridgeDirection type
 	Asset       string                 `bson:"asset"`
 	Amount      int64                  `bson:"amount"`
 	From        string                 `bson:"from,omitempty"`
