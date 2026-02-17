@@ -29,11 +29,55 @@ type p2pMessage struct {
 	Type    string                 `json:"type"`
 	Account string                 `json:"account"`
 	Data    map[string]interface{} `json:"data"`
+
+	// Round and type info for filtering stale messages
+	Round   uint64 `json:"round,omitempty"`   // Block height of the session
+	Action  string `json:"action,omitempty"`  // keygen, sign, reshare
+	Session string `json:"session,omitempty"` // Full session ID
 }
 
 // ValidateMessage implements libp2p.PubSubServiceParams.
-func (p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
-	// Can add a blacklist for spammers or ignore previously seen messages.
+func (p p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
+	// Always accept signature-related messages (ask_sigs, res_sig) as they use different channels
+	if parsedMsg.Type == "ask_sigs" || parsedMsg.Type == "res_sig" {
+		return true
+	}
+
+	// For TSS round messages, validate they're relevant to current session
+	if parsedMsg.Session != "" && parsedMsg.Round > 0 {
+		// Check if this session exists and is still active
+		p.tssMgr.bufferLock.RLock()
+		sessionInfo, sessionActive := p.tssMgr.sessionMap[parsedMsg.Session]
+		_, dispatcherExists := p.tssMgr.actionMap[parsedMsg.Session]
+		p.tssMgr.bufferLock.RUnlock()
+
+		if !sessionActive && !dispatcherExists {
+			// Session not found - could be from old round, drop silently
+			fmt.Printf("[TSS] [PUBSUB] ValidateMessage: session not found, dropping session=%s round=%d\n",
+				parsedMsg.Session, parsedMsg.Round)
+			return false
+		}
+
+		// Verify the round matches current expected round for this session
+		if sessionActive {
+			// Allow messages within a reasonable window (current round ± 1)
+			if parsedMsg.Round < sessionInfo.bh && sessionInfo.bh-parsedMsg.Round > 1 {
+				fmt.Printf("[TSS] [PUBSUB] ValidateMessage: old round, dropping session=%s msgRound=%d sessionRound=%d\n",
+					parsedMsg.Session, parsedMsg.Round, sessionInfo.bh)
+				return false // Message from old round
+			}
+
+			// Verify action type matches (keygen, sign, reshare)
+			if parsedMsg.Action != "" && sessionInfo.action != "" {
+				if parsedMsg.Action != string(sessionInfo.action) {
+					fmt.Printf("[TSS] [PUBSUB] ValidateMessage: action type mismatch, dropping session=%s msgAction=%s expectedAction=%s\n",
+						parsedMsg.Session, parsedMsg.Action, sessionInfo.action)
+					return false // Action type doesn't match
+				}
+			}
+		}
+	}
+
 	return true
 }
 
@@ -234,30 +278,30 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 	}
 	duration := time.Since(startTime)
 
-		if err != nil {
-			if attempt < maxRetries {
-				retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt))
-				fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed, will retry sessionId=%s from=%s to=%s peerId=%s duration=%v attempt=%d/%d delay=%v err=%v\n",
-					sessionId, fromAccount, participant.Account, peerId.String(), duration, attempt+1, maxRetries, retryDelay, err)
-				tss.metrics.IncrementMessageRetry()
-				time.Sleep(retryDelay)
-				return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, attempt+1)
-			} else {
-				fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed after %d attempts sessionId=%s from=%s to=%s peerId=%s duration=%v err=%v\n",
-					maxRetries, sessionId, fromAccount, participant.Account, peerId.String(), duration, err)
-				tss.metrics.IncrementMessageSendFailure()
-				return err
-			}
+	if err != nil {
+		if attempt < maxRetries {
+			retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt))
+			fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed, will retry sessionId=%s from=%s to=%s peerId=%s duration=%v attempt=%d/%d delay=%v err=%v\n",
+				sessionId, fromAccount, participant.Account, peerId.String(), duration, attempt+1, maxRetries, retryDelay, err)
+			tss.metrics.IncrementMessageRetry()
+			time.Sleep(retryDelay)
+			return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, attempt+1)
 		} else {
-			if attempt > 0 {
-				fmt.Printf("[TSS] [P2P] RPC Call succeeded on retry sessionId=%s from=%s to=%s attempt=%d duration=%v\n",
-					sessionId, fromAccount, participant.Account, attempt+1, duration)
-			} else {
-				fmt.Printf("[TSS] [P2P] RPC Call success sessionId=%s from=%s to=%s duration=%v\n",
-					sessionId, fromAccount, participant.Account, duration)
-			}
-			tss.metrics.RecordMessageSendLatency(duration)
+			fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed after %d attempts sessionId=%s from=%s to=%s peerId=%s duration=%v err=%v\n",
+				maxRetries, sessionId, fromAccount, participant.Account, peerId.String(), duration, err)
+			tss.metrics.IncrementMessageSendFailure()
+			return err
 		}
+	} else {
+		if attempt > 0 {
+			fmt.Printf("[TSS] [P2P] RPC Call succeeded on retry sessionId=%s from=%s to=%s attempt=%d duration=%v\n",
+				sessionId, fromAccount, participant.Account, attempt+1, duration)
+		} else {
+			fmt.Printf("[TSS] [P2P] RPC Call success sessionId=%s from=%s to=%s duration=%v\n",
+				sessionId, fromAccount, participant.Account, duration)
+		}
+		tss.metrics.RecordMessageSendLatency(duration)
+	}
 
 	return nil
 }

@@ -48,12 +48,12 @@ const TSS_ACTIVATE_HEIGHT = 102_083_000
 var BLAME_EXPIRE = uint64(24 * 60 * 20)
 
 // TSS Reshare configuration constants
-const TSS_RESHARE_SYNC_DELAY = 5 * time.Second      // Reduced from 15s to 5s
-const TSS_RESHARE_TIMEOUT = 2 * time.Minute         // Increased from 1 minute to 2 minutes
-const TSS_MESSAGE_RETRY_COUNT = 3                   // Number of retries for failed messages
-const TSS_MESSAGE_RETRY_DELAY = 1 * time.Second     // Base delay for retries
-const TSS_BAN_THRESHOLD_PERCENT = 25                // Failure rate threshold for bans (25%)
-const TSS_BAN_GRACE_PERIOD_EPOCHS = 4               // Epochs before new nodes can be banned
+const TSS_RESHARE_SYNC_DELAY = 5 * time.Second       // Reduced from 15s to 5s
+const TSS_RESHARE_TIMEOUT = 2 * time.Minute          // Increased from 1 minute to 2 minutes
+const TSS_MESSAGE_RETRY_COUNT = 3                    // Number of retries for failed messages
+const TSS_MESSAGE_RETRY_DELAY = 1 * time.Second      // Base delay for retries
+const TSS_BAN_THRESHOLD_PERCENT = 25                 // Failure rate threshold for bans (25%)
+const TSS_BAN_GRACE_PERIOD_EPOCHS = 4                // Epochs before new nodes can be banned
 const TSS_BUFFERED_MESSAGE_MAX_AGE = 1 * time.Minute // Maximum age for buffered messages
 
 type TssManager struct {
@@ -243,7 +243,7 @@ func (tss *TssManager) BlameScore() scoreMap {
 			break
 		}
 		elections[epoch] = *election
-		
+
 		// Track first appearance of each node
 		for _, member := range election.Members {
 			if _, exists := nodeFirstEpoch[member.Account]; !exists {
@@ -254,7 +254,7 @@ func (tss *TssManager) BlameScore() scoreMap {
 
 	currentEpoch := initialElection.Epoch
 	blameMap := make(map[string]int)
-	timeoutBlameMap := make(map[string]int)  // Separate tracking for timeouts vs errors
+	timeoutBlameMap := make(map[string]int) // Separate tracking for timeouts vs errors
 	errorBlameMap := make(map[string]int)
 
 	for _, election := range elections {
@@ -297,12 +297,12 @@ func (tss *TssManager) BlameScore() scoreMap {
 		if exists && currentEpoch >= firstEpoch {
 			epochsSinceFirst = currentEpoch - firstEpoch
 		}
-		
+
 		sortedArray = append(sortedArray, score{
-			Account: account,
-			Score:   blameMap[account],
-			Weight:  weight,
-			FirstEpoch: firstEpoch,
+			Account:          account,
+			Score:            blameMap[account],
+			Weight:           weight,
+			FirstEpoch:       firstEpoch,
 			EpochsSinceFirst: epochsSinceFirst,
 		})
 	}
@@ -314,7 +314,7 @@ func (tss *TssManager) BlameScore() scoreMap {
 	bannedNodes := make(map[string]bool)
 	bannedList := make([]string, 0)
 	gracePeriodExemptions := make([]string, 0)
-	
+
 	for _, entry := range sortedArray {
 		// Check grace period for new nodes
 		if entry.EpochsSinceFirst < TSS_BAN_GRACE_PERIOD_EPOCHS {
@@ -323,18 +323,18 @@ func (tss *TssManager) BlameScore() scoreMap {
 				entry.Account, entry.Score, entry.Weight, entry.EpochsSinceFirst, TSS_BAN_GRACE_PERIOD_EPOCHS)
 			continue
 		}
-		
+
 		// Use configurable threshold instead of hardcoded 25%
 		thresholdPercent := TSS_BAN_THRESHOLD_PERCENT
 		failureRate := float64(entry.Score) / float64(entry.Weight) * 100.0
-		
+
 		if entry.Weight > 0 && entry.Score > entry.Weight*thresholdPercent/100 {
 			bannedNodes[entry.Account] = true
 			bannedList = append(bannedList, entry.Account)
-			
+
 			timeoutCount := timeoutBlameMap[entry.Account]
 			errorCount := errorBlameMap[entry.Account]
-			
+
 			fmt.Printf("[TSS] [BLAME] Node banned: account=%s score=%d weight=%d failureRate=%.2f%% threshold=%d%% timeoutBlames=%d errorBlames=%d epochsSinceFirst=%d\n",
 				entry.Account, entry.Score, entry.Weight, failureRate, thresholdPercent, timeoutCount, errorCount, entry.EpochsSinceFirst)
 		} else {
@@ -342,7 +342,7 @@ func (tss *TssManager) BlameScore() scoreMap {
 				entry.Account, entry.Score, entry.Weight, failureRate, thresholdPercent)
 		}
 	}
-	
+
 	if len(bannedList) > 0 {
 		fmt.Printf("[TSS] [BLAME] Ban summary: totalBanned=%d bannedNodes=%v gracePeriodExemptions=%d\n",
 			len(bannedList), bannedList, len(gracePeriodExemptions))
@@ -384,7 +384,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	}
 
 	blameMap := tssMgr.BlameScore()
-	
+
 	fmt.Printf("[TSS] [ACTIONS] Running actions blockHeight=%d isLeader=%v actionCount=%d bannedNodes=%d\n",
 		bh, isLeader, len(actions), len(blameMap.bannedNodes))
 
@@ -575,7 +575,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					Account: member.Account,
 				})
 			}
-			
+
 			fmt.Printf("[TSS] [RESHARE] Participant selection sessionId=%s oldParticipants=%d newParticipants=%d excluded=%d excludedNodes=%v\n",
 				sessionId, len(commitedMembers), len(newParticipants), len(excludedNodes), excludedNodes)
 			fmt.Println("newParticipants", newParticipants)
@@ -588,14 +588,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					sessionId, len(newParticipants), minRequired, threshold)
 				continue
 			}
-			
+
 			// Pre-flight check: verify old participants are available
 			if len(commitedMembers) < threshold+1 {
 				fmt.Printf("[TSS] [RESHARE] ERROR: Insufficient old participants sessionId=%s oldParticipants=%d required=%d threshold=%d\n",
 					sessionId, len(commitedMembers), threshold+1, threshold)
 				continue
 			}
-			
+
 			fmt.Printf("[TSS] [RESHARE] Pre-flight checks passed sessionId=%s oldParticipants=%d newParticipants=%d\n",
 				sessionId, len(commitedMembers), len(newParticipants))
 
@@ -631,9 +631,23 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					sessionId, bufferSize)
 			}
 		}
+		// Determine action type from the action
+		var actionType ActionType
+		switch action.Type {
+		case KeyGenAction:
+			actionType = ActionTypeKeyGen
+		case SignAction:
+			actionType = ActionTypeSign
+		case ReshareAction:
+			actionType = ActionTypeReshare
+		default:
+			actionType = ""
+		}
+
 		tssMgr.sessionMap[sessionId] = sessionInfo{
 			leader: leader,
 			bh:     bh,
+			action: actionType,
 		}
 	}
 
@@ -727,7 +741,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				commitment := result.Serialize()
 				commitment.BlockHeight = bh
 				commitableResults = append(commitableResults, commitment)
-				
+
 				// Schedule automatic retry for reshare timeouts
 				if dsc.KeyId() != "" {
 					keyInfo, err := tssMgr.tssKeys.FindKey(dsc.KeyId())

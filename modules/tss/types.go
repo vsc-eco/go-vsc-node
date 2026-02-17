@@ -1,8 +1,18 @@
 package tss
 
+// ActionType represents the type of TSS operation
+type ActionType string
+
+const (
+	ActionTypeKeyGen  ActionType = "keygen"
+	ActionTypeSign    ActionType = "sign"
+	ActionTypeReshare ActionType = "reshare"
+)
+
 type sessionInfo struct {
 	leader string
 	bh     uint64
+	action ActionType // The type of action for this session (keygen, sign, reshare)
 }
 
 // id = "vsc.tss_sign"
