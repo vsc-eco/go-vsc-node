@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"unicode/utf8"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/params"
@@ -78,9 +79,14 @@ func New(
 	callSession *contract_session.CallSession,
 	recursionDepth int,
 ) ContractExecutionContext {
+	// Initialize sender limits on the first call (recursion depth 0)
+	if recursionDepth == 0 {
+		callSession.InitializeSenderLimits(env.SenderIntents)
+	}
+
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
-	//TODO: pass these through for sender
+
 	for _, intent := range env.CallerIntents {
 		if intent.Type == "transfer.allow" {
 			limit, ok := intent.Args["limit"]
@@ -91,17 +97,25 @@ func New(
 			if !ok {
 				continue
 			}
+			decimals := -1
+			decimalsStr, ok := intent.Args["decimals"]
+			if ok {
+				dec, err := strconv.Atoi(decimalsStr)
+				if err == nil {
+					decimals = dec
+				}
+			}
 			key := intent.Type + "-" + token
 			seen := seenTypes[key]
 			if seen {
 				continue
 			}
 			seenTypes[key] = true
-			val, _ := common.SafeParseHiveFloat(limit)
+			val, _ := common.ParseDecimalsToBaseUnits(limit, decimals)
 			tokenLimits[token] = &val
 		}
 	}
-	fmt.Println("tokenLimits", tokenLimits, "depth", recursionDepth)
+	// fmt.Println("tokenLimits", tokenLimits, "depth", recursionDepth)
 	return &contractExecutionContext{
 		env.CallerIntents,
 		env.SenderIntents,
@@ -423,7 +437,7 @@ func (ctx *contractExecutionContext) PullBalance(from string, amount int64, asse
 	}
 	res := ctx.ledger.ExecuteTransfer(ledgerSystem.OpLogEvent{
 		To:     "contract:" + ctx.env.ContractId,
-		From:   ctx.env.Caller,
+		From:   from,
 		Amount: amount,
 		Asset:  asset,
 		// Memo   string `json:"mo" // TODO add in future

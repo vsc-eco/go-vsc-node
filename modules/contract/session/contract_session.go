@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/contracts"
@@ -253,12 +254,20 @@ func (cs *CallSession) InitializeSenderLimits(senderIntents []contracts.Intent) 
 			if !ok {
 				continue
 			}
+			decimals := -1
+			decimalsStr, ok := intent.Args["decimals"]
+			if ok {
+				dec, err := strconv.Atoi(decimalsStr)
+				if err == nil {
+					decimals = dec
+				}
+			}
 			key := intent.Type + "-" + token
 			if seenTypes[key] {
 				continue
 			}
 			seenTypes[key] = true
-			val, _ := common.SafeParseHiveFloat(limit)
+			val, _ := common.ParseDecimalsToBaseUnits(limit, decimals)
 			cs.senderTokenLimits[token] = &val
 		}
 	}
@@ -274,7 +283,7 @@ func (cs *CallSession) GetSenderTokenLimit(token string) *int64 {
 func (cs *CallSession) DecrementSenderTokenLimit(token string, amount int64) error {
 	limit, ok := cs.senderTokenLimits[token]
 	if !ok {
-		return fmt.Errorf("no sender intent for token: %s", token)
+		return fmt.Errorf("no sender token limit for token: %s", token)
 	}
 	if amount > *limit {
 		return fmt.Errorf("amount (%d) exceeds remaining sender limit (%d) for token: %s", amount, *limit, token)

@@ -11,3 +11,11 @@ func TestContractId(t *testing.T) {
 	contractId := common.ContractId("bef70add6d21cd812cf68da2caee72da05de48b4", 0)
 	assert.Equal(t, contractId, "vsc1Bem8RnoLgGPP7E2MBN52ekrdVqy2LNpSqF")
 }
+
+func TestParseFloat(t *testing.T) {
+	result, err := common.ParseDecimalsToBaseUnits("1005.0", 2)
+	if err != nil {
+		t.Error(err)
+	}
+	t.Log(result)
+}

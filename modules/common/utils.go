@@ -87,7 +87,7 @@ func ArrayToStringArray(arr interface{}) []string {
 type Sig struct {
 	Algo string `refmt:"alg" json:"alg"`
 	Sig  string `refmt:"sig" json:"sig"`
-	Bv   string `refmt:"bv" json:"bv,omitempty"`
+	Bv   string `refmt:"bv"  json:"bv,omitempty"`
 	//Only applies to KeyID
 	//Technically redundant as it's stored in Required_Auths
 	Kid string `refmt:"kid" json:"kid"`
@@ -110,6 +110,41 @@ func SafeParseHiveFloat(amount string) (int64, error) {
 	}
 
 	return strconv.ParseInt(strings.Join(parts, ""), 10, 64)
+}
+
+// parses an integer or decimal amount string, with an optional decimals value
+// decimals: the number of decimals supported by this token. use -1 to indicate
+// unknown, and the amount be assumed to be in base units
+func ParseDecimalsToBaseUnits(amount string, decimals int) (int64, error) {
+	parts := strings.Split(amount, ".")
+
+	var intPart, fracPart string
+	switch len(parts) {
+	case 1:
+		intPart = parts[0]
+		fracPart = ""
+	case 2:
+		intPart = parts[0]
+		fracPart = parts[1]
+	default:
+		return 0, fmt.Errorf("must have at most 1 decimal point")
+	}
+
+	dec := 0
+	if decimals >= 0 {
+		dec = decimals
+	} else if len(parts) == 2 {
+		dec = len(fracPart)
+	}
+
+	// Truncate or pad fracPart to match precision
+	if len(fracPart) > dec {
+		fracPart = fracPart[:dec]
+	} else {
+		fracPart = fracPart + strings.Repeat("0", dec-len(fracPart))
+	}
+
+	return strconv.ParseInt(intPart+fracPart, 10, 64)
 }
 
 func ContractId(txid string, opidx int) string {
