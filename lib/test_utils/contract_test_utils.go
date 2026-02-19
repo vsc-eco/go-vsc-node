@@ -250,7 +250,6 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 
 	if res.Error != nil {
 		ct.LedgerSession.Revert()
-		logs := ct.CallSession.PopLogs()
 		ct.CallSession.Rollback()
 		return ContractTestCallResult{
 			Success: false,
@@ -258,7 +257,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 			ErrMsg:  *res.Error,
 			RcUsed:  rcUsed,
 			GasUsed: res.Gas,
-			Logs:    logs,
+			Logs:    map[string]contract_session.LogOutput{},
 		}
 	}
 	diff := ct.CallSession.GetStateDiff()

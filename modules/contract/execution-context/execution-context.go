@@ -237,6 +237,8 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 		}
 	case "msg.caller":
 		return result.Ok(ctx.env.Caller)
+	case "intents":
+		fallthrough
 	case "intents.caller":
 		return result.Map(
 			resultWrap(json.Marshal(ctx.env.CallerIntents)),
