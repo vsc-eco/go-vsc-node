@@ -253,7 +253,31 @@ var SdkModule = map[string]sdkFunc{
 		})
 	},
 	//Pulls token balance from user transction
-	"hive.draw": func(ctx context.Context, arg1 any, arg2 any, arg3 any) SdkResult {
+	"hive.draw": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+		amountString, ok := arg1.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		amount, err := strconv.ParseInt(amountString, 10, 64)
+		if err != nil {
+			return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), err))
+		}
+		asset, ok := arg2.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+
+		return result.Map(
+			eCtx.PullBalance("", amount, asset),
+			func(struct{}) SdkResultStruct {
+				return SdkResultStruct{
+					Gas: params.CYCLE_GAS_PER_RC,
+				}
+			},
+		)
+	},
+	"hive.draw_from": func(ctx context.Context, arg1 any, arg2 any, arg3 any) SdkResult {
 		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 		from, ok := arg1.(string)
 		if !ok {

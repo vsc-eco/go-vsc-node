@@ -397,7 +397,7 @@ func (ctx *contractExecutionContext) PullBalance(from string, amount int64, asse
 		)
 	}
 	switch from {
-	case ctx.env.Caller:
+	case ctx.env.Caller, "":
 		tokenLimit, ok := ctx.tokenLimits[asset]
 		if !ok {
 			return result.Err[struct{}](
