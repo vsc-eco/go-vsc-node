@@ -642,7 +642,7 @@ func (t *TxUnstakeHbd) Type() string {
 // }
 
 type TxConsensusStake struct {
-	Self TxSelf
+	Self TxSelf `json:"-"`
 
 	From   string `json:"from"`
 	To     string `json:"to"`

@@ -46,5 +46,13 @@ func (pc *p2pConfigStruct) SetOptions(conf p2pConfig) error {
 		pc.Port = conf.Port
 		pc.ServerMode = conf.ServerMode
 		pc.AllowPrivate = conf.AllowPrivate
+		pc.Bootnodes = conf.Bootnodes
+		pc.AnnounceAddrs = conf.AnnounceAddrs
+	})
+}
+
+func (pc *p2pConfigStruct) SetBootnodes(bootnodes []string) error {
+	return pc.Update(func(pc *p2pConfig) {
+		pc.Bootnodes = bootnodes
 	})
 }

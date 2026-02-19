@@ -2,9 +2,7 @@ package gateway
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -736,15 +734,11 @@ func (ms *MultiSig) waitCheckBh(INTERVAL uint64, blockHeight uint64) error {
 }
 
 func (ms *MultiSig) getSigningKp() *hivego.KeyPair {
-	blsPrivSeed, err := hex.DecodeString(ms.identity.Get().BlsPrivKeySeed)
+	kp, err := GatewayKeyFromBlsSeed(ms.identity.DefaultValue().BlsPrivKeySeed)
 	if err != nil {
 		fmt.Println("Failed to decode bls priv seed", err)
 		return nil
 	}
-	salt := []byte("gateway_key")
-	gatewayKey := sha256.Sum256(append(blsPrivSeed, salt...))
-
-	kp := hivego.KeyPairFromBytes(gatewayKey[:])
 	return kp
 }
 
