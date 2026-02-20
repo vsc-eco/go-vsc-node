@@ -10,6 +10,7 @@ import (
 	"time"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
@@ -36,6 +37,11 @@ func main() {
 		os.Exit(1)
 	}
 	pubKey := kp.GetPublicKeyString()
+	defaultAuth := hivego.Auths{
+		WeightThreshold: 1,
+		KeyAuths:        [][2]any{{*pubKey, 1}},
+		AccountAuths:    [][2]any{},
+	}
 	sysConf := systemconfig.FromNetwork(args.network)
 
 	threshold := int(args.nodes * 2 / 3)
@@ -82,23 +88,11 @@ func main() {
 			Fee:            "0.000 TESTS",
 			Creator:        args.witCreator,
 			NewAccountName: witnessName,
-			Owner: hivego.Auths{
-				WeightThreshold: 1,
-				KeyAuths:        [][2]any{{*pubKey, 1}},
-				AccountAuths:    [][2]any{},
-			},
-			Active: hivego.Auths{
-				WeightThreshold: 1,
-				KeyAuths:        [][2]any{{*pubKey, 1}},
-				AccountAuths:    [][2]any{},
-			},
-			Posting: hivego.Auths{
-				WeightThreshold: 1,
-				KeyAuths:        [][2]any{{*pubKey, 1}},
-				AccountAuths:    [][2]any{},
-			},
-			MemoKey:      *pubKey,
-			JsonMetadata: "",
+			Owner:          defaultAuth,
+			Active:         defaultAuth,
+			Posting:        defaultAuth,
+			MemoKey:        *pubKey,
+			JsonMetadata:   "",
 		})
 	}
 
@@ -107,7 +101,7 @@ func main() {
 		p.SetBootnodes(bootnodes)
 	}
 
-	// Create gateway account
+	// Create gateway and dao accounts
 	hiveOps = append(hiveOps, hivego.AccountCreateOperation{
 		Fee:            "0.000 TESTS",
 		Creator:        args.witCreator,
@@ -129,6 +123,24 @@ func main() {
 		},
 		MemoKey:      *pubKey,
 		JsonMetadata: "",
+	}, hivego.AccountCreateOperation{
+		Fee:            "0.000 TESTS",
+		Creator:        args.witCreator,
+		NewAccountName: params.DAO_WALLET,
+		Owner:          defaultAuth,
+		Active:         defaultAuth,
+		Posting:        defaultAuth,
+		MemoKey:        *pubKey,
+		JsonMetadata:   "",
+	}, hivego.AccountCreateOperation{
+		Fee:            "0.000 TESTS",
+		Creator:        args.witCreator,
+		NewAccountName: "vsc.network",
+		Owner:          defaultAuth,
+		Active:         defaultAuth,
+		Posting:        defaultAuth,
+		MemoKey:        *pubKey,
+		JsonMetadata:   "",
 	})
 
 	hiveClient := hivego.NewHiveRpc([]string{args.hiveUrl})
