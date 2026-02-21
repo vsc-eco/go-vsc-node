@@ -11,6 +11,7 @@ type args struct {
 	dataDir    string
 	nodes      int
 	hiveUrl    string
+	dbUrl      string
 	dbPrefix   string
 	p2pPort    int
 	witPrefix  string
@@ -29,6 +30,7 @@ func ParseArgs() (args, error) {
 	dataDir := flag.String("data-dir", "data", "Parent data directory for config and storage for all nodes")
 	nodes := flag.Int("nodes", 4, "Node count to initialize (min. 4)")
 	hiveUrl := flag.String("hive-urls", "", "Hive RPC URLs (comma-separated)")
+	dbUrl := flag.String("db-url", "mongodb://localhost:27017", "MongoDB database URL")
 	dbPrefix := flag.String("db-prefix", "magi", "Database name prefix")
 	p2pPort := flag.Int("p2p-port", 10720, "P2P port for the first node")
 	witPrefix := flag.String("wit-prefix", "magi.test", "Witness username prefix")
@@ -43,6 +45,7 @@ func ParseArgs() (args, error) {
 		*dataDir,
 		*nodes,
 		*hiveUrl,
+		*dbUrl,
 		*dbPrefix,
 		*p2pPort,
 		*witPrefix,

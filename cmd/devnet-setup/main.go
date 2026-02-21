@@ -68,6 +68,7 @@ func main() {
 		plugins.Init()
 
 		hiveConf.SetHiveURIs(strings.Split(args.hiveUrl, ","))
+		dbConf.SetDbURI(args.dbUrl)
 		dbConf.SetDbName(args.dbPrefix + "-" + strconv.Itoa(n))
 		p2pConf.SetOptions(p2p.P2POpts{
 			Port:          args.p2pPort - 1 + n,
