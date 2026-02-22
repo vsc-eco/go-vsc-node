@@ -127,7 +127,7 @@ func main() {
 	}, hivego.AccountCreateOperation{
 		Fee:            "0.000 TESTS",
 		Creator:        args.witCreator,
-		NewAccountName: params.DAO_WALLET,
+		NewAccountName: strings.Replace(params.DAO_WALLET, "hive:", "", 1),
 		Owner:          defaultAuth,
 		Active:         defaultAuth,
 		Posting:        defaultAuth,
