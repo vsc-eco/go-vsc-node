@@ -83,10 +83,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	hiveRpcClient := hivego.NewHiveRpc([]string{hiveConf.Get().HiveURI})
+	hiveRpcClient := hivego.NewHiveRpc(hiveConf.Get().HiveURIs)
 	hiveRpcClient.ChainID = sysConfig.HiveChainId()
 
-	head, _ := hiveBlocks.GetLastProcessedBlock()
+	head, _ := hiveBlocks.GetHighestBlock()
 	wits, _ := witnessDb.GetWitnessesAtBlockHeight(head)
 	members := []elections.ElectionMember{}
 	weights := []uint64{}
@@ -139,7 +139,7 @@ func main() {
 		fmt.Println("tx id:", txid)
 	}
 
-	seconds := 60
+	seconds := 20
 	fmt.Println("wait", seconds, "seconds for peers to retrieve dag...")
 
 	time.Sleep(time.Duration(seconds) * time.Second)

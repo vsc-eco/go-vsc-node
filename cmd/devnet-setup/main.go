@@ -103,6 +103,7 @@ func main() {
 	}
 
 	// Create gateway and dao accounts
+	daoL1Acc := strings.Replace(params.DAO_WALLET, "hive:", "", 1)
 	hiveOps = append(hiveOps, hivego.AccountCreateOperation{
 		Fee:            "0.000 TESTS",
 		Creator:        args.witCreator,
@@ -127,7 +128,7 @@ func main() {
 	}, hivego.AccountCreateOperation{
 		Fee:            "0.000 TESTS",
 		Creator:        args.witCreator,
-		NewAccountName: strings.Replace(params.DAO_WALLET, "hive:", "", 1),
+		NewAccountName: daoL1Acc,
 		Owner:          defaultAuth,
 		Active:         defaultAuth,
 		Posting:        defaultAuth,
@@ -178,8 +179,25 @@ func main() {
 			RequiredAuths:        []string{witnessName},
 			RequiredPostingAuths: []string{},
 			Json:                 string(stakeOpJson),
+		}, hivego.TransferToVesting{
+			From:   args.witCreator,
+			To:     witnessName,
+			Amount: "10.000 TESTS",
 		})
 	}
+	hiveOps = append(hiveOps, hivego.TransferToSavings{
+		From:   args.witCreator,
+		To:     sysConf.GatewayWallet(),
+		Amount: "10.000 TESTS",
+	}, hivego.TransferToSavings{
+		From:   args.witCreator,
+		To:     daoL1Acc,
+		Amount: "10.000 TESTS",
+	}, hivego.TransferToSavings{
+		From:   args.witCreator,
+		To:     "vsc.network",
+		Amount: "10.000 TESTS",
+	})
 
 	txId, err = hiveClient.Broadcast(hiveOps, &args.wif)
 	if err != nil {
