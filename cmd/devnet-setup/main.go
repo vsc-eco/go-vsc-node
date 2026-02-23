@@ -185,15 +185,15 @@ func main() {
 			Amount: "10.000 TESTS",
 		})
 	}
-	hiveOps = append(hiveOps, hivego.TransferToSavings{
+	hiveOps = append(hiveOps, hivego.TransferToVesting{
 		From:   args.witCreator,
 		To:     sysConf.GatewayWallet(),
 		Amount: "10.000 TESTS",
-	}, hivego.TransferToSavings{
+	}, hivego.TransferToVesting{
 		From:   args.witCreator,
 		To:     daoL1Acc,
 		Amount: "10.000 TESTS",
-	}, hivego.TransferToSavings{
+	}, hivego.TransferToVesting{
 		From:   args.witCreator,
 		To:     "vsc.network",
 		Amount: "10.000 TESTS",
