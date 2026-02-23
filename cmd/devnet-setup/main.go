@@ -67,11 +67,14 @@ func main() {
 		plugins := aggregate.New([]aggregate.Plugin{dbConf, p2pConf, gqlConf, hiveConf, idConf, p2pServer})
 		plugins.Init()
 
+		host := strings.Replace(args.p2pHost, "?", strconv.Itoa(n), 1)
+		port := args.p2pPort - 1 + n
+
 		hiveConf.SetHiveURIs(strings.Split(args.hiveUrl, ","))
 		dbConf.SetDbURI(args.dbUrl)
 		dbConf.SetDbName(args.dbPrefix + "-" + strconv.Itoa(n))
 		p2pConf.SetOptions(p2p.P2POpts{
-			Port:          args.p2pPort - 1 + n,
+			Port:          port,
 			ServerMode:    true,
 			AllowPrivate:  true,
 			Bootnodes:     []string{},
@@ -82,7 +85,7 @@ func main() {
 
 		gwKey, _ := gateway.GatewayKeyFromBlsSeed(idConf.DefaultValue().BlsPrivKeySeed)
 
-		bootnodes = append(bootnodes, p2pServer.GetPeerAddr().String()+"/p2p/"+p2pServer.GetPeerId())
+		bootnodes = append(bootnodes, host+"/tcp/"+strconv.Itoa(port)+"/p2p/"+p2pServer.GetPeerId())
 		p2pConfs = append(p2pConfs, p2pConf)
 		gwAuths = append(gwAuths, [2]any{*gwKey.GetPublicKeyString(), 1})
 		hiveOps = append(hiveOps, hivego.AccountCreateOperation{

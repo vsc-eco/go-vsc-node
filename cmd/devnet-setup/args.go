@@ -13,6 +13,7 @@ type args struct {
 	hiveUrl    string
 	dbUrl      string
 	dbPrefix   string
+	p2pHost    string
 	p2pPort    int
 	witPrefix  string
 	witCreator string
@@ -32,6 +33,7 @@ func ParseArgs() (args, error) {
 	hiveUrl := flag.String("hive-urls", "", "Hive RPC URLs (comma-separated)")
 	dbUrl := flag.String("db-url", "mongodb://localhost:27017", "MongoDB database URL")
 	dbPrefix := flag.String("db-prefix", "magi", "Database name prefix")
+	p2pHost := flag.String("p2p-host", "/ip4/127.0.0.1", "P2P bootstrap host")
 	p2pPort := flag.Int("p2p-port", 10720, "P2P port for the first node")
 	witPrefix := flag.String("wit-prefix", "magi.test", "Witness username prefix")
 	witCreator := flag.String("wit-creator", "initminer", "Username of witness account creator")
@@ -47,6 +49,7 @@ func ParseArgs() (args, error) {
 		*hiveUrl,
 		*dbUrl,
 		*dbPrefix,
+		*p2pHost,
 		*p2pPort,
 		*witPrefix,
 		*witCreator,
