@@ -13,8 +13,10 @@ import (
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
+	"vsc-node/modules/db/vsc"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/witnesses"
+	"vsc-node/modules/e2e"
 	"vsc-node/modules/gateway"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/hive/streamer"
@@ -64,8 +66,17 @@ func main() {
 		wits := witnesses.NewEmptyWitnesses()
 		p2pServer := p2p.New(wits, p2pConf, idConf, sysConf, nil)
 
-		plugins := aggregate.New([]aggregate.Plugin{dbConf, p2pConf, gqlConf, hiveConf, idConf, p2pServer})
-		plugins.Init()
+		plugins := []aggregate.Plugin{dbConf, p2pConf, gqlConf, hiveConf, idConf, p2pServer}
+
+		if args.dropDb {
+			d := db.New(dbConf)
+			magiDb := vsc.New(d, dbConf)
+			dbNuker := e2e.NewDbNuker(magiDb)
+			plugins = append(plugins, d, magiDb, dbNuker)
+		}
+
+		a := aggregate.New(plugins)
+		a.Init()
 
 		host := strings.Replace(args.p2pHost, "?", strconv.Itoa(n), 1)
 		port := args.p2pPort - 1 + n

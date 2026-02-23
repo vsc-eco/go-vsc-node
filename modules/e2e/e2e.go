@@ -23,7 +23,6 @@ import (
 
 	"github.com/chebyrash/promise"
 	"github.com/vsc-eco/hivego"
-	"go.mongodb.org/mongo-driver/bson"
 )
 
 type TestFinalizer struct {
@@ -36,12 +35,7 @@ type TestFinalizer struct {
 // }
 
 func NukeDb(db *vsc.VscDb) {
-	ctx := context.Background()
-
-	colsNames, _ := db.ListCollectionNames(ctx, bson.M{})
-	for _, colName := range colsNames {
-		db.Collection(colName).DeleteMany(ctx, bson.M{})
-	}
+	db.Drop(context.Background())
 }
 
 type DbNuker struct {
@@ -50,12 +44,7 @@ type DbNuker struct {
 }
 
 func (dn *DbNuker) Init() error {
-	ctx := context.Background()
-
-	colsNames, _ := dn.Db.ListCollectionNames(ctx, bson.M{})
-	for _, colName := range colsNames {
-		dn.Db.Collection(colName).DeleteMany(ctx, bson.M{})
-	}
+	NukeDb(dn.Db)
 
 	return nil
 }
