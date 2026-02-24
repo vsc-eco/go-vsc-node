@@ -276,13 +276,27 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 					}
 				}
 			}
-
-			// cl := min(len(tssMgr.queuedActions), 5)
-			// top5Actions := tssMgr.queuedActions[:cl]
-			// tssMgr.RunActions(top5Actions, witnessSlot.Account, isLeader, bh)
-
-			// tssMgr.queuedActions = slices.Delete(tssMgr.queuedActions, 0, cl)
 		}
+
+		// Run queued actions (e.g. from KeyGen() / KeyReshare() / KeySign() API or tests)
+		const maxQueuedPerBlock = 5
+		tssMgr.lock.Lock()
+		take := maxQueuedPerBlock
+		if take > len(tssMgr.queuedActions) {
+			take = len(tssMgr.queuedActions)
+		}
+		for i := 0; i < take; i++ {
+			qa := tssMgr.queuedActions[i]
+			if !keyLocks[qa.KeyId] {
+				generatedActions = append(generatedActions, qa)
+				keyLocks[qa.KeyId] = true
+			}
+		}
+		if take > 0 {
+			tssMgr.queuedActions = tssMgr.queuedActions[take:]
+		}
+		tssMgr.lock.Unlock()
+
 		if len(generatedActions) > 0 {
 			tssMgr.RunActions(generatedActions, witnessSlot.Account, isLeader, bh)
 		}
@@ -856,9 +870,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		}
 		if isLeader {
 			go func() {
-				if len(signedResults) > 0 {
+				if len(signedResults) > 0 && tssMgr.hiveClient != nil {
 
-					//Signed Results submission
 					sigPacket := make([]map[string]any, 0)
 					for _, signResult := range signedResults {
 						sigPacket = append(sigPacket, map[string]any{
@@ -877,8 +890,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						Id:                   "vsc.tss_sign",
 						Json:                 string(rawJson),
 					}
-
-					// wif := tssMgr.config.Get().HiveActiveKey
 
 					hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
 						deployOp,
@@ -917,7 +928,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 						signableCid, _ := common.HashBytes(bytes, multicodec.DagCbor)
 
-						ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 						defer cancel()
 						fmt.Println("commitResult", bytes, err)
 
@@ -965,7 +976,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				rawJson, err := json.Marshal(sigPacket)
 
 				fmt.Println("json.Marshal <err>", err)
-				if canCommit {
+				if canCommit && tssMgr.hiveClient != nil {
 					deployOp := hivego.CustomJsonOperation{
 						RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
 						RequiredPostingAuths: []string{},
@@ -983,6 +994,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					if err != nil {
 						fmt.Println("Broadcast err", err)
 					}
+				} else if canCommit {
+					fmt.Println("[TSS] Commitment ready but no hive client to broadcast")
 				}
 			}
 		}
@@ -1078,13 +1091,16 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 
 		fmt.Println("finalizedCiruit, err", finalizedCiruit, err)
 
-		serialized, err := finalizedCiruit.Serialize()
-
 		if err != nil {
 			errRes = err
 		}
-
-		res = serialized
+		if finalizedCiruit != nil {
+			serialized, err := finalizedCiruit.Serialize()
+			if err != nil {
+				errRes = err
+			}
+			res = serialized
+		}
 		proc1 <- struct{}{}
 	}()
 
@@ -1172,6 +1188,20 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 func (tssMgr *TssManager) Init() error {
 	tssMgr.VStream.RegisterBlockTick("tss-mgr", tssMgr.BlockTick, true)
 	return nil
+}
+
+// GetKeygenResult returns the hex public key for a completed keygen, or "" if not yet done.
+func (tssMgr *TssManager) GetKeygenResult(keyId string) (string, error) {
+	for sessId, result := range tssMgr.sessionResults {
+		if result.Type() == KeyGenResultType {
+			res := result.(KeyGenResult)
+			if res.KeyId == keyId {
+				_ = sessId
+				return hex.EncodeToString(res.PublicKey), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("keygen result not found for key %s", keyId)
 }
 
 func (tssMgr *TssManager) KeyGen(keyId string, algo tss_helpers.SigningAlgo) int {

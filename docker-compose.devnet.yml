@@ -1,0 +1,70 @@
+# Local Hive devnet + single VSC node (short-term local testing).
+#
+# Uses Tin Toy (tintoy) - a minimal Hive testnet in Docker. No external network.
+#
+# Usage:
+#   cd go-vsc-node
+#   ./scripts/launch-devnet.sh
+#   # or manually:
+#   docker compose -f docker-compose.devnet.yml up -d
+#   # RPC: http://localhost:8090  (condenser_api, etc.)
+#   # VSC GraphQL: http://localhost:6600
+#
+# Create node accounts on the devnet (see docs/devnet.md), then put
+# data/config/identityConfig.json in place and restart the app service if needed.
+
+version: "3.9"
+
+services:
+  # Minimal Hive testnet (Tin Toy - 2000 accounts, initminer-style)
+  hive-devnet:
+    image: inertia/tintoy:latest
+    container_name: hive-devnet
+    ports:
+      - "8090:8090"   # JSON-RPC (use this as HIVE_API)
+      - "8091:8091"   # hived json-rpc
+      - "8080:8080"   # condenser
+      - "2001:2001"   # p2p
+    networks:
+      - vsc-devnet
+
+  db:
+    image: mongo:8.0.4
+    container_name: vsc-devnet-db
+    networks:
+      - vsc-devnet
+    volumes:
+      - devnet-db:/data/db
+    ports:
+      - "127.0.0.1:6620:27017"
+
+  app:
+    build:
+      dockerfile: Dockerfile
+      context: .
+    container_name: vsc-devnet-node
+    ports:
+      - "6600:6600"
+      - "6610:6610"
+      - "6610:6610/udp"
+    environment:
+      - MONGO_URL=mongodb://db:27017
+      - VSC_NETWORK=testnet
+      - VSC_DATA_DIR=data
+      - VSC_GRAPHQL_PORT=6600
+      - VSC_P2P_PORT=6610
+      - HIVE_API=http://hive-devnet:8090
+    depends_on:
+      - hive-devnet
+      - db
+    networks:
+      - vsc-devnet
+    volumes:
+      - ./data:/home/app/app/data
+
+volumes:
+  devnet-db: {}
+
+networks:
+  vsc-devnet:
+    driver: bridge

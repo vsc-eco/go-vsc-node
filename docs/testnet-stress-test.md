@@ -7,8 +7,9 @@ Guide to run the **fix/tss-reshare-stability** branch on the Hive/VSC testnet wi
 - **Testnet API**: [Techcoderx testnet](https://testnet.techcoderx.com/) (explorer: https://testnet.techcoderx.com/explorer/@magic-man)
 - **Hive testnet RPC** for nodes: set `HIVE_API` to the testnet legacy JSON-RPC URL (e.g. `https://testnet.techcoderx.com` or the URL that serves `condenser_api`).
 - **Accounts**: One Hive testnet account per VSC node. You can create accounts via the testnet (e.g. using @magic-man or the API) and fund them.
+- **RC (Resource Credits)**: The testnet requires RC to broadcast transactions. If your creator account (e.g. magic-man) has 0 RC, power up some TESTS on the testnet first, or wait for RC to regenerate.
 - **Keys**: Active key (WIF) for each node account, stored in `.env` or loaded by **clive** for broadcasting the registration transaction.
-- **clive**: Preferred for wallet actions (transfer + custom_json). Install from [openhive-network/clive](https://github.com/openhive-network/clive).
+- **clive**: Preferred for wallet actions (transfer + custom_json). Install from [openhive-network/clive](https://github.com/openhive-network/clive). For multi-node setup, use `scripts/launch-testnet-multinode-clive.sh`: it generates NAI-format tx files and invokes clive to sign and broadcast (no beem for broadcast; testnet accepts NAI only).
 
 ## 1. Register each VSC node on the testnet
 

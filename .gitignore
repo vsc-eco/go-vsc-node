@@ -8,3 +8,10 @@ btc-data/*
 .DS_Store
 cmd/mapping-bot/*datastore
 vsc-node
+
+# Testnet data, keys, and identity configs (contain private keys)
+testnet/
+testnet/keys.json
+testnet/node*/config/identityConfig.json
+
+.venv

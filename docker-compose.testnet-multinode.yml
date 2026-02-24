@@ -1,0 +1,129 @@
+# 3-node VSC testnet for p2p TSS testing.
+#
+# Each node runs against the Hive testnet (techcoderx) and has its own MongoDB.
+# Nodes discover each other via on-chain announcements (account_update).
+#
+# Pre-requisite: run scripts/launch-testnet-multinode.sh (or the setup script
+# directly) to create Hive accounts and generate identity configs in testnet/.
+#
+# Usage:
+#   docker compose -f docker-compose.testnet-multinode.yml build
+#   docker compose -f docker-compose.testnet-multinode.yml up -d
+#   docker compose -f docker-compose.testnet-multinode.yml logs -f
+#   docker compose -f docker-compose.testnet-multinode.yml down
+
+x-vsc-node: &vsc-node
+  build:
+    dockerfile: Dockerfile
+    context: .
+  networks:
+    - vsc-testnet
+  restart: unless-stopped
+
+x-vsc-env: &vsc-env
+  VSC_NETWORK: testnet
+  HIVE_API: ${HIVE_API:-https://testnet.techcoderx.com}
+
+services:
+  # ---------- Node 1 ----------
+  node1:
+    <<: *vsc-node
+    container_name: vsc-node1
+    ports:
+      - "6600:6600"
+      - "6610:6610"
+      - "6610:6610/udp"
+    environment:
+      <<: *vsc-env
+      MONGO_URL: mongodb://db1:27017
+      VSC_DATA_DIR: data
+      VSC_GRAPHQL_PORT: "6600"
+      VSC_P2P_PORT: "6610"
+    depends_on:
+      db1:
+        condition: service_started
+    volumes:
+      - ./testnet/node1:/home/app/app/data
+
+  # ---------- Node 2 ----------
+  node2:
+    <<: *vsc-node
+    container_name: vsc-node2
+    ports:
+      - "6601:6601"
+      - "6611:6611"
+      - "6611:6611/udp"
+    environment:
+      <<: *vsc-env
+      MONGO_URL: mongodb://db2:27017
+      VSC_DATA_DIR: data
+      VSC_GRAPHQL_PORT: "6601"
+      VSC_P2P_PORT: "6611"
+    depends_on:
+      db2:
+        condition: service_started
+    volumes:
+      - ./testnet/node2:/home/app/app/data
+
+  # ---------- Node 3 ----------
+  node3:
+    <<: *vsc-node
+    container_name: vsc-node3
+    ports:
+      - "6602:6602"
+      - "6612:6612"
+      - "6612:6612/udp"
+    environment:
+      <<: *vsc-env
+      MONGO_URL: mongodb://db3:27017
+      VSC_DATA_DIR: data
+      VSC_GRAPHQL_PORT: "6602"
+      VSC_P2P_PORT: "6612"
+    depends_on:
+      db3:
+        condition: service_started
+    volumes:
+      - ./testnet/node3:/home/app/app/data
+
+  # ---------- Databases ----------
+  db1:
+    image: mongo:8.0.4
+    container_name: vsc-db1
+    ports:
+      - "127.0.0.1:6620:27017"
+    networks:
+      - vsc-testnet
+    volumes:
+      - testnet-db1:/data/db
+    restart: unless-stopped
+
+  db2:
+    image: mongo:8.0.4
+    container_name: vsc-db2
+    ports:
+      - "127.0.0.1:6621:27017"
+    networks:
+      - vsc-testnet
+    volumes:
+      - testnet-db2:/data/db
+    restart: unless-stopped
+
+  db3:
+    image: mongo:8.0.4
+    container_name: vsc-db3
+    ports:
+      - "127.0.0.1:6622:27017"
+    networks:
+      - vsc-testnet
+    volumes:
+      - testnet-db3:/data/db
+    restart: unless-stopped
+
+volumes:
+  testnet-db1: {}
+  testnet-db2: {}
+  testnet-db3: {}
+
+networks:
+  vsc-testnet:
+    driver: bridge

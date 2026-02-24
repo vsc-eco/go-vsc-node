@@ -1,12 +1,14 @@
 package hive
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"math/rand"
 	"time"
 
+	"github.com/decred/dcrd/dcrec/secp256k1/v2"
 	"github.com/vsc-eco/hivego"
 )
 
@@ -35,6 +37,7 @@ type HiveTransactionCreator interface {
 type TransactionBroadcaster struct {
 	Client  *hivego.HiveRpcNode
 	KeyPair func() (*hivego.KeyPair, error)
+	ChainId []byte // Custom chain ID for testnet signing. nil = use hivego default (mainnet).
 }
 
 func (t *TransactionBroadcaster) Broadcast(tx hivego.HiveTransaction) (string, error) {
@@ -177,7 +180,28 @@ func (t *TransactionBroadcaster) Sign(tx hivego.HiveTransaction) (string, error)
 	if err != nil {
 		return "", err
 	}
+	if len(t.ChainId) > 0 {
+		return t.signWithChainId(tx, kp)
+	}
 	return tx.Sign(*kp)
+}
+
+// signWithChainId replicates hivego's Sign but with a custom chain ID
+// (needed for testnets that use a different chain ID than mainnet).
+func (t *TransactionBroadcaster) signWithChainId(tx hivego.HiveTransaction, kp *hivego.KeyPair) (string, error) {
+	serialized, err := hivego.SerializeTx(tx)
+	if err != nil {
+		return "", err
+	}
+	buf := make([]byte, 0, len(t.ChainId)+len(serialized))
+	buf = append(buf, t.ChainId...)
+	buf = append(buf, serialized...)
+	digest := sha256.Sum256(buf)
+	sig, err := secp256k1.SignCompact(kp.PrivateKey, digest[:], true)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(sig), nil
 }
 
 func (t *TransactionCrafter) MakeTransaction(ops []hivego.HiveOperation) hivego.HiveTransaction {

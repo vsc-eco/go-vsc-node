@@ -1,0 +1,4 @@
+# Tin Toy (tintoy) devnet keys - plain text for testnet only.
+# Run ./scripts/get-devnet-keys.sh once (with hive-devnet up) to fill TNMAN_* keys.
+# Initminer (wit-block-signing-0 / genesis) - used for funding tnman
+INITMINER_KEY=5KkamG4tYsEJ8XcacNqq25LTzkSSfzok1ctzJWXgu4GAjcqSRzL

@@ -1,0 +1,134 @@
+# Local Hive devnet + 3 VSC nodes (TSS testing: keygen/reshare need ≥3 nodes).
+#
+# Uses Tin Toy (tintoy) as Hive RPC. No external network.
+#
+# Prerequisite: create accounts and configs in testnet/:
+#   ./scripts/launch-devnet.sh   # start hive-devnet first
+#   ./scripts/devnet-create-accounts.sh   # NUM_NODES=3 by default
+#
+# Usage:
+#   docker compose -f docker-compose.devnet-3nodes.yml up -d
+#   docker compose -f docker-compose.devnet-3nodes.yml logs -f
+#   docker compose -f docker-compose.devnet-3nodes.yml down
+#
+# Ports: Node1 6600/6610, Node2 6601/6611, Node3 6602/6612
+
+x-vsc-node: &vsc-node
+  build:
+    dockerfile: Dockerfile
+    context: .
+  networks:
+    - vsc-devnet
+  restart: unless-stopped
+
+x-vsc-env: &vsc-env
+  VSC_NETWORK: testnet
+  HIVE_API: http://hive-devnet:8090
+
+services:
+  hive-devnet:
+    image: inertia/tintoy:latest
+    container_name: hive-devnet
+    ports:
+      - "8090:8090"
+      - "8091:8091"
+      - "8080:8080"
+      - "2001:2001"
+    networks:
+      - vsc-devnet
+
+  node1:
+    <<: *vsc-node
+    container_name: vsc-devnet-node1
+    ports:
+      - "6600:6600"
+      - "6610:6610"
+      - "6610:6610/udp"
+    environment:
+      <<: *vsc-env
+      MONGO_URL: mongodb://db1:27017
+      VSC_DATA_DIR: data
+      VSC_GRAPHQL_PORT: "6600"
+      VSC_P2P_PORT: "6610"
+    depends_on:
+      - hive-devnet
+      - db1
+    volumes:
+      - ./testnet/node1:/home/app/app/data
+
+  node2:
+    <<: *vsc-node
+    container_name: vsc-devnet-node2
+    ports:
+      - "6601:6601"
+      - "6611:6611"
+      - "6611:6611/udp"
+    environment:
+      <<: *vsc-env
+      MONGO_URL: mongodb://db2:27017
+      VSC_DATA_DIR: data
+      VSC_GRAPHQL_PORT: "6601"
+      VSC_P2P_PORT: "6611"
+    depends_on:
+      - hive-devnet
+      - db2
+    volumes:
+      - ./testnet/node2:/home/app/app/data
+
+  node3:
+    <<: *vsc-node
+    container_name: vsc-devnet-node3
+    ports:
+      - "6602:6602"
+      - "6612:6612"
+      - "6612:6612/udp"
+    environment:
+      <<: *vsc-env
+      MONGO_URL: mongodb://db3:27017
+      VSC_DATA_DIR: data
+      VSC_GRAPHQL_PORT: "6602"
+      VSC_P2P_PORT: "6612"
+    depends_on:
+      - hive-devnet
+      - db3
+    volumes:
+      - ./testnet/node3:/home/app/app/data
+
+  db1:
+    image: mongo:8.0.4
+    container_name: vsc-devnet-db1
+    networks:
+      - vsc-devnet
+    volumes:
+      - devnet-db1:/data/db
+    ports:
+      - "127.0.0.1:6620:27017"
+
+  db2:
+    image: mongo:8.0.4
+    container_name: vsc-devnet-db2
+    networks:
+      - vsc-devnet
+    volumes:
+      - devnet-db2:/data/db
+    ports:
+      - "127.0.0.1:6621:27017"
+
+  db3:
+    image: mongo:8.0.4
+    container_name: vsc-devnet-db3
+    networks:
+      - vsc-devnet
+    volumes:
+      - devnet-db3:/data/db
+    ports:
+      - "127.0.0.1:6622:27017"
+
+volumes:
+  devnet-db1: {}
+  devnet-db2: {}
+  devnet-db3: {}
+
+networks:
+  vsc-devnet:
+    driver: bridge

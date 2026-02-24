@@ -1,0 +1,21 @@
+# Hive devnet only (Tin Toy). Run this on the SSH server so the 3-node
+# VSC stack can point at it from elsewhere.
+#
+# Usage on server:
+#   docker compose -f docker-compose.hive-devnet-only.yml up -d
+#   docker compose -f docker-compose.hive-devnet-only.yml logs -f hive-devnet
+#   docker compose -f docker-compose.hive-devnet-only.yml down
+#
+# Ensure port 8090 (and 8091 if needed) is reachable from where you run
+# the 3-node stack (firewall / security group).
+
+services:
+  hive-devnet:
+    image: inertia/tintoy:latest
+    container_name: hive-devnet
+    ports:
+      - "8090:8090"
+      - "8091:8091"
+      - "8080:8080"
+      - "2001:2001"
+    restart: unless-stopped

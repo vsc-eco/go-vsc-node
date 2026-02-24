@@ -36,7 +36,7 @@ import (
 
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
-	"vsc-node/modules/vstream"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
 
 	"github.com/chebyrash/promise"
 	flatfs "github.com/ipfs/go-ds-flatfs"
@@ -48,7 +48,7 @@ type Node struct {
 
 	StateEngine      *stateEngine.StateEngine
 	P2P              *p2pInterface.P2PServer
-	VStream          *vstream.VStream
+	VStream          *blockconsumer.HiveConsumer
 	ElectionProposer election_proposer.ElectionProposer
 
 	TxPool *transactionpool.TransactionPool
@@ -176,7 +176,7 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	dbNuker := NewDbNuker(vscDb)
 
-	vstream := vstream.New(se)
+	vstream := blockconsumer.New(se)
 
 	ep := election_proposer.New(p2p, witnessesDb, electionDb, balanceDb, datalayer, &txCreator, identityConfig, se, vstream)
 

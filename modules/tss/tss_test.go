@@ -7,7 +7,6 @@ package tss_test
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
@@ -31,6 +30,7 @@ import (
 
 	flatfs "github.com/ipfs/go-ds-flatfs"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	// "vsc-node/modules/tss"
@@ -38,6 +38,30 @@ import (
 
 type MockElectionSystem struct {
 	ActiveWitnesses map[string]stateEngine.Witness
+}
+
+// waitForPeersConnected blocks until each P2P server has at least minPeers connected, or timeout.
+func waitForPeersConnected(t *testing.T, pts []*libp2p.P2PServer, minPeers int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		allGood := true
+		for _, p := range pts {
+			if len(p.Network().Peers()) < minPeers {
+				allGood = false
+				break
+			}
+		}
+		if allGood {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	// Timeout: report current peer counts
+	for i, p := range pts {
+		t.Logf("node %d peers: %d (need %d)", i, len(p.Network().Peers()), minPeers)
+	}
+	t.Fatalf("peers not connected within %v (need %d per node)", timeout, minPeers)
 }
 
 func (mes *MockElectionSystem) GetSchedule(blockHeight uint64) []stateEngine.WitnessSlot {
@@ -61,7 +85,17 @@ func (mes *MockElectionSystem) GetSchedule(blockHeight uint64) []stateEngine.Wit
 	return list
 }
 
-func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, *blockconsumer.HiveConsumer, witnesses.Witnesses, *libp2p.P2PServer, elections.Elections) {
+type testNode struct {
+	agg      *aggregate.Aggregate
+	vstr     *blockconsumer.HiveConsumer
+	witness  witnesses.Witnesses
+	p2p      *libp2p.P2PServer
+	election elections.Elections
+	identity common.IdentityConfig
+	tss      *vtss.TssManager
+}
+
+func MakeNode(index int, mes *MockElectionSystem) testNode {
 	path := "data-dir-" + strconv.Itoa(index)
 
 	os.Mkdir(path, os.ModePerm)
@@ -83,7 +117,6 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, *blockc
 	p2p := libp2p.New(witnesses, identity, sconf, nil, 22222+index)
 
 	keystore, err := flatfs.CreateOrOpen(path+"/keys", flatfs.Prefix(1), false)
-
 	if err != nil {
 		panic(err)
 	}
@@ -105,21 +138,7 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, *blockc
 		tssMgr,
 	})
 
-	go func() {
-		keyId := "test-key"
-		tssMgr.KeyGen(keyId, tss_helpers.SigningAlgoEcdsa)
-
-		time.Sleep(2 * time.Minute)
-		msg, _ := hex.DecodeString("89d7d1a68f8edd0cc1f961dce816422055d1ab69a0623954b834c95c1cdd7ed0")
-
-		fmt.Println("msg hex is", hex.EncodeToString(msg))
-
-		// tssMgr.KeySign(msg, keyId, tss_helpers.SigningAlgoEddsa)
-
-		tssMgr.KeyReshare(keyId)
-	}()
-
-	return agg, hiveConsumer, witnesses, p2p, electionDb
+	return testNode{agg: agg, vstr: hiveConsumer, witness: witnesses, p2p: p2p, election: electionDb, identity: identity, tss: tssMgr}
 }
 
 func TestVtss(t *testing.T) {
@@ -140,99 +159,161 @@ func TestVtss(t *testing.T) {
 	}
 	_ = mongoClient.Disconnect(context.Background())
 	cancel()
+
 	mes := &MockElectionSystem{
 		ActiveWitnesses: map[string]stateEngine.Witness{
-			"e2e-1": stateEngine.Witness{},
-			"e2e-2": stateEngine.Witness{},
-			"e2e-3": stateEngine.Witness{},
+			"e2e-0": {},
+			"e2e-1": {},
+			"e2e-2": {},
 		},
 	}
 
-	vstrs := make([]*blockconsumer.HiveConsumer, 0)
-	wts := make([]witnesses.Witnesses, 0)
-	ets := make([]elections.Elections, 0)
-	pts := make([]*libp2p.P2PServer, 0)
+	// Create 3 test nodes
+	nodes := make([]testNode, 3)
 	for x := 0; x < 3; x++ {
-		agg, vstr, witness, p2p, et := MakeNode(x, mes)
-		vstrs = append(vstrs, vstr)
-		wts = append(wts, witness)
-		pts = append(pts, p2p)
-		ets = append(ets, et)
-		go test_utils.RunPlugin(t, agg)
+		nodes[x] = MakeNode(x, mes)
+		go test_utils.RunPlugin(t, nodes[x].agg)
 	}
 
-	// Wait for all P2P servers to be started (host set) before using ID()/Addrs()
+	// Wait for all P2P servers to be started
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	for _, p := range pts {
-		if _, err := p.Started().Await(waitCtx); err != nil {
+	for _, n := range nodes {
+		if _, err := n.p2p.Started().Await(waitCtx); err != nil {
 			waitCancel()
 			t.Fatalf("p2p started: %v", err)
 		}
 	}
 	waitCancel()
-	time.Sleep(2 * time.Second) // allow peer discovery
-	for _, w := range wts {
-		for i, n := range pts {
-			w.SetWitnessUpdate(witnesses.SetWitnessUpdateType{
+	time.Sleep(2 * time.Second)
+
+	// Get each node's BLS DID for election member keys
+	blsDIDs := make([]string, 3)
+	for i, n := range nodes {
+		did, err := n.identity.BlsDID()
+		if err != nil {
+			t.Fatalf("get BLS DID for node %d: %v", i, err)
+		}
+		blsDIDs[i] = string(did)
+		t.Logf("node %d BLS DID: %s", i, blsDIDs[i])
+	}
+
+	// Seed witness records (account → peer_id) so TSS P2P can resolve peers.
+	for _, n := range nodes {
+		for i, other := range nodes {
+			err := n.witness.SetWitnessUpdate(witnesses.SetWitnessUpdateType{
 				Account: "e2e-" + strconv.Itoa(i),
+				Height:  1,
 				Metadata: witnesses.PostingJsonMetadata{
+					DidKeys: []witnesses.PostingJsonKeys{{Type: "consensus", Key: blsDIDs[i]}},
 					VscNode: witnesses.PostingJsonMetadataVscNode{
-						PeerId: n.ID().String(),
+						PeerId: other.p2p.ID().String(),
 					},
 				},
 			})
-			// fmt.Println("err", err)
-			for ix, nx := range pts {
-				if ix != i {
-					for _, addr := range nx.Addrs() {
-						addr := addr.String() + "/p2p/" + nx.ID().String()
-
-						addrInfo, _ := peer.AddrInfoFromString(addr)
-						err := n.Connect(context.Background(), *addrInfo)
-						if err == nil {
-							break
-						}
-					}
-				}
+			if err != nil {
+				t.Fatalf("seed witness e2e-%d: %v", i, err)
 			}
 		}
 	}
 
-	for _, e := range ets {
-		e.StoreElection(elections.ElectionResult{
+	// Connect nodes using explicit 127.0.0.1 addrs (hosts listen on 0.0.0.0)
+	connectCtx, connectCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	const basePort = 22222
+	for i, n := range nodes {
+		for ix, other := range nodes {
+			if ix == i {
+				continue
+			}
+			port := basePort + ix
+			tcpAddr, _ := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", port))
+			quicAddr, _ := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/127.0.0.1/udp/%d/quic-v1", port))
+			addrInfo := peer.AddrInfo{ID: other.p2p.ID(), Addrs: []multiaddr.Multiaddr{tcpAddr, quicAddr}}
+			if err := n.p2p.Connect(connectCtx, addrInfo); err != nil {
+				connectCancel()
+				t.Fatalf("connect node %d -> %d: %v", i, ix, err)
+			}
+		}
+	}
+	connectCancel()
+
+	pts := make([]*libp2p.P2PServer, len(nodes))
+	for i, n := range nodes {
+		pts[i] = n.p2p
+	}
+	waitForPeersConnected(t, pts, 2, 45*time.Second)
+
+	// Store election with BLS keys and weights so waitForSigs can collect signatures
+	electionMembers := make([]elections.ElectionMember, 3)
+	electionWeights := make([]uint64, 3)
+	for i := range nodes {
+		electionMembers[i] = elections.ElectionMember{
+			Account: "e2e-" + strconv.Itoa(i),
+			Key:     blsDIDs[i],
+		}
+		electionWeights[i] = 1
+	}
+
+	for _, n := range nodes {
+		n.election.StoreElection(elections.ElectionResult{
 			BlockHeight: 1,
 			ElectionDataInfo: elections.ElectionDataInfo{
-				Members: []elections.ElectionMember{
-					{
-						Account: "e2e-0",
-					},
-					{
-						Account: "e2e-1",
-					},
-					{
-						Account: "e2e-2",
-					},
-				},
+				Members: electionMembers,
+				Weights: electionWeights,
 			},
 		})
 	}
 
-	time.Sleep(5 * time.Second)
+	// Queue keygen on each node
+	for _, n := range nodes {
+		n.tss.KeyGen("test-key", tss_helpers.SigningAlgoEcdsa)
+	}
+
+	// Feed blocks starting at TSS_ACTIVATE_HEIGHT so BlockTick runs
+	done := make(chan struct{})
 	go func() {
-		bh := uint64(0)
+		bh := uint64(vtss.TSS_ACTIVATE_HEIGHT)
 		for {
-			for _, vstr := range vstrs {
-				vstr.ProcessBlock(hive_blocks.HiveBlock{
+			select {
+			case <-done:
+				return
+			default:
+			}
+			for _, n := range nodes {
+				n.vstr.ProcessBlock(hive_blocks.HiveBlock{
 					Transactions: []hive_blocks.Tx{},
 					BlockNumber:  bh,
 				}, &bh)
 			}
 			time.Sleep(3 * time.Second)
-			bh = bh + 1
+			bh++
 		}
 	}()
 
-	select {}
+	// Wait for keygen to complete: poll for "Hex public key" in session results
+	// The keygen produces a public key within ~20s if P2P works; give it 2 minutes.
+	t.Log("Waiting for TSS keygen to complete...")
+	keygenDone := false
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		time.Sleep(3 * time.Second)
+		// Check if any node's TSS produced a keygen result by checking the key in the DB
+		for _, n := range nodes {
+			key, err := n.tss.GetKeygenResult("test-key")
+			if err == nil && key != "" {
+				t.Logf("TSS keygen succeeded! Public key: %s", key)
+				keygenDone = true
+				break
+			}
+		}
+		if keygenDone {
+			break
+		}
+	}
+	close(done)
+
+	if !keygenDone {
+		t.Fatal("TSS keygen did not complete within 2 minutes")
+	}
 }
 
 // TestReshareSingleNodeFailure tests reshare behavior when one node fails mid-process

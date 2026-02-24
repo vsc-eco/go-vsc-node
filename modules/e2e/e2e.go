@@ -15,8 +15,8 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 	"vsc-node/modules/db/vsc/witnesses"
 	election_proposer "vsc-node/modules/election-proposer"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
 	libp2p "vsc-node/modules/p2p"
-	"vsc-node/modules/vstream"
 
 	a "vsc-node/modules/aggregate"
 
@@ -86,7 +86,7 @@ type E2ERunner struct {
 
 	BlockHeight uint64
 
-	VStream    *vstream.VStream
+	VStream    *blockconsumer.HiveConsumer
 	BlockEvent chan uint64
 }
 

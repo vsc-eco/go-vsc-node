@@ -1,0 +1,118 @@
+# 3 VSC nodes (TSS) pointing at a remote Hive devnet (e.g. on SSH server).
+#
+# Prerequisite:
+#   1. Hive devnet running on the remote (e.g. docker-compose.hive-devnet-only.yml on server).
+#   2. Create tnman + node accounts with HIVE_API pointing at the remote, then run this compose.
+#
+# Usage (from this repo, where the 3 nodes run):
+#   export HIVE_API=http://YOUR_SERVER:8090
+#   # If you need to create accounts (once): GET_DEV_KEY=/path/to/get_dev_key HIVE_API=$HIVE_API ./scripts/devnet-create-accounts.sh
+#   docker compose -f docker-compose.devnet-3nodes-remote.yml up -d
+#
+# HIVE_API must be set to the remote Hive RPC URL (e.g. http://naf:8090 or http://your-server-ip:8090).
+
+x-vsc-node: &vsc-node
+  build:
+    dockerfile: Dockerfile
+    context: .
+  networks:
+    - vsc-devnet
+  restart: unless-stopped
+
+x-vsc-env: &vsc-env
+  VSC_NETWORK: testnet
+  HIVE_API: ${HIVE_API}
+
+services:
+  node1:
+    <<: *vsc-node
+    container_name: vsc-devnet-node1
+    ports:
+      - "6600:6600"
+      - "6610:6610"
+      - "6610:6610/udp"
+    environment:
+      <<: *vsc-env
+      MONGO_URL: mongodb://db1:27017
+      VSC_DATA_DIR: data
+      VSC_GRAPHQL_PORT: "6600"
+      VSC_P2P_PORT: "6610"
+    depends_on:
+      - db1
+    volumes:
+      - ./testnet/node1:/home/app/app/data
+
+  node2:
+    <<: *vsc-node
+    container_name: vsc-devnet-node2
+    ports:
+      - "6601:6601"
+      - "6611:6611"
+      - "6611:6611/udp"
+    environment:
+      <<: *vsc-env
+      MONGO_URL: mongodb://db2:27017
+      VSC_DATA_DIR: data
+      VSC_GRAPHQL_PORT: "6601"
+      VSC_P2P_PORT: "6611"
+    depends_on:
+      - db2
+    volumes:
+      - ./testnet/node2:/home/app/app/data
+
+  node3:
+    <<: *vsc-node
+    container_name: vsc-devnet-node3
+    ports:
+      - "6602:6602"
+      - "6612:6612"
+      - "6612:6612/udp"
+    environment:
+      <<: *vsc-env
+      MONGO_URL: mongodb://db3:27017
+      VSC_DATA_DIR: data
+      VSC_GRAPHQL_PORT: "6602"
+      VSC_P2P_PORT: "6612"
+    depends_on:
+      - db3
+    volumes:
+      - ./testnet/node3:/home/app/app/data
+
+  db1:
+    image: mongo:8.0.4
+    container_name: vsc-devnet-db1
+    networks:
+      - vsc-devnet
+    volumes:
+      - devnet-db1:/data/db
+    ports:
+      - "127.0.0.1:6620:27017"
+
+  db2:
+    image: mongo:8.0.4
+    container_name: vsc-devnet-db2
+    networks:
+      - vsc-devnet
+    volumes:
+      - devnet-db2:/data/db
+    ports:
+      - "127.0.0.1:6621:27017"
+
+  db3:
+    image: mongo:8.0.4
+    container_name: vsc-devnet-db3
+    networks:
+      - vsc-devnet
+    volumes:
+      - devnet-db3:/data/db
+    ports:
+      - "127.0.0.1:6622:27017"
+
+volumes:
+  devnet-db1: {}
+  devnet-db2: {}
+  devnet-db3: {}
+
+networks:
+  vsc-devnet:
+    driver: bridge

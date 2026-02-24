@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
@@ -131,19 +132,30 @@ func main() {
 
 	identityConfig := common.NewIdentityConfig(dataDir + "/config")
 
-	hiveCreator := hive.LiveTransactionCreator{
-		TransactionCrafter: hive.TransactionCrafter{},
-		TransactionBroadcaster: hive.TransactionBroadcaster{
-			Client:  hiveRpcClient,
-			KeyPair: identityConfig.HiveActiveKeyPair,
-		},
-	}
-
 	var sysConfig systemconfig.SystemConfig
 	if network == "testnet" {
 		sysConfig = systemconfig.TestnetConfig()
 	} else {
 		sysConfig = systemconfig.MainnetConfig()
+	}
+
+	// ChainId from system config enables testnet signing (testnet has a
+	// different chain ID than mainnet; hivego defaults to mainnet).
+	// Override via HIVE_CHAIN_ID env var if needed.
+	chainId := sysConfig.ChainId()
+	if cidHex := os.Getenv("HIVE_CHAIN_ID"); cidHex != "" {
+		if b, err := hex.DecodeString(cidHex); err == nil {
+			chainId = b
+		}
+	}
+
+	hiveCreator := hive.LiveTransactionCreator{
+		TransactionCrafter: hive.TransactionCrafter{},
+		TransactionBroadcaster: hive.TransactionBroadcaster{
+			Client:  hiveRpcClient,
+			KeyPair: identityConfig.HiveActiveKeyPair,
+			ChainId: chainId,
+		},
 	}
 
 	//Set below from vstream
