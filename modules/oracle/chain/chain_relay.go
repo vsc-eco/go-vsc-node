@@ -10,6 +10,7 @@ import (
 	"strings"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/hive/streamer"
 
 	"github.com/chebyrash/promise"
 	"github.com/vsc-eco/hivego"
@@ -111,7 +112,8 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 			startSymbols[symbol] = strconv.Itoa(int(fcl.blockHeight))
 		}
 	}
-	hiveClient := hivego.NewHiveRpc([]string{"https://api.hive.blog"})
+	// TODO: replace with user's URIs
+	hiveClient := hivego.NewHiveRpc(streamer.DefaultHiveURIs)
 
 	jsonBytes, _ := json.Marshal(startSymbols)
 	wif := c.conf.Get().HiveActiveKey

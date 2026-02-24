@@ -125,7 +125,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	identityConfig.SetUsername(input.Username)
 	kp := HashSeed([]byte(SEED_PREFIX + input.Username))
 
-	hiveClient := hivego.NewHiveRpc("https://api.hive.blog")
+	hiveClient := hivego.NewHiveRpc(streamer.DefaultHiveURIs)
 
 	brcst := hive.MockTransactionBroadcaster{
 		KeyPair:  kp,
@@ -178,11 +178,50 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	dbNuker := NewDbNuker(vscDb)
 
-	ep := election_proposer.New(p2p, witnessesDb, electionDb, vscBlocks, balanceDb, datalayer, &txCreator, identityConfig, sysConfig, se, blockConsumer)
+	ep := election_proposer.New(
+		p2p,
+		witnessesDb,
+		electionDb,
+		vscBlocks,
+		balanceDb,
+		datalayer,
+		&txCreator,
+		identityConfig,
+		sysConfig,
+		se,
+		blockConsumer,
+	)
 
-	bp := blockproducer.New(logger, p2p, blockConsumer, se, identityConfig, sysConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb, se.RcSystem, nonceDb)
+	bp := blockproducer.New(
+		logger,
+		p2p,
+		blockConsumer,
+		se,
+		identityConfig,
+		sysConfig,
+		&txCreator,
+		datalayer,
+		electionDb,
+		vscBlocks,
+		txDb,
+		se.RcSystem,
+		nonceDb,
+	)
 
-	multisig := gateway.New(logger, sysConfig, witnessesDb, electionDb, actionsDb, balanceDb, &txCreator, blockConsumer, p2p, se, identityConfig, hiveClient)
+	multisig := gateway.New(
+		logger,
+		sysConfig,
+		witnessesDb,
+		electionDb,
+		actionsDb,
+		balanceDb,
+		&txCreator,
+		blockConsumer,
+		p2p,
+		se,
+		identityConfig,
+		hiveClient,
+	)
 
 	dataAvailability := data_availability.New(p2p, identityConfig, datalayer)
 
@@ -192,7 +231,19 @@ func MakeNode(input MakeNodeInput) *Node {
 	if err != nil {
 		panic(err)
 	}
-	tssManager := tss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessesDb, electionDb, blockConsumer, se, identityConfig, ds, &txCreator)
+	tssManager := tss.New(
+		p2p,
+		tssKeys,
+		tssRequests,
+		tssCommitments,
+		witnessesDb,
+		electionDb,
+		blockConsumer,
+		se,
+		identityConfig,
+		ds,
+		&txCreator,
+	)
 
 	plugins := make([]aggregate.Plugin, 0)
 

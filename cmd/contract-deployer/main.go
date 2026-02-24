@@ -88,12 +88,18 @@ func main() {
 	}
 }
 
-func deployNewContract(sysConfig systemconfig.SystemConfig, identityConfig common.IdentityConfig, hiveConfig streamer.HiveConfig, proof *stateEngine.StorageProof, args args) {
+func deployNewContract(
+	sysConfig systemconfig.SystemConfig,
+	identityConfig common.IdentityConfig,
+	hiveConfig streamer.HiveConfig,
+	proof *stateEngine.StorageProof,
+	args args,
+) {
 	user := identityConfig.Get().HiveUsername
 	wif := identityConfig.Get().HiveActiveKey
 
 	if len(user) > 0 && len(wif) > 0 {
-		hiveClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURI)
+		hiveClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURIs)
 
 		tx := stateEngine.TxCreateContract{
 			Version:      "0.1",
@@ -141,12 +147,18 @@ func deployNewContract(sysConfig systemconfig.SystemConfig, identityConfig commo
 	}
 }
 
-func updateContract(sysConfig systemconfig.SystemConfig, identityConfig common.IdentityConfig, hiveConfig streamer.HiveConfig, proof *stateEngine.StorageProof, args args) {
+func updateContract(
+	sysConfig systemconfig.SystemConfig,
+	identityConfig common.IdentityConfig,
+	hiveConfig streamer.HiveConfig,
+	proof *stateEngine.StorageProof,
+	args args,
+) {
 	user := identityConfig.Get().HiveUsername
 	wif := identityConfig.Get().HiveActiveKey
 
 	if len(user) > 0 && len(wif) > 0 {
-		hiveClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURI)
+		hiveClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURIs)
 
 		tx := stateEngine.TxUpdateContract{
 			NetId:       sysConfig.NetId(),
