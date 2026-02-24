@@ -94,7 +94,7 @@ func main() {
 		idConf.SetUsername(witnessName)
 		idConf.SetActiveKey(args.wif)
 
-		gwKey, _ := gateway.GatewayKeyFromBlsSeed(idConf.DefaultValue().BlsPrivKeySeed)
+		gwKey, _ := gateway.GatewayKeyFromBlsSeed(idConf.Get().BlsPrivKeySeed)
 
 		bootnodes = append(bootnodes, host+"/tcp/"+strconv.Itoa(port)+"/p2p/"+p2pServer.GetPeerId())
 		p2pConfs = append(p2pConfs, p2pConf)

@@ -734,7 +734,7 @@ func (ms *MultiSig) waitCheckBh(INTERVAL uint64, blockHeight uint64) error {
 }
 
 func (ms *MultiSig) getSigningKp() *hivego.KeyPair {
-	kp, err := GatewayKeyFromBlsSeed(ms.identity.DefaultValue().BlsPrivKeySeed)
+	kp, err := GatewayKeyFromBlsSeed(ms.identity.Get().BlsPrivKeySeed)
 	if err != nil {
 		fmt.Println("Failed to decode bls priv seed", err)
 		return nil
