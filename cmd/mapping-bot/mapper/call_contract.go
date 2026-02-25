@@ -46,7 +46,7 @@ func callContract(
 	hiveConfig := streamer.NewHiveConfig()
 	hiveConfig.Init()
 
-	hiveRpcClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURI)
+	hiveRpcClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURIs)
 
 	hiveCreator := hive.LiveTransactionCreator{
 		TransactionCrafter: hive.TransactionCrafter{},
