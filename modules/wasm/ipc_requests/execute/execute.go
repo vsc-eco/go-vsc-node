@@ -106,8 +106,8 @@ func (res *ExecutionFinish[Result]) Process(context.Context) result.Result[ipc_r
 		processedRes := pm.Result.UnwrapAsPtr()
 		if processedRes != nil {
 			resStruct := any(processedRes).(*wasm_types.WasmResultStruct)
-			resStruct.Error = res.Error != nil
-			if resStruct.Error {
+			resStruct.Error = res.Error
+			if resStruct.Error != nil {
 				resStruct.Result = *res.Error
 			}
 		}
