@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
 	"vsc-node/modules/common"
 
 	libp2p "vsc-node/modules/p2p"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/multiformats/go-multicodec"
@@ -27,11 +29,55 @@ type p2pMessage struct {
 	Type    string                 `json:"type"`
 	Account string                 `json:"account"`
 	Data    map[string]interface{} `json:"data"`
+
+	// Round and type info for filtering stale messages
+	Round   uint64 `json:"round,omitempty"`   // Block height of the session
+	Action  string `json:"action,omitempty"`  // keygen, sign, reshare
+	Session string `json:"session,omitempty"` // Full session ID
 }
 
 // ValidateMessage implements libp2p.PubSubServiceParams.
-func (p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
-	// Can add a blacklist for spammers or ignore previously seen messages.
+func (p p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
+	// Always accept signature-related messages (ask_sigs, res_sig) as they use different channels
+	if parsedMsg.Type == "ask_sigs" || parsedMsg.Type == "res_sig" {
+		return true
+	}
+
+	// For TSS round messages, validate they're relevant to current session
+	if parsedMsg.Session != "" && parsedMsg.Round > 0 {
+		// Check if this session exists and is still active
+		p.tssMgr.bufferLock.RLock()
+		sessionInfo, sessionActive := p.tssMgr.sessionMap[parsedMsg.Session]
+		_, dispatcherExists := p.tssMgr.actionMap[parsedMsg.Session]
+		p.tssMgr.bufferLock.RUnlock()
+
+		if !sessionActive && !dispatcherExists {
+			// Session not found - could be from old round, drop silently
+			fmt.Printf("[TSS] [PUBSUB] ValidateMessage: session not found, dropping session=%s round=%d\n",
+				parsedMsg.Session, parsedMsg.Round)
+			return false
+		}
+
+		// Verify the round matches current expected round for this session
+		if sessionActive {
+			// Allow messages within a reasonable window (current round ± 1)
+			if parsedMsg.Round < sessionInfo.bh && sessionInfo.bh-parsedMsg.Round > 1 {
+				fmt.Printf("[TSS] [PUBSUB] ValidateMessage: old round, dropping session=%s msgRound=%d sessionRound=%d\n",
+					parsedMsg.Session, parsedMsg.Round, sessionInfo.bh)
+				return false // Message from old round
+			}
+
+			// Verify action type matches (keygen, sign, reshare)
+			if parsedMsg.Action != "" && sessionInfo.action != "" {
+				if parsedMsg.Action != string(sessionInfo.action) {
+					fmt.Printf("[TSS] [PUBSUB] ValidateMessage: action type mismatch, dropping session=%s msgAction=%s expectedAction=%s\n",
+						parsedMsg.Session, parsedMsg.Action, sessionInfo.action)
+					return false // Action type doesn't match
+				}
+			}
+		}
+	}
+
 	return true
 }
 
@@ -153,11 +199,24 @@ func (txp *TssManager) stopP2P() error {
 	return nil
 }
 
+// SendMsg sends a TSS message to a participant with retry logic and connection health checks
 func (tss *TssManager) SendMsg(sessionId string, participant Participant, moniker string, msg []byte, isBroadcast bool, commiteeType string, cmtFrom string) error {
+	return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, 0)
+}
+
+// sendMsgWithRetry implements retry logic with exponential backoff
+func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participant, moniker string, msg []byte, isBroadcast bool, commiteeType string, cmtFrom string, attempt int) error {
+	const maxRetries = 3
+	const baseRetryDelay = 1 * time.Second
+
+	startTime := time.Now()
+	fromAccount := tss.config.Get().HiveUsername
+
 	witness, err := tss.witnessDb.GetWitnessAtHeight(participant.Account, nil)
 
-	// fmt.Println("participant.Account", participant.Account)
 	if err != nil {
+		fmt.Printf("[TSS] [P2P] ERROR: GetWitnessAtHeight failed sessionId=%s from=%s to=%s err=%v\n",
+			sessionId, fromAccount, participant.Account, err)
 		fmt.Println("GetWitnessAtHeight", err)
 		return err
 	}
@@ -165,7 +224,24 @@ func (tss *TssManager) SendMsg(sessionId string, participant Participant, monike
 	peerId, err := peer.Decode(witness.PeerId)
 
 	if err != nil {
+		fmt.Printf("[TSS] [P2P] ERROR: PeerId decode failed sessionId=%s from=%s to=%s peerId=%s err=%v\n",
+			sessionId, fromAccount, participant.Account, witness.PeerId, err)
 		return err
+	}
+
+	// Check connection health before sending
+	if !tss.isPeerConnected(peerId) {
+		if attempt < maxRetries {
+			retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt)) // Exponential backoff: 1s, 2s, 4s
+			fmt.Printf("[TSS] [P2P] WARN: Peer not connected, will retry sessionId=%s to=%s peerId=%s attempt=%d/%d delay=%v\n",
+				sessionId, participant.Account, peerId.String(), attempt+1, maxRetries, retryDelay)
+			time.Sleep(retryDelay)
+			return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, attempt+1)
+		} else {
+			fmt.Printf("[TSS] [P2P] ERROR: Peer not connected after %d attempts sessionId=%s to=%s peerId=%s\n",
+				maxRetries, sessionId, participant.Account, peerId.String())
+			return fmt.Errorf("peer %s not connected after %d retries", peerId.String(), maxRetries)
+		}
 	}
 
 	tMsg := TMsg{
@@ -178,6 +254,65 @@ func (tss *TssManager) SendMsg(sessionId string, participant Participant, monike
 	}
 	tRes := TRes{}
 
-	// fmt.Println("Sending message from", tss.config.Get().HiveUsername, "to", participant.Account, "isBroadcast", isBroadcast)
-	return tss.client.Call(peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
+	if attempt == 0 {
+		fmt.Printf("[TSS] [P2P] Sending message sessionId=%s from=%s to=%s isBroadcast=%v cmt=%s cmtFrom=%s msgLen=%d\n",
+			sessionId, fromAccount, participant.Account, isBroadcast, commiteeType, cmtFrom, len(msg))
+	} else {
+		fmt.Printf("[TSS] [P2P] Retrying message sessionId=%s from=%s to=%s attempt=%d/%d msgLen=%d\n",
+			sessionId, fromAccount, participant.Account, attempt+1, maxRetries, len(msg))
+	}
+
+	// Add timeout to RPC call using a channel
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- tss.client.Call(peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
+	}()
+
+	select {
+	case err = <-errChan:
+		// RPC call completed
+	case <-time.After(30 * time.Second):
+		err = fmt.Errorf("RPC call timeout after 30s")
+		fmt.Printf("[TSS] [P2P] ERROR: RPC call timeout sessionId=%s to=%s peerId=%s\n",
+			sessionId, participant.Account, peerId.String())
+	}
+	duration := time.Since(startTime)
+
+	if err != nil {
+		if attempt < maxRetries {
+			retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt))
+			fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed, will retry sessionId=%s from=%s to=%s peerId=%s duration=%v attempt=%d/%d delay=%v err=%v\n",
+				sessionId, fromAccount, participant.Account, peerId.String(), duration, attempt+1, maxRetries, retryDelay, err)
+			tss.metrics.IncrementMessageRetry()
+			time.Sleep(retryDelay)
+			return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, attempt+1)
+		} else {
+			fmt.Printf("[TSS] [P2P] ERROR: RPC Call failed after %d attempts sessionId=%s from=%s to=%s peerId=%s duration=%v err=%v\n",
+				maxRetries, sessionId, fromAccount, participant.Account, peerId.String(), duration, err)
+			tss.metrics.IncrementMessageSendFailure()
+			return err
+		}
+	} else {
+		if attempt > 0 {
+			fmt.Printf("[TSS] [P2P] RPC Call succeeded on retry sessionId=%s from=%s to=%s attempt=%d duration=%v\n",
+				sessionId, fromAccount, participant.Account, attempt+1, duration)
+		} else {
+			fmt.Printf("[TSS] [P2P] RPC Call success sessionId=%s from=%s to=%s duration=%v\n",
+				sessionId, fromAccount, participant.Account, duration)
+		}
+		tss.metrics.RecordMessageSendLatency(duration)
+	}
+
+	return nil
+}
+
+// isPeerConnected checks if a peer is currently connected
+func (tss *TssManager) isPeerConnected(peerId peer.ID) bool {
+	host := tss.p2p.Host()
+	connState := host.Network().Connectedness(peerId)
+	connected := connState == network.Connected
+	if !connected {
+		fmt.Printf("[TSS] [P2P] Peer connection check: peerId=%s state=%v\n", peerId.String(), connState)
+	}
+	return connected
 }

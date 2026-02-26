@@ -1,0 +1,39 @@
+# Run 2 VSC testnet nodes (TSS stress test).
+# Use with: docker compose -f docker-compose.yml -f docker-compose.testnet.yml -f docker-compose.testnet-2nodes.yml up -d
+# Set HIVE_API to your testnet RPC (e.g. https://testnet.techcoderx.com) and create data/config and data2/config identityConfig.json for each node.
+
+version: "3.9"
+services:
+  app2:
+    profiles: ["default"]
+    build:
+      dockerfile: Dockerfile
+      context: .
+    ports:
+      - "6601:6601"
+      - "6611:6611"
+      - "6611:6611/udp"
+    environment:
+      - MONGO_URL=mongodb://db2:27017
+      - VSC_NETWORK=testnet
+      - VSC_DATA_DIR=data2
+      - VSC_GRAPHQL_PORT=6601
+      - VSC_P2P_PORT=6611
+      - HIVE_API=${HIVE_API:-}
+    depends_on:
+      - db2
+    networks:
+      - go-vsc-node
+    volumes:
+      - ./data2:/home/app/app/data2
+  db2:
+    image: mongo:8.0.4
+    ports:
+      - "127.0.0.1:6621:27017"
+    networks:
+      - go-vsc-node
+    volumes:
+      - db2:/data/db
+
+volumes:
+  db2: {}

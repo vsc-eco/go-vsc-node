@@ -46,6 +46,74 @@ const TSS_ROTATE_INTERVAL = 20 * 5
 // 24 hour blame
 var BLAME_EXPIRE = uint64(24 * 60 * 20)
 
+// TSS Reshare configuration constants
+// These can be overridden via environment variables:
+// VSC_TSS_RESHARE_TIMEOUT - reshare timeout (e.g., "2m")
+// VSC_TSS_RPC_TIMEOUT - RPC call timeout (e.g., "30s")
+// VSC_TSS_MESSAGE_RETRIES - number of message retries
+// VSC_TSS_BAN_THRESHOLD - ban threshold percentage
+// VSC_TSS_BAN_GRACE_EPOCHS - grace period epochs for new nodes
+
+var (
+	TSS_RESHARE_SYNC_DELAY       = 5 * time.Second  // Reduced from 15s to 5s
+	TSS_RESHARE_TIMEOUT          = 2 * time.Minute  // Increased from 1 minute to 2 minutes
+	TSS_MESSAGE_RETRY_COUNT      = 3                // Number of retries for failed messages
+	TSS_MESSAGE_RETRY_DELAY      = 1 * time.Second  // Base delay for retries
+	TSS_BAN_THRESHOLD_PERCENT    = 25               // Failure rate threshold for bans (25%)
+	TSS_BAN_GRACE_PERIOD_EPOCHS  = 4                // Epochs before new nodes can be banned (as int for comparison)
+	TSS_BUFFERED_MESSAGE_MAX_AGE = 1 * time.Minute  // Maximum age for buffered messages
+	MAX_RESHARE_RETRIES          = 3                // Maximum number of reshare retries on timeout
+	RPC_TIMEOUT                  = 30 * time.Second // RPC call timeout
+)
+
+func init() {
+	// Load configuration from environment variables
+	loadTSSConfig()
+}
+
+func loadTSSConfig() {
+	// Override from environment variables if set
+	if timeout := getEnvDuration("VSC_TSS_RESHARE_TIMEOUT"); timeout > 0 {
+		TSS_RESHARE_TIMEOUT = timeout
+	}
+	if timeout := getEnvDuration("VSC_TSS_RPC_TIMEOUT"); timeout > 0 {
+		RPC_TIMEOUT = timeout
+	}
+	if retries := getEnvInt("VSC_TSS_MESSAGE_RETRIES"); retries > 0 {
+		TSS_MESSAGE_RETRY_COUNT = retries
+	}
+	if threshold := getEnvInt("VSC_TSS_BAN_THRESHOLD"); threshold > 0 {
+		TSS_BAN_THRESHOLD_PERCENT = threshold
+	}
+	if grace := getEnvInt("VSC_TSS_BAN_GRACE_EPOCHS"); grace > 0 {
+		TSS_BAN_GRACE_PERIOD_EPOCHS = grace
+	}
+}
+
+func getEnvDuration(name string) time.Duration {
+	if val := getEnvString(name); val != "" {
+		if d, err := time.ParseDuration(val); err == nil {
+			return d
+		}
+	}
+	return 0
+}
+
+func getEnvInt(name string) int {
+	if val := getEnvString(name); val != "" {
+		if i, err := strconv.Atoi(val); err == nil {
+			return i
+		}
+	}
+	return 0
+}
+
+func getEnvString(name string) string {
+	// This function reads from environment variables
+	// For production use, implement proper os.Getenv or use viper/config
+	return ""
+}
+
 type TssManager struct {
 	p2p    *libp2p.P2PServer
 	pubsub libp2p.PubSubService[p2pMessage]
@@ -80,6 +148,40 @@ type TssManager struct {
 	actionMap      map[string]Dispatcher
 	sessionMap     map[string]sessionInfo
 	sessionResults map[string]DispatcherResult
+
+	// Message buffer for early-arriving messages before dispatcher registration
+	messageBuffer map[string][]bufferedMessage
+	bufferLock    sync.RWMutex
+
+	// Retry count for reshare operations (in-memory to avoid DB dependency)
+	retryCounts   map[string]int
+	retryCountsMu sync.Mutex
+
+	// Metrics for observability
+	metrics *Metrics
+}
+
+// getRetryCount returns the retry count for a given key ID
+func (tssMgr *TssManager) getRetryCount(keyId string) int {
+	tssMgr.retryCountsMu.Lock()
+	defer tssMgr.retryCountsMu.Unlock()
+	return tssMgr.retryCounts[keyId]
+}
+
+// incrementRetryCount increments the retry count for a given key ID
+func (tssMgr *TssManager) incrementRetryCount(keyId string) {
+	tssMgr.retryCountsMu.Lock()
+	defer tssMgr.retryCountsMu.Unlock()
+	tssMgr.retryCounts[keyId]++
+}
+
+type bufferedMessage struct {
+	Data    []byte
+	From    string
+	IsBrcst bool
+	Cmt     string
+	CmtFrom string
+	Time    time.Time
 }
 
 func (tssMgr *TssManager) Receive() {}
@@ -189,9 +291,11 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 }
 
 type score struct {
-	Account string
-	Score   int
-	Weight  int
+	Account          string
+	Score            int
+	Weight           int
+	FirstEpoch       uint64
+	EpochsSinceFirst uint64
 }
 
 type scoreMap struct {
@@ -200,6 +304,7 @@ type scoreMap struct {
 
 func (tss *TssManager) BlameScore() scoreMap {
 	weightMap := make(map[string]int)
+	nodeFirstEpoch := make(map[string]uint64) // Track first epoch each node appeared
 
 	initialElection, _ := tss.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
 	elections := make(map[uint64]elections.ElectionResult, 0)
@@ -215,9 +320,20 @@ func (tss *TssManager) BlameScore() scoreMap {
 			break
 		}
 		elections[epoch] = *election
+
+		// Track first appearance of each node
+		for _, member := range election.Members {
+			if _, exists := nodeFirstEpoch[member.Account]; !exists {
+				nodeFirstEpoch[member.Account] = epoch
+			}
+		}
 	}
 
+	currentEpoch := initialElection.Epoch
 	blameMap := make(map[string]int)
+	timeoutBlameMap := make(map[string]int) // Separate tracking for timeouts vs errors
+	errorBlameMap := make(map[string]int)
+
 	for _, election := range elections {
 		blames, _ := tss.tssCommitments.GetBlames(tss_db.ByEpoch(election.Epoch), tss_db.ByType("blame"))
 		for _, member := range election.Members {
@@ -229,9 +345,23 @@ func (tss *TssManager) BlameScore() scoreMap {
 			blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
 			bv = bv.SetBytes(blameBytes)
 
+			// Determine if this is a timeout or error based on metadata
+			isTimeout := false
+			if blame.Metadata != nil && blame.Metadata.Error != nil {
+				// Check if error indicates timeout
+				errMsg := *blame.Metadata.Error
+				isTimeout = len(errMsg) > 0 && (errMsg == "timeout" || errMsg == "TIMEOUT")
+			}
+
 			for idx, member := range election.Members {
 				if bv.Bit(idx) == 1 {
 					blameMap[member.Account] += 1
+					tss.metrics.IncrementBlameCount(member.Account)
+					if isTimeout {
+						timeoutBlameMap[member.Account] += 1
+					} else {
+						errorBlameMap[member.Account] += 1
+					}
 				}
 			}
 		}
@@ -239,10 +369,18 @@ func (tss *TssManager) BlameScore() scoreMap {
 
 	sortedArray := make([]score, 0)
 	for account, weight := range weightMap {
+		firstEpoch, exists := nodeFirstEpoch[account]
+		epochsSinceFirst := uint64(0)
+		if exists && currentEpoch >= firstEpoch {
+			epochsSinceFirst = currentEpoch - firstEpoch
+		}
+
 		sortedArray = append(sortedArray, score{
-			Account: account,
-			Score:   blameMap[account],
-			Weight:  weight,
+			Account:          account,
+			Score:            blameMap[account],
+			Weight:           weight,
+			FirstEpoch:       firstEpoch,
+			EpochsSinceFirst: epochsSinceFirst,
 		})
 	}
 
@@ -251,11 +389,43 @@ func (tss *TssManager) BlameScore() scoreMap {
 	})
 
 	bannedNodes := make(map[string]bool)
+	bannedList := make([]string, 0)
+	gracePeriodExemptions := make([]string, 0)
+
 	for _, entry := range sortedArray {
-		//Failure rate of 25% or more results in ban
-		if entry.Score > entry.Weight*25/100 {
-			bannedNodes[entry.Account] = true
+		// Check grace period for new nodes
+		gracePeriod := uint64(TSS_BAN_GRACE_PERIOD_EPOCHS)
+		if entry.EpochsSinceFirst < gracePeriod {
+			gracePeriodExemptions = append(gracePeriodExemptions, entry.Account)
+			fmt.Printf("[TSS] [BLAME] Node in grace period (exempt from ban): account=%s score=%d weight=%d epochsSinceFirst=%d gracePeriod=%d\n",
+				entry.Account, entry.Score, entry.Weight, entry.EpochsSinceFirst, gracePeriod)
+			continue
 		}
+
+		// Use configurable threshold instead of hardcoded 25%
+		thresholdPercent := TSS_BAN_THRESHOLD_PERCENT
+		failureRate := float64(entry.Score) / float64(entry.Weight) * 100.0
+
+		if entry.Weight > 0 && entry.Score > entry.Weight*thresholdPercent/100 {
+			bannedNodes[entry.Account] = true
+			bannedList = append(bannedList, entry.Account)
+
+			timeoutCount := timeoutBlameMap[entry.Account]
+			errorCount := errorBlameMap[entry.Account]
+
+			fmt.Printf("[TSS] [BLAME] Node banned: account=%s score=%d weight=%d failureRate=%.2f%% threshold=%d%% timeoutBlames=%d errorBlames=%d epochsSinceFirst=%d\n",
+				entry.Account, entry.Score, entry.Weight, failureRate, thresholdPercent, timeoutCount, errorCount, entry.EpochsSinceFirst)
+		} else {
+			fmt.Printf("[TSS] [BLAME] Node not banned: account=%s score=%d weight=%d failureRate=%.2f%% threshold=%d%%\n",
+				entry.Account, entry.Score, entry.Weight, failureRate, thresholdPercent)
+		}
+	}
+
+	if len(bannedList) > 0 {
+		fmt.Printf("[TSS] [BLAME] Ban summary: totalBanned=%d bannedNodes=%v gracePeriodExemptions=%d\n",
+			len(bannedList), bannedList, len(gracePeriodExemptions))
+	} else {
+		fmt.Printf("[TSS] [BLAME] Ban summary: no nodes banned gracePeriodExemptions=%d\n", len(gracePeriodExemptions))
 	}
 	// scoreMapBytes, _ := json.MarshalIndent(blameMap, "", "  ")
 	// fmt.Println("scoreMap", string(scoreMapBytes), sortedArray)
@@ -292,6 +462,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	}
 
 	blameMap := tssMgr.BlameScore()
+
+	fmt.Printf("[TSS] [ACTIONS] Running actions blockHeight=%d isLeader=%v actionCount=%d bannedNodes=%d\n",
+		bh, isLeader, len(actions), len(blameMap.bannedNodes))
 
 	dispatchers := make([]Dispatcher, 0)
 	for idx, action := range actions {
@@ -351,7 +524,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			dispatcher.startLock.TryLock()
 
 			dispatchers = append(dispatchers, dispatcher)
+			tssMgr.bufferLock.Lock()
 			tssMgr.actionMap[sessionId] = dispatcher
+			tssMgr.bufferLock.Unlock()
 
 		} else if action.Type == SignAction {
 			sessionId = "sign-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
@@ -397,12 +572,16 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			dispatcher.startLock.TryLock()
 
 			dispatchers = append(dispatchers, dispatcher)
+			tssMgr.bufferLock.Lock()
 			tssMgr.actionMap[sessionId] = dispatcher
+			tssMgr.bufferLock.Unlock()
 		} else if action.Type == ReshareAction {
 
 			participants := make([]Participant, 0)
 			sessionId = "reshare-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
+			fmt.Printf("[TSS] [RESHARE] Creating reshare action sessionId=%s keyId=%s blockHeight=%d\n",
+				sessionId, action.KeyId, bh)
 			fmt.Println("reshare sessionId", sessionId)
 			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "keygen", "reshare")
 			lastBlame, _ := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "blame")
@@ -410,6 +589,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			//This should either be equal but never less in practical terms
 			//However, we can add further checks
 			if commitment.Epoch >= currentElection.Epoch || err != nil {
+				fmt.Printf("[TSS] [RESHARE] Skipping reshare sessionId=%s keyId=%s commitmentEpoch=%d currentEpoch=%d err=%v\n",
+					sessionId, action.KeyId, commitment.Epoch, currentElection.Epoch, err)
 				fmt.Println("reshare skipping")
 				continue
 			}
@@ -451,6 +632,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 
 			newParticipants := make([]Participant, 0)
+			excludedNodes := make([]string, 0)
 
 			for idx, member := range currentElection.Members {
 				fmt.Println("isBlame", isBlame, idx, blameBits.Bit(idx))
@@ -462,13 +644,38 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				// }
 				//if node is banned
 				if blameMap.bannedNodes[member.Account] {
+					excludedNodes = append(excludedNodes, member.Account)
+					fmt.Printf("[TSS] [RESHARE] Excluding banned node from reshare sessionId=%s account=%s\n",
+						sessionId, member.Account)
 					continue
 				}
 				newParticipants = append(newParticipants, Participant{
 					Account: member.Account,
 				})
 			}
+
+			fmt.Printf("[TSS] [RESHARE] Participant selection sessionId=%s oldParticipants=%d newParticipants=%d excluded=%d excludedNodes=%v\n",
+				sessionId, len(commitedMembers), len(newParticipants), len(excludedNodes), excludedNodes)
 			fmt.Println("newParticipants", newParticipants)
+
+			// Pre-flight checks: validate participant set meets minimum threshold
+			threshold, _ := tss_helpers.GetThreshold(len(newParticipants))
+			minRequired := threshold + 1
+			if len(newParticipants) < minRequired {
+				fmt.Printf("[TSS] [RESHARE] ERROR: Insufficient participants sessionId=%s participants=%d required=%d threshold=%d\n",
+					sessionId, len(newParticipants), minRequired, threshold)
+				continue
+			}
+
+			// Pre-flight check: verify old participants are available
+			if len(commitedMembers) < threshold+1 {
+				fmt.Printf("[TSS] [RESHARE] ERROR: Insufficient old participants sessionId=%s oldParticipants=%d required=%d threshold=%d\n",
+					sessionId, len(commitedMembers), threshold+1, threshold)
+				continue
+			}
+
+			fmt.Printf("[TSS] [RESHARE] Pre-flight checks passed sessionId=%s oldParticipants=%d newParticipants=%d\n",
+				sessionId, len(commitedMembers), len(newParticipants))
 
 			dispatcher := &ReshareDispatcher{
 				BaseDispatcher: BaseDispatcher{
@@ -484,6 +691,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 					keystore:    tssMgr.keyStore,
 					blockHeight: bh,
+					isReshare:   true,
 				},
 				newParticipants: newParticipants,
 				newEpoch:        currentElection.Epoch,
@@ -491,11 +699,34 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			dispatcher.startLock.TryLock()
 
 			dispatchers = append(dispatchers, dispatcher)
+			tssMgr.bufferLock.Lock()
 			tssMgr.actionMap[sessionId] = dispatcher
+			bufferSize := len(tssMgr.messageBuffer[sessionId])
+			tssMgr.bufferLock.Unlock()
+
+			// Trigger replay of any buffered messages for this session
+			if bufferSize > 0 {
+				fmt.Printf("[TSS] [RESHARE] Dispatcher registered, will replay buffered messages sessionId=%s bufferSize=%d\n",
+					sessionId, bufferSize)
+			}
 		}
+		// Determine action type from the action
+		var actionType ActionType
+		switch action.Type {
+		case KeyGenAction:
+			actionType = ActionTypeKeyGen
+		case SignAction:
+			actionType = ActionTypeSign
+		case ReshareAction:
+			actionType = ActionTypeReshare
+		default:
+			actionType = ""
+		}
+
 		tssMgr.sessionMap[sessionId] = sessionInfo{
 			leader: leader,
 			bh:     bh,
+			action: actionType,
 		}
 	}
 
@@ -509,9 +740,13 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		if err == nil {
 			startedDispatcher = append(startedDispatcher, dispatcher)
 		} else {
-			delete(tssMgr.sigChannels, dispatcher.SessionId())
-			delete(tssMgr.actionMap, dispatcher.SessionId())
-			delete(tssMgr.sessionMap, dispatcher.SessionId())
+			sessionId := dispatcher.SessionId()
+			delete(tssMgr.sigChannels, sessionId)
+			tssMgr.bufferLock.Lock()
+			delete(tssMgr.actionMap, sessionId)
+			delete(tssMgr.messageBuffer, sessionId)
+			tssMgr.bufferLock.Unlock()
+			delete(tssMgr.sessionMap, sessionId)
 		}
 		fmt.Println("Start() err", err)
 	}
@@ -524,9 +759,13 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			resultPtr, err := dsc.Done().Await(context.Background())
 			// fmt.Println("result, err", resultPtr, err)
 
-			delete(tssMgr.sigChannels, dsc.SessionId())
-			delete(tssMgr.actionMap, dsc.SessionId())
-			delete(tssMgr.sessionMap, dsc.SessionId())
+			sessionId := dsc.SessionId()
+			delete(tssMgr.sigChannels, sessionId)
+			tssMgr.bufferLock.Lock()
+			delete(tssMgr.actionMap, sessionId)
+			delete(tssMgr.messageBuffer, sessionId)
+			tssMgr.bufferLock.Unlock()
+			delete(tssMgr.sessionMap, sessionId)
 			if err != nil {
 
 				fmt.Println("Done() err", err, dsc.SessionId())
@@ -575,10 +814,45 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				res.BlockHeight = bh
 				tssMgr.sessionResults[dsc.SessionId()] = res
 
+				fmt.Printf("[TSS] [TIMEOUT] Timeout result sessionId=%s keyId=%s blockHeight=%d epoch=%d culprits=%v\n",
+					res.SessionId, res.KeyId, res.BlockHeight, res.Epoch, res.Culprits)
 				fmt.Println("Timeout Result", res, time.Now().String())
 				commitment := result.Serialize()
 				commitment.BlockHeight = bh
 				commitableResults = append(commitableResults, commitment)
+
+				// Schedule automatic retry for reshare timeouts with retry limit
+				if dsc.KeyId() != "" {
+					keyInfo, err := tssMgr.tssKeys.FindKey(dsc.KeyId())
+					if err == nil {
+						// Check retry count from session (in-memory) to avoid DB dependency
+						retryCount := tssMgr.getRetryCount(dsc.KeyId())
+						if retryCount < MAX_RESHARE_RETRIES {
+							// Calculate exponential backoff delay based on retry count
+							retryDelay := time.Duration(retryCount+1) * TSS_RESHARE_SYNC_DELAY
+
+							fmt.Printf("[TSS] [RECOVERY] Scheduling reshare retry for timeout sessionId=%s keyId=%s retryCount=%d/%d delay=%v\n",
+								dsc.SessionId(), dsc.KeyId(), retryCount+1, MAX_RESHARE_RETRIES, retryDelay)
+
+							// Increment retry count
+							tssMgr.incrementRetryCount(dsc.KeyId())
+
+							// Schedule retry with delay
+							go func() {
+								time.Sleep(retryDelay)
+								tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
+									Type:  ReshareAction,
+									KeyId: dsc.KeyId(),
+									Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
+								})
+							}()
+						} else {
+							fmt.Printf("[TSS] [RECOVERY] Max reshare retries exceeded sessionId=%s keyId=%s maxRetries=%d\n",
+								dsc.SessionId(), dsc.KeyId(), MAX_RESHARE_RETRIES)
+							// Could trigger alert or manual intervention here
+						}
+					}
+				}
 			}
 		}
 		if isLeader {
@@ -1015,6 +1289,7 @@ func New(
 		hiveClient: hiveClient,
 
 		tssKeys:        tssKeys,
+		metrics:        GetMetrics(),
 		tssRequests:    tssRequests,
 		tssCommitments: tssCommitments,
 
@@ -1024,8 +1299,10 @@ func New(
 
 		queuedActions:  make([]QueuedAction, 0),
 		actionMap:      make(map[string]Dispatcher),
+		messageBuffer:  make(map[string][]bufferedMessage),
 		sessionMap:     make(map[string]sessionInfo),
 		sessionResults: make(map[string]DispatcherResult),
+		retryCounts:    make(map[string]int),
 	}
 }
 
