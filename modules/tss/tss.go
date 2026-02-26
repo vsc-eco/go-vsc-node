@@ -38,25 +38,11 @@ import (
 	flatfs "github.com/ipfs/go-ds-flatfs"
 )
 
-const TSS_SIGN_INTERVAL = 50 //* 2
-
-// 5 minutes in blocks
-const TSS_ROTATE_INTERVAL = 20 * 5
-
-// 24 hour blame
-var BLAME_EXPIRE = uint64(24 * 60 * 20)
-
-// TSS Reshare configuration constants
-// These can be overridden via environment variables:
-// VSC_TSS_RESHARE_TIMEOUT - reshare timeout (e.g., "2m")
-// VSC_TSS_RPC_TIMEOUT - RPC call timeout (e.g., "30s")
-// VSC_TSS_MESSAGE_RETRIES - number of message retries
-// VSC_TSS_BAN_THRESHOLD - ban threshold percentage
-// VSC_TSS_BAN_GRACE_EPOCHS - grace period epochs for new nodes
-
-var (
+const (
+	TSS_SIGN_INTERVAL            = 50               // 50 L1 blocks
+	TSS_ROTATE_INTERVAL          = 20 * 5           // 5 minutes in L1 blocks
 	TSS_RESHARE_SYNC_DELAY       = 5 * time.Second  // Reduced from 15s to 5s
-	TSS_RESHARE_TIMEOUT          = 2 * time.Minute  // Increased from 1 minute to 2 minutes
+	TSS_RESHARE_TIMEOUT          = 2 * time.Minute  // Reshare timeout
 	TSS_MESSAGE_RETRY_COUNT      = 3                // Number of retries for failed messages
 	TSS_MESSAGE_RETRY_DELAY      = 1 * time.Second  // Base delay for retries
 	TSS_BAN_THRESHOLD_PERCENT    = 25               // Failure rate threshold for bans (25%)
@@ -64,55 +50,8 @@ var (
 	TSS_BUFFERED_MESSAGE_MAX_AGE = 1 * time.Minute  // Maximum age for buffered messages
 	MAX_RESHARE_RETRIES          = 3                // Maximum number of reshare retries on timeout
 	RPC_TIMEOUT                  = 30 * time.Second // RPC call timeout
+	BLAME_EXPIRE                 = uint64(28800)    // 24 hour blame
 )
-
-func init() {
-	// Load configuration from environment variables
-	loadTSSConfig()
-}
-
-func loadTSSConfig() {
-	// Override from environment variables if set
-	if timeout := getEnvDuration("VSC_TSS_RESHARE_TIMEOUT"); timeout > 0 {
-		TSS_RESHARE_TIMEOUT = timeout
-	}
-	if timeout := getEnvDuration("VSC_TSS_RPC_TIMEOUT"); timeout > 0 {
-		RPC_TIMEOUT = timeout
-	}
-	if retries := getEnvInt("VSC_TSS_MESSAGE_RETRIES"); retries > 0 {
-		TSS_MESSAGE_RETRY_COUNT = retries
-	}
-	if threshold := getEnvInt("VSC_TSS_BAN_THRESHOLD"); threshold > 0 {
-		TSS_BAN_THRESHOLD_PERCENT = threshold
-	}
-	if grace := getEnvInt("VSC_TSS_BAN_GRACE_EPOCHS"); grace > 0 {
-		TSS_BAN_GRACE_PERIOD_EPOCHS = grace
-	}
-}
-
-func getEnvDuration(name string) time.Duration {
-	if val := getEnvString(name); val != "" {
-		if d, err := time.ParseDuration(val); err == nil {
-			return d
-		}
-	}
-	return 0
-}
-
-func getEnvInt(name string) int {
-	if val := getEnvString(name); val != "" {
-		if i, err := strconv.Atoi(val); err == nil {
-			return i
-		}
-	}
-	return 0
-}
-
-func getEnvString(name string) string {
-	// This function reads from environment variables
-	// For production use, implement proper os.Getenv or use viper/config
-	return ""
-}
 
 type TssManager struct {
 	p2p    *libp2p.P2PServer
