@@ -39,7 +39,7 @@ func ParseArgs() (args, error) {
 	p2pPort := flag.Int("p2p-port", 10720, "P2P port for the first node")
 	witPrefix := flag.String("wit-prefix", "magi.test", "Witness username prefix")
 	witCreator := flag.String("wit-creator", "initminer", "Username of witness account creator")
-	wif := flag.String("wif", "", "Private active key of witness account creator")
+	wif := flag.String("wif", "5JNHfZYKGaomSFvd4NUdQ9qMcEAC43kujbfjueTHpVapX1Kzq2n", "Private active key of witness account creator")
 	stakeAmt := flag.String("stake", "2000.000", "Stake amount for each witness")
 
 	flag.Parse()
