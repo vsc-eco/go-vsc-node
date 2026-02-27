@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   init:
     profiles: ["init"]
@@ -32,15 +31,26 @@ services:
     volumes:
       - ./data:/home/app/app/data
   db:
-    image: mongo:8.0.4
+    image: mongo:8.0.17
     # restart: always
     ports:
-      - 127.0.0.1:27027:27017
+      - 127.0.0.1:27017:27017
     networks:
       - go-vsc-node
     volumes:
       - db:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      interval: 10s
+      retries: 5
+      timeout: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
   btcd:
+    profiles:
+      - btcd
     image: ruimarinho/bitcoin-core:latest
     container_name: btcd
     command: -rpcuser='vsc-node-user' -rpcpassword='vsc-node-pass' -rpcallowip=0.0.0.0/0 -rpcbind=0.0.0.0 -prune=550 -dbcache=2048 -server=1 -listen=1
