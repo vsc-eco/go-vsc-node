@@ -6,23 +6,13 @@ This repository contains the node implementation of Go VSC Node, the core of the
 
 ## Executables
 
-### Main daemon
-
-The main Go VSC Node daemon.
-
-**Build command**: `go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o ./build/magid vsc-node/cmd/vsc-node`
-
-### Contract deployer
-
-Used to deploy contracts on the Magi network.
-
-**Build command**: `go build -buildvcs=false -o ./build/contract-deployer vsc-node/cmd/contract-deployer`
-
-### Genesis elector
-
-Create and broadcast a genesis election, usually for a testnet.
-
-**Build command**: `go build -buildvcs=false -o ./build/genesis-elector vsc-node/cmd/genesis-elector`
+| Executable | Description | Build Command |
+|------------|-------------|---------------|
+| magid | The main Go VSC Node daemon | `make magid` |
+| contract-deployer | Used to deploy contracts on the Magi network | `make contract-deployer` |
+| genesis-elector | Create and broadcast a genesis election, usually for a testnet/devnet | `make genesis-elector` |
+| devnet-setup | Initialize and bootstrap a Magi test network, usually a devnet | `make devnet-setup` |
+| mapping-bot | Bot for processing native asset mappings | `make mapping-bot` |
 
 ## Sensitive files
 
