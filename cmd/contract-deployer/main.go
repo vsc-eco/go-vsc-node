@@ -47,7 +47,7 @@ func main() {
 
 	initErr := a.Init()
 	if initErr != nil {
-		fmt.Println("failed to init plugins", err)
+		fmt.Println("failed to init plugins", initErr)
 		os.Exit(1)
 	}
 	if args.isInit {
