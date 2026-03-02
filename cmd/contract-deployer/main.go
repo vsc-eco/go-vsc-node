@@ -95,7 +95,7 @@ func deployNewContract(sysConfig systemconfig.SystemConfig, identityConfig commo
 	wif := identityConfig.Get().HiveActiveKey
 
 	if len(user) > 0 && len(wif) > 0 {
-		hiveClient := hivego.NewHiveRpc([]string{hiveConfig.Get().HiveURI})
+		hiveClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURIs)
 		hiveClient.ChainID = sysConfig.HiveChainId()
 
 		tx := stateEngine.TxCreateContract{
@@ -154,7 +154,7 @@ func updateContract(sysConfig systemconfig.SystemConfig, identityConfig common.I
 	wif := identityConfig.Get().HiveActiveKey
 
 	if len(user) > 0 && len(wif) > 0 {
-		hiveClient := hivego.NewHiveRpc([]string{hiveConfig.Get().HiveURI})
+		hiveClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURIs)
 		hiveClient.ChainID = sysConfig.HiveChainId()
 
 		tx := stateEngine.TxUpdateContract{
