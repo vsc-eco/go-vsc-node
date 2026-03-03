@@ -1,17 +1,25 @@
 package streamer
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"vsc-node/modules/config"
 )
 
-const DefaultHiveURI = "https://api.hive.blog"
+var DefaultHiveURIs = []string{
+	"https://api.hive.blog",
+	"https://techcoderx.com",
+	"https://hive-api.3speak.tv",
+	"https://api.openhive.network",
+	"https://api.deathwing.me",
+}
 
 type hiveConfig struct {
-	HiveURI string
+	HiveURIs []string `json:"HiveURIs,omitempty"`
+	// Old field for backward compatibility
+	HiveURI string `json:"HiveURI,omitempty"`
 }
 
 type hiveConfigStruct struct {
@@ -22,70 +30,85 @@ type HiveConfig = *hiveConfigStruct
 
 func NewHiveConfig() HiveConfig {
 	return &hiveConfigStruct{config.New(hiveConfig{
-		HiveURI: DefaultHiveURI,
+		HiveURIs: DefaultHiveURIs,
 	}, nil)}
 }
 
 func (hc *hiveConfigStruct) Init() error {
-	// Try to read from new array format first
-	uri, err := hc.readFirstURIFromArrayFormat()
-	if err == nil && uri != "" {
-		// Successfully read from new format, set it in memory
-		hc.Config.Update(func(config *hiveConfig) {
-			config.HiveURI = uri
-		})
-		// Mark as loaded so Init doesn't try to create a new file
-		// We need to use reflection or just call the parent Init and ignore the error
-	}
-
-	err = hc.Config.Init()
+	err := hc.Config.Init()
 	if err != nil {
 		return fmt.Errorf("Failed to init Hive config: %w", err)
 	}
 
-	url := os.Getenv("HIVE_API")
-	if url != "" {
-		return hc.SetHiveURI(url)
+	config := hc.Get()
+
+	// Migration: convert old single URI to array
+	if config.HiveURI != "" && len(config.HiveURIs) == 0 {
+		err = hc.Update(func(hc *hiveConfig) {
+			// build new hive uris prioritizing the current setting
+			hc.HiveURIs = func(current string, defaults []string) []string {
+				result := make([]string, 0, len(defaults)+1)
+				result = append(result, hc.HiveURI)
+				for _, uri := range defaults {
+					if uri != current {
+						result = append(result, uri)
+					}
+				}
+				return result
+			}(hc.HiveURI, DefaultHiveURIs)
+			hc.HiveURI = "" // clear old field
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	envURIs := os.Getenv("HIVE_API")
+	if envURIs != "" {
+		uris := strings.Split(envURIs, ",")
+		for i := range uris {
+			uris[i] = strings.TrimSpace(uris[i])
+		}
+		return hc.SetHiveURIs(uris)
 	}
 	return nil
 }
 
-// readFirstURIFromArrayFormat tries to read the first URI from the new array format
-func (hc *hiveConfigStruct) readFirstURIFromArrayFormat() (string, error) {
-	f, err := os.Open(hc.FilePath())
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	var newFormat struct {
-		HiveURIs []string `json:"HiveURIs,omitempty"`
-	}
-
-	decoder := json.NewDecoder(f)
-	if err := decoder.Decode(&newFormat); err != nil {
-		return "", err
+func (hc *hiveConfigStruct) SetHiveURIs(uris []string) error {
+	// Validate all URIs before updating
+	for _, uri := range uris {
+		if uri != "" {
+			_, err := url.Parse(uri)
+			if err != nil {
+				return fmt.Errorf("Invalid Hive API URL '%s': %w", uri, err)
+			}
+		}
 	}
 
-	if len(newFormat.HiveURIs) > 0 {
-		return newFormat.HiveURIs[0], nil
-	}
-
-	return "", fmt.Errorf("no URIs found in array format")
+	return hc.Update(func(hc *hiveConfig) {
+		if len(uris) == 0 {
+			hc.HiveURIs = DefaultHiveURIs
+		} else {
+			hc.HiveURIs = uris
+		}
+	})
 }
 
-func (hc *hiveConfigStruct) SetHiveURI(uri string) error {
+// Helper method to add a single URI
+func (hc *hiveConfigStruct) AddHiveURI(uri string) error {
 	if uri != "" {
 		_, err := url.Parse(uri)
 		if err != nil {
 			return fmt.Errorf("Invalid Hive API URL: %w", err)
 		}
 	}
+
 	return hc.Update(func(hc *hiveConfig) {
-		if uri == "" {
-			hc.HiveURI = DefaultHiveURI
-		} else {
-			hc.HiveURI = uri
-		}
+		hc.HiveURIs = append(hc.HiveURIs, uri)
 	})
+}
+
+// Helper method to get all URIs
+func (hc *hiveConfigStruct) GetHiveURIs() []string {
+	return hc.Get().HiveURIs
 }

@@ -92,7 +92,7 @@ func TestStateEngine(t *testing.T) {
 		return false
 	}
 
-	client := hivego.NewHiveRpc("https://techcoderx.com")
+	client := hivego.NewHiveRpc(streamer.DefaultHiveURIs)
 	s := streamer.NewStreamer(client, hiveBlocks, []streamer.FilterFunc{filter}, []streamer.VirtualFilterFunc{
 		func(op hivego.VirtualOp) bool {
 			return op.Op.Type == "interest_operation"
@@ -115,10 +115,36 @@ func TestStateEngine(t *testing.T) {
 
 	wasm := wasm_runtime.New()
 
-	se := stateEngine.New(l, sysConfig, dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
+	se := stateEngine.New(
+		l,
+		sysConfig,
+		dl,
+		witnessesDb,
+		electionDb,
+		contractDb,
+		contractState,
+		txDb,
+		ledgerDbImpl,
+		balanceDb,
+		hiveBlocks,
+		interestClaims,
+		vscBlocks,
+		actionDb,
+		rcDb,
+		nonceDb,
+		tssKeys,
+		tssCommitments,
+		tssRequests,
+		wasm,
+	)
 
 	blockConsumer := blockconsumer.New(se)
-	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, streamer.DefaultBlockStart)
+	sr := streamer.NewStreamReader(
+		hiveBlocks,
+		blockConsumer.ProcessBlock,
+		se.SaveBlockHeight,
+		streamer.DefaultBlockStart,
+	)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
@@ -189,7 +215,28 @@ func TestMockEngine(t *testing.T) {
 
 	wasm := wasm_runtime.New()
 
-	se := stateEngine.New(l, sysConfig, dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
+	se := stateEngine.New(
+		l,
+		sysConfig,
+		dl,
+		witnessesDb,
+		electionDb,
+		contractDb,
+		contractState,
+		txDb,
+		ledgerDbImpl,
+		balanceDb,
+		hiveBlocks,
+		interestClaims,
+		vscBlocks,
+		actionsDb,
+		rcDb,
+		nonceDb,
+		tssKeys,
+		tssCommitments,
+		tssRequests,
+		wasm,
+	)
 
 	process := func(block hive_blocks.HiveBlock, headHeight *uint64) {
 		se.ProcessBlock(block)

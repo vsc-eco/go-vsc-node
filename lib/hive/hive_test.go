@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 	"vsc-node/lib/hive"
+	"vsc-node/modules/hive/streamer"
 
 	"github.com/vsc-eco/hivego"
 )
@@ -14,7 +15,7 @@ const wif = ""
 
 func TestSavingsWithdraw(t *testing.T) {
 	// goenv := os.Getenv("GOENV")
-	hiveClient := hivego.NewHiveRpc("https://api.hive.blog")
+	hiveClient := hivego.NewHiveRpc(streamer.DefaultHiveURIs)
 
 	txCrafter := hive.TransactionCrafter{}
 	txBroadcaster := hive.TransactionBroadcaster{
