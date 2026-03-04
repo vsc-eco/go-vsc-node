@@ -264,6 +264,34 @@ func DrawHbd(a *string) *string {
 	return nil
 }
 
+//go:wasmexport drawHiveFrom
+func DrawHiveFrom(a *string) *string {
+	params := strings.Split((*a), ",")
+	if len(params) < 2 {
+		sdk.Abort("invalid payload")
+	}
+	amt, err := strconv.ParseInt(params[1], 10, 64)
+	if err != nil {
+		sdk.Abort("invalid amount")
+	}
+	sdk.HiveDrawFrom(sdk.Address(params[0]), amt, sdk.AssetHive)
+	return nil
+}
+
+//go:wasmexport drawHiveBothIntents
+func DrawHiveBothIntents(a *string) *string {
+	amt, err := strconv.ParseInt(*a, 10, 64)
+	if err != nil {
+		sdk.Abort("invalid amount")
+	}
+	sdk.HiveDraw(amt, sdk.AssetHive)
+
+	contractId := sdk.GetEnvKey("contract.id")
+	sender := sdk.GetEnvKey("msg.sender")
+	sdk.ContractCall(*contractId, "drawHiveFrom", *sender+","+(*a), nil)
+	return nil
+}
+
 //go:wasmexport transferHive
 func TransferHive(a *string) *string {
 	params := strings.Split((*a), ",")

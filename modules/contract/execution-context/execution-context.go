@@ -416,6 +416,14 @@ func (ctx *contractExecutionContext) PullBalance(from string, amount int64, asse
 		}
 		*tokenLimit -= amount
 		from = ctx.env.Caller
+		if ctx.env.Sender == from {
+			err := ctx.callSession.DecrementSenderTokenLimit(asset, amount)
+			if err != nil {
+				return result.Err[struct{}](
+					errors.Join(errors.New(contracts.LEDGER_INTENT_ERROR), err),
+				)
+			}
+		}
 	case ctx.env.Sender:
 		err := ctx.callSession.DecrementSenderTokenLimit(asset, amount)
 		if err != nil {

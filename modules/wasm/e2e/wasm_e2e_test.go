@@ -78,6 +78,23 @@ func TestContractTestUtil(t *testing.T) {
 	assert.False(t, ledgerErr.Success)
 	assert.Equal(t, ledgerErr.Err, contracts.LEDGER_INTENT_ERROR)
 
+	drawBothIntents := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "drawHiveBothIntents",
+		Payload:    json.RawMessage([]byte("1000")),
+		RcLimit:    1000,
+		Intents: []contracts.Intent{{
+			Type: "transfer.allow",
+			Args: map[string]string{
+				"limit": "1.000",
+				"token": "hive",
+			},
+		}},
+	})
+	assert.False(t, drawBothIntents.Success)
+	assert.Equal(t, drawBothIntents.Err, contracts.LEDGER_INTENT_ERROR)
+
 	abortResult := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId,
