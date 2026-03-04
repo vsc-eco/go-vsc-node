@@ -236,12 +236,8 @@ func (cs *CallSession) GetContractFromDb(contractId string, height uint64) resul
 }
 
 // InitializeSenderLimits sets up the sender's token limits from intents.
-// This should be called once at the start of the transaction.
 func (cs *CallSession) InitializeSenderLimits(senderIntents []contracts.Intent) {
-	// Only initialize if not already set
-	if len(cs.senderTokenLimits) > 0 {
-		return
-	}
+	cs.senderTokenLimits = make(map[string]*int64)
 
 	seenTypes := make(map[string]bool)
 	for _, intent := range senderIntents {
