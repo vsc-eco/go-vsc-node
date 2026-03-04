@@ -79,11 +79,6 @@ func New(
 	callSession *contract_session.CallSession,
 	recursionDepth int,
 ) ContractExecutionContext {
-	// Initialize sender limits on the first call (recursion depth 0)
-	if recursionDepth == 0 {
-		callSession.InitializeSenderLimits(env.SenderIntents)
-	}
-
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
 
@@ -114,6 +109,10 @@ func New(
 			val, _ := common.ParseDecimalsToBaseUnits(limit, decimals)
 			tokenLimits[token] = &val
 		}
+	}
+	// Initialize sender limits on the first call (recursion depth 0)
+	if recursionDepth == 0 {
+		callSession.InitializeSenderLimits(tokenLimits)
 	}
 	// fmt.Println("tokenLimits", tokenLimits, "depth", recursionDepth)
 	return &contractExecutionContext{
@@ -416,14 +415,6 @@ func (ctx *contractExecutionContext) PullBalance(from string, amount int64, asse
 		}
 		*tokenLimit -= amount
 		from = ctx.env.Caller
-		if ctx.env.Sender == from {
-			err := ctx.callSession.DecrementSenderTokenLimit(asset, amount)
-			if err != nil {
-				return result.Err[struct{}](
-					errors.Join(errors.New(contracts.LEDGER_INTENT_ERROR), err),
-				)
-			}
-		}
 	case ctx.env.Sender:
 		err := ctx.callSession.DecrementSenderTokenLimit(asset, amount)
 		if err != nil {

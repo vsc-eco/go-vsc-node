@@ -292,6 +292,19 @@ func DrawHiveBothIntents(a *string) *string {
 	return nil
 }
 
+//go:wasmexport drawHiveBothIntents2
+func DrawHiveBothIntents2(a *string) *string {
+	amt, err := strconv.ParseInt(*a, 10, 64)
+	if err != nil {
+		sdk.Abort("invalid amount")
+	}
+	contractId := sdk.GetEnvKey("contract.id")
+	sender := sdk.GetEnvKey("msg.sender")
+	sdk.ContractCall(*contractId, "drawHiveFrom", *sender+","+(*a), nil)
+	sdk.HiveDraw(amt, sdk.AssetHive)
+	return nil
+}
+
 //go:wasmexport transferHive
 func TransferHive(a *string) *string {
 	params := strings.Split((*a), ",")

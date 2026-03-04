@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"vsc-node/lib/datalayer"
-	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/contracts"
 	tss_db "vsc-node/modules/db/vsc/tss"
 
@@ -236,37 +234,8 @@ func (cs *CallSession) GetContractFromDb(contractId string, height uint64) resul
 }
 
 // InitializeSenderLimits sets up the sender's token limits from intents.
-func (cs *CallSession) InitializeSenderLimits(senderIntents []contracts.Intent) {
-	cs.senderTokenLimits = make(map[string]*int64)
-
-	seenTypes := make(map[string]bool)
-	for _, intent := range senderIntents {
-		if intent.Type == "transfer.allow" {
-			limit, ok := intent.Args["limit"]
-			if !ok {
-				continue
-			}
-			token, ok := intent.Args["token"]
-			if !ok {
-				continue
-			}
-			decimals := -1
-			decimalsStr, ok := intent.Args["decimals"]
-			if ok {
-				dec, err := strconv.Atoi(decimalsStr)
-				if err == nil {
-					decimals = dec
-				}
-			}
-			key := intent.Type + "-" + token
-			if seenTypes[key] {
-				continue
-			}
-			seenTypes[key] = true
-			val, _ := common.ParseDecimalsToBaseUnits(limit, decimals)
-			cs.senderTokenLimits[token] = &val
-		}
-	}
+func (cs *CallSession) InitializeSenderLimits(senderLimits map[string]*int64) {
+	cs.senderTokenLimits = senderLimits
 }
 
 // GetSenderTokenLimit returns the remaining limit for a token, or nil if no limit exists
