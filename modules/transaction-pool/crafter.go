@@ -90,7 +90,7 @@ func (tp *TransactionCrafter) SignFinal(vscTx VSCTransaction) (SerializedVSCTran
 }
 
 type SignaturePackage struct {
-	Type string       `refmt:"__t" json:"__t"`
+	Type string       `refmt:"__t"  json:"__t"`
 	Sigs []common.Sig `refmt:"sigs" json:"sigs"`
 }
 
@@ -284,7 +284,9 @@ func (tx *VSCStake) Validate() (bool, error) {
 	valid := tx.Asset == "hbd" || tx.Asset == "hbd_savings" && (tx.Type == "stake" || tx.Type == "unstake")
 
 	if !valid {
-		return false, fmt.Errorf("failed validation - invalid asset or type; asset must equal hbd, and stake = stake|unstake")
+		return false, fmt.Errorf(
+			"failed validation - invalid asset or type; asset must equal hbd, and stake = stake|unstake",
+		)
 	}
 
 	return valid, nil
@@ -363,6 +365,7 @@ type VscWithdraw struct {
 	To     string `json:"to"`
 	Amount string `json:"amount"`
 	Asset  string `json:"asset"`
+	Memo   string `json:"memo"`
 	Type   string `json:"type"`
 
 	NetId string `json:"-"`
@@ -453,7 +456,9 @@ func (tx *VscWithdraw) Validate() (bool, error) {
 	valid := tx.Asset == "hbd" || tx.Asset == "hive"
 
 	if !valid {
-		return false, fmt.Errorf("failed validation - invalid asset or type; asset must equal hbd, and stake = stake|unstake")
+		return false, fmt.Errorf(
+			"failed validation - invalid asset or type; asset must equal hbd, and stake = stake|unstake",
+		)
 	}
 
 	return valid, nil
@@ -739,9 +744,14 @@ func (tx *VSCTransaction) HashEip712() (cid.Cid, []byte, error) {
 		"tx": ops,
 	}
 
-	typedData, err := dids.ConvertToEIP712TypedData("vsc.network", signingShell2, "tx_container_v0", func(f float64) (*big.Int, error) {
-		return big.NewInt(int64(f)), nil
-	})
+	typedData, err := dids.ConvertToEIP712TypedData(
+		"vsc.network",
+		signingShell2,
+		"tx_container_v0",
+		func(f float64) (*big.Int, error) {
+			return big.NewInt(int64(f)), nil
+		},
+	)
 
 	if err != nil {
 		return cid.Cid{}, nil, fmt.Errorf("failed to convert to EIP712 typed data: %w", err)

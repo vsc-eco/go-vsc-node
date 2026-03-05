@@ -84,7 +84,12 @@ type StreamReader struct {
 }
 
 // inits a StreamReader with the provided hiveBlocks interface and process function
-func NewStreamReader(hiveBlocks hiveblocks.HiveBlocks, process ProcessFunction, getBlockHeight BlockHeightFunction, maybeStartBlock ...uint64) *StreamReader {
+func NewStreamReader(
+	hiveBlocks hiveblocks.HiveBlocks,
+	process ProcessFunction,
+	getBlockHeight BlockHeightFunction,
+	maybeStartBlock ...uint64,
+) *StreamReader {
 	startBlock := DefaultBlockStart
 	if len(maybeStartBlock) > 0 {
 		startBlock = maybeStartBlock[0]
@@ -241,7 +246,13 @@ type Streamer struct {
 
 // ===== streamer =====
 
-func NewStreamer(blockClient BlockClient, hiveBlocks hiveblocks.HiveBlocks, filters []FilterFunc, vFilters []VirtualFilterFunc, startAtBlock *uint64) *Streamer {
+func NewStreamer(
+	blockClient BlockClient,
+	hiveBlocks hiveblocks.HiveBlocks,
+	filters []FilterFunc,
+	vFilters []VirtualFilterFunc,
+	startAtBlock *uint64,
+) *Streamer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Streamer{
 		hiveBlocks:     hiveBlocks,
@@ -414,6 +425,9 @@ func (s *Streamer) streamBlocks() {
 
 			if len(blocks) == 0 {
 				log.Println("warning no blocks fetched")
+				time.Sleep(MinTimeBetweenBlockBatchFetches + 3*time.Second)
+
+				continue
 			}
 
 			// if not can store, across this async gap, we should skip processing

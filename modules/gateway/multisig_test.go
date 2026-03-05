@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 	"vsc-node/lib/hive"
+	"vsc-node/modules/hive/streamer"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v2"
 	"github.com/vsc-eco/hivego"
@@ -294,7 +295,7 @@ func TestMultisigKeys(t *testing.T) {
 	// 	},
 	// }
 
-	client := hivego.NewHiveRpc([]string{"https://api.hive.blog"})
+	client := hivego.NewHiveRpc(streamer.DefaultHiveURIs)
 
 	accounts, _ := client.GetAccount([]string{"vsc.go-testnet"})
 	account := accounts[0]

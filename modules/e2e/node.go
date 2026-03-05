@@ -137,7 +137,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	sysConfig := systemconfig.MocknetConfig()
 	kp := HashSeed([]byte(SEED_PREFIX + input.Username))
 
-	hiveClient := hivego.NewHiveRpc([]string{"https://api.hive.blog"})
+	hiveClient := hivego.NewHiveRpc(streamer.DefaultHiveURIs)
 	hiveClient.ChainID = sysConfig.HiveChainId()
 
 	brcst := hive.MockTransactionBroadcaster{
@@ -189,11 +189,50 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	dbNuker := NewDbNuker(vscDb)
 
-	ep := election_proposer.New(p2p, witnessesDb, electionDb, vscBlocks, balanceDb, datalayer, &txCreator, identityConfig, sysConfig, se, blockConsumer)
+	ep := election_proposer.New(
+		p2p,
+		witnessesDb,
+		electionDb,
+		vscBlocks,
+		balanceDb,
+		datalayer,
+		&txCreator,
+		identityConfig,
+		sysConfig,
+		se,
+		blockConsumer,
+	)
 
-	bp := blockproducer.New(logger, p2p, blockConsumer, se, identityConfig, sysConfig, &txCreator, datalayer, electionDb, vscBlocks, txDb, se.RcSystem, nonceDb)
+	bp := blockproducer.New(
+		logger,
+		p2p,
+		blockConsumer,
+		se,
+		identityConfig,
+		sysConfig,
+		&txCreator,
+		datalayer,
+		electionDb,
+		vscBlocks,
+		txDb,
+		se.RcSystem,
+		nonceDb,
+	)
 
-	multisig := gateway.New(logger, sysConfig, witnessesDb, electionDb, actionsDb, balanceDb, &txCreator, blockConsumer, p2p, se, identityConfig, hiveClient)
+	multisig := gateway.New(
+		logger,
+		sysConfig,
+		witnessesDb,
+		electionDb,
+		actionsDb,
+		balanceDb,
+		&txCreator,
+		blockConsumer,
+		p2p,
+		se,
+		identityConfig,
+		hiveClient,
+	)
 
 	dataAvailability := data_availability.New(p2p, identityConfig, datalayer)
 
@@ -203,7 +242,20 @@ func MakeNode(input MakeNodeInput) *Node {
 	if err != nil {
 		panic(err)
 	}
-	tssManager := tss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessesDb, electionDb, blockConsumer, se, identityConfig, sysConfig, ds, &txCreator)
+	tssManager := tss.New(
+		p2p,
+		tssKeys,
+		tssRequests,
+		tssCommitments,
+		witnessesDb,
+		electionDb,
+		blockConsumer,
+		se,
+		identityConfig,
+		sysConfig,
+		ds,
+		&txCreator,
+	)
 
 	plugins := make([]aggregate.Plugin, 0)
 

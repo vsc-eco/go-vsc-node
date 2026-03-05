@@ -90,7 +90,13 @@ func main() {
 	}
 }
 
-func deployNewContract(sysConfig systemconfig.SystemConfig, identityConfig common.IdentityConfig, hiveConfig streamer.HiveConfig, proof *stateEngine.StorageProof, args args) {
+func deployNewContract(
+	sysConfig systemconfig.SystemConfig,
+	identityConfig common.IdentityConfig,
+	hiveConfig streamer.HiveConfig,
+	proof *stateEngine.StorageProof,
+	args args,
+) {
 	user := identityConfig.Get().HiveUsername
 	wif := identityConfig.Get().HiveActiveKey
 
@@ -149,7 +155,13 @@ func deployNewContract(sysConfig systemconfig.SystemConfig, identityConfig commo
 	}
 }
 
-func updateContract(sysConfig systemconfig.SystemConfig, identityConfig common.IdentityConfig, hiveConfig streamer.HiveConfig, proof *stateEngine.StorageProof, args args) {
+func updateContract(
+	sysConfig systemconfig.SystemConfig,
+	identityConfig common.IdentityConfig,
+	hiveConfig streamer.HiveConfig,
+	proof *stateEngine.StorageProof,
+	args args,
+) {
 	user := identityConfig.Get().HiveUsername
 	wif := identityConfig.Get().HiveActiveKey
 
