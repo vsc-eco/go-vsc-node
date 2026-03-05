@@ -236,59 +236,6 @@ func (p2pServer *P2PServer) Init() error {
 
 // Start implements aggregate.Plugin.
 func (p2ps *P2PServer) Start() *promise.Promise[any] {
-
-	// go func() {
-	// 	for {
-	// 		time.Sleep(10 * time.Second)
-	// 		p2ps.host.ID()
-
-	// 		pps := p2ps.host.Mux().Protocols()
-
-	// 		fmt.Println("pps, err", pps, p2ps.host.Peerstore().PeerInfo(p2ps.host.ID()))
-	// 		peers := p2ps.host.Network().Peers()
-	// 		fmt.Println("Connected Peers:", peers)
-	// 		fmt.Println("IGV", len(peers))
-
-	// 		peerID, _ := peer.Decode("12D3KooWRnteMca3kEjGeSB7hDQNhD4RaVK8Ls5cJkzimmpo8VK6")
-	// 		pps2, err := p2ps.dht.FindPeer(context.Background(), peerID)
-
-	// 		fmt.Println("FindPeer", pps2, err)
-	// 		peerInfo := p2ps.host.Peerstore().PeerInfo(peerID)
-	// 		fmt.Println("PeerInfo", peerInfo)
-	// 		err = p2ps.host.Connect(context.Background(), peerInfo)
-
-	// 		fmt.Println("Connect", err)
-	// 		protocols, _ := p2ps.host.Peerstore().GetProtocols(peerID)
-	// 		fmt.Println("Protocols", protocols)
-	// 		ctx, cancel := context.WithCancel(context.Background())
-	// 		res := ping.NewPingService(p2ps.host).Ping(ctx, peerID)
-
-	// 		go func() {
-	// 			for {
-	// 				pong, ok := <-res
-	// 				if !ok {
-	// 					return
-	// 				}
-	// 				if pong.Error == nil {
-	// 					fmt.Println("Pinged", peerID.String(), "in", pong.RTT.Nanoseconds(), ok, pong.Error)
-	// 					cancel()
-	// 					break
-	// 				} else {
-	// 					fmt.Println("Ping error", pong.Error)
-	// 				}
-	// 			}
-	// 		}()
-
-	// 		fmt.Println("My addresses", p2ps.host.Addrs())
-	// 		fmt.Println("Registered addresses", p2ps.host.Peerstore().Addrs(p2ps.host.ID()))
-	//
-	// 	}
-	// }()
-
-	// p2ps.cron.AddFunc("@every 5m", func() {
-	// 	p2ps.connectRegisteredPeers()
-	// })
-
 	p2ps.cron.AddFunc("@every 30m", func() {
 		p2ps.discoverPeers()
 	})
