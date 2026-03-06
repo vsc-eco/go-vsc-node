@@ -157,13 +157,22 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		syncDelay := TSS_RESHARE_SYNC_DELAY
 		fmt.Printf("[TSS] [RESHARE] Waiting %v before starting parties sessionId=%s\n", syncDelay, dispatcher.sessionId)
 		
-		// Check participant readiness before starting
+		// Check participant readiness before starting (strict: do not start with missing peers)
 		ready := dispatcher.waitForParticipantReadiness(sortedPids, dispatcher.newPids, syncDelay)
 		if !ready {
-			fmt.Printf("[TSS] [RESHARE] WARN: Not all participants ready, proceeding anyway sessionId=%s\n", dispatcher.sessionId)
+			err := fmt.Errorf("insufficient participants ready for reshare (would block or panic)")
+			fmt.Printf("[TSS] [RESHARE] ERROR: %v sessionId=%s - skipping reshare\n", err, dispatcher.sessionId)
+			return err
 		}
 
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("[TSS] [RESHARE] PANIC recovered in old party start ECDSA sessionId=%s panic=%v\n",
+						dispatcher.sessionId, r)
+					dispatcher.err = fmt.Errorf("panic in old party start: %v", r)
+				}
+			}()
 			//Check if old party is not nil (ie node is part of old committee)
 			if myParty != nil {
 				fmt.Printf("[TSS] [RESHARE] Starting old party ECDSA sessionId=%s partyId=%s\n",
@@ -185,6 +194,13 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			}
 		}()
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("[TSS] [RESHARE] PANIC recovered in new party start ECDSA sessionId=%s panic=%v\n",
+						dispatcher.sessionId, r)
+					dispatcher.err = fmt.Errorf("panic in new party start: %v", r)
+				}
+			}()
 			//Check if new party is not nil (ie will be in new committee)
 			if myNewParty != nil {
 				fmt.Printf("[TSS] [RESHARE] Starting new party ECDSA sessionId=%s partyId=%s\n",
@@ -266,13 +282,22 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		syncDelay := TSS_RESHARE_SYNC_DELAY
 		fmt.Printf("[TSS] [RESHARE] Waiting %v before starting parties (EDDSA) sessionId=%s\n", syncDelay, dispatcher.sessionId)
 		
-		// Check participant readiness before starting
+		// Check participant readiness before starting (strict: do not start with missing peers)
 		ready := dispatcher.waitForParticipantReadiness(sortedPids, dispatcher.newPids, syncDelay)
 		if !ready {
-			fmt.Printf("[TSS] [RESHARE] WARN: Not all participants ready, proceeding anyway (EDDSA) sessionId=%s\n", dispatcher.sessionId)
+			err := fmt.Errorf("insufficient participants ready for reshare (would block or panic)")
+			fmt.Printf("[TSS] [RESHARE] ERROR: %v sessionId=%s (EDDSA) - skipping reshare\n", err, dispatcher.sessionId)
+			return err
 		}
 
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("[TSS] [RESHARE] PANIC recovered in old party start EDDSA sessionId=%s panic=%v\n",
+						dispatcher.sessionId, r)
+					dispatcher.err = fmt.Errorf("panic in old party start: %v", r)
+				}
+			}()
 			if myParty != nil {
 				params := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 				dispatcher.party = reshareEddsa.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
@@ -289,6 +314,13 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		}()
 
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("[TSS] [RESHARE] PANIC recovered in new party start EDDSA sessionId=%s panic=%v\n",
+						dispatcher.sessionId, r)
+					dispatcher.err = fmt.Errorf("panic in new party start: %v", r)
+				}
+			}()
 			if myNewParty != nil {
 				newParams := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 
@@ -493,23 +525,37 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 		dispatcher.sessionId, fromStr, isBrcst, cmt, fromCmt, len(input))
 
 	if cmt == "both" || cmt == "old" {
-		go func() {
-			ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
-			if err != nil {
-				fmt.Printf("[TSS] [RESHARE] ERROR: UpdateFromBytes failed (old party) sessionId=%s from=%s ok=%v err=%v\n",
-					dispatcher.sessionId, fromStr, ok, err)
-				fmt.Println("UpdateFromBytes", ok, err)
-				dispatcher.tssErr = err
-			} else {
-				dispatcher.lastMsg = time.Now()
-				fmt.Printf("[TSS] [RESHARE] Message processed successfully (old party) sessionId=%s from=%s\n",
-					dispatcher.sessionId, fromStr)
-			}
-		}()
+		if dispatcher.party != nil {
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						fmt.Printf("[TSS] [RESHARE] PANIC recovered in old party UpdateFromBytes sessionId=%s from=%s panic=%v\n",
+							dispatcher.sessionId, fromStr, r)
+					}
+				}()
+				ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
+				if err != nil {
+					fmt.Printf("[TSS] [RESHARE] ERROR: UpdateFromBytes failed (old party) sessionId=%s from=%s ok=%v err=%v\n",
+						dispatcher.sessionId, fromStr, ok, err)
+					fmt.Println("UpdateFromBytes", ok, err)
+					dispatcher.tssErr = err
+				} else {
+					dispatcher.lastMsg = time.Now()
+					fmt.Printf("[TSS] [RESHARE] Message processed successfully (old party) sessionId=%s from=%s\n",
+						dispatcher.sessionId, fromStr)
+				}
+			}()
+		}
 	}
 	if cmt == "both" || cmt == "new" {
 		if dispatcher.newParty != nil {
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						fmt.Printf("[TSS] [RESHARE] PANIC recovered in new party UpdateFromBytes sessionId=%s from=%s panic=%v\n",
+							dispatcher.sessionId, fromStr, r)
+					}
+				}()
 				ok, err := dispatcher.newParty.UpdateFromBytes(input, from, isBrcst)
 
 				if err != nil {

@@ -45,8 +45,8 @@ const (
 	TSS_RESHARE_TIMEOUT          = 2 * time.Minute  // Reshare timeout
 	TSS_MESSAGE_RETRY_COUNT      = 3                // Number of retries for failed messages
 	TSS_MESSAGE_RETRY_DELAY      = 1 * time.Second  // Base delay for retries
-	TSS_BAN_THRESHOLD_PERCENT    = 25               // Failure rate threshold for bans (25%)
-	TSS_BAN_GRACE_PERIOD_EPOCHS  = 4                // Epochs before new nodes can be banned (as int for comparison)
+	TSS_BAN_THRESHOLD_PERCENT    = 60               // Failure rate threshold for bans (60% — higher on testnet to avoid banning on transient offline)
+	TSS_BAN_GRACE_PERIOD_EPOCHS  = 3                // Epochs before new nodes can be banned (as int for comparison)
 	TSS_BUFFERED_MESSAGE_MAX_AGE = 1 * time.Minute  // Maximum age for buffered messages
 	MAX_RESHARE_RETRIES          = 3                // Maximum number of reshare retries on timeout
 	RPC_TIMEOUT                  = 30 * time.Second // RPC call timeout
@@ -174,7 +174,11 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		generatedActions := make([]QueuedAction, 0)
 		if bh%TSS_ROTATE_INTERVAL == 0 {
 
-			electionData, _ := tssMgr.electionDb.GetElectionByHeight(bh)
+			electionData, err := tssMgr.electionDb.GetElectionByHeight(bh)
+			if err != nil || electionData.Members == nil {
+				fmt.Printf("[TSS] Election data missing at height %d, skipping rotate (err=%v)\n", bh, err)
+				return
+			}
 
 			epoch := electionData.Epoch
 			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(epoch)
@@ -245,7 +249,10 @@ func (tss *TssManager) BlameScore() scoreMap {
 	weightMap := make(map[string]int)
 	nodeFirstEpoch := make(map[string]uint64) // Track first epoch each node appeared
 
-	initialElection, _ := tss.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
+	initialElection, err := tss.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
+	if err != nil || initialElection.Members == nil {
+		return scoreMap{bannedNodes: make(map[string]bool)}
+	}
 	elections := make(map[uint64]elections.ElectionResult, 0)
 	elections[initialElection.Epoch] = initialElection
 
@@ -391,11 +398,13 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	}
 
 	currentElection, err := tssMgr.electionDb.GetElectionByHeight(uint64(bh))
-
 	fmt.Println("err (197)", currentElection, err)
-	if err != nil {
-		fmt.Println("err", err)
-		// tssMgr
+	if err != nil || currentElection.Members == nil {
+		if err != nil {
+			fmt.Println("err", err)
+		} else {
+			fmt.Printf("[TSS] [ACTIONS] Election data missing at height %d, skipping actions\n", bh)
+		}
 		tssMgr.lock.Unlock()
 		return
 	}
@@ -552,6 +561,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			fmt.Println("commitment", commitment)
 			commitmentElection := tssMgr.electionDb.GetElection(commitment.Epoch)
+			if commitmentElection == nil || commitmentElection.Members == nil {
+				fmt.Printf("[TSS] [RESHARE] Commitment election missing for epoch %d, skipping reshare sessionId=%s\n",
+					commitment.Epoch, sessionId)
+				continue
+			}
 
 			commitmentBytes, err := base64.RawURLEncoding.DecodeString(commitment.Commitment)
 
@@ -563,7 +577,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			fmt.Println("commitment, err", commitment, err)
 			fmt.Println("bitset", bitset, commitmentBytes)
 			for idx, member := range commitmentElection.Members {
-				if bitset.Bit(idx) == 1 {
+				if idx < bitset.BitLen() && bitset.Bit(idx) == 1 {
 					commitedMembers = append(commitedMembers, Participant{
 						Account: member.Account,
 					})
@@ -674,7 +688,17 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		fmt.Println("dispatcher started!")
 		//If start fails then done is never possible
 		//todo: handle this better
-		err := dispatcher.Start()
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("panic in dispatcher Start: %v", r)
+					fmt.Printf("[TSS] [ACTIONS] PANIC recovered in dispatcher.Start sessionId=%s panic=%v\n",
+						dispatcher.SessionId(), r)
+				}
+			}()
+			err = dispatcher.Start()
+		}()
 
 		if err == nil {
 			startedDispatcher = append(startedDispatcher, dispatcher)
@@ -691,6 +715,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	}
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("[TSS] [ACTIONS] PANIC recovered in Done/Await goroutine panic=%v\n", r)
+			}
+		}()
 
 		signedResults := make([]KeySignResult, 0)
 		commitableResults := make([]tss_helpers.BaseCommitment, 0)
