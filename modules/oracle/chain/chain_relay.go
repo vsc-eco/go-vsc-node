@@ -20,6 +20,7 @@ var (
 	// only usage is to build chain map with proper key-value for ChainOracle.chainMap
 	_chains = [...]chainRelay{
 		&bitcoinRelayer{},
+		&litecoinRelayer{},
 	}
 
 	_ aggregate.Plugin = &ChainOracle{}
@@ -32,6 +33,8 @@ type chainRelay interface {
 	Init() error
 	// Returns the ticker of the chain (ie, BTC for bitcoin).
 	Symbol() string
+	// Returns the VSC contract ID for this chain's mapping contract.
+	ContractID() string
 	// Checks for (optional) latest chain state.
 	GetLatestValidHeight() (chainState, error)
 	GetContractState() (chainState, error)
@@ -185,7 +188,7 @@ func fetchChainStatus(chain chainRelay) (chainSession, error) {
 		return chainSession{}, fmt.Errorf("failed to get chain data: %w", err)
 	}
 
-	c := "vsc1BRZLx1"
+	c := chain.ContractID()
 	chainSession := chainSession{
 		symbol:            chain.Symbol(),
 		contractId:        &c,
