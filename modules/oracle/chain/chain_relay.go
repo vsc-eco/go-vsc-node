@@ -28,6 +28,7 @@ var (
 	// only usage is to build chain map with proper key-value for ChainOracle.chainMap
 	_chains = [...]chainRelay{
 		&bitcoinRelayer{},
+		&litecoinRelayer{},
 	}
 
 	_ aggregate.Plugin = &ChainOracle{}

@@ -66,6 +66,11 @@ func (b *bitcoinRelayer) Symbol() string {
 	return "BTC"
 }
 
+// ContractID implements chainRelay.
+func (b *bitcoinRelayer) ContractID() string {
+	return "vsc1BRZLx1"
+}
+
 // TickCheck implements chainRelay.
 func (b *bitcoinRelayer) GetLatestValidHeight() (chainState, error) {
 	// connect to btcd
