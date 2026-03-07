@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 	"time"
+	"vsc-node/lib/hive"
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -18,15 +19,17 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
+	"vsc-node/modules/e2e"
+	blockconsumer "vsc-node/modules/hive/block-consumer"
+	"vsc-node/modules/hive/streamer"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	vtss "vsc-node/modules/tss"
 	tss_helpers "vsc-node/modules/tss/helpers"
-	"vsc-node/modules/vstream"
 
 	flatfs "github.com/ipfs/go-ds-flatfs"
 	"github.com/libp2p/go-libp2p/core/peer"
-	// "vsc-node/modules/tss"
+	"github.com/vsc-eco/hivego"
 )
 
 type MockElectionSystem struct {
@@ -54,11 +57,11 @@ func (mes *MockElectionSystem) GetSchedule(blockHeight uint64) []stateEngine.Wit
 	return list
 }
 
-func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream.VStream, witnesses.Witnesses, *libp2p.P2PServer, elections.Elections) {
+func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, blockconsumer.HiveConsumer, witnesses.Witnesses, *libp2p.P2PServer, elections.Elections) {
 	path := "data-dir-" + strconv.Itoa(index)
 
 	os.Mkdir(path, os.ModePerm)
-	dbConf := db.NewDbConfig()
+	dbConf := db.NewDbConfig(path)
 	identity := common.NewIdentityConfig(path)
 	p2pConf := libp2p.NewConfig(path)
 	aggregate.New([]aggregate.Plugin{dbConf, identity, p2pConf}).Init()
@@ -79,7 +82,25 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	electionDb := elections.New(vscDb)
 	witnesses := witnesses.New(vscDb)
-	vstream := vstream.New(nil)
+
+	kp := e2e.HashSeed([]byte(e2e.SEED_PREFIX + path))
+
+	hiveClient := hivego.NewHiveRpc(streamer.DefaultHiveURIs)
+	hiveClient.ChainID = csonf.HiveChainId()
+
+	brcst := hive.MockTransactionBroadcaster{
+		KeyPair: kp,
+		Callback: func(tx hivego.HiveTransaction) error {
+			return nil
+		},
+	}
+
+	txCreator := hive.MockTransactionCreator{
+		MockTransactionBroadcaster: brcst,
+		TransactionCrafter:         hive.TransactionCrafter{},
+	}
+
+	blockConsumer := blockconsumer.New(nil)
 
 	p2p := libp2p.New(witnesses, p2pConf, identity, csonf, nil)
 
@@ -88,7 +109,7 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 	if err != nil {
 		panic(err)
 	}
-	tssMgr := vtss.New(p2p, tssKeys, tssRequests, tssCommitments, witnesses, electionDb, vstream, mes, identity, keystore)
+	tssMgr := vtss.New(p2p, tssKeys, tssRequests, tssCommitments, witnesses, electionDb, blockConsumer, mes, identity, csonf, keystore, &txCreator)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		identity,
@@ -110,7 +131,7 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 		keyId := "test-key"
 		tssMgr.KeyGen(keyId, tss_helpers.SigningAlgoEcdsa)
 
-		time.Sleep(2 * time.Minute)
+		time.Sleep(30 * time.Second)
 		msg, _ := hex.DecodeString("89d7d1a68f8edd0cc1f961dce816422055d1ab69a0623954b834c95c1cdd7ed0")
 
 		fmt.Println("msg hex is", hex.EncodeToString(msg))
@@ -120,7 +141,7 @@ func MakeNode(index int, mes *MockElectionSystem) (*aggregate.Aggregate, vstream
 		tssMgr.KeyReshare(keyId)
 	}()
 
-	return agg, *vstream, witnesses, p2p, electionDb
+	return agg, *blockConsumer, witnesses, p2p, electionDb
 }
 
 func TestVtss(t *testing.T) {
@@ -133,7 +154,7 @@ func TestVtss(t *testing.T) {
 		},
 	}
 
-	vstrs := make([]vstream.VStream, 0)
+	vstrs := make([]blockconsumer.HiveConsumer, 0)
 	wts := make([]witnesses.Witnesses, 0)
 	ets := make([]elections.Elections, 0)
 	pts := make([]*libp2p.P2PServer, 0)
