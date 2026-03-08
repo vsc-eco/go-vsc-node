@@ -34,8 +34,8 @@ const (
 	priceOracleBroadcastInterval = uint64(600 / 3)
 	priceOraclePollInterval      = time.Second * 15
 
-	// 10 minutes = 600 seconds or 200 blocks, 3s for every new block
-	chainRelayInterval = uint64(600 / 3)
+	// ~1 minute = 20 blocks, 3s for every new block
+	chainRelayInterval = uint64(20)
 )
 
 var (
