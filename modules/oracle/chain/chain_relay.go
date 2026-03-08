@@ -6,14 +6,21 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"os"
 	"strconv"
 	"strings"
+	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
+	"vsc-node/modules/db/vsc/contracts"
+	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/hive/streamer"
+	transactionpool "vsc-node/modules/transaction-pool"
 
 	"github.com/chebyrash/promise"
+	"github.com/ipfs/go-cid"
 	"github.com/vsc-eco/hivego"
 )
 
@@ -33,13 +40,12 @@ type chainRelay interface {
 	Init() error
 	// Returns the ticker of the chain (ie, BTC for bitcoin).
 	Symbol() string
+	// Returns the contract ID for this chain's mapping contract.
+	ContractId() string
 	// Checks for (optional) latest chain state.
 	GetLatestValidHeight() (chainState, error)
-	GetContractState() (chainState, error)
 	// Fetches chaindata and serializes to raw bytes.
 	ChainData(startBlockHeight uint64, count uint64) ([]chainBlock, error)
-	// Deserializes and verifies the received raw bytes of the chain data.
-	// VerifyChainData(json.RawMessage) error
 }
 
 type chainBlock interface {
@@ -52,6 +58,9 @@ type chainState struct {
 	blockHeight uint64
 }
 
+// stateKey used by mapping contracts to store the last submitted block height.
+const lastHeightStateKey = "lsthgt"
+
 type ChainOracle struct {
 	ctx               context.Context
 	logger            *slog.Logger
@@ -59,6 +68,11 @@ type ChainOracle struct {
 	chainRelayers     map[string]chainRelay
 	conf              common.IdentityConfig
 	sconf             systemconfig.SystemConfig
+	electionDb        elections.Elections
+	contractState     contracts.ContractState
+	da                *DataLayer.DataLayer
+	txCrafter         *transactionpool.TransactionCrafter
+	txPool            *transactionpool.TransactionPool
 }
 
 func New(
@@ -66,6 +80,11 @@ func New(
 	oracleLogger *slog.Logger,
 	conf common.IdentityConfig,
 	sconf systemconfig.SystemConfig,
+	electionDb elections.Elections,
+	contractState contracts.ContractState,
+	da *DataLayer.DataLayer,
+	txCrafter *transactionpool.TransactionCrafter,
+	txPool *transactionpool.TransactionPool,
 ) *ChainOracle {
 	logger := oracleLogger.With("sub-service", "chain-relay")
 
@@ -81,6 +100,11 @@ func New(
 		chainRelayers:     chainRelayers,
 		conf:              conf,
 		sconf:             sconf,
+		electionDb:        electionDb,
+		contractState:     contractState,
+		da:                da,
+		txCrafter:         txCrafter,
+		txPool:            txPool,
 	}
 }
 
@@ -143,7 +167,7 @@ func (c *ChainOracle) fetchAllStatuses() []chainSession {
 	chainSessions := make([]chainSession, 0)
 
 	for _, chain := range c.chainRelayers {
-		chainSession, err := fetchChainStatus(chain)
+		chainSession, err := c.fetchChainStatus(chain)
 		if err != nil {
 			c.logger.Error(
 				"failed to get chain data.",
@@ -160,45 +184,87 @@ func (c *ChainOracle) fetchAllStatuses() []chainSession {
 
 type chainSession struct {
 	symbol            string
-	contractId        *string
+	contractId        string
 	chainData         []chainBlock
 	newBlocksToSubmit bool
 }
 
-func fetchChainStatus(chain chainRelay) (chainSession, error) {
+// getContractBlockHeight reads the last submitted block height from a
+// mapping contract's state via the data layer.
+func (c *ChainOracle) getContractBlockHeight(contractId string) (uint64, error) {
+	output, err := c.contractState.GetLastOutput(contractId, math.MaxInt64)
+	if err != nil {
+		return 0, fmt.Errorf("no contract output found for %s: %w", contractId, err)
+	}
+
+	cidz, err := cid.Parse(output.StateMerkle)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse state merkle CID: %w", err)
+	}
+
+	databin := DataLayer.NewDataBinFromCid(c.da, cidz)
+	cidVal, err := databin.Get(lastHeightStateKey)
+	if err != nil {
+		if err == os.ErrNotExist {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("failed to get %s from state: %w", lastHeightStateKey, err)
+	}
+
+	rawVal, err := c.da.GetRaw(*cidVal)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read state value: %w", err)
+	}
+
+	height, err := strconv.ParseUint(string(rawVal), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse block height %q: %w", string(rawVal), err)
+	}
+
+	return height, nil
+}
+
+func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
+	contractId := chain.ContractId()
+	if contractId == "" {
+		return chainSession{}, fmt.Errorf("no contract ID configured for %s relay", chain.Symbol())
+	}
+
 	latestChainState, err := chain.GetLatestValidHeight()
 	if err != nil {
 		return chainSession{
 			newBlocksToSubmit: false,
 		}, fmt.Errorf("failed to check latest state: %w", err)
 	}
-	//
 
-	contractState, err := chain.GetContractState()
+	contractHeight, err := c.getContractBlockHeight(contractId)
 	if err != nil {
+		c.logger.Warn("failed to get contract state, assuming height 0",
+			"symbol", chain.Symbol(),
+			"contractId", contractId,
+			"err", err,
+		)
+		contractHeight = 0
+	}
+
+	if latestChainState.blockHeight <= contractHeight {
 		return chainSession{
+			symbol:            chain.Symbol(),
 			newBlocksToSubmit: false,
-		}, err
+		}, nil
 	}
 
-	if latestChainState.blockHeight <= contractState.blockHeight {
-		return chainSession{}, nil
-	}
-
-	chainData, err := chain.ChainData(contractState.blockHeight+1, 100)
+	chainData, err := chain.ChainData(contractHeight+1, 100)
 	if err != nil {
 		return chainSession{}, fmt.Errorf("failed to get chain data: %w", err)
 	}
 
-	c := "vsc1BRZLx1"
-	chainSession := chainSession{
+	return chainSession{
 		symbol:            chain.Symbol(),
-		contractId:        &c,
+		contractId:        contractId,
 		chainData:         chainData,
 		newBlocksToSubmit: true,
-	}
-
-	return chainSession, nil
+	}, nil
 }
 
 func makeChainSessionID(c *chainSession) (string, error) {
@@ -213,23 +279,22 @@ func makeChainSessionID(c *chainSession) (string, error) {
 	return id, nil
 }
 
-// symbol - startBlock - endBlock
+// parseChainSessionID parses "SYMBOL-startBlock-endBlock" format.
 func parseChainSessionID(sessionID string) (string, uint64, uint64, error) {
-	var (
-		chainSymbol string
-		startBlock  uint64
-		endBlock    uint64
-	)
+	parts := strings.Split(sessionID, "-")
+	if len(parts) != 3 {
+		return "", 0, 0, fmt.Errorf("invalid session ID format: %s", sessionID)
+	}
 
-	_, err := fmt.Sscanf(
-		sessionID,
-		"%s-%d-%d",
-		&chainSymbol,
-		&startBlock,
-		&endBlock,
-	)
+	chainSymbol := parts[0]
+	startBlock, err := strconv.ParseUint(parts[1], 10, 64)
 	if err != nil {
-		return "", 0, 0, err
+		return "", 0, 0, fmt.Errorf("invalid start block: %w", err)
+	}
+
+	endBlock, err := strconv.ParseUint(parts[2], 10, 64)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("invalid end block: %w", err)
 	}
 
 	return chainSymbol, startBlock, endBlock, nil

@@ -1,6 +1,7 @@
 package main
 
 import (
+	ed25519Std "crypto/ed25519"
 	"fmt"
 	"os"
 	"path"
@@ -8,6 +9,7 @@ import (
 
 	cbortypes "vsc-node/lib/cbor-types"
 	"vsc-node/lib/datalayer"
+	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/logger"
 	"vsc-node/modules/aggregate"
@@ -196,7 +198,31 @@ func main() {
 	)
 
 	bp := blockproducer.New(l, p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
-	oracle := oracle.New(p2p, identityConfig, sysConfig, electionDb, witnessDb, blockConsumer, se)
+
+	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, identityConfig, rcSystem)
+
+	// Create a VSC transaction crafter for the chain relay oracle.
+	// Uses the node's libp2p identity key to sign relay transactions.
+	var oracleTxCrafter *transactionpool.TransactionCrafter
+	if libp2pKey, err := identityConfig.Libp2pPrivateKey(); err == nil {
+		rawBytes, err := libp2pKey.Raw()
+		if err == nil {
+			edPrivKey := ed25519Std.PrivateKey(rawBytes)
+			edPubKey := edPrivKey.Public().(ed25519Std.PublicKey)
+			didKey, err := dids.NewKeyDID(edPubKey)
+			if err == nil {
+				oracleTxCrafter = &transactionpool.TransactionCrafter{
+					Identity: dids.NewKeyProvider(edPrivKey),
+					Did:      didKey,
+					VSCBroadcast: &transactionpool.InternalBroadcast{
+						TxPool: txpool,
+					},
+				}
+			}
+		}
+	}
+
+	oracle := oracle.New(p2p, identityConfig, sysConfig, electionDb, witnessDb, blockConsumer, se, contractState, da, oracleTxCrafter, txpool)
 
 	multisig := gateway.New(
 		l,
@@ -212,8 +238,6 @@ func main() {
 		identityConfig,
 		hiveRpcClient,
 	)
-
-	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, identityConfig, rcSystem)
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
 

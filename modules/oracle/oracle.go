@@ -3,12 +3,15 @@ package oracle
 import (
 	"context"
 	"errors"
+	"log"
 	"log/slog"
 	"os"
 	"time"
+	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
+	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/witnesses"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
@@ -16,6 +19,7 @@ import (
 	"vsc-node/modules/oracle/p2p"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
+	transactionpool "vsc-node/modules/transaction-pool"
 
 	"github.com/chebyrash/promise"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -65,6 +69,10 @@ func New(
 	witnessDb witnesses.Witnesses,
 	hiveConsumer *blockconsumer.HiveConsumer,
 	stateEngine *stateEngine.StateEngine,
+	contractState contracts.ContractState,
+	da *DataLayer.DataLayer,
+	txCrafter *transactionpool.TransactionCrafter,
+	txPool *transactionpool.TransactionPool,
 ) *Oracle {
 	logLevel := slog.LevelInfo
 	if os.Getenv("DEBUG") == "1" {
@@ -81,16 +89,7 @@ func New(
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// priceOracle := price.New(
-	// 	ctx,
-	// 	logger,
-	// 	userCurrency,
-	// 	priceOraclePollInterval,
-	// 	watchSymbols,
-	// 	conf,
-	// )
-
-	chainRelayer := chain.New(ctx, logger, conf, sconf)
+	chainRelayer := chain.New(ctx, logger, conf, sconf, electionDb, contractState, da, txCrafter, txPool)
 
 	return &Oracle{
 		ctx:          ctx,
@@ -102,14 +101,16 @@ func New(
 		hiveConsumer: hiveConsumer,
 		stateEngine:  stateEngine,
 		logger:       logger,
-		// priceOracle: priceOracle,
-		chainOracle: chainRelayer,
+		chainOracle:  chainRelayer,
 	}
 }
 
 // Init implements aggregate.Plugin.
 // Runs initialization in order of how they are passed in to `Aggregate`
 func (o *Oracle) Init() error {
+	log.Println("[oracle] Init: registering blockTick callback")
+	o.hiveConsumer.RegisterBlockTick("oracle", o.blockTick, true)
+
 	services := []aggregate.Plugin{
 		o.chainOracle,
 		// o.priceOracle,

@@ -26,6 +26,10 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 		return
 	}
 
+	if bh > *headHeight {
+		return
+	}
+
 	blockDiff := *headHeight - bh
 	if blockDiff > blockHeightThreshold {
 		return
@@ -67,6 +71,7 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	signal := p2p.BlockTickSignal{
 		IsProducer:     isProducer,
 		IsWitness:      isWitness,
+		BlockHeight:    *headHeight,
 		ElectedMembers: members,
 	}
 
@@ -75,6 +80,7 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	// }
 
 	if isChainRelayTick {
+		log.Printf("[oracle] chain relay tick at block %d, isProducer=%v, isWitness=%v, username=%s", *headHeight, isProducer, isWitness, username)
 		go o.chainOracle.HandleBlockTick(signal, o)
 	}
 }
