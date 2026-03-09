@@ -663,13 +663,25 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 
 	end := make(chan struct{})
 
+	// Capture references before goroutine starts so the goroutine
+	// does not need to access ep.signingInfo (which may become nil on timeout).
+	sigChan := ep.sigChannels[ep.signingInfo.epoch]
+	circuit := ep.signingInfo.circuit
+
 	var err error
 	var signedWeight uint64
 	go func() {
 		signedWeight = 0
 
 		for signedWeight < (weightTotal * 8 / 10) {
-			signResp := <-ep.sigChannels[ep.signingInfo.epoch]
+			var signResp *signResponse
+			select {
+			case <-ctx.Done():
+				fmt.Println("[ep] goroutine: context cancelled")
+				end <- struct{}{}
+				return
+			case signResp = <-sigChan:
+			}
 
 			if signResp == nil {
 				fmt.Println("[ep] timed out waiting")
@@ -704,9 +716,9 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 				}
 			}
 
-			circuit := *ep.signingInfo.circuit
+			c := *circuit
 
-			added, err := circuit.AddAndVerify(member, sigStr)
+			added, err := c.AddAndVerify(member, sigStr)
 
 			fmt.Println("[ep] aggregating signature", sigStr, "from", account)
 			fmt.Println("[ep] agg err", err)
@@ -722,7 +734,8 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 	select {
 	case <-ctx.Done():
 		fmt.Println("[ep] collect sigs timeout")
-		return signedWeight, nil // Return error if canceled
+		<-end // Wait for goroutine to finish before returning
+		return signedWeight, nil
 	case <-end:
 		return signedWeight, err
 	}
