@@ -98,7 +98,7 @@ func TestnetConfig() SystemConfig {
 			MinStake:         params.CONSENSUS_MINIMUM,
 			MinMembers:       3,
 			MinRcLimit:       params.MINIMUM_RC_LIMIT,
-			TssIndexHeight:   0,
+			TssIndexHeight:   1135000,
 			ElectionInterval: params.ELECTION_INTERVAL,
 		},
 	}
