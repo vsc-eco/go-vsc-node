@@ -18,6 +18,7 @@ var (
 )
 
 type litecoinRelayer struct {
+	conf              ChainConfig
 	rpcConfig         rpcclient.ConnConfig
 	validityThreshold uint64
 	contractId        string
@@ -34,17 +35,13 @@ type ltcChainData struct {
 	blockHeader *wire.BlockHeader `json:"-"`
 }
 
-const (
-	ltcdRpcUsername = "vsc-node-user"
-	ltcdRpcPassword = "vsc-node-pass"
-)
-
 // Init implements chainRelay.
 func (l *litecoinRelayer) Init() error {
+	ltc := l.conf.Get().Litecoin
 	l.rpcConfig = rpcclient.ConnConfig{
-		Host:         "litecoind:9332",
-		User:         ltcdRpcUsername,
-		Pass:         ltcdRpcPassword,
+		Host:         ltc.Host,
+		User:         ltc.User,
+		Pass:         ltc.Pass,
 		HTTPPostMode: true,
 		DisableTLS:   true,
 	}
