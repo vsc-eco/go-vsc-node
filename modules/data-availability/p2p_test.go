@@ -10,7 +10,6 @@ import (
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/config"
 	"vsc-node/modules/db/vsc/elections"
-	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/stretchr/testify/assert"
@@ -25,7 +24,7 @@ func TestBasicP2P(t *testing.T) {
 		Client:   true,
 	})
 
-	servers := make([]*Node, stateEngine.STORAGE_PROOF_MINIMUM_SIGNERS)
+	servers := make([]*Node, client.sysConfig.ConsensusParams().MinSpSigners)
 	for i := range servers {
 		servers[i] = MakeNode(MakeNodeInput{
 			Username: fmt.Sprint("server-", i),
@@ -80,5 +79,5 @@ func TestBasicP2P(t *testing.T) {
 
 	res, err := client.client.RequestProofWithElection(data, election)
 	assert.NoError(t, err)
-	assert.Truef(t, res.Verify(election), "failed to verify data availability proof")
+	assert.Truef(t, res.Verify(election, client.sysConfig), "failed to verify data availability proof")
 }

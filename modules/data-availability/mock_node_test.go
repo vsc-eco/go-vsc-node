@@ -19,6 +19,7 @@ type Node struct {
 	client         *data_availability_client.DataAvailability
 	db             *vsc.VscDb
 	identityConfig common.IdentityConfig
+	sysConfig      systemconfig.SystemConfig
 	p2p            *p2pInterface.P2PServer
 }
 
@@ -90,7 +91,7 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	var da aggregate.Plugin
 	if input.Client {
-		da = data_availability_client.New(p2p, identityConfig, datalayer)
+		da = data_availability_client.New(p2p, identityConfig, sysConfig, datalayer)
 	} else {
 		da = data_availability_server.New(p2p, identityConfig, datalayer)
 	}
@@ -113,6 +114,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		client,
 		vscDb,
 		identityConfig,
+		sysConfig,
 		p2p,
 	}
 }

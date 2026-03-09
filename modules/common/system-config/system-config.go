@@ -78,6 +78,7 @@ func MainnetConfig() SystemConfig {
 		consensusParams: params.ConsensusParams{
 			MinStake:         params.CONSENSUS_MINIMUM,
 			MinMembers:       7,
+			MinSpSigners:     6,
 			MinRcLimit:       params.MINIMUM_RC_LIMIT,
 			TssIndexHeight:   params.TSS_INDEX_HEIGHT,
 			ElectionInterval: params.ELECTION_INTERVAL,
@@ -97,6 +98,7 @@ func TestnetConfig() SystemConfig {
 		consensusParams: params.ConsensusParams{
 			MinStake:         params.CONSENSUS_MINIMUM,
 			MinMembers:       3,
+			MinSpSigners:     3,
 			MinRcLimit:       params.MINIMUM_RC_LIMIT,
 			TssIndexHeight:   1135000,
 			ElectionInterval: params.ELECTION_INTERVAL,
@@ -115,6 +117,7 @@ func DevnetConfig() SystemConfig {
 		consensusParams: params.ConsensusParams{
 			MinStake:         1000,
 			MinMembers:       3,
+			MinSpSigners:     3,
 			MinRcLimit:       params.MINIMUM_RC_LIMIT,
 			TssIndexHeight:   0,
 			ElectionInterval: 40,

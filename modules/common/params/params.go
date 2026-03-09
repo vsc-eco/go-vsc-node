@@ -41,6 +41,7 @@ var ELECTION_INTERVAL = uint64(6 * 60 * 20)
 type ConsensusParams struct {
 	MinStake         int64
 	MinMembers       int
+	MinSpSigners     int
 	MinRcLimit       uint64
 	TssIndexHeight   uint64
 	ElectionInterval uint64

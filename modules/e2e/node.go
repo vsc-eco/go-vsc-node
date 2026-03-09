@@ -368,6 +368,7 @@ type NodeClient struct {
 	Plugins    []aggregate.Plugin
 	P2PService *p2pInterface.P2PServer
 	Identity   common.IdentityConfig
+	System     systemconfig.SystemConfig
 }
 
 func MakeClient(input MakeClientInput) NodeClient {
@@ -400,5 +401,6 @@ func MakeClient(input MakeClientInput) NodeClient {
 		Plugins:    plugins,
 		P2PService: p2p,
 		Identity:   identityConfig,
+		System:     sysConfig,
 	}
 }

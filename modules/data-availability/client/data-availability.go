@@ -10,6 +10,7 @@ import (
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	systemconfig "vsc-node/modules/common/system-config"
 	data_availability_spec "vsc-node/modules/data-availability/spec"
 	"vsc-node/modules/db/vsc/elections"
 	libp2p "vsc-node/modules/p2p"
@@ -24,6 +25,7 @@ type DataAvailability struct {
 	p2p         *libp2p.P2PServer
 	service     libp2p.PubSubService[p2pMessage]
 	conf        common.IdentityConfig
+	sconf       systemconfig.SystemConfig
 	dl          *datalayer.DataLayer
 	circuit     dids.PartialBlsCircuit
 	startStatus start_status.StartStatus
@@ -31,10 +33,11 @@ type DataAvailability struct {
 
 var _ a.Plugin = (*DataAvailability)(nil)
 
-func New(p2p *libp2p.P2PServer, conf common.IdentityConfig, dl *datalayer.DataLayer) *DataAvailability {
+func New(p2p *libp2p.P2PServer, conf common.IdentityConfig, sconf systemconfig.SystemConfig, dl *datalayer.DataLayer) *DataAvailability {
 	return &DataAvailability{
 		p2p:         p2p,
 		conf:        conf,
+		sconf:       sconf,
 		dl:          dl,
 		startStatus: start_status.New(),
 	}
@@ -129,7 +132,7 @@ loop:
 			fmt.Println("signer count:", circuit.SignerCount())
 			return stateEngine.StorageProof{}, ctx.Err()
 		case <-t.C:
-			if circuit.SignerCount() >= stateEngine.STORAGE_PROOF_MINIMUM_SIGNERS {
+			if circuit.SignerCount() >= d.sconf.ConsensusParams().MinSpSigners {
 				break loop
 			}
 		}

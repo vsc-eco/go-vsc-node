@@ -107,7 +107,7 @@ func (c *E2EContainer) initClient() {
 	}
 
 	c.client = client
-	c.daClient = data_availability_client.New(c.client.P2PService, c.client.Identity, c.r2e.Datalayer)
+	c.daClient = data_availability_client.New(c.client.P2PService, c.client.Identity, c.client.System, c.r2e.Datalayer)
 	c.daClient.Init()
 	c.daClient.Start().Await(context.Background())
 }

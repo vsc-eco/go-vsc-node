@@ -8,6 +8,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
@@ -167,7 +168,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 		panic("Failed to get election")
 	}
 
-	verified := tx.StorageProof.Verify(election)
+	verified := tx.StorageProof.Verify(election, se.sconf)
 
 	// fmt.Println("Storage proof verify result", verified)
 
@@ -238,10 +239,8 @@ type StorageProof struct {
 	Signature dids.SerializedCircuit `json:"signature"`
 }
 
-const STORAGE_PROOF_MINIMUM_SIGNERS = 6
-
 // TODO: Define everything else that'll happen with this
-func (sp *StorageProof) Verify(electionInfo elections.ElectionResult) bool {
+func (sp *StorageProof) Verify(electionInfo elections.ElectionResult, sconf systemconfig.SystemConfig) bool {
 	didMembers := make([]dids.BlsDID, 0)
 	for _, v := range electionInfo.Members {
 		didMembers = append(didMembers, dids.BlsDID(v.Key))
@@ -258,7 +257,7 @@ func (sp *StorageProof) Verify(electionInfo elections.ElectionResult) bool {
 	}
 	verified, includedDids, err := circuit.Verify()
 
-	if !verified || err != nil || len(includedDids) < STORAGE_PROOF_MINIMUM_SIGNERS {
+	if !verified || err != nil || len(includedDids) < sconf.ConsensusParams().MinSpSigners {
 		return false
 	}
 
@@ -359,7 +358,7 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 				Err:     "failed to get election",
 			}
 		}
-		verified := tx.StorageProof.Verify(election)
+		verified := tx.StorageProof.Verify(election, se.sconf)
 		if !verified {
 			return UpdateContractResult{
 				Success: false,
