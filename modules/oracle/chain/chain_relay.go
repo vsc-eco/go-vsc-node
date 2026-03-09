@@ -261,7 +261,7 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 	}
 
 	contractHeight, err := c.getContractBlockHeight(contractId)
-	if err != nil {
+	if err != nil || contractHeight == 0 {
 		// When contract state is unavailable (e.g. new or dummy contract),
 		// start from near the chain tip instead of block 0 to avoid
 		// requesting pruned blocks.
