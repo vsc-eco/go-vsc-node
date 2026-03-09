@@ -68,7 +68,7 @@ func (b *bitcoinRelayer) Symbol() string {
 
 // ContractID implements chainRelay.
 func (b *bitcoinRelayer) ContractID() string {
-	return "vsc1BRZLx1"
+	return "" // TODO: set once BTC contract is deployed (network-dependent)
 }
 
 // TickCheck implements chainRelay.
