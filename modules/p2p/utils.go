@@ -52,3 +52,25 @@ func isCircuitAddr(addr multiaddr.Multiaddr) bool {
 
 	return err == nil
 }
+
+// hasPublicIP checks if the machine has any public IP addresses on its network
+// interfaces. Returns false in Docker containers that only see private IPs.
+func hasPublicIP() bool {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip := ipNet.IP
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			continue
+		}
+		// Found a public IP
+		return true
+	}
+	return false
+}

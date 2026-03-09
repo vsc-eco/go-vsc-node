@@ -15,6 +15,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	multiaddr "github.com/multiformats/go-multiaddr"
 	"github.com/multiformats/go-multicodec"
 	blsu "github.com/protolambda/bls12-381-util"
 )
@@ -306,13 +307,58 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 	return nil
 }
 
-// isPeerConnected checks if a peer is currently connected
+// isPeerConnected checks if a peer is currently connected, attempting to connect if not.
+// It tries: 1) direct connection via DHT, 2) circuit relay through connected peers.
 func (tss *TssManager) isPeerConnected(peerId peer.ID) bool {
 	host := tss.p2p.Host()
 	connState := host.Network().Connectedness(peerId)
-	connected := connState == network.Connected
-	if !connected {
-		fmt.Printf("[TSS] [P2P] Peer connection check: peerId=%s state=%v\n", peerId.String(), connState)
+	if connState == network.Connected {
+		return true
 	}
-	return connected
+
+	fmt.Printf("[TSS] [P2P] Peer connection check: peerId=%s state=%v, attempting connection...\n", peerId.String(), connState)
+
+	// Attempt 1: Direct connection via DHT lookup (routed host)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	addrInfo := peer.AddrInfo{ID: peerId}
+	if err := host.Connect(ctx, addrInfo); err == nil {
+		cancel()
+		fmt.Printf("[TSS] [P2P] Successfully connected to peer via DHT: peerId=%s\n", peerId.String())
+		return true
+	} else {
+		cancel()
+		fmt.Printf("[TSS] [P2P] DHT connection failed: peerId=%s err=%v, trying circuit relay...\n", peerId.String(), err)
+	}
+
+	// Attempt 2: Circuit relay through connected peers
+	// Build relay address: /p2p/<relay-peer>/p2p-circuit/p2p/<target-peer>
+	connectedPeers := host.Network().Peers()
+	for _, relayPeer := range connectedPeers {
+		if relayPeer == peerId {
+			continue
+		}
+
+		relayAddr, err := multiaddr.NewMultiaddr("/p2p/" + relayPeer.String() + "/p2p-circuit/p2p/" + peerId.String())
+		if err != nil {
+			continue
+		}
+
+		relayInfo := peer.AddrInfo{
+			ID:    peerId,
+			Addrs: []multiaddr.Multiaddr{relayAddr},
+		}
+
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := host.Connect(ctx2, relayInfo); err == nil {
+			cancel2()
+			fmt.Printf("[TSS] [P2P] Successfully connected to peer via circuit relay: peerId=%s relay=%s\n", peerId.String(), relayPeer.String())
+			return true
+		} else {
+			cancel2()
+			fmt.Printf("[TSS] [P2P] Circuit relay failed: peerId=%s relay=%s err=%v\n", peerId.String(), relayPeer.String(), err)
+		}
+	}
+
+	fmt.Printf("[TSS] [P2P] All connection attempts failed: peerId=%s tried %d relays\n", peerId.String(), len(connectedPeers))
+	return false
 }

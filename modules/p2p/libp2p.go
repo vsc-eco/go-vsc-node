@@ -199,6 +199,14 @@ func (p2pServer *P2PServer) Init() error {
 		libp2p.AddrsFactory(p2pServer.addrFactory),
 	}
 
+	// If no public IPs are visible (e.g. running in Docker), force the node
+	// to behave as if it's behind NAT. This makes AutoRelay reserve slots on
+	// relay peers, allowing other nodes to reach us through circuit relay.
+	if !hasPublicIP() {
+		fmt.Println("[P2P] No public IP detected, forcing ReachabilityPrivate for relay reservations")
+		options = append(options, libp2p.ForceReachabilityPrivate())
+	}
+
 	p2p, err := libp2p.New(options...)
 	if err != nil {
 		return err
@@ -242,12 +250,16 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 
 	p2ps.cron.AddFunc("@every 15m", func() {
 		p2ps.advertiseSelf()
+	})
 
+	p2ps.cron.AddFunc("@every 5m", func() {
+		p2ps.connectRegisteredPeers()
 	})
 
 	go func() {
 		time.Sleep(1 * time.Minute)
 		p2ps.advertiseSelf()
+		p2ps.connectRegisteredPeers()
 	}()
 
 	uniquePeers := make(map[string]struct{})
@@ -469,7 +481,7 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 	witnesses, _ := p2p.witnessDb.GetLastestWitnesses(opts...)
 
 	for _, witness := range witnesses {
-		if witness.PeerId == "" {
+		if witness.PeerId == "" || witness.PeerId == p2p.host.ID().String() {
 			continue
 		}
 		witnessTime, _ := time.Parse(time.RFC3339, witness.Ts)
@@ -502,15 +514,53 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 
 		peerId, _ := peer.AddrInfoFromString("/p2p/" + witness.PeerId)
 
-		for _, peer := range p2p.host.Network().Peers() {
-			if peer.String() == peerId.ID.String() {
-				p2p.host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
-				p2p.host.Connect(context.Background(), *peerId)
+		// Skip if already connected
+		if p2p.host.Network().Connectedness(peerId.ID) == network.Connected {
+			continue
+		}
+
+		// Try direct connection if we have addresses
+		if len(selectedAddr) > 0 {
+			addrInfo, err := peer.AddrInfosFromP2pAddrs(selectedAddr...)
+			if err == nil && len(addrInfo) > 0 {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				err := p2p.host.Connect(ctx, addrInfo[0])
+				cancel()
+				if err != nil {
+					fmt.Printf("connectRegisteredPeers: failed direct connect to %s (%s): %v\n", witness.PeerId, witness.Account, err)
+				} else {
+					fmt.Printf("connectRegisteredPeers: connected to %s (%s)\n", witness.PeerId, witness.Account)
+					continue
+				}
 			}
 		}
-		addrInfo, err := peer.AddrInfosFromP2pAddrs(selectedAddr...)
-		if err != nil && len(addrInfo) > 0 {
-			p2p.host.Connect(context.Background(), addrInfo[0])
+
+		// Fallback: try circuit relay through connected peers
+		connectedPeers := p2p.host.Network().Peers()
+		relayConnected := false
+		for _, relayPeerId := range connectedPeers {
+			if relayPeerId == peerId.ID {
+				continue
+			}
+			relayAddr, err := multiaddr.NewMultiaddr("/p2p/" + relayPeerId.String() + "/p2p-circuit/p2p/" + witness.PeerId)
+			if err != nil {
+				continue
+			}
+			relayInfo := peer.AddrInfo{
+				ID:    peerId.ID,
+				Addrs: []multiaddr.Multiaddr{relayAddr},
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			err = p2p.host.Connect(ctx, relayInfo)
+			cancel()
+			if err == nil {
+				fmt.Printf("connectRegisteredPeers: connected to %s (%s) via relay %s\n", witness.PeerId, witness.Account, relayPeerId.String())
+				relayConnected = true
+				break
+			}
+		}
+		if !relayConnected && len(connectedPeers) > 0 {
+			fmt.Printf("connectRegisteredPeers: all relay attempts failed for %s (%s)\n", witness.PeerId, witness.Account)
 		}
 	}
 }
