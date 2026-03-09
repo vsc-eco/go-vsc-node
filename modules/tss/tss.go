@@ -258,7 +258,7 @@ func (tss *TssManager) BlameScore() scoreMap {
 
 	epoch := initialElection.Epoch
 	//Pull the last 7 days worth of elections
-	epochCount := (4 * 7) - 1
+	epochCount := 3
 	for i := 0; i < epochCount; i++ {
 		epoch--
 		election := tss.electionDb.GetElection(epoch)
