@@ -44,9 +44,9 @@ const (
 func (b *bitcoinRelayer) Init() error {
 	var btcdRpcHost string
 	if os.Getenv("DEBUG") == "1" {
-		btcdRpcHost = "173.211.12.65:8332"
+		btcdRpcHost = "173.211.12.65:48332"
 	} else {
-		btcdRpcHost = "btcd:8332"
+		btcdRpcHost = "bitcoind:48332"
 	}
 
 	b.rpcConfig = rpcclient.ConnConfig{
