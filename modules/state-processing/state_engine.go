@@ -726,7 +726,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.tss_sign" {
-					if txSelf.BlockHeight < se.SystemConfig().ConsensusParams().TssIndexHeight {
+					if se.sconf.OnTestnet() && txSelf.BlockHeight < se.SystemConfig().ConsensusParams().TssIndexHeight {
+						// for testnet, ignore below tss index height
 						continue
 					}
 

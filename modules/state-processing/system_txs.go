@@ -57,29 +57,32 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 		})
 	}
 
-	tssOps := output.TssOps
-	for _, res := range output.Results {
-		tssOps = append(tssOps, res.TssOps...)
-	}
+	if !se.sconf.OnTestnet() || txSelf.BlockHeight >= se.sconf.ConsensusParams().TssIndexHeight {
+		// for testnet, index only above tss index height
+		tssOps := output.TssOps
+		for _, res := range output.Results {
+			tssOps = append(tssOps, res.TssOps...)
+		}
 
-	for _, tssOp := range tssOps {
-		if tssOp.Type == "create" {
-			fmt.Println("CREATING TSS KEY", tssOp)
-			_, err := se.tssKeys.FindKey(tssOp.KeyId)
+		for _, tssOp := range tssOps {
+			if tssOp.Type == "create" {
+				fmt.Println("CREATING TSS KEY", tssOp)
+				_, err := se.tssKeys.FindKey(tssOp.KeyId)
 
-			// fmt.Println("err", err)
-			if err == mongo.ErrNoDocuments {
-				se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args))
+				// fmt.Println("err", err)
+				if err == mongo.ErrNoDocuments {
+					se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args))
+				}
+			} else if tssOp.Type == "sign" {
+				se.tssRequests.SetSignedRequest(tss_db.TssRequest{
+					KeyId:  tssOp.KeyId,
+					Status: "unsigned",
+					Msg:    tssOp.Args,
+				})
+				// if err == mongo.ErrNoDocuments {
+				// 	se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args))
+				// }
 			}
-		} else if tssOp.Type == "sign" {
-			se.tssRequests.SetSignedRequest(tss_db.TssRequest{
-				KeyId:  tssOp.KeyId,
-				Status: "unsigned",
-				Msg:    tssOp.Args,
-			})
-			// if err == mongo.ErrNoDocuments {
-			// 	se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args))
-			// }
 		}
 	}
 
