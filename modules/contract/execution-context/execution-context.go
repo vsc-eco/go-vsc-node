@@ -247,7 +247,7 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 		)
 	case "intents.sender":
 		return result.Map(
-			resultWrap(json.Marshal(ctx.senderIntents)),
+			resultWrap(json.Marshal(ctx.env.SenderIntents)),
 			func(b []byte) string {
 				return string(b)
 			},
