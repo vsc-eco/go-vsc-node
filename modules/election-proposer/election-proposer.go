@@ -9,6 +9,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
@@ -58,6 +59,9 @@ type electionProposer struct {
 		epoch   uint64
 		circuit *dids.PartialBlsCircuit
 	}
+
+	sigMu      sync.Mutex
+	sigRunning bool
 }
 
 type ElectionProposer = *electionProposer
@@ -638,12 +642,19 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 	if ep.signingInfo == nil {
 		return 0, errors.New("no block signing info")
 	}
-	// go func() {
-	// 	time.Sleep(30 * time.Second)
-	// 	if ep.signingInfo != nil {
-	// 		ep.sigChannels[ep.signingInfo.epoch] <- nil
-	// 	}
-	// }()
+
+	ep.sigMu.Lock()
+	if ep.sigRunning {
+		ep.sigMu.Unlock()
+		return 0, errors.New("waitForSigs already running")
+	}
+	ep.sigRunning = true
+	ep.sigMu.Unlock()
+	defer func() {
+		ep.sigMu.Lock()
+		ep.sigRunning = false
+		ep.sigMu.Unlock()
+	}()
 
 	weightTotal := uint64(0)
 	for _, weight := range election.Weights {
@@ -655,7 +666,7 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 	var err error
 	var signedWeight uint64
 	go func() {
-		signedWeight := uint64(0)
+		signedWeight = 0
 
 		for signedWeight < (weightTotal * 8 / 10) {
 			signResp := <-ep.sigChannels[ep.signingInfo.epoch]
