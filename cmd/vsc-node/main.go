@@ -34,6 +34,7 @@ import (
 	blockconsumer "vsc-node/modules/hive/block-consumer"
 	"vsc-node/modules/hive/streamer"
 	"vsc-node/modules/oracle"
+	"vsc-node/modules/oracle/chain"
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
@@ -203,7 +204,8 @@ func main() {
 		rcSystem,
 		nonceDb,
 	)
-	oracle := oracle.New(p2p, identityConfig, electionDb, witnessDb, blockConsumer, se)
+	chainConf := chain.NewChainConfig()
+	oracle := oracle.New(p2p, identityConfig, electionDb, witnessDb, blockConsumer, se, chainConf)
 
 	multisig := gateway.New(
 		l,
@@ -268,6 +270,7 @@ func main() {
 		//Configuration init
 		dbConf,
 		identityConfig,
+		chainConf,
 
 		//DB plugin initialization
 		dbImpl,

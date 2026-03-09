@@ -63,6 +63,7 @@ func New(
 	witnessDb witnesses.Witnesses,
 	hiveConsumer *blockconsumer.HiveConsumer,
 	stateEngine *stateEngine.StateEngine,
+	chainConf chain.ChainConfig,
 ) *Oracle {
 	logLevel := slog.LevelInfo
 	if os.Getenv("DEBUG") == "1" {
@@ -88,7 +89,7 @@ func New(
 	// 	conf,
 	// )
 
-	chainRelayer := chain.New(ctx, logger, conf)
+	chainRelayer := chain.New(ctx, logger, conf, chainConf)
 
 	return &Oracle{
 		ctx:          ctx,

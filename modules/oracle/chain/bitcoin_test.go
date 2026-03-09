@@ -1,33 +1,28 @@
 package chain
 
 import (
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
 func TestBitcoinRelayer(t *testing.T) {
-	if err := os.Setenv("DEBUG", "1"); err != nil {
-		t.Fatal("failed to set DEBUG environment", err)
-	}
+	conf := NewChainConfig()
+	assert.NoError(t, conf.Init())
 
-	b := &bitcoinRelayer{}
-
+	b := &bitcoinRelayer{conf: conf}
 	assert.NoError(t, b.Init())
 
-	chainState, err := b.TickCheck()
+	chainState, err := b.GetLatestValidHeight()
 	if err != nil {
-		t.Fatal("failed TickCheck", err)
+		t.Fatal("failed GetLatestValidHeight", err)
 	}
 
-	t.Log("TickCheck chainState", chainState)
+	t.Log("GetLatestValidHeight chainState", chainState)
 
-	chainDataBytes, err := b.ChainData(chainState)
+	blocks, err := b.ChainData(chainState.blockHeight, 1)
 	if err != nil {
 		t.Fatal("failed ChainData", err)
 	}
-	t.Log("ChainData chainDataBytes json", string(chainDataBytes))
-
-	assert.NoError(t, b.VerifyChainData(chainDataBytes))
+	t.Log("ChainData blocks", blocks)
 }
