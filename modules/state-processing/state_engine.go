@@ -1110,6 +1110,22 @@ func (se *StateEngine) ExecuteBatch() {
 			rcUsed := se.RcMap[payer] // don't crash if payer is not in RC map
 			se.RcMap[payer] = rcUsed + result.RcUsed
 
+			// When someone starts unbonding (consensus unstake), schedule TSS key generation
+			// for the target epoch so a new key is ready when the validator set changes.
+			if result.Success && vscTx.Type() == "consensus_unstake" {
+				if !se.sconf.OnTestnet() || vscTx.TxSelf().BlockHeight >= se.sconf.ConsensusParams().TssIndexHeight {
+					if cu, ok := vscTx.(*TxConsensusUnstake); ok {
+						electionResult := se.GetElectionInfo(cu.TxSelf().BlockHeight - 1)
+						targetEpoch := electionResult.Epoch + 5
+						keyId := "consensus-" + strconv.FormatUint(targetEpoch, 10)
+						_, err := se.tssKeys.FindKey(keyId)
+						if err == mongo.ErrNoDocuments {
+							_ = se.tssKeys.InsertKey(keyId, tss_db.EcdsaType)
+						}
+					}
+				}
+			}
+
 			if vscTx.Type() == "call_contract" {
 				txId := MakeTxId(tx.TxId, idx)
 				if !result.Success {
