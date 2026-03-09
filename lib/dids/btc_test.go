@@ -163,3 +163,19 @@ func TestBtcDID_IdentifierRoundtrip(t *testing.T) {
 	assert.Equal(t, did.String(), parsed.String())
 	assert.Equal(t, addr, parsed.Identifier())
 }
+
+func TestBtcDID_RealWalletSignature(t *testing.T) {
+	// Real signature from Bitcoin Core v28.1.0
+	// Address: 15NsrHB1sNbVsWFcoK9BPA7qVWfA7eyN4d (P2PKH legacy)
+	// Block content: []byte("test vsc btc did")
+	// CID: QmbCB9UokqQzyHX1DW1gT95yMrCBX5YDL5oHmS7CswBSf8
+	// Signature produced by: signmessage "15NsrHB1sNbVsWFcoK9BPA7qVWfA7eyN4d" "<CID>"
+	addr := "15NsrHB1sNbVsWFcoK9BPA7qVWfA7eyN4d"
+	sig := "IDu5SKlO49iXHnpdrH5CdVFqCtjuwjF97ZRkuZ+UB3Y7OCpOyHeUuqfTw2ZZ+paid8MucuMpk1FRjuv4kqvQ6JI="
+	block := blocks.NewBlock([]byte("test vsc btc did"))
+
+	did := dids.NewBtcDID(addr)
+	valid, err := did.Verify(block, sig)
+	assert.NoError(t, err)
+	assert.True(t, valid, "real Bitcoin Core signature must verify correctly")
+}
