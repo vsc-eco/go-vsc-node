@@ -726,6 +726,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.tss_sign" {
+					if txSelf.BlockHeight < se.SystemConfig().ConsensusParams().TssIndexHeight {
+						continue
+					}
 
 					signedData := struct {
 						Packet []struct {
