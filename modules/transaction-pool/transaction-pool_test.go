@@ -64,7 +64,7 @@ func TestTx(t *testing.T) {
 		To:     "vsc.account",
 		Amount: "0.001",
 		Asset:  "hbd",
-		NetId:  "vsc-mainnet",
+		NetId:  "vsc-mocknet",
 	}
 
 	txId, _ := transferOp.Hash()
@@ -131,7 +131,7 @@ func TestFlow(t *testing.T) {
 		To:     "vsc.account",
 		Amount: "0.001",
 		Asset:  "hbd",
-		NetId:  "vsc-mainnet",
+		NetId:  "vsc-mocknet",
 	}
 
 	txId, _ := transferOp.Hash()

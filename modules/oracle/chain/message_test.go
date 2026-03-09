@@ -11,7 +11,7 @@ import (
 func TestMakeChainOracleMessage_Request(t *testing.T) {
 	request := chainRelayRequest{
 		ContractId: "vsc1abc123",
-		NetId:      "vsc-mainnet",
+		NetId:      "vsc-mocknet",
 	}
 
 	msg, err := makeChainOracleMessage(signatureRequest, "BTC-100-200", request)
@@ -24,7 +24,7 @@ func TestMakeChainOracleMessage_Request(t *testing.T) {
 	err = json.Unmarshal(msg.Payload, &decoded)
 	require.NoError(t, err)
 	assert.Equal(t, "vsc1abc123", decoded.ContractId)
-	assert.Equal(t, "vsc-mainnet", decoded.NetId)
+	assert.Equal(t, "vsc-mocknet", decoded.NetId)
 }
 
 func TestMakeChainOracleMessage_Response(t *testing.T) {
@@ -54,7 +54,7 @@ func TestMakeChainOracleMessage_EmptySessionID(t *testing.T) {
 func TestChainOracleMessage_JSONRoundTrip(t *testing.T) {
 	request := chainRelayRequest{
 		ContractId: "vsc1contract",
-		NetId:      "vsc-mainnet",
+		NetId:      "vsc-mocknet",
 	}
 
 	original, err := makeChainOracleMessage(signatureRequest, "DASH-500-600", request)

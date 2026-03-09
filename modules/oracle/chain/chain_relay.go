@@ -42,6 +42,8 @@ type chainRelay interface {
 	Symbol() string
 	// Returns the contract ID for this chain's mapping contract.
 	ContractId() string
+	// Sets the contract ID for this chain's mapping contract.
+	SetContractId(id string)
 	// Checks for (optional) latest chain state.
 	GetLatestValidHeight() (chainState, error)
 	// Fetches chaindata and serializes to raw bytes.
@@ -108,6 +110,11 @@ func New(
 	}
 }
 
+// SetTxCrafter sets the transaction crafter after initialization.
+func (c *ChainOracle) SetTxCrafter(txCrafter *transactionpool.TransactionCrafter) {
+	c.txCrafter = txCrafter
+}
+
 // Init implements aggregate.Plugin.
 func (c *ChainOracle) Init() error {
 	// initializes market api's
@@ -119,6 +126,13 @@ func (c *ChainOracle) Init() error {
 				"failed to initialize chainrelayer %s: %w",
 				symbol, err,
 			)
+		}
+	}
+
+	// Set contract IDs from system config
+	if btc, ok := c.chainRelayers["BTC"]; ok {
+		if id := c.sconf.BtcContractId(); id != "" {
+			btc.SetContractId(id)
 		}
 	}
 
@@ -239,12 +253,16 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 
 	contractHeight, err := c.getContractBlockHeight(contractId)
 	if err != nil {
-		c.logger.Warn("failed to get contract state, assuming height 0",
+		// When contract state is unavailable (e.g. new or dummy contract),
+		// start from near the chain tip instead of block 0 to avoid
+		// requesting pruned blocks.
+		contractHeight = latestChainState.blockHeight - 1
+		c.logger.Warn("failed to get contract state, starting near chain tip",
 			"symbol", chain.Symbol(),
 			"contractId", contractId,
+			"fallbackHeight", contractHeight,
 			"err", err,
 		)
-		contractHeight = 0
 	}
 
 	if latestChainState.blockHeight <= contractHeight {

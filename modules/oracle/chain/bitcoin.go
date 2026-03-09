@@ -58,17 +58,17 @@ func (b *bitcoinRelayer) Init() error {
 	}
 	b.validityThreshold = 3
 
-	// TODO: set from config/environment once the BTC mapping contract is deployed
-	if id := os.Getenv("BTC_CONTRACT_ID"); id != "" {
-		b.contractId = id
-	}
-
 	return nil
 }
 
 // ContractId implements chainRelay.
 func (b *bitcoinRelayer) ContractId() string {
 	return b.contractId
+}
+
+// SetContractId implements chainRelay.
+func (b *bitcoinRelayer) SetContractId(id string) {
+	b.contractId = id
 }
 
 // Symbol implements chainRelay.

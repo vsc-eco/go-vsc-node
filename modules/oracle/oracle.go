@@ -2,12 +2,14 @@ package oracle
 
 import (
 	"context"
+	ed25519Std "crypto/ed25519"
 	"errors"
 	"log"
 	"log/slog"
 	"os"
 	"time"
 	DataLayer "vsc-node/lib/datalayer"
+	"vsc-node/lib/dids"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
@@ -35,7 +37,7 @@ const (
 	priceOraclePollInterval      = time.Second * 15
 
 	// ~1 minute = 20 blocks, 3s for every new block
-	chainRelayInterval = uint64(20)
+	chainRelayInterval = uint64(1)
 )
 
 var (
@@ -56,6 +58,7 @@ type Oracle struct {
 	witnessDb    witnesses.Witnesses
 	hiveConsumer *blockconsumer.HiveConsumer
 	stateEngine  *stateEngine.StateEngine
+	txPool       *transactionpool.TransactionPool
 
 	// priceOracle *price.PriceOracle
 	chainOracle *chain.ChainOracle
@@ -71,7 +74,6 @@ func New(
 	stateEngine *stateEngine.StateEngine,
 	contractState contracts.ContractState,
 	da *DataLayer.DataLayer,
-	txCrafter *transactionpool.TransactionCrafter,
 	txPool *transactionpool.TransactionPool,
 ) *Oracle {
 	logLevel := slog.LevelInfo
@@ -89,7 +91,8 @@ func New(
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	chainRelayer := chain.New(ctx, logger, conf, sconf, electionDb, contractState, da, txCrafter, txPool)
+	// txCrafter will be created in Init() after identity config is loaded
+	chainRelayer := chain.New(ctx, logger, conf, sconf, electionDb, contractState, da, nil, txPool)
 
 	return &Oracle{
 		ctx:          ctx,
@@ -102,6 +105,7 @@ func New(
 		stateEngine:  stateEngine,
 		logger:       logger,
 		chainOracle:  chainRelayer,
+		txPool:       txPool,
 	}
 }
 
@@ -110,6 +114,25 @@ func New(
 func (o *Oracle) Init() error {
 	log.Println("[oracle] Init: registering blockTick callback")
 	o.hiveConsumer.RegisterBlockTick("oracle", o.blockTick, true)
+
+	// Create the txCrafter now that identity config has been loaded from disk.
+	// The libp2p private key is only available after identityConfig.Init().
+	if libp2pKey, err := o.conf.Libp2pPrivateKey(); err == nil {
+		if rawBytes, err := libp2pKey.Raw(); err == nil {
+			edPrivKey := ed25519Std.PrivateKey(rawBytes)
+			edPubKey := edPrivKey.Public().(ed25519Std.PublicKey)
+			if didKey, err := dids.NewKeyDID(edPubKey); err == nil {
+				txCrafter := &transactionpool.TransactionCrafter{
+					Identity: dids.NewKeyProvider(edPrivKey),
+					Did:      didKey,
+					VSCBroadcast: &transactionpool.InternalBroadcast{
+						TxPool: o.txPool,
+					},
+				}
+				o.chainOracle.SetTxCrafter(txCrafter)
+			}
+		}
+	}
 
 	services := []aggregate.Plugin{
 		o.chainOracle,
