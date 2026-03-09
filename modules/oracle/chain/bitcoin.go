@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -35,30 +34,21 @@ type btcChainData struct {
 	blockHeader *wire.BlockHeader `json:"-"`
 }
 
-const (
-	btcdRpcUsername = "vsc-node-user"
-	btcdRpcPassword = "vsc-node-pass"
-)
-
 // Init implements chainRelay.
 func (b *bitcoinRelayer) Init() error {
-	var btcdRpcHost string
-	if os.Getenv("DEBUG") == "1" {
-		btcdRpcHost = "173.211.12.65:48332"
-	} else {
-		btcdRpcHost = "bitcoind:48332"
-	}
+	b.validityThreshold = 3
+	return nil
+}
 
+// Configure sets the RPC connection config from the oracle config.
+func (b *bitcoinRelayer) Configure(host, user, pass string) {
 	b.rpcConfig = rpcclient.ConnConfig{
-		Host:         btcdRpcHost,
-		User:         btcdRpcUsername,
-		Pass:         btcdRpcPassword,
+		Host:         host,
+		User:         user,
+		Pass:         pass,
 		HTTPPostMode: true,
 		DisableTLS:   true,
 	}
-	b.validityThreshold = 3
-
-	return nil
 }
 
 // ContractId implements chainRelay.

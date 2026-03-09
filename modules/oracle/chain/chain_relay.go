@@ -115,6 +115,15 @@ func (c *ChainOracle) SetTxCrafter(txCrafter *transactionpool.TransactionCrafter
 	c.txCrafter = txCrafter
 }
 
+// ConfigureBitcoin sets the bitcoind RPC connection details from the oracle config.
+func (c *ChainOracle) ConfigureBitcoin(host, user, pass string) {
+	if btc, ok := c.chainRelayers["BTC"]; ok {
+		if br, ok := btc.(*bitcoinRelayer); ok {
+			br.Configure(host, user, pass)
+		}
+	}
+}
+
 // Init implements aggregate.Plugin.
 func (c *ChainOracle) Init() error {
 	// initializes market api's

@@ -54,6 +54,7 @@ type Oracle struct {
 	p2pServer    *libp2p.P2PServer
 	pubSubSrv    libp2p.PubSubService[p2p.Msg]
 	conf         common.IdentityConfig
+	oracleConf   OracleConfig
 	electionDb   elections.Elections
 	witnessDb    witnesses.Witnesses
 	hiveConsumer *blockconsumer.HiveConsumer
@@ -75,6 +76,7 @@ func New(
 	contractState contracts.ContractState,
 	da *DataLayer.DataLayer,
 	txPool *transactionpool.TransactionPool,
+	oracleConf OracleConfig,
 ) *Oracle {
 	logLevel := slog.LevelInfo
 	if os.Getenv("DEBUG") == "1" {
@@ -99,6 +101,7 @@ func New(
 		cancelFunc:   cancel,
 		p2pServer:    p2pServer,
 		conf:         conf,
+		oracleConf:   oracleConf,
 		electionDb:   electionDb,
 		witnessDb:    witnessDb,
 		hiveConsumer: hiveConsumer,
@@ -114,6 +117,10 @@ func New(
 func (o *Oracle) Init() error {
 	log.Println("[oracle] Init: registering blockTick callback")
 	o.hiveConsumer.RegisterBlockTick("oracle", o.blockTick, true)
+
+	// Configure bitcoind RPC from oracle config
+	cfg := o.oracleConf.Get()
+	o.chainOracle.ConfigureBitcoin(cfg.BitcoindRpcHost, cfg.BitcoindRpcUser, cfg.BitcoindRpcPass)
 
 	// Create the txCrafter now that identity config has been loaded from disk.
 	// The libp2p private key is only available after identityConfig.Init().
