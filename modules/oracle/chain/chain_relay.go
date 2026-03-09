@@ -17,12 +17,6 @@ import (
 )
 
 var (
-	// only usage is to build chain map with proper key-value for ChainOracle.chainMap
-	_chains = [...]chainRelay{
-		&bitcoinRelayer{},
-		&litecoinRelayer{},
-	}
-
 	_ aggregate.Plugin = &ChainOracle{}
 
 	errInvalidChainData   = errors.New("invalid chain data")
@@ -60,17 +54,24 @@ type ChainOracle struct {
 	signatureChannels *signatureChannels
 	chainRelayers     map[string]chainRelay
 	conf              common.IdentityConfig
+	chainConf         ChainConfig
 }
 
 func New(
 	ctx context.Context,
 	oracleLogger *slog.Logger,
 	conf common.IdentityConfig,
+	chainConf ChainConfig,
 ) *ChainOracle {
 	logger := oracleLogger.With("sub-service", "chain-relay")
 
+	chains := []chainRelay{
+		&bitcoinRelayer{conf: chainConf},
+		&litecoinRelayer{conf: chainConf},
+	}
+
 	chainRelayers := make(map[string]chainRelay)
-	for _, c := range _chains {
+	for _, c := range chains {
 		chainRelayers[strings.ToUpper(c.Symbol())] = c
 	}
 
@@ -80,6 +81,7 @@ func New(
 		signatureChannels: makeSignatureChannels(),
 		chainRelayers:     chainRelayers,
 		conf:              conf,
+		chainConf:         chainConf,
 	}
 }
 

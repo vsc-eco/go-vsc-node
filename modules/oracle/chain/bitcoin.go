@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -19,6 +18,7 @@ var (
 )
 
 type bitcoinRelayer struct {
+	conf              ChainConfig
 	rpcConfig         rpcclient.ConnConfig
 	validityThreshold uint64
 }
@@ -34,25 +34,13 @@ type btcChainData struct {
 	blockHeader *wire.BlockHeader `json:"-"`
 }
 
-const (
-	btcdRpcUsername = "vsc-node-user"
-	btcdRpcPassword = "vsc-node-pass"
-)
-
 // Init implements chainRelay.
 func (b *bitcoinRelayer) Init() error {
-	var btcdRpcHost string
-	if os.Getenv("DEBUG") == "1" {
-		btcdRpcHost = "173.211.12.65:8332"
-	} else {
-		btcdRpcHost = "btcd:8332"
-	}
-	
-
+	btc := b.conf.Get().Bitcoin
 	b.rpcConfig = rpcclient.ConnConfig{
-		Host:         btcdRpcHost,
-		User:         btcdRpcUsername,
-		Pass:         btcdRpcPassword,
+		Host:         btc.Host,
+		User:         btc.User,
+		Pass:         btc.Pass,
 		HTTPPostMode: true,
 		DisableTLS:   true,
 	}
