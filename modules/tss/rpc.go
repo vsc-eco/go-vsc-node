@@ -31,6 +31,24 @@ type TRes struct {
 	Data []byte
 }
 
+// TurnCredentialRequest asks a peer for TURN credentials that are scoped
+// to the caller's Hive account. The SessionId field is optional and can
+// be used by callers to derive per-session usernames for bookkeeping.
+type TurnCredentialRequest struct {
+	SessionId string
+}
+
+// TurnCredentialResponse contains the derived TURN username/password
+// pair together with basic metadata needed by a client to connect to the
+// relays.
+type TurnCredentialResponse struct {
+	Username  string   `json:"username"`
+	Password  string   `json:"password"`
+	Realm     string   `json:"realm"`
+	Servers   []string `json:"servers"`
+	ExpiresAt int64    `json:"expires_at"`
+}
+
 func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 	receiveTime := time.Now()
 	myAccount := tss.mgr.config.Get().HiveUsername
@@ -115,6 +133,27 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 			req.SessionId, totalDuration)
 	}
 
+	return nil
+}
+
+// GetTurnCredentials exposes the TURN credential service over the
+// existing TSS RPC interface so that peers can fetch short-lived TURN
+// credentials tied to their Hive account identity.
+func (tss *TssRpc) GetTurnCredentials(ctx context.Context, req *TurnCredentialRequest, res *TurnCredentialResponse) error {
+	if globalTurnService == nil {
+		return fmt.Errorf("TURN credential service not configured on this node")
+	}
+
+	creds, err := globalTurnService.GenerateCredentials(req.SessionId)
+	if err != nil {
+		return err
+	}
+
+	res.Username = creds.Username
+	res.Password = creds.Password
+	res.Realm = creds.Realm
+	res.Servers = creds.Servers
+	res.ExpiresAt = creds.ExpiresAt.Unix()
 	return nil
 }
 

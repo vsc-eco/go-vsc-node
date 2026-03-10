@@ -59,6 +59,10 @@ type TssManager struct {
 	server *gorpc.Server
 	client *gorpc.Client
 
+	// Optional external bridge for fallback delivery when direct
+	// libp2p connectivity to a participant is unavailable.
+	bridge *BridgeClient
+
 	sigChannels map[string]chan sigMsg
 
 	tssRequests    tss_db.TssRequests
@@ -1240,6 +1244,7 @@ func New(
 	sconf systemconfig.SystemConfig,
 	keystore *flatfs.Datastore,
 	hiveClient hive.HiveTransactionCreator,
+	bridge *BridgeClient,
 ) *TssManager {
 	preParams := make(chan ecKeyGen.LocalPreParams, 1)
 
@@ -1260,6 +1265,8 @@ func New(
 		metrics:        GetMetrics(),
 		tssRequests:    tssRequests,
 		tssCommitments: tssCommitments,
+
+		bridge: bridge,
 
 		witnessDb:  witnessDb,
 		electionDb: electionDb,

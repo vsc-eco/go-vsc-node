@@ -157,6 +157,7 @@ func (p2pServer *P2PServer) Init() error {
 	relayResources.ReservationTTL = 8 * time.Hour
 
 	port := p2pServer.config.Get().Port
+
 	var idht *dht.IpfsDHT
 	options := []libp2p.Option{
 		libp2p.ListenAddrStrings(

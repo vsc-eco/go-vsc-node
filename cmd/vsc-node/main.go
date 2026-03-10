@@ -222,6 +222,17 @@ func main() {
 		panic(err)
 	}
 
+	// Optional external bridge URL for TSS connectivity (bolt-on service).
+	// When set, TSS will fall back to this bridge when direct libp2p
+	// connectivity to a participant is unavailable. Intended for testnet
+	// experiments; production usage should harden this path.
+	bridgeURL := os.Getenv("TSS_BRIDGE_URL")
+	var bridgeClient *tss.BridgeClient
+	if bridgeURL != "" {
+		fmt.Println("TSS bridge enabled:", bridgeURL)
+		bridgeClient = tss.NewBridgeClient(bridgeURL)
+	}
+
 	tssMgr := tss.New(
 		p2p,
 		tssKeys,
@@ -235,7 +246,17 @@ func main() {
 		sysConfig,
 		flatDb,
 		&hiveCreator,
+		bridgeClient,
 	)
+
+	// Optional: configure TURN credential service for TSS using the node's
+	// Hive identity as the logical account for authentication. Only nodes
+	// that set the corresponding config as enabled will actually issue
+	// credentials; others will simply report that the service is disabled.
+	turnCfg := tss.NewTurnConfig(args.dataDir)
+	if err := tss.ConfigureTurnService(turnCfg, identityConfig); err != nil {
+		fmt.Println("Failed to configure TSS TURN service:", err)
+	}
 
 	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{
 		Witnesses:      witnessDb,

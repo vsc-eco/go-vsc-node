@@ -240,6 +240,37 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 		} else {
 			fmt.Printf("[TSS] [P2P] ERROR: Peer not connected after %d attempts sessionId=%s to=%s peerId=%s\n",
 				maxRetries, sessionId, participant.Account, peerId.String())
+
+			// As a best-effort fallback, try sending via the external
+			// bridge if configured. This path is intentionally simple and
+			// only used when direct libp2p connectivity fails.
+			if tss.bridge != nil && tss.bridge.Enabled() {
+				fmt.Printf("[TSS] [P2P] Falling back to bridge delivery sessionId=%s to=%s\n",
+					sessionId, participant.Account)
+
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+
+				tMsg := TMsg{
+					IsBroadcast: isBroadcast,
+					SessionId:   sessionId,
+					Type:        "msg",
+					Action:      "", // not currently used on the wire
+					KeyId:       "",
+					Data:        msg,
+					Cmt:         commiteeType,
+					CmtFrom:     cmtFrom,
+				}
+
+				if err := tss.bridge.Send(ctx, participant.Account, &tMsg); err != nil {
+					fmt.Printf("[TSS] [P2P] Bridge delivery failed sessionId=%s to=%s err=%v\n",
+						sessionId, participant.Account, err)
+					return fmt.Errorf("peer %s not connected after %d retries (bridge failed: %v)", peerId.String(), maxRetries, err)
+				}
+
+				return nil
+			}
+
 			return fmt.Errorf("peer %s not connected after %d retries", peerId.String(), maxRetries)
 		}
 	}
