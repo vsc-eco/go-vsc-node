@@ -43,6 +43,7 @@ const (
 	TSS_ROTATE_INTERVAL          = 20 * 5           // 5 minutes in L1 blocks
 	TSS_RESHARE_SYNC_DELAY       = 5 * time.Second  // Reduced from 15s to 5s
 	TSS_RESHARE_TIMEOUT          = 2 * time.Minute  // Reshare timeout
+	TSS_DEFAULT_TIMEOUT          = 2 * time.Minute  // Default timeout for keygen/sign operations
 	TSS_MESSAGE_RETRY_COUNT      = 3                // Number of retries for failed messages
 	TSS_MESSAGE_RETRY_DELAY      = 1 * time.Second  // Base delay for retries
 	TSS_BAN_THRESHOLD_PERCENT    = 60               // Failure rate threshold for bans (60% — higher on testnet to avoid banning on transient offline)

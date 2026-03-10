@@ -252,7 +252,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 						BlockHeight: dispatcher.blockHeight,
 					}
 
-					dispatcher.done <- struct{}{}
+					dispatcher.signalDone()
 				}
 			}
 		}()
@@ -369,7 +369,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 					BlockHeight: dispatcher.blockHeight,
 				}
 
-				dispatcher.done <- struct{}{}
+				dispatcher.signalDone()
 			}
 		}()
 	}
@@ -771,7 +771,7 @@ func (dispatcher *SignDispatcher) Start() error {
 				KeyId:     dispatcher.keyId,
 			}
 
-			dispatcher.done <- struct{}{}
+			dispatcher.signalDone()
 		}()
 
 	} else if dispatcher.algo == tss_helpers.SigningAlgoEddsa {
@@ -828,7 +828,7 @@ func (dispatcher *SignDispatcher) Start() error {
 				KeyId:     dispatcher.keyId,
 			}
 
-			dispatcher.done <- struct{}{}
+			dispatcher.signalDone()
 		}()
 	}
 
@@ -909,6 +909,83 @@ type BaseDispatcher struct {
 
 	lastMsg  time.Time
 	isReshare bool // true when this is a ReshareDispatcher (use longer timeout)
+
+	failedMsgs     []failedMsg
+	failedMsgsLock sync.Mutex
+	stopRetry      chan struct{}
+	stopRetryOnce  sync.Once
+}
+
+type failedMsg struct {
+	sessionId    string
+	participant  Participant
+	moniker      string
+	bytes        []byte
+	isBroadcast  bool
+	commiteeType string
+	cmtFrom      string
+	attempts     int
+}
+
+func (dispatcher *BaseDispatcher) signalDone() {
+	dispatcher.stopRetryOnce.Do(func() {
+		if dispatcher.stopRetry != nil {
+			close(dispatcher.stopRetry)
+		}
+	})
+	dispatcher.done <- struct{}{}
+}
+
+func (dispatcher *BaseDispatcher) queueFailedMsg(fm failedMsg) {
+	dispatcher.failedMsgsLock.Lock()
+	dispatcher.failedMsgs = append(dispatcher.failedMsgs, fm)
+	dispatcher.failedMsgsLock.Unlock()
+}
+
+func (dispatcher *BaseDispatcher) retryFailedMsgs() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-dispatcher.stopRetry:
+			return
+		case <-ticker.C:
+			dispatcher.failedMsgsLock.Lock()
+			toRetry := dispatcher.failedMsgs
+			dispatcher.failedMsgs = nil
+			dispatcher.failedMsgsLock.Unlock()
+
+			if len(toRetry) == 0 {
+				continue
+			}
+
+			remaining := make([]failedMsg, 0)
+			for _, fm := range toRetry {
+				fm.attempts++
+				if fm.attempts > 6 {
+					fmt.Printf("[TSS] [DISPATCH] Giving up on message to=%s after %d dispatcher retries sessionId=%s\n",
+						fm.participant.Account, fm.attempts, fm.sessionId)
+					continue
+				}
+				err := dispatcher.tssMgr.SendMsg(fm.sessionId, fm.participant, fm.moniker,
+					fm.bytes, fm.isBroadcast, fm.commiteeType, fm.cmtFrom)
+				if err != nil {
+					fmt.Printf("[TSS] [DISPATCH] Retry %d failed to=%s err=%v\n",
+						fm.attempts, fm.participant.Account, err)
+					remaining = append(remaining, fm)
+				} else {
+					fmt.Printf("[TSS] [DISPATCH] Retry %d succeeded to=%s sessionId=%s\n",
+						fm.attempts, fm.participant.Account, fm.sessionId)
+				}
+			}
+
+			if len(remaining) > 0 {
+				dispatcher.failedMsgsLock.Lock()
+				dispatcher.failedMsgs = append(dispatcher.failedMsgs, remaining...)
+				dispatcher.failedMsgsLock.Unlock()
+			}
+		}
+	}
 }
 
 func (dispatcher *BaseDispatcher) handleMsgs() {
@@ -939,7 +1016,15 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 					go func() {
 						err := dispatcher.tssMgr.SendMsg(dispatcher.sessionId, p, msg.WireMsg().From.Moniker, bytes, true, commiteeType, "")
 						if err != nil {
-							fmt.Println("SendMsg direct info", err, p.Account, len(bytes))
+							fmt.Printf("[TSS] [DISPATCH] SendMsg failed, queuing for retry to=%s err=%v\n", p.Account, err)
+							dispatcher.queueFailedMsg(failedMsg{
+								sessionId:    dispatcher.sessionId,
+								participant:  Participant{Account: p.Account},
+								moniker:      msg.WireMsg().From.Moniker,
+								bytes:        bytes,
+								isBroadcast:  true,
+								commiteeType: commiteeType,
+							})
 						}
 					}()
 				}
@@ -957,7 +1042,15 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 							Account: string(to.Id),
 						}, to.Moniker, bytes, false, commiteeType, "")
 						if err != nil {
-							fmt.Println("SendMsg direct info", err, string(to.Id), len(bytes))
+							fmt.Printf("[TSS] [DISPATCH] SendMsg failed, queuing for retry to=%s err=%v\n", string(to.Id), err)
+							dispatcher.queueFailedMsg(failedMsg{
+								sessionId:    dispatcher.sessionId,
+								participant:  Participant{Account: string(to.Id)},
+								moniker:      to.Moniker,
+								bytes:        bytes,
+								isBroadcast:  false,
+								commiteeType: commiteeType,
+							})
 						}
 					}()
 				}
@@ -1037,9 +1130,12 @@ func (dispatcher *BaseDispatcher) baseStart() {
 	if dispatcher.isReshare {
 		timeout = TSS_RESHARE_TIMEOUT
 	} else {
-		timeout = 1 * time.Minute // Default timeout for other operations
+		timeout = TSS_DEFAULT_TIMEOUT
 	}
-	
+
+	dispatcher.stopRetry = make(chan struct{})
+	go dispatcher.retryFailedMsgs()
+
 	dispatcher.lastMsg = time.Now()
 	fmt.Printf("[TSS] [BASE] Starting timeout monitor sessionId=%s timeout=%v lastMsg=%v\n",
 		dispatcher.sessionId, timeout, dispatcher.lastMsg)
@@ -1051,7 +1147,7 @@ func (dispatcher *BaseDispatcher) baseStart() {
 				dispatcher.timeout = true
 				fmt.Printf("[TSS] [BASE] TIMEOUT: sessionId=%s elapsed=%v timeout=%v lastMsg=%v\n",
 					dispatcher.sessionId, elapsed, timeout, dispatcher.lastMsg)
-				dispatcher.done <- struct{}{}
+				dispatcher.signalDone()
 				break
 			}
 
@@ -1162,7 +1258,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 				BlockHeight: dispatcher.blockHeight,
 				Epoch:       dispatcher.epoch,
 			}
-			dispatcher.done <- struct{}{}
+			dispatcher.signalDone()
 		}()
 	} else if dispatcher.algo == tss_helpers.SigningAlgoEddsa {
 		end := make(chan *keyGenEddsa.LocalPartySaveData)
@@ -1204,7 +1300,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 				BlockHeight: dispatcher.blockHeight,
 				Epoch:       dispatcher.epoch,
 			}
-			dispatcher.done <- struct{}{}
+			dispatcher.signalDone()
 		}()
 	}
 	dispatcher.baseStart()
