@@ -17,8 +17,8 @@ func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (string, error) {
 		return "", fmt.Errorf("invalid session id: %w", err)
 	}
 
-	fmt.Println(
-		"TODO: fetch %s block from %d to %d",
+	fmt.Printf(
+		"TODO: fetch %s block from %d to %d\n",
 		chainSymbol, startBlock, endBlock,
 	)
 
