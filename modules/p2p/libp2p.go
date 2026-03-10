@@ -208,6 +208,7 @@ func (p2pServer *P2PServer) Init() error {
 	p2pServer.host = routedHost
 	p2pServer.dht = idht
 	fmt.Println("peer ID:", p2pServer.GetPeerId())
+	fmt.Println("peer addrs:", p2pServer.Addrs())
 
 	go func() {
 		cSub, _ := p2pServer.host.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
@@ -421,6 +422,19 @@ func (p2pServer *P2PServer) SetStreamHandlerMatch(pid protocol.ID, matcher func(
 }
 
 func (p2p *P2PServer) addrFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
+	// If announce addresses are explicitly configured, use them exclusively
+	if announceAddrs := p2p.config.Get().AnnounceAddrs; len(announceAddrs) > 0 {
+		result := make([]multiaddr.Multiaddr, 0, len(announceAddrs))
+		for _, addrStr := range announceAddrs {
+			ma, err := multiaddr.NewMultiaddr(addrStr)
+			if err != nil {
+				continue
+			}
+			result = append(result, ma)
+		}
+		return result
+	}
+
 	filteredAddrs := make([]multiaddr.Multiaddr, 0)
 	port := p2p.config.Get().Port
 
