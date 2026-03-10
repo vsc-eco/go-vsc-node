@@ -2,9 +2,12 @@ package database
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
+
 	"fmt"
 	"time"
+	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -155,8 +158,8 @@ func (s *StateStore) ClearAllTransactions(ctx context.Context) error {
 func (s *StateStore) AddPendingTransaction(
 	ctx context.Context,
 	txID string,
-	rawTx string,
-	unsignedHashes []UnsignedSigHash,
+	rawTx []byte,
+	unsignedHashes []contractinterface.UnsignedSigHash,
 ) error {
 	signatures := make([]SignatureSlot, len(unsignedHashes))
 	for i, uh := range unsignedHashes {
@@ -206,7 +209,7 @@ func (s *StateStore) GetAllPendingSigHashes(ctx context.Context) ([]string, erro
 	defer cursor.Close(ctx)
 
 	var results []struct {
-		SigHash string `bson:"sigHash"`
+		SigHash []byte `bson:"sigHash"`
 	}
 	if err := cursor.All(ctx, &results); err != nil {
 		return nil, fmt.Errorf("failed to decode sig hashes: %w", err)
@@ -214,7 +217,7 @@ func (s *StateStore) GetAllPendingSigHashes(ctx context.Context) ([]string, erro
 
 	hashes := make([]string, len(results))
 	for i, r := range results {
-		hashes[i] = r.SigHash
+		hashes[i] = hex.EncodeToString(r.SigHash)
 	}
 	return hashes, nil
 }
@@ -244,7 +247,7 @@ func (s *StateStore) UpdateSignatures(
 
 		// Find the signature index and update it
 		for i := range tx.Signatures {
-			if tx.Signatures[i].SigHash == sigHash && tx.Signatures[i].Signature == nil {
+			if hex.EncodeToString(tx.Signatures[i].SigHash) == sigHash && tx.Signatures[i].Signature == nil {
 				// Update this specific signature slot
 				update := bson.M{
 					"$set": bson.M{

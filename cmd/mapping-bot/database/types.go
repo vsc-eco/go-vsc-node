@@ -55,7 +55,7 @@ type SentTransaction struct {
 // PendingTransaction represents a transaction awaiting signatures
 type PendingTransaction struct {
 	TxID              string          `bson:"_id"`
-	RawTx             string          `bson:"rawTx"`
+	RawTx             []byte          `bson:"rawTx"`
 	TotalSignatures   uint32          `bson:"totalSignatures"`
 	CurrentSignatures uint32          `bson:"currentSignatures"`
 	CreatedAt         time.Time       `bson:"createdAt"`
@@ -65,14 +65,7 @@ type PendingTransaction struct {
 // SignatureSlot represents a signature slot in a transaction
 type SignatureSlot struct {
 	Index         uint32 `bson:"index"`
-	SigHash       string `bson:"sigHash"`
-	WitnessScript string `bson:"witnessScript"`
+	SigHash       []byte `bson:"sigHash"`
+	WitnessScript []byte `bson:"witnessScript"`
 	Signature     []byte `bson:"signature,omitempty"` // omitempty keeps it null when empty
-}
-
-// UnsignedSigHash is a helper struct for adding transactions
-type UnsignedSigHash struct {
-	Index         uint32 `json:"index"`
-	SigHash       string `json:"sig_hash"`
-	WitnessScript string `json:"witness_script"`
 }

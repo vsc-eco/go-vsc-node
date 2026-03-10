@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"time"
+	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mempool"
 
@@ -15,12 +16,6 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/hasura/go-graphql-client"
 )
-
-// SigningData and UnsignedSigHash structs same as contract
-type SigningData struct {
-	RawTx             string                     `json:"tx"`
-	UnsignedSigHashes []database.UnsignedSigHash `json:"unsigned_sig_hashes"`
-}
 
 type HashMetadata struct {
 	TxId  string
@@ -77,7 +72,7 @@ func (ms *MapperState) HandleUnmap(
 func (ms *MapperState) ProcessTxSpends(
 	ctx context.Context,
 	gqlClient *graphql.Client,
-	incomingTxSpends map[string]*SigningData,
+	incomingTxSpends map[string]*contractinterface.SigningData,
 ) {
 	for txId, signingData := range incomingTxSpends {
 		// already in the system
@@ -97,7 +92,7 @@ func (ms *MapperState) ProcessTxSpends(
 		// 	continue
 		// }
 
-		err := ms.Db.State.AddPendingTransaction(ctx, txId, signingData.RawTx, signingData.UnsignedSigHashes)
+		err := ms.Db.State.AddPendingTransaction(ctx, txId, signingData.Tx, signingData.UnsignedSigHashes)
 		if err != nil && err != database.ErrPendingTxExists {
 
 		}
@@ -128,23 +123,14 @@ func (ms *MapperState) CheckSignagures(
 
 func attachSignatures(signedData *database.PendingTransaction) (*TxRawIdPair, error) {
 	var tx wire.MsgTx
-	txBytes, err := hex.DecodeString(signedData.RawTx)
-	if err != nil {
-		return nil, err
-	}
-	tx.Deserialize(bytes.NewReader(txBytes))
+	tx.Deserialize(bytes.NewReader(signedData.RawTx))
 
 	for _, inputData := range signedData.Signatures {
 		signature := append(signedData.Signatures[inputData.Index].Signature, byte(txscript.SigHashAll))
 
-		witnessScriptBytes, err := hex.DecodeString(inputData.WitnessScript)
-		if err != nil {
-			return nil, err
-		}
-
 		witness := wire.TxWitness{
 			signature[:],
-			witnessScriptBytes,
+			inputData.WitnessScript,
 		}
 
 		tx.TxIn[inputData.Index].Witness = witness

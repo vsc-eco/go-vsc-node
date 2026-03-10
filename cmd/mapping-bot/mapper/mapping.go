@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/mempool"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -61,7 +62,7 @@ func (ms *MapperState) HandleMap(
 	}
 	for _, tx := range jsonMessages {
 		// TODO: input username and contract ID
-		err := callContract(ctx, "milo-hpr", "vsc1BTpUPXMyvc6LNe38w5UNCNAURZHH6esBic", tx, "map")
+		err := callContract(ctx, "milo-hpr", contractinterface.ContractId, tx, "map")
 		if err != nil {
 			log.Printf("error calling contract: %s", err.Error())
 		}

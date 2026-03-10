@@ -7,39 +7,29 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 
 	"github.com/hasura/go-graphql-client"
 )
 
-const observedContractPrefix = "observed_txs"
-const txSpendRegistryContractKey = "tx_spend_registry"
-const txSpendContractPrefix = "tx_spend"
-const lastHeightContractKey = "last_block_height"
-
-// new contract
-const contractId = "vsc1BTpUPXMyvc6LNe38w5UNCNAURZHH6esBic"
-
-// old contract
-// const contractId = "vsc1BVgE4NL3nZwtoDn82XMymNPriRUp9UVAGU"
-
 type GetContractStateQuery struct {
-	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys)"`
+	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractinterface.ContractId: $contractinterface.ContractId, keys: $keys)"`
 }
 
 func fetchMultipleTxSpendKeys(
 	ctx context.Context,
 	client *graphql.Client,
 	registry []string,
-) (map[string]*SigningData, error) {
+) (map[string]*contractinterface.SigningData, error) {
 	var query GetContractStateQuery
 
 	keys := make([]string, len(registry))
 	for i, txId := range registry {
-		keys[i] = txSpendContractPrefix + txId
+		keys[i] = contractinterface.TxSpendContractPrefix + txId
 	}
 
 	vars2 := map[string]any{
-		"contractId": contractId,
+		"contractinterface.ContractId": contractinterface.ContractId,
 		"keys":       keys,
 	}
 
@@ -54,20 +44,19 @@ func fetchMultipleTxSpendKeys(
 		return nil, err
 	}
 
-	var txSpends = make(map[string]*SigningData, len(registry))
+	var txSpends = make(map[string]*contractinterface.SigningData, len(registry))
 	for i, txId := range registry {
 		spendJson, ok := stateMap[keys[i]]
 		if !ok {
 			log.Printf("tx spend registry data does not match listed spends")
 		} else {
-			var spend SigningData
 			var tmp string
 			err = json.Unmarshal(spendJson, &tmp)
 			if err != nil {
 				return nil, err
 			}
-			err := json.Unmarshal([]byte(tmp), &spend)
-			if err != nil {
+			var spend contractinterface.SigningData
+			if _, err := spend.UnmarshalMsg([]byte(tmp)); err != nil {
 				return nil, fmt.Errorf("error unmarshalling tx spend for tx id %s: %w", txId, err)
 			}
 			txSpends[txId] = &spend
@@ -78,12 +67,12 @@ func fetchMultipleTxSpendKeys(
 }
 
 // returns a map of transaction Ids to unsigned data that was submitted to be signed
-func FetchTxSpends(ctx context.Context, client *graphql.Client) (map[string]*SigningData, error) {
+func FetchTxSpends(ctx context.Context, client *graphql.Client) (map[string]*contractinterface.SigningData, error) {
 	var query GetContractStateQuery
 
 	vars1 := map[string]any{
-		"contractId": contractId,
-		"keys":       []string{txSpendRegistryContractKey},
+		"contractinterface.ContractId": contractinterface.ContractId,
+		"keys":       []string{contractinterface.TxSpendRegistryContractKey},
 	}
 	err := client.Query(ctx, &query, vars1, graphql.OperationName("GetContractState"))
 	if err != nil {
@@ -96,27 +85,27 @@ func FetchTxSpends(ctx context.Context, client *graphql.Client) (map[string]*Sig
 		return nil, err
 	}
 
-	var txSpendsRegistry []string
-	if txSpendsData, exists := stateMap[txSpendRegistryContractKey]; exists && string(txSpendsData) != `"null"` {
+	var txSpendsRegistry contractinterface.TxSpendsRegistry
+	if txSpendsData, exists := stateMap[contractinterface.TxSpendRegistryContractKey]; exists && string(txSpendsData) != `"null"` {
 		var tmp string
 		err = json.Unmarshal(txSpendsData, &tmp)
 		if err != nil {
 			return nil, err
 		}
-		err = json.Unmarshal([]byte(tmp), &txSpendsRegistry)
+		txSpendsRegistry, err = contractinterface.UnmarshalTxSpendsRegistry([]byte(tmp))
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	var txSpends map[string]*SigningData
+	var txSpends map[string]*contractinterface.SigningData
 	if len(txSpendsRegistry) > 0 {
 		txSpends, err = fetchMultipleTxSpendKeys(ctx, client, txSpendsRegistry)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		txSpends = make(map[string]*SigningData)
+		txSpends = make(map[string]*contractinterface.SigningData)
 	}
 
 	return txSpends, nil
@@ -126,10 +115,10 @@ func FetchTxSpends(ctx context.Context, client *graphql.Client) (map[string]*Sig
 func FetchObservedTx(ctx context.Context, client *graphql.Client, txId string, vout int) (bool, error) {
 	var query GetContractStateQuery
 
-	key := observedContractPrefix + fmt.Sprintf("%s:%d", txId, vout)
+	key := contractinterface.ObservedContractPrefix + fmt.Sprintf("%s:%d", txId, vout)
 
 	variables := map[string]any{
-		"contractId": contractId,
+		"contractinterface.ContractId": contractinterface.ContractId,
 		"keys":       []string{key},
 	}
 	err := client.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
@@ -158,7 +147,7 @@ func FetchSignatures(ctx context.Context, client *graphql.Client, msgHex []strin
 	}
 
 	variables := map[string]any{
-		"keyId":  strings.Join([]string{contractId, "main"}, "-"),
+		"keyId":  strings.Join([]string{contractinterface.ContractId, "main"}, "-"),
 		"msgHex": msgHex,
 	}
 
@@ -190,8 +179,8 @@ func FetchLastHeight(ctx context.Context, client *graphql.Client) (string, error
 	var query GetContractStateQuery
 
 	variables := map[string]any{
-		"contractId": contractId,
-		"keys":       []string{lastHeightContractKey},
+		"contractinterface.ContractId": contractinterface.ContractId,
+		"keys":       []string{contractinterface.LastHeightContractKey},
 	}
 	err := client.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
@@ -204,6 +193,6 @@ func FetchLastHeight(ctx context.Context, client *graphql.Client) (string, error
 		return "", err
 	}
 
-	value := strings.ReplaceAll(string(stateMap[lastHeightContractKey]), "\"", "")
+	value := strings.ReplaceAll(string(stateMap[contractinterface.LastHeightContractKey]), "\"", "")
 	return value, nil
 }
