@@ -51,6 +51,7 @@ const (
 	MAX_RESHARE_RETRIES          = 3                // Maximum number of reshare retries on timeout
 	RPC_TIMEOUT                  = 30 * time.Second // RPC call timeout
 	BLAME_EXPIRE                 = uint64(28800)    // 24 hour blame
+	TSS_BLAME_EPOCH_COUNT        = (4 * 7) - 1      // Number of past epochs to include in blame scoring
 )
 
 type TssManager struct {
@@ -253,24 +254,31 @@ func (tss *TssManager) BlameScore() scoreMap {
 	if err != nil || initialElection.Members == nil {
 		return scoreMap{bannedNodes: make(map[string]bool)}
 	}
-	elections := make(map[uint64]elections.ElectionResult, 0)
-	elections[initialElection.Epoch] = initialElection
+
+	// Build set of current election members — only these will be scored
+	currentMembers := make(map[string]bool, len(initialElection.Members))
+	for _, member := range initialElection.Members {
+		currentMembers[member.Account] = true
+	}
+
+	electionMap := make(map[uint64]elections.ElectionResult, 0)
+	electionMap[initialElection.Epoch] = initialElection
 
 	epoch := initialElection.Epoch
-	//Pull the last 7 days worth of elections
-	epochCount := 3
-	for i := 0; i < epochCount; i++ {
+	for i := 0; i < TSS_BLAME_EPOCH_COUNT; i++ {
 		epoch--
 		election := tss.electionDb.GetElection(epoch)
 		if election == nil {
 			break
 		}
-		elections[epoch] = *election
+		electionMap[epoch] = *election
 
-		// Track first appearance of each node
+		// Track first appearance of each node (current members only)
 		for _, member := range election.Members {
-			if _, exists := nodeFirstEpoch[member.Account]; !exists {
-				nodeFirstEpoch[member.Account] = epoch
+			if currentMembers[member.Account] {
+				if _, exists := nodeFirstEpoch[member.Account]; !exists {
+					nodeFirstEpoch[member.Account] = epoch
+				}
 			}
 		}
 	}
@@ -280,10 +288,12 @@ func (tss *TssManager) BlameScore() scoreMap {
 	timeoutBlameMap := make(map[string]int) // Separate tracking for timeouts vs errors
 	errorBlameMap := make(map[string]int)
 
-	for _, election := range elections {
+	for _, election := range electionMap {
 		blames, _ := tss.tssCommitments.GetBlames(tss_db.ByEpoch(election.Epoch), tss_db.ByType("blame"))
 		for _, member := range election.Members {
-			weightMap[member.Account] += len(blames)
+			if currentMembers[member.Account] {
+				weightMap[member.Account] += len(blames)
+			}
 		}
 
 		for _, blame := range blames {
@@ -300,7 +310,7 @@ func (tss *TssManager) BlameScore() scoreMap {
 			}
 
 			for idx, member := range election.Members {
-				if bv.Bit(idx) == 1 {
+				if bv.Bit(idx) == 1 && currentMembers[member.Account] {
 					blameMap[member.Account] += 1
 					tss.metrics.IncrementBlameCount(member.Account)
 					if isTimeout {
