@@ -79,6 +79,8 @@ func (dl *DataLayer) Init() error {
 		panic(err)
 	}
 
+	dl.Datastore = ds
+
 	var bstore blockstore.Blockstore = blockstore.NewBlockstore(ds)
 
 	bswapnet := network.NewFromIpfsHost(dl.p2pService)
@@ -113,6 +115,9 @@ func (dl *DataLayer) Start() *promise.Promise[any] {
 }
 
 func (dl *DataLayer) Stop() error {
+	if dl.Datastore != nil {
+		return dl.Datastore.Close()
+	}
 	return nil
 }
 
