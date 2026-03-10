@@ -27,6 +27,7 @@ COPY --chown=app:app . .
 
 # Source the WasmEdge environment and build the application
 RUN . /home/app/.wasmedge/env && go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o vsc-node vsc-node/cmd/vsc-node
+RUN . /home/app/.wasmedge/env && go build -buildvcs=false -o tss-bridge vsc-node/cmd/tss-bridge
 
 
 
@@ -41,6 +42,7 @@ WORKDIR /home/app/app
 
 # Copy the binary from the build stage
 COPY --from=build /home/app/app/vsc-node .
+COPY --from=build /home/app/app/tss-bridge .
 
 # Copy the WasmEdge from the build stage
 COPY --from=build /home/app/.wasmedge /home/app/.wasmedge
@@ -55,5 +57,6 @@ RUN printf '#!/bin/sh\n\
 exec "$@"\n' > /home/app/app/entrypoint.sh && \
 chmod +x /home/app/app/entrypoint.sh
 
-# Command to run when the container starts
-ENTRYPOINT ["/home/app/app/entrypoint.sh", "./vsc-node"]
+# Entrypoint sources WasmEdge env, then exec's whatever CMD provides
+ENTRYPOINT ["/home/app/app/entrypoint.sh"]
+CMD ["./vsc-node"]

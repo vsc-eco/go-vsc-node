@@ -58,6 +58,24 @@ services:
       - ./.btc-data:/home/bitcoin/.bitcoin
     ports:
       - 8332:8332 # rpc port
+  tss-bridge:
+    build:
+      dockerfile: Dockerfile
+      context: .
+    command: ["./tss-bridge"]
+    environment:
+      - TSS_BRIDGE_BIND=:8081
+    ports:
+      - "8081:8081"
+    networks:
+      - go-vsc-node
+    container_name: tss-bridge
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
 volumes:
   db: {}
 networks:
