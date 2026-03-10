@@ -16,14 +16,12 @@ type chainConfig struct {
 	Litecoin chainRpcEntry
 }
 
-type chainConfigStruct struct {
+type ChainConfig struct {
 	*config.Config[chainConfig]
 }
 
-type ChainConfig = *chainConfigStruct
-
 func NewChainConfig() ChainConfig {
-	return &chainConfigStruct{config.New(chainConfig{
+	return ChainConfig{config.New(chainConfig{
 		Bitcoin: chainRpcEntry{
 			Host: "btcd:8332",
 			User: "vsc-node-user",
@@ -37,7 +35,7 @@ func NewChainConfig() ChainConfig {
 	}, nil)}
 }
 
-func (cc *chainConfigStruct) Init() error {
+func (cc ChainConfig) Init() error {
 	if err := cc.Config.Init(); err != nil {
 		return err
 	}
