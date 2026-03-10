@@ -77,21 +77,23 @@ func New(witnessDb WitnessGetter, config P2PConfig, idConfig common.IdentityConf
 	}
 }
 
-var topicNameFlag = "/vsc/mainnet/multicast"
+func (p2p *P2PServer) topicName() string {
+	return p2p.systemConfig.PubSubTopicPrefix() + "/multicast"
+}
 
 // Finds VSC peers through DHT
 func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 	h := p2p.host
 
 	routingDiscovery := drouting.NewRoutingDiscovery(p2p.dht)
-	dutil.Advertise(ctx, routingDiscovery, topicNameFlag)
+	dutil.Advertise(ctx, routingDiscovery, p2p.topicName())
 
 	// Look for others who have announced and attempt to connect to them
 	anyConnected := false
 	for !anyConnected {
 
 		// fmt.Println("Bootstraping peers via dht... PeerId: " + h.ID().String())
-		peerChan, err := routingDiscovery.FindPeers(ctx, topicNameFlag)
+		peerChan, err := routingDiscovery.FindPeers(ctx, p2p.topicName())
 		if err != nil {
 			panic(err)
 		}
@@ -243,7 +245,10 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 
 	p2ps.cron.AddFunc("@every 15m", func() {
 		p2ps.advertiseSelf()
+	})
 
+	p2ps.cron.AddFunc("@every 5m", func() {
+		p2ps.connectRegisteredPeers()
 	})
 
 	go func() {
@@ -523,7 +528,7 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 			}
 		}
 		addrInfo, err := peer.AddrInfosFromP2pAddrs(selectedAddr...)
-		if err != nil && len(addrInfo) > 0 {
+		if err == nil && len(addrInfo) > 0 {
 			p2p.host.Connect(context.Background(), addrInfo[0])
 		}
 	}
@@ -550,7 +555,7 @@ func (p2p *P2PServer) discoverPeers() {
 	// Look for others who have announced and attempt to connect to them
 	// fmt.Println("Searching for peers via dht...")
 
-	peerChan, err := routingDiscovery.FindPeers(ctx, topicNameFlag)
+	peerChan, err := routingDiscovery.FindPeers(ctx, p2p.topicName())
 	if err != nil {
 		panic(err)
 	}
@@ -573,7 +578,7 @@ func (p2p *P2PServer) discoverPeers() {
 
 func (p2p *P2PServer) advertiseSelf() {
 	routingDiscovery := drouting.NewRoutingDiscovery(p2p.dht)
-	routingDiscovery.Advertise(context.Background(), topicNameFlag)
+	routingDiscovery.Advertise(context.Background(), p2p.topicName())
 }
 
 // =================================
