@@ -1,0 +1,53 @@
+{
+  "ref_block_num": 55962,
+  "ref_block_prefix": 982649092,
+  "expiration": "2026-02-18T23:35:12",
+  "operations": [
+    [
+      9,
+      {
+        "fee": {
+          "amount": "0",
+          "nai": "@@000000021",
+          "precision": 3
+        },
+        "creator": "magic-man",
+        "new_account_name": "vsc.testnet",
+        "owner": {
+          "weight_threshold": 1,
+          "account_auths": [],
+          "key_auths": [
+            [
+              "STM5973L5fAj17tNRDHTJaAMnMDqiv41dvxv2c4J7sHsjb8LDRzTc",
+              1
+            ]
+          ]
+        },
+        "active": {
+          "weight_threshold": 1,
+          "account_auths": [],
+          "key_auths": [
+            [
+              "STM5K7o2PKdYQc2r4uGrLgBTUuF2DRhXKn6JoyHwVJKscc6jgrgww",
+              1
+            ]
+          ]
+        },
+        "posting": {
+          "weight_threshold": 1,
+          "account_auths": [],
+          "key_auths": [
+            [
+              "STM6sR1zdN6SCcFssHjrU3Wz8TiTvW43zCJqUgSrTsckxgY8LRorr",
+              1
+            ]
+          ]
+        },
+        "memo_key": "STM63pjb4UKvFZ4jRfQgSnDX2RZ7J9YUGUcowFskK47W2N8maTC1f",
+        "json_metadata": ""
+      }
+    ]
+  ],
+  "extensions": [],
+  "signatures": []
+}

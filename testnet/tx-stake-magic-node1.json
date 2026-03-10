@@ -1,0 +1,33 @@
+{
+  "ref_block_num": 55963,
+  "ref_block_prefix": 1867605415,
+  "expiration": "2026-02-18T23:35:15",
+  "operations": [
+    [
+      2,
+      {
+        "from": "magic-node1",
+        "to": "vsc.testnet",
+        "amount": {
+          "amount": "1000000",
+          "nai": "@@000000021",
+          "precision": 3
+        },
+        "memo": ""
+      }
+    ],
+    [
+      18,
+      {
+        "required_auths": [
+          "magic-node1"
+        ],
+        "required_posting_auths": [],
+        "id": "vsc.consensus_stake",
+        "json": "{\"from\": \"hive:magic-node1\", \"to\": \"hive:magic-node1\", \"asset\": \"hive\", \"net_id\": \"vsc-testnet\", \"amount\": \"1000.000\"}"
+      }
+    ]
+  ],
+  "extensions": [],
+  "signatures": []
+}

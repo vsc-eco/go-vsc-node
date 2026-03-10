@@ -1,0 +1,78 @@
+{
+  "magic-node1": {
+    "password": "P24ddef99d21b066448084e132c3b8dc896c21de66a1106e94ddc9c8e9fa82b33",
+    "owner": {
+      "private": "5JmwCcutbjRHJ7EfQE6nthzhg3DLJJXie89x5PwshCfpjRR9kcM",
+      "public": "STM5mVYFUrCXTmYPPbncy3Yekoz1C7T2K4QcoFvWq6MhdN2UjRSmd"
+    },
+    "active": {
+      "private": "5J1L6zjZUW5ECZbedVoXw31cmGgUoFewDrYvqvjFuV4ebPzt19P",
+      "public": "STM7xfN2ZRZpCFVcsFrfhmS3DBpYBz47TnYyQCa68HD6c3KF42Q9M"
+    },
+    "posting": {
+      "private": "5J6KpBBP2ku7uES4e67TiQqBHFaRG6XbkG8gecV2KSfm8B8PrGV",
+      "public": "STM5exCjmGHt14qqdgznqHFTcrDDdZ5vBs53T1YzURKs7S6haYKQH"
+    },
+    "memo": {
+      "private": "5JspwXPYhjTqXRc5auQWLkbR63Hcim9gQTTgupK7msMm6YsTRAz",
+      "public": "STM7UyVpQwDxPuD2LFEnZYNfuFWGtRAgLto1rKd9g3bdigg8qHPCk"
+    }
+  },
+  "magic-node2": {
+    "password": "P6a0f28fdd3a0fd7428fc0cc7e9aeba5ff9b3045990417b0dba5d9bc1c0a38096",
+    "owner": {
+      "private": "5JEJgw7TSizPFrfuS3zAKLbbvg4Tf6tG6zTFSqVA8xicmcMt47N",
+      "public": "STM7uEyiN1PGwhgwrHYVuWHsAnhQSKKwzXZjxmNimZCxaLrt8pxgU"
+    },
+    "active": {
+      "private": "5JcuU7dJTcuT7jaDWbihFs5u2fFsiza2LmxAq8XsLAJoTCyYEnp",
+      "public": "STM888ceRHjoT37GYemobZrHobCM63zNsEzD4PjtAcFqXEsKH8DZx"
+    },
+    "posting": {
+      "private": "5JaWmYqiwdZE6M1NxW6fKWLGWkYV1sEs2kKfbg3QssK1Lte6wWf",
+      "public": "STM7srk9qjRPzpPt4HqbUaVzCimjwZSAev7H6H72wVWSu4iTQ4di9"
+    },
+    "memo": {
+      "private": "5JBjetCKEw7wqfS1JU6MFi7KmcoaWX5DJAUyLYoahsGzGiESfBW",
+      "public": "STM57punKqGyY64eEgEikM1aCcLVDd7q8dCtuhgZqeQaEVEUFod8m"
+    }
+  },
+  "vsc.testnet": {
+    "password": "P49fb4c4940d882c846ed70d7b0d084d021845c854eeffe3e8a9bb0d0d4b90a77",
+    "owner": {
+      "private": "5JrKW1CfsPu6rdtvk3R5dX2EJo5HMqxjw2ShiEombombyBvFQEg",
+      "public": "STM63UM7cb2j7gN1UvwPXvEpyzAXffJx2z2mXLGDCdzaFkjFXh3wn"
+    },
+    "active": {
+      "private": "5HzAr4x3wthGGZYtBNNxJpL88YtHWPXvAjrtDFmYEskFYwkNZ8X",
+      "public": "STM8ZHcUuD9BAsFq19U64aT44WUwM7XRMu2vFCXHVsa7csuattj9s"
+    },
+    "posting": {
+      "private": "5HzxCNYLsFLqoRaUBY63y6EHFXtUCEdE7qHf6frPsjLzHkij8ZH",
+      "public": "STM6Mvzcwcd9uChSWFxbJwUBUxRh7sXei8kLZKPdyxGDqgVKaUJ3R"
+    },
+    "memo": {
+      "private": "5JrAJoncFjzcKgWmozacBzHwq3RdP3g52TbDRjDT5S3uEVeH8wv",
+      "public": "STM8iypENg1SUsFadDTYZ6SBBdkUNoyJkBtaqp1rg2RwMZujRqUiv"
+    }
+  },
+  "magic-node3": {
+    "password": "P83a12b565618afd5459730b9f1331bad9c65932006d8e3da1d2df37a545e296c",
+    "owner": {
+      "private": "5JqLxfZ8uBXSS9w364asMW5f9n3oabGCL6pJ6LbUgtn2PXbF2zQ",
+      "public": "STM5ND4KmjGpd4g14jUJ9GSCobv814tDt124iKVYe8brW9CsEoSUf"
+    },
+    "active": {
+      "private": "5Jue8B5wGdnrBk1dWp8s6jmeNgRPJdDGDvKM84p8itg6UkggqYN",
+      "public": "STM7wFVBiZ1otxCfLwPShfQdVFc5nw9fHcuA51LeXrpp94fSf7xhR"
+    },
+    "posting": {
+      "private": "5KhXfxXFmQNiBw9YN7Nip64nbMhnLA8iLBF1L6KfUERJd47EXqx",
+      "public": "STM5pcT2rWaL2zsBxzWVxCEa5RaZS5rwiFbyiE2AnEaR8pChQ4CHP"
+    },
+    "memo": {
+      "private": "5KkHD4vKuHHx9Znt6s1oavYhik7VVRKE4vq6EsVCXpHb2eyX3CL",
+      "public": "STM8AvuEP76iJP2DotbeSpJHcW5UfJW1aDddRNCZD82LC3VzjoP9b"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "ref_block_num": 55963,
+  "ref_block_prefix": 1867605415,
+  "expiration": "2026-02-18T23:35:15",
+  "operations": [
+    [
+      2,
+      {
+        "from": "magic-man",
+        "to": "magic-node2",
+        "amount": {
+          "amount": "5000000",
+          "nai": "@@000000021",
+          "precision": 3
+        },
+        "memo": "VSC testnet"
+      }
+    ]
+  ],
+  "extensions": [],
+  "signatures": []
+}

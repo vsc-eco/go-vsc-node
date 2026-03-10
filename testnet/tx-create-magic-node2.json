@@ -1,0 +1,53 @@
+{
+  "ref_block_num": 55961,
+  "ref_block_prefix": 1978033995,
+  "expiration": "2026-02-18T23:35:09",
+  "operations": [
+    [
+      9,
+      {
+        "fee": {
+          "amount": "0",
+          "nai": "@@000000021",
+          "precision": 3
+        },
+        "creator": "magic-man",
+        "new_account_name": "magic-node2",
+        "owner": {
+          "weight_threshold": 1,
+          "account_auths": [],
+          "key_auths": [
+            [
+              "STM8D1A9cYJV9kK9v3qGSkNz7C31ZkS7Li5h4hZbjREqrah9uDDQX",
+              1
+            ]
+          ]
+        },
+        "active": {
+          "weight_threshold": 1,
+          "account_auths": [],
+          "key_auths": [
+            [
+              "STM4wEYNd13RmmAzjwENpy6zhQyb8d6tW7ETooWLtt91vwzYtirSC",
+              1
+            ]
+          ]
+        },
+        "posting": {
+          "weight_threshold": 1,
+          "account_auths": [],
+          "key_auths": [
+            [
+              "STM81WEqr23vdAWQPJRj5if2SscY48bUF3XNGtDVFVf7CmRUmCAiQ",
+              1
+            ]
+          ]
+        },
+        "memo_key": "STM8hHdr8cA8HL1vFAzKQ5ae3R6uX7t6KNu9tazik1Poq1ERHBMMH",
+        "json_metadata": ""
+      }
+    ]
+  ],
+  "extensions": [],
+  "signatures": []
+}
