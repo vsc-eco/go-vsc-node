@@ -261,6 +261,13 @@ func (o *ChainOracle) processChainRelay(
 			if added {
 				weight := findMemberWeight(&electionResult, member)
 				signedWeight += weight
+				o.logger.Debug("received signature",
+					"symbol", chainStatus.symbol,
+					"account", sigMsg.Account,
+					"weight", weight,
+					"signedWeight", signedWeight,
+					"threshold", threshold,
+				)
 			}
 		}
 	}
