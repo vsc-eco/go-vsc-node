@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
+	"vsc-node/lib/dids"
 	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/contracts"
+	ledgerSystem "vsc-node/modules/ledger-system"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_types "vsc-node/modules/wasm/types"
 
 	"github.com/JustinKnueppel/go-result"
+	"github.com/ipfs/go-cid"
 )
 
 type SdkResultStruct = wasm_types.WasmResultStruct
@@ -234,6 +238,49 @@ var SdkModule = map[string]sdkFunc{
 				}
 			},
 		)
+	},
+	"system.verify_address": func(ctx context.Context, a any) SdkResult {
+		addr, ok := a.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+
+		ret := func(s string) SdkResult {
+			return result.Ok(SdkResultStruct{Result: s, Gas: params.CYCLE_GAS_PER_RC / 4})
+		}
+
+		switch {
+		case strings.HasPrefix(addr, dids.EthDIDPrefix):
+			if _, err := dids.ParseEthDID(addr); err != nil {
+				return ret("unknown")
+			}
+			return ret("user:evm")
+		case strings.HasPrefix(addr, dids.KeyDIDPrefix):
+			if _, err := dids.ParseKeyDID(addr); err != nil {
+				return ret("unknown")
+			}
+			return ret("key")
+		case strings.HasPrefix(addr, "hive:"):
+			username := strings.TrimPrefix(addr, "hive:")
+			matched, _ := regexp.MatchString(ledgerSystem.HIVE_REGEX, username)
+			if !matched || len(username) < 3 || len(username) >= 17 {
+				return ret("unknown")
+			}
+			return ret("user:hive")
+		case strings.HasPrefix(addr, "contract:"):
+			contractId := strings.TrimPrefix(addr, "contract:")
+			if _, err := cid.Decode(contractId); err != nil {
+				return ret("unknown")
+			}
+			return ret("contract")
+		case strings.HasPrefix(addr, "system:"):
+			if len(strings.TrimPrefix(addr, "system:")) == 0 {
+				return ret("unknown")
+			}
+			return ret("system")
+		default:
+			return ret("unknown")
+		}
 	},
 
 	//Gets current balance of an account
