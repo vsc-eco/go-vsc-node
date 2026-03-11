@@ -611,6 +611,17 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 					dispatcher.err = err
 				}
 
+				// Deliver self-messages locally — in reshare, old and new parties are
+				// separate instances on the same node, so tss-lib's internal auto-apply
+				// doesn't cross between them. Bypass P2P (which fails for self) and
+				// call HandleP2P directly.
+				if to.Id == dispatcher.tssMgr.config.Get().HiveUsername {
+					go func(msgBytes []byte) {
+						dispatcher.HandleP2P(msgBytes, to.Id, msg.IsBroadcast(), commiteeType, cmtFrom)
+					}(bytes)
+					continue
+				}
+
 				go func(targetId string, msgBytes []byte) {
 					sendStart := time.Now()
 					err = dispatcher.tssMgr.SendMsg(dispatcher.sessionId, Participant{
