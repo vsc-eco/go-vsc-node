@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
@@ -94,21 +95,38 @@ func main() {
 		}
 
 		if blockHeight == 0 {
-			tip, err := mempoolClient.GetTipHeight()
+			// prefer the contract's last processed height so we don't re-scan blocks
+			// the contract has already seen; fall back to the mempool tip
+			var startHeight uint32
+			contractHeightStr, err := mapper.FetchLastHeight(ctx, bot.GqlClient)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "error fetching tip height from mempool: %s\n", err.Error())
-				time.Sleep(time.Minute)
-				cancel()
-				continue
+				fmt.Fprintf(os.Stderr, "error fetching last height from contract: %s\n", err.Error())
+			} else if contractHeightStr != "" {
+				h, err := strconv.ParseUint(contractHeightStr, 10, 32)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "contract last height is not a valid integer %q: %s\n", contractHeightStr, err.Error())
+				} else {
+					startHeight = uint32(h)
+					fmt.Printf("no stored block height, resuming from contract height: %d\n", startHeight)
+				}
 			}
-			if err := bot.Db.State.SetBlockHeight(ctx, tip); err != nil {
+			if startHeight == 0 {
+				startHeight, err = mempoolClient.GetTipHeight()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error fetching tip height from mempool: %s\n", err.Error())
+					time.Sleep(time.Minute)
+					cancel()
+					continue
+				}
+				fmt.Printf("no stored block height, starting from tip: %d\n", startHeight)
+			}
+			if err := bot.Db.State.SetBlockHeight(ctx, startHeight); err != nil {
 				fmt.Fprintf(os.Stderr, "error seeding block height: %s\n", err.Error())
 				time.Sleep(time.Minute)
 				cancel()
 				continue
 			}
-			fmt.Printf("no stored block height, starting from tip: %d\n", tip)
-			blockHeight = tip
+			blockHeight = startHeight
 		}
 
 		hash, status, err := mempoolClient.GetBlockHashAtHeight(blockHeight)
