@@ -2,12 +2,13 @@ package mapper
 
 import (
 	"log/slog"
+	"os"
 	"vsc-node/cmd/mapping-bot/database"
 
 	"github.com/hasura/go-graphql-client"
 )
 
-const graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
+const defaultGraphQLUrl = "https://api.vsc.eco/api/v1/graphql"
 
 type MapperState struct {
 	Db *database.Database
@@ -17,9 +18,13 @@ type MapperState struct {
 }
 
 func NewMapperState(db *database.Database) (*MapperState, error) {
+	gqlUrl := os.Getenv("VSC_GRAPHQL_URL")
+	if gqlUrl == "" {
+		gqlUrl = defaultGraphQLUrl
+	}
 	return &MapperState{
 		Db:        db,
-		GqlClient: graphql.NewClient(graphQLUrl, nil),
+		GqlClient: graphql.NewClient(gqlUrl, nil),
 		L:         slog.Default(),
 	}, nil
 }

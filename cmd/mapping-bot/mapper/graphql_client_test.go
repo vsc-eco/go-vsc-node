@@ -20,7 +20,7 @@ func TestSignatures(t *testing.T) {
 		Transport: &loggingTransport{http.DefaultTransport},
 	}
 
-	cx := graphql.NewClient(graphQLUrl, httpClient)
+	cx := graphql.NewClient(defaultGraphQLUrl, httpClient)
 
 	msgHex := []string{}
 
@@ -41,7 +41,7 @@ func TestTxSpends(t *testing.T) {
 		Transport: &loggingTransport{http.DefaultTransport},
 	}
 
-	cx := graphql.NewClient(graphQLUrl, httpClient)
+	cx := graphql.NewClient(defaultGraphQLUrl, httpClient)
 
 	/*
 		t.Log("FetchContractData")
@@ -65,7 +65,7 @@ func TestLastHeight(t *testing.T) {
 		Transport: &loggingTransport{http.DefaultTransport},
 	}
 
-	cx := graphql.NewClient(graphQLUrl, httpClient)
+	cx := graphql.NewClient(defaultGraphQLUrl, httpClient)
 
 	t.Log("FetchTxSpends")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

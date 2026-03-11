@@ -15,7 +15,11 @@ import (
 const httpPort = 8000
 
 func main() {
-	db, err := database.New(context.Background(), "mongodb://localhost:27017", "mappingbot")
+	mongoURL := os.Getenv("MONGO_URL")
+	if mongoURL == "" {
+		mongoURL = "mongodb://localhost:27017"
+	}
+	db, err := database.New(context.Background(), mongoURL, "mappingbot")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create datastore: %s\n", err.Error())
 		os.Exit(1)
