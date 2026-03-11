@@ -16,7 +16,7 @@ type SystemConfig interface {
 	GatewayWallet() string
 	StartHeight() uint64
 	ConsensusParams() params.ConsensusParams
-	BtcContractId() string
+	OracleParams() params.OracleParams
 }
 
 type config struct {
@@ -27,7 +27,7 @@ type config struct {
 	gatewayWallet   string
 	startHeight     uint64
 	consensusParams params.ConsensusParams
-	btcContractId   string
+	oracleParams    params.OracleParams
 }
 
 func (c *config) OnMainnet() bool {
@@ -65,12 +65,12 @@ func (c *config) ConsensusParams() params.ConsensusParams {
 	return c.consensusParams
 }
 
-func (c *config) StartHeight() uint64 {
-	return c.startHeight
+func (c *config) OracleParams() params.OracleParams {
+	return c.oracleParams
 }
 
-func (c *config) BtcContractId() string {
-	return c.btcContractId
+func (c *config) StartHeight() uint64 {
+	return c.startHeight
 }
 
 func MainnetConfig() SystemConfig {
@@ -101,7 +101,6 @@ func TestnetConfig() SystemConfig {
 		hiveChainId:    "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
 		gatewayWallet:  "vsc.gateway",
 		startHeight:    2,
-		btcContractId:  "vsc1BemohMM2HKzfQzWquTfMF6LWvb2V9M35c3",
 		consensusParams: params.ConsensusParams{
 			MinStake:         params.CONSENSUS_MINIMUM,
 			MinMembers:       3,
@@ -109,6 +108,9 @@ func TestnetConfig() SystemConfig {
 			MinRcLimit:       params.MINIMUM_RC_LIMIT,
 			TssIndexHeight:   1135000,
 			ElectionInterval: params.ELECTION_INTERVAL,
+		},
+		oracleParams: params.OracleParams{
+			BtcContractId: "vsc1BemohMM2HKzfQzWquTfMF6LWvb2V9M35c3",
 		},
 	}
 	return conf
@@ -121,7 +123,6 @@ func DevnetConfig() SystemConfig {
 		hiveChainId:   "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
 		gatewayWallet: "vsc.gateway",
 		startHeight:   2,
-		btcContractId: "vsc1BemohMM2HKzfQzWquTfMF6LWvb2V9M35c3",
 		consensusParams: params.ConsensusParams{
 			MinStake:         1000,
 			MinMembers:       3,

@@ -46,3 +46,7 @@ type ConsensusParams struct {
 	TssIndexHeight   uint64
 	ElectionInterval uint64
 }
+
+type OracleParams struct {
+	BtcContractId string
+}

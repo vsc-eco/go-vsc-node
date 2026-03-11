@@ -140,7 +140,7 @@ func (c *ChainOracle) Init() error {
 
 	// Set contract IDs from system config
 	if btc, ok := c.chainRelayers["BTC"]; ok {
-		if id := c.sconf.BtcContractId(); id != "" {
+		if id := c.sconf.OracleParams().BtcContractId; id != "" {
 			btc.SetContractId(id)
 		}
 	}
