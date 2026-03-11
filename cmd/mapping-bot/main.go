@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"time"
+	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
 	"vsc-node/cmd/mapping-bot/mempool"
@@ -43,6 +44,17 @@ func main() {
 		os.Exit(1)
 	}
 	network = chainParams
+
+	cfg := newMappingBotConfig()
+	if err := cfg.Init(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load config: %s\n", err.Error())
+		os.Exit(1)
+	}
+	contractinterface.ContractId = cfg.GetContractId()
+	if contractinterface.ContractId == "" {
+		fmt.Fprintf(os.Stderr, "ContractId must be set in %s\n", cfg.FilePath())
+		os.Exit(1)
+	}
 
 	mongoURL := os.Getenv("MONGO_URL")
 	if mongoURL == "" {
