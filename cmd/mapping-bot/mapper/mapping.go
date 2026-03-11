@@ -10,7 +10,6 @@ import (
 	"time"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/mempool"
-
 )
 
 // height, in blocks, below the current height at which transactions should be dropped
