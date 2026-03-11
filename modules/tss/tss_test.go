@@ -677,3 +677,273 @@ func TestTss(t *testing.T) {
 
 	fmt.Println("[TEST] All TSS operations completed successfully!")
 }
+
+// blameBitset creates a base64-encoded bitset marking the given member indices as blamed.
+func blameBitset(indices ...int) string {
+	bitset := big.NewInt(0)
+	for _, idx := range indices {
+		bitset.SetBit(bitset, idx, 1)
+	}
+	return base64.RawURLEncoding.EncodeToString(bitset.Bytes())
+}
+
+func dropBlameTestDatabase() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+	if err != nil {
+		return
+	}
+	defer client.Disconnect(ctx)
+	client.Database("go-vsc-blame-test").Drop(ctx)
+}
+
+// makeBlameNode creates a minimal node for blame testing.
+func makeBlameNode(mes *MockElectionSystem) (nodeComponents, *vtss.TssManager) {
+	path := "data-dir-blame"
+
+	os.RemoveAll(path)
+	os.Mkdir(path, os.ModePerm)
+
+	dbConf := db.NewDbConfig(path)
+	identity := common.NewIdentityConfig(path)
+	p2pConf := libp2p.NewConfig(path)
+	aggregate.New([]aggregate.Plugin{dbConf, identity, p2pConf}).Init()
+	dbConf.SetDbName("go-vsc-blame-test")
+	identity.SetUsername("mock-blame-0")
+	sysConf := systemconfig.MocknetConfig()
+
+	database := db.New(dbConf)
+	vscDb := vsc.New(database, dbConf)
+	tssCommitments := tss_db.NewCommitments(vscDb)
+	electionDb := elections.New(vscDb)
+	witnessDb := witnesses.New(vscDb)
+
+	blockConsumer := blockconsumer.New(nil)
+
+	p2pConf.SetOptions(libp2p.P2POpts{
+		Port:         22299,
+		ServerMode:   true,
+		AllowPrivate: true,
+		Bootnodes:    []string{},
+	})
+	p2p := libp2p.New(witnessDb, p2pConf, identity, sysConf, nil)
+
+	tssKeys := tss_db.NewKeys(vscDb)
+	tssRequests := tss_db.NewRequests(vscDb)
+
+	keystore, err := flatfs.CreateOrOpen(path+"/keys", flatfs.Prefix(1), false)
+	if err != nil {
+		panic(err)
+	}
+
+	txCreator := hive.MockTransactionCreator{
+		MockTransactionBroadcaster: hive.MockTransactionBroadcaster{
+			Callback: func(tx hivego.HiveTransaction) error { return nil },
+		},
+		TransactionCrafter: hive.TransactionCrafter{},
+	}
+
+	tssMgr := vtss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessDb, electionDb, blockConsumer, mes, identity, sysConf, keystore, &txCreator)
+
+	agg := aggregate.New([]aggregate.Plugin{
+		identity,
+		dbConf,
+		database,
+		vscDb,
+		tssKeys,
+		tssRequests,
+		tssCommitments,
+		electionDb,
+		witnessDb,
+		p2p,
+		tssMgr,
+	})
+
+	return nodeComponents{
+		agg:            agg,
+		consumer:       blockConsumer,
+		witnessDb:      witnessDb,
+		p2p:            p2p,
+		electionDb:     electionDb,
+		tssKeys:        tssKeys,
+		tssRequests:    tssRequests,
+		tssCommitments: tssCommitments,
+		identity:       identity,
+	}, tssMgr
+}
+
+func TestBlameScore(t *testing.T) {
+	dropBlameTestDatabase()
+	t.Cleanup(func() {
+		dropBlameTestDatabase()
+		os.RemoveAll("data-dir-blame")
+	})
+
+	members4 := []elections.ElectionMember{
+		{Account: "node-a", Key: "key-a"},
+		{Account: "node-b", Key: "key-b"},
+		{Account: "node-c", Key: "key-c"},
+		{Account: "node-d", Key: "key-d"},
+	}
+	weights4 := []uint64{10, 10, 10, 10}
+
+	mes := &MockElectionSystem{WitnessNames: []string{"node-a", "node-b", "node-c", "node-d"}}
+	node, tssMgr := makeBlameNode(mes)
+
+	go test_utils.RunPlugin(t, node.agg)
+	time.Sleep(3 * time.Second)
+	defer node.agg.Stop()
+
+	// Helper to store contiguous elections where all 4 members appear from epoch 0 through
+	// the given epoch. BlameScore iterates backwards from the latest epoch and tracks the
+	// most recent historical epoch each node appeared in (nodeFirstEpoch). To bypass the
+	// grace period (epochsSinceFirst >= 3), we store members in the current epoch and in
+	// epochs that are 3+ behind, but NOT in the 3 immediately preceding epochs.
+	// This way nodeFirstEpoch = (current - 4) and epochsSinceFirst = 4 >= 3.
+	storeElectionsWithGracePeriodBypass := func(currentEpoch uint64) {
+		// Current epoch has all 4 members
+		node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: currentEpoch, NetId: "vsc-mocknet", Type: "initial"},
+			ElectionDataInfo:   elections.ElectionDataInfo{Members: members4, Weights: weights4},
+			BlockHeight:        currentEpoch * 100,
+		})
+		// Epochs (current-1), (current-2), (current-3) exist but with NO members
+		// so the backward loop doesn't break but nodeFirstEpoch isn't set yet
+		for ep := currentEpoch - 1; ep >= currentEpoch-3 && ep > 0; ep-- {
+			node.electionDb.StoreElection(elections.ElectionResult{
+				ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: ep, NetId: "vsc-mocknet", Type: "initial"},
+				ElectionDataInfo:   elections.ElectionDataInfo{Members: []elections.ElectionMember{}, Weights: []uint64{}},
+				BlockHeight:        ep * 100,
+			})
+		}
+		// Epoch (current-4) has all 4 members — this is where nodeFirstEpoch gets set
+		// epochsSinceFirst = current - (current-4) = 4 >= gracePeriod(3)
+		if currentEpoch >= 4 {
+			node.electionDb.StoreElection(elections.ElectionResult{
+				ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: currentEpoch - 4, NetId: "vsc-mocknet", Type: "initial"},
+				ElectionDataInfo:   elections.ElectionDataInfo{Members: members4, Weights: weights4},
+				BlockHeight:        (currentEpoch - 4) * 100,
+			})
+		}
+	}
+
+	t.Run("no_blames_no_bans", func(t *testing.T) {
+		dropBlameTestDatabase()
+		time.Sleep(500 * time.Millisecond)
+
+		storeElectionsWithGracePeriodBypass(10)
+
+		result := tssMgr.BlameScore()
+
+		if len(result.BannedNodes) != 0 {
+			t.Errorf("Expected no banned nodes, got %v", result.BannedNodes)
+		}
+	})
+
+	t.Run("blame_above_threshold_bans_node", func(t *testing.T) {
+		dropBlameTestDatabase()
+		time.Sleep(500 * time.Millisecond)
+
+		storeElectionsWithGracePeriodBypass(10)
+
+		// Insert 2 blame commitments in epoch 6 (where members exist), both blaming node-a (index 0)
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
+			Commitment: blameBitset(0), TxId: "blame-tx-1",
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
+			Commitment: blameBitset(0), TxId: "blame-tx-2",
+		})
+
+		result := tssMgr.BlameScore()
+
+		if !result.BannedNodes["node-a"] {
+			t.Errorf("Expected node-a to be banned (100%% failure rate), got BannedNodes=%v", result.BannedNodes)
+		}
+		if result.BannedNodes["node-b"] || result.BannedNodes["node-c"] || result.BannedNodes["node-d"] {
+			t.Errorf("Expected only node-a banned, got BannedNodes=%v", result.BannedNodes)
+		}
+	})
+
+	t.Run("blame_below_threshold_no_ban", func(t *testing.T) {
+		dropBlameTestDatabase()
+		time.Sleep(500 * time.Millisecond)
+
+		storeElectionsWithGracePeriodBypass(10)
+
+		// Insert 3 blame commitments in epoch 6, each blaming a different node (33% < 60%)
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
+			Commitment: blameBitset(1), TxId: "blame-tx-1",
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
+			Commitment: blameBitset(2), TxId: "blame-tx-2",
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 602,
+			Commitment: blameBitset(3), TxId: "blame-tx-3",
+		})
+
+		result := tssMgr.BlameScore()
+
+		if len(result.BannedNodes) != 0 {
+			t.Errorf("Expected no bans (33%% failure rate < 60%% threshold), got BannedNodes=%v", result.BannedNodes)
+		}
+	})
+
+	t.Run("grace_period_exemption", func(t *testing.T) {
+		dropBlameTestDatabase()
+		time.Sleep(500 * time.Millisecond)
+
+		// Current epoch 10 has all 4 members including node-d.
+		// Epochs 9, 8, 7 have all 4 members (so nodeFirstEpoch for node-d = 9, epochsSinceFirst = 1).
+		// This means node-d is in grace period (1 < 3) and should NOT be banned.
+		for ep := uint64(7); ep <= 10; ep++ {
+			node.electionDb.StoreElection(elections.ElectionResult{
+				ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: ep, NetId: "vsc-mocknet", Type: "initial"},
+				ElectionDataInfo:   elections.ElectionDataInfo{Members: members4, Weights: weights4},
+				BlockHeight:        ep * 100,
+			})
+		}
+
+		// Blame node-d (index 3) in epochs 7-9 — 100% failure rate but grace period protects
+		for ep := uint64(7); ep <= 9; ep++ {
+			node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+				Type: "blame", KeyId: "test-key", Epoch: ep, BlockHeight: ep * 100,
+				Commitment: blameBitset(3), TxId: fmt.Sprintf("blame-tx-%d", ep),
+			})
+		}
+
+		result := tssMgr.BlameScore()
+
+		if result.BannedNodes["node-d"] {
+			t.Errorf("Expected node-d exempt from ban (grace period), got BannedNodes=%v", result.BannedNodes)
+		}
+	})
+
+	t.Run("timeout_blame_contributes_to_ban", func(t *testing.T) {
+		dropBlameTestDatabase()
+		time.Sleep(500 * time.Millisecond)
+
+		storeElectionsWithGracePeriodBypass(10)
+
+		// Insert blame commitments blaming node-c (index 2) — should trigger ban
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
+			Commitment: blameBitset(2), TxId: "blame-tx-1",
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
+			Commitment: blameBitset(2), TxId: "blame-tx-2",
+		})
+
+		result := tssMgr.BlameScore()
+
+		if !result.BannedNodes["node-c"] {
+			t.Errorf("Expected node-c to be banned (100%% blame rate), got BannedNodes=%v", result.BannedNodes)
+		}
+	})
+}

@@ -243,17 +243,17 @@ type score struct {
 	EpochsSinceFirst uint64
 }
 
-type scoreMap struct {
-	bannedNodes map[string]bool
+type ScoreMap struct {
+	BannedNodes map[string]bool
 }
 
-func (tss *TssManager) BlameScore() scoreMap {
+func (tss *TssManager) BlameScore() ScoreMap {
 	weightMap := make(map[string]int)
 	nodeFirstEpoch := make(map[string]uint64) // Track first epoch each node appeared
 
 	initialElection, err := tss.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
 	if err != nil || initialElection.Members == nil {
-		return scoreMap{bannedNodes: make(map[string]bool)}
+		return ScoreMap{BannedNodes: make(map[string]bool)}
 	}
 
 	// Build set of current election members — only these will be scored
@@ -388,8 +388,8 @@ func (tss *TssManager) BlameScore() scoreMap {
 	// fmt.Println("scoreMap", string(scoreMapBytes), sortedArray)
 	// fmt.Println("BlamedNodes", bannedNodes)
 
-	return scoreMap{
-		bannedNodes: bannedNodes,
+	return ScoreMap{
+		BannedNodes: bannedNodes,
 	}
 }
 
@@ -423,7 +423,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	blameMap := tssMgr.BlameScore()
 
 	fmt.Printf("[TSS] [ACTIONS] Running actions blockHeight=%d isLeader=%v actionCount=%d bannedNodes=%d\n",
-		bh, isLeader, len(actions), len(blameMap.bannedNodes))
+		bh, isLeader, len(actions), len(blameMap.BannedNodes))
 
 	dispatchers := make([]Dispatcher, 0)
 	for idx, action := range actions {
@@ -455,7 +455,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				// 	}
 				// }
 				//if node is banned
-				if blameMap.bannedNodes[member.Account] {
+				if blameMap.BannedNodes[member.Account] {
 					continue
 				}
 				participants = append(participants, Participant{
@@ -607,7 +607,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				// 	}
 				// }
 				//if node is banned
-				if blameMap.bannedNodes[member.Account] {
+				if blameMap.BannedNodes[member.Account] {
 					excludedNodes = append(excludedNodes, member.Account)
 					fmt.Printf("[TSS] [RESHARE] Excluding banned node from reshare sessionId=%s account=%s\n",
 						sessionId, member.Account)
