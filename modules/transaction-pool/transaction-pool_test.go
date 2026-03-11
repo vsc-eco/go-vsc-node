@@ -48,6 +48,12 @@ func TestTest(t *testing.T) {
 	fmt.Println(czPrefix.Codec, czPrefix.MhLength, czPrefix.MhType, czPrefix.Version)
 }
 
+type mockBroadcast struct{}
+
+func (m *mockBroadcast) Broadcast(tx transactionpool.SerializedVSCTransaction) (string, error) {
+	return "mock-cid", nil
+}
+
 func TestTx(t *testing.T) {
 	transferOp := &transactionpool.VSCTransfer{
 		From:   "vsc.account",
@@ -69,17 +75,20 @@ func TestTx(t *testing.T) {
 
 	didKey, _ := dids.NewKeyDID(pubKey)
 	transactionCreator := transactionpool.TransactionCrafter{
-		Identity: dids.NewKeyProvider(privKey),
-		Did:      didKey,
-
-		VSCBroadcast: &transactionpool.InternalBroadcast{
-			TxPool: &transactionpool.TransactionPool{},
-		},
+		Identity:     dids.NewKeyProvider(privKey),
+		Did:          didKey,
+		VSCBroadcast: &mockBroadcast{},
 	}
 
-	sTx, _ := transactionCreator.SignFinal(vscTx)
+	sTx, err := transactionCreator.SignFinal(vscTx)
+	if err != nil {
+		t.Fatalf("SignFinal failed: %v", err)
+	}
 
-	transactionCreator.Broadcast(sTx)
+	_, err = transactionCreator.Broadcast(sTx)
+	if err != nil {
+		t.Fatalf("Broadcast failed: %v", err)
+	}
 }
 
 // TestFlow removed: requires too many module dependencies (p2p, datalayer, db, etc.)

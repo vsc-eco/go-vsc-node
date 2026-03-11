@@ -73,7 +73,7 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 
 	sigPack := SignaturePackage{}
 
-	err = cbornode.DecodeInto(sTx.Sig, &sigPack)
+	err = common.DecodeCbor(sTx.Sig, &sigPack)
 	fmt.Println("decode error", err)
 	if err != nil {
 		return nil, err
