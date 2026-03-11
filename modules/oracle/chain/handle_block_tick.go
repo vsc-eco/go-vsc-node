@@ -2,6 +2,7 @@ package chain
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -75,7 +76,7 @@ func (o *ChainOracle) processChainRelay(
 	startHeight := chainStatus.chainData[0].BlockHeight()
 	endHeight := chainStatus.chainData[blockCount-1].BlockHeight()
 
-	o.logger.Info("initiating chain relay consensus",
+	o.logger.Debug("initiating chain relay consensus",
 		"symbol", chainStatus.symbol,
 		"blocks", blockCount,
 		"start", startHeight,
@@ -177,6 +178,15 @@ func (o *ChainOracle) processChainRelay(
 
 	sigChan, err := o.signatureChannels.makeSession(sessionID)
 	if err != nil {
+		if errors.Is(err, errChannelExists) {
+			// A previous tick is already collecting signatures for this
+			// session — nothing to do.
+			o.logger.Debug("signature session already active, skipping",
+				"symbol", chainStatus.symbol,
+				"sessionID", sessionID,
+			)
+			return
+		}
 		o.logger.Error("failed to create signature session",
 			"symbol", chainStatus.symbol, "err", err,
 		)
@@ -205,11 +215,6 @@ func (o *ChainOracle) processChainRelay(
 		return
 	}
 
-	o.logger.Debug("broadcast signature request",
-		"symbol", chainStatus.symbol,
-		"sessionID", sessionID,
-		"txCid", txCid.String(),
-	)
 
 	// Wait for signatures with timeout
 	threshold := electionResult.TotalWeight * 2 / 3
@@ -225,7 +230,7 @@ func (o *ChainOracle) processChainRelay(
 			return
 
 		case <-timer.C:
-			o.logger.Warn("signature collection timeout",
+			o.logger.Debug("signature collection timeout",
 				"symbol", chainStatus.symbol,
 				"signedWeight", signedWeight,
 				"threshold", threshold,
@@ -256,19 +261,13 @@ func (o *ChainOracle) processChainRelay(
 			if added {
 				weight := findMemberWeight(&electionResult, member)
 				signedWeight += weight
-				o.logger.Debug("collected signature",
-					"symbol", chainStatus.symbol,
-					"account", sigMsg.Account,
-					"signedWeight", signedWeight,
-					"threshold", threshold,
-				)
 			}
 		}
 	}
 
 checkThreshold:
 	if signedWeight <= threshold {
-		o.logger.Warn("not enough signatures for chain relay",
+		o.logger.Info("not enough signatures for chain relay",
 			"symbol", chainStatus.symbol,
 			"signedWeight", signedWeight,
 			"threshold", threshold,
