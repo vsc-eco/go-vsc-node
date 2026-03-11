@@ -54,7 +54,7 @@ func TestTx(t *testing.T) {
 		To:     "vsc.account",
 		Amount: "0.001",
 		Asset:  "hbd",
-		NetId:  "vsc-mainnet",
+		NetId:  "vsc-mocknet",
 	}
 
 	serializedOp, _ := transferOp.SerializeVSC()
@@ -62,7 +62,7 @@ func TestTx(t *testing.T) {
 	vscTx := transactionpool.VSCTransaction{
 		Ops:   []transactionpool.VSCTransactionOp{serializedOp},
 		Nonce: 0,
-		NetId: "vsc-mainnet",
+		NetId: "vsc-mocknet",
 	}
 
 	pubKey, privKey, _ := ed25519.GenerateKey(rand.Reader)
