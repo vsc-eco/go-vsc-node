@@ -124,20 +124,25 @@ func (o *Oracle) Init() error {
 
 	// Create the txCrafter now that identity config has been loaded from disk.
 	// The libp2p private key is only available after identityConfig.Init().
-	if libp2pKey, err := o.conf.Libp2pPrivateKey(); err == nil {
-		if rawBytes, err := libp2pKey.Raw(); err == nil {
-			edPrivKey := ed25519Std.PrivateKey(rawBytes)
-			edPubKey := edPrivKey.Public().(ed25519Std.PublicKey)
-			if didKey, err := dids.NewKeyDID(edPubKey); err == nil {
-				txCrafter := &transactionpool.TransactionCrafter{
-					Identity: dids.NewKeyProvider(edPrivKey),
-					Did:      didKey,
-					VSCBroadcast: &transactionpool.InternalBroadcast{
-						TxPool: o.txPool,
-					},
-				}
-				o.chainOracle.SetTxCrafter(txCrafter)
+	if libp2pKey, err := o.conf.Libp2pPrivateKey(); err != nil {
+		o.logger.Error("failed to get libp2p private key, chain relay submission disabled", "err", err)
+	} else if rawBytes, err := libp2pKey.Raw(); err != nil {
+		o.logger.Error("failed to get raw libp2p key bytes, chain relay submission disabled", "err", err)
+	} else {
+		edPrivKey := ed25519Std.PrivateKey(rawBytes)
+		edPubKey := edPrivKey.Public().(ed25519Std.PublicKey)
+		if didKey, err := dids.NewKeyDID(edPubKey); err != nil {
+			o.logger.Error("failed to create key DID, chain relay submission disabled", "err", err)
+		} else {
+			txCrafter := &transactionpool.TransactionCrafter{
+				Identity: dids.NewKeyProvider(edPrivKey),
+				Did:      didKey,
+				VSCBroadcast: &transactionpool.InternalBroadcast{
+					TxPool: o.txPool,
+				},
 			}
+			o.chainOracle.SetTxCrafter(txCrafter)
+			o.logger.Info("chain relay transaction crafter initialized")
 		}
 	}
 
