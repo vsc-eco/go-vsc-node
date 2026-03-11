@@ -13,7 +13,7 @@ import (
 )
 
 type GetContractStateQuery struct {
-	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contactId: $contactId, keys: $keys)"`
+	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys)"`
 }
 
 func fetchMultipleTxSpendKeys(
@@ -29,8 +29,8 @@ func fetchMultipleTxSpendKeys(
 	}
 
 	vars2 := map[string]any{
-		"contactId": contractinterface.ContractId,
-		"keys":      keys,
+		"contractId": contractinterface.ContractId,
+		"keys":       keys,
 	}
 
 	err := client.Query(ctx, &query, vars2, graphql.OperationName("GetContractState"))
@@ -71,8 +71,8 @@ func FetchTxSpends(ctx context.Context, client *graphql.Client) (map[string]*con
 	var query GetContractStateQuery
 
 	vars1 := map[string]any{
-		"contactId": contractinterface.ContractId,
-		"keys":      []string{contractinterface.TxSpendRegistryContractKey},
+		"contractId": contractinterface.ContractId,
+		"keys":       []string{contractinterface.TxSpendRegistryContractKey},
 	}
 	err := client.Query(ctx, &query, vars1, graphql.OperationName("GetContractState"))
 	if err != nil {
@@ -119,8 +119,8 @@ func FetchObservedTx(ctx context.Context, client *graphql.Client, txId string, v
 	key := contractinterface.ObservedContractPrefix + fmt.Sprintf("%s:%d", txId, vout)
 
 	variables := map[string]any{
-		"contactId": contractinterface.ContractId,
-		"keys":      []string{key},
+		"contractId": contractinterface.ContractId,
+		"keys":       []string{key},
 	}
 	err := client.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
@@ -180,8 +180,8 @@ func FetchLastHeight(ctx context.Context, client *graphql.Client) (string, error
 	var query GetContractStateQuery
 
 	variables := map[string]any{
-		"contactId": contractinterface.ContractId,
-		"keys":      []string{contractinterface.LastHeightContractKey},
+		"contractId": contractinterface.ContractId,
+		"keys":       []string{contractinterface.LastHeightContractKey},
 	}
 	err := client.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
