@@ -11,7 +11,6 @@ import (
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/mempool"
 
-	"github.com/btcsuite/btcd/chaincfg"
 )
 
 // height, in blocks, below the current height at which transactions should be dropped
@@ -39,7 +38,7 @@ func (ms *MapperState) HandleMap(
 		return
 	}
 
-	blockParser := NewBlockParser(ms.Db.Addresses, &chaincfg.TestNet4Params)
+	blockParser := NewBlockParser(ms.Db.Addresses, ms.ChainParams)
 
 	foundTxs, err := blockParser.ParseBlock(ctx, ms.GqlClient, blockBytes, blockHeight)
 	if err != nil {
@@ -73,6 +72,8 @@ func (ms *MapperState) HandleMap(
 		log.Printf("error incrementing last block height: %s", err.Error())
 		return
 	}
+
+	ms.setLastBlock(blockHeight)
 }
 
 func groupTxsByBlock(transactions []mempool.Transaction, lastHeight uint32) map[string][]mempool.Transaction {
@@ -96,7 +97,7 @@ func groupTxsByBlock(transactions []mempool.Transaction, lastHeight uint32) map[
 
 // checks for existing txs for new addresses being registered
 func (ms *MapperState) HandleExistingTxs(btcAddress string) {
-	mempoolClient := mempool.NewMempoolClient(http.DefaultClient)
+	mempoolClient := mempool.NewMempoolClient(http.DefaultClient, ms.MempoolBaseURL)
 	txHistory, err := mempoolClient.GetAddressTxs(btcAddress)
 	if err != nil {
 		log.Printf("failed to fetch transaction history for address %s: %s", btcAddress, err)

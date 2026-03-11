@@ -17,6 +17,10 @@ import (
 
 var requestValidator = validator.New(validator.WithRequiredStructEnabled())
 
+// staleBlockThreshold is how long without a processed block before health is degraded.
+// BTC mainnet averages ~10 min per block; 20 min gives one missed block of headroom.
+const staleBlockThreshold = 20 * time.Minute
+
 func mapBotHttpServer(
 	ctx context.Context,
 	addressStore *database.AddressStore,
@@ -28,8 +32,45 @@ func mapBotHttpServer(
 		return
 	}
 
-	http.Handle("/", requestHandler(ctx, bot))
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
+	mux := http.NewServeMux()
+	mux.Handle("GET /health", healthHandler(bot))
+	mux.Handle("/", requestHandler(ctx, bot))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), mux))
+}
+
+type healthResponse struct {
+	Status      string  `json:"status"`
+	BlockHeight uint32  `json:"blockHeight"`
+	LastBlockAt *string `json:"lastBlockAt"`
+	StaleSecs   *int64  `json:"staleSecs,omitempty"`
+}
+
+func healthHandler(bot *mapper.MapperState) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		height, lastAt := bot.LastBlock()
+
+		resp := healthResponse{BlockHeight: height}
+
+		if lastAt.IsZero() {
+			// No block processed yet this session — not necessarily unhealthy,
+			// could be a fresh start. Report status but return 200.
+			resp.Status = "starting"
+		} else {
+			ts := lastAt.UTC().Format(time.RFC3339)
+			resp.LastBlockAt = &ts
+			stale := int64(time.Since(lastAt).Seconds())
+			if time.Since(lastAt) > staleBlockThreshold {
+				resp.Status = "unhealthy"
+				resp.StaleSecs = &stale
+				w.WriteHeader(http.StatusServiceUnavailable)
+			} else {
+				resp.Status = "ok"
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}
 }
 
 type requestBody struct {

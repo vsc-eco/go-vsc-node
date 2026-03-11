@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,11 +11,38 @@ import (
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
 	"vsc-node/cmd/mapping-bot/mempool"
+
+	"github.com/btcsuite/btcd/chaincfg"
 )
 
 const httpPort = 8000
 
+func parseNetwork(name string) (*chaincfg.Params, string, error) {
+	switch name {
+	case "mainnet":
+		return &chaincfg.MainNetParams, mempool.MempoolMainnetAPIBase, nil
+	case "testnet4":
+		return &chaincfg.TestNet4Params, mempool.MempoolTestnet4APIBase, nil
+	case "testnet3":
+		return &chaincfg.TestNet3Params, mempool.MempoolTestnet3APIBase, nil
+	case "regnet":
+		return &chaincfg.RegressionNetParams, mempool.MempoolMainnetAPIBase, nil
+	default:
+		return nil, "", fmt.Errorf("unknown network %q: must be mainnet, testnet4, testnet3, or regnet", name)
+	}
+}
+
 func main() {
+	networkName := flag.String("network", "mainnet", "Bitcoin network: mainnet, testnet4, testnet3, or regnet")
+	flag.Parse()
+
+	chainParams, mempoolBase, err := parseNetwork(*networkName)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(1)
+	}
+	network = chainParams
+
 	mongoURL := os.Getenv("MONGO_URL")
 	if mongoURL == "" {
 		mongoURL = "mongodb://localhost:27017"
@@ -27,7 +55,7 @@ func main() {
 	defer db.Close(context.Background())
 	lastClear := time.Now()
 
-	bot, err := mapper.NewMapperState(db)
+	bot, err := mapper.NewMapperState(db, chainParams, mempoolBase)
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
@@ -36,7 +64,7 @@ func main() {
 	defer cancel()
 	go mapBotHttpServer(httpCtx, db.Addresses, httpPort, bot)
 
-	mempoolClient := mempool.NewMempoolClient(http.DefaultClient)
+	mempoolClient := mempool.NewMempoolClient(http.DefaultClient, mempoolBase)
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
@@ -63,6 +91,24 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error fetching block height from db: %s", err.Error())
 			cancel()
 			continue
+		}
+
+		if blockHeight == 0 {
+			tip, err := mempoolClient.GetTipHeight()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error fetching tip height from mempool: %s\n", err.Error())
+				time.Sleep(time.Minute)
+				cancel()
+				continue
+			}
+			if err := bot.Db.State.SetBlockHeight(ctx, tip); err != nil {
+				fmt.Fprintf(os.Stderr, "error seeding block height: %s\n", err.Error())
+				time.Sleep(time.Minute)
+				cancel()
+				continue
+			}
+			fmt.Printf("no stored block height, starting from tip: %d\n", tip)
+			blockHeight = tip
 		}
 
 		hash, status, err := mempoolClient.GetBlockHashAtHeight(blockHeight)

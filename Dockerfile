@@ -64,6 +64,8 @@ ENTRYPOINT ["/home/app/app/entrypoint.sh", "./vsc-node"]
 
 FROM rockylinux:9.3-minimal AS mapping-bot
 
+RUN microdnf install -y curl && microdnf clean all
+
 RUN useradd -m app
 
 USER app

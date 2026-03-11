@@ -9,7 +9,9 @@ import (
 	"net/http"
 )
 
-const MempoolAPIBase = "https://mempool.space/testnet4/api"
+const MempoolMainnetAPIBase = "https://mempool.space/api"
+const MempoolTestnet4APIBase = "https://mempool.space/testnet4/api"
+const MempoolTestnet3APIBase = "https://mempool.space/testnet/api"
 
 type MempoolClient struct {
 	baseURL string
@@ -65,11 +67,30 @@ type Status struct {
 	BlockTime   int64  `json:"block_time"`
 }
 
-func NewMempoolClient(httpClient *http.Client) *MempoolClient {
+func NewMempoolClient(httpClient *http.Client, baseURL string) *MempoolClient {
 	return &MempoolClient{
-		baseURL: MempoolAPIBase,
+		baseURL: baseURL,
 		client:  httpClient,
 	}
+}
+
+func (m *MempoolClient) GetTipHeight() (uint32, error) {
+	url := fmt.Sprintf("%s/blocks/tip/height", m.baseURL)
+	resp, err := m.client.Get(url)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("mempool API returned status %d", resp.StatusCode)
+	}
+
+	var height uint32
+	if err := json.NewDecoder(resp.Body).Decode(&height); err != nil {
+		return 0, fmt.Errorf("error decoding tip height: %w", err)
+	}
+	return height, nil
 }
 
 func (m *MempoolClient) GetBlockHashAtHeight(height uint32) (string, int, error) {
