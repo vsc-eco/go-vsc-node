@@ -80,7 +80,6 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	// }
 
 	if isChainRelayTick {
-		log.Printf("[oracle] chain relay tick at block %d, isProducer=%v, isWitness=%v, username=%s", *headHeight, isProducer, isWitness, username)
 		go o.chainOracle.HandleBlockTick(signal, o)
 	}
 }

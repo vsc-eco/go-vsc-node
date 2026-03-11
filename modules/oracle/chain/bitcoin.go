@@ -114,6 +114,11 @@ func (b *bitcoinRelayer) ChainData(
 		stopHeight = uint64(latestBlock)
 	}
 
+	if stopHeight < startHeight {
+		// Local bitcoin node is behind the requested start height — not synced yet.
+		return nil, fmt.Errorf("local bitcoin tip (%d) is behind requested start height (%d)", stopHeight, startHeight)
+	}
+
 	// get all blocks from startHeight to stopHeight
 	blocks := make([]chainBlock, 0, stopHeight-startHeight)
 	for blockHeight := startHeight; blockHeight <= stopHeight; blockHeight++ {

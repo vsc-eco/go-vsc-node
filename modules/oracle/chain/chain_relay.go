@@ -156,11 +156,12 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 
 		fcl, err := chainRelayer.GetLatestValidHeight()
 
-		fmt.Println("fcl", fcl, symbol)
 		if err != nil {
 			startSymbols[symbol] = err.Error()
+			c.logger.Error("failed to get latest chain height on startup", "symbol", symbol, "err", err)
 		} else {
 			startSymbols[symbol] = strconv.Itoa(int(fcl.blockHeight))
+			c.logger.Info("chain relay starting", "symbol", symbol, "height", fcl.blockHeight)
 		}
 	}
 	// TODO: replace with user's URIs
@@ -266,7 +267,7 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 		// start from near the chain tip instead of block 0 to avoid
 		// requesting pruned blocks.
 		contractHeight = latestChainState.blockHeight - 1
-		c.logger.Warn("failed to get contract state, starting near chain tip",
+		c.logger.Debug("failed to get contract state, starting near chain tip",
 			"symbol", chain.Symbol(),
 			"contractId", contractId,
 			"fallbackHeight", contractHeight,
