@@ -78,6 +78,8 @@ services:
         condition: service_healthy
     networks:
       - go-vsc-node
+    volumes:
+      - ./data/mapping-bot:/data/mapping-bot
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
       interval: 2m

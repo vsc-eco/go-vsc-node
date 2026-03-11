@@ -2,7 +2,7 @@ package main
 
 import "vsc-node/modules/config"
 
-const mappingBotDataDir = "data/mapping-bot"
+const mappingBotDataDir = "/data/mapping-bot"
 
 type mappingBotConfig struct {
 	ContractId string
