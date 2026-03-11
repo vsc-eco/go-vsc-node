@@ -57,6 +57,7 @@ func main() {
 	dbConf := db.NewDbConfig(args.dataDir)
 	p2pConf := p2pInterface.NewConfig(args.dataDir)
 	gqlConf := gql.NewGqlConfig(args.dataDir)
+	oracleConf := oracle.NewOracleConfig(args.dataDir)
 	hiveApiUrl := streamer.NewHiveConfig(args.dataDir)
 	hiveApiUrlErr := hiveApiUrl.Init()
 
@@ -196,7 +197,10 @@ func main() {
 	)
 
 	bp := blockproducer.New(l, p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
-	oracle := oracle.New(p2p, identityConfig, sysConfig, electionDb, witnessDb, blockConsumer, se)
+
+	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, identityConfig, rcSystem)
+
+	oracle := oracle.New(p2p, identityConfig, sysConfig, electionDb, witnessDb, blockConsumer, se, contractState, da, txpool, oracleConf)
 
 	multisig := gateway.New(
 		l,
@@ -212,8 +216,6 @@ func main() {
 		identityConfig,
 		hiveRpcClient,
 	)
-
-	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, identityConfig, rcSystem)
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
 
@@ -264,6 +266,7 @@ func main() {
 		p2pConf,
 		identityConfig,
 		gqlConf,
+		oracleConf,
 
 		//DB plugin initialization
 		dbImpl,

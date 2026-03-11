@@ -122,6 +122,13 @@ func (s *StreamReader) Init() error {
 		lp = s.startBlock - 1
 	}
 
+	// guard against stale lastProcessed that's ahead of actual stored blocks
+	highestBlock, err := s.hiveBlocks.GetHighestBlock()
+	if err == nil && highestBlock > 0 && lp > highestBlock {
+		log.Printf("[StreamReader] lastProcessed=%d exceeds highestBlock=%d, resetting", lp, highestBlock)
+		lp = highestBlock
+	}
+
 	s.lastProcessed = lp
 	s.lastSaved = &lp
 	return nil

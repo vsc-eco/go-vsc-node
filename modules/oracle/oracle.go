@@ -2,13 +2,18 @@ package oracle
 
 import (
 	"context"
+	ed25519Std "crypto/ed25519"
 	"errors"
+	"log"
 	"log/slog"
 	"os"
 	"time"
+	DataLayer "vsc-node/lib/datalayer"
+	"vsc-node/lib/dids"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
+	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/witnesses"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
@@ -16,6 +21,7 @@ import (
 	"vsc-node/modules/oracle/p2p"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
+	transactionpool "vsc-node/modules/transaction-pool"
 
 	"github.com/chebyrash/promise"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -30,8 +36,8 @@ const (
 	priceOracleBroadcastInterval = uint64(600 / 3)
 	priceOraclePollInterval      = time.Second * 15
 
-	// 10 minutes = 600 seconds or 200 blocks, 3s for every new block
-	chainRelayInterval = uint64(600 / 3)
+	// ~1 minute = 20 blocks, 3s for every new block
+	chainRelayInterval = uint64(1)
 )
 
 var (
@@ -48,10 +54,12 @@ type Oracle struct {
 	p2pServer    *libp2p.P2PServer
 	pubSubSrv    libp2p.PubSubService[p2p.Msg]
 	conf         common.IdentityConfig
+	oracleConf   OracleConfig
 	electionDb   elections.Elections
 	witnessDb    witnesses.Witnesses
 	hiveConsumer *blockconsumer.HiveConsumer
 	stateEngine  *stateEngine.StateEngine
+	txPool       *transactionpool.TransactionPool
 
 	// priceOracle *price.PriceOracle
 	chainOracle *chain.ChainOracle
@@ -65,6 +73,10 @@ func New(
 	witnessDb witnesses.Witnesses,
 	hiveConsumer *blockconsumer.HiveConsumer,
 	stateEngine *stateEngine.StateEngine,
+	contractState contracts.ContractState,
+	da *DataLayer.DataLayer,
+	txPool *transactionpool.TransactionPool,
+	oracleConf OracleConfig,
 ) *Oracle {
 	logLevel := slog.LevelInfo
 	if os.Getenv("DEBUG") == "1" {
@@ -81,35 +93,54 @@ func New(
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// priceOracle := price.New(
-	// 	ctx,
-	// 	logger,
-	// 	userCurrency,
-	// 	priceOraclePollInterval,
-	// 	watchSymbols,
-	// 	conf,
-	// )
-
-	chainRelayer := chain.New(ctx, logger, conf, sconf)
+	// txCrafter will be created in Init() after identity config is loaded
+	chainRelayer := chain.New(ctx, logger, conf, sconf, electionDb, contractState, da, nil, txPool)
 
 	return &Oracle{
 		ctx:          ctx,
 		cancelFunc:   cancel,
 		p2pServer:    p2pServer,
 		conf:         conf,
+		oracleConf:   oracleConf,
 		electionDb:   electionDb,
 		witnessDb:    witnessDb,
 		hiveConsumer: hiveConsumer,
 		stateEngine:  stateEngine,
 		logger:       logger,
-		// priceOracle: priceOracle,
-		chainOracle: chainRelayer,
+		chainOracle:  chainRelayer,
+		txPool:       txPool,
 	}
 }
 
 // Init implements aggregate.Plugin.
 // Runs initialization in order of how they are passed in to `Aggregate`
 func (o *Oracle) Init() error {
+	log.Println("[oracle] Init: registering blockTick callback")
+	o.hiveConsumer.RegisterBlockTick("oracle", o.blockTick, true)
+
+	// Configure bitcoind RPC from oracle config
+	cfg := o.oracleConf.Get()
+	o.chainOracle.ConfigureBitcoin(cfg.BitcoindRpcHost, cfg.BitcoindRpcUser, cfg.BitcoindRpcPass)
+
+	// Create the txCrafter now that identity config has been loaded from disk.
+	// The libp2p private key is only available after identityConfig.Init().
+	if libp2pKey, err := o.conf.Libp2pPrivateKey(); err == nil {
+		if rawBytes, err := libp2pKey.Raw(); err == nil {
+			edPrivKey := ed25519Std.PrivateKey(rawBytes)
+			edPubKey := edPrivKey.Public().(ed25519Std.PublicKey)
+			if didKey, err := dids.NewKeyDID(edPubKey); err == nil {
+				txCrafter := &transactionpool.TransactionCrafter{
+					Identity: dids.NewKeyProvider(edPrivKey),
+					Did:      didKey,
+					VSCBroadcast: &transactionpool.InternalBroadcast{
+						TxPool: o.txPool,
+					},
+				}
+				o.chainOracle.SetTxCrafter(txCrafter)
+			}
+		}
+	}
+
 	services := []aggregate.Plugin{
 		o.chainOracle,
 		// o.priceOracle,

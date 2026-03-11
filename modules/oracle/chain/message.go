@@ -5,18 +5,6 @@ import (
 	"errors"
 )
 
-// You need message type (exists), sessionId --> it is the ID of the sign
-// operation, payload --> signature
-// sign-ltc-2394823984
-//types = signature response, signature ask
-// signature response:
-// - msg type
-// - sessionId
-// - payload aka signature
-//signature ask:
-// - type
-// - chainId -> btc, ltc
-
 type messageType int
 
 const (
@@ -32,6 +20,21 @@ type chainOracleMessage struct {
 	MessageType messageType     `json:"message_type"`
 	SessionID   string          `json:"session_id"`
 	Payload     json.RawMessage `json:"data"`
+}
+
+// chainRelayRequest is the payload for a signatureRequest message.
+// The producer broadcasts this to ask witnesses to verify and sign chain data.
+type chainRelayRequest struct {
+	ContractId string `json:"contract_id"`
+	NetId      string `json:"net_id"`
+}
+
+// chainRelayResponse is the payload for a signatureResponse message.
+// Witnesses send this back with their BLS signature over the transaction CID.
+type chainRelayResponse struct {
+	Signature string `json:"signature"` // base64 BLS signature
+	Account   string `json:"account"`   // signer's hive account
+	BlsDid    string `json:"bls_did"`   // signer's BLS DID
 }
 
 func makeChainOracleMessage(

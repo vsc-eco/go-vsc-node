@@ -19,9 +19,9 @@ services:
       dockerfile: Dockerfile
       context: .
     ports:
-      - "8080:8080"
-      - "10720:10720"
-      - "10720:10720/udp"
+      - "8094:8080"
+      - "10724:10720"
+      - "10724:10720/udp"
     environment:
       - MONGO_URL=mongodb://db:27017
     depends_on:
@@ -48,16 +48,6 @@ services:
       resources:
         limits:
           memory: 1G
-  btcd:
-    profiles:
-      - btcd
-    image: ruimarinho/bitcoin-core:latest
-    container_name: btcd
-    command: -rpcuser='vsc-node-user' -rpcpassword='vsc-node-pass' -rpcallowip=0.0.0.0/0 -rpcbind=0.0.0.0 -prune=550 -dbcache=2048 -server=1 -listen=1
-    volumes:
-      - ./.btc-data:/home/bitcoin/.bitcoin
-    ports:
-      - 8332:8332 # rpc port
 volumes:
   db: {}
 networks:

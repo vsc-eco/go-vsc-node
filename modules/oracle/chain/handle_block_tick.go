@@ -1,190 +1,321 @@
 package chain
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
-	"sync"
+	"strings"
 	"time"
+	"vsc-node/lib/dids"
 	"vsc-node/modules/db/vsc/contracts"
+	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
 	transactionpool "vsc-node/modules/transaction-pool"
 )
 
-type session struct {
-	vscTransaction transactionpool.SerializedVSCTransaction
-	chainData      []string
-	signatures     []string
-}
-
-type vscTransaction struct {
-	sessionID  string
-	chainData  []byte
-	signatures []string
-}
+const (
+	// Time to wait for witness signatures before proceeding.
+	signatureCollectionTimeout = 12 * time.Second
+)
 
 func makeTransaction(
-	contractId *string,
-	payload []string,
+	contractId string,
+	payload string,
 	symbol string,
+	txNetId string,
 ) transactionpool.VSCTransaction {
-	ops := make([]transactionpool.VSCTransactionOp, 0)
 	op := transactionpool.VscContractCall{
-		ContractId: *contractId,
+		ContractId: contractId,
 		Action:     "add_blocks",
-		Payload:    "",
+		Payload:    payload,
 		Intents:    []contracts.Intent{},
 		RcLimit:    1000,
-		Caller:     "did:vsc:oracle:" + symbol,
-		NetId:      "vsc-mainnet",
+		Caller:     "did:vsc:oracle:" + strings.ToLower(symbol),
+		NetId:      txNetId,
 	}
 	vOp, _ := op.SerializeVSC()
-	ops = append(ops, vOp)
 	return transactionpool.VSCTransaction{
-		Ops:   ops,
+		Ops:   []transactionpool.VSCTransactionOp{vOp},
 		Nonce: 0,
-		NetId: "vsc-mainnet",
-		// Headers: transactionpool.VSCTransactionHeader{
-		// 	Nonce:         0,
-		// 	RequiredAuths: []string{"did:vsc:oracle:" + symbol},
-
-		// 	NetId: "vsc-mainnet",
-		// },
-		// Type:    "vsc-tx",
-		// Version: "0.2",
-
-		// Tx: ops,
+		NetId: txNetId,
 	}
 }
 
-// HandleBlockTick implements oracle.BlockTickHandler.
+// HandleBlockTick is called when it's time to relay chain data.
+// If this node is the block producer, it initiates the P2P consensus flow:
+// 1. Fetch new chain blocks
+// 2. Build the relay transaction
+// 3. Broadcast signature request to elected witnesses
+// 4. Collect BLS signatures until >=2/3 threshold
+// 5. Submit the signed transaction
 func (o *ChainOracle) HandleBlockTick(
 	signal p2p.BlockTickSignal,
 	p2pSpec p2p.OracleP2PSpec,
 ) {
-	// NOTE: when the node is the not the producer, it is not a witness. The
-	// action of witness is triggered for incoming p2p message.
 	if !signal.IsProducer {
 		return
 	}
-	// ## Process end to end ##
-	// - Node is witness & producer
-	// - Using the contract state of latest block in combination with latest
-	//   block on Bitcoin mainnet
-	// - Assuming this is true.
-	// - Create the transaction structure with the block headers to submit
-	// - Receiving node will do the same check as above, aka verify that new
-	//   blocks must be submitted
-	// - If true, then sign the exact same transaction and return signature
-	// - Producer node will receive signatures through the p2p channel
-	// - Producer node will aggregate those signatures into a single BLS circuit
-	//   for submission on mainnet
-
-	// make chainDataPool and signature requests
 
 	chainStatuses := o.fetchAllStatuses()
-	signatureRequests := make([]chainOracleMessage, 0, len(chainStatuses))
-	sessionMap := make(map[string]session)
 
 	for _, chainStatus := range chainStatuses {
 		if !chainStatus.newBlocksToSubmit {
 			continue
 		}
 
-		sessionID, err := makeChainSessionID(&chainStatus)
-		if err != nil {
-			o.logger.Error(
-				"failed to create session ID",
-				"block count", len(chainStatus.chainData),
-				"err", err,
-			)
-			continue
-		}
-
-		signatureRequest, err := makeChainOracleMessage(
-			signatureRequest,
-			sessionID,
-			chainStatus.chainData,
-		)
-		if err != nil {
-			o.logger.Error(
-				"failed to create signature requests",
-				"sessionID", sessionID,
-				"err", err,
-			)
-			continue
-		}
-
-		payload, err := makeTransactionPayload(chainStatus.chainData)
-		if err != nil {
-			o.logger.Error(
-				"failed to make transaction payload",
-				"sessionID", sessionID,
-				"err", err,
-			)
-			continue
-		}
-
-		tx := makeTransaction(chainStatus.contractId, payload, chainStatus.symbol)
-
-		signatureRequests = append(signatureRequests, *signatureRequest)
-
-		serializedTx, _ := tx.Serialize()
-
-		sessionMap[sessionID] = session{
-			vscTransaction: serializedTx,
-			chainData:      payload,
-			signatures:     make([]string, 0, 128),
-		}
+		o.processChainRelay(chainStatus, signal, p2pSpec)
 	}
-
-	// broadcast signature requests + collect signatures
-	// - Ask P2P channels for signatures for the transaction
-	// - Receiving node will receive request to create transaction on VSC mainnet
-	defer o.signatureChannels.clearMap()
-
-	sessionMapMtx := &sync.Mutex{}
-	ctx, cancel := context.WithTimeout(o.ctx, 30*time.Second)
-	defer cancel()
-
-	for i := range signatureRequests {
-		sigRequest := &signatureRequests[i]
-		sigChan, err := o.signatureChannels.makeSession(sigRequest.SessionID)
-		if err != nil {
-			o.logger.Error("fialed to make signature session",
-				"sessionID", sigRequest.SessionID,
-				"err", err,
-			)
-			continue
-		}
-
-		if err := p2pSpec.Broadcast(p2p.MsgChainRelay, sigRequest); err != nil {
-			o.logger.Error(
-				"failed to broadcast signature request",
-				"sessionID", sigRequest.SessionID,
-				"err", err,
-			)
-			continue
-		}
-
-		go collectSignature(
-			ctx,
-			sessionMapMtx,
-			sigChan,
-			sigRequest.SessionID,
-			sessionMap,
-		)
-	}
-
-	<-ctx.Done()
-
-	// validate signatures + submit transaction
-	for sessionID, session := range sessionMap {
-		fmt.Println(sessionID, session)
-	}
-
 }
 
-// validate signatures + make transaction
+func (o *ChainOracle) processChainRelay(
+	chainStatus chainSession,
+	signal p2p.BlockTickSignal,
+	p2pSpec p2p.OracleP2PSpec,
+) {
+	blockCount := len(chainStatus.chainData)
+	startHeight := chainStatus.chainData[0].BlockHeight()
+	endHeight := chainStatus.chainData[blockCount-1].BlockHeight()
+
+	o.logger.Info("initiating chain relay consensus",
+		"symbol", chainStatus.symbol,
+		"blocks", blockCount,
+		"start", startHeight,
+		"end", endHeight,
+	)
+
+	// Build the transaction payload
+	payload, err := makeTransactionPayload(chainStatus.chainData)
+	if err != nil {
+		o.logger.Error("failed to make transaction payload",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	payloadJson, err := json.Marshal(payload)
+	if err != nil {
+		o.logger.Error("failed to marshal payload",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	tx := makeTransaction(chainStatus.contractId, string(payloadJson), chainStatus.symbol, o.sconf.NetId())
+
+	// Hash the transaction to get the CID that witnesses will sign
+	signableBlock, err := tx.ToSignableBlock()
+	if err != nil {
+		o.logger.Error("failed to create signable block",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	txCid := signableBlock.Cid()
+
+	// Get the current election to set up the BLS circuit
+	electionResult, err := o.electionDb.GetElectionByHeight(signal.BlockHeight)
+	if err != nil {
+		o.logger.Error("failed to get election result",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	memberKeys := electionResult.MemberKeys()
+	circuit, err := dids.NewBlsCircuitGenerator(memberKeys).Generate(txCid)
+	if err != nil {
+		o.logger.Error("failed to create BLS circuit",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	// Self-sign: producer signs its own data
+	blsProvider, err := o.conf.BlsProvider()
+	if err != nil {
+		o.logger.Error("failed to get BLS provider",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	selfSig, err := blsProvider.Sign(txCid)
+	if err != nil {
+		o.logger.Error("failed to self-sign",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	selfDid, err := o.conf.BlsDID()
+	if err != nil {
+		o.logger.Error("failed to get own BLS DID",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	added, err := circuit.AddAndVerify(selfDid, selfSig)
+	if err != nil || !added {
+		o.logger.Error("failed to add self-signature to circuit",
+			"symbol", chainStatus.symbol, "err", err, "added", added,
+		)
+		return
+	}
+
+	selfWeight := findMemberWeight(&electionResult, selfDid)
+	signedWeight := selfWeight
+
+	// Create a session to receive signatures from peers
+	sessionID, err := makeChainSessionID(&chainStatus)
+	if err != nil {
+		o.logger.Error("failed to create session ID",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	sigChan, err := o.signatureChannels.makeSession(sessionID)
+	if err != nil {
+		o.logger.Error("failed to create signature session",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+	defer o.signatureChannels.clearSession(sessionID)
+
+	// Broadcast signature request to all witnesses
+	request := chainRelayRequest{
+		ContractId: chainStatus.contractId,
+		NetId:      o.sconf.NetId(),
+	}
+
+	requestMsg, err := makeChainOracleMessage(signatureRequest, sessionID, request)
+	if err != nil {
+		o.logger.Error("failed to create request message",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	if err := p2pSpec.Broadcast(p2p.MsgChainRelay, requestMsg); err != nil {
+		o.logger.Error("failed to broadcast signature request",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	o.logger.Debug("broadcast signature request",
+		"symbol", chainStatus.symbol,
+		"sessionID", sessionID,
+		"txCid", txCid.String(),
+	)
+
+	// Wait for signatures with timeout
+	threshold := electionResult.TotalWeight * 2 / 3
+	timer := time.NewTimer(signatureCollectionTimeout)
+	defer timer.Stop()
+
+	for signedWeight <= threshold {
+		select {
+		case <-o.ctx.Done():
+			o.logger.Warn("context cancelled during signature collection",
+				"symbol", chainStatus.symbol,
+			)
+			return
+
+		case <-timer.C:
+			o.logger.Warn("signature collection timeout",
+				"symbol", chainStatus.symbol,
+				"signedWeight", signedWeight,
+				"threshold", threshold,
+			)
+			goto checkThreshold
+
+		case sigMsg := <-sigChan:
+			if sigMsg.BlsDid == "" || sigMsg.Signature == "" {
+				continue
+			}
+
+			// Skip our own signature (already added)
+			if sigMsg.BlsDid == selfDid.String() {
+				continue
+			}
+
+			member := dids.BlsDID(sigMsg.BlsDid)
+			added, err := circuit.AddAndVerify(member, sigMsg.Signature)
+			if err != nil {
+				o.logger.Debug("failed to verify signature",
+					"symbol", chainStatus.symbol,
+					"account", sigMsg.Account,
+					"err", err,
+				)
+				continue
+			}
+
+			if added {
+				weight := findMemberWeight(&electionResult, member)
+				signedWeight += weight
+				o.logger.Debug("collected signature",
+					"symbol", chainStatus.symbol,
+					"account", sigMsg.Account,
+					"signedWeight", signedWeight,
+					"threshold", threshold,
+				)
+			}
+		}
+	}
+
+checkThreshold:
+	if signedWeight <= threshold {
+		o.logger.Warn("not enough signatures for chain relay",
+			"symbol", chainStatus.symbol,
+			"signedWeight", signedWeight,
+			"threshold", threshold,
+			"totalWeight", electionResult.TotalWeight,
+		)
+		return
+	}
+
+	o.logger.Info("chain relay consensus reached",
+		"symbol", chainStatus.symbol,
+		"signedWeight", signedWeight,
+		"threshold", threshold,
+		"signers", circuit.SignerCount(),
+	)
+
+	// Submit the transaction
+	if o.txCrafter == nil || o.txPool == nil {
+		o.logger.Warn("transaction crafter or pool not configured, skipping submission",
+			"symbol", chainStatus.symbol,
+		)
+		return
+	}
+
+	signedTx, err := o.txCrafter.SignFinal(tx)
+	if err != nil {
+		o.logger.Error("failed to sign transaction",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	txCidResult, err := o.txPool.IngestTx(signedTx, transactionpool.IngestOptions{Broadcast: true})
+	if err != nil {
+		o.logger.Error("failed to submit transaction",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	o.logger.Info("chain relay transaction submitted",
+		"symbol", chainStatus.symbol,
+		"txCid", txCidResult.String(),
+		"blocks", fmt.Sprintf("%d-%d", startHeight, endHeight),
+		"signers", circuit.SignerCount(),
+	)
+}
+
 func makeTransactionPayload(blocks []chainBlock) ([]string, error) {
 	payload := make([]string, len(blocks))
 	var err error
@@ -199,24 +330,15 @@ func makeTransactionPayload(blocks []chainBlock) ([]string, error) {
 	return payload, nil
 }
 
-func collectSignature(
-	ctx context.Context,
-	mtx *sync.Mutex,
-	sigChan <-chan signatureMessage,
-	sessionID string,
-	sessionMap map[string]session,
-) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-
-		case msg := <-sigChan:
-			mtx.Lock()
-			session := sessionMap[sessionID]
-			session.signatures = append(session.signatures, msg.Signature)
-			sessionMap[sessionID] = session
-			mtx.Unlock()
+// findMemberWeight returns the election weight for a given BLS DID.
+func findMemberWeight(election *elections.ElectionResult, did dids.BlsDID) uint64 {
+	for i, member := range election.Members {
+		if dids.BlsDID(member.Key) == did {
+			if i < len(election.Weights) {
+				return election.Weights[i]
+			}
+			return 1
 		}
 	}
+	return 0
 }

@@ -16,6 +16,7 @@ type SystemConfig interface {
 	GatewayWallet() string
 	StartHeight() uint64
 	ConsensusParams() params.ConsensusParams
+	BtcContractId() string
 }
 
 type config struct {
@@ -26,6 +27,7 @@ type config struct {
 	gatewayWallet   string
 	startHeight     uint64
 	consensusParams params.ConsensusParams
+	btcContractId   string
 }
 
 func (c *config) OnMainnet() bool {
@@ -67,6 +69,10 @@ func (c *config) StartHeight() uint64 {
 	return c.startHeight
 }
 
+func (c *config) BtcContractId() string {
+	return c.btcContractId
+}
+
 func MainnetConfig() SystemConfig {
 	conf := &config{
 		bootstrapPeers: MAINNET_BOOTSTRAP,
@@ -95,6 +101,7 @@ func TestnetConfig() SystemConfig {
 		hiveChainId:    "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
 		gatewayWallet:  "vsc.gateway",
 		startHeight:    2,
+		btcContractId:  "vsc1BemohMM2HKzfQzWquTfMF6LWvb2V9M35c3",
 		consensusParams: params.ConsensusParams{
 			MinStake:         params.CONSENSUS_MINIMUM,
 			MinMembers:       3,
@@ -114,6 +121,7 @@ func DevnetConfig() SystemConfig {
 		hiveChainId:   "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
 		gatewayWallet: "vsc.gateway",
 		startHeight:   2,
+		btcContractId: "vsc1BemohMM2HKzfQzWquTfMF6LWvb2V9M35c3",
 		consensusParams: params.ConsensusParams{
 			MinStake:         1000,
 			MinMembers:       3,
