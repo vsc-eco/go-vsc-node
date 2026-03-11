@@ -46,6 +46,12 @@ func Parse(did string, includeBLS ...bool) (DID, error) {
 	}
 	errs = append(errs, err)
 
+	res, err = ParseBtcDID(did)
+	if err == nil {
+		return res, nil
+	}
+	errs = append(errs, err)
+
 	return nil, errors.Join(errs...)
 }
 

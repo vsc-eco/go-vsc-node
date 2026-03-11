@@ -17,6 +17,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/hive/streamer"
 
+	"vsc-node/lib/dids"
 	vscCommon "vsc-node/modules/common"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -38,6 +39,7 @@ import (
 var SUPPORTED_TYPES = []string{
 	"ethereum",
 	"hive",
+	"bitcoin",
 }
 
 func NormalizeAddress(address string, addressType string) (*string, error) {
@@ -70,6 +72,15 @@ func NormalizeAddress(address string, addressType string) (*string, error) {
 				return &returnVal, nil
 			}
 			returnVal := "hive:" + address
+			return &returnVal, nil
+		}
+	case "bitcoin":
+		{
+			parsed, err := dids.ParseBtcDID(dids.BtcDIDPrefix + address)
+			if err != nil {
+				return nil, errors.New("invalid bitcoin address")
+			}
+			returnVal := parsed.String()
 			return &returnVal, nil
 		}
 	}
