@@ -2,13 +2,19 @@ package dids_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 	"vsc-node/lib/dids"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	cbornode "github.com/ipfs/go-ipld-cbor"
@@ -467,4 +473,144 @@ func TestE2E_DIDParseRoundtrip(t *testing.T) {
 			}
 		})
 	}
+}
+
+// signBIP322E2E creates a BIP-322 "simple" signature for E2E tests.
+// Mirrors what Leather wallet produces for bc1q addresses.
+func signBIP322E2E(t *testing.T, privKey *btcec.PrivateKey, msg string) string {
+	t.Helper()
+
+	pubkey := privKey.PubKey()
+	pubkeyHash := btcutil.Hash160(pubkey.SerializeCompressed())
+	addr, err := btcutil.NewAddressWitnessPubKeyHash(pubkeyHash, &chaincfg.MainNetParams)
+	require.NoError(t, err)
+	scriptPubKey, err := txscript.PayToAddrScript(addr)
+	require.NoError(t, err)
+
+	// BIP-322 tagged message hash
+	tag := sha256.Sum256([]byte("BIP0322-signed-message"))
+	h := sha256.New()
+	h.Write(tag[:])
+	h.Write(tag[:])
+	h.Write([]byte(msg))
+	msgHash := h.Sum(nil)
+
+	// Build to_spend transaction
+	toSpend := wire.NewMsgTx(0)
+	scriptSig := make([]byte, 0, 34)
+	scriptSig = append(scriptSig, txscript.OP_0)
+	scriptSig = append(scriptSig, txscript.OP_DATA_32)
+	scriptSig = append(scriptSig, msgHash...)
+	nullHash := chainhash.Hash{}
+	txIn := wire.NewTxIn(wire.NewOutPoint(&nullHash, 0xFFFFFFFF), scriptSig, nil)
+	txIn.Sequence = 0
+	toSpend.AddTxIn(txIn)
+	toSpend.AddTxOut(wire.NewTxOut(0, scriptPubKey))
+
+	// Build to_sign transaction
+	toSpendHash := toSpend.TxHash()
+	toSign := wire.NewMsgTx(0)
+	toSignIn := wire.NewTxIn(wire.NewOutPoint(&toSpendHash, 0), nil, nil)
+	toSignIn.Sequence = 0
+	toSign.AddTxIn(toSignIn)
+	toSign.AddTxOut(wire.NewTxOut(0, []byte{txscript.OP_RETURN}))
+
+	// Compute BIP-143 sighash
+	scriptCode, err := txscript.NewScriptBuilder().
+		AddOp(txscript.OP_DUP).
+		AddOp(txscript.OP_HASH160).
+		AddData(pubkeyHash).
+		AddOp(txscript.OP_EQUALVERIFY).
+		AddOp(txscript.OP_CHECKSIG).
+		Script()
+	require.NoError(t, err)
+
+	prevOutputFetcher := txscript.NewCannedPrevOutputFetcher(scriptPubKey, 0)
+	sigHashes := txscript.NewTxSigHashes(toSign, prevOutputFetcher)
+	sighashBytes, err := txscript.CalcWitnessSigHash(scriptCode, sigHashes, txscript.SigHashAll, toSign, 0, 0)
+	require.NoError(t, err)
+
+	sig := ecdsa.Sign(privKey, sighashBytes)
+	derSig := sig.Serialize()
+	sigWithSighash := append(derSig, byte(txscript.SigHashAll))
+
+	compressedPubkey := pubkey.SerializeCompressed()
+	witness := make([]byte, 0, 1+1+len(sigWithSighash)+1+len(compressedPubkey))
+	witness = append(witness, 2)
+	witness = append(witness, byte(len(sigWithSighash)))
+	witness = append(witness, sigWithSighash...)
+	witness = append(witness, byte(len(compressedPubkey)))
+	witness = append(witness, compressedPubkey...)
+
+	return base64.StdEncoding.EncodeToString(witness)
+}
+
+// TestE2E_BtcTransferSigning_BIP322 tests a transfer signed with BIP-322
+// (the format Leather wallet actually produces for bc1q addresses).
+func TestE2E_BtcTransferSigning_BIP322(t *testing.T) {
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	pubKeyHash := btcutil.Hash160(privKey.PubKey().SerializeCompressed())
+	addr, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
+	require.NoError(t, err)
+
+	did := "did:pkh:bip122:000000000019d6689c085ae165831e93/" + addr.String()
+
+	payload := map[string]interface{}{
+		"from":   did,
+		"to":     "hive:vsc.gateway",
+		"amount": "0.001",
+		"asset":  "hbd",
+	}
+
+	cidString, shell := frontendBuildSigningShell(t, did, "transfer", payload)
+
+	// Sign with BIP-322 (what Leather actually does for bc1q)
+	sig := signBIP322E2E(t, privKey, cidString)
+
+	// Backend side
+	parsedDID, err := dids.Parse(did)
+	require.NoError(t, err)
+
+	backendBlock := backendReconstructSigningShell(t, nil, shell)
+	assert.Equal(t, cidString, backendBlock.Cid().String(),
+		"frontend CID and backend-reconstructed CID must be identical")
+
+	valid, err := parsedDID.Verify(backendBlock, sig)
+	require.NoError(t, err)
+	assert.True(t, valid, "BIP-322 signature must verify against backend-reconstructed CID")
+}
+
+// TestE2E_BtcStakeHBD_BIP322 tests a stake_hbd operation with BIP-322 signature.
+func TestE2E_BtcStakeHBD_BIP322(t *testing.T) {
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	pubKeyHash := btcutil.Hash160(privKey.PubKey().SerializeCompressed())
+	addr, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
+	require.NoError(t, err)
+
+	did := "did:pkh:bip122:000000000019d6689c085ae165831e93/" + addr.String()
+
+	payload := map[string]interface{}{
+		"from":   did,
+		"to":     did,
+		"amount": "10.000",
+		"asset":  "hbd",
+		"type":   "stake_hbd",
+	}
+
+	cidString, shell := frontendBuildSigningShell(t, did, "stake_hbd", payload)
+	sig := signBIP322E2E(t, privKey, cidString)
+
+	parsedDID, err := dids.Parse(did)
+	require.NoError(t, err)
+
+	backendBlock := backendReconstructSigningShell(t, nil, shell)
+	assert.Equal(t, cidString, backendBlock.Cid().String())
+
+	valid, err := parsedDID.Verify(backendBlock, sig)
+	require.NoError(t, err)
+	assert.True(t, valid, "BIP-322 stake_hbd signature must verify")
 }
