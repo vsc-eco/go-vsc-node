@@ -16,54 +16,40 @@ var (
 	pubKeyHex = ""
 )
 
-func makeBtcAddress(instruction string) (string, error) {
-	pubKeyBytes, err := hex.DecodeString(pubKeyHex)
-	if err != nil {
-		return "", err
-	}
+// func makeBtcAddress(instruction string) (string, error) {
+// 	pubKeyBytes, err := hex.DecodeString(pubKeyHex)
+// 	if err != nil {
+// 		return "", err
+// 	}
 
-	tag := sha256.Sum256([]byte(instruction))
+// 	tag := sha256.Sum256([]byte(instruction))
 
-	scriptBuilder := txscript.NewScriptBuilder()
-	scriptBuilder.AddData(pubKeyBytes)              // Push pubkey
-	scriptBuilder.AddOp(txscript.OP_CHECKSIGVERIFY) // OP_CHECKSIGVERIFY
-	scriptBuilder.AddData(tag[:])                   // Push tag/bits
+// 	scriptBuilder := txscript.NewScriptBuilder()
+// 	scriptBuilder.AddData(pubKeyBytes)              // Push pubkey
+// 	scriptBuilder.AddOp(txscript.OP_CHECKSIGVERIFY) // OP_CHECKSIGVERIFY
+// 	scriptBuilder.AddData(tag[:])                   // Push tag/bits
 
-	script, err := scriptBuilder.Script()
-	if err != nil {
-		return "", err
-	}
+// 	script, err := scriptBuilder.Script()
+// 	if err != nil {
+// 		return "", err
+// 	}
 
-	witnessProgram := sha256.Sum256(script)
-	addressWitnessScriptHash, err := btcutil.NewAddressWitnessScriptHash(
-		witnessProgram[:],
-		network,
-	)
-	if err != nil {
-		return "", err
-	}
-	address := addressWitnessScriptHash.EncodeAddress()
+// 	witnessProgram := sha256.Sum256(script)
+// 	addressWitnessScriptHash, err := btcutil.NewAddressWitnessScriptHash(
+// 		witnessProgram[:],
+// 		network,
+// 	)
+// 	if err != nil {
+// 		return "", err
+// 	}
+// 	address := addressWitnessScriptHash.EncodeAddress()
 
-	return address, nil
-}
+// 	return address, nil
+// }
 
 func createP2WSHAddressWithBackup(
-	primaryPubKeyHex string, backupPubKeyHex string, tag []byte, network *chaincfg.Params,
+	primaryPubKey []byte, backupPubKey []byte, tag []byte, network *chaincfg.Params,
 ) (string, []byte, error) {
-	primaryPubKeyBytes, err := hex.DecodeString(primaryPubKeyHex)
-	if err != nil {
-		return "", nil, err
-	}
-
-	if backupPubKeyHex == "" {
-		return createSimpleP2WSHAddress(primaryPubKeyBytes, tag, network)
-	}
-
-	backupPubKeyBytes, err := hex.DecodeString(backupPubKeyHex)
-	if err != nil {
-		return "", nil, err
-	}
-
 	csvBlocks := BackupCSVBlocks
 
 	if network.Net != chaincfg.MainNetParams.Net {
@@ -76,7 +62,7 @@ func createP2WSHAddressWithBackup(
 	scriptBuilder.AddOp(txscript.OP_IF)
 
 	// primary spending path
-	scriptBuilder.AddData(primaryPubKeyBytes)
+	scriptBuilder.AddData(primaryPubKey)
 	if tag == nil || len(tag) > 0 {
 		scriptBuilder.AddOp(txscript.OP_CHECKSIGVERIFY)
 		scriptBuilder.AddData(tag)
@@ -91,7 +77,7 @@ func createP2WSHAddressWithBackup(
 	scriptBuilder.AddOp(txscript.OP_CHECKSEQUENCEVERIFY)
 	scriptBuilder.AddOp(txscript.OP_DROP)
 
-	scriptBuilder.AddData(backupPubKeyBytes)
+	scriptBuilder.AddData(backupPubKey)
 	scriptBuilder.AddOp(txscript.OP_CHECKSIG)
 
 	// end if

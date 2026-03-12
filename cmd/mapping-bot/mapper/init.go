@@ -10,6 +10,7 @@ import (
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mempool"
 	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/hive/streamer"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -43,10 +44,10 @@ type Bot struct {
 	L              *slog.Logger
 	ChainParams    *chaincfg.Params
 	MempoolClient  *mempool.MempoolClient
-	ContractId     string
-	NetId          string // vsc network id
+	BotConfig      MappingBotConfig
 	IdentityConfig common.IdentityConfig
 	HiveConfig     streamer.HiveConfig
+	SystemConfig   systemconfig.SystemConfig
 
 	lastBlockHeight atomic.Uint64
 	lastBlockAt     atomic.Int64 // Unix nanoseconds; 0 means not yet set
@@ -85,10 +86,10 @@ func parseNetwork(name string) (*chaincfg.Params, string, error) {
 func NewBot(
 	db *database.Database,
 	btcNetId string,
-	vscNetId string,
 	mappingBotConfig MappingBotConfig,
 	identityConfig common.IdentityConfig,
 	hiveConfig streamer.HiveConfig,
+	systemConfig systemconfig.SystemConfig,
 ) (*Bot, error) {
 	chainParams, mempoolBase, err := parseNetwork(btcNetId)
 	if err != nil {
@@ -105,9 +106,9 @@ func NewBot(
 		L:              slog.Default(),
 		ChainParams:    chainParams,
 		MempoolClient:  mempoolClient,
-		NetId:          vscNetId,
-		ContractId:     mappingBotConfig.Get().ContractId,
+		BotConfig:      mappingBotConfig,
 		IdentityConfig: identityConfig,
 		HiveConfig:     hiveConfig,
+		SystemConfig:   systemConfig,
 	}, nil
 }

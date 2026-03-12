@@ -77,7 +77,7 @@ func main() {
 	defer db.Close(context.Background())
 	lastClear := time.Now()
 
-	bot, err := mapper.NewBot(db, args.btcNetwork, sysConfig.NetId(), mappingBotConfig, identityConfig, hiveConfig)
+	bot, err := mapper.NewBot(db, args.btcNetwork, mappingBotConfig, identityConfig, hiveConfig, sysConfig)
 	if err != nil {
 		log.Fatalln(err.Error())
 	}

@@ -9,7 +9,7 @@ import (
 	"strings"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 
-	"github.com/hasura/go-graphql-client"
+	graphql "github.com/hasura/go-graphql-client"
 )
 
 type GetContractStateQuery struct {
@@ -28,7 +28,7 @@ func (b *Bot) fetchMultipleTxSpendKeys(
 	}
 
 	vars2 := map[string]any{
-		"contractId": b.ContractId,
+		"contractId": b.BotConfig.ContractId(),
 		"keys":       keys,
 	}
 
@@ -70,7 +70,7 @@ func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.
 	var query GetContractStateQuery
 
 	vars1 := map[string]any{
-		"contractId": b.ContractId,
+		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{contractinterface.TxSpendsRegistryKey},
 	}
 	err := b.GqlClient.Query(ctx, &query, vars1, graphql.OperationName("GetContractState"))
@@ -118,7 +118,7 @@ func (b *Bot) FetchObservedTx(ctx context.Context, txId string, vout int) (bool,
 	key := contractinterface.ObservedPrefix + fmt.Sprintf("%s:%d", txId, vout)
 
 	variables := map[string]any{
-		"contractId": b.ContractId,
+		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{key},
 	}
 	err := b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
@@ -149,7 +149,7 @@ func (b *Bot) FetchSignatures(
 	}
 
 	variables := map[string]any{
-		"keyId":  strings.Join([]string{b.ContractId, "main"}, "-"),
+		"keyId":  strings.Join([]string{b.BotConfig.ContractId(), "main"}, "-"),
 		"msgHex": msgHex,
 	}
 
@@ -177,37 +177,48 @@ func (b *Bot) FetchSignatures(
 }
 
 // FetchPublicKeys fetches the primary and backup public keys from contract state.
-func (b *Bot) FetchPublicKeys(ctx context.Context) (primaryKey string, backupKey string, err error) {
+// Keys are stored as raw bytes in the contract and returned as hex strings.
+func (b *Bot) FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error) {
 	var query GetContractStateQuery
 
 	variables := map[string]any{
-		"contractId": b.ContractId,
+		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{contractinterface.PrimaryPublicKeyStateKey, contractinterface.BackupPublicKeyStateKey},
 	}
 	err = b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
-		return "", "", err
+		return nil, nil, err
 	}
 
 	var stateMap map[string]json.RawMessage
 	err = json.Unmarshal(query.GetStateByKeys, &stateMap)
 	if err != nil {
-		return "", "", err
+		return nil, nil, err
 	}
 
-	primaryKey = strings.ReplaceAll(string(stateMap[contractinterface.PrimaryPublicKeyStateKey]), "\"", "")
-	backupKey = strings.ReplaceAll(string(stateMap[contractinterface.BackupPublicKeyStateKey]), "\"", "")
-
-	if primaryKey == "" || primaryKey == "null" {
-		return "", "", fmt.Errorf("primary public key not found in contract state")
+	primaryRaw, err := unmarshalRawBytes(stateMap[contractinterface.PrimaryPublicKeyStateKey])
+	if err != nil || len(primaryRaw) == 0 {
+		return nil, nil, fmt.Errorf("primary public key not found in contract state")
 	}
 
-	// backup key is optional — treat "null" as empty
-	if backupKey == "null" {
-		backupKey = ""
+	backupRaw, _ := unmarshalRawBytes(stateMap[contractinterface.BackupPublicKeyStateKey])
+
+	return primaryRaw, backupRaw, nil
+}
+
+// unmarshalRawBytes decodes a JSON value that is a raw byte string.
+// Returns nil for null/missing values.
+func unmarshalRawBytes(raw json.RawMessage) ([]byte, error) {
+	if len(raw) == 0 || string(raw) == "null" || string(raw) == `"null"` {
+		return nil, nil
 	}
 
-	return primaryKey, backupKey, nil
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, err
+	}
+
+	return []byte(s), nil
 }
 
 // gets last height recorded in contract state
@@ -215,7 +226,7 @@ func (b *Bot) FetchLastHeight(ctx context.Context) (string, error) {
 	var query GetContractStateQuery
 
 	variables := map[string]any{
-		"contractId": b.ContractId,
+		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{contractinterface.LastHeightKey},
 	}
 	err := b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))

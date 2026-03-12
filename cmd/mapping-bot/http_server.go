@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -101,22 +102,31 @@ func requestHandler(
 			return
 		}
 
-		vscAddr := requestBody.Instruction
-
 		// fetch public keys from contract state
 		ctx, cancel := context.WithTimeout(globalCtx, 15*time.Second)
 		defer cancel()
 
-		primaryKey, backupKey, err := bot.FetchPublicKeys(ctx)
+		primaryKeyHex := bot.BotConfig.PrimaryKey()
+		primaryKey, err := hex.DecodeString(primaryKeyHex)
 		if err != nil {
-			writeResponse(w, http.StatusInternalServerError, "failed to fetch public keys")
-			writeError(err)
+			writeResponse(w, http.StatusBadRequest, "primary key invalid, please set in "+bot.BotConfig.FilePath())
+			return
+		}
+		backupKeyHex := bot.BotConfig.BackupKey()
+		backupKey, err := hex.DecodeString(backupKeyHex)
+		if err != nil {
+			writeResponse(w, http.StatusBadRequest, "backup key invalid, please set in "+bot.BotConfig.FilePath())
 			return
 		}
 
 		// make btc address
 		tag := sha256.Sum256([]byte(requestBody.Instruction))
-		btcAddr, _, err := createP2WSHAddressWithBackup(primaryKey, backupKey, tag[:], bot.ChainParams)
+		btcAddr, _, err := createP2WSHAddressWithBackup(
+			primaryKey,
+			backupKey,
+			tag[:],
+			bot.ChainParams,
+		)
 		if err != nil {
 			writeResponse(w, http.StatusInternalServerError, "")
 			writeError(err)
@@ -127,7 +137,7 @@ func requestHandler(
 		ctx, cancel = context.WithTimeout(globalCtx, 15*time.Second)
 		defer cancel()
 
-		if err := bot.Db.Addresses.Insert(ctx, btcAddr, vscAddr); err != nil {
+		if err := bot.Db.Addresses.Insert(ctx, btcAddr, requestBody.Instruction); err != nil {
 			if errors.Is(err, database.ErrAddrExists) {
 				writeResponse(w, http.StatusConflict, "address map exists")
 			} else {
@@ -135,7 +145,7 @@ func requestHandler(
 				writeError(err)
 			}
 		} else {
-			writeResponse(w, http.StatusCreated, "address mapping created")
+			writeResponse(w, http.StatusCreated, "address mapping created: "+btcAddr+" -> "+requestBody.Instruction)
 		}
 
 		// handle this error, also allows test scripts witout bot

@@ -30,6 +30,7 @@ func (b *Bot) callContract(
 ) error {
 	username := b.IdentityConfig.Get().HiveUsername
 	hiveRpcClient := hivego.NewHiveRpc(b.HiveConfig.Get().HiveURIs)
+	hiveRpcClient.ChainID = b.SystemConfig.HiveChainId()
 
 	hiveCreator := hive.LiveTransactionCreator{
 		TransactionCrafter: hive.TransactionCrafter{},
@@ -40,9 +41,9 @@ func (b *Bot) callContract(
 	}
 
 	txObj := stateEngine.TxVscCallContract{
-		NetId:      b.NetId,
+		NetId:      b.SystemConfig.NetId(),
 		Caller:     fmt.Sprintf("hive:%s", username),
-		ContractId: b.ContractId,
+		ContractId: b.BotConfig.Get().ContractId,
 		Action:     action,
 		Payload:    contractInput,
 		RcLimit:    1000,
