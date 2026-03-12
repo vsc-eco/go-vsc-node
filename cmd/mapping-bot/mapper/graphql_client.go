@@ -176,6 +176,40 @@ func (b *Bot) FetchSignatures(
 	return out, nil
 }
 
+// FetchPublicKeys fetches the primary and backup public keys from contract state.
+func (b *Bot) FetchPublicKeys(ctx context.Context) (primaryKey string, backupKey string, err error) {
+	var query GetContractStateQuery
+
+	variables := map[string]any{
+		"contractId": b.ContractId,
+		"keys":       []string{contractinterface.PrimaryPublicKeyStateKey, contractinterface.BackupPublicKeyStateKey},
+	}
+	err = b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
+	if err != nil {
+		return "", "", err
+	}
+
+	var stateMap map[string]json.RawMessage
+	err = json.Unmarshal(query.GetStateByKeys, &stateMap)
+	if err != nil {
+		return "", "", err
+	}
+
+	primaryKey = strings.ReplaceAll(string(stateMap[contractinterface.PrimaryPublicKeyStateKey]), "\"", "")
+	backupKey = strings.ReplaceAll(string(stateMap[contractinterface.BackupPublicKeyStateKey]), "\"", "")
+
+	if primaryKey == "" || primaryKey == "null" {
+		return "", "", fmt.Errorf("primary public key not found in contract state")
+	}
+
+	// backup key is optional — treat "null" as empty
+	if backupKey == "null" {
+		backupKey = ""
+	}
+
+	return primaryKey, backupKey, nil
+}
+
 // gets last height recorded in contract state
 func (b *Bot) FetchLastHeight(ctx context.Context) (string, error) {
 	var query GetContractStateQuery

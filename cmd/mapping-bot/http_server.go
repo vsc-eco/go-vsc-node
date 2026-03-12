@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,8 +103,20 @@ func requestHandler(
 
 		vscAddr := requestBody.Instruction
 
+		// fetch public keys from contract state
+		ctx, cancel := context.WithTimeout(globalCtx, 15*time.Second)
+		defer cancel()
+
+		primaryKey, backupKey, err := bot.FetchPublicKeys(ctx)
+		if err != nil {
+			writeResponse(w, http.StatusInternalServerError, "failed to fetch public keys")
+			writeError(err)
+			return
+		}
+
 		// make btc address
-		btcAddr, err := makeBtcAddress(requestBody.Instruction)
+		tag := sha256.Sum256([]byte(requestBody.Instruction))
+		btcAddr, _, err := createP2WSHAddressWithBackup(primaryKey, backupKey, tag[:], bot.ChainParams)
 		if err != nil {
 			writeResponse(w, http.StatusInternalServerError, "")
 			writeError(err)
@@ -111,7 +124,7 @@ func requestHandler(
 		}
 
 		// insert mapping
-		ctx, cancel := context.WithTimeout(globalCtx, 15*time.Second)
+		ctx, cancel = context.WithTimeout(globalCtx, 15*time.Second)
 		defer cancel()
 
 		if err := bot.Db.Addresses.Insert(ctx, btcAddr, vscAddr); err != nil {

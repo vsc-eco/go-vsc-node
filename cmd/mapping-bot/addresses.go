@@ -9,6 +9,8 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 )
 
+const BackupCSVBlocks = 4320 // ~1 month
+
 var (
 	network   = &chaincfg.TestNet4Params
 	pubKeyHex = ""
@@ -43,4 +45,101 @@ func makeBtcAddress(instruction string) (string, error) {
 	address := addressWitnessScriptHash.EncodeAddress()
 
 	return address, nil
+}
+
+func createP2WSHAddressWithBackup(
+	primaryPubKeyHex string, backupPubKeyHex string, tag []byte, network *chaincfg.Params,
+) (string, []byte, error) {
+	primaryPubKeyBytes, err := hex.DecodeString(primaryPubKeyHex)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if backupPubKeyHex == "" {
+		return createSimpleP2WSHAddress(primaryPubKeyBytes, tag, network)
+	}
+
+	backupPubKeyBytes, err := hex.DecodeString(backupPubKeyHex)
+	if err != nil {
+		return "", nil, err
+	}
+
+	csvBlocks := BackupCSVBlocks
+
+	if network.Net != chaincfg.MainNetParams.Net {
+		csvBlocks = 2
+	}
+
+	scriptBuilder := txscript.NewScriptBuilder()
+
+	// start if
+	scriptBuilder.AddOp(txscript.OP_IF)
+
+	// primary spending path
+	scriptBuilder.AddData(primaryPubKeyBytes)
+	if tag == nil || len(tag) > 0 {
+		scriptBuilder.AddOp(txscript.OP_CHECKSIGVERIFY)
+		scriptBuilder.AddData(tag)
+	} else {
+		scriptBuilder.AddOp(txscript.OP_CHECKSIG)
+	}
+
+	// else: backup path
+	scriptBuilder.AddOp(txscript.OP_ELSE)
+
+	scriptBuilder.AddInt64(int64(csvBlocks))
+	scriptBuilder.AddOp(txscript.OP_CHECKSEQUENCEVERIFY)
+	scriptBuilder.AddOp(txscript.OP_DROP)
+
+	scriptBuilder.AddData(backupPubKeyBytes)
+	scriptBuilder.AddOp(txscript.OP_CHECKSIG)
+
+	// end if
+	scriptBuilder.AddOp(txscript.OP_ENDIF)
+
+	script, err := scriptBuilder.Script()
+	if err != nil {
+		return "", nil, err
+	}
+
+	witnessProgram := sha256.Sum256(script)
+	addressWitnessScriptHash, err := btcutil.NewAddressWitnessScriptHash(witnessProgram[:], network)
+	if err != nil {
+		return "", nil, err
+	}
+
+	return addressWitnessScriptHash.EncodeAddress(), script, nil
+}
+
+func createP2WSHAddress(pubKeyHex string, tag []byte, network *chaincfg.Params) (string, []byte, error) {
+	pubKeyBytes, err := hex.DecodeString(pubKeyHex)
+	if err != nil {
+		return "", nil, err
+	}
+
+	return createSimpleP2WSHAddress(pubKeyBytes, tag, network)
+}
+
+func createSimpleP2WSHAddress(pubKeyBytes []byte, tag []byte, network *chaincfg.Params) (string, []byte, error) {
+	scriptBuilder := txscript.NewScriptBuilder()
+	if len(tag) > 0 {
+		scriptBuilder.AddData(pubKeyBytes)
+		scriptBuilder.AddOp(txscript.OP_CHECKSIGVERIFY)
+		scriptBuilder.AddData(tag)
+	} else {
+		scriptBuilder.AddData(pubKeyBytes)
+		scriptBuilder.AddOp(txscript.OP_CHECKSIG)
+	}
+
+	script, err := scriptBuilder.Script()
+	if err != nil {
+		return "", nil, err
+	}
+
+	witnessProgram := sha256.Sum256(script)
+	addressWitnessScriptHash, err := btcutil.NewAddressWitnessScriptHash(witnessProgram[:], network)
+	if err != nil {
+		return "", nil, err
+	}
+	return addressWitnessScriptHash.EncodeAddress(), script, nil
 }

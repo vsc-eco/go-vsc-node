@@ -12,3 +12,6 @@ const TxSpendsPrefix = "d" + DirPathDelimiter
 const SupplyKey = "s"
 
 const LastHeightKey = "h"
+
+const PrimaryPublicKeyStateKey = "pubkey"
+const BackupPublicKeyStateKey = "backupkey"
