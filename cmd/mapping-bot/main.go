@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -24,6 +25,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
+
+	if args.debug {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})))
+	}
+	slog.Debug("vsc network", "network", args.network)
 
 	sysConfig := systemconfig.FromNetwork(args.network)
 
@@ -59,7 +67,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("contractId set to: %s", contractId)
+	fmt.Printf("contractId set to: %s\n", contractId)
 
 	db, err := database.New(context.Background(), dbConfig.Get().DbURI, dbConfig.GetDbName())
 	if err != nil {

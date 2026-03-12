@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
 	"sync/atomic"
 	"time"
 	"vsc-node/cmd/mapping-bot/database"
@@ -14,6 +15,25 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/hasura/go-graphql-client"
 )
+
+type loggingTransport struct {
+	transport http.RoundTripper
+}
+
+func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	reqDump, _ := httputil.DumpRequestOut(req, true)
+	slog.Debug("HTTP request", "dump", string(reqDump))
+
+	resp, err := t.transport.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
+
+	respDump, _ := httputil.DumpResponse(resp, true)
+	slog.Debug("HTTP response", "dump", string(respDump))
+
+	return resp, err
+}
 
 const defaultGraphQLUrl = "https://api.vsc.eco/api/v1/graphql"
 
@@ -78,8 +98,10 @@ func NewBot(
 	mempoolClient := mempool.NewMempoolClient(http.DefaultClient, mempoolBase)
 
 	return &Bot{
-		Db:             db,
-		GqlClient:      graphql.NewClient(mappingBotConfig.Get().ConnectedGraphQLAddr, nil),
+		Db: db,
+		GqlClient: graphql.NewClient(mappingBotConfig.Get().ConnectedGraphQLAddr, &http.Client{
+			Transport: &loggingTransport{http.DefaultTransport},
+		}),
 		L:              slog.Default(),
 		ChainParams:    chainParams,
 		MempoolClient:  mempoolClient,

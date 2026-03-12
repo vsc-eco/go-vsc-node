@@ -2,10 +2,8 @@ package mapper
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
-	"net/http/httputil"
 	"testing"
 	"time"
 
@@ -81,21 +79,21 @@ func TestLastHeight(t *testing.T) {
 // client := graphql.NewClient("https://your-api-endpoint.com/graphql", httpClient)
 
 // Logging transport
-type loggingTransport struct {
-	transport http.RoundTripper
-}
+// type loggingTransport struct {
+// 	transport http.RoundTripper
+// }
 
-func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	reqDump, _ := httputil.DumpRequestOut(req, true)
-	fmt.Printf("Request:\n%s\n\n", reqDump)
+// func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+// 	reqDump, _ := httputil.DumpRequestOut(req, true)
+// 	fmt.Printf("Request:\n%s\n\n", reqDump)
 
-	resp, err := t.transport.RoundTrip(req)
-	if err != nil {
-		return resp, err
-	}
+// 	resp, err := t.transport.RoundTrip(req)
+// 	if err != nil {
+// 		return resp, err
+// 	}
 
-	respDump, _ := httputil.DumpResponse(resp, true)
-	fmt.Printf("Response:\n%s\n\n", respDump)
+// 	respDump, _ := httputil.DumpResponse(resp, true)
+// 	fmt.Printf("Response:\n%s\n\n", respDump)
 
-	return resp, err
-}
+// 	return resp, err
+// }
