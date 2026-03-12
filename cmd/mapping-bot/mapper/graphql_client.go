@@ -24,7 +24,7 @@ func (b *Bot) fetchMultipleTxSpendKeys(
 
 	keys := make([]string, len(registry))
 	for i, txId := range registry {
-		keys[i] = contractinterface.TxSpendContractPrefix + txId
+		keys[i] = contractinterface.TxSpendsPrefix + txId
 	}
 
 	vars2 := map[string]any{
@@ -71,7 +71,7 @@ func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.
 
 	vars1 := map[string]any{
 		"contractId": b.ContractId,
-		"keys":       []string{contractinterface.TxSpendRegistryContractKey},
+		"keys":       []string{contractinterface.TxSpendsRegistryKey},
 	}
 	err := b.GqlClient.Query(ctx, &query, vars1, graphql.OperationName("GetContractState"))
 	if err != nil {
@@ -85,7 +85,7 @@ func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.
 	}
 
 	var txSpendsRegistry contractinterface.TxSpendsRegistry
-	if txSpendsData, exists := stateMap[contractinterface.TxSpendRegistryContractKey]; exists &&
+	if txSpendsData, exists := stateMap[contractinterface.TxSpendsRegistryKey]; exists &&
 		string(txSpendsData) != `"null"` {
 		var tmp string
 		err = json.Unmarshal(txSpendsData, &tmp)
@@ -115,7 +115,7 @@ func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.
 func (b *Bot) FetchObservedTx(ctx context.Context, txId string, vout int) (bool, error) {
 	var query GetContractStateQuery
 
-	key := contractinterface.ObservedContractPrefix + fmt.Sprintf("%s:%d", txId, vout)
+	key := contractinterface.ObservedPrefix + fmt.Sprintf("%s:%d", txId, vout)
 
 	variables := map[string]any{
 		"contractId": b.ContractId,
@@ -182,7 +182,7 @@ func (b *Bot) FetchLastHeight(ctx context.Context) (string, error) {
 
 	variables := map[string]any{
 		"contractId": b.ContractId,
-		"keys":       []string{contractinterface.LastHeightContractKey},
+		"keys":       []string{contractinterface.LastHeightKey},
 	}
 	err := b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
@@ -195,6 +195,6 @@ func (b *Bot) FetchLastHeight(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	value := strings.ReplaceAll(string(stateMap[contractinterface.LastHeightContractKey]), "\"", "")
+	value := strings.ReplaceAll(string(stateMap[contractinterface.LastHeightKey]), "\"", "")
 	return value, nil
 }
