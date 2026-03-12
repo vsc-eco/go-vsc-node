@@ -59,7 +59,7 @@ func main() {
 	}
 
 	contractinterface.ContractId = cfg.GetContractId()
-	if contractinterface.ContractId == "" {
+	if contractinterface.ContractId == "" || contractinterface.ContractId == "ADD_BTC_MAPPING_CONTRACT_ID" {
 		fmt.Fprintf(os.Stderr, "ContractId must be set in %s\n", cfg.FilePath())
 		os.Exit(1)
 	}
