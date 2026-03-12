@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"vsc-node/modules/db/vsc/contracts"
 	stateEngine "vsc-node/modules/state-processing"
 
@@ -65,15 +64,10 @@ func (b *Bot) callContract(
 		return err
 	}
 
-	fmt.Println("txjson", string(txJson))
-	if slog.Default().Enabled(ctx, slog.LevelDebug) {
-		return nil
-	}
+	b.L.Info("creating tx", "json", txJson)
 
 	op := hiveCreator.CustomJson([]string{username}, []string{}, "vsc.call", string(txJson))
 	tx := hiveCreator.MakeTransaction([]hivego.HiveOperation{op})
-
-	fmt.Println("tx created")
 
 	hiveCreator.PopulateSigningProps(&tx, nil)
 	sig, err := hiveCreator.Sign(tx)
@@ -82,11 +76,11 @@ func (b *Bot) callContract(
 	}
 
 	tx.AddSig(sig)
-	_, err = hiveCreator.Broadcast(tx)
+	txId, err := hiveCreator.Broadcast(tx)
 	if err != nil {
 		return fmt.Errorf("error broadcasting tx: %w", err)
 	}
 
-	fmt.Println("tx broadcast")
+	b.L.Info("tx broadcast", "id", txId)
 	return nil
 }

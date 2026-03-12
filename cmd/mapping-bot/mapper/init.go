@@ -97,12 +97,14 @@ func NewBot(
 	}
 
 	mempoolClient := mempool.NewMempoolClient(http.DefaultClient, mempoolBase)
+	// gqlClient := graphql.NewClient(mappingBotConfig.Get().ConnectedGraphQLAddr, &http.Client{
+	// 	Transport: &loggingTransport{http.DefaultTransport},
+	// })
+	gqlClient := graphql.NewClient(mappingBotConfig.Get().ConnectedGraphQLAddr, http.DefaultClient)
 
 	return &Bot{
-		Db: db,
-		GqlClient: graphql.NewClient(mappingBotConfig.Get().ConnectedGraphQLAddr, &http.Client{
-			Transport: &loggingTransport{http.DefaultTransport},
-		}),
+		Db:             db,
+		GqlClient:      gqlClient,
 		L:              slog.Default(),
 		ChainParams:    chainParams,
 		MempoolClient:  mempoolClient,

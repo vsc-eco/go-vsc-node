@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
-	"log/slog"
 
 	"vsc-node/cmd/mapping-bot/database"
 
@@ -47,10 +46,10 @@ func (b *Bot) ParseBlock(
 			// this loop should never be longer than one cycle, only happens with multisig which is outdated
 			for _, addr := range addresses {
 				if instruction, err := b.Db.Addresses.GetInstruction(ctx, addr); err == nil {
-					slog.Debug("instruction address found", "instruction", instruction)
+					b.L.Debug("instruction address found", "instruction", instruction)
 					exists, err := b.FetchObservedTx(ctx, tx.TxID(), i)
 					if exists || err != nil {
-						slog.Debug("error fetching observed tx", "exits", exists, "error", err)
+						b.L.Debug("error fetching observed tx", "exits", exists, "error", err)
 						break
 					}
 					matchedTxIndices[txIndex] = append(matchedTxIndices[txIndex], instruction)
@@ -61,7 +60,7 @@ func (b *Bot) ParseBlock(
 		}
 	}
 
-	slog.Debug(
+	b.L.Debug(
 		"number of utxos in the block that correspond to vsc addresses",
 		"len(matchedTxIndices)",
 		len(matchedTxIndices),

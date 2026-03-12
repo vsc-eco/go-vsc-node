@@ -13,7 +13,7 @@ import (
 )
 
 type GetContractStateQuery struct {
-	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys)"`
+	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys, encoding: $encoding)"`
 }
 
 func (b *Bot) fetchMultipleTxSpendKeys(
@@ -30,6 +30,7 @@ func (b *Bot) fetchMultipleTxSpendKeys(
 	vars2 := map[string]any{
 		"contractId": b.BotConfig.ContractId(),
 		"keys":       keys,
+		"encoding":   "hex",
 	}
 
 	err := b.GqlClient.Query(ctx, &query, vars2, graphql.OperationName("GetContractState"))
@@ -54,8 +55,12 @@ func (b *Bot) fetchMultipleTxSpendKeys(
 			if err != nil {
 				return nil, err
 			}
+			decoded, err := hex.DecodeString(tmp)
+			if err != nil {
+				return nil, fmt.Errorf("error decoding tx spend hex for tx id %s: %w", txId, err)
+			}
 			var spend contractinterface.SigningData
-			if _, err := spend.UnmarshalMsg([]byte(tmp)); err != nil {
+			if _, err := spend.UnmarshalMsg(decoded); err != nil {
 				return nil, fmt.Errorf("error unmarshalling tx spend for tx id %s: %w", txId, err)
 			}
 			txSpends[txId] = &spend
@@ -72,6 +77,7 @@ func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.
 	vars1 := map[string]any{
 		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{contractinterface.TxSpendsRegistryKey},
+		"encoding":   "hex",
 	}
 	err := b.GqlClient.Query(ctx, &query, vars1, graphql.OperationName("GetContractState"))
 	if err != nil {
@@ -92,7 +98,11 @@ func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.
 		if err != nil {
 			return nil, err
 		}
-		txSpendsRegistry, err = contractinterface.UnmarshalTxSpendsRegistry([]byte(tmp))
+		decoded, err := hex.DecodeString(tmp)
+		if err != nil {
+			return nil, fmt.Errorf("error decoding tx spends registry hex: %w", err)
+		}
+		txSpendsRegistry, err = contractinterface.UnmarshalTxSpendsRegistry(decoded)
 		if err != nil {
 			return nil, err
 		}
@@ -120,6 +130,7 @@ func (b *Bot) FetchObservedTx(ctx context.Context, txId string, vout int) (bool,
 	variables := map[string]any{
 		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{key},
+		"encoding":   "hex",
 	}
 	err := b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
@@ -184,6 +195,7 @@ func (b *Bot) FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backup
 	variables := map[string]any{
 		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{contractinterface.PrimaryPublicKeyStateKey, contractinterface.BackupPublicKeyStateKey},
+		"encoding":   "hex",
 	}
 	err = b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
@@ -206,7 +218,7 @@ func (b *Bot) FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backup
 	return primaryRaw, backupRaw, nil
 }
 
-// unmarshalRawBytes decodes a JSON value that is a raw byte string.
+// unmarshalRawBytes decodes a JSON value that is a hex-encoded byte string.
 // Returns nil for null/missing values.
 func unmarshalRawBytes(raw json.RawMessage) ([]byte, error) {
 	if len(raw) == 0 || string(raw) == "null" || string(raw) == `"null"` {
@@ -218,7 +230,7 @@ func unmarshalRawBytes(raw json.RawMessage) ([]byte, error) {
 		return nil, err
 	}
 
-	return []byte(s), nil
+	return hex.DecodeString(s)
 }
 
 // gets last height recorded in contract state

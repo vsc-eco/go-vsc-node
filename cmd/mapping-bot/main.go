@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -31,10 +30,8 @@ func main() {
 			Level: slog.LevelDebug,
 		})))
 	}
-	slog.Debug("vsc network", "network", args.network)
 
 	sysConfig := systemconfig.FromNetwork(args.network)
-
 	mappingBotConfig := mapper.NewMappingBotConfig(args.dataDir)
 	identityConfig := common.NewIdentityConfig(args.dataDir)
 	hiveConfig := streamer.NewHiveConfig(args.dataDir)
@@ -61,13 +58,24 @@ func main() {
 		return
 	}
 
-	contractId := mappingBotConfig.Get().ContractId
+	contractId := mappingBotConfig.ContractId()
 	if contractId == "" || contractId == "ADD_BTC_MAPPING_CONTRACT_ID" {
 		fmt.Fprintf(os.Stderr, "ContractId must be set in %s\n", args.dataDir)
 		os.Exit(1)
 	}
 
-	fmt.Printf("contractId set to: %s\n", contractId)
+	slog.Debug(
+		"params",
+		"vsc network",
+		sysConfig.NetId(),
+		"hive chain id",
+		sysConfig.HiveChainId(),
+		"btc network",
+		args.btcNetwork,
+		"contract id",
+		mappingBotConfig.ContractId(),
+		"connected graphql",
+	)
 
 	db, err := database.New(context.Background(), dbConfig.Get().DbURI, dbConfig.GetDbName())
 	if err != nil {
@@ -79,7 +87,8 @@ func main() {
 
 	bot, err := mapper.NewBot(db, args.btcNetwork, mappingBotConfig, identityConfig, hiveConfig, sysConfig)
 	if err != nil {
-		log.Fatalln(err.Error())
+		slog.Error("could not initialize new bot", "err", err.Error())
+		os.Exit(1)
 	}
 
 	httpCtx, cancel := context.WithCancel(context.Background())
@@ -98,14 +107,7 @@ func main() {
 			}
 		}
 
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error fetching tx spends: %s\n", err.Error())
-			time.Sleep(time.Minute)
-			cancel()
-			continue
-		} else {
-			go bot.HandleUnmap()
-		}
+		go bot.HandleUnmap()
 
 		blockHeight, err := bot.Db.State.GetBlockHeight(ctx)
 		if err != nil {

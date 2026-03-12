@@ -33,6 +33,11 @@ func (b *Bot) HandleUnmap() {
 	defer cancel()
 
 	txSpends, err := b.FetchTxSpends(ctx)
+	if err != nil {
+		b.L.Debug("failed to fetch tx spends from contract", "error", err)
+	} else {
+		b.L.Debug("fetched tx spends from contract", "count", len(txSpends))
+	}
 
 	b.ProcessTxSpends(ctx, b.GqlClient, txSpends)
 	finishedTxs, err := b.CheckSignagures(ctx)
@@ -53,11 +58,11 @@ func (b *Bot) HandleUnmap() {
 			txPairs[i] = txPair
 		}
 		for _, tx := range txPairs {
-			slog.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
-			if !slog.Default().Enabled(ctx, slog.LevelDebug) {
+			b.L.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
+			if !b.L.Enabled(ctx, slog.LevelDebug) {
 				err := b.MempoolClient.PostTx(tx.RawTx)
 				if err != nil {
-					slog.Warn("transaction failed to post", "txId", tx.TxId)
+					b.L.Warn("transaction failed to post", "txId", tx.TxId)
 					continue
 				}
 			}
@@ -72,6 +77,7 @@ func (b *Bot) ProcessTxSpends(
 	incomingTxSpends map[string]*contractinterface.SigningData,
 ) {
 	for txId, signingData := range incomingTxSpends {
+		b.L.Debug("processing incoming tx spend", "txId", txId, "sigHashCount", len(signingData.UnsignedSigHashes))
 		// already in the system
 
 		// could re-enable this, but it does a lot of gql requests for probably no reason
@@ -90,8 +96,12 @@ func (b *Bot) ProcessTxSpends(
 		// }
 
 		err := b.Db.State.AddPendingTransaction(ctx, txId, signingData.Tx, signingData.UnsignedSigHashes)
-		if err != nil && err != database.ErrPendingTxExists {
-
+		if err == database.ErrPendingTxExists {
+			b.L.Debug("tx spend already in system, skipping", "txId", txId)
+		} else if err != nil {
+			b.L.Debug("failed to add pending transaction", "txId", txId, "error", err)
+		} else {
+			b.L.Debug("added new pending transaction", "txId", txId)
 		}
 	}
 }

@@ -320,7 +320,7 @@ type SimulateContractCallResult {
 }
 
 type Query {
-  getStateByKeys(contractId: String!, keys: [String!]!): Map
+  getStateByKeys(contractId: String!, keys: [String!]!, encoding: String): Map
   findTransaction(filterOptions: TransactionFilter): [TransactionRecord!]
   findContractOutput(filterOptions: ContractOutputFilter): [ContractOutput!]
   findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerRecord!]

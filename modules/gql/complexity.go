@@ -52,7 +52,7 @@ func NewComplexityRoot() gqlgen.ComplexityRoot {
 	c.Query.GetTssKey = func(childComplexity int, keyID string) int {
 		return 5 + childComplexity
 	}
-	c.Query.GetStateByKeys = func(childComplexity int, contractID string, keys []string) int {
+	c.Query.GetStateByKeys = func(childComplexity int, contractID string, keys []string, encoding *string) int {
 		return 5 + childComplexity
 	}
 	c.Query.GetDagByCid = func(childComplexity int, cidString string) int {
