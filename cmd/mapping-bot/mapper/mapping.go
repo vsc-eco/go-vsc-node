@@ -31,7 +31,6 @@ func (b *Bot) HandleMap(
 	}
 
 	if lastContractHeight < blockHeight {
-		b.lastBlockHeight.Store(lastContractHeight)
 		log.Printf("delaying processing of block with height %d, block not yet present in contract", blockHeight)
 		return
 	}
