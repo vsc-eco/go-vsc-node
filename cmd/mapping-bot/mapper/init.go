@@ -9,7 +9,6 @@ import (
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mempool"
 	"vsc-node/modules/common"
-	"vsc-node/modules/gql"
 	"vsc-node/modules/hive/streamer"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -68,9 +67,9 @@ func NewBot(
 	db *database.Database,
 	btcNetId string,
 	vscNetId string,
+	mappingBotConfig MappingBotConfig,
 	identityConfig common.IdentityConfig,
 	hiveConfig streamer.HiveConfig,
-	gqlConfig gql.GqlConfig,
 ) (*Bot, error) {
 	chainParams, mempoolBase, err := parseNetwork(btcNetId)
 	if err != nil {
@@ -81,11 +80,12 @@ func NewBot(
 
 	return &Bot{
 		Db:             db,
-		GqlClient:      graphql.NewClient(gqlConfig.GetHostAddr(), nil),
+		GqlClient:      graphql.NewClient(mappingBotConfig.Get().ConnectedGraphQLAddr, nil),
 		L:              slog.Default(),
 		ChainParams:    chainParams,
 		MempoolClient:  mempoolClient,
 		NetId:          vscNetId,
+		ContractId:     mappingBotConfig.Get().ContractId,
 		IdentityConfig: identityConfig,
 		HiveConfig:     hiveConfig,
 	}, nil

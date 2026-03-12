@@ -14,7 +14,6 @@ import (
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
-	"vsc-node/modules/gql"
 	"vsc-node/modules/hive/streamer"
 )
 
@@ -29,37 +28,35 @@ func main() {
 
 	sysConfig := systemconfig.FromNetwork(args.network)
 
-	mappingBotConfig := newMappingBotConfig(args.dataDir)
+	mappingBotConfig := mapper.NewMappingBotConfig(args.dataDir)
 	identityConfig := common.NewIdentityConfig(args.dataDir)
 	hiveConfig := streamer.NewHiveConfig(args.dataDir)
 	dbConfig := db.NewDbConfig(args.dataDir)
-	gqlConfig := gql.NewGqlConfig(args.dataDir)
 
 	configs := aggregate.New([]aggregate.Plugin{
 		mappingBotConfig,
 		identityConfig,
 		hiveConfig,
 		dbConfig,
-		gqlConfig,
 	})
-
-	if dbConfig.GetDbName() == db.DefaultDbName {
-		dbConfig.SetDbName("btc-mapping-bot")
-	}
 
 	if err := configs.Init(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to init configs: %s\n", err.Error())
 		os.Exit(1)
 	}
 
+	if dbConfig.GetDbName() == db.DefaultDbName {
+		dbConfig.SetDbName("btc-mapping-bot")
+	}
+
 	if args.isInit {
-		fmt.Printf("config initialized at %s\n", mappingBotConfig.FilePath())
+		fmt.Printf("config initialized at %s\n", args.dataDir)
 		return
 	}
 
 	contractId := mappingBotConfig.Get().ContractId
 	if contractId == "" || contractId == "ADD_BTC_MAPPING_CONTRACT_ID" {
-		fmt.Fprintf(os.Stderr, "ContractId must be set in %s\n", mappingBotConfig.FilePath())
+		fmt.Fprintf(os.Stderr, "ContractId must be set in %s\n", args.dataDir)
 		os.Exit(1)
 	}
 
@@ -73,7 +70,7 @@ func main() {
 	defer db.Close(context.Background())
 	lastClear := time.Now()
 
-	bot, err := mapper.NewBot(db, args.btcNetwork, sysConfig.NetId(), identityConfig, hiveConfig, gqlConfig)
+	bot, err := mapper.NewBot(db, args.btcNetwork, sysConfig.NetId(), mappingBotConfig, identityConfig, hiveConfig)
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
