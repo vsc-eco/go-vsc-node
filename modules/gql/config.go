@@ -13,6 +13,8 @@ type gqlConfigStruct struct {
 
 type GqlConfig = *gqlConfigStruct
 
+const DefaultComplexityLimit = 10000
+
 func NewGqlConfig(dataDir ...string) GqlConfig {
 	var dataDirPtr *string
 	if len(dataDir) > 0 {
@@ -21,7 +23,7 @@ func NewGqlConfig(dataDir ...string) GqlConfig {
 
 	return &gqlConfigStruct{config.New(gqlConfig{
 		HostAddr:      "0.0.0.0:8080",
-		MaxComplexity: 1000,
+		MaxComplexity: DefaultComplexityLimit,
 	}, dataDirPtr)}
 }
 
@@ -44,7 +46,7 @@ func (gc *gqlConfigStruct) SetMaxComplexity(limit int) error {
 func (gc *gqlConfigStruct) GetMaxComplexity() int {
 	v := gc.Get().MaxComplexity
 	if v <= 0 {
-		return 1000
+		return DefaultComplexityLimit
 	}
 	return v
 }
