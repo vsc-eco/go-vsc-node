@@ -118,9 +118,13 @@ func (o *Oracle) Init() error {
 	log.Println("[oracle] Init: registering blockTick callback")
 	o.hiveConsumer.RegisterBlockTick("oracle", o.blockTick, true)
 
-	// Configure bitcoind RPC from oracle config
+	// Configure RPC connections for all chains from oracle config
 	cfg := o.oracleConf.Get()
-	o.chainOracle.ConfigureBitcoin(cfg.BitcoindRpcHost, cfg.BitcoindRpcUser, cfg.BitcoindRpcPass)
+	for symbol := range chain.RegisteredChains() {
+		if rpc, ok := cfg.ChainRpc(symbol); ok {
+			o.chainOracle.ConfigureChain(symbol, rpc.RpcHost, rpc.RpcUser, rpc.RpcPass)
+		}
+	}
 
 	// Create the txCrafter now that identity config has been loaded from disk.
 	// The libp2p private key is only available after identityConfig.Init().

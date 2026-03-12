@@ -48,5 +48,24 @@ type ConsensusParams struct {
 }
 
 type OracleParams struct {
+	// ChainContracts maps chain symbols (e.g. "BTC") to their
+	// relay mapping contract IDs.
+	ChainContracts map[string]string
+
+	// Deprecated: use ChainContracts["BTC"] instead.
 	BtcContractId string
+}
+
+// ContractId returns the relay contract ID for the given chain symbol.
+// Falls back to the legacy BtcContractId field for BTC.
+func (o OracleParams) ContractId(symbol string) string {
+	if o.ChainContracts != nil {
+		if id, ok := o.ChainContracts[symbol]; ok {
+			return id
+		}
+	}
+	if symbol == "BTC" {
+		return o.BtcContractId
+	}
+	return ""
 }
