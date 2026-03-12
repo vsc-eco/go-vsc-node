@@ -93,7 +93,7 @@ func (d BtcDID) Verify(data blocks.Block, sig string) (bool, error) {
 		return verifyBIP322Simple(addr, data, sigBytes)
 	}
 
-	return false, fmt.Errorf("invalid signature length %d for address type %s: expected 65 (BIP-137)", len(sigBytes), addrType)
+	return false, fmt.Errorf("unsupported signature length: %d (expected 65 for BIP-137 or 107 for BIP-322 P2WPKH)", len(sigBytes))
 }
 
 // ===== BIP-137 verification =====
