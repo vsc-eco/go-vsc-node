@@ -19,7 +19,3 @@ func newMappingBotConfig(dataDir ...string) *mappingBotConfigStruct {
 		ContractId: "ADD_BTC_MAPPING_CONTRACT_ID",
 	}, dataDirPtr)}
 }
-
-func (c *mappingBotConfigStruct) GetContractId() string {
-	return c.Get().ContractId
-}

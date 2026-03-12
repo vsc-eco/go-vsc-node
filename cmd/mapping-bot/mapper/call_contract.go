@@ -4,11 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"log/slog"
-	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/contracts"
-	"vsc-node/modules/hive/streamer"
 	stateEngine "vsc-node/modules/state-processing"
 
 	"vsc-node/lib/hive"
@@ -26,42 +23,26 @@ type txVscCallContractJSON struct {
 	Intents    []contracts.Intent `json:"intents"`
 }
 
-// need a contract id
-// call a contract from L1 (hive account) with 4 arguments:
-//   - hive username
-//   - contract id
-//   - raw json message input
-//   - action (function name/contract entrypoint)
-//
-// returning (json RawMessage, error)
-func callContract(
+func (b *Bot) callContract(
 	ctx context.Context,
-	username, contractID string,
 	contractInput json.RawMessage,
 	action string,
 ) error {
-
-	identityConfig := common.NewIdentityConfig()
-	identityConfig.Init()
-	hiveConfig := streamer.NewHiveConfig()
-	hiveConfig.Init()
-
-	hiveRpcClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURIs)
+	username := b.IdentityConfig.Get().HiveUsername
+	hiveRpcClient := hivego.NewHiveRpc(b.HiveConfig.Get().HiveURIs)
 
 	hiveCreator := hive.LiveTransactionCreator{
 		TransactionCrafter: hive.TransactionCrafter{},
 		TransactionBroadcaster: hive.TransactionBroadcaster{
 			Client:  hiveRpcClient,
-			KeyPair: identityConfig.HiveActiveKeyPair,
+			KeyPair: b.IdentityConfig.HiveActiveKeyPair,
 		},
 	}
 
-	log.Println("identity config", identityConfig)
-
 	txObj := stateEngine.TxVscCallContract{
-		NetId:      "vsc-mainnet",
-		Caller:     fmt.Sprintf("hive:%s", username), // hive:username
-		ContractId: contractID,
+		NetId:      b.NetId,
+		Caller:     fmt.Sprintf("hive:%s", username),
+		ContractId: b.ContractId,
 		Action:     action,
 		Payload:    contractInput,
 		RcLimit:    1000,

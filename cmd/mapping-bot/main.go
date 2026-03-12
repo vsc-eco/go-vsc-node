@@ -8,67 +8,64 @@ import (
 	"os"
 	"strconv"
 	"time"
-	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
-	"vsc-node/cmd/mapping-bot/mempool"
-
-	"github.com/btcsuite/btcd/chaincfg"
+	"vsc-node/modules/aggregate"
+	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
+	"vsc-node/modules/db"
+	"vsc-node/modules/gql"
+	"vsc-node/modules/hive/streamer"
 )
 
 const httpPort = 8000
 
-func parseNetwork(name string) (*chaincfg.Params, string, error) {
-	switch name {
-	case "mainnet":
-		return &chaincfg.MainNetParams, mempool.MempoolMainnetAPIBase, nil
-	case "testnet4":
-		return &chaincfg.TestNet4Params, mempool.MempoolTestnet4APIBase, nil
-	case "testnet3":
-		return &chaincfg.TestNet3Params, mempool.MempoolTestnet3APIBase, nil
-	case "regnet":
-		return &chaincfg.RegressionNetParams, mempool.MempoolMainnetAPIBase, nil
-	default:
-		return nil, "", fmt.Errorf("unknown network %q: must be mainnet, testnet4, testnet3, or regnet", name)
-	}
-}
-
 func main() {
-	a, err := parseArgs()
+	args, err := parseArgs()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
 
-	chainParams, mempoolBase, err := parseNetwork(a.network)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
+	sysConfig := systemconfig.FromNetwork(args.network)
+
+	mappingBotConfig := newMappingBotConfig(args.dataDir)
+	identityConfig := common.NewIdentityConfig(args.dataDir)
+	hiveConfig := streamer.NewHiveConfig(args.dataDir)
+	dbConfig := db.NewDbConfig(args.dataDir)
+	gqlConfig := gql.NewGqlConfig(args.dataDir)
+
+	configs := aggregate.New([]aggregate.Plugin{
+		mappingBotConfig,
+		identityConfig,
+		hiveConfig,
+		dbConfig,
+		gqlConfig,
+	})
+
+	if dbConfig.GetDbName() == db.DefaultDbName {
+		dbConfig.SetDbName("btc-mapping-bot")
+	}
+
+	if err := configs.Init(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to init configs: %s\n", err.Error())
 		os.Exit(1)
 	}
-	network = chainParams
 
-	cfg := newMappingBotConfig(a.dataDir)
-	if err := cfg.Init(); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load config: %s\n", err.Error())
-		os.Exit(1)
-	}
-
-	if a.isInit {
-		fmt.Printf("config initialized at %s\n", cfg.FilePath())
+	if args.isInit {
+		fmt.Printf("config initialized at %s\n", mappingBotConfig.FilePath())
 		return
 	}
 
-	contractinterface.ContractId = cfg.GetContractId()
-	if contractinterface.ContractId == "" || contractinterface.ContractId == "ADD_BTC_MAPPING_CONTRACT_ID" {
-		fmt.Fprintf(os.Stderr, "ContractId must be set in %s\n", cfg.FilePath())
+	contractId := mappingBotConfig.Get().ContractId
+	if contractId == "" || contractId == "ADD_BTC_MAPPING_CONTRACT_ID" {
+		fmt.Fprintf(os.Stderr, "ContractId must be set in %s\n", mappingBotConfig.FilePath())
 		os.Exit(1)
 	}
 
-	mongoURL := os.Getenv("MONGO_URL")
-	if mongoURL == "" {
-		mongoURL = "mongodb://localhost:27017"
-	}
-	db, err := database.New(context.Background(), mongoURL, "mappingbot")
+	fmt.Printf("contractId set to: %s", contractId)
+
+	db, err := database.New(context.Background(), dbConfig.Get().DbURI, dbConfig.GetDbName())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create datastore: %s\n", err.Error())
 		os.Exit(1)
@@ -76,7 +73,7 @@ func main() {
 	defer db.Close(context.Background())
 	lastClear := time.Now()
 
-	bot, err := mapper.NewMapperState(db, chainParams, mempoolBase)
+	bot, err := mapper.NewBot(db, args.btcNetwork, sysConfig.NetId(), identityConfig, hiveConfig, gqlConfig)
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
@@ -85,7 +82,6 @@ func main() {
 	defer cancel()
 	go mapBotHttpServer(httpCtx, db.Addresses, httpPort, bot)
 
-	mempoolClient := mempool.NewMempoolClient(http.DefaultClient, mempoolBase)
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
@@ -104,7 +100,7 @@ func main() {
 			cancel()
 			continue
 		} else {
-			go bot.HandleUnmap(mempoolClient)
+			go bot.HandleUnmap()
 		}
 
 		blockHeight, err := bot.Db.State.GetBlockHeight(ctx)
@@ -118,7 +114,7 @@ func main() {
 			// prefer the contract's last processed height so we don't re-scan blocks
 			// the contract has already seen; fall back to the mempool tip
 			var startHeight uint32
-			contractHeightStr, err := mapper.FetchLastHeight(ctx, bot.GqlClient)
+			contractHeightStr, err := bot.FetchLastHeight(ctx)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error fetching last height from contract: %s\n", err.Error())
 			} else if contractHeightStr != "" {
@@ -131,7 +127,7 @@ func main() {
 				}
 			}
 			if startHeight == 0 {
-				startHeight, err = mempoolClient.GetTipHeight()
+				startHeight, err = bot.MempoolClient.GetTipHeight()
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "error fetching tip height from mempool: %s\n", err.Error())
 					time.Sleep(time.Minute)
@@ -149,7 +145,7 @@ func main() {
 			blockHeight = startHeight
 		}
 
-		hash, status, err := mempoolClient.GetBlockHashAtHeight(blockHeight)
+		hash, status, err := bot.MempoolClient.GetBlockHashAtHeight(blockHeight)
 		if status == http.StatusNotFound {
 			fmt.Println("No new block.")
 			time.Sleep(time.Minute)
@@ -162,7 +158,7 @@ func main() {
 			cancel()
 			continue
 		}
-		blockBytes, err := mempoolClient.GetRawBlock(hash)
+		blockBytes, err := bot.MempoolClient.GetRawBlock(hash)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			// return

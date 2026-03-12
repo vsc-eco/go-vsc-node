@@ -1,11 +1,16 @@
 package mapper
 
 import (
+	"fmt"
 	"log/slog"
-	"os"
+	"net/http"
 	"sync"
 	"time"
 	"vsc-node/cmd/mapping-bot/database"
+	"vsc-node/cmd/mapping-bot/mempool"
+	"vsc-node/modules/common"
+	"vsc-node/modules/gql"
+	"vsc-node/modules/hive/streamer"
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/hasura/go-graphql-client"
@@ -13,43 +18,75 @@ import (
 
 const defaultGraphQLUrl = "https://api.vsc.eco/api/v1/graphql"
 
-type MapperState struct {
+type Bot struct {
 	Db             *database.Database
 	GqlClient      *graphql.Client
 	L              *slog.Logger
 	ChainParams    *chaincfg.Params
-	MempoolBaseURL string
+	MempoolClient  *mempool.MempoolClient
+	ContractId     string
+	NetId          string // vsc network id
+	IdentityConfig common.IdentityConfig
+	HiveConfig     streamer.HiveConfig
 
 	mu              sync.RWMutex
 	lastBlockAt     time.Time
 	lastBlockHeight uint32
 }
 
-func (ms *MapperState) setLastBlock(height uint32) {
-	ms.mu.Lock()
-	defer ms.mu.Unlock()
-	ms.lastBlockHeight = height
-	ms.lastBlockAt = time.Now()
+func (b *Bot) setLastBlock(height uint32) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lastBlockHeight = height
+	b.lastBlockAt = time.Now()
 }
 
 // LastBlock returns the most recently processed block height and when it was processed.
 // Returns a zero time if no block has been processed yet this session.
-func (ms *MapperState) LastBlock() (height uint32, at time.Time) {
-	ms.mu.RLock()
-	defer ms.mu.RUnlock()
-	return ms.lastBlockHeight, ms.lastBlockAt
+func (b *Bot) LastBlock() (height uint32, at time.Time) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.lastBlockHeight, b.lastBlockAt
 }
 
-func NewMapperState(db *database.Database, chainParams *chaincfg.Params, mempoolBaseURL string) (*MapperState, error) {
-	gqlUrl := os.Getenv("VSC_GRAPHQL_URL")
-	if gqlUrl == "" {
-		gqlUrl = defaultGraphQLUrl
+func parseNetwork(name string) (*chaincfg.Params, string, error) {
+	switch name {
+	case "mainnet":
+		return &chaincfg.MainNetParams, mempool.MempoolMainnetAPIBase, nil
+	case "testnet4":
+		return &chaincfg.TestNet4Params, mempool.MempoolTestnet4APIBase, nil
+	case "testnet3":
+		return &chaincfg.TestNet3Params, mempool.MempoolTestnet3APIBase, nil
+	case "regnet":
+		return &chaincfg.RegressionNetParams, mempool.MempoolMainnetAPIBase, nil
+	default:
+		return nil, "", fmt.Errorf("unknown network %q: must be mainnet, testnet4, testnet3, or regnet", name)
 	}
-	return &MapperState{
+}
+
+func NewBot(
+	db *database.Database,
+	btcNetId string,
+	vscNetId string,
+	identityConfig common.IdentityConfig,
+	hiveConfig streamer.HiveConfig,
+	gqlConfig gql.GqlConfig,
+) (*Bot, error) {
+	chainParams, mempoolBase, err := parseNetwork(btcNetId)
+	if err != nil {
+		return nil, err
+	}
+
+	mempoolClient := mempool.NewMempoolClient(http.DefaultClient, mempoolBase)
+
+	return &Bot{
 		Db:             db,
-		GqlClient:      graphql.NewClient(gqlUrl, nil),
+		GqlClient:      graphql.NewClient(gqlConfig.GetHostAddr(), nil),
 		L:              slog.Default(),
 		ChainParams:    chainParams,
-		MempoolBaseURL: mempoolBaseURL,
+		MempoolClient:  mempoolClient,
+		NetId:          vscNetId,
+		IdentityConfig: identityConfig,
+		HiveConfig:     hiveConfig,
 	}, nil
 }

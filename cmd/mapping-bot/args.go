@@ -7,9 +7,10 @@ import (
 )
 
 type args struct {
-	isInit  bool
-	network string
-	dataDir string
+	isInit     bool
+	network    string
+	btcNetwork string
+	dataDir    string
 }
 
 func parseArgs() (args, error) {
@@ -19,14 +20,16 @@ func parseArgs() (args, error) {
 		flag.PrintDefaults()
 	}
 	isInit := flag.Bool("init", false, "Initialize the bot (create config file and exit)")
-	network := flag.String("network", "mainnet", "Bitcoin network: mainnet, testnet4, testnet3, or regnet")
+	network := flag.String("network", "mainnet", "VSC network: mainnet, testnet, or devnet")
+	btcNetwork := flag.String("btc-network", "mainnet", "Bitcoin network: mainnet, testnet4, testnet3, or regnet")
 	dataDir := flag.String("data-dir", "data", "Data directory for config and storage")
 
 	flag.Parse()
 
 	return args{
-		isInit:  *isInit,
-		network: *network,
-		dataDir: *dataDir,
+		isInit:     *isInit,
+		network:    *network,
+		btcNetwork: *btcNetwork,
+		dataDir:    *dataDir,
 	}, nil
 }

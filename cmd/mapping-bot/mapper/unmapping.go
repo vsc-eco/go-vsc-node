@@ -10,7 +10,6 @@ import (
 	"time"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
-	"vsc-node/cmd/mapping-bot/mempool"
 
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -27,18 +26,16 @@ type TxRawIdPair struct {
 	TxId  string
 }
 
-func (ms *MapperState) HandleUnmap(
-	memPoolClient *mempool.MempoolClient,
-) {
-	ms.L.Debug("handling unmap")
+func (b *Bot) HandleUnmap() {
+	b.L.Debug("handling unmap")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
 	defer cancel()
 
-	txSpends, err := FetchTxSpends(ctx, ms.GqlClient)
+	txSpends, err := b.FetchTxSpends(ctx)
 
-	ms.ProcessTxSpends(ctx, ms.GqlClient, txSpends)
-	finishedTxs, err := ms.CheckSignagures(ctx, ms.GqlClient)
+	b.ProcessTxSpends(ctx, b.GqlClient, txSpends)
+	finishedTxs, err := b.CheckSignagures(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error fetching signatures from the database: %s", err.Error())
 		return
@@ -58,18 +55,18 @@ func (ms *MapperState) HandleUnmap(
 		for _, tx := range txPairs {
 			slog.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
 			if !slog.Default().Enabled(ctx, slog.LevelDebug) {
-				err := memPoolClient.PostTx(tx.RawTx)
+				err := b.MempoolClient.PostTx(tx.RawTx)
 				if err != nil {
 					slog.Warn("transaction failed to post", "txId", tx.TxId)
 					continue
 				}
 			}
-			ms.Db.State.MarkTransactionSent(ctx, tx.TxId)
+			b.Db.State.MarkTransactionSent(ctx, tx.TxId)
 		}
 	}
 }
 
-func (ms *MapperState) ProcessTxSpends(
+func (b *Bot) ProcessTxSpends(
 	ctx context.Context,
 	gqlClient *graphql.Client,
 	incomingTxSpends map[string]*contractinterface.SigningData,
@@ -92,28 +89,27 @@ func (ms *MapperState) ProcessTxSpends(
 		// 	continue
 		// }
 
-		err := ms.Db.State.AddPendingTransaction(ctx, txId, signingData.Tx, signingData.UnsignedSigHashes)
+		err := b.Db.State.AddPendingTransaction(ctx, txId, signingData.Tx, signingData.UnsignedSigHashes)
 		if err != nil && err != database.ErrPendingTxExists {
 
 		}
 	}
 }
 
-func (ms *MapperState) CheckSignagures(
+func (b *Bot) CheckSignagures(
 	ctx context.Context,
-	graphQlClient *graphql.Client,
 ) ([]*database.PendingTransaction, error) {
-	allHashes, err := ms.Db.State.GetAllPendingSigHashes(ctx)
+	allHashes, err := b.Db.State.GetAllPendingSigHashes(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	newSignagutes, err := FetchSignatures(ctx, graphQlClient, allHashes)
+	newSignagutes, err := b.FetchSignatures(ctx, allHashes)
 	if err != nil {
 		return nil, err
 	}
 
-	fullySignedTxs, err := ms.Db.State.UpdateSignatures(ctx, newSignagutes)
+	fullySignedTxs, err := b.Db.State.UpdateSignatures(ctx, newSignagutes)
 	if err != nil {
 		return nil, err
 	}

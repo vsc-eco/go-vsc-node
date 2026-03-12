@@ -16,9 +16,8 @@ type GetContractStateQuery struct {
 	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys)"`
 }
 
-func fetchMultipleTxSpendKeys(
+func (b *Bot) fetchMultipleTxSpendKeys(
 	ctx context.Context,
-	client *graphql.Client,
 	registry []string,
 ) (map[string]*contractinterface.SigningData, error) {
 	var query GetContractStateQuery
@@ -29,11 +28,11 @@ func fetchMultipleTxSpendKeys(
 	}
 
 	vars2 := map[string]any{
-		"contractId": contractinterface.ContractId,
+		"contractId": b.ContractId,
 		"keys":       keys,
 	}
 
-	err := client.Query(ctx, &query, vars2, graphql.OperationName("GetContractState"))
+	err := b.GqlClient.Query(ctx, &query, vars2, graphql.OperationName("GetContractState"))
 	if err != nil {
 		return nil, err
 	}
@@ -67,14 +66,14 @@ func fetchMultipleTxSpendKeys(
 }
 
 // returns a map of transaction Ids to unsigned data that was submitted to be signed
-func FetchTxSpends(ctx context.Context, client *graphql.Client) (map[string]*contractinterface.SigningData, error) {
+func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.SigningData, error) {
 	var query GetContractStateQuery
 
 	vars1 := map[string]any{
-		"contractId": contractinterface.ContractId,
+		"contractId": b.ContractId,
 		"keys":       []string{contractinterface.TxSpendRegistryContractKey},
 	}
-	err := client.Query(ctx, &query, vars1, graphql.OperationName("GetContractState"))
+	err := b.GqlClient.Query(ctx, &query, vars1, graphql.OperationName("GetContractState"))
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +100,7 @@ func FetchTxSpends(ctx context.Context, client *graphql.Client) (map[string]*con
 
 	var txSpends map[string]*contractinterface.SigningData
 	if len(txSpendsRegistry) > 0 {
-		txSpends, err = fetchMultipleTxSpendKeys(ctx, client, txSpendsRegistry)
+		txSpends, err = b.fetchMultipleTxSpendKeys(ctx, txSpendsRegistry)
 		if err != nil {
 			return nil, err
 		}
@@ -113,16 +112,16 @@ func FetchTxSpends(ctx context.Context, client *graphql.Client) (map[string]*con
 }
 
 // TODO: use individual utxos (txid:vout) instead of just txids
-func FetchObservedTx(ctx context.Context, client *graphql.Client, txId string, vout int) (bool, error) {
+func (b *Bot) FetchObservedTx(ctx context.Context, txId string, vout int) (bool, error) {
 	var query GetContractStateQuery
 
 	key := contractinterface.ObservedContractPrefix + fmt.Sprintf("%s:%d", txId, vout)
 
 	variables := map[string]any{
-		"contractId": contractinterface.ContractId,
+		"contractId": b.ContractId,
 		"keys":       []string{key},
 	}
-	err := client.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
+	err := b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
 		return false, err
 	}
@@ -138,7 +137,9 @@ func FetchObservedTx(ctx context.Context, client *graphql.Client, txId string, v
 	return exists, nil
 }
 
-func FetchSignatures(ctx context.Context, client *graphql.Client, msgHex []string) (map[string][]byte, error) {
+func (b *Bot) FetchSignatures(
+	ctx context.Context, msgHex []string,
+) (map[string][]byte, error) {
 	var query struct {
 		Tss []struct {
 			Msg    string `graphql:"msg"`
@@ -148,12 +149,12 @@ func FetchSignatures(ctx context.Context, client *graphql.Client, msgHex []strin
 	}
 
 	variables := map[string]any{
-		"keyId":  strings.Join([]string{contractinterface.ContractId, "main"}, "-"),
+		"keyId":  strings.Join([]string{b.ContractId, "main"}, "-"),
 		"msgHex": msgHex,
 	}
 
 	opName := graphql.OperationName("GetTssRequests")
-	if err := client.Query(ctx, &query, variables, opName); err != nil {
+	if err := b.GqlClient.Query(ctx, &query, variables, opName); err != nil {
 		return nil, fmt.Errorf("failed graphql query: %w", err)
 	}
 
@@ -176,14 +177,14 @@ func FetchSignatures(ctx context.Context, client *graphql.Client, msgHex []strin
 }
 
 // gets last height recorded in contract state
-func FetchLastHeight(ctx context.Context, client *graphql.Client) (string, error) {
+func (b *Bot) FetchLastHeight(ctx context.Context) (string, error) {
 	var query GetContractStateQuery
 
 	variables := map[string]any{
-		"contractId": contractinterface.ContractId,
+		"contractId": b.ContractId,
 		"keys":       []string{contractinterface.LastHeightContractKey},
 	}
-	err := client.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
+	err := b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
 		return "", err
 	}

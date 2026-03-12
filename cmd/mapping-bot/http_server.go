@@ -25,7 +25,7 @@ func mapBotHttpServer(
 	ctx context.Context,
 	addressStore *database.AddressStore,
 	port int,
-	bot *mapper.MapperState,
+	bot *mapper.Bot,
 ) {
 	if addressStore == nil {
 		fmt.Fprintf(os.Stderr, "datastore or mutext not providred\n")
@@ -45,7 +45,7 @@ type healthResponse struct {
 	StaleSecs   *int64  `json:"staleSecs,omitempty"`
 }
 
-func healthHandler(bot *mapper.MapperState) http.HandlerFunc {
+func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		height, lastAt := bot.LastBlock()
 
@@ -79,7 +79,7 @@ type requestBody struct {
 
 func requestHandler(
 	globalCtx context.Context,
-	bot *mapper.MapperState,
+	bot *mapper.Bot,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// validate incoming request + parse for vsc address

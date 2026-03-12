@@ -33,7 +33,7 @@ func TestUnmap(t *testing.T) {
 		os.Exit(1)
 	}
 
-	bot, err := mapper.NewMapperState(db)
+	bot, err := mapper.NewBot(db)
 	if err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)
@@ -80,7 +80,7 @@ func TestMap(t *testing.T) {
 		os.Exit(1)
 	}
 
-	bot, err := mapper.NewMapperState(db)
+	bot, err := mapper.NewBot(db)
 	if err != nil {
 		log.Fatalln(err.Error())
 	}

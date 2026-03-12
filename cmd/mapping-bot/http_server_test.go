@@ -28,7 +28,7 @@ func TestHttpServer(t *testing.T) {
 		}
 	}()
 
-	bot, err := mapper.NewMapperState(db)
+	bot, err := mapper.NewBot(db)
 	if err != nil {
 		t.Fatalf("error creating bot: %s", err.Error())
 	}
