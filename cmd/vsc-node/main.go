@@ -239,7 +239,7 @@ func main() {
 		&hiveCreator,
 	)
 
-	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{
+	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Complexity: gql.NewComplexityRoot(), Resolvers: &gqlgen.Resolver{
 		Witnesses:      witnessDb,
 		TxPool:         txpool,
 		Balances:       balanceDb,

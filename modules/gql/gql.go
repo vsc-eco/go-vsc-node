@@ -54,6 +54,7 @@ func (g *gqlManager) Init() error {
 	gqlServer := handler.New(g.schema)
 	gqlServer.AddTransport(transport.POST{})
 	gqlServer.Use(extension.Introspection{})
+	gqlServer.Use(extension.FixedComplexityLimit(g.conf.GetMaxComplexity()))
 
 	// OPTIONAL, UNCOMMENT TO ENABLE TRACING
 	// gqlServer.Use(apollotracing.Tracer{})
