@@ -1,3 +1,26 @@
+// Package chain implements a multi-chain block relay system for the VSC oracle.
+//
+// The chain relay watches external blockchains (BTC, DASH, ETH, etc.) and submits
+// their block headers to VSC mapping contracts via BLS-signed consensus transactions.
+//
+// # Architecture
+//
+// The system is built around two interfaces:
+//
+//   - chainRelay: implemented per-chain (e.g. bitcoin.go) to handle RPC
+//     communication, block fetching, and serialization.
+//   - chainBlock: represents a single block from any chain, with methods
+//     to serialize it for relay.
+//
+// # Adding a new chain
+//
+// 1. Create a new file (e.g. dash.go) implementing chainRelay and chainBlock.
+// 2. Self-register via init(): func init() { RegisterChain(&dashRelayer{}) }
+// 3. Add the chain's contract ID to ChainContracts in system-config.
+// 4. Add RPC connection details to the Chains map in the oracle config JSON.
+//
+// No other files need to be modified — the consensus, P2P signature collection,
+// and transaction submission logic is fully chain-agnostic.
 package chain
 
 import (
@@ -25,37 +48,63 @@ import (
 )
 
 var (
-	// only usage is to build chain map with proper key-value for ChainOracle.chainMap
-	_chains = [...]chainRelay{
-		&bitcoinRelayer{},
-	}
-
 	_ aggregate.Plugin = &ChainOracle{}
 
 	errInvalidChainData   = errors.New("invalid chain data")
 	errInvalidChainSymbol = errors.New("invalid chain symbol")
 )
 
+// chainRelay is the interface that chain-specific relayers must implement.
+// To add a new chain, implement this interface and register it via
+// RegisterChain() in an init() function.
 type chainRelay interface {
 	Init() error
-	// Returns the ticker of the chain (ie, BTC for bitcoin).
+	// Returns the ticker of the chain (e.g. "BTC", "DASH").
 	Symbol() string
 	// Returns the contract ID for this chain's mapping contract.
 	ContractId() string
 	// Sets the contract ID for this chain's mapping contract.
 	SetContractId(id string)
+	// Configure sets the RPC connection details for this chain.
+	Configure(host, user, pass string)
 	// Checks for (optional) latest chain state.
 	GetLatestValidHeight() (chainState, error)
 	// Fetches chaindata and serializes to raw bytes.
 	ChainData(startBlockHeight uint64, count uint64) ([]chainBlock, error)
 }
 
+// chainRegistry holds all registered chain relayers.
+// Chains register themselves via RegisterChain(), typically in init().
+var chainRegistry = make(map[string]chainRelay)
+
+// RegisterChain registers a chain relayer. Call this from init() in
+// each chain's source file (e.g. bitcoin.go, dash.go).
+func RegisterChain(r chainRelay) {
+	chainRegistry[strings.ToUpper(r.Symbol())] = r
+}
+
+// RegisteredChains returns the symbols of all registered chains.
+func RegisteredChains() map[string]struct{} {
+	result := make(map[string]struct{}, len(chainRegistry))
+	for symbol := range chainRegistry {
+		result[symbol] = struct{}{}
+	}
+	return result
+}
+
+// chainBlock represents a single block from any external chain.
+// Each chain implementation provides its own struct satisfying this interface.
 type chainBlock interface {
-	Type() string //symbol of block network
+	// Type returns the chain symbol (e.g. "BTC", "DASH").
+	Type() string
+	// Serialize encodes the block (typically the header) as a hex string
+	// for inclusion in the relay transaction payload.
 	Serialize() (string, error)
+	// BlockHeight returns the block's height on its native chain.
 	BlockHeight() uint64
 }
 
+// chainState holds minimal chain tip information returned by GetLatestValidHeight.
 type chainState struct {
 	blockHeight uint64
 }
@@ -63,11 +112,20 @@ type chainState struct {
 // stateKey used by mapping contracts to store the last submitted block height.
 const lastHeightStateKey = "lsthgt"
 
+// ChainOracle orchestrates block relay for all registered chains.
+// It runs as an aggregate.Plugin and is driven by Hive block ticks.
+// On each tick (when this node is the block producer), it:
+//  1. Fetches new blocks from each chain's RPC via the chainRelay interface.
+//  2. Builds a relay transaction and requests BLS signatures from peer witnesses.
+//  3. Once 2/3+ weighted signatures are collected, submits the signed transaction.
+//
+// All consensus, P2P, and submission logic is chain-agnostic — only the
+// chainRelay implementations contain chain-specific code.
 type ChainOracle struct {
 	ctx               context.Context
 	logger            *slog.Logger
 	signatureChannels *signatureChannels
-	chainRelayers     map[string]chainRelay
+	chainRelayers     map[string]chainRelay // symbol -> relayer instance
 	conf              common.IdentityConfig
 	sconf             systemconfig.SystemConfig
 	electionDb        elections.Elections
@@ -90,9 +148,10 @@ func New(
 ) *ChainOracle {
 	logger := oracleLogger.With("sub-service", "chain-relay")
 
-	chainRelayers := make(map[string]chainRelay)
-	for _, c := range _chains {
-		chainRelayers[strings.ToUpper(c.Symbol())] = c
+	// Copy registered chains into this instance's map
+	chainRelayers := make(map[string]chainRelay, len(chainRegistry))
+	for symbol, c := range chainRegistry {
+		chainRelayers[symbol] = c
 	}
 
 	return &ChainOracle{
@@ -115,12 +174,10 @@ func (c *ChainOracle) SetTxCrafter(txCrafter *transactionpool.TransactionCrafter
 	c.txCrafter = txCrafter
 }
 
-// ConfigureBitcoin sets the bitcoind RPC connection details from the oracle config.
-func (c *ChainOracle) ConfigureBitcoin(host, user, pass string) {
-	if btc, ok := c.chainRelayers["BTC"]; ok {
-		if br, ok := btc.(*bitcoinRelayer); ok {
-			br.Configure(host, user, pass)
-		}
+// ConfigureChain sets the RPC connection details for a registered chain.
+func (c *ChainOracle) ConfigureChain(symbol, host, user, pass string) {
+	if chain, ok := c.chainRelayers[strings.ToUpper(symbol)]; ok {
+		chain.Configure(host, user, pass)
 	}
 }
 
@@ -138,10 +195,11 @@ func (c *ChainOracle) Init() error {
 		}
 	}
 
-	// Set contract IDs from system config
-	if btc, ok := c.chainRelayers["BTC"]; ok {
-		if id := c.sconf.OracleParams().BtcContractId; id != "" {
-			btc.SetContractId(id)
+	// Set contract IDs from system config for all registered chains
+	oracleParams := c.sconf.OracleParams()
+	for symbol, chainRelayer := range c.chainRelayers {
+		if id := oracleParams.ContractId(symbol); id != "" {
+			chainRelayer.SetContractId(id)
 		}
 	}
 
@@ -153,6 +211,12 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 
 	startSymbols := make(map[string]string)
 	for symbol, chainRelayer := range c.chainRelayers {
+		// Only attempt RPC connection for chains that are fully configured
+		// (have both a contract ID and RPC details). Skip the rest silently.
+		if chainRelayer.ContractId() == "" {
+			c.logger.Debug("chain relay not configured, skipping", "symbol", symbol)
+			continue
+		}
 
 		fcl, err := chainRelayer.GetLatestValidHeight()
 
@@ -187,10 +251,21 @@ func (c *ChainOracle) Stop() error {
 	return nil
 }
 
+// fetchAllStatuses queries every registered chain for new blocks to relay.
+// Returns a chainSession per chain indicating whether there are blocks to submit.
+// Chains without a contract ID are silently skipped — they are registered but
+// not yet enabled for this network.
 func (c *ChainOracle) fetchAllStatuses() []chainSession {
 	chainSessions := make([]chainSession, 0)
 
 	for _, chain := range c.chainRelayers {
+		// Skip chains that have no contract ID configured for this network.
+		// This avoids noisy error logs for registered-but-unused chains
+		// (e.g. DASH/LTC on a node that only relays BTC).
+		if chain.ContractId() == "" {
+			continue
+		}
+
 		chainSession, err := c.fetchChainStatus(chain)
 		if err != nil {
 			c.logger.Error(
@@ -206,11 +281,14 @@ func (c *ChainOracle) fetchAllStatuses() []chainSession {
 	return chainSessions
 }
 
+// chainSession captures the relay state for a single chain during one tick:
+// which chain, its target contract, the fetched blocks, and whether there
+// are new blocks that need submitting.
 type chainSession struct {
-	symbol            string
-	contractId        string
-	chainData         []chainBlock
-	newBlocksToSubmit bool
+	symbol            string       // chain ticker (e.g. "BTC")
+	contractId        string       // VSC mapping contract for this chain
+	chainData         []chainBlock // new blocks fetched from the chain's RPC
+	newBlocksToSubmit bool         // true if chainData contains unseen blocks
 }
 
 // getContractBlockHeight reads the last submitted block height from a
@@ -248,6 +326,9 @@ func (c *ChainOracle) getContractBlockHeight(contractId string) (uint64, error) 
 	return height, nil
 }
 
+// fetchChainStatus compares a chain's current tip against the last height
+// submitted to its mapping contract. If new blocks exist, it fetches up to
+// 100 of them via the chain's RPC for relay.
 func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 	contractId := chain.ContractId()
 	if contractId == "" {
@@ -295,6 +376,8 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 	}, nil
 }
 
+// makeChainSessionID builds a unique session identifier for P2P signature
+// collection in the format "SYMBOL-startBlock-endBlock" (e.g. "BTC-640000-640100").
 func makeChainSessionID(c *chainSession) (string, error) {
 	if len(c.chainData) == 0 {
 		return "", errors.New("chainData not supplied")

@@ -12,6 +12,10 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
+func init() {
+	RegisterChain(&bitcoinRelayer{})
+}
+
 var (
 	_ chainRelay = &bitcoinRelayer{}
 	_ chainBlock = &btcChainData{}

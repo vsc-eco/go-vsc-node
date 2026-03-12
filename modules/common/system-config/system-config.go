@@ -110,7 +110,9 @@ func TestnetConfig() SystemConfig {
 			ElectionInterval: params.ELECTION_INTERVAL,
 		},
 		oracleParams: params.OracleParams{
-			BtcContractId: "vsc1BemohMM2HKzfQzWquTfMF6LWvb2V9M35c3",
+			ChainContracts: map[string]string{
+				"BTC": "vsc1BemohMM2HKzfQzWquTfMF6LWvb2V9M35c3",
+			},
 		},
 	}
 	return conf
