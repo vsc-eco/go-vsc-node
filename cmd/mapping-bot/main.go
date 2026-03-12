@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -35,21 +34,30 @@ func parseNetwork(name string) (*chaincfg.Params, string, error) {
 }
 
 func main() {
-	networkName := flag.String("network", "mainnet", "Bitcoin network: mainnet, testnet4, testnet3, or regnet")
-	flag.Parse()
+	a, err := parseArgs()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(1)
+	}
 
-	chainParams, mempoolBase, err := parseNetwork(*networkName)
+	chainParams, mempoolBase, err := parseNetwork(a.network)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
 	network = chainParams
 
-	cfg := newMappingBotConfig()
+	cfg := newMappingBotConfig(a.dataDir)
 	if err := cfg.Init(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load config: %s\n", err.Error())
 		os.Exit(1)
 	}
+
+	if a.isInit {
+		fmt.Printf("config initialized at %s\n", cfg.FilePath())
+		return
+	}
+
 	contractinterface.ContractId = cfg.GetContractId()
 	if contractinterface.ContractId == "" {
 		fmt.Fprintf(os.Stderr, "ContractId must be set in %s\n", cfg.FilePath())
