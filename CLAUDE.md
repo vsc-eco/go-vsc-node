@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 make                    # Build all 5 binaries to ./build/
-make magid              # Build only the main daemon
+make magid              # Build the main vsc-node binary
 go test ./...           # Run all tests
 go test ./modules/tss/  # Run tests in a specific package
 go run github.com/99designs/gqlgen generate  # Regenerate GraphQL code
@@ -44,14 +44,6 @@ Init DB + P2P + DataLayer → Start Hive block consumer (L1 listener) → Create
 
 **API & Config**: `gql/` (GraphQL API, schema in `modules/gql/schema.graphql`), `config/`, `common/` (system config per network), `db/` (MongoDB collections)
 
-### Key Dependencies
-
-- **StateEngine** is the central coordinator — most modules depend on it
-- **P2P** uses libp2p for peer discovery, consensus messaging, and data distribution
-- **Hive** is the L1 chain — the node listens to Hive blocks and broadcasts operations back
-- **MongoDB** is the database backend (see `modules/db/` for all collections)
-- **IPFS** (via lib/datalayer) handles data storage and availability
-
 ### Networks
 
 Mainnet (`vsc-mainnet`), Testnet (`vsc-testnet`), Devnet (`vsc-devnet`)— network-specific params in `modules/common/system-config/`
@@ -59,7 +51,3 @@ Mainnet (`vsc-mainnet`), Testnet (`vsc-testnet`), Devnet (`vsc-devnet`)— netwo
 ### GraphQL
 
 Schema: `modules/gql/schema.graphql`. Auto-binds DB models via `gqlgen.yml`. Playground available at the GQL server URL + `/sandbox`.
-
-### Docker
-
-Multi-stage build (Go 1.24.1 → RockyLinux 9.3) with WasmEdge 0.13.4. Compose includes MongoDB 8.0 and optional btcd (Bitcoin core).

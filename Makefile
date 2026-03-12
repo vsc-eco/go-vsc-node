@@ -12,6 +12,9 @@ LDFLAGS := -X vsc-node/modules/announcements.GitCommit=$(GIT_COMMIT)
 PREFIX ?= /usr/local
 INSTALL_DIR := $(PREFIX)/bin
 
+# Source dependencies
+GO_SOURCES := $(shell find modules lib -type f -name '*.go') go.mod go.sum
+
 # Targets
 .PHONY: all clean install magid contract-deployer genesis-elector devnet-setup mapping-bot
 
@@ -35,19 +38,19 @@ mapping-bot: $(BUILD_DIR)/mapping-bot
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/magid: $(BUILD_DIR)
+$(BUILD_DIR)/magid: $(BUILD_DIR) $(GO_SOURCES)
 	go build $(BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $@ vsc-node/cmd/vsc-node
 
-$(BUILD_DIR)/contract-deployer: $(BUILD_DIR)
+$(BUILD_DIR)/contract-deployer: $(BUILD_DIR) $(GO_SOURCES)
 	go build $(BUILD_FLAGS) -o $@ vsc-node/cmd/contract-deployer
 
-$(BUILD_DIR)/genesis-elector: $(BUILD_DIR)
+$(BUILD_DIR)/genesis-elector: $(BUILD_DIR) $(GO_SOURCES)
 	go build $(BUILD_FLAGS) -o $@ vsc-node/cmd/genesis-elector
 
-$(BUILD_DIR)/devnet-setup: $(BUILD_DIR)
+$(BUILD_DIR)/devnet-setup: $(BUILD_DIR) $(GO_SOURCES)
 	go build $(BUILD_FLAGS) -o $@ vsc-node/cmd/devnet-setup
 
-$(BUILD_DIR)/mapping-bot: $(BUILD_DIR)
+$(BUILD_DIR)/mapping-bot: $(BUILD_DIR) $(GO_SOURCES)
 	go build $(BUILD_FLAGS) -o $@ vsc-node/cmd/mapping-bot
 
 install: all
