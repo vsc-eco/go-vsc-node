@@ -7,6 +7,8 @@ package gqlgen
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -16,6 +18,8 @@ import (
 	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/params"
+	contract_execution_context "vsc-node/modules/contract/execution-context"
+	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -28,6 +32,8 @@ import (
 	ledgerSystem "vsc-node/modules/ledger-system"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
+	wasm_context "vsc-node/modules/wasm/context"
+	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
 
 	"github.com/ipfs/go-cid"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -515,6 +521,187 @@ func (r *queryResolver) GetTssKey(ctx context.Context, keyID string) (*tss_db.Ts
 // GetTssRequests is the resolver for the getTssRequests field.
 func (r *queryResolver) GetTssRequests(ctx context.Context, keyID string, msgHex []string) ([]tss_db.TssRequest, error) {
 	return r.TssRequests.FindRequests(keyID, msgHex)
+}
+
+// SimulateContractCalls is the resolver for the simulateContractCalls field.
+func (r *queryResolver) SimulateContractCalls(ctx context.Context, input SimulateContractCallsInput) ([]SimulateContractCallResult, error) {
+	// Get latest block info
+	highestBlock, err := r.HiveBlocks.GetHighestBlock()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get highest block: %w", err)
+	}
+	block, err := r.HiveBlocks.GetBlock(highestBlock)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get block %d: %w", highestBlock, err)
+	}
+
+	blockHeight := block.BlockNumber
+	blockId := block.BlockID
+	timestamp := block.Timestamp
+
+	// Validate rc_limit for all calls
+	for i, call := range input.Calls {
+		if call.RcLimit < 1 || call.RcLimit > 100000 {
+			return nil, fmt.Errorf("call %d: rc_limit must be between 1 and 100000, got %d", i, call.RcLimit)
+		}
+	}
+
+	// Create sessions from live DB state
+	ledgerSession := ledgerSystem.NewSession(r.StateEngine.LedgerState)
+	callSession := contract_session.NewCallSession(r.Da, r.Contracts, r.ContractsState, r.TssKeys, blockHeight, nil)
+
+	results := make([]SimulateContractCallResult, 0, len(input.Calls))
+
+	for opIndex, call := range input.Calls {
+		rcLimit := uint(call.RcLimit)
+
+		info, err := r.Contracts.ContractById(call.ContractID, blockHeight)
+		if err != nil {
+			errMsg := err.Error()
+			results = append(results, SimulateContractCallResult{
+				Success: false,
+				ErrMsg:  &errMsg,
+				RcUsed:  model.Int64(100),
+				GasUsed: model.Uint64(0),
+			})
+			ledgerSession.Revert()
+			callSession.Rollback()
+			return results, nil
+		}
+
+		c, err := cid.Decode(info.Code)
+		if err != nil {
+			errMsg := err.Error()
+			results = append(results, SimulateContractCallResult{
+				Success: false,
+				ErrMsg:  &errMsg,
+				RcUsed:  model.Int64(100),
+				GasUsed: model.Uint64(0),
+			})
+			ledgerSession.Revert()
+			callSession.Rollback()
+			return results, nil
+		}
+
+		node, err := r.Da.Get(c, nil)
+		if err != nil {
+			errMsg := err.Error()
+			results = append(results, SimulateContractCallResult{
+				Success: false,
+				ErrMsg:  &errMsg,
+				RcUsed:  model.Int64(100),
+				GasUsed: model.Uint64(0),
+			})
+			ledgerSession.Revert()
+			callSession.Rollback()
+			return results, nil
+		}
+
+		code := node.RawData()
+
+		caller := ""
+		if len(input.RequiredAuths) > 0 {
+			caller = input.RequiredAuths[0]
+		} else if len(input.RequiredPostingAuths) > 0 {
+			caller = input.RequiredPostingAuths[0]
+		}
+
+		// Convert intents
+		intents := make([]contracts.Intent, 0, len(call.Intents))
+		for _, intent := range call.Intents {
+			args := make(map[string]string)
+			for k, v := range intent.Args {
+				args[k] = fmt.Sprintf("%v", v)
+			}
+			intents = append(intents, contracts.Intent{
+				Type: intent.Type,
+				Args: args,
+			})
+		}
+
+		ctxValue := contract_execution_context.New(
+			contract_execution_context.Environment{
+				ContractId:           call.ContractID,
+				ContractOwner:        info.Owner,
+				BlockHeight:          blockHeight,
+				TxId:                 input.TxID,
+				BlockId:              blockId,
+				Index:                0,
+				OpIndex:              opIndex,
+				Timestamp:            timestamp,
+				RequiredAuths:        input.RequiredAuths,
+				RequiredPostingAuths: input.RequiredPostingAuths,
+				Caller:               caller,
+				Sender:               caller,
+				CallerIntents:        intents,
+				SenderIntents:        intents,
+			},
+			int64(rcLimit), rcLimit*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
+		)
+
+		// Unmarshal payload string
+		var payload string
+		if err := json.Unmarshal([]byte(call.Payload), &payload); err != nil {
+			payload = call.Payload
+		}
+
+		wasmCtx := context.WithValue(
+			context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
+			wasm_context.WasmExecCodeCtxKey,
+			hex.EncodeToString(code),
+		)
+
+		w := wasm_runtime_ipc.New()
+		w.Init()
+		res := w.Execute(wasmCtx, rcLimit*params.CYCLE_GAS_PER_RC, call.Action, payload, info.Runtime)
+		rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
+
+		if res.Error != nil {
+			ledgerSession.Revert()
+			callSession.Rollback()
+			errCode := string(res.ErrorCode)
+			errMsg := *res.Error
+			results = append(results, SimulateContractCallResult{
+				Success: false,
+				Err:     &errCode,
+				ErrMsg:  &errMsg,
+				RcUsed:  model.Int64(rcUsed),
+				GasUsed: model.Uint64(res.Gas),
+			})
+			return results, nil
+		}
+
+		diff := callSession.GetStateDiff()
+		logs := callSession.PopLogs()
+
+		// Convert logs to map[string]interface{}
+		logsMap := make(model.Map)
+		for k, v := range logs {
+			logsMap[k] = v
+		}
+
+		// Convert state diff to map[string]interface{}
+		diffMap := make(model.Map)
+		for k, v := range diff {
+			diffMap[k] = v
+		}
+
+		ret := res.Result
+		results = append(results, SimulateContractCallResult{
+			Success:   true,
+			Ret:       &ret,
+			RcUsed:    model.Int64(rcUsed),
+			GasUsed:   model.Uint64(res.Gas),
+			Logs:      logsMap,
+			StateDiff: diffMap,
+		})
+	}
+
+	// After all calls succeed, finalize
+	ledgerSession.Done()
+	callSession.Commit()
+
+	return results, nil
 }
 
 // Amount is the resolver for the amount field.

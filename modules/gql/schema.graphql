@@ -288,6 +288,37 @@ input ContractOutputFilter {
   limit: Int
 }
 
+input IntentInput {
+  type: String!
+  args: Map
+}
+
+input SimulateContractCallInput {
+  contract_id: String!
+  action: String!
+  payload: String!
+  rc_limit: Uint64!
+  intents: [IntentInput!]
+}
+
+input SimulateContractCallsInput {
+  tx_id: String!
+  required_auths: [String!]
+  required_posting_auths: [String!]
+  calls: [SimulateContractCallInput!]!
+}
+
+type SimulateContractCallResult {
+  success: Boolean!
+  err: String
+  err_msg: String
+  ret: String
+  rc_used: Int64!
+  gas_used: Uint64!
+  logs: Map
+  state_diff: Map
+}
+
 type Query {
   getStateByKeys(contractId: String!, keys: [String!]!): Map
   findTransaction(filterOptions: TransactionFilter): [TransactionRecord!]
@@ -309,6 +340,7 @@ type Query {
   electionByBlockHeight(blockHeight: Uint64): ElectionResult!
   getTssKey(keyId: String!): TssKey
   getTssRequests(keyId: String!, msgHex: [String!]): [TssRequest!]
+  simulateContractCalls(input: SimulateContractCallsInput!): [SimulateContractCallResult!]!
 }
 
 scalar Uint64

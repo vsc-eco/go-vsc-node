@@ -63,6 +63,9 @@ func NewComplexityRoot() gqlgen.ComplexityRoot {
 	c.Query.SubmitTransactionV1 = func(childComplexity int, tx string, sig string) int {
 		return 10 + childComplexity
 	}
+	c.Query.SimulateContractCalls = func(childComplexity int, input gqlgen.SimulateContractCallsInput) int {
+		return 10 + len(input.Calls)*childComplexity
+	}
 
 	// List/search queries: base cost 5, scaled by limit * childComplexity
 	c.Query.FindTransaction = func(childComplexity int, filterOptions *gqlgen.TransactionFilter) int {

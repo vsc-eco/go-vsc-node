@@ -214,6 +214,7 @@ type ComplexityRoot struct {
 		GetTssRequests        func(childComplexity int, keyID string, msgHex []string) int
 		GetWitness            func(childComplexity int, account string, height *model.Uint64) int
 		LocalNodeInfo         func(childComplexity int) int
+		SimulateContractCalls func(childComplexity int, input SimulateContractCallsInput) int
 		SubmitTransactionV1   func(childComplexity int, tx string, sig string) int
 		WitnessNodes          func(childComplexity int, height model.Uint64) int
 		WitnessSchedule       func(childComplexity int, height model.Uint64) int
@@ -225,6 +226,17 @@ type ComplexityRoot struct {
 		Amount      func(childComplexity int) int
 		BlockHeight func(childComplexity int) int
 		MaxRcs      func(childComplexity int) int
+	}
+
+	SimulateContractCallResult struct {
+		Err       func(childComplexity int) int
+		ErrMsg    func(childComplexity int) int
+		GasUsed   func(childComplexity int) int
+		Logs      func(childComplexity int) int
+		RcUsed    func(childComplexity int) int
+		Ret       func(childComplexity int) int
+		StateDiff func(childComplexity int) int
+		Success   func(childComplexity int) int
 	}
 
 	TransactionOperation struct {
@@ -374,6 +386,7 @@ type QueryResolver interface {
 	ElectionByBlockHeight(ctx context.Context, blockHeight *model.Uint64) (*elections.ElectionResult, error)
 	GetTssKey(ctx context.Context, keyID string) (*tss_db.TssKey, error)
 	GetTssRequests(ctx context.Context, keyID string, msgHex []string) ([]tss_db.TssRequest, error)
+	SimulateContractCalls(ctx context.Context, input SimulateContractCallsInput) ([]SimulateContractCallResult, error)
 }
 type RcRecordResolver interface {
 	Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error)
@@ -1133,6 +1146,17 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.Query.LocalNodeInfo(childComplexity), true
+	case "Query.simulateContractCalls":
+		if e.complexity.Query.SimulateContractCalls == nil {
+			break
+		}
+
+		args, err := ec.field_Query_simulateContractCalls_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.SimulateContractCalls(childComplexity, args["input"].(SimulateContractCallsInput)), true
 	case "Query.submitTransactionV1":
 		if e.complexity.Query.SubmitTransactionV1 == nil {
 			break
@@ -1202,6 +1226,55 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.RcRecord.MaxRcs(childComplexity), true
+
+	case "SimulateContractCallResult.err":
+		if e.complexity.SimulateContractCallResult.Err == nil {
+			break
+		}
+
+		return e.complexity.SimulateContractCallResult.Err(childComplexity), true
+	case "SimulateContractCallResult.err_msg":
+		if e.complexity.SimulateContractCallResult.ErrMsg == nil {
+			break
+		}
+
+		return e.complexity.SimulateContractCallResult.ErrMsg(childComplexity), true
+	case "SimulateContractCallResult.gas_used":
+		if e.complexity.SimulateContractCallResult.GasUsed == nil {
+			break
+		}
+
+		return e.complexity.SimulateContractCallResult.GasUsed(childComplexity), true
+	case "SimulateContractCallResult.logs":
+		if e.complexity.SimulateContractCallResult.Logs == nil {
+			break
+		}
+
+		return e.complexity.SimulateContractCallResult.Logs(childComplexity), true
+	case "SimulateContractCallResult.rc_used":
+		if e.complexity.SimulateContractCallResult.RcUsed == nil {
+			break
+		}
+
+		return e.complexity.SimulateContractCallResult.RcUsed(childComplexity), true
+	case "SimulateContractCallResult.ret":
+		if e.complexity.SimulateContractCallResult.Ret == nil {
+			break
+		}
+
+		return e.complexity.SimulateContractCallResult.Ret(childComplexity), true
+	case "SimulateContractCallResult.state_diff":
+		if e.complexity.SimulateContractCallResult.StateDiff == nil {
+			break
+		}
+
+		return e.complexity.SimulateContractCallResult.StateDiff(childComplexity), true
+	case "SimulateContractCallResult.success":
+		if e.complexity.SimulateContractCallResult.Success == nil {
+			break
+		}
+
+		return e.complexity.SimulateContractCallResult.Success(childComplexity), true
 
 	case "TransactionOperation.data":
 		if e.complexity.TransactionOperation.Data == nil {
@@ -1515,8 +1588,11 @@ func (e *executableSchema) Exec(ctx context.Context) graphql.ResponseHandler {
 	inputUnmarshalMap := graphql.BuildUnmarshalerMap(
 		ec.unmarshalInputContractOutputFilter,
 		ec.unmarshalInputFindContractFilter,
+		ec.unmarshalInputIntentInput,
 		ec.unmarshalInputLedgerActionsFilter,
 		ec.unmarshalInputLedgerTxFilter,
+		ec.unmarshalInputSimulateContractCallInput,
+		ec.unmarshalInputSimulateContractCallsInput,
 		ec.unmarshalInputTransactionFilter,
 	)
 	first := true
@@ -1890,6 +1966,37 @@ input ContractOutputFilter {
   limit: Int
 }
 
+input IntentInput {
+  type: String!
+  args: Map
+}
+
+input SimulateContractCallInput {
+  contract_id: String!
+  action: String!
+  payload: String!
+  rc_limit: Uint64!
+  intents: [IntentInput!]
+}
+
+input SimulateContractCallsInput {
+  tx_id: String!
+  required_auths: [String!]
+  required_posting_auths: [String!]
+  calls: [SimulateContractCallInput!]!
+}
+
+type SimulateContractCallResult {
+  success: Boolean!
+  err: String
+  err_msg: String
+  ret: String
+  rc_used: Int64!
+  gas_used: Uint64!
+  logs: Map
+  state_diff: Map
+}
+
 type Query {
   getStateByKeys(contractId: String!, keys: [String!]!): Map
   findTransaction(filterOptions: TransactionFilter): [TransactionRecord!]
@@ -1911,6 +2018,7 @@ type Query {
   electionByBlockHeight(blockHeight: Uint64): ElectionResult!
   getTssKey(keyId: String!): TssKey
   getTssRequests(keyId: String!, msgHex: [String!]): [TssRequest!]
+  simulateContractCalls(input: SimulateContractCallsInput!): [SimulateContractCallResult!]!
 }
 
 scalar Uint64
@@ -2123,6 +2231,17 @@ func (ec *executionContext) field_Query_getWitness_args(ctx context.Context, raw
 		return nil, err
 	}
 	args["height"] = arg1
+	return args, nil
+}
+
+func (ec *executionContext) field_Query_simulateContractCalls_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := graphql.ProcessArgField(ctx, rawArgs, "input", ec.unmarshalNSimulateContractCallsInput2vscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐSimulateContractCallsInput)
+	if err != nil {
+		return nil, err
+	}
+	args["input"] = arg0
 	return args, nil
 }
 
@@ -5874,6 +5993,65 @@ func (ec *executionContext) fieldContext_Query_getTssRequests(ctx context.Contex
 	return fc, nil
 }
 
+func (ec *executionContext) _Query_simulateContractCalls(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_Query_simulateContractCalls,
+		func(ctx context.Context) (any, error) {
+			fc := graphql.GetFieldContext(ctx)
+			return ec.resolvers.Query().SimulateContractCalls(ctx, fc.Args["input"].(SimulateContractCallsInput))
+		},
+		nil,
+		ec.marshalNSimulateContractCallResult2ᚕvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐSimulateContractCallResultᚄ,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_Query_simulateContractCalls(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "success":
+				return ec.fieldContext_SimulateContractCallResult_success(ctx, field)
+			case "err":
+				return ec.fieldContext_SimulateContractCallResult_err(ctx, field)
+			case "err_msg":
+				return ec.fieldContext_SimulateContractCallResult_err_msg(ctx, field)
+			case "ret":
+				return ec.fieldContext_SimulateContractCallResult_ret(ctx, field)
+			case "rc_used":
+				return ec.fieldContext_SimulateContractCallResult_rc_used(ctx, field)
+			case "gas_used":
+				return ec.fieldContext_SimulateContractCallResult_gas_used(ctx, field)
+			case "logs":
+				return ec.fieldContext_SimulateContractCallResult_logs(ctx, field)
+			case "state_diff":
+				return ec.fieldContext_SimulateContractCallResult_state_diff(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type SimulateContractCallResult", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_simulateContractCalls_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Query___type(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	return graphql.ResolveField(
 		ctx,
@@ -6093,6 +6271,238 @@ func (ec *executionContext) fieldContext_RcRecord_max_rcs(_ context.Context, fie
 		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SimulateContractCallResult_success(ctx context.Context, field graphql.CollectedField, obj *SimulateContractCallResult) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_SimulateContractCallResult_success,
+		func(ctx context.Context) (any, error) {
+			return obj.Success, nil
+		},
+		nil,
+		ec.marshalNBoolean2bool,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_SimulateContractCallResult_success(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SimulateContractCallResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SimulateContractCallResult_err(ctx context.Context, field graphql.CollectedField, obj *SimulateContractCallResult) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_SimulateContractCallResult_err,
+		func(ctx context.Context) (any, error) {
+			return obj.Err, nil
+		},
+		nil,
+		ec.marshalOString2ᚖstring,
+		true,
+		false,
+	)
+}
+
+func (ec *executionContext) fieldContext_SimulateContractCallResult_err(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SimulateContractCallResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SimulateContractCallResult_err_msg(ctx context.Context, field graphql.CollectedField, obj *SimulateContractCallResult) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_SimulateContractCallResult_err_msg,
+		func(ctx context.Context) (any, error) {
+			return obj.ErrMsg, nil
+		},
+		nil,
+		ec.marshalOString2ᚖstring,
+		true,
+		false,
+	)
+}
+
+func (ec *executionContext) fieldContext_SimulateContractCallResult_err_msg(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SimulateContractCallResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SimulateContractCallResult_ret(ctx context.Context, field graphql.CollectedField, obj *SimulateContractCallResult) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_SimulateContractCallResult_ret,
+		func(ctx context.Context) (any, error) {
+			return obj.Ret, nil
+		},
+		nil,
+		ec.marshalOString2ᚖstring,
+		true,
+		false,
+	)
+}
+
+func (ec *executionContext) fieldContext_SimulateContractCallResult_ret(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SimulateContractCallResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SimulateContractCallResult_rc_used(ctx context.Context, field graphql.CollectedField, obj *SimulateContractCallResult) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_SimulateContractCallResult_rc_used,
+		func(ctx context.Context) (any, error) {
+			return obj.RcUsed, nil
+		},
+		nil,
+		ec.marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐInt64,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_SimulateContractCallResult_rc_used(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SimulateContractCallResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SimulateContractCallResult_gas_used(ctx context.Context, field graphql.CollectedField, obj *SimulateContractCallResult) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_SimulateContractCallResult_gas_used,
+		func(ctx context.Context) (any, error) {
+			return obj.GasUsed, nil
+		},
+		nil,
+		ec.marshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_SimulateContractCallResult_gas_used(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SimulateContractCallResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Uint64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SimulateContractCallResult_logs(ctx context.Context, field graphql.CollectedField, obj *SimulateContractCallResult) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_SimulateContractCallResult_logs,
+		func(ctx context.Context) (any, error) {
+			return obj.Logs, nil
+		},
+		nil,
+		ec.marshalOMap2vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐMap,
+		true,
+		false,
+	)
+}
+
+func (ec *executionContext) fieldContext_SimulateContractCallResult_logs(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SimulateContractCallResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Map does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _SimulateContractCallResult_state_diff(ctx context.Context, field graphql.CollectedField, obj *SimulateContractCallResult) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_SimulateContractCallResult_state_diff,
+		func(ctx context.Context) (any, error) {
+			return obj.StateDiff, nil
+		},
+		nil,
+		ec.marshalOMap2vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐMap,
+		true,
+		false,
+	)
+}
+
+func (ec *executionContext) fieldContext_SimulateContractCallResult_state_diff(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "SimulateContractCallResult",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Map does not have child fields")
 		},
 	}
 	return fc, nil
@@ -9147,6 +9557,40 @@ func (ec *executionContext) unmarshalInputFindContractFilter(ctx context.Context
 	return it, nil
 }
 
+func (ec *executionContext) unmarshalInputIntentInput(ctx context.Context, obj any) (IntentInput, error) {
+	var it IntentInput
+	asMap := map[string]any{}
+	for k, v := range obj.(map[string]any) {
+		asMap[k] = v
+	}
+
+	fieldsInOrder := [...]string{"type", "args"}
+	for _, k := range fieldsInOrder {
+		v, ok := asMap[k]
+		if !ok {
+			continue
+		}
+		switch k {
+		case "type":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("type"))
+			data, err := ec.unmarshalNString2string(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.Type = data
+		case "args":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("args"))
+			data, err := ec.unmarshalOMap2vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐMap(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.Args = data
+		}
+	}
+
+	return it, nil
+}
+
 func (ec *executionContext) unmarshalInputLedgerActionsFilter(ctx context.Context, obj any) (LedgerActionsFilter, error) {
 	var it LedgerActionsFilter
 	asMap := map[string]any{}
@@ -9307,6 +9751,109 @@ func (ec *executionContext) unmarshalInputLedgerTxFilter(ctx context.Context, ob
 				return it, err
 			}
 			it.Limit = data
+		}
+	}
+
+	return it, nil
+}
+
+func (ec *executionContext) unmarshalInputSimulateContractCallInput(ctx context.Context, obj any) (SimulateContractCallInput, error) {
+	var it SimulateContractCallInput
+	asMap := map[string]any{}
+	for k, v := range obj.(map[string]any) {
+		asMap[k] = v
+	}
+
+	fieldsInOrder := [...]string{"contract_id", "action", "payload", "rc_limit", "intents"}
+	for _, k := range fieldsInOrder {
+		v, ok := asMap[k]
+		if !ok {
+			continue
+		}
+		switch k {
+		case "contract_id":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("contract_id"))
+			data, err := ec.unmarshalNString2string(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.ContractID = data
+		case "action":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("action"))
+			data, err := ec.unmarshalNString2string(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.Action = data
+		case "payload":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("payload"))
+			data, err := ec.unmarshalNString2string(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.Payload = data
+		case "rc_limit":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("rc_limit"))
+			data, err := ec.unmarshalNUint642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐUint64(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.RcLimit = data
+		case "intents":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("intents"))
+			data, err := ec.unmarshalOIntentInput2ᚕvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐIntentInputᚄ(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.Intents = data
+		}
+	}
+
+	return it, nil
+}
+
+func (ec *executionContext) unmarshalInputSimulateContractCallsInput(ctx context.Context, obj any) (SimulateContractCallsInput, error) {
+	var it SimulateContractCallsInput
+	asMap := map[string]any{}
+	for k, v := range obj.(map[string]any) {
+		asMap[k] = v
+	}
+
+	fieldsInOrder := [...]string{"tx_id", "required_auths", "required_posting_auths", "calls"}
+	for _, k := range fieldsInOrder {
+		v, ok := asMap[k]
+		if !ok {
+			continue
+		}
+		switch k {
+		case "tx_id":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("tx_id"))
+			data, err := ec.unmarshalNString2string(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.TxID = data
+		case "required_auths":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("required_auths"))
+			data, err := ec.unmarshalOString2ᚕstringᚄ(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.RequiredAuths = data
+		case "required_posting_auths":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("required_posting_auths"))
+			data, err := ec.unmarshalOString2ᚕstringᚄ(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.RequiredPostingAuths = data
+		case "calls":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("calls"))
+			data, err := ec.unmarshalNSimulateContractCallInput2ᚕvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐSimulateContractCallInputᚄ(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.Calls = data
 		}
 	}
 
@@ -11549,6 +12096,28 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "simulateContractCalls":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_simulateContractCalls(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "__type":
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Query___type(ctx, field)
@@ -11704,6 +12273,65 @@ func (ec *executionContext) _RcRecord(ctx context.Context, sel ast.SelectionSet,
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var simulateContractCallResultImplementors = []string{"SimulateContractCallResult"}
+
+func (ec *executionContext) _SimulateContractCallResult(ctx context.Context, sel ast.SelectionSet, obj *SimulateContractCallResult) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, simulateContractCallResultImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("SimulateContractCallResult")
+		case "success":
+			out.Values[i] = ec._SimulateContractCallResult_success(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "err":
+			out.Values[i] = ec._SimulateContractCallResult_err(ctx, field, obj)
+		case "err_msg":
+			out.Values[i] = ec._SimulateContractCallResult_err_msg(ctx, field, obj)
+		case "ret":
+			out.Values[i] = ec._SimulateContractCallResult_ret(ctx, field, obj)
+		case "rc_used":
+			out.Values[i] = ec._SimulateContractCallResult_rc_used(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "gas_used":
+			out.Values[i] = ec._SimulateContractCallResult_gas_used(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "logs":
+			out.Values[i] = ec._SimulateContractCallResult_logs(ctx, field, obj)
+		case "state_diff":
+			out.Values[i] = ec._SimulateContractCallResult_state_diff(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -13121,6 +13749,11 @@ func (ec *executionContext) marshalNInt642vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐI
 	return v
 }
 
+func (ec *executionContext) unmarshalNIntentInput2vscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐIntentInput(ctx context.Context, v any) (IntentInput, error) {
+	res, err := ec.unmarshalInputIntentInput(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
 func (ec *executionContext) unmarshalNJSON2string(ctx context.Context, v any) (string, error) {
 	res, err := graphql.UnmarshalString(v)
 	return res, graphql.ErrorOnPath(ctx, err)
@@ -13191,6 +13824,79 @@ func (ec *executionContext) marshalNPostingJsonKeys2ᚕvscᚑnodeᚋmodulesᚋdb
 	}
 
 	return ret
+}
+
+func (ec *executionContext) unmarshalNSimulateContractCallInput2vscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐSimulateContractCallInput(ctx context.Context, v any) (SimulateContractCallInput, error) {
+	res, err := ec.unmarshalInputSimulateContractCallInput(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) unmarshalNSimulateContractCallInput2ᚕvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐSimulateContractCallInputᚄ(ctx context.Context, v any) ([]SimulateContractCallInput, error) {
+	var vSlice []any
+	vSlice = graphql.CoerceList(v)
+	var err error
+	res := make([]SimulateContractCallInput, len(vSlice))
+	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
+		res[i], err = ec.unmarshalNSimulateContractCallInput2vscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐSimulateContractCallInput(ctx, vSlice[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+func (ec *executionContext) marshalNSimulateContractCallResult2vscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐSimulateContractCallResult(ctx context.Context, sel ast.SelectionSet, v SimulateContractCallResult) graphql.Marshaler {
+	return ec._SimulateContractCallResult(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNSimulateContractCallResult2ᚕvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐSimulateContractCallResultᚄ(ctx context.Context, sel ast.SelectionSet, v []SimulateContractCallResult) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNSimulateContractCallResult2vscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐSimulateContractCallResult(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
+func (ec *executionContext) unmarshalNSimulateContractCallsInput2vscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐSimulateContractCallsInput(ctx context.Context, v any) (SimulateContractCallsInput, error) {
+	res, err := ec.unmarshalInputSimulateContractCallsInput(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNString2string(ctx context.Context, v any) (string, error) {
@@ -13984,6 +14690,24 @@ func (ec *executionContext) marshalOInt642ᚖvscᚑnodeᚋmodulesᚋgqlᚋmodel�
 		return graphql.Null
 	}
 	return v
+}
+
+func (ec *executionContext) unmarshalOIntentInput2ᚕvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐIntentInputᚄ(ctx context.Context, v any) ([]IntentInput, error) {
+	if v == nil {
+		return nil, nil
+	}
+	var vSlice []any
+	vSlice = graphql.CoerceList(v)
+	var err error
+	res := make([]IntentInput, len(vSlice))
+	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
+		res[i], err = ec.unmarshalNIntentInput2vscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐIntentInput(ctx, vSlice[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
 }
 
 func (ec *executionContext) marshalOLedgerAction2ᚕᚖvscᚑnodeᚋmodulesᚋgqlᚋgqlgenᚐLedgerAction(ctx context.Context, sel ast.SelectionSet, v []*LedgerAction) graphql.Marshaler {

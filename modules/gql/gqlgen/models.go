@@ -26,6 +26,11 @@ type FindContractFilter struct {
 	Limit      *int    `json:"limit,omitempty"`
 }
 
+type IntentInput struct {
+	Type string    `json:"type"`
+	Args model.Map `json:"args,omitempty"`
+}
+
 type LedgerAction struct {
 	ID     *string       `json:"id,omitempty"`
 	Status *string       `json:"status,omitempty"`
@@ -69,6 +74,32 @@ type LocalNodeInfo struct {
 }
 
 type Query struct {
+}
+
+type SimulateContractCallInput struct {
+	ContractID string        `json:"contract_id"`
+	Action     string        `json:"action"`
+	Payload    string        `json:"payload"`
+	RcLimit    model.Uint64  `json:"rc_limit"`
+	Intents    []IntentInput `json:"intents,omitempty"`
+}
+
+type SimulateContractCallResult struct {
+	Success   bool         `json:"success"`
+	Err       *string      `json:"err,omitempty"`
+	ErrMsg    *string      `json:"err_msg,omitempty"`
+	Ret       *string      `json:"ret,omitempty"`
+	RcUsed    model.Int64  `json:"rc_used"`
+	GasUsed   model.Uint64 `json:"gas_used"`
+	Logs      model.Map    `json:"logs,omitempty"`
+	StateDiff model.Map    `json:"state_diff,omitempty"`
+}
+
+type SimulateContractCallsInput struct {
+	TxID                 string                      `json:"tx_id"`
+	RequiredAuths        []string                    `json:"required_auths,omitempty"`
+	RequiredPostingAuths []string                    `json:"required_posting_auths,omitempty"`
+	Calls                []SimulateContractCallInput `json:"calls"`
 }
 
 type TransactionFilter struct {
