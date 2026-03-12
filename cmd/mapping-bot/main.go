@@ -153,6 +153,10 @@ func main() {
 		// time.Sleep(3 * time.Second)
 		// return
 		cancel()
-		time.Sleep(time.Minute)
+		if args.btcNetwork == "mainnet" {
+			time.Sleep(time.Minute)
+		} else {
+			time.Sleep(10 * time.Second)
+		}
 	}
 }
