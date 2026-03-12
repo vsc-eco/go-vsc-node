@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	blocks "github.com/ipfs/go-block-format"
 )
 
@@ -73,17 +77,29 @@ func (d BtcDID) Verify(data blocks.Block, sig string) (bool, error) {
 		return false, fmt.Errorf("unsupported address: %w", err)
 	}
 
-	// hash the block's CID string using Bitcoin Signed Message format
-	hash := BitcoinMessageHash(data.Cid().String())
-
-	// decode base64 BIP-137 signature
+	// decode base64 signature
 	sigBytes, err := base64.StdEncoding.DecodeString(sig)
 	if err != nil {
 		return false, fmt.Errorf("failed to decode signature: %w", err)
 	}
-	if len(sigBytes) != 65 {
-		return false, fmt.Errorf("invalid signature length: expected 65, got %d", len(sigBytes))
+
+	// BIP-137 compact signature (65 bytes)
+	if len(sigBytes) == 65 {
+		return verifyBIP137(addr, addrType, data, sigBytes)
 	}
+
+	// BIP-322 "simple" signature (variable length, typically ~107 bytes for P2WPKH)
+	if addrType == "p2wpkh" {
+		return verifyBIP322Simple(addr, data, sigBytes)
+	}
+
+	return false, fmt.Errorf("invalid signature length %d for address type %s: expected 65 (BIP-137)", len(sigBytes), addrType)
+}
+
+// ===== BIP-137 verification =====
+
+func verifyBIP137(addr string, addrType string, data blocks.Block, sigBytes []byte) (bool, error) {
+	hash := BitcoinMessageHash(data.Cid().String())
 
 	// recover public key — RecoverCompact handles the header byte internally
 	pubKey, _, err := ecdsa.RecoverCompact(sigBytes, hash)
@@ -132,6 +148,165 @@ func (d BtcDID) Verify(data blocks.Block, sig string) (bool, error) {
 	}
 
 	return false, fmt.Errorf("unknown address type")
+}
+
+// ===== BIP-322 "simple" verification =====
+
+// verifyBIP322Simple verifies a BIP-322 "simple" signature for P2WPKH addresses.
+// BIP-322 signs a virtual transaction sighash (BIP-143), NOT the Bitcoin message hash.
+// Leather wallet returns BIP-322 for all SegWit (bc1q) addresses.
+func verifyBIP322Simple(addr string, data blocks.Block, sigBytes []byte) (bool, error) {
+	// 1. Parse witness stack: [num_items, sig_len, sig_bytes, pubkey_len, pubkey_bytes]
+	items, err := parseCompactWitnessStack(sigBytes)
+	if err != nil {
+		return false, fmt.Errorf("BIP-322: %w", err)
+	}
+	if len(items) != 2 {
+		return false, fmt.Errorf("BIP-322: expected 2 witness items, got %d", len(items))
+	}
+
+	sigWithSighash := items[0]
+	pubkeyBytes := items[1]
+
+	// 2. Parse and validate compressed public key
+	if len(pubkeyBytes) != 33 {
+		return false, fmt.Errorf("BIP-322: expected 33-byte compressed pubkey, got %d", len(pubkeyBytes))
+	}
+	pubkey, err := btcec.ParsePubKey(pubkeyBytes)
+	if err != nil {
+		return false, fmt.Errorf("BIP-322: invalid public key: %w", err)
+	}
+
+	// 3. Verify public key matches the P2WPKH address
+	pubkeyHash := btcutil.Hash160(pubkey.SerializeCompressed())
+	derivedAddr, err := btcutil.NewAddressWitnessPubKeyHash(pubkeyHash, &chaincfg.MainNetParams)
+	if err != nil {
+		return false, fmt.Errorf("BIP-322: failed to derive address: %w", err)
+	}
+	if derivedAddr.String() != addr {
+		return false, nil // pubkey doesn't match address
+	}
+
+	// 4. Compute BIP-322 tagged message hash
+	msgHash := bip322TaggedHash([]byte(data.Cid().String()))
+
+	// 5. Build scriptPubKey for the P2WPKH address
+	decoded, err := btcutil.DecodeAddress(addr, &chaincfg.MainNetParams)
+	if err != nil {
+		return false, fmt.Errorf("BIP-322: failed to decode address: %w", err)
+	}
+	scriptPubKey, err := txscript.PayToAddrScript(decoded)
+	if err != nil {
+		return false, fmt.Errorf("BIP-322: failed to build scriptPubKey: %w", err)
+	}
+
+	// 6. Build the "to_spend" virtual transaction (BIP-322 spec)
+	toSpend := wire.NewMsgTx(0)
+	scriptSig := make([]byte, 0, 34)
+	scriptSig = append(scriptSig, txscript.OP_0)
+	scriptSig = append(scriptSig, txscript.OP_DATA_32)
+	scriptSig = append(scriptSig, msgHash...)
+	nullHash := chainhash.Hash{}
+	txIn := wire.NewTxIn(wire.NewOutPoint(&nullHash, 0xFFFFFFFF), scriptSig, nil)
+	txIn.Sequence = 0
+	toSpend.AddTxIn(txIn)
+	toSpend.AddTxOut(wire.NewTxOut(0, scriptPubKey))
+
+	// 7. Build the "to_sign" virtual transaction
+	toSpendHash := toSpend.TxHash()
+	toSign := wire.NewMsgTx(0)
+	toSignIn := wire.NewTxIn(wire.NewOutPoint(&toSpendHash, 0), nil, nil)
+	toSignIn.Sequence = 0
+	toSign.AddTxIn(toSignIn)
+	toSign.AddTxOut(wire.NewTxOut(0, []byte{txscript.OP_RETURN}))
+
+	// 8. Compute BIP-143 segwit sighash
+	// For P2WPKH, the scriptCode is the equivalent P2PKH script
+	scriptCode, err := txscript.NewScriptBuilder().
+		AddOp(txscript.OP_DUP).
+		AddOp(txscript.OP_HASH160).
+		AddData(pubkeyHash).
+		AddOp(txscript.OP_EQUALVERIFY).
+		AddOp(txscript.OP_CHECKSIG).
+		Script()
+	if err != nil {
+		return false, fmt.Errorf("BIP-322: failed to build scriptCode: %w", err)
+	}
+
+	// Determine sighash type from the trailing byte after the DER signature
+	sighashType := txscript.SigHashAll
+	if len(sigWithSighash) > 2 && sigWithSighash[0] == 0x30 {
+		derLen := int(sigWithSighash[1]) + 2
+		if len(sigWithSighash) > derLen {
+			sighashType = txscript.SigHashType(sigWithSighash[derLen])
+		}
+	}
+
+	prevOutputFetcher := txscript.NewCannedPrevOutputFetcher(scriptPubKey, 0)
+	sigHashes := txscript.NewTxSigHashes(toSign, prevOutputFetcher)
+	sighashBytes, err := txscript.CalcWitnessSigHash(scriptCode, sigHashes, sighashType, toSign, 0, 0)
+	if err != nil {
+		return false, fmt.Errorf("BIP-322: failed to compute sighash: %w", err)
+	}
+
+	// 9. Parse DER signature (strip sighash type byte) and verify
+	derSig := stripSighashType(sigWithSighash)
+	parsedSig, err := ecdsa.ParseDERSignature(derSig)
+	if err != nil {
+		return false, fmt.Errorf("BIP-322: failed to parse DER signature: %w", err)
+	}
+
+	return parsedSig.Verify(sighashBytes, pubkey), nil
+}
+
+// bip322TaggedHash computes the BIP-322 tagged message hash.
+// SHA256(SHA256("BIP0322-signed-message") || SHA256("BIP0322-signed-message") || message)
+func bip322TaggedHash(message []byte) []byte {
+	tag := sha256.Sum256([]byte("BIP0322-signed-message"))
+	h := sha256.New()
+	h.Write(tag[:])
+	h.Write(tag[:])
+	h.Write(message)
+	result := h.Sum(nil)
+	return result
+}
+
+// parseCompactWitnessStack parses a serialized witness stack.
+// Format: varint(num_items) [varint(item_len) item_bytes]...
+func parseCompactWitnessStack(data []byte) ([][]byte, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty witness data")
+	}
+	offset := 0
+	numItems := int(data[offset])
+	offset++
+
+	items := make([][]byte, 0, numItems)
+	for i := 0; i < numItems; i++ {
+		if offset >= len(data) {
+			return nil, fmt.Errorf("unexpected end of witness data at item %d", i)
+		}
+		itemLen := int(data[offset])
+		offset++
+		if offset+itemLen > len(data) {
+			return nil, fmt.Errorf("witness item %d length %d exceeds data bounds", i, itemLen)
+		}
+		items = append(items, data[offset:offset+itemLen])
+		offset += itemLen
+	}
+	return items, nil
+}
+
+// stripSighashType removes the trailing sighash type byte from a DER+sighash signature.
+func stripSighashType(sigWithSighash []byte) []byte {
+	if len(sigWithSighash) < 3 || sigWithSighash[0] != 0x30 {
+		return sigWithSighash
+	}
+	derLen := int(sigWithSighash[1]) + 2
+	if len(sigWithSighash) > derLen {
+		return sigWithSighash[:derLen]
+	}
+	return sigWithSighash
 }
 
 // ===== helpers =====
