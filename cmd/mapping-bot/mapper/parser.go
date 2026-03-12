@@ -20,16 +20,16 @@ type MappingInputData struct {
 }
 
 type VerificationRequest struct {
-	BlockHeight    uint32 `json:"block_height"`
+	BlockHeight    uint64 `json:"block_height"`
 	RawTxHex       string `json:"raw_tx_hex"`
 	MerkleProofHex string `json:"merkle_proof_hex"` // array of byte arrays, each of which is guaranteed 32 bytes
-	TxIndex        uint32 `json:"tx_index"`         // position of the tx in the block
+	TxIndex        uint64 `json:"tx_index"`         // position of the tx in the block
 }
 
 func (b *Bot) ParseBlock(
 	ctx context.Context,
 	rawBlockBytes []byte,
-	blockHeight uint32,
+	blockHeight uint64,
 ) ([]*MappingInputData, error) {
 	var msgBlock wire.MsgBlock
 	err := msgBlock.Deserialize(bytes.NewReader(rawBlockBytes))
@@ -89,7 +89,7 @@ func (b *Bot) ParseBlock(
 				BlockHeight:    blockHeight,
 				RawTxHex:       rawTxHex,
 				MerkleProofHex: merkleProofHex,
-				TxIndex:        uint32(txIdx),
+				TxIndex:        uint64(txIdx),
 			},
 			Instructions: instructions,
 		})

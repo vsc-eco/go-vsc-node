@@ -17,7 +17,7 @@ import (
 // === StateStore Methods ===
 
 // SetBlockHeight sets the last processed block height
-func (s *StateStore) SetBlockHeight(ctx context.Context, height uint32) error {
+func (s *StateStore) SetBlockHeight(ctx context.Context, height uint64) error {
 	doc := BlockHeight{
 		ID:     "current",
 		Height: height,
@@ -33,7 +33,7 @@ func (s *StateStore) SetBlockHeight(ctx context.Context, height uint32) error {
 
 // GetBlockHeight retrieves the last processed block height
 // Returns 0 if no height has been set yet
-func (s *StateStore) GetBlockHeight(ctx context.Context) (uint32, error) {
+func (s *StateStore) GetBlockHeight(ctx context.Context) (uint64, error) {
 	var result BlockHeight
 	err := s.heightCollection.FindOne(ctx, bson.M{"_id": "current"}).Decode(&result)
 	if err != nil {
@@ -48,7 +48,7 @@ func (s *StateStore) GetBlockHeight(ctx context.Context) (uint32, error) {
 // IncrementBlockHeight atomically increments the block height by 1
 // Returns the new height after increment
 // If no height exists, initializes to 1
-func (s *StateStore) IncrementBlockHeight(ctx context.Context) (uint32, error) {
+func (s *StateStore) IncrementBlockHeight(ctx context.Context) (uint64, error) {
 	filter := bson.M{"_id": "current"}
 	update := bson.M{
 		"$inc": bson.M{"height": 1},
@@ -164,7 +164,7 @@ func (s *StateStore) AddPendingTransaction(
 	signatures := make([]SignatureSlot, len(unsignedHashes))
 	for i, uh := range unsignedHashes {
 		signatures[i] = SignatureSlot{
-			Index:         uh.Index,
+			Index:         uint64(uh.Index),
 			SigHash:       uh.SigHash,
 			WitnessScript: uh.WitnessScript,
 			Signature:     nil,
@@ -174,7 +174,7 @@ func (s *StateStore) AddPendingTransaction(
 	doc := PendingTransaction{
 		TxID:              txID,
 		RawTx:             rawTx,
-		TotalSignatures:   uint32(len(unsignedHashes)),
+		TotalSignatures:   uint64(len(unsignedHashes)),
 		CurrentSignatures: 0,
 		CreatedAt:         time.Now().UTC(),
 		Signatures:        signatures,

@@ -40,7 +40,7 @@ func mapBotHttpServer(
 
 type healthResponse struct {
 	Status      string  `json:"status"`
-	BlockHeight uint32  `json:"blockHeight"`
+	BlockHeight uint64  `json:"blockHeight"`
 	LastBlockAt *string `json:"lastBlockAt"`
 	StaleSecs   *int64  `json:"staleSecs,omitempty"`
 }

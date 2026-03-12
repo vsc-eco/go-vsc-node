@@ -43,7 +43,7 @@ type AddressMapping struct {
 // BlockHeight stores the last processed block height
 type BlockHeight struct {
 	ID     string `bson:"_id"` // Always "current"
-	Height uint32 `bson:"height"`
+	Height uint64 `bson:"height"`
 }
 
 // SentTransaction stores a transaction ID that has been sent
@@ -56,15 +56,15 @@ type SentTransaction struct {
 type PendingTransaction struct {
 	TxID              string          `bson:"_id"`
 	RawTx             []byte          `bson:"rawTx"`
-	TotalSignatures   uint32          `bson:"totalSignatures"`
-	CurrentSignatures uint32          `bson:"currentSignatures"`
+	TotalSignatures   uint64          `bson:"totalSignatures"`
+	CurrentSignatures uint64          `bson:"currentSignatures"`
 	CreatedAt         time.Time       `bson:"createdAt"`
 	Signatures        []SignatureSlot `bson:"signatures"`
 }
 
 // SignatureSlot represents a signature slot in a transaction
 type SignatureSlot struct {
-	Index         uint32 `bson:"index"`
+	Index         uint64 `bson:"index"`
 	SigHash       []byte `bson:"sigHash"`
 	WitnessScript []byte `bson:"witnessScript"`
 	Signature     []byte `bson:"signature,omitempty"` // omitempty keeps it null when empty

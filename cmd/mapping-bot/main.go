@@ -110,7 +110,7 @@ func main() {
 		if blockHeight == 0 {
 			// prefer the contract's last processed height so we don't re-scan blocks
 			// the contract has already seen; fall back to the mempool tip
-			var startHeight uint32
+			var startHeight uint64
 			contractHeightStr, err := bot.FetchLastHeight(ctx)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error fetching last height from contract: %s\n", err.Error())
@@ -119,7 +119,7 @@ func main() {
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "contract last height is not a valid integer %q: %s\n", contractHeightStr, err.Error())
 				} else {
-					startHeight = uint32(h)
+					startHeight = h
 					fmt.Printf("no stored block height, resuming from contract height: %d\n", startHeight)
 				}
 			}

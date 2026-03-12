@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"sync"
+	"sync/atomic"
 	"time"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mempool"
@@ -28,24 +28,23 @@ type Bot struct {
 	IdentityConfig common.IdentityConfig
 	HiveConfig     streamer.HiveConfig
 
-	mu              sync.RWMutex
-	lastBlockAt     time.Time
-	lastBlockHeight uint32
+	lastBlockHeight atomic.Uint64
+	lastBlockAt     atomic.Int64 // Unix nanoseconds; 0 means not yet set
 }
 
-func (b *Bot) setLastBlock(height uint32) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.lastBlockHeight = height
-	b.lastBlockAt = time.Now()
+func (b *Bot) setLastBlock(height uint64) {
+	b.lastBlockHeight.Store(height)
+	b.lastBlockAt.Store(time.Now().UnixNano())
 }
 
 // LastBlock returns the most recently processed block height and when it was processed.
 // Returns a zero time if no block has been processed yet this session.
-func (b *Bot) LastBlock() (height uint32, at time.Time) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.lastBlockHeight, b.lastBlockAt
+func (b *Bot) LastBlock() (height uint64, at time.Time) {
+	height = b.lastBlockHeight.Load()
+	if ns := b.lastBlockAt.Load(); ns != 0 {
+		at = time.Unix(0, ns)
+	}
+	return
 }
 
 func parseNetwork(name string) (*chaincfg.Params, string, error) {

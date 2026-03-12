@@ -62,9 +62,9 @@ type Output struct {
 
 type Status struct {
 	Confirmed   bool   `json:"confirmed"`
-	BlockHeight int    `json:"block_height"`
+	BlockHeight uint64 `json:"block_height"`
 	BlockHash   string `json:"block_hash"`
-	BlockTime   int64  `json:"block_time"`
+	BlockTime   uint64 `json:"block_time"`
 }
 
 func NewMempoolClient(httpClient *http.Client, baseURL string) *MempoolClient {
@@ -74,7 +74,7 @@ func NewMempoolClient(httpClient *http.Client, baseURL string) *MempoolClient {
 	}
 }
 
-func (m *MempoolClient) GetTipHeight() (uint32, error) {
+func (m *MempoolClient) GetTipHeight() (uint64, error) {
 	url := fmt.Sprintf("%s/blocks/tip/height", m.baseURL)
 	resp, err := m.client.Get(url)
 	if err != nil {
@@ -86,14 +86,14 @@ func (m *MempoolClient) GetTipHeight() (uint32, error) {
 		return 0, fmt.Errorf("mempool API returned status %d", resp.StatusCode)
 	}
 
-	var height uint32
+	var height uint64
 	if err := json.NewDecoder(resp.Body).Decode(&height); err != nil {
 		return 0, fmt.Errorf("error decoding tip height: %w", err)
 	}
 	return height, nil
 }
 
-func (m *MempoolClient) GetBlockHashAtHeight(height uint32) (string, int, error) {
+func (m *MempoolClient) GetBlockHashAtHeight(height uint64) (string, int, error) {
 	slog.Info("getting hash for block", "height", height)
 	url := fmt.Sprintf("%s/block-height/%d", m.baseURL, height)
 	resp, err := m.client.Get(url)

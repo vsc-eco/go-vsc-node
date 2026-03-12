@@ -15,7 +15,7 @@ const dropHeightDiff = 4320
 
 func (b *Bot) HandleMap(
 	blockBytes []byte,
-	blockHeight uint32,
+	blockHeight uint64,
 ) {
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
 	defer cancel()
@@ -30,7 +30,8 @@ func (b *Bot) HandleMap(
 		return
 	}
 
-	if uint32(lastContractHeight) < blockHeight {
+	if lastContractHeight < blockHeight {
+		b.lastBlockHeight.Store(lastContractHeight)
 		log.Printf("delaying processing of block with height %d, block not yet present in contract", blockHeight)
 		return
 	}
@@ -70,13 +71,13 @@ func (b *Bot) HandleMap(
 	b.setLastBlock(blockHeight)
 }
 
-func groupTxsByBlock(transactions []mempool.Transaction, lastHeight uint32) map[string][]mempool.Transaction {
+func groupTxsByBlock(transactions []mempool.Transaction, lastHeight uint64) map[string][]mempool.Transaction {
 	// rarely will have txs that are in the same block so allocate length to same as array
 	grouped := make(map[string][]mempool.Transaction, len(transactions))
 
 	for _, tx := range transactions {
 		// don't acknowledge blocks older than the drop diff (and can break here because the rest will be older)
-		if (lastHeight - uint32(tx.Status.BlockHeight)) < dropHeightDiff {
+		if (lastHeight - tx.Status.BlockHeight) < dropHeightDiff {
 			break
 		}
 		blockHash := tx.Status.BlockHash
@@ -115,6 +116,6 @@ func (b *Bot) HandleExistingTxs(btcAddress string) {
 		if err != nil {
 			log.Printf("error getting block with hash %s: %s", blockHash, err.Error())
 		}
-		b.HandleMap(blockBytes, uint32(blockHeight))
+		b.HandleMap(blockBytes, blockHeight)
 	}
 }
