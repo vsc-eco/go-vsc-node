@@ -165,11 +165,6 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 
 	// tssMgr.activeActions
 	if witnessSlot != nil {
-		// fmt.Println("witnessSlot expression", witnessSlot.Account, tssMgr.config.Get().HiveUsername, bh%TSS_INTERVAL == 0)
-		// if witnessSlot.Account == tssMgr.config.Get().HiveUsername && bh%TSS_INTERVAL == 0 {
-		// 	fmt.Println("ME slot")
-		// }
-
 		isLeader := witnessSlot.Account == tssMgr.config.Get().HiveUsername
 
 		keyLocks := make(map[string]bool)
@@ -211,7 +206,6 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				keyInfo, _ := tssMgr.tssKeys.FindKey(signReq.KeyId)
 				if !keyLocks[signReq.KeyId] {
 					rawMsg, err := hex.DecodeString(signReq.Msg)
-					fmt.Println("err", err)
 					if err == nil {
 						generatedActions = append(generatedActions, QueuedAction{
 							Type:  SignAction,
@@ -384,9 +378,6 @@ func (tss *TssManager) BlameScore() ScoreMap {
 	} else {
 		fmt.Printf("[TSS] [BLAME] Ban summary: no nodes banned gracePeriodExemptions=%d\n", len(gracePeriodExemptions))
 	}
-	// scoreMapBytes, _ := json.MarshalIndent(blameMap, "", "  ")
-	// fmt.Println("scoreMap", string(scoreMapBytes), sortedArray)
-	// fmt.Println("BlamedNodes", bannedNodes)
 
 	return ScoreMap{
 		BannedNodes: bannedNodes,
@@ -547,7 +538,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			fmt.Printf("[TSS] [RESHARE] Creating reshare action sessionId=%s keyId=%s blockHeight=%d\n",
 				sessionId, action.KeyId, bh)
-			fmt.Println("reshare sessionId", sessionId)
 			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "keygen", "reshare")
 			lastBlame, _ := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "blame")
 
@@ -556,7 +546,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			if commitment.Epoch >= currentElection.Epoch || err != nil {
 				fmt.Printf("[TSS] [RESHARE] Skipping reshare sessionId=%s keyId=%s commitmentEpoch=%d currentEpoch=%d err=%v\n",
 					sessionId, action.KeyId, commitment.Epoch, currentElection.Epoch, err)
-				fmt.Println("reshare skipping")
 				continue
 			}
 
@@ -569,14 +558,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					blameBits = blameBits.SetBytes(blameBytes)
 				}
 			}
-			//No idea what was happening here
-			// if commitment.Type != "reshare" {
-			// 	if lastBlame.BlockHeight > commitment.BlockHeight && lastBlame.BlockHeight > bh-BLAME_EXPIRE {
-			// 		isBlame = true
-			// 	}
-			// }
 
-			fmt.Println("commitment", commitment)
 			commitmentElection := tssMgr.electionDb.GetElection(commitment.Epoch)
 			if commitmentElection == nil || commitmentElection.Members == nil {
 				fmt.Printf("[TSS] [RESHARE] Commitment election missing for epoch %d, skipping reshare sessionId=%s\n",
@@ -606,13 +588,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			for idx, member := range currentElection.Members {
 				fmt.Println("isBlame", isBlame, idx, blameBits.Bit(idx))
-				// if isBlame {
-				// 	if blameBits.Bit(idx) == 1 {
-				// 		//Deny inclusion into next commitee due to previous blame
-				// 		continue
-				// 	}
-				// }
-				//if node is banned
 				if blameMap.BannedNodes[member.Account] {
 					excludedNodes = append(excludedNodes, member.Account)
 					fmt.Printf("[TSS] [RESHARE] Excluding banned node from reshare sessionId=%s account=%s\n",
@@ -802,7 +777,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 				fmt.Printf("[TSS] [TIMEOUT] Timeout result sessionId=%s keyId=%s blockHeight=%d epoch=%d culprits=%v\n",
 					res.SessionId, res.KeyId, res.BlockHeight, res.Epoch, res.Culprits)
-				fmt.Println("Timeout Result", res, time.Now().String())
 				commitment := result.Serialize()
 				commitment.BlockHeight = bh
 				commitableResults = append(commitableResults, commitment)
@@ -974,7 +948,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 		}
 
-		// fmt.Println("UNLOCKING!!!", tssMgr.config.Get().HiveUsername)
 		tssMgr.lock.Unlock()
 	}()
 }
@@ -1036,7 +1009,6 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 		for signedWeight < (weightTotal * 2 / 3) {
 			msg := <-sigChan
 
-			// fmt.Println("EMT", msg)
 			var member dids.Member
 			var memberAccount string
 			var index int = -1
@@ -1083,78 +1055,6 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 		return res, errRes
 	}
 }
-
-//Remaining important things to do:
-// - Blame manager and error management
-// - Register key data on chain
-// - SDK bindings for key generation, signing, and deletion (optional support). Charge accordingly.
-// - RC cost for signing ?
-// - Key reshare support (key rotation)
-// - Signing return sig through Done()
-// - BLS sign output results
-
-// func (tssMgr *TssManager) AskForSigs(sessionId string) {
-// 	result := tssMgr.sessionResults[sessionId]
-
-// 	result.Serialize()
-// 	electionData, err := tssMgr.electionDb.GetElectionByHeight(math.MaxInt64)
-
-// 	if err != nil {
-// 		return
-// 	}
-
-// 	didList := make([]dids.BlsDID, 0)
-
-// 	for _, member := range electionData.Members {
-// 		didList = append(didList, dids.BlsDID(member.Key))
-// 	}
-
-// 	circuit := dids.NewBlsCircuitGenerator(didList)
-
-// 	var signedMembers = make(map[dids.BlsDID]bool, 0)
-// 	var msgCid cid.Cid
-// 	partialCircuit, _ := circuit.Generate(msgCid)
-
-// 	signedWeight := 0
-// 	if tssMgr.sigChannels[sessionId] != nil {
-// 		go func() {
-// 			for {
-// 				sig := <-tssMgr.sigChannels[sessionId]
-
-// 				var member dids.BlsDID
-// 				var index int
-// 				for idx, mbr := range electionData.Members {
-// 					if mbr.Account == sig.Account {
-// 						member = dids.BlsDID(mbr.Key)
-// 						index = idx
-// 						break
-// 					}
-// 				}
-
-// 				// fmt.Println("sig", sig)
-// 				//Prevent replay attacks / double aggregation
-// 				if !signedMembers[member] {
-// 					verified, _ := partialCircuit.AddAndVerify(member, sig.Sig)
-
-// 					if verified {
-// 						signedMembers[member] = true
-// 						signedWeight += int(electionData.Weights[index])
-// 					}
-// 				}
-// 			}
-// 		}()
-
-// 		tssMgr.sigChannels[sessionId] = make(chan sigMsg)
-
-// 		tssMgr.pubsub.Send(p2pMessage{
-// 			Type:    "ask_sigs",
-// 			Account: tssMgr.config.Get().HiveUsername,
-// 			Data: map[string]interface{}{
-// 				"session_id": sessionId,
-// 			},
-// 		})
-// 	}
-// }
 
 func (tssMgr *TssManager) Init() error {
 	tssMgr.VStream.RegisterBlockTick("tss-mgr", tssMgr.BlockTick, true)

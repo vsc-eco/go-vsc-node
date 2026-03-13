@@ -184,7 +184,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		// Wait for sync delay (reduced from 15s to configurable 5s)
 		syncDelay := TSS_RESHARE_SYNC_DELAY
 		fmt.Printf("[TSS] [RESHARE] Waiting %v before starting parties sessionId=%s\n", syncDelay, dispatcher.sessionId)
-		
+
 		// Check participant readiness before starting (strict: do not start with missing peers)
 		ready := dispatcher.waitForParticipantReadiness(sortedPids, dispatcher.newPids, syncDelay)
 		if !ready {
@@ -309,7 +309,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		// Wait for sync delay (reduced from 15s to configurable 5s)
 		syncDelay := TSS_RESHARE_SYNC_DELAY
 		fmt.Printf("[TSS] [RESHARE] Waiting %v before starting parties (EDDSA) sessionId=%s\n", syncDelay, dispatcher.sessionId)
-		
+
 		// Check participant readiness before starting (strict: do not start with missing peers)
 		ready := dispatcher.waitForParticipantReadiness(sortedPids, dispatcher.newPids, syncDelay)
 		if !ready {
@@ -418,15 +418,15 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 			culprits := make(map[string]bool, 0)
 			oldCulprits := make([]string, 0)
 			newCulprits := make([]string, 0)
-			
+
 			// Check connection status for each culprit to provide context
 			culpritContext := make(map[string]string)
-			
+
 			if dispatcher.party != nil {
 				for _, p := range dispatcher.party.WaitingFor() {
 					culprits[p.Id] = true
 					oldCulprits = append(oldCulprits, p.Id)
-					
+
 					// Check if culprit is connected
 					witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(p.Id, nil)
 					if err == nil {
@@ -449,7 +449,7 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 				for _, p := range dispatcher.newParty.WaitingFor() {
 					culprits[p.Id] = true
 					newCulprits = append(newCulprits, p.Id)
-					
+
 					// Check if culprit is connected
 					if _, exists := culpritContext[p.Id]; !exists {
 						witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(p.Id, nil)
@@ -675,7 +675,7 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(oldPids btss.So
 	startTime := time.Now()
 	checkInterval := 500 * time.Millisecond
 	maxChecks := int(maxWait / checkInterval)
-	
+
 	allParticipants := make(map[string]bool)
 	for _, p := range oldPids {
 		allParticipants[p.Id] = true
@@ -683,13 +683,13 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(oldPids btss.So
 	for _, p := range newPids {
 		allParticipants[p.Id] = true
 	}
-	
+
 	connectedCount := 0
 	totalCount := len(allParticipants)
-	
+
 	fmt.Printf("[TSS] [RESHARE] Checking participant readiness sessionId=%s totalParticipants=%d\n",
 		dispatcher.sessionId, totalCount)
-	
+
 	for i := 0; i < maxChecks; i++ {
 		connectedCount = 0
 		for account := range allParticipants {
@@ -697,36 +697,36 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(oldPids btss.So
 			if err != nil {
 				continue
 			}
-			
+
 			peerId, err := peer.Decode(witness.PeerId)
 			if err != nil {
 				continue
 			}
-			
+
 			host := dispatcher.tssMgr.p2p.Host()
 			connState := host.Network().Connectedness(peerId)
 			if connState == network.Connected {
 				connectedCount++
 			}
 		}
-		
+
 		readinessPercent := float64(connectedCount) / float64(totalCount) * 100.0
 		fmt.Printf("[TSS] [RESHARE] Readiness check sessionId=%s connected=%d/%d (%.1f%%) elapsed=%v\n",
 			dispatcher.sessionId, connectedCount, totalCount, readinessPercent, time.Since(startTime))
-		
+
 		// Require at least threshold+1 participants to be connected
 		threshold, _ := tss_helpers.GetThreshold(totalCount)
 		minRequired := threshold + 1
-		
+
 		if connectedCount >= minRequired {
 			fmt.Printf("[TSS] [RESHARE] Sufficient participants ready sessionId=%s connected=%d required=%d\n",
 				dispatcher.sessionId, connectedCount, minRequired)
 			return true
 		}
-		
+
 		time.Sleep(checkInterval)
 	}
-	
+
 	fmt.Printf("[TSS] [RESHARE] WARN: Readiness check timeout sessionId=%s connected=%d/%d after=%v\n",
 		dispatcher.sessionId, connectedCount, totalCount, time.Since(startTime))
 	return false
@@ -977,7 +977,7 @@ type BaseDispatcher struct {
 	started   bool
 	startLock sync.Mutex
 
-	lastMsg  time.Time
+	lastMsg   time.Time
 	isReshare bool // true when this is a ReshareDispatcher (use longer timeout)
 
 	failedMsgs     []failedMsg
@@ -1157,12 +1157,6 @@ func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcs
 		return
 	}
 
-	// fmt.Println("dispatcher.party", dispatcher.party, cmt)
-	// if cmt == "both" || cmt == "old" {
-	// 	fmt.Println("UPDATING OLD")
-	// 	fmt.Println("Updating old", from)
-
-	// }
 	go func() {
 		ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
 
@@ -1174,16 +1168,6 @@ func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcs
 			dispatcher.lastMsg = time.Now()
 		}
 	}()
-	// if cmt == "both" || cmt == "new" {
-	// 	if dispatcher.newParty != nil {
-	// 		fmt.Println("UPDATING NEW")
-	// 		ok, err := dispatcher.newParty.UpdateFromBytes(input, from, isBrcst)
-	// 		if err != nil {
-	// 			fmt.Println("UpdateFromBytes", ok, err)
-	// 			dispatcher.tssErr = err
-	// 		}
-	// 	}
-	// }
 }
 
 func (dsc *BaseDispatcher) SessionId() string {
@@ -1604,13 +1588,13 @@ func (result TimeoutResult) Serialize() tss_helpers.BaseCommitment {
 	// Mark timeout in metadata so we can distinguish from errors
 	timeoutErr := "timeout"
 	timeoutReason := fmt.Sprintf("Timeout waiting for %d nodes: %v", len(result.Culprits), result.Culprits)
-	
+
 	return tss_helpers.BaseCommitment{
-		Type:        "blame",
-		KeyId:       result.KeyId,
-		SessionId:   result.SessionId,
-		Commitment:  commitment,
-		PublicKey:   nil,
+		Type:       "blame",
+		KeyId:      result.KeyId,
+		SessionId:  result.SessionId,
+		Commitment: commitment,
+		PublicKey:  nil,
 		Metadata: &tss_helpers.CommitmentMetadata{
 			Error:  &timeoutErr,
 			Reason: &timeoutReason,
