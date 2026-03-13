@@ -71,6 +71,9 @@ type chainRelay interface {
 	GetLatestValidHeight() (chainState, error)
 	// Fetches chaindata and serializes to raw bytes.
 	ChainData(startBlockHeight uint64, count uint64) ([]chainBlock, error)
+	// Clone returns a fresh, independent copy of this relayer.
+	// Used by New() to avoid sharing singleton state from the registry.
+	Clone() chainRelay
 }
 
 // chainRegistry holds all registered chain relayers.
@@ -150,10 +153,10 @@ func New(
 ) *ChainOracle {
 	logger := oracleLogger.With("sub-service", "chain-relay")
 
-	// Copy registered chains into this instance's map
+	// Clone registered chains so this instance owns independent state.
 	chainRelayers := make(map[string]chainRelay, len(chainRegistry))
 	for symbol, c := range chainRegistry {
-		chainRelayers[symbol] = c
+		chainRelayers[symbol] = c.Clone()
 	}
 
 	return &ChainOracle{

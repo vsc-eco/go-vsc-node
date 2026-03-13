@@ -189,6 +189,12 @@ func getLtcBlockByHash(
 	}, nil
 }
 
+// Clone implements chainRelay.
+func (l *litecoinRelayer) Clone() chainRelay {
+	clone := *l
+	return &clone
+}
+
 func (l *litecoinRelayer) connect() (*rpcclient.Client, error) {
 	return rpcclient.New(&l.rpcConfig, nil)
 }

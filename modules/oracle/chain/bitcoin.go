@@ -216,6 +216,12 @@ func getBlockByHash(
 	return &btcBlock, nil
 }
 
+// Clone implements chainRelay.
+func (b *bitcoinRelayer) Clone() chainRelay {
+	clone := *b
+	return &clone
+}
+
 func (b *bitcoinRelayer) connect() (*rpcclient.Client, error) {
 	return rpcclient.New(&b.rpcConfig, nil)
 }

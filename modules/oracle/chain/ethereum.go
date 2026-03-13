@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"time"
 
@@ -64,8 +65,13 @@ func (e *ethereumRelayer) Init() error {
 
 // Configure implements chainRelay.
 // For ETH, host is the full RPC URL (e.g. "http://geth:8545").
-// user and pass are ignored — include auth in the URL if needed.
+// user and pass are not used — include auth in the URL if needed.
 func (e *ethereumRelayer) Configure(host, user, pass string) {
+	if user != "" || pass != "" {
+		slog.Warn("ETH oracle: RpcUser/RpcPass are ignored for Ethereum — "+
+			"include credentials in the RPC URL if your node requires auth",
+			"host", host)
+	}
 	e.rpcURL = host
 }
 
@@ -173,6 +179,12 @@ func (e *ethChainData) Serialize() (string, error) {
 // Type implements chainBlock.
 func (e *ethChainData) Type() string {
 	return "ETH"
+}
+
+// Clone implements chainRelay.
+func (e *ethereumRelayer) Clone() chainRelay {
+	clone := *e
+	return &clone
 }
 
 func (e *ethereumRelayer) connect() (*ethclient.Client, error) {

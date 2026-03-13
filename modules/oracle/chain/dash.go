@@ -190,6 +190,12 @@ func getDashBlockByHash(
 	}, nil
 }
 
+// Clone implements chainRelay.
+func (d *dashRelayer) Clone() chainRelay {
+	clone := *d
+	return &clone
+}
+
 func (d *dashRelayer) connect() (*rpcclient.Client, error) {
 	return rpcclient.New(&d.rpcConfig, nil)
 }
