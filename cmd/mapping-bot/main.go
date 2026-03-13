@@ -16,8 +16,6 @@ import (
 	"vsc-node/modules/hive/streamer"
 )
 
-const httpPort = 8000
-
 func main() {
 	args, err := parseArgs()
 	if err != nil {
@@ -93,7 +91,7 @@ func main() {
 
 	httpCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go mapBotHttpServer(httpCtx, db.Addresses, httpPort, bot)
+	go mapBotHttpServer(httpCtx, db.Addresses, bot)
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

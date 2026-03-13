@@ -26,7 +26,6 @@ const staleBlockThreshold = 20 * time.Minute
 func mapBotHttpServer(
 	ctx context.Context,
 	addressStore *database.AddressStore,
-	port int,
 	bot *mapper.Bot,
 ) {
 	if addressStore == nil {
@@ -36,8 +35,9 @@ func mapBotHttpServer(
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /health", healthHandler(bot))
+	mux.Handle("POST /sign", signHandler(ctx, bot))
 	mux.Handle("/", requestHandler(ctx, bot))
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), mux))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", bot.BotConfig.HttpPort()), mux))
 }
 
 type healthResponse struct {
@@ -153,6 +153,73 @@ func requestHandler(
 			go bot.HandleExistingTxs(btcAddr)
 		} else {
 			fmt.Fprintf(os.Stderr, "no mapper state passed to http server, skipping check for previous txs")
+		}
+	}
+}
+
+type signRequest struct {
+	TxID      string `json:"txId"      validate:"required"`
+	Signature string `json:"signature" validate:"required"`
+}
+
+func signHandler(
+	globalCtx context.Context,
+	bot *mapper.Bot,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req signRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeResponse(w, http.StatusBadRequest, "invalid JSON")
+			return
+		}
+		if err := requestValidator.Struct(&req); err != nil {
+			writeResponse(w, http.StatusBadRequest, "txId and signature are required")
+			return
+		}
+
+		sigBytes, err := hex.DecodeString(req.Signature)
+		if err != nil {
+			writeResponse(w, http.StatusBadRequest, "signature must be valid hex")
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(globalCtx, 15*time.Second)
+		defer cancel()
+
+		tx, err := bot.Db.State.GetPendingTransaction(ctx, req.TxID)
+		if err != nil {
+			writeResponse(w, http.StatusNotFound, fmt.Sprintf("pending transaction not found: %s", req.TxID))
+			return
+		}
+
+		// Build a signatures map from the pending transaction's unsigned slots
+		sigMap := make(map[string][]byte)
+		for _, slot := range tx.Signatures {
+			if slot.Signature == nil {
+				sigMap[hex.EncodeToString(slot.SigHash)] = sigBytes
+			}
+		}
+
+		if len(sigMap) == 0 {
+			writeResponse(w, http.StatusConflict, "all signature slots already filled")
+			return
+		}
+
+		fullySigned, err := bot.Db.State.UpdateSignatures(ctx, sigMap)
+		if err != nil {
+			writeResponse(w, http.StatusInternalServerError, "failed to update signatures")
+			writeError(err)
+			return
+		}
+
+		if len(fullySigned) > 0 {
+			writeResponse(
+				w,
+				http.StatusOK,
+				fmt.Sprintf("signature applied, transaction %s is now fully signed", req.TxID),
+			)
+		} else {
+			writeResponse(w, http.StatusOK, fmt.Sprintf("signature applied to %d slot(s), transaction %s still awaiting more signatures", len(sigMap), req.TxID))
 		}
 	}
 }

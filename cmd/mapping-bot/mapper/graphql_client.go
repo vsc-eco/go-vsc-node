@@ -240,6 +240,7 @@ func (b *Bot) FetchLastHeight(ctx context.Context) (string, error) {
 	variables := map[string]any{
 		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{contractinterface.LastHeightKey},
+		"encoding":   "hex",
 	}
 	err := b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
@@ -252,6 +253,14 @@ func (b *Bot) FetchLastHeight(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	value := strings.ReplaceAll(string(stateMap[contractinterface.LastHeightKey]), "\"", "")
-	return value, nil
+	var tmp string
+	err = json.Unmarshal(stateMap[contractinterface.LastHeightKey], &tmp)
+	if err != nil {
+		return "", err
+	}
+	decoded, err := hex.DecodeString(tmp)
+	if err != nil {
+		return "", fmt.Errorf("error decoding last height hex: %w", err)
+	}
+	return string(decoded), nil
 }

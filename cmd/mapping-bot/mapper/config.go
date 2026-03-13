@@ -7,6 +7,7 @@ type mappingBotConfig struct {
 	PrimaryPublicKey     string
 	BackupPublicKey      string
 	ConnectedGraphQLAddr string
+	HttpPort             uint16
 }
 
 type mappingBotConfigStruct struct {
@@ -25,6 +26,7 @@ func NewMappingBotConfig(dataDir ...string) *mappingBotConfigStruct {
 		PrimaryPublicKey:     "",
 		BackupPublicKey:      "",
 		ConnectedGraphQLAddr: "0.0.0.0:8080",
+		HttpPort:             8000,
 	}, dataDirPtr)}
 }
 
@@ -38,4 +40,8 @@ func (c *mappingBotConfigStruct) PrimaryKey() string {
 
 func (c *mappingBotConfigStruct) BackupKey() string {
 	return c.Get().BackupPublicKey
+}
+
+func (c *mappingBotConfigStruct) HttpPort() uint16 {
+	return c.Get().HttpPort
 }
