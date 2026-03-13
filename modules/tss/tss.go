@@ -43,10 +43,10 @@ const (
 	TSS_ROTATE_INTERVAL          = 20 * 5           // 5 minutes in L1 blocks
 	TSS_RESHARE_SYNC_DELAY       = 5 * time.Second  // Reduced from 15s to 5s
 	TSS_RESHARE_TIMEOUT          = 2 * time.Minute  // Reshare timeout
-	TSS_DEFAULT_TIMEOUT          = 2 * time.Minute  // Default timeout for keygen/sign operations
+	TSS_DEFAULT_TIMEOUT          = 1 * time.Minute  // Timeout for keygen/sign operations
 	TSS_MESSAGE_RETRY_COUNT      = 3                // Number of retries for failed messages
 	TSS_MESSAGE_RETRY_DELAY      = 1 * time.Second  // Base delay for retries
-	TSS_BAN_THRESHOLD_PERCENT    = 60               // Failure rate threshold for bans (60% — higher on testnet to avoid banning on transient offline)
+	TSS_BAN_THRESHOLD_PERCENT    = 60               // Failure rate threshold for bans
 	TSS_BAN_GRACE_PERIOD_EPOCHS  = 3                // Epochs before new nodes can be banned (as int for comparison)
 	TSS_BUFFERED_MESSAGE_MAX_AGE = 1 * time.Minute  // Maximum age for buffered messages
 	MAX_RESHARE_RETRIES          = 3                // Maximum number of reshare retries on timeout
@@ -216,8 +216,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 					}
 				}
 			}
-
-			}
+		}
 		// Consume any recovery-scheduled actions (e.g., reshare retries after timeouts)
 		if len(tssMgr.queuedActions) > 0 {
 			generatedActions = append(generatedActions, tssMgr.queuedActions...)
