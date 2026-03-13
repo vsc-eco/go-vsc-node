@@ -128,6 +128,7 @@ type ChainOracle struct {
 	chainRelayers     map[string]chainRelay // symbol -> relayer instance
 	conf              common.IdentityConfig
 	sconf             systemconfig.SystemConfig
+	hiveConf          streamer.HiveConfig
 	electionDb        elections.Elections
 	contractState     contracts.ContractState
 	da                *DataLayer.DataLayer
@@ -140,6 +141,7 @@ func New(
 	oracleLogger *slog.Logger,
 	conf common.IdentityConfig,
 	sconf systemconfig.SystemConfig,
+	hiveConf streamer.HiveConfig,
 	electionDb elections.Elections,
 	contractState contracts.ContractState,
 	da *DataLayer.DataLayer,
@@ -161,6 +163,7 @@ func New(
 		chainRelayers:     chainRelayers,
 		conf:              conf,
 		sconf:             sconf,
+		hiveConf:          hiveConf,
 		electionDb:        electionDb,
 		contractState:     contractState,
 		da:                da,
@@ -228,8 +231,13 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 			c.logger.Info("chain relay starting", "symbol", symbol, "height", fcl.blockHeight)
 		}
 	}
-	// TODO: replace with user's URIs
-	hiveClient := hivego.NewHiveRpc(streamer.DefaultHiveURIs)
+	hiveURIs := streamer.DefaultHiveURIs
+	if c.hiveConf != nil {
+		if uris := c.hiveConf.GetHiveURIs(); len(uris) > 0 {
+			hiveURIs = uris
+		}
+	}
+	hiveClient := hivego.NewHiveRpc(hiveURIs)
 	hiveClient.ChainID = c.sconf.HiveChainId()
 
 	jsonBytes, _ := json.Marshal(startSymbols)

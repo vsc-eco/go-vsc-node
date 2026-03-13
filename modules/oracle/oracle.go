@@ -17,6 +17,7 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/witnesses"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
+	"vsc-node/modules/hive/streamer"
 	"vsc-node/modules/oracle/chain"
 	"vsc-node/modules/oracle/p2p"
 	libp2p "vsc-node/modules/p2p"
@@ -77,6 +78,7 @@ func New(
 	da *DataLayer.DataLayer,
 	txPool *transactionpool.TransactionPool,
 	oracleConf OracleConfig,
+	hiveConf streamer.HiveConfig,
 ) *Oracle {
 	logLevel := slog.LevelInfo
 	if os.Getenv("DEBUG") == "1" {
@@ -94,7 +96,7 @@ func New(
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// txCrafter will be created in Init() after identity config is loaded
-	chainRelayer := chain.New(ctx, logger, conf, sconf, electionDb, contractState, da, nil, txPool)
+	chainRelayer := chain.New(ctx, logger, conf, sconf, hiveConf, electionDb, contractState, da, nil, txPool)
 
 	return &Oracle{
 		ctx:          ctx,
