@@ -670,11 +670,13 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			actionType = ""
 		}
 
+		tssMgr.bufferLock.Lock()
 		tssMgr.sessionMap[sessionId] = sessionInfo{
 			leader: leader,
 			bh:     bh,
 			action: actionType,
 		}
+		tssMgr.bufferLock.Unlock()
 	}
 
 	startedDispatcher := make([]Dispatcher, 0)
@@ -698,12 +700,12 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			startedDispatcher = append(startedDispatcher, dispatcher)
 		} else {
 			sessionId := dispatcher.SessionId()
-			delete(tssMgr.sigChannels, sessionId)
 			tssMgr.bufferLock.Lock()
+			delete(tssMgr.sigChannels, sessionId)
 			delete(tssMgr.actionMap, sessionId)
 			delete(tssMgr.messageBuffer, sessionId)
-			tssMgr.bufferLock.Unlock()
 			delete(tssMgr.sessionMap, sessionId)
+			tssMgr.bufferLock.Unlock()
 		}
 		fmt.Println("Start() err", err)
 	}
@@ -722,12 +724,12 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// fmt.Println("result, err", resultPtr, err)
 
 			sessionId := dsc.SessionId()
-			delete(tssMgr.sigChannels, sessionId)
 			tssMgr.bufferLock.Lock()
+			delete(tssMgr.sigChannels, sessionId)
 			delete(tssMgr.actionMap, sessionId)
 			delete(tssMgr.messageBuffer, sessionId)
-			tssMgr.bufferLock.Unlock()
 			delete(tssMgr.sessionMap, sessionId)
+			tssMgr.bufferLock.Unlock()
 			if err != nil {
 
 				fmt.Println("Done() err", err, dsc.SessionId())
@@ -875,6 +877,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					circuit    *dids.SerializedCircuit
 					commitment tss_helpers.BaseCommitment
 				})
+				var commitedMu sync.Mutex
 				var wg sync.WaitGroup
 				for _, commitResult := range commitableResults {
 					wg.Add(1)
@@ -896,6 +899,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						fmt.Println("serializedCircuit, err", serializedCircuit, err)
 
 						if err == nil {
+							commitedMu.Lock()
 							commitedResults[commitResult.SessionId] = struct {
 								err        error
 								circuit    *dids.SerializedCircuit
@@ -905,6 +909,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 								circuit:    serializedCircuit,
 								commitment: commitResult,
 							}
+							commitedMu.Unlock()
 						}
 
 						wg.Done()
@@ -989,7 +994,9 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 	fmt.Println("waitForSigs.members", members)
 	blsCircuit := dids.NewBlsCircuitGenerator(members)
 
+	tssMgr.bufferLock.Lock()
 	tssMgr.sigChannels[sessionId] = make(chan sigMsg)
+	tssMgr.bufferLock.Unlock()
 
 	tssMgr.pubsub.Send(p2pMessage{
 		Type:    "ask_sigs",
@@ -1010,7 +1017,9 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 		signedWeight := uint64(0)
 
 		// common.has
+		tssMgr.bufferLock.RLock()
 		sigChan := tssMgr.sigChannels[sessionId]
+		tssMgr.bufferLock.RUnlock()
 
 		signedMap := make(map[string]bool)
 		for signedWeight < (weightTotal * 2 / 3) {

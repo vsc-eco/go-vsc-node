@@ -144,8 +144,11 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 
 		// fmt.Println("sig ret", msg, s.tssMgr.sigChannels[sessId] != nil)
 
-		if s.tssMgr.sigChannels[sessId] != nil {
-			s.tssMgr.sigChannels[sessId] <- sigMsg{
+		s.tssMgr.bufferLock.RLock()
+		sigChan := s.tssMgr.sigChannels[sessId]
+		s.tssMgr.bufferLock.RUnlock()
+		if sigChan != nil {
+			sigChan <- sigMsg{
 				Account:   msg.Account,
 				SessionId: sessId,
 				Sig:       sig,
