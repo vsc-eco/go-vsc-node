@@ -163,10 +163,15 @@ func (m *MempoolClient) GetAddressTxs(btcAddress string) ([]Transaction, error) 
 
 func (m *MempoolClient) PostTx(rawTx string) error {
 	url := fmt.Sprintf("%s/tx", m.baseURL)
-	resp, err := m.client.Post(url, "test/plain", bytes.NewReader([]byte(rawTx)))
+	resp, err := m.client.Post(url, "text/plain", bytes.NewReader([]byte(rawTx)))
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("mempool API returned status %d: %s", resp.StatusCode, string(body))
+	}
 	return nil
 }

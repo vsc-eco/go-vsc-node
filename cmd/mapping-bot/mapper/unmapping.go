@@ -60,7 +60,7 @@ func (b *Bot) HandleUnmap() {
 			b.L.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
 			err := b.MempoolClient.PostTx(tx.RawTx)
 			if err != nil {
-				b.L.Warn("transaction failed to post", "txId", tx.TxId)
+				b.L.Warn("transaction failed to post", "err", err, "txId", tx.TxId)
 				continue
 			}
 			b.Db.State.MarkTransactionSent(ctx, tx.TxId)
@@ -125,8 +125,13 @@ func attachSignatures(signedData *database.Transaction) (*TxRawIdPair, error) {
 	for _, inputData := range signedData.Signatures {
 		signature := append(signedData.Signatures[inputData.Index].Signature, byte(txscript.SigHashAll))
 
+		branchSelector := []byte{0x01} // primary key path (OP_IF)
+		if inputData.IsBackup {
+			branchSelector = []byte{} // backup key path (OP_ELSE)
+		}
 		witness := wire.TxWitness{
 			signature[:],
+			branchSelector,
 			inputData.WitnessScript,
 		}
 

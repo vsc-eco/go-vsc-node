@@ -162,15 +162,22 @@ func (s *StateStore) GetAllPendingSigHashes(ctx context.Context) ([]string, erro
 	return hashes, nil
 }
 
+// SignatureUpdate carries a signature and whether it was submitted via the backup (HTTP) path.
+type SignatureUpdate struct {
+	Bytes    []byte
+	IsBackup bool
+}
+
 // UpdateSignatures updates transactions with new signatures
 // Returns transactions that are now fully signed
 func (s *StateStore) UpdateSignatures(
 	ctx context.Context,
-	signatures map[string][]byte,
+	signatures map[string]SignatureUpdate,
 ) ([]*Transaction, error) {
 	fullySignedTxs := make([]*Transaction, 0)
 
-	for sigHash, sigBytes := range signatures {
+	for sigHash, update := range signatures {
+		sigBytes := update.Bytes
 		sigHashBytes, decErr := hex.DecodeString(sigHash)
 		if decErr != nil {
 			return nil, fmt.Errorf("invalid sigHash %s: %w", sigHash, decErr)
@@ -188,21 +195,25 @@ func (s *StateStore) UpdateSignatures(
 
 		for i := range tx.Signatures {
 			if hex.EncodeToString(tx.Signatures[i].SigHash) == sigHash && tx.Signatures[i].Signature == nil {
-				update := bson.M{
+				dbUpdate := bson.M{
 					"$set": bson.M{
 						fmt.Sprintf("signatures.%d.signature", i): sigBytes,
+						fmt.Sprintf("signatures.%d.isBackup", i):  update.IsBackup,
 					},
 					"$inc": bson.M{
 						"currentSignatures": 1,
 					},
 				}
 
-				_, err := s.txCollection.UpdateOne(ctx, bson.M{"_id": tx.TxID}, update)
+				_, err := s.txCollection.UpdateOne(ctx, bson.M{"_id": tx.TxID}, dbUpdate)
 				if err != nil {
 					return nil, fmt.Errorf("failed to update signature for txID %s: %w", tx.TxID, err)
 				}
 
-				if tx.CurrentSignatures+1 >= tx.TotalSignatures {
+				tx.Signatures[i].Signature = sigBytes
+				tx.Signatures[i].IsBackup = update.IsBackup
+				tx.CurrentSignatures++
+				if tx.CurrentSignatures >= tx.TotalSignatures {
 					fullySignedTxs = append(fullySignedTxs, &tx)
 				}
 				break

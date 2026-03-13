@@ -72,4 +72,5 @@ type SignatureSlot struct {
 	SigHash       []byte `bson:"sigHash"`
 	WitnessScript []byte `bson:"witnessScript"`
 	Signature     []byte `bson:"signature,omitempty"` // omitempty keeps it null when empty
+	IsBackup      bool   `bson:"isBackup,omitempty"`  // true when signed via HTTP (backup key path)
 }

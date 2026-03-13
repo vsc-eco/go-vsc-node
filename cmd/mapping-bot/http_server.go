@@ -198,7 +198,7 @@ func signHandler(
 		}
 
 		// Build a signatures map keyed by sighash for each provided index
-		sigMap := make(map[string][]byte)
+		sigMap := make(map[string]database.SignatureUpdate)
 		for _, entry := range req.Signatures {
 			if entry.Index >= len(tx.Signatures) {
 				writeResponse(w, http.StatusBadRequest, fmt.Sprintf("index %d out of range", entry.Index))
@@ -214,7 +214,7 @@ func signHandler(
 				return
 			}
 			slot := tx.Signatures[entry.Index]
-			sigMap[hex.EncodeToString(slot.SigHash)] = sigBytes
+			sigMap[hex.EncodeToString(slot.SigHash)] = database.SignatureUpdate{Bytes: sigBytes, IsBackup: true}
 		}
 
 		fullySigned, err := bot.Db.State.UpdateSignatures(ctx, sigMap)

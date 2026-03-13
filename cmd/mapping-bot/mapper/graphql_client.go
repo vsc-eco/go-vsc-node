@@ -8,6 +8,7 @@ import (
 	"log"
 	"strings"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
+	"vsc-node/cmd/mapping-bot/database"
 
 	graphql "github.com/hasura/go-graphql-client"
 )
@@ -150,7 +151,7 @@ func (b *Bot) FetchObservedTx(ctx context.Context, txId string, vout int) (bool,
 
 func (b *Bot) FetchSignatures(
 	ctx context.Context, msgHex []string,
-) (map[string][]byte, error) {
+) (map[string]database.SignatureUpdate, error) {
 	var query struct {
 		Tss []struct {
 			Msg    string `graphql:"msg"`
@@ -169,7 +170,7 @@ func (b *Bot) FetchSignatures(
 		return nil, fmt.Errorf("failed graphql query: %w", err)
 	}
 
-	out := make(map[string][]byte)
+	out := make(map[string]database.SignatureUpdate)
 	for _, tss := range query.Tss {
 		if tss.Status != "complete" {
 			continue
@@ -181,7 +182,7 @@ func (b *Bot) FetchSignatures(
 				tss.Sig, err,
 			)
 		}
-		out[tss.Msg] = buf
+		out[tss.Msg] = database.SignatureUpdate{Bytes: buf, IsBackup: false}
 	}
 
 	return out, nil
