@@ -622,6 +622,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			fmt.Printf("[TSS] [RESHARE] Pre-flight checks passed sessionId=%s oldParticipants=%d newParticipants=%d\n",
 				sessionId, len(commitedMembers), len(newParticipants))
 
+			// Only register a reshare dispatcher if this node has the key for the old epoch (avoids
+			// registering then immediately removing when Start() fails with "key not found").
+			_, keyErr := tssMgr.keyStore.Get(context.Background(), makeKey("key", action.KeyId, int(commitment.Epoch)))
+			if keyErr != nil {
+				fmt.Printf("[TSS] [RESHARE] Skipping reshare - local key not found sessionId=%s keyId=%s epoch=%d err=%v\n",
+					sessionId, action.KeyId, commitment.Epoch, keyErr)
+				continue
+			}
+
 			dispatcher := &ReshareDispatcher{
 				BaseDispatcher: BaseDispatcher{
 					startLock:    sync.Mutex{},
