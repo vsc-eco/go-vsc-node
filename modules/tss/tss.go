@@ -657,8 +657,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					blockHeight: bh,
 					isReshare:   true,
 				},
-				newParticipants: newParticipants,
-				newEpoch:        currentElection.Epoch,
+				newParticipants:    newParticipants,
+				newEpoch:           currentElection.Epoch,
+				prevCommitmentType: commitment.Type,
 			}
 			dispatcher.startLock.TryLock()
 

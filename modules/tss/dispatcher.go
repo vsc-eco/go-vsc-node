@@ -53,8 +53,9 @@ type ReshareDispatcher struct {
 	BaseDispatcher
 
 	//Filled externally
-	newParticipants []Participant
-	newEpoch        uint64
+	newParticipants    []Participant
+	newEpoch           uint64
+	prevCommitmentType string
 
 	//Filled internally
 	newParty btss.Party
@@ -70,6 +71,33 @@ func (dispatcher *ReshareDispatcher) Start() error {
 	sortedPids, myParty, p2pCtx := dispatcher.baseInfo()
 
 	userId := dispatcher.tssMgr.config.Get().HiveUsername
+
+	// If previous key data came from a reshare, the save data contains epoch-modified
+	// party IDs. We must recreate old party IDs with the same epoch modification so
+	// tss-lib can match them against the save data.
+	if dispatcher.prevCommitmentType == "reshare" {
+		oldEpochIdx := makeEpochIdx(int(dispatcher.epoch))
+		pIds := make([]*btss.PartyID, 0)
+		for idx, p := range dispatcher.participants {
+			i := big.NewInt(0)
+			i = i.SetBytes([]byte(p.Account))
+			if oldEpochIdx != 0 {
+				i = i.Mul(i, big.NewInt(int64(oldEpochIdx+1)))
+			}
+			pi := btss.NewPartyID(p.Account, dispatcher.sessionId, i)
+			dispatcher.participants[idx].PartyId = pi
+			pIds = append(pIds, pi)
+		}
+		sortedPids = btss.SortPartyIDs(pIds)
+		p2pCtx = btss.NewPeerContext(sortedPids)
+		myParty = nil
+		for _, p := range sortedPids {
+			if p.Id == userId {
+				myParty = p
+				break
+			}
+		}
+	}
 
 	fmt.Printf("[TSS] [RESHARE] Reshare participants: old=%d new=%d sessionId=%s\n",
 		len(sortedPids), len(dispatcher.newParticipants), dispatcher.sessionId)
