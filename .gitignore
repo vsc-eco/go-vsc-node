@@ -5,6 +5,8 @@ modules/oracle/e2e/data-testnode-*
 modules/oracle/e2e/oracle-test_testnode-*
 !btc-data/bitcoin.conf
 btc-data/*
+.btc-data
+.vscode
 .DS_Store
 build
 cmd/mapping-bot/*datastore
