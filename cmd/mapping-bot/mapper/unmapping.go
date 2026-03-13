@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"log/slog"
 	"os"
 	"time"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
@@ -59,12 +58,10 @@ func (b *Bot) HandleUnmap() {
 		}
 		for _, tx := range txPairs {
 			b.L.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
-			if !b.L.Enabled(ctx, slog.LevelDebug) {
-				err := b.MempoolClient.PostTx(tx.RawTx)
-				if err != nil {
-					b.L.Warn("transaction failed to post", "txId", tx.TxId)
-					continue
-				}
+			err := b.MempoolClient.PostTx(tx.RawTx)
+			if err != nil {
+				b.L.Warn("transaction failed to post", "txId", tx.TxId)
+				continue
 			}
 			b.Db.State.MarkTransactionSent(ctx, tx.TxId)
 		}
@@ -78,26 +75,20 @@ func (b *Bot) ProcessTxSpends(
 ) {
 	for txId, signingData := range incomingTxSpends {
 		b.L.Debug("processing incoming tx spend", "txId", txId, "sigHashCount", len(signingData.UnsignedSigHashes))
-		// already in the system
 
-		// could re-enable this, but it does a lot of gql requests for probably no reason
-		// make sure none of the tx's utxos are observed before adding to the system
-		// this should never happen
-		// exists := false
-		// for i := range signingData.UnsignedSigHashes {
-		// 	ok, err := FetchObservedTx(gqlClient, txId, i)
-		// 	if ok || err != nil {
-		// 		exists = true
-		// 		break
-		// 	}
-		// }
-		// if exists {
-		// 	continue
-		// }
+		sent, err := b.Db.State.IsTransactionSent(ctx, txId)
+		if err != nil {
+			b.L.Debug("failed to check sent status", "txId", txId, "error", err)
+			continue
+		}
+		if sent {
+			b.L.Debug("tx spend already sent, skipping", "txId", txId)
+			continue
+		}
 
-		err := b.Db.State.AddPendingTransaction(ctx, txId, signingData.Tx, signingData.UnsignedSigHashes)
+		err = b.Db.State.AddPendingTransaction(ctx, txId, signingData.Tx, signingData.UnsignedSigHashes)
 		if err == database.ErrPendingTxExists {
-			b.L.Debug("tx spend already in system, skipping", "txId", txId)
+			b.L.Debug("tx spend already pending, skipping", "txId", txId)
 		} else if err != nil {
 			b.L.Debug("failed to add pending transaction", "txId", txId, "error", err)
 		} else {

@@ -232,8 +232,12 @@ func (s *StateStore) UpdateSignatures(
 
 	// For each signature, find and update the corresponding transaction
 	for sigHash, sigBytes := range signatures {
-		// Find the transaction containing this sigHash
-		filter := bson.M{"signatures.sigHash": sigHash}
+		// sigHash is hex-encoded; decode to bytes to match the BSON binary field
+		sigHashBytes, decErr := hex.DecodeString(sigHash)
+		if decErr != nil {
+			return nil, fmt.Errorf("invalid sigHash %s: %w", sigHash, decErr)
+		}
+		filter := bson.M{"signatures.sigHash": sigHashBytes}
 
 		var tx PendingTransaction
 		err := s.pendingTxCollection.FindOne(ctx, filter).Decode(&tx)

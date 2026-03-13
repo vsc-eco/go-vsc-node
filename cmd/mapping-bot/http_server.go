@@ -157,9 +157,14 @@ func requestHandler(
 	}
 }
 
-type signRequest struct {
-	TxID      string `json:"txId"      validate:"required"`
+type signatureEntry struct {
+	Index     int    `json:"index"     validate:"min=0"`
 	Signature string `json:"signature" validate:"required"`
+}
+
+type signRequest struct {
+	TxID       string           `json:"tx_id"      validate:"required"`
+	Signatures []signatureEntry `json:"signatures" validate:"required,min=1,dive"`
 }
 
 func signHandler(
@@ -173,13 +178,7 @@ func signHandler(
 			return
 		}
 		if err := requestValidator.Struct(&req); err != nil {
-			writeResponse(w, http.StatusBadRequest, "txId and signature are required")
-			return
-		}
-
-		sigBytes, err := hex.DecodeString(req.Signature)
-		if err != nil {
-			writeResponse(w, http.StatusBadRequest, "signature must be valid hex")
+			writeResponse(w, http.StatusBadRequest, "tx_id and at least one signature are required")
 			return
 		}
 
@@ -192,17 +191,20 @@ func signHandler(
 			return
 		}
 
-		// Build a signatures map from the pending transaction's unsigned slots
+		// Build a signatures map keyed by sighash for each provided index
 		sigMap := make(map[string][]byte)
-		for _, slot := range tx.Signatures {
-			if slot.Signature == nil {
-				sigMap[hex.EncodeToString(slot.SigHash)] = sigBytes
+		for _, entry := range req.Signatures {
+			if entry.Index >= len(tx.Signatures) {
+				writeResponse(w, http.StatusBadRequest, fmt.Sprintf("index %d out of range", entry.Index))
+				return
 			}
-		}
-
-		if len(sigMap) == 0 {
-			writeResponse(w, http.StatusConflict, "all signature slots already filled")
-			return
+			sigBytes, err := hex.DecodeString(entry.Signature)
+			if err != nil {
+				writeResponse(w, http.StatusBadRequest, fmt.Sprintf("signature at index %d must be valid hex", entry.Index))
+				return
+			}
+			slot := tx.Signatures[entry.Index]
+			sigMap[hex.EncodeToString(slot.SigHash)] = sigBytes
 		}
 
 		fullySigned, err := bot.Db.State.UpdateSignatures(ctx, sigMap)
@@ -219,7 +221,7 @@ func signHandler(
 				fmt.Sprintf("signature applied, transaction %s is now fully signed", req.TxID),
 			)
 		} else {
-			writeResponse(w, http.StatusOK, fmt.Sprintf("signature applied to %d slot(s), transaction %s still awaiting more signatures", len(sigMap), req.TxID))
+			writeResponse(w, http.StatusOK, fmt.Sprintf("%d signature(s) applied, transaction %s still awaiting more signatures", len(sigMap), req.TxID))
 		}
 	}
 }
