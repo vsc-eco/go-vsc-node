@@ -79,7 +79,7 @@ services:
     networks:
       - go-vsc-node
     volumes:
-      - ./data/mapping-bot:/data
+      - ./data/mapping-bot:/home/app/app/data
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
       interval: 2m
