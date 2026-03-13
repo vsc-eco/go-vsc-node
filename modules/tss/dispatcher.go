@@ -913,7 +913,7 @@ func (dispatcher *SignDispatcher) Done() *promise.Promise[DispatcherResult] {
 		if dispatcher.timeout {
 			culprits := make([]string, 0)
 			for _, p := range dispatcher.party.WaitingFor() {
-				culprits = append(culprits, string(p.Key))
+				culprits = append(culprits, p.Id)
 			}
 			resolve(TimeoutResult{
 				tssMgr: dispatcher.tssMgr,
@@ -1368,7 +1368,7 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 		if dispatcher.timeout {
 			culprits := make([]string, 0)
 			for _, p := range dispatcher.party.WaitingFor() {
-				culprits = append(culprits, string(p.Key))
+				culprits = append(culprits, p.Id)
 			}
 			resolve(TimeoutResult{
 				tssMgr: dispatcher.tssMgr,

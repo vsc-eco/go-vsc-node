@@ -217,11 +217,11 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				}
 			}
 
-			// cl := min(len(tssMgr.queuedActions), 5)
-			// top5Actions := tssMgr.queuedActions[:cl]
-			// tssMgr.RunActions(top5Actions, witnessSlot.Account, isLeader, bh)
-
-			// tssMgr.queuedActions = slices.Delete(tssMgr.queuedActions, 0, cl)
+			}
+		// Consume any recovery-scheduled actions (e.g., reshare retries after timeouts)
+		if len(tssMgr.queuedActions) > 0 {
+			generatedActions = append(generatedActions, tssMgr.queuedActions...)
+			tssMgr.queuedActions = tssMgr.queuedActions[:0]
 		}
 		if len(generatedActions) > 0 {
 			tssMgr.RunActions(generatedActions, witnessSlot.Account, isLeader, bh)
@@ -396,6 +396,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 	fmt.Println("Running Actions", tssMgr.config.Get().HiveUsername, bh, "isLeader", isLeader, "locked", locked)
 	if !locked {
+		fmt.Printf("[TSS] [ACTIONS] RunActions skipped: lock held by previous batch blockHeight=%d\n", bh)
 		return
 	}
 
@@ -815,6 +816,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 		}
+
+		// Release the lock before leader post-processing.
+		// The leader's result submission (Hive broadcasts, signature collection) does not
+		// modify shared TSS state and can run without the lock. Holding the lock through
+		// post-processing causes the next RunActions to fail TryLock and silently skip,
+		// leading to cascading signing failures.
+		tssMgr.lock.Unlock()
+
 		if isLeader {
 			go func() {
 				if len(signedResults) > 0 {
@@ -947,8 +956,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 		}
-
-		tssMgr.lock.Unlock()
 	}()
 }
 
