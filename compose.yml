@@ -76,8 +76,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      app:
-        condition: service_started
     networks:
       - go-vsc-node
     volumes:
