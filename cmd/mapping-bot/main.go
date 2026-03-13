@@ -73,6 +73,7 @@ func main() {
 		"contract id",
 		mappingBotConfig.ContractId(),
 		"connected graphql",
+		mappingBotConfig.DefaultValue().ConnectedGraphQLAddr,
 	)
 
 	db, err := database.New(context.Background(), dbConfig.Get().DbURI, dbConfig.GetDbName())
