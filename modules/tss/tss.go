@@ -218,10 +218,12 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			}
 		}
 		// Consume any recovery-scheduled actions (e.g., reshare retries after timeouts)
+		tssMgr.bufferLock.Lock()
 		if len(tssMgr.queuedActions) > 0 {
 			generatedActions = append(generatedActions, tssMgr.queuedActions...)
 			tssMgr.queuedActions = tssMgr.queuedActions[:0]
 		}
+		tssMgr.bufferLock.Unlock()
 		if len(generatedActions) > 0 {
 			tssMgr.RunActions(generatedActions, witnessSlot.Account, isLeader, bh)
 		}
@@ -709,6 +711,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		fmt.Println("Start() err", err)
 	}
 
+	// Release the lock immediately after starting dispatchers.
+	// The Done/Await goroutine below only reads from dispatchers and writes
+	// to shared maps protected by bufferLock. Holding tssMgr.lock through
+	// the entire await (including timeouts) blocks subsequent RunActions calls,
+	// causing cascading signing failures when reshare retries overlap with
+	// the next sign interval.
+	tssMgr.lock.Unlock()
+
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -741,7 +751,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				res := result.(KeyGenResult)
 
 				res.BlockHeight = bh
+				tssMgr.bufferLock.Lock()
 				tssMgr.sessionResults[dsc.SessionId()] = res
+				tssMgr.bufferLock.Unlock()
 
 				commitment := result.Serialize()
 				commitableResults = append(commitableResults, commitment)
@@ -749,14 +761,18 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				res := result.(KeySignResult)
 
 				res.BlockHeight = bh
+				tssMgr.bufferLock.Lock()
 				tssMgr.sessionResults[dsc.SessionId()] = res
+				tssMgr.bufferLock.Unlock()
 
 				signedResults = append(signedResults, res)
 			} else if result.Type() == ReshareResultType {
 				res := result.(ReshareResult)
 
 				res.BlockHeight = bh
+				tssMgr.bufferLock.Lock()
 				tssMgr.sessionResults[dsc.SessionId()] = res
+				tssMgr.bufferLock.Unlock()
 				commitment := result.Serialize()
 				commitment.BlockHeight = bh
 				commitableResults = append(commitableResults, commitment)
@@ -775,7 +791,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				res := result.(TimeoutResult)
 
 				res.BlockHeight = bh
+				tssMgr.bufferLock.Lock()
 				tssMgr.sessionResults[dsc.SessionId()] = res
+				tssMgr.bufferLock.Unlock()
 
 				fmt.Printf("[TSS] [TIMEOUT] Timeout result sessionId=%s keyId=%s blockHeight=%d epoch=%d culprits=%v\n",
 					res.SessionId, res.KeyId, res.BlockHeight, res.Epoch, res.Culprits)
@@ -802,11 +820,13 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 							// Schedule retry with delay
 							go func() {
 								time.Sleep(retryDelay)
+								tssMgr.bufferLock.Lock()
 								tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
 									Type:  ReshareAction,
 									KeyId: dsc.KeyId(),
 									Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
 								})
+								tssMgr.bufferLock.Unlock()
 							}()
 						} else {
 							fmt.Printf("[TSS] [RECOVERY] Max reshare retries exceeded sessionId=%s keyId=%s maxRetries=%d\n",
@@ -818,12 +838,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 		}
 
-		// Release the lock before leader post-processing.
-		// The leader's result submission (Hive broadcasts, signature collection) does not
-		// modify shared TSS state and can run without the lock. Holding the lock through
-		// post-processing causes the next RunActions to fail TryLock and silently skip,
-		// leading to cascading signing failures.
-		tssMgr.lock.Unlock()
+		// Lock was already released before this goroutine started.
 
 		if isLeader {
 			go func() {
@@ -1077,14 +1092,17 @@ func (tssMgr *TssManager) Init() error {
 }
 
 func (tssMgr *TssManager) KeyGen(keyId string, algo tss_helpers.SigningAlgo) int {
+	tssMgr.bufferLock.Lock()
 	tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
 		Type:  KeyGenAction,
 		KeyId: keyId,
 		Algo:  algo,
 		Args:  nil,
 	})
+	n := len(tssMgr.queuedActions)
+	tssMgr.bufferLock.Unlock()
 
-	return len(tssMgr.queuedActions)
+	return n
 }
 
 func (tssMgr *TssManager) KeySign(msgs []byte, keyId string) (int, error) {
@@ -1093,13 +1111,16 @@ func (tssMgr *TssManager) KeySign(msgs []byte, keyId string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	tssMgr.bufferLock.Lock()
 	tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
 		Type:  SignAction,
 		KeyId: keyId,
 		Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
 		Args:  msgs,
 	})
-	return len(tssMgr.queuedActions), nil
+	n := len(tssMgr.queuedActions)
+	tssMgr.bufferLock.Unlock()
+	return n, nil
 }
 
 func (tssMgr *TssManager) KeyReshare(keyId string) (int, error) {
@@ -1108,13 +1129,16 @@ func (tssMgr *TssManager) KeyReshare(keyId string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	tssMgr.bufferLock.Lock()
 	tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
 		Type:  ReshareAction,
 		KeyId: keyId,
 		Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
 		Args:  nil,
 	})
-	return len(tssMgr.queuedActions), nil
+	n := len(tssMgr.queuedActions)
+	tssMgr.bufferLock.Unlock()
+	return n, nil
 }
 
 func (tssMgr *TssManager) Start() *promise.Promise[any] {

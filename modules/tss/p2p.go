@@ -90,8 +90,11 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 		}
 
 		// fmt.Println("sessId", sessId, s.tssMgr.sessionResults[sessId] != nil)
-		if s.tssMgr.sessionResults[sessId] != nil {
-			baseCommitment := s.tssMgr.sessionResults[sessId].Serialize()
+		s.tssMgr.bufferLock.RLock()
+		sessionResult := s.tssMgr.sessionResults[sessId]
+		s.tssMgr.bufferLock.RUnlock()
+		if sessionResult != nil {
+			baseCommitment := sessionResult.Serialize()
 			commitBytes, _ := common.EncodeDagCbor(baseCommitment)
 
 			commitCid, _ := common.HashBytes(commitBytes, multicodec.DagCbor)
