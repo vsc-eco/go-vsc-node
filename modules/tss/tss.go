@@ -511,6 +511,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 
+			prevCommitType := ""
+			if err == nil {
+				prevCommitType = commitment.Type
+			}
+
 			dispatcher := &SignDispatcher{
 				BaseDispatcher: BaseDispatcher{
 					startLock:    sync.Mutex{},
@@ -526,7 +531,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 					epoch: keyInfo.Epoch,
 				},
-				msg: action.Args,
+				msg:                action.Args,
+				prevCommitmentType: prevCommitType,
 			}
 			dispatcher.startLock.TryLock()
 

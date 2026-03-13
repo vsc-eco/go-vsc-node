@@ -737,12 +737,43 @@ type SignDispatcher struct {
 
 	msg []byte
 
+	prevCommitmentType string
+
 	result *KeySignResult
 }
 
 func (dispatcher *SignDispatcher) Start() error {
 
 	sortedPids, myParty, p2pCtx := dispatcher.baseInfo()
+
+	// If the save data was created by a reshare, the party IDs in the save data
+	// have epoch-modified keys. We must recreate party IDs with the same epoch
+	// modification so tss-lib can match them against the save data.
+	if dispatcher.prevCommitmentType == "reshare" {
+		userId := dispatcher.tssMgr.config.Get().HiveUsername
+		epochIdx := makeEpochIdx(int(dispatcher.epoch))
+		pIds := make([]*btss.PartyID, 0)
+		for idx, p := range dispatcher.participants {
+			i := big.NewInt(0)
+			i = i.SetBytes([]byte(p.Account))
+			if epochIdx != 0 {
+				i = i.Mul(i, big.NewInt(int64(epochIdx+1)))
+			}
+			pi := btss.NewPartyID(p.Account, dispatcher.sessionId, i)
+			dispatcher.participants[idx].PartyId = pi
+			pIds = append(pIds, pi)
+		}
+		sortedPids = btss.SortPartyIDs(pIds)
+		p2pCtx = btss.NewPeerContext(sortedPids)
+		myParty = nil
+		for _, p := range sortedPids {
+			if p.Id == userId {
+				myParty = p
+				break
+			}
+		}
+	}
+
 	if myParty == nil {
 		return fmt.Errorf("node not part of keygen committee")
 	}
