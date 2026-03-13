@@ -70,6 +70,7 @@ func NewContractTest() ContractTest {
 	logr := logger.PrefixedLogger{Prefix: "contract-test"}
 	idConfig := common.NewIdentityConfig()
 	p2pConfig := p2pInterface.NewConfig()
+	p2pConfig.SetOptions(p2pInterface.P2POpts{Port: 0}) // random port to avoid conflicts with running nodes
 	sysConfig := systemconfig.MocknetConfig()
 	ledgers := MockLedgerDb{LedgerRecords: make(map[string][]ledgerDb.LedgerRecord)}
 	balances := MockBalanceDb{BalanceRecords: make(map[string][]ledgerDb.BalanceRecord)}
