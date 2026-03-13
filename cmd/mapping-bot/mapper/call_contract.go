@@ -42,7 +42,7 @@ func (b *Bot) callContract(
 	txObj := stateEngine.TxVscCallContract{
 		NetId:      b.SystemConfig.NetId(),
 		Caller:     fmt.Sprintf("hive:%s", username),
-		ContractId: b.BotConfig.Get().ContractId,
+		ContractId: b.BotConfig.ContractId(),
 		Action:     action,
 		Payload:    contractInput,
 		RcLimit:    1000,

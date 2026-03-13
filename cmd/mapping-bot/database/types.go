@@ -7,11 +7,19 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
+type TxState string
+
+const (
+	TxStatePending   TxState = "pending"
+	TxStateSent      TxState = "sent"
+	TxStateConfirmed TxState = "confirmed"
+)
+
 var (
-	ErrAddrExists      = errors.New("address key exists in datastore")
-	ErrAddrNotFound    = errors.New("address not found")
-	ErrTxNotFound      = errors.New("transaction not found")
-	ErrPendingTxExists = errors.New("pending tx key exists in datastore")
+	ErrAddrExists   = errors.New("address key exists in datastore")
+	ErrAddrNotFound = errors.New("address not found")
+	ErrTxNotFound   = errors.New("transaction not found")
+	ErrTxExists     = errors.New("tx key exists in datastore")
 )
 
 // AddressStore handles address mapping operations
@@ -21,9 +29,8 @@ type AddressStore struct {
 
 // StateStore handles block height and transaction tracking
 type StateStore struct {
-	heightCollection    *mongo.Collection
-	txCollection        *mongo.Collection
-	pendingTxCollection *mongo.Collection
+	heightCollection *mongo.Collection
+	txCollection     *mongo.Collection
 }
 
 // Database represents the complete database with organized sub-stores
@@ -46,20 +53,17 @@ type BlockHeight struct {
 	Height uint64 `bson:"height"`
 }
 
-// SentTransaction stores a transaction ID that has been sent
-type SentTransaction struct {
-	TxID   string    `bson:"_id"` // Transaction ID as primary key
-	SentAt time.Time `bson:"sentAt"`
-}
-
-// PendingTransaction represents a transaction awaiting signatures
-type PendingTransaction struct {
+// Transaction represents a transaction in any state
+type Transaction struct {
 	TxID              string          `bson:"_id"`
-	RawTx             []byte          `bson:"rawTx"`
-	TotalSignatures   uint64          `bson:"totalSignatures"`
-	CurrentSignatures uint64          `bson:"currentSignatures"`
+	State             TxState         `bson:"state"`
+	RawTx             []byte          `bson:"rawTx,omitempty"`
+	TotalSignatures   uint64          `bson:"totalSignatures,omitempty"`
+	CurrentSignatures uint64          `bson:"currentSignatures,omitempty"`
 	CreatedAt         time.Time       `bson:"createdAt"`
-	Signatures        []SignatureSlot `bson:"signatures"`
+	SentAt            *time.Time      `bson:"sentAt,omitempty"`
+	ConfirmedAt       *time.Time      `bson:"confirmedAt,omitempty"`
+	Signatures        []SignatureSlot `bson:"signatures,omitempty"`
 }
 
 // SignatureSlot represents a signature slot in a transaction

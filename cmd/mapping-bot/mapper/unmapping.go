@@ -76,18 +76,18 @@ func (b *Bot) ProcessTxSpends(
 	for txId, signingData := range incomingTxSpends {
 		b.L.Debug("processing incoming tx spend", "txId", txId, "sigHashCount", len(signingData.UnsignedSigHashes))
 
-		sent, err := b.Db.State.IsTransactionSent(ctx, txId)
+		processed, err := b.Db.State.IsTransactionProcessed(ctx, txId)
 		if err != nil {
-			b.L.Debug("failed to check sent status", "txId", txId, "error", err)
+			b.L.Debug("failed to check tx status", "txId", txId, "error", err)
 			continue
 		}
-		if sent {
-			b.L.Debug("tx spend already sent, skipping", "txId", txId)
+		if processed {
+			b.L.Debug("tx spend already processed, skipping", "txId", txId)
 			continue
 		}
 
 		err = b.Db.State.AddPendingTransaction(ctx, txId, signingData.Tx, signingData.UnsignedSigHashes)
-		if err == database.ErrPendingTxExists {
+		if err == database.ErrTxExists {
 			b.L.Debug("tx spend already pending, skipping", "txId", txId)
 		} else if err != nil {
 			b.L.Debug("failed to add pending transaction", "txId", txId, "error", err)
@@ -99,7 +99,7 @@ func (b *Bot) ProcessTxSpends(
 
 func (b *Bot) CheckSignagures(
 	ctx context.Context,
-) ([]*database.PendingTransaction, error) {
+) ([]*database.Transaction, error) {
 	allHashes, err := b.Db.State.GetAllPendingSigHashes(ctx)
 	if err != nil {
 		return nil, err
@@ -118,7 +118,7 @@ func (b *Bot) CheckSignagures(
 	return fullySignedTxs, nil
 }
 
-func attachSignatures(signedData *database.PendingTransaction) (*TxRawIdPair, error) {
+func attachSignatures(signedData *database.Transaction) (*TxRawIdPair, error) {
 	var tx wire.MsgTx
 	tx.Deserialize(bytes.NewReader(signedData.RawTx))
 

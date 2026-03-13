@@ -38,13 +38,31 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 const defaultGraphQLUrl = "https://api.vsc.eco/api/v1/graphql"
 
+// BotConfiger is the interface for bot configuration, allowing test implementations.
+type BotConfiger interface {
+	ContractId() string
+	PrimaryKey() string
+	BackupKey() string
+	HttpPort() uint16
+	FilePath() string
+}
+
+// MempoolClientIface allows swapping the real mempool client for a stub in tests.
+type MempoolClientIface interface {
+	PostTx(rawTx string) error
+	GetAddressTxs(btcAddress string) ([]mempool.Transaction, error)
+	GetRawBlock(hash string) ([]byte, error)
+	GetBlockHashAtHeight(height uint64) (string, int, error)
+	GetTipHeight() (uint64, error)
+}
+
 type Bot struct {
 	Db             *database.Database
 	GqlClient      *graphql.Client
 	L              *slog.Logger
 	ChainParams    *chaincfg.Params
-	MempoolClient  *mempool.MempoolClient
-	BotConfig      MappingBotConfig
+	MempoolClient  MempoolClientIface
+	BotConfig      BotConfiger
 	IdentityConfig common.IdentityConfig
 	HiveConfig     streamer.HiveConfig
 	SystemConfig   systemconfig.SystemConfig

@@ -106,16 +106,22 @@ func requestHandler(
 		ctx, cancel := context.WithTimeout(globalCtx, 15*time.Second)
 		defer cancel()
 
-		primaryKeyHex := bot.BotConfig.PrimaryKey()
-		primaryKey, err := hex.DecodeString(primaryKeyHex)
+		// primaryKeyHex := bot.BotConfig.PrimaryKey()
+		// primaryKey, err := hex.DecodeString(primaryKeyHex)
+		// if err != nil {
+		// 	writeResponse(w, http.StatusBadRequest, "primary key invalid, please set in "+bot.BotConfig.FilePath())
+		// 	return
+		// }
+		// backupKeyHex := bot.BotConfig.BackupKey()
+		// backupKey, err := hex.DecodeString(backupKeyHex)
+		// if err != nil {
+		// 	writeResponse(w, http.StatusBadRequest, "backup key invalid, please set in "+bot.BotConfig.FilePath())
+		// 	return
+		// }
+		primaryKey, backupKey, err := bot.FetchPublicKeys(ctx)
 		if err != nil {
-			writeResponse(w, http.StatusBadRequest, "primary key invalid, please set in "+bot.BotConfig.FilePath())
-			return
-		}
-		backupKeyHex := bot.BotConfig.BackupKey()
-		backupKey, err := hex.DecodeString(backupKeyHex)
-		if err != nil {
-			writeResponse(w, http.StatusBadRequest, "backup key invalid, please set in "+bot.BotConfig.FilePath())
+			writeResponse(w, http.StatusInternalServerError, "could not fetch public keys")
+			writeError(err)
 			return
 		}
 
@@ -200,7 +206,11 @@ func signHandler(
 			}
 			sigBytes, err := hex.DecodeString(entry.Signature)
 			if err != nil {
-				writeResponse(w, http.StatusBadRequest, fmt.Sprintf("signature at index %d must be valid hex", entry.Index))
+				writeResponse(
+					w,
+					http.StatusBadRequest,
+					fmt.Sprintf("signature at index %d must be valid hex", entry.Index),
+				)
 				return
 			}
 			slot := tx.Signatures[entry.Index]

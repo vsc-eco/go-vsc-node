@@ -23,8 +23,7 @@ func New(ctx context.Context, connString, dbName string) (*Database, error) {
 	db := client.Database(dbName)
 	addrCollection := db.Collection("address_mappings")
 	heightCollection := db.Collection("block_height")
-	txCollection := db.Collection("sent_transactions")
-	pendingTxCollection := db.Collection("pending_transactions")
+	txCollection := db.Collection("transactions")
 
 	// Create index on createdAt for address mappings
 	addrIndexModel := mongo.IndexModel{
@@ -35,31 +34,40 @@ func New(ctx context.Context, connString, dbName string) (*Database, error) {
 		return nil, fmt.Errorf("failed to create address index: %w", err)
 	}
 
-	// Create index on sentAt for transactions
-	txIndexModel := mongo.IndexModel{
-		Keys:    bson.D{{Key: "sentAt", Value: 1}},
-		Options: options.Index().SetName("sentAt_idx"),
+	// Index on state for filtering pending/sent/confirmed
+	txStateIndexModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "state", Value: 1}},
+		Options: options.Index().SetName("state_idx"),
 	}
-	if _, err := txCollection.Indexes().CreateOne(ctx, txIndexModel); err != nil {
-		return nil, fmt.Errorf("failed to create transaction index: %w", err)
+	if _, err := txCollection.Indexes().CreateOne(ctx, txStateIndexModel); err != nil {
+		return nil, fmt.Errorf("failed to create tx state index: %w", err)
 	}
 
-	// Create index on signatures.sigHash for fast hash lookups
-	pendingSigHashIndexModel := mongo.IndexModel{
+	// Index on signatures.sigHash for fast hash lookups during signing
+	txSigHashIndexModel := mongo.IndexModel{
 		Keys:    bson.D{{Key: "signatures.sigHash", Value: 1}},
 		Options: options.Index().SetName("sigHash_idx"),
 	}
-	if _, err := pendingTxCollection.Indexes().CreateOne(ctx, pendingSigHashIndexModel); err != nil {
-		return nil, fmt.Errorf("failed to create pending tx sigHash index: %w", err)
+	if _, err := txCollection.Indexes().CreateOne(ctx, txSigHashIndexModel); err != nil {
+		return nil, fmt.Errorf("failed to create tx sigHash index: %w", err)
 	}
 
-	// Create index on createdAt for cleanup of old pending transactions
-	pendingCreatedAtIndexModel := mongo.IndexModel{
+	// Index on createdAt for cleanup of old pending transactions
+	txCreatedAtIndexModel := mongo.IndexModel{
 		Keys:    bson.D{{Key: "createdAt", Value: 1}},
-		Options: options.Index().SetName("pending_createdAt_idx"),
+		Options: options.Index().SetName("createdAt_idx"),
 	}
-	if _, err := pendingTxCollection.Indexes().CreateOne(ctx, pendingCreatedAtIndexModel); err != nil {
-		return nil, fmt.Errorf("failed to create pending tx createdAt index: %w", err)
+	if _, err := txCollection.Indexes().CreateOne(ctx, txCreatedAtIndexModel); err != nil {
+		return nil, fmt.Errorf("failed to create tx createdAt index: %w", err)
+	}
+
+	// Index on sentAt for cleanup of old sent transactions
+	txSentAtIndexModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "sentAt", Value: 1}},
+		Options: options.Index().SetName("sentAt_idx"),
+	}
+	if _, err := txCollection.Indexes().CreateOne(ctx, txSentAtIndexModel); err != nil {
+		return nil, fmt.Errorf("failed to create tx sentAt index: %w", err)
 	}
 
 	return &Database{
@@ -68,9 +76,8 @@ func New(ctx context.Context, connString, dbName string) (*Database, error) {
 			collection: addrCollection,
 		},
 		State: &StateStore{
-			heightCollection:    heightCollection,
-			txCollection:        txCollection,
-			pendingTxCollection: pendingTxCollection,
+			heightCollection: heightCollection,
+			txCollection:     txCollection,
 		},
 	}, nil
 }
@@ -90,9 +97,6 @@ func (d *Database) DropAllCollections(ctx context.Context) error {
 	}
 	if err := d.State.txCollection.Drop(ctx); err != nil {
 		return fmt.Errorf("failed to drop tx collection: %w", err)
-	}
-	if err := d.State.pendingTxCollection.Drop(ctx); err != nil {
-		return fmt.Errorf("failed to drop pending tx collection: %w", err)
 	}
 	return nil
 }
