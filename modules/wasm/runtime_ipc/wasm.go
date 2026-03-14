@@ -623,10 +623,15 @@ func (w *Wasm) Execute(
 
 	argsAlloc := allocString(runtime, vm, nil, args)
 
-	argsAlloc.InspectErr(func(err error) {
-		errStr := fmt.Errorf("failed to allocate string: %w", err).Error()
+	if argsAlloc.IsErr() {
+		errStr := fmt.Errorf("failed to allocate string: %w", argsAlloc.UnwrapErr()).Error()
 		fmt.Println(errStr)
-	})
+		return wasm_types.WasmResultStruct{
+			Error:     &errStr,
+			ErrorCode: errorStrToSymbol(argsAlloc.UnwrapErr().Error()),
+			Gas:       vm.GetStatistics().GetTotalCost() + importGm.GetGasUsed(),
+		}
+	}
 	callResult := resultWrap(vm.ExecuteRegistered("contract", entrypoint, argsAlloc.Unwrap()))
 
 	if callResult.IsErr() {
