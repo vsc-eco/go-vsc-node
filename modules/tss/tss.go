@@ -818,11 +818,17 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 							tssMgr.incrementRetryCount(dsc.KeyId())
 
 							// Schedule retry with delay
+							// Use the correct action type: keygen timeouts should retry as keygen,
+							// not reshare (reshare requires an existing commitment in the DB).
+							retryType := ReshareAction
+							if _, isKeygen := dsc.(*KeyGenDispatcher); isKeygen {
+								retryType = KeyGenAction
+							}
 							go func() {
 								time.Sleep(retryDelay)
 								tssMgr.bufferLock.Lock()
 								tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
-									Type:  ReshareAction,
+									Type:  retryType,
 									KeyId: dsc.KeyId(),
 									Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
 								})
