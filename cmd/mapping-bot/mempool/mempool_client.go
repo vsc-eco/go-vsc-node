@@ -9,7 +9,9 @@ import (
 	"net/http"
 )
 
-const MempoolAPIBase = "https://mempool.space/testnet4/api"
+const MempoolMainnetAPIBase = "https://mempool.space/api"
+const MempoolTestnet4APIBase = "https://mempool.space/testnet4/api"
+const MempoolTestnet3APIBase = "https://mempool.space/testnet/api"
 
 type MempoolClient struct {
 	baseURL string
@@ -60,19 +62,38 @@ type Output struct {
 
 type Status struct {
 	Confirmed   bool   `json:"confirmed"`
-	BlockHeight int    `json:"block_height"`
+	BlockHeight uint64 `json:"block_height"`
 	BlockHash   string `json:"block_hash"`
-	BlockTime   int64  `json:"block_time"`
+	BlockTime   uint64 `json:"block_time"`
 }
 
-func NewMempoolClient(httpClient *http.Client) *MempoolClient {
+func NewMempoolClient(httpClient *http.Client, baseURL string) *MempoolClient {
 	return &MempoolClient{
-		baseURL: MempoolAPIBase,
+		baseURL: baseURL,
 		client:  httpClient,
 	}
 }
 
-func (m *MempoolClient) GetBlockHashAtHeight(height uint32) (string, int, error) {
+func (m *MempoolClient) GetTipHeight() (uint64, error) {
+	url := fmt.Sprintf("%s/blocks/tip/height", m.baseURL)
+	resp, err := m.client.Get(url)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("mempool API returned status %d", resp.StatusCode)
+	}
+
+	var height uint64
+	if err := json.NewDecoder(resp.Body).Decode(&height); err != nil {
+		return 0, fmt.Errorf("error decoding tip height: %w", err)
+	}
+	return height, nil
+}
+
+func (m *MempoolClient) GetBlockHashAtHeight(height uint64) (string, int, error) {
 	slog.Info("getting hash for block", "height", height)
 	url := fmt.Sprintf("%s/block-height/%d", m.baseURL, height)
 	resp, err := m.client.Get(url)
@@ -142,10 +163,15 @@ func (m *MempoolClient) GetAddressTxs(btcAddress string) ([]Transaction, error) 
 
 func (m *MempoolClient) PostTx(rawTx string) error {
 	url := fmt.Sprintf("%s/tx", m.baseURL)
-	resp, err := m.client.Post(url, "test/plain", bytes.NewReader([]byte(rawTx)))
+	resp, err := m.client.Post(url, "text/plain", bytes.NewReader([]byte(rawTx)))
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("mempool API returned status %d: %s", resp.StatusCode, string(body))
+	}
 	return nil
 }

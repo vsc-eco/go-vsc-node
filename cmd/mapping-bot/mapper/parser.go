@@ -4,15 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
-	"log/slog"
 
 	"vsc-node/cmd/mapping-bot/database"
 
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/hasura/go-graphql-client"
 )
 
 type MappingInputData struct {
@@ -22,29 +19,16 @@ type MappingInputData struct {
 }
 
 type VerificationRequest struct {
-	BlockHeight    uint32 `json:"block_height"`
+	BlockHeight    uint64 `json:"block_height"`
 	RawTxHex       string `json:"raw_tx_hex"`
 	MerkleProofHex string `json:"merkle_proof_hex"` // array of byte arrays, each of which is guaranteed 32 bytes
-	TxIndex        uint32 `json:"tx_index"`         // position of the tx in the block
+	TxIndex        uint64 `json:"tx_index"`         // position of the tx in the block
 }
 
-type BlockParser struct {
-	addressDb   *database.AddressStore
-	chainParams *chaincfg.Params
-}
-
-func NewBlockParser(addressDb *database.AddressStore, params *chaincfg.Params) *BlockParser {
-	return &BlockParser{
-		addressDb:   addressDb,
-		chainParams: params,
-	}
-}
-
-func (bp *BlockParser) ParseBlock(
+func (b *Bot) ParseBlock(
 	ctx context.Context,
-	gqlClient *graphql.Client,
 	rawBlockBytes []byte,
-	blockHeight uint32,
+	blockHeight uint64,
 ) ([]*MappingInputData, error) {
 	var msgBlock wire.MsgBlock
 	err := msgBlock.Deserialize(bytes.NewReader(rawBlockBytes))
@@ -57,15 +41,15 @@ func (bp *BlockParser) ParseBlock(
 
 	for txIndex, tx := range msgBlock.Transactions {
 		for i, txOut := range tx.TxOut {
-			addresses := bp.extractAddresses(txOut.PkScript)
+			addresses := b.extractAddresses(txOut.PkScript)
 
 			// this loop should never be longer than one cycle, only happens with multisig which is outdated
 			for _, addr := range addresses {
-				if instruction, err := bp.addressDb.GetInstruction(ctx, addr); err == nil {
-					slog.Debug("instruction address found", "instruction", instruction)
-					exists, err := FetchObservedTx(ctx, gqlClient, tx.TxID(), i)
+				if instruction, err := b.Db.Addresses.GetInstruction(ctx, addr); err == nil {
+					b.L.Debug("instruction address found", "instruction", instruction)
+					exists, err := b.FetchObservedTx(ctx, tx.TxID(), i)
 					if exists || err != nil {
-						slog.Debug("error fetching observed tx", "exits", exists, "error", err)
+						b.L.Debug("error fetching observed tx", "exits", exists, "error", err)
 						break
 					}
 					matchedTxIndices[txIndex] = append(matchedTxIndices[txIndex], instruction)
@@ -76,7 +60,7 @@ func (bp *BlockParser) ParseBlock(
 		}
 	}
 
-	slog.Debug(
+	b.L.Debug(
 		"number of utxos in the block that correspond to vsc addresses",
 		"len(matchedTxIndices)",
 		len(matchedTxIndices),
@@ -94,7 +78,7 @@ func (bp *BlockParser) ParseBlock(
 		}
 		rawTxHex := hex.EncodeToString(txBuf.Bytes())
 
-		merkleProofHex, err := bp.generateMerkleProof(&msgBlock, txIdx)
+		merkleProofHex, err := generateMerkleProof(&msgBlock, txIdx)
 		if err != nil {
 			return nil, err
 		}
@@ -104,7 +88,7 @@ func (bp *BlockParser) ParseBlock(
 				BlockHeight:    blockHeight,
 				RawTxHex:       rawTxHex,
 				MerkleProofHex: merkleProofHex,
-				TxIndex:        uint32(txIdx),
+				TxIndex:        uint64(txIdx),
 			},
 			Instructions: instructions,
 		})
@@ -113,10 +97,10 @@ func (bp *BlockParser) ParseBlock(
 	return mapInputs, nil
 }
 
-func (bp *BlockParser) extractAddresses(pkScript []byte) []string {
+func (b *Bot) extractAddresses(pkScript []byte) []string {
 	var addresses []string
 
-	scriptClass, addrs, _, err := txscript.ExtractPkScriptAddrs(pkScript, bp.chainParams)
+	scriptClass, addrs, _, err := txscript.ExtractPkScriptAddrs(pkScript, b.ChainParams)
 	if err != nil {
 		// fine if error, just means no addresses to extract
 		return addresses
@@ -131,7 +115,7 @@ func (bp *BlockParser) extractAddresses(pkScript []byte) []string {
 	return addresses
 }
 
-func (bp *BlockParser) generateMerkleProof(block *wire.MsgBlock, txIndex int) (string, error) {
+func generateMerkleProof(block *wire.MsgBlock, txIndex int) (string, error) {
 	txCount := len(block.Transactions)
 
 	txHashes := make([]*chainhash.Hash, txCount)

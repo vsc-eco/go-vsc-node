@@ -1,134 +1,94 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"log"
-	"log/slog"
-	"net/http"
-	"net/http/httputil"
-	"os"
 	"testing"
-	"time"
+	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
-	"vsc-node/cmd/mapping-bot/mapper"
-	"vsc-node/cmd/mapping-bot/mempool"
 
-	"github.com/hasura/go-graphql-client"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestUnmap(t *testing.T) {
-	slog.SetLogLoggerLevel(slog.LevelDebug)
+// TestProcessTxSpends_NewTransaction verifies that an unseen tx is added as pending.
+func TestProcessTxSpends_NewTransaction(t *testing.T) {
+	db := setupTestDatabase(t)
+	bot := newTestBot(t, db)
 
-	db, err := database.New(context.Background(), "mongodb://localhost:27017", "mappingbottest")
-	if err != nil {
-		t.Fatalf("failed to create datastore: %s\n", err.Error())
-	}
-	defer db.DropDatabase(context.Background())
-
-	// SET THIS TO LAST BLOCK HEIGHT FOR TEST
-	err = db.State.SetBlockHeight(context.TODO(), 4806875)
-	if err != nil {
-		slog.Error("failed to add default block height\n")
-		os.Exit(1)
+	sigHash := make([]byte, 32)
+	sigHash[0] = 0x11
+	spends := map[string]*contractinterface.SigningData{
+		"txNew": {
+			Tx:                []byte{0x01},
+			UnsignedSigHashes: []contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
+		},
 	}
 
-	bot, err := mapper.NewMapperState(db)
-	if err != nil {
-		slog.Error(err.Error())
-		os.Exit(1)
-	}
+	bot.ProcessTxSpends(t.Context(), nil, spends)
 
-	loggingClient := &http.Client{
-		Transport: &loggingTransport{http.DefaultTransport},
-	}
-	bot.GqlClient = graphql.NewClient("https://api.vsc.eco/api/v1/graphql", loggingClient)
-
-	mempoolClient := mempool.NewMempoolClient(loggingClient)
-
-	if err != nil {
-		t.Fatalf("error fetching tx spends: %s\n", err.Error())
-	} else {
-		bot.HandleUnmap(mempoolClient)
-	}
+	tx, err := db.State.GetPendingTransaction(t.Context(), "txNew")
+	require.NoError(t, err)
+	assert.Equal(t, database.TxStatePending, tx.State)
 }
 
-func TestMap(t *testing.T) {
-	slog.SetLogLoggerLevel(slog.LevelDebug)
+// TestProcessTxSpends_AlreadySent verifies that a sent tx is not re-added as pending.
+func TestProcessTxSpends_AlreadySent(t *testing.T) {
+	db := setupTestDatabase(t)
+	bot := newTestBot(t, db)
 
-	db, err := database.New(context.Background(), "mongodb://localhost:27017", "mappingbottest")
-	if err != nil {
-		t.Fatalf("failed to create datastore: %s\n", err.Error())
-	}
-	defer db.DropDatabase(context.Background())
+	sigHash := make([]byte, 32)
+	sigHash[0] = 0x22
 
-	// remove for prod
-	err = db.Addresses.Insert(
-		context.TODO(),
-		"tb1q9gxwgzzxs7d597nh8843tndtwl9qrdup02tc0xcltrlt2tjyg7xqhat2zx",
-		"deposit_to=hive:milo-hpr",
-	)
-	if err != nil {
-		if err != database.ErrAddrExists {
-			fmt.Fprintf(os.Stderr, "failed to add default address\n")
-			os.Exit(1)
-		}
-	}
-	err = db.State.SetBlockHeight(context.TODO(), 114810)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to add default block height\n")
-		os.Exit(1)
+	// Add and immediately mark as sent
+	require.NoError(t, db.State.AddPendingTransaction(t.Context(), "txAlreadySent", []byte{0x01},
+		[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
+	))
+	require.NoError(t, db.State.MarkTransactionSent(t.Context(), "txAlreadySent"))
+
+	spends := map[string]*contractinterface.SigningData{
+		"txAlreadySent": {
+			Tx:                []byte{0x01},
+			UnsignedSigHashes: []contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
+		},
 	}
 
-	bot, err := mapper.NewMapperState(db)
-	if err != nil {
-		log.Fatalln(err.Error())
-	}
+	bot.ProcessTxSpends(t.Context(), nil, spends)
 
-	httpCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go mapBotHttpServer(httpCtx, db.Addresses, httpPort, bot)
-
-	mempoolClient := mempool.NewMempoolClient(http.DefaultClient)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	blockHeight, err := bot.Db.State.GetBlockHeight(ctx)
-	if err != nil {
-		t.Fatalf("error fetching block height from db: %s", err.Error())
-	}
-
-	hash, status, err := mempoolClient.GetBlockHashAtHeight(blockHeight)
-	if status == http.StatusNotFound {
-		t.Fatalf("No new block.")
-	} else if err != nil {
-		t.Fatal(err.Error())
-	}
-	blockBytes, err := mempoolClient.GetRawBlock(hash)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	bot.HandleMap(blockBytes, blockHeight)
+	// Should still not be pending (was sent)
+	_, err := db.State.GetPendingTransaction(t.Context(), "txAlreadySent")
+	assert.Error(t, err)
 }
 
-// Logging transport
-type loggingTransport struct {
-	transport http.RoundTripper
-}
+// TestProcessTxSpends_AlreadyPending verifies that a pending tx is not re-added.
+func TestProcessTxSpends_AlreadyPending(t *testing.T) {
+	db := setupTestDatabase(t)
+	bot := newTestBot(t, db)
 
-func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	reqDump, _ := httputil.DumpRequestOut(req, true)
-	fmt.Printf("Request:\n%s\n\n", reqDump)
+	sigHash := make([]byte, 32)
+	sigHash[0] = 0x33
 
-	resp, err := t.transport.RoundTrip(req)
-	if err != nil {
-		return resp, err
+	require.NoError(t, db.State.AddPendingTransaction(t.Context(), "txPending", []byte{0x01},
+		[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
+	))
+
+	spends := map[string]*contractinterface.SigningData{
+		"txPending": {
+			Tx:                []byte{0x01},
+			UnsignedSigHashes: []contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
+		},
 	}
 
-	respDump, _ := httputil.DumpResponse(resp, true)
-	fmt.Printf("Response:\n%s\n\n", respDump)
+	// Should not panic or create a duplicate
+	bot.ProcessTxSpends(t.Context(), nil, spends)
 
-	return resp, err
+	txs, err := db.State.GetAllPendingTransactions(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, txs, 1, "should still only have the original pending tx")
 }
+
+// TestNoopMempoolClient_DoesNotBroadcast verifies the stub never calls the real network.
+func TestNoopMempoolClient_DoesNotBroadcast(t *testing.T) {
+	noop := &noopMempoolClient{}
+	require.NoError(t, noop.PostTx("deadbeef"))
+	assert.Equal(t, []string{"deadbeef"}, noop.posted, "noop should record but not broadcast")
+}
+

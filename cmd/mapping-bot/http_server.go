@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,19 +19,60 @@ import (
 
 var requestValidator = validator.New(validator.WithRequiredStructEnabled())
 
+// staleBlockThreshold is how long without a processed block before health is degraded.
+// BTC mainnet averages ~10 min per block; 20 min gives one missed block of headroom.
+const staleBlockThreshold = 20 * time.Minute
+
 func mapBotHttpServer(
 	ctx context.Context,
 	addressStore *database.AddressStore,
-	port int,
-	bot *mapper.MapperState,
+	bot *mapper.Bot,
 ) {
 	if addressStore == nil {
 		fmt.Fprintf(os.Stderr, "datastore or mutext not providred\n")
 		return
 	}
 
-	http.Handle("/", requestHandler(ctx, bot))
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
+	mux := http.NewServeMux()
+	mux.Handle("GET /health", healthHandler(bot))
+	mux.Handle("POST /sign", signHandler(ctx, bot))
+	mux.Handle("/", requestHandler(ctx, bot))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", bot.BotConfig.HttpPort()), mux))
+}
+
+type healthResponse struct {
+	Status      string  `json:"status"`
+	BlockHeight uint64  `json:"blockHeight"`
+	LastBlockAt *string `json:"lastBlockAt"`
+	StaleSecs   *int64  `json:"staleSecs,omitempty"`
+}
+
+func healthHandler(bot *mapper.Bot) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		height, lastAt := bot.LastBlock()
+
+		resp := healthResponse{BlockHeight: height}
+
+		if lastAt.IsZero() {
+			// No block processed yet this session — not necessarily unhealthy,
+			// could be a fresh start. Report status but return 200.
+			resp.Status = "starting"
+		} else {
+			ts := lastAt.UTC().Format(time.RFC3339)
+			resp.LastBlockAt = &ts
+			stale := int64(time.Since(lastAt).Seconds())
+			if time.Since(lastAt) > staleBlockThreshold {
+				resp.Status = "unhealthy"
+				resp.StaleSecs = &stale
+				w.WriteHeader(http.StatusServiceUnavailable)
+			} else {
+				resp.Status = "ok"
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}
 }
 
 type requestBody struct {
@@ -38,7 +81,7 @@ type requestBody struct {
 
 func requestHandler(
 	globalCtx context.Context,
-	bot *mapper.MapperState,
+	bot *mapper.Bot,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// validate incoming request + parse for vsc address
@@ -59,10 +102,37 @@ func requestHandler(
 			return
 		}
 
-		vscAddr := requestBody.Instruction
+		// fetch public keys from contract state
+		ctx, cancel := context.WithTimeout(globalCtx, 15*time.Second)
+		defer cancel()
+
+		// primaryKeyHex := bot.BotConfig.PrimaryKey()
+		// primaryKey, err := hex.DecodeString(primaryKeyHex)
+		// if err != nil {
+		// 	writeResponse(w, http.StatusBadRequest, "primary key invalid, please set in "+bot.BotConfig.FilePath())
+		// 	return
+		// }
+		// backupKeyHex := bot.BotConfig.BackupKey()
+		// backupKey, err := hex.DecodeString(backupKeyHex)
+		// if err != nil {
+		// 	writeResponse(w, http.StatusBadRequest, "backup key invalid, please set in "+bot.BotConfig.FilePath())
+		// 	return
+		// }
+		primaryKey, backupKey, err := bot.FetchPublicKeys(ctx)
+		if err != nil {
+			writeResponse(w, http.StatusInternalServerError, "could not fetch public keys")
+			writeError(err)
+			return
+		}
 
 		// make btc address
-		btcAddr, err := makeBtcAddress(requestBody.Instruction)
+		tag := sha256.Sum256([]byte(requestBody.Instruction))
+		btcAddr, _, err := createP2WSHAddressWithBackup(
+			primaryKey,
+			backupKey,
+			tag[:],
+			bot.ChainParams,
+		)
 		if err != nil {
 			writeResponse(w, http.StatusInternalServerError, "")
 			writeError(err)
@@ -70,10 +140,10 @@ func requestHandler(
 		}
 
 		// insert mapping
-		ctx, cancel := context.WithTimeout(globalCtx, 15*time.Second)
+		ctx, cancel = context.WithTimeout(globalCtx, 15*time.Second)
 		defer cancel()
 
-		if err := bot.Db.Addresses.Insert(ctx, btcAddr, vscAddr); err != nil {
+		if err := bot.Db.Addresses.Insert(ctx, btcAddr, requestBody.Instruction); err != nil {
 			if errors.Is(err, database.ErrAddrExists) {
 				writeResponse(w, http.StatusConflict, "address map exists")
 			} else {
@@ -81,7 +151,7 @@ func requestHandler(
 				writeError(err)
 			}
 		} else {
-			writeResponse(w, http.StatusCreated, "address mapping created")
+			writeResponse(w, http.StatusCreated, "address mapping created: "+btcAddr+" -> "+requestBody.Instruction)
 		}
 
 		// handle this error, also allows test scripts witout bot
@@ -89,6 +159,79 @@ func requestHandler(
 			go bot.HandleExistingTxs(btcAddr)
 		} else {
 			fmt.Fprintf(os.Stderr, "no mapper state passed to http server, skipping check for previous txs")
+		}
+	}
+}
+
+type signatureEntry struct {
+	Index     int    `json:"index"     validate:"min=0"`
+	Signature string `json:"signature" validate:"required"`
+}
+
+type signRequest struct {
+	TxID       string           `json:"tx_id"      validate:"required"`
+	Signatures []signatureEntry `json:"signatures" validate:"required,min=1,dive"`
+}
+
+func signHandler(
+	globalCtx context.Context,
+	bot *mapper.Bot,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req signRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeResponse(w, http.StatusBadRequest, "invalid JSON")
+			return
+		}
+		if err := requestValidator.Struct(&req); err != nil {
+			writeResponse(w, http.StatusBadRequest, "tx_id and at least one signature are required")
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(globalCtx, 15*time.Second)
+		defer cancel()
+
+		tx, err := bot.Db.State.GetPendingTransaction(ctx, req.TxID)
+		if err != nil {
+			writeResponse(w, http.StatusNotFound, fmt.Sprintf("pending transaction not found: %s", req.TxID))
+			return
+		}
+
+		// Build a signatures map keyed by sighash for each provided index
+		sigMap := make(map[string]database.SignatureUpdate)
+		for _, entry := range req.Signatures {
+			if entry.Index >= len(tx.Signatures) {
+				writeResponse(w, http.StatusBadRequest, fmt.Sprintf("index %d out of range", entry.Index))
+				return
+			}
+			sigBytes, err := hex.DecodeString(entry.Signature)
+			if err != nil {
+				writeResponse(
+					w,
+					http.StatusBadRequest,
+					fmt.Sprintf("signature at index %d must be valid hex", entry.Index),
+				)
+				return
+			}
+			slot := tx.Signatures[entry.Index]
+			sigMap[hex.EncodeToString(slot.SigHash)] = database.SignatureUpdate{Bytes: sigBytes, IsBackup: true}
+		}
+
+		fullySigned, err := bot.Db.State.UpdateSignatures(ctx, sigMap)
+		if err != nil {
+			writeResponse(w, http.StatusInternalServerError, "failed to update signatures")
+			writeError(err)
+			return
+		}
+
+		if len(fullySigned) > 0 {
+			writeResponse(
+				w,
+				http.StatusOK,
+				fmt.Sprintf("signature applied, transaction %s is now fully signed", req.TxID),
+			)
+		} else {
+			writeResponse(w, http.StatusOK, fmt.Sprintf("%d signature(s) applied, transaction %s still awaiting more signatures", len(sigMap), req.TxID))
 		}
 	}
 }

@@ -2,9 +2,11 @@ package database
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
+	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -14,7 +16,7 @@ import (
 // === StateStore Methods ===
 
 // SetBlockHeight sets the last processed block height
-func (s *StateStore) SetBlockHeight(ctx context.Context, height uint32) error {
+func (s *StateStore) SetBlockHeight(ctx context.Context, height uint64) error {
 	doc := BlockHeight{
 		ID:     "current",
 		Height: height,
@@ -30,12 +32,12 @@ func (s *StateStore) SetBlockHeight(ctx context.Context, height uint32) error {
 
 // GetBlockHeight retrieves the last processed block height
 // Returns 0 if no height has been set yet
-func (s *StateStore) GetBlockHeight(ctx context.Context) (uint32, error) {
+func (s *StateStore) GetBlockHeight(ctx context.Context) (uint64, error) {
 	var result BlockHeight
 	err := s.heightCollection.FindOne(ctx, bson.M{"_id": "current"}).Decode(&result)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			return 0, nil // Return 0 if no height has been set
+			return 0, nil
 		}
 		return 0, fmt.Errorf("failed to get block height: %w", err)
 	}
@@ -45,7 +47,7 @@ func (s *StateStore) GetBlockHeight(ctx context.Context) (uint32, error) {
 // IncrementBlockHeight atomically increments the block height by 1
 // Returns the new height after increment
 // If no height exists, initializes to 1
-func (s *StateStore) IncrementBlockHeight(ctx context.Context) (uint32, error) {
+func (s *StateStore) IncrementBlockHeight(ctx context.Context) (uint64, error) {
 	filter := bson.M{"_id": "current"}
 	update := bson.M{
 		"$inc": bson.M{"height": 1},
@@ -64,74 +66,227 @@ func (s *StateStore) IncrementBlockHeight(ctx context.Context) (uint32, error) {
 	return result.Height, nil
 }
 
-// MarkTransactionSent marks a transaction ID as sent
-// Returns ErrAddrExists if the transaction was already marked as sent
-func (s *StateStore) MarkTransactionSent(ctx context.Context, txID string) error {
-	err := s.DeletePendingTransaction(ctx, txID)
-	if err != nil {
-		return err
+// === Transaction Methods ===
+
+// AddPendingTransaction adds a new unsigned transaction
+func (s *StateStore) AddPendingTransaction(
+	ctx context.Context,
+	txID string,
+	rawTx []byte,
+	unsignedHashes []contractinterface.UnsignedSigHash,
+) error {
+	signatures := make([]SignatureSlot, len(unsignedHashes))
+	for i, uh := range unsignedHashes {
+		signatures[i] = SignatureSlot{
+			Index:         uint64(uh.Index),
+			SigHash:       uh.SigHash,
+			WitnessScript: uh.WitnessScript,
+			Signature:     nil,
+		}
 	}
 
-	doc := SentTransaction{
-		TxID:   txID,
-		SentAt: time.Now().UTC(),
+	doc := Transaction{
+		TxID:              txID,
+		State:             TxStatePending,
+		RawTx:             rawTx,
+		TotalSignatures:   uint64(len(unsignedHashes)),
+		CurrentSignatures: 0,
+		CreatedAt:         time.Now().UTC(),
+		Signatures:        signatures,
 	}
 
-	_, err = s.txCollection.InsertOne(ctx, doc)
+	_, err := s.txCollection.InsertOne(ctx, doc)
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
-			return ErrAddrExists // Reusing this error, or create ErrTxExists
+			return ErrTxExists
 		}
-		return fmt.Errorf("failed to mark transaction as sent [txID:%s]: %w", txID, err)
+		return fmt.Errorf("failed to insert pending transaction [txID:%s]: %w", txID, err)
 	}
 	return nil
 }
 
-// IsTransactionSent checks if a transaction ID has been marked as sent
-func (s *StateStore) IsTransactionSent(ctx context.Context, txID string) (bool, error) {
-	var result SentTransaction
-	err := s.txCollection.FindOne(ctx, bson.M{"_id": txID}).Decode(&result)
+// GetPendingTransaction retrieves a pending transaction by ID
+func (s *StateStore) GetPendingTransaction(ctx context.Context, txID string) (*Transaction, error) {
+	var tx Transaction
+	err := s.txCollection.FindOne(ctx, bson.M{"_id": txID, "state": TxStatePending}).Decode(&tx)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			return false, nil
+			return nil, fmt.Errorf("transaction %s not found", txID)
 		}
-		return false, fmt.Errorf("failed to check transaction [txID:%s]: %w", txID, err)
+		return nil, fmt.Errorf("failed to get transaction %s: %w", txID, err)
 	}
-	return true, nil
+	return &tx, nil
 }
 
-// DeleteTransaction removes a transaction from the sent list
-func (s *StateStore) DeleteTransaction(ctx context.Context, txID string) error {
-	result, err := s.txCollection.DeleteOne(ctx, bson.M{"_id": txID})
+// GetAllPendingTransactions retrieves all pending transactions
+func (s *StateStore) GetAllPendingTransactions(ctx context.Context) ([]Transaction, error) {
+	cursor, err := s.txCollection.Find(ctx, bson.M{"state": TxStatePending})
 	if err != nil {
-		return fmt.Errorf("failed to delete transaction [txID:%s]: %w", txID, err)
+		return nil, fmt.Errorf("failed to get all pending transactions: %w", err)
 	}
-	if result.DeletedCount == 0 {
+	defer cursor.Close(ctx)
+
+	var txs []Transaction
+	if err := cursor.All(ctx, &txs); err != nil {
+		return nil, fmt.Errorf("failed to decode pending transactions: %w", err)
+	}
+	return txs, nil
+}
+
+// GetAllPendingSigHashes returns all signature hashes that are still unsigned
+func (s *StateStore) GetAllPendingSigHashes(ctx context.Context) ([]string, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"state": TxStatePending}}},
+		{{Key: "$unwind", Value: "$signatures"}},
+		{{Key: "$match", Value: bson.M{"signatures.signature": nil}}},
+		{{Key: "$project", Value: bson.M{"_id": 0, "sigHash": "$signatures.sigHash"}}},
+	}
+
+	cursor, err := s.txCollection.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pending sig hashes: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var results []struct {
+		SigHash []byte `bson:"sigHash"`
+	}
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("failed to decode sig hashes: %w", err)
+	}
+
+	hashes := make([]string, len(results))
+	for i, r := range results {
+		hashes[i] = hex.EncodeToString(r.SigHash)
+	}
+	return hashes, nil
+}
+
+// SignatureUpdate carries a signature and whether it was submitted via the backup (HTTP) path.
+type SignatureUpdate struct {
+	Bytes    []byte
+	IsBackup bool
+}
+
+// UpdateSignatures updates transactions with new signatures
+// Returns transactions that are now fully signed
+func (s *StateStore) UpdateSignatures(
+	ctx context.Context,
+	signatures map[string]SignatureUpdate,
+) ([]*Transaction, error) {
+	fullySignedTxs := make([]*Transaction, 0)
+
+	for sigHash, update := range signatures {
+		sigBytes := update.Bytes
+		sigHashBytes, decErr := hex.DecodeString(sigHash)
+		if decErr != nil {
+			return nil, fmt.Errorf("invalid sigHash %s: %w", sigHash, decErr)
+		}
+		filter := bson.M{"state": TxStatePending, "signatures.sigHash": sigHashBytes}
+
+		var tx Transaction
+		err := s.txCollection.FindOne(ctx, filter).Decode(&tx)
+		if err != nil {
+			if errors.Is(err, mongo.ErrNoDocuments) {
+				continue
+			}
+			return nil, fmt.Errorf("failed to find transaction for sigHash %s: %w", sigHash, err)
+		}
+
+		for i := range tx.Signatures {
+			if hex.EncodeToString(tx.Signatures[i].SigHash) == sigHash && tx.Signatures[i].Signature == nil {
+				dbUpdate := bson.M{
+					"$set": bson.M{
+						fmt.Sprintf("signatures.%d.signature", i): sigBytes,
+						fmt.Sprintf("signatures.%d.isBackup", i):  update.IsBackup,
+					},
+					"$inc": bson.M{
+						"currentSignatures": 1,
+					},
+				}
+
+				_, err := s.txCollection.UpdateOne(ctx, bson.M{"_id": tx.TxID}, dbUpdate)
+				if err != nil {
+					return nil, fmt.Errorf("failed to update signature for txID %s: %w", tx.TxID, err)
+				}
+
+				tx.Signatures[i].Signature = sigBytes
+				tx.Signatures[i].IsBackup = update.IsBackup
+				tx.CurrentSignatures++
+				if tx.CurrentSignatures >= tx.TotalSignatures {
+					fullySignedTxs = append(fullySignedTxs, &tx)
+				}
+				break
+			}
+		}
+	}
+
+	return fullySignedTxs, nil
+}
+
+// MarkTransactionSent atomically transitions a transaction from pending to sent,
+// retaining signature data
+func (s *StateStore) MarkTransactionSent(ctx context.Context, txID string) error {
+	now := time.Now().UTC()
+	result, err := s.txCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": txID, "state": TxStatePending},
+		bson.M{"$set": bson.M{"state": TxStateSent, "sentAt": now}},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to mark transaction as sent [txID:%s]: %w", txID, err)
+	}
+	if result.MatchedCount == 0 {
 		return ErrTxNotFound
 	}
 	return nil
 }
 
-// DeleteOldTransactions removes transactions sent before the specified duration ago
-func (s *StateStore) DeleteOldTransactions(ctx context.Context, age time.Duration) (int64, error) {
-	cutoffTime := time.Now().UTC().Add(-age)
-	filter := bson.M{"sentAt": bson.M{"$lt": cutoffTime}}
-	result, err := s.txCollection.DeleteMany(ctx, filter)
+// MarkTransactionConfirmed atomically transitions a transaction from sent to confirmed
+// and drops the raw tx and signature data
+func (s *StateStore) MarkTransactionConfirmed(ctx context.Context, txID string) error {
+	now := time.Now().UTC()
+	result, err := s.txCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": txID, "state": TxStateSent},
+		bson.M{
+			"$set":   bson.M{"state": TxStateConfirmed, "confirmedAt": now},
+			"$unset": bson.M{"rawTx": "", "signatures": ""},
+		},
+	)
 	if err != nil {
-		return 0, fmt.Errorf("failed to delete old transactions: %w", err)
+		return fmt.Errorf("failed to mark transaction as confirmed [txID:%s]: %w", txID, err)
 	}
-	return result.DeletedCount, nil
+	if result.MatchedCount == 0 {
+		return ErrTxNotFound
+	}
+	return nil
 }
 
-// GetAllTransactions retrieves all sent transaction IDs
-func (s *StateStore) GetAllTransactions(ctx context.Context) ([]string, error) {
-	cursor, err := s.txCollection.Find(ctx, bson.M{})
+// IsTransactionProcessed checks if a transaction has been sent or confirmed
+func (s *StateStore) IsTransactionProcessed(ctx context.Context, txID string) (bool, error) {
+	count, err := s.txCollection.CountDocuments(ctx, bson.M{
+		"_id":   txID,
+		"state": bson.M{"$in": bson.A{TxStateSent, TxStateConfirmed}},
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get sent transactions: %w", err)
+		return false, fmt.Errorf("failed to check transaction [txID:%s]: %w", txID, err)
+	}
+	return count > 0, nil
+}
+
+// GetAllTransactions retrieves all sent and confirmed transaction IDs
+func (s *StateStore) GetAllTransactions(ctx context.Context) ([]string, error) {
+	cursor, err := s.txCollection.Find(
+		ctx,
+		bson.M{"state": bson.M{"$in": bson.A{TxStateSent, TxStateConfirmed}}},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transactions: %w", err)
 	}
 	defer cursor.Close(ctx)
 
-	var results []SentTransaction
+	var results []Transaction
 	if err := cursor.All(ctx, &results); err != nil {
 		return nil, fmt.Errorf("failed to decode results: %w", err)
 	}
@@ -143,190 +298,34 @@ func (s *StateStore) GetAllTransactions(ctx context.Context) ([]string, error) {
 	return txIDs, nil
 }
 
-// ClearAllTransactions removes all sent transaction records
-func (s *StateStore) ClearAllTransactions(ctx context.Context) error {
-	_, err := s.txCollection.DeleteMany(ctx, bson.M{})
-	return err
-}
-
-// === Pending Transaction Methods ===
-
-// AddPendingTransaction adds a new unsigned transaction to the pending queue
-func (s *StateStore) AddPendingTransaction(
-	ctx context.Context,
-	txID string,
-	rawTx string,
-	unsignedHashes []UnsignedSigHash,
-) error {
-	signatures := make([]SignatureSlot, len(unsignedHashes))
-	for i, uh := range unsignedHashes {
-		signatures[i] = SignatureSlot{
-			Index:         uh.Index,
-			SigHash:       uh.SigHash,
-			WitnessScript: uh.WitnessScript,
-			Signature:     nil,
-		}
-	}
-
-	doc := PendingTransaction{
-		TxID:              txID,
-		RawTx:             rawTx,
-		TotalSignatures:   uint32(len(unsignedHashes)),
-		CurrentSignatures: 0,
-		CreatedAt:         time.Now().UTC(),
-		Signatures:        signatures,
-	}
-
-	_, err := s.pendingTxCollection.InsertOne(ctx, doc)
-	if err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			return ErrPendingTxExists
-		}
-		return fmt.Errorf("failed to insert pending transaction [txID:%s]: %w", txID, err)
-	}
-	return nil
-}
-
-// GetAllPendingSigHashes returns all signature hashes that are still unsigned
-func (s *StateStore) GetAllPendingSigHashes(ctx context.Context) ([]string, error) {
-	// Use aggregation to extract all unsigned sigHashes
-	pipeline := mongo.Pipeline{
-		// Unwind the signatures array
-		{{Key: "$unwind", Value: "$signatures"}},
-		// Filter for null signatures
-		{{Key: "$match", Value: bson.M{"signatures.signature": nil}}},
-		// Project just the sigHash
-		{{Key: "$project", Value: bson.M{"_id": 0, "sigHash": "$signatures.sigHash"}}},
-	}
-
-	cursor, err := s.pendingTxCollection.Aggregate(ctx, pipeline)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get pending sig hashes: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var results []struct {
-		SigHash string `bson:"sigHash"`
-	}
-	if err := cursor.All(ctx, &results); err != nil {
-		return nil, fmt.Errorf("failed to decode sig hashes: %w", err)
-	}
-
-	hashes := make([]string, len(results))
-	for i, r := range results {
-		hashes[i] = r.SigHash
-	}
-	return hashes, nil
-}
-
-// UpdateSignatures updates transactions with new signatures
-// Returns the txIDs of transactions that are now fully signed
-func (s *StateStore) UpdateSignatures(
-	ctx context.Context,
-	signatures map[string][]byte,
-) ([]*PendingTransaction, error) {
-	fullySignedTxIDs := make([]*PendingTransaction, 0)
-
-	// For each signature, find and update the corresponding transaction
-	for sigHash, sigBytes := range signatures {
-		// Find the transaction containing this sigHash
-		filter := bson.M{"signatures.sigHash": sigHash}
-
-		var tx PendingTransaction
-		err := s.pendingTxCollection.FindOne(ctx, filter).Decode(&tx)
-		if err != nil {
-			if errors.Is(err, mongo.ErrNoDocuments) {
-				// Hash not found - might have already been processed
-				continue
-			}
-			return nil, fmt.Errorf("failed to find transaction for sigHash %s: %w", sigHash, err)
-		}
-
-		// Find the signature index and update it
-		for i := range tx.Signatures {
-			if tx.Signatures[i].SigHash == sigHash && tx.Signatures[i].Signature == nil {
-				// Update this specific signature slot
-				update := bson.M{
-					"$set": bson.M{
-						fmt.Sprintf("signatures.%d.signature", i): sigBytes,
-					},
-					"$inc": bson.M{
-						"currentSignatures": 1,
-					},
-				}
-
-				_, err := s.pendingTxCollection.UpdateOne(ctx, bson.M{"_id": tx.TxID}, update)
-				if err != nil {
-					return nil, fmt.Errorf("failed to update signature for txID %s: %w", tx.TxID, err)
-				}
-
-				// Check if this transaction is now fully signed
-				if tx.CurrentSignatures+1 >= tx.TotalSignatures {
-					fullySignedTxIDs = append(fullySignedTxIDs, &tx)
-				}
-				break
-			}
-		}
-	}
-
-	return fullySignedTxIDs, nil
-}
-
-// GetPendingTransaction retrieves a pending transaction by ID
-func (s *StateStore) GetPendingTransaction(ctx context.Context, txID string) (*PendingTransaction, error) {
-	var tx PendingTransaction
-	err := s.pendingTxCollection.FindOne(ctx, bson.M{"_id": txID}).Decode(&tx)
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, fmt.Errorf("transaction %s not found", txID)
-		}
-		return nil, fmt.Errorf("failed to get transaction %s: %w", txID, err)
-	}
-	return &tx, nil
-}
-
-// DeletePendingTransaction removes a transaction from the pending queue
-func (s *StateStore) DeletePendingTransaction(ctx context.Context, txID string) error {
-	result, err := s.pendingTxCollection.DeleteOne(ctx, bson.M{"_id": txID})
-	if err != nil {
-		return fmt.Errorf("failed to delete transaction %s: %w", txID, err)
-	}
-	if result.DeletedCount == 0 {
-		return fmt.Errorf("transaction %s not found", txID)
-	}
-	return nil
-}
-
-// DeleteOldPendingTransactions removes pending transactions created before the specified duration ago
-// Returns the number of transactions deleted
+// DeleteOldPendingTransactions removes pending transactions created before the given age
 func (s *StateStore) DeleteOldPendingTransactions(ctx context.Context, age time.Duration) (int64, error) {
 	cutoffTime := time.Now().UTC().Add(-age)
-	filter := bson.M{"createdAt": bson.M{"$lt": cutoffTime}}
-
-	result, err := s.pendingTxCollection.DeleteMany(ctx, filter)
+	result, err := s.txCollection.DeleteMany(ctx, bson.M{
+		"state":     TxStatePending,
+		"createdAt": bson.M{"$lt": cutoffTime},
+	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to delete old pending transactions: %w", err)
 	}
 	return result.DeletedCount, nil
 }
 
-// ClearAllPendingTransactions removes all pending transactions
-func (s *StateStore) ClearAllPendingTransactions(ctx context.Context) error {
-	_, err := s.pendingTxCollection.DeleteMany(ctx, bson.M{})
-	return err
+// DeleteOldSentTransactions removes sent transactions sent before the given age
+func (s *StateStore) DeleteOldSentTransactions(ctx context.Context, age time.Duration) (int64, error) {
+	cutoffTime := time.Now().UTC().Add(-age)
+	result, err := s.txCollection.DeleteMany(ctx, bson.M{
+		"state":  TxStateSent,
+		"sentAt": bson.M{"$lt": cutoffTime},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete old sent transactions: %w", err)
+	}
+	return result.DeletedCount, nil
 }
 
-// GetAllPendingTransactions retrieves all pending transactions
-func (s *StateStore) GetAllPendingTransactions(ctx context.Context) ([]PendingTransaction, error) {
-	cursor, err := s.pendingTxCollection.Find(ctx, bson.M{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get all pending transactions: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var txs []PendingTransaction
-	if err := cursor.All(ctx, &txs); err != nil {
-		return nil, fmt.Errorf("failed to decode pending transactions: %w", err)
-	}
-	return txs, nil
+// ClearAllTransactions removes all transaction records
+func (s *StateStore) ClearAllTransactions(ctx context.Context) error {
+	_, err := s.txCollection.DeleteMany(ctx, bson.M{})
+	return err
 }

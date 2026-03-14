@@ -1,25 +1,132 @@
 package mapper
 
 import (
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httputil"
+	"sync/atomic"
+	"time"
 	"vsc-node/cmd/mapping-bot/database"
+	"vsc-node/cmd/mapping-bot/mempool"
+	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
+	"vsc-node/modules/hive/streamer"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/hasura/go-graphql-client"
 )
 
-const graphQLUrl = "https://api.vsc.eco/api/v1/graphql"
-
-type MapperState struct {
-	Db *database.Database
-	// txs that have been posted, but haven't been seen in a block yet
-	GqlClient *graphql.Client
-	L         *slog.Logger
+type loggingTransport struct {
+	transport http.RoundTripper
 }
 
-func NewMapperState(db *database.Database) (*MapperState, error) {
-	return &MapperState{
-		Db:        db,
-		GqlClient: graphql.NewClient(graphQLUrl, nil),
-		L:         slog.Default(),
+func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	reqDump, _ := httputil.DumpRequestOut(req, true)
+	slog.Debug("HTTP request", "dump", string(reqDump))
+
+	resp, err := t.transport.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
+
+	respDump, _ := httputil.DumpResponse(resp, true)
+	slog.Debug("HTTP response", "dump", string(respDump))
+
+	return resp, err
+}
+
+const defaultGraphQLUrl = "https://api.vsc.eco/api/v1/graphql"
+
+// BotConfiger is the interface for bot configuration, allowing test implementations.
+type BotConfiger interface {
+	ContractId() string
+	HttpPort() uint16
+	FilePath() string
+}
+
+// MempoolClientIface allows swapping the real mempool client for a stub in tests.
+type MempoolClientIface interface {
+	PostTx(rawTx string) error
+	GetAddressTxs(btcAddress string) ([]mempool.Transaction, error)
+	GetRawBlock(hash string) ([]byte, error)
+	GetBlockHashAtHeight(height uint64) (string, int, error)
+	GetTipHeight() (uint64, error)
+}
+
+type Bot struct {
+	Db             *database.Database
+	GqlClient      *graphql.Client
+	L              *slog.Logger
+	ChainParams    *chaincfg.Params
+	MempoolClient  MempoolClientIface
+	BotConfig      BotConfiger
+	IdentityConfig common.IdentityConfig
+	HiveConfig     streamer.HiveConfig
+	SystemConfig   systemconfig.SystemConfig
+
+	lastBlockHeight atomic.Uint64
+	lastBlockAt     atomic.Int64 // Unix nanoseconds; 0 means not yet set
+}
+
+func (b *Bot) setLastBlock(height uint64) {
+	b.lastBlockHeight.Store(height)
+	b.lastBlockAt.Store(time.Now().UnixNano())
+}
+
+// LastBlock returns the most recently processed block height and when it was processed.
+// Returns a zero time if no block has been processed yet this session.
+func (b *Bot) LastBlock() (height uint64, at time.Time) {
+	height = b.lastBlockHeight.Load()
+	if ns := b.lastBlockAt.Load(); ns != 0 {
+		at = time.Unix(0, ns)
+	}
+	return
+}
+
+func parseNetwork(name string) (*chaincfg.Params, string, error) {
+	switch name {
+	case "mainnet":
+		return &chaincfg.MainNetParams, mempool.MempoolMainnetAPIBase, nil
+	case "testnet4":
+		return &chaincfg.TestNet4Params, mempool.MempoolTestnet4APIBase, nil
+	case "testnet3":
+		return &chaincfg.TestNet3Params, mempool.MempoolTestnet3APIBase, nil
+	case "regnet":
+		return &chaincfg.RegressionNetParams, mempool.MempoolMainnetAPIBase, nil
+	default:
+		return nil, "", fmt.Errorf("unknown network %q: must be mainnet, testnet4, testnet3, or regnet", name)
+	}
+}
+
+func NewBot(
+	db *database.Database,
+	btcNetId string,
+	mappingBotConfig MappingBotConfig,
+	identityConfig common.IdentityConfig,
+	hiveConfig streamer.HiveConfig,
+	systemConfig systemconfig.SystemConfig,
+) (*Bot, error) {
+	chainParams, mempoolBase, err := parseNetwork(btcNetId)
+	if err != nil {
+		return nil, err
+	}
+
+	mempoolClient := mempool.NewMempoolClient(http.DefaultClient, mempoolBase)
+	// gqlClient := graphql.NewClient(mappingBotConfig.Get().ConnectedGraphQLAddr, &http.Client{
+	// 	Transport: &loggingTransport{http.DefaultTransport},
+	// })
+	gqlClient := graphql.NewClient(mappingBotConfig.Get().ConnectedGraphQLAddr, http.DefaultClient)
+
+	return &Bot{
+		Db:             db,
+		GqlClient:      gqlClient,
+		L:              slog.Default(),
+		ChainParams:    chainParams,
+		MempoolClient:  mempoolClient,
+		BotConfig:      mappingBotConfig,
+		IdentityConfig: identityConfig,
+		HiveConfig:     hiveConfig,
+		SystemConfig:   systemConfig,
 	}, nil
 }

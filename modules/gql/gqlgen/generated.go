@@ -209,7 +209,7 @@ type ComplexityRoot struct {
 		GetAccountRc          func(childComplexity int, account string, height *model.Uint64) int
 		GetDagByCid           func(childComplexity int, cidString string) int
 		GetElection           func(childComplexity int, epoch model.Uint64) int
-		GetStateByKeys        func(childComplexity int, contractID string, keys []string) int
+		GetStateByKeys        func(childComplexity int, contractID string, keys []string, encoding *string) int
 		GetTssKey             func(childComplexity int, keyID string) int
 		GetTssRequests        func(childComplexity int, keyID string, msgHex []string) int
 		GetWitness            func(childComplexity int, account string, height *model.Uint64) int
@@ -366,7 +366,7 @@ type PostingJsonKeysResolver interface {
 	T(ctx context.Context, obj *witnesses.PostingJsonKeys) (*string, error)
 }
 type QueryResolver interface {
-	GetStateByKeys(ctx context.Context, contractID string, keys []string) (model.Map, error)
+	GetStateByKeys(ctx context.Context, contractID string, keys []string, encoding *string) (model.Map, error)
 	FindTransaction(ctx context.Context, filterOptions *TransactionFilter) ([]transactions.TransactionRecord, error)
 	FindContractOutput(ctx context.Context, filterOptions *ContractOutputFilter) ([]contracts.ContractOutput, error)
 	FindLedgerTXs(ctx context.Context, filterOptions *LedgerTxFilter) ([]ledger_db.LedgerRecord, error)
@@ -1106,7 +1106,7 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 			return 0, false
 		}
 
-		return e.complexity.Query.GetStateByKeys(childComplexity, args["contractId"].(string), args["keys"].([]string)), true
+		return e.complexity.Query.GetStateByKeys(childComplexity, args["contractId"].(string), args["keys"].([]string), args["encoding"].(*string)), true
 	case "Query.getTssKey":
 		if e.complexity.Query.GetTssKey == nil {
 			break
@@ -1998,7 +1998,7 @@ type SimulateContractCallResult {
 }
 
 type Query {
-  getStateByKeys(contractId: String!, keys: [String!]!): Map
+  getStateByKeys(contractId: String!, keys: [String!]!, encoding: String): Map
   findTransaction(filterOptions: TransactionFilter): [TransactionRecord!]
   findContractOutput(filterOptions: ContractOutputFilter): [ContractOutput!]
   findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerRecord!]
@@ -2188,6 +2188,11 @@ func (ec *executionContext) field_Query_getStateByKeys_args(ctx context.Context,
 		return nil, err
 	}
 	args["keys"] = arg1
+	arg2, err := graphql.ProcessArgField(ctx, rawArgs, "encoding", ec.unmarshalOString2ᚖstring)
+	if err != nil {
+		return nil, err
+	}
+	args["encoding"] = arg2
 	return args, nil
 }
 
@@ -4889,7 +4894,7 @@ func (ec *executionContext) _Query_getStateByKeys(ctx context.Context, field gra
 		ec.fieldContext_Query_getStateByKeys,
 		func(ctx context.Context) (any, error) {
 			fc := graphql.GetFieldContext(ctx)
-			return ec.resolvers.Query().GetStateByKeys(ctx, fc.Args["contractId"].(string), fc.Args["keys"].([]string))
+			return ec.resolvers.Query().GetStateByKeys(ctx, fc.Args["contractId"].(string), fc.Args["keys"].([]string), fc.Args["encoding"].(*string))
 		},
 		nil,
 		ec.marshalOMap2vscᚑnodeᚋmodulesᚋgqlᚋmodelᚐMap,

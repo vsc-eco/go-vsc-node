@@ -25,6 +25,7 @@ require (
 	github.com/protolambda/bls12-381-util v0.1.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/cors v1.11.1
+	github.com/tinylib/msgp v1.6.3
 	github.com/vektah/gqlparser/v2 v2.5.30
 	github.com/vsc-eco/go-ethereum v0.0.1
 	github.com/vsc-eco/hivego v0.0.0-20260224180332-508b8c394435
@@ -55,6 +56,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
 	github.com/olekukonko/tablewriter v0.0.5 // indirect
+	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pion/transport/v3 v3.0.7 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect

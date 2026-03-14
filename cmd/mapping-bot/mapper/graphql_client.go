@@ -7,43 +7,34 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
+	"vsc-node/cmd/mapping-bot/database"
 
-	"github.com/hasura/go-graphql-client"
+	graphql "github.com/hasura/go-graphql-client"
 )
 
-const observedContractPrefix = "observed_txs"
-const txSpendRegistryContractKey = "tx_spend_registry"
-const txSpendContractPrefix = "tx_spend"
-const lastHeightContractKey = "last_block_height"
-
-// new contract
-const contractId = "vsc1BTpUPXMyvc6LNe38w5UNCNAURZHH6esBic"
-
-// old contract
-// const contractId = "vsc1BVgE4NL3nZwtoDn82XMymNPriRUp9UVAGU"
-
 type GetContractStateQuery struct {
-	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys)"`
+	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys, encoding: $encoding)"`
 }
 
-func fetchMultipleTxSpendKeys(
+func (b *Bot) fetchMultipleTxSpendKeys(
 	ctx context.Context,
-	client *graphql.Client,
 	registry []string,
-) (map[string]*SigningData, error) {
+) (map[string]*contractinterface.SigningData, error) {
 	var query GetContractStateQuery
 
 	keys := make([]string, len(registry))
 	for i, txId := range registry {
-		keys[i] = txSpendContractPrefix + txId
+		keys[i] = contractinterface.TxSpendsPrefix + txId
 	}
 
 	vars2 := map[string]any{
-		"contractId": contractId,
+		"contractId": b.BotConfig.ContractId(),
 		"keys":       keys,
+		"encoding":   "hex",
 	}
 
-	err := client.Query(ctx, &query, vars2, graphql.OperationName("GetContractState"))
+	err := b.GqlClient.Query(ctx, &query, vars2, graphql.OperationName("GetContractState"))
 	if err != nil {
 		return nil, err
 	}
@@ -54,20 +45,23 @@ func fetchMultipleTxSpendKeys(
 		return nil, err
 	}
 
-	var txSpends = make(map[string]*SigningData, len(registry))
+	var txSpends = make(map[string]*contractinterface.SigningData, len(registry))
 	for i, txId := range registry {
 		spendJson, ok := stateMap[keys[i]]
 		if !ok {
 			log.Printf("tx spend registry data does not match listed spends")
 		} else {
-			var spend SigningData
 			var tmp string
 			err = json.Unmarshal(spendJson, &tmp)
 			if err != nil {
 				return nil, err
 			}
-			err := json.Unmarshal([]byte(tmp), &spend)
+			decoded, err := hex.DecodeString(tmp)
 			if err != nil {
+				return nil, fmt.Errorf("error decoding tx spend hex for tx id %s: %w", txId, err)
+			}
+			var spend contractinterface.SigningData
+			if _, err := spend.UnmarshalMsg(decoded); err != nil {
 				return nil, fmt.Errorf("error unmarshalling tx spend for tx id %s: %w", txId, err)
 			}
 			txSpends[txId] = &spend
@@ -78,14 +72,15 @@ func fetchMultipleTxSpendKeys(
 }
 
 // returns a map of transaction Ids to unsigned data that was submitted to be signed
-func FetchTxSpends(ctx context.Context, client *graphql.Client) (map[string]*SigningData, error) {
+func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.SigningData, error) {
 	var query GetContractStateQuery
 
 	vars1 := map[string]any{
-		"contractId": contractId,
-		"keys":       []string{txSpendRegistryContractKey},
+		"contractId": b.BotConfig.ContractId(),
+		"keys":       []string{contractinterface.TxSpendsRegistryKey},
+		"encoding":   "hex",
 	}
-	err := client.Query(ctx, &query, vars1, graphql.OperationName("GetContractState"))
+	err := b.GqlClient.Query(ctx, &query, vars1, graphql.OperationName("GetContractState"))
 	if err != nil {
 		return nil, err
 	}
@@ -96,43 +91,49 @@ func FetchTxSpends(ctx context.Context, client *graphql.Client) (map[string]*Sig
 		return nil, err
 	}
 
-	var txSpendsRegistry []string
-	if txSpendsData, exists := stateMap[txSpendRegistryContractKey]; exists && string(txSpendsData) != `"null"` {
+	var txSpendsRegistry contractinterface.TxSpendsRegistry
+	if txSpendsData, exists := stateMap[contractinterface.TxSpendsRegistryKey]; exists &&
+		string(txSpendsData) != `"null"` {
 		var tmp string
 		err = json.Unmarshal(txSpendsData, &tmp)
 		if err != nil {
 			return nil, err
 		}
-		err = json.Unmarshal([]byte(tmp), &txSpendsRegistry)
+		decoded, err := hex.DecodeString(tmp)
+		if err != nil {
+			return nil, fmt.Errorf("error decoding tx spends registry hex: %w", err)
+		}
+		txSpendsRegistry, err = contractinterface.UnmarshalTxSpendsRegistry(decoded)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	var txSpends map[string]*SigningData
+	var txSpends map[string]*contractinterface.SigningData
 	if len(txSpendsRegistry) > 0 {
-		txSpends, err = fetchMultipleTxSpendKeys(ctx, client, txSpendsRegistry)
+		txSpends, err = b.fetchMultipleTxSpendKeys(ctx, txSpendsRegistry)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		txSpends = make(map[string]*SigningData)
+		txSpends = make(map[string]*contractinterface.SigningData)
 	}
 
 	return txSpends, nil
 }
 
 // TODO: use individual utxos (txid:vout) instead of just txids
-func FetchObservedTx(ctx context.Context, client *graphql.Client, txId string, vout int) (bool, error) {
+func (b *Bot) FetchObservedTx(ctx context.Context, txId string, vout int) (bool, error) {
 	var query GetContractStateQuery
 
-	key := observedContractPrefix + fmt.Sprintf("%s:%d", txId, vout)
+	key := contractinterface.ObservedPrefix + fmt.Sprintf("%s:%d", txId, vout)
 
 	variables := map[string]any{
-		"contractId": contractId,
+		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{key},
+		"encoding":   "hex",
 	}
-	err := client.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
+	err := b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
 		return false, err
 	}
@@ -148,7 +149,9 @@ func FetchObservedTx(ctx context.Context, client *graphql.Client, txId string, v
 	return exists, nil
 }
 
-func FetchSignatures(ctx context.Context, client *graphql.Client, msgHex []string) (map[string][]byte, error) {
+func (b *Bot) FetchSignatures(
+	ctx context.Context, msgHex []string,
+) (map[string]database.SignatureUpdate, error) {
 	var query struct {
 		Tss []struct {
 			Msg    string `graphql:"msg"`
@@ -158,16 +161,16 @@ func FetchSignatures(ctx context.Context, client *graphql.Client, msgHex []strin
 	}
 
 	variables := map[string]any{
-		"keyId":  strings.Join([]string{contractId, "main"}, "-"),
+		"keyId":  strings.Join([]string{b.BotConfig.ContractId(), "main"}, "-"),
 		"msgHex": msgHex,
 	}
 
 	opName := graphql.OperationName("GetTssRequests")
-	if err := client.Query(ctx, &query, variables, opName); err != nil {
+	if err := b.GqlClient.Query(ctx, &query, variables, opName); err != nil {
 		return nil, fmt.Errorf("failed graphql query: %w", err)
 	}
 
-	out := make(map[string][]byte)
+	out := make(map[string]database.SignatureUpdate)
 	for _, tss := range query.Tss {
 		if tss.Status != "complete" {
 			continue
@@ -179,21 +182,68 @@ func FetchSignatures(ctx context.Context, client *graphql.Client, msgHex []strin
 				tss.Sig, err,
 			)
 		}
-		out[tss.Msg] = buf
+		out[tss.Msg] = database.SignatureUpdate{Bytes: buf, IsBackup: false}
 	}
 
 	return out, nil
 }
 
-// gets last height recorded in contract state
-func FetchLastHeight(ctx context.Context, client *graphql.Client) (string, error) {
+// FetchPublicKeys fetches the primary and backup public keys from contract state.
+// Keys are stored as raw bytes in the contract and returned as hex strings.
+func (b *Bot) FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error) {
 	var query GetContractStateQuery
 
 	variables := map[string]any{
-		"contractId": contractId,
-		"keys":       []string{lastHeightContractKey},
+		"contractId": b.BotConfig.ContractId(),
+		"keys":       []string{contractinterface.PrimaryPublicKeyStateKey, contractinterface.BackupPublicKeyStateKey},
+		"encoding":   "hex",
 	}
-	err := client.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
+	err = b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var stateMap map[string]json.RawMessage
+	err = json.Unmarshal(query.GetStateByKeys, &stateMap)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	primaryRaw, err := unmarshalRawBytes(stateMap[contractinterface.PrimaryPublicKeyStateKey])
+	if err != nil || len(primaryRaw) == 0 {
+		return nil, nil, fmt.Errorf("primary public key not found in contract state")
+	}
+
+	backupRaw, _ := unmarshalRawBytes(stateMap[contractinterface.BackupPublicKeyStateKey])
+
+	return primaryRaw, backupRaw, nil
+}
+
+// unmarshalRawBytes decodes a JSON value that is a hex-encoded byte string.
+// Returns nil for null/missing values.
+func unmarshalRawBytes(raw json.RawMessage) ([]byte, error) {
+	if len(raw) == 0 || string(raw) == "null" || string(raw) == `"null"` {
+		return nil, nil
+	}
+
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, err
+	}
+
+	return hex.DecodeString(s)
+}
+
+// gets last height recorded in contract state
+func (b *Bot) FetchLastHeight(ctx context.Context) (string, error) {
+	var query GetContractStateQuery
+
+	variables := map[string]any{
+		"contractId": b.BotConfig.ContractId(),
+		"keys":       []string{contractinterface.LastHeightKey},
+		"encoding":   "hex",
+	}
+	err := b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
 	if err != nil {
 		return "", err
 	}
@@ -204,6 +254,14 @@ func FetchLastHeight(ctx context.Context, client *graphql.Client) (string, error
 		return "", err
 	}
 
-	value := strings.ReplaceAll(string(stateMap[lastHeightContractKey]), "\"", "")
-	return value, nil
+	var tmp string
+	err = json.Unmarshal(stateMap[contractinterface.LastHeightKey], &tmp)
+	if err != nil {
+		return "", err
+	}
+	decoded, err := hex.DecodeString(tmp)
+	if err != nil {
+		return "", fmt.Errorf("error decoding last height hex: %w", err)
+	}
+	return string(decoded), nil
 }

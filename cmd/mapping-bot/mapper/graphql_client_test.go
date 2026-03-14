@@ -2,100 +2,82 @@ package mapper
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
-	"net/http/httputil"
 	"testing"
 	"time"
+	"vsc-node/cmd/mapping-bot/database"
+	"vsc-node/cmd/mapping-bot/mempool"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/hasura/go-graphql-client"
 )
 
-// const graphQLUrl = "http://0.0.0.0:8080"
+// noopTestMempoolClient satisfies MempoolClientIface without hitting any network.
+type noopTestMempoolClient struct{}
 
-func TestSignatures(t *testing.T) {
-	// Create a custom HTTP client with logging
-	httpClient := &http.Client{
-		Transport: &loggingTransport{http.DefaultTransport},
+func (n *noopTestMempoolClient) PostTx(_ string) error                             { return nil }
+func (n *noopTestMempoolClient) GetAddressTxs(_ string) ([]mempool.Transaction, error) {
+	return nil, nil
+}
+func (n *noopTestMempoolClient) GetRawBlock(_ string) ([]byte, error)               { return nil, nil }
+func (n *noopTestMempoolClient) GetBlockHashAtHeight(_ uint64) (string, int, error) { return "", 0, nil }
+func (n *noopTestMempoolClient) GetTipHeight() (uint64, error)                      { return 0, nil }
+
+// newIntegrationBot creates a Bot pointing at the real VSC API.
+func newIntegrationBot(t *testing.T) *Bot {
+	t.Helper()
+	db, err := database.New(context.Background(), "mongodb://localhost:27017", "mappingbottest_gql")
+	if err != nil {
+		t.Skipf("MongoDB not available: %s", err)
 	}
+	t.Cleanup(func() {
+		db.DropDatabase(context.Background())
+		db.Close(context.Background())
+	})
+	cfg := NewMappingBotConfig()
+	return &Bot{
+		Db:            db,
+		GqlClient:     graphql.NewClient(defaultGraphQLUrl, http.DefaultClient),
+		ChainParams:   &chaincfg.TestNet4Params,
+		BotConfig:     cfg,
+		L:             slog.Default(),
+		MempoolClient: &noopTestMempoolClient{},
+	}
+}
 
-	cx := graphql.NewClient(graphQLUrl, httpClient)
-
-	msgHex := []string{}
-
-	t.Log("FetchSignatures")
+func TestSignatures_Integration(t *testing.T) {
+	t.Skip("integration test: requires live VSC API")
+	bot := newIntegrationBot(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	result, err := FetchSignatures(ctx, cx, msgHex)
+	result, err := bot.FetchSignatures(ctx, []string{})
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	t.Log(result)
 }
 
-func TestTxSpends(t *testing.T) {
-	slog.SetLogLoggerLevel(slog.LevelDebug)
-	httpClient := &http.Client{
-		Transport: &loggingTransport{http.DefaultTransport},
-	}
-
-	cx := graphql.NewClient(graphQLUrl, httpClient)
-
-	/*
-		t.Log("FetchContractData")
-		r, d, err := FetchContractData(cx)
-		t.Log(r, d, err)
-	*/
-
-	t.Log("FetchTxSpends")
+func TestTxSpends_Integration(t *testing.T) {
+	t.Skip("integration test: requires live VSC API")
+	bot := newIntegrationBot(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	result, err := FetchTxSpends(ctx, cx)
+	result, err := bot.FetchTxSpends(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	t.Log("result", result)
 }
 
-func TestLastHeight(t *testing.T) {
-	httpClient := &http.Client{
-		Transport: &loggingTransport{http.DefaultTransport},
-	}
-
-	cx := graphql.NewClient(graphQLUrl, httpClient)
-
-	t.Log("FetchTxSpends")
+func TestLastHeight_Integration(t *testing.T) {
+	t.Skip("integration test: requires live VSC API")
+	bot := newIntegrationBot(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	result, err := FetchLastHeight(ctx, cx)
+	result, err := bot.FetchLastHeight(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	t.Log("result", result)
-}
-
-// client := graphql.NewClient("https://your-api-endpoint.com/graphql", httpClient)
-
-// Logging transport
-type loggingTransport struct {
-	transport http.RoundTripper
-}
-
-func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	reqDump, _ := httputil.DumpRequestOut(req, true)
-	fmt.Printf("Request:\n%s\n\n", reqDump)
-
-	resp, err := t.transport.RoundTrip(req)
-	if err != nil {
-		return resp, err
-	}
-
-	respDump, _ := httputil.DumpResponse(resp, true)
-	fmt.Printf("Response:\n%s\n\n", respDump)
-
-	return resp, err
 }

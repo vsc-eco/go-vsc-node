@@ -4,11 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"log/slog"
-	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/contracts"
-	"vsc-node/modules/hive/streamer"
 	stateEngine "vsc-node/modules/state-processing"
 
 	"vsc-node/lib/hive"
@@ -26,42 +22,27 @@ type txVscCallContractJSON struct {
 	Intents    []contracts.Intent `json:"intents"`
 }
 
-// need a contract id
-// call a contract from L1 (hive account) with 4 arguments:
-//   - hive username
-//   - contract id
-//   - raw json message input
-//   - action (function name/contract entrypoint)
-//
-// returning (json RawMessage, error)
-func callContract(
+func (b *Bot) callContract(
 	ctx context.Context,
-	username, contractID string,
 	contractInput json.RawMessage,
 	action string,
 ) error {
-
-	identityConfig := common.NewIdentityConfig()
-	identityConfig.Init()
-	hiveConfig := streamer.NewHiveConfig()
-	hiveConfig.Init()
-
-	hiveRpcClient := hivego.NewHiveRpc(hiveConfig.Get().HiveURIs)
+	username := b.IdentityConfig.Get().HiveUsername
+	hiveRpcClient := hivego.NewHiveRpc(b.HiveConfig.Get().HiveURIs)
+	hiveRpcClient.ChainID = b.SystemConfig.HiveChainId()
 
 	hiveCreator := hive.LiveTransactionCreator{
 		TransactionCrafter: hive.TransactionCrafter{},
 		TransactionBroadcaster: hive.TransactionBroadcaster{
 			Client:  hiveRpcClient,
-			KeyPair: identityConfig.HiveActiveKeyPair,
+			KeyPair: b.IdentityConfig.HiveActiveKeyPair,
 		},
 	}
 
-	log.Println("identity config", identityConfig)
-
 	txObj := stateEngine.TxVscCallContract{
-		NetId:      "vsc-mainnet",
-		Caller:     fmt.Sprintf("hive:%s", username), // hive:username
-		ContractId: contractID,
+		NetId:      b.SystemConfig.NetId(),
+		Caller:     fmt.Sprintf("hive:%s", username),
+		ContractId: b.BotConfig.ContractId(),
 		Action:     action,
 		Payload:    contractInput,
 		RcLimit:    1000,
@@ -83,15 +64,10 @@ func callContract(
 		return err
 	}
 
-	fmt.Println("txjson", string(txJson))
-	if slog.Default().Enabled(ctx, slog.LevelDebug) {
-		return nil
-	}
+	b.L.Info("creating tx", "json", txJson)
 
 	op := hiveCreator.CustomJson([]string{username}, []string{}, "vsc.call", string(txJson))
 	tx := hiveCreator.MakeTransaction([]hivego.HiveOperation{op})
-
-	fmt.Println("tx created")
 
 	hiveCreator.PopulateSigningProps(&tx, nil)
 	sig, err := hiveCreator.Sign(tx)
@@ -100,11 +76,11 @@ func callContract(
 	}
 
 	tx.AddSig(sig)
-	_, err = hiveCreator.Broadcast(tx)
+	txId, err := hiveCreator.Broadcast(tx)
 	if err != nil {
 		return fmt.Errorf("error broadcasting tx: %w", err)
 	}
 
-	fmt.Println("tx broadcast")
+	b.L.Info("tx broadcast", "id", txId)
 	return nil
 }

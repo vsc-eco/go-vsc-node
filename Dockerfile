@@ -28,9 +28,11 @@ COPY --chown=app:app . .
 # Source the WasmEdge environment and build the application
 RUN . /home/app/.wasmedge/env && go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o vsc-node vsc-node/cmd/vsc-node
 
+RUN . /home/app/.wasmedge/env && go build -buildvcs=false -o mapping-bot vsc-node/cmd/mapping-bot
 
 
-FROM rockylinux:9.3-minimal
+
+FROM rockylinux:9.3-minimal AS vsc-node
 
 RUN useradd -m app
 
@@ -57,3 +59,28 @@ chmod +x /home/app/app/entrypoint.sh
 
 # Command to run when the container starts
 ENTRYPOINT ["/home/app/app/entrypoint.sh", "./vsc-node"]
+
+
+
+FROM rockylinux:9.3-minimal AS mapping-bot
+
+RUN microdnf install -y curl && microdnf clean all
+
+RUN useradd -m app
+
+USER app
+
+WORKDIR /home/app/app
+
+COPY --from=build /home/app/app/mapping-bot .
+COPY --from=build /home/app/.wasmedge /home/app/.wasmedge
+
+ENV LD_LIBRARY_PATH=/home/app/.wasmedge/lib:$LD_LIBRARY_PATH
+ENV PATH=/home/app/.wasmedge/bin:$PATH
+
+RUN printf '#!/bin/sh\n\
+. /home/app/.wasmedge/env\n\
+exec "$@"\n' > /home/app/app/entrypoint.sh && \
+chmod +x /home/app/app/entrypoint.sh
+
+ENTRYPOINT ["/home/app/app/entrypoint.sh", "./mapping-bot"]
