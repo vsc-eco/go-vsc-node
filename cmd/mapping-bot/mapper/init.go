@@ -41,8 +41,6 @@ const defaultGraphQLUrl = "https://api.vsc.eco/api/v1/graphql"
 // BotConfiger is the interface for bot configuration, allowing test implementations.
 type BotConfiger interface {
 	ContractId() string
-	PrimaryKey() string
-	BackupKey() string
 	HttpPort() uint16
 	FilePath() string
 }
