@@ -133,7 +133,6 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 	//@todo double check threshold calculation is correct
 	threshold, _ := tss_helpers.GetThreshold(len(sortedPids))
-	threshold++ //Add one
 
 	newThreshold, _ := tss_helpers.GetThreshold(len(dispatcher.newPids))
 	// newThreshold++
@@ -163,6 +162,9 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 	fmt.Printf("[TSS] [RESHARE] Party membership: oldParty=%v newParty=%v sessionId=%s\n",
 		myParty != nil, myNewParty != nil, dispatcher.sessionId)
+
+	var partyInitWg sync.WaitGroup
+	partyInitWg.Add(2)
 
 	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
 		keydata := keyGenSecp256k1.LocalPartySaveData{}
@@ -194,7 +196,9 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		}
 
 		go func() {
+			var initOnce sync.Once
 			defer func() {
+				initOnce.Do(func() { partyInitWg.Done() })
 				if r := recover(); r != nil {
 					fmt.Printf("[TSS] [RESHARE] PANIC recovered in old party start ECDSA sessionId=%s panic=%v\n",
 						dispatcher.sessionId, r)
@@ -208,6 +212,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				params := btss.NewReSharingParameters(btss.S256(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 
 				dispatcher.party = reshareSecp256k1.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
+				initOnce.Do(func() { partyInitWg.Done() })
 
 				err := dispatcher.party.Start()
 
@@ -219,10 +224,14 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				} else {
 					fmt.Printf("[TSS] [RESHARE] Old party started successfully sessionId=%s\n", dispatcher.sessionId)
 				}
+			} else {
+				initOnce.Do(func() { partyInitWg.Done() })
 			}
 		}()
 		go func() {
+			var initOnce sync.Once
 			defer func() {
+				initOnce.Do(func() { partyInitWg.Done() })
 				if r := recover(); r != nil {
 					fmt.Printf("[TSS] [RESHARE] PANIC recovered in new party start ECDSA sessionId=%s panic=%v\n",
 						dispatcher.sessionId, r)
@@ -236,6 +245,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				newParams := btss.NewReSharingParameters(btss.S256(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 
 				dispatcher.newParty = reshareSecp256k1.NewLocalParty(newParams, save, dispatcher.p2pMsg, end)
+				initOnce.Do(func() { partyInitWg.Done() })
 
 				err := dispatcher.newParty.Start()
 
@@ -247,6 +257,8 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				} else {
 					fmt.Printf("[TSS] [RESHARE] New party started successfully sessionId=%s\n", dispatcher.sessionId)
 				}
+			} else {
+				initOnce.Do(func() { partyInitWg.Done() })
 			}
 		}()
 		go func() {
@@ -319,7 +331,9 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		}
 
 		go func() {
+			var initOnce sync.Once
 			defer func() {
+				initOnce.Do(func() { partyInitWg.Done() })
 				if r := recover(); r != nil {
 					fmt.Printf("[TSS] [RESHARE] PANIC recovered in old party start EDDSA sessionId=%s panic=%v\n",
 						dispatcher.sessionId, r)
@@ -329,6 +343,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			if myParty != nil {
 				params := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 				dispatcher.party = reshareEddsa.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
+				initOnce.Do(func() { partyInitWg.Done() })
 
 				fmt.Println("dispatcher.party", dispatcher.party)
 
@@ -338,11 +353,15 @@ func (dispatcher *ReshareDispatcher) Start() error {
 					fmt.Println("err", err)
 					dispatcher.err = err
 				}
+			} else {
+				initOnce.Do(func() { partyInitWg.Done() })
 			}
 		}()
 
 		go func() {
+			var initOnce sync.Once
 			defer func() {
+				initOnce.Do(func() { partyInitWg.Done() })
 				if r := recover(); r != nil {
 					fmt.Printf("[TSS] [RESHARE] PANIC recovered in new party start EDDSA sessionId=%s panic=%v\n",
 						dispatcher.sessionId, r)
@@ -353,6 +372,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				newParams := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 
 				dispatcher.newParty = reshareEddsa.NewLocalParty(newParams, save, dispatcher.p2pMsg, end)
+				initOnce.Do(func() { partyInitWg.Done() })
 
 				fmt.Println("dispatcher.newParty", dispatcher.newParty)
 				err := dispatcher.newParty.Start()
@@ -361,6 +381,8 @@ func (dispatcher *ReshareDispatcher) Start() error {
 					fmt.Println("newParty.start()err", err)
 					dispatcher.err = err
 				}
+			} else {
+				partyInitWg.Done()
 			}
 		}()
 
@@ -402,6 +424,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		}()
 	}
 
+	partyInitWg.Wait()
 	dispatcher.baseStart()
 
 	return nil
@@ -690,9 +713,17 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(oldPids btss.So
 	fmt.Printf("[TSS] [RESHARE] Checking participant readiness sessionId=%s totalParticipants=%d\n",
 		dispatcher.sessionId, totalCount)
 
+	selfAccount := dispatcher.tssMgr.config.Get().HiveUsername
+
 	for i := 0; i < maxChecks; i++ {
 		connectedCount = 0
 		for account := range allParticipants {
+			// Self is always "connected" — no libp2p connection to ourselves
+			if account == selfAccount {
+				connectedCount++
+				continue
+			}
+
 			witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(account, nil)
 			if err != nil {
 				continue
@@ -799,7 +830,6 @@ func (dispatcher *SignDispatcher) Start() error {
 		}
 		json.Unmarshal(rawKey, &keydata)
 		threshold, err := tss_helpers.GetThreshold(len(sortedPids))
-		threshold++ //Add one
 
 		if err != nil {
 
@@ -868,7 +898,6 @@ func (dispatcher *SignDispatcher) Start() error {
 
 		// json.Unmarshal(dispatcher.savedKeyData, &keydata)
 		threshold, err := tss_helpers.GetThreshold(len(sortedPids))
-		threshold++ //Add one
 
 		if err != nil {
 			return nil
@@ -1252,7 +1281,6 @@ type KeyGenDispatcher struct {
 
 func (dispatcher *KeyGenDispatcher) Start() error {
 	threshold, err := tss_helpers.GetThreshold(len(dispatcher.participants))
-	threshold++
 
 	pl := len(dispatcher.participants)
 

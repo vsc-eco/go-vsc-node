@@ -260,20 +260,15 @@ func (tss *TssManager) BlameScore() ScoreMap {
 	electionMap := make(map[uint64]elections.ElectionResult, 0)
 	electionMap[initialElection.Epoch] = initialElection
 
-	epoch := initialElection.Epoch
-	for i := 0; i < TSS_BLAME_EPOCH_COUNT; i++ {
-		epoch--
-		election := tss.electionDb.GetElection(epoch)
-		if election == nil {
-			break
-		}
-		electionMap[epoch] = *election
+	previousElections := tss.electionDb.GetPreviousElections(initialElection.Epoch, TSS_BLAME_EPOCH_COUNT)
+	for _, election := range previousElections {
+		electionMap[election.Epoch] = election
 
 		// Track first appearance of each node (current members only)
 		for _, member := range election.Members {
 			if currentMembers[member.Account] {
 				if _, exists := nodeFirstEpoch[member.Account]; !exists {
-					nodeFirstEpoch[member.Account] = epoch
+					nodeFirstEpoch[member.Account] = election.Epoch
 				}
 			}
 		}
@@ -441,12 +436,12 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			fmt.Println("bitset", bitset, isBlame)
 			fmt.Println("lastBlame, err", lastBlame, err)
 			fmt.Println("lastBlame.BlockHeight", lastBlame.BlockHeight, bh-BLAME_EXPIRE)
-			for _, member := range currentElection.Members {
-				// if isBlame {
-				// 	if bitset.Bit(idx) == 1 {
-				// 		continue
-				// 	}
-				// }
+			for idx, member := range currentElection.Members {
+				if isBlame {
+					if bitset.Bit(idx) == 1 {
+						continue
+					}
+				}
 				//if node is banned
 				if blameMap.BannedNodes[member.Account] {
 					continue
@@ -535,7 +530,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			tssMgr.bufferLock.Unlock()
 		} else if action.Type == ReshareAction {
 
-			participants := make([]Participant, 0)
 			sessionId = "reshare-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
 			fmt.Printf("[TSS] [RESHARE] Creating reshare action sessionId=%s keyId=%s blockHeight=%d\n",
@@ -590,6 +584,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			for idx, member := range currentElection.Members {
 				fmt.Println("isBlame", isBlame, idx, blameBits.Bit(idx))
+				if isBlame {
+					if blameBits.Bit(idx) == 1 {
+						excludedNodes = append(excludedNodes, member.Account)
+						fmt.Printf("[TSS] [RESHARE] Excluding blamed node from reshare sessionId=%s account=%s\n",
+							sessionId, member.Account)
+						continue
+					}
+				}
 				if blameMap.BannedNodes[member.Account] {
 					excludedNodes = append(excludedNodes, member.Account)
 					fmt.Printf("[TSS] [RESHARE] Excluding banned node from reshare sessionId=%s account=%s\n",
@@ -630,7 +632,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					algo:         tss_helpers.SigningAlgo(action.Algo),
 					tssMgr:       tssMgr,
 					participants: commitedMembers,
-					p2pMsg:       make(chan btss.Message, 4*len(participants)),
+					p2pMsg:       make(chan btss.Message, 4*(len(commitedMembers)+len(newParticipants))),
 					sessionId:    sessionId,
 					done:         make(chan struct{}),
 					keyId:        action.KeyId,

@@ -17,6 +17,10 @@ func (m *MockElectionDb) GetElection(epoch uint64) *elections.ElectionResult {
 	return nil
 }
 
+func (m *MockElectionDb) GetPreviousElections(beforeEpoch uint64, limit int) []elections.ElectionResult {
+	return nil
+}
+
 func (m *MockElectionDb) GetElectionByHeight(height uint64) (elections.ElectionResult, error) {
 	return elections.ElectionResult{
 		ElectionCommonInfo: elections.ElectionCommonInfo{

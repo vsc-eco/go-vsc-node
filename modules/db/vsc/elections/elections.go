@@ -112,6 +112,40 @@ func (e *elections) GetElection(epoch uint64) *ElectionResult {
 	}
 }
 
+func (e *elections) GetPreviousElections(beforeEpoch uint64, limit int) []ElectionResult {
+	findQuery := bson.M{
+		"epoch": bson.M{
+			"$lt": beforeEpoch,
+		},
+	}
+	queryOptions := options.Find()
+	queryOptions.SetSort(bson.M{"epoch": -1})
+	queryOptions.SetLimit(int64(limit))
+
+	ctx := context.Background()
+	cursor, err := e.Find(ctx, findQuery, queryOptions)
+	if err != nil {
+		return nil
+	}
+	defer cursor.Close(ctx)
+
+	var results []ElectionResult
+	for cursor.Next(ctx) {
+		electionRecord := ElectionResultRecord{}
+		err := cursor.Decode(&electionRecord)
+		if err != nil {
+			continue
+		}
+		electionResult := ElectionResult{}
+		err = refmt.CloneAtlased(electionRecord, &electionResult, cbornode.CborAtlas)
+		if err != nil {
+			continue
+		}
+		results = append(results, electionResult)
+	}
+	return results
+}
+
 func (e *elections) GetElectionByHeight(height uint64) (ElectionResult, error) {
 	findQuery := bson.M{
 		"block_height": bson.M{

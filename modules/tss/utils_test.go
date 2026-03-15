@@ -11,13 +11,13 @@ func TestMakeEpochIdx(t *testing.T) {
 		epoch int
 		want  int
 	}{
-		{0, 1},   // 0 % 100 = 0 -> 1
+		{0, 1},   // 0 -> 1 (ensure non-zero)
 		{1, 1},
 		{99, 99},
-		{100, 1},  // 100 % 100 = 0 -> 1
-		{101, 1},  // 101 % 100 = 1
-		{199, 99},
-		{200, 1},
+		{100, 100}, // no longer collides with epoch 0
+		{101, 101},
+		{199, 199},
+		{200, 200}, // no longer collides with epoch 100
 	}
 	for _, tt := range tests {
 		got := makeEpochIdx(tt.epoch)
