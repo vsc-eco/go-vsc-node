@@ -752,6 +752,11 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 	for contractId, output := range bp.StateEngine.TempOutputs {
 		fmt.Printf("[bp][MakeOutputs]   contract=%s baseCid=%s cacheKeys=%d deletions=%d results=%d\n",
 			contractId, output.Cid, len(output.Cache), len(output.Deletions), len(bp.StateEngine.ContractResults[contractId]))
+
+		// Load or create DataBin. Directories use BasicDirectory for small entry
+		// counts and auto-upgrade to HAMT at 256+ entries. Deterministic CIDs are
+		// ensured by materializeGetNode, which forces all HAMT children into memory
+		// before serialization so Shard.Node() takes a uniform code path.
 		var db datalayer.DataBin
 		if output.Cid == "" {
 			db = datalayer.NewDataBin(bp.Datalayer)
@@ -760,10 +765,12 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			db = datalayer.NewDataBinFromCid(bp.Datalayer, cidz)
 		}
 
+		// Apply deletions
 		for key := range output.Deletions {
 			db.Delete(key)
 		}
 
+		// Apply cache diffs — only changed/new entries are written
 		for key, value := range output.Cache {
 			if output.Deletions[key] {
 				continue
@@ -780,7 +787,9 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 				Codec: multicodec.Raw,
 			})
 
-			db.Set(key, cidz)
+			if err := db.Set(key, cidz); err != nil {
+				fmt.Printf("[bp][MakeOutputs]     SET ERROR key=%s err=%v\n", key, err)
+			}
 		}
 		savedCid := db.Save()
 
