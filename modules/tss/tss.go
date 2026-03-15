@@ -895,39 +895,45 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				var wg sync.WaitGroup
 				for _, commitResult := range commitableResults {
 					wg.Add(1)
-					go func() {
-						commitResult.BlockHeight = bh
+					cr := commitResult // capture for goroutine so each commitment is processed correctly
+					go func(cr tss_helpers.BaseCommitment) {
+						cr.BlockHeight = bh
 
-						jj, _ := json.Marshal(commitResult)
-						fmt.Println("Sign commitResult", commitResult, string(jj))
-						bytes, _ := common.EncodeDagCbor(commitResult)
+						jj, _ := json.Marshal(cr)
+						fmt.Println("Sign commitResult", cr, string(jj))
+						bytes, encErr := common.EncodeDagCbor(cr)
+						if encErr != nil {
+							fmt.Println("[TSS] EncodeDagCbor err", encErr)
+							wg.Done()
+							return
+						}
 
 						signableCid, _ := common.HashBytes(bytes, multicodec.DagCbor)
 
 						ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 						defer cancel()
-						fmt.Println("commitResult", bytes, err)
+						fmt.Println("[TSS] commitResult bytes len", len(bytes), "sessionId", cr.SessionId)
 
-						serializedCircuit, err := tssMgr.waitForSigs(ctx, signableCid, commitResult.SessionId, &currentElection)
+						serializedCircuit, err := tssMgr.waitForSigs(ctx, signableCid, cr.SessionId, &currentElection)
 
 						fmt.Println("serializedCircuit, err", serializedCircuit, err)
 
 						if err == nil {
 							commitedMu.Lock()
-							commitedResults[commitResult.SessionId] = struct {
+							commitedResults[cr.SessionId] = struct {
 								err        error
 								circuit    *dids.SerializedCircuit
 								commitment tss_helpers.BaseCommitment
 							}{
-								err:        err,
+								err:        nil,
 								circuit:    serializedCircuit,
-								commitment: commitResult,
+								commitment: cr,
 							}
 							commitedMu.Unlock()
 						}
 
 						wg.Done()
-					}()
+					}(cr)
 				}
 				wg.Wait()
 
@@ -999,13 +1005,16 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 	for _, weight := range election.Weights {
 		weightTotal += weight
 	}
+	requiredWeight := weightTotal * 2 / 3
 
 	members := make([]dids.Member, 0)
-
 	for _, member := range election.Members {
 		members = append(members, dids.BlsDID(member.Key))
 	}
-	fmt.Println("waitForSigs.members", members)
+
+	fmt.Printf("[TSS] [BLS] waitForSigs started sessionId=%s weightTotal=%d required=%d (2/3) memberCount=%d\n",
+		sessionId, weightTotal, requiredWeight, len(members))
+
 	blsCircuit := dids.NewBlsCircuitGenerator(members)
 
 	tssMgr.bufferLock.Lock()
@@ -1019,8 +1028,8 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 			"session_id": sessionId,
 		},
 	})
+	fmt.Printf("[TSS] [BLS] ask_sigs sent sessionId=%s account=%s cid=%s\n", sessionId, tssMgr.config.Get().HiveUsername, cid.String())
 
-	fmt.Println("WAITING FOR SIGS commitedCid", cid)
 	circuit, _ := blsCircuit.Generate(cid)
 
 	var errRes error
@@ -1029,59 +1038,76 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 	proc1 := make(chan struct{})
 	go func() {
 		signedWeight := uint64(0)
+		sigCount := 0
 
-		// common.has
 		tssMgr.bufferLock.RLock()
 		sigChan := tssMgr.sigChannels[sessionId]
 		tssMgr.bufferLock.RUnlock()
 
 		signedMap := make(map[string]bool)
-		for signedWeight < (weightTotal * 2 / 3) {
+		for signedWeight < requiredWeight {
 			msg := <-sigChan
 
 			var member dids.Member
 			var memberAccount string
-			var index int = -1
+			index := -1
 			for i, data := range election.Members {
 				if data.Account == msg.Account {
 					member = dids.BlsDID(data.Key)
+					memberAccount = msg.Account
 					index = i
 					break
 				}
 			}
 
 			if index == -1 {
+				fmt.Printf("[TSS] [BLS] waitForSigs ignoring unknown account sessionId=%s from=%s\n", sessionId, msg.Account)
 				continue
 			}
 
 			added, err := circuit.AddAndVerify(member, msg.Sig)
-
-			fmt.Println("added, err", added, err)
+			if err != nil {
+				fmt.Printf("[TSS] [BLS] waitForSigs AddAndVerify failed sessionId=%s from=%s err=%v\n", sessionId, msg.Account, err)
+				continue
+			}
 
 			if added {
 				signedWeight += election.Weights[index]
 				signedMap[memberAccount] = true
+				sigCount++
+				fmt.Printf("[TSS] [BLS] sig accepted sessionId=%s from=%s signedWeight=%d/%d sigCount=%d\n",
+					sessionId, msg.Account, signedWeight, requiredWeight, sigCount)
 			}
 		}
+
+		fmt.Printf("[TSS] [BLS] waitForSigs threshold reached sessionId=%s signedWeight=%d finalizing\n", sessionId, signedWeight)
+
 		finalizedCiruit, err := circuit.Finalize()
-
-		fmt.Println("finalizedCiruit, err", finalizedCiruit, err)
-
-		serialized, err := finalizedCiruit.Serialize()
-
 		if err != nil {
 			errRes = err
+			fmt.Printf("[TSS] [BLS] waitForSigs Finalize err sessionId=%s err=%v\n", sessionId, err)
+		} else if finalizedCiruit != nil {
+			serialized, serr := finalizedCiruit.Serialize()
+			if serr != nil {
+				errRes = serr
+				fmt.Printf("[TSS] [BLS] waitForSigs Serialize err sessionId=%s err=%v\n", sessionId, serr)
+			} else {
+				res = serialized
+			}
 		}
-
-		res = serialized
 		proc1 <- struct{}{}
 	}()
 
 	select {
 	case <-ctx.Done():
-		fmt.Println("CONTEXT EXPIRED!!")
-		return nil, ctx.Err() // Return error if canceled
+		fmt.Printf("[TSS] [BLS] waitForSigs TIMEOUT/CANCELLED sessionId=%s err=%v\n", sessionId, ctx.Err())
+		return nil, ctx.Err()
 	case <-proc1:
+		if errRes != nil {
+			fmt.Printf("[TSS] [BLS] waitForSigs SUCCESS with err sessionId=%s err=%v\n", sessionId, errRes)
+		} else {
+			fmt.Printf("[TSS] [BLS] waitForSigs SUCCESS sessionId=%s\n", sessionId)
+		}
 		return res, errRes
 	}
 }

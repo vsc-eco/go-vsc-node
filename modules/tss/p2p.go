@@ -84,58 +84,62 @@ func (p p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.
 func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
 	if msg.Type == "ask_sigs" {
 		sessId, ok := msg.Data["session_id"].(string)
-
 		if !ok {
+			fmt.Printf("[TSS] [BLS] ask_sigs missing session_id in data account=%s\n", msg.Account)
 			return nil
 		}
 
-		// fmt.Println("sessId", sessId, s.tssMgr.sessionResults[sessId] != nil)
 		s.tssMgr.bufferLock.RLock()
 		sessionResult := s.tssMgr.sessionResults[sessId]
 		s.tssMgr.bufferLock.RUnlock()
-		if sessionResult != nil {
-			baseCommitment := sessionResult.Serialize()
-			commitBytes, _ := common.EncodeDagCbor(baseCommitment)
 
-			commitCid, _ := common.HashBytes(commitBytes, multicodec.DagCbor)
+		fmt.Printf("[TSS] [BLS] ask_sigs received sessionId=%s from=%s haveResult=%v\n",
+			sessId, msg.Account, sessionResult != nil)
 
-			fmt.Println("commitedCid", commitCid)
-			blsPrivKey := blsu.SecretKey{}
-			var arr [32]byte
-			blsPrivSeedHex := s.tssMgr.config.Get().BlsPrivKeySeed
-			blsPrivSeed, err := hex.DecodeString(blsPrivSeedHex)
-			if err != nil {
-				return nil
-			}
-			if len(blsPrivSeed) != 32 {
-				return nil
-			}
-
-			copy(arr[:], blsPrivSeed)
-			if err = blsPrivKey.Deserialize(&arr); err != nil {
-				return nil
-			}
-			sig := blsu.Sign(&blsPrivKey, commitCid.Bytes())
-
-			sigBytes := sig.Serialize()
-
-			sigStr := base64.URLEncoding.EncodeToString(sigBytes[:])
-
-			fmt.Println("sigStr", sigStr)
-			send(p2pMessage{
-				Type:    "res_sig",
-				Account: s.tssMgr.config.Get().HiveUsername,
-				Data: map[string]interface{}{
-					"sig":        sigStr,
-					"session_id": sessId,
-				},
-			})
+		if sessionResult == nil {
+			fmt.Printf("[TSS] [BLS] ask_sigs NOT responding sessionId=%s (no session result for this node)\n", sessId)
+			return nil
 		}
+
+		baseCommitment := sessionResult.Serialize()
+		commitBytes, _ := common.EncodeDagCbor(baseCommitment)
+		commitCid, _ := common.HashBytes(commitBytes, multicodec.DagCbor)
+
+		blsPrivKey := blsu.SecretKey{}
+		var arr [32]byte
+		blsPrivSeedHex := s.tssMgr.config.Get().BlsPrivKeySeed
+		blsPrivSeed, err := hex.DecodeString(blsPrivSeedHex)
+		if err != nil {
+			fmt.Printf("[TSS] [BLS] ask_sigs NOT responding sessionId=%s (BlsPrivKeySeed decode err=%v)\n", sessId, err)
+			return nil
+		}
+		if len(blsPrivSeed) != 32 {
+			fmt.Printf("[TSS] [BLS] ask_sigs NOT responding sessionId=%s (BlsPrivKeySeed len=%d want 32)\n", sessId, len(blsPrivSeed))
+			return nil
+		}
+
+		copy(arr[:], blsPrivSeed)
+		if err = blsPrivKey.Deserialize(&arr); err != nil {
+			fmt.Printf("[TSS] [BLS] ask_sigs NOT responding sessionId=%s (BLS key deserialize err=%v)\n", sessId, err)
+			return nil
+		}
+		sig := blsu.Sign(&blsPrivKey, commitCid.Bytes())
+		sigBytes := sig.Serialize()
+		sigStr := base64.URLEncoding.EncodeToString(sigBytes[:])
+
+		send(p2pMessage{
+			Type:    "res_sig",
+			Account: s.tssMgr.config.Get().HiveUsername,
+			Data: map[string]interface{}{
+				"sig":        sigStr,
+				"session_id": sessId,
+			},
+		})
+		fmt.Printf("[TSS] [BLS] res_sig sent sessionId=%s account=%s\n", sessId, s.tssMgr.config.Get().HiveUsername)
 	}
 
 	if msg.Type == "res_sig" {
 		sessId, ok := msg.Data["session_id"].(string)
-
 		if !ok {
 			return nil
 		}
@@ -145,11 +149,12 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 			return nil
 		}
 
-		// fmt.Println("sig ret", msg, s.tssMgr.sigChannels[sessId] != nil)
-
 		s.tssMgr.bufferLock.RLock()
 		sigChan := s.tssMgr.sigChannels[sessId]
 		s.tssMgr.bufferLock.RUnlock()
+
+		fmt.Printf("[TSS] [BLS] res_sig received sessionId=%s from=%s chanReady=%v\n", sessId, msg.Account, sigChan != nil)
+
 		if sigChan != nil {
 			sigChan <- sigMsg{
 				Account:   msg.Account,
