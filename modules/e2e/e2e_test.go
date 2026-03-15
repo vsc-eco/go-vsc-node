@@ -445,7 +445,7 @@ func TestE2E(t *testing.T) {
 		return
 	}
 
-	container.Stop()
+	// container.Stop() - removed: t.Cleanup registered by RunPlugin handles shutdown
 
 	// r2e.SetSteps([]func() error{
 	// 	r2e.WaitToStart(),
