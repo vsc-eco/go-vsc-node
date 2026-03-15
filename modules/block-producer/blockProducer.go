@@ -164,6 +164,19 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 		offchainTxs = append(offchainTxs, contractOutputs...)
 	}
 
+	fmt.Println("[bp][GenerateBlock] slotHeight=", slotHeight, "txCount=", len(offchainTxs))
+	for i, tx := range offchainTxs {
+		fmt.Printf("[bp][GenerateBlock]   tx[%d] type=%d id=%s\n", i, tx.Type, tx.Id)
+	}
+	if oplog != nil {
+		fmt.Println("[bp][GenerateBlock] oplog CID=", oplog.Id)
+	} else {
+		fmt.Println("[bp][GenerateBlock] oplog=nil")
+	}
+	for i, co := range contractOutputs {
+		fmt.Printf("[bp][GenerateBlock]   output[%d] id=%s\n", i, co.Id)
+	}
+
 	for _, tx := range offchainTxs {
 		outCids = append(outCids, cid.MustParse(tx.Id))
 	}
@@ -214,6 +227,8 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 	}
 
 	daSession.Commit()
+
+	fmt.Println("[bp][GenerateBlock] merkleRoot=", mr, "blockCid=", blockCid.String(), "prevBlock=", prevBlockId, "range=", prevRange)
 
 	return &blockHeader, outTxs, nil
 }
@@ -376,6 +391,8 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	}
 
 	cid, _ := bp.Datalayer.HashObject(genBlock)
+
+	fmt.Println("[bp][ProduceBlock] PRODUCER headerCid=", cid.String(), "slotHeight=", bh)
 
 	electionResult, err := bp.electionsDb.GetElectionByHeight(bh)
 
@@ -549,6 +566,8 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		return "", err
 	}
 
+	fmt.Println("[bp][HandleBlockMsg] SIGNER headerCid=", localCid.String(), "slotHeight=", msg.SlotHeight)
+
 	// Compare locally derived CID with producer's CID
 	producerCidStr, ok := msg.Data["block_cid"].(string)
 	if !ok || producerCidStr == "" {
@@ -672,6 +691,15 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 		opLog = compileResult.OpLog
 	}
 
+	fmt.Println("[bp][MakeOplog] bh=", bh, "oplogLen=", len(opLog), "txOutIds=", len(bp.StateEngine.TxOutIds), "rawOplogLen=", len(bp.StateEngine.LedgerState.Oplog))
+	for i, op := range opLog {
+		fmt.Printf("[bp][MakeOplog]   oplog[%d] id=%s type=%s from=%s to=%s amount=%d bh=%d\n", i, op.Id, op.Type, op.From, op.To, op.Amount, op.BlockHeight)
+	}
+	for _, txId := range bp.StateEngine.TxOutIds {
+		output := bp.StateEngine.TxOutput[txId]
+		fmt.Printf("[bp][MakeOplog]   txOut id=%s ok=%v ledgerIds=%v\n", txId, output.Ok, output.LedgerIds)
+	}
+
 	outputs := make([]stateEngine.OplogOutputEntry, 0)
 	for _, txId := range bp.StateEngine.TxOutIds {
 		output := bp.StateEngine.TxOutput[txId]
@@ -718,8 +746,12 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 
 func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.VscBlockTx {
 
+	fmt.Println("[bp][MakeOutputs] tempOutputs=", len(bp.StateEngine.TempOutputs), "contractResults=", len(bp.StateEngine.ContractResults))
+
 	contractOutputs := make([]vscBlocks.VscBlockTx, 0)
 	for contractId, output := range bp.StateEngine.TempOutputs {
+		fmt.Printf("[bp][MakeOutputs]   contract=%s baseCid=%s cacheKeys=%d deletions=%d results=%d\n",
+			contractId, output.Cid, len(output.Cache), len(output.Deletions), len(bp.StateEngine.ContractResults[contractId]))
 		var db datalayer.DataBin
 		if output.Cid == "" {
 			db = datalayer.NewDataBin(bp.Datalayer)
