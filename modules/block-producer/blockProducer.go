@@ -395,6 +395,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 			Data: map[string]interface{}{
 				"producer":     bp.config.Config.Get().HiveUsername,
 				"transactions": transactions,
+				"block_cid":    cid.String(),
 			},
 		})
 	}()
@@ -507,6 +508,14 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		return "", fmt.Errorf("failed to deserialize bls priv key: %w", err)
 	}
 
+	// Producer receiving its own message: use cached CID, skip GenerateBlock
+	if producer == bp.config.Get().HiveUsername && bp.blockSigning != nil {
+		sig := blsu.Sign(&blsPrivKey, bp.blockSigning.cid.Bytes())
+		sigBytes := sig.Serialize()
+		return base64.RawURLEncoding.EncodeToString(sigBytes[:]), nil
+	}
+
+	// Remote signer: validate transactions exist locally
 	txStrs := []string{}
 	for _, v := range msg.Data["transactions"].([]interface{}) {
 		txStrs = append(txStrs, v.(string))
@@ -526,7 +535,7 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		})
 	}
 
-	// fmt.Println("Received msg to create block", msg)
+	// Independently derive block (including oplog + contract outputs)
 	blockHeader, _, err := bp.GenerateBlock(msg.SlotHeight, generateBlockParams{
 		Transactions: transactions,
 	})
@@ -535,22 +544,25 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		return "", err
 	}
 
-	// fmt.Println("[bp] maybe blockHeader", blockHeader, err)
-
-	cid, err := bp.Datalayer.HashObject(blockHeader)
-
+	localCid, err := bp.Datalayer.HashObject(blockHeader)
 	if err != nil {
 		return "", err
 	}
 
-	// fmt.Println("[bp] maybe cid", cid, err)
+	// Compare locally derived CID with producer's CID
+	producerCidStr, ok := msg.Data["block_cid"].(string)
+	if !ok || producerCidStr == "" {
+		return "", errors.New("missing block_cid in message")
+	}
+	if localCid.String() != producerCidStr {
+		fmt.Println("[bp] CID MISMATCH: local=", localCid.String(), "producer=", producerCidStr)
+		return "", fmt.Errorf("block CID mismatch: local=%s producer=%s", localCid.String(), producerCidStr)
+	}
 
-	sig := blsu.Sign(&blsPrivKey, cid.Bytes())
-
+	// CIDs match — sign
+	sig := blsu.Sign(&blsPrivKey, localCid.Bytes())
 	sigBytes := sig.Serialize()
-
-	sigStr := base64.URLEncoding.EncodeToString(sigBytes[:])
-	// fmt.Println("[bp] maybe signed!", sigStr)
+	sigStr := base64.RawURLEncoding.EncodeToString(sigBytes[:])
 
 	return sigStr, nil
 }
@@ -612,11 +624,13 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 				circuit := *bp.blockSigning.circuit
 
 				added, err := circuit.AddAndVerify(member, sigStr)
-
-				fmt.Println("[bp] aggregating signature", sigStr, "from", account)
-				fmt.Println("[bp] agg err", err)
-				if added {
+				if err != nil {
+					fmt.Println("[bp] sig verification error from", account, "err:", err)
+				} else if !added {
+					fmt.Println("[bp] sig rejected (added=false) from", account)
+				} else {
 					signedWeight += election.Weights[index]
+					fmt.Println("[bp] sig accepted from", account, "weight:", election.Weights[index], "totalSigned:", signedWeight)
 				}
 
 			}
