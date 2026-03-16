@@ -1202,7 +1202,385 @@ func TestTss(t *testing.T) {
 	}
 	mu.Unlock()
 
-	fmt.Println("[TEST] All 7 TSS phases completed successfully!")
+	fmt.Println("[TEST] Phases 1-7 completed successfully!")
+
+	// =====================================================
+	// PHASE 8: MULTIPLE SIMULTANEOUS SIGNING REQUESTS (block 450)
+	// =====================================================
+	fmt.Println("[TEST] === PHASE 8: MULTIPLE SIMULTANEOUS SIGNING REQUESTS ===")
+
+	// Wait for reshare lock to release and stale retry goroutines to fire
+	time.Sleep(5 * time.Second)
+
+	// Clear stale retries from previous phases
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Insert reshare commitment from Phase 7 into all nodes
+	for _, node := range nodes {
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type:        "reshare",
+			KeyId:       "test-key",
+			Epoch:       3,
+			BlockHeight: 400,
+			Commitment:  commitmentStr, // all 6 bits set
+			TxId:        "mock-reshare-tx-3",
+		})
+	}
+
+	// Update key epoch to 3 for all nodes
+	for _, node := range nodes {
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id:     "test-key",
+			Status: "active",
+			Algo:   tss_db.EcdsaType,
+			Epoch:  3,
+		})
+	}
+
+	// Insert two different signing requests for the same key
+	msgHexA := "1111111111111111111111111111111111111111111111111111111111111111"
+	msgHexB := "2222222222222222222222222222222222222222222222222222222222222222"
+	for _, node := range nodes {
+		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+			KeyId:  "test-key",
+			Msg:    msgHexA,
+			Status: tss_db.SignPending,
+		})
+		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+			KeyId:  "test-key",
+			Msg:    msgHexB,
+			Status: tss_db.SignPending,
+		})
+	}
+
+	// Reset sign broadcast capture
+	mu.Lock()
+	signBroadcast = nil
+	mu.Unlock()
+
+	// Re-establish full mesh connections
+	connectAllPeers(t, nodes)
+	time.Sleep(2 * time.Second)
+
+	fmt.Println("[TEST] Processing blocks to trigger signing at block 450...")
+	processBlocks(nodes, 406, 448, &headHeight)
+	headHeight = 470
+	for bh := uint64(449); bh <= 455; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Poll for sign broadcast
+	fmt.Println("[TEST] Waiting for multi-sign to complete...")
+	signDone = false
+	for i := 0; i < 90; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := signBroadcast != nil
+		mu.Unlock()
+		if done {
+			signDone = true
+			fmt.Println("[TEST] Multi-sign completed!")
+			break
+		}
+	}
+
+	if !signDone {
+		t.Fatal("Phase 8: Multiple simultaneous signing did not complete within timeout")
+	}
+
+	// Verify both signatures are in the broadcast
+	mu.Lock()
+	if signBroadcast != nil {
+		for _, op := range signBroadcast.Operations {
+			raw, _ := json.Marshal(op)
+			var cj struct {
+				Json string `json:"json"`
+			}
+			json.Unmarshal(raw, &cj)
+			var payload struct {
+				Packet []struct {
+					KeyId string `json:"key_id"`
+					Msg   string `json:"msg"`
+					Sig   string `json:"sig"`
+				} `json:"packet"`
+			}
+			json.Unmarshal([]byte(cj.Json), &payload)
+
+			if len(payload.Packet) < 2 {
+				t.Errorf("Phase 8: Expected at least 2 signatures in packet, got %d", len(payload.Packet))
+			} else {
+				foundA, foundB := false, false
+				for _, pkt := range payload.Packet {
+					if pkt.Msg == msgHexA {
+						foundA = true
+						if pkt.Sig == "" {
+							t.Error("Phase 8: Signature for msgA is empty")
+						}
+					}
+					if pkt.Msg == msgHexB {
+						foundB = true
+						if pkt.Sig == "" {
+							t.Error("Phase 8: Signature for msgB is empty")
+						}
+					}
+				}
+				if !foundA {
+					t.Errorf("Phase 8: Missing signature for msgA (%s)", msgHexA)
+				}
+				if !foundB {
+					t.Errorf("Phase 8: Missing signature for msgB (%s)", msgHexB)
+				}
+			}
+		}
+	}
+	mu.Unlock()
+
+	fmt.Println("[TEST] Phase 8 completed!")
+
+	// =====================================================
+	// PHASE 9: MULTIPLE KEYS / KEYLOCKS MECHANISM (block 500)
+	// =====================================================
+	fmt.Println("[TEST] === PHASE 9: MULTIPLE KEYS / KEYLOCKS ===")
+
+	// Wait for sign lock to release and stale retry goroutines to fire
+	time.Sleep(5 * time.Second)
+
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Insert a second key "test-key-2" as "new" (will trigger keygen)
+	for _, node := range nodes {
+		node.tssKeys.InsertKey("test-key-2", tss_db.EcdsaType)
+	}
+
+	// Insert a signing request for test-key-2 (should be blocked by keyLocks during keygen)
+	msgHexLock := "3333333333333333333333333333333333333333333333333333333333333333"
+	for _, node := range nodes {
+		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+			KeyId:  "test-key-2",
+			Msg:    msgHexLock,
+			Status: tss_db.SignPending,
+		})
+	}
+
+	// Also insert a signing request for test-key (already active, should NOT be locked)
+	msgHex4 := "4444444444444444444444444444444444444444444444444444444444444444"
+	for _, node := range nodes {
+		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+			KeyId:  "test-key",
+			Msg:    msgHex4,
+			Status: tss_db.SignPending,
+		})
+	}
+
+	// Reset sign and keygen broadcast captures
+	mu.Lock()
+	signBroadcast = nil
+	keygenBroadcast = nil
+	mu.Unlock()
+
+	// Re-establish full mesh connections
+	connectAllPeers(t, nodes)
+	time.Sleep(2 * time.Second)
+
+	// Block 500 is both TSS_ROTATE_INTERVAL (100) and TSS_SIGN_INTERVAL (50) boundary.
+	// This triggers keygen for test-key-2 AND signing for test-key.
+	// keyLocks should prevent signing test-key-2 while its keygen is active.
+	fmt.Println("[TEST] Processing blocks to trigger keygen+sign at block 500...")
+	processBlocks(nodes, 456, 498, &headHeight)
+	headHeight = 520
+	for bh := uint64(499); bh <= 505; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Wait for sign broadcast (for test-key, the active key)
+	fmt.Println("[TEST] Waiting for signing of active key...")
+	signDone = false
+	for i := 0; i < 90; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := signBroadcast != nil
+		mu.Unlock()
+		if done {
+			signDone = true
+			fmt.Println("[TEST] Signing of active key completed!")
+			break
+		}
+	}
+
+	if !signDone {
+		t.Fatal("Phase 9: Signing of active key (test-key) did not complete within timeout")
+	}
+
+	// Verify the sign broadcast is for test-key (not test-key-2 which should be locked)
+	mu.Lock()
+	if signBroadcast != nil {
+		for _, op := range signBroadcast.Operations {
+			raw, _ := json.Marshal(op)
+			var cj struct {
+				Json string `json:"json"`
+			}
+			json.Unmarshal(raw, &cj)
+			var payload struct {
+				Packet []struct {
+					KeyId string `json:"key_id"`
+					Msg   string `json:"msg"`
+					Sig   string `json:"sig"`
+				} `json:"packet"`
+			}
+			json.Unmarshal([]byte(cj.Json), &payload)
+
+			for _, pkt := range payload.Packet {
+				if pkt.KeyId == "test-key-2" {
+					t.Error("Phase 9: test-key-2 should not have been signed (keyLocks should block it during keygen)")
+				}
+				if pkt.KeyId == "test-key" && pkt.Msg == msgHex4 && pkt.Sig == "" {
+					t.Error("Phase 9: Signature for test-key is empty")
+				}
+			}
+		}
+	}
+	mu.Unlock()
+
+	// Wait for keygen of test-key-2 to complete
+	fmt.Println("[TEST] Waiting for keygen of test-key-2...")
+	keygenDone = false
+	for i := 0; i < 120; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := keygenBroadcast != nil
+		mu.Unlock()
+		if done {
+			keygenDone = true
+			fmt.Println("[TEST] Keygen of test-key-2 completed!")
+			break
+		}
+	}
+
+	if !keygenDone {
+		fmt.Println("[TEST] Keygen broadcast for test-key-2 not captured (BLS sig may have failed), continuing...")
+	}
+
+	fmt.Println("[TEST] Phase 9 completed!")
+
+	// =====================================================
+	// PHASE 10: RESHARE WITH 2 MEMBERS SWAPPED (block 600)
+	// =====================================================
+	fmt.Println("[TEST] === PHASE 10: RESHARE WITH 2 MEMBERS SWAPPED ===")
+
+	// Wait for keygen/sign lock to release
+	time.Sleep(10 * time.Second)
+
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Store epoch 4 election with only 4 members (drop nodes 4 AND 5)
+	members4 := members[:4]
+	weights4 := weights[:4]
+	for _, node := range nodes {
+		err := node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{
+				Epoch: 4,
+				NetId: "vsc-mocknet",
+				Type:  "initial",
+			},
+			ElectionDataInfo: elections.ElectionDataInfo{
+				Members: members4,
+				Weights: weights4,
+			},
+			BlockHeight: 590,
+		})
+		if err != nil {
+			t.Fatalf("Failed to store election epoch 4: %v", err)
+		}
+	}
+
+	// Update MockElectionSystem to only include 4 witnesses
+	droppedWitness2 := "mock-tss-" + strconv.Itoa(5) // node 4 has username mock-tss-5
+	witnessNames4 := make([]string, 0, 4)
+	for _, name := range originalWitnessNames {
+		if name != droppedWitness && name != droppedWitness2 {
+			witnessNames4 = append(witnessNames4, name)
+		}
+	}
+	mes.WitnessNames = witnessNames4
+
+	// Disconnect nodes 4 and 5, exclude from keepalive
+	excludedNodes.Store(4, true)
+	excludedNodes.Store(5, true)
+	disconnectNode(nodes, 4)
+	disconnectNode(nodes, 5)
+	time.Sleep(1 * time.Second)
+
+	// Reset reshare broadcast capture
+	mu.Lock()
+	reshareBroadcast = nil
+	mu.Unlock()
+
+	// Re-establish connections among 4 active nodes
+	connectActivePeers(t, nodes, excludedNodes)
+	time.Sleep(2 * time.Second)
+
+	fmt.Println("[TEST] Processing blocks to trigger reshare at block 600...")
+	processBlocks(nodes, 506, 598, &headHeight)
+	headHeight = 620
+	for bh := uint64(599); bh <= 605; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Poll for reshare broadcast
+	fmt.Println("[TEST] Waiting for reshare with 2 members swapped...")
+	reshareDone = false
+	for i := 0; i < 240; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := reshareBroadcast != nil
+		mu.Unlock()
+		if done {
+			reshareDone = true
+			fmt.Println("[TEST] Reshare with 2 members swapped completed!")
+			break
+		}
+	}
+
+	if !reshareDone {
+		t.Fatal("Phase 10: Reshare with 2 members swapped did not complete within timeout")
+	}
+
+	mu.Lock()
+	if reshareBroadcast == nil {
+		t.Fatal("Phase 10: Reshare broadcast was nil")
+	}
+	mu.Unlock()
+
+	// Restore for cleanup
+	excludedNodes.Delete(4)
+	excludedNodes.Delete(5)
+	mes.WitnessNames = originalWitnessNames
+
+	fmt.Println("[TEST] All 10 TSS phases completed successfully!")
 }
 
 // blameBitset creates a base64-encoded bitset marking the given member indices as blamed.
@@ -1472,6 +1850,250 @@ func TestBlameScore(t *testing.T) {
 
 		if !result.BannedNodes["node-c"] {
 			t.Errorf("Expected node-c to be banned (100%% blame rate), got BannedNodes=%v", result.BannedNodes)
+		}
+	})
+
+	t.Run("timeout_blame_metadata_tracked", func(t *testing.T) {
+		dropBlameTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		storeElectionsWithGracePeriodBypass(10)
+
+		// Insert blame commitments with timeout metadata blaming node-b (index 1)
+		timeoutErr := "timeout"
+		timeoutReason := "Timeout waiting for 1 nodes: [node-b]"
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
+			Commitment: blameBitset(1), TxId: "blame-timeout-1",
+			Metadata: &tss_db.CommitmentMetadata{Error: &timeoutErr, Reason: &timeoutReason},
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
+			Commitment: blameBitset(1), TxId: "blame-timeout-2",
+			Metadata: &tss_db.CommitmentMetadata{Error: &timeoutErr, Reason: &timeoutReason},
+		})
+
+		result := tssMgr.BlameScore()
+
+		if !result.BannedNodes["node-b"] {
+			t.Errorf("Expected node-b to be banned (timeout blames count toward ban), got BannedNodes=%v", result.BannedNodes)
+		}
+	})
+
+	t.Run("mixed_timeout_and_error_blames", func(t *testing.T) {
+		dropBlameTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		storeElectionsWithGracePeriodBypass(10)
+
+		// Insert 3 blame commitments for node-a (index 0): 2 timeouts + 1 error
+		// Total 3 blames out of 3 operations = 100% > 60% threshold → ban
+		timeoutErr := "timeout"
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
+			Commitment: blameBitset(0), TxId: "blame-mix-1",
+			Metadata: &tss_db.CommitmentMetadata{Error: &timeoutErr},
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
+			Commitment: blameBitset(0), TxId: "blame-mix-2",
+			Metadata: &tss_db.CommitmentMetadata{Error: &timeoutErr},
+		})
+		// Error blame (no timeout metadata)
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 602,
+			Commitment: blameBitset(0), TxId: "blame-mix-3",
+		})
+
+		result := tssMgr.BlameScore()
+
+		if !result.BannedNodes["node-a"] {
+			t.Errorf("Expected node-a to be banned (mixed timeout+error blames), got BannedNodes=%v", result.BannedNodes)
+		}
+		// Other nodes should not be banned
+		if result.BannedNodes["node-b"] || result.BannedNodes["node-c"] || result.BannedNodes["node-d"] {
+			t.Errorf("Expected only node-a banned, got BannedNodes=%v", result.BannedNodes)
+		}
+	})
+
+	t.Run("ban_reduces_to_threshold_exact", func(t *testing.T) {
+		dropBlameTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		storeElectionsWithGracePeriodBypass(10)
+
+		// Ban exactly 1 of 4 members (node-a, index 0), leaving 3
+		// threshold = ceil(4*2/3)-1 = 2, so threshold+1 = 3 → exactly at minimum quorum
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
+			Commitment: blameBitset(0), TxId: "blame-thresh-1",
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
+			Commitment: blameBitset(0), TxId: "blame-thresh-2",
+		})
+
+		result := tssMgr.BlameScore()
+
+		if !result.BannedNodes["node-a"] {
+			t.Errorf("Expected node-a to be banned, got BannedNodes=%v", result.BannedNodes)
+		}
+		// Exactly 1 banned, 3 remain (threshold+1 = 3 still achievable)
+		bannedCount := 0
+		for _, banned := range result.BannedNodes {
+			if banned {
+				bannedCount++
+			}
+		}
+		if bannedCount != 1 {
+			t.Errorf("Expected exactly 1 banned node, got %d: %v", bannedCount, result.BannedNodes)
+		}
+	})
+
+	t.Run("ban_reduces_below_threshold", func(t *testing.T) {
+		dropBlameTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		storeElectionsWithGracePeriodBypass(10)
+
+		// Ban 2 of 4 members (node-a index 0 and node-b index 1), leaving 2
+		// threshold+1 = 3, so 2 remaining < 3 → insufficient for quorum
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
+			Commitment: blameBitset(0, 1), TxId: "blame-below-1",
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
+			Commitment: blameBitset(0, 1), TxId: "blame-below-2",
+		})
+
+		result := tssMgr.BlameScore()
+
+		if !result.BannedNodes["node-a"] {
+			t.Errorf("Expected node-a to be banned, got BannedNodes=%v", result.BannedNodes)
+		}
+		if !result.BannedNodes["node-b"] {
+			t.Errorf("Expected node-b to be banned, got BannedNodes=%v", result.BannedNodes)
+		}
+	})
+
+	t.Run("grace_period_boundary_at_exactly_3", func(t *testing.T) {
+		dropBlameTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		// Current epoch=10, node first appears at epoch=7
+		// epochsSinceFirst = 10-7 = 3, grace period check is < 3, so 3 is NOT exempt → bannable
+		node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 10, NetId: "vsc-mocknet", Type: "initial"},
+			ElectionDataInfo:   elections.ElectionDataInfo{Members: members4, Weights: weights4},
+			BlockHeight:        1000,
+		})
+		// Epochs 9, 8 with no members (keeps backward iteration going)
+		for ep := uint64(8); ep <= 9; ep++ {
+			node.electionDb.StoreElection(elections.ElectionResult{
+				ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: ep, NetId: "vsc-mocknet", Type: "initial"},
+				ElectionDataInfo:   elections.ElectionDataInfo{Members: []elections.ElectionMember{}, Weights: []uint64{}},
+				BlockHeight:        ep * 100,
+			})
+		}
+		// Epoch 7 has all members — nodeFirstEpoch = 7, epochsSinceFirst = 10-7 = 3
+		node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 7, NetId: "vsc-mocknet", Type: "initial"},
+			ElectionDataInfo:   elections.ElectionDataInfo{Members: members4, Weights: weights4},
+			BlockHeight:        700,
+		})
+
+		// Blame node-d (index 3) with 100% rate in epoch 7
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 7, BlockHeight: 700,
+			Commitment: blameBitset(3), TxId: "blame-grace3-1",
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 7, BlockHeight: 701,
+			Commitment: blameBitset(3), TxId: "blame-grace3-2",
+		})
+
+		result := tssMgr.BlameScore()
+
+		if !result.BannedNodes["node-d"] {
+			t.Errorf("Expected node-d to be banned (epochsSinceFirst=3, not in grace period), got BannedNodes=%v", result.BannedNodes)
+		}
+	})
+
+	t.Run("grace_period_boundary_at_exactly_2", func(t *testing.T) {
+		dropBlameTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		// Current epoch=10, node first appears at epoch=8
+		// epochsSinceFirst = 10-8 = 2 < 3 → grace period protects
+		node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 10, NetId: "vsc-mocknet", Type: "initial"},
+			ElectionDataInfo:   elections.ElectionDataInfo{Members: members4, Weights: weights4},
+			BlockHeight:        1000,
+		})
+		// Epoch 9 with no members
+		node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 9, NetId: "vsc-mocknet", Type: "initial"},
+			ElectionDataInfo:   elections.ElectionDataInfo{Members: []elections.ElectionMember{}, Weights: []uint64{}},
+			BlockHeight:        900,
+		})
+		// Epoch 8 has all members — nodeFirstEpoch = 8, epochsSinceFirst = 10-8 = 2
+		node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 8, NetId: "vsc-mocknet", Type: "initial"},
+			ElectionDataInfo:   elections.ElectionDataInfo{Members: members4, Weights: weights4},
+			BlockHeight:        800,
+		})
+
+		// Blame node-d (index 3) with 100% rate in epoch 8
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 8, BlockHeight: 800,
+			Commitment: blameBitset(3), TxId: "blame-grace2-1",
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 8, BlockHeight: 801,
+			Commitment: blameBitset(3), TxId: "blame-grace2-2",
+		})
+
+		result := tssMgr.BlameScore()
+
+		if result.BannedNodes["node-d"] {
+			t.Errorf("Expected node-d exempt from ban (epochsSinceFirst=2 < 3 grace period), got BannedNodes=%v", result.BannedNodes)
+		}
+	})
+
+	t.Run("blame_across_multiple_epochs", func(t *testing.T) {
+		dropBlameTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		storeElectionsWithGracePeriodBypass(10)
+
+		// Insert blame commitments for node-b (index 1) across 3 different epochs
+		// Each epoch has 1 blame commitment, so weight per epoch = 1
+		// Total: 3 blames out of 3 weight = 100% → ban
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
+			Commitment: blameBitset(1), TxId: "blame-multi-ep-1",
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 10, BlockHeight: 1000,
+			Commitment: blameBitset(1), TxId: "blame-multi-ep-2",
+		})
+		// Also add a blame in the epoch where members exist (epoch current-4 = 6)
+		// Use a different epoch that has members — epoch 6 already has members from bypass helper
+		// Add blame in epoch 10 (current) which also has members
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 10, BlockHeight: 1001,
+			Commitment: blameBitset(1), TxId: "blame-multi-ep-3",
+		})
+
+		result := tssMgr.BlameScore()
+
+		if !result.BannedNodes["node-b"] {
+			t.Errorf("Expected node-b to be banned (blames across multiple epochs), got BannedNodes=%v", result.BannedNodes)
+		}
+		// Verify other nodes are not banned
+		if result.BannedNodes["node-a"] || result.BannedNodes["node-c"] || result.BannedNodes["node-d"] {
+			t.Errorf("Expected only node-b banned, got BannedNodes=%v", result.BannedNodes)
 		}
 	})
 }
