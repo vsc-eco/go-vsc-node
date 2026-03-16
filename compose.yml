@@ -65,9 +65,8 @@ services:
   mapping-bot:
     profiles: ["mapping-bot"]
     build:
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.mapping-bot
       context: .
-      target: mapping-bot
     command: []
     ports:
       - 8000:8000

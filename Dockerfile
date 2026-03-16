@@ -30,7 +30,7 @@ RUN . /home/app/.wasmedge/env && go build -buildvcs=false -ldflags "-X vsc-node/
 
 
 
-FROM rockylinux:9.3-minimal
+FROM rockylinux:9.3-minimal AS vsc-node
 
 RUN useradd -m app
 
