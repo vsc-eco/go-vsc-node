@@ -74,6 +74,7 @@ type nodeComponents struct {
 	tssRequests    tss_db.TssRequests
 	tssCommitments tss_db.TssCommitments
 	identity       common.IdentityConfig
+	tssMgr         *vtss.TssManager
 }
 
 func dropTestDatabases() {
@@ -128,7 +129,7 @@ func connectAllPeers(t *testing.T, nodes []nodeComponents) {
 // TSS protocol runs. Returns a cancel function to stop the keepalive.
 // startPeerKeepalive runs a background goroutine that periodically pings all
 // peers to keep connections alive and reconnects if needed.
-func startPeerKeepalive(nodes []nodeComponents, interval time.Duration) context.CancelFunc {
+func startPeerKeepalive(nodes []nodeComponents, interval time.Duration, excludedNodes *sync.Map) context.CancelFunc {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -139,8 +140,14 @@ func startPeerKeepalive(nodes []nodeComponents, interval time.Duration) context.
 				return
 			case <-ticker.C:
 				for i := 0; i < len(nodes); i++ {
+					if _, excluded := excludedNodes.Load(i); excluded {
+						continue
+					}
 					for j := 0; j < len(nodes); j++ {
 						if i == j {
+							continue
+						}
+						if _, excluded := excludedNodes.Load(j); excluded {
 							continue
 						}
 						targetID := nodes[j].p2p.ID()
@@ -245,7 +252,80 @@ func MakeNode(index int, mes *MockElectionSystem, broadcastCb func(tx hivego.Hiv
 		tssRequests:    tssRequests,
 		tssCommitments: tssCommitments,
 		identity:       identity,
+		tssMgr:         tssMgr,
 	}
+}
+
+func disconnectNode(nodes []nodeComponents, targetIdx int) {
+	targetID := nodes[targetIdx].p2p.ID()
+	for i := 0; i < len(nodes); i++ {
+		if i == targetIdx {
+			continue
+		}
+		// Unprotect and close connections in both directions
+		nodes[i].p2p.Host().ConnManager().Unprotect(targetID, "tss-test")
+		nodes[i].p2p.Host().Network().ClosePeer(targetID)
+		// Clear addresses so libp2p can't auto-reconnect
+		nodes[i].p2p.Peerstore().ClearAddrs(targetID)
+
+		peerID := nodes[i].p2p.ID()
+		nodes[targetIdx].p2p.Host().ConnManager().Unprotect(peerID, "tss-test")
+		nodes[targetIdx].p2p.Host().Network().ClosePeer(peerID)
+		nodes[targetIdx].p2p.Peerstore().ClearAddrs(peerID)
+	}
+	fmt.Printf("[TEST] Node %d disconnected from all peers\n", targetIdx)
+}
+
+// connectActivePeers connects all nodes except those in the excluded set.
+// Use this instead of connectAllPeers when some nodes are intentionally disconnected.
+func connectActivePeers(t *testing.T, nodes []nodeComponents, excludedNodes *sync.Map) {
+	for i := 0; i < len(nodes); i++ {
+		if _, excluded := excludedNodes.Load(i); excluded {
+			continue
+		}
+		for j := 0; j < len(nodes); j++ {
+			if i == j {
+				continue
+			}
+			if _, excluded := excludedNodes.Load(j); excluded {
+				continue
+			}
+			targetID := nodes[j].p2p.ID()
+			addrs := nodes[j].p2p.Addrs()
+			nodes[i].p2p.Peerstore().AddAddrs(targetID, addrs, peerstore.PermanentAddrTTL)
+			addrInfo := peer.AddrInfo{ID: targetID, Addrs: addrs}
+			err := nodes[i].p2p.Connect(context.Background(), addrInfo)
+			if err != nil {
+				fmt.Printf("[TEST] Connect %d->%d failed: %v\n", i, j, err)
+			}
+			nodes[i].p2p.Host().ConnManager().Protect(targetID, "tss-test")
+		}
+	}
+}
+
+func reconnectNode(t *testing.T, nodes []nodeComponents, targetIdx int) {
+	for i := 0; i < len(nodes); i++ {
+		if i == targetIdx {
+			continue
+		}
+		// Add addresses in both directions
+		targetID := nodes[targetIdx].p2p.ID()
+		targetAddrs := nodes[targetIdx].p2p.Addrs()
+		nodes[i].p2p.Peerstore().AddAddrs(targetID, targetAddrs, peerstore.PermanentAddrTTL)
+
+		peerID := nodes[i].p2p.ID()
+		peerAddrs := nodes[i].p2p.Addrs()
+		nodes[targetIdx].p2p.Peerstore().AddAddrs(peerID, peerAddrs, peerstore.PermanentAddrTTL)
+
+		addrInfo := peer.AddrInfo{ID: targetID, Addrs: targetAddrs}
+		err := nodes[i].p2p.Connect(context.Background(), addrInfo)
+		if err != nil {
+			fmt.Printf("[TEST] Reconnect %d->%d failed: %v\n", i, targetIdx, err)
+		}
+		nodes[i].p2p.Host().ConnManager().Protect(targetID, "tss-test")
+		nodes[targetIdx].p2p.Host().ConnManager().Protect(peerID, "tss-test")
+	}
+	fmt.Printf("[TEST] Node %d reconnected to all peers\n", targetIdx)
 }
 
 func processBlocks(nodes []nodeComponents, start, end uint64, headHeight *uint64) {
@@ -276,6 +356,9 @@ func TestTss(t *testing.T) {
 	var keygenBroadcast *hivego.HiveTransaction
 	var signBroadcast *hivego.HiveTransaction
 	var reshareBroadcast *hivego.HiveTransaction
+
+	// Declared before broadcastCb so the closure can reference it
+	nodes := make([]nodeComponents, nodeCount)
 
 	broadcastCb := func(tx hivego.HiveTransaction) error {
 		mu.Lock()
@@ -311,6 +394,27 @@ func TestTss(t *testing.T) {
 					txCopy := tx
 					signBroadcast = &txCopy
 					fmt.Println("[TEST] Sign result captured")
+
+					// Mark signing requests as complete on all nodes
+					// (mirrors what the state engine does in production)
+					var signPayload struct {
+						Packet []struct {
+							KeyId string `json:"key_id"`
+							Msg   string `json:"msg"`
+							Sig   string `json:"sig"`
+						} `json:"packet"`
+					}
+					json.Unmarshal([]byte(cj.Json), &signPayload)
+					for _, pkt := range signPayload.Packet {
+						for _, node := range nodes {
+							node.tssRequests.UpdateRequest(tss_db.TssRequest{
+								KeyId:  pkt.KeyId,
+								Msg:    pkt.Msg,
+								Sig:    pkt.Sig,
+								Status: tss_db.SignComplete,
+							})
+						}
+					}
 				}
 			}
 		}
@@ -318,7 +422,6 @@ func TestTss(t *testing.T) {
 	}
 
 	// Step 1: Create 6 nodes
-	nodes := make([]nodeComponents, nodeCount)
 	for i := 0; i < nodeCount; i++ {
 		nodes[i] = MakeNode(i, mes, broadcastCb)
 	}
@@ -336,7 +439,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Wait for P2P startup
-	time.Sleep(5 * time.Second)
+	time.Sleep(3 * time.Second)
 
 	// Register connection event notifiers to debug disconnections
 	for i := 0; i < nodeCount; i++ {
@@ -386,11 +489,12 @@ func TestTss(t *testing.T) {
 
 	// Connect all P2P peers (full mesh)
 	connectAllPeers(t, nodes)
-	time.Sleep(3 * time.Second)
+	time.Sleep(2 * time.Second)
 
 	// Start background keepalive to prevent connections from dropping during long TSS protocols.
 	// Use a short interval because libp2p connections can drop during reshare rounds.
-	stopKeepalive := startPeerKeepalive(nodes, 2*time.Second)
+	excludedNodes := &sync.Map{}
+	stopKeepalive := startPeerKeepalive(nodes, 2*time.Second, excludedNodes)
 	defer stopKeepalive()
 
 	// Step 3: Store election (epoch 0) in all nodes
@@ -442,7 +546,7 @@ func TestTss(t *testing.T) {
 				BlockNumber:  bh,
 			}, &headHeight)
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	// Wait for keygen to fully complete, including the RunActions goroutine releasing the lock.
@@ -450,8 +554,8 @@ func TestTss(t *testing.T) {
 	// Poll for keygen broadcast (up to 4 minutes), then wait additional time for lock release.
 	fmt.Println("[TEST] Waiting for keygen TSS protocol to complete...")
 	keygenDone := false
-	for i := 0; i < 240; i++ {
-		time.Sleep(1 * time.Second)
+	for i := 0; i < 120; i++ {
+		time.Sleep(500 * time.Millisecond)
 		mu.Lock()
 		done := keygenBroadcast != nil
 		mu.Unlock()
@@ -465,9 +569,9 @@ func TestTss(t *testing.T) {
 	if !keygenDone {
 		// Keygen broadcast wasn't captured (BLS sig aggregation may have failed),
 		// but the keygen protocol itself likely completed.
-		// Wait for the full 2-minute RunActions timeout + buffer to ensure lock release.
+		// Wait for the RunActions timeout + buffer to ensure lock release.
 		fmt.Println("[TEST] Keygen broadcast not captured, waiting for RunActions timeout...")
-		time.Sleep(90 * time.Second)
+		time.Sleep(35 * time.Second)
 	} else {
 		// Keygen broadcast was captured, the lock releases shortly after broadcast.
 		// Wait a few extra seconds for the goroutine to fully finish.
@@ -529,7 +633,7 @@ func TestTss(t *testing.T) {
 
 	// Re-establish peer connections before signing (connections may have timed out during keygen wait)
 	connectAllPeers(t, nodes)
-	time.Sleep(3 * time.Second)
+	time.Sleep(2 * time.Second)
 
 	// Process remaining blocks from keygen phase
 	processBlocks(nodes, 106, 148, &headHeight)
@@ -543,14 +647,14 @@ func TestTss(t *testing.T) {
 				BlockNumber:  bh,
 			}, &headHeight)
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	// Wait for signing to complete
 	fmt.Println("[TEST] Waiting for signing to complete...")
 	signDone := false
-	for i := 0; i < 120; i++ {
-		time.Sleep(1 * time.Second)
+	for i := 0; i < 90; i++ {
+		time.Sleep(500 * time.Millisecond)
 		mu.Lock()
 		done := signBroadcast != nil
 		mu.Unlock()
@@ -562,7 +666,7 @@ func TestTss(t *testing.T) {
 	}
 
 	if !signDone {
-		t.Fatal("Signing did not complete within timeout (2 minutes)")
+		t.Fatal("Signing did not complete within timeout")
 	}
 
 	// Assertion 2: Verify signature broadcast
@@ -604,10 +708,8 @@ func TestTss(t *testing.T) {
 	fmt.Println("[TEST] === PHASE 3: RESHARE ===")
 
 	// Wait for signing RunActions lock to release before reshare.
-	// Signing is fast (no pre-params), but the RunActions goroutine holds the lock
-	// until signing completes + broadcast. Wait a reasonable amount.
 	fmt.Println("[TEST] Waiting for signing lock to release...")
-	time.Sleep(15 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	// Step 9: Store new election (epoch 1) for reshare
 	for _, node := range nodes {
@@ -630,7 +732,7 @@ func TestTss(t *testing.T) {
 
 	// Re-establish peer connections before reshare
 	connectAllPeers(t, nodes)
-	time.Sleep(3 * time.Second)
+	time.Sleep(2 * time.Second)
 
 	fmt.Println("[TEST] Processing blocks to trigger reshare at block 200...")
 
@@ -645,14 +747,14 @@ func TestTss(t *testing.T) {
 				BlockNumber:  bh,
 			}, &headHeight)
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	// Wait for reshare to complete
 	fmt.Println("[TEST] Waiting for reshare to complete...")
 	reshareDone := false
 	for i := 0; i < 240; i++ {
-		time.Sleep(1 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 		mu.Lock()
 		done := reshareBroadcast != nil
 		mu.Unlock()
@@ -664,7 +766,7 @@ func TestTss(t *testing.T) {
 	}
 
 	if !reshareDone {
-		t.Fatal("Reshare did not complete within timeout (4 minutes)")
+		t.Fatal("Reshare did not complete within timeout")
 	}
 
 	// Assertion 3: Reshare broadcast captured
@@ -675,7 +777,432 @@ func TestTss(t *testing.T) {
 	fmt.Printf("[TEST] Reshare broadcast has %d operations\n", len(reshareBroadcast.Operations))
 	mu.Unlock()
 
-	fmt.Println("[TEST] All TSS operations completed successfully!")
+	fmt.Println("[TEST] Phases 1-3 completed successfully!")
+
+	// =====================================================
+	// PHASE 4: SIGN WITH ONE NODE OFFLINE (block 250)
+	// =====================================================
+	fmt.Println("[TEST] === PHASE 4: SIGN WITH NODE OFFLINE ===")
+
+	// Wait for reshare lock to release and stale retry goroutines to fire
+	time.Sleep(5 * time.Second)
+
+	// Clear any stale retry actions that fired during the wait
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Insert reshare commitment from Phase 3 into all nodes
+	for _, node := range nodes {
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type:        "reshare",
+			KeyId:       "test-key",
+			Epoch:       1,
+			BlockHeight: 200,
+			Commitment:  commitmentStr, // all 6 bits set
+			TxId:        "mock-reshare-tx",
+		})
+	}
+
+	// Update key epoch to 1 for all nodes
+	for _, node := range nodes {
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id:     "test-key",
+			Status: "active",
+			Algo:   tss_db.EcdsaType,
+			Epoch:  1,
+		})
+	}
+
+	// Disconnect node 5
+	excludedNodes.Store(5, true)
+	disconnectNode(nodes, 5)
+	time.Sleep(1 * time.Second)
+
+	// Insert new signing request
+	msgHex2 := "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+	for _, node := range nodes {
+		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+			KeyId:  "test-key",
+			Msg:    msgHex2,
+			Status: tss_db.SignPending,
+		})
+	}
+
+	// Reset sign broadcast capture
+	mu.Lock()
+	signBroadcast = nil
+	mu.Unlock()
+
+	// Re-establish connections among remaining 5 nodes (excluding node 5)
+	connectActivePeers(t, nodes, excludedNodes)
+	time.Sleep(2 * time.Second)
+
+	fmt.Println("[TEST] Processing blocks to trigger signing at block 250...")
+	processBlocks(nodes, 206, 248, &headHeight)
+	headHeight = 270
+	for bh := uint64(249); bh <= 255; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Poll for sign broadcast
+	fmt.Println("[TEST] Waiting for signing with node offline to complete...")
+	signDone = false
+	for i := 0; i < 90; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := signBroadcast != nil
+		mu.Unlock()
+		if done {
+			signDone = true
+			fmt.Println("[TEST] Signing with node offline completed!")
+			break
+		}
+	}
+
+	if !signDone {
+		t.Fatal("Phase 4: Signing with node offline did not complete within timeout")
+	}
+
+	// Verify signature
+	mu.Lock()
+	if signBroadcast != nil {
+		for _, op := range signBroadcast.Operations {
+			raw, _ := json.Marshal(op)
+			var cj struct {
+				Json string `json:"json"`
+			}
+			json.Unmarshal(raw, &cj)
+			var payload struct {
+				Packet []struct {
+					Sig string `json:"sig"`
+				} `json:"packet"`
+			}
+			json.Unmarshal([]byte(cj.Json), &payload)
+			if len(payload.Packet) > 0 && payload.Packet[0].Sig == "" {
+				t.Error("Phase 4: Signing with node offline produced empty signature")
+			}
+		}
+	}
+	mu.Unlock()
+
+	// Reconnect node 5
+	excludedNodes.Delete(5)
+	reconnectNode(t, nodes, 5)
+	time.Sleep(2 * time.Second)
+
+	fmt.Println("[TEST] Phase 4 completed!")
+
+	// =====================================================
+	// PHASE 5: RESHARE WITH WITNESS REPLACEMENT (block 300)
+	// =====================================================
+	fmt.Println("[TEST] === PHASE 5: RESHARE WITH WITNESS REPLACEMENT ===")
+
+	// Wait for sign lock to release and stale retry goroutines to fire
+	time.Sleep(5 * time.Second)
+
+	// Clear stale retries from previous phases
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Store epoch 2 election with only 5 members (drop node 5)
+	members5 := members[:5]
+	weights5 := weights[:5]
+	for _, node := range nodes {
+		err := node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{
+				Epoch: 2,
+				NetId: "vsc-mocknet",
+				Type:  "initial",
+			},
+			ElectionDataInfo: elections.ElectionDataInfo{
+				Members: members5,
+				Weights: weights5,
+			},
+			BlockHeight: 290,
+		})
+		if err != nil {
+			t.Fatalf("Failed to store election epoch 2: %v", err)
+		}
+	}
+
+	// Update MockElectionSystem to only include 5 witnesses
+	originalWitnessNames := make([]string, len(mes.WitnessNames))
+	copy(originalWitnessNames, mes.WitnessNames)
+	witnessNames5 := make([]string, 0, 5)
+	droppedWitness := "mock-tss-" + strconv.Itoa(6) // node 5 has username mock-tss-6
+	for _, name := range mes.WitnessNames {
+		if name != droppedWitness {
+			witnessNames5 = append(witnessNames5, name)
+		}
+	}
+	mes.WitnessNames = witnessNames5
+
+	// Disconnect node 5 and exclude from keepalive
+	excludedNodes.Store(5, true)
+	disconnectNode(nodes, 5)
+	time.Sleep(1 * time.Second)
+
+	// Reset reshare broadcast capture
+	mu.Lock()
+	reshareBroadcast = nil
+	mu.Unlock()
+
+	// Re-establish connections among 5 active nodes (excluding node 5)
+	connectActivePeers(t, nodes, excludedNodes)
+	time.Sleep(2 * time.Second)
+
+	fmt.Println("[TEST] Processing blocks to trigger reshare at block 300...")
+	processBlocks(nodes, 256, 298, &headHeight)
+	headHeight = 320
+	for bh := uint64(299); bh <= 305; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Poll for reshare broadcast
+	fmt.Println("[TEST] Waiting for reshare with witness replacement...")
+	reshareDone = false
+	for i := 0; i < 240; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := reshareBroadcast != nil
+		mu.Unlock()
+		if done {
+			reshareDone = true
+			fmt.Println("[TEST] Reshare with witness replacement completed!")
+			break
+		}
+	}
+
+	if !reshareDone {
+		t.Fatal("Phase 5: Reshare with witness replacement did not complete within timeout")
+	}
+
+	mu.Lock()
+	if reshareBroadcast == nil {
+		t.Fatal("Phase 5: Reshare broadcast was nil")
+	}
+	mu.Unlock()
+
+	fmt.Println("[TEST] Phase 5 completed!")
+
+	// =====================================================
+	// PHASE 6: SIGN WITH REDUCED 5-MEMBER SET (block 350)
+	// =====================================================
+	fmt.Println("[TEST] === PHASE 6: SIGN WITH REDUCED MEMBER SET ===")
+
+	// Wait for reshare lock to release and stale retry goroutines to fire
+	time.Sleep(5 * time.Second)
+
+	// Clear stale retries from previous phases
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Insert reshare commitment for epoch 2 (5-bit bitset for nodes 0-4)
+	bitset5 := big.NewInt(0)
+	for i := 0; i < 5; i++ {
+		bitset5.SetBit(bitset5, i, 1)
+	}
+	commitmentStr5 := base64.RawURLEncoding.EncodeToString(bitset5.Bytes())
+
+	for _, node := range nodes {
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type:        "reshare",
+			KeyId:       "test-key",
+			Epoch:       2,
+			BlockHeight: 300,
+			Commitment:  commitmentStr5,
+			TxId:        "mock-reshare-tx-2",
+		})
+	}
+
+	// Update key epoch to 2
+	for _, node := range nodes {
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id:     "test-key",
+			Status: "active",
+			Algo:   tss_db.EcdsaType,
+			Epoch:  2,
+		})
+	}
+
+	// Insert new signing request
+	msgHex3 := "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3"
+	for _, node := range nodes {
+		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+			KeyId:  "test-key",
+			Msg:    msgHex3,
+			Status: tss_db.SignPending,
+		})
+	}
+
+	// Reset sign broadcast capture
+	mu.Lock()
+	signBroadcast = nil
+	mu.Unlock()
+
+	// Re-establish connections among 5 active nodes (excluding node 5)
+	connectActivePeers(t, nodes, excludedNodes)
+	time.Sleep(2 * time.Second)
+
+	fmt.Println("[TEST] Processing blocks to trigger signing at block 350...")
+	processBlocks(nodes, 306, 348, &headHeight)
+	headHeight = 370
+	for bh := uint64(349); bh <= 355; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Poll for sign broadcast
+	fmt.Println("[TEST] Waiting for signing with reduced set...")
+	signDone = false
+	for i := 0; i < 90; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := signBroadcast != nil
+		mu.Unlock()
+		if done {
+			signDone = true
+			fmt.Println("[TEST] Signing with reduced set completed!")
+			break
+		}
+	}
+
+	if !signDone {
+		t.Fatal("Phase 6: Signing with reduced set did not complete within timeout")
+	}
+
+	// Verify signature
+	mu.Lock()
+	if signBroadcast != nil {
+		for _, op := range signBroadcast.Operations {
+			raw, _ := json.Marshal(op)
+			var cj struct {
+				Json string `json:"json"`
+			}
+			json.Unmarshal(raw, &cj)
+			var payload struct {
+				Packet []struct {
+					Sig string `json:"sig"`
+				} `json:"packet"`
+			}
+			json.Unmarshal([]byte(cj.Json), &payload)
+			if len(payload.Packet) > 0 && payload.Packet[0].Sig == "" {
+				t.Error("Phase 6: Signing with reduced set produced empty signature")
+			}
+		}
+	}
+	mu.Unlock()
+
+	fmt.Println("[TEST] Phase 6 completed!")
+
+	// =====================================================
+	// PHASE 7: RESHARE WITH NODE RETURNING (block 400)
+	// =====================================================
+	fmt.Println("[TEST] === PHASE 7: RESHARE WITH NODE RETURNING ===")
+
+	// Wait for sign lock to release and stale retry goroutines to fire
+	time.Sleep(5 * time.Second)
+
+	// Clear stale retries from previous phases
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Restore MockElectionSystem to all 6 witnesses
+	mes.WitnessNames = originalWitnessNames
+
+	// Reconnect node 5
+	excludedNodes.Delete(5)
+	reconnectNode(t, nodes, 5)
+	time.Sleep(2 * time.Second)
+
+	// Store epoch 3 election with all 6 members
+	for _, node := range nodes {
+		err := node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{
+				Epoch: 3,
+				NetId: "vsc-mocknet",
+				Type:  "initial",
+			},
+			ElectionDataInfo: elections.ElectionDataInfo{
+				Members: members,
+				Weights: weights,
+			},
+			BlockHeight: 390,
+		})
+		if err != nil {
+			t.Fatalf("Failed to store election epoch 3: %v", err)
+		}
+	}
+
+	// Reset reshare broadcast capture
+	mu.Lock()
+	reshareBroadcast = nil
+	mu.Unlock()
+
+	// Re-establish full mesh connections
+	connectAllPeers(t, nodes)
+	time.Sleep(2 * time.Second)
+
+	fmt.Println("[TEST] Processing blocks to trigger reshare at block 400...")
+	processBlocks(nodes, 356, 398, &headHeight)
+	headHeight = 420
+	for bh := uint64(399); bh <= 405; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Poll for reshare broadcast
+	fmt.Println("[TEST] Waiting for reshare with node returning...")
+	reshareDone = false
+	for i := 0; i < 240; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := reshareBroadcast != nil
+		mu.Unlock()
+		if done {
+			reshareDone = true
+			fmt.Println("[TEST] Reshare with node returning completed!")
+			break
+		}
+	}
+
+	if !reshareDone {
+		t.Fatal("Phase 7: Reshare with node returning did not complete within timeout")
+	}
+
+	mu.Lock()
+	if reshareBroadcast == nil {
+		t.Fatal("Phase 7: Reshare broadcast was nil")
+	}
+	mu.Unlock()
+
+	fmt.Println("[TEST] All 7 TSS phases completed successfully!")
 }
 
 // blameBitset creates a base64-encoded bitset marking the given member indices as blamed.
@@ -770,6 +1297,7 @@ func makeBlameNode(mes *MockElectionSystem) (nodeComponents, *vtss.TssManager) {
 		tssRequests:    tssRequests,
 		tssCommitments: tssCommitments,
 		identity:       identity,
+		tssMgr:         tssMgr,
 	}, tssMgr
 }
 
@@ -830,7 +1358,7 @@ func TestBlameScore(t *testing.T) {
 
 	t.Run("no_blames_no_bans", func(t *testing.T) {
 		dropBlameTestDatabase()
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		storeElectionsWithGracePeriodBypass(10)
 
@@ -843,7 +1371,7 @@ func TestBlameScore(t *testing.T) {
 
 	t.Run("blame_above_threshold_bans_node", func(t *testing.T) {
 		dropBlameTestDatabase()
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		storeElectionsWithGracePeriodBypass(10)
 
@@ -869,7 +1397,7 @@ func TestBlameScore(t *testing.T) {
 
 	t.Run("blame_below_threshold_no_ban", func(t *testing.T) {
 		dropBlameTestDatabase()
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		storeElectionsWithGracePeriodBypass(10)
 
@@ -896,7 +1424,7 @@ func TestBlameScore(t *testing.T) {
 
 	t.Run("grace_period_exemption", func(t *testing.T) {
 		dropBlameTestDatabase()
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		// Current epoch 10 has all 4 members including node-d.
 		// Epochs 9, 8, 7 have all 4 members (so nodeFirstEpoch for node-d = 9, epochsSinceFirst = 1).
@@ -926,7 +1454,7 @@ func TestBlameScore(t *testing.T) {
 
 	t.Run("timeout_blame_contributes_to_ban", func(t *testing.T) {
 		dropBlameTestDatabase()
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		storeElectionsWithGracePeriodBypass(10)
 

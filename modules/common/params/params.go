@@ -1,5 +1,7 @@
 package params
 
+import "time"
+
 // A transaction consuming 1000 RC (1 HBD equivalent) would generate ~0.002 HBD interest for the protocol
 // At 100K gas/RC and 100 RC minimum cost it would take at least 10M gas for a tx to consume more
 const CYCLE_GAS_PER_RC = 100_000
@@ -45,6 +47,39 @@ type ConsensusParams struct {
 	MinRcLimit       uint64
 	TssIndexHeight   uint64
 	ElectionInterval uint64
+}
+
+type TssParams struct {
+	ReshareSyncDelay      time.Duration
+	ReshareTimeout        time.Duration
+	DefaultTimeout        time.Duration
+	MessageRetryDelay     time.Duration
+	BufferedMessageMaxAge time.Duration
+	RpcTimeout            time.Duration
+	CommitDelay           time.Duration
+	WaitForSigsTimeout    time.Duration
+}
+
+var DefaultTssParams = TssParams{
+	ReshareSyncDelay:      5 * time.Second,
+	ReshareTimeout:        2 * time.Minute,
+	DefaultTimeout:        1 * time.Minute,
+	MessageRetryDelay:     1 * time.Second,
+	BufferedMessageMaxAge: 1 * time.Minute,
+	RpcTimeout:            30 * time.Second,
+	CommitDelay:           5 * time.Second,
+	WaitForSigsTimeout:    6 * time.Second,
+}
+
+var MocknetTssParams = TssParams{
+	ReshareSyncDelay:      1 * time.Second,
+	ReshareTimeout:        2 * time.Minute,
+	DefaultTimeout:        1 * time.Minute,
+	MessageRetryDelay:     500 * time.Millisecond,
+	BufferedMessageMaxAge: 30 * time.Second,
+	RpcTimeout:            10 * time.Second,
+	CommitDelay:           1 * time.Second,
+	WaitForSigsTimeout:    6 * time.Second,
 }
 
 type OracleParams struct {

@@ -61,7 +61,7 @@ func TestRetryCountExceedsMax(t *testing.T) {
 
 func TestExponentialBackoffCalculation(t *testing.T) {
 	// Test that retry delay follows exponential backoff pattern
-	baseDelay := TSS_RESHARE_SYNC_DELAY
+	baseDelay := 5 * time.Second
 
 	// Retry 0: delay = (0+1) * baseDelay = 1 * baseDelay
 	delay0 := time.Duration(0+1) * baseDelay

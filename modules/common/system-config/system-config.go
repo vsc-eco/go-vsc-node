@@ -17,6 +17,7 @@ type SystemConfig interface {
 	StartHeight() uint64
 	ConsensusParams() params.ConsensusParams
 	OracleParams() params.OracleParams
+	TssParams() params.TssParams
 }
 
 type config struct {
@@ -28,6 +29,7 @@ type config struct {
 	startHeight     uint64
 	consensusParams params.ConsensusParams
 	oracleParams    params.OracleParams
+	tssParams       params.TssParams
 }
 
 func (c *config) OnMainnet() bool {
@@ -69,6 +71,10 @@ func (c *config) OracleParams() params.OracleParams {
 	return c.oracleParams
 }
 
+func (c *config) TssParams() params.TssParams {
+	return c.tssParams
+}
+
 func (c *config) StartHeight() uint64 {
 	return c.startHeight
 }
@@ -89,6 +95,7 @@ func MainnetConfig() SystemConfig {
 			TssIndexHeight:   params.TSS_INDEX_HEIGHT,
 			ElectionInterval: params.ELECTION_INTERVAL,
 		},
+		tssParams: params.DefaultTssParams,
 	}
 	return conf
 }
@@ -116,6 +123,7 @@ func TestnetConfig() SystemConfig {
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
 			},
 		},
+		tssParams: params.DefaultTssParams,
 	}
 	return conf
 }
@@ -135,6 +143,7 @@ func DevnetConfig() SystemConfig {
 			TssIndexHeight:   0,
 			ElectionInterval: 40,
 		},
+		tssParams: params.DefaultTssParams,
 	}
 	return conf
 }
@@ -153,6 +162,7 @@ func MocknetConfig() SystemConfig {
 			TssIndexHeight:   0,
 			ElectionInterval: 1000,
 		},
+		tssParams: params.MocknetTssParams,
 	}
 	return conf
 }

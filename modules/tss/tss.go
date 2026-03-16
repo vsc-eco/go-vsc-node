@@ -41,20 +41,14 @@ import (
 )
 
 const (
-	TSS_SIGN_INTERVAL            = 50               // 50 L1 blocks
-	TSS_ROTATE_INTERVAL          = 20 * 5           // 5 minutes in L1 blocks
-	TSS_RESHARE_SYNC_DELAY       = 5 * time.Second  // Reduced from 15s to 5s
-	TSS_RESHARE_TIMEOUT          = 2 * time.Minute  // Reshare timeout
-	TSS_DEFAULT_TIMEOUT          = 1 * time.Minute  // Timeout for keygen/sign operations
-	TSS_MESSAGE_RETRY_COUNT      = 3                // Number of retries for failed messages
-	TSS_MESSAGE_RETRY_DELAY      = 1 * time.Second  // Base delay for retries
-	TSS_BAN_THRESHOLD_PERCENT    = 60               // Failure rate threshold for bans
-	TSS_BAN_GRACE_PERIOD_EPOCHS  = 3                // Epochs before new nodes can be banned (as int for comparison)
-	TSS_BUFFERED_MESSAGE_MAX_AGE = 1 * time.Minute  // Maximum age for buffered messages
-	MAX_RESHARE_RETRIES          = 3                // Maximum number of reshare retries on timeout
-	RPC_TIMEOUT                  = 30 * time.Second // RPC call timeout
-	BLAME_EXPIRE                 = uint64(28800)    // 24 hour blame
-	TSS_BLAME_EPOCH_COUNT        = (4 * 7) - 1      // Number of past epochs to include in blame scoring
+	TSS_SIGN_INTERVAL           = 50            // 50 L1 blocks
+	TSS_ROTATE_INTERVAL         = 20 * 5        // 5 minutes in L1 blocks
+	TSS_MESSAGE_RETRY_COUNT     = 3             // Number of retries for failed messages
+	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for bans
+	TSS_BAN_GRACE_PERIOD_EPOCHS = 3             // Epochs before new nodes can be banned (as int for comparison)
+	MAX_RESHARE_RETRIES         = 3             // Maximum number of reshare retries on timeout
+	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
+	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1  // Number of past epochs to include in blame scoring
 )
 
 type TssManager struct {
@@ -116,6 +110,17 @@ func (tssMgr *TssManager) incrementRetryCount(keyId string) {
 	tssMgr.retryCountsMu.Lock()
 	defer tssMgr.retryCountsMu.Unlock()
 	tssMgr.retryCounts[keyId]++
+}
+
+// ClearQueuedActions clears any pending retry actions. Used by tests to prevent
+// stale retries from previous phases from interfering with later phases.
+func (tssMgr *TssManager) ClearQueuedActions() {
+	tssMgr.bufferLock.Lock()
+	tssMgr.queuedActions = tssMgr.queuedActions[:0]
+	tssMgr.bufferLock.Unlock()
+	tssMgr.retryCountsMu.Lock()
+	tssMgr.retryCounts = make(map[string]int)
+	tssMgr.retryCountsMu.Unlock()
 }
 
 type bufferedMessage struct {
@@ -501,42 +506,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 
-			// Filter to only connected participants
-			selfAccount := tssMgr.config.Get().HiveUsername
-			connectedParticipants := make([]Participant, 0, len(participants))
-			for _, p := range participants {
-				if p.Account == selfAccount {
-					connectedParticipants = append(connectedParticipants, p)
-					continue
-				}
-				witness, werr := tssMgr.witnessDb.GetWitnessAtHeight(p.Account, nil)
-				if werr != nil || witness.PeerId == "" {
-					fmt.Printf("[TSS] [SIGN] Excluding disconnected participant sessionId=%s account=%s reason=no_witness\n",
-						sessionId, p.Account)
-					continue
-				}
-				peerId, perr := peer.Decode(witness.PeerId)
-				if perr != nil {
-					fmt.Printf("[TSS] [SIGN] Excluding disconnected participant sessionId=%s account=%s reason=bad_peer_id\n",
-						sessionId, p.Account)
-					continue
-				}
-				connState := tssMgr.p2p.Host().Network().Connectedness(peerId)
-				if connState == network.Connected {
-					connectedParticipants = append(connectedParticipants, p)
-				} else {
-					fmt.Printf("[TSS] [SIGN] Excluding disconnected participant sessionId=%s account=%s reason=not_connected\n",
-						sessionId, p.Account)
-				}
-			}
-
-			origThreshold, _ := tss_helpers.GetThreshold(len(participants))
-			if len(connectedParticipants) < origThreshold+1 {
-				fmt.Printf("[TSS] [SIGN] Not enough connected participants for signing sessionId=%s connected=%d needed=%d total=%d\n",
-					sessionId, len(connectedParticipants), origThreshold+1, len(participants))
+			// Filter to only connected participants to avoid timeouts on unreachable nodes
+			participants = tssMgr.filterConnectedParticipants(participants, sessionId, "SIGN")
+			origThreshold, _ := tss_helpers.GetThreshold(len(currentElection.Members))
+			if len(participants) < origThreshold+1 {
+				fmt.Printf("[TSS] [SIGN] Not enough connected participants for signing sessionId=%s connected=%d needed=%d\n",
+					sessionId, len(participants), origThreshold+1)
 				continue
 			}
-			participants = connectedParticipants
 
 			prevCommitType := ""
 			if err == nil {
@@ -618,13 +595,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 
-			allNewParticipants := make([]Participant, 0)
-			for _, member := range currentElection.Members {
-				allNewParticipants = append(allNewParticipants, Participant{
-					Account: member.Account,
-				})
-			}
-
 			newParticipants := make([]Participant, 0)
 			excludedNodes := make([]string, 0)
 
@@ -653,58 +623,24 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				sessionId, len(commitedMembers), len(newParticipants), len(excludedNodes), excludedNodes)
 			fmt.Println("newParticipants", newParticipants)
 
-			// Check if blame exclusion left too few participants; if so, ignore blame and use all
-			blameThreshold, _ := tss_helpers.GetThreshold(len(newParticipants))
-			if len(newParticipants) < blameThreshold+1 {
-				fmt.Printf("[TSS] [RESHARE] Blame exclusion left too few participants (%d), ignoring blame and using all %d participants sessionId=%s\n",
-					len(newParticipants), len(allNewParticipants), sessionId)
-				newParticipants = allNewParticipants
-				excludedNodes = nil
-			}
-
-			// Filter new participants by connectivity
-			selfAccount := tssMgr.config.Get().HiveUsername
-			connectedNewParticipants := make([]Participant, 0, len(newParticipants))
-			for _, p := range newParticipants {
-				if p.Account == selfAccount {
-					connectedNewParticipants = append(connectedNewParticipants, p)
-					continue
-				}
-				witness, werr := tssMgr.witnessDb.GetWitnessAtHeight(p.Account, nil)
-				if werr != nil || witness.PeerId == "" {
-					fmt.Printf("[TSS] [RESHARE] Excluding disconnected new participant sessionId=%s account=%s reason=no_witness\n",
-						sessionId, p.Account)
-					continue
-				}
-				peerId, perr := peer.Decode(witness.PeerId)
-				if perr != nil {
-					fmt.Printf("[TSS] [RESHARE] Excluding disconnected new participant sessionId=%s account=%s reason=bad_peer_id\n",
-						sessionId, p.Account)
-					continue
-				}
-				connState := tssMgr.p2p.Host().Network().Connectedness(peerId)
-				if connState == network.Connected {
-					connectedNewParticipants = append(connectedNewParticipants, p)
-				} else {
-					fmt.Printf("[TSS] [RESHARE] Excluding disconnected new participant sessionId=%s account=%s reason=not_connected\n",
-						sessionId, p.Account)
-				}
-			}
-			newParticipants = connectedNewParticipants
+			// Filter both old and new participants by connectivity
+			// Threshold is based on original counts (before filtering) since the key was created with that many participants
+			origOldThreshold, _ := tss_helpers.GetThreshold(len(commitedMembers))
+			origNewThreshold, _ := tss_helpers.GetThreshold(len(newParticipants))
+			commitedMembers = tssMgr.filterConnectedParticipants(commitedMembers, sessionId, "RESHARE-OLD")
+			newParticipants = tssMgr.filterConnectedParticipants(newParticipants, sessionId, "RESHARE-NEW")
 
 			// Pre-flight checks: validate participant set meets minimum threshold
-			threshold, _ := tss_helpers.GetThreshold(len(newParticipants))
-			minRequired := threshold + 1
-			if len(newParticipants) < minRequired {
-				fmt.Printf("[TSS] [RESHARE] ERROR: Insufficient participants sessionId=%s participants=%d required=%d threshold=%d\n",
-					sessionId, len(newParticipants), minRequired, threshold)
+			if len(newParticipants) < origNewThreshold+1 {
+				fmt.Printf("[TSS] [RESHARE] ERROR: Insufficient new participants sessionId=%s participants=%d required=%d threshold=%d\n",
+					sessionId, len(newParticipants), origNewThreshold+1, origNewThreshold)
 				continue
 			}
 
 			// Pre-flight check: verify old participants are available
-			if len(commitedMembers) < threshold+1 {
+			if len(commitedMembers) < origOldThreshold+1 {
 				fmt.Printf("[TSS] [RESHARE] ERROR: Insufficient old participants sessionId=%s oldParticipants=%d required=%d threshold=%d\n",
-					sessionId, len(commitedMembers), threshold+1, threshold)
+					sessionId, len(commitedMembers), origOldThreshold+1, origOldThreshold)
 				continue
 			}
 
@@ -896,7 +832,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						retryCount := tssMgr.getRetryCount(dsc.KeyId())
 						if retryCount < MAX_RESHARE_RETRIES {
 							// Calculate exponential backoff delay based on retry count
-							retryDelay := time.Duration(retryCount+1) * TSS_RESHARE_SYNC_DELAY
+							retryDelay := time.Duration(retryCount+1) * tssMgr.sconf.TssParams().ReshareSyncDelay
 
 							fmt.Printf("[TSS] [RECOVERY] Scheduling reshare retry for timeout sessionId=%s keyId=%s retryCount=%d/%d delay=%v\n",
 								dsc.SessionId(), dsc.KeyId(), retryCount+1, MAX_RESHARE_RETRIES, retryDelay)
@@ -964,14 +900,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						fmt.Println("Broadcast err", err)
 					}
 					fmt.Println("signature.txId", txId)
-					// tssMgr.hiveClient.Broadcast([]hivego.HiveOperation{
-					// 	deployOp,
-					// }, &wif)
 				}
 			}()
 
 			if len(commitableResults) > 0 {
-				time.Sleep(5 * time.Second)
+				time.Sleep(tssMgr.sconf.TssParams().CommitDelay)
 
 				commitedResults := make(map[string]struct {
 					err        error
@@ -991,7 +924,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 						signableCid, _ := common.HashBytes(bytes, multicodec.DagCbor)
 
-						ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+						ctx, cancel := context.WithTimeout(context.Background(), tssMgr.sconf.TssParams().WaitForSigsTimeout)
 						defer cancel()
 						fmt.Println("commitResult", bytes, err)
 
@@ -1226,6 +1159,40 @@ func (tssMgr *TssManager) KeyReshare(keyId string) (int, error) {
 	n := len(tssMgr.queuedActions)
 	tssMgr.bufferLock.Unlock()
 	return n, nil
+}
+
+// filterConnectedParticipants returns only participants that are currently
+// connected via P2P (always includes self). Used to avoid starting TSS
+// sessions that would time out waiting for unreachable nodes.
+func (tssMgr *TssManager) filterConnectedParticipants(participants []Participant, sessionId string, label string) []Participant {
+	selfAccount := tssMgr.config.Get().HiveUsername
+	connected := make([]Participant, 0, len(participants))
+	for _, p := range participants {
+		if p.Account == selfAccount {
+			connected = append(connected, p)
+			continue
+		}
+		witness, werr := tssMgr.witnessDb.GetWitnessAtHeight(p.Account, nil)
+		if werr != nil || witness.PeerId == "" {
+			fmt.Printf("[TSS] [%s] Excluding disconnected participant sessionId=%s account=%s reason=no_witness\n",
+				label, sessionId, p.Account)
+			continue
+		}
+		peerId, perr := peer.Decode(witness.PeerId)
+		if perr != nil {
+			fmt.Printf("[TSS] [%s] Excluding disconnected participant sessionId=%s account=%s reason=bad_peer_id\n",
+				label, sessionId, p.Account)
+			continue
+		}
+		connState := tssMgr.p2p.Host().Network().Connectedness(peerId)
+		if connState == network.Connected {
+			connected = append(connected, p)
+		} else {
+			fmt.Printf("[TSS] [%s] Excluding disconnected participant sessionId=%s self=%s account=%s peerId=%s reason=not_connected connState=%d\n",
+				label, sessionId, selfAccount, p.Account, witness.PeerId, connState)
+		}
+	}
+	return connected
 }
 
 func (tssMgr *TssManager) Start() *promise.Promise[any] {

@@ -60,6 +60,7 @@ type ReshareDispatcher struct {
 	//Filled internally
 	newParty btss.Party
 	newPids  btss.SortedPartyIDs
+	oldPids  btss.SortedPartyIDs // epoch-modified old party IDs (set during Start)
 	result   *ReshareResult
 }
 
@@ -98,6 +99,10 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			}
 		}
 	}
+
+	// Store epoch-modified old party IDs so reshareMsgs() and HandleP2P() can
+	// use them without calling baseInfo() (which would overwrite epoch modifications).
+	dispatcher.oldPids = sortedPids
 
 	fmt.Printf("[TSS] [RESHARE] Reshare participants: old=%d new=%d sessionId=%s\n",
 		len(sortedPids), len(dispatcher.newParticipants), dispatcher.sessionId)
@@ -143,21 +148,28 @@ func (dispatcher *ReshareDispatcher) Start() error {
 	//epoch: 5 <-- actual data
 	//epoch: 7 <-- likely empty
 
-	savedKeyData, err := dispatcher.keystore.Get(context.Background(), makeKey("key", dispatcher.keyId, int(dispatcher.epoch)))
-
-	fmt.Printf("[TSS] [RESHARE] Key retrieval: keyId=%s epoch=%d err=%v dataLen=%d sessionId=%s\n",
-		dispatcher.keyId, dispatcher.epoch, err, len(savedKeyData), dispatcher.sessionId)
-	fmt.Println("mem", err, len(savedKeyData))
-	if err != nil {
-		fmt.Printf("[TSS] [RESHARE] ERROR: Failed to retrieve key data: keyId=%s epoch=%d err=%v sessionId=%s\n",
-			dispatcher.keyId, dispatcher.epoch, err, dispatcher.sessionId)
-		return err
-	}
-
 	if myParty == nil && myNewParty == nil {
 		err := fmt.Errorf("node not part of old or new committee")
 		fmt.Printf("[TSS] [RESHARE] ERROR: %v sessionId=%s userId=%s\n", err, dispatcher.sessionId, userId)
 		return err
+	}
+
+	// Only load old key data if this node is part of the old committee.
+	// New-only participants don't have (or need) the previous epoch's key data.
+	var err error
+	var savedKeyData []byte
+	if myParty != nil {
+		savedKeyData, err = dispatcher.keystore.Get(context.Background(), makeKey("key", dispatcher.keyId, int(dispatcher.epoch)))
+		fmt.Printf("[TSS] [RESHARE] Key retrieval: keyId=%s epoch=%d err=%v dataLen=%d sessionId=%s\n",
+			dispatcher.keyId, dispatcher.epoch, err, len(savedKeyData), dispatcher.sessionId)
+		if err != nil {
+			fmt.Printf("[TSS] [RESHARE] ERROR: Failed to retrieve key data: keyId=%s epoch=%d err=%v sessionId=%s\n",
+				dispatcher.keyId, dispatcher.epoch, err, dispatcher.sessionId)
+			return err
+		}
+	} else {
+		fmt.Printf("[TSS] [RESHARE] New-only participant, skipping key retrieval sessionId=%s userId=%s\n",
+			dispatcher.sessionId, userId)
 	}
 
 	fmt.Printf("[TSS] [RESHARE] Party membership: oldParty=%v newParty=%v sessionId=%s\n",
@@ -169,11 +181,13 @@ func (dispatcher *ReshareDispatcher) Start() error {
 	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
 		keydata := keyGenSecp256k1.LocalPartySaveData{}
 
-		err = json.Unmarshal(savedKeyData, &keydata)
-
-		fmt.Println("err", err)
-		if err != nil {
-			return err
+		if myParty != nil {
+			err = json.Unmarshal(savedKeyData, &keydata)
+			if err != nil {
+				fmt.Printf("[TSS] [RESHARE] ERROR: Failed to unmarshal key data ECDSA sessionId=%s err=%v\n",
+					dispatcher.sessionId, err)
+				return err
+			}
 		}
 
 		end := make(chan *keyGenSecp256k1.LocalPartySaveData)
@@ -184,7 +198,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		go dispatcher.reshareMsgs()
 
 		// Wait for sync delay (reduced from 15s to configurable 5s)
-		syncDelay := TSS_RESHARE_SYNC_DELAY
+		syncDelay := dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay
 		fmt.Printf("[TSS] [RESHARE] Waiting %v before starting parties sessionId=%s\n", syncDelay, dispatcher.sessionId)
 
 		// Check participant readiness before starting (strict: do not start with missing peers)
@@ -304,11 +318,13 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 		keydata := keyGenEddsa.LocalPartySaveData{}
 
-		err = json.Unmarshal(savedKeyData, &keydata)
-
-		fmt.Println("err", err)
-		if err != nil {
-			return err
+		if myParty != nil {
+			err = json.Unmarshal(savedKeyData, &keydata)
+			if err != nil {
+				fmt.Printf("[TSS] [RESHARE] ERROR: Failed to unmarshal key data EDDSA sessionId=%s err=%v\n",
+					dispatcher.sessionId, err)
+				return err
+			}
 		}
 
 		end := make(chan *keyGenEddsa.LocalPartySaveData)
@@ -319,7 +335,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		go dispatcher.reshareMsgs()
 
 		// Wait for sync delay (reduced from 15s to configurable 5s)
-		syncDelay := TSS_RESHARE_SYNC_DELAY
+		syncDelay := dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay
 		fmt.Printf("[TSS] [RESHARE] Waiting %v before starting parties (EDDSA) sessionId=%s\n", syncDelay, dispatcher.sessionId)
 
 		// Check participant readiness before starting (strict: do not start with missing peers)
@@ -545,22 +561,21 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isBrcst bool, cmt string, fromCmt string) {
 	dispatcher.startWait()
 
-	sortedIds, _, _ := dispatcher.baseInfo()
-
+	// Use stored epoch-modified party IDs instead of baseInfo() which would
+	// overwrite the epoch modifications set during Start().
 	var from *btss.PartyID
 
 	if fromCmt == "old" {
-		for _, p := range sortedIds {
+		for _, p := range dispatcher.oldPids {
 			if p.Id == fromStr {
 				from = p
 				break
 			}
 		}
 	} else if fromCmt == "new" {
-
-		for _, p := range dispatcher.newParticipants {
-			if p.PartyId.Id == fromStr {
-				from = p.PartyId
+		for _, p := range dispatcher.newPids {
+			if p.Id == fromStr {
+				from = p
 				break
 			}
 		}
@@ -639,15 +654,15 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 			}
 
 			var cmtFrom string
-			for _, old := range dispatcher.participants {
-				if slices.Compare(old.PartyId.GetKey(), msg.GetFrom().GetKey()) == 0 {
+			for _, old := range dispatcher.oldPids {
+				if slices.Compare(old.GetKey(), msg.GetFrom().GetKey()) == 0 {
 					cmtFrom = "old"
 					break
 				}
 			}
 
-			for _, newP := range dispatcher.newParticipants {
-				if slices.Compare(newP.PartyId.GetKey(), msg.GetFrom().GetKey()) == 0 {
+			for _, newP := range dispatcher.newPids {
+				if slices.Compare(newP.GetKey(), msg.GetFrom().GetKey()) == 0 {
 					cmtFrom = "new"
 					break
 				}
@@ -843,7 +858,7 @@ func (dispatcher *SignDispatcher) Start() error {
 		dispatcher.party = keySignSecp256k1.NewLocalParty(m, params, keydata, dispatcher.p2pMsg, end)
 
 		go dispatcher.handleMsgs()
-		time.Sleep(TSS_RESHARE_SYNC_DELAY)
+		time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 		go func() {
 			fmt.Println("Starting Sign ECDSA")
 			err := dispatcher.party.Start()
@@ -909,7 +924,7 @@ func (dispatcher *SignDispatcher) Start() error {
 		dispatcher.party = keySignEddsa.NewLocalParty(m, params, keydata, dispatcher.p2pMsg, end)
 
 		go dispatcher.handleMsgs()
-		time.Sleep(TSS_RESHARE_SYNC_DELAY)
+		time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 		go func() {
 			err := dispatcher.party.Start()
 
@@ -1211,9 +1226,9 @@ func (dispatcher *BaseDispatcher) baseStart() {
 	// Use configurable timeout, longer for reshare operations
 	var timeout time.Duration
 	if dispatcher.isReshare {
-		timeout = TSS_RESHARE_TIMEOUT
+		timeout = dispatcher.tssMgr.sconf.TssParams().ReshareTimeout
 	} else {
-		timeout = TSS_DEFAULT_TIMEOUT
+		timeout = dispatcher.tssMgr.sconf.TssParams().DefaultTimeout
 	}
 
 	dispatcher.stopRetry = make(chan struct{})
@@ -1302,7 +1317,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		dispatcher.party = keyGenSecp256k1.NewLocalParty(parameters, dispatcher.p2pMsg, end, preParams)
 
 		go dispatcher.handleMsgs()
-		time.Sleep(TSS_RESHARE_SYNC_DELAY)
+		time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 		go func() {
 			err := dispatcher.party.Start()
 			if err != nil {
@@ -1350,7 +1365,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		dispatcher.party = party
 
 		go dispatcher.handleMsgs()
-		time.Sleep(TSS_RESHARE_SYNC_DELAY)
+		time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 
 		go func() {
 			err := party.Start()
