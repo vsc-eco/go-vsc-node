@@ -34,6 +34,8 @@ import (
 
 	"github.com/chebyrash/promise"
 	gorpc "github.com/libp2p/go-libp2p-gorpc"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	flatfs "github.com/ipfs/go-ds-flatfs"
 )
@@ -499,6 +501,43 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 
+			// Filter to only connected participants
+			selfAccount := tssMgr.config.Get().HiveUsername
+			connectedParticipants := make([]Participant, 0, len(participants))
+			for _, p := range participants {
+				if p.Account == selfAccount {
+					connectedParticipants = append(connectedParticipants, p)
+					continue
+				}
+				witness, werr := tssMgr.witnessDb.GetWitnessAtHeight(p.Account, nil)
+				if werr != nil || witness.PeerId == "" {
+					fmt.Printf("[TSS] [SIGN] Excluding disconnected participant sessionId=%s account=%s reason=no_witness\n",
+						sessionId, p.Account)
+					continue
+				}
+				peerId, perr := peer.Decode(witness.PeerId)
+				if perr != nil {
+					fmt.Printf("[TSS] [SIGN] Excluding disconnected participant sessionId=%s account=%s reason=bad_peer_id\n",
+						sessionId, p.Account)
+					continue
+				}
+				connState := tssMgr.p2p.Host().Network().Connectedness(peerId)
+				if connState == network.Connected {
+					connectedParticipants = append(connectedParticipants, p)
+				} else {
+					fmt.Printf("[TSS] [SIGN] Excluding disconnected participant sessionId=%s account=%s reason=not_connected\n",
+						sessionId, p.Account)
+				}
+			}
+
+			origThreshold, _ := tss_helpers.GetThreshold(len(participants))
+			if len(connectedParticipants) < origThreshold+1 {
+				fmt.Printf("[TSS] [SIGN] Not enough connected participants for signing sessionId=%s connected=%d needed=%d total=%d\n",
+					sessionId, len(connectedParticipants), origThreshold+1, len(participants))
+				continue
+			}
+			participants = connectedParticipants
+
 			prevCommitType := ""
 			if err == nil {
 				prevCommitType = commitment.Type
@@ -579,6 +618,13 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 
+			allNewParticipants := make([]Participant, 0)
+			for _, member := range currentElection.Members {
+				allNewParticipants = append(allNewParticipants, Participant{
+					Account: member.Account,
+				})
+			}
+
 			newParticipants := make([]Participant, 0)
 			excludedNodes := make([]string, 0)
 
@@ -606,6 +652,45 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			fmt.Printf("[TSS] [RESHARE] Participant selection sessionId=%s oldParticipants=%d newParticipants=%d excluded=%d excludedNodes=%v\n",
 				sessionId, len(commitedMembers), len(newParticipants), len(excludedNodes), excludedNodes)
 			fmt.Println("newParticipants", newParticipants)
+
+			// Check if blame exclusion left too few participants; if so, ignore blame and use all
+			blameThreshold, _ := tss_helpers.GetThreshold(len(newParticipants))
+			if len(newParticipants) < blameThreshold+1 {
+				fmt.Printf("[TSS] [RESHARE] Blame exclusion left too few participants (%d), ignoring blame and using all %d participants sessionId=%s\n",
+					len(newParticipants), len(allNewParticipants), sessionId)
+				newParticipants = allNewParticipants
+				excludedNodes = nil
+			}
+
+			// Filter new participants by connectivity
+			selfAccount := tssMgr.config.Get().HiveUsername
+			connectedNewParticipants := make([]Participant, 0, len(newParticipants))
+			for _, p := range newParticipants {
+				if p.Account == selfAccount {
+					connectedNewParticipants = append(connectedNewParticipants, p)
+					continue
+				}
+				witness, werr := tssMgr.witnessDb.GetWitnessAtHeight(p.Account, nil)
+				if werr != nil || witness.PeerId == "" {
+					fmt.Printf("[TSS] [RESHARE] Excluding disconnected new participant sessionId=%s account=%s reason=no_witness\n",
+						sessionId, p.Account)
+					continue
+				}
+				peerId, perr := peer.Decode(witness.PeerId)
+				if perr != nil {
+					fmt.Printf("[TSS] [RESHARE] Excluding disconnected new participant sessionId=%s account=%s reason=bad_peer_id\n",
+						sessionId, p.Account)
+					continue
+				}
+				connState := tssMgr.p2p.Host().Network().Connectedness(peerId)
+				if connState == network.Connected {
+					connectedNewParticipants = append(connectedNewParticipants, p)
+				} else {
+					fmt.Printf("[TSS] [RESHARE] Excluding disconnected new participant sessionId=%s account=%s reason=not_connected\n",
+						sessionId, p.Account)
+				}
+			}
+			newParticipants = connectedNewParticipants
 
 			// Pre-flight checks: validate participant set meets minimum threshold
 			threshold, _ := tss_helpers.GetThreshold(len(newParticipants))
