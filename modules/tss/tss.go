@@ -34,8 +34,6 @@ import (
 
 	"github.com/chebyrash/promise"
 	gorpc "github.com/libp2p/go-libp2p-gorpc"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
 
 	flatfs "github.com/ipfs/go-ds-flatfs"
 )
@@ -506,8 +504,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 
-			// Filter to only connected participants to avoid timeouts on unreachable nodes
-			participants = tssMgr.filterConnectedParticipants(participants, sessionId, "SIGN")
+			// Readiness check: ping each participant's TSS RPC layer to filter out zombie nodes
+			participants = tssMgr.checkParticipantReadiness(participants, sessionId, "SIGN")
 			origThreshold, _ := tss_helpers.GetThreshold(len(currentElection.Members))
 			if len(participants) < origThreshold+1 {
 				fmt.Printf("[TSS] [SIGN] Not enough connected participants for signing sessionId=%s connected=%d needed=%d\n",
@@ -627,8 +625,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// Threshold is based on original counts (before filtering) since the key was created with that many participants
 			origOldThreshold, _ := tss_helpers.GetThreshold(len(commitedMembers))
 			origNewThreshold, _ := tss_helpers.GetThreshold(len(newParticipants))
-			commitedMembers = tssMgr.filterConnectedParticipants(commitedMembers, sessionId, "RESHARE-OLD")
-			newParticipants = tssMgr.filterConnectedParticipants(newParticipants, sessionId, "RESHARE-NEW")
+			commitedMembers = tssMgr.checkParticipantReadiness(commitedMembers, sessionId, "RESHARE-OLD")
+			newParticipants = tssMgr.checkParticipantReadiness(newParticipants, sessionId, "RESHARE-NEW")
 
 			// Pre-flight checks: validate participant set meets minimum threshold
 			if len(newParticipants) < origNewThreshold+1 {
@@ -1159,40 +1157,6 @@ func (tssMgr *TssManager) KeyReshare(keyId string) (int, error) {
 	n := len(tssMgr.queuedActions)
 	tssMgr.bufferLock.Unlock()
 	return n, nil
-}
-
-// filterConnectedParticipants returns only participants that are currently
-// connected via P2P (always includes self). Used to avoid starting TSS
-// sessions that would time out waiting for unreachable nodes.
-func (tssMgr *TssManager) filterConnectedParticipants(participants []Participant, sessionId string, label string) []Participant {
-	selfAccount := tssMgr.config.Get().HiveUsername
-	connected := make([]Participant, 0, len(participants))
-	for _, p := range participants {
-		if p.Account == selfAccount {
-			connected = append(connected, p)
-			continue
-		}
-		witness, werr := tssMgr.witnessDb.GetWitnessAtHeight(p.Account, nil)
-		if werr != nil || witness.PeerId == "" {
-			fmt.Printf("[TSS] [%s] Excluding disconnected participant sessionId=%s account=%s reason=no_witness\n",
-				label, sessionId, p.Account)
-			continue
-		}
-		peerId, perr := peer.Decode(witness.PeerId)
-		if perr != nil {
-			fmt.Printf("[TSS] [%s] Excluding disconnected participant sessionId=%s account=%s reason=bad_peer_id\n",
-				label, sessionId, p.Account)
-			continue
-		}
-		connState := tssMgr.p2p.Host().Network().Connectedness(peerId)
-		if connState == network.Connected {
-			connected = append(connected, p)
-		} else {
-			fmt.Printf("[TSS] [%s] Excluding disconnected participant sessionId=%s self=%s account=%s peerId=%s reason=not_connected connState=%d\n",
-				label, sessionId, selfAccount, p.Account, witness.PeerId, connState)
-		}
-	}
-	return connected
 }
 
 func (tssMgr *TssManager) Start() *promise.Promise[any] {

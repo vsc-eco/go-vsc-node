@@ -312,6 +312,82 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 	return nil
 }
 
+// checkParticipantReadiness sends a TSS-level "ready" ping to each participant
+// and returns only those that respond within the deadline. This filters out
+// zombie nodes that are connected at the libp2p level but not functioning
+// at the application level. Always includes self.
+func (tss *TssManager) checkParticipantReadiness(participants []Participant, sessionId string, label string) []Participant {
+	selfAccount := tss.config.Get().HiveUsername
+	readyTimeout := 5 * time.Second
+
+	type readyResult struct {
+		participant Participant
+		ok          bool
+		reason      string
+	}
+
+	results := make(chan readyResult, len(participants))
+
+	for _, p := range participants {
+		if p.Account == selfAccount {
+			results <- readyResult{participant: p, ok: true}
+			continue
+		}
+
+		go func(p Participant) {
+			witness, err := tss.witnessDb.GetWitnessAtHeight(p.Account, nil)
+			if err != nil || witness.PeerId == "" {
+				results <- readyResult{participant: p, ok: false, reason: "no_witness"}
+				return
+			}
+
+			peerId, err := peer.Decode(witness.PeerId)
+			if err != nil {
+				results <- readyResult{participant: p, ok: false, reason: "bad_peer_id"}
+				return
+			}
+
+			tMsg := TMsg{
+				SessionId: sessionId,
+				Type:      "ready",
+			}
+			tRes := TRes{}
+
+			errChan := make(chan error, 1)
+			go func() {
+				errChan <- tss.client.Call(peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
+			}()
+
+			select {
+			case err := <-errChan:
+				if err != nil {
+					results <- readyResult{participant: p, ok: false, reason: fmt.Sprintf("rpc_error: %v", err)}
+				} else {
+					results <- readyResult{participant: p, ok: true}
+				}
+			case <-time.After(readyTimeout):
+				results <- readyResult{participant: p, ok: false, reason: "timeout"}
+			}
+		}(p)
+	}
+
+	ready := make([]Participant, 0, len(participants))
+	for range participants {
+		r := <-results
+		if r.ok {
+			ready = append(ready, r.participant)
+		} else {
+			fmt.Printf("[TSS] [READY] [%s] Excluding unresponsive participant sessionId=%s account=%s reason=%s\n",
+				label, sessionId, r.participant.Account, r.reason)
+		}
+	}
+
+	fmt.Printf("[TSS] [READY] [%s] Readiness check complete sessionId=%s total=%d ready=%d\n",
+		label, sessionId, len(participants), len(ready))
+
+	return ready
+}
+
 // isPeerConnected checks if a peer is currently connected
 func (tss *TssManager) isPeerConnected(peerId peer.ID) bool {
 	host := tss.p2p.Host()

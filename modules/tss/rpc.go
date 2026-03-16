@@ -39,6 +39,11 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 	fmt.Printf("[TSS] [RPC] Received message sessionId=%s type=%s fromPeer=%s isBroadcast=%v cmt=%s cmtFrom=%s msgLen=%d\n",
 		req.SessionId, req.Type, peerId.String(), req.IsBroadcast, req.Cmt, req.CmtFrom, len(req.Data))
 
+	if req.Type == "ready" {
+		res.Action = "ready_ack"
+		return nil
+	}
+
 	if req.Type == "msg" {
 		// Check if dispatcher exists
 		tss.mgr.bufferLock.RLock()
