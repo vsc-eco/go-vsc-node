@@ -16,9 +16,12 @@ INSTALL_DIR := $(PREFIX)/bin
 GO_SOURCES := $(shell find modules lib -type f -name '*.go') go.mod go.sum
 
 # Targets
-.PHONY: all clean install magid contract-deployer genesis-elector devnet-setup mapping-bot
+.PHONY: all clean install magid contract-deployer genesis-elector devnet-setup mapping-bot generate
 
-all: magid contract-deployer genesis-elector devnet-setup mapping-bot
+all: generate magid contract-deployer genesis-elector devnet-setup mapping-bot
+
+generate:
+	go run github.com/99designs/gqlgen generate
 
 magid: $(BUILD_DIR)/magid
 	@echo "Built magid"

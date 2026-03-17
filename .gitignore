@@ -10,3 +10,5 @@ btc-data/*
 .DS_Store
 build
 cmd/mapping-bot/*datastore
+modules/gql/gqlgen/generated.go
+modules/gql/gqlgen/models.go
