@@ -78,7 +78,7 @@ func (tssKeys *tssKeys) FindNewKeys(bh uint64) ([]TssKey, error) {
 	})
 
 	keys := make([]TssKey, 0)
-	if findCursor.Next(context.Background()) {
+	for findCursor.Next(context.Background()) {
 		var k TssKey
 		findCursor.Decode(&k)
 		keys = append(keys, k)
@@ -96,7 +96,7 @@ func (tssKeys *tssKeys) FindEpochKeys(epoch uint64) ([]TssKey, error) {
 	})
 
 	keys := make([]TssKey, 0)
-	if findCursor.Next(context.Background()) {
+	for findCursor.Next(context.Background()) {
 		var k TssKey
 		findCursor.Decode(&k)
 		keys = append(keys, k)
