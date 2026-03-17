@@ -64,7 +64,10 @@ func contractRead(contractId *string, key *string) *string
 func contractCall(contractId *string, method *string, payload *string, options *string) *string
 
 //go:wasmimport sdk tss.create_key
-func tssCreateKey(keyId *string, algo *string, epochs *string) *string
+func tssCreateKey(keyId *string, algo *string) *string
+
+//go:wasmimport sdk tss.create_key_v2
+func tssCreateKeyV2(keyId *string, algo *string, epochs *string) *string
 
 //go:wasmimport sdk tss.renew_key
 func tssRenewKey(keyId *string, epochs *string) *string
@@ -219,12 +222,22 @@ func ContractCall(contractId string, method string, payload string, options *Con
 	return contractCall(&contractId, &method, &payload, &optStr)
 }
 
-func TssCreateKey(keyId string, algo string, epochs uint64) string {
+// TssCreateKey creates a key with the maximum epoch lifespan.
+// Deprecated: use TssCreateKeyForEpochs to specify a lifespan.
+func TssCreateKey(keyId string, algo string) string {
+	if algo != "ecdsa" && algo != "eddsa" {
+		Abort("algo must be ecdsa or eddsa")
+	}
+	return *tssCreateKey(&keyId, &algo)
+}
+
+// TssCreateKeyForEpochs creates a key that expires after the given number of epochs.
+func TssCreateKeyForEpochs(keyId string, algo string, epochs uint64) string {
 	if algo != "ecdsa" && algo != "eddsa" {
 		Abort("algo must be ecdsa or eddsa")
 	}
 	epochsStr := strconv.FormatUint(epochs, 10)
-	return *tssCreateKey(&keyId, &algo, &epochsStr)
+	return *tssCreateKeyV2(&keyId, &algo, &epochsStr)
 }
 
 // TssRenewKey extends the expiry of a key owned by this contract by additionalEpochs.
