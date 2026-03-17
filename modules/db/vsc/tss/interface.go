@@ -6,9 +6,12 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
+// MaxKeyEpochs is the maximum number of epochs a key may be created or renewed for at once.
+const MaxKeyEpochs = uint64(52)
+
 type TssKeys interface {
 	a.Plugin
-	InsertKey(id string, t TssKeyAlgo) error
+	InsertKey(id string, t TssKeyAlgo, epochs uint64) error
 	FindKey(id string) (TssKey, error)
 	SetKey(key TssKey) error
 	FindNewKeys(blockHeight uint64) ([]TssKey, error)
@@ -40,6 +43,11 @@ type TssKey struct {
 	Algo          TssKeyAlgo `bson:"algo"`
 	CreatedHeight int64      `bson:"created_height"`
 	Epoch         uint64     `bson:"epoch"`
+	// Epochs is the requested lifespan in epochs (0 = no expiry).
+	Epochs uint64 `bson:"epochs"`
+	// ExpiryEpoch is the epoch at which the key expires (0 = no expiry).
+	// Set to Epoch + Epochs when the key first becomes active.
+	ExpiryEpoch uint64 `bson:"expiry_epoch"`
 }
 
 type TssRequest struct {
@@ -90,9 +98,10 @@ const (
 )
 
 type TssOp struct {
-	Type  string `json:"type"`
-	KeyId string `json:"key_id"`
-	Args  string `json:"args"`
+	Type   string `json:"type"`
+	KeyId  string `json:"key_id"`
+	Args   string `json:"args"`
+	Epochs uint64 `json:"epochs,omitempty"`
 }
 
 type SearchOption func(m *bson.M) error

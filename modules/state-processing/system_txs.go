@@ -72,7 +72,22 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 
 				// fmt.Println("err", err)
 				if err == mongo.ErrNoDocuments {
-					se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args))
+					se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args), tssOp.Epochs)
+				}
+			} else if tssOp.Type == "renew" {
+				key, err := se.tssKeys.FindKey(tssOp.KeyId)
+				if err == nil && key.ExpiryEpoch > 0 && tssOp.Epochs > 0 {
+					electionData, elecErr := se.electionDb.GetElectionByHeight(txSelf.BlockHeight)
+					if elecErr == nil {
+						maxExpiry := electionData.Epoch + tss_db.MaxKeyEpochs
+						newExpiry := key.ExpiryEpoch + tssOp.Epochs
+						if newExpiry > maxExpiry {
+							newExpiry = maxExpiry
+						}
+						key.ExpiryEpoch = newExpiry
+						fmt.Printf("[TSS] [L1] Key renewed keyId=%s newExpiryEpoch=%d\n", key.Id, key.ExpiryEpoch)
+						se.tssKeys.SetKey(key)
+					}
 				}
 			} else if tssOp.Type == "sign" {
 				se.tssRequests.SetSignedRequest(tss_db.TssRequest{

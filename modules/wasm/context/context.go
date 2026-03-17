@@ -35,7 +35,8 @@ type ExecContextValue interface {
 	SetEphemState(key string, value string) result.Result[struct{}]
 	SetState(key string, value string) result.Result[struct{}]
 	WithdrawBalance(to string, amount int64, asset string) result.Result[struct{}]
-	TssCreateKey(keyId string, keyType string) result.Result[string]
+	TssCreateKey(keyId string, keyType string, epochs uint64) result.Result[string]
+	TssRenewKey(keyId string, additionalEpochs uint64) result.Result[string]
 	TssGetKey(keyId string) result.Result[string]
 	TssKeySign(keyId string, msg string) result.Result[string]
 }

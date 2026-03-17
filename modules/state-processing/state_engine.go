@@ -888,8 +888,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								keyInfo.CreatedHeight = int64(block.BlockNumber)
 								keyInfo.Status = "active"
 								keyInfo.Epoch = commitment.Epoch
-								fmt.Printf("[TSS] [L1] Key activated keyId=%s epoch=%d blockHeight=%d pubKey=%s\n",
-									keyInfo.Id, keyInfo.Epoch, block.BlockNumber, keyInfo.PublicKey)
+								if keyInfo.Epochs > 0 {
+									keyInfo.ExpiryEpoch = commitment.Epoch + keyInfo.Epochs
+								}
+								fmt.Printf("[TSS] [L1] Key activated keyId=%s epoch=%d expiryEpoch=%d blockHeight=%d pubKey=%s\n",
+									keyInfo.Id, keyInfo.Epoch, keyInfo.ExpiryEpoch, block.BlockNumber, keyInfo.PublicKey)
 								se.tssKeys.SetKey(keyInfo)
 							} else if newKey {
 								fmt.Printf("[TSS] [L1] Keygen/reshare acknowledged (no pubKey) keyId=%s epoch=%d\n",

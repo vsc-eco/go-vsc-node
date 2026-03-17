@@ -11,6 +11,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/contracts"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_types "vsc-node/modules/wasm/types"
@@ -469,7 +470,7 @@ var SdkModule = map[string]sdkFunc{
 		}
 		return eCtx.ContractCall(contractId, method, payload, options)
 	},
-	"tss.create_key": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+	"tss.create_key": func(ctx context.Context, arg1 any, arg2 any, arg3 any) SdkResult {
 		keyName, ok := arg1.(string)
 
 		if !ok {
@@ -490,9 +491,19 @@ var SdkModule = map[string]sdkFunc{
 		if keyType != "eddsa" && keyType != "ecdsa" {
 			return ErrInvalidArgument
 		}
+
+		epochsFloat, ok := arg3.(float64)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		epochs := uint64(epochsFloat)
+		if epochs == 0 || epochs > tss_db.MaxKeyEpochs {
+			return ErrInvalidArgument
+		}
+
 		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 
-		res := eCtx.TssCreateKey(keyName, keyType)
+		res := eCtx.TssCreateKey(keyName, keyType, epochs)
 
 		if res.IsOk() {
 			return result.Ok(SdkResultStruct{
@@ -504,6 +515,40 @@ var SdkModule = map[string]sdkFunc{
 		} else {
 			err := res.UnwrapErr()
 
+			return result.Err[SdkResultStruct](err)
+		}
+	},
+	"tss.renew_key": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+		keyName, ok := arg1.(string)
+		if !ok {
+			return ErrInvalidArgument
+		}
+
+		matched, _ := regexp.Match("^[a-zA-Z0-9]+$", []byte(keyName))
+		if !matched {
+			return ErrInvalidArgument
+		}
+
+		epochsFloat, ok := arg2.(float64)
+		if !ok {
+			return ErrInvalidArgument
+		}
+		epochs := uint64(epochsFloat)
+		if epochs == 0 || epochs > tss_db.MaxKeyEpochs {
+			return ErrInvalidArgument
+		}
+
+		eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+
+		res := eCtx.TssRenewKey(keyName, epochs)
+
+		if res.IsOk() {
+			return result.Ok(SdkResultStruct{
+				Result: res.Unwrap(),
+				Gas:    100_000,
+			})
+		} else {
+			err := res.UnwrapErr()
 			return result.Err[SdkResultStruct](err)
 		}
 	},

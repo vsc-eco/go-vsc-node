@@ -576,15 +576,16 @@ func (ctx *contractExecutionContext) ContractCall(
 	))
 }
 
-func (ctx *contractExecutionContext) TssCreateKey(keyId string, keyType string) result.Result[string] {
+func (ctx *contractExecutionContext) TssCreateKey(keyId string, keyType string, epochs uint64) result.Result[string] {
 	fullKey := ctx.env.ContractId + "-" + keyId
 	_, err := ctx.callSession.TssKeys.FindKey(fullKey)
 
 	if err == mongo.ErrNoDocuments {
 		ctx.callSession.AppendTssLog(ctx.env.ContractId, tss_db.TssOp{
-			Type:  "create",
-			KeyId: fullKey,
-			Args:  keyType,
+			Type:   "create",
+			KeyId:  fullKey,
+			Args:   keyType,
+			Epochs: epochs,
 		})
 		return result.Ok("created")
 	}
@@ -593,6 +594,28 @@ func (ctx *contractExecutionContext) TssCreateKey(keyId string, keyType string) 
 	}
 	fmt.Println("err", err)
 	return result.Err[string](errors.New("runtime error"))
+}
+
+func (ctx *contractExecutionContext) TssRenewKey(keyId string, additionalEpochs uint64) result.Result[string] {
+	fullKey := ctx.env.ContractId + "-" + keyId
+	key, err := ctx.callSession.TssKeys.FindKey(fullKey)
+
+	if err == mongo.ErrNoDocuments {
+		return result.Err[string](errors.New("key not found"))
+	}
+	if err != nil {
+		return result.Err[string](errors.New("runtime error"))
+	}
+	if key.ExpiryEpoch == 0 {
+		return result.Err[string](errors.New("key has no expiry to renew"))
+	}
+
+	ctx.callSession.AppendTssLog(ctx.env.ContractId, tss_db.TssOp{
+		Type:   "renew",
+		KeyId:  fullKey,
+		Epochs: additionalEpochs,
+	})
+	return result.Ok("renewed")
 }
 
 func (ctx *contractExecutionContext) TssGetKey(keyId string) result.Result[string] {

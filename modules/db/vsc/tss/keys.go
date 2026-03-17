@@ -14,7 +14,7 @@ type tssKeys struct {
 	*db.Collection
 }
 
-func (tssKeys *tssKeys) InsertKey(id string, t TssKeyAlgo) error {
+func (tssKeys *tssKeys) InsertKey(id string, t TssKeyAlgo, epochs uint64) error {
 	opts := options.FindOneAndUpdate().SetUpsert(true)
 	tssKeys.FindOneAndUpdate(context.Background(), bson.M{
 		"id": id,
@@ -22,10 +22,11 @@ func (tssKeys *tssKeys) InsertKey(id string, t TssKeyAlgo) error {
 		"$set": bson.M{
 			"algo":   t,
 			"status": "created",
+			"epochs": epochs,
 		},
 	}, opts)
 
-	fmt.Printf("[TSS] [DB] InsertKey keyId=%s algo=%s status=created\n", id, t)
+	fmt.Printf("[TSS] [DB] InsertKey keyId=%s algo=%s epochs=%d status=created\n", id, t, epochs)
 	return nil
 }
 
@@ -58,6 +59,7 @@ func (tssKeys *tssKeys) SetKey(key TssKey) error {
 			"public_key":     key.PublicKey,
 			"epoch":          key.Epoch,
 			"created_height": key.CreatedHeight,
+			"expiry_epoch":   key.ExpiryEpoch,
 		},
 	})
 
@@ -86,12 +88,15 @@ func (tssKeys *tssKeys) FindNewKeys(bh uint64) ([]TssKey, error) {
 	return keys, nil
 }
 
-// Find keys with al ower
+// FindEpochKeys returns active keys from a lower epoch that have not yet expired.
 func (tssKeys *tssKeys) FindEpochKeys(epoch uint64) ([]TssKey, error) {
 	findCursor, _ := tssKeys.Find(context.Background(), bson.M{
 		"status": "active",
-		"epoch": bson.M{
-			"$lt": epoch,
+		"epoch":  bson.M{"$lt": epoch},
+		"$or": []bson.M{
+			{"expiry_epoch": bson.M{"$exists": false}}, // pre-expiry keys
+			{"expiry_epoch": 0},                        // no expiry
+			{"expiry_epoch": bson.M{"$gt": epoch}},     // not yet expired
 		},
 	})
 
