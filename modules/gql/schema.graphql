@@ -24,7 +24,7 @@ ISO 8601 (RFC 3339) formatted date-time string.
 scalar DateTime
 
 """
-Status of a transaction in the VSC network pipeline.
+Status of a transaction in the Magi network.
 """
 enum TransactionStatus {
   """Transaction has been submitted but not yet included in a block."""
@@ -40,7 +40,7 @@ enum TransactionStatus {
 }
 
 """
-Supported asset types on the VSC network.
+Supported asset types on the Magi network.
 """
 enum Asset {
   """Liquid HIVE token."""
@@ -54,16 +54,16 @@ enum Asset {
 }
 
 """
-A recorded transaction on the VSC network.
+A recorded transaction on the Magi network.
 """
 type TransactionRecord {
-  """Unique transaction identifier (CID)."""
+  """Transaction ID"""
   id: String!
-  """Hive L1 block height where this transaction was anchored."""
+  """Hive L1 block height where this transaction was included."""
   anchr_height: Uint64!
-  """Index within the anchor block."""
+  """Block index in which the transaction was included in."""
   anchr_index: Uint64!
-  """Hive L1 block ID where this transaction was anchored."""
+  """Hive L1 block ID where this transaction was included."""
   anchr_id: String
   """Timestamp of the anchor block."""
   anchr_ts: String
@@ -83,11 +83,11 @@ type TransactionRecord {
   required_auths: [String!]
   """Accounts whose posting key authority is required to sign this transaction."""
   required_posting_auths: [String!]
-  """Current status of the transaction (e.g. unconfirmed, confirmed, processed)."""
-  status: String!
+  """Current status of the transaction (UNCONFIRMED, INCLUDED, CONFIRMED, FAILED)."""
+  status: TransactionStatus!
   """Ledger events (balance transfers) produced by this transaction."""
   ledger: [OpLogEvent!]
-  """Ledger actions (e.g. staking, unstaking) produced by this transaction."""
+  """Ledger actions (e.g. unstake, unmap) produced by this transaction."""
   ledger_actions: [LedgerAction]
   """Contract outputs produced by this transaction."""
   output: [TransactionOutput!]
@@ -175,7 +175,7 @@ A contract execution output record containing the results of contract calls.
 type ContractOutput {
   """Unique output identifier (CID)."""
   id: String!
-  """VSC block height at which this output was produced."""
+  """Magi block height at which this output was produced."""
   block_height: Int64!
   """Timestamp when the output was produced."""
   timestamp: String!
@@ -190,7 +190,7 @@ type ContractOutput {
 }
 
 """
-A smart contract deployed on the VSC network.
+A smart contract deployed on the Magi network.
 """
 type Contract {
   """Unique contract identifier."""
@@ -234,7 +234,7 @@ type NonceRecord {
 }
 
 """
-Information about the local VSC node.
+Information about the local Magi node.
 """
 type LocalNodeInfo {
   """Software version identifier."""
@@ -260,7 +260,7 @@ type PostingJsonKeys {
 }
 
 """
-A witness (block producer/validator) registered on the VSC network.
+A witness (block producer/validator) registered on the Magi network.
 """
 type Witness {
   """Hive account name of the witness."""
@@ -277,7 +277,7 @@ type Witness {
   net_id: String
   """Libp2p peer ID of the witness."""
   peer_id: String
-  """VSC protocol version supported by the witness."""
+  """Magi protocol version supported by the witness."""
   protocol_version: Uint64!
   """Timestamp of the witness registration or last update."""
   ts: String
@@ -735,7 +735,7 @@ type Query {
   ): [Contract!]
 
   """
-  Submit a signed VSC transaction to the network mempool. Returns the transaction CID on success.
+  Submit a signed Magi transaction to the network mempool. Returns the transaction CID on success.
   """
   submitTransactionV1(
     """Base64url-encoded serialized transaction."""
@@ -753,7 +753,7 @@ type Query {
   ): NonceRecord
 
   """
-  Get information about the local VSC node including version, git commit, and sync status.
+  Get information about the local Magi node including version, git commit, and sync status.
   """
   localNodeInfo: LocalNodeInfo
 

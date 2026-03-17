@@ -12,15 +12,21 @@ LDFLAGS := -X vsc-node/modules/announcements.GitCommit=$(GIT_COMMIT)
 PREFIX ?= /usr/local
 INSTALL_DIR := $(PREFIX)/bin
 
+# GraphQL schema and generated outputs
+GQL_SCHEMA := modules/gql/schema.graphql
+GQL_GENERATED := modules/gql/gqlgen/generated.go
+
 # Source dependencies
 GO_SOURCES := $(shell find modules lib -type f -name '*.go') go.mod go.sum
 
 # Targets
 .PHONY: all clean install magid contract-deployer genesis-elector devnet-setup mapping-bot generate
 
-all: generate magid contract-deployer genesis-elector devnet-setup mapping-bot
+all: $(GQL_GENERATED) magid contract-deployer genesis-elector devnet-setup mapping-bot
 
-generate:
+generate: $(GQL_GENERATED)
+
+$(GQL_GENERATED): $(GQL_SCHEMA)
 	go run github.com/99designs/gqlgen generate
 
 magid: $(BUILD_DIR)/magid
