@@ -142,9 +142,8 @@ func (dispatcher *ReshareDispatcher) Start() error {
 	newThreshold, _ := tss_helpers.GetThreshold(len(dispatcher.newPids))
 	// newThreshold++
 
-	fmt.Printf("[TSS] [RESHARE] Thresholds: old=%d/%d new=%d/%d sessionId=%s\n",
-		threshold, len(sortedPids), newThreshold, len(dispatcher.newPids), dispatcher.sessionId)
-	fmt.Println("newSortedPids", len(dispatcher.newPids), newThreshold, threshold)
+	fmt.Printf("[TSS] [RESHARE] Thresholds: old required=%d/%d (t=%d) new required=%d/%d (t=%d) sessionId=%s\n",
+		threshold+1, len(sortedPids), threshold, newThreshold+1, len(dispatcher.newPids), newThreshold, dispatcher.sessionId)
 	//epoch: 5 <-- actual data
 	//epoch: 7 <-- likely empty
 

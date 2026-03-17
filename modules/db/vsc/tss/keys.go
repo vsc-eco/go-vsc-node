@@ -51,21 +51,18 @@ func (tssKeys *tssKeys) FindKey(id string) (TssKey, error) {
 }
 
 func (tssKeys *tssKeys) SetKey(key TssKey) error {
-	setFields := bson.M{
-		"status":         key.Status,
-		"public_key":     key.PublicKey,
-		"epoch":          key.Epoch,
-		"created_height": key.CreatedHeight,
-		"expiry_epoch":   key.ExpiryEpoch,
-	}
-	update := bson.M{"$set": setFields}
-	if key.DeprecatedHeight == 0 {
-		update["$unset"] = bson.M{"deprecated_height": ""}
-	} else {
-		setFields["deprecated_height"] = key.DeprecatedHeight
-	}
-
-	res := tssKeys.FindOneAndUpdate(context.Background(), bson.M{"id": key.Id}, update)
+	res := tssKeys.FindOneAndUpdate(context.Background(), bson.M{
+		"id": key.Id,
+	}, bson.M{
+		"$set": bson.M{
+			"status":            key.Status,
+			"public_key":        key.PublicKey,
+			"epoch":             key.Epoch,
+			"created_height":    key.CreatedHeight,
+			"expiry_epoch":      key.ExpiryEpoch,
+			"deprecated_height": key.DeprecatedHeight,
+		},
+	})
 
 	dbErr := res.Err()
 	if dbErr != nil {
@@ -80,10 +77,13 @@ func (tssKeys *tssKeys) SetKey(key TssKey) error {
 
 // FindDeprecatingKeys returns active keys whose ExpiryEpoch has been reached (and ExpiryEpoch > 0).
 func (tssKeys *tssKeys) FindDeprecatingKeys(epoch uint64) ([]TssKey, error) {
-	findCursor, _ := tssKeys.Find(context.Background(), bson.M{
+	findCursor, err := tssKeys.Find(context.Background(), bson.M{
 		"status":       TssKeyActive,
 		"expiry_epoch": bson.M{"$gt": 0, "$lte": epoch},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("FindDeprecatingKeys query failed: %w", err)
+	}
 
 	keys := make([]TssKey, 0)
 	for findCursor.Next(context.Background()) {
@@ -98,10 +98,13 @@ func (tssKeys *tssKeys) FindDeprecatingKeys(epoch uint64) ([]TssKey, error) {
 // Returns keys where deprecated_height + KeyDeprecationGracePeriod == blockHeight, ensuring
 // cleanup runs exactly once per key.
 func (tssKeys *tssKeys) FindNewlyRetired(blockHeight uint64) ([]TssKey, error) {
-	findCursor, _ := tssKeys.Find(context.Background(), bson.M{
+	findCursor, err := tssKeys.Find(context.Background(), bson.M{
 		"status":            TssKeyDeprecated,
 		"deprecated_height": bson.M{"$gt": 0, "$lte": int64(blockHeight) - int64(KeyDeprecationGracePeriod)},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("FindNewlyRetired query failed: %w", err)
+	}
 
 	keys := make([]TssKey, 0)
 	for findCursor.Next(context.Background()) {

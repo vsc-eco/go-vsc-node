@@ -207,12 +207,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	}
 
 	// Phase 2: retire deprecated keys whose grace period has elapsed (block-height based).
-	if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil {
-		for _, k := range retiring {
-			k.Status = tss_db.TssKeyRetired
-			se.tssKeys.SetKey(k)
-			fmt.Printf("[TSS] [L1] Key retired keyId=%s deprecatedHeight=%d blockHeight=%d\n",
-				k.Id, k.DeprecatedHeight, block.BlockNumber)
+	if tss_db.KeyRetirementEnabled {
+		if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil {
+			for _, k := range retiring {
+				k.Status = tss_db.TssKeyRetired
+				se.tssKeys.SetKey(k)
+				fmt.Printf("[TSS] [L1] Key retired keyId=%s deprecatedHeight=%d blockHeight=%d\n",
+					k.Id, k.DeprecatedHeight, block.BlockNumber)
+			}
 		}
 	}
 
