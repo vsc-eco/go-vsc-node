@@ -7,6 +7,7 @@ import (
 	"vsc-node/modules/db/vsc"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -17,7 +18,8 @@ type tssCommitments struct {
 func (tsc *tssCommitments) SetCommitmentData(commitment TssCommitment) error {
 	options := options.FindOneAndUpdate().SetUpsert(true)
 	updateResult := tsc.FindOneAndUpdate(context.Background(), bson.M{
-		"tx_id": commitment.TxId,
+		"key_id": commitment.KeyId,
+		"tx_id":  commitment.TxId,
 	}, bson.M{
 		"$set": bson.M{
 			"type":         commitment.Type,
@@ -30,7 +32,18 @@ func (tsc *tssCommitments) SetCommitmentData(commitment TssCommitment) error {
 		},
 	}, options)
 
-	return updateResult.Err()
+	dbErr := updateResult.Err()
+	// FindOneAndUpdate with upsert returns ErrNoDocuments when it inserts a new
+	// document (nothing to "find"), but the write still succeeded.
+	if dbErr != nil && dbErr != mongo.ErrNoDocuments {
+		fmt.Printf("[TSS] [DB] SetCommitmentData FAILED keyId=%s type=%s epoch=%d txId=%s err=%v\n",
+			commitment.KeyId, commitment.Type, commitment.Epoch, commitment.TxId, dbErr)
+		return dbErr
+	}
+	fmt.Printf("[TSS] [DB] SetCommitmentData OK keyId=%s type=%s epoch=%d blockHeight=%d txId=%s db=%s\n",
+		commitment.KeyId, commitment.Type, commitment.Epoch, commitment.BlockHeight, commitment.TxId,
+		tsc.Database().Name())
+	return nil
 }
 
 func (tsc *tssCommitments) GetCommitment(keyId string, epoch uint64) (TssCommitment, error) {

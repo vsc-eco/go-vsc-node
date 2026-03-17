@@ -801,37 +801,29 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					commitmentData := make(map[string]tss_helpers.SignedCommitment)
 
 					err := json.Unmarshal(cj.Json, &commitmentData)
+					if err != nil {
+						fmt.Printf("[TSS] [L1] vsc.tss_commitment parse error txId=%s err=%v\n", tx.TransactionID, err)
+						continue
+					}
 
-					fmt.Println("vsc.tss_commitment <err>", err, commitmentData, string(cj.Json))
+					fmt.Printf("[TSS] [L1] Processing vsc.tss_commitment txId=%s blockHeight=%d count=%d\n",
+						tx.TransactionID, block.BlockNumber, len(commitmentData))
 
 					for _, commitment := range commitmentData {
-						// savedCommitment, err := se.tssCommitments.GetCommitmentByHeight(commitment.KeyId, block.BlockNumber, "reshare", "keygen")
-
-						fmt.Println("commitment.KeyId, block.BlockNumber", commitment.KeyId, block.BlockNumber)
+						fmt.Printf("[TSS] [L1] Commitment entry sessionId=%s keyId=%s type=%s epoch=%d blockHeight=%d\n",
+							commitment.SessionId, commitment.KeyId, commitment.Type, commitment.Epoch, commitment.BlockHeight)
 
 						members := make([]dids.BlsDID, 0)
 						electionData, err := se.electionDb.GetElectionByHeight(block.BlockNumber)
 
 						if err != nil {
+							fmt.Printf("[TSS] [L1] Election lookup FAILED keyId=%s blockHeight=%d err=%v\n",
+								commitment.KeyId, block.BlockNumber, err)
 							continue
 						}
 						for _, mbr := range electionData.Members {
 							members = append(members, dids.BlsDID(mbr.Key))
 						}
-
-						// electionData, _ := se.electionDb.GetElectionByHeight(savedCommitment.Epoch)
-
-						// decodedCommitment, _ := base64.RawURLEncoding.DecodeString(savedCommitment.Commitment)
-
-						// bitset := &big.Int{}
-						// bitset.SetBytes(decodedCommitment)
-
-						// for idx, mbr := range electionData.Members {
-						// 	if bitset.Bit(idx) == 1 {
-						// 		members = append(members, dids.BlsDID(mbr.Key))
-						// 	}
-						// }
-						// savedCommitment
 
 						baseComment := tss_helpers.BaseCommitment{
 							Type:       commitment.Type,
@@ -847,9 +839,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						data, _ := common.EncodeDagCbor(baseComment)
 
 						commitmentCid, err := common.HashBytes(data, multicodec.DagCbor)
-
 						if err != nil {
-							fmt.Println("error hashing commitment cid", err)
+							fmt.Printf("[TSS] [L1] CID hash error keyId=%s err=%v\n", commitment.KeyId, err)
 							continue
 						}
 
@@ -858,44 +849,55 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							BitVector: commitment.BitSet,
 						}, members, commitmentCid)
 
-						testJson, _ := json.Marshal(baseComment)
-						fmt.Println("verify commitmentCid", commitmentCid, string(testJson))
 						verified, _, _ := circuit.Verify()
+						tssIndexHeight := se.SystemConfig().ConsensusParams().TssIndexHeight
 
-						fmt.Println("verified commitment", verified)
-						if verified && block.BlockNumber > se.SystemConfig().ConsensusParams().TssIndexHeight {
-							// commitment.
-							se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
-								Type:        commitment.Type,
-								BlockHeight: commitment.BlockHeight,
-								Epoch:       commitment.Epoch,
-								Commitment:  commitment.Commitment,
-								KeyId:       commitment.KeyId,
-								PublicKey:   commitment.PublicKey,
-								TxId:        tx.TransactionID,
-							})
+						if !verified {
+							fmt.Printf("[TSS] [L1] BLS verification FAILED keyId=%s sessionId=%s type=%s epoch=%d cid=%s\n",
+								commitment.KeyId, commitment.SessionId, commitment.Type, commitment.Epoch, commitmentCid)
+							continue
+						}
+						if block.BlockNumber <= tssIndexHeight {
+							fmt.Printf("[TSS] [L1] Skipped (before TssIndexHeight) keyId=%s blockHeight=%d tssIndexHeight=%d\n",
+								commitment.KeyId, block.BlockNumber, tssIndexHeight)
+							continue
+						}
 
-							var newKey bool
-							savedKeyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
-							if savedKeyInfo.Status == "created" {
-								newKey = true
-							}
+						fmt.Printf("[TSS] [L1] Writing commitment to DB keyId=%s sessionId=%s type=%s epoch=%d txId=%s\n",
+							commitment.KeyId, commitment.SessionId, commitment.Type, commitment.Epoch, tx.TransactionID)
+						se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+							Type:        commitment.Type,
+							BlockHeight: commitment.BlockHeight,
+							Epoch:       commitment.Epoch,
+							Commitment:  commitment.Commitment,
+							KeyId:       commitment.KeyId,
+							PublicKey:   commitment.PublicKey,
+							TxId:        tx.TransactionID,
+						})
 
-							if commitment.Type == "keygen" || commitment.Type == "reshare" {
-								keyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
-								if newKey && commitment.PublicKey != nil {
-									keyInfo.PublicKey = *commitment.PublicKey
-									keyInfo.CreatedHeight = int64(block.BlockNumber)
-									keyInfo.Status = "active"
+						var newKey bool
+						savedKeyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
+						if savedKeyInfo.Status == "created" {
+							newKey = true
+						}
 
-									keyInfo.Epoch = commitment.Epoch
-									se.tssKeys.SetKey(keyInfo)
-								} else if newKey {
-
-								} else {
-									keyInfo.Epoch = commitment.Epoch
-									se.tssKeys.SetKey(keyInfo)
-								}
+						if commitment.Type == "keygen" || commitment.Type == "reshare" {
+							keyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
+							if newKey && commitment.PublicKey != nil {
+								keyInfo.PublicKey = *commitment.PublicKey
+								keyInfo.CreatedHeight = int64(block.BlockNumber)
+								keyInfo.Status = "active"
+								keyInfo.Epoch = commitment.Epoch
+								fmt.Printf("[TSS] [L1] Key activated keyId=%s epoch=%d blockHeight=%d pubKey=%s\n",
+									keyInfo.Id, keyInfo.Epoch, block.BlockNumber, keyInfo.PublicKey)
+								se.tssKeys.SetKey(keyInfo)
+							} else if newKey {
+								fmt.Printf("[TSS] [L1] Keygen/reshare acknowledged (no pubKey) keyId=%s epoch=%d\n",
+									commitment.KeyId, commitment.Epoch)
+							} else {
+								keyInfo.Epoch = commitment.Epoch
+								fmt.Printf("[TSS] [L1] Key epoch updated keyId=%s epoch=%d\n", keyInfo.Id, keyInfo.Epoch)
+								se.tssKeys.SetKey(keyInfo)
 							}
 						}
 					}

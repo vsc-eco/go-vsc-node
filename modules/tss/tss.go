@@ -438,17 +438,17 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 
-			fmt.Println("bitset", bitset, isBlame)
-			fmt.Println("lastBlame, err", lastBlame, err)
-			fmt.Println("lastBlame.BlockHeight", lastBlame.BlockHeight, bh-BLAME_EXPIRE)
+			excludedAccounts := make([]string, 0)
 			for idx, member := range currentElection.Members {
 				if isBlame {
 					if bitset.Bit(idx) == 1 {
+						excludedAccounts = append(excludedAccounts, member.Account+" (blamed)")
 						continue
 					}
 				}
 				//if node is banned
 				if blameMap.BannedNodes[member.Account] {
+					excludedAccounts = append(excludedAccounts, member.Account+" (banned)")
 					continue
 				}
 				participants = append(participants, Participant{
@@ -456,7 +456,12 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				})
 			}
 
-			fmt.Println("keygen dispatcher", participants)
+			participantAccounts := make([]string, 0)
+			for _, p := range participants {
+				participantAccounts = append(participantAccounts, p.Account)
+			}
+			fmt.Printf("[TSS] [KEYGEN] Creating session sessionId=%s keyId=%s epoch=%d blockHeight=%d participants=%v excluded=%v hasBlame=%v lastBlameHeight=%d\n",
+				sessionId, action.KeyId, currentElection.Epoch, bh, participantAccounts, excludedAccounts, isBlame, lastBlame.BlockHeight)
 
 			dispatcher := &KeyGenDispatcher{
 				BaseDispatcher: BaseDispatcher{
@@ -761,9 +766,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			delete(tssMgr.sessionMap, sessionId)
 			tssMgr.bufferLock.Unlock()
 			if err != nil {
-
-				fmt.Println("Done() err", err, dsc.SessionId())
-				//handle error
+				fmt.Printf("[TSS] [KEYGEN] Dispatcher rejected sessionId=%s err=%v\n", dsc.SessionId(), err)
 				continue
 			}
 
@@ -775,6 +778,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				tssMgr.bufferLock.Lock()
 				tssMgr.sessionResults[dsc.SessionId()] = res
 				tssMgr.bufferLock.Unlock()
+
+				fmt.Printf("[TSS] [KEYGEN] SUCCESS sessionId=%s keyId=%s blockHeight=%d epoch=%d pubKey=%x commitment=%s\n",
+					res.SessionId, res.KeyId, res.BlockHeight, res.Epoch, res.PublicKey, res.Commitment)
 
 				commitment := result.Serialize()
 				commitableResults = append(commitableResults, commitment)
@@ -794,20 +800,37 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				tssMgr.bufferLock.Lock()
 				tssMgr.sessionResults[dsc.SessionId()] = res
 				tssMgr.bufferLock.Unlock()
+
+				fmt.Printf("[TSS] [RESHARE] SUCCESS sessionId=%s keyId=%s blockHeight=%d epoch=%d commitment=%s\n",
+					res.SessionId, res.KeyId, res.BlockHeight, res.NewEpoch, res.Commitment)
+
 				commitment := result.Serialize()
 				commitment.BlockHeight = bh
 				commitableResults = append(commitableResults, commitment)
 
 			} else if result.Type() == ErrorType {
-				//TODO: Handle errors better. For now, ignore them
+				res := result.(ErrorResult)
+				res.BlockHeight = bh
 
-				// res := result.(ErrorResult)
+				if res.tssErr != nil {
+					culprits := make([]string, 0)
+					for _, n := range res.tssErr.Culprits() {
+						culprits = append(culprits, string(n.GetId()))
+					}
+					fmt.Printf("[TSS] [KEYGEN] ERROR (tss) sessionId=%s keyId=%s blockHeight=%d epoch=%d culprits=%v err=%v\n",
+						res.SessionId, res.KeyId, res.BlockHeight, res.Epoch, culprits, res.tssErr.Error())
+				} else if res.err != nil {
+					fmt.Printf("[TSS] [KEYGEN] ERROR (internal) sessionId=%s keyId=%s blockHeight=%d epoch=%d err=%v\n",
+						res.SessionId, res.KeyId, res.BlockHeight, res.Epoch, res.err)
+				}
 
-				// res.BlockHeight = bh
-				// tssMgr.sessionResults[dsc.SessionId()] = res
-				// commitment := result.Serialize()
-				// commitment.BlockHeight = bh
-				// commitableResults = append(commitableResults, commitment)
+				tssMgr.bufferLock.Lock()
+				tssMgr.sessionResults[dsc.SessionId()] = res
+				tssMgr.bufferLock.Unlock()
+
+				commitment := result.Serialize()
+				commitment.BlockHeight = bh
+				commitableResults = append(commitableResults, commitment)
 			} else if result.Type() == TimeoutType {
 				res := result.(TimeoutResult)
 
@@ -910,6 +933,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			if len(commitableResults) > 0 {
 				time.Sleep(tssMgr.sconf.TssParams().CommitDelay)
 
+				fmt.Printf("[TSS] [COMMIT] Starting multi-sig collection blockHeight=%d count=%d\n", bh, len(commitableResults))
+
 				commitedResults := make(map[string]struct {
 					err        error
 					circuit    *dids.SerializedCircuit
@@ -922,21 +947,23 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					go func() {
 						commitResult.BlockHeight = bh
 
-						jj, _ := json.Marshal(commitResult)
-						fmt.Println("Sign commitResult", commitResult, string(jj))
-						bytes, _ := common.EncodeDagCbor(commitResult)
+						fmt.Printf("[TSS] [COMMIT] Collecting sigs sessionId=%s keyId=%s type=%s epoch=%d\n",
+							commitResult.SessionId, commitResult.KeyId, commitResult.Type, commitResult.Epoch)
 
+						bytes, _ := common.EncodeDagCbor(commitResult)
 						signableCid, _ := common.HashBytes(bytes, multicodec.DagCbor)
 
 						ctx, cancel := context.WithTimeout(context.Background(), tssMgr.sconf.TssParams().WaitForSigsTimeout)
 						defer cancel()
-						fmt.Println("commitResult", bytes, err)
 
 						serializedCircuit, err := tssMgr.waitForSigs(ctx, signableCid, commitResult.SessionId, &currentElection)
 
-						fmt.Println("serializedCircuit, err", serializedCircuit, err)
-
-						if err == nil {
+						if err != nil {
+							fmt.Printf("[TSS] [COMMIT] waitForSigs FAILED sessionId=%s keyId=%s type=%s err=%v\n",
+								commitResult.SessionId, commitResult.KeyId, commitResult.Type, err)
+						} else {
+							fmt.Printf("[TSS] [COMMIT] waitForSigs OK sessionId=%s keyId=%s type=%s\n",
+								commitResult.SessionId, commitResult.KeyId, commitResult.Type)
 							commitedMu.Lock()
 							commitedResults[commitResult.SessionId] = struct {
 								err        error
@@ -975,10 +1002,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					}
 				}
 
+				if !canCommit {
+					fmt.Printf("[TSS] [COMMIT] No results reached threshold blockHeight=%d total=%d committed=%d\n",
+						bh, len(commitableResults), len(commitedResults))
+				}
+
 				rawJson, err := json.Marshal(sigPacket)
 
-				fmt.Println("json.Marshal <err>", err)
 				if canCommit {
+					fmt.Printf("[TSS] [COMMIT] Broadcasting to Hive blockHeight=%d sessions=%d\n", bh, len(commitedResults))
 					deployOp := hivego.CustomJsonOperation{
 						RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
 						RequiredPostingAuths: []string{},
@@ -994,7 +1026,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					hiveTx.AddSig(sig)
 					_, err = tssMgr.hiveClient.Broadcast(hiveTx)
 					if err != nil {
-						fmt.Println("Broadcast err", err)
+						fmt.Printf("[TSS] [COMMIT] Hive broadcast FAILED blockHeight=%d err=%v\n", bh, err)
+					} else {
+						fmt.Printf("[TSS] [COMMIT] Hive broadcast OK blockHeight=%d\n", bh)
 					}
 				}
 			}

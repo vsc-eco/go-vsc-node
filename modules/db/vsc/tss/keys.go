@@ -2,6 +2,7 @@ package tss_db
 
 import (
 	"context"
+	"fmt"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
@@ -24,6 +25,7 @@ func (tssKeys *tssKeys) InsertKey(id string, t TssKeyAlgo) error {
 		},
 	}, opts)
 
+	fmt.Printf("[TSS] [DB] InsertKey keyId=%s algo=%s status=created\n", id, t)
 	return nil
 }
 
@@ -59,7 +61,15 @@ func (tssKeys *tssKeys) SetKey(key TssKey) error {
 		},
 	})
 
-	return res.Err()
+	dbErr := res.Err()
+	if dbErr != nil {
+		fmt.Printf("[TSS] [DB] SetKey FAILED keyId=%s status=%s epoch=%d err=%v\n",
+			key.Id, key.Status, key.Epoch, dbErr)
+	} else {
+		fmt.Printf("[TSS] [DB] SetKey OK keyId=%s status=%s epoch=%d\n",
+			key.Id, key.Status, key.Epoch)
+	}
+	return dbErr
 }
 
 func (tssKeys *tssKeys) FindNewKeys(bh uint64) ([]TssKey, error) {

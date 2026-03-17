@@ -1401,8 +1401,12 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 	_, myParty, p2pCtx := dispatcher.baseInfo()
 
 	if myParty == nil {
+		fmt.Printf("[TSS] [KEYGEN] Node not in committee sessionId=%s keyId=%s\n", dispatcher.sessionId, dispatcher.keyId)
 		return fmt.Errorf("node not part of keygen committee")
 	}
+
+	fmt.Printf("[TSS] [KEYGEN] Starting DKG sessionId=%s keyId=%s epoch=%d participants=%d algo=%s\n",
+		dispatcher.sessionId, dispatcher.keyId, dispatcher.epoch, len(dispatcher.participants), dispatcher.algo)
 
 	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
 		end := make(chan *keyGenSecp256k1.LocalPartySaveData)
@@ -1416,7 +1420,8 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		go func() {
 			err := dispatcher.party.Start()
 			if err != nil {
-				fmt.Println("party.Start() err", err)
+				fmt.Printf("[TSS] [KEYGEN] party.Start() FAILED sessionId=%s keyId=%s err=%v\n",
+					dispatcher.sessionId, dispatcher.keyId, err)
 				dispatcher.err = err
 			}
 		}()
@@ -1433,12 +1438,20 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 			}
 			pubBytes := pubKey.SerializeCompressed()
 
-			fmt.Println("[TSS] Hex public key", hex.EncodeToString(pubBytes))
+			fmt.Printf("[TSS] [KEYGEN] DKG complete (ECDSA) sessionId=%s keyId=%s pubKey=%s\n",
+				dispatcher.sessionId, dispatcher.keyId, hex.EncodeToString(pubBytes))
 
 			bytes, _ := json.Marshal(savedOutput)
 
 			k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
-			dispatcher.tssMgr.keyStore.Put(context.Background(), k, bytes)
+			ksErr := dispatcher.tssMgr.keyStore.Put(context.Background(), k, bytes)
+			if ksErr != nil {
+				fmt.Printf("[TSS] [KEYGEN] Keystore write FAILED sessionId=%s keyId=%s err=%v\n",
+					dispatcher.sessionId, dispatcher.keyId, ksErr)
+			} else {
+				fmt.Printf("[TSS] [KEYGEN] Keystore write OK sessionId=%s keyId=%s\n",
+					dispatcher.sessionId, dispatcher.keyId)
+			}
 
 			dispatcher.result = &KeyGenResult{
 				PublicKey:   pubBytes,
@@ -1476,11 +1489,20 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 
 			pubBytes := publicKey.SerializeCompressed()
 
-			// fmt.Println("pubHex ed25519", hex.EncodeToString(pubHex))
+			fmt.Printf("[TSS] [KEYGEN] DKG complete (EdDSA) sessionId=%s keyId=%s pubKey=%s\n",
+				dispatcher.sessionId, dispatcher.keyId, hex.EncodeToString(pubBytes))
+
 			bytes, _ := json.Marshal(savedOutput)
 
 			k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
-			dispatcher.tssMgr.keyStore.Put(context.Background(), k, bytes)
+			ksErr := dispatcher.tssMgr.keyStore.Put(context.Background(), k, bytes)
+			if ksErr != nil {
+				fmt.Printf("[TSS] [KEYGEN] Keystore write FAILED sessionId=%s keyId=%s err=%v\n",
+					dispatcher.sessionId, dispatcher.keyId, ksErr)
+			} else {
+				fmt.Printf("[TSS] [KEYGEN] Keystore write OK sessionId=%s keyId=%s\n",
+					dispatcher.sessionId, dispatcher.keyId)
+			}
 
 			dispatcher.result = &KeyGenResult{
 				PublicKey:   pubBytes,
@@ -1508,6 +1530,8 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 			for _, p := range dispatcher.party.WaitingFor() {
 				culprits = append(culprits, p.Id)
 			}
+			fmt.Printf("[TSS] [KEYGEN] Done: TIMEOUT sessionId=%s keyId=%s culprits=%v\n",
+				dispatcher.sessionId, dispatcher.keyId, culprits)
 			resolve(TimeoutResult{
 				tssMgr: dispatcher.tssMgr,
 
@@ -1521,6 +1545,12 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 		}
 
 		if dispatcher.tssErr != nil {
+			culprits := make([]string, 0)
+			for _, n := range dispatcher.tssErr.Culprits() {
+				culprits = append(culprits, string(n.GetId()))
+			}
+			fmt.Printf("[TSS] [KEYGEN] Done: TSS ERROR sessionId=%s keyId=%s culprits=%v err=%v\n",
+				dispatcher.sessionId, dispatcher.keyId, culprits, dispatcher.tssErr.Error())
 			resolve(ErrorResult{
 				tssErr: dispatcher.tssErr,
 
@@ -1533,10 +1563,13 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 		}
 
 		if dispatcher.err != nil {
+			fmt.Printf("[TSS] [KEYGEN] Done: INTERNAL ERROR sessionId=%s keyId=%s err=%v\n",
+				dispatcher.sessionId, dispatcher.keyId, dispatcher.err)
 			reject(dispatcher.err)
 			return
 		}
 
+		fmt.Printf("[TSS] [KEYGEN] Done: SUCCESS sessionId=%s keyId=%s\n", dispatcher.sessionId, dispatcher.keyId)
 		resolve(*dispatcher.result)
 	})
 }
