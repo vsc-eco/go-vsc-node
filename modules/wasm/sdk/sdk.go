@@ -492,11 +492,10 @@ var SdkModule = map[string]sdkFunc{
 			return ErrInvalidArgument
 		}
 
-		epochsFloat, ok := arg3.(float64)
+		epochs, ok := arg3.(uint64)
 		if !ok {
 			return ErrInvalidArgument
 		}
-		epochs := uint64(epochsFloat)
 		if epochs == 0 || epochs > tss_db.MaxKeyEpochs {
 			return ErrInvalidArgument
 		}
@@ -529,11 +528,10 @@ var SdkModule = map[string]sdkFunc{
 			return ErrInvalidArgument
 		}
 
-		epochsFloat, ok := arg2.(float64)
+		epochs, ok := arg2.(uint64)
 		if !ok {
 			return ErrInvalidArgument
 		}
-		epochs := uint64(epochsFloat)
 		if epochs == 0 || epochs > tss_db.MaxKeyEpochs {
 			return ErrInvalidArgument
 		}

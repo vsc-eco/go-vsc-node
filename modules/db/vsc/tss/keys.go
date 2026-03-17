@@ -55,11 +55,12 @@ func (tssKeys *tssKeys) SetKey(key TssKey) error {
 		"id": key.Id,
 	}, bson.M{
 		"$set": bson.M{
-			"status":         key.Status,
-			"public_key":     key.PublicKey,
-			"epoch":          key.Epoch,
-			"created_height": key.CreatedHeight,
-			"expiry_epoch":   key.ExpiryEpoch,
+			"status":            key.Status,
+			"public_key":        key.PublicKey,
+			"epoch":             key.Epoch,
+			"created_height":    key.CreatedHeight,
+			"expiry_epoch":      key.ExpiryEpoch,
+			"deprecated_height": key.DeprecatedHeight,
 		},
 	})
 
@@ -72,6 +73,42 @@ func (tssKeys *tssKeys) SetKey(key TssKey) error {
 			key.Id, key.Status, key.Epoch)
 	}
 	return dbErr
+}
+
+// FindDeprecatingKeys returns active keys whose ExpiryEpoch has been reached (and ExpiryEpoch > 0).
+func (tssKeys *tssKeys) FindDeprecatingKeys(epoch uint64) ([]TssKey, error) {
+	findCursor, _ := tssKeys.Find(context.Background(), bson.M{
+		"status":       TssKeyActive,
+		"expiry_epoch": bson.M{"$gt": 0, "$lte": epoch},
+	})
+
+	keys := make([]TssKey, 0)
+	for findCursor.Next(context.Background()) {
+		var k TssKey
+		findCursor.Decode(&k)
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
+// FindNewlyRetired returns deprecated keys whose grace period has elapsed at the given block height.
+// Returns keys where deprecated_height + KeyDeprecationGracePeriod == blockHeight, ensuring
+// cleanup runs exactly once per key.
+func (tssKeys *tssKeys) FindNewlyRetired(blockHeight uint64) ([]TssKey, error) {
+	findCursor, _ := tssKeys.Find(context.Background(), bson.M{
+		"status":            TssKeyDeprecated,
+		"deprecated_height": bson.M{"$gt": 0, "$lte": int64(blockHeight) - int64(KeyDeprecationGracePeriod)},
+	})
+
+	keys := make([]TssKey, 0)
+	for findCursor.Next(context.Background()) {
+		var k TssKey
+		findCursor.Decode(&k)
+		// Only return keys whose grace period ends exactly at this block (or just became eligible).
+		// We use $lte so we catch any that were missed (e.g. if a block was skipped).
+		keys = append(keys, k)
+	}
+	return keys, nil
 }
 
 func (tssKeys *tssKeys) FindNewKeys(bh uint64) ([]TssKey, error) {

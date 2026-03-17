@@ -233,6 +233,20 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			tssMgr.RunActions(generatedActions, witnessSlot.Account, isLeader, bh)
 		}
 	}
+
+	// Keystore cleanup: delete flatfs entries for newly retired keys.
+	if retiredKeys, err := tssMgr.tssKeys.FindNewlyRetired(bh); err == nil {
+		for _, key := range retiredKeys {
+			dsKey := makeKey("key", key.Id, int(key.Epoch))
+			if delErr := tssMgr.keyStore.Delete(context.Background(), dsKey); delErr != nil {
+				fmt.Printf("[TSS] keystore delete FAILED keyId=%s epoch=%d err=%v\n",
+					key.Id, key.Epoch, delErr)
+			} else {
+				fmt.Printf("[TSS] keystore deleted (retired) keyId=%s epoch=%d\n",
+					key.Id, key.Epoch)
+			}
+		}
+	}
 }
 
 type score struct {

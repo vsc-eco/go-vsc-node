@@ -187,6 +187,33 @@ func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 // This model is more efficient and best yet, it prevents MEV potential by locking the block execution time to the witness slot.
 func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	se.BlockHeight = int(block.BlockNumber)
+
+	// --- Key lifecycle: deprecation and retirement ---
+	if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
+		currentEpoch := electionData.Epoch
+
+		// Phase 1: deprecate active keys that have reached their expiry epoch.
+		if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
+			for _, k := range deprecating {
+				k.Status = tss_db.TssKeyDeprecated
+				k.DeprecatedHeight = int64(block.BlockNumber)
+				se.tssKeys.SetKey(k)
+				fmt.Printf("[TSS] [L1] Key deprecated keyId=%s expiryEpoch=%d blockHeight=%d\n",
+					k.Id, k.ExpiryEpoch, block.BlockNumber)
+			}
+		}
+	}
+
+	// Phase 2: retire deprecated keys whose grace period has elapsed (block-height based).
+	if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil {
+		for _, k := range retiring {
+			k.Status = tss_db.TssKeyRetired
+			se.tssKeys.SetKey(k)
+			fmt.Printf("[TSS] [L1] Key retired keyId=%s deprecatedHeight=%d blockHeight=%d\n",
+				k.Id, k.DeprecatedHeight, block.BlockNumber)
+		}
+	}
+
 	blockInfo := struct {
 		BlockHeight uint64
 		BlockId     string

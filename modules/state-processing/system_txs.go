@@ -76,16 +76,29 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 				}
 			} else if tssOp.Type == "renew" {
 				key, err := se.tssKeys.FindKey(tssOp.KeyId)
-				if err == nil && key.ExpiryEpoch > 0 && tssOp.Epochs > 0 {
+				renewable := err == nil && tssOp.Epochs > 0 &&
+					(key.Status == tss_db.TssKeyActive || key.Status == tss_db.TssKeyDeprecated)
+				if renewable {
 					electionData, elecErr := se.electionDb.GetElectionByHeight(txSelf.BlockHeight)
 					if elecErr == nil {
 						maxExpiry := electionData.Epoch + tss_db.MaxKeyEpochs
-						newExpiry := key.ExpiryEpoch + tssOp.Epochs
+						// For deprecated keys with no ExpiryEpoch set, base from current epoch.
+						baseExpiry := key.ExpiryEpoch
+						if baseExpiry == 0 {
+							baseExpiry = electionData.Epoch
+						}
+						newExpiry := baseExpiry + tssOp.Epochs
 						if newExpiry > maxExpiry {
 							newExpiry = maxExpiry
 						}
 						key.ExpiryEpoch = newExpiry
-						fmt.Printf("[TSS] [L1] Key renewed keyId=%s newExpiryEpoch=%d\n", key.Id, key.ExpiryEpoch)
+						// Reactivate deprecated keys.
+						if key.Status == tss_db.TssKeyDeprecated {
+							key.Status = tss_db.TssKeyActive
+							key.DeprecatedHeight = 0
+						}
+						fmt.Printf("[TSS] [L1] Key renewed keyId=%s newExpiryEpoch=%d status=%s\n",
+							key.Id, key.ExpiryEpoch, key.Status)
 						se.tssKeys.SetKey(key)
 					}
 				}

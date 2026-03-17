@@ -606,6 +606,9 @@ func (ctx *contractExecutionContext) TssRenewKey(keyId string, additionalEpochs 
 	if err != nil {
 		return result.Err[string](errors.New("runtime error"))
 	}
+	if key.Status == tss_db.TssKeyRetired {
+		return result.Err[string](errors.New("key is retired and cannot be renewed"))
+	}
 	if key.ExpiryEpoch == 0 {
 		return result.Err[string](errors.New("key has no expiry to renew"))
 	}
@@ -631,7 +634,7 @@ func (ctx *contractExecutionContext) TssGetKey(keyId string) result.Result[strin
 	status = tssKey.Status
 
 	res := status
-	if status == "active" || status == "deleted" {
+	if status == tss_db.TssKeyActive || status == tss_db.TssKeyDeprecated || status == "deleted" {
 		res += "," + tssKey.PublicKey
 		res += "," + string(tssKey.Algo)
 	}

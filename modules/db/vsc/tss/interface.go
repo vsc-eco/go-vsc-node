@@ -9,6 +9,10 @@ import (
 // MaxKeyEpochs is the maximum number of epochs a key may be created or renewed for at once.
 const MaxKeyEpochs = uint64(52)
 
+// KeyDeprecationGracePeriod is the number of blocks a key stays in "deprecated" status before
+// being permanently retired (keystore entry deleted). At ~3s/block this is roughly 1 week.
+const KeyDeprecationGracePeriod = uint64(201600)
+
 type TssKeys interface {
 	a.Plugin
 	InsertKey(id string, t TssKeyAlgo, epochs uint64) error
@@ -16,6 +20,10 @@ type TssKeys interface {
 	SetKey(key TssKey) error
 	FindNewKeys(blockHeight uint64) ([]TssKey, error)
 	FindEpochKeys(epoch uint64) ([]TssKey, error)
+	// FindDeprecatingKeys returns active keys whose ExpiryEpoch has been reached.
+	FindDeprecatingKeys(epoch uint64) ([]TssKey, error)
+	// FindNewlyRetired returns deprecated keys whose grace period has just elapsed.
+	FindNewlyRetired(blockHeight uint64) ([]TssKey, error)
 }
 
 type TssRequests interface {
@@ -37,7 +45,7 @@ type TssCommitments interface {
 
 type TssKey struct {
 	Id            string     `bson:"id"`
-	Status        string     `bson:"status"` //new, active, deleted (not implemented)
+	Status        string     `bson:"status"` // created, active, deprecated, retired
 	PublicKey     string     `bson:"public_key"`
 	Owner         string     `bson:"owner"`
 	Algo          TssKeyAlgo `bson:"algo"`
@@ -48,6 +56,9 @@ type TssKey struct {
 	// ExpiryEpoch is the epoch at which the key expires (0 = no expiry).
 	// Set to Epoch + Epochs when the key first becomes active.
 	ExpiryEpoch uint64 `bson:"expiry_epoch"`
+	// DeprecatedHeight is the block height at which this key was deprecated (0 = not deprecated).
+	// Retirement fires at DeprecatedHeight + KeyDeprecationGracePeriod.
+	DeprecatedHeight int64 `bson:"deprecated_height"`
 }
 
 type TssRequest struct {
@@ -86,8 +97,11 @@ const (
 type TssKeyStatus string
 
 const (
-	TssKeyActive string = "active"
-	TssKeyNew    string = "new"
+	TssKeyCreated    string = "created"
+	TssKeyActive     string = "active"
+	TssKeyNew        string = "new"
+	TssKeyDeprecated string = "deprecated"
+	TssKeyRetired    string = "retired"
 )
 
 type TssSignStatus string
