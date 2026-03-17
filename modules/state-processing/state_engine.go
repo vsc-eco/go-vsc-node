@@ -28,6 +28,7 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
+	"vsc-node/lib/vsclog"
 	tss_helpers "vsc-node/modules/tss/helpers"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
@@ -36,6 +37,8 @@ import (
 	"github.com/multiformats/go-multicodec"
 	"go.mongodb.org/mongo-driver/mongo"
 )
+
+var tssLog = vsclog.Module("tss")
 
 type ProcessExtraInfo struct {
 	BlockHeight int
@@ -200,8 +203,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					k.DeprecatedHeight = int64(block.BlockNumber)
 				}
 				se.tssKeys.SetKey(k)
-				fmt.Printf("[TSS] [L1] Key deprecated keyId=%s expiryEpoch=%d blockHeight=%d\n",
-					k.Id, k.ExpiryEpoch, block.BlockNumber)
+				tssLog.Info("key deprecated", "keyId", k.Id, "expiryEpoch", k.ExpiryEpoch, "blockHeight", block.BlockNumber)
 			}
 		}
 	}
@@ -212,8 +214,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			for _, k := range retiring {
 				k.Status = tss_db.TssKeyRetired
 				se.tssKeys.SetKey(k)
-				fmt.Printf("[TSS] [L1] Key retired keyId=%s deprecatedHeight=%d blockHeight=%d\n",
-					k.Id, k.DeprecatedHeight, block.BlockNumber)
+				tssLog.Info("key retired", "keyId", k.Id, "deprecatedHeight", k.DeprecatedHeight, "blockHeight", block.BlockNumber)
 			}
 		}
 	}
@@ -833,23 +834,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					err := json.Unmarshal(cj.Json, &commitmentData)
 					if err != nil {
-						fmt.Printf("[TSS] [L1] vsc.tss_commitment parse error txId=%s err=%v\n", tx.TransactionID, err)
+						tssLog.Warn("vsc.tss_commitment parse error", "txId", tx.TransactionID, "err", err)
 						continue
 					}
 
-					fmt.Printf("[TSS] [L1] Processing vsc.tss_commitment txId=%s blockHeight=%d count=%d\n",
-						tx.TransactionID, block.BlockNumber, len(commitmentData))
+					tssLog.Verbose("processing vsc.tss_commitment", "txId", tx.TransactionID, "blockHeight", block.BlockNumber, "count", len(commitmentData))
 
 					for _, commitment := range commitmentData {
-						fmt.Printf("[TSS] [L1] Commitment entry sessionId=%s keyId=%s type=%s epoch=%d blockHeight=%d\n",
-							commitment.SessionId, commitment.KeyId, commitment.Type, commitment.Epoch, commitment.BlockHeight)
+						tssLog.Verbose("commitment entry", "sessionId", commitment.SessionId, "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
 
 						members := make([]dids.BlsDID, 0)
 						electionData, err := se.electionDb.GetElectionByHeight(block.BlockNumber)
 
 						if err != nil {
-							fmt.Printf("[TSS] [L1] Election lookup FAILED keyId=%s blockHeight=%d err=%v\n",
-								commitment.KeyId, block.BlockNumber, err)
+							tssLog.Warn("election lookup failed", "keyId", commitment.KeyId, "blockHeight", block.BlockNumber, "err", err)
 							continue
 						}
 						for _, mbr := range electionData.Members {
@@ -871,7 +869,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 						commitmentCid, err := common.HashBytes(data, multicodec.DagCbor)
 						if err != nil {
-							fmt.Printf("[TSS] [L1] CID hash error keyId=%s err=%v\n", commitment.KeyId, err)
+							tssLog.Warn("CID hash error", "keyId", commitment.KeyId, "err", err)
 							continue
 						}
 
@@ -884,18 +882,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						tssIndexHeight := se.SystemConfig().ConsensusParams().TssIndexHeight
 
 						if !verified {
-							fmt.Printf("[TSS] [L1] BLS verification FAILED keyId=%s sessionId=%s type=%s epoch=%d cid=%s\n",
-								commitment.KeyId, commitment.SessionId, commitment.Type, commitment.Epoch, commitmentCid)
+							tssLog.Warn("BLS verification failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "cid", commitmentCid)
 							continue
 						}
 						if block.BlockNumber <= tssIndexHeight {
-							fmt.Printf("[TSS] [L1] Skipped (before TssIndexHeight) keyId=%s blockHeight=%d tssIndexHeight=%d\n",
-								commitment.KeyId, block.BlockNumber, tssIndexHeight)
+							tssLog.Verbose("skipped (before TssIndexHeight)", "keyId", commitment.KeyId, "blockHeight", block.BlockNumber, "tssIndexHeight", tssIndexHeight)
 							continue
 						}
 
-						fmt.Printf("[TSS] [L1] Writing commitment to DB keyId=%s sessionId=%s type=%s epoch=%d txId=%s\n",
-							commitment.KeyId, commitment.SessionId, commitment.Type, commitment.Epoch, tx.TransactionID)
+						tssLog.Verbose("writing commitment to DB", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "txId", tx.TransactionID)
 						se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
 							Type:        commitment.Type,
 							BlockHeight: commitment.BlockHeight,
@@ -922,15 +917,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								if keyInfo.Epochs > 0 {
 									keyInfo.ExpiryEpoch = commitment.Epoch + keyInfo.Epochs
 								}
-								fmt.Printf("[TSS] [L1] Key activated keyId=%s epoch=%d expiryEpoch=%d blockHeight=%d pubKey=%s\n",
-									keyInfo.Id, keyInfo.Epoch, keyInfo.ExpiryEpoch, block.BlockNumber, keyInfo.PublicKey)
+								tssLog.Info("key activated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch, "blockHeight", block.BlockNumber, "pubKey", keyInfo.PublicKey)
 								se.tssKeys.SetKey(keyInfo)
 							} else if newKey {
-								fmt.Printf("[TSS] [L1] Keygen/reshare acknowledged (no pubKey) keyId=%s epoch=%d\n",
-									commitment.KeyId, commitment.Epoch)
+								tssLog.Verbose("keygen/reshare acknowledged (no pubKey)", "keyId", commitment.KeyId, "epoch", commitment.Epoch)
 							} else {
 								keyInfo.Epoch = commitment.Epoch
-								fmt.Printf("[TSS] [L1] Key epoch updated keyId=%s epoch=%d\n", keyInfo.Id, keyInfo.Epoch)
+								tssLog.Info("key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch)
 								se.tssKeys.SetKey(keyInfo)
 							}
 						}
@@ -1499,7 +1492,9 @@ func (se *StateEngine) Init() error {
 	// One-time migration: deprecate any active keys that pre-date the expiry system.
 	// These keys have no ExpiryEpoch and would otherwise reshare forever.
 	// deprecated_height=0 means no retirement clock — they stay deprecated until renewed.
-	se.tssKeys.DeprecateLegacyKeys()
+	if err := se.tssKeys.DeprecateLegacyKeys(); err != nil {
+		tssLog.Warn("DeprecateLegacyKeys failed during init", "err", err)
+	}
 	return nil
 }
 

@@ -36,13 +36,10 @@ func (tsc *tssCommitments) SetCommitmentData(commitment TssCommitment) error {
 	// FindOneAndUpdate with upsert returns ErrNoDocuments when it inserts a new
 	// document (nothing to "find"), but the write still succeeded.
 	if dbErr != nil && dbErr != mongo.ErrNoDocuments {
-		fmt.Printf("[TSS] [DB] SetCommitmentData FAILED keyId=%s type=%s epoch=%d txId=%s err=%v\n",
-			commitment.KeyId, commitment.Type, commitment.Epoch, commitment.TxId, dbErr)
+		log.Warn("SetCommitmentData failed", "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "txId", commitment.TxId, "err", dbErr)
 		return dbErr
 	}
-	fmt.Printf("[TSS] [DB] SetCommitmentData OK keyId=%s type=%s epoch=%d blockHeight=%d txId=%s db=%s\n",
-		commitment.KeyId, commitment.Type, commitment.Epoch, commitment.BlockHeight, commitment.TxId,
-		tsc.Database().Name())
+	log.Verbose("SetCommitmentData OK", "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "txId", commitment.TxId, "db", tsc.Database().Name())
 	return nil
 }
 
@@ -106,7 +103,7 @@ func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qt
 		}
 	}
 
-	fmt.Println("getCommitmentByHeight", query)
+	log.Trace("getCommitmentByHeight", "query", query)
 
 	findResult := tsc.FindOne(context.Background(), query, findOpts)
 

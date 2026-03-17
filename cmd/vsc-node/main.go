@@ -54,6 +54,8 @@ func main() {
 		fmt.Println("Error parsing arguments:", err)
 		os.Exit(1)
 	}
+	initLogLevel(args.logLevel)
+
 	dbConf := db.NewDbConfig(args.dataDir)
 	p2pConf := p2pInterface.NewConfig(args.dataDir)
 	gqlConf := gql.NewGqlConfig(args.dataDir)

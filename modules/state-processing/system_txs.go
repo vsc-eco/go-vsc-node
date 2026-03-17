@@ -67,7 +67,7 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 
 		for _, tssOp := range tssOps {
 			if tssOp.Type == "create" {
-				fmt.Println("CREATING TSS KEY", tssOp)
+				tssLog.Verbose("creating TSS key", "keyId", tssOp.KeyId, "algo", tssOp.Args, "epochs", tssOp.Epochs)
 				_, err := se.tssKeys.FindKey(tssOp.KeyId)
 
 				// fmt.Println("err", err)
@@ -97,8 +97,7 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 							key.Status = tss_db.TssKeyActive
 							key.DeprecatedHeight = 0
 						}
-						fmt.Printf("[TSS] [L1] Key renewed keyId=%s newExpiryEpoch=%d status=%s\n",
-							key.Id, key.ExpiryEpoch, key.Status)
+						tssLog.Info("key renewed", "keyId", key.Id, "newExpiryEpoch", key.ExpiryEpoch, "status", key.Status)
 						se.tssKeys.SetKey(key)
 					}
 				}

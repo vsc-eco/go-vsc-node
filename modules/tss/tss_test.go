@@ -528,7 +528,7 @@ func TestTss(t *testing.T) {
 
 	// Step 4: Insert TSS key for keygen in all nodes
 	for _, node := range nodes {
-		node.tssKeys.InsertKey("test-key", tss_db.EcdsaType)
+		node.tssKeys.InsertKey("test-key", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
 	}
 
 	fmt.Println("[TEST] === PHASE 1: KEYGEN ===")
@@ -1359,7 +1359,7 @@ func TestTss(t *testing.T) {
 
 	// Insert a second key "test-key-2" as "new" (will trigger keygen)
 	for _, node := range nodes {
-		node.tssKeys.InsertKey("test-key-2", tss_db.EcdsaType)
+		node.tssKeys.InsertKey("test-key-2", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
 	}
 
 	// Insert a signing request for test-key-2 (should be blocked by keyLocks during keygen)

@@ -3,12 +3,15 @@ package tss_db
 import (
 	"context"
 	"fmt"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+var log = vsclog.Module("tss")
 
 type tssKeys struct {
 	*db.Collection
@@ -26,7 +29,7 @@ func (tssKeys *tssKeys) InsertKey(id string, t TssKeyAlgo, epochs uint64) error 
 		},
 	}, opts)
 
-	fmt.Printf("[TSS] [DB] InsertKey keyId=%s algo=%s epochs=%d status=created\n", id, t, epochs)
+	log.Verbose("key inserted", "keyId", id, "algo", t, "epochs", epochs)
 	return nil
 }
 
@@ -66,11 +69,9 @@ func (tssKeys *tssKeys) SetKey(key TssKey) error {
 
 	dbErr := res.Err()
 	if dbErr != nil {
-		fmt.Printf("[TSS] [DB] SetKey FAILED keyId=%s status=%s epoch=%d err=%v\n",
-			key.Id, key.Status, key.Epoch, dbErr)
+		log.Warn("SetKey failed", "keyId", key.Id, "status", key.Status, "epoch", key.Epoch, "err", dbErr)
 	} else {
-		fmt.Printf("[TSS] [DB] SetKey OK keyId=%s status=%s epoch=%d\n",
-			key.Id, key.Status, key.Epoch)
+		log.Verbose("SetKey OK", "keyId", key.Id, "status", key.Status, "epoch", key.Epoch)
 	}
 	return dbErr
 }
@@ -169,9 +170,9 @@ func (tssKeys *tssKeys) DeprecateLegacyKeys() error {
 		},
 	})
 	if err != nil {
-		fmt.Printf("[TSS] [DB] DeprecateLegacyKeys FAILED err=%v\n", err)
+		log.Warn("DeprecateLegacyKeys failed", "err", err)
 	} else {
-		fmt.Printf("[TSS] [DB] DeprecateLegacyKeys OK\n")
+		log.Info("DeprecateLegacyKeys completed")
 	}
 	return err
 }

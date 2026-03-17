@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
 	hiveblocks "vsc-node/modules/db/vsc/hive_blocks"
 
@@ -16,6 +17,8 @@ import (
 	"github.com/vsc-eco/hivego"
 	"go.mongodb.org/mongo-driver/mongo"
 )
+
+var vlog = vsclog.Module("streamer")
 
 // ===== block client interface =====
 
@@ -97,7 +100,7 @@ func NewStreamReader(
 	if process == nil {
 		process = func(block hiveblocks.HiveBlock, headHeight *uint64) {} // no-op
 	}
-	fmt.Println("startBlock", startBlock)
+	vlog.Verbose("stream reader initialized", "startBlock", startBlock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &StreamReader{
@@ -145,7 +148,7 @@ func (s *StreamReader) Start() *promise.Promise[any] {
 
 func inteceptError() {
 	MyError := recover()
-	fmt.Println(MyError)
+	vlog.Warn("intercepted error", "err", MyError)
 }
 
 // polls the database at intervals, processing new blocks as they arrive
@@ -468,7 +471,7 @@ func (s *Streamer) streamBlocks() {
 }
 
 func (s *Streamer) fetchBlockBatch(startBlock, batchSize uint64) ([]hivego.Block, error) {
-	log.Printf("fetching block range %d-%d\n", startBlock, startBlock+batchSize-1)
+	vlog.Verbose("fetching block range", "startBlock", startBlock, "endBlock", startBlock+batchSize-1)
 	p := promise.New(func(resolve func([]hivego.Block), reject func(error)) {
 		blocks, err := s.client.GetBlockRange(int(startBlock), int(batchSize))
 		if err != nil {
@@ -552,10 +555,10 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 		}
 
 		if needsVirtualOps {
-			fmt.Println("Pulling virtual ops")
+			vlog.Trace("Pulling virtual ops")
 			virtualOps, _ := s.client.FetchVirtualOps(int(block.BlockNumber), true, false)
 			bbytes, _ := json.Marshal(virtualOps)
-			fmt.Println("virtualOps", string(bbytes))
+			vlog.Trace("virtual ops fetched", "data", string(bbytes))
 			filteredOps := make([]hivego.VirtualOp, 0)
 			for _, vop := range virtualOps {
 				for _, vFilter := range s.vFilters {

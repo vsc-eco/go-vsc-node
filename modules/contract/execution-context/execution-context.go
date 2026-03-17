@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"unicode/utf8"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/params"
 	contract_session "vsc-node/modules/contract/session"
@@ -23,6 +24,8 @@ import (
 	"github.com/JustinKnueppel/go-result"
 	"go.mongodb.org/mongo-driver/mongo"
 )
+
+var tssLog = vsclog.Module("tss")
 
 type contractExecutionContext struct {
 	callerIntents []contracts.Intent
@@ -651,12 +654,12 @@ func (ctx *contractExecutionContext) TssKeySign(keyId string, msg string) result
 	keyInfo, err := ctx.callSession.TssKeys.FindKey(fullKey)
 
 	if err == mongo.ErrNoDocuments {
-		fmt.Printf("[TSS] TssKeySign rejected: key not found keyId=%s\n", fullKey)
+		tssLog.Verbose("key sign rejected: key not found", "keyId", fullKey)
 		return result.Ok("fail")
 	}
 
 	if keyInfo.Status != tss_db.TssKeyActive {
-		fmt.Printf("[TSS] TssKeySign rejected: key not active keyId=%s status=%s\n", fullKey, keyInfo.Status)
+		tssLog.Verbose("key sign rejected: not active", "keyId", fullKey, "status", keyInfo.Status)
 		return result.Ok("fail")
 	}
 
