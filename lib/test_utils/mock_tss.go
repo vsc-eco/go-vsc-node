@@ -13,13 +13,14 @@ type MockTssKeysDb struct {
 	Keys map[string]tss.TssKey
 }
 
-func (m *MockTssKeysDb) InsertKey(id string, t tss.TssKeyAlgo) error {
+func (m *MockTssKeysDb) InsertKey(id string, t tss.TssKeyAlgo, epochs uint64) error {
 	if _, exists := m.Keys[id]; exists {
 		return fmt.Errorf("key already exists")
 	}
 	m.Keys[id] = tss.TssKey{
-		Id:   id,
-		Algo: t,
+		Id:     id,
+		Algo:   t,
+		Epochs: epochs,
 	}
 	return nil
 }
@@ -55,6 +56,38 @@ func (m *MockTssKeysDb) FindEpochKeys(epoch uint64) ([]tss.TssKey, error) {
 		}
 	}
 	return results, nil
+}
+
+func (m *MockTssKeysDb) FindDeprecatingKeys(epoch uint64) ([]tss.TssKey, error) {
+	var results []tss.TssKey
+	for _, key := range m.Keys {
+		if key.Status == tss.TssKeyActive && key.ExpiryEpoch > 0 && key.ExpiryEpoch <= epoch {
+			results = append(results, key)
+		}
+	}
+	return results, nil
+}
+
+func (m *MockTssKeysDb) FindNewlyRetired(blockHeight uint64) ([]tss.TssKey, error) {
+	var results []tss.TssKey
+	for _, key := range m.Keys {
+		if key.Status == tss.TssKeyDeprecated && key.DeprecatedHeight > 0 &&
+			uint64(key.DeprecatedHeight)+tss.KeyDeprecationGracePeriod <= blockHeight {
+			results = append(results, key)
+		}
+	}
+	return results, nil
+}
+
+func (m *MockTssKeysDb) DeprecateLegacyKeys() error {
+	for id, key := range m.Keys {
+		if key.Status == tss.TssKeyActive && key.ExpiryEpoch == 0 {
+			key.Status = tss.TssKeyDeprecated
+			key.DeprecatedHeight = 0
+			m.Keys[id] = key
+		}
+	}
+	return nil
 }
 
 // MockTssCommitmentsDb implements tss.TssCommitments interface for testing
