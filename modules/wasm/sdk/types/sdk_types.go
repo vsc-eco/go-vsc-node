@@ -24,16 +24,19 @@ type VmType struct {
 
 func generateSdkTypes() []SdkType {
 	res := make([]SdkType, 0)
-	for name, fn := range sdk.SdkModule {
-		t := reflect.TypeOf(fn)
-		res = append(res, SdkType{
-			name,
-			VmType{
-				generateFunctionParameters(name, t),
-				generateFunctionResult(name, t),
-			},
-			generateCost(name, t),
-		})
+	for ns, methods := range sdk.SdkNamespaces {
+		for method, fn := range methods {
+			name := ns + "." + method
+			t := reflect.TypeOf(fn)
+			res = append(res, SdkType{
+				name,
+				VmType{
+					generateFunctionParameters(name, t),
+					generateFunctionResult(name, t),
+				},
+				generateCost(name, t),
+			})
+		}
 	}
 	fmt.Fprintln(os.Stderr, "sdk types", res)
 	return res

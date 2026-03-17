@@ -51,18 +51,21 @@ func (tssKeys *tssKeys) FindKey(id string) (TssKey, error) {
 }
 
 func (tssKeys *tssKeys) SetKey(key TssKey) error {
-	res := tssKeys.FindOneAndUpdate(context.Background(), bson.M{
-		"id": key.Id,
-	}, bson.M{
-		"$set": bson.M{
-			"status":            key.Status,
-			"public_key":        key.PublicKey,
-			"epoch":             key.Epoch,
-			"created_height":    key.CreatedHeight,
-			"expiry_epoch":      key.ExpiryEpoch,
-			"deprecated_height": key.DeprecatedHeight,
-		},
-	})
+	setFields := bson.M{
+		"status":         key.Status,
+		"public_key":     key.PublicKey,
+		"epoch":          key.Epoch,
+		"created_height": key.CreatedHeight,
+		"expiry_epoch":   key.ExpiryEpoch,
+	}
+	update := bson.M{"$set": setFields}
+	if key.DeprecatedHeight == 0 {
+		update["$unset"] = bson.M{"deprecated_height": ""}
+	} else {
+		setFields["deprecated_height"] = key.DeprecatedHeight
+	}
+
+	res := tssKeys.FindOneAndUpdate(context.Background(), bson.M{"id": key.Id}, update)
 
 	dbErr := res.Err()
 	if dbErr != nil {

@@ -484,7 +484,7 @@ func registerImportV2(
 }
 
 func executeImport(ctx context.Context, name string, args []any) result.Result[wasm_types.WasmResultStruct] {
-	fn, ok := sdk.SdkModule[name]
+	fn, ok := sdk.Resolve(name)
 	if !ok {
 		return result.Err[wasm_types.WasmResultStruct](fmt.Errorf("vm requested non-existing function: %s", name))
 	}

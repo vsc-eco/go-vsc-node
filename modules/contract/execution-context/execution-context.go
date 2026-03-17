@@ -609,7 +609,10 @@ func (ctx *contractExecutionContext) TssRenewKey(keyId string, additionalEpochs 
 	if key.Status == tss_db.TssKeyRetired {
 		return result.Err[string](errors.New("key is retired and cannot be renewed"))
 	}
-	if key.ExpiryEpoch == 0 {
+	// Active keys with no expiry were intentionally created without a lifespan and cannot be renewed.
+	// Deprecated keys with ExpiryEpoch==0 are legacy keys — renewal is allowed and the state engine
+	// will base the new expiry on the current epoch.
+	if key.Status == tss_db.TssKeyActive && key.ExpiryEpoch == 0 {
 		return result.Err[string](errors.New("key has no expiry to renew"))
 	}
 
@@ -648,10 +651,12 @@ func (ctx *contractExecutionContext) TssKeySign(keyId string, msg string) result
 	keyInfo, err := ctx.callSession.TssKeys.FindKey(fullKey)
 
 	if err == mongo.ErrNoDocuments {
+		fmt.Printf("[TSS] TssKeySign rejected: key not found keyId=%s\n", fullKey)
 		return result.Ok("fail")
 	}
 
-	if keyInfo.Status != "active" {
+	if keyInfo.Status != tss_db.TssKeyActive {
+		fmt.Printf("[TSS] TssKeySign rejected: key not active keyId=%s status=%s\n", fullKey, keyInfo.Status)
 		return result.Ok("fail")
 	}
 
