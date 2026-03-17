@@ -1094,7 +1094,7 @@ func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionI
 		tssMgr.bufferLock.RUnlock()
 
 		signedMap := make(map[string]bool)
-		for signedWeight < (weightTotal * 2 / 3) {
+		for signedWeight*3 < weightTotal*2 {
 			msg := <-sigChan
 
 			var member dids.Member
