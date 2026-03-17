@@ -146,6 +146,30 @@ func (tssKeys *tssKeys) FindEpochKeys(epoch uint64) ([]TssKey, error) {
 	return keys, nil
 }
 
+// DeprecateLegacyKeys bulk-deprecates all active keys that have no expiry epoch set.
+// deprecated_height is left at 0, meaning no retirement clock is running — the key
+// stays deprecated until renewed.
+func (tssKeys *tssKeys) DeprecateLegacyKeys() error {
+	_, err := tssKeys.UpdateMany(context.Background(), bson.M{
+		"status": TssKeyActive,
+		"$or": []bson.M{
+			{"expiry_epoch": bson.M{"$exists": false}},
+			{"expiry_epoch": 0},
+		},
+	}, bson.M{
+		"$set": bson.M{
+			"status":            TssKeyDeprecated,
+			"deprecated_height": 0,
+		},
+	})
+	if err != nil {
+		fmt.Printf("[TSS] [DB] DeprecateLegacyKeys FAILED err=%v\n", err)
+	} else {
+		fmt.Printf("[TSS] [DB] DeprecateLegacyKeys OK\n")
+	}
+	return err
+}
+
 func NewKeys(d *vsc.VscDb) TssKeys {
 	return &tssKeys{db.NewCollection(d.DbInstance, "tss_keys")}
 }

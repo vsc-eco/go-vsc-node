@@ -7,11 +7,17 @@ import (
 )
 
 // MaxKeyEpochs is the maximum number of epochs a key may be created or renewed for at once.
-const MaxKeyEpochs = uint64(52)
+// about 3 months
+const MaxKeyEpochs = uint64(365)
 
 // KeyDeprecationGracePeriod is the number of blocks a key stays in "deprecated" status before
-// being permanently retired (keystore entry deleted). At ~3s/block this is roughly 1 week.
-const KeyDeprecationGracePeriod = uint64(201600)
+// being permanently retired (keystore entry deleted). At ~3s/block this is roughly 2 weeks.
+const KeyDeprecationGracePeriod = uint64(403200)
+
+// KeyRetirementEnabled controls whether deprecated keys ever advance to retired.
+// When false, all newly deprecated keys receive deprecated_height=0, meaning no retirement
+// clock is started and the key stays deprecated indefinitely until renewed.
+const KeyRetirementEnabled = false
 
 type TssKeys interface {
 	a.Plugin
@@ -24,6 +30,11 @@ type TssKeys interface {
 	FindDeprecatingKeys(epoch uint64) ([]TssKey, error)
 	// FindNewlyRetired returns deprecated keys whose grace period has just elapsed.
 	FindNewlyRetired(blockHeight uint64) ([]TssKey, error)
+	// DeprecateLegacyKeys marks all active keys with no expiry as deprecated (deprecated_height=0).
+	// Called once at node startup so pre-expiry-system keys are no longer reshared or signed.
+	// Keys with deprecated_height=0 are not subject to the retirement grace period — they stay
+	// deprecated until explicitly renewed.
+	DeprecateLegacyKeys() error
 }
 
 type TssRequests interface {
@@ -77,14 +88,14 @@ type CommitmentMetadata struct {
 
 type TssCommitment struct {
 	//type = blame, reshare
-	Type        string               `json:"type"         bson:"type"`
-	BlockHeight uint64               `json:"block_height" bson:"block_height"`
-	Epoch       uint64               `json:"epoch"        bson:"epoch"`
-	Commitment  string               `json:"commitment"   bson:"commitment"`
-	KeyId       string               `json:"key_id"       bson:"key_id"`
-	TxId        string               `json:"tx_id"        bson:"tx_id"`
-	PublicKey   *string              `json:"public_key"   bson:"public_key"`
-	Metadata    *CommitmentMetadata  `json:"metadata"     bson:"metadata,omitempty"`
+	Type        string              `json:"type"         bson:"type"`
+	BlockHeight uint64              `json:"block_height" bson:"block_height"`
+	Epoch       uint64              `json:"epoch"        bson:"epoch"`
+	Commitment  string              `json:"commitment"   bson:"commitment"`
+	KeyId       string              `json:"key_id"       bson:"key_id"`
+	TxId        string              `json:"tx_id"        bson:"tx_id"`
+	PublicKey   *string             `json:"public_key"   bson:"public_key"`
+	Metadata    *CommitmentMetadata `json:"metadata"     bson:"metadata,omitempty"`
 }
 
 type TssKeyAlgo string

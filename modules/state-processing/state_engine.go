@@ -196,7 +196,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
 			for _, k := range deprecating {
 				k.Status = tss_db.TssKeyDeprecated
-				k.DeprecatedHeight = int64(block.BlockNumber)
+				if tss_db.KeyRetirementEnabled {
+					k.DeprecatedHeight = int64(block.BlockNumber)
+				}
 				se.tssKeys.SetKey(k)
 				fmt.Printf("[TSS] [L1] Key deprecated keyId=%s expiryEpoch=%d blockHeight=%d\n",
 					k.Id, k.ExpiryEpoch, block.BlockNumber)
@@ -1492,7 +1494,10 @@ func (se *StateEngine) Commit() {
 }
 
 func (se *StateEngine) Init() error {
-
+	// One-time migration: deprecate any active keys that pre-date the expiry system.
+	// These keys have no ExpiryEpoch and would otherwise reshare forever.
+	// deprecated_height=0 means no retirement clock — they stay deprecated until renewed.
+	se.tssKeys.DeprecateLegacyKeys()
 	return nil
 }
 
