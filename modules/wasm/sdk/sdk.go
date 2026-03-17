@@ -16,7 +16,7 @@ import (
 	wasm_types "vsc-node/modules/wasm/types"
 
 	"github.com/JustinKnueppel/go-result"
-	"github.com/ipfs/go-cid"
+	"github.com/btcsuite/btcd/btcutil/base58"
 )
 
 type SdkResultStruct = wasm_types.WasmResultStruct
@@ -269,7 +269,11 @@ var SdkModule = map[string]sdkFunc{
 			return ret("user:hive")
 		case strings.HasPrefix(addr, "contract:"):
 			contractId := strings.TrimPrefix(addr, "contract:")
-			if _, err := cid.Decode(contractId); err != nil {
+			if !strings.HasPrefix(contractId, "vsc1") || len(contractId) != 38 {
+				return ret("unknown")
+			}
+			_, ver, err := base58.CheckDecode(contractId[4:])
+			if err != nil || ver != 0x1a {
 				return ret("unknown")
 			}
 			return ret("contract")
