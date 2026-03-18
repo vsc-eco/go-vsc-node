@@ -1585,7 +1585,558 @@ func TestTss(t *testing.T) {
 	excludedNodes.Delete(5)
 	mes.WitnessNames = originalWitnessNames
 
-	log.Info("All 10 TSS phases completed successfully!")
+	log.Info("Phases 1-10 completed!")
+
+	// =====================================================
+	// PHASE 11: SIMULTANEOUS KEYGEN + RESHARE (block 700)
+	// Verifies that keygen for a new key and reshare for an
+	// existing key can run in the same RunActions batch, and
+	// that both commitments survive the DB upsert (composite
+	// {key_id, tx_id} filter) when sharing the same tx_id.
+	// =====================================================
+	log.Info("=== PHASE 11: SIMULTANEOUS KEYGEN + RESHARE ===")
+
+	// Wait for Phase 10 lock to release
+	time.Sleep(5 * time.Second)
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Neutralize test-key-2: set to active with epoch 5 so it's
+	// skipped by both FindNewKeys (not "created") and FindEpochKeys(5) (epoch not < 5).
+	for _, node := range nodes {
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id:     "test-key-2",
+			Status: "active",
+			Algo:   tss_db.EcdsaType,
+			Epoch:  5,
+		})
+	}
+
+	// Insert Phase 10 reshare commitment for test-key (epoch 4, 4-member bitset)
+	bitset4Phase10 := big.NewInt(0)
+	for i := 0; i < 4; i++ {
+		bitset4Phase10.SetBit(bitset4Phase10, i, 1)
+	}
+	commitmentStr4 := base64.RawURLEncoding.EncodeToString(bitset4Phase10.Bytes())
+
+	for _, node := range nodes {
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type:        "reshare",
+			KeyId:       "test-key",
+			Epoch:       4,
+			BlockHeight: 600,
+			Commitment:  commitmentStr4,
+			TxId:        "mock-reshare-tx-4",
+		})
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id:     "test-key",
+			Status: "active",
+			Algo:   tss_db.EcdsaType,
+			Epoch:  4,
+		})
+	}
+
+	// Insert new key for keygen
+	for _, node := range nodes {
+		node.tssKeys.InsertKey("test-key-multi", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
+	}
+
+	// Store epoch 5 election with all 6 members
+	for _, node := range nodes {
+		err := node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{
+				Epoch: 5,
+				NetId: "vsc-mocknet",
+				Type:  "initial",
+			},
+			ElectionDataInfo: elections.ElectionDataInfo{
+				Members: members,
+				Weights: weights,
+			},
+			BlockHeight: 690,
+		})
+		if err != nil {
+			t.Fatalf("Failed to store election epoch 5: %v", err)
+		}
+	}
+
+	// Reset broadcast captures
+	mu.Lock()
+	keygenBroadcast = nil
+	reshareBroadcast = nil
+	mu.Unlock()
+
+	connectAllPeers(t, nodes)
+	time.Sleep(2 * time.Second)
+
+	// Process blocks: keygen for test-key-multi + reshare for test-key at block 700
+	log.Info("Processing blocks to trigger simultaneous keygen+reshare at block 700...")
+	processBlocks(nodes, 606, 698, &headHeight)
+	headHeight = 720
+	for bh := uint64(699); bh <= 705; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Wait for BOTH keygen and reshare broadcasts
+	log.Info("Waiting for simultaneous keygen+reshare to complete...")
+	bothDone := false
+	for i := 0; i < 240; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := keygenBroadcast != nil && reshareBroadcast != nil
+		mu.Unlock()
+		if done {
+			bothDone = true
+			log.Info("Both keygen and reshare broadcasts detected!")
+			break
+		}
+	}
+
+	if !bothDone {
+		mu.Lock()
+		kg := keygenBroadcast != nil
+		rs := reshareBroadcast != nil
+		mu.Unlock()
+		t.Fatalf("Phase 11: Timed out waiting for broadcasts (keygen=%v, reshare=%v)", kg, rs)
+	}
+
+	// Verify broadcast contains both entry types
+	mu.Lock()
+	if keygenBroadcast != nil {
+		foundKeygen := false
+		for _, op := range keygenBroadcast.Operations {
+			raw, _ := json.Marshal(op)
+			var cj struct {
+				Json string `json:"json"`
+			}
+			json.Unmarshal(raw, &cj)
+			var payload map[string]interface{}
+			json.Unmarshal([]byte(cj.Json), &payload)
+			for _, v := range payload {
+				if m, ok := v.(map[string]interface{}); ok {
+					if tp, _ := m["type"].(string); tp == "keygen" {
+						foundKeygen = true
+					}
+				}
+			}
+		}
+		if !foundKeygen {
+			t.Error("Phase 11: keygen broadcast missing keygen entry")
+		}
+	}
+	if reshareBroadcast != nil {
+		foundReshare := false
+		for _, op := range reshareBroadcast.Operations {
+			raw, _ := json.Marshal(op)
+			var cj struct {
+				Json string `json:"json"`
+			}
+			json.Unmarshal(raw, &cj)
+			var payload map[string]interface{}
+			json.Unmarshal([]byte(cj.Json), &payload)
+			for _, v := range payload {
+				if m, ok := v.(map[string]interface{}); ok {
+					if tp, _ := m["type"].(string); tp == "reshare" {
+						foundReshare = true
+					}
+				}
+			}
+		}
+		if !foundReshare {
+			t.Error("Phase 11: reshare broadcast missing reshare entry")
+		}
+	}
+	mu.Unlock()
+
+	// Critical DB test: insert both commitments with the SAME tx_id.
+	// With the old {tx_id}-only filter, the second SetCommitmentData would
+	// overwrite the first. With the {key_id, tx_id} fix, both persist.
+	for _, node := range nodes {
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type:        "reshare",
+			KeyId:       "test-key",
+			Epoch:       5,
+			BlockHeight: 700,
+			Commitment:  commitmentStr,
+			TxId:        "mock-multi-tx",
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type:        "keygen",
+			KeyId:       "test-key-multi",
+			Epoch:       5,
+			BlockHeight: 700,
+			Commitment:  commitmentStr,
+			TxId:        "mock-multi-tx", // same tx_id as above
+		})
+	}
+
+	// Verify both records exist (the core assertion for the DB fix)
+	c1, err := nodes[0].tssCommitments.GetCommitment("test-key", 5)
+	if err != nil {
+		t.Fatalf("Phase 11: Failed to get commitment for test-key epoch 5: %v", err)
+	}
+	if c1.Type != "reshare" {
+		t.Errorf("Phase 11: Expected test-key commitment type 'reshare', got '%s'", c1.Type)
+	}
+	if c1.TxId != "mock-multi-tx" {
+		t.Errorf("Phase 11: Expected test-key tx_id 'mock-multi-tx', got '%s'", c1.TxId)
+	}
+
+	c2, err := nodes[0].tssCommitments.GetCommitment("test-key-multi", 5)
+	if err != nil {
+		t.Fatalf("Phase 11: Failed to get commitment for test-key-multi epoch 5: %v", err)
+	}
+	if c2.Type != "keygen" {
+		t.Errorf("Phase 11: Expected test-key-multi commitment type 'keygen', got '%s'", c2.Type)
+	}
+	if c2.TxId != "mock-multi-tx" {
+		t.Errorf("Phase 11: Expected test-key-multi tx_id 'mock-multi-tx', got '%s'", c2.TxId)
+	}
+	log.Info("Phase 11: Both commitments stored correctly with same tx_id")
+
+	// Update key states
+	for _, node := range nodes {
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id:     "test-key",
+			Status: "active",
+			Algo:   tss_db.EcdsaType,
+			Epoch:  5,
+		})
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id:     "test-key-multi",
+			Status: "active",
+			Algo:   tss_db.EcdsaType,
+			Epoch:  5,
+		})
+	}
+
+	log.Info("Phase 11 completed!")
+
+	// =====================================================
+	// PHASE 12: SIGN AFTER MULTI-KEY OPERATION (block 750)
+	// Confirms test-key still works for signing after being
+	// reshared alongside another key's keygen.
+	// =====================================================
+	log.Info("=== PHASE 12: SIGN AFTER MULTI-KEY OPERATION ===")
+
+	time.Sleep(5 * time.Second)
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Insert signing request for test-key
+	msgHex5 := "5555555555555555555555555555555555555555555555555555555555555555"
+	for _, node := range nodes {
+		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+			KeyId:  "test-key",
+			Msg:    msgHex5,
+			Status: tss_db.SignPending,
+		})
+	}
+
+	mu.Lock()
+	signBroadcast = nil
+	mu.Unlock()
+
+	connectAllPeers(t, nodes)
+	time.Sleep(2 * time.Second)
+
+	log.Info("Processing blocks to trigger signing at block 750...")
+	processBlocks(nodes, 706, 748, &headHeight)
+	headHeight = 770
+	for bh := uint64(749); bh <= 755; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	log.Info("Waiting for signing after multi-key operation...")
+	signDone = false
+	for i := 0; i < 90; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := signBroadcast != nil
+		mu.Unlock()
+		if done {
+			signDone = true
+			log.Info("Signing after multi-key operation completed!")
+			break
+		}
+	}
+
+	if !signDone {
+		t.Fatal("Phase 12: Signing after multi-key operation did not complete within timeout")
+	}
+
+	mu.Lock()
+	if signBroadcast != nil {
+		for _, op := range signBroadcast.Operations {
+			raw, _ := json.Marshal(op)
+			var cj struct {
+				Json string `json:"json"`
+			}
+			json.Unmarshal(raw, &cj)
+			var payload struct {
+				Packet []struct {
+					KeyId string `json:"key_id"`
+					Msg   string `json:"msg"`
+					Sig   string `json:"sig"`
+				} `json:"packet"`
+			}
+			json.Unmarshal([]byte(cj.Json), &payload)
+			for _, pkt := range payload.Packet {
+				if pkt.KeyId == "test-key" && pkt.Msg == msgHex5 {
+					if pkt.Sig == "" {
+						t.Error("Phase 12: Signature for test-key is empty")
+					} else {
+						log.Info("Phase 12: signature verified", "msg", pkt.Msg, "sig", pkt.Sig)
+					}
+				}
+			}
+		}
+	}
+	mu.Unlock()
+
+	log.Info("Phase 12 completed!")
+
+	log.Info("All 12 TSS phases completed successfully!")
+
+	// =====================================================
+	// PHASE 13: KEY EXPIRATION (block 800, epoch 6)
+	// Verifies that key deprecation mechanics work: a key
+	// whose ExpiryEpoch is reached gets flagged by
+	// FindDeprecatingKeys and transitions to deprecated.
+	// =====================================================
+	log.Info("=== PHASE 13: KEY EXPIRATION ===")
+
+	time.Sleep(5 * time.Second)
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Set test-key to have ExpiryEpoch=6 (about to expire at current epoch)
+	for _, node := range nodes {
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id:          "test-key",
+			Status:      tss_db.TssKeyActive,
+			Algo:        tss_db.EcdsaType,
+			Epoch:       5,
+			Epochs:      tss_db.MaxKeyEpochs,
+			ExpiryEpoch: 6,
+		})
+	}
+
+	// Verify FindDeprecatingKeys returns test-key at epoch 6
+	deprecating, err := nodes[0].tssKeys.FindDeprecatingKeys(6)
+	if err != nil {
+		t.Fatalf("Phase 13: FindDeprecatingKeys failed: %v", err)
+	}
+	foundDeprecating := false
+	for _, k := range deprecating {
+		if k.Id == "test-key" {
+			foundDeprecating = true
+			break
+		}
+	}
+	if !foundDeprecating {
+		t.Error("Phase 13: Expected FindDeprecatingKeys(6) to return test-key")
+	}
+
+	// FindDeprecatingKeys at epoch 5 should NOT return it (not yet expired)
+	notYet, err := nodes[0].tssKeys.FindDeprecatingKeys(5)
+	if err != nil {
+		t.Fatalf("Phase 13: FindDeprecatingKeys(5) failed: %v", err)
+	}
+	for _, k := range notYet {
+		if k.Id == "test-key" {
+			t.Error("Phase 13: FindDeprecatingKeys(5) should NOT return test-key (ExpiryEpoch=6)")
+		}
+	}
+
+	// Simulate what ProcessBlock does: deprecate the key on all nodes
+	for _, node := range nodes {
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id:          "test-key",
+			Status:      tss_db.TssKeyDeprecated,
+			Algo:        tss_db.EcdsaType,
+			Epoch:       5,
+			Epochs:      tss_db.MaxKeyEpochs,
+			ExpiryEpoch: 6,
+		})
+	}
+
+	// Verify key is now deprecated
+	deprecatedKey, err := nodes[0].tssKeys.FindKey("test-key")
+	if err != nil {
+		t.Fatalf("Phase 13: FindKey after deprecation failed: %v", err)
+	}
+	if deprecatedKey.Status != tss_db.TssKeyDeprecated {
+		t.Errorf("Phase 13: Expected key status 'deprecated', got '%s'", deprecatedKey.Status)
+	}
+
+	// FindEpochKeys should NOT return the deprecated key
+	epochKeys, _ := nodes[0].tssKeys.FindEpochKeys(7)
+	for _, k := range epochKeys {
+		if k.Id == "test-key" {
+			t.Error("Phase 13: FindEpochKeys(7) should NOT return deprecated test-key")
+		}
+	}
+
+	log.Info("Phase 13 completed!")
+
+	// =====================================================
+	// PHASE 14: KEY RENEWAL + SIGN (block 800)
+	// Renews the deprecated key, verifies reactivation and
+	// DB query correctness, then signs to confirm the key
+	// still works end-to-end after renewal.
+	// =====================================================
+	log.Info("=== PHASE 14: KEY RENEWAL + SIGN ===")
+
+	time.Sleep(5 * time.Second)
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Simulate renewal (as system_txs.go does): reactivate with new expiry.
+	// Key stays at epoch 5 (its actual crypto-material epoch in flatfs).
+	renewedExpiry := uint64(6 + tss_db.MaxKeyEpochs)
+	for _, node := range nodes {
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id:          "test-key",
+			Status:      tss_db.TssKeyActive,
+			Algo:        tss_db.EcdsaType,
+			Epoch:       5,
+			Epochs:      tss_db.MaxKeyEpochs,
+			ExpiryEpoch: renewedExpiry,
+		})
+	}
+
+	// Verify key is active again with correct expiry
+	renewedKey, err := nodes[0].tssKeys.FindKey("test-key")
+	if err != nil {
+		t.Fatalf("Phase 14: FindKey after renewal failed: %v", err)
+	}
+	if renewedKey.Status != tss_db.TssKeyActive {
+		t.Errorf("Phase 14: Expected key status 'active' after renewal, got '%s'", renewedKey.Status)
+	}
+	if renewedKey.ExpiryEpoch != renewedExpiry {
+		t.Errorf("Phase 14: Expected ExpiryEpoch=%d after renewal, got %d", renewedExpiry, renewedKey.ExpiryEpoch)
+	}
+
+	// FindDeprecatingKeys should no longer return this key at epoch 6
+	notDeprecating, _ := nodes[0].tssKeys.FindDeprecatingKeys(6)
+	for _, k := range notDeprecating {
+		if k.Id == "test-key" {
+			t.Error("Phase 14: FindDeprecatingKeys(6) should NOT return renewed test-key")
+		}
+	}
+
+	// FindEpochKeys(6) should return it (active, epoch 5 < 6, ExpiryEpoch > 6)
+	epochKeysAfterRenewal, _ := nodes[0].tssKeys.FindEpochKeys(6)
+	foundForReshare := false
+	for _, k := range epochKeysAfterRenewal {
+		if k.Id == "test-key" {
+			foundForReshare = true
+			break
+		}
+	}
+	if !foundForReshare {
+		t.Error("Phase 14: FindEpochKeys(6) should return renewed test-key for reshare")
+	}
+
+	// Sign with renewed key at block 800 (TSS_SIGN_INTERVAL = 50, 800 % 50 == 0)
+	msgHex6 := "6666666666666666666666666666666666666666666666666666666666666666"
+	for _, node := range nodes {
+		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+			KeyId:  "test-key",
+			Msg:    msgHex6,
+			Status: tss_db.SignPending,
+		})
+	}
+
+	mu.Lock()
+	signBroadcast = nil
+	mu.Unlock()
+
+	connectAllPeers(t, nodes)
+	time.Sleep(2 * time.Second)
+
+	// Use block 850 (850 % 50 == 0, 850 % 100 != 0) to trigger signing
+	// without also triggering a reshare interval that would keyLock test-key.
+	log.Info("Processing blocks to trigger signing at block 850...")
+	processBlocks(nodes, 756, 848, &headHeight)
+	headHeight = 870
+	for bh := uint64(849); bh <= 855; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	log.Info("Waiting for signing with renewed key...")
+	signDone = false
+	for i := 0; i < 90; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := signBroadcast != nil
+		mu.Unlock()
+		if done {
+			signDone = true
+			log.Info("Signing with renewed key completed!")
+			break
+		}
+	}
+
+	if !signDone {
+		t.Fatal("Phase 14: Signing with renewed key did not complete within timeout")
+	}
+
+	mu.Lock()
+	if signBroadcast != nil {
+		for _, op := range signBroadcast.Operations {
+			raw, _ := json.Marshal(op)
+			var cj struct {
+				Json string `json:"json"`
+			}
+			json.Unmarshal(raw, &cj)
+			var payload struct {
+				Packet []struct {
+					KeyId string `json:"key_id"`
+					Msg   string `json:"msg"`
+					Sig   string `json:"sig"`
+				} `json:"packet"`
+			}
+			json.Unmarshal([]byte(cj.Json), &payload)
+			for _, pkt := range payload.Packet {
+				if pkt.KeyId == "test-key" && pkt.Msg == msgHex6 {
+					if pkt.Sig == "" {
+						t.Error("Phase 14: Signature for renewed test-key is empty")
+					} else {
+						log.Info("Phase 14: renewed key signature verified", "msg", pkt.Msg, "sig", pkt.Sig)
+					}
+				}
+			}
+		}
+	}
+	mu.Unlock()
+
+	log.Info("Phase 14 completed!")
+
+	log.Info("All 14 TSS phases completed successfully!")
 }
 
 // blameBitset creates a base64-encoded bitset marking the given member indices as blamed.
@@ -2099,6 +2650,307 @@ func TestBlameScore(t *testing.T) {
 		// Verify other nodes are not banned
 		if result.BannedNodes["node-a"] || result.BannedNodes["node-c"] || result.BannedNodes["node-d"] {
 			t.Errorf("Expected only node-b banned, got BannedNodes=%v", result.BannedNodes)
+		}
+	})
+}
+
+func dropLifecycleTestDatabase() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+	if err != nil {
+		return
+	}
+	defer client.Disconnect(ctx)
+	client.Database("go-vsc-lifecycle-test").Drop(ctx)
+}
+
+func TestKeyLifecycle(t *testing.T) {
+	dropLifecycleTestDatabase()
+	t.Cleanup(func() {
+		dropLifecycleTestDatabase()
+		os.RemoveAll("data-dir-lifecycle")
+	})
+
+	// Set up a minimal node with real MongoDB (reuse makeBlameNode pattern)
+	path := "data-dir-lifecycle"
+	os.RemoveAll(path)
+	os.Mkdir(path, os.ModePerm)
+
+	dbConf := db.NewDbConfig(path)
+	identity := common.NewIdentityConfig(path)
+	p2pConf := libp2p.NewConfig(path)
+	aggregate.New([]aggregate.Plugin{dbConf, identity, p2pConf}).Init()
+	dbConf.SetDbName("go-vsc-lifecycle-test")
+
+	database := db.New(dbConf)
+	vscDb := vsc.New(database, dbConf)
+	tssKeys := tss_db.NewKeys(vscDb)
+
+	agg := aggregate.New([]aggregate.Plugin{
+		dbConf,
+		identity,
+		database,
+		vscDb,
+		tssKeys,
+	})
+
+	go test_utils.RunPlugin(t, agg)
+	time.Sleep(3 * time.Second)
+	defer agg.Stop()
+
+	t.Run("activation_sets_expiry", func(t *testing.T) {
+		dropLifecycleTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		tssKeys.InsertKey("key-expiry-1", tss_db.EcdsaType, 10)
+
+		// Simulate activation at epoch 5 (as state_engine.go does)
+		tssKeys.SetKey(tss_db.TssKey{
+			Id:          "key-expiry-1",
+			Status:      tss_db.TssKeyActive,
+			Algo:        tss_db.EcdsaType,
+			Epoch:       5,
+			ExpiryEpoch: 5 + 10, // epoch + epochs
+		})
+
+		key, err := tssKeys.FindKey("key-expiry-1")
+		if err != nil {
+			t.Fatalf("FindKey failed: %v", err)
+		}
+		if key.ExpiryEpoch != 15 {
+			t.Errorf("Expected ExpiryEpoch=15, got %d", key.ExpiryEpoch)
+		}
+		if key.Status != tss_db.TssKeyActive {
+			t.Errorf("Expected status 'active', got '%s'", key.Status)
+		}
+	})
+
+	t.Run("find_deprecating_keys", func(t *testing.T) {
+		dropLifecycleTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		// Key A: expires at epoch 10
+		tssKeys.InsertKey("key-dep-a", tss_db.EcdsaType, 10)
+		tssKeys.SetKey(tss_db.TssKey{
+			Id: "key-dep-a", Status: tss_db.TssKeyActive, Algo: tss_db.EcdsaType,
+			Epoch: 0, ExpiryEpoch: 10,
+		})
+		// Key B: expires at epoch 20
+		tssKeys.InsertKey("key-dep-b", tss_db.EcdsaType, 20)
+		tssKeys.SetKey(tss_db.TssKey{
+			Id: "key-dep-b", Status: tss_db.TssKeyActive, Algo: tss_db.EcdsaType,
+			Epoch: 0, ExpiryEpoch: 20,
+		})
+
+		// At epoch 9: neither should be returned
+		keys9, _ := tssKeys.FindDeprecatingKeys(9)
+		if len(keys9) != 0 {
+			t.Errorf("FindDeprecatingKeys(9): expected 0, got %d", len(keys9))
+		}
+
+		// At epoch 10: only key A
+		keys10, _ := tssKeys.FindDeprecatingKeys(10)
+		if len(keys10) != 1 || keys10[0].Id != "key-dep-a" {
+			ids := make([]string, len(keys10))
+			for i, k := range keys10 {
+				ids[i] = k.Id
+			}
+			t.Errorf("FindDeprecatingKeys(10): expected [key-dep-a], got %v", ids)
+		}
+
+		// At epoch 20: both
+		keys20, _ := tssKeys.FindDeprecatingKeys(20)
+		if len(keys20) != 2 {
+			t.Errorf("FindDeprecatingKeys(20): expected 2, got %d", len(keys20))
+		}
+	})
+
+	t.Run("find_epoch_keys_excludes_expired", func(t *testing.T) {
+		dropLifecycleTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		tssKeys.InsertKey("key-epoch-1", tss_db.EcdsaType, 3)
+		tssKeys.SetKey(tss_db.TssKey{
+			Id: "key-epoch-1", Status: tss_db.TssKeyActive, Algo: tss_db.EcdsaType,
+			Epoch: 2, ExpiryEpoch: 5,
+		})
+
+		// Epoch 3: key.Epoch(2) < 3 and ExpiryEpoch(5) > 3 → included
+		keys3, _ := tssKeys.FindEpochKeys(3)
+		found3 := false
+		for _, k := range keys3 {
+			if k.Id == "key-epoch-1" {
+				found3 = true
+			}
+		}
+		if !found3 {
+			t.Error("FindEpochKeys(3): expected key-epoch-1 to be included (not yet expired)")
+		}
+
+		// Epoch 5: ExpiryEpoch(5) is NOT > 5 → excluded
+		keys5, _ := tssKeys.FindEpochKeys(5)
+		for _, k := range keys5 {
+			if k.Id == "key-epoch-1" {
+				t.Error("FindEpochKeys(5): expected key-epoch-1 to be excluded (expiry reached)")
+			}
+		}
+
+		// Epoch 6: same, still excluded
+		keys6, _ := tssKeys.FindEpochKeys(6)
+		for _, k := range keys6 {
+			if k.Id == "key-epoch-1" {
+				t.Error("FindEpochKeys(6): expected key-epoch-1 to be excluded (past expiry)")
+			}
+		}
+	})
+
+	t.Run("deprecate_legacy_keys", func(t *testing.T) {
+		dropLifecycleTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		// Legacy key: no expiry
+		tssKeys.InsertKey("key-legacy", tss_db.EcdsaType, 0)
+		tssKeys.SetKey(tss_db.TssKey{
+			Id: "key-legacy", Status: tss_db.TssKeyActive, Algo: tss_db.EcdsaType,
+			Epoch: 1, ExpiryEpoch: 0,
+		})
+		// Normal key: has expiry
+		tssKeys.InsertKey("key-normal", tss_db.EcdsaType, 100)
+		tssKeys.SetKey(tss_db.TssKey{
+			Id: "key-normal", Status: tss_db.TssKeyActive, Algo: tss_db.EcdsaType,
+			Epoch: 1, ExpiryEpoch: 101,
+		})
+
+		err := tssKeys.DeprecateLegacyKeys()
+		if err != nil {
+			t.Fatalf("DeprecateLegacyKeys failed: %v", err)
+		}
+
+		legacy, _ := tssKeys.FindKey("key-legacy")
+		if legacy.Status != tss_db.TssKeyDeprecated {
+			t.Errorf("Expected legacy key to be deprecated, got '%s'", legacy.Status)
+		}
+		if legacy.DeprecatedHeight != 0 {
+			t.Errorf("Expected legacy DeprecatedHeight=0, got %d", legacy.DeprecatedHeight)
+		}
+
+		normal, _ := tssKeys.FindKey("key-normal")
+		if normal.Status != tss_db.TssKeyActive {
+			t.Errorf("Expected normal key to remain active, got '%s'", normal.Status)
+		}
+	})
+
+	t.Run("renewal_reactivates_deprecated", func(t *testing.T) {
+		dropLifecycleTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		tssKeys.InsertKey("key-renew", tss_db.EcdsaType, 10)
+		// Active key that got deprecated
+		tssKeys.SetKey(tss_db.TssKey{
+			Id: "key-renew", Status: tss_db.TssKeyDeprecated, Algo: tss_db.EcdsaType,
+			Epoch: 5, ExpiryEpoch: 15, DeprecatedHeight: 1000,
+		})
+
+		// Simulate renewal at epoch 20 (as system_txs.go does)
+		currentEpoch := uint64(20)
+		renewEpochs := uint64(100)
+		newExpiry := currentEpoch + renewEpochs
+		tssKeys.SetKey(tss_db.TssKey{
+			Id: "key-renew", Status: tss_db.TssKeyActive, Algo: tss_db.EcdsaType,
+			Epoch: 5, ExpiryEpoch: newExpiry, DeprecatedHeight: 0,
+		})
+
+		key, _ := tssKeys.FindKey("key-renew")
+		if key.Status != tss_db.TssKeyActive {
+			t.Errorf("Expected reactivated status 'active', got '%s'", key.Status)
+		}
+		if key.ExpiryEpoch != 120 {
+			t.Errorf("Expected ExpiryEpoch=120, got %d", key.ExpiryEpoch)
+		}
+		if key.DeprecatedHeight != 0 {
+			t.Errorf("Expected DeprecatedHeight=0 after renewal, got %d", key.DeprecatedHeight)
+		}
+
+		// Should no longer show up in deprecating keys at old expiry
+		dep, _ := tssKeys.FindDeprecatingKeys(15)
+		for _, k := range dep {
+			if k.Id == "key-renew" {
+				t.Error("Renewed key should not appear in FindDeprecatingKeys at old expiry epoch")
+			}
+		}
+	})
+
+	t.Run("renewal_capped_at_max", func(t *testing.T) {
+		dropLifecycleTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		tssKeys.InsertKey("key-cap", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
+		tssKeys.SetKey(tss_db.TssKey{
+			Id: "key-cap", Status: tss_db.TssKeyDeprecated, Algo: tss_db.EcdsaType,
+			Epoch: 5, ExpiryEpoch: 10,
+		})
+
+		// Simulate renewal with epochs exceeding MaxKeyEpochs (apply cap as system_txs.go does)
+		currentEpoch := uint64(20)
+		requestedEpochs := tss_db.MaxKeyEpochs + 100
+		maxExpiry := currentEpoch + tss_db.MaxKeyEpochs
+		newExpiry := currentEpoch + requestedEpochs
+		if newExpiry > maxExpiry {
+			newExpiry = maxExpiry
+		}
+
+		tssKeys.SetKey(tss_db.TssKey{
+			Id: "key-cap", Status: tss_db.TssKeyActive, Algo: tss_db.EcdsaType,
+			Epoch: 5, ExpiryEpoch: newExpiry, DeprecatedHeight: 0,
+		})
+
+		key, _ := tssKeys.FindKey("key-cap")
+		if key.ExpiryEpoch != maxExpiry {
+			t.Errorf("Expected ExpiryEpoch capped at %d, got %d", maxExpiry, key.ExpiryEpoch)
+		}
+	})
+
+	t.Run("find_newly_retired", func(t *testing.T) {
+		dropLifecycleTestDatabase()
+		time.Sleep(200 * time.Millisecond)
+
+		tssKeys.InsertKey("key-retire", tss_db.EcdsaType, 10)
+		tssKeys.SetKey(tss_db.TssKey{
+			Id: "key-retire", Status: tss_db.TssKeyDeprecated, Algo: tss_db.EcdsaType,
+			Epoch: 5, ExpiryEpoch: 15, DeprecatedHeight: 1000,
+		})
+
+		// Before grace period: should not be returned
+		before, _ := tssKeys.FindNewlyRetired(1000 + tss_db.KeyDeprecationGracePeriod - 1)
+		for _, k := range before {
+			if k.Id == "key-retire" {
+				t.Error("FindNewlyRetired should NOT return key before grace period elapses")
+			}
+		}
+
+		// At grace period boundary: should be returned
+		at, _ := tssKeys.FindNewlyRetired(1000 + tss_db.KeyDeprecationGracePeriod)
+		found := false
+		for _, k := range at {
+			if k.Id == "key-retire" {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("FindNewlyRetired should return key when grace period elapses")
+		}
+
+		// After grace period: should still be returned
+		after, _ := tssKeys.FindNewlyRetired(1000 + tss_db.KeyDeprecationGracePeriod + 100)
+		foundAfter := false
+		for _, k := range after {
+			if k.Id == "key-retire" {
+				foundAfter = true
+			}
+		}
+		if !foundAfter {
+			t.Error("FindNewlyRetired should return key after grace period")
 		}
 	})
 }
