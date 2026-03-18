@@ -53,8 +53,8 @@ type TransactionOutput struct {
 }
 
 type TransactionRecord struct {
-	Id     string `json:"id" bson:"id"`
-	Status string `json:"status" bson:"status"`
+	Id     string            `json:"id" bson:"id"`
+	Status TransactionStatus `json:"status" bson:"status"`
 
 	//Auths involved in the transaction
 	RequiredAuths        []string `json:"required_auths" bson:"required_auths"`

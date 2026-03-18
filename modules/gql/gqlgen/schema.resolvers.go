@@ -762,11 +762,6 @@ func (r *transactionRecordResolver) RcLimit(ctx context.Context, obj *transactio
 	return model.Uint64(obj.RcLimit), nil
 }
 
-// Status is the resolver for the status field.
-func (r *transactionRecordResolver) Status(ctx context.Context, obj *transactions.TransactionRecord) (transactions.TransactionStatus, error) {
-	panic(fmt.Errorf("not implemented: Status - status"))
-}
-
 // LedgerActions is the resolver for the ledger_actions field.
 func (r *transactionRecordResolver) LedgerActions(ctx context.Context, obj *transactions.TransactionRecord) ([]*LedgerAction, error) {
 	lrs, err := r.Actions.GetActionsByTxId(obj.Id)
