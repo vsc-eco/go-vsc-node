@@ -6,6 +6,9 @@ type mappingBotConfig struct {
 	ContractId           string
 	ConnectedGraphQLAddr string
 	HttpPort             uint16
+	// SignApiKey authenticates requests to the /sign endpoint.
+	// If empty, /sign is disabled for safety.
+	SignApiKey string
 }
 
 type mappingBotConfigStruct struct {
@@ -20,7 +23,7 @@ func NewMappingBotConfig(dataDir ...string) *mappingBotConfigStruct {
 		dataDirPtr = &dataDir[0]
 	}
 	return &mappingBotConfigStruct{config.New(mappingBotConfig{
-		ContractId:           "ADD_BTC_MAPPING_CONTRACT_ID",
+		ContractId:           "ADD_MAPPING_CONTRACT_ID",
 		ConnectedGraphQLAddr: "0.0.0.0:8080",
 		HttpPort:             8000,
 	}, dataDirPtr)}
@@ -32,4 +35,14 @@ func (c *mappingBotConfigStruct) ContractId() string {
 
 func (c *mappingBotConfigStruct) HttpPort() uint16 {
 	return c.Get().HttpPort
+}
+
+func (c *mappingBotConfigStruct) SignApiKey() string {
+	return c.Get().SignApiKey
+}
+
+func (c *mappingBotConfigStruct) SetHttpPort(port uint16) {
+	cfg := c.Get()
+	cfg.HttpPort = port
+	c.Set(cfg)
 }

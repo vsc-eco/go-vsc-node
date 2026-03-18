@@ -161,6 +161,30 @@ func (m *MempoolClient) GetAddressTxs(btcAddress string) ([]Transaction, error) 
 	return txHistory, nil
 }
 
+// GetTxStatus checks whether a transaction is confirmed on the blockchain.
+// Returns (confirmed, error). If the tx is not found, returns (false, nil).
+func (m *MempoolClient) GetTxStatus(txid string) (bool, error) {
+	url := fmt.Sprintf("%s/tx/%s/status", m.baseURL, txid)
+	resp, err := m.client.Get(url)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("mempool API returned status %d for tx %s", resp.StatusCode, txid)
+	}
+
+	var status Status
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return false, fmt.Errorf("error decoding tx status: %w", err)
+	}
+	return status.Confirmed, nil
+}
+
 func (m *MempoolClient) PostTx(rawTx string) error {
 	url := fmt.Sprintf("%s/tx", m.baseURL)
 	resp, err := m.client.Post(url, "text/plain", bytes.NewReader([]byte(rawTx)))

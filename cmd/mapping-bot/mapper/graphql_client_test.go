@@ -6,23 +6,11 @@ import (
 	"net/http"
 	"testing"
 	"time"
+	"vsc-node/cmd/mapping-bot/chain"
 	"vsc-node/cmd/mapping-bot/database"
-	"vsc-node/cmd/mapping-bot/mempool"
 
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/hasura/go-graphql-client"
 )
-
-// noopTestMempoolClient satisfies MempoolClientIface without hitting any network.
-type noopTestMempoolClient struct{}
-
-func (n *noopTestMempoolClient) PostTx(_ string) error                             { return nil }
-func (n *noopTestMempoolClient) GetAddressTxs(_ string) ([]mempool.Transaction, error) {
-	return nil, nil
-}
-func (n *noopTestMempoolClient) GetRawBlock(_ string) ([]byte, error)               { return nil, nil }
-func (n *noopTestMempoolClient) GetBlockHashAtHeight(_ uint64) (string, int, error) { return "", 0, nil }
-func (n *noopTestMempoolClient) GetTipHeight() (uint64, error)                      { return 0, nil }
 
 // newIntegrationBot creates a Bot pointing at the real VSC API.
 func newIntegrationBot(t *testing.T) *Bot {
@@ -36,13 +24,14 @@ func newIntegrationBot(t *testing.T) *Bot {
 		db.Close(context.Background())
 	})
 	cfg := NewMappingBotConfig()
+	chainCfg := chain.NewBTCTestnet4(http.DefaultClient)
 	return &Bot{
-		Db:            db,
-		GqlClient:     graphql.NewClient(defaultGraphQLUrl, http.DefaultClient),
-		ChainParams:   &chaincfg.TestNet4Params,
-		BotConfig:     cfg,
-		L:             slog.Default(),
-		MempoolClient: &noopTestMempoolClient{},
+		Db:          db,
+		GqlClient:   graphql.NewClient(defaultGraphQLUrl, http.DefaultClient),
+		Chain:       chainCfg,
+		ChainParams: chainCfg.ChainParams,
+		BotConfig:   cfg,
+		L:           slog.Default(),
 	}
 }
 

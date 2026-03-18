@@ -298,6 +298,26 @@ func (s *StateStore) GetAllTransactions(ctx context.Context) ([]string, error) {
 	return txIDs, nil
 }
 
+// GetSentTransactionIDs returns the IDs of all transactions in the "sent" state
+func (s *StateStore) GetSentTransactionIDs(ctx context.Context) ([]string, error) {
+	cursor, err := s.txCollection.Find(ctx, bson.M{"state": TxStateSent})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sent transactions: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var results []Transaction
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("failed to decode results: %w", err)
+	}
+
+	txIDs := make([]string, len(results))
+	for i, tx := range results {
+		txIDs[i] = tx.TxID
+	}
+	return txIDs, nil
+}
+
 // DeleteOldPendingTransactions removes pending transactions created before the given age
 func (s *StateStore) DeleteOldPendingTransactions(ctx context.Context, age time.Duration) (int64, error) {
 	cutoffTime := time.Now().UTC().Add(-age)

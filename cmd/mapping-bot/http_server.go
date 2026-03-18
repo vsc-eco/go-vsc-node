@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,9 +18,9 @@ import (
 
 var requestValidator = validator.New(validator.WithRequiredStructEnabled())
 
-// staleBlockThreshold is how long without a processed block before health is degraded.
-// BTC mainnet averages ~10 min per block; 20 min gives one missed block of headroom.
-const staleBlockThreshold = 20 * time.Minute
+// staleBlockMultiplier is how many block intervals without a processed block
+// before health is degraded. 2x gives one missed block of headroom.
+const staleBlockMultiplier = 2
 
 func mapBotHttpServer(
 	ctx context.Context,
@@ -41,10 +40,13 @@ func mapBotHttpServer(
 }
 
 type healthResponse struct {
-	Status      string  `json:"status"`
-	BlockHeight uint64  `json:"blockHeight"`
-	LastBlockAt *string `json:"lastBlockAt"`
-	StaleSecs   *int64  `json:"staleSecs,omitempty"`
+	Status         string   `json:"status"`
+	BlockHeight    uint64   `json:"blockHeight"`
+	LastBlockAt    *string  `json:"lastBlockAt"`
+	StaleSecs      *int64   `json:"staleSecs,omitempty"`
+	PendingSentTxs int      `json:"pendingSentTxs"`            // txs broadcast but not yet confirmed
+	PendingUnsigned int     `json:"pendingUnsigned,omitempty"` // txs awaiting TSS signatures
+	Issues         []string `json:"issues,omitempty"`          // specific problems detected
 }
 
 func healthHandler(bot *mapper.Bot) http.HandlerFunc {
@@ -53,21 +55,49 @@ func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 
 		resp := healthResponse{BlockHeight: height}
 
+		// Count sent-but-unconfirmed txs and pending-unsigned txs
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		sentIDs, err := bot.Db.State.GetSentTransactionIDs(ctx)
+		if err == nil {
+			resp.PendingSentTxs = len(sentIDs)
+		}
+		pendingHashes, err := bot.Db.State.GetAllPendingSigHashes(ctx)
+		if err == nil && len(pendingHashes) > 0 {
+			resp.PendingUnsigned = len(pendingHashes)
+		}
+
+		var issues []string
+
 		if lastAt.IsZero() {
-			// No block processed yet this session — not necessarily unhealthy,
-			// could be a fresh start. Report status but return 200.
 			resp.Status = "starting"
 		} else {
 			ts := lastAt.UTC().Format(time.RFC3339)
 			resp.LastBlockAt = &ts
 			stale := int64(time.Since(lastAt).Seconds())
-			if time.Since(lastAt) > staleBlockThreshold {
-				resp.Status = "unhealthy"
+			staleThreshold := time.Duration(staleBlockMultiplier) * bot.Chain.BlockInterval
+			if time.Since(lastAt) > staleThreshold {
+				issues = append(issues, fmt.Sprintf("block processing stale for %ds", stale))
 				resp.StaleSecs = &stale
-				w.WriteHeader(http.StatusServiceUnavailable)
-			} else {
-				resp.Status = "ok"
 			}
+		}
+
+		// Flag if sent txs have been hanging too long (>1h)
+		if resp.PendingSentTxs > 0 {
+			issues = append(issues, fmt.Sprintf("%d txs broadcast but unconfirmed", resp.PendingSentTxs))
+		}
+
+		// Flag unsigned txs (waiting on TSS)
+		if resp.PendingUnsigned > 0 {
+			issues = append(issues, fmt.Sprintf("%d sig hashes awaiting TSS signatures", resp.PendingUnsigned))
+		}
+
+		if len(issues) > 0 {
+			resp.Status = "unhealthy"
+			resp.Issues = issues
+			w.WriteHeader(http.StatusServiceUnavailable)
+		} else if !lastAt.IsZero() {
+			resp.Status = "ok"
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -125,13 +155,11 @@ func requestHandler(
 			return
 		}
 
-		// make btc address
-		tag := sha256.Sum256([]byte(requestBody.Instruction))
-		btcAddr, _, err := createP2WSHAddressWithBackup(
-			primaryKey,
-			backupKey,
-			tag[:],
-			bot.ChainParams,
+		// Generate deposit address using the chain-specific address generator
+		btcAddr, _, err := bot.Chain.AddressGen.GenerateDepositAddress(
+			hex.EncodeToString(primaryKey),
+			hex.EncodeToString(backupKey),
+			requestBody.Instruction,
 		)
 		if err != nil {
 			writeResponse(w, http.StatusInternalServerError, "")
@@ -178,6 +206,18 @@ func signHandler(
 	bot *mapper.Bot,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Auth: require API key in Authorization header
+		apiKey := bot.BotConfig.SignApiKey()
+		if apiKey == "" {
+			writeResponse(w, http.StatusForbidden, "/sign endpoint disabled — set SignApiKey in config")
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "Bearer "+apiKey {
+			writeResponse(w, http.StatusUnauthorized, "invalid or missing API key")
+			return
+		}
+
 		var req signRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeResponse(w, http.StatusBadRequest, "invalid JSON")
@@ -200,17 +240,21 @@ func signHandler(
 		// Build a signatures map keyed by sighash for each provided index
 		sigMap := make(map[string]database.SignatureUpdate)
 		for _, entry := range req.Signatures {
-			if entry.Index >= len(tx.Signatures) {
-				writeResponse(w, http.StatusBadRequest, fmt.Sprintf("index %d out of range", entry.Index))
+			// Validate index bounds (including negative values)
+			if entry.Index < 0 || entry.Index >= len(tx.Signatures) {
+				writeResponse(w, http.StatusBadRequest, fmt.Sprintf("index %d out of range (0-%d)", entry.Index, len(tx.Signatures)-1))
 				return
 			}
 			sigBytes, err := hex.DecodeString(entry.Signature)
 			if err != nil {
-				writeResponse(
-					w,
-					http.StatusBadRequest,
-					fmt.Sprintf("signature at index %d must be valid hex", entry.Index),
-				)
+				writeResponse(w, http.StatusBadRequest,
+					fmt.Sprintf("signature at index %d must be valid hex", entry.Index))
+				return
+			}
+			// Validate ECDSA DER signature length (64-73 bytes)
+			if len(sigBytes) < 64 || len(sigBytes) > 73 {
+				writeResponse(w, http.StatusBadRequest,
+					fmt.Sprintf("signature at index %d has invalid length %d (expected 64-73 bytes)", entry.Index, len(sigBytes)))
 				return
 			}
 			slot := tx.Signatures[entry.Index]
@@ -225,13 +269,11 @@ func signHandler(
 		}
 
 		if len(fullySigned) > 0 {
-			writeResponse(
-				w,
-				http.StatusOK,
-				fmt.Sprintf("signature applied, transaction %s is now fully signed", req.TxID),
-			)
+			writeResponse(w, http.StatusOK,
+				fmt.Sprintf("signature applied, transaction %s is now fully signed", req.TxID))
 		} else {
-			writeResponse(w, http.StatusOK, fmt.Sprintf("%d signature(s) applied, transaction %s still awaiting more signatures", len(sigMap), req.TxID))
+			writeResponse(w, http.StatusOK,
+				fmt.Sprintf("%d signature(s) applied, transaction %s still awaiting more signatures", len(sigMap), req.TxID))
 		}
 	}
 }

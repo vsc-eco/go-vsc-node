@@ -150,8 +150,8 @@ func TestUpdateSignatures_IncrementsCount(t *testing.T) {
 
 	sig := make([]byte, 64)
 	sig[0] = 0xFF
-	sigMap := map[string][]byte{
-		hex.EncodeToString(sigHash): sig,
+	sigMap := map[string]database.SignatureUpdate{
+		hex.EncodeToString(sigHash): {Bytes: sig},
 	}
 
 	fullySigned, err := db.State.UpdateSignatures(ctx, sigMap)
@@ -175,15 +175,15 @@ func TestUpdateSignatures_MultiSlot(t *testing.T) {
 	sig := []byte{0x01, 0x02}
 
 	// Fill only first slot — should NOT be fully signed yet
-	fullySigned, err := db.State.UpdateSignatures(ctx, map[string][]byte{
-		hex.EncodeToString(h1): sig,
+	fullySigned, err := db.State.UpdateSignatures(ctx, map[string]database.SignatureUpdate{
+		hex.EncodeToString(h1): {Bytes: sig},
 	})
 	require.NoError(t, err)
 	assert.Empty(t, fullySigned)
 
 	// Fill second slot — now fully signed
-	fullySigned, err = db.State.UpdateSignatures(ctx, map[string][]byte{
-		hex.EncodeToString(h2): sig,
+	fullySigned, err = db.State.UpdateSignatures(ctx, map[string]database.SignatureUpdate{
+		hex.EncodeToString(h2): {Bytes: sig},
 	})
 	require.NoError(t, err)
 	assert.Len(t, fullySigned, 1)
@@ -194,8 +194,8 @@ func TestUpdateSignatures_UnknownSigHash(t *testing.T) {
 	ctx := context.Background()
 
 	// Updating with a hash that doesn't exist in any pending tx should be a no-op
-	fullySigned, err := db.State.UpdateSignatures(ctx, map[string][]byte{
-		hex.EncodeToString(makeSigHash(0xFF)): {0x01},
+	fullySigned, err := db.State.UpdateSignatures(ctx, map[string]database.SignatureUpdate{
+		hex.EncodeToString(makeSigHash(0xFF)): {Bytes: []byte{0x01}},
 	})
 	require.NoError(t, err)
 	assert.Empty(t, fullySigned)
@@ -224,7 +224,7 @@ func TestGetAllPendingSigHashes_ExcludesSigned(t *testing.T) {
 
 	h := makeSigHash(0xD1)
 	require.NoError(t, db.State.AddPendingTransaction(ctx, "txHashSigned", []byte{0x0A}, makeUnsignedSigHashes(h)))
-	_, err := db.State.UpdateSignatures(ctx, map[string][]byte{hex.EncodeToString(h): {0x01}})
+	_, err := db.State.UpdateSignatures(ctx, map[string]database.SignatureUpdate{hex.EncodeToString(h): {Bytes: []byte{0x01}}})
 	require.NoError(t, err)
 
 	hashes, err := db.State.GetAllPendingSigHashes(ctx)

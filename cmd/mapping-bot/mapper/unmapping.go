@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/hasura/go-graphql-client"
 )
 
 type HashMetadata struct {
@@ -31,14 +31,14 @@ func (b *Bot) HandleUnmap() {
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
 	defer cancel()
 
-	txSpends, err := b.FetchTxSpends(ctx)
+	txSpends, err := b.gql().FetchTxSpends(ctx)
 	if err != nil {
 		b.L.Debug("failed to fetch tx spends from contract", "error", err)
 	} else {
 		b.L.Debug("fetched tx spends from contract", "count", len(txSpends))
 	}
 
-	b.ProcessTxSpends(ctx, b.GqlClient, txSpends)
+	b.ProcessTxSpends(ctx, txSpends)
 	finishedTxs, err := b.CheckSignagures(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error fetching signatures from the database: %s", err.Error())
@@ -58,25 +58,69 @@ func (b *Bot) HandleUnmap() {
 		}
 		for _, tx := range txPairs {
 			b.L.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
-			err := b.MempoolClient.PostTx(tx.RawTx)
-			if err != nil {
-				b.L.Warn("transaction failed to post", "err", err, "txId", tx.TxId)
+			if err := b.postTxWithRetry(tx.RawTx, 3); err != nil {
+				b.L.Warn("transaction failed to post after retries", "err", err, "txId", tx.TxId)
 				continue
 			}
-			b.Db.State.MarkTransactionSent(ctx, tx.TxId)
+			b.stateDB().MarkTransactionSent(ctx, tx.TxId)
 		}
+	}
+}
+
+// HandleConfirmations checks all sent transactions against the blockchain.
+// When a tx is confirmed, it transitions the DB state to "confirmed" and calls
+// the mapping contract's confirmSpend action to promote unconfirmed UTXOs.
+func (b *Bot) HandleConfirmations() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sentTxIDs, err := b.stateDB().GetSentTransactionIDs(ctx)
+	if err != nil {
+		b.L.Warn("failed to get sent transactions", "error", err)
+		return
+	}
+	if len(sentTxIDs) == 0 {
+		return
+	}
+
+	for _, txId := range sentTxIDs {
+		confirmed, err := b.Chain.Client.GetTxStatus(txId)
+		if err != nil {
+			b.L.Debug("failed to check tx status", "txId", txId, "error", err)
+			continue
+		}
+		if !confirmed {
+			continue
+		}
+
+		b.L.Info("tx confirmed on chain, calling confirmSpend", "txId", txId)
+
+		// Call confirmSpend on the mapping contract to promote unconfirmed UTXOs
+		payload := json.RawMessage(fmt.Sprintf(`{"tx_id":"%s"}`, txId))
+		if err := b.callWithRetry(ctx, payload, "confirmSpend", 3); err != nil {
+			b.L.Warn("confirmSpend failed after retries", "txId", txId, "error", err)
+			continue
+		}
+
+		// Transition to confirmed in local DB
+		err = b.stateDB().MarkTransactionConfirmed(ctx, txId)
+		if err != nil {
+			b.L.Warn("failed to mark tx confirmed in DB", "txId", txId, "error", err)
+			continue
+		}
+
+		b.L.Info("tx confirmed and confirmSpend called", "txId", txId)
 	}
 }
 
 func (b *Bot) ProcessTxSpends(
 	ctx context.Context,
-	gqlClient *graphql.Client,
 	incomingTxSpends map[string]*contractinterface.SigningData,
 ) {
 	for txId, signingData := range incomingTxSpends {
 		b.L.Debug("processing incoming tx spend", "txId", txId, "sigHashCount", len(signingData.UnsignedSigHashes))
 
-		processed, err := b.Db.State.IsTransactionProcessed(ctx, txId)
+		processed, err := b.stateDB().IsTransactionProcessed(ctx, txId)
 		if err != nil {
 			b.L.Debug("failed to check tx status", "txId", txId, "error", err)
 			continue
@@ -86,7 +130,7 @@ func (b *Bot) ProcessTxSpends(
 			continue
 		}
 
-		err = b.Db.State.AddPendingTransaction(ctx, txId, signingData.Tx, signingData.UnsignedSigHashes)
+		err = b.stateDB().AddPendingTransaction(ctx, txId, signingData.Tx, signingData.UnsignedSigHashes)
 		if err == database.ErrTxExists {
 			b.L.Debug("tx spend already pending, skipping", "txId", txId)
 		} else if err != nil {
@@ -100,17 +144,17 @@ func (b *Bot) ProcessTxSpends(
 func (b *Bot) CheckSignagures(
 	ctx context.Context,
 ) ([]*database.Transaction, error) {
-	allHashes, err := b.Db.State.GetAllPendingSigHashes(ctx)
+	allHashes, err := b.stateDB().GetAllPendingSigHashes(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	newSignagutes, err := b.FetchSignatures(ctx, allHashes)
+	newSignagutes, err := b.gql().FetchSignatures(ctx, allHashes)
 	if err != nil {
 		return nil, err
 	}
 
-	fullySignedTxs, err := b.Db.State.UpdateSignatures(ctx, newSignagutes)
+	fullySignedTxs, err := b.stateDB().UpdateSignatures(ctx, newSignagutes)
 	if err != nil {
 		return nil, err
 	}

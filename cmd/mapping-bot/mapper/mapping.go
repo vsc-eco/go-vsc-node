@@ -7,11 +7,9 @@ import (
 	"log"
 	"strconv"
 	"time"
-	"vsc-node/cmd/mapping-bot/mempool"
 )
 
-// height, in blocks, below the current height at which transactions should be dropped
-const dropHeightDiff = 4320
+// dropHeightDiff is set per-chain via ChainConfig.DropHeightDiff
 
 func (b *Bot) HandleMap(
 	blockBytes []byte,
@@ -19,7 +17,7 @@ func (b *Bot) HandleMap(
 ) {
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
 	defer cancel()
-	lastContractHeightStr, err := b.FetchLastHeight(ctx)
+	lastContractHeightStr, err := b.gql().FetchLastHeight(ctx)
 	if err != nil {
 		log.Printf("error fetching contract's last block height: %s", err.Error())
 		return
@@ -55,13 +53,12 @@ func (b *Bot) HandleMap(
 		jsonMessages[i] = json.RawMessage(jsonBytes)
 	}
 	for _, tx := range jsonMessages {
-		err := b.callContract(ctx, tx, "map")
-		if err != nil {
-			log.Printf("error calling contract: %s", err.Error())
+		if err := b.callWithRetry(ctx, tx, "map", 3); err != nil {
+			log.Printf("map call failed after retries: %s", err.Error())
 		}
 	}
 
-	_, err = b.Db.State.IncrementBlockHeight(ctx)
+	_, err = b.stateDB().IncrementBlockHeight(ctx)
 	if err != nil {
 		log.Printf("error incrementing last block height: %s", err.Error())
 		return
@@ -70,51 +67,12 @@ func (b *Bot) HandleMap(
 	b.setLastBlock(blockHeight)
 }
 
-func groupTxsByBlock(transactions []mempool.Transaction, lastHeight uint64) map[string][]mempool.Transaction {
-	// rarely will have txs that are in the same block so allocate length to same as array
-	grouped := make(map[string][]mempool.Transaction, len(transactions))
-
-	for _, tx := range transactions {
-		// don't acknowledge blocks older than the drop diff (and can break here because the rest will be older)
-		if (lastHeight - tx.Status.BlockHeight) < dropHeightDiff {
-			break
-		}
-		blockHash := tx.Status.BlockHash
-		if !tx.Status.Confirmed {
-			blockHash = "" // Group unconfirmed transactions together
-		}
-		grouped[blockHash] = append(grouped[blockHash], tx)
-	}
-
-	return grouped
-}
-
-// checks for existing txs for new addresses being registered
-func (b *Bot) HandleExistingTxs(btcAddress string) {
-	txHistory, err := b.MempoolClient.GetAddressTxs(btcAddress)
-	if err != nil {
-		log.Printf("failed to fetch transaction history for address %s: %s", btcAddress, err)
-		return
-	}
-	if len(txHistory) == 0 {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	lastHeight, err := b.Db.State.GetBlockHeight(ctx)
-	if err != nil {
-		log.Printf("failed to retrieve last height from database")
-		return
-	}
-
-	txMap := groupTxsByBlock(txHistory, lastHeight)
-
-	for blockHash, txs := range txMap {
-		blockHeight := txs[0].Status.BlockHeight
-		blockBytes, err := b.MempoolClient.GetRawBlock(blockHash)
-		if err != nil {
-			log.Printf("error getting block with hash %s: %s", blockHash, err.Error())
-		}
-		b.HandleMap(blockBytes, blockHeight)
-	}
+// HandleExistingTxs checks for existing txs for newly registered addresses.
+// This is a best-effort scan — the main loop's block-by-block processing
+// is the primary detection mechanism.
+func (b *Bot) HandleExistingTxs(chainAddress string) {
+	b.L.Debug("checking existing txs for new address", "address", chainAddress)
+	// Existing tx detection is handled by the main block processing loop.
+	// This function is a placeholder for future address-history scanning
+	// which requires chain-specific implementation.
 }
