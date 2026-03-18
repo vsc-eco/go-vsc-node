@@ -51,6 +51,8 @@ type TssCommitments interface {
 	GetCommitment(keyId string, epoch uint64) (TssCommitment, error)
 	GetLatestCommitment(keyId string, qtype string) (TssCommitment, error)
 	GetCommitmentByHeight(keyId string, height uint64, qtype ...string) (TssCommitment, error)
+	FindCommitments(keyId string, opts ...SearchOption) ([]TssCommitment, error)
+	FindAllCommitments(opts ...SearchOption) ([]TssCommitment, error)
 	GetBlames(...SearchOption) ([]TssCommitment, error)
 }
 

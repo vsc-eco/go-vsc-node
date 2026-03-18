@@ -116,6 +116,64 @@ func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qt
 	return commitment, err
 }
 
+func (tsc *tssCommitments) FindCommitments(keyId string, opts ...SearchOption) ([]TssCommitment, error) {
+	query := bson.M{
+		"key_id": keyId,
+	}
+	for _, opt := range opts {
+		if err := opt(&query); err != nil {
+			return nil, err
+		}
+	}
+
+	findOpts := options.Find().
+		SetSort(bson.D{{Key: "block_height", Value: -1}, {Key: "epoch", Value: -1}})
+
+	cursor, err := tsc.Find(context.Background(), query, findOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	commitments := make([]TssCommitment, 0)
+	for cursor.Next(context.Background()) {
+		var commitment TssCommitment
+		if err := cursor.Decode(&commitment); err != nil {
+			return nil, fmt.Errorf("failed to decode commitment: %w", err)
+		}
+		commitments = append(commitments, commitment)
+	}
+
+	return commitments, nil
+}
+
+func (tsc *tssCommitments) FindAllCommitments(opts ...SearchOption) ([]TssCommitment, error) {
+	query := bson.M{}
+	for _, opt := range opts {
+		if err := opt(&query); err != nil {
+			return nil, err
+		}
+	}
+
+	findOpts := options.Find().
+		SetSort(bson.D{{Key: "block_height", Value: -1}, {Key: "epoch", Value: -1}})
+
+	cursor, err := tsc.Find(context.Background(), query, findOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	commitments := make([]TssCommitment, 0)
+	for cursor.Next(context.Background()) {
+		var commitment TssCommitment
+		if err := cursor.Decode(&commitment); err != nil {
+			return nil, fmt.Errorf("failed to decode commitment: %w", err)
+		}
+		commitments = append(commitments, commitment)
+	}
+
+	return commitments, nil
+}
+
 func (tsc *tssCommitments) GetBlames(opts ...SearchOption) ([]TssCommitment, error) {
 	query := bson.M{
 		"type": "blame",

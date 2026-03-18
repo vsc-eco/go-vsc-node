@@ -52,6 +52,15 @@ func NewComplexityRoot() gqlgen.ComplexityRoot {
 	c.Query.GetTssKey = func(childComplexity int, keyID string) int {
 		return 5 + childComplexity
 	}
+	c.Query.GetTssCommitments = func(childComplexity int, keyID string, types []string, epoch *model.Uint64, fromBlock *model.Uint64) int {
+		return 50 + childComplexity
+	}
+	c.Query.GetLatestTssCommitment = func(childComplexity int, keyID string, typeArg *string) int {
+		return 5 + childComplexity
+	}
+	c.Query.GetRecentTssCommitments = func(childComplexity int, types []string, fromBlock *model.Uint64) int {
+		return 50 + childComplexity
+	}
 	c.Query.GetStateByKeys = func(childComplexity int, contractID string, keys []string, encoding *string) int {
 		return 5 + childComplexity
 	}

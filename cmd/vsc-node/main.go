@@ -251,6 +251,7 @@ func main() {
 		Contracts:      contractDb,
 		ContractsState: contractState,
 		TssKeys:        tssKeys,
+		TssCommitments: tssCommitments,
 		TssRequests:    tssRequests,
 	}}), gqlConf)
 

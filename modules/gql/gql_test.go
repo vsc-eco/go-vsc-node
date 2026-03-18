@@ -1,148 +1,217 @@
 package gql_test
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"net/http"
 	"testing"
-	"time"
-	"vsc-node/lib/datalayer"
+
 	"vsc-node/lib/test_utils"
-	"vsc-node/modules/aggregate"
-	"vsc-node/modules/common"
-	systemconfig "vsc-node/modules/common/system-config"
-	"vsc-node/modules/db"
-	"vsc-node/modules/db/vsc"
-	"vsc-node/modules/db/vsc/contracts"
-	"vsc-node/modules/db/vsc/elections"
-	"vsc-node/modules/db/vsc/hive_blocks"
-	ledgerDb "vsc-node/modules/db/vsc/ledger"
-	"vsc-node/modules/db/vsc/nonces"
-	rcDb "vsc-node/modules/db/vsc/rcs"
-	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
-	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
-	"vsc-node/modules/db/vsc/witnesses"
-	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
-	libp2p "vsc-node/modules/p2p"
-	stateEngine "vsc-node/modules/state-processing"
-	transactionpool "vsc-node/modules/transaction-pool"
-	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
+	"vsc-node/modules/gql/model"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestQueryAndMutation(t *testing.T) {
-	// init the gql plugin with an in-memory test server
-	sysConfig := systemconfig.MocknetConfig()
-	dbConfg := db.NewDbConfig()
-	identityConfig := common.NewIdentityConfig()
-	p2pConfig := libp2p.NewConfig()
-	gqlConfig := gql.NewGqlConfig()
-	d := db.New(dbConfg)
-	vscDb := vsc.New(d, dbConfg)
-	witnesses := witnesses.New(vscDb)
-	p2p := libp2p.New(witnesses, p2pConfig, identityConfig, sysConfig, nil)
-	hiveBlocks, hiveBlocksErr := hive_blocks.New(vscDb)
-	electionDb := elections.New(vscDb)
-	contractDb := contracts.New(vscDb)
-	txDb := transactions.New(vscDb)
-	vscBlocks := vscBlocks.New(vscDb)
-	ledgerDbImpl := ledgerDb.New(vscDb)
-	balanceDb := ledgerDb.NewBalances(vscDb)
-	actionsDb := ledgerDb.NewActionsDb(vscDb)
-	interestClaims := ledgerDb.NewInterestClaimDb(vscDb)
-	contractState := contracts.NewContractState(vscDb)
-	nonceDb := nonces.New(vscDb)
-	rcDb := rcDb.New(vscDb)
-	tssKeys := tss_db.NewKeys(vscDb)
-	tssCommitments := tss_db.NewCommitments(vscDb)
-	tssRequests := tss_db.NewRequests(vscDb)
-	da := datalayer.New(p2p)
-	conf := common.NewIdentityConfig()
-	balances := ledgerDb.NewBalances(vscDb)
-	wasm := wasm_runtime.New()
+func TestTssKeyLifecycleResolver(t *testing.T) {
+	keys := &test_utils.MockTssKeysDb{Keys: map[string]tss_db.TssKey{}}
+	require.NoError(t, keys.InsertKey("key-1", tss_db.EcdsaType, 12))
+	require.NoError(t, keys.SetKey(tss_db.TssKey{
+		Id:               "key-1",
+		Status:           tss_db.TssKeyDeprecated,
+		PublicKey:        "02deadbeef",
+		CreatedHeight:    123,
+		Epoch:            5,
+		Epochs:           12,
+		ExpiryEpoch:      17,
+		DeprecatedHeight: 456,
+	}))
 
-	assert.NoError(t, hiveBlocksErr)
-	se := stateEngine.New(sysConfig, da, witnesses, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
-	txPool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, conf, se.RcSystem)
 	resolver := &gqlgen.Resolver{
-		witnesses,
-		txPool,
-		balances,
-		ledgerDbImpl,
-		actionsDb,
-		electionDb,
-		txDb,
-		nonceDb,
-		rcDb,
-		hiveBlocks,
-		se,
-		da,
-		contractDb,
-		contractState,
-		tssKeys,
-		tssRequests,
+		TssKeys: keys,
 	}
-	schema := gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: resolver})
 
-	// set host address to localhost:8081
-	gqlConfig.Init()
-	gqlConfig.SetHostAddr("127.0.0.1:8081")
+	ctx := context.Background()
+	key, err := resolver.Query().GetTssKey(ctx, "key-1")
+	require.NoError(t, err)
+	require.NotNil(t, key)
 
-	g := gql.New(schema, gqlConfig)
-	agg := aggregate.New([]aggregate.Plugin{
-		dbConfg,
-		d,
-		vscDb,
-		witnesses,
-		p2p,
-		txDb,
-		da,
-		conf,
-		txPool,
-		balances,
-		g,
-	})
-	test_utils.RunPlugin(t, agg)
+	createdHeight, err := resolver.TssKey().CreatedHeight(ctx, key)
+	require.NoError(t, err)
+	epoch, err := resolver.TssKey().Epoch(ctx, key)
+	require.NoError(t, err)
+	epochs, err := resolver.TssKey().Epochs(ctx, key)
+	require.NoError(t, err)
+	expiryEpoch, err := resolver.TssKey().ExpiryEpoch(ctx, key)
+	require.NoError(t, err)
+	deprecatedHeight, err := resolver.TssKey().DeprecatedHeight(ctx, key)
+	require.NoError(t, err)
 
-	ctx, _ := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	_, err := g.Started().Await(ctx)
-	assert.NoError(t, err)
+	assert.Equal(t, "key-1", key.Id)
+	assert.Equal(t, tss_db.TssKeyDeprecated, key.Status)
+	assert.Equal(t, "02deadbeef", key.PublicKey)
+	assert.Equal(t, model.Int64(123), createdHeight)
+	assert.Equal(t, model.Uint64(5), epoch)
+	assert.Equal(t, model.Uint64(12), epochs)
+	assert.Equal(t, model.Uint64(17), expiryEpoch)
+	assert.Equal(t, model.Int64(456), deprecatedHeight)
+}
 
-	// test get current number query
-	query := `{"query": "query { witnessNodes(height: 52) { net_id } }"}`
-	resp := performGraphQLRequest(t, "http://"+gqlConfig.GetHostAddr()+"/api/v1/graphql", query)
-
-	expectedQuery := map[string]interface{}{
-		"data": map[string]interface{}{
-			"getCurrentNumber": map[string]interface{}{
-				"currentNumber": float64(1),
+func TestTssCommitmentsResolver(t *testing.T) {
+	pubKey := "02cafebabe"
+	commitments := &test_utils.MockTssCommitmentsDb{
+		Commitments: map[string]tss_db.TssCommitment{
+			"key-1:5:keygen": {
+				Type:        "keygen",
+				BlockHeight: 100,
+				Epoch:       5,
+				Commitment:  "bitset-a",
+				KeyId:       "key-1",
+				TxId:        "tx-a",
+				PublicKey:   &pubKey,
+			},
+			"key-1:6:reshare": {
+				Type:        "reshare",
+				BlockHeight: 120,
+				Epoch:       6,
+				Commitment:  "bitset-b",
+				KeyId:       "key-1",
+				TxId:        "tx-b",
 			},
 		},
 	}
-	assert.Equal(t, expectedQuery, resp)
+
+	resolver := &gqlgen.Resolver{
+		TssCommitments: commitments,
+	}
+
+	ctx := context.Background()
+	all, err := resolver.Query().GetTssCommitments(ctx, "key-1", nil, nil, nil)
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+	assert.Equal(t, "reshare", all[0].Type)
+	assert.Equal(t, uint64(120), all[0].BlockHeight)
+	assert.Equal(t, "keygen", all[1].Type)
+	assert.Equal(t, uint64(100), all[1].BlockHeight)
+
+	blockHeight, err := resolver.TssCommitment().BlockHeight(ctx, &all[0])
+	require.NoError(t, err)
+	epoch, err := resolver.TssCommitment().Epoch(ctx, &all[0])
+	require.NoError(t, err)
+	assert.Equal(t, model.Uint64(120), blockHeight)
+	assert.Equal(t, model.Uint64(6), epoch)
+
+	filterEpoch := model.Uint64(6)
+	filterFromBlock := model.Uint64(100)
+	filtered, err := resolver.Query().GetTssCommitments(ctx, "key-1", []string{"reshare"}, &filterEpoch, &filterFromBlock)
+	require.NoError(t, err)
+	require.Len(t, filtered, 1)
+	assert.Equal(t, "reshare", filtered[0].Type)
+	assert.Equal(t, "tx-b", filtered[0].TxId)
 }
 
-// ===== test helpers =====
-
-func performGraphQLRequest(t *testing.T, url, query string) map[string]interface{} {
-	req, err := http.NewRequest("POST", url, bytes.NewBufferString(query))
-	if err != nil {
-		t.Fatalf("failed to create request: %v", err)
+func TestLatestTssCommitmentResolver(t *testing.T) {
+	pubKey := "02cafebabe"
+	commitments := &test_utils.MockTssCommitmentsDb{
+		Commitments: map[string]tss_db.TssCommitment{
+			"key-1:5:keygen": {
+				Type:        "keygen",
+				BlockHeight: 100,
+				Epoch:       5,
+				Commitment:  "bitset-a",
+				KeyId:       "key-1",
+				TxId:        "tx-a",
+				PublicKey:   &pubKey,
+			},
+			"key-1:6:timeout": {
+				Type:        "timeout",
+				BlockHeight: 130,
+				Epoch:       6,
+				Commitment:  "timeout-a",
+				KeyId:       "key-1",
+				TxId:        "tx-timeout",
+			},
+			"key-1:7:reshare": {
+				Type:        "reshare",
+				BlockHeight: 140,
+				Epoch:       7,
+				Commitment:  "bitset-b",
+				KeyId:       "key-1",
+				TxId:        "tx-b",
+			},
+		},
 	}
-	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("failed to send request: %v", err)
+	resolver := &gqlgen.Resolver{TssCommitments: commitments}
+	ctx := context.Background()
+
+	latest, err := resolver.Query().GetLatestTssCommitment(ctx, "key-1", nil)
+	require.NoError(t, err)
+	require.NotNil(t, latest)
+	assert.Equal(t, "reshare", latest.Type)
+	assert.Equal(t, uint64(140), latest.BlockHeight)
+	assert.Equal(t, "tx-b", latest.TxId)
+
+	timeoutType := "timeout"
+	latestTimeout, err := resolver.Query().GetLatestTssCommitment(ctx, "key-1", &timeoutType)
+	require.NoError(t, err)
+	require.NotNil(t, latestTimeout)
+	assert.Equal(t, "timeout", latestTimeout.Type)
+	assert.Equal(t, uint64(130), latestTimeout.BlockHeight)
+	assert.Equal(t, "tx-timeout", latestTimeout.TxId)
+}
+
+func TestRecentBlameTimeoutCommitmentsResolver(t *testing.T) {
+	commitments := &test_utils.MockTssCommitmentsDb{
+		Commitments: map[string]tss_db.TssCommitment{
+			"key-1:4:keygen": {
+				Type:        "keygen",
+				BlockHeight: 90,
+				Epoch:       4,
+				Commitment:  "bitset-a",
+				KeyId:       "key-1",
+				TxId:        "tx-keygen",
+			},
+			"key-1:5:blame": {
+				Type:        "blame",
+				BlockHeight: 110,
+				Epoch:       5,
+				Commitment:  "blame-a",
+				KeyId:       "key-1",
+				TxId:        "tx-blame",
+			},
+			"key-2:6:timeout": {
+				Type:        "timeout",
+				BlockHeight: 125,
+				Epoch:       6,
+				Commitment:  "timeout-a",
+				KeyId:       "key-2",
+				TxId:        "tx-timeout",
+			},
+			"key-3:7:reshare": {
+				Type:        "reshare",
+				BlockHeight: 140,
+				Epoch:       7,
+				Commitment:  "bitset-b",
+				KeyId:       "key-3",
+				TxId:        "tx-reshare",
+			},
+		},
 	}
-	defer resp.Body.Close()
 
-	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
-	return result
+	resolver := &gqlgen.Resolver{TssCommitments: commitments}
+	ctx := context.Background()
+	fromBlock := model.Uint64(100)
+
+	recent, err := resolver.Query().GetRecentTssCommitments(ctx, []string{"blame", "timeout"}, &fromBlock)
+	require.NoError(t, err)
+	require.Len(t, recent, 2)
+
+	assert.Equal(t, "timeout", recent[0].Type)
+	assert.Equal(t, "key-2", recent[0].KeyId)
+	assert.Equal(t, uint64(125), recent[0].BlockHeight)
+
+	assert.Equal(t, "blame", recent[1].Type)
+	assert.Equal(t, "key-1", recent[1].KeyId)
+	assert.Equal(t, uint64(110), recent[1].BlockHeight)
 }

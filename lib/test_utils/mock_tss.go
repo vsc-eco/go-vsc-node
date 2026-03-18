@@ -5,6 +5,8 @@ import (
 	"slices"
 	"vsc-node/modules/aggregate"
 	tss "vsc-node/modules/db/vsc/tss"
+
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // MockTssKeysDb implements tss.TssKeys interface for testing
@@ -154,6 +156,99 @@ func (m *MockTssCommitmentsDb) GetCommitmentByHeight(
 		return tss.TssCommitment{}, fmt.Errorf("commitment not found for keyId: %s, height: %d", keyId, height)
 	}
 	return result, nil
+}
+
+func (m *MockTssCommitmentsDb) FindCommitments(keyId string, opts ...tss.SearchOption) ([]tss.TssCommitment, error) {
+	query := bson.M{"key_id": keyId}
+	for _, opt := range opts {
+		if err := opt(&query); err != nil {
+			return nil, err
+		}
+	}
+
+	results := make([]tss.TssCommitment, 0)
+	for _, commitment := range m.Commitments {
+		if commitment.KeyId != keyId {
+			continue
+		}
+		if epoch, ok := query["epoch"].(uint64); ok && commitment.Epoch != epoch {
+			continue
+		}
+		if typeQuery, ok := query["type"].(bson.M); ok {
+			types, _ := typeQuery["$in"].([]string)
+			if len(types) > 0 && !slices.Contains(types, commitment.Type) {
+				continue
+			}
+		}
+		if bhQuery, ok := query["block_height"].(bson.M); ok {
+			minHeight, _ := bhQuery["$gt"].(uint64)
+			if commitment.BlockHeight <= minHeight {
+				continue
+			}
+		}
+		results = append(results, commitment)
+	}
+	slices.SortFunc(results, func(a, b tss.TssCommitment) int {
+		if a.BlockHeight != b.BlockHeight {
+			if a.BlockHeight > b.BlockHeight {
+				return -1
+			}
+			return 1
+		}
+		if a.Epoch > b.Epoch {
+			return -1
+		}
+		if a.Epoch < b.Epoch {
+			return 1
+		}
+		return 0
+	})
+	return results, nil
+}
+
+func (m *MockTssCommitmentsDb) FindAllCommitments(opts ...tss.SearchOption) ([]tss.TssCommitment, error) {
+	query := bson.M{}
+	for _, opt := range opts {
+		if err := opt(&query); err != nil {
+			return nil, err
+		}
+	}
+
+	results := make([]tss.TssCommitment, 0)
+	for _, commitment := range m.Commitments {
+		if epoch, ok := query["epoch"].(uint64); ok && commitment.Epoch != epoch {
+			continue
+		}
+		if typeQuery, ok := query["type"].(bson.M); ok {
+			types, _ := typeQuery["$in"].([]string)
+			if len(types) > 0 && !slices.Contains(types, commitment.Type) {
+				continue
+			}
+		}
+		if bhQuery, ok := query["block_height"].(bson.M); ok {
+			minHeight, _ := bhQuery["$gt"].(uint64)
+			if commitment.BlockHeight <= minHeight {
+				continue
+			}
+		}
+		results = append(results, commitment)
+	}
+	slices.SortFunc(results, func(a, b tss.TssCommitment) int {
+		if a.BlockHeight != b.BlockHeight {
+			if a.BlockHeight > b.BlockHeight {
+				return -1
+			}
+			return 1
+		}
+		if a.Epoch > b.Epoch {
+			return -1
+		}
+		if a.Epoch < b.Epoch {
+			return 1
+		}
+		return 0
+	})
+	return results, nil
 }
 
 func (m *MockTssCommitmentsDb) GetBlames(opts ...tss.SearchOption) ([]tss.TssCommitment, error) {
