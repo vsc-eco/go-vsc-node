@@ -186,7 +186,9 @@ func (h *moduleHandler) WithGroup(name string) slog.Handler {
 type stripTimeKeyWriter struct{}
 
 func (stripTimeKeyWriter) Write(p []byte) (int, error) {
-	_, err := os.Stderr.Write(bytes.Replace(p, []byte("time="), nil, 1))
+	p = bytes.Replace(p, []byte("time="), nil, 1)
+	p = bytes.Replace(p, []byte("level="), nil, 1)
+	_, err := os.Stderr.Write(p)
 	return len(p), err
 }
 
@@ -204,9 +206,11 @@ func rebuildHandler() {
 				l := a.Value.Any().(slog.Level)
 				switch {
 				case l <= LevelTrace:
-					a.Value = slog.StringValue("TRACE")
+					a.Value = slog.StringValue("[TRACE]")
 				case l <= LevelVerbose:
-					a.Value = slog.StringValue("VERBOSE")
+					a.Value = slog.StringValue("[VERBOSE]")
+				default:
+					a.Value = slog.StringValue("[" + a.Value.String() + "]")
 				}
 			}
 			return a
