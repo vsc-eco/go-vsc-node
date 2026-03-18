@@ -770,7 +770,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					if err == nil {
 						for _, sigPack := range signedData.Packet {
 							if keyCache[sigPack.KeyId] == nil {
-								fmt.Println("Fetch key 123")
 								tssKey, _ := se.tssKeys.FindKey(sigPack.KeyId)
 								keyCache[sigPack.KeyId] = &tssKey
 							}
@@ -1061,28 +1060,10 @@ func (se *StateEngine) ExecuteBatch() {
 		// latest in-memory state instead of the latest contract state
 		callSession := contract_session.NewCallSession(se.da, se.contractDb, se.contractState, se.tssKeys, lastBlockBh, se.TempOutputs)
 
-		//Forced ledger operations that is produced irrespective of the output result.
-		//For example, deposit operations.
-		// forcedLedger := make([]ledgerSystem.OpLogEvent, 0)
 		outputs := make([]ContractIdResult, 0)
 		ok := true
 		for idx, vscTx := range tx.Ops {
 			fmt.Println("Execute tx.bh", vscTx.TxSelf().BlockHeight)
-			// debugJson := map[string]interface{}{
-			// 	"EndBlock":    lastBlock.EndBlock,
-			// 	"StartBlock":  lastBlock.StartBlock,
-			// 	"lastBlockBh": lastBlockBh,
-			// 	"SlotHeight":  se.slotStatus.SlotHeight,
-			// 	"BlockHeight": se.BlockHeight,
-			// }
-			// jsonBytes, _ := json.MarshalIndent(debugJson, "", "  ")
-			// fmt.Println(string(jsonBytes))
-
-			// if vscTx.Type() == "deposit" {
-			// 	fOplog := vscTx.(TxDeposit).ToLedger()
-			// 	forcedLedger = append(forcedLedger, fOplog...)
-			// 	continue
-			// }
 
 			if vscTx.Type() == "deposit" {
 				continue
@@ -1412,7 +1393,6 @@ func (se *StateEngine) Flush() {
 func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint64 {
 
 	if lastBlk == 0 || lastSavedBlk == 0 {
-		fmt.Println("Returning lastSavdBlk", lastBlk, lastSavedBlk)
 		return lastSavedBlk
 	}
 	var outputExists bool

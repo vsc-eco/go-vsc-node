@@ -24,20 +24,6 @@ type SearchConfig struct {
 
 type SearchOption func(cfg *bson.M) error
 
-// func SearchExpiration(blocks uint64) SearchOption {
-// 	return func(cfg *bson.M) error {
-// 		(*cfg)["expiration_blocks"] = blocks
-// 		return nil
-// 	}
-// }
-
-// func SearchHeight(bh uint64) SearchOption {
-// 	return func(cfg *bson.M) error {
-// 		(*cfg)["block_height"] = bh
-// 		return nil
-// 	}
-// }
-
 // Only returns witnesses that are enabled
 func EnabledOnly() SearchOption {
 	return func(cfg *bson.M) error {

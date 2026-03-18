@@ -99,12 +99,8 @@ func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 			if peer.ID == h.ID() {
 				continue // No self connection
 			}
-			// p2p.host.Peerstore().AddAddrs(peer.ID, peer.Addrs, peerstore.ConnectedAddrTTL)
 			err := h.Connect(ctx, peer)
-			if err != nil {
-				// fmt.Println("Failed connecting to ", peer.ID.String(), ", error:", err)
-			} else {
-				// fmt.Println("Connected to:", peer.ID.String())
+			if err == nil {
 				anyConnected = true
 			}
 		}
@@ -474,14 +470,6 @@ func (p2p *P2PServer) addrFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multi
 func (p2p *P2PServer) connectRegisteredPeers() {
 	opts := []witnesses.SearchOption{}
 
-	// if p2p.blockStatus != nil {
-	// 	currentBlockHeight := p2p.blockStatus.BlockHeight()
-	// 	opts = append(opts, witnesses.SearchHeight(currentBlockHeight))
-	// 	opts = append(opts, witnesses.SearchExpiration(witnesses.WITNESS_EXPIRE_BLOCKS))
-	// }
-
-	fmt.Println("connectRegisteredPeers opts", opts)
-
 	witnesses, _ := p2p.witnessDb.GetLastestWitnesses(opts...)
 
 	for _, witness := range witnesses {
@@ -504,7 +492,6 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 		for _, peer := range witness.PeerAddrs {
 			m, _ := multiaddr.NewMultiaddr(peer)
 
-			// fmt.Println("circuitAddress", circuitAddress, err)
 			if isCircuitAddr(m) {
 				selectedAddr = append(selectedAddr, m.Encapsulate(mp))
 				continue
@@ -550,8 +537,6 @@ func (p2p *P2PServer) discoverPeers() {
 	routingDiscovery := drouting.NewRoutingDiscovery(p2p.dht)
 
 	// Look for others who have announced and attempt to connect to them
-	// fmt.Println("Searching for peers via dht...")
-
 	peerChan, err := routingDiscovery.FindPeers(ctx, p2p.topicName())
 	if err != nil {
 		panic(err)

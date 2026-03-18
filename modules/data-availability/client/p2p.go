@@ -36,12 +36,8 @@ func (d *DataAvailability) stopP2P() error {
 	return d.service.Close()
 }
 
-// var count = atomic.Int32{}
-// var sigCount = atomic.Int32{}
-
 // HandleMessage implements libp2p.PubSubServiceParams.
 func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
-	// fmt.Println("client message count:", count.Add(1), msg.Type().String())
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	switch msg.Type() {
@@ -68,8 +64,6 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 		if !slices.Contains(*added, true) {
 			return fmt.Errorf("message did not add any signatures")
 		}
-
-		// fmt.Println("client message sig count:", sigCount.Add(1), msg.Type().String())
 
 		return nil
 	}

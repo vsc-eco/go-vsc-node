@@ -74,14 +74,12 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	sigPack := SignaturePackage{}
 
 	err = common.DecodeCbor(sTx.Sig, &sigPack)
-	fmt.Println("decode error", err)
 	if err != nil {
 		return nil, err
 	}
 
 	txShell := VSCTransactionShell{}
 	if err := common.DecodeCbor(sTx.Tx, &txShell); err != nil {
-		fmt.Println("decode error2", err)
 		return nil, err
 	}
 
@@ -90,7 +88,6 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	for _, op := range txShell.Tx {
 		payload := make(map[string]interface{})
 		if err := cbornode.DecodeInto(op.Payload, &payload); err != nil {
-			fmt.Println("decode error3", err)
 			return nil, err
 		}
 
@@ -159,7 +156,6 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		return nil, err
 	}
 
-	fmt.Println("Verification?", verified)
 	if !verified {
 		return nil, errors.New("missing required auth")
 	}
@@ -174,7 +170,6 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	if !hasVscDID {
 		rcsAvailable := tp.rcs.GetAvailableRCs(txShell.Headers.RequiredAuths[0], latestBlk)
 
-		fmt.Println("RCS available for", txShell.Headers.RequiredAuths[0], ":", rcsAvailable)
 		//Note: RcLimit is user defined input
 		if uint64(rcsAvailable) < txShell.Headers.RcLimit || txShell.Headers.RcLimit == 0 {
 			return nil, fmt.Errorf("not enough RCS available: %d < %d", rcsAvailable, txShell.Headers.RcLimit)
@@ -187,16 +182,13 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	if err != nil {
 		return nil, err
 	}
-	cidc, err := tp.datalayer.PutRaw(sTx.Tx, common_types.PutRawOptions{
+	_, err = tp.datalayer.PutRaw(sTx.Tx, common_types.PutRawOptions{
 		Codec: multicodec.DagCbor,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	fmt.Println("tx CID", cidz.String(), "cidc", cidc.String())
-
-	fmt.Println("Options", options)
 	if len(options) == 0 || options[0].Broadcast {
 		err = tp.Broadcast(cidz.String(), sTx)
 		fmt.Println("Broadcasting transaction", cidz.String(), err)
@@ -259,12 +251,6 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 	txShell := VSCTransactionShell{}
 
 	if err := common.DecodeCbor(decodedTx, &txShell); err != nil {
-		fmt.Println("decode error2", err)
-		return
-	}
-
-	if err != nil {
-		fmt.Println("decode error", err)
 		return
 	}
 
@@ -318,7 +304,6 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 		sigPack.Sigs,
 	)
 	if err != nil {
-		fmt.Println(fmt.Errorf("failed to parse DIDs: %w", err))
 		return
 	}
 
@@ -336,7 +321,6 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 
 		//Note: RcLimit is user defined input
 		if uint64(rcsAvailable) < txShell.Headers.RcLimit || txShell.Headers.RcLimit == 0 {
-			fmt.Println(errors.New("insufficient RCs"))
 			return
 		}
 	}

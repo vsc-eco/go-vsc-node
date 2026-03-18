@@ -12,7 +12,7 @@ import (
 
 	// "github.com/btcsuite/btcd/btcec"
 
-"vsc-node/lib/utils"
+	"vsc-node/lib/utils"
 	tss_helpers "vsc-node/modules/tss/helpers"
 
 	"github.com/bnb-chain/tss-lib/v2/common"
@@ -281,7 +281,6 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				reshareResult := <-end
 				log.Verbose("reshare result received", "algo", "ECDSA", "sessionId", dispatcher.sessionId, "partyId", dispatcher.newParty.PartyID().Id, "hasPubKey", reshareResult.ECDSAPub != nil)
 
-				// fmt.Println("ECDSA reshareResult", reshareResult, reshareResult.ECDSAPub != nil)
 				if reshareResult.ECDSAPub != nil {
 					duration := time.Since(startTime)
 					log.Info("reshare completed successfully", "algo", "ECDSA", "sessionId", dispatcher.sessionId, "duration", duration, "keyId", dispatcher.keyId, "newEpoch", dispatcher.newEpoch)
@@ -397,8 +396,6 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		go func() {
 			for {
 				reshareResult := <-end
-
-				// fmt.Println("pre-check reshareResult", reshareResult, dispatcher.newParty.PartyID().Id)
 
 				log.Verbose("reshare result received", "algo", "EdDSA", "sessionId", dispatcher.sessionId, "partyId", dispatcher.newParty.PartyID().Id)
 				if reshareResult.EDDSAPub == nil {
@@ -1133,7 +1130,6 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 						dispatcher.err = err
 					}
 
-					// fmt.Println("", string(to.Id))
 					go func() {
 						err := dispatcher.tssMgr.SendMsg(dispatcher.sessionId, Participant{
 							Account: string(to.Id),
@@ -1178,7 +1174,6 @@ func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcs
 		return
 	}
 
-	// fmt.Println("dispatcher.party", dispatcher.party, from)
 	//Filter out any messages to self
 	if dispatcher.party.PartyID().Id == from.Id {
 		return

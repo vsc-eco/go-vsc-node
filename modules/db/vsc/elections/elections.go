@@ -177,18 +177,6 @@ func (e *elections) GetElectionByHeight(height uint64) (ElectionResult, error) {
 			return electionResult, err
 		}
 
-		// electionResult := ElectionResult{
-		// 	electionCommonInfo{
-		// 		Epoch: electionRecord.Epoch,
-		// 		NetId: electionRecord.NetId,
-		// 	},
-		// 	electionHeaderInfo{
-		// 		Data: electionRecord.Data,
-		// 	},
-		// 	electionDataInfo{
-		// 		Members: electionRecord.Members,
-		// 	},
-		// }
 		return electionResult, nil
 	}
 }
@@ -241,19 +229,6 @@ func MinimalRequiredElectionVotes(blocksSinceLastElection, memberCountOfLastElec
 
 	return uint64(math.Round(mappedValue))
 }
-
-// export const MIN_BLOCKS_SINCE_LAST_ELECTION = 1200 // 1 hour
-// export const MAX_BLOCKS_SINCE_LAST_ELECTION = 403200 // 2 weeks
-
-// export function minimalRequiredElectionVotes(blocksSinceLastElection: number, memberCountOfLastElection: number): number {
-//     if (blocksSinceLastElection < MIN_BLOCKS_SINCE_LAST_ELECTION) {
-//         throw new Error('tried to run election before time slot')
-//     }
-//     const minMembers = Math.floor((memberCountOfLastElection / 2) + 1) // 1/2 + 1
-//     const maxMembers = Math.ceil(memberCountOfLastElection * 2 / 3) // 2/3
-//     const drift = (MAX_BLOCKS_SINCE_LAST_ELECTION - Math.min(blocksSinceLastElection, MAX_BLOCKS_SINCE_LAST_ELECTION)) / MAX_BLOCKS_SINCE_LAST_ELECTION;
-//     return Math.round(Range.from([0, 1]).map(drift, Range.from([minMembers, maxMembers])));
-// }
 
 func init() {
 	cbornode.RegisterCborType(ElectionResultRecord{})

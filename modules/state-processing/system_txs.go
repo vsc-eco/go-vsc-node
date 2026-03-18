@@ -634,11 +634,8 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 		Block:      blockCid,
 	}
 
-	// dag, _ := dagCbor.WrapObject(blockHeader, mh.SHA2_256, -1)
 	cid, _ := se.da.HashObject(blockHeader)
 
-	// fmt.Println("Validated CID", cid)
-	// fmt.Println("MemberDids", memberDids)
 	circuit, err := dids.DeserializeBlsCircuit(t.SignedBlock.Signature, memberDids, *cid)
 
 	verified, includedDids, err := circuit.Verify()
@@ -791,12 +788,6 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	for k, v := range nonceUpdates {
 		se.nonceDb.SetNonce(k, v+1)
 	}
-
-	// for _, v := range txsToInjest {
-	// 	se.txDb.Ingest(
-
-	// 	)
-	// }
 
 	se.TxBatch = append(txsToInjest, se.TxBatch...)
 }

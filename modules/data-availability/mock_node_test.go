@@ -79,16 +79,6 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	datalayer := DataLayer.New(p2p, dataDir)
 
-	// key, err := identityConfig.Libp2pPrivateKey()
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// peerId, err := peer.IDFromPrivateKey(key)
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// libp2p.BOOTSTRAP = append(libp2p.BOOTSTRAP, fmt.Sprintf("/ip4/127.0.0.1/tcp/%d/p2p/%s", port, peerId.String()))
-
 	var da aggregate.Plugin
 	if input.Client {
 		da = data_availability_client.New(p2p, identityConfig, sysConfig, datalayer)
