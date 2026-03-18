@@ -40,9 +40,10 @@ type Database struct {
 	State     *StateStore
 }
 
-// AddressMapping represents a BTC to VSC address mapping document
+// AddressMapping represents a chain address to VSC instruction mapping document.
+// Works for any UTXO chain (BTC, LTC, DASH).
 type AddressMapping struct {
-	BtcAddr     string    `bson:"_id"` // Use btcAddr as primary key
+	ChainAddr   string    `bson:"_id"` // chain deposit address as primary key
 	Instruction string    `bson:"instruction"`
 	CreatedAt   time.Time `bson:"createdAt"`
 }

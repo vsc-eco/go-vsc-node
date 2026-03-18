@@ -45,9 +45,9 @@ func (b *Bot) ParseBlock(
 
 			// this loop should never be longer than one cycle, only happens with multisig which is outdated
 			for _, addr := range addresses {
-				if instruction, err := b.Db.Addresses.GetInstruction(ctx, addr); err == nil {
+				if instruction, err := b.addrDB().GetInstruction(ctx, addr); err == nil {
 					b.L.Debug("instruction address found", "instruction", instruction)
-					exists, err := b.FetchObservedTx(ctx, tx.TxID(), i)
+					exists, err := b.gql().FetchObservedTx(ctx, tx.TxID(), i)
 					if exists || err != nil {
 						b.L.Debug("error fetching observed tx", "exits", exists, "error", err)
 						break

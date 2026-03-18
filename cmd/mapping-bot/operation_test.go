@@ -23,7 +23,7 @@ func TestProcessTxSpends_NewTransaction(t *testing.T) {
 		},
 	}
 
-	bot.ProcessTxSpends(t.Context(), nil, spends)
+	bot.ProcessTxSpends(t.Context(), spends)
 
 	tx, err := db.State.GetPendingTransaction(t.Context(), "txNew")
 	require.NoError(t, err)
@@ -51,7 +51,7 @@ func TestProcessTxSpends_AlreadySent(t *testing.T) {
 		},
 	}
 
-	bot.ProcessTxSpends(t.Context(), nil, spends)
+	bot.ProcessTxSpends(t.Context(), spends)
 
 	// Should still not be pending (was sent)
 	_, err := db.State.GetPendingTransaction(t.Context(), "txAlreadySent")
@@ -78,16 +78,16 @@ func TestProcessTxSpends_AlreadyPending(t *testing.T) {
 	}
 
 	// Should not panic or create a duplicate
-	bot.ProcessTxSpends(t.Context(), nil, spends)
+	bot.ProcessTxSpends(t.Context(), spends)
 
 	txs, err := db.State.GetAllPendingTransactions(t.Context())
 	require.NoError(t, err)
 	assert.Len(t, txs, 1, "should still only have the original pending tx")
 }
 
-// TestNoopMempoolClient_DoesNotBroadcast verifies the stub never calls the real network.
-func TestNoopMempoolClient_DoesNotBroadcast(t *testing.T) {
-	noop := &noopMempoolClient{}
+// TestNoopChainClient_DoesNotBroadcast verifies the stub never calls the real network.
+func TestNoopChainClient_DoesNotBroadcast(t *testing.T) {
+	noop := &noopChainClient{}
 	require.NoError(t, noop.PostTx("deadbeef"))
 	assert.Equal(t, []string{"deadbeef"}, noop.posted, "noop should record but not broadcast")
 }

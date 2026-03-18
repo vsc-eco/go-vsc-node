@@ -12,9 +12,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
+	"vsc-node/cmd/mapping-bot/chain"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
-	"vsc-node/cmd/mapping-bot/mempool"
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/hasura/go-graphql-client"
@@ -32,23 +32,25 @@ func (c *testBotConfig) ContractId() string { return "test-contract" }
 func (c *testBotConfig) PrimaryKey() string { return c.primaryKey }
 func (c *testBotConfig) BackupKey() string  { return c.backupKey }
 func (c *testBotConfig) HttpPort() uint16   { return 8000 }
+func (c *testBotConfig) SignApiKey() string  { return "test-api-key" }
 func (c *testBotConfig) FilePath() string   { return "test-config.json" }
 
-// noopMempoolClient prevents any real transactions from being broadcast.
-type noopMempoolClient struct {
+// noopChainClient prevents any real blockchain calls from being made.
+type noopChainClient struct {
 	posted []string
 }
 
-func (n *noopMempoolClient) PostTx(rawTx string) error {
+func (n *noopChainClient) PostTx(rawTx string) error {
 	n.posted = append(n.posted, rawTx)
 	return nil
 }
-func (n *noopMempoolClient) GetAddressTxs(_ string) ([]mempool.Transaction, error) {
+func (n *noopChainClient) GetAddressTxs(_ string) ([]chain.TxHistoryEntry, error) {
 	return nil, nil
 }
-func (n *noopMempoolClient) GetRawBlock(_ string) ([]byte, error)               { return nil, nil }
-func (n *noopMempoolClient) GetBlockHashAtHeight(_ uint64) (string, int, error) { return "", 0, nil }
-func (n *noopMempoolClient) GetTipHeight() (uint64, error)                      { return 0, nil }
+func (n *noopChainClient) GetRawBlock(_ string) ([]byte, error)               { return nil, nil }
+func (n *noopChainClient) GetBlockHashAtHeight(_ uint64) (string, int, error) { return "", 0, nil }
+func (n *noopChainClient) GetTipHeight() (uint64, error)                      { return 0, nil }
+func (n *noopChainClient) GetTxStatus(_ string) (bool, error)                 { return false, nil }
 
 // Compressed secp256k1 public keys used only for tests (generator point G and 2G).
 const (
@@ -74,16 +76,23 @@ func mockGQLServer(t *testing.T) *httptest.Server {
 func newTestBot(t *testing.T, db *database.Database) *mapper.Bot {
 	t.Helper()
 	gqlSrv := mockGQLServer(t)
+	testChain := &chain.ChainConfig{
+		Name:        "btc",
+		AssetSymbol: "BTC",
+		Client:      &noopChainClient{},
+		AddressGen:  &chain.BTCAddressGenerator{Params: &chaincfg.TestNet4Params, BackupCSVBlocks: 2},
+		ChainParams: &chaincfg.TestNet4Params,
+	}
 	return &mapper.Bot{
 		Db:          db,
 		GqlClient:   graphql.NewClient(gqlSrv.URL, gqlSrv.Client()),
-		ChainParams: &chaincfg.TestNet4Params,
+		Chain:       testChain,
+		ChainParams: testChain.ChainParams,
 		BotConfig: &testBotConfig{
 			primaryKey: testPrimaryKeyHex,
 			backupKey:  testBackupKeyHex,
 		},
-		MempoolClient: &noopMempoolClient{},
-		L:             slog.Default(),
+		L: slog.Default(),
 	}
 }
 
