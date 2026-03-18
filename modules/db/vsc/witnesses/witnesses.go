@@ -167,7 +167,6 @@ func (w *witnesses) GetWitnessNode(account string, blockHeight *int64) {
 
 	result := bson.M{}
 	mongoResult.Decode(&result)
-	// fmt.Println("Vaultec decoded data from mongo query result", result)
 }
 
 func (w *witnesses) GetLastestWitnesses(searchOptions ...SearchOption) ([]Witness, error) {

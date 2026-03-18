@@ -5,7 +5,6 @@ import (
 	"time"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/hive"
-	"vsc-node/lib/logger"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
@@ -130,10 +129,6 @@ func MakeNode(input MakeNodeInput) *Node {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssKeys := tss_db.NewKeys(vscDb)
 
-	logger := logger.PrefixedLogger{
-		Prefix: input.Username,
-	}
-
 	sysConfig := systemconfig.MocknetConfig()
 	kp := HashSeed([]byte(SEED_PREFIX + input.Username))
 
@@ -161,7 +156,6 @@ func MakeNode(input MakeNodeInput) *Node {
 	wasm := wasm_runtime.New()
 
 	se := stateEngine.New(
-		logger,
 		sysConfig,
 		datalayer,
 		witnessesDb,
@@ -204,7 +198,6 @@ func MakeNode(input MakeNodeInput) *Node {
 	)
 
 	bp := blockproducer.New(
-		logger,
 		p2p,
 		blockConsumer,
 		se,
@@ -220,7 +213,6 @@ func MakeNode(input MakeNodeInput) *Node {
 	)
 
 	multisig := gateway.New(
-		logger,
 		sysConfig,
 		witnessesDb,
 		electionDb,
@@ -258,8 +250,6 @@ func MakeNode(input MakeNodeInput) *Node {
 	)
 
 	plugins := make([]aggregate.Plugin, 0)
-
-	fmt.Println("dbNuke", dbNuker)
 	plugins = append(plugins,
 		dbConf,
 		db,

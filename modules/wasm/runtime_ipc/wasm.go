@@ -71,9 +71,6 @@ func resultToWasmEdgeResult(
 	memory *wasmedge.Memory,
 	res result.Result[string],
 ) ([]interface{}, wasmedge.Result) {
-	// res.InspectErr(func(err error) {
-	// 	fmt.Println("err:", err)
-	// })
 	return result.MapOrElse(
 			result.AndThen(
 				res,
@@ -410,19 +407,6 @@ func registerImportV2(
 
 				res := executeImport(ctx, f.Name, args)
 
-				// res := client.Request(&execute.SdkCallRequest[WasmResultStruct]{
-				// 	Function: f.Name,
-				// 	Argument: args,
-				// })
-
-				// fmt.Printf("res %+v\n", res)
-				// res.InspectErr(func(err error) {
-				// 	fmt.Printf("res.error %s\n", err.Error())
-				// })
-
-				// for f.Name == "system.getEnv" {
-				// 	break
-				// }
 				wasmRes, err := resultToWasmEdgeResult(
 					runtime,
 					vm,
@@ -433,7 +417,6 @@ func registerImportV2(
 							func(pm wasm_types.WasmResultStruct) result.Result[wasm_types.WasmResultStruct] {
 
 								if pm.Error != nil {
-									// fmt.Println("Definite error!", *pm.Error)
 									err := errors.New(*pm.Error)
 
 									retChan <- wasm_types.WasmResultStruct{
@@ -443,7 +426,6 @@ func registerImportV2(
 									}
 									return result.Err[wasm_types.WasmResultStruct](err)
 								}
-								// fmt.Println("Possible error maybe!!", pm.Result)
 								return result.Ok(pm)
 							},
 						),
@@ -453,14 +435,7 @@ func registerImportV2(
 							vm.GetStatistics().SetCostLimit(*gas)
 							return res.Result
 						},
-					).InspectErr(func(err error) {
-
-						// errStr := err.Error()
-						// client.Send(&execute.ExecutionFinish[WasmResultStruct]{Result: &wasm_types.WasmResultStruct{
-						// 	Gas: vm.GetStatistics().GetTotalCost(),
-						// }, Error: &errStr}).Expect("exec finish failed")
-						// fmt.Fprintln(os.Stderr, client.Close())
-					}),
+					),
 				)
 
 				if len(f.Type.Result) == 0 {
@@ -616,7 +591,6 @@ func (w *Wasm) Execute(
 
 	wasm_runtime.Execute(runtime, wasm_runtime.RuntimeAction[result.Result[[]any]]{
 		Go: func() result.Result[[]any] {
-			// fmt.Fprintln(os.Stderr, "go runtime init")
 			return resultWrap(vm.ExecuteRegistered("contract", "_initialize"))
 		},
 	})
@@ -625,7 +599,6 @@ func (w *Wasm) Execute(
 
 	if argsAlloc.IsErr() {
 		errStr := fmt.Errorf("failed to allocate string: %w", argsAlloc.UnwrapErr()).Error()
-		fmt.Println(errStr)
 		return wasm_types.WasmResultStruct{
 			Error:     &errStr,
 			ErrorCode: errorStrToSymbol(argsAlloc.UnwrapErr().Error()),
@@ -675,7 +648,6 @@ func (w *Wasm) Execute(
 	}
 
 	totalGasCost := vm.GetStatistics().GetTotalCost() + importGm.GetGasUsed()
-	// fmt.Println("total gas cost:", totalGasCost)
 
 	return wasm_types.WasmResultStruct{
 		Error:  nil,

@@ -115,7 +115,6 @@ type InternalBroadcast struct {
 
 func (ib *InternalBroadcast) Broadcast(tx SerializedVSCTransaction) (string, error) {
 	cidz, err := ib.TxPool.IngestTx(tx, IngestOptions{Broadcast: true})
-	fmt.Println("err", err)
 	if err != nil {
 		return "", err
 	}

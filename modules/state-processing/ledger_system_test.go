@@ -606,12 +606,6 @@ func TestHBDSavings(t *testing.T) {
 	ledgerSystem.SaveSnapshot("hive:vaultec", 32)
 
 	fmt.Println("HBD savings Balance", hbdBal)
-	// ledgerJson, _ := json.Marshal(ledgerDbA.LedgerRecords)
-	// fmt.Println("Ledger Records", string(ledgerJson))
-	// ledgerJson, _ = json.Marshal(ledgerSystem.ActionsDb)
-	// fmt.Println("ActionsDb", string(ledgerJson))
-	// ledgerJson, _ = json.Marshal(ledgerSystem.BalanceDb)
-	// fmt.Println("BalanceDb", string(ledgerJson))
 
 	ledgerSystem.ClaimHBDInterest(1, 40, 1)
 	hbdBal = ledgerSystem.GetBalance("hive:vaultec", 45, "hbd_savings")

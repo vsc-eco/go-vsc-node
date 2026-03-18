@@ -265,16 +265,6 @@ func (dl *DataLayer) GetObject(cid cid.Cid, v interface{}, options common_types.
 }
 
 func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
-	go func() {
-		// dl.dht.Bootstrap(context.TODO())
-		// peers, _ := dl.dht.FindProviders(context.Background(), cid)
-		// for _, peer := range peers {
-		// 	dl.host.Connect(context.Background(), peer)
-		// }
-		// fmt.Println("TRYING TO PULL IN LOOP")
-		// dl.bitswap.GetBlock(context.Background(), cid)
-		// fmt.Println("I PULLED SOMETHING LOL")
-	}()
 	block, err := dl.blockServ.GetBlock(context.Background(), cid)
 	//Make sure it is stored
 	// dl.blockServ.AddBlock(context.Background(), block)

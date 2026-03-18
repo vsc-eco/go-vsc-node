@@ -123,8 +123,6 @@ func (e *electionProposer) blockTick(bh uint64, headHeight *uint64) {
 	e.bh = bh
 	e.headHeight = headHeight
 
-	// scoreMap, err := e.scoreMap()
-	// fmt.Println(err, scoreMap.BannedNodes)
 	if e.canHold() {
 
 		slotInfo := stateEngine.CalculateSlotInfo(bh)
@@ -149,9 +147,6 @@ func (e *electionProposer) blockTick(bh uint64, headHeight *uint64) {
 }
 
 func (e *electionProposer) canHold() bool {
-	if e.bh%10 == 0 {
-		// fmt.Println("caHold()", e.bh)
-	}
 	if e.headHeight == nil {
 		return false
 	}
@@ -161,7 +156,6 @@ func (e *electionProposer) canHold() bool {
 
 	result, _ := e.elections.GetElectionByHeight(e.bh)
 
-	// fmt.Println("Last check", result.BlockHeight < e.bh-ELECTION_INTERVAL)
 	return result.BlockHeight < e.bh-e.sconf.ConsensusParams().ElectionInterval
 }
 
@@ -280,7 +274,6 @@ func (e *electionProposer) GenerateFullElection(
 		distWeight = uint64(math.Ceil((1 + float64(totalOptionalWeight)/2) / float64(len(REQUIRED_ELECTION_MEMBERS))))
 	}
 
-	// fmt.Println("witnessList", witnessList)
 	members := utils.Map(witnessList, func(w witnesses.Witness) elections.ElectionMember {
 		key, err := w.ConsensusKey()
 

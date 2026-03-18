@@ -35,7 +35,6 @@ func (d *DataAvailability) stopP2P() error {
 
 // HandleMessage implements libp2p.PubSubServiceParams.
 func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
-	// fmt.Println("server message count:", count.Add(1))
 	switch msg.Type() {
 	case data_availability_spec.P2pMessageData:
 		provider, err := s.Conf().BlsProvider()

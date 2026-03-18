@@ -17,7 +17,6 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
-	"vsc-node/lib/logger"
 	"vsc-node/lib/vsclog"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -70,8 +69,6 @@ type BlockProducer struct {
 	electionsDb elections.Elections
 
 	_started bool
-
-	log logger.Logger
 }
 
 type signingInfo struct {
@@ -107,13 +104,8 @@ func (bp *BlockProducer) BlockTick(bh uint64, headHeight *uint64) {
 	}
 
 	if witnessSlot != nil {
-
 		if witnessSlot.Account == bp.config.Get().HiveUsername && bh%CONSENSUS_SPECS.SlotLength == 0 {
-			// canProduce := bp.canProduce(bh)
-			// fmt.Println("Can produce", canProduce)
-			// if canProduce {
 			bp.ProduceBlock(witnessSlot.SlotHeight)
-			// }
 		}
 	}
 }
@@ -132,7 +124,6 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 	var prevBlockId *string
 	var prevRange [2]int
 	if prevBlock != nil {
-		// fmt.Println("PrevBlock exists")
 		prevBlockId = &prevBlock.BlockContent
 		prevRange = [2]int{prevBlock.EndBlock, int(slotHeight)}
 	} else {
@@ -205,10 +196,7 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 		MerkleRoot:   &mr,
 	}
 
-	// fmt.Println("vsc Block", blockData)
-
 	blockCid, err := bp.Datalayer.PutObject(blockData)
-	// fmt.Println("vsc Block", blockCid, err)
 
 	if err != nil {
 		return nil, nil, err
@@ -350,8 +338,7 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 			}
 		}
 	}
-	// rcFinish := rcSession.Done()
-	// fmt.Println("rcFinish", rcFinish)
+
 	for _, txRecord := range sequencedTxs {
 		op := txRecord.Ops[0].Type
 		txs = append(txs, vscBlocks.VscBlockTx{
@@ -433,9 +420,6 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 		return
 	}
 
-	// fmt.Println("signedWeight", signedWeight, err)
-	// fmt.Println("CircuitMap", circuit.CircuitMap())
-
 	if !(signedWeight > (electionResult.TotalWeight * 2 / 3)) {
 		vlog.Warn("not enough signatures", "signedW", signedWeight, "totalW", electionResult.TotalWeight*2/3)
 		return
@@ -486,9 +470,6 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		return "", errors.New("invalid slot height (1)")
 	}
 
-	// fmt.Println("[bp] too ahead in future", msg.SlotHeight-common.CONSENSUS_SPECS.SlotLength, bp.bh)
-	// fmt.Println("[bp] is block ahead?", msg.SlotHeight, bp.bh)
-
 	if msg.SlotHeight > bp.bh {
 		//Local node is out of sync perhaps
 		for msg.SlotHeight > bp.bh {
@@ -506,7 +487,6 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		return "", errors.New("no slot found for height")
 	}
 
-	// fmt.Println("[bp] maybe bad producer", producer, slot.Account, producer == slot.Account)
 	if producer != slot.Account {
 		return "", errors.New("invalid producer")
 	}
@@ -568,7 +548,7 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		return "", err
 	}
 
-	vlog.Info("HandleBlockMsg SIGNER", "headerCid", localCid.String(), "slotHeight", msg.SlotHeight)
+	vlog.Debug("HandleBlockMsg SIGNER", "headerCid", localCid.String(), "slotHeight", msg.SlotHeight)
 
 	// Compare locally derived CID with producer's CID
 	producerCidStr, ok := msg.Data["block_cid"].(string)
@@ -613,11 +593,6 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 		return 0, ctx.Err() // Return error if canceled
 	default:
 		signedWeight := uint64(0)
-
-		vlog.Trace("default action")
-		// Perform the operation
-
-		// slotHeight := bp.blockSigning.slotHeight
 
 		for signedWeight < (weightTotal * 9 / 10) {
 			msg := <-bp.sigChannels[bp.blockSigning.slotHeight]
@@ -927,9 +902,8 @@ func (bp *BlockProducer) Stop() error {
 	return bp.stopP2P()
 }
 
-func New(logger logger.Logger, p2p *libp2p.P2PServer, hiveConsumer *blockconsumer.HiveConsumer, se *stateEngine.StateEngine, conf common.IdentityConfig, sconf systemconfig.SystemConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions, rcSystem *rcSystem.RcSystem, nonceDb nonces.Nonces) *BlockProducer {
+func New(p2p *libp2p.P2PServer, hiveConsumer *blockconsumer.HiveConsumer, se *stateEngine.StateEngine, conf common.IdentityConfig, sconf systemconfig.SystemConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions, rcSystem *rcSystem.RcSystem, nonceDb nonces.Nonces) *BlockProducer {
 	return &BlockProducer{
-		log:          logger,
 		sigChannels:  make(map[uint64]chan sigMsg),
 		StateEngine:  se,
 		hiveConsumer: hiveConsumer,

@@ -102,7 +102,6 @@ func (c *E2EContainer) initClient() {
 		peerId, _ := peer.AddrInfoFromString(peerStr)
 		ctx := context.Background()
 		ctx, _ = context.WithTimeout(ctx, 5*time.Second)
-		// fmt.Println("Trying to connect", peerId)
 		client.P2PService.Connect(ctx, *peerId)
 	}
 
@@ -217,7 +216,6 @@ func (c *E2EContainer) Start(t *testing.T) error {
 				peerId, _ := peer.AddrInfoFromString(peerStr)
 				ctx := context.Background()
 				ctx, _ = context.WithTimeout(ctx, 5*time.Second)
-				// fmt.Println("Trying to connect", peerId)
 				node.P2P.Connect(ctx, *peerId)
 			}
 		}

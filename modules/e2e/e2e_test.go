@@ -23,12 +23,9 @@ import (
 
 	"vsc-node/lib/dids"
 
-	// "github.com/decred/dcrd/dcrec/secp256k1/v2"
-
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/hasura/go-graphql-client"
 	"github.com/vsc-eco/hivego"
-	// secp256k1 "github.com/ethereum/go-ethereum/crypto/secp256k1"
 )
 
 //go:embed artifacts/contract_test.wasm
@@ -67,66 +64,8 @@ func TestE2E(t *testing.T) {
 	fmt.Println("privBytes", privBytes)
 	ethPriv, _ := ethCrypto.ToECDSA(privBytes)
 
-	ethProvider := dids.NewEthProvider(ethPriv)
-
 	ethAddr := ethCrypto.PubkeyToAddress(ethPriv.PublicKey)
 	ethDid := dids.NewEthDID(ethAddr.Hex())
-	// kk, _ := ethCrypto.ToECDSA(privBytes)
-
-	// fmt.Println("privBytes", hex.EncodeToString(privBytes))
-
-	// fmt.Println(ethCrypto.PubkeyToAddress(kk.PublicKey).Hex(), ethCrypto.PubkeyToAddress(ethPriv.PublicKey).Hex())
-
-	ethCreator := transactionpool.TransactionCrafter{
-		Identity: ethProvider,
-		Did:      ethDid,
-
-		VSCBroadcast: container.VSCBroadcast(),
-	}
-
-	fmt.Println("s", ethCreator)
-
-	// fmt.Println("EVM test")
-	// fmt.Println("EVM test")
-	// transferOp := &transactionpool.VSCTransfer{
-	// 	From:   ethDid.String(),
-	// 	To:     "hive:vsc.account",
-	// 	Amount: "0.001",
-	// 	Asset:  "hbd",
-	// 	NetId:  "vsc-mocknet",
-	// 	Nonce:  0,
-	// }
-	// transferOp2 := &transactionpool.VSCTransfer{
-	// 	From:   ethDid.String(),
-	// 	To:     "hive:vsc.account",
-	// 	Amount: "0.001",
-	// 	Asset:  "hbd",
-	// 	NetId:  "vsc-mocknet",
-	// 	Nonce:  0,
-	// }
-	// op, _ := transferOp.SerializeVSC()
-	// op2, _ := transferOp2.SerializeVSC()
-	// tx := transactionpool.VSCTransaction{
-	// 	Ops: []transactionpool.VSCTransactionOp{
-	// 		op,
-	// 		op2,
-	// 	},
-	// }
-	// sTx, err := ethCreator.SignFinal(tx)
-
-	// bbb, _ := json.Marshal(sTx)
-	// fmt.Println("VSCTransfer err", err, string(bbb))
-
-	// transactionCreator.Broadcast(sTx)
-
-	// transactionCreatorNoRc := transactionpool.TransactionCrafter{
-	// 	Identity: dids.NewKeyProvider(privKey1),
-	// 	Did:      didKeyNoRcs,
-
-	// 	VSCBroadcast: &transactionpool.InternalBroadcast{
-	// 		TxPool: runningNodes[0].TxPool,
-	// 	},
-	// }
 
 	graphClient := graphql.NewClient("http://localhost:7080/api/v1/graphql", nil)
 

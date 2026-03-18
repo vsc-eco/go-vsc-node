@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 	"vsc-node/lib/datalayer"
-	"vsc-node/lib/logger"
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -37,9 +36,6 @@ import (
 
 func TestQueryAndMutation(t *testing.T) {
 	// init the gql plugin with an in-memory test server
-	l := logger.PrefixedLogger{
-		Prefix: "vsc-node",
-	}
 	sysConfig := systemconfig.MocknetConfig()
 	dbConfg := db.NewDbConfig()
 	identityConfig := common.NewIdentityConfig()
@@ -70,7 +66,7 @@ func TestQueryAndMutation(t *testing.T) {
 	wasm := wasm_runtime.New()
 
 	assert.NoError(t, hiveBlocksErr)
-	se := stateEngine.New(l, sysConfig, da, witnesses, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
+	se := stateEngine.New(sysConfig, da, witnesses, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
 	txPool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, conf, se.RcSystem)
 	resolver := &gqlgen.Resolver{
 		witnesses,

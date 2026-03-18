@@ -471,7 +471,7 @@ func (s *Streamer) streamBlocks() {
 }
 
 func (s *Streamer) fetchBlockBatch(startBlock, batchSize uint64) ([]hivego.Block, error) {
-	vlog.Verbose("fetching block range", "startBlock", startBlock, "endBlock", startBlock+batchSize-1)
+	vlog.Info("fetching block range", "startBlock", startBlock, "endBlock", startBlock+batchSize-1)
 	p := promise.New(func(resolve func([]hivego.Block), reject func(error)) {
 		blocks, err := s.client.GetBlockRange(int(startBlock), int(batchSize))
 		if err != nil {

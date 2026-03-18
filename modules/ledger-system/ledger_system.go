@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"vsc-node/lib/logger"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/params"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
@@ -28,6 +28,8 @@ import (
 // In summary:
 // 1. TX execution -> 2. Oplog -> 3. Ledger update (locally calculated value)
 
+var log = vsclog.Module("ledger")
+
 type ledgerSystem struct {
 	BalanceDb ledger_db.Balances
 	LedgerDb  ledger_db.Ledger
@@ -37,8 +39,6 @@ type ledgerSystem struct {
 	//Some examples are withdrawals, and stake/unstake operations. Other future operations might be applicable as well
 	//Anything that requires on chain processing to complete
 	ActionsDb ledger_db.BridgeActions
-
-	log logger.Logger
 }
 
 func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64) {
@@ -127,7 +127,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 }
 
 func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ExtraInfo) {
-	ls.log.Debug("IndexActions", actionUpdate)
+	log.Debug("IndexActions", actionUpdate)
 
 	actionIds := common.ArrayToStringArray(actionUpdate["ops"].([]interface{}))
 
@@ -148,7 +148,7 @@ func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraI
 		ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
 
 		if record.Type == "stake" {
-			ls.log.Debug("Indexxing stake Ledger")
+			log.Debug("Indexxing stake Ledger")
 			ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
 				Id:     record.Id + "#out",
 				Amount: record.Amount,
@@ -380,12 +380,11 @@ func (ls *ledgerSystem) NewEmptyState() *LedgerState {
 // Then trigger a delayed (actual stake) even when the onchain operation is executed through the gateway
 // A two part Virtual Ledger operation operating out of sync
 
-func New(balanceDb ledger_db.Balances, ledgerDb ledger_db.Ledger, claimDb ledger_db.InterestClaims, actionDb ledger_db.BridgeActions, log logger.Logger) LedgerSystem {
+func New(balanceDb ledger_db.Balances, ledgerDb ledger_db.Ledger, claimDb ledger_db.InterestClaims, actionDb ledger_db.BridgeActions) LedgerSystem {
 	return &ledgerSystem{
 		BalanceDb: balanceDb,
 		LedgerDb:  ledgerDb,
 		ClaimDb:   claimDb,
 		ActionsDb: actionDb,
-		log:       log,
 	}
 }

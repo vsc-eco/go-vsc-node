@@ -9,7 +9,6 @@ import (
 	cbortypes "vsc-node/lib/cbor-types"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/hive"
-	"vsc-node/lib/logger"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
 	blockproducer "vsc-node/modules/block-producer"
@@ -153,11 +152,7 @@ func main() {
 
 	dataAvailability := data_availability.New(p2p, identityConfig, da)
 
-	l := logger.PrefixedLogger{
-		Prefix: "vsc-node",
-	}
 	se := stateEngine.New(
-		l,
 		sysConfig,
 		da,
 		witnessDb,
@@ -198,14 +193,13 @@ func main() {
 		blockConsumer,
 	)
 
-	bp := blockproducer.New(l, p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
+	bp := blockproducer.New(p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
 
 	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, identityConfig, rcSystem)
 
 	oracle := oracle.New(p2p, identityConfig, sysConfig, electionDb, witnessDb, blockConsumer, se, contractState, da, txpool, oracleConf, hiveApiUrl)
 
 	multisig := gateway.New(
-		l,
 		sysConfig,
 		witnessesDb,
 		electionDb,

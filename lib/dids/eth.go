@@ -497,15 +497,6 @@ func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeNam
 		return nil
 	})
 
-	// jsonData, err := json.MarshalIndent(typedData, "", "  ")
-	// if err != nil {
-	// 	fmt.Println("Error:", err)
-	// }
-	// fmt.Println(string(jsonData))
-
-	// chainId : nil
-	// version: ""
-
 	return typedData, err
 }
 
@@ -547,10 +538,6 @@ func (e *EthProvider) Sign(block blocks.Block) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to sign data hash: %v", err)
 	}
-
-	fmt.Println("Hex sig", hex.EncodeToString(sig))
-
-	fmt.Println("EthProvider signer err", err)
 
 	return "0x" + hex.EncodeToString(sig), nil
 }
@@ -865,9 +852,7 @@ func generateTypedDataWithPath(
 
 		case reflect.Map:
 			// nested maps gen new type names and processes recursively
-			// fmt.Println("VAL: ", reflect.ValueOf(fieldValue).Kind())
 			nestedTypeName := fmt.Sprintf("%s.%s", typeName, fieldName)
-			// fmt.Println("pre-NESTED: ", fieldValue)
 			nestedData, ok := fieldValue.(map[any]interface{})
 			if !ok {
 				fmt.Println(nestedTypeName, fieldValue)

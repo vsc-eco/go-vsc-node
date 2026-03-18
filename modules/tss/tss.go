@@ -14,8 +14,8 @@ import (
 	"time"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
-	"vsc-node/lib/vsclog"
 	"vsc-node/lib/utils"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
@@ -49,7 +49,7 @@ const (
 	TSS_BAN_GRACE_PERIOD_EPOCHS = 3             // Epochs before new nodes can be banned (as int for comparison)
 	MAX_RESHARE_RETRIES         = 3             // Maximum number of reshare retries on timeout
 	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
-	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1  // Number of past epochs to include in blame scoring
+	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
 )
 
 type TssManager struct {
@@ -755,7 +755,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		commitableResults := make([]tss_helpers.BaseCommitment, 0)
 		for _, dsc := range startedDispatcher {
 			resultPtr, err := dsc.Done().Await(context.Background())
-			// fmt.Println("result, err", resultPtr, err)
 
 			sessionId := dsc.SessionId()
 			tssMgr.bufferLock.Lock()

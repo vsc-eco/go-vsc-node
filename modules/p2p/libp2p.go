@@ -91,14 +91,11 @@ func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 	// Look for others who have announced and attempt to connect to them
 	anyConnected := false
 	for !anyConnected {
-
-		// fmt.Println("Bootstraping peers via dht... PeerId: " + h.ID().String())
 		peerChan, err := routingDiscovery.FindPeers(ctx, p2p.topicName())
 		if err != nil {
 			panic(err)
 		}
 		for peer := range peerChan {
-
 			if peer.ID == h.ID() {
 				continue // No self connection
 			}

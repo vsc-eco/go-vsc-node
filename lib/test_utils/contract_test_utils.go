@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"vsc-node/lib/datalayer"
-	"vsc-node/lib/logger"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
@@ -67,7 +66,6 @@ type ContractTestCallResult struct {
 
 // Create a new contract testing environment with mock databases.
 func NewContractTest() ContractTest {
-	logr := logger.PrefixedLogger{Prefix: "contract-test"}
 	idConfig := common.NewIdentityConfig()
 	p2pConfig := p2pInterface.NewConfig()
 	p2pConfig.SetOptions(p2pInterface.P2POpts{Port: 0}) // random port to avoid conflicts with running nodes
@@ -86,7 +84,6 @@ func NewContractTest() ContractTest {
 	tssRequests := MockTssRequestsDb{Requests: make(map[string]tss_db.TssRequest)}
 
 	se := stateEngine.New(
-		logr,
 		sysConfig,
 		nil,
 		nil,

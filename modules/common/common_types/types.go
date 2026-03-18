@@ -1,7 +1,6 @@
 package common_types
 
 import (
-	"vsc-node/lib/logger"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -44,8 +43,6 @@ type DataLayer interface {
 }
 
 type StateEngine interface {
-	//TODO: Handle logger allocation per sub-routine
-	Log() logger.Logger
 	DataLayer() DataLayer
 	//returns: contract information (contracts.Contract) contract exists (bool)
 	GetContractInfo(id string, height uint64) (contracts.Contract, bool)

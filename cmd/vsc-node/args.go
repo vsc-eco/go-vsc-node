@@ -27,7 +27,7 @@ func ParseArgs() (args, error) {
 	network := flag.String("network", "mainnet", "Name of the network (mainnet or testnet)")
 	dataDir := flag.String("data-dir", "data", "Data directory for config and storage")
 	disableTss := flag.Bool("disable-tss", false, "Disable TSS plugin (testnet only)")
-	logLevel := flag.String("log-level", "error", "Log level spec: error|warn|info|debug|verbose|trace or comma-separated with module overrides (e.g. error,tss=verbose,bp=info)")
+	logLevel := flag.String("log-level", "info", "Log level spec: error|warn|info|debug|verbose|trace or comma-separated with module overrides (e.g. error,tss=verbose,bp=info)")
 
 	flag.Parse()
 

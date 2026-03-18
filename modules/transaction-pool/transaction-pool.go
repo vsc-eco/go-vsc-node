@@ -85,13 +85,6 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		return nil, err
 	}
 
-	// // We throw away `b` here to ensure that we canonicalize the encoded
-	// // CBOR object.
-	// node, err := cbornode.WrapObject(m, multihash.SHA2_256, -1)
-	// if err != nil {
-	// 	return nil, err
-	// }
-
 	ops := make([]VSCTransactionSignOp, 0, len(txShell.Tx))
 
 	for _, op := range txShell.Tx {
@@ -117,9 +110,6 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		Headers: txShell.Headers,
 		Tx:      ops,
 	}
-
-	// ssbytes, _ := json.Marshal(txSignStruct)
-	// fmt.Println("signingShell2", string(ssbytes))
 
 	bytes, err := common.EncodeDagCbor(txSignStruct)
 	cidz1, _ := cid.Prefix{
@@ -351,7 +341,6 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 		}
 	}
 
-	// fmt.Println("broadcast verify result", verified)
 	if err != nil {
 		return
 	}

@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 	"vsc-node/lib/hive"
-	"vsc-node/lib/logger"
 	"vsc-node/lib/utils"
+	"vsc-node/lib/vsclog"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
@@ -28,6 +28,8 @@ import (
 	"github.com/chebyrash/promise"
 	"github.com/vsc-eco/hivego"
 )
+
+var log = vsclog.Module("gateway")
 
 // VSC On chain gateway wallet
 type MultiSig struct {
@@ -44,7 +46,6 @@ type MultiSig struct {
 	service libp2p.PubSubService[p2pMessage]
 	p2p     *libp2p.P2PServer
 	se      *stateEngine.StateEngine
-	log     logger.Logger
 	msgChan map[string]chan *p2pMessage
 
 	bh uint64
@@ -788,7 +789,6 @@ func (ms *MultiSig) toHiveAssetName(asset string) string {
 var _ a.Plugin = &MultiSig{}
 
 func New(
-	logger logger.Logger,
 	sconf systemconfig.SystemConfig,
 	witnessDb witnesses.Witnesses,
 	electionDb elections.Elections,
@@ -812,7 +812,6 @@ func New(
 		se:            se,
 		identity:      identityConfig,
 		sconf:         sconf,
-		log:           logger,
 		hiveClient:    hiveClient,
 
 		msgChan: make(map[string]chan *p2pMessage),

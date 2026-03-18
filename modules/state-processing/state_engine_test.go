@@ -26,7 +26,6 @@ import (
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
 	DataLayer "vsc-node/lib/datalayer"
-	"vsc-node/lib/logger"
 	"vsc-node/lib/test_utils"
 	p2p "vsc-node/modules/p2p"
 
@@ -59,9 +58,6 @@ func TestStateEngine(t *testing.T) {
 	identityConfig := common.NewIdentityConfig()
 	p2pConfig := p2p.NewConfig()
 	sysConfig := systemconfig.MocknetConfig()
-	l := logger.PrefixedLogger{
-		Prefix: "vsc-node",
-	}
 
 	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		if op.Type == "custom_json" {
@@ -117,7 +113,7 @@ func TestStateEngine(t *testing.T) {
 
 	wasm := wasm_runtime.New()
 
-	se := stateEngine.New(l, sysConfig, dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
+	se := stateEngine.New(sysConfig, dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
 
 	blockConsumer := blockconsumer.New(se)
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, streamer.DefaultBlockStart)
@@ -172,9 +168,6 @@ func TestMockEngine(t *testing.T) {
 	identityConfig := common.NewIdentityConfig()
 	p2pConfig := p2p.NewConfig()
 	sysConfig := systemconfig.MocknetConfig()
-	l := logger.PrefixedLogger{
-		Prefix: "vsc-node",
-	}
 
 	// slow down the streamer a bit for real data
 	streamer.AcceptableBlockLag = 0
@@ -192,7 +185,7 @@ func TestMockEngine(t *testing.T) {
 
 	wasm := wasm_runtime.New()
 
-	se := stateEngine.New(l, sysConfig, dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
+	se := stateEngine.New(sysConfig, dl, witnessesDb, electionDb, contractDb, contractState, txDb, ledgerDbImpl, balanceDb, hiveBlocks, interestClaims, vscBlocks, actionsDb, rcDb, nonceDb, tssKeys, tssCommitments, tssRequests, wasm)
 
 	process := func(block hive_blocks.HiveBlock, headHeight *uint64) {
 		se.ProcessBlock(block)
