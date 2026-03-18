@@ -1,12 +1,14 @@
 package vsclog
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -179,11 +181,25 @@ func (h *moduleHandler) WithGroup(name string) slog.Handler {
 	return &moduleHandler{base: h.base.WithGroup(name), module: h.module}
 }
 
+// stripTimeKeyWriter strips the "time=" key prefix emitted by slog's
+// TextHandler so the timestamp appears bare at the start of each line.
+type stripTimeKeyWriter struct{}
+
+func (stripTimeKeyWriter) Write(p []byte) (int, error) {
+	_, err := os.Stderr.Write(bytes.Replace(p, []byte("time="), nil, 1))
+	return len(p), err
+}
+
 func rebuildHandler() {
-	baseHandler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	baseHandler = slog.NewTextHandler(stripTimeKeyWriter{}, &slog.HandlerOptions{
 		// Set to lowest possible so the moduleHandler.Enabled controls filtering.
 		Level: LevelTrace,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				if t, ok := a.Value.Any().(time.Time); ok {
+					a.Value = slog.StringValue(t.UTC().Format("2006-01-02T15:04:05.000Z"))
+				}
+			}
 			if a.Key == slog.LevelKey {
 				l := a.Value.Any().(slog.Level)
 				switch {

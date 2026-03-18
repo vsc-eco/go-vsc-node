@@ -330,7 +330,6 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	amount := int64(0)
 
 	if strings.HasPrefix(account, "hive:") {
-		fmt.Println("account", account, "is hive account")
 		maxRcs = maxRcs + params.RC_HIVE_FREE_AMOUNT
 		amount = params.RC_HIVE_FREE_AMOUNT
 	}

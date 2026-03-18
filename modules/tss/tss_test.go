@@ -15,6 +15,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/test_utils"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
@@ -40,6 +41,8 @@ import (
 )
 
 const nodeCount = 6
+
+var log = vsclog.Module("tss-test")
 
 type MockElectionSystem struct {
 	// Use a sorted slice for deterministic iteration order.
@@ -103,7 +106,7 @@ func connectAllPeers(t *testing.T, nodes []nodeComponents) {
 			addrInfo := peer.AddrInfo{ID: targetID, Addrs: addrs}
 			err := nodes[i].p2p.Connect(context.Background(), addrInfo)
 			if err != nil {
-				fmt.Printf("[TEST] Connect %d->%d failed: %v\n", i, j, err)
+				log.Warn("connect failed", "from", i, "to", j, "err", err)
 			}
 			// Protect the connection from being trimmed by the connection manager
 			nodes[i].p2p.Host().ConnManager().Protect(targetID, "tss-test")
@@ -120,7 +123,7 @@ func connectAllPeers(t *testing.T, nodes []nodeComponents) {
 				connected++
 			}
 		}
-		fmt.Printf("[TEST] Node %d connected to %d/%d peers\n", i, connected, nodeCount-1)
+		log.Info("node connected", "node", i, "connected", connected, "total", nodeCount-1)
 	}
 }
 
@@ -157,9 +160,9 @@ func startPeerKeepalive(nodes []nodeComponents, interval time.Duration, excluded
 							addrInfo := peer.AddrInfo{ID: targetID, Addrs: addrs}
 							err := h.Connect(ctx, addrInfo)
 							if err != nil {
-								fmt.Printf("[KEEPALIVE] Reconnect %d->%d failed: %v\n", i, j, err)
+								log.Warn("keepalive reconnect failed", "from", i, "to", j, "err", err)
 							} else {
-								fmt.Printf("[KEEPALIVE] Reconnected %d->%d\n", i, j)
+								log.Info("keepalive reconnected", "from", i, "to", j)
 							}
 						} else {
 							// Ping the peer to keep the connection alive
@@ -273,7 +276,7 @@ func disconnectNode(nodes []nodeComponents, targetIdx int) {
 		nodes[targetIdx].p2p.Host().Network().ClosePeer(peerID)
 		nodes[targetIdx].p2p.Peerstore().ClearAddrs(peerID)
 	}
-	fmt.Printf("[TEST] Node %d disconnected from all peers\n", targetIdx)
+	log.Info("node disconnected from all peers", "node", targetIdx)
 }
 
 // connectActivePeers connects all nodes except those in the excluded set.
@@ -296,7 +299,7 @@ func connectActivePeers(t *testing.T, nodes []nodeComponents, excludedNodes *syn
 			addrInfo := peer.AddrInfo{ID: targetID, Addrs: addrs}
 			err := nodes[i].p2p.Connect(context.Background(), addrInfo)
 			if err != nil {
-				fmt.Printf("[TEST] Connect %d->%d failed: %v\n", i, j, err)
+				log.Warn("connect failed", "from", i, "to", j, "err", err)
 			}
 			nodes[i].p2p.Host().ConnManager().Protect(targetID, "tss-test")
 		}
@@ -320,12 +323,12 @@ func reconnectNode(t *testing.T, nodes []nodeComponents, targetIdx int) {
 		addrInfo := peer.AddrInfo{ID: targetID, Addrs: targetAddrs}
 		err := nodes[i].p2p.Connect(context.Background(), addrInfo)
 		if err != nil {
-			fmt.Printf("[TEST] Reconnect %d->%d failed: %v\n", i, targetIdx, err)
+			log.Warn("reconnect failed", "from", i, "to", targetIdx, "err", err)
 		}
 		nodes[i].p2p.Host().ConnManager().Protect(targetID, "tss-test")
 		nodes[targetIdx].p2p.Host().ConnManager().Protect(peerID, "tss-test")
 	}
-	fmt.Printf("[TEST] Node %d reconnected to all peers\n", targetIdx)
+	log.Info("node reconnected to all peers", "node", targetIdx)
 }
 
 func processBlocks(nodes []nodeComponents, start, end uint64, headHeight *uint64) {
@@ -340,6 +343,8 @@ func processBlocks(nodes []nodeComponents, start, end uint64, headHeight *uint64
 }
 
 func TestTss(t *testing.T) {
+	vsclog.ParseAndApply("trace")
+
 	// Clean databases from previous runs
 	dropTestDatabases()
 
@@ -371,7 +376,7 @@ func TestTss(t *testing.T) {
 					Json string `json:"json"`
 				}
 				json.Unmarshal(raw, &cj)
-				fmt.Printf("[TEST] Broadcast received: id=%s\n", cj.Id)
+				log.Info("broadcast received", "id", cj.Id)
 				if cj.Id == "vsc.tss_commitment" {
 					var payload map[string]interface{}
 					json.Unmarshal([]byte(cj.Json), &payload)
@@ -381,11 +386,11 @@ func TestTss(t *testing.T) {
 								if tp == "keygen" && keygenBroadcast == nil {
 									txCopy := tx
 									keygenBroadcast = &txCopy
-									fmt.Println("[TEST] Keygen commitment captured")
+									log.Info("keygen commitment captured")
 								} else if tp == "reshare" && reshareBroadcast == nil {
 									txCopy := tx
 									reshareBroadcast = &txCopy
-									fmt.Println("[TEST] Reshare commitment captured")
+									log.Info("reshare commitment captured")
 								}
 							}
 						}
@@ -393,7 +398,7 @@ func TestTss(t *testing.T) {
 				} else if cj.Id == "vsc.tss_sign" && signBroadcast == nil {
 					txCopy := tx
 					signBroadcast = &txCopy
-					fmt.Println("[TEST] Sign result captured")
+					log.Info("sign result captured")
 
 					// Mark signing requests as complete on all nodes
 					// (mirrors what the state engine does in production)
@@ -446,7 +451,7 @@ func TestTss(t *testing.T) {
 		nodeIdx := i
 		notifee := &network.NotifyBundle{
 			DisconnectedF: func(n network.Network, conn network.Conn) {
-				fmt.Printf("[NOTIF] Node %d disconnected from %s\n", nodeIdx, conn.RemotePeer().String()[:16])
+				log.Info("node disconnected from peer", "node", nodeIdx, "peer", conn.RemotePeer().String()[:16])
 			},
 		}
 		nodes[i].p2p.Host().Network().Notify(notifee)
@@ -460,7 +465,7 @@ func TestTss(t *testing.T) {
 			t.Fatalf("Failed to derive BLS DID for node %d: %v", i, err)
 		}
 		blsDids[i] = blsDid
-		fmt.Printf("[TEST] Node %d (mock-tss-%d) BLS DID: %s\n", i, i+1, blsDid)
+		log.Info("node BLS DID", "node", i, "user", i+1, "did", blsDid)
 	}
 
 	// Set witness updates in all witness DBs
@@ -531,8 +536,8 @@ func TestTss(t *testing.T) {
 		node.tssKeys.InsertKey("test-key", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
 	}
 
-	fmt.Println("[TEST] === PHASE 1: KEYGEN ===")
-	fmt.Println("[TEST] Processing blocks to trigger keygen at block 100...")
+	log.Info("=== PHASE 1: KEYGEN ===")
+	log.Info("Processing blocks to trigger keygen at block 100...")
 
 	// Step 5: Process blocks to trigger keygen at block 100
 	// Process blocks up to 99 quickly, then slowly around 100
@@ -552,7 +557,7 @@ func TestTss(t *testing.T) {
 	// Wait for keygen to fully complete, including the RunActions goroutine releasing the lock.
 	// The RunActions goroutine holds the lock until: keygen completes + 5s sleep + 6s waitForSigs + broadcast.
 	// Poll for keygen broadcast (up to 4 minutes), then wait additional time for lock release.
-	fmt.Println("[TEST] Waiting for keygen TSS protocol to complete...")
+	log.Info("Waiting for keygen TSS protocol to complete...")
 	keygenDone := false
 	for i := 0; i < 120; i++ {
 		time.Sleep(500 * time.Millisecond)
@@ -561,7 +566,7 @@ func TestTss(t *testing.T) {
 		mu.Unlock()
 		if done {
 			keygenDone = true
-			fmt.Println("[TEST] Keygen broadcast detected!")
+			log.Info("Keygen broadcast detected!")
 			break
 		}
 	}
@@ -570,12 +575,12 @@ func TestTss(t *testing.T) {
 		// Keygen broadcast wasn't captured (BLS sig aggregation may have failed),
 		// but the keygen protocol itself likely completed.
 		// Wait for the RunActions timeout + buffer to ensure lock release.
-		fmt.Println("[TEST] Keygen broadcast not captured, waiting for RunActions timeout...")
+		log.Info("Keygen broadcast not captured, waiting for RunActions timeout...")
 		time.Sleep(35 * time.Second)
 	} else {
 		// Keygen broadcast was captured, the lock releases shortly after broadcast.
 		// Wait a few extra seconds for the goroutine to fully finish.
-		fmt.Println("[TEST] Waiting for RunActions lock to release...")
+		log.Info("Waiting for RunActions lock to release...")
 		time.Sleep(5 * time.Second)
 	}
 
@@ -616,7 +621,7 @@ func TestTss(t *testing.T) {
 	if key.Status != "active" {
 		t.Errorf("Expected key status 'active', got '%s'", key.Status)
 	}
-	fmt.Printf("[TEST] TSS key created: id=%s algo=%s status=%s\n", key.Id, key.Algo, key.Status)
+	log.Info("TSS key created", "id", key.Id, "algo", key.Algo, "status", key.Status)
 
 	// Step 8: Insert signing request
 	msgHex := "4c67f5f07565d45cccd89bebfb3a9ee357bff33fef45b14b8f424cd17c93e6f8"
@@ -628,8 +633,8 @@ func TestTss(t *testing.T) {
 		})
 	}
 
-	fmt.Println("[TEST] === PHASE 2: SIGNING ===")
-	fmt.Println("[TEST] Processing blocks to trigger signing at block 150...")
+	log.Info("=== PHASE 2: SIGNING ===")
+	log.Info("Processing blocks to trigger signing at block 150...")
 
 	// Re-establish peer connections before signing (connections may have timed out during keygen wait)
 	connectAllPeers(t, nodes)
@@ -651,7 +656,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Wait for signing to complete
-	fmt.Println("[TEST] Waiting for signing to complete...")
+	log.Info("Waiting for signing to complete...")
 	signDone := false
 	for i := 0; i < 90; i++ {
 		time.Sleep(500 * time.Millisecond)
@@ -660,7 +665,7 @@ func TestTss(t *testing.T) {
 		mu.Unlock()
 		if done {
 			signDone = true
-			fmt.Println("[TEST] Signing completed!")
+			log.Info("Signing completed!")
 			break
 		}
 	}
@@ -694,7 +699,7 @@ func TestTss(t *testing.T) {
 				if sig.Sig == "" {
 					t.Error("Signing produced empty signature")
 				} else {
-					fmt.Printf("[TEST] Signature created for msg %s: %s\n", sig.Msg, sig.Sig)
+					log.Info("signature created", "msg", sig.Msg, "sig", sig.Sig)
 				}
 				if sig.Msg != msgHex {
 					t.Errorf("Signed message mismatch: got %s, want %s", sig.Msg, msgHex)
@@ -705,10 +710,10 @@ func TestTss(t *testing.T) {
 		}
 	}
 
-	fmt.Println("[TEST] === PHASE 3: RESHARE ===")
+	log.Info("=== PHASE 3: RESHARE ===")
 
 	// Wait for signing RunActions lock to release before reshare.
-	fmt.Println("[TEST] Waiting for signing lock to release...")
+	log.Info("Waiting for signing lock to release...")
 	time.Sleep(5 * time.Second)
 
 	// Step 9: Store new election (epoch 1) for reshare
@@ -734,7 +739,7 @@ func TestTss(t *testing.T) {
 	connectAllPeers(t, nodes)
 	time.Sleep(2 * time.Second)
 
-	fmt.Println("[TEST] Processing blocks to trigger reshare at block 200...")
+	log.Info("Processing blocks to trigger reshare at block 200...")
 
 	// Process blocks up to reshare trigger
 	processBlocks(nodes, 156, 198, &headHeight)
@@ -751,7 +756,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Wait for reshare to complete
-	fmt.Println("[TEST] Waiting for reshare to complete...")
+	log.Info("Waiting for reshare to complete...")
 	reshareDone := false
 	for i := 0; i < 240; i++ {
 		time.Sleep(500 * time.Millisecond)
@@ -760,7 +765,7 @@ func TestTss(t *testing.T) {
 		mu.Unlock()
 		if done {
 			reshareDone = true
-			fmt.Println("[TEST] Reshare completed!")
+			log.Info("Reshare completed!")
 			break
 		}
 	}
@@ -774,15 +779,15 @@ func TestTss(t *testing.T) {
 	if reshareBroadcast == nil {
 		t.Fatal("Reshare broadcast was nil")
 	}
-	fmt.Printf("[TEST] Reshare broadcast has %d operations\n", len(reshareBroadcast.Operations))
+	log.Info("reshare broadcast", "ops", len(reshareBroadcast.Operations))
 	mu.Unlock()
 
-	fmt.Println("[TEST] Phases 1-3 completed successfully!")
+	log.Info("Phases 1-3 completed successfully!")
 
 	// =====================================================
 	// PHASE 4: SIGN WITH ONE NODE OFFLINE (block 250)
 	// =====================================================
-	fmt.Println("[TEST] === PHASE 4: SIGN WITH NODE OFFLINE ===")
+	log.Info("=== PHASE 4: SIGN WITH NODE OFFLINE ===")
 
 	// Wait for reshare lock to release and stale retry goroutines to fire
 	time.Sleep(5 * time.Second)
@@ -838,7 +843,7 @@ func TestTss(t *testing.T) {
 	connectActivePeers(t, nodes, excludedNodes)
 	time.Sleep(2 * time.Second)
 
-	fmt.Println("[TEST] Processing blocks to trigger signing at block 250...")
+	log.Info("Processing blocks to trigger signing at block 250...")
 	processBlocks(nodes, 206, 248, &headHeight)
 	headHeight = 270
 	for bh := uint64(249); bh <= 255; bh++ {
@@ -852,7 +857,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Poll for sign broadcast
-	fmt.Println("[TEST] Waiting for signing with node offline to complete...")
+	log.Info("Waiting for signing with node offline to complete...")
 	signDone = false
 	for i := 0; i < 90; i++ {
 		time.Sleep(500 * time.Millisecond)
@@ -861,7 +866,7 @@ func TestTss(t *testing.T) {
 		mu.Unlock()
 		if done {
 			signDone = true
-			fmt.Println("[TEST] Signing with node offline completed!")
+			log.Info("Signing with node offline completed!")
 			break
 		}
 	}
@@ -897,12 +902,12 @@ func TestTss(t *testing.T) {
 	reconnectNode(t, nodes, 5)
 	time.Sleep(2 * time.Second)
 
-	fmt.Println("[TEST] Phase 4 completed!")
+	log.Info("Phase 4 completed!")
 
 	// =====================================================
 	// PHASE 5: RESHARE WITH WITNESS REPLACEMENT (block 300)
 	// =====================================================
-	fmt.Println("[TEST] === PHASE 5: RESHARE WITH WITNESS REPLACEMENT ===")
+	log.Info("=== PHASE 5: RESHARE WITH WITNESS REPLACEMENT ===")
 
 	// Wait for sign lock to release and stale retry goroutines to fire
 	time.Sleep(5 * time.Second)
@@ -959,7 +964,7 @@ func TestTss(t *testing.T) {
 	connectActivePeers(t, nodes, excludedNodes)
 	time.Sleep(2 * time.Second)
 
-	fmt.Println("[TEST] Processing blocks to trigger reshare at block 300...")
+	log.Info("Processing blocks to trigger reshare at block 300...")
 	processBlocks(nodes, 256, 298, &headHeight)
 	headHeight = 320
 	for bh := uint64(299); bh <= 305; bh++ {
@@ -973,7 +978,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Poll for reshare broadcast
-	fmt.Println("[TEST] Waiting for reshare with witness replacement...")
+	log.Info("Waiting for reshare with witness replacement...")
 	reshareDone = false
 	for i := 0; i < 240; i++ {
 		time.Sleep(500 * time.Millisecond)
@@ -982,7 +987,7 @@ func TestTss(t *testing.T) {
 		mu.Unlock()
 		if done {
 			reshareDone = true
-			fmt.Println("[TEST] Reshare with witness replacement completed!")
+			log.Info("Reshare with witness replacement completed!")
 			break
 		}
 	}
@@ -997,12 +1002,12 @@ func TestTss(t *testing.T) {
 	}
 	mu.Unlock()
 
-	fmt.Println("[TEST] Phase 5 completed!")
+	log.Info("Phase 5 completed!")
 
 	// =====================================================
 	// PHASE 6: SIGN WITH REDUCED 5-MEMBER SET (block 350)
 	// =====================================================
-	fmt.Println("[TEST] === PHASE 6: SIGN WITH REDUCED MEMBER SET ===")
+	log.Info("=== PHASE 6: SIGN WITH REDUCED MEMBER SET ===")
 
 	// Wait for reshare lock to release and stale retry goroutines to fire
 	time.Sleep(5 * time.Second)
@@ -1059,7 +1064,7 @@ func TestTss(t *testing.T) {
 	connectActivePeers(t, nodes, excludedNodes)
 	time.Sleep(2 * time.Second)
 
-	fmt.Println("[TEST] Processing blocks to trigger signing at block 350...")
+	log.Info("Processing blocks to trigger signing at block 350...")
 	processBlocks(nodes, 306, 348, &headHeight)
 	headHeight = 370
 	for bh := uint64(349); bh <= 355; bh++ {
@@ -1073,7 +1078,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Poll for sign broadcast
-	fmt.Println("[TEST] Waiting for signing with reduced set...")
+	log.Info("Waiting for signing with reduced set...")
 	signDone = false
 	for i := 0; i < 90; i++ {
 		time.Sleep(500 * time.Millisecond)
@@ -1082,7 +1087,7 @@ func TestTss(t *testing.T) {
 		mu.Unlock()
 		if done {
 			signDone = true
-			fmt.Println("[TEST] Signing with reduced set completed!")
+			log.Info("Signing with reduced set completed!")
 			break
 		}
 	}
@@ -1113,12 +1118,12 @@ func TestTss(t *testing.T) {
 	}
 	mu.Unlock()
 
-	fmt.Println("[TEST] Phase 6 completed!")
+	log.Info("Phase 6 completed!")
 
 	// =====================================================
 	// PHASE 7: RESHARE WITH NODE RETURNING (block 400)
 	// =====================================================
-	fmt.Println("[TEST] === PHASE 7: RESHARE WITH NODE RETURNING ===")
+	log.Info("=== PHASE 7: RESHARE WITH NODE RETURNING ===")
 
 	// Wait for sign lock to release and stale retry goroutines to fire
 	time.Sleep(5 * time.Second)
@@ -1164,7 +1169,7 @@ func TestTss(t *testing.T) {
 	connectAllPeers(t, nodes)
 	time.Sleep(2 * time.Second)
 
-	fmt.Println("[TEST] Processing blocks to trigger reshare at block 400...")
+	log.Info("Processing blocks to trigger reshare at block 400...")
 	processBlocks(nodes, 356, 398, &headHeight)
 	headHeight = 420
 	for bh := uint64(399); bh <= 405; bh++ {
@@ -1178,7 +1183,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Poll for reshare broadcast
-	fmt.Println("[TEST] Waiting for reshare with node returning...")
+	log.Info("Waiting for reshare with node returning...")
 	reshareDone = false
 	for i := 0; i < 240; i++ {
 		time.Sleep(500 * time.Millisecond)
@@ -1187,7 +1192,7 @@ func TestTss(t *testing.T) {
 		mu.Unlock()
 		if done {
 			reshareDone = true
-			fmt.Println("[TEST] Reshare with node returning completed!")
+			log.Info("Reshare with node returning completed!")
 			break
 		}
 	}
@@ -1202,12 +1207,12 @@ func TestTss(t *testing.T) {
 	}
 	mu.Unlock()
 
-	fmt.Println("[TEST] Phases 1-7 completed successfully!")
+	log.Info("Phases 1-7 completed successfully!")
 
 	// =====================================================
 	// PHASE 8: MULTIPLE SIMULTANEOUS SIGNING REQUESTS (block 450)
 	// =====================================================
-	fmt.Println("[TEST] === PHASE 8: MULTIPLE SIMULTANEOUS SIGNING REQUESTS ===")
+	log.Info("=== PHASE 8: MULTIPLE SIMULTANEOUS SIGNING REQUESTS ===")
 
 	// Wait for reshare lock to release and stale retry goroutines to fire
 	time.Sleep(5 * time.Second)
@@ -1264,7 +1269,7 @@ func TestTss(t *testing.T) {
 	connectAllPeers(t, nodes)
 	time.Sleep(2 * time.Second)
 
-	fmt.Println("[TEST] Processing blocks to trigger signing at block 450...")
+	log.Info("Processing blocks to trigger signing at block 450...")
 	processBlocks(nodes, 406, 448, &headHeight)
 	headHeight = 470
 	for bh := uint64(449); bh <= 455; bh++ {
@@ -1278,7 +1283,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Poll for sign broadcast
-	fmt.Println("[TEST] Waiting for multi-sign to complete...")
+	log.Info("Waiting for multi-sign to complete...")
 	signDone = false
 	for i := 0; i < 90; i++ {
 		time.Sleep(500 * time.Millisecond)
@@ -1287,7 +1292,7 @@ func TestTss(t *testing.T) {
 		mu.Unlock()
 		if done {
 			signDone = true
-			fmt.Println("[TEST] Multi-sign completed!")
+			log.Info("Multi-sign completed!")
 			break
 		}
 	}
@@ -1343,12 +1348,12 @@ func TestTss(t *testing.T) {
 	}
 	mu.Unlock()
 
-	fmt.Println("[TEST] Phase 8 completed!")
+	log.Info("Phase 8 completed!")
 
 	// =====================================================
 	// PHASE 9: MULTIPLE KEYS / KEYLOCKS MECHANISM (block 500)
 	// =====================================================
-	fmt.Println("[TEST] === PHASE 9: MULTIPLE KEYS / KEYLOCKS ===")
+	log.Info("=== PHASE 9: MULTIPLE KEYS / KEYLOCKS ===")
 
 	// Wait for sign lock to release and stale retry goroutines to fire
 	time.Sleep(5 * time.Second)
@@ -1395,7 +1400,7 @@ func TestTss(t *testing.T) {
 	// Block 500 is both TSS_ROTATE_INTERVAL (100) and TSS_SIGN_INTERVAL (50) boundary.
 	// This triggers keygen for test-key-2 AND signing for test-key.
 	// keyLocks should prevent signing test-key-2 while its keygen is active.
-	fmt.Println("[TEST] Processing blocks to trigger keygen+sign at block 500...")
+	log.Info("Processing blocks to trigger keygen+sign at block 500...")
 	processBlocks(nodes, 456, 498, &headHeight)
 	headHeight = 520
 	for bh := uint64(499); bh <= 505; bh++ {
@@ -1409,7 +1414,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Wait for sign broadcast (for test-key, the active key)
-	fmt.Println("[TEST] Waiting for signing of active key...")
+	log.Info("Waiting for signing of active key...")
 	signDone = false
 	for i := 0; i < 90; i++ {
 		time.Sleep(500 * time.Millisecond)
@@ -1418,7 +1423,7 @@ func TestTss(t *testing.T) {
 		mu.Unlock()
 		if done {
 			signDone = true
-			fmt.Println("[TEST] Signing of active key completed!")
+			log.Info("Signing of active key completed!")
 			break
 		}
 	}
@@ -1458,7 +1463,7 @@ func TestTss(t *testing.T) {
 	mu.Unlock()
 
 	// Wait for keygen of test-key-2 to complete
-	fmt.Println("[TEST] Waiting for keygen of test-key-2...")
+	log.Info("Waiting for keygen of test-key-2...")
 	keygenDone = false
 	for i := 0; i < 120; i++ {
 		time.Sleep(500 * time.Millisecond)
@@ -1467,21 +1472,21 @@ func TestTss(t *testing.T) {
 		mu.Unlock()
 		if done {
 			keygenDone = true
-			fmt.Println("[TEST] Keygen of test-key-2 completed!")
+			log.Info("Keygen of test-key-2 completed!")
 			break
 		}
 	}
 
 	if !keygenDone {
-		fmt.Println("[TEST] Keygen broadcast for test-key-2 not captured (BLS sig may have failed), continuing...")
+		log.Info("Keygen broadcast for test-key-2 not captured (BLS sig may have failed), continuing...")
 	}
 
-	fmt.Println("[TEST] Phase 9 completed!")
+	log.Info("Phase 9 completed!")
 
 	// =====================================================
 	// PHASE 10: RESHARE WITH 2 MEMBERS SWAPPED (block 600)
 	// =====================================================
-	fmt.Println("[TEST] === PHASE 10: RESHARE WITH 2 MEMBERS SWAPPED ===")
+	log.Info("=== PHASE 10: RESHARE WITH 2 MEMBERS SWAPPED ===")
 
 	// Wait for keygen/sign lock to release
 	time.Sleep(10 * time.Second)
@@ -1537,7 +1542,7 @@ func TestTss(t *testing.T) {
 	connectActivePeers(t, nodes, excludedNodes)
 	time.Sleep(2 * time.Second)
 
-	fmt.Println("[TEST] Processing blocks to trigger reshare at block 600...")
+	log.Info("Processing blocks to trigger reshare at block 600...")
 	processBlocks(nodes, 506, 598, &headHeight)
 	headHeight = 620
 	for bh := uint64(599); bh <= 605; bh++ {
@@ -1551,7 +1556,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Poll for reshare broadcast
-	fmt.Println("[TEST] Waiting for reshare with 2 members swapped...")
+	log.Info("Waiting for reshare with 2 members swapped...")
 	reshareDone = false
 	for i := 0; i < 240; i++ {
 		time.Sleep(500 * time.Millisecond)
@@ -1560,7 +1565,7 @@ func TestTss(t *testing.T) {
 		mu.Unlock()
 		if done {
 			reshareDone = true
-			fmt.Println("[TEST] Reshare with 2 members swapped completed!")
+			log.Info("Reshare with 2 members swapped completed!")
 			break
 		}
 	}
@@ -1580,7 +1585,7 @@ func TestTss(t *testing.T) {
 	excludedNodes.Delete(5)
 	mes.WitnessNames = originalWitnessNames
 
-	fmt.Println("[TEST] All 10 TSS phases completed successfully!")
+	log.Info("All 10 TSS phases completed successfully!")
 }
 
 // blameBitset creates a base64-encoded bitset marking the given member indices as blamed.
