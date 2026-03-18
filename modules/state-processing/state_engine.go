@@ -821,17 +821,23 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 				} else if cj.Id == "vsc.tss_commitment" {
 
-					commitmentData := make(map[string]tss_helpers.SignedCommitment)
+					var commitments []tss_helpers.SignedCommitment
 
-					err := json.Unmarshal(cj.Json, &commitmentData)
-					if err != nil {
-						tssLog.Warn("vsc.tss_commitment parse error", "txId", tx.TransactionID, "err", err)
-						continue
+					// Try new array format first, fall back to legacy map format
+					if err := json.Unmarshal(cj.Json, &commitments); err != nil {
+						commitmentMap := make(map[string]tss_helpers.SignedCommitment)
+						if err := json.Unmarshal(cj.Json, &commitmentMap); err != nil {
+							tssLog.Warn("vsc.tss_commitment parse error", "txId", tx.TransactionID, "err", err)
+							continue
+						}
+						for _, c := range commitmentMap {
+							commitments = append(commitments, c)
+						}
 					}
 
-					tssLog.Verbose("processing vsc.tss_commitment", "txId", tx.TransactionID, "blockHeight", block.BlockNumber, "count", len(commitmentData))
+					tssLog.Verbose("processing vsc.tss_commitment", "txId", tx.TransactionID, "blockHeight", block.BlockNumber, "count", len(commitments))
 
-					for _, commitment := range commitmentData {
+					for _, commitment := range commitments {
 						tssLog.Verbose("commitment entry", "sessionId", commitment.SessionId, "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
 
 						members := make([]dids.BlsDID, 0)

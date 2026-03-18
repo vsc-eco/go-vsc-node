@@ -971,11 +971,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				wg.Wait()
 
 				var canCommit bool = false
-				sigPacket := make(map[string]any, 0)
+				sigPacket := make([]map[string]any, 0)
 				for _, signResult := range commitedResults {
 					if signResult.err == nil {
 						canCommit = true
-						sigPacket[signResult.commitment.SessionId] = map[string]any{
+						sigPacket = append(sigPacket, map[string]any{
 							"type":         signResult.commitment.Type,
 							"session_id":   signResult.commitment.SessionId,
 							"key_id":       signResult.commitment.KeyId,
@@ -986,7 +986,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 							"signature": signResult.circuit.Signature,
 							"bv":        signResult.circuit.BitVector,
-						}
+						})
 					}
 				}
 

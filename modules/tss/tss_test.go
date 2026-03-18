@@ -343,7 +343,7 @@ func processBlocks(nodes []nodeComponents, start, end uint64, headHeight *uint64
 }
 
 func TestTss(t *testing.T) {
-	vsclog.ParseAndApply("trace")
+	vsclog.ParseAndApply("verbose")
 
 	// Clean databases from previous runs
 	dropTestDatabases()
@@ -378,9 +378,16 @@ func TestTss(t *testing.T) {
 				json.Unmarshal(raw, &cj)
 				log.Info("broadcast received", "id", cj.Id)
 				if cj.Id == "vsc.tss_commitment" {
-					var payload map[string]interface{}
-					json.Unmarshal([]byte(cj.Json), &payload)
-					for _, v := range payload {
+					// Parse commitment entries from array format (new) or map format (legacy)
+					var entries []interface{}
+					if err := json.Unmarshal([]byte(cj.Json), &entries); err != nil {
+						var payload map[string]interface{}
+						json.Unmarshal([]byte(cj.Json), &payload)
+						for _, v := range payload {
+							entries = append(entries, v)
+						}
+					}
+					for _, v := range entries {
 						if m, ok := v.(map[string]interface{}); ok {
 							if tp, ok := m["type"].(string); ok {
 								if tp == "keygen" && keygenBroadcast == nil {
@@ -393,12 +400,35 @@ func TestTss(t *testing.T) {
 									log.Info("reshare commitment captured")
 								}
 							}
+
+							// Store commitment in DB (mirrors state engine production path)
+							keyId, _ := m["key_id"].(string)
+							cType, _ := m["type"].(string)
+							commitmentStr, _ := m["commitment"].(string)
+							epoch, _ := m["epoch"].(float64)
+							blockHeight, _ := m["block_height"].(float64)
+							var pubKey *string
+							if pk, ok := m["pub_key"].(string); ok {
+								pubKey = &pk
+							}
+							for _, node := range nodes {
+								node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+									Type:        cType,
+									KeyId:       keyId,
+									Commitment:  commitmentStr,
+									Epoch:       uint64(epoch),
+									BlockHeight: uint64(blockHeight),
+									PublicKey:   pubKey,
+								})
+							}
 						}
 					}
-				} else if cj.Id == "vsc.tss_sign" && signBroadcast == nil {
-					txCopy := tx
-					signBroadcast = &txCopy
-					log.Info("sign result captured")
+				} else if cj.Id == "vsc.tss_sign" {
+					if signBroadcast == nil {
+						txCopy := tx
+						signBroadcast = &txCopy
+						log.Info("sign result captured")
+					}
 
 					// Mark signing requests as complete on all nodes
 					// (mirrors what the state engine does in production)
@@ -1717,9 +1747,9 @@ func TestTss(t *testing.T) {
 				Json string `json:"json"`
 			}
 			json.Unmarshal(raw, &cj)
-			var payload map[string]interface{}
-			json.Unmarshal([]byte(cj.Json), &payload)
-			for _, v := range payload {
+			var entries []interface{}
+			json.Unmarshal([]byte(cj.Json), &entries)
+			for _, v := range entries {
 				if m, ok := v.(map[string]interface{}); ok {
 					if tp, _ := m["type"].(string); tp == "keygen" {
 						foundKeygen = true
@@ -1739,9 +1769,9 @@ func TestTss(t *testing.T) {
 				Json string `json:"json"`
 			}
 			json.Unmarshal(raw, &cj)
-			var payload map[string]interface{}
-			json.Unmarshal([]byte(cj.Json), &payload)
-			for _, v := range payload {
+			var entries []interface{}
+			json.Unmarshal([]byte(cj.Json), &entries)
+			for _, v := range entries {
 				if m, ok := v.(map[string]interface{}); ok {
 					if tp, _ := m["type"].(string); tp == "reshare" {
 						foundReshare = true
@@ -1762,7 +1792,7 @@ func TestTss(t *testing.T) {
 		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
 			Type:        "reshare",
 			KeyId:       "test-key",
-			Epoch:       5,
+			Epoch:       55,
 			BlockHeight: 700,
 			Commitment:  commitmentStr,
 			TxId:        "mock-multi-tx",
@@ -1770,7 +1800,7 @@ func TestTss(t *testing.T) {
 		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
 			Type:        "keygen",
 			KeyId:       "test-key-multi",
-			Epoch:       5,
+			Epoch:       55,
 			BlockHeight: 700,
 			Commitment:  commitmentStr,
 			TxId:        "mock-multi-tx", // same tx_id as above
@@ -1778,9 +1808,9 @@ func TestTss(t *testing.T) {
 	}
 
 	// Verify both records exist (the core assertion for the DB fix)
-	c1, err := nodes[0].tssCommitments.GetCommitment("test-key", 5)
+	c1, err := nodes[0].tssCommitments.GetCommitment("test-key", 55)
 	if err != nil {
-		t.Fatalf("Phase 11: Failed to get commitment for test-key epoch 5: %v", err)
+		t.Fatalf("Phase 11: Failed to get commitment for test-key epoch 55: %v", err)
 	}
 	if c1.Type != "reshare" {
 		t.Errorf("Phase 11: Expected test-key commitment type 'reshare', got '%s'", c1.Type)
@@ -1789,9 +1819,9 @@ func TestTss(t *testing.T) {
 		t.Errorf("Phase 11: Expected test-key tx_id 'mock-multi-tx', got '%s'", c1.TxId)
 	}
 
-	c2, err := nodes[0].tssCommitments.GetCommitment("test-key-multi", 5)
+	c2, err := nodes[0].tssCommitments.GetCommitment("test-key-multi", 55)
 	if err != nil {
-		t.Fatalf("Phase 11: Failed to get commitment for test-key-multi epoch 5: %v", err)
+		t.Fatalf("Phase 11: Failed to get commitment for test-key-multi epoch 55: %v", err)
 	}
 	if c2.Type != "keygen" {
 		t.Errorf("Phase 11: Expected test-key-multi commitment type 'keygen', got '%s'", c2.Type)

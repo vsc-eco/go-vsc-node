@@ -76,7 +76,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 	// party IDs. We must recreate old party IDs with the same epoch modification so
 	// tss-lib can match them against the save data.
 	if dispatcher.prevCommitmentType == "reshare" {
-		oldEpochIdx := makeEpochIdx(int(dispatcher.epoch))
+		oldEpochIdx := dispatcher.epoch
 		pIds := make([]*btss.PartyID, 0)
 		for idx, p := range dispatcher.participants {
 			i := big.NewInt(0)
@@ -105,7 +105,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 	log.Verbose("reshare participant counts", "oldCount", len(sortedPids), "newCount", len(dispatcher.newParticipants), "sessionId", dispatcher.sessionId)
 
-	epochIdx := makeEpochIdx(int(dispatcher.newEpoch))
+	epochIdx := dispatcher.newEpoch
 	newPids := make([]*btss.PartyID, 0)
 	for idx, p := range dispatcher.newParticipants {
 		i := big.NewInt(0)
@@ -760,7 +760,7 @@ func (dispatcher *SignDispatcher) Start() error {
 	// modification so tss-lib can match them against the save data.
 	if dispatcher.prevCommitmentType == "reshare" {
 		userId := dispatcher.tssMgr.config.Get().HiveUsername
-		epochIdx := makeEpochIdx(int(dispatcher.epoch))
+		epochIdx := dispatcher.epoch
 		pIds := make([]*btss.PartyID, 0)
 		for idx, p := range dispatcher.participants {
 			i := big.NewInt(0)
