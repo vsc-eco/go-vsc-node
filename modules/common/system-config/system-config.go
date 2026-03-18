@@ -113,7 +113,7 @@ func TestnetConfig() SystemConfig {
 			MinMembers:       3,
 			MinSpSigners:     3,
 			MinRcLimit:       params.MINIMUM_RC_LIMIT,
-			TssIndexHeight:   1135000,
+			TssIndexHeight:   1409500,
 			ElectionInterval: params.ELECTION_INTERVAL,
 		},
 		oracleParams: params.OracleParams{
