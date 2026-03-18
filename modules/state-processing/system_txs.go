@@ -31,7 +31,7 @@ type ContractOutput struct {
 	Metadata   contracts.ContractMetadata `json:"metadata"`
 	//This might not be used
 
-	Results     []contracts.ContractOutputResult `json:"results" bson:"results"`
+	Results     []contracts.ContractOutputResult `json:"results"      bson:"results"`
 	StateMerkle string                           `json:"state_merkle"`
 
 	// Legacy, moved to results array
@@ -82,12 +82,8 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 					electionData, elecErr := se.electionDb.GetElectionByHeight(txSelf.BlockHeight)
 					if elecErr == nil {
 						maxExpiry := electionData.Epoch + tss_db.MaxKeyEpochs
-						// For deprecated keys with no ExpiryEpoch set, base from current epoch.
-						baseExpiry := key.ExpiryEpoch
-						if baseExpiry == 0 {
-							baseExpiry = electionData.Epoch
-						}
-						newExpiry := baseExpiry + tssOp.Epochs
+						// base on current epoch so you can't renew infinitely into the future
+						newExpiry := electionData.Epoch + tssOp.Epochs
 						if newExpiry > maxExpiry {
 							newExpiry = maxExpiry
 						}
@@ -650,7 +646,12 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 	// fmt.Println("circuit.Verify()", err)
 
 	if uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength <= t.Self.BlockHeight {
-		fmt.Println("Block is too far in the future", t.SignedBlock.Headers.Br, uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength, t.Self.BlockHeight)
+		fmt.Println(
+			"Block is too far in the future",
+			t.SignedBlock.Headers.Br,
+			uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength,
+			t.Self.BlockHeight,
+		)
 		return false
 	}
 
