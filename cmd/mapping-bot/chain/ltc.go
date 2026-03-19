@@ -34,7 +34,8 @@ func NewLTCMainnet(httpClient *http.Client) *ChainConfig {
 		Parser:         &BTCBlockParser{Params: params},
 		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 17280},
 		BlockInterval:  150 * time.Second, // 2.5 min blocks
-		DropHeightDiff: 17280,             // ~30 days at 2.5 min
+		SleepInterval:  time.Minute,
+		DropHeightDiff: 17280, // ~30 days at 2.5 min
 		ChainParams:    params,
 		DefaultDbName:  "ltc-mapping-bot",
 	}
@@ -49,6 +50,7 @@ func NewLTCTestnet(httpClient *http.Client) *ChainConfig {
 		Parser:         &BTCBlockParser{Params: params},
 		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 2},
 		BlockInterval:  150 * time.Second,
+		SleepInterval:  10 * time.Second,
 		DropHeightDiff: 17280,
 		ChainParams:    params,
 		DefaultDbName:  "ltc-mapping-bot-testnet",

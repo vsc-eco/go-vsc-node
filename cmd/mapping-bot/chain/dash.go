@@ -34,6 +34,7 @@ func NewDASHMainnet(httpClient *http.Client) *ChainConfig {
 		Parser:         &BTCBlockParser{Params: params},
 		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 17280},
 		BlockInterval:  150 * time.Second, // 2.5 min blocks
+		SleepInterval:  time.Minute,
 		DropHeightDiff: 17280,
 		ChainParams:    params,
 		DefaultDbName:  "dash-mapping-bot",
@@ -49,6 +50,7 @@ func NewDASHTestnet(httpClient *http.Client) *ChainConfig {
 		Parser:         &BTCBlockParser{Params: params},
 		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 2},
 		BlockInterval:  150 * time.Second,
+		SleepInterval:  10 * time.Second,
 		DropHeightDiff: 17280,
 		ChainParams:    params,
 		DefaultDbName:  "dash-mapping-bot-testnet",

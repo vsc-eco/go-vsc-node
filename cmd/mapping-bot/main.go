@@ -2,11 +2,12 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
 	"time"
+
 	"vsc-node/cmd/mapping-bot/chain"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
@@ -20,7 +21,7 @@ import (
 func main() {
 	args, err := parseArgs()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
+		slog.Error("failed to parse args", "err", err)
 		os.Exit(1)
 	}
 
@@ -44,14 +45,14 @@ func main() {
 	})
 
 	if err := configs.Init(); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to init configs: %s\n", err.Error())
+		slog.Error("failed to init configs", "err", err)
 		os.Exit(1)
 	}
 
 	// DB name set below after chain resolution
 
 	if args.isInit {
-		fmt.Printf("config initialized at %s\n", args.dataDir)
+		slog.Info("config initialized", "path", args.dataDir)
 		return
 	}
 
@@ -62,14 +63,14 @@ func main() {
 
 	contractId := mappingBotConfig.ContractId()
 	if contractId == "" || contractId == "ADD_MAPPING_CONTRACT_ID" {
-		fmt.Fprintf(os.Stderr, "ContractId must be set in %s\n", args.dataDir)
+		slog.Error("ContractId must be set", "path", args.dataDir)
 		os.Exit(1)
 	}
 
 	// Resolve chain configuration from CLI flags
 	chainCfg, err := chain.Resolve(args.chainName, args.chainNetwork, http.DefaultClient)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "unsupported chain: %s\n", err.Error())
+		slog.Error("unsupported chain", "err", err)
 		os.Exit(1)
 	}
 
@@ -90,7 +91,7 @@ func main() {
 
 	db, err := database.New(context.Background(), dbConfig.Get().DbURI, dbConfig.GetDbName())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create datastore: %s\n", err.Error())
+		slog.Error("failed to create datastore", "err", err)
 		os.Exit(1)
 	}
 	defer db.Close(context.Background())
@@ -106,6 +107,7 @@ func main() {
 	defer cancel()
 	go mapBotHttpServer(httpCtx, db.Addresses, bot)
 
+	var wg sync.WaitGroup
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
@@ -113,24 +115,19 @@ func main() {
 		if time.Since(lastClear).Hours() > 24 {
 			_, err := db.Addresses.DeleteOlderThan(ctx, 24*30*time.Hour)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "error deleting expired addresses: %s\n", err.Error())
+				bot.L.Error("error deleting expired addresses", "err", err)
 			}
 			// Clean up txs stuck in "sent" state for > 7 days (likely failed broadcasts)
 			_, err = db.State.DeleteOldSentTransactions(ctx, 7*24*time.Hour)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "error deleting old sent transactions: %s\n", err.Error())
+				bot.L.Error("error deleting old sent transactions", "err", err)
 			}
 			lastClear = time.Now()
 		}
 
-		// Run sequentially to avoid races on shared DB state.
-		// HandleUnmap processes pending txs; HandleConfirmations promotes sent → confirmed.
-		bot.HandleUnmap()
-		bot.HandleConfirmations()
-
 		blockHeight, err := bot.Db.State.GetBlockHeight(ctx)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error fetching block height from db: %s", err.Error())
+			bot.L.Error("error fetching block height from db", "err", err)
 			cancel()
 			continue
 		}
@@ -138,16 +135,16 @@ func main() {
 		if blockHeight == 0 {
 			startHeight, err := bot.Chain.Client.GetTipHeight()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "error fetching tip height from mempool: %s\n", err.Error())
-				time.Sleep(time.Minute)
+				bot.L.Error("error fetching tip height", "err", err)
+				time.Sleep(chainCfg.SleepInterval)
 				cancel()
 				continue
 			}
-			fmt.Printf("no stored block height, starting from tip: %d\n", startHeight)
+			bot.L.Info("no stored block height, starting from tip", "height", startHeight)
 
 			if err := bot.Db.State.SetBlockHeight(ctx, startHeight); err != nil {
-				fmt.Fprintf(os.Stderr, "error seeding block height: %s\n", err.Error())
-				time.Sleep(time.Minute)
+				bot.L.Error("error seeding block height", "err", err)
+				time.Sleep(chainCfg.SleepInterval)
 				cancel()
 				continue
 			}
@@ -156,33 +153,41 @@ func main() {
 
 		hash, status, err := bot.Chain.Client.GetBlockHashAtHeight(blockHeight)
 		if status == http.StatusNotFound {
-			fmt.Println("No new block.")
-			time.Sleep(time.Minute)
+			bot.L.Info("no new block")
+			// At head — sleep before checking again
+			time.Sleep(chainCfg.SleepInterval)
 			cancel()
 			continue
 		} else if err != nil {
-			fmt.Fprintln(os.Stderr, err.Error())
-			// return
-			time.Sleep(time.Minute)
+			bot.L.Error("error fetching block hash", "height", blockHeight, "err", err)
+			time.Sleep(chainCfg.SleepInterval)
 			cancel()
 			continue
 		}
 		blockBytes, err := bot.Chain.Client.GetRawBlock(hash)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err.Error())
-			// return
-			time.Sleep(time.Minute)
+			bot.L.Error("error fetching raw block", "hash", hash, "err", err)
+			time.Sleep(chainCfg.SleepInterval)
 			cancel()
 			continue
 		}
 
-		go bot.HandleMap(blockBytes, blockHeight)
+		// Run map and unmap concurrently, but wait for both to finish before
+		// advancing to the next block.
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			bot.HandleMap(blockBytes, blockHeight)
+		}()
+		go func() {
+			defer wg.Done()
+			bot.HandleUnmap()
+			bot.HandleConfirmations()
+		}()
+		wg.Wait()
 
-		// // TODO: remove for prod
-		// time.Sleep(3 * time.Second)
-		// return
 		cancel()
-		// Sleep based on chain's expected block interval
-		time.Sleep(chainCfg.BlockInterval)
+		// No sleep — process the next block immediately.
+		// Sleep only happens above when at the chain tip (404).
 	}
 }

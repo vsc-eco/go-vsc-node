@@ -77,6 +77,9 @@ type ChainConfig struct {
 	AddressGen AddressGenerator
 	// BlockInterval is the expected time between blocks.
 	BlockInterval time.Duration
+	// SleepInterval is how long to sleep when at the chain tip before checking for a new block.
+	// Shorter than BlockInterval since some chains have variable block times.
+	SleepInterval time.Duration
 	// DropHeightDiff is how many blocks old an address must be before cleanup.
 	DropHeightDiff uint64
 	// ChainParams holds btcsuite-compatible chain parameters (for UTXO chains).

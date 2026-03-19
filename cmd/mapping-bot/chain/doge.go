@@ -30,7 +30,8 @@ func NewDOGEMainnet(httpClient *http.Client) *ChainConfig {
 		Parser:         &BTCBlockParser{Params: params},
 		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 43200},
 		BlockInterval:  time.Minute, // 1 min blocks
-		DropHeightDiff: 43200,       // ~30 days at 1 min
+		SleepInterval:  time.Minute,
+		DropHeightDiff: 43200, // ~30 days at 1 min
 		ChainParams:    params,
 		DefaultDbName:  "doge-mapping-bot",
 	}
@@ -45,6 +46,7 @@ func NewDOGETestnet(httpClient *http.Client) *ChainConfig {
 		Parser:         &BTCBlockParser{Params: params},
 		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 2},
 		BlockInterval:  time.Minute,
+		SleepInterval:  10 * time.Second,
 		DropHeightDiff: 43200,
 		ChainParams:    params,
 		DefaultDbName:  "doge-mapping-bot-testnet",

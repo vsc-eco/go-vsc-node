@@ -32,7 +32,8 @@ func NewBCHMainnet(httpClient *http.Client) *ChainConfig {
 		Parser:         &BTCBlockParser{Params: params},
 		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 4320},
 		BlockInterval:  10 * time.Minute, // same as BTC
-		DropHeightDiff: 4320,             // ~30 days
+		SleepInterval:  time.Minute,
+		DropHeightDiff: 4320, // ~30 days
 		ChainParams:    params,
 		DefaultDbName:  "bch-mapping-bot",
 	}
@@ -47,6 +48,7 @@ func NewBCHTestnet(httpClient *http.Client) *ChainConfig {
 		Parser:         &BTCBlockParser{Params: params},
 		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 2},
 		BlockInterval:  10 * time.Minute,
+		SleepInterval:  10 * time.Second,
 		DropHeightDiff: 4320,
 		ChainParams:    params,
 		DefaultDbName:  "bch-mapping-bot-testnet",
