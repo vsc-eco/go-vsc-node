@@ -42,7 +42,7 @@ func (c *mappingBotConfigStruct) SignApiKey() string {
 }
 
 func (c *mappingBotConfigStruct) SetHttpPort(port uint16) {
-	cfg := c.Get()
-	cfg.HttpPort = port
-	c.Set(cfg)
+	c.Update(func(cfg *mappingBotConfig) {
+		cfg.HttpPort = port
+	})
 }
