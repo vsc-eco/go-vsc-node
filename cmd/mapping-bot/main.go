@@ -174,10 +174,11 @@ func main() {
 
 		// Run map and unmap concurrently, but wait for both to finish before
 		// advancing to the next block.
+		var mapped bool
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			bot.HandleMap(blockBytes, blockHeight)
+			mapped = bot.HandleMap(blockBytes, blockHeight)
 		}()
 		go func() {
 			defer wg.Done()
@@ -187,7 +188,9 @@ func main() {
 		wg.Wait()
 
 		cancel()
-		// No sleep — process the next block immediately.
-		// Sleep only happens above when at the chain tip (404).
+		// If the block wasn't processed (e.g., not yet in the contract), sleep before retrying.
+		if !mapped {
+			time.Sleep(chainCfg.SleepInterval)
+		}
 	}
 }
