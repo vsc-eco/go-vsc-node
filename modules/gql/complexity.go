@@ -103,7 +103,11 @@ func NewComplexityRoot() gqlgen.ComplexityRoot {
 		}
 		return limitCost(5, childComplexity, limit)
 	}
-	c.Query.FindTssCommitments = func(childComplexity int, keyID *string, types []string, epoch *model.Uint64, fromBlock *model.Uint64, toBlock *model.Uint64, offset *int, limit *int) int {
+	c.Query.FindTssCommitments = func(childComplexity int, filterOptions *gqlgen.TssCommitmentFilter) int {
+		var limit *int
+		if filterOptions != nil {
+			limit = filterOptions.Limit
+		}
 		return limitCost(5, childComplexity, limit)
 	}
 	// Fixed-size list queries (no limit parameter): flat cost 50

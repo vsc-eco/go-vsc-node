@@ -87,7 +87,7 @@ func TestTssCommitmentsResolver(t *testing.T) {
 
 	ctx := context.Background()
 	keyId := "key-1"
-	all, err := resolver.Query().FindTssCommitments(ctx, &keyId, nil, nil, nil, nil, nil, nil)
+	all, err := resolver.Query().FindTssCommitments(ctx, &gqlgen.TssCommitmentFilter{ByKeyID: &keyId})
 	require.NoError(t, err)
 	require.Len(t, all, 2)
 	assert.Equal(t, "reshare", all[0].Type)
@@ -104,7 +104,7 @@ func TestTssCommitmentsResolver(t *testing.T) {
 
 	filterEpoch := model.Uint64(6)
 	filterFromBlock := model.Uint64(100)
-	filtered, err := resolver.Query().FindTssCommitments(ctx, &keyId, []string{"reshare"}, &filterEpoch, &filterFromBlock, nil, nil, nil)
+	filtered, err := resolver.Query().FindTssCommitments(ctx, &gqlgen.TssCommitmentFilter{ByKeyID: &keyId, ByTypes: []string{"reshare"}, ByEpoch: &filterEpoch, FromBlock: &filterFromBlock})
 	require.NoError(t, err)
 	require.Len(t, filtered, 1)
 	assert.Equal(t, "reshare", filtered[0].Type)
@@ -153,7 +153,7 @@ func TestRecentBlameTimeoutCommitmentsResolver(t *testing.T) {
 	ctx := context.Background()
 	fromBlock := model.Uint64(100)
 
-	recent, err := resolver.Query().FindTssCommitments(ctx, nil, []string{"blame", "timeout"}, nil, &fromBlock, nil, nil, nil)
+	recent, err := resolver.Query().FindTssCommitments(ctx, &gqlgen.TssCommitmentFilter{ByTypes: []string{"blame", "timeout"}, FromBlock: &fromBlock})
 	require.NoError(t, err)
 	require.Len(t, recent, 2)
 

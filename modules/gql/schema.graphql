@@ -628,6 +628,26 @@ input ContractOutputFilter {
 }
 
 """
+Filter options for querying TSS commitments.
+"""
+input TssCommitmentFilter {
+  """Filter by TSS key ID."""
+  byKeyId: String
+  """Filter by commitment types."""
+  byTypes: [String!]
+  """Filter by exact epoch."""
+  byEpoch: Uint64
+  """Include only records from this block height onwards (exclusive)."""
+  fromBlock: Uint64
+  """Include only records up to this block height (inclusive)."""
+  toBlock: Uint64
+  """Number of records to skip (for pagination)."""
+  offset: Int
+  """Maximum number of records to return (for pagination)."""
+  limit: Int
+}
+
+"""
 An intent declaration for a simulated contract call.
 """
 input IntentInput {
@@ -865,20 +885,8 @@ type Query {
   Search for verified TSS commitments, optionally filtered by key ID, commitment types, epoch, or block height range.
   """
   findTssCommitments(
-    """Optional TSS key ID to filter commitments for."""
-    keyId: String
-    """Optional list of commitment types to include."""
-    types: [String!]
-    """Optional exact epoch filter."""
-    epoch: Uint64
-    """Optional lower bound block height filter (exclusive)."""
-    fromBlock: Uint64
-    """Optional upper bound block height filter (inclusive)."""
-    toBlock: Uint64
-    """Number of results to skip (0-10000, default 0)."""
-    offset: Int
-    """Maximum number of results to return (1-100, default 50)."""
-    limit: Int
+    """Filter criteria for the TSS commitment search."""
+    filterOptions: TssCommitmentFilter
   ): [TssCommitment!]
 
   """

@@ -527,12 +527,15 @@ func (r *queryResolver) GetTssRequests(ctx context.Context, keyID string, msgHex
 }
 
 // FindTssCommitments is the resolver for the findTssCommitments field.
-func (r *queryResolver) FindTssCommitments(ctx context.Context, keyID *string, types []string, epoch *model.Uint64, fromBlock *model.Uint64, toBlock *model.Uint64, offset *int, limit *int) ([]tss_db.TssCommitment, error) {
-	off, lim, err := Paginate(offset, limit)
+func (r *queryResolver) FindTssCommitments(ctx context.Context, filterOptions *TssCommitmentFilter) ([]tss_db.TssCommitment, error) {
+	if filterOptions == nil {
+		filterOptions = &TssCommitmentFilter{}
+	}
+	off, lim, err := Paginate(filterOptions.Offset, filterOptions.Limit)
 	if err != nil {
 		return nil, err
 	}
-	return r.TssCommitments.FindCommitments(keyID, types, (*uint64)(epoch), (*uint64)(fromBlock), (*uint64)(toBlock), off, lim)
+	return r.TssCommitments.FindCommitments(filterOptions.ByKeyID, filterOptions.ByTypes, (*uint64)(filterOptions.ByEpoch), (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), off, lim)
 }
 
 // SimulateContractCalls is the resolver for the simulateContractCalls field.
