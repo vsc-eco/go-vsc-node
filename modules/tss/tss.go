@@ -474,6 +474,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 			log.Verbose("creating keygen session", "sessionId", sessionId, "keyId", action.KeyId, "epoch", currentElection.Epoch, "blockHeight", bh, "participants", participantAccounts, "excluded", excludedAccounts, "hasBlame", isBlame, "lastBlameHeight", lastBlame.BlockHeight)
 
+			if len(participants) < 2 {
+				log.Warn("insufficient participants for keygen, minimum 2 required", "sessionId", sessionId, "participants", len(participants))
+				continue
+			}
+
 			dispatcher := &KeyGenDispatcher{
 				BaseDispatcher: BaseDispatcher{
 					startLock:    sync.Mutex{},
@@ -637,9 +642,13 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			commitedMembers = tssMgr.checkParticipantReadiness(commitedMembers, sessionId, "RESHARE-OLD")
 			newParticipants = tssMgr.checkParticipantReadiness(newParticipants, sessionId, "RESHARE-NEW")
 
-			// Pre-flight checks: validate participant set meets minimum threshold
-			if len(newParticipants) < origNewThreshold+1 {
-				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "participants", len(newParticipants), "required", origNewThreshold+1, "threshold", origNewThreshold)
+			// Pre-flight checks: validate participant set meets minimum threshold (at least 2)
+			minNewRequired := origNewThreshold + 1
+			if minNewRequired < 2 {
+				minNewRequired = 2
+			}
+			if len(newParticipants) < minNewRequired {
+				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "participants", len(newParticipants), "required", minNewRequired, "threshold", origNewThreshold)
 				continue
 			}
 
