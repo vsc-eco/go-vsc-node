@@ -526,6 +526,15 @@ func (r *queryResolver) GetTssRequests(ctx context.Context, keyID string, msgHex
 	return r.TssRequests.FindRequests(keyID, msgHex)
 }
 
+// FindTssCommitments is the resolver for the findTssCommitments field.
+func (r *queryResolver) FindTssCommitments(ctx context.Context, keyID *string, types []string, epoch *model.Uint64, fromBlock *model.Uint64, toBlock *model.Uint64, offset *int, limit *int) ([]tss_db.TssCommitment, error) {
+	off, lim, err := Paginate(offset, limit)
+	if err != nil {
+		return nil, err
+	}
+	return r.TssCommitments.FindCommitments(keyID, types, (*uint64)(epoch), (*uint64)(fromBlock), (*uint64)(toBlock), off, lim)
+}
+
 // SimulateContractCalls is the resolver for the simulateContractCalls field.
 func (r *queryResolver) SimulateContractCalls(ctx context.Context, input SimulateContractCallsInput) ([]SimulateContractCallResult, error) {
 	// Get latest block info
@@ -785,6 +794,16 @@ func (r *transactionRecordResolver) LedgerActions(ctx context.Context, obj *tran
 	return actions, nil
 }
 
+// BlockHeight is the resolver for the block_height field.
+func (r *tssCommitmentResolver) BlockHeight(ctx context.Context, obj *tss_db.TssCommitment) (model.Uint64, error) {
+	return model.Uint64(obj.BlockHeight), nil
+}
+
+// Epoch is the resolver for the epoch field.
+func (r *tssCommitmentResolver) Epoch(ctx context.Context, obj *tss_db.TssCommitment) (model.Uint64, error) {
+	return model.Uint64(obj.Epoch), nil
+}
+
 // CreatedHeight is the resolver for the created_height field.
 func (r *tssKeyResolver) CreatedHeight(ctx context.Context, obj *tss_db.TssKey) (model.Int64, error) {
 	return model.Int64(obj.CreatedHeight), nil
@@ -793,6 +812,21 @@ func (r *tssKeyResolver) CreatedHeight(ctx context.Context, obj *tss_db.TssKey) 
 // Epoch is the resolver for the epoch field.
 func (r *tssKeyResolver) Epoch(ctx context.Context, obj *tss_db.TssKey) (model.Uint64, error) {
 	return model.Uint64(obj.Epoch), nil
+}
+
+// Epochs is the resolver for the epochs field.
+func (r *tssKeyResolver) Epochs(ctx context.Context, obj *tss_db.TssKey) (model.Uint64, error) {
+	return model.Uint64(obj.Epochs), nil
+}
+
+// ExpiryEpoch is the resolver for the expiry_epoch field.
+func (r *tssKeyResolver) ExpiryEpoch(ctx context.Context, obj *tss_db.TssKey) (model.Uint64, error) {
+	return model.Uint64(obj.ExpiryEpoch), nil
+}
+
+// DeprecatedHeight is the resolver for the deprecated_height field.
+func (r *tssKeyResolver) DeprecatedHeight(ctx context.Context, obj *tss_db.TssKey) (model.Int64, error) {
+	return model.Int64(obj.DeprecatedHeight), nil
 }
 
 // Height is the resolver for the height field.
@@ -853,6 +887,9 @@ func (r *Resolver) TransactionRecord() TransactionRecordResolver {
 	return &transactionRecordResolver{r}
 }
 
+// TssCommitment returns TssCommitmentResolver implementation.
+func (r *Resolver) TssCommitment() TssCommitmentResolver { return &tssCommitmentResolver{r} }
+
 // TssKey returns TssKeyResolver implementation.
 func (r *Resolver) TssKey() TssKeyResolver { return &tssKeyResolver{r} }
 
@@ -875,6 +912,7 @@ type queryResolver struct{ *Resolver }
 type rcRecordResolver struct{ *Resolver }
 type transactionOperationResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
+type tssCommitmentResolver struct{ *Resolver }
 type tssKeyResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }

@@ -469,6 +469,12 @@ type TssKey {
   created_height: Int64!
   """Epoch during which the key was generated."""
   epoch: Uint64!
+  """Requested lifespan in epochs (0 means no expiry)."""
+  epochs: Uint64!
+  """Epoch at which the key expires (0 means no expiry)."""
+  expiry_epoch: Uint64!
+  """Block height at which the key became deprecated (0 means not deprecated)."""
+  deprecated_height: Int64!
 }
 
 """
@@ -483,6 +489,28 @@ type TssRequest {
   msg: String!
   """Resulting signature (hex-encoded), empty if unsigned."""
   sig: String!
+}
+
+"""
+A verified TSS commitment emitted from keygen, reshare, timeout, or blame handling.
+"""
+type TssCommitment {
+  """Commitment type (e.g. keygen, reshare, blame, timeout)."""
+  type: String!
+  """Block height associated with the commitment."""
+  block_height: Uint64!
+  """Epoch associated with the commitment."""
+  epoch: Uint64!
+  """Base64-encoded participant commitment bitset or blame payload."""
+  commitment: String!
+  """TSS key ID associated with the commitment."""
+  key_id: String!
+  """Hive transaction ID that carried the commitment."""
+  tx_id: String!
+  """Aggregated public key when present (e.g. keygen activation)."""
+  public_key: String
+  """Block timestamp inferred from the associated Hive block."""
+  timestamp: String!
 }
 
 """
@@ -832,6 +860,26 @@ type Query {
     """Optional list of hex-encoded message hashes to filter by."""
     msgHex: [String!]
   ): [TssRequest!]
+
+  """
+  Search for verified TSS commitments, optionally filtered by key ID, commitment types, epoch, or block height range.
+  """
+  findTssCommitments(
+    """Optional TSS key ID to filter commitments for."""
+    keyId: String
+    """Optional list of commitment types to include."""
+    types: [String!]
+    """Optional exact epoch filter."""
+    epoch: Uint64
+    """Optional lower bound block height filter (exclusive)."""
+    fromBlock: Uint64
+    """Optional upper bound block height filter (inclusive)."""
+    toBlock: Uint64
+    """Number of results to skip (0-10000, default 0)."""
+    offset: Int
+    """Maximum number of results to return (1-100, default 50)."""
+    limit: Int
+  ): [TssCommitment!]
 
   """
   Simulate one or more contract calls without committing state changes. Useful for estimating gas costs, testing contract logic, and previewing state diffs.
