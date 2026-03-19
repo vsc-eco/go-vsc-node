@@ -2,8 +2,6 @@ package tss_db
 
 import (
 	a "vsc-node/modules/aggregate"
-
-	"go.mongodb.org/mongo-driver/bson"
 )
 
 // MaxKeyEpochs is the maximum number of epochs a key may be created or renewed for at once.
@@ -49,11 +47,9 @@ type TssCommitments interface {
 	a.Plugin
 	SetCommitmentData(commitment TssCommitment) error
 	GetCommitment(keyId string, epoch uint64) (TssCommitment, error)
-	GetLatestCommitment(keyId string, qtype string) (TssCommitment, error)
 	GetCommitmentByHeight(keyId string, height uint64, qtype ...string) (TssCommitment, error)
-	FindCommitments(keyId string, opts ...SearchOption) ([]TssCommitment, error)
-	FindAllCommitments(opts ...SearchOption) ([]TssCommitment, error)
-	GetBlames(...SearchOption) ([]TssCommitment, error)
+	FindCommitments(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TssCommitment, error)
+	GetBlames(epoch *uint64) ([]TssCommitment, error)
 }
 
 type TssKey struct {
@@ -98,6 +94,7 @@ type TssCommitment struct {
 	TxId        string              `json:"tx_id"        bson:"tx_id"`
 	PublicKey   *string             `json:"public_key"   bson:"public_key"`
 	Metadata    *CommitmentMetadata `json:"metadata"     bson:"metadata,omitempty"`
+	Timestamp   string              `json:"timestamp"    bson:"timestamp,omitempty"`
 }
 
 type TssKeyAlgo string
@@ -131,25 +128,3 @@ type TssOp struct {
 	Epochs uint64 `json:"epochs,omitempty"`
 }
 
-type SearchOption func(m *bson.M) error
-
-func HeightGt(height uint64) SearchOption {
-	return func(m *bson.M) error {
-		(*m)["block_height"] = bson.M{"$gt": height}
-		return nil
-	}
-}
-
-func ByEpoch(epoch uint64) SearchOption {
-	return func(m *bson.M) error {
-		(*m)["epoch"] = epoch
-		return nil
-	}
-}
-
-func ByType(typ ...string) SearchOption {
-	return func(m *bson.M) error {
-		(*m)["type"] = bson.M{"$in": typ}
-		return nil
-	}
-}

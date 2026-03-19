@@ -302,7 +302,7 @@ func (tss *TssManager) BlameScore() ScoreMap {
 	errorBlameMap := make(map[string]int)
 
 	for _, election := range electionMap {
-		blames, _ := tss.tssCommitments.GetBlames(tss_db.ByEpoch(election.Epoch), tss_db.ByType("blame"))
+		blames, _ := tss.tssCommitments.GetBlames(&election.Epoch)
 		for _, member := range election.Members {
 			if currentMembers[member.Account] {
 				weightMap[member.Account] += len(blames)

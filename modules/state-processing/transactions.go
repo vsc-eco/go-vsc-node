@@ -73,12 +73,8 @@ func (t TxVscCallContract) ExecuteTx(
 	info, exists := se.GetContractInfo(t.ContractId, t.Self.BlockHeight)
 
 	if !exists {
-		fmt.Println("Contract not found:", t.ContractId, info, exists)
 		return errorToTxResult(fmt.Errorf("contract not found"), 100)
 	}
-	// if err != nil {
-	// 	return errorToTxResult(err, 100)
-	// }
 
 	c, err := cid.Decode(info.Code)
 	if err != nil {
@@ -157,8 +153,6 @@ func (t TxVscCallContract) ExecuteTx(
 	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
 
 	if res.Error != nil {
-		fmt.Println("WASM execution error:", *res.Error)
-
 		return TxResult{
 			Success: false,
 			Err:     &res.ErrorCode,
@@ -166,9 +160,7 @@ func (t TxVscCallContract) ExecuteTx(
 			RcUsed:  rcUsed,
 		}
 	}
-	fmt.Println("basicResult:", res)
 
-	fmt.Println("rcUsed", rcUsed)
 	return TxResult{
 		Success: true,
 		Ret:     res.Result,
@@ -886,7 +878,6 @@ func (tx *TransactionContainer) AsContractOutput() *ContractOutput {
 
 	bJson, _ := dag.MarshalJSON()
 
-	// fmt.Println("Marshelled JSON from contract output", string(bJson))
 	json.Unmarshal(bJson, &output)
 
 	return &output
@@ -920,12 +911,6 @@ func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
 	return &offchainTx
 }
 
-// Hive anchor containing merkle root, list of hive txs
-// Consider deprecating from protocol
-func (tx *TransactionContainer) AsHiveAnchor() {
-
-}
-
 func (tx *TransactionContainer) AsOplog(endBlock uint64) Oplog {
 	cid := cid.MustParse(tx.Id)
 	node, err := tx.da.GetDag(cid)
@@ -934,7 +919,6 @@ func (tx *TransactionContainer) AsOplog(endBlock uint64) Oplog {
 		panic(err)
 	}
 	jsonBytes, _ := node.MarshalJSON()
-	// fmt.Println("Oplog node", node, string(jsonBytes))
 
 	oplog := Oplog{
 		Self: tx.Self,
@@ -942,7 +926,6 @@ func (tx *TransactionContainer) AsOplog(endBlock uint64) Oplog {
 		EndBlock: endBlock,
 	}
 	json.Unmarshal(jsonBytes, &oplog)
-	// fmt.Println("Oplog decoded", oplog)
 
 	return oplog
 }
@@ -1138,8 +1121,6 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 	self := tx.TxSelf()
 	self.RequiredAuths = tx.Headers.RequiredAuths
 
-	// fmt.Println("stakeTx tx.Tx[type].(string)", tx.Tx["type"].(string))
-
 	output := make([]VSCTransaction, 0)
 	for idx, op := range tx.Tx {
 		var vtx VSCTransaction
@@ -1160,8 +1141,6 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 			}
 			transactionpool.DecodeTxCbor(op, &transferTx)
 
-			// bbytes, _ := json.Marshal(transferTx)
-			// fmt.Println("Decoded transfer tx", string(bbytes), decodeErr)
 			vtx = transferTx
 		case "withdraw":
 			withdrawTx := TxVSCWithdraw{
@@ -1180,7 +1159,6 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 
 			transactionpool.DecodeTxCbor(op, &stakeTx)
 
-			fmt.Println("stakeTx", stakeTx)
 			vtx = &stakeTx
 		case "unstake_hbd":
 			stakeTx := TxStakeHbd{
@@ -1191,7 +1169,6 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 
 			transactionpool.DecodeTxCbor(op, &stakeTx)
 
-			fmt.Println("stakeTx", stakeTx)
 			vtx = &stakeTx
 		}
 

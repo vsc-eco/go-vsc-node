@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
+	"vsc-node/modules/db/vsc/hive_blocks"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -62,29 +63,6 @@ func (tsc *tssCommitments) GetCommitment(keyId string, epoch uint64) (TssCommitm
 	return record, nil
 }
 
-func (tsc *tssCommitments) GetLatestCommitment(keyId string, qtype string) (TssCommitment, error) {
-	findOpts := options.FindOne().SetSort(bson.M{
-		"epoch": -1,
-	})
-
-	findResult := tsc.FindOne(context.Background(), bson.M{
-		"key_id": keyId,
-		"type":   qtype,
-	}, findOpts)
-
-	if findResult.Err() != nil {
-		return TssCommitment{}, findResult.Err()
-	}
-	var record TssCommitment
-	err := findResult.Decode(&record)
-
-	if err != nil {
-		return TssCommitment{}, err
-	}
-
-	return record, nil
-}
-
 func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qtype ...string) (TssCommitment, error) {
 	findOpts := options.FindOne().SetSort(bson.M{
 		"block_height": -1,
@@ -116,23 +94,30 @@ func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qt
 	return commitment, err
 }
 
-func (tsc *tssCommitments) FindCommitments(keyId string, opts ...SearchOption) ([]TssCommitment, error) {
-	query := bson.M{
-		"key_id": keyId,
+func (tsc *tssCommitments) FindCommitments(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TssCommitment, error) {
+	filters := bson.D{}
+	if keyId != nil {
+		filters = append(filters, bson.E{Key: "key_id", Value: *keyId})
 	}
-	for _, opt := range opts {
-		if err := opt(&query); err != nil {
-			return nil, err
-		}
+	if len(byTypes) > 0 {
+		filters = append(filters, bson.E{Key: "type", Value: bson.D{{Key: "$in", Value: byTypes}}})
+	}
+	if epoch != nil {
+		filters = append(filters, bson.E{Key: "epoch", Value: *epoch})
+	}
+	if fromBlock != nil {
+		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$gt", Value: *fromBlock}}})
+	}
+	if toBlock != nil {
+		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$lte", Value: *toBlock}}})
 	}
 
-	findOpts := options.Find().
-		SetSort(bson.D{{Key: "block_height", Value: -1}, {Key: "epoch", Value: -1}})
-
-	cursor, err := tsc.Find(context.Background(), query, findOpts)
+	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
+	cursor, err := tsc.Aggregate(context.Background(), pipe)
 	if err != nil {
 		return nil, err
 	}
+	defer cursor.Close(context.Background())
 
 	commitments := make([]TssCommitment, 0)
 	for cursor.Next(context.Background()) {
@@ -146,49 +131,20 @@ func (tsc *tssCommitments) FindCommitments(keyId string, opts ...SearchOption) (
 	return commitments, nil
 }
 
-func (tsc *tssCommitments) FindAllCommitments(opts ...SearchOption) ([]TssCommitment, error) {
-	query := bson.M{}
-	for _, opt := range opts {
-		if err := opt(&query); err != nil {
-			return nil, err
-		}
-	}
-
-	findOpts := options.Find().
-		SetSort(bson.D{{Key: "block_height", Value: -1}, {Key: "epoch", Value: -1}})
-
-	cursor, err := tsc.Find(context.Background(), query, findOpts)
-	if err != nil {
-		return nil, err
-	}
-
-	commitments := make([]TssCommitment, 0)
-	for cursor.Next(context.Background()) {
-		var commitment TssCommitment
-		if err := cursor.Decode(&commitment); err != nil {
-			return nil, fmt.Errorf("failed to decode commitment: %w", err)
-		}
-		commitments = append(commitments, commitment)
-	}
-
-	return commitments, nil
-}
-
-func (tsc *tssCommitments) GetBlames(opts ...SearchOption) ([]TssCommitment, error) {
+func (tsc *tssCommitments) GetBlames(epoch *uint64) ([]TssCommitment, error) {
 	query := bson.M{
 		"type": "blame",
 	}
-	for _, opt := range opts {
-		if err := opt(&query); err != nil {
-			return nil, err
-		}
+	if epoch != nil {
+		query["epoch"] = *epoch
 	}
 
 	findResult, err := tsc.Find(context.Background(), query)
-
 	if err != nil {
 		return nil, err
 	}
+	defer findResult.Close(context.Background())
+
 	commitments := make([]TssCommitment, 0)
 	for findResult.Next(context.Background()) {
 		var commitment TssCommitment

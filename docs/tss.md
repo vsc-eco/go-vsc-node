@@ -1,10 +1,5 @@
 # TSS
 
-This repo is currently checked out to `testnet`, fast-forwarded to `origin/testnet`.
-
-- Current branch tip: `801dff8` - `testnet: reset tss`
-- Comparison baseline used while debugging: `origin/wip/fix/tss-creation-signing`
-
 ## What TSS Does
 
 The TSS subsystem manages threshold keys for VSC operations. At a high level it provides:

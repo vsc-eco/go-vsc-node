@@ -526,54 +526,13 @@ func (r *queryResolver) GetTssRequests(ctx context.Context, keyID string, msgHex
 	return r.TssRequests.FindRequests(keyID, msgHex)
 }
 
-// GetTssCommitments is the resolver for the getTssCommitments field.
-func (r *queryResolver) GetTssCommitments(ctx context.Context, keyID string, types []string, epoch *model.Uint64, fromBlock *model.Uint64) ([]tss_db.TssCommitment, error) {
-	opts := make([]tss_db.SearchOption, 0, 3)
-	if len(types) > 0 {
-		opts = append(opts, tss_db.ByType(types...))
-	}
-	if epoch != nil {
-		opts = append(opts, tss_db.ByEpoch(uint64(*epoch)))
-	}
-	if fromBlock != nil {
-		opts = append(opts, tss_db.HeightGt(uint64(*fromBlock)))
-	}
-	return r.TssCommitments.FindCommitments(keyID, opts...)
-}
-
-// GetLatestTssCommitment is the resolver for the getLatestTssCommitment field.
-func (r *queryResolver) GetLatestTssCommitment(ctx context.Context, keyID string, typeArg *string) (*tss_db.TssCommitment, error) {
-	if typeArg != nil && *typeArg != "" {
-		commitment, err := r.TssCommitments.GetLatestCommitment(keyID, *typeArg)
-		if err != nil {
-			if err == mongo.ErrNoDocuments {
-				return nil, nil
-			}
-			return nil, err
-		}
-		return &commitment, nil
-	}
-
-	commitments, err := r.TssCommitments.FindCommitments(keyID)
+// FindTssCommitments is the resolver for the findTssCommitments field.
+func (r *queryResolver) FindTssCommitments(ctx context.Context, keyID *string, types []string, epoch *model.Uint64, fromBlock *model.Uint64, toBlock *model.Uint64, offset *int, limit *int) ([]tss_db.TssCommitment, error) {
+	off, lim, err := Paginate(offset, limit)
 	if err != nil {
 		return nil, err
 	}
-	if len(commitments) == 0 {
-		return nil, nil
-	}
-	return &commitments[0], nil
-}
-
-// GetRecentTssCommitments is the resolver for the getRecentTssCommitments field.
-func (r *queryResolver) GetRecentTssCommitments(ctx context.Context, types []string, fromBlock *model.Uint64) ([]tss_db.TssCommitment, error) {
-	opts := make([]tss_db.SearchOption, 0, 2)
-	if len(types) > 0 {
-		opts = append(opts, tss_db.ByType(types...))
-	}
-	if fromBlock != nil {
-		opts = append(opts, tss_db.HeightGt(uint64(*fromBlock)))
-	}
-	return r.TssCommitments.FindAllCommitments(opts...)
+	return r.TssCommitments.FindCommitments(keyID, types, (*uint64)(epoch), (*uint64)(fromBlock), (*uint64)(toBlock), off, lim)
 }
 
 // SimulateContractCalls is the resolver for the simulateContractCalls field.

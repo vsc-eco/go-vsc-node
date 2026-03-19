@@ -86,7 +86,8 @@ func TestTssCommitmentsResolver(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	all, err := resolver.Query().GetTssCommitments(ctx, "key-1", nil, nil, nil)
+	keyId := "key-1"
+	all, err := resolver.Query().FindTssCommitments(ctx, &keyId, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, all, 2)
 	assert.Equal(t, "reshare", all[0].Type)
@@ -103,62 +104,11 @@ func TestTssCommitmentsResolver(t *testing.T) {
 
 	filterEpoch := model.Uint64(6)
 	filterFromBlock := model.Uint64(100)
-	filtered, err := resolver.Query().GetTssCommitments(ctx, "key-1", []string{"reshare"}, &filterEpoch, &filterFromBlock)
+	filtered, err := resolver.Query().FindTssCommitments(ctx, &keyId, []string{"reshare"}, &filterEpoch, &filterFromBlock, nil, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, filtered, 1)
 	assert.Equal(t, "reshare", filtered[0].Type)
 	assert.Equal(t, "tx-b", filtered[0].TxId)
-}
-
-func TestLatestTssCommitmentResolver(t *testing.T) {
-	pubKey := "02cafebabe"
-	commitments := &test_utils.MockTssCommitmentsDb{
-		Commitments: map[string]tss_db.TssCommitment{
-			"key-1:5:keygen": {
-				Type:        "keygen",
-				BlockHeight: 100,
-				Epoch:       5,
-				Commitment:  "bitset-a",
-				KeyId:       "key-1",
-				TxId:        "tx-a",
-				PublicKey:   &pubKey,
-			},
-			"key-1:6:timeout": {
-				Type:        "timeout",
-				BlockHeight: 130,
-				Epoch:       6,
-				Commitment:  "timeout-a",
-				KeyId:       "key-1",
-				TxId:        "tx-timeout",
-			},
-			"key-1:7:reshare": {
-				Type:        "reshare",
-				BlockHeight: 140,
-				Epoch:       7,
-				Commitment:  "bitset-b",
-				KeyId:       "key-1",
-				TxId:        "tx-b",
-			},
-		},
-	}
-
-	resolver := &gqlgen.Resolver{TssCommitments: commitments}
-	ctx := context.Background()
-
-	latest, err := resolver.Query().GetLatestTssCommitment(ctx, "key-1", nil)
-	require.NoError(t, err)
-	require.NotNil(t, latest)
-	assert.Equal(t, "reshare", latest.Type)
-	assert.Equal(t, uint64(140), latest.BlockHeight)
-	assert.Equal(t, "tx-b", latest.TxId)
-
-	timeoutType := "timeout"
-	latestTimeout, err := resolver.Query().GetLatestTssCommitment(ctx, "key-1", &timeoutType)
-	require.NoError(t, err)
-	require.NotNil(t, latestTimeout)
-	assert.Equal(t, "timeout", latestTimeout.Type)
-	assert.Equal(t, uint64(130), latestTimeout.BlockHeight)
-	assert.Equal(t, "tx-timeout", latestTimeout.TxId)
 }
 
 func TestRecentBlameTimeoutCommitmentsResolver(t *testing.T) {
@@ -203,7 +153,7 @@ func TestRecentBlameTimeoutCommitmentsResolver(t *testing.T) {
 	ctx := context.Background()
 	fromBlock := model.Uint64(100)
 
-	recent, err := resolver.Query().GetRecentTssCommitments(ctx, []string{"blame", "timeout"}, &fromBlock)
+	recent, err := resolver.Query().FindTssCommitments(ctx, nil, []string{"blame", "timeout"}, nil, &fromBlock, nil, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, recent, 2)
 

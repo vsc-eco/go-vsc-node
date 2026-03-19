@@ -5,8 +5,6 @@ import (
 	"slices"
 	"vsc-node/modules/aggregate"
 	tss "vsc-node/modules/db/vsc/tss"
-
-	"go.mongodb.org/mongo-driver/bson"
 )
 
 // MockTssKeysDb implements tss.TssKeys interface for testing
@@ -113,23 +111,6 @@ func (m *MockTssCommitmentsDb) GetCommitment(keyId string, epoch uint64) (tss.Ts
 	return tss.TssCommitment{}, fmt.Errorf("commitment not found for keyId: %s, epoch: %d", keyId, epoch)
 }
 
-func (m *MockTssCommitmentsDb) GetLatestCommitment(keyId string, qtype string) (tss.TssCommitment, error) {
-	var latest tss.TssCommitment
-	found := false
-	for _, commitment := range m.Commitments {
-		if commitment.KeyId == keyId && commitment.Type == qtype {
-			if !found || commitment.Epoch > latest.Epoch {
-				latest = commitment
-				found = true
-			}
-		}
-	}
-	if !found {
-		return tss.TssCommitment{}, fmt.Errorf("no commitment found for keyId: %s, type: %s", keyId, qtype)
-	}
-	return latest, nil
-}
-
 func (m *MockTssCommitmentsDb) GetCommitmentByHeight(
 	keyId string,
 	height uint64,
@@ -158,33 +139,23 @@ func (m *MockTssCommitmentsDb) GetCommitmentByHeight(
 	return result, nil
 }
 
-func (m *MockTssCommitmentsDb) FindCommitments(keyId string, opts ...tss.SearchOption) ([]tss.TssCommitment, error) {
-	query := bson.M{"key_id": keyId}
-	for _, opt := range opts {
-		if err := opt(&query); err != nil {
-			return nil, err
-		}
-	}
-
+func (m *MockTssCommitmentsDb) filterAndSort(keyIdFilter *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64) []tss.TssCommitment {
 	results := make([]tss.TssCommitment, 0)
 	for _, commitment := range m.Commitments {
-		if commitment.KeyId != keyId {
+		if keyIdFilter != nil && commitment.KeyId != *keyIdFilter {
 			continue
 		}
-		if epoch, ok := query["epoch"].(uint64); ok && commitment.Epoch != epoch {
+		if epoch != nil && commitment.Epoch != *epoch {
 			continue
 		}
-		if typeQuery, ok := query["type"].(bson.M); ok {
-			types, _ := typeQuery["$in"].([]string)
-			if len(types) > 0 && !slices.Contains(types, commitment.Type) {
-				continue
-			}
+		if len(byTypes) > 0 && !slices.Contains(byTypes, commitment.Type) {
+			continue
 		}
-		if bhQuery, ok := query["block_height"].(bson.M); ok {
-			minHeight, _ := bhQuery["$gt"].(uint64)
-			if commitment.BlockHeight <= minHeight {
-				continue
-			}
+		if fromBlock != nil && commitment.BlockHeight <= *fromBlock {
+			continue
+		}
+		if toBlock != nil && commitment.BlockHeight > *toBlock {
+			continue
 		}
 		results = append(results, commitment)
 	}
@@ -203,62 +174,31 @@ func (m *MockTssCommitmentsDb) FindCommitments(keyId string, opts ...tss.SearchO
 		}
 		return 0
 	})
+	return results
+}
+
+func (m *MockTssCommitmentsDb) FindCommitments(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]tss.TssCommitment, error) {
+	results := m.filterAndSort(keyId, byTypes, epoch, fromBlock, toBlock)
+	if offset > len(results) {
+		return []tss.TssCommitment{}, nil
+	}
+	results = results[offset:]
+	if limit > 0 && limit < len(results) {
+		results = results[:limit]
+	}
 	return results, nil
 }
 
-func (m *MockTssCommitmentsDb) FindAllCommitments(opts ...tss.SearchOption) ([]tss.TssCommitment, error) {
-	query := bson.M{}
-	for _, opt := range opts {
-		if err := opt(&query); err != nil {
-			return nil, err
-		}
-	}
-
-	results := make([]tss.TssCommitment, 0)
-	for _, commitment := range m.Commitments {
-		if epoch, ok := query["epoch"].(uint64); ok && commitment.Epoch != epoch {
-			continue
-		}
-		if typeQuery, ok := query["type"].(bson.M); ok {
-			types, _ := typeQuery["$in"].([]string)
-			if len(types) > 0 && !slices.Contains(types, commitment.Type) {
-				continue
-			}
-		}
-		if bhQuery, ok := query["block_height"].(bson.M); ok {
-			minHeight, _ := bhQuery["$gt"].(uint64)
-			if commitment.BlockHeight <= minHeight {
-				continue
-			}
-		}
-		results = append(results, commitment)
-	}
-	slices.SortFunc(results, func(a, b tss.TssCommitment) int {
-		if a.BlockHeight != b.BlockHeight {
-			if a.BlockHeight > b.BlockHeight {
-				return -1
-			}
-			return 1
-		}
-		if a.Epoch > b.Epoch {
-			return -1
-		}
-		if a.Epoch < b.Epoch {
-			return 1
-		}
-		return 0
-	})
-	return results, nil
-}
-
-func (m *MockTssCommitmentsDb) GetBlames(opts ...tss.SearchOption) ([]tss.TssCommitment, error) {
-	// For testing purposes, we'll return all blame-type commitments
-	// In a real MongoDB implementation, SearchOptions would modify a bson.M query
+func (m *MockTssCommitmentsDb) GetBlames(epoch *uint64) ([]tss.TssCommitment, error) {
 	var results []tss.TssCommitment
 	for _, commitment := range m.Commitments {
-		if commitment.Type == "blame" {
-			results = append(results, commitment)
+		if commitment.Type != "blame" {
+			continue
 		}
+		if epoch != nil && commitment.Epoch != *epoch {
+			continue
+		}
+		results = append(results, commitment)
 	}
 	return results, nil
 }
