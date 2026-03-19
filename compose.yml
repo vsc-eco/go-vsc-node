@@ -52,9 +52,11 @@ services:
           memory: 1G
   bitcoind:
     image: bitcoin/bitcoin:29.3
-    container_name: vsc-btcd-testnet
-    command: -testnet4 -rpcuser=vsc-node-user -rpcpassword=vsc-node-pass -rpcallowip=0.0.0.0/0 -rpcbind=0.0.0.0 -prune=550 -dbcache=2048 -server=1 -listen=1
+    container_name: vsc-btcd
+    command: -rpcuser=vsc-node-user -rpcpassword=vsc-node-pass -rpcallowip=0.0.0.0/0 -rpcbind=0.0.0.0 -prune=550 -dbcache=2048 -server=1 -listen=1
     restart: always
+    networks:
+      - go-vsc-node
     volumes:
       - ./.btc-data:/home/bitcoin/.bitcoin
     logging:

@@ -70,7 +70,7 @@ func NewOracleConfig(dataDir ...string) OracleConfig {
 	return &oracleConfigStruct{config.New(oracleConfig{
 		Chains: map[string]ChainRpcConfig{
 			"BTC": {
-				RpcHost: "bitcoind:48332",
+				RpcHost: "bitcoind:8332",
 				RpcUser: "vsc-node-user",
 				RpcPass: "vsc-node-pass",
 			},
