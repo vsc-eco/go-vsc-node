@@ -26,7 +26,7 @@ func makeTransaction(
 ) transactionpool.VSCTransaction {
 	op := transactionpool.VscContractCall{
 		ContractId: contractId,
-		Action:     "add_blocks",
+		Action:     "addBlocks",
 		Payload:    payload,
 		Intents:    []contracts.Intent{},
 		RcLimit:    1000,
@@ -322,18 +322,68 @@ checkThreshold:
 	)
 }
 
-func makeTransactionPayload(blocks []chainBlock) ([]string, error) {
-	payload := make([]string, len(blocks))
-	var err error
+// utxoAddBlocksPayload matches the UTXO mapping contract's AddBlocksParams:
+// a single concatenated hex string of fixed 80-byte block headers,
+// plus the latest fee rate for the chain.
+type utxoAddBlocksPayload struct {
+	Blocks    string `json:"blocks"`
+	LatestFee int64  `json:"latest_fee"`
+}
 
-	for i, block := range blocks {
-		payload[i], err = block.Serialize()
+// ethAddBlocksPayload matches the ETH mapping contract's AddBlocksParams:
+// an array of individually hex-encoded RLP block headers (variable length).
+type ethAddBlocksPayload struct {
+	Blocks []string `json:"blocks"`
+}
+
+// makeTransactionPayload builds the chain-appropriate payload.
+// UTXO chains (BTC/DASH/LTC) use concatenated hex + fee rate.
+// ETH uses an array of individual hex strings.
+func makeTransactionPayload(blocks []chainBlock) (any, error) {
+	if len(blocks) == 0 {
+		return &utxoAddBlocksPayload{}, nil
+	}
+
+	// Determine chain type from first block.
+	if blocks[0].Type() == "ETH" {
+		return makeEthPayload(blocks)
+	}
+	return makeUtxoPayload(blocks)
+}
+
+func makeUtxoPayload(blocks []chainBlock) (*utxoAddBlocksPayload, error) {
+	var concatenated strings.Builder
+	var latestFee int64
+
+	for _, block := range blocks {
+		hex, err := block.Serialize()
 		if err != nil {
 			return nil, err
 		}
+		concatenated.WriteString(hex)
+
+		// Extract fee rate from BTC blocks (last block's rate wins).
+		if btc, ok := block.(*btcChainData); ok {
+			latestFee = btc.AverageFeeRate
+		}
 	}
 
-	return payload, nil
+	return &utxoAddBlocksPayload{
+		Blocks:    concatenated.String(),
+		LatestFee: latestFee,
+	}, nil
+}
+
+func makeEthPayload(blocks []chainBlock) (*ethAddBlocksPayload, error) {
+	headers := make([]string, len(blocks))
+	for i, block := range blocks {
+		hex, err := block.Serialize()
+		if err != nil {
+			return nil, err
+		}
+		headers[i] = hex
+	}
+	return &ethAddBlocksPayload{Blocks: headers}, nil
 }
 
 // findMemberWeight returns the election weight for a given BLS DID.

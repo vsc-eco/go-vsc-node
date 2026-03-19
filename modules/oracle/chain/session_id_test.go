@@ -46,11 +46,17 @@ func TestParseChainSessionID_InvalidFormat(t *testing.T) {
 
 // mockChainBlock implements chainBlock for testing.
 type mockChainBlock struct {
-	height uint64
-	data   string
+	height    uint64
+	data      string
+	chainType string // defaults to "TEST" if empty
 }
 
-func (m *mockChainBlock) Type() string              { return "TEST" }
+func (m *mockChainBlock) Type() string {
+	if m.chainType != "" {
+		return m.chainType
+	}
+	return "TEST"
+}
 func (m *mockChainBlock) Serialize() (string, error) { return m.data, nil }
 func (m *mockChainBlock) BlockHeight() uint64        { return m.height }
 
