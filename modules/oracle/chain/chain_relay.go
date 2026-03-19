@@ -113,7 +113,7 @@ type chainState struct {
 }
 
 // stateKey used by mapping contracts to store the last submitted block height.
-const lastHeightStateKey = "lsthgt"
+const lastHeightStateKey = "h"
 
 // ChainOracle orchestrates block relay for all registered chains.
 // It runs as an aggregate.Plugin and is driven by Hive block ticks.

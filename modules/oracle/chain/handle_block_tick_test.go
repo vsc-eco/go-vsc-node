@@ -5,6 +5,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/modules/db/vsc/elections"
 
+	"github.com/btcsuite/btcd/wire"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -56,25 +57,49 @@ func TestFindMemberWeight_MissingWeights(t *testing.T) {
 	assert.Equal(t, uint64(1), findMemberWeight(election, dids.BlsDID("did:key:z6Bob")))
 }
 
-func TestMakeTransactionPayload(t *testing.T) {
+func TestMakeTransactionPayload_UTXO(t *testing.T) {
 	blocks := []chainBlock{
 		&mockChainBlock{height: 100, data: "aabbccdd"},
 		&mockChainBlock{height: 101, data: "11223344"},
 		&mockChainBlock{height: 102, data: "deadbeef"},
 	}
 
-	payload, err := makeTransactionPayload(blocks)
+	raw, err := makeTransactionPayload(blocks)
 	assert.NoError(t, err)
-	assert.Equal(t, 3, len(payload))
-	assert.Equal(t, "aabbccdd", payload[0])
-	assert.Equal(t, "11223344", payload[1])
-	assert.Equal(t, "deadbeef", payload[2])
+	payload := raw.(*utxoAddBlocksPayload)
+	assert.Equal(t, "aabbccdd11223344deadbeef", payload.Blocks)
+	assert.Equal(t, int64(0), payload.LatestFee) // non-BTC blocks have no fee
 }
 
 func TestMakeTransactionPayload_Empty(t *testing.T) {
-	payload, err := makeTransactionPayload([]chainBlock{})
+	raw, err := makeTransactionPayload([]chainBlock{})
 	assert.NoError(t, err)
-	assert.Equal(t, 0, len(payload))
+	payload := raw.(*utxoAddBlocksPayload)
+	assert.Equal(t, "", payload.Blocks)
+}
+
+func TestMakeTransactionPayload_BTCFeeRate(t *testing.T) {
+	blocks := []chainBlock{
+		&btcChainData{Height: 100, AverageFeeRate: 5, blockHeader: &wire.BlockHeader{}},
+		&btcChainData{Height: 101, AverageFeeRate: 12, blockHeader: &wire.BlockHeader{}},
+	}
+
+	raw, err := makeTransactionPayload(blocks)
+	assert.NoError(t, err)
+	payload := raw.(*utxoAddBlocksPayload)
+	assert.Equal(t, int64(12), payload.LatestFee)
+}
+
+func TestMakeTransactionPayload_ETH(t *testing.T) {
+	blocks := []chainBlock{
+		&mockChainBlock{height: 100, data: "aabbccdd", chainType: "ETH"},
+		&mockChainBlock{height: 101, data: "11223344", chainType: "ETH"},
+	}
+
+	raw, err := makeTransactionPayload(blocks)
+	assert.NoError(t, err)
+	payload := raw.(*ethAddBlocksPayload)
+	assert.Equal(t, []string{"aabbccdd", "11223344"}, payload.Blocks)
 }
 
 func TestMakeTransaction(t *testing.T) {
