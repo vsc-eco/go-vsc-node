@@ -15,7 +15,7 @@ import (
 
 const (
 	// Time to wait for witness signatures before proceeding.
-	signatureCollectionTimeout = 1 * time.Minute
+	signatureCollectionTimeout = 90 * time.Second
 )
 
 func makeTransaction(
@@ -214,6 +214,10 @@ func (o *ChainOracle) processChainRelay(
 		)
 		return
 	}
+	o.logger.Debug("broadcast signature request",
+		"symbol", chainStatus.symbol,
+		"sessionID", sessionID,
+	)
 
 	// Wait for signatures with timeout
 	threshold := electionResult.TotalWeight * 2 / 3
@@ -266,6 +270,12 @@ func (o *ChainOracle) processChainRelay(
 					"weight", weight,
 					"signedWeight", signedWeight,
 					"threshold", threshold,
+				)
+			} else {
+				o.logger.Debug("signature not added to circuit",
+					"symbol", chainStatus.symbol,
+					"account", sigMsg.Account,
+					"blsDid", sigMsg.BlsDid,
 				)
 			}
 		}

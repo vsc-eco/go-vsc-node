@@ -7,8 +7,8 @@ import (
 	"log"
 	"time"
 	DataLayer "vsc-node/lib/datalayer"
-	"vsc-node/lib/vsclog"
 	"vsc-node/lib/dids"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
@@ -37,7 +37,7 @@ const (
 	priceOraclePollInterval      = time.Second * 15
 
 	// ~1 minute = 20 blocks, 3s for every new block
-	chainRelayInterval = uint64(1)
+	chainRelayInterval = uint64(20)
 )
 
 var (

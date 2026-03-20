@@ -35,6 +35,10 @@ func (c *ChainOracle) Handle(peerID peer.ID, p2pMsg p2p.Msg) (p2p.Msg, error) {
 	switch msg.MessageType {
 	case signatureRequest:
 		// Witness: independently verify chain data and sign
+		c.logger.Debug("received signature request",
+			"sessionID", msg.SessionID,
+			"peer", peerID,
+		)
 		response, err := witnessChainData(c, &msg)
 		if err != nil {
 			c.logger.Debug("failed to witness chain data",

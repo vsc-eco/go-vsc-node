@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // witnessChainData independently verifies chain data and returns a BLS signature.
@@ -42,7 +43,14 @@ func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (*chainRelayRespo
 
 	// Independently fetch the same blocks from our own RPC
 	count := (endBlock - startBlock) + 1
+	chainDataStart := time.Now()
 	blocks, err := chain.ChainData(startBlock, count)
+	c.logger.Debug("witness chain data fetch",
+		"symbol", chainSymbol,
+		"blocks", count,
+		"duration", time.Since(chainDataStart),
+		"err", err,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch chain data for verification: %w", err)
 	}
