@@ -48,9 +48,6 @@ func getBalance(arg1 *string, arg2 *string) *string
 //go:wasmimport sdk hive.draw
 func hiveDraw(arg1 *string, arg2 *string) *string
 
-//go:wasmimport sdk hive.draw_from
-func hiveDrawFrom(arg1 *string, arg2 *string, arg3 *string) *string
-
 //go:wasmimport sdk hive.transfer
 func hiveTransfer(arg1 *string, arg2 *string, arg3 *string) *string
 
@@ -179,13 +176,6 @@ func HiveDraw(amount int64, asset Asset) {
 	amt := strconv.FormatInt(amount, 10)
 	as := asset.String()
 	hiveDraw(&amt, &as)
-}
-
-func HiveDrawFrom(from Address, amount int64, asset Asset) {
-	frm := from.String()
-	amt := strconv.FormatInt(amount, 10)
-	as := asset.String()
-	hiveDrawFrom(&frm, &amt, &as)
 }
 
 // Transfer assets from the contract to another account.

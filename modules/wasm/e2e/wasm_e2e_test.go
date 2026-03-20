@@ -78,57 +78,6 @@ func TestContractTestUtil(t *testing.T) {
 	assert.False(t, ledgerErr.Success)
 	assert.Equal(t, ledgerErr.Err, contracts.LEDGER_INTENT_ERROR)
 
-	drawBothIntents := ct.Call(stateEngine.TxVscCallContract{
-		Self:       txSelf,
-		ContractId: contractId,
-		Action:     "drawHiveBothIntents",
-		Payload:    json.RawMessage([]byte("1000")),
-		RcLimit:    1000,
-		Intents: []contracts.Intent{{
-			Type: "transfer.allow",
-			Args: map[string]string{
-				"limit": "1.000",
-				"token": "hive",
-			},
-		}},
-	})
-	assert.False(t, drawBothIntents.Success)
-	assert.Equal(t, drawBothIntents.Err, contracts.LEDGER_INTENT_ERROR)
-
-	drawBothIntents2 := ct.Call(stateEngine.TxVscCallContract{
-		Self:       txSelf,
-		ContractId: contractId,
-		Action:     "drawHiveBothIntents",
-		Payload:    json.RawMessage([]byte("500")),
-		RcLimit:    1000,
-		Intents: []contracts.Intent{{
-			Type: "transfer.allow",
-			Args: map[string]string{
-				"limit": "1.000",
-				"token": "hive",
-			},
-		}},
-	})
-	assert.True(t, drawBothIntents2.Success)
-	assert.Equal(t, ct.GetBalance("contract:vscmycontract", ledgerDb.AssetHive), int64(2000))
-
-	drawBothIntents3 := ct.Call(stateEngine.TxVscCallContract{
-		Self:       txSelf,
-		ContractId: contractId,
-		Action:     "drawHiveBothIntents2",
-		Payload:    json.RawMessage([]byte("500")),
-		RcLimit:    1000,
-		Intents: []contracts.Intent{{
-			Type: "transfer.allow",
-			Args: map[string]string{
-				"limit": "0.600",
-				"token": "hive",
-			},
-		}},
-	})
-	assert.False(t, drawBothIntents3.Success)
-	assert.Equal(t, drawBothIntents3.Err, contracts.LEDGER_INTENT_ERROR)
-
 	abortResult := ct.Call(stateEngine.TxVscCallContract{
 		Self:       txSelf,
 		ContractId: contractId,
@@ -295,6 +244,6 @@ func TestContractTestUtil(t *testing.T) {
 		RcLimit:    1000,
 		Intents:    []contracts.Intent{},
 	})
-	assert.Equal(t, ct.GetBalance("contract:vscmycontract", ledgerDb.AssetHive), int64(1980))
+	assert.Equal(t, ct.GetBalance("contract:vscmycontract", ledgerDb.AssetHive), int64(980))
 	assert.Equal(t, ct.GetBalance("contract:vscmycontract2", ledgerDb.AssetHive), int64(20))
 }

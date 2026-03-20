@@ -28,15 +28,13 @@ import (
 var tssLog = vsclog.Module("tss")
 
 type contractExecutionContext struct {
-	callerIntents []contracts.Intent
-	senderIntents []contracts.Intent
-	ledger        ledgerSystem.LedgerSession
-	env           Environment
-	rcLimit       int64
-	gasRemain     uint
-	callSession   *contract_session.CallSession
-	recursion     int
-	gasUsage      uint
+	ledger      ledgerSystem.LedgerSession
+	env         Environment
+	rcLimit     int64
+	gasRemain   uint
+	callSession *contract_session.CallSession
+	recursion   int
+	gasUsage    uint
 
 	ioReadGas  int
 	ioWriteGas int
@@ -68,8 +66,7 @@ type Environment struct {
 	RequiredPostingAuths []string
 	Caller               string
 	Sender               string
-	CallerIntents        []contracts.Intent
-	SenderIntents        []contracts.Intent
+	Intents              []contracts.Intent
 }
 
 var _ wasm_context.ExecContextValue = &contractExecutionContext{}
@@ -85,7 +82,7 @@ func New(
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
 
-	for _, intent := range env.CallerIntents {
+	for _, intent := range env.Intents {
 		if intent.Type == "transfer.allow" {
 			limit, ok := intent.Args["limit"]
 			if !ok {
@@ -113,14 +110,8 @@ func New(
 			tokenLimits[token] = &val
 		}
 	}
-	// Initialize sender limits on the first call (recursion depth 0)
-	if recursionDepth == 0 {
-		callSession.InitializeSenderLimits(tokenLimits)
-	}
 	// fmt.Println("tokenLimits", tokenLimits, "depth", recursionDepth)
 	return &contractExecutionContext{
-		env.CallerIntents,
-		env.SenderIntents,
 		ledger,
 		env,
 		rcLimit,
@@ -240,17 +231,8 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 	case "msg.caller":
 		return result.Ok(ctx.env.Caller)
 	case "intents":
-		fallthrough
-	case "intents.caller":
 		return result.Map(
-			resultWrap(json.Marshal(ctx.env.CallerIntents)),
-			func(b []byte) string {
-				return string(b)
-			},
-		)
-	case "intents.sender":
-		return result.Map(
-			resultWrap(json.Marshal(ctx.env.SenderIntents)),
+			resultWrap(json.Marshal(ctx.env.Intents)),
 			func(b []byte) string {
 				return string(b)
 			},
@@ -308,8 +290,7 @@ func (ctx *contractExecutionContext) GetEnv() result.Result[string] {
 		"msg.required_posting_auths": ctx.env.RequiredPostingAuths,
 		"msg.payer":                  payer,
 		"msg.caller":                 ctx.env.Caller,
-		"intents.caller":             ctx.env.CallerIntents,
-		"intents.sender":             ctx.env.SenderIntents,
+		"intents":                    ctx.env.Intents,
 	}
 
 	envBytes, err := json.Marshal(envMap)
@@ -418,22 +399,15 @@ func (ctx *contractExecutionContext) PullBalance(from string, amount int64, asse
 		}
 		*tokenLimit -= amount
 		from = ctx.env.Caller
-	case ctx.env.Sender:
-		err := ctx.callSession.DecrementSenderTokenLimit(asset, amount)
-		if err != nil {
-			return result.Err[struct{}](
-				errors.Join(errors.New(contracts.LEDGER_INTENT_ERROR), err),
-			)
-		}
 	default:
 		return result.Err[struct{}](
-			errors.Join(errors.New(contracts.LEDGER_INTENT_ERROR), errors.New("user does not match caller or sender")),
+			errors.Join(errors.New(contracts.LEDGER_INTENT_ERROR), errors.New("user does not match caller")),
 		)
 	}
 
-	// assuming sender is the RC payer
+	// assuming caller is the RC payer
 	var transferOptions []ledgerSystem.TransferOptions
-	if asset == "hbd" && ctx.env.Caller == ctx.env.Sender {
+	if asset == "hbd" {
 		transferOptions = []ledgerSystem.TransferOptions{
 			{
 				Exclusion: ctx.rcLimit,
@@ -552,8 +526,7 @@ func (ctx *contractExecutionContext) ContractCall(
 				RequiredPostingAuths: ctx.env.RequiredPostingAuths,
 				Caller:               "contract:" + ctx.env.ContractId,
 				Sender:               ctx.env.Sender,
-				CallerIntents:        opts.Intents,
-				SenderIntents:        ctx.senderIntents,
+				Intents:              opts.Intents,
 			}, ctx.rcLimit, gasRemaining, ctx.ledger, ctx.callSession, nextRecursion)
 
 			callPayload := payload

@@ -323,29 +323,6 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 				func(struct{}) SdkResultStruct { return SdkResultStruct{Gas: params.CYCLE_GAS_PER_RC} },
 			)
 		},
-		"draw_from": func(ctx context.Context, arg1 any, arg2 any, arg3 any) SdkResult {
-			eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
-			from, ok := arg1.(string)
-			if !ok {
-				return ErrInvalidArgument
-			}
-			amountString, ok := arg2.(string)
-			if !ok {
-				return ErrInvalidArgument
-			}
-			amount, err := strconv.ParseInt(amountString, 10, 64)
-			if err != nil {
-				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), err))
-			}
-			asset, ok := arg3.(string)
-			if !ok {
-				return ErrInvalidArgument
-			}
-			return result.Map(
-				eCtx.PullBalance(from, amount, asset),
-				func(struct{}) SdkResultStruct { return SdkResultStruct{Gas: params.CYCLE_GAS_PER_RC} },
-			)
-		},
 		"transfer": func(ctx context.Context, arg1 any, arg2 any, arg3 any) SdkResult {
 			eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 			to, ok := arg1.(string)

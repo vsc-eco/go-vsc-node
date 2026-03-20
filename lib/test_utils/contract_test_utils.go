@@ -233,8 +233,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 			RequiredPostingAuths: tx.Self.RequiredPostingAuths,
 			Caller:               caller,
 			Sender:               caller,
-			CallerIntents:        tx.Intents,
-			SenderIntents:        tx.Intents,
+			Intents:              tx.Intents,
 		},
 		int64(tx.RcLimit), tx.RcLimit*params.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
 	)

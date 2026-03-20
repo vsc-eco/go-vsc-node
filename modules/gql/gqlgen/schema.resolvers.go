@@ -648,8 +648,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 				RequiredPostingAuths: input.RequiredPostingAuths,
 				Caller:               caller,
 				Sender:               caller,
-				CallerIntents:        intents,
-				SenderIntents:        intents,
+				Intents:              intents,
 			},
 			int64(rcLimit), rcLimit*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
 		)

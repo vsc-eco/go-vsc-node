@@ -126,8 +126,7 @@ func (t TxVscCallContract) ExecuteTx(
 		RequiredPostingAuths: t.Self.RequiredPostingAuths,
 		Caller:               caller,
 		Sender:               caller,
-		CallerIntents:        t.Intents,
-		SenderIntents:        t.Intents,
+		Intents:              t.Intents,
 	}, int64(gas), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0)
 
 	validUtf8 := utf8.Valid(t.Payload)
@@ -624,15 +623,6 @@ func (t *TxUnstakeHbd) Type() string {
 	return "unstake_hbd"
 }
 
-// type TxUnstakeHbd struct {
-// 	Self   TxSelf
-// 	From   string `json:"from"`
-// 	To     string `json:"to"`
-// 	Amount string `json:"amount"`
-// 	Asset  string `json:"asset"`
-// 	NetId  string `json:"net_id"`
-// }
-
 type TxConsensusStake struct {
 	Self TxSelf `json:"-"`
 
@@ -895,18 +885,6 @@ func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
 		Self: tx.Self,
 	}
 	json.Unmarshal(bJson, &offchainTx)
-
-	// b64Bytes, _ := base64.StdEncoding.DecodeString(offchainTx.Tx["payload"].(string))
-
-	// node, _ := cbornode.Decode(b64Bytes, mh.SHA2_256, -1)
-	// bbytes, _ := node.MarshalJSON()
-	// var txPayload map[string]interface{}
-	// json.Unmarshal(bbytes, &txPayload)
-
-	// offchainTx.Tx = map[string]interface{}{
-	// 	"type":    offchainTx.Tx["op"],
-	// 	"payload": txPayload,
-	// }
 
 	return &offchainTx
 }
@@ -1179,7 +1157,6 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 }
 
 func (tx *OffchainTransaction) Type() string {
-
 	return "offchain"
 }
 

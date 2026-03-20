@@ -186,48 +186,25 @@ func tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk1(in *jlexer.Lexer, out
 			out.Caller = Address(in.String())
 		case "msg.payer":
 			out.Payer = Address(in.String())
-		case "intents.caller":
+		case "intents":
 			if in.IsNull() {
 				in.Skip()
-				out.CallerIntents = nil
+				out.Intents = nil
 			} else {
 				in.Delim('[')
-				if out.CallerIntents == nil {
+				if out.Intents == nil {
 					if !in.IsDelim(']') {
-						out.CallerIntents = make([]Intent, 0, 2)
+						out.Intents = make([]Intent, 0, 2)
 					} else {
-						out.CallerIntents = []Intent{}
+						out.Intents = []Intent{}
 					}
 				} else {
-					out.CallerIntents = (out.CallerIntents)[:0]
+					out.Intents = (out.Intents)[:0]
 				}
 				for !in.IsDelim(']') {
 					var v7 Intent
 					tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk3(in, &v7)
-					out.CallerIntents = append(out.CallerIntents, v7)
-					in.WantComma()
-				}
-				in.Delim(']')
-			}
-		case "intents.sender":
-			if in.IsNull() {
-				in.Skip()
-				out.SenderIntents = nil
-			} else {
-				in.Delim('[')
-				if out.SenderIntents == nil {
-					if !in.IsDelim(']') {
-						out.SenderIntents = make([]Intent, 0, 2)
-					} else {
-						out.SenderIntents = []Intent{}
-					}
-				} else {
-					out.SenderIntents = (out.SenderIntents)[:0]
-				}
-				for !in.IsDelim(']') {
-					var v8 Intent
-					tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk3(in, &v8)
-					out.SenderIntents = append(out.SenderIntents, v8)
+					out.Intents = append(out.Intents, v7)
 					in.WantComma()
 				}
 				in.Delim(']')
@@ -302,33 +279,17 @@ func tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk1(out *jwriter.Writer, 
 		out.String(string(in.Payer))
 	}
 	{
-		const prefix string = ",\"intents.caller\":"
+		const prefix string = ",\"intents\":"
 		out.RawString(prefix)
-		if in.CallerIntents == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
+		if in.Intents == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
 			out.RawString("null")
 		} else {
 			out.RawByte('[')
-			for v9, v10 := range in.CallerIntents {
+			for v9, v10 := range in.Intents {
 				if v9 > 0 {
 					out.RawByte(',')
 				}
 				tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk3(out, v10)
-			}
-			out.RawByte(']')
-		}
-	}
-	{
-		const prefix string = ",\"intents.sender\":"
-		out.RawString(prefix)
-		if in.SenderIntents == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
-			out.RawString("null")
-		} else {
-			out.RawByte('[')
-			for v11, v12 := range in.SenderIntents {
-				if v11 > 0 {
-					out.RawByte(',')
-				}
-				tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk3(out, v12)
 			}
 			out.RawByte(']')
 		}

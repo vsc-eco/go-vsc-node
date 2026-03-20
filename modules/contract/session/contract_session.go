@@ -36,8 +36,7 @@ type CallSession struct {
 	TssKeys tss_db.TssKeys
 
 	// pending carries the temp contract outputs already produced earlier in the slot.
-	pending           map[string]*TempOutput
-	senderTokenLimits map[string]*int64
+	pending map[string]*TempOutput
 }
 
 // Create a new contract call session for a transaction.
@@ -59,7 +58,6 @@ func NewCallSession(
 		pending: cloneTempOutputs(
 			pending,
 		), // Copy temp outputs so mutations here never leak back to the caller.
-		senderTokenLimits: make(map[string]*int64),
 	}
 }
 
@@ -233,29 +231,6 @@ func (cs *CallSession) GetContractFromDb(contractId string, height uint64) resul
 	return result.Ok(ContractWithCode{info, code})
 }
 
-// InitializeSenderLimits sets up the sender's token limits from intents.
-func (cs *CallSession) InitializeSenderLimits(senderLimits map[string]*int64) {
-	cs.senderTokenLimits = senderLimits
-}
-
-// GetSenderTokenLimit returns the remaining limit for a token, or nil if no limit exists
-func (cs *CallSession) GetSenderTokenLimit(token string) *int64 {
-	return cs.senderTokenLimits[token]
-}
-
-// DecrementSenderTokenLimit reduces the sender's token limit by the specified amount
-// Returns error if limit doesn't exist or would be exceeded
-func (cs *CallSession) DecrementSenderTokenLimit(token string, amount int64) error {
-	limit, ok := cs.senderTokenLimits[token]
-	if !ok {
-		return fmt.Errorf("no sender token limit for token: %s", token)
-	}
-	if amount > *limit {
-		return fmt.Errorf("amount (%d) exceeds remaining sender limit (%d) for token: %s", amount, *limit, token)
-	}
-	*limit -= amount
-	return nil
-}
 
 // Session for a contract
 type ContractSession struct {
