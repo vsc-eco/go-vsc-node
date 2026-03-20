@@ -76,6 +76,12 @@ func (o *ChainOracle) processChainRelay(
 	p2pSpec p2p.OracleP2PSpec,
 ) {
 	blockCount := len(chainStatus.chainData)
+	if blockCount == 0 {
+		o.logger.Warn("processChainRelay called with empty chain data, skipping",
+			"symbol", chainStatus.symbol,
+		)
+		return
+	}
 	startHeight := chainStatus.chainData[0].BlockHeight()
 	endHeight := chainStatus.chainData[blockCount-1].BlockHeight()
 

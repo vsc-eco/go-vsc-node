@@ -372,6 +372,11 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 	}
 
 	if latestChainState.blockHeight <= contractHeight {
+		c.logger.Debug("no new blocks to relay",
+			"symbol", chain.Symbol(),
+			"contractHeight", contractHeight,
+			"latestValidHeight", latestChainState.blockHeight,
+		)
 		return chainSession{
 			symbol:            chain.Symbol(),
 			newBlocksToSubmit: false,

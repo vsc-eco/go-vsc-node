@@ -114,8 +114,8 @@ func (b *bitcoinRelayer) ChainData(
 	}
 
 	stopHeight := startHeight + count
-	if stopHeight > uint64(latestBlock) {
-		stopHeight = uint64(latestBlock)
+	if stopHeight > uint64(latestBlock)+1 {
+		stopHeight = uint64(latestBlock) + 1
 	}
 
 	if stopHeight < startHeight {
