@@ -339,7 +339,7 @@ func (c *ChainOracle) getContractBlockHeight(contractId string) (uint64, error) 
 
 // fetchChainStatus compares a chain's current tip against the last height
 // submitted to its mapping contract. If new blocks exist, it fetches up to
-// 100 of them via the chain's RPC for relay.
+// 50 of them via the chain's RPC for relay.
 func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 	contractId := chain.ContractId()
 	if contractId == "" {
@@ -374,7 +374,7 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 		}, nil
 	}
 
-	chainData, err := chain.ChainData(contractHeight+1, 100)
+	chainData, err := chain.ChainData(contractHeight+1, 50)
 	if err != nil {
 		return chainSession{}, fmt.Errorf("failed to get chain data: %w", err)
 	}
