@@ -15,7 +15,7 @@ import (
 
 const (
 	// Time to wait for witness signatures before proceeding.
-	signatureCollectionTimeout = 12 * time.Second
+	signatureCollectionTimeout = 1 * time.Minute
 )
 
 func makeTransaction(
@@ -214,7 +214,6 @@ func (o *ChainOracle) processChainRelay(
 		)
 		return
 	}
-
 
 	// Wait for signatures with timeout
 	threshold := electionResult.TotalWeight * 2 / 3

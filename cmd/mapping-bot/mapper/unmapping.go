@@ -71,7 +71,7 @@ func (b *Bot) HandleUnmap() {
 // When a tx is confirmed, it transitions the DB state to "confirmed" and calls
 // the mapping contract's confirmSpend action to promote unconfirmed UTXOs.
 func (b *Bot) HandleConfirmations() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	sentTxIDs, err := b.stateDB().GetSentTransactionIDs(ctx)

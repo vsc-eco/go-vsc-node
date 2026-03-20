@@ -15,7 +15,7 @@ func (b *Bot) HandleMap(
 	blockBytes []byte,
 	blockHeight uint64,
 ) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	lastContractHeightStr, err := b.gql().FetchLastHeight(ctx)
 	if err != nil {

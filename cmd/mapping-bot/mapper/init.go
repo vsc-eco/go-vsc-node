@@ -156,18 +156,20 @@ func (b *Bot) LastBlock() (height uint64, at time.Time) {
 // ErrTxFailed is returned when a VSC transaction reaches the FAILED status.
 var ErrTxFailed = fmt.Errorf("VSC transaction failed")
 
-// callWithRetry retries a contract call up to maxAttempts times with exponential backoff.
-// After a successful broadcast it polls the VSC node until the transaction reaches
-// a terminal status (CONFIRMED or FAILED).
+// callWithRetry broadcasts a contract call and monitors its on-chain status.
+// It only re-broadcasts when the previous attempt either failed to broadcast or
+// reached the FAILED status on-chain. While a transaction is still INCLUDED or
+// UNCONFIRMED it keeps polling — it never re-broadcasts over a live transaction.
 func (b *Bot) callWithRetry(ctx context.Context, payload json.RawMessage, action string, maxAttempts int) error {
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		txId, err := b.caller().CallContract(ctx, payload, action)
 		if err != nil {
+			// Broadcast itself failed — retry with backoff.
 			lastErr = err
 			if attempt < maxAttempts {
 				backoff := time.Duration(attempt) * 2 * time.Second
-				b.L.Debug("contract call failed, retrying", "action", action, "attempt", attempt, "backoff", backoff, "error", err)
+				b.L.Debug("broadcast failed, retrying", "action", action, "attempt", attempt, "backoff", backoff, "error", err)
 				select {
 				case <-time.After(backoff):
 				case <-ctx.Done():
@@ -177,48 +179,75 @@ func (b *Bot) callWithRetry(ctx context.Context, payload json.RawMessage, action
 			continue
 		}
 
-		// Broadcast succeeded — poll for terminal status.
+		// Broadcast succeeded — wait for on-chain resolution.
 		status, err := b.awaitTxStatus(ctx, txId, action)
 		if err != nil {
+			// Context cancelled or similar — stop entirely.
 			return fmt.Errorf("error polling tx %s status: %w", txId, err)
 		}
-		if status == "FAILED" {
-			b.L.Warn("VSC transaction failed", "action", action, "txId", txId)
+
+		switch status {
+		case "CONFIRMED", "PROCESSED":
+			b.L.Info("VSC transaction confirmed", "action", action, "txId", txId, "status", status)
+			return nil
+		case "FAILED":
+			b.L.Warn("VSC transaction failed on-chain", "action", action, "txId", txId, "attempt", attempt)
 			b.recordFailedTx(txId, action)
-			return fmt.Errorf("%w: action=%s txId=%s", ErrTxFailed, action, txId)
+			lastErr = fmt.Errorf("%w: action=%s txId=%s", ErrTxFailed, action, txId)
+			// Fall through to retry with a new broadcast.
+			if attempt < maxAttempts {
+				backoff := time.Duration(attempt) * 2 * time.Second
+				b.L.Debug("will re-broadcast after FAILED", "action", action, "attempt", attempt, "backoff", backoff)
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
 		}
-		b.L.Info("VSC transaction confirmed", "action", action, "txId", txId, "status", status)
-		return nil
 	}
 	return lastErr
 }
 
-// awaitTxStatus polls findTransaction until the tx reaches a terminal status
-// (CONFIRMED, PROCESSED, or FAILED) or the context is cancelled.
+const (
+	// initialStatusDelay is how long to wait after broadcast before the first
+	// status poll, giving the VSC node time to index the transaction.
+	initialStatusDelay = 10 * time.Second
+	// statusPollInterval is how often to re-check after the initial delay.
+	statusPollInterval = 3 * time.Second
+)
+
+// awaitTxStatus waits for a broadcast transaction to reach a terminal status.
+// It sleeps initialStatusDelay before the first poll, then polls every
+// statusPollInterval. It never returns while the tx is INCLUDED/UNCONFIRMED —
+// only CONFIRMED, PROCESSED, FAILED, or a context error will end the loop.
 func (b *Bot) awaitTxStatus(ctx context.Context, txId string, action string) (string, error) {
-	const pollInterval = 3 * time.Second
+	// Initial delay — give the node time to ingest the Hive block.
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-time.After(initialStatusDelay):
+	}
 
 	for {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(pollInterval):
-		}
-
 		status, err := b.gql().FetchTransactionStatus(ctx, txId)
 		if err != nil {
 			// Transaction may not be indexed yet — keep polling.
 			b.L.Debug("tx status not available yet", "action", action, "txId", txId, "error", err)
-			continue
+		} else {
+			b.L.Debug("polled tx status", "action", action, "txId", txId, "status", status)
+			switch status {
+			case "CONFIRMED", "PROCESSED", "FAILED":
+				return status, nil
+			}
+			// INCLUDED / UNCONFIRMED — keep polling.
 		}
 
-		b.L.Debug("polled tx status", "action", action, "txId", txId, "status", status)
-
-		switch status {
-		case "CONFIRMED", "PROCESSED", "FAILED":
-			return status, nil
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(statusPollInterval):
 		}
-		// INCLUDED / UNCONFIRMED — keep polling.
 	}
 }
 
