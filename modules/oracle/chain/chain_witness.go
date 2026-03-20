@@ -12,7 +12,7 @@ import (
 // transaction, and signs the resulting CID with its BLS key.
 func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (*chainRelayResponse, error) {
 	// Parse the session ID to get symbol, start, end blocks
-	chainSymbol, startBlock, endBlock, err := parseChainSessionID(msg.SessionID)
+	chainSymbol, _, startBlock, endBlock, err := parseChainSessionID(msg.SessionID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid session id: %w", err)
 	}

@@ -388,8 +388,11 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 }
 
 // makeChainSessionID builds a unique session identifier for P2P signature
-// collection in the format "SYMBOL-startBlock-endBlock" (e.g. "BTC-640000-640100").
-func makeChainSessionID(c *chainSession) (string, error) {
+// collection in the format "SYMBOL-hiveHeight-startBlock-endBlock"
+// (e.g. "BTC-93000000-640000-640100"). Including the Hive block height
+// prevents collisions when the same chain block range is retried across
+// multiple Hive blocks.
+func makeChainSessionID(c *chainSession, hiveBlockHeight uint64) (string, error) {
 	if len(c.chainData) == 0 {
 		return "", errors.New("chainData not supplied")
 	}
@@ -397,27 +400,32 @@ func makeChainSessionID(c *chainSession) (string, error) {
 	startBlock := c.chainData[0].BlockHeight()
 	endBlock := c.chainData[len(c.chainData)-1].BlockHeight()
 
-	id := fmt.Sprintf("%s-%d-%d", c.symbol, startBlock, endBlock)
+	id := fmt.Sprintf("%s-%d-%d-%d", c.symbol, hiveBlockHeight, startBlock, endBlock)
 	return id, nil
 }
 
-// parseChainSessionID parses "SYMBOL-startBlock-endBlock" format.
-func parseChainSessionID(sessionID string) (string, uint64, uint64, error) {
+// parseChainSessionID parses "SYMBOL-hiveHeight-startBlock-endBlock" format.
+func parseChainSessionID(sessionID string) (string, uint64, uint64, uint64, error) {
 	parts := strings.Split(sessionID, "-")
-	if len(parts) != 3 {
-		return "", 0, 0, fmt.Errorf("invalid session ID format: %s", sessionID)
+	if len(parts) != 4 {
+		return "", 0, 0, 0, fmt.Errorf("invalid session ID format: %s", sessionID)
 	}
 
 	chainSymbol := parts[0]
-	startBlock, err := strconv.ParseUint(parts[1], 10, 64)
+	hiveBlockHeight, err := strconv.ParseUint(parts[1], 10, 64)
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("invalid start block: %w", err)
+		return "", 0, 0, 0, fmt.Errorf("invalid hive block height: %w", err)
 	}
 
-	endBlock, err := strconv.ParseUint(parts[2], 10, 64)
+	startBlock, err := strconv.ParseUint(parts[2], 10, 64)
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("invalid end block: %w", err)
+		return "", 0, 0, 0, fmt.Errorf("invalid start block: %w", err)
 	}
 
-	return chainSymbol, startBlock, endBlock, nil
+	endBlock, err := strconv.ParseUint(parts[3], 10, 64)
+	if err != nil {
+		return "", 0, 0, 0, fmt.Errorf("invalid end block: %w", err)
+	}
+
+	return chainSymbol, hiveBlockHeight, startBlock, endBlock, nil
 }

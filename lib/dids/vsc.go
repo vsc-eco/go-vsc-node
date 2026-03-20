@@ -43,6 +43,7 @@ func NewVscDID(
 		members:   members,
 		weightMap: weightMap,
 		threshold: threshold,
+		bitvector: bitVector,
 	}
 
 	return vscDid, nil

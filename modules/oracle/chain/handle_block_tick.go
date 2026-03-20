@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 	"vsc-node/lib/dids"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/p2p"
@@ -172,7 +173,7 @@ func (o *ChainOracle) processChainRelay(
 	signedWeight := selfWeight
 
 	// Create a session to receive signatures from peers
-	sessionID, err := makeChainSessionID(&chainStatus)
+	sessionID, err := makeChainSessionID(&chainStatus, signal.BlockHeight)
 	if err != nil {
 		o.logger.Error("failed to create session ID",
 			"symbol", chainStatus.symbol, "err", err,
@@ -304,19 +305,61 @@ checkThreshold:
 	)
 
 	// Submit the transaction
-	if o.txCrafter == nil || o.txPool == nil {
-		o.logger.Warn("transaction crafter or pool not configured, skipping submission",
+	if o.txPool == nil {
+		o.logger.Warn("transaction pool not configured, skipping submission",
 			"symbol", chainStatus.symbol,
 		)
 		return
 	}
 
-	signedTx, err := o.txCrafter.SignFinal(tx)
+	// Finalize the BLS circuit to produce the aggregated signature.
+	finalCircuit, err := circuit.Finalize()
 	if err != nil {
-		o.logger.Error("failed to sign transaction",
+		o.logger.Error("failed to finalize BLS circuit",
 			"symbol", chainStatus.symbol, "err", err,
 		)
 		return
+	}
+
+	serializedCircuit, err := finalCircuit.Serialize()
+	if err != nil {
+		o.logger.Error("failed to serialize BLS circuit",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	sTx, err := tx.Serialize()
+	if err != nil {
+		o.logger.Error("failed to serialize transaction",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	sigPackage := transactionpool.SignaturePackage{
+		Type: "vsc-sig",
+		Sigs: []common.Sig{
+			{
+				Algo: "BLS12-381",
+				Kid:  "did:vsc:oracle:" + strings.ToLower(chainStatus.symbol),
+				Sig:  serializedCircuit.Signature,
+				Bv:   serializedCircuit.BitVector,
+			},
+		},
+	}
+
+	sigBytes, err := common.EncodeDagCbor(sigPackage)
+	if err != nil {
+		o.logger.Error("failed to encode signature package",
+			"symbol", chainStatus.symbol, "err", err,
+		)
+		return
+	}
+
+	signedTx := transactionpool.SerializedVSCTransaction{
+		Tx:  sTx.Tx,
+		Sig: sigBytes,
 	}
 
 	txCidResult, err := o.txPool.IngestTx(signedTx, transactionpool.IngestOptions{Broadcast: true})

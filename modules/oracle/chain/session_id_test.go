@@ -8,17 +8,19 @@ import (
 )
 
 func TestParseChainSessionID_Valid(t *testing.T) {
-	symbol, start, end, err := parseChainSessionID("BTC-640000-640100")
+	symbol, hiveHeight, start, end, err := parseChainSessionID("BTC-93000000-640000-640100")
 	require.NoError(t, err)
 	assert.Equal(t, "BTC", symbol)
+	assert.Equal(t, uint64(93000000), hiveHeight)
 	assert.Equal(t, uint64(640000), start)
 	assert.Equal(t, uint64(640100), end)
 }
 
 func TestParseChainSessionID_SingleBlock(t *testing.T) {
-	symbol, start, end, err := parseChainSessionID("DASH-12345-12345")
+	symbol, hiveHeight, start, end, err := parseChainSessionID("DASH-100-12345-12345")
 	require.NoError(t, err)
 	assert.Equal(t, "DASH", symbol)
+	assert.Equal(t, uint64(100), hiveHeight)
 	assert.Equal(t, uint64(12345), start)
 	assert.Equal(t, uint64(12345), end)
 }
@@ -31,14 +33,16 @@ func TestParseChainSessionID_InvalidFormat(t *testing.T) {
 		{"empty", ""},
 		{"no dashes", "BTC640000640100"},
 		{"one dash", "BTC-640000"},
-		{"four parts", "BTC-640-000-100"},
-		{"non-numeric start", "BTC-abc-640100"},
-		{"non-numeric end", "BTC-640000-xyz"},
+		{"two dashes (old format)", "BTC-640000-640100"},
+		{"five parts", "BTC-12345-640-000-100"},
+		{"non-numeric hive height", "BTC-abc-640000-640100"},
+		{"non-numeric start", "BTC-12345-abc-640100"},
+		{"non-numeric end", "BTC-12345-640000-xyz"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, _, err := parseChainSessionID(tt.input)
+			_, _, _, _, err := parseChainSessionID(tt.input)
 			assert.Error(t, err)
 		})
 	}
@@ -70,9 +74,9 @@ func TestMakeChainSessionID(t *testing.T) {
 		},
 	}
 
-	id, err := makeChainSessionID(session)
+	id, err := makeChainSessionID(session, 93000000)
 	require.NoError(t, err)
-	assert.Equal(t, "BTC-640000-640100", id)
+	assert.Equal(t, "BTC-93000000-640000-640100", id)
 }
 
 func TestMakeChainSessionID_EmptyChainData(t *testing.T) {
@@ -81,7 +85,7 @@ func TestMakeChainSessionID_EmptyChainData(t *testing.T) {
 		chainData: []chainBlock{},
 	}
 
-	_, err := makeChainSessionID(session)
+	_, err := makeChainSessionID(session, 93000000)
 	assert.Error(t, err)
 }
 
@@ -94,12 +98,13 @@ func TestSessionIDRoundTrip(t *testing.T) {
 		},
 	}
 
-	id, err := makeChainSessionID(session)
+	id, err := makeChainSessionID(session, 55000)
 	require.NoError(t, err)
 
-	symbol, start, end, err := parseChainSessionID(id)
+	symbol, hiveHeight, start, end, err := parseChainSessionID(id)
 	require.NoError(t, err)
 	assert.Equal(t, "DASH", symbol)
+	assert.Equal(t, uint64(55000), hiveHeight)
 	assert.Equal(t, uint64(100), start)
 	assert.Equal(t, uint64(200), end)
 }
