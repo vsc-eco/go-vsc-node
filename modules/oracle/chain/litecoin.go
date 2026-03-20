@@ -129,7 +129,7 @@ func (l *litecoinRelayer) ChainData(startHeight uint64, count uint64) ([]chainBl
 	}
 
 	blocks := make([]chainBlock, 0, stopHeight-startHeight)
-	for height := startHeight; height <= stopHeight; height++ {
+	for height := startHeight; height < stopHeight; height++ {
 		blockHash, err := client.GetBlockHash(int64(height))
 		if err != nil {
 			return nil, fmt.Errorf("failed to get block hash at height %d: %w", height, err)

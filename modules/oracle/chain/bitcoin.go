@@ -125,7 +125,7 @@ func (b *bitcoinRelayer) ChainData(
 
 	// get all blocks from startHeight to stopHeight
 	blocks := make([]chainBlock, 0, stopHeight-startHeight)
-	for blockHeight := startHeight; blockHeight <= stopHeight; blockHeight++ {
+	for blockHeight := startHeight; blockHeight < stopHeight; blockHeight++ {
 		blockHash, err := btcdClient.GetBlockHash(int64(blockHeight))
 		if err != nil {
 			return nil, fmt.Errorf(

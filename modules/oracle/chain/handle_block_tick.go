@@ -112,6 +112,10 @@ func (o *ChainOracle) processChainRelay(
 	}
 
 	txCid := signableBlock.Cid()
+	o.logger.Debug("producer computed cid",
+		"symbol", chainStatus.symbol,
+		"cid", txCid.String(),
+	)
 
 	// Get the current election to set up the BLS circuit
 	electionResult, err := o.electionDb.GetElectionByHeight(signal.BlockHeight)
