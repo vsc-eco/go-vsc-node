@@ -154,7 +154,9 @@ func main() {
 		hash, status, err := bot.Chain.Client.GetBlockHashAtHeight(blockHeight)
 		if status == http.StatusNotFound {
 			bot.L.Info("no new block")
-			// At head — sleep before checking again
+			// At head — still run unmap/confirmations, then sleep before checking again
+			bot.HandleUnmap()
+			bot.HandleConfirmations()
 			time.Sleep(chainCfg.SleepInterval)
 			cancel()
 			continue

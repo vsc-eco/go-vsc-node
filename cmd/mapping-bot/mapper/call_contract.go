@@ -45,7 +45,7 @@ func (b *Bot) callContract(
 		ContractId: b.BotConfig.ContractId(),
 		Action:     action,
 		Payload:    contractInput,
-		RcLimit:    1000,
+		RcLimit:    10000,
 		Intents:    []contracts.Intent{},
 	}
 
