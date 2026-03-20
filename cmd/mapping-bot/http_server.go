@@ -40,13 +40,14 @@ func mapBotHttpServer(
 }
 
 type healthResponse struct {
-	Status         string   `json:"status"`
-	BlockHeight    uint64   `json:"blockHeight"`
-	LastBlockAt    *string  `json:"lastBlockAt"`
-	StaleSecs      *int64   `json:"staleSecs,omitempty"`
-	PendingSentTxs int      `json:"pendingSentTxs"`            // txs broadcast but not yet confirmed
-	PendingUnsigned int     `json:"pendingUnsigned,omitempty"` // txs awaiting TSS signatures
-	Issues         []string `json:"issues,omitempty"`          // specific problems detected
+	Status          string            `json:"status"`
+	BlockHeight     uint64            `json:"blockHeight"`
+	LastBlockAt     *string           `json:"lastBlockAt"`
+	StaleSecs       *int64            `json:"staleSecs,omitempty"`
+	PendingSentTxs  int               `json:"pendingSentTxs"`            // txs broadcast but not yet confirmed
+	PendingUnsigned int               `json:"pendingUnsigned,omitempty"` // txs awaiting TSS signatures
+	FailedVscTxs    []mapper.FailedTx `json:"failedVscTxs,omitempty"`   // VSC txs that reached FAILED status
+	Issues          []string          `json:"issues,omitempty"`          // specific problems detected
 }
 
 func healthHandler(bot *mapper.Bot) http.HandlerFunc {
@@ -90,6 +91,13 @@ func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 		// Flag unsigned txs (waiting on TSS)
 		if resp.PendingUnsigned > 0 {
 			issues = append(issues, fmt.Sprintf("%d sig hashes awaiting TSS signatures", resp.PendingUnsigned))
+		}
+
+		// Flag failed VSC transactions
+		failedTxs := bot.FailedTxs()
+		if len(failedTxs) > 0 {
+			resp.FailedVscTxs = failedTxs
+			issues = append(issues, fmt.Sprintf("%d VSC transaction(s) failed", len(failedTxs)))
 		}
 
 		if len(issues) > 0 {

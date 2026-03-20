@@ -3,6 +3,7 @@ package mapper
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 	"vsc-node/cmd/mapping-bot/chain"
@@ -22,7 +23,8 @@ type mockGraphQL struct {
 	lastHeight string
 	primaryKey []byte
 	backupKey  []byte
-	observedTx map[string]bool // key: "txid:vout"
+	observedTx map[string]bool   // key: "txid:vout"
+	txStatuses map[string]string // key: tx ID, value: status
 
 	// Track which methods were called and with what args.
 	calls []mockGQLCall
@@ -74,6 +76,17 @@ func (m *mockGraphQL) FetchObservedTx(ctx context.Context, txId string, vout int
 	return m.observedTx[key], nil
 }
 
+func (m *mockGraphQL) FetchTransactionStatus(ctx context.Context, txId string) (string, error) {
+	m.recordCall("FetchTransactionStatus", txId)
+	if m.txStatuses == nil {
+		return "", fmt.Errorf("transaction %s not found", txId)
+	}
+	if status, ok := m.txStatuses[txId]; ok {
+		return status, nil
+	}
+	return "", fmt.Errorf("transaction %s not found", txId)
+}
+
 // ---------------------------------------------------------------------------
 // mockContractCaller — satisfies ContractCaller
 // ---------------------------------------------------------------------------
@@ -89,11 +102,11 @@ type mockContractCaller struct {
 	err   error // optional error to return
 }
 
-func (m *mockContractCaller) CallContract(ctx context.Context, contractInput json.RawMessage, action string) error {
+func (m *mockContractCaller) CallContract(ctx context.Context, contractInput json.RawMessage, action string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, contractCall{Action: action, Payload: contractInput})
-	return m.err
+	return "mock-tx-id", m.err
 }
 
 func (m *mockContractCaller) getCalls() []contractCall {

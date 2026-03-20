@@ -28,12 +28,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"math"
 	"os"
 	"strconv"
 	"strings"
 	DataLayer "vsc-node/lib/datalayer"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
@@ -126,7 +126,7 @@ const lastHeightStateKey = "h"
 // chainRelay implementations contain chain-specific code.
 type ChainOracle struct {
 	ctx               context.Context
-	logger            *slog.Logger
+	logger            *vsclog.Logger
 	signatureChannels *signatureChannels
 	chainRelayers     map[string]chainRelay // symbol -> relayer instance
 	conf              common.IdentityConfig
@@ -141,7 +141,7 @@ type ChainOracle struct {
 
 func New(
 	ctx context.Context,
-	oracleLogger *slog.Logger,
+	oracleLogger *vsclog.Logger,
 	conf common.IdentityConfig,
 	sconf systemconfig.SystemConfig,
 	hiveConf streamer.HiveConfig,

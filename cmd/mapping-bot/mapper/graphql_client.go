@@ -1,11 +1,13 @@
 package mapper
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
@@ -186,6 +188,62 @@ func (b *Bot) FetchSignatures(
 	}
 
 	return out, nil
+}
+
+// FetchTransactionStatus queries the VSC node for a transaction's current status
+// using a raw GraphQL request (the hasura client doesn't handle input types well).
+func (b *Bot) FetchTransactionStatus(ctx context.Context, txId string) (string, error) {
+	gqlQuery := `query FindTransaction($filterOptions: TransactionFilter) {
+		findTransaction(filterOptions: $filterOptions) {
+			status
+		}
+	}`
+
+	reqBody, err := json.Marshal(map[string]any{
+		"query": gqlQuery,
+		"variables": map[string]any{
+			"filterOptions": map[string]any{
+				"byId": txId,
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal graphql request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.GqlURL, bytes.NewReader(reqBody))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to query transaction status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Data struct {
+			FindTransaction []struct {
+				Status string `json:"status"`
+			} `json:"findTransaction"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+	if len(result.Errors) > 0 {
+		return "", fmt.Errorf("graphql error: %s", result.Errors[0].Message)
+	}
+	if len(result.Data.FindTransaction) == 0 {
+		return "", fmt.Errorf("transaction %s not found", txId)
+	}
+
+	return result.Data.FindTransaction[0].Status, nil
 }
 
 // FetchPublicKeys fetches the primary and backup public keys from contract state.

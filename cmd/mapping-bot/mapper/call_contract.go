@@ -26,7 +26,7 @@ func (b *Bot) callContract(
 	ctx context.Context,
 	contractInput json.RawMessage,
 	action string,
-) error {
+) (string, error) {
 	username := b.IdentityConfig.Get().HiveUsername
 	hiveRpcClient := hivego.NewHiveRpc(b.HiveConfig.Get().HiveURIs)
 	hiveRpcClient.ChainID = b.SystemConfig.HiveChainId()
@@ -61,7 +61,7 @@ func (b *Bot) callContract(
 
 	txJson, err := json.Marshal(wrapper)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	b.L.Info("creating tx", "json", txJson)
@@ -72,15 +72,15 @@ func (b *Bot) callContract(
 	hiveCreator.PopulateSigningProps(&tx, nil)
 	sig, err := hiveCreator.Sign(tx)
 	if err != nil {
-		return fmt.Errorf("error creating signature: %w", err)
+		return "", fmt.Errorf("error creating signature: %w", err)
 	}
 
 	tx.AddSig(sig)
 	txId, err := hiveCreator.Broadcast(tx)
 	if err != nil {
-		return fmt.Errorf("error broadcasting tx: %w", err)
+		return "", fmt.Errorf("error broadcasting tx: %w", err)
 	}
 
 	b.L.Info("tx broadcast", "id", txId)
-	return nil
+	return txId, nil
 }

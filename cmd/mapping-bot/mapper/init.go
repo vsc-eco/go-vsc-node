@@ -3,9 +3,11 @@ package mapper
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
+	"sync"
 	"sync/atomic"
 	"time"
 	"vsc-node/cmd/mapping-bot/chain"
@@ -65,8 +67,35 @@ type Bot struct {
 	StateDB StateStore
 	AddrDB  AddressStore
 
+	GqlURL string // GraphQL endpoint URL for raw queries
+
 	lastBlockHeight atomic.Uint64
 	lastBlockAt     atomic.Int64 // Unix nanoseconds; 0 means not yet set
+
+	failedTxsMu sync.Mutex
+	failedTxs   []FailedTx // VSC transactions that reached FAILED status
+}
+
+// FailedTx records a VSC transaction that reached the FAILED status.
+type FailedTx struct {
+	TxId   string    `json:"txId"`
+	Action string    `json:"action"`
+	At     time.Time `json:"at"`
+}
+
+func (b *Bot) recordFailedTx(txId, action string) {
+	b.failedTxsMu.Lock()
+	defer b.failedTxsMu.Unlock()
+	b.failedTxs = append(b.failedTxs, FailedTx{TxId: txId, Action: action, At: time.Now()})
+}
+
+// FailedTxs returns a snapshot of VSC transactions that reached FAILED status.
+func (b *Bot) FailedTxs() []FailedTx {
+	b.failedTxsMu.Lock()
+	defer b.failedTxsMu.Unlock()
+	out := make([]FailedTx, len(b.failedTxs))
+	copy(out, b.failedTxs)
+	return out
 }
 
 // gql returns the GraphQLFetcher to use — the override if set, otherwise the Bot itself.
@@ -105,7 +134,7 @@ func (b *Bot) addrDB() AddressStore {
 // botContractCaller wraps the Bot's callContract method to satisfy ContractCaller.
 type botContractCaller struct{ b *Bot }
 
-func (c *botContractCaller) CallContract(ctx context.Context, contractInput json.RawMessage, action string) error {
+func (c *botContractCaller) CallContract(ctx context.Context, contractInput json.RawMessage, action string) (string, error) {
 	return c.b.callContract(ctx, contractInput, action)
 }
 
@@ -124,25 +153,73 @@ func (b *Bot) LastBlock() (height uint64, at time.Time) {
 	return
 }
 
+// ErrTxFailed is returned when a VSC transaction reaches the FAILED status.
+var ErrTxFailed = fmt.Errorf("VSC transaction failed")
+
 // callWithRetry retries a contract call up to maxAttempts times with exponential backoff.
+// After a successful broadcast it polls the VSC node until the transaction reaches
+// a terminal status (CONFIRMED or FAILED).
 func (b *Bot) callWithRetry(ctx context.Context, payload json.RawMessage, action string, maxAttempts int) error {
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		lastErr = b.caller().CallContract(ctx, payload, action)
-		if lastErr == nil {
-			return nil
-		}
-		if attempt < maxAttempts {
-			backoff := time.Duration(attempt) * 2 * time.Second
-			b.L.Debug("contract call failed, retrying", "action", action, "attempt", attempt, "backoff", backoff, "error", lastErr)
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return ctx.Err()
+		txId, err := b.caller().CallContract(ctx, payload, action)
+		if err != nil {
+			lastErr = err
+			if attempt < maxAttempts {
+				backoff := time.Duration(attempt) * 2 * time.Second
+				b.L.Debug("contract call failed, retrying", "action", action, "attempt", attempt, "backoff", backoff, "error", err)
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 			}
+			continue
 		}
+
+		// Broadcast succeeded — poll for terminal status.
+		status, err := b.awaitTxStatus(ctx, txId, action)
+		if err != nil {
+			return fmt.Errorf("error polling tx %s status: %w", txId, err)
+		}
+		if status == "FAILED" {
+			b.L.Warn("VSC transaction failed", "action", action, "txId", txId)
+			b.recordFailedTx(txId, action)
+			return fmt.Errorf("%w: action=%s txId=%s", ErrTxFailed, action, txId)
+		}
+		b.L.Info("VSC transaction confirmed", "action", action, "txId", txId, "status", status)
+		return nil
 	}
 	return lastErr
+}
+
+// awaitTxStatus polls findTransaction until the tx reaches a terminal status
+// (CONFIRMED, PROCESSED, or FAILED) or the context is cancelled.
+func (b *Bot) awaitTxStatus(ctx context.Context, txId string, action string) (string, error) {
+	const pollInterval = 3 * time.Second
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(pollInterval):
+		}
+
+		status, err := b.gql().FetchTransactionStatus(ctx, txId)
+		if err != nil {
+			// Transaction may not be indexed yet — keep polling.
+			b.L.Debug("tx status not available yet", "action", action, "txId", txId, "error", err)
+			continue
+		}
+
+		b.L.Debug("polled tx status", "action", action, "txId", txId, "status", status)
+
+		switch status {
+		case "CONFIRMED", "PROCESSED", "FAILED":
+			return status, nil
+		}
+		// INCLUDED / UNCONFIRMED — keep polling.
+	}
 }
 
 // postTxWithRetry retries a transaction broadcast up to maxAttempts times with exponential backoff.
@@ -171,7 +248,8 @@ func NewBot(
 	hiveConfig streamer.HiveConfig,
 	systemConfig systemconfig.SystemConfig,
 ) (*Bot, error) {
-	gqlClient := graphql.NewClient(mappingBotConfig.Get().ConnectedGraphQLAddr, http.DefaultClient)
+	gqlURL := mappingBotConfig.Get().ConnectedGraphQLAddr
+	gqlClient := graphql.NewClient(gqlURL, http.DefaultClient)
 
 	return &Bot{
 		Db:             db,
@@ -183,5 +261,6 @@ func NewBot(
 		IdentityConfig: identityConfig,
 		HiveConfig:     hiveConfig,
 		SystemConfig:   systemConfig,
+		GqlURL:         gqlURL,
 	}, nil
 }

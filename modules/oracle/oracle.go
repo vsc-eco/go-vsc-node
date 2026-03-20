@@ -5,10 +5,9 @@ import (
 	ed25519Std "crypto/ed25519"
 	"errors"
 	"log"
-	"log/slog"
-	"os"
 	"time"
 	DataLayer "vsc-node/lib/datalayer"
+	"vsc-node/lib/vsclog"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -51,7 +50,7 @@ var (
 type Oracle struct {
 	ctx          context.Context
 	cancelFunc   context.CancelFunc
-	logger       *slog.Logger
+	logger       *vsclog.Logger
 	p2pServer    *libp2p.P2PServer
 	pubSubSrv    libp2p.PubSubService[p2p.Msg]
 	conf         common.IdentityConfig
@@ -80,18 +79,7 @@ func New(
 	oracleConf OracleConfig,
 	hiveConf streamer.HiveConfig,
 ) *Oracle {
-	logLevel := slog.LevelInfo
-	if os.Getenv("DEBUG") == "1" {
-		logLevel = slog.LevelDebug
-	}
-
-	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel,
-	})
-
-	logger := slog.New(logHandler).
-		With("service", "oracle").
-		With("id", conf.Get().HiveUsername)
+	logger := vsclog.Module("oracle").With("id", conf.Get().HiveUsername)
 
 	ctx, cancel := context.WithCancel(context.Background())
 

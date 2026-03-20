@@ -15,11 +15,15 @@ type GraphQLFetcher interface {
 	FetchLastHeight(ctx context.Context) (string, error)
 	FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error)
 	FetchObservedTx(ctx context.Context, txId string, vout int) (bool, error)
+	// FetchTransactionStatus queries the VSC node for the status of a transaction
+	// by its Hive tx ID. Returns the status string (e.g. "INCLUDED", "CONFIRMED", "FAILED")
+	// or an error if the transaction is not found or the query fails.
+	FetchTransactionStatus(ctx context.Context, txId string) (string, error)
 }
 
 // ContractCaller abstracts Hive transaction broadcasting for contract calls.
 type ContractCaller interface {
-	CallContract(ctx context.Context, contractInput json.RawMessage, action string) error
+	CallContract(ctx context.Context, contractInput json.RawMessage, action string) (string, error)
 }
 
 // StateStore abstracts the database.StateStore operations used by Bot methods.
