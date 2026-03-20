@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	systemconfig "vsc-node/modules/common/system-config"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
@@ -39,8 +40,12 @@ type btcChainData struct {
 }
 
 // Init implements chainRelay.
-func (b *bitcoinRelayer) Init() error {
-	b.validityThreshold = 3
+func (b *bitcoinRelayer) Init(sconf systemconfig.SystemConfig) error {
+	if sconf.OnTestnet() {
+		b.validityThreshold = 0
+	} else {
+		b.validityThreshold = 2
+	}
 	return nil
 }
 

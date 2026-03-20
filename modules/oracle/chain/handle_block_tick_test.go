@@ -103,7 +103,7 @@ func TestMakeTransactionPayload_ETH(t *testing.T) {
 }
 
 func TestMakeTransaction(t *testing.T) {
-	tx := makeTransaction("vsc1contract", `["aabb","ccdd"]`, "BTC", "vsc-mocknet")
+	tx := makeTransaction("vsc1contract", `["aabb","ccdd"]`, "BTC", "vsc-mocknet", 0)
 
 	assert.Equal(t, 1, len(tx.Ops))
 	assert.Equal(t, "call", tx.Ops[0].Type)
@@ -112,13 +112,13 @@ func TestMakeTransaction(t *testing.T) {
 }
 
 func TestMakeTransaction_CallerFormat(t *testing.T) {
-	tx := makeTransaction("vsc1x", `["data"]`, "BTC", "vsc-mocknet")
+	tx := makeTransaction("vsc1x", `["data"]`, "BTC", "vsc-mocknet", 0)
 
 	// The caller should be lowercase oracle DID
 	assert.Contains(t, tx.Ops[0].RequiredAuths.Active, "did:vsc:oracle:btc")
 }
 
 func TestMakeTransaction_DashSymbol(t *testing.T) {
-	tx := makeTransaction("vsc1y", `["data"]`, "DASH", "vsc-mocknet")
+	tx := makeTransaction("vsc1y", `["data"]`, "DASH", "vsc-mocknet", 0)
 	assert.Contains(t, tx.Ops[0].RequiredAuths.Active, "did:vsc:oracle:dash")
 }

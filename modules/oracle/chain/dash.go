@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	systemconfig "vsc-node/modules/common/system-config"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
@@ -53,7 +54,7 @@ type dashChainData struct {
 }
 
 // Init implements chainRelay.
-func (d *dashRelayer) Init() error {
+func (d *dashRelayer) Init(_ systemconfig.SystemConfig) error {
 	// DASH has ChainLocks for near-instant finality, so a lower
 	// validity threshold is sufficient compared to BTC.
 	d.validityThreshold = 1

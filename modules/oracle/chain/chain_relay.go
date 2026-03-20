@@ -59,7 +59,7 @@ var (
 // To add a new chain, implement this interface and register it via
 // RegisterChain() in an init() function.
 type chainRelay interface {
-	Init() error
+	Init(sconf systemconfig.SystemConfig) error
 	// Returns the ticker of the chain (e.g. "BTC", "DASH").
 	Symbol() string
 	// Returns the contract ID for this chain's mapping contract.
@@ -197,7 +197,7 @@ func (c *ChainOracle) Init() error {
 	for symbol, chainRelayer := range c.chainRelayers {
 
 		c.logger.Debug("initializing chain relay: " + symbol)
-		if err := chainRelayer.Init(); err != nil {
+		if err := chainRelayer.Init(c.sconf); err != nil {
 			return fmt.Errorf(
 				"failed to initialize chainrelayer %s: %w",
 				symbol, err,

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	systemconfig "vsc-node/modules/common/system-config"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
@@ -53,7 +54,7 @@ type ltcChainData struct {
 }
 
 // Init implements chainRelay.
-func (l *litecoinRelayer) Init() error {
+func (l *litecoinRelayer) Init(_ systemconfig.SystemConfig) error {
 	// LTC has ~2.5 min blocks, so 2 confirmations ≈ 5 min.
 	l.validityThreshold = 2
 	return nil

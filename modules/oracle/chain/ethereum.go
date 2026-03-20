@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"math/big"
 	"time"
+	systemconfig "vsc-node/modules/common/system-config"
 
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -59,7 +60,7 @@ type ethChainData struct {
 }
 
 // Init implements chainRelay.
-func (e *ethereumRelayer) Init() error {
+func (e *ethereumRelayer) Init(_ systemconfig.SystemConfig) error {
 	return nil
 }
 
