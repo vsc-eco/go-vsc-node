@@ -201,7 +201,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					k.DeprecatedHeight = int64(block.BlockNumber)
 				}
 				se.tssKeys.SetKey(k)
-				tssLog.Info("key deprecated", "keyId", k.Id, "expiryEpoch", k.ExpiryEpoch, "blockHeight", block.BlockNumber)
+				tssLog.Info(
+					"key deprecated",
+					"keyId",
+					k.Id,
+					"expiryEpoch",
+					k.ExpiryEpoch,
+					"blockHeight",
+					block.BlockNumber,
+				)
 			}
 		}
 	}
@@ -212,7 +220,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			for _, k := range retiring {
 				k.Status = tss_db.TssKeyRetired
 				se.tssKeys.SetKey(k)
-				tssLog.Info("key retired", "keyId", k.Id, "deprecatedHeight", k.DeprecatedHeight, "blockHeight", block.BlockNumber)
+				tssLog.Info(
+					"key retired",
+					"keyId",
+					k.Id,
+					"deprecatedHeight",
+					k.DeprecatedHeight,
+					"blockHeight",
+					block.BlockNumber,
+				)
 			}
 		}
 	}
@@ -275,7 +291,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			}
 
 			if Id == "vsc.fr_sync" && RequiredAuths[0] == se.sconf.GatewayWallet() {
-				log.Debug("vsc.fr_sync", opVal)
+				log.Debug("vsc.fr_sync", "opVal", opVal)
 
 				frSync := struct {
 					StakedAmount   int64 `json:"stake_amt"`
@@ -331,8 +347,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 				if err == nil {
 					se.LedgerSystem.IndexActions(actionUpdate, ledgerSystem.ExtraInfo{
-						block.BlockNumber,
-						tx.TransactionID,
+						BlockHeight: block.BlockNumber,
+						ActionId:    tx.TransactionID,
 					})
 				}
 
@@ -1064,7 +1080,14 @@ func (se *StateEngine) ExecuteBatch() {
 		rcSession := se.RcSystem.NewSession(ledgerSession)
 		// Pass the current temp outputs so calls within this slot see the
 		// latest in-memory state instead of the latest contract state
-		callSession := contract_session.NewCallSession(se.da, se.contractDb, se.contractState, se.tssKeys, lastBlockBh, se.TempOutputs)
+		callSession := contract_session.NewCallSession(
+			se.da,
+			se.contractDb,
+			se.contractState,
+			se.tssKeys,
+			lastBlockBh,
+			se.TempOutputs,
+		)
 
 		outputs := make([]ContractIdResult, 0)
 		ok := true
@@ -1112,7 +1135,17 @@ func (se *StateEngine) ExecuteBatch() {
 			}
 			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, callSession, payer)
 
-			log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
+			log.Debug(
+				"TRANSACTION STATUS",
+				"result",
+				result,
+				"ledger session",
+				ledgerSession,
+				"idx",
+				idx,
+				"type",
+				vscTx.Type(),
+			)
 			fmt.Println("RC Payer is", payer, vscTx.Type(), vscTx, result.RcUsed)
 
 			rcUsed := se.RcMap[payer] // don't crash if payer is not in RC map
@@ -1353,9 +1386,12 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord)
 
-		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(se.LedgerState.VirtualLedger[k], func(v ledgerSystem.LedgerUpdate) bool {
-			return v.Type == "deposit"
-		})
+		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(
+			se.LedgerState.VirtualLedger[k],
+			func(v ledgerSystem.LedgerUpdate) bool {
+				return v.Type == "deposit"
+			},
+		)
 	}
 }
 
