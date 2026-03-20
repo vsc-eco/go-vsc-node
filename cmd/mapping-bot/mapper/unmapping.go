@@ -8,12 +8,19 @@ import (
 	"fmt"
 	"os"
 	"time"
+	"vsc-node/cmd/mapping-bot/chain"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
 
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 )
+
+// ConfirmSpendParams is the payload for the confirmSpend contract action.
+type ConfirmSpendParams struct {
+	TxData  *VerificationRequest `json:"tx_data"`
+	Indices []uint32             `json:"indices"`
+}
 
 type HashMetadata struct {
 	TxId  string
@@ -68,49 +75,101 @@ func (b *Bot) HandleUnmap() {
 }
 
 // HandleConfirmations checks all sent transactions against the blockchain.
-// When a tx is confirmed, it transitions the DB state to "confirmed" and calls
-// the mapping contract's confirmSpend action to promote unconfirmed UTXOs.
+// When a tx is confirmed, it builds a merkle proof and calls the mapping
+// contract's confirmSpend action with a ConfirmSpendParams payload.
 func (b *Bot) HandleConfirmations() {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	sentTxIDs, err := b.stateDB().GetSentTransactionIDs(ctx)
+	sentTxs, err := b.stateDB().GetSentTransactions(ctx)
 	if err != nil {
 		b.L.Warn("failed to get sent transactions", "error", err)
 		return
 	}
-	if len(sentTxIDs) == 0 {
+	if len(sentTxs) == 0 {
 		return
 	}
 
-	for _, txId := range sentTxIDs {
-		confirmed, err := b.Chain.Client.GetTxStatus(txId)
+	for _, dbTx := range sentTxs {
+		txId := dbTx.TxID
+
+		details, err := b.Chain.Client.GetTxDetails(txId)
 		if err != nil {
-			b.L.Debug("failed to check tx status", "txId", txId, "error", err)
+			b.L.Debug("failed to check tx details", "txId", txId, "error", err)
 			continue
 		}
-		if !confirmed {
+		if !details.Confirmed {
 			continue
 		}
 
-		b.L.Info("tx confirmed on chain, calling confirmSpend", "txId", txId)
+		b.L.Info("tx confirmed on chain, building proof for confirmSpend", "txId", txId)
 
-		// Call confirmSpend on the mapping contract to promote unconfirmed UTXOs
-		payload := json.RawMessage(fmt.Sprintf(`{"tx_id":"%s"}`, txId))
+		payload, err := b.buildConfirmSpendPayload(ctx, dbTx, details)
+		if err != nil {
+			b.L.Warn("failed to build confirmSpend payload", "txId", txId, "error", err)
+			continue
+		}
+
 		if err := b.callWithRetry(ctx, payload, "confirmSpend", 3); err != nil {
 			b.L.Warn("confirmSpend failed after retries", "txId", txId, "error", err)
 			continue
 		}
 
-		// Transition to confirmed in local DB
-		err = b.stateDB().MarkTransactionConfirmed(ctx, txId)
-		if err != nil {
+		if err := b.stateDB().MarkTransactionConfirmed(ctx, txId); err != nil {
 			b.L.Warn("failed to mark tx confirmed in DB", "txId", txId, "error", err)
 			continue
 		}
 
 		b.L.Info("tx confirmed and confirmSpend called", "txId", txId)
 	}
+}
+
+// buildConfirmSpendPayload constructs the JSON-encoded ConfirmSpendParams for a confirmed BTC tx.
+// It fetches the raw block, builds a merkle proof, and collects the input indices
+// that were signed (i.e. the VSC-mapped UTXOs being spent).
+func (b *Bot) buildConfirmSpendPayload(
+	ctx context.Context,
+	dbTx database.Transaction,
+	details chain.TxConfirmationDetails,
+) ([]byte, error) {
+	rawBlock, err := b.Chain.Client.GetRawBlock(details.BlockHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch raw block %s: %w", details.BlockHash, err)
+	}
+
+	var msgBlock wire.MsgBlock
+	if err := msgBlock.Deserialize(bytes.NewReader(rawBlock)); err != nil {
+		return nil, fmt.Errorf("failed to deserialize block: %w", err)
+	}
+
+	merkleProofHex, err := generateMerkleProof(&msgBlock, int(details.TxIndex))
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate merkle proof: %w", err)
+	}
+
+	rawTxHex := hex.EncodeToString(dbTx.RawTx)
+
+	// Collect the input indices that correspond to VSC-mapped UTXOs.
+	indices := make([]uint32, 0, len(dbTx.Signatures))
+	seen := make(map[uint32]struct{})
+	for _, sig := range dbTx.Signatures {
+		idx := uint32(sig.Index)
+		if _, ok := seen[idx]; !ok {
+			seen[idx] = struct{}{}
+			indices = append(indices, idx)
+		}
+	}
+
+	params := ConfirmSpendParams{
+		TxData: &VerificationRequest{
+			BlockHeight:    details.BlockHeight,
+			RawTxHex:       rawTxHex,
+			MerkleProofHex: merkleProofHex,
+			TxIndex:        uint64(details.TxIndex),
+		},
+		Indices: indices,
+	}
+	return json.Marshal(params)
 }
 
 func (b *Bot) ProcessTxSpends(

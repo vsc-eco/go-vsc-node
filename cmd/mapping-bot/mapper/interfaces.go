@@ -42,6 +42,7 @@ type StateStore interface {
 	MarkTransactionSent(ctx context.Context, txID string) error
 	MarkTransactionConfirmed(ctx context.Context, txID string) error
 	GetSentTransactionIDs(ctx context.Context) ([]string, error)
+	GetSentTransactions(ctx context.Context) ([]database.Transaction, error)
 }
 
 // AddressStore abstracts the database.AddressStore operations used by Bot methods.

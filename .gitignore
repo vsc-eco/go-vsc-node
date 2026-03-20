@@ -13,5 +13,4 @@ cmd/mapping-bot/*datastore
 modules/gql/gqlgen/generated.go
 modules/gql/gqlgen/models.go
 vsc-node
-mapping-bot
 contract-deployer

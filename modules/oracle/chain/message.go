@@ -27,6 +27,7 @@ type chainOracleMessage struct {
 type chainRelayRequest struct {
 	ContractId string `json:"contract_id"`
 	NetId      string `json:"net_id"`
+	Nonce      uint64 `json:"nonce"`
 }
 
 // chainRelayResponse is the payload for a signatureResponse message.

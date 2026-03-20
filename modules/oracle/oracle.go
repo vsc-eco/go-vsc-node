@@ -14,6 +14,7 @@ import (
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/witnesses"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
 	"vsc-node/modules/hive/streamer"
@@ -78,13 +79,14 @@ func New(
 	txPool *transactionpool.TransactionPool,
 	oracleConf OracleConfig,
 	hiveConf streamer.HiveConfig,
+	nonceDb nonces.Nonces,
 ) *Oracle {
 	logger := vsclog.Module("oracle").With("id", conf.Get().HiveUsername)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// txCrafter will be created in Init() after identity config is loaded
-	chainRelayer := chain.New(ctx, logger, conf, sconf, hiveConf, electionDb, contractState, da, nil, txPool)
+	chainRelayer := chain.New(ctx, logger, conf, sconf, hiveConf, electionDb, contractState, da, nil, txPool, nonceDb)
 
 	return &Oracle{
 		ctx:          ctx,

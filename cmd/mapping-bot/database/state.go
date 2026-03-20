@@ -298,6 +298,21 @@ func (s *StateStore) GetAllTransactions(ctx context.Context) ([]string, error) {
 	return txIDs, nil
 }
 
+// GetSentTransactions returns all transactions in the "sent" state, including raw tx data.
+func (s *StateStore) GetSentTransactions(ctx context.Context) ([]Transaction, error) {
+	cursor, err := s.txCollection.Find(ctx, bson.M{"state": TxStateSent})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sent transactions: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var results []Transaction
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("failed to decode sent transactions: %w", err)
+	}
+	return results, nil
+}
+
 // GetSentTransactionIDs returns the IDs of all transactions in the "sent" state
 func (s *StateStore) GetSentTransactionIDs(ctx context.Context) ([]string, error) {
 	cursor, err := s.txCollection.Find(ctx, bson.M{"state": TxStateSent})

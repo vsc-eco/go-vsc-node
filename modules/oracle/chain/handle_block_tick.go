@@ -24,6 +24,7 @@ func makeTransaction(
 	payload string,
 	symbol string,
 	txNetId string,
+	nonce uint64,
 ) transactionpool.VSCTransaction {
 	op := transactionpool.VscContractCall{
 		ContractId: contractId,
@@ -36,9 +37,10 @@ func makeTransaction(
 	}
 	vOp, _ := op.SerializeVSC()
 	return transactionpool.VSCTransaction{
-		Ops:   []transactionpool.VSCTransactionOp{vOp},
-		Nonce: 0,
-		NetId: txNetId,
+		Ops:     []transactionpool.VSCTransactionOp{vOp},
+		Nonce:   nonce,
+		NetId:   txNetId,
+		RcLimit: uint64(op.RcLimit),
 	}
 }
 
@@ -101,7 +103,15 @@ func (o *ChainOracle) processChainRelay(
 		return
 	}
 
-	tx := makeTransaction(chainStatus.contractId, string(payloadJson), chainStatus.symbol, o.sconf.NetId())
+	oracleDid := "did:vsc:oracle:" + strings.ToLower(chainStatus.symbol)
+	var nonce uint64
+	if o.nonceDb != nil {
+		if nonceRecord, err := o.nonceDb.GetNonce(oracleDid); err == nil {
+			nonce = nonceRecord.Nonce
+		}
+	}
+
+	tx := makeTransaction(chainStatus.contractId, string(payloadJson), chainStatus.symbol, o.sconf.NetId(), nonce)
 
 	// Hash the transaction to get the CID that witnesses will sign
 	signableBlock, err := tx.ToSignableBlock()
@@ -203,6 +213,7 @@ func (o *ChainOracle) processChainRelay(
 	request := chainRelayRequest{
 		ContractId: chainStatus.contractId,
 		NetId:      o.sconf.NetId(),
+		Nonce:      nonce,
 	}
 
 	requestMsg, err := makeChainOracleMessage(signatureRequest, sessionID, request)

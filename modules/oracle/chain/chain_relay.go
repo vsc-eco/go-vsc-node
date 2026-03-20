@@ -39,6 +39,7 @@ import (
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/hive/streamer"
 	transactionpool "vsc-node/modules/transaction-pool"
 
@@ -137,6 +138,7 @@ type ChainOracle struct {
 	da                *DataLayer.DataLayer
 	txCrafter         *transactionpool.TransactionCrafter
 	txPool            *transactionpool.TransactionPool
+	nonceDb           nonces.Nonces
 }
 
 func New(
@@ -150,6 +152,7 @@ func New(
 	da *DataLayer.DataLayer,
 	txCrafter *transactionpool.TransactionCrafter,
 	txPool *transactionpool.TransactionPool,
+	nonceDb nonces.Nonces,
 ) *ChainOracle {
 	logger := oracleLogger.With("sub-service", "chain-relay")
 
@@ -172,6 +175,7 @@ func New(
 		da:                da,
 		txCrafter:         txCrafter,
 		txPool:            txPool,
+		nonceDb:           nonceDb,
 	}
 }
 

@@ -290,6 +290,18 @@ func (m *mockStateStore) GetSentTransactionIDs(ctx context.Context) ([]string, e
 	return ids, nil
 }
 
+func (m *mockStateStore) GetSentTransactions(ctx context.Context) ([]database.Transaction, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []database.Transaction
+	for _, tx := range m.txs {
+		if tx.State == database.TxStateSent {
+			out = append(out, *tx)
+		}
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // mockAddressStore — in-memory satisfying AddressStore
 // ---------------------------------------------------------------------------
@@ -336,6 +348,7 @@ type mockChainClient struct {
 	blockHashes   map[uint64]string
 	rawBlocks     map[string][]byte
 	txStatuses    map[string]bool // txid -> confirmed
+	txDetails     map[string]chain.TxConfirmationDetails
 	postTxErr     error
 }
 
@@ -344,6 +357,7 @@ func newMockChainClient() *mockChainClient {
 		blockHashes: make(map[uint64]string),
 		rawBlocks:   make(map[string][]byte),
 		txStatuses:  make(map[string]bool),
+		txDetails:   make(map[string]chain.TxConfirmationDetails),
 	}
 }
 
@@ -388,5 +402,11 @@ func (m *mockChainClient) GetTxStatus(txid string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.txStatuses[txid], nil
+}
+
+func (m *mockChainClient) GetTxDetails(txid string) (chain.TxConfirmationDetails, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.txDetails[txid], nil
 }
 

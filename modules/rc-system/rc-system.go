@@ -98,6 +98,10 @@ func (rss *rcSession) CanConsume(account string, blockHeight uint64, rcAmt int64
 		//Give the user 5 HBD worth of RCs by default
 		//If user is Hive account
 		balAmt = balAmt + 5_000
+	} else if strings.HasPrefix(account, "did:vsc:oracle:") {
+		// Oracle DIDs are consensus-validated (2/3 BLS threshold) system accounts
+		// with no on-chain HBD balance, so grant them a large free RC allowance.
+		balAmt = balAmt + 5_000_000
 	}
 
 	frozeAmt := rss.rcSystem.GetFrozenAmt(account, blockHeight)

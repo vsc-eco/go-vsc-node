@@ -22,8 +22,20 @@ type BlockchainClient interface {
 	GetAddressTxs(address string) ([]TxHistoryEntry, error)
 	// GetTxStatus checks whether a transaction is confirmed.
 	GetTxStatus(txid string) (bool, error)
+	// GetTxDetails returns confirmation details for a transaction.
+	// Returns a zero-value TxConfirmationDetails and no error if the tx is not yet confirmed.
+	GetTxDetails(txid string) (TxConfirmationDetails, error)
 	// PostTx broadcasts a raw signed transaction.
 	PostTx(rawTx string) error
+}
+
+// TxConfirmationDetails holds the on-chain position of a confirmed transaction.
+type TxConfirmationDetails struct {
+	Confirmed   bool
+	BlockHeight uint64
+	BlockHash   string
+	// TxIndex is the position of the transaction within the block (0-based).
+	TxIndex uint32
 }
 
 // TxHistoryEntry is a chain-agnostic representation of a historical transaction

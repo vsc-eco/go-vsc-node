@@ -70,7 +70,7 @@ func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (*chainRelayRespo
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	tx := makeTransaction(request.ContractId, string(payloadJson), chainSymbol, request.NetId)
+	tx := makeTransaction(request.ContractId, string(payloadJson), chainSymbol, request.NetId, request.Nonce)
 
 	// Hash the transaction to get the CID (must match what the producer computed)
 	signableBlock, err := tx.ToSignableBlock()

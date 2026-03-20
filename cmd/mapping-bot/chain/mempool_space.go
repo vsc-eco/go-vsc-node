@@ -132,23 +132,62 @@ func (m *MempoolSpaceClient) GetAddressTxs(address string) ([]TxHistoryEntry, er
 }
 
 func (m *MempoolSpaceClient) GetTxStatus(txid string) (bool, error) {
-	url := fmt.Sprintf("%s/tx/%s/status", m.baseURL, txid)
-	resp, err := m.client.Get(url)
+	details, err := m.GetTxDetails(txid)
 	if err != nil {
 		return false, err
 	}
+	return details.Confirmed, nil
+}
+
+func (m *MempoolSpaceClient) GetTxDetails(txid string) (TxConfirmationDetails, error) {
+	url := fmt.Sprintf("%s/tx/%s/status", m.baseURL, txid)
+	resp, err := m.client.Get(url)
+	if err != nil {
+		return TxConfirmationDetails{}, err
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return false, nil
+		return TxConfirmationDetails{}, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("API returned status %d for tx %s", resp.StatusCode, txid)
+		return TxConfirmationDetails{}, fmt.Errorf("API returned status %d for tx %s", resp.StatusCode, txid)
 	}
 	var status mempoolTxStatus
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		return false, fmt.Errorf("error decoding tx status: %w", err)
+		return TxConfirmationDetails{}, fmt.Errorf("error decoding tx status: %w", err)
 	}
-	return status.Confirmed, nil
+	if !status.Confirmed {
+		return TxConfirmationDetails{}, nil
+	}
+
+	// Fetch the ordered txid list for this block to find the tx's position.
+	txidsURL := fmt.Sprintf("%s/block/%s/txids", m.baseURL, status.BlockHash)
+	txidsResp, err := m.client.Get(txidsURL)
+	if err != nil {
+		return TxConfirmationDetails{}, fmt.Errorf("failed to fetch block txids: %w", err)
+	}
+	defer txidsResp.Body.Close()
+	if txidsResp.StatusCode != http.StatusOK {
+		return TxConfirmationDetails{}, fmt.Errorf("block txids API returned status %d", txidsResp.StatusCode)
+	}
+	var txids []string
+	if err := json.NewDecoder(txidsResp.Body).Decode(&txids); err != nil {
+		return TxConfirmationDetails{}, fmt.Errorf("error decoding block txids: %w", err)
+	}
+	txIndex := uint32(0)
+	for i, id := range txids {
+		if id == txid {
+			txIndex = uint32(i)
+			break
+		}
+	}
+
+	return TxConfirmationDetails{
+		Confirmed:   true,
+		BlockHeight: status.BlockHeight,
+		BlockHash:   status.BlockHash,
+		TxIndex:     txIndex,
+	}, nil
 }
 
 func (m *MempoolSpaceClient) PostTx(rawTx string) error {
