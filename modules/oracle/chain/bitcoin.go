@@ -42,7 +42,7 @@ type btcChainData struct {
 // Init implements chainRelay.
 func (b *bitcoinRelayer) Init(sconf systemconfig.SystemConfig) error {
 	if sconf.OnTestnet() {
-		b.validityThreshold = 0
+		b.validityThreshold = 1
 	} else {
 		b.validityThreshold = 2
 	}
