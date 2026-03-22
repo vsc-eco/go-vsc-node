@@ -154,6 +154,10 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 		return balRecord.HBD_SAVINGS + stakeBal
 	} else if asset == "hive_consensus" {
 		return balRecord.HIVE_CONSENSUS
+	} else if asset == "hive_hp" {
+		return balRecord.HIVE_HP
+	} else if asset == "pending_hp" {
+		return balRecord.PENDING_HP
 	} else {
 		return 0
 	}

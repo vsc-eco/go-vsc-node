@@ -107,7 +107,7 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 			fmt.Println("Multisig: Running Actions")
 			go ms.TickActions(bh)
 		}
-		if bh&SYNC_INTERVAL == 0 {
+		if bh%SYNC_INTERVAL == 0 {
 			go ms.TickSyncFr(bh)
 		}
 	}
@@ -365,7 +365,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 		return signingPackage{}, errors.New("invalid slot")
 	}
 	actionFilter := []string{
-		"withdraw", "stake", "unstake",
+		"withdraw", "stake", "unstake", "hp_stake", "hp_unstake",
 	}
 	actions, err := ms.ledgerActions.GetPendingActions(bh, actionFilter...)
 
@@ -416,6 +416,131 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 		if action.Type == "unstake" {
 			unstakeBal += uint64(action.Amount)
 			unstakeTxCount += 1
+		}
+
+		if action.Type == "hp_stake" {
+			// HP stake: Full per-node account lifecycle
+			// Steps: Create account → Transfer HIVE → Power up → Set proxy
+			// Delegation is deferred to a separate action after L1 confirms power-up
+			// (requires HIVE→VESTS conversion from dynamic_global_properties)
+			hiveAccount := ""
+			if action.Params != nil {
+				if ha, ok := action.Params["hive_account"].(string); ok {
+					hiveAccount = ha
+				}
+			}
+			if hiveAccount == "" || len(hiveAccount) < 3 {
+				continue
+			}
+
+			nodeAccount := deriveNodeAccountName(hiveAccount)
+			amt := hive.AmountToString(action.Amount)
+			gatewayWallet := ms.sconf.GatewayWallet()
+
+			// Step 1: Create per-node account with gateway as sole authority
+			// IMPORTANT: On Hive, if ANY operation in a transaction fails, the ENTIRE
+			// transaction is rejected atomically. So we must check if the account exists
+			// before including AccountCreate. If it already exists (re-opt-in after opt-out),
+			// skip account creation — the account is already controlled by the gateway.
+			accountExists := false
+			existingAccounts, err := ms.hiveClient.GetAccount([]string{nodeAccount})
+			if err == nil && len(existingAccounts) > 0 {
+				accountExists = true
+			}
+
+			if !accountExists {
+				gatewayAuth := hivego.Auths{WeightThreshold: 1, AccountAuths: [][2]interface{}{{gatewayWallet, 1}}}
+				createOp := ms.hiveCreator.AccountCreate(
+					"3.000 HIVE",
+					gatewayWallet,
+					nodeAccount,
+					gatewayAuth, // owner
+					gatewayAuth, // active
+					gatewayAuth, // posting
+					getMemoKeyForNodeAccount(ms),
+					`{"hp_node":"`+hiveAccount+`"}`,
+				)
+				ops = append(ops, createOp)
+			}
+
+			// Step 2: Transfer full HIVE amount from gateway to per-node account
+			transferOp := ms.hiveCreator.Transfer(
+				gatewayWallet,
+				nodeAccount,
+				amt,
+				"HIVE",
+				"HP staking for "+hiveAccount,
+			)
+			ops = append(ops, transferOp)
+
+			// Step 3: Power up 70% — keep 30% as liquid buffer on per-node account
+			// The buffer allows the node account to pay for future L1 transactions
+			// (undelegation, power-down, proxy changes) without needing additional funds.
+			powerUpAmt := action.Amount * 70 / 100
+			powerUpAmtStr := hive.AmountToString(powerUpAmt)
+			powerUpOp := ms.hiveCreator.TransferToVesting(
+				nodeAccount,
+				nodeAccount,
+				powerUpAmtStr+" HIVE",
+			)
+			ops = append(ops, powerUpOp)
+
+			// Step 4: Delegate HP back to validator for curation rewards
+			// DEFERRED: Delegation requires the VESTS amount, which depends on the current
+			// HIVE/VESTS ratio from dynamic_global_properties on L1 at the time of power-up.
+			// This must be a SEPARATE follow-up action ("hp_delegate") triggered after the
+			// power-up confirms on L1 and the exact VESTS amount is known.
+			// TODO: Implement "hp_delegate" action type that:
+			//   1. Reads the per-node account's vesting_shares from L1
+			//   2. Calls DelegateVestingShares(nodeAccount, hiveAccount, vestingShares)
+
+			// Step 5: Set governance proxy to validator (witness + DHF voting)
+			proxyOp := ms.hiveCreator.AccountWitnessProxy(
+				nodeAccount,
+				hiveAccount,
+			)
+			ops = append(ops, proxyOp)
+		}
+
+		if action.Type == "hp_unstake" {
+			// HP unstake: Begin the ~14 week exit process
+			// Steps: Undelegate → Remove proxy
+			// Power-down (WithdrawVesting) is deferred to a follow-up action after
+			// the 5-day undelegation cooldown completes.
+			hiveAccount := ""
+			if action.Params != nil {
+				if ha, ok := action.Params["hive_account"].(string); ok {
+					hiveAccount = ha
+				}
+			}
+			if hiveAccount == "" || len(hiveAccount) < 3 {
+				continue
+			}
+
+			nodeAccount := deriveNodeAccountName(hiveAccount)
+
+			// Step 1: Undelegate — set delegation to 0 VESTS (triggers 5-day cooldown on Hive)
+			undelegateOp := ms.hiveCreator.DelegateVestingShares(
+				nodeAccount,
+				hiveAccount,
+				"0.000000 VESTS",
+			)
+			ops = append(ops, undelegateOp)
+
+			// Step 2: Remove governance proxy
+			removeProxyOp := ms.hiveCreator.AccountWitnessProxy(
+				nodeAccount,
+				"",
+			)
+			ops = append(ops, removeProxyOp)
+
+			// Step 3: Power-down (WithdrawVesting) — DEFERRED
+			// Must be triggered after the 5-day undelegation cooldown completes.
+			// TODO: Implement "hp_start_powerdown" action type that:
+			//   1. Is scheduled 144,000 blocks (~5 days) after undelegation
+			//   2. Reads the per-node account's vesting_shares from L1
+			//   3. Calls WithdrawVesting(nodeAccount, vestingShares)
+			//   4. 13 weekly installments handled by fill_vesting_withdraw (Phase 5)
 		}
 	}
 

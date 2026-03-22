@@ -242,9 +242,17 @@ func (e *electionProposer) GenerateFullElection(
 			return elections.ElectionHeader{}, elections.ElectionData{}, err
 		}
 		if balRecord != nil {
-			if balRecord.HIVE_CONSENSUS >= e.sconf.ConsensusParams().MinStake {
+			// Total stake includes both consensus-bonded HIVE and confirmed HP-staked HIVE.
+			// NOTE: pending_hp is intentionally excluded — it does not count toward election
+			// weight until confirmed via hp_confirm (two-phase commit).
+			// NOTE(B4): When a validator opts out of HP staking, they lose hive_hp weight
+			// immediately. This is INTENTIONAL — the ~14 week exit period via Hive power-down
+			// is the tradeoff that incentivizes long-term commitment. Validators should
+			// understand that opting out means losing election weight right away.
+			totalStake := balRecord.HIVE_CONSENSUS + balRecord.HIVE_HP
+			if totalStake >= e.sconf.ConsensusParams().MinStake {
 				nodesWithStake++
-				stakedMap[w.Account] = uint64(balRecord.HIVE_CONSENSUS)
+				stakedMap[w.Account] = uint64(totalStake)
 			}
 		}
 		defaultWeightMap[w.Account] = DEFAULT_NEW_NODE_WEIGHT

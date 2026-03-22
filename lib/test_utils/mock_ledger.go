@@ -178,9 +178,14 @@ func (m *MockActionsDb) SetStatus(id string, status string) {
 	m.Actions[id] = action
 }
 
-// Multisig gatway use only, not implemented in mocks
 func (m *MockActionsDb) GetPendingActions(bh uint64, t ...string) ([]ledgerDb.ActionRecord, error) {
-	return make([]ledgerDb.ActionRecord, 0), nil
+	result := make([]ledgerDb.ActionRecord, 0)
+	for _, action := range m.Actions {
+		if action.Status == "pending" && slices.Contains(t, action.Type) {
+			result = append(result, action)
+		}
+	}
+	return result, nil
 }
 
 func (m *MockActionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([]ledgerDb.ActionRecord, error) {

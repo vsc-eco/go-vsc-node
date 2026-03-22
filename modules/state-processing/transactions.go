@@ -804,6 +804,147 @@ func (t *TxConsensusUnstake) Type() string {
 	return "consensus_unstake"
 }
 
+// TxOptInHP — Opt into HP staking (power up bonded HIVE as HP)
+type TxOptInHP struct {
+	Self TxSelf
+
+	From        string `json:"from"`
+	To          string `json:"to"`
+	Amount      string `json:"amount"`
+	HiveAccount string `json:"hive_account"`
+	NetId       string `json:"net_id"`
+}
+
+func (tx *TxOptInHP) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+	if tx.NetId != se.SystemConfig().NetId() {
+		return TxResult{Success: false, Ret: "Invalid network id", RcUsed: 50}
+	}
+
+	if tx.To == "" || tx.From == "" {
+		return TxResult{Success: false, Ret: "Invalid to/from", RcUsed: 50}
+	}
+	if !slices.Contains(tx.Self.RequiredAuths, tx.From) {
+		return TxResult{Success: false, Ret: "Invalid RequiredAuths", RcUsed: 50}
+	}
+	// Validate hive: prefix on from/to (HP staking is Hive-account only)
+	if !strings.HasPrefix(tx.From, "hive:") || !strings.HasPrefix(tx.To, "hive:") {
+		return TxResult{Success: false, Ret: "Invalid to/from: must be hive: prefixed", RcUsed: 50}
+	}
+	// Validate HiveAccount is non-empty, valid length, and matches the To field
+	if tx.HiveAccount == "" || len(tx.HiveAccount) < 3 || len(tx.HiveAccount) > 16 {
+		return TxResult{Success: false, Ret: "Invalid hive_account", RcUsed: 50}
+	}
+	// HiveAccount must correspond to the To address to prevent L1/L2 mismatch
+	if "hive:"+tx.HiveAccount != tx.To {
+		return TxResult{Success: false, Ret: "hive_account must match to address", RcUsed: 50}
+	}
+
+	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	if err != nil {
+		return TxResult{Success: false, Ret: fmt.Errorf("Invalid amount: %w", err).Error(), RcUsed: 50}
+	}
+
+	params := ledgerSystem.HPStakeParams{
+		Id:          MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
+		From:        tx.From,
+		To:          tx.To,
+		Amount:      amount,
+		BlockHeight: tx.Self.BlockHeight,
+		HiveAccount: tx.HiveAccount,
+	}
+
+	ledgerResult := ledgerSession.OptInHP(params)
+
+	return TxResult{
+		Success: ledgerResult.Ok,
+		Ret:     ledgerResult.Msg,
+		RcUsed:  200,
+	}
+}
+
+func (t *TxOptInHP) ToData() map[string]interface{} {
+	return map[string]interface{}{
+		"from":         t.From,
+		"to":           t.To,
+		"amount":       t.Amount,
+		"hive_account": t.HiveAccount,
+		"type":         "opt_in_hp",
+	}
+}
+
+func (t *TxOptInHP) TxSelf() TxSelf  { return t.Self }
+func (t *TxOptInHP) Type() string     { return "opt_in_hp" }
+
+// TxOptOutHP — Opt out of HP staking (begin power-down cycle)
+type TxOptOutHP struct {
+	Self TxSelf
+
+	From        string `json:"from"`
+	To          string `json:"to"`
+	Amount      string `json:"amount"`
+	HiveAccount string `json:"hive_account"`
+	NetId       string `json:"net_id"`
+}
+
+func (tx *TxOptOutHP) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+	if tx.NetId != se.SystemConfig().NetId() {
+		return TxResult{Success: false, Ret: "Invalid network id", RcUsed: 50}
+	}
+
+	if tx.To == "" || tx.From == "" {
+		return TxResult{Success: false, Ret: "Invalid to/from", RcUsed: 50}
+	}
+	if !slices.Contains(tx.Self.RequiredAuths, tx.From) {
+		return TxResult{Success: false, Ret: "Invalid RequiredAuths", RcUsed: 50}
+	}
+	if !strings.HasPrefix(tx.From, "hive:") || !strings.HasPrefix(tx.To, "hive:") {
+		return TxResult{Success: false, Ret: "Invalid to/from: must be hive: prefixed", RcUsed: 50}
+	}
+	if tx.HiveAccount == "" || len(tx.HiveAccount) < 3 || len(tx.HiveAccount) > 16 {
+		return TxResult{Success: false, Ret: "Invalid hive_account", RcUsed: 50}
+	}
+	if "hive:"+tx.HiveAccount != tx.From {
+		return TxResult{Success: false, Ret: "hive_account must match from address", RcUsed: 50}
+	}
+
+	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	if err != nil {
+		return TxResult{Success: false, Ret: fmt.Errorf("Invalid amount: %w", err).Error(), RcUsed: 50}
+	}
+
+	electionResult := se.GetElectionInfo(tx.Self.BlockHeight - 1)
+
+	params := ledgerSystem.HPStakeParams{
+		Id:            MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
+		From:          tx.From,
+		To:            tx.To,
+		Amount:        amount,
+		BlockHeight:   tx.Self.BlockHeight,
+		HiveAccount:   tx.HiveAccount,
+		ElectionEpoch: electionResult.Epoch + 5,
+	}
+
+	ledgerResult := ledgerSession.OptOutHP(params)
+
+	return TxResult{
+		Success: ledgerResult.Ok,
+		Ret:     ledgerResult.Msg,
+		RcUsed:  200,
+	}
+}
+
+func (t *TxOptOutHP) ToData() map[string]interface{} {
+	return map[string]interface{}{
+		"from":   t.From,
+		"to":     t.To,
+		"amount": t.Amount,
+		"type":   "opt_out_hp",
+	}
+}
+
+func (t *TxOptOutHP) TxSelf() TxSelf  { return t.Self }
+func (t *TxOptOutHP) Type() string     { return "opt_out_hp" }
+
 type TransactionSig struct {
 	Type string       `json:"__t"`
 	Sigs []common.Sig `json:"sigs"`

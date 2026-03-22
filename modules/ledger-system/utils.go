@@ -6,7 +6,7 @@ import (
 )
 
 var transferableAssetTypes = []string{"hive", "hbd", "hbd_savings"}
-var assetTypes = slices.Concat(transferableAssetTypes, []string{"hive_consensus"})
+var assetTypes = slices.Concat(transferableAssetTypes, []string{"hive_consensus", "hive_hp", "pending_hp"})
 
 const ETH_REGEX = "^0x[a-fA-F0-9]{40}$"
 const HIVE_REGEX = `^[a-z][0-9a-z\-]*[0-9a-z](\.[a-z][0-9a-z\-]*[0-9a-z])*$`
@@ -33,9 +33,9 @@ func FilterLedgerOps(query FilterLedgerParams, array []LedgerUpdate) []LedgerUpd
 			allowed = true
 		} else if v.BlockHeight == query.FinalHeight {
 			if v.BIdx < query.BelowBIdx {
-				if v.OpIdx < query.BelowOpIdx {
-					allowed = true
-				}
+				allowed = true
+			} else if v.BIdx == query.BelowBIdx && v.OpIdx < query.BelowOpIdx {
+				allowed = true
 			}
 		}
 
@@ -167,6 +167,96 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				Asset:       "hive_consensus",
 				Owner:       v.To,
 				Type:        "consensus_stake",
+			})
+		}
+		if v.Type == "hp_stake" {
+			// HP stake: debit hive_consensus, credit pending_hp (two-phase commit)
+			// pending_hp is converted to hive_hp via hp_confirm after gateway confirms L1 ops.
+			// pending_hp does NOT count toward election weight — only hive_hp does.
+			affectedAccounts[v.From] = true
+			affectedAccounts[v.To] = true
+
+			ledgerRecords = append(ledgerRecords, LedgerUpdate{
+				Id:          v.Id + "#in",
+				BlockHeight: endBlock,
+				Amount:      -v.Amount,
+				Asset:       "hive_consensus",
+				Owner:       v.From,
+				Type:        "hp_stake",
+			})
+			ledgerRecords = append(ledgerRecords, LedgerUpdate{
+				Id:          v.Id + "#out",
+				BlockHeight: endBlock,
+				Amount:      v.Amount,
+				Asset:       "pending_hp",
+				Owner:       v.To,
+				Type:        "hp_stake",
+			})
+
+			actionRecords = append(actionRecords, ledgerDb.ActionRecord{
+				Id:          v.Id,
+				Amount:      v.Amount,
+				Asset:       "hive_hp",
+				To:          v.To,
+				TxId:        v.Id,
+				Status:      "pending",
+				Type:        "hp_stake",
+				Params:      v.Params,
+				BlockHeight: endBlock,
+			})
+		}
+		if v.Type == "hp_unstake" {
+			// Guard: skip hp_unstake processing if unstaking is disabled.
+			// This is a defense-in-depth check — OptOutHP already blocks when
+			// HP_UNSTAKE_ENABLED is false, but if an oplog event somehow arrives
+			// (e.g., from a replayed block), we must not process it.
+			if !HP_UNSTAKE_ENABLED {
+				continue
+			}
+			// HP unstake: debit hive_hp
+			// Action record for gateway to undelegate + start power-down
+			affectedAccounts[v.From] = true
+
+			ledgerRecords = append(ledgerRecords, LedgerUpdate{
+				Id:          v.Id + "#in",
+				BlockHeight: endBlock,
+				Amount:      -v.Amount,
+				Asset:       "hive_hp",
+				Owner:       v.From,
+				Type:        "hp_unstake",
+			})
+
+			actionRecords = append(actionRecords, ledgerDb.ActionRecord{
+				Id:          v.Id,
+				Amount:      v.Amount,
+				Asset:       "hive_hp",
+				To:          v.To,
+				TxId:        v.Id,
+				Status:      "pending",
+				Type:        "hp_unstake",
+				Params:      v.Params,
+				BlockHeight: endBlock,
+			})
+		}
+		if v.Type == "hp_confirm" {
+			// HP confirm: convert pending_hp -> hive_hp (triggered when gateway confirms L1 ops)
+			affectedAccounts[v.From] = true
+
+			ledgerRecords = append(ledgerRecords, LedgerUpdate{
+				Id:          v.Id + "#in",
+				BlockHeight: endBlock,
+				Amount:      -v.Amount,
+				Asset:       "pending_hp",
+				Owner:       v.From,
+				Type:        "hp_confirm",
+			})
+			ledgerRecords = append(ledgerRecords, LedgerUpdate{
+				Id:          v.Id + "#out",
+				BlockHeight: endBlock,
+				Amount:      v.Amount,
+				Asset:       "hive_hp",
+				Owner:       v.From,
+				Type:        "hp_confirm",
 			})
 		}
 		if v.Type == "consensus_unstake" {

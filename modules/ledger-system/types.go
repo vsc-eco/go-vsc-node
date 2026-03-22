@@ -59,6 +59,16 @@ type ConsensusParams struct {
 	ElectionEpoch uint64
 }
 
+type HPStakeParams struct {
+	Id            string
+	From          string
+	To            string
+	Amount        int64
+	BlockHeight   uint64
+	HiveAccount   string // Validator's Hive account name (for per-node account creation)
+	ElectionEpoch uint64 // For opt-out: tracks completion epoch
+}
+
 type LedgerResult struct {
 	Ok  bool
 	Msg string
@@ -115,6 +125,9 @@ type LedgerSession interface {
 	Unstake(StakeOp) LedgerResult
 	ConsensusStake(ConsensusParams) LedgerResult
 	ConsensusUnstake(ConsensusParams) LedgerResult
+	OptInHP(HPStakeParams) LedgerResult
+	OptOutHP(HPStakeParams) LedgerResult
+	ConfirmHP(HPStakeParams) LedgerResult
 	Done() []string
 	Revert()
 }

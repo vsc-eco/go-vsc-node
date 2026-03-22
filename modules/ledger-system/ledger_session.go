@@ -1,7 +1,6 @@
 package ledgerSystem
 
 import (
-	"fmt"
 	"regexp"
 	"slices"
 	"strconv"
@@ -85,7 +84,6 @@ func (session *ledgerSession) GetBalance(account string, blockHeight uint64, ass
 	if session.balances[session.key(account, asset)] == nil {
 		bal := session.state.SnapshotForAccount(account, blockHeight, asset)
 		session.balances[session.key(account, asset)] = &bal
-		fmt.Println("Ledger get Current lol")
 	}
 
 	return *session.balances[session.key(account, asset)]
@@ -249,6 +247,152 @@ func (ledgerSession *ledgerSession) ConsensusUnstake(params ConsensusParams) Led
 	}
 }
 
+// HP_MIN_STAKE is the minimum amount of hive_consensus required to opt into HP staking (50,000 HIVE = 50_000_000 in ledger units)
+const HP_MIN_STAKE = int64(50_000_000)
+
+// CONSENSUS_MIN_STAKE is the minimum total stake (consensus + hp) to remain election-eligible.
+// Matches params.MAINNET_CONSENSUS_MINIMUM (2,000 HIVE = 2,000,000 in ledger units).
+const CONSENSUS_MIN_STAKE = int64(2_000_000)
+
+func (ledgerSession *ledgerSession) OptInHP(params HPStakeParams) LedgerResult {
+	if params.Amount <= 0 {
+		return LedgerResult{
+			Ok:  false,
+			Msg: "invalid amount",
+		}
+	}
+
+	if params.Amount < HP_MIN_STAKE {
+		return LedgerResult{
+			Ok:  false,
+			Msg: "below minimum: 50,000 HIVE required for HP staking",
+		}
+	}
+
+	consensusBal := ledgerSession.GetBalance(params.From, params.BlockHeight, "hive_consensus")
+
+	if consensusBal < params.Amount {
+		return LedgerResult{
+			Ok:  false,
+			Msg: "insufficient balance",
+		}
+	}
+
+	// NOTE: No separate MinStake check needed after conversion because:
+	// 1. The election system (election-proposer.go) sums HIVE_CONSENSUS + HIVE_HP for eligibility
+	// 2. Moving consensus → hp doesn't reduce total stake, just shifts it between asset types
+	// 3. The consensus balance check above already prevents moving more than available
+
+	ledgerSession.AppendOplog(OpLogEvent{
+		Id:          params.Id,
+		From:        params.From,
+		To:          params.To,
+		BlockHeight: params.BlockHeight,
+		Amount:      params.Amount,
+		Asset:       "hive",
+		Type:        "hp_stake",
+		Params: map[string]interface{}{
+			"hive_account": params.HiveAccount,
+		},
+	})
+
+	return LedgerResult{
+		Ok:  true,
+		Msg: "success",
+	}
+}
+
+// HP_UNSTAKE_ENABLED controls whether opt-out is allowed. Set to false until
+// Phase 5 (fill_vesting_withdraw virtual op handler) is implemented.
+// Without Phase 5, opt-out debits hive_hp but has no mechanism to credit
+// hive_consensus back from L1 power-down installments — funds would be lost.
+const HP_UNSTAKE_ENABLED = false
+
+func (ledgerSession *ledgerSession) OptOutHP(params HPStakeParams) LedgerResult {
+	if !HP_UNSTAKE_ENABLED {
+		return LedgerResult{
+			Ok:  false,
+			Msg: "hp unstake not yet enabled: power-down handler pending",
+		}
+	}
+
+	if params.Amount <= 0 {
+		return LedgerResult{
+			Ok:  false,
+			Msg: "invalid amount",
+		}
+	}
+
+	hpBal := ledgerSession.GetBalance(params.From, params.BlockHeight, "hive_hp")
+
+	if hpBal < params.Amount {
+		return LedgerResult{
+			Ok:  false,
+			Msg: "insufficient balance",
+		}
+	}
+
+	ledgerSession.AppendOplog(OpLogEvent{
+		Id:          params.Id,
+		From:        params.From,
+		To:          params.To,
+		BlockHeight: params.BlockHeight,
+		Amount:      params.Amount,
+		Asset:       "hive",
+		Type:        "hp_unstake",
+		Params: map[string]interface{}{
+			"epoch":        params.ElectionEpoch,
+			"hive_account": params.HiveAccount,
+		},
+	})
+
+	return LedgerResult{
+		Ok:  true,
+		Msg: "success",
+	}
+}
+
+// ConfirmHP converts pending_hp -> hive_hp after gateway confirms L1 power-up.
+// Timeout rollback: if pending_hp is not confirmed within HP_CONFIRM_TIMEOUT blocks,
+// the pending_hp should be rolled back to hive_consensus (handled by a separate scheduled check).
+const HP_CONFIRM_TIMEOUT = uint64(1200) // ~1 hour of Hive blocks
+
+func (ledgerSession *ledgerSession) ConfirmHP(params HPStakeParams) LedgerResult {
+	if params.Amount <= 0 {
+		return LedgerResult{
+			Ok:  false,
+			Msg: "invalid amount",
+		}
+	}
+
+	pendingBal := ledgerSession.GetBalance(params.From, params.BlockHeight, "pending_hp")
+
+	if pendingBal < params.Amount {
+		return LedgerResult{
+			Ok:  false,
+			Msg: "insufficient pending_hp balance",
+		}
+	}
+
+	ledgerSession.AppendOplog(OpLogEvent{
+		Id:          params.Id,
+		From:        params.From,
+		To:          params.From,
+		BlockHeight: params.BlockHeight,
+		Amount:      params.Amount,
+		Asset:       "hive",
+		Type:        "hp_confirm",
+		Params: map[string]interface{}{
+			"hive_account": params.HiveAccount,
+		},
+	})
+
+	return LedgerResult{
+		Ok:  true,
+		Msg: "success",
+	}
+}
+
 func (ledgerSession *ledgerSession) ExecuteTransfer(opLogEvent OpLogEvent, options ...TransferOptions) LedgerResult {
 	// le := ledgerSession.le
 	//Check if the from account has enough balance
@@ -287,7 +431,6 @@ func (ledgerSession *ledgerSession) ExecuteTransfer(opLogEvent OpLogEvent, optio
 	// le.Ls.log.Debug("Transfer - balAmt", fromBal, "bh="+strconv.Itoa(int(opLogEvent.BlockHeight)))
 	// le.Ls.log.Debug("ledgerSession.StartHeight", ledgerSession.StartHeight, "OpLogEvent.BlockHeight", opLogEvent.BlockHeight)
 
-	fmt.Println("Ledger.Status", opLogEvent.From, fromBal, opLogEvent.Amount)
 	if (fromBal - exclusion) < opLogEvent.Amount {
 		return LedgerResult{
 			Ok:  false,

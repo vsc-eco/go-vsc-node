@@ -24,6 +24,14 @@ type HiveTransactionCreator interface {
 
 	UpdateAccount(username string, owner *hivego.Auths, active *hivego.Auths, posting *hivego.Auths, jsonMetadata string, memoKey string) hivego.HiveOperation
 
+	// HP staking operations
+	TransferToVesting(from string, to string, amount string) hivego.HiveOperation
+	WithdrawVesting(account string, vestingShares string) hivego.HiveOperation
+	DelegateVestingShares(delegator string, delegatee string, vestingShares string) hivego.HiveOperation
+	AccountWitnessProxy(account string, proxy string) hivego.HiveOperation
+	AccountCreate(fee string, creator string, newAccountName string, owner hivego.Auths, active hivego.Auths, posting hivego.Auths, memoKey string, jsonMetadata string) hivego.HiveOperation
+	CreateClaimedAccount(creator string, newAccountName string, owner hivego.Auths, active hivego.Auths, posting hivego.Auths, memoKey string, jsonMetadata string) hivego.HiveOperation
+
 	MakeTransaction(ops []hivego.HiveOperation) hivego.HiveTransaction
 
 	//Use prior to signing
@@ -172,6 +180,64 @@ func (t *TransactionCrafter) CancelTransferFromSavings(from string, requestId in
 	return op
 }
 
+// HP staking operation wrappers
+
+func (t *TransactionCrafter) TransferToVesting(from string, to string, amount string) hivego.HiveOperation {
+	return hivego.TransferToVesting{
+		From:   from,
+		To:     to,
+		Amount: amount,
+	}
+}
+
+func (t *TransactionCrafter) WithdrawVesting(account string, vestingShares string) hivego.HiveOperation {
+	return hivego.WithdrawVestingOperation{
+		Account:       account,
+		VestingShares: vestingShares,
+	}
+}
+
+func (t *TransactionCrafter) DelegateVestingShares(delegator string, delegatee string, vestingShares string) hivego.HiveOperation {
+	return hivego.DelegateVestingSharesOperation{
+		Delegator:     delegator,
+		Delegatee:     delegatee,
+		VestingShares: vestingShares,
+	}
+}
+
+func (t *TransactionCrafter) AccountWitnessProxy(account string, proxy string) hivego.HiveOperation {
+	return hivego.AccountWitnessProxyOperation{
+		Account: account,
+		Proxy:   proxy,
+	}
+}
+
+func (t *TransactionCrafter) AccountCreate(fee string, creator string, newAccountName string, owner hivego.Auths, active hivego.Auths, posting hivego.Auths, memoKey string, jsonMetadata string) hivego.HiveOperation {
+	return hivego.AccountCreateOperation{
+		Fee:            fee,
+		Creator:        creator,
+		NewAccountName: newAccountName,
+		Owner:          owner,
+		Active:         active,
+		Posting:        posting,
+		MemoKey:        memoKey,
+		JsonMetadata:   jsonMetadata,
+	}
+}
+
+func (t *TransactionCrafter) CreateClaimedAccount(creator string, newAccountName string, owner hivego.Auths, active hivego.Auths, posting hivego.Auths, memoKey string, jsonMetadata string) hivego.HiveOperation {
+	return hivego.CreateClaimedAccountOperation{
+		Creator:        creator,
+		NewAccountName: newAccountName,
+		Owner:          owner,
+		Active:         active,
+		Posting:        posting,
+		MemoKey:        memoKey,
+		JsonMetadata:   jsonMetadata,
+		Extensions:     []interface{}{},
+	}
+}
+
 func (t *TransactionBroadcaster) Sign(tx hivego.HiveTransaction) (string, error) {
 	kp, err := t.KeyPair()
 	if err != nil {
@@ -228,3 +294,4 @@ type MockTransactionCreator struct {
 }
 
 var _ HiveTransactionCreator = &LiveTransactionCreator{}
+var _ HiveTransactionCreator = &MockTransactionCreator{}

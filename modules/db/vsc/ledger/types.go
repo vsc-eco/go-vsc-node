@@ -45,6 +45,8 @@ type BalanceRecord struct {
 	BlockHeight       uint64 `json:"block_height" bson:"block_height"`
 	Hive              int64  `json:"hive" bson:"hive"`
 	HIVE_CONSENSUS    int64  `json:"hive_consensus" bson:"hive_consensus"`
+	HIVE_HP           int64  `json:"hive_hp" bson:"hive_hp"`
+	PENDING_HP        int64  `json:"pending_hp" bson:"pending_hp"`
 	HBD               int64  `json:"hbd" bson:"hbd"`
 	HBD_SAVINGS       int64  `json:"hbd_savings" bson:"hbd_savings"`
 	HBD_AVG           int64  `json:"hbd_avg" bson:"hbd_avg"`
@@ -68,6 +70,8 @@ type Asset string
 const (
 	AssetHive          Asset = "hive"
 	AssetHiveConsensus Asset = "hive_consensus"
+	AssetHiveHP        Asset = "hive_hp"
+	AssetPendingHP     Asset = "pending_hp"
 	AssetHbd           Asset = "hbd"
 	AssetHbdSavings    Asset = "hbd_savings"
 )

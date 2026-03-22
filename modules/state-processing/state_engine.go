@@ -725,6 +725,22 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					json.Unmarshal(cj.Json, &parsedTx)
 
 					vscTx = &parsedTx
+				} else if cj.Id == "vsc.opt_in_hp" {
+					parsedTx := TxOptInHP{
+						Self: txSelf,
+					}
+
+					json.Unmarshal(cj.Json, &parsedTx)
+
+					vscTx = &parsedTx
+				} else if cj.Id == "vsc.opt_out_hp" {
+					parsedTx := TxOptOutHP{
+						Self: txSelf,
+					}
+
+					json.Unmarshal(cj.Json, &parsedTx)
+
+					vscTx = &parsedTx
 				} else if cj.Id == "vsc.tss_sign" {
 
 					signedData := struct {
@@ -1218,13 +1234,46 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	}
 	se.LedgerState.LedgerDb.StoreLedger(ledgerRecords...)
 	se.LedgerState.ActionDb.ExecuteComplete(nil, completeIds...)
-	// se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)
-	// se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(nil, completeIds...)
+
+	// HP pending timeout rollback: if pending_hp hasn't been confirmed within
+	// HP_CONFIRM_TIMEOUT blocks (~1 hour), roll it back to hive_consensus.
+	// This prevents funds from being locked forever if the gateway fails.
+	hpPendingActions, _ := se.LedgerState.ActionDb.GetPendingActions(endBlock, "hp_stake")
+	hpRollbackIds := make([]string, 0)
+	hpRollbackRecords := make([]ledgerDb.LedgerRecord, 0)
+	for _, action := range hpPendingActions {
+		if action.Status == "pending" && endBlock > action.BlockHeight+ledgerSystem.HP_CONFIRM_TIMEOUT {
+			hpRollbackIds = append(hpRollbackIds, action.Id)
+			// Debit pending_hp
+			hpRollbackRecords = append(hpRollbackRecords, ledgerDb.LedgerRecord{
+				Id:          action.Id + "#rollback-in",
+				Amount:      -action.Amount,
+				Asset:       "pending_hp",
+				BlockHeight: endBlock,
+				Owner:       action.To,
+				Type:        "hp_timeout_rollback",
+			})
+			// Credit hive_consensus (return funds)
+			hpRollbackRecords = append(hpRollbackRecords, ledgerDb.LedgerRecord{
+				Id:          action.Id + "#rollback-out",
+				Amount:      action.Amount,
+				Asset:       "hive_consensus",
+				BlockHeight: endBlock,
+				Owner:       action.To,
+				Type:        "hp_timeout_rollback",
+			})
+		}
+	}
+	if len(hpRollbackRecords) > 0 {
+		se.LedgerState.LedgerDb.StoreLedger(hpRollbackRecords...)
+		se.LedgerState.ActionDb.ExecuteComplete(nil, hpRollbackIds...)
+		se.log.Debug("HP timeout rollback: rolled back", len(hpRollbackIds), "pending HP actions")
+	}
 
 	//se.log.Debug("stBlock, endBlock", stBlock, endBlock)
 	distinctAccounts, _ := se.LedgerState.LedgerDb.GetDistinctAccountsRange(stBlock, endBlock)
 
-	assets := []string{"hbd", "hive", "hbd_savings", "hive_consensus"}
+	assets := []string{"hbd", "hive", "hbd_savings", "hive_consensus", "hive_hp", "pending_hp"}
 
 	//Cleanup!
 	for _, k := range distinctAccounts {
@@ -1245,6 +1294,10 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 				ledgerBalances[asset] = balanceR.HBD_SAVINGS
 			} else if asset == "hive_consensus" {
 				ledgerBalances[asset] = balanceR.HIVE_CONSENSUS
+			} else if asset == "hive_hp" {
+				ledgerBalances[asset] = balanceR.HIVE_HP
+			} else if asset == "pending_hp" {
+				ledgerBalances[asset] = balanceR.PENDING_HP
 			} else {
 				ledgerBalances[asset] = 0
 			}
@@ -1330,6 +1383,8 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			BlockHeight:    endBlock,
 			Hive:           ledgerBalances["hive"],
 			HIVE_CONSENSUS: ledgerBalances["hive_consensus"],
+			HIVE_HP:        ledgerBalances["hive_hp"],
+			PENDING_HP:     ledgerBalances["pending_hp"],
 			HBD:            ledgerBalances["hbd"],
 			HBD_SAVINGS:    ledgerBalances["hbd_savings"],
 			HBD_AVG:        hbdAvg,
