@@ -1145,8 +1145,11 @@ func (se *StateEngine) ExecuteBatch() {
 				idx,
 				"type",
 				vscTx.Type(),
+				"rc payer",
+				payer,
+				"rc used",
+				result.RcUsed,
 			)
-			fmt.Println("RC Payer is", payer, vscTx.Type(), vscTx, result.RcUsed)
 
 			rcUsed := se.RcMap[payer] // don't crash if payer is not in RC map
 			se.RcMap[payer] = rcUsed + result.RcUsed
