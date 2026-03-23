@@ -1,10 +1,14 @@
 package mapper
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"strconv"
 	"time"
+
+	"github.com/btcsuite/btcd/wire"
 )
 
 // dropHeightDiff is set per-chain via ChainConfig.DropHeightDiff
@@ -54,10 +58,14 @@ func (b *Bot) HandleMap(
 		}
 	}
 
-	_, err = b.stateDB().IncrementBlockHeight(ctx)
+	advanced, err := b.stateDB().AdvanceBlockHeightIfCurrent(ctx, blockHeight, blockHeight+1)
 	if err != nil {
-		b.L.Error("error incrementing last block height", "err", err)
+		b.L.Error("error advancing last block height", "err", err, "blockHeight", blockHeight)
 		return false
+	}
+	if !advanced {
+		// Another bot instance likely advanced the height first.
+		b.L.Info("block height already advanced by another instance", "blockHeight", blockHeight)
 	}
 
 	b.setLastBlock(blockHeight)
@@ -69,7 +77,82 @@ func (b *Bot) HandleMap(
 // is the primary detection mechanism.
 func (b *Bot) HandleExistingTxs(chainAddress string) {
 	b.L.Debug("checking existing txs for new address", "address", chainAddress)
-	// Existing tx detection is handled by the main block processing loop.
-	// This function is a placeholder for future address-history scanning
-	// which requires chain-specific implementation.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	entries, err := b.Chain.Client.GetAddressTxs(chainAddress)
+	if err != nil {
+		b.L.Error("failed to fetch address tx history", "address", chainAddress, "err", err)
+		return
+	}
+	if len(entries) == 0 {
+		return
+	}
+
+	blockTxIDs := make(map[string]map[string]uint64)
+	for _, entry := range entries {
+		if !entry.Confirmed {
+			continue
+		}
+
+		details, err := b.Chain.Client.GetTxDetails(entry.TxID)
+		if err != nil {
+			b.L.Warn("failed to fetch tx confirmation details", "txid", entry.TxID, "err", err)
+			continue
+		}
+		if !details.Confirmed || details.BlockHash == "" {
+			continue
+		}
+		if _, ok := blockTxIDs[details.BlockHash]; !ok {
+			blockTxIDs[details.BlockHash] = make(map[string]uint64)
+		}
+		blockTxIDs[details.BlockHash][entry.TxID] = details.BlockHeight
+	}
+
+	for blockHash, wantedTxIDs := range blockTxIDs {
+		var blockHeight uint64
+		for _, h := range wantedTxIDs {
+			blockHeight = h
+			break
+		}
+		blockBytes, err := b.Chain.Client.GetRawBlock(blockHash)
+		if err != nil {
+			b.L.Warn("failed to fetch raw block for historical tx scan", "blockHash", blockHash, "err", err)
+			continue
+		}
+		foundTxs, err := b.ParseBlock(ctx, blockBytes, blockHeight)
+		if err != nil {
+			b.L.Warn("failed to parse historical block", "blockHash", blockHash, "height", blockHeight, "err", err)
+			continue
+		}
+
+		// Only map historical txs that were present in the address history.
+		for _, tx := range foundTxs {
+			txID := txIDFromRawTxHex(tx.TxData.RawTxHex)
+			if _, ok := wantedTxIDs[txID]; !ok {
+				continue
+			}
+
+			jsonBytes, err := json.Marshal(tx)
+			if err != nil {
+				b.L.Warn("could not marshal historical transaction", "err", err)
+				continue
+			}
+			if err := b.callWithRetry(ctx, json.RawMessage(jsonBytes), "map", 3); err != nil {
+				b.L.Error("historical map call failed after retries", "err", err)
+			}
+		}
+	}
+}
+
+func txIDFromRawTxHex(rawTxHex string) string {
+	rawTx, err := hex.DecodeString(rawTxHex)
+	if err != nil {
+		return ""
+	}
+	var tx wire.MsgTx
+	if err := tx.Deserialize(bytes.NewReader(rawTx)); err != nil {
+		return ""
+	}
+	return tx.TxID()
 }

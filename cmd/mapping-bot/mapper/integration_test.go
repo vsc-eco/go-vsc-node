@@ -29,8 +29,8 @@ type testBotConfig struct{}
 
 func (c *testBotConfig) ContractId() string { return "test-contract" }
 func (c *testBotConfig) HttpPort() uint16   { return 0 }
-func (c *testBotConfig) SignApiKey() string  { return "" }
-func (c *testBotConfig) FilePath() string    { return "" }
+func (c *testBotConfig) SignApiKey() string { return "" }
+func (c *testBotConfig) FilePath() string   { return "" }
 
 // newTestBotWithMocks creates a Bot wired to all mock dependencies.
 // Returns the bot and all mocks so the caller can inspect/configure them.
@@ -124,6 +124,56 @@ func buildTestBlock(t *testing.T, destAddr string, params *chaincfg.Params) []by
 	return buf.Bytes()
 }
 
+// buildTestBlockTwoPayments is like buildTestBlock but adds two payment txs to destAddr.
+func buildTestBlockTwoPayments(t *testing.T, destAddr string, params *chaincfg.Params) []byte {
+	t.Helper()
+
+	coinbaseTx := wire.NewMsgTx(wire.TxVersion)
+	coinbaseTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{Hash: chainhash.Hash{}, Index: 0xffffffff},
+		SignatureScript:  []byte{0x04, 0xff, 0xff, 0x00, 0x1d, 0x01, 0x04},
+		Sequence:         0xffffffff,
+	})
+	coinbaseTx.AddTxOut(&wire.TxOut{Value: 50e8, PkScript: []byte{txscript.OP_TRUE}})
+
+	addr, err := btcutil.DecodeAddress(destAddr, params)
+	require.NoError(t, err)
+	pkScript, err := txscript.PayToAddrScript(addr)
+	require.NoError(t, err)
+
+	makePayment := func(prevHash chainhash.Hash, value int64) *wire.MsgTx {
+		tx := wire.NewMsgTx(wire.TxVersion)
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: wire.OutPoint{Hash: prevHash, Index: 0},
+			SignatureScript:  []byte{txscript.OP_TRUE},
+			Sequence:         0xffffffff,
+		})
+		tx.AddTxOut(&wire.TxOut{Value: value, PkScript: pkScript})
+		return tx
+	}
+
+	paymentTx1 := makePayment(coinbaseTx.TxHash(), 10000)
+	paymentTx2 := makePayment(paymentTx1.TxHash(), 15000)
+
+	block := wire.MsgBlock{
+		Header: wire.BlockHeader{
+			Version:    1,
+			PrevBlock:  chainhash.Hash{},
+			MerkleRoot: chainhash.Hash{},
+			Timestamp:  time.Now(),
+			Bits:       0x1d00ffff,
+			Nonce:      0,
+		},
+		Transactions: []*wire.MsgTx{coinbaseTx, paymentTx1, paymentTx2},
+	}
+	// Merkle root correctness is not required for parser tests.
+	block.Header.MerkleRoot = chainhash.DoubleHashH([]byte("test-merkle"))
+
+	var buf bytes.Buffer
+	require.NoError(t, block.Serialize(&buf))
+	return buf.Bytes()
+}
+
 // ---------------------------------------------------------------------------
 // TestHandleMap_EndToEnd
 // ---------------------------------------------------------------------------
@@ -133,6 +183,7 @@ func TestHandleMap_EndToEnd(t *testing.T) {
 
 	// Set contract's last height high enough that block 100 is already known
 	gql.lastHeight = "200"
+	gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
 
 	// Register a known deposit address so ParseBlock can find it.
 	// We need a real P2WSH address on testnet4.
@@ -141,6 +192,7 @@ func TestHandleMap_EndToEnd(t *testing.T) {
 
 	// Build a block with a tx sending to that address
 	blockBytes := buildTestBlock(t, depositAddr, &chaincfg.TestNet4Params)
+	require.NoError(t, state.SetBlockHeight(context.Background(), 100))
 
 	bot.HandleMap(blockBytes, 100)
 
@@ -152,7 +204,78 @@ func TestHandleMap_EndToEnd(t *testing.T) {
 	// Verify: block height was incremented
 	h, err := state.GetBlockHeight(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, uint64(1), h)
+	assert.Equal(t, uint64(101), h)
+}
+
+func TestHandleExistingTxs_MapsHistoricalForNewAddress(t *testing.T) {
+	bot, gql, caller, _, addr, chainClient := newTestBotWithMocks()
+	gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
+
+	depositAddr := "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+	addr.instructions[depositAddr] = "deposit_to=hive:testuser"
+	blockBytes := buildTestBlock(t, depositAddr, &chaincfg.TestNet4Params)
+
+	var block wire.MsgBlock
+	require.NoError(t, block.Deserialize(bytes.NewReader(blockBytes)))
+	require.GreaterOrEqual(t, len(block.Transactions), 2)
+	historicalTxID := block.Transactions[1].TxID()
+
+	chainClient.rawBlocks["block-100"] = blockBytes
+	chainClient.addressTxs[depositAddr] = []chain.TxHistoryEntry{
+		{TxID: historicalTxID, Confirmed: true},
+	}
+	chainClient.txDetails[historicalTxID] = chain.TxConfirmationDetails{
+		Confirmed:   true,
+		BlockHeight: 100,
+		BlockHash:   "block-100",
+		TxIndex:     1,
+	}
+
+	bot.HandleExistingTxs(depositAddr)
+
+	calls := caller.getCalls()
+	require.NotEmpty(t, calls, "expected historical map call")
+	assert.Equal(t, "map", calls[0].Action)
+}
+
+func TestHandleExistingTxs_MapsMultipleHistoryTxsInSameBlock(t *testing.T) {
+	bot, gql, caller, _, addr, chainClient := newTestBotWithMocks()
+	gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
+
+	depositAddr := "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+	addr.instructions[depositAddr] = "deposit_to=hive:testuser"
+	blockBytes := buildTestBlockTwoPayments(t, depositAddr, &chaincfg.TestNet4Params)
+
+	var block wire.MsgBlock
+	require.NoError(t, block.Deserialize(bytes.NewReader(blockBytes)))
+	require.GreaterOrEqual(t, len(block.Transactions), 3)
+	txID1 := block.Transactions[1].TxID()
+	txID2 := block.Transactions[2].TxID()
+
+	chainClient.rawBlocks["block-200"] = blockBytes
+	chainClient.addressTxs[depositAddr] = []chain.TxHistoryEntry{
+		{TxID: txID1, Confirmed: true},
+		{TxID: txID2, Confirmed: true},
+	}
+	chainClient.txDetails[txID1] = chain.TxConfirmationDetails{
+		Confirmed:   true,
+		BlockHeight: 200,
+		BlockHash:   "block-200",
+		TxIndex:     1,
+	}
+	chainClient.txDetails[txID2] = chain.TxConfirmationDetails{
+		Confirmed:   true,
+		BlockHeight: 200,
+		BlockHash:   "block-200",
+		TxIndex:     2,
+	}
+
+	bot.HandleExistingTxs(depositAddr)
+
+	calls := caller.getCalls()
+	require.Len(t, calls, 2, "expected one map call per historical tx in block")
+	assert.Equal(t, "map", calls[0].Action)
+	assert.Equal(t, "map", calls[1].Action)
 }
 
 // ---------------------------------------------------------------------------
