@@ -50,8 +50,10 @@ type AddressMapping struct {
 
 // BlockHeight stores the last processed block height
 type BlockHeight struct {
-	ID     string `bson:"_id"` // Always "current"
-	Height uint64 `bson:"height"`
+	ID        string     `bson:"_id"` // Always "current"
+	Height    uint64     `bson:"height"`
+	LockOwner string     `bson:"lockOwner,omitempty"`
+	LockUntil *time.Time `bson:"lockUntil,omitempty"`
 }
 
 // Transaction represents a transaction in any state

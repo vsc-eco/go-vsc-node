@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 
 	"vsc-node/cmd/mapping-bot/database"
 
@@ -53,7 +54,7 @@ func (b *Bot) ParseBlock(
 						break
 					}
 					matchedTxIndices[txIndex] = append(matchedTxIndices[txIndex], instruction)
-				} else if err != database.ErrAddrNotFound {
+				} else if !errors.Is(err, database.ErrAddrNotFound) {
 					return nil, err
 				}
 			}

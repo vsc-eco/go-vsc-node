@@ -153,6 +153,16 @@ func (m *mockStateStore) SetBlockHeight(ctx context.Context, height uint64) erro
 	return nil
 }
 
+func (m *mockStateStore) AdvanceBlockHeightIfCurrent(ctx context.Context, current, next uint64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.blockHeight != current {
+		return false, nil
+	}
+	m.blockHeight = next
+	return true, nil
+}
+
 func (m *mockStateStore) AddPendingTransaction(ctx context.Context, txID string, rawTx []byte, unsignedHashes []contractinterface.UnsignedSigHash) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -342,14 +352,15 @@ func (m *mockAddressStore) Insert(ctx context.Context, chainAddr, instruction st
 // ---------------------------------------------------------------------------
 
 type mockChainClient struct {
-	mu            sync.Mutex
-	posted        []string
-	tipHeight     uint64
-	blockHashes   map[uint64]string
-	rawBlocks     map[string][]byte
-	txStatuses    map[string]bool // txid -> confirmed
-	txDetails     map[string]chain.TxConfirmationDetails
-	postTxErr     error
+	mu          sync.Mutex
+	posted      []string
+	tipHeight   uint64
+	blockHashes map[uint64]string
+	rawBlocks   map[string][]byte
+	txStatuses  map[string]bool // txid -> confirmed
+	txDetails   map[string]chain.TxConfirmationDetails
+	addressTxs  map[string][]chain.TxHistoryEntry
+	postTxErr   error
 }
 
 func newMockChainClient() *mockChainClient {
@@ -358,6 +369,7 @@ func newMockChainClient() *mockChainClient {
 		rawBlocks:   make(map[string][]byte),
 		txStatuses:  make(map[string]bool),
 		txDetails:   make(map[string]chain.TxConfirmationDetails),
+		addressTxs:  make(map[string][]chain.TxHistoryEntry),
 	}
 }
 
@@ -369,7 +381,9 @@ func (m *mockChainClient) PostTx(rawTx string) error {
 }
 
 func (m *mockChainClient) GetAddressTxs(address string) ([]chain.TxHistoryEntry, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.addressTxs[address], nil
 }
 
 func (m *mockChainClient) GetRawBlock(hash string) ([]byte, error) {
@@ -409,4 +423,3 @@ func (m *mockChainClient) GetTxDetails(txid string) (chain.TxConfirmationDetails
 	defer m.mu.Unlock()
 	return m.txDetails[txid], nil
 }
-

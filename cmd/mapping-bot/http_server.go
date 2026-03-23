@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -128,10 +129,18 @@ func requestHandler(
 			return
 		}
 
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
 		var requestBody requestBody
-		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
-			writeResponse(w, http.StatusInternalServerError, "")
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&requestBody); err != nil {
+			writeResponse(w, http.StatusBadRequest, "invalid request body")
 			writeError(err)
+			return
+		}
+		var trailing json.RawMessage
+		if err := dec.Decode(&trailing); err == nil || !errors.Is(err, io.EOF) {
+			writeResponse(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 
@@ -215,6 +224,11 @@ func signHandler(
 	bot *mapper.Bot,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeResponse(w, http.StatusMethodNotAllowed, "only POST allowed")
+			return
+		}
+
 		// Auth: require API key in Authorization header
 		apiKey := bot.BotConfig.SignApiKey()
 		if apiKey == "" {
@@ -227,8 +241,16 @@ func signHandler(
 			return
 		}
 
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
 		var req signRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeResponse(w, http.StatusBadRequest, "invalid JSON")
+			return
+		}
+		var trailing json.RawMessage
+		if err := dec.Decode(&trailing); err == nil || !errors.Is(err, io.EOF) {
 			writeResponse(w, http.StatusBadRequest, "invalid JSON")
 			return
 		}

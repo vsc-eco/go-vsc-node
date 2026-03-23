@@ -66,6 +66,60 @@ func (s *StateStore) IncrementBlockHeight(ctx context.Context) (uint64, error) {
 	return result.Height, nil
 }
 
+// AdvanceBlockHeightIfCurrent atomically advances height from current to next.
+// Returns true if the advance was applied, false if current did not match.
+func (s *StateStore) AdvanceBlockHeightIfCurrent(ctx context.Context, current, next uint64) (bool, error) {
+	result, err := s.heightCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": "current", "height": current},
+		bson.M{"$set": bson.M{"height": next}},
+	)
+	if err != nil {
+		return false, fmt.Errorf("failed to advance block height from %d to %d: %w", current, next, err)
+	}
+	return result.MatchedCount > 0, nil
+}
+
+// TryAcquireBlockLease attempts to lease processing rights for a specific height.
+// Returns true if the lease was acquired by owner.
+func (s *StateStore) TryAcquireBlockLease(ctx context.Context, height uint64, owner string, ttl time.Duration) (bool, error) {
+	now := time.Now().UTC()
+	until := now.Add(ttl)
+	filter := bson.M{
+		"_id":    "current",
+		"height": height,
+		"$or": bson.A{
+			bson.M{"lockUntil": bson.M{"$exists": false}},
+			bson.M{"lockUntil": bson.M{"$lt": now}},
+			bson.M{"lockOwner": owner},
+		},
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"lockOwner": owner,
+			"lockUntil": until,
+		},
+	}
+	result, err := s.heightCollection.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return false, fmt.Errorf("failed to acquire block lease [height:%d owner:%s]: %w", height, owner, err)
+	}
+	return result.MatchedCount > 0, nil
+}
+
+// ReleaseBlockLease releases a previously acquired block lease.
+func (s *StateStore) ReleaseBlockLease(ctx context.Context, height uint64, owner string) error {
+	_, err := s.heightCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": "current", "height": height, "lockOwner": owner},
+		bson.M{"$unset": bson.M{"lockOwner": "", "lockUntil": ""}},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to release block lease [height:%d owner:%s]: %w", height, owner, err)
+	}
+	return nil
+}
+
 // === Transaction Methods ===
 
 // AddPendingTransaction adds a new unsigned transaction
@@ -111,7 +165,7 @@ func (s *StateStore) GetPendingTransaction(ctx context.Context, txID string) (*T
 	err := s.txCollection.FindOne(ctx, bson.M{"_id": txID, "state": TxStatePending}).Decode(&tx)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, fmt.Errorf("transaction %s not found", txID)
+			return nil, fmt.Errorf("transaction %s not found: %w", txID, ErrTxNotFound)
 		}
 		return nil, fmt.Errorf("failed to get transaction %s: %w", txID, err)
 	}
