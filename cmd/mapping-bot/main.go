@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -96,6 +97,8 @@ func main() {
 	}
 	defer db.Close(context.Background())
 	lastClear := time.Now()
+	hostname, _ := os.Hostname()
+	instanceID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
 
 	bot, err := mapper.NewBot(db, chainCfg, mappingBotConfig, identityConfig, hiveConfig, sysConfig)
 	if err != nil {
@@ -151,17 +154,37 @@ func main() {
 			blockHeight = startHeight
 		}
 
+		leaseAcquired, err := bot.Db.State.TryAcquireBlockLease(ctx, blockHeight, instanceID, 2*chainCfg.BlockInterval)
+		if err != nil {
+			bot.L.Error("error acquiring block lease", "height", blockHeight, "err", err)
+			cancel()
+			time.Sleep(chainCfg.SleepInterval)
+			continue
+		}
+		if !leaseAcquired {
+			// Another bot instance is processing this height right now.
+			cancel()
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
 		hash, status, err := bot.Chain.Client.GetBlockHashAtHeight(blockHeight)
 		if status == http.StatusNotFound {
 			bot.L.Info("no new block")
 			// At head — still run unmap/confirmations, then sleep before checking again
 			bot.HandleUnmap()
 			bot.HandleConfirmations()
+			if err := bot.Db.State.ReleaseBlockLease(ctx, blockHeight, instanceID); err != nil {
+				bot.L.Warn("failed to release block lease", "height", blockHeight, "err", err)
+			}
 			time.Sleep(chainCfg.SleepInterval)
 			cancel()
 			continue
 		} else if err != nil {
 			bot.L.Error("error fetching block hash", "height", blockHeight, "err", err)
+			if err := bot.Db.State.ReleaseBlockLease(ctx, blockHeight, instanceID); err != nil {
+				bot.L.Warn("failed to release block lease", "height", blockHeight, "err", err)
+			}
 			time.Sleep(chainCfg.SleepInterval)
 			cancel()
 			continue
@@ -169,6 +192,9 @@ func main() {
 		blockBytes, err := bot.Chain.Client.GetRawBlock(hash)
 		if err != nil {
 			bot.L.Error("error fetching raw block", "hash", hash, "err", err)
+			if err := bot.Db.State.ReleaseBlockLease(ctx, blockHeight, instanceID); err != nil {
+				bot.L.Warn("failed to release block lease", "height", blockHeight, "err", err)
+			}
 			time.Sleep(chainCfg.SleepInterval)
 			cancel()
 			continue
@@ -188,6 +214,9 @@ func main() {
 			bot.HandleConfirmations()
 		}()
 		wg.Wait()
+		if err := bot.Db.State.ReleaseBlockLease(ctx, blockHeight, instanceID); err != nil {
+			bot.L.Warn("failed to release block lease", "height", blockHeight, "err", err)
+		}
 
 		cancel()
 		// If the block wasn't processed (e.g., not yet in the contract), sleep before retrying.

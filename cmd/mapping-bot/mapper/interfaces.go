@@ -31,6 +31,7 @@ type StateStore interface {
 	IncrementBlockHeight(ctx context.Context) (uint64, error)
 	GetBlockHeight(ctx context.Context) (uint64, error)
 	SetBlockHeight(ctx context.Context, height uint64) error
+	AdvanceBlockHeightIfCurrent(ctx context.Context, current, next uint64) (bool, error)
 
 	AddPendingTransaction(ctx context.Context, txID string, rawTx []byte, unsignedHashes []contractinterface.UnsignedSigHash) error
 	GetPendingTransaction(ctx context.Context, txID string) (*database.Transaction, error)
