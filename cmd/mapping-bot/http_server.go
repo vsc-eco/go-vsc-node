@@ -46,7 +46,7 @@ type healthResponse struct {
 	StaleSecs       *int64            `json:"staleSecs,omitempty"`
 	PendingSentTxs  int               `json:"pendingSentTxs"`            // txs broadcast but not yet confirmed
 	PendingUnsigned int               `json:"pendingUnsigned,omitempty"` // txs awaiting TSS signatures
-	FailedVscTxs    []mapper.FailedTx `json:"failedVscTxs,omitempty"`   // VSC txs that reached FAILED status
+	FailedVscTxs    []mapper.FailedTx `json:"failedVscTxs,omitempty"`    // VSC txs that reached FAILED status
 	Issues          []string          `json:"issues,omitempty"`          // specific problems detected
 }
 
@@ -181,7 +181,8 @@ func requestHandler(
 
 		if err := bot.Db.Addresses.Insert(ctx, btcAddr, requestBody.Instruction); err != nil {
 			if errors.Is(err, database.ErrAddrExists) {
-				writeResponse(w, http.StatusConflict, "address map exists")
+				writeResponse(w, http.StatusOK, "address mapping exists: "+btcAddr+" -> "+requestBody.Instruction)
+				return
 			} else {
 				writeResponse(w, http.StatusInternalServerError, "")
 				writeError(err)
@@ -250,7 +251,11 @@ func signHandler(
 		for _, entry := range req.Signatures {
 			// Validate index bounds (including negative values)
 			if entry.Index < 0 || entry.Index >= len(tx.Signatures) {
-				writeResponse(w, http.StatusBadRequest, fmt.Sprintf("index %d out of range (0-%d)", entry.Index, len(tx.Signatures)-1))
+				writeResponse(
+					w,
+					http.StatusBadRequest,
+					fmt.Sprintf("index %d out of range (0-%d)", entry.Index, len(tx.Signatures)-1),
+				)
 				return
 			}
 			sigBytes, err := hex.DecodeString(entry.Signature)
@@ -261,8 +266,15 @@ func signHandler(
 			}
 			// Validate ECDSA DER signature length (64-73 bytes)
 			if len(sigBytes) < 64 || len(sigBytes) > 73 {
-				writeResponse(w, http.StatusBadRequest,
-					fmt.Sprintf("signature at index %d has invalid length %d (expected 64-73 bytes)", entry.Index, len(sigBytes)))
+				writeResponse(
+					w,
+					http.StatusBadRequest,
+					fmt.Sprintf(
+						"signature at index %d has invalid length %d (expected 64-73 bytes)",
+						entry.Index,
+						len(sigBytes),
+					),
+				)
 				return
 			}
 			slot := tx.Signatures[entry.Index]

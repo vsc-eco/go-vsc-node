@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/chain"
+	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
 
@@ -32,7 +32,7 @@ func (c *testBotConfig) ContractId() string { return "test-contract" }
 func (c *testBotConfig) PrimaryKey() string { return c.primaryKey }
 func (c *testBotConfig) BackupKey() string  { return c.backupKey }
 func (c *testBotConfig) HttpPort() uint16   { return 8000 }
-func (c *testBotConfig) SignApiKey() string  { return "test-api-key" }
+func (c *testBotConfig) SignApiKey() string { return "test-api-key" }
 func (c *testBotConfig) FilePath() string   { return "test-config.json" }
 
 // noopChainClient prevents any real blockchain calls from being made.
@@ -51,6 +51,9 @@ func (n *noopChainClient) GetRawBlock(_ string) ([]byte, error)               { 
 func (n *noopChainClient) GetBlockHashAtHeight(_ uint64) (string, int, error) { return "", 0, nil }
 func (n *noopChainClient) GetTipHeight() (uint64, error)                      { return 0, nil }
 func (n *noopChainClient) GetTxStatus(_ string) (bool, error)                 { return false, nil }
+func (n *noopChainClient) GetTxDetails(string) (chain.TxConfirmationDetails, error) {
+	return chain.TxConfirmationDetails{}, nil
+}
 
 // Compressed secp256k1 public keys used only for tests (generator point G and 2G).
 const (
