@@ -139,6 +139,9 @@ type ChainOracle struct {
 	txCrafter         *transactionpool.TransactionCrafter
 	txPool            *transactionpool.TransactionPool
 	nonceDb           nonces.Nonces
+	// lastSubmitted tracks the last successfully submitted block range per
+	// chain symbol to avoid duplicate submissions for the same range.
+	lastSubmitted     map[string]string // symbol -> "startHeight-endHeight"
 }
 
 func New(
@@ -176,6 +179,7 @@ func New(
 		txCrafter:         txCrafter,
 		txPool:            txPool,
 		nonceDb:           nonceDb,
+		lastSubmitted:     make(map[string]string),
 	}
 }
 

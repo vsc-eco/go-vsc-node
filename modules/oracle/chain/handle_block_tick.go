@@ -85,6 +85,12 @@ func (o *ChainOracle) processChainRelay(
 	startHeight := chainStatus.chainData[0].BlockHeight()
 	endHeight := chainStatus.chainData[blockCount-1].BlockHeight()
 
+	// Skip if we already submitted this exact range
+	rangeKey := fmt.Sprintf("%d-%d", startHeight, endHeight)
+	if o.lastSubmitted[chainStatus.symbol] == rangeKey {
+		return
+	}
+
 	o.logger.Debug("initiating chain relay consensus",
 		"symbol", chainStatus.symbol,
 		"blocks", blockCount,
@@ -393,6 +399,9 @@ checkThreshold:
 		"blocks", fmt.Sprintf("%d-%d", startHeight, endHeight),
 		"signers", circuit.SignerCount(),
 	)
+
+	// Track this range to prevent duplicate submissions
+	o.lastSubmitted[chainStatus.symbol] = rangeKey
 }
 
 // utxoAddBlocksPayload matches the UTXO mapping contract's AddBlocksParams:
