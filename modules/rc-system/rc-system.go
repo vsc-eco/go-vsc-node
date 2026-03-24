@@ -33,12 +33,16 @@ func (rcs *RcSystem) GetAvailableRCs(account string, blockHeight uint64) int64 {
 	balAmt := rcs.LedgerSystem.GetBalance(account, blockHeight, "hbd")
 
 	if strings.HasPrefix(account, "hive:") {
-		//Give the user 5 HBD worth of RCs by default
-		//If user is Hive account
 		balAmt = balAmt + params.RC_HIVE_FREE_AMOUNT
+	} else if strings.HasPrefix(account, "did:vsc:oracle:") {
+		balAmt = balAmt + 5_000_000
 	}
 
 	frozeAmt := rcs.GetFrozenAmt(account, blockHeight)
+
+	if frozeAmt > balAmt {
+		frozeAmt = balAmt
+	}
 
 	return balAmt - frozeAmt
 }
@@ -106,7 +110,16 @@ func (rss *rcSession) CanConsume(account string, blockHeight uint64, rcAmt int64
 
 	frozeAmt := rss.rcSystem.GetFrozenAmt(account, blockHeight)
 
-	//fmt.Println("rcAmt", balAmt, frozeAmt, rcAmt)
+	// Cap frozenAmt at balAmt to prevent accounts from being permanently
+	// locked out. The frozen amount decays over RC_RETURN_PERIOD, but under
+	// sustained usage it can exceed the free allowance. Without this cap,
+	// zero-HBD accounts (oracles, new hive users) get stuck forever.
+	// The rate-limiting still works: once capped, totalAmt = 0 and the
+	// account must wait for decay before consuming more.
+	if frozeAmt > balAmt {
+		frozeAmt = balAmt
+	}
+
 	totalAmt := balAmt - frozeAmt
 	if totalAmt < rcAmt {
 		return false, 0, rcAmt

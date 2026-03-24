@@ -229,7 +229,7 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 
 	prefilteredTxs, _ := bp.TxDb.FindUnconfirmedTransactions(slotHeight)
 
-	vlog.Verbose("prefilteredTxs", "txs", prefilteredTxs)
+	vlog.Debug("generateTransactions", "prefilteredCount", len(prefilteredTxs), "slotHeight", slotHeight)
 	txRecords := make([]transactions.TransactionRecord, 0)
 
 	nonceMap := make(map[string]int64, len(prefilteredTxs))
@@ -242,10 +242,13 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 		}
 		if txRecord.Nonce >= nonceMap[keyId] && txRecord.RcLimit >= bp.sconf.ConsensusParams().MinRcLimit {
 			txRecords = append(txRecords, txRecord)
+		} else {
+			vlog.Debug("tx filtered out", "id", txRecord.Id, "txNonce", txRecord.Nonce, "dbNonce", nonceMap[keyId], "rcLimit", txRecord.RcLimit, "minRc", bp.sconf.ConsensusParams().MinRcLimit)
 		}
 	}
 
 	if len(txRecords) == 0 {
+		vlog.Debug("no transactions passed nonce/rc filter")
 		return []vscBlocks.VscBlockTx{}
 	}
 
@@ -335,9 +338,16 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 				txMap[keyId] = txMap[keyId][1:]
 				nonceMap[keyId]++
 				sequencedTxs = append(sequencedTxs, tx)
+				vlog.Debug("tx sequenced", "id", tx.Id, "nonce", tx.Nonce)
+			} else {
+				vlog.Debug("tx nonce mismatch", "id", tx.Id, "txNonce", tx.Nonce, "expected", nonceMap[keyId])
 			}
+		} else {
+			vlog.Debug("tx RC consume failed", "id", tx.Id, "payer", payer, "rcLimit", tx.RcLimit)
 		}
 	}
+
+	vlog.Debug("generateTransactions result", "sequenced", len(sequencedTxs), "filtered", len(txRecords))
 
 	for _, txRecord := range sequencedTxs {
 		op := txRecord.Ops[0].Type
