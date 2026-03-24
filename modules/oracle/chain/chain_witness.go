@@ -148,8 +148,8 @@ func witnessReplaceBlock(c *ChainOracle, sessionID string, request *chainRelayRe
 	}
 
 	// Build the same replaceBlock transaction.
-	// Payload is a JSON string containing raw hex.
-	payloadStr := `"` + canonicalHex + `"`
+	// Payload is raw hex — SerializeVSC handles JSON encoding.
+	payloadStr := canonicalHex
 
 	tx := makeTransaction(request.ContractId, payloadStr, "replaceBlock", chainSymbol, request.NetId, request.Nonce)
 
