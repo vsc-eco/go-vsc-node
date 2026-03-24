@@ -72,9 +72,16 @@ type chainRelay interface {
 	GetLatestValidHeight() (chainState, error)
 	// Fetches chaindata and serializes to raw bytes.
 	ChainData(startBlockHeight uint64, count uint64) ([]chainBlock, error)
+	// GetCanonicalBlockHeader returns the raw 80-byte block header hex for a
+	// given height according to the chain's RPC. Used for reorg detection.
+	// Chains that don't support this should return "", nil.
+	GetCanonicalBlockHeader(height uint64) (string, error)
 	// Clone returns a fresh, independent copy of this relayer.
 	// Used by New() to avoid sharing singleton state from the registry.
 	Clone() chainRelay
+	// AutoReorgDetection returns true if the oracle should automatically
+	// detect and fix reorgs by calling replaceBlock on the contract.
+	AutoReorgDetection() bool
 }
 
 // chainRegistry holds all registered chain relayers.
@@ -308,6 +315,8 @@ type chainSession struct {
 	contractId        string       // VSC mapping contract for this chain
 	chainData         []chainBlock // new blocks fetched from the chain's RPC
 	newBlocksToSubmit bool         // true if chainData contains unseen blocks
+	replaceBlock      bool         // true if a reorg was detected and replaceBlock should be called
+	replaceBlockHex   string       // canonical block header hex for replaceBlock
 }
 
 // getContractBlockHeight reads the last submitted block height from a
@@ -387,6 +396,28 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 		}, nil
 	}
 
+	// Auto-reorg detection: compare stored block with canonical chain.
+	if chain.AutoReorgDetection() && contractHeight > 0 {
+		reorgDetected, canonicalHex, err := c.checkForReorg(chain, contractId, contractHeight)
+		if err != nil {
+			c.logger.Warn("reorg detection check failed, continuing with addBlocks",
+				"symbol", chain.Symbol(), "err", err,
+			)
+		} else if reorgDetected {
+			c.logger.Warn("reorg detected! stored block differs from canonical chain",
+				"symbol", chain.Symbol(),
+				"height", contractHeight,
+			)
+			return chainSession{
+				symbol:            chain.Symbol(),
+				contractId:        contractId,
+				newBlocksToSubmit: true,
+				replaceBlock:      true,
+				replaceBlockHex:   canonicalHex,
+			}, nil
+		}
+	}
+
 	chainData, err := chain.ChainData(contractHeight+1, 50)
 	if err != nil {
 		return chainSession{}, fmt.Errorf("failed to get chain data: %w", err)
@@ -400,12 +431,70 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 	}, nil
 }
 
+// checkForReorg compares the block header stored in the contract at the given
+// height with the canonical block header from the chain's RPC. Returns true
+// if they differ (reorg detected), along with the correct canonical header hex.
+func (c *ChainOracle) checkForReorg(chain chainRelay, contractId string, height uint64) (bool, string, error) {
+	// Get the canonical header from the chain RPC
+	canonicalHex, err := chain.GetCanonicalBlockHeader(height)
+	if err != nil {
+		return false, "", fmt.Errorf("failed to get canonical header: %w", err)
+	}
+	if canonicalHex == "" {
+		return false, "", nil // chain doesn't support this check
+	}
+
+	// Get the stored header from contract state
+	storedHex, err := c.getStoredBlockHeaderHex(contractId, height)
+	if err != nil {
+		return false, "", fmt.Errorf("failed to get stored header: %w", err)
+	}
+
+	if storedHex != canonicalHex {
+		return true, canonicalHex, nil
+	}
+	return false, "", nil
+}
+
+// getStoredBlockHeaderHex reads the raw block header from the contract state
+// at the given height and returns it as a hex string.
+func (c *ChainOracle) getStoredBlockHeaderHex(contractId string, height uint64) (string, error) {
+	output, err := c.contractState.GetLastOutput(contractId, math.MaxInt64)
+	if err != nil {
+		return "", fmt.Errorf("no contract output found: %w", err)
+	}
+
+	cidz, err := cid.Parse(output.StateMerkle)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse state merkle: %w", err)
+	}
+
+	blockKey := "b-" + strconv.FormatUint(height, 10)
+	databin := DataLayer.NewDataBinFromCid(c.da, cidz)
+	cidVal, err := databin.Get(blockKey)
+	if err != nil {
+		return "", fmt.Errorf("block key %s not found in state: %w", blockKey, err)
+	}
+
+	rawVal, err := c.da.GetRaw(*cidVal)
+	if err != nil {
+		return "", fmt.Errorf("failed to read block data: %w", err)
+	}
+
+	return fmt.Sprintf("%x", rawVal), nil
+}
+
 // makeChainSessionID builds a unique session identifier for P2P signature
 // collection in the format "SYMBOL-hiveHeight-startBlock-endBlock"
 // (e.g. "BTC-93000000-640000-640100"). Including the Hive block height
 // prevents collisions when the same chain block range is retried across
 // multiple Hive blocks.
 func makeChainSessionID(c *chainSession, hiveBlockHeight uint64) (string, error) {
+	if c.replaceBlock {
+		id := fmt.Sprintf("%s-%d-replace", c.symbol, hiveBlockHeight)
+		return id, nil
+	}
+
 	if len(c.chainData) == 0 {
 		return "", errors.New("chainData not supplied")
 	}

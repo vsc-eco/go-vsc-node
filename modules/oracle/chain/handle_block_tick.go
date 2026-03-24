@@ -22,13 +22,14 @@ const (
 func makeTransaction(
 	contractId string,
 	payload string,
+	action string,
 	symbol string,
 	txNetId string,
 	nonce uint64,
 ) transactionpool.VSCTransaction {
 	op := transactionpool.VscContractCall{
 		ContractId: contractId,
-		Action:     "addBlocks",
+		Action:     action,
 		Payload:    payload,
 		Intents:    []contracts.Intent{},
 		RcLimit:    1000,
@@ -76,17 +77,24 @@ func (o *ChainOracle) processChainRelay(
 	p2pSpec p2p.OracleP2PSpec,
 ) {
 	blockCount := len(chainStatus.chainData)
-	if blockCount == 0 {
-		o.logger.Warn("processChainRelay called with empty chain data, skipping",
-			"symbol", chainStatus.symbol,
-		)
-		return
+	var startHeight, endHeight uint64
+	var rangeKey string
+
+	if chainStatus.replaceBlock {
+		rangeKey = "replace-" + chainStatus.replaceBlockHex[:16]
+	} else {
+		if blockCount == 0 {
+			o.logger.Warn("processChainRelay called with empty chain data, skipping",
+				"symbol", chainStatus.symbol,
+			)
+			return
+		}
+		startHeight = chainStatus.chainData[0].BlockHeight()
+		endHeight = chainStatus.chainData[blockCount-1].BlockHeight()
+		rangeKey = fmt.Sprintf("%d-%d", startHeight, endHeight)
 	}
-	startHeight := chainStatus.chainData[0].BlockHeight()
-	endHeight := chainStatus.chainData[blockCount-1].BlockHeight()
 
 	// Skip if we already submitted this exact range
-	rangeKey := fmt.Sprintf("%d-%d", startHeight, endHeight)
 	if o.lastSubmitted[chainStatus.symbol] == rangeKey {
 		return
 	}
@@ -99,20 +107,23 @@ func (o *ChainOracle) processChainRelay(
 	)
 
 	// Build the transaction payload
-	payload, err := makeTransactionPayload(chainStatus.chainData)
-	if err != nil {
-		o.logger.Error("failed to make transaction payload",
-			"symbol", chainStatus.symbol, "err", err,
-		)
-		return
-	}
+	var payloadJson []byte
+	if !chainStatus.replaceBlock {
+		txPayload, err := makeTransactionPayload(chainStatus.chainData)
+		if err != nil {
+			o.logger.Error("failed to make transaction payload",
+				"symbol", chainStatus.symbol, "err", err,
+			)
+			return
+		}
 
-	payloadJson, err := json.Marshal(payload)
-	if err != nil {
-		o.logger.Error("failed to marshal payload",
-			"symbol", chainStatus.symbol, "err", err,
-		)
-		return
+		payloadJson, err = json.Marshal(txPayload)
+		if err != nil {
+			o.logger.Error("failed to marshal payload",
+				"symbol", chainStatus.symbol, "err", err,
+			)
+			return
+		}
 	}
 
 	oracleDid := "did:vsc:oracle:" + strings.ToLower(chainStatus.symbol)
@@ -123,7 +134,27 @@ func (o *ChainOracle) processChainRelay(
 		}
 	}
 
-	tx := makeTransaction(chainStatus.contractId, string(payloadJson), chainStatus.symbol, o.sconf.NetId(), nonce)
+	var action, txPayloadStr string
+	if chainStatus.replaceBlock {
+		action = "replaceBlock"
+		// replaceBlock expects a JSON string of the hex header
+		replacePayloadBytes, err := json.Marshal(chainStatus.replaceBlockHex)
+		if err != nil {
+			o.logger.Error("failed to marshal replaceBlock payload",
+				"symbol", chainStatus.symbol, "err", err,
+			)
+			return
+		}
+		txPayloadStr = string(replacePayloadBytes)
+		o.logger.Info("submitting replaceBlock to fix reorg",
+			"symbol", chainStatus.symbol,
+		)
+	} else {
+		action = "addBlocks"
+		txPayloadStr = string(payloadJson)
+	}
+
+	tx := makeTransaction(chainStatus.contractId, txPayloadStr, action, chainStatus.symbol, o.sconf.NetId(), nonce)
 
 	// Hash the transaction to get the CID that witnesses will sign
 	signableBlock, err := tx.ToSignableBlock()

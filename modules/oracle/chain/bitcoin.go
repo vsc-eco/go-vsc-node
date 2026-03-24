@@ -26,6 +26,7 @@ type bitcoinRelayer struct {
 	rpcConfig         rpcclient.ConnConfig
 	validityThreshold uint64
 	contractId        string
+	autoReorg         bool
 }
 
 type btcChainData struct {
@@ -42,9 +43,11 @@ type btcChainData struct {
 // Init implements chainRelay.
 func (b *bitcoinRelayer) Init(sconf systemconfig.SystemConfig) error {
 	if sconf.OnTestnet() {
-		b.validityThreshold = 1
+		b.validityThreshold = 0
+		b.autoReorg = true
 	} else {
 		b.validityThreshold = 2
+		b.autoReorg = false
 	}
 	return nil
 }
@@ -219,6 +222,37 @@ func getBlockByHash(
 	}
 
 	return &btcBlock, nil
+}
+
+// GetCanonicalBlockHeader implements chainRelay.
+func (b *bitcoinRelayer) GetCanonicalBlockHeader(height uint64) (string, error) {
+	btcdClient, err := b.connect()
+	if err != nil {
+		return "", fmt.Errorf("failed to connect to btcd: %w", err)
+	}
+	defer btcdClient.Shutdown()
+
+	blockHash, err := btcdClient.GetBlockHash(int64(height))
+	if err != nil {
+		return "", fmt.Errorf("failed to get block hash for height %d: %w", height, err)
+	}
+
+	block, err := btcdClient.GetBlock(blockHash)
+	if err != nil {
+		return "", fmt.Errorf("failed to get block at height %d: %w", height, err)
+	}
+
+	buf := &bytes.Buffer{}
+	if err := block.Header.Serialize(buf); err != nil {
+		return "", fmt.Errorf("failed to serialize block header: %w", err)
+	}
+
+	return hex.EncodeToString(buf.Bytes()), nil
+}
+
+// AutoReorgDetection implements chainRelay.
+func (b *bitcoinRelayer) AutoReorgDetection() bool {
+	return b.autoReorg
 }
 
 // Clone implements chainRelay.

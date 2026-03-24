@@ -200,3 +200,13 @@ func (d *dashRelayer) Clone() chainRelay {
 func (d *dashRelayer) connect() (*rpcclient.Client, error) {
 	return rpcclient.New(&d.rpcConfig, nil)
 }
+
+// GetCanonicalBlockHeader implements chainRelay.
+func (d *dashRelayer) GetCanonicalBlockHeader(height uint64) (string, error) {
+	return "", nil
+}
+
+// AutoReorgDetection implements chainRelay.
+func (d *dashRelayer) AutoReorgDetection() bool {
+	return false
+}

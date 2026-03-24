@@ -182,6 +182,16 @@ func (e *ethChainData) Type() string {
 	return "ETH"
 }
 
+// GetCanonicalBlockHeader implements chainRelay.
+func (e *ethereumRelayer) GetCanonicalBlockHeader(height uint64) (string, error) {
+	return "", nil
+}
+
+// AutoReorgDetection implements chainRelay.
+func (e *ethereumRelayer) AutoReorgDetection() bool {
+	return false
+}
+
 // Clone implements chainRelay.
 func (e *ethereumRelayer) Clone() chainRelay {
 	clone := *e

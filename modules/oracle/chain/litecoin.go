@@ -199,3 +199,13 @@ func (l *litecoinRelayer) Clone() chainRelay {
 func (l *litecoinRelayer) connect() (*rpcclient.Client, error) {
 	return rpcclient.New(&l.rpcConfig, nil)
 }
+
+// GetCanonicalBlockHeader implements chainRelay.
+func (l *litecoinRelayer) GetCanonicalBlockHeader(height uint64) (string, error) {
+	return "", nil
+}
+
+// AutoReorgDetection implements chainRelay.
+func (l *litecoinRelayer) AutoReorgDetection() bool {
+	return false
+}
