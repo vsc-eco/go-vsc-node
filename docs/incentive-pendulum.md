@@ -1,7 +1,6 @@
 # Incentive pendulum (Magi)
 
 **Primary documentation:** [docs/pendulum/README.md](pendulum/README.md) (scope file, math PDF, implementation gaps, **test coverage**).
-
 This document describes the **Magi incentive pendulum** implementation on branch **`pendulum`**: closed-form economics from the March 2026 PDF (“The Incentive Pendulum — Formalized Mathematics”), plus the **sole HIVE oracle** design (witness participation + moving average). **HBD is treated as \$1** for accounting. **No other protocol oracles** are used for pool assets; CLP pools price assets via **open-market** reserves and swap math.
 
 ## Code layout
@@ -30,7 +29,6 @@ go test ./modules/incentive-pendulum -fuzz=FuzzSplitConservesR -fuzztime=10s   #
 3. **Collateralization**: `CollateralFromSV` / `CollateralReport` encode ideal / safe / warning / cliff bands so policy can throttle or surface risk without embedding DEX logic inside consensus core.
 
 DEX routers keep using **open-market** reserves for asset prices; the pendulum only supplies **fee policy**, **\(s\)**, **split math**, and **HIVE→HBD** for bond valuation.
-
 ## Economics (summary)
 
 - **Inputs** (same unit as HBD minors with HBD = \$1): \(E\) effective bond, \(T\) total effective bond, \(V\) vault liquidity, \(P\) pooled HBD, \(R\) CLP fees to distribute, \(u \approx T/E\) (often 1.5).
