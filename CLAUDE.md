@@ -44,6 +44,8 @@ Init DB + P2P + DataLayer → Start Hive block consumer (L1 listener) → Create
 
 **API & Config**: `gql/` (GraphQL API, schema in `modules/gql/schema.graphql`), `config/`, `common/` (system config per network), `db/` (MongoDB collections)
 
+**Incentive pendulum** (branch `pendulum`): `modules/incentive-pendulum/` — Magi pendulum math (fees + \(R\) split) and witness-window helpers for the sole HIVE-in-HBD oracle. See `docs/incentive-pendulum.md`.
+
 ### Networks
 
 Mainnet (`vsc-mainnet`), Testnet (`vsc-testnet`), Devnet (`vsc-devnet`)— network-specific params in `modules/common/system-config/`
