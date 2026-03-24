@@ -94,9 +94,37 @@ func (o *ChainOracle) processChainRelay(
 		rangeKey = fmt.Sprintf("%d-%d", startHeight, endHeight)
 	}
 
-	// Skip if we already submitted this exact range
+	// Skip if we already submitted this exact range AND the contract
+	// height has advanced (meaning the submission was accepted).
+	// If the contract height hasn't moved, the previous submission may
+	// have failed on-chain, so we must retry.
 	if o.lastSubmitted[chainStatus.symbol] == rangeKey {
-		return
+		contractHeight, err := o.getContractBlockHeight(chainStatus.contractId)
+		if err == nil && contractHeight >= endHeight {
+			return // contract accepted the range, skip
+		}
+		o.logger.Info("retrying previously submitted range (contract did not advance)",
+			"symbol", chainStatus.symbol,
+			"range", rangeKey,
+		)
+		// Clear the stale entry so we proceed with resubmission
+		delete(o.lastSubmitted, chainStatus.symbol)
+	}
+
+	// Skip if we recently witnessed (signed) this range for another producer.
+	// This prevents duplicate submissions across different nodes.
+	witnessKey := fmt.Sprintf("%s:%s", strings.ToUpper(chainStatus.symbol), rangeKey)
+	if witnessedAt, ok := o.recentlyWitnessed[witnessKey]; ok {
+		if time.Since(witnessedAt) < 5*time.Minute {
+			o.logger.Debug("skipping range recently witnessed for another producer",
+				"symbol", chainStatus.symbol,
+				"range", rangeKey,
+				"witnessedAgo", time.Since(witnessedAt),
+			)
+			return
+		}
+		// Stale entry — another producer's submission may have failed
+		delete(o.recentlyWitnessed, witnessKey)
 	}
 
 	o.logger.Debug("initiating chain relay consensus",

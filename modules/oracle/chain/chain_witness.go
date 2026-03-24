@@ -101,6 +101,11 @@ func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (*chainRelayRespo
 		return nil, fmt.Errorf("failed to get BLS DID: %w", err)
 	}
 
+	// Record that we witnessed this range so we don't re-produce it
+	// if we become the next block producer.
+	witnessKey := fmt.Sprintf("%s:%d-%d", strings.ToUpper(chainSymbol), startBlock, endBlock)
+	c.recentlyWitnessed[witnessKey] = time.Now()
+
 	c.logger.Debug("signed chain relay data",
 		"symbol", chainSymbol,
 		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock),

@@ -32,6 +32,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
@@ -149,6 +150,10 @@ type ChainOracle struct {
 	// lastSubmitted tracks the last successfully submitted block range per
 	// chain symbol to avoid duplicate submissions for the same range.
 	lastSubmitted     map[string]string // symbol -> "startHeight-endHeight"
+	// recentlyWitnessed tracks block ranges this node recently signed as a
+	// witness for another producer. If we become producer and see the same
+	// range, we skip it to avoid duplicate submissions across nodes.
+	recentlyWitnessed map[string]time.Time // "SYMBOL:startHeight-endHeight" -> when witnessed
 }
 
 func New(
@@ -187,6 +192,7 @@ func New(
 		txPool:            txPool,
 		nonceDb:           nonceDb,
 		lastSubmitted:     make(map[string]string),
+		recentlyWitnessed: make(map[string]time.Time),
 	}
 }
 
