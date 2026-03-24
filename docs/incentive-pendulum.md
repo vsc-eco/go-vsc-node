@@ -1,5 +1,7 @@
 # Incentive pendulum (Magi)
 
+**Primary documentation:** [docs/pendulum/README.md](pendulum/README.md) (scope file, math PDF, implementation gaps, **test coverage**).
+
 This document describes the **Magi incentive pendulum** implementation on branch **`pendulum`**: closed-form economics from the March 2026 PDF (“The Incentive Pendulum — Formalized Mathematics”), plus the **sole HIVE oracle** design (witness participation + moving average). **HBD is treated as \$1** for accounting. **No other protocol oracles** are used for pool assets; CLP pools price assets via **open-market** reserves and swap math.
 
 ## Code layout
