@@ -147,13 +147,11 @@ func witnessReplaceBlock(c *ChainOracle, sessionID string, request *chainRelayRe
 		return nil, fmt.Errorf("failed to get canonical header: %w", err)
 	}
 
-	// Build the same replaceBlock transaction
-	payloadJson, err := json.Marshal(canonicalHex)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal replaceBlock payload: %w", err)
-	}
+	// Build the same replaceBlock transaction.
+	// Payload is a JSON string containing raw hex.
+	payloadStr := `"` + canonicalHex + `"`
 
-	tx := makeTransaction(request.ContractId, string(payloadJson), "replaceBlock", chainSymbol, request.NetId, request.Nonce)
+	tx := makeTransaction(request.ContractId, payloadStr, "replaceBlock", chainSymbol, request.NetId, request.Nonce)
 
 	signableBlock, err := tx.ToSignableBlock()
 	if err != nil {
