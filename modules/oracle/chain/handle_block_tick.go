@@ -111,19 +111,25 @@ func (o *ChainOracle) processChainRelay(
 		delete(o.lastSubmitted, chainStatus.symbol)
 	}
 
-	// Skip if we recently witnessed (signed) this range for another producer.
-	// This prevents duplicate submissions across different nodes.
+	// Skip if we recently witnessed (signed) this range for another producer
+	// AND the contract height has advanced (meaning their submission succeeded).
 	witnessKey := fmt.Sprintf("%s:%s", strings.ToUpper(chainStatus.symbol), rangeKey)
 	if witnessedAt, ok := o.recentlyWitnessed[witnessKey]; ok {
 		if time.Since(witnessedAt) < 5*time.Minute {
-			o.logger.Debug("skipping range recently witnessed for another producer",
+			contractHeight, err := o.getContractBlockHeight(chainStatus.contractId)
+			if err == nil && contractHeight >= endHeight {
+				o.logger.Debug("skipping range recently witnessed (contract advanced)",
+					"symbol", chainStatus.symbol,
+					"range", rangeKey,
+				)
+				return
+			}
+			o.logger.Info("producing despite recent witness (contract did not advance)",
 				"symbol", chainStatus.symbol,
 				"range", rangeKey,
 				"witnessedAgo", time.Since(witnessedAt),
 			)
-			return
 		}
-		// Stale entry — another producer's submission may have failed
 		delete(o.recentlyWitnessed, witnessKey)
 	}
 
