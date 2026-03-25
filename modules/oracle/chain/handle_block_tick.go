@@ -32,7 +32,7 @@ func makeTransaction(
 		Action:     action,
 		Payload:    payload,
 		Intents:    []contracts.Intent{},
-		RcLimit:    1000,
+		RcLimit:    100000,
 		Caller:     "did:vsc:oracle:" + strings.ToLower(symbol),
 		NetId:      txNetId,
 	}
