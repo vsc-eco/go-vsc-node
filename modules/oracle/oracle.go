@@ -37,8 +37,10 @@ const (
 	priceOracleBroadcastInterval = uint64(600 / 3)
 	priceOraclePollInterval      = time.Second * 15
 
-	// ~1 minute = 20 blocks, 3s for every new block
-	chainRelayInterval = uint64(20)
+	// ~2 minutes = 40 blocks, 3s for every new block.
+	// Must span at least 2 witness slots so the first producer's tx confirms
+	// before the next producer's oracle tick fires, preventing duplicate submissions.
+	chainRelayInterval = uint64(40)
 )
 
 var (
