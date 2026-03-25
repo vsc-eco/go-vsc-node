@@ -94,21 +94,37 @@ func (o *ChainOracle) processChainRelay(
 		rangeKey = fmt.Sprintf("%d-%d", startHeight, endHeight)
 	}
 
-	// Skip if we already submitted this exact range AND the contract
-	// height has advanced (meaning the submission was accepted).
-	// If the contract height hasn't moved, the previous submission may
-	// have failed on-chain, so we must retry.
-	if o.lastSubmitted[chainStatus.symbol] == rangeKey {
-		contractHeight, err := o.getContractBlockHeight(chainStatus.contractId)
-		if err == nil && contractHeight >= endHeight {
-			return // contract accepted the range, skip
+	// Skip if the start of this batch overlaps with a previously submitted
+	// batch that hasn't been processed on-chain yet. This prevents overlapping
+	// submissions when the mempool hasn't cleared.
+	// Expires after 2 minutes to avoid deadlocks if the tx failed on-chain.
+	if !chainStatus.replaceBlock {
+		if lastEnd, ok := o.lastSubmittedEnd[chainStatus.symbol]; ok && startHeight <= lastEnd {
+			submittedAt := o.lastSubmittedAt[chainStatus.symbol]
+			expired := time.Since(submittedAt) > 2*time.Minute
+
+			contractHeight, err := o.getContractBlockHeight(chainStatus.contractId)
+			if err == nil && contractHeight >= lastEnd {
+				// Contract caught up — clear the tracker
+				delete(o.lastSubmittedEnd, chainStatus.symbol)
+				delete(o.lastSubmittedAt, chainStatus.symbol)
+			} else if expired {
+				// Timeout — previous tx likely failed, allow retry
+				o.logger.Info("dedup tracker expired, allowing retry",
+					"symbol", chainStatus.symbol,
+					"lastSubmittedEnd", lastEnd,
+				)
+				delete(o.lastSubmittedEnd, chainStatus.symbol)
+				delete(o.lastSubmittedAt, chainStatus.symbol)
+			} else {
+				o.logger.Debug("skipping overlapping range (previous tx still pending)",
+					"symbol", chainStatus.symbol,
+					"range", rangeKey,
+					"lastSubmittedEnd", lastEnd,
+				)
+				return
+			}
 		}
-		o.logger.Info("retrying previously submitted range (contract did not advance)",
-			"symbol", chainStatus.symbol,
-			"range", rangeKey,
-		)
-		// Clear the stale entry so we proceed with resubmission
-		delete(o.lastSubmitted, chainStatus.symbol)
 	}
 
 	// Skip if we recently witnessed (signed) this range for another producer
@@ -460,8 +476,11 @@ checkThreshold:
 		"signers", circuit.SignerCount(),
 	)
 
-	// Track this range to prevent duplicate submissions
-	o.lastSubmitted[chainStatus.symbol] = rangeKey
+	// Track the end height to prevent overlapping submissions
+	if !chainStatus.replaceBlock {
+		o.lastSubmittedEnd[chainStatus.symbol] = endHeight
+		o.lastSubmittedAt[chainStatus.symbol] = time.Now()
+	}
 }
 
 // utxoAddBlocksPayload matches the UTXO mapping contract's AddBlocksParams:
