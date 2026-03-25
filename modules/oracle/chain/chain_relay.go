@@ -147,9 +147,12 @@ type ChainOracle struct {
 	txCrafter         *transactionpool.TransactionCrafter
 	txPool            *transactionpool.TransactionPool
 	nonceDb           nonces.Nonces
-	// lastSubmitted tracks the last successfully submitted block range per
-	// chain symbol to avoid duplicate submissions for the same range.
-	lastSubmitted     map[string]string // symbol -> "startHeight-endHeight"
+	// lastSubmittedEnd tracks the end height of the last submitted block range
+	// per chain symbol. Any new submission whose start height <= this value
+	// is skipped until the contract state catches up, preventing overlapping
+	// batches when the previous tx is still in the mempool.
+	lastSubmittedEnd  map[string]uint64    // symbol -> endHeight
+	lastSubmittedAt   map[string]time.Time // symbol -> when submitted
 	// recentlyWitnessed tracks block ranges this node recently signed as a
 	// witness for another producer. If we become producer and see the same
 	// range, we skip it to avoid duplicate submissions across nodes.
@@ -191,7 +194,8 @@ func New(
 		txCrafter:         txCrafter,
 		txPool:            txPool,
 		nonceDb:           nonceDb,
-		lastSubmitted:     make(map[string]string),
+		lastSubmittedEnd:  make(map[string]uint64),
+		lastSubmittedAt:   make(map[string]time.Time),
 		recentlyWitnessed: make(map[string]time.Time),
 	}
 }
