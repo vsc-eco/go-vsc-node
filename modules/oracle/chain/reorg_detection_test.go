@@ -2,6 +2,7 @@ package chain
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -40,25 +41,25 @@ func TestMakeChainSessionID_ReplaceDoesNotRequireChainData(t *testing.T) {
 	assert.Contains(t, id, "replace")
 }
 
-func TestProcessChainRelay_SkipsDuplicateReplace(t *testing.T) {
+func TestProcessChainRelay_ReplaceBlockBypassesDedup(t *testing.T) {
 	o := &ChainOracle{
-		lastSubmitted: make(map[string]string),
+		lastSubmittedEnd: make(map[string]uint64),
+		lastSubmittedAt:  make(map[string]time.Time),
 	}
 
-	hex := "00000020abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	// Simulate a pending addBlocks up to height 100
+	o.lastSubmittedEnd["BTC"] = 100
+	o.lastSubmittedAt["BTC"] = time.Now()
 
-	// Simulate having already submitted this replace
-	rangeKey := "replace-" + hex[:16]
-	o.lastSubmitted["BTC"] = rangeKey
-
+	// A replaceBlock session should NOT be affected by the dedup tracker
 	session := chainSession{
 		symbol:          "BTC",
 		replaceBlock:    true,
-		replaceBlockHex: hex,
+		replaceBlockHex: "00000020abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
 	}
 
-	// The dedup key should match
-	testRangeKey := "replace-" + session.replaceBlockHex[:16]
-	assert.Equal(t, rangeKey, testRangeKey)
-	assert.Equal(t, o.lastSubmitted["BTC"], testRangeKey)
+	// replaceBlock should always be allowed through
+	assert.True(t, session.replaceBlock, "replaceBlock sessions bypass dedup")
+	// The tracker should still exist (not cleared by replace)
+	assert.Equal(t, uint64(100), o.lastSubmittedEnd["BTC"])
 }
