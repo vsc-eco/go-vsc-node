@@ -100,7 +100,7 @@ func (rss *rcSession) CanConsume(account string, blockHeight uint64, rcAmt int64
 	// They have no HBD balance and should never be rate-limited by RCs.
 	// This matches IngestTx which also skips RC checks for VscDID accounts.
 	if strings.HasPrefix(account, "did:vsc:oracle:") {
-		return true, 0, rcAmt
+		return true, math.MaxInt64, rcAmt
 	}
 
 	balAmt := rss.ledgerSession.GetBalance(account, blockHeight, "hbd")
