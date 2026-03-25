@@ -364,6 +364,10 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 
 	//Subject the returned amount from the currently frozen RCs
 	frozenAmount := rcRecord.Amount - amtRet
+	//Cap frozen to max available RCs
+	if frozenAmount > maxRcs {
+		frozenAmount = maxRcs
+	}
 	//Subtract frozen RCs - regenerated RCs
 	amount = amount - frozenAmount
 
