@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/vsclog"
@@ -1397,6 +1398,20 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 			rcBal = frozeAmt + v
 		}
 
+		// Cap frozen RC to user's balance — prevents snowball from
+		// multi-tx slots and non-contract ops that bypass CanConsume
+		balAmt := se.LedgerSystem.GetBalance(k, blockHeight, "hbd")
+		if strings.HasPrefix(k, "hive:") {
+			balAmt = balAmt + params.RC_HIVE_FREE_AMOUNT
+		}
+		if rcBal > balAmt {
+			rcBal = balAmt
+		}
+		if rcBal < 0 {
+			rcBal = 0
+		}
+
+		// fmt.Println("rcRecord k", k, rcRecord, rcBal)
 		se.rcDb.SetRecord(k, blockHeight, rcBal)
 	}
 }
