@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 	"strconv"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
@@ -1180,7 +1181,16 @@ func (se *StateEngine) ExecuteBatch() {
 					}
 				} else {
 					logs := callSession.PopLogs()
-					for id, log := range logs {
+					// Sort log keys for deterministic output ordering across nodes.
+					// Cross-contract calls produce logs from multiple contracts;
+					// unsorted map iteration causes different output order → CID mismatch.
+					logIds := make([]string, 0, len(logs))
+					for id := range logs {
+						logIds = append(logIds, id)
+					}
+					sort.Strings(logIds)
+					for _, id := range logIds {
+						log := logs[id]
 						if id == contractId {
 							outputs = append(outputs, ContractIdResult{
 								ContractId: contractId,

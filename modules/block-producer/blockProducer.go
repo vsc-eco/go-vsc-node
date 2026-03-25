@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -736,7 +737,18 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 	vlog.Verbose("MakeOutputs", "tempOutputs", len(bp.StateEngine.TempOutputs), "contractResults", len(bp.StateEngine.ContractResults))
 
 	contractOutputs := make([]vscBlocks.VscBlockTx, 0)
-	for contractId, output := range bp.StateEngine.TempOutputs {
+
+	// Sort contract IDs for deterministic output ordering across nodes.
+	// Go map iteration order is non-deterministic; without sorting, different
+	// nodes produce different block CIDs for identical state changes.
+	contractIds := make([]string, 0, len(bp.StateEngine.TempOutputs))
+	for contractId := range bp.StateEngine.TempOutputs {
+		contractIds = append(contractIds, contractId)
+	}
+	sort.Strings(contractIds)
+
+	for _, contractId := range contractIds {
+		output := bp.StateEngine.TempOutputs[contractId]
 		vlog.Trace("MakeOutputs contract", "contract", contractId, "baseCid", output.Cid, "cacheKeys", len(output.Cache), "deletions", len(output.Deletions), "results", len(bp.StateEngine.ContractResults[contractId]))
 
 		// Load or create DataBin. Directories use BasicDirectory for small entry
@@ -751,13 +763,24 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			db = datalayer.NewDataBinFromCid(bp.Datalayer, cidz)
 		}
 
-		// Apply deletions
+		// Apply deletions in sorted order for deterministic CIDs
+		delKeys := make([]string, 0, len(output.Deletions))
 		for key := range output.Deletions {
+			delKeys = append(delKeys, key)
+		}
+		sort.Strings(delKeys)
+		for _, key := range delKeys {
 			db.Delete(key)
 		}
 
-		// Apply cache diffs — only changed/new entries are written
-		for key, value := range output.Cache {
+		// Apply cache diffs in sorted order for deterministic CIDs
+		cacheKeys := make([]string, 0, len(output.Cache))
+		for key := range output.Cache {
+			cacheKeys = append(cacheKeys, key)
+		}
+		sort.Strings(cacheKeys)
+		for _, key := range cacheKeys {
+			value := output.Cache[key]
 			if output.Deletions[key] {
 				continue
 			}
