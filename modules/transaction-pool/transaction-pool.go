@@ -352,10 +352,9 @@ func (tp *TransactionPool) indexTx(txId string, txShell VSCTransactionShell) err
 		}
 
 		ops = append(ops, transactions.TransactionOperation{
-			RequiredAuths: txShell.Headers.RequiredAuths,
-			Type:          op.Type,
-			Idx:           int64(idx),
-			Data:          opData,
+			Type: op.Type,
+			Idx:  int64(idx),
+			Data: opData,
 		})
 	}
 

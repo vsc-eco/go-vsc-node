@@ -168,7 +168,7 @@ func (t TxVscCallContract) ExecuteTx(
 }
 
 func (tx TxVscCallContract) Type() string {
-	return "call_contract"
+	return "call"
 }
 
 func (tx TxVscCallContract) TxSelf() TxSelf {
@@ -177,7 +177,6 @@ func (tx TxVscCallContract) TxSelf() TxSelf {
 
 func (tx TxVscCallContract) ToData() map[string]interface{} {
 	return map[string]interface{}{
-		"type":        "call",
 		"contract_id": tx.ContractId,
 		"action":      tx.Action,
 		"payload":     tx.Payload,
@@ -520,7 +519,6 @@ func (t *TxStakeHbd) ToData() map[string]interface{} {
 		"to":     t.To,
 		"amount": t.Amount,
 		"asset":  t.Asset,
-		"type":   t.Type(),
 	}
 }
 
@@ -611,7 +609,6 @@ func (t *TxUnstakeHbd) ToData() map[string]interface{} {
 		"to":     t.To,
 		"amount": t.Amount,
 		"asset":  t.Asset,
-		"type":   t.Type(),
 	}
 }
 
@@ -703,7 +700,6 @@ func (t *TxConsensusStake) ToData() map[string]interface{} {
 		"from":   t.From,
 		"amount": t.Amount,
 		"asset":  t.Asset,
-		"type":   "consensus_stake",
 	}
 }
 
@@ -795,7 +791,6 @@ func (t *TxConsensusUnstake) ToData() map[string]interface{} {
 		"to":     t.To,
 		"amount": t.Amount,
 		"asset":  t.Asset,
-		"type":   "consensus_unstake",
 	}
 }
 
@@ -1059,10 +1054,9 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSe
 
 	for idx, v := range txs {
 		op := transactions.TransactionOperation{
-			RequiredAuths: txSelf.RequiredAuths,
-			Type:          v.Type(),
-			Data:          v.ToData(),
-			Idx:           int64(idx),
+			Type: v.Type(),
+			Data: v.ToData(),
+			Idx:  int64(idx),
 		}
 
 		opTypesM[op.Type] = true

@@ -41,7 +41,7 @@ const (
 )
 
 type TransactionOperation struct {
-	RequiredAuths []string               `json:"required_auths" bson:"required_auths"`
+	RequiredAuths []string               `json:"required_auths,omitempty" bson:"required_auths,omitempty"`
 	Type          string                 `json:"type" bson:"type"`
 	Idx           int64                  `json:"idx" bson:"idx"`
 	Data          map[string]interface{} `json:"data" bson:"data"`
