@@ -652,31 +652,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						Asset:  token,
 						Memo:   depositMemo,
 					})
-
-					// ingest into transaction_pool
-					// se.txDb.Ingest(transactions.IngestTransactionUpdate{
-					// 	Id:             tx.TransactionID,
-					// 	RequiredAuths:  []string{depositedFrom},
-					// 	Status:         "CONFIRMED",
-					// 	Type:           "hive",
-					// 	Tx:             transact,
-					// 	AnchoredBlock:  &block.BlockID,
-					// 	AnchoredHeight: &block.BlockNumber,
-					// 	AnchoredOpIdx:  &leDeposit.OpIdx,
-					// 	AnchoredIndex:  &leDeposit.BIdx,
-					// 	Ledger: []ledgerSystem.OpLogEvent{{
-					// 		Id:          MakeTxId(tx.TransactionID, opIndex),
-					// 		To:          depositedTo,
-					// 		From:        depositedFrom,
-					// 		Amount:      amt,
-					// 		Asset:       token,
-					// 		Memo:        depositMemo,
-					// 		Type:        "deposit",
-					// 		BIdx:        leDeposit.BIdx,
-					// 		OpIdx:       leDeposit.OpIdx,
-					// 		BlockHeight: block.BlockNumber,
-					// 	}},
-					// })
 				}
 			}
 			//# End parsing gateway transfer operations

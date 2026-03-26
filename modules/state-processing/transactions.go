@@ -176,10 +176,12 @@ func (tx TxVscCallContract) TxSelf() TxSelf {
 }
 
 func (tx TxVscCallContract) ToData() map[string]interface{} {
+	payload := string(tx.Payload)
+	json.Unmarshal(tx.Payload, &payload)
 	return map[string]interface{}{
 		"contract_id": tx.ContractId,
 		"action":      tx.Action,
-		"payload":     tx.Payload,
+		"payload":     payload,
 		"rc_limit":    tx.RcLimit,
 		"intents":     tx.Intents,
 	}
