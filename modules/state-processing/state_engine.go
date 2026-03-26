@@ -1118,7 +1118,7 @@ func (se *StateEngine) ExecuteBatch() {
 			var contractId string
 			lastContractMeta := contracts.ContractMetadata{}
 			lastStateCid := ""
-			if vscTx.Type() == "call_contract" {
+			if vscTx.Type() == "call" {
 				contractCall, ok := vscTx.(TxVscCallContract)
 				if ok {
 					contractId = contractCall.ContractId
@@ -1155,7 +1155,7 @@ func (se *StateEngine) ExecuteBatch() {
 			rcUsed := se.RcMap[payer] // don't crash if payer is not in RC map
 			se.RcMap[payer] = rcUsed + result.RcUsed
 
-			if vscTx.Type() == "call_contract" {
+			if vscTx.Type() == "call" {
 				txId := MakeTxId(tx.TxId, idx)
 				if !result.Success {
 					// If failed, output the error message only
