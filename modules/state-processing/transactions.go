@@ -766,7 +766,50 @@ func (tx *TxConsensusUnstake) ExecuteTx(se common_types.StateEngine, ledgerSessi
 		}
 	}
 
+	// --- Witness offboarding guard ---
+	// Reject unstake if it would leave fewer than 2/3 of current election
+	// members staked, which would prevent TSS reshare from completing.
 	electionResult := se.GetElectionInfo(tx.Self.BlockHeight - 1)
+
+	if electionResult.Type == "staked" && len(electionResult.Members) > 0 {
+		minStake := int64(se.SystemConfig().ConsensusParams().MinStake)
+
+		unstakerAccount := strings.TrimPrefix(tx.From, "hive:")
+		isElectionMember := false
+		for _, member := range electionResult.Members {
+			if member.Account == unstakerAccount {
+				isElectionMember = true
+				break
+			}
+		}
+
+		if isElectionMember {
+			currentBal := ledgerSession.GetBalance(tx.From, tx.Self.BlockHeight, "hive_consensus")
+			if currentBal-amount < minStake {
+				remainingStaked := 0
+				for _, member := range electionResult.Members {
+					if member.Account == unstakerAccount {
+						continue
+					}
+					bal := ledgerSession.GetBalance("hive:"+member.Account, tx.Self.BlockHeight, "hive_consensus")
+					if bal >= minStake {
+						remainingStaked++
+					}
+				}
+
+				totalMembers := len(electionResult.Members)
+				requiredMembers := int(math.Ceil(float64(totalMembers) * 2.0 / 3.0))
+
+				if remainingStaked < requiredMembers {
+					return TxResult{
+						Success: false,
+						Ret:     "unstake rejected: would leave fewer than 2/3 of election members staked",
+						RcUsed:  50,
+					}
+				}
+			}
+		}
+	}
 
 	params := ledgerSystem.ConsensusParams{
 		Id:            MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
