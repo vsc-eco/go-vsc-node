@@ -161,6 +161,13 @@ func (s *StateStore) AddPendingTransaction(
 
 // GetPendingTransaction retrieves a pending transaction by ID
 func (s *StateStore) GetPendingTransaction(ctx context.Context, txID string) (*Transaction, error) {
+	if len(txID) != 64 {
+		return nil, fmt.Errorf("invalid txID length %d: %w", len(txID), ErrTxNotFound)
+	}
+	if _, err := hex.DecodeString(txID); err != nil {
+		return nil, fmt.Errorf("invalid txID hex: %w", ErrTxNotFound)
+	}
+
 	var tx Transaction
 	err := s.txCollection.FindOne(ctx, bson.M{"_id": txID, "state": TxStatePending}).Decode(&tx)
 	if err != nil {
