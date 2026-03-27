@@ -259,18 +259,26 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	}
 
 	for _, virtualOp := range block.VirtualOps {
-		//Process virtual operations here such as claimed interest
-
-		fmt.Println("block.VirtualOps", block.VirtualOps)
 		if virtualOp.Op.Type == "interest_operation" {
-			//Ensure it matches our gateway wallet
-			if virtualOp.Op.Value["owner"].(string) == se.sconf.GatewayWallet() {
-
-				vInt := virtualOp.Op.Value["interest"].(map[string]any)["amount"].(string)
-
-				vInt1, err := strconv.ParseInt(vInt, 10, 64)
+			owner, ok := virtualOp.Op.Value["owner"].(string)
+			if !ok {
+				continue
+			}
+			if owner == se.sconf.GatewayWallet() {
+				interest, ok := virtualOp.Op.Value["interest"].(map[string]any)
+				if !ok {
+					fmt.Println("interest_operation: unexpected interest field type", "block", block.BlockNumber)
+					continue
+				}
+				amountStr, ok := interest["amount"].(string)
+				if !ok {
+					fmt.Println("interest_operation: unexpected amount field type", "block", block.BlockNumber)
+					continue
+				}
+				vInt1, err := strconv.ParseInt(amountStr, 10, 64)
 				if err != nil {
-					panic(err)
+					fmt.Println("interest_operation: failed to parse amount", "block", block.BlockNumber, "amount", amountStr, "err", err)
+					continue
 				}
 				se.claimHBDInterest(blockInfo.BlockHeight, vInt1)
 			}
@@ -1444,7 +1452,8 @@ func (se *StateEngine) GetContractInfo(id string, height uint64) (contracts.Cont
 	if err == mongo.ErrNoDocuments {
 		return contracts.Contract{}, false
 	} else if err != nil {
-		panic(err)
+		fmt.Println("GetContractInfo: db error", "id", id, "height", height, "err", err)
+		return contracts.Contract{}, false
 	}
 
 	return contractInfo, true

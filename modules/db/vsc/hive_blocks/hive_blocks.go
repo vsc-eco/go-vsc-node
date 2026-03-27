@@ -385,6 +385,14 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 	ctx, cancel := context.WithCancel(ctx)
 	errChan := make(chan error)
 	go func() {
+		// Recover from panics in the listener callback (e.g. ProcessBlock).
+		// Without this, an unrecovered panic in the listener kills the entire
+		// node process because this goroutine has no other defer/recover.
+		defer func() {
+			if r := recover(); r != nil {
+				errChan <- fmt.Errorf("panic in block listener at block %d: %v", startBlock, r)
+			}
+		}()
 		for {
 			select {
 			case <-ctx.Done():

@@ -183,7 +183,10 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 	election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
 
 	if err != nil {
-		panic("Failed to get election")
+		return TxResult{
+			Success: false,
+			Ret:     fmt.Sprintf("failed to get election at height %d: %v", tx.Self.BlockHeight, err),
+		}
 	}
 
 	verified := tx.StorageProof.Verify(election, se.sconf)
