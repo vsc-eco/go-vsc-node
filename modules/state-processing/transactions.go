@@ -891,7 +891,8 @@ func (tx *TransactionContainer) AsOplog(endBlock uint64) Oplog {
 	node, err := tx.da.GetDag(cid)
 
 	if err != nil {
-		panic(err)
+		fmt.Println("AsOplog: failed to fetch DAG", "cid", tx.Id, "err", err)
+		return Oplog{Self: tx.Self, EndBlock: endBlock}
 	}
 	jsonBytes, _ := node.MarshalJSON()
 
