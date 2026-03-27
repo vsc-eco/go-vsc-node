@@ -56,6 +56,8 @@ type ReshareDispatcher struct {
 	newParticipants    []Participant
 	newEpoch           uint64
 	prevCommitmentType string
+	origOldSize        int // full old committee size before readiness filtering
+	origNewSize        int // full new committee size before readiness filtering
 
 	//Filled internally
 	newParty btss.Party
@@ -134,10 +136,13 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 	newP2pCtx := btss.NewPeerContext(dispatcher.newPids)
 
-	//@todo double check threshold calculation is correct
-	threshold, _ := tss_helpers.GetThreshold(len(sortedPids))
+	// Use the ORIGINAL (pre-readiness-filter) committee sizes for threshold.
+	// tss-lib Lagrange interpolation requires the threshold matching the polynomial
+	// degree from keygen/reshare. Using the filtered subset size produces wrong
+	// coefficients and corrupts the key.
+	threshold, _ := tss_helpers.GetThreshold(dispatcher.origOldSize)
 
-	newThreshold, _ := tss_helpers.GetThreshold(len(dispatcher.newPids))
+	newThreshold, _ := tss_helpers.GetThreshold(dispatcher.origNewSize)
 	// newThreshold++
 
 	log.Verbose("reshare thresholds calculated", "oldRequired", threshold+1, "oldTotal", len(sortedPids), "oldThreshold", threshold, "newRequired", newThreshold+1, "newTotal", len(dispatcher.newPids), "newThreshold", newThreshold, "sessionId", dispatcher.sessionId)
@@ -214,9 +219,9 @@ func (dispatcher *ReshareDispatcher) Start() error {
 					p2pCtx,
 					newP2pCtx,
 					myParty,
-					len(sortedPids),
+					dispatcher.origOldSize,
 					threshold,
-					len(dispatcher.newPids),
+					dispatcher.origNewSize,
 					newThreshold,
 				)
 
@@ -252,9 +257,9 @@ func (dispatcher *ReshareDispatcher) Start() error {
 					p2pCtx,
 					newP2pCtx,
 					myNewParty,
-					len(sortedPids),
+					dispatcher.origOldSize,
 					threshold,
-					len(dispatcher.newPids),
+					dispatcher.origNewSize,
 					newThreshold,
 				)
 
@@ -282,6 +287,24 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				log.Verbose("reshare result received", "algo", "ECDSA", "sessionId", dispatcher.sessionId, "partyId", dispatcher.newParty.PartyID().Id, "hasPubKey", reshareResult.ECDSAPub != nil)
 
 				if reshareResult.ECDSAPub != nil {
+					// Safety check: verify reshared key matches original
+					origKeyData, origErr := dispatcher.keystore.Get(context.Background(), makeKey("key", dispatcher.keyId, int(dispatcher.epoch)))
+					if origErr == nil {
+						var origSave keyGenSecp256k1.LocalPartySaveData
+						if json.Unmarshal(origKeyData, &origSave) == nil && origSave.ECDSAPub != nil {
+							if origSave.ECDSAPub.X().Cmp(reshareResult.ECDSAPub.X()) != 0 ||
+								origSave.ECDSAPub.Y().Cmp(reshareResult.ECDSAPub.Y()) != 0 {
+								log.Error("RESHARE KEY MISMATCH - public key changed, aborting reshare",
+									"keyId", dispatcher.keyId, "sessionId", dispatcher.sessionId,
+									"origX", fmt.Sprintf("%x", origSave.ECDSAPub.X()),
+									"newX", fmt.Sprintf("%x", reshareResult.ECDSAPub.X()))
+								dispatcher.err = fmt.Errorf("reshare produced different public key for key %s", dispatcher.keyId)
+								dispatcher.signalDone()
+								return
+							}
+						}
+					}
+
 					duration := time.Since(startTime)
 					log.Info("reshare completed successfully", "algo", "ECDSA", "sessionId", dispatcher.sessionId, "duration", duration, "keyId", dispatcher.keyId, "newEpoch", dispatcher.newEpoch)
 					dispatcher.tssMgr.metrics.IncrementReshareSuccess()
@@ -346,7 +369,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				}
 			}()
 			if myParty != nil {
-				params := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
+				params := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myParty, dispatcher.origOldSize, threshold, dispatcher.origNewSize, newThreshold)
 				dispatcher.party = reshareEddsa.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
 				initOnce.Do(func() { partyInitWg.Done() })
 
@@ -373,7 +396,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				}
 			}()
 			if myNewParty != nil {
-				newParams := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
+				newParams := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myNewParty, dispatcher.origOldSize, threshold, dispatcher.origNewSize, newThreshold)
 
 				dispatcher.newParty = reshareEddsa.NewLocalParty(newParams, save, dispatcher.p2pMsg, end)
 				initOnce.Do(func() { partyInitWg.Done() })
@@ -400,6 +423,23 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				log.Verbose("reshare result received", "algo", "EdDSA", "sessionId", dispatcher.sessionId, "partyId", dispatcher.newParty.PartyID().Id)
 				if reshareResult.EDDSAPub == nil {
 					continue
+				}
+
+				// Safety check: verify reshared key matches original
+				origKeyData, origErr := dispatcher.keystore.Get(context.Background(), makeKey("key", dispatcher.keyId, int(dispatcher.epoch)))
+				if origErr == nil {
+					var origSave keyGenEddsa.LocalPartySaveData
+					if json.Unmarshal(origKeyData, &origSave) == nil && origSave.EDDSAPub != nil {
+						if origSave.EDDSAPub.X().Cmp(reshareResult.EDDSAPub.X()) != 0 ||
+							origSave.EDDSAPub.Y().Cmp(reshareResult.EDDSAPub.Y()) != 0 {
+							log.Error("RESHARE KEY MISMATCH - public key changed, aborting reshare",
+								"keyId", dispatcher.keyId, "sessionId", dispatcher.sessionId,
+								"algo", "EdDSA")
+							dispatcher.err = fmt.Errorf("reshare produced different public key for key %s", dispatcher.keyId)
+							dispatcher.signalDone()
+							return
+						}
+					}
 				}
 
 				duration := time.Since(startTime)
@@ -747,6 +787,7 @@ type SignDispatcher struct {
 	msg []byte
 
 	prevCommitmentType string
+	origCommitteeSize  int // full committee size before readiness filtering
 
 	result *KeySignResult
 }
@@ -807,7 +848,9 @@ func (dispatcher *SignDispatcher) Start() error {
 			return err
 		}
 		json.Unmarshal(rawKey, &keydata)
-		threshold, err := tss_helpers.GetThreshold(len(sortedPids))
+		// Use original committee size for threshold — not the readiness-filtered subset.
+		// The polynomial degree must match keygen/reshare or Lagrange interpolation is wrong.
+		threshold, err := tss_helpers.GetThreshold(dispatcher.origCommitteeSize)
 
 		if err != nil {
 
@@ -874,8 +917,8 @@ func (dispatcher *SignDispatcher) Start() error {
 			return err
 		}
 
-		// json.Unmarshal(dispatcher.savedKeyData, &keydata)
-		threshold, err := tss_helpers.GetThreshold(len(sortedPids))
+		// Use original committee size for threshold — not the readiness-filtered subset.
+		threshold, err := tss_helpers.GetThreshold(dispatcher.origCommitteeSize)
 
 		if err != nil {
 			return nil

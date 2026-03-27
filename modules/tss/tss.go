@@ -517,7 +517,13 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			participants := make([]Participant, 0)
 
-			for midx, member := range currentElection.Members {
+			// Fix 4: Use the commitment's epoch election for bitset mapping,
+			// not currentElection which may have different members/order.
+			commitElection := tssMgr.electionDb.GetElection(commitment.Epoch)
+			if commitElection == nil || commitElection.Members == nil {
+				commitElection = &currentElection
+			}
+			for midx, member := range commitElection.Members {
 				if bv.Bit(midx) == 1 {
 					participants = append(participants, Participant{
 						Account: member.Account,
@@ -525,9 +531,12 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 
+			// Capture pre-filter size for correct threshold calculation
+			origSignCommitteeSize := len(participants)
+
 			// Readiness check: ping each participant's TSS RPC layer to filter out zombie nodes
 			participants = tssMgr.checkParticipantReadiness(participants, sessionId, "SIGN")
-			origThreshold, _ := tss_helpers.GetThreshold(len(currentElection.Members))
+			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
 			if len(participants) < origThreshold+1 {
 				log.Warn("insufficient participants for signing", "sessionId", sessionId, "connected", len(participants), "needed", origThreshold+1)
 				continue
@@ -555,6 +564,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				},
 				msg:                action.Args,
 				prevCommitmentType: prevCommitType,
+				origCommitteeSize:  origSignCommitteeSize,
 			}
 			dispatcher.startLock.TryLock()
 
@@ -635,10 +645,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			log.Verbose("reshare participant selection", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "excluded", len(excludedNodes), "excludedNodes", excludedNodes)
 			log.Trace("new participants list", "newParticipants", newParticipants)
 
+			// Capture pre-filter sizes — these are needed by the dispatcher for correct
+			// threshold calculation in tss-lib. Using post-filter sizes corrupts the key.
+			origOldSize := len(commitedMembers)
+			origNewSize := len(newParticipants)
+
 			// Filter both old and new participants by connectivity
 			// Threshold is based on original counts (before filtering) since the key was created with that many participants
-			origOldThreshold, _ := tss_helpers.GetThreshold(len(commitedMembers))
-			origNewThreshold, _ := tss_helpers.GetThreshold(len(newParticipants))
+			origOldThreshold, _ := tss_helpers.GetThreshold(origOldSize)
+			origNewThreshold, _ := tss_helpers.GetThreshold(origNewSize)
 			commitedMembers = tssMgr.checkParticipantReadiness(commitedMembers, sessionId, "RESHARE-OLD")
 			newParticipants = tssMgr.checkParticipantReadiness(newParticipants, sessionId, "RESHARE-NEW")
 
@@ -678,6 +693,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				},
 				newParticipants:    newParticipants,
 				newEpoch:           currentElection.Epoch,
+				origOldSize:        origOldSize,
+				origNewSize:        origNewSize,
 				prevCommitmentType: commitment.Type,
 			}
 			dispatcher.startLock.TryLock()
