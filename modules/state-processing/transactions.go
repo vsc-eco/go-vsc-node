@@ -319,11 +319,11 @@ func (tx TxVSCTransfer) ExecuteTx(
 		BlockHeight: tx.Self.BlockHeight,
 	}
 
-	log.Debug("Transfer - tx.Self.BlockHeight", tx.Self.BlockHeight)
+	log.Debug("Transfer", "blockHeight", tx.Self.BlockHeight)
 
 	ledgerResult := ledgerSession.ExecuteTransfer(transferParams)
 
-	log.Debug("Transfer LedgerResult", ledgerResult)
+	log.Debug("Transfer LedgerResult", "result", ledgerResult)
 
 	return TxResult{
 		Success: ledgerResult.Ok,
@@ -424,7 +424,7 @@ func (t *TxVSCWithdraw) ExecuteTx(
 	parameter, _ := json.Marshal(params)
 	ledgerResult := ledgerSession.Withdraw(params)
 
-	log.Debug("ExecuteTx Result", params, ledgerResult, string(parameter))
+	log.Debug("ExecuteTx Result", "params", params, "result", ledgerResult, "parameterJson", string(parameter))
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,
@@ -507,7 +507,7 @@ func (t *TxStakeHbd) ExecuteTx(
 	}
 	ledgerResult := ledgerSession.Stake(params)
 
-	log.Debug("Stake LedgerResult", ledgerResult)
+	log.Debug("Stake LedgerResult", "result", ledgerResult)
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,
@@ -597,7 +597,7 @@ func (t *TxUnstakeHbd) ExecuteTx(
 	ledgerResult := ledgerSession.Unstake(params)
 	paramsJson, _ := json.Marshal(params)
 
-	log.Debug("Unstake LedgerResult", ledgerResult, string(paramsJson))
+	log.Debug("Unstake LedgerResult", "result", ledgerResult, "paramsJson", string(paramsJson))
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,

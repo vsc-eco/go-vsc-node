@@ -1317,43 +1317,11 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			claimHeight = claimRecord.BlockHeight
 		} else if prevBalRecord != nil {
 			//There is a previous balance record
-
-			if ledgerBalances["hbd_savings"] != prevBalRecord.HBD_SAVINGS {
-				//If there is a change in the savings balance, calculate the average
-
-				A := endBlock - prevBalRecord.HBD_MODIFY_HEIGHT //Example: Modifed at 10, endBlock = 40; thus 10-40 = 30
-				B := endBlock - prevBalRecord.HBD_CLAIM_HEIGHT  //Example: Claimed at block 100, current block 800; thus
-
-				moreAvg := prevBalRecord.HBD_SAVINGS * int64(A) / int64(B)
-
-				var tmpAvg int64
-				if moreAvg > 0 {
-					tmpAvg = prevBalRecord.HBD_AVG + moreAvg
-				} else {
-					tmpAvg = prevBalRecord.HBD_AVG
-				}
-
-				//Apply adjustments
-				tmpAvg = tmpAvg * int64(A) / int64(B)
-				if tmpAvg > 0 || prevBalRecord.HBD_MODIFY_HEIGHT == 0 {
-					modifyHeight = endBlock
-					hbdAvg = tmpAvg
-				} else {
-					modifyHeight = prevBalRecord.HBD_MODIFY_HEIGHT
-					// hbdAvg = prevBalRecord.HBD_AVG
-				}
-
-				//Only update modified height if there is an average of >1 or 0.001
-				//This is avoid the scenario of small deposits within a short period of time causing averages to be lost
-
-				//Balance adjusted once accounting for the modify time
-				//This ensures an average decreases. If balance is equal to the previous balance, then the average will not change
-				// log.Debug("k="+k, "adjustedBal", tmpAvg, "hbdAvg="+strconv.Itoa(int(hbdAvg)), "B="+strconv.Itoa(int(B)), "C="+strconv.Itoa(int(C)), "endBlock="+strconv.Itoa(int(endBlock)))
-				// log.Debug(prevBalRecord.HBD_CLAIM_HEIGHT, prevBalRecord.HBD_MODIFY_HEIGHT, moreAvg)
-			} else {
-				modifyHeight = prevBalRecord.HBD_MODIFY_HEIGHT
-				hbdAvg = prevBalRecord.HBD_AVG
-			}
+			//HBD_AVG stores an unnormalized cumulative sum (balance * blocks) since the last claim.
+			//Accumulate the previous balance's contribution for blocks since last modification.
+			A := endBlock - prevBalRecord.HBD_MODIFY_HEIGHT
+			hbdAvg = prevBalRecord.HBD_AVG + prevBalRecord.HBD_SAVINGS*int64(A)
+			modifyHeight = endBlock
 		} else {
 			modifyHeight = endBlock
 			hbdAvg = 0
