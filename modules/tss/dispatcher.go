@@ -219,9 +219,9 @@ func (dispatcher *ReshareDispatcher) Start() error {
 					p2pCtx,
 					newP2pCtx,
 					myParty,
-					dispatcher.origOldSize,
+					len(sortedPids),
 					threshold,
-					dispatcher.origNewSize,
+					len(dispatcher.newPids),
 					newThreshold,
 				)
 
@@ -257,9 +257,9 @@ func (dispatcher *ReshareDispatcher) Start() error {
 					p2pCtx,
 					newP2pCtx,
 					myNewParty,
-					dispatcher.origOldSize,
+					len(sortedPids),
 					threshold,
-					dispatcher.origNewSize,
+					len(dispatcher.newPids),
 					newThreshold,
 				)
 
@@ -369,7 +369,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				}
 			}()
 			if myParty != nil {
-				params := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myParty, dispatcher.origOldSize, threshold, dispatcher.origNewSize, newThreshold)
+				params := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 				dispatcher.party = reshareEddsa.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
 				initOnce.Do(func() { partyInitWg.Done() })
 
@@ -396,7 +396,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				}
 			}()
 			if myNewParty != nil {
-				newParams := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myNewParty, dispatcher.origOldSize, threshold, dispatcher.origNewSize, newThreshold)
+				newParams := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
 
 				dispatcher.newParty = reshareEddsa.NewLocalParty(newParams, save, dispatcher.p2pMsg, end)
 				initOnce.Do(func() { partyInitWg.Done() })
