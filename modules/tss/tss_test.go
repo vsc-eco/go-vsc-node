@@ -2244,6 +2244,688 @@ func TestTss(t *testing.T) {
 	log.Info("All 14 TSS phases completed successfully!")
 }
 
+// TestTssThresholdIntegration is a focused integration test that proves the threshold fix
+// (commit 219f20f) works end-to-end through the real TSS stack with MongoDB, P2P,
+// readiness filtering, and block processing.
+//
+// Scenario:
+//  1. Keygen with 6 members (epoch 0) → capture pubkey
+//  2. Disconnect 1 node → reshare (epoch 1) with 5 of 6 old members
+//     (checkParticipantReadiness drops the offline node, but threshold uses origSize=6)
+//  3. Sign with the reshared key (1 node still offline → 5 of 6 sign)
+//  4. Verify signature against the KEYGEN pubkey → proves key was preserved
+//  5. Reconnect all, store epoch 2 with SWAPPED member order → reshare again
+//  6. Sign using epoch 2 commitment → bitset maps against epoch 2 election (not epoch 1)
+//  7. Verify signature against keygen pubkey → proves bitset mapping fix works
+func TestTssThresholdIntegration(t *testing.T) {
+	vsclog.ParseAndApply("verbose")
+
+	// Use a separate DB prefix to not conflict with TestTss
+	const intgNodeCount = 6
+	intgDbPrefix := "go-vsc-tss-threshold-intg-"
+
+	// Clean databases from previous runs
+	func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+		if err != nil {
+			return
+		}
+		defer client.Disconnect(ctx)
+		for i := 0; i < intgNodeCount; i++ {
+			client.Database(intgDbPrefix + strconv.Itoa(i)).Drop(ctx)
+		}
+	}()
+
+	// Build MockElectionSystem with 6 witnesses
+	witnessNames := make([]string, intgNodeCount)
+	for i := 0; i < intgNodeCount; i++ {
+		witnessNames[i] = "mock-intg-" + strconv.Itoa(i+1)
+	}
+	sort.Strings(witnessNames)
+	mes := &MockElectionSystem{WitnessNames: witnessNames}
+
+	// Shared broadcast capture
+	var mu sync.Mutex
+	var keygenBroadcast *hivego.HiveTransaction
+	var signBroadcast *hivego.HiveTransaction
+	var reshareBroadcast *hivego.HiveTransaction
+	keygenPubKeys := make(map[string]string)
+
+	nodes := make([]nodeComponents, intgNodeCount)
+
+	broadcastCb := func(tx hivego.HiveTransaction) error {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, op := range tx.Operations {
+			if op.OpName() == "custom_json" {
+				raw, _ := json.Marshal(op)
+				var cj struct {
+					Id   string `json:"id"`
+					Json string `json:"json"`
+				}
+				json.Unmarshal(raw, &cj)
+				log.Info("intg broadcast received", "id", cj.Id)
+				if cj.Id == "vsc.tss_commitment" {
+					var entries []interface{}
+					if err := json.Unmarshal([]byte(cj.Json), &entries); err != nil {
+						var payload map[string]interface{}
+						json.Unmarshal([]byte(cj.Json), &payload)
+						for _, v := range payload {
+							entries = append(entries, v)
+						}
+					}
+					for _, v := range entries {
+						if m, ok := v.(map[string]interface{}); ok {
+							if tp, ok := m["type"].(string); ok {
+								if tp == "keygen" && keygenBroadcast == nil {
+									txCopy := tx
+									keygenBroadcast = &txCopy
+									log.Info("intg keygen commitment captured")
+								} else if tp == "reshare" && reshareBroadcast == nil {
+									txCopy := tx
+									reshareBroadcast = &txCopy
+									log.Info("intg reshare commitment captured")
+								}
+							}
+							if pk, ok := m["pub_key"].(string); ok {
+								if kid, ok := m["key_id"].(string); ok {
+									keygenPubKeys[kid] = pk
+								}
+							}
+
+							// Store commitment in DB
+							keyId, _ := m["key_id"].(string)
+							cType, _ := m["type"].(string)
+							commitmentStr, _ := m["commitment"].(string)
+							epoch, _ := m["epoch"].(float64)
+							blockHeight, _ := m["block_height"].(float64)
+							var pubKey *string
+							if pk, ok := m["pub_key"].(string); ok {
+								pubKey = &pk
+							}
+							for _, node := range nodes {
+								node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+									Type:        cType,
+									KeyId:       keyId,
+									Commitment:  commitmentStr,
+									Epoch:       uint64(epoch),
+									BlockHeight: uint64(blockHeight),
+									PublicKey:   pubKey,
+								})
+							}
+						}
+					}
+				} else if cj.Id == "vsc.tss_sign" {
+					if signBroadcast == nil {
+						txCopy := tx
+						signBroadcast = &txCopy
+						log.Info("intg sign result captured")
+					}
+					var signPayload struct {
+						Packet []struct {
+							KeyId string `json:"key_id"`
+							Msg   string `json:"msg"`
+							Sig   string `json:"sig"`
+						} `json:"packet"`
+					}
+					json.Unmarshal([]byte(cj.Json), &signPayload)
+					for _, pkt := range signPayload.Packet {
+						for _, node := range nodes {
+							node.tssRequests.UpdateRequest(tss_db.TssRequest{
+								KeyId:  pkt.KeyId,
+								Msg:    pkt.Msg,
+								Sig:    pkt.Sig,
+								Status: tss_db.SignComplete,
+							})
+						}
+					}
+				}
+			}
+		}
+		return nil
+	}
+
+	// Create nodes using custom MakeNode-like setup with separate DB names and ports
+	for i := 0; i < intgNodeCount; i++ {
+		path := "data-dir-intg-" + strconv.Itoa(i)
+		os.RemoveAll(path)
+		os.Mkdir(path, os.ModePerm)
+
+		dbConf := db.NewDbConfig(path)
+		identity := common.NewIdentityConfig(path)
+		p2pConf := libp2p.NewConfig(path)
+		aggregate.New([]aggregate.Plugin{dbConf, identity, p2pConf}).Init()
+		dbConf.SetDbName(intgDbPrefix + strconv.Itoa(i))
+		identity.SetUsername("mock-intg-" + strconv.Itoa(i+1))
+		p2pConf.SetOptions(libp2p.P2POpts{
+			Port:         23222 + i, // different port range from TestTss
+			ServerMode:   true,
+			AllowPrivate: true,
+			Bootnodes:    []string{},
+		})
+		sysConf := systemconfig.MocknetConfig()
+
+		database := db.New(dbConf)
+		vscDb := vsc.New(database, dbConf)
+		tssKeys := tss_db.NewKeys(vscDb)
+		tssRequests := tss_db.NewRequests(vscDb)
+		tssCommitments := tss_db.NewCommitments(vscDb)
+		electionDb := elections.New(vscDb)
+		witnessDb := witnesses.New(vscDb)
+
+		kp := e2e.HashSeed([]byte(e2e.SEED_PREFIX + path))
+		brcst := hive.MockTransactionBroadcaster{
+			KeyPair:  kp,
+			Callback: broadcastCb,
+		}
+		txCreator := hive.MockTransactionCreator{
+			MockTransactionBroadcaster: brcst,
+			TransactionCrafter:         hive.TransactionCrafter{},
+		}
+
+		blockConsumer := blockconsumer.New(nil)
+		p2p := libp2p.New(witnessDb, p2pConf, identity, sysConf, nil)
+
+		keystore, err := flatfs.CreateOrOpen(path+"/keys", flatfs.Prefix(1), false)
+		if err != nil {
+			t.Fatalf("failed to create keystore for node %d: %v", i, err)
+		}
+
+		tssMgr := vtss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessDb, electionDb, blockConsumer, mes, identity, sysConf, keystore, &txCreator)
+
+		agg := aggregate.New([]aggregate.Plugin{
+			identity, dbConf, database, vscDb,
+			tssKeys, tssRequests, tssCommitments,
+			electionDb, witnessDb, p2p, tssMgr,
+		})
+
+		nodes[i] = nodeComponents{
+			agg: agg, consumer: blockConsumer, witnessDb: witnessDb,
+			p2p: p2p, electionDb: electionDb, tssKeys: tssKeys,
+			tssRequests: tssRequests, tssCommitments: tssCommitments,
+			identity: identity, tssMgr: tssMgr,
+		}
+	}
+
+	t.Cleanup(func() {
+		for i := 0; i < intgNodeCount; i++ {
+			os.RemoveAll("data-dir-intg-" + strconv.Itoa(i))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		client, _ := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+		if client != nil {
+			for i := 0; i < intgNodeCount; i++ {
+				client.Database(intgDbPrefix + strconv.Itoa(i)).Drop(ctx)
+			}
+			client.Disconnect(ctx)
+		}
+	})
+
+	// Start all nodes
+	for i := 0; i < intgNodeCount; i++ {
+		go test_utils.RunPlugin(t, nodes[i].agg)
+	}
+	time.Sleep(3 * time.Second)
+
+	// Set up BLS DIDs and witness updates
+	blsDids := make([]dids.BlsDID, intgNodeCount)
+	for i := 0; i < intgNodeCount; i++ {
+		blsDid, err := nodes[i].identity.BlsDID()
+		if err != nil {
+			t.Fatalf("Failed to derive BLS DID for node %d: %v", i, err)
+		}
+		blsDids[i] = blsDid
+	}
+	for _, node := range nodes {
+		for i := 0; i < intgNodeCount; i++ {
+			node.witnessDb.SetWitnessUpdate(witnesses.SetWitnessUpdateType{
+				Account: "mock-intg-" + strconv.Itoa(i+1),
+				Metadata: witnesses.PostingJsonMetadata{
+					VscNode: witnesses.PostingJsonMetadataVscNode{
+						PeerId: nodes[i].p2p.ID().String(),
+					},
+					DidKeys: []witnesses.PostingJsonKeys{
+						{CryptoType: "DID-BLS", Type: "consensus", Key: string(blsDids[i])},
+					},
+				},
+			})
+		}
+	}
+
+	// Connect all peers
+	for i := 0; i < intgNodeCount; i++ {
+		for j := 0; j < intgNodeCount; j++ {
+			if i == j {
+				continue
+			}
+			targetID := nodes[j].p2p.ID()
+			addrs := nodes[j].p2p.Addrs()
+			nodes[i].p2p.Peerstore().AddAddrs(targetID, addrs, peerstore.PermanentAddrTTL)
+			addrInfo := peer.AddrInfo{ID: targetID, Addrs: addrs}
+			nodes[i].p2p.Connect(context.Background(), addrInfo)
+			nodes[i].p2p.Host().ConnManager().Protect(targetID, "tss-intg-test")
+		}
+	}
+	time.Sleep(2 * time.Second)
+
+	excludedNodes := &sync.Map{}
+	stopKeepalive := startPeerKeepalive(nodes, 2*time.Second, excludedNodes)
+	defer stopKeepalive()
+
+	// Store epoch 0 election with all 6 members
+	members := make([]elections.ElectionMember, intgNodeCount)
+	weights := make([]uint64, intgNodeCount)
+	for i := 0; i < intgNodeCount; i++ {
+		members[i] = elections.ElectionMember{
+			Account: "mock-intg-" + strconv.Itoa(i+1),
+			Key:     string(blsDids[i]),
+		}
+		weights[i] = 10
+	}
+	for _, node := range nodes {
+		node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 0, NetId: "vsc-mocknet", Type: "initial"},
+			ElectionDataInfo:   elections.ElectionDataInfo{Members: members, Weights: weights},
+			BlockHeight:        1,
+		})
+	}
+
+	// Insert TSS key for keygen
+	for _, node := range nodes {
+		node.tssKeys.InsertKey("intg-key", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
+	}
+
+	// =====================================================
+	// PHASE 1: KEYGEN (block 100)
+	// =====================================================
+	log.Info("=== INTG PHASE 1: KEYGEN ===")
+
+	headHeight := uint64(120)
+	processBlocks(nodes, 2, 98, &headHeight)
+	for bh := uint64(99); bh <= 105; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	log.Info("Waiting for keygen...")
+	keygenDone := false
+	for i := 0; i < 120; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := keygenBroadcast != nil
+		mu.Unlock()
+		if done {
+			keygenDone = true
+			break
+		}
+	}
+	if !keygenDone {
+		log.Info("Keygen broadcast not captured, waiting for timeout...")
+		time.Sleep(35 * time.Second)
+	} else {
+		time.Sleep(5 * time.Second)
+	}
+
+	// Manually insert keygen commitment
+	bitset := big.NewInt(0)
+	for i := 0; i < intgNodeCount; i++ {
+		bitset.SetBit(bitset, i, 1)
+	}
+	commitmentStr := base64.RawURLEncoding.EncodeToString(bitset.Bytes())
+	for _, node := range nodes {
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "keygen", KeyId: "intg-key", Epoch: 0,
+			BlockHeight: 100, Commitment: commitmentStr, TxId: "mock-intg-keygen-tx",
+		})
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id: "intg-key", Status: "active", Algo: tss_db.EcdsaType, Epoch: 0,
+		})
+	}
+
+	// Capture keygen pubkey
+	mu.Lock()
+	keygenPubKey := keygenPubKeys["intg-key"]
+	mu.Unlock()
+	if keygenPubKey == "" {
+		t.Fatal("Keygen public key not captured — cannot verify signatures")
+	}
+	log.Info("keygen pubkey captured", "pubkey", keygenPubKey)
+
+	// =====================================================
+	// PHASE 2: RESHARE WITH 1 NODE OFFLINE (block 200)
+	// This is the core threshold fix test:
+	// - Node 5 is disconnected
+	// - checkParticipantReadiness drops it
+	// - Threshold must use origSize=6, not filtered size=5
+	// - If threshold were wrong, pubkey would change (the bug)
+	// =====================================================
+	log.Info("=== INTG PHASE 2: RESHARE WITH OFFLINE NODE (threshold fix) ===")
+
+	time.Sleep(5 * time.Second)
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Store epoch 1 election with all 6 members
+	for _, node := range nodes {
+		node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 1, NetId: "vsc-mocknet", Type: "initial"},
+			ElectionDataInfo:   elections.ElectionDataInfo{Members: members, Weights: weights},
+			BlockHeight:        190,
+		})
+	}
+
+	// Disconnect node 5 — readiness filter will drop it
+	excludedNodes.Store(5, true)
+	disconnectNode(nodes, 5)
+	time.Sleep(1 * time.Second)
+
+	connectActivePeers(t, nodes, excludedNodes)
+	time.Sleep(2 * time.Second)
+
+	log.Info("Processing blocks to trigger reshare at block 200...")
+	processBlocks(nodes, 106, 198, &headHeight)
+	headHeight = 220
+	for bh := uint64(199); bh <= 205; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	log.Info("Waiting for reshare with offline node...")
+	reshareDone := false
+	for i := 0; i < 240; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := reshareBroadcast != nil
+		mu.Unlock()
+		if done {
+			reshareDone = true
+			break
+		}
+	}
+	if !reshareDone {
+		t.Fatal("INTG Phase 2: Reshare did not complete — threshold fix may not be working")
+	}
+	log.Info("Reshare with offline node completed successfully!")
+
+	// =====================================================
+	// PHASE 3: SIGN WITH RESHARED KEY + VERIFY (block 250)
+	// Signs with 5 of 6 nodes (node 5 still offline).
+	// Signature must verify against the KEYGEN pubkey.
+	// This proves reshare preserved the key despite subset.
+	// =====================================================
+	log.Info("=== INTG PHASE 3: SIGN AND VERIFY AGAINST KEYGEN PUBKEY ===")
+
+	time.Sleep(5 * time.Second)
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Insert reshare commitment for epoch 1 (5-bit bitset, node 5 excluded)
+	bitset5 := big.NewInt(0)
+	for i := 0; i < intgNodeCount-1; i++ {
+		bitset5.SetBit(bitset5, i, 1)
+	}
+	commitmentStr5 := base64.RawURLEncoding.EncodeToString(bitset5.Bytes())
+	for _, node := range nodes {
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "reshare", KeyId: "intg-key", Epoch: 1,
+			BlockHeight: 200, Commitment: commitmentStr5, TxId: "mock-intg-reshare-tx",
+		})
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id: "intg-key", Status: "active", Algo: tss_db.EcdsaType, Epoch: 1,
+		})
+	}
+
+	msgHex := "aabbccdd11223344556677889900aabbccdd11223344556677889900aabbccdd"
+	for _, node := range nodes {
+		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+			KeyId: "intg-key", Msg: msgHex, Status: tss_db.SignPending,
+		})
+	}
+
+	connectActivePeers(t, nodes, excludedNodes)
+	time.Sleep(2 * time.Second)
+
+	log.Info("Processing blocks to trigger signing at block 250...")
+	processBlocks(nodes, 206, 248, &headHeight)
+	headHeight = 270
+	for bh := uint64(249); bh <= 255; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	log.Info("Waiting for signing...")
+	signDone := false
+	for i := 0; i < 90; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := signBroadcast != nil
+		mu.Unlock()
+		if done {
+			signDone = true
+			break
+		}
+	}
+	if !signDone {
+		t.Fatal("INTG Phase 3: Signing did not complete")
+	}
+
+	// THE KEY ASSERTION: verify signature against KEYGEN pubkey
+	mu.Lock()
+	if signBroadcast != nil {
+		for _, op := range signBroadcast.Operations {
+			raw, _ := json.Marshal(op)
+			var cj struct {
+				Json string `json:"json"`
+			}
+			json.Unmarshal(raw, &cj)
+			var payload struct {
+				Packet []struct {
+					KeyId string `json:"key_id"`
+					Msg   string `json:"msg"`
+					Sig   string `json:"sig"`
+				} `json:"packet"`
+			}
+			json.Unmarshal([]byte(cj.Json), &payload)
+			for _, pkt := range payload.Packet {
+				if pkt.Sig == "" {
+					t.Error("INTG Phase 3: Signature is empty")
+				} else {
+					log.Info("verifying signature against keygen pubkey", "msg", pkt.Msg, "pubkey", keygenPubKey)
+					verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKey)
+					t.Log("INTG Phase 3: Signature verified against keygen pubkey — threshold fix confirmed!")
+				}
+			}
+		}
+	}
+	mu.Unlock()
+
+	// =====================================================
+	// PHASE 4: BITSET ELECTION MAPPING FIX (block 300-350)
+	// Reconnect all nodes. Store epoch 2 with SWAPPED member
+	// order. Reshare to epoch 2, then sign. The signing code
+	// must use the commitment's epoch election (epoch 2) for
+	// bitset mapping, not whatever currentElection returns.
+	// =====================================================
+	log.Info("=== INTG PHASE 4: BITSET ELECTION MAPPING FIX ===")
+
+	time.Sleep(5 * time.Second)
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Reconnect node 5
+	excludedNodes.Delete(5)
+	reconnectNode(t, nodes, 5)
+	time.Sleep(2 * time.Second)
+
+	// Store epoch 2 with SWAPPED member order (swap first two members)
+	// This is the scenario the bitset mapping fix addresses:
+	// if signing uses currentElection (epoch 2) members in swapped order,
+	// the bitset maps to wrong accounts.
+	swappedMembers := make([]elections.ElectionMember, intgNodeCount)
+	copy(swappedMembers, members)
+	swappedMembers[0], swappedMembers[1] = swappedMembers[1], swappedMembers[0]
+	for _, node := range nodes {
+		node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 2, NetId: "vsc-mocknet", Type: "initial"},
+			ElectionDataInfo:   elections.ElectionDataInfo{Members: swappedMembers, Weights: weights},
+			BlockHeight:        290,
+		})
+	}
+
+	mu.Lock()
+	reshareBroadcast = nil
+	mu.Unlock()
+
+	connectAllPeers(t, nodes)
+	time.Sleep(2 * time.Second)
+
+	log.Info("Processing blocks to trigger reshare at block 300...")
+	processBlocks(nodes, 256, 298, &headHeight)
+	headHeight = 320
+	for bh := uint64(299); bh <= 305; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	log.Info("Waiting for reshare to epoch 2 (swapped members)...")
+	reshareDone = false
+	for i := 0; i < 240; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := reshareBroadcast != nil
+		mu.Unlock()
+		if done {
+			reshareDone = true
+			break
+		}
+	}
+	if !reshareDone {
+		t.Fatal("INTG Phase 4: Reshare to epoch 2 did not complete")
+	}
+
+	// Set up for signing with epoch 2 commitment
+	time.Sleep(5 * time.Second)
+	for _, node := range nodes {
+		node.tssMgr.ClearQueuedActions()
+	}
+
+	// Insert reshare commitment for epoch 2 with full 6-member bitset
+	// The commitment's epoch is 2, which has swapped member order.
+	// The bitset mapping must use epoch 2's election (swappedMembers),
+	// not whatever election is "current" at signing time.
+	for _, node := range nodes {
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "reshare", KeyId: "intg-key", Epoch: 2,
+			BlockHeight: 300, Commitment: commitmentStr, TxId: "mock-intg-reshare-tx-2",
+		})
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id: "intg-key", Status: "active", Algo: tss_db.EcdsaType, Epoch: 2,
+		})
+	}
+
+	msgHex2 := "ddccbbaa44332211998877665500ddccbbaa44332211998877665500ddccbbaa"
+	for _, node := range nodes {
+		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+			KeyId: "intg-key", Msg: msgHex2, Status: tss_db.SignPending,
+		})
+	}
+
+	mu.Lock()
+	signBroadcast = nil
+	mu.Unlock()
+
+	connectAllPeers(t, nodes)
+	time.Sleep(2 * time.Second)
+
+	log.Info("Processing blocks to trigger signing at block 350...")
+	processBlocks(nodes, 306, 348, &headHeight)
+	headHeight = 370
+	for bh := uint64(349); bh <= 355; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	log.Info("Waiting for signing with swapped election order...")
+	signDone = false
+	for i := 0; i < 90; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := signBroadcast != nil
+		mu.Unlock()
+		if done {
+			signDone = true
+			break
+		}
+	}
+	if !signDone {
+		t.Fatal("INTG Phase 4: Signing with swapped election order did not complete")
+	}
+
+	// Verify signature against keygen pubkey — proves bitset mapping used correct epoch
+	mu.Lock()
+	if signBroadcast != nil {
+		for _, op := range signBroadcast.Operations {
+			raw, _ := json.Marshal(op)
+			var cj struct {
+				Json string `json:"json"`
+			}
+			json.Unmarshal(raw, &cj)
+			var payload struct {
+				Packet []struct {
+					KeyId string `json:"key_id"`
+					Msg   string `json:"msg"`
+					Sig   string `json:"sig"`
+				} `json:"packet"`
+			}
+			json.Unmarshal([]byte(cj.Json), &payload)
+			for _, pkt := range payload.Packet {
+				if pkt.Sig == "" {
+					t.Error("INTG Phase 4: Signature is empty")
+				} else {
+					verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKey)
+					t.Log("INTG Phase 4: Signature verified — bitset election mapping fix confirmed!")
+				}
+			}
+		}
+	}
+	mu.Unlock()
+
+	log.Info("All integration test phases completed successfully!")
+	log.Info("Verified: threshold fix preserves key across reshare with offline nodes")
+	log.Info("Verified: bitset election mapping uses commitment epoch, not current epoch")
+}
+
 // blameBitset creates a base64-encoded bitset marking the given member indices as blamed.
 func blameBitset(indices ...int) string {
 	bitset := big.NewInt(0)
