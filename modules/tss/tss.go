@@ -366,7 +366,19 @@ func (tss *TssManager) BlameScore() ScoreMap {
 		gracePeriod := uint64(TSS_BAN_GRACE_PERIOD_EPOCHS)
 		if entry.EpochsSinceFirst < gracePeriod {
 			gracePeriodExemptions = append(gracePeriodExemptions, entry.Account)
-			log.Verbose("node in grace period, exempt from ban", "account", entry.Account, "score", entry.Score, "weight", entry.Weight, "epochsSinceFirst", entry.EpochsSinceFirst, "gracePeriod", gracePeriod)
+			log.Verbose(
+				"node in grace period, exempt from ban",
+				"account",
+				entry.Account,
+				"score",
+				entry.Score,
+				"weight",
+				entry.Weight,
+				"epochsSinceFirst",
+				entry.EpochsSinceFirst,
+				"gracePeriod",
+				gracePeriod,
+			)
 			continue
 		}
 
@@ -381,14 +393,40 @@ func (tss *TssManager) BlameScore() ScoreMap {
 			timeoutCount := timeoutBlameMap[entry.Account]
 			errorCount := errorBlameMap[entry.Account]
 
-			log.Verbose("node banned", "account", entry.Account, "score", entry.Score, "weight", entry.Weight, "failureRate", failureRate, "threshold", thresholdPercent, "timeoutBlames", timeoutCount, "errorBlames", errorCount, "epochsSinceFirst", entry.EpochsSinceFirst)
+			log.Verbose(
+				"node banned",
+				"account",
+				entry.Account,
+				"score",
+				entry.Score,
+				"weight",
+				entry.Weight,
+				"failureRate",
+				failureRate,
+				"threshold",
+				thresholdPercent,
+				"timeoutBlames",
+				timeoutCount,
+				"errorBlames",
+				errorCount,
+				"epochsSinceFirst",
+				entry.EpochsSinceFirst,
+			)
 		} else {
 			log.Verbose("node not banned", "account", entry.Account, "score", entry.Score, "weight", entry.Weight, "failureRate", failureRate, "threshold", thresholdPercent)
 		}
 	}
 
 	if len(bannedList) > 0 {
-		log.Verbose("ban summary", "totalBanned", len(bannedList), "bannedNodes", bannedList, "gracePeriodExemptions", len(gracePeriodExemptions))
+		log.Verbose(
+			"ban summary",
+			"totalBanned",
+			len(bannedList),
+			"bannedNodes",
+			bannedList,
+			"gracePeriodExemptions",
+			len(gracePeriodExemptions),
+		)
 	} else {
 		log.Verbose("ban summary, no nodes banned", "gracePeriodExemptions", len(gracePeriodExemptions))
 	}
@@ -408,7 +446,17 @@ func (tss *TssManager) BlameScore() ScoreMap {
 func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLeader bool, bh uint64) {
 	locked := tssMgr.lock.TryLock()
 
-	log.Trace("RunActions called", "account", tssMgr.config.Get().HiveUsername, "blockHeight", bh, "isLeader", isLeader, "locked", locked)
+	log.Trace(
+		"RunActions called",
+		"account",
+		tssMgr.config.Get().HiveUsername,
+		"blockHeight",
+		bh,
+		"isLeader",
+		isLeader,
+		"locked",
+		locked,
+	)
 	if !locked {
 		log.Verbose("RunActions skipped, lock held by previous batch", "blockHeight", bh)
 		return
@@ -428,7 +476,17 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 	blameMap := tssMgr.BlameScore()
 
-	log.Info("running actions", "blockHeight", bh, "isLeader", isLeader, "actionCount", len(actions), "bannedNodes", len(blameMap.BannedNodes))
+	log.Info(
+		"running actions",
+		"blockHeight",
+		bh,
+		"isLeader",
+		isLeader,
+		"actionCount",
+		len(actions),
+		"bannedNodes",
+		len(blameMap.BannedNodes),
+	)
 
 	dispatchers := make([]Dispatcher, 0)
 	for idx, action := range actions {
@@ -472,10 +530,34 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			for _, p := range participants {
 				participantAccounts = append(participantAccounts, p.Account)
 			}
-			log.Verbose("creating keygen session", "sessionId", sessionId, "keyId", action.KeyId, "epoch", currentElection.Epoch, "blockHeight", bh, "participants", participantAccounts, "excluded", excludedAccounts, "hasBlame", isBlame, "lastBlameHeight", lastBlame.BlockHeight)
+			log.Verbose(
+				"creating keygen session",
+				"sessionId",
+				sessionId,
+				"keyId",
+				action.KeyId,
+				"epoch",
+				currentElection.Epoch,
+				"blockHeight",
+				bh,
+				"participants",
+				participantAccounts,
+				"excluded",
+				excludedAccounts,
+				"hasBlame",
+				isBlame,
+				"lastBlameHeight",
+				lastBlame.BlockHeight,
+			)
 
 			if len(participants) < 2 {
-				log.Warn("insufficient participants for keygen, minimum 2 required", "sessionId", sessionId, "participants", len(participants))
+				log.Warn(
+					"insufficient participants for keygen, minimum 2 required",
+					"sessionId",
+					sessionId,
+					"participants",
+					len(participants),
+				)
 				continue
 			}
 
@@ -521,7 +603,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// not currentElection which may have different members/order.
 			commitElection := tssMgr.electionDb.GetElection(commitment.Epoch)
 			if commitElection == nil || commitElection.Members == nil {
-				commitElection = &currentElection
+				log.Warn("cannot find commit election", "epoch", commitElection.Epoch)
+				continue
 			}
 			for midx, member := range commitElection.Members {
 				if bv.Bit(midx) == 1 {
@@ -803,7 +886,21 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				tssMgr.sessionResults[dsc.SessionId()] = res
 				tssMgr.bufferLock.Unlock()
 
-				log.Info("keygen success", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.Epoch, "pubKey", fmt.Sprintf("%x", res.PublicKey), "commitment", res.Commitment)
+				log.Info(
+					"keygen success",
+					"sessionId",
+					res.SessionId,
+					"keyId",
+					res.KeyId,
+					"blockHeight",
+					res.BlockHeight,
+					"epoch",
+					res.Epoch,
+					"pubKey",
+					fmt.Sprintf("%x", res.PublicKey),
+					"commitment",
+					res.Commitment,
+				)
 
 				commitment := result.Serialize()
 				commitableResults = append(commitableResults, commitment)
@@ -964,18 +1061,46 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					go func() {
 						commitResult.BlockHeight = bh
 
-						log.Verbose("collecting sigs", "sessionId", commitResult.SessionId, "keyId", commitResult.KeyId, "type", commitResult.Type, "epoch", commitResult.Epoch)
+						log.Verbose(
+							"collecting sigs",
+							"sessionId",
+							commitResult.SessionId,
+							"keyId",
+							commitResult.KeyId,
+							"type",
+							commitResult.Type,
+							"epoch",
+							commitResult.Epoch,
+						)
 
 						bytes, _ := common.EncodeDagCbor(commitResult)
 						signableCid, _ := common.HashBytes(bytes, multicodec.DagCbor)
 
-						ctx, cancel := context.WithTimeout(context.Background(), tssMgr.sconf.TssParams().WaitForSigsTimeout)
+						ctx, cancel := context.WithTimeout(
+							context.Background(),
+							tssMgr.sconf.TssParams().WaitForSigsTimeout,
+						)
 						defer cancel()
 
-						serializedCircuit, err := tssMgr.waitForSigs(ctx, signableCid, commitResult.SessionId, &currentElection)
+						serializedCircuit, err := tssMgr.waitForSigs(
+							ctx,
+							signableCid,
+							commitResult.SessionId,
+							&currentElection,
+						)
 
 						if err != nil {
-							log.Warn("waitForSigs failed", "sessionId", commitResult.SessionId, "keyId", commitResult.KeyId, "type", commitResult.Type, "err", err)
+							log.Warn(
+								"waitForSigs failed",
+								"sessionId",
+								commitResult.SessionId,
+								"keyId",
+								commitResult.KeyId,
+								"type",
+								commitResult.Type,
+								"err",
+								err,
+							)
 						} else {
 							log.Verbose("waitForSigs OK", "sessionId", commitResult.SessionId, "keyId", commitResult.KeyId, "type", commitResult.Type)
 							commitedMu.Lock()
@@ -1017,7 +1142,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 
 				if !canCommit {
-					log.Warn("no results reached threshold", "blockHeight", bh, "total", len(commitableResults), "committed", len(commitedResults))
+					log.Warn(
+						"no results reached threshold",
+						"blockHeight",
+						bh,
+						"total",
+						len(commitableResults),
+						"committed",
+						len(commitedResults),
+					)
 				}
 
 				rawJson, err := json.Marshal(sigPacket)
@@ -1065,7 +1198,12 @@ func (tssMgr *TssManager) setToCommitment(participants []Participant, epoch uint
 	return base64.RawURLEncoding.EncodeToString(bitset.Bytes())
 }
 
-func (tssMgr *TssManager) waitForSigs(ctx context.Context, cid cid.Cid, sessionId string, election *elections.ElectionResult) (*dids.SerializedCircuit, error) {
+func (tssMgr *TssManager) waitForSigs(
+	ctx context.Context,
+	cid cid.Cid,
+	sessionId string,
+	election *elections.ElectionResult,
+) (*dids.SerializedCircuit, error) {
 	weightTotal := uint64(0)
 	for _, weight := range election.Weights {
 		weightTotal += weight

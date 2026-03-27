@@ -321,6 +321,7 @@ func signHandler(
 }
 
 func writeResponse(w http.ResponseWriter, statusCode int, msg string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(statusCode)
 
 	if len(msg) == 0 {
