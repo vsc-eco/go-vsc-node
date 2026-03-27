@@ -3,6 +3,7 @@ package tss_test
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -31,6 +32,7 @@ import (
 	stateEngine "vsc-node/modules/state-processing"
 	vtss "vsc-node/modules/tss"
 
+	"github.com/eager7/dogd/btcec"
 	flatfs "github.com/ipfs/go-ds-flatfs"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -342,6 +344,46 @@ func processBlocks(nodes []nodeComponents, start, end uint64, headHeight *uint64
 	}
 }
 
+// verifyEcdsaSig verifies a DER-encoded ECDSA signature (hex) against a message hash (hex)
+// and a compressed secp256k1 public key (hex).
+func verifyEcdsaSig(t *testing.T, sigHex, msgHex, pubKeyHex string) {
+	t.Helper()
+
+	sigBytes, err := hex.DecodeString(sigHex)
+	if err != nil {
+		t.Errorf("failed to decode signature hex: %v", err)
+		return
+	}
+
+	sig, err := btcec.ParseDERSignature(sigBytes, btcec.S256())
+	if err != nil {
+		t.Errorf("failed to parse DER signature: %v", err)
+		return
+	}
+
+	pubKeyBytes, err := hex.DecodeString(pubKeyHex)
+	if err != nil {
+		t.Errorf("failed to decode public key hex: %v", err)
+		return
+	}
+
+	pubKey, err := btcec.ParsePubKey(pubKeyBytes, btcec.S256())
+	if err != nil {
+		t.Errorf("failed to parse public key: %v", err)
+		return
+	}
+
+	msgBytes, err := hex.DecodeString(msgHex)
+	if err != nil {
+		t.Errorf("failed to decode message hex: %v", err)
+		return
+	}
+
+	if !sig.Verify(msgBytes, pubKey) {
+		t.Errorf("ECDSA signature verification failed for msg=%s", msgHex)
+	}
+}
+
 func TestTss(t *testing.T) {
 	vsclog.ParseAndApply("verbose")
 
@@ -361,6 +403,7 @@ func TestTss(t *testing.T) {
 	var keygenBroadcast *hivego.HiveTransaction
 	var signBroadcast *hivego.HiveTransaction
 	var reshareBroadcast *hivego.HiveTransaction
+	keygenPubKeys := make(map[string]string)
 
 	// Declared before broadcastCb so the closure can reference it
 	nodes := make([]nodeComponents, nodeCount)
@@ -390,10 +433,17 @@ func TestTss(t *testing.T) {
 					for _, v := range entries {
 						if m, ok := v.(map[string]interface{}); ok {
 							if tp, ok := m["type"].(string); ok {
-								if tp == "keygen" && keygenBroadcast == nil {
-									txCopy := tx
-									keygenBroadcast = &txCopy
-									log.Info("keygen commitment captured")
+								if tp == "keygen" {
+									if keygenBroadcast == nil {
+										txCopy := tx
+										keygenBroadcast = &txCopy
+										log.Info("keygen commitment captured")
+									}
+									if pk, ok := m["pub_key"].(string); ok {
+										if kid, ok := m["key_id"].(string); ok {
+											keygenPubKeys[kid] = pk
+										}
+									}
 								} else if tp == "reshare" && reshareBroadcast == nil {
 									txCopy := tx
 									reshareBroadcast = &txCopy
@@ -730,6 +780,11 @@ func TestTss(t *testing.T) {
 					t.Error("Signing produced empty signature")
 				} else {
 					log.Info("signature created", "msg", sig.Msg, "sig", sig.Sig)
+					if keygenPubKeys["test-key"] != "" {
+						verifyEcdsaSig(t, sig.Sig, sig.Msg, keygenPubKeys["test-key"])
+					} else {
+						t.Error("Cannot verify signature: keygen public key not captured")
+					}
 				}
 				if sig.Msg != msgHex {
 					t.Errorf("Signed message mismatch: got %s, want %s", sig.Msg, msgHex)
@@ -916,12 +971,17 @@ func TestTss(t *testing.T) {
 			json.Unmarshal(raw, &cj)
 			var payload struct {
 				Packet []struct {
+					Msg string `json:"msg"`
 					Sig string `json:"sig"`
 				} `json:"packet"`
 			}
 			json.Unmarshal([]byte(cj.Json), &payload)
-			if len(payload.Packet) > 0 && payload.Packet[0].Sig == "" {
-				t.Error("Phase 4: Signing with node offline produced empty signature")
+			for _, pkt := range payload.Packet {
+				if pkt.Sig == "" {
+					t.Error("Phase 4: Signing with node offline produced empty signature")
+				} else {
+					verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKeys["test-key"])
+				}
 			}
 		}
 	}
@@ -1137,12 +1197,17 @@ func TestTss(t *testing.T) {
 			json.Unmarshal(raw, &cj)
 			var payload struct {
 				Packet []struct {
+					Msg string `json:"msg"`
 					Sig string `json:"sig"`
 				} `json:"packet"`
 			}
 			json.Unmarshal([]byte(cj.Json), &payload)
-			if len(payload.Packet) > 0 && payload.Packet[0].Sig == "" {
-				t.Error("Phase 6: Signing with reduced set produced empty signature")
+			for _, pkt := range payload.Packet {
+				if pkt.Sig == "" {
+					t.Error("Phase 6: Signing with reduced set produced empty signature")
+				} else {
+					verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKeys["test-key"])
+				}
 			}
 		}
 	}
@@ -1358,12 +1423,16 @@ func TestTss(t *testing.T) {
 						foundA = true
 						if pkt.Sig == "" {
 							t.Error("Phase 8: Signature for msgA is empty")
+						} else {
+							verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKeys["test-key"])
 						}
 					}
 					if pkt.Msg == msgHexB {
 						foundB = true
 						if pkt.Sig == "" {
 							t.Error("Phase 8: Signature for msgB is empty")
+						} else {
+							verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKeys["test-key"])
 						}
 					}
 				}
@@ -1484,8 +1553,12 @@ func TestTss(t *testing.T) {
 				if pkt.KeyId == "test-key-2" {
 					t.Error("Phase 9: test-key-2 should not have been signed (keyLocks should block it during keygen)")
 				}
-				if pkt.KeyId == "test-key" && pkt.Msg == msgHex4 && pkt.Sig == "" {
-					t.Error("Phase 9: Signature for test-key is empty")
+				if pkt.KeyId == "test-key" && pkt.Msg == msgHex4 {
+					if pkt.Sig == "" {
+						t.Error("Phase 9: Signature for test-key is empty")
+					} else {
+						verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKeys["test-key"])
+					}
 				}
 			}
 		}
@@ -1931,6 +2004,7 @@ func TestTss(t *testing.T) {
 						t.Error("Phase 12: Signature for test-key is empty")
 					} else {
 						log.Info("Phase 12: signature verified", "msg", pkt.Msg, "sig", pkt.Sig)
+						verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKeys["test-key"])
 					}
 				}
 			}
@@ -2157,6 +2231,7 @@ func TestTss(t *testing.T) {
 						t.Error("Phase 14: Signature for renewed test-key is empty")
 					} else {
 						log.Info("Phase 14: renewed key signature verified", "msg", pkt.Msg, "sig", pkt.Sig)
+						verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKeys["test-key"])
 					}
 				}
 			}
