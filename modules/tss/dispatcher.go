@@ -66,6 +66,28 @@ type ReshareDispatcher struct {
 	result   *ReshareResult
 }
 
+// verifyResharedKey checks that the reshared public key matches the original.
+// extractPub deserializes the stored key data and returns the original (X, Y).
+func (dispatcher *ReshareDispatcher) verifyResharedKey(newX, newY *big.Int, algo string, extractPub func([]byte) (*big.Int, *big.Int, error)) error {
+	origKeyData, err := dispatcher.keystore.Get(context.Background(), makeKey("key", dispatcher.keyId, int(dispatcher.epoch)))
+	if err != nil {
+		return nil // no original key to compare against
+	}
+	origX, origY, err := extractPub(origKeyData)
+	if err != nil {
+		return nil
+	}
+	if origX.Cmp(newX) != 0 || origY.Cmp(newY) != 0 {
+		log.Error("RESHARE KEY MISMATCH - public key changed, aborting reshare",
+			"keyId", dispatcher.keyId, "sessionId", dispatcher.sessionId,
+			"algo", algo,
+			"origX", fmt.Sprintf("%x", origX),
+			"newX", fmt.Sprintf("%x", newX))
+		return fmt.Errorf("reshare produced different public key for key %s", dispatcher.keyId)
+	}
+	return nil
+}
+
 func (dispatcher *ReshareDispatcher) Start() error {
 	startTime := time.Now()
 	log.Info("starting reshare", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "epoch", dispatcher.epoch, "newEpoch", dispatcher.newEpoch, "blockHeight", dispatcher.blockHeight)
@@ -288,21 +310,16 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 				if reshareResult.ECDSAPub != nil {
 					// Safety check: verify reshared key matches original
-					origKeyData, origErr := dispatcher.keystore.Get(context.Background(), makeKey("key", dispatcher.keyId, int(dispatcher.epoch)))
-					if origErr == nil {
-						var origSave keyGenSecp256k1.LocalPartySaveData
-						if json.Unmarshal(origKeyData, &origSave) == nil && origSave.ECDSAPub != nil {
-							if origSave.ECDSAPub.X().Cmp(reshareResult.ECDSAPub.X()) != 0 ||
-								origSave.ECDSAPub.Y().Cmp(reshareResult.ECDSAPub.Y()) != 0 {
-								log.Error("RESHARE KEY MISMATCH - public key changed, aborting reshare",
-									"keyId", dispatcher.keyId, "sessionId", dispatcher.sessionId,
-									"origX", fmt.Sprintf("%x", origSave.ECDSAPub.X()),
-									"newX", fmt.Sprintf("%x", reshareResult.ECDSAPub.X()))
-								dispatcher.err = fmt.Errorf("reshare produced different public key for key %s", dispatcher.keyId)
-								dispatcher.signalDone()
-								return
-							}
+					if err := dispatcher.verifyResharedKey(reshareResult.ECDSAPub.X(), reshareResult.ECDSAPub.Y(), "ECDSA", func(data []byte) (*big.Int, *big.Int, error) {
+						var save keyGenSecp256k1.LocalPartySaveData
+						if err := json.Unmarshal(data, &save); err != nil || save.ECDSAPub == nil {
+							return nil, nil, fmt.Errorf("unmarshal failed or nil pub")
 						}
+						return save.ECDSAPub.X(), save.ECDSAPub.Y(), nil
+					}); err != nil {
+						dispatcher.err = err
+						dispatcher.signalDone()
+						return
 					}
 
 					duration := time.Since(startTime)
@@ -426,20 +443,16 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				}
 
 				// Safety check: verify reshared key matches original
-				origKeyData, origErr := dispatcher.keystore.Get(context.Background(), makeKey("key", dispatcher.keyId, int(dispatcher.epoch)))
-				if origErr == nil {
-					var origSave keyGenEddsa.LocalPartySaveData
-					if json.Unmarshal(origKeyData, &origSave) == nil && origSave.EDDSAPub != nil {
-						if origSave.EDDSAPub.X().Cmp(reshareResult.EDDSAPub.X()) != 0 ||
-							origSave.EDDSAPub.Y().Cmp(reshareResult.EDDSAPub.Y()) != 0 {
-							log.Error("RESHARE KEY MISMATCH - public key changed, aborting reshare",
-								"keyId", dispatcher.keyId, "sessionId", dispatcher.sessionId,
-								"algo", "EdDSA")
-							dispatcher.err = fmt.Errorf("reshare produced different public key for key %s", dispatcher.keyId)
-							dispatcher.signalDone()
-							return
-						}
+				if err := dispatcher.verifyResharedKey(reshareResult.EDDSAPub.X(), reshareResult.EDDSAPub.Y(), "EdDSA", func(data []byte) (*big.Int, *big.Int, error) {
+					var save keyGenEddsa.LocalPartySaveData
+					if err := json.Unmarshal(data, &save); err != nil || save.EDDSAPub == nil {
+						return nil, nil, fmt.Errorf("unmarshal failed or nil pub")
 					}
+					return save.EDDSAPub.X(), save.EDDSAPub.Y(), nil
+				}); err != nil {
+					dispatcher.err = err
+					dispatcher.signalDone()
+					return
 				}
 
 				duration := time.Since(startTime)
