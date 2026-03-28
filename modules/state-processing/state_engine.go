@@ -775,12 +775,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					err := json.Unmarshal(cj.Json, &signedData)
 
 					keyCache := make(map[string]*tss_db.TssKey)
-					fmt.Println("err 718", err)
 					if err == nil {
 						for _, sigPack := range signedData.Packet {
 							if keyCache[sigPack.KeyId] == nil {
-								tssKey, _ := se.tssKeys.FindKey(sigPack.KeyId)
-								if keyCache[sigPack.KeyId].Status != tss_db.TssKeyActive {
+								tssKey, err := se.tssKeys.FindKey(sigPack.KeyId)
+								if err != nil {
+									log.Warn("failed to find key", "keyId", sigPack.KeyId, "err", err)
+									continue
+								}
+								if tssKey.Status != tss_db.TssKeyActive {
 									log.Warn(
 										"signing attempted for non-active key, skipping",
 										"keyId",
@@ -796,7 +799,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								publicKey, err := hex.DecodeString(keyCache[sigPack.KeyId].PublicKey)
 								sigBytes, err1 := hex.DecodeString(sigPack.Sig)
 								msgBytes, _ := hex.DecodeString(sigPack.Msg)
-								fmt.Println("err", err, err1)
 								if err == nil && err1 == nil {
 									if keyCache[sigPack.KeyId].Algo == tss_db.EcdsaType {
 										pubKey, err1 := btcec.ParsePubKey(publicKey, btcec.S256())
