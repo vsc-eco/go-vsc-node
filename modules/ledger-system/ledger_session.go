@@ -254,7 +254,7 @@ func (ledgerSession *ledgerSession) ExecuteTransfer(opLogEvent OpLogEvent, optio
 	exclusion := int64(0)
 
 	if len(options) > 0 {
-		options[0].Exclusion = exclusion
+		exclusion = options[0].Exclusion
 	}
 
 	if opLogEvent.Amount <= 0 {
@@ -308,7 +308,7 @@ func (ledgerSession *ledgerSession) Stake(stakeOp StakeOp, options ...TransferOp
 	exclusion := int64(0)
 
 	if len(options) > 0 {
-		options[0].Exclusion = exclusion
+		exclusion = options[0].Exclusion
 	}
 
 	//Cannot stake less than 0.002 HBD
@@ -332,7 +332,7 @@ func (ledgerSession *ledgerSession) Stake(stakeOp StakeOp, options ...TransferOp
 
 	// le.Ls.log.Debug("Stake - balAmt", fromBal, stakeOp.Id)
 
-	if (exclusion + fromBal) < stakeOp.Amount {
+	if (fromBal - exclusion) < stakeOp.Amount {
 		return LedgerResult{
 			Ok:  false,
 			Msg: "insufficient balance",

@@ -117,7 +117,7 @@ func (rss *rcSession) CanConsume(account string, blockHeight uint64, rcAmt int64
 
 	frozeAmt := rss.rcSystem.GetFrozenAmt(account, blockHeight)
 
-	totalAmt := balAmt - frozeAmt
+	totalAmt := balAmt - frozeAmt - rss.rcMap[account]
 	if totalAmt < rcAmt {
 		return false, 0, rcAmt
 	} else {
