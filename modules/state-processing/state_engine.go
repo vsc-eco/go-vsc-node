@@ -277,7 +277,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 				vInt1, err := strconv.ParseInt(amountStr, 10, 64)
 				if err != nil {
-					fmt.Println("interest_operation: failed to parse amount", "block", block.BlockNumber, "amount", amountStr, "err", err)
+					fmt.Println(
+						"interest_operation: failed to parse amount",
+						"block",
+						block.BlockNumber,
+						"amount",
+						amountStr,
+						"err",
+						err,
+					)
 					continue
 				}
 				se.claimHBDInterest(blockInfo.BlockHeight, vInt1)
@@ -772,6 +780,16 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						for _, sigPack := range signedData.Packet {
 							if keyCache[sigPack.KeyId] == nil {
 								tssKey, _ := se.tssKeys.FindKey(sigPack.KeyId)
+								if keyCache[sigPack.KeyId].Status != tss_db.TssKeyActive {
+									log.Warn(
+										"signing attempted for non-active key, skipping",
+										"keyId",
+										tssKey.Id,
+										"status",
+										tssKey.Status,
+									)
+									continue
+								}
 								keyCache[sigPack.KeyId] = &tssKey
 							}
 							if keyCache[sigPack.KeyId] != nil {
@@ -842,10 +860,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						tssLog.Verbose("commitment entry", "sessionId", commitment.SessionId, "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
 
 						members := make([]dids.BlsDID, 0)
-						electionData, err := se.electionDb.GetElectionByHeight(block.BlockNumber)
+						electionData := se.electionDb.GetElection(commitment.Epoch)
 
-						if err != nil {
-							tssLog.Warn("election lookup failed", "keyId", commitment.KeyId, "blockHeight", block.BlockNumber, "err", err)
+						if electionData == nil || electionData.Members == nil {
+							tssLog.Warn("election lookup failed", "keyId", commitment.KeyId, "epoch", commitment.Epoch, "blockHeight", block.BlockNumber)
 							continue
 						}
 						for _, mbr := range electionData.Members {

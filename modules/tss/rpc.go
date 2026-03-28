@@ -9,6 +9,15 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+const (
+	// Max number of buffered messages per session before new messages are dropped.
+	maxMessagesPerSession = 100
+	// Max number of distinct sessions that can have buffered messages.
+	maxBufferedSessions = 50
+	// Max size in bytes of a single message's Data field that will be buffered.
+	maxBufferedMessageSize = 64 * 1024 // 64 KB
+)
+
 type TssRpc struct {
 	mgr *TssManager
 }
@@ -83,8 +92,32 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 			// Replay any buffered messages for this session
 			tss.replayBufferedMessages(req.SessionId, dispatcher)
 		} else {
+			// Reject oversized messages
+			if len(req.Data) > maxBufferedMessageSize {
+				log.Warn("dropping oversized buffered message",
+					"sessionId", req.SessionId, "peerId", peerId.String(), "size", len(req.Data))
+				return nil
+			}
+
 			// Buffer the message for later replay
 			tss.mgr.bufferLock.Lock()
+
+			// Enforce per-session message limit
+			if len(tss.mgr.messageBuffer[req.SessionId]) >= maxMessagesPerSession {
+				tss.mgr.bufferLock.Unlock()
+				log.Warn("message buffer full for session, dropping message",
+					"sessionId", req.SessionId, "peerId", peerId.String(), "limit", maxMessagesPerSession)
+				return nil
+			}
+
+			// Enforce total session limit
+			if _, exists := tss.mgr.messageBuffer[req.SessionId]; !exists && len(tss.mgr.messageBuffer) >= maxBufferedSessions {
+				tss.mgr.bufferLock.Unlock()
+				log.Warn("too many buffered sessions, dropping message",
+					"sessionId", req.SessionId, "peerId", peerId.String(), "limit", maxBufferedSessions)
+				return nil
+			}
+
 			bufferedMsg := bufferedMessage{
 				Data:    req.Data,
 				From:    peerId.String(),
