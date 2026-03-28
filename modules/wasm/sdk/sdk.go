@@ -203,10 +203,14 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			if ns, method, hasDot := strings.Cut(callArg, "."); hasDot {
 				if methods, ok2 := (*sdkNamespacesRef)[ns]; ok2 {
 					if f, ok3 := methods[method]; ok3 {
+						fn, ok4 := f.(func(context.Context, any) SdkResult)
+						if !ok4 {
+							return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("ARITY_MISMATCH")))
+						}
 						return result.And(
 							result.Err[any](err),
 							result.Map(
-								f.(func(context.Context, any) SdkResult)(ctx, valArg.Arg0),
+								fn(ctx, valArg.Arg0),
 								func(res SdkResultStruct) SdkResultStruct {
 									res.Result = fmt.Sprintf(`{"result":"%s"}`, res.Result)
 									return res

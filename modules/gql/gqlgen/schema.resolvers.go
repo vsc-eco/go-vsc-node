@@ -715,9 +715,10 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 		})
 	}
 
-	// After all calls succeed, finalize
-	ledgerSession.Done()
-	callSession.Commit()
+	// After all calls succeed, collect results but do not mutate live state.
+	// Done() would append to the live LedgerState oplog/virtual ledger,
+	// corrupting production balances from a read-only simulation endpoint.
+	ledgerSession.Revert()
 
 	return results, nil
 }
