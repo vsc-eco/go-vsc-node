@@ -431,7 +431,11 @@ func registerImportV2(
 						),
 						func(res wasm_types.WasmResultStruct) string {
 							importGm.Consume(res.Gas)
-							*gas -= uint(res.Gas)
+							if uint(res.Gas) > *gas {
+								*gas = 0
+							} else {
+								*gas -= uint(res.Gas)
+							}
 							vm.GetStatistics().SetCostLimit(*gas)
 							return res.Result
 						},
