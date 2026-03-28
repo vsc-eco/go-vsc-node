@@ -302,7 +302,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		}()
 		go func() {
 			select {
-			case <-dispatcher.stopMsgs:
+			case <-dispatcher.msgCtx.Done():
 			case <-endOld:
 			}
 		}()
@@ -310,7 +310,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			for {
 				var reshareResult *keyGenSecp256k1.LocalPartySaveData
 				select {
-				case <-dispatcher.stopMsgs:
+				case <-dispatcher.msgCtx.Done():
 					return
 				case reshareResult = <-end:
 				}
@@ -441,7 +441,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 		go func() {
 			select {
-			case <-dispatcher.stopMsgs:
+			case <-dispatcher.msgCtx.Done():
 			case <-endOld:
 			}
 		}()
@@ -449,7 +449,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			for {
 				var reshareResult *keyGenEddsa.LocalPartySaveData
 				select {
-				case <-dispatcher.stopMsgs:
+				case <-dispatcher.msgCtx.Done():
 					return
 				case reshareResult = <-end:
 				}
@@ -682,7 +682,7 @@ func (dispatcher *ReshareDispatcher) reshareMsgs() {
 		for {
 			var msg btss.Message
 			select {
-			case <-dispatcher.stopMsgs:
+			case <-dispatcher.msgCtx.Done():
 				return
 			case msg = <-dispatcher.p2pMsg:
 			}
@@ -913,7 +913,7 @@ func (dispatcher *SignDispatcher) Start() error {
 		go func() {
 			var sigResult *common.SignatureData
 			select {
-			case <-dispatcher.stopMsgs:
+			case <-dispatcher.msgCtx.Done():
 				return
 			case sigResult = <-end:
 			}
@@ -981,7 +981,7 @@ func (dispatcher *SignDispatcher) Start() error {
 		go func() {
 			var sigResult *common.SignatureData
 			select {
-			case <-dispatcher.stopMsgs:
+			case <-dispatcher.msgCtx.Done():
 				return
 			case sigResult = <-end:
 			}
@@ -1060,8 +1060,9 @@ type BaseDispatcher struct {
 	timeout bool
 	// partyType string
 
-	done     chan struct{}
-	stopMsgs chan struct{} // closed by signalDone to unblock message-loop goroutines
+	done       chan struct{}
+	msgCtx     context.Context    // cancelled by signalDone to unblock message-loop goroutines
+	cancelMsgs context.CancelFunc
 
 	keystore datastore.Datastore
 
@@ -1077,8 +1078,6 @@ type BaseDispatcher struct {
 
 	failedMsgs     []failedMsg
 	failedMsgsLock sync.Mutex
-	stopRetry      chan struct{}
-	stopRetryOnce  sync.Once
 
 	doneSignalled bool // guards against both timeout and completion racing to signal done
 	doneMu        sync.Mutex
@@ -1096,19 +1095,8 @@ type failedMsg struct {
 }
 
 func (dispatcher *BaseDispatcher) signalDone() {
-	// Stop message-loop goroutines (reshareMsgs, handleMsgs, endOld receivers, etc.)
-	select {
-	case <-dispatcher.stopMsgs:
-		// already closed
-	default:
-		close(dispatcher.stopMsgs)
-	}
-
-	dispatcher.stopRetryOnce.Do(func() {
-		if dispatcher.stopRetry != nil {
-			close(dispatcher.stopRetry)
-		}
-	})
+	// Stop message-loop goroutines (reshareMsgs, handleMsgs, endOld receivers, retryFailedMsgs, etc.)
+	dispatcher.cancelMsgs()
 
 	dispatcher.doneMu.Lock()
 	if dispatcher.doneSignalled {
@@ -1132,7 +1120,7 @@ func (dispatcher *BaseDispatcher) retryFailedMsgs() {
 	defer ticker.Stop()
 	for {
 		select {
-		case <-dispatcher.stopRetry:
+		case <-dispatcher.msgCtx.Done():
 			return
 		case <-ticker.C:
 			dispatcher.failedMsgsLock.Lock()
@@ -1175,7 +1163,7 @@ func (dispatcher *BaseDispatcher) handleMsgs() {
 		for {
 			var msg btss.Message
 			select {
-			case <-dispatcher.stopMsgs:
+			case <-dispatcher.msgCtx.Done():
 				return
 			case msg = <-dispatcher.p2pMsg:
 			}
@@ -1310,18 +1298,28 @@ func (dispatcher *BaseDispatcher) baseStart() {
 		timeout = dispatcher.tssMgr.sconf.TssParams().DefaultTimeout
 	}
 
-	dispatcher.stopRetry = make(chan struct{})
 	go dispatcher.retryFailedMsgs()
 
 	dispatcher.lastMsg = time.Now()
 	log.Trace("starting timeout monitor", "sessionId", dispatcher.sessionId, "timeout", timeout, "lastMsg", dispatcher.lastMsg)
 	go func() {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
 		for {
-			elapsed := time.Since(dispatcher.lastMsg)
-			if elapsed > timeout {
+			select {
+			case <-dispatcher.msgCtx.Done():
+				// Session completed or was cancelled; stop monitoring
+				return
+			case <-timer.C:
+				elapsed := time.Since(dispatcher.lastMsg)
+				if elapsed < timeout {
+					// Activity happened since the timer started; reset for remaining time
+					timer.Reset(timeout - elapsed)
+					continue
+				}
+
 				dispatcher.doneMu.Lock()
 				if dispatcher.doneSignalled {
-					// Keygen/reshare/sign already completed successfully; skip timeout
 					dispatcher.doneMu.Unlock()
 					return
 				}
@@ -1331,23 +1329,10 @@ func (dispatcher *BaseDispatcher) baseStart() {
 
 				log.Warn("session timeout", "sessionId", dispatcher.sessionId, "elapsed", elapsed, "timeout", timeout, "lastMsg", dispatcher.lastMsg)
 
-				// Stop message-loop goroutines
-				select {
-				case <-dispatcher.stopMsgs:
-				default:
-					close(dispatcher.stopMsgs)
-				}
-
-				dispatcher.stopRetryOnce.Do(func() {
-					if dispatcher.stopRetry != nil {
-						close(dispatcher.stopRetry)
-					}
-				})
+				dispatcher.cancelMsgs()
 				dispatcher.done <- struct{}{}
-				break
+				return
 			}
-
-			time.Sleep(time.Millisecond)
 		}
 	}()
 
@@ -1430,7 +1415,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		go func() {
 			var savedOutput *keyGenSecp256k1.LocalPartySaveData
 			select {
-			case <-dispatcher.stopMsgs:
+			case <-dispatcher.msgCtx.Done():
 				return
 			case savedOutput = <-end:
 			}
@@ -1488,7 +1473,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		go func() {
 			var savedOutput *keyGenEddsa.LocalPartySaveData
 			select {
-			case <-dispatcher.stopMsgs:
+			case <-dispatcher.msgCtx.Done():
 				return
 			case savedOutput = <-end:
 			}
