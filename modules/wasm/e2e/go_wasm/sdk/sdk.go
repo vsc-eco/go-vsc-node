@@ -33,6 +33,9 @@ func ephemStateGetObject(contractId *string, key *string) *string
 //go:wasmimport sdk ephem_db.rm_object
 func ephemStateDeleteObject(key *string) *string
 
+//go:wasmimport sdk system.call
+func systemCall(name *string, args *string) *string
+
 //go:wasmimport sdk system.get_env
 func getEnv(arg *string) *string
 
@@ -245,4 +248,10 @@ func TssSignKey(keyId string, bytes []byte) {
 	byteStr := hex.EncodeToString(bytes)
 
 	tssSignKey(&keyId, &byteStr)
+}
+
+// SystemCall invokes an SDK function by name via the system.call host import.
+// This is the raw dispatch mechanism — it resolves "namespace.method" and calls it.
+func SystemCall(name string, args string) *string {
+	return systemCall(&name, &args)
 }

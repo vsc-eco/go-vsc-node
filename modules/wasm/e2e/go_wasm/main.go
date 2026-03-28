@@ -397,6 +397,26 @@ func GasUnderflow(a *string) *string {
 	return &ret
 }
 
+// systemCallCrash triggers a panic in the host by calling system.call with a
+// function name whose arity doesn't match the hard-coded type assertion in
+// sdk.go line 209: f.(func(context.Context, any) SdkResult).
+// hive.transfer is func(ctx, any, any, any) SdkResult — 3 value args, not 1.
+//
+//go:wasmexport systemCallCrash
+func SystemCallCrash(a *string) *string {
+	sdk.Log("systemCallCrash: calling system.call with hive.transfer")
+	// The second arg is a JSON object; system.call parses .arg0 out of it.
+	// The target function (hive.transfer) has 3 value params, but system.call
+	// will try to assert it as func(context.Context, any) SdkResult — panic.
+	result := sdk.SystemCall("hive.transfer", `{"arg0":"anything"}`)
+	// If we reach here, the panic was somehow caught or the bug is fixed
+	ret := "NO_CRASH"
+	if result != nil {
+		ret = "NO_CRASH:" + *result
+	}
+	return &ret
+}
+
 //go:wasmexport createKey
 func CreateKey(a *string) *string {
 	status := sdk.TssCreateKey("main", "eddsa")
