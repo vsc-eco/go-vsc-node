@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
@@ -87,13 +88,17 @@ type TssManager struct {
 	sessionMap     map[string]sessionInfo
 	sessionResults map[string]DispatcherResult
 
-	// Message buffer for early-arriving messages before dispatcher registration
-	messageBuffer map[string][]bufferedMessage
+	// Message buffer for early-arriving messages before dispatcher registration.
+	// Priority queue keyed by block height for O(1) eviction of stale sessions.
+	messageBuffer *sessionBuffer
 	bufferLock    sync.RWMutex
 
 	// Retry count for reshare operations (in-memory to avoid DB dependency)
 	retryCounts   map[string]int
 	retryCountsMu sync.Mutex
+
+	// Last block height seen by BlockTick, used for session admission filtering
+	lastBlockHeight atomic.Uint64
 
 	// Metrics for observability
 	metrics *Metrics
@@ -150,6 +155,8 @@ func (tssMgr *TssManager) GeneratePreParams() {
 }
 
 func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
+	tssMgr.lastBlockHeight.Store(bh)
+
 	//First check if we are in sync or not
 	if bh < *headHeight-20 {
 		return
@@ -811,7 +818,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			dispatchers = append(dispatchers, dispatcher)
 			tssMgr.bufferLock.Lock()
 			tssMgr.actionMap[sessionId] = dispatcher
-			bufferSize := len(tssMgr.messageBuffer[sessionId])
+			bufferSize := tssMgr.messageBuffer.MsgCount(sessionId)
 			tssMgr.bufferLock.Unlock()
 
 			// Trigger replay of any buffered messages for this session
@@ -864,7 +871,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			tssMgr.bufferLock.Lock()
 			delete(tssMgr.sigChannels, sessionId)
 			delete(tssMgr.actionMap, sessionId)
-			delete(tssMgr.messageBuffer, sessionId)
+			tssMgr.messageBuffer.Delete(sessionId)
 			delete(tssMgr.sessionMap, sessionId)
 			tssMgr.bufferLock.Unlock()
 		}
@@ -895,7 +902,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			tssMgr.bufferLock.Lock()
 			delete(tssMgr.sigChannels, sessionId)
 			delete(tssMgr.actionMap, sessionId)
-			delete(tssMgr.messageBuffer, sessionId)
+			tssMgr.messageBuffer.Delete(sessionId)
 			delete(tssMgr.sessionMap, sessionId)
 			tssMgr.bufferLock.Unlock()
 			if err != nil {
@@ -1464,7 +1471,7 @@ func New(
 
 		queuedActions:  make([]QueuedAction, 0),
 		actionMap:      make(map[string]Dispatcher),
-		messageBuffer:  make(map[string][]bufferedMessage),
+		messageBuffer:  newSessionBuffer(),
 		sessionMap:     make(map[string]sessionInfo),
 		sessionResults: make(map[string]DispatcherResult),
 		retryCounts:    make(map[string]int),
