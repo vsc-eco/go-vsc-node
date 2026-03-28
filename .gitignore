@@ -14,3 +14,5 @@ modules/gql/gqlgen/generated.go
 modules/gql/gqlgen/models.go
 vsc-node
 contract-deployer
+*.tar
+logs/

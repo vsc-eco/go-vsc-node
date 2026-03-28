@@ -3,6 +3,8 @@ package tss
 import (
 	"context"
 	"math/big"
+	"strconv"
+	"strings"
 	"time"
 
 	gorpc "github.com/libp2p/go-libp2p-gorpc"
@@ -16,7 +18,25 @@ const (
 	maxBufferedSessions = 50
 	// Max size in bytes of a single message's Data field that will be buffered.
 	maxBufferedMessageSize = 64 * 1024 // 64 KB
+	// Max block age for a session to be admitted into the buffer.
+	// Sessions with block height older than (currentBlockHeight - maxBufferBlockAge) are rejected.
+	maxBufferBlockAge uint64 = 2
 )
+
+// parseSessionBlockHeight extracts the block height from a session ID.
+// Session IDs follow the format "{type}-{blockHeight}-{actionIndex}-{keyId}".
+// Returns 0 if parsing fails.
+func parseSessionBlockHeight(sessionId string) uint64 {
+	parts := strings.SplitN(sessionId, "-", 4)
+	if len(parts) < 2 {
+		return 0
+	}
+	bh, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return bh
+}
 
 type TssRpc struct {
 	mgr *TssManager
@@ -99,23 +119,42 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 				return nil
 			}
 
+			// Reject sessions with stale block heights
+			sessionBh := parseSessionBlockHeight(req.SessionId)
+			currentBh := tss.mgr.lastBlockHeight.Load()
+			if currentBh > 0 && sessionBh > 0 && sessionBh+maxBufferBlockAge < currentBh {
+				log.Warn("dropping message for stale session",
+					"sessionId", req.SessionId, "peerId", peerId.String(),
+					"sessionBlockHeight", sessionBh, "currentBlockHeight", currentBh)
+				return nil
+			}
+
 			// Buffer the message for later replay
 			tss.mgr.bufferLock.Lock()
 
 			// Enforce per-session message limit
-			if len(tss.mgr.messageBuffer[req.SessionId]) >= maxMessagesPerSession {
+			if tss.mgr.messageBuffer.MsgCount(req.SessionId) >= maxMessagesPerSession {
 				tss.mgr.bufferLock.Unlock()
 				log.Warn("message buffer full for session, dropping message",
 					"sessionId", req.SessionId, "peerId", peerId.String(), "limit", maxMessagesPerSession)
 				return nil
 			}
 
-			// Enforce total session limit
-			if _, exists := tss.mgr.messageBuffer[req.SessionId]; !exists && len(tss.mgr.messageBuffer) >= maxBufferedSessions {
-				tss.mgr.bufferLock.Unlock()
-				log.Warn("too many buffered sessions, dropping message",
-					"sessionId", req.SessionId, "peerId", peerId.String(), "limit", maxBufferedSessions)
-				return nil
+			// Enforce total session limit with eviction of oldest session
+			if !tss.mgr.messageBuffer.Has(req.SessionId) && tss.mgr.messageBuffer.Len() >= maxBufferedSessions {
+				_, lowestBh := tss.mgr.messageBuffer.PeekMinBlockHeight()
+				if sessionBh > lowestBh {
+					evictedId := tss.mgr.messageBuffer.EvictMin()
+					log.Warn("buffer full, evicting oldest session",
+						"evictedSessionId", evictedId, "evictedBlockHeight", lowestBh,
+						"newSessionId", req.SessionId, "newBlockHeight", sessionBh)
+				} else {
+					tss.mgr.bufferLock.Unlock()
+					log.Warn("buffer full and incoming session is not newer, dropping message",
+						"sessionId", req.SessionId, "peerId", peerId.String(),
+						"sessionBlockHeight", sessionBh, "lowestBufferedBlockHeight", lowestBh)
+					return nil
+				}
 			}
 
 			bufferedMsg := bufferedMessage{
@@ -126,21 +165,14 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 				CmtFrom: req.CmtFrom,
 				Time:    receiveTime,
 			}
-			tss.mgr.messageBuffer[req.SessionId] = append(tss.mgr.messageBuffer[req.SessionId], bufferedMsg)
-			bufferSize := len(tss.mgr.messageBuffer[req.SessionId])
+			tss.mgr.messageBuffer.Push(req.SessionId, sessionBh, bufferedMsg)
+			bufferSize := tss.mgr.messageBuffer.MsgCount(req.SessionId)
+			bufferedSessions := tss.mgr.messageBuffer.Len()
 			tss.mgr.bufferLock.Unlock()
-
-			keys := make([]string, 0)
-			tss.mgr.bufferLock.RLock()
-			for k := range tss.mgr.actionMap {
-				keys = append(keys, k)
-			}
-			bufferSize = len(tss.mgr.messageBuffer[req.SessionId])
-			tss.mgr.bufferLock.RUnlock()
 
 			log.Verbose("buffering message, dispatcher not found",
 				"sessionId", req.SessionId, "myAccount", myAccount, "peerId", peerId.String(),
-				"activeSessions", len(keys), "bufferSize", bufferSize)
+				"bufferedSessions", bufferedSessions, "bufferSize", bufferSize)
 			tss.mgr.metrics.IncrementMessageDrop()
 		}
 	}
@@ -156,10 +188,7 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 // replayBufferedMessages replays buffered messages for a session when dispatcher becomes ready
 func (tss *TssRpc) replayBufferedMessages(sessionId string, dispatcher Dispatcher) {
 	tss.mgr.bufferLock.Lock()
-	buffered := tss.mgr.messageBuffer[sessionId]
-	if len(buffered) > 0 {
-		delete(tss.mgr.messageBuffer, sessionId)
-	}
+	buffered := tss.mgr.messageBuffer.Drain(sessionId)
 	tss.mgr.bufferLock.Unlock()
 
 	if len(buffered) > 0 {
