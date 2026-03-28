@@ -210,6 +210,18 @@ func (m *mockStateStore) GetAllPendingTransactions(ctx context.Context) ([]datab
 	return out, nil
 }
 
+func (m *mockStateStore) GetFullySignedPendingTransactions(ctx context.Context) ([]*database.Transaction, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*database.Transaction
+	for _, tx := range m.txs {
+		if tx.State == database.TxStatePending && tx.TotalSignatures > 0 && tx.CurrentSignatures >= tx.TotalSignatures {
+			out = append(out, tx)
+		}
+	}
+	return out, nil
+}
+
 func (m *mockStateStore) GetAllPendingSigHashes(ctx context.Context) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
