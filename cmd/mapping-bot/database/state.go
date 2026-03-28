@@ -194,6 +194,29 @@ func (s *StateStore) GetAllPendingTransactions(ctx context.Context) ([]Transacti
 	return txs, nil
 }
 
+// GetFullySignedPendingTransactions returns pending transactions where all signatures have been collected.
+// This catches transactions that were fully signed but never transitioned out of "pending" state
+// (e.g., due to a crash or race condition after the last signature was applied).
+func (s *StateStore) GetFullySignedPendingTransactions(ctx context.Context) ([]*Transaction, error) {
+	filter := bson.M{
+		"state":           TxStatePending,
+		"totalSignatures": bson.M{"$gt": 0},
+		"$expr":           bson.M{"$gte": bson.A{"$currentSignatures", "$totalSignatures"}},
+	}
+
+	cursor, err := s.txCollection.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get fully signed pending transactions: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var txs []*Transaction
+	if err := cursor.All(ctx, &txs); err != nil {
+		return nil, fmt.Errorf("failed to decode fully signed pending transactions: %w", err)
+	}
+	return txs, nil
+}
+
 // GetAllPendingSigHashes returns all signature hashes that are still unsigned
 func (s *StateStore) GetAllPendingSigHashes(ctx context.Context) ([]string, error) {
 	pipeline := mongo.Pipeline{
