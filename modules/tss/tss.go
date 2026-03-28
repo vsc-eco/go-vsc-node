@@ -592,7 +592,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					p2pMsg:       make(chan btss.Message, 2*len(participants)),
 					sessionId:    sessionId,
 					done:         make(chan struct{}),
-					stopMsgs:     make(chan struct{}),
 
 					keyId: action.KeyId,
 					algo:  action.Algo,
@@ -600,6 +599,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					epoch: currentElection.Epoch,
 				},
 			}
+			dispatcher.msgCtx, dispatcher.cancelMsgs = context.WithCancel(context.Background())
 			dispatcher.startLock.TryLock()
 
 			dispatchers = append(dispatchers, dispatcher)
@@ -663,7 +663,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					p2pMsg:       make(chan btss.Message, 2*len(participants)),
 					sessionId:    sessionId,
 					done:         make(chan struct{}),
-					stopMsgs:     make(chan struct{}),
 					keyId:        action.KeyId,
 
 					keystore: tssMgr.keyStore,
@@ -674,6 +673,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				prevCommitmentType: prevCommitType,
 				origCommitteeSize:  origSignCommitteeSize,
 			}
+			dispatcher.msgCtx, dispatcher.cancelMsgs = context.WithCancel(context.Background())
 			dispatcher.startLock.TryLock()
 
 			dispatchers = append(dispatchers, dispatcher)
@@ -792,7 +792,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					p2pMsg:       make(chan btss.Message, 4*(len(commitedMembers)+len(newParticipants))),
 					sessionId:    sessionId,
 					done:         make(chan struct{}),
-					stopMsgs:     make(chan struct{}),
 					keyId:        action.KeyId,
 					epoch:        commitment.Epoch,
 
@@ -806,6 +805,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				origNewSize:        origNewSize,
 				prevCommitmentType: commitment.Type,
 			}
+			dispatcher.msgCtx, dispatcher.cancelMsgs = context.WithCancel(context.Background())
 			dispatcher.startLock.TryLock()
 
 			dispatchers = append(dispatchers, dispatcher)
