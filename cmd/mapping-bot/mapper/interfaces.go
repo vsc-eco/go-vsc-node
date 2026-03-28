@@ -37,6 +37,7 @@ type StateStore interface {
 	GetPendingTransaction(ctx context.Context, txID string) (*database.Transaction, error)
 	GetAllPendingTransactions(ctx context.Context) ([]database.Transaction, error)
 	GetAllPendingSigHashes(ctx context.Context) ([]string, error)
+	GetFullySignedPendingTransactions(ctx context.Context) ([]*database.Transaction, error)
 	UpdateSignatures(ctx context.Context, signatures map[string]database.SignatureUpdate) ([]*database.Transaction, error)
 
 	IsTransactionProcessed(ctx context.Context, txID string) (bool, error)

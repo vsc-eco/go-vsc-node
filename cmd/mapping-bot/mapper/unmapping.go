@@ -203,6 +203,13 @@ func (b *Bot) ProcessTxSpends(
 func (b *Bot) CheckSignagures(
 	ctx context.Context,
 ) ([]*database.Transaction, error) {
+	// First, pick up any pending transactions that are already fully signed
+	// but were never broadcast (e.g., due to a crash after the last signature was applied).
+	alreadySigned, err := b.stateDB().GetFullySignedPendingTransactions(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	allHashes, err := b.stateDB().GetAllPendingSigHashes(ctx)
 	if err != nil {
 		return nil, err
@@ -218,6 +225,17 @@ func (b *Bot) CheckSignagures(
 		return nil, err
 	}
 
+	// Merge, deduplicating by TxID
+	seen := make(map[string]struct{}, len(fullySignedTxs))
+	for _, tx := range fullySignedTxs {
+		seen[tx.TxID] = struct{}{}
+	}
+	for _, tx := range alreadySigned {
+		if _, ok := seen[tx.TxID]; !ok {
+			fullySignedTxs = append(fullySignedTxs, tx)
+		}
+	}
+
 	return fullySignedTxs, nil
 }
 
@@ -226,7 +244,10 @@ func attachSignatures(signedData *database.Transaction) (*TxRawIdPair, error) {
 	tx.Deserialize(bytes.NewReader(signedData.RawTx))
 
 	for _, inputData := range signedData.Signatures {
-		signature := append(signedData.Signatures[inputData.Index].Signature, byte(txscript.SigHashAll))
+		sig := signedData.Signatures[inputData.Index].Signature
+		signature := make([]byte, len(sig)+1)
+		copy(signature, sig)
+		signature[len(sig)] = byte(txscript.SigHashAll)
 
 		branchSelector := []byte{0x01} // primary key path (OP_IF)
 		if inputData.IsBackup {
