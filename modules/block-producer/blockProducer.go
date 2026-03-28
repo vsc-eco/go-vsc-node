@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 	"vsc-node/lib/datalayer"
@@ -63,6 +64,7 @@ type BlockProducer struct {
 	p2p     *libp2p.P2PServer
 	service libp2p.PubSubService[p2pMessage]
 
+	sigMu        sync.RWMutex
 	sigChannels  map[uint64]chan sigMsg
 	blockSigning *signingInfo
 	bh           uint64
@@ -417,7 +419,16 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 		})
 	}()
 
-	bp.sigChannels[bh] = make(chan sigMsg)
+	sigChan := make(chan sigMsg, 1)
+	bp.sigMu.Lock()
+	bp.sigChannels[bh] = sigChan
+	bp.sigMu.Unlock()
+	defer func() {
+		bp.sigMu.Lock()
+		delete(bp.sigChannels, bh)
+		bp.sigMu.Unlock()
+	}()
+
 	bp.blockSigning = &signingInfo{
 		cid:        *cid,
 		slotHeight: bh,
@@ -583,31 +594,26 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 	if bp.blockSigning == nil {
 		return 0, errors.New("no block signing info")
 	}
-	go func() {
-		time.Sleep(12 * time.Second)
-		bp.sigChannels[bp.blockSigning.slotHeight] <- sigMsg{
-			Type: "end",
-		}
-	}()
+
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+
 	weightTotal := uint64(0)
 	for _, weight := range election.Weights {
 		weightTotal += weight
 	}
 
-	go func() {
+	bp.sigMu.RLock()
+	sigChan := bp.sigChannels[bp.blockSigning.slotHeight]
+	bp.sigMu.RUnlock()
 
-	}()
-
-	select {
-	case <-ctx.Done():
-		vlog.Trace("ctx done")
-		return 0, ctx.Err() // Return error if canceled
-	default:
-		signedWeight := uint64(0)
-
-		for signedWeight < (weightTotal * 9 / 10) {
-			msg := <-bp.sigChannels[bp.blockSigning.slotHeight]
-
+	signedWeight := uint64(0)
+	for signedWeight < (weightTotal * 9 / 10) {
+		select {
+		case <-ctx.Done():
+			vlog.Trace("Ending wait for sig (timeout)")
+			return signedWeight, nil
+		case msg := <-sigChan:
 			if msg.Type == "sig" {
 				sig := msg.Msg
 				sigStr, ok := sig.Data["sig"].(string)
@@ -639,16 +645,11 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 					signedWeight += election.Weights[index]
 					vlog.Trace("sig accepted", "account", account, "weight", election.Weights[index], "totalSigned", signedWeight)
 				}
-
-			}
-			if msg.Type == "end" {
-				vlog.Trace("Ending wait for sig")
-				break
 			}
 		}
-		vlog.Trace("Done waittt")
-		return signedWeight, nil
 	}
+	vlog.Trace("Done waittt")
+	return signedWeight, nil
 }
 
 func (bp *BlockProducer) canProduce(height uint64) bool {

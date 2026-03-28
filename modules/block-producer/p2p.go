@@ -57,8 +57,11 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 	}
 
 	if msg.Type == "block_sig" {
-		if s.bp.sigChannels[msg.SlotHeight] != nil {
-			s.bp.sigChannels[msg.SlotHeight] <- sigMsg{
+		s.bp.sigMu.RLock()
+		ch := s.bp.sigChannels[msg.SlotHeight]
+		s.bp.sigMu.RUnlock()
+		if ch != nil {
+			ch <- sigMsg{
 				Type: "sig",
 				Msg:  msg,
 			}

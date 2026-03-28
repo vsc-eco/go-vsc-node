@@ -1272,7 +1272,12 @@ func (tssMgr *TssManager) waitForSigs(
 
 		signedMap := make(map[string]bool)
 		for signedWeight*3 < weightTotal*2 {
-			msg := <-sigChan
+			var msg sigMsg
+			select {
+			case <-ctx.Done():
+				return
+			case msg = <-sigChan:
+			}
 
 			var member dids.Member
 			var memberAccount string
