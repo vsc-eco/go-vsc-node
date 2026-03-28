@@ -489,7 +489,12 @@ func (h *hiveBlocks) GetMetadata() (Document, error) {
 func GetAggTimestampPipeline(filters bson.D, localField string, timestampField string, offset int, limit int) mongo.Pipeline {
 	return mongo.Pipeline{
 		{{Key: "$match", Value: filters}},
-		// Join with hive_blocks
+		// Sort and paginate BEFORE the lookup so MongoDB can use indexes
+		// and only join the paginated subset with hive_blocks
+		{{Key: "$sort", Value: bson.D{{Key: localField, Value: -1}}}},
+		{{Key: "$skip", Value: offset}},
+		{{Key: "$limit", Value: limit}},
+		// Join with hive_blocks (now only on paginated subset)
 		{{Key: "$lookup", Value: bson.D{
 			{Key: "from", Value: "hive_blocks"},
 			{Key: "localField", Value: localField},
@@ -506,11 +511,6 @@ func GetAggTimestampPipeline(filters bson.D, localField string, timestampField s
 		{{Key: "$project", Value: bson.D{
 			{Key: "block_info", Value: 0},
 		}}},
-		// Sorting
-		{{Key: "$sort", Value: bson.D{{Key: localField, Value: -1}}}},
-		// Pagination
-		{{Key: "$skip", Value: offset}},
-		{{Key: "$limit", Value: limit}},
 	}
 }
 
