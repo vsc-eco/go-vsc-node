@@ -106,7 +106,7 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 			fmt.Println("Multisig: Running Actions")
 			go ms.TickActions(bh)
 		}
-		if bh&SYNC_INTERVAL == 0 {
+		if bh%SYNC_INTERVAL == 0 {
 			go ms.TickSyncFr(bh)
 		}
 	}
