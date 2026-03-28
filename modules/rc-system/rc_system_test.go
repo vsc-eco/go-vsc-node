@@ -355,20 +355,61 @@ func TestConsume_AccumulatesInSession(t *testing.T) {
 
 	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{"hive:alice:hbd": 10_000}})
 
+	// Available = 10000 + 5000 (free) = 15000
 	ok1, _ := session.Consume("hive:alice", 100, 5000)
 	if !ok1 {
 		t.Error("first consume should succeed")
 	}
 
+	// After first consume, rcMap["hive:alice"] = 5000
+	// CanConsume should now see: 15000 - 5000 = 10000 available
 	ok2, _ := session.Consume("hive:alice", 100, 5000)
-	// Note: Consume internally calls CanConsume which reads from DB, not session map
-	// This is a known limitation — session.rcMap is not checked in CanConsume
-	// The fix is in UpdateRcMap (capping at write time)
-	if ok2 {
-		// This would succeed because CanConsume reads DB (0 frozen), not session map
-		// This test documents the known behavior
-		t.Log("KNOWN: Consume allows double-spending within session (CanConsume reads DB only)")
+	if !ok2 {
+		t.Error("second consume should succeed (10000 remaining)")
 	}
+
+	// After second consume, rcMap["hive:alice"] = 10000
+	// CanConsume should now see: 15000 - 10000 = 5000 available
+	ok3, _ := session.Consume("hive:alice", 100, 5000)
+	if !ok3 {
+		t.Error("third consume should succeed (5000 remaining)")
+	}
+
+	// After third consume, rcMap["hive:alice"] = 15000
+	// CanConsume should now see: 15000 - 15000 = 0 available
+	ok4, _ := session.Consume("hive:alice", 100, 1)
+	if ok4 {
+		t.Error("fourth consume should FAIL — all RCs exhausted")
+	}
+}
+
+func TestConsume_PreventsNxAmplification(t *testing.T) {
+	// Attack scenario: account has 100 HBD (+ 5000 free = 5100 RC available)
+	// Submits 10 transactions each costing 1000 RC
+	// Before fix: all 10 pass (10000 RC consumed on 5100 balance)
+	// After fix: only 5 pass (5000 RC consumed, 6th rejected)
+	db := newMockRcDb()
+	ls := &mockLedgerSystem{balances: map[string]int64{"hive:attacker:hbd": 100}}
+	rcs := New(db, ls)
+
+	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{"hive:attacker:hbd": 100}})
+
+	// Available = 100 + 5000 (free) = 5100
+	passed := 0
+	for i := 0; i < 10; i++ {
+		ok, _ := session.Consume("hive:attacker", 100, 1000)
+		if ok {
+			passed++
+		}
+	}
+
+	if passed > 5 {
+		t.Errorf("RC AMPLIFICATION BUG: %d/10 transactions passed on 5100 RC budget (max should be 5)", passed)
+	}
+	if passed != 5 {
+		t.Errorf("expected exactly 5 transactions to pass, got %d", passed)
+	}
+	t.Logf("RC enforcement: %d/10 transactions passed (correct — budget is 5100, each costs 1000)", passed)
 }
 
 func TestRevert_ClearsSession(t *testing.T) {

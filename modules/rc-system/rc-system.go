@@ -122,7 +122,7 @@ func (rss *rcSession) CanConsume(account string, blockHeight uint64, rcAmt int64
 	}
 
 	//fmt.Println("rcAmt", balAmt, frozeAmt, rcAmt)
-	totalAmt := balAmt - frozeAmt
+	totalAmt := balAmt - frozeAmt - rss.rcMap[account]
 	if totalAmt < rcAmt {
 		return false, 0, rcAmt
 	} else {
