@@ -2,7 +2,6 @@ package libp2p
 
 import (
 	"net"
-	"testing"
 
 	"github.com/multiformats/go-multiaddr"
 )
@@ -30,15 +29,22 @@ func (pg *peerGetter) GetStatus() {
 
 // var _ common_types.PeerInfoGetter = &peerGetter{}
 
-func isPublicAddr(addr multiaddr.Multiaddr) bool {
-	if testing.Testing() {
-		// assume nodes in e2e tests are reachable regardless
-		return true
-	}
+func IsPublicAddr(addr multiaddr.Multiaddr) bool {
+	// Check IPv4 address
 	ipv4Address, err := addr.ValueForProtocol(multiaddr.P_IP4)
+	if err == nil {
+		ip := net.ParseIP(ipv4Address)
+		return ip != nil && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalMulticast() && !ip.IsLinkLocalUnicast()
+	}
 
-	ip := net.ParseIP(ipv4Address)
-	return !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalMulticast() && !ip.IsLinkLocalUnicast() && err == nil
+	// Check IPv6 address
+	ipv6Address, err := addr.ValueForProtocol(multiaddr.P_IP6)
+	if err == nil {
+		ip := net.ParseIP(ipv6Address)
+		return ip != nil && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalMulticast() && !ip.IsLinkLocalUnicast()
+	}
+
+	return false
 }
 
 func isCircuitAddr(addr multiaddr.Multiaddr) bool {

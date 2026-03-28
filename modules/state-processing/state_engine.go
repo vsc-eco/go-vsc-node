@@ -7,11 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 	"strconv"
-	"strings"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
-	"vsc-node/lib/logger"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
 	"vsc-node/modules/common/params"
@@ -37,6 +37,9 @@ import (
 	"github.com/multiformats/go-multicodec"
 	"go.mongodb.org/mongo-driver/mongo"
 )
+
+var tssLog = vsclog.Module("tss")
+var log = vsclog.Module("se")
 
 type ProcessExtraInfo struct {
 	BlockHeight int
@@ -90,8 +93,6 @@ type StateEngine struct {
 
 	//First Tx of batch
 	firstTxHeight uint64
-
-	log logger.Logger
 
 	slotStatus *SlotStatus
 
@@ -188,6 +189,51 @@ func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 // This model is more efficient and best yet, it prevents MEV potential by locking the block execution time to the witness slot.
 func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	se.BlockHeight = int(block.BlockNumber)
+
+	// --- Key lifecycle: deprecation and retirement ---
+	if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
+		currentEpoch := electionData.Epoch
+
+		// Phase 1: deprecate active keys that have reached their expiry epoch.
+		if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
+			for _, k := range deprecating {
+				k.Status = tss_db.TssKeyDeprecated
+				if tss_db.KeyRetirementEnabled {
+					k.DeprecatedHeight = int64(block.BlockNumber)
+				}
+				se.tssKeys.SetKey(k)
+				tssLog.Info(
+					"key deprecated",
+					"keyId",
+					k.Id,
+					"expiryEpoch",
+					k.ExpiryEpoch,
+					"blockHeight",
+					block.BlockNumber,
+				)
+			}
+		}
+	}
+
+	// Phase 2: retire deprecated keys whose grace period has elapsed (block-height based).
+	if tss_db.KeyRetirementEnabled {
+		if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil {
+			for _, k := range retiring {
+				k.Status = tss_db.TssKeyRetired
+				se.tssKeys.SetKey(k)
+				tssLog.Info(
+					"key retired",
+					"keyId",
+					k.Id,
+					"deprecatedHeight",
+					k.DeprecatedHeight,
+					"blockHeight",
+					block.BlockNumber,
+				)
+			}
+		}
+	}
+
 	blockInfo := struct {
 		BlockHeight uint64
 		BlockId     string
@@ -212,18 +258,26 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	}
 
 	for _, virtualOp := range block.VirtualOps {
-		//Process virtual operations here such as claimed interest
-
-		fmt.Println("block.VirtualOps", block.VirtualOps)
 		if virtualOp.Op.Type == "interest_operation" {
-			//Ensure it matches our gateway wallet
-			if virtualOp.Op.Value["owner"].(string) == se.sconf.GatewayWallet() {
-
-				vInt := virtualOp.Op.Value["interest"].(map[string]any)["amount"].(string)
-
-				vInt1, err := strconv.ParseInt(vInt, 10, 64)
+			owner, ok := virtualOp.Op.Value["owner"].(string)
+			if !ok {
+				continue
+			}
+			if owner == se.sconf.GatewayWallet() {
+				interest, ok := virtualOp.Op.Value["interest"].(map[string]any)
+				if !ok {
+					fmt.Println("interest_operation: unexpected interest field type", "block", block.BlockNumber)
+					continue
+				}
+				amountStr, ok := interest["amount"].(string)
+				if !ok {
+					fmt.Println("interest_operation: unexpected amount field type", "block", block.BlockNumber)
+					continue
+				}
+				vInt1, err := strconv.ParseInt(amountStr, 10, 64)
 				if err != nil {
-					panic(err)
+					fmt.Println("interest_operation: failed to parse amount", "block", block.BlockNumber, "amount", amountStr, "err", err)
+					continue
 				}
 				se.claimHBDInterest(blockInfo.BlockHeight, vInt1)
 			}
@@ -246,7 +300,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			}
 
 			if Id == "vsc.fr_sync" && RequiredAuths[0] == se.sconf.GatewayWallet() {
-				se.log.Debug("vsc.fr_sync", opVal)
+				log.Debug("vsc.fr_sync", "opVal", opVal)
 
 				frSync := struct {
 					StakedAmount   int64 `json:"stake_amt"`
@@ -302,8 +356,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 				if err == nil {
 					se.LedgerSystem.IndexActions(actionUpdate, ledgerSystem.ExtraInfo{
-						block.BlockNumber,
-						tx.TransactionID,
+						BlockHeight: block.BlockNumber,
+						ActionId:    tx.TransactionID,
 					})
 				}
 
@@ -350,7 +404,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		}
 
 		if singleOp.Type == "custom_json" {
-			// fmt.Println(op.Type)
 			opVal := singleOp.Value
 			cj := CustomJson{
 				Id:                   opVal["id"].(string),
@@ -390,7 +443,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 				}
 
-				// fmt.Println("cj.RequiredAuths[0], scheduleSlot.Account ", cj.RequiredAuths[0], scheduleSlot.Account)
 				if cj.RequiredAuths[0] == scheduleSlot.Account {
 					rawJson := map[string]interface{}{}
 					json.Unmarshal(cj.Json, &rawJson)
@@ -406,7 +458,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					validated := parsedBlock.Validate(se)
 
-					// fmt.Println("Validated block?", validated)
 					if validated {
 						se.slotStatus.Done = true
 						se.slotStatus.Producer = cj.RequiredAuths[0]
@@ -580,7 +631,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						BIdx:  int64(tx.Index),
 						OpIdx: int64(opIndex),
 					}
-					// fmt.Println("Registering deposit!", leDeposit)
 					depositedTo := se.LedgerSystem.Deposit(leDeposit)
 
 					// create deposit payload for indexing
@@ -610,31 +660,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						Asset:  token,
 						Memo:   depositMemo,
 					})
-
-					// ingest into transaction_pool
-					// se.txDb.Ingest(transactions.IngestTransactionUpdate{
-					// 	Id:             tx.TransactionID,
-					// 	RequiredAuths:  []string{depositedFrom},
-					// 	Status:         "CONFIRMED",
-					// 	Type:           "hive",
-					// 	Tx:             transact,
-					// 	AnchoredBlock:  &block.BlockID,
-					// 	AnchoredHeight: &block.BlockNumber,
-					// 	AnchoredOpIdx:  &leDeposit.OpIdx,
-					// 	AnchoredIndex:  &leDeposit.BIdx,
-					// 	Ledger: []ledgerSystem.OpLogEvent{{
-					// 		Id:          MakeTxId(tx.TransactionID, opIndex),
-					// 		To:          depositedTo,
-					// 		From:        depositedFrom,
-					// 		Amount:      amt,
-					// 		Asset:       token,
-					// 		Memo:        depositMemo,
-					// 		Type:        "deposit",
-					// 		BIdx:        leDeposit.BIdx,
-					// 		OpIdx:       leDeposit.OpIdx,
-					// 		BlockHeight: block.BlockNumber,
-					// 	}},
-					// })
 				}
 			}
 			//# End parsing gateway transfer operations
@@ -668,8 +693,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					RequiredPostingAuths: cj.RequiredPostingAuths,
 				}
 
-				// fmt.Println("RR gr86", txSelf, cj, string(cj.Json))
-
 				var vscTx VSCTransaction
 				if cj.Id == "vsc.withdraw" {
 					parsedTx := TxVSCWithdraw{
@@ -677,7 +700,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 					json.Unmarshal(cj.Json, &parsedTx)
 
-					// se.log.Debug("parsedTx vsc.withdraw", parsedTx)
+					// log.Debug("parsedTx vsc.withdraw", parsedTx)
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.call" {
@@ -703,7 +726,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.unstake_hbd" {
-					// se.log.Debug("vsc.unstake_hbd", cj.Json)
+					// log.Debug("vsc.unstake_hbd", cj.Json)
 					parsedTx := TxUnstakeHbd{
 						Self: txSelf,
 					}
@@ -727,6 +750,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.tss_sign" {
+					if se.sconf.OnTestnet() && txSelf.BlockHeight < se.SystemConfig().ConsensusParams().TssIndexHeight {
+						// for testnet, ignore below tss index height
+						continue
+					}
 
 					signedData := struct {
 						Packet []struct {
@@ -743,7 +770,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					if err == nil {
 						for _, sigPack := range signedData.Packet {
 							if keyCache[sigPack.KeyId] == nil {
-								fmt.Println("Fetch key 123")
 								tssKey, _ := se.tssKeys.FindKey(sigPack.KeyId)
 								keyCache[sigPack.KeyId] = &tssKey
 							}
@@ -795,40 +821,35 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 				} else if cj.Id == "vsc.tss_commitment" {
 
-					commitmentData := make(map[string]tss_helpers.SignedCommitment)
+					var commitments []tss_helpers.SignedCommitment
 
-					err := json.Unmarshal(cj.Json, &commitmentData)
+					// Try new array format first, fall back to legacy map format
+					if err := json.Unmarshal(cj.Json, &commitments); err != nil {
+						commitmentMap := make(map[string]tss_helpers.SignedCommitment)
+						if err := json.Unmarshal(cj.Json, &commitmentMap); err != nil {
+							tssLog.Warn("vsc.tss_commitment parse error", "txId", tx.TransactionID, "err", err)
+							continue
+						}
+						for _, c := range commitmentMap {
+							commitments = append(commitments, c)
+						}
+					}
 
-					fmt.Println("vsc.tss_commitment <err>", err, commitmentData, string(cj.Json))
+					tssLog.Verbose("processing vsc.tss_commitment", "txId", tx.TransactionID, "blockHeight", block.BlockNumber, "count", len(commitments))
 
-					for _, commitment := range commitmentData {
-						// savedCommitment, err := se.tssCommitments.GetCommitmentByHeight(commitment.KeyId, block.BlockNumber, "reshare", "keygen")
-
-						fmt.Println("commitment.KeyId, block.BlockNumber", commitment.KeyId, block.BlockNumber)
+					for _, commitment := range commitments {
+						tssLog.Verbose("commitment entry", "sessionId", commitment.SessionId, "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
 
 						members := make([]dids.BlsDID, 0)
 						electionData, err := se.electionDb.GetElectionByHeight(block.BlockNumber)
 
 						if err != nil {
+							tssLog.Warn("election lookup failed", "keyId", commitment.KeyId, "blockHeight", block.BlockNumber, "err", err)
 							continue
 						}
 						for _, mbr := range electionData.Members {
 							members = append(members, dids.BlsDID(mbr.Key))
 						}
-
-						// electionData, _ := se.electionDb.GetElectionByHeight(savedCommitment.Epoch)
-
-						// decodedCommitment, _ := base64.RawURLEncoding.DecodeString(savedCommitment.Commitment)
-
-						// bitset := &big.Int{}
-						// bitset.SetBytes(decodedCommitment)
-
-						// for idx, mbr := range electionData.Members {
-						// 	if bitset.Bit(idx) == 1 {
-						// 		members = append(members, dids.BlsDID(mbr.Key))
-						// 	}
-						// }
-						// savedCommitment
 
 						baseComment := tss_helpers.BaseCommitment{
 							Type:       commitment.Type,
@@ -844,9 +865,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						data, _ := common.EncodeDagCbor(baseComment)
 
 						commitmentCid, err := common.HashBytes(data, multicodec.DagCbor)
-
 						if err != nil {
-							fmt.Println("error hashing commitment cid", err)
+							tssLog.Warn("CID hash error", "keyId", commitment.KeyId, "err", err)
 							continue
 						}
 
@@ -855,44 +875,53 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							BitVector: commitment.BitSet,
 						}, members, commitmentCid)
 
-						testJson, _ := json.Marshal(baseComment)
-						fmt.Println("verify commitmentCid", commitmentCid, string(testJson))
 						verified, _, _ := circuit.Verify()
+						tssIndexHeight := se.SystemConfig().ConsensusParams().TssIndexHeight
 
-						fmt.Println("verified commitment", verified)
-						if verified && block.BlockNumber > se.SystemConfig().ConsensusParams().TssIndexHeight {
-							// commitment.
-							se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
-								Type:        commitment.Type,
-								BlockHeight: commitment.BlockHeight,
-								Epoch:       commitment.Epoch,
-								Commitment:  commitment.Commitment,
-								KeyId:       commitment.KeyId,
-								PublicKey:   commitment.PublicKey,
-								TxId:        tx.TransactionID,
-							})
+						if !verified {
+							tssLog.Warn("BLS verification failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "cid", commitmentCid)
+							continue
+						}
+						if block.BlockNumber <= tssIndexHeight {
+							tssLog.Verbose("skipped (before TssIndexHeight)", "keyId", commitment.KeyId, "blockHeight", block.BlockNumber, "tssIndexHeight", tssIndexHeight)
+							continue
+						}
 
-							var newKey bool
-							savedKeyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
-							if savedKeyInfo.Status == "created" {
-								newKey = true
-							}
+						tssLog.Verbose("writing commitment to DB", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "txId", tx.TransactionID)
+						se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+							Type:        commitment.Type,
+							BlockHeight: commitment.BlockHeight,
+							Epoch:       commitment.Epoch,
+							Commitment:  commitment.Commitment,
+							KeyId:       commitment.KeyId,
+							PublicKey:   commitment.PublicKey,
+							TxId:        tx.TransactionID,
+						})
 
-							if commitment.Type == "keygen" || commitment.Type == "reshare" {
-								keyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
-								if newKey && commitment.PublicKey != nil {
-									keyInfo.PublicKey = *commitment.PublicKey
-									keyInfo.CreatedHeight = int64(block.BlockNumber)
-									keyInfo.Status = "active"
+						var newKey bool
+						savedKeyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
+						if savedKeyInfo.Status == "created" {
+							newKey = true
+						}
 
-									keyInfo.Epoch = commitment.Epoch
-									se.tssKeys.SetKey(keyInfo)
-								} else if newKey {
-
-								} else {
-									keyInfo.Epoch = commitment.Epoch
-									se.tssKeys.SetKey(keyInfo)
+						if commitment.Type == "keygen" || commitment.Type == "reshare" {
+							keyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
+							if newKey && commitment.PublicKey != nil {
+								keyInfo.PublicKey = *commitment.PublicKey
+								keyInfo.CreatedHeight = int64(block.BlockNumber)
+								keyInfo.Status = "active"
+								keyInfo.Epoch = commitment.Epoch
+								if keyInfo.Epochs > 0 {
+									keyInfo.ExpiryEpoch = commitment.Epoch + keyInfo.Epochs
 								}
+								tssLog.Info("key activated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch, "blockHeight", block.BlockNumber, "pubKey", keyInfo.PublicKey)
+								se.tssKeys.SetKey(keyInfo)
+							} else if newKey {
+								tssLog.Verbose("keygen/reshare acknowledged (no pubKey)", "keyId", commitment.KeyId, "epoch", commitment.Epoch)
+							} else {
+								keyInfo.Epoch = commitment.Epoch
+								tssLog.Info("key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch)
+								se.tssKeys.SetKey(keyInfo)
 							}
 						}
 					}
@@ -1008,7 +1037,7 @@ func (se *StateEngine) ExecuteBatch() {
 	}
 
 	// if len(se.TxOutput) > 0 {
-	// 	se.log.Debug("TxOutput pending", se.TxOutput, len(se.TxBatch))
+	// 	log.Debug("TxOutput pending", se.TxOutput, len(se.TxBatch))
 	// }
 
 	// instead of recreating the ledger session for every Hive transaction,
@@ -1035,30 +1064,19 @@ func (se *StateEngine) ExecuteBatch() {
 		rcSession := se.RcSystem.NewSession(ledgerSession)
 		// Pass the current temp outputs so calls within this slot see the
 		// latest in-memory state instead of the latest contract state
-		callSession := contract_session.NewCallSession(se.da, se.contractDb, se.contractState, se.tssKeys, lastBlockBh, se.TempOutputs)
+		callSession := contract_session.NewCallSession(
+			se.da,
+			se.contractDb,
+			se.contractState,
+			se.tssKeys,
+			lastBlockBh,
+			se.TempOutputs,
+		)
 
-		//Forced ledger operations that is produced irrespective of the output result.
-		//For example, deposit operations.
-		// forcedLedger := make([]ledgerSystem.OpLogEvent, 0)
 		outputs := make([]ContractIdResult, 0)
 		ok := true
 		for idx, vscTx := range tx.Ops {
 			fmt.Println("Execute tx.bh", vscTx.TxSelf().BlockHeight)
-			// debugJson := map[string]interface{}{
-			// 	"EndBlock":    lastBlock.EndBlock,
-			// 	"StartBlock":  lastBlock.StartBlock,
-			// 	"lastBlockBh": lastBlockBh,
-			// 	"SlotHeight":  se.slotStatus.SlotHeight,
-			// 	"BlockHeight": se.BlockHeight,
-			// }
-			// jsonBytes, _ := json.MarshalIndent(debugJson, "", "  ")
-			// fmt.Println(string(jsonBytes))
-
-			// if vscTx.Type() == "deposit" {
-			// 	fOplog := vscTx.(TxDeposit).ToLedger()
-			// 	forcedLedger = append(forcedLedger, fOplog...)
-			// 	continue
-			// }
 
 			if vscTx.Type() == "deposit" {
 				continue
@@ -1067,7 +1085,7 @@ func (se *StateEngine) ExecuteBatch() {
 				se.firstTxHeight = vscTx.TxSelf().BlockHeight - 1
 			}
 			if len(vscTx.TxSelf().RequiredAuths) == 0 && len(vscTx.TxSelf().RequiredPostingAuths) == 0 {
-				se.log.Debug("TRANSACTION REVERTING - no required auths")
+				log.Debug("TRANSACTION REVERTING - no required auths")
 				ok = false
 				ledgerSession.Revert()
 				break
@@ -1083,7 +1101,7 @@ func (se *StateEngine) ExecuteBatch() {
 			var contractId string
 			lastContractMeta := contracts.ContractMetadata{}
 			lastStateCid := ""
-			if vscTx.Type() == "call_contract" {
+			if vscTx.Type() == "call" {
 				contractCall, ok := vscTx.(TxVscCallContract)
 				if ok {
 					contractId = contractCall.ContractId
@@ -1101,13 +1119,26 @@ func (se *StateEngine) ExecuteBatch() {
 			}
 			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, callSession, payer)
 
-			se.log.Debug("TRANSACTION STATUS", result, ledgerSession, "idx=", idx, vscTx.Type())
-			fmt.Println("RC Payer is", payer, vscTx.Type(), vscTx, result.RcUsed)
+			log.Debug(
+				"TRANSACTION STATUS",
+				"result",
+				result,
+				"ledger session",
+				ledgerSession,
+				"idx",
+				idx,
+				"type",
+				vscTx.Type(),
+				"rc payer",
+				payer,
+				"rc used",
+				result.RcUsed,
+			)
 
 			rcUsed := se.RcMap[payer] // don't crash if payer is not in RC map
 			se.RcMap[payer] = rcUsed + result.RcUsed
 
-			if vscTx.Type() == "call_contract" {
+			if vscTx.Type() == "call" {
 				txId := MakeTxId(tx.TxId, idx)
 				if !result.Success {
 					// If failed, output the error message only
@@ -1133,7 +1164,16 @@ func (se *StateEngine) ExecuteBatch() {
 					}
 				} else {
 					logs := callSession.PopLogs()
-					for id, log := range logs {
+					// Sort log keys for deterministic output ordering across nodes.
+					// Cross-contract calls produce logs from multiple contracts;
+					// unsorted map iteration causes different output order → CID mismatch.
+					logIds := make([]string, 0, len(logs))
+					for id := range logs {
+						logIds = append(logIds, id)
+					}
+					sort.Strings(logIds)
+					for _, id := range logIds {
+						log := logs[id]
 						if id == contractId {
 							outputs = append(outputs, ContractIdResult{
 								ContractId: contractId,
@@ -1161,7 +1201,7 @@ func (se *StateEngine) ExecuteBatch() {
 				}
 			}
 			if !result.Success {
-				se.log.Debug("TRANSACTION REVERTING")
+				log.Debug("TRANSACTION REVERTING")
 				ok = false
 				ledgerSession.Revert()
 				break
@@ -1222,7 +1262,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	// se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)
 	// se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(nil, completeIds...)
 
-	//se.log.Debug("stBlock, endBlock", stBlock, endBlock)
+	//log.Debug("stBlock, endBlock", stBlock, endBlock)
 	distinctAccounts, _ := se.LedgerState.LedgerDb.GetDistinctAccountsRange(stBlock, endBlock)
 
 	assets := []string{"hbd", "hive", "hbd_savings", "hive_consensus"}
@@ -1284,43 +1324,11 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			claimHeight = claimRecord.BlockHeight
 		} else if prevBalRecord != nil {
 			//There is a previous balance record
-
-			if ledgerBalances["hbd_savings"] != prevBalRecord.HBD_SAVINGS {
-				//If there is a change in the savings balance, calculate the average
-
-				A := endBlock - prevBalRecord.HBD_MODIFY_HEIGHT //Example: Modifed at 10, endBlock = 40; thus 10-40 = 30
-				B := endBlock - prevBalRecord.HBD_CLAIM_HEIGHT  //Example: Claimed at block 100, current block 800; thus
-
-				moreAvg := prevBalRecord.HBD_SAVINGS * int64(A) / int64(B)
-
-				var tmpAvg int64
-				if moreAvg > 0 {
-					tmpAvg = prevBalRecord.HBD_AVG + moreAvg
-				} else {
-					tmpAvg = prevBalRecord.HBD_AVG
-				}
-
-				//Apply adjustments
-				tmpAvg = tmpAvg * int64(A) / int64(B)
-				if tmpAvg > 0 || prevBalRecord.HBD_MODIFY_HEIGHT == 0 {
-					modifyHeight = endBlock
-					hbdAvg = tmpAvg
-				} else {
-					modifyHeight = prevBalRecord.HBD_MODIFY_HEIGHT
-					// hbdAvg = prevBalRecord.HBD_AVG
-				}
-
-				//Only update modified height if there is an average of >1 or 0.001
-				//This is avoid the scenario of small deposits within a short period of time causing averages to be lost
-
-				//Balance adjusted once accounting for the modify time
-				//This ensures an average decreases. If balance is equal to the previous balance, then the average will not change
-				// se.log.Debug("k="+k, "adjustedBal", tmpAvg, "hbdAvg="+strconv.Itoa(int(hbdAvg)), "B="+strconv.Itoa(int(B)), "C="+strconv.Itoa(int(C)), "endBlock="+strconv.Itoa(int(endBlock)))
-				// se.log.Debug(prevBalRecord.HBD_CLAIM_HEIGHT, prevBalRecord.HBD_MODIFY_HEIGHT, moreAvg)
-			} else {
-				modifyHeight = prevBalRecord.HBD_MODIFY_HEIGHT
-				hbdAvg = prevBalRecord.HBD_AVG
-			}
+			//HBD_AVG stores an unnormalized cumulative sum (balance * blocks) since the last claim.
+			//Accumulate the previous balance's contribution for blocks since last modification.
+			A := endBlock - prevBalRecord.HBD_MODIFY_HEIGHT
+			hbdAvg = prevBalRecord.HBD_AVG + prevBalRecord.HBD_SAVINGS*int64(A)
+			modifyHeight = endBlock
 		} else {
 			modifyHeight = endBlock
 			hbdAvg = 0
@@ -1342,9 +1350,12 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord)
 
-		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(se.LedgerState.VirtualLedger[k], func(v ledgerSystem.LedgerUpdate) bool {
-			return v.Type == "deposit"
-		})
+		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(
+			se.LedgerState.VirtualLedger[k],
+			func(v ledgerSystem.LedgerUpdate) bool {
+				return v.Type == "deposit"
+			},
+		)
 	}
 }
 
@@ -1360,23 +1371,8 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 			frozeAmt := rcSystem.CalculateFrozenBal(rcRecord.BlockHeight, blockHeight, rcRecord.Amount)
 
 			rcBal = frozeAmt + v
-			// fmt.Println("rcRecord frozeAmt", frozeAmt, rcRecord.BlockHeight, blockHeight, rcRecord.Amount)
 		}
 
-		// Cap frozen RC to user's balance — prevents snowball from
-		// multi-tx slots and non-contract ops that bypass CanConsume
-		balAmt := se.LedgerSystem.GetBalance(k, blockHeight, "hbd")
-		if strings.HasPrefix(k, "hive:") {
-			balAmt = balAmt + params.RC_HIVE_FREE_AMOUNT
-		}
-		if rcBal > balAmt {
-			rcBal = balAmt
-		}
-		if rcBal < 0 {
-			rcBal = 0
-		}
-
-		// fmt.Println("rcRecord k", k, rcRecord, rcBal)
 		se.rcDb.SetRecord(k, blockHeight, rcBal)
 	}
 }
@@ -1403,7 +1399,6 @@ func (se *StateEngine) Flush() {
 func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint64 {
 
 	if lastBlk == 0 || lastSavedBlk == 0 {
-		fmt.Println("Returning lastSavdBlk", lastBlk, lastSavedBlk)
 		return lastSavedBlk
 	}
 	var outputExists bool
@@ -1432,10 +1427,6 @@ func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint
 	// }
 }
 
-func (se *StateEngine) Log() logger.Logger {
-	return se.log
-}
-
 func (se *StateEngine) DataLayer() common_types.DataLayer {
 	return se.da
 }
@@ -1446,7 +1437,8 @@ func (se *StateEngine) GetContractInfo(id string, height uint64) (contracts.Cont
 	if err == mongo.ErrNoDocuments {
 		return contracts.Contract{}, false
 	} else if err != nil {
-		panic(err)
+		fmt.Println("GetContractInfo: db error", "id", id, "height", height, "err", err)
+		return contracts.Contract{}, false
 	}
 
 	return contractInfo, true
@@ -1470,7 +1462,12 @@ func (se *StateEngine) Commit() {
 }
 
 func (se *StateEngine) Init() error {
-
+	// One-time migration: deprecate any active keys that pre-date the expiry system.
+	// These keys have no ExpiryEpoch and would otherwise reshare forever.
+	// deprecated_height=0 means no retirement clock — they stay deprecated until renewed.
+	if err := se.tssKeys.DeprecateLegacyKeys(); err != nil {
+		tssLog.Warn("DeprecateLegacyKeys failed during init", "err", err)
+	}
 	return nil
 }
 
@@ -1487,7 +1484,7 @@ func (se *StateEngine) SystemConfig() systemconfig.SystemConfig {
 	return se.sconf
 }
 
-func New(logger logger.Logger, sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
+func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	witnessesDb witnesses.Witnesses,
 	electionsDb elections.Elections,
 	contractDb contracts.Contracts,
@@ -1507,7 +1504,7 @@ func New(logger logger.Logger, sconf systemconfig.SystemConfig, da *DataLayer.Da
 	wasm *wasm_runtime.Wasm,
 ) *StateEngine {
 
-	ls := ledgerSystem.New(balanceDb, ledgerDb, interestClaims, actionDb, logger)
+	ls := ledgerSystem.New(balanceDb, ledgerDb, interestClaims, actionDb)
 
 	// {
 	// 	BalanceDb: balanceDb,
@@ -1529,7 +1526,6 @@ func New(logger logger.Logger, sconf systemconfig.SystemConfig, da *DataLayer.Da
 
 	return &StateEngine{
 		sconf:           sconf,
-		log:             logger,
 		TxOutput:        make(map[string]TxOutput),
 		ContractResults: make(map[string][]ContractResult),
 		TempOutputs:     make(map[string]*contract_session.TempOutput),

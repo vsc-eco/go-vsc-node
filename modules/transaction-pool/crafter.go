@@ -115,8 +115,10 @@ type InternalBroadcast struct {
 
 func (ib *InternalBroadcast) Broadcast(tx SerializedVSCTransaction) (string, error) {
 	cidz, err := ib.TxPool.IngestTx(tx, IngestOptions{Broadcast: true})
-	fmt.Println("err", err)
-	return cidz.String(), err
+	if err != nil {
+		return "", err
+	}
+	return cidz.String(), nil
 }
 
 // id = "vsc.transfer"
@@ -611,9 +613,10 @@ func (tx *VscContractCall) Validate() (bool, error) {
 // }
 
 type VSCTransaction struct {
-	Ops   []VSCTransactionOp
-	Nonce uint64
-	NetId string // NetId is included in headers
+	Ops     []VSCTransactionOp
+	Nonce   uint64
+	NetId   string // NetId is included in headers
+	RcLimit uint64 // Optional; 0 means use the protocol default (500)
 }
 
 func (tx *VSCTransaction) Serialize() (SerializedVSCTransaction, error) {
@@ -640,6 +643,11 @@ func (tx *VSCTransaction) ToShell() VSCTransactionShell {
 		requiredAuths = append(requiredAuths, auth)
 	}
 
+	rcLimit := uint64(500)
+	if tx.RcLimit > 0 {
+		rcLimit = tx.RcLimit
+	}
+
 	shell := VSCTransactionShell{
 		Type:    "vsc-tx",
 		Version: "0.2",
@@ -647,7 +655,7 @@ func (tx *VSCTransaction) ToShell() VSCTransactionShell {
 			Nonce:         tx.Nonce,
 			RequiredAuths: requiredAuths,
 			NetId:         tx.NetId,
-			RcLimit:       500,
+			RcLimit:       rcLimit,
 		},
 		Tx: tx.Ops,
 	}

@@ -86,8 +86,8 @@ func (a *Aggregate) Start() *promise.Promise[any] {
 
 // Stop implements Plugin.
 func (a *Aggregate) Stop() error {
-	for _, p := range a.plugins {
-		if err := p.Stop(); err != nil {
+	for i := len(a.plugins) - 1; i >= 0; i-- {
+		if err := a.plugins[i].Stop(); err != nil {
 			return err
 		}
 	}

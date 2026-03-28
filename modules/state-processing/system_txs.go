@@ -8,6 +8,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/transactions"
@@ -30,7 +31,7 @@ type ContractOutput struct {
 	Metadata   contracts.ContractMetadata `json:"metadata"`
 	//This might not be used
 
-	Results     []contracts.ContractOutputResult `json:"results" bson:"results"`
+	Results     []contracts.ContractOutputResult `json:"results"      bson:"results"`
 	StateMerkle string                           `json:"state_merkle"`
 
 	// Legacy, moved to results array
@@ -57,29 +58,54 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 		})
 	}
 
-	tssOps := output.TssOps
-	for _, res := range output.Results {
-		tssOps = append(tssOps, res.TssOps...)
-	}
+	if !se.sconf.OnTestnet() || txSelf.BlockHeight >= se.sconf.ConsensusParams().TssIndexHeight {
+		// for testnet, index only above tss index height
+		tssOps := output.TssOps
+		for _, res := range output.Results {
+			tssOps = append(tssOps, res.TssOps...)
+		}
 
-	for _, tssOp := range tssOps {
-		if tssOp.Type == "create" {
-			fmt.Println("CREATING TSS KEY", tssOp)
-			_, err := se.tssKeys.FindKey(tssOp.KeyId)
+		for _, tssOp := range tssOps {
+			if tssOp.Type == "create" {
+				tssLog.Verbose("creating TSS key", "keyId", tssOp.KeyId, "algo", tssOp.Args, "epochs", tssOp.Epochs)
+				_, err := se.tssKeys.FindKey(tssOp.KeyId)
 
-			// fmt.Println("err", err)
-			if err == mongo.ErrNoDocuments {
-				se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args))
+				if err == mongo.ErrNoDocuments {
+					se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args), tssOp.Epochs)
+				}
+			} else if tssOp.Type == "renew" {
+				key, err := se.tssKeys.FindKey(tssOp.KeyId)
+				renewable := err == nil && tssOp.Epochs > 0 &&
+					(key.Status == tss_db.TssKeyActive || key.Status == tss_db.TssKeyDeprecated)
+				if renewable {
+					electionData, elecErr := se.electionDb.GetElectionByHeight(txSelf.BlockHeight)
+					if elecErr == nil {
+						maxExpiry := electionData.Epoch + tss_db.MaxKeyEpochs
+						// base on current epoch so you can't renew infinitely into the future
+						newExpiry := electionData.Epoch + tssOp.Epochs
+						if newExpiry > maxExpiry {
+							newExpiry = maxExpiry
+						}
+						key.ExpiryEpoch = newExpiry
+						// Reactivate deprecated keys.
+						if key.Status == tss_db.TssKeyDeprecated {
+							key.Status = tss_db.TssKeyActive
+							key.DeprecatedHeight = 0
+						}
+						tssLog.Info("key renewed", "keyId", key.Id, "newExpiryEpoch", key.ExpiryEpoch, "status", key.Status)
+						se.tssKeys.SetKey(key)
+					}
+				}
+			} else if tssOp.Type == "sign" {
+				se.tssRequests.SetSignedRequest(tss_db.TssRequest{
+					KeyId:  tssOp.KeyId,
+					Status: "unsigned",
+					Msg:    tssOp.Args,
+				})
+				// if err == mongo.ErrNoDocuments {
+				// 	se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args))
+				// }
 			}
-		} else if tssOp.Type == "sign" {
-			se.tssRequests.SetSignedRequest(tss_db.TssRequest{
-				KeyId:  tssOp.KeyId,
-				Status: "unsigned",
-				Msg:    tssOp.Args,
-			})
-			// if err == mongo.ErrNoDocuments {
-			// 	se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args))
-			// }
 		}
 	}
 
@@ -140,8 +166,6 @@ const CONTRACT_DATA_AVAILABLITY_PROOF_REQUIRED_HEIGHT = 84162592
 
 // ProcessTx implements VSCTransaction.
 func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
-
-	// fmt.Println("tx.Runtime", tx.Runtime)
 	if wasm_runtime.NewFromString(tx.Runtime.String()).IsErr() {
 		return TxResult{
 			Success: false,
@@ -156,18 +180,16 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 		}
 	}
 
-	// fmt.Println("Must validate storage proof")
-
 	election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
 
 	if err != nil {
-		panic("Failed to get election")
+		return TxResult{
+			Success: false,
+			Ret:     fmt.Sprintf("failed to get election at height %d: %v", tx.Self.BlockHeight, err),
+		}
 	}
 
-	verified := tx.StorageProof.Verify(election)
-
-	// fmt.Println("Storage proof verify result", verified)
-
+	verified := tx.StorageProof.Verify(election, se.sconf)
 	if !verified {
 		return TxResult{
 			Success: false,
@@ -203,15 +225,6 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 		Runtime:        tx.Runtime,
 	})
 
-	// dd := map[string]interface{}{
-	// 	"bytes": []byte("HELLO WORLD LOLLL"),
-	// }
-	// dagCbor, _ := dagCbor.WrapObject(dd, mh.SHA2_256, -2)
-
-	// cid2, _ := se.da.PutObject(dd)
-	// bbytes, _ := dagCbor.MarshalJSON()
-	// fmt.Println("GDAGCBOR TEST", string(bbytes), cid2)
-
 	return TxResult{
 		Success: true,
 	}
@@ -235,10 +248,8 @@ type StorageProof struct {
 	Signature dids.SerializedCircuit `json:"signature"`
 }
 
-const STORAGE_PROOF_MINIMUM_SIGNERS = 6
-
 // TODO: Define everything else that'll happen with this
-func (sp *StorageProof) Verify(electionInfo elections.ElectionResult) bool {
+func (sp *StorageProof) Verify(electionInfo elections.ElectionResult, sconf systemconfig.SystemConfig) bool {
 	didMembers := make([]dids.BlsDID, 0)
 	for _, v := range electionInfo.Members {
 		didMembers = append(didMembers, dids.BlsDID(v.Key))
@@ -255,7 +266,7 @@ func (sp *StorageProof) Verify(electionInfo elections.ElectionResult) bool {
 	}
 	verified, includedDids, err := circuit.Verify()
 
-	if !verified || err != nil || len(includedDids) < STORAGE_PROOF_MINIMUM_SIGNERS {
+	if !verified || err != nil || len(includedDids) < sconf.ConsensusParams().MinSpSigners {
 		return false
 	}
 
@@ -356,7 +367,7 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 				Err:     "failed to get election",
 			}
 		}
-		verified := tx.StorageProof.Verify(election)
+		verified := tx.StorageProof.Verify(election, se.sconf)
 		if !verified {
 			return UpdateContractResult{
 				Success: false,
@@ -408,7 +419,6 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			if err != nil {
 				return
 			}
-			// fmt.Println("Hit here 2")
 			node, _ := se.da.Get(parsedCid, nil)
 
 			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
@@ -423,8 +433,6 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			elecResult.NetId = tx.NetId
 			elecResult.Data = tx.Data
 
-			// fmt.Println("TxElection bytes", string(bbytes))
-			// fmt.Println("Hit here 3")
 			//Store
 			se.electionDb.StoreElection(elecResult)
 		}
@@ -581,19 +589,6 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 		memberDids = append(memberDids, dids.BlsDID(member.Key))
 	}
 
-	//We can't use json convert then unmarshell due to CID instance must be passed to cbor lib
-	//..to properly serialize the CID into the correct cbor type
-	// blockHeader := map[string]interface{}{
-	// 	"__v": t.SignedBlock.Version,
-	// 	"__t": t.SignedBlock.Type,
-	// 	"headers": map[string]interface{}{
-	// 		"br":    t.SignedBlock.Headers.Br,
-	// 		"prevb": t.SignedBlock.Headers.PrevBlock,
-	// 	},
-	// 	"merkle_root": t.SignedBlock.MerkleRoot,
-	// 	"block":       t.SignedBlock.Block,
-	// }
-
 	blockCid, _ := cid.Parse(t.SignedBlock.Block)
 	blockHeader := vscBlocks.VscHeader{
 		Type:    t.SignedBlock.Type,
@@ -609,31 +604,27 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 		Block:      blockCid,
 	}
 
-	// dag, _ := dagCbor.WrapObject(blockHeader, mh.SHA2_256, -1)
 	cid, _ := se.da.HashObject(blockHeader)
 
-	// fmt.Println("Validated CID", cid)
-	// fmt.Println("MemberDids", memberDids)
 	circuit, err := dids.DeserializeBlsCircuit(t.SignedBlock.Signature, memberDids, *cid)
 
 	verified, includedDids, err := circuit.Verify()
 
-	// fmt.Println("circuit.Verify()", err)
-
 	if uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength <= t.Self.BlockHeight {
-		fmt.Println("Block is too far in the future", t.SignedBlock.Headers.Br, uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength, t.Self.BlockHeight)
+		fmt.Println(
+			"Block is too far in the future",
+			t.SignedBlock.Headers.Br,
+			uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength,
+			t.Self.BlockHeight,
+		)
 		return false
 	}
 
-	// fmt.Println("Verified sig", verified)
 	if !verified {
 		return false
 	}
 
 	signingScore, total := elections.CalculateSigningScore(*circuit, elecResult)
-	// fmt.Println("signingScore, total", signingScore, total, signingScore > ((total*2)/3))
-	//PASS
-	// blockCid := cid.MustParse(t.SignedBlock.Block)
 
 	verifiedR := signingScore > ((total * 2) / 3)
 
@@ -714,6 +705,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			Index:       idx,
 			BlockHeight: uint64(t.SignedBlock.Headers.Br[1]),
 			BlockId:     t.Self.BlockId,
+			Timestamp:   t.Self.Timestamp,
 		})
 
 		if txContainer.Type() == "transaction" {
@@ -727,7 +719,6 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				Index: idx,
 			})
 
-			// fmt.Println("broadcast inject tx", tx.Headers.Nonce, tx.Headers.RequiredAuths)
 			keyId := transactionpool.HashKeyAuths(tx.Headers.RequiredAuths)
 			if nonceUpdates[keyId] < tx.Headers.Nonce || nonceUpdates[keyId] == 0 {
 				nonceUpdates[keyId] = tx.Headers.Nonce
@@ -740,7 +731,6 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			})
 		} else if txContainer.Type() == "output" {
 			contractOutput := txContainer.AsContractOutput()
-			// fmt.Println(contractOutput, string(jsonBlsaz))
 
 			contractOutput.Ingest(se, TxSelf{
 				BlockId:     t.Self.BlockId,
@@ -748,11 +738,8 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				TxId:        t.Self.TxId,
 			}, int64(se.slotStatus.SlotHeight))
 
-			fmt.Println("OUTPUT CONTAINER", contractOutput)
-
 		} else if txContainer.Type() == "oplog" {
 			oplog := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))
-			// fmt.Println("OpLog detected!", txContainer, oplog)
 			oplog.ExecuteTx(se)
 		}
 	}
@@ -760,12 +747,6 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	for k, v := range nonceUpdates {
 		se.nonceDb.SetNonce(k, v+1)
 	}
-
-	// for _, v := range txsToInjest {
-	// 	se.txDb.Ingest(
-
-	// 	)
-	// }
 
 	se.TxBatch = append(txsToInjest, se.TxBatch...)
 }

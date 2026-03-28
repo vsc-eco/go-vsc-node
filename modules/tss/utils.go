@@ -19,11 +19,3 @@ func makeKey(t string, id string, epochTag ...int) datastore.Key {
 
 	return k
 }
-
-func makeEpochIdx(epoch int) int {
-	epochIdx := epoch % 100
-	if epochIdx == 0 {
-		epochIdx++
-	}
-	return epochIdx
-}

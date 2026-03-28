@@ -80,7 +80,7 @@ func (state *LedgerState) Compile(bh uint64) *CompiledResult {
 	}
 
 	return &CompiledResult{
-		OpLog: state.Oplog,
+		OpLog: oplog,
 	}
 }
 

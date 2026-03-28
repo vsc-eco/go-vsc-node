@@ -5,7 +5,6 @@ import (
 	"time"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/hive"
-	"vsc-node/lib/logger"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
@@ -94,9 +93,24 @@ type MakeNodeInput struct {
 const SEED_PREFIX = "MOCK_SEED-"
 
 func MakeNode(input MakeNodeInput) *Node {
-	dbConf := db.NewDbConfig()
+	dataDir := "data-" + input.Username
+	dbConf := db.NewDbConfig(dataDir)
+	identityConfig := common.NewIdentityConfig(dataDir)
+	p2pConfig := p2pInterface.NewConfig(dataDir)
+	gqlConfig := gql.NewGqlConfig(dataDir)
+	aggregate.New([]aggregate.Plugin{dbConf, identityConfig, p2pConfig, gqlConfig}).Init()
+	dbConf.SetDbName("go-vsc-" + input.Username)
+	identityConfig.SetUsername(input.Username)
+	p2pConfig.SetOptions(p2pInterface.P2POpts{
+		Port:         input.Port,
+		ServerMode:   true,
+		AllowPrivate: true,
+		Bootnodes:    []string{},
+	})
+	gqlConfig.SetHostAddr("0.0.0.0:7080")
+
 	db := db.New(dbConf)
-	vscDb := vsc.New(db, input.Username)
+	vscDb := vsc.New(db, dbConf)
 	hiveBlocks := &MockHiveDbs{}
 	vscBlocks := vscBlocks.New(vscDb)
 	witnessesDb := witnesses.New(vscDb)
@@ -115,17 +129,11 @@ func MakeNode(input MakeNodeInput) *Node {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssKeys := tss_db.NewKeys(vscDb)
 
-	logger := logger.PrefixedLogger{
-		Prefix: input.Username,
-	}
-
-	identityConfig := common.NewIdentityConfig("data-" + input.Username + "/config")
-
-	identityConfig.Init()
-	identityConfig.SetUsername(input.Username)
+	sysConfig := systemconfig.MocknetConfig()
 	kp := HashSeed([]byte(SEED_PREFIX + input.Username))
 
 	hiveClient := hivego.NewHiveRpc(streamer.DefaultHiveURIs)
+	hiveClient.ChainID = sysConfig.HiveChainId()
 
 	brcst := hive.MockTransactionBroadcaster{
 		KeyPair:  kp,
@@ -139,18 +147,15 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	hrpc := &MockHiveRpcClient{}
 
-	sysConfig := systemconfig.MocknetConfig()
-
 	var blockStatus common_types.BlockStatusGetter = nil
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, blockStatus, input.Port)
+	p2p := p2pInterface.New(witnessesDb, p2pConfig, identityConfig, sysConfig, blockStatus)
 
-	announcementsManager, _ := announcements.New(hrpc, identityConfig, sysConfig, time.Hour*24, &txCreator, p2p)
+	announcementsManager, _ := announcements.New(hrpc, identityConfig, sysConfig, p2pConfig, time.Hour*24, &txCreator, p2p)
 
-	datalayer := DataLayer.New(p2p, input.Username)
+	datalayer := DataLayer.New(p2p, dataDir)
 	wasm := wasm_runtime.New()
 
 	se := stateEngine.New(
-		logger,
 		sysConfig,
 		datalayer,
 		witnessesDb,
@@ -193,7 +198,6 @@ func MakeNode(input MakeNodeInput) *Node {
 	)
 
 	bp := blockproducer.New(
-		logger,
 		p2p,
 		blockConsumer,
 		se,
@@ -209,7 +213,6 @@ func MakeNode(input MakeNodeInput) *Node {
 	)
 
 	multisig := gateway.New(
-		logger,
 		sysConfig,
 		witnessesDb,
 		electionDb,
@@ -227,7 +230,7 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, 0)
 
-	ds, err := flatfs.CreateOrOpen("data-"+input.Username+"/keys", flatfs.Prefix(1), false)
+	ds, err := flatfs.CreateOrOpen(dataDir+"/keys", flatfs.Prefix(1), false)
 	if err != nil {
 		panic(err)
 	}
@@ -241,13 +244,12 @@ func MakeNode(input MakeNodeInput) *Node {
 		blockConsumer,
 		se,
 		identityConfig,
+		sysConfig,
 		ds,
 		&txCreator,
 	)
 
 	plugins := make([]aggregate.Plugin, 0)
-
-	fmt.Println("dbNuke", dbNuker)
 	plugins = append(plugins,
 		dbConf,
 		db,
@@ -287,23 +289,24 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	if input.Primary {
 		gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: &gqlgen.Resolver{
-			witnessesDb,
-			txpool,
-			balanceDb,
-			ledgerDb,
-			actionsDb,
-			electionDb,
-			txDb,
-			nonceDb,
-			rcDb,
-			hiveBlocks,
-			se,
-			datalayer,
-			contractDb,
-			contractState,
-			tssKeys,
-			tssRequests,
-		}}), "0.0.0.0:7080")
+			Witnesses:      witnessesDb,
+			TxPool:         txpool,
+			Balances:       balanceDb,
+			Ledger:         ledgerDb,
+			Actions:        actionsDb,
+			Elections:      electionDb,
+			Transactions:   txDb,
+			Nonces:         nonceDb,
+			Rc:             rcDb,
+			HiveBlocks:     hiveBlocks,
+			StateEngine:    se,
+			Da:             datalayer,
+			Contracts:      contractDb,
+			ContractsState: contractState,
+			TssKeys:        tssKeys,
+			TssCommitments: tssCommitments,
+			TssRequests:    tssRequests,
+		}}), gqlConfig)
 		plugins = append(plugins, gqlManager)
 	}
 
@@ -356,17 +359,28 @@ type NodeClient struct {
 	Plugins    []aggregate.Plugin
 	P2PService *p2pInterface.P2PServer
 	Identity   common.IdentityConfig
+	System     systemconfig.SystemConfig
 }
 
 func MakeClient(input MakeClientInput) NodeClient {
-	identityConfig := common.NewIdentityConfig("data-mock-client/config")
+	dataDir := "data-mock-client"
+	identityConfig := common.NewIdentityConfig(dataDir)
 
 	identityConfig.Init()
 	identityConfig.SetUsername("mock-client")
 
+	p2pConfig := p2pInterface.NewConfig(dataDir)
+	p2pConfig.Init()
+	p2pConfig.SetOptions(p2pInterface.P2POpts{
+		Port:         0,
+		ServerMode:   false,
+		AllowPrivate: true,
+		Bootnodes:    []string{},
+	})
+
 	sysConfig := systemconfig.MocknetConfig()
 	wits := witnesses.NewEmptyWitnesses()
-	p2p := p2pInterface.New(wits, identityConfig, sysConfig, nil, 0)
+	p2p := p2pInterface.New(wits, p2pConfig, identityConfig, sysConfig, nil)
 
 	plugins := make([]aggregate.Plugin, 0)
 	plugins = append(plugins,
@@ -378,5 +392,6 @@ func MakeClient(input MakeClientInput) NodeClient {
 		Plugins:    plugins,
 		P2PService: p2p,
 		Identity:   identityConfig,
+		System:     sysConfig,
 	}
 }

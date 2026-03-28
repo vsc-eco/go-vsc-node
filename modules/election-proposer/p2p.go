@@ -285,7 +285,7 @@ func (s p2pSpec) SerializeMessage(msg p2pMessage) []byte {
 
 // Topic implements libp2p.PubSubServiceParams.
 func (p2pSpec) Topic() string {
-	return "/vsc/mainnet/election-proposal/v1"
+	return "/election-proposal/v1"
 }
 
 func signCid(conf common.IdentityConfig, cid cid.Cid) (blsu.Signature, error) {

@@ -24,7 +24,7 @@ var _ ipc_requests.Message[any] = &SdkCallRequest[any]{}
 // Process implements ipc_requests.Message.
 func (s *SdkCallRequest[Result]) Process(ctx context.Context) result.Result[ipc_requests.ProcessedMessage[Result]] {
 	// fmt.Fprintln(os.Stderr, "sdk call request", s)
-	fn, ok := sdk.SdkModule[s.Function]
+	fn, ok := sdk.Resolve(s.Function)
 	if !ok {
 		return result.Err[ipc_requests.ProcessedMessage[Result]](fmt.Errorf("vm requested non-existing function: %s", s.Function))
 	}
@@ -106,8 +106,8 @@ func (res *ExecutionFinish[Result]) Process(context.Context) result.Result[ipc_r
 		processedRes := pm.Result.UnwrapAsPtr()
 		if processedRes != nil {
 			resStruct := any(processedRes).(*wasm_types.WasmResultStruct)
-			resStruct.Error = res.Error != nil
-			if resStruct.Error {
+			resStruct.Error = res.Error
+			if resStruct.Error != nil {
 				resStruct.Result = *res.Error
 			}
 		}

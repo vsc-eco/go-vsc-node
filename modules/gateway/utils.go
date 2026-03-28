@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v2"
@@ -18,4 +19,16 @@ func RecoverPublicKey(signature string, hash []byte) (string, error) {
 		return "", err
 	}
 	return *hivego.GetPublicKeyString(pubKey), nil
+}
+
+func GatewayKeyFromBlsSeed(blsSeed string) (*hivego.KeyPair, error) {
+	blsPrivSeed, err := hex.DecodeString(blsSeed)
+	if err != nil {
+		return nil, err
+	}
+	salt := []byte("gateway_key")
+	gatewayKey := sha256.Sum256(append(blsPrivSeed, salt...))
+
+	kp := hivego.KeyPairFromBytes(gatewayKey[:])
+	return kp, nil
 }

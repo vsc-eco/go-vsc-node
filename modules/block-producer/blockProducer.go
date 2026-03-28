@@ -11,14 +11,14 @@ import (
 	"math/rand"
 	"reflect"
 	"slices"
-	"strconv"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
-	"vsc-node/lib/logger"
+	"vsc-node/lib/vsclog"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
@@ -44,6 +44,8 @@ import (
 
 var CONSENSUS_SPECS = common.CONSENSUS_SPECS
 
+var vlog = vsclog.Module("bp")
+
 type BlockProducer struct {
 	a.Plugin
 
@@ -68,8 +70,6 @@ type BlockProducer struct {
 	electionsDb elections.Elections
 
 	_started bool
-
-	log logger.Logger
 }
 
 type signingInfo struct {
@@ -84,7 +84,7 @@ func (bp *BlockProducer) BlockTick(bh uint64, headHeight *uint64) {
 	}
 	bp.bh = bh
 	if headHeight == nil {
-		fmt.Println("HeadHeight is nil")
+		vlog.Warn("HeadHeight is nil")
 		return
 	}
 	if bh < *headHeight-40 {
@@ -105,13 +105,8 @@ func (bp *BlockProducer) BlockTick(bh uint64, headHeight *uint64) {
 	}
 
 	if witnessSlot != nil {
-
 		if witnessSlot.Account == bp.config.Get().HiveUsername && bh%CONSENSUS_SPECS.SlotLength == 0 {
-			// canProduce := bp.canProduce(bh)
-			// fmt.Println("Can produce", canProduce)
-			// if canProduce {
 			bp.ProduceBlock(witnessSlot.SlotHeight)
-			// }
 		}
 	}
 }
@@ -130,7 +125,6 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 	var prevBlockId *string
 	var prevRange [2]int
 	if prevBlock != nil {
-		// fmt.Println("PrevBlock exists")
 		prevBlockId = &prevBlock.BlockContent
 		prevRange = [2]int{prevBlock.EndBlock, int(slotHeight)}
 	} else {
@@ -142,7 +136,7 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 	outTxs := []string{}
 	outCids := []cid.Cid{}
 	if len(options) > 0 && options[0].PopulateTxs {
-		fmt.Println("Populating transactions")
+		vlog.Trace("Populating transactions")
 		offchainTxs = bp.generateTransactions(slotHeight)
 
 	} else if len(options) > 0 && len(options[0].Transactions) > 0 {
@@ -162,6 +156,19 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 	contractOutputs := bp.MakeOutputs(daSession)
 	if len(contractOutputs) > 0 {
 		offchainTxs = append(offchainTxs, contractOutputs...)
+	}
+
+	vlog.Info("GenerateBlock", "slotHeight", slotHeight, "txCount", len(offchainTxs))
+	for i, tx := range offchainTxs {
+		vlog.Trace("GenerateBlock tx", "index", i, "type", tx.Type, "id", tx.Id)
+	}
+	if oplog != nil {
+		vlog.Trace("GenerateBlock oplog", "CID", oplog.Id)
+	} else {
+		vlog.Trace("GenerateBlock oplog=nil")
+	}
+	for i, co := range contractOutputs {
+		vlog.Trace("GenerateBlock output", "index", i, "id", co.Id)
 	}
 
 	for _, tx := range offchainTxs {
@@ -190,10 +197,7 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 		MerkleRoot:   &mr,
 	}
 
-	// fmt.Println("vsc Block", blockData)
-
 	blockCid, err := bp.Datalayer.PutObject(blockData)
-	// fmt.Println("vsc Block", blockCid, err)
 
 	if err != nil {
 		return nil, nil, err
@@ -215,6 +219,8 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 
 	daSession.Commit()
 
+	vlog.Verbose("GenerateBlock", "merkleRoot", mr, "blockCid", blockCid.String(), "prevBlock", prevBlockId, "range", prevRange)
+
 	return &blockHeader, outTxs, nil
 }
 
@@ -224,7 +230,7 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 
 	prefilteredTxs, _ := bp.TxDb.FindUnconfirmedTransactions(slotHeight)
 
-	fmt.Println("prefilteredTxs", prefilteredTxs)
+	vlog.Debug("generateTransactions", "prefilteredCount", len(prefilteredTxs), "slotHeight", slotHeight)
 	txRecords := make([]transactions.TransactionRecord, 0)
 
 	nonceMap := make(map[string]int64, len(prefilteredTxs))
@@ -237,10 +243,13 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 		}
 		if txRecord.Nonce >= nonceMap[keyId] && txRecord.RcLimit >= bp.sconf.ConsensusParams().MinRcLimit {
 			txRecords = append(txRecords, txRecord)
+		} else {
+			vlog.Debug("tx filtered out", "id", txRecord.Id, "txNonce", txRecord.Nonce, "dbNonce", nonceMap[keyId], "rcLimit", txRecord.RcLimit, "minRc", bp.sconf.ConsensusParams().MinRcLimit)
 		}
 	}
 
 	if len(txRecords) == 0 {
+		vlog.Debug("no transactions passed nonce/rc filter")
 		return []vscBlocks.VscBlockTx{}
 	}
 
@@ -255,8 +264,8 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 		ids = append(ids, txRecord.Id)
 	}
 
-	fmt.Println("txRecords", txRecords)
-	fmt.Println("ids", ids)
+	vlog.Verbose("txRecords", "records", txRecords)
+	vlog.Verbose("transaction ids", "ids", ids)
 	seedStr := []byte(transactionpool.HashKeyAuths(ids))
 
 	data := binary.BigEndian.Uint64(seedStr[:])
@@ -330,11 +339,17 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 				txMap[keyId] = txMap[keyId][1:]
 				nonceMap[keyId]++
 				sequencedTxs = append(sequencedTxs, tx)
+				vlog.Debug("tx sequenced", "id", tx.Id, "nonce", tx.Nonce)
+			} else {
+				vlog.Debug("tx nonce mismatch", "id", tx.Id, "txNonce", tx.Nonce, "expected", nonceMap[keyId])
 			}
+		} else {
+			vlog.Debug("tx RC consume failed", "id", tx.Id, "payer", payer, "rcLimit", tx.RcLimit)
 		}
 	}
-	// rcFinish := rcSession.Done()
-	// fmt.Println("rcFinish", rcFinish)
+
+	vlog.Debug("generateTransactions result", "sequenced", len(sequencedTxs), "filtered", len(txRecords))
+
 	for _, txRecord := range sequencedTxs {
 		op := txRecord.Ops[0].Type
 		txs = append(txs, vscBlocks.VscBlockTx{
@@ -356,7 +371,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	//For right now we will just produce a blank
 	//This will allow us to test the e2e parsing
 
-	fmt.Println("bp.bh", bp.bh)
+	vlog.Trace("ProduceBlock", "bh", bp.bh)
 	stTime := bp.bh + 1
 	for i := 0; i < 5; i++ {
 		if bh == stTime {
@@ -371,16 +386,18 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	})
 
 	if err != nil {
-		fmt.Println("Error generating block", err)
+		vlog.Error("Error generating block", "err", err)
 		return
 	}
 
 	cid, _ := bp.Datalayer.HashObject(genBlock)
 
+	vlog.Info("ProduceBlock PRODUCER", "headerCid", cid.String(), "slotHeight", bh)
+
 	electionResult, err := bp.electionsDb.GetElectionByHeight(bh)
 
 	if err != nil {
-		fmt.Println("Error generating block", err)
+		vlog.Error("Error generating block", "err", err)
 		return
 	}
 
@@ -395,6 +412,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 			Data: map[string]interface{}{
 				"producer":     bp.config.Config.Get().HiveUsername,
 				"transactions": transactions,
+				"block_cid":    cid.String(),
 			},
 		})
 	}()
@@ -409,15 +427,12 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	signedWeight, err := bp.waitForSigs(context.Background(), &electionResult)
 
 	if err != nil {
-		fmt.Println("Error waiting for signatures", err)
+		vlog.Error("Error waiting for signatures", "err", err)
 		return
 	}
 
-	// fmt.Println("signedWeight", signedWeight, err)
-	// fmt.Println("CircuitMap", circuit.CircuitMap())
-
 	if !(signedWeight > (electionResult.TotalWeight * 2 / 3)) {
-		fmt.Println("[bp] not enough signatures", "signedW="+strconv.Itoa(int(signedWeight)), "totalW="+strconv.Itoa(int(electionResult.TotalWeight*2/3)))
+		vlog.Warn("not enough signatures", "signedW", signedWeight, "totalW", electionResult.TotalWeight*2/3)
 		return
 	}
 
@@ -454,7 +469,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	id, err := bp.HiveCreator.Broadcast(tx)
 
-	fmt.Println("BlockID!", id, err)
+	vlog.Info("Block produced", "blockID", id, "err", err)
 }
 
 func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
@@ -465,9 +480,6 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	if msg.SlotHeight+common.CONSENSUS_SPECS.SlotLength < bp.bh {
 		return "", errors.New("invalid slot height (1)")
 	}
-
-	// fmt.Println("[bp] too ahead in future", msg.SlotHeight-common.CONSENSUS_SPECS.SlotLength, bp.bh)
-	// fmt.Println("[bp] is block ahead?", msg.SlotHeight, bp.bh)
 
 	if msg.SlotHeight > bp.bh {
 		//Local node is out of sync perhaps
@@ -486,7 +498,6 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		return "", errors.New("no slot found for height")
 	}
 
-	// fmt.Println("[bp] maybe bad producer", producer, slot.Account, producer == slot.Account)
 	if producer != slot.Account {
 		return "", errors.New("invalid producer")
 	}
@@ -507,6 +518,14 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		return "", fmt.Errorf("failed to deserialize bls priv key: %w", err)
 	}
 
+	// Producer receiving its own message: use cached CID, skip GenerateBlock
+	if producer == bp.config.Get().HiveUsername && bp.blockSigning != nil {
+		sig := blsu.Sign(&blsPrivKey, bp.blockSigning.cid.Bytes())
+		sigBytes := sig.Serialize()
+		return base64.RawURLEncoding.EncodeToString(sigBytes[:]), nil
+	}
+
+	// Remote signer: validate transactions exist locally
 	txStrs := []string{}
 	for _, v := range msg.Data["transactions"].([]interface{}) {
 		txStrs = append(txStrs, v.(string))
@@ -526,7 +545,7 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		})
 	}
 
-	// fmt.Println("Received msg to create block", msg)
+	// Independently derive block (including oplog + contract outputs)
 	blockHeader, _, err := bp.GenerateBlock(msg.SlotHeight, generateBlockParams{
 		Transactions: transactions,
 	})
@@ -535,22 +554,27 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		return "", err
 	}
 
-	// fmt.Println("[bp] maybe blockHeader", blockHeader, err)
-
-	cid, err := bp.Datalayer.HashObject(blockHeader)
-
+	localCid, err := bp.Datalayer.HashObject(blockHeader)
 	if err != nil {
 		return "", err
 	}
 
-	// fmt.Println("[bp] maybe cid", cid, err)
+	vlog.Debug("HandleBlockMsg SIGNER", "headerCid", localCid.String(), "slotHeight", msg.SlotHeight)
 
-	sig := blsu.Sign(&blsPrivKey, cid.Bytes())
+	// Compare locally derived CID with producer's CID
+	producerCidStr, ok := msg.Data["block_cid"].(string)
+	if !ok || producerCidStr == "" {
+		return "", errors.New("missing block_cid in message")
+	}
+	if localCid.String() != producerCidStr {
+		vlog.Error("CID MISMATCH", "local", localCid.String(), "producer", producerCidStr)
+		return "", fmt.Errorf("block CID mismatch: local=%s producer=%s", localCid.String(), producerCidStr)
+	}
 
+	// CIDs match — sign
+	sig := blsu.Sign(&blsPrivKey, localCid.Bytes())
 	sigBytes := sig.Serialize()
-
-	sigStr := base64.URLEncoding.EncodeToString(sigBytes[:])
-	// fmt.Println("[bp] maybe signed!", sigStr)
+	sigStr := base64.RawURLEncoding.EncodeToString(sigBytes[:])
 
 	return sigStr, nil
 }
@@ -576,15 +600,10 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 
 	select {
 	case <-ctx.Done():
-		fmt.Println("[bp] ctx done")
+		vlog.Trace("ctx done")
 		return 0, ctx.Err() // Return error if canceled
 	default:
 		signedWeight := uint64(0)
-
-		fmt.Println("[bp] default action")
-		// Perform the operation
-
-		// slotHeight := bp.blockSigning.slotHeight
 
 		for signedWeight < (weightTotal * 9 / 10) {
 			msg := <-bp.sigChannels[bp.blockSigning.slotHeight]
@@ -612,20 +631,22 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 				circuit := *bp.blockSigning.circuit
 
 				added, err := circuit.AddAndVerify(member, sigStr)
-
-				fmt.Println("[bp] aggregating signature", sigStr, "from", account)
-				fmt.Println("[bp] agg err", err)
-				if added {
+				if err != nil {
+					vlog.Warn("sig verification error", "account", account, "err", err)
+				} else if !added {
+					vlog.Warn("sig rejected", "account", account)
+				} else {
 					signedWeight += election.Weights[index]
+					vlog.Trace("sig accepted", "account", account, "weight", election.Weights[index], "totalSigned", signedWeight)
 				}
 
 			}
 			if msg.Type == "end" {
-				fmt.Println("Ending wait for sig")
+				vlog.Trace("Ending wait for sig")
 				break
 			}
 		}
-		fmt.Println("Done waittt")
+		vlog.Trace("Done waittt")
 		return signedWeight, nil
 	}
 }
@@ -656,6 +677,15 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 
 	if compileResult != nil {
 		opLog = compileResult.OpLog
+	}
+
+	vlog.Verbose("MakeOplog", "bh", bh, "oplogLen", len(opLog), "txOutIds", len(bp.StateEngine.TxOutIds), "rawOplogLen", len(bp.StateEngine.LedgerState.Oplog))
+	for i, op := range opLog {
+		vlog.Trace("MakeOplog oplog entry", "index", i, "id", op.Id, "type", op.Type, "from", op.From, "to", op.To, "amount", op.Amount, "bh", op.BlockHeight)
+	}
+	for _, txId := range bp.StateEngine.TxOutIds {
+		output := bp.StateEngine.TxOutput[txId]
+		vlog.Trace("MakeOplog txOut", "id", txId, "ok", output.Ok, "ledgerIds", output.LedgerIds)
 	}
 
 	outputs := make([]stateEngine.OplogOutputEntry, 0)
@@ -704,8 +734,27 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 
 func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.VscBlockTx {
 
+	vlog.Verbose("MakeOutputs", "tempOutputs", len(bp.StateEngine.TempOutputs), "contractResults", len(bp.StateEngine.ContractResults))
+
 	contractOutputs := make([]vscBlocks.VscBlockTx, 0)
-	for contractId, output := range bp.StateEngine.TempOutputs {
+
+	// Sort contract IDs for deterministic output ordering across nodes.
+	// Go map iteration order is non-deterministic; without sorting, different
+	// nodes produce different block CIDs for identical state changes.
+	contractIds := make([]string, 0, len(bp.StateEngine.TempOutputs))
+	for contractId := range bp.StateEngine.TempOutputs {
+		contractIds = append(contractIds, contractId)
+	}
+	sort.Strings(contractIds)
+
+	for _, contractId := range contractIds {
+		output := bp.StateEngine.TempOutputs[contractId]
+		vlog.Trace("MakeOutputs contract", "contract", contractId, "baseCid", output.Cid, "cacheKeys", len(output.Cache), "deletions", len(output.Deletions), "results", len(bp.StateEngine.ContractResults[contractId]))
+
+		// Load or create DataBin. Directories use BasicDirectory for small entry
+		// counts and auto-upgrade to HAMT at 256+ entries. Deterministic CIDs are
+		// ensured by materializeGetNode, which forces all HAMT children into memory
+		// before serialization so Shard.Node() takes a uniform code path.
 		var db datalayer.DataBin
 		if output.Cid == "" {
 			db = datalayer.NewDataBin(bp.Datalayer)
@@ -714,11 +763,24 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			db = datalayer.NewDataBinFromCid(bp.Datalayer, cidz)
 		}
 
+		// Apply deletions in sorted order for deterministic CIDs
+		delKeys := make([]string, 0, len(output.Deletions))
 		for key := range output.Deletions {
+			delKeys = append(delKeys, key)
+		}
+		sort.Strings(delKeys)
+		for _, key := range delKeys {
 			db.Delete(key)
 		}
 
-		for key, value := range output.Cache {
+		// Apply cache diffs in sorted order for deterministic CIDs
+		cacheKeys := make([]string, 0, len(output.Cache))
+		for key := range output.Cache {
+			cacheKeys = append(cacheKeys, key)
+		}
+		sort.Strings(cacheKeys)
+		for _, key := range cacheKeys {
+			value := output.Cache[key]
 			if output.Deletions[key] {
 				continue
 			}
@@ -734,7 +796,9 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 				Codec: multicodec.Raw,
 			})
 
-			db.Set(key, cidz)
+			if err := db.Set(key, cidz); err != nil {
+				vlog.Error("MakeOutputs SET ERROR", "key", key, "err", err)
+			}
 		}
 		savedCid := db.Save()
 
@@ -871,9 +935,8 @@ func (bp *BlockProducer) Stop() error {
 	return bp.stopP2P()
 }
 
-func New(logger logger.Logger, p2p *libp2p.P2PServer, hiveConsumer *blockconsumer.HiveConsumer, se *stateEngine.StateEngine, conf common.IdentityConfig, sconf systemconfig.SystemConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions, rcSystem *rcSystem.RcSystem, nonceDb nonces.Nonces) *BlockProducer {
+func New(p2p *libp2p.P2PServer, hiveConsumer *blockconsumer.HiveConsumer, se *stateEngine.StateEngine, conf common.IdentityConfig, sconf systemconfig.SystemConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions, rcSystem *rcSystem.RcSystem, nonceDb nonces.Nonces) *BlockProducer {
 	return &BlockProducer{
-		log:          logger,
 		sigChannels:  make(map[uint64]chan sigMsg),
 		StateEngine:  se,
 		hiveConsumer: hiveConsumer,

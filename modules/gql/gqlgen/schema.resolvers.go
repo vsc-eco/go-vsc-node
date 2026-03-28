@@ -7,6 +7,8 @@ package gqlgen
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -16,17 +18,22 @@ import (
 	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/params"
+	contract_execution_context "vsc-node/modules/contract/execution-context"
+	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
+	wasm_context "vsc-node/modules/wasm/context"
+	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
 
 	"github.com/ipfs/go-cid"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -198,7 +205,7 @@ func (r *postingJsonKeysResolver) T(ctx context.Context, obj *witnesses.PostingJ
 }
 
 // GetStateByKeys is the resolver for the getStateByKeys field.
-func (r *queryResolver) GetStateByKeys(ctx context.Context, contractID string, keys []string) (model.Map, error) {
+func (r *queryResolver) GetStateByKeys(ctx context.Context, contractID string, keys []string, encoding *string) (model.Map, error) {
 	if len(keys) < 1 || len(keys) > 100 {
 		return nil, fmt.Errorf("number of state keys to query must be between 1 and 100")
 	}
@@ -228,7 +235,11 @@ func (r *queryResolver) GetStateByKeys(ctx context.Context, contractID string, k
 			keyErr = err
 			continue
 		}
-		result[key] = string(rawVal)
+		if encoding != nil && *encoding == "hex" {
+			result[key] = hex.EncodeToString(rawVal)
+		} else {
+			result[key] = string(rawVal)
+		}
 	}
 	return model.Map(result), keyErr
 }
@@ -319,7 +330,6 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	amount := int64(0)
 
 	if strings.HasPrefix(account, "hive:") {
-		fmt.Println("account", account, "is hive account")
 		maxRcs = maxRcs + params.RC_HIVE_FREE_AMOUNT
 		amount = params.RC_HIVE_FREE_AMOUNT
 	}
@@ -507,57 +517,209 @@ func (r *queryResolver) ElectionByBlockHeight(ctx context.Context, blockHeight *
 }
 
 // GetTssKey is the resolver for the getTssKey field.
-func (r *queryResolver) GetTssKey(ctx context.Context, keyID string) (*TssKey, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
-
+func (r *queryResolver) GetTssKey(ctx context.Context, keyID string) (*tss_db.TssKey, error) {
 	t, err := r.TssKeys.FindKey(keyID)
 	if err != nil {
 		return nil, err
 	}
-
-	tssKey := &TssKey{
-		ID:            keyID,
-		Status:        t.Status,
-		PublicKey:     t.PublicKey,
-		Owner:         t.Owner,
-		Algo:          string(t.Algo),
-		CreatedHeight: int(t.CreatedHeight),
-	}
-
-	return tssKey, nil
+	return &t, nil
 }
 
 // GetTssRequests is the resolver for the getTssRequests field.
-func (r *queryResolver) GetTssRequests(ctx context.Context, keyID string, msgHex []string) ([]TssRequest, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
+func (r *queryResolver) GetTssRequests(ctx context.Context, keyID string, msgHex []string) ([]tss_db.TssRequest, error) {
+	return r.TssRequests.FindRequests(keyID, msgHex)
+}
 
-	t, err := r.TssRequests.FindRequests(keyID, msgHex)
+// FindTssCommitments is the resolver for the findTssCommitments field.
+func (r *queryResolver) FindTssCommitments(ctx context.Context, filterOptions *TssCommitmentFilter) ([]tss_db.TssCommitment, error) {
+	if filterOptions == nil {
+		filterOptions = &TssCommitmentFilter{}
+	}
+	off, lim, err := Paginate(filterOptions.Offset, filterOptions.Limit)
 	if err != nil {
 		return nil, err
 	}
+	return r.TssCommitments.FindCommitments(filterOptions.ByKeyID, filterOptions.ByTypes, (*uint64)(filterOptions.ByEpoch), (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), off, lim)
+}
 
-	tssRequests := make([]TssRequest, len(t))
-	for i := range t {
-		tr := &t[i]
+// SimulateContractCalls is the resolver for the simulateContractCalls field.
+func (r *queryResolver) SimulateContractCalls(ctx context.Context, input SimulateContractCallsInput) ([]SimulateContractCallResult, error) {
+	// Get latest block info
+	highestBlock, err := r.HiveBlocks.GetHighestBlock()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get highest block: %w", err)
+	}
+	block, err := r.HiveBlocks.GetBlock(highestBlock)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get block %d: %w", highestBlock, err)
+	}
 
-		tssRequests[i] = TssRequest{
-			ID:     tr.Id,
-			Status: string(tr.Status),
-			KeyID:  keyID,
-			Msg:    tr.Msg,
-			Sig:    tr.Sig,
+	blockHeight := block.BlockNumber
+	blockId := block.BlockID
+	timestamp := block.Timestamp
+
+	// Validate rc_limit for all calls
+	for i, call := range input.Calls {
+		if call.RcLimit < 1 || call.RcLimit > 100000 {
+			return nil, fmt.Errorf("call %d: rc_limit must be between 1 and 100000, got %d", i, call.RcLimit)
 		}
 	}
 
-	return tssRequests, nil
+	// Create sessions from live DB state
+	ledgerSession := ledgerSystem.NewSession(r.StateEngine.LedgerState)
+	callSession := contract_session.NewCallSession(r.Da, r.Contracts, r.ContractsState, r.TssKeys, blockHeight, nil)
+
+	results := make([]SimulateContractCallResult, 0, len(input.Calls))
+
+	for opIndex, call := range input.Calls {
+		rcLimit := uint(call.RcLimit)
+
+		info, err := r.Contracts.ContractById(call.ContractID, blockHeight)
+		if err != nil {
+			errMsg := err.Error()
+			results = append(results, SimulateContractCallResult{
+				Success: false,
+				ErrMsg:  &errMsg,
+				RcUsed:  model.Int64(100),
+				GasUsed: model.Uint64(0),
+			})
+			ledgerSession.Revert()
+			callSession.Rollback()
+			return results, nil
+		}
+
+		c, err := cid.Decode(info.Code)
+		if err != nil {
+			errMsg := err.Error()
+			results = append(results, SimulateContractCallResult{
+				Success: false,
+				ErrMsg:  &errMsg,
+				RcUsed:  model.Int64(100),
+				GasUsed: model.Uint64(0),
+			})
+			ledgerSession.Revert()
+			callSession.Rollback()
+			return results, nil
+		}
+
+		node, err := r.Da.Get(c, nil)
+		if err != nil {
+			errMsg := err.Error()
+			results = append(results, SimulateContractCallResult{
+				Success: false,
+				ErrMsg:  &errMsg,
+				RcUsed:  model.Int64(100),
+				GasUsed: model.Uint64(0),
+			})
+			ledgerSession.Revert()
+			callSession.Rollback()
+			return results, nil
+		}
+
+		code := node.RawData()
+
+		caller := ""
+		if len(input.RequiredAuths) > 0 {
+			caller = input.RequiredAuths[0]
+		} else if len(input.RequiredPostingAuths) > 0 {
+			caller = input.RequiredPostingAuths[0]
+		}
+
+		// Convert intents
+		intents := make([]contracts.Intent, 0, len(call.Intents))
+		for _, intent := range call.Intents {
+			args := make(map[string]string)
+			for k, v := range intent.Args {
+				args[k] = fmt.Sprintf("%v", v)
+			}
+			intents = append(intents, contracts.Intent{
+				Type: intent.Type,
+				Args: args,
+			})
+		}
+
+		ctxValue := contract_execution_context.New(
+			contract_execution_context.Environment{
+				ContractId:           call.ContractID,
+				ContractOwner:        info.Owner,
+				BlockHeight:          blockHeight,
+				TxId:                 input.TxID,
+				BlockId:              blockId,
+				Index:                0,
+				OpIndex:              opIndex,
+				Timestamp:            timestamp,
+				RequiredAuths:        input.RequiredAuths,
+				RequiredPostingAuths: input.RequiredPostingAuths,
+				Caller:               caller,
+				Sender:               caller,
+				Intents:              intents,
+			},
+			int64(rcLimit), rcLimit*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
+		)
+
+		// Unmarshal payload string
+		var payload string
+		if err := json.Unmarshal([]byte(call.Payload), &payload); err != nil {
+			payload = call.Payload
+		}
+
+		wasmCtx := context.WithValue(
+			context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
+			wasm_context.WasmExecCodeCtxKey,
+			hex.EncodeToString(code),
+		)
+
+		w := wasm_runtime_ipc.New()
+		w.Init()
+		res := w.Execute(wasmCtx, rcLimit*params.CYCLE_GAS_PER_RC, call.Action, payload, info.Runtime)
+		rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
+
+		if res.Error != nil {
+			ledgerSession.Revert()
+			callSession.Rollback()
+			errCode := string(res.ErrorCode)
+			errMsg := *res.Error
+			results = append(results, SimulateContractCallResult{
+				Success: false,
+				Err:     &errCode,
+				ErrMsg:  &errMsg,
+				RcUsed:  model.Int64(rcUsed),
+				GasUsed: model.Uint64(res.Gas),
+			})
+			return results, nil
+		}
+
+		diff := callSession.GetStateDiff()
+		logs := callSession.PopLogs()
+
+		// Convert logs to map[string]interface{}
+		logsMap := make(model.Map)
+		for k, v := range logs {
+			logsMap[k] = v
+		}
+
+		// Convert state diff to map[string]interface{}
+		diffMap := make(model.Map)
+		for k, v := range diff {
+			diffMap[k] = v
+		}
+
+		ret := res.Result
+		results = append(results, SimulateContractCallResult{
+			Success:   true,
+			Ret:       &ret,
+			RcUsed:    model.Int64(rcUsed),
+			GasUsed:   model.Uint64(res.Gas),
+			Logs:      logsMap,
+			StateDiff: diffMap,
+		})
+	}
+
+	// After all calls succeed, finalize
+	ledgerSession.Done()
+	callSession.Commit()
+
+	return results, nil
 }
 
 // Amount is the resolver for the amount field.
@@ -638,6 +800,41 @@ func (r *transactionRecordResolver) LedgerActions(ctx context.Context, obj *tran
 	return actions, nil
 }
 
+// BlockHeight is the resolver for the block_height field.
+func (r *tssCommitmentResolver) BlockHeight(ctx context.Context, obj *tss_db.TssCommitment) (model.Uint64, error) {
+	return model.Uint64(obj.BlockHeight), nil
+}
+
+// Epoch is the resolver for the epoch field.
+func (r *tssCommitmentResolver) Epoch(ctx context.Context, obj *tss_db.TssCommitment) (model.Uint64, error) {
+	return model.Uint64(obj.Epoch), nil
+}
+
+// CreatedHeight is the resolver for the created_height field.
+func (r *tssKeyResolver) CreatedHeight(ctx context.Context, obj *tss_db.TssKey) (model.Int64, error) {
+	return model.Int64(obj.CreatedHeight), nil
+}
+
+// Epoch is the resolver for the epoch field.
+func (r *tssKeyResolver) Epoch(ctx context.Context, obj *tss_db.TssKey) (model.Uint64, error) {
+	return model.Uint64(obj.Epoch), nil
+}
+
+// Epochs is the resolver for the epochs field.
+func (r *tssKeyResolver) Epochs(ctx context.Context, obj *tss_db.TssKey) (model.Uint64, error) {
+	return model.Uint64(obj.Epochs), nil
+}
+
+// ExpiryEpoch is the resolver for the expiry_epoch field.
+func (r *tssKeyResolver) ExpiryEpoch(ctx context.Context, obj *tss_db.TssKey) (model.Uint64, error) {
+	return model.Uint64(obj.ExpiryEpoch), nil
+}
+
+// DeprecatedHeight is the resolver for the deprecated_height field.
+func (r *tssKeyResolver) DeprecatedHeight(ctx context.Context, obj *tss_db.TssKey) (model.Int64, error) {
+	return model.Int64(obj.DeprecatedHeight), nil
+}
+
 // Height is the resolver for the height field.
 func (r *witnessResolver) Height(ctx context.Context, obj *witnesses.Witness) (model.Uint64, error) {
 	return model.Uint64(obj.Height), nil
@@ -696,6 +893,12 @@ func (r *Resolver) TransactionRecord() TransactionRecordResolver {
 	return &transactionRecordResolver{r}
 }
 
+// TssCommitment returns TssCommitmentResolver implementation.
+func (r *Resolver) TssCommitment() TssCommitmentResolver { return &tssCommitmentResolver{r} }
+
+// TssKey returns TssKeyResolver implementation.
+func (r *Resolver) TssKey() TssKeyResolver { return &tssKeyResolver{r} }
+
 // Witness returns WitnessResolver implementation.
 func (r *Resolver) Witness() WitnessResolver { return &witnessResolver{r} }
 
@@ -715,5 +918,7 @@ type queryResolver struct{ *Resolver }
 type rcRecordResolver struct{ *Resolver }
 type transactionOperationResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
+type tssCommitmentResolver struct{ *Resolver }
+type tssKeyResolver struct{ *Resolver }
 type witnessResolver struct{ *Resolver }
 type witnessSlotResolver struct{ *Resolver }

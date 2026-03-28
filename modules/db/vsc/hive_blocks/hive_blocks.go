@@ -385,6 +385,14 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 	ctx, cancel := context.WithCancel(ctx)
 	errChan := make(chan error)
 	go func() {
+		// Recover from panics in the listener callback (e.g. ProcessBlock).
+		// Without this, an unrecovered panic in the listener kills the entire
+		// node process because this goroutine has no other defer/recover.
+		defer func() {
+			if r := recover(); r != nil {
+				errChan <- fmt.Errorf("panic in block listener at block %d: %v", startBlock, r)
+			}
+		}()
 		for {
 			select {
 			case <-ctx.Done():
@@ -512,17 +520,5 @@ func GetAggTimestampPipeline2(filters bson.D, localField string, timestampField 
 	pipe = append(pipe, bson.D{{Key: "$addFields", Value: bson.D{
 		{Key: "tx_id", Value: "$id"},
 	}}})
-	// pipe = append(pipe, bson.D{{Key: "$set", Value: bson.D{
-	// 	{Key: "id", Value: bson.D{
-	// 		{
-	// 			Key: "$concat",
-	// 			Value: bson.A{
-	// 				"$id",
-	// 				"-",
-	// 				bson.D{{Key: "$toString", Value: "$anchr_opidx"}},
-	// 			},
-	// 		},
-	// 	}},
-	// }}})
 	return pipe
 }

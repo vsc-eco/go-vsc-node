@@ -18,3 +18,9 @@ var MAINNET_BOOTSTRAP = []string{
 	"/ip4/138.199.230.214/tcp/10720/p2p/12D3KooWHyT797hmbLjgbFjYFpbHrre1EPWzFo876FDhdcbPVG8p",        //@tibfox.vsc
 
 }
+
+var TESTNET_BOOTSTRAP = []string{
+	"/ip4/107.174.174.109/tcp/20721/p2p/12D3KooWDrd23cThkAQxCQQunSjyGK1emHVSgq8PwhhjdDYKYxt7",
+	"/ip4/107.174.174.109/tcp/20722/p2p/12D3KooWJb42uHPJeqH9tirZXe9HvjtaEfoCjnCVPiYhJh1GRwTH",
+	"/ip4/107.174.174.109/tcp/20723/p2p/12D3KooWEMYQToTsb86iRG9T5G8owwZx5hRv6SZDsNz5pbKTwyHF",
+}

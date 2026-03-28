@@ -26,6 +26,10 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 		return
 	}
 
+	if bh > *headHeight {
+		return
+	}
+
 	blockDiff := *headHeight - bh
 	if blockDiff > blockHeightThreshold {
 		return
@@ -58,7 +62,7 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	var (
 		username = o.conf.Get().HiveUsername
 		// isAvgPriceBroadcastTick = *headHeight%priceOracleBroadcastInterval == 0
-		isChainRelayTick = *headHeight%chainRelayInterval == 0
+		isChainRelayTick = bh%chainRelayInterval == 0
 		isWitness        = slices.Contains(memberAccounts, username)
 		isProducer       = witnessSlot != nil &&
 			witnessSlot.Account == username
@@ -67,6 +71,7 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	signal := p2p.BlockTickSignal{
 		IsProducer:     isProducer,
 		IsWitness:      isWitness,
+		BlockHeight:    *headHeight,
 		ElectedMembers: members,
 	}
 

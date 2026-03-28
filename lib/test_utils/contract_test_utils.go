@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"vsc-node/lib/datalayer"
-	"vsc-node/lib/logger"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
@@ -17,6 +16,7 @@ import (
 	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	p2pInterface "vsc-node/modules/p2p"
@@ -36,6 +36,12 @@ func randomHex(n int) string {
 	return hex.EncodeToString(bytes)
 }
 
+type TssState struct {
+	Keys        *MockTssKeysDb
+	Commitments *MockTssCommitmentsDb
+	Requests    *MockTssRequestsDb
+}
+
 // Contract testing environment
 type ContractTest struct {
 	BlockHeight   uint64
@@ -44,6 +50,7 @@ type ContractTest struct {
 	CallSession   *contract_session.CallSession
 	StateEngine   *stateEngine.StateEngine
 	DataLayer     *datalayer.DataLayer
+	Tss           TssState
 }
 
 type ContractTestCallResult struct {
@@ -59,8 +66,9 @@ type ContractTestCallResult struct {
 
 // Create a new contract testing environment with mock databases.
 func NewContractTest() ContractTest {
-	logr := logger.PrefixedLogger{Prefix: "contract-test"}
 	idConfig := common.NewIdentityConfig()
+	p2pConfig := p2pInterface.NewConfig()
+	p2pConfig.SetOptions(p2pInterface.P2POpts{Port: 0}) // random port to avoid conflicts with running nodes
 	sysConfig := systemconfig.MocknetConfig()
 	ledgers := MockLedgerDb{LedgerRecords: make(map[string][]ledgerDb.LedgerRecord)}
 	balances := MockBalanceDb{BalanceRecords: make(map[string][]ledgerDb.BalanceRecord)}
@@ -71,8 +79,11 @@ func NewContractTest() ContractTest {
 	contractState := MockContractStateDb{Outputs: make(map[string]contracts.ContractOutput)}
 	witnessesDb := witnesses.NewEmptyWitnesses()
 
+	tssKeys := MockTssKeysDb{Keys: make(map[string]tss_db.TssKey)}
+	tssCommitments := MockTssCommitmentsDb{Commitments: make(map[string]tss_db.TssCommitment)}
+	tssRequests := MockTssRequestsDb{Requests: make(map[string]tss_db.TssRequest)}
+
 	se := stateEngine.New(
-		logr,
 		sysConfig,
 		nil,
 		nil,
@@ -88,15 +99,15 @@ func NewContractTest() ContractTest {
 		&actions,
 		nil,
 		nil,
-		nil,
-		nil,
-		nil,
+		&tssKeys,
+		&tssCommitments,
+		&tssRequests,
 		nil,
 	)
 	var blockStatus common_types.BlockStatusGetter
-	p2p := p2pInterface.New(witnessesDb, idConfig, sysConfig, blockStatus)
+	p2p := p2pInterface.New(witnessesDb, p2pConfig, idConfig, sysConfig, blockStatus)
 	dl := datalayer.New(p2p)
-	a := aggregate.New([]aggregate.Plugin{idConfig, p2p, dl})
+	a := aggregate.New([]aggregate.Plugin{idConfig, p2pConfig, p2p, dl})
 	if err := a.Init(); err != nil {
 		panic(err)
 	}
@@ -106,9 +117,14 @@ func NewContractTest() ContractTest {
 		BlockHeight:   0,
 		ContractDb:    &contractDb,
 		LedgerSession: se.LedgerSystem.NewEmptySession(state, 0),
-		CallSession:   contract_session.NewCallSession(dl, &contractDb, &contractState, nil, 0, nil),
+		CallSession:   contract_session.NewCallSession(dl, &contractDb, &contractState, &tssKeys, 0, nil),
 		DataLayer:     dl,
 		StateEngine:   se,
+		Tss: TssState{
+			Keys:        &tssKeys,
+			Commitments: &tssCommitments,
+			Requests:    &tssRequests,
+		},
 	}
 }
 
@@ -201,6 +217,8 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		caller = tx.Self.RequiredPostingAuths[0]
 	}
 
+	// fmt.Println("tx intents:", tx.Intents)
+
 	ctxValue := contract_execution_context.New(
 		contract_execution_context.Environment{
 			ContractId:           tx.ContractId,
@@ -291,6 +309,26 @@ func (ct *ContractTest) StateGet(contractId string, key string) string {
 func (ct *ContractTest) StateDelete(contractId string, key string) {
 	ct.CallSession.GetStateStore(contractId).Delete(key)
 	ct.CallSession.Commit()
+}
+
+// Set the value of a key in the ephemeral contract state
+func (ct *ContractTest) EphemStateSet(contractId string, key string, value string) {
+	ct.CallSession.GetStateStore(contractId).SetEphem(key, []byte(value))
+}
+
+// Retrieve the value of a key from the ephemeral contract state
+func (ct *ContractTest) EphemStateGet(contractId string, key string) string {
+	return string(ct.CallSession.GetStateStore(contractId).GetEphem(key))
+}
+
+// Unset the value of a key in the ephemeral contract state
+func (ct *ContractTest) EphemStateDelete(contractId string, key string) {
+	ct.CallSession.GetStateStore(contractId).DeleteEphem(key)
+}
+
+// Clear the ephemeral state of the contract if contract ID specified, or entire call session otherwise
+func (ct *ContractTest) EphemStateClear(contractId ...string) {
+	ct.CallSession.ClearEphemState(contractId...)
 }
 
 func (ct *ContractTest) executeLedgerOpLogs(ledgerOps []ledgerSystem.OpLogEvent, startBlock uint64, endBlock uint64) {

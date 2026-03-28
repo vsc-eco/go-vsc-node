@@ -14,24 +14,24 @@ type DbInstance struct {
 	*mongo.Database
 
 	db   Db
-	name string
+	conf DbConfig
 	opts []*options.DatabaseOptions
 }
 
 var _ a.Plugin = &DbInstance{}
 
-func NewDbInstance(db Db, name string, opts ...*options.DatabaseOptions) *DbInstance {
+func NewDbInstance(db Db, conf DbConfig, opts ...*options.DatabaseOptions) *DbInstance {
 	return &DbInstance{
 		nil,
 		db,
-		name,
+		conf,
 		opts,
 	}
 }
 
 // Init implements aggregate.Plugin.
 func (d *DbInstance) Init() error {
-	d.Database = d.db.Database(d.name, d.opts...)
+	d.Database = d.db.Database(d.conf.GetDbName(), d.opts...)
 	return nil
 }
 

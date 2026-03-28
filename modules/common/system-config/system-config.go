@@ -7,23 +7,37 @@ import (
 
 type SystemConfig interface {
 	OnMainnet() bool
+	OnTestnet() bool
 	OnMocknet() bool
 	BootstrapPeers() []string
+	PubSubTopicPrefix() string
 	NetId() string
+	HiveChainId() string
 	GatewayWallet() string
+	StartHeight() uint64
 	ConsensusParams() params.ConsensusParams
+	OracleParams() params.OracleParams
+	TssParams() params.TssParams
 }
 
 type config struct {
 	network         string
 	bootstrapPeers  []string
 	netId           string
+	hiveChainId     string
 	gatewayWallet   string
+	startHeight     uint64
 	consensusParams params.ConsensusParams
+	oracleParams    params.OracleParams
+	tssParams       params.TssParams
 }
 
 func (c *config) OnMainnet() bool {
 	return c.network == "mainnet"
+}
+
+func (c *config) OnTestnet() bool {
+	return c.network == "testnet" || c.network == "devnet"
 }
 
 func (c *config) OnMocknet() bool {
@@ -34,8 +48,16 @@ func (c *config) BootstrapPeers() []string {
 	return c.bootstrapPeers
 }
 
+func (c *config) PubSubTopicPrefix() string {
+	return "/vsc/" + c.network
+}
+
 func (c *config) NetId() string {
 	return c.netId
+}
+
+func (c *config) HiveChainId() string {
+	return c.hiveChainId
 }
 
 func (c *config) GatewayWallet() string {
@@ -45,32 +67,83 @@ func (c *config) ConsensusParams() params.ConsensusParams {
 	return c.consensusParams
 }
 
+func (c *config) OracleParams() params.OracleParams {
+	return c.oracleParams
+}
+
+func (c *config) TssParams() params.TssParams {
+	return c.tssParams
+}
+
+func (c *config) StartHeight() uint64 {
+	return c.startHeight
+}
+
 func MainnetConfig() SystemConfig {
 	conf := &config{
 		bootstrapPeers: MAINNET_BOOTSTRAP,
 		network:        "mainnet",
 		netId:          "vsc-mainnet",
+		hiveChainId:    "beeab0de00000000000000000000000000000000000000000000000000000000",
 		gatewayWallet:  "vsc.gateway",
+		startHeight:    94601000,
 		consensusParams: params.ConsensusParams{
-			MinStake:       params.MAINNET_CONSENSUS_MINIMUM,
-			MinRcLimit:     params.MINIMUM_RC_LIMIT,
-			TssIndexHeight: params.TSS_INDEX_HEIGHT,
+			MinStake:         params.CONSENSUS_MINIMUM,
+			MinMembers:       7,
+			MinSpSigners:     6,
+			MinRcLimit:       params.MINIMUM_RC_LIMIT,
+			TssIndexHeight:   params.TSS_INDEX_HEIGHT,
+			ElectionInterval: params.ELECTION_INTERVAL,
 		},
+		tssParams: params.DefaultTssParams,
 	}
 	return conf
 }
 
-// TODO: Define a testnet config
 func TestnetConfig() SystemConfig {
 	conf := &config{
-		network:       "testnet",
-		netId:         "vsc-testnet",
-		gatewayWallet: "vsc.testnet",
+		bootstrapPeers: TESTNET_BOOTSTRAP,
+		network:        "testnet",
+		netId:          "vsc-testnet",
+		hiveChainId:    "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
+		gatewayWallet:  "vsc.gateway",
+		startHeight:    2,
 		consensusParams: params.ConsensusParams{
-			MinStake:       params.TESTNET_CONSENSUS_MINIMUM,
-			MinRcLimit:     params.MINIMUM_RC_LIMIT,
-			TssIndexHeight: 0,
+			MinStake:         params.CONSENSUS_MINIMUM,
+			MinMembers:       3,
+			MinSpSigners:     3,
+			MinRcLimit:       params.MINIMUM_RC_LIMIT,
+			TssIndexHeight:   1409500,
+			ElectionInterval: params.ELECTION_INTERVAL,
 		},
+		oracleParams: params.OracleParams{
+			ChainContracts: map[string]string{
+				"BTC": "vsc1BYBwMvsSFwqvwzio352VWp6fGkjVs7t3Dp",
+				// "DASH": "vsc1...", // deploy dash-mapping-contract and add contract ID
+				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
+			},
+		},
+		tssParams: params.DefaultTssParams,
+	}
+	return conf
+}
+
+func DevnetConfig() SystemConfig {
+	conf := &config{
+		network:       "devnet",
+		netId:         "vsc-devnet",
+		hiveChainId:   "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
+		gatewayWallet: "vsc.gateway",
+		startHeight:   2,
+		consensusParams: params.ConsensusParams{
+			MinStake:         1000,
+			MinMembers:       3,
+			MinSpSigners:     3,
+			MinRcLimit:       params.MINIMUM_RC_LIMIT,
+			TssIndexHeight:   0,
+			ElectionInterval: 40,
+		},
+		tssParams: params.DefaultTssParams,
 	}
 	return conf
 }
@@ -79,12 +152,17 @@ func MocknetConfig() SystemConfig {
 	conf := &config{
 		network:       "mocknet",
 		netId:         "vsc-mocknet",
+		hiveChainId:   "123456789abcdef000000000000000000000000000000000000000000000000",
 		gatewayWallet: "vsc.mocknet",
+		startHeight:   0,
 		consensusParams: params.ConsensusParams{
-			MinStake:       1,
-			MinRcLimit:     1,
-			TssIndexHeight: 0,
+			MinStake:         1,
+			MinMembers:       3,
+			MinRcLimit:       1,
+			TssIndexHeight:   0,
+			ElectionInterval: 1000,
 		},
+		tssParams: params.MocknetTssParams,
 	}
 	return conf
 }
@@ -95,6 +173,8 @@ func FromNetwork(network string) SystemConfig {
 		return MainnetConfig()
 	case "testnet":
 		return TestnetConfig()
+	case "devnet":
+		return DevnetConfig()
 	case "mocknet":
 		return MocknetConfig()
 	default:

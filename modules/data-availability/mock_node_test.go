@@ -19,6 +19,7 @@ type Node struct {
 	client         *data_availability_client.DataAvailability
 	db             *vsc.VscDb
 	identityConfig common.IdentityConfig
+	sysConfig      systemconfig.SystemConfig
 	p2p            *p2pInterface.P2PServer
 }
 
@@ -52,41 +53,35 @@ var nodeCount = 0
 
 func MakeNode(input MakeNodeInput) *Node {
 	input.Username = "e2e-" + input.Username
-	dbConf := db.NewDbConfig()
+	dataDir := "data-" + input.Username
+	dbConf := db.NewDbConfig(dataDir)
+	identityConfig := common.NewIdentityConfig(dataDir)
+	p2pConfig := p2pInterface.NewConfig(dataDir)
+	aggregate.New([]aggregate.Plugin{dbConf, identityConfig, p2pConfig}).Init()
+	dbConf.SetDbName("go-vsc-" + input.Username)
+	identityConfig.SetUsername(input.Username)
+	p2pConfig.SetOptions(p2pInterface.P2POpts{
+		Port:         7001 + nodeCount,
+		ServerMode:   !input.Client,
+		AllowPrivate: true,
+		Bootnodes:    []string{},
+	})
+
 	db := db.New(dbConf)
-	vscDb := vsc.New(db, input.Username)
+	vscDb := vsc.New(db, dbConf)
 	witnessesDb := witnesses.New(vscDb)
 
-	// logger := logger.PrefixedLogger{
-	// 	Prefix: input.Username,
-	// }
-
-	identityConfig := common.NewIdentityConfig("data-" + input.Username + "/config")
-
-	identityConfig.Init()
-	identityConfig.SetUsername(input.Username)
+	nodeCount++
 
 	sysConfig := systemconfig.MocknetConfig()
 
-	port := 7001 + nodeCount
-	nodeCount++
-	p2p := p2pInterface.New(witnessesDb, identityConfig, sysConfig, nil, port)
+	p2p := p2pInterface.New(witnessesDb, p2pConfig, identityConfig, sysConfig, nil)
 
-	datalayer := DataLayer.New(p2p, input.Username)
-
-	// key, err := identityConfig.Libp2pPrivateKey()
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// peerId, err := peer.IDFromPrivateKey(key)
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// libp2p.BOOTSTRAP = append(libp2p.BOOTSTRAP, fmt.Sprintf("/ip4/127.0.0.1/tcp/%d/p2p/%s", port, peerId.String()))
+	datalayer := DataLayer.New(p2p, dataDir)
 
 	var da aggregate.Plugin
 	if input.Client {
-		da = data_availability_client.New(p2p, identityConfig, datalayer)
+		da = data_availability_client.New(p2p, identityConfig, sysConfig, datalayer)
 	} else {
 		da = data_availability_server.New(p2p, identityConfig, datalayer)
 	}
@@ -109,6 +104,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		client,
 		vscDb,
 		identityConfig,
+		sysConfig,
 		p2p,
 	}
 }

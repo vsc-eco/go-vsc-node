@@ -28,6 +28,15 @@ func (ac *identityConfigStruct) SetUsername(username string) error {
 	})
 }
 
+func (ac *identityConfigStruct) SetActiveKey(wif string) error {
+	if wif == "" {
+		return fmt.Errorf("empty wif")
+	}
+	return ac.Update(func(dc *identityConfig) {
+		dc.HiveActiveKey = wif
+	})
+}
+
 func (ac *identityConfigStruct) HiveActiveKeyPair() (*hivego.KeyPair, error) {
 	wif := ac.Get().HiveActiveKey
 	return hivego.KeyPairFromWif(wif)

@@ -69,7 +69,7 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 				if kp == nil {
 					return nil
 				}
-				sig, err := signPkg.Tx.Sign(*kp)
+				sig, err := signPkg.Tx.Sign(*kp, s.ms.hiveClient.ChainID)
 				if err != nil {
 					return nil
 				}
@@ -115,7 +115,7 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 				if kp == nil {
 					return nil
 				}
-				sig, err := signPkg.Tx.Sign(*kp)
+				sig, err := signPkg.Tx.Sign(*kp, s.ms.hiveClient.ChainID)
 				if err != nil {
 					return nil
 				}
@@ -158,7 +158,7 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 				if kp == nil {
 					return nil
 				}
-				sig, err := signPkg.Tx.Sign(*kp)
+				sig, err := signPkg.Tx.Sign(*kp, s.ms.hiveClient.ChainID)
 				if err != nil {
 					return nil
 				}
@@ -224,7 +224,7 @@ func (p2pSpec) SerializeMessage(msg p2pMessage) []byte {
 }
 
 func (p2pSpec) Topic() string {
-	return "/vsc/mainnet/gateway/v1"
+	return "/gateway/v1"
 }
 
 var _ libp2p.PubSubServiceParams[p2pMessage] = p2pSpec{}
