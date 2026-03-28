@@ -212,6 +212,16 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 
 			for _, signReq := range signingRequests {
 				keyInfo, _ := tssMgr.tssKeys.FindKey(signReq.KeyId)
+				if keyInfo.Status != tss_db.TssKeyActive {
+					log.Warn(
+						"signing attempted for non-active key, skipping",
+						"keyId",
+						keyInfo.Id,
+						"status",
+						keyInfo.Status,
+					)
+					continue
+				}
 				if !keyLocks[signReq.KeyId] {
 					rawMsg, err := hex.DecodeString(signReq.Msg)
 					if err == nil {
@@ -225,10 +235,23 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				}
 			}
 		}
-		// Consume any recovery-scheduled actions (e.g., reshare retries after timeouts)
+		// Consume any recovery-scheduled actions (e.g., reshare retries after timeouts).
+		// Skip queued actions whose key is already locked by a fresh action in this block
+		// (the fresh reshare takes priority). Queued reshares that survive filtering also
+		// populate keyLocks so they block signing, matching normal reshare/sign precedence.
 		tssMgr.bufferLock.Lock()
 		if len(tssMgr.queuedActions) > 0 {
-			generatedActions = append(generatedActions, tssMgr.queuedActions...)
+			for _, qa := range tssMgr.queuedActions {
+				if keyLocks[qa.KeyId] {
+					log.Verbose("dropping queued action, key already locked by current block",
+						"type", qa.Type, "keyId", qa.KeyId, "blockHeight", bh)
+					continue
+				}
+				generatedActions = append(generatedActions, qa)
+				if qa.Type == ReshareAction || qa.Type == KeyGenAction {
+					keyLocks[qa.KeyId] = true
+				}
+			}
 			tssMgr.queuedActions = tssMgr.queuedActions[:0]
 		}
 		tssMgr.bufferLock.Unlock()
@@ -569,6 +592,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					p2pMsg:       make(chan btss.Message, 2*len(participants)),
 					sessionId:    sessionId,
 					done:         make(chan struct{}),
+					stopMsgs:     make(chan struct{}),
 
 					keyId: action.KeyId,
 					algo:  action.Algo,
@@ -639,6 +663,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					p2pMsg:       make(chan btss.Message, 2*len(participants)),
 					sessionId:    sessionId,
 					done:         make(chan struct{}),
+					stopMsgs:     make(chan struct{}),
 					keyId:        action.KeyId,
 
 					keystore: tssMgr.keyStore,
@@ -767,6 +792,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					p2pMsg:       make(chan btss.Message, 4*(len(commitedMembers)+len(newParticipants))),
 					sessionId:    sessionId,
 					done:         make(chan struct{}),
+					stopMsgs:     make(chan struct{}),
 					keyId:        action.KeyId,
 					epoch:        commitment.Epoch,
 

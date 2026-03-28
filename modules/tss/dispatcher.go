@@ -301,11 +301,19 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			}
 		}()
 		go func() {
-			<-endOld
+			select {
+			case <-dispatcher.stopMsgs:
+			case <-endOld:
+			}
 		}()
 		go func() {
 			for {
-				reshareResult := <-end
+				var reshareResult *keyGenSecp256k1.LocalPartySaveData
+				select {
+				case <-dispatcher.stopMsgs:
+					return
+				case reshareResult = <-end:
+				}
 				log.Verbose("reshare result received", "algo", "ECDSA", "sessionId", dispatcher.sessionId, "partyId", dispatcher.newParty.PartyID().Id, "hasPubKey", reshareResult.ECDSAPub != nil)
 
 				if reshareResult.ECDSAPub != nil {
@@ -341,6 +349,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 					}
 
 					dispatcher.signalDone()
+					return
 				}
 			}
 		}()
@@ -431,11 +440,19 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		}()
 
 		go func() {
-			<-endOld
+			select {
+			case <-dispatcher.stopMsgs:
+			case <-endOld:
+			}
 		}()
 		go func() {
 			for {
-				reshareResult := <-end
+				var reshareResult *keyGenEddsa.LocalPartySaveData
+				select {
+				case <-dispatcher.stopMsgs:
+					return
+				case reshareResult = <-end:
+				}
 
 				log.Verbose("reshare result received", "algo", "EdDSA", "sessionId", dispatcher.sessionId, "partyId", dispatcher.newParty.PartyID().Id)
 				if reshareResult.EDDSAPub == nil {
@@ -474,6 +491,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				}
 
 				dispatcher.signalDone()
+				return
 			}
 		}()
 	}
@@ -662,7 +680,12 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 func (dispatcher *ReshareDispatcher) reshareMsgs() {
 	go func() {
 		for {
-			msg := <-dispatcher.p2pMsg
+			var msg btss.Message
+			select {
+			case <-dispatcher.stopMsgs:
+				return
+			case msg = <-dispatcher.p2pMsg:
+			}
 
 			var commiteeType string
 			if msg.IsToOldAndNewCommittees() {
@@ -888,11 +911,14 @@ func (dispatcher *SignDispatcher) Start() error {
 			}
 		}()
 		go func() {
-			sigResult := <-end
+			var sigResult *common.SignatureData
+			select {
+			case <-dispatcher.stopMsgs:
+				return
+			case sigResult = <-end:
+			}
 
 			log.Trace("sign result received", "algo", "ECDSA", "sessionId", dispatcher.sessionId)
-
-			// sigResult.R
 
 			derSig := btcec.Signature{
 				R: new(big.Int).SetBytes(sigResult.R),
@@ -953,7 +979,12 @@ func (dispatcher *SignDispatcher) Start() error {
 			}
 		}()
 		go func() {
-			sigResult := <-end
+			var sigResult *common.SignatureData
+			select {
+			case <-dispatcher.stopMsgs:
+				return
+			case sigResult = <-end:
+			}
 
 			dispatcher.result = &KeySignResult{
 				Msg:       dispatcher.msg,
@@ -1029,7 +1060,8 @@ type BaseDispatcher struct {
 	timeout bool
 	// partyType string
 
-	done chan struct{}
+	done     chan struct{}
+	stopMsgs chan struct{} // closed by signalDone to unblock message-loop goroutines
 
 	keystore datastore.Datastore
 
@@ -1064,6 +1096,14 @@ type failedMsg struct {
 }
 
 func (dispatcher *BaseDispatcher) signalDone() {
+	// Stop message-loop goroutines (reshareMsgs, handleMsgs, endOld receivers, etc.)
+	select {
+	case <-dispatcher.stopMsgs:
+		// already closed
+	default:
+		close(dispatcher.stopMsgs)
+	}
+
 	dispatcher.stopRetryOnce.Do(func() {
 		if dispatcher.stopRetry != nil {
 			close(dispatcher.stopRetry)
@@ -1133,7 +1173,12 @@ func (dispatcher *BaseDispatcher) retryFailedMsgs() {
 func (dispatcher *BaseDispatcher) handleMsgs() {
 	go func() {
 		for {
-			msg := <-dispatcher.p2pMsg
+			var msg btss.Message
+			select {
+			case <-dispatcher.stopMsgs:
+				return
+			case msg = <-dispatcher.p2pMsg:
+			}
 
 			var commiteeType string
 			if msg.IsToOldAndNewCommittees() {
@@ -1286,6 +1331,13 @@ func (dispatcher *BaseDispatcher) baseStart() {
 
 				log.Warn("session timeout", "sessionId", dispatcher.sessionId, "elapsed", elapsed, "timeout", timeout, "lastMsg", dispatcher.lastMsg)
 
+				// Stop message-loop goroutines
+				select {
+				case <-dispatcher.stopMsgs:
+				default:
+					close(dispatcher.stopMsgs)
+				}
+
 				dispatcher.stopRetryOnce.Do(func() {
 					if dispatcher.stopRetry != nil {
 						close(dispatcher.stopRetry)
@@ -1376,7 +1428,12 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		}()
 
 		go func() {
-			savedOutput := <-end
+			var savedOutput *keyGenSecp256k1.LocalPartySaveData
+			select {
+			case <-dispatcher.stopMsgs:
+				return
+			case savedOutput = <-end:
+			}
 
 			pk := savedOutput.ECDSAPub
 
@@ -1429,7 +1486,12 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		}()
 
 		go func() {
-			savedOutput := <-end
+			var savedOutput *keyGenEddsa.LocalPartySaveData
+			select {
+			case <-dispatcher.stopMsgs:
+				return
+			case savedOutput = <-end:
+			}
 
 			publicKey := edwards.NewPublicKey(savedOutput.EDDSAPub.X(), savedOutput.EDDSAPub.Y())
 
