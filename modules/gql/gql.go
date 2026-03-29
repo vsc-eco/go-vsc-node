@@ -73,8 +73,11 @@ func (g *gqlManager) Init() error {
 
 	// assigns the HTTP server
 	g.server = &http.Server{
-		Addr:    g.conf.GetHostAddr(),
-		Handler: c.Handler(mux),
+		Addr:              g.conf.GetHostAddr(),
+		Handler:           c.Handler(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
 	}
 
 	g.startPromise = promise.New(func(resolve func(any), reject func(error)) {
