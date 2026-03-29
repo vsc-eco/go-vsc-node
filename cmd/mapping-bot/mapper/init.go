@@ -89,6 +89,24 @@ func (b *Bot) recordFailedTx(txId, action string) {
 	b.failedTxs = append(b.failedTxs, FailedTx{TxId: txId, Action: action, At: time.Now()})
 }
 
+// clearFailedTxs removes previously recorded failures by their VSC tx IDs.
+// Called when a retry of the same logical operation eventually succeeds.
+func (b *Bot) clearFailedTxs(txIds []string) {
+	b.failedTxsMu.Lock()
+	defer b.failedTxsMu.Unlock()
+	remove := make(map[string]struct{}, len(txIds))
+	for _, id := range txIds {
+		remove[id] = struct{}{}
+	}
+	filtered := make([]FailedTx, 0, len(b.failedTxs))
+	for _, ft := range b.failedTxs {
+		if _, ok := remove[ft.TxId]; !ok {
+			filtered = append(filtered, ft)
+		}
+	}
+	b.failedTxs = filtered
+}
+
 // FailedTxs returns a snapshot of VSC transactions that reached FAILED status.
 func (b *Bot) FailedTxs() []FailedTx {
 	b.failedTxsMu.Lock()
@@ -162,6 +180,7 @@ var ErrTxFailed = fmt.Errorf("VSC transaction failed")
 // UNCONFIRMED it keeps polling — it never re-broadcasts over a live transaction.
 func (b *Bot) callWithRetry(ctx context.Context, payload json.RawMessage, action string, maxAttempts int) error {
 	var lastErr error
+	var recordedFailures []string // VSC txIds recorded as failed during this call
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		txId, err := b.caller().CallContract(ctx, payload, action)
 		if err != nil {
@@ -189,10 +208,15 @@ func (b *Bot) callWithRetry(ctx context.Context, payload json.RawMessage, action
 		switch status {
 		case "CONFIRMED", "PROCESSED":
 			b.L.Info("VSC transaction confirmed", "action", action, "txId", txId, "status", status)
+			// A retry succeeded — clear any failures recorded during earlier attempts.
+			if len(recordedFailures) > 0 {
+				b.clearFailedTxs(recordedFailures)
+			}
 			return nil
 		case "FAILED":
 			b.L.Warn("VSC transaction failed on-chain", "action", action, "txId", txId, "attempt", attempt)
 			b.recordFailedTx(txId, action)
+			recordedFailures = append(recordedFailures, txId)
 			lastErr = fmt.Errorf("%w: action=%s txId=%s", ErrTxFailed, action, txId)
 			// Fall through to retry with a new broadcast.
 			if attempt < maxAttempts {
