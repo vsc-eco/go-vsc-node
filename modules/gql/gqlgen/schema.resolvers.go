@@ -573,6 +573,10 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 
 	for opIndex, call := range input.Calls {
 		rcLimit := uint(call.RcLimit)
+		// Cap rcLimit to prevent overflow when multiplied by CYCLE_GAS_PER_RC
+		if maxGas := ^uint(0) / params.CYCLE_GAS_PER_RC; rcLimit > maxGas {
+			rcLimit = maxGas
+		}
 
 		info, err := r.Contracts.ContractById(call.ContractID, blockHeight)
 		if err != nil {
