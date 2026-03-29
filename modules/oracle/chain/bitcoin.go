@@ -27,6 +27,7 @@ type bitcoinRelayer struct {
 	validityThreshold uint64
 	contractId        string
 	autoReorg         bool
+	fixedFeeRate      int64 // if > 0, override avgfeerate with this value
 }
 
 type btcChainData struct {
@@ -45,6 +46,7 @@ func (b *bitcoinRelayer) Init(sconf systemconfig.SystemConfig) error {
 	if sconf.OnTestnet() {
 		b.validityThreshold = 0
 		b.autoReorg = true
+		b.fixedFeeRate = 1
 	} else {
 		b.validityThreshold = 2
 		b.autoReorg = false
@@ -150,6 +152,9 @@ func (b *bitcoinRelayer) ChainData(
 			)
 		}
 
+		if b.fixedFeeRate > 0 {
+			btcBlock.AverageFeeRate = b.fixedFeeRate
+		}
 		blocks = append(blocks, btcBlock)
 	}
 
