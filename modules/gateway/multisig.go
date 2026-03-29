@@ -138,6 +138,7 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
+	delete(ms.msgChan, signPkg.TxId)
 
 	if err != nil {
 		return
@@ -185,6 +186,7 @@ func (ms *MultiSig) TickActions(bh uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
+	delete(ms.msgChan, signPkg.TxId)
 
 	fmt.Println("TickActions signatures", signatures, weight, err)
 	if err != nil {
@@ -234,6 +236,7 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
+	delete(ms.msgChan, signPkg.TxId)
 
 	if err != nil {
 		return

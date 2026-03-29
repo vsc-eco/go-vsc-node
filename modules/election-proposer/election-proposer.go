@@ -471,6 +471,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		signedWeight, err := ep.waitForSigs(ctx, &electionResult)
+		delete(ep.sigChannels, ep.signingInfo.epoch)
 
 		if err != nil {
 			return err
