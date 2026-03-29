@@ -1212,6 +1212,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 		}
+
+		// LEAK 3 fix: clean up sessionResults for all dispatchers that ran
+		// in this batch. Entries are only needed while waitForSigs collects
+		// signatures; after that they leak memory indefinitely.
+		tssMgr.bufferLock.Lock()
+		for _, dsc := range startedDispatcher {
+			delete(tssMgr.sessionResults, dsc.SessionId())
+		}
+		tssMgr.bufferLock.Unlock()
 	}()
 }
 
@@ -1251,7 +1260,7 @@ func (tssMgr *TssManager) waitForSigs(
 	blsCircuit := dids.NewBlsCircuitGenerator(members)
 
 	tssMgr.bufferLock.Lock()
-	tssMgr.sigChannels[sessionId] = make(chan sigMsg)
+	tssMgr.sigChannels[sessionId] = make(chan sigMsg, 16)
 	tssMgr.bufferLock.Unlock()
 
 	tssMgr.pubsub.Send(p2pMessage{
@@ -1268,7 +1277,7 @@ func (tssMgr *TssManager) waitForSigs(
 	var errRes error
 	var res *dids.SerializedCircuit
 
-	proc1 := make(chan struct{})
+	proc1 := make(chan struct{}, 1)
 	go func() {
 		signedWeight := uint64(0)
 
