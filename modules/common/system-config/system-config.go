@@ -118,7 +118,7 @@ func TestnetConfig() SystemConfig {
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
-				"BTC": "vsc1BYBwMvsSFwqvwzio352VWp6fGkjVs7t3Dp",
+				"BTC": "vsc1BkWohDf5fPcwn7V9B9ar6TyiWc3A2ZGJ4t",
 				// "DASH": "vsc1...", // deploy dash-mapping-contract and add contract ID
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
 			},
