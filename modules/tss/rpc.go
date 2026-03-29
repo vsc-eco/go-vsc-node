@@ -20,7 +20,8 @@ const (
 	maxBufferedMessageSize = 64 * 1024 // 64 KB
 	// Max block age for a session to be admitted into the buffer.
 	// Sessions with block height older than (currentBlockHeight - maxBufferBlockAge) are rejected.
-	maxBufferBlockAge uint64 = 2
+	// TSS sessions can run up to 60s; at ~3s/block that's ~20 blocks. Allow extra margin.
+	maxBufferBlockAge uint64 = 30
 )
 
 // parseSessionBlockHeight extracts the block height from a session ID.
