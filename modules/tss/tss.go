@@ -157,8 +157,11 @@ func (tssMgr *TssManager) GeneratePreParams() {
 func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	tssMgr.lastBlockHeight.Store(bh)
 
+	if headHeight == nil {
+		return
+	}
 	//First check if we are in sync or not
-	if bh < *headHeight-20 {
+	if *headHeight > 20 && bh < *headHeight-20 {
 		return
 	}
 

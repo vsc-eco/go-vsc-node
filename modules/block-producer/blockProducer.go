@@ -565,9 +565,17 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	}
 
 	// Remote signer: validate transactions exist locally
+	txRaw, ok := msg.Data["transactions"].([]interface{})
+	if !ok {
+		return "", errors.New("invalid or missing transactions field")
+	}
 	txStrs := []string{}
-	for _, v := range msg.Data["transactions"].([]interface{}) {
-		txStrs = append(txStrs, v.(string))
+	for _, v := range txRaw {
+		s, ok := v.(string)
+		if !ok {
+			return "", errors.New("invalid transaction entry type")
+		}
+		txStrs = append(txStrs, s)
 	}
 
 	transactions := []vscBlocks.VscBlockTx{}
