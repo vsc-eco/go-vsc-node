@@ -1407,7 +1407,6 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 			rcBal = 0
 		}
 
-		// fmt.Println("rcRecord k", k, rcRecord, rcBal)
 		se.rcDb.SetRecord(k, blockHeight, rcBal)
 	}
 }
