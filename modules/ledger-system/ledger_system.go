@@ -52,9 +52,15 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	//Ensure averages have been updated before distribution;
 	for _, balance := range ledgerBalances {
 
+		if blockHeight <= balance.HBD_CLAIM_HEIGHT {
+			continue // Avoid underflow when claim height is at or beyond current block
+		}
 		B := blockHeight - balance.HBD_CLAIM_HEIGHT //Total blocks since last claim
 		if B == 0 {
 			continue //Avoid division by zero when claim height equals block height
+		}
+		if blockHeight <= balance.HBD_MODIFY_HEIGHT {
+			continue // Avoid underflow when modify height is at or beyond current block
 		}
 		A := blockHeight - balance.HBD_MODIFY_HEIGHT //Blocks since last balance modification
 
