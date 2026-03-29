@@ -300,6 +300,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			opVal := headerOp.Value
 			RequiredAuths := common.ArrayToStringArray(opVal["required_auths"])
 
+			// Hive allows custom_json with required_auths:[] and
+			// required_posting_auths:["user"]. Without this guard,
+			// RequiredAuths[0] below panics and crashes the node.
+			if len(RequiredAuths) == 0 {
+				continue
+			}
+
 			cj := CustomJson{
 				Id:                   opVal["id"].(string),
 				RequiredAuths:        common.ArrayToStringArray(opVal["required_auths"]),
@@ -418,6 +425,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				RequiredAuths:        common.ArrayToStringArray(opVal["required_auths"]),
 				RequiredPostingAuths: common.ArrayToStringArray(opVal["required_posting_auths"]),
 				Json:                 []byte(opVal["json"].(string)),
+			}
+
+			if len(cj.RequiredAuths) == 0 {
+				continue
 			}
 
 			txSelf := TxSelf{
