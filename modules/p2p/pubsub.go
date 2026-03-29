@@ -38,6 +38,9 @@ type pubSubService[Msg any] struct {
 	cancelCtx context.CancelFunc
 
 	startStatus start_status.StartStatus
+
+	// semaphore limits concurrent message handler goroutines to prevent DoS
+	semaphore chan struct{}
 }
 
 var _ io.Closer = &pubSubService[any]{}
@@ -99,13 +102,14 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 	startStatus := start_status.New()
 
 	res := &pubSubService[Msg]{
-		topic,
-		cancelRelay,
-		sub,
-		service,
-		ctx,
-		cancel,
-		startStatus,
+		topic:       topic,
+		cancelRelay: cancelRelay,
+		sub:         sub,
+		params:      service,
+		ctx:         ctx,
+		cancelCtx:   cancel,
+		startStatus: startStatus,
+		semaphore:   make(chan struct{}, 64),
 	}
 
 	go func() {
@@ -150,7 +154,17 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 			// 	continue
 			// }
 
+			// Attempt to acquire semaphore; drop message if at capacity
+			select {
+			case res.semaphore <- struct{}{}:
+			default:
+				fmt.Println("pubsub: dropping message, concurrency limit reached")
+				continue
+			}
+
 			go func() {
+				defer func() { <-res.semaphore }()
+
 				parsedMsg, err := service.ParseMessage(msg.GetData())
 				if err != nil {
 					//TODO handle error

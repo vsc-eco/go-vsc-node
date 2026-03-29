@@ -544,6 +544,10 @@ func (r *queryResolver) FindTssCommitments(ctx context.Context, filterOptions *T
 
 // SimulateContractCalls is the resolver for the simulateContractCalls field.
 func (r *queryResolver) SimulateContractCalls(ctx context.Context, input SimulateContractCallsInput) ([]SimulateContractCallResult, error) {
+	if len(input.Calls) > 10 {
+		return nil, fmt.Errorf("maximum 10 calls per simulation")
+	}
+
 	// Get latest block info
 	highestBlock, err := r.HiveBlocks.GetHighestBlock()
 	if err != nil {
