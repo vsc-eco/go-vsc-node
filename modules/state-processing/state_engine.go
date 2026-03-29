@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/vsclog"
@@ -1391,6 +1392,19 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 			frozeAmt := rcSystem.CalculateFrozenBal(rcRecord.BlockHeight, blockHeight, rcRecord.Amount)
 
 			rcBal = frozeAmt + v
+		}
+
+		// Cap rcBal to the user's actual balance (+ free amount for Hive accounts)
+		// to prevent frozen RC from accumulating beyond what the user owns.
+		balAmt := se.LedgerSystem.GetBalance(k, blockHeight, "hbd")
+		if strings.HasPrefix(k, "hive:") {
+			balAmt = balAmt + params.RC_HIVE_FREE_AMOUNT
+		}
+		if rcBal > balAmt {
+			rcBal = balAmt
+		}
+		if rcBal < 0 {
+			rcBal = 0
 		}
 
 		se.rcDb.SetRecord(k, blockHeight, rcBal)

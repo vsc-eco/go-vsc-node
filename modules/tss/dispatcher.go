@@ -647,9 +647,13 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 				ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
 				if err != nil {
 					log.Trace("UpdateFromBytes failed (old party)", "sessionId", dispatcher.sessionId, "from", fromStr, "ok", ok, "err", err)
+					dispatcher.p2pMu.Lock()
 					dispatcher.tssErr = err
+					dispatcher.p2pMu.Unlock()
 				} else {
+					dispatcher.p2pMu.Lock()
 					dispatcher.lastMsg = time.Now()
+					dispatcher.p2pMu.Unlock()
 					log.Trace("message processed successfully (old party)", "sessionId", dispatcher.sessionId, "from", fromStr)
 				}
 			}()
@@ -667,9 +671,13 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 
 				if err != nil {
 					log.Trace("UpdateFromBytes failed (new party)", "sessionId", dispatcher.sessionId, "from", fromStr, "ok", ok, "err", err)
+					dispatcher.p2pMu.Lock()
 					dispatcher.tssErr = err
+					dispatcher.p2pMu.Unlock()
 				} else {
+					dispatcher.p2pMu.Lock()
 					dispatcher.lastMsg = time.Now()
+					dispatcher.p2pMu.Unlock()
 					log.Trace("message processed successfully (new party)", "sessionId", dispatcher.sessionId, "from", fromStr)
 				}
 			}()
@@ -1058,6 +1066,7 @@ type BaseDispatcher struct {
 	err     error
 	tssErr  *btss.Error
 	timeout bool
+	p2pMu   sync.Mutex // protects tssErr and lastMsg from concurrent HandleP2P goroutine writes
 	// partyType string
 
 	done       chan struct{}
@@ -1274,9 +1283,13 @@ func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcs
 		log.Trace("update party", "ok", ok, "inputLen", len(input), "from", from.Id)
 		if err != nil {
 			log.Trace("UpdateFromBytes error", "ok", ok, "err", err)
+			dispatcher.p2pMu.Lock()
 			dispatcher.tssErr = err
+			dispatcher.p2pMu.Unlock()
 		} else {
+			dispatcher.p2pMu.Lock()
 			dispatcher.lastMsg = time.Now()
+			dispatcher.p2pMu.Unlock()
 		}
 	}()
 }
@@ -1311,7 +1324,10 @@ func (dispatcher *BaseDispatcher) baseStart() {
 				// Session completed or was cancelled; stop monitoring
 				return
 			case <-timer.C:
-				elapsed := time.Since(dispatcher.lastMsg)
+				dispatcher.p2pMu.Lock()
+				lastMsg := dispatcher.lastMsg
+				dispatcher.p2pMu.Unlock()
+				elapsed := time.Since(lastMsg)
 				if elapsed < timeout {
 					// Activity happened since the timer started; reset for remaining time
 					timer.Reset(timeout - elapsed)
