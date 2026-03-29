@@ -120,7 +120,10 @@ type generateBlockParams struct {
 
 // This function should generate a deterministically generated block
 // In the future we should apply protocol versioning to this
-func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlockParams) (*vscBlocks.VscHeader, []string, error) {
+func (bp *BlockProducer) GenerateBlock(
+	slotHeight uint64,
+	options ...generateBlockParams,
+) (*vscBlocks.VscHeader, []string, error) {
 	prevBlock, err := bp.VscBlocks.GetBlockByHeight(slotHeight)
 	daSession := datalayer.NewSession(bp.Datalayer)
 
@@ -221,7 +224,17 @@ func (bp *BlockProducer) GenerateBlock(slotHeight uint64, options ...generateBlo
 
 	daSession.Commit()
 
-	vlog.Verbose("GenerateBlock", "merkleRoot", mr, "blockCid", blockCid.String(), "prevBlock", prevBlockId, "range", prevRange)
+	vlog.Verbose(
+		"GenerateBlock",
+		"merkleRoot",
+		mr,
+		"blockCid",
+		blockCid.String(),
+		"prevBlock",
+		prevBlockId,
+		"range",
+		prevRange,
+	)
 
 	return &blockHeader, outTxs, nil
 }
@@ -468,7 +481,12 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	}
 	bbytes, _ := json.Marshal(blockHeader)
 
-	op := bp.HiveCreator.CustomJson([]string{bp.config.Config.Get().HiveUsername}, []string{}, "vsc.produce_block", string(bbytes))
+	op := bp.HiveCreator.CustomJson(
+		[]string{bp.config.Config.Get().HiveUsername},
+		[]string{},
+		"vsc.produce_block",
+		string(bbytes),
+	)
 
 	tx := bp.HiveCreator.MakeTransaction([]hivego.HiveOperation{op})
 
@@ -494,7 +512,7 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 
 	if msg.SlotHeight > bp.bh {
 		// Reject messages too far in the future to prevent DoS via large SlotHeight
-		if msg.SlotHeight > bp.bh+20 {
+		if msg.SlotHeight-bp.bh > 20 {
 			return "", fmt.Errorf("slot height %d too far ahead of current %d", msg.SlotHeight, bp.bh)
 		}
 		// Local node is out of sync perhaps — wait briefly with bounded timeout
@@ -690,9 +708,35 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 		opLog = compileResult.OpLog
 	}
 
-	vlog.Verbose("MakeOplog", "bh", bh, "oplogLen", len(opLog), "txOutIds", len(bp.StateEngine.TxOutIds), "rawOplogLen", len(bp.StateEngine.LedgerState.Oplog))
+	vlog.Verbose(
+		"MakeOplog",
+		"bh",
+		bh,
+		"oplogLen",
+		len(opLog),
+		"txOutIds",
+		len(bp.StateEngine.TxOutIds),
+		"rawOplogLen",
+		len(bp.StateEngine.LedgerState.Oplog),
+	)
 	for i, op := range opLog {
-		vlog.Trace("MakeOplog oplog entry", "index", i, "id", op.Id, "type", op.Type, "from", op.From, "to", op.To, "amount", op.Amount, "bh", op.BlockHeight)
+		vlog.Trace(
+			"MakeOplog oplog entry",
+			"index",
+			i,
+			"id",
+			op.Id,
+			"type",
+			op.Type,
+			"from",
+			op.From,
+			"to",
+			op.To,
+			"amount",
+			op.Amount,
+			"bh",
+			op.BlockHeight,
+		)
 	}
 	for _, txId := range bp.StateEngine.TxOutIds {
 		output := bp.StateEngine.TxOutput[txId]
@@ -745,7 +789,13 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 
 func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.VscBlockTx {
 
-	vlog.Verbose("MakeOutputs", "tempOutputs", len(bp.StateEngine.TempOutputs), "contractResults", len(bp.StateEngine.ContractResults))
+	vlog.Verbose(
+		"MakeOutputs",
+		"tempOutputs",
+		len(bp.StateEngine.TempOutputs),
+		"contractResults",
+		len(bp.StateEngine.ContractResults),
+	)
 
 	contractOutputs := make([]vscBlocks.VscBlockTx, 0)
 
@@ -760,7 +810,19 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 
 	for _, contractId := range contractIds {
 		output := bp.StateEngine.TempOutputs[contractId]
-		vlog.Trace("MakeOutputs contract", "contract", contractId, "baseCid", output.Cid, "cacheKeys", len(output.Cache), "deletions", len(output.Deletions), "results", len(bp.StateEngine.ContractResults[contractId]))
+		vlog.Trace(
+			"MakeOutputs contract",
+			"contract",
+			contractId,
+			"baseCid",
+			output.Cid,
+			"cacheKeys",
+			len(output.Cache),
+			"deletions",
+			len(output.Deletions),
+			"results",
+			len(bp.StateEngine.ContractResults[contractId]),
+		)
 
 		// Load or create DataBin. Directories use BasicDirectory for small entry
 		// counts and auto-upgrade to HAMT at 256+ entries. Deterministic CIDs are
@@ -946,7 +1008,20 @@ func (bp *BlockProducer) Stop() error {
 	return bp.stopP2P()
 }
 
-func New(p2p *libp2p.P2PServer, hiveConsumer *blockconsumer.HiveConsumer, se *stateEngine.StateEngine, conf common.IdentityConfig, sconf systemconfig.SystemConfig, hiveCreator hive.HiveTransactionCreator, da *datalayer.DataLayer, electionsDb elections.Elections, vscBlocks vscBlocks.VscBlocks, txDb transactions.Transactions, rcSystem *rcSystem.RcSystem, nonceDb nonces.Nonces) *BlockProducer {
+func New(
+	p2p *libp2p.P2PServer,
+	hiveConsumer *blockconsumer.HiveConsumer,
+	se *stateEngine.StateEngine,
+	conf common.IdentityConfig,
+	sconf systemconfig.SystemConfig,
+	hiveCreator hive.HiveTransactionCreator,
+	da *datalayer.DataLayer,
+	electionsDb elections.Elections,
+	vscBlocks vscBlocks.VscBlocks,
+	txDb transactions.Transactions,
+	rcSystem *rcSystem.RcSystem,
+	nonceDb nonces.Nonces,
+) *BlockProducer {
 	return &BlockProducer{
 		sigChannels:  make(map[uint64]chan sigMsg),
 		StateEngine:  se,

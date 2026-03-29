@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 	start_status "vsc-node/modules/start-status"
 
@@ -163,15 +164,18 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 			}
 
 			go func() {
-				defer func() { <-res.semaphore }()
-
 				parsedMsg, err := service.ParseMessage(msg.GetData())
 				if err != nil {
+					<-res.semaphore
 					//TODO handle error
 					return
 				}
 
+				var wg sync.WaitGroup
+				wg.Add(2)
+
 				go func() {
+					defer wg.Done()
 					err := service.HandleRawMessage(ctx, msg, res.Send)
 					if err != nil {
 						//TODO handle error
@@ -180,6 +184,7 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 				}()
 
 				go func() {
+					defer wg.Done()
 					err := service.HandleMessage(ctx, msg.GetFrom(), parsedMsg, res.Send)
 					if err != nil {
 						//TODO handle error
@@ -187,6 +192,9 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 						return
 					}
 				}()
+
+				wg.Wait()
+				<-res.semaphore
 			}()
 		}
 	}()
