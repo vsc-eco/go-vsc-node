@@ -86,7 +86,7 @@ type TssManager struct {
 
 	actionMap      map[string]Dispatcher
 	sessionMap     map[string]sessionInfo
-	sessionResults map[string]DispatcherResult
+	sessionResults map[string]sessionResultEntry
 
 	// Message buffer for early-arriving messages before dispatcher registration.
 	// Priority queue keyed by block height for O(1) eviction of stale sessions.
@@ -895,145 +895,169 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 		signedResults := make([]KeySignResult, 0)
 		commitableResults := make([]tss_helpers.BaseCommitment, 0)
+
+		// Await all dispatchers concurrently so that each dispatcher's
+		// sessionResults entry is stored as soon as IT finishes, rather than
+		// being blocked behind slower dispatchers in a sequential loop.
+		// This prevents a race where fast nodes clean up sessionResults
+		// before slow nodes (delayed by an earlier timeout) send ask_sigs.
+		var resultsMu sync.Mutex
+		var awaitWg sync.WaitGroup
 		for _, dsc := range startedDispatcher {
-			resultPtr, err := dsc.Done().Await(context.Background())
+			awaitWg.Add(1)
+			go func(dsc Dispatcher) {
+				defer awaitWg.Done()
 
-			sessionId := dsc.SessionId()
-			tssMgr.bufferLock.Lock()
-			delete(tssMgr.sigChannels, sessionId)
-			delete(tssMgr.actionMap, sessionId)
-			tssMgr.messageBuffer.Delete(sessionId)
-			delete(tssMgr.sessionMap, sessionId)
-			tssMgr.bufferLock.Unlock()
-			if err != nil {
-				log.Warn("session dispatch rejected", "sessionId", dsc.SessionId(), "err", err)
-				continue
-			}
+				resultPtr, err := dsc.Done().Await(context.Background())
 
-			result := *resultPtr
-			if result.Type() == KeyGenResultType {
-				res := result.(KeyGenResult)
-
-				res.BlockHeight = bh
+				sessionId := dsc.SessionId()
 				tssMgr.bufferLock.Lock()
-				tssMgr.sessionResults[dsc.SessionId()] = res
+				delete(tssMgr.sigChannels, sessionId)
+				delete(tssMgr.actionMap, sessionId)
+				tssMgr.messageBuffer.Delete(sessionId)
+				delete(tssMgr.sessionMap, sessionId)
 				tssMgr.bufferLock.Unlock()
-
-				log.Info(
-					"keygen success",
-					"sessionId",
-					res.SessionId,
-					"keyId",
-					res.KeyId,
-					"blockHeight",
-					res.BlockHeight,
-					"epoch",
-					res.Epoch,
-					"pubKey",
-					fmt.Sprintf("%x", res.PublicKey),
-					"commitment",
-					res.Commitment,
-				)
-
-				commitment := result.Serialize()
-				commitableResults = append(commitableResults, commitment)
-			} else if result.Type() == KeySignResultType {
-				res := result.(KeySignResult)
-
-				res.BlockHeight = bh
-				tssMgr.bufferLock.Lock()
-				tssMgr.sessionResults[dsc.SessionId()] = res
-				tssMgr.bufferLock.Unlock()
-
-				signedResults = append(signedResults, res)
-			} else if result.Type() == ReshareResultType {
-				res := result.(ReshareResult)
-
-				res.BlockHeight = bh
-				tssMgr.bufferLock.Lock()
-				tssMgr.sessionResults[dsc.SessionId()] = res
-				tssMgr.bufferLock.Unlock()
-
-				log.Info("reshare success", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.NewEpoch, "commitment", res.Commitment)
-
-				commitment := result.Serialize()
-				commitment.BlockHeight = bh
-				commitableResults = append(commitableResults, commitment)
-
-			} else if result.Type() == ErrorType {
-				res := result.(ErrorResult)
-				res.BlockHeight = bh
-
-				if res.tssErr != nil {
-					culprits := make([]string, 0)
-					for _, n := range res.tssErr.Culprits() {
-						culprits = append(culprits, string(n.GetId()))
-					}
-					log.Verbose("TSS error result with culprits", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.Epoch, "culprits", culprits, "err", res.tssErr.Error())
-				} else if res.err != nil {
-					log.Verbose("internal error result", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.Epoch, "err", res.err)
+				if err != nil {
+					log.Warn("session dispatch rejected", "sessionId", dsc.SessionId(), "err", err)
+					return
 				}
 
-				tssMgr.bufferLock.Lock()
-				tssMgr.sessionResults[dsc.SessionId()] = res
-				tssMgr.bufferLock.Unlock()
+				result := *resultPtr
+				if result.Type() == KeyGenResultType {
+					res := result.(KeyGenResult)
 
-				commitment := result.Serialize()
-				commitment.BlockHeight = bh
-				commitableResults = append(commitableResults, commitment)
-			} else if result.Type() == TimeoutType {
-				res := result.(TimeoutResult)
+					res.BlockHeight = bh
+					tssMgr.bufferLock.Lock()
+					tssMgr.sessionResults[dsc.SessionId()] = sessionResultEntry{result: res, blockHeight: bh}
+					tssMgr.bufferLock.Unlock()
 
-				res.BlockHeight = bh
-				tssMgr.bufferLock.Lock()
-				tssMgr.sessionResults[dsc.SessionId()] = res
-				tssMgr.bufferLock.Unlock()
+					log.Info(
+						"keygen success",
+						"sessionId",
+						res.SessionId,
+						"keyId",
+						res.KeyId,
+						"blockHeight",
+						res.BlockHeight,
+						"epoch",
+						res.Epoch,
+						"pubKey",
+						fmt.Sprintf("%x", res.PublicKey),
+						"commitment",
+						res.Commitment,
+					)
 
-				log.Warn("timeout result", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.Epoch, "culprits", res.Culprits)
-				commitment := result.Serialize()
-				commitment.BlockHeight = bh
-				commitableResults = append(commitableResults, commitment)
+					commitment := result.Serialize()
+					resultsMu.Lock()
+					commitableResults = append(commitableResults, commitment)
+					resultsMu.Unlock()
+				} else if result.Type() == KeySignResultType {
+					res := result.(KeySignResult)
 
-				// Schedule automatic retry for reshare timeouts with retry limit
-				if dsc.KeyId() != "" {
-					keyInfo, err := tssMgr.tssKeys.FindKey(dsc.KeyId())
-					if err == nil {
-						// Check retry count from session (in-memory) to avoid DB dependency
-						retryCount := tssMgr.getRetryCount(dsc.KeyId())
-						if retryCount < MAX_RESHARE_RETRIES {
-							// Calculate exponential backoff delay based on retry count
-							retryDelay := time.Duration(retryCount+1) * tssMgr.sconf.TssParams().ReshareSyncDelay
+					res.BlockHeight = bh
+					tssMgr.bufferLock.Lock()
+					tssMgr.sessionResults[dsc.SessionId()] = sessionResultEntry{result: res, blockHeight: bh}
+					tssMgr.bufferLock.Unlock()
 
-							log.Info("scheduling reshare retry for timeout", "sessionId", dsc.SessionId(), "keyId", dsc.KeyId(), "retryCount", retryCount+1, "maxRetries", MAX_RESHARE_RETRIES, "delay", retryDelay)
+					resultsMu.Lock()
+					signedResults = append(signedResults, res)
+					resultsMu.Unlock()
+				} else if result.Type() == ReshareResultType {
+					res := result.(ReshareResult)
 
-							// Increment retry count
-							tssMgr.incrementRetryCount(dsc.KeyId())
+					res.BlockHeight = bh
+					tssMgr.bufferLock.Lock()
+					tssMgr.sessionResults[dsc.SessionId()] = sessionResultEntry{result: res, blockHeight: bh}
+					tssMgr.bufferLock.Unlock()
 
-							// Schedule retry with delay
-							// Use the correct action type: keygen timeouts should retry as keygen,
-							// not reshare (reshare requires an existing commitment in the DB).
-							retryType := ReshareAction
-							if _, isKeygen := dsc.(*KeyGenDispatcher); isKeygen {
-								retryType = KeyGenAction
+					log.Info("reshare success", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.NewEpoch, "commitment", res.Commitment)
+
+					commitment := result.Serialize()
+					commitment.BlockHeight = bh
+					resultsMu.Lock()
+					commitableResults = append(commitableResults, commitment)
+					resultsMu.Unlock()
+
+				} else if result.Type() == ErrorType {
+					res := result.(ErrorResult)
+					res.BlockHeight = bh
+
+					if res.tssErr != nil {
+						culprits := make([]string, 0)
+						for _, n := range res.tssErr.Culprits() {
+							culprits = append(culprits, string(n.GetId()))
+						}
+						log.Verbose("TSS error result with culprits", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.Epoch, "culprits", culprits, "err", res.tssErr.Error())
+					} else if res.err != nil {
+						log.Verbose("internal error result", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.Epoch, "err", res.err)
+					}
+
+					tssMgr.bufferLock.Lock()
+					tssMgr.sessionResults[dsc.SessionId()] = sessionResultEntry{result: res, blockHeight: bh}
+					tssMgr.bufferLock.Unlock()
+
+					commitment := result.Serialize()
+					commitment.BlockHeight = bh
+					resultsMu.Lock()
+					commitableResults = append(commitableResults, commitment)
+					resultsMu.Unlock()
+				} else if result.Type() == TimeoutType {
+					res := result.(TimeoutResult)
+
+					res.BlockHeight = bh
+					tssMgr.bufferLock.Lock()
+					tssMgr.sessionResults[dsc.SessionId()] = sessionResultEntry{result: res, blockHeight: bh}
+					tssMgr.bufferLock.Unlock()
+
+					log.Warn("timeout result", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.Epoch, "culprits", res.Culprits)
+					commitment := result.Serialize()
+					commitment.BlockHeight = bh
+					resultsMu.Lock()
+					commitableResults = append(commitableResults, commitment)
+					resultsMu.Unlock()
+
+					// Schedule automatic retry for reshare timeouts with retry limit
+					if dsc.KeyId() != "" {
+						keyInfo, err := tssMgr.tssKeys.FindKey(dsc.KeyId())
+						if err == nil {
+							// Check retry count from session (in-memory) to avoid DB dependency
+							retryCount := tssMgr.getRetryCount(dsc.KeyId())
+							if retryCount < MAX_RESHARE_RETRIES {
+								// Calculate exponential backoff delay based on retry count
+								retryDelay := time.Duration(retryCount+1) * tssMgr.sconf.TssParams().ReshareSyncDelay
+
+								log.Info("scheduling reshare retry for timeout", "sessionId", dsc.SessionId(), "keyId", dsc.KeyId(), "retryCount", retryCount+1, "maxRetries", MAX_RESHARE_RETRIES, "delay", retryDelay)
+
+								// Increment retry count
+								tssMgr.incrementRetryCount(dsc.KeyId())
+
+								// Schedule retry with delay
+								// Use the correct action type: keygen timeouts should retry as keygen,
+								// not reshare (reshare requires an existing commitment in the DB).
+								retryType := ReshareAction
+								if _, isKeygen := dsc.(*KeyGenDispatcher); isKeygen {
+									retryType = KeyGenAction
+								}
+								go func() {
+									time.Sleep(retryDelay)
+									tssMgr.bufferLock.Lock()
+									tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
+										Type:  retryType,
+										KeyId: dsc.KeyId(),
+										Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
+									})
+									tssMgr.bufferLock.Unlock()
+								}()
+							} else {
+								log.Error("max reshare retries exceeded", "sessionId", dsc.SessionId(), "keyId", dsc.KeyId(), "maxRetries", MAX_RESHARE_RETRIES)
+								// Could trigger alert or manual intervention here
 							}
-							go func() {
-								time.Sleep(retryDelay)
-								tssMgr.bufferLock.Lock()
-								tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
-									Type:  retryType,
-									KeyId: dsc.KeyId(),
-									Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
-								})
-								tssMgr.bufferLock.Unlock()
-							}()
-						} else {
-							log.Error("max reshare retries exceeded", "sessionId", dsc.SessionId(), "keyId", dsc.KeyId(), "maxRetries", MAX_RESHARE_RETRIES)
-							// Could trigger alert or manual intervention here
 						}
 					}
 				}
-			}
+			}(dsc)
 		}
+		awaitWg.Wait()
 
 		// Lock was already released before this goroutine started.
 
@@ -1213,12 +1237,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 		}
 
-		// LEAK 3 fix: clean up sessionResults for all dispatchers that ran
-		// in this batch. Entries are only needed while waitForSigs collects
-		// signatures; after that they leak memory indefinitely.
+		// Clean up stale sessionResults entries. Keep them for 40 blocks (~2 min)
+		// so that slower nodes (delayed by a timed-out action in their batch)
+		// can still respond to ask_sigs from faster nodes.
+		const sessionResultMaxAge uint64 = 40
 		tssMgr.bufferLock.Lock()
-		for _, dsc := range startedDispatcher {
-			delete(tssMgr.sessionResults, dsc.SessionId())
+		for id, entry := range tssMgr.sessionResults {
+			if bh > entry.blockHeight+sessionResultMaxAge {
+				delete(tssMgr.sessionResults, id)
+			}
 		}
 		tssMgr.bufferLock.Unlock()
 	}()
@@ -1482,7 +1509,7 @@ func New(
 		actionMap:      make(map[string]Dispatcher),
 		messageBuffer:  newSessionBuffer(),
 		sessionMap:     make(map[string]sessionInfo),
-		sessionResults: make(map[string]DispatcherResult),
+		sessionResults: make(map[string]sessionResultEntry),
 		retryCounts:    make(map[string]int),
 	}
 }

@@ -39,3 +39,8 @@ type sigMsg struct {
 	Sig       string `json:"sig"`
 	SessionId string `json:"session_id"`
 }
+
+type sessionResultEntry struct {
+	result      DispatcherResult
+	blockHeight uint64
+}
