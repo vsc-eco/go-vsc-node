@@ -343,13 +343,13 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 				return ErrInvalidArgument
 			}
 			amount, err := strconv.ParseInt(amountString, 10, 64)
-			if amount < 0 {
-				return result.Err[SdkResultStruct](
-					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("amount cannot be negative")),
-				)
-			}
 			if err != nil {
 				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), err))
+			}
+			if amount <= 0 {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("amount must be positive")),
+				)
 			}
 			asset, ok := arg3.(string)
 			if !ok {
@@ -371,13 +371,13 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 				return ErrInvalidArgument
 			}
 			amount, err := strconv.ParseInt(amountString, 10, 64)
-			if amount < 0 {
-				return result.Err[SdkResultStruct](
-					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("amount cannot be negative")),
-				)
-			}
 			if err != nil {
 				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), err))
+			}
+			if amount <= 0 {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("amount must be positive")),
+				)
 			}
 			asset, ok := arg3.(string)
 			if !ok {
