@@ -506,7 +506,11 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 	return promise.New(func(resolve func(DispatcherResult), reject func(error)) {
 		<-dispatcher.done
 
-		log.Verbose("reshare done called", "sessionId", dispatcher.sessionId, "timeout", dispatcher.timeout, "hasTssErr", dispatcher.tssErr != nil, "hasErr", dispatcher.err != nil)
+		dispatcher.p2pMu.Lock()
+		tssErr := dispatcher.tssErr
+		dispatcher.p2pMu.Unlock()
+
+		log.Verbose("reshare done called", "sessionId", dispatcher.sessionId, "timeout", dispatcher.timeout, "hasTssErr", tssErr != nil, "hasErr", dispatcher.err != nil)
 		if dispatcher.timeout {
 			culprits := make(map[string]bool, 0)
 			oldCulprits := make([]string, 0)
@@ -582,11 +586,11 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 			return
 		}
 
-		if dispatcher.tssErr != nil {
-			log.Warn("reshare TSS error", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", dispatcher.tssErr)
+		if tssErr != nil {
+			log.Warn("reshare TSS error", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", tssErr)
 			dispatcher.tssMgr.metrics.IncrementReshareFailure()
 			resolve(ErrorResult{
-				tssErr:      dispatcher.tssErr,
+				tssErr:      tssErr,
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
 				BlockHeight: dispatcher.blockHeight,
@@ -1029,9 +1033,13 @@ func (dispatcher *SignDispatcher) Done() *promise.Promise[DispatcherResult] {
 			return
 		}
 
-		if dispatcher.tssErr != nil {
+		dispatcher.p2pMu.Lock()
+		tssErr := dispatcher.tssErr
+		dispatcher.p2pMu.Unlock()
+
+		if tssErr != nil {
 			resolve(ErrorResult{
-				tssErr: dispatcher.tssErr,
+				tssErr: tssErr,
 
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
@@ -1343,7 +1351,7 @@ func (dispatcher *BaseDispatcher) baseStart() {
 				dispatcher.timeout = true
 				dispatcher.doneMu.Unlock()
 
-				log.Warn("session timeout", "sessionId", dispatcher.sessionId, "elapsed", elapsed, "timeout", timeout, "lastMsg", dispatcher.lastMsg)
+				log.Warn("session timeout", "sessionId", dispatcher.sessionId, "elapsed", elapsed, "timeout", timeout, "lastMsg", lastMsg)
 
 				dispatcher.cancelMsgs()
 				dispatcher.done <- struct{}{}
@@ -1549,14 +1557,18 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 			return
 		}
 
-		if dispatcher.tssErr != nil {
+		dispatcher.p2pMu.Lock()
+		tssErr := dispatcher.tssErr
+		dispatcher.p2pMu.Unlock()
+
+		if tssErr != nil {
 			culprits := make([]string, 0)
-			for _, n := range dispatcher.tssErr.Culprits() {
+			for _, n := range tssErr.Culprits() {
 				culprits = append(culprits, string(n.GetId()))
 			}
-			log.Warn("keygen done: TSS error", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "culprits", culprits, "err", dispatcher.tssErr.Error())
+			log.Warn("keygen done: TSS error", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "culprits", culprits, "err", tssErr.Error())
 			resolve(ErrorResult{
-				tssErr: dispatcher.tssErr,
+				tssErr: tssErr,
 
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
