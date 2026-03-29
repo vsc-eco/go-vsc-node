@@ -339,15 +339,8 @@ func (ledgerSession *ledgerSession) Stake(stakeOp StakeOp, options ...TransferOp
 		}
 	}
 
-	ledgerSession.AppendLedger(LedgerUpdate{
-		Id:     stakeOp.Id,
-		OpIdx:  0,
-		Owner:  stakeOp.From,
-		Amount: -stakeOp.Amount,
-		Asset:  stakeOp.Asset,
-		Type:   "stake",
-		Memo:   stakeOp.Memo,
-	})
+	// Removed direct AppendLedger — AppendOplog below handles the debit
+	// via ExecuteOplog to avoid double-debiting the session balance.
 
 	// le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], LedgerUpdate{
 	// 	Id:     stakeOp.Id,
@@ -457,15 +450,8 @@ func (ledgerSession *ledgerSession) Unstake(stakeOp StakeOp) LedgerResult {
 
 	// fee := int64(0)
 
-	ledgerSession.AppendLedger(LedgerUpdate{
-		Id:     stakeOp.Id,
-		OpIdx:  0,
-		Owner:  stakeOp.From,
-		Amount: -stakeOp.Amount,
-		Asset:  stakeOp.Asset,
-		Type:   "stake",
-		Memo:   stakeOp.Memo,
-	})
+	// Removed direct AppendLedger — AppendOplog below handles the debit
+	// via ExecuteOplog to avoid double-debiting the session balance.
 	// le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], )
 
 	// if stakeOp.Instant {

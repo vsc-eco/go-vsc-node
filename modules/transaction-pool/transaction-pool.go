@@ -121,6 +121,10 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		return nil, err
 	}
 
+	if len(txShell.Headers.RequiredAuths) == 0 {
+		return nil, errors.New("transaction must have at least one required auth")
+	}
+
 	hashAuths := HashKeyAuths(txShell.Headers.RequiredAuths)
 	nonceRecord, err := tp.nonceDb.GetNonce(hashAuths)
 
@@ -251,6 +255,10 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 	txShell := VSCTransactionShell{}
 
 	if err := common.DecodeCbor(decodedTx, &txShell); err != nil {
+		return
+	}
+
+	if len(txShell.Headers.RequiredAuths) == 0 {
 		return
 	}
 
