@@ -46,8 +46,8 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 		}
 	}
 
-	// get elected members
-	result, err := o.electionDb.GetElectionByHeight(*headHeight)
+	// get elected members — use bh (not headHeight) to match the schedule lookup above
+	result, err := o.electionDb.GetElectionByHeight(bh)
 	if err != nil {
 		log.Println("[oracle] failed to get currently elected members.", err)
 		return

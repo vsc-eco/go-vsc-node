@@ -11,6 +11,9 @@ import (
 )
 
 func HashKeyAuths(keyAuths []string) string {
+	if len(keyAuths) == 0 {
+		return ""
+	}
 	if len(keyAuths) < 2 {
 		return keyAuths[0]
 	} else {

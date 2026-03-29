@@ -96,6 +96,12 @@ func (t TxVscCallContract) ExecuteTx(
 
 	gas := min(uint(availableGas), t.RcLimit)
 
+	// Cap gas to prevent overflow when multiplied by CYCLE_GAS_PER_RC
+	const maxGas = ^uint(0) / params.CYCLE_GAS_PER_RC
+	if gas > maxGas {
+		gas = maxGas
+	}
+
 	var caller string = t.Caller
 	if caller == "" {
 		if len(t.Self.RequiredAuths) > 0 {
