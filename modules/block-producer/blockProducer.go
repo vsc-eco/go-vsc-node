@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"reflect"
 	"slices"
@@ -511,8 +512,11 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	}
 
 	if msg.SlotHeight > bp.bh {
+		if math.MaxUint64-bp.bh < 20 {
+			return "", fmt.Errorf("block height impossibly high")
+		}
 		// Reject messages too far in the future to prevent DoS via large SlotHeight
-		if msg.SlotHeight-bp.bh > 20 {
+		if msg.SlotHeight > bp.bh+20 {
 			return "", fmt.Errorf("slot height %d too far ahead of current %d", msg.SlotHeight, bp.bh)
 		}
 		// Local node is out of sync perhaps — wait briefly with bounded timeout
