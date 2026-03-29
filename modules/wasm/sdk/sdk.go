@@ -318,6 +318,11 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			if err != nil {
 				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), err))
 			}
+			if amount <= 0 {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("amount must be positive")),
+				)
+			}
 			asset, ok := arg2.(string)
 			if !ok {
 				return ErrInvalidArgument
