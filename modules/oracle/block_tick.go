@@ -71,7 +71,7 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	signal := p2p.BlockTickSignal{
 		IsProducer:     isProducer,
 		IsWitness:      isWitness,
-		BlockHeight:    *headHeight,
+		BlockHeight:    bh,
 		ElectedMembers: members,
 	}
 

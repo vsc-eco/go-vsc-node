@@ -719,6 +719,9 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				Index: idx,
 			})
 
+			if len(tx.Headers.RequiredAuths) == 0 {
+				continue
+			}
 			keyId := transactionpool.HashKeyAuths(tx.Headers.RequiredAuths)
 			if nonceUpdates[keyId] < tx.Headers.Nonce || nonceUpdates[keyId] == 0 {
 				nonceUpdates[keyId] = tx.Headers.Nonce
