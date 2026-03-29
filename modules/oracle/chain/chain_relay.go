@@ -151,8 +151,8 @@ type ChainOracle struct {
 	// per chain symbol. Any new submission whose start height <= this value
 	// is skipped until the contract state catches up, preventing overlapping
 	// batches when the previous tx is still in the mempool.
-	lastSubmittedEnd  map[string]uint64    // symbol -> endHeight
-	lastSubmittedAt   map[string]time.Time // symbol -> when submitted
+	lastSubmittedEnd map[string]uint64    // symbol -> endHeight
+	lastSubmittedAt  map[string]time.Time // symbol -> when submitted
 	// recentlyWitnessed tracks block ranges this node recently signed as a
 	// witness for another producer. If we become producer and see the same
 	// range, we skip it to avoid duplicate submissions across nodes.
@@ -385,13 +385,15 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 		// When contract state is unavailable (e.g. new or dummy contract),
 		// start from near the chain tip instead of block 0 to avoid
 		// requesting pruned blocks.
-		contractHeight = latestChainState.blockHeight - 1
-		c.logger.Debug("failed to get contract state, starting near chain tip",
+		c.logger.Debug("failed to get contract state, waiting",
 			"symbol", chain.Symbol(),
 			"contractId", contractId,
 			"fallbackHeight", contractHeight,
 			"err", err,
 		)
+		return chainSession{
+			newBlocksToSubmit: false,
+		}, nil
 	}
 
 	if latestChainState.blockHeight <= contractHeight {
