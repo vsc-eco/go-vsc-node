@@ -119,7 +119,7 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 		return
 	}
 
-	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage)
+	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage, 16)
 	signReq := signRequest{
 		TxId:        signPkg.TxId,
 		BlockHeight: bh,
@@ -164,7 +164,7 @@ func (ms *MultiSig) TickActions(bh uint64) {
 		return
 	}
 
-	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage)
+	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage, 16)
 	signReq := signRequest{
 		TxId:        signPkg.TxId,
 		BlockHeight: bh,
@@ -214,7 +214,7 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 		return
 	}
 
-	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage)
+	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage, 16)
 	signReq := signRequest{
 		TxId:        signPkg.TxId,
 		BlockHeight: bh,
