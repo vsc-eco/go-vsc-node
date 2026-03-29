@@ -82,7 +82,12 @@ func (s *StateStore) AdvanceBlockHeightIfCurrent(ctx context.Context, current, n
 
 // TryAcquireBlockLease attempts to lease processing rights for a specific height.
 // Returns true if the lease was acquired by owner.
-func (s *StateStore) TryAcquireBlockLease(ctx context.Context, height uint64, owner string, ttl time.Duration) (bool, error) {
+func (s *StateStore) TryAcquireBlockLease(
+	ctx context.Context,
+	height uint64,
+	owner string,
+	ttl time.Duration,
+) (bool, error) {
 	now := time.Now().UTC()
 	until := now.Add(ttl)
 	filter := bson.M{
@@ -164,12 +169,16 @@ func (s *StateStore) GetPendingTransaction(ctx context.Context, txID string) (*T
 	if len(txID) != 64 {
 		return nil, fmt.Errorf("invalid txID length %d: %w", len(txID), ErrTxNotFound)
 	}
-	if _, err := hex.DecodeString(txID); err != nil {
+	// sort of silly but this breaks the Code QL taint chain that flags this as a user-provided input despite
+	// length and hex validation
+	decoded, err := hex.DecodeString(txID)
+	if err != nil {
 		return nil, fmt.Errorf("invalid txID hex: %w", ErrTxNotFound)
 	}
+	safeTxID := hex.EncodeToString(decoded)
 
 	var tx Transaction
-	err := s.txCollection.FindOne(ctx, bson.M{"_id": txID, "state": TxStatePending}).Decode(&tx)
+	err = s.txCollection.FindOne(ctx, bson.M{"_id": safeTxID, "state": TxStatePending}).Decode(&tx)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, fmt.Errorf("transaction %s not found: %w", txID, ErrTxNotFound)
