@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 	"vsc-node/cmd/mapping-bot/chain"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
@@ -90,6 +91,23 @@ func (b *Bot) HandleConfirmations() {
 		return
 	}
 
+	// Fetch the contract's last processed block height once, so we can check
+	// whether each confirmation block has been ingested before calling confirmSpend.
+	var contractHeight uint64
+	var contractHeightOk bool
+	lastContractHeightStr, err := b.gql().FetchLastHeight(ctx)
+	if err != nil {
+		b.L.Debug("failed to fetch contract height for confirmSpend", "error", err)
+	} else {
+		h, parseErr := strconv.ParseUint(lastContractHeightStr, 10, 64)
+		if parseErr != nil {
+			b.L.Debug("invalid contract height response", "value", lastContractHeightStr)
+		} else {
+			contractHeight = h
+			contractHeightOk = true
+		}
+	}
+
 	for _, dbTx := range sentTxs {
 		txId := dbTx.TxID
 
@@ -99,6 +117,14 @@ func (b *Bot) HandleConfirmations() {
 			continue
 		}
 		if !details.Confirmed {
+			continue
+		}
+
+		// Wait until the contract has processed the confirmation block,
+		// the same way HandleMap waits before mapping.
+		if contractHeightOk && contractHeight < details.BlockHeight {
+			b.L.Info("delaying confirmSpend, block not yet in contract",
+				"txId", txId, "blockHeight", details.BlockHeight, "contractHeight", contractHeight)
 			continue
 		}
 

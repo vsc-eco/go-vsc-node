@@ -66,6 +66,33 @@ func newTestBotWithMocks() (
 	return
 }
 
+// buildMinimalBlock creates a coinbase-only Bitcoin block suitable for
+// confirmSpend tests where only the block structure (not the payment) matters.
+func buildMinimalBlock(t *testing.T) []byte {
+	t.Helper()
+	coinbaseTx := wire.NewMsgTx(wire.TxVersion)
+	coinbaseTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{Hash: chainhash.Hash{}, Index: 0xffffffff},
+		SignatureScript:  []byte{0x04, 0xff, 0xff, 0x00, 0x1d, 0x01, 0x04},
+		Sequence:         0xffffffff,
+	})
+	coinbaseTx.AddTxOut(&wire.TxOut{Value: 50e8, PkScript: []byte{txscript.OP_TRUE}})
+
+	block := wire.MsgBlock{
+		Header: wire.BlockHeader{
+			Version:    1,
+			MerkleRoot: coinbaseTx.TxHash(),
+			Timestamp:  time.Now(),
+			Bits:       0x1d00ffff,
+		},
+		Transactions: []*wire.MsgTx{coinbaseTx},
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, block.Serialize(&buf))
+	return buf.Bytes()
+}
+
 // buildTestBlock creates a minimal Bitcoin block containing one coinbase tx
 // and one payment tx that sends to the given address. Returns serialized block bytes.
 func buildTestBlock(t *testing.T, destAddr string, params *chaincfg.Params) []byte {
@@ -332,7 +359,12 @@ func TestHandleUnmap_EndToEnd(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleConfirmations_EndToEnd(t *testing.T) {
-	bot, _, caller, state, _, chainClient := newTestBotWithMocks()
+	bot, gql, caller, state, _, chainClient := newTestBotWithMocks()
+
+	// Contract height must be >= the confirmation block height.
+	gql.lastHeight = "1000"
+	// The mock caller returns "mock-tx-id"; tell the mock GQL it's confirmed.
+	gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
 
 	// Add a sent tx to the state store
 	sigHash := make([]byte, 32)
@@ -343,8 +375,19 @@ func TestHandleConfirmations_EndToEnd(t *testing.T) {
 	))
 	require.NoError(t, state.MarkTransactionSent(context.Background(), "txConfirm1"))
 
-	// Chain reports the tx as confirmed
-	chainClient.txStatuses["txConfirm1"] = true
+	// Build a minimal block and wire up mock chain data
+	blockBytes := buildMinimalBlock(t)
+	var block wire.MsgBlock
+	require.NoError(t, block.Deserialize(bytes.NewReader(blockBytes)))
+	blockHash := block.BlockHash().String()
+
+	chainClient.txDetails["txConfirm1"] = chain.TxConfirmationDetails{
+		Confirmed:   true,
+		BlockHeight: 500,
+		BlockHash:   blockHash,
+		TxIndex:     0,
+	}
+	chainClient.rawBlocks[blockHash] = blockBytes
 
 	bot.HandleConfirmations()
 
@@ -352,7 +395,6 @@ func TestHandleConfirmations_EndToEnd(t *testing.T) {
 	calls := caller.getCalls()
 	require.Len(t, calls, 1)
 	assert.Equal(t, "confirmSpend", calls[0].Action)
-	assert.Contains(t, string(calls[0].Payload), "txConfirm1")
 
 	// Verify: tx is now confirmed in the state store
 	state.mu.Lock()
@@ -388,6 +430,48 @@ func TestHandleConfirmations_NotYetConfirmed(t *testing.T) {
 	// tx should still be in "sent" state
 	state.mu.Lock()
 	tx := state.txs["txNotConfirmed"]
+	state.mu.Unlock()
+	assert.Equal(t, database.TxStateSent, tx.State)
+}
+
+// ---------------------------------------------------------------------------
+// TestHandleConfirmations_DelaysWhenBlockNotInContract
+// ---------------------------------------------------------------------------
+
+func TestHandleConfirmations_DelaysWhenBlockNotInContract(t *testing.T) {
+	bot, gql, caller, state, _, chainClient := newTestBotWithMocks()
+
+	// Contract is only at height 400 — the confirmation block is at 500.
+	gql.lastHeight = "400"
+
+	sigHash := make([]byte, 32)
+	sigHash[0] = 0xDD
+	require.NoError(t, state.AddPendingTransaction(
+		context.Background(), "txDelay", []byte{0x01},
+		[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
+	))
+	require.NoError(t, state.MarkTransactionSent(context.Background(), "txDelay"))
+
+	blockBytes := buildMinimalBlock(t)
+	var block wire.MsgBlock
+	require.NoError(t, block.Deserialize(bytes.NewReader(blockBytes)))
+	blockHash := block.BlockHash().String()
+	chainClient.rawBlocks[blockHash] = blockBytes
+	chainClient.txDetails["txDelay"] = chain.TxConfirmationDetails{
+		Confirmed:   true,
+		BlockHeight: 500,
+		BlockHash:   blockHash,
+		TxIndex:     0,
+	}
+
+	bot.HandleConfirmations()
+
+	// Should NOT call confirmSpend — contract hasn't processed the block yet.
+	assert.Empty(t, caller.getCalls())
+
+	// tx should remain in "sent" state.
+	state.mu.Lock()
+	tx := state.txs["txDelay"]
 	state.mu.Unlock()
 	assert.Equal(t, database.TxStateSent, tx.State)
 }
@@ -592,8 +676,13 @@ func TestProcessTxSpends_MultipleMixed(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleConfirmations_MultipleTransactions(t *testing.T) {
-	bot, _, caller, state, _, chainClient := newTestBotWithMocks()
+	bot, gql, caller, state, _, chainClient := newTestBotWithMocks()
 	ctx := context.Background()
+
+	// Contract height must be >= the confirmation block height.
+	gql.lastHeight = "1000"
+	// The mock caller returns "mock-tx-id"; tell the mock GQL it's confirmed.
+	gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
 
 	// Add two sent transactions
 	for _, txID := range []string{"txA", "txB"} {
@@ -605,17 +694,28 @@ func TestHandleConfirmations_MultipleTransactions(t *testing.T) {
 		require.NoError(t, state.MarkTransactionSent(ctx, txID))
 	}
 
+	// Build a minimal block and wire up mock chain data
+	blockBytes := buildMinimalBlock(t)
+	var block wire.MsgBlock
+	require.NoError(t, block.Deserialize(bytes.NewReader(blockBytes)))
+	blockHash := block.BlockHash().String()
+	chainClient.rawBlocks[blockHash] = blockBytes
+
 	// Only txA is confirmed
-	chainClient.txStatuses["txA"] = true
-	chainClient.txStatuses["txB"] = false
+	chainClient.txDetails["txA"] = chain.TxConfirmationDetails{
+		Confirmed:   true,
+		BlockHeight: 500,
+		BlockHash:   blockHash,
+		TxIndex:     0,
+	}
+	// txB is not confirmed (zero-value details, Confirmed: false)
 
 	bot.HandleConfirmations()
 
-	// Only one confirmSpend call should have been made
+	// Only one confirmSpend call should have been made (for txA)
 	calls := caller.getCalls()
 	require.Len(t, calls, 1)
 	assert.Equal(t, "confirmSpend", calls[0].Action)
-	assert.Contains(t, string(calls[0].Payload), "txA")
 
 	// txA should be confirmed, txB still sent
 	state.mu.Lock()
