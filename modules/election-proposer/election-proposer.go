@@ -150,7 +150,7 @@ func (e *electionProposer) canHold() bool {
 	if e.headHeight == nil {
 		return false
 	}
-	if e.bh < *e.headHeight-50 {
+	if *e.headHeight > 50 && e.bh < *e.headHeight-50 {
 		return false
 	}
 
