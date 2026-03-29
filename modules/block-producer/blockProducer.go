@@ -493,9 +493,19 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	}
 
 	if msg.SlotHeight > bp.bh {
-		//Local node is out of sync perhaps
+		// Reject messages too far in the future to prevent DoS via large SlotHeight
+		if msg.SlotHeight > bp.bh+20 {
+			return "", fmt.Errorf("slot height %d too far ahead of current %d", msg.SlotHeight, bp.bh)
+		}
+		// Local node is out of sync perhaps — wait briefly with bounded timeout
+		timeout := time.After(10 * time.Second)
 		for msg.SlotHeight > bp.bh {
-			time.Sleep(1 * time.Second)
+			select {
+			case <-timeout:
+				return "", fmt.Errorf("timed out waiting for slot height %d (current: %d)", msg.SlotHeight, bp.bh)
+			case <-time.After(1 * time.Second):
+				// re-check bp.bh
+			}
 		}
 	} else if msg.SlotHeight-common.CONSENSUS_SPECS.SlotLength > bp.bh {
 		return "", errors.New("invalid slot height (2)")
