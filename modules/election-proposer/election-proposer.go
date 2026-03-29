@@ -154,9 +154,14 @@ func (e *electionProposer) canHold() bool {
 		return false
 	}
 
+	electionInterval := e.sconf.ConsensusParams().ElectionInterval
+	if e.bh < electionInterval {
+		return false // Too early in chain for elections
+	}
+
 	result, _ := e.elections.GetElectionByHeight(e.bh)
 
-	return result.BlockHeight < e.bh-e.sconf.ConsensusParams().ElectionInterval
+	return result.BlockHeight < e.bh-electionInterval
 }
 
 func (e *electionProposer) GenerateElection() (elections.ElectionHeader, elections.ElectionData, error) {

@@ -1449,6 +1449,9 @@ func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint
 				return lastSavedBlk
 			}
 		} else {
+			if se.firstTxHeight == 0 {
+				return lastSavedBlk
+			}
 			return se.firstTxHeight - 1
 		}
 	} else {
