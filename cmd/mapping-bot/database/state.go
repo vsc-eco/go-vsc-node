@@ -443,6 +443,25 @@ func (s *StateStore) DeleteOldSentTransactions(ctx context.Context, age time.Dur
 	return result.DeletedCount, nil
 }
 
+// GetOldestPendingCreatedAt returns the CreatedAt time of the oldest pending transaction.
+// Returns a zero time if there are no pending transactions.
+func (s *StateStore) GetOldestPendingCreatedAt(ctx context.Context) (time.Time, error) {
+	opts := options.FindOne().
+		SetSort(bson.D{{Key: "createdAt", Value: 1}}).
+		SetProjection(bson.M{"createdAt": 1})
+	var result struct {
+		CreatedAt time.Time `bson:"createdAt"`
+	}
+	err := s.txCollection.FindOne(ctx, bson.M{"state": TxStatePending}, opts).Decode(&result)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return time.Time{}, nil
+		}
+		return time.Time{}, fmt.Errorf("failed to get oldest pending transaction: %w", err)
+	}
+	return result.CreatedAt, nil
+}
+
 // ClearAllTransactions removes all transaction records
 func (s *StateStore) ClearAllTransactions(ctx context.Context) error {
 	_, err := s.txCollection.DeleteMany(ctx, bson.M{})

@@ -89,9 +89,14 @@ func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 			issues = append(issues, fmt.Sprintf("%d txs broadcast but unconfirmed", resp.PendingSentTxs))
 		}
 
-		// Flag unsigned txs (waiting on TSS)
+		// Flag unsigned txs only if they've been waiting longer than 20 minutes.
+		// Pending signatures are normal during TSS signing rounds.
 		if resp.PendingUnsigned > 0 {
-			issues = append(issues, fmt.Sprintf("%d sig hashes awaiting TSS signatures", resp.PendingUnsigned))
+			const staleSigThreshold = 20 * time.Minute
+			oldestCreated, err := bot.Db.State.GetOldestPendingCreatedAt(ctx)
+			if err == nil && !oldestCreated.IsZero() && time.Since(oldestCreated) > staleSigThreshold {
+				issues = append(issues, fmt.Sprintf("%d sig hashes awaiting TSS signatures for >20m", resp.PendingUnsigned))
+			}
 		}
 
 		// Flag failed VSC transactions
