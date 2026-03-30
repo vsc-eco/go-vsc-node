@@ -84,9 +84,13 @@ func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 			}
 		}
 
-		// Flag if sent txs have been hanging too long (>1h)
+		// Flag sent txs only after 2 new blocks have been processed since broadcast,
+		// giving the transaction reasonable time to confirm.
 		if resp.PendingSentTxs > 0 {
-			issues = append(issues, fmt.Sprintf("%d txs broadcast but unconfirmed", resp.PendingSentTxs))
+			oldestHeight, err := bot.Db.State.GetOldestSentAtHeight(ctx)
+			if err == nil && oldestHeight > 0 && height >= oldestHeight+2 {
+				issues = append(issues, fmt.Sprintf("%d txs broadcast but unconfirmed after 2+ blocks", resp.PendingSentTxs))
+			}
 		}
 
 		// Flag unsigned txs only if they've been waiting longer than 20 minutes.

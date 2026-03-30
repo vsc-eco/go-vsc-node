@@ -65,6 +65,7 @@ type Transaction struct {
 	CurrentSignatures uint64          `bson:"currentSignatures,omitempty"`
 	CreatedAt         time.Time       `bson:"createdAt"`
 	SentAt            *time.Time      `bson:"sentAt,omitempty"`
+	SentAtHeight      uint64          `bson:"sentAtHeight,omitempty"`
 	ConfirmedAt       *time.Time      `bson:"confirmedAt,omitempty"`
 	Signatures        []SignatureSlot `bson:"signatures,omitempty"`
 }

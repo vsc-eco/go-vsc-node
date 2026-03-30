@@ -42,7 +42,7 @@ func TestProcessTxSpends_AlreadySent(t *testing.T) {
 	require.NoError(t, db.State.AddPendingTransaction(t.Context(), "txAlreadySent", []byte{0x01},
 		[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
 	))
-	require.NoError(t, db.State.MarkTransactionSent(t.Context(), "txAlreadySent"))
+	require.NoError(t, db.State.MarkTransactionSent(t.Context(), "txAlreadySent", 0))
 
 	spends := map[string]*contractinterface.SigningData{
 		"txAlreadySent": {

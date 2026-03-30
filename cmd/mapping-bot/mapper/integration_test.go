@@ -373,7 +373,7 @@ func TestHandleConfirmations_EndToEnd(t *testing.T) {
 		context.Background(), "txConfirm1", []byte{0x01},
 		[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
 	))
-	require.NoError(t, state.MarkTransactionSent(context.Background(), "txConfirm1"))
+	require.NoError(t, state.MarkTransactionSent(context.Background(), "txConfirm1", 100))
 
 	// Build a minimal block and wire up mock chain data
 	blockBytes := buildMinimalBlock(t)
@@ -417,7 +417,7 @@ func TestHandleConfirmations_NotYetConfirmed(t *testing.T) {
 		context.Background(), "txNotConfirmed", []byte{0x01},
 		[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
 	))
-	require.NoError(t, state.MarkTransactionSent(context.Background(), "txNotConfirmed"))
+	require.NoError(t, state.MarkTransactionSent(context.Background(), "txNotConfirmed", 100))
 
 	// Chain reports the tx as NOT confirmed
 	chainClient.txStatuses["txNotConfirmed"] = false
@@ -450,7 +450,7 @@ func TestHandleConfirmations_DelaysWhenBlockNotInContract(t *testing.T) {
 		context.Background(), "txDelay", []byte{0x01},
 		[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
 	))
-	require.NoError(t, state.MarkTransactionSent(context.Background(), "txDelay"))
+	require.NoError(t, state.MarkTransactionSent(context.Background(), "txDelay", 100))
 
 	blockBytes := buildMinimalBlock(t)
 	var block wire.MsgBlock
@@ -517,7 +517,7 @@ func TestProcessTxSpends_AlreadySent(t *testing.T) {
 		context.Background(), "txAlreadySent", []byte{0x01},
 		[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
 	))
-	require.NoError(t, state.MarkTransactionSent(context.Background(), "txAlreadySent"))
+	require.NoError(t, state.MarkTransactionSent(context.Background(), "txAlreadySent", 100))
 
 	spends := map[string]*contractinterface.SigningData{
 		"txAlreadySent": {
@@ -630,7 +630,7 @@ func TestProcessTxSpends_MultipleMixed(t *testing.T) {
 		context.Background(), "txSent", []byte{0x01},
 		[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash1, WitnessScript: []byte{0x01}}},
 	))
-	require.NoError(t, state.MarkTransactionSent(context.Background(), "txSent"))
+	require.NoError(t, state.MarkTransactionSent(context.Background(), "txSent", 100))
 
 	// Pre-populate one already pending
 	sigHash2 := make([]byte, 32)
@@ -691,7 +691,7 @@ func TestHandleConfirmations_MultipleTransactions(t *testing.T) {
 		require.NoError(t, state.AddPendingTransaction(ctx, txID, []byte{0x01},
 			[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
 		))
-		require.NoError(t, state.MarkTransactionSent(ctx, txID))
+		require.NoError(t, state.MarkTransactionSent(ctx, txID, 100))
 	}
 
 	// Build a minimal block and wire up mock chain data

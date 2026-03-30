@@ -318,13 +318,13 @@ func (s *StateStore) UpdateSignatures(
 }
 
 // MarkTransactionSent atomically transitions a transaction from pending to sent,
-// retaining signature data
-func (s *StateStore) MarkTransactionSent(ctx context.Context, txID string) error {
+// retaining signature data. blockHeight is the chain height at the time of broadcast.
+func (s *StateStore) MarkTransactionSent(ctx context.Context, txID string, blockHeight uint64) error {
 	now := time.Now().UTC()
 	result, err := s.txCollection.UpdateOne(
 		ctx,
 		bson.M{"_id": txID, "state": TxStatePending},
-		bson.M{"$set": bson.M{"state": TxStateSent, "sentAt": now}},
+		bson.M{"$set": bson.M{"state": TxStateSent, "sentAt": now, "sentAtHeight": blockHeight}},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to mark transaction as sent [txID:%s]: %w", txID, err)
@@ -404,6 +404,25 @@ func (s *StateStore) GetSentTransactions(ctx context.Context) ([]Transaction, er
 		return nil, fmt.Errorf("failed to decode sent transactions: %w", err)
 	}
 	return results, nil
+}
+
+// GetOldestSentAtHeight returns the lowest sentAtHeight among sent transactions.
+// Returns 0 if there are no sent transactions.
+func (s *StateStore) GetOldestSentAtHeight(ctx context.Context) (uint64, error) {
+	opts := options.FindOne().
+		SetSort(bson.D{{Key: "sentAtHeight", Value: 1}}).
+		SetProjection(bson.M{"sentAtHeight": 1})
+	var result struct {
+		SentAtHeight uint64 `bson:"sentAtHeight"`
+	}
+	err := s.txCollection.FindOne(ctx, bson.M{"state": TxStateSent}, opts).Decode(&result)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("failed to get oldest sent transaction height: %w", err)
+	}
+	return result.SentAtHeight, nil
 }
 
 // GetSentTransactionIDs returns the IDs of all transactions in the "sent" state

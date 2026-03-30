@@ -78,7 +78,7 @@ func TestMarkTransactionSent(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, db.State.AddPendingTransaction(ctx, "txSent", []byte{0x02}, makeUnsignedSigHashes(makeSigHash(2))))
-	require.NoError(t, db.State.MarkTransactionSent(ctx, "txSent"))
+	require.NoError(t, db.State.MarkTransactionSent(ctx, "txSent", 100))
 
 	// Should no longer appear as pending
 	_, err := db.State.GetPendingTransaction(ctx, "txSent")
@@ -94,7 +94,7 @@ func TestMarkTransactionSent_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
 
-	err := db.State.MarkTransactionSent(ctx, "doesNotExist")
+	err := db.State.MarkTransactionSent(ctx, "doesNotExist", 0)
 	assert.ErrorIs(t, err, database.ErrTxNotFound)
 }
 
@@ -103,7 +103,7 @@ func TestMarkTransactionConfirmed(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, db.State.AddPendingTransaction(ctx, "txConfirm", []byte{0x03}, makeUnsignedSigHashes(makeSigHash(3))))
-	require.NoError(t, db.State.MarkTransactionSent(ctx, "txConfirm"))
+	require.NoError(t, db.State.MarkTransactionSent(ctx, "txConfirm", 100))
 	require.NoError(t, db.State.MarkTransactionConfirmed(ctx, "txConfirm"))
 
 	processed, err := db.State.IsTransactionProcessed(ctx, "txConfirm")
