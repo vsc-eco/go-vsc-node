@@ -301,91 +301,59 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			opVal := headerOp.Value
 			RequiredAuths := common.ArrayToStringArray(opVal["required_auths"])
 
-			// Hive allows custom_json with required_auths:[] and
-			// required_posting_auths:["user"]. Without this guard,
-			// RequiredAuths[0] below panics and crashes the node.
-			if len(RequiredAuths) == 0 {
-				continue
-			}
-
-			cj := CustomJson{
-				Id:                   opVal["id"].(string),
-				RequiredAuths:        common.ArrayToStringArray(opVal["required_auths"]),
-				RequiredPostingAuths: common.ArrayToStringArray(opVal["required_posting_auths"]),
-				Json:                 []byte(opVal["json"].(string)),
-			}
-
-			if Id == "vsc.fr_sync" && RequiredAuths[0] == se.sconf.GatewayWallet() {
-				log.Debug("vsc.fr_sync", "opVal", opVal)
-
-				frSync := struct {
-					StakedAmount   int64 `json:"stake_amt"`
-					UnstakedAmount int64 `json:"unstake_amt"`
-				}{}
-				json.Unmarshal(cj.Json, &frSync)
-
-				fmt.Println("frSync", frSync)
-
-				var amt int64
-
-				if frSync.StakedAmount > 0 {
-					amt = frSync.StakedAmount
-				} else {
-					//Must be negative to indicate unstaking has occurred
-					amt = -frSync.UnstakedAmount
+			// Only process system header operations (vsc.fr_sync, vsc.actions)
+			// when active auth is present. User operations with posting-only
+			// auth are handled in the user operations section below.
+			if len(RequiredAuths) > 0 {
+				cj := CustomJson{
+					Id:                   opVal["id"].(string),
+					RequiredAuths:        common.ArrayToStringArray(opVal["required_auths"]),
+					RequiredPostingAuths: common.ArrayToStringArray(opVal["required_posting_auths"]),
+					Json:                 []byte(opVal["json"].(string)),
 				}
 
-				se.LedgerState.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-					Id:          MakeTxId(tx.TransactionID, 0),
-					Amount:      amt,
-					BlockHeight: blockInfo.BlockHeight + 1,
-					Owner:       params.FR_VIRTUAL_ACCOUNT,
-					//Fractional reserve update
-					Asset: "hbd_savings",
-					Type:  "fr_sync",
-				})
-				// se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-				// 	Id:          MakeTxId(tx.TransactionID, 0),
-				// 	Amount:      amt,
-				// 	BlockHeight: blockInfo.BlockHeight + 1,
-				// 	Owner:       common.FR_VIRTUAL_ACCOUNT,
-				// 	//Fractional reserve update
-				// 	Asset: "hbd_savings",
-				// 	Type:  "fr_sync",
-				// })
-			}
+				if Id == "vsc.fr_sync" && RequiredAuths[0] == se.sconf.GatewayWallet() {
+					log.Debug("vsc.fr_sync", "opVal", opVal)
 
-			if (Id == "vsc.actions") && RequiredAuths[0] == se.sconf.GatewayWallet() {
+					frSync := struct {
+						StakedAmount   int64 `json:"stake_amt"`
+						UnstakedAmount int64 `json:"unstake_amt"`
+					}{}
+					json.Unmarshal(cj.Json, &frSync)
 
-				// txSelf := TxSelf{
-				// 	BlockHeight:   blockInfo.BlockHeight,
-				// 	BlockId:       blockInfo.BlockId,
-				// 	Timestamp:     blockInfo.Timestamp,
-				// 	Index:         blkIdx,
-				// 	OpIndex:       0,
-				// 	TxId:          tx.TransactionID,
-				// 	RequiredAuths: cj.RequiredAuths,
-				// }
+					fmt.Println("frSync", frSync)
 
-				actionUpdate := map[string]interface{}{}
-				err := json.Unmarshal(cj.Json, &actionUpdate)
+					var amt int64
 
-				if err == nil {
-					se.LedgerSystem.IndexActions(actionUpdate, ledgerSystem.ExtraInfo{
-						BlockHeight: block.BlockNumber,
-						ActionId:    tx.TransactionID,
+					if frSync.StakedAmount > 0 {
+						amt = frSync.StakedAmount
+					} else {
+						//Must be negative to indicate unstaking has occurred
+						amt = -frSync.UnstakedAmount
+					}
+
+					se.LedgerState.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+						Id:          MakeTxId(tx.TransactionID, 0),
+						Amount:      amt,
+						BlockHeight: blockInfo.BlockHeight + 1,
+						Owner:       params.FR_VIRTUAL_ACCOUNT,
+						//Fractional reserve update
+						Asset: "hbd_savings",
+						Type:  "fr_sync",
 					})
 				}
 
-				// if tx.Operations[1].Type == "transfer" {
-				// 	//Process withdraw
-				// }
-				// if tx.Operations[1].Type == "transfer_from_savings" {
-				// 	//Process withdraw
-				// }
-				// if tx.Operations[1].Type == "transfer_to_savings" {
-				// 	//Process deposit
-				// }
+				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() {
+					actionUpdate := map[string]interface{}{}
+					err := json.Unmarshal(cj.Json, &actionUpdate)
+
+					if err == nil {
+						se.LedgerSystem.IndexActions(actionUpdate, ledgerSystem.ExtraInfo{
+							BlockHeight: block.BlockNumber,
+							ActionId:    tx.TransactionID,
+						})
+					}
+				}
 			}
 		}
 
@@ -428,121 +396,67 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				Json:                 []byte(opVal["json"].(string)),
 			}
 
-			if len(cj.RequiredAuths) == 0 {
-				continue
-			}
-
-			txSelf := TxSelf{
-				BlockHeight:          blockInfo.BlockHeight,
-				BlockId:              blockInfo.BlockId,
-				Timestamp:            blockInfo.Timestamp,
-				Index:                blkIdx,
-				OpIndex:              0,
-				TxId:                 tx.TransactionID,
-				RequiredAuths:        cj.RequiredAuths,
-				RequiredPostingAuths: cj.RequiredPostingAuths,
-			}
-			//Start parsing block
-			if cj.Id == "vsc.produce_block" {
-				//Process block production
-				rawJson := map[string]interface{}{}
-				json.Unmarshal(cj.Json, &rawJson)
-				// parsedTx := TxProposeBlock{}
-				// json.Unmarshal(cj.Json, &parsedTx)
-
-				// parsedTx.ExecuteTx(se)
-
-				schedule := se.GetSchedule(slotInfo.StartHeight)
-
-				var scheduleSlot WitnessSlot
-
-				for _, slot := range schedule {
-					if slot.SlotHeight == slotInfo.StartHeight {
-						scheduleSlot = slot
-						break
-					}
+			// Only process system transactions when active auth is present.
+			// User operations with posting-only auth are handled below.
+			if len(cj.RequiredAuths) > 0 {
+				txSelf := TxSelf{
+					BlockHeight:          blockInfo.BlockHeight,
+					BlockId:              blockInfo.BlockId,
+					Timestamp:            blockInfo.Timestamp,
+					Index:                blkIdx,
+					OpIndex:              0,
+					TxId:                 tx.TransactionID,
+					RequiredAuths:        cj.RequiredAuths,
+					RequiredPostingAuths: cj.RequiredPostingAuths,
 				}
-
-				if cj.RequiredAuths[0] == scheduleSlot.Account {
+				//Start parsing block
+				if cj.Id == "vsc.produce_block" {
+					//Process block production
 					rawJson := map[string]interface{}{}
 					json.Unmarshal(cj.Json, &rawJson)
+					// parsedTx := TxProposeBlock{}
+					// json.Unmarshal(cj.Json, &parsedTx)
 
-					parsedBlock := TxProposeBlock{
-						Self: txSelf,
-						SignedBlock: SignedBlockHeader{
-							UnsignedBlockHeader: UnsignedBlockHeader{},
-							Signature:           dids.SerializedCircuit{},
-						},
-					}
-					json.Unmarshal(cj.Json, &parsedBlock)
+					// parsedTx.ExecuteTx(se)
 
-					validated := parsedBlock.Validate(se)
+					schedule := se.GetSchedule(slotInfo.StartHeight)
 
-					if validated {
-						se.slotStatus.Done = true
-						se.slotStatus.Producer = cj.RequiredAuths[0]
-						parsedBlock.ExecuteTx(se)
-					}
-				}
-				continue
-			}
-			//# End parsing block
+					var scheduleSlot WitnessSlot
 
-			//# Start parsing system transactions
-			if cj.Id == "vsc.create_contract" {
-				for idx, auth := range txSelf.RequiredAuths {
-					txSelf.RequiredAuths[idx] = "hive:" + auth
-				}
-
-				for idx, auth := range txSelf.RequiredPostingAuths {
-					txSelf.RequiredPostingAuths[idx] = "hive:" + auth
-				}
-
-				parsedTx := TxCreateContract{
-					Self: txSelf,
-				}
-				json.Unmarshal(cj.Json, &parsedTx)
-
-				if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
-					hasFee, feeAmt, feePayer := hasFeePaymentOp(tx.Operations, params.CONTRACT_DEPLOYMENT_FEE, "hbd")
-					if !hasFee {
-						continue
+					for _, slot := range schedule {
+						if slot.SlotHeight == slotInfo.StartHeight {
+							scheduleSlot = slot
+							break
+						}
 					}
 
-					txResult := parsedTx.ExecuteTx(se)
+					if cj.RequiredAuths[0] == scheduleSlot.Account {
+						rawJson := map[string]interface{}{}
+						json.Unmarshal(cj.Json, &rawJson)
 
-					if txResult.Success {
-						se.LedgerSystem.Deposit(ledgerSystem.Deposit{
-							Id:          MakeTxId(tx.TransactionID, 1),
-							Asset:       "hbd",
-							Amount:      feeAmt,
-							Account:     se.sconf.GatewayWallet(),
-							From:        "hive:" + feePayer,
-							Memo:        "to=vsc.dao",
-							BlockHeight: blockInfo.BlockHeight,
-							BIdx:        int64(tx.Index),
-							OpIdx:       int64(1),
-						})
-					} else {
-						se.LedgerSystem.Deposit(ledgerSystem.Deposit{
-							Id:          MakeTxId(tx.TransactionID, 1),
-							Asset:       "hbd",
-							Amount:      feeAmt,
-							Account:     "hive:" + feePayer,
-							From:        "hive:" + feePayer,
-							Memo:        "to=" + feePayer,
-							BlockHeight: blockInfo.BlockHeight,
-							BIdx:        int64(tx.Index),
-							OpIdx:       int64(1),
-						})
+						parsedBlock := TxProposeBlock{
+							Self: txSelf,
+							SignedBlock: SignedBlockHeader{
+								UnsignedBlockHeader: UnsignedBlockHeader{},
+								Signature:           dids.SerializedCircuit{},
+							},
+						}
+						json.Unmarshal(cj.Json, &parsedBlock)
+
+						validated := parsedBlock.Validate(se)
+
+						if validated {
+							se.slotStatus.Done = true
+							se.slotStatus.Producer = cj.RequiredAuths[0]
+							parsedBlock.ExecuteTx(se)
+						}
 					}
-
-				} else {
-					parsedTx.ExecuteTx(se)
+					continue
 				}
-				continue
-			} else if cj.Id == "vsc.update_contract" {
-				if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_UPDATE_HEIGHT {
+				//# End parsing block
+
+				//# Start parsing system transactions
+				if cj.Id == "vsc.create_contract" {
 					for idx, auth := range txSelf.RequiredAuths {
 						txSelf.RequiredAuths[idx] = "hive:" + auth
 					}
@@ -551,16 +465,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						txSelf.RequiredPostingAuths[idx] = "hive:" + auth
 					}
 
-					parsedTx := TxUpdateContract{
+					parsedTx := TxCreateContract{
 						Self: txSelf,
 					}
 					json.Unmarshal(cj.Json, &parsedTx)
 
-					hasFee, feeAmt, feePayer := hasFeePaymentOp(tx.Operations, params.CONTRACT_DEPLOYMENT_FEE, "hbd")
-					txResult := parsedTx.ExecuteTx(se, hasFee)
+					if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
+						hasFee, feeAmt, feePayer := hasFeePaymentOp(tx.Operations, params.CONTRACT_DEPLOYMENT_FEE, "hbd")
+						if !hasFee {
+							continue
+						}
 
-					if hasFee {
-						if txResult.Success && txResult.CodeUpdated {
+						txResult := parsedTx.ExecuteTx(se)
+
+						if txResult.Success {
 							se.LedgerSystem.Deposit(ledgerSystem.Deposit{
 								Id:          MakeTxId(tx.TransactionID, 1),
 								Asset:       "hbd",
@@ -585,18 +503,67 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								OpIdx:       int64(1),
 							})
 						}
+
+					} else {
+						parsedTx.ExecuteTx(se)
 					}
+					continue
+				} else if cj.Id == "vsc.update_contract" {
+					if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_UPDATE_HEIGHT {
+						for idx, auth := range txSelf.RequiredAuths {
+							txSelf.RequiredAuths[idx] = "hive:" + auth
+						}
+
+						for idx, auth := range txSelf.RequiredPostingAuths {
+							txSelf.RequiredPostingAuths[idx] = "hive:" + auth
+						}
+
+						parsedTx := TxUpdateContract{
+							Self: txSelf,
+						}
+						json.Unmarshal(cj.Json, &parsedTx)
+
+						hasFee, feeAmt, feePayer := hasFeePaymentOp(tx.Operations, params.CONTRACT_DEPLOYMENT_FEE, "hbd")
+						txResult := parsedTx.ExecuteTx(se, hasFee)
+
+						if hasFee {
+							if txResult.Success && txResult.CodeUpdated {
+								se.LedgerSystem.Deposit(ledgerSystem.Deposit{
+									Id:          MakeTxId(tx.TransactionID, 1),
+									Asset:       "hbd",
+									Amount:      feeAmt,
+									Account:     se.sconf.GatewayWallet(),
+									From:        "hive:" + feePayer,
+									Memo:        "to=vsc.dao",
+									BlockHeight: blockInfo.BlockHeight,
+									BIdx:        int64(tx.Index),
+									OpIdx:       int64(1),
+								})
+							} else {
+								se.LedgerSystem.Deposit(ledgerSystem.Deposit{
+									Id:          MakeTxId(tx.TransactionID, 1),
+									Asset:       "hbd",
+									Amount:      feeAmt,
+									Account:     "hive:" + feePayer,
+									From:        "hive:" + feePayer,
+									Memo:        "to=" + feePayer,
+									BlockHeight: blockInfo.BlockHeight,
+									BIdx:        int64(tx.Index),
+									OpIdx:       int64(1),
+								})
+							}
+						}
+					}
+					continue
+				} else if cj.Id == "vsc.election_result" {
+					parsedTx := &TxElectionResult{
+						Self: txSelf,
+					}
+					json.Unmarshal(cj.Json, &parsedTx)
+					parsedTx.ExecuteTx(se)
+					continue
 				}
-				continue
-			} else if cj.Id == "vsc.election_result" {
-				parsedTx := &TxElectionResult{
-					Self: txSelf,
-				}
-				json.Unmarshal(cj.Json, &parsedTx)
-				parsedTx.ExecuteTx(se)
-				continue
-			}
-			//# End parsing system transactions
+			} //# End parsing system transactions
 		}
 
 		opList := make([]VSCTransaction, 0)
