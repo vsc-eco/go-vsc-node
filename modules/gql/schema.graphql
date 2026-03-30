@@ -1,307 +1,899 @@
+"""
+JSON scalar type represents arbitrary JSON values.
+"""
 scalar JSON
 
+"""
+Unsigned 64-bit integer, serialized as a string to avoid precision loss.
+"""
+scalar Uint64
+
+"""
+Signed 64-bit integer, serialized as a string to avoid precision loss.
+"""
+scalar Int64
+
+"""
+Arbitrary key-value map, serialized as a JSON object.
+"""
+scalar Map
+
+"""
+ISO 8601 (RFC 3339) formatted date-time string.
+"""
+scalar DateTime
+
+"""
+Status of a transaction in the Magi network.
+"""
 enum TransactionStatus {
+  """Transaction has been submitted but not yet included in a block."""
   UNCONFIRMED
+  """Transaction has been confirmed on-chain."""
   CONFIRMED
+  """Transaction execution failed."""
   FAILED
+  """Transaction has been included in a block but not yet fully processed."""
   INCLUDED
+  """Transaction has been fully processed by the state engine."""
   PROCESSED
 }
 
+"""
+Supported asset types on the Magi network.
+"""
 enum Asset {
+  """Liquid HIVE token."""
   hive
+  """HIVE staked for consensus (governance weight)."""
   hive_consensus
+  """Hive Backed Dollar (HBD) stablecoin."""
   hbd
+  """HBD held in savings (subject to withdrawal delay)."""
   hbd_savings
 }
 
+"""
+A recorded transaction on the Magi network.
+"""
 type TransactionRecord {
+  """Transaction ID"""
   id: String!
+  """Hive L1 block height where this transaction was included."""
   anchr_height: Uint64!
+  """Block index in which the transaction was included in."""
   anchr_index: Uint64!
+  """Hive L1 block ID where this transaction was included."""
   anchr_id: String
+  """Timestamp of the anchor block."""
   anchr_ts: String
+  """Transaction type identifier."""
   type: String!
+  """List of operations contained in this transaction."""
   ops: [TransactionOperation]
+  """List of operation type identifiers for quick filtering."""
   op_types: [String!]
+  """Timestamp when the transaction was first observed by the network."""
   first_seen: DateTime!
+  """Sequence number for the sender account, used to prevent replay attacks."""
   nonce: Uint64!
+  """Maximum resource credits the sender is willing to spend."""
   rc_limit: Uint64!
+  """Accounts whose active key authority is required to sign this transaction."""
   required_auths: [String!]
+  """Accounts whose posting key authority is required to sign this transaction."""
   required_posting_auths: [String!]
-  status: String!
+  """Current status of the transaction (UNCONFIRMED, INCLUDED, CONFIRMED, FAILED)."""
+  status: TransactionStatus!
+  """Ledger events (balance transfers) produced by this transaction."""
   ledger: [OpLogEvent!]
+  """Ledger actions (e.g. unstake, unmap) produced by this transaction."""
   ledger_actions: [LedgerAction]
+  """Contract outputs produced by this transaction."""
   output: [TransactionOutput!]
 }
 
+"""
+A single operation within a transaction.
+"""
 type TransactionOperation {
+  """Accounts whose active key authority is required for this operation."""
   required_auths: [String!]
+  """Operation type identifier."""
   type: String
+  """Position of this operation within the transaction."""
   index: Uint64!
+  """Operation-specific payload data."""
   data: Map
 }
 
+"""
+A ledger action record representing a high-level financial action (e.g. transfer, stake, unstake).
+"""
 type LedgerAction {
+  """Unique action identifier."""
   id: String
+  """Execution status of the action."""
   status: String
+  """Action type (e.g. transfer, stake, unstake, withdraw)."""
   type: String
+  """Action-specific payload data."""
   data: Map
+  """Asset involved in this action."""
   asset: String
+  """Amount in the smallest unit of the asset."""
   amount: Uint64
+  """Optional memo attached to the action."""
   memo: String
+  """Destination account."""
   to: String
 }
 
+"""
+A low-level ledger operation log event representing a balance change.
+"""
 type OpLogEvent {
+  """Destination account."""
   to: String!
+  """Source account."""
   from: String!
+  """Amount transferred (can be negative for debits)."""
   amount: Int64!
+  """Asset type involved in this event."""
   asset: String!
+  """Optional memo."""
   memo: String
+  """Event type (e.g. transfer, stake, unstake)."""
   type: String!
+  """Additional parameters specific to the event type."""
   params: Map
 }
 
+"""
+Reference to a contract output produced by a transaction operation.
+"""
 type TransactionOutput {
+  """Operation indices that produced this output."""
   index: [Int!]
+  """Contract output identifier (CID)."""
   id: String!
 }
 
+"""
+Result of a single contract call within a contract output.
+"""
 type ContractOutputResult {
+  """Return value from the contract call."""
   ret: String!
+  """Whether the contract call succeeded."""
   ok: Boolean!
 }
 
+"""
+A contract execution output record containing the results of contract calls.
+"""
 type ContractOutput {
+  """Unique output identifier (CID)."""
   id: String!
+  """Magi block height at which this output was produced."""
   block_height: Int64!
+  """Timestamp when the output was produced."""
   timestamp: String!
+  """Contract that produced this output."""
   contract_id: String!
+  """Transaction IDs that triggered this contract execution."""
   inputs: [String!]!
+  """Merkle root of the contract state after execution."""
   state_merkle: String!
+  """Results of individual contract calls in this output."""
   results: [ContractOutputResult!]!
 }
 
+"""
+A smart contract deployed on the Magi network.
+"""
 type Contract {
+  """Unique contract identifier."""
   id: String!
+  """CID of the contract's WASM bytecode."""
   code: String
+  """Human-readable contract name."""
   name: String
+  """Contract description."""
   description: String
+  """Account that originally deployed the contract."""
   creator: String
+  """Current owner of the contract."""
   owner: String
+  """Transaction ID of the contract creation."""
   tx_id: String
+  """Hive block height at which the contract was created."""
   creation_height: Uint64!
+  """Timestamp of contract creation."""
   creation_ts: String!
+  """WASM runtime version used by this contract."""
   runtime: String!
 }
 
+"""
+Result of submitting a transaction to the network.
+"""
 type TransactionSubmitResult {
+  """CID of the submitted transaction, or null if submission failed."""
   id: String
 }
 
+"""
+Account nonce record used for transaction ordering and replay protection.
+"""
 type NonceRecord {
+  """Account identifier."""
   account: String!
+  """Current nonce value. Next transaction must use nonce + 1."""
   nonce: Uint64!
 }
 
+"""
+Information about the local Magi node.
+"""
 type LocalNodeInfo {
+  """Software version identifier."""
   version_id: String!
+  """Git commit hash of the running binary."""
   git_commit: String!
+  """Most recent Hive L1 block processed by this node."""
   last_processed_block: Uint64!
+  """Current consensus epoch."""
   epoch: Uint64!
 }
 
+"""
+Cryptographic key entry from a witness's posting JSON metadata.
+"""
 type PostingJsonKeys {
+  """Cryptographic algorithm type (e.g. ed25519, secp256k1)."""
   ct: String
+  """Key purpose type (e.g. consensus, gateway)."""
   t: String
+  """Public key value."""
   key: String
 }
 
+"""
+A witness (block producer/validator) registered on the Magi network.
+"""
 type Witness {
+  """Hive account name of the witness."""
   account: String
+  """Hive block height of the witness registration or last update."""
   height: Uint64!
+  """DID keys published by the witness."""
   did_keys: [PostingJsonKeys!]!
+  """Whether the witness is currently enabled."""
   enabled: Boolean
+  """Git commit hash of the witness node software."""
   git_commit: String
+  """Network identifier the witness is operating on."""
   net_id: String
+  """Libp2p peer ID of the witness."""
   peer_id: String
+  """Magi protocol version supported by the witness."""
   protocol_version: Uint64!
+  """Timestamp of the witness registration or last update."""
   ts: String
+  """Transaction ID of the witness registration or last update."""
   tx_id: String
+  """Software version identifier of the witness node."""
   version_id: String
+  """Public key used for the P2P multisig gateway."""
   gateway_key: String
 }
 
+"""
+A slot in the witness block production schedule.
+"""
 type WitnessSlot {
+  """Account assigned to this slot."""
   account: String
+  """Block number for this slot."""
   bn: Uint64!
 }
 
+"""
+Token balance record for an account at a specific block height.
+"""
 type BalanceRecord {
+  """Account identifier (e.g. hive:username or did:key:...)."""
   account: String
+  """Block height at which this balance was recorded."""
   block_height: Uint64!
+  """HBD (Hive Backed Dollar) balance in smallest unit."""
   hbd: Int64!
+  """Time-weighted average HBD balance, used for interest/RC calculations."""
   hbd_avg: Int64!
+  """Block height at which HBD balance was last modified."""
   hbd_modify: Uint64!
+  """Block height at which HBD interest was last claimed."""
   hbd_claim: Uint64!
+  """HBD held in savings."""
   hbd_savings: Int64!
+  """Liquid HIVE balance in smallest unit."""
   hive: Int64!
+  """HIVE staked for consensus participation."""
   hive_consensus: Int64!
+  """Amount of consensus-staked HIVE currently in the unstaking period."""
   consensus_unstaking: Int64!
+  """Amount of HBD currently in the unstaking period."""
   pending_hbd_unstaking: Int64
 }
 
+"""
+Resource credit record for an account, used to meter transaction costs.
+"""
 type RcRecord {
+  """Account identifier."""
   account: String!
+  """Currently available resource credits."""
   amount: Int64!
+  """Block height at which RCs were last calculated."""
   block_height: Uint64!
+  """Maximum resource credits for this account (based on staked balance)."""
   max_rcs: Int64!
 }
 
+"""
+A ledger transfer record representing a balance movement between accounts.
+"""
 type LedgerRecord {
+  """Unique record identifier."""
   id: String!
+  """Transfer amount in smallest unit of the asset."""
   amount: Int64!
+  """Block height at which the transfer occurred."""
   block_height: Uint64!
+  """Timestamp of the transfer."""
   timestamp: String!
+  """Source account of the transfer."""
   from: String!
+  """Owner account associated with this record."""
   owner: String!
+  """Transfer type (e.g. transfer, stake, unstake)."""
   type: String!
+  """Asset type involved."""
   asset: String!
+  """Transaction ID that produced this ledger record."""
   tx_id: String!
 }
 
+"""
+A detailed action record for ledger operations with full metadata.
+"""
 type ActionRecord {
+  """Unique action record identifier."""
   id: String!
+  """Execution status of the action."""
   status: String!
+  """Amount in smallest unit of the asset."""
   amount: Int64!
+  """Asset type involved."""
   asset: String!
+  """Destination account."""
   to: String!
+  """Optional memo."""
   memo: String!
+  """Transaction ID that triggered this action."""
   action_id: String!
+  """Action type (e.g. transfer, stake, unstake, withdraw)."""
   type: String!
+  """Additional parameters specific to the action type."""
   params: Map
+  """Block height at which the action was executed."""
   block_height: Uint64!
+  """Timestamp of the action."""
   timestamp: String!
 }
 
+"""
+A member of a consensus election committee.
+"""
 type ElectionMember {
+  """Public key of the elected member."""
   key: String!
+  """Hive account of the elected member."""
   account: String!
 }
 
+"""
+Result of a consensus election for a given epoch.
+"""
 type ElectionResult {
+  """Epoch number for this election."""
   epoch: Uint64!
+  """Network identifier."""
   net_id: String!
+  """Election type."""
   type: String!
+  """Election data payload (CID)."""
   data: String!
+  """List of elected committee members."""
   members: [ElectionMember!]!
+  """Voting weights of each elected member."""
   weights: [Uint64!]!
+  """Protocol version at the time of election."""
   protocol_version: Uint64!
+  """Total combined weight of all elected members."""
   total_weight: Uint64!
+  """Block height at which the election was finalized."""
   block_height: Uint64!
+  """Account that proposed this election result."""
   proposer: String!
+  """Transaction ID of the election result."""
   tx_id: String!
 }
 
+"""
+Algorithm used for threshold signature scheme (TSS) key generation.
+"""
+enum TssKeyAlgo {
+  """Elliptic Curve Digital Signature Algorithm (secp256k1)."""
+  ecdsa
+  """Edwards-curve Digital Signature Algorithm (Ed25519)."""
+  eddsa
+}
+
+"""
+Status of a TSS signing request.
+"""
+enum TssSignStatus {
+  """Signing is complete and a valid signature is available."""
+  complete
+  """Signing has not yet been performed."""
+  unsigned
+}
+
+"""
+A threshold signature scheme (TSS) key used for multisig consensus operations.
+"""
 type TssKey {
-	id: String!
-	status: String!
-	PublicKey: String!
-	Owner: String!
-	Algo: String!
-	CreatedHeight: Int!
+  """Unique key identifier."""
+  id: String!
+  """Current status of the key."""
+  status: String!
+  """The aggregated public key."""
+  public_key: String!
+  """Owner or group that controls this key."""
+  owner: String!
+  """Cryptographic algorithm used."""
+  algo: TssKeyAlgo!
+  """Block height at which the key was created."""
+  created_height: Int64!
+  """Epoch during which the key was generated."""
+  epoch: Uint64!
+  """Requested lifespan in epochs (0 means no expiry)."""
+  epochs: Uint64!
+  """Epoch at which the key expires (0 means no expiry)."""
+  expiry_epoch: Uint64!
+  """Block height at which the key became deprecated (0 means not deprecated)."""
+  deprecated_height: Int64!
 }
 
+"""
+A TSS signing request for a specific message.
+"""
 type TssRequest {
-	id: String!
-	status: String!
-	keyId: String!
-	msg: String!  
-	sig: String! 
+  """ID of the TSS key used for signing."""
+  key_id: String!
+  """Current status of the signing request."""
+  status: TssSignStatus!
+  """Message to be signed (hex-encoded)."""
+  msg: String!
+  """Resulting signature (hex-encoded), empty if unsigned."""
+  sig: String!
 }
 
+"""
+A verified TSS commitment emitted from keygen, reshare, timeout, or blame handling.
+"""
+type TssCommitment {
+  """Commitment type (e.g. keygen, reshare, blame, timeout)."""
+  type: String!
+  """Block height associated with the commitment."""
+  block_height: Uint64!
+  """Epoch associated with the commitment."""
+  epoch: Uint64!
+  """Base64-encoded participant commitment bitset or blame payload."""
+  commitment: String!
+  """TSS key ID associated with the commitment."""
+  key_id: String!
+  """Hive transaction ID that carried the commitment."""
+  tx_id: String!
+  """Aggregated public key when present (e.g. keygen activation)."""
+  public_key: String
+  """Block timestamp inferred from the associated Hive block."""
+  timestamp: String!
+}
+
+"""
+Filter options for querying ledger transfer records.
+"""
 input LedgerTxFilter {
+  """Filter by sender or receiver account."""
   byToFrom: String
+  """Filter by transaction ID (must be at least 40 characters)."""
   byTxId: String
+  """Filter by transfer types."""
   byTypes: [String!]
+  """Filter by asset type."""
   byAsset: Asset
+  """Include only records from this block height onwards."""
   fromBlock: Uint64
+  """Include only records up to this block height."""
   toBlock: Uint64
+  """Number of records to skip (for pagination)."""
   offset: Int
+  """Maximum number of records to return (for pagination)."""
   limit: Int
 }
 
+"""
+Filter options for querying ledger action records.
+"""
 input LedgerActionsFilter {
+  """Filter by transaction ID (must be at least 40 characters)."""
   byTxId: String
+  """Filter by action ID."""
   byActionId: String
+  """Filter by account."""
   byAccount: String
+  """Filter by action types."""
   byTypes: [String!]
+  """Filter by asset type."""
   byAsset: Asset
+  """Filter by action status."""
   byStatus: String
+  """Include only records from this block height onwards."""
   fromBlock: Uint64
+  """Include only records up to this block height."""
   toBlock: Uint64
+  """Number of records to skip (for pagination)."""
   offset: Int
+  """Maximum number of records to return (for pagination)."""
   limit: Int
 }
 
+"""
+Filter options for querying transactions.
+"""
 input TransactionFilter {
+  """Filter by exact transaction ID."""
   byId: String
+  """Filter by a list of transaction IDs."""
   byIds: [String!]
+  """Filter by account (sender or signer)."""
   byAccount: String
+  """Filter by contract ID involved in the transaction."""
   byContract: String
+  """Filter by transaction status."""
   byStatus: TransactionStatus
+  """Filter by operation types."""
   byType: [String!]
+  """Filter by ledger sender or receiver account."""
   byLedgerToFrom: String
+  """Filter by ledger transfer types."""
   byLedgerTypes: [String!]
+  """Include only transactions from this block height onwards."""
   fromBlock: Uint64
+  """Include only transactions up to this block height."""
   toBlock: Uint64
+  """Number of records to skip (for pagination)."""
   offset: Int
+  """Maximum number of records to return (for pagination)."""
   limit: Int
 }
 
+"""
+Filter options for querying smart contracts.
+"""
 input FindContractFilter {
+  """Filter by contract ID."""
   byId: String
+  """Filter by contract code CID."""
   byCode: String
+  """If true, include historical versions of contracts."""
   historical: Boolean
+  """Number of records to skip (for pagination)."""
   offset: Int
+  """Maximum number of records to return (for pagination)."""
   limit: Int
 }
 
+"""
+Filter options for querying contract outputs.
+"""
 input ContractOutputFilter {
+  """Filter by output ID."""
   byId: String
+  """Filter by input transaction ID."""
   byInput: String
+  """Filter by contract ID."""
   byContract: String
+  """Include only outputs from this block height onwards."""
   fromBlock: Uint64
+  """Include only outputs up to this block height."""
   toBlock: Uint64
+  """Number of records to skip (for pagination)."""
   offset: Int
+  """Maximum number of records to return (for pagination)."""
   limit: Int
+}
+
+"""
+Filter options for querying TSS commitments.
+"""
+input TssCommitmentFilter {
+  """Filter by TSS key ID."""
+  byKeyId: String
+  """Filter by commitment types."""
+  byTypes: [String!]
+  """Filter by exact epoch."""
+  byEpoch: Uint64
+  """Include only records from this block height onwards (exclusive)."""
+  fromBlock: Uint64
+  """Include only records up to this block height (inclusive)."""
+  toBlock: Uint64
+  """Number of records to skip (for pagination)."""
+  offset: Int
+  """Maximum number of records to return (for pagination)."""
+  limit: Int
+}
+
+"""
+An intent declaration for a simulated contract call.
+"""
+input IntentInput {
+  """Intent type (e.g. token transfer authorization)."""
+  type: String!
+  """Intent arguments as key-value pairs."""
+  args: Map
+}
+
+"""
+Input for a single simulated contract call.
+"""
+input SimulateContractCallInput {
+  """ID of the contract to call."""
+  contract_id: String!
+  """Name of the contract action/function to invoke."""
+  action: String!
+  """JSON-encoded payload to pass to the contract action."""
+  payload: String!
+  """Maximum resource credits to allocate (1-100000)."""
+  rc_limit: Uint64!
+  """Optional intents (e.g. token transfer authorizations) for this call."""
+  intents: [IntentInput!]
+}
+
+"""
+Input for simulating one or more contract calls as a batch.
+"""
+input SimulateContractCallsInput {
+  """Transaction ID to use in the simulation context."""
+  tx_id: String!
+  """Accounts providing active key authorization."""
+  required_auths: [String!]
+  """Accounts providing posting key authorization."""
+  required_posting_auths: [String!]
+  """List of contract calls to simulate in sequence."""
+  calls: [SimulateContractCallInput!]!
+}
+
+"""
+Result of a simulated contract call.
+"""
+type SimulateContractCallResult {
+  """Whether the contract call executed successfully."""
+  success: Boolean!
+  """Error code if the call failed."""
+  err: String
+  """Human-readable error message if the call failed."""
+  err_msg: String
+  """Return value from the contract call."""
+  ret: String
+  """Resource credits consumed by this call."""
+  rc_used: Int64!
+  """WASM gas cycles consumed by this call."""
+  gas_used: Uint64!
+  """Log entries emitted by the contract during execution."""
+  logs: Map
+  """State key-value changes produced by the contract call."""
+  state_diff: Map
 }
 
 type Query {
-  getStateByKeys(contractId: String!, keys: [String!]!): Map
-  findTransaction(filterOptions: TransactionFilter): [TransactionRecord!]
-  findContractOutput(filterOptions: ContractOutputFilter): [ContractOutput!]
-  findLedgerTXs(filterOptions: LedgerTxFilter): [LedgerRecord!]
-  findLedgerActions(filterOptions: LedgerActionsFilter): [ActionRecord!]
-  getAccountBalance(account: String!, height: Uint64): BalanceRecord
-  getAccountRC(account: String!, height: Uint64): RcRecord
-  findContract(filterOptions: FindContractFilter): [Contract!]
-  submitTransactionV1(tx: String!, sig: String!): TransactionSubmitResult
-  getAccountNonce(account: String!): NonceRecord
-  localNodeInfo: LocalNodeInfo
-  getWitness(account: String!, height: Uint64): Witness
-  witnessNodes(height: Uint64!): [Witness!]!
-  witnessSchedule(height: Uint64!): [WitnessSlot!]!
-  witnessStake(account: String!): Uint64!
-  getDagByCID(cidString: String!): JSON!
-  getElection(epoch: Uint64!): ElectionResult
-  electionByBlockHeight(blockHeight: Uint64): ElectionResult!
-  getTssKey(keyId: String!): TssKey
-  getTssRequests(keyId: String!, msgHex: [String!]): [TssRequest!]
-}
+  """
+  Retrieve contract state values by their keys. Returns a map of key-value pairs from the contract's state merkle tree.
+  """
+  getStateByKeys(
+    """ID of the contract to query state from."""
+    contractId: String!
+    """State keys to look up (1 to 100 keys)."""
+    keys: [String!]!
+    """Encoding for returned values. Use 'hex' for hex-encoded output, otherwise returns UTF-8 strings."""
+    encoding: String
+  ): Map
 
-scalar Uint64
-scalar Int64
-scalar Map
-scalar DateTime
+  """
+  Search for transactions matching the given filter criteria.
+  """
+  findTransaction(
+    """Filter criteria for the transaction search."""
+    filterOptions: TransactionFilter
+  ): [TransactionRecord!]
+
+  """
+  Search for contract execution outputs matching the given filter criteria.
+  """
+  findContractOutput(
+    """Filter criteria for the contract output search."""
+    filterOptions: ContractOutputFilter
+  ): [ContractOutput!]
+
+  """
+  Search for ledger transfer records matching the given filter criteria.
+  """
+  findLedgerTXs(
+    """Filter criteria for the ledger transfer search."""
+    filterOptions: LedgerTxFilter
+  ): [LedgerRecord!]
+
+  """
+  Search for ledger action records matching the given filter criteria.
+  """
+  findLedgerActions(
+    """Filter criteria for the ledger action search."""
+    filterOptions: LedgerActionsFilter
+  ): [ActionRecord!]
+
+  """
+  Get the token balance for an account, optionally at a specific block height.
+  """
+  getAccountBalance(
+    """Account identifier (e.g. 'hive:username' or 'did:key:...')."""
+    account: String!
+    """Block height to query balance at. Defaults to the latest block."""
+    height: Uint64
+  ): BalanceRecord
+
+  """
+  Get the resource credit balance for an account, optionally at a specific block height. RCs regenerate over time based on staked balance.
+  """
+  getAccountRC(
+    """Account identifier (e.g. 'hive:username' or 'did:key:...')."""
+    account: String!
+    """Block height to query RCs at. Defaults to the latest block."""
+    height: Uint64
+  ): RcRecord
+
+  """
+  Search for smart contracts matching the given filter criteria.
+  """
+  findContract(
+    """Filter criteria for the contract search."""
+    filterOptions: FindContractFilter
+  ): [Contract!]
+
+  """
+  Submit a signed Magi transaction to the network mempool. Returns the transaction CID on success.
+  """
+  submitTransactionV1(
+    """Base64url-encoded serialized transaction."""
+    tx: String!
+    """Base64url-encoded transaction signature."""
+    sig: String!
+  ): TransactionSubmitResult
+
+  """
+  Get the current nonce for an account. The next transaction must use nonce + 1.
+  """
+  getAccountNonce(
+    """Account identifier."""
+    account: String!
+  ): NonceRecord
+
+  """
+  Get information about the local Magi node including version, git commit, and sync status.
+  """
+  localNodeInfo: LocalNodeInfo
+
+  """
+  Get witness registration details for a specific account, optionally at a specific block height.
+  """
+  getWitness(
+    """Hive account name of the witness."""
+    account: String!
+    """Block height to query at. Defaults to the latest."""
+    height: Uint64
+  ): Witness
+
+  """
+  Get all registered witnesses at a specific block height.
+  """
+  witnessNodes(
+    """Block height to query witnesses at."""
+    height: Uint64!
+  ): [Witness!]!
+
+  """
+  Get the block production schedule (slot assignments) for the round containing the given block height.
+  """
+  witnessSchedule(
+    """Block height to retrieve the schedule for."""
+    height: Uint64!
+  ): [WitnessSlot!]!
+
+  """
+  Get the consensus stake (HIVE staked for block production) for an account.
+  """
+  witnessStake(
+    """Account identifier."""
+    account: String!
+  ): Uint64!
+
+  """
+  Retrieve a DAG node by its CID from the data availability layer. Returns the raw JSON representation.
+  """
+  getDagByCID(
+    """Content identifier (CID) string."""
+    cidString: String!
+  ): JSON!
+
+  """
+  Get the consensus election result for a specific epoch.
+  """
+  getElection(
+    """Epoch number to query."""
+    epoch: Uint64!
+  ): ElectionResult
+
+  """
+  Get the active consensus election at a given block height. Defaults to the current election if no height is specified.
+  """
+  electionByBlockHeight(
+    """Block height to query the active election for."""
+    blockHeight: Uint64
+  ): ElectionResult!
+
+  """
+  Get a TSS (threshold signature scheme) key by its ID.
+  """
+  getTssKey(
+    """Unique key identifier."""
+    keyId: String!
+  ): TssKey
+
+  """
+  Get TSS signing requests for a key, optionally filtered by message hashes.
+  """
+  getTssRequests(
+    """TSS key ID to query requests for."""
+    keyId: String!
+    """Optional list of hex-encoded message hashes to filter by."""
+    msgHex: [String!]
+  ): [TssRequest!]
+
+  """
+  Search for verified TSS commitments, optionally filtered by key ID, commitment types, epoch, or block height range.
+  """
+  findTssCommitments(
+    """Filter criteria for the TSS commitment search."""
+    filterOptions: TssCommitmentFilter
+  ): [TssCommitment!]
+
+  """
+  Simulate one or more contract calls without committing state changes. Useful for estimating gas costs, testing contract logic, and previewing state diffs.
+  """
+  simulateContractCalls(
+    """Simulation input containing the batch of contract calls to execute."""
+    input: SimulateContractCallsInput!
+  ): [SimulateContractCallResult!]!
+}

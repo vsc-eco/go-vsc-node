@@ -9,6 +9,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
@@ -31,9 +32,6 @@ import (
 	"github.com/vsc-eco/hivego"
 	"go.mongodb.org/mongo-driver/mongo"
 )
-
-// 6 hours of  hive blocks
-var ELECTION_INTERVAL = uint64(6 * 60 * 20)
 
 type electionProposer struct {
 	conf  common.IdentityConfig
@@ -61,6 +59,9 @@ type electionProposer struct {
 		epoch   uint64
 		circuit *dids.PartialBlsCircuit
 	}
+
+	sigMu      sync.Mutex
+	sigRunning bool
 }
 
 type ElectionProposer = *electionProposer
@@ -122,8 +123,6 @@ func (e *electionProposer) blockTick(bh uint64, headHeight *uint64) {
 	e.bh = bh
 	e.headHeight = headHeight
 
-	// scoreMap, err := e.scoreMap()
-	// fmt.Println(err, scoreMap.BannedNodes)
 	if e.canHold() {
 
 		slotInfo := stateEngine.CalculateSlotInfo(bh)
@@ -148,20 +147,21 @@ func (e *electionProposer) blockTick(bh uint64, headHeight *uint64) {
 }
 
 func (e *electionProposer) canHold() bool {
-	if e.bh%10 == 0 {
-		// fmt.Println("caHold()", e.bh)
-	}
 	if e.headHeight == nil {
 		return false
 	}
-	if e.bh < *e.headHeight-50 {
+	if *e.headHeight > 50 && e.bh < *e.headHeight-50 {
 		return false
+	}
+
+	electionInterval := e.sconf.ConsensusParams().ElectionInterval
+	if e.bh < electionInterval {
+		return false // Too early in chain for elections
 	}
 
 	result, _ := e.elections.GetElectionByHeight(e.bh)
 
-	// fmt.Println("Last check", result.BlockHeight < e.bh-ELECTION_INTERVAL)
-	return result.BlockHeight < e.bh-ELECTION_INTERVAL
+	return result.BlockHeight < e.bh-electionInterval
 }
 
 func (e *electionProposer) GenerateElection() (elections.ElectionHeader, elections.ElectionData, error) {
@@ -189,7 +189,6 @@ func (e *electionProposer) GenerateElectionAtBlock(blk uint64) (elections.Electi
 }
 
 const DEFAULT_NEW_NODE_WEIGHT = uint64(10)
-const MINIMUM_ELECTION_MEMBER_COUNT = int(7)
 
 var REQUIRED_ELECTION_MEMBERS = []string{
 	// "vaultec.vsc",
@@ -252,7 +251,7 @@ func (e *electionProposer) GenerateFullElection(
 
 	var pType string
 	weightMap := map[string]uint64{}
-	if nodesWithStake >= uint64(MINIMUM_ELECTION_MEMBER_COUNT) || etype == "staked" {
+	if nodesWithStake >= uint64(e.sconf.ConsensusParams().MinMembers) || etype == "staked" {
 		pType = "staked"
 		weightMap = stakedMap
 	} else {
@@ -280,7 +279,6 @@ func (e *electionProposer) GenerateFullElection(
 		distWeight = uint64(math.Ceil((1 + float64(totalOptionalWeight)/2) / float64(len(REQUIRED_ELECTION_MEMBERS))))
 	}
 
-	// fmt.Println("witnessList", witnessList)
 	members := utils.Map(witnessList, func(w witnesses.Witness) elections.ElectionMember {
 		key, err := w.ConsensusKey()
 
@@ -402,7 +400,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		if len(options) > 0 {
 			minimumMemberCount = options[0].OverrideMinimumMemberCount
 		} else {
-			minimumMemberCount = MINIMUM_ELECTION_MEMBER_COUNT
+			minimumMemberCount = ep.sconf.ConsensusParams().MinMembers
 		}
 
 		if len(electionData.Members) < minimumMemberCount {
@@ -478,6 +476,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		signedWeight, err := ep.waitForSigs(ctx, &electionResult)
+		delete(ep.sigChannels, ep.signingInfo.epoch)
 
 		if err != nil {
 			return err
@@ -630,7 +629,7 @@ func (ep *electionProposer) makeElection(blk uint64) (elections.ElectionHeader, 
 		return elections.ElectionHeader{}, err
 	}
 
-	if blk-electionResult.BlockHeight < ELECTION_INTERVAL {
+	if blk-electionResult.BlockHeight < ep.sconf.ConsensusParams().ElectionInterval {
 		return elections.ElectionHeader{}, errors.New("next election not ready")
 	}
 	electionHeader, _, err := ep.GenerateElectionAtBlock(blk)
@@ -642,12 +641,19 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 	if ep.signingInfo == nil {
 		return 0, errors.New("no block signing info")
 	}
-	// go func() {
-	// 	time.Sleep(30 * time.Second)
-	// 	if ep.signingInfo != nil {
-	// 		ep.sigChannels[ep.signingInfo.epoch] <- nil
-	// 	}
-	// }()
+
+	ep.sigMu.Lock()
+	if ep.sigRunning {
+		ep.sigMu.Unlock()
+		return 0, errors.New("waitForSigs already running")
+	}
+	ep.sigRunning = true
+	ep.sigMu.Unlock()
+	defer func() {
+		ep.sigMu.Lock()
+		ep.sigRunning = false
+		ep.sigMu.Unlock()
+	}()
 
 	weightTotal := uint64(0)
 	for _, weight := range election.Weights {
@@ -656,13 +662,25 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 
 	end := make(chan struct{})
 
+	// Capture references before goroutine starts so the goroutine
+	// does not need to access ep.signingInfo (which may become nil on timeout).
+	sigChan := ep.sigChannels[ep.signingInfo.epoch]
+	circuit := ep.signingInfo.circuit
+
 	var err error
 	var signedWeight uint64
 	go func() {
-		signedWeight := uint64(0)
+		signedWeight = 0
 
 		for signedWeight < (weightTotal * 8 / 10) {
-			signResp := <-ep.sigChannels[ep.signingInfo.epoch]
+			var signResp *signResponse
+			select {
+			case <-ctx.Done():
+				fmt.Println("[ep] goroutine: context cancelled")
+				end <- struct{}{}
+				return
+			case signResp = <-sigChan:
+			}
 
 			if signResp == nil {
 				fmt.Println("[ep] timed out waiting")
@@ -697,9 +715,9 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 				}
 			}
 
-			circuit := *ep.signingInfo.circuit
+			c := *circuit
 
-			added, err := circuit.AddAndVerify(member, sigStr)
+			added, err := c.AddAndVerify(member, sigStr)
 
 			fmt.Println("[ep] aggregating signature", sigStr, "from", account)
 			fmt.Println("[ep] agg err", err)
@@ -715,7 +733,8 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 	select {
 	case <-ctx.Done():
 		fmt.Println("[ep] collect sigs timeout")
-		return signedWeight, nil // Return error if canceled
+		<-end // Wait for goroutine to finish before returning
+		return signedWeight, nil
 	case <-end:
 		return signedWeight, err
 	}

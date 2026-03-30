@@ -61,27 +61,6 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 		return fmt.Errorf("no consensus key found in did keys")
 	}
 
-	// qq := bson.M{
-	// 	"$or": []bson.M{
-	// 		{
-	// 			"peer_id": request.Metadata.VscNode.PeerId,
-	// 		},
-	// 		{
-	// 			"gateway_key": request.Metadata.VscNode.GatewayKey,
-	// 		},
-	// 		{
-	// 			"gateway_active_key": request.Metadata.VscNode.GatewayActiveKey,
-	// 		},
-	// 		{
-	// 			"did_keys.key": consensusKey,
-	// 		},
-	// 	},
-	// }
-
-	// qq2 := bson.M{
-	// 	"account": requestIn.Account,
-	// }
-
 	query := bson.M{
 		"account": request.Account,
 		"height":  request.Height,
@@ -104,9 +83,6 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 	}
 	w.FindOneAndUpdate(ctx, query, update, findOptions)
 
-	// if result.Err() != nil {
-	// 	return result.Err()
-	// }
 	oldRecordsFilter := bson.M{
 		"account": request.Account,
 	}
@@ -167,7 +143,6 @@ func (w *witnesses) GetWitnessNode(account string, blockHeight *int64) {
 
 	result := bson.M{}
 	mongoResult.Decode(&result)
-	// fmt.Println("Vaultec decoded data from mongo query result", result)
 }
 
 func (w *witnesses) GetLastestWitnesses(searchOptions ...SearchOption) ([]Witness, error) {
@@ -229,7 +204,6 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) (
 		"account": bson.M{"$in": distinctAccounts},
 	}
 
-	// cfg := SearchConfig{}
 	for _, opt := range opts {
 		opt(&query)
 	}

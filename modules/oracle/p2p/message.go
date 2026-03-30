@@ -131,5 +131,6 @@ func MakeOracleBlock(
 type BlockTickSignal struct {
 	IsProducer     bool
 	IsWitness      bool
+	BlockHeight    uint64
 	ElectedMembers []elections.ElectionMember
 }

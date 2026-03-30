@@ -71,7 +71,7 @@ func TxStatusAssertion(txns []TxStatusAssert, waitTimeSec uint) EvaluateFunc {
 				return errors.New("non-existent transaction")
 			}
 			tx := *getTransaction
-			if tx.Status != string(txn.ExpectedStatus) {
+			if tx.Status != txn.ExpectedStatus {
 				return fmt.Errorf("incorrect status should be %s status is: %s", txn.ExpectedStatus, tx.Status)
 			}
 		}

@@ -35,5 +35,6 @@ type Resolver struct {
 	Contracts      contracts.Contracts
 	ContractsState contracts.ContractState
 	TssKeys        tss_db.TssKeys
+	TssCommitments tss_db.TssCommitments
 	TssRequests    tss_db.TssRequests
 }

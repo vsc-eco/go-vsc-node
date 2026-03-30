@@ -40,7 +40,14 @@ type CallSession struct {
 }
 
 // Create a new contract call session for a transaction.
-func NewCallSession(dl *datalayer.DataLayer, contractDb contracts.Contracts, stateDb contracts.ContractState, tssKeys tss_db.TssKeys, lastBh uint64, pending map[string]*TempOutput) *CallSession {
+func NewCallSession(
+	dl *datalayer.DataLayer,
+	contractDb contracts.Contracts,
+	stateDb contracts.ContractState,
+	tssKeys tss_db.TssKeys,
+	lastBh uint64,
+	pending map[string]*TempOutput,
+) *CallSession {
 	return &CallSession{
 		dl:         dl,
 		contractDb: contractDb,
@@ -48,7 +55,9 @@ func NewCallSession(dl *datalayer.DataLayer, contractDb contracts.Contracts, sta
 		lastBh:     lastBh,
 		sessions:   make(map[string]*ContractSession),
 		TssKeys:    tssKeys,
-		pending:    cloneTempOutputs(pending), // Copy temp outputs so mutations here never leak back to the caller.
+		pending: cloneTempOutputs(
+			pending,
+		), // Copy temp outputs so mutations here never leak back to the caller.
 	}
 }
 
@@ -147,6 +156,17 @@ func (cs *CallSession) AppendTssLog(contractId string, op tss_db.TssOp) {
 	session.tssOps = append(session.tssOps, op)
 }
 
+// Clear ephemeral contract state. Used in contract tests only.
+func (cs *CallSession) ClearEphemState(contractId ...string) {
+	if len(contractId) > 0 {
+		cs.GetStateStore(contractId[0]).ClearEphem()
+	} else {
+		for _, c := range cs.sessions {
+			c.GetStateStore().ClearEphem()
+		}
+	}
+}
+
 // pulls (and removes) the latest in-memory temp output for a contract
 // so the session can read the freshest state of the slot before hitting the DB.
 func (cs *CallSession) takePending(contractId string) *TempOutput {
@@ -193,7 +213,9 @@ func (cs *CallSession) GetStateDiff() map[string]StateDiff {
 func (cs *CallSession) GetContractFromDb(contractId string, height uint64) result.Result[ContractWithCode] {
 	info, err := cs.contractDb.ContractById(contractId, height)
 	if err == mongo.ErrNoDocuments {
-		return result.Err[ContractWithCode](errors.Join(fmt.Errorf(contracts.IC_CONTRT_NOT_FND), fmt.Errorf("contract not found")))
+		return result.Err[ContractWithCode](
+			errors.Join(fmt.Errorf(contracts.IC_CONTRT_NOT_FND), fmt.Errorf("contract not found")),
+		)
 	} else if err != nil {
 		return result.Err[ContractWithCode](errors.Join(fmt.Errorf(contracts.IC_CONTRT_GET_ERR), err))
 	}
@@ -209,6 +231,7 @@ func (cs *CallSession) GetContractFromDb(contractId string, height uint64) resul
 	return result.Ok(ContractWithCode{info, code})
 }
 
+
 // Session for a contract
 type ContractSession struct {
 	dl *datalayer.DataLayer
@@ -218,8 +241,8 @@ type ContractSession struct {
 	deletions   map[string]bool
 	stateMerkle string
 	state       *StateStore
-	logs        []string
 
+	logs   []string
 	tssOps []tss_db.TssOp
 }
 
@@ -297,6 +320,9 @@ type StateStore struct {
 	datalayer *datalayer.DataLayer
 	databin   *datalayer.DataBin
 	cs        *ContractSession
+
+	// ephemeral state that only exists throughout the transaction
+	ephem map[string][]byte
 }
 
 type stateKeyDiff struct {
@@ -343,6 +369,26 @@ func (ss *StateStore) Set(key string, value []byte) {
 func (ss *StateStore) Delete(key string) {
 	delete(ss.cache, key)
 	ss.deletions[key] = true
+}
+
+func (ss *StateStore) GetEphem(key string) []byte {
+	return ss.ephem[key]
+}
+
+func (ss *StateStore) SetEphem(key string, value []byte) {
+	ss.ephem[key] = value
+}
+
+func (ss *StateStore) DeleteEphem(key string) {
+	delete(ss.ephem, key)
+}
+
+func (ss *StateStore) ClearEphem() {
+	ss.ephem = make(map[string][]byte)
+}
+
+func (ss *StateStore) EphemGetAll() map[string][]byte {
+	return maps.Clone(ss.ephem)
 }
 
 func (ss *StateStore) Commit() {
@@ -392,6 +438,7 @@ func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) *S
 			datalayer: dl,
 			databin:   &databin,
 			cs:        cs,
+			ephem:     make(map[string][]byte),
 		}
 	} else {
 		cidz := cid.MustParse(cids)
@@ -403,6 +450,7 @@ func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) *S
 			datalayer: dl,
 			databin:   &databin,
 			cs:        cs,
+			ephem:     make(map[string][]byte),
 		}
 	}
 }

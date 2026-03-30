@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"vsc-node/modules/oracle/p2p"
 
-	"github.com/go-playground/validator/v10"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -16,10 +15,6 @@ var (
 	)
 	ErrInvalidChainOracleMessageType = errors.New(
 		"invalid chain oracle message type",
-	)
-
-	signatureMessageValidator = validator.New(
-		validator.WithRequiredStructEnabled(),
 	)
 )
 
@@ -32,31 +27,46 @@ func (c *ChainOracle) Handle(peerID peer.ID, p2pMsg p2p.Msg) (p2p.Msg, error) {
 	var msg chainOracleMessage
 	if err := json.Unmarshal(p2pMsg.Data, &msg); err != nil {
 		return nil, fmt.Errorf(
-			"failed to deserialize chain oracle message: from [%s], err [%e]",
+			"failed to deserialize chain oracle message: from [%s], err [%w]",
 			peerID, err,
 		)
 	}
 
 	switch msg.MessageType {
 	case signatureRequest:
-		signature, err := witnessChainData(c, &msg)
+		// Witness: independently verify chain data and sign
+		c.logger.Debug("received signature request",
+			"sessionID", msg.SessionID,
+			"peer", peerID,
+		)
+		response, err := witnessChainData(c, &msg)
 		if err != nil {
-			return nil, err
+			c.logger.Debug("failed to witness chain data",
+				"sessionID", msg.SessionID,
+				"peer", peerID,
+				"err", err,
+			)
+			return nil, nil
 		}
 
-		response := chainOracleMessage{
-			MessageType: signatureResponse,
-			SessionID:   msg.SessionID,
-			Payload:     json.RawMessage(signature),
+		responseMsg, err := makeChainOracleMessage(
+			signatureResponse,
+			msg.SessionID,
+			response,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create response message: %w", err)
 		}
 
-		return p2p.MakeOracleMessage(p2p.MsgChainRelay, &response)
+		return p2p.MakeOracleMessage(p2p.MsgChainRelay, responseMsg)
 
 	case signatureResponse:
+		// Producer: route signature to the waiting channel
 		if err := receiveSignature(c, &msg); err != nil {
-			return nil, fmt.Errorf(
-				"failed to receive signature: session ID [%s], err [%w]",
-				msg.SessionID, err,
+			// Not an error — may not have an active session for this
+			c.logger.Debug("failed to receive signature",
+				"sessionID", msg.SessionID,
+				"err", err,
 			)
 		}
 
@@ -68,17 +78,17 @@ func (c *ChainOracle) Handle(peerID peer.ID, p2pMsg p2p.Msg) (p2p.Msg, error) {
 }
 
 func receiveSignature(c *ChainOracle, msg *chainOracleMessage) error {
-	var signatureResponse signatureMessage
-	if err := json.Unmarshal(msg.Payload, &signatureResponse); err != nil {
-		return err
-	}
-
-	if err := signatureMessageValidator.Struct(&signatureResponse); err != nil {
-		return fmt.Errorf("invalid signature message: %w", err)
+	var response chainRelayResponse
+	if err := json.Unmarshal(msg.Payload, &response); err != nil {
+		return fmt.Errorf("invalid signature response: %w", err)
 	}
 
 	return c.signatureChannels.receiveSignature(
 		msg.SessionID,
-		signatureResponse,
+		signatureMessage{
+			Signature: response.Signature,
+			Account:   response.Account,
+			BlsDid:    response.BlsDid,
+		},
 	)
 }

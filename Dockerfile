@@ -25,12 +25,12 @@ RUN go mod download
 # Copy the rest of the application code
 COPY --chown=app:app . .
 
-# Source the WasmEdge environment and build the application
-RUN . /home/app/.wasmedge/env && go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o vsc-node vsc-node/cmd/vsc-node
+# Generate GraphQL code and build the application
+RUN . /home/app/.wasmedge/env && go run github.com/99designs/gqlgen generate && go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o vsc-node vsc-node/cmd/vsc-node
 
 
 
-FROM rockylinux:9.3-minimal
+FROM rockylinux:9.3-minimal AS vsc-node
 
 RUN useradd -m app
 

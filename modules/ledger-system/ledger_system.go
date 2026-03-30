@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"vsc-node/lib/logger"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/params"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
@@ -28,6 +28,8 @@ import (
 // In summary:
 // 1. TX execution -> 2. Oplog -> 3. Ledger update (locally calculated value)
 
+var log = vsclog.Module("ledger")
+
 type ledgerSystem struct {
 	BalanceDb ledger_db.Balances
 	LedgerDb  ledger_db.Ledger
@@ -37,8 +39,6 @@ type ledgerSystem struct {
 	//Some examples are withdrawals, and stake/unstake operations. Other future operations might be applicable as well
 	//Anything that requires on chain processing to complete
 	ActionsDb ledger_db.BridgeActions
-
-	log logger.Logger
 }
 
 func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64) {
@@ -52,23 +52,24 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	//Ensure averages have been updated before distribution;
 	for _, balance := range ledgerBalances {
 
-		A := blockHeight - balance.HBD_MODIFY_HEIGHT //Example: Modifed at 10, endBlock = 40; thus 10-40 = 30
-		B := blockHeight - balance.HBD_CLAIM_HEIGHT  //Example: Claimed at block 100, current block 800; thus
-
-		moreAvg := balance.HBD_SAVINGS * int64(A) / int64(B)
-
-		var tmpAvg int64
-		if moreAvg > 0 {
-			tmpAvg = balance.HBD_AVG + moreAvg
-		} else {
-			tmpAvg = balance.HBD_AVG
+		if blockHeight <= balance.HBD_CLAIM_HEIGHT {
+			continue // Avoid underflow when claim height is at or beyond current block
 		}
+		B := blockHeight - balance.HBD_CLAIM_HEIGHT //Total blocks since last claim
+		if B == 0 {
+			continue //Avoid division by zero when claim height equals block height
+		}
+		if blockHeight <= balance.HBD_MODIFY_HEIGHT {
+			continue // Avoid underflow when modify height is at or beyond current block
+		}
+		A := blockHeight - balance.HBD_MODIFY_HEIGHT //Blocks since last balance modification
 
-		//Apply adjustments
-		endingAvg := tmpAvg * int64(A) / int64(B)
+		//HBD_AVG is an unnormalized cumulative sum (balance * blocks).
+		//Add the current balance's contribution for the remaining period, then divide by B to get TWAB.
+		endingAvg := (balance.HBD_AVG + balance.HBD_SAVINGS*int64(A)) / int64(B)
 
 		if endingAvg < 1 {
-			fmt.Println("ClaimHBD tmpAvg is sub zero", balance.Account, tmpAvg)
+			fmt.Println("ClaimHBD endingAvg is sub zero", balance.Account, endingAvg)
 			continue
 		}
 
@@ -115,11 +116,18 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	}
 	//Note this calculation is inaccurate and should be calculated based on N blocks of Y claim period
 	//Should not assume a static amount of time or 12 exactly claim interals per year. But since this is for statistics, it doesn't matter.
-	observedApr := (float64(amount) / float64(totalAvg)) * 12
+	var observedApr float64
+	if totalAvg > 0 {
+		observedApr = (float64(amount) / float64(totalAvg)) * 12
+	}
 
+	savedAmount := amount
+	if totalAvg == 0 {
+		savedAmount = 0
+	}
 	ls.ClaimDb.SaveClaim(ledger_db.ClaimRecord{
 		BlockHeight: blockHeight,
-		Amount:      amount,
+		Amount:      savedAmount,
 		ReceivedN:   len(processedBalRecords),
 		ObservedApr: observedApr,
 	})
@@ -127,7 +135,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 }
 
 func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ExtraInfo) {
-	ls.log.Debug("IndexActions", actionUpdate)
+	log.Debug("IndexActions", actionUpdate)
 
 	actionIds := common.ArrayToStringArray(actionUpdate["ops"].([]interface{}))
 
@@ -148,7 +156,7 @@ func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraI
 		ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
 
 		if record.Type == "stake" {
-			ls.log.Debug("Indexxing stake Ledger")
+			log.Debug("Indexxing stake Ledger")
 			ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
 				Id:     record.Id + "#out",
 				Amount: record.Amount,
@@ -380,12 +388,11 @@ func (ls *ledgerSystem) NewEmptyState() *LedgerState {
 // Then trigger a delayed (actual stake) even when the onchain operation is executed through the gateway
 // A two part Virtual Ledger operation operating out of sync
 
-func New(balanceDb ledger_db.Balances, ledgerDb ledger_db.Ledger, claimDb ledger_db.InterestClaims, actionDb ledger_db.BridgeActions, log logger.Logger) LedgerSystem {
+func New(balanceDb ledger_db.Balances, ledgerDb ledger_db.Ledger, claimDb ledger_db.InterestClaims, actionDb ledger_db.BridgeActions) LedgerSystem {
 	return &ledgerSystem{
 		BalanceDb: balanceDb,
 		LedgerDb:  ledgerDb,
 		ClaimDb:   claimDb,
 		ActionsDb: actionDb,
-		log:       log,
 	}
 }

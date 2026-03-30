@@ -102,12 +102,11 @@ func (c *E2EContainer) initClient() {
 		peerId, _ := peer.AddrInfoFromString(peerStr)
 		ctx := context.Background()
 		ctx, _ = context.WithTimeout(ctx, 5*time.Second)
-		// fmt.Println("Trying to connect", peerId)
 		client.P2PService.Connect(ctx, *peerId)
 	}
 
 	c.client = client
-	c.daClient = data_availability_client.New(c.client.P2PService, c.client.Identity, c.r2e.Datalayer)
+	c.daClient = data_availability_client.New(c.client.P2PService, c.client.Identity, c.client.System, c.r2e.Datalayer)
 	c.daClient.Init()
 	c.daClient.Start().Await(context.Background())
 }
@@ -217,7 +216,6 @@ func (c *E2EContainer) Start(t *testing.T) error {
 				peerId, _ := peer.AddrInfoFromString(peerStr)
 				ctx := context.Background()
 				ctx, _ = context.WithTimeout(ctx, 5*time.Second)
-				// fmt.Println("Trying to connect", peerId)
 				node.P2P.Connect(ctx, *peerId)
 			}
 		}

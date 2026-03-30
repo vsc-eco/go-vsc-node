@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"math/big"
 	"strings"
 	"sync"
@@ -365,19 +366,22 @@ func (pbc *partialBlsCircuit) Finalize() (*BlsCircuit, error) {
 		return nil, fmt.Errorf("failed to finalize BLS circuit: block is nil")
 	}
 
-	// if no members have signed, fail the finalization
+	// Lock, set finalized (blocks further addRaw writes), and snapshot sigs
+	// so aggregateSignatures can iterate without racing with P2P handlers.
+	pbc.circuit.mutex.Lock()
+	pbc.circuit.finalized.Store(true)
 	if len(pbc.circuit.sigs) == 0 {
+		pbc.circuit.mutex.Unlock()
 		return nil, fmt.Errorf("failed to finalize BLS circuit: no signatures collected")
 	}
+	sigsCopy := make(map[BlsDID]*BlsSig, len(pbc.circuit.sigs))
+	maps.Copy(sigsCopy, pbc.circuit.sigs)
+	pbc.circuit.mutex.Unlock()
 
-	// finalize the BLS circuit
-	pbc.circuit.finalize()
-
-	// aggregate signatures and build bit vector
-	if err := pbc.circuit.aggregateSignatures(); err != nil {
+	// aggregate signatures and build bit vector from the snapshot
+	if err := pbc.circuit.aggregateSignaturesFrom(sigsCopy); err != nil {
 		return nil, fmt.Errorf("failed to aggregate signatures: %w", err)
 	}
-	// pbc.circuit.msg = pbc.Msg()
 
 	// returns the fully populated and verified BLS circuit
 	return pbc.circuit, nil
@@ -447,12 +451,12 @@ func (b *BlsCircuit) addRaw(DID BlsDID, sigBytes []byte) (bool, error) {
 		return false, nil
 	}
 
-	// store the sig
+	// store the sig — check finalized under the lock to close the TOCTOU window
+	b.mutex.Lock()
 	if !b.finalized.Load() {
-		b.mutex.Lock()
 		b.sigs[DID] = signature
-		b.mutex.Unlock()
 	}
+	b.mutex.Unlock()
 
 	return true, nil
 }
@@ -464,7 +468,16 @@ func (b *BlsCircuit) finalize() {
 
 // aggregates the collected signatures and builds the bit vector
 func (b *BlsCircuit) aggregateSignatures() error {
-	if len(b.sigs) == 0 {
+	b.mutex.Lock()
+	sigsCopy := make(map[BlsDID]*BlsSig, len(b.sigs))
+	maps.Copy(sigsCopy, b.sigs)
+	b.mutex.Unlock()
+	return b.aggregateSignaturesFrom(sigsCopy)
+}
+
+// aggregateSignaturesFrom builds the bit vector and aggregate sig from a snapshot of sigs.
+func (b *BlsCircuit) aggregateSignaturesFrom(sigs map[BlsDID]*BlsSig) error {
+	if len(sigs) == 0 {
 		return fmt.Errorf("no signatures to aggregate")
 	}
 
@@ -472,23 +485,21 @@ func (b *BlsCircuit) aggregateSignatures() error {
 		return fmt.Errorf("circuit not finalized")
 	}
 
-	var sigs []*BlsSig
+	var sigSlice []*BlsSig
 	b.bitVector = big.NewInt(0)
-	// b.includedDIDs = nil
 
 	for idx, did := range b.keyset {
-		if sig, ok := b.sigs[did]; ok {
-			sigs = append(sigs, sig)
-			// b.includedDIDs = append(b.includedDIDs, did)
+		if sig, ok := sigs[did]; ok {
+			sigSlice = append(sigSlice, sig)
 			b.bitVector.SetBit(b.bitVector, idx, 1)
 		}
 	}
 
-	if len(sigs) == 0 {
+	if len(sigSlice) == 0 {
 		return fmt.Errorf("no signatures to aggregate")
 	}
 
-	sig, _ := bls.Aggregate(sigs)
+	sig, _ := bls.Aggregate(sigSlice)
 	b.aggSigs = sig
 
 	return nil

@@ -2,9 +2,7 @@ package gateway
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +13,8 @@ import (
 	"strings"
 	"time"
 	"vsc-node/lib/hive"
-	"vsc-node/lib/logger"
 	"vsc-node/lib/utils"
+	"vsc-node/lib/vsclog"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
@@ -30,6 +28,8 @@ import (
 	"github.com/chebyrash/promise"
 	"github.com/vsc-eco/hivego"
 )
+
+var log = vsclog.Module("gateway")
 
 // VSC On chain gateway wallet
 type MultiSig struct {
@@ -46,7 +46,6 @@ type MultiSig struct {
 	service libp2p.PubSubService[p2pMessage]
 	p2p     *libp2p.P2PServer
 	se      *stateEngine.StateEngine
-	log     logger.Logger
 	msgChan map[string]chan *p2pMessage
 
 	bh uint64
@@ -107,7 +106,7 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 			fmt.Println("Multisig: Running Actions")
 			go ms.TickActions(bh)
 		}
-		if bh&SYNC_INTERVAL == 0 {
+		if bh%SYNC_INTERVAL == 0 {
 			go ms.TickSyncFr(bh)
 		}
 	}
@@ -120,7 +119,7 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 		return
 	}
 
-	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage)
+	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage, 16)
 	signReq := signRequest{
 		TxId:        signPkg.TxId,
 		BlockHeight: bh,
@@ -139,6 +138,7 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
+	delete(ms.msgChan, signPkg.TxId)
 
 	if err != nil {
 		return
@@ -164,7 +164,7 @@ func (ms *MultiSig) TickActions(bh uint64) {
 		return
 	}
 
-	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage)
+	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage, 16)
 	signReq := signRequest{
 		TxId:        signPkg.TxId,
 		BlockHeight: bh,
@@ -186,6 +186,7 @@ func (ms *MultiSig) TickActions(bh uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
+	delete(ms.msgChan, signPkg.TxId)
 
 	fmt.Println("TickActions signatures", signatures, weight, err)
 	if err != nil {
@@ -213,7 +214,7 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 		return
 	}
 
-	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage)
+	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage, 16)
 	signReq := signRequest{
 		TxId:        signPkg.TxId,
 		BlockHeight: bh,
@@ -235,6 +236,7 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
+	delete(ms.msgChan, signPkg.TxId)
 
 	if err != nil {
 		return
@@ -402,7 +404,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 				ms.sconf.GatewayWallet(),
 				to,
 				hive.AmountToString(amt),
-				strings.ToUpper(action.Asset),
+				ms.toHiveAssetName(action.Asset),
 				action.Memo,
 			)
 
@@ -429,7 +431,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 			ms.sconf.GatewayWallet(),
 			ms.sconf.GatewayWallet(),
 			amtStr,
-			"HBD",
+			ms.toHiveAssetName("hbd"),
 			"Staking "+amtStr+" HBD from "+strconv.Itoa(stakeTxCount)+" transactions",
 		)
 
@@ -440,7 +442,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 
 		amtStr := hive.AmountToString(mustUnstakeBal)
 
-		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), amtStr, "HBD", "Unstaking "+amtStr+" HBD from "+strconv.Itoa(unstakeTxCount)+" transactions", int(bh))
+		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), amtStr, ms.toHiveAssetName("hbd"), "Unstaking "+amtStr+" HBD from "+strconv.Itoa(unstakeTxCount)+" transactions", int(bh))
 
 		ops = append(ops, op)
 	}
@@ -583,13 +585,13 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 			ms.sconf.GatewayWallet(),
 			ms.sconf.GatewayWallet(),
 			hive.AmountToString(hbdToStake),
-			"HBD",
+			ms.toHiveAssetName("hbd"),
 			"Staking "+hive.AmountToString(hbdToStake)+" HBD",
 		)
 
 		ops = append(ops, op)
 	} else if (hbdToUnstake > 10_000 || stakedBal < 10_000) && hbdToUnstake != 0 {
-		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), hive.AmountToString(hbdToUnstake), "HBD", "Unstaking "+hive.AmountToString(hbdToUnstake)+" HBD", int(bh+1))
+		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), hive.AmountToString(hbdToUnstake), ms.toHiveAssetName("hbd"), "Unstaking "+hive.AmountToString(hbdToUnstake)+" HBD", int(bh+1))
 
 		ops = append(ops, op)
 	}
@@ -673,7 +675,7 @@ func (ms *MultiSig) waitForSigs(
 	if err != nil {
 		return nil, 0, err
 	}
-	txHash := hivego.HashTxForSig(txBytes)
+	txHash := hivego.HashTxForSig(txBytes, ms.sconf.HiveChainId())
 
 	// var timeoutz time.Duration
 	// if len(timeout) > 0 {
@@ -763,22 +765,33 @@ func (ms *MultiSig) waitCheckBh(INTERVAL uint64, blockHeight uint64) error {
 }
 
 func (ms *MultiSig) getSigningKp() *hivego.KeyPair {
-	blsPrivSeed, err := hex.DecodeString(ms.identity.Get().BlsPrivKeySeed)
+	kp, err := GatewayKeyFromBlsSeed(ms.identity.Get().BlsPrivKeySeed)
 	if err != nil {
 		fmt.Println("Failed to decode bls priv seed", err)
 		return nil
 	}
-	salt := []byte("gateway_key")
-	gatewayKey := sha256.Sum256(append(blsPrivSeed, salt...))
-
-	kp := hivego.KeyPairFromBytes(gatewayKey[:])
 	return kp
+}
+
+func (ms *MultiSig) toHiveAssetName(asset string) string {
+	// TODO: transition to NAI format instead of strings
+	if ms.sconf.OnTestnet() {
+		switch asset {
+		case "hive":
+			return "TESTS"
+		case "hbd":
+			return "TBD"
+		default:
+			return ""
+		}
+	} else {
+		return strings.ToUpper(asset)
+	}
 }
 
 var _ a.Plugin = &MultiSig{}
 
 func New(
-	logger logger.Logger,
 	sconf systemconfig.SystemConfig,
 	witnessDb witnesses.Witnesses,
 	electionDb elections.Elections,
@@ -802,7 +815,6 @@ func New(
 		se:            se,
 		identity:      identityConfig,
 		sconf:         sconf,
-		log:           logger,
 		hiveClient:    hiveClient,
 
 		msgChan: make(map[string]chan *p2pMessage),

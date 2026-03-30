@@ -177,7 +177,7 @@ func (t *TransactionBroadcaster) Sign(tx hivego.HiveTransaction) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return tx.Sign(*kp)
+	return tx.Sign(*kp, t.Client.ChainID)
 }
 
 func (t *TransactionCrafter) MakeTransaction(ops []hivego.HiveOperation) hivego.HiveTransaction {

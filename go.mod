@@ -9,7 +9,9 @@ require (
 	github.com/CosmWasm/tinyjson v0.9.0
 	github.com/JustinKnueppel/go-result v1.0.0
 	github.com/bnb-chain/tss-lib/v2 v2.0.2
-	github.com/btcsuite/btcd v0.24.2
+	github.com/btcsuite/btcd v0.25.0
+	github.com/btcsuite/btcd/btcec/v2 v2.3.5
+	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/btcsuite/btcutil v1.0.3-0.20201208143702-a53e38424cce
 	github.com/chebyrash/promise v0.0.0-20230709133807-42ec49ba1459
 	github.com/consensys/gnark-crypto v0.14.0
@@ -23,7 +25,7 @@ require (
 	github.com/protolambda/bls12-381-util v0.1.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/cors v1.11.1
-	github.com/vektah/gqlparser/v2 v2.5.30
+	github.com/tinylib/msgp v1.6.3
 	github.com/vsc-eco/go-ethereum v0.0.1
 	github.com/vsc-eco/hivego v0.0.0-20260224180332-508b8c394435
 	go.mongodb.org/mongo-driver v1.16.0
@@ -32,15 +34,16 @@ require (
 replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 
 require (
+	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
 	github.com/VictoriaMetrics/fastcache v1.12.2 // indirect
 	github.com/alexbrainman/goissue34681 v0.0.0-20191006012335-3fc7a47baff5 // indirect
 	github.com/bits-and-blooms/bitset v1.14.2 // indirect
-	github.com/btcsuite/btcd/btcec/v2 v2.3.5 // indirect
 	github.com/consensys/bavard v0.1.13 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240223125850-b1e8a79f509c // indirect
 	github.com/crate-crypto/go-kzg-4844 v1.1.0 // indirect
+	github.com/deckarep/golang-set/v2 v2.6.0 // indirect
 	github.com/filecoin-project/go-clock v0.1.0 // indirect
 	github.com/gammazero/chanqueue v1.0.0 // indirect
 	github.com/gammazero/deque v1.0.0 // indirect
@@ -52,12 +55,14 @@ require (
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
 	github.com/olekukonko/tablewriter v0.0.5 // indirect
+	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pion/transport/v3 v3.0.7 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
+	github.com/vektah/gqlparser/v2 v2.5.30 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	golang.org/x/telemetry v0.0.0-20250908211612-aef8a434d053 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
@@ -66,8 +71,7 @@ require (
 require (
 	github.com/agl/ed25519 v0.0.0-20200225211852-fd4d107ace12 // indirect
 	github.com/agnivade/levenshtein v1.2.1 // indirect
-	github.com/btcsuite/btcd/btcutil v1.1.6 // indirect
-	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
+	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/btcsuite/btclog v1.0.0 // indirect
 	github.com/btcsuite/go-socks v0.0.0-20170105172521-4720035b7bfd // indirect
 	github.com/btcsuite/websocket v0.0.0-20150119174127-31079b680792 // indirect

@@ -52,7 +52,7 @@ func (p2pSpec) SerializeMessage(msg p2pMessage) []byte {
 }
 
 func (p2pSpec) Topic() string {
-	return "/vsc/mainnet/txpool/v1"
+	return "/txpool/v1"
 }
 
 var _ libp2p.PubSubServiceParams[p2pMessage] = p2pSpec{}

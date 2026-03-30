@@ -14,15 +14,8 @@ type VscDb struct {
 
 var _ a.Plugin = &VscDb{}
 
-func New(d db.Db, suffix ...string) *VscDb {
-	var dbPath string
-	if len(suffix) > 0 {
-		dbPath = "go-vsc-" + suffix[0]
-	} else {
-		dbPath = "go-vsc"
-	}
-
-	return &VscDb{db.NewDbInstance(d, dbPath)}
+func New(d db.Db, dbConf db.DbConfig) *VscDb {
+	return &VscDb{db.NewDbInstance(d, dbConf)}
 }
 
 func (db *VscDb) Nuke() error {

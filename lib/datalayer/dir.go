@@ -3,6 +3,7 @@ package datalayer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -10,8 +11,21 @@ import (
 
 	uio "github.com/ipfs/boxo/ipld/unixfs/io"
 	"github.com/ipfs/go-cid"
+	ipld "github.com/ipfs/go-ipld-format"
 	"github.com/multiformats/go-multicodec"
 )
+
+// materializeGetNode forces all HAMT children into memory before serializing,
+// ensuring deterministic CID computation. HAMTDirectory.ForEachLink uses
+// walkTrie → childer.each → childer.get → loadChild, which populates the
+// in-memory children array. After this, Shard.Node() uniformly takes the
+// "loaded child" code path for every slot, eliminating the two-path
+// serialization divergence that causes non-deterministic CIDs.
+// For BasicDirectory this is a cheap no-op iteration over the flat link list.
+func materializeGetNode(dir uio.Directory) (ipld.Node, error) {
+	dir.ForEachLink(context.Background(), func(*ipld.Link) error { return nil })
+	return dir.GetNode()
+}
 
 type MutableDirectory struct {
 	uio.DynamicDirectory
@@ -25,12 +39,22 @@ type LeafDir struct {
 
 // Applies leaves to Dir
 func (lf *LeafDir) Compact(recursive bool) {
-	for key, value := range lf.leaves {
+	// Sort leaf keys for deterministic iteration order.
+	// BasicDirectory sorts links on encode, but consistent insertion order
+	// avoids any edge cases in the underlying directory implementation.
+	leafKeys := make([]string, 0, len(lf.leaves))
+	for key := range lf.leaves {
+		leafKeys = append(leafKeys, key)
+	}
+	sort.Strings(leafKeys)
+
+	for _, key := range leafKeys {
+		value := lf.leaves[key]
 		if recursive {
 			value.Compact(recursive)
 		}
 
-		node, _ := value.Dir.GetNode()
+		node, _ := materializeGetNode(value.Dir)
 		lf.Dir.AddChild(context.Background(), key, node)
 
 		//Do expensive link deletion cycle if a leaf was deleted (directory)
@@ -240,17 +264,52 @@ func (db *DataBin) resolveWrkDir(path string) (*LeafDir, error) {
 	return lf, nil
 }
 
+// EnumerateAll returns all key-CID pairs in the DataBin.
+// Keys for nested entries use "/" separator (e.g., "dir/subkey").
+// This is used to rebuild state directories deterministically.
+func (db *DataBin) EnumerateAll() (map[string]cid.Cid, error) {
+	db.Leaf.Compact(true)
+	result := make(map[string]cid.Cid)
+	err := enumerateLeaf(&db.Leaf, "", result)
+	return result, err
+}
+
+func enumerateLeaf(lf *LeafDir, prefix string, result map[string]cid.Cid) error {
+	links, err := lf.Dir.Links(context.Background())
+	if err != nil {
+		return err
+	}
+	for _, link := range links {
+		fullKey := link.Name
+		if prefix != "" {
+			fullKey = prefix + "/" + link.Name
+		}
+		if link.Cid.Prefix().Codec == uint64(multicodec.Protobuf) {
+			// It's a subdirectory — recurse into its leaf if available
+			if subLeaf, ok := lf.leaves[link.Name]; ok {
+				if err := enumerateLeaf(subLeaf, fullKey, result); err != nil {
+					return err
+				}
+			}
+			// If no leaf, we can't enumerate further (data not loaded)
+		} else {
+			result[fullKey] = link.Cid
+		}
+	}
+	return nil
+}
+
 // Must compact to be safe. If single level
 func (db *DataBin) Cid() cid.Cid {
 	db.Leaf.Compact(true)
-	node, _ := db.Leaf.Dir.GetNode()
+	node, _ := materializeGetNode(db.Leaf.Dir)
 
 	return node.Cid()
 }
 
 func (db *DataBin) Save() cid.Cid {
 	db.Leaf.Compact(true)
-	nodeDir, err := db.Leaf.Dir.GetNode()
+	nodeDir, err := materializeGetNode(db.Leaf.Dir)
 	if err != nil {
 		panic(err)
 	}
@@ -281,7 +340,7 @@ func (db *DataBin) Save() cid.Cid {
 }
 
 func NewDataBin(da *DataLayer) DataBin {
-	uio.HAMTShardingSize = 1
+	uio.HAMTShardingSize = 256
 	dir := uio.NewDirectory(da.DagServ)
 
 	return DataBin{
@@ -294,6 +353,7 @@ func NewDataBin(da *DataLayer) DataBin {
 }
 
 func NewDataBinFromCid(da *DataLayer, inputCid cid.Cid) DataBin {
+	uio.HAMTShardingSize = 256
 	return DataBin{
 		DataLayer: da,
 		Leaf:      newLeafFromCid(da, inputCid),
@@ -303,8 +363,24 @@ func NewDataBinFromCid(da *DataLayer, inputCid cid.Cid) DataBin {
 func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
 	ctx := context.Background()
 
-	node, _ := da.DagServ.Get(ctx, inputCid)
-	dir, _ := uio.NewDirectoryFromNode(da.DagServ, node)
+	node, err := da.DagServ.Get(ctx, inputCid)
+	if err != nil {
+		fmt.Println("[databin] ERROR loading node for CID", inputCid, "err:", err)
+		// Return empty leaf to avoid panic
+		return LeafDir{
+			Dir:    uio.NewDirectory(da.DagServ),
+			leaves: make(map[string]*LeafDir),
+		}
+	}
+
+	dir, err := uio.NewDirectoryFromNode(da.DagServ, node)
+	if err != nil {
+		fmt.Println("[databin] ERROR creating directory from node", inputCid, "err:", err)
+		return LeafDir{
+			Dir:    uio.NewDirectory(da.DagServ),
+			leaves: make(map[string]*LeafDir),
+		}
+	}
 
 	links, _ := dir.Links(ctx)
 

@@ -85,7 +85,6 @@ func (session *ledgerSession) GetBalance(account string, blockHeight uint64, ass
 	if session.balances[session.key(account, asset)] == nil {
 		bal := session.state.SnapshotForAccount(account, blockHeight, asset)
 		session.balances[session.key(account, asset)] = &bal
-		fmt.Println("Ledger get Current lol")
 	}
 
 	return *session.balances[session.key(account, asset)]
@@ -255,7 +254,7 @@ func (ledgerSession *ledgerSession) ExecuteTransfer(opLogEvent OpLogEvent, optio
 	exclusion := int64(0)
 
 	if len(options) > 0 {
-		options[0].Exclusion = exclusion
+		exclusion = options[0].Exclusion
 	}
 
 	if opLogEvent.Amount <= 0 {
@@ -309,7 +308,7 @@ func (ledgerSession *ledgerSession) Stake(stakeOp StakeOp, options ...TransferOp
 	exclusion := int64(0)
 
 	if len(options) > 0 {
-		options[0].Exclusion = exclusion
+		exclusion = options[0].Exclusion
 	}
 
 	//Cannot stake less than 0.002 HBD
@@ -333,22 +332,15 @@ func (ledgerSession *ledgerSession) Stake(stakeOp StakeOp, options ...TransferOp
 
 	// le.Ls.log.Debug("Stake - balAmt", fromBal, stakeOp.Id)
 
-	if (exclusion + fromBal) < stakeOp.Amount {
+	if (fromBal - exclusion) < stakeOp.Amount {
 		return LedgerResult{
 			Ok:  false,
 			Msg: "insufficient balance",
 		}
 	}
 
-	ledgerSession.AppendLedger(LedgerUpdate{
-		Id:     stakeOp.Id,
-		OpIdx:  0,
-		Owner:  stakeOp.From,
-		Amount: -stakeOp.Amount,
-		Asset:  stakeOp.Asset,
-		Type:   "stake",
-		Memo:   stakeOp.Memo,
-	})
+	// Removed direct AppendLedger — AppendOplog below handles the debit
+	// via ExecuteOplog to avoid double-debiting the session balance.
 
 	// le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], LedgerUpdate{
 	// 	Id:     stakeOp.Id,
@@ -458,15 +450,8 @@ func (ledgerSession *ledgerSession) Unstake(stakeOp StakeOp) LedgerResult {
 
 	// fee := int64(0)
 
-	ledgerSession.AppendLedger(LedgerUpdate{
-		Id:     stakeOp.Id,
-		OpIdx:  0,
-		Owner:  stakeOp.From,
-		Amount: -stakeOp.Amount,
-		Asset:  stakeOp.Asset,
-		Type:   "stake",
-		Memo:   stakeOp.Memo,
-	})
+	// Removed direct AppendLedger — AppendOplog below handles the debit
+	// via ExecuteOplog to avoid double-debiting the session balance.
 	// le.VirtualLedger[stakeOp.From] = append(le.VirtualLedger[stakeOp.From], )
 
 	// if stakeOp.Instant {

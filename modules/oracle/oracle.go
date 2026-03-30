@@ -2,19 +2,27 @@ package oracle
 
 import (
 	"context"
+	ed25519Std "crypto/ed25519"
 	"errors"
-	"log/slog"
-	"os"
+	"log"
 	"time"
+	DataLayer "vsc-node/lib/datalayer"
+	"vsc-node/lib/dids"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	systemconfig "vsc-node/modules/common/system-config"
+	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/witnesses"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
+	"vsc-node/modules/hive/streamer"
 	"vsc-node/modules/oracle/chain"
 	"vsc-node/modules/oracle/p2p"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
+	transactionpool "vsc-node/modules/transaction-pool"
 
 	"github.com/chebyrash/promise"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -29,8 +37,10 @@ const (
 	priceOracleBroadcastInterval = uint64(600 / 3)
 	priceOraclePollInterval      = time.Second * 15
 
-	// 10 minutes = 600 seconds or 200 blocks, 3s for every new block
-	chainRelayInterval = uint64(600 / 3)
+	// ~2 minutes = 40 blocks, 3s for every new block.
+	// Must span at least 2 witness slots so the first producer's tx confirms
+	// before the next producer's oracle tick fires, preventing duplicate submissions.
+	chainRelayInterval = uint64(40)
 )
 
 var (
@@ -43,14 +53,16 @@ var (
 type Oracle struct {
 	ctx          context.Context
 	cancelFunc   context.CancelFunc
-	logger       *slog.Logger
+	logger       *vsclog.Logger
 	p2pServer    *libp2p.P2PServer
 	pubSubSrv    libp2p.PubSubService[p2p.Msg]
 	conf         common.IdentityConfig
+	oracleConf   OracleConfig
 	electionDb   elections.Elections
 	witnessDb    witnesses.Witnesses
 	hiveConsumer *blockconsumer.HiveConsumer
 	stateEngine  *stateEngine.StateEngine
+	txPool       *transactionpool.TransactionPool
 
 	// priceOracle *price.PriceOracle
 	chainOracle *chain.ChainOracle
@@ -59,55 +71,79 @@ type Oracle struct {
 func New(
 	p2pServer *libp2p.P2PServer,
 	conf common.IdentityConfig,
+	sconf systemconfig.SystemConfig,
 	electionDb elections.Elections,
 	witnessDb witnesses.Witnesses,
 	hiveConsumer *blockconsumer.HiveConsumer,
 	stateEngine *stateEngine.StateEngine,
+	contractState contracts.ContractState,
+	da *DataLayer.DataLayer,
+	txPool *transactionpool.TransactionPool,
+	oracleConf OracleConfig,
+	hiveConf streamer.HiveConfig,
+	nonceDb nonces.Nonces,
 ) *Oracle {
-	logLevel := slog.LevelInfo
-	if os.Getenv("DEBUG") == "1" {
-		logLevel = slog.LevelDebug
-	}
-
-	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel,
-	})
-
-	logger := slog.New(logHandler).
-		With("service", "oracle").
-		With("id", conf.Get().HiveUsername)
+	logger := vsclog.Module("oracle").With("id", conf.Get().HiveUsername)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// priceOracle := price.New(
-	// 	ctx,
-	// 	logger,
-	// 	userCurrency,
-	// 	priceOraclePollInterval,
-	// 	watchSymbols,
-	// 	conf,
-	// )
-
-	chainRelayer := chain.New(ctx, logger, conf)
+	// txCrafter will be created in Init() after identity config is loaded
+	chainRelayer := chain.New(ctx, logger, conf, sconf, hiveConf, electionDb, contractState, da, nil, txPool, nonceDb)
 
 	return &Oracle{
 		ctx:          ctx,
 		cancelFunc:   cancel,
 		p2pServer:    p2pServer,
 		conf:         conf,
+		oracleConf:   oracleConf,
 		electionDb:   electionDb,
 		witnessDb:    witnessDb,
 		hiveConsumer: hiveConsumer,
 		stateEngine:  stateEngine,
 		logger:       logger,
-		// priceOracle: priceOracle,
-		chainOracle: chainRelayer,
+		chainOracle:  chainRelayer,
+		txPool:       txPool,
 	}
 }
 
 // Init implements aggregate.Plugin.
 // Runs initialization in order of how they are passed in to `Aggregate`
 func (o *Oracle) Init() error {
+	log.Println("[oracle] Init: registering blockTick callback")
+	o.hiveConsumer.RegisterBlockTick("oracle", o.blockTick, true)
+
+	// Configure RPC connections for all chains from oracle config
+	cfg := o.oracleConf.Get()
+	for symbol := range chain.RegisteredChains() {
+		if rpc, ok := cfg.ChainRpc(symbol); ok {
+			o.chainOracle.ConfigureChain(symbol, rpc.RpcHost, rpc.RpcUser, rpc.RpcPass)
+		}
+	}
+
+	// Create the txCrafter now that identity config has been loaded from disk.
+	// The libp2p private key is only available after identityConfig.Init().
+	if libp2pKey, err := o.conf.Libp2pPrivateKey(); err != nil {
+		o.logger.Error("failed to get libp2p private key, chain relay submission disabled", "err", err)
+	} else if rawBytes, err := libp2pKey.Raw(); err != nil {
+		o.logger.Error("failed to get raw libp2p key bytes, chain relay submission disabled", "err", err)
+	} else {
+		edPrivKey := ed25519Std.PrivateKey(rawBytes)
+		edPubKey := edPrivKey.Public().(ed25519Std.PublicKey)
+		if didKey, err := dids.NewKeyDID(edPubKey); err != nil {
+			o.logger.Error("failed to create key DID, chain relay submission disabled", "err", err)
+		} else {
+			txCrafter := &transactionpool.TransactionCrafter{
+				Identity: dids.NewKeyProvider(edPrivKey),
+				Did:      didKey,
+				VSCBroadcast: &transactionpool.InternalBroadcast{
+					TxPool: o.txPool,
+				},
+			}
+			o.chainOracle.SetTxCrafter(txCrafter)
+			o.logger.Info("chain relay transaction crafter initialized")
+		}
+	}
+
 	services := []aggregate.Plugin{
 		o.chainOracle,
 		// o.priceOracle,

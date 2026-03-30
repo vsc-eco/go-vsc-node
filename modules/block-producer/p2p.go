@@ -57,8 +57,11 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 	}
 
 	if msg.Type == "block_sig" {
-		if s.bp.sigChannels[msg.SlotHeight] != nil {
-			s.bp.sigChannels[msg.SlotHeight] <- sigMsg{
+		s.bp.sigMu.RLock()
+		ch := s.bp.sigChannels[msg.SlotHeight]
+		s.bp.sigMu.RUnlock()
+		if ch != nil {
+			ch <- sigMsg{
 				Type: "sig",
 				Msg:  msg,
 			}
@@ -87,7 +90,7 @@ func (p2pSpec) SerializeMessage(msg p2pMessage) []byte {
 }
 
 func (p2pSpec) Topic() string {
-	return "/vsc/mainet/block-producer/v1"
+	return "/block-producer/v1"
 }
 
 var _ libp2p.PubSubServiceParams[p2pMessage] = p2pSpec{}

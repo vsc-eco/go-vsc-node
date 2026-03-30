@@ -385,6 +385,14 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 	ctx, cancel := context.WithCancel(ctx)
 	errChan := make(chan error)
 	go func() {
+		// Recover from panics in the listener callback (e.g. ProcessBlock).
+		// Without this, an unrecovered panic in the listener kills the entire
+		// node process because this goroutine has no other defer/recover.
+		defer func() {
+			if r := recover(); r != nil {
+				errChan <- fmt.Errorf("panic in block listener at block %d: %v", startBlock, r)
+			}
+		}()
 		for {
 			select {
 			case <-ctx.Done():
@@ -481,7 +489,12 @@ func (h *hiveBlocks) GetMetadata() (Document, error) {
 func GetAggTimestampPipeline(filters bson.D, localField string, timestampField string, offset int, limit int) mongo.Pipeline {
 	return mongo.Pipeline{
 		{{Key: "$match", Value: filters}},
-		// Join with hive_blocks
+		// Sort and paginate BEFORE the lookup so MongoDB can use indexes
+		// and only join the paginated subset with hive_blocks
+		{{Key: "$sort", Value: bson.D{{Key: localField, Value: -1}}}},
+		{{Key: "$skip", Value: offset}},
+		{{Key: "$limit", Value: limit}},
+		// Join with hive_blocks (now only on paginated subset)
 		{{Key: "$lookup", Value: bson.D{
 			{Key: "from", Value: "hive_blocks"},
 			{Key: "localField", Value: localField},
@@ -498,11 +511,6 @@ func GetAggTimestampPipeline(filters bson.D, localField string, timestampField s
 		{{Key: "$project", Value: bson.D{
 			{Key: "block_info", Value: 0},
 		}}},
-		// Sorting
-		{{Key: "$sort", Value: bson.D{{Key: localField, Value: -1}}}},
-		// Pagination
-		{{Key: "$skip", Value: offset}},
-		{{Key: "$limit", Value: limit}},
 	}
 }
 
@@ -512,17 +520,5 @@ func GetAggTimestampPipeline2(filters bson.D, localField string, timestampField 
 	pipe = append(pipe, bson.D{{Key: "$addFields", Value: bson.D{
 		{Key: "tx_id", Value: "$id"},
 	}}})
-	// pipe = append(pipe, bson.D{{Key: "$set", Value: bson.D{
-	// 	{Key: "id", Value: bson.D{
-	// 		{
-	// 			Key: "$concat",
-	// 			Value: bson.A{
-	// 				"$id",
-	// 				"-",
-	// 				bson.D{{Key: "$toString", Value: "$anchr_opidx"}},
-	// 			},
-	// 		},
-	// 	}},
-	// }}})
 	return pipe
 }

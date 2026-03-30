@@ -41,7 +41,7 @@ const (
 )
 
 type TransactionOperation struct {
-	RequiredAuths []string               `json:"required_auths" bson:"required_auths"`
+	RequiredAuths []string               `json:"required_auths,omitempty" bson:"required_auths,omitempty"`
 	Type          string                 `json:"type" bson:"type"`
 	Idx           int64                  `json:"idx" bson:"idx"`
 	Data          map[string]interface{} `json:"data" bson:"data"`
@@ -53,8 +53,8 @@ type TransactionOutput struct {
 }
 
 type TransactionRecord struct {
-	Id     string `json:"id" bson:"id"`
-	Status string `json:"status" bson:"status"`
+	Id     string            `json:"id" bson:"id"`
+	Status TransactionStatus `json:"status" bson:"status"`
 
 	//Auths involved in the transaction
 	RequiredAuths        []string `json:"required_auths" bson:"required_auths"`

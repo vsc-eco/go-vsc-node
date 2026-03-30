@@ -1,6 +1,7 @@
 package rc_system
 
 import (
+	"math"
 	"strings"
 	"vsc-node/modules/common/params"
 	rcDb "vsc-node/modules/db/vsc/rcs"
@@ -30,11 +31,14 @@ func (rcs *RcSystem) GetFrozenAmt(account string, blockHeight uint64) int64 {
 }
 
 func (rcs *RcSystem) GetAvailableRCs(account string, blockHeight uint64) int64 {
+	// Oracle DIDs bypass RC limits entirely.
+	if strings.HasPrefix(account, "did:vsc:oracle:") {
+		return math.MaxInt64
+	}
+
 	balAmt := rcs.LedgerSystem.GetBalance(account, blockHeight, "hbd")
 
 	if strings.HasPrefix(account, "hive:") {
-		//Give the user 5 HBD worth of RCs by default
-		//If user is Hive account
 		balAmt = balAmt + params.RC_HIVE_FREE_AMOUNT
 	}
 
@@ -96,6 +100,13 @@ func (rss *rcSession) Consume(account string, blockHeight uint64, rcAmt int64) (
 }
 
 func (rss *rcSession) CanConsume(account string, blockHeight uint64, rcAmt int64) (bool, int64, int64) {
+	// Oracle DIDs are consensus-validated system accounts (2/3 BLS threshold).
+	// They have no HBD balance and should never be rate-limited by RCs.
+	// This matches IngestTx which also skips RC checks for VscDID accounts.
+	if strings.HasPrefix(account, "did:vsc:oracle:") {
+		return true, math.MaxInt64, rcAmt
+	}
+
 	balAmt := rss.ledgerSession.GetBalance(account, blockHeight, "hbd")
 
 	if strings.HasPrefix(account, "hive:") {
@@ -106,12 +117,7 @@ func (rss *rcSession) CanConsume(account string, blockHeight uint64, rcAmt int64
 
 	frozeAmt := rss.rcSystem.GetFrozenAmt(account, blockHeight)
 
-	if frozeAmt > balAmt {
-		frozeAmt = balAmt
-	}
-
-	//fmt.Println("rcAmt", balAmt, frozeAmt, rcAmt)
-	totalAmt := balAmt - frozeAmt
+	totalAmt := balAmt - frozeAmt - rss.rcMap[account]
 	if totalAmt < rcAmt {
 		return false, 0, rcAmt
 	} else {

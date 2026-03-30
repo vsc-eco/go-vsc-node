@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 	start_status "vsc-node/modules/start-status"
 
@@ -38,6 +39,9 @@ type pubSubService[Msg any] struct {
 	cancelCtx context.CancelFunc
 
 	startStatus start_status.StartStatus
+
+	// semaphore limits concurrent message handler goroutines to prevent DoS
+	semaphore chan struct{}
 }
 
 var _ io.Closer = &pubSubService[any]{}
@@ -66,7 +70,8 @@ func (p *pubSubService[Msg]) Started() *promise.Promise[any] {
 }
 
 func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg]) (PubSubService[Msg], error) {
-	topic, err := p2p.pubsub.Join(service.Topic())
+	topicName := p2p.systemConfig.PubSubTopicPrefix() + service.Topic()
+	topic, err := p2p.pubsub.Join(topicName)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +82,7 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 	}
 
 	// Invalid messages are not relayed nor processed by subscribers
-	err = p2p.pubsub.RegisterTopicValidator(service.Topic(), func(ctx context.Context, from peer.ID, msg *pubsub.Message) bool {
+	err = p2p.pubsub.RegisterTopicValidator(topicName, func(ctx context.Context, from peer.ID, msg *pubsub.Message) bool {
 		parsedMsg, err := service.ParseMessage(msg.GetData())
 		if err != nil {
 			return false
@@ -98,13 +103,14 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 	startStatus := start_status.New()
 
 	res := &pubSubService[Msg]{
-		topic,
-		cancelRelay,
-		sub,
-		service,
-		ctx,
-		cancel,
-		startStatus,
+		topic:       topic,
+		cancelRelay: cancelRelay,
+		sub:         sub,
+		params:      service,
+		ctx:         ctx,
+		cancelCtx:   cancel,
+		startStatus: startStatus,
+		semaphore:   make(chan struct{}, 64),
 	}
 
 	go func() {
@@ -149,14 +155,27 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 			// 	continue
 			// }
 
+			// Attempt to acquire semaphore; drop message if at capacity
+			select {
+			case res.semaphore <- struct{}{}:
+			default:
+				fmt.Println("pubsub: dropping message, concurrency limit reached")
+				continue
+			}
+
 			go func() {
 				parsedMsg, err := service.ParseMessage(msg.GetData())
 				if err != nil {
+					<-res.semaphore
 					//TODO handle error
 					return
 				}
 
+				var wg sync.WaitGroup
+				wg.Add(2)
+
 				go func() {
+					defer wg.Done()
 					err := service.HandleRawMessage(ctx, msg, res.Send)
 					if err != nil {
 						//TODO handle error
@@ -165,6 +184,7 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 				}()
 
 				go func() {
+					defer wg.Done()
 					err := service.HandleMessage(ctx, msg.GetFrom(), parsedMsg, res.Send)
 					if err != nil {
 						//TODO handle error
@@ -172,6 +192,9 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 						return
 					}
 				}()
+
+				wg.Wait()
+				<-res.semaphore
 			}()
 		}
 	}()

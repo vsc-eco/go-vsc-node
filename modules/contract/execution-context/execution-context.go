@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"unicode/utf8"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/params"
 	contract_session "vsc-node/modules/contract/session"
@@ -23,8 +25,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
+var tssLog = vsclog.Module("tss")
+
 type contractExecutionContext struct {
-	intents     []contracts.Intent
 	ledger      ledgerSystem.LedgerSession
 	env         Environment
 	rcLimit     int64
@@ -78,6 +81,7 @@ func New(
 ) ContractExecutionContext {
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
+
 	for _, intent := range env.Intents {
 		if intent.Type == "transfer.allow" {
 			limit, ok := intent.Args["limit"]
@@ -88,18 +92,26 @@ func New(
 			if !ok {
 				continue
 			}
+			decimals := -1
+			decimalsStr, ok := intent.Args["decimals"]
+			if ok {
+				dec, err := strconv.Atoi(decimalsStr)
+				if err == nil {
+					decimals = dec
+				}
+			}
 			key := intent.Type + "-" + token
 			seen := seenTypes[key]
 			if seen {
 				continue
 			}
 			seenTypes[key] = true
-			val, _ := common.SafeParseHiveFloat(limit)
+			val, _ := common.ParseDecimalsToBaseUnits(limit, decimals)
 			tokenLimits[token] = &val
 		}
 	}
+	// fmt.Println("tokenLimits", tokenLimits, "depth", recursionDepth)
 	return &contractExecutionContext{
-		env.Intents,
 		ledger,
 		env,
 		rcLimit,
@@ -232,7 +244,12 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 	case "block.timestamp":
 		return result.Ok(ctx.env.Timestamp)
 	}
-	return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), fmt.Errorf("environment does not contain value for \"%s\"", key)))
+	return result.Err[string](
+		errors.Join(
+			fmt.Errorf(contracts.ENV_VAR_ERROR),
+			fmt.Errorf("environment does not contain value for \"%s\"", key),
+		),
+	)
 }
 
 // GetEnv returns the environment variables in a standard contract format
@@ -278,7 +295,9 @@ func (ctx *contractExecutionContext) GetEnv() result.Result[string] {
 
 	envBytes, err := json.Marshal(envMap)
 	if err != nil {
-		return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), fmt.Errorf("failed to marshal env map: %w", err)))
+		return result.Err[string](
+			errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), fmt.Errorf("failed to marshal env map: %w", err)),
+		)
 	}
 	return result.Ok(string(envBytes))
 }
@@ -331,28 +350,64 @@ func (ctx *contractExecutionContext) DeleteState(key string) result.Result[struc
 	return result.Ok(struct{}{})
 }
 
+func (ctx *contractExecutionContext) GetEphemState(contractId string, key string) result.Result[string] {
+	c := contractId
+	if c == "" {
+		c = ctx.env.ContractId
+	}
+	res := ctx.callSession.GetStateStore(c).GetEphem(key)
+	return result.Ok(string(res))
+}
+
+func (ctx *contractExecutionContext) SetEphemState(key string, value string) result.Result[struct{}] {
+	ctx.callSession.GetStateStore(ctx.env.ContractId).SetEphem(key, []byte(value))
+	return result.Ok(struct{}{})
+}
+
+func (ctx *contractExecutionContext) DeleteEphemState(key string) result.Result[struct{}] {
+	ctx.callSession.GetStateStore(ctx.env.ContractId).DeleteEphem(key)
+	return result.Ok(struct{}{})
+}
+
 func (ctx *contractExecutionContext) GetBalance(account string, asset string) int64 {
 	getBal := ctx.ledger.GetBalance(account, ctx.env.BlockHeight, asset)
 
 	return getBal
 }
 
-func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) result.Result[struct{}] {
+func (ctx *contractExecutionContext) PullBalance(from string, amount int64, asset string) result.Result[struct{}] {
 	if len(ctx.env.RequiredAuths) == 0 {
-		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.MISSING_REQ_AUTH), fmt.Errorf("no active authority")))
+		return result.Err[struct{}](
+			errors.Join(fmt.Errorf(contracts.MISSING_REQ_AUTH), fmt.Errorf("no active authority")),
+		)
 	}
-	tokenLimit, ok := ctx.tokenLimits[asset]
-	if !ok {
-		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_INTENT_ERROR), fmt.Errorf("no user intent for: %s", asset)))
+	switch from {
+	case ctx.env.Caller, "":
+		tokenLimit, ok := ctx.tokenLimits[asset]
+		if !ok {
+			return result.Err[struct{}](
+				errors.Join(fmt.Errorf(contracts.LEDGER_INTENT_ERROR), fmt.Errorf("no caller intent for: %s", asset)),
+			)
+		}
+		if amount > *tokenLimit {
+			return result.Err[struct{}](
+				errors.Join(
+					fmt.Errorf(contracts.LEDGER_INTENT_ERROR),
+					fmt.Errorf("amount (%d) is over remaining token limit (%d)", amount, *tokenLimit),
+				),
+			)
+		}
+		*tokenLimit -= amount
+		from = ctx.env.Caller
+	default:
+		return result.Err[struct{}](
+			errors.Join(errors.New(contracts.LEDGER_INTENT_ERROR), errors.New("user does not match caller")),
+		)
 	}
-	if amount > *tokenLimit {
-		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_INTENT_ERROR), fmt.Errorf("amount (%d) is over remaining token limit (%d)", amount, *tokenLimit)))
-	}
-	*tokenLimit -= amount
 
-	// assuming sender is the RC payer
+	// assuming caller is the RC payer
 	var transferOptions []ledgerSystem.TransferOptions
-	if asset == "hbd" && ctx.env.Caller == ctx.env.Sender {
+	if asset == "hbd" {
 		transferOptions = []ledgerSystem.TransferOptions{
 			{
 				Exclusion: ctx.rcLimit,
@@ -361,7 +416,7 @@ func (ctx *contractExecutionContext) PullBalance(amount int64, asset string) res
 	}
 	res := ctx.ledger.ExecuteTransfer(ledgerSystem.OpLogEvent{
 		To:     "contract:" + ctx.env.ContractId,
-		From:   ctx.env.Caller,
+		From:   from,
 		Amount: amount,
 		Asset:  asset,
 		// Memo   string `json:"mo" // TODO add in future
@@ -428,14 +483,23 @@ func (ctx *contractExecutionContext) ContractStateGet(contractId string, key str
 	return result.Ok(resStr)
 }
 
-func (ctx *contractExecutionContext) ContractCall(contractId string, method string, payload string, options string) wasm_types.WasmResult {
+func (ctx *contractExecutionContext) ContractCall(
+	contractId string,
+	method string,
+	payload string,
+	options string,
+) wasm_types.WasmResult {
 	nextRecursion := ctx.recursion + 1
 	if nextRecursion > params.CONTRACT_CALL_MAX_RECURSION_DEPTH {
-		return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf(contracts.IC_RCSE_LIMIT_HIT), fmt.Errorf("call recursion limit hit")))
+		return result.Err[wasm_types.WasmResultStruct](
+			errors.Join(fmt.Errorf(contracts.IC_RCSE_LIMIT_HIT), fmt.Errorf("call recursion limit hit")),
+		)
 	}
 	payloadJson := json.RawMessage(payload)
 	if !utf8.Valid(payloadJson) {
-		return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf(contracts.IC_INVALD_PAYLD), fmt.Errorf("payload does not parse to a UTF-8 string")))
+		return result.Err[wasm_types.WasmResultStruct](
+			errors.Join(fmt.Errorf(contracts.IC_INVALD_PAYLD), fmt.Errorf("payload does not parse to a UTF-8 string")),
+		)
 	}
 	opts := contracts.ICCallOptions{
 		Intents: []contracts.Intent{},
@@ -468,25 +532,36 @@ func (ctx *contractExecutionContext) ContractCall(contractId string, method stri
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)
 
-			wasmCtx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(ct.Code))
+			wasmCtx := context.WithValue(
+				context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
+				wasm_context.WasmExecCodeCtxKey,
+				hex.EncodeToString(ct.Code),
+			)
 			res := w.Execute(wasmCtx, gasRemaining, method, callPayload, ct.Info.Runtime)
 			if res.Error != nil {
-				return result.Err[wasm_types.WasmResultStruct](errors.Join(fmt.Errorf("%s", res.ErrorCode), fmt.Errorf("%s", *res.Error), fmt.Errorf("%d", res.Gas)))
+				return result.Err[wasm_types.WasmResultStruct](
+					errors.Join(
+						fmt.Errorf("%s", res.ErrorCode),
+						fmt.Errorf("%s", *res.Error),
+						fmt.Errorf("%d", res.Gas),
+					),
+				)
 			}
 			return result.Ok(res)
 		},
 	))
 }
 
-func (ctx *contractExecutionContext) TssCreateKey(keyId string, keyType string) result.Result[string] {
+func (ctx *contractExecutionContext) TssCreateKey(keyId string, keyType string, epochs uint64) result.Result[string] {
 	fullKey := ctx.env.ContractId + "-" + keyId
 	_, err := ctx.callSession.TssKeys.FindKey(fullKey)
 
 	if err == mongo.ErrNoDocuments {
 		ctx.callSession.AppendTssLog(ctx.env.ContractId, tss_db.TssOp{
-			Type:  "create",
-			KeyId: fullKey,
-			Args:  keyType,
+			Type:   "create",
+			KeyId:  fullKey,
+			Args:   keyType,
+			Epochs: epochs,
 		})
 		return result.Ok("created")
 	}
@@ -495,6 +570,34 @@ func (ctx *contractExecutionContext) TssCreateKey(keyId string, keyType string) 
 	}
 	fmt.Println("err", err)
 	return result.Err[string](errors.New("runtime error"))
+}
+
+func (ctx *contractExecutionContext) TssRenewKey(keyId string, additionalEpochs uint64) result.Result[string] {
+	fullKey := ctx.env.ContractId + "-" + keyId
+	key, err := ctx.callSession.TssKeys.FindKey(fullKey)
+
+	if err == mongo.ErrNoDocuments {
+		return result.Err[string](errors.New("key not found"))
+	}
+	if err != nil {
+		return result.Err[string](errors.New("runtime error"))
+	}
+	if key.Status == tss_db.TssKeyRetired {
+		return result.Err[string](errors.New("key is retired and cannot be renewed"))
+	}
+	// Active keys with no expiry were intentionally created without a lifespan and cannot be renewed.
+	// Deprecated keys with ExpiryEpoch==0 are legacy keys — renewal is allowed and the state engine
+	// will base the new expiry on the current epoch.
+	if key.Status == tss_db.TssKeyActive && key.ExpiryEpoch == 0 {
+		return result.Err[string](errors.New("key has no expiry to renew"))
+	}
+
+	ctx.callSession.AppendTssLog(ctx.env.ContractId, tss_db.TssOp{
+		Type:   "renew",
+		KeyId:  fullKey,
+		Epochs: additionalEpochs,
+	})
+	return result.Ok("renewed")
 }
 
 func (ctx *contractExecutionContext) TssGetKey(keyId string) result.Result[string] {
@@ -510,7 +613,7 @@ func (ctx *contractExecutionContext) TssGetKey(keyId string) result.Result[strin
 	status = tssKey.Status
 
 	res := status
-	if status == "active" || status == "deleted" {
+	if status == tss_db.TssKeyActive || status == tss_db.TssKeyDeprecated || status == "deleted" {
 		res += "," + tssKey.PublicKey
 		res += "," + string(tssKey.Algo)
 	}
@@ -524,10 +627,12 @@ func (ctx *contractExecutionContext) TssKeySign(keyId string, msg string) result
 	keyInfo, err := ctx.callSession.TssKeys.FindKey(fullKey)
 
 	if err == mongo.ErrNoDocuments {
+		tssLog.Verbose("key sign rejected: key not found", "keyId", fullKey)
 		return result.Ok("fail")
 	}
 
-	if keyInfo.Status != "active" {
+	if keyInfo.Status != tss_db.TssKeyActive {
+		tssLog.Verbose("key sign rejected: not active", "keyId", fullKey, "status", keyInfo.Status)
 		return result.Ok("fail")
 	}
 

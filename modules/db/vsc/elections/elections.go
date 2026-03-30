@@ -112,6 +112,40 @@ func (e *elections) GetElection(epoch uint64) *ElectionResult {
 	}
 }
 
+func (e *elections) GetPreviousElections(beforeEpoch uint64, limit int) []ElectionResult {
+	findQuery := bson.M{
+		"epoch": bson.M{
+			"$lt": beforeEpoch,
+		},
+	}
+	queryOptions := options.Find()
+	queryOptions.SetSort(bson.M{"epoch": -1})
+	queryOptions.SetLimit(int64(limit))
+
+	ctx := context.Background()
+	cursor, err := e.Find(ctx, findQuery, queryOptions)
+	if err != nil {
+		return nil
+	}
+	defer cursor.Close(ctx)
+
+	var results []ElectionResult
+	for cursor.Next(ctx) {
+		electionRecord := ElectionResultRecord{}
+		err := cursor.Decode(&electionRecord)
+		if err != nil {
+			continue
+		}
+		electionResult := ElectionResult{}
+		err = refmt.CloneAtlased(electionRecord, &electionResult, cbornode.CborAtlas)
+		if err != nil {
+			continue
+		}
+		results = append(results, electionResult)
+	}
+	return results
+}
+
 func (e *elections) GetElectionByHeight(height uint64) (ElectionResult, error) {
 	findQuery := bson.M{
 		"block_height": bson.M{
@@ -143,18 +177,6 @@ func (e *elections) GetElectionByHeight(height uint64) (ElectionResult, error) {
 			return electionResult, err
 		}
 
-		// electionResult := ElectionResult{
-		// 	electionCommonInfo{
-		// 		Epoch: electionRecord.Epoch,
-		// 		NetId: electionRecord.NetId,
-		// 	},
-		// 	electionHeaderInfo{
-		// 		Data: electionRecord.Data,
-		// 	},
-		// 	electionDataInfo{
-		// 		Members: electionRecord.Members,
-		// 	},
-		// }
 		return electionResult, nil
 	}
 }
@@ -207,19 +229,6 @@ func MinimalRequiredElectionVotes(blocksSinceLastElection, memberCountOfLastElec
 
 	return uint64(math.Round(mappedValue))
 }
-
-// export const MIN_BLOCKS_SINCE_LAST_ELECTION = 1200 // 1 hour
-// export const MAX_BLOCKS_SINCE_LAST_ELECTION = 403200 // 2 weeks
-
-// export function minimalRequiredElectionVotes(blocksSinceLastElection: number, memberCountOfLastElection: number): number {
-//     if (blocksSinceLastElection < MIN_BLOCKS_SINCE_LAST_ELECTION) {
-//         throw new Error('tried to run election before time slot')
-//     }
-//     const minMembers = Math.floor((memberCountOfLastElection / 2) + 1) // 1/2 + 1
-//     const maxMembers = Math.ceil(memberCountOfLastElection * 2 / 3) // 2/3
-//     const drift = (MAX_BLOCKS_SINCE_LAST_ELECTION - Math.min(blocksSinceLastElection, MAX_BLOCKS_SINCE_LAST_ELECTION)) / MAX_BLOCKS_SINCE_LAST_ELECTION;
-//     return Math.round(Range.from([0, 1]).map(drift, Range.from([minMembers, maxMembers])));
-// }
 
 func init() {
 	cbornode.RegisterCborType(ElectionResultRecord{})

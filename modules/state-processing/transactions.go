@@ -60,19 +60,21 @@ func errorToTxResult(err error, RCs int64) TxResult {
 }
 
 // ExecuteTx implements VSCTransaction.
-func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (t TxVscCallContract) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if t.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 100)
 	}
 	info, exists := se.GetContractInfo(t.ContractId, t.Self.BlockHeight)
 
 	if !exists {
-		fmt.Println("Contract not found:", t.ContractId, info, exists)
 		return errorToTxResult(fmt.Errorf("contract not found"), 100)
 	}
-	// if err != nil {
-	// 	return errorToTxResult(err, 100)
-	// }
 
 	c, err := cid.Decode(info.Code)
 	if err != nil {
@@ -93,6 +95,12 @@ func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession 
 	}
 
 	gas := min(uint(availableGas), t.RcLimit)
+
+	// Cap gas to prevent overflow when multiplied by CYCLE_GAS_PER_RC
+	const maxGas = ^uint(0) / params.CYCLE_GAS_PER_RC
+	if gas > maxGas {
+		gas = maxGas
+	}
 
 	var caller string = t.Caller
 	if caller == "" {
@@ -139,15 +147,17 @@ func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession 
 	// string), `payload` will be untouched and errors can be ignored
 	json.Unmarshal([]byte(t.Payload), &payload)
 
-	wasmCtx := context.WithValue(context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue), wasm_context.WasmExecCodeCtxKey, hex.EncodeToString(code))
+	wasmCtx := context.WithValue(
+		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
+		wasm_context.WasmExecCodeCtxKey,
+		hex.EncodeToString(code),
+	)
 
 	res := w.Execute(wasmCtx, gas*params.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime)
 
 	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
 
 	if res.Error != nil {
-		fmt.Println("WASM execution error:", *res.Error)
-
 		return TxResult{
 			Success: false,
 			Err:     &res.ErrorCode,
@@ -155,9 +165,7 @@ func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession 
 			RcUsed:  rcUsed,
 		}
 	}
-	fmt.Println("basicResult:", res)
 
-	fmt.Println("rcUsed", rcUsed)
 	return TxResult{
 		Success: true,
 		Ret:     res.Result,
@@ -166,7 +174,7 @@ func (t TxVscCallContract) ExecuteTx(se common_types.StateEngine, ledgerSession 
 }
 
 func (tx TxVscCallContract) Type() string {
-	return "call_contract"
+	return "call"
 }
 
 func (tx TxVscCallContract) TxSelf() TxSelf {
@@ -174,11 +182,12 @@ func (tx TxVscCallContract) TxSelf() TxSelf {
 }
 
 func (tx TxVscCallContract) ToData() map[string]interface{} {
+	payload := string(tx.Payload)
+	json.Unmarshal(tx.Payload, &payload)
 	return map[string]interface{}{
-		"type":        "call",
 		"contract_id": tx.ContractId,
 		"action":      tx.Action,
-		"payload":     tx.Payload,
+		"payload":     payload,
 		"rc_limit":    tx.RcLimit,
 		"intents":     tx.Intents,
 	}
@@ -201,7 +210,13 @@ func (tx TxDeposit) TxSelf() TxSelf {
 	return tx.Self
 }
 
-func (tx TxDeposit) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (tx TxDeposit) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	return TxResult{
 		Success: true,
 		RcUsed:  0,
@@ -253,14 +268,15 @@ func (tx TxVSCTransfer) TxSelf() TxSelf {
 	return tx.Self
 }
 
-func (tx TxVSCTransfer) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (tx TxVSCTransfer) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if tx.NetId != se.SystemConfig().NetId() {
-		fmt.Println("Invalid network id:", tx.NetId, se.SystemConfig().NetId())
-		// return TxResult{
-		// 	Success: false,
-		// 	Ret:     "Invalid network id",
-		// 	RcUsed:  50,
-		// }
+		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
 	if tx.To == "" || tx.From == "" {
 		return TxResult{
@@ -270,7 +286,8 @@ func (tx TxVSCTransfer) ExecuteTx(se common_types.StateEngine, ledgerSession led
 		}
 	}
 
-	if (!strings.HasPrefix(tx.To, "did:") && !strings.HasPrefix(tx.To, "hive:")) || (!strings.HasPrefix(tx.From, "did:") && !strings.HasPrefix(tx.From, "hive:")) {
+	if (!strings.HasPrefix(tx.To, "did:") && !strings.HasPrefix(tx.To, "hive:")) ||
+		(!strings.HasPrefix(tx.From, "did:") && !strings.HasPrefix(tx.From, "hive:")) {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
@@ -308,11 +325,11 @@ func (tx TxVSCTransfer) ExecuteTx(se common_types.StateEngine, ledgerSession led
 		BlockHeight: tx.Self.BlockHeight,
 	}
 
-	se.Log().Debug("Transfer - tx.Self.BlockHeight", tx.Self.BlockHeight)
+	log.Debug("Transfer", "blockHeight", tx.Self.BlockHeight)
 
 	ledgerResult := ledgerSession.ExecuteTransfer(transferParams)
 
-	se.Log().Debug("Transfer LedgerResult", ledgerResult)
+	log.Debug("Transfer LedgerResult", "result", ledgerResult)
 
 	return TxResult{
 		Success: ledgerResult.Ok,
@@ -356,15 +373,15 @@ func (tx TxVSCWithdraw) TxSelf() TxSelf {
 // Note: this function does the work of translating any and all VSC transactions to the ledger compatible formats
 // ledgerExecutor will then do the heavy lifting of executing the input ops
 // as LedgerExecutor may be called within other contexts, such as the contract executor
-func (t *TxVSCWithdraw) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (t *TxVSCWithdraw) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if t.NetId != se.SystemConfig().NetId() {
-		fmt.Println("Invalid network id:", t.NetId, se.SystemConfig().NetId())
-
-		// return TxResult{
-		// 	Success: false,
-		// 	Ret:     "Invalid network id",
-		// 	RcUsed:  50,
-		// }
+		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
 	if t.To == "" {
 		//Maybe default to self later?
@@ -413,7 +430,7 @@ func (t *TxVSCWithdraw) ExecuteTx(se common_types.StateEngine, ledgerSession led
 	parameter, _ := json.Marshal(params)
 	ledgerResult := ledgerSession.Withdraw(params)
 
-	se.Log().Debug("ExecuteTx Result", params, ledgerResult, string(parameter))
+	log.Debug("ExecuteTx Result", "params", params, "result", ledgerResult, "parameterJson", string(parameter))
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,
@@ -442,14 +459,15 @@ type TxStakeHbd struct {
 	NetId string `json:"net_id"`
 }
 
-func (t *TxStakeHbd) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (t *TxStakeHbd) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if t.NetId != se.SystemConfig().NetId() {
-		fmt.Println("Invalid network id:", t.NetId, se.SystemConfig().NetId())
-
-		// return TxResult{
-		// 	Success: false,
-		// 	Ret:     "Invalid network id",
-		// }
+		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
 	if t.To == "" || t.From == "" {
 		return TxResult{
@@ -495,7 +513,7 @@ func (t *TxStakeHbd) ExecuteTx(se common_types.StateEngine, ledgerSession ledger
 	}
 	ledgerResult := ledgerSession.Stake(params)
 
-	se.Log().Debug("Stake LedgerResult", ledgerResult)
+	log.Debug("Stake LedgerResult", "result", ledgerResult)
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,
@@ -509,7 +527,6 @@ func (t *TxStakeHbd) ToData() map[string]interface{} {
 		"to":     t.To,
 		"amount": t.Amount,
 		"asset":  t.Asset,
-		"type":   t.Type(),
 	}
 }
 
@@ -530,16 +547,15 @@ type TxUnstakeHbd struct {
 	NetId  string `json:"net_id"`
 }
 
-func (t *TxUnstakeHbd) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
-	se.Log().Debug("TxUnstakeHbd", t.Self.BlockHeight, t.Self.TxId, t.Self.OpIndex, t.NetId, se.SystemConfig().NetId())
+func (t *TxUnstakeHbd) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if t.NetId != se.SystemConfig().NetId() {
-		fmt.Println("Invalid network id:", t.NetId, se.SystemConfig().NetId())
-
-		// return TxResult{
-		// 	Success: false,
-		// 	Ret:     "Invalid network id",
-		// 	RcUsed:  50,
-		// }
+		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
 	if t.To == "" || t.From == "" {
 		return TxResult{
@@ -587,7 +603,7 @@ func (t *TxUnstakeHbd) ExecuteTx(se common_types.StateEngine, ledgerSession ledg
 	ledgerResult := ledgerSession.Unstake(params)
 	paramsJson, _ := json.Marshal(params)
 
-	se.Log().Debug("Unstake LedgerResult", ledgerResult, string(paramsJson))
+	log.Debug("Unstake LedgerResult", "result", ledgerResult, "paramsJson", string(paramsJson))
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,
@@ -601,7 +617,6 @@ func (t *TxUnstakeHbd) ToData() map[string]interface{} {
 		"to":     t.To,
 		"amount": t.Amount,
 		"asset":  t.Asset,
-		"type":   t.Type(),
 	}
 }
 
@@ -613,17 +628,8 @@ func (t *TxUnstakeHbd) Type() string {
 	return "unstake_hbd"
 }
 
-// type TxUnstakeHbd struct {
-// 	Self   TxSelf
-// 	From   string `json:"from"`
-// 	To     string `json:"to"`
-// 	Amount string `json:"amount"`
-// 	Asset  string `json:"asset"`
-// 	NetId  string `json:"net_id"`
-// }
-
 type TxConsensusStake struct {
-	Self TxSelf
+	Self TxSelf `json:"-"`
 
 	From   string `json:"from"`
 	To     string `json:"to"`
@@ -632,15 +638,15 @@ type TxConsensusStake struct {
 	NetId  string `json:"net_id"`
 }
 
-func (tx *TxConsensusStake) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (tx *TxConsensusStake) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if tx.NetId != se.SystemConfig().NetId() {
-		fmt.Println("Invalid network id:", tx.NetId, se.SystemConfig().NetId())
-
-		// return TxResult{
-		// 	Success: false,
-		// 	Ret:     "Invalid network id",
-		// 	RcUsed:  50,
-		// }
+		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
 
 	if tx.To == "" || tx.From == "" {
@@ -659,7 +665,8 @@ func (tx *TxConsensusStake) ExecuteTx(se common_types.StateEngine, ledgerSession
 		}
 	}
 
-	if (strings.HasPrefix(tx.To, "did:") || !strings.HasPrefix(tx.To, "hive:")) || (!strings.HasPrefix(tx.From, "did:") && !strings.HasPrefix(tx.From, "hive:")) {
+	if (strings.HasPrefix(tx.To, "did:") || !strings.HasPrefix(tx.To, "hive:")) ||
+		(!strings.HasPrefix(tx.From, "did:") && !strings.HasPrefix(tx.From, "hive:")) {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
@@ -701,7 +708,6 @@ func (t *TxConsensusStake) ToData() map[string]interface{} {
 		"from":   t.From,
 		"amount": t.Amount,
 		"asset":  t.Asset,
-		"type":   "consensus_stake",
 	}
 }
 
@@ -723,15 +729,15 @@ type TxConsensusUnstake struct {
 	NetId  string `json:"net_id"`
 }
 
-func (tx *TxConsensusUnstake) ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult {
+func (tx *TxConsensusUnstake) ExecuteTx(
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	rcPayer string,
+) TxResult {
 	if tx.NetId != se.SystemConfig().NetId() {
-		fmt.Println("Invalid network id:", tx.NetId, se.SystemConfig().NetId())
-
-		// return TxResult{
-		// 	Success: false,
-		// 	Ret:     "Invalid network id",
-		// 	RcUsed:  50,
-		// }
+		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
 
 	if tx.To == "" || tx.From == "" {
@@ -748,7 +754,8 @@ func (tx *TxConsensusUnstake) ExecuteTx(se common_types.StateEngine, ledgerSessi
 			RcUsed:  50,
 		}
 	}
-	if (strings.HasPrefix(tx.To, "did:") && !strings.HasPrefix(tx.To, "hive:")) || (strings.HasPrefix(tx.From, "did:") || !strings.HasPrefix(tx.From, "hive:")) {
+	if (strings.HasPrefix(tx.To, "did:") && !strings.HasPrefix(tx.To, "hive:")) ||
+		(strings.HasPrefix(tx.From, "did:") || !strings.HasPrefix(tx.From, "hive:")) {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
@@ -792,7 +799,6 @@ func (t *TxConsensusUnstake) ToData() map[string]interface{} {
 		"to":     t.To,
 		"amount": t.Amount,
 		"asset":  t.Asset,
-		"type":   "consensus_unstake",
 	}
 }
 
@@ -865,7 +871,6 @@ func (tx *TransactionContainer) AsContractOutput() *ContractOutput {
 
 	bJson, _ := dag.MarshalJSON()
 
-	// fmt.Println("Marshelled JSON from contract output", string(bJson))
 	json.Unmarshal(bJson, &output)
 
 	return &output
@@ -880,32 +885,11 @@ func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
 
 	offchainTx := OffchainTransaction{
 		TxId: tx.Id,
-		Self: TxSelf{
-			TxId:        tx.Id,
-			BlockHeight: tx.Self.BlockHeight,
-		},
+		Self: tx.Self,
 	}
 	json.Unmarshal(bJson, &offchainTx)
 
-	// b64Bytes, _ := base64.StdEncoding.DecodeString(offchainTx.Tx["payload"].(string))
-
-	// node, _ := cbornode.Decode(b64Bytes, mh.SHA2_256, -1)
-	// bbytes, _ := node.MarshalJSON()
-	// var txPayload map[string]interface{}
-	// json.Unmarshal(bbytes, &txPayload)
-
-	// offchainTx.Tx = map[string]interface{}{
-	// 	"type":    offchainTx.Tx["op"],
-	// 	"payload": txPayload,
-	// }
-
 	return &offchainTx
-}
-
-// Hive anchor containing merkle root, list of hive txs
-// Consider deprecating from protocol
-func (tx *TransactionContainer) AsHiveAnchor() {
-
 }
 
 func (tx *TransactionContainer) AsOplog(endBlock uint64) Oplog {
@@ -913,10 +897,10 @@ func (tx *TransactionContainer) AsOplog(endBlock uint64) Oplog {
 	node, err := tx.da.GetDag(cid)
 
 	if err != nil {
-		panic(err)
+		fmt.Println("AsOplog: failed to fetch DAG", "cid", tx.Id, "err", err)
+		return Oplog{Self: tx.Self, EndBlock: endBlock}
 	}
 	jsonBytes, _ := node.MarshalJSON()
-	// fmt.Println("Oplog node", node, string(jsonBytes))
 
 	oplog := Oplog{
 		Self: tx.Self,
@@ -924,7 +908,6 @@ func (tx *TransactionContainer) AsOplog(endBlock uint64) Oplog {
 		EndBlock: endBlock,
 	}
 	json.Unmarshal(jsonBytes, &oplog)
-	// fmt.Println("Oplog decoded", oplog)
 
 	return oplog
 }
@@ -1080,10 +1063,9 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSe
 
 	for idx, v := range txs {
 		op := transactions.TransactionOperation{
-			RequiredAuths: txSelf.RequiredAuths,
-			Type:          v.Type(),
-			Data:          v.ToData(),
-			Idx:           int64(idx),
+			Type: v.Type(),
+			Data: v.ToData(),
+			Idx:  int64(idx),
 		}
 
 		opTypesM[op.Type] = true
@@ -1120,10 +1102,8 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 	self := tx.TxSelf()
 	self.RequiredAuths = tx.Headers.RequiredAuths
 
-	// fmt.Println("stakeTx tx.Tx[type].(string)", tx.Tx["type"].(string))
-
 	output := make([]VSCTransaction, 0)
-	for _, op := range tx.Tx {
+	for idx, op := range tx.Tx {
 		var vtx VSCTransaction
 		switch op.Type {
 		case "call":
@@ -1131,6 +1111,7 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 				Self:  self,
 				NetId: tx.Headers.NetId,
 			}
+			callTx.Self.OpIndex = idx
 			transactionpool.DecodeTxCbor(op, &callTx)
 
 			vtx = callTx
@@ -1141,8 +1122,6 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 			}
 			transactionpool.DecodeTxCbor(op, &transferTx)
 
-			// bbytes, _ := json.Marshal(transferTx)
-			// fmt.Println("Decoded transfer tx", string(bbytes), decodeErr)
 			vtx = transferTx
 		case "withdraw":
 			withdrawTx := TxVSCWithdraw{
@@ -1161,7 +1140,6 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 
 			transactionpool.DecodeTxCbor(op, &stakeTx)
 
-			fmt.Println("stakeTx", stakeTx)
 			vtx = &stakeTx
 		case "unstake_hbd":
 			stakeTx := TxStakeHbd{
@@ -1172,7 +1150,6 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 
 			transactionpool.DecodeTxCbor(op, &stakeTx)
 
-			fmt.Println("stakeTx", stakeTx)
 			vtx = &stakeTx
 		}
 
@@ -1183,14 +1160,19 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 }
 
 func (tx *OffchainTransaction) Type() string {
-
 	return "offchain"
 }
 
 var _ VscTxContainer = &OffchainTransaction{}
 
 type VSCTransaction interface {
-	ExecuteTx(se common_types.StateEngine, ledgerSession ledgerSystem.LedgerSession, rcSession rcSystem.RcSession, callSession *contract_session.CallSession, rcPayer string) TxResult
+	ExecuteTx(
+		se common_types.StateEngine,
+		ledgerSession ledgerSystem.LedgerSession,
+		rcSession rcSystem.RcSession,
+		callSession *contract_session.CallSession,
+		rcPayer string,
+	) TxResult
 	TxSelf() TxSelf
 	ToData() map[string]interface{}
 	Type() string

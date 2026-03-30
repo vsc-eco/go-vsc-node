@@ -104,7 +104,7 @@ func (p *OracleP2PMessageHandler) HandleRawMessage(
 
 // ParseMessage implements PubSubServiceParams[Msg]
 func (p *OracleP2PMessageHandler) ParseMessage(data []byte) (Msg, error) {
-	var msg Msg
+	msg := &oracleMessage{}
 	if err := json.Unmarshal(data, msg); err != nil {
 		return nil, err
 	}

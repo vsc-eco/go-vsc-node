@@ -44,7 +44,7 @@ type DataLayer struct {
 	DagServ    format.DAGService
 	Datastore  *badger.Datastore
 
-	dbPrefix []string
+	dataDir []string
 }
 
 type MetricsCtx context.Context
@@ -67,8 +67,8 @@ func (dl *DataLayer) Init() error {
 
 	var path string
 
-	if len(dl.dbPrefix) > 0 {
-		path = fmt.Sprint("data-", dl.dbPrefix[0], "/badger")
+	if len(dl.dataDir) > 0 && dl.dataDir[0] != "" {
+		path = fmt.Sprint(dl.dataDir[0], "/badger")
 	} else {
 		path = "data/badger"
 	}
@@ -78,6 +78,8 @@ func (dl *DataLayer) Init() error {
 	if err != nil {
 		panic(err)
 	}
+
+	dl.Datastore = ds
 
 	var bstore blockstore.Blockstore = blockstore.NewBlockstore(ds)
 
@@ -113,6 +115,9 @@ func (dl *DataLayer) Start() *promise.Promise[any] {
 }
 
 func (dl *DataLayer) Stop() error {
+	if dl.Datastore != nil {
+		return dl.Datastore.Close()
+	}
 	return nil
 }
 
@@ -260,16 +265,6 @@ func (dl *DataLayer) GetObject(cid cid.Cid, v interface{}, options common_types.
 }
 
 func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
-	go func() {
-		// dl.dht.Bootstrap(context.TODO())
-		// peers, _ := dl.dht.FindProviders(context.Background(), cid)
-		// for _, peer := range peers {
-		// 	dl.host.Connect(context.Background(), peer)
-		// }
-		// fmt.Println("TRYING TO PULL IN LOOP")
-		// dl.bitswap.GetBlock(context.Background(), cid)
-		// fmt.Println("I PULLED SOMETHING LOL")
-	}()
 	block, err := dl.blockServ.GetBlock(context.Background(), cid)
 	//Make sure it is stored
 	// dl.blockServ.AddBlock(context.Background(), block)
@@ -345,11 +340,11 @@ func (dl *DataLayer) FindProviders(cid.Cid) []peer.ID {
 
 var _ a.Plugin = &DataLayer{}
 
-func New(p2pService *libp2p.P2PServer, dbPrefix ...string) *DataLayer {
+func New(p2pService *libp2p.P2PServer, dataDir ...string) *DataLayer {
 
 	return &DataLayer{
 
 		p2pService: p2pService,
-		dbPrefix:   dbPrefix,
+		dataDir:    dataDir,
 	}
 }

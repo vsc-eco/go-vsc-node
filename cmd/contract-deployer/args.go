@@ -14,6 +14,7 @@ type args struct {
 	owner       string
 	isInit      bool
 	gqlUrl      string
+	dataDir     string
 
 	// update contract args
 	contractId string
@@ -32,6 +33,7 @@ func ParseArgs() (args, error) {
 	owner := flag.String("owner", "", "Owner of the contract (defaults to contract deployer)")
 	isInit := flag.Bool("init", false, "Generate credentials config files")
 	gqlUrl := flag.String("gqlUrl", "https://api.vsc.eco/api/v1/graphql", "GraphQL API URL for fetching latest election")
+	dataDir := flag.String("data-dir", "data", "Data directory for config")
 	contractId := flag.String("contractId", "", "Existing contract ID to update contract. Omit to deploy a new contract.")
 	flag.Parse()
 
@@ -43,6 +45,7 @@ func ParseArgs() (args, error) {
 		*owner,
 		*isInit,
 		*gqlUrl,
+		*dataDir,
 		*contractId,
 	}, nil
 }

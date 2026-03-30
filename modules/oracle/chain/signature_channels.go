@@ -11,9 +11,12 @@ var (
 	errChannelFull    = errors.New("channel full")
 )
 
+// signatureMessage carries a witness's BLS signature response through
+// the internal channel system.
 type signatureMessage struct {
-	// base64 encoded string of 96 bytes is 128
-	Signature string `json:"signature,omitempty" validate:"base64,required,len=128"`
+	Signature string `json:"signature"` // base64 BLS signature
+	Account   string `json:"account"`   // signer's hive account
+	BlsDid    string `json:"bls_did"`   // signer's BLS DID
 }
 
 type signatureChannels struct {
@@ -60,6 +63,17 @@ func (s *signatureChannels) receiveSignature(
 		return nil
 	default:
 		return errChannelFull
+	}
+}
+
+// clearSession closes and removes a single session channel.
+func (s *signatureChannels) clearSession(sessionID string) {
+	s.rwLock.Lock()
+	defer s.rwLock.Unlock()
+
+	if ch, ok := s.chanMap[sessionID]; ok {
+		close(ch)
+		delete(s.chanMap, sessionID)
 	}
 }
 

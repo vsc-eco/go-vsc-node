@@ -1,0 +1,94 @@
+services:
+  init:
+    profiles: ["init"]
+    build:
+      dockerfile: Dockerfile
+      context: .
+      target: vsc-node
+    command: ./vsc-node --init
+    environment:
+      - MONGO_URL=mongodb://db:27017
+    depends_on:
+      - db
+    networks:
+      - go-vsc-node
+    volumes:
+      - ./data:/home/app/app/data
+  app:
+    profiles: ["default"]
+    build:
+      dockerfile: Dockerfile
+      context: .
+      target: vsc-node
+    ports:
+      - "8094:8080"
+      - "10724:10720"
+      - "10724:10720/udp"
+    environment:
+      - MONGO_URL=mongodb://db:27017
+    depends_on:
+      - db
+    networks:
+      - go-vsc-node
+    volumes:
+      - ./data:/home/app/app/data
+  db:
+    image: mongo:8.0.17
+    # restart: always
+    ports:
+      - 127.0.0.1:27017:27017
+    networks:
+      - go-vsc-node
+    volumes:
+      - db:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      interval: 10s
+      retries: 5
+      timeout: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+  bitcoind:
+    image: bitcoin/bitcoin:29.3
+    container_name: vsc-btcd
+    command: -rpcuser=vsc-node-user -rpcpassword=vsc-node-pass -rpcallowip=0.0.0.0/0 -rpcbind=0.0.0.0 -prune=550 -dbcache=2048 -server=1 -listen=1
+    restart: always
+    networks:
+      - go-vsc-node
+    volumes:
+      - ./.btc-data:/home/bitcoin/.bitcoin
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "5"
+        max-size: "10m"
+  mapping-bot:
+    profiles: ["mapping-bot"]
+    build:
+      dockerfile: Dockerfile.mapping-bot
+      context: .
+    command: []
+    ports:
+      - 127.0.0.1:8000:8000
+    environment:
+      - MONGO_URL=mongodb://db:27017
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - go-vsc-node
+    volumes:
+      - ./data/mapping-bot:/home/app/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 2m
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+volumes:
+  db: {}
+networks:
+  go-vsc-node:
+    driver: bridge

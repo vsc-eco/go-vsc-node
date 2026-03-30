@@ -30,7 +30,7 @@ type gqlManager struct {
 	server       *http.Server
 	started      atomic.Bool
 	startPromise *promise.Promise[any]
-	Addr         string
+	conf         GqlConfig
 	schema       graphql.ExecutableSchema
 }
 
@@ -40,9 +40,9 @@ var _ a.Plugin = &gqlManager{}
 
 // ===== implementing the a.Plugin interface =====
 
-func New(schema graphql.ExecutableSchema, addr string) *gqlManager {
+func New(schema graphql.ExecutableSchema, conf GqlConfig) *gqlManager {
 	return &gqlManager{
-		Addr:   addr,
+		conf:   conf,
 		schema: schema,
 	}
 }
@@ -54,6 +54,7 @@ func (g *gqlManager) Init() error {
 	gqlServer := handler.New(g.schema)
 	gqlServer.AddTransport(transport.POST{})
 	gqlServer.Use(extension.Introspection{})
+	gqlServer.Use(extension.FixedComplexityLimit(g.conf.GetMaxComplexity()))
 
 	// OPTIONAL, UNCOMMENT TO ENABLE TRACING
 	// gqlServer.Use(apollotracing.Tracer{})
@@ -72,8 +73,11 @@ func (g *gqlManager) Init() error {
 
 	// assigns the HTTP server
 	g.server = &http.Server{
-		Addr:    g.Addr,
-		Handler: c.Handler(mux),
+		Addr:              g.conf.GetHostAddr(),
+		Handler:           c.Handler(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
 	}
 
 	g.startPromise = promise.New(func(resolve func(any), reject func(error)) {
@@ -89,7 +93,7 @@ func (g *gqlManager) Init() error {
 
 func (g *gqlManager) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
-		log.Printf("GraphQL sandbox available on %s/sandbox", g.Addr)
+		log.Printf("GraphQL sandbox available on %s/sandbox", g.conf.GetHostAddr())
 
 		if err := g.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			reject(err)

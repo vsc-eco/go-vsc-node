@@ -18,21 +18,25 @@ type IOSession interface {
 type ExecContextValue interface {
 	ContractCall(contractId string, method string, payload string, options string) wasm_types.WasmResult
 	ContractStateGet(contractId string, key string) result.Result[string]
+	DeleteEphemState(key string) result.Result[struct{}]
 	DeleteState(key string) result.Result[struct{}]
 	EnvVar(key string) result.Result[string]
 	GetBalance(account string, asset string) int64
 	GetEnv() result.Result[string]
+	GetEphemState(contractId string, key string) result.Result[string]
 	GetState(key string) result.Result[string]
 	IOGas() int
 	IOSession() IOSession
 	Log(msg string)
-	PullBalance(amount int64, asset string) result.Result[struct{}]
+	PullBalance(from string, amount int64, asset string) result.Result[struct{}]
 	Revert()
 	SendBalance(to string, amount int64, asset string) result.Result[struct{}]
 	SetGasUsage(gasUsed uint)
+	SetEphemState(key string, value string) result.Result[struct{}]
 	SetState(key string, value string) result.Result[struct{}]
 	WithdrawBalance(to string, amount int64, asset string) result.Result[struct{}]
-	TssCreateKey(keyId string, keyType string) result.Result[string]
+	TssCreateKey(keyId string, keyType string, epochs uint64) result.Result[string]
+	TssRenewKey(keyId string, additionalEpochs uint64) result.Result[string]
 	TssGetKey(keyId string) result.Result[string]
 	TssKeySign(keyId string, msg string) result.Result[string]
 }

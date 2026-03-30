@@ -40,9 +40,9 @@ func (m *mockHiveRpcClient) UpdateAccount(account string, owner *hivego.Auths, a
 	return "", nil // indicates success, despite looking unimplemented
 }
 
-func mockPeer(sysConf systemconfig.SystemConfig, idConf common.IdentityConfig) *p2pInterface.P2PServer {
+func mockPeer(sysConf systemconfig.SystemConfig, idConf common.IdentityConfig, p2pConf p2pInterface.P2PConfig) *p2pInterface.P2PServer {
 	wits := witnesses.NewEmptyWitnesses()
-	p2p := p2pInterface.New(wits, idConf, sysConf, nil)
+	p2p := p2pInterface.New(wits, p2pConf, idConf, sysConf, nil)
 	return p2p
 }
 
@@ -53,6 +53,7 @@ func TestImmediateExecution(t *testing.T) {
 	hiveRpcClient := &mockHiveRpcClient{}
 	sysConfig := systemconfig.MocknetConfig()
 	conf := common.NewIdentityConfig()
+	p2pConf := p2pInterface.NewConfig()
 
 	txCreator := hive.LiveTransactionCreator{
 		TransactionBroadcaster: hive.TransactionBroadcaster{
@@ -61,13 +62,14 @@ func TestImmediateExecution(t *testing.T) {
 		},
 		TransactionCrafter: hive.TransactionCrafter{},
 	}
-	p2p := mockPeer(sysConfig, conf)
+	p2p := mockPeer(sysConfig, conf, p2pConf)
 
-	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, time.Second*15, &txCreator, p2p)
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, p2pConf, time.Second*15, &txCreator, p2p)
 	assert.NoError(t, err)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
+		p2pConf,
 		p2p,
 		anouncementsManager,
 	})
@@ -86,6 +88,7 @@ func TestCronExecutions(t *testing.T) {
 	hiveRpcClient := &mockHiveRpcClient{}
 	sysConfig := systemconfig.MocknetConfig()
 	conf := common.NewIdentityConfig()
+	p2pConf := p2pInterface.NewConfig()
 
 	txCreator := hive.LiveTransactionCreator{
 		TransactionBroadcaster: hive.TransactionBroadcaster{
@@ -94,10 +97,11 @@ func TestCronExecutions(t *testing.T) {
 		},
 		TransactionCrafter: hive.TransactionCrafter{},
 	}
-	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, time.Second*2, &txCreator, mockPeer(sysConfig, conf))
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, p2pConf, time.Second*2, &txCreator, mockPeer(sysConfig, conf, p2pConf))
 	assert.NoError(t, err)
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
+		p2pConf,
 		anouncementsManager,
 	})
 	test_utils.RunPlugin(t, agg)
@@ -121,6 +125,7 @@ func TestStopAnnouncer(t *testing.T) {
 	hiveRpcClient := &mockHiveRpcClient{}
 	sysConfig := systemconfig.MocknetConfig()
 	conf := common.NewIdentityConfig()
+	p2pConf := p2pInterface.NewConfig()
 
 	txCreator := hive.LiveTransactionCreator{
 		TransactionBroadcaster: hive.TransactionBroadcaster{
@@ -129,11 +134,12 @@ func TestStopAnnouncer(t *testing.T) {
 		},
 		TransactionCrafter: hive.TransactionCrafter{},
 	}
-	p2p := mockPeer(sysConfig, conf)
-	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, time.Second*2, &txCreator, p2p)
+	p2p := mockPeer(sysConfig, conf, p2pConf)
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, p2pConf, time.Second*2, &txCreator, p2p)
 	assert.NoError(t, err)
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
+		p2pConf,
 		p2p,
 		anouncementsManager,
 	})
@@ -160,20 +166,22 @@ func TestInvalidAnnouncementsFrequencySetup(t *testing.T) {
 	hiveRpcClient := &mockHiveRpcClient{}
 	sysConfig := systemconfig.MocknetConfig()
 	conf := common.NewIdentityConfig()
-	peerGetter := mockPeer(sysConfig, conf)
-	_, err := announcements.New(hiveRpcClient, conf, sysConfig, time.Second*0, nil, peerGetter)
+	p2pConf := p2pInterface.NewConfig()
+	peerGetter := mockPeer(sysConfig, conf, p2pConf)
+	_, err := announcements.New(hiveRpcClient, conf, sysConfig, p2pConf, time.Second*0, nil, peerGetter)
 	assert.Error(t, err)
-	_, err = announcements.New(hiveRpcClient, conf, sysConfig, time.Second*-1, nil, peerGetter)
+	_, err = announcements.New(hiveRpcClient, conf, sysConfig, p2pConf, time.Second*-1, nil, peerGetter)
 	assert.Error(t, err)
-	_, err = announcements.New(hiveRpcClient, conf, sysConfig, time.Second*-2, nil, peerGetter)
+	_, err = announcements.New(hiveRpcClient, conf, sysConfig, p2pConf, time.Second*-2, nil, peerGetter)
 	assert.Error(t, err)
-	_, err = announcements.New(hiveRpcClient, conf, sysConfig, time.Second*3, nil, peerGetter)
+	_, err = announcements.New(hiveRpcClient, conf, sysConfig, p2pConf, time.Second*3, nil, peerGetter)
 	assert.NoError(t, err)
 }
 
 func TestInvalidRpcClient(t *testing.T) {
 	sysConfig := systemconfig.MocknetConfig()
 	conf := common.NewIdentityConfig()
-	_, err := announcements.New(nil, conf, sysConfig, time.Second*2, nil, mockPeer(sysConfig, conf))
+	p2pConf := p2pInterface.NewConfig()
+	_, err := announcements.New(nil, conf, sysConfig, p2pConf, time.Second*2, nil, mockPeer(sysConfig, conf, p2pConf))
 	assert.Error(t, err)
 }
