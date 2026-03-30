@@ -7,7 +7,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"sync"
 
 	uio "github.com/ipfs/boxo/ipld/unixfs/io"
 	"github.com/ipfs/go-cid"
@@ -61,7 +60,7 @@ func (lf *LeafDir) Compact(recursive bool) {
 		if lf.leafDeleted == true {
 			links, _ := lf.Dir.Links(context.Background())
 			for _, v := range links {
-				if v.Cid.Prefix().Codec == uint64(multicodec.Protobuf) {
+				if v.Cid.Prefix().Codec == uint64(multicodec.DagPb) {
 					if lf.leaves[v.Name] == nil {
 						//Deletion happened! Remove from directory structure
 						lf.Dir.RemoveChild(context.Background(), v.Name)
@@ -129,7 +128,7 @@ func (db *DataBin) List(prefix string) (*[]string, error) {
 	tree := make([]string, 0)
 	for _, v := range links {
 		prefix := v.Cid.Prefix()
-		if prefix.Codec == uint64(multicodec.Protobuf) {
+		if prefix.Codec == uint64(multicodec.DagPb) {
 			//If it's protobuf then it's a sub directory
 			//TODO: Recursive resolve
 			//Signify it's a directory by including "/" at the end
@@ -284,7 +283,7 @@ func enumerateLeaf(lf *LeafDir, prefix string, result map[string]cid.Cid) error 
 		if prefix != "" {
 			fullKey = prefix + "/" + link.Name
 		}
-		if link.Cid.Prefix().Codec == uint64(multicodec.Protobuf) {
+		if link.Cid.Prefix().Codec == uint64(multicodec.DagPb) {
 			// It's a subdirectory — recurse into its leaf if available
 			if subLeaf, ok := lf.leaves[link.Name]; ok {
 				if err := enumerateLeaf(subLeaf, fullKey, result); err != nil {
@@ -315,28 +314,30 @@ func (db *DataBin) Save() cid.Cid {
 	}
 
 	go func() {
-		// links, _ := db.Leaf.Dir.Links(context.Background())
-		var wg sync.WaitGroup
-		// for _, link := range links {
-
-		// 	wg.Add(1)
-		// 	go func(link *format.Link) {
-		// 		fmt.Println("Getting block", link.Cid)
-		// 		blk, _ := db.DataLayer.blockServ.GetBlock(context.Background(), link.Cid)
-		// 		fmt.Println("Notifying block", link.Cid)
-		// 		db.DataLayer.notify(context.Background(), blk)
-		// 		fmt.Println("Done block", link.Cid)
-		// 		wg.Done()
-		// 	}(link)
-		// }
-		wg.Wait()
-		db.DataLayer.blockServ.AddBlock(context.Background(), nodeDir)
-		db.DataLayer.bitswap.NotifyNewBlocks(context.Background(), nodeDir)
-
+		ctx := context.Background()
+		// Persist all subdirectory nodes so nested paths (containing "/")
+		// survive reload via NewDataBinFromCid.
+		db.addLeafBlocks(ctx, &db.Leaf)
+		db.DataLayer.blockServ.AddBlock(ctx, nodeDir)
+		db.DataLayer.bitswap.NotifyNewBlocks(ctx, nodeDir)
 		db.DataLayer.p2pService.BroadcastCid(nodeDir.Cid())
 	}()
 
 	return nodeDir.Cid()
+}
+
+// addLeafBlocks recursively persists subdirectory nodes into the blockservice.
+// Without this, intermediate directory nodes created during Compact are only
+// held in memory and lost on reload — causing paths with "/" to be dropped.
+func (db *DataBin) addLeafBlocks(ctx context.Context, lf *LeafDir) {
+	for _, child := range lf.leaves {
+		db.addLeafBlocks(ctx, child)
+		node, err := materializeGetNode(child.Dir)
+		if err != nil {
+			continue
+		}
+		db.DataLayer.blockServ.AddBlock(ctx, node)
+	}
 }
 
 func NewDataBin(da *DataLayer) DataBin {
@@ -386,7 +387,7 @@ func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
 
 	leaves := make(map[string]*LeafDir)
 	for _, lnk := range links {
-		if lnk.Cid.Prefix().Codec == uint64(multicodec.Protobuf) {
+		if lnk.Cid.Prefix().Codec == uint64(multicodec.DagPb) {
 			lf := newLeafFromCid(da, lnk.Cid)
 			leaves[lnk.Name] = &lf
 		}
