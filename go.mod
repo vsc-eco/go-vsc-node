@@ -26,6 +26,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/cors v1.11.1
 	github.com/tinylib/msgp v1.6.3
+	github.com/vektah/gqlparser/v2 v2.5.30
 	github.com/vsc-eco/go-ethereum v0.0.1
 	github.com/vsc-eco/hivego v0.0.0-20260224180332-508b8c394435
 	go.mongodb.org/mongo-driver v1.16.0
@@ -62,7 +63,6 @@ require (
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
-	github.com/vektah/gqlparser/v2 v2.5.30 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	golang.org/x/telemetry v0.0.0-20250908211612-aef8a434d053 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
