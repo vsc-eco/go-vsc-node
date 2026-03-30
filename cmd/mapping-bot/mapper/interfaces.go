@@ -41,7 +41,7 @@ type StateStore interface {
 	UpdateSignatures(ctx context.Context, signatures map[string]database.SignatureUpdate) ([]*database.Transaction, error)
 
 	IsTransactionProcessed(ctx context.Context, txID string) (bool, error)
-	MarkTransactionSent(ctx context.Context, txID string) error
+	MarkTransactionSent(ctx context.Context, txID string, blockHeight uint64) error
 	MarkTransactionConfirmed(ctx context.Context, txID string) error
 	GetSentTransactionIDs(ctx context.Context) ([]string, error)
 	GetSentTransactions(ctx context.Context) ([]database.Transaction, error)

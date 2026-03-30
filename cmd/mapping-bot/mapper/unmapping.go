@@ -70,7 +70,8 @@ func (b *Bot) HandleUnmap() {
 				b.L.Warn("transaction failed to post after retries", "err", err, "txId", tx.TxId)
 				continue
 			}
-			b.stateDB().MarkTransactionSent(ctx, tx.TxId)
+			height, _ := b.LastBlock()
+			b.stateDB().MarkTransactionSent(ctx, tx.TxId, height)
 		}
 	}
 }

@@ -274,7 +274,7 @@ func (m *mockStateStore) IsTransactionProcessed(ctx context.Context, txID string
 	return tx.State == database.TxStateSent || tx.State == database.TxStateConfirmed, nil
 }
 
-func (m *mockStateStore) MarkTransactionSent(ctx context.Context, txID string) error {
+func (m *mockStateStore) MarkTransactionSent(ctx context.Context, txID string, blockHeight uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	tx, ok := m.txs[txID]
@@ -284,6 +284,7 @@ func (m *mockStateStore) MarkTransactionSent(ctx context.Context, txID string) e
 	tx.State = database.TxStateSent
 	now := time.Now().UTC()
 	tx.SentAt = &now
+	tx.SentAtHeight = blockHeight
 	return nil
 }
 
