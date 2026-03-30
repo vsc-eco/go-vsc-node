@@ -321,7 +321,15 @@ func main() {
 
 	if args.isInit {
 		fmt.Println("initing")
-		err = a.Init()
+		configs := aggregate.New([]aggregate.Plugin{
+			dbConf,
+			p2pConf,
+			identityConfig,
+			gqlConf,
+			oracleConf,
+			hiveApiUrl,
+		})
+		err = configs.Init()
 	} else {
 		err = a.Run()
 	}
