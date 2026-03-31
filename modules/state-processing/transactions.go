@@ -82,7 +82,7 @@ func (t TxVscCallContract) ExecuteTx(
 
 	code, cached := se.GetCachedCode(c)
 	if !cached {
-		node, err := se.DataLayer().Get(c, nil)
+		node, err := se.DataLayer().Get(context.Background(), c, nil)
 		if err != nil {
 			return errorToTxResult(err, 100)
 		}
@@ -868,7 +868,7 @@ func (tx *TransactionContainer) AsContractOutput() *ContractOutput {
 		Id: tx.Id,
 	}
 	txCid := cid.MustParse(tx.Id)
-	dag, _ := tx.da.GetDag(txCid)
+	dag, _ := tx.da.GetDag(context.Background(), txCid)
 
 	bJson, _ := dag.MarshalJSON()
 
@@ -880,7 +880,7 @@ func (tx *TransactionContainer) AsContractOutput() *ContractOutput {
 // As a regular VSC transaction
 func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
 	txCid := cid.MustParse(tx.Id)
-	dag, _ := tx.da.GetDag(txCid)
+	dag, _ := tx.da.GetDag(context.Background(), txCid)
 
 	bJson, _ := dag.MarshalJSON()
 
@@ -895,7 +895,7 @@ func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
 
 func (tx *TransactionContainer) AsOplog(endBlock uint64) Oplog {
 	cid := cid.MustParse(tx.Id)
-	node, err := tx.da.GetDag(cid)
+	node, err := tx.da.GetDag(context.Background(), cid)
 
 	if err != nil {
 		fmt.Println("AsOplog: failed to fetch DAG", "cid", tx.Id, "err", err)

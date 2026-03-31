@@ -228,32 +228,24 @@ func (dl *DataLayer) HashObject(data interface{}) (*cid.Cid, error) {
 	return &cid, err
 }
 
-func (dl *DataLayer) Get(cid cid.Cid, options *common_types.GetOptions) (format.Node, error) {
-	//This is using direct bitswap access which may not use a block store.
-	//Thus, it will not store anything upon request.
-	block, err := dl.blockServ.GetBlock(context.Background(), cid)
+func (dl *DataLayer) Get(ctx context.Context, cid cid.Cid, options *common_types.GetOptions) (format.Node, error) {
+	block, err := dl.blockServ.GetBlock(ctx, cid)
 	if err != nil {
 		return nil, err
 	}
 	node, err := dagCbor.DecodeBlock(block)
 
-	dl.blockServ.AddBlock(context.Background(), block)
+	dl.blockServ.AddBlock(ctx, block)
 
 	if err != nil {
 		return nil, err
 	}
 	return node, nil
-	// if options.NoStore {
-	// } else {
-	// 	//This will automatically store locally
-	// 	node, err := dl.DagServ.Get(context.Background(), cid)
-	// 	return &node, err
-	// }
 }
 
-// Gets Object then converts it to Golang type seemlessly
-func (dl *DataLayer) GetObject(cid cid.Cid, v interface{}, options common_types.GetOptions) error {
-	dataNode, err := dl.Get(cid, &options)
+// Gets Object then converts it to Golang type seamlessly
+func (dl *DataLayer) GetObject(ctx context.Context, cid cid.Cid, v interface{}, options common_types.GetOptions) error {
+	dataNode, err := dl.Get(ctx, cid, &options)
 
 	if err != nil {
 		return err
@@ -264,10 +256,8 @@ func (dl *DataLayer) GetObject(cid cid.Cid, v interface{}, options common_types.
 	return err
 }
 
-func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
-	block, err := dl.blockServ.GetBlock(context.Background(), cid)
-	//Make sure it is stored
-	// dl.blockServ.AddBlock(context.Background(), block)
+func (dl *DataLayer) GetDag(ctx context.Context, cid cid.Cid) (*dagCbor.Node, error) {
+	block, err := dl.blockServ.GetBlock(ctx, cid)
 	if err != nil {
 		return nil, err
 	}
@@ -275,12 +265,39 @@ func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
 	return dag, err
 }
 
-func (dl *DataLayer) GetRaw(cid cid.Cid) ([]byte, error) {
-	block, err := dl.blockServ.GetBlock(context.Background(), cid)
+func (dl *DataLayer) GetRaw(ctx context.Context, cid cid.Cid) ([]byte, error) {
+	block, err := dl.blockServ.GetBlock(ctx, cid)
 	if err != nil {
 		return nil, err
 	}
 	return block.RawData(), nil
+}
+
+// GetMany fetches multiple CIDs concurrently using a Bitswap session for
+// optimized peer utilization. Returns a map of CID to raw block data.
+func (dl *DataLayer) GetMany(ctx context.Context, cids []cid.Cid) (map[cid.Cid]blocks.Block, error) {
+	if len(cids) == 0 {
+		return make(map[cid.Cid]blocks.Block), nil
+	}
+
+	session := blockservice.NewSession(ctx, dl.blockServ)
+	results := make(map[cid.Cid]blocks.Block, len(cids))
+
+	ch := session.GetBlocks(ctx, cids)
+	for block := range ch {
+		results[block.Cid()] = block
+	}
+
+	if len(results) != len(cids) {
+		// Check which CIDs are missing
+		for _, c := range cids {
+			if _, ok := results[c]; !ok {
+				return results, fmt.Errorf("failed to fetch CID %s", c.String())
+			}
+		}
+	}
+
+	return results, nil
 }
 
 func (dl *DataLayer) notify(ctx context.Context, block blocks.Block) {

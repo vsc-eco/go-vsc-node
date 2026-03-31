@@ -2,6 +2,7 @@ package contract_session
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -223,7 +224,7 @@ func (cs *CallSession) GetContractFromDb(contractId string, height uint64) resul
 	if err != nil {
 		return result.Err[ContractWithCode](errors.Join(fmt.Errorf(contracts.IC_CID_DEC_ERR), err))
 	}
-	node, err := cs.dl.Get(c, nil)
+	node, err := cs.dl.Get(context.Background(), c, nil)
 	if err != nil {
 		return result.Err[ContractWithCode](errors.Join(fmt.Errorf(contracts.IC_CODE_FET_ERR), err))
 	}
@@ -347,7 +348,7 @@ func (ss *StateStore) Get(key string) []byte {
 		cidz, err := ss.databin.Get(key)
 
 		if err == nil {
-			rawBytes, err := ss.datalayer.GetRaw(*cidz)
+			rawBytes, err := ss.datalayer.GetRaw(context.Background(), *cidz)
 			if err == nil {
 				ss.cache[key] = rawBytes
 			} else {

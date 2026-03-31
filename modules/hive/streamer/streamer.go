@@ -492,6 +492,7 @@ func (s *Streamer) fetchBlockBatch(startBlock, batchSize uint64) ([]hivego.Block
 
 func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 	hiveBlocks := make([]hiveblocks.HiveBlock, len(blocks))
+	virtualOpsNeeded := make([]int, 0)
 	for i, block := range blocks {
 		// init the filtered block with essential fields
 		hiveBlock := hiveblocks.HiveBlock{
@@ -553,23 +554,48 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 			}
 		}
 
+		hiveBlocks[i] = hiveBlock
+
 		if needsVirtualOps {
-			vlog.Trace("Pulling virtual ops")
-			virtualOps, _ := s.client.FetchVirtualOps(int(block.BlockNumber), true, false)
-			bbytes, _ := json.Marshal(virtualOps)
-			vlog.Trace("virtual ops fetched", "data", string(bbytes))
-			filteredOps := make([]hivego.VirtualOp, 0)
-			for _, vop := range virtualOps {
-				for _, vFilter := range s.vFilters {
-					if vFilter(vop) {
-						filteredOps = append(filteredOps, vop)
+			virtualOpsNeeded = append(virtualOpsNeeded, i)
+		}
+	}
+
+	// Fetch virtual ops concurrently for blocks that need them
+	if len(virtualOpsNeeded) > 0 {
+		const maxWorkers = 8
+		sem := make(chan struct{}, maxWorkers)
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+
+		for _, idx := range virtualOpsNeeded {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(blockIdx int) {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				blockNum := int(hiveBlocks[blockIdx].BlockNumber)
+				vlog.Trace("Pulling virtual ops", "block", blockNum)
+				virtualOps, _ := s.client.FetchVirtualOps(blockNum, true, false)
+				bbytes, _ := json.Marshal(virtualOps)
+				vlog.Trace("virtual ops fetched", "data", string(bbytes))
+
+				filteredOps := make([]hivego.VirtualOp, 0)
+				for _, vop := range virtualOps {
+					for _, vFilter := range s.vFilters {
+						if vFilter(vop) {
+							filteredOps = append(filteredOps, vop)
+						}
 					}
 				}
-			}
-			hiveBlock.VirtualOps = filteredOps
-		}
 
-		hiveBlocks[i] = hiveBlock
+				mu.Lock()
+				hiveBlocks[blockIdx].VirtualOps = filteredOps
+				mu.Unlock()
+			}(idx)
+		}
+		wg.Wait()
 	}
 
 	// if the streamer is paused or stopped, skip block processing, this
