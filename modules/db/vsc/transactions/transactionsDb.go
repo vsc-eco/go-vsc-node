@@ -3,12 +3,14 @@ package transactions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -24,6 +26,13 @@ func (e *transactions) Init() error {
 	err := e.Collection.Init()
 	if err != nil {
 		return err
+	}
+
+	idx := mongo.IndexModel{
+		Keys: bson.D{{Key: "status", Value: 1}, {Key: "type", Value: 1}, {Key: "expire_block", Value: 1}},
+	}
+	if err := e.CreateIndexIfNotExist(idx); err != nil {
+		return fmt.Errorf("failed to create transaction_pool index: %w", err)
 	}
 
 	return nil

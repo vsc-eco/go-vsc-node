@@ -2,8 +2,8 @@ package ledger_db
 
 import (
 	"context"
+	"fmt"
 	"strings"
-	"vsc-node/modules/common"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
@@ -21,17 +21,39 @@ func New(d *vsc.VscDb) Ledger {
 	return &ledger{db.NewCollection(d.DbInstance, "ledger")}
 }
 
-func (ledger *ledger) StoreLedger(ledgerRecords ...LedgerRecord) {
-	if len(ledgerRecords) > 0 {
-		for _, ledgerRecord := range ledgerRecords {
-			findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
-			ledger.FindOneAndUpdate(context.Background(), bson.M{
-				"id": ledgerRecord.Id,
-			}, bson.M{
-				"$set": ledgerRecord,
-			}, findUpdateOpts)
+func (l *ledger) Init() error {
+	if err := l.Collection.Init(); err != nil {
+		return err
+	}
+
+	indexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "owner", Value: 1}, {Key: "block_height", Value: 1}}},
+		{Keys: bson.D{{Key: "owner", Value: 1}, {Key: "tk", Value: 1}, {Key: "block_height", Value: 1}}},
+		{Keys: bson.D{{Key: "id", Value: 1}}},
+	}
+	for _, idx := range indexes {
+		if err := l.CreateIndexIfNotExist(idx); err != nil {
+			return fmt.Errorf("failed to create ledger index: %w", err)
 		}
 	}
+	return nil
+}
+
+func (ledger *ledger) StoreLedger(ledgerRecords ...LedgerRecord) {
+	if len(ledgerRecords) == 0 {
+		return
+	}
+
+	models := make([]mongo.WriteModel, len(ledgerRecords))
+	for i, record := range ledgerRecords {
+		models[i] = mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"id": record.Id}).
+			SetUpdate(bson.M{"$set": record}).
+			SetUpsert(true)
+	}
+
+	opts := options.BulkWrite().SetOrdered(false)
+	ledger.BulkWrite(context.Background(), models, opts)
 }
 
 // Get ledger ops after height inclusive
@@ -213,6 +235,20 @@ func NewBalances(d *vsc.VscDb) Balances {
 	return &balances{db.NewCollection(d.DbInstance, "ledger_balances")}
 }
 
+func (b *balances) Init() error {
+	if err := b.Collection.Init(); err != nil {
+		return err
+	}
+
+	idx := mongo.IndexModel{
+		Keys: bson.D{{Key: "account", Value: 1}, {Key: "block_height", Value: -1}},
+	}
+	if err := b.CreateIndexIfNotExist(idx); err != nil {
+		return fmt.Errorf("failed to create balances index: %w", err)
+	}
+	return nil
+}
+
 // Gets the balance record for a given account and asset
 // Note: this does not return updated ledger records
 func (balances *balances) GetBalanceRecord(account string, blockHeight uint64) (*BalanceRecord, error) {
@@ -249,20 +285,26 @@ func (balances *balances) UpdateBalanceRecord(record BalanceRecord) error {
 }
 
 func (balances *balances) GetAll(blockHeight uint64) []BalanceRecord {
-	distinctAccountZ, _ := balances.Distinct(context.Background(), "account", bson.M{})
-	distinctAccount := common.ArrayToStringArray(distinctAccountZ)
-
-	//TODO: Either use a bulk read or use threads
-	//Initial iteration
-	records := make([]BalanceRecord, 0)
-	for _, act := range distinctAccount {
-		br, _ := balances.GetBalanceRecord(act, blockHeight)
-
-		if br != nil {
-			records = append(records, *br)
-		}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"block_height": bson.M{"$lte": blockHeight}}}},
+		{{Key: "$sort", Value: bson.D{{Key: "account", Value: 1}, {Key: "block_height", Value: -1}}}},
+		{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: "$account"},
+			{Key: "doc", Value: bson.M{"$first": "$$ROOT"}},
+		}}},
+		{{Key: "$replaceRoot", Value: bson.M{"newRoot": "$doc"}}},
 	}
 
+	cursor, err := balances.Aggregate(context.Background(), pipeline)
+	if err != nil {
+		return []BalanceRecord{}
+	}
+	defer cursor.Close(context.Background())
+
+	var records []BalanceRecord
+	if err := cursor.All(context.Background(), &records); err != nil {
+		return []BalanceRecord{}
+	}
 	return records
 }
 
@@ -272,6 +314,23 @@ type actionsDb struct {
 
 func NewActionsDb(d *vsc.VscDb) BridgeActions {
 	return &actionsDb{db.NewCollection(d.DbInstance, "ledger_actions")}
+}
+
+func (a *actionsDb) Init() error {
+	if err := a.Collection.Init(); err != nil {
+		return err
+	}
+
+	indexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "block_height", Value: 1}}},
+		{Keys: bson.D{{Key: "id", Value: 1}}},
+	}
+	for _, idx := range indexes {
+		if err := a.CreateIndexIfNotExist(idx); err != nil {
+			return fmt.Errorf("failed to create actions index: %w", err)
+		}
+	}
+	return nil
 }
 
 func (actionsDb *actionsDb) StoreAction(withdraw ActionRecord) {
@@ -548,4 +607,18 @@ func (ic *interestClaims) FindClaims(fromBlock *uint64, toBlock *uint64, offset 
 
 func NewInterestClaimDb(d *vsc.VscDb) InterestClaims {
 	return &interestClaims{db.NewCollection(d.DbInstance, "ledger_claims")}
+}
+
+func (ic *interestClaims) Init() error {
+	if err := ic.Collection.Init(); err != nil {
+		return err
+	}
+
+	idx := mongo.IndexModel{
+		Keys: bson.D{{Key: "block_height", Value: -1}},
+	}
+	if err := ic.CreateIndexIfNotExist(idx); err != nil {
+		return fmt.Errorf("failed to create claims index: %w", err)
+	}
+	return nil
 }

@@ -180,35 +180,36 @@ func (blocks *hiveBlocks) Init() error {
 	return nil
 }
 
-// stores a block and updates the last stored block atomically without txs
-func (h *hiveBlocks) StoreBlocks(headBlock uint64, blocks ...HiveBlock) error {
+// stores blocks and updates metadata atomically.
+// lastBlockNum is the highest block number seen in this batch (used for metadata tracking),
+// which may differ from the last element in blocks when irrelevant blocks are filtered out.
+func (h *hiveBlocks) StoreBlocks(headBlock uint64, lastBlockNum uint64, blocks ...HiveBlock) error {
 
-	if len(blocks) == 0 {
-		return fmt.Errorf("empty blocks")
-	}
-	models := make([]mongo.WriteModel, len(blocks)+1) // space for all hive blocks + the metadata doc
+	models := make([]mongo.WriteModel, 0, len(blocks)+1)
 
 	h.writeMutex.Lock()
 	defer h.writeMutex.Unlock()
-	for i, block := range blocks {
-		models[i] = mongo.NewUpdateOneModel().SetFilter(bson.M{
+	for _, block := range blocks {
+		models = append(models, mongo.NewUpdateOneModel().SetFilter(bson.M{
 			"block.block_number": block.BlockNumber,
 		}).SetUpdate(bson.M{
 			"$set": Document{
 				Type:  DocumentTypeHiveBlock,
 				Block: &block,
 			},
-		}).SetUpsert(true)
+		}).SetUpsert(true))
 	}
 
-	models[len(models)-1] = mongo.NewUpdateOneModel().
+	// Always update metadata with the last block number from the batch,
+	// even if no blocks were stored (all filtered out)
+	models = append(models, mongo.NewUpdateOneModel().
 		SetFilter(Document{Type: DocumentTypeMetadata}).
 		SetUpdate(bson.M{"$set": Document{
 			Type:            DocumentTypeMetadata,
-			LastStoredBlock: &blocks[len(blocks)-1].BlockNumber,
+			LastStoredBlock: &lastBlockNum,
 			HeadHeight:      &headBlock,
 		}}).
-		SetUpsert(true)
+		SetUpsert(true))
 	bulkWriteOptions := options.BulkWrite().SetOrdered(true)
 
 	// execute the bulk write op
@@ -367,17 +368,18 @@ func (h *hiveBlocks) GetLastStoredBlock() (uint64, error) {
 }
 
 func (h *hiveBlocks) GetHighestBlock() (uint64, error) {
-	findOptions := options.FindOne().SetSort(bson.D{{Key: "block.block_number", Value: -1}})
 	var result Document
-	err := h.Collection.FindOne(context.Background(), Document{Type: DocumentTypeHiveBlock}, findOptions).Decode(&result)
+	err := h.FindOne(context.Background(), Document{Type: DocumentTypeMetadata}).Decode(&result)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return 0, nil // no blocks stored yet
+			return 0, nil
 		}
 		return 0, fmt.Errorf("failed to get highest block: %w", err)
 	}
-
-	return result.Block.BlockNumber, nil
+	if result.LastStoredBlock == nil {
+		return 0, nil
+	}
+	return *result.LastStoredBlock, nil
 }
 
 func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block HiveBlock, headBlock *uint64) error) (context.CancelFunc, <-chan error) {

@@ -18,10 +18,11 @@ type MockHiveDbs struct {
 	HighestBlock uint64
 }
 
-func (m *MockHiveDbs) StoreBlocks(processedBlk uint64, blocks ...hive_blocks.HiveBlock) error {
+func (m *MockHiveDbs) StoreBlocks(processedBlk uint64, lastBlockNum uint64, blocks ...hive_blocks.HiveBlock) error {
 	for _, block := range blocks {
 		m.blocks[block.BlockNumber] = &block
 	}
+	m.HighestBlock = lastBlockNum
 	return nil
 }
 

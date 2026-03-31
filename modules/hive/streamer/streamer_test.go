@@ -70,7 +70,7 @@ func seedBlockData(t *testing.T, hiveBlocks hive_blocks.HiveBlocks, n uint64) {
 		}
 
 		// store block
-		assert.NoError(t, hiveBlocks.StoreBlocks(n, block))
+		assert.NoError(t, hiveBlocks.StoreBlocks(n, block.BlockNumber, block))
 	}
 }
 
@@ -191,7 +191,7 @@ func (m *MockHiveBlockDb) GetLastProcessedBlock() (uint64, error) {
 }
 
 // StoreBlocks implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) StoreBlocks(headBlock uint64, blocks ...hive_blocks.HiveBlock) error {
+func (m *MockHiveBlockDb) StoreBlocks(headBlock uint64, lastBlockNum uint64, blocks ...hive_blocks.HiveBlock) error {
 	m.Blocks = append(m.Blocks, blocks...)
 	m.HeadHeight = headBlock
 	return nil
@@ -899,7 +899,7 @@ func TestNestedArrayStructure(t *testing.T) {
 	}
 
 	// store block
-	err := mockHiveBlocks.StoreBlocks(originalBlock.BlockNumber, originalBlock)
+	err := mockHiveBlocks.StoreBlocks(originalBlock.BlockNumber, originalBlock.BlockNumber, originalBlock)
 	assert.NoError(t, err)
 
 	// fetch stored block directly by its ID (we do this with a 1-wide range)

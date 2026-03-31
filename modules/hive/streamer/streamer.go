@@ -11,6 +11,7 @@ import (
 
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
+	"vsc-node/modules/common"
 	hiveblocks "vsc-node/modules/db/vsc/hive_blocks"
 
 	"github.com/chebyrash/promise"
@@ -52,7 +53,7 @@ var (
 	//
 	// we need this because if we call it too often, this route seems
 	// to get rate limited very, very easily
-	HeadBlockCheckPollIntervalOnceUpdated = time.Minute * 1
+	HeadBlockCheckPollIntervalOnceUpdated = time.Second * 5
 	// maximum backoff interval for fetching the head block number
 	HeadBlockMaxBackoffInterval = time.Minute * 5
 	// even if all predicate funcs say we should keep pulling the next batch of
@@ -458,9 +459,7 @@ func (s *Streamer) streamBlocks() {
 			go func() {
 				defer s.processWg.Done()
 				if err := s.storeBlocks(blocks); err != nil {
-					if err.Error() != "empty blocks" {
-						log.Printf("processing blocks failed: %v\n", err)
-					}
+					log.Printf("processing blocks failed: %v\n", err)
 				}
 			}()
 
@@ -580,13 +579,24 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 		return fmt.Errorf("streamer is paused or stopped")
 	}
 
-	// store the block with filtered txs
-	//
-	// even if a block has no txs, we store
-	if err := s.hiveBlocks.StoreBlocks(s.headHeight, hiveBlocks...); err != nil {
-		if err.Error() == "empty blocks" {
-			return nil
+	// Filter to only store blocks that:
+	// 1. Contain relevant transactions or virtual ops
+	// 2. Are round seed blocks for witness schedule randomization
+	//    (at roundStartHeight - 1, i.e. blockNumber % ScheduleLength == ScheduleLength - 1)
+	// 3. Are the last block in the batch (ensures GetBlock(GetHighestBlock()) always works)
+	lastIdx := len(hiveBlocks) - 1
+	lastBlockNum := hiveBlocks[lastIdx].BlockNumber
+	relevantBlocks := make([]hiveblocks.HiveBlock, 0, len(hiveBlocks))
+	for i, hb := range hiveBlocks {
+		isRoundSeed := hb.BlockNumber%common.CONSENSUS_SPECS.ScheduleLength == common.CONSENSUS_SPECS.ScheduleLength-1
+		hasTxs := len(hb.Transactions) > 0 || len(hb.VirtualOps) > 0
+		isLast := i == lastIdx
+		if hasTxs || isRoundSeed || isLast {
+			relevantBlocks = append(relevantBlocks, hb)
 		}
+	}
+
+	if err := s.hiveBlocks.StoreBlocks(s.headHeight, lastBlockNum, relevantBlocks...); err != nil {
 		return fmt.Errorf("failed to store block: %v", err)
 	}
 

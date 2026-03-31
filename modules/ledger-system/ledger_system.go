@@ -83,11 +83,8 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 
 	fmt.Println("Processed bal records", ledgerBalances, string(bsj))
 
+	ledgerRecords := make([]ledger_db.LedgerRecord, 0, len(processedBalRecords))
 	for id, balance := range processedBalRecords {
-		// if balance.HBD_AVG == 0 {
-		// 	continue
-		// }
-
 		distributeAmt := balance.HBD_AVG * amount / totalAvg
 
 		if distributeAmt > 0 {
@@ -96,16 +93,14 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 				if balance.Account == "system:fr_balance" {
 					owner = params.DAO_WALLET
 				} else {
-					//Filter
 					continue
 				}
 			} else {
 				owner = balance.Account
 			}
 
-			ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-				Id: "hbd_interest_" + strconv.Itoa(int(blockHeight)) + "_" + strconv.Itoa(id),
-				//next block
+			ledgerRecords = append(ledgerRecords, ledger_db.LedgerRecord{
+				Id:          "hbd_interest_" + strconv.Itoa(int(blockHeight)) + "_" + strconv.Itoa(id),
 				BlockHeight: blockHeight + 1,
 				Amount:      int64(distributeAmt),
 				Asset:       "hbd_savings",
@@ -114,6 +109,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 			})
 		}
 	}
+	ls.LedgerDb.StoreLedger(ledgerRecords...)
 	//Note this calculation is inaccurate and should be calculated based on N blocks of Y claim period
 	//Should not assume a static amount of time or 12 exactly claim interals per year. But since this is for statistics, it doesn't matter.
 	var observedApr float64
