@@ -4,6 +4,7 @@ import (
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
+	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
 	"github.com/ipfs/go-cid"
 	dagCbor "github.com/ipfs/go-ipld-cbor"
@@ -48,6 +49,9 @@ type StateEngine interface {
 	GetContractInfo(id string, height uint64) (contracts.Contract, bool)
 	GetElectionInfo(height ...uint64) elections.ElectionResult
 	SystemConfig() systemconfig.SystemConfig
+	WasmRuntime() *wasm_runtime.Wasm
+	GetCachedCode(c cid.Cid) ([]byte, bool)
+	PutCachedCode(c cid.Cid, code []byte)
 }
 
 type BlockStatusGetter interface {

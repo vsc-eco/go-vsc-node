@@ -16,7 +16,6 @@ import (
 	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
-	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
 
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/transactions"
@@ -81,12 +80,15 @@ func (t TxVscCallContract) ExecuteTx(
 		return errorToTxResult(err, 100)
 	}
 
-	node, err := se.DataLayer().Get(c, nil)
-	if err != nil {
-		return errorToTxResult(err, 100)
+	code, cached := se.GetCachedCode(c)
+	if !cached {
+		node, err := se.DataLayer().Get(c, nil)
+		if err != nil {
+			return errorToTxResult(err, 100)
+		}
+		code = node.RawData()
+		se.PutCachedCode(c, code)
 	}
-
-	code := node.RawData()
 
 	hasMinRCs, availableGas, _ := rcSession.CanConsume(rcPayer, t.Self.BlockHeight, 100)
 
@@ -113,8 +115,7 @@ func (t TxVscCallContract) ExecuteTx(
 		return errorToTxResult(fmt.Errorf("caller is not in required_auths or required_posting_auths"), 100)
 	}
 
-	w := wasm_runtime_ipc.New()
-	w.Init()
+	w := se.WasmRuntime()
 
 	// ensure entrypoint contract is appended to outputs regardless of state access or logs
 	callSession.GetContractSession(t.ContractId)

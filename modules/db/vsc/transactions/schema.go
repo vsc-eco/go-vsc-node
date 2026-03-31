@@ -37,7 +37,6 @@ const (
 	TransactionStatusConfirmed   TransactionStatus = "CONFIRMED"
 	TransactionStatusFailed      TransactionStatus = "FAILED"
 	TransactionStatusIncluded    TransactionStatus = "INCLUDED"
-	TransactionStatusProcessed   TransactionStatus = "PROCESSED"
 )
 
 type TransactionOperation struct {

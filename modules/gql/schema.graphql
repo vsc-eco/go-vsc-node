@@ -29,14 +29,12 @@ Status of a transaction in the Magi network.
 enum TransactionStatus {
   """Transaction has been submitted but not yet included in a block."""
   UNCONFIRMED
-  """Transaction has been confirmed on-chain."""
+  """Transaction has been executed successfully."""
   CONFIRMED
   """Transaction execution failed."""
   FAILED
   """Transaction has been included in a block but not yet fully processed."""
   INCLUDED
-  """Transaction has been fully processed by the state engine."""
-  PROCESSED
 }
 
 """

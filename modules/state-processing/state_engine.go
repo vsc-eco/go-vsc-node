@@ -35,6 +35,7 @@ import (
 
 	"github.com/chebyrash/promise"
 	"github.com/eager7/dogd/btcec"
+	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multicodec"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -69,6 +70,11 @@ type StateEngine struct {
 
 	wasm *wasm_runtime.Wasm
 
+	// Per-block cache for contract info lookups
+	contractInfoCache map[string]contractInfoCacheEntry
+	// Cache for WASM code by CID (content-addressed, never stale)
+	codeCache map[string][]byte
+
 	//Nonce map similar to what we use before
 	NonceMap map[string]int
 	RcMap    map[string]int64
@@ -98,6 +104,11 @@ type StateEngine struct {
 	slotStatus *SlotStatus
 
 	BlockHeight int
+}
+
+type contractInfoCacheEntry struct {
+	info   contracts.Contract
+	exists bool
 }
 
 //Transaction
@@ -190,6 +201,9 @@ func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 // This model is more efficient and best yet, it prevents MEV potential by locking the block execution time to the witness slot.
 func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	se.BlockHeight = int(block.BlockNumber)
+
+	// Clear per-block caches
+	se.contractInfoCache = make(map[string]contractInfoCacheEntry)
 
 	// --- Key lifecycle: deprecation and retirement ---
 	if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
@@ -1477,16 +1491,36 @@ func (se *StateEngine) DataLayer() common_types.DataLayer {
 }
 
 func (se *StateEngine) GetContractInfo(id string, height uint64) (contracts.Contract, bool) {
+	cacheKey := fmt.Sprintf("%s:%d", id, height)
+	if cached, ok := se.contractInfoCache[cacheKey]; ok {
+		return cached.info, cached.exists
+	}
+
 	contractInfo, err := se.contractDb.ContractById(id, height)
 
 	if err == mongo.ErrNoDocuments {
+		se.contractInfoCache[cacheKey] = contractInfoCacheEntry{exists: false}
 		return contracts.Contract{}, false
 	} else if err != nil {
 		fmt.Println("GetContractInfo: db error", "id", id, "height", height, "err", err)
 		return contracts.Contract{}, false
 	}
 
+	se.contractInfoCache[cacheKey] = contractInfoCacheEntry{info: contractInfo, exists: true}
 	return contractInfo, true
+}
+
+func (se *StateEngine) WasmRuntime() *wasm_runtime.Wasm {
+	return se.wasm
+}
+
+func (se *StateEngine) GetCachedCode(c cid.Cid) ([]byte, bool) {
+	code, ok := se.codeCache[c.String()]
+	return code, ok
+}
+
+func (se *StateEngine) PutCachedCode(c cid.Cid, code []byte) {
+	se.codeCache[c.String()] = code
 }
 
 func (se *StateEngine) GetElectionInfo(height ...uint64) elections.ElectionResult {
@@ -1597,10 +1631,9 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 
 		wasm: wasm,
 
-		// LedgerExecutor: &ledgerSystem.LedgerExecutor{
-		// 	VirtualLedger: make(map[string][]ledgerSystem.LedgerUpdate),
-		// 	Ls:            ls,
-		// },
+		contractInfoCache: make(map[string]contractInfoCacheEntry),
+		codeCache:         make(map[string][]byte),
+
 		LedgerSystem: ls,
 		LedgerState:  ledgerState,
 	}

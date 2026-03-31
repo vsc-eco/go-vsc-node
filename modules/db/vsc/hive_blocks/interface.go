@@ -7,7 +7,7 @@ import (
 
 type HiveBlocks interface {
 	aggregate.Plugin
-	StoreBlocks(headBlock uint64, blocks ...HiveBlock) error
+	StoreBlocks(headBlock uint64, lastBlockNum uint64, blocks ...HiveBlock) error
 	ClearBlocks() error
 	StoreLastProcessedBlock(blockNumber uint64) error
 	GetLastProcessedBlock() (uint64, error)
