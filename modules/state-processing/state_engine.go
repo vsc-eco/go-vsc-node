@@ -1,6 +1,7 @@
 package state_engine
 
 import (
+	"context"
 	"crypto"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/vsclog"
@@ -33,6 +35,8 @@ import (
 	tss_helpers "vsc-node/modules/tss/helpers"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
+	lru "github.com/hashicorp/golang-lru/v2"
+
 	"github.com/chebyrash/promise"
 	"github.com/eager7/dogd/btcec"
 	"github.com/ipfs/go-cid"
@@ -42,6 +46,13 @@ import (
 
 var tssLog = vsclog.Module("tss")
 var log = vsclog.Module("se")
+
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
 
 type ProcessExtraInfo struct {
 	BlockHeight int
@@ -70,10 +81,10 @@ type StateEngine struct {
 
 	wasm *wasm_runtime.Wasm
 
-	// Per-block cache for contract info lookups
-	contractInfoCache map[string]contractInfoCacheEntry
-	// Cache for WASM code by CID (content-addressed, never stale)
-	codeCache map[string][]byte
+	// LRU cache for contract info lookups (persists across blocks)
+	contractInfoCache *lru.Cache[string, contractInfoCacheEntry]
+	// LRU cache for WASM code by CID (content-addressed, never stale)
+	codeCache *lru.Cache[string, []byte]
 
 	//Nonce map similar to what we use before
 	NonceMap map[string]int
@@ -199,11 +210,58 @@ func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 // Even in that scenario, we would still need to scan backwards to get the "wet" state of the stateEngine
 // In other words, it adds complexity to the state engine while being less efficient.
 // This model is more efficient and best yet, it prevents MEV potential by locking the block execution time to the witness slot.
+// prefetchBlockData scans a Hive block for vsc.produce_block transactions and
+// starts fetching their L2 block content from the P2P network in the background.
+// This allows Bitswap to pipeline data retrieval while we process the block.
+func (se *StateEngine) prefetchBlockData(block hive_blocks.HiveBlock) {
+	var blockCids []cid.Cid
+
+	for _, tx := range block.Transactions {
+		if len(tx.Operations) == 0 {
+			continue
+		}
+		op := tx.Operations[0]
+		if op.Type != "custom_json" {
+			continue
+		}
+		opVal := op.Value
+		id, _ := opVal["id"].(string)
+		if id != "vsc.produce_block" {
+			continue
+		}
+		jsonStr, _ := opVal["json"].(string)
+		if jsonStr == "" {
+			continue
+		}
+		var parsed struct {
+			SignedBlock struct {
+				Block string `json:"block"`
+			} `json:"signed_block"`
+		}
+		if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil || parsed.SignedBlock.Block == "" {
+			continue
+		}
+		c, err := cid.Parse(parsed.SignedBlock.Block)
+		if err != nil {
+			continue
+		}
+		blockCids = append(blockCids, c)
+	}
+
+	if len(blockCids) > 0 {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			se.da.GetMany(ctx, blockCids)
+		}()
+	}
+}
+
 func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	se.BlockHeight = int(block.BlockNumber)
 
-	// Clear per-block caches
-	se.contractInfoCache = make(map[string]contractInfoCacheEntry)
+	// Kick off P2P prefetching for L2 block content before processing
+	se.prefetchBlockData(block)
 
 	// --- Key lifecycle: deprecation and retirement ---
 	if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
@@ -1046,7 +1104,60 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	}
 }
 
+// prefetchContractCode scans the pending transaction batch for contract call
+// operations and fetches all needed WASM code from the P2P network in parallel
+// before sequential execution begins.
+func (se *StateEngine) prefetchContractCode() {
+	var codeCids []cid.Cid
+	seen := make(map[string]bool)
+
+	for _, tx := range se.TxBatch {
+		for _, vscTx := range tx.Ops {
+			if vscTx.Type() != "call_contract" {
+				continue
+			}
+			callTx, ok := vscTx.(*TxVscCallContract)
+			if !ok {
+				continue
+			}
+			info, exists := se.GetContractInfo(callTx.ContractId, callTx.Self.BlockHeight)
+			if !exists {
+				continue
+			}
+			if _, cached := se.GetCachedCode(cid.MustParse(info.Code)); cached {
+				continue
+			}
+			if seen[info.Code] {
+				continue
+			}
+			seen[info.Code] = true
+			c, err := cid.Decode(info.Code)
+			if err != nil {
+				continue
+			}
+			codeCids = append(codeCids, c)
+		}
+	}
+
+	if len(codeCids) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	blocks, err := se.da.GetMany(ctx, codeCids)
+	if err != nil {
+		log.Debug("prefetchContractCode partial failure", "err", err)
+	}
+	for c, block := range blocks {
+		se.PutCachedCode(c, block.RawData())
+	}
+}
+
 func (se *StateEngine) ExecuteBatch() {
+	// Prefetch contract code for all pending contract calls in parallel
+	se.prefetchContractCode()
 
 	lastBlock, _ := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight)
 
@@ -1492,21 +1603,21 @@ func (se *StateEngine) DataLayer() common_types.DataLayer {
 
 func (se *StateEngine) GetContractInfo(id string, height uint64) (contracts.Contract, bool) {
 	cacheKey := fmt.Sprintf("%s:%d", id, height)
-	if cached, ok := se.contractInfoCache[cacheKey]; ok {
+	if cached, ok := se.contractInfoCache.Get(cacheKey); ok {
 		return cached.info, cached.exists
 	}
 
 	contractInfo, err := se.contractDb.ContractById(id, height)
 
 	if err == mongo.ErrNoDocuments {
-		se.contractInfoCache[cacheKey] = contractInfoCacheEntry{exists: false}
+		se.contractInfoCache.Add(cacheKey, contractInfoCacheEntry{exists: false})
 		return contracts.Contract{}, false
 	} else if err != nil {
 		fmt.Println("GetContractInfo: db error", "id", id, "height", height, "err", err)
 		return contracts.Contract{}, false
 	}
 
-	se.contractInfoCache[cacheKey] = contractInfoCacheEntry{info: contractInfo, exists: true}
+	se.contractInfoCache.Add(cacheKey, contractInfoCacheEntry{info: contractInfo, exists: true})
 	return contractInfo, true
 }
 
@@ -1515,12 +1626,11 @@ func (se *StateEngine) WasmRuntime() *wasm_runtime.Wasm {
 }
 
 func (se *StateEngine) GetCachedCode(c cid.Cid) ([]byte, bool) {
-	code, ok := se.codeCache[c.String()]
-	return code, ok
+	return se.codeCache.Get(c.String())
 }
 
 func (se *StateEngine) PutCachedCode(c cid.Cid, code []byte) {
-	se.codeCache[c.String()] = code
+	se.codeCache.Add(c.String(), code)
 }
 
 func (se *StateEngine) GetElectionInfo(height ...uint64) elections.ElectionResult {
@@ -1631,8 +1741,8 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 
 		wasm: wasm,
 
-		contractInfoCache: make(map[string]contractInfoCacheEntry),
-		codeCache:         make(map[string][]byte),
+		contractInfoCache: must(lru.New[string, contractInfoCacheEntry](4096)),
+		codeCache:         must(lru.New[string, []byte](512)),
 
 		LedgerSystem: ls,
 		LedgerState:  ledgerState,

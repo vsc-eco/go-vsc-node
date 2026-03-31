@@ -1,6 +1,7 @@
 package state_engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -127,7 +128,7 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 				for _, v := range *list {
 					cidz, err := db.Get(v)
 					if err == nil {
-						se.da.Get(*cidz, &common_types.GetOptions{})
+						se.da.Get(context.Background(), *cidz, &common_types.GetOptions{})
 					}
 				}
 			}
@@ -208,7 +209,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 
 	cidz := cid.MustParse(tx.Code)
 	go func() {
-		se.da.Get(cidz, &common_types.GetOptions{})
+		se.da.Get(context.Background(), cidz, &common_types.GetOptions{})
 	}()
 
 	id := common.ContractId(tx.Self.TxId, tx.Self.OpIndex)
@@ -385,7 +386,7 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 		}
 		cidz := cid.MustParse(tx.Code)
 		go func() {
-			se.da.Get(cidz, &common_types.GetOptions{})
+			se.da.Get(context.Background(), cidz, &common_types.GetOptions{})
 		}()
 		updatedContract.Code = tx.Code
 		updatedContract.Runtime = *tx.Runtime
@@ -428,7 +429,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			if err != nil {
 				return
 			}
-			node, _ := se.da.Get(parsedCid, nil)
+			node, _ := se.da.Get(context.Background(), parsedCid, nil)
 
 			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
 			elecResult := elections.ElectionResult{}
@@ -539,9 +540,9 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 		if verified && realWeight >= minimums {
 			fmt.Println("Election verified, indexing...", tx.Epoch)
 			fmt.Println("Election CID", parsedCid)
-			se.da.GetDag(parsedCid)
+			se.da.GetDag(context.Background(), parsedCid)
 			fmt.Println("Got dag prolly")
-			node, _ := se.da.Get(parsedCid, nil)
+			node, _ := se.da.Get(context.Background(), parsedCid, nil)
 			fmt.Println("Got Election from DA")
 			//Verified and 2/3 majority signed
 			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
@@ -661,12 +662,12 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 	blockCid, _ := cid.Parse(t.SignedBlock.Block)
-	node, _ := se.da.GetDag(blockCid)
+	node, _ := se.da.GetDag(context.Background(), blockCid)
 	jsonBytes, _ := node.MarshalJSON()
 	blockContentC := vscBlocks.VscBlock{}
 	// json.Unmarshal(jsonBytes, &blockContent)
 
-	se.da.GetObject(blockCid, &blockContentC, common_types.GetOptions{})
+	se.da.GetObject(context.Background(), blockCid, &blockContentC, common_types.GetOptions{})
 
 	slotInfo := CalculateSlotInfo(t.Self.BlockHeight)
 
@@ -839,7 +840,7 @@ func (bTx *BlockTx) Decode(da *datalayer.DataLayer, txSelf TxSelf) TransactionCo
 	//Do some conversion back to a TX type?
 	txCid := cid.MustParse(bTx.Id)
 
-	dagNode, _ := da.GetDag(txCid)
+	dagNode, _ := da.GetDag(context.Background(), txCid)
 	tx := TransactionContainer{
 		da:      da,
 		Id:      bTx.Id,

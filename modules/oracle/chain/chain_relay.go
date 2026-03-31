@@ -345,7 +345,7 @@ func (c *ChainOracle) getContractBlockHeight(contractId string) (uint64, error) 
 		return 0, fmt.Errorf("failed to get %s from state: %w", lastHeightStateKey, err)
 	}
 
-	rawVal, err := c.da.GetRaw(*cidVal)
+	rawVal, err := c.da.GetRaw(context.Background(), *cidVal)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read state value: %w", err)
 	}
@@ -566,7 +566,7 @@ func (c *ChainOracle) getStoredBlockHeaderHex(contractId string, height uint64) 
 		return "", fmt.Errorf("block key %s not found in state: %w", blockKey, err)
 	}
 
-	rawVal, err := c.da.GetRaw(*cidVal)
+	rawVal, err := c.da.GetRaw(context.Background(), *cidVal)
 	if err != nil {
 		return "", fmt.Errorf("failed to read block data: %w", err)
 	}

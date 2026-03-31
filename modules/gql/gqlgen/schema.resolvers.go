@@ -241,7 +241,7 @@ func (r *queryResolver) GetStateByKeys(ctx context.Context, contractID string, k
 			}
 			continue
 		}
-		rawVal, err := r.Da.GetRaw(*cidVal)
+		rawVal, err := r.Da.GetRaw(ctx, *cidVal)
 		if err != nil {
 			keyErr = err
 			continue
@@ -514,7 +514,7 @@ func (r *queryResolver) GetDagByCid(ctx context.Context, cidString string) (stri
 	if parseErr != nil {
 		return "", parseErr
 	}
-	node, nodeErr := r.Da.GetDag(blockCid)
+	node, nodeErr := r.Da.GetDag(ctx, blockCid)
 	if nodeErr != nil {
 		return "", nodeErr
 	}
@@ -650,7 +650,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			return results, nil
 		}
 
-		node, err := r.Da.Get(c, nil)
+		node, err := r.Da.Get(ctx, c, nil)
 		if err != nil {
 			errMsg := err.Error()
 			results = append(results, SimulateContractCallResult{

@@ -205,7 +205,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		}
 	}
 
-	node, err := ct.DataLayer.Get(c, nil)
+	node, err := ct.DataLayer.Get(context.Background(), c, nil)
 	if err != nil {
 		return ContractTestCallResult{
 			Success: false,
