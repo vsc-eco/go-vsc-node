@@ -95,6 +95,13 @@ func MainnetConfig() SystemConfig {
 			TssIndexHeight:   params.TSS_INDEX_HEIGHT,
 			ElectionInterval: params.ELECTION_INTERVAL,
 		},
+		oracleParams: params.OracleParams{
+			ChainContracts: map[string]string{
+				"BTC": "vsc1BdrQ6EtbQ64rq2PkPd21x4MaLnVRcJj85d",
+				// "DASH": "vsc1...", // deploy dash-mapping-contract and add contract ID
+				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
+			},
+		},
 		tssParams: params.DefaultTssParams,
 	}
 	return conf
