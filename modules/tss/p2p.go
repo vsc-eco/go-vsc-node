@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-"vsc-node/modules/common"
+	"vsc-node/modules/common"
 
 	libp2p "vsc-node/modules/p2p"
 
@@ -70,8 +70,15 @@ func (p p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.
 			// Verify action type matches (keygen, sign, reshare)
 			if parsedMsg.Action != "" && sessionInfo.action != "" {
 				if parsedMsg.Action != string(sessionInfo.action) {
-					log.Trace("validate message: action type mismatch, dropping",
-						"session", parsedMsg.Session, "msgAction", parsedMsg.Action, "expectedAction", sessionInfo.action)
+					log.Trace(
+						"validate message: action type mismatch, dropping",
+						"session",
+						parsedMsg.Session,
+						"msgAction",
+						parsedMsg.Action,
+						"expectedAction",
+						sessionInfo.action,
+					)
 					return false // Action type doesn't match
 				}
 			}
@@ -81,7 +88,12 @@ func (p p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.
 	return true
 }
 
-func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
+func (s p2pSpec) HandleMessage(
+	ctx context.Context,
+	from peer.ID,
+	msg p2pMessage,
+	send libp2p.SendFunc[p2pMessage],
+) error {
 	if msg.Type == "ask_sigs" {
 		sessId, ok := msg.Data["session_id"].(string)
 
@@ -203,12 +215,29 @@ func (txp *TssManager) stopP2P() error {
 }
 
 // SendMsg sends a TSS message to a participant with retry logic and connection health checks
-func (tss *TssManager) SendMsg(sessionId string, participant Participant, moniker string, msg []byte, isBroadcast bool, commiteeType string, cmtFrom string) error {
+func (tss *TssManager) SendMsg(
+	sessionId string,
+	participant Participant,
+	moniker string,
+	msg []byte,
+	isBroadcast bool,
+	commiteeType string,
+	cmtFrom string,
+) error {
 	return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, 0)
 }
 
 // sendMsgWithRetry implements retry logic with exponential backoff
-func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participant, moniker string, msg []byte, isBroadcast bool, commiteeType string, cmtFrom string, attempt int) error {
+func (tss *TssManager) sendMsgWithRetry(
+	sessionId string,
+	participant Participant,
+	moniker string,
+	msg []byte,
+	isBroadcast bool,
+	commiteeType string,
+	cmtFrom string,
+	attempt int,
+) error {
 	const maxRetries = 3
 	const baseRetryDelay = 1 * time.Second
 
@@ -226,8 +255,19 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 	peerId, err := peer.Decode(witness.PeerId)
 
 	if err != nil {
-		log.Error("PeerId decode failed",
-			"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "peerId", witness.PeerId, "err", err)
+		log.Error(
+			"PeerId decode failed",
+			"sessionId",
+			sessionId,
+			"from",
+			fromAccount,
+			"to",
+			participant.Account,
+			"peerId",
+			witness.PeerId,
+			"err",
+			err,
+		)
 		return err
 	}
 
@@ -235,10 +275,32 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 	if !tss.isPeerConnected(peerId) {
 		if attempt < maxRetries {
 			retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt)) // Exponential backoff: 1s, 2s, 4s
-			log.Verbose("peer not connected, retrying with backoff",
-				"sessionId", sessionId, "to", participant.Account, "peerId", peerId.String(), "attempt", attempt+1, "maxRetries", maxRetries, "delay", retryDelay)
+			log.Verbose(
+				"peer not connected, retrying with backoff",
+				"sessionId",
+				sessionId,
+				"to",
+				participant.Account,
+				"peerId",
+				peerId.String(),
+				"attempt",
+				attempt+1,
+				"maxRetries",
+				maxRetries,
+				"delay",
+				retryDelay,
+			)
 			time.Sleep(retryDelay)
-			return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, attempt+1)
+			return tss.sendMsgWithRetry(
+				sessionId,
+				participant,
+				moniker,
+				msg,
+				isBroadcast,
+				commiteeType,
+				cmtFrom,
+				attempt+1,
+			)
 		} else {
 			log.Warn("peer not connected after retries",
 				"sessionId", sessionId, "to", participant.Account, "peerId", peerId.String(), "maxRetries", maxRetries)
@@ -257,8 +319,23 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 	tRes := TRes{}
 
 	if attempt == 0 {
-		log.Trace("sending message",
-			"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "isBroadcast", isBroadcast, "cmt", commiteeType, "cmtFrom", cmtFrom, "msgLen", len(msg))
+		log.Trace(
+			"sending message",
+			"sessionId",
+			sessionId,
+			"from",
+			fromAccount,
+			"to",
+			participant.Account,
+			"isBroadcast",
+			isBroadcast,
+			"cmt",
+			commiteeType,
+			"cmtFrom",
+			cmtFrom,
+			"msgLen",
+			len(msg),
+		)
 	} else {
 		log.Verbose("retrying message send",
 			"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "attempt", attempt+1, "maxRetries", maxRetries, "msgLen", len(msg))
@@ -281,11 +358,39 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 	if err != nil {
 		if attempt < maxRetries {
 			retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt))
-			log.Error("RPC call failed, will retry",
-				"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "peerId", peerId.String(), "duration", duration, "attempt", attempt+1, "maxRetries", maxRetries, "delay", retryDelay, "err", err)
+			log.Error(
+				"RPC call failed, will retry",
+				"sessionId",
+				sessionId,
+				"from",
+				fromAccount,
+				"to",
+				participant.Account,
+				"peerId",
+				peerId.String(),
+				"duration",
+				duration,
+				"attempt",
+				attempt+1,
+				"maxRetries",
+				maxRetries,
+				"delay",
+				retryDelay,
+				"err",
+				err,
+			)
 			tss.metrics.IncrementMessageRetry()
 			time.Sleep(retryDelay)
-			return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, attempt+1)
+			return tss.sendMsgWithRetry(
+				sessionId,
+				participant,
+				moniker,
+				msg,
+				isBroadcast,
+				commiteeType,
+				cmtFrom,
+				attempt+1,
+			)
 		} else {
 			log.Error("RPC call failed after all retries",
 				"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "peerId", peerId.String(), "duration", duration, "maxRetries", maxRetries, "err", err)
@@ -322,7 +427,12 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 // all nodes because only deterministic errors (same on every node) cause exclusion.
 //
 // When keepTimeouts is false (signing, new committee), timeouts cause exclusion as before.
-func (tss *TssManager) checkParticipantReadiness(participants []Participant, sessionId string, label string, keepTimeouts bool) []Participant {
+func (tss *TssManager) checkParticipantReadiness(
+	participants []Participant,
+	sessionId string,
+	label string,
+	keepTimeouts bool,
+) []Participant {
 	selfAccount := tss.config.Get().HiveUsername
 	readyTimeout := 5 * time.Second
 
@@ -462,7 +572,7 @@ func (tss *TssManager) countReadyParticipants(participants []Participant, sessio
 		if r.ok {
 			count++
 		} else {
-			log.Verbose("unresponsive participant (not excluding)",
+			log.Verbose("unresponsive participant (pre-flight, not excluded)",
 				"label", label, "sessionId", sessionId, "account", r.account, "reason", r.reason)
 		}
 	}
