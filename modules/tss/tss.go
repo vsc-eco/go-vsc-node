@@ -1042,13 +1042,12 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 					// Do NOT schedule custom retries for reshare/keygen timeouts.
 					// Custom retries use the node's current block height for the session
-					// ID, which differs per node. When nodes create sessions at different
-					// block heights, GetCommitmentByHeight returns different commitments
-					// (blame data may differ) → different old committee lists → different
-					// SSIDs → "ssid mismatch" in round 2.
-					// Instead, rely on the natural TSS_ROTATE_INTERVAL cycle (every 100
-					// blocks / ~5 min). The next bh%100==0 boundary triggers a fresh
-					// reshare with a deterministic session ID that all nodes agree on.
+					// ID, which differs per node → nodes create incompatible sessions and
+					// messages never match. Instead, rely on the natural TSS_ROTATE_INTERVAL
+					// cycle (every 100 blocks / ~5 min). The next bh%100==0 boundary will
+					// trigger a fresh reshare with a deterministic session ID that all
+					// nodes agree on. FindEpochKeys() will return the key again because
+					// no commitment was recorded for the failed attempt.
 					if dsc.KeyId() != "" {
 						log.Info("reshare/keygen timeout, will retry at next rotate interval",
 							"sessionId", dsc.SessionId(), "keyId", dsc.KeyId(),
