@@ -48,7 +48,6 @@ const (
 	TSS_MESSAGE_RETRY_COUNT     = 3             // Number of retries for failed messages
 	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for bans
 	TSS_BAN_GRACE_PERIOD_EPOCHS = 3             // Epochs before new nodes can be banned (as int for comparison)
-	MAX_RESHARE_RETRIES         = 3             // Maximum number of reshare retries on timeout
 	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
 	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
 )
@@ -93,10 +92,6 @@ type TssManager struct {
 	messageBuffer *sessionBuffer
 	bufferLock    sync.RWMutex
 
-	// Retry count for reshare operations (in-memory to avoid DB dependency)
-	retryCounts   map[string]int
-	retryCountsMu sync.Mutex
-
 	// Last block height seen by BlockTick, used for session admission filtering
 	lastBlockHeight atomic.Uint64
 
@@ -104,29 +99,12 @@ type TssManager struct {
 	metrics *Metrics
 }
 
-// getRetryCount returns the retry count for a given key ID
-func (tssMgr *TssManager) getRetryCount(keyId string) int {
-	tssMgr.retryCountsMu.Lock()
-	defer tssMgr.retryCountsMu.Unlock()
-	return tssMgr.retryCounts[keyId]
-}
-
-// incrementRetryCount increments the retry count for a given key ID
-func (tssMgr *TssManager) incrementRetryCount(keyId string) {
-	tssMgr.retryCountsMu.Lock()
-	defer tssMgr.retryCountsMu.Unlock()
-	tssMgr.retryCounts[keyId]++
-}
-
-// ClearQueuedActions clears any pending retry actions. Used by tests to prevent
-// stale retries from previous phases from interfering with later phases.
+// ClearQueuedActions clears any pending actions. Used by tests to prevent
+// stale actions from previous phases from interfering with later phases.
 func (tssMgr *TssManager) ClearQueuedActions() {
 	tssMgr.bufferLock.Lock()
 	tssMgr.queuedActions = tssMgr.queuedActions[:0]
 	tssMgr.bufferLock.Unlock()
-	tssMgr.retryCountsMu.Lock()
-	tssMgr.retryCounts = make(map[string]int)
-	tssMgr.retryCountsMu.Unlock()
 }
 
 type bufferedMessage struct {
@@ -1219,7 +1197,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		// Clean up stale sessionResults entries. Keep them for 40 blocks (~2 min)
 		// so that slower nodes (delayed by a timed-out action in their batch)
 		// can still respond to ask_sigs from faster nodes.
-		const sessionResultMaxAge uint64 = 40
+		const sessionResultMaxAge uint64 = 100
 		tssMgr.bufferLock.Lock()
 		for id, entry := range tssMgr.sessionResults {
 			if bh > entry.blockHeight+sessionResultMaxAge {
@@ -1489,7 +1467,6 @@ func New(
 		messageBuffer:  newSessionBuffer(),
 		sessionMap:     make(map[string]sessionInfo),
 		sessionResults: make(map[string]sessionResultEntry),
-		retryCounts:    make(map[string]int),
 	}
 }
 

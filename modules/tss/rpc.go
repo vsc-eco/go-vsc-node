@@ -22,8 +22,8 @@ const (
 	maxBufferedMessageSize = 256 * 1024 // 256 KB
 	// Max block age for a session to be admitted into the buffer.
 	// Sessions with block height older than (currentBlockHeight - maxBufferBlockAge) are rejected.
-	// TSS sessions can run up to 60s; at ~3s/block that's ~20 blocks. Allow extra margin.
-	maxBufferBlockAge uint64 = 30
+	// TSS sessions can run up to 2m; at ~3s/block that's ~40 blocks. Allow extra margin.
+	maxBufferBlockAge uint64 = 80
 )
 
 // parseSessionBlockHeight extracts the block height from a session ID.
@@ -103,8 +103,19 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 			i := big.NewInt(0)
 			i.SetBytes([]byte(act))
 
-			log.Trace("processing message",
-				"sessionId", req.SessionId, "from", act, "to", myAccount, "isBroadcast", req.IsBroadcast, "cmt", req.Cmt)
+			log.Trace(
+				"processing message",
+				"sessionId",
+				req.SessionId,
+				"from",
+				act,
+				"to",
+				myAccount,
+				"isBroadcast",
+				req.IsBroadcast,
+				"cmt",
+				req.Cmt,
+			)
 
 			processStart := time.Now()
 			dispatcher.HandleP2P(req.Data, act, req.IsBroadcast, req.Cmt, req.CmtFrom)
@@ -200,14 +211,30 @@ func (tss *TssRpc) replayBufferedMessages(sessionId string, dispatcher Dispatche
 			// Get account from peerId
 			peerId, err := peer.Decode(msg.From)
 			if err != nil {
-				log.Error("failed to decode peerId for buffered message", "sessionId", sessionId, "peerId", msg.From, "err", err)
+				log.Error(
+					"failed to decode peerId for buffered message",
+					"sessionId",
+					sessionId,
+					"peerId",
+					msg.From,
+					"err",
+					err,
+				)
 				continue
 			}
 
 			peerIds := []string{peerId.String()}
 			witness, err := tss.mgr.witnessDb.GetWitnessesByPeerId(peerIds)
 			if err != nil || len(witness) == 0 {
-				log.Warn("failed to get witness for buffered message", "sessionId", sessionId, "peerId", msg.From, "err", err)
+				log.Warn(
+					"failed to get witness for buffered message",
+					"sessionId",
+					sessionId,
+					"peerId",
+					msg.From,
+					"err",
+					err,
+				)
 				continue
 			}
 			act := witness[0].Account
