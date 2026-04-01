@@ -25,7 +25,6 @@ package chain
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -41,12 +40,10 @@ import (
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/nonces"
-	"vsc-node/modules/hive/streamer"
 	transactionpool "vsc-node/modules/transaction-pool"
 
 	"github.com/chebyrash/promise"
 	"github.com/ipfs/go-cid"
-	"github.com/vsc-eco/hivego"
 )
 
 var (
@@ -140,7 +137,6 @@ type ChainOracle struct {
 	chainRelayers     map[string]chainRelay // symbol -> relayer instance
 	conf              common.IdentityConfig
 	sconf             systemconfig.SystemConfig
-	hiveConf          streamer.HiveConfig
 	electionDb        elections.Elections
 	contractState     contracts.ContractState
 	da                *DataLayer.DataLayer
@@ -164,7 +160,6 @@ func New(
 	oracleLogger *vsclog.Logger,
 	conf common.IdentityConfig,
 	sconf systemconfig.SystemConfig,
-	hiveConf streamer.HiveConfig,
 	electionDb elections.Elections,
 	contractState contracts.ContractState,
 	da *DataLayer.DataLayer,
@@ -187,7 +182,6 @@ func New(
 		chainRelayers:     chainRelayers,
 		conf:              conf,
 		sconf:             sconf,
-		hiveConf:          hiveConf,
 		electionDb:        electionDb,
 		contractState:     contractState,
 		da:                da,
@@ -259,24 +253,6 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 			c.logger.Info("chain relay starting", "symbol", symbol, "height", fcl.blockHeight)
 		}
 	}
-	hiveURIs := streamer.DefaultHiveURIs
-	if c.hiveConf != nil {
-		if uris := c.hiveConf.GetHiveURIs(); len(uris) > 0 {
-			hiveURIs = uris
-		}
-	}
-	hiveClient := hivego.NewHiveRpc(hiveURIs)
-	hiveClient.ChainID = c.sconf.HiveChainId()
-
-	jsonBytes, _ := json.Marshal(startSymbols)
-	wif := c.conf.Get().HiveActiveKey
-	hiveClient.BroadcastJson(
-		[]string{c.conf.Get().HiveUsername},
-		[]string{},
-		"dev_vsc.chain_oracle",
-		string(jsonBytes),
-		&wif,
-	)
 	return promise.New(func(resolve func(any), _ func(error)) {
 		resolve(nil)
 	})
