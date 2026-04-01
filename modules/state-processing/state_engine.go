@@ -1426,7 +1426,7 @@ func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint
 		// Only pin if the first uncommitted TX is within a recent window.
 		// Beyond 2 slot lengths the output is stale and we should advance.
 		if lastBlk > pinHeight && lastBlk-pinHeight <= 2*CONSENSUS_SPECS.SlotLength {
-			log.Debug(
+			log.Trace(
 				"SaveBlockHeight: pinning",
 				"lastBlk",
 				lastBlk,
@@ -1439,7 +1439,7 @@ func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint
 		}
 	}
 
-	log.Debug(
+	log.Trace(
 		"SaveBlockHeight: advancing",
 		"lastBlk",
 		lastBlk,
