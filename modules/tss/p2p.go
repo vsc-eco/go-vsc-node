@@ -384,6 +384,81 @@ func (tss *TssManager) checkParticipantReadiness(participants []Participant, ses
 	return ready
 }
 
+// countReadyParticipants checks how many participants respond to a readiness
+// ping, WITHOUT modifying the participant list. Use this for pre-flight gates
+// where the party list must remain deterministic across all nodes.
+func (tss *TssManager) countReadyParticipants(participants []Participant, sessionId string, label string) int {
+	selfAccount := tss.config.Get().HiveUsername
+	readyTimeout := 5 * time.Second
+
+	type readyResult struct {
+		ok      bool
+		account string
+		reason  string
+	}
+
+	results := make(chan readyResult, len(participants))
+
+	for _, p := range participants {
+		if p.Account == selfAccount {
+			results <- readyResult{ok: true, account: p.Account}
+			continue
+		}
+
+		go func(p Participant) {
+			witness, err := tss.witnessDb.GetWitnessAtHeight(p.Account, nil)
+			if err != nil || witness.PeerId == "" {
+				results <- readyResult{ok: false, account: p.Account, reason: "no_witness"}
+				return
+			}
+
+			peerId, err := peer.Decode(witness.PeerId)
+			if err != nil {
+				results <- readyResult{ok: false, account: p.Account, reason: "bad_peer_id"}
+				return
+			}
+
+			tMsg := TMsg{
+				SessionId: sessionId,
+				Type:      "ready",
+			}
+			tRes := TRes{}
+
+			errChan := make(chan error, 1)
+			go func() {
+				errChan <- tss.client.Call(peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
+			}()
+
+			select {
+			case err := <-errChan:
+				if err != nil {
+					results <- readyResult{ok: false, account: p.Account, reason: fmt.Sprintf("rpc_error: %v", err)}
+				} else {
+					results <- readyResult{ok: true, account: p.Account}
+				}
+			case <-time.After(readyTimeout):
+				results <- readyResult{ok: false, account: p.Account, reason: "timeout"}
+			}
+		}(p)
+	}
+
+	count := 0
+	for range participants {
+		r := <-results
+		if r.ok {
+			count++
+		} else {
+			log.Verbose("unresponsive participant (pre-flight, not excluded)",
+				"label", label, "sessionId", sessionId, "account", r.account, "reason", r.reason)
+		}
+	}
+
+	log.Verbose("readiness count complete",
+		"label", label, "sessionId", sessionId, "total", len(participants), "ready", count)
+
+	return count
+}
+
 // isPeerConnected checks if a peer is currently connected
 func (tss *TssManager) isPeerConnected(peerId peer.ID) bool {
 	host := tss.p2p.Host()

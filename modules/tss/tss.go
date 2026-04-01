@@ -648,14 +648,17 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 
-			// Capture pre-filter size for correct threshold calculation
+			// Use deterministic signer set — DO NOT filter by connectivity.
+			// All nodes must use the same participant list so BuildLocalSaveDataSubset
+			// produces identical Ks subsets and Lagrange coefficients match.
+			// Filtering causes different wi values → incompatible partial signatures.
 			origSignCommitteeSize := len(participants)
 
-			// Readiness check: ping each participant's TSS RPC layer to filter out zombie nodes
-			participants = tssMgr.checkParticipantReadiness(participants, sessionId, "SIGN")
+			// Pre-flight gate: count ready participants without modifying the list
 			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
-			if len(participants) < origThreshold+1 {
-				log.Warn("insufficient participants for signing", "sessionId", sessionId, "connected", len(participants), "needed", origThreshold+1)
+			signReady := tssMgr.countReadyParticipants(participants, sessionId, "SIGN")
+			if signReady < origThreshold+1 {
+				log.Warn("insufficient participants for signing", "sessionId", sessionId, "ready", signReady, "needed", origThreshold+1, "total", origSignCommitteeSize)
 				continue
 			}
 
@@ -763,35 +766,38 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			log.Verbose("reshare participant selection", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "excluded", len(excludedNodes), "excludedNodes", excludedNodes)
 			log.Trace("new participants list", "newParticipants", newParticipants)
 
-			// Capture pre-filter sizes — these are needed by the dispatcher for correct
-			// threshold calculation in tss-lib. Using post-filter sizes corrupts the key.
+			// Use deterministic committee sizes — DO NOT filter by connectivity here.
+			// Each node must use the exact same old and new party lists so that
+			// tss-lib's SSID computation (which hashes party keys + save data subsets)
+			// is identical across all participants. Filtering here causes nodes to
+			// disagree on party sets → different SSIDs → "ssid mismatch" in round 2.
+			// The dispatcher's waitForParticipantReadiness() handles connectivity
+			// gating at session start.
 			origOldSize := len(commitedMembers)
 			origNewSize := len(newParticipants)
 
-			// Filter both old and new participants by connectivity
-			// Threshold is based on original counts (before filtering) since the key was created with that many participants
+			// Pre-flight gate: check connectivity WITHOUT modifying the party lists.
+			// This avoids creating a dispatcher (and acquiring startLock) when we
+			// know the reshare will fail due to insufficient participants.
 			origOldThreshold, _ := tss_helpers.GetThreshold(origOldSize)
 			origNewThreshold, _ := tss_helpers.GetThreshold(origNewSize)
-			commitedMembers = tssMgr.checkParticipantReadiness(commitedMembers, sessionId, "RESHARE-OLD")
-			newParticipants = tssMgr.checkParticipantReadiness(newParticipants, sessionId, "RESHARE-NEW")
+			oldReady := tssMgr.countReadyParticipants(commitedMembers, sessionId, "RESHARE-OLD")
+			newReady := tssMgr.countReadyParticipants(newParticipants, sessionId, "RESHARE-NEW")
 
-			// Pre-flight checks: validate participant set meets minimum threshold (at least 2)
 			minNewRequired := origNewThreshold + 1
 			if minNewRequired < 2 {
 				minNewRequired = 2
 			}
-			if len(newParticipants) < minNewRequired {
-				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "participants", len(newParticipants), "required", minNewRequired, "threshold", origNewThreshold)
+			if newReady < minNewRequired {
+				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "ready", newReady, "required", minNewRequired, "total", origNewSize)
+				continue
+			}
+			if oldReady < origOldThreshold+1 {
+				log.Warn("insufficient old participants for reshare", "sessionId", sessionId, "ready", oldReady, "required", origOldThreshold+1, "total", origOldSize)
 				continue
 			}
 
-			// Pre-flight check: verify old participants are available
-			if len(commitedMembers) < origOldThreshold+1 {
-				log.Warn("insufficient old participants for reshare", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "required", origOldThreshold+1, "threshold", origOldThreshold)
-				continue
-			}
-
-			log.Verbose("reshare pre-flight checks passed", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants))
+			log.Verbose("reshare pre-flight checks passed", "sessionId", sessionId, "oldReady", oldReady, "oldTotal", origOldSize, "newReady", newReady, "newTotal", origNewSize)
 
 			dispatcher := &ReshareDispatcher{
 				BaseDispatcher: BaseDispatcher{
