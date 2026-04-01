@@ -840,10 +840,16 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						tssLog.Verbose("commitment entry", "sessionId", commitment.SessionId, "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
 
 						members := make([]dids.BlsDID, 0)
-						electionData := se.electionDb.GetElection(commitment.Epoch)
+						// Use the election active at the commitment's block height,
+						// not the commitment's epoch. The leader collects BLS signatures
+						// from GetElectionByHeight(bh) where bh = commitment.BlockHeight.
+						// Using GetElection(commitment.Epoch) returns a different election
+						// when the epoch has advanced, causing BLS verification to fail
+						// because the member lists (and BLS keys) differ.
+						electionData, elErr := se.electionDb.GetElectionByHeight(commitment.BlockHeight)
 
-						if electionData == nil || electionData.Members == nil {
-							tssLog.Warn("election lookup failed", "keyId", commitment.KeyId, "epoch", commitment.Epoch, "blockHeight", block.BlockNumber)
+						if elErr != nil || electionData.Members == nil {
+							tssLog.Warn("election lookup failed", "keyId", commitment.KeyId, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "err", elErr)
 							continue
 						}
 						for _, mbr := range electionData.Members {
