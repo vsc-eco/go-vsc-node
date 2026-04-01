@@ -1025,43 +1025,18 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					commitableResults = append(commitableResults, commitment)
 					resultsMu.Unlock()
 
-					// Schedule automatic retry for reshare timeouts with retry limit
+					// Do NOT schedule custom retries for reshare/keygen timeouts.
+					// Custom retries use the node's current block height for the session
+					// ID, which differs per node → nodes create incompatible sessions and
+					// messages never match. Instead, rely on the natural TSS_ROTATE_INTERVAL
+					// cycle (every 100 blocks / ~5 min). The next bh%100==0 boundary will
+					// trigger a fresh reshare with a deterministic session ID that all
+					// nodes agree on. FindEpochKeys() will return the key again because
+					// no commitment was recorded for the failed attempt.
 					if dsc.KeyId() != "" {
-						keyInfo, err := tssMgr.tssKeys.FindKey(dsc.KeyId())
-						if err == nil {
-							// Check retry count from session (in-memory) to avoid DB dependency
-							retryCount := tssMgr.getRetryCount(dsc.KeyId())
-							if retryCount < MAX_RESHARE_RETRIES {
-								// Calculate exponential backoff delay based on retry count
-								retryDelay := time.Duration(retryCount+1) * tssMgr.sconf.TssParams().ReshareSyncDelay
-
-								log.Info("scheduling reshare retry for timeout", "sessionId", dsc.SessionId(), "keyId", dsc.KeyId(), "retryCount", retryCount+1, "maxRetries", MAX_RESHARE_RETRIES, "delay", retryDelay)
-
-								// Increment retry count
-								tssMgr.incrementRetryCount(dsc.KeyId())
-
-								// Schedule retry with delay
-								// Use the correct action type: keygen timeouts should retry as keygen,
-								// not reshare (reshare requires an existing commitment in the DB).
-								retryType := ReshareAction
-								if _, isKeygen := dsc.(*KeyGenDispatcher); isKeygen {
-									retryType = KeyGenAction
-								}
-								go func() {
-									time.Sleep(retryDelay)
-									tssMgr.bufferLock.Lock()
-									tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
-										Type:  retryType,
-										KeyId: dsc.KeyId(),
-										Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
-									})
-									tssMgr.bufferLock.Unlock()
-								}()
-							} else {
-								log.Error("max reshare retries exceeded", "sessionId", dsc.SessionId(), "keyId", dsc.KeyId(), "maxRetries", MAX_RESHARE_RETRIES)
-								// Could trigger alert or manual intervention here
-							}
-						}
+						log.Info("reshare/keygen timeout, will retry at next rotate interval",
+							"sessionId", dsc.SessionId(), "keyId", dsc.KeyId(),
+							"nextRetryIn", fmt.Sprintf("~%d blocks", TSS_ROTATE_INTERVAL-(bh%TSS_ROTATE_INTERVAL)))
 					}
 				}
 			}(dsc)
