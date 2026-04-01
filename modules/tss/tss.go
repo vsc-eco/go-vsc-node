@@ -728,17 +728,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// produces identical Ks subsets and Lagrange coefficients match.
 			// Filtering causes different wi values → incompatible partial signatures.
 			origSignCommitteeSize := len(participants)
-			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
 
-			// Readiness check: keepTimeouts=true so transient timeouts don't cause
-			// non-deterministic party lists across nodes. Only definitive errors
-			// (no_witness, bad_peer_id, protocol not supported) cause exclusion —
-			// these are deterministic because all nodes query the same witness DB.
-			// Timeout nodes stay in the list; if truly offline, the 60s signing
-			// timeout will catch them and produce blame.
-			participants = tssMgr.checkParticipantReadiness(participants, sessionId, "SIGN", true)
-			if len(participants) < origThreshold+1 {
-				log.Warn("insufficient participants for signing", "sessionId", sessionId, "connected", len(participants), "needed", origThreshold+1, "total", origSignCommitteeSize)
+			// Pre-flight gate: count ready participants without modifying the list.
+			// Never filter the signing party list — all nodes must use identical
+			// lists so BuildLocalSaveDataSubset produces matching Ks subsets.
+			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
+			signReady := tssMgr.countReadyParticipants(participants, sessionId, "SIGN")
+			if signReady < origThreshold+1 {
+				log.Warn("insufficient participants for signing", "sessionId", sessionId, "ready", signReady, "needed", origThreshold+1, "total", origSignCommitteeSize)
 				continue
 			}
 
@@ -926,27 +923,28 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				"excluded", len(excludedNodes), "excludedNodes", excludedNodes,
 				"readyCount", len(readyAccounts))
 
-			// Threshold calculation from FULL commitment size (pre-filter).
+			// Threshold from FULL commitment size (pre-filter). Party lists are
+			// already filtered deterministically by on-chain readiness + blame + ban.
 			origOldSize := fullOldCommitteeSize
-			origNewSize := len(currentElection.Members) // pre-filter new size
+			origNewSize := len(currentElection.Members)
 			origOldThreshold, _ := tss_helpers.GetThreshold(origOldSize)
 			origNewThreshold, _ := tss_helpers.GetThreshold(origNewSize)
 
-			// Pre-flight checks
+			// Pre-flight checks — lists are already on-chain-readiness-filtered
 			minNewRequired := origNewThreshold + 1
 			if minNewRequired < 2 {
 				minNewRequired = 2
 			}
 			if len(newParticipants) < minNewRequired {
-				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "newParticipants", len(newParticipants), "required", minNewRequired, "threshold", origNewThreshold)
+				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "newParticipants", len(newParticipants), "required", minNewRequired, "readyCount", len(readyAccounts))
 				continue
 			}
 			if len(commitedMembers) < origOldThreshold+1 {
-				log.Warn("insufficient old participants for reshare", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "required", origOldThreshold+1, "threshold", origOldThreshold)
+				log.Warn("insufficient old participants for reshare", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "required", origOldThreshold+1, "readyCount", len(readyAccounts))
 				continue
 			}
 
-			log.Verbose("reshare pre-flight checks passed", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants))
+			log.Verbose("reshare pre-flight checks passed", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "readyCount", len(readyAccounts))
 
 			dispatcher := &ReshareDispatcher{
 				BaseDispatcher: BaseDispatcher{
