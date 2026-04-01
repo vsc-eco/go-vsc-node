@@ -17,7 +17,9 @@ const (
 	// Max number of distinct sessions that can have buffered messages.
 	maxBufferedSessions = 50
 	// Max size in bytes of a single message's Data field that will be buffered.
-	maxBufferedMessageSize = 64 * 1024 // 64 KB
+	// The largest TSS message is ECDSA reshare DGRound2Message1 (~175KB: two DLN proofs
+	// at ~66KB each + ModProof at ~42KB), so 256KB gives adequate headroom.
+	maxBufferedMessageSize = 256 * 1024 // 256 KB
 	// Max block age for a session to be admitted into the buffer.
 	// Sessions with block height older than (currentBlockHeight - maxBufferBlockAge) are rejected.
 	// TSS sessions can run up to 60s; at ~3s/block that's ~20 blocks. Allow extra margin.
