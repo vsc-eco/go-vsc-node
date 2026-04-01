@@ -1411,41 +1411,26 @@ func (se *StateEngine) Flush() {
 	se.firstTxHeight = 0
 }
 
-// If there is transactions in the queue, use the last vsc block height to resume
-// If not continue parsing from lastBlk
-// Need to test
+// SaveBlockHeight determines the persisted checkpoint for crash recovery.
+// When uncommitted transaction outputs exist (TxOutput populated by ExecuteBatch
+// but not yet cleared by Flush), pin the checkpoint just before the first TX so
+// a restart replays the batch. The pin is bounded to 2 slot lengths so a stale
+// TxOutput (Flush never fired) cannot freeze the checkpoint indefinitely.
 func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint64 {
-
 	if lastBlk == 0 || lastSavedBlk == 0 {
 		return lastSavedBlk
 	}
-	var outputExists bool
-	for _, _ = range se.TxOutput {
-		outputExists = true
-		break
-	}
-	if outputExists {
-		vscRecord, _ := se.vscBlocks.GetBlockByHeight(lastBlk)
-		if vscRecord != nil {
-			if lastSavedBlk != uint64(vscRecord.SlotHeight) {
-				return uint64(vscRecord.SlotHeight) + 1
-			} else {
-				return lastSavedBlk
-			}
-		} else {
-			if se.firstTxHeight == 0 {
-				return lastSavedBlk
-			}
-			return se.firstTxHeight - 1
+
+	if len(se.TxOutput) > 0 && se.firstTxHeight > 0 {
+		pinHeight := se.firstTxHeight - 1
+		// Only pin if the first uncommitted TX is within a recent window.
+		// Beyond 2 slot lengths the output is stale and we should advance.
+		if lastBlk > pinHeight && lastBlk-pinHeight <= 2*CONSENSUS_SPECS.SlotLength {
+			return pinHeight
 		}
-	} else {
-		return lastBlk
 	}
 
-	// if len(se.TxBatch) > 0 {
-	// } else {
-	// 	return lastBlk
-	// }
+	return lastBlk
 }
 
 func (se *StateEngine) DataLayer() common_types.DataLayer {
