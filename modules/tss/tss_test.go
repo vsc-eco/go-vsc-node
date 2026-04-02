@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"sync"
@@ -231,7 +232,20 @@ func MakeNode(index int, mes *MockElectionSystem, broadcastCb func(tx hivego.Hiv
 		panic(err)
 	}
 
-	tssMgr := vtss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessDb, electionDb, blockConsumer, mes, identity, sysConf, keystore, &txCreator)
+	tssMgr := vtss.New(
+		p2p,
+		tssKeys,
+		tssRequests,
+		tssCommitments,
+		witnessDb,
+		electionDb,
+		blockConsumer,
+		mes,
+		identity,
+		sysConf,
+		keystore,
+		&txCreator,
+	)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		identity,
@@ -382,6 +396,52 @@ func verifyEcdsaSig(t *testing.T, sigHex, msgHex, pubKeyHex string) {
 	if !sig.Verify(msgBytes, pubKey) {
 		t.Errorf("ECDSA signature verification failed for msg=%s", msgHex)
 	}
+}
+
+// goroutineGuard tracks goroutine counts across test phases and aborts if
+// growth exceeds the configured threshold. Call checkpoint("phase name") at
+// each phase boundary.
+type goroutineGuard struct {
+	t         *testing.T
+	log       *vsclog.Logger
+	maxGrowth int // max allowed goroutine growth between checkpoints
+	absLimit  int // absolute goroutine count that triggers immediate abort
+	prev      int
+	baseline  int
+}
+
+var ggLog = vsclog.Module("goroutine-guard")
+
+func newGoroutineGuard(t *testing.T, maxGrowth, absLimit int) *goroutineGuard {
+	n := runtime.NumGoroutine()
+	ggLog.Info("baseline", "goroutines", n, "maxGrowth", maxGrowth, "absLimit", absLimit)
+	return &goroutineGuard{t: t, log: ggLog, maxGrowth: maxGrowth, absLimit: absLimit, prev: n, baseline: n}
+}
+
+func (g *goroutineGuard) checkpoint(phase string) {
+	// Brief pause to let completed goroutines settle
+	runtime.Gosched()
+	n := runtime.NumGoroutine()
+	delta := n - g.prev
+	totalGrowth := n - g.baseline
+	g.log.Info(phase, "goroutines", n, "delta", delta, "totalGrowth", totalGrowth)
+
+	if n > g.absLimit {
+		g.dump()
+		g.t.Fatalf("goroutine count %d exceeds absolute limit %d at %s", n, g.absLimit, phase)
+	}
+	if delta > g.maxGrowth {
+		g.dump()
+		g.t.Fatalf("goroutine growth %+d exceeds max %d at %s", delta, g.maxGrowth, phase)
+	}
+	g.prev = n
+}
+
+func (g *goroutineGuard) dump() {
+	buf := make([]byte, 1<<22) // 4 MB
+	n := runtime.Stack(buf, true)
+	g.log.Warn("goroutine dump", "bytes", n)
+	fmt.Fprintf(os.Stderr, "%s\n", buf[:n])
 }
 
 func TestTss(t *testing.T) {
@@ -616,7 +676,12 @@ func TestTss(t *testing.T) {
 		node.tssKeys.InsertKey("test-key", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
 	}
 
+	// Goroutine leak guard: baseline taken AFTER all nodes, P2P, DB, and
+	// keepalive are running so libp2p/mongo infrastructure doesn't count.
+	gg := newGoroutineGuard(t, 500, 5000)
+
 	log.Info("=== PHASE 1: KEYGEN ===")
+	gg.checkpoint("phase 1 start (keygen)")
 	log.Info("Processing blocks to trigger keygen at block 100...")
 
 	// Step 5: Process blocks to trigger keygen at block 100
@@ -714,6 +779,7 @@ func TestTss(t *testing.T) {
 	}
 
 	log.Info("=== PHASE 2: SIGNING ===")
+	gg.checkpoint("phase 2 start (signing)")
 	log.Info("Processing blocks to trigger signing at block 150...")
 
 	// Re-establish peer connections before signing (connections may have timed out during keygen wait)
@@ -796,6 +862,7 @@ func TestTss(t *testing.T) {
 	}
 
 	log.Info("=== PHASE 3: RESHARE ===")
+	gg.checkpoint("phase 3 start (reshare)")
 
 	// Wait for signing RunActions lock to release before reshare.
 	log.Info("Waiting for signing lock to release...")
@@ -873,6 +940,7 @@ func TestTss(t *testing.T) {
 	// PHASE 4: SIGN WITH ONE NODE OFFLINE (block 250)
 	// =====================================================
 	log.Info("=== PHASE 4: SIGN WITH NODE OFFLINE ===")
+	gg.checkpoint("phase 4 start (sign offline)")
 
 	// Wait for reshare lock to release and stale retry goroutines to fire
 	time.Sleep(5 * time.Second)
@@ -998,6 +1066,7 @@ func TestTss(t *testing.T) {
 	// PHASE 5: RESHARE WITH WITNESS REPLACEMENT (block 300)
 	// =====================================================
 	log.Info("=== PHASE 5: RESHARE WITH WITNESS REPLACEMENT ===")
+	gg.checkpoint("phase 5 start (reshare witness replacement)")
 
 	// Wait for sign lock to release and stale retry goroutines to fire
 	time.Sleep(5 * time.Second)
@@ -1098,6 +1167,7 @@ func TestTss(t *testing.T) {
 	// PHASE 6: SIGN WITH REDUCED 5-MEMBER SET (block 350)
 	// =====================================================
 	log.Info("=== PHASE 6: SIGN WITH REDUCED MEMBER SET ===")
+	gg.checkpoint("phase 6 start (sign reduced set)")
 
 	// Wait for reshare lock to release and stale retry goroutines to fire
 	time.Sleep(5 * time.Second)
@@ -1219,6 +1289,7 @@ func TestTss(t *testing.T) {
 	// PHASE 7: RESHARE WITH NODE RETURNING (block 400)
 	// =====================================================
 	log.Info("=== PHASE 7: RESHARE WITH NODE RETURNING ===")
+	gg.checkpoint("phase 7 start (reshare node returning)")
 
 	// Wait for sign lock to release and stale retry goroutines to fire
 	time.Sleep(5 * time.Second)
@@ -1308,6 +1379,7 @@ func TestTss(t *testing.T) {
 	// PHASE 8: MULTIPLE SIMULTANEOUS SIGNING REQUESTS (block 450)
 	// =====================================================
 	log.Info("=== PHASE 8: MULTIPLE SIMULTANEOUS SIGNING REQUESTS ===")
+	gg.checkpoint("phase 8 start (multi-sign)")
 
 	// Wait for reshare lock to release and stale retry goroutines to fire
 	time.Sleep(5 * time.Second)
@@ -1453,6 +1525,7 @@ func TestTss(t *testing.T) {
 	// PHASE 9: MULTIPLE KEYS / KEYLOCKS MECHANISM (block 500)
 	// =====================================================
 	log.Info("=== PHASE 9: MULTIPLE KEYS / KEYLOCKS ===")
+	gg.checkpoint("phase 9 start (keylocks)")
 
 	// Wait for sign lock to release and stale retry goroutines to fire
 	time.Sleep(5 * time.Second)
@@ -1590,6 +1663,7 @@ func TestTss(t *testing.T) {
 	// PHASE 10: RESHARE WITH 2 MEMBERS SWAPPED (block 600)
 	// =====================================================
 	log.Info("=== PHASE 10: RESHARE WITH 2 MEMBERS SWAPPED ===")
+	gg.checkpoint("phase 10 start (reshare 2-swap)")
 
 	// Wait for keygen/sign lock to release
 	time.Sleep(10 * time.Second)
@@ -1698,6 +1772,7 @@ func TestTss(t *testing.T) {
 	// {key_id, tx_id} filter) when sharing the same tx_id.
 	// =====================================================
 	log.Info("=== PHASE 11: SIMULTANEOUS KEYGEN + RESHARE ===")
+	gg.checkpoint("phase 11 start (keygen+reshare)")
 
 	// Wait for Phase 10 lock to release
 	time.Sleep(5 * time.Second)
@@ -1928,6 +2003,7 @@ func TestTss(t *testing.T) {
 	// reshared alongside another key's keygen.
 	// =====================================================
 	log.Info("=== PHASE 12: SIGN AFTER MULTI-KEY OPERATION ===")
+	gg.checkpoint("phase 12 start (sign after multi-key)")
 
 	time.Sleep(5 * time.Second)
 	for _, node := range nodes {
@@ -2023,6 +2099,7 @@ func TestTss(t *testing.T) {
 	// FindDeprecatingKeys and transitions to deprecated.
 	// =====================================================
 	log.Info("=== PHASE 13: KEY EXPIRATION ===")
+	gg.checkpoint("phase 13 start (key expiration)")
 
 	time.Sleep(5 * time.Second)
 	for _, node := range nodes {
@@ -2106,6 +2183,7 @@ func TestTss(t *testing.T) {
 	// still works end-to-end after renewal.
 	// =====================================================
 	log.Info("=== PHASE 14: KEY RENEWAL + SIGN ===")
+	gg.checkpoint("phase 14 start (key renewal + sign)")
 
 	time.Sleep(5 * time.Second)
 	for _, node := range nodes {
@@ -2241,6 +2319,7 @@ func TestTss(t *testing.T) {
 
 	log.Info("Phase 14 completed!")
 
+	gg.checkpoint("all phases complete")
 	log.Info("All 14 TSS phases completed successfully!")
 }
 
@@ -2433,7 +2512,20 @@ func TestTssThresholdIntegration(t *testing.T) {
 			t.Fatalf("failed to create keystore for node %d: %v", i, err)
 		}
 
-		tssMgr := vtss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessDb, electionDb, blockConsumer, mes, identity, sysConf, keystore, &txCreator)
+		tssMgr := vtss.New(
+			p2p,
+			tssKeys,
+			tssRequests,
+			tssCommitments,
+			witnessDb,
+			electionDb,
+			blockConsumer,
+			mes,
+			identity,
+			sysConf,
+			keystore,
+			&txCreator,
+		)
 
 		agg := aggregate.New([]aggregate.Plugin{
 			identity, dbConf, database, vscDb,
@@ -2992,7 +3084,20 @@ func makeBlameNode(mes *MockElectionSystem) (nodeComponents, *vtss.TssManager) {
 		TransactionCrafter: hive.TransactionCrafter{},
 	}
 
-	tssMgr := vtss.New(p2p, tssKeys, tssRequests, tssCommitments, witnessDb, electionDb, blockConsumer, mes, identity, sysConf, keystore, &txCreator)
+	tssMgr := vtss.New(
+		p2p,
+		tssKeys,
+		tssRequests,
+		tssCommitments,
+		witnessDb,
+		electionDb,
+		blockConsumer,
+		mes,
+		identity,
+		sysConf,
+		keystore,
+		&txCreator,
+	)
 
 	agg := aggregate.New([]aggregate.Plugin{
 		identity,
@@ -3053,26 +3158,37 @@ func TestBlameScore(t *testing.T) {
 	storeElectionsWithGracePeriodBypass := func(currentEpoch uint64) {
 		// Current epoch has all 4 members
 		node.electionDb.StoreElection(elections.ElectionResult{
-			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: currentEpoch, NetId: "vsc-mocknet", Type: "initial"},
-			ElectionDataInfo:   elections.ElectionDataInfo{Members: members4, Weights: weights4},
-			BlockHeight:        currentEpoch * 100,
+			ElectionCommonInfo: elections.ElectionCommonInfo{
+				Epoch: currentEpoch,
+				NetId: "vsc-mocknet",
+				Type:  "initial",
+			},
+			ElectionDataInfo: elections.ElectionDataInfo{Members: members4, Weights: weights4},
+			BlockHeight:      currentEpoch * 100,
 		})
 		// Epochs (current-1), (current-2), (current-3) exist but with NO members
 		// so the backward loop doesn't break but nodeFirstEpoch isn't set yet
 		for ep := currentEpoch - 1; ep >= currentEpoch-3 && ep > 0; ep-- {
 			node.electionDb.StoreElection(elections.ElectionResult{
 				ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: ep, NetId: "vsc-mocknet", Type: "initial"},
-				ElectionDataInfo:   elections.ElectionDataInfo{Members: []elections.ElectionMember{}, Weights: []uint64{}},
-				BlockHeight:        ep * 100,
+				ElectionDataInfo: elections.ElectionDataInfo{
+					Members: []elections.ElectionMember{},
+					Weights: []uint64{},
+				},
+				BlockHeight: ep * 100,
 			})
 		}
 		// Epoch (current-4) has all 4 members — this is where nodeFirstEpoch gets set
 		// epochsSinceFirst = current - (current-4) = 4 >= gracePeriod(3)
 		if currentEpoch >= 4 {
 			node.electionDb.StoreElection(elections.ElectionResult{
-				ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: currentEpoch - 4, NetId: "vsc-mocknet", Type: "initial"},
-				ElectionDataInfo:   elections.ElectionDataInfo{Members: members4, Weights: weights4},
-				BlockHeight:        (currentEpoch - 4) * 100,
+				ElectionCommonInfo: elections.ElectionCommonInfo{
+					Epoch: currentEpoch - 4,
+					NetId: "vsc-mocknet",
+					Type:  "initial",
+				},
+				ElectionDataInfo: elections.ElectionDataInfo{Members: members4, Weights: weights4},
+				BlockHeight:      (currentEpoch - 4) * 100,
 			})
 		}
 	}
@@ -3219,7 +3335,10 @@ func TestBlameScore(t *testing.T) {
 		result := tssMgr.BlameScore()
 
 		if !result.BannedNodes["node-b"] {
-			t.Errorf("Expected node-b to be banned (timeout blames count toward ban), got BannedNodes=%v", result.BannedNodes)
+			t.Errorf(
+				"Expected node-b to be banned (timeout blames count toward ban), got BannedNodes=%v",
+				result.BannedNodes,
+			)
 		}
 	})
 
@@ -3251,7 +3370,10 @@ func TestBlameScore(t *testing.T) {
 		result := tssMgr.BlameScore()
 
 		if !result.BannedNodes["node-a"] {
-			t.Errorf("Expected node-a to be banned (mixed timeout+error blames), got BannedNodes=%v", result.BannedNodes)
+			t.Errorf(
+				"Expected node-a to be banned (mixed timeout+error blames), got BannedNodes=%v",
+				result.BannedNodes,
+			)
 		}
 		// Other nodes should not be banned
 		if result.BannedNodes["node-b"] || result.BannedNodes["node-c"] || result.BannedNodes["node-d"] {
@@ -3335,8 +3457,11 @@ func TestBlameScore(t *testing.T) {
 		for ep := uint64(8); ep <= 9; ep++ {
 			node.electionDb.StoreElection(elections.ElectionResult{
 				ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: ep, NetId: "vsc-mocknet", Type: "initial"},
-				ElectionDataInfo:   elections.ElectionDataInfo{Members: []elections.ElectionMember{}, Weights: []uint64{}},
-				BlockHeight:        ep * 100,
+				ElectionDataInfo: elections.ElectionDataInfo{
+					Members: []elections.ElectionMember{},
+					Weights: []uint64{},
+				},
+				BlockHeight: ep * 100,
 			})
 		}
 		// Epoch 7 has all members — nodeFirstEpoch = 7, epochsSinceFirst = 10-7 = 3
@@ -3359,7 +3484,10 @@ func TestBlameScore(t *testing.T) {
 		result := tssMgr.BlameScore()
 
 		if !result.BannedNodes["node-d"] {
-			t.Errorf("Expected node-d to be banned (epochsSinceFirst=3, not in grace period), got BannedNodes=%v", result.BannedNodes)
+			t.Errorf(
+				"Expected node-d to be banned (epochsSinceFirst=3, not in grace period), got BannedNodes=%v",
+				result.BannedNodes,
+			)
 		}
 	})
 
@@ -3400,7 +3528,10 @@ func TestBlameScore(t *testing.T) {
 		result := tssMgr.BlameScore()
 
 		if result.BannedNodes["node-d"] {
-			t.Errorf("Expected node-d exempt from ban (epochsSinceFirst=2 < 3 grace period), got BannedNodes=%v", result.BannedNodes)
+			t.Errorf(
+				"Expected node-d exempt from ban (epochsSinceFirst=2 < 3 grace period), got BannedNodes=%v",
+				result.BannedNodes,
+			)
 		}
 	})
 
@@ -3432,7 +3563,10 @@ func TestBlameScore(t *testing.T) {
 		result := tssMgr.BlameScore()
 
 		if !result.BannedNodes["node-b"] {
-			t.Errorf("Expected node-b to be banned (blames across multiple epochs), got BannedNodes=%v", result.BannedNodes)
+			t.Errorf(
+				"Expected node-b to be banned (blames across multiple epochs), got BannedNodes=%v",
+				result.BannedNodes,
+			)
 		}
 		// Verify other nodes are not banned
 		if result.BannedNodes["node-a"] || result.BannedNodes["node-c"] || result.BannedNodes["node-d"] {
