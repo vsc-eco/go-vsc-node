@@ -699,17 +699,44 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				continue
 			}
 
+			// Resolve blamed accounts by name from the current election's blame bits.
+			// The blame bitset is indexed against currentElection (which may have
+			// different members/order than commitmentElection). Matching by account
+			// name makes it work across elections.
+			blamedAccounts := make(map[string]bool)
+			if isBlame {
+				for idx, member := range currentElection.Members {
+					if blameBits.Bit(idx) == 1 {
+						blamedAccounts[member.Account] = true
+					}
+				}
+			}
+			for account, banned := range blameMap.BannedNodes {
+				if banned {
+					blamedAccounts[account] = true
+				}
+			}
+
 			commitmentBytes, err := base64.RawURLEncoding.DecodeString(commitment.Commitment)
 
 			bitset := big.NewInt(0)
 			bitset = bitset.SetBytes(commitmentBytes)
 
 			commitedMembers := make([]Participant, 0)
+			// Count the full commitment size BEFORE blame exclusion.
+			// This is needed for threshold calculation — the polynomial degree
+			// must match the original keygen/reshare, not the blame-reduced set.
+			fullOldCommitteeSize := 0
 
 			log.Trace("commitment lookup", "commitment", commitment, "err", err)
 			log.Trace("bitset details", "bitset", bitset, "commitmentBytes", commitmentBytes)
 			for idx, member := range commitmentElection.Members {
 				if idx < bitset.BitLen() && bitset.Bit(idx) == 1 {
+					fullOldCommitteeSize++
+					if blamedAccounts[member.Account] {
+						log.Verbose("excluding blamed node from old committee", "sessionId", sessionId, "account", member.Account)
+						continue
+					}
 					commitedMembers = append(commitedMembers, Participant{
 						Account: member.Account,
 					})
@@ -741,9 +768,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			log.Verbose("reshare participant selection", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "excluded", len(excludedNodes), "excludedNodes", excludedNodes)
 			log.Trace("new participants list", "newParticipants", newParticipants)
 
-			// Capture pre-filter sizes — these are needed by the dispatcher for correct
-			// threshold calculation in tss-lib. Using post-filter sizes corrupts the key.
-			origOldSize := len(commitedMembers)
+			// Use the FULL commitment size for threshold calculation, not the
+			// blame-reduced count. The polynomial degree must match keygen.
+			origOldSize := fullOldCommitteeSize
 			origNewSize := len(newParticipants)
 
 			// Filter both old and new participants by connectivity
