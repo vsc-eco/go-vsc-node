@@ -525,55 +525,61 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 			oldCulprits := make([]string, 0)
 			newCulprits := make([]string, 0)
 
+			// Build membership sets for old/new committees so we can
+			// correctly label culprits. tss-lib's WaitingFor() returns
+			// combined old+new party IDs regardless of which party you call it on.
+			oldMemberSet := make(map[string]bool, len(dispatcher.participants))
+			for _, p := range dispatcher.participants {
+				oldMemberSet[p.Account] = true
+			}
+			newMemberSet := make(map[string]bool, len(dispatcher.newParticipants))
+			for _, p := range dispatcher.newParticipants {
+				newMemberSet[p.Account] = true
+			}
+
 			// Check connection status for each culprit to provide context
 			culpritContext := make(map[string]string)
 
+			// Collect all waiting parties from both old and new sides.
+			// WaitingFor() returns combined old+new, so we deduplicate via
+			// the culprits map and label based on actual committee membership.
+			allWaiting := make(map[string]bool)
 			if dispatcher.party != nil {
 				for _, p := range dispatcher.party.WaitingFor() {
-					culprits[p.Id] = true
-					oldCulprits = append(oldCulprits, p.Id)
-
-					// Check if culprit is connected
-					witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(p.Id, nil)
-					if err == nil {
-						peerId, err := peer.Decode(witness.PeerId)
-						if err == nil {
-							host := dispatcher.tssMgr.p2p.Host()
-							connState := host.Network().Connectedness(peerId)
-							if connState != network.Connected {
-								culpritContext[p.Id] = "not_connected"
-							} else {
-								culpritContext[p.Id] = "connected_but_no_response"
-							}
-						}
-					} else {
-						culpritContext[p.Id] = "witness_not_found"
-					}
+					allWaiting[p.Id] = true
 				}
 			}
 			if dispatcher.newParty != nil {
 				for _, p := range dispatcher.newParty.WaitingFor() {
-					culprits[p.Id] = true
-					newCulprits = append(newCulprits, p.Id)
+					allWaiting[p.Id] = true
+				}
+			}
 
-					// Check if culprit is connected
-					if _, exists := culpritContext[p.Id]; !exists {
-						witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(p.Id, nil)
-						if err == nil {
-							peerId, err := peer.Decode(witness.PeerId)
-							if err == nil {
-								host := dispatcher.tssMgr.p2p.Host()
-								connState := host.Network().Connectedness(peerId)
-								if connState != network.Connected {
-									culpritContext[p.Id] = "not_connected"
-								} else {
-									culpritContext[p.Id] = "connected_but_no_response"
-								}
-							}
+			for id := range allWaiting {
+				culprits[id] = true
+
+				if oldMemberSet[id] {
+					oldCulprits = append(oldCulprits, id)
+				}
+				if newMemberSet[id] {
+					newCulprits = append(newCulprits, id)
+				}
+
+				// Check if culprit is connected
+				witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(id, nil)
+				if err == nil {
+					peerId, err := peer.Decode(witness.PeerId)
+					if err == nil {
+						host := dispatcher.tssMgr.p2p.Host()
+						connState := host.Network().Connectedness(peerId)
+						if connState != network.Connected {
+							culpritContext[id] = "not_connected"
 						} else {
-							culpritContext[p.Id] = "witness_not_found"
+							culpritContext[id] = "connected_but_no_response"
 						}
 					}
+				} else {
+					culpritContext[id] = "witness_not_found"
 				}
 			}
 
