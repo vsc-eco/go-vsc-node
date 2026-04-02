@@ -264,19 +264,17 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 			"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "attempt", attempt+1, "maxRetries", maxRetries, "msgLen", len(msg))
 	}
 
-	// Add timeout to RPC call using a channel
-	errChan := make(chan error, 1)
-	go func() {
-		errChan <- tss.client.Call(peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
-	}()
-
-	select {
-	case err = <-errChan:
-		// RPC call completed
-	case <-time.After(30 * time.Second):
-		err = fmt.Errorf("RPC call timeout after 30s")
+	// Use CallContext with a deadline so the RPC (and its underlying libp2p
+	// stream) is cancelled when the timeout fires. The previous pattern of
+	// wrapping Call() in a goroutine + select/time.After leaked the goroutine
+	// (and the stream) because Call() uses context.Background() internally.
+	rpcTimeout := tss.sconf.TssParams().RpcTimeout
+	rpcCtx, rpcCancel := context.WithTimeout(context.Background(), rpcTimeout)
+	err = tss.client.CallContext(rpcCtx, peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
+	rpcCancel()
+	if rpcCtx.Err() == context.DeadlineExceeded {
 		log.Warn("RPC call timeout",
-			"sessionId", sessionId, "to", participant.Account, "peerId", peerId.String())
+			"sessionId", sessionId, "to", participant.Account, "peerId", peerId.String(), "timeout", rpcTimeout)
 	}
 	duration := time.Since(startTime)
 
@@ -361,20 +359,17 @@ func (tss *TssManager) checkParticipantReadiness(participants []Participant, ses
 			}
 			tRes := TRes{}
 
-			errChan := make(chan error, 1)
-			go func() {
-				errChan <- tss.client.Call(peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
-			}()
-
-			select {
-			case err := <-errChan:
-				if err != nil {
-					results <- readyResult{participant: p, ok: false, reason: fmt.Sprintf("rpc_error: %v", err)}
-				} else {
-					results <- readyResult{participant: p, ok: true}
+			rpcCtx, rpcCancel := context.WithTimeout(context.Background(), readyTimeout)
+			err = tss.client.CallContext(rpcCtx, peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
+			rpcCancel()
+			if err != nil {
+				reason := fmt.Sprintf("rpc_error: %v", err)
+				if rpcCtx.Err() == context.DeadlineExceeded {
+					reason = "timeout"
 				}
-			case <-time.After(readyTimeout):
-				results <- readyResult{participant: p, ok: false, reason: "timeout"}
+				results <- readyResult{participant: p, ok: false, reason: reason}
+			} else {
+				results <- readyResult{participant: p, ok: true}
 			}
 		}(p)
 	}
