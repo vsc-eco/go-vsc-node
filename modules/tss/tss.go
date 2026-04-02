@@ -300,10 +300,12 @@ func (tss *TssManager) BlameScore() ScoreMap {
 	for _, election := range previousElections {
 		electionMap[election.Epoch] = election
 
-		// Track first appearance of each node (current members only)
+		// Track earliest appearance of each node (current members only).
+		// GetPreviousElections returns descending order, so we must keep
+		// the lowest epoch seen, not the first one encountered in iteration.
 		for _, member := range election.Members {
 			if currentMembers[member.Account] {
-				if _, exists := nodeFirstEpoch[member.Account]; !exists {
+				if prev, exists := nodeFirstEpoch[member.Account]; !exists || election.Epoch < prev {
 					nodeFirstEpoch[member.Account] = election.Epoch
 				}
 			}
@@ -629,14 +631,19 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 
-			// Capture pre-filter size for correct threshold calculation
+			// Capture pre-filter size for correct threshold calculation.
 			origSignCommitteeSize := len(participants)
-
-			// Readiness check: ping each participant's TSS RPC layer to filter out zombie nodes
-			participants = tssMgr.checkParticipantReadiness(participants, sessionId, "SIGN", false)
 			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
+
+			// Readiness check: keepTimeouts=true so transient timeouts don't cause
+			// non-deterministic party lists across nodes. Only definitive errors
+			// (no_witness, bad_peer_id, protocol not supported) cause exclusion —
+			// these are deterministic because all nodes query the same witness DB.
+			// Timeout nodes stay in the list; if truly offline, the 60s signing
+			// timeout will catch them and produce blame.
+			participants = tssMgr.checkParticipantReadiness(participants, sessionId, "SIGN", true)
 			if len(participants) < origThreshold+1 {
-				log.Warn("insufficient participants for signing", "sessionId", sessionId, "connected", len(participants), "needed", origThreshold+1)
+				log.Warn("insufficient participants for signing", "sessionId", sessionId, "connected", len(participants), "needed", origThreshold+1, "total", origSignCommitteeSize)
 				continue
 			}
 
@@ -735,6 +742,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						log.Verbose("excluding blamed node from old committee", "sessionId", sessionId, "account", member.Account)
 						continue
 					}
+					if blameMap.BannedNodes[member.Account] {
+						log.Verbose("excluding banned node from old committee", "sessionId", sessionId, "account", member.Account)
+						continue
+					}
 					commitedMembers = append(commitedMembers, Participant{
 						Account: member.Account,
 					})
@@ -771,20 +782,28 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			origOldSize := fullOldCommitteeSize
 			origNewSize := len(newParticipants)
 
-			// Filter both old and new participants by connectivity
-			// Threshold is based on original counts (before filtering) since the key was created with that many participants
+			// Thresholds based on original counts (before any filtering) since the
+			// key was created with that many participants.
 			origOldThreshold, _ := tss_helpers.GetThreshold(origOldSize)
 			origNewThreshold, _ := tss_helpers.GetThreshold(origNewSize)
+
+			// Old committee: keepTimeouts=true so transient timeouts don't cause
+			// SSID mismatch (only definitive errors like "protocol not supported"
+			// cause exclusion). This is the existing fix from PR #124.
 			commitedMembers = tssMgr.checkParticipantReadiness(commitedMembers, sessionId, "RESHARE-OLD", true)
-			newParticipants = tssMgr.checkParticipantReadiness(newParticipants, sessionId, "RESHARE-NEW", false)
+
+			// New committee: count-only gate, never filter the list.
+			// Same non-determinism bug as signing — if nodes disagree on which
+			// new members are reachable, they build different party sets → SSID mismatch.
+			newReady := tssMgr.countReadyParticipants(newParticipants, sessionId, "RESHARE-NEW")
 
 			// Pre-flight checks: validate participant set meets minimum threshold (at least 2)
 			minNewRequired := origNewThreshold + 1
 			if minNewRequired < 2 {
 				minNewRequired = 2
 			}
-			if len(newParticipants) < minNewRequired {
-				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "participants", len(newParticipants), "required", minNewRequired, "threshold", origNewThreshold)
+			if newReady < minNewRequired {
+				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "ready", newReady, "required", minNewRequired, "threshold", origNewThreshold)
 				continue
 			}
 
