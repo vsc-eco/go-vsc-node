@@ -519,22 +519,10 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 			// Check connection status for each culprit to provide context
 			culpritContext := make(map[string]string)
 
-			// Build old party ID set for accurate culprit labeling.
-			// tss-lib's WaitingFor() returns combined old+new parties,
-			// so we filter by actual membership to avoid mislabeling.
-			oldPidSet := make(map[string]bool)
-			for _, p := range dispatcher.oldPids {
-				oldPidSet[p.Id] = true
-			}
-
 			if dispatcher.party != nil {
 				for _, p := range dispatcher.party.WaitingFor() {
 					culprits[p.Id] = true
-					if oldPidSet[p.Id] {
-						oldCulprits = append(oldCulprits, p.Id)
-					} else {
-						newCulprits = append(newCulprits, p.Id)
-					}
+					oldCulprits = append(oldCulprits, p.Id)
 
 					// Check if culprit is connected
 					witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(p.Id, nil)
