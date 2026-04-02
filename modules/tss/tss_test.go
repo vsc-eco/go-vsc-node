@@ -3875,3 +3875,93 @@ func TestKeyLifecycle(t *testing.T) {
 		}
 	})
 }
+
+// TestBlameBitsetElectionAlignment verifies that blame bitsets are encoded and
+// decoded against the same election member list. This is a regression test for
+// the bug where reshare blame was encoded against the keygen election (epoch N,
+// 18 members) but decoded against the current election (epoch N+5, 19 members).
+// When a member is added at position 0, every index shifts by 1 and blame
+// lands on the wrong nodes.
+func TestBlameBitsetElectionAlignment(t *testing.T) {
+	// Simulate two elections: keygen epoch (18 members) and current epoch (19 members).
+	// "actifit" is added at position 0 in the current epoch, shifting all others by 1.
+	keygenMembers := []string{
+		"arcange", "atexoras", "bala", "botlord", "bradleyarrow",
+		"comptroller", "delta-p", "emrebeyler", "herman", "louis",
+		"mahdiyari", "mengao", "milo", "prime", "sagarkothari",
+		"techcoderx", "tibfox", "v4vapp",
+	}
+	currentMembers := []string{
+		"actifit", "arcange", "atexoras", "bala", "botlord", "bradleyarrow",
+		"comptroller", "delta-p", "emrebeyler", "herman", "louis",
+		"mahdiyari", "mengao", "milo", "prime", "sagarkothari",
+		"techcoderx", "tibfox", "v4vapp",
+	}
+
+	culprits := []string{"prime", "emrebeyler", "comptroller"}
+
+	// --- BUG PATH: encode against keygen election, decode against current election ---
+	bugBitset := big.NewInt(0)
+	for _, culprit := range culprits {
+		for idx, member := range keygenMembers {
+			if member == culprit {
+				bugBitset.SetBit(bugBitset, idx, 1)
+				break
+			}
+		}
+	}
+	bugEncoded := base64.RawURLEncoding.EncodeToString(bugBitset.Bytes())
+
+	bugDecoded := make([]string, 0)
+	for idx, member := range currentMembers {
+		if bugBitset.Bit(idx) == 1 {
+			bugDecoded = append(bugDecoded, member)
+		}
+	}
+
+	sort.Strings(culprits)
+	sort.Strings(bugDecoded)
+	if fmt.Sprint(culprits) == fmt.Sprint(bugDecoded) {
+		t.Fatal("Expected bug path to produce WRONG blame targets, but they matched — test setup is wrong")
+	}
+	t.Logf("BUG PATH: encoded against keygen election, decoded against current election")
+	t.Logf("  Intended culprits: %v", culprits)
+	t.Logf("  Decoded (wrong):   %v", bugDecoded)
+	t.Logf("  Bitset:            %s", bugEncoded)
+
+	for _, decoded := range bugDecoded {
+		for _, c := range culprits {
+			if decoded == c {
+				t.Errorf("Bug path accidentally decoded a correct culprit %q — off-by-one not demonstrated", decoded)
+			}
+		}
+	}
+
+	// --- FIX PATH: encode against current election, decode against current election ---
+	fixBitset := big.NewInt(0)
+	for _, culprit := range culprits {
+		for idx, member := range currentMembers {
+			if member == culprit {
+				fixBitset.SetBit(fixBitset, idx, 1)
+				break
+			}
+		}
+	}
+	fixEncoded := base64.RawURLEncoding.EncodeToString(fixBitset.Bytes())
+
+	fixDecoded := make([]string, 0)
+	for idx, member := range currentMembers {
+		if fixBitset.Bit(idx) == 1 {
+			fixDecoded = append(fixDecoded, member)
+		}
+	}
+
+	sort.Strings(fixDecoded)
+	if fmt.Sprint(culprits) != fmt.Sprint(fixDecoded) {
+		t.Fatalf("FIX PATH: blame roundtrip failed\n  Intended: %v\n  Decoded:  %v\n  Bitset:   %s", culprits, fixDecoded, fixEncoded)
+	}
+	t.Logf("FIX PATH: encoded against current election, decoded against current election")
+	t.Logf("  Intended culprits: %v", culprits)
+	t.Logf("  Decoded (correct): %v", fixDecoded)
+	t.Logf("  Bitset:            %s", fixEncoded)
+}
