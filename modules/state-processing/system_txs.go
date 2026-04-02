@@ -419,7 +419,11 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			if err != nil {
 				return
 			}
-			node, _ := se.da.Get(parsedCid, nil)
+			node, err := se.da.Get(parsedCid, nil)
+			if err != nil {
+				log.Warn("TxElectionResult: failed to fetch genesis election data, skipping", "cid", parsedCid, "err", err)
+				return
+			}
 
 			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
 			elecResult := elections.ElectionResult{}
@@ -522,9 +526,11 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 		if verified && realWeight >= minimums {
 			fmt.Println("Election verified, indexing...", tx.Epoch)
 			fmt.Println("Election CID", parsedCid)
-			se.da.GetDag(parsedCid)
-			fmt.Println("Got dag prolly")
-			node, _ := se.da.Get(parsedCid, nil)
+			node, err := se.da.Get(parsedCid, nil)
+			if err != nil {
+				log.Warn("TxElectionResult: failed to fetch election data, skipping", "epoch", tx.Epoch, "cid", parsedCid, "err", err)
+				return
+			}
 			fmt.Println("Got Election from DA")
 			//Verified and 2/3 majority signed
 			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
@@ -643,13 +649,23 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 // ProcessTx implements VSCTransaction.
 func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
-	blockCid, _ := cid.Parse(t.SignedBlock.Block)
-	node, _ := se.da.GetDag(blockCid)
+	blockCid, err := cid.Parse(t.SignedBlock.Block)
+	if err != nil {
+		log.Warn("TxProposeBlock: invalid block CID, skipping", "block", t.SignedBlock.Block, "err", err)
+		return
+	}
+	node, err := se.da.GetDag(blockCid)
+	if err != nil {
+		log.Warn("TxProposeBlock: failed to fetch block DAG, skipping block", "cid", blockCid, "err", err)
+		return
+	}
 	jsonBytes, _ := node.MarshalJSON()
 	blockContentC := vscBlocks.VscBlock{}
-	// json.Unmarshal(jsonBytes, &blockContent)
 
-	se.da.GetObject(blockCid, &blockContentC, common_types.GetOptions{})
+	if err := se.da.GetObject(blockCid, &blockContentC, common_types.GetOptions{}); err != nil {
+		log.Warn("TxProposeBlock: failed to decode block content, skipping block", "cid", blockCid, "err", err)
+		return
+	}
 
 	slotInfo := CalculateSlotInfo(t.Self.BlockHeight)
 
@@ -710,7 +726,11 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 		if txContainer.Type() == "transaction" {
 			//Note: sig verification has already happened
-			tx := txContainer.AsTransaction()
+			tx, err := txContainer.AsTransaction()
+			if err != nil {
+				log.Warn("TxProposeBlock: failed to fetch transaction, skipping", "txId", txInfo.Id, "err", err)
+				continue
+			}
 
 			tx.Ingest(se, t.Self.TxId, TxSelf{
 				BlockId:     t.Self.BlockId,
@@ -733,7 +753,11 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				Ops:  txs,
 			})
 		} else if txContainer.Type() == "output" {
-			contractOutput := txContainer.AsContractOutput()
+			contractOutput, err := txContainer.AsContractOutput()
+			if err != nil {
+				log.Warn("TxProposeBlock: failed to fetch contract output, skipping", "txId", txInfo.Id, "err", err)
+				continue
+			}
 
 			contractOutput.Ingest(se, TxSelf{
 				BlockId:     t.Self.BlockId,
@@ -742,7 +766,11 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			}, int64(se.slotStatus.SlotHeight))
 
 		} else if txContainer.Type() == "oplog" {
-			oplog := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))
+			oplog, err := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))
+			if err != nil {
+				log.Warn("TxProposeBlock: failed to fetch oplog, skipping", "txId", txInfo.Id, "err", err)
+				continue
+			}
 			oplog.ExecuteTx(se)
 		}
 	}
