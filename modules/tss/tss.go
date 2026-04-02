@@ -630,7 +630,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			origSignCommitteeSize := len(participants)
 
 			// Readiness check: ping each participant's TSS RPC layer to filter out zombie nodes
-			participants = tssMgr.checkParticipantReadiness(participants, sessionId, "SIGN")
+			participants = tssMgr.checkParticipantReadiness(participants, sessionId, "SIGN", false)
 			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
 			if len(participants) < origThreshold+1 {
 				log.Warn("insufficient participants for signing", "sessionId", sessionId, "connected", len(participants), "needed", origThreshold+1)
@@ -750,8 +750,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// Threshold is based on original counts (before filtering) since the key was created with that many participants
 			origOldThreshold, _ := tss_helpers.GetThreshold(origOldSize)
 			origNewThreshold, _ := tss_helpers.GetThreshold(origNewSize)
-			commitedMembers = tssMgr.checkParticipantReadiness(commitedMembers, sessionId, "RESHARE-OLD")
-			newParticipants = tssMgr.checkParticipantReadiness(newParticipants, sessionId, "RESHARE-NEW")
+			commitedMembers = tssMgr.checkParticipantReadiness(commitedMembers, sessionId, "RESHARE-OLD", true)
+			newParticipants = tssMgr.checkParticipantReadiness(newParticipants, sessionId, "RESHARE-NEW", false)
 
 			// Pre-flight checks: validate participant set meets minimum threshold (at least 2)
 			minNewRequired := origNewThreshold + 1

@@ -312,7 +312,19 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 // and returns only those that respond within the deadline. This filters out
 // zombie nodes that are connected at the libp2p level but not functioning
 // at the application level. Always includes self.
-func (tss *TssManager) checkParticipantReadiness(participants []Participant, sessionId string, label string) []Participant {
+// checkParticipantReadiness pings each participant and returns those that respond.
+//
+// When keepTimeouts is true, participants that fail due to timeout are KEPT in the
+// returned list — only definitive failures (no witness, bad peer ID, RPC error) are
+// excluded. This is used for the OLD committee in reshare: timeout nodes might just
+// be slow, and excluding them non-deterministically causes SSID mismatch between nodes.
+// If a timeout node is genuinely offline, tss-lib will wait for it until the session's
+// 2-minute ReshareTimeout fires, producing blame. This is an intentional tradeoff:
+// ~2 minutes wasted per offline old member, but SSIDs are guaranteed to match across
+// all nodes because only deterministic errors (same on every node) cause exclusion.
+//
+// When keepTimeouts is false (signing, new committee), timeouts cause exclusion as before.
+func (tss *TssManager) checkParticipantReadiness(participants []Participant, sessionId string, label string, keepTimeouts bool) []Participant {
 	selfAccount := tss.config.Get().HiveUsername
 	readyTimeout := 5 * time.Second
 
@@ -371,6 +383,12 @@ func (tss *TssManager) checkParticipantReadiness(participants []Participant, ses
 	for range participants {
 		r := <-results
 		if r.ok {
+			ready = append(ready, r.participant)
+		} else if keepTimeouts && r.reason == "timeout" {
+			// Timeout is transient — keep the node to avoid SSID mismatch.
+			// If genuinely offline, the 2-minute ReshareTimeout will catch it.
+			log.Verbose("keeping timed-out participant (transient)",
+				"label", label, "sessionId", sessionId, "account", r.participant.Account)
 			ready = append(ready, r.participant)
 		} else {
 			log.Warn("excluding unresponsive participant",
