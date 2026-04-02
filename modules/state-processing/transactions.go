@@ -873,24 +873,29 @@ func (tx *TransactionContainer) Type() string {
 }
 
 // Converts to Contract Output
-func (tx *TransactionContainer) AsContractOutput() *ContractOutput {
+func (tx *TransactionContainer) AsContractOutput() (*ContractOutput, error) {
 	output := ContractOutput{
 		Id: tx.Id,
 	}
 	txCid := cid.MustParse(tx.Id)
-	dag, _ := tx.da.GetDag(txCid)
+	dag, err := tx.da.GetDag(txCid)
+	if err != nil {
+		return nil, fmt.Errorf("AsContractOutput(%s): %w", tx.Id, err)
+	}
 
 	bJson, _ := dag.MarshalJSON()
-
 	json.Unmarshal(bJson, &output)
 
-	return &output
+	return &output, nil
 }
 
 // As a regular VSC transaction
-func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
+func (tx *TransactionContainer) AsTransaction() (*OffchainTransaction, error) {
 	txCid := cid.MustParse(tx.Id)
-	dag, _ := tx.da.GetDag(txCid)
+	dag, err := tx.da.GetDag(txCid)
+	if err != nil {
+		return nil, fmt.Errorf("AsTransaction(%s): %w", tx.Id, err)
+	}
 
 	bJson, _ := dag.MarshalJSON()
 
@@ -900,27 +905,24 @@ func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
 	}
 	json.Unmarshal(bJson, &offchainTx)
 
-	return &offchainTx
+	return &offchainTx, nil
 }
 
-func (tx *TransactionContainer) AsOplog(endBlock uint64) Oplog {
+func (tx *TransactionContainer) AsOplog(endBlock uint64) (Oplog, error) {
 	cid := cid.MustParse(tx.Id)
 	node, err := tx.da.GetDag(cid)
-
 	if err != nil {
-		fmt.Println("AsOplog: failed to fetch DAG", "cid", tx.Id, "err", err)
-		return Oplog{Self: tx.Self, EndBlock: endBlock}
+		return Oplog{}, fmt.Errorf("AsOplog(%s): %w", tx.Id, err)
 	}
 	jsonBytes, _ := node.MarshalJSON()
 
 	oplog := Oplog{
-		Self: tx.Self,
-
+		Self:     tx.Self,
 		EndBlock: endBlock,
 	}
 	json.Unmarshal(jsonBytes, &oplog)
 
-	return oplog
+	return oplog, nil
 }
 
 // AsPendulumSettlement decodes the SettlementRecord pointed at by this

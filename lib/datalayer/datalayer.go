@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/chebyrash/promise"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -24,6 +25,7 @@ import (
 	format "github.com/ipfs/go-ipld-format"
 
 	"vsc-node/lib/utils"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common/common_types"
 	libp2p "vsc-node/modules/p2p"
 
@@ -35,6 +37,11 @@ import (
 
 	a "vsc-node/modules/aggregate"
 )
+
+const dagFetchTimeout = 60 * time.Second
+const dagFetchMaxRetries = 3
+
+var daLog = vsclog.Module("datalayer")
 
 type DataLayer struct {
 	// a.Plugin
@@ -228,10 +235,37 @@ func (dl *DataLayer) HashObject(data interface{}) (*cid.Cid, error) {
 	return &cid, err
 }
 
+// fetchBlock retrieves a block by CID with retries and exponential backoff.
+// Each attempt has its own timeout (dagFetchTimeout). Between attempts the
+// delay doubles: 5s, 10s, 20s, ...
+func (dl *DataLayer) fetchBlock(c cid.Cid) (blocks.Block, error) {
+	var lastErr error
+	backoff := 5 * time.Second
+
+	for attempt := 0; attempt <= dagFetchMaxRetries; attempt++ {
+		if attempt > 0 {
+			daLog.Warn("retrying DAG fetch", "cid", c, "attempt", attempt, "backoff", backoff)
+			time.Sleep(backoff)
+			backoff *= 2
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), dagFetchTimeout)
+		block, err := dl.blockServ.GetBlock(ctx, c)
+		cancel()
+
+		if err == nil {
+			return block, nil
+		}
+		lastErr = err
+	}
+
+	return nil, fmt.Errorf("fetchBlock(%s): all %d attempts failed: %w", c, dagFetchMaxRetries+1, lastErr)
+}
+
 func (dl *DataLayer) Get(cid cid.Cid, options *common_types.GetOptions) (format.Node, error) {
 	//This is using direct bitswap access which may not use a block store.
 	//Thus, it will not store anything upon request.
-	block, err := dl.blockServ.GetBlock(context.Background(), cid)
+	block, err := dl.fetchBlock(cid)
 	if err != nil {
 		return nil, err
 	}
@@ -243,12 +277,6 @@ func (dl *DataLayer) Get(cid cid.Cid, options *common_types.GetOptions) (format.
 		return nil, err
 	}
 	return node, nil
-	// if options.NoStore {
-	// } else {
-	// 	//This will automatically store locally
-	// 	node, err := dl.DagServ.Get(context.Background(), cid)
-	// 	return &node, err
-	// }
 }
 
 // Gets Object then converts it to Golang type seemlessly
@@ -265,9 +293,7 @@ func (dl *DataLayer) GetObject(cid cid.Cid, v interface{}, options common_types.
 }
 
 func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
-	block, err := dl.blockServ.GetBlock(context.Background(), cid)
-	//Make sure it is stored
-	// dl.blockServ.AddBlock(context.Background(), block)
+	block, err := dl.fetchBlock(cid)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +302,7 @@ func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
 }
 
 func (dl *DataLayer) GetRaw(cid cid.Cid) ([]byte, error) {
-	block, err := dl.blockServ.GetBlock(context.Background(), cid)
+	block, err := dl.fetchBlock(cid)
 	if err != nil {
 		return nil, err
 	}
