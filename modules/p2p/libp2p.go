@@ -56,6 +56,8 @@ type P2PServer struct {
 	blockStatus common_types.BlockStatusGetter
 
 	reachabilityStatus network.Reachability
+
+	bgCancel context.CancelFunc // cancels background goroutines on Stop()
 }
 
 var _ aggregate.Plugin = &P2PServer{}
@@ -244,9 +246,16 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 		p2ps.connectRegisteredPeers()
 	})
 
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	p2ps.bgCancel = bgCancel
+
 	go func() {
-		time.Sleep(1 * time.Minute)
-		p2ps.advertiseSelf()
+		select {
+		case <-time.After(1 * time.Minute):
+			p2ps.advertiseSelf()
+		case <-bgCtx.Done():
+			return
+		}
 	}()
 
 	uniquePeers := make(map[string]struct{})
@@ -292,7 +301,11 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 				p2ps.startStatus.TriggerStart()
 			}
 
-			time.Sleep(60 * time.Second)
+			select {
+			case <-time.After(60 * time.Second):
+			case <-bgCtx.Done():
+				return
+			}
 		}
 	}()
 
@@ -303,7 +316,10 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 
 // Stop implements aggregate.Plugin.
 func (p2p *P2PServer) Stop() error {
-	//FIXME make this clean up sub services
+	if p2p.bgCancel != nil {
+		p2p.bgCancel()
+	}
+	p2p.cron.Stop()
 	return nil
 }
 

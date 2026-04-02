@@ -1027,6 +1027,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		// Lock was already released before this goroutine started.
 
 		if isLeader {
+			// Fire-and-forget but bounded: the Hive RPC client has its own
+			// HTTP timeout so Broadcast won't block forever.
 			go func() {
 				if len(signedResults) > 0 {
 
@@ -1049,8 +1051,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						Id:                   "vsc.tss_sign",
 						Json:                 string(rawJson),
 					}
-
-					// wif := tssMgr.config.Get().HiveActiveKey
 
 					hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
 						deployOp,
