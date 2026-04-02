@@ -1127,14 +1127,11 @@ type failedMsg struct {
 	attempts     int
 }
 
-func (dispatcher *BaseDispatcher) signalDone() {
-	// Stop message-loop goroutines (reshareMsgs, handleMsgs, endOld receivers, retryFailedMsgs, etc.)
-	dispatcher.cancelMsgs()
-
-	// Drain p2pMsg so that any goroutines blocked writing to it (from
-	// party.UpdateFromBytes inside HandleP2P) can unblock and exit.
-	// Without this, those goroutines leak permanently because handleMsgs
-	// (the only reader) has already exited via cancelMsgs above.
+// drainP2pMsg spins up a goroutine that reads from p2pMsg until the channel
+// is closed or 30 seconds of inactivity pass. This unblocks any goroutines
+// stuck writing to p2pMsg (from party.UpdateFromBytes inside HandleP2P)
+// after the message-loop reader has exited.
+func (dispatcher *BaseDispatcher) drainP2pMsg() {
 	go func() {
 		for {
 			select {
@@ -1147,6 +1144,11 @@ func (dispatcher *BaseDispatcher) signalDone() {
 			}
 		}
 	}()
+}
+
+func (dispatcher *BaseDispatcher) signalDone() {
+	// Stop message-loop goroutines (reshareMsgs, handleMsgs, endOld receivers, retryFailedMsgs, etc.)
+	dispatcher.cancelMsgs()
 
 	dispatcher.doneMu.Lock()
 	if dispatcher.doneSignalled {
@@ -1155,6 +1157,10 @@ func (dispatcher *BaseDispatcher) signalDone() {
 	}
 	dispatcher.doneSignalled = true
 	dispatcher.doneMu.Unlock()
+
+	// Drain after the doneMu guard so only one drain goroutine is ever launched
+	// per dispatcher, even if both the timeout and completion paths race here.
+	dispatcher.drainP2pMsg()
 
 	dispatcher.done <- struct{}{}
 }
@@ -1413,19 +1419,7 @@ func (dispatcher *BaseDispatcher) baseStart() {
 				log.Warn("session timeout", "sessionId", dispatcher.sessionId, "elapsed", elapsed, "timeout", timeout, "lastMsg", lastMsg)
 
 				dispatcher.cancelMsgs()
-				// Drain p2pMsg to unblock UpdateFromBytes goroutines
-				go func() {
-					for {
-						select {
-						case _, ok := <-dispatcher.p2pMsg:
-							if !ok {
-								return
-							}
-						case <-time.After(30 * time.Second):
-							return
-						}
-					}
-				}()
+				dispatcher.drainP2pMsg()
 				dispatcher.done <- struct{}{}
 				return
 			}
