@@ -590,7 +590,7 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
 				BlockHeight: dispatcher.blockHeight,
-				Epoch:       dispatcher.epoch,
+				Epoch:       dispatcher.newEpoch,
 			})
 			return
 		}
@@ -603,7 +603,7 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
 				BlockHeight: dispatcher.blockHeight,
-				Epoch:       dispatcher.epoch,
+				Epoch:       dispatcher.newEpoch,
 			})
 			return
 		}
