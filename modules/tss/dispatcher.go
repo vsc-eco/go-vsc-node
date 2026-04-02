@@ -47,6 +47,11 @@ type Dispatcher interface {
 	KeyId() string
 	HandleP2P(msg []byte, from string, isBrcst bool, cmt string, fromCmt string)
 	Done() *promise.Promise[DispatcherResult]
+
+	// Cleanup releases resources when Start() fails before baseStart() runs.
+	// Cancels msgCtx (so reshareMsgs/handleMsgs goroutines exit) and releases
+	// startLock (so any HandleP2P callers blocked in startWait unblock).
+	Cleanup()
 }
 
 type ReshareDispatcher struct {
@@ -219,6 +224,9 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		// Check participant readiness before starting (strict: do not start with missing peers)
 		ready := dispatcher.waitForParticipantReadiness(sortedPids, dispatcher.newPids, syncDelay)
 		if !ready {
+			// Cancel the context so the reshareMsgs goroutine (launched above) exits
+			// its loop instead of blocking on p2pMsg forever.
+			dispatcher.cancelMsgs()
 			err := fmt.Errorf("insufficient participants ready for reshare (would block or panic)")
 			log.Error("insufficient participants ready, skipping reshare", "sessionId", dispatcher.sessionId, "err", err)
 			return err
@@ -380,6 +388,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		// Check participant readiness before starting (strict: do not start with missing peers)
 		ready := dispatcher.waitForParticipantReadiness(sortedPids, dispatcher.newPids, syncDelay)
 		if !ready {
+			dispatcher.cancelMsgs()
 			err := fmt.Errorf("insufficient participants ready for reshare (would block or panic)")
 			log.Error("insufficient participants ready, skipping reshare", "algo", "EdDSA", "sessionId", dispatcher.sessionId, "err", err)
 			return err
@@ -612,6 +621,13 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 
 func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isBrcst bool, cmt string, fromCmt string) {
 	dispatcher.startWait()
+
+	// Don't spawn goroutines for a completed/timed-out session.
+	select {
+	case <-dispatcher.msgCtx.Done():
+		return
+	default:
+	}
 
 	// Use stored epoch-modified party IDs instead of baseInfo() which would
 	// overwrite the epoch modifications set during Start().
@@ -1115,6 +1131,23 @@ func (dispatcher *BaseDispatcher) signalDone() {
 	// Stop message-loop goroutines (reshareMsgs, handleMsgs, endOld receivers, retryFailedMsgs, etc.)
 	dispatcher.cancelMsgs()
 
+	// Drain p2pMsg so that any goroutines blocked writing to it (from
+	// party.UpdateFromBytes inside HandleP2P) can unblock and exit.
+	// Without this, those goroutines leak permanently because handleMsgs
+	// (the only reader) has already exited via cancelMsgs above.
+	go func() {
+		for {
+			select {
+			case _, ok := <-dispatcher.p2pMsg:
+				if !ok {
+					return
+				}
+			case <-time.After(30 * time.Second):
+				return
+			}
+		}
+	}()
+
 	dispatcher.doneMu.Lock()
 	if dispatcher.doneSignalled {
 		dispatcher.doneMu.Unlock()
@@ -1267,6 +1300,15 @@ func (dispatcher *BaseDispatcher) startWait() {
 
 func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcst bool, cmt string, cmtFrom string) {
 	dispatcher.startWait()
+
+	// Don't spawn goroutines for a completed/timed-out session.
+	// UpdateFromBytes can block inside tss-lib writing to p2pMsg.
+	select {
+	case <-dispatcher.msgCtx.Done():
+		return
+	default:
+	}
+
 	sortedIds, _, _ := dispatcher.baseInfo()
 
 	var from *btss.PartyID
@@ -1308,6 +1350,23 @@ func (dsc *BaseDispatcher) SessionId() string {
 
 func (dsc *BaseDispatcher) KeyId() string {
 	return dsc.keyId
+}
+
+func (dsc *BaseDispatcher) Cleanup() {
+	if dsc.cancelMsgs != nil {
+		dsc.cancelMsgs()
+	}
+	if !dsc.started {
+		// startLock was acquired by TryLock in RunActions but never released
+		// by baseStart. Unlock it so any HandleP2P blocked in startWait returns.
+		// Use TryLock+Unlock to avoid unlocking an already-unlocked mutex.
+		if !dsc.startLock.TryLock() {
+			dsc.startLock.Unlock()
+		} else {
+			// Was already unlocked; re-unlock the one we just acquired.
+			dsc.startLock.Unlock()
+		}
+	}
 }
 
 func (dispatcher *BaseDispatcher) baseStart() {
@@ -1354,6 +1413,19 @@ func (dispatcher *BaseDispatcher) baseStart() {
 				log.Warn("session timeout", "sessionId", dispatcher.sessionId, "elapsed", elapsed, "timeout", timeout, "lastMsg", lastMsg)
 
 				dispatcher.cancelMsgs()
+				// Drain p2pMsg to unblock UpdateFromBytes goroutines
+				go func() {
+					for {
+						select {
+						case _, ok := <-dispatcher.p2pMsg:
+							if !ok {
+								return
+							}
+						case <-time.After(30 * time.Second):
+							return
+						}
+					}
+				}()
 				dispatcher.done <- struct{}{}
 				return
 			}

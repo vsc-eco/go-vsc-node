@@ -97,6 +97,9 @@ type TssManager struct {
 
 	// Metrics for observability
 	metrics *Metrics
+
+	// Cancel function for background goroutines (preParams ticker, etc.)
+	bgCancel context.CancelFunc
 }
 
 // ClearQueuedActions clears any pending actions. Used by tests to prevent
@@ -848,6 +851,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		if err == nil {
 			startedDispatcher = append(startedDispatcher, dispatcher)
 		} else {
+			// Start() failed before baseStart() could release startLock and
+			// cancel msgCtx. Clean up so HandleP2P callers don't deadlock on
+			// startWait() and reshareMsgs/handleMsgs goroutines don't leak.
+			dispatcher.Cleanup()
+
 			sessionId := dispatcher.SessionId()
 			tssMgr.bufferLock.Lock()
 			delete(tssMgr.sigChannels, sessionId)
@@ -1401,7 +1409,8 @@ func (tssMgr *TssManager) Start() *promise.Promise[any] {
 
 	go tssMgr.GeneratePreParams()
 
-	ctx := context.Background()
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	tssMgr.bgCancel = bgCancel
 
 	go func() {
 		//Every one minute
@@ -1409,7 +1418,7 @@ func (tssMgr *TssManager) Start() *promise.Promise[any] {
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-bgCtx.Done():
 				return
 			case <-ticker.C:
 				tssMgr.GeneratePreParams()
@@ -1420,6 +1429,9 @@ func (tssMgr *TssManager) Start() *promise.Promise[any] {
 }
 
 func (tssMgr *TssManager) Stop() error {
+	if tssMgr.bgCancel != nil {
+		tssMgr.bgCancel()
+	}
 	tssMgr.stopP2P()
 	return nil
 }
