@@ -43,6 +43,39 @@ const dagFetchMaxRetries = 3
 
 var daLog = vsclog.Module("datalayer")
 
+// retryBlockService wraps a blockservice.BlockService so that every GetBlock
+// call is bounded by dagFetchTimeout and retried up to dagFetchMaxRetries
+// times with exponential backoff.  This covers ALL code paths that resolve
+// CIDs—including the HAMT directory traversal used by UnixFS/DagServ—not
+// just the explicit Get/GetDag/GetRaw helpers.
+type retryBlockService struct {
+	blockservice.BlockService
+}
+
+func (r *retryBlockService) GetBlock(ctx context.Context, c cid.Cid) (blocks.Block, error) {
+	var lastErr error
+	backoff := 5 * time.Second
+
+	for attempt := 0; attempt <= dagFetchMaxRetries; attempt++ {
+		if attempt > 0 {
+			daLog.Warn("retrying block fetch", "cid", c, "attempt", attempt, "backoff", backoff)
+			time.Sleep(backoff)
+			backoff *= 2
+		}
+
+		tCtx, cancel := context.WithTimeout(ctx, dagFetchTimeout)
+		block, err := r.BlockService.GetBlock(tCtx, c)
+		cancel()
+
+		if err == nil {
+			return block, nil
+		}
+		lastErr = err
+	}
+
+	return nil, fmt.Errorf("GetBlock(%s): all %d attempts failed: %w", c, dagFetchMaxRetries+1, lastErr)
+}
+
 type DataLayer struct {
 	// a.Plugin
 	p2pService *libp2p.P2PServer
@@ -107,8 +140,10 @@ func (dl *DataLayer) Init() error {
 	// A wrapped providing exchange using the previous exchange and the provider.
 	exchange := providing.New(bswap, provider)
 
-	// Finally the blockservice
-	blockService := blockservice.New(bstore, exchange)
+	// Finally the blockservice, wrapped with timeout+retry so that every
+	// CID resolution (including HAMT directory traversals via DagServ) is
+	// bounded and retried automatically.
+	blockService := &retryBlockService{blockservice.New(bstore, exchange)}
 	dl.blockServ = blockService
 	dl.bitswap = bswap
 
@@ -235,37 +270,10 @@ func (dl *DataLayer) HashObject(data interface{}) (*cid.Cid, error) {
 	return &cid, err
 }
 
-// fetchBlock retrieves a block by CID with retries and exponential backoff.
-// Each attempt has its own timeout (dagFetchTimeout). Between attempts the
-// delay doubles: 5s, 10s, 20s, ...
-func (dl *DataLayer) fetchBlock(c cid.Cid) (blocks.Block, error) {
-	var lastErr error
-	backoff := 5 * time.Second
-
-	for attempt := 0; attempt <= dagFetchMaxRetries; attempt++ {
-		if attempt > 0 {
-			daLog.Warn("retrying DAG fetch", "cid", c, "attempt", attempt, "backoff", backoff)
-			time.Sleep(backoff)
-			backoff *= 2
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), dagFetchTimeout)
-		block, err := dl.blockServ.GetBlock(ctx, c)
-		cancel()
-
-		if err == nil {
-			return block, nil
-		}
-		lastErr = err
-	}
-
-	return nil, fmt.Errorf("fetchBlock(%s): all %d attempts failed: %w", c, dagFetchMaxRetries+1, lastErr)
-}
-
 func (dl *DataLayer) Get(cid cid.Cid, options *common_types.GetOptions) (format.Node, error) {
 	//This is using direct bitswap access which may not use a block store.
 	//Thus, it will not store anything upon request.
-	block, err := dl.fetchBlock(cid)
+	block, err := dl.blockServ.GetBlock(context.Background(), cid)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +301,7 @@ func (dl *DataLayer) GetObject(cid cid.Cid, v interface{}, options common_types.
 }
 
 func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
-	block, err := dl.fetchBlock(cid)
+	block, err := dl.blockServ.GetBlock(context.Background(), cid)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +310,7 @@ func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
 }
 
 func (dl *DataLayer) GetRaw(cid cid.Cid) ([]byte, error) {
-	block, err := dl.fetchBlock(cid)
+	block, err := dl.blockServ.GetBlock(context.Background(), cid)
 	if err != nil {
 		return nil, err
 	}
