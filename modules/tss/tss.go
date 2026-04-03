@@ -641,7 +641,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// these are deterministic because all nodes query the same witness DB.
 			// Timeout nodes stay in the list; if truly offline, the 60s signing
 			// timeout will catch them and produce blame.
-			participants = tssMgr.checkParticipantReadiness(participants, sessionId, "SIGN", true)
+			participants = tssMgr.checkParticipantReadiness(participants, sessionId, "SIGN", false)
 			if len(participants) < origThreshold+1 {
 				log.Warn("insufficient participants for signing", "sessionId", sessionId, "connected", len(participants), "needed", origThreshold+1, "total", origSignCommitteeSize)
 				continue
@@ -790,7 +790,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// Old committee: keepTimeouts=true so transient timeouts don't cause
 			// SSID mismatch (only definitive errors like "protocol not supported"
 			// cause exclusion). This is the existing fix from PR #124.
-			commitedMembers = tssMgr.checkParticipantReadiness(commitedMembers, sessionId, "RESHARE-OLD", true)
+			commitedMembers = tssMgr.checkParticipantReadiness(commitedMembers, sessionId, "RESHARE-OLD", false)
 
 			// New committee: count-only gate, never filter the list.
 			// Same non-determinism bug as signing — if nodes disagree on which
