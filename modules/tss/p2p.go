@@ -324,7 +324,7 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 // When keepTimeouts is false (signing, new committee), timeouts cause exclusion as before.
 func (tss *TssManager) checkParticipantReadiness(participants []Participant, sessionId string, label string, keepTimeouts bool) []Participant {
 	selfAccount := tss.config.Get().HiveUsername
-	readyTimeout := 10 * time.Second
+	readyTimeout := 5 * time.Second
 
 	type readyResult struct {
 		participant Participant
@@ -403,7 +403,7 @@ func (tss *TssManager) checkParticipantReadiness(participants []Participant, ses
 // go/no-go gate while keeping the deterministic on-chain party list intact.
 func (tss *TssManager) countReadyParticipants(participants []Participant, sessionId string, label string) int {
 	selfAccount := tss.config.Get().HiveUsername
-	readyTimeout := 10 * time.Second
+	readyTimeout := 5 * time.Second
 
 	type readyResult struct {
 		ok      bool
