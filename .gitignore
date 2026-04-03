@@ -16,3 +16,4 @@ vsc-node
 contract-deployer
 *.tar
 logs/
+*attack-vectors.md
