@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/chebyrash/promise"
@@ -48,11 +49,31 @@ var daLog = vsclog.Module("datalayer")
 // times with exponential backoff.  This covers ALL code paths that resolve
 // CIDs—including the HAMT directory traversal used by UnixFS/DagServ—not
 // just the explicit Get/GetDag/GetRaw helpers.
+//
+// CIDs that remain unreachable after all retries are added to a negative
+// cache so subsequent requests for the same CID fail immediately instead
+// of burning minutes on retries that will never succeed (e.g. a missing
+// HAMT shard node that every future contract call would re-traverse).
 type retryBlockService struct {
 	blockservice.BlockService
+	failedMu sync.RWMutex
+	failed   map[cid.Cid]time.Time // CID → time of last failure
 }
 
+// failedCidTTL controls how long a CID stays in the negative cache before
+// we allow another retry cycle.  This gives the peer network time to heal
+// without retrying endlessly.
+const failedCidTTL = 30 * time.Minute
+
 func (r *retryBlockService) GetBlock(ctx context.Context, c cid.Cid) (blocks.Block, error) {
+	// Fast-path: if this CID recently exhausted all retries, fail immediately.
+	r.failedMu.RLock()
+	if t, ok := r.failed[c]; ok && time.Since(t) < failedCidTTL {
+		r.failedMu.RUnlock()
+		return nil, fmt.Errorf("GetBlock(%s): skipped (unreachable, last failed %s ago)", c, time.Since(t).Round(time.Second))
+	}
+	r.failedMu.RUnlock()
+
 	var lastErr error
 	backoff := 5 * time.Second
 
@@ -68,10 +89,22 @@ func (r *retryBlockService) GetBlock(ctx context.Context, c cid.Cid) (blocks.Blo
 		cancel()
 
 		if err == nil {
+			// Success — clear any stale negative-cache entry.
+			r.failedMu.Lock()
+			delete(r.failed, c)
+			r.failedMu.Unlock()
 			return block, nil
 		}
 		lastErr = err
 	}
+
+	// All retries exhausted — cache the failure.
+	r.failedMu.Lock()
+	r.failed[c] = time.Now()
+	r.failedMu.Unlock()
+
+	daLog.Warn("block unreachable, adding to negative cache",
+		"cid", c, "ttl", failedCidTTL, "err", lastErr)
 
 	return nil, fmt.Errorf("GetBlock(%s): all %d attempts failed: %w", c, dagFetchMaxRetries+1, lastErr)
 }
@@ -143,7 +176,10 @@ func (dl *DataLayer) Init() error {
 	// Finally the blockservice, wrapped with timeout+retry so that every
 	// CID resolution (including HAMT directory traversals via DagServ) is
 	// bounded and retried automatically.
-	blockService := &retryBlockService{blockservice.New(bstore, exchange)}
+	blockService := &retryBlockService{
+		BlockService: blockservice.New(bstore, exchange),
+		failed:       make(map[cid.Cid]time.Time),
+	}
 	dl.blockServ = blockService
 	dl.bitswap = bswap
 
