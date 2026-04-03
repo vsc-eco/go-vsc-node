@@ -1744,7 +1744,8 @@ func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint
 	if len(se.TxOutput) > 0 && se.firstTxHeight > 0 {
 		pinHeight := se.firstTxHeight - 1
 		// Only pin if the first uncommitted TX is within a recent window.
-		// Beyond 2 slot lengths the output is stale and we should advance.
+		// Beyond 2 slot lengths the output is stale — flush the orphaned
+		// batch results so the checkpoint can advance.
 		if lastBlk > pinHeight && lastBlk-pinHeight <= 2*CONSENSUS_SPECS.SlotLength {
 			log.Trace(
 				"SaveBlockHeight: pinning",
@@ -1757,6 +1758,17 @@ func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint
 			)
 			return pinHeight
 		}
+		// Pin window expired — the corresponding contract output was never
+		// ingested (e.g. unreachable CID during reindex).  Flush the stale
+		// batch so we stop pinning and let the checkpoint advance.
+		log.Warn(
+			"SaveBlockHeight: flushing stale TxOutput",
+			"lastBlk", lastBlk,
+			"pinHeight", pinHeight,
+			"firstTxHeight", se.firstTxHeight,
+			"txOutputLen", len(se.TxOutput),
+		)
+		se.Flush()
 	}
 
 	log.Trace(
