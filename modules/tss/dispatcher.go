@@ -521,6 +521,10 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 
 		log.Verbose("reshare done called", "sessionId", dispatcher.sessionId, "timeout", dispatcher.timeout, "hasTssErr", tssErr != nil, "hasErr", dispatcher.err != nil)
 		if dispatcher.timeout {
+			culprits := make(map[string]bool, 0)
+			oldCulprits := make([]string, 0)
+			newCulprits := make([]string, 0)
+
 			// Build membership sets for old/new committees so we can
 			// correctly label culprits. tss-lib's WaitingFor() returns
 			// combined old+new party IDs regardless of which party you call it on.
@@ -533,38 +537,27 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 				newMemberSet[p.Account] = true
 			}
 
-			// Merge protocol error culprits (collected during session) and
-			// timeout culprits (from WaitingFor) into one map.
-			allCulprits := make(map[string]string) // account -> reason
+			// Check connection status for each culprit to provide context
+			culpritContext := make(map[string]string)
 
-			dispatcher.p2pMu.Lock()
-			for account, reason := range dispatcher.blameCulprits {
-				allCulprits[account] = reason
-			}
-			dispatcher.p2pMu.Unlock()
-
-			// Add timeout culprits from WaitingFor (skip if already blamed for error)
+			// Collect all waiting parties from both old and new sides.
+			// WaitingFor() returns combined old+new, so we deduplicate via
+			// the culprits map and label based on actual committee membership.
+			allWaiting := make(map[string]bool)
 			if dispatcher.party != nil {
 				for _, p := range dispatcher.party.WaitingFor() {
-					if _, exists := allCulprits[p.Id]; !exists {
-						allCulprits[p.Id] = "timeout"
-					}
+					allWaiting[p.Id] = true
 				}
 			}
 			if dispatcher.newParty != nil {
 				for _, p := range dispatcher.newParty.WaitingFor() {
-					if _, exists := allCulprits[p.Id]; !exists {
-						allCulprits[p.Id] = "timeout"
-					}
+					allWaiting[p.Id] = true
 				}
 			}
 
-			// Label culprits by committee and check connection status
-			oldCulprits := make([]string, 0)
-			newCulprits := make([]string, 0)
-			culpritContext := make(map[string]string)
+			for id := range allWaiting {
+				culprits[id] = true
 
-			for id := range allCulprits {
 				if oldMemberSet[id] {
 					oldCulprits = append(oldCulprits, id)
 				}
@@ -572,6 +565,7 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 					newCulprits = append(newCulprits, id)
 				}
 
+				// Check if culprit is connected
 				witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(id, nil)
 				if err == nil {
 					peerId, err := peer.Decode(witness.PeerId)
@@ -589,15 +583,10 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 				}
 			}
 
-			log.Info("reshare blame summary", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "totalCulprits", len(allCulprits))
-			for account, reason := range allCulprits {
-				log.Debug("reshare blamed node", "sessionId", dispatcher.sessionId, "account", account, "reason", reason, "context", culpritContext[account])
-			}
+			log.Warn("reshare session timeout", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "oldCulprits", oldCulprits, "newCulprits", newCulprits, "totalCulprits", len(culprits), "contexts", culpritContext)
 
-			log.Warn("reshare session timeout", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "oldCulprits", oldCulprits, "newCulprits", newCulprits, "totalCulprits", len(allCulprits), "contexts", culpritContext)
-
-			culpritsList := make([]string, 0, len(allCulprits))
-			for c := range allCulprits {
+			culpritsList := make([]string, 0)
+			for c := range culprits {
 				culpritsList = append(culpritsList, c)
 			}
 			resolve(TimeoutResult{
@@ -685,14 +674,7 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 				if err != nil {
 					log.Trace("UpdateFromBytes failed (old party)", "sessionId", dispatcher.sessionId, "from", fromStr, "ok", ok, "err", err)
 					dispatcher.p2pMu.Lock()
-					if dispatcher.tssErr == nil {
-						dispatcher.tssErr = err
-					}
-					for _, c := range err.Culprits() {
-						if _, exists := dispatcher.blameCulprits[c.Id]; !exists {
-							dispatcher.blameCulprits[c.Id] = err.Error()
-						}
-					}
+					dispatcher.tssErr = err
 					dispatcher.p2pMu.Unlock()
 				} else {
 					dispatcher.p2pMu.Lock()
@@ -716,14 +698,7 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 				if err != nil {
 					log.Trace("UpdateFromBytes failed (new party)", "sessionId", dispatcher.sessionId, "from", fromStr, "ok", ok, "err", err)
 					dispatcher.p2pMu.Lock()
-					if dispatcher.tssErr == nil {
-						dispatcher.tssErr = err
-					}
-					for _, c := range err.Culprits() {
-						if _, exists := dispatcher.blameCulprits[c.Id]; !exists {
-							dispatcher.blameCulprits[c.Id] = err.Error()
-						}
-					}
+					dispatcher.tssErr = err
 					dispatcher.p2pMu.Unlock()
 				} else {
 					dispatcher.p2pMu.Lock()
@@ -1064,29 +1039,9 @@ func (dispatcher *SignDispatcher) Done() *promise.Promise[DispatcherResult] {
 		<-dispatcher.done
 
 		if dispatcher.timeout {
-			// Merge protocol error culprits with timeout culprits
-			allCulprits := make(map[string]string)
-
-			dispatcher.p2pMu.Lock()
-			for account, reason := range dispatcher.blameCulprits {
-				allCulprits[account] = reason
-			}
-			dispatcher.p2pMu.Unlock()
-
+			culprits := make([]string, 0)
 			for _, p := range dispatcher.party.WaitingFor() {
-				if _, exists := allCulprits[p.Id]; !exists {
-					allCulprits[p.Id] = "timeout"
-				}
-			}
-
-			log.Info("sign blame summary", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "totalCulprits", len(allCulprits))
-			for account, reason := range allCulprits {
-				log.Debug("sign blamed node", "sessionId", dispatcher.sessionId, "account", account, "reason", reason)
-			}
-
-			culprits := make([]string, 0, len(allCulprits))
-			for c := range allCulprits {
-				culprits = append(culprits, c)
+				culprits = append(culprits, p.Id)
 			}
 			resolve(TimeoutResult{
 				tssMgr: dispatcher.tssMgr,
@@ -1141,12 +1096,7 @@ type BaseDispatcher struct {
 	err     error
 	tssErr  *btss.Error
 	timeout bool
-	p2pMu   sync.Mutex // protects tssErr, blameCulprits, and lastMsg from concurrent HandleP2P goroutine writes
-
-	// blameCulprits accumulates all nodes that caused protocol errors during
-	// the session. Key is the account name, value is the error description.
-	// Merged with WaitingFor() timeout culprits when the session times out.
-	blameCulprits map[string]string
+	p2pMu   sync.Mutex // protects tssErr and lastMsg from concurrent HandleP2P goroutine writes
 	// partyType string
 
 	done       chan struct{}
@@ -1396,14 +1346,7 @@ func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcs
 		if err != nil {
 			log.Trace("UpdateFromBytes error", "ok", ok, "err", err)
 			dispatcher.p2pMu.Lock()
-			if dispatcher.tssErr == nil {
-				dispatcher.tssErr = err
-			}
-			for _, c := range err.Culprits() {
-				if _, exists := dispatcher.blameCulprits[c.Id]; !exists {
-					dispatcher.blameCulprits[c.Id] = err.Error()
-				}
-			}
+			dispatcher.tssErr = err
 			dispatcher.p2pMu.Unlock()
 		} else {
 			dispatcher.p2pMu.Lock()
@@ -1439,8 +1382,6 @@ func (dsc *BaseDispatcher) Cleanup() {
 }
 
 func (dispatcher *BaseDispatcher) baseStart() {
-	dispatcher.blameCulprits = make(map[string]string)
-
 	// Use configurable timeout, longer for reshare operations
 	var timeout time.Duration
 	if dispatcher.isReshare {
@@ -1671,29 +1612,9 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 		<-dispatcher.done
 
 		if dispatcher.timeout {
-			// Merge protocol error culprits with timeout culprits
-			allCulprits := make(map[string]string)
-
-			dispatcher.p2pMu.Lock()
-			for account, reason := range dispatcher.blameCulprits {
-				allCulprits[account] = reason
-			}
-			dispatcher.p2pMu.Unlock()
-
+			culprits := make([]string, 0)
 			for _, p := range dispatcher.party.WaitingFor() {
-				if _, exists := allCulprits[p.Id]; !exists {
-					allCulprits[p.Id] = "timeout"
-				}
-			}
-
-			log.Info("keygen blame summary", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "totalCulprits", len(allCulprits))
-			for account, reason := range allCulprits {
-				log.Debug("keygen blamed node", "sessionId", dispatcher.sessionId, "account", account, "reason", reason)
-			}
-
-			culprits := make([]string, 0, len(allCulprits))
-			for c := range allCulprits {
-				culprits = append(culprits, c)
+				culprits = append(culprits, p.Id)
 			}
 			log.Warn("keygen done: timeout", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "culprits", culprits)
 			resolve(TimeoutResult{
