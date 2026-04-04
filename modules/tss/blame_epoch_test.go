@@ -5,31 +5,9 @@ import (
 	"math/big"
 	"sort"
 	"testing"
+	"vsc-node/lib/test_utils"
 	"vsc-node/modules/db/vsc/elections"
-
-	"github.com/chebyrash/promise"
 )
-
-// mockElectionDb implements elections.Elections with an in-memory map.
-// Only GetElection is needed for setToCommitment; the rest are stubs.
-type mockElectionDb struct {
-	data map[uint64]*elections.ElectionResult
-}
-
-func (m *mockElectionDb) Init() error                          { return nil }
-func (m *mockElectionDb) Start() *promise.Promise[any]         { return nil }
-func (m *mockElectionDb) Stop() error                          { return nil }
-func (m *mockElectionDb) StoreElection(elections.ElectionResult) error { return nil }
-func (m *mockElectionDb) GetPreviousElections(uint64, int) []elections.ElectionResult { return nil }
-func (m *mockElectionDb) GetElectionByHeight(uint64) (elections.ElectionResult, error) {
-	return elections.ElectionResult{}, nil
-}
-func (m *mockElectionDb) GetElection(epoch uint64) *elections.ElectionResult {
-	if r, ok := m.data[epoch]; ok {
-		return r
-	}
-	return nil
-}
 
 func makeElection(epoch uint64, accounts []string) *elections.ElectionResult {
 	members := make([]elections.ElectionMember, len(accounts))
@@ -83,8 +61,8 @@ func TestBlameEpochMismatchProvesBug(t *testing.T) {
 		"techcoderx", "tibfox", "v4vapp",
 	}
 
-	mockDb := &mockElectionDb{
-		data: map[uint64]*elections.ElectionResult{
+	mockDb := &test_utils.MockElectionDb{
+		Elections: map[uint64]*elections.ElectionResult{
 			keygenEpoch:  makeElection(keygenEpoch, keygenMembers),
 			currentEpoch: makeElection(currentEpoch, currentMembers),
 		},
@@ -103,7 +81,7 @@ func TestBlameEpochMismatchProvesBug(t *testing.T) {
 	bugEncoded := tssMgr.setToCommitment(participants, keygenEpoch)
 
 	// Decode against current election (what RunActions does)
-	bugDecoded := decodeBlameBitset(bugEncoded, mockDb.data[currentEpoch].Members)
+	bugDecoded := decodeBlameBitset(bugEncoded, mockDb.Elections[currentEpoch].Members)
 
 	if equal(culprits, bugDecoded) {
 		t.Fatal("BUG PATH: blame roundtrip should produce WRONG targets when epochs differ, but got correct targets — test is broken")
@@ -127,7 +105,7 @@ func TestBlameEpochMismatchProvesBug(t *testing.T) {
 	fixEncoded := tssMgr.setToCommitment(participants, currentEpoch)
 
 	// Decode against current election (same as RunActions)
-	fixDecoded := decodeBlameBitset(fixEncoded, mockDb.data[currentEpoch].Members)
+	fixDecoded := decodeBlameBitset(fixEncoded, mockDb.Elections[currentEpoch].Members)
 
 	if !equal(culprits, fixDecoded) {
 		t.Fatalf("FIX PATH: blame roundtrip failed\n  Intended: %v\n  Decoded:  %v", culprits, fixDecoded)
@@ -155,8 +133,8 @@ func TestBlameEpochDispatcherField(t *testing.T) {
 		"techcoderx", "tibfox", "v4vapp",
 	}
 
-	mockDb := &mockElectionDb{
-		data: map[uint64]*elections.ElectionResult{
+	mockDb := &test_utils.MockElectionDb{
+		Elections: map[uint64]*elections.ElectionResult{
 			currentEpoch: makeElection(currentEpoch, currentMembers),
 		},
 	}
@@ -184,7 +162,7 @@ func TestBlameEpochDispatcherField(t *testing.T) {
 	}
 
 	// Decode the commitment against the same election (what RunActions does)
-	decoded := decodeBlameBitset(serialized.Commitment, mockDb.data[currentEpoch].Members)
+	decoded := decodeBlameBitset(serialized.Commitment, mockDb.Elections[currentEpoch].Members)
 
 	if !equal(culprits, decoded) {
 		t.Fatalf("Serialize() roundtrip failed\n  Culprits: %v\n  Decoded:  %v\n  Commitment: %s", culprits, decoded, serialized.Commitment)
