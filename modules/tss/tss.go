@@ -700,6 +700,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					isBlame = true
 					blameBytes, _ := base64.RawURLEncoding.DecodeString(lastBlame.Commitment)
 					blameBits = blameBits.SetBytes(blameBytes)
+					log.Trace("blame commitment found", "epoch", lastBlame.Epoch, "blockHeight", lastBlame.BlockHeight, "commitment", lastBlame.Commitment, "bitset", blameBits)
 				}
 			}
 
@@ -776,6 +777,58 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			log.Verbose("reshare participant selection", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "excluded", len(excludedNodes), "excludedNodes", excludedNodes)
 			log.Trace("new participants list", "newParticipants", newParticipants)
+
+			// Safety valve: if blame exclusion reduces either committee below threshold,
+			// ignore the blame entirely and rebuild with ban-only exclusion.
+			// This prevents a single over-broad blame from deadlocking reshares for 24 hours.
+			// All nodes make the same decision (deterministic — same on-chain blame/ban data).
+			if isBlame {
+				oldThreshold, _ := tss_helpers.GetThreshold(fullOldCommitteeSize)
+				newThreshold, _ := tss_helpers.GetThreshold(len(newParticipants))
+				minNew := newThreshold + 1
+				if minNew < 2 {
+					minNew = 2
+				}
+				if len(commitedMembers) < oldThreshold+1 || len(newParticipants) < minNew {
+					log.Warn("blame too broad, rebuilding without blame",
+						"sessionId", sessionId,
+						"oldParticipants", len(commitedMembers),
+						"oldRequired", oldThreshold+1,
+						"newParticipants", len(newParticipants),
+						"newRequired", minNew,
+					)
+					isBlame = false
+					blamedAccounts = make(map[string]bool)
+
+					// Rebuild old committee with ban-only exclusion
+					commitedMembers = make([]Participant, 0)
+					for idx, member := range commitmentElection.Members {
+						if idx < bitset.BitLen() && bitset.Bit(idx) == 1 {
+							if blameMap.BannedNodes[member.Account] {
+								continue
+							}
+							commitedMembers = append(commitedMembers, Participant{
+								Account: member.Account,
+							})
+						}
+					}
+
+					// Rebuild new committee with ban-only exclusion
+					newParticipants = make([]Participant, 0)
+					excludedNodes = make([]string, 0)
+					for _, member := range currentElection.Members {
+						if blameMap.BannedNodes[member.Account] {
+							excludedNodes = append(excludedNodes, member.Account)
+							continue
+						}
+						newParticipants = append(newParticipants, Participant{
+							Account: member.Account,
+						})
+					}
+
+					log.Verbose("reshare participant selection after blame override", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "excluded", len(excludedNodes), "excludedNodes", excludedNodes)
+				}
+			}
 
 			// Use the FULL commitment size for threshold calculation, not the
 			// blame-reduced count. The polynomial degree must match keygen.
