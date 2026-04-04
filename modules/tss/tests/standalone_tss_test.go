@@ -835,3 +835,122 @@ func TestBlameDbRoundTripOldCommitteeExclusion(t *testing.T) {
 	t.Logf("  leaving only 3 old members, below threshold+1=4. RunActions read the blame from DB")
 	t.Logf("  and applied it to the real reshare path.")
 }
+
+// TestSignWithNodeFlap tests signing when a node disconnects and reconnects mid-process.
+// This simulates network instability where connections are transient.
+//
+// Flow:
+// 1. Keygen with all 6 nodes
+// 2. Disconnect node 5 briefly
+// 3. Trigger signing while node 5 is reconnecting
+// 4. Verify signing completes with 5 of 6 nodes (threshold=3, need 4)
+func TestSignWithNodeFlap(t *testing.T) {
+	nodes, _, keygenPubKeys, signBroadcast, _, keygenBroadcast, mu, excludedNodes, stopKeepalive := setupCluster(t)
+	defer stopKeepalive()
+
+	// Step 1: Keygen
+	log.Info("=== KEYGEN ===")
+	doKeygen(t, nodes, "test-key", keygenBroadcast, keygenPubKeys, mu)
+	log.Info("keygen done", "pubkey", keygenPubKeys["test-key"])
+
+	// Activate the key on all nodes. The broadcastCb stores the keygen commitment
+	// in MongoDB but doesn't run through the state engine, so the key stays "created".
+	// In production, state_engine.go:917 sets status="active" when processing the
+	// vsc.tss_commitment transaction. We replicate that here.
+	for _, node := range nodes {
+		node.tssKeys.SetKey(tss_db.TssKey{
+			Id:          "test-key",
+			Status:      tss_db.TssKeyActive,
+			Algo:        tss_db.EcdsaType,
+			Epoch:       0,
+			Epochs:      tss_db.MaxKeyEpochs,
+			ExpiryEpoch: tss_db.MaxKeyEpochs,
+		})
+	}
+
+	// Step 2: Disconnect node 5, wait briefly, reconnect
+	log.Info("=== DISCONNECT NODE 5 ===")
+	excludedNodes.Store(5, true)
+	disconnectNode(nodes, 5)
+	time.Sleep(1 * time.Second)
+
+	// Step 3: Insert signing request and trigger signing while node 5 is offline
+	log.Info("=== TRIGGER SIGNING WITH NODE 5 OFFLINE ===")
+	msgHex := "cafebabe00000000000000000000000000000000000000000000000000000001"
+	for _, node := range nodes {
+		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+			KeyId:  "test-key",
+			Msg:    msgHex,
+			Status: tss_db.SignPending,
+		})
+	}
+
+	// Reconnect node 5 after a brief delay (simulating flap)
+	time.Sleep(2 * time.Second)
+	excludedNodes.Delete(5)
+	reconnectNode(t, nodes, 5)
+	log.Info("=== NODE 5 RECONNECTED ===")
+	time.Sleep(2 * time.Second)
+
+	connectAllPeers(t, nodes)
+	time.Sleep(1 * time.Second)
+
+	// Block 250 triggers signing (250 % 50 == 0)
+	headHeight := uint64(270)
+	processBlocks(nodes, 106, 248, &headHeight)
+	for bh := uint64(249); bh <= 255; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{BlockNumber: bh}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Wait for signing to complete
+	log.Info("Waiting for signing to complete after node flap...")
+	signDone := false
+	for i := 0; i < 90; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := *signBroadcast != nil
+		mu.Unlock()
+		if done {
+			signDone = true
+			break
+		}
+	}
+
+	if !signDone {
+		t.Fatal("Signing did not complete after node flap — network recovery failed")
+	}
+
+	// Verify signature
+	mu.Lock()
+	defer mu.Unlock()
+	if *signBroadcast != nil {
+		for _, op := range (*signBroadcast).Operations {
+			raw, _ := json.Marshal(op)
+			var cj struct {
+				Json string `json:"json"`
+			}
+			json.Unmarshal(raw, &cj)
+			var payload struct {
+				Packet []struct {
+					KeyId string `json:"key_id"`
+					Msg   string `json:"msg"`
+					Sig   string `json:"sig"`
+				} `json:"packet"`
+			}
+			json.Unmarshal([]byte(cj.Json), &payload)
+			for _, pkt := range payload.Packet {
+				if pkt.KeyId == "test-key" && pkt.Msg == msgHex {
+					if pkt.Sig == "" {
+						t.Error("Signature is empty after node flap")
+					} else {
+						verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKeys["test-key"])
+						t.Logf("PASS: Signing completed successfully after node flap")
+					}
+				}
+			}
+		}
+	}
+}
