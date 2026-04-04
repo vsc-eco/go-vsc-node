@@ -135,7 +135,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 }
 
 func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ExtraInfo) {
-	log.Debug("IndexActions", actionUpdate)
+	log.Debug("IndexActions", "actionUpdate", actionUpdate)
 
 	actionIds := common.ArrayToStringArray(actionUpdate["ops"].([]interface{}))
 
