@@ -1,0 +1,111 @@
+services:
+  haf:
+    image: ${HAF_IMAGE}
+    tty: true
+    stdin_open: true
+    init: true
+    command: ""
+    stop_grace_period: 2m
+    environment:
+      PG_ACCESS: "local haf_block_log haf_maintainer trust"
+      PGCTLTIMEOUT: 600
+      OVERRIDE_LD_PRELOAD: ""
+    volumes:
+      - type: bind
+        source: ${HAF_DATA_DIR}
+        target: /home/hived/datadir
+      - type: bind
+        source: ${HAF_DATA_DIR}/logs/postgresql
+        target: /home/hived/postgresql_logs/
+    ports:
+      - "${HIVE_PORT}:8091"
+    networks:
+      - devnet
+    healthcheck:
+      test: ["CMD-SHELL", "wget -T2 -nv -t1 --spider http://127.0.0.1:8091/ || exit 1"]
+      interval: 10s
+      timeout: 2s
+      retries: 10
+      start_period: 5m
+
+  db:
+    image: ${MONGO_IMAGE}
+    ports:
+      - "127.0.0.1:${MONGO_PORT}:27017"
+    networks:
+      - devnet
+    volumes:
+      - db:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      interval: 10s
+      retries: 5
+      timeout: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  devnet-setup:
+    build:
+      context: ${SOURCE_DIR}
+      dockerfile: tests/devnet/Dockerfile.devnet
+    profiles: ["setup"]
+    depends_on:
+      db:
+        condition: service_healthy
+      haf:
+        condition: service_healthy
+    command:
+      - ./devnet-setup
+      - -db-url=mongodb://db:27017
+      - -data-dir=/data/devnet
+      - -hive-urls=http://haf:8091
+      - -nodes=${DEVNET_NODES}
+      - -p2p-host=/dns4/magi-?
+      - -drop-db
+    volumes:
+      - ${DEVNET_DATA_DIR}:/data/devnet
+    networks:
+      - devnet
+
+  genesis-elector:
+    build:
+      context: ${SOURCE_DIR}
+      dockerfile: tests/devnet/Dockerfile.devnet
+    profiles: ["setup"]
+    depends_on:
+      db:
+        condition: service_healthy
+      haf:
+        condition: service_healthy
+    command:
+      - ./genesis-elector
+      - -network=devnet
+      - -data-dir=/data/devnet/data-${GENESIS_NODE}
+    volumes:
+      - ${DEVNET_DATA_DIR}:/data/devnet
+    networks:
+      - devnet
+
+  contract-deployer:
+    build:
+      context: ${SOURCE_DIR}
+      dockerfile: tests/devnet/Dockerfile.devnet
+    profiles: ["tools"]
+    depends_on:
+      db:
+        condition: service_healthy
+      haf:
+        condition: service_healthy
+    volumes:
+      - ${DEVNET_DATA_DIR}:/data/devnet
+    networks:
+      - devnet
+
+volumes:
+  db: {}
+
+networks:
+  devnet:
+    driver: bridge
