@@ -83,21 +83,25 @@ func TestDevnetSetup(t *testing.T) {
 	})
 }
 
-// TestContractDeploy extends TestDevnetSetup to also deploy a test
-// contract. Separated so the base setup test can pass independently.
+// TestDeployCallTss builds the call-tss contract, starts a devnet,
+// and deploys it. This is the pattern most TSS tests will follow.
 //
 // Run with:
 //
-//	go test -v -run TestContractDeploy -timeout 25m ./tests/devnet/
-func TestContractDeploy(t *testing.T) {
+//	go test -v -run TestDeployCallTss -timeout 25m ./tests/devnet/
+func TestDeployCallTss(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping devnet contract deploy test in short mode")
 	}
 	requireDocker(t)
 
-	wasmPath := TestContractPath()
-	if _, err := os.Stat(wasmPath); err != nil {
-		t.Fatalf("test contract not found at %s: %v", wasmPath, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	defer cancel()
+
+	// Build the call-tss contract
+	wasmPath, err := BuildCallTssContract(ctx)
+	if err != nil {
+		t.Fatalf("building call-tss contract: %v", err)
 	}
 
 	cfg := DefaultConfig()
@@ -111,16 +115,13 @@ func TestContractDeploy(t *testing.T) {
 	}
 	t.Cleanup(func() { d.Stop() })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	defer cancel()
-
 	if err := d.Start(ctx); err != nil {
 		t.Fatalf("starting devnet: %v", err)
 	}
 
 	contractId, err := d.DeployContract(ctx, ContractDeployOpts{
 		WasmPath: wasmPath,
-		Name:     "tss-test-contract",
+		Name:     "call-tss",
 	})
 	if err != nil {
 		t.Fatalf("deploying contract: %v", err)
