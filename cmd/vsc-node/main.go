@@ -89,6 +89,9 @@ func main() {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
+	if args.electionInterval > 0 {
+		sysConfig.SetElectionInterval(args.electionInterval)
+	}
 
 	if err != nil {
 		fmt.Println("error is", err)

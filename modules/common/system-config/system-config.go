@@ -18,6 +18,7 @@ type SystemConfig interface {
 	ConsensusParams() params.ConsensusParams
 	OracleParams() params.OracleParams
 	TssParams() params.TssParams
+	SetElectionInterval(interval uint64)
 }
 
 type config struct {
@@ -73,6 +74,10 @@ func (c *config) OracleParams() params.OracleParams {
 
 func (c *config) TssParams() params.TssParams {
 	return c.tssParams
+}
+
+func (c *config) SetElectionInterval(interval uint64) {
+	c.consensusParams.ElectionInterval = interval
 }
 
 func (c *config) StartHeight() uint64 {

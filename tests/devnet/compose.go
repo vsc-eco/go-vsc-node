@@ -35,8 +35,12 @@ func writeEnvFile(cfg *Config, hafDataDir, devnetDir, outputPath string) error {
 }
 
 // writeNodesOverride generates a docker-compose override file that
-// defines the magi-1 … magi-N node services.  This is the only
+// defines the magi-1 … magi-N node services. This is the only
 // generated YAML — everything else lives in the static compose file.
+//
+// Each node gets NET_ADMIN capability for iptables-based network
+// partition testing. If cfg.ElectionInterval is set, it is passed
+// as a CLI flag to magid.
 func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
 	var b strings.Builder
 
@@ -44,6 +48,16 @@ func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
 	for i := 1; i <= cfg.Nodes; i++ {
 		gqlPort := cfg.GQLBasePort + i - 1
 		p2pPort := cfg.P2PBasePort + i - 1
+
+		// Build the magid command, optionally including election-interval.
+		cmd := fmt.Sprintf(
+			`"./magid", "-network", "devnet", "-data-dir", "/data/devnet/data-%d", "-log-level", "%s"`,
+			i, cfg.LogLevel,
+		)
+		if cfg.ElectionInterval > 0 {
+			cmd += fmt.Sprintf(`, "-election-interval", "%d"`, cfg.ElectionInterval)
+		}
+
 		fmt.Fprintf(&b, `
   magi-%[1]d:
     build:
@@ -54,16 +68,18 @@ func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
         condition: service_healthy
     networks:
       - devnet
+    cap_add:
+      - NET_ADMIN
     container_name: magi-%[1]d
     hostname: magi-%[1]d
-    command: ["./magid", "-network", "devnet", "-data-dir", "/data/devnet/data-%[1]d", "-log-level", "%[3]s"]
+    command: [%[3]s]
     ports:
       - "%[4]d:8080"
       - "%[5]d:%[5]d"
       - "%[5]d:%[5]d/udp"
     volumes:
       - %[6]s:/data/devnet
-`, i, cfg.SourceDir, cfg.LogLevel, gqlPort, p2pPort, devnetDir)
+`, i, cfg.SourceDir, cmd, gqlPort, p2pPort, devnetDir)
 	}
 
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)

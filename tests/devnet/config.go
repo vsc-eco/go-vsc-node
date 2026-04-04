@@ -42,6 +42,9 @@ type Config struct {
 	GenesisNode int
 	// InitminerWIF is the private key for the initminer account.
 	InitminerWIF string
+	// ElectionInterval overrides the devnet default election interval
+	// (in blocks). 0 means use the devnet default (40 blocks).
+	ElectionInterval uint64
 }
 
 // DefaultConfig returns a Config with sensible defaults for testing.

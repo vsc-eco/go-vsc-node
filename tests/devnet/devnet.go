@@ -163,6 +163,11 @@ func (d *Devnet) Start(ctx context.Context) error {
 		return fmt.Errorf("restarting genesis node: %w", err)
 	}
 
+	// Step 8: fund accounts for contract deployment
+	if err := d.fundAccounts(); err != nil {
+		return fmt.Errorf("funding accounts: %w", err)
+	}
+
 	d.started = true
 	log.Printf("[devnet] devnet is running")
 	log.Printf("[devnet]   Hive RPC: %s", d.HiveRPCEndpoint())

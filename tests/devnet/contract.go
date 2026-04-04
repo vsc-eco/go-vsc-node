@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -57,7 +58,6 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 	log.Printf("[devnet] deploying contract %q from %s (node %d)...",
 		opts.Name, wasmPath, opts.DeployerNode)
 
-	// Build the deployer command that will run inside the container.
 	deployCmd := []string{
 		"./contract-deployer",
 		"-network=devnet",
@@ -70,7 +70,6 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 		deployCmd = append(deployCmd, fmt.Sprintf("-description=%s", opts.Description))
 	}
 
-	// docker compose run --rm -v <wasmDir>:/wasm contract-deployer <cmd...>
 	args := []string{
 		"run", "--rm",
 		"-v", fmt.Sprintf("%s:/wasm", wasmDir),
@@ -94,14 +93,34 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 	return contractId, nil
 }
 
+// BuildCallTssContract builds the call-tss WASM contract using Docker
+// TinyGo. Returns the path to the built .wasm file.
+func BuildCallTssContract(ctx context.Context) (string, error) {
+	contractDir := filepath.Join(findSourceRoot(), "tests", "devnet", "contracts", "call-tss")
+	wasmPath := filepath.Join(contractDir, "bin", "build.wasm")
+
+	log.Printf("[devnet] building call-tss contract...")
+	cmd := exec.CommandContext(ctx, "make", "-C", contractDir, "build")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("building call-tss contract: %w", err)
+	}
+
+	if _, err := os.Stat(wasmPath); err != nil {
+		return "", fmt.Errorf("built wasm not found at %s: %w", wasmPath, err)
+	}
+
+	log.Printf("[devnet] call-tss contract built: %s", wasmPath)
+	return wasmPath, nil
+}
+
 // TestContractPath returns the absolute path to the built-in test
 // WASM contract at modules/e2e/artifacts/contract_test.wasm.
 func TestContractPath() string {
 	return filepath.Join(findSourceRoot(), "modules", "e2e", "artifacts", "contract_test.wasm")
 }
 
-// parseContractId extracts the contract ID from contract-deployer output.
-// The deployer prints "contract id: vsc1..." on success.
 func parseContractId(output string) string {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
