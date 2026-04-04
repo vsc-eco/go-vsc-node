@@ -1,39 +1,11 @@
 package tss
 
 import (
-	"encoding/base64"
-	"math/big"
 	"sort"
 	"testing"
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/db/vsc/elections"
 )
-
-func makeElection(epoch uint64, accounts []string) *elections.ElectionResult {
-	members := make([]elections.ElectionMember, len(accounts))
-	for i, a := range accounts {
-		members[i] = elections.ElectionMember{Account: a}
-	}
-	return &elections.ElectionResult{
-		ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: epoch},
-		ElectionDataInfo:   elections.ElectionDataInfo{Members: members},
-	}
-}
-
-// decodeBlameBitset decodes a base64 blame bitset against an election member list,
-// exactly as RunActions does at tss.go:707-712.
-func decodeBlameBitset(encoded string, members []elections.ElectionMember) []string {
-	blameBytes, _ := base64.RawURLEncoding.DecodeString(encoded)
-	bits := new(big.Int).SetBytes(blameBytes)
-	var names []string
-	for idx, m := range members {
-		if bits.Bit(idx) == 1 {
-			names = append(names, m.Account)
-		}
-	}
-	sort.Strings(names)
-	return names
-}
 
 // TestBlameEpochMismatchProvesBug proves that encoding blame against the keygen
 // epoch and decoding against the current epoch produces WRONG blame targets.
