@@ -1,89 +1,12 @@
-package ledgerSystem
+package ledgerSystem_test
 
 import (
 	"fmt"
 	"testing"
+	"vsc-node/lib/test_utils"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
-
-	"github.com/chebyrash/promise"
+	. "vsc-node/modules/ledger-system"
 )
-
-// ---------------------------------------------------------------------------
-// Minimal mock implementations of the DB interfaces required by LedgerState
-// ---------------------------------------------------------------------------
-
-// mockLedger satisfies ledger_db.Ledger
-type mockLedger struct{}
-
-func (m *mockLedger) Init() error                        { return nil }
-func (m *mockLedger) Start() *promise.Promise[any]       { return nil }
-func (m *mockLedger) Stop() error                        { return nil }
-func (m *mockLedger) StoreLedger(...ledger_db.LedgerRecord) {}
-func (m *mockLedger) GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]ledger_db.LedgerRecord, error) {
-	empty := make([]ledger_db.LedgerRecord, 0)
-	return &empty, nil
-}
-func (m *mockLedger) GetLedgerRange(account string, start uint64, end uint64, asset string, options ...ledger_db.LedgerOptions) (*[]ledger_db.LedgerRecord, error) {
-	empty := make([]ledger_db.LedgerRecord, 0)
-	return &empty, nil
-}
-func (m *mockLedger) GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *ledger_db.Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledger_db.LedgerRecord, error) {
-	return nil, nil
-}
-func (m *mockLedger) GetRawLedgerRange(account *string, txId *string, txTypes []string, asset *ledger_db.Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledger_db.LedgerRecord, error) {
-	return nil, nil
-}
-func (m *mockLedger) GetDistinctAccountsRange(startBlock, endBlock uint64) ([]string, error) {
-	return nil, nil
-}
-
-// mockBalances satisfies ledger_db.Balances -- seeds an account with a given HBD balance
-type mockBalances struct {
-	hbd int64
-}
-
-func (m *mockBalances) Init() error                  { return nil }
-func (m *mockBalances) Start() *promise.Promise[any] { return nil }
-func (m *mockBalances) Stop() error                  { return nil }
-func (m *mockBalances) GetBalanceRecord(account string, blockHeight uint64) (*ledger_db.BalanceRecord, error) {
-	return &ledger_db.BalanceRecord{
-		Account:     account,
-		BlockHeight: 0,
-		HBD:         m.hbd,
-	}, nil
-}
-func (m *mockBalances) UpdateBalanceRecord(record ledger_db.BalanceRecord) error {
-	return nil
-}
-func (m *mockBalances) GetAll(blockHeight uint64) []ledger_db.BalanceRecord {
-	return nil
-}
-
-// mockActions satisfies ledger_db.BridgeActions
-type mockActions struct{}
-
-func (m *mockActions) Init() error                  { return nil }
-func (m *mockActions) Start() *promise.Promise[any] { return nil }
-func (m *mockActions) Stop() error                  { return nil }
-func (m *mockActions) StoreAction(withdraw ledger_db.ActionRecord) {}
-func (m *mockActions) ExecuteComplete(actionId *string, ids ...string) {}
-func (m *mockActions) Get(id string) (*ledger_db.ActionRecord, error) { return nil, nil }
-func (m *mockActions) SetStatus(id string, status string) {}
-func (m *mockActions) GetPendingActions(bh uint64, t ...string) ([]ledger_db.ActionRecord, error) {
-	return nil, nil
-}
-func (m *mockActions) GetPendingActionsByEpoch(epoch uint64, t ...string) ([]ledger_db.ActionRecord, error) {
-	return nil, nil
-}
-func (m *mockActions) GetActionsRange(txId *string, actionId *string, account *string, byTypes []string, asset *ledger_db.Asset, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledger_db.ActionRecord, error) {
-	return nil, nil
-}
-func (m *mockActions) GetAccountPendingConsensusUnstake(account string) (int64, error) {
-	return 0, nil
-}
-func (m *mockActions) GetActionsByTxId(txId string) ([]ledger_db.ActionRecord, error) {
-	return nil, nil
-}
 
 // ---------------------------------------------------------------------------
 // Test: Prove Stake() double-debits the user's HBD balance
@@ -100,9 +23,11 @@ func TestStakeDoubleDebit(t *testing.T) {
 		Oplog:           make([]OpLogEvent, 0),
 		VirtualLedger:   make(map[string][]LedgerUpdate),
 		GatewayBalances: make(map[string]uint64),
-		LedgerDb:        &mockLedger{},
-		ActionDb:        &mockActions{},
-		BalanceDb:       &mockBalances{hbd: startingHBD},
+		LedgerDb:        &test_utils.MockLedgerDb{LedgerRecords: make(map[string][]ledger_db.LedgerRecord)},
+		ActionDb:        &test_utils.MockActionsDb{Actions: make(map[string]ledger_db.ActionRecord)},
+		BalanceDb: &test_utils.MockBalanceDb{BalanceRecords: map[string][]ledger_db.BalanceRecord{
+			user: {{Account: user, BlockHeight: 0, HBD: startingHBD}},
+		}},
 	}
 
 	session := NewSession(state)
