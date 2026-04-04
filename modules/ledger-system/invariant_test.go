@@ -10,7 +10,6 @@ import (
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 
-	"github.com/chebyrash/promise"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -79,38 +78,8 @@ func oplogInTransit(state *ledgerSystem.LedgerState) map[string]int64 {
 	return transit
 }
 
-// Mock RC DB (same pattern as rc_system_test.go).
-type mockRcDb struct {
-	records map[string][]rcDb.RcRecord
-}
-
-func newMockRcDb() *mockRcDb {
-	return &mockRcDb{records: make(map[string][]rcDb.RcRecord)}
-}
-
-func (m *mockRcDb) Init() error { return nil }
-func (m *mockRcDb) Start() *promise.Promise[any] {
-	return promise.New(func(resolve func(interface{}), reject func(error)) { resolve(nil) })
-}
-func (m *mockRcDb) Stop() error { return nil }
-
-func (m *mockRcDb) GetRecord(account string, blockHeight uint64) (rcDb.RcRecord, error) {
-	recs := m.records[account]
-	var best rcDb.RcRecord
-	for _, r := range recs {
-		if r.BlockHeight <= blockHeight && r.BlockHeight >= best.BlockHeight {
-			best = r
-		}
-	}
-	return best, nil
-}
-
-func (m *mockRcDb) SetRecord(account string, blockHeight uint64, amount int64) {
-	m.records[account] = append(m.records[account], rcDb.RcRecord{
-		Account:     account,
-		Amount:      amount,
-		BlockHeight: blockHeight,
-	})
+func newMockRcDb() *test_utils.MockRcDb {
+	return &test_utils.MockRcDb{Records: make(map[string][]rcDb.RcRecord)}
 }
 
 // Mock LedgerSystem for RC tests -- wraps a LedgerState.
