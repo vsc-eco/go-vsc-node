@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 )
 
-//go:embed testdata/config.ini testdata/pgtune.conf
+//go:embed testdata/config.ini testdata/pgtune.conf testdata/drone.yaml
 var testdataFS embed.FS
 
 // createHAFDataDirs creates the directory structure required by a HAF
@@ -45,4 +45,18 @@ func createHAFDataDirs(hafDataDir string) error {
 		filepath.Join(hafDataDir, "haf_db_store", "haf_postgresql_conf.d", "pgtune.conf"),
 		pgtune, 0o644,
 	)
+}
+
+// writeDroneConfig writes the embedded drone config.yaml to the given
+// directory. Returns the absolute path to the written file.
+func writeDroneConfig(dataDir string) (string, error) {
+	data, err := testdataFS.ReadFile("testdata/drone.yaml")
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dataDir, "drone.yaml")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
 }

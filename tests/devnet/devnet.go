@@ -93,9 +93,14 @@ func (d *Devnet) Start(ctx context.Context) error {
 		return fmt.Errorf("creating devnet dir: %w", err)
 	}
 
-	// Step 2: write .env and nodes override
+	// Step 2: write drone config, .env, and nodes override
+	log.Printf("[devnet] writing drone config...")
+	droneConfigPath, err := writeDroneConfig(d.dataDir)
+	if err != nil {
+		return fmt.Errorf("writing drone config: %w", err)
+	}
 	log.Printf("[devnet] writing %s", d.envFile)
-	if err := writeEnvFile(d.cfg, d.hafDataDir, d.devnetDir, d.envFile); err != nil {
+	if err := writeEnvFile(d.cfg, d.hafDataDir, d.devnetDir, droneConfigPath, d.envFile); err != nil {
 		return fmt.Errorf("writing env file: %w", err)
 	}
 	if err := writeSysConfigOverrides(d.cfg, d.devnetDir); err != nil {
@@ -129,13 +134,23 @@ func (d *Devnet) Start(ctx context.Context) error {
 	}
 	log.Printf("[devnet] HAF is healthy")
 
-	// Step 5: devnet-setup
+	// Step 5: devnet-setup (writes node configs with drone as Hive API URL)
 	log.Printf("[devnet] running devnet-setup...")
 	if err := d.compose(ctx, "run", "--rm", "devnet-setup"); err != nil {
 		return fmt.Errorf("devnet-setup: %w", err)
 	}
 
-	// Step 6: start magi nodes
+	// Step 6: start hafah API stack (hafah-install → pgbouncer → hafah-postgrest → drone)
+	log.Printf("[devnet] starting hafah API stack (hafah-install, pgbouncer, hafah-postgrest, drone)...")
+	if err := d.compose(ctx, "up", "-d", "drone"); err != nil {
+		return fmt.Errorf("starting hafah stack: %w", err)
+	}
+	log.Printf("[devnet] waiting for drone API router...")
+	if err := d.waitForService(ctx, "drone", 5*time.Minute); err != nil {
+		return fmt.Errorf("drone health check: %w", err)
+	}
+	log.Printf("[devnet] hafah API stack is ready")
+
 	log.Printf("[devnet] starting %d magi nodes...", d.cfg.Nodes)
 	names := make([]string, d.cfg.Nodes)
 	for i := range names {
@@ -174,6 +189,7 @@ func (d *Devnet) Start(ctx context.Context) error {
 	d.started = true
 	log.Printf("[devnet] devnet is running")
 	log.Printf("[devnet]   Hive RPC: %s", d.HiveRPCEndpoint())
+	log.Printf("[devnet]   Drone:    %s", d.DroneEndpoint())
 	log.Printf("[devnet]   MongoDB:  %s", d.MongoURI())
 	for i := 1; i <= d.cfg.Nodes; i++ {
 		log.Printf("[devnet]   magi-%d GQL: %s", i, d.GQLEndpoint(i))
@@ -229,6 +245,11 @@ func (d *Devnet) HiveRPCEndpoint() string {
 // MongoURI returns the MongoDB connection URI.
 func (d *Devnet) MongoURI() string {
 	return fmt.Sprintf("mongodb://localhost:%d", d.cfg.MongoPort)
+}
+
+// DroneEndpoint returns the drone API router endpoint URL.
+func (d *Devnet) DroneEndpoint() string {
+	return fmt.Sprintf("http://localhost:%d", d.cfg.DronePort)
 }
 
 // ProjectName returns the docker compose project name.
