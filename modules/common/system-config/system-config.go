@@ -1,7 +1,9 @@
 package systemconfig
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"vsc-node/modules/common/params"
 )
 
@@ -18,7 +20,7 @@ type SystemConfig interface {
 	ConsensusParams() params.ConsensusParams
 	OracleParams() params.OracleParams
 	TssParams() params.TssParams
-	SetElectionInterval(interval uint64)
+	LoadOverrides(path string) error
 }
 
 type config struct {
@@ -76,8 +78,72 @@ func (c *config) TssParams() params.TssParams {
 	return c.tssParams
 }
 
-func (c *config) SetElectionInterval(interval uint64) {
-	c.consensusParams.ElectionInterval = interval
+// SysConfigOverrides is the JSON shape for the -sysconfig override file.
+// Only fields present in the JSON are applied; the rest keep their
+// network defaults.
+type SysConfigOverrides struct {
+	BootstrapPeers  []string               `json:"bootstrapPeers,omitempty"`
+	NetId           string                 `json:"netId,omitempty"`
+	HiveChainId     string                 `json:"hiveChainId,omitempty"`
+	GatewayWallet   string                 `json:"gatewayWallet,omitempty"`
+	StartHeight     *uint64                `json:"startHeight,omitempty"`
+	ConsensusParams *params.ConsensusParams `json:"consensusParams,omitempty"`
+	OracleParams    *params.OracleParams   `json:"oracleParams,omitempty"`
+	TssParams       *params.TssParams      `json:"tssParams,omitempty"`
+}
+
+func (c *config) LoadOverrides(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading sysconfig overrides: %w", err)
+	}
+	// Unmarshal into raw messages so we can apply each section
+	// directly onto the existing config, preserving defaults for
+	// fields not present in the JSON.
+	var raw struct {
+		BootstrapPeers  []string        `json:"bootstrapPeers,omitempty"`
+		NetId           string          `json:"netId,omitempty"`
+		HiveChainId     string          `json:"hiveChainId,omitempty"`
+		GatewayWallet   string          `json:"gatewayWallet,omitempty"`
+		StartHeight     *uint64         `json:"startHeight,omitempty"`
+		ConsensusParams json.RawMessage `json:"consensusParams,omitempty"`
+		OracleParams    json.RawMessage `json:"oracleParams,omitempty"`
+		TssParams       json.RawMessage `json:"tssParams,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parsing sysconfig overrides: %w", err)
+	}
+	if raw.BootstrapPeers != nil {
+		c.bootstrapPeers = raw.BootstrapPeers
+	}
+	if raw.NetId != "" {
+		c.netId = raw.NetId
+	}
+	if raw.HiveChainId != "" {
+		c.hiveChainId = raw.HiveChainId
+	}
+	if raw.GatewayWallet != "" {
+		c.gatewayWallet = raw.GatewayWallet
+	}
+	if raw.StartHeight != nil {
+		c.startHeight = *raw.StartHeight
+	}
+	if raw.ConsensusParams != nil {
+		if err := json.Unmarshal(raw.ConsensusParams, &c.consensusParams); err != nil {
+			return fmt.Errorf("applying consensus overrides: %w", err)
+		}
+	}
+	if raw.OracleParams != nil {
+		if err := json.Unmarshal(raw.OracleParams, &c.oracleParams); err != nil {
+			return fmt.Errorf("applying oracle overrides: %w", err)
+		}
+	}
+	if raw.TssParams != nil {
+		if err := json.Unmarshal(raw.TssParams, &c.tssParams); err != nil {
+			return fmt.Errorf("applying tss overrides: %w", err)
+		}
+	}
+	return nil
 }
 
 func (c *config) StartHeight() uint64 {

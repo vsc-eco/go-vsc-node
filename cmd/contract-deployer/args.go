@@ -7,14 +7,15 @@ import (
 )
 
 type args struct {
-	network     string
-	wasmPath    string
-	name        string
-	description string
-	owner       string
-	isInit      bool
-	gqlUrl      string
-	dataDir     string
+	network       string
+	wasmPath      string
+	name          string
+	description   string
+	owner         string
+	isInit        bool
+	gqlUrl        string
+	dataDir       string
+	sysconfigPath string
 
 	// update contract args
 	contractId string
@@ -35,6 +36,7 @@ func ParseArgs() (args, error) {
 	gqlUrl := flag.String("gqlUrl", "https://api.vsc.eco/api/v1/graphql", "GraphQL API URL for fetching latest election")
 	dataDir := flag.String("data-dir", "data", "Data directory for config")
 	contractId := flag.String("contractId", "", "Existing contract ID to update contract. Omit to deploy a new contract.")
+	sysconfigPath := flag.String("sysconfig", "", "Path to JSON file with system config overrides")
 	flag.Parse()
 
 	return args{
@@ -46,6 +48,7 @@ func ParseArgs() (args, error) {
 		*isInit,
 		*gqlUrl,
 		*dataDir,
+		*sysconfigPath,
 		*contractId,
 	}, nil
 }

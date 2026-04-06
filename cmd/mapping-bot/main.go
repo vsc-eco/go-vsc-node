@@ -33,6 +33,12 @@ func main() {
 	}
 
 	sysConfig := systemconfig.FromNetwork(args.network)
+	if args.sysconfigPath != "" {
+		if err := sysConfig.LoadOverrides(args.sysconfigPath); err != nil {
+			fmt.Println("Error loading sysconfig overrides:", err)
+			os.Exit(1)
+		}
+	}
 	mappingBotConfig := mapper.NewMappingBotConfig(args.dataDir)
 	identityConfig := common.NewIdentityConfig(args.dataDir)
 	hiveConfig := streamer.NewHiveConfig(args.dataDir)

@@ -45,6 +45,12 @@ func main() {
 		AccountAuths:    [][2]any{},
 	}
 	sysConf := systemconfig.FromNetwork(args.network)
+	if args.sysconfigPath != "" {
+		if err := sysConf.LoadOverrides(args.sysconfigPath); err != nil {
+			fmt.Println("Error loading sysconfig overrides:", err)
+			os.Exit(1)
+		}
+	}
 
 	threshold := int(args.nodes * 2 / 3)
 	bootnodes := []string{}

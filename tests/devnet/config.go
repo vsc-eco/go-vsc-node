@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	systemconfig "vsc-node/modules/common/system-config"
 )
 
 // Config holds all configuration for a devnet test environment.
@@ -42,9 +44,9 @@ type Config struct {
 	GenesisNode int
 	// InitminerWIF is the private key for the initminer account.
 	InitminerWIF string
-	// ElectionInterval overrides the devnet default election interval
-	// (in blocks). 0 means use the devnet default (40 blocks).
-	ElectionInterval uint64
+	// SysConfigOverrides, if non-nil, are written to a JSON file and
+	// passed to each magid node via -sysconfig flag.
+	SysConfigOverrides *systemconfig.SysConfigOverrides
 }
 
 // DefaultConfig returns a Config with sensible defaults for testing.
