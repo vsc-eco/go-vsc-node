@@ -1,6 +1,7 @@
 package devnet
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,13 +35,28 @@ func writeEnvFile(cfg *Config, hafDataDir, devnetDir, outputPath string) error {
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)
 }
 
+// writeSysConfigOverrides writes the sysconfig override JSON file for
+// each node into the devnet data directory. Returns the container path
+// to the sysconfig file (same for all nodes since the file is identical).
+func writeSysConfigOverrides(cfg *Config, devnetDir string) error {
+	if cfg.SysConfigOverrides == nil {
+		return nil
+	}
+	data, err := json.MarshalIndent(cfg.SysConfigOverrides, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling sysconfig overrides: %w", err)
+	}
+	path := filepath.Join(devnetDir, "sysconfig.json")
+	return os.WriteFile(path, data, 0o644)
+}
+
 // writeNodesOverride generates a docker-compose override file that
 // defines the magi-1 … magi-N node services. This is the only
 // generated YAML — everything else lives in the static compose file.
 //
 // Each node gets NET_ADMIN capability for iptables-based network
-// partition testing. If cfg.ElectionInterval is set, it is passed
-// as a CLI flag to magid.
+// partition testing. If cfg.SysConfigOverrides is set, a sysconfig.json
+// file is written and passed to each magid node via -sysconfig flag.
 func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
 	var b strings.Builder
 
@@ -49,13 +65,13 @@ func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
 		gqlPort := cfg.GQLBasePort + i - 1
 		p2pPort := cfg.P2PBasePort + i - 1
 
-		// Build the magid command, optionally including election-interval.
+		// Build the magid command, optionally including sysconfig path.
 		cmd := fmt.Sprintf(
 			`"./magid", "-network", "devnet", "-data-dir", "/data/devnet/data-%d", "-log-level", "%s"`,
 			i, cfg.LogLevel,
 		)
-		if cfg.ElectionInterval > 0 {
-			cmd += fmt.Sprintf(`, "-election-interval", "%d"`, cfg.ElectionInterval)
+		if cfg.SysConfigOverrides != nil {
+			cmd += `, "-sysconfig", "/data/devnet/sysconfig.json"`
 		}
 
 		fmt.Fprintf(&b, `

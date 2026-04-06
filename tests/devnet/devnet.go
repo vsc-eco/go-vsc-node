@@ -98,6 +98,9 @@ func (d *Devnet) Start(ctx context.Context) error {
 	if err := writeEnvFile(d.cfg, d.hafDataDir, d.devnetDir, d.envFile); err != nil {
 		return fmt.Errorf("writing env file: %w", err)
 	}
+	if err := writeSysConfigOverrides(d.cfg, d.devnetDir); err != nil {
+		return fmt.Errorf("writing sysconfig overrides: %w", err)
+	}
 	log.Printf("[devnet] writing %s", d.overrideFile)
 	if err := writeNodesOverride(d.cfg, d.devnetDir, d.overrideFile); err != nil {
 		return fmt.Errorf("writing nodes override: %w", err)

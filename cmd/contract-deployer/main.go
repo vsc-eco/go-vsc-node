@@ -28,6 +28,12 @@ func main() {
 	hiveConfig := streamer.NewHiveConfig(args.dataDir)
 	p2pConf := p2pInterface.NewConfig(args.dataDir)
 	sysConfig := systemconfig.FromNetwork(args.network)
+	if args.sysconfigPath != "" {
+		if err := sysConfig.LoadOverrides(args.sysconfigPath); err != nil {
+			fmt.Println("Error loading sysconfig overrides:", err)
+			os.Exit(1)
+		}
+	}
 	wits := witnesses.NewEmptyWitnesses()
 	p2p := p2pInterface.New(wits, p2pConf, identityConfig, sysConfig, nil)
 	da := datalayer.New(p2p, args.dataDir)
