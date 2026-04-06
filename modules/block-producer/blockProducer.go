@@ -408,7 +408,14 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	cid, _ := bp.Datalayer.HashObject(genBlock)
 
-	vlog.Info("ProduceBlock PRODUCER", "headerCid", cid.String(), "slotHeight", bh)
+	vlog.Info("ProduceBlock PRODUCER",
+		"headerCid", cid.String(),
+		"slotHeight", bh,
+		"blockCid", genBlock.Block.String(),
+		"merkleRoot", genBlock.MerkleRoot,
+		"prevBlock", genBlock.Headers.Prevb,
+		"blockRange", genBlock.Headers.Br,
+	)
 
 	electionResult, err := bp.electionsDb.GetElectionByHeight(bh)
 
@@ -618,7 +625,14 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		return "", errors.New("missing block_cid in message")
 	}
 	if localCid.String() != producerCidStr {
-		vlog.Error("CID MISMATCH", "local", localCid.String(), "producer", producerCidStr)
+		vlog.Error("CID MISMATCH",
+			"local", localCid.String(),
+			"producer", producerCidStr,
+			"blockCid", blockHeader.Block.String(),
+			"merkleRoot", blockHeader.MerkleRoot,
+			"prevBlock", blockHeader.Headers.Prevb,
+			"blockRange", blockHeader.Headers.Br,
+		)
 		return "", fmt.Errorf("block CID mismatch: local=%s producer=%s", localCid.String(), producerCidStr)
 	}
 
