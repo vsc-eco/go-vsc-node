@@ -131,6 +131,50 @@ func (tsc *tssCommitments) FindCommitments(keyId *string, byTypes []string, epoc
 	return commitments, nil
 }
 
+func (tsc *tssCommitments) FindCommitmentsSimple(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, limit int) ([]TssCommitment, error) {
+	query := bson.M{}
+	if keyId != nil {
+		query["key_id"] = *keyId
+	}
+	if len(byTypes) > 0 {
+		query["type"] = bson.M{"$in": byTypes}
+	}
+	if epoch != nil {
+		query["epoch"] = *epoch
+	}
+	if fromBlock != nil {
+		query["block_height"] = bson.M{"$gt": *fromBlock}
+	}
+	if toBlock != nil {
+		if _, exists := query["block_height"]; exists {
+			query["block_height"].(bson.M)["$lte"] = *toBlock
+		} else {
+			query["block_height"] = bson.M{"$lte": *toBlock}
+		}
+	}
+
+	findOpts := options.Find().SetSort(bson.M{"block_height": -1})
+	if limit > 0 {
+		findOpts.SetLimit(int64(limit))
+	}
+
+	cursor, err := tsc.Find(context.Background(), query, findOpts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(context.Background())
+
+	commitments := make([]TssCommitment, 0)
+	for cursor.Next(context.Background()) {
+		var commitment TssCommitment
+		if err := cursor.Decode(&commitment); err != nil {
+			return nil, fmt.Errorf("failed to decode commitment: %w", err)
+		}
+		commitments = append(commitments, commitment)
+	}
+	return commitments, nil
+}
+
 func (tsc *tssCommitments) GetBlames(epoch *uint64) ([]TssCommitment, error) {
 	query := bson.M{
 		"type": "blame",

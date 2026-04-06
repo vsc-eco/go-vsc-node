@@ -50,6 +50,14 @@ const (
 	TSS_BAN_GRACE_PERIOD_EPOCHS = 3             // Epochs before new nodes can be banned (as int for comparison)
 	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
 	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
+
+	// READINESS_WINDOW_CLOSE_OFFSET is the number of blocks before a reshare
+	// trigger at which the on-chain readiness window closes. Readiness signals
+	// must be in a block at least this many blocks before the reshare block
+	// to guarantee all nodes (within the sync guard of 20 blocks) have
+	// processed them before RunActions fires.
+	// Must be > 20 (sync guard) to ensure determinism. 30 gives 10 blocks margin.
+	READINESS_WINDOW_CLOSE_OFFSET = 30
 )
 
 type TssManager struct {
@@ -159,6 +167,90 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		if slot.SlotHeight == slotInfo.StartHeight {
 			witnessSlot = &slot
 			break
+		}
+	}
+
+	// Broadcast on-chain readiness signal before the next reshare cycle.
+	// The signal lands on Hive, gets processed by StateEngine, and is read
+	// by RunActions at the reshare block to build deterministic party lists.
+	// Fires when we are within READINESS_WINDOW_CLOSE_OFFSET blocks of a reshare.
+	blocksUntilReshare := TSS_ROTATE_INTERVAL - (bh % TSS_ROTATE_INTERVAL)
+	if blocksUntilReshare <= READINESS_WINDOW_CLOSE_OFFSET && bh%TSS_ROTATE_INTERVAL != 0 {
+		nextReshareBlock := bh + blocksUntilReshare
+		selfAccount := tssMgr.config.Get().HiveUsername
+
+		// Check if we're an election member and have keys to reshare
+		electionData, err := tssMgr.electionDb.GetElectionByHeight(bh)
+		if err == nil && electionData.Members != nil {
+			isMember := false
+			for _, m := range electionData.Members {
+				if m.Account == selfAccount {
+					isMember = true
+					break
+				}
+			}
+			if isMember {
+				reshareKeys, err := tssMgr.tssKeys.FindEpochKeys(electionData.Epoch)
+				if err != nil {
+					log.Warn("FindEpochKeys failed during readiness broadcast",
+						"epoch", electionData.Epoch, "err", err)
+				}
+				for _, key := range reshareKeys {
+					// Deduplication: check if we already broadcast readiness for this cycle.
+					// Readiness records use Epoch field for targetBlock and Commitment for account.
+					existing, _ := tssMgr.tssCommitments.FindCommitmentsSimple(
+						&key.Id,
+						[]string{"ready"},
+						&nextReshareBlock, // stored in Epoch field
+						nil, nil, 1,
+					)
+					alreadySent := false
+					for _, e := range existing {
+						if e.Commitment == selfAccount {
+							alreadySent = true
+							break
+						}
+					}
+					if alreadySent {
+						continue
+					}
+
+					// Broadcast in a goroutine so BlockTick doesn't block on Hive API.
+					go func(keyId string) {
+						readyJson, _ := json.Marshal(map[string]interface{}{
+							"account":      selfAccount,
+							"key_id":       keyId,
+							"target_block": nextReshareBlock,
+						})
+						deployOp := hivego.CustomJsonOperation{
+							RequiredAuths:        []string{selfAccount},
+							RequiredPostingAuths: []string{},
+							Id:                   "vsc.tss_ready",
+							Json:                 string(readyJson),
+						}
+						hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{deployOp})
+						tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
+						sig, signErr := tssMgr.hiveClient.Sign(hiveTx)
+						if signErr != nil {
+							log.Warn("failed to sign tss readiness tx",
+								"account", selfAccount, "keyId", keyId,
+								"targetBlock", nextReshareBlock, "err", signErr)
+							return
+						}
+						hiveTx.AddSig(sig)
+						_, broadcastErr := tssMgr.hiveClient.Broadcast(hiveTx)
+						if broadcastErr != nil {
+							log.Warn("failed to broadcast tss readiness",
+								"account", selfAccount, "keyId", keyId,
+								"targetBlock", nextReshareBlock, "err", broadcastErr)
+						} else {
+							log.Info("broadcast tss readiness",
+								"account", selfAccount, "keyId", keyId,
+								"targetBlock", nextReshareBlock)
+						}
+					}(key.Id)
+				}
+			}
 		}
 	}
 
@@ -631,7 +723,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 
-			// Capture pre-filter size for correct threshold calculation.
+			// Use deterministic signer set — DO NOT filter by connectivity.
+			// All nodes must use the same participant list so BuildLocalSaveDataSubset
+			// produces identical Ks subsets and Lagrange coefficients match.
+			// Filtering causes different wi values → incompatible partial signatures.
 			origSignCommitteeSize := len(participants)
 			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
 
@@ -641,7 +736,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// these are deterministic because all nodes query the same witness DB.
 			// Timeout nodes stay in the list; if truly offline, the 60s signing
 			// timeout will catch them and produce blame.
-			participants = tssMgr.checkParticipantReadiness(participants, sessionId, "SIGN", false)
+			participants = tssMgr.checkParticipantReadiness(participants, sessionId, "SIGN", true)
 			if len(participants) < origThreshold+1 {
 				log.Warn("insufficient participants for signing", "sessionId", sessionId, "connected", len(participants), "needed", origThreshold+1, "total", origSignCommitteeSize)
 				continue
@@ -684,24 +779,63 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			log.Verbose("creating reshare session", "sessionId", sessionId, "keyId", action.KeyId, "blockHeight", bh)
 			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "keygen", "reshare")
-			lastBlame, _ := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "blame")
 
-			//This should either be equal but never less in practical terms
-			//However, we can add further checks
 			if commitment.Epoch >= currentElection.Epoch || err != nil {
 				log.Verbose("skipping reshare, commitment epoch meets or exceeds current", "sessionId", sessionId, "keyId", action.KeyId, "commitmentEpoch", commitment.Epoch, "currentEpoch", currentElection.Epoch, "err", err)
 				continue
 			}
 
-			var isBlame bool
-			blameBits := big.NewInt(0)
-			if lastBlame.Type == "blame" {
-				if lastBlame.BlockHeight > commitment.BlockHeight && int64(lastBlame.BlockHeight) > int64(bh)-int64(BLAME_EXPIRE) {
-					isBlame = true
-					blameBytes, _ := base64.RawURLEncoding.DecodeString(lastBlame.Commitment)
-					blameBits = blameBits.SetBytes(blameBytes)
-					log.Trace("blame commitment found", "epoch", lastBlame.Epoch, "blockHeight", lastBlame.BlockHeight, "commitment", lastBlame.Commitment, "bitset", blameBits)
+			// ═══════════════════════════════════════════════════════════
+			// CHANGE 5: Accumulate ALL blame commitments in the BLAME_EXPIRE
+			// window, not just the most recent one. Repeat offenders now
+			// accumulate blame across multiple reshare cycles.
+			// ═══════════════════════════════════════════════════════════
+			var blameExpireBlock uint64
+			if bh > BLAME_EXPIRE {
+				blameExpireBlock = bh - BLAME_EXPIRE
+			}
+			keyIdStr := action.KeyId
+			allBlames, blameErr := tssMgr.tssCommitments.FindCommitmentsSimple(
+				&keyIdStr,
+				[]string{"blame"},
+				nil,
+				&blameExpireBlock,
+				&bh,
+				100,
+			)
+			if blameErr != nil {
+				log.Warn("failed to fetch blame commitments", "sessionId", sessionId, "err", blameErr)
+			}
+
+			// ═══════════════════════════════════════════════════════════
+			// CHANGE 4: Decode each blame bitset against the blame's OWN
+			// epoch election, not currentElection. The blame was encoded
+			// via setToCommitment(culprits, epoch) which uses
+			// GetElection(epoch).Members for bit positions.
+			// ═══════════════════════════════════════════════════════════
+			blamedAccounts := make(map[string]bool)
+			for _, blame := range allBlames {
+				if blame.BlockHeight <= commitment.BlockHeight {
+					continue
 				}
+				blameElection := tssMgr.electionDb.GetElection(blame.Epoch)
+				if blameElection == nil || blameElection.Members == nil {
+					log.Warn("blame election missing, skipping blame entry",
+						"blameEpoch", blame.Epoch, "sessionId", sessionId)
+					continue
+				}
+				blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
+				bBits := new(big.Int).SetBytes(blameBytes)
+				for bidx, member := range blameElection.Members {
+					if bBits.Bit(bidx) == 1 {
+						blamedAccounts[member.Account] = true
+					}
+				}
+			}
+			if len(blamedAccounts) > 0 {
+				log.Verbose("accumulated blame exclusions",
+					"sessionId", sessionId, "blamedCount", len(blamedAccounts),
+					"blameCommitments", len(allBlames))
 			}
 
 			commitmentElection := tssMgr.electionDb.GetElection(commitment.Epoch)
@@ -710,32 +844,36 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				continue
 			}
 
-			// Resolve blamed accounts by name from the current election's blame bits.
-			// The blame bitset is indexed against currentElection (after the
-			// dispatcher.newEpoch fix, blame is always encoded against the current
-			// election). Matching by account name bridges old/new election membership.
-			blamedAccounts := make(map[string]bool)
-			if isBlame {
-				for idx, member := range currentElection.Members {
-					if blameBits.Bit(idx) == 1 {
-						blamedAccounts[member.Account] = true
-					}
-				}
+			// ═══════════════════════════════════════════════════════════
+			// CHANGE 3: Build party lists from on-chain readiness signals
+			// instead of non-deterministic RPC readiness checks.
+			// Query tss_commitments for type="ready" records matching this
+			// key and target reshare block. Intersect with commitment bitset
+			// (old committee) and currentElection (new committee).
+			// ═══════════════════════════════════════════════════════════
+			readyRecords, readyErr := tssMgr.tssCommitments.FindCommitmentsSimple(
+				&keyIdStr,
+				[]string{"ready"},
+				&bh, // targetBlock stored in Epoch field
+				nil, nil, 100,
+			)
+			if readyErr != nil {
+				log.Warn("failed to fetch readiness records", "sessionId", sessionId, "err", readyErr)
 			}
+			readyAccounts := make(map[string]bool)
+			for _, r := range readyRecords {
+				readyAccounts[r.Commitment] = true // Account name stored in Commitment field
+			}
+			log.Verbose("on-chain readiness set",
+				"sessionId", sessionId, "readyCount", len(readyAccounts))
 
+			// Decode commitment bitset for old committee membership
 			commitmentBytes, err := base64.RawURLEncoding.DecodeString(commitment.Commitment)
-
-			bitset := big.NewInt(0)
-			bitset = bitset.SetBytes(commitmentBytes)
+			bitset := new(big.Int).SetBytes(commitmentBytes)
 
 			commitedMembers := make([]Participant, 0)
-			// Count the full commitment size BEFORE blame exclusion.
-			// This is needed for threshold calculation — the polynomial degree
-			// must match the original keygen/reshare, not the blame-reduced set.
 			fullOldCommitteeSize := 0
 
-			log.Trace("commitment lookup", "commitment", commitment, "err", err)
-			log.Trace("bitset details", "bitset", bitset, "commitmentBytes", commitmentBytes)
 			for idx, member := range commitmentElection.Members {
 				if idx < bitset.BitLen() && bitset.Bit(idx) == 1 {
 					fullOldCommitteeSize++
@@ -747,6 +885,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						log.Verbose("excluding banned node from old committee", "sessionId", sessionId, "account", member.Account)
 						continue
 					}
+					// On-chain readiness gate: only include if node broadcast readiness
+					if !readyAccounts[member.Account] {
+						log.Verbose("excluding non-ready node from old committee", "sessionId", sessionId, "account", member.Account)
+						continue
+					}
 					commitedMembers = append(commitedMembers, Participant{
 						Account: member.Account,
 					})
@@ -756,18 +899,21 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			newParticipants := make([]Participant, 0)
 			excludedNodes := make([]string, 0)
 
-			for idx, member := range currentElection.Members {
-				log.Trace("blame check for member", "isBlame", isBlame, "idx", idx, "blameBit", blameBits.Bit(idx))
-				if isBlame {
-					if blameBits.Bit(idx) == 1 {
-						excludedNodes = append(excludedNodes, member.Account)
-						log.Verbose("excluding blamed node from reshare", "sessionId", sessionId, "account", member.Account)
-						continue
-					}
+			for _, member := range currentElection.Members {
+				if blamedAccounts[member.Account] {
+					excludedNodes = append(excludedNodes, member.Account)
+					log.Verbose("excluding blamed node from new committee", "sessionId", sessionId, "account", member.Account)
+					continue
 				}
 				if blameMap.BannedNodes[member.Account] {
 					excludedNodes = append(excludedNodes, member.Account)
-					log.Verbose("excluding banned node from reshare", "sessionId", sessionId, "account", member.Account)
+					log.Verbose("excluding banned node from new committee", "sessionId", sessionId, "account", member.Account)
+					continue
+				}
+				// On-chain readiness gate: only include if node broadcast readiness
+				if !readyAccounts[member.Account] {
+					excludedNodes = append(excludedNodes, member.Account)
+					log.Verbose("excluding non-ready node from new committee", "sessionId", sessionId, "account", member.Account)
 					continue
 				}
 				newParticipants = append(newParticipants, Participant{
@@ -775,92 +921,26 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				})
 			}
 
-			log.Verbose("reshare participant selection", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "excluded", len(excludedNodes), "excludedNodes", excludedNodes)
-			log.Trace("new participants list", "newParticipants", newParticipants)
+			log.Verbose("reshare participant selection", "sessionId", sessionId,
+				"oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants),
+				"excluded", len(excludedNodes), "excludedNodes", excludedNodes,
+				"readyCount", len(readyAccounts))
 
-			// Safety valve: if blame exclusion reduces either committee below threshold,
-			// ignore the blame entirely and rebuild with ban-only exclusion.
-			// This prevents a single over-broad blame from deadlocking reshares for 24 hours.
-			// All nodes make the same decision (deterministic — same on-chain blame/ban data).
-			if isBlame {
-				oldThreshold, _ := tss_helpers.GetThreshold(fullOldCommitteeSize)
-				newThreshold, _ := tss_helpers.GetThreshold(len(newParticipants))
-				minNew := newThreshold + 1
-				if minNew < 2 {
-					minNew = 2
-				}
-				if len(commitedMembers) < oldThreshold+1 || len(newParticipants) < minNew {
-					log.Warn("blame too broad, rebuilding without blame",
-						"sessionId", sessionId,
-						"oldParticipants", len(commitedMembers),
-						"oldRequired", oldThreshold+1,
-						"newParticipants", len(newParticipants),
-						"newRequired", minNew,
-					)
-					isBlame = false
-					blamedAccounts = make(map[string]bool)
-
-					// Rebuild old committee with ban-only exclusion
-					commitedMembers = make([]Participant, 0)
-					for idx, member := range commitmentElection.Members {
-						if idx < bitset.BitLen() && bitset.Bit(idx) == 1 {
-							if blameMap.BannedNodes[member.Account] {
-								continue
-							}
-							commitedMembers = append(commitedMembers, Participant{
-								Account: member.Account,
-							})
-						}
-					}
-
-					// Rebuild new committee with ban-only exclusion
-					newParticipants = make([]Participant, 0)
-					excludedNodes = make([]string, 0)
-					for _, member := range currentElection.Members {
-						if blameMap.BannedNodes[member.Account] {
-							excludedNodes = append(excludedNodes, member.Account)
-							continue
-						}
-						newParticipants = append(newParticipants, Participant{
-							Account: member.Account,
-						})
-					}
-
-					log.Verbose("reshare participant selection after blame override", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "excluded", len(excludedNodes), "excludedNodes", excludedNodes)
-				}
-			}
-
-			// Use the FULL commitment size for threshold calculation, not the
-			// blame-reduced count. The polynomial degree must match keygen.
+			// Threshold calculation from FULL commitment size (pre-filter).
 			origOldSize := fullOldCommitteeSize
-			origNewSize := len(newParticipants)
-
-			// Thresholds based on original counts (before any filtering) since the
-			// key was created with that many participants.
+			origNewSize := len(currentElection.Members) // pre-filter new size
 			origOldThreshold, _ := tss_helpers.GetThreshold(origOldSize)
 			origNewThreshold, _ := tss_helpers.GetThreshold(origNewSize)
 
-			// Old committee: keepTimeouts=true so transient timeouts don't cause
-			// SSID mismatch (only definitive errors like "protocol not supported"
-			// cause exclusion). This is the existing fix from PR #124.
-			commitedMembers = tssMgr.checkParticipantReadiness(commitedMembers, sessionId, "RESHARE-OLD", false)
-
-			// New committee: count-only gate, never filter the list.
-			// Same non-determinism bug as signing — if nodes disagree on which
-			// new members are reachable, they build different party sets → SSID mismatch.
-			newReady := tssMgr.countReadyParticipants(newParticipants, sessionId, "RESHARE-NEW")
-
-			// Pre-flight checks: validate participant set meets minimum threshold (at least 2)
+			// Pre-flight checks
 			minNewRequired := origNewThreshold + 1
 			if minNewRequired < 2 {
 				minNewRequired = 2
 			}
-			if newReady < minNewRequired {
-				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "ready", newReady, "required", minNewRequired, "threshold", origNewThreshold)
+			if len(newParticipants) < minNewRequired {
+				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "newParticipants", len(newParticipants), "required", minNewRequired, "threshold", origNewThreshold)
 				continue
 			}
-
-			// Pre-flight check: verify old participants are available
 			if len(commitedMembers) < origOldThreshold+1 {
 				log.Warn("insufficient old participants for reshare", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "required", origOldThreshold+1, "threshold", origOldThreshold)
 				continue
@@ -1101,13 +1181,12 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 					// Do NOT schedule custom retries for reshare/keygen timeouts.
 					// Custom retries use the node's current block height for the session
-					// ID, which differs per node. When nodes create sessions at different
-					// block heights, GetCommitmentByHeight returns different commitments
-					// (blame data may differ) → different old committee lists → different
-					// SSIDs → "ssid mismatch" in round 2.
-					// Instead, rely on the natural TSS_ROTATE_INTERVAL cycle (every 100
-					// blocks / ~5 min). The next bh%100==0 boundary triggers a fresh
-					// reshare with a deterministic session ID that all nodes agree on.
+					// ID, which differs per node → nodes create incompatible sessions and
+					// messages never match. Instead, rely on the natural TSS_ROTATE_INTERVAL
+					// cycle (every 100 blocks / ~5 min). The next bh%100==0 boundary will
+					// trigger a fresh reshare with a deterministic session ID that all
+					// nodes agree on. FindEpochKeys() will return the key again because
+					// no commitment was recorded for the failed attempt.
 					if dsc.KeyId() != "" {
 						log.Info("reshare/keygen timeout, will retry at next rotate interval",
 							"sessionId", dsc.SessionId(), "keyId", dsc.KeyId(),
