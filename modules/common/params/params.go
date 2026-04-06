@@ -1,6 +1,12 @@
 package params
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"strings"
+	"time"
+)
 
 // A transaction consuming 1000 RC (1 HBD equivalent) would generate ~0.002 HBD interest for the protocol
 // At 100K gas/RC and 100 RC minimum cost it would take at least 10M gas for a tx to consume more
@@ -41,23 +47,66 @@ var TSS_INDEX_HEIGHT uint64 = 102_083_000
 var ELECTION_INTERVAL = uint64(6 * 60 * 20)
 
 type ConsensusParams struct {
-	MinStake         int64
-	MinMembers       int
-	MinSpSigners     int
-	MinRcLimit       uint64
-	TssIndexHeight   uint64
-	ElectionInterval uint64
+	MinStake         int64  `json:"minStake,omitempty"`
+	MinMembers       int    `json:"minMembers,omitempty"`
+	MinSpSigners     int    `json:"minSpSigners,omitempty"`
+	MinRcLimit       uint64 `json:"minRcLimit,omitempty"`
+	TssIndexHeight   uint64 `json:"tssIndexHeight,omitempty"`
+	ElectionInterval uint64 `json:"electionInterval,omitempty"`
 }
 
 type TssParams struct {
-	ReshareSyncDelay      time.Duration
-	ReshareTimeout        time.Duration
-	DefaultTimeout        time.Duration
-	MessageRetryDelay     time.Duration
-	BufferedMessageMaxAge time.Duration
-	RpcTimeout            time.Duration
-	CommitDelay           time.Duration
-	WaitForSigsTimeout    time.Duration
+	ReshareSyncDelay      time.Duration `json:"reshareSyncDelay,omitempty"`
+	ReshareTimeout        time.Duration `json:"reshareTimeout,omitempty"`
+	DefaultTimeout        time.Duration `json:"defaultTimeout,omitempty"`
+	MessageRetryDelay     time.Duration `json:"messageRetryDelay,omitempty"`
+	BufferedMessageMaxAge time.Duration `json:"bufferedMessageMaxAge,omitempty"`
+	RpcTimeout            time.Duration `json:"rpcTimeout,omitempty"`
+	CommitDelay           time.Duration `json:"commitDelay,omitempty"`
+	WaitForSigsTimeout    time.Duration `json:"waitForSigsTimeout,omitempty"`
+}
+
+// MarshalJSON serializes TssParams with durations as human-readable
+// strings (e.g. "5s", "2m") using the json tags on TssParams itself.
+func (t TssParams) MarshalJSON() ([]byte, error) {
+	m := make(map[string]string)
+	v := reflect.ValueOf(t)
+	rt := v.Type()
+	for i := 0; i < rt.NumField(); i++ {
+		tag := rt.Field(i).Tag.Get("json")
+		key, _, _ := strings.Cut(tag, ",")
+		dur := v.Field(i).Interface().(time.Duration)
+		if dur != 0 {
+			m[key] = dur.String()
+		}
+	}
+	return json.Marshal(m)
+}
+
+// UnmarshalJSON deserializes TssParams from a JSON object where
+// durations are human-readable strings. Only fields present in the
+// JSON are overwritten.
+func (t *TssParams) UnmarshalJSON(data []byte) error {
+	var m map[string]string
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	v := reflect.ValueOf(t).Elem()
+	rt := v.Type()
+	for i := 0; i < rt.NumField(); i++ {
+		tag := rt.Field(i).Tag.Get("json")
+		key, _, _ := strings.Cut(tag, ",")
+		s, ok := m[key]
+		if !ok || s == "" {
+			continue
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("field %s: %w", key, err)
+		}
+		v.Field(i).Set(reflect.ValueOf(d))
+	}
+	return nil
 }
 
 var DefaultTssParams = TssParams{
@@ -85,10 +134,10 @@ var MocknetTssParams = TssParams{
 type OracleParams struct {
 	// ChainContracts maps chain symbols (e.g. "BTC") to their
 	// relay mapping contract IDs.
-	ChainContracts map[string]string
+	ChainContracts map[string]string `json:"chainContracts,omitempty"`
 
 	// Deprecated: use ChainContracts["BTC"] instead.
-	BtcContractId string
+	BtcContractId string `json:"btcContractId,omitempty"`
 }
 
 // ContractId returns the relay contract ID for the given chain symbol.

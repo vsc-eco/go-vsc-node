@@ -41,6 +41,12 @@ func main() {
 	witnessDb := witnesses.New(vscDb)
 	electionDb := elections.New(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
+	if args.sysconfigPath != "" {
+		if err := sysConfig.LoadOverrides(args.sysconfigPath); err != nil {
+			fmt.Println("Error loading sysconfig overrides:", err)
+			os.Exit(1)
+		}
+	}
 	identityConfig := common.NewIdentityConfig(args.dataDir)
 
 	p2p := p2pInterface.New(witnessDb, p2pConf, identityConfig, sysConfig, nil)

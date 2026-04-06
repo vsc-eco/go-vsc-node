@@ -7,19 +7,20 @@ import (
 )
 
 type args struct {
-	network    string
-	dataDir    string
-	nodes      int
-	hiveUrl    string
-	dbUrl      string
-	dbPrefix   string
-	dropDb     bool
-	p2pHost    string
-	p2pPort    int
-	witPrefix  string
-	witCreator string
-	wif        string
-	stakeAmt   string
+	network       string
+	dataDir       string
+	nodes         int
+	hiveUrl       string
+	dbUrl         string
+	dbPrefix      string
+	dropDb        bool
+	p2pHost       string
+	p2pPort       int
+	witPrefix     string
+	witCreator    string
+	wif           string
+	stakeAmt      string
+	sysconfigPath string
 }
 
 func ParseArgs() (args, error) {
@@ -41,6 +42,7 @@ func ParseArgs() (args, error) {
 	witCreator := flag.String("wit-creator", "initminer", "Username of witness account creator")
 	wif := flag.String("wif", "5JNHfZYKGaomSFvd4NUdQ9qMcEAC43kujbfjueTHpVapX1Kzq2n", "Private active key of witness account creator")
 	stakeAmt := flag.String("stake", "2000.000", "Stake amount for each witness")
+	sysconfigPath := flag.String("sysconfig", "", "Path to JSON file with system config overrides")
 
 	flag.Parse()
 
@@ -58,5 +60,6 @@ func ParseArgs() (args, error) {
 		*witCreator,
 		*wif,
 		*stakeAmt,
+		*sysconfigPath,
 	}, nil
 }

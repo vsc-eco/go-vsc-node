@@ -13,8 +13,9 @@ type args struct {
 	network string
 	dataDir string
 
-	disableTss bool
-	logLevel   string
+	disableTss    bool
+	logLevel      string
+	sysconfigPath string
 }
 
 func ParseArgs() (args, error) {
@@ -28,6 +29,7 @@ func ParseArgs() (args, error) {
 	dataDir := flag.String("data-dir", "data", "Data directory for config and storage")
 	disableTss := flag.Bool("disable-tss", false, "Disable TSS plugin (testnet only)")
 	logLevel := flag.String("log-level", "info", "Log level spec: error|warn|info|debug|verbose|trace or comma-separated with module overrides (e.g. error,tss=verbose,bp=info)")
+	sysconfigPath := flag.String("sysconfig", "", "Path to JSON file with system config overrides")
 
 	flag.Parse()
 
@@ -37,6 +39,7 @@ func ParseArgs() (args, error) {
 		*dataDir,
 		*disableTss,
 		*logLevel,
+		*sysconfigPath,
 	}, nil
 }
 

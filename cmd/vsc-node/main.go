@@ -89,6 +89,12 @@ func main() {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
+	if args.sysconfigPath != "" {
+		if err := sysConfig.LoadOverrides(args.sysconfigPath); err != nil {
+			fmt.Println("Error loading sysconfig overrides:", err)
+			os.Exit(1)
+		}
+	}
 
 	if err != nil {
 		fmt.Println("error is", err)

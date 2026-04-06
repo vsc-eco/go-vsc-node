@@ -7,13 +7,14 @@ import (
 )
 
 type args struct {
-	isInit       bool
-	debug        bool
-	network      string
-	chainName    string
-	chainNetwork string
-	dataDir      string
-	port         int
+	isInit        bool
+	debug         bool
+	network       string
+	chainName     string
+	chainNetwork  string
+	dataDir       string
+	port          int
+	sysconfigPath string
 }
 
 func parseArgs() (args, error) {
@@ -29,16 +30,18 @@ func parseArgs() (args, error) {
 	chainNetwork := flag.String("chain-network", "mainnet", "Chain network: mainnet, testnet, testnet3, testnet4, regtest")
 	dataDir := flag.String("data-dir", "data", "Data directory for config and storage")
 	port := flag.Int("port", 0, "HTTP port override (0 = use config file value)")
+	sysconfigPath := flag.String("sysconfig", "", "Path to JSON file with system config overrides")
 
 	flag.Parse()
 
 	return args{
-		isInit:       *isInit,
-		debug:        *debug,
-		network:      *network,
-		chainName:    *chainName,
-		chainNetwork: *chainNetwork,
-		dataDir:      *dataDir,
-		port:         *port,
+		isInit:        *isInit,
+		debug:         *debug,
+		network:       *network,
+		chainName:     *chainName,
+		chainNetwork:  *chainNetwork,
+		dataDir:       *dataDir,
+		port:          *port,
+		sysconfigPath: *sysconfigPath,
 	}, nil
 }
