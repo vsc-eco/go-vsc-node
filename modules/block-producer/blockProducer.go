@@ -845,7 +845,12 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			db = datalayer.NewDataBin(bp.Datalayer)
 		} else {
 			cidz := cid.MustParse(output.Cid)
-			db = datalayer.NewDataBinFromCid(bp.Datalayer, cidz)
+			var err error
+			db, err = datalayer.NewDataBinFromCid(bp.Datalayer, cidz)
+			if err != nil {
+				vlog.Error("MakeOutputs failed to load contract state", "contract", contractId, "cid", output.Cid, "err", err)
+				continue
+			}
 		}
 
 		// Apply deletions in sorted order for deterministic CIDs

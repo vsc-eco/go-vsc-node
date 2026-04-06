@@ -137,12 +137,14 @@ func TestDeterministicCidAfterReload(t *testing.T) {
 	t.Log("Base CID:", baseCid)
 
 	// Simulate node A: load from CID, apply diff
-	dbA := DataLayer.NewDataBinFromCid(da, baseCid)
+	dbA, err := DataLayer.NewDataBinFromCid(da, baseCid)
+	assert.NoError(t, err)
 	dbA.Set("new-key", node3.Cid())
 	cidA := dbA.Cid()
 
 	// Simulate node B: load from same CID, apply same diff
-	dbB := DataLayer.NewDataBinFromCid(da, baseCid)
+	dbB, err := DataLayer.NewDataBinFromCid(da, baseCid)
+	assert.NoError(t, err)
 	dbB.Set("new-key", node3.Cid())
 	cidB := dbB.Cid()
 
@@ -235,7 +237,8 @@ func TestDeterministicCidManyKeysReloadAndModify(t *testing.T) {
 	t.Log("Base CID (many keys):", baseCid)
 
 	// Simulate node A: load, modify a few keys
-	dbA := DataLayer.NewDataBinFromCid(da, baseCid)
+	dbA, err := DataLayer.NewDataBinFromCid(da, baseCid)
+	assert.NoError(t, err)
 	dbA.Set("key-0010", nodes[numKeys].Cid())    // update existing
 	dbA.Set("key-0050", nodes[numKeys+1].Cid())  // update existing
 	dbA.Delete("key-0100")                       // delete
@@ -243,7 +246,8 @@ func TestDeterministicCidManyKeysReloadAndModify(t *testing.T) {
 	cidA := dbA.Cid()
 
 	// Simulate node B: load same base, apply same modifications
-	dbB := DataLayer.NewDataBinFromCid(da, baseCid)
+	dbB, err := DataLayer.NewDataBinFromCid(da, baseCid)
+	assert.NoError(t, err)
 	dbB.Set("key-0010", nodes[numKeys].Cid())
 	dbB.Set("key-0050", nodes[numKeys+1].Cid())
 	dbB.Delete("key-0100")

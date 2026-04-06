@@ -100,9 +100,12 @@ func (cs *CallSession) GetContractSession(contractId string) *ContractSession {
 }
 
 // Get current state store of a contract.
-func (cs *CallSession) GetStateStore(contractId string) *StateStore {
+func (cs *CallSession) GetStateStore(contractId string) (*StateStore, error) {
 	sess := cs.GetContractSession(contractId)
-	return sess.GetStateStore()
+	if err := sess.StateErr(); err != nil {
+		return nil, err
+	}
+	return sess.GetStateStore(), nil
 }
 
 // Get metadata of a contract.
@@ -159,10 +162,14 @@ func (cs *CallSession) AppendTssLog(contractId string, op tss_db.TssOp) {
 // Clear ephemeral contract state. Used in contract tests only.
 func (cs *CallSession) ClearEphemState(contractId ...string) {
 	if len(contractId) > 0 {
-		cs.GetStateStore(contractId[0]).ClearEphem()
+		if ss, err := cs.GetStateStore(contractId[0]); err == nil {
+			ss.ClearEphem()
+		}
 	} else {
 		for _, c := range cs.sessions {
-			c.GetStateStore().ClearEphem()
+			if ss := c.GetStateStore(); ss != nil {
+				ss.ClearEphem()
+			}
 		}
 	}
 }
@@ -189,15 +196,18 @@ func (cs *CallSession) takePending(contractId string) *TempOutput {
 // Commit state changes to contract sessions
 func (cs *CallSession) Commit() {
 	for _, session := range cs.sessions {
-		session.GetStateStore().Commit()
+		if ss := session.GetStateStore(); ss != nil {
+			ss.Commit()
+		}
 	}
 }
 
 // Rollback state changes
 func (cs *CallSession) Rollback() {
-
 	for _, session := range cs.sessions {
-		session.state.Rollback()
+		if session.state != nil {
+			session.state.Rollback()
+		}
 		session.PopLogs()
 	}
 }
@@ -241,6 +251,7 @@ type ContractSession struct {
 	deletions   map[string]bool
 	stateMerkle string
 	state       *StateStore
+	stateErr    error
 
 	logs   []string
 	tssOps []tss_db.TssOp
@@ -255,14 +266,30 @@ func NewContractSession(dl *datalayer.DataLayer, output TempOutput) *ContractSes
 		stateMerkle: output.Cid,
 		logs:        make([]string, 0),
 	}
-	newSession.state = NewStateStore(dl, output.Cid, newSession)
+	state, err := NewStateStore(dl, output.Cid, newSession)
+	if err != nil {
+		fmt.Println("[contract_session] failed to load state for CID", output.Cid, "err:", err)
+		newSession.stateErr = err
+	} else {
+		newSession.state = state
+	}
 	return newSession
+}
+
+// StateErr returns a non-nil error if the contract state failed to load.
+func (cs *ContractSession) StateErr() error {
+	return cs.stateErr
 }
 
 // Get the current state store of the contract
 func (cs *ContractSession) GetStateStore() *StateStore {
-	if cs.state == nil {
-		cs.state = NewStateStore(cs.dl, cs.stateMerkle, cs)
+	if cs.state == nil && cs.stateErr == nil {
+		state, err := NewStateStore(cs.dl, cs.stateMerkle, cs)
+		if err != nil {
+			cs.stateErr = err
+		} else {
+			cs.state = state
+		}
 	}
 	return cs.state
 }
@@ -428,7 +455,7 @@ func (ss *StateStore) GetDiff() StateDiff {
 	}
 }
 
-func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) *StateStore {
+func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) (*StateStore, error) {
 	if cids == "" {
 		databin := datalayer.NewDataBin(dl)
 
@@ -439,10 +466,13 @@ func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) *S
 			databin:   &databin,
 			cs:        cs,
 			ephem:     make(map[string][]byte),
-		}
+		}, nil
 	} else {
 		cidz := cid.MustParse(cids)
-		databin := datalayer.NewDataBinFromCid(dl, cidz)
+		databin, err := datalayer.NewDataBinFromCid(dl, cidz)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load state store from CID %s: %w", cids, err)
+		}
 
 		return &StateStore{
 			cache:     maps.Clone(cs.cache),
@@ -451,7 +481,7 @@ func NewStateStore(dl *datalayer.DataLayer, cids string, cs *ContractSession) *S
 			databin:   &databin,
 			cs:        cs,
 			ephem:     make(map[string][]byte),
-		}
+		}, nil
 	}
 }
 

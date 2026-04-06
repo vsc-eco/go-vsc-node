@@ -112,7 +112,11 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 	go func() {
 		cid, err := cid.Parse(output.StateMerkle)
 		if err == nil {
-			db := datalayer.NewDataBinFromCid(se.da, cid)
+			db, err := datalayer.NewDataBinFromCid(se.da, cid)
+			if err != nil {
+				fmt.Println("[system_txs] failed to load state for prefetch:", err)
+				return
+			}
 			list, _ := db.List("")
 			if list != nil {
 				for _, v := range *list {

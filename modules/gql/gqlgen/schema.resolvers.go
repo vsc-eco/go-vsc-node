@@ -217,7 +217,10 @@ func (r *queryResolver) GetStateByKeys(ctx context.Context, contractID string, k
 	if err != nil {
 		return nil, err
 	}
-	databin := datalayer.NewDataBinFromCid(r.Da, cidz)
+	databin, err := datalayer.NewDataBinFromCid(r.Da, cidz)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load contract state: %w", err)
+	}
 	result := make(map[string]interface{})
 	var keyErr error
 	for _, key := range keys {

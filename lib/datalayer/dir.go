@@ -352,42 +352,43 @@ func NewDataBin(da *DataLayer) DataBin {
 	}
 }
 
-func NewDataBinFromCid(da *DataLayer, inputCid cid.Cid) DataBin {
+func NewDataBinFromCid(da *DataLayer, inputCid cid.Cid) (DataBin, error) {
 	uio.HAMTShardingSize = 256
+	leaf, err := newLeafFromCid(da, inputCid)
+	if err != nil {
+		return DataBin{}, fmt.Errorf("failed to load DataBin from CID %s: %w", inputCid, err)
+	}
 	return DataBin{
 		DataLayer: da,
-		Leaf:      newLeafFromCid(da, inputCid),
-	}
+		Leaf:      leaf,
+	}, nil
 }
 
-func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
+func newLeafFromCid(da *DataLayer, inputCid cid.Cid) (LeafDir, error) {
 	ctx := context.Background()
 
 	node, err := da.DagServ.Get(ctx, inputCid)
 	if err != nil {
-		fmt.Println("[databin] ERROR loading node for CID", inputCid, "err:", err)
-		// Return empty leaf to avoid panic
-		return LeafDir{
-			Dir:    uio.NewDirectory(da.DagServ),
-			leaves: make(map[string]*LeafDir),
-		}
+		return LeafDir{}, fmt.Errorf("loading node for CID %s: %w", inputCid, err)
 	}
 
 	dir, err := uio.NewDirectoryFromNode(da.DagServ, node)
 	if err != nil {
-		fmt.Println("[databin] ERROR creating directory from node", inputCid, "err:", err)
-		return LeafDir{
-			Dir:    uio.NewDirectory(da.DagServ),
-			leaves: make(map[string]*LeafDir),
-		}
+		return LeafDir{}, fmt.Errorf("creating directory from node %s: %w", inputCid, err)
 	}
 
-	links, _ := dir.Links(ctx)
+	links, err := dir.Links(ctx)
+	if err != nil {
+		return LeafDir{}, fmt.Errorf("listing links for CID %s: %w", inputCid, err)
+	}
 
 	leaves := make(map[string]*LeafDir)
 	for _, lnk := range links {
 		if lnk.Cid.Prefix().Codec == uint64(multicodec.Protobuf) {
-			lf := newLeafFromCid(da, lnk.Cid)
+			lf, err := newLeafFromCid(da, lnk.Cid)
+			if err != nil {
+				return LeafDir{}, fmt.Errorf("loading child %q of CID %s: %w", lnk.Name, inputCid, err)
+			}
 			leaves[lnk.Name] = &lf
 		}
 	}
@@ -395,5 +396,5 @@ func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
 	return LeafDir{
 		Dir:    dir,
 		leaves: leaves,
-	}
+	}, nil
 }

@@ -328,13 +328,21 @@ func (ctx *contractExecutionContext) SetState(key string, value string) result.R
 	)
 	newWriteGas := ctx.callSession.IncSize(ctx.env.ContractId, newWriteToAdd)
 	ctx.doIO(newWriteToAdd-newWriteGas, newWriteGas)
-	ctx.callSession.GetStateStore(ctx.env.ContractId).Set(key, []byte(value))
+	ss, err := ctx.callSession.GetStateStore(ctx.env.ContractId)
+	if err != nil {
+		return result.Err[struct{}](fmt.Errorf("state unavailable: %w", err))
+	}
+	ss.Set(key, []byte(value))
 	return result.Ok(struct{}{})
 }
 
 func (ctx *contractExecutionContext) GetState(key string) result.Result[string] {
 	ctx.doIO(len(key))
-	res := ctx.callSession.GetStateStore(ctx.env.ContractId).Get(key)
+	ss, err := ctx.callSession.GetStateStore(ctx.env.ContractId)
+	if err != nil {
+		return result.Err[string](fmt.Errorf("state unavailable: %w", err))
+	}
+	res := ss.Get(key)
 	if res == nil {
 		return result.Ok("")
 	}
@@ -346,7 +354,11 @@ func (ctx *contractExecutionContext) DeleteState(key string) result.Result[struc
 	ctx.doIO(len(key))
 	value := ctx.GetState(key).Unwrap()
 	ctx.callSession.IncSize(ctx.env.ContractId, len(key)-len(value))
-	ctx.callSession.GetStateStore(ctx.env.ContractId).Delete(key)
+	ss, err := ctx.callSession.GetStateStore(ctx.env.ContractId)
+	if err != nil {
+		return result.Err[struct{}](fmt.Errorf("state unavailable: %w", err))
+	}
+	ss.Delete(key)
 	return result.Ok(struct{}{})
 }
 
@@ -355,17 +367,29 @@ func (ctx *contractExecutionContext) GetEphemState(contractId string, key string
 	if c == "" {
 		c = ctx.env.ContractId
 	}
-	res := ctx.callSession.GetStateStore(c).GetEphem(key)
+	ss, err := ctx.callSession.GetStateStore(c)
+	if err != nil {
+		return result.Err[string](fmt.Errorf("state unavailable: %w", err))
+	}
+	res := ss.GetEphem(key)
 	return result.Ok(string(res))
 }
 
 func (ctx *contractExecutionContext) SetEphemState(key string, value string) result.Result[struct{}] {
-	ctx.callSession.GetStateStore(ctx.env.ContractId).SetEphem(key, []byte(value))
+	ss, err := ctx.callSession.GetStateStore(ctx.env.ContractId)
+	if err != nil {
+		return result.Err[struct{}](fmt.Errorf("state unavailable: %w", err))
+	}
+	ss.SetEphem(key, []byte(value))
 	return result.Ok(struct{}{})
 }
 
 func (ctx *contractExecutionContext) DeleteEphemState(key string) result.Result[struct{}] {
-	ctx.callSession.GetStateStore(ctx.env.ContractId).DeleteEphem(key)
+	ss, err := ctx.callSession.GetStateStore(ctx.env.ContractId)
+	if err != nil {
+		return result.Err[struct{}](fmt.Errorf("state unavailable: %w", err))
+	}
+	ss.DeleteEphem(key)
 	return result.Ok(struct{}{})
 }
 
@@ -474,7 +498,11 @@ func (ctx *contractExecutionContext) WithdrawBalance(to string, amount int64, as
 
 func (ctx *contractExecutionContext) ContractStateGet(contractId string, key string) result.Result[string] {
 	ctx.doIO(len(key))
-	res := ctx.callSession.GetStateStore(contractId).Get(key)
+	ss, err := ctx.callSession.GetStateStore(contractId)
+	if err != nil {
+		return result.Err[string](fmt.Errorf("state unavailable: %w", err))
+	}
+	res := ss.Get(key)
 	if res == nil {
 		return result.Ok("")
 	}

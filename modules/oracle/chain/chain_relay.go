@@ -318,7 +318,10 @@ func (c *ChainOracle) getContractBlockHeight(contractId string) (uint64, error) 
 		return 0, fmt.Errorf("failed to parse state merkle CID: %w", err)
 	}
 
-	databin := DataLayer.NewDataBinFromCid(c.da, cidz)
+	databin, err := DataLayer.NewDataBinFromCid(c.da, cidz)
+	if err != nil {
+		return 0, fmt.Errorf("failed to load state for contract: %w", err)
+	}
 	cidVal, err := databin.Get(lastHeightStateKey)
 	if err != nil {
 		if err == os.ErrNotExist {
@@ -458,7 +461,10 @@ func (c *ChainOracle) getStoredBlockHeaderHex(contractId string, height uint64) 
 	}
 
 	blockKey := "b-" + strconv.FormatUint(height, 10)
-	databin := DataLayer.NewDataBinFromCid(c.da, cidz)
+	databin, err := DataLayer.NewDataBinFromCid(c.da, cidz)
+	if err != nil {
+		return "", fmt.Errorf("failed to load state: %w", err)
+	}
 	cidVal, err := databin.Get(blockKey)
 	if err != nil {
 		return "", fmt.Errorf("block key %s not found in state: %w", blockKey, err)
