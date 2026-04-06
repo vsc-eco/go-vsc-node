@@ -47,6 +47,16 @@ type Config struct {
 	// SysConfigOverrides, if non-nil, are written to a JSON file and
 	// passed to each magid node via -sysconfig flag.
 	SysConfigOverrides *systemconfig.SysConfigOverrides
+	// HafahImage is the Docker image for the hafah SQL installer.
+	HafahImage string
+	// PostgRESTImage is the Docker image for hafah-postgrest (PostgREST).
+	PostgRESTImage string
+	// PgBouncerImage is the Docker image for pgbouncer connection pooler.
+	PgBouncerImage string
+	// DroneImage is the Docker image for the drone API router.
+	DroneImage string
+	// DronePort is the host port exposed for the drone API endpoint.
+	DronePort int
 }
 
 // DefaultConfig returns a Config with sensible defaults for testing.
@@ -64,7 +74,12 @@ func DefaultConfig() *Config {
 		MongoImage:    "mongo:8.0.17",
 		SourceDir:     findSourceRoot(),
 		GenesisNode:   5,
-		InitminerWIF:  "5JNHfZYKGaomSFvd4NUdQ9qMcEAC43kujbfjueTHpVapX1Kzq2n",
+		InitminerWIF:   "5JNHfZYKGaomSFvd4NUdQ9qMcEAC43kujbfjueTHpVapX1Kzq2n",
+		HafahImage:     "registry.gitlab.syncad.com/hive/hafah",
+		PostgRESTImage: "registry.gitlab.syncad.com/hive/haf_api_node/postgrest",
+		PgBouncerImage: "registry.gitlab.syncad.com/hive/haf_api_node/pgbouncer",
+		DroneImage:     "registry.gitlab.syncad.com/hive/drone",
+		DronePort:      19000,
 	}
 }
 

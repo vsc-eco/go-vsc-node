@@ -139,7 +139,8 @@ func TestEnvFileGeneration(t *testing.T) {
 	hafDir := filepath.Join(tmpDir, "haf")
 	devnetDir := filepath.Join(tmpDir, "devnet")
 
-	if err := writeEnvFile(cfg, hafDir, devnetDir, envPath); err != nil {
+	droneConfigPath := filepath.Join(tmpDir, "drone.yaml")
+	if err := writeEnvFile(cfg, hafDir, devnetDir, droneConfigPath, envPath); err != nil {
 		t.Fatalf("writeEnvFile: %v", err)
 	}
 
@@ -192,7 +193,17 @@ func TestComposeFileExists(t *testing.T) {
 		"devnet-setup:",
 		"genesis-elector:",
 		"contract-deployer:",
-		"http://haf:8091",
+		"http://drone:9000",
+		"hafah-install:",
+		"pgbouncer:",
+		"hafah-postgrest:",
+		"drone:",
+		"${HAFAH_IMAGE}",
+		"${POSTGREST_IMAGE}",
+		"${PGBOUNCER_IMAGE}",
+		"${DRONE_IMAGE}",
+		"${DRONE_PORT}",
+		"${DRONE_CONFIG_PATH}",
 		"/dns4/magi-?",
 	}
 	for _, check := range checks {

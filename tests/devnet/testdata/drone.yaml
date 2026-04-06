@@ -1,0 +1,61 @@
+# Drone config for devnet integration tests.
+# Two backends: hived (via HAF) and hafah (via PostgREST).
+# No hivemind — social API methods fall through to hived.
+# Caching disabled for test determinism.
+
+drone:
+  port: 9000
+  hostname: 0.0.0.0
+  cache_max_capacity: 0
+  middleware_connection_threads: 4
+  add_cors_headers: false
+  access_log_format: simple
+  access_log_file: ""
+  access_log_flush_every_line: false
+  metrics_enabled: false
+  add_jussi_headers: false
+
+backends:
+  hived: http://haf:8091
+  hafah: http://hafah-postgrest:3000
+
+urls:
+  bridge: hived
+  hive: hived
+  hived: hived
+  appbase: hived
+  appbase.network_broadcast_api: hived
+  appbase.condenser_api.get_accounts: hived
+  appbase.condenser_api.broadcast_block: hived
+  appbase.condenser_api.broadcast_transaction: hived
+  appbase.condenser_api.broadcast_transaction_synchronous: hived
+  appbase.network_broadcast_api.broadcast_transaction_synchronous: hived
+  appbase.condenser_api.get_block: hived
+  appbase.block_api.get_block: hafah
+  appbase.block_api.get_block_header: hafah
+  appbase.block_api.get_block_range: hafah
+  appbase.account_history_api.get_account_history: hafah
+  appbase.account_history_api.get_ops_in_block: hafah
+  appbase.account_history_api.enum_virtual_ops: hafah
+  appbase.account_history_api.get_transaction: hafah
+  appbase.condenser_api.get_account_history: hafah
+  appbase.condenser_api.get_ops_in_block: hafah
+  appbase.condenser_api.enum_virtual_ops: hafah
+  appbase.condenser_api.get_transaction: hafah
+
+ttls:
+  hived: 0
+  appbase: 0
+  bridge: 0
+  hive: 0
+
+timeouts:
+  bridge: 30
+  hive: 30
+  hived: 5
+  hived.network_broadcast_api: 0
+  appbase: 3
+  appbase.network_broadcast_api: 0
+  appbase.condenser_api.broadcast_block: 0
+  appbase.condenser_api.broadcast_transaction: 0
+  appbase.condenser_api.broadcast_transaction_synchronous: 0

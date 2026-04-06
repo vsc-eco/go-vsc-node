@@ -16,7 +16,7 @@ func composeFilePath() string {
 
 // writeEnvFile generates the .env file consumed by docker compose for
 // variable substitution in both the base and override compose files.
-func writeEnvFile(cfg *Config, hafDataDir, devnetDir, outputPath string) error {
+func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, outputPath string) error {
 	var b strings.Builder
 
 	kv := func(k, v string) { fmt.Fprintf(&b, "%s=%s\n", k, v) }
@@ -31,6 +31,12 @@ func writeEnvFile(cfg *Config, hafDataDir, devnetDir, outputPath string) error {
 	kv("DEVNET_NODES", fmt.Sprint(cfg.Nodes))
 	kv("GENESIS_NODE", fmt.Sprint(cfg.GenesisNode))
 	kv("LOG_LEVEL", cfg.LogLevel)
+	kv("HAFAH_IMAGE", cfg.HafahImage)
+	kv("POSTGREST_IMAGE", cfg.PostgRESTImage)
+	kv("PGBOUNCER_IMAGE", cfg.PgBouncerImage)
+	kv("DRONE_IMAGE", cfg.DroneImage)
+	kv("DRONE_PORT", fmt.Sprint(cfg.DronePort))
+	kv("DRONE_CONFIG_PATH", droneConfigPath)
 
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)
 }

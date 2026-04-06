@@ -7,7 +7,12 @@ services:
     command: ""
     stop_grace_period: 2m
     environment:
-      PG_ACCESS: "local haf_block_log haf_maintainer trust"
+      PG_ACCESS: |
+        local haf_block_log haf_maintainer trust
+        local haf_block_log haf_admin trust
+        local haf_block_log hafah_user trust
+        host haf_block_log haf_admin 0.0.0.0/0 trust
+        host haf_block_log hafah_user 0.0.0.0/0 trust
       PGCTLTIMEOUT: 600
       OVERRIDE_LD_PRELOAD: ""
     volumes:
@@ -46,6 +51,92 @@ services:
         limits:
           memory: 1G
 
+  hafah-install:
+    image: ${HAFAH_IMAGE}
+    command: install_app
+    environment:
+      POSTGRES_URL: postgresql://haf_admin@haf/haf_block_log
+    depends_on:
+      haf:
+        condition: service_healthy
+    networks:
+      - devnet
+
+  pgbouncer:
+    image: ${PGBOUNCER_IMAGE}
+    environment:
+      PGBOUNCER_USERS: "hafah_user haf_admin"
+      PGBOUNCER_LISTEN_ADDR: "*"
+      PGBOUNCER_DB_HOST: haf
+      PGBOUNCER_DB_PORT: 5432
+      PGBOUNCER_DB_NAME: haf_block_log
+      PGBOUNCER_POOL_MODE: transaction
+      PGBOUNCER_DEFAULT_POOL_SIZE: 20
+      PGBOUNCER_RESERVE_POOL_SIZE: 5
+      PGBOUNCER_MAX_CLIENT_CONN: 200
+      PGBOUNCER_MAX_DB_CONNECTIONS: 30
+      PGBOUNCER_QUERY_WAIT_TIMEOUT: 120
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U haf_admin -d haf_block_log || exit 1"]
+      interval: 10s
+      timeout: 2s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      haf:
+        condition: service_healthy
+    networks:
+      - devnet
+
+  hafah-postgrest:
+    image: ${POSTGREST_IMAGE}
+    environment:
+      PGRST_SERVER_HOST: "*"
+      PGRST_SERVER_PORT: 3000
+      PGRST_ADMIN_SERVER_PORT: 3001
+      PGRST_DB_URI: postgresql://hafah_user@pgbouncer:6432/haf_block_log
+      PGRST_DB_SCHEMA: hafah_endpoints,hafah_api_v1,hafah_api_v2
+      PGRST_DB_ROOT_SPEC: home
+      PGRST_DB_ANON_ROLE: hafah_user
+      PGRST_DB_POOL: 8
+      PGRST_DB_POOL_ACQUISITION_TIMEOUT: 10
+    healthcheck:
+      test: ["CMD-SHELL", "wget -T2 -nv -t1 --spider http://127.0.0.1:3001/ready || exit 1"]
+      interval: 10s
+      timeout: 2s
+      retries: 10
+      start_period: 1m
+    depends_on:
+      hafah-install:
+        condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
+    networks:
+      - devnet
+
+  drone:
+    image: ${DRONE_IMAGE}
+    environment:
+      RUST_LOG: info
+    volumes:
+      - type: bind
+        source: ${DRONE_CONFIG_PATH}
+        target: /config.yaml
+        read_only: true
+    ports:
+      - "${DRONE_PORT}:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -T2 -nv -t1 --spider http://127.0.0.1:9000/ || exit 1"]
+      interval: 10s
+      timeout: 2s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      hafah-postgrest:
+        condition: service_healthy
+    networks:
+      - devnet
+
   devnet-setup:
     build:
       context: ${SOURCE_DIR}
@@ -60,7 +151,7 @@ services:
       - ./devnet-setup
       - -db-url=mongodb://db:27017
       - -data-dir=/data/devnet
-      - -hive-urls=http://haf:8091
+      - -hive-urls=http://drone:9000
       - -nodes=${DEVNET_NODES}
       - -p2p-host=/dns4/magi-?
       - -drop-db
