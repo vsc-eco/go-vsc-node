@@ -521,6 +521,31 @@ func (ic *interestClaims) SaveClaim(claim ClaimRecord) {
 	}, options)
 }
 
+func (ic *interestClaims) FindClaims(fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ClaimRecord, error) {
+	filters := bson.D{}
+	if fromBlock != nil {
+		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$gte", Value: *fromBlock}}})
+	}
+	if toBlock != nil {
+		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$lte", Value: *toBlock}}})
+	}
+	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
+	cursor, err := ic.Aggregate(context.TODO(), pipe)
+	if err != nil {
+		return []ClaimRecord{}, err
+	}
+	defer cursor.Close(context.TODO())
+	var results []ClaimRecord
+	for cursor.Next(context.TODO()) {
+		var elem ClaimRecord
+		if err := cursor.Decode(&elem); err != nil {
+			return []ClaimRecord{}, err
+		}
+		results = append(results, elem)
+	}
+	return results, nil
+}
+
 func NewInterestClaimDb(d *vsc.VscDb) InterestClaims {
 	return &interestClaims{db.NewCollection(d.DbInstance, "ledger_claims")}
 }

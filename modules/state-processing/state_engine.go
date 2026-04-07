@@ -121,7 +121,7 @@ type StateEngine struct {
 
 // Finalizes state into pseudo block
 
-func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64) {
+func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64, txId string) {
 	lastClaim := se.claimDb.GetLastClaim(blockHeight - 1)
 
 	claimHeight := uint64(0)
@@ -129,7 +129,7 @@ func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64) {
 		claimHeight = lastClaim.BlockHeight
 	}
 
-	se.LedgerSystem.ClaimHBDInterest(claimHeight, blockHeight, amount)
+	se.LedgerSystem.ClaimHBDInterest(claimHeight, blockHeight, amount, txId)
 }
 
 // Gets ranomized schedule of witnesses
@@ -288,7 +288,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					)
 					continue
 				}
-				se.claimHBDInterest(blockInfo.BlockHeight, vInt1)
+				se.claimHBDInterest(blockInfo.BlockHeight, vInt1, virtualOp.TrxId)
 			}
 		}
 	}

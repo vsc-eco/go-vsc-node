@@ -259,6 +259,7 @@ func main() {
 		TssKeys:        tssKeys,
 		TssCommitments: tssCommitments,
 		TssRequests:    tssRequests,
+		InterestClaims: interestClaims,
 	}}), gqlConf)
 
 	plugins := make([]aggregate.Plugin, 0)
