@@ -528,6 +528,128 @@ func TestClaimHBDInterest_AccumulatedAvg(t *testing.T) {
 	assert.Equal(t, int64(75), records[0].Amount)
 }
 
+func TestClaimHBDInterest_TruncatesDown(t *testing.T) {
+	// Verify that both TWAB and distribution truncate (round down), not round up.
+	//
+	// Three accounts with balances chosen so that integer division produces remainders:
+	//   Alice: 1000 HBD_SAVINGS, full period (100 blocks)
+	//     TWAB = (0 + 1000*100) / 100 = 1000
+	//   Bob:   700 HBD_SAVINGS, full period
+	//     TWAB = (0 + 700*100) / 100 = 700
+	//   Carol: 300 HBD_SAVINGS, full period
+	//     TWAB = (0 + 300*100) / 100 = 300
+	//   totalAvg = 2000
+	//
+	// Distribute 100 units:
+	//   Alice: 1000 * 100 / 2000 = 50    (exact)
+	//   Bob:   700  * 100 / 2000 = 35    (exact)
+	//   Carol: 300  * 100 / 2000 = 15    (exact)
+	//   Total distributed = 100 (no dust)
+	//
+	// Now distribute 99 units (forces truncation):
+	//   Alice: 1000 * 99 / 2000 = 49     (49.5 truncated)
+	//   Bob:   700  * 99 / 2000 = 34     (34.65 truncated)
+	//   Carol: 300  * 99 / 2000 = 14     (14.85 truncated)
+	//   Total distributed = 97, dust = 2 (lost to truncation)
+
+	t.Run("distribution truncates fractional amounts", func(t *testing.T) {
+		ls, lDb, _ := newLedgerEnvWithClaims(map[string][]ledgerDb.BalanceRecord{
+			"hive:alice": {{
+				Account:           "hive:alice",
+				BlockHeight:       100,
+				HBD_SAVINGS:       1000,
+				HBD_AVG:           0,
+				HBD_CLAIM_HEIGHT:  100,
+				HBD_MODIFY_HEIGHT: 100,
+			}},
+			"hive:bob": {{
+				Account:           "hive:bob",
+				BlockHeight:       100,
+				HBD_SAVINGS:       700,
+				HBD_AVG:           0,
+				HBD_CLAIM_HEIGHT:  100,
+				HBD_MODIFY_HEIGHT: 100,
+			}},
+			"hive:carol": {{
+				Account:           "hive:carol",
+				BlockHeight:       100,
+				HBD_SAVINGS:       300,
+				HBD_AVG:           0,
+				HBD_CLAIM_HEIGHT:  100,
+				HBD_MODIFY_HEIGHT: 100,
+			}},
+		})
+
+		ls.ClaimHBDInterest(100, 200, 99)
+
+		aliceRecords := lDb.LedgerRecords["hive:alice"]
+		bobRecords := lDb.LedgerRecords["hive:bob"]
+		carolRecords := lDb.LedgerRecords["hive:carol"]
+		require.Len(t, aliceRecords, 1)
+		require.Len(t, bobRecords, 1)
+		require.Len(t, carolRecords, 1)
+
+		// Each amount must be the truncated (floored) value, not rounded
+		assert.Equal(t, int64(49), aliceRecords[0].Amount, "Alice: 1000*99/2000=49.5 should truncate to 49")
+		assert.Equal(t, int64(34), bobRecords[0].Amount, "Bob: 700*99/2000=34.65 should truncate to 34")
+		assert.Equal(t, int64(14), carolRecords[0].Amount, "Carol: 300*99/2000=14.85 should truncate to 14")
+
+		// Total distributed < total available (dust lost to truncation)
+		totalDistributed := aliceRecords[0].Amount + bobRecords[0].Amount + carolRecords[0].Amount
+		assert.Equal(t, int64(97), totalDistributed, "total distributed should be 97, not 99 — 2 units lost to truncation")
+		assert.Less(t, totalDistributed, int64(99), "total distributed must be <= interest amount")
+	})
+
+	t.Run("TWAB truncates fractional average", func(t *testing.T) {
+		// Alice: HBD_AVG=0, HBD_SAVINGS=100, staked at block 100.
+		// Claim at block 203, period started at 100.
+		// B = 203 - 100 = 103
+		// A = 203 - 100 = 103
+		// TWAB = (0 + 100*103) / 103 = 100 (exact, no truncation)
+		//
+		// Bob: HBD_AVG=0, HBD_SAVINGS=100, staked at block 101.
+		// B = 203 - 100 = 103
+		// A = 203 - 101 = 102
+		// TWAB = (0 + 100*102) / 103 = 10200/103 = 99 (99.03 truncated)
+		//
+		// totalAvg = 199
+		// Alice: 100 * 100 / 199 = 50 (50.25 truncated)
+		// Bob:    99 * 100 / 199 = 49 (49.74 truncated)
+		ls, lDb, _ := newLedgerEnvWithClaims(map[string][]ledgerDb.BalanceRecord{
+			"hive:alice": {{
+				Account:           "hive:alice",
+				BlockHeight:       100,
+				HBD_SAVINGS:       100,
+				HBD_AVG:           0,
+				HBD_CLAIM_HEIGHT:  100,
+				HBD_MODIFY_HEIGHT: 100,
+			}},
+			"hive:bob": {{
+				Account:           "hive:bob",
+				BlockHeight:       101,
+				HBD_SAVINGS:       100,
+				HBD_AVG:           0,
+				HBD_CLAIM_HEIGHT:  100,
+				HBD_MODIFY_HEIGHT: 101,
+			}},
+		})
+
+		ls.ClaimHBDInterest(100, 203, 100)
+
+		aliceRecords := lDb.LedgerRecords["hive:alice"]
+		bobRecords := lDb.LedgerRecords["hive:bob"]
+		require.Len(t, aliceRecords, 1)
+		require.Len(t, bobRecords, 1)
+
+		// Bob's TWAB is truncated from 99.03 to 99, giving Alice a slight edge
+		assert.Equal(t, int64(50), aliceRecords[0].Amount, "Alice: 100*100/199=50.25 should truncate to 50")
+		assert.Equal(t, int64(49), bobRecords[0].Amount, "Bob: 99*100/199=49.74 should truncate to 49")
+
+		totalDistributed := aliceRecords[0].Amount + bobRecords[0].Amount
+		assert.Equal(t, int64(99), totalDistributed, "1 unit lost to truncation")
+	})
+}
+
 func TestOplogIngest(t *testing.T) {
 	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
 		"hive:alice": {{
