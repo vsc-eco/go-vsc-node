@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ContractDeployOpts holds options for deploying a WASM contract.
@@ -25,8 +26,12 @@ type ContractDeployOpts struct {
 }
 
 // DeployContract deploys a WASM contract to the running devnet.
-// It uses the contract-deployer Docker service with the specified
-// node's identity for signing the Hive transaction.
+//
+// The contract-deployer binary needs P2P connectivity (for storage
+// proof collection) and opens a badger DB lock, so it can't run
+// alongside the magi node that owns the same data directory. We
+// briefly stop the deployer node, run the deployer using that node's
+// data dir, then restart the node.
 func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (string, error) {
 	if !d.started {
 		return "", fmt.Errorf("devnet not started")
@@ -43,6 +48,16 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 	if opts.GQLNode == 0 {
 		opts.GQLNode = 1
 	}
+	// GQL node must be different from deployer node since deployer
+	// node will be stopped during deployment.
+	if opts.GQLNode == opts.DeployerNode {
+		for i := 1; i <= d.cfg.Nodes; i++ {
+			if i != opts.DeployerNode {
+				opts.GQLNode = i
+				break
+			}
+		}
+	}
 
 	wasmPath, err := filepath.Abs(opts.WasmPath)
 	if err != nil {
@@ -54,9 +69,15 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 
 	wasmDir := filepath.Dir(wasmPath)
 	wasmFile := filepath.Base(wasmPath)
+	nodeName := fmt.Sprintf("magi-%d", opts.DeployerNode)
 
-	log.Printf("[devnet] deploying contract %q from %s (node %d)...",
-		opts.Name, wasmPath, opts.DeployerNode)
+	log.Printf("[devnet] deploying contract %q (stopping %s, using node %d for GQL)...",
+		opts.Name, nodeName, opts.GQLNode)
+
+	// Stop the deployer node to release the badger lock.
+	if err := d.compose(ctx, "stop", nodeName); err != nil {
+		return "", fmt.Errorf("stopping %s: %w", nodeName, err)
+	}
 
 	deployCmd := []string{
 		"./contract-deployer",
@@ -78,6 +99,14 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 	args = append(args, deployCmd...)
 
 	out, err := d.composeOutput(ctx, args...)
+
+	// Always restart the node, even if deploy failed.
+	if startErr := d.compose(ctx, "start", nodeName); startErr != nil {
+		log.Printf("[devnet] warning: failed to restart %s: %v", nodeName, startErr)
+	}
+	// Give the restarted node time to reconnect to peers.
+	time.Sleep(5 * time.Second)
+
 	if err != nil {
 		return "", fmt.Errorf("contract deployment failed: %w\noutput: %s", err, out)
 	}
