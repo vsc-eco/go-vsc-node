@@ -142,6 +142,10 @@ func (ic *MockInterestClaimsDb) SaveClaim(claim ledgerDb.ClaimRecord) {
 	ic.Claims = append(ic.Claims, claim)
 }
 
+func (ic *MockInterestClaimsDb) FindClaims(fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledgerDb.ClaimRecord, error) {
+	return make([]ledgerDb.ClaimRecord, 0), nil
+}
+
 type MockActionsDb struct {
 	aggregate.Plugin
 	Actions map[string]ledgerDb.ActionRecord

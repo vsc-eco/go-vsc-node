@@ -169,6 +169,16 @@ func (r *electionResultResolver) BlockHeight(ctx context.Context, obj *elections
 	return model.Uint64(obj.BlockHeight), nil
 }
 
+// BlockHeight is the resolver for the block_height field.
+func (r *ledgerClaimRecordResolver) BlockHeight(ctx context.Context, obj *ledgerDb.ClaimRecord) (model.Uint64, error) {
+	return model.Uint64(obj.BlockHeight), nil
+}
+
+// Amount is the resolver for the amount field.
+func (r *ledgerClaimRecordResolver) Amount(ctx context.Context, obj *ledgerDb.ClaimRecord) (model.Int64, error) {
+	return model.Int64(obj.Amount), nil
+}
+
 // Amount is the resolver for the amount field.
 func (r *ledgerRecordResolver) Amount(ctx context.Context, obj *ledgerDb.LedgerRecord) (model.Int64, error) {
 	return model.Int64(obj.Amount), nil
@@ -530,6 +540,18 @@ func (r *queryResolver) GetTssRequests(ctx context.Context, keyID string, msgHex
 	return r.TssRequests.FindRequests(keyID, msgHex)
 }
 
+// FindLedgerClaims is the resolver for the findLedgerClaims field.
+func (r *queryResolver) FindLedgerClaims(ctx context.Context, filterOptions *LedgerClaimFilter) ([]ledgerDb.ClaimRecord, error) {
+	if filterOptions == nil {
+		filterOptions = &LedgerClaimFilter{}
+	}
+	offset, limit, err := Paginate(filterOptions.Offset, filterOptions.Limit)
+	if err != nil {
+		return nil, err
+	}
+	return r.InterestClaims.FindClaims((*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
+}
+
 // FindTssCommitments is the resolver for the findTssCommitments field.
 func (r *queryResolver) FindTssCommitments(ctx context.Context, filterOptions *TssCommitmentFilter) ([]tss_db.TssCommitment, error) {
 	if filterOptions == nil {
@@ -874,6 +896,11 @@ func (r *Resolver) ContractOutput() ContractOutputResolver { return &contractOut
 // ElectionResult returns ElectionResultResolver implementation.
 func (r *Resolver) ElectionResult() ElectionResultResolver { return &electionResultResolver{r} }
 
+// LedgerClaimRecord returns LedgerClaimRecordResolver implementation.
+func (r *Resolver) LedgerClaimRecord() LedgerClaimRecordResolver {
+	return &ledgerClaimRecordResolver{r}
+}
+
 // LedgerRecord returns LedgerRecordResolver implementation.
 func (r *Resolver) LedgerRecord() LedgerRecordResolver { return &ledgerRecordResolver{r} }
 
@@ -919,6 +946,7 @@ type balanceRecordResolver struct{ *Resolver }
 type contractResolver struct{ *Resolver }
 type contractOutputResolver struct{ *Resolver }
 type electionResultResolver struct{ *Resolver }
+type ledgerClaimRecordResolver struct{ *Resolver }
 type ledgerRecordResolver struct{ *Resolver }
 type nonceRecordResolver struct{ *Resolver }
 type opLogEventResolver struct{ *Resolver }

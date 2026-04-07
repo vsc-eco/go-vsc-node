@@ -27,6 +27,7 @@ type InterestClaims interface {
 	aggregate.Plugin
 	GetLastClaim(blockHeight uint64) *ClaimRecord
 	SaveClaim(claimRecord ClaimRecord)
+	FindClaims(fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ClaimRecord, error)
 }
 
 type ClaimRecord struct {
@@ -37,7 +38,8 @@ type ClaimRecord struct {
 	//Numbers of accounts received interest
 	ReceivedN int `bson:"received_n"`
 	//Percent that was observed based on network averages
-	ObservedApr float64 `bson:"observed_apr"`
+	ObservedApr float64  `bson:"observed_apr"`
+	Timestamp   *string  `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
 }
 
 type BalanceRecord struct {

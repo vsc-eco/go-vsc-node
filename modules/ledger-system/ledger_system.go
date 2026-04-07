@@ -41,7 +41,7 @@ type ledgerSystem struct {
 	ActionsDb ledger_db.BridgeActions
 }
 
-func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64) {
+func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {
 	fmt.Println("ClaimHBDInterest", lastClaim, blockHeight, amount)
 	//Do distribution of HBD interest on an going forward basis
 	//Save to ledger DB the difference.
@@ -128,6 +128,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	ls.ClaimDb.SaveClaim(ledger_db.ClaimRecord{
 		BlockHeight: blockHeight,
 		Amount:      savedAmount,
+		TxId:        txId,
 		ReceivedN:   len(processedBalRecords),
 		ObservedApr: observedApr,
 	})
