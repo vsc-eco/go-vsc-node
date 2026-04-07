@@ -47,6 +47,16 @@ type Config struct {
 	// SysConfigOverrides, if non-nil, are written to a JSON file and
 	// passed to each magid node via -sysconfig flag.
 	SysConfigOverrides *systemconfig.SysConfigOverrides
+	// SkipFunding skips the price feed + TBD transfer step. Set to true
+	// for tests that don't need contract deployment funds (e.g., TSS tests).
+	SkipFunding bool
+	// OldCodeSourceDir is the path to an older version of the go-vsc-node
+	// repo. If set, nodes listed in OldCodeNodes are built from this source
+	// instead of SourceDir. Used for multi-version testing.
+	OldCodeSourceDir string
+	// OldCodeNodes lists which nodes (1-indexed) should run the old code
+	// image built from OldCodeSourceDir.
+	OldCodeNodes []int
 	// HafahImage is the Docker image for the hafah SQL installer.
 	HafahImage string
 	// PostgRESTImage is the Docker image for hafah-postgrest (PostgREST).

@@ -64,30 +64,42 @@ type TssParams struct {
 	RpcTimeout            time.Duration `json:"rpcTimeout,omitempty"`
 	CommitDelay           time.Duration `json:"commitDelay,omitempty"`
 	WaitForSigsTimeout    time.Duration `json:"waitForSigsTimeout,omitempty"`
+	RotateInterval        uint64        `json:"rotateInterval,omitempty"`
+	SignInterval           uint64        `json:"signInterval,omitempty"`
+	ReadinessOffset        uint64        `json:"readinessOffset,omitempty"`
+	PreParamsTimeout       time.Duration `json:"preParamsTimeout,omitempty"`
 }
 
 // MarshalJSON serializes TssParams with durations as human-readable
-// strings (e.g. "5s", "2m") using the json tags on TssParams itself.
+// strings (e.g. "5s", "2m") and uint64 fields as numbers.
 func (t TssParams) MarshalJSON() ([]byte, error) {
-	m := make(map[string]string)
+	m := make(map[string]interface{})
 	v := reflect.ValueOf(t)
 	rt := v.Type()
 	for i := 0; i < rt.NumField(); i++ {
 		tag := rt.Field(i).Tag.Get("json")
 		key, _, _ := strings.Cut(tag, ",")
-		dur := v.Field(i).Interface().(time.Duration)
-		if dur != 0 {
-			m[key] = dur.String()
+		field := v.Field(i)
+		switch field.Kind() {
+		case reflect.Int64: // time.Duration
+			dur := field.Interface().(time.Duration)
+			if dur != 0 {
+				m[key] = dur.String()
+			}
+		case reflect.Uint64:
+			val := field.Uint()
+			if val != 0 {
+				m[key] = val
+			}
 		}
 	}
 	return json.Marshal(m)
 }
 
 // UnmarshalJSON deserializes TssParams from a JSON object where
-// durations are human-readable strings. Only fields present in the
-// JSON are overwritten.
+// durations are human-readable strings and intervals are numbers.
 func (t *TssParams) UnmarshalJSON(data []byte) error {
-	var m map[string]string
+	var m map[string]json.RawMessage
 	if err := json.Unmarshal(data, &m); err != nil {
 		return err
 	}
@@ -96,15 +108,29 @@ func (t *TssParams) UnmarshalJSON(data []byte) error {
 	for i := 0; i < rt.NumField(); i++ {
 		tag := rt.Field(i).Tag.Get("json")
 		key, _, _ := strings.Cut(tag, ",")
-		s, ok := m[key]
-		if !ok || s == "" {
+		raw, ok := m[key]
+		if !ok {
 			continue
 		}
-		d, err := time.ParseDuration(s)
-		if err != nil {
-			return fmt.Errorf("field %s: %w", key, err)
+		field := v.Field(i)
+		switch field.Kind() {
+		case reflect.Int64: // time.Duration
+			var s string
+			if err := json.Unmarshal(raw, &s); err != nil {
+				return fmt.Errorf("field %s: expected duration string: %w", key, err)
+			}
+			d, err := time.ParseDuration(s)
+			if err != nil {
+				return fmt.Errorf("field %s: %w", key, err)
+			}
+			field.Set(reflect.ValueOf(d))
+		case reflect.Uint64:
+			var n uint64
+			if err := json.Unmarshal(raw, &n); err != nil {
+				return fmt.Errorf("field %s: expected number: %w", key, err)
+			}
+			field.SetUint(n)
 		}
-		v.Field(i).Set(reflect.ValueOf(d))
 	}
 	return nil
 }

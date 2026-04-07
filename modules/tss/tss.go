@@ -43,22 +43,47 @@ import (
 var log = vsclog.Module("tss")
 
 const (
-	TSS_SIGN_INTERVAL           = 50            // 50 L1 blocks
-	TSS_ROTATE_INTERVAL         = 20 * 5        // 5 minutes in L1 blocks
+	// Defaults for configurable intervals (overridable via sysconfig TssParams).
+	DEFAULT_SIGN_INTERVAL     = 50      // 50 L1 blocks
+	DEFAULT_ROTATE_INTERVAL   = 20 * 5  // 5 minutes in L1 blocks
+	DEFAULT_READINESS_OFFSET  = 30      // blocks before reshare to broadcast readiness
+
 	TSS_MESSAGE_RETRY_COUNT     = 3             // Number of retries for failed messages
 	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for bans
 	TSS_BAN_GRACE_PERIOD_EPOCHS = 3             // Epochs before new nodes can be banned (as int for comparison)
 	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
 	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
-
-	// READINESS_WINDOW_CLOSE_OFFSET is the number of blocks before a reshare
-	// trigger at which the on-chain readiness window closes. Readiness signals
-	// must be in a block at least this many blocks before the reshare block
-	// to guarantee all nodes (within the sync guard of 20 blocks) have
-	// processed them before RunActions fires.
-	// Must be > 20 (sync guard) to ensure determinism. 30 gives 10 blocks margin.
-	READINESS_WINDOW_CLOSE_OFFSET = 30
 )
+
+// getRotateInterval returns the TSS reshare interval from sysconfig, or the default.
+func getRotateInterval(sconf systemconfig.SystemConfig) uint64 {
+	if v := sconf.TssParams().RotateInterval; v > 0 {
+		return v
+	}
+	return DEFAULT_ROTATE_INTERVAL
+}
+
+// getSignInterval returns the TSS signing interval from sysconfig, or the default.
+func getSignInterval(sconf systemconfig.SystemConfig) uint64 {
+	if v := sconf.TssParams().SignInterval; v > 0 {
+		return v
+	}
+	return DEFAULT_SIGN_INTERVAL
+}
+
+// getReadinessOffset returns the readiness window offset from sysconfig, or the default.
+// Capped at rotateInterval - 5 to ensure the window fits within the cycle.
+func getReadinessOffset(sconf systemconfig.SystemConfig) uint64 {
+	offset := uint64(DEFAULT_READINESS_OFFSET)
+	if v := sconf.TssParams().ReadinessOffset; v > 0 {
+		offset = v
+	}
+	rotateInterval := getRotateInterval(sconf)
+	if offset >= rotateInterval-2 {
+		offset = rotateInterval / 2
+	}
+	return offset
+}
 
 type TssManager struct {
 	p2p    *libp2p.P2PServer
@@ -133,9 +158,16 @@ func (tssMgr *TssManager) GeneratePreParams() {
 	locked := tssMgr.preParamsLock.TryLock()
 	if locked {
 		if len(tssMgr.preParams) == 0 {
-			log.Info("need to generate preparams")
-			preParams, err := ecKeyGen.GeneratePreParams(time.Minute)
-			if err == nil {
+			timeout := tssMgr.sconf.TssParams().PreParamsTimeout
+			if timeout == 0 {
+				timeout = time.Minute
+			}
+			log.Info("need to generate preparams", "timeout", timeout)
+			preParams, err := ecKeyGen.GeneratePreParams(timeout)
+			if err != nil {
+				log.Error("preparams generation failed", "err", err)
+			} else {
+				log.Info("preparams generated successfully")
 				tssMgr.preParams <- *preParams
 			}
 		}
@@ -173,9 +205,10 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	// Broadcast on-chain readiness signal before the next reshare cycle.
 	// The signal lands on Hive, gets processed by StateEngine, and is read
 	// by RunActions at the reshare block to build deterministic party lists.
-	// Fires when we are within READINESS_WINDOW_CLOSE_OFFSET blocks of a reshare.
-	blocksUntilReshare := TSS_ROTATE_INTERVAL - (bh % TSS_ROTATE_INTERVAL)
-	if blocksUntilReshare <= READINESS_WINDOW_CLOSE_OFFSET && bh%TSS_ROTATE_INTERVAL != 0 {
+	rotateInterval := getRotateInterval(tssMgr.sconf)
+	readinessOffset := getReadinessOffset(tssMgr.sconf)
+	blocksUntilReshare := rotateInterval - (bh % rotateInterval)
+	if blocksUntilReshare <= readinessOffset && bh%rotateInterval != 0 {
 		nextReshareBlock := bh + blocksUntilReshare
 		selfAccount := tssMgr.config.Get().HiveUsername
 
@@ -260,7 +293,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 
 		keyLocks := make(map[string]bool)
 		generatedActions := make([]QueuedAction, 0)
-		if bh%TSS_ROTATE_INTERVAL == 0 {
+		if bh%rotateInterval == 0 {
 
 			electionData, err := tssMgr.electionDb.GetElectionByHeight(bh)
 			if err != nil || electionData.Members == nil {
@@ -290,7 +323,8 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				keyLocks[key.Id] = true
 			}
 		}
-		if bh%TSS_SIGN_INTERVAL == 0 {
+		signInterval := getSignInterval(tssMgr.sconf)
+		if bh%signInterval == 0 {
 			signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh)
 
 			for _, signReq := range signingRequests {
@@ -1180,15 +1214,16 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					// Do NOT schedule custom retries for reshare/keygen timeouts.
 					// Custom retries use the node's current block height for the session
 					// ID, which differs per node → nodes create incompatible sessions and
-					// messages never match. Instead, rely on the natural TSS_ROTATE_INTERVAL
-					// cycle (every 100 blocks / ~5 min). The next bh%100==0 boundary will
-					// trigger a fresh reshare with a deterministic session ID that all
-					// nodes agree on. FindEpochKeys() will return the key again because
-					// no commitment was recorded for the failed attempt.
+					// messages never match. Instead, rely on the natural rotate interval
+					// cycle. The next bh%rotateInterval==0 boundary will trigger a fresh
+					// reshare with a deterministic session ID that all nodes agree on.
+					// FindEpochKeys() will return the key again because no commitment
+					// was recorded for the failed attempt.
+					ri := getRotateInterval(tssMgr.sconf)
 					if dsc.KeyId() != "" {
 						log.Info("reshare/keygen timeout, will retry at next rotate interval",
 							"sessionId", dsc.SessionId(), "keyId", dsc.KeyId(),
-							"nextRetryIn", fmt.Sprintf("~%d blocks", TSS_ROTATE_INTERVAL-(bh%TSS_ROTATE_INTERVAL)))
+							"nextRetryIn", fmt.Sprintf("~%d blocks", ri-(bh%ri)))
 					}
 				}
 			}(dsc)

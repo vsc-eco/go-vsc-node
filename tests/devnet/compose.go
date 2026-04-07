@@ -56,6 +56,22 @@ func writeSysConfigOverrides(cfg *Config, devnetDir string) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
+// isOldCodeNode returns true if the given node number is in the
+// OldCodeNodes list.
+func isOldCodeNode(cfg *Config, node int) bool {
+	for _, n := range cfg.OldCodeNodes {
+		if n == node {
+			return true
+		}
+	}
+	return false
+}
+
+// oldCodeImageTag returns the Docker image tag used for old-code nodes.
+func oldCodeImageTag(cfg *Config) string {
+	return "devnet-old-code:latest"
+}
+
 // writeNodesOverride generates a docker-compose override file that
 // defines the magi-1 … magi-N node services. This is the only
 // generated YAML — everything else lives in the static compose file.
@@ -63,6 +79,10 @@ func writeSysConfigOverrides(cfg *Config, devnetDir string) error {
 // Each node gets NET_ADMIN capability for iptables-based network
 // partition testing. If cfg.SysConfigOverrides is set, a sysconfig.json
 // file is written and passed to each magid node via -sysconfig flag.
+//
+// Nodes listed in cfg.OldCodeNodes use a pre-built image instead of
+// building from source, and do not receive the -sysconfig flag (old
+// code does not support it).
 func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
 	var b strings.Builder
 
@@ -70,21 +90,30 @@ func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
 	for i := 1; i <= cfg.Nodes; i++ {
 		gqlPort := cfg.GQLBasePort + i - 1
 		p2pPort := cfg.P2PBasePort + i - 1
+		isOld := isOldCodeNode(cfg, i)
 
-		// Build the magid command, optionally including sysconfig path.
+		// Build the magid command. Old-code nodes don't get -sysconfig
+		// because the old binary doesn't support the flag.
 		cmd := fmt.Sprintf(
 			`"./magid", "-network", "devnet", "-data-dir", "/data/devnet/data-%d", "-log-level", "%s"`,
 			i, cfg.LogLevel,
 		)
-		if cfg.SysConfigOverrides != nil {
+		if cfg.SysConfigOverrides != nil && !isOld {
 			cmd += `, "-sysconfig", "/data/devnet/sysconfig.json"`
+		}
+
+		// Image source: pre-built image for old-code nodes, build from
+		// source for new-code nodes.
+		var imageLine string
+		if isOld {
+			imageLine = fmt.Sprintf("    image: %s", oldCodeImageTag(cfg))
+		} else {
+			imageLine = fmt.Sprintf("    build:\n      context: %s\n      dockerfile: tests/devnet/Dockerfile.devnet", cfg.SourceDir)
 		}
 
 		fmt.Fprintf(&b, `
   magi-%[1]d:
-    build:
-      context: %[2]s
-      dockerfile: tests/devnet/Dockerfile.devnet
+%[2]s
     depends_on:
       db:
         condition: service_healthy
@@ -101,7 +130,7 @@ func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
       - "%[5]d:%[5]d/udp"
     volumes:
       - %[6]s:/data/devnet
-`, i, cfg.SourceDir, cmd, gqlPort, p2pPort, devnetDir)
+`, i, imageLine, cmd, gqlPort, p2pPort, devnetDir)
 	}
 
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)

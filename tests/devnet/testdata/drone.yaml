@@ -8,6 +8,7 @@ drone:
   hostname: 0.0.0.0
   cache_max_capacity: 0
   middleware_connection_threads: 4
+  operator_message: "devnet"
   add_cors_headers: false
   access_log_format: simple
   access_log_file: ""
@@ -18,6 +19,9 @@ drone:
 backends:
   hived: http://haf:8091
   hafah: http://hafah-postgrest:3000
+
+translate_to_appbase:
+  - hived
 
 urls:
   bridge: hived
@@ -59,3 +63,7 @@ timeouts:
   appbase.condenser_api.broadcast_block: 0
   appbase.condenser_api.broadcast_transaction: 0
   appbase.condenser_api.broadcast_transaction_synchronous: 0
+
+equivalent_methods:
+  block_api.get_block:
+    - appbase.condenser_api.get_block

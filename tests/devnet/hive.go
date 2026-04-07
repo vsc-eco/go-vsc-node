@@ -18,6 +18,7 @@ func createHAFDataDirs(hafDataDir string) error {
 		"haf_db_store/pgdata/pg_wal",
 		"haf_db_store/tablespace",
 		"haf_db_store/haf_postgresql_conf.d",
+		"haf_postgresql_conf.d",
 		"logs/postgresql",
 	}
 	for _, d := range dirs {
@@ -41,8 +42,17 @@ func createHAFDataDirs(hafDataDir string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(
+	// Write pgtune.conf to BOTH locations — the PostgreSQL include_dir
+	// points to /home/hived/datadir/haf_postgresql_conf.d (directly under
+	// the datadir mount), not under haf_db_store/.
+	if err := os.WriteFile(
 		filepath.Join(hafDataDir, "haf_db_store", "haf_postgresql_conf.d", "pgtune.conf"),
+		pgtune, 0o644,
+	); err != nil {
+		return err
+	}
+	return os.WriteFile(
+		filepath.Join(hafDataDir, "haf_postgresql_conf.d", "pgtune.conf"),
 		pgtune, 0o644,
 	)
 }
