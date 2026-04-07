@@ -1311,6 +1311,23 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	//log.Debug("stBlock, endBlock", stBlock, endBlock)
 	distinctAccounts, _ := se.LedgerState.LedgerDb.GetDistinctAccountsRange(stBlock, endBlock)
 
+	//Ensure system:fr_balance is always processed so its hbd_claim stays current.
+	//Its interest goes to hive:vsc.dao, so it never appears in distinctAccounts via
+	//interest ledger records, but it still needs claim-height updates for correct TWAB.
+	hasFr := false
+	for _, a := range distinctAccounts {
+		if a == params.FR_VIRTUAL_ACCOUNT {
+			hasFr = true
+			break
+		}
+	}
+	if !hasFr {
+		frBal, _ := se.LedgerState.BalanceDb.GetBalanceRecord(params.FR_VIRTUAL_ACCOUNT, endBlock)
+		if frBal != nil {
+			distinctAccounts = append(distinctAccounts, params.FR_VIRTUAL_ACCOUNT)
+		}
+	}
+
 	assets := []string{"hbd", "hive", "hbd_savings", "hive_consensus"}
 
 	//Cleanup!
@@ -1341,17 +1358,10 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		ledgerUpdates, _ := se.LedgerState.LedgerDb.GetLedgerRange(k, stHeight, endBlock, "")
 
-		if len(*ledgerUpdates) == 0 {
-			continue
-		}
-
-		for _, v := range *ledgerUpdates {
-			ledgerBalances[v.Asset] += v.Amount
-		}
+		hasLedgerUpdates := len(*ledgerUpdates) > 0
 
 		//Previous claim record
 		claimRecord := se.claimDb.GetLastClaim(endBlock)
-		// var lastClaim = int64(1)
 
 		var hbdAvg = int64(0)
 		var modifyHeight = uint64(0)
@@ -1364,7 +1374,18 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			modifyHeight = endBlock
 		}
 
-		if claimRecordC.BlockHeight != balanceR.HBD_CLAIM_HEIGHT {
+		needsClaimUpdate := claimRecordC.BlockHeight != balanceR.HBD_CLAIM_HEIGHT
+
+		//Skip accounts that have no new ledger records AND no pending claim update
+		if !hasLedgerUpdates && !needsClaimUpdate {
+			continue
+		}
+
+		for _, v := range *ledgerUpdates {
+			ledgerBalances[v.Asset] += v.Amount
+		}
+
+		if needsClaimUpdate {
 			//Need to execute recalculation of the claim
 			hbdAvg = 0
 			claimHeight = claimRecord.BlockHeight
@@ -1375,6 +1396,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			A := endBlock - prevBalRecord.HBD_MODIFY_HEIGHT
 			hbdAvg = prevBalRecord.HBD_AVG + prevBalRecord.HBD_SAVINGS*int64(A)
 			modifyHeight = endBlock
+			claimHeight = prevBalRecord.HBD_CLAIM_HEIGHT
 		} else {
 			modifyHeight = endBlock
 			hbdAvg = 0
