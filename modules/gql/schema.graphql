@@ -628,6 +628,38 @@ input ContractOutputFilter {
 }
 
 """
+A ledger claim record representing an HBD interest claim event.
+"""
+type LedgerClaimRecord {
+  """Hive block height at which the claim occurred."""
+  block_height: Uint64!
+  """Amount of HBD interest claimed in smallest unit."""
+  amount: Int64!
+  """Transaction ID of the claim."""
+  tx_id: String!
+  """Number of accounts that received interest in this claim."""
+  received_n: Int!
+  """Observed APR percentage based on network averages."""
+  observed_apr: Float!
+  """Timestamp of the claim."""
+  timestamp: String!
+}
+
+"""
+Filter options for querying ledger claim records.
+"""
+input LedgerClaimFilter {
+  """Include only records from this block height onwards."""
+  fromBlock: Uint64
+  """Include only records up to this block height."""
+  toBlock: Uint64
+  """Number of records to skip (for pagination)."""
+  offset: Int
+  """Maximum number of records to return (for pagination)."""
+  limit: Int
+}
+
+"""
 Filter options for querying TSS commitments.
 """
 input TssCommitmentFilter {
@@ -880,6 +912,14 @@ type Query {
     """Optional list of hex-encoded message hashes to filter by."""
     msgHex: [String!]
   ): [TssRequest!]
+
+  """
+  Search for ledger claim records (HBD interest claims) matching the given filter criteria.
+  """
+  findLedgerClaims(
+    """Filter criteria for the ledger claim search."""
+    filterOptions: LedgerClaimFilter
+  ): [LedgerClaimRecord!]
 
   """
   Search for verified TSS commitments, optionally filtered by key ID, commitment types, epoch, or block height range.

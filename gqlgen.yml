@@ -58,5 +58,8 @@ models:
   OpLogEvent:
     model:
       - vsc-node/modules/ledger-system.OpLogEvent
+  LedgerClaimRecord:
+    model:
+      - vsc-node/modules/db/vsc/ledger.ClaimRecord
 
 call_argument_directives_with_null: true

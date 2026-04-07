@@ -121,7 +121,7 @@ type LedgerSession interface {
 
 type LedgerSystem interface {
 	GetBalance(account string, blockHeight uint64, asset string) int64
-	ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64)
+	ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string)
 	IndexActions(actionUpdate map[string]interface{}, extraInfo ExtraInfo)
 	Deposit(deposit Deposit) string
 	IngestOplog(oplog []OpLogEvent, options OplogInjestOptions)

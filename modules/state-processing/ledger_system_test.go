@@ -328,7 +328,7 @@ func TestClaimHBDInterest_SingleAccount_ConstantBalance(t *testing.T) {
 		}},
 	})
 
-	ls.ClaimHBDInterest(100, 200, 50)
+	ls.ClaimHBDInterest(100, 200, 50, "")
 
 	// Alice should receive all 50 interest
 	records := lDb.LedgerRecords["hive:alice"]
@@ -365,7 +365,7 @@ func TestClaimHBDInterest_TwoAccounts_EqualBalances(t *testing.T) {
 		}},
 	})
 
-	ls.ClaimHBDInterest(100, 200, 100)
+	ls.ClaimHBDInterest(100, 200, 100, "")
 
 	aliceRecords := lDb.LedgerRecords["hive:alice"]
 	bobRecords := lDb.LedgerRecords["hive:bob"]
@@ -396,7 +396,7 @@ func TestClaimHBDInterest_TwoAccounts_DifferentBalances(t *testing.T) {
 		}},
 	})
 
-	ls.ClaimHBDInterest(100, 200, 100)
+	ls.ClaimHBDInterest(100, 200, 100, "")
 
 	aliceRecords := lDb.LedgerRecords["hive:alice"]
 	bobRecords := lDb.LedgerRecords["hive:bob"]
@@ -435,7 +435,7 @@ func TestClaimHBDInterest_MidPeriodStake(t *testing.T) {
 		}},
 	})
 
-	ls.ClaimHBDInterest(100, 200, 120)
+	ls.ClaimHBDInterest(100, 200, 120, "")
 
 	aliceRecords := lDb.LedgerRecords["hive:alice"]
 	bobRecords := lDb.LedgerRecords["hive:bob"]
@@ -460,7 +460,7 @@ func TestClaimHBDInterest_DivisionByZero(t *testing.T) {
 
 	// Should not panic
 	require.NotPanics(t, func() {
-		ls.ClaimHBDInterest(200, 200, 50)
+		ls.ClaimHBDInterest(200, 200, 50, "")
 	})
 
 	// No interest should be distributed
@@ -492,7 +492,7 @@ func TestClaimHBDInterest_ZeroSavings(t *testing.T) {
 		}},
 	})
 
-	ls.ClaimHBDInterest(100, 200, 50)
+	ls.ClaimHBDInterest(100, 200, 50, "")
 
 	// Alice gets everything, Bob gets nothing
 	aliceRecords := lDb.LedgerRecords["hive:alice"]
@@ -520,7 +520,7 @@ func TestClaimHBDInterest_AccumulatedAvg(t *testing.T) {
 		}},
 	})
 
-	ls.ClaimHBDInterest(100, 200, 75)
+	ls.ClaimHBDInterest(100, 200, 75, "")
 
 	// Single account → gets 100% of interest
 	records := lDb.LedgerRecords["hive:alice"]
@@ -580,7 +580,7 @@ func TestClaimHBDInterest_TruncatesDown(t *testing.T) {
 			}},
 		})
 
-		ls.ClaimHBDInterest(100, 200, 99)
+		ls.ClaimHBDInterest(100, 200, 99, "")
 
 		aliceRecords := lDb.LedgerRecords["hive:alice"]
 		bobRecords := lDb.LedgerRecords["hive:bob"]
@@ -634,7 +634,7 @@ func TestClaimHBDInterest_TruncatesDown(t *testing.T) {
 			}},
 		})
 
-		ls.ClaimHBDInterest(100, 203, 100)
+		ls.ClaimHBDInterest(100, 203, 100, "")
 
 		aliceRecords := lDb.LedgerRecords["hive:alice"]
 		bobRecords := lDb.LedgerRecords["hive:bob"]

@@ -25,6 +25,7 @@ type Resolver struct {
 	Balances       ledgerDb.Balances
 	Ledger         ledgerDb.Ledger
 	Actions        ledgerDb.BridgeActions
+	InterestClaims ledgerDb.InterestClaims
 	Elections      elections.Elections
 	Transactions   transactions.Transactions
 	Nonces         nonces.Nonces
