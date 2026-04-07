@@ -1,11 +1,14 @@
+---
 # Drone config for devnet integration tests.
+# Derived from haf_api_node/drone/config.yaml reference config.
 # Two backends: hived (via HAF) and hafah (via PostgREST).
-# No hivemind — social API methods fall through to hived.
+# No hivemind — social API methods omitted.
 # Caching disabled for test determinism.
 
 drone:
   port: 9000
   hostname: 0.0.0.0
+  operator_message: ""
   cache_max_capacity: 0
   middleware_connection_threads: 4
   add_cors_headers: false
@@ -19,9 +22,10 @@ backends:
   hived: http://haf:8091
   hafah: http://hafah-postgrest:3000
 
+translate_to_appbase:
+  - hived
+
 urls:
-  bridge: hived
-  hive: hived
   hived: hived
   appbase: hived
   appbase.network_broadcast_api: hived
@@ -46,12 +50,8 @@ urls:
 ttls:
   hived: 0
   appbase: 0
-  bridge: 0
-  hive: 0
 
 timeouts:
-  bridge: 30
-  hive: 30
   hived: 5
   hived.network_broadcast_api: 0
   appbase: 3
@@ -59,3 +59,7 @@ timeouts:
   appbase.condenser_api.broadcast_block: 0
   appbase.condenser_api.broadcast_transaction: 0
   appbase.condenser_api.broadcast_transaction_synchronous: 0
+
+equivalent_methods:
+  destination_api.destination_method:
+    - appbase.source_api.source_method

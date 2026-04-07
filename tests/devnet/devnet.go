@@ -107,7 +107,7 @@ func (d *Devnet) Start(ctx context.Context) error {
 		return fmt.Errorf("writing sysconfig overrides: %w", err)
 	}
 	log.Printf("[devnet] writing %s", d.overrideFile)
-	if err := writeNodesOverride(d.cfg, d.devnetDir, d.overrideFile); err != nil {
+	if err := writeNodesOverride(d.cfg, d.devnetDir, d.projectName, d.overrideFile); err != nil {
 		return fmt.Errorf("writing nodes override: %w", err)
 	}
 
@@ -134,13 +134,8 @@ func (d *Devnet) Start(ctx context.Context) error {
 	}
 	log.Printf("[devnet] HAF is healthy")
 
-	// Step 5: devnet-setup (writes node configs with drone as Hive API URL)
-	log.Printf("[devnet] running devnet-setup...")
-	if err := d.compose(ctx, "run", "--rm", "devnet-setup"); err != nil {
-		return fmt.Errorf("devnet-setup: %w", err)
-	}
-
-	// Step 6: start hafah API stack (hafah-install → pgbouncer → hafah-postgrest → drone)
+	// Step 5: start hafah API stack (hafah-install → pgbouncer → hafah-postgrest → drone)
+	// Must come before devnet-setup because devnet-setup broadcasts via drone.
 	log.Printf("[devnet] starting hafah API stack (hafah-install, pgbouncer, hafah-postgrest, drone)...")
 	if err := d.compose(ctx, "up", "-d", "drone"); err != nil {
 		return fmt.Errorf("starting hafah stack: %w", err)
@@ -150,6 +145,12 @@ func (d *Devnet) Start(ctx context.Context) error {
 		return fmt.Errorf("drone health check: %w", err)
 	}
 	log.Printf("[devnet] hafah API stack is ready")
+
+	// Step 6: devnet-setup (creates accounts, node configs — talks to drone)
+	log.Printf("[devnet] running devnet-setup...")
+	if err := d.compose(ctx, "run", "--rm", "devnet-setup"); err != nil {
+		return fmt.Errorf("devnet-setup: %w", err)
+	}
 
 	log.Printf("[devnet] starting %d magi nodes...", d.cfg.Nodes)
 	names := make([]string, d.cfg.Nodes)
@@ -181,7 +182,7 @@ func (d *Devnet) Start(ctx context.Context) error {
 		return fmt.Errorf("restarting genesis node: %w", err)
 	}
 
-	// Step 8: fund accounts for contract deployment
+	// Step 8: fund witness accounts with TBD + TESTS from initminer
 	if err := d.fundAccounts(); err != nil {
 		return fmt.Errorf("funding accounts: %w", err)
 	}
@@ -214,18 +215,25 @@ func (d *Devnet) Stop() error {
 		log.Printf("[devnet] warning: compose down failed: %v", err)
 	}
 
-	// The HAF container runs as a different uid (postgres, hived) so
-	// some files under haf-data/ will be owned by those uids.  Use
-	// sudo rm to clean them up.
+	// The HAF container creates files owned by postgres/hived uids.
+	// Use a throwaway container to rm as root instead of requiring
+	// sudo on the host.
 	if d.cfg.DataDir == "" {
-		cmd := exec.Command("sudo", "rm", "-rf", d.dataDir)
-		if err := cmd.Run(); err != nil {
-			// Fall back to regular rm (works if no root-owned files remain)
-			if err2 := os.RemoveAll(d.dataDir); err2 != nil {
-				log.Printf("[devnet] warning: failed to remove %s: %v", d.dataDir, err2)
-			}
-		}
+		exec.Command("docker", "run", "--rm",
+			"-v", d.dataDir+":/cleanup",
+			"alpine", "rm", "-rf", "/cleanup").Run()
+		os.RemoveAll(d.dataDir) // remove the now-empty dir itself
 	}
+
+	// Prune images and build cache from this project to prevent disk
+	// exhaustion across test runs.  The build cache is the main offender
+	// (~5-10 GB per full build).
+	log.Printf("[devnet] pruning docker resources...")
+	pruneCmd := exec.Command("docker", "system", "prune", "-af",
+		"--filter", "label=com.docker.compose.project="+d.projectName)
+	pruneCmd.Run() // best-effort
+	// Also prune dangling build cache (not project-scoped).
+	exec.Command("docker", "builder", "prune", "-af", "--keep-storage=5gb").Run()
 
 	d.started = false
 	log.Printf("[devnet] stopped")
@@ -297,7 +305,8 @@ func (d *Devnet) composeOutput(ctx context.Context, args ...string) (string, err
 }
 
 // waitForService polls a docker compose service until its healthcheck
-// reports "healthy" or the timeout expires.
+// reports "healthy" or the timeout expires.  If the container exits
+// before becoming healthy, the wait fails immediately.
 func (d *Devnet) waitForService(ctx context.Context, service string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -307,9 +316,23 @@ func (d *Devnet) waitForService(ctx context.Context, service string, timeout tim
 				service, timeout, truncateLogs(logs, 50))
 		}
 
-		out, err := d.composeOutput(ctx, "ps", "--format", "{{.Health}}", service)
-		if err == nil && strings.TrimSpace(out) == "healthy" {
-			return nil
+		out, err := d.composeOutput(ctx, "ps", "--format", "{{.Health}}|{{.State}}", service)
+		if err == nil {
+			line := strings.TrimSpace(out)
+			parts := strings.SplitN(line, "|", 2)
+			health := parts[0]
+			state := ""
+			if len(parts) > 1 {
+				state = parts[1]
+			}
+			if health == "healthy" {
+				return nil
+			}
+			if state == "exited" || state == "dead" {
+				logs, _ := d.Logs(ctx, service)
+				return fmt.Errorf("service %q exited before becoming healthy\nlast logs:\n%s",
+					service, truncateLogs(logs, 50))
+			}
 		}
 
 		select {
