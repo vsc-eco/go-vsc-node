@@ -89,9 +89,12 @@ func (d *Devnet) Start(ctx context.Context) error {
 	if err := createHAFDataDirs(d.hafDataDir); err != nil {
 		return fmt.Errorf("creating HAF data dirs: %w", err)
 	}
-	if err := os.MkdirAll(d.devnetDir, 0o755); err != nil {
+	if err := os.MkdirAll(d.devnetDir, 0o777); err != nil {
 		return fmt.Errorf("creating devnet dir: %w", err)
 	}
+	// Ensure the devnet data dir is world-writable so the container's
+	// app user (uid != host uid) can create node data directories.
+	os.Chmod(d.devnetDir, 0o777)
 
 	// Step 2: write drone config, .env, and nodes override
 	log.Printf("[devnet] writing drone config...")
@@ -111,7 +114,15 @@ func (d *Devnet) Start(ctx context.Context) error {
 		return fmt.Errorf("writing nodes override: %w", err)
 	}
 
-	// Step 3: build image
+	// Step 3a: build old-code image if multi-version testing is configured
+	if d.cfg.OldCodeSourceDir != "" && len(d.cfg.OldCodeNodes) > 0 {
+		log.Printf("[devnet] building old-code image...")
+		if err := d.BuildOldCodeImage(ctx); err != nil {
+			return fmt.Errorf("building old-code image: %w", err)
+		}
+	}
+
+	// Step 3b: build image
 	log.Printf("[devnet] building devnet image (this may take a while)...")
 	if err := d.compose(ctx, "build"); err != nil {
 		return fmt.Errorf("building image: %w", err)
@@ -134,13 +145,8 @@ func (d *Devnet) Start(ctx context.Context) error {
 	}
 	log.Printf("[devnet] HAF is healthy")
 
-	// Step 5: devnet-setup (writes node configs with drone as Hive API URL)
-	log.Printf("[devnet] running devnet-setup...")
-	if err := d.compose(ctx, "run", "--rm", "devnet-setup"); err != nil {
-		return fmt.Errorf("devnet-setup: %w", err)
-	}
-
-	// Step 6: start hafah API stack (hafah-install → pgbouncer → hafah-postgrest → drone)
+	// Step 5: start hafah API stack (hafah-install → pgbouncer → hafah-postgrest → drone)
+	// Drone must be running before devnet-setup, which uses it as the Hive API.
 	log.Printf("[devnet] starting hafah API stack (hafah-install, pgbouncer, hafah-postgrest, drone)...")
 	if err := d.compose(ctx, "up", "-d", "drone"); err != nil {
 		return fmt.Errorf("starting hafah stack: %w", err)
@@ -150,6 +156,12 @@ func (d *Devnet) Start(ctx context.Context) error {
 		return fmt.Errorf("drone health check: %w", err)
 	}
 	log.Printf("[devnet] hafah API stack is ready")
+
+	// Step 6: devnet-setup (writes node configs with drone as Hive API URL)
+	log.Printf("[devnet] running devnet-setup...")
+	if err := d.compose(ctx, "run", "--rm", "devnet-setup"); err != nil {
+		return fmt.Errorf("devnet-setup: %w", err)
+	}
 
 	log.Printf("[devnet] starting %d magi nodes...", d.cfg.Nodes)
 	names := make([]string, d.cfg.Nodes)
@@ -181,9 +193,13 @@ func (d *Devnet) Start(ctx context.Context) error {
 		return fmt.Errorf("restarting genesis node: %w", err)
 	}
 
-	// Step 8: fund accounts for contract deployment
-	if err := d.fundAccounts(); err != nil {
-		return fmt.Errorf("funding accounts: %w", err)
+	// Step 8: fund accounts for contract deployment (optional)
+	if !d.cfg.SkipFunding {
+		if err := d.fundAccounts(); err != nil {
+			return fmt.Errorf("funding accounts: %w", err)
+		}
+	} else {
+		log.Printf("[devnet] skipping account funding (SkipFunding=true)")
 	}
 
 	d.started = true
@@ -265,6 +281,81 @@ func (d *Devnet) DataDir() string {
 // ComposeFile returns the path to docker-compose.yml.
 func (d *Devnet) ComposeFile() string {
 	return d.composeFile
+}
+
+// StopNode stops a single magi node container (1-indexed).
+func (d *Devnet) StopNode(ctx context.Context, node int) error {
+	name := fmt.Sprintf("magi-%d", node)
+	log.Printf("[devnet] stopping %s", name)
+	return d.compose(ctx, "stop", name)
+}
+
+// StartNode starts a previously stopped magi node container (1-indexed).
+func (d *Devnet) StartNode(ctx context.Context, node int) error {
+	name := fmt.Sprintf("magi-%d", node)
+	log.Printf("[devnet] starting %s", name)
+	return d.compose(ctx, "start", name)
+}
+
+// BuildOldCodeImage builds a Docker image from the old code source
+// directory. It writes a temporary Dockerfile that:
+//  1. Runs gqlgen generate (required by older code)
+//  2. Builds the magid binary
+//  3. Includes iptables for partition testing
+//
+// The image is tagged so it can be referenced by old-code node entries
+// in the compose file.
+func (d *Devnet) BuildOldCodeImage(ctx context.Context) error {
+	if d.cfg.OldCodeSourceDir == "" {
+		return fmt.Errorf("OldCodeSourceDir not set")
+	}
+
+	tag := oldCodeImageTag(d.cfg)
+
+	// Write a Dockerfile tailored for the old code into the old source dir.
+	dockerfile := filepath.Join(d.cfg.OldCodeSourceDir, "Dockerfile.devnet-old")
+	content := `# syntax=docker/dockerfile:1
+FROM golang:1.24.1 AS build
+RUN apt update && apt install -y git python3
+RUN useradd -m app
+USER app
+WORKDIR /home/app/app
+RUN curl -sSf https://raw.githubusercontent.com/WasmEdge/WasmEdge/master/utils/install.sh | bash -s -- -v 0.13.4
+COPY go.mod go.sum ./
+RUN go mod download
+COPY --chown=app:app . .
+RUN . /home/app/.wasmedge/env && \
+    go run github.com/99designs/gqlgen generate && \
+    go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o magid vsc-node/cmd/vsc-node
+
+FROM rockylinux:9.3-minimal
+RUN microdnf install -y iptables && microdnf clean all
+RUN useradd -m app
+RUN mkdir -p /data/mapping-bot /data/devnet && chown app:app /data/mapping-bot /data/devnet
+USER app
+WORKDIR /home/app/app
+COPY --from=build /home/app/app/magid .
+COPY --from=build /home/app/.wasmedge /home/app/.wasmedge
+ENV LD_LIBRARY_PATH=/home/app/.wasmedge/lib
+ENV PATH=/home/app/.wasmedge/bin:$PATH
+RUN printf '#!/bin/sh\n. /home/app/.wasmedge/env\nexec "$@"\n' > /home/app/app/entrypoint.sh && \
+    chmod +x /home/app/app/entrypoint.sh
+ENTRYPOINT ["/home/app/app/entrypoint.sh"]
+`
+	if err := os.WriteFile(dockerfile, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("writing old-code Dockerfile: %w", err)
+	}
+	defer os.Remove(dockerfile)
+
+	log.Printf("[devnet] building old-code image %s from %s", tag, d.cfg.OldCodeSourceDir)
+	cmd := exec.CommandContext(ctx, "docker", "build",
+		"-t", tag,
+		"-f", dockerfile,
+		d.cfg.OldCodeSourceDir,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // Logs returns the docker compose logs for a service.

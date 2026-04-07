@@ -92,3 +92,10 @@ func (r rawOperation) OpName() string {
 func (r rawOperation) SerializeOp() ([]byte, error) {
 	return json.Marshal(r.data)
 }
+
+// MarshalJSON ensures the operation's data map is serialized when
+// hivego builds the JSON-RPC broadcast payload. Without this,
+// rawOperation's unexported fields produce an empty object.
+func (r rawOperation) MarshalJSON() ([]byte, error) {
+	return json.Marshal(r.data)
+}
