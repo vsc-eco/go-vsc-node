@@ -222,7 +222,7 @@ func TestNodesOverride(t *testing.T) {
 	devnetDir := filepath.Join(tmpDir, "devnet")
 	outPath := filepath.Join(tmpDir, "nodes.yml")
 
-	if err := writeNodesOverride(cfg, devnetDir, outPath); err != nil {
+	if err := writeNodesOverride(cfg, devnetDir, "test-project", outPath); err != nil {
 		t.Fatalf("writeNodesOverride: %v", err)
 	}
 

@@ -83,7 +83,7 @@ func oldCodeImageTag(cfg *Config) string {
 // Nodes listed in cfg.OldCodeNodes use a pre-built image instead of
 // building from source, and do not receive the -sysconfig flag (old
 // code does not support it).
-func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
+func writeNodesOverride(cfg *Config, devnetDir, projectName, outputPath string) error {
 	var b strings.Builder
 
 	b.WriteString("services:\n")
@@ -121,7 +121,7 @@ func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
       - devnet
     cap_add:
       - NET_ADMIN
-    container_name: magi-%[1]d
+    container_name: %[7]s-magi-%[1]d
     hostname: magi-%[1]d
     command: [%[3]s]
     ports:
@@ -130,7 +130,7 @@ func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
       - "%[5]d:%[5]d/udp"
     volumes:
       - %[6]s:/data/devnet
-`, i, imageLine, cmd, gqlPort, p2pPort, devnetDir)
+`, i, imageLine, cmd, gqlPort, p2pPort, devnetDir, projectName)
 	}
 
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)
