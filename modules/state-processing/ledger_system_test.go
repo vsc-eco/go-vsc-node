@@ -650,6 +650,44 @@ func TestClaimHBDInterest_TruncatesDown(t *testing.T) {
 	})
 }
 
+func TestClaimHBDInterest_FrBalanceInterestGoesToDao(t *testing.T) {
+	// system:fr_balance's interest should be redirected to hive:vsc.dao (DAO_WALLET).
+	// Both accounts should receive proportional interest based on their TWAB.
+	ls, lDb, _ := newLedgerEnvWithClaims(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:           "hive:alice",
+			BlockHeight:       100,
+			HBD_SAVINGS:       1000,
+			HBD_AVG:           0,
+			HBD_CLAIM_HEIGHT:  100,
+			HBD_MODIFY_HEIGHT: 100,
+		}},
+		"system:fr_balance": {{
+			Account:           "system:fr_balance",
+			BlockHeight:       100,
+			HBD_SAVINGS:       3000,
+			HBD_AVG:           0,
+			HBD_CLAIM_HEIGHT:  100,
+			HBD_MODIFY_HEIGHT: 100,
+		}},
+	})
+
+	ls.ClaimHBDInterest(100, 200, 100, "")
+
+	// Alice gets 25% (TWAB 1000 out of 4000 total)
+	aliceRecords := lDb.LedgerRecords["hive:alice"]
+	require.Len(t, aliceRecords, 1)
+	assert.Equal(t, int64(25), aliceRecords[0].Amount)
+
+	// DAO wallet gets 75% (from system:fr_balance's TWAB 3000 out of 4000)
+	daoRecords := lDb.LedgerRecords["hive:vsc.dao"]
+	require.Len(t, daoRecords, 1)
+	assert.Equal(t, int64(75), daoRecords[0].Amount)
+
+	// system:fr_balance itself should NOT have any records
+	assert.Empty(t, lDb.LedgerRecords["system:fr_balance"])
+}
+
 func TestOplogIngest(t *testing.T) {
 	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
 		"hive:alice": {{

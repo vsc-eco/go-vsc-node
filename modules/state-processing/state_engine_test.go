@@ -19,6 +19,7 @@ import (
 	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vsc-eco/hivego"
 )
 
@@ -953,4 +954,274 @@ func TestRapidBlockProcessing(t *testing.T) {
 
 	bal := te.SE.LedgerSystem.GetBalance("hive:alice", te.Reader.LastBlock, "hbd")
 	assert.Equal(t, int64(5), bal)
+}
+
+// ============================================================
+// Group 15: TWAB / UpdateBalances correctness
+// ============================================================
+
+// TestUpdateBalances_ClaimResetsAvgAndSetsClaimHeight verifies that when a new
+// claim record exists, UpdateBalances resets hbd_avg to 0 and sets hbd_claim.
+func TestUpdateBalances_ClaimResetsAvgAndSetsClaimHeight(t *testing.T) {
+	te := newTestEnv()
+
+	// Seed a balance record at block 100 with accumulated avg and old claim
+	te.BalanceDb.BalanceRecords["hive:alice"] = []ledgerDb.BalanceRecord{{
+		Account:           "hive:alice",
+		BlockHeight:       100,
+		HBD_SAVINGS:       5000,
+		HBD_AVG:           250000,
+		HBD_CLAIM_HEIGHT:  50,
+		HBD_MODIFY_HEIGHT: 90,
+	}}
+
+	// Insert a claim record at block 200
+	te.InterestClaims.SaveClaim(ledgerDb.ClaimRecord{
+		BlockHeight: 200,
+		Amount:      100,
+		ReceivedN:   1,
+	})
+
+	// Insert a ledger record so the account appears in distinctAccounts
+	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+		Id:          "interest_alice",
+		Owner:       "hive:alice",
+		Amount:      100,
+		Asset:       "hbd_savings",
+		Type:        "interest",
+		BlockHeight: 210,
+	})
+
+	te.SE.UpdateBalances(200, 210)
+
+	records := te.BalanceDb.BalanceRecords["hive:alice"]
+	require.True(t, len(records) >= 2, "should have created a new balance record")
+	latest := records[len(records)-1]
+
+	assert.Equal(t, uint64(210), latest.BlockHeight)
+	assert.Equal(t, uint64(200), latest.HBD_CLAIM_HEIGHT, "should adopt the new claim height")
+	assert.Equal(t, int64(0), latest.HBD_AVG, "avg should reset on new claim")
+	assert.Equal(t, int64(5100), latest.HBD_SAVINGS, "savings should include interest")
+}
+
+// TestUpdateBalances_NonClaimPreservesClaimHeight verifies that a balance
+// update triggered by non-claim activity (e.g. a deposit) preserves the
+// existing hbd_claim and correctly accumulates hbd_avg.
+func TestUpdateBalances_NonClaimPreservesClaimHeight(t *testing.T) {
+	te := newTestEnv()
+
+	// Seed: account was last claimed at block 100, modified at block 100
+	te.BalanceDb.BalanceRecords["hive:alice"] = []ledgerDb.BalanceRecord{{
+		Account:           "hive:alice",
+		BlockHeight:       100,
+		HBD:               0,
+		HBD_SAVINGS:       2000,
+		HBD_AVG:           0,
+		HBD_CLAIM_HEIGHT:  100,
+		HBD_MODIFY_HEIGHT: 100,
+	}}
+
+	// A claim exists at block 100 (matching the balance record)
+	te.InterestClaims.SaveClaim(ledgerDb.ClaimRecord{
+		BlockHeight: 100,
+		Amount:      50,
+		ReceivedN:   1,
+	})
+
+	// A deposit at block 150 triggers the balance update
+	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+		Id:          "deposit_alice",
+		Owner:       "hive:alice",
+		Amount:      500,
+		Asset:       "hbd",
+		Type:        "deposit",
+		BlockHeight: 150,
+	})
+
+	te.SE.UpdateBalances(100, 150)
+
+	records := te.BalanceDb.BalanceRecords["hive:alice"]
+	require.True(t, len(records) >= 2)
+	latest := records[len(records)-1]
+
+	assert.Equal(t, uint64(150), latest.BlockHeight)
+	assert.Equal(t, uint64(100), latest.HBD_CLAIM_HEIGHT,
+		"claim height must be preserved across non-claim updates")
+	assert.Equal(t, int64(500), latest.HBD,
+		"liquid HBD should include the deposit")
+
+	// hbd_avg should accumulate: prev_avg + savings * (endBlock - modify_height)
+	// = 0 + 2000 * (150 - 100) = 100000
+	assert.Equal(t, int64(100000), latest.HBD_AVG,
+		"avg should accumulate savings * elapsed blocks")
+	assert.Equal(t, uint64(150), latest.HBD_MODIFY_HEIGHT)
+}
+
+// TestUpdateBalances_RepeatedNonClaimUpdatesAccumulateAvg verifies that
+// multiple non-claim balance updates correctly accumulate hbd_avg over
+// successive periods without losing the claim height.
+func TestUpdateBalances_RepeatedNonClaimUpdatesAccumulateAvg(t *testing.T) {
+	te := newTestEnv()
+
+	// Initial state: claimed at 100, savings = 1000
+	te.BalanceDb.BalanceRecords["hive:alice"] = []ledgerDb.BalanceRecord{{
+		Account:           "hive:alice",
+		BlockHeight:       100,
+		HBD_SAVINGS:       1000,
+		HBD_AVG:           0,
+		HBD_CLAIM_HEIGHT:  100,
+		HBD_MODIFY_HEIGHT: 100,
+	}}
+
+	te.InterestClaims.SaveClaim(ledgerDb.ClaimRecord{
+		BlockHeight: 100,
+		Amount:      10,
+		ReceivedN:   1,
+	})
+
+	// First deposit at block 200
+	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+		Id: "dep1", Owner: "hive:alice", Amount: 500,
+		Asset: "hbd", Type: "deposit", BlockHeight: 200,
+	})
+	te.SE.UpdateBalances(100, 200)
+
+	records := te.BalanceDb.BalanceRecords["hive:alice"]
+	mid := records[len(records)-1]
+	assert.Equal(t, uint64(100), mid.HBD_CLAIM_HEIGHT, "claim height preserved after 1st deposit")
+	// avg = 0 + 1000*(200-100) = 100000
+	assert.Equal(t, int64(100000), mid.HBD_AVG)
+	assert.Equal(t, int64(500), mid.HBD)
+	assert.Equal(t, int64(1000), mid.HBD_SAVINGS, "savings unchanged by HBD deposit")
+
+	// Second deposit at block 300
+	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+		Id: "dep2", Owner: "hive:alice", Amount: 300,
+		Asset: "hbd", Type: "deposit", BlockHeight: 300,
+	})
+	te.SE.UpdateBalances(200, 300)
+
+	records = te.BalanceDb.BalanceRecords["hive:alice"]
+	final := records[len(records)-1]
+	assert.Equal(t, uint64(100), final.HBD_CLAIM_HEIGHT, "claim height preserved after 2nd deposit")
+	// avg = 100000 + 1000*(300-200) = 200000
+	assert.Equal(t, int64(200000), final.HBD_AVG)
+	assert.Equal(t, int64(800), final.HBD, "500+300")
+}
+
+// TestUpdateBalances_FrBalanceGetsClaimUpdate verifies that system:fr_balance
+// receives claim height updates even when it has no ledger records in the
+// current window.
+func TestUpdateBalances_FrBalanceGetsClaimUpdate(t *testing.T) {
+	te := newTestEnv()
+
+	// Seed FR balance with hbd_claim=0 (never claimed)
+	te.BalanceDb.BalanceRecords["system:fr_balance"] = []ledgerDb.BalanceRecord{{
+		Account:           "system:fr_balance",
+		BlockHeight:       50,
+		HBD_SAVINGS:       100000,
+		HBD_AVG:           5000000,
+		HBD_CLAIM_HEIGHT:  0,
+		HBD_MODIFY_HEIGHT: 50,
+	}}
+
+	// A claim exists at block 200
+	te.InterestClaims.SaveClaim(ledgerDb.ClaimRecord{
+		BlockHeight: 200,
+		Amount:      500,
+		ReceivedN:   10,
+	})
+
+	// Some OTHER account has ledger activity (to trigger UpdateBalances normally)
+	te.BalanceDb.BalanceRecords["hive:alice"] = []ledgerDb.BalanceRecord{{
+		Account:           "hive:alice",
+		BlockHeight:       100,
+		HBD:               1000,
+		HBD_CLAIM_HEIGHT:  200,
+		HBD_MODIFY_HEIGHT: 100,
+	}}
+	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+		Id: "dep_alice", Owner: "hive:alice", Amount: 100,
+		Asset: "hbd", Type: "deposit", BlockHeight: 210,
+	})
+
+	// FR balance has NO ledger records in this window — but should still be processed
+	te.SE.UpdateBalances(200, 210)
+
+	frRecords := te.BalanceDb.BalanceRecords["system:fr_balance"]
+	require.True(t, len(frRecords) >= 2, "FR balance should have a new record")
+	latest := frRecords[len(frRecords)-1]
+
+	assert.Equal(t, uint64(200), latest.HBD_CLAIM_HEIGHT,
+		"FR balance claim height should be updated to latest claim")
+	assert.Equal(t, int64(0), latest.HBD_AVG,
+		"avg should reset since claim height changed")
+	assert.Equal(t, int64(100000), latest.HBD_SAVINGS,
+		"savings should be unchanged (no ledger activity)")
+}
+
+// TestUpdateBalances_TwabCorrectAfterClaimThenDeposit runs the full cycle:
+// claim → deposit → verify TWAB at next claim is computed correctly.
+func TestUpdateBalances_TwabCorrectAfterClaimThenDeposit(t *testing.T) {
+	te := newTestEnv()
+
+	// Claim at block 100
+	te.InterestClaims.SaveClaim(ledgerDb.ClaimRecord{
+		BlockHeight: 100, Amount: 50, ReceivedN: 1,
+	})
+
+	// Alice: savings=5000, just claimed, avg reset
+	te.BalanceDb.BalanceRecords["hive:alice"] = []ledgerDb.BalanceRecord{{
+		Account:           "hive:alice",
+		BlockHeight:       110,
+		HBD_SAVINGS:       5000,
+		HBD_AVG:           0,
+		HBD_CLAIM_HEIGHT:  100,
+		HBD_MODIFY_HEIGHT: 110,
+	}}
+
+	// Deposit at block 200 (non-claim activity)
+	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+		Id: "dep1", Owner: "hive:alice", Amount: 1000,
+		Asset: "hbd", Type: "deposit", BlockHeight: 200,
+	})
+	te.SE.UpdateBalances(110, 200)
+
+	records := te.BalanceDb.BalanceRecords["hive:alice"]
+	afterDeposit := records[len(records)-1]
+
+	// Verify intermediate state is correct
+	assert.Equal(t, uint64(100), afterDeposit.HBD_CLAIM_HEIGHT, "claim preserved")
+	// avg = 0 + 5000*(200-110) = 450000
+	assert.Equal(t, int64(450000), afterDeposit.HBD_AVG, "avg accumulated correctly")
+	assert.Equal(t, uint64(200), afterDeposit.HBD_MODIFY_HEIGHT)
+
+	// Now add second claim at block 300
+	te.InterestClaims.SaveClaim(ledgerDb.ClaimRecord{
+		BlockHeight: 300, Amount: 100, ReceivedN: 1,
+	})
+	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+		Id: "int1", Owner: "hive:alice", Amount: 100,
+		Asset: "hbd_savings", Type: "interest", BlockHeight: 310,
+	})
+	te.SE.UpdateBalances(200, 310)
+
+	records = te.BalanceDb.BalanceRecords["hive:alice"]
+	afterClaim := records[len(records)-1]
+
+	assert.Equal(t, uint64(300), afterClaim.HBD_CLAIM_HEIGHT, "new claim adopted")
+	assert.Equal(t, int64(0), afterClaim.HBD_AVG, "avg reset on new claim")
+	assert.Equal(t, int64(5100), afterClaim.HBD_SAVINGS, "savings includes interest")
+
+	// Verify the TWAB that ClaimHBDInterest would compute for the period 100→300
+	// endingAvg = (hbd_avg + savings * A) / B
+	// Using the state just before claim: avg=450000, savings=5000, modify=200, claim=100
+	// B = 300 - 100 = 200, A = 300 - 200 = 100
+	// endingAvg = (450000 + 5000*100) / 200 = 950000/200 = 4750
+	// This is correct: 5000 savings for full 200 blocks except first 10 = avg ~4750
+	expectedTwab := int64(4750)
+	B := int64(300 - 100)
+	A := int64(300 - 200)
+	computedTwab := (afterDeposit.HBD_AVG + afterDeposit.HBD_SAVINGS*A) / B
+	assert.Equal(t, expectedTwab, computedTwab, "TWAB should reflect time-weighted average")
 }
