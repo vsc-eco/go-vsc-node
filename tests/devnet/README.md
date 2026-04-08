@@ -236,3 +236,96 @@ tests/devnet/
   contracts/
     call-tss/             TSS test contract (Go/TinyGo -> WASM)
 ```
+
+## Test inventory
+
+27 tests across 14 files. Each integration test spins up its own devnet
+(~2-3 min startup) and runs for 5-15 min depending on how many reshare
+cycles it needs.
+
+Run a single test:
+```bash
+go test -v -run TestTSSReshareHappyPath -timeout 25m ./tests/devnet/
+```
+
+Run all integration tests (sequential, ~3-4 hours):
+```bash
+go test -v -run 'TestTSS|TestBlame|TestEdge' -timeout 300m ./tests/devnet/
+```
+
+### Infrastructure / smoke tests
+
+| Test | File | Description |
+|------|------|-------------|
+| `TestDevnetSetup` | `devnet_test.go` | Spins up full devnet (HAF, MongoDB, magi nodes), verifies Hive RPC is reachable. Basic infrastructure smoke test. |
+| `TestDeployCallTss` | `devnet_test.go` | Builds the call-tss WASM contract, starts devnet, deploys it. Validates the contract deployment pipeline end-to-end. |
+| `TestEnvFileGeneration` | `devnet_test.go` | Unit test: verifies `.env` file is generated with correct variable substitutions. No Docker needed. |
+| `TestComposeFileExists` | `devnet_test.go` | Unit test: verifies static `docker-compose.yml` contains all expected service definitions and variables. |
+| `TestNodesOverride` | `devnet_test.go` | Unit test: verifies the generated nodes override YAML contains the right number of magi services. |
+| `TestHAFDataDirs` | `devnet_test.go` | Unit test: verifies HAF data directory structure (config.ini, pgtune.conf, pgdata dirs) is created correctly. |
+
+### Reshare happy path
+
+| Test | File | Description |
+|------|------|-------------|
+| `TestTSSReshareHappyPath` | `reshare_happy_test.go` | Full happy path: keygen completes, on-chain readiness is broadcast by all nodes, reshare commitment lands on Hive. Baseline smoke test for the on-chain gossip architecture. Verifies log messages for readiness broadcast and pre-flight checks. |
+
+### Readiness gate
+
+| Test | File | Description |
+|------|------|-------------|
+| `TestTSSOfflineNodeExcludedByReadiness` | `readiness_test.go` | Disconnects a node before the readiness window so it never broadcasts `vsc.tss_ready`. The node is excluded from the party list entirely — no blame needed. Reshare succeeds with the remaining nodes. |
+| `TestTSSFalseReadinessProducesBlame` | `readiness_test.go` | Node broadcasts readiness (on-chain) then disconnects before the reshare protocol starts. It's in the party list but doesn't send btss messages. All online nodes see the same WaitingFor() result, produce identical CIDs, BLS succeeds — blame lands targeting the disconnected node. |
+
+### Blame cycle / accumulation
+
+| Test | File | Description |
+|------|------|-------------|
+| `TestTSSBlameExcludesNodeNextCycle` | `blame_cycle_test.go` | Disconnects a node, waits for blame to land on-chain, then verifies the blamed node is excluded from the party list in the next reshare cycle — either via blame-based exclusion or readiness gate (both are valid). |
+| `TestTSSBlameEpochDecode` | `blame_cycle_test.go` | Causes blame at epoch 0, then unstakes a node to change election membership at epoch 1. Verifies blame bitset is decoded against epoch 0's election (6 members), not epoch 1's (5 members with shifted positions). Wrong decode would exclude the wrong node. |
+| `TestTSSBlameAccumulation` | `blame_cycle_test.go` | Blames node 3 in cycle 1 and node 4 in cycle 2, then verifies BOTH are excluded in cycle 3. The old code read only the most recent blame via `GetCommitmentByHeight`; the fix reads all blames in the BLAME_EXPIRE window. |
+
+### Blame tests (Milo's — contract-based keygen)
+
+| Test | File | Description |
+|------|------|-------------|
+| `TestBlameExcludesNodeOnRetry` | `blame_test.go` | Deploys call-tss contract, triggers keygen via contract call, disconnects a node before reshare, waits for blame, verifies exclusion on retry. Uses the full contract-based keygen path (not MongoDB seeding). |
+| `TestBlameSSIDMismatch` | `blame_ssid_test.go` | Verifies SSID mismatch detection under fault conditions with the full contract-based setup. Tests that nodes detect and report SSID divergence when party lists don't match. |
+| `TestBlamePartialLatency` | `blame_partial_test.go` | 2 of 7 nodes have asymmetric outbound latency (6s). Different healthy nodes see different subsets of slow nodes as reachable vs timed-out. Tests that on-chain readiness produces deterministic party lists despite non-deterministic RPC results. Must recover within 1 epoch. |
+| `TestBlameBidirectionalLatency` | `blame_bidir_test.go` | Bidirectional latency variant — verifies that healthy nodes are NOT incorrectly blamed when slow nodes' delayed responses affect traffic in both directions. Only the actual slow nodes should appear as culprits. |
+
+### Disconnected node
+
+| Test | File | Description |
+|------|------|-------------|
+| `TestBlameDisconnectedNode` | `blame_disconnect_test.go` | Fully disconnects a node (drops ALL traffic via iptables) after its readiness has landed on-chain. The node is in the party list but can't send or receive anything. Verifies blame targets only the disconnected node, and reshare succeeds without it on the next cycle. Tests the "false readiness" scenario from the review (Section 4, Scenario 3). |
+
+### Partition / recovery
+
+| Test | File | Description |
+|------|------|-------------|
+| `TestTSSPartitionAndRecovery` | `partition_recovery_test.go` | Partitions 2 specific nodes from each other (both still connected to the other 3). Reshare should still succeed since messages can relay through connected nodes. Heals partition, verifies continued operation with no SSID mismatches. |
+
+### Multi-version
+
+| Test | File | Description |
+|------|------|-------------|
+| `TestTSSMultiVersion` | `multiversion_test.go` | Runs 4 nodes on current code and 1 node on an older version (no `vsc.tss_ready` handler). Old node never broadcasts readiness and is excluded from party lists. SSID mismatches are expected (old node builds different party lists). Old node does NOT crash. Validates graceful degradation described in the review. |
+
+### Full lifecycle
+
+| Test | File | Description |
+|------|------|-------------|
+| `TestTSSFullRecoveryCycle` | `recovery_full_test.go` | End-to-end lifecycle: keygen → first reshare (all healthy) → disconnect node → blame lands → reconnect node → second reshare succeeds. Proves the complete recovery path works from start to finish. |
+
+### Edge cases
+
+| Test | File | Description |
+|------|------|-------------|
+| `TestEdgeLeaderCrashDuringBLS` | `edge_cases_test.go` | Stops the leader node mid-BLS signature collection after the reshare protocol completes. The `ask_sigs` pubsub message is one-shot with no retry — if the leader dies, the commitment is lost. Verifies the network recovers on the next cycle with a different leader. Tests local keystore vs on-chain state divergence. |
+| `TestEdgePartitionNoQuorum` | `edge_cases_test.go` | Splits 7 nodes into groups of 3 and 4. Neither group has btss quorum (need 5). Both halves fail all reshare attempts. After healing the partition, verifies the full network recovers cleanly — no stale blame from the split should prevent the next reshare. |
+| `TestEdgeNodeRestartMidCycle` | `edge_cases_test.go` | Restarts a node (stop + start container) between its readiness broadcast and the reshare trigger. On-chain readiness exists but the node has no preparams, no P2P connections, no session state. Appears as "connected but no response". Verifies blame targets the restarted node and reshare recovers. |
+| `TestEdgePreparamsExhaustion` | `edge_cases_test.go` | Adds latency to one node causing 4+ consecutive blame cycles. Each failed reshare consumes one set of preparams (Paillier keys + safe primes). Verifies healthy nodes regenerate preparams fast enough between cycles and recover after the fault is removed. |
+| `TestEdgeKeygenBlameCrossEpoch` | `edge_cases_test.go` | Disconnects a node during keygen to produce blame at epoch 0. Waits for epoch 1 (different election). Verifies the keygen blame from epoch 0 doesn't interfere with reshare in epoch 1 — blame is decoded against the correct epoch's election. |
+| `TestEdgeFlappingNode` | `edge_cases_test.go` | A node toggles between online and offline every reshare cycle for 4 cycles. Tests whether blame accumulation handles repeat offenders correctly, and whether the network can converge despite the oscillation pattern. |
+| `TestEdgeSimultaneousRestart` | `edge_cases_test.go` | All 7 nodes restart at the same time (simulating coordinated deployment). Tests CPU contention during simultaneous preparams generation, P2P reconnection timing, and whether the network recovers within 1-2 reshare cycles after all nodes are back. |

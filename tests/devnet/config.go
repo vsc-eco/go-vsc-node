@@ -74,7 +74,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Nodes:         5,
 		GQLBasePort:   18080,
-		P2PBasePort:   10720,
+		P2PBasePort:   11720, // offset from mainnet/testnet nodes on 10720+
 		MongoPort:     18057,
 		HivePort:      18091,
 		WitnessPrefix: "magi.test",

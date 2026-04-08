@@ -67,6 +67,10 @@ type TssParams struct {
 	RotateInterval         uint64        `json:"rotateInterval,omitempty"`
 	SignInterval           uint64        `json:"signInterval,omitempty"`
 	ReadinessOffset        uint64        `json:"readinessOffset,omitempty"`
+	// PreParamsTimeout is the maximum time to spend generating Paillier
+	// key pairs and safe primes for TSS. Defaults to 1 minute if zero.
+	// Set higher (e.g. 10m) in test/CI environments where multiple nodes
+	// compete for CPU and prime generation takes longer.
 	PreParamsTimeout       time.Duration `json:"preParamsTimeout,omitempty"`
 }
 

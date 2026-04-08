@@ -159,23 +159,45 @@ func TestBlameExcludesNodeOnRetry(t *testing.T) {
 	currentBh, _ := d.getLastProcessedBlock(ctx, 2)
 	t.Logf("epoch 1 arrived, node 2 at block %d", currentBh)
 
-	// Disconnect node 3 BEFORE the next reshare fires (next bh%100==0).
+	// Wait for the next reshare block. We need the target node to
+	// broadcast readiness (on-chain) and THEN partition it from peers
+	// so it's in the party list but can't exchange btss messages.
+	// Simply disconnecting before the readiness window would cause the
+	// readiness gate to exclude the node — no blame would be produced.
 	disconnectedNode := 3
-	t.Logf("disconnecting node %d...", disconnectedNode)
-	if err := d.Disconnect(ctx, disconnectedNode); err != nil {
-		t.Fatalf("disconnecting node %d: %v", disconnectedNode, err)
+	rotateInterval := uint64(20)
+	nextReshare := ((currentBh/rotateInterval)+1)*rotateInterval
+	t.Logf("waiting for reshare block %d (node %d will be partitioned at that point)...", nextReshare, disconnectedNode)
+	if err := d.WaitForBlockProcessing(ctx, 2, nextReshare, 3*time.Minute); err != nil {
+		t.Fatalf("didn't reach reshare block: %v", err)
+	}
+
+	// Partition the node from all OTHER magi nodes. This keeps its
+	// Hive/MongoDB connections alive (so readiness is on-chain and the
+	// node doesn't crash) but blocks P2P btss messages.
+	t.Logf("partitioning node %d from all peers at reshare block...", disconnectedNode)
+	for i := 1; i <= cfg.Nodes; i++ {
+		if i == disconnectedNode {
+			continue
+		}
+		if err := d.Partition(ctx, disconnectedNode, i); err != nil {
+			t.Logf("warning: partition %d<->%d: %v", disconnectedNode, i, err)
+		}
 	}
 	t.Cleanup(func() {
-		d.Reconnect(context.Background(), disconnectedNode)
+		for i := 1; i <= cfg.Nodes; i++ {
+			if i == disconnectedNode {
+				continue
+			}
+			d.Heal(context.Background(), disconnectedNode, i)
+		}
 	})
 
 	// ── Phase 3: Wait for blame ──────────────────────────────────────
 
-	// The next reshare fires at the next bh%100==0. With the
-	// disconnected node, the reshare will timeout after 2 minutes
-	// (ReshareTimeout), then BLS collection (~11s), then on-chain
-	// after 1-2 L1 blocks (~6s). Total: ~2.5 min from the reshare
-	// trigger. Plus up to 100 blocks (~5 min) until the next trigger.
+	// The node is in the party list (readiness on-chain) but can't
+	// send/receive btss messages (P2P partitioned). All online nodes
+	// will timeout waiting for it → blame.
 	t.Log("Phase 3: waiting for first blame commitment...")
 	blame1, err := d.WaitForCommitment(ctx, 2, bson.M{
 		"key_id": fullKeyId,
