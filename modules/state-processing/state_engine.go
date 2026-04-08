@@ -930,48 +930,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 					}
-				} else if cj.Id == "vsc.tss_ready" {
-					// On-chain readiness signal for TSS reshare.
-					// Nodes broadcast this before a reshare cycle to declare
-					// they are online and ready to participate. Party list
-					// construction reads these from MongoDB to build a
-					// deterministic participant set from on-chain data only.
-					var readySignal struct {
-						Account     string `json:"account"`
-						KeyId       string `json:"key_id"`
-						TargetBlock uint64 `json:"target_block"`
-					}
-					if err := json.Unmarshal(cj.Json, &readySignal); err != nil {
-						tssLog.Warn("vsc.tss_ready parse error", "txId", tx.TransactionID, "err", err)
-						continue
-					}
-					// Verify the broadcaster matches the required_auths signer.
-					// txSelf.RequiredAuths has "hive:" prefix (added at line 665).
-					signerAccount := ""
-					if len(txSelf.RequiredAuths) > 0 {
-						signerAccount = strings.TrimPrefix(txSelf.RequiredAuths[0], "hive:")
-					}
-					if signerAccount != readySignal.Account {
-						tssLog.Warn("vsc.tss_ready account mismatch",
-							"claimed", readySignal.Account, "signer", signerAccount)
-						continue
-					}
-					// Reusing Epoch field for TargetBlock and Commitment field for account name.
-					// Safe because type=ready records are never returned by any existing query —
-					// all queries filter by explicit type using $in. See GetCommitmentByHeight
-					// and FindCommitments in the DB layer.
-					se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
-						Type:        "ready",
-						KeyId:       readySignal.KeyId,
-						BlockHeight: block.BlockNumber,
-						Epoch:       readySignal.TargetBlock,
-						Commitment:  readySignal.Account,
-						TxId:        tx.TransactionID,
-					})
-					tssLog.Verbose("stored tss readiness signal",
-						"account", readySignal.Account, "keyId", readySignal.KeyId,
-						"targetBlock", readySignal.TargetBlock, "blockHeight", block.BlockNumber)
 				}
+				// NOTE: vsc.tss_ready was removed — readiness is now handled
+				// off-chain via BLS-signed gossip attestations in the TSS module.
 
 				if vscTx != nil {
 					opList = append(opList, vscTx)

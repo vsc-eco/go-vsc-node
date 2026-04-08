@@ -303,3 +303,38 @@ func startDevnet(t *testing.T, cfg *Config, timeout time.Duration) (*Devnet, con
 
 	return d, ctx
 }
+
+// startDevnetNoKey is like startDevnet but does NOT insert a TSS key.
+// Use this when you need to control the timing of key insertion (e.g.,
+// waiting for a specific election epoch before triggering keygen).
+func startDevnetNoKey(t *testing.T, cfg *Config, timeout time.Duration) (*Devnet, context.Context) {
+	t.Helper()
+	requireDocker(t)
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("creating devnet: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := d.Stop(); err != nil {
+			t.Logf("warning: stop failed: %v", err)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	t.Cleanup(cancel)
+
+	t.Log("starting devnet (this takes several minutes)...")
+	if err := d.Start(ctx); err != nil {
+		for i := 1; i <= cfg.Nodes; i++ {
+			logs, _ := d.Logs(ctx, fmt.Sprintf("magi-%d", i))
+			if logs != "" {
+				t.Logf("magi-%d logs:\n%s", i, truncateLogs(logs, 30))
+			}
+		}
+		t.Fatalf("starting devnet: %v", err)
+	}
+	t.Logf("devnet running: Hive=%s Mongo=%s", d.HiveRPCEndpoint(), d.MongoURI())
+
+	return d, ctx
+}

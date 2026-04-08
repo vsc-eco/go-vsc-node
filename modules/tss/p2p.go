@@ -38,8 +38,9 @@ type p2pMessage struct {
 
 // ValidateMessage implements libp2p.PubSubServiceParams.
 func (p p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
-	// Always accept signature-related messages (ask_sigs, res_sig) as they use different channels
-	if parsedMsg.Type == "ask_sigs" || parsedMsg.Type == "res_sig" {
+	// Always accept signature-related and gossip readiness messages — they
+	// are not tied to a specific TSS session.
+	if parsedMsg.Type == "ask_sigs" || parsedMsg.Type == "res_sig" || parsedMsg.Type == "ready_gossip" {
 		return true
 	}
 
@@ -168,7 +169,115 @@ func (s p2pSpec) HandleMessage(
 		}
 	}
 
+	if msg.Type == "ready_gossip" {
+		s.handleReadyGossip(msg)
+	}
+
 	return nil
+}
+
+// handleReadyGossip processes a bundle of signed readiness attestations from
+// another node. Each attestation's BLS signature is verified against the
+// signer's consensus key from the election before being stored.
+func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
+	targetBlockF, ok := msg.Data["target_block"].(float64)
+	if !ok {
+		return
+	}
+	targetBlock := uint64(targetBlockF)
+
+	keyId, _ := msg.Data["key_id"].(string)
+	if keyId == "" {
+		return
+	}
+
+	// Staleness check: reject if target block is in the past.
+	currentBh := s.tssMgr.lastBlockHeight.Load()
+	if targetBlock < currentBh {
+		return
+	}
+
+	// Reject if unreasonably far in the future.
+	rotateInterval := getRotateInterval(s.tssMgr.sconf)
+	if targetBlock > currentBh+2*rotateInterval {
+		return
+	}
+
+	// Look up the election to verify attestation signatures.
+	election, err := s.tssMgr.electionDb.GetElectionByHeight(targetBlock)
+	if err != nil || election.Members == nil {
+		return
+	}
+
+	// Check settle period: if we're within DEFAULT_SETTLE_BLOCKS of the
+	// target, only accept attestations for accounts we've already seen.
+	inSettlePeriod := false
+	if currentBh > 0 && targetBlock > currentBh {
+		blocksUntil := targetBlock - currentBh
+		inSettlePeriod = blocksUntil <= DEFAULT_SETTLE_BLOCKS
+	}
+
+	attList, ok := msg.Data["attestations"].([]interface{})
+	if !ok {
+		return
+	}
+
+	dedupKey := fmt.Sprintf("%s:%d", keyId, targetBlock)
+	newCount := 0
+
+	s.tssMgr.gossipLock.Lock()
+	defer s.tssMgr.gossipLock.Unlock()
+
+	if s.tssMgr.gossipAttestations[dedupKey] == nil {
+		s.tssMgr.gossipAttestations[dedupKey] = make(map[string]ReadyAttestation)
+	}
+	existing := s.tssMgr.gossipAttestations[dedupKey]
+
+	for _, raw := range attList {
+		attMap, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		account, _ := attMap["account"].(string)
+		sig, _ := attMap["sig"].(string)
+		if account == "" || sig == "" {
+			continue
+		}
+
+		// Skip if we already have this attestation.
+		if _, has := existing[account]; has {
+			continue
+		}
+
+		// During settle period, reject attestations from accounts not already seen.
+		if inSettlePeriod {
+			log.Trace("rejecting new attestation during settle period",
+				"account", account, "keyId", keyId, "targetBlock", targetBlock)
+			continue
+		}
+
+		att := ReadyAttestation{
+			Account:     account,
+			KeyId:       keyId,
+			TargetBlock: targetBlock,
+			Sig:         sig,
+		}
+
+		if !s.tssMgr.verifyAttestation(att, election) {
+			log.Warn("rejecting attestation with invalid BLS signature",
+				"account", account, "keyId", keyId, "targetBlock", targetBlock)
+			continue
+		}
+
+		existing[account] = att
+		newCount++
+	}
+
+	if newCount > 0 {
+		log.Trace("merged gossip attestations",
+			"keyId", keyId, "targetBlock", targetBlock,
+			"new", newCount, "total", len(existing))
+	}
 }
 
 func (p2pSpec) HandleRawMessage(ctx context.Context, rawMsg *pubsub.Message, send libp2p.SendFunc[p2pMessage]) error {

@@ -124,23 +124,31 @@ func (d *Devnet) Start(ctx context.Context) error {
 		}
 	}
 
-	// Step 3b: build the devnet image once, then all services reference
-	// it by name. This avoids BuildKit launching N parallel Go compiles
-	// which can OOM on machines with limited RAM.
-	log.Printf("[devnet] building devnet image %s (this may take a while)...", d.imageName)
-	buildCmd := exec.CommandContext(ctx, "docker", "build",
-		"-t", d.imageName,
-		"-f", filepath.Join(d.cfg.SourceDir, "tests", "devnet", "Dockerfile.devnet"),
-		d.cfg.SourceDir,
-	)
-	buildCmd.Stdout = os.Stdout
-	buildCmd.Stderr = os.Stderr
-	if err := buildCmd.Run(); err != nil {
-		return fmt.Errorf("building image: %w", err)
-	}
+	// Step 3b + Step 4: Build the devnet image and start HAF+MongoDB in
+	// parallel. They are completely independent — HAF doesn't need the magi
+	// image, and the build doesn't need HAF. They only converge at
+	// devnet-setup (needs drone) and node startup (needs the built image).
+	//
+	// Building the image separately (rather than letting compose build per
+	// service) avoids BuildKit launching N parallel Go compiles which can
+	// OOM on machines with limited RAM.
+	type buildResult struct{ err error }
+	buildDone := make(chan buildResult, 1)
 
-	// Step 4: start infrastructure
-	log.Printf("[devnet] starting HAF and MongoDB...")
+	log.Printf("[devnet] building devnet image %s (this may take a while)...", d.imageName)
+	go func() {
+		buildCmd := exec.CommandContext(ctx, "docker", "build",
+			"-t", d.imageName,
+			"-f", filepath.Join(d.cfg.SourceDir, "tests", "devnet", "Dockerfile.devnet"),
+			d.cfg.SourceDir,
+		)
+		buildCmd.Stdout = os.Stdout
+		buildCmd.Stderr = os.Stderr
+		buildDone <- buildResult{err: buildCmd.Run()}
+	}()
+
+	// Start HAF + MongoDB while the image builds.
+	log.Printf("[devnet] starting HAF and MongoDB (parallel with image build)...")
 	if err := d.compose(ctx, "up", "-d", "haf", "db"); err != nil {
 		return fmt.Errorf("starting HAF+DB: %w", err)
 	}
@@ -156,7 +164,7 @@ func (d *Devnet) Start(ctx context.Context) error {
 	}
 	log.Printf("[devnet] HAF is healthy")
 
-	// Step 5: start hafah API stack (hafah-install → pgbouncer → hafah-postgrest → drone)
+	// Start hafah API stack (hafah-install → pgbouncer → hafah-postgrest → drone).
 	// Drone must be running before devnet-setup, which uses it as the Hive API.
 	log.Printf("[devnet] starting hafah API stack (hafah-install, pgbouncer, hafah-postgrest, drone)...")
 	if err := d.compose(ctx, "up", "-d", "drone"); err != nil {
@@ -167,6 +175,14 @@ func (d *Devnet) Start(ctx context.Context) error {
 		return fmt.Errorf("drone health check: %w", err)
 	}
 	log.Printf("[devnet] hafah API stack is ready")
+
+	// Wait for the image build to finish before starting nodes.
+	log.Printf("[devnet] waiting for image build to complete...")
+	br := <-buildDone
+	if br.err != nil {
+		return fmt.Errorf("building image: %w", br.err)
+	}
+	log.Printf("[devnet] image build complete")
 
 	// Step 6: devnet-setup (writes node configs with drone as Hive API URL)
 	log.Printf("[devnet] running devnet-setup...")
