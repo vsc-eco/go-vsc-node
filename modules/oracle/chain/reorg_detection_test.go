@@ -51,15 +51,34 @@ func TestProcessChainRelay_ReplaceBlockBypassesDedup(t *testing.T) {
 	o.lastSubmittedEnd["BTC"] = 100
 	o.lastSubmittedAt["BTC"] = time.Now()
 
-	// A replaceBlock session should NOT be affected by the dedup tracker
+	// A replaceBlocks session should NOT be affected by the dedup tracker
 	session := chainSession{
-		symbol:          "BTC",
-		replaceBlock:    true,
-		replaceBlockHex: "00000020abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+		symbol:            "BTC",
+		replaceBlock:      true,
+		replaceBlockHex:   "00000020abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+		replaceBlockDepth: 1,
 	}
 
-	// replaceBlock should always be allowed through
-	assert.True(t, session.replaceBlock, "replaceBlock sessions bypass dedup")
+	// replaceBlocks should always be allowed through
+	assert.True(t, session.replaceBlock, "replaceBlocks sessions bypass dedup")
 	// The tracker should still exist (not cleared by replace)
 	assert.Equal(t, uint64(100), o.lastSubmittedEnd["BTC"])
+}
+
+func TestChainSession_ReplaceBlockDepth(t *testing.T) {
+	// Multi-block reorg: depth > 1
+	session := chainSession{
+		symbol:            "BTC",
+		replaceBlock:      true,
+		replaceBlockHex:   "aabbccdd", // concatenated hex
+		replaceBlockDepth: 3,
+	}
+
+	assert.True(t, session.replaceBlock)
+	assert.Equal(t, 3, session.replaceBlockDepth)
+
+	id, err := makeChainSessionID(&session, 93000000)
+	require.NoError(t, err)
+	assert.Equal(t, "BTC-93000000-replace", id)
+	assert.True(t, isReplaceSession(id))
 }
