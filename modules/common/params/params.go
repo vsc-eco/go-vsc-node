@@ -47,12 +47,13 @@ var TSS_INDEX_HEIGHT uint64 = 102_083_000
 var ELECTION_INTERVAL = uint64(6 * 60 * 20)
 
 type ConsensusParams struct {
-	MinStake         int64  `json:"minStake,omitempty"`
-	MinMembers       int    `json:"minMembers,omitempty"`
-	MinSpSigners     int    `json:"minSpSigners,omitempty"`
-	MinRcLimit       uint64 `json:"minRcLimit,omitempty"`
-	TssIndexHeight   uint64 `json:"tssIndexHeight,omitempty"`
-	ElectionInterval uint64 `json:"electionInterval,omitempty"`
+	MinStake             int64  `json:"minStake,omitempty"`
+	MinMembers           int    `json:"minMembers,omitempty"`
+	MinSpSigners         int    `json:"minSpSigners,omitempty"`
+	MinRcLimit           uint64 `json:"minRcLimit,omitempty"`
+	TssIndexHeight       uint64 `json:"tssIndexHeight,omitempty"`
+	ElectionInterval     uint64 `json:"electionInterval,omitempty"`
+	ElectionDupeFixEpoch uint64 `json:"electionDupeFixEpoch,omitempty"`
 }
 
 type TssParams struct {
