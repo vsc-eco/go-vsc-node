@@ -206,6 +206,33 @@ func (d *Devnet) waitForElectionEpoch(ctx context.Context, node int, minEpoch ui
 	}
 }
 
+// GetElectionMembers returns the ordered list of account names from
+// the election at the given epoch, as stored in MongoDB. This is the
+// canonical ordering used for blame/reshare bitset indexing.
+func (d *Devnet) GetElectionMembers(ctx context.Context, node int, epoch uint64) ([]string, error) {
+	client, err := d.mongoClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Disconnect(ctx)
+
+	coll := client.Database(d.nodeDbName(node)).Collection("elections")
+	var result struct {
+		Members []struct {
+			Account string `bson:"account"`
+		} `bson:"members"`
+	}
+	err = coll.FindOne(ctx, bson.M{"epoch": epoch}).Decode(&result)
+	if err != nil {
+		return nil, fmt.Errorf("finding election epoch %d: %w", epoch, err)
+	}
+	names := make([]string, len(result.Members))
+	for i, m := range result.Members {
+		names[i] = m.Account
+	}
+	return names, nil
+}
+
 // dumpTssLogs greps a node's Docker logs for TSS-related messages
 // (keygen, reshare, blame, session) and logs the last 30 matches.
 func (d *Devnet) dumpTssLogs(ctx context.Context, t interface{ Logf(string, ...any) }, node int) {
