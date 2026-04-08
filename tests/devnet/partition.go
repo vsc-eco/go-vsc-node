@@ -123,6 +123,21 @@ func (d *Devnet) AddLatency(ctx context.Context, nodeA, nodeB int, delayMs, jitt
 	return nil
 }
 
+// AddOutboundLatency adds one-directional delay to traffic FROM nodeA
+// TO nodeB. Traffic from B to A is unaffected. This is useful when
+// you want nodeA to appear slow to nodeB without making nodeB appear
+// slow to nodeA.
+func (d *Devnet) AddOutboundLatency(ctx context.Context, fromNode, toNode int, delayMs, jitterMs int) error {
+	nameFrom := d.containerName(fromNode)
+	ipTo, err := d.containerIP(ctx, d.containerName(toNode))
+	if err != nil {
+		return fmt.Errorf("getting IP for magi-%d: %w", toNode, err)
+	}
+
+	log.Printf("[devnet] adding %dms±%dms outbound latency: magi-%d → magi-%d", delayMs, jitterMs, fromNode, toNode)
+	return d.addNetemForIP(ctx, nameFrom, ipTo, delayMs, jitterMs)
+}
+
 // RemoveLatency removes any tc latency rules from a node, restoring
 // normal network behavior.
 func (d *Devnet) RemoveLatency(ctx context.Context, node int) error {

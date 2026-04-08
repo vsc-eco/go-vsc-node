@@ -2,6 +2,7 @@ package devnet
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -156,55 +157,69 @@ func TestBlamePartialLatency(t *testing.T) {
 
 	t.Log("Phase 2: injecting asymmetric latency to nodes 6 and 7...")
 
-	// Node 6 is slow from nodes 1,2 (but ok from 3,4,5)
+	// Use OUTBOUND-ONLY latency: delay traffic FROM nodes 6/7 TO
+	// specific healthy nodes. This makes 6/7 appear slow to those
+	// nodes without making the healthy nodes appear slow to 6/7.
+	//
+	// Without this, bidirectional latency causes the healthy nodes
+	// to ALSO be blamed (their responses to 6/7 are delayed too),
+	// resulting in 4+ blamed nodes and no quorum for reshare.
+
+	// Node 6 is slow SENDING to nodes 1,2
 	for _, n := range []int{1, 2} {
-		if err := d.AddLatency(ctx, n, 6, 6000, 0); err != nil {
-			t.Fatalf("adding latency %d↔6: %v", n, err)
+		if err := d.AddOutboundLatency(ctx, 6, n, 6000, 0); err != nil {
+			t.Fatalf("adding outbound latency 6→%d: %v", n, err)
 		}
 	}
 
-	// Node 7 is slow from nodes 1,3 (but ok from 2,4,5)
+	// Node 7 is slow SENDING to nodes 1,3
 	for _, n := range []int{1, 3} {
-		if err := d.AddLatency(ctx, n, 7, 6000, 0); err != nil {
-			t.Fatalf("adding latency %d↔7: %v", n, err)
+		if err := d.AddOutboundLatency(ctx, 7, n, 6000, 0); err != nil {
+			t.Fatalf("adding outbound latency 7→%d: %v", n, err)
 		}
 	}
 
 	t.Cleanup(func() {
-		for _, n := range []int{1, 2, 3, 6, 7} {
-			d.RemoveLatency(context.Background(), n)
-		}
+		d.RemoveLatency(context.Background(), 6)
+		d.RemoveLatency(context.Background(), 7)
 	})
 
-	t.Log("  Node 1: sees 6=timeout, 7=timeout")
-	t.Log("  Node 2: sees 6=timeout, 7=ok")
-	t.Log("  Node 3: sees 6=ok,      7=timeout")
-	t.Log("  Node 4: sees 6=ok,      7=ok")
-	t.Log("  Node 5: sees 6=ok,      7=ok")
+	t.Log("  Outbound latency (6s, one-way):")
+	t.Log("  Node 6 → Nodes 1,2: slow (readiness check times out)")
+	t.Log("  Node 7 → Nodes 1,3: slow (readiness check times out)")
+	t.Log("  All other paths: normal")
 
-	// ── Phase 3: Wait for the network to self-heal under latency ─────
+	// ── Phase 3: Wait for the network to self-heal WITHIN ONE EPOCH ──
 	//
-	// The latency stays active throughout this phase. We wait for up
-	// to 4 reshare cycles. The correct behavior is:
+	// The latency stays active throughout. With ElectionInterval=60
+	// and RotateInterval=20, there are 3 reshare cycles per epoch.
+	// The protocol MUST recover within those 3 cycles:
 	//
-	//   Cycle 1: blame lands (5 healthy nodes agree on culprits)
-	//   Cycle 2: reshare succeeds with 5 nodes (blamed nodes excluded)
+	//   Cycle 1: blame lands (healthy nodes agree on the 2 slow culprits)
+	//   Cycle 2: reshare succeeds (blamed nodes excluded, 5 healthy remain)
 	//
-	// With the current bug, neither blame nor reshare will land because
-	// nodes disagree on the party list.
+	// If the protocol has bugs like cascading blame (a slow node's
+	// delayed messages cause a healthy node to also appear stuck and
+	// get blamed), the blame set grows beyond the 2 actual slow nodes,
+	// reducing the remaining healthy set below quorum. The test fails.
+	//
+	// We wait through exactly 3 reshare cycles (one epoch) to enforce
+	// that recovery must happen within a single epoch — not by waiting
+	// for an epoch transition to reset the state.
 
 	rotateInterval := uint64(20)
 	bh, _ := d.getLastProcessedBlock(ctx, 2)
-	// Wait through 4 reshare cycles to give the blame→exclude→reshare
-	// pipeline time to complete while latency is still active.
-	targetBlock := ((bh/rotateInterval)+1)*rotateInterval + 4*rotateInterval + 50
+	// 3 reshare cycles = 1 epoch. Add margin for protocol timeout (2m)
+	// and BLS collection.
+	targetBlock := ((bh/rotateInterval)+1)*rotateInterval + 3*rotateInterval + 50
 
-	t.Logf("current block: %d, waiting through 4 reshare cycles (latency active) to block %d...", bh, targetBlock)
+	t.Logf("current block: %d, waiting through 3 reshare cycles (1 epoch, latency active) to block %d...", bh, targetBlock)
 	if err := d.WaitForBlockProcessing(ctx, 2, targetBlock, 12*time.Minute); err != nil {
 		t.Fatalf("didn't reach target block: %v", err)
 	}
 
-	// Collect all blame/reshare commitments since keygen.
+	// Collect all blame/reshare commitments since keygen, within the
+	// SAME epoch as the first reshare attempt.
 	commits, err := d.GetCommitments(ctx, 2, bson.M{
 		"key_id":       fullKeyId,
 		"type":         bson.M{"$in": []string{"blame", "reshare"}},
@@ -214,14 +229,43 @@ func TestBlamePartialLatency(t *testing.T) {
 		t.Fatalf("querying commitments: %v", err)
 	}
 
+	// Get election members from MongoDB to map bitset indices to
+	// account names. The ordering is by consensus key, NOT by node
+	// number — we must read the actual election to decode correctly.
+	var blameEpoch uint64
+	if len(commits) > 0 {
+		blameEpoch = commits[0].Epoch
+	}
+	members, err := d.GetElectionMembers(ctx, 2, blameEpoch)
+	if err != nil {
+		t.Logf("warning: could not read election members for epoch %d: %v", blameEpoch, err)
+		// Fall back to node order (may be wrong)
+		members = make([]string, cfg.Nodes)
+		for i := range members {
+			members[i] = fmt.Sprintf("%s%d", cfg.WitnessPrefix, i+1)
+		}
+	}
+	t.Logf("election epoch %d member ordering: %v", blameEpoch, members)
+
 	t.Logf("commitments during obstructed network: %d", len(commits))
 	for i, c := range commits {
 		bits := decodeBitset(t, c.Commitment)
-		t.Logf("  [%d] type=%s block=%d epoch=%d bitset=%s commitment=%s",
-			i, c.Type, c.BlockHeight, c.Epoch, bits.Text(2), c.Commitment)
+		var names []string
+		for j := 0; j < len(members); j++ {
+			if bits.Bit(j) == 1 {
+				names = append(names, members[j])
+			}
+		}
+		label := "blamed"
+		if c.Type == "reshare" {
+			label = "in committee"
+		}
+		t.Logf("  [%d] type=%s block=%d epoch=%d %s=%v bitset=%s",
+			i, c.Type, c.BlockHeight, c.Epoch, label, names, bits.Text(2))
 	}
 
-	// Check if a reshare succeeded while latency was still active.
+	// ── Assertions ───────────────────────────────────────────────────
+
 	hasReshare := false
 	for _, c := range commits {
 		if c.Type == "reshare" {
@@ -230,38 +274,60 @@ func TestBlamePartialLatency(t *testing.T) {
 		}
 	}
 
-	switch {
-	case hasReshare:
+	if !hasReshare {
 		t.Log("")
-		t.Log("RESULT: Reshare succeeded under obstructed network!")
-		t.Log("The 5 healthy nodes agreed on a blame, excluded the slow")
-		t.Log("nodes, and completed a reshare among themselves.")
-		t.Log("This is the CORRECT behavior.")
+		// Diagnose why it failed.
+		switch {
+		case len(commits) == 0:
+			t.Log("FAIL: No commitments landed under obstructed network.")
+			t.Log("DIAGNOSIS: Nodes could not agree on any blame CID.")
+			t.Log("This indicates SSID mismatch or BLS collection failure.")
 
-	case len(commits) == 0:
-		t.Log("")
-		t.Log("RESULT: No commitments landed under obstructed network.")
-		t.Log("DIAGNOSIS: Even with 5/7 healthy nodes (above 2/3 threshold),")
-		t.Log("the non-deterministic readiness check prevents BLS consensus")
-		t.Log("on any blame CID. The network cannot make progress.")
-		t.Log("")
-		t.Log("EXPECTED WHEN FIXED: Blame should land (5 healthy nodes agree)")
-		t.Log("followed by a successful reshare excluding the slow nodes,")
-		t.Log("all while the slow nodes remain slow.")
+		case len(commits) >= 2 && commits[0].Commitment == commits[len(commits)-1].Commitment:
+			t.Log("FAIL: Repeated identical blame — same nodes blamed each cycle.")
+			t.Log("DIAGNOSIS: Blame landed but exclusion isn't working on retry.")
+			t.Log("The blamed nodes are not being removed from the party list.")
 
-	case len(commits) >= 2 && commits[0].Commitment == commits[len(commits)-1].Commitment:
+		default:
+			// Check for cascading blame: more than 2 nodes blamed.
+			for _, c := range commits {
+				if c.Type == "blame" {
+					bits := decodeBitset(t, c.Commitment)
+					blamedCount := 0
+					var blamedNames []string
+					for j := 0; j < len(members); j++ {
+						if bits.Bit(j) == 1 {
+							blamedCount++
+							blamedNames = append(blamedNames, members[j])
+						}
+					}
+					if blamedCount > 2 {
+						t.Logf("FAIL: Cascading blame — %d nodes blamed %v but only 2 are slow.",
+							blamedCount, blamedNames)
+						t.Log("DIAGNOSIS: A slow node's delayed messages caused a healthy")
+						t.Log("node to stall in the protocol (couldn't advance rounds),")
+						t.Log("making it appear as a non-participant. The blame set grew")
+						t.Log("beyond the actual faulty nodes, reducing quorum below the")
+						t.Log("threshold needed for reshare.")
+					} else {
+						t.Logf("FAIL: Blame landed (blamed %v) but reshare didn't succeed.", blamedNames)
+						t.Log("DIAGNOSIS: Blamed nodes were not excluded on retry,")
+						t.Log("or insufficient cycles within the epoch.")
+					}
+					break
+				}
+			}
+		}
 		t.Log("")
-		t.Log("RESULT: Repeated identical blame — same nodes blamed each cycle.")
-		t.Log("Blame landed but exclusion isn't working. The network is stuck")
-		t.Log("in a blame loop even though 5 healthy nodes have quorum.")
-
-	case len(commits) >= 1:
-		t.Log("")
-		t.Logf("RESULT: %d commitment(s) landed but no reshare succeeded.", len(commits))
-		t.Log("Partial progress — blame is landing but the network hasn't")
-		t.Log("completed a reshare among the healthy nodes yet.")
-
-	default:
-		t.Logf("RESULT: %d commitment(s), pattern unclear.", len(commits))
+		t.Log("REQUIRED: The network must recover within a single epoch.")
+		t.Log("With 2/7 slow nodes and 5 healthy (above 2/3 threshold),")
+		t.Log("blame should target ONLY the 2 slow nodes, and the next")
+		t.Log("reshare should succeed with the 5 healthy nodes.")
+		t.FailNow()
 	}
+
+	t.Log("")
+	t.Log("PASS: Reshare succeeded under obstructed network within one epoch!")
+	t.Log("The healthy nodes agreed on a blame, excluded the slow nodes,")
+	t.Log("and completed a reshare among themselves.")
 }
