@@ -8,10 +8,9 @@
 drone:
   port: 9000
   hostname: 0.0.0.0
-  operator_message: ""
+  operator_message: "devnet"
   cache_max_capacity: 0
   middleware_connection_threads: 4
-  operator_message: "devnet"
   add_cors_headers: false
   access_log_format: simple
   access_log_file: ""
