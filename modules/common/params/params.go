@@ -64,7 +64,7 @@ type TssParams struct {
 	RpcTimeout            time.Duration `json:"rpcTimeout,omitempty"`
 	CommitDelay           time.Duration `json:"commitDelay,omitempty"`
 	WaitForSigsTimeout    time.Duration `json:"waitForSigsTimeout,omitempty"`
-	RotateInterval        uint64        `json:"rotateInterval,omitempty"`
+	RotateInterval         uint64        `json:"rotateInterval,omitempty"`
 	SignInterval           uint64        `json:"signInterval,omitempty"`
 	ReadinessOffset        uint64        `json:"readinessOffset,omitempty"`
 	PreParamsTimeout       time.Duration `json:"preParamsTimeout,omitempty"`
@@ -98,6 +98,7 @@ func (t TssParams) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON deserializes TssParams from a JSON object where
 // durations are human-readable strings and intervals are numbers.
+// Only fields present in the JSON are overwritten.
 func (t *TssParams) UnmarshalJSON(data []byte) error {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(data, &m); err != nil {

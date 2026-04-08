@@ -16,7 +16,7 @@ func composeFilePath() string {
 
 // writeEnvFile generates the .env file consumed by docker compose for
 // variable substitution in both the base and override compose files.
-func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, outputPath string) error {
+func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, imageName, outputPath string) error {
 	var b strings.Builder
 
 	kv := func(k, v string) { fmt.Fprintf(&b, "%s=%s\n", k, v) }
@@ -37,6 +37,7 @@ func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, outputPat
 	kv("DRONE_IMAGE", cfg.DroneImage)
 	kv("DRONE_PORT", fmt.Sprint(cfg.DronePort))
 	kv("DRONE_CONFIG_PATH", droneConfigPath)
+	kv("MAGI_IMAGE", imageName)
 
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)
 }
@@ -81,9 +82,9 @@ func oldCodeImageTag(cfg *Config) string {
 // file is written and passed to each magid node via -sysconfig flag.
 //
 // Nodes listed in cfg.OldCodeNodes use a pre-built image instead of
-// building from source, and do not receive the -sysconfig flag (old
+// the standard image, and do not receive the -sysconfig flag (old
 // code does not support it).
-func writeNodesOverride(cfg *Config, devnetDir, projectName, outputPath string) error {
+func writeNodesOverride(cfg *Config, devnetDir, projectName, imageName, outputPath string) error {
 	var b strings.Builder
 
 	b.WriteString("services:\n")
@@ -102,18 +103,16 @@ func writeNodesOverride(cfg *Config, devnetDir, projectName, outputPath string) 
 			cmd += `, "-sysconfig", "/data/devnet/sysconfig.json"`
 		}
 
-		// Image source: pre-built image for old-code nodes, build from
-		// source for new-code nodes.
-		var imageLine string
+		// Image source: pre-built old-code image or the standard
+		// pre-built image (avoids N parallel Go compiles).
+		nodeImage := imageName
 		if isOld {
-			imageLine = fmt.Sprintf("    image: %s", oldCodeImageTag(cfg))
-		} else {
-			imageLine = fmt.Sprintf("    build:\n      context: %s\n      dockerfile: tests/devnet/Dockerfile.devnet", cfg.SourceDir)
+			nodeImage = oldCodeImageTag(cfg)
 		}
 
 		fmt.Fprintf(&b, `
   magi-%[1]d:
-%[2]s
+    image: %[8]s
     depends_on:
       db:
         condition: service_healthy
@@ -130,7 +129,7 @@ func writeNodesOverride(cfg *Config, devnetDir, projectName, outputPath string) 
       - "%[5]d:%[5]d/udp"
     volumes:
       - %[6]s:/data/devnet
-`, i, imageLine, cmd, gqlPort, p2pPort, devnetDir, projectName)
+`, i, cfg.SourceDir, cmd, gqlPort, p2pPort, devnetDir, projectName, nodeImage)
 	}
 
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)
