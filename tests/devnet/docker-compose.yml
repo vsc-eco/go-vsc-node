@@ -138,9 +138,7 @@ services:
       - devnet
 
   devnet-setup:
-    build:
-      context: ${SOURCE_DIR}
-      dockerfile: tests/devnet/Dockerfile.devnet
+    image: ${MAGI_IMAGE}
     profiles: ["setup"]
     depends_on:
       db:
@@ -161,9 +159,7 @@ services:
       - devnet
 
   genesis-elector:
-    build:
-      context: ${SOURCE_DIR}
-      dockerfile: tests/devnet/Dockerfile.devnet
+    image: ${MAGI_IMAGE}
     profiles: ["setup"]
     depends_on:
       db:
@@ -180,9 +176,7 @@ services:
       - devnet
 
   contract-deployer:
-    build:
-      context: ${SOURCE_DIR}
-      dockerfile: tests/devnet/Dockerfile.devnet
+    image: ${MAGI_IMAGE}
     profiles: ["tools"]
     depends_on:
       db:

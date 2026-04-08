@@ -90,6 +90,10 @@ func main() {
 	tssRequests := tss_db.NewRequests(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
 	if args.sysconfigPath != "" {
+		if args.network != "devnet" && args.network != "mocknet" {
+			fmt.Println("Error: -sysconfig overrides are only allowed on devnet and mocknet")
+			os.Exit(1)
+		}
 		if err := sysConfig.LoadOverrides(args.sysconfigPath); err != nil {
 			fmt.Println("Error loading sysconfig overrides:", err)
 			os.Exit(1)

@@ -25,6 +25,7 @@ type Devnet struct {
 	overrideFile string
 	envFile      string
 	projectName  string
+	imageName    string
 	started      bool
 }
 
@@ -94,26 +95,36 @@ func (d *Devnet) Start(ctx context.Context) error {
 	}
 
 	// Step 2: write drone config, .env, and nodes override
+	d.imageName = d.projectName + "-magi"
 	log.Printf("[devnet] writing drone config...")
 	droneConfigPath, err := writeDroneConfig(d.dataDir)
 	if err != nil {
 		return fmt.Errorf("writing drone config: %w", err)
 	}
 	log.Printf("[devnet] writing %s", d.envFile)
-	if err := writeEnvFile(d.cfg, d.hafDataDir, d.devnetDir, droneConfigPath, d.envFile); err != nil {
+	if err := writeEnvFile(d.cfg, d.hafDataDir, d.devnetDir, droneConfigPath, d.imageName, d.envFile); err != nil {
 		return fmt.Errorf("writing env file: %w", err)
 	}
 	if err := writeSysConfigOverrides(d.cfg, d.devnetDir); err != nil {
 		return fmt.Errorf("writing sysconfig overrides: %w", err)
 	}
 	log.Printf("[devnet] writing %s", d.overrideFile)
-	if err := writeNodesOverride(d.cfg, d.devnetDir, d.projectName, d.overrideFile); err != nil {
+	if err := writeNodesOverride(d.cfg, d.devnetDir, d.projectName, d.imageName, d.overrideFile); err != nil {
 		return fmt.Errorf("writing nodes override: %w", err)
 	}
 
-	// Step 3: build image
-	log.Printf("[devnet] building devnet image (this may take a while)...")
-	if err := d.compose(ctx, "build"); err != nil {
+	// Step 3: build the devnet image once, then all services reference
+	// it by name. This avoids BuildKit launching N parallel Go compiles
+	// which can OOM on machines with limited RAM.
+	log.Printf("[devnet] building devnet image %s (this may take a while)...", d.imageName)
+	buildCmd := exec.CommandContext(ctx, "docker", "build",
+		"-t", d.imageName,
+		"-f", filepath.Join(d.cfg.SourceDir, "tests", "devnet", "Dockerfile.devnet"),
+		d.cfg.SourceDir,
+	)
+	buildCmd.Stdout = os.Stdout
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
 		return fmt.Errorf("building image: %w", err)
 	}
 
@@ -198,13 +209,31 @@ func (d *Devnet) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop tears down the devnet environment.
+// Stop tears down the devnet environment. If KeepRunning is true,
+// it pauses for user input before tearing down, allowing inspection
+// of the running containers.
 func (d *Devnet) Stop() error {
 	if d.cfg.KeepRunning {
-		log.Printf("[devnet] KeepRunning=true, skipping teardown")
+		log.Printf("[devnet] containers still running — inspect with:")
 		log.Printf("[devnet]   project: %s", d.projectName)
 		log.Printf("[devnet]   data:    %s", d.dataDir)
-		return nil
+		log.Printf("[devnet]   compose: docker compose -f %s -f %s --env-file %s -p %s ps",
+			d.composeFile, d.overrideFile, d.envFile, d.projectName)
+		for i := 1; i <= d.cfg.Nodes; i++ {
+			log.Printf("[devnet]   magi-%d logs: docker logs %s", i, d.containerName(i))
+		}
+		log.Printf("[devnet]   mongo:   mongosh mongodb://localhost:%d", d.cfg.MongoPort)
+		// Create a signal file. Teardown proceeds when it's deleted.
+		holdFile := filepath.Join(d.dataDir, "HOLD")
+		os.WriteFile(holdFile, []byte("delete this file to trigger teardown\n"), 0o644)
+		log.Printf("[devnet] to tear down, run:  rm %s", holdFile)
+		for {
+			if _, err := os.Stat(holdFile); os.IsNotExist(err) {
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
+		log.Printf("[devnet] HOLD file removed, continuing with teardown")
 	}
 
 	log.Printf("[devnet] tearing down...")

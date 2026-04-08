@@ -44,13 +44,22 @@ var log = vsclog.Module("tss")
 
 const (
 	TSS_SIGN_INTERVAL           = 50            // 50 L1 blocks
-	TSS_ROTATE_INTERVAL         = 20 * 5        // 5 minutes in L1 blocks
+	TSS_ROTATE_INTERVAL_DEFAULT = 20 * 5        // 5 minutes in L1 blocks (default)
 	TSS_MESSAGE_RETRY_COUNT     = 3             // Number of retries for failed messages
 	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for bans
 	TSS_BAN_GRACE_PERIOD_EPOCHS = 3             // Epochs before new nodes can be banned (as int for comparison)
 	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
 	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
 )
+
+// rotateInterval returns the effective TSS rotate interval from config,
+// falling back to the default if not configured.
+func (tssMgr *TssManager) rotateInterval() uint64 {
+	if ri := tssMgr.sconf.TssParams().RotateInterval; ri > 0 {
+		return ri
+	}
+	return TSS_ROTATE_INTERVAL_DEFAULT
+}
 
 type TssManager struct {
 	p2p    *libp2p.P2PServer
@@ -168,7 +177,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 
 		keyLocks := make(map[string]bool)
 		generatedActions := make([]QueuedAction, 0)
-		if bh%TSS_ROTATE_INTERVAL == 0 {
+		if bh%tssMgr.rotateInterval() == 0 {
 
 			electionData, err := tssMgr.electionDb.GetElectionByHeight(bh)
 			if err != nil || electionData.Members == nil {
@@ -1111,7 +1120,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					if dsc.KeyId() != "" {
 						log.Info("reshare/keygen timeout, will retry at next rotate interval",
 							"sessionId", dsc.SessionId(), "keyId", dsc.KeyId(),
-							"nextRetryIn", fmt.Sprintf("~%d blocks", TSS_ROTATE_INTERVAL-(bh%TSS_ROTATE_INTERVAL)))
+							"nextRetryIn", fmt.Sprintf("~%d blocks", tssMgr.rotateInterval()-(bh%tssMgr.rotateInterval())))
 					}
 				}
 			}(dsc)

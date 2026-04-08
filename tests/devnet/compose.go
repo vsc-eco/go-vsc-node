@@ -16,7 +16,7 @@ func composeFilePath() string {
 
 // writeEnvFile generates the .env file consumed by docker compose for
 // variable substitution in both the base and override compose files.
-func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, outputPath string) error {
+func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, imageName, outputPath string) error {
 	var b strings.Builder
 
 	kv := func(k, v string) { fmt.Fprintf(&b, "%s=%s\n", k, v) }
@@ -37,6 +37,7 @@ func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, outputPat
 	kv("DRONE_IMAGE", cfg.DroneImage)
 	kv("DRONE_PORT", fmt.Sprint(cfg.DronePort))
 	kv("DRONE_CONFIG_PATH", droneConfigPath)
+	kv("MAGI_IMAGE", imageName)
 
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)
 }
@@ -63,7 +64,7 @@ func writeSysConfigOverrides(cfg *Config, devnetDir string) error {
 // Each node gets NET_ADMIN capability for iptables-based network
 // partition testing. If cfg.SysConfigOverrides is set, a sysconfig.json
 // file is written and passed to each magid node via -sysconfig flag.
-func writeNodesOverride(cfg *Config, devnetDir, projectName, outputPath string) error {
+func writeNodesOverride(cfg *Config, devnetDir, projectName, imageName, outputPath string) error {
 	var b strings.Builder
 
 	b.WriteString("services:\n")
@@ -82,9 +83,7 @@ func writeNodesOverride(cfg *Config, devnetDir, projectName, outputPath string) 
 
 		fmt.Fprintf(&b, `
   magi-%[1]d:
-    build:
-      context: %[2]s
-      dockerfile: tests/devnet/Dockerfile.devnet
+    image: %[8]s
     depends_on:
       db:
         condition: service_healthy
@@ -101,7 +100,7 @@ func writeNodesOverride(cfg *Config, devnetDir, projectName, outputPath string) 
       - "%[5]d:%[5]d/udp"
     volumes:
       - %[6]s:/data/devnet
-`, i, cfg.SourceDir, cmd, gqlPort, p2pPort, devnetDir, projectName)
+`, i, cfg.SourceDir, cmd, gqlPort, p2pPort, devnetDir, projectName, imageName)
 	}
 
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)

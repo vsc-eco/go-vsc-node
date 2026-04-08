@@ -64,30 +64,40 @@ type TssParams struct {
 	RpcTimeout            time.Duration `json:"rpcTimeout,omitempty"`
 	CommitDelay           time.Duration `json:"commitDelay,omitempty"`
 	WaitForSigsTimeout    time.Duration `json:"waitForSigsTimeout,omitempty"`
+	RotateInterval        uint64        `json:"rotateInterval,omitempty"`
 }
 
 // MarshalJSON serializes TssParams with durations as human-readable
 // strings (e.g. "5s", "2m") using the json tags on TssParams itself.
+// Non-duration fields (like RotateInterval) are serialized as-is.
 func (t TssParams) MarshalJSON() ([]byte, error) {
-	m := make(map[string]string)
+	m := make(map[string]interface{})
 	v := reflect.ValueOf(t)
 	rt := v.Type()
 	for i := 0; i < rt.NumField(); i++ {
 		tag := rt.Field(i).Tag.Get("json")
 		key, _, _ := strings.Cut(tag, ",")
-		dur := v.Field(i).Interface().(time.Duration)
-		if dur != 0 {
-			m[key] = dur.String()
+		field := v.Field(i)
+		if field.Type() == reflect.TypeOf(time.Duration(0)) {
+			dur := field.Interface().(time.Duration)
+			if dur != 0 {
+				m[key] = dur.String()
+			}
+		} else {
+			if !field.IsZero() {
+				m[key] = field.Interface()
+			}
 		}
 	}
 	return json.Marshal(m)
 }
 
 // UnmarshalJSON deserializes TssParams from a JSON object where
-// durations are human-readable strings. Only fields present in the
-// JSON are overwritten.
+// durations are human-readable strings. Non-duration fields are
+// parsed from their JSON number representation. Only fields present
+// in the JSON are overwritten.
 func (t *TssParams) UnmarshalJSON(data []byte) error {
-	var m map[string]string
+	var m map[string]json.RawMessage
 	if err := json.Unmarshal(data, &m); err != nil {
 		return err
 	}
@@ -96,15 +106,26 @@ func (t *TssParams) UnmarshalJSON(data []byte) error {
 	for i := 0; i < rt.NumField(); i++ {
 		tag := rt.Field(i).Tag.Get("json")
 		key, _, _ := strings.Cut(tag, ",")
-		s, ok := m[key]
-		if !ok || s == "" {
+		raw, ok := m[key]
+		if !ok {
 			continue
 		}
-		d, err := time.ParseDuration(s)
-		if err != nil {
-			return fmt.Errorf("field %s: %w", key, err)
+		field := v.Field(i)
+		if field.Type() == reflect.TypeOf(time.Duration(0)) {
+			var s string
+			if err := json.Unmarshal(raw, &s); err != nil {
+				return fmt.Errorf("field %s: expected duration string: %w", key, err)
+			}
+			d, err := time.ParseDuration(s)
+			if err != nil {
+				return fmt.Errorf("field %s: %w", key, err)
+			}
+			field.Set(reflect.ValueOf(d))
+		} else {
+			if err := json.Unmarshal(raw, field.Addr().Interface()); err != nil {
+				return fmt.Errorf("field %s: %w", key, err)
+			}
 		}
-		v.Field(i).Set(reflect.ValueOf(d))
 	}
 	return nil
 }
