@@ -301,8 +301,9 @@ type chainSession struct {
 	contractId        string       // VSC mapping contract for this chain
 	chainData         []chainBlock // new blocks fetched from the chain's RPC
 	newBlocksToSubmit bool         // true if chainData contains unseen blocks
-	replaceBlock      bool         // true if a reorg was detected and replaceBlock should be called
-	replaceBlockHex   string       // canonical block header hex for replaceBlock
+	replaceBlock      bool         // true if a reorg was detected and replaceBlocks should be called
+	replaceBlockHex   string       // concatenated canonical block header hex for replaceBlocks
+	replaceBlockDepth int          // number of blocks being replaced (reorg depth)
 }
 
 // getContractBlockHeight reads the last submitted block height from a
@@ -386,7 +387,7 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 
 	// Auto-reorg detection: compare stored block with canonical chain.
 	if chain.AutoReorgDetection() && contractHeight > 0 {
-		reorgDetected, canonicalHex, err := c.checkForReorg(chain, contractId, contractHeight)
+		reorgDetected, canonicalHex, depth, err := c.checkForReorg(chain, contractId, contractHeight)
 		if err != nil {
 			c.logger.Warn("reorg detection check failed, continuing with addBlocks",
 				"symbol", chain.Symbol(), "err", err,
@@ -395,6 +396,7 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 			c.logger.Warn("reorg detected! stored block differs from canonical chain",
 				"symbol", chain.Symbol(),
 				"height", contractHeight,
+				"depth", depth,
 			)
 			return chainSession{
 				symbol:            chain.Symbol(),
@@ -402,6 +404,7 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 				newBlocksToSubmit: true,
 				replaceBlock:      true,
 				replaceBlockHex:   canonicalHex,
+				replaceBlockDepth: depth,
 			}, nil
 		}
 	}
@@ -419,29 +422,82 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 	}, nil
 }
 
-// checkForReorg compares the block header stored in the contract at the given
-// height with the canonical block header from the chain's RPC. Returns true
-// if they differ (reorg detected), along with the correct canonical header hex.
-func (c *ChainOracle) checkForReorg(chain chainRelay, contractId string, height uint64) (bool, string, error) {
-	// Get the canonical header from the chain RPC
+// maxReorgDepth is the maximum number of blocks we'll walk back to find the
+// fork point during reorg detection. This prevents unbounded RPC calls.
+const maxReorgDepth = 20
+
+// checkForReorg compares block headers stored in the contract with the canonical
+// chain. If a mismatch is found at the tip, it walks backwards to find the full
+// reorg depth. Returns: detected bool, concatenated canonical headers hex
+// (oldest-first), reorg depth, and error.
+func (c *ChainOracle) checkForReorg(chain chainRelay, contractId string, height uint64) (bool, string, int, error) {
+	// Check the tip first
 	canonicalHex, err := chain.GetCanonicalBlockHeader(height)
 	if err != nil {
-		return false, "", fmt.Errorf("failed to get canonical header: %w", err)
+		return false, "", 0, fmt.Errorf("failed to get canonical header at %d: %w", height, err)
 	}
 	if canonicalHex == "" {
-		return false, "", nil // chain doesn't support this check
+		return false, "", 0, nil // chain doesn't support this check
 	}
 
-	// Get the stored header from contract state
 	storedHex, err := c.getStoredBlockHeaderHex(contractId, height)
 	if err != nil {
-		return false, "", fmt.Errorf("failed to get stored header: %w", err)
+		return false, "", 0, fmt.Errorf("failed to get stored header at %d: %w", height, err)
 	}
 
-	if storedHex != canonicalHex {
-		return true, canonicalHex, nil
+	if storedHex == canonicalHex {
+		return false, "", 0, nil // no reorg
 	}
-	return false, "", nil
+
+	// Reorg detected at tip. Walk backwards to find the fork point.
+	// Collect canonical headers from the reorged range (oldest first).
+	canonicalHeaders := []string{canonicalHex}
+
+	for depth := 1; depth < maxReorgDepth; depth++ {
+		checkHeight := height - uint64(depth)
+		if checkHeight == 0 {
+			break // can't go below height 1
+		}
+
+		canonical, err := chain.GetCanonicalBlockHeader(checkHeight)
+		if err != nil {
+			c.logger.Warn("reorg walk-back: failed to get canonical header",
+				"symbol", chain.Symbol(), "height", checkHeight, "err", err,
+			)
+			break
+		}
+
+		stored, err := c.getStoredBlockHeaderHex(contractId, checkHeight)
+		if err != nil {
+			c.logger.Warn("reorg walk-back: failed to get stored header",
+				"symbol", chain.Symbol(), "height", checkHeight, "err", err,
+			)
+			break
+		}
+
+		if stored == canonical {
+			break // found the fork point — this block matches
+		}
+
+		// This block is also reorged; prepend its canonical header
+		canonicalHeaders = append([]string{canonical}, canonicalHeaders...)
+	}
+
+	// Concatenate all canonical headers (oldest first) into one hex string
+	concatenated := ""
+	for _, h := range canonicalHeaders {
+		concatenated += h
+	}
+
+	depth := len(canonicalHeaders)
+	c.logger.Info("reorg depth determined",
+		"symbol", chain.Symbol(),
+		"tipHeight", height,
+		"depth", depth,
+		"forkPoint", height-uint64(depth),
+	)
+
+	return true, concatenated, depth, nil
 }
 
 // getStoredBlockHeaderHex reads the raw block header from the contract state

@@ -124,9 +124,10 @@ func isReplaceSession(sessionID string) bool {
 	return strings.HasSuffix(sessionID, "-replace")
 }
 
-// witnessReplaceBlock verifies and signs a replaceBlock transaction.
-// The witness independently fetches the canonical block header from its own
-// RPC and builds the same replaceBlock transaction to sign.
+// witnessReplaceBlock verifies and signs a replaceBlocks transaction.
+// The witness independently fetches the canonical block headers from its own
+// RPC (walking back to find the reorg depth) and builds the same replaceBlocks
+// transaction to sign.
 func witnessReplaceBlock(c *ChainOracle, sessionID string, request *chainRelayRequest) (*chainRelayResponse, error) {
 	// Session ID format: "SYMBOL-hiveHeight-replace"
 	parts := strings.Split(sessionID, "-")
@@ -140,23 +141,24 @@ func witnessReplaceBlock(c *ChainOracle, sessionID string, request *chainRelayRe
 		return nil, errInvalidChainSymbol
 	}
 
-	// Get the contract height to know which block to replace
+	// Get the contract height to know which blocks to replace
 	contractHeight, err := c.getContractBlockHeight(request.ContractId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get contract height: %w", err)
 	}
 
-	// Fetch the canonical header from our own RPC
-	canonicalHex, err := chain.GetCanonicalBlockHeader(contractHeight)
+	// Perform the same reorg detection walk-back as the producer
+	reorgDetected, concatenatedHex, depth, err := c.checkForReorg(chain, request.ContractId, contractHeight)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get canonical header: %w", err)
+		return nil, fmt.Errorf("failed to check for reorg: %w", err)
+	}
+	if !reorgDetected {
+		return nil, fmt.Errorf("witness does not detect reorg at height %d", contractHeight)
 	}
 
-	// Build the same replaceBlock transaction.
-	// Payload is raw hex — SerializeVSC handles JSON encoding.
-	payloadStr := canonicalHex
-
-	tx := makeTransaction(request.ContractId, payloadStr, "replaceBlock", chainSymbol, request.NetId, request.Nonce)
+	// Build the same replaceBlocks transaction.
+	// Payload is concatenated hex — SerializeVSC handles JSON encoding.
+	tx := makeTransaction(request.ContractId, concatenatedHex, "replaceBlocks", chainSymbol, request.NetId, request.Nonce)
 
 	signableBlock, err := tx.ToSignableBlock()
 	if err != nil {
@@ -180,9 +182,10 @@ func witnessReplaceBlock(c *ChainOracle, sessionID string, request *chainRelayRe
 		return nil, fmt.Errorf("failed to get BLS DID: %w", err)
 	}
 
-	c.logger.Info("signed replaceBlock data",
+	c.logger.Info("signed replaceBlocks data",
 		"symbol", chainSymbol,
 		"contractHeight", contractHeight,
+		"depth", depth,
 		"cid", txCid.String(),
 	)
 

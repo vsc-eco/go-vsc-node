@@ -186,13 +186,14 @@ func (o *ChainOracle) processChainRelay(
 
 	var action, txPayloadStr string
 	if chainStatus.replaceBlock {
-		action = "replaceBlock"
-		// replaceBlock contract input is *string containing raw hex.
+		action = "replaceBlocks"
+		// replaceBlocks contract input is concatenated hex of 80-byte headers.
 		// Payload is a Go string that gets json.Marshal'd by SerializeVSC,
 		// which adds the JSON quotes automatically.
 		txPayloadStr = chainStatus.replaceBlockHex
-		o.logger.Info("submitting replaceBlock to fix reorg",
+		o.logger.Info("submitting replaceBlocks to fix reorg",
 			"symbol", chainStatus.symbol,
+			"depth", chainStatus.replaceBlockDepth,
 		)
 	} else {
 		action = "addBlocks"
