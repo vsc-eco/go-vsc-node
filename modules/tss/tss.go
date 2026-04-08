@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -133,6 +134,11 @@ type TssManager struct {
 
 	// Cancel function for background goroutines (preParams ticker, etc.)
 	bgCancel context.CancelFunc
+
+	// In-memory dedup for readiness broadcasts. Key is "keyId:targetBlock".
+	// Prevents spamming Hive with duplicate vsc.tss_ready transactions
+	// while waiting for the first broadcast to land on-chain (~1-2 blocks).
+	readinessSent map[string]bool
 }
 
 // ClearQueuedActions clears any pending actions. Used by tests to prevent
@@ -154,6 +160,12 @@ type bufferedMessage struct {
 
 func (tssMgr *TssManager) Receive() {}
 
+// GeneratePreParams generates Paillier key pairs and safe primes for TSS.
+// This is CPU-intensive (finding 1024-bit safe primes) and can take anywhere
+// from 15 seconds on a fast machine to several minutes on a loaded server.
+// The timeout is configurable via TssParams.PreParamsTimeout (defaults to 1
+// minute if unset). In devnet/CI environments with many concurrent nodes,
+// a longer timeout (e.g. 10 minutes) is recommended.
 func (tssMgr *TssManager) GeneratePreParams() {
 	locked := tssMgr.preParamsLock.TryLock()
 	if locked {
@@ -229,23 +241,24 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 						"epoch", electionData.Epoch, "err", err)
 				}
 				for _, key := range reshareKeys {
-					// Deduplication: check if we already broadcast readiness for this cycle.
-					// Readiness records use Epoch field for targetBlock and Commitment for account.
-					existing, _ := tssMgr.tssCommitments.FindCommitmentsSimple(
-						&key.Id,
-						[]string{"ready"},
-						&nextReshareBlock, // stored in Epoch field
-						nil, nil, 1,
-					)
-					alreadySent := false
-					for _, e := range existing {
-						if e.Commitment == selfAccount {
-							alreadySent = true
-							break
-						}
-					}
-					if alreadySent {
+					// In-memory dedup: one broadcast per key per reshare cycle.
+					// The MongoDB check was racy (broadcast takes 1-2 blocks to
+					// land on-chain), causing N duplicate broadcasts per window.
+					dedupKey := fmt.Sprintf("%s:%d", key.Id, nextReshareBlock)
+					if tssMgr.readinessSent[dedupKey] {
 						continue
+					}
+					tssMgr.readinessSent[dedupKey] = true
+
+					// Evict stale entries from previous cycles to prevent unbounded growth.
+					for k := range tssMgr.readinessSent {
+						// Keys are "keyId:targetBlock" — evict if targetBlock < current bh.
+						parts := strings.SplitN(k, ":", 2)
+						if len(parts) == 2 {
+							if block, err := strconv.ParseUint(parts[1], 10, 64); err == nil && block < bh {
+								delete(tssMgr.readinessSent, k)
+							}
+						}
 					}
 
 					// Broadcast in a goroutine so BlockTick doesn't block on Hive API.
@@ -1685,6 +1698,7 @@ func New(
 		messageBuffer:  newSessionBuffer(),
 		sessionMap:     make(map[string]sessionInfo),
 		sessionResults: make(map[string]sessionResultEntry),
+		readinessSent:  make(map[string]bool),
 	}
 }
 

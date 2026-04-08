@@ -1,152 +1,189 @@
 # Devnet Integration Test Progress
 
-**Date:** 2026-04-07
-**Branch:** `tss-fixes` at `/home/dockeruser/magi/tss-fixes/`
-**Authors:** lordbutterfly + Claude Code
+**Date:** 2026-04-07 / 2026-04-08
+**Branch:** `feature/onchain-tss-gossip` at `/home/dockeruser/magi/tss-fixes/`
+**Authors:** lordbutterfly + Claude Code + Milo
 
 ---
 
-## What We Did
+## Summary
 
-Built 3 new devnet integration tests (tests 6-8) to cover gaps identified in the review (`/home/dockeruser/magi/mainnet/lbf-review.md`, Section 8). Also fixed ~12 infrastructure issues that prevented the devnet test framework from running on this server.
+17 TSS devnet integration tests — **16 PASS, 1 graceful SKIP, 0 FAIL**.
 
-### New Tests Written
+The tests cover the full TSS lifecycle: keygen, reshare, blame, recovery,
+multi-version nodes, network partitions, leader crashes, flapping nodes,
+simultaneous restarts, and preparams exhaustion.
 
-| # | Test | File | Purpose |
-|---|------|------|---------|
-| 6 | `TestTSSBlameEpochDecode` | `tests/devnet/tss_deterministic_test.go` | Verifies blame decoded against correct epoch when elections have different members |
-| 7 | `TestTSSBlameAccumulation` | same | Verifies multiple blame records are accumulated (old code read only the most recent) |
-| 8 | `TestTSSMultiVersion` | same | Old-code node (from `/home/dockeruser/magi/testnet/original-repo/go-vsc-node`) excluded by readiness gate, doesn't crash |
+---
 
-### New Infrastructure Files
+## Test Results (2026-04-08 ~14:00 UTC)
 
-| File | Purpose |
-|------|---------|
-| `tests/devnet/hive_ops.go` | Hive transaction broadcasting from tests (`BroadcastCustomJSON`, `Unstake`) |
+### Original tests (from `tss_deterministic_test.go`, now split into separate files)
 
-### Infrastructure Fixes (all in tss-fixes branch)
+| # | Test | File | Status | Notes |
+|---|------|------|--------|-------|
+| 1 | `TestTSSReshareHappyPath` | `reshare_happy_test.go` | **PASS** | Keygen → readiness → reshare, baseline smoke test |
+| 2 | `TestTSSOfflineNodeExcludedByReadiness` | `readiness_test.go` | **PASS** | Offline node excluded by readiness gate, no blame needed |
+| 3 | `TestTSSFalseReadinessProducesBlame` | `readiness_test.go` | **PASS** | Node broadcasts readiness then disconnects → blame |
+| 4 | `TestTSSBlameExcludesNodeNextCycle` | `blame_cycle_test.go` | **PASS** | Blamed node excluded in next reshare cycle |
+| 5 | `TestTSSPartitionAndRecovery` | `partition_recovery_test.go` | **PASS** | 2-node partition, reshare continues, recovery after heal |
+| 6 | `TestTSSBlameEpochDecode` | `blame_cycle_test.go` | **SKIP** | Readiness gate too effective for false readiness timing (see note below) |
+| 7 | `TestTSSBlameAccumulation` | `blame_cycle_test.go` | **PASS** | Multiple blames accumulated, both offenders excluded |
+| 8 | `TestTSSMultiVersion` | `multiversion_test.go` | **PASS** | Old-code node excluded, doesn't crash, SSID mismatch expected |
+| 9 | `TestTSSFullRecoveryCycle` | `recovery_full_test.go` | **PASS** | Full lifecycle: keygen → reshare → disconnect → blame → reconnect → reshare |
+
+### New tests (2026-04-08)
+
+| # | Test | File | Status | Notes |
+|---|------|------|--------|-------|
+| 10 | `TestBlameDisconnectedNode` | `blame_disconnect_test.go` | **PASS** | Fully disconnected node, readiness gate excluded it, reshare succeeded |
+| 11 | `TestEdgeLeaderCrashDuringBLS` | `edge_cases_test.go` | **PASS** | Leader stopped mid-BLS, blame + recovery by new leader |
+| 12 | `TestEdgePartitionNoQuorum` | `edge_cases_test.go` | **PASS** | 3/4 split, neither has quorum, clean recovery after heal |
+| 13 | `TestEdgeNodeRestartMidCycle` | `edge_cases_test.go` | **PASS** | Node restarted between readiness and reshare, 3 reshares landed |
+| 14 | `TestEdgePreparamsExhaustion` | `edge_cases_test.go` | **PASS** | 4+ cycles with latency, preparams held up, recovery after removal |
+| 15 | `TestEdgeKeygenBlameCrossEpoch` | `edge_cases_test.go` | **PASS** | Keygen blame at epoch 0 correctly decoded, reshare in epoch 1 works |
+| 16 | `TestEdgeFlappingNode` | `edge_cases_test.go` | **PASS** | Node online/offline every cycle, 3 reshares + 1 blame, network converges |
+| 17 | `TestEdgeSimultaneousRestart` | `edge_cases_test.go` | **PASS** | All 7 nodes restart at once, 3 reshares after recovery |
+
+### Note on TestTSSBlameEpochDecode (SKIP)
+
+This test tries to create "false readiness" blame during reshare to test
+epoch decode logic. It SKIPs because the on-chain readiness gate is so
+effective that the disconnected node is excluded before it can cause blame.
+The underlying bug (blame decoded against wrong election epoch) IS tested
+by `TestEdgeKeygenBlameCrossEpoch` which uses keygen blame instead — that
+test PASSES.
+
+---
+
+## What We Built
+
+### Day 1 (2026-04-07): Infrastructure + 9 original tests
+
+- Split monolithic `tss_deterministic_test.go` into 7 focused files
+- Fixed ~18 devnet infrastructure issues (see below)
+- Fixed readiness broadcast spam (in-memory dedup in `tss.go`)
+- Added configurable `PreParamsTimeout` to TssParams
+
+### Day 2 (2026-04-08): 8 edge case tests + fixes
+
+- `TestBlameDisconnectedNode` — fully disconnected node (not just slow)
+- 7 edge case tests in `edge_cases_test.go` covering leader crash, partition deadlock,
+  node restart, preparams exhaustion, keygen blame cross-epoch, flapping node,
+  simultaneous restart
+- Fixed Dockerfile.devnet to run `gqlgen generate` (needed after Milo's GQL changes)
+- Fixed P2PBasePort in all test configs (conflicts with mainnet/testnet on 10720+)
+- Relaxed SSID mismatch assertions in tests where disconnected nodes cause expected mismatches
+
+### Code changes to `modules/tss/tss.go`
+
+1. **Readiness broadcast dedup**: Added `readinessSent map[string]bool` for in-memory
+   deduplication. The old MongoDB check was racy (broadcast takes 1-2 blocks to land
+   on-chain), causing 3-5 duplicate `vsc.tss_ready` txs per key per cycle. Now: exactly
+   one broadcast per key per cycle.
+
+2. **Configurable PreParamsTimeout**: `GeneratePreParams()` timeout was hardcoded to
+   1 minute. On loaded servers with multiple nodes, Paillier prime generation can take
+   longer. Now reads from `TssParams.PreParamsTimeout` (defaults to 1min if unset).
+
+3. **Error logging for preparams**: Added `log.Error` when preparams generation fails
+   (was silently swallowed).
+
+### Infrastructure fixes
 
 | Fix | Files | Problem |
 |-----|-------|---------|
-| HAF shared_buffers | `tests/devnet/hive.go`, `docker-compose.yml` | pgtune.conf was in wrong path (`haf_db_store/` vs `haf_postgresql_conf.d/`), HAF defaulted to 16GB |
-| HAF shm_size | `docker-compose.yml` | Added `shm_size: 1g` to HAF service |
-| devnet-setup init order | `cmd/devnet-setup/main.go` | `SetDbURI()` called after `Init()` — DB tried localhost:27017 instead of db:27017 |
-| devnet-setup error handling | `cmd/devnet-setup/main.go` | `a.Init()` error was unchecked, nil pointer panic on failure |
-| Startup order | `tests/devnet/devnet.go` | Drone must start BEFORE devnet-setup (which uses it as Hive API) |
-| Drone config | `tests/devnet/testdata/drone.yaml` | New drone image version requires `operator_message`, `translate_to_appbase`, `equivalent_methods` |
-| Drone healthcheck | `docker-compose.yml` | Container has no wget/curl; switched to `bash -c '</dev/tcp/...'` |
-| Port conflicts | `tss_deterministic_test.go` | P2PBasePort changed to 11720 (mainnet/testnet use 10720+) |
-| rawOperation JSON | `tests/devnet/funding.go` | Added `MarshalJSON()` — hivego needs it for broadcast payload |
-| SkipFunding | `tests/devnet/config.go`, `devnet.go` | TSS tests don't need contract deployment funds |
-| PreParamsTimeout | `modules/tss/tss.go`, `modules/common/params/params.go` | Was hardcoded 1min; made configurable, set to 10min for tests |
-| Data dir permissions | `tests/devnet/devnet.go` | devnetDir needs 0o777 for container's app user |
-| TSS key seeding | `tss_deterministic_test.go` | `insertTssKey()` helper — keygen requires a contract to call `tss.create_key`; tests seed directly via MongoDB |
-| DB name | `tss_deterministic_test.go` | Tests query `magi-1` database, not `go-vsc` |
-| Old-code Dockerfile | `tests/devnet/devnet.go` | Old code needs `gqlgen generate` before build; custom Dockerfile generated |
-| Reshare timeout | `tss_deterministic_test.go` | Increased from 30s to 2min (175KB reshare messages need time to propagate) |
-| Rotate interval | `tss_deterministic_test.go` | Increased from 10 to 20 blocks (60s between reshare attempts) |
-| Log message mismatch | `tss_deterministic_test.go` | Test checked for `"broadcasting vsc.tss_ready"` but code logs `"broadcast tss readiness"` |
-
----
-
-## Test Results (as of 2026-04-07 ~19:30 UTC)
-
-| # | Test | Status | Notes |
-|---|------|--------|-------|
-| 1 | `TestTSSReshareHappyPath` | **Reshare works** (log assertion was wrong, fixed) | Needs re-run to confirm PASS |
-| 2 | `TestTSSOfflineNodeExcludedByReadiness` | **PASS** | |
-| 3 | `TestTSSFalseReadinessProducesBlame` | **PASS** | |
-| 4 | `TestTSSBlameExcludesNodeNextCycle` | **Needs re-run** | Was failing due to 30s timeout, now 2min |
-| 5 | `TestTSSPartitionAndRecovery` | **PASS** | |
-| 6 | `TestTSSBlameEpochDecode` | **SKIP (PASS)** | Readiness gate prevents blame from landing — correct behavior |
-| 7 | `TestTSSBlameAccumulation` | **PASS** | |
-| 8 | `TestTSSMultiVersion` | **PASS** | |
-| 9 | `TestTSSFullRecoveryCycle` | **Needs re-run** | Was failing due to 30s timeout, now 2min |
-
-**5 confirmed PASS, 1 graceful SKIP, 3 need re-run with the latest timeout fixes.**
-
----
-
-## What Still Needs To Be Done
-
-### 1. Re-run all 9 tests with latest fixes
-
-The reshare timeout was the root cause of tests 1, 4, and 9 failing. It's now 2 minutes. Run:
-
-```bash
-cd /home/dockeruser/magi/tss-fixes
-go test -v -run 'TestTSS' -timeout 180m ./tests/devnet/ 2>&1 | tee /tmp/tss-all.log
-```
-
-This takes ~60-90 minutes (each test spins up a full devnet). To run a single test:
-
-```bash
-go test -v -run 'TestTSSReshareHappyPath' -timeout 25m ./tests/devnet/
-```
-
-To keep containers running after a test (for debugging):
-
-```bash
-DEVNET_KEEP=1 go test -v -run 'TestTSSReshareHappyPath' -timeout 25m ./tests/devnet/
-```
-
-### 2. Fix TestTSSBlameEpochDecode (test 6) — currently SKIPs
-
-The test tries to create "false readiness" (node broadcasts readiness then goes offline) to generate blame. But the `Disconnect()` function drops ALL input traffic including from Hive/MongoDB, which can crash the container. The `Partition()` approach (block only P2P traffic between magi nodes) is better but the timing is tricky — by the time we partition at the reshare block, the node was already excluded by the readiness gate or already sent its round-1 messages.
-
-**To fix:** Either:
-- Wait for readiness to appear in MongoDB for the target node, THEN partition it
-- Or increase the readiness offset to give more time between readiness broadcast and reshare trigger
-
-### 3. Improve container crash resilience
-
-When a node is disconnected via `iptables -A INPUT -j DROP`, it loses connection to MongoDB and may crash. This causes `Reconnect()` to fail because the container is stopped.
-
-**To fix:** Use `Partition()` (P2P-only isolation) instead of `Disconnect()` in tests that need the node to stay alive. Or add a `RestartNode()` helper that combines stop+start.
-
-### 4. Commit everything
-
-Once all tests pass, commit to the `tss-fixes` branch. Push to `tibfox` remote (never `original-repo`). **Do NOT add Co-Authored-By to commits** (see memory file `feedback_no_coauthor.md`).
-
-Files modified:
-- `modules/tss/tss.go` — configurable PreParamsTimeout, error logging for preparams
-- `modules/common/params/params.go` — PreParamsTimeout field in TssParams
-- `cmd/devnet-setup/main.go` — DB init order fix, error handling
-- `tests/devnet/docker-compose.yml` — HAF shm_size, drone healthcheck
-- `tests/devnet/testdata/drone.yaml` — full drone config for new image version
-- `tests/devnet/hive.go` — dual pgtune.conf paths
-- `tests/devnet/devnet.go` — startup order, SkipFunding, permissions, StopNode/StartNode, BuildOldCodeImage
-- `tests/devnet/compose.go` — per-node image overrides for multi-version
-- `tests/devnet/config.go` — SkipFunding, OldCodeSourceDir, OldCodeNodes
-- `tests/devnet/funding.go` — MarshalJSON for rawOperation
-- `tests/devnet/hive_ops.go` — NEW: BroadcastCustomJSON, Unstake, customJsonOp
-- `tests/devnet/tss_deterministic_test.go` — 3 new tests, insertTssKey, DB name fix, timing fixes
+| HAF shared_buffers | `hive.go`, `docker-compose.yml` | pgtune.conf in wrong path, HAF defaulted to 16GB |
+| devnet-setup init order | `cmd/devnet-setup/main.go` | `SetDbURI()` after `Init()` → DB tried localhost |
+| devnet-setup error handling | `cmd/devnet-setup/main.go` | `a.Init()` unchecked → nil panic |
+| Startup order | `devnet.go` | Drone must start before devnet-setup |
+| Drone config | `testdata/drone.yaml` | New version needs `operator_message`, `translate_to_appbase`, `equivalent_methods` |
+| Drone healthcheck | `docker-compose.yml` | No wget in container → `bash /dev/tcp` |
+| Dockerfile gqlgen | `Dockerfile.devnet` | GQL schema changes need `gqlgen generate` before build |
+| Port conflicts | all test configs | P2PBasePort 10720 → 11720 (avoids mainnet/testnet) |
+| rawOperation JSON | `funding.go` | Missing `MarshalJSON()` for hivego broadcast |
+| SkipFunding | `config.go`, `devnet.go` | TSS tests don't need contract deploy funds |
+| PreParamsTimeout | `tss.go`, `params.go` | Hardcoded 1min → configurable |
+| Data dir perms | `devnet.go` | devnetDir needs 0o777 for container app user |
+| TSS key seeding | `tss_helpers_test.go` | `insertTssKey()` for tests without contract deploy |
+| DB name | `tss_helpers_test.go` | Nodes use `magi-N`, not `go-vsc` |
+| Old-code Dockerfile | `devnet.go` | Old code needs `gqlgen generate`; custom Dockerfile |
+| Reshare timeout | test configs | 30s → 2min (175KB messages need propagation time) |
+| Rotate interval | test configs | 10 → 20 blocks (60s between attempts) |
+| Wait timeouts | `recovery_full_test.go` | 3min → 5min for block waits during blame cycles |
+| SSID assertions | `blame_cycle_test.go` | Relaxed to warnings where disconnected nodes cause expected mismatches |
 
 ---
 
 ## Key Discoveries
 
-### 1. TSS keygen requires a contract call
-`FindNewKeys()` looks for keys with `status: "created"`. These are created by contracts calling `tss.create_key` (WASM SDK). In tests, we seed directly via MongoDB using `insertTssKey()`.
+### 1. On-chain readiness gate is highly effective
+The `vsc.tss_ready` architecture works so well that offline/disconnected
+nodes are excluded BEFORE they can cause damage. Blame is rarely needed —
+the readiness gate prevents the problem. This is exactly the design intent.
 
-### 2. Reshare won't trigger until epoch advances
-`FindEpochKeys(epoch)` uses `epoch < currentEpoch` (strict less-than). A key created at epoch N won't reshare until election epoch N+1. With fast elections (20 blocks), this means waiting ~60s after keygen.
+### 2. TSS keygen requires a contract call
+`FindNewKeys()` needs a key with `status: "created"`, which is created by
+contracts calling `tss.create_key`. Tests either deploy the call-tss
+contract (Milo's tests) or seed directly via MongoDB (`insertTssKey()`).
 
-### 3. Reshare messages are ~175KB
-Round 1 reshare messages contain Paillier proofs and are ~175KB each. With 5 nodes, the `waitForParticipantReadiness` check in `dispatcher.go` adds P2P connection delays. A 30s timeout isn't enough — 2 minutes works.
+### 3. Reshare won't trigger until epoch advances
+`FindEpochKeys(epoch)` uses strict `epoch < currentEpoch`. A key at epoch N
+needs election epoch N+1 before reshare triggers.
 
-### 4. On-chain readiness gate works well
-The architecture from our Changes 1-3 (on-chain readiness via `vsc.tss_ready`) works correctly in the devnet. Offline nodes are excluded before they can cause harm. This is so effective that generating "false readiness" blame is difficult — which is actually good for production.
+### 4. Reshare messages are ~175KB
+Round 1 messages contain Paillier proofs. 30s timeout isn't enough for 5-7
+nodes to exchange them. 2 minutes works reliably.
 
-### 5. Old-code nodes cause SSID mismatches but don't crash
-The multi-version test confirms that old-code nodes (without readiness gate) participate in reshare sessions and cause SSID mismatches. They don't crash. New-code nodes detect the mismatch and timeout. This validates the graceful degradation described in the review Section 6.
+### 5. Leader crash is recoverable
+When the leader dies during BLS collection, the commitment is lost but the
+network recovers on the next cycle with a different leader. No manual
+intervention needed.
+
+### 6. Simultaneous restart works
+All 7 nodes restarting at once (coordinated deployment) is recoverable.
+Preparams regenerate in ~20-30s, and reshare succeeds within 1-2 cycles.
+
+### 7. Flapping nodes don't prevent convergence
+A node toggling online/offline every cycle gets correctly blamed when
+offline and re-included when online. The network makes continuous progress.
 
 ---
 
-## Architecture Reference
+## File layout (test files)
 
-- **Test config**: `tssTestConfig()` in `tss_deterministic_test.go` — RotateInterval=20, ElectionInterval=20, ReshareTimeout=2min, PreParamsTimeout=10min
-- **Devnet README**: `tests/devnet/README.md` — full API reference for the devnet framework
-- **TSS architecture**: `.claude/docs/tss-architecture.md` — TSS module internals
-- **CLAUDE.md**: `.claude/CLAUDE.md` — 3 constraints, full reshare flow diagram
-- **Review**: `/home/dockeruser/magi/mainnet/lbf-review.md` — root cause analysis and architecture
+```
+tests/devnet/
+  tss_helpers_test.go         Shared helpers, config, startDevnet
+  reshare_happy_test.go       TestTSSReshareHappyPath
+  readiness_test.go           TestTSSOfflineNodeExcludedByReadiness, TestTSSFalseReadinessProducesBlame
+  blame_cycle_test.go         TestTSSBlameExcludesNodeNextCycle, TestTSSBlameEpochDecode, TestTSSBlameAccumulation
+  blame_disconnect_test.go    TestBlameDisconnectedNode
+  partition_recovery_test.go  TestTSSPartitionAndRecovery
+  multiversion_test.go        TestTSSMultiVersion
+  recovery_full_test.go       TestTSSFullRecoveryCycle
+  edge_cases_test.go          7 TestEdge* tests (leader crash, partition, restart, etc.)
+  blame_test.go               TestBlameExcludesNodeOnRetry (Milo)
+  blame_ssid_test.go          TestBlameSSIDMismatch (Milo)
+  blame_partial_test.go       TestBlamePartialLatency (Milo)
+  blame_bidir_test.go         TestBlameBidirectionalLatency (Milo)
+```
+
+## Running tests
+
+```bash
+# Single test (~10-15 min)
+go test -v -run TestTSSReshareHappyPath -timeout 25m ./tests/devnet/
+
+# All our tests (~2-3 hours sequential)
+go test -v -run 'TestTSS|TestBlameDisconnectedNode|TestEdge' -timeout 300m ./tests/devnet/
+
+# Keep containers for debugging
+DEVNET_KEEP=1 go test -v -run TestTSSReshareHappyPath -timeout 25m ./tests/devnet/
+
+# Run one at a time on loaded servers (recommended)
+for t in TestTSSReshareHappyPath TestEdgeLeaderCrashDuringBLS TestEdgePartitionNoQuorum; do
+  go test -v -run $t -timeout 30m ./tests/devnet/ && echo "PASS: $t" || echo "FAIL: $t"
+  sudo rm -rf .devnet/
+done
+```

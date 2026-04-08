@@ -17,8 +17,9 @@ RUN go mod download
 
 COPY --chown=app:app . .
 
-# Build all devnet binaries
+# Generate GraphQL code (needed when schema changes) and build all devnet binaries
 RUN . /home/app/.wasmedge/env && \
+    go run github.com/99designs/gqlgen generate && \
     go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o magid vsc-node/cmd/vsc-node && \
     go build -buildvcs=false -o devnet-setup vsc-node/cmd/devnet-setup && \
     go build -buildvcs=false -o genesis-elector vsc-node/cmd/genesis-elector && \
