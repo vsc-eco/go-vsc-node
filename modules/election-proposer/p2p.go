@@ -137,6 +137,10 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 				return nil
 			}
 
+			if existing := ep.elections.GetElection(signReq.Epoch); existing != nil {
+				return nil
+			}
+
 			cid, err := electionHeader.Cid()
 
 			if err != nil {

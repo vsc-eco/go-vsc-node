@@ -60,6 +60,7 @@ type electionProposer struct {
 		circuit *dids.PartialBlsCircuit
 	}
 
+	electionMu sync.Mutex
 	sigMu      sync.Mutex
 	sigRunning bool
 }
@@ -120,6 +121,9 @@ func (e *electionProposer) Stop() error {
 }
 
 func (e *electionProposer) blockTick(bh uint64, headHeight *uint64) {
+	e.electionMu.Lock()
+	defer e.electionMu.Unlock()
+
 	e.bh = bh
 	e.headHeight = headHeight
 

@@ -449,6 +449,14 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			return
 		}
 
+		// Ignore duplicate election results from the dedup epoch onwards
+		if tx.Epoch >= se.sconf.ConsensusParams().ElectionDupeFixEpoch {
+			if existing := se.electionDb.GetElection(tx.Epoch); existing != nil {
+				log.Verbose("duplicate election ignored", "epoch", tx.Epoch)
+				return
+			}
+		}
+
 		//Weight that is calculated by aggregating number of signers
 		potentialWeight := 0
 		memberDids := make([]dids.BlsDID, 0)
