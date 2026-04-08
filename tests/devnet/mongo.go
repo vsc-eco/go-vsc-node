@@ -3,6 +3,7 @@ package devnet
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -203,6 +204,25 @@ func (d *Devnet) waitForElectionEpoch(ctx context.Context, node int, minEpoch ui
 		case <-time.After(5 * time.Second):
 		}
 	}
+}
+
+// dumpTssLogs greps a node's Docker logs for TSS-related messages
+// (keygen, reshare, blame, session) and logs the last 30 matches.
+func (d *Devnet) dumpTssLogs(ctx context.Context, t interface{ Logf(string, ...any) }, node int) {
+	container := d.containerName(node)
+	// docker logs piped through grep for TSS keywords
+	out, err := exec.CommandContext(ctx, "bash", "-c",
+		fmt.Sprintf("docker logs %s 2>&1 | grep -iE 'keygen|reshare|blame|tss|session|commitment' | tail -30", container),
+	).CombinedOutput()
+	if err != nil {
+		t.Logf("node %d: could not grep TSS logs: %v", node, err)
+		return
+	}
+	if len(out) == 0 {
+		t.Logf("node %d: no TSS-related log lines found", node)
+		return
+	}
+	t.Logf("node %d TSS logs (last 30):\n%s", node, string(out))
 }
 
 // dumpContracts logs the contracts collection for a node.

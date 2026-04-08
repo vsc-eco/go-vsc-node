@@ -91,6 +91,99 @@ func (d *Devnet) Reconnect(ctx context.Context, node int) error {
 	return d.iptables(ctx, name, "-F", "INPUT")
 }
 
+// AddLatency adds network delay to traffic between two specific nodes
+// (bidirectional). The delay is in milliseconds with optional jitter.
+// This is more realistic than a full partition — it causes readiness
+// check timeouts on some nodes but not others, triggering the SSID
+// mismatch bug where checkParticipantReadiness produces different
+// party lists on different nodes.
+func (d *Devnet) AddLatency(ctx context.Context, nodeA, nodeB int, delayMs, jitterMs int) error {
+	nameA := d.containerName(nodeA)
+	nameB := d.containerName(nodeB)
+
+	ipA, err := d.containerIP(ctx, nameA)
+	if err != nil {
+		return fmt.Errorf("getting IP for %s: %w", nameA, err)
+	}
+	ipB, err := d.containerIP(ctx, nameB)
+	if err != nil {
+		return fmt.Errorf("getting IP for %s: %w", nameB, err)
+	}
+
+	log.Printf("[devnet] adding %dms±%dms latency: magi-%d <-> magi-%d", delayMs, jitterMs, nodeA, nodeB)
+
+	// Add latency on A for traffic to/from B
+	if err := d.addNetemForIP(ctx, nameA, ipB, delayMs, jitterMs); err != nil {
+		return fmt.Errorf("adding latency on magi-%d: %w", nodeA, err)
+	}
+	// Add latency on B for traffic to/from A
+	if err := d.addNetemForIP(ctx, nameB, ipA, delayMs, jitterMs); err != nil {
+		return fmt.Errorf("adding latency on magi-%d: %w", nodeB, err)
+	}
+	return nil
+}
+
+// RemoveLatency removes any tc latency rules from a node, restoring
+// normal network behavior.
+func (d *Devnet) RemoveLatency(ctx context.Context, node int) error {
+	name := d.containerName(node)
+	log.Printf("[devnet] removing latency from magi-%d", node)
+	// Delete the root qdisc — this removes all tc rules.
+	// Ignore errors (may not have any rules).
+	d.tcExec(ctx, name, "qdisc", "del", "dev", "eth0", "root")
+	return nil
+}
+
+// addNetemForIP sets up tc netem delay for traffic to a specific IP.
+// Uses a prio qdisc with a u32 filter to match only the target IP.
+func (d *Devnet) addNetemForIP(ctx context.Context, container, targetIP string, delayMs, jitterMs int) error {
+	// Create a prio qdisc as root (3 bands by default)
+	if err := d.tcExec(ctx, container,
+		"qdisc", "add", "dev", "eth0", "root", "handle", "1:", "prio",
+		"bands", "3", "priomap", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0",
+	); err != nil {
+		// May already exist from a previous call; try replacing
+		d.tcExec(ctx, container, "qdisc", "del", "dev", "eth0", "root")
+		if err := d.tcExec(ctx, container,
+			"qdisc", "add", "dev", "eth0", "root", "handle", "1:", "prio",
+			"bands", "3", "priomap", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0",
+		); err != nil {
+			return err
+		}
+	}
+
+	// Add netem delay on band 2 (1:2)
+	delay := fmt.Sprintf("%dms", delayMs)
+	jitter := fmt.Sprintf("%dms", jitterMs)
+	if err := d.tcExec(ctx, container,
+		"qdisc", "add", "dev", "eth0", "parent", "1:2", "handle", "20:",
+		"netem", "delay", delay, jitter,
+	); err != nil {
+		return err
+	}
+
+	// Filter: match destination IP → send to band 2 (netem)
+	if err := d.tcExec(ctx, container,
+		"filter", "add", "dev", "eth0", "parent", "1:0", "protocol", "ip",
+		"u32", "match", "ip", "dst", targetIP+"/32", "flowid", "1:2",
+	); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// tcExec runs a tc command inside a container.
+func (d *Devnet) tcExec(ctx context.Context, container string, args ...string) error {
+	fullArgs := append([]string{"exec", "-u", "root", container, "tc"}, args...)
+	cmd := exec.CommandContext(ctx, "docker", fullArgs...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tc in %s (%v): %s", container, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // iptables runs an iptables command inside a container.
 func (d *Devnet) iptables(ctx context.Context, container string, args ...string) error {
 	fullArgs := append([]string{"exec", "-u", "root", container, "iptables"}, args...)

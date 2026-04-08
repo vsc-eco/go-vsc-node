@@ -28,8 +28,8 @@ RUN . /home/app/.wasmedge/env && \
 
 FROM rockylinux:9.3-minimal
 
-# Install iptables for network partition testing
-RUN microdnf install -y iptables && microdnf clean all
+# Install iptables + tc for network partition and latency testing
+RUN microdnf install -y iptables iproute iproute-tc && microdnf clean all
 
 RUN useradd -m app
 
