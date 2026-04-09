@@ -1132,7 +1132,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// Threshold from FULL commitment size (pre-filter). Party lists are
 			// already filtered deterministically by on-chain readiness + blame + ban.
 			origOldSize := fullOldCommitteeSize
-			origNewSize := len(currentElection.Members)
+			origNewSize := len(newParticipants) // post-filter: threshold for the NEW key is based on actual participants, not full election
 			origOldThreshold, _ := tss_helpers.GetThreshold(origOldSize)
 			origNewThreshold, _ := tss_helpers.GetThreshold(origNewSize)
 
