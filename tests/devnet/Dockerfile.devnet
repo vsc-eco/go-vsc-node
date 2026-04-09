@@ -17,8 +17,9 @@ RUN go mod download
 
 COPY --chown=app:app . .
 
-# Build all devnet binaries
+# Generate GraphQL code (needed when schema changes) and build all devnet binaries
 RUN . /home/app/.wasmedge/env && \
+    go run github.com/99designs/gqlgen generate && \
     go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o magid vsc-node/cmd/vsc-node && \
     go build -buildvcs=false -o devnet-setup vsc-node/cmd/devnet-setup && \
     go build -buildvcs=false -o genesis-elector vsc-node/cmd/genesis-elector && \
@@ -28,8 +29,8 @@ RUN . /home/app/.wasmedge/env && \
 
 FROM rockylinux:9.3-minimal
 
-# Install iptables for network partition testing
-RUN microdnf install -y iptables && microdnf clean all
+# Install iptables + tc for network partition and latency testing
+RUN microdnf install -y iptables iproute iproute-tc && microdnf clean all
 
 RUN useradd -m app
 

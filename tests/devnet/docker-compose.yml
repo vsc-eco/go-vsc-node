@@ -6,6 +6,7 @@ services:
     init: true
     command: ""
     stop_grace_period: 2m
+    shm_size: 1g
     environment:
       PG_ACCESS: |
         local haf_block_log haf_maintainer trust
@@ -15,6 +16,7 @@ services:
         host haf_block_log hafah_user 0.0.0.0/0 trust
       PGCTLTIMEOUT: 600
       OVERRIDE_LD_PRELOAD: ""
+      SHARED_BUFFERS: 512MB
     volumes:
       - type: bind
         source: ${HAF_DATA_DIR}
@@ -126,9 +128,9 @@ services:
     ports:
       - "${DRONE_PORT}:9000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -T2 -nv -t1 --spider http://127.0.0.1:9000/ || exit 1"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9000' 2>/dev/null || exit 1"]
       interval: 10s
-      timeout: 2s
+      timeout: 5s
       retries: 10
       start_period: 30s
     depends_on:
@@ -138,9 +140,7 @@ services:
       - devnet
 
   devnet-setup:
-    build:
-      context: ${SOURCE_DIR}
-      dockerfile: tests/devnet/Dockerfile.devnet
+    image: ${MAGI_IMAGE}
     profiles: ["setup"]
     depends_on:
       db:
@@ -161,9 +161,7 @@ services:
       - devnet
 
   genesis-elector:
-    build:
-      context: ${SOURCE_DIR}
-      dockerfile: tests/devnet/Dockerfile.devnet
+    image: ${MAGI_IMAGE}
     profiles: ["setup"]
     depends_on:
       db:
@@ -180,9 +178,7 @@ services:
       - devnet
 
   contract-deployer:
-    build:
-      context: ${SOURCE_DIR}
-      dockerfile: tests/devnet/Dockerfile.devnet
+    image: ${MAGI_IMAGE}
     profiles: ["tools"]
     depends_on:
       db:

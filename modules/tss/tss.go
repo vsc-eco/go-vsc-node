@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,7 @@ import (
 
 	"github.com/chebyrash/promise"
 	gorpc "github.com/libp2p/go-libp2p-gorpc"
+	blsu "github.com/protolambda/bls12-381-util"
 
 	flatfs "github.com/ipfs/go-ds-flatfs"
 )
@@ -43,14 +45,198 @@ import (
 var log = vsclog.Module("tss")
 
 const (
-	TSS_SIGN_INTERVAL           = 50            // 50 L1 blocks
-	TSS_ROTATE_INTERVAL         = 20 * 5        // 5 minutes in L1 blocks
+	// Defaults for configurable intervals (overridable via sysconfig TssParams).
+	DEFAULT_SIGN_INTERVAL     = 50      // 50 L1 blocks
+	DEFAULT_ROTATE_INTERVAL   = 20 * 5  // 5 minutes in L1 blocks
+	DEFAULT_READINESS_OFFSET  = 30      // blocks before reshare to broadcast readiness
+
 	TSS_MESSAGE_RETRY_COUNT     = 3             // Number of retries for failed messages
-	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for bans
+	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for long-term bans
+	TSS_BLAME_THRESHOLD_PERCENT = 33            // Failure rate threshold for short-term per-key blame exclusion
 	TSS_BAN_GRACE_PERIOD_EPOCHS = 3             // Epochs before new nodes can be banned (as int for comparison)
 	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
 	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
 )
+
+// ReadyAttestation is a BLS-signed self-attestation that a node is ready for
+// a reshare cycle. Each node signs its own attestation; attestations are
+// gossiped via pubsub so all honest nodes converge to the same set.
+type ReadyAttestation struct {
+	Account     string `json:"account"`
+	KeyId       string `json:"key_id"`
+	TargetBlock uint64 `json:"target_block"`
+	Sig         string `json:"sig"` // base64 BLS signature over CBOR(account, key_id, target_block)
+}
+
+// DEFAULT_SETTLE_BLOCKS is the number of blocks before reshare during which
+// no new attestations are accepted — only re-gossip of existing ones.
+const DEFAULT_SETTLE_BLOCKS = 3
+
+// attestationCID computes a deterministic CID for a readiness attestation.
+// The same (account, keyId, targetBlock) always produces the same CID.
+func attestationCID(account, keyId string, targetBlock uint64) (cid.Cid, error) {
+	payload := map[string]interface{}{
+		"account":      account,
+		"key_id":       keyId,
+		"target_block": targetBlock,
+	}
+	data, err := common.EncodeDagCbor(payload)
+	if err != nil {
+		return cid.Undef, fmt.Errorf("cbor encode attestation: %w", err)
+	}
+	return common.HashBytes(data, multicodec.DagCbor)
+}
+
+// signReadyAttestation creates a BLS-signed readiness attestation for this node.
+func (tssMgr *TssManager) signReadyAttestation(keyId string, targetBlock uint64) (*ReadyAttestation, error) {
+	account := tssMgr.config.Get().HiveUsername
+
+	c, err := attestationCID(account, keyId, targetBlock)
+	if err != nil {
+		return nil, err
+	}
+
+	blsPrivKey := blsu.SecretKey{}
+	var arr [32]byte
+	blsPrivSeed, err := hex.DecodeString(tssMgr.config.Get().BlsPrivKeySeed)
+	if err != nil {
+		return nil, fmt.Errorf("decode bls seed: %w", err)
+	}
+	if len(blsPrivSeed) != 32 {
+		return nil, fmt.Errorf("bls seed must be 32 bytes")
+	}
+	copy(arr[:], blsPrivSeed)
+	if err = blsPrivKey.Deserialize(&arr); err != nil {
+		return nil, fmt.Errorf("deserialize bls key: %w", err)
+	}
+
+	sig := blsu.Sign(&blsPrivKey, c.Bytes())
+	sigBytes := sig.Serialize()
+
+	return &ReadyAttestation{
+		Account:     account,
+		KeyId:       keyId,
+		TargetBlock: targetBlock,
+		Sig:         base64.URLEncoding.EncodeToString(sigBytes[:]),
+	}, nil
+}
+
+// verifyAttestation checks that a readiness attestation has a valid BLS
+// signature from the claimed account, using the account's consensus key
+// from the given election.
+func (tssMgr *TssManager) verifyAttestation(att ReadyAttestation, election elections.ElectionResult) bool {
+	// Find the member's BLS public key
+	var blsDID dids.BlsDID
+	found := false
+	for _, m := range election.Members {
+		if m.Account == att.Account {
+			blsDID = dids.BlsDID(m.Key)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return false
+	}
+
+	pubKey := blsDID.Identifier()
+	if pubKey == nil {
+		return false
+	}
+
+	c, err := attestationCID(att.Account, att.KeyId, att.TargetBlock)
+	if err != nil {
+		return false
+	}
+
+	sigBytes, err := base64.URLEncoding.DecodeString(att.Sig)
+	if err != nil {
+		return false
+	}
+	if len(sigBytes) != 96 {
+		return false
+	}
+
+	sig := new(blsu.Signature)
+	sig.Deserialize((*[96]byte)(sigBytes))
+	return blsu.Verify(pubKey, c.Bytes(), sig)
+}
+
+// broadcastGossipBundle sends all known attestations for a given key+targetBlock
+// as a single pubsub message. Called every block tick during the readiness window
+// for gossip amplification.
+func (tssMgr *TssManager) broadcastGossipBundle(dedupKey, keyId string, targetBlock uint64) {
+	tssMgr.gossipLock.RLock()
+	attMap := tssMgr.gossipAttestations[dedupKey]
+	if len(attMap) == 0 {
+		tssMgr.gossipLock.RUnlock()
+		return
+	}
+	attestations := make([]interface{}, 0, len(attMap))
+	for _, att := range attMap {
+		attestations = append(attestations, map[string]interface{}{
+			"account":      att.Account,
+			"key_id":       att.KeyId,
+			"target_block": att.TargetBlock,
+			"sig":          att.Sig,
+		})
+	}
+	tssMgr.gossipLock.RUnlock()
+
+	tssMgr.pubsub.Send(p2pMessage{
+		Type:    "ready_gossip",
+		Account: tssMgr.config.Get().HiveUsername,
+		Data: map[string]interface{}{
+			"key_id":       keyId,
+			"target_block": float64(targetBlock),
+			"attestations": attestations,
+		},
+	})
+}
+
+// cleanupGossipState evicts gossip state for reshare cycles that have passed.
+func (tssMgr *TssManager) cleanupGossipState(bh uint64) {
+	tssMgr.gossipLock.Lock()
+	defer tssMgr.gossipLock.Unlock()
+	for k := range tssMgr.gossipAttestations {
+		parts := strings.SplitN(k, ":", 2)
+		if len(parts) == 2 {
+			if block, err := strconv.ParseUint(parts[1], 10, 64); err == nil && block < bh {
+				delete(tssMgr.gossipAttestations, k)
+			}
+		}
+	}
+}
+
+// getRotateInterval returns the TSS reshare interval from sysconfig, or the default.
+func getRotateInterval(sconf systemconfig.SystemConfig) uint64 {
+	if v := sconf.TssParams().RotateInterval; v > 0 {
+		return v
+	}
+	return DEFAULT_ROTATE_INTERVAL
+}
+
+// getSignInterval returns the TSS signing interval from sysconfig, or the default.
+func getSignInterval(sconf systemconfig.SystemConfig) uint64 {
+	if v := sconf.TssParams().SignInterval; v > 0 {
+		return v
+	}
+	return DEFAULT_SIGN_INTERVAL
+}
+
+// getReadinessOffset returns the readiness window offset from sysconfig, or the default.
+// Capped at rotateInterval - 5 to ensure the window fits within the cycle.
+func getReadinessOffset(sconf systemconfig.SystemConfig) uint64 {
+	offset := uint64(DEFAULT_READINESS_OFFSET)
+	if v := sconf.TssParams().ReadinessOffset; v > 0 {
+		offset = v
+	}
+	rotateInterval := getRotateInterval(sconf)
+	if offset >= rotateInterval-2 {
+		offset = rotateInterval / 2
+	}
+	return offset
+}
 
 type TssManager struct {
 	p2p    *libp2p.P2PServer
@@ -100,6 +286,15 @@ type TssManager struct {
 
 	// Cancel function for background goroutines (preParams ticker, etc.)
 	bgCancel context.CancelFunc
+
+	// In-memory dedup for readiness gossip broadcasts. Key is "keyId:targetBlock".
+	readinessSent map[string]bool
+
+	// Off-chain gossip readiness state. Protected by gossipLock.
+	gossipLock sync.RWMutex
+	// gossipAttestations["keyId:targetBlock"][account] = signed attestation.
+	// Populated by ready_gossip messages received via pubsub.
+	gossipAttestations map[string]map[string]ReadyAttestation
 }
 
 // ClearQueuedActions clears any pending actions. Used by tests to prevent
@@ -121,13 +316,26 @@ type bufferedMessage struct {
 
 func (tssMgr *TssManager) Receive() {}
 
+// GeneratePreParams generates Paillier key pairs and safe primes for TSS.
+// This is CPU-intensive (finding 1024-bit safe primes) and can take anywhere
+// from 15 seconds on a fast machine to several minutes on a loaded server.
+// The timeout is configurable via TssParams.PreParamsTimeout (defaults to 1
+// minute if unset). In devnet/CI environments with many concurrent nodes,
+// a longer timeout (e.g. 10 minutes) is recommended.
 func (tssMgr *TssManager) GeneratePreParams() {
 	locked := tssMgr.preParamsLock.TryLock()
 	if locked {
 		if len(tssMgr.preParams) == 0 {
-			log.Info("need to generate preparams")
-			preParams, err := ecKeyGen.GeneratePreParams(time.Minute)
-			if err == nil {
+			timeout := tssMgr.sconf.TssParams().PreParamsTimeout
+			if timeout == 0 {
+				timeout = time.Minute
+			}
+			log.Info("need to generate preparams", "timeout", timeout)
+			preParams, err := ecKeyGen.GeneratePreParams(timeout)
+			if err != nil {
+				log.Error("preparams generation failed", "err", err)
+			} else {
+				log.Info("preparams generated successfully")
 				tssMgr.preParams <- *preParams
 			}
 		}
@@ -137,6 +345,7 @@ func (tssMgr *TssManager) GeneratePreParams() {
 
 func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	tssMgr.lastBlockHeight.Store(bh)
+	tssMgr.cleanupGossipState(bh)
 
 	if headHeight == nil {
 		return
@@ -162,13 +371,93 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		}
 	}
 
+	// Off-chain gossip readiness: broadcast signed attestations via pubsub
+	// before the next reshare cycle. All honest nodes converge to the same
+	// attestation set, which RunActions uses to build deterministic party lists.
+	rotateInterval := getRotateInterval(tssMgr.sconf)
+	readinessOffset := getReadinessOffset(tssMgr.sconf)
+	blocksUntilReshare := rotateInterval - (bh % rotateInterval)
+	if blocksUntilReshare <= readinessOffset && bh%rotateInterval != 0 {
+		nextReshareBlock := bh + blocksUntilReshare
+		selfAccount := tssMgr.config.Get().HiveUsername
+		inSettlePeriod := blocksUntilReshare <= DEFAULT_SETTLE_BLOCKS
+
+		// Check if we're an election member and have keys to reshare
+		electionData, err := tssMgr.electionDb.GetElectionByHeight(bh)
+		if err == nil && electionData.Members != nil {
+			isMember := false
+			for _, m := range electionData.Members {
+				if m.Account == selfAccount {
+					isMember = true
+					break
+				}
+			}
+			if isMember {
+				reshareKeys, err := tssMgr.tssKeys.FindEpochKeys(electionData.Epoch)
+				if err != nil {
+					log.Warn("FindEpochKeys failed during readiness broadcast",
+						"epoch", electionData.Epoch, "err", err)
+				}
+				for _, key := range reshareKeys {
+					dedupKey := fmt.Sprintf("%s:%d", key.Id, nextReshareBlock)
+
+					// During the announce phase, sign and store our own attestation.
+					// During the settle phase, skip new attestations but still gossip.
+					tssMgr.gossipLock.Lock()
+					alreadySent := tssMgr.readinessSent[dedupKey]
+					if !inSettlePeriod && !alreadySent {
+						tssMgr.readinessSent[dedupKey] = true
+					}
+					tssMgr.gossipLock.Unlock()
+
+					if !inSettlePeriod && !alreadySent {
+						att, err := tssMgr.signReadyAttestation(key.Id, nextReshareBlock)
+						if err != nil {
+							log.Warn("failed to sign readiness attestation",
+								"keyId", key.Id, "targetBlock", nextReshareBlock, "err", err)
+							continue
+						}
+
+						tssMgr.gossipLock.Lock()
+						if tssMgr.gossipAttestations[dedupKey] == nil {
+							tssMgr.gossipAttestations[dedupKey] = make(map[string]ReadyAttestation)
+						}
+						tssMgr.gossipAttestations[dedupKey][selfAccount] = *att
+						tssMgr.gossipLock.Unlock()
+
+						log.Info("signed readiness attestation",
+							"account", selfAccount, "keyId", key.Id,
+							"targetBlock", nextReshareBlock)
+					}
+
+					// Broadcast a bundle of ALL known attestations for this key.
+					// Gossip amplification: every block tick re-broadcasts the full
+					// bundle so late-joining or poorly-connected nodes catch up.
+					tssMgr.broadcastGossipBundle(dedupKey, key.Id, nextReshareBlock)
+				}
+			}
+		}
+
+		// Evict stale readinessSent entries from previous cycles.
+		tssMgr.gossipLock.Lock()
+		for k := range tssMgr.readinessSent {
+			parts := strings.SplitN(k, ":", 2)
+			if len(parts) == 2 {
+				if block, err := strconv.ParseUint(parts[1], 10, 64); err == nil && block < bh {
+					delete(tssMgr.readinessSent, k)
+				}
+			}
+		}
+		tssMgr.gossipLock.Unlock()
+	}
+
 	// tssMgr.activeActions
 	if witnessSlot != nil {
 		isLeader := witnessSlot.Account == tssMgr.config.Get().HiveUsername
 
 		keyLocks := make(map[string]bool)
 		generatedActions := make([]QueuedAction, 0)
-		if bh%TSS_ROTATE_INTERVAL == 0 {
+		if bh%rotateInterval == 0 {
 
 			electionData, err := tssMgr.electionDb.GetElectionByHeight(bh)
 			if err != nil || electionData.Members == nil {
@@ -198,7 +487,8 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				keyLocks[key.Id] = true
 			}
 		}
-		if bh%TSS_SIGN_INTERVAL == 0 {
+		signInterval := getSignInterval(tssMgr.sconf)
+		if bh%signInterval == 0 {
 			signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh)
 
 			for _, signReq := range signingRequests {
@@ -631,19 +921,19 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 
-			// Capture pre-filter size for correct threshold calculation.
+			// Use deterministic signer set — DO NOT filter by connectivity.
+			// All nodes must use the same participant list so BuildLocalSaveDataSubset
+			// produces identical Ks subsets and Lagrange coefficients match.
+			// Filtering causes different wi values → incompatible partial signatures.
 			origSignCommitteeSize := len(participants)
-			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
 
-			// Readiness check: keepTimeouts=true so transient timeouts don't cause
-			// non-deterministic party lists across nodes. Only definitive errors
-			// (no_witness, bad_peer_id, protocol not supported) cause exclusion —
-			// these are deterministic because all nodes query the same witness DB.
-			// Timeout nodes stay in the list; if truly offline, the 60s signing
-			// timeout will catch them and produce blame.
-			participants = tssMgr.checkParticipantReadiness(participants, sessionId, "SIGN", false)
-			if len(participants) < origThreshold+1 {
-				log.Warn("insufficient participants for signing", "sessionId", sessionId, "connected", len(participants), "needed", origThreshold+1, "total", origSignCommitteeSize)
+			// Pre-flight gate: count ready participants without modifying the list.
+			// Never filter the signing party list — all nodes must use identical
+			// lists so BuildLocalSaveDataSubset produces matching Ks subsets.
+			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
+			signReady := tssMgr.countReadyParticipants(participants, sessionId, "SIGN")
+			if signReady < origThreshold+1 {
+				log.Warn("insufficient participants for signing", "sessionId", sessionId, "ready", signReady, "needed", origThreshold+1, "total", origSignCommitteeSize)
 				continue
 			}
 
@@ -684,24 +974,80 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			log.Verbose("creating reshare session", "sessionId", sessionId, "keyId", action.KeyId, "blockHeight", bh)
 			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "keygen", "reshare")
-			lastBlame, _ := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "blame")
 
-			//This should either be equal but never less in practical terms
-			//However, we can add further checks
 			if commitment.Epoch >= currentElection.Epoch || err != nil {
 				log.Verbose("skipping reshare, commitment epoch meets or exceeds current", "sessionId", sessionId, "keyId", action.KeyId, "commitmentEpoch", commitment.Epoch, "currentEpoch", currentElection.Epoch, "err", err)
 				continue
 			}
 
-			var isBlame bool
-			blameBits := big.NewInt(0)
-			if lastBlame.Type == "blame" {
-				if lastBlame.BlockHeight > commitment.BlockHeight && int64(lastBlame.BlockHeight) > int64(bh)-int64(BLAME_EXPIRE) {
-					isBlame = true
-					blameBytes, _ := base64.RawURLEncoding.DecodeString(lastBlame.Commitment)
-					blameBits = blameBits.SetBytes(blameBytes)
-					log.Trace("blame commitment found", "epoch", lastBlame.Epoch, "blockHeight", lastBlame.BlockHeight, "commitment", lastBlame.Commitment, "bitset", blameBits)
+			// ═══════════════════════════════════════════════════════════
+			// CHANGE 5: Accumulate ALL blame commitments in the BLAME_EXPIRE
+			// window, not just the most recent one. Repeat offenders now
+			// accumulate blame across multiple reshare cycles.
+			// ═══════════════════════════════════════════════════════════
+			var blameExpireBlock uint64
+			if bh > BLAME_EXPIRE {
+				blameExpireBlock = bh - BLAME_EXPIRE
+			}
+			keyIdStr := action.KeyId
+			allBlames, blameErr := tssMgr.tssCommitments.FindCommitmentsSimple(
+				&keyIdStr,
+				[]string{"blame"},
+				nil,
+				&blameExpireBlock,
+				&bh,
+				100,
+			)
+			if blameErr != nil {
+				log.Warn("failed to fetch blame commitments", "sessionId", sessionId, "err", blameErr)
+			}
+
+			// ═══════════════════════════════════════════════════════════
+			// CHANGE 4: Decode each blame bitset against the blame's OWN
+			// epoch election, not currentElection. The blame was encoded
+			// via setToCommitment(culprits, epoch) which uses
+			// GetElection(epoch).Members for bit positions.
+			//
+			// CHANGE 4b: Use threshold-based exclusion (TSS_BLAME_THRESHOLD_PERCENT)
+			// instead of absolute exclusion. A node must appear in >33% of
+			// blame commitments within the BLAME_EXPIRE window to be excluded.
+			// This prevents a malicious coalition from excluding healthy nodes
+			// with a single manufactured blame.
+			// ═══════════════════════════════════════════════════════════
+			blameCount := make(map[string]int)   // account → number of blames naming this account
+			blameOpportunities := 0              // total blame commitments in window (denominator)
+			for _, blame := range allBlames {
+				if blame.BlockHeight <= commitment.BlockHeight {
+					continue
 				}
+				blameElection := tssMgr.electionDb.GetElection(blame.Epoch)
+				if blameElection == nil || blameElection.Members == nil {
+					log.Warn("blame election missing, skipping blame entry",
+						"blameEpoch", blame.Epoch, "sessionId", sessionId)
+					continue
+				}
+				blameOpportunities++
+				blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
+				bBits := new(big.Int).SetBytes(blameBytes)
+				for bidx, member := range blameElection.Members {
+					if bBits.Bit(bidx) == 1 {
+						blameCount[member.Account]++
+					}
+				}
+			}
+			blamedAccounts := make(map[string]bool)
+			if blameOpportunities > 0 {
+				for account, count := range blameCount {
+					if count*100 > blameOpportunities*TSS_BLAME_THRESHOLD_PERCENT {
+						blamedAccounts[account] = true
+					}
+				}
+			}
+			if len(blamedAccounts) > 0 {
+				log.Verbose("blame threshold exclusions",
+					"sessionId", sessionId, "blamedCount", len(blamedAccounts),
+					"blameCommitments", blameOpportunities,
+					"threshold", TSS_BLAME_THRESHOLD_PERCENT)
 			}
 
 			commitmentElection := tssMgr.electionDb.GetElection(commitment.Epoch)
@@ -710,32 +1056,27 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				continue
 			}
 
-			// Resolve blamed accounts by name from the current election's blame bits.
-			// The blame bitset is indexed against currentElection (after the
-			// dispatcher.newEpoch fix, blame is always encoded against the current
-			// election). Matching by account name bridges old/new election membership.
-			blamedAccounts := make(map[string]bool)
-			if isBlame {
-				for idx, member := range currentElection.Members {
-					if blameBits.Bit(idx) == 1 {
-						blamedAccounts[member.Account] = true
-					}
-				}
+			// Build party lists from gossip attestations. Each node
+			// independently computes the ready set from BLS-signed
+			// self-attestations collected via pubsub gossip.
+			dedupKey := fmt.Sprintf("%s:%d", keyIdStr, bh)
+			tssMgr.gossipLock.RLock()
+			attMap := tssMgr.gossipAttestations[dedupKey]
+			readyAccounts := make(map[string]bool, len(attMap))
+			for account := range attMap {
+				readyAccounts[account] = true
 			}
+			tssMgr.gossipLock.RUnlock()
+			log.Verbose("gossip readiness set",
+				"sessionId", sessionId, "readyCount", len(readyAccounts))
 
+			// Decode commitment bitset for old committee membership
 			commitmentBytes, err := base64.RawURLEncoding.DecodeString(commitment.Commitment)
-
-			bitset := big.NewInt(0)
-			bitset = bitset.SetBytes(commitmentBytes)
+			bitset := new(big.Int).SetBytes(commitmentBytes)
 
 			commitedMembers := make([]Participant, 0)
-			// Count the full commitment size BEFORE blame exclusion.
-			// This is needed for threshold calculation — the polynomial degree
-			// must match the original keygen/reshare, not the blame-reduced set.
 			fullOldCommitteeSize := 0
 
-			log.Trace("commitment lookup", "commitment", commitment, "err", err)
-			log.Trace("bitset details", "bitset", bitset, "commitmentBytes", commitmentBytes)
 			for idx, member := range commitmentElection.Members {
 				if idx < bitset.BitLen() && bitset.Bit(idx) == 1 {
 					fullOldCommitteeSize++
@@ -747,6 +1088,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						log.Verbose("excluding banned node from old committee", "sessionId", sessionId, "account", member.Account)
 						continue
 					}
+					// On-chain readiness gate: only include if node broadcast readiness
+					if !readyAccounts[member.Account] {
+						log.Verbose("excluding non-ready node from old committee", "sessionId", sessionId, "account", member.Account)
+						continue
+					}
 					commitedMembers = append(commitedMembers, Participant{
 						Account: member.Account,
 					})
@@ -756,18 +1102,21 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			newParticipants := make([]Participant, 0)
 			excludedNodes := make([]string, 0)
 
-			for idx, member := range currentElection.Members {
-				log.Trace("blame check for member", "isBlame", isBlame, "idx", idx, "blameBit", blameBits.Bit(idx))
-				if isBlame {
-					if blameBits.Bit(idx) == 1 {
-						excludedNodes = append(excludedNodes, member.Account)
-						log.Verbose("excluding blamed node from reshare", "sessionId", sessionId, "account", member.Account)
-						continue
-					}
+			for _, member := range currentElection.Members {
+				if blamedAccounts[member.Account] {
+					excludedNodes = append(excludedNodes, member.Account)
+					log.Verbose("excluding blamed node from new committee", "sessionId", sessionId, "account", member.Account)
+					continue
 				}
 				if blameMap.BannedNodes[member.Account] {
 					excludedNodes = append(excludedNodes, member.Account)
-					log.Verbose("excluding banned node from reshare", "sessionId", sessionId, "account", member.Account)
+					log.Verbose("excluding banned node from new committee", "sessionId", sessionId, "account", member.Account)
+					continue
+				}
+				// On-chain readiness gate: only include if node broadcast readiness
+				if !readyAccounts[member.Account] {
+					excludedNodes = append(excludedNodes, member.Account)
+					log.Verbose("excluding non-ready node from new committee", "sessionId", sessionId, "account", member.Account)
 					continue
 				}
 				newParticipants = append(newParticipants, Participant{
@@ -775,98 +1124,33 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				})
 			}
 
-			log.Verbose("reshare participant selection", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "excluded", len(excludedNodes), "excludedNodes", excludedNodes)
-			log.Trace("new participants list", "newParticipants", newParticipants)
+			log.Verbose("reshare participant selection", "sessionId", sessionId,
+				"oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants),
+				"excluded", len(excludedNodes), "excludedNodes", excludedNodes,
+				"readyCount", len(readyAccounts))
 
-			// Safety valve: if blame exclusion reduces either committee below threshold,
-			// ignore the blame entirely and rebuild with ban-only exclusion.
-			// This prevents a single over-broad blame from deadlocking reshares for 24 hours.
-			// All nodes make the same decision (deterministic — same on-chain blame/ban data).
-			if isBlame {
-				oldThreshold, _ := tss_helpers.GetThreshold(fullOldCommitteeSize)
-				newThreshold, _ := tss_helpers.GetThreshold(len(newParticipants))
-				minNew := newThreshold + 1
-				if minNew < 2 {
-					minNew = 2
-				}
-				if len(commitedMembers) < oldThreshold+1 || len(newParticipants) < minNew {
-					log.Warn("blame too broad, rebuilding without blame",
-						"sessionId", sessionId,
-						"oldParticipants", len(commitedMembers),
-						"oldRequired", oldThreshold+1,
-						"newParticipants", len(newParticipants),
-						"newRequired", minNew,
-					)
-					isBlame = false
-					blamedAccounts = make(map[string]bool)
-
-					// Rebuild old committee with ban-only exclusion
-					commitedMembers = make([]Participant, 0)
-					for idx, member := range commitmentElection.Members {
-						if idx < bitset.BitLen() && bitset.Bit(idx) == 1 {
-							if blameMap.BannedNodes[member.Account] {
-								continue
-							}
-							commitedMembers = append(commitedMembers, Participant{
-								Account: member.Account,
-							})
-						}
-					}
-
-					// Rebuild new committee with ban-only exclusion
-					newParticipants = make([]Participant, 0)
-					excludedNodes = make([]string, 0)
-					for _, member := range currentElection.Members {
-						if blameMap.BannedNodes[member.Account] {
-							excludedNodes = append(excludedNodes, member.Account)
-							continue
-						}
-						newParticipants = append(newParticipants, Participant{
-							Account: member.Account,
-						})
-					}
-
-					log.Verbose("reshare participant selection after blame override", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "excluded", len(excludedNodes), "excludedNodes", excludedNodes)
-				}
-			}
-
-			// Use the FULL commitment size for threshold calculation, not the
-			// blame-reduced count. The polynomial degree must match keygen.
+			// Threshold from FULL commitment size (pre-filter). Party lists are
+			// already filtered deterministically by on-chain readiness + blame + ban.
 			origOldSize := fullOldCommitteeSize
-			origNewSize := len(newParticipants)
-
-			// Thresholds based on original counts (before any filtering) since the
-			// key was created with that many participants.
+			origNewSize := len(newParticipants) // post-filter: threshold for the NEW key is based on actual participants, not full election
 			origOldThreshold, _ := tss_helpers.GetThreshold(origOldSize)
 			origNewThreshold, _ := tss_helpers.GetThreshold(origNewSize)
 
-			// Old committee: keepTimeouts=true so transient timeouts don't cause
-			// SSID mismatch (only definitive errors like "protocol not supported"
-			// cause exclusion). This is the existing fix from PR #124.
-			commitedMembers = tssMgr.checkParticipantReadiness(commitedMembers, sessionId, "RESHARE-OLD", false)
-
-			// New committee: count-only gate, never filter the list.
-			// Same non-determinism bug as signing — if nodes disagree on which
-			// new members are reachable, they build different party sets → SSID mismatch.
-			newReady := tssMgr.countReadyParticipants(newParticipants, sessionId, "RESHARE-NEW")
-
-			// Pre-flight checks: validate participant set meets minimum threshold (at least 2)
+			// Pre-flight checks — lists are already on-chain-readiness-filtered
 			minNewRequired := origNewThreshold + 1
 			if minNewRequired < 2 {
 				minNewRequired = 2
 			}
-			if newReady < minNewRequired {
-				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "ready", newReady, "required", minNewRequired, "threshold", origNewThreshold)
+			if len(newParticipants) < minNewRequired {
+				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "newParticipants", len(newParticipants), "required", minNewRequired, "readyCount", len(readyAccounts))
 				continue
 			}
-
-			// Pre-flight check: verify old participants are available
 			if len(commitedMembers) < origOldThreshold+1 {
-				log.Warn("insufficient old participants for reshare", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "required", origOldThreshold+1, "threshold", origOldThreshold)
+				log.Warn("insufficient old participants for reshare", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "required", origOldThreshold+1, "readyCount", len(readyAccounts))
 				continue
 			}
 
-			log.Verbose("reshare pre-flight checks passed", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants))
+			log.Verbose("reshare pre-flight checks passed", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "readyCount", len(readyAccounts))
 
 			dispatcher := &ReshareDispatcher{
 				BaseDispatcher: BaseDispatcher{
@@ -1101,17 +1385,17 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 					// Do NOT schedule custom retries for reshare/keygen timeouts.
 					// Custom retries use the node's current block height for the session
-					// ID, which differs per node. When nodes create sessions at different
-					// block heights, GetCommitmentByHeight returns different commitments
-					// (blame data may differ) → different old committee lists → different
-					// SSIDs → "ssid mismatch" in round 2.
-					// Instead, rely on the natural TSS_ROTATE_INTERVAL cycle (every 100
-					// blocks / ~5 min). The next bh%100==0 boundary triggers a fresh
+					// ID, which differs per node → nodes create incompatible sessions and
+					// messages never match. Instead, rely on the natural rotate interval
+					// cycle. The next bh%rotateInterval==0 boundary will trigger a fresh
 					// reshare with a deterministic session ID that all nodes agree on.
+					// FindEpochKeys() will return the key again because no commitment
+					// was recorded for the failed attempt.
+					ri := getRotateInterval(tssMgr.sconf)
 					if dsc.KeyId() != "" {
 						log.Info("reshare/keygen timeout, will retry at next rotate interval",
 							"sessionId", dsc.SessionId(), "keyId", dsc.KeyId(),
-							"nextRetryIn", fmt.Sprintf("~%d blocks", TSS_ROTATE_INTERVAL-(bh%TSS_ROTATE_INTERVAL)))
+							"nextRetryIn", fmt.Sprintf("~%d blocks", ri-(bh%ri)))
 					}
 				}
 			}(dsc)
@@ -1573,6 +1857,8 @@ func New(
 		messageBuffer:  newSessionBuffer(),
 		sessionMap:     make(map[string]sessionInfo),
 		sessionResults: make(map[string]sessionResultEntry),
+		readinessSent:      make(map[string]bool),
+		gossipAttestations: make(map[string]map[string]ReadyAttestation),
 	}
 }
 

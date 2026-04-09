@@ -16,7 +16,7 @@ func composeFilePath() string {
 
 // writeEnvFile generates the .env file consumed by docker compose for
 // variable substitution in both the base and override compose files.
-func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, outputPath string) error {
+func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, imageName, outputPath string) error {
 	var b strings.Builder
 
 	kv := func(k, v string) { fmt.Fprintf(&b, "%s=%s\n", k, v) }
@@ -37,6 +37,7 @@ func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, outputPat
 	kv("DRONE_IMAGE", cfg.DroneImage)
 	kv("DRONE_PORT", fmt.Sprint(cfg.DronePort))
 	kv("DRONE_CONFIG_PATH", droneConfigPath)
+	kv("MAGI_IMAGE", imageName)
 
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)
 }
@@ -56,6 +57,22 @@ func writeSysConfigOverrides(cfg *Config, devnetDir string) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
+// isOldCodeNode returns true if the given node number is in the
+// OldCodeNodes list.
+func isOldCodeNode(cfg *Config, node int) bool {
+	for _, n := range cfg.OldCodeNodes {
+		if n == node {
+			return true
+		}
+	}
+	return false
+}
+
+// oldCodeImageTag returns the Docker image tag used for old-code nodes.
+func oldCodeImageTag(cfg *Config) string {
+	return "devnet-old-code:latest"
+}
+
 // writeNodesOverride generates a docker-compose override file that
 // defines the magi-1 … magi-N node services. This is the only
 // generated YAML — everything else lives in the static compose file.
@@ -63,28 +80,39 @@ func writeSysConfigOverrides(cfg *Config, devnetDir string) error {
 // Each node gets NET_ADMIN capability for iptables-based network
 // partition testing. If cfg.SysConfigOverrides is set, a sysconfig.json
 // file is written and passed to each magid node via -sysconfig flag.
-func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
+//
+// Nodes listed in cfg.OldCodeNodes use a pre-built image instead of
+// the standard image, and do not receive the -sysconfig flag (old
+// code does not support it).
+func writeNodesOverride(cfg *Config, devnetDir, projectName, imageName, outputPath string) error {
 	var b strings.Builder
 
 	b.WriteString("services:\n")
 	for i := 1; i <= cfg.Nodes; i++ {
 		gqlPort := cfg.GQLBasePort + i - 1
 		p2pPort := cfg.P2PBasePort + i - 1
+		isOld := isOldCodeNode(cfg, i)
 
-		// Build the magid command, optionally including sysconfig path.
+		// Build the magid command. Old-code nodes don't get -sysconfig
+		// because the old binary doesn't support the flag.
 		cmd := fmt.Sprintf(
 			`"./magid", "-network", "devnet", "-data-dir", "/data/devnet/data-%d", "-log-level", "%s"`,
 			i, cfg.LogLevel,
 		)
-		if cfg.SysConfigOverrides != nil {
+		if cfg.SysConfigOverrides != nil && !isOld {
 			cmd += `, "-sysconfig", "/data/devnet/sysconfig.json"`
+		}
+
+		// Image source: pre-built old-code image or the standard
+		// pre-built image (avoids N parallel Go compiles).
+		nodeImage := imageName
+		if isOld {
+			nodeImage = oldCodeImageTag(cfg)
 		}
 
 		fmt.Fprintf(&b, `
   magi-%[1]d:
-    build:
-      context: %[2]s
-      dockerfile: tests/devnet/Dockerfile.devnet
+    image: %[8]s
     depends_on:
       db:
         condition: service_healthy
@@ -92,7 +120,7 @@ func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
       - devnet
     cap_add:
       - NET_ADMIN
-    container_name: magi-%[1]d
+    container_name: %[7]s-magi-%[1]d
     hostname: magi-%[1]d
     command: [%[3]s]
     ports:
@@ -101,7 +129,7 @@ func writeNodesOverride(cfg *Config, devnetDir, outputPath string) error {
       - "%[5]d:%[5]d/udp"
     volumes:
       - %[6]s:/data/devnet
-`, i, cfg.SourceDir, cmd, gqlPort, p2pPort, devnetDir)
+`, i, cfg.SourceDir, cmd, gqlPort, p2pPort, devnetDir, projectName, nodeImage)
 	}
 
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)

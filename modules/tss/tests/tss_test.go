@@ -2330,7 +2330,7 @@ func TestTss(t *testing.T) {
 // Scenario:
 //  1. Keygen with 6 members (epoch 0) → capture pubkey
 //  2. Disconnect 1 node → reshare (epoch 1) with 5 of 6 old members
-//     (checkParticipantReadiness drops the offline node, but threshold uses origSize=6)
+//     (gossip readiness excludes the offline node, but threshold uses origSize=6)
 //  3. Sign with the reshared key (1 node still offline → 5 of 6 sign)
 //  4. Verify signature against the KEYGEN pubkey → proves key was preserved
 //  5. Reconnect all, store epoch 2 with SWAPPED member order → reshare again
@@ -2695,7 +2695,7 @@ func TestTssThresholdIntegration(t *testing.T) {
 	// PHASE 2: RESHARE WITH 1 NODE OFFLINE (block 200)
 	// This is the core threshold fix test:
 	// - Node 5 is disconnected
-	// - checkParticipantReadiness drops it
+	// - Gossip readiness excludes it from the party list
 	// - Threshold must use origSize=6, not filtered size=5
 	// - If threshold were wrong, pubkey would change (the bug)
 	// =====================================================
