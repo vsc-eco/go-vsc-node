@@ -931,6 +931,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						}
 					}
 				}
+				// NOTE: vsc.tss_ready was removed — readiness is now handled
+				// off-chain via BLS-signed gossip attestations in the TSS module.
 
 				if vscTx != nil {
 					opList = append(opList, vscTx)

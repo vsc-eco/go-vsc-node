@@ -69,6 +69,11 @@ func main() {
 		hiveConf := streamer.NewHiveConfig(nodeDir)
 		idConf := common.NewIdentityConfig(nodeDir)
 
+		// Set DB config BEFORE creating the DB plugin and calling Init(),
+		// so the DB connects to the correct MongoDB endpoint (not localhost).
+		dbConf.SetDbURI(args.dbUrl)
+		dbConf.SetDbName(args.dbPrefix + "-" + strconv.Itoa(n))
+
 		wits := witnesses.NewEmptyWitnesses()
 		p2pServer := p2p.New(wits, p2pConf, idConf, sysConf, nil)
 
@@ -82,14 +87,15 @@ func main() {
 		}
 
 		a := aggregate.New(plugins)
-		a.Init()
+		if err := a.Init(); err != nil {
+			fmt.Printf("Error initializing node %d: %v\n", n, err)
+			os.Exit(1)
+		}
 
 		host := strings.Replace(args.p2pHost, "?", strconv.Itoa(n), 1)
 		port := args.p2pPort - 1 + n
 
 		hiveConf.SetHiveURIs(strings.Split(args.hiveUrl, ","))
-		dbConf.SetDbURI(args.dbUrl)
-		dbConf.SetDbName(args.dbPrefix + "-" + strconv.Itoa(n))
 		p2pConf.SetOptions(p2p.P2POpts{
 			Port:          port,
 			ServerMode:    true,

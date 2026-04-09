@@ -140,7 +140,7 @@ func TestEnvFileGeneration(t *testing.T) {
 	devnetDir := filepath.Join(tmpDir, "devnet")
 
 	droneConfigPath := filepath.Join(tmpDir, "drone.yaml")
-	if err := writeEnvFile(cfg, hafDir, devnetDir, droneConfigPath, envPath); err != nil {
+	if err := writeEnvFile(cfg, hafDir, devnetDir, droneConfigPath, "test-magi-image", envPath); err != nil {
 		t.Fatalf("writeEnvFile: %v", err)
 	}
 
@@ -189,7 +189,7 @@ func TestComposeFileExists(t *testing.T) {
 		"${MONGO_PORT}",
 		"${DEVNET_NODES}",
 		"${GENESIS_NODE}",
-		"${SOURCE_DIR}",
+		"${MAGI_IMAGE}",
 		"devnet-setup:",
 		"genesis-elector:",
 		"contract-deployer:",
@@ -222,7 +222,7 @@ func TestNodesOverride(t *testing.T) {
 	devnetDir := filepath.Join(tmpDir, "devnet")
 	outPath := filepath.Join(tmpDir, "nodes.yml")
 
-	if err := writeNodesOverride(cfg, devnetDir, outPath); err != nil {
+	if err := writeNodesOverride(cfg, devnetDir, "test-project", "test-magi-image", outPath); err != nil {
 		t.Fatalf("writeNodesOverride: %v", err)
 	}
 

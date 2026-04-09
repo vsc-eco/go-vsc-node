@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-"vsc-node/modules/common"
+	"vsc-node/modules/common"
 
 	libp2p "vsc-node/modules/p2p"
 
@@ -38,8 +38,9 @@ type p2pMessage struct {
 
 // ValidateMessage implements libp2p.PubSubServiceParams.
 func (p p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
-	// Always accept signature-related messages (ask_sigs, res_sig) as they use different channels
-	if parsedMsg.Type == "ask_sigs" || parsedMsg.Type == "res_sig" {
+	// Always accept signature-related and gossip readiness messages — they
+	// are not tied to a specific TSS session.
+	if parsedMsg.Type == "ask_sigs" || parsedMsg.Type == "res_sig" || parsedMsg.Type == "ready_gossip" {
 		return true
 	}
 
@@ -70,8 +71,15 @@ func (p p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.
 			// Verify action type matches (keygen, sign, reshare)
 			if parsedMsg.Action != "" && sessionInfo.action != "" {
 				if parsedMsg.Action != string(sessionInfo.action) {
-					log.Trace("validate message: action type mismatch, dropping",
-						"session", parsedMsg.Session, "msgAction", parsedMsg.Action, "expectedAction", sessionInfo.action)
+					log.Trace(
+						"validate message: action type mismatch, dropping",
+						"session",
+						parsedMsg.Session,
+						"msgAction",
+						parsedMsg.Action,
+						"expectedAction",
+						sessionInfo.action,
+					)
 					return false // Action type doesn't match
 				}
 			}
@@ -81,7 +89,12 @@ func (p p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.
 	return true
 }
 
-func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
+func (s p2pSpec) HandleMessage(
+	ctx context.Context,
+	from peer.ID,
+	msg p2pMessage,
+	send libp2p.SendFunc[p2pMessage],
+) error {
 	if msg.Type == "ask_sigs" {
 		sessId, ok := msg.Data["session_id"].(string)
 
@@ -156,7 +169,137 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 		}
 	}
 
+	if msg.Type == "ready_gossip" {
+		s.handleReadyGossip(msg)
+	}
+
 	return nil
+}
+
+// handleReadyGossip processes a bundle of signed readiness attestations from
+// another node. Each attestation's BLS signature is verified against the
+// signer's consensus key from the election before being stored.
+func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
+	targetBlockF, ok := msg.Data["target_block"].(float64)
+	if !ok {
+		return
+	}
+	targetBlock := uint64(targetBlockF)
+
+	keyId, _ := msg.Data["key_id"].(string)
+	if keyId == "" {
+		return
+	}
+
+	// Staleness check: reject if target block is in the past.
+	currentBh := s.tssMgr.lastBlockHeight.Load()
+	if targetBlock < currentBh {
+		return
+	}
+
+	// Reject if unreasonably far in the future.
+	rotateInterval := getRotateInterval(s.tssMgr.sconf)
+	if targetBlock > currentBh+2*rotateInterval {
+		return
+	}
+
+	// Look up the election to verify attestation signatures.
+	election, err := s.tssMgr.electionDb.GetElectionByHeight(targetBlock)
+	if err != nil || election.Members == nil {
+		return
+	}
+
+	// Build a set of valid election members for cheap pre-filtering
+	// before the expensive BLS signature verification.
+	electionMembers := make(map[string]bool, len(election.Members))
+	for _, m := range election.Members {
+		electionMembers[m.Account] = true
+	}
+
+	// Check settle period: if we're within DEFAULT_SETTLE_BLOCKS of the
+	// target, only accept attestations for accounts we've already seen.
+	inSettlePeriod := false
+	if currentBh > 0 && targetBlock > currentBh {
+		blocksUntil := targetBlock - currentBh
+		inSettlePeriod = blocksUntil <= DEFAULT_SETTLE_BLOCKS
+	}
+
+	attList, ok := msg.Data["attestations"].([]interface{})
+	if !ok {
+		return
+	}
+
+	// Cap bundle size at the election member count to prevent a malicious peer
+	// from sending an oversized bundle that wastes CPU on BLS verification.
+	maxAttestations := len(election.Members)
+	if len(attList) > maxAttestations {
+		log.Warn("oversized gossip bundle, truncating",
+			"received", len(attList), "max", maxAttestations,
+			"keyId", keyId, "targetBlock", targetBlock)
+		attList = attList[:maxAttestations]
+	}
+
+	dedupKey := fmt.Sprintf("%s:%d", keyId, targetBlock)
+	newCount := 0
+
+	s.tssMgr.gossipLock.Lock()
+	defer s.tssMgr.gossipLock.Unlock()
+
+	if s.tssMgr.gossipAttestations[dedupKey] == nil {
+		s.tssMgr.gossipAttestations[dedupKey] = make(map[string]ReadyAttestation)
+	}
+	existing := s.tssMgr.gossipAttestations[dedupKey]
+
+	for _, raw := range attList {
+		attMap, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		account, _ := attMap["account"].(string)
+		sig, _ := attMap["sig"].(string)
+		if account == "" || sig == "" {
+			continue
+		}
+
+		// Only accept attestations from actual election members.
+		if !electionMembers[account] {
+			continue
+		}
+
+		// Skip if we already have this attestation.
+		if _, has := existing[account]; has {
+			continue
+		}
+
+		// During settle period, reject attestations from accounts not already seen.
+		if inSettlePeriod {
+			log.Trace("rejecting new attestation during settle period",
+				"account", account, "keyId", keyId, "targetBlock", targetBlock)
+			continue
+		}
+
+		att := ReadyAttestation{
+			Account:     account,
+			KeyId:       keyId,
+			TargetBlock: targetBlock,
+			Sig:         sig,
+		}
+
+		if !s.tssMgr.verifyAttestation(att, election) {
+			log.Warn("rejecting attestation with invalid BLS signature",
+				"account", account, "keyId", keyId, "targetBlock", targetBlock)
+			continue
+		}
+
+		existing[account] = att
+		newCount++
+	}
+
+	if newCount > 0 {
+		log.Trace("merged gossip attestations",
+			"keyId", keyId, "targetBlock", targetBlock,
+			"new", newCount, "total", len(existing))
+	}
 }
 
 func (p2pSpec) HandleRawMessage(ctx context.Context, rawMsg *pubsub.Message, send libp2p.SendFunc[p2pMessage]) error {
@@ -203,12 +346,29 @@ func (txp *TssManager) stopP2P() error {
 }
 
 // SendMsg sends a TSS message to a participant with retry logic and connection health checks
-func (tss *TssManager) SendMsg(sessionId string, participant Participant, moniker string, msg []byte, isBroadcast bool, commiteeType string, cmtFrom string) error {
+func (tss *TssManager) SendMsg(
+	sessionId string,
+	participant Participant,
+	moniker string,
+	msg []byte,
+	isBroadcast bool,
+	commiteeType string,
+	cmtFrom string,
+) error {
 	return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, 0)
 }
 
 // sendMsgWithRetry implements retry logic with exponential backoff
-func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participant, moniker string, msg []byte, isBroadcast bool, commiteeType string, cmtFrom string, attempt int) error {
+func (tss *TssManager) sendMsgWithRetry(
+	sessionId string,
+	participant Participant,
+	moniker string,
+	msg []byte,
+	isBroadcast bool,
+	commiteeType string,
+	cmtFrom string,
+	attempt int,
+) error {
 	const maxRetries = 3
 	const baseRetryDelay = 1 * time.Second
 
@@ -226,8 +386,19 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 	peerId, err := peer.Decode(witness.PeerId)
 
 	if err != nil {
-		log.Error("PeerId decode failed",
-			"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "peerId", witness.PeerId, "err", err)
+		log.Error(
+			"PeerId decode failed",
+			"sessionId",
+			sessionId,
+			"from",
+			fromAccount,
+			"to",
+			participant.Account,
+			"peerId",
+			witness.PeerId,
+			"err",
+			err,
+		)
 		return err
 	}
 
@@ -235,10 +406,32 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 	if !tss.isPeerConnected(peerId) {
 		if attempt < maxRetries {
 			retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt)) // Exponential backoff: 1s, 2s, 4s
-			log.Verbose("peer not connected, retrying with backoff",
-				"sessionId", sessionId, "to", participant.Account, "peerId", peerId.String(), "attempt", attempt+1, "maxRetries", maxRetries, "delay", retryDelay)
+			log.Verbose(
+				"peer not connected, retrying with backoff",
+				"sessionId",
+				sessionId,
+				"to",
+				participant.Account,
+				"peerId",
+				peerId.String(),
+				"attempt",
+				attempt+1,
+				"maxRetries",
+				maxRetries,
+				"delay",
+				retryDelay,
+			)
 			time.Sleep(retryDelay)
-			return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, attempt+1)
+			return tss.sendMsgWithRetry(
+				sessionId,
+				participant,
+				moniker,
+				msg,
+				isBroadcast,
+				commiteeType,
+				cmtFrom,
+				attempt+1,
+			)
 		} else {
 			log.Warn("peer not connected after retries",
 				"sessionId", sessionId, "to", participant.Account, "peerId", peerId.String(), "maxRetries", maxRetries)
@@ -257,8 +450,23 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 	tRes := TRes{}
 
 	if attempt == 0 {
-		log.Trace("sending message",
-			"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "isBroadcast", isBroadcast, "cmt", commiteeType, "cmtFrom", cmtFrom, "msgLen", len(msg))
+		log.Trace(
+			"sending message",
+			"sessionId",
+			sessionId,
+			"from",
+			fromAccount,
+			"to",
+			participant.Account,
+			"isBroadcast",
+			isBroadcast,
+			"cmt",
+			commiteeType,
+			"cmtFrom",
+			cmtFrom,
+			"msgLen",
+			len(msg),
+		)
 	} else {
 		log.Verbose("retrying message send",
 			"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "attempt", attempt+1, "maxRetries", maxRetries, "msgLen", len(msg))
@@ -281,11 +489,39 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 	if err != nil {
 		if attempt < maxRetries {
 			retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt))
-			log.Error("RPC call failed, will retry",
-				"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "peerId", peerId.String(), "duration", duration, "attempt", attempt+1, "maxRetries", maxRetries, "delay", retryDelay, "err", err)
+			log.Error(
+				"RPC call failed, will retry",
+				"sessionId",
+				sessionId,
+				"from",
+				fromAccount,
+				"to",
+				participant.Account,
+				"peerId",
+				peerId.String(),
+				"duration",
+				duration,
+				"attempt",
+				attempt+1,
+				"maxRetries",
+				maxRetries,
+				"delay",
+				retryDelay,
+				"err",
+				err,
+			)
 			tss.metrics.IncrementMessageRetry()
 			time.Sleep(retryDelay)
-			return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, attempt+1)
+			return tss.sendMsgWithRetry(
+				sessionId,
+				participant,
+				moniker,
+				msg,
+				isBroadcast,
+				commiteeType,
+				cmtFrom,
+				attempt+1,
+			)
 		} else {
 			log.Error("RPC call failed after all retries",
 				"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "peerId", peerId.String(), "duration", duration, "maxRetries", maxRetries, "err", err)
@@ -306,101 +542,10 @@ func (tss *TssManager) sendMsgWithRetry(sessionId string, participant Participan
 	return nil
 }
 
-// checkParticipantReadiness sends a TSS-level "ready" ping to each participant
-// and returns only those that respond within the deadline. This filters out
-// zombie nodes that are connected at the libp2p level but not functioning
-// at the application level. Always includes self.
-// checkParticipantReadiness pings each participant and returns those that respond.
-//
-// When keepTimeouts is true, participants that fail due to timeout are KEPT in the
-// returned list — only definitive failures (no witness, bad peer ID, RPC error) are
-// excluded. This is used for the OLD committee in reshare: timeout nodes might just
-// be slow, and excluding them non-deterministically causes SSID mismatch between nodes.
-// If a timeout node is genuinely offline, tss-lib will wait for it until the session's
-// 2-minute ReshareTimeout fires, producing blame. This is an intentional tradeoff:
-// ~2 minutes wasted per offline old member, but SSIDs are guaranteed to match across
-// all nodes because only deterministic errors (same on every node) cause exclusion.
-//
-// When keepTimeouts is false (signing, new committee), timeouts cause exclusion as before.
-func (tss *TssManager) checkParticipantReadiness(participants []Participant, sessionId string, label string, keepTimeouts bool) []Participant {
-	selfAccount := tss.config.Get().HiveUsername
-	readyTimeout := 5 * time.Second
-
-	type readyResult struct {
-		participant Participant
-		ok          bool
-		reason      string
-	}
-
-	results := make(chan readyResult, len(participants))
-
-	for _, p := range participants {
-		if p.Account == selfAccount {
-			results <- readyResult{participant: p, ok: true}
-			continue
-		}
-
-		go func(p Participant) {
-			witness, err := tss.witnessDb.GetWitnessAtHeight(p.Account, nil)
-			if err != nil || witness.PeerId == "" {
-				results <- readyResult{participant: p, ok: false, reason: "no_witness"}
-				return
-			}
-
-			peerId, err := peer.Decode(witness.PeerId)
-			if err != nil {
-				results <- readyResult{participant: p, ok: false, reason: "bad_peer_id"}
-				return
-			}
-
-			tMsg := TMsg{
-				SessionId: sessionId,
-				Type:      "ready",
-			}
-			tRes := TRes{}
-
-			rpcCtx, rpcCancel := context.WithTimeout(context.Background(), readyTimeout)
-			err = tss.client.CallContext(rpcCtx, peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
-			rpcCancel()
-			if err != nil {
-				reason := fmt.Sprintf("rpc_error: %v", err)
-				if rpcCtx.Err() == context.DeadlineExceeded {
-					reason = "timeout"
-				}
-				results <- readyResult{participant: p, ok: false, reason: reason}
-			} else {
-				results <- readyResult{participant: p, ok: true}
-			}
-		}(p)
-	}
-
-	ready := make([]Participant, 0, len(participants))
-	for range participants {
-		r := <-results
-		if r.ok {
-			ready = append(ready, r.participant)
-		} else if keepTimeouts && r.reason == "timeout" {
-			// Timeout is transient — keep the node to avoid SSID mismatch.
-			// If genuinely offline, the 2-minute ReshareTimeout will catch it.
-			log.Verbose("keeping timed-out participant (transient)",
-				"label", label, "sessionId", sessionId, "account", r.participant.Account)
-			ready = append(ready, r.participant)
-		} else {
-			log.Warn("excluding unresponsive participant",
-				"label", label, "sessionId", sessionId, "account", r.participant.Account, "reason", r.reason)
-		}
-	}
-
-	log.Verbose("readiness check complete",
-		"label", label, "sessionId", sessionId, "total", len(participants), "ready", len(ready))
-
-	return ready
-}
-
 // countReadyParticipants pings each participant's TSS RPC layer and returns
-// the number of reachable peers. Unlike checkParticipantReadiness, it never
-// modifies or filters the participant list — callers use the count as a
-// go/no-go gate while keeping the deterministic on-chain party list intact.
+// the number of reachable peers. It never modifies or filters the participant
+// list — callers use the count as a go/no-go gate while keeping the
+// deterministic party list intact. Used for signing pre-flight checks.
 func (tss *TssManager) countReadyParticipants(participants []Participant, sessionId string, label string) int {
 	selfAccount := tss.config.Get().HiveUsername
 	readyTimeout := 5 * time.Second
@@ -462,7 +607,7 @@ func (tss *TssManager) countReadyParticipants(participants []Participant, sessio
 		if r.ok {
 			count++
 		} else {
-			log.Verbose("unresponsive participant (not excluding)",
+			log.Verbose("unresponsive participant (pre-flight, not excluded)",
 				"label", label, "sessionId", sessionId, "account", r.account, "reason", r.reason)
 		}
 	}
