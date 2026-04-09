@@ -51,7 +51,8 @@ const (
 	DEFAULT_READINESS_OFFSET  = 30      // blocks before reshare to broadcast readiness
 
 	TSS_MESSAGE_RETRY_COUNT     = 3             // Number of retries for failed messages
-	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for bans
+	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for long-term bans
+	TSS_BLAME_THRESHOLD_PERCENT = 33            // Failure rate threshold for short-term per-key blame exclusion
 	TSS_BAN_GRACE_PERIOD_EPOCHS = 3             // Epochs before new nodes can be banned (as int for comparison)
 	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
 	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
@@ -402,9 +403,14 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 
 					// During the announce phase, sign and store our own attestation.
 					// During the settle phase, skip new attestations but still gossip.
-					if !inSettlePeriod && !tssMgr.readinessSent[dedupKey] {
+					tssMgr.gossipLock.Lock()
+					alreadySent := tssMgr.readinessSent[dedupKey]
+					if !inSettlePeriod && !alreadySent {
 						tssMgr.readinessSent[dedupKey] = true
+					}
+					tssMgr.gossipLock.Unlock()
 
+					if !inSettlePeriod && !alreadySent {
 						att, err := tssMgr.signReadyAttestation(key.Id, nextReshareBlock)
 						if err != nil {
 							log.Warn("failed to sign readiness attestation",
@@ -433,6 +439,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		}
 
 		// Evict stale readinessSent entries from previous cycles.
+		tssMgr.gossipLock.Lock()
 		for k := range tssMgr.readinessSent {
 			parts := strings.SplitN(k, ":", 2)
 			if len(parts) == 2 {
@@ -441,6 +448,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				}
 			}
 		}
+		tssMgr.gossipLock.Unlock()
 	}
 
 	// tssMgr.activeActions
@@ -999,8 +1007,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// epoch election, not currentElection. The blame was encoded
 			// via setToCommitment(culprits, epoch) which uses
 			// GetElection(epoch).Members for bit positions.
+			//
+			// CHANGE 4b: Use threshold-based exclusion (TSS_BLAME_THRESHOLD_PERCENT)
+			// instead of absolute exclusion. A node must appear in >33% of
+			// blame commitments within the BLAME_EXPIRE window to be excluded.
+			// This prevents a malicious coalition from excluding healthy nodes
+			// with a single manufactured blame.
 			// ═══════════════════════════════════════════════════════════
-			blamedAccounts := make(map[string]bool)
+			blameCount := make(map[string]int)   // account → number of blames naming this account
+			blameOpportunities := 0              // total blame commitments in window (denominator)
 			for _, blame := range allBlames {
 				if blame.BlockHeight <= commitment.BlockHeight {
 					continue
@@ -1011,18 +1026,28 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						"blameEpoch", blame.Epoch, "sessionId", sessionId)
 					continue
 				}
+				blameOpportunities++
 				blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
 				bBits := new(big.Int).SetBytes(blameBytes)
 				for bidx, member := range blameElection.Members {
 					if bBits.Bit(bidx) == 1 {
-						blamedAccounts[member.Account] = true
+						blameCount[member.Account]++
+					}
+				}
+			}
+			blamedAccounts := make(map[string]bool)
+			if blameOpportunities > 0 {
+				for account, count := range blameCount {
+					if count*100 > blameOpportunities*TSS_BLAME_THRESHOLD_PERCENT {
+						blamedAccounts[account] = true
 					}
 				}
 			}
 			if len(blamedAccounts) > 0 {
-				log.Verbose("accumulated blame exclusions",
+				log.Verbose("blame threshold exclusions",
 					"sessionId", sessionId, "blamedCount", len(blamedAccounts),
-					"blameCommitments", len(allBlames))
+					"blameCommitments", blameOpportunities,
+					"threshold", TSS_BLAME_THRESHOLD_PERCENT)
 			}
 
 			commitmentElection := tssMgr.electionDb.GetElection(commitment.Epoch)

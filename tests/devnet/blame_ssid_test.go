@@ -12,45 +12,25 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-// TestBlameSSIDMismatch reproduces the mainnet blame loop caused by
-// the readiness check in checkParticipantReadiness (tss.go:846).
+// TestBlameSSIDMismatch is a regression test for the old mainnet blame loop.
 //
-// On mainnet, most blame commitments never land on Hive. The root
-// cause is that checkParticipantReadiness modifies the old committee
-// based on non-deterministic readiness results:
+// The old system used RPC-based readiness checks (checkParticipantReadiness)
+// that produced non-deterministic party lists across nodes, causing SSID
+// mismatch and preventing blame from landing. This has been replaced by
+// BLS-signed gossip attestations that are deterministic across all nodes.
 //
-//   - keepTimeouts=false: timeout nodes are EXCLUDED from the old
-//     committee. Different nodes see different timeouts → different
-//     party lists → different SSIDs → protocol fails → different
-//     blame culprit sets → different CIDs → BLS collection fails.
+// This test creates asymmetric network conditions where some nodes can reach
+// a peer but others cannot, then verifies that the gossip-based system
+// correctly handles the situation — unreachable nodes won't send gossip
+// attestations, so they're deterministically excluded from the party list.
 //
-//   - keepTimeouts=true: timeout nodes are KEPT in the old committee.
-//     If the node is genuinely offline, CanProceed() blocks for the
-//     full ReshareTimeout (2 min). The blame CID is deterministic
-//     (all nodes agree the same node didn't participate), so blame
-//     DOES land. But the next reshare cycle reads the same blame,
-//     excludes the same nodes, yet the offline node still causes
-//     the readiness check to include it (it's not in the blame for
-//     the old committee — blame only excludes from the new committee
-//     construction on line 762, and from old committee on line 742).
-//     So the same node blocks CanProceed again → identical blame →
-//     infinite loop of the same blame bitset.
+// Setup: 7 nodes. Nodes 1-4 have 6s latency to node 7, nodes 5-6 don't.
 //
-// Both paths are broken. This test creates asymmetric network
-// conditions where some nodes can reach a peer but others cannot,
-// triggering whichever path the current code takes. It then checks
-// whether the system gets stuck.
-//
-// Setup: 7 nodes. Nodes 1-4 cannot reach node 7, but nodes 5-6 can.
-//
-// Expected behavior if bug is present:
-//   - keepTimeouts=false: no blame lands (SSID mismatch)
-//   - keepTimeouts=true: blame lands but is identical across cycles
-//
-// Expected behavior when fixed:
-//   - Readiness checks must not modify the deterministic party list.
-//     Offline nodes should be handled by the protocol timeout, and
-//     blame should correctly exclude them on retry.
+// Expected behavior:
+//   - Node 7 can still gossip attestations (latency doesn't prevent pubsub)
+//   - If node 7's attestations arrive in time, it's included in reshare
+//   - If they arrive too late, it's excluded deterministically on all nodes
+//   - Either way, blame should land correctly if the reshare fails
 //
 // Run with:
 //
@@ -160,23 +140,15 @@ func TestBlameSSIDMismatch(t *testing.T) {
 
 	// ── Phase 2: Inject asymmetric latency ───────────────────────────
 	//
-	// Add ~5s latency between nodes 1-4 and node 7 (but NOT between
-	// nodes 5-6 and node 7). The readiness check in
-	// checkParticipantReadiness uses a 5-second RPC timeout, so:
-	//
-	//   - Nodes 1-4 checking node 7: 5s latency + normal RTT ≈ timeout
-	//   - Nodes 5-6 checking node 7: normal RTT ≈ succeeds
-	//   - Node 7 checking nodes 1-4: 5s latency ≈ timeout
-	//
-	// With keepTimeouts=false: timeout → exclude → different party lists
-	// With keepTimeouts=true: node 7 stays in list but is slow → may
-	//   miss early round messages → protocol limps along differently
-	//
-	// Either way, nodes disagree on who's in the session.
+	// Add ~6s latency between nodes 1-4 and node 7 (but NOT between
+	// nodes 5-6 and node 7). With gossip-based readiness, this latency
+	// may delay node 7's attestation delivery via pubsub. If attestations
+	// arrive before the reshare block, node 7 is included deterministically
+	// on all nodes. If they arrive too late, node 7 is excluded
+	// deterministically on all nodes.
 
-	// 6s latency guarantees the 5s readiness RPC always times out.
-	// No jitter — deterministic failure for nodes 1-4, deterministic
-	// success for nodes 5-6 (normal latency).
+	// 6s latency may delay gossip attestation delivery via pubsub.
+	// No jitter — consistent delay for nodes 1-4, normal for nodes 5-6.
 	t.Log("Phase 2: injecting 6s latency between nodes 1-4 and node 7...")
 	for _, n := range []int{1, 2, 3, 4} {
 		if err := d.AddLatency(ctx, n, 7, 6000, 0); err != nil {
@@ -192,19 +164,16 @@ func TestBlameSSIDMismatch(t *testing.T) {
 
 	// ── Phase 3: Wait through two reshare cycles ─────────────────────
 	//
-	// We wait for 2 reshare windows (200 blocks) and observe what
-	// happens. Possible outcomes:
+	// We wait for 2 reshare windows and observe what happens.
+	// With gossip-based readiness, expected outcomes:
 	//
-	// A) No commitments land (keepTimeouts=false path — SSID mismatch
-	//    prevents BLS consensus on any blame CID)
+	// A) No commitments land — gossip attestations failed to propagate
 	//
-	// B) Blame lands but is identical across cycles (keepTimeouts=true
-	//    path — node 7 blocks CanProceed, blame is deterministic but
-	//    the same node is blamed repeatedly because it's still in the
-	//    party list on retry)
+	// B) Blame lands and node 7 is excluded on retry via blame
+	//    accumulation threshold, then reshare succeeds
 	//
-	// C) First blame lands, second reshare excludes node 7 and
-	//    succeeds (CORRECT behavior — what a fix should achieve)
+	// C) Reshare succeeds immediately — node 7's attestations arrived
+	//    in time despite the latency
 
 	rotateInterval := uint64(20) // matches TssParams.RotateInterval above
 	bh, _ := d.getLastProcessedBlock(ctx, 2)
@@ -240,18 +209,16 @@ func TestBlameSSIDMismatch(t *testing.T) {
 		// Outcome A: SSID mismatch — no blame landed.
 		t.Log("")
 		t.Log("RESULT: No blame/reshare commitments landed during asymmetric partition.")
-		t.Log("DIAGNOSIS: Nodes built different party lists due to non-deterministic")
-		t.Log("readiness checks → SSID mismatch → different blame CIDs → BLS failed.")
-		t.Log("This is the keepTimeouts=false (or any non-deterministic exclusion) bug.")
+		t.Log("DIAGNOSIS: Gossip attestations may not have propagated, or nodes")
+		t.Log("disagreed on readiness state. Check gossip logs for attestation counts.")
 
 	case len(commits) >= 2 && commits[0].Commitment == commits[1].Commitment:
 		// Outcome B: repeated identical blame.
 		t.Log("")
 		t.Log("RESULT: Multiple blame commitments landed with IDENTICAL bitsets.")
 		t.Log("DIAGNOSIS: Blame is deterministic (all nodes agree), but the blamed")
-		t.Log("node is not being excluded on retry. The same party list is used each")
-		t.Log("time, causing an infinite blame loop for the same culprits.")
-		t.Log("This is the keepTimeouts=true repeated-blame bug.")
+		t.Log("node has not exceeded the blame threshold for exclusion. Check if the")
+		t.Log("TSS_BLAME_THRESHOLD_PERCENT is set correctly for this scenario.")
 
 	case len(commits) >= 1 && commits[0].Type == "reshare":
 		// Outcome C: reshare succeeded — blame exclusion worked.

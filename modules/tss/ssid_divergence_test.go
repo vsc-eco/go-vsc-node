@@ -89,34 +89,34 @@ func buildPartyIDs(accounts []string, epoch uint64) btss.SortedPartyIDs {
 
 // TestSSIDDivergenceFromDifferentPartyLists proves that when nodes construct
 // different party lists for the old committee, the SSID computation produces
-// different values. This is the root cause of reshare failures when nodes
-// have non-deterministic readiness check results.
+// different values. This demonstrates why party lists MUST be identical across
+// all nodes — any divergence causes SSID mismatch and session failure.
 //
-// The failure mode:
-//  1. Node A's readiness check excludes "node-f" (RPC error, no_witness, etc.)
-//  2. Node B's readiness check keeps "node-f" (RPC succeeded)
-//  3. Node A builds old committee: [a, b, c, d, e] — 5 parties
-//  4. Node B builds old committee: [a, b, c, d, e, f] — 6 parties
-//  5. Both compute SSID from round.Parties().IDs().Keys()
-//  6. Different Keys lists → different SSID hash
-//  7. Round 2: new party receives messages with BOTH SSIDs
-//  8. bytes.Equal(SSID_A, SSID_B) → false → WrapError("ssid mismatch")
-//  9. Session is poisoned for ALL nodes, not just the mismatched one
-//  10. Timeout fires after 2 minutes, WaitingFor() returns ALL parties
+// The failure mode (if party lists diverge for any reason):
+//  1. Node A builds old committee: [a, b, c, d, e] — 5 parties
+//  2. Node B builds old committee: [a, b, c, d, e, f] — 6 parties
+//  3. Both compute SSID from round.Parties().IDs().Keys()
+//  4. Different Keys lists → different SSID hash
+//  5. Round 2: new party receives messages with BOTH SSIDs
+//  6. bytes.Equal(SSID_A, SSID_B) → false → WrapError("ssid mismatch")
+//  7. Session is poisoned for ALL nodes, not just the mismatched one
+//  8. Timeout fires after 2 minutes, WaitingFor() returns ALL parties
 //
-// This test proves steps 5-6 directly, without needing a full P2P cluster.
+// This is why the gossip attestation system replaced the old RPC-based
+// readiness checks — gossip attestations are collected from pubsub and
+// are deterministic across all nodes.
+//
+// This test proves steps 3-4 directly, without needing a full P2P cluster.
 func TestSSIDDivergenceFromDifferentPartyLists(t *testing.T) {
 	// The 6-node committee that participated in keygen
 	allMembers := []string{"node-a", "node-b", "node-c", "node-d", "node-e", "node-f"}
 	sort.Strings(allMembers) // deterministic baseline
 
-	// Node A: all 6 members passed readiness check
+	// Node A: all 6 members in party list
 	nodeAMembers := make([]string, len(allMembers))
 	copy(nodeAMembers, allMembers)
 
-	// Node B: "node-f" failed readiness check (e.g., RPC timeout classified as
-	// "rpc_error" which is a "definitive" error even with keepTimeouts=true,
-	// or "no_witness" because Node B's witness DB hasn't synced the latest update).
+	// Node B: "node-f" missing from party list (simulates any divergence).
 	nodeBMembers := make([]string, 0, len(allMembers)-1)
 	for _, m := range allMembers {
 		if m != "node-f" {
@@ -231,7 +231,7 @@ func TestSSIDIdenticalWhenPartyListsMatch(t *testing.T) {
 // because SHA-512/256 is a cryptographic hash — any input change produces
 // an unpredictable output change.
 func TestSSIDDivergenceFromSingleExtraNode(t *testing.T) {
-	// 19-node mainnet scenario: one node excluded by readiness check
+	// 19-node mainnet scenario: one node missing from party list
 	members19 := make([]string, 19)
 	for i := 0; i < 19; i++ {
 		members19[i] = "witness-" + string(rune('a'+i))
@@ -241,7 +241,7 @@ func TestSSIDDivergenceFromSingleExtraNode(t *testing.T) {
 	// Node A: all 19
 	pidsA := buildPartyIDs(members19, 0)
 
-	// Node B: 18 (excluded witness-s due to no_witness in local DB)
+	// Node B: 18 (witness-s missing from party list)
 	members18 := make([]string, 0, 18)
 	for _, m := range members19 {
 		if m != "witness-s" {

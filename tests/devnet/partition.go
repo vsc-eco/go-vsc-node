@@ -93,10 +93,9 @@ func (d *Devnet) Reconnect(ctx context.Context, node int) error {
 
 // AddLatency adds network delay to traffic between two specific nodes
 // (bidirectional). The delay is in milliseconds with optional jitter.
-// This is more realistic than a full partition — it causes readiness
-// check timeouts on some nodes but not others, triggering the SSID
-// mismatch bug where checkParticipantReadiness produces different
-// party lists on different nodes.
+// This is more realistic than a full partition — it can cause gossip
+// attestations to arrive late, preventing nodes from appearing in the
+// readiness set before the reshare block.
 func (d *Devnet) AddLatency(ctx context.Context, nodeA, nodeB int, delayMs, jitterMs int) error {
 	nameA := d.containerName(nodeA)
 	nameB := d.containerName(nodeB)

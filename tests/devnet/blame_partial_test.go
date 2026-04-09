@@ -14,27 +14,17 @@ import (
 )
 
 // TestBlamePartialLatency tests whether the network can make useful
-// progress when 2 of 7 nodes are slow enough to fail readiness checks,
-// but 5 healthy nodes (> 2/3 threshold) remain.
+// progress when 2 of 7 nodes have high latency, but 5 healthy nodes
+// (> 2/3 threshold) remain.
 //
-// The challenge: each healthy node sees a different subset of the 2
-// slow nodes as reachable vs timed-out, depending on which latency
-// paths happen to be configured. This means:
+// With gossip-based readiness, latency affects whether nodes' BLS-signed
+// attestations arrive before the reshare block. Unlike the old RPC-based
+// readiness checks, gossip attestations are collected deterministically
+// by all nodes from pubsub — so all nodes see the same readiness set.
+// Slow nodes whose attestations arrive late are excluded consistently.
 //
-//   - Node 1 might see {6: timeout, 7: timeout}
-//   - Node 2 might see {6: timeout, 7: ok}
-//   - Node 3 might see {6: ok, 7: timeout}
-//   - Node 4 might see {6: ok, 7: ok}
-//   - Node 5 might see {6: ok, 7: ok}
-//
-// With the current buggy checkParticipantReadiness, each node builds a
-// different party list → SSID mismatch → no blame lands.
-//
-// When fixed, nodes should build identical party lists from on-chain
-// data only, let the protocol timeout handle slow nodes, and produce
-// a blame commitment that the 5 healthy nodes agree on. The subsequent
-// reshare should then exclude the blamed nodes and succeed with the
-// remaining healthy quorum.
+// The subsequent reshare should succeed with the ready quorum, and if
+// a reshare fails, blame should land and accumulate correctly.
 //
 // Latency setup (deterministic, not random):
 //

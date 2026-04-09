@@ -520,106 +520,10 @@ func (tss *TssManager) sendMsgWithRetry(
 	return nil
 }
 
-// checkParticipantReadiness sends a TSS-level "ready" ping to each participant
-// and returns only those that respond within the deadline. This filters out
-// zombie nodes that are connected at the libp2p level but not functioning
-// at the application level. Always includes self.
-// checkParticipantReadiness pings each participant and returns those that respond.
-//
-// When keepTimeouts is true, participants that fail due to timeout are KEPT in the
-// returned list — only definitive failures (no witness, bad peer ID, RPC error) are
-// excluded. This is used for the OLD committee in reshare: timeout nodes might just
-// be slow, and excluding them non-deterministically causes SSID mismatch between nodes.
-// If a timeout node is genuinely offline, tss-lib will wait for it until the session's
-// 2-minute ReshareTimeout fires, producing blame. This is an intentional tradeoff:
-// ~2 minutes wasted per offline old member, but SSIDs are guaranteed to match across
-// all nodes because only deterministic errors (same on every node) cause exclusion.
-//
-// When keepTimeouts is false (signing, new committee), timeouts cause exclusion as before.
-func (tss *TssManager) checkParticipantReadiness(
-	participants []Participant,
-	sessionId string,
-	label string,
-	keepTimeouts bool,
-) []Participant {
-	selfAccount := tss.config.Get().HiveUsername
-	readyTimeout := 5 * time.Second
-
-	type readyResult struct {
-		participant Participant
-		ok          bool
-		reason      string
-	}
-
-	results := make(chan readyResult, len(participants))
-
-	for _, p := range participants {
-		if p.Account == selfAccount {
-			results <- readyResult{participant: p, ok: true}
-			continue
-		}
-
-		go func(p Participant) {
-			witness, err := tss.witnessDb.GetWitnessAtHeight(p.Account, nil)
-			if err != nil || witness.PeerId == "" {
-				results <- readyResult{participant: p, ok: false, reason: "no_witness"}
-				return
-			}
-
-			peerId, err := peer.Decode(witness.PeerId)
-			if err != nil {
-				results <- readyResult{participant: p, ok: false, reason: "bad_peer_id"}
-				return
-			}
-
-			tMsg := TMsg{
-				SessionId: sessionId,
-				Type:      "ready",
-			}
-			tRes := TRes{}
-
-			rpcCtx, rpcCancel := context.WithTimeout(context.Background(), readyTimeout)
-			err = tss.client.CallContext(rpcCtx, peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
-			rpcCancel()
-			if err != nil {
-				reason := fmt.Sprintf("rpc_error: %v", err)
-				if rpcCtx.Err() == context.DeadlineExceeded {
-					reason = "timeout"
-				}
-				results <- readyResult{participant: p, ok: false, reason: reason}
-			} else {
-				results <- readyResult{participant: p, ok: true}
-			}
-		}(p)
-	}
-
-	ready := make([]Participant, 0, len(participants))
-	for range participants {
-		r := <-results
-		if r.ok {
-			ready = append(ready, r.participant)
-		} else if keepTimeouts && r.reason == "timeout" {
-			// Timeout is transient — keep the node to avoid SSID mismatch.
-			// If genuinely offline, the 2-minute ReshareTimeout will catch it.
-			log.Verbose("keeping timed-out participant (transient)",
-				"label", label, "sessionId", sessionId, "account", r.participant.Account)
-			ready = append(ready, r.participant)
-		} else {
-			log.Warn("excluding unresponsive participant",
-				"label", label, "sessionId", sessionId, "account", r.participant.Account, "reason", r.reason)
-		}
-	}
-
-	log.Verbose("readiness check complete",
-		"label", label, "sessionId", sessionId, "total", len(participants), "ready", len(ready))
-
-	return ready
-}
-
 // countReadyParticipants pings each participant's TSS RPC layer and returns
-// the number of reachable peers. Unlike checkParticipantReadiness, it never
-// modifies or filters the participant list — callers use the count as a
-// go/no-go gate while keeping the deterministic on-chain party list intact.
+// the number of reachable peers. It never modifies or filters the participant
+// list — callers use the count as a go/no-go gate while keeping the
+// deterministic party list intact. Used for signing pre-flight checks.
 func (tss *TssManager) countReadyParticipants(participants []Participant, sessionId string, label string) int {
 	selfAccount := tss.config.Get().HiveUsername
 	readyTimeout := 5 * time.Second
