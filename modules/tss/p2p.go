@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"strconv"
 	"time"
 	"vsc-node/modules/common"
+	tss_helpers "vsc-node/modules/tss/helpers"
 
 	libp2p "vsc-node/modules/p2p"
 
@@ -108,6 +110,35 @@ func (s p2pSpec) HandleMessage(
 		s.tssMgr.bufferLock.RUnlock()
 		if hasResult {
 			baseCommitment := entry.result.Serialize()
+
+			// Refuse to sign systemic blames: if fewer than threshold+1
+			// nodes remain unblamed, the protocol could not have succeeded
+			// (not enough shares for Lagrange interpolation). For 19 nodes
+			// with threshold 12: maxBlamed = 19-13 = 6, so 7+ is systemic.
+			if baseCommitment.Type == "blame" && baseCommitment.Commitment != "" {
+				blameElection := s.tssMgr.electionDb.GetElection(baseCommitment.Epoch)
+				if blameElection != nil {
+					bv := new(big.Int)
+					blameBytes, _ := base64.RawURLEncoding.DecodeString(baseCommitment.Commitment)
+					bv.SetBytes(blameBytes)
+					blamedCount := 0
+					for idx := range blameElection.Members {
+						if bv.Bit(idx) == 1 {
+							blamedCount++
+						}
+					}
+					blameThreshold, _ := tss_helpers.GetThreshold(len(blameElection.Members))
+					maxBlamed := len(blameElection.Members) - (blameThreshold + 1)
+					if blamedCount > maxBlamed {
+						log.Info("refusing to sign systemic blame",
+							"sessionId", sessId,
+							"blamedCount", blamedCount,
+							"maxBlamed", maxBlamed)
+						return nil
+					}
+				}
+			}
+
 			commitBytes, _ := common.EncodeDagCbor(baseCommitment)
 
 			commitCid, _ := common.HashBytes(commitBytes, multicodec.DagCbor)

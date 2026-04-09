@@ -103,19 +103,19 @@ func TestBlameScore_EmptyElectionInWindow(t *testing.T) {
 }
 
 func TestBlameScore_AllNodesBanned(t *testing.T) {
-	// If every node exceeds the blame threshold, all should be banned.
-	// This tests what happens when the entire committee is unreliable.
+	// When all nodes are blamed in every commit, those commits are systemic
+	// (blamed count > threshold) and are filtered out. No nodes should be banned.
 	accounts := []string{"alice", "bob", "carol", "dave"}
 	current := makeElectionResult(10, accounts)
 
-	// Previous elections to establish history beyond grace period
 	prev := []elections.ElectionResult{
 		makeElectionResult(7, accounts),
 		makeElectionResult(4, accounts),
 		makeElectionResult(1, accounts),
 	}
 
-	// All 4 nodes blamed in every epoch (100% failure rate)
+	// All 4 nodes blamed in every epoch — systemic failure
+	// threshold=2, maxBlamed = 4-(2+1) = 1, blaming 4 > 1 → filtered
 	blames := map[uint64][]tss_db.TssCommitment{
 		10: {{Type: "blame", Epoch: 10, Commitment: makeBlameBitset(0, 1, 2, 3), KeyId: "k1"}},
 		7:  {{Type: "blame", Epoch: 7, Commitment: makeBlameBitset(0, 1, 2, 3), KeyId: "k1"}},
@@ -126,17 +126,18 @@ func TestBlameScore_AllNodesBanned(t *testing.T) {
 	mgr := newBlameScoreMgr(current, prev, blames)
 	result := mgr.BlameScore()
 
-	// All 4 should be banned (100% failure > 60% threshold)
+	// Systemic blames are skipped — no individual node should be banned
 	for _, acct := range accounts {
-		assert.True(t, result.BannedNodes[acct],
-			"Node %s should be banned at 100%% failure rate", acct)
+		assert.False(t, result.BannedNodes[acct],
+			"Node %s should NOT be banned — all blames are systemic (all nodes blamed)", acct)
 	}
 }
 
-func TestBlameScore_ExactBanThreshold(t *testing.T) {
-	// Node at exactly 60% failure rate should be banned (> check, not >=).
-	// TSS_BAN_THRESHOLD_PERCENT = 60, check is: Score > Weight * 60 / 100
-	accounts := []string{"alice", "bob", "carol"}
+func TestBlameScore_BanCap(t *testing.T) {
+	// Even with many individual blames, the ban cap prevents banning so many
+	// nodes that the network becomes inoperable.
+	// 6 members: threshold=3, maxBlamed = 6-4 = 2, maxBans = 6-4 = 2
+	accounts := []string{"alice", "bob", "carol", "dave", "eve", "frank"}
 	current := makeElectionResult(10, accounts)
 
 	prev := []elections.ElectionResult{
@@ -145,36 +146,151 @@ func TestBlameScore_ExactBanThreshold(t *testing.T) {
 		makeElectionResult(1, accounts),
 	}
 
-	// Alice blamed in 3 out of 4 epochs = weight 4 (each epoch has 1 blame, 4 epochs total)
-	// But we need: Score > Weight * 60/100
-	// With 4 blames total (weight=4), and alice blamed in all 4: Score=4, Weight=4
-	// 4 > 4*60/100 = 4 > 2.4 → banned
-	// With alice blamed in 2 of 4: Score=2, Weight=4
-	// 2 > 4*60/100 = 2 > 2.4 → NOT banned (just below)
-
-	// First test: 3 of 5 blame opportunities → 60% exactly
-	// Make 5 blames total, alice in 3 of them
-	epoch10 := uint64(10)
-	epoch7 := uint64(7)
-	epoch4 := uint64(4)
+	// Each epoch has 1 blame commit naming 1 node.
+	// 1 <= maxBlamed(2), so none are systemic. Each non-systemic commit
+	// adds weight=1 to all members. alice: score=2 (epochs 10,1), weight=4.
 	blames := map[uint64][]tss_db.TssCommitment{
-		epoch10: {
-			{Type: "blame", Epoch: 10, Commitment: makeBlameBitset(0), KeyId: "k1"},     // alice
-			{Type: "blame", Epoch: 10, Commitment: makeBlameBitset(1), KeyId: "k1"},     // bob only
+		10: {{Type: "blame", Epoch: 10, Commitment: makeBlameBitset(0), KeyId: "k1"}},
+		7:  {{Type: "blame", Epoch: 7, Commitment: makeBlameBitset(1), KeyId: "k1"}},
+		4:  {{Type: "blame", Epoch: 4, Commitment: makeBlameBitset(2), KeyId: "k1"}},
+		1:  {{Type: "blame", Epoch: 1, Commitment: makeBlameBitset(0), KeyId: "k1"}},
+	}
+
+	mgr := newBlameScoreMgr(current, prev, blames)
+	result := mgr.BlameScore()
+
+	// alice: score=2 (blamed in epoch 10 and 1), weight=4 → 50% → not banned
+	assert.Empty(t, result.BannedNodes, "No node exceeds 60%% in this setup")
+
+	// New test: alice and bob blamed in all commits → 100%, carol in none.
+	blames2 := map[uint64][]tss_db.TssCommitment{
+		10: {{Type: "blame", Epoch: 10, Commitment: makeBlameBitset(0, 1), KeyId: "k1"}},
+		7:  {{Type: "blame", Epoch: 7, Commitment: makeBlameBitset(0, 1), KeyId: "k1"}},
+		4:  {{Type: "blame", Epoch: 4, Commitment: makeBlameBitset(0, 1), KeyId: "k1"}},
+		1:  {{Type: "blame", Epoch: 1, Commitment: makeBlameBitset(0, 1, 2), KeyId: "k1"}},
+	}
+	// 2 blamed per commit (except epoch 1 has 3). maxBlamed=2, so epoch 1 is
+	// systemic (3 > 2) and gets filtered. Remaining 3 non-systemic commits:
+	// alice: score=3, weight=3 → 100% → banned
+	// bob: score=3, weight=3 → 100% → banned
+	// carol: only in systemic commit → score=0 → not banned
+	// maxBans=2, so both alice and bob can be banned.
+
+	mgr2 := newBlameScoreMgr(current, prev, blames2)
+	result2 := mgr2.BlameScore()
+
+	assert.True(t, result2.BannedNodes["alice"], "Alice at 100%% should be banned")
+	assert.True(t, result2.BannedNodes["bob"], "Bob at 100%% should be banned")
+	assert.False(t, result2.BannedNodes["carol"], "Carol should not be banned (only in systemic commit)")
+
+	// Now test the actual cap with a larger election.
+	// 10 members: threshold=6, maxBlamed=3, maxBans=3.
+	// Rotate blames across 4 nodes so each is blamed in 3 of 4 commits → 75%.
+	accounts10 := []string{"alice", "bob", "carol", "dave", "eve", "frank", "grace", "heidi", "ivan", "judy"}
+	current10 := makeElectionResult(10, accounts10)
+	prev10 := []elections.ElectionResult{
+		makeElectionResult(7, accounts10),
+		makeElectionResult(4, accounts10),
+		makeElectionResult(1, accounts10),
+	}
+	blames3 := map[uint64][]tss_db.TssCommitment{
+		10: {{Type: "blame", Epoch: 10, Commitment: makeBlameBitset(0, 1, 2), KeyId: "k1"}}, // alice, bob, carol
+		7:  {{Type: "blame", Epoch: 7, Commitment: makeBlameBitset(0, 1, 3), KeyId: "k1"}},  // alice, bob, dave
+		4:  {{Type: "blame", Epoch: 4, Commitment: makeBlameBitset(0, 2, 3), KeyId: "k1"}},  // alice, carol, dave
+		1:  {{Type: "blame", Epoch: 1, Commitment: makeBlameBitset(1, 2, 3), KeyId: "k1"}},  // bob, carol, dave
+	}
+	// 3 blamed per commit, maxBlamed=3, 3 <= 3 → NOT systemic
+	// alice: score=3 (epochs 10,7,4), weight=4 → 75% → candidate for ban
+	// bob: score=3 (epochs 10,7,1), weight=4 → 75% → candidate for ban
+	// carol: score=3 (epochs 10,4,1), weight=4 → 75% → candidate for ban
+	// dave: score=3 (epochs 7,4,1), weight=4 → 75% → candidate for ban
+	// 4 candidates but maxBans=3 → only 3 can be banned
+
+	mgr3 := newBlameScoreMgr(current10, prev10, blames3)
+	result3 := mgr3.BlameScore()
+
+	bannedCount := 0
+	for _, acct := range []string{"alice", "bob", "carol", "dave"} {
+		if result3.BannedNodes[acct] {
+			bannedCount++
+		}
+	}
+	assert.Equal(t, 3, bannedCount,
+		"Ban cap should limit bans to 3 (election size 10, threshold 6)")
+
+	for _, acct := range []string{"eve", "frank", "grace", "heidi", "ivan", "judy"} {
+		assert.False(t, result3.BannedNodes[acct],
+			"Node %s has 0%% failure and should not be banned", acct)
+	}
+}
+
+func TestBlameScore_SystemicBlameFiltered(t *testing.T) {
+	// Blame commits naming more nodes than maxBlamed are systemic and should
+	// be excluded from scoring entirely.
+	// 6 members: threshold=3, maxBlamed = 6-(3+1) = 2. Blaming 3 > 2 → systemic.
+	accounts := []string{"alice", "bob", "carol", "dave", "eve", "frank"}
+	current := makeElectionResult(10, accounts)
+
+	prev := []elections.ElectionResult{
+		makeElectionResult(7, accounts),
+		makeElectionResult(4, accounts),
+		makeElectionResult(1, accounts),
+	}
+
+	blames := map[uint64][]tss_db.TssCommitment{
+		// Systemic blame (3 of 6 blamed, 3 > maxBlamed 2) — should be filtered
+		10: {{Type: "blame", Epoch: 10, Commitment: makeBlameBitset(0, 1, 2), KeyId: "k1"}},
+		// Individual blame (1 blamed, 1 <= maxBlamed 2) — should count
+		7: {{Type: "blame", Epoch: 7, Commitment: makeBlameBitset(0), KeyId: "k1"}},
+	}
+
+	mgr := newBlameScoreMgr(current, prev, blames)
+	result := mgr.BlameScore()
+
+	// alice: score=1 (only the individual blame counts), weight=1
+	// 1 > 1*60/100 = 1 > 0 → banned
+	assert.True(t, result.BannedNodes["alice"],
+		"Alice should be banned from individual blame (systemic blame filtered)")
+	// bob, carol were only in the systemic blame — should not be banned
+	assert.False(t, result.BannedNodes["bob"],
+		"Bob should NOT be banned — only appeared in systemic blame")
+	assert.False(t, result.BannedNodes["carol"],
+		"Carol should NOT be banned — only appeared in systemic blame")
+}
+
+func TestBlameScore_ExactBanThreshold(t *testing.T) {
+	// Node at exactly 60% failure rate should NOT be banned (> check, not >=).
+	// TSS_BAN_THRESHOLD_PERCENT = 60, check is: Score > Weight * 60 / 100
+	// Use 6 members so threshold=3, maxBlamed=2, and individual blames (1 node)
+	// pass the systemic filter (1 <= 2).
+	accounts := []string{"alice", "bob", "carol", "dave", "eve", "frank"}
+	current := makeElectionResult(10, accounts)
+
+	prev := []elections.ElectionResult{
+		makeElectionResult(7, accounts),
+		makeElectionResult(4, accounts),
+		makeElectionResult(1, accounts),
+	}
+
+	// 5 blame commits total, alice blamed in 3 of them → 3/5 = 60%
+	blames := map[uint64][]tss_db.TssCommitment{
+		uint64(10): {
+			{Type: "blame", Epoch: 10, Commitment: makeBlameBitset(0), KeyId: "k1"}, // alice
+			{Type: "blame", Epoch: 10, Commitment: makeBlameBitset(1), KeyId: "k2"}, // bob only
 		},
-		epoch7: {
-			{Type: "blame", Epoch: 7, Commitment: makeBlameBitset(0), KeyId: "k1"},      // alice
+		uint64(7): {
+			{Type: "blame", Epoch: 7, Commitment: makeBlameBitset(0), KeyId: "k1"}, // alice
 		},
-		epoch4: {
-			{Type: "blame", Epoch: 4, Commitment: makeBlameBitset(0), KeyId: "k1"},      // alice
-			{Type: "blame", Epoch: 4, Commitment: makeBlameBitset(1, 2), KeyId: "k1"},   // bob, carol
+		uint64(4): {
+			{Type: "blame", Epoch: 4, Commitment: makeBlameBitset(0), KeyId: "k1"}, // alice
+			{Type: "blame", Epoch: 4, Commitment: makeBlameBitset(1), KeyId: "k2"}, // bob only
 		},
 	}
 
 	mgr := newBlameScoreMgr(current, prev, blames)
 	result := mgr.BlameScore()
 
-	// alice: weight = 2+1+2 = 5 (blame count per epoch she's a member), score = 3
+	// alice: weight = 5 (5 non-systemic blame commits across epochs she's in), score = 3
 	// 3 > 5*60/100 = 3 > 3 → FALSE (not strictly greater)
 	assert.False(t, result.BannedNodes["alice"],
 		"Node at exactly 60%% failure rate (3/5) should NOT be banned (> not >=)")
@@ -210,7 +326,8 @@ func TestBlameScore_GracePeriodWithEpochGaps(t *testing.T) {
 
 func TestBlameScore_ManyEpochsAccumulation(t *testing.T) {
 	// Verify blame accumulation across many epochs (close to TSS_BLAME_EPOCH_COUNT=27).
-	accounts := []string{"alice", "bob"}
+	// Use 6 members so threshold=3, maxBans=2, and individual blames pass systemic filter.
+	accounts := []string{"alice", "bob", "carol", "dave", "eve", "frank"}
 	current := makeElectionResult(30, accounts)
 
 	prev := make([]elections.ElectionResult, 0)
@@ -226,8 +343,7 @@ func TestBlameScore_ManyEpochsAccumulation(t *testing.T) {
 		}
 	}
 	// Also blame alice in current epoch
-	epoch30 := uint64(30)
-	blames[epoch30] = []tss_db.TssCommitment{
+	blames[uint64(30)] = []tss_db.TssCommitment{
 		{Type: "blame", Epoch: 30, Commitment: makeBlameBitset(0), KeyId: "k1"},
 	}
 
@@ -293,7 +409,8 @@ func TestBlameScore_ElectionLookupFailure(t *testing.T) {
 
 func TestBlameScore_TimeoutVsErrorClassification(t *testing.T) {
 	// Verify that timeout blames are correctly distinguished from error blames.
-	accounts := []string{"alice", "bob"}
+	// Use 6 members so individual blames pass systemic filter and ban cap allows bans.
+	accounts := []string{"alice", "bob", "carol", "dave", "eve", "frank"}
 	current := makeElectionResult(10, accounts)
 
 	prev := []elections.ElectionResult{
@@ -304,9 +421,8 @@ func TestBlameScore_TimeoutVsErrorClassification(t *testing.T) {
 	timeoutErr := "timeout"
 	regularErr := "SSID mismatch"
 
-	epoch10 := uint64(10)
 	blames := map[uint64][]tss_db.TssCommitment{
-		epoch10: {
+		uint64(10): {
 			{
 				Type: "blame", Epoch: 10, KeyId: "k1",
 				Commitment: makeBlameBitset(0),
@@ -325,7 +441,7 @@ func TestBlameScore_TimeoutVsErrorClassification(t *testing.T) {
 
 	require.NotNil(t, result)
 	// Both timeout and error blames should contribute to the total score.
-	// alice: 2 blames out of 2 opportunities in epoch 10 = 100% → banned
+	// alice: 2 blames out of 2 opportunities = 100% → banned
 	assert.True(t, result.BannedNodes["alice"],
 		"Both timeout and error blames should contribute to ban score")
 }
