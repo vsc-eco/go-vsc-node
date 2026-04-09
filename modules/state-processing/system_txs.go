@@ -98,9 +98,10 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 				}
 			} else if tssOp.Type == "sign" {
 				se.tssRequests.SetSignedRequest(tss_db.TssRequest{
-					KeyId:  tssOp.KeyId,
-					Status: "unsigned",
-					Msg:    tssOp.Args,
+					KeyId:         tssOp.KeyId,
+					Status:        "unsigned",
+					Msg:           tssOp.Args,
+					CreatedHeight: txSelf.BlockHeight,
 				})
 				// if err == mongo.ErrNoDocuments {
 				// 	se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args))

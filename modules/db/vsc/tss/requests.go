@@ -69,15 +69,41 @@ func (tssReqs *tssRequests) SetSignedRequest(req TssRequest) error {
 		"msg":    req.Msg,
 	}, bson.M{
 		"$set": bson.M{
-			"status": "unsigned",
+			"status":         "unsigned",
+			"created_height": req.CreatedHeight,
 		},
 	}, updateOptions)
 	return singeResult.Err()
 }
 
 func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64) ([]TssRequest, error) {
+	ctx := context.Background()
+
+	// Backfill legacy requests that lack a created_height so they enter
+	// the same expiry window as newly created requests.
+	tssReqs.UpdateMany(ctx, bson.M{
+		"status": "unsigned",
+		"$or": bson.A{
+			bson.M{"created_height": bson.M{"$exists": false}},
+			bson.M{"created_height": 0},
+		},
+	}, bson.M{
+		"$set": bson.M{"created_height": blockHeight},
+	})
+
+	// Mark expired unsigned requests as failed so they stop being retried.
+	if blockHeight > SignExpiryBlocks {
+		cutoff := blockHeight - SignExpiryBlocks
+		tssReqs.UpdateMany(ctx, bson.M{
+			"status":         "unsigned",
+			"created_height": bson.M{"$lte": cutoff},
+		}, bson.M{
+			"$set": bson.M{"status": string(SignFailed)},
+		})
+	}
+
 	requests := make([]TssRequest, 0)
-	findResult, err := tssReqs.Find(context.Background(), bson.M{
+	findResult, err := tssReqs.Find(ctx, bson.M{
 		"status": "unsigned",
 	})
 
@@ -85,7 +111,7 @@ func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64) ([]TssReque
 		return nil, err
 	}
 
-	for findResult.Next(context.Background()) {
+	for findResult.Next(ctx) {
 		var req TssRequest
 		findResult.Decode(&req)
 		requests = append(requests, req)

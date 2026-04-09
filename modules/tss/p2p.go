@@ -345,7 +345,8 @@ func (txp *TssManager) stopP2P() error {
 	return nil
 }
 
-// SendMsg sends a TSS message to a participant with retry logic and connection health checks
+// SendMsg sends a TSS message to a participant. This is a single-attempt send;
+// retries are handled by retryFailedMsgs() in the dispatcher layer.
 func (tss *TssManager) SendMsg(
 	sessionId string,
 	participant Participant,
@@ -355,28 +356,10 @@ func (tss *TssManager) SendMsg(
 	commiteeType string,
 	cmtFrom string,
 ) error {
-	return tss.sendMsgWithRetry(sessionId, participant, moniker, msg, isBroadcast, commiteeType, cmtFrom, 0)
-}
-
-// sendMsgWithRetry implements retry logic with exponential backoff
-func (tss *TssManager) sendMsgWithRetry(
-	sessionId string,
-	participant Participant,
-	moniker string,
-	msg []byte,
-	isBroadcast bool,
-	commiteeType string,
-	cmtFrom string,
-	attempt int,
-) error {
-	const maxRetries = 3
-	const baseRetryDelay = 1 * time.Second
-
 	startTime := time.Now()
 	fromAccount := tss.config.Get().HiveUsername
 
 	witness, err := tss.witnessDb.GetWitnessAtHeight(participant.Account, nil)
-
 	if err != nil {
 		log.Error("GetWitnessAtHeight failed",
 			"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "err", err)
@@ -384,59 +367,17 @@ func (tss *TssManager) sendMsgWithRetry(
 	}
 
 	peerId, err := peer.Decode(witness.PeerId)
-
 	if err != nil {
-		log.Error(
-			"PeerId decode failed",
-			"sessionId",
-			sessionId,
-			"from",
-			fromAccount,
-			"to",
-			participant.Account,
-			"peerId",
-			witness.PeerId,
-			"err",
-			err,
-		)
+		log.Error("PeerId decode failed",
+			"sessionId", sessionId, "from", fromAccount, "to", participant.Account,
+			"peerId", witness.PeerId, "err", err)
 		return err
 	}
 
-	// Check connection health before sending
 	if !tss.isPeerConnected(peerId) {
-		if attempt < maxRetries {
-			retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt)) // Exponential backoff: 1s, 2s, 4s
-			log.Verbose(
-				"peer not connected, retrying with backoff",
-				"sessionId",
-				sessionId,
-				"to",
-				participant.Account,
-				"peerId",
-				peerId.String(),
-				"attempt",
-				attempt+1,
-				"maxRetries",
-				maxRetries,
-				"delay",
-				retryDelay,
-			)
-			time.Sleep(retryDelay)
-			return tss.sendMsgWithRetry(
-				sessionId,
-				participant,
-				moniker,
-				msg,
-				isBroadcast,
-				commiteeType,
-				cmtFrom,
-				attempt+1,
-			)
-		} else {
-			log.Warn("peer not connected after retries",
-				"sessionId", sessionId, "to", participant.Account, "peerId", peerId.String(), "maxRetries", maxRetries)
-			return fmt.Errorf("peer %s not connected after %d retries", peerId.String(), maxRetries)
-		}
+		log.Warn("peer not connected",
+			"sessionId", sessionId, "to", participant.Account, "peerId", peerId.String())
+		return fmt.Errorf("peer %s not connected", peerId.String())
 	}
 
 	tMsg := TMsg{
@@ -449,33 +390,12 @@ func (tss *TssManager) sendMsgWithRetry(
 	}
 	tRes := TRes{}
 
-	if attempt == 0 {
-		log.Trace(
-			"sending message",
-			"sessionId",
-			sessionId,
-			"from",
-			fromAccount,
-			"to",
-			participant.Account,
-			"isBroadcast",
-			isBroadcast,
-			"cmt",
-			commiteeType,
-			"cmtFrom",
-			cmtFrom,
-			"msgLen",
-			len(msg),
-		)
-	} else {
-		log.Verbose("retrying message send",
-			"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "attempt", attempt+1, "maxRetries", maxRetries, "msgLen", len(msg))
-	}
+	log.Trace("sending message",
+		"sessionId", sessionId, "from", fromAccount, "to", participant.Account,
+		"isBroadcast", isBroadcast, "cmt", commiteeType, "cmtFrom", cmtFrom, "msgLen", len(msg))
 
 	// Use CallContext with a deadline so the RPC (and its underlying libp2p
-	// stream) is cancelled when the timeout fires. The previous pattern of
-	// wrapping Call() in a goroutine + select/time.After leaked the goroutine
-	// (and the stream) because Call() uses context.Background() internally.
+	// stream) is cancelled when the timeout fires.
 	rpcTimeout := tss.sconf.TssParams().RpcTimeout
 	rpcCtx, rpcCancel := context.WithTimeout(context.Background(), rpcTimeout)
 	err = tss.client.CallContext(rpcCtx, peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
@@ -487,58 +407,16 @@ func (tss *TssManager) sendMsgWithRetry(
 	duration := time.Since(startTime)
 
 	if err != nil {
-		if attempt < maxRetries {
-			retryDelay := baseRetryDelay * time.Duration(1<<uint(attempt))
-			log.Error(
-				"RPC call failed, will retry",
-				"sessionId",
-				sessionId,
-				"from",
-				fromAccount,
-				"to",
-				participant.Account,
-				"peerId",
-				peerId.String(),
-				"duration",
-				duration,
-				"attempt",
-				attempt+1,
-				"maxRetries",
-				maxRetries,
-				"delay",
-				retryDelay,
-				"err",
-				err,
-			)
-			tss.metrics.IncrementMessageRetry()
-			time.Sleep(retryDelay)
-			return tss.sendMsgWithRetry(
-				sessionId,
-				participant,
-				moniker,
-				msg,
-				isBroadcast,
-				commiteeType,
-				cmtFrom,
-				attempt+1,
-			)
-		} else {
-			log.Error("RPC call failed after all retries",
-				"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "peerId", peerId.String(), "duration", duration, "maxRetries", maxRetries, "err", err)
-			tss.metrics.IncrementMessageSendFailure()
-			return err
-		}
-	} else {
-		if attempt > 0 {
-			log.Trace("RPC call succeeded on retry",
-				"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "attempt", attempt+1, "duration", duration)
-		} else {
-			log.Trace("RPC call success",
-				"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "duration", duration)
-		}
-		tss.metrics.RecordMessageSendLatency(duration)
+		log.Error("RPC call failed",
+			"sessionId", sessionId, "from", fromAccount, "to", participant.Account,
+			"peerId", peerId.String(), "duration", duration, "err", err)
+		tss.metrics.IncrementMessageSendFailure()
+		return err
 	}
 
+	log.Trace("RPC call success",
+		"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "duration", duration)
+	tss.metrics.RecordMessageSendLatency(duration)
 	return nil
 }
 
