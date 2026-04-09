@@ -1178,7 +1178,7 @@ func (dispatcher *BaseDispatcher) queueFailedMsg(fm failedMsg) {
 }
 
 func (dispatcher *BaseDispatcher) retryFailedMsgs() {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -1197,7 +1197,7 @@ func (dispatcher *BaseDispatcher) retryFailedMsgs() {
 			remaining := make([]failedMsg, 0)
 			for _, fm := range toRetry {
 				fm.attempts++
-				if fm.attempts > 6 {
+				if fm.attempts > TSS_MESSAGE_RETRY_COUNT {
 					log.Trace("giving up on message after retries", "to", fm.participant.Account, "attempts", fm.attempts, "sessionId", fm.sessionId)
 					continue
 				}

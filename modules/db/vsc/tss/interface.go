@@ -17,6 +17,10 @@ const KeyDeprecationGracePeriod = uint64(403200)
 // clock is started and the key stays deprecated indefinitely until renewed.
 const KeyRetirementEnabled = false
 
+// SignExpiryBlocks is the number of blocks after which an unsigned signing request
+// is marked as failed. At ~3s/block this is roughly 50 minutes (20 sign intervals).
+const SignExpiryBlocks = uint64(1000)
+
 type TssKeys interface {
 	a.Plugin
 	InsertKey(id string, t TssKeyAlgo, epochs uint64) error
@@ -76,11 +80,12 @@ type TssKey struct {
 }
 
 type TssRequest struct {
-	Id     string        `bson:"id"`
-	Status TssSignStatus `bson:"status"`
-	KeyId  string        `bson:"key_id"`
-	Msg    string        `bson:"msg"`
-	Sig    string        `bson:"sig"`
+	Id            string        `bson:"id"`
+	Status        TssSignStatus `bson:"status"`
+	KeyId         string        `bson:"key_id"`
+	Msg           string        `bson:"msg"`
+	Sig           string        `bson:"sig"`
+	CreatedHeight uint64        `bson:"created_height"`
 }
 
 // CommitmentMetadata optionally stores error/reason for blame commitments (e.g. timeout vs error).
@@ -124,6 +129,7 @@ type TssSignStatus string
 const (
 	SignComplete TssSignStatus = "complete"
 	SignPending  TssSignStatus = "unsigned"
+	SignFailed   TssSignStatus = "failed"
 )
 
 type TssOp struct {
