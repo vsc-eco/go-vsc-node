@@ -10,7 +10,6 @@ import (
 	"math/big"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -58,14 +57,14 @@ const (
 	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
 )
 
-// ReadyAttestation is a BLS-signed self-attestation that a node is ready for
-// a reshare cycle. Each node signs its own attestation; attestations are
-// gossiped via pubsub so all honest nodes converge to the same set.
+// ReadyAttestation is a BLS-signed self-attestation that a node is online and
+// ready for TSS operations at a given block height. Attestations are per-height
+// (not per-key) because readiness is a node property — if a node is up, it can
+// participate in any key's reshare or signing at that height.
 type ReadyAttestation struct {
 	Account     string `json:"account"`
-	KeyId       string `json:"key_id"`
 	TargetBlock uint64 `json:"target_block"`
-	Sig         string `json:"sig"` // base64 BLS signature over CBOR(account, key_id, target_block)
+	Sig         string `json:"sig"` // base64 BLS signature over CBOR(account, target_block)
 }
 
 // DEFAULT_SETTLE_BLOCKS is the number of blocks before reshare during which
@@ -73,11 +72,10 @@ type ReadyAttestation struct {
 const DEFAULT_SETTLE_BLOCKS = 3
 
 // attestationCID computes a deterministic CID for a readiness attestation.
-// The same (account, keyId, targetBlock) always produces the same CID.
-func attestationCID(account, keyId string, targetBlock uint64) (cid.Cid, error) {
+// The same (account, targetBlock) always produces the same CID.
+func attestationCID(account string, targetBlock uint64) (cid.Cid, error) {
 	payload := map[string]interface{}{
 		"account":      account,
-		"key_id":       keyId,
 		"target_block": targetBlock,
 	}
 	data, err := common.EncodeDagCbor(payload)
@@ -88,10 +86,10 @@ func attestationCID(account, keyId string, targetBlock uint64) (cid.Cid, error) 
 }
 
 // signReadyAttestation creates a BLS-signed readiness attestation for this node.
-func (tssMgr *TssManager) signReadyAttestation(keyId string, targetBlock uint64) (*ReadyAttestation, error) {
+func (tssMgr *TssManager) signReadyAttestation(targetBlock uint64) (*ReadyAttestation, error) {
 	account := tssMgr.config.Get().HiveUsername
 
-	c, err := attestationCID(account, keyId, targetBlock)
+	c, err := attestationCID(account, targetBlock)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +113,6 @@ func (tssMgr *TssManager) signReadyAttestation(keyId string, targetBlock uint64)
 
 	return &ReadyAttestation{
 		Account:     account,
-		KeyId:       keyId,
 		TargetBlock: targetBlock,
 		Sig:         base64.URLEncoding.EncodeToString(sigBytes[:]),
 	}, nil
@@ -144,7 +141,7 @@ func (tssMgr *TssManager) verifyAttestation(att ReadyAttestation, election elect
 		return false
 	}
 
-	c, err := attestationCID(att.Account, att.KeyId, att.TargetBlock)
+	c, err := attestationCID(att.Account, att.TargetBlock)
 	if err != nil {
 		return false
 	}
@@ -162,10 +159,11 @@ func (tssMgr *TssManager) verifyAttestation(att ReadyAttestation, election elect
 	return blsu.Verify(pubKey, c.Bytes(), sig)
 }
 
-// broadcastGossipBundle sends all known attestations for a given key+targetBlock
+// broadcastGossipBundle sends all known attestations for a given targetBlock
 // as a single pubsub message. Called every block tick during the readiness window
 // for gossip amplification.
-func (tssMgr *TssManager) broadcastGossipBundle(dedupKey, keyId string, targetBlock uint64) {
+func (tssMgr *TssManager) broadcastGossipBundle(targetBlock uint64) {
+	dedupKey := strconv.FormatUint(targetBlock, 10)
 	tssMgr.gossipLock.RLock()
 	attMap := tssMgr.gossipAttestations[dedupKey]
 	if len(attMap) == 0 {
@@ -176,7 +174,6 @@ func (tssMgr *TssManager) broadcastGossipBundle(dedupKey, keyId string, targetBl
 	for _, att := range attMap {
 		attestations = append(attestations, map[string]interface{}{
 			"account":      att.Account,
-			"key_id":       att.KeyId,
 			"target_block": att.TargetBlock,
 			"sig":          att.Sig,
 		})
@@ -187,23 +184,19 @@ func (tssMgr *TssManager) broadcastGossipBundle(dedupKey, keyId string, targetBl
 		Type:    "ready_gossip",
 		Account: tssMgr.config.Get().HiveUsername,
 		Data: map[string]interface{}{
-			"key_id":       keyId,
 			"target_block": float64(targetBlock),
 			"attestations": attestations,
 		},
 	})
 }
 
-// cleanupGossipState evicts gossip state for reshare cycles that have passed.
+// cleanupGossipState evicts gossip state for target blocks that have passed.
 func (tssMgr *TssManager) cleanupGossipState(bh uint64) {
 	tssMgr.gossipLock.Lock()
 	defer tssMgr.gossipLock.Unlock()
 	for k := range tssMgr.gossipAttestations {
-		parts := strings.SplitN(k, ":", 2)
-		if len(parts) == 2 {
-			if block, err := strconv.ParseUint(parts[1], 10, 64); err == nil && block < bh {
-				delete(tssMgr.gossipAttestations, k)
-			}
+		if block, err := strconv.ParseUint(k, 10, 64); err == nil && block < bh {
+			delete(tssMgr.gossipAttestations, k)
 		}
 	}
 }
@@ -287,12 +280,13 @@ type TssManager struct {
 	// Cancel function for background goroutines (preParams ticker, etc.)
 	bgCancel context.CancelFunc
 
-	// In-memory dedup for readiness gossip broadcasts. Key is "keyId:targetBlock".
+	// In-memory dedup for readiness gossip broadcasts. Key is "targetBlock".
 	readinessSent map[string]bool
 
 	// Off-chain gossip readiness state. Protected by gossipLock.
 	gossipLock sync.RWMutex
-	// gossipAttestations["keyId:targetBlock"][account] = signed attestation.
+	// gossipAttestations["targetBlock"][account] = signed attestation.
+	// Per-height (not per-key): readiness is a node property.
 	// Populated by ready_gossip messages received via pubsub.
 	gossipAttestations map[string]map[string]ReadyAttestation
 }
@@ -371,53 +365,62 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		}
 	}
 
-	// Off-chain gossip readiness: broadcast signed attestations via pubsub
-	// before the next reshare cycle. All honest nodes converge to the same
-	// attestation set, which RunActions uses to build deterministic party lists.
+	// Off-chain gossip readiness: broadcast a per-height BLS-signed attestation
+	// before upcoming reshare and signing intervals. All honest nodes converge
+	// to the same attestation set, which RunActions uses to build deterministic
+	// party lists. Readiness is per-height (not per-key) because if a node is
+	// up, it can participate in any key's operations at that height.
 	rotateInterval := getRotateInterval(tssMgr.sconf)
+	signInterval := getSignInterval(tssMgr.sconf)
 	readinessOffset := getReadinessOffset(tssMgr.sconf)
+
+	// Collect upcoming target blocks that need readiness gossip.
+	gossipTargets := make(map[uint64]bool)
 	blocksUntilReshare := rotateInterval - (bh % rotateInterval)
 	if blocksUntilReshare <= readinessOffset && bh%rotateInterval != 0 {
-		nextReshareBlock := bh + blocksUntilReshare
-		selfAccount := tssMgr.config.Get().HiveUsername
-		inSettlePeriod := blocksUntilReshare <= DEFAULT_SETTLE_BLOCKS
+		gossipTargets[bh+blocksUntilReshare] = true
+	}
+	blocksUntilSign := signInterval - (bh % signInterval)
+	if blocksUntilSign <= readinessOffset && bh%signInterval != 0 {
+		gossipTargets[bh+blocksUntilSign] = true
+	}
 
-		// Check if we're an election member and have keys to reshare
+	if len(gossipTargets) > 0 {
+		selfAccount := tssMgr.config.Get().HiveUsername
+
+		// Check if we're an election member.
 		electionData, err := tssMgr.electionDb.GetElectionByHeight(bh)
+		isMember := false
 		if err == nil && electionData.Members != nil {
-			isMember := false
 			for _, m := range electionData.Members {
 				if m.Account == selfAccount {
 					isMember = true
 					break
 				}
 			}
-			if isMember {
-				reshareKeys, err := tssMgr.tssKeys.FindEpochKeys(electionData.Epoch)
-				if err != nil {
-					log.Warn("FindEpochKeys failed during readiness broadcast",
-						"epoch", electionData.Epoch, "err", err)
+		}
+
+		if isMember {
+			for targetBlock := range gossipTargets {
+				blocksUntil := targetBlock - bh
+				inSettlePeriod := blocksUntil <= DEFAULT_SETTLE_BLOCKS
+				dedupKey := strconv.FormatUint(targetBlock, 10)
+
+				// During the announce phase, sign and store our own attestation.
+				// During the settle phase, skip new attestations but still gossip.
+				tssMgr.gossipLock.Lock()
+				alreadySent := tssMgr.readinessSent[dedupKey]
+				if !inSettlePeriod && !alreadySent {
+					tssMgr.readinessSent[dedupKey] = true
 				}
-				for _, key := range reshareKeys {
-					dedupKey := fmt.Sprintf("%s:%d", key.Id, nextReshareBlock)
+				tssMgr.gossipLock.Unlock()
 
-					// During the announce phase, sign and store our own attestation.
-					// During the settle phase, skip new attestations but still gossip.
-					tssMgr.gossipLock.Lock()
-					alreadySent := tssMgr.readinessSent[dedupKey]
-					if !inSettlePeriod && !alreadySent {
-						tssMgr.readinessSent[dedupKey] = true
-					}
-					tssMgr.gossipLock.Unlock()
-
-					if !inSettlePeriod && !alreadySent {
-						att, err := tssMgr.signReadyAttestation(key.Id, nextReshareBlock)
-						if err != nil {
-							log.Warn("failed to sign readiness attestation",
-								"keyId", key.Id, "targetBlock", nextReshareBlock, "err", err)
-							continue
-						}
-
+				if !inSettlePeriod && !alreadySent {
+					att, err := tssMgr.signReadyAttestation(targetBlock)
+					if err != nil {
+						log.Warn("failed to sign readiness attestation",
+							"targetBlock", targetBlock, "err", err)
+					} else {
 						tssMgr.gossipLock.Lock()
 						if tssMgr.gossipAttestations[dedupKey] == nil {
 							tssMgr.gossipAttestations[dedupKey] = make(map[string]ReadyAttestation)
@@ -426,26 +429,21 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 						tssMgr.gossipLock.Unlock()
 
 						log.Info("signed readiness attestation",
-							"account", selfAccount, "keyId", key.Id,
-							"targetBlock", nextReshareBlock)
+							"account", selfAccount, "targetBlock", targetBlock)
 					}
-
-					// Broadcast a bundle of ALL known attestations for this key.
-					// Gossip amplification: every block tick re-broadcasts the full
-					// bundle so late-joining or poorly-connected nodes catch up.
-					tssMgr.broadcastGossipBundle(dedupKey, key.Id, nextReshareBlock)
 				}
+
+				// Gossip amplification: every block tick re-broadcasts the full
+				// bundle so late-joining or poorly-connected nodes catch up.
+				tssMgr.broadcastGossipBundle(targetBlock)
 			}
 		}
 
 		// Evict stale readinessSent entries from previous cycles.
 		tssMgr.gossipLock.Lock()
 		for k := range tssMgr.readinessSent {
-			parts := strings.SplitN(k, ":", 2)
-			if len(parts) == 2 {
-				if block, err := strconv.ParseUint(parts[1], 10, 64); err == nil && block < bh {
-					delete(tssMgr.readinessSent, k)
-				}
+			if block, err := strconv.ParseUint(k, 10, 64); err == nil && block < bh {
+				delete(tssMgr.readinessSent, k)
 			}
 		}
 		tssMgr.gossipLock.Unlock()
@@ -487,7 +485,6 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				keyLocks[key.Id] = true
 			}
 		}
-		signInterval := getSignInterval(tssMgr.sconf)
 		if bh%signInterval == 0 {
 			signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh)
 
@@ -921,19 +918,108 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}
 
-			// Use deterministic signer set — DO NOT filter by connectivity.
-			// All nodes must use the same participant list so BuildLocalSaveDataSubset
-			// produces identical Ks subsets and Lagrange coefficients match.
-			// Filtering causes different wi values → incompatible partial signatures.
+			// Record the full committee size before any exclusion — threshold
+			// is computed from this so the cryptographic parameters match the
+			// original keygen/reshare.
 			origSignCommitteeSize := len(participants)
 
-			// Pre-flight gate: count ready participants without modifying the list.
-			// Never filter the signing party list — all nodes must use identical
-			// lists so BuildLocalSaveDataSubset produces matching Ks subsets.
+			// Exclude blamed and banned nodes deterministically (on-chain data
+			// only). DO NOT filter by connectivity — that is non-deterministic.
+			// BuildLocalSaveDataSubset remaps indices for the remaining subset.
+			//
+			// Uses the same accumulated-threshold approach as reshare: collect
+			// ALL blame commits in the BLAME_EXPIRE window, decode each against
+			// its own epoch election, and exclude nodes appearing in >33% of
+			// blame commits.
+			var signBlameExpireBlock uint64
+			if bh > BLAME_EXPIRE {
+				signBlameExpireBlock = bh - BLAME_EXPIRE
+			}
+			signKeyId := action.KeyId
+			signBlames, signBlameErr := tssMgr.tssCommitments.FindCommitmentsSimple(
+				&signKeyId,
+				[]string{"blame"},
+				nil,
+				&signBlameExpireBlock,
+				&bh,
+				100,
+			)
+			if signBlameErr != nil {
+				log.Warn("failed to fetch blame commitments for signing", "sessionId", sessionId, "err", signBlameErr)
+			}
+
+			signBlameCount := make(map[string]int)
+			signBlameOpportunities := 0
+			for _, blame := range signBlames {
+				if blame.BlockHeight <= commitment.BlockHeight {
+					continue
+				}
+				blameElection := tssMgr.electionDb.GetElection(blame.Epoch)
+				if blameElection == nil || blameElection.Members == nil {
+					log.Warn("blame election missing, skipping blame entry",
+						"blameEpoch", blame.Epoch, "sessionId", sessionId)
+					continue
+				}
+				signBlameOpportunities++
+				blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
+				bBits := new(big.Int).SetBytes(blameBytes)
+				for bidx, member := range blameElection.Members {
+					if bBits.Bit(bidx) == 1 {
+						signBlameCount[member.Account]++
+					}
+				}
+			}
+			signBlamedAccounts := make(map[string]bool)
+			if signBlameOpportunities > 0 {
+				for account, count := range signBlameCount {
+					if count*100 > signBlameOpportunities*TSS_BLAME_THRESHOLD_PERCENT {
+						signBlamedAccounts[account] = true
+					}
+				}
+			}
+			if len(signBlamedAccounts) > 0 {
+				log.Verbose("signing blame threshold exclusions",
+					"sessionId", sessionId, "blamedCount", len(signBlamedAccounts),
+					"blameCommitments", signBlameOpportunities,
+					"threshold", TSS_BLAME_THRESHOLD_PERCENT)
+			}
+
+			// Build gossip readiness set — same mechanism as reshare.
+			// Per-height key: readiness is a node property, not per-key.
+			signHeightKey := strconv.FormatUint(bh, 10)
+			tssMgr.gossipLock.RLock()
+			signAttMap := tssMgr.gossipAttestations[signHeightKey]
+			signReadyAccounts := make(map[string]bool, len(signAttMap))
+			for account := range signAttMap {
+				signReadyAccounts[account] = true
+			}
+			tssMgr.gossipLock.RUnlock()
+			log.Verbose("signing gossip readiness set",
+				"sessionId", sessionId, "readyCount", len(signReadyAccounts))
+
+			filtered := make([]Participant, 0, len(participants))
+			for _, p := range participants {
+				if signBlamedAccounts[p.Account] {
+					log.Verbose("excluding blamed node from signing", "sessionId", sessionId, "account", p.Account)
+					continue
+				}
+				if blameMap.BannedNodes[p.Account] {
+					log.Verbose("excluding banned node from signing", "sessionId", sessionId, "account", p.Account)
+					continue
+				}
+				if !signReadyAccounts[p.Account] {
+					log.Verbose("excluding non-ready node from signing", "sessionId", sessionId, "account", p.Account)
+					continue
+				}
+				filtered = append(filtered, p)
+			}
+			participants = filtered
+
+			// Pre-flight gate: need threshold+1 participants after all
+			// deterministic exclusions (blame, ban, gossip readiness).
 			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
-			signReady := tssMgr.countReadyParticipants(participants, sessionId, "SIGN")
-			if signReady < origThreshold+1 {
-				log.Warn("insufficient participants for signing", "sessionId", sessionId, "ready", signReady, "needed", origThreshold+1, "total", origSignCommitteeSize)
+			if len(participants) < origThreshold+1 {
+				log.Warn("insufficient participants for signing", "sessionId", sessionId, "ready", len(participants), "needed", origThreshold+1, "total", origSignCommitteeSize)
 				continue
 			}
 
@@ -1059,9 +1145,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// Build party lists from gossip attestations. Each node
 			// independently computes the ready set from BLS-signed
 			// self-attestations collected via pubsub gossip.
-			dedupKey := fmt.Sprintf("%s:%d", keyIdStr, bh)
+			// Per-height key: readiness is a node property, not per-key.
+			heightKey := strconv.FormatUint(bh, 10)
 			tssMgr.gossipLock.RLock()
-			attMap := tssMgr.gossipAttestations[dedupKey]
+			attMap := tssMgr.gossipAttestations[heightKey]
 			readyAccounts := make(map[string]bool, len(attMap))
 			for account := range attMap {
 				readyAccounts[account] = true

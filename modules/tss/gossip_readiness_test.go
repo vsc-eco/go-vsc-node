@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strconv"
 	"testing"
 
 	"vsc-node/modules/db/vsc/elections"
@@ -33,8 +34,8 @@ func testPubKeyHex(pk blsu.Pubkey) string {
 
 // signAttestationDirect signs an attestation using the raw BLS key, bypassing
 // TssManager.config (which needs the full config infrastructure).
-func signAttestationDirect(sk *blsu.SecretKey, account, keyId string, targetBlock uint64) (*ReadyAttestation, error) {
-	c, err := attestationCID(account, keyId, targetBlock)
+func signAttestationDirect(sk *blsu.SecretKey, account string, targetBlock uint64) (*ReadyAttestation, error) {
+	c, err := attestationCID(account, targetBlock)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +44,6 @@ func signAttestationDirect(sk *blsu.SecretKey, account, keyId string, targetBloc
 
 	return &ReadyAttestation{
 		Account:     account,
-		KeyId:       keyId,
 		TargetBlock: targetBlock,
 		Sig:         base64.URLEncoding.EncodeToString(sigBytes[:]),
 	}, nil
@@ -52,7 +52,7 @@ func signAttestationDirect(sk *blsu.SecretKey, account, keyId string, targetBloc
 // verifyAttestationDirect verifies an attestation using a raw BLS pubkey,
 // bypassing BlsDID parsing (which needs real did:key format).
 func verifyAttestationDirect(att ReadyAttestation, pk *blsu.Pubkey) bool {
-	c, err := attestationCID(att.Account, att.KeyId, att.TargetBlock)
+	c, err := attestationCID(att.Account, att.TargetBlock)
 	if err != nil {
 		return false
 	}
@@ -68,11 +68,11 @@ func verifyAttestationDirect(att ReadyAttestation, pk *blsu.Pubkey) bool {
 func TestAttestationSignVerifyRoundTrip(t *testing.T) {
 	sk, pk := generateTestBLSKey(42)
 
-	att, err := signAttestationDirect(&sk, "alice", "key1", 500)
+	att, err := signAttestationDirect(&sk, "alice", 500)
 	if err != nil {
 		t.Fatalf("signAttestationDirect failed: %v", err)
 	}
-	if att.Account != "alice" || att.KeyId != "key1" || att.TargetBlock != 500 {
+	if att.Account != "alice" || att.TargetBlock != 500 {
 		t.Fatalf("attestation fields mismatch: %+v", att)
 	}
 
@@ -93,20 +93,13 @@ func TestAttestationSignVerifyRoundTrip(t *testing.T) {
 	if verifyAttestationDirect(tampered2, &pk) {
 		t.Fatal("should reject tampered target block")
 	}
-
-	// Tamper with key ID — should fail
-	tampered3 := *att
-	tampered3.KeyId = "key2"
-	if verifyAttestationDirect(tampered3, &pk) {
-		t.Fatal("should reject tampered key ID")
-	}
 }
 
 func TestAttestationRejectsWrongKey(t *testing.T) {
 	sk1, _ := generateTestBLSKey(42)
 	_, pk2 := generateTestBLSKey(99)
 
-	att, err := signAttestationDirect(&sk1, "alice", "key1", 500)
+	att, err := signAttestationDirect(&sk1, "alice", 500)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,11 +111,11 @@ func TestAttestationRejectsWrongKey(t *testing.T) {
 }
 
 func TestAttestationCIDDeterministic(t *testing.T) {
-	c1, err := attestationCID("alice", "key1", 500)
+	c1, err := attestationCID("alice", 500)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c2, err := attestationCID("alice", "key1", 500)
+	c2, err := attestationCID("alice", 500)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,15 +124,11 @@ func TestAttestationCIDDeterministic(t *testing.T) {
 	}
 
 	// Different inputs must produce different CIDs
-	c3, _ := attestationCID("bob", "key1", 500)
+	c3, _ := attestationCID("bob", 500)
 	if c1 == c3 {
 		t.Fatal("different account should produce different CID")
 	}
-	c4, _ := attestationCID("alice", "key2", 500)
-	if c1 == c4 {
-		t.Fatal("different key should produce different CID")
-	}
-	c5, _ := attestationCID("alice", "key1", 501)
+	c5, _ := attestationCID("alice", 501)
 	if c1 == c5 {
 		t.Fatal("different block should produce different CID")
 	}
@@ -149,12 +138,8 @@ func TestVerifyAttestationViaElection(t *testing.T) {
 	// Test the full verifyAttestation path that uses election member lookup.
 	sk, pk := generateTestBLSKey(42)
 
-	att, _ := signAttestationDirect(&sk, "alice", "key1", 500)
+	att, _ := signAttestationDirect(&sk, "alice", 500)
 
-	// Build an election with alice's real DID key.
-	// BlsDID.Identifier() expects did:key:z<multibase> format, but
-	// we can test with the raw approach since verifyAttestation uses
-	// Identifier() internally. Let's use the real DID construction.
 	mgr := &TssManager{}
 
 	// Create a proper BlsDID from the public key
@@ -191,7 +176,6 @@ func TestVerifyAttestationViaElection(t *testing.T) {
 func testBlsDIDFromPubKey(pk blsu.Pubkey) string {
 	compressed := pk.Serialize()
 	// The BLS DID format is did:key:z<multibase-btc-encoded-multicodec-prefixed-key>
-	// For testing, we use the dids package's construction path.
 	// The multicodec prefix for BLS12-381 G1 public key is 0xea01
 	prefix := []byte{0xea, 0x01}
 	data := append(prefix, compressed[:]...)
@@ -233,13 +217,13 @@ func TestGossipStateAccumulatesAttestations(t *testing.T) {
 		gossipAttestations: make(map[string]map[string]ReadyAttestation),
 	}
 
-	dedupKey := "key1:500"
+	dedupKey := "500"
 
 	mgr.gossipLock.Lock()
 	mgr.gossipAttestations[dedupKey] = make(map[string]ReadyAttestation)
-	mgr.gossipAttestations[dedupKey]["alice"] = ReadyAttestation{Account: "alice", KeyId: "key1", TargetBlock: 500, Sig: "a"}
-	mgr.gossipAttestations[dedupKey]["bob"] = ReadyAttestation{Account: "bob", KeyId: "key1", TargetBlock: 500, Sig: "b"}
-	mgr.gossipAttestations[dedupKey]["carol"] = ReadyAttestation{Account: "carol", KeyId: "key1", TargetBlock: 500, Sig: "c"}
+	mgr.gossipAttestations[dedupKey]["alice"] = ReadyAttestation{Account: "alice", TargetBlock: 500, Sig: "a"}
+	mgr.gossipAttestations[dedupKey]["bob"] = ReadyAttestation{Account: "bob", TargetBlock: 500, Sig: "b"}
+	mgr.gossipAttestations[dedupKey]["carol"] = ReadyAttestation{Account: "carol", TargetBlock: 500, Sig: "c"}
 	mgr.gossipLock.Unlock()
 
 	mgr.gossipLock.RLock()
@@ -265,19 +249,19 @@ func TestGossipCleanupEvictsOldEntries(t *testing.T) {
 		gossipAttestations: make(map[string]map[string]ReadyAttestation),
 	}
 
-	mgr.gossipAttestations["key1:100"] = map[string]ReadyAttestation{
+	mgr.gossipAttestations["100"] = map[string]ReadyAttestation{
 		"alice": {Account: "alice"},
 	}
-	mgr.gossipAttestations["key1:200"] = map[string]ReadyAttestation{
+	mgr.gossipAttestations["200"] = map[string]ReadyAttestation{
 		"bob": {Account: "bob"},
 	}
 
 	mgr.cleanupGossipState(150)
 
-	if _, exists := mgr.gossipAttestations["key1:100"]; exists {
+	if _, exists := mgr.gossipAttestations["100"]; exists {
 		t.Fatal("expected block 100 entry to be evicted")
 	}
-	if _, exists := mgr.gossipAttestations["key1:200"]; !exists {
+	if _, exists := mgr.gossipAttestations["200"]; !exists {
 		t.Fatal("expected block 200 entry to be kept")
 	}
 }
@@ -306,5 +290,34 @@ func TestGossipReadySetDeterministicFromSameAttestations(t *testing.T) {
 	}
 	if set1[0] != "alice" || set1[1] != "bob" || set1[2] != "carol" {
 		t.Fatalf("expected alphabetical order, got %v", set1)
+	}
+}
+
+func TestPerHeightGossipSharedAcrossKeys(t *testing.T) {
+	// Verify that a single per-height gossip entry is usable for multiple keys.
+	mgr := &TssManager{
+		gossipAttestations: make(map[string]map[string]ReadyAttestation),
+	}
+
+	targetBlock := uint64(500)
+	heightKey := strconv.FormatUint(targetBlock, 10)
+
+	mgr.gossipAttestations[heightKey] = map[string]ReadyAttestation{
+		"alice": {Account: "alice", TargetBlock: targetBlock},
+		"bob":   {Account: "bob", TargetBlock: targetBlock},
+	}
+
+	// Both key1 and key2 should see the same ready set from one gossip entry
+	attMap := mgr.gossipAttestations[heightKey]
+	readyAccounts := make(map[string]bool, len(attMap))
+	for account := range attMap {
+		readyAccounts[account] = true
+	}
+
+	if !readyAccounts["alice"] || !readyAccounts["bob"] {
+		t.Fatal("expected both alice and bob in ready set")
+	}
+	if len(readyAccounts) != 2 {
+		t.Fatalf("expected 2 ready accounts, got %d", len(readyAccounts))
 	}
 }
