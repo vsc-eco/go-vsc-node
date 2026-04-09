@@ -375,14 +375,26 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	readinessOffset := getReadinessOffset(tssMgr.sconf)
 
 	// Collect upcoming target blocks that need readiness gossip.
+	// Only broadcast if there is actual work scheduled for that height.
 	gossipTargets := make(map[uint64]bool)
 	blocksUntilReshare := rotateInterval - (bh % rotateInterval)
 	if blocksUntilReshare <= readinessOffset && bh%rotateInterval != 0 {
-		gossipTargets[bh+blocksUntilReshare] = true
+		// Check if there are keys that need reshare at the next rotate interval.
+		if electionData, err := tssMgr.electionDb.GetElectionByHeight(bh); err == nil {
+			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(electionData.Epoch)
+			newKeys, _ := tssMgr.tssKeys.FindNewKeys(bh + blocksUntilReshare)
+			if len(reshareKeys) > 0 || len(newKeys) > 0 {
+				gossipTargets[bh+blocksUntilReshare] = true
+			}
+		}
 	}
 	blocksUntilSign := signInterval - (bh % signInterval)
 	if blocksUntilSign <= readinessOffset && bh%signInterval != 0 {
-		gossipTargets[bh+blocksUntilSign] = true
+		// Check if there are unsigned signing requests pending.
+		signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh)
+		if len(signingRequests) > 0 {
+			gossipTargets[bh+blocksUntilSign] = true
+		}
 	}
 
 	if len(gossipTargets) > 0 {
