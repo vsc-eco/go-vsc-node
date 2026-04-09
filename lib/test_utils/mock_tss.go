@@ -189,6 +189,14 @@ func (m *MockTssCommitmentsDb) FindCommitments(keyId *string, byTypes []string, 
 	return results, nil
 }
 
+func (m *MockTssCommitmentsDb) FindCommitmentsSimple(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, limit int) ([]tss.TssCommitment, error) {
+	results := m.filterAndSort(keyId, byTypes, epoch, fromBlock, toBlock)
+	if limit > 0 && limit < len(results) {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
 func (m *MockTssCommitmentsDb) GetBlames(epoch *uint64) ([]tss.TssCommitment, error) {
 	var results []tss.TssCommitment
 	for _, commitment := range m.Commitments {

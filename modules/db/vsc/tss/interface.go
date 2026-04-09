@@ -49,6 +49,11 @@ type TssCommitments interface {
 	GetCommitment(keyId string, epoch uint64) (TssCommitment, error)
 	GetCommitmentByHeight(keyId string, height uint64, qtype ...string) (TssCommitment, error)
 	FindCommitments(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TssCommitment, error)
+	// FindCommitmentsSimple queries tss_commitments with a direct Find (no aggregation
+	// pipeline, no hive_blocks join). Use for queries where the timestamp field is not
+	// needed and records may not have matching hive_blocks entries (e.g., type="ready"
+	// records stored directly via SetCommitmentData).
+	FindCommitmentsSimple(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, limit int) ([]TssCommitment, error)
 	GetBlames(epoch *uint64) ([]TssCommitment, error)
 }
 
