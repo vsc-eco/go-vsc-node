@@ -37,10 +37,10 @@ func TestTSSReshareHappyPath(t *testing.T) {
 	// Assertions
 	assertNoSSIDMismatch(t, d, ctx, cfg.Nodes)
 
-	if node, ok := anyNodeLogsContain(d, ctx, cfg.Nodes, "broadcast tss readiness"); ok {
-		t.Logf("magi-%d confirmed readiness broadcast", node)
+	if node, ok := anyNodeLogsContain(d, ctx, cfg.Nodes, "signed readiness attestation"); ok {
+		t.Logf("magi-%d confirmed gossip readiness attestation", node)
 	} else {
-		t.Error("no node logged readiness broadcast")
+		t.Error("no node logged readiness attestation")
 	}
 
 	if node, ok := anyNodeLogsContain(d, ctx, cfg.Nodes, "reshare pre-flight checks passed"); ok {
