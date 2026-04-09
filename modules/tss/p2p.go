@@ -209,6 +209,13 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 		return
 	}
 
+	// Build a set of valid election members for cheap pre-filtering
+	// before the expensive BLS signature verification.
+	electionMembers := make(map[string]bool, len(election.Members))
+	for _, m := range election.Members {
+		electionMembers[m.Account] = true
+	}
+
 	// Check settle period: if we're within DEFAULT_SETTLE_BLOCKS of the
 	// target, only accept attestations for accounts we've already seen.
 	inSettlePeriod := false
@@ -220,6 +227,16 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 	attList, ok := msg.Data["attestations"].([]interface{})
 	if !ok {
 		return
+	}
+
+	// Cap bundle size at the election member count to prevent a malicious peer
+	// from sending an oversized bundle that wastes CPU on BLS verification.
+	maxAttestations := len(election.Members)
+	if len(attList) > maxAttestations {
+		log.Warn("oversized gossip bundle, truncating",
+			"received", len(attList), "max", maxAttestations,
+			"keyId", keyId, "targetBlock", targetBlock)
+		attList = attList[:maxAttestations]
 	}
 
 	dedupKey := fmt.Sprintf("%s:%d", keyId, targetBlock)
@@ -241,6 +258,11 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 		account, _ := attMap["account"].(string)
 		sig, _ := attMap["sig"].(string)
 		if account == "" || sig == "" {
+			continue
+		}
+
+		// Only accept attestations from actual election members.
+		if !electionMembers[account] {
 			continue
 		}
 
