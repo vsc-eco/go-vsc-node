@@ -618,16 +618,45 @@ func (tss *TssManager) BlameScore() ScoreMap {
 
 	for _, election := range electionMap {
 		blames, _ := tss.tssCommitments.GetBlames(&election.Epoch)
-		for _, member := range election.Members {
-			if currentMembers[member.Account] {
-				weightMap[member.Account] += len(blames)
-			}
-		}
+
+		// Compute threshold for this election's size to detect systemic failures.
+		electionThreshold, _ := tss_helpers.GetThreshold(len(election.Members))
 
 		for _, blame := range blames {
 			bv := big.NewInt(0)
 			blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
 			bv = bv.SetBytes(blameBytes)
+
+			// Count how many nodes are blamed in this single commit.
+			// A blame is systemic when fewer than threshold+1 nodes remain
+			// unblamed — i.e. not enough shares for Lagrange interpolation.
+			// For 19 nodes with threshold 12: maxBlamed = 19-13 = 6, so
+			// blaming 7+ is systemic. Skip entirely to prevent cascading
+			// blame death spirals from protocol-level failures (SSID
+			// mismatch, network partition).
+			blamedInCommit := 0
+			for idx := range election.Members {
+				if bv.Bit(idx) == 1 {
+					blamedInCommit++
+				}
+			}
+			maxBlamed := len(election.Members) - (electionThreshold + 1)
+			if blamedInCommit > maxBlamed {
+				log.Verbose("skipping systemic blame commit",
+					"epoch", election.Epoch,
+					"blamedCount", blamedInCommit,
+					"maxBlamed", maxBlamed,
+					"blameHeight", blame.BlockHeight)
+				continue
+			}
+
+			// Weight is counted per non-systemic blame commit so the
+			// denominator stays consistent with the filtered numerator.
+			for _, member := range election.Members {
+				if currentMembers[member.Account] {
+					weightMap[member.Account]++
+				}
+			}
 
 			// Determine if this is a timeout or error based on metadata
 			isTimeout := false
@@ -676,6 +705,15 @@ func (tss *TssManager) BlameScore() ScoreMap {
 	bannedList := make([]string, 0)
 	gracePeriodExemptions := make([]string, 0)
 
+	// Ban cap: never ban so many nodes that fewer than threshold+1 remain.
+	// This prevents cascading blame from making the network inoperable.
+	electionSize := len(initialElection.Members)
+	networkThreshold, _ := tss_helpers.GetThreshold(electionSize)
+	maxBans := electionSize - (networkThreshold + 1)
+	if maxBans < 0 {
+		maxBans = 0
+	}
+
 	for _, entry := range sortedArray {
 		// Check grace period for new nodes
 		gracePeriod := uint64(TSS_BAN_GRACE_PERIOD_EPOCHS)
@@ -702,6 +740,15 @@ func (tss *TssManager) BlameScore() ScoreMap {
 		failureRate := float64(entry.Score) / float64(entry.Weight) * 100.0
 
 		if entry.Weight > 0 && entry.Score > entry.Weight*thresholdPercent/100 {
+			if len(bannedList) >= maxBans {
+				log.Verbose("ban cap reached, not banning further nodes",
+					"account", entry.Account,
+					"failureRate", failureRate,
+					"bannedSoFar", len(bannedList),
+					"maxBans", maxBans,
+					"electionSize", electionSize)
+				continue
+			}
 			bannedNodes[entry.Account] = true
 			bannedList = append(bannedList, entry.Account)
 
@@ -737,13 +784,17 @@ func (tss *TssManager) BlameScore() ScoreMap {
 			"ban summary",
 			"totalBanned",
 			len(bannedList),
+			"maxBans",
+			maxBans,
+			"electionSize",
+			electionSize,
 			"bannedNodes",
 			bannedList,
 			"gracePeriodExemptions",
 			len(gracePeriodExemptions),
 		)
 	} else {
-		log.Verbose("ban summary, no nodes banned", "gracePeriodExemptions", len(gracePeriodExemptions))
+		log.Verbose("ban summary, no nodes banned", "maxBans", maxBans, "gracePeriodExemptions", len(gracePeriodExemptions))
 	}
 
 	return ScoreMap{
@@ -1462,11 +1513,28 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					tssMgr.sessionResults[dsc.SessionId()] = sessionResultEntry{result: res, blockHeight: bh}
 					tssMgr.bufferLock.Unlock()
 
-					commitment := result.Serialize()
-					commitment.BlockHeight = bh
-					resultsMu.Lock()
-					commitableResults = append(commitableResults, commitment)
-					resultsMu.Unlock()
+					// Don't record systemic blames: if fewer than
+					// threshold+1 nodes remain unblamed, the protocol
+					// could not have succeeded — this is a systemic
+					// failure, not individual misbehavior.
+					errorCulpritCount := 0
+					if res.tssErr != nil {
+						errorCulpritCount = len(res.tssErr.Culprits())
+					}
+					blameThreshold, _ := tss_helpers.GetThreshold(len(currentElection.Members))
+					maxBlamed := len(currentElection.Members) - (blameThreshold + 1)
+					if errorCulpritCount > maxBlamed {
+						log.Info("suppressing systemic error blame",
+							"sessionId", res.SessionId,
+							"culprits", errorCulpritCount,
+							"maxBlamed", maxBlamed)
+					} else {
+						commitment := result.Serialize()
+						commitment.BlockHeight = bh
+						resultsMu.Lock()
+						commitableResults = append(commitableResults, commitment)
+						resultsMu.Unlock()
+					}
 				} else if result.Type() == TimeoutType {
 					res := result.(TimeoutResult)
 
@@ -1476,11 +1544,23 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					tssMgr.bufferLock.Unlock()
 
 					log.Warn("timeout result", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.Epoch, "culprits", res.Culprits)
-					commitment := result.Serialize()
-					commitment.BlockHeight = bh
-					resultsMu.Lock()
-					commitableResults = append(commitableResults, commitment)
-					resultsMu.Unlock()
+
+					// Don't record systemic blames: see error blame
+					// comment above for the threshold rationale.
+					blameThreshold, _ := tss_helpers.GetThreshold(len(currentElection.Members))
+					maxBlamed := len(currentElection.Members) - (blameThreshold + 1)
+					if len(res.Culprits) > maxBlamed {
+						log.Info("suppressing systemic timeout blame",
+							"sessionId", res.SessionId,
+							"culprits", len(res.Culprits),
+							"maxBlamed", maxBlamed)
+					} else {
+						commitment := result.Serialize()
+						commitment.BlockHeight = bh
+						resultsMu.Lock()
+						commitableResults = append(commitableResults, commitment)
+						resultsMu.Unlock()
+					}
 
 					// Do NOT schedule custom retries for reshare/keygen timeouts.
 					// Custom retries use the node's current block height for the session
