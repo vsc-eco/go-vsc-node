@@ -1201,6 +1201,7 @@ func (dispatcher *BaseDispatcher) retryFailedMsgs() {
 					log.Trace("giving up on message after retries", "to", fm.participant.Account, "attempts", fm.attempts, "sessionId", fm.sessionId)
 					continue
 				}
+				dispatcher.tssMgr.metrics.IncrementMessageRetry()
 				err := dispatcher.tssMgr.SendMsg(fm.sessionId, fm.participant, fm.moniker,
 					fm.bytes, fm.isBroadcast, fm.commiteeType, fm.cmtFrom)
 				if err != nil {
