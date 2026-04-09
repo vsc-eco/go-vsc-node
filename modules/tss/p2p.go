@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 	"vsc-node/modules/common"
 
@@ -186,11 +187,6 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 	}
 	targetBlock := uint64(targetBlockF)
 
-	keyId, _ := msg.Data["key_id"].(string)
-	if keyId == "" {
-		return
-	}
-
 	// Staleness check: reject if target block is in the past.
 	currentBh := s.tssMgr.lastBlockHeight.Load()
 	if targetBlock < currentBh {
@@ -235,11 +231,11 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 	if len(attList) > maxAttestations {
 		log.Warn("oversized gossip bundle, truncating",
 			"received", len(attList), "max", maxAttestations,
-			"keyId", keyId, "targetBlock", targetBlock)
+			"targetBlock", targetBlock)
 		attList = attList[:maxAttestations]
 	}
 
-	dedupKey := fmt.Sprintf("%s:%d", keyId, targetBlock)
+	dedupKey := strconv.FormatUint(targetBlock, 10)
 	newCount := 0
 
 	s.tssMgr.gossipLock.Lock()
@@ -274,20 +270,19 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 		// During settle period, reject attestations from accounts not already seen.
 		if inSettlePeriod {
 			log.Trace("rejecting new attestation during settle period",
-				"account", account, "keyId", keyId, "targetBlock", targetBlock)
+				"account", account, "targetBlock", targetBlock)
 			continue
 		}
 
 		att := ReadyAttestation{
 			Account:     account,
-			KeyId:       keyId,
 			TargetBlock: targetBlock,
 			Sig:         sig,
 		}
 
 		if !s.tssMgr.verifyAttestation(att, election) {
 			log.Warn("rejecting attestation with invalid BLS signature",
-				"account", account, "keyId", keyId, "targetBlock", targetBlock)
+				"account", account, "targetBlock", targetBlock)
 			continue
 		}
 
@@ -297,7 +292,7 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 
 	if newCount > 0 {
 		log.Trace("merged gossip attestations",
-			"keyId", keyId, "targetBlock", targetBlock,
+			"targetBlock", targetBlock,
 			"new", newCount, "total", len(existing))
 	}
 }
