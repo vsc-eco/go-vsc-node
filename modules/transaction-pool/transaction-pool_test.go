@@ -1,15 +1,13 @@
 package transactionpool_test
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
-
 	"encoding/base64"
 	"fmt"
 	"testing"
 	"vsc-node/lib/dids"
 	transactionpool "vsc-node/modules/transaction-pool"
 
+	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ipfs/go-cid"
 
 	"github.com/multiformats/go-multicodec"
@@ -71,12 +69,12 @@ func TestTx(t *testing.T) {
 		NetId: "vsc-mocknet",
 	}
 
-	pubKey, privKey, _ := ed25519.GenerateKey(rand.Reader)
+	ethKey, _ := ethCrypto.GenerateKey()
+	ethAddr := ethCrypto.PubkeyToAddress(ethKey.PublicKey).Hex()
 
-	didKey, _ := dids.NewKeyDID(pubKey)
 	transactionCreator := transactionpool.TransactionCrafter{
-		Identity:     dids.NewKeyProvider(privKey),
-		Did:          didKey,
+		Identity:     dids.NewEthProvider(ethKey),
+		Did:          dids.NewEthDID(ethAddr),
 		VSCBroadcast: &mockBroadcast{},
 	}
 

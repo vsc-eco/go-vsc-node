@@ -82,7 +82,7 @@ func TestBtcDID_P2WPKH(t *testing.T) {
 
 func TestBtcDID_RejectTaproot(t *testing.T) {
 	_, err := dids.ParseBtcDID(
-		"did:pkh:bip122:000000000019d6689c085ae165831e93/bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3s7p",
+		"did:pkh:bip122:000000000019d6689c085ae165831e93:bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3s7p",
 	)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "taproot")

@@ -218,7 +218,7 @@ func TestE2E_BtcTransferSigning(t *testing.T) {
 	addr, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
 	require.NoError(t, err)
 
-	did := "did:pkh:bip122:000000000019d6689c085ae165831e93/" + addr.String()
+	did := "did:pkh:bip122:000000000019d6689c085ae165831e93:" + addr.String()
 
 	// Frontend builds the signing shell for a transfer
 	payload := map[string]interface{}{
@@ -262,7 +262,7 @@ func TestE2E_BtcContractCallSigning(t *testing.T) {
 	addr, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
 	require.NoError(t, err)
 
-	did := "did:pkh:bip122:000000000019d6689c085ae165831e93/" + addr.String()
+	did := "did:pkh:bip122:000000000019d6689c085ae165831e93:" + addr.String()
 
 	// Contract call payload — keys of varying lengths that expose sort-order bugs:
 	// alphabetical: action, caller, contract_id, intents, payload, rc_limit
@@ -270,7 +270,7 @@ func TestE2E_BtcContractCallSigning(t *testing.T) {
 	payload := map[string]interface{}{
 		"contract_id": "vs41q.....fake_contract_id",
 		"action":      "transfer",
-		"payload":     `{"amount":"100000","recipient_vsc_address":"did:pkh:bip122:000000000019d6689c085ae165831e93/bc1qtest"}`,
+		"payload":     `{"amount":"100000","recipient_vsc_address":"did:pkh:bip122:000000000019d6689c085ae165831e93:bc1qtest"}`,
 		"rc_limit":    float64(10000), // JSON numbers are float64
 		"intents":     []interface{}{},
 		"caller":      did,
@@ -302,7 +302,7 @@ func TestE2E_BtcWithdrawSigning(t *testing.T) {
 	addr, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
 	require.NoError(t, err)
 
-	did := "did:pkh:bip122:000000000019d6689c085ae165831e93/" + addr.String()
+	did := "did:pkh:bip122:000000000019d6689c085ae165831e93:" + addr.String()
 
 	payload := map[string]interface{}{
 		"from":   did,
@@ -340,7 +340,7 @@ func TestE2E_CIDKeyOrdering(t *testing.T) {
 		"payload":     `{}`,
 		"rc_limit":    float64(500),
 		"intents":     []interface{}{},
-		"caller":      "did:pkh:bip122:000000000019d6689c085ae165831e93/bc1qtest",
+		"caller":      "did:pkh:bip122:000000000019d6689c085ae165831e93:bc1qtest",
 	}
 
 	// Frontend path: JSON.stringify(sortKeys(payload))
@@ -374,7 +374,7 @@ func TestE2E_P2PKH_AddressType(t *testing.T) {
 	addr, err := btcutil.NewAddressPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
 	require.NoError(t, err)
 
-	did := "did:pkh:bip122:000000000019d6689c085ae165831e93/" + addr.String()
+	did := "did:pkh:bip122:000000000019d6689c085ae165831e93:" + addr.String()
 
 	payload := map[string]interface{}{
 		"from":   did,
@@ -407,7 +407,7 @@ func TestE2E_P2SH_AddressType(t *testing.T) {
 	addr, err := btcutil.NewAddressScriptHash(redeemScript, &chaincfg.MainNetParams)
 	require.NoError(t, err)
 
-	did := "did:pkh:bip122:000000000019d6689c085ae165831e93/" + addr.String()
+	did := "did:pkh:bip122:000000000019d6689c085ae165831e93:" + addr.String()
 
 	payload := map[string]interface{}{
 		"from":   did,
@@ -440,11 +440,11 @@ func TestE2E_DIDParseRoundtrip(t *testing.T) {
 	}{
 		{
 			name: "BTC P2WPKH DID",
-			did:  "did:pkh:bip122:000000000019d6689c085ae165831e93/bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+			did:  "did:pkh:bip122:000000000019d6689c085ae165831e93:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
 		},
 		{
 			name: "BTC P2PKH DID",
-			did:  "did:pkh:bip122:000000000019d6689c085ae165831e93/1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+			did:  "did:pkh:bip122:000000000019d6689c085ae165831e93:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
 		},
 		{
 			name: "EVM DID",
@@ -452,7 +452,7 @@ func TestE2E_DIDParseRoundtrip(t *testing.T) {
 		},
 		{
 			name:    "Taproot rejected",
-			did:     "did:pkh:bip122:000000000019d6689c085ae165831e93/bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3s7p",
+			did:     "did:pkh:bip122:000000000019d6689c085ae165831e93:bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3s7p",
 			wantErr: true,
 		},
 		{
@@ -555,7 +555,7 @@ func TestE2E_BtcTransferSigning_BIP322(t *testing.T) {
 	addr, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
 	require.NoError(t, err)
 
-	did := "did:pkh:bip122:000000000019d6689c085ae165831e93/" + addr.String()
+	did := "did:pkh:bip122:000000000019d6689c085ae165831e93:" + addr.String()
 
 	payload := map[string]interface{}{
 		"from":   did,
@@ -591,7 +591,7 @@ func TestE2E_BtcStakeHBD_BIP322(t *testing.T) {
 	addr, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
 	require.NoError(t, err)
 
-	did := "did:pkh:bip122:000000000019d6689c085ae165831e93/" + addr.String()
+	did := "did:pkh:bip122:000000000019d6689c085ae165831e93:" + addr.String()
 
 	payload := map[string]interface{}{
 		"from":   did,
