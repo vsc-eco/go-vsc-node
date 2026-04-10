@@ -196,10 +196,11 @@ func MakeNode(index int, mes *MockElectionSystem, broadcastCb func(tx hivego.Hiv
 	dbConf.SetDbName("go-vsc-tss-test-" + strconv.Itoa(index))
 	identity.SetUsername("mock-tss-" + strconv.Itoa(index+1))
 	p2pConf.SetOptions(libp2p.P2POpts{
-		Port:         22222 + index,
-		ServerMode:   true,
-		AllowPrivate: true,
-		Bootnodes:    []string{},
+		Port:             22222 + index,
+		ServerMode:       true,
+		AllowPrivate:     true,
+		PubsubBufferSize: 2048,
+		Bootnodes:        []string{},
 	})
 	sysConf := systemconfig.MocknetConfig()
 
@@ -348,14 +349,23 @@ func reconnectNode(t *testing.T, nodes []nodeComponents, targetIdx int) {
 }
 
 func processBlocks(nodes []nodeComponents, start, end uint64, headHeight *uint64) {
+	hh := *headHeight // Snapshot: async BlockTick goroutines won't see later mutations
 	for bh := start; bh <= end; bh++ {
 		for _, node := range nodes {
 			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
 				Transactions: []hive_blocks.Tx{},
 				BlockNumber:  bh,
-			}, headHeight)
+			}, &hh)
+		}
+		// Pace block processing: yield every few blocks so pubsub handlers
+		// can drain. Without this, all async BlockTick goroutines broadcast
+		// gossip simultaneously, exceeding the pubsub concurrency limit (64)
+		// and causing messages to be dropped.
+		if (bh-start)%5 == 4 {
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
+	time.Sleep(2 * time.Second) // Let final async goroutines complete + gossip propagate
 }
 
 // verifyEcdsaSig verifies a DER-encoded ECDSA signature (hex) against a message hash (hex)
@@ -2479,10 +2489,11 @@ func TestTssThresholdIntegration(t *testing.T) {
 		dbConf.SetDbName(intgDbPrefix + strconv.Itoa(i))
 		identity.SetUsername("mock-intg-" + strconv.Itoa(i+1))
 		p2pConf.SetOptions(libp2p.P2POpts{
-			Port:         23222 + i, // different port range from TestTss
-			ServerMode:   true,
-			AllowPrivate: true,
-			Bootnodes:    []string{},
+			Port:             23222 + i, // different port range from TestTss
+			ServerMode:       true,
+			AllowPrivate:     true,
+			PubsubBufferSize: 2048,
+			Bootnodes:        []string{},
 		})
 		sysConf := systemconfig.MocknetConfig()
 
@@ -3062,10 +3073,11 @@ func makeBlameNode(mes *MockElectionSystem) (nodeComponents, *vtss.TssManager) {
 	blockConsumer := blockconsumer.New(nil)
 
 	p2pConf.SetOptions(libp2p.P2POpts{
-		Port:         22299,
-		ServerMode:   true,
-		AllowPrivate: true,
-		Bootnodes:    []string{},
+		Port:             22299,
+		ServerMode:       true,
+		AllowPrivate:     true,
+		PubsubBufferSize: 2048,
+		Bootnodes:        []string{},
 	})
 	p2p := libp2p.New(witnessDb, p2pConf, identity, sysConf, nil)
 
@@ -3264,9 +3276,22 @@ func TestBlameScore(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 
 		// Current epoch 10 has all 4 members including node-d.
-		// Epochs 9, 8, 7 have all 4 members (so nodeFirstEpoch for node-d = 9, epochsSinceFirst = 1).
-		// This means node-d is in grace period (1 < 3) and should NOT be banned.
-		for ep := uint64(7); ep <= 10; ep++ {
+		// node-d first appears at epoch 9, so epochsSinceFirst = 10 - 9 = 1 < 3 → grace period.
+		// Epochs 7-8 have only nodes a/b/c (no node-d), so nodeFirstEpoch for node-d = 9.
+		members3 := []elections.ElectionMember{
+			{Account: "node-a", Key: "key-a"},
+			{Account: "node-b", Key: "key-b"},
+			{Account: "node-c", Key: "key-c"},
+		}
+		weights3 := []uint64{10, 10, 10}
+		for ep := uint64(7); ep <= 8; ep++ {
+			node.electionDb.StoreElection(elections.ElectionResult{
+				ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: ep, NetId: "vsc-mocknet", Type: "initial"},
+				ElectionDataInfo:   elections.ElectionDataInfo{Members: members3, Weights: weights3},
+				BlockHeight:        ep * 100,
+			})
+		}
+		for ep := uint64(9); ep <= 10; ep++ {
 			node.electionDb.StoreElection(elections.ElectionResult{
 				ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: ep, NetId: "vsc-mocknet", Type: "initial"},
 				ElectionDataInfo:   elections.ElectionDataInfo{Members: members4, Weights: weights4},
@@ -3274,13 +3299,11 @@ func TestBlameScore(t *testing.T) {
 			})
 		}
 
-		// Blame node-d (index 3) in epochs 7-9 — 100% failure rate but grace period protects
-		for ep := uint64(7); ep <= 9; ep++ {
-			node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
-				Type: "blame", KeyId: "test-key", Epoch: ep, BlockHeight: ep * 100,
-				Commitment: blameBitset(3), TxId: fmt.Sprintf("blame-tx-%d", ep),
-			})
-		}
+		// Blame node-d (index 3) in epoch 9 — 100% failure rate but grace period protects
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 9, BlockHeight: 900,
+			Commitment: blameBitset(3), TxId: "blame-tx-9",
+		})
 
 		result := tssMgr.BlameScore()
 
@@ -3419,10 +3442,50 @@ func TestBlameScore(t *testing.T) {
 		dropBlameTestDatabase()
 		time.Sleep(200 * time.Millisecond)
 
-		storeElectionsWithGracePeriodBypass(10)
+		// Use 7-member elections so we can blame 2 nodes per commit without
+		// triggering the systemic blame filter (maxBlamed = 7 - 5 = 2).
+		// threshold = ceil(7*2/3)-1 = 4, maxBans = 7 - 5 = 2.
+		// We'll get 3 nodes above the ban threshold, but only 2 can be banned.
+		members7 := []elections.ElectionMember{
+			{Account: "node-a", Key: "key-a"},
+			{Account: "node-b", Key: "key-b"},
+			{Account: "node-c", Key: "key-c"},
+			{Account: "node-d", Key: "key-d"},
+			{Account: "node-e", Key: "key-e"},
+			{Account: "node-f", Key: "key-f"},
+			{Account: "node-g", Key: "key-g"},
+		}
+		weights7 := []uint64{10, 10, 10, 10, 10, 10, 10}
 
-		// Ban 2 of 4 members (node-a index 0 and node-b index 1), leaving 2
-		// threshold+1 = 3, so 2 remaining < 3 → insufficient for quorum
+		// Store elections with grace period bypass for 7 members
+		node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 10, NetId: "vsc-mocknet", Type: "initial"},
+			ElectionDataInfo:   elections.ElectionDataInfo{Members: members7, Weights: weights7},
+			BlockHeight:        1000,
+		})
+		for ep := uint64(7); ep <= 9; ep++ {
+			node.electionDb.StoreElection(elections.ElectionResult{
+				ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: ep, NetId: "vsc-mocknet", Type: "initial"},
+				ElectionDataInfo:   elections.ElectionDataInfo{Members: []elections.ElectionMember{}, Weights: []uint64{}},
+				BlockHeight:        ep * 100,
+			})
+		}
+		node.electionDb.StoreElection(elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 6, NetId: "vsc-mocknet", Type: "initial"},
+			ElectionDataInfo:   elections.ElectionDataInfo{Members: members7, Weights: weights7},
+			BlockHeight:        600,
+		})
+
+		// Blame nodes a, b, c (indices 0, 1, 2) — each commit blames 1 node.
+		// 2 commits per node → score=2, total commits=6 → weight=6.
+		// 2 > 6*60/100 = 2 > 3? No. Need higher ratio.
+		// Use 3 commits per node → score=3, total=9, weight=9. 3 > 9*60/100 = 3 > 5? No.
+		// Instead, blame all 3 in every commit (blamedInCommit=3 > maxBlamed=2 → systemic).
+		// Use 2-node blames: blame (a,b), (a,c), (b,c). 2 commits each pair.
+		// Node-a: blamed in (a,b) and (a,c) commits = 4 of 6 = 67% > 60%.
+		// Node-b: blamed in (a,b) and (b,c) commits = 4 of 6 = 67% > 60%.
+		// Node-c: blamed in (a,c) and (b,c) commits = 4 of 6 = 67% > 60%.
+		// All 3 exceed threshold but maxBans=2, so only 2 get banned.
 		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
 			Commitment: blameBitset(0, 1), TxId: "blame-below-1",
@@ -3431,14 +3494,35 @@ func TestBlameScore(t *testing.T) {
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
 			Commitment: blameBitset(0, 1), TxId: "blame-below-2",
 		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 602,
+			Commitment: blameBitset(0, 2), TxId: "blame-below-3",
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 603,
+			Commitment: blameBitset(0, 2), TxId: "blame-below-4",
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 604,
+			Commitment: blameBitset(1, 2), TxId: "blame-below-5",
+		})
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 605,
+			Commitment: blameBitset(1, 2), TxId: "blame-below-6",
+		})
 
 		result := tssMgr.BlameScore()
 
-		if !result.BannedNodes["node-a"] {
-			t.Errorf("Expected node-a to be banned, got BannedNodes=%v", result.BannedNodes)
+		// All 3 nodes (a, b, c) exceed the 60% threshold, but ban cap (maxBans=2)
+		// should prevent banning all 3. Exactly 2 should be banned.
+		bannedCount := 0
+		for _, banned := range result.BannedNodes {
+			if banned {
+				bannedCount++
+			}
 		}
-		if !result.BannedNodes["node-b"] {
-			t.Errorf("Expected node-b to be banned, got BannedNodes=%v", result.BannedNodes)
+		if bannedCount != 2 {
+			t.Errorf("Expected exactly 2 banned nodes (ban cap), got %d: %v", bannedCount, result.BannedNodes)
 		}
 	})
 
