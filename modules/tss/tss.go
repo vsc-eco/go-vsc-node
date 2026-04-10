@@ -195,7 +195,7 @@ func (tssMgr *TssManager) cleanupGossipState(bh uint64) {
 	tssMgr.gossipLock.Lock()
 	defer tssMgr.gossipLock.Unlock()
 	for k := range tssMgr.gossipAttestations {
-		if block, err := strconv.ParseUint(k, 10, 64); err == nil && block < bh {
+		if block, err := strconv.ParseUint(k, 10, 64); err == nil && block+5 < bh {
 			delete(tssMgr.gossipAttestations, k)
 		}
 	}
@@ -454,7 +454,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		// Evict stale readinessSent entries from previous cycles.
 		tssMgr.gossipLock.Lock()
 		for k := range tssMgr.readinessSent {
-			if block, err := strconv.ParseUint(k, 10, 64); err == nil && block < bh {
+			if block, err := strconv.ParseUint(k, 10, 64); err == nil && block+5 < bh {
 				delete(tssMgr.readinessSent, k)
 			}
 		}
