@@ -3,8 +3,10 @@ package chain
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	systemconfig "vsc-node/modules/common/system-config"
 
@@ -133,8 +135,12 @@ func (b *bitcoinRelayer) ChainData(
 		return nil, fmt.Errorf("local bitcoin tip (%d) is behind requested start height (%d)", stopHeight, startHeight)
 	}
 
-	// get all blocks from startHeight to stopHeight
-	blocks := make([]chainBlock, 0, stopHeight-startHeight)
+	// Resolve all block hashes first.
+	type hashEntry struct {
+		hash   *chainhash.Hash
+		height uint64
+	}
+	entries := make([]hashEntry, 0, stopHeight-startHeight)
 	for blockHeight := startHeight; blockHeight < stopHeight; blockHeight++ {
 		blockHash, err := btcdClient.GetBlockHash(int64(blockHeight))
 		if err != nil {
@@ -143,19 +149,58 @@ func (b *bitcoinRelayer) ChainData(
 				blockHeight, err,
 			)
 		}
+		entries = append(entries, hashEntry{hash: blockHash, height: blockHeight})
+	}
 
-		btcBlock, err := getBlockByHash(btcdClient, blockHash, blockHeight)
+	// Attempt to fetch all blocks, collecting any that are pruned.
+	type fetchedBlock struct {
+		block *btcChainData
+		index int
+	}
+	results := make([]*btcChainData, len(entries))
+	var prunedHashes []*chainhash.Hash
+	var prunedIndices []int
+
+	for i, entry := range entries {
+		btcBlock, err := getBlockByHash(btcdClient, entry.hash, entry.height)
 		if err != nil {
+			if strings.Contains(err.Error(), "pruned data") {
+				prunedHashes = append(prunedHashes, entry.hash)
+				prunedIndices = append(prunedIndices, i)
+				continue
+			}
 			return nil, fmt.Errorf(
 				"failed to get block: [blockHeight: %d], [err: %w]",
-				blockHeight, err,
+				entry.height, err,
 			)
 		}
+		results[i] = btcBlock
+	}
 
+	// Batch-fetch any pruned blocks from peers, then retry.
+	if len(prunedHashes) > 0 {
+		if err := fetchPrunedBlocks(btcdClient, prunedHashes); err != nil {
+			return nil, fmt.Errorf("failed to recover pruned blocks: %w", err)
+		}
+		for _, idx := range prunedIndices {
+			entry := entries[idx]
+			btcBlock, err := getBlockByHash(btcdClient, entry.hash, entry.height)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"failed to get block after recovery: [blockHeight: %d], [err: %w]",
+					entry.height, err,
+				)
+			}
+			results[idx] = btcBlock
+		}
+	}
+
+	blocks := make([]chainBlock, len(results))
+	for i, btcBlock := range results {
 		if b.fixedFeeRate > 0 {
 			btcBlock.AverageFeeRate = b.fixedFeeRate
 		}
-		blocks = append(blocks, btcBlock)
+		blocks[i] = btcBlock
 	}
 
 	return blocks, nil
@@ -195,6 +240,90 @@ func (b *bitcoinRelayer) getLatestValidBlockHeight(
 	return latestValidBlockHeight, nil
 }
 
+// getPeers returns the list of connected peer IDs.
+func getPeers(btcdClient *rpcclient.Client) ([]int, error) {
+	peerInfoResult, err := btcdClient.RawRequest("getpeerinfo", nil)
+	if err != nil {
+		return nil, fmt.Errorf("getpeerinfo failed: %w", err)
+	}
+	var peers []struct {
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal(peerInfoResult, &peers); err != nil {
+		return nil, fmt.Errorf("failed to parse getpeerinfo: %w", err)
+	}
+	ids := make([]int, len(peers))
+	for i, p := range peers {
+		ids[i] = p.ID
+	}
+	return ids, nil
+}
+
+// requestBlockFromPeer sends a getblockfrompeer request for a single block hash.
+func requestBlockFromPeer(btcdClient *rpcclient.Client, blockHash *chainhash.Hash, peerID int) error {
+	hashJSON, _ := json.Marshal(blockHash.String())
+	peerJSON, _ := json.Marshal(peerID)
+	_, err := btcdClient.RawRequest("getblockfrompeer", []json.RawMessage{hashJSON, peerJSON})
+	return err
+}
+
+// fetchPrunedBlocks requests multiple pruned blocks from peers in batch, then
+// polls until all arrive. Tries up to 3 peers, falling back if one times out.
+func fetchPrunedBlocks(btcdClient *rpcclient.Client, blockHashes []*chainhash.Hash) error {
+	if len(blockHashes) == 0 {
+		return nil
+	}
+
+	peers, err := getPeers(btcdClient)
+	if err != nil {
+		return err
+	}
+	if len(peers) == 0 {
+		return errors.New("no connected peers to fetch pruned blocks from")
+	}
+
+	maxPeers := len(peers)
+	if maxPeers > 3 {
+		maxPeers = 3
+	}
+
+	for p := 0; p < maxPeers; p++ {
+		// Request all blocks from this peer.
+		for _, hash := range blockHashes {
+			requestBlockFromPeer(btcdClient, hash, peers[p])
+		}
+
+		// Poll until all blocks arrive (up to 30s per peer attempt).
+		for i := 0; i < 30; i++ {
+			time.Sleep(1 * time.Second)
+			remaining := make([]*chainhash.Hash, 0)
+			for _, hash := range blockHashes {
+				_, err := btcdClient.GetBlock(hash)
+				if err != nil {
+					if strings.Contains(err.Error(), "pruned data") {
+						remaining = append(remaining, hash)
+					} else {
+						return fmt.Errorf("failed to get block %s: %w", hash, err)
+					}
+				}
+			}
+			if len(remaining) == 0 {
+				return nil
+			}
+			blockHashes = remaining
+		}
+	}
+	return fmt.Errorf("%d blocks still unavailable after trying %d peers", len(blockHashes), maxPeers)
+}
+
+// fetchPrunedBlock requests a single pruned block from peers.
+func fetchPrunedBlock(btcdClient *rpcclient.Client, blockHash *chainhash.Hash) (*wire.MsgBlock, error) {
+	if err := fetchPrunedBlocks(btcdClient, []*chainhash.Hash{blockHash}); err != nil {
+		return nil, err
+	}
+	return btcdClient.GetBlock(blockHash)
+}
+
 func getBlockByHash(
 	btcdClient *rpcclient.Client,
 	blockHash *chainhash.Hash,
@@ -202,7 +331,14 @@ func getBlockByHash(
 ) (*btcChainData, error) {
 	block, err := btcdClient.GetBlock(blockHash)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get block: %w", err)
+		if strings.Contains(err.Error(), "pruned data") {
+			block, err = fetchPrunedBlock(btcdClient, blockHash)
+			if err != nil {
+				return nil, fmt.Errorf("failed to recover pruned block: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("failed to get block: %w", err)
+		}
 	}
 
 	blockHeader := &block.Header
