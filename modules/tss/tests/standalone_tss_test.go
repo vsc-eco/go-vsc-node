@@ -281,8 +281,9 @@ func doReshare(t *testing.T, nodes []nodeComponents, epoch uint64, blockStart ui
 	*reshareBroadcast = nil
 	mu.Unlock()
 
-	headHeight := blockStart + 20
-	processBlocks(nodes, blockStart-2, blockStart-2, &headHeight)
+	headHeight := blockStart - 10 // Low enough for gossip-window blocks to pass sync guard
+	processBlocks(nodes, blockStart-30, blockStart-2, &headHeight)
+	headHeight = blockStart + 20
 	for bh := blockStart - 1; bh <= blockStart+5; bh++ {
 		for _, node := range nodes {
 			node.consumer.ProcessBlock(hive_blocks.HiveBlock{BlockNumber: bh}, &headHeight)
@@ -379,8 +380,9 @@ func TestSigningWithRenewedKey(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Block 250 (250 % 50 == 0, sign trigger)
-	headHeight := uint64(270)
+	headHeight := uint64(226) // Low enough for gossip-window blocks to pass sync guard
 	processBlocks(nodes, 206, 248, &headHeight)
+	headHeight = 270
 	for bh := uint64(249); bh <= 255; bh++ {
 		for _, node := range nodes {
 			node.consumer.ProcessBlock(hive_blocks.HiveBlock{BlockNumber: bh}, &headHeight)
@@ -687,8 +689,9 @@ func TestBlameDbRoundTripOldCommitteeExclusion(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Trigger reshare at block 200 (200 % 100 == 0)
-	headHeight := uint64(220)
+	headHeight := uint64(172) // Low enough for gossip-window blocks to pass sync guard
 	processBlocks(nodes, 152, 198, &headHeight)
+	headHeight = 220
 	for bh := uint64(199); bh <= 205; bh++ {
 		for _, node := range nodes {
 			node.consumer.ProcessBlock(hive_blocks.HiveBlock{BlockNumber: bh}, &headHeight)
@@ -801,8 +804,9 @@ func TestBlameDbRoundTripOldCommitteeExclusion(t *testing.T) {
 	mu.Unlock()
 
 	// Trigger reshare at block 300 — all 6 nodes online, but 3 blamed
-	headHeight = uint64(320)
+	headHeight = uint64(272) // Low enough for gossip-window blocks to pass sync guard
 	processBlocks(nodes, 252, 298, &headHeight)
+	headHeight = 320
 	for bh := uint64(299); bh <= 305; bh++ {
 		for _, node := range nodes {
 			node.consumer.ProcessBlock(hive_blocks.HiveBlock{BlockNumber: bh}, &headHeight)
@@ -896,8 +900,9 @@ func TestSignWithNodeFlap(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	// Block 250 triggers signing (250 % 50 == 0)
-	headHeight := uint64(270)
+	headHeight := uint64(126) // Low enough for gossip-window blocks to pass sync guard
 	processBlocks(nodes, 106, 248, &headHeight)
+	headHeight = 270
 	for bh := uint64(249); bh <= 255; bh++ {
 		for _, node := range nodes {
 			node.consumer.ProcessBlock(hive_blocks.HiveBlock{BlockNumber: bh}, &headHeight)
