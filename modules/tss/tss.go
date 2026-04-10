@@ -28,8 +28,8 @@ import (
 
 	stateEngine "vsc-node/modules/state-processing"
 
-	ecKeyGen "github.com/bnb-chain/tss-lib/v2/ecdsa/keygen"
-	btss "github.com/bnb-chain/tss-lib/v2/tss"
+	ecKeyGen "github.com/bnb-chain/tss-lib/v3/ecdsa/keygen"
+	btss "github.com/bnb-chain/tss-lib/v3/tss"
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multicodec"
 	"github.com/vsc-eco/hivego"

@@ -8,7 +8,7 @@ require (
 	github.com/99designs/gqlgen v0.17.81
 	github.com/CosmWasm/tinyjson v0.9.0
 	github.com/JustinKnueppel/go-result v1.0.0
-	github.com/bnb-chain/tss-lib/v2 v2.0.2
+	github.com/bnb-chain/tss-lib/v3 v3.0.0
 	github.com/btcsuite/btcd v0.25.0
 	github.com/btcsuite/btcd/btcec/v2 v2.3.5
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
@@ -35,6 +35,7 @@ require (
 replace github.com/agl/ed25519 => github.com/binance-chain/edwards25519 v0.0.0-20200305024217-f36fc4b53d43
 
 require (
+	filippo.io/bigmod v0.1.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
 	github.com/VictoriaMetrics/fastcache v1.12.2 // indirect
