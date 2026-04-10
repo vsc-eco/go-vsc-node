@@ -102,6 +102,11 @@ func New(
 	}
 }
 
+// ChainOracle returns the chain oracle instance for external use (e.g. GraphQL healthchecks).
+func (o *Oracle) ChainOracle() *chain.ChainOracle {
+	return o.chainOracle
+}
+
 // Init implements aggregate.Plugin.
 // Runs initialization in order of how they are passed in to `Aggregate`
 func (o *Oracle) Init() error {
