@@ -93,7 +93,7 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 		return nil, err
 	}
 
-	sub, err := topic.Subscribe(pubsub.WithBufferSize(512)) //TODO might need to increase buffer size if messages are dropped
+	sub, err := topic.Subscribe(pubsub.WithBufferSize(p2p.config.Get().PubsubBufferSize))
 	if err != nil {
 		return nil, err
 	}
