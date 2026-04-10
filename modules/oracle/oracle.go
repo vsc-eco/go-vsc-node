@@ -2,12 +2,10 @@ package oracle
 
 import (
 	"context"
-	ed25519Std "crypto/ed25519"
 	"errors"
 	"log"
 	"time"
 	DataLayer "vsc-node/lib/datalayer"
-	"vsc-node/lib/dids"
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -115,30 +113,6 @@ func (o *Oracle) Init() error {
 	for symbol := range chain.RegisteredChains() {
 		if rpc, ok := cfg.ChainRpc(symbol); ok {
 			o.chainOracle.ConfigureChain(symbol, rpc.RpcHost, rpc.RpcUser, rpc.RpcPass)
-		}
-	}
-
-	// Create the txCrafter now that identity config has been loaded from disk.
-	// The libp2p private key is only available after identityConfig.Init().
-	if libp2pKey, err := o.conf.Libp2pPrivateKey(); err != nil {
-		o.logger.Error("failed to get libp2p private key, chain relay submission disabled", "err", err)
-	} else if rawBytes, err := libp2pKey.Raw(); err != nil {
-		o.logger.Error("failed to get raw libp2p key bytes, chain relay submission disabled", "err", err)
-	} else {
-		edPrivKey := ed25519Std.PrivateKey(rawBytes)
-		edPubKey := edPrivKey.Public().(ed25519Std.PublicKey)
-		if didKey, err := dids.NewKeyDID(edPubKey); err != nil {
-			o.logger.Error("failed to create key DID, chain relay submission disabled", "err", err)
-		} else {
-			txCrafter := &transactionpool.TransactionCrafter{
-				Identity: dids.NewKeyProvider(edPrivKey),
-				Did:      didKey,
-				VSCBroadcast: &transactionpool.InternalBroadcast{
-					TxPool: o.txPool,
-				},
-			}
-			o.chainOracle.SetTxCrafter(txCrafter)
-			o.logger.Info("chain relay transaction crafter initialized")
 		}
 	}
 

@@ -58,8 +58,6 @@ func (tp *TransactionCrafter) SignFinal(vscTx VSCTransaction) (SerializedVSCTran
 		return SerializedVSCTransaction{}, err
 	}
 
-	fmt.Println("common.Sig", sig)
-
 	sigPackage := SignaturePackage{
 		Type: "vsc-sig",
 		Sigs: []common.Sig{
@@ -534,7 +532,6 @@ func (tx *VscContractCall) SerializeHive() ([]hivego.HiveOperation, error) {
 	activeMap := make(map[string]bool, 0)
 
 	for _, intent := range tx.Intents {
-		fmt.Println("intent", intent)
 		if intent.Type == "transfer.allow" {
 			activeMap[tx.Caller] = true
 		}
@@ -822,9 +819,6 @@ func (tx *VSCTransaction) Hash() (cid.Cid, []byte, error) {
 		},
 		"tx": ops,
 	}
-
-	ssbytes, _ := json.Marshal(signingShell2)
-	fmt.Println("signingShell2", string(ssbytes))
 
 	bytes, _ := common.EncodeDagCbor(signingShell2)
 

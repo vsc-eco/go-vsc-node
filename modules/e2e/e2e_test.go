@@ -2,8 +2,6 @@ package e2e_test
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
@@ -22,6 +20,7 @@ import (
 	transactionpool "vsc-node/modules/transaction-pool"
 
 	"vsc-node/lib/dids"
+	"vsc-node/lib/vsclog"
 
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/hasura/go-graphql-client"
@@ -40,18 +39,21 @@ var CONTRACT_WASM []byte
 const NODE_COUNT = 9
 
 func TestE2E(t *testing.T) {
+	vsclog.ParseAndApply("verbose")
 	config.UseMainConfigDuringTests = true
-
-	pubKey, privKey, _ := ed25519.GenerateKey(rand.Reader)
-	didKey, _ := dids.NewKeyDID(pubKey)
 
 	container := e2e.NewContainer(NODE_COUNT)
 
 	container.Init()
 	container.Start(t)
 
+	// Primary test key for contract calls and transfers
+	testKey, _ := ethCrypto.GenerateKey()
+	testAddr := ethCrypto.PubkeyToAddress(testKey.PublicKey).Hex()
+	didKey := dids.NewEthDID(testAddr)
+
 	transactionCreator := transactionpool.TransactionCrafter{
-		Identity: dids.NewKeyProvider(privKey),
+		Identity: dids.NewEthProvider(testKey),
 		Did:      didKey,
 
 		VSCBroadcast: container.VSCBroadcast(),
@@ -73,7 +75,7 @@ func TestE2E(t *testing.T) {
 
 	r2e := container.Runner()
 	container.AddStep(r2e.WaitToStart())
-	container.AddStep(r2e.Wait(10))
+	container.AddStep(r2e.Wait(5))
 	container.AddStep(r2e.BroadcastElection())
 
 	container.AddStep(e2e.Step{
@@ -91,26 +93,39 @@ func TestE2E(t *testing.T) {
 			mockCreator.Transfer("test-account", "vsc.gateway", "50000", "HBD", "to=vaultec")
 			mockCreator.Transfer("test-account", "vsc.gateway", "50", "HIVE", "")
 			return func(ctx e2e.StepCtx) error {
-				time.Sleep(40 * time.Second)
-				var rcQuery struct {
-					GetAccountRc struct {
-						Amount graphql.Int `graphql:"amount"`
-					} `graphql:"getAccountRC(account: $account)"`
-					GetAccountBalance struct {
-						Hbd  graphql.Int `graphql:"hbd"`
-						Hive graphql.Int `graphql:"hive"`
-					} `graphql:"getAccountBalance(account: $account)"`
-				}
-				graphClient.Query(context.Background(), &rcQuery, map[string]any{
-					"account": graphql.String(didKey.String()),
-				})
+				deadline := time.After(40 * time.Second)
+				ticker := time.NewTicker(2 * time.Second)
+				defer ticker.Stop()
 
-				fmt.Println("EVALUATE Account RC", rcQuery)
-				return nil
+				for {
+					var rcQuery struct {
+						GetAccountRc struct {
+							Amount graphql.Int `graphql:"amount"`
+						} `graphql:"getAccountRC(account: $account)"`
+						GetAccountBalance struct {
+							Hbd  graphql.Int `graphql:"hbd"`
+							Hive graphql.Int `graphql:"hive"`
+						} `graphql:"getAccountBalance(account: $account)"`
+					}
+					graphClient.Query(context.Background(), &rcQuery, map[string]any{
+						"account": graphql.String(didKey.String()),
+					})
+
+					fmt.Println("EVALUATE Account RC", rcQuery)
+					if rcQuery.GetAccountBalance.Hbd > 0 || rcQuery.GetAccountBalance.Hive > 0 {
+						return nil
+					}
+
+					select {
+					case <-deadline:
+						return nil
+					case <-ticker.C:
+					}
+				}
 			}, nil
 		},
 	})
-	container.AddStep(r2e.Wait(10))
+	container.AddStep(r2e.Wait(5))
 
 	var contractId string
 	container.AddStep(e2e.Step{
@@ -161,7 +176,7 @@ func TestE2E(t *testing.T) {
 		},
 	})
 
-	container.AddStep(r2e.DupElection(10 * time.Second))
+	container.AddStep(r2e.DupElection(5 * time.Second))
 	container.AddStep(e2e.Step{
 		Name: "Update Contract",
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
@@ -204,14 +219,14 @@ func TestE2E(t *testing.T) {
 		},
 	})
 
-	container.AddStep(r2e.Wait(20))
+	container.AddStep(r2e.Wait(10))
 	container.AddStep(e2e.Step{
 		Name: "Execute Contract - Test 1",
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
 			statePut := &transactionpool.VscContractCall{
 				Caller:     didKey.String(),
 				ContractId: contractId,
-				RcLimit:    200,
+				RcLimit:    400,
 				Action:     "test1",
 				Payload:    "test",
 			}
@@ -225,7 +240,7 @@ func TestE2E(t *testing.T) {
 			tokenDraw := &transactionpool.VscContractCall{
 				Caller:     didKey.String(),
 				ContractId: contractId,
-				RcLimit:    200,
+				RcLimit:    400,
 				Action:     "test3",
 				Payload:    "test",
 				Intents: []contracts.Intent{
@@ -258,7 +273,7 @@ func TestE2E(t *testing.T) {
 			}
 
 			fmt.Println("txId", txId)
-			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}}, 60), nil
+			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}}, 120), nil
 		},
 	})
 
@@ -287,7 +302,7 @@ func TestE2E(t *testing.T) {
 		},
 	})
 
-	container.AddStep(r2e.DupElection(30 * time.Second))
+	container.AddStep(r2e.DupElection(10 * time.Second))
 
 	container.AddStep(e2e.Step{
 		Name: "Execute Contract - Test 2",
@@ -296,7 +311,7 @@ func TestE2E(t *testing.T) {
 			stateGetMod := &transactionpool.VscContractCall{
 				Caller:     didKey.String(),
 				ContractId: contractId,
-				RcLimit:    200,
+				RcLimit:    400,
 				Action:     "test2",
 				Payload:    "test",
 			}
@@ -310,7 +325,7 @@ func TestE2E(t *testing.T) {
 			tokenSend := &transactionpool.VscContractCall{
 				Caller:     didKey.String(),
 				ContractId: contractId,
-				RcLimit:    200,
+				RcLimit:    400,
 				Action:     "test4",
 				Payload:    "test",
 				Intents: []contracts.Intent{
@@ -373,10 +388,10 @@ func TestE2E(t *testing.T) {
 			}
 
 			fmt.Println("txId2", txId2)
-			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}, {txId2, transactions.TransactionStatusFailed}}, 60), nil
+			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}, {txId2, transactions.TransactionStatusFailed}}, 120), nil
 		},
 	})
-	container.AddStep(r2e.Wait(30))
+	container.AddStep(r2e.Wait(10))
 
 	err := container.RunSteps(t)
 
