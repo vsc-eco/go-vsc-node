@@ -4,7 +4,7 @@ import (
 	stateEngine "vsc-node/modules/state-processing"
 	tss_helpers "vsc-node/modules/tss/helpers"
 
-	bc "github.com/bnb-chain/tss-lib/v2/common"
+	bc "github.com/bnb-chain/tss-lib/v3/common"
 )
 
 type KeySigner interface {
