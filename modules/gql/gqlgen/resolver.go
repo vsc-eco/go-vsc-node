@@ -11,6 +11,7 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
+	"vsc-node/modules/oracle/chain"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 )
@@ -38,4 +39,5 @@ type Resolver struct {
 	TssKeys        tss_db.TssKeys
 	TssCommitments tss_db.TssCommitments
 	TssRequests    tss_db.TssRequests
+	ChainOracle    *chain.ChainOracle
 }
