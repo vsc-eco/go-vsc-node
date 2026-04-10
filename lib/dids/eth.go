@@ -34,7 +34,7 @@ import (
 // - https://github.com/w3c-ccg/did-pkh/blob/main/did-pkh-method-draft.md
 const EthDIDPrefix = "did:pkh:eip155:1:"
 
-const debug = true
+const debug = false
 
 func runDebug(run func() error) error {
 	if debug {
@@ -99,7 +99,6 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 			return fmt.Errorf("failed to decode CBOR data: %v", err)
 		}
 
-		fmt.Println(decodedData2)
 		return nil
 	})
 	if err != nil {
@@ -123,7 +122,6 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 	// compute the EIP-712 hash
 	dataHash, err := computeEIP712Hash(payload.Data)
 
-	fmt.Println("DATA HASH: ", hex.EncodeToString(dataHash))
 	if err != nil {
 		return false, fmt.Errorf("failed to compute EIP-712 hash: %v", err)
 	}
@@ -443,13 +441,9 @@ func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeNam
 	// primaryTypeName.path.path.path : []{Name: x, Type: y}
 	types := make(map[string][]apitypes.Type, len(uniqueTypes))
 	for _, partialType := range typeMap {
-		fmt.Println(partialType.typeName)
-		fmt.Println("types:", partialType.val)
 		for i, _ := range partialType.typeName {
 			before := partialType.typeName[:i+1] // [tx_container], [tx_container, tx], [tx_container, tx, payload]
 			after := partialType.typeName[i+1:]
-			fmt.Println("before:", before)
-			fmt.Println("after:", after)
 			typeName := strings.Join(before, "_")
 			if len(after) == 0 {
 				types[typeName] = append(types[typeName], partialType.val)
@@ -460,16 +454,13 @@ func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeNam
 				}) {
 					isArray := isValidArr(partialType.val.Name)
 					if isArray {
-						fmt.Println("array type name:", typeName)
 						typeNameToFind := append(before, after[0])
-						fmt.Println("array type name to find:", typeNameToFind)
 						arrayType := typeMap[slices.IndexFunc(typeMap, func(findType struct {
 							typeName []string
 							val      apitypes.Type
 						}) bool {
 							return slices.Equal(findType.typeName, typeNameToFind)
 						})].val.Type
-						fmt.Println("array type:", arrayType)
 						types[typeName] = append(val, apitypes.Type{Name: after[0], Type: arrayType + "[]"})
 						break
 					} else {
@@ -855,11 +846,8 @@ func generateTypedDataWithPath(
 			nestedTypeName := fmt.Sprintf("%s.%s", typeName, fieldName)
 			nestedData, ok := fieldValue.(map[any]interface{})
 			if !ok {
-				fmt.Println(nestedTypeName, fieldValue)
-				fmt.Println(reflect.ValueOf(fieldValue).MapKeys()[0].Interface())
 				return nil, nil, fmt.Errorf("379 expected map[string]interface{} for field '%s'", fieldName)
 			}
-			fmt.Println("NESTED: ", nestedData)
 			nestedMessage, nestedTypes, err := generateTypedDataWithPath(nestedData, nestedTypeName, floatHandler)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to generate typed data for nested map: %v", err)

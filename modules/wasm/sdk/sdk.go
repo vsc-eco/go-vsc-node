@@ -256,11 +256,6 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 					return ret("unknown")
 				}
 				return ret("user:evm")
-			case strings.HasPrefix(addr, dids.KeyDIDPrefix):
-				if _, err := dids.ParseKeyDID(addr); err != nil {
-					return ret("unknown")
-				}
-				return ret("key")
 			case strings.HasPrefix(addr, "hive:"):
 				username := strings.TrimPrefix(addr, "hive:")
 				matched, _ := regexp.MatchString(ledgerSystem.HIVE_REGEX, username)
