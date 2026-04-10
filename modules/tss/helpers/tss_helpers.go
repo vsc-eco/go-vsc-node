@@ -6,7 +6,7 @@ import (
 	"math"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/v2/tss"
+	"github.com/bnb-chain/tss-lib/v3/tss"
 	"github.com/eager7/dogd/btcec"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
