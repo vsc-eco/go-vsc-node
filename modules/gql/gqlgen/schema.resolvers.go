@@ -457,7 +457,19 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 	if electionErr != nil {
 		return nil, electionErr
 	}
-	return &LocalNodeInfo{GitCommit: announcements.GitCommit, VersionID: announcements.VersionId, LastProcessedBlock: model.Uint64(head), Epoch: model.Uint64(election.Epoch)}, nil
+	info := &LocalNodeInfo{
+		GitCommit:          announcements.GitCommit,
+		VersionID:          announcements.VersionId,
+		LastProcessedBlock: model.Uint64(head),
+		Epoch:              model.Uint64(election.Epoch),
+	}
+	if r.ChainOracle != nil {
+		if height, err := r.ChainOracle.GetChainBlockHeight("BTC"); err == nil {
+			h := model.Uint64(height)
+			info.BtcBlockHeight = &h
+		}
+	}
+	return info, nil
 }
 
 // GetWitness is the resolver for the getWitness field.

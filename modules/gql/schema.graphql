@@ -245,6 +245,8 @@ type LocalNodeInfo {
   last_processed_block: Uint64!
   """Current consensus epoch."""
   epoch: Uint64!
+  """Latest block height from the connected BTCD instance, or null if unavailable."""
+  btc_block_height: Uint64
 }
 
 """
