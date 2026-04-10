@@ -234,6 +234,16 @@ type NonceRecord {
 }
 
 """
+Status of a single chain oracle relayer.
+"""
+type ChainOracleStatus {
+  """Chain symbol (e.g. BTC, LTC, DASH)."""
+  symbol: String!
+  """Latest block height, or null if unreachable."""
+  block_height: Uint64
+}
+
+"""
 Information about the local Magi node.
 """
 type LocalNodeInfo {
@@ -245,8 +255,8 @@ type LocalNodeInfo {
   last_processed_block: Uint64!
   """Current consensus epoch."""
   epoch: Uint64!
-  """Latest block height from the connected BTCD instance, or null if unavailable."""
-  btc_block_height: Uint64
+  """Status of each registered chain oracle."""
+  chain_oracles: [ChainOracleStatus!]!
 }
 
 """

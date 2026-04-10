@@ -528,21 +528,26 @@ func (c *ChainOracle) getStoredBlockHeaderHex(contractId string, height uint64) 
 	return fmt.Sprintf("%x", rawVal), nil
 }
 
-// GetChainBlockHeight returns the latest block height for a given chain symbol,
-// or 0 and an error if the chain is not configured or unreachable.
-func (c *ChainOracle) GetChainBlockHeight(symbol string) (uint64, error) {
-	chain, ok := c.chainRelayers[strings.ToUpper(symbol)]
-	if !ok {
-		return 0, fmt.Errorf("chain %s not registered", symbol)
+// ChainStatus holds the block height status of a single chain relayer.
+type ChainStatus struct {
+	Symbol      string
+	BlockHeight *uint64 // nil if unreachable or not configured
+}
+
+// GetAllChainStatuses returns the block height status for every registered chain.
+func (c *ChainOracle) GetAllChainStatuses() []ChainStatus {
+	statuses := make([]ChainStatus, 0, len(c.chainRelayers))
+	for symbol, chain := range c.chainRelayers {
+		cs := ChainStatus{Symbol: symbol}
+		if chain.ContractId() != "" {
+			if state, err := chain.GetLatestValidHeight(); err == nil {
+				h := state.blockHeight
+				cs.BlockHeight = &h
+			}
+		}
+		statuses = append(statuses, cs)
 	}
-	if chain.ContractId() == "" {
-		return 0, fmt.Errorf("chain %s not configured", symbol)
-	}
-	state, err := chain.GetLatestValidHeight()
-	if err != nil {
-		return 0, err
-	}
-	return state.blockHeight, nil
+	return statuses
 }
 
 // makeChainSessionID builds a unique session identifier for P2P signature
