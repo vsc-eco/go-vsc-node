@@ -188,12 +188,12 @@ func TestnetConfig() SystemConfig {
 		gatewayWallet:  "vsc.gateway",
 		startHeight:    2,
 		consensusParams: params.ConsensusParams{
-			MinStake:           params.CONSENSUS_MINIMUM,
-			MinMembers:         3,
-			MinSpSigners:       3,
-			MinRcLimit:         params.MINIMUM_RC_LIMIT,
-			TssIndexHeight:     1409500,
-			ElectionInterval:   params.ELECTION_INTERVAL,
+			MinStake:             params.CONSENSUS_MINIMUM,
+			MinMembers:           3,
+			MinSpSigners:         3,
+			MinRcLimit:           params.MINIMUM_RC_LIMIT,
+			TssIndexHeight:       1409500,
+			ElectionInterval:     1200,
 			ElectionDupeFixEpoch: 268,
 		},
 		oracleParams: params.OracleParams{
