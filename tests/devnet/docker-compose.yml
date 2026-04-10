@@ -190,6 +190,34 @@ services:
     networks:
       - devnet
 
+  # bitcoind in regtest mode for oracle chain-relay tests.
+  # Reachable inside the docker network as bitcoind:18443
+  # (regtest JSON-RPC port). Optional — gated by the BITCOIND profile so
+  # tests that don't need it skip the startup cost.
+  bitcoind:
+    image: ${BITCOIND_IMAGE}
+    profiles: ["bitcoind"]
+    command:
+      - bitcoind
+      - -regtest=1
+      - -server=1
+      - -txindex=1
+      - -fallbackfee=0.0001
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcport=18443
+      - -rpcuser=vsc-node-user
+      - -rpcpassword=vsc-node-pass
+      - -printtoconsole=1
+    networks:
+      - devnet
+    healthcheck:
+      test: ["CMD-SHELL", "bitcoin-cli -regtest -rpcuser=vsc-node-user -rpcpassword=vsc-node-pass getblockchaininfo > /dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
 volumes:
   db: {}
 

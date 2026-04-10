@@ -67,6 +67,13 @@ type Config struct {
 	DroneImage string
 	// DronePort is the host port exposed for the drone API endpoint.
 	DronePort int
+	// BitcoindImage is the Docker image for the bitcoind regtest service
+	// used by oracle chain-relay tests. Only started when EnableBitcoind
+	// is true.
+	BitcoindImage string
+	// EnableBitcoind starts the bitcoind regtest service alongside the
+	// devnet. Required for oracle chain-relay tests.
+	EnableBitcoind bool
 }
 
 // DefaultConfig returns a Config with sensible defaults for testing.
@@ -90,6 +97,7 @@ func DefaultConfig() *Config {
 		PgBouncerImage: "registry.gitlab.syncad.com/hive/haf_api_node/pgbouncer",
 		DroneImage:     "registry.gitlab.syncad.com/hive/drone",
 		DronePort:      19000,
+		BitcoindImage:  "bitcoin/bitcoin:29.3",
 	}
 }
 

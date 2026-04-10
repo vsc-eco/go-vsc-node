@@ -38,6 +38,7 @@ func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, imageName
 	kv("DRONE_PORT", fmt.Sprint(cfg.DronePort))
 	kv("DRONE_CONFIG_PATH", droneConfigPath)
 	kv("MAGI_IMAGE", imageName)
+	kv("BITCOIND_IMAGE", cfg.BitcoindImage)
 
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)
 }
