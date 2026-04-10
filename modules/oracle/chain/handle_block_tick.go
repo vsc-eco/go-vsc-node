@@ -1,10 +1,12 @@
 package chain
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
@@ -15,8 +17,22 @@ import (
 )
 
 const (
-	// Time to wait for witness signatures before proceeding.
+	// Time to wait for witness signatures before proceeding. This is the
+	// hard upper bound — the no-progress watchdog (below) usually fires
+	// long before this when the threshold is unreachable.
 	signatureCollectionTimeout = 90 * time.Second
+
+	// signatureNoProgressTimeout is the maximum time the producer will
+	// wait between successive accepted signatures before assuming no more
+	// are coming. When down witnesses make the threshold unreachable, this
+	// lets the producer give up in a few seconds instead of stalling for
+	// the full signatureCollectionTimeout.
+	//
+	// Healthy nodes typically respond within a few hundred milliseconds,
+	// so a 15s window is a comfortable safety margin for slow-but-alive
+	// witnesses while still saving 75 seconds per relay attempt against
+	// genuinely down nodes.
+	signatureNoProgressTimeout = 15 * time.Second
 )
 
 func makeTransaction(
@@ -324,69 +340,102 @@ func (o *ChainOracle) processChainRelay(
 		"sessionID", sessionID,
 	)
 
-	// Wait for signatures with timeout
+	// Wait for signatures with two stacked timeouts:
+	//   1. signatureCollectionTimeout — the hard upper bound (90s).
+	//   2. signatureNoProgressTimeout — a watchdog that cancels the
+	//      collection sub-context once no new signature has arrived for N
+	//      seconds. When the threshold is unreachable (because some
+	//      witnesses are down or partitioned), this lets the producer give
+	//      up in seconds instead of waiting the full 90 seconds.
+	//
+	// The watchdog runs alongside collectChainSignatures and triggers via
+	// context cancellation. The helper itself is unchanged — it still
+	// embodies the "wait until threshold or timeout" primitive — and its
+	// unit tests in collect_signatures_test.go continue to pass.
 	threshold := electionResult.TotalWeight * 2 / 3
-	timer := time.NewTimer(signatureCollectionTimeout)
-	defer timer.Stop()
 
-	for signedWeight <= threshold {
-		select {
-		case <-o.ctx.Done():
+	collectCtx, collectCancel := context.WithCancel(o.ctx)
+	defer collectCancel()
+
+	var lastProgressMu sync.Mutex
+	lastProgress := time.Now()
+	noProgressFired := false
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-collectCtx.Done():
+				return
+			case <-ticker.C:
+				lastProgressMu.Lock()
+				since := time.Since(lastProgress)
+				lastProgressMu.Unlock()
+				if since > signatureNoProgressTimeout {
+					o.logger.Debug("signature collection no-progress watchdog firing",
+						"symbol", chainStatus.symbol,
+						"noProgressFor", since,
+					)
+					lastProgressMu.Lock()
+					noProgressFired = true
+					lastProgressMu.Unlock()
+					collectCancel()
+					return
+				}
+			}
+		}
+	}()
+
+	// Wrap circuit.AddAndVerify so successful additions reset the
+	// no-progress clock.
+	verifyWithProgress := func(member dids.BlsDID, signature string) (bool, error) {
+		added, err := circuit.AddAndVerify(member, signature)
+		if added {
+			lastProgressMu.Lock()
+			lastProgress = time.Now()
+			lastProgressMu.Unlock()
+		}
+		return added, err
+	}
+
+	collectResult := collectChainSignatures(
+		collectCtx,
+		o.logger,
+		sigChan,
+		signatureCollectionTimeout,
+		selfWeight,
+		threshold,
+		selfDid,
+		verifyWithProgress,
+		func(did dids.BlsDID) uint64 { return findMemberWeight(&electionResult, did) },
+		chainStatus.symbol,
+	)
+
+	// Drain the watchdog goroutine.
+	collectCancel()
+
+	if collectResult.Cancelled {
+		// Distinguish a real shutdown (parent o.ctx cancelled) from the
+		// watchdog firing on no-progress. Only the former should bail
+		// without logging "not enough signatures".
+		lastProgressMu.Lock()
+		watchdogFired := noProgressFired
+		lastProgressMu.Unlock()
+
+		if !watchdogFired && o.ctx.Err() != nil {
 			o.logger.Warn("context cancelled during signature collection",
 				"symbol", chainStatus.symbol,
 			)
 			return
-
-		case <-timer.C:
-			o.logger.Debug("signature collection timeout",
-				"symbol", chainStatus.symbol,
-				"signedWeight", signedWeight,
-				"threshold", threshold,
-			)
-			goto checkThreshold
-
-		case sigMsg := <-sigChan:
-			if sigMsg.BlsDid == "" || sigMsg.Signature == "" {
-				continue
-			}
-
-			// Skip our own signature (already added)
-			if sigMsg.BlsDid == selfDid.String() {
-				continue
-			}
-
-			member := dids.BlsDID(sigMsg.BlsDid)
-			added, err := circuit.AddAndVerify(member, sigMsg.Signature)
-			if err != nil {
-				o.logger.Debug("failed to verify signature",
-					"symbol", chainStatus.symbol,
-					"account", sigMsg.Account,
-					"err", err,
-				)
-				continue
-			}
-
-			if added {
-				weight := findMemberWeight(&electionResult, member)
-				signedWeight += weight
-				o.logger.Debug("received signature",
-					"symbol", chainStatus.symbol,
-					"account", sigMsg.Account,
-					"weight", weight,
-					"signedWeight", signedWeight,
-					"threshold", threshold,
-				)
-			} else {
-				o.logger.Debug("signature not added to circuit",
-					"symbol", chainStatus.symbol,
-					"account", sigMsg.Account,
-					"blsDid", sigMsg.BlsDid,
-				)
-			}
 		}
+		// Otherwise fall through to the threshold check below — the
+		// watchdog gave up, but we should still log the under-threshold
+		// state via the existing log line so monitoring tools see it.
 	}
 
-checkThreshold:
+	signedWeight = collectResult.SignedWeight
+
 	if signedWeight <= threshold {
 		o.logger.Info("not enough signatures for chain relay",
 			"symbol", chainStatus.symbol,

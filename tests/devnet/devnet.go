@@ -229,6 +229,18 @@ func (d *Devnet) Start(ctx context.Context) error {
 		log.Printf("[devnet] skipping account funding (SkipFunding=true)")
 	}
 
+	// Step 9: optional bitcoind regtest for oracle chain-relay tests
+	if d.cfg.EnableBitcoind {
+		log.Printf("[devnet] starting bitcoind (regtest) for oracle tests...")
+		if err := d.compose(ctx, "--profile", "bitcoind", "up", "-d", "bitcoind"); err != nil {
+			return fmt.Errorf("starting bitcoind: %w", err)
+		}
+		if err := d.waitForService(ctx, "bitcoind", 2*time.Minute); err != nil {
+			return fmt.Errorf("bitcoind health check: %w", err)
+		}
+		log.Printf("[devnet] bitcoind is healthy")
+	}
+
 	d.started = true
 	log.Printf("[devnet] devnet is running")
 	log.Printf("[devnet]   Hive RPC: %s", d.HiveRPCEndpoint())
