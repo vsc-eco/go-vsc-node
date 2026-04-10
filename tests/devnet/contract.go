@@ -144,6 +144,30 @@ func BuildCallTssContract(ctx context.Context) (string, error) {
 	return wasmPath, nil
 }
 
+// BuildBtcStubContract builds the btc-stub WASM contract used by oracle
+// chain-relay devnet tests. The stub mimics the BTC mapping contract's
+// `addBlocks` interface but skips all BTC validation, making it cheap to
+// run inside a regtest devnet.
+func BuildBtcStubContract(ctx context.Context) (string, error) {
+	contractDir := filepath.Join(findSourceRoot(), "tests", "devnet", "contracts", "btc-stub")
+	wasmPath := filepath.Join(contractDir, "bin", "build.wasm")
+
+	log.Printf("[devnet] building btc-stub contract...")
+	cmd := exec.CommandContext(ctx, "make", "-C", contractDir, "build")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("building btc-stub contract: %w", err)
+	}
+
+	if _, err := os.Stat(wasmPath); err != nil {
+		return "", fmt.Errorf("built wasm not found at %s: %w", wasmPath, err)
+	}
+
+	log.Printf("[devnet] btc-stub contract built: %s", wasmPath)
+	return wasmPath, nil
+}
+
 // TestContractPath returns the absolute path to the built-in test
 // WASM contract at modules/e2e/artifacts/contract_test.wasm.
 func TestContractPath() string {
