@@ -528,6 +528,23 @@ func (c *ChainOracle) getStoredBlockHeaderHex(contractId string, height uint64) 
 	return fmt.Sprintf("%x", rawVal), nil
 }
 
+// GetChainBlockHeight returns the latest block height for a given chain symbol,
+// or 0 and an error if the chain is not configured or unreachable.
+func (c *ChainOracle) GetChainBlockHeight(symbol string) (uint64, error) {
+	chain, ok := c.chainRelayers[strings.ToUpper(symbol)]
+	if !ok {
+		return 0, fmt.Errorf("chain %s not registered", symbol)
+	}
+	if chain.ContractId() == "" {
+		return 0, fmt.Errorf("chain %s not configured", symbol)
+	}
+	state, err := chain.GetLatestValidHeight()
+	if err != nil {
+		return 0, err
+	}
+	return state.blockHeight, nil
+}
+
 // makeChainSessionID builds a unique session identifier for P2P signature
 // collection in the format "SYMBOL-hiveHeight-startBlock-endBlock"
 // (e.g. "BTC-93000000-640000-640100"). Including the Hive block height
