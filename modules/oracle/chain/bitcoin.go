@@ -2,10 +2,12 @@ package chain
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	systemconfig "vsc-node/modules/common/system-config"
@@ -179,7 +181,7 @@ func (b *bitcoinRelayer) ChainData(
 
 	// Batch-fetch any pruned blocks from peers, then retry.
 	if len(prunedHashes) > 0 {
-		if err := fetchPrunedBlocks(btcdClient, prunedHashes); err != nil {
+		if err := fetchPrunedBlocks(context.Background(), btcdClient, prunedHashes); err != nil {
 			return nil, fmt.Errorf("failed to recover pruned blocks: %w", err)
 		}
 		for _, idx := range prunedIndices {
@@ -250,21 +252,31 @@ func (b *bitcoinRelayer) getLatestValidBlockHeight(
 	return latestValidBlockHeight, nil
 }
 
-// getPeers returns the list of connected peer IDs.
+// getPeers returns the IDs of connected peers that advertise NODE_NETWORK
+// (full block service, bit 0). NODE_NETWORK_LIMITED peers only serve the last
+// ~288 blocks and will refuse historical fetches, so they are excluded.
 func getPeers(btcdClient *rpcclient.Client) ([]int32, error) {
 	peers, err := btcdClient.GetPeerInfo()
 	if err != nil {
 		return nil, fmt.Errorf("getpeerinfo failed: %w", err)
 	}
-	ids := make([]int32, len(peers))
-	for i, p := range peers {
-		ids[i] = p.ID
+	const nodeNetwork uint64 = 1
+	ids := make([]int32, 0, len(peers))
+	for _, p := range peers {
+		services, err := strconv.ParseUint(p.Services, 16, 64)
+		if err != nil {
+			continue
+		}
+		if services&nodeNetwork != 0 {
+			ids = append(ids, p.ID)
+		}
 	}
 	return ids, nil
 }
 
 // requestBlockFromPeer sends a getblockfrompeer request for a single block hash.
 func requestBlockFromPeer(btcdClient *rpcclient.Client, blockHash *chainhash.Hash, peerID int32) error {
+	// json.Marshal cannot fail on a string or int — these are infallible.
 	hashJSON, _ := json.Marshal(blockHash.String())
 	peerJSON, _ := json.Marshal(peerID)
 	_, err := btcdClient.RawRequest("getblockfrompeer", []json.RawMessage{hashJSON, peerJSON})
@@ -272,8 +284,9 @@ func requestBlockFromPeer(btcdClient *rpcclient.Client, blockHash *chainhash.Has
 }
 
 // fetchPrunedBlocks requests multiple pruned blocks from peers in batch, then
-// polls until all arrive. Tries up to 3 peers, falling back if one times out.
-func fetchPrunedBlocks(btcdClient *rpcclient.Client, blockHashes []*chainhash.Hash) error {
+// polls until all arrive. Tries up to 3 archive (NODE_NETWORK) peers, falling
+// back if one times out. The provided context controls cancellation on shutdown.
+func fetchPrunedBlocks(ctx context.Context, btcdClient *rpcclient.Client, blockHashes []*chainhash.Hash) error {
 	if len(blockHashes) == 0 {
 		return nil
 	}
@@ -283,7 +296,9 @@ func fetchPrunedBlocks(btcdClient *rpcclient.Client, blockHashes []*chainhash.Ha
 		return err
 	}
 	if len(peers) == 0 {
-		return errors.New("no connected peers to fetch pruned blocks from")
+		btcLogger.Warn("no archive (NODE_NETWORK) peers connected — cannot fetch pruned blocks. " +
+			"Add an archive peer via addnode=<ip> in bitcoind config")
+		return errors.New("no archive (NODE_NETWORK) peers connected to fetch pruned blocks from")
 	}
 
 	maxPeers := len(peers)
@@ -292,7 +307,7 @@ func fetchPrunedBlocks(btcdClient *rpcclient.Client, blockHashes []*chainhash.Ha
 	}
 
 	for p := 0; p < maxPeers; p++ {
-		// Request all blocks from this peer.
+		// Request all remaining blocks from this peer.
 		for _, hash := range blockHashes {
 			if err := requestBlockFromPeer(btcdClient, hash, peers[p]); err != nil {
 				btcLogger.Debug("getblockfrompeer request failed", "hash", hash, "peer", peers[p], "err", err)
@@ -301,7 +316,11 @@ func fetchPrunedBlocks(btcdClient *rpcclient.Client, blockHashes []*chainhash.Ha
 
 		// Poll until all blocks arrive (up to 10s per peer attempt).
 		for i := 0; i < 10; i++ {
-			time.Sleep(1 * time.Second)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(1 * time.Second):
+			}
 			remaining := make([]*chainhash.Hash, 0)
 			for _, hash := range blockHashes {
 				_, err := btcdClient.GetBlock(hash)
@@ -319,6 +338,7 @@ func fetchPrunedBlocks(btcdClient *rpcclient.Client, blockHashes []*chainhash.Ha
 			blockHashes = remaining
 		}
 	}
+	btcLogger.Warn("giving up on pruned block recovery", "remaining", len(blockHashes), "peersAttempted", maxPeers)
 	return fmt.Errorf("%d blocks still unavailable after trying %d peers", len(blockHashes), maxPeers)
 }
 
