@@ -462,11 +462,16 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 		VersionID:          announcements.VersionId,
 		LastProcessedBlock: model.Uint64(head),
 		Epoch:              model.Uint64(election.Epoch),
+		ChainOracles:       []ChainOracleStatus{},
 	}
 	if r.ChainOracle != nil {
-		if height, err := r.ChainOracle.GetChainBlockHeight("BTC"); err == nil {
-			h := model.Uint64(height)
-			info.BtcBlockHeight = &h
+		for _, cs := range r.ChainOracle.GetAllChainStatuses() {
+			status := ChainOracleStatus{Symbol: cs.Symbol}
+			if cs.BlockHeight != nil {
+				h := model.Uint64(*cs.BlockHeight)
+				status.BlockHeight = &h
+			}
+			info.ChainOracles = append(info.ChainOracles, status)
 		}
 	}
 	return info, nil
