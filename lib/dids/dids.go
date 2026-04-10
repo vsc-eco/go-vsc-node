@@ -34,13 +34,7 @@ func Parse(did string, includeBLS ...bool) (DID, error) {
 
 	var res DID
 
-	res, err := ParseKeyDID(did)
-	if err == nil {
-		return res, nil
-	}
-	errs = append(errs, err)
-
-	res, err = ParseEthDID(did)
+	res, err := ParseEthDID(did)
 	if err == nil {
 		return res, nil
 	}
