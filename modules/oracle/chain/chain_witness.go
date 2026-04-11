@@ -49,7 +49,7 @@ func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (*chainRelayRespo
 	// Independently fetch the same blocks from our own RPC
 	count := (endBlock - startBlock) + 1
 	chainDataStart := time.Now()
-	blocks, err := chain.ChainData(startBlock, count)
+	blocks, err := chain.ChainData(c.ctx, startBlock, count)
 	c.logger.Debug("witness chain data fetch",
 		"symbol", chainSymbol,
 		"blocks", count,
