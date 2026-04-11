@@ -74,6 +74,10 @@ type Config struct {
 	// EnableBitcoind starts the bitcoind regtest service alongside the
 	// devnet. Required for oracle chain-relay tests.
 	EnableBitcoind bool
+	// BitcoindRPCPort is the host port exposed for the archive bitcoind's
+	// JSON-RPC. Used by tests that need direct RPC access from Go (e.g.
+	// creating large transactions for pruning tests). Defaults to 18543.
+	BitcoindRPCPort int
 }
 
 // DefaultConfig returns a Config with sensible defaults for testing.
@@ -97,7 +101,8 @@ func DefaultConfig() *Config {
 		PgBouncerImage: "registry.gitlab.syncad.com/hive/haf_api_node/pgbouncer",
 		DroneImage:     "registry.gitlab.syncad.com/hive/drone",
 		DronePort:      19000,
-		BitcoindImage:  "bitcoin/bitcoin:29.3",
+		BitcoindImage:   "bitcoin/bitcoin:29.3",
+		BitcoindRPCPort: 18543,
 	}
 }
 

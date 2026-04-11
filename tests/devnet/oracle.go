@@ -68,6 +68,39 @@ func (d *Devnet) WriteOracleConfigs(ctx context.Context) error {
 	return nil
 }
 
+// WriteOracleConfigsForHost is like WriteOracleConfigs but points the BTC
+// chain at a specific RPC host (e.g. "bitcoind-pruned:18443") instead of
+// the default archive bitcoind.
+func (d *Devnet) WriteOracleConfigsForHost(ctx context.Context, rpcHost string) error {
+	cfg := oracleConfigJSON{
+		Chains: map[string]chainRpcConfigJSON{
+			"BTC": {
+				RpcHost: rpcHost,
+				RpcUser: "vsc-node-user",
+				RpcPass: "vsc-node-pass",
+			},
+		},
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling oracle config: %w", err)
+	}
+
+	for i := 1; i <= d.cfg.Nodes; i++ {
+		nodeDir := filepath.Join(d.devnetDir, fmt.Sprintf("data-%d", i), "config")
+		if err := os.MkdirAll(nodeDir, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", nodeDir, err)
+		}
+		path := filepath.Join(nodeDir, "oracleConfig.json")
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", path, err)
+		}
+		log.Printf("[devnet] wrote oracle config for magi-%d -> %s", i, rpcHost)
+	}
+	return nil
+}
+
 // SetOracleContractIDs updates the SysConfigOverrides JSON file in-place
 // to set OracleParams.ChainContracts to the provided map. Must be called
 // while the devnet is running. Magi nodes only re-read the sysconfig file
