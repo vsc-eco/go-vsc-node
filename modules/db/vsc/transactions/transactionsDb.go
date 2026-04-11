@@ -208,6 +208,25 @@ func (e *transactions) InvalidateCompetingTransactions(requiredAuths []string, n
 	return result.ModifiedCount, nil
 }
 
+// HasUnconfirmedWithNonce checks if an UNCONFIRMED transaction exists
+// with the given required_auths and nonce.
+func (e *transactions) HasUnconfirmedWithNonce(requiredAuths []string, nonce uint64) (bool, error) {
+	filter := bson.M{
+		"status": string(TransactionStatusUnconfirmed),
+		"required_auths": bson.M{
+			"$all":  requiredAuths,
+			"$size": len(requiredAuths),
+		},
+		"nonce": nonce,
+	}
+
+	count, err := e.CountDocuments(context.Background(), filter)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // Searches for unconfirmed VSC transactions with no verification
 // Provide height for expiration filtering
 func (e *transactions) FindUnconfirmedTransactions(height uint64) ([]TransactionRecord, error) {

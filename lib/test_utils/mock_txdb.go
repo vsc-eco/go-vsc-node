@@ -93,6 +93,36 @@ func (m *MockTxDb) InvalidateCompetingTransactions(requiredAuths []string, nonce
 	return count, nil
 }
 
+func (m *MockTxDb) HasUnconfirmedWithNonce(requiredAuths []string, nonce uint64) (bool, error) {
+	authSet := make(map[string]bool, len(requiredAuths))
+	for _, a := range requiredAuths {
+		authSet[a] = true
+	}
+
+	for _, rec := range m.Records {
+		if rec.Status != transactions.TransactionStatusUnconfirmed {
+			continue
+		}
+		if int64(nonce) != rec.Nonce {
+			continue
+		}
+		if len(rec.RequiredAuths) != len(requiredAuths) {
+			continue
+		}
+		match := true
+		for _, a := range rec.RequiredAuths {
+			if !authSet[a] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *MockTxDb) FindUnconfirmedTransactions(height uint64) ([]transactions.TransactionRecord, error) {
 	var results []transactions.TransactionRecord
 	for _, rec := range m.Records {
