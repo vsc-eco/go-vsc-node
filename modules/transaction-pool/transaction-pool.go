@@ -29,6 +29,11 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
+// TxProcessingGate is implemented by StateEngine to block offchain txs during recovery suspension.
+type TxProcessingGate interface {
+	ProcessingSuspendedForPool() bool
+}
+
 type TransactionPool struct {
 	TxDb       transactions.Transactions
 	nonceDb    nonces.Nonces
@@ -41,6 +46,8 @@ type TransactionPool struct {
 	electionDb elections.Elections
 
 	conf common.IdentityConfig
+
+	processingGate TxProcessingGate
 }
 
 type IngestOptions struct {
@@ -51,6 +58,9 @@ var MAX_TX_SIZE = 16384
 
 // Ingests and verifies a transaction
 func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...IngestOptions) (*cid.Cid, error) {
+	if tp.processingGate != nil && tp.processingGate.ProcessingSuspendedForPool() {
+		return nil, errors.New("vsc transaction processing suspended until recovery multisig posts vsc.recovery_require_version")
+	}
 	if sTx.Sig == nil {
 		return nil, errors.New("no signature provided")
 	}
@@ -443,7 +453,7 @@ func (tp *TransactionPool) Stop() error {
 	return tp.stopP2P()
 }
 
-func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, nonceDb nonces.Nonces, electionDb elections.Elections, hiveBlocks hive_blocks.HiveBlocks, da *datalayer.DataLayer, conf common.IdentityConfig, rcSystem *rcSystem.RcSystem) *TransactionPool {
+func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, nonceDb nonces.Nonces, electionDb elections.Elections, hiveBlocks hive_blocks.HiveBlocks, da *datalayer.DataLayer, conf common.IdentityConfig, rcSystem *rcSystem.RcSystem, gate TxProcessingGate) *TransactionPool {
 	return &TransactionPool{
 		TxDb:       txDb,
 		nonceDb:    nonceDb,
@@ -453,6 +463,7 @@ func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, nonceDb nonces.N
 		hiveBlocks: hiveBlocks,
 		rcs:        rcSystem,
 		electionDb: electionDb,
+		processingGate: gate,
 	}
 }
 

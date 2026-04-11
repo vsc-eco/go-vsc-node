@@ -129,6 +129,17 @@ type ConsensusParams struct {
 	// verbatim behavior) — the correct default until an operator pins the
 	// activation height for a deploy.
 	EvmAddressChecksumHeight uint64 `json:"evmAddressChecksumHeight,omitempty"`
+
+	// RecoveryMultisigAccounts are Hive account names (no hive: prefix) authorized to post
+	// vsc.recovery_suspend and vsc.recovery_require_version.
+	RecoveryMultisigAccounts []string `json:"recoveryMultisigAccounts,omitempty"`
+	// RecoveryMultisigThreshold is M in M-of-N (distinct accounts from RecoveryMultisigAccounts in required_auths).
+	RecoveryMultisigThreshold int `json:"recoveryMultisigThreshold,omitempty"`
+	// ConsensusVersionActivationNum/Den is the stake fraction (Num/Den) of the current committee
+	// that must already announce a scheduled target version before it activates at its epoch.
+	// Defaults to 4/5 (80%) when unset.
+	ConsensusVersionActivationNum uint64 `json:"consensusVersionActivationNum,omitempty"`
+	ConsensusVersionActivationDen uint64 `json:"consensusVersionActivationDen,omitempty"`
 }
 
 // ───── Named activation predicates (Ethereum ChainConfig style) ─────
