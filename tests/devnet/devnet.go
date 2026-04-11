@@ -283,7 +283,13 @@ func (d *Devnet) Stop() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	if err := d.compose(ctx, "down", "-v", "--remove-orphans"); err != nil {
+	// Include all profiles so compose down also tears down profile-gated
+	// services (bitcoind, bitcoind-pruned). No-op if they weren't started.
+	if err := d.compose(ctx,
+		"--profile", "bitcoind",
+		"--profile", "bitcoind-pruned",
+		"down", "-v", "--remove-orphans",
+	); err != nil {
 		log.Printf("[devnet] warning: compose down failed: %v", err)
 	}
 

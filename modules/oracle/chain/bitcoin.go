@@ -181,9 +181,11 @@ func (b *bitcoinRelayer) ChainData(
 
 	// Batch-fetch any pruned blocks from peers, then retry.
 	if len(prunedHashes) > 0 {
+		btcLogger.Info("recovering pruned blocks from peers", "count", len(prunedHashes))
 		if err := fetchPrunedBlocks(context.Background(), btcdClient, prunedHashes); err != nil {
 			return nil, fmt.Errorf("failed to recover pruned blocks: %w", err)
 		}
+		btcLogger.Info("pruned blocks recovered successfully", "count", len(prunedHashes))
 		for _, idx := range prunedIndices {
 			entry := entries[idx]
 			btcBlock, err := getBlockByHash(btcdClient, entry.hash, entry.height)
