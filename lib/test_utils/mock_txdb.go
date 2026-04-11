@@ -85,8 +85,7 @@ func (m *MockTxDb) InvalidateCompetingTransactions(requiredAuths []string, nonce
 			}
 		}
 		if match {
-			rec.Status = transactions.TransactionStatusDropped
-			m.Records[id] = rec
+			delete(m.Records, id)
 			count++
 		}
 	}
