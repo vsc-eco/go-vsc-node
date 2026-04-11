@@ -10,4 +10,5 @@ type Transactions interface {
 	FindTransactions(ids []string, id *string, account *string, contract *string, status *TransactionStatus, byType []string, ledgerToFrom *string, ledgerTypes []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TransactionRecord, error)
 	FindUnconfirmedTransactions(height uint64) ([]TransactionRecord, error)
 	InvalidateCompetingTransactions(requiredAuths []string, nonces []uint64) (int64, error)
+	HasUnconfirmedWithNonce(requiredAuths []string, nonce uint64) (bool, error)
 }
