@@ -1060,6 +1060,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			log.Verbose("signing gossip readiness set",
 				"sessionId", sessionId, "readyCount", len(signReadyAccounts))
 
+			minSignVer := tssMgr.scheduler.TssMinimumConsensusVersion(bh)
 			filtered := make([]Participant, 0, len(participants))
 			for _, p := range participants {
 				if signBlamedAccounts[p.Account] {
@@ -1072,6 +1073,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 				if !signReadyAccounts[p.Account] {
 					log.Verbose("excluding non-ready node from signing", "sessionId", sessionId, "account", p.Account)
+					continue
+				}
+				w, werr := tssMgr.witnessDb.GetWitnessAtHeight(p.Account, &bh)
+				if werr != nil || !stateEngine.WitnessMeetsEffectiveMinimum(w, minSignVer) {
+					log.Verbose("excluding node failing version gate from signing", "sessionId", sessionId, "account", p.Account)
 					continue
 				}
 				filtered = append(filtered, p)
@@ -1220,6 +1226,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			log.Verbose("gossip readiness set",
 				"sessionId", sessionId, "readyCount", len(readyAccounts))
 
+			minReshareVer := tssMgr.scheduler.TssMinimumConsensusVersion(bh)
+
 			// Decode commitment bitset for old committee membership
 			commitmentBytes, err := base64.RawURLEncoding.DecodeString(commitment.Commitment)
 			bitset := new(big.Int).SetBytes(commitmentBytes)
@@ -1241,6 +1249,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					// On-chain readiness gate: only include if node broadcast readiness
 					if !readyAccounts[member.Account] {
 						log.Verbose("excluding non-ready node from old committee", "sessionId", sessionId, "account", member.Account)
+						continue
+					}
+					ow, owErr := tssMgr.witnessDb.GetWitnessAtHeight(member.Account, &bh)
+					if owErr != nil || !stateEngine.WitnessMeetsEffectiveMinimum(ow, minReshareVer) {
+						log.Verbose("excluding old committee node failing version gate", "sessionId", sessionId, "account", member.Account)
 						continue
 					}
 					commitedMembers = append(commitedMembers, Participant{
@@ -1267,6 +1280,12 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				if !readyAccounts[member.Account] {
 					excludedNodes = append(excludedNodes, member.Account)
 					log.Verbose("excluding non-ready node from new committee", "sessionId", sessionId, "account", member.Account)
+					continue
+				}
+				nw, nwErr := tssMgr.witnessDb.GetWitnessAtHeight(member.Account, &bh)
+				if nwErr != nil || !stateEngine.WitnessMeetsEffectiveMinimum(nw, minReshareVer) {
+					excludedNodes = append(excludedNodes, member.Account)
+					log.Verbose("excluding new committee node failing version gate", "sessionId", sessionId, "account", member.Account)
 					continue
 				}
 				newParticipants = append(newParticipants, Participant{

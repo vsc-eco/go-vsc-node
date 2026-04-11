@@ -255,6 +255,10 @@ type LocalNodeInfo {
   last_processed_block: Uint64!
   """Current consensus epoch."""
   epoch: Uint64!
+  """Consensus triple display (major.consensus.non_consensus), provisional -p during recovery suspension."""
+  consensus_version_display: String!
+  """True while chain processing is suspended until recovery multisig clears the gate."""
+  processing_suspended: Boolean!
   """Status of each registered chain oracle."""
   chain_oracles: [ChainOracleStatus!]!
 }
@@ -291,6 +295,10 @@ type Witness {
   peer_id: String
   """Magi protocol version supported by the witness."""
   protocol_version: Uint64!
+  """Major component of major.consensus.non_consensus."""
+  version_major: Uint64!
+  """Non-consensus component (optional behavior); may differ without excluding the witness."""
+  version_non_consensus: Uint64!
   """Timestamp of the witness registration or last update."""
   ts: String
   """Transaction ID of the witness registration or last update."""
@@ -433,6 +441,10 @@ type ElectionResult {
   weights: [Uint64!]!
   """Protocol version at the time of election."""
   protocol_version: Uint64!
+  """Major component at election time."""
+  version_major: Uint64!
+  """Non-consensus component at election time."""
+  version_non_consensus: Uint64!
   """Total combined weight of all elected members."""
   total_weight: Uint64!
   """Block height at which the election was finalized."""

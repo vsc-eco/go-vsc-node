@@ -568,6 +568,66 @@ func (tx *TxElectionResult) ToData() map[string]interface{} {
 	}
 }
 
+// TxProposeConsensusVersion proposes a target triple; adoption requires stake-weighted witness readiness.
+type TxProposeConsensusVersion struct {
+	Self          TxSelf
+	NetId         string `json:"net_id"`
+	Major         uint64 `json:"major"`
+	Consensus     uint64 `json:"consensus"`
+	NonConsensus uint64 `json:"non_consensus"`
+}
+
+func (tx TxProposeConsensusVersion) Type() string {
+	return "propose_consensus_version"
+}
+
+func (tx TxProposeConsensusVersion) TxSelf() TxSelf {
+	return tx.Self
+}
+
+func (tx *TxProposeConsensusVersion) ExecuteTx(se *StateEngine) {
+	se.executeProposeConsensusVersion(tx)
+}
+
+// TxRecoverySuspend sets chain-global processing suspension until recovery_require_version (multisig only).
+type TxRecoverySuspend struct {
+	Self TxSelf
+}
+
+func (tx TxRecoverySuspend) Type() string {
+	return "recovery_suspend"
+}
+
+func (tx TxRecoverySuspend) TxSelf() TxSelf {
+	return tx.Self
+}
+
+func (tx *TxRecoverySuspend) ExecuteTx(se *StateEngine) {
+	se.executeRecoverySuspend(tx)
+}
+
+// TxRecoveryRequireVersion clears suspension and sets adopted / minimum version (multisig only).
+type TxRecoveryRequireVersion struct {
+	Self          TxSelf
+	Major         uint64 `json:"major"`
+	Consensus     uint64 `json:"consensus"`
+	NonConsensus uint64 `json:"non_consensus"`
+	Reason        string `json:"reason,omitempty"`
+	CheckpointRef string `json:"checkpoint_ref,omitempty"`
+}
+
+func (tx TxRecoveryRequireVersion) Type() string {
+	return "recovery_require_version"
+}
+
+func (tx TxRecoveryRequireVersion) TxSelf() TxSelf {
+	return tx.Self
+}
+
+func (tx *TxRecoveryRequireVersion) ExecuteTx(se *StateEngine) {
+	se.executeRecoveryRequireVersion(tx)
+}
+
 type TxProposeBlock struct {
 	Self TxSelf
 

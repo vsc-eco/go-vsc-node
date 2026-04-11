@@ -143,7 +143,9 @@ type payloadVscNode struct {
 	Ts              string   `json:"ts"`
 	VersionId       string   `json:"version_id"`
 	GitCommit       string   `json:"git_commit"`
+	VersionMajor    uint64   `json:"version_major"`
 	ProtocolVersion uint64   `json:"protocol_version"`
+	VersionNonConsensus uint64 `json:"version_non_consensus"`
 	GatewayKey      string   `json:"gateway_key"`
 	Witness         struct {
 		Enabled bool `json:"enabled"`
@@ -255,7 +257,9 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 			Ts:              time.Now().Format(time.RFC3339),
 			GitCommit:       GitCommit,
 			VersionId:       VersionId, //Use standard versioning
-			ProtocolVersion: 0,         //Protocol 0 until protocol 1 is finalized.
+			VersionMajor:    0,
+			ProtocolVersion: 0, // consensus component until finalized
+			VersionNonConsensus: 0,
 			GatewayKey:      *gatewayKP.GetPublicKeyString(),
 			Witness: struct {
 				Enabled bool `json:"enabled"`

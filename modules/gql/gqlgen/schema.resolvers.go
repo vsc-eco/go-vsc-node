@@ -159,6 +159,16 @@ func (r *electionResultResolver) ProtocolVersion(ctx context.Context, obj *elect
 	return model.Uint64(obj.ProtocolVersion), nil
 }
 
+// VersionMajor is the resolver for the version_major field.
+func (r *electionResultResolver) VersionMajor(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error) {
+	return model.Uint64(obj.VersionMajor), nil
+}
+
+// VersionNonConsensus is the resolver for the version_non_consensus field.
+func (r *electionResultResolver) VersionNonConsensus(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error) {
+	return model.Uint64(obj.VersionNonConsensus), nil
+}
+
 // TotalWeight is the resolver for the total_weight field.
 func (r *electionResultResolver) TotalWeight(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error) {
 	return model.Uint64(obj.TotalWeight), nil
@@ -458,11 +468,13 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 		return nil, electionErr
 	}
 	info := &LocalNodeInfo{
-		GitCommit:          announcements.GitCommit,
-		VersionID:          announcements.VersionId,
-		LastProcessedBlock: model.Uint64(head),
-		Epoch:              model.Uint64(election.Epoch),
-		ChainOracles:       []ChainOracleStatus{},
+		GitCommit:                 announcements.GitCommit,
+		VersionID:                 announcements.VersionId,
+		LastProcessedBlock:        model.Uint64(head),
+		Epoch:                     model.Uint64(election.Epoch),
+		ConsensusVersionDisplay:   r.StateEngine.DisplayConsensusVersion(),
+		ProcessingSuspended:       r.StateEngine.ProcessingSuspendedForPool(),
+		ChainOracles:              []ChainOracleStatus{},
 	}
 	if r.ChainOracle != nil {
 		for _, cs := range r.ChainOracle.GetAllChainStatuses() {
@@ -891,6 +903,16 @@ func (r *witnessResolver) Height(ctx context.Context, obj *witnesses.Witness) (m
 // ProtocolVersion is the resolver for the protocol_version field.
 func (r *witnessResolver) ProtocolVersion(ctx context.Context, obj *witnesses.Witness) (model.Uint64, error) {
 	return model.Uint64(obj.ProtocolVersion), nil
+}
+
+// VersionMajor is the resolver for the version_major field.
+func (r *witnessResolver) VersionMajor(ctx context.Context, obj *witnesses.Witness) (model.Uint64, error) {
+	return model.Uint64(obj.VersionMajor), nil
+}
+
+// VersionNonConsensus is the resolver for the version_non_consensus field.
+func (r *witnessResolver) VersionNonConsensus(ctx context.Context, obj *witnesses.Witness) (model.Uint64, error) {
+	return model.Uint64(obj.VersionNonConsensus), nil
 }
 
 // Bn is the resolver for the bn field.
