@@ -187,6 +187,71 @@ func (d *Devnet) BitcoindPrunedRPCHostPort() string {
 	return "bitcoind-pruned:18443"
 }
 
+// ── Mainnet-pruned bitcoind helpers ──────────────────────────────────────
+
+// StartBitcoindMainnetPruned starts a mainnet bitcoind with -prune=550 that
+// connects to real Bitcoin peers via DNS seeds. Mainnet blocks are large
+// enough that auto-pruning kicks in within a few minutes of IBD, making
+// this a reliable way to test the pruned-block recovery path without
+// needing to generate artificial block data.
+func (d *Devnet) StartBitcoindMainnetPruned(ctx context.Context) error {
+	if err := d.compose(ctx, "--profile", "bitcoind-mainnet-pruned", "up", "-d", "bitcoind-mainnet-pruned"); err != nil {
+		return fmt.Errorf("starting bitcoind-mainnet-pruned: %w", err)
+	}
+	if err := d.waitForService(ctx, "bitcoind-mainnet-pruned", 2*time.Minute); err != nil {
+		return fmt.Errorf("bitcoind-mainnet-pruned health check: %w", err)
+	}
+	return nil
+}
+
+// bitcoinCliMainnet runs bitcoin-cli inside the mainnet-pruned container.
+// Note: no -regtest flag.
+func (d *Devnet) bitcoinCliMainnet(ctx context.Context, args ...string) (string, error) {
+	full := append([]string{
+		"exec", "bitcoind-mainnet-pruned",
+		"bitcoin-cli",
+		"-rpcport=18443",
+		"-rpcuser=vsc-node-user", "-rpcpassword=vsc-node-pass",
+	}, args...)
+	out, err := d.composeOutput(ctx, full...)
+	return strings.TrimSpace(out), err
+}
+
+// BitcoindMainnetPrunedRPCHostPort returns the docker-internal RPC endpoint
+// for the mainnet-pruned bitcoind.
+func (d *Devnet) BitcoindMainnetPrunedRPCHostPort() string {
+	return "bitcoind-mainnet-pruned:18443"
+}
+
+// WaitForMainnetPruning polls getblockchaininfo on the mainnet-pruned node
+// until pruneheight > 0 (meaning auto-pruning has kicked in and early blocks
+// are no longer available). Returns the prune height.
+func (d *Devnet) WaitForMainnetPruning(ctx context.Context, timeout time.Duration) (uint64, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := d.bitcoinCliMainnet(ctx, "getblockchaininfo")
+		if err == nil {
+			var info struct {
+				Blocks      uint64 `json:"blocks"`
+				PruneHeight uint64 `json:"pruneheight"`
+			}
+			if jsonErr := json.Unmarshal([]byte(out), &info); jsonErr == nil && info.PruneHeight > 0 {
+				return info.PruneHeight, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return 0, fmt.Errorf("mainnet pruning never started within %v", timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(15 * time.Second):
+		}
+	}
+}
+
+// ── Regtest block data fill ─────────────────────────────────────────────
+
 // FillBlockData generates enough block data on the archive bitcoind to
 // exceed 550 MB (the minimum before pruneblockchain will prune). It runs
 // a shell loop inside the container to avoid per-RPC docker exec overhead,

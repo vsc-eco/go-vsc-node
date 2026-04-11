@@ -279,6 +279,33 @@ services:
       retries: 20
       start_period: 30s
 
+  # bitcoind on mainnet with auto-pruning at the minimum 550 MB. Used by the
+  # pruned-block-fetch test — mainnet blocks are already large enough that
+  # pruning kicks in within a few minutes of IBD, avoiding the need to
+  # generate artificial block data. Connected mainnet peers provide the
+  # archive (NODE_NETWORK) source for getblockfrompeer recovery.
+  bitcoind-mainnet-pruned:
+    image: ${BITCOIND_IMAGE}
+    profiles: ["bitcoind-mainnet-pruned"]
+    command:
+      - bitcoind
+      - -server=1
+      - -prune=550
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcport=18443
+      - -rpcuser=vsc-node-user
+      - -rpcpassword=vsc-node-pass
+      - -printtoconsole=1
+    networks:
+      - devnet
+    healthcheck:
+      test: ["CMD-SHELL", "bitcoin-cli -rpcport=18443 -rpcuser=vsc-node-user -rpcpassword=vsc-node-pass getblockchaininfo > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
 volumes:
   db: {}
 
