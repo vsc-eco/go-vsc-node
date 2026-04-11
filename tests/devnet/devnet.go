@@ -288,6 +288,7 @@ func (d *Devnet) Stop() error {
 	if err := d.compose(ctx,
 		"--profile", "bitcoind",
 		"--profile", "bitcoind-pruned",
+		"--profile", "bitcoind-mainnet-pruned",
 		"down", "-v", "--remove-orphans",
 	); err != nil {
 		log.Printf("[devnet] warning: compose down failed: %v", err)
