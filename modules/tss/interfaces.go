@@ -1,6 +1,7 @@
 package tss
 
 import (
+	"vsc-node/modules/common/consensusversion"
 	stateEngine "vsc-node/modules/state-processing"
 	tss_helpers "vsc-node/modules/tss/helpers"
 
@@ -49,4 +50,6 @@ type partyConfig struct {
 
 type GetScheduler interface {
 	GetSchedule(slotHeight uint64) []stateEngine.WitnessSlot
+	// TssMinimumConsensusVersion is the minimum major/consensus triple for TSS at this Hive height.
+	TssMinimumConsensusVersion(blockHeight uint64) consensusversion.Version
 }

@@ -20,6 +20,7 @@ import (
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
@@ -68,6 +69,10 @@ func (mes *MockElectionSystem) GetSchedule(blockHeight uint64) []stateEngine.Wit
 		})
 	}
 	return list
+}
+
+func (mes *MockElectionSystem) TssMinimumConsensusVersion(uint64) consensusversion.Version {
+	return consensusversion.Version{}
 }
 
 type nodeComponents struct {

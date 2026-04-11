@@ -19,6 +19,8 @@ type ElectionDataInfo struct {
 	Members         []ElectionMember `json:"members" graphql:"members" refmt:"members" bson:"members"`
 	Weights         []uint64         `json:"weights" graphql:"weights" refmt:"weights" bson:"weights"`
 	ProtocolVersion uint64           `json:"protocol_version" graphql:"protocol_version" refmt:"protocol_version" bson:"protocol_version"`
+	VersionMajor    uint64           `json:"version_major" graphql:"version_major" refmt:"version_major" bson:"version_major,omitempty"`
+	VersionNonConsensus uint64       `json:"version_non_consensus" graphql:"version_non_consensus" refmt:"version_non_consensus" bson:"version_non_consensus,omitempty"`
 }
 type ElectionData struct {
 	ElectionCommonInfo
@@ -43,6 +45,8 @@ type ElectionResultRecord struct {
 	Members         []ElectionMember `json:"members" graphql:"members" refmt:"members" bson:"members"`
 	Weights         []uint64         `json:"weights" graphql:"weights" refmt:"weights" bson:"weights"`
 	ProtocolVersion uint64           `json:"protocol_version" graphql:"protocol_version" refmt:"protocol_version" bson:"protocol_version"`
+	VersionMajor    uint64           `json:"version_major" graphql:"version_major" refmt:"version_major" bson:"version_major,omitempty"`
+	VersionNonConsensus uint64     `json:"version_non_consensus" graphql:"version_non_consensus" refmt:"version_non_consensus" bson:"version_non_consensus,omitempty"`
 	TotalWeight     uint64           `json:"total_weight" graphql:"total_weight" refmt:"total_weight" bson:"total_weight"`
 	BlockHeight     uint64           `json:"block_height" graphql:"block_height" refmt:"block_height" bson:"block_height"`
 	Proposer        string           `json:"proposer" graphql:"proposer" refmt:"proposer" bson:"proposer"`

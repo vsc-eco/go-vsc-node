@@ -17,6 +17,7 @@ import (
 	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -185,11 +186,18 @@ func (e *electionProposer) GenerateElectionAtBlock(blk uint64) (elections.Electi
 		return elections.ElectionHeader{}, elections.ElectionData{}, err
 	}
 
+	var prevEpoch uint64
+	var prevVer consensusversion.Version
+	if err == nil {
+		prevEpoch = electionResult.Epoch
+		prevVer = elections.ResultVersion(electionResult)
+	}
+
 	// TODO: Add a way to get the witness active score
 	// const scoreChart = await this.self.witness.getWitnessActiveScore(blk)
 	// scoreChart := map[string]uint64{}
 
-	return e.GenerateFullElection(witnesses, electionResult.Epoch, electionResult.ProtocolVersion, blk)
+	return e.GenerateFullElection(witnesses, prevEpoch, prevVer, blk)
 }
 
 const DEFAULT_NEW_NODE_WEIGHT = uint64(10)
@@ -203,11 +211,14 @@ const VSC_ELECTION_TX_ID = "vsc.election_result"
 func (e *electionProposer) GenerateFullElection(
 	witnessList []witnesses.Witness,
 	previousEpoch uint64,
-	consensusVersion uint64,
+	prevVersion consensusversion.Version,
 	blockHeight uint64,
 ) (elections.ElectionHeader, elections.ElectionData, error) {
+	adopted := e.se.TssMinimumConsensusVersion(blockHeight)
+	effective := consensusversion.MaxComponentwise(prevVersion, adopted)
+
 	witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
-		return w.ProtocolVersion < consensusVersion
+		return !w.ConsensusVersionTriple().MeetsConsensusMin(effective)
 	})
 
 	// ensure the list is in a deterministic order
@@ -313,7 +324,9 @@ func (e *electionProposer) GenerateFullElection(
 	}
 	electionData.Members = members
 	electionData.NetId = e.sconf.NetId()
-	electionData.ProtocolVersion = consensusVersion
+	electionData.ProtocolVersion = effective.Consensus
+	electionData.VersionMajor = effective.Major
+	electionData.VersionNonConsensus = effective.NonConsensus
 	electionData.Weights = weights
 	electionData.Type = pType
 	cid, err := electionData.Cid()

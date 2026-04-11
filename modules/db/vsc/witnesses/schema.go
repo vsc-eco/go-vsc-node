@@ -8,7 +8,10 @@ type Witness struct {
 	GitCommit        string            `json:"git_commit" bson:"git_commit"`
 	NetId            string            `json:"net_id" bson:"net_id"`
 	PeerId           string            `json:"peer_id" bson:"peer_id"`
-	ProtocolVersion  uint64            `json:"protocol_version" bson:"protocol_version"`
+	// VersionMajor with ProtocolVersion (consensus) and VersionNonConsensus form major.consensus.non_consensus.
+	VersionMajor        uint64 `json:"version_major" bson:"version_major,omitempty"`
+	ProtocolVersion     uint64 `json:"protocol_version" bson:"protocol_version"`
+	VersionNonConsensus uint64 `json:"version_non_consensus" bson:"version_non_consensus,omitempty"`
 	Ts               string            `json:"ts" bson:"ts"`
 	TxId             string            `json:"tx_id" bson:"tx_id"`
 	VersionId        string            `json:"version_id" bson:"version_id"`
@@ -36,7 +39,10 @@ type PostingJsonMetadataVscNode struct {
 	Ts              string   `json:"ts"`
 	GitCommit       string   `json:"git_commit"`
 	VersionId       string   `json:"version_id" bson:"version_id"`
+	VersionMajor    uint64   `json:"version_major"`
 	ProtocolVersion uint64   `json:"protocol_version"`
+	// Non-consensus component; may differ across nodes without excluding them from committee.
+	VersionNonConsensus uint64 `json:"version_non_consensus"`
 	Witness         struct {
 		Enabled bool `json:"enabled"`
 		// Plugins     []string `json:"plugins"`
