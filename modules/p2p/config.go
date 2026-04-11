@@ -6,12 +6,13 @@ import (
 )
 
 type p2pConfig struct {
-	Port             int
-	ServerMode       bool
-	AllowPrivate     bool
-	PubsubBufferSize int
-	Bootnodes        []string
-	AnnounceAddrs    []string
+	Port                    int
+	ServerMode              bool
+	AllowPrivate            bool
+	PubsubBufferSize        int
+	PubsubConcurrencyLimit  int
+	Bootnodes               []string
+	AnnounceAddrs           []string
 }
 
 type p2pConfigStruct struct {
@@ -28,12 +29,13 @@ func NewConfig(dataDir ...string) P2PConfig {
 	}
 
 	return &p2pConfigStruct{config.New(p2pConfig{
-		Port:             10720,
-		ServerMode:       false,
-		AllowPrivate:     false,
-		PubsubBufferSize: 512,
-		Bootnodes:        []string{},
-		AnnounceAddrs:    []string{},
+		Port:                   10720,
+		ServerMode:             false,
+		AllowPrivate:           false,
+		PubsubBufferSize:       512,
+		PubsubConcurrencyLimit: 256,
+		Bootnodes:              []string{},
+		AnnounceAddrs:          []string{},
 	}, dataDirPtr)}
 }
 
@@ -49,6 +51,7 @@ func (pc *p2pConfigStruct) SetOptions(conf p2pConfig) error {
 		pc.ServerMode = conf.ServerMode
 		pc.AllowPrivate = conf.AllowPrivate
 		pc.PubsubBufferSize = conf.PubsubBufferSize
+		pc.PubsubConcurrencyLimit = conf.PubsubConcurrencyLimit
 		pc.Bootnodes = conf.Bootnodes
 		pc.AnnounceAddrs = conf.AnnounceAddrs
 	})
@@ -61,6 +64,11 @@ func (pc *p2pConfigStruct) Init() error {
 	if pc.Get().PubsubBufferSize == 0 {
 		pc.Update(func(c *p2pConfig) {
 			c.PubsubBufferSize = pc.DefaultValue().PubsubBufferSize
+		})
+	}
+	if pc.Get().PubsubConcurrencyLimit == 0 {
+		pc.Update(func(c *p2pConfig) {
+			c.PubsubConcurrencyLimit = pc.DefaultValue().PubsubConcurrencyLimit
 		})
 	}
 	return nil
