@@ -691,6 +691,12 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 	nonceUpdates := make(map[string]uint64)
 
+	type confirmedNonceInfo struct {
+		RequiredAuths []string
+		Nonces        map[uint64]bool
+	}
+	confirmedNonces := make(map[string]*confirmedNonceInfo)
+
 	//At this point of the process a call should be made to state engine
 	//To kick off finalization of the inflight state
 	//Such as transfers, contract calls, etc
@@ -736,6 +742,14 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				nonceUpdates[keyId] = tx.Headers.Nonce
 			}
 
+			if confirmedNonces[keyId] == nil {
+				confirmedNonces[keyId] = &confirmedNonceInfo{
+					RequiredAuths: tx.Headers.RequiredAuths,
+					Nonces:        make(map[uint64]bool),
+				}
+			}
+			confirmedNonces[keyId].Nonces[tx.Headers.Nonce] = true
+
 			txs := tx.ToTransaction()
 			txsToInjest = append(txsToInjest, TxPacket{
 				TxId: tx.Cid().String(),
@@ -758,6 +772,14 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 	for k, v := range nonceUpdates {
 		se.nonceDb.SetNonce(k, v+1)
+	}
+
+	for _, info := range confirmedNonces {
+		nonces := make([]uint64, 0, len(info.Nonces))
+		for n := range info.Nonces {
+			nonces = append(nonces, n)
+		}
+		se.txDb.InvalidateCompetingTransactions(info.RequiredAuths, nonces)
 	}
 
 	se.TxBatch = append(txsToInjest, se.TxBatch...)
