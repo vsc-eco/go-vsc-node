@@ -110,7 +110,7 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 		ctx:         ctx,
 		cancelCtx:   cancel,
 		startStatus: startStatus,
-		semaphore:   make(chan struct{}, 64),
+		semaphore:   make(chan struct{}, p2p.config.Get().PubsubConcurrencyLimit),
 	}
 
 	go func() {
