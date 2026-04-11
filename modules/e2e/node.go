@@ -14,6 +14,7 @@ import (
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
+	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
@@ -132,6 +133,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssKeys := tss_db.NewKeys(vscDb)
 	pendulumSettlementsDb := pendulum_settlements.New(vscDb)
+	consensusStateDb := consensus_state.New(vscDb)
 
 	sysConfig := systemconfig.MocknetConfig()
 	kp := HashSeed([]byte(SEED_PREFIX + input.Username))
@@ -179,13 +181,14 @@ func MakeNode(input MakeNodeInput) *Node {
 		tssCommitments,
 		tssRequests,
 		pendulumSettlementsDb,
+		consensusStateDb,
 		wasm,
 		identityConfig,
 	)
 
 	blockConsumer := blockconsumer.New(se)
 
-	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, datalayer, identityConfig, se.RcSystem)
+	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, datalayer, identityConfig, se.RcSystem, se)
 
 	dbNuker := NewDbNuker(vscDb)
 
@@ -282,6 +285,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		tssKeys,
 		tssRequests,
 		pendulumSettlementsDb,
+		consensusStateDb,
 		dataAvailability,
 		blockConsumer,
 		wasm,

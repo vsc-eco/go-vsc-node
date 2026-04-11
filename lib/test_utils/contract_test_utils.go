@@ -126,9 +126,10 @@ func NewContractTest() ContractTest {
 		&tssKeys,
 		&tssCommitments,
 		&tssRequests,
-		nil,
-		nil,
-		nil,
+		nil, // pendulumSettlementsDb
+		nil, // consensusStateDb
+		nil, // wasm
+		nil, // identityConfig
 	)
 	var blockStatus common_types.BlockStatusGetter
 	p2p := p2pInterface.New(witnessesDb, p2pConfig, idConfig, sysConfig, blockStatus)

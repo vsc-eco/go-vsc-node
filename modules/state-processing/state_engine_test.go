@@ -7,6 +7,7 @@ import (
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
+	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
@@ -49,7 +50,15 @@ type testEnv struct {
 }
 
 func newTestEnv() *testEnv {
-	sysConfig := systemconfig.MocknetConfig()
+	return newTestEnvWithConsensus(nil, nil)
+}
+
+// newTestEnvWithConsensus builds a test environment. If cs is nil, the state engine has no chain consensus store.
+// If sconf is nil, MocknetConfig is used.
+func newTestEnvWithConsensus(cs consensus_state.ConsensusState, sconf systemconfig.SystemConfig) *testEnv {
+	if sconf == nil {
+		sconf = systemconfig.MocknetConfig()
+	}
 
 	witnessesDb := &test_utils.MockWitnessDb{
 		ByAccount: make(map[string]*witnesses.Witness),
@@ -98,12 +107,15 @@ func newTestEnv() *testEnv {
 	}
 
 	se := stateEngine.New(
-		sysConfig, nil,
+		sconf, nil,
 		witnessesDb, electionDb, contractDb, contractState,
 		txDb, ledgerDbImpl, balanceDb, nil,
 		interestClaims, vscBlocksDb, actionsDb, mockRcDb, nonceDb,
-		tssKeys, tssCommitments, tssRequests, nil,
-		nil, nil,
+		tssKeys, tssCommitments, tssRequests,
+		nil, // pendulumSettlementsDb
+		cs,  // consensusStateDb
+		nil, // wasm
+		nil, // identityConfig
 	)
 
 	mockReader := stateEngine.NewMockReader()
