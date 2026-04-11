@@ -67,29 +67,42 @@ type Config struct {
 	DroneImage string
 	// DronePort is the host port exposed for the drone API endpoint.
 	DronePort int
+	// BitcoindImage is the Docker image for the bitcoind regtest service
+	// used by oracle chain-relay tests. Only started when EnableBitcoind
+	// is true.
+	BitcoindImage string
+	// EnableBitcoind starts the bitcoind regtest service alongside the
+	// devnet. Required for oracle chain-relay tests.
+	EnableBitcoind bool
+	// BitcoindRPCPort is the host port exposed for the archive bitcoind's
+	// JSON-RPC. Used by tests that need direct RPC access from Go (e.g.
+	// creating large transactions for pruning tests). Defaults to 18543.
+	BitcoindRPCPort int
 }
 
 // DefaultConfig returns a Config with sensible defaults for testing.
 func DefaultConfig() *Config {
 	return &Config{
-		Nodes:         5,
-		GQLBasePort:   18080,
-		P2PBasePort:   11720, // offset from mainnet/testnet nodes on 10720+
-		MongoPort:     18057,
-		HivePort:      18091,
-		WitnessPrefix: "magi.test",
-		StakeAmount:   "2000.000",
-		LogLevel:      "error,tss=trace",
-		HAFImage:      "registry.gitlab.syncad.com/hive/haf/testnet",
-		MongoImage:    "mongo:8.0.17",
-		SourceDir:     findSourceRoot(),
-		GenesisNode:   5,
-		InitminerWIF:   "5JNHfZYKGaomSFvd4NUdQ9qMcEAC43kujbfjueTHpVapX1Kzq2n",
-		HafahImage:     "registry.gitlab.syncad.com/hive/hafah",
-		PostgRESTImage: "registry.gitlab.syncad.com/hive/haf_api_node/postgrest",
-		PgBouncerImage: "registry.gitlab.syncad.com/hive/haf_api_node/pgbouncer",
-		DroneImage:     "registry.gitlab.syncad.com/hive/drone",
-		DronePort:      19000,
+		Nodes:           5,
+		GQLBasePort:     18080,
+		P2PBasePort:     11720, // offset from mainnet/testnet nodes on 10720+
+		MongoPort:       18057,
+		HivePort:        18091,
+		WitnessPrefix:   "magi.test",
+		StakeAmount:     "2000.000",
+		LogLevel:        "error,tss=trace",
+		HAFImage:        "registry.gitlab.syncad.com/hive/haf/testnet",
+		MongoImage:      "mongo:8.0.17",
+		SourceDir:       findSourceRoot(),
+		GenesisNode:     5,
+		InitminerWIF:    "5JNHfZYKGaomSFvd4NUdQ9qMcEAC43kujbfjueTHpVapX1Kzq2n",
+		HafahImage:      "registry.gitlab.syncad.com/hive/hafah",
+		PostgRESTImage:  "registry.gitlab.syncad.com/hive/haf_api_node/postgrest",
+		PgBouncerImage:  "registry.gitlab.syncad.com/hive/haf_api_node/pgbouncer",
+		DroneImage:      "registry.gitlab.syncad.com/hive/drone",
+		DronePort:       19000,
+		BitcoindImage:   "bitcoin/bitcoin:29.3",
+		BitcoindRPCPort: 18543,
 	}
 }
 

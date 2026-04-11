@@ -206,6 +206,79 @@ services:
     networks:
       - devnet
 
+  # bitcoind in regtest mode for oracle chain-relay tests.
+  # Reachable inside the docker network as bitcoind:18443
+  # (regtest JSON-RPC port). Optional — gated by the BITCOIND profile so
+  # tests that don't need it skip the startup cost.
+  #
+  # -datacarriersize=400000 allows large OP_RETURN transactions (up to 400 KB)
+  # for filling block data quickly in pruning tests (default 83 bytes is far
+  # too small to reach the 128 MB block file threshold needed for pruning).
+  bitcoind:
+    image: ${BITCOIND_IMAGE}
+    profiles: ["bitcoind"]
+    command:
+      - bitcoind
+      - -regtest=1
+      - -server=1
+      - -txindex=1
+      - -fallbackfee=0.0001
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcport=18443
+      - -rpcuser=vsc-node-user
+      - -rpcpassword=vsc-node-pass
+      - -datacarriersize=400000
+      - -printtoconsole=1
+    ports:
+      - "127.0.0.1:${BITCOIND_RPC_PORT:-18543}:18443"
+    networks:
+      - devnet
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bitcoin-cli -regtest -rpcuser=vsc-node-user -rpcpassword=vsc-node-pass getblockchaininfo > /dev/null 2>&1 || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # bitcoind in regtest mode with manual pruning (-prune=1) for testing
+  # the oracle's fetch-from-peer recovery path. Connected to the archive
+  # bitcoind via P2P so getblockfrompeer can retrieve pruned block data.
+  # The archive node acts as the NODE_NETWORK peer that serves full blocks.
+  bitcoind-pruned:
+    image: ${BITCOIND_IMAGE}
+    profiles: ["bitcoind-pruned"]
+    command:
+      - bitcoind
+      - -regtest=1
+      - -server=1
+      - -prune=1
+      - -fallbackfee=0.0001
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcport=18443
+      - -rpcuser=vsc-node-user
+      - -rpcpassword=vsc-node-pass
+      - -datacarriersize=400000
+      - -connect=bitcoind:18444
+      - -printtoconsole=1
+    networks:
+      - devnet
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bitcoin-cli -regtest -rpcuser=vsc-node-user -rpcpassword=vsc-node-pass getblockchaininfo > /dev/null 2>&1 || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
 volumes:
   db: {}
 
