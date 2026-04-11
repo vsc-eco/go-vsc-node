@@ -15,6 +15,7 @@ package chain
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -105,7 +106,7 @@ func (d *dashRelayer) GetLatestValidHeight() (chainState, error) {
 }
 
 // ChainData implements chainRelay.
-func (d *dashRelayer) ChainData(startHeight uint64, count uint64) ([]chainBlock, error) {
+func (d *dashRelayer) ChainData(_ context.Context, startHeight uint64, count uint64) ([]chainBlock, error) {
 	if startHeight == 0 {
 		return nil, errors.New("start height not provided")
 	}

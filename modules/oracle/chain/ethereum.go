@@ -113,7 +113,7 @@ func (e *ethereumRelayer) GetLatestValidHeight() (chainState, error) {
 }
 
 // ChainData implements chainRelay.
-func (e *ethereumRelayer) ChainData(startHeight uint64, count uint64) ([]chainBlock, error) {
+func (e *ethereumRelayer) ChainData(_ context.Context, startHeight uint64, count uint64) ([]chainBlock, error) {
 	if startHeight == 0 {
 		return nil, errors.New("start height not provided")
 	}
