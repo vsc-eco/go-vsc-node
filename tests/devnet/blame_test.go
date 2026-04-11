@@ -166,7 +166,7 @@ func TestBlameExcludesNodeOnRetry(t *testing.T) {
 	// readiness gate to exclude the node — no blame would be produced.
 	disconnectedNode := 3
 	rotateInterval := uint64(20)
-	nextReshare := ((currentBh/rotateInterval)+1)*rotateInterval
+	nextReshare := ((currentBh / rotateInterval) + 1) * rotateInterval
 	t.Logf("waiting for reshare block %d (node %d will be partitioned at that point)...", nextReshare, disconnectedNode)
 	if err := d.WaitForBlockProcessing(ctx, 2, nextReshare, 3*time.Minute); err != nil {
 		t.Fatalf("didn't reach reshare block: %v", err)

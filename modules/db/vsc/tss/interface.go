@@ -106,13 +106,13 @@ type CommitmentMetadata struct {
 
 type TssCommitment struct {
 	//type = blame, reshare, sign_result, keygen
-	Type        string              `json:"type"         bson:"type"`
-	BlockHeight uint64              `json:"block_height" bson:"block_height"`
-	Epoch       uint64              `json:"epoch"        bson:"epoch"`
-	Commitment  string              `json:"commitment"   bson:"commitment"`
-	KeyId       string              `json:"key_id"       bson:"key_id"`
-	TxId        string              `json:"tx_id"        bson:"tx_id"`
-	PublicKey   *string             `json:"public_key"   bson:"public_key"`
+	Type        string  `json:"type"         bson:"type"`
+	BlockHeight uint64  `json:"block_height" bson:"block_height"`
+	Epoch       uint64  `json:"epoch"        bson:"epoch"`
+	Commitment  string  `json:"commitment"   bson:"commitment"`
+	KeyId       string  `json:"key_id"       bson:"key_id"`
+	TxId        string  `json:"tx_id"        bson:"tx_id"`
+	PublicKey   *string `json:"public_key"   bson:"public_key"`
 	// BitSet is the BLS signers bitvec from the on-chain SignedCommitment
 	// (the "bv" field). For sign_result commitments this enumerates which
 	// committee members BLS-signed the result; the reward-reduction

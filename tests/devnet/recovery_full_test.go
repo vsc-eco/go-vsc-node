@@ -11,11 +11,11 @@ import (
 // keygen → reshare → disconnect a node → blame → reconnect → reshare again.
 //
 // This is the end-to-end proof that the network can:
-//   1. Generate a key (keygen)
-//   2. Rotate it (reshare)
-//   3. Handle a node failure (blame)
-//   4. Recover after the node comes back (exclude or re-include)
-//   5. Continue operating (second reshare)
+//  1. Generate a key (keygen)
+//  2. Rotate it (reshare)
+//  3. Handle a node failure (blame)
+//  4. Recover after the node comes back (exclude or re-include)
+//  5. Continue operating (second reshare)
 //
 // Each step depends on the previous one succeeding. If any step fails,
 // the test provides diagnostic information about which phase broke.

@@ -58,7 +58,7 @@ func TestBlsQuorumMet_WeightedMembers(t *testing.T) {
 
 	assert.False(t, state_engine.BlsQuorumMet(dd[1:], members, w), // 3+2=5 → 15 < 20
 		"weight 5 of 10 is below 2/3")
-	assert.True(t, state_engine.BlsQuorumMet(dd[:1], members, w) == false) // 5 → 15 < 20
+	assert.True(t, state_engine.BlsQuorumMet(dd[:1], members, w) == false)             // 5 → 15 < 20
 	assert.True(t, state_engine.BlsQuorumMet([]dids.BlsDID{dd[0], dd[2]}, members, w), // 5+2=7 → 21 >= 20
 		"weight 7 of 10 meets 2/3")
 }

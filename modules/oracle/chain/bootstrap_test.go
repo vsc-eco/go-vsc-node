@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"vsc-node/modules/db/vsc/contracts"
 	vsclog "vsc-node/lib/vsclog"
 	systemconfig "vsc-node/modules/common/system-config"
+	"vsc-node/modules/db/vsc/contracts"
 )
 
 // mockContractState implements contracts.ContractState with a canned response.
@@ -20,9 +20,11 @@ type mockContractState struct {
 	err    error
 }
 
-func (m *mockContractState) Init() error                           { return nil }
-func (m *mockContractState) Start() *promise.Promise[any]          { return promise.New(func(r func(any), _ func(error)) { r(nil) }) }
-func (m *mockContractState) Stop() error                           { return nil }
+func (m *mockContractState) Init() error { return nil }
+func (m *mockContractState) Start() *promise.Promise[any] {
+	return promise.New(func(r func(any), _ func(error)) { r(nil) })
+}
+func (m *mockContractState) Stop() error                             { return nil }
 func (m *mockContractState) IngestOutput(contracts.IngestOutputArgs) {}
 func (m *mockContractState) GetLastOutput(string, uint64) (contracts.ContractOutput, error) {
 	return m.output, m.err
@@ -40,10 +42,10 @@ type mockChainRelay struct {
 }
 
 func (m *mockChainRelay) Init(_ systemconfig.SystemConfig) error { return nil }
-func (m *mockChainRelay) Symbol() string                             { return m.symbol }
-func (m *mockChainRelay) ContractId() string                         { return m.contractId }
-func (m *mockChainRelay) SetContractId(id string)                    { m.contractId = id }
-func (m *mockChainRelay) Configure(_, _, _ string)                   {}
+func (m *mockChainRelay) Symbol() string                         { return m.symbol }
+func (m *mockChainRelay) ContractId() string                     { return m.contractId }
+func (m *mockChainRelay) SetContractId(id string)                { m.contractId = id }
+func (m *mockChainRelay) Configure(_, _, _ string)               {}
 func (m *mockChainRelay) GetLatestValidHeight() (chainState, error) {
 	return chainState{blockHeight: m.tipHeight}, nil
 }

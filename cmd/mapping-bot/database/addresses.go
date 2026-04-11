@@ -32,7 +32,7 @@ func (a *AddressStore) DeleteOlderThan(ctx context.Context, age time.Duration) (
 // Insert stores a BTC to VSC address mapping
 func (a *AddressStore) Insert(ctx context.Context, chainAddr, instruction string) error {
 	doc := AddressMapping{
-		ChainAddr:     chainAddr,
+		ChainAddr:   chainAddr,
 		Instruction: instruction,
 		CreatedAt:   time.Now().UTC(),
 	}

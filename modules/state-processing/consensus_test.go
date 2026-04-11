@@ -171,8 +171,8 @@ func TestGenerateScheduleFairDistribution(t *testing.T) {
 
 	// With 120 slots and 13 witnesses: 120/13 = 9 remainder 3
 	// So 3 witnesses get 10 slots, 10 witnesses get 9 slots (round-robin before shuffle)
-	minExpected := slotsPerRound / len(witnesses)         // 9
-	maxExpected := slotsPerRound/len(witnesses) + 1       // 10
+	minExpected := slotsPerRound / len(witnesses)   // 9
+	maxExpected := slotsPerRound/len(witnesses) + 1 // 10
 
 	for account, count := range counts {
 		assert.GreaterOrEqual(t, count, minExpected,

@@ -47,8 +47,8 @@ func TestEVMAutoExpiry(t *testing.T) {
 	didKey := dids.NewEthDID(testAddr)
 
 	transactionCreator := transactionpool.TransactionCrafter{
-		Identity: dids.NewEthProvider(testKey),
-		Did:      didKey,
+		Identity:     dids.NewEthProvider(testKey),
+		Did:          didKey,
 		VSCBroadcast: container.VSCBroadcast(),
 	}
 	var nonce uint64

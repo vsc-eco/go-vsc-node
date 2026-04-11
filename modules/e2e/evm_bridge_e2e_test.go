@@ -5,11 +5,11 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"testing"
-	"time"
 	"io"
 	"net/http"
 	"strings"
+	"testing"
+	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/config"
 	"vsc-node/modules/db/vsc/contracts"
@@ -50,8 +50,8 @@ func TestEVMBridgeE2E(t *testing.T) {
 	didKey := dids.NewEthDID(testAddr)
 
 	transactionCreator := transactionpool.TransactionCrafter{
-		Identity: dids.NewEthProvider(testKey),
-		Did:      didKey,
+		Identity:     dids.NewEthProvider(testKey),
+		Did:          didKey,
 		VSCBroadcast: container.VSCBroadcast(),
 	}
 	var nonce uint64

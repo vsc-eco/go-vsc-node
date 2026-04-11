@@ -119,9 +119,9 @@ type signingShellHeaders struct {
 }
 
 type signingShellOp struct {
-	Type            string `json:"type"`
-	Payload         string `json:"payload"` // JSON string with alphabetically sorted keys
-	rawPayloadCBOR  []byte // CBOR-encoded payload (simulates what's in the wire tx)
+	Type           string `json:"type"`
+	Payload        string `json:"payload"` // JSON string with alphabetically sorted keys
+	rawPayloadCBOR []byte // CBOR-encoded payload (simulates what's in the wire tx)
 }
 
 type signingShell struct {

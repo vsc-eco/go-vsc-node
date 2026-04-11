@@ -2,15 +2,17 @@
 // Runs live against magi-test.techcoderx.com and mainnet simulate.
 //
 // Tests:
-//   A. Auto-route decision (pure local math) — boundary at 7500 bytes
-//   B. CBOR determinism (same payload → same bytes across runs)
-//   C. Sequential nonce submission with unfunded DID
-//   D. CID returned by submitTransactionV1 is queryable via findTransaction
-//   E. Testnet contract simulate with did:ethr vs hive: (already verified above)
-//   F. Mainnet contract simulate with did:ethr vs hive: (already verified above)
+//
+//	A. Auto-route decision (pure local math) — boundary at 7500 bytes
+//	B. CBOR determinism (same payload → same bytes across runs)
+//	C. Sequential nonce submission with unfunded DID
+//	D. CID returned by submitTransactionV1 is queryable via findTransaction
+//	E. Testnet contract simulate with did:ethr vs hive: (already verified above)
+//	F. Mainnet contract simulate with did:ethr vs hive: (already verified above)
 //
 // Out of scope (needs testnet HBD + real BTC tx in an oracle-submitted block):
-//   G. Full end-to-end map execution + state credit.
+//
+//	G. Full end-to-end map execution + state credit.
 package main
 
 import (

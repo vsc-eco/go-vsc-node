@@ -34,6 +34,9 @@ type ElectionDataInfo struct {
 	// MUST be encoded such that nil pointers are OMITTED from CBOR, not
 	// written as null — see TestElectionDataCid for the pin that guards this.
 	Settlement *settlement.SettlementRecord `json:"settlement,omitempty" graphql:"settlement" refmt:"settlement,omitempty" bson:"settlement,omitempty"`
+
+	VersionMajor        uint64 `json:"version_major" graphql:"version_major" refmt:"version_major" bson:"version_major,omitempty"`
+	VersionNonConsensus uint64 `json:"version_non_consensus" graphql:"version_non_consensus" refmt:"version_non_consensus" bson:"version_non_consensus,omitempty"`
 }
 type ElectionData struct {
 	ElectionCommonInfo
@@ -52,17 +55,19 @@ type ElectionResult struct {
 }
 
 type ElectionResultRecord struct {
-	Epoch           uint64           `json:"epoch" graphql:"epoch" refmt:"epoch" bson:"epoch"`
-	NetId           string           `json:"net_id" graphql:"net_id" refmt:"net_id" bson:"net_id"`
-	Data            string           `json:"data" graphql:"data" refmt:"data" bson:"data"`
-	Members         []ElectionMember `json:"members" graphql:"members" refmt:"members" bson:"members"`
-	Weights         []uint64         `json:"weights" graphql:"weights" refmt:"weights" bson:"weights"`
-	ProtocolVersion uint64           `json:"protocol_version" graphql:"protocol_version" refmt:"protocol_version" bson:"protocol_version"`
-	TotalWeight     uint64           `json:"total_weight" graphql:"total_weight" refmt:"total_weight" bson:"total_weight"`
-	BlockHeight     uint64           `json:"block_height" graphql:"block_height" refmt:"block_height" bson:"block_height"`
-	Proposer        string           `json:"proposer" graphql:"proposer" refmt:"proposer" bson:"proposer"`
-	Type            string           `json:"type" graphql:"type" refmt:"type" bson:"type"`
-	TxId            string           `json:"tx_id" graphql:"tx_id" refmt:"tx_id" bson:"tx_id"`
+	Epoch               uint64           `json:"epoch" graphql:"epoch" refmt:"epoch" bson:"epoch"`
+	NetId               string           `json:"net_id" graphql:"net_id" refmt:"net_id" bson:"net_id"`
+	Data                string           `json:"data" graphql:"data" refmt:"data" bson:"data"`
+	Members             []ElectionMember `json:"members" graphql:"members" refmt:"members" bson:"members"`
+	Weights             []uint64         `json:"weights" graphql:"weights" refmt:"weights" bson:"weights"`
+	ProtocolVersion     uint64           `json:"protocol_version" graphql:"protocol_version" refmt:"protocol_version" bson:"protocol_version"`
+	VersionMajor        uint64           `json:"version_major" graphql:"version_major" refmt:"version_major" bson:"version_major,omitempty"`
+	VersionNonConsensus uint64           `json:"version_non_consensus" graphql:"version_non_consensus" refmt:"version_non_consensus" bson:"version_non_consensus,omitempty"`
+	TotalWeight         uint64           `json:"total_weight" graphql:"total_weight" refmt:"total_weight" bson:"total_weight"`
+	BlockHeight         uint64           `json:"block_height" graphql:"block_height" refmt:"block_height" bson:"block_height"`
+	Proposer            string           `json:"proposer" graphql:"proposer" refmt:"proposer" bson:"proposer"`
+	Type                string           `json:"type" graphql:"type" refmt:"type" bson:"type"`
+	TxId                string           `json:"tx_id" graphql:"tx_id" refmt:"tx_id" bson:"tx_id"`
 }
 
 type ElectionMember struct {

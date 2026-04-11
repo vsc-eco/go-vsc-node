@@ -41,9 +41,9 @@ type PendulumSwapFeeArgs struct {
 // network-share accumulator. The SDK has already credited
 // NodeBucketCreditedHBD to pendulum:nodes:HBD.
 type PendulumSwapFeeResult struct {
-	UserOutput            int64
-	NewXReserve           int64
-	NewYReserve           int64
+	UserOutput  int64
+	NewXReserve int64
+	NewYReserve int64
 	// NetworkCreditOutput is the 25% network cut on (totalCLP + totalProtocol),
 	// in the output asset of the swap (since both fee components live on the
 	// output side under the unified model).

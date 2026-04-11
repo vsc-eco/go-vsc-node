@@ -16,11 +16,11 @@ func TestGetThreshold(t *testing.T) {
 		wantError bool
 	}{
 		{"negative", -1, 0, true},
-		{"zero", 0, -1, false},  // ceil(0*2/3)-1 = -1
-		{"one", 1, 0, false},    // ceil(2/3)-1 = 1-1 = 0
-		{"two", 2, 1, false},    // ceil(4/3)-1 = 2-1 = 1
-		{"three", 3, 1, false},  // ceil(2)-1 = 2-1 = 1
-		{"four", 4, 2, false},   // ceil(8/3)-1 = 3-1 = 2
+		{"zero", 0, -1, false}, // ceil(0*2/3)-1 = -1
+		{"one", 1, 0, false},   // ceil(2/3)-1 = 1-1 = 0
+		{"two", 2, 1, false},   // ceil(4/3)-1 = 2-1 = 1
+		{"three", 3, 1, false}, // ceil(2)-1 = 2-1 = 1
+		{"four", 4, 2, false},  // ceil(8/3)-1 = 3-1 = 2
 		{"five", 5, 3, false},  // ceil(10/3)-1 = 4-1 = 3
 		{"six", 6, 3, false},   // ceil(4)-1 = 3
 		{"nine", 9, 5, false},  // ceil(6)-1 = 5

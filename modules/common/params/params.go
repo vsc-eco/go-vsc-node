@@ -70,6 +70,12 @@ type ConsensusParams struct {
 	// every node, reindex or not). 0 means "no seed" — correct for fresh chains
 	// built from genesis with the settlement code already present.
 	PendulumSeedEpoch uint64 `json:"pendulumSeedEpoch,omitempty"`
+
+	// RecoveryMultisigAccounts are Hive account names (no hive: prefix) authorized to post
+	// vsc.recovery_suspend and vsc.recovery_require_version.
+	RecoveryMultisigAccounts []string `json:"recoveryMultisigAccounts,omitempty"`
+	// RecoveryMultisigThreshold is M in M-of-N (distinct accounts from RecoveryMultisigAccounts in required_auths).
+	RecoveryMultisigThreshold int `json:"recoveryMultisigThreshold,omitempty"`
 }
 
 type TssParams struct {

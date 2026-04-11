@@ -231,7 +231,6 @@ func (cs *CallSession) GetContractFromDb(contractId string, height uint64) resul
 	return result.Ok(ContractWithCode{info, code})
 }
 
-
 // Session for a contract
 type ContractSession struct {
 	dl *datalayer.DataLayer

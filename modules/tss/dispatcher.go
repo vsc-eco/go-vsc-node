@@ -1263,7 +1263,7 @@ type BaseDispatcher struct {
 	// partyType string
 
 	done       chan struct{}
-	msgCtx     context.Context    // cancelled by signalDone to unblock message-loop goroutines
+	msgCtx     context.Context // cancelled by signalDone to unblock message-loop goroutines
 	cancelMsgs context.CancelFunc
 
 	keystore datastore.Datastore

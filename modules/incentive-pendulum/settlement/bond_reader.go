@@ -3,8 +3,8 @@ package settlement
 import (
 	"strings"
 
-	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/lib/vsclog"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
 )
 
 var log = vsclog.Module("pendulum-settlement")

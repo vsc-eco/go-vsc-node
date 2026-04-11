@@ -35,4 +35,3 @@ func TestSavingsWithdraw(t *testing.T) {
 	txId, err := hiveClient.BroadcastRaw(tx)
 	fmt.Println("TX ID:", txId, "error", err)
 }
-

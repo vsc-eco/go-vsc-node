@@ -38,8 +38,8 @@ type ClaimRecord struct {
 	//Numbers of accounts received interest
 	ReceivedN int `bson:"received_n"`
 	//Percent that was observed based on network averages
-	ObservedApr float64  `bson:"observed_apr"`
-	Timestamp   *string  `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
+	ObservedApr float64 `bson:"observed_apr"`
+	Timestamp   *string `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
 }
 
 type BalanceRecord struct {

@@ -244,7 +244,7 @@ func nextReshareBoundary(head int) int {
 func tssTestConfig() *Config {
 	cfg := DefaultConfig()
 	cfg.Nodes = 5
-	cfg.SkipFunding = true  // TSS tests don't need contract deployment funds
+	cfg.SkipFunding = true // TSS tests don't need contract deployment funds
 	cfg.LogLevel = "error,tss=trace"
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
@@ -255,14 +255,14 @@ func tssTestConfig() *Config {
 		},
 		TssParams: &params.TssParams{
 			RotateInterval:     uint64(testRotateInterval), // reshare every 20 blocks (~60s)
-			SignInterval:       10,                          // sign every 10 blocks
-			ReadinessOffset:    5,                           // broadcast readiness 5 blocks before reshare
-			ReshareTimeout:     2 * time.Minute,             // reshare round 1 messages are ~175KB, need time to propagate
+			SignInterval:       10,                         // sign every 10 blocks
+			ReadinessOffset:    5,                          // broadcast readiness 5 blocks before reshare
+			ReshareTimeout:     2 * time.Minute,            // reshare round 1 messages are ~175KB, need time to propagate
 			DefaultTimeout:     1 * time.Minute,
 			CommitDelay:        2 * time.Second,
 			WaitForSigsTimeout: 10 * time.Second,
 			ReshareSyncDelay:   2 * time.Second,
-			PreParamsTimeout:   10 * time.Minute,            // generous timeout for loaded test servers
+			PreParamsTimeout:   10 * time.Minute, // generous timeout for loaded test servers
 		},
 	}
 	return cfg

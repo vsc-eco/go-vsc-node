@@ -64,14 +64,14 @@ func TestTrustedHivePriceBps_InterquartileTrim_DropsExtremes(t *testing.T) {
 	// Trim = 2 from each end → keep {2400, 2500, 2600, 2700}.
 	// Mean = (2400+2500+2600+2700)/4 = 2550.
 	q := map[string]Quote{
-		"a": {HbdRaw: 100, HiveRaw: 1000},  // 1000 bps  (dropped low)
-		"b": {HbdRaw: 200, HiveRaw: 1000},  // 2000 bps  (dropped low)
-		"c": {HbdRaw: 240, HiveRaw: 1000},  // 2400 bps
-		"d": {HbdRaw: 250, HiveRaw: 1000},  // 2500 bps
-		"e": {HbdRaw: 260, HiveRaw: 1000},  // 2600 bps
-		"f": {HbdRaw: 270, HiveRaw: 1000},  // 2700 bps
-		"g": {HbdRaw: 800, HiveRaw: 1000},  // 8000 bps  (dropped high)
-		"h": {HbdRaw: 900, HiveRaw: 1000},  // 9000 bps  (dropped high)
+		"a": {HbdRaw: 100, HiveRaw: 1000}, // 1000 bps  (dropped low)
+		"b": {HbdRaw: 200, HiveRaw: 1000}, // 2000 bps  (dropped low)
+		"c": {HbdRaw: 240, HiveRaw: 1000}, // 2400 bps
+		"d": {HbdRaw: 250, HiveRaw: 1000}, // 2500 bps
+		"e": {HbdRaw: 260, HiveRaw: 1000}, // 2600 bps
+		"f": {HbdRaw: 270, HiveRaw: 1000}, // 2700 bps
+		"g": {HbdRaw: 800, HiveRaw: 1000}, // 8000 bps  (dropped high)
+		"h": {HbdRaw: 900, HiveRaw: 1000}, // 9000 bps  (dropped high)
 	}
 	tr := map[string]bool{
 		"a": true, "b": true, "c": true, "d": true,

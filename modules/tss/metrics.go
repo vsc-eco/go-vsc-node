@@ -10,20 +10,20 @@ type Metrics struct {
 	mu sync.RWMutex
 
 	// Reshare metrics
-	ReshareDuration      []time.Duration // Histogram of reshare completion times
-	ReshareSuccessCount  int64           // Counter of successful reshares
-	ReshareFailureCount  int64           // Counter of failed reshares
-	ReshareTimeoutCount  int64           // Counter of timeout occurrences
+	ReshareDuration     []time.Duration // Histogram of reshare completion times
+	ReshareSuccessCount int64           // Counter of successful reshares
+	ReshareFailureCount int64           // Counter of failed reshares
+	ReshareTimeoutCount int64           // Counter of timeout occurrences
 
 	// Message metrics
-	MessageSendFailures  int64           // Counter of failed message sends
-	MessageDrops         int64           // Counter of dropped messages (missing actionMap)
-	MessageRetryCount    int64           // Counter of message retries
-	MessageSendLatency   []time.Duration // Histogram of message send latencies
+	MessageSendFailures int64           // Counter of failed message sends
+	MessageDrops        int64           // Counter of dropped messages (missing actionMap)
+	MessageRetryCount   int64           // Counter of message retries
+	MessageSendLatency  []time.Duration // Histogram of message send latencies
 
 	// Blame metrics
-	BlameCount           map[string]int64 // Counter of blame events per node
-	BanCount             int64            // Counter of node bans
+	BlameCount map[string]int64 // Counter of blame events per node
+	BanCount   int64            // Counter of node bans
 
 	// Participant metrics
 	ParticipantReadinessFailures int64 // Counter of readiness check failures

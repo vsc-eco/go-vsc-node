@@ -92,4 +92,3 @@ func TestNoopChainClient_DoesNotBroadcast(t *testing.T) {
 	require.NoError(t, noop.PostTx("deadbeef"))
 	assert.Equal(t, []string{"deadbeef"}, noop.posted, "noop should record but not broadcast")
 }
-

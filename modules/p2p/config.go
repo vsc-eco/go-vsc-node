@@ -6,13 +6,13 @@ import (
 )
 
 type p2pConfig struct {
-	Port                    int
-	ServerMode              bool
-	AllowPrivate            bool
-	PubsubBufferSize        int
-	PubsubConcurrencyLimit  int
-	Bootnodes               []string
-	AnnounceAddrs           []string
+	Port                   int
+	ServerMode             bool
+	AllowPrivate           bool
+	PubsubBufferSize       int
+	PubsubConcurrencyLimit int
+	Bootnodes              []string
+	AnnounceAddrs          []string
 
 	// Pentest finding N-L6: operator-managed connection deny lists,
 	// applied to the libp2p ConnectionGater at node start. Empty by

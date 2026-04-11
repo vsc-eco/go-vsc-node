@@ -17,20 +17,20 @@ func TestParseAssetAmount(t *testing.T) {
 		{"1.234", "hbd", 1234, false},
 		{"1.234", "HBD", 1234, false}, // case-insensitive symbol
 		{"0.001", "hive", 1, false},
-		{"10", "hbd", 10000, false},        // integer form padded
-		{"10.0", "hbd", 10000, false},      // single-digit fraction padded
-		{"10.00", "hbd", 10000, false},     // double-digit fraction padded
-		{"10.000", "hbd", 10000, false},    // exact precision
-		{"-1.234", "hbd", -1234, false},    // negative
-		{"+1.234", "hbd", 1234, false},     // explicit positive
+		{"10", "hbd", 10000, false},     // integer form padded
+		{"10.0", "hbd", 10000, false},   // single-digit fraction padded
+		{"10.00", "hbd", 10000, false},  // double-digit fraction padded
+		{"10.000", "hbd", 10000, false}, // exact precision
+		{"-1.234", "hbd", -1234, false}, // negative
+		{"+1.234", "hbd", 1234, false},  // explicit positive
 		{"0", "hbd", 0, false},
 		{"0.000", "hbd", 0, false},
-		{"1.2345", "hbd", 0, true}, // exceeds precision — must reject
-		{"1.234", "wat", 0, true},  // unknown asset
-		{"abc", "hbd", 0, true},    // not a number
-		{"1.2.3", "hbd", 0, true},  // malformed
-		{"--1.000", "hbd", 0, true},                         // double-negative rejected
-		{"+-1.000", "hbd", 0, true},                         // mixed-sign rejected
+		{"1.2345", "hbd", 0, true},                             // exceeds precision — must reject
+		{"1.234", "wat", 0, true},                              // unknown asset
+		{"abc", "hbd", 0, true},                                // not a number
+		{"1.2.3", "hbd", 0, true},                              // malformed
+		{"--1.000", "hbd", 0, true},                            // double-negative rejected
+		{"+-1.000", "hbd", 0, true},                            // mixed-sign rejected
 		{strconv.FormatInt(math.MaxInt64, 10), "hbd", 0, true}, // integer-form base-unit overflow rejected
 	}
 	for _, tt := range tests {

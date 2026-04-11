@@ -52,7 +52,7 @@ func TestComposeRecord_EmptyBucketIgnoresEmptyBonds(t *testing.T) {
 		Epoch:               5,
 		PrevEpoch:           4,
 		EpochStartBh:        1000,
-		SlotHeight:           2000,
+		SlotHeight:          2000,
 		CommitteeBonds:      map[string]int64{}, // explicitly empty
 		BucketBalanceHBD:    0,
 		ReductionsByAccount: nil,
@@ -70,7 +70,7 @@ func TestComposeRecord_NonEmptyBucketStillRequiresBonds(t *testing.T) {
 		Epoch:               5,
 		PrevEpoch:           4,
 		EpochStartBh:        1000,
-		SlotHeight:           2000,
+		SlotHeight:          2000,
 		CommitteeBonds:      map[string]int64{},
 		BucketBalanceHBD:    1000,
 		ReductionsByAccount: nil,
@@ -88,7 +88,7 @@ func TestComposeRecord_RejectsNegativeBucket(t *testing.T) {
 		Epoch:               5,
 		PrevEpoch:           4,
 		EpochStartBh:        1000,
-		SlotHeight:           2000,
+		SlotHeight:          2000,
 		BucketBalanceHBD:    -1,
 		ReductionsByAccount: nil,
 	})
@@ -105,7 +105,7 @@ func TestComposeRecord_EmptyBucket_DeterministicAcrossCalls(t *testing.T) {
 		Epoch:               7,
 		PrevEpoch:           6,
 		EpochStartBh:        1000,
-		SlotHeight:           1500,
+		SlotHeight:          1500,
 		BucketBalanceHBD:    0,
 		ReductionsByAccount: nil,
 	}

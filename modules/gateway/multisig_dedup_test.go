@@ -3,9 +3,9 @@ package gateway
 import (
 	"testing"
 
+	"vsc-node/lib/test_utils"
 	systemconfig "vsc-node/modules/common/system-config"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
-	"vsc-node/lib/test_utils"
 
 	"github.com/vsc-eco/hivego"
 )
@@ -35,8 +35,8 @@ func (stubHiveCreator) MakeTransaction(_ []hivego.HiveOperation) hivego.HiveTran
 	return hivego.HiveTransaction{}
 }
 func (stubHiveCreator) PopulateSigningProps(_ *hivego.HiveTransaction, _ []int) error { return nil }
-func (stubHiveCreator) Sign(_ hivego.HiveTransaction) (string, error)                { return "sig", nil }
-func (stubHiveCreator) Broadcast(_ hivego.HiveTransaction) (string, error)           { return "txid", nil }
+func (stubHiveCreator) Sign(_ hivego.HiveTransaction) (string, error)                 { return "sig", nil }
+func (stubHiveCreator) Broadcast(_ hivego.HiveTransaction) (string, error)            { return "txid", nil }
 
 // TestExecuteActionsDoesNotReselectBroadcastActions reproduces CRITICAL #1
 // (gateway double-spend). A single pending withdraw is selected on the first

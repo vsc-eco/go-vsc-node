@@ -57,8 +57,8 @@ func TestStakeDoubleDebit(t *testing.T) {
 
 	// Check balance after stake
 	postBal := session.GetBalance(user, blockHeight, "hbd")
-	expectedCorrect := startingHBD - stakeAmount   // 600 -- what it should be
-	expectedBuggy := startingHBD - 2*stakeAmount   // 200 -- double-debit
+	expectedCorrect := startingHBD - stakeAmount // 600 -- what it should be
+	expectedBuggy := startingHBD - 2*stakeAmount // 200 -- double-debit
 
 	fmt.Printf("[POST-STAKE] Balance: %d HBD\n", postBal)
 	fmt.Printf("             Expected (correct):  %d\n", expectedCorrect)

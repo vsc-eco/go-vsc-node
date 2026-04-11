@@ -22,6 +22,7 @@ import (
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	contract_session "vsc-node/modules/contract/session"
+	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
@@ -76,6 +77,9 @@ type StateEngine struct {
 	tssRequests    tss_db.TssRequests
 	tssKeys        tss_db.TssKeys
 	tssCommitments tss_db.TssCommitments
+
+	consensusState      consensus_state.ConsensusState
+	chainConsensusCache consensus_state.ChainConsensusState
 
 	wasm *wasm_runtime.Wasm
 
@@ -248,6 +252,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	}()
 
 	se.BlockHeight = int(block.BlockNumber)
+	se.refreshChainConsensusCache()
 
 	// --- Key lifecycle: deprecation and retirement ---
 	if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
@@ -462,6 +467,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						Metadata: rawJson,
 					}
 					se.witnessDb.SetWitnessUpdate(inputData)
+					se.TryFinalizeConsensusProposal(blockInfo.BlockHeight)
 				}
 			}
 			continue
@@ -493,6 +499,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					TxId:                 tx.TransactionID,
 					RequiredAuths:        cj.RequiredAuths,
 					RequiredPostingAuths: cj.RequiredPostingAuths,
+				}
+				if se.chainProcessingSuspended() && !isRecoveryAllowlistedCustomJSON(cj.Id) {
+					continue
 				}
 				//Start parsing block
 				if cj.Id == "vsc.produce_block" {
@@ -653,6 +662,21 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// payload of `null` would set the inner pointer to nil
 					// and the subsequent ExecuteTx call would panic with a
 					// nil receiver.
+					json.Unmarshal(cj.Json, parsedTx)
+					parsedTx.ExecuteTx(se)
+					continue
+				} else if cj.Id == "vsc.propose_consensus_version" {
+					parsedTx := &TxProposeConsensusVersion{Self: txSelf}
+					json.Unmarshal(cj.Json, parsedTx)
+					parsedTx.ExecuteTx(se)
+					continue
+				} else if cj.Id == "vsc.recovery_suspend" {
+					parsedTx := &TxRecoverySuspend{Self: txSelf}
+					json.Unmarshal(cj.Json, parsedTx)
+					parsedTx.ExecuteTx(se)
+					continue
+				} else if cj.Id == "vsc.recovery_require_version" {
+					parsedTx := &TxRecoveryRequireVersion{Self: txSelf}
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
 					continue
@@ -2051,6 +2075,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	tssCommitments tss_db.TssCommitments,
 	tssRequests tss_db.TssRequests,
 	pendulumSettlementsDb pendulum_settlements.PendulumSettlements,
+	consensusStateDb consensus_state.ConsensusState,
 	wasm *wasm_runtime.Wasm,
 	identityConfig common.IdentityConfig,
 ) *StateEngine {
@@ -2100,6 +2125,8 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		tssRequests:    tssRequests,
 		tssCommitments: tssCommitments,
 		tssKeys:        tssKeys,
+
+		consensusState: consensusStateDb,
 
 		wasm: wasm,
 

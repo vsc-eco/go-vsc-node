@@ -45,10 +45,11 @@ import (
 //   - At least one node logs "initiating chain relay consensus" for DASH.
 //
 // Prereqs:
+//
 //   - Built WASM at <utxo-mapping>/dash-mapping-contract/bin/testnet.wasm.
 //     If you don't have it, build it with:
 //
-//	cd <utxo-mapping>/dash-mapping-contract && USE_DOCKER=1 make testnet
+//     cd <utxo-mapping>/dash-mapping-contract && USE_DOCKER=1 make testnet
 //
 //     Or point DASH_MAPPING_WASM_PATH at an absolute path.
 //

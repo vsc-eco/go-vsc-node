@@ -28,11 +28,11 @@ type Distribution struct {
 // distribution math; the underlying ledger HIVE_CONSENSUS balance is NOT
 // debited (that would be true slashing — out of scope).
 type RewardReductionApplied struct {
-	Account          string
-	Bps              int
-	OriginalBond     int64
-	ReductionAmount  int64
-	EffectiveBond    int64
+	Account         string
+	Bps             int
+	OriginalBond    int64
+	ReductionAmount int64
+	EffectiveBond   int64
 }
 
 func CalculateSplitPreviewFixed(r int64, t int64, effectiveNumerator int64, effectiveDenominator int64, v int64, p int64) SplitPreview {

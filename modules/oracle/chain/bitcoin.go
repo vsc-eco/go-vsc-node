@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/lib/vsclog"
+	systemconfig "vsc-node/modules/common/system-config"
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"

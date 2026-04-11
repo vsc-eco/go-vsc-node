@@ -316,12 +316,12 @@ func TestSerialize_ReshareResult_DifferentEpoch_DifferentCID(t *testing.T) {
 
 	r1 := ReshareResult{
 		Commitment: mgr.setToCommitment(participants, epoch1),
-		KeyId: "k1", SessionId: "reshare-100-0-k1",
+		KeyId:      "k1", SessionId: "reshare-100-0-k1",
 		NewEpoch: epoch1, BlockHeight: 100,
 	}
 	r2 := ReshareResult{
 		Commitment: mgr.setToCommitment(participants, epoch2),
-		KeyId: "k1", SessionId: "reshare-100-0-k1",
+		KeyId:      "k1", SessionId: "reshare-100-0-k1",
 		NewEpoch: epoch2, BlockHeight: 100,
 	}
 

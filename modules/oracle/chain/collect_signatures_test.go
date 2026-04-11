@@ -207,8 +207,8 @@ func TestCollectChainSignatures_HeavyWitnessDown_TimesOut(t *testing.T) {
 	// total = 100, threshold = 66
 	// If the heavy witness is down: max possible = 10+10+10 = 30 (with self) -> 30 <= 66.
 	witnesses := []fakeWitness{
-		{did: "did:key:z6Self", weight: 10, respond: true},   // self
-		{did: "did:key:z6Wit1", weight: 60, respond: false},  // heavy, down
+		{did: "did:key:z6Self", weight: 10, respond: true},  // self
+		{did: "did:key:z6Wit1", weight: 60, respond: false}, // heavy, down
 		{did: "did:key:z6Wit2", weight: 10, respond: true},
 		{did: "did:key:z6Wit3", weight: 10, respond: true},
 		{did: "did:key:z6Wit4", weight: 10, respond: true},

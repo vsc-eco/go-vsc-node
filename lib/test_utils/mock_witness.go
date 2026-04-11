@@ -11,7 +11,7 @@ type MockWitnessDb struct {
 	ByPeerId  map[string][]witnesses.Witness
 }
 
-func (m *MockWitnessDb) StoreNodeAnnouncement(string) error                { return nil }
+func (m *MockWitnessDb) StoreNodeAnnouncement(string) error                    { return nil }
 func (m *MockWitnessDb) SetWitnessUpdate(witnesses.SetWitnessUpdateType) error { return nil }
 func (m *MockWitnessDb) GetLastestWitnesses(...witnesses.SearchOption) ([]witnesses.Witness, error) {
 	return nil, nil

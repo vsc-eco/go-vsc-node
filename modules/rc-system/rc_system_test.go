@@ -35,8 +35,8 @@ func (m *mockLedgerSession) ConsensusStake(c ledgerSystem.ConsensusParams) ledge
 func (m *mockLedgerSession) ConsensusUnstake(c ledgerSystem.ConsensusParams) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{}
 }
-func (m *mockLedgerSession) Done() []string   { return nil }
-func (m *mockLedgerSession) Revert()          {}
+func (m *mockLedgerSession) Done() []string { return nil }
+func (m *mockLedgerSession) Revert()        {}
 
 type mockLedgerSystem struct {
 	balances map[string]int64
@@ -45,7 +45,8 @@ type mockLedgerSystem struct {
 func (m *mockLedgerSystem) GetBalance(account string, blockHeight uint64, asset string) int64 {
 	return m.balances[account+":"+asset]
 }
-func (m *mockLedgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {}
+func (m *mockLedgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {
+}
 func (m *mockLedgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ledgerSystem.ExtraInfo) {
 }
 func (m *mockLedgerSystem) Deposit(deposit ledgerSystem.Deposit) string { return "" }

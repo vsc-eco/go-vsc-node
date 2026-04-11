@@ -137,15 +137,17 @@ type payload struct {
 }
 
 type payloadVscNode struct {
-	NetId           string   `json:"net_id"`
-	PeerId          string   `json:"peer_id"`
-	PeerAddrs       []string `json:"peer_addrs"`
-	Ts              string   `json:"ts"`
-	VersionId       string   `json:"version_id"`
-	GitCommit       string   `json:"git_commit"`
-	ProtocolVersion uint64   `json:"protocol_version"`
-	GatewayKey      string   `json:"gateway_key"`
-	Witness         struct {
+	NetId               string   `json:"net_id"`
+	PeerId              string   `json:"peer_id"`
+	PeerAddrs           []string `json:"peer_addrs"`
+	Ts                  string   `json:"ts"`
+	VersionId           string   `json:"version_id"`
+	GitCommit           string   `json:"git_commit"`
+	VersionMajor        uint64   `json:"version_major"`
+	ProtocolVersion     uint64   `json:"protocol_version"`
+	VersionNonConsensus uint64   `json:"version_non_consensus"`
+	GatewayKey          string   `json:"gateway_key"`
+	Witness             struct {
 		Enabled bool `json:"enabled"`
 	} `json:"witness"`
 }
@@ -249,14 +251,16 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 		},
 		VscNode: payloadVscNode{
 			//Potentially use specific net ID for E2E tests
-			NetId:           a.sconf.NetId(),
-			PeerId:          a.peerInfo.GetPeerId(), //Plz fill in
-			PeerAddrs:       peerAddrs,
-			Ts:              time.Now().Format(time.RFC3339),
-			GitCommit:       GitCommit,
-			VersionId:       VersionId, //Use standard versioning
-			ProtocolVersion: 0,         //Protocol 0 until protocol 1 is finalized.
-			GatewayKey:      *gatewayKP.GetPublicKeyString(),
+			NetId:               a.sconf.NetId(),
+			PeerId:              a.peerInfo.GetPeerId(), //Plz fill in
+			PeerAddrs:           peerAddrs,
+			Ts:                  time.Now().Format(time.RFC3339),
+			GitCommit:           GitCommit,
+			VersionId:           VersionId, //Use standard versioning
+			VersionMajor:        0,
+			ProtocolVersion:     0, // consensus component until finalized
+			VersionNonConsensus: 0,
+			GatewayKey:          *gatewayKP.GetPublicKeyString(),
 			Witness: struct {
 				Enabled bool `json:"enabled"`
 			}{

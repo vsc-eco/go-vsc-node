@@ -403,9 +403,9 @@ func TestAccrualErrorPropagates(t *testing.T) {
 // stabilizer hint: HBD-in raises s, HBD-out lowers it; "exacerbates"
 // means the swap moves s away from 0.5.
 func TestExacerbatesFromSnapshot(t *testing.T) {
-	half := pendulum.BpsScale / 2          // 0.5 in bps
-	low := pendulum.BpsScale * 30 / 100    // 0.3 in bps
-	high := pendulum.BpsScale * 70 / 100   // 0.7 in bps
+	half := pendulum.BpsScale / 2        // 0.5 in bps
+	low := pendulum.BpsScale * 30 / 100  // 0.3 in bps
+	high := pendulum.BpsScale * 70 / 100 // 0.7 in bps
 
 	cases := []struct {
 		name  string

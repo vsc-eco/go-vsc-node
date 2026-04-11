@@ -37,13 +37,13 @@ var forbiddenEntrypoints = map[string]struct{}{
 // reserved by toolchains and never appear on a legitimate user action:
 //
 //   - "__"        AssemblyScript runtime (__new/__pin/__retain/...) and
-//                 wasm-bindgen (__wbindgen_*, __data_end, __heap_base,
-//                 __externref_*). Double underscore is conventionally
-//                 reserved; no production action uses it.
+//     wasm-bindgen (__wbindgen_*, __data_end, __heap_base,
+//     __externref_*). Double underscore is conventionally
+//     reserved; no production action uses it.
 //   - "runtime."  Go / TinyGo runtime exports (runtime.alloc, etc.).
-//                 The '.' cannot occur in a contract action name.
+//     The '.' cannot occur in a contract action name.
 //   - "syscall."  TinyGo/wasi syscall shims (syscall.seek is exported
-//                 by Magi's own test wasms). Same '.' argument.
+//     by Magi's own test wasms). Same '.' argument.
 //
 // Prefix denial is strictly more durable than the explicit list: a new
 // AssemblyScript/wasm-bindgen helper or syscall shim is blocked the day

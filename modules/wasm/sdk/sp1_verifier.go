@@ -18,7 +18,7 @@ const (
 	sp1VkHashPrefixLen = 4
 	sp1Groth16ProofLen = 256
 	sp1ProofMinLen     = sp1VkHashPrefixLen + 32 + 32 + 32 + sp1Groth16ProofLen // 356
-	sp1VkMinLen        = 292                                                     // fixed fields before IC array
+	sp1VkMinLen        = 292                                                    // fixed fields before IC array
 )
 
 var errSp1InvalidProof = errors.New("sp1: invalid proof")

@@ -14,7 +14,9 @@ import (
 // then does keyAuths[0] — index out of range panic — crashing the node.
 //
 // Additionally, even if HashKeyAuths were fixed, IngestTx line 171 does:
-//   tp.rcs.GetAvailableRCs(txShell.Headers.RequiredAuths[0], latestBlk)
+//
+//	tp.rcs.GetAvailableRCs(txShell.Headers.RequiredAuths[0], latestBlk)
+//
 // which would also panic on an empty slice.
 //
 // Both are reachable from network input (P2P ReceiveTx and RPC IngestTx).

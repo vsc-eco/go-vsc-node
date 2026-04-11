@@ -405,7 +405,7 @@ func TestFuzzAll(t *testing.T) {
 				"negative_index",
 				stateEngine.TxSelf{
 					TxId: "fuzz-tx", BlockId: "abcdef", Index: -1, OpIndex: -1,
-					Timestamp: "2026-03-28T00:00:00",
+					Timestamp:     "2026-03-28T00:00:00",
 					RequiredAuths: []string{"hive:fuzzer"}, RequiredPostingAuths: []string{},
 				},
 			},
@@ -413,7 +413,7 @@ func TestFuzzAll(t *testing.T) {
 				"huge_index",
 				stateEngine.TxSelf{
 					TxId: "fuzz-tx", BlockId: "abcdef", Index: 999999999, OpIndex: 999999999,
-					Timestamp: "2026-03-28T00:00:00",
+					Timestamp:     "2026-03-28T00:00:00",
 					RequiredAuths: []string{"hive:fuzzer"}, RequiredPostingAuths: []string{},
 				},
 			},

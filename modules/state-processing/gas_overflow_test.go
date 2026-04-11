@@ -20,7 +20,7 @@ func TestGasBudgetOverflow(t *testing.T) {
 
 	t.Run("OverflowWithoutCap", func(t *testing.T) {
 		// Simulate what would happen without the cap
-		hugeGas := uint(math.MaxUint64 / params.CYCLE_GAS_PER_RC) + 1
+		hugeGas := uint(math.MaxUint64/params.CYCLE_GAS_PER_RC) + 1
 		overflowed := hugeGas * params.CYCLE_GAS_PER_RC
 		if overflowed > hugeGas {
 			t.Log("no overflow detected — platform may handle this differently")
