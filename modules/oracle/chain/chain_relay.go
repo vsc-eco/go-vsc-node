@@ -69,7 +69,7 @@ type chainRelay interface {
 	// Checks for (optional) latest chain state.
 	GetLatestValidHeight() (chainState, error)
 	// Fetches chaindata and serializes to raw bytes.
-	ChainData(startBlockHeight uint64, count uint64) ([]chainBlock, error)
+	ChainData(ctx context.Context, startBlockHeight uint64, count uint64) ([]chainBlock, error)
 	// GetCanonicalBlockHeader returns the raw 80-byte block header hex for a
 	// given height according to the chain's RPC. Used for reorg detection.
 	// Chains that don't support this should return "", nil.
@@ -409,7 +409,7 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 		}
 	}
 
-	chainData, err := chain.ChainData(contractHeight+1, 50)
+	chainData, err := chain.ChainData(c.ctx, contractHeight+1, 50)
 	if err != nil {
 		return chainSession{}, fmt.Errorf("failed to get chain data: %w", err)
 	}

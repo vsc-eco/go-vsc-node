@@ -15,6 +15,7 @@ package chain
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -104,7 +105,7 @@ func (l *litecoinRelayer) GetLatestValidHeight() (chainState, error) {
 }
 
 // ChainData implements chainRelay.
-func (l *litecoinRelayer) ChainData(startHeight uint64, count uint64) ([]chainBlock, error) {
+func (l *litecoinRelayer) ChainData(_ context.Context, startHeight uint64, count uint64) ([]chainBlock, error) {
 	if startHeight == 0 {
 		return nil, errors.New("start height not provided")
 	}
