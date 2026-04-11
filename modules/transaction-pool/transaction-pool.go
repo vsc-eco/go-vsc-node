@@ -142,6 +142,19 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		return nil, fmt.Errorf("nonce incrementing too fast: %d > %d", txShell.Headers.Nonce, nonce+100)
 	}
 
+	// Reject if nonce - 1 has not been confirmed (via nonce DB) and does not
+	// exist as UNCONFIRMED in the transaction pool.  This prevents gaps in the
+	// nonce sequence.
+	if txShell.Headers.Nonce > nonce {
+		prevExists, err := tp.TxDb.HasUnconfirmedWithNonce(txShell.Headers.RequiredAuths, txShell.Headers.Nonce-1)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check previous nonce: %w", err)
+		}
+		if !prevExists {
+			return nil, fmt.Errorf("missing previous nonce %d in transaction pool", txShell.Headers.Nonce-1)
+		}
+	}
+
 	electionData, err := tp.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
 
 	// make DIDs + verify signatures
@@ -338,6 +351,24 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 	}
 
 	if verified {
+		hashAuths := HashKeyAuths(txShell.Headers.RequiredAuths)
+		nonceRecord, nonceErr := tp.nonceDb.GetNonce(hashAuths)
+		if nonceErr != nil && nonceErr != mongo.ErrNoDocuments {
+			return
+		}
+		confirmedNonce := nonceRecord.Nonce
+
+		if txShell.Headers.Nonce < confirmedNonce && confirmedNonce != 0 {
+			return
+		}
+
+		if txShell.Headers.Nonce > confirmedNonce {
+			prevExists, err := tp.TxDb.HasUnconfirmedWithNonce(txShell.Headers.RequiredAuths, txShell.Headers.Nonce-1)
+			if err != nil || !prevExists {
+				return
+			}
+		}
+
 		tp.indexTx(cidz.String(), txShell)
 	}
 }
