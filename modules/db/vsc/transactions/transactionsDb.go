@@ -185,6 +185,29 @@ func (e *transactions) FindTransactions(ids []string, id *string, account *strin
 	return results, nil
 }
 
+// InvalidateCompetingTransactions marks UNCONFIRMED transactions as DROPPED
+// when they share the same required_auths and nonce as a confirmed transaction.
+func (e *transactions) InvalidateCompetingTransactions(requiredAuths []string, nonces []uint64) (int64, error) {
+	filter := bson.M{
+		"status": string(TransactionStatusUnconfirmed),
+		"required_auths": bson.M{
+			"$all":  requiredAuths,
+			"$size": len(requiredAuths),
+		},
+		"nonce": bson.M{"$in": nonces},
+	}
+
+	result, err := e.UpdateMany(context.Background(), filter, bson.M{
+		"$set": bson.M{
+			"status": string(TransactionStatusDropped),
+		},
+	})
+	if err != nil {
+		return 0, err
+	}
+	return result.ModifiedCount, nil
+}
+
 // Searches for unconfirmed VSC transactions with no verification
 // Provide height for expiration filtering
 func (e *transactions) FindUnconfirmedTransactions(height uint64) ([]TransactionRecord, error) {
