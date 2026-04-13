@@ -82,6 +82,7 @@ type StateEngine struct {
 
 	consensusState      consensus_state.ConsensusState
 	chainConsensusCache consensus_state.ChainConsensusState
+	consensusRuntime    ConsensusRuntime
 
 	wasm *wasm_runtime.Wasm
 
@@ -469,7 +470,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 				}
 
-				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() {
+				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() && !se.chainProcessingSuspended() {
 					actionUpdate := map[string]interface{}{}
 					err := json.Unmarshal(cj.Json, &actionUpdate)
 
@@ -2519,6 +2520,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		tssKeys:        tssKeys,
 
 		consensusState: consensusStateDb,
+		consensusRuntime: NewConsensusRuntime(),
 
 		wasm: wasm,
 

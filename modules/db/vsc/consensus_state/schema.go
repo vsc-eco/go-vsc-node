@@ -17,6 +17,10 @@ type ChainConsensusState struct {
 
 	// MinRequiredVersion is set by recovery_require_version; nodes below this must upgrade.
 	MinRequiredVersion *consensusversion.Version `bson:"min_required_version,omitempty"`
+
+	// NextActivation is an attestation-style record that captures when a coordinated
+	// version line should become active (normal upgrade cutover or postponed recovery cutover).
+	NextActivation *ConsensusActivation `bson:"next_activation,omitempty"`
 }
 
 type PendingConsensusProposal struct {
@@ -34,4 +38,17 @@ func (p PendingConsensusProposal) Target() consensusversion.Version {
 		Consensus:     p.Consensus,
 		NonConsensus: p.NonConsensus,
 	}
+}
+
+type ConsensusActivation struct {
+	// Mode is "normal" or "recovery".
+	Mode string `bson:"mode"`
+	// Version line for the activation (major/consensus; non_consensus is informational).
+	Version consensusversion.Version `bson:"version"`
+	// ActivationHeight is the Hive block height when the line should switch over.
+	ActivationHeight uint64 `bson:"activation_height"`
+	// AttestedBlockHeight is the block where this activation was recorded/attested.
+	AttestedBlockHeight uint64 `bson:"attested_block_height"`
+	// AttestedTxId is the transaction that recorded the activation.
+	AttestedTxId string `bson:"attested_tx_id"`
 }

@@ -97,6 +97,20 @@ func (m *MockConsensusState) SetMinRequiredAndClearSuspension(_ context.Context,
 	return nil
 }
 
+func (m *MockConsensusState) SetNextActivation(_ context.Context, a *consensus_state.ConsensusActivation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.S.NextActivation = a
+	return nil
+}
+
+func (m *MockConsensusState) ClearNextActivation(_ context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.S.NextActivation = nil
+	return nil
+}
+
 // Snapshot returns a copy of current state (for assertions).
 func (m *MockConsensusState) Snapshot() consensus_state.ChainConsensusState {
 	m.mu.Lock()
