@@ -23,4 +23,12 @@ func TestVerifyRecoveryMultisig(t *testing.T) {
 	if VerifyRecoveryMultisig(params.ConsensusParams{}, []string{"hive:alice"}) {
 		t.Fatal("empty config must reject")
 	}
+
+	invalidThreshold := params.ConsensusParams{
+		RecoveryMultisigAccounts: []string{"alice", "alice"},
+		RecoveryMultisigThreshold: 2,
+	}
+	if VerifyRecoveryMultisig(invalidThreshold, []string{"alice"}) {
+		t.Fatal("threshold must not exceed unique configured signer count")
+	}
 }

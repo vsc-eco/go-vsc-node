@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math/rand"
 	"time"
 
@@ -38,6 +39,9 @@ type TransactionBroadcaster struct {
 }
 
 func (t *TransactionBroadcaster) Broadcast(tx hivego.HiveTransaction) (string, error) {
+	if t == nil || t.Client == nil {
+		return "", errors.New("hive broadcaster client is nil")
+	}
 	// err := t.PopulateSigningProps(&tx)
 
 	// if err != nil {
@@ -48,6 +52,9 @@ func (t *TransactionBroadcaster) Broadcast(tx hivego.HiveTransaction) (string, e
 }
 
 func (t *TransactionBroadcaster) PopulateSigningProps(tx *hivego.HiveTransaction, bh []int) error {
+	if t == nil || t.Client == nil {
+		return errors.New("hive broadcaster client is nil")
+	}
 	if len(bh) > 0 {
 		bha := bh[0]
 		hBlock, err := t.Client.GetBlock(bha)
@@ -173,6 +180,9 @@ func (t *TransactionCrafter) CancelTransferFromSavings(from string, requestId in
 }
 
 func (t *TransactionBroadcaster) Sign(tx hivego.HiveTransaction) (string, error) {
+	if t == nil || t.Client == nil {
+		return "", errors.New("hive broadcaster client is nil")
+	}
 	kp, err := t.KeyPair()
 	if err != nil {
 		return "", err
