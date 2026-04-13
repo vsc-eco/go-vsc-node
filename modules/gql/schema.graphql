@@ -259,6 +259,20 @@ type LocalNodeInfo {
   consensus_version_display: String!
   """True while chain processing is suspended until recovery multisig clears the gate."""
   processing_suspended: Boolean!
+  """Active coordinated consensus line (major.consensus) at the local head."""
+  active_consensus_line: String!
+  """Active consensus executor implementation identifier at the local head."""
+  active_consensus_executor: String!
+  """Attested activation mode for the next/active switch-over (normal or recovery)."""
+  consensus_activation_mode: String
+  """Attested cutover height for activation."""
+  consensus_activation_height: Uint64
+  """Attested activation version display (major.consensus.non_consensus)."""
+  consensus_activation_version: String
+  """Block height where the activation was attested."""
+  consensus_activation_attested_block: Uint64
+  """Transaction id that attested the activation."""
+  consensus_activation_attested_txid: String
   """Status of each registered chain oracle."""
   chain_oracles: [ChainOracleStatus!]!
 }
@@ -421,6 +435,14 @@ type ElectionMember {
   key: String!
   """Hive account of the elected member."""
   account: String!
+  """True when per-member version fields were recorded at election time."""
+  has_per_member_version: Boolean!
+  """Major component at election snapshot for this member."""
+  member_major: Uint64!
+  """Consensus component at election snapshot for this member."""
+  member_consensus: Uint64!
+  """Non-consensus component at election snapshot for this member."""
+  member_non_consensus: Uint64!
 }
 
 """

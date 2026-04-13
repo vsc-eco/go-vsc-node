@@ -177,18 +177,18 @@ func (e *electionProposer) GenerateElection() (elections.ElectionHeader, electio
 
 // Generates a raw election graph from local data
 func (e *electionProposer) GenerateElectionAtBlock(blk uint64) (elections.ElectionHeader, elections.ElectionData, error) {
-	witnesses, err := e.witnesses.GetWitnessesAtBlockHeight(blk, witnesses.EnabledOnly())
-	if err != nil {
-		return elections.ElectionHeader{}, elections.ElectionData{}, err
+	witnesses, werr := e.witnesses.GetWitnessesAtBlockHeight(blk, witnesses.EnabledOnly())
+	if werr != nil {
+		return elections.ElectionHeader{}, elections.ElectionData{}, werr
 	}
-	electionResult, err := e.elections.GetElectionByHeight(blk - 1)
-	if err != nil && err != mongo.ErrNoDocuments {
-		return elections.ElectionHeader{}, elections.ElectionData{}, err
+	electionResult, elecErr := e.elections.GetElectionByHeight(blk - 1)
+	if elecErr != nil && elecErr != mongo.ErrNoDocuments {
+		return elections.ElectionHeader{}, elections.ElectionData{}, elecErr
 	}
 
 	var prevEpoch uint64
 	var prevVer consensusversion.Version
-	if err == nil {
+	if elecErr == nil {
 		prevEpoch = electionResult.Epoch
 		prevVer = elections.ResultVersion(electionResult)
 	}
@@ -214,8 +214,8 @@ func (e *electionProposer) GenerateFullElection(
 	prevVersion consensusversion.Version,
 	blockHeight uint64,
 ) (elections.ElectionHeader, elections.ElectionData, error) {
-	adopted := e.se.TssMinimumConsensusVersion(blockHeight)
-	effective := consensusversion.MaxComponentwise(prevVersion, adopted)
+	_ = prevVersion
+	effective := e.se.TssMinimumConsensusVersion(blockHeight)
 
 	witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 		return !w.ConsensusVersionTriple().MeetsConsensusMin(effective)
@@ -300,9 +300,14 @@ func (e *electionProposer) GenerateFullElection(
 		if err != nil {
 			panic(err)
 		}
+		t := w.ConsensusVersionTriple()
 		return elections.ElectionMember{
-			Key:     key.String(),
-			Account: w.Account,
+			Key:                 key.String(),
+			Account:             w.Account,
+			HasPerMemberVersion: true,
+			MemberMajor:         t.Major,
+			MemberConsensus:     t.Consensus,
+			MemberNonConsensus:  t.NonConsensus,
 		}
 	})
 

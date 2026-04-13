@@ -976,7 +976,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// not currentElection which may have different members/order.
 			commitElection := tssMgr.electionDb.GetElection(commitment.Epoch)
 			if commitElection == nil || commitElection.Members == nil {
-				log.Warn("cannot find commit election", "epoch", commitElection.Epoch)
+				log.Warn("cannot find commit election", "epoch", commitment.Epoch)
 				continue
 			}
 			for midx, member := range commitElection.Members {
@@ -1081,8 +1081,13 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					log.Verbose("excluding non-ready node from signing", "sessionId", sessionId, "account", p.Account)
 					continue
 				}
-				w, werr := tssMgr.witnessDb.GetWitnessAtHeight(p.Account, &bh)
-				if werr != nil || !stateEngine.WitnessMeetsEffectiveMinimum(w, minSignVer) {
+				em, ok := electionMemberByAccount(commitElection.Members, p.Account)
+				if !ok {
+					log.Verbose("excluding signing participant not in commit election", "sessionId", sessionId, "account", p.Account)
+					continue
+				}
+				mv := elections.MemberConsensusVersion(em, *commitElection)
+				if !mv.MeetsConsensusMin(minSignVer) {
 					log.Verbose("excluding node failing version gate from signing", "sessionId", sessionId, "account", p.Account)
 					continue
 				}
@@ -1257,8 +1262,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						log.Verbose("excluding non-ready node from old committee", "sessionId", sessionId, "account", member.Account)
 						continue
 					}
-					ow, owErr := tssMgr.witnessDb.GetWitnessAtHeight(member.Account, &bh)
-					if owErr != nil || !stateEngine.WitnessMeetsEffectiveMinimum(ow, minReshareVer) {
+					ov := elections.MemberConsensusVersion(member, *commitmentElection)
+					if !ov.MeetsConsensusMin(minReshareVer) {
 						log.Verbose("excluding old committee node failing version gate", "sessionId", sessionId, "account", member.Account)
 						continue
 					}
@@ -1288,8 +1293,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					log.Verbose("excluding non-ready node from new committee", "sessionId", sessionId, "account", member.Account)
 					continue
 				}
-				nw, nwErr := tssMgr.witnessDb.GetWitnessAtHeight(member.Account, &bh)
-				if nwErr != nil || !stateEngine.WitnessMeetsEffectiveMinimum(nw, minReshareVer) {
+				nv := elections.MemberConsensusVersion(member, currentElection)
+				if !nv.MeetsConsensusMin(minReshareVer) {
 					excludedNodes = append(excludedNodes, member.Account)
 					log.Verbose("excluding new committee node failing version gate", "sessionId", sessionId, "account", member.Account)
 					continue
@@ -2070,6 +2075,16 @@ func New(
 		readinessSent:      make(map[string]bool),
 		gossipAttestations: make(map[string]map[string]ReadyAttestation),
 	}
+}
+
+// electionMemberByAccount resolves committee membership for deterministic TSS version checks.
+func electionMemberByAccount(members []elections.ElectionMember, account string) (elections.ElectionMember, bool) {
+	for _, m := range members {
+		if m.Account == account {
+			return m, true
+		}
+	}
+	return elections.ElectionMember{}, false
 }
 
 //Processes:

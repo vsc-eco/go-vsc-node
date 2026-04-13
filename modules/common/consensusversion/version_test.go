@@ -39,3 +39,12 @@ func TestMaxComponentwise(t *testing.T) {
 		t.Fatalf("got %+v", m)
 	}
 }
+
+func TestMergeElectionAndAdoptedMinMajorBump(t *testing.T) {
+	prev := Version{Major: 0, Consensus: 3, NonConsensus: 0}
+	adopted := Version{Major: 1, Consensus: 0, NonConsensus: 0}
+	m := MergeElectionAndAdoptedMin(prev, adopted)
+	if m != adopted {
+		t.Fatalf("major bump must not inherit old consensus counter: got %+v want %+v", m, adopted)
+	}
+}

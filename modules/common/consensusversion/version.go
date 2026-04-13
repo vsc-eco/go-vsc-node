@@ -77,3 +77,13 @@ func MaxComponentwise(a, b Version) Version {
 	}
 	return out
 }
+
+// MergeElectionAndAdoptedMin combines the last election's triple with chain-adopted version.
+// When adopted bumps major above the election line, the election's old consensus counter must not
+// be mixed in (otherwise MaxComponentwise would produce a never-announced hybrid like 1.5.0).
+func MergeElectionAndAdoptedMin(prevElection, adopted Version) Version {
+	if adopted.Major > prevElection.Major {
+		return adopted
+	}
+	return MaxComponentwise(prevElection, adopted)
+}

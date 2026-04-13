@@ -18,6 +18,24 @@ import (
 	"github.com/vsc-eco/hivego"
 )
 
+func newMockTxCreator(t *testing.T, hiveRpcClient *mockHiveRpcClient) *hive.MockTransactionCreator {
+	t.Helper()
+	kp, err := hivego.KeyPairFromWif("5JpboCuFbypjdBzSgWwWm3ZjGpQoPbSc7bcoXYg26TWQZ7uwFRM")
+	if err != nil {
+		t.Fatalf("failed to create mock keypair: %v", err)
+	}
+	return &hive.MockTransactionCreator{
+		MockTransactionBroadcaster: hive.MockTransactionBroadcaster{
+			KeyPair: kp,
+			Callback: func(tx hivego.HiveTransaction) error {
+				hiveRpcClient.updateAccountCallCount++
+				return nil
+			},
+		},
+		TransactionCrafter: hive.TransactionCrafter{},
+	}
+}
+
 // ===== mocks =====
 
 type mockHiveRpcClient struct {
@@ -55,16 +73,10 @@ func TestImmediateExecution(t *testing.T) {
 	conf := common.NewIdentityConfig()
 	p2pConf := p2pInterface.NewConfig()
 
-	txCreator := hive.LiveTransactionCreator{
-		TransactionBroadcaster: hive.TransactionBroadcaster{
-			KeyPair: conf.HiveActiveKeyPair,
-			Client:  nil,
-		},
-		TransactionCrafter: hive.TransactionCrafter{},
-	}
+	txCreator := newMockTxCreator(t, hiveRpcClient)
 	p2p := mockPeer(sysConfig, conf, p2pConf)
 
-	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, p2pConf, time.Second*15, &txCreator, p2p)
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, p2pConf, time.Second*15, txCreator, p2p)
 	assert.NoError(t, err)
 
 	agg := aggregate.New([]aggregate.Plugin{
@@ -90,14 +102,8 @@ func TestCronExecutions(t *testing.T) {
 	conf := common.NewIdentityConfig()
 	p2pConf := p2pInterface.NewConfig()
 
-	txCreator := hive.LiveTransactionCreator{
-		TransactionBroadcaster: hive.TransactionBroadcaster{
-			KeyPair: conf.HiveActiveKeyPair,
-			Client:  nil,
-		},
-		TransactionCrafter: hive.TransactionCrafter{},
-	}
-	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, p2pConf, time.Second*2, &txCreator, mockPeer(sysConfig, conf, p2pConf))
+	txCreator := newMockTxCreator(t, hiveRpcClient)
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, p2pConf, time.Second*2, txCreator, mockPeer(sysConfig, conf, p2pConf))
 	assert.NoError(t, err)
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,
@@ -127,15 +133,9 @@ func TestStopAnnouncer(t *testing.T) {
 	conf := common.NewIdentityConfig()
 	p2pConf := p2pInterface.NewConfig()
 
-	txCreator := hive.LiveTransactionCreator{
-		TransactionBroadcaster: hive.TransactionBroadcaster{
-			KeyPair: nil,
-			Client:  nil,
-		},
-		TransactionCrafter: hive.TransactionCrafter{},
-	}
+	txCreator := newMockTxCreator(t, hiveRpcClient)
 	p2p := mockPeer(sysConfig, conf, p2pConf)
-	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, p2pConf, time.Second*2, &txCreator, p2p)
+	anouncementsManager, err := announcements.New(hiveRpcClient, conf, sysConfig, p2pConf, time.Second*2, txCreator, p2p)
 	assert.NoError(t, err)
 	agg := aggregate.New([]aggregate.Plugin{
 		conf,

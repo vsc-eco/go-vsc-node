@@ -10,3 +10,17 @@ func ResultVersion(r ElectionResult) consensusversion.Version {
 		NonConsensus: r.VersionNonConsensus,
 	}
 }
+
+// MemberConsensusVersion returns the deterministic version snapshot for TSS gating.
+// When HasPerMemberVersion is set, Member* fields come from the witness at election time; otherwise
+// legacy elections use the election-level triple for all members (same value for every member).
+func MemberConsensusVersion(m ElectionMember, el ElectionResult) consensusversion.Version {
+	if m.HasPerMemberVersion {
+		return consensusversion.Version{
+			Major:         m.MemberMajor,
+			Consensus:     m.MemberConsensus,
+			NonConsensus: m.MemberNonConsensus,
+		}
+	}
+	return ResultVersion(el)
+}

@@ -230,6 +230,16 @@ func MinimalRequiredElectionVotes(blocksSinceLastElection, memberCountOfLastElec
 	return uint64(math.Round(mappedValue))
 }
 
+// MinimalRequiredConsensusVersionVotes is a fixed 2/3 stake threshold for adopting a proposed
+// consensus version. Unlike MinimalRequiredElectionVotes, it does not decay over time — a
+// long-pending upgrade must not become adoptable by a small minority.
+func MinimalRequiredConsensusVersionVotes(totalWeight uint64) uint64 {
+	if totalWeight == 0 {
+		return 0
+	}
+	return uint64(math.Ceil(float64(totalWeight) * 2.0 / 3.0))
+}
+
 func init() {
 	cbornode.RegisterCborType(ElectionResultRecord{})
 	cbornode.RegisterCborType(ElectionResult{})

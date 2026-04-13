@@ -57,4 +57,9 @@ type ElectionResultRecord struct {
 type ElectionMember struct {
 	Key     string `json:"key" graphql:"key" refmt:"key"`
 	Account string `json:"account" graphql:"account" refmt:"account"`
+	// HasPerMemberVersion is true when Member* fields were snapshotted at election build time (post-feature elections).
+	HasPerMemberVersion bool `json:"has_per_member_version,omitempty" graphql:"has_per_member_version" refmt:"has_per_member_version"`
+	MemberMajor         uint64 `json:"member_major,omitempty" graphql:"member_major" refmt:"member_major"`
+	MemberConsensus     uint64 `json:"member_consensus,omitempty" graphql:"member_consensus" refmt:"member_consensus"`
+	MemberNonConsensus  uint64 `json:"member_non_consensus,omitempty" graphql:"member_non_consensus" refmt:"member_non_consensus"`
 }

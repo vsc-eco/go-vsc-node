@@ -49,6 +49,8 @@ type ConsensusState interface {
 	SetAdoptedVersion(ctx context.Context, v consensusversion.Version) error
 	SetProcessingSuspended(ctx context.Context, suspended bool) error
 	SetMinRequiredAndClearSuspension(ctx context.Context, v consensusversion.Version) error
+	SetNextActivation(ctx context.Context, a *ConsensusActivation) error
+	ClearNextActivation(ctx context.Context) error
 }
 
 func (c *consensusState) Get(ctx context.Context) (ChainConsensusState, error) {
@@ -70,6 +72,7 @@ func defaultState() ChainConsensusState {
 		ProcessingSuspended:   false,
 		PendingProposal:     nil,
 		MinRequiredVersion:    nil,
+		NextActivation:      nil,
 	}
 }
 
@@ -126,6 +129,24 @@ func (c *consensusState) SetMinRequiredAndClearSuspension(ctx context.Context, v
 			},
 			"$unset": bson.M{"pending_proposal": ""},
 		},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
+func (c *consensusState) SetNextActivation(ctx context.Context, a *ConsensusActivation) error {
+	_, err := c.Collection.UpdateOne(ctx,
+		bson.M{"_id": singletonID},
+		bson.M{"$set": bson.M{"next_activation": a}},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
+func (c *consensusState) ClearNextActivation(ctx context.Context) error {
+	_, err := c.Collection.UpdateOne(ctx,
+		bson.M{"_id": singletonID},
+		bson.M{"$unset": bson.M{"next_activation": ""}},
 		options.Update().SetUpsert(true),
 	)
 	return err
