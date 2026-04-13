@@ -16,6 +16,9 @@ func VerifyRecoveryMultisig(p params.ConsensusParams, requiredAuths []string) bo
 	for _, a := range p.RecoveryMultisigAccounts {
 		allowed[strings.TrimPrefix(a, "hive:")] = true
 	}
+	if p.RecoveryMultisigThreshold > len(allowed) {
+		return false
+	}
 	seen := make(map[string]bool)
 	for _, raw := range requiredAuths {
 		acc := strings.TrimPrefix(raw, "hive:")

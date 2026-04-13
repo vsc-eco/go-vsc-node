@@ -13,7 +13,7 @@ import (
 func isRecoveryAllowlistedCustomJSON(id string) bool {
 	switch id {
 	case "vsc.recovery_require_version", "vsc.recovery_suspend",
-		"vsc.election_result", "vsc.fr_sync", "vsc.actions":
+		"vsc.election_result", "vsc.fr_sync":
 		return true
 	default:
 		return false
@@ -63,7 +63,12 @@ func (se *StateEngine) TryFinalizeConsensusProposal(blockHeight uint64) {
 	if st.PendingProposal == nil {
 		return
 	}
-	target := st.PendingProposal.Target()
+	target := coordinationTarget(st.PendingProposal.Target())
+	adopted := coordinationTarget(se.EffectiveAdoptedConsensusVersion())
+	if target.Cmp(adopted) < 0 {
+		log.Warn("pending consensus target is below adopted; refusing finalize", "target", target.Format(), "adopted", adopted.Format())
+		return
+	}
 
 	prevElec, err := se.electionDb.GetElectionByHeight(blockHeight)
 	if err != nil {
@@ -78,20 +83,29 @@ func (se *StateEngine) TryFinalizeConsensusProposal(blockHeight uint64) {
 			totalWeight += w
 		}
 	}
-
-	blocksSince := uint64(0)
-	if blockHeight > prevElec.BlockHeight {
-		blocksSince = blockHeight - prevElec.BlockHeight
+	if totalWeight == 0 {
+		log.Warn("cannot finalize consensus proposal with zero election weight", "blockHeight", blockHeight)
+		return
 	}
-	minVotes := elections.MinimalRequiredElectionVotes(blocksSince, totalWeight)
+
+	minVotes := elections.MinimalRequiredConsensusVersionVotes(totalWeight)
 
 	var readyWeight uint64
 	for i, m := range prevElec.Members {
-		w, err := se.witnessDb.GetWitnessAtHeight(m.Account, &blockHeight)
-		if err != nil || w == nil {
-			continue
+		ready := false
+		// Deterministic fast path: for elections that snapshot per-member versions,
+		// finalize readiness must come from election data, not local witness DB state.
+		if m.HasPerMemberVersion {
+			mv := coordinationTarget(elections.MemberConsensusVersion(m, prevElec))
+			ready = mv.MeetsConsensusMin(target)
+		} else {
+			// Legacy elections fallback.
+			w, err := se.witnessDb.GetWitnessAtHeight(m.Account, &blockHeight)
+			if err == nil && w != nil {
+				ready = coordinationTarget(w.ConsensusVersionTriple()).MeetsConsensusMin(target)
+			}
 		}
-		if !w.ConsensusVersionTriple().MeetsConsensusMin(target) {
+		if !ready {
 			continue
 		}
 		if len(prevElec.Weights) == 0 {
@@ -102,8 +116,27 @@ func (se *StateEngine) TryFinalizeConsensusProposal(blockHeight uint64) {
 	}
 
 	if readyWeight >= minVotes {
-		_ = se.consensusState.SetAdoptedVersion(context.Background(), target)
-		_ = se.consensusState.ClearPendingProposal(context.Background())
+		if err := se.consensusState.SetAdoptedVersion(context.Background(), target); err != nil {
+			log.Warn("SetAdoptedVersion failed", "err", err)
+			return
+		}
+		if err := se.consensusState.ClearPendingProposal(context.Background()); err != nil {
+			log.Warn("ClearPendingProposal failed after adopt", "err", err)
+			return
+		}
+		if st.PendingProposal != nil {
+			act := &consensus_state.ConsensusActivation{
+				Mode:                "normal",
+				Version:             target,
+				ActivationHeight:    blockHeight + 1,
+				AttestedBlockHeight: blockHeight,
+				AttestedTxId:        st.PendingProposal.TxId,
+			}
+			if err := se.consensusState.SetNextActivation(context.Background(), act); err != nil {
+				log.Warn("SetNextActivation failed after adopt", "err", err)
+				return
+			}
+		}
 		se.refreshChainConsensusCache()
 	}
 }
@@ -112,6 +145,7 @@ func (se *StateEngine) executeProposeConsensusVersion(tx *TxProposeConsensusVers
 	if se.consensusState == nil {
 		return
 	}
+	st := se.chainConsensusCache
 	if tx.NetId != "" && tx.NetId != se.sconf.NetId() {
 		return
 	}
@@ -130,15 +164,39 @@ func (se *StateEngine) executeProposeConsensusVersion(tx *TxProposeConsensusVers
 	if !found {
 		return
 	}
-	prop := &consensus_state.PendingConsensusProposal{
+	target := coordinationTarget(consensusversion.Version{
 		Major:         tx.Major,
 		Consensus:     tx.Consensus,
 		NonConsensus: tx.NonConsensus,
+	})
+	adopted := coordinationTarget(se.EffectiveAdoptedConsensusVersion())
+	if target.Cmp(adopted) < 0 {
+		return
+	}
+	if st.PendingProposal != nil {
+		pending := coordinationTarget(st.PendingProposal.Target())
+		// Coordination mode: once a target is pending, no different target can
+		// replace it until it is adopted/cleared.
+		if target.Cmp(pending) != 0 {
+			return
+		}
+		if target.Cmp(pending) == 0 {
+			se.TryFinalizeConsensusProposal(tx.Self.BlockHeight)
+			return
+		}
+	}
+	prop := &consensus_state.PendingConsensusProposal{
+		Major:         tx.Major,
+		Consensus:     tx.Consensus,
+		NonConsensus: 0,
 		Proposer:      firstHiveAuth(tx.Self.RequiredAuths),
 		BlockHeight:   tx.Self.BlockHeight,
 		TxId:          tx.Self.TxId,
 	}
-	_ = se.consensusState.SetPendingProposal(context.Background(), prop)
+	if err := se.consensusState.SetPendingProposal(context.Background(), prop); err != nil {
+		log.Warn("SetPendingProposal failed", "err", err)
+		return
+	}
 	se.refreshChainConsensusCache()
 	se.TryFinalizeConsensusProposal(tx.Self.BlockHeight)
 }
@@ -151,7 +209,10 @@ func (se *StateEngine) executeRecoverySuspend(tx *TxRecoverySuspend) {
 	if se.consensusState == nil {
 		return
 	}
-	_ = se.consensusState.SetProcessingSuspended(context.Background(), true)
+	if err := se.consensusState.SetProcessingSuspended(context.Background(), true); err != nil {
+		log.Warn("SetProcessingSuspended failed", "err", err)
+		return
+	}
 	se.refreshChainConsensusCache()
 }
 
@@ -163,12 +224,29 @@ func (se *StateEngine) executeRecoveryRequireVersion(tx *TxRecoveryRequireVersio
 	if se.consensusState == nil {
 		return
 	}
+	if !se.chainConsensusCache.ProcessingSuspended {
+		return
+	}
 	v := consensusversion.Version{
 		Major:         tx.Major,
 		Consensus:     tx.Consensus,
 		NonConsensus: tx.NonConsensus,
 	}
-	_ = se.consensusState.SetMinRequiredAndClearSuspension(context.Background(), v)
+	if err := se.consensusState.SetMinRequiredAndClearSuspension(context.Background(), v); err != nil {
+		log.Warn("SetMinRequiredAndClearSuspension failed", "err", err)
+		return
+	}
+	act := &consensus_state.ConsensusActivation{
+		Mode:                "recovery",
+		Version:             coordinationTarget(v),
+		ActivationHeight:    tx.Self.BlockHeight + 1,
+		AttestedBlockHeight: tx.Self.BlockHeight,
+		AttestedTxId:        tx.Self.TxId,
+	}
+	if err := se.consensusState.SetNextActivation(context.Background(), act); err != nil {
+		log.Warn("SetNextActivation failed for recovery", "err", err)
+		return
+	}
 	se.refreshChainConsensusCache()
 }
 
@@ -177,6 +255,14 @@ func firstHiveAuth(auths []string) string {
 		return ""
 	}
 	return strings.TrimPrefix(auths[0], "hive:")
+}
+
+func coordinationTarget(v consensusversion.Version) consensusversion.Version {
+	return consensusversion.Version{
+		Major:         v.Major,
+		Consensus:     v.Consensus,
+		NonConsensus: 0,
+	}
 }
 
 // WitnessMeetsEffectiveMinimum returns true if the witness can participate in TSS for the given election minimum.
@@ -194,7 +280,7 @@ func (se *StateEngine) ElectionMinimumVersion(e *elections.ElectionResult) conse
 	}
 	v := elections.ResultVersion(*e)
 	adopted := se.EffectiveAdoptedConsensusVersion()
-	return consensusversion.MaxComponentwise(v, adopted)
+	return consensusversion.MergeElectionAndAdoptedMin(v, adopted)
 }
 
 // ProcessingSuspendedForPool is used by the transaction pool to reject offchain txs.
