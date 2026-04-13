@@ -115,6 +115,9 @@ func (o *Oracle) Init() error {
 	log.Println("[oracle] Init: registering blockTick callback")
 	o.hiveConsumer.RegisterBlockTick("oracle", o.blockTick, true)
 
+	// TODO(temporary): remove once nodes have updated configs.
+	o.oracleConf.migrateBitcoindToVscBtcd()
+
 	// Configure RPC connections for all chains from oracle config
 	cfg := o.oracleConf.Get()
 	for symbol := range chain.RegisteredChains() {
