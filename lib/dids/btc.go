@@ -20,7 +20,7 @@ import (
 
 // did:pkh:bip122 method for Bitcoin mainnet
 // CAIP-2 chain ID: first 32 hex chars of genesis block hash
-const BtcDIDPrefix = "did:pkh:bip122:000000000019d6689c085ae165831e93:"
+const BtcDIDPrefix = "did:pkh:bip122:000000000019d6689c085ae165831e93/"
 
 // ===== interface assertions =====
 
