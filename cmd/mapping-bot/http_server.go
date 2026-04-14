@@ -132,6 +132,15 @@ func requestHandler(
 	bot *mapper.Bot,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
 		// validate incoming request + parse for vsc address
 		if r.Method != http.MethodPost {
 			writeResponse(w, http.StatusMethodNotAllowed, "only POST allowed")
