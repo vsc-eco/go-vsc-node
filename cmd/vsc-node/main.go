@@ -41,6 +41,7 @@ import (
 
 	data_availability "vsc-node/modules/data-availability/server"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
+	wasm_sdk "vsc-node/modules/wasm/sdk"
 
 	flatfs "github.com/ipfs/go-ds-flatfs"
 	"github.com/vsc-eco/hivego"
@@ -89,6 +90,7 @@ func main() {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
+	wasm_sdk.Init(sysConfig.OnMainnet())
 	if args.sysconfigPath != "" {
 		if args.network != "devnet" && args.network != "mocknet" {
 			fmt.Println("Error: -sysconfig overrides are only allowed on devnet and mocknet")
