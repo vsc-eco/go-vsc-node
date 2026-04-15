@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,6 +16,79 @@ import (
 	graphql "github.com/hasura/go-graphql-client"
 )
 
+// ---------------------------------------------------------------------------
+// Fallback helpers
+// ---------------------------------------------------------------------------
+
+// gqlHTTPPost sends bodyBytes as a JSON POST to each configured URL in order,
+// stopping at the first URL that responds with a 2xx status. The decode func
+// is called with the successful response and its result is returned directly
+// (application-level errors such as GraphQL errors are NOT retried).
+// Network errors and non-2xx HTTP responses trigger fallback to the next URL.
+func (b *Bot) gqlHTTPPost(ctx context.Context, bodyBytes []byte, decode func(*http.Response) error) error {
+	urls := b.gqlURLs
+	if b.GqlURL != "" {
+		urls = []string{b.GqlURL}
+	}
+	var lastErr error
+	for _, url := range urls {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+		if err != nil {
+			// Bad URL — non-retriable.
+			return fmt.Errorf("build request for %s: %w", url, err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue // network error — try next URL
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+			continue // server error — try next URL
+		}
+		decErr := decode(resp)
+		resp.Body.Close()
+		return decErr // success or application error — don't retry
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return errors.New("no GraphQL endpoints configured")
+}
+
+// gqlClientDo calls fn with each configured graphql.Client in order, stopping
+// at the first success. Only errors from fn trigger fallback to the next client.
+// fn should create a fresh query struct on each invocation to avoid partial-state
+// issues across retries.
+func (b *Bot) gqlClientDo(fn func(*graphql.Client) error) error {
+	clients := b.gqlClients
+	if b.GqlClient != nil {
+		clients = []*graphql.Client{b.GqlClient}
+	}
+	var lastErr error
+	for _, client := range clients {
+		if err := fn(client); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	if len(clients) == 0 {
+		return errors.New("no GraphQL clients configured")
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Contract state queries (hasura graphql-client based)
+// ---------------------------------------------------------------------------
+
 type GetContractStateQuery struct {
 	GetStateByKeys json.RawMessage `graphql:"getStateByKeys(contractId: $contractId, keys: $keys, encoding: $encoding)"`
 }
@@ -23,39 +97,43 @@ func (b *Bot) fetchMultipleTxSpendKeys(
 	ctx context.Context,
 	registry []string,
 ) (map[string]*contractinterface.SigningData, error) {
-	var query GetContractStateQuery
-
 	keys := make([]string, len(registry))
 	for i, txId := range registry {
 		keys[i] = contractinterface.TxSpendsPrefix + txId
 	}
 
-	vars2 := map[string]any{
+	vars := map[string]interface{}{
 		"contractId": b.BotConfig.ContractId(),
 		"keys":       keys,
 		"encoding":   "hex",
 	}
 
-	err := b.GqlClient.Query(ctx, &query, vars2, graphql.OperationName("GetContractState"))
+	var result json.RawMessage
+	err := b.gqlClientDo(func(client *graphql.Client) error {
+		var q GetContractStateQuery
+		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
+			return err
+		}
+		result = q.GetStateByKeys
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
 
 	var stateMap map[string]json.RawMessage
-	err = json.Unmarshal(query.GetStateByKeys, &stateMap)
-	if err != nil {
+	if err := json.Unmarshal(result, &stateMap); err != nil {
 		return nil, err
 	}
 
-	var txSpends = make(map[string]*contractinterface.SigningData, len(registry))
+	txSpends := make(map[string]*contractinterface.SigningData, len(registry))
 	for i, txId := range registry {
 		spendJson, ok := stateMap[keys[i]]
 		if !ok {
 			log.Printf("tx spend registry data does not match listed spends")
 		} else {
 			var tmp string
-			err = json.Unmarshal(spendJson, &tmp)
-			if err != nil {
+			if err := json.Unmarshal(spendJson, &tmp); err != nil {
 				return nil, err
 			}
 			decoded, err := hex.DecodeString(tmp)
@@ -75,21 +153,27 @@ func (b *Bot) fetchMultipleTxSpendKeys(
 
 // returns a map of transaction Ids to unsigned data that was submitted to be signed
 func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.SigningData, error) {
-	var query GetContractStateQuery
-
-	vars1 := map[string]any{
+	vars := map[string]interface{}{
 		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{contractinterface.TxSpendsRegistryKey},
 		"encoding":   "hex",
 	}
-	err := b.GqlClient.Query(ctx, &query, vars1, graphql.OperationName("GetContractState"))
+
+	var result json.RawMessage
+	err := b.gqlClientDo(func(client *graphql.Client) error {
+		var q GetContractStateQuery
+		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
+			return err
+		}
+		result = q.GetStateByKeys
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
 
 	var stateMap map[string]json.RawMessage
-	err = json.Unmarshal(query.GetStateByKeys, &stateMap)
-	if err != nil {
+	if err := json.Unmarshal(result, &stateMap); err != nil {
 		return nil, err
 	}
 
@@ -97,8 +181,7 @@ func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.
 	if txSpendsData, exists := stateMap[contractinterface.TxSpendsRegistryKey]; exists &&
 		string(txSpendsData) != `"null"` {
 		var tmp string
-		err = json.Unmarshal(txSpendsData, &tmp)
-		if err != nil {
+		if err := json.Unmarshal(txSpendsData, &tmp); err != nil {
 			return nil, err
 		}
 		decoded, err := hex.DecodeString(tmp)
@@ -111,38 +194,37 @@ func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.
 		}
 	}
 
-	var txSpends map[string]*contractinterface.SigningData
 	if len(txSpendsRegistry) > 0 {
-		txSpends, err = b.fetchMultipleTxSpendKeys(ctx, txSpendsRegistry)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		txSpends = make(map[string]*contractinterface.SigningData)
+		return b.fetchMultipleTxSpendKeys(ctx, txSpendsRegistry)
 	}
-
-	return txSpends, nil
+	return make(map[string]*contractinterface.SigningData), nil
 }
 
 // TODO: use individual utxos (txid:vout) instead of just txids
 func (b *Bot) FetchObservedTx(ctx context.Context, txId string, vout int) (bool, error) {
-	var query GetContractStateQuery
-
 	key := contractinterface.ObservedPrefix + fmt.Sprintf("%s:%d", txId, vout)
 
-	variables := map[string]any{
+	vars := map[string]interface{}{
 		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{key},
 		"encoding":   "hex",
 	}
-	err := b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
+
+	var result json.RawMessage
+	err := b.gqlClientDo(func(client *graphql.Client) error {
+		var q GetContractStateQuery
+		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
+			return err
+		}
+		result = q.GetStateByKeys
+		return nil
+	})
 	if err != nil {
 		return false, err
 	}
 
 	var stateMap map[string]json.RawMessage
-	err = json.Unmarshal(query.GetStateByKeys, &stateMap)
-	if err != nil {
+	if err := json.Unmarshal(result, &stateMap); err != nil {
 		return false, err
 	}
 
@@ -154,26 +236,34 @@ func (b *Bot) FetchObservedTx(ctx context.Context, txId string, vout int) (bool,
 func (b *Bot) FetchSignatures(
 	ctx context.Context, msgHex []string,
 ) (map[string]database.SignatureUpdate, error) {
-	var query struct {
-		Tss []struct {
-			Msg    string `graphql:"msg"`
-			Sig    string `graphql:"sig"`
-			Status string `graphql:"status"`
-		} `graphql:"getTssRequests(keyId: $keyId, msgHex: $msgHex)"`
-	}
-
-	variables := map[string]any{
+	vars := map[string]interface{}{
 		"keyId":  strings.Join([]string{b.BotConfig.ContractId(), "main"}, "-"),
 		"msgHex": msgHex,
 	}
 
-	opName := graphql.OperationName("GetTssRequests")
-	if err := b.GqlClient.Query(ctx, &query, variables, opName); err != nil {
+	type tssRow struct {
+		Msg    string `graphql:"msg"`
+		Sig    string `graphql:"sig"`
+		Status string `graphql:"status"`
+	}
+	var rows []tssRow
+
+	err := b.gqlClientDo(func(client *graphql.Client) error {
+		var q struct {
+			Tss []tssRow `graphql:"getTssRequests(keyId: $keyId, msgHex: $msgHex)"`
+		}
+		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetTssRequests")); err != nil {
+			return err
+		}
+		rows = q.Tss
+		return nil
+	})
+	if err != nil {
 		return nil, fmt.Errorf("failed graphql query: %w", err)
 	}
 
 	out := make(map[string]database.SignatureUpdate)
-	for _, tss := range query.Tss {
+	for _, tss := range rows {
 		if tss.Status != "complete" {
 			continue
 		}
@@ -190,17 +280,18 @@ func (b *Bot) FetchSignatures(
 	return out, nil
 }
 
-// FetchTransactionStatus queries the VSC node for a transaction's current status
-// using a raw GraphQL request (the hasura client doesn't handle input types well).
-func (b *Bot) FetchTransactionStatus(ctx context.Context, txId string) (string, error) {
-	gqlQuery := `query FindTransaction($filterOptions: TransactionFilter) {
-		findTransaction(filterOptions: $filterOptions) {
-			status
-		}
-	}`
+// ---------------------------------------------------------------------------
+// Raw HTTP GraphQL queries
+// ---------------------------------------------------------------------------
 
+// FetchTransactionStatus queries the VSC node for a transaction's current status.
+func (b *Bot) FetchTransactionStatus(ctx context.Context, txId string) (string, error) {
 	reqBody, err := json.Marshal(map[string]any{
-		"query": gqlQuery,
+		"query": `query FindTransaction($filterOptions: TransactionFilter) {
+			findTransaction(filterOptions: $filterOptions) {
+				status
+			}
+		}`,
 		"variables": map[string]any{
 			"filterOptions": map[string]any{
 				"byId": txId,
@@ -210,18 +301,6 @@ func (b *Bot) FetchTransactionStatus(ctx context.Context, txId string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal graphql request: %w", err)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.GqlURL, bytes.NewReader(reqBody))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to query transaction status: %w", err)
-	}
-	defer resp.Body.Close()
 
 	var result struct {
 		Data struct {
@@ -233,8 +312,11 @@ func (b *Bot) FetchTransactionStatus(ctx context.Context, txId string) (string, 
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
+	err = b.gqlHTTPPost(ctx, reqBody, func(resp *http.Response) error {
+		return json.NewDecoder(resp.Body).Decode(&result)
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to query transaction status: %w", err)
 	}
 	if len(result.Errors) > 0 {
 		return "", fmt.Errorf("graphql error: %s", result.Errors[0].Message)
@@ -242,7 +324,6 @@ func (b *Bot) FetchTransactionStatus(ctx context.Context, txId string) (string, 
 	if len(result.Data.FindTransaction) == 0 {
 		return "", fmt.Errorf("transaction %s not found", txId)
 	}
-
 	return result.Data.FindTransaction[0].Status, nil
 }
 
@@ -258,16 +339,6 @@ func (b *Bot) FetchAccountNonce(ctx context.Context, account string) (uint64, er
 	if err != nil {
 		return 0, fmt.Errorf("marshal request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.GqlURL, bytes.NewReader(reqBody))
-	if err != nil {
-		return 0, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("fetch nonce: %w", err)
-	}
-	defer resp.Body.Close()
 
 	var result struct {
 		Data struct {
@@ -279,8 +350,11 @@ func (b *Bot) FetchAccountNonce(ctx context.Context, account string) (uint64, er
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, fmt.Errorf("decode response: %w", err)
+	err = b.gqlHTTPPost(ctx, reqBody, func(resp *http.Response) error {
+		return json.NewDecoder(resp.Body).Decode(&result)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("fetch nonce: %w", err)
 	}
 	if len(result.Errors) > 0 {
 		return 0, fmt.Errorf("graphql error: %s", result.Errors[0].Message)
@@ -301,16 +375,6 @@ func (b *Bot) SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (st
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.GqlURL, bytes.NewReader(reqBody))
-	if err != nil {
-		return "", fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("submit tx: %w", err)
-	}
-	defer resp.Body.Close()
 
 	var result struct {
 		Data struct {
@@ -322,8 +386,11 @@ func (b *Bot) SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (st
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
+	err = b.gqlHTTPPost(ctx, reqBody, func(resp *http.Response) error {
+		return json.NewDecoder(resp.Body).Decode(&result)
+	})
+	if err != nil {
+		return "", fmt.Errorf("submit tx: %w", err)
 	}
 	if len(result.Errors) > 0 {
 		return "", fmt.Errorf("graphql error: %s", result.Errors[0].Message)
@@ -337,21 +404,27 @@ func (b *Bot) SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (st
 // FetchPublicKeys fetches the primary and backup public keys from contract state.
 // Keys are stored as raw bytes in the contract and returned as hex strings.
 func (b *Bot) FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error) {
-	var query GetContractStateQuery
-
-	variables := map[string]any{
+	vars := map[string]interface{}{
 		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{contractinterface.PrimaryPublicKeyStateKey, contractinterface.BackupPublicKeyStateKey},
 		"encoding":   "hex",
 	}
-	err = b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
+
+	var result json.RawMessage
+	err = b.gqlClientDo(func(client *graphql.Client) error {
+		var q GetContractStateQuery
+		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
+			return err
+		}
+		result = q.GetStateByKeys
+		return nil
+	})
 	if err != nil {
 		return nil, nil, err
 	}
 
 	var stateMap map[string]json.RawMessage
-	err = json.Unmarshal(query.GetStateByKeys, &stateMap)
-	if err != nil {
+	if err = json.Unmarshal(result, &stateMap); err != nil {
 		return nil, nil, err
 	}
 
@@ -382,27 +455,32 @@ func unmarshalRawBytes(raw json.RawMessage) ([]byte, error) {
 
 // gets last height recorded in contract state
 func (b *Bot) FetchLastHeight(ctx context.Context) (string, error) {
-	var query GetContractStateQuery
-
-	variables := map[string]any{
+	vars := map[string]interface{}{
 		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{contractinterface.LastHeightKey},
 		"encoding":   "hex",
 	}
-	err := b.GqlClient.Query(ctx, &query, variables, graphql.OperationName("GetContractState"))
+
+	var result json.RawMessage
+	err := b.gqlClientDo(func(client *graphql.Client) error {
+		var q GetContractStateQuery
+		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
+			return err
+		}
+		result = q.GetStateByKeys
+		return nil
+	})
 	if err != nil {
 		return "", err
 	}
 
 	var stateMap map[string]json.RawMessage
-	err = json.Unmarshal(query.GetStateByKeys, &stateMap)
-	if err != nil {
+	if err := json.Unmarshal(result, &stateMap); err != nil {
 		return "", err
 	}
 
 	var tmp string
-	err = json.Unmarshal(stateMap[contractinterface.LastHeightKey], &tmp)
-	if err != nil {
+	if err := json.Unmarshal(stateMap[contractinterface.LastHeightKey], &tmp); err != nil {
 		return "", err
 	}
 	decoded, err := hex.DecodeString(tmp)

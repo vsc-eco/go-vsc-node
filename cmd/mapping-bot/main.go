@@ -13,10 +13,8 @@ import (
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
 	"vsc-node/modules/aggregate"
-	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
-	"vsc-node/modules/hive/streamer"
 )
 
 func main() {
@@ -40,14 +38,10 @@ func main() {
 		}
 	}
 	mappingBotConfig := mapper.NewMappingBotConfig(args.dataDir)
-	identityConfig := common.NewIdentityConfig(args.dataDir)
-	hiveConfig := streamer.NewHiveConfig(args.dataDir)
 	dbConfig := db.NewDbConfig(args.dataDir)
 
 	configs := aggregate.New([]aggregate.Plugin{
 		mappingBotConfig,
-		identityConfig,
-		hiveConfig,
 		dbConfig,
 	})
 
@@ -93,7 +87,7 @@ func main() {
 		"chain", chainCfg.Name,
 		"chain network", args.chainNetwork,
 		"contract id", mappingBotConfig.ContractId(),
-		"connected graphql", mappingBotConfig.DefaultValue().ConnectedGraphQLAddr,
+		"connected graphql", mappingBotConfig.Get().ConnectedGraphQLAddrs,
 	)
 
 	db, err := database.New(context.Background(), dbConfig.Get().DbURI, dbConfig.GetDbName())
@@ -106,7 +100,7 @@ func main() {
 	hostname, _ := os.Hostname()
 	instanceID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
 
-	bot, err := mapper.NewBot(db, chainCfg, mappingBotConfig, identityConfig, hiveConfig, sysConfig)
+	bot, err := mapper.NewBot(db, chainCfg, mappingBotConfig, sysConfig)
 	if err != nil {
 		slog.Error("could not initialize new bot", "err", err.Error())
 		os.Exit(1)
