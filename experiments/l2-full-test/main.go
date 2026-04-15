@@ -171,7 +171,10 @@ func testCidPolling() {
 	fmt.Println("\n=== D. L2 CID polling (polling path works for vsc-type tx) ===")
 	cid := "bafyreifzu5mfs5wfbsyrs37uf7pgpe2nwfaenx3fmf6hrjmyjf6hvlsw3u" // real mainnet addBlocks
 	resp := gql("https://api.vsc.eco/api/v1/graphql", gqlReq{
-		Query: `{ findTransaction(filterOptions:{byId:"` + cid + `"}){ id status type } }`,
+		Query: `query($id:String!){ findTransaction(filterOptions:{byId:$id}){ id status type } }`,
+		Variables: map[string]interface{}{
+			"id": cid,
+		},
 	})
 	if len(resp.Data) > 0 {
 		out, _ := json.MarshalIndent(resp.Data, "", "  ")
