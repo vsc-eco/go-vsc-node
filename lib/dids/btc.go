@@ -22,6 +22,10 @@ import (
 // CAIP-2 chain ID: first 32 hex chars of genesis block hash
 const BtcDIDPrefix = "did:pkh:bip122:000000000019d6689c085ae165831e93:"
 
+// did:pkh:bip122 method for Bitcoin testnet3
+// CAIP-2 chain ID: first 32 hex chars of testnet3 genesis block hash
+const BtcTestnetDIDPrefix = "did:pkh:bip122:000000000933ea01ad0ee984209779ba:"
+
 // ===== interface assertions =====
 
 var _ DID = BtcDID("")
@@ -57,6 +61,27 @@ func ParseBtcDID(did string) (BtcDID, error) {
 
 func NewBtcDID(btcAddr string) BtcDID {
 	return BtcDID(BtcDIDPrefix + btcAddr)
+}
+
+func ParseBtcTestnetDID(did string) (BtcDID, error) {
+	addr, hasPrefix := strings.CutPrefix(did, BtcTestnetDIDPrefix)
+	if !hasPrefix {
+		return "", fmt.Errorf("does not have btc testnet prefix")
+	}
+
+	decoded, err := btcutil.DecodeAddress(addr, &chaincfg.TestNet3Params)
+	if err != nil {
+		return "", fmt.Errorf("invalid Bitcoin testnet address: %w", err)
+	}
+
+	switch decoded.(type) {
+	case *btcutil.AddressPubKeyHash, *btcutil.AddressScriptHash, *btcutil.AddressWitnessPubKeyHash:
+		// supported
+	default:
+		return "", fmt.Errorf("unsupported Bitcoin testnet address type: %T", decoded)
+	}
+
+	return BtcDID(did), nil
 }
 
 // ===== implementing the DID interface =====
