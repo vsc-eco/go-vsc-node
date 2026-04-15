@@ -1,7 +1,6 @@
 package mapper
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -15,52 +14,9 @@ import (
 	transactionpool "vsc-node/modules/transaction-pool"
 
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
+
+	"bytes"
 )
-
-// TestEstimateHiveEnvelopeSize covers the size-estimation math that drives the
-// auto-routing decision. The estimate should scale with payload length and
-// cross the hiveEnvelopeThreshold at the expected point.
-func TestEstimateHiveEnvelopeSize(t *testing.T) {
-	mkPayload := func(n int) json.RawMessage {
-		return json.RawMessage(bytes.Repeat([]byte("a"), n))
-	}
-
-	tests := []struct {
-		name              string
-		payloadLen        int
-		wantOverThreshold bool
-		wantOverHiveCap   bool
-	}{
-		{"small typical map", 1369, false, false},
-		{"mid-range", 5000, false, false},
-		{"just below threshold", 7000, false, false},
-		{"at threshold", 7500, true, false},
-		{"failing bc1q74 tx", 8687, true, true}, // actual failing tx's payload_len
-		{"over cap", 12000, true, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := estimateHiveEnvelopeSize(
-				"map",
-				"vsc-mainnet",
-				"milo.vsc",
-				"vsc1BdrQ6EtbQ64rq2PkPd21x4MaLnVRcJj85d",
-				mkPayload(tt.payloadLen),
-			)
-			overThreshold := got > hiveEnvelopeThreshold
-			overCap := got > hiveCustomJsonMaxSize
-			if overThreshold != tt.wantOverThreshold {
-				t.Errorf("payload=%d envelope=%d: overThreshold=%v want %v",
-					tt.payloadLen, got, overThreshold, tt.wantOverThreshold)
-			}
-			if overCap != tt.wantOverHiveCap {
-				t.Errorf("payload=%d envelope=%d: overHiveCap=%v want %v",
-					tt.payloadLen, got, overCap, tt.wantOverHiveCap)
-			}
-		})
-	}
-}
 
 // l2TestBotConfig uses a VSC-prefixed contract id — the transactionpool
 // validator rejects anything else. testBotConfig returns "test-contract"
@@ -163,31 +119,23 @@ func TestCallContractL2_SubmitErrorSurfaces(t *testing.T) {
 	}
 }
 
-// TestCallContract_RoutesToL2_OnLargePayload asserts the auto-routing wiring
-// in callContract: large payloads bypass the Hive path and go to L2.
-//
-// Since callContract builds a real Hive RPC client even for the Hive branch,
-// this test supplies only the L2 prerequisites and confirms the L2 mock was
-// invoked without ever touching Hive. A small payload is NOT covered here —
-// that path requires a live Hive endpoint and is exercised separately.
-func TestCallContract_RoutesToL2_OnLargePayload(t *testing.T) {
+// TestCallContractL2_TooLarge ensures transactions that would exceed the L2
+// size limit are rejected with an error (not silently dropped).
+func TestCallContractL2_TooLarge(t *testing.T) {
 	gql := &mockGraphQL{nonces: map[string]uint64{}}
 	bot, did := buildBotForL2Test(t, gql)
 	gql.nonces[did.String()] = 0
 
-	// Need hiveUsername for the size estimator. Inject via identityConfig.
-	bot.IdentityConfig = common.NewIdentityConfig()
+	// Build a payload large enough that the serialized CBOR will exceed l2MaxTxSize.
+	// The CBOR overhead is small; a ~16000-byte payload string will push it over.
+	hugePayload := json.RawMessage(`"` + strings.Repeat("x", 16000) + `"`)
 
-	// Oversized payload → should route to L2.
-	bigPayload := json.RawMessage(bytes.Repeat([]byte("a"), 9000))
-	id, err := bot.callContract(context.Background(), bigPayload, "map")
-	if err != nil {
-		t.Fatalf("callContract L2 route: %v", err)
+	_, err := bot.callContractL2(context.Background(), hugePayload, "map")
+	if err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("want too-large error, got %v", err)
 	}
-	if !strings.HasPrefix(id, "bafyrei-mock-l2-") {
-		t.Errorf("expected L2 id prefix, got %q", id)
-	}
-	if len(gql.submitted) != 1 {
-		t.Errorf("expected 1 L2 submission, got %d", len(gql.submitted))
+	// SubmitTransactionV1 must NOT have been called.
+	if len(gql.submitted) != 0 {
+		t.Errorf("expected no submissions for oversized tx, got %d", len(gql.submitted))
 	}
 }

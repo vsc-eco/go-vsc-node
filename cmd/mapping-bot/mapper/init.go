@@ -14,9 +14,7 @@ import (
 	"vsc-node/cmd/mapping-bot/chain"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/lib/dids"
-	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
-	"vsc-node/modules/hive/streamer"
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/hasura/go-graphql-client"
@@ -52,24 +50,29 @@ type BotConfiger interface {
 }
 
 type Bot struct {
-	Db             *database.Database
-	GqlClient      *graphql.Client
-	L              *slog.Logger
-	Chain          *chain.ChainConfig // chain-specific client, parser, address generator
-	ChainParams    *chaincfg.Params   // convenience alias for Chain.ChainParams
-	BotConfig      BotConfiger
-	IdentityConfig common.IdentityConfig
-	HiveConfig     streamer.HiveConfig
-	SystemConfig   systemconfig.SystemConfig
+	Db           *database.Database
+	L            *slog.Logger
+	Chain        *chain.ChainConfig // chain-specific client, parser, address generator
+	ChainParams  *chaincfg.Params   // convenience alias for Chain.ChainParams
+	BotConfig    BotConfiger
+	SystemConfig systemconfig.SystemConfig
 
 	// Optional interface overrides for testing. When nil, the Bot uses its own
-	// concrete implementations (GqlClient, callContract, Db.State, Db.Addresses).
+	// concrete implementations (gqlClients, callContract, Db.State, Db.Addresses).
 	Gql     GraphQLFetcher
 	Caller  ContractCaller
 	StateDB StateStore
 	AddrDB  AddressStore
 
-	GqlURL string // GraphQL endpoint URL for raw queries
+	// GqlClient and GqlURL are single-endpoint overrides used in tests.
+	// When set, they take priority over gqlClients/gqlURLs respectively.
+	GqlClient *graphql.Client
+	GqlURL    string
+
+	// gqlURLs and gqlClients are the ordered list of VSC node GraphQL endpoints.
+	// The first entry is tried first; subsequent entries are fallbacks.
+	gqlURLs    []string
+	gqlClients []*graphql.Client
 
 	lastBlockHeight atomic.Uint64
 	lastBlockAt     atomic.Int64 // Unix nanoseconds; 0 means not yet set
@@ -78,8 +81,6 @@ type Bot struct {
 	failedTxs   []FailedTx // VSC transactions that reached FAILED status
 
 	// L2 submission identity — secp256k1 key + derived did:pkh:eip155 DID.
-	// Used when a map/unmap payload would exceed Hive's custom_json cap.
-	// Lazily loaded from MappingBotConfig on first use; nil if unavailable.
 	botEthKey *ecdsa.PrivateKey
 	botEthDID dids.EthDID
 }
@@ -305,43 +306,41 @@ func NewBot(
 	db *database.Database,
 	chainCfg *chain.ChainConfig,
 	mappingBotConfig MappingBotConfig,
-	identityConfig common.IdentityConfig,
-	hiveConfig streamer.HiveConfig,
 	systemConfig systemconfig.SystemConfig,
 ) (*Bot, error) {
-	gqlURL := mappingBotConfig.Get().ConnectedGraphQLAddr
-	gqlClient := graphql.NewClient(gqlURL, http.DefaultClient)
+	gqlAddrs := mappingBotConfig.Get().ConnectedGraphQLAddrs
+	if len(gqlAddrs) == 0 {
+		return nil, fmt.Errorf("ConnectedGraphQLAddrs must have at least one entry")
+	}
 
-	// Load or generate the bot's L2 signing key. Failure here is non-fatal —
-	// the bot can still operate over the Hive custom_json path for small
-	// payloads; large payloads simply fail until the operator provisions a key.
-	var (
-		ethKey *ecdsa.PrivateKey
-		ethDID dids.EthDID
-	)
-	if priv, generated, err := mappingBotConfig.BotEthKey(); err == nil {
-		ethKey = priv
-		ethDID = mappingBotConfig.BotEthDID(priv)
-		if generated {
-			slog.Warn("generated new L2 signing key — fund this DID with HBD before it can submit oversized map calls",
-				"did", ethDID.String())
-		}
-	} else {
-		slog.Warn("L2 signing key unavailable — oversized payloads will fail until configured", "err", err)
+	gqlClients := make([]*graphql.Client, len(gqlAddrs))
+	for i, addr := range gqlAddrs {
+		gqlClients[i] = graphql.NewClient(addr, http.DefaultClient)
+	}
+
+	// Load or generate the bot's L2 signing key. Failure here is fatal since
+	// all contract calls go through the L2 path.
+	priv, generated, err := mappingBotConfig.BotEthKey()
+	if err != nil {
+		return nil, fmt.Errorf("L2 signing key unavailable: %w", err)
+	}
+	ethDID := mappingBotConfig.BotEthDID(priv)
+	if generated {
+		slog.Warn("generated new L2 signing key — fund this DID with HBD before the bot can submit transactions",
+			"did", ethDID.String())
 	}
 
 	return &Bot{
-		Db:             db,
-		GqlClient:      gqlClient,
-		L:              slog.Default(),
-		Chain:          chainCfg,
-		ChainParams:    chainCfg.ChainParams,
-		BotConfig:      mappingBotConfig,
-		IdentityConfig: identityConfig,
-		HiveConfig:     hiveConfig,
-		SystemConfig:   systemConfig,
-		GqlURL:         gqlURL,
-		botEthKey:      ethKey,
-		botEthDID:      ethDID,
+		Db:           db,
+		L:            slog.Default(),
+		Chain:        chainCfg,
+		ChainParams:  chainCfg.ChainParams,
+		BotConfig:    mappingBotConfig,
+		SystemConfig: systemConfig,
+		gqlURLs:      gqlAddrs,
+		gqlClients:   gqlClients,
+		botEthKey:    priv,
+		botEthDID:    ethDID,
 	}, nil
 }
+

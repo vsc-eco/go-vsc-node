@@ -11,9 +11,12 @@ import (
 )
 
 type mappingBotConfig struct {
-	ContractId           string
-	ConnectedGraphQLAddr string
-	HttpPort             uint16
+	ContractId string
+	// ConnectedGraphQLAddrs is the ordered list of VSC node GraphQL endpoints.
+	// The first entry is tried first (typically a local/docker-internal node);
+	// subsequent entries are fallbacks used when the primary is unreachable.
+	ConnectedGraphQLAddrs []string
+	HttpPort              uint16
 	// SignApiKey authenticates requests to the /sign endpoint.
 	// If empty, /sign is disabled for safety.
 	SignApiKey string
@@ -35,9 +38,9 @@ func NewMappingBotConfig(dataDir ...string) *mappingBotConfigStruct {
 		dataDirPtr = &dataDir[0]
 	}
 	return &mappingBotConfigStruct{config.New(mappingBotConfig{
-		ContractId:           "ADD_MAPPING_CONTRACT_ID",
-		ConnectedGraphQLAddr: "0.0.0.0:8080",
-		HttpPort:             8000,
+		ContractId:            "ADD_MAPPING_CONTRACT_ID",
+		ConnectedGraphQLAddrs: []string{"http://0.0.0.0:8080/api/v1/graphql"},
+		HttpPort:              8000,
 	}, dataDirPtr)}
 }
 
