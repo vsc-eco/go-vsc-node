@@ -36,6 +36,7 @@ func mapBotHttpServer(
 	mux := http.NewServeMux()
 	mux.Handle("GET /health", healthHandler(bot))
 	mux.Handle("POST /sign", signHandler(ctx, bot))
+	mux.Handle("POST /retry", retryHandler(ctx, bot))
 	mux.Handle("/", requestHandler(ctx, bot))
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", bot.BotConfig.HttpPort()), mux))
 }
@@ -47,7 +48,7 @@ type healthResponse struct {
 	StaleSecs       *int64            `json:"staleSecs,omitempty"`
 	PendingSentTxs  int               `json:"pendingSentTxs"`            // txs broadcast but not yet confirmed
 	PendingUnsigned int               `json:"pendingUnsigned,omitempty"` // txs awaiting TSS signatures
-	FailedVscTxs    []mapper.FailedTx `json:"failedVscTxs,omitempty"`    // VSC txs that reached FAILED status
+	FailedVscTxs    []database.FailedVscTx `json:"failedVscTxs,omitempty"` // VSC txs that reached FAILED status
 	Issues          []string          `json:"issues,omitempty"`          // specific problems detected
 }
 
@@ -104,8 +105,8 @@ func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 		}
 
 		// Flag failed VSC transactions
-		failedTxs := bot.FailedTxs()
-		if len(failedTxs) > 0 {
+		failedTxs, err := bot.Db.FailedTxs.GetAll(ctx)
+		if err == nil && len(failedTxs) > 0 {
 			resp.FailedVscTxs = failedTxs
 			issues = append(issues, fmt.Sprintf("%d VSC transaction(s) failed", len(failedTxs)))
 		}
@@ -164,6 +165,13 @@ func requestHandler(
 
 		if err := requestValidator.Struct(&requestBody); err != nil {
 			writeResponse(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+
+		// Validate the instruction semantics before generating an address.
+		mainnet := bot.SystemConfig != nil && bot.SystemConfig.OnMainnet()
+		if err := mapper.ValidateInstruction(requestBody.Instruction, mainnet); err != nil {
+			writeResponse(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
@@ -335,6 +343,55 @@ func signHandler(
 			writeResponse(w, http.StatusOK,
 				fmt.Sprintf("%d signature(s) applied, transaction %s still awaiting more signatures", len(sigMap), req.TxID))
 		}
+	}
+}
+
+type retryRequest struct {
+	TxIds []string `json:"txIds" validate:"required,min=1,dive,required"`
+}
+
+func retryHandler(
+	globalCtx context.Context,
+	bot *mapper.Bot,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		var req retryRequest
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeResponse(w, http.StatusBadRequest, "invalid JSON")
+			return
+		}
+		var trailing json.RawMessage
+		if err := dec.Decode(&trailing); err == nil || !errors.Is(err, io.EOF) {
+			writeResponse(w, http.StatusBadRequest, "invalid JSON")
+			return
+		}
+		if err := requestValidator.Struct(&req); err != nil {
+			writeResponse(w, http.StatusBadRequest, "txIds must be a non-empty list of strings")
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(globalCtx, 5*time.Minute)
+		defer cancel()
+
+		type retryResult struct {
+			TxId  string `json:"txId"`
+			Error string `json:"error,omitempty"`
+		}
+		results := make([]retryResult, 0, len(req.TxIds))
+		for _, txId := range req.TxIds {
+			err := bot.RetryFailedTx(ctx, txId)
+			res := retryResult{TxId: txId}
+			if err != nil {
+				res.Error = err.Error()
+			}
+			results = append(results, res)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(results)
 	}
 }
 

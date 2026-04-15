@@ -24,6 +24,7 @@ func New(ctx context.Context, connString, dbName string) (*Database, error) {
 	addrCollection := db.Collection("address_mappings")
 	heightCollection := db.Collection("block_height")
 	txCollection := db.Collection("transactions")
+	failedTxCollection := db.Collection("failed_vsc_txs")
 
 	// Create index on createdAt for address mappings
 	addrIndexModel := mongo.IndexModel{
@@ -70,6 +71,15 @@ func New(ctx context.Context, connString, dbName string) (*Database, error) {
 		return nil, fmt.Errorf("failed to create tx sentAt index: %w", err)
 	}
 
+	// Index on failedAt for ordering failed txs by recency
+	failedTxIndexModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "failedAt", Value: -1}},
+		Options: options.Index().SetName("failedAt_idx"),
+	}
+	if _, err := failedTxCollection.Indexes().CreateOne(ctx, failedTxIndexModel); err != nil {
+		return nil, fmt.Errorf("failed to create failedAt index: %w", err)
+	}
+
 	return &Database{
 		client: client,
 		Addresses: &AddressStore{
@@ -78,6 +88,9 @@ func New(ctx context.Context, connString, dbName string) (*Database, error) {
 		State: &StateStore{
 			heightCollection: heightCollection,
 			txCollection:     txCollection,
+		},
+		FailedTxs: &FailedTxStore{
+			collection: failedTxCollection,
 		},
 	}, nil
 }
@@ -97,6 +110,9 @@ func (d *Database) DropAllCollections(ctx context.Context) error {
 	}
 	if err := d.State.txCollection.Drop(ctx); err != nil {
 		return fmt.Errorf("failed to drop tx collection: %w", err)
+	}
+	if err := d.FailedTxs.collection.Drop(ctx); err != nil {
+		return fmt.Errorf("failed to drop failed_vsc_txs collection: %w", err)
 	}
 	return nil
 }
