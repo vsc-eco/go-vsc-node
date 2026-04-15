@@ -131,6 +131,20 @@ Defined in `mapper/config.go`. Created on first run with `-init`.
 | `ConnectedGraphQLAddr` | string | `0.0.0.0:8080`                    | Address of the VSC node's GraphQL API for contract state, public keys, and TSS signatures.           |
 | `HttpPort`             | uint16 | `8000`                            | Port the mapping bot's HTTP server listens on.                                                       |
 | `SignApiKey`           | string | `""`                              | API key for the `/sign` endpoint. If empty, `/sign` is disabled.                                     |
+| `BotEthPrivKey`        | string | auto-generated on first run       | secp256k1 key used to sign VSC L2 transactions (did:pkh:eip155 caller). Used when a payload exceeds Hive's 8192-byte custom_json cap — e.g. large BTC txs with many inputs or witness data. |
+
+### L2 Signing Key Setup (first run)
+
+Small map calls (<~7 KB envelope) are broadcast via Hive custom_json using
+`HiveActiveKey` as before — no operator action required.
+
+When a map payload would exceed Hive's 8192-byte `custom_json` limit, the bot
+auto-routes through the VSC L2 transaction pool (16384-byte cap) using the
+`BotEthPrivKey` above. On first run, the bot generates a fresh key, logs the
+derived `did:pkh:eip155:…` address, and persists the key. The derived DID
+needs a small HBD balance to pay for RCs (DIDs have no free allotment, unlike
+`hive:` accounts). Transfer ~1 HBD on VSC L2 to the logged DID — that buys
+roughly 500 large-payload map calls. Top up when the balance drops.
 
 ### Other Config Files
 
