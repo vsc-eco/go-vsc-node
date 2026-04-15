@@ -359,6 +359,78 @@ func (m *mockStateStore) GetSentTransactions(ctx context.Context) ([]database.Tr
 }
 
 // ---------------------------------------------------------------------------
+// mockFailedTxStore — in-memory satisfying FailedTxStore
+// ---------------------------------------------------------------------------
+
+type mockFailedTxStore struct {
+	mu      sync.Mutex
+	records map[string]*database.FailedVscTx
+}
+
+func newMockFailedTxStore() *mockFailedTxStore {
+	return &mockFailedTxStore{records: make(map[string]*database.FailedVscTx)}
+}
+
+func (m *mockFailedTxStore) RecordFailed(ctx context.Context, txId, action string, payload json.RawMessage) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	m.records[txId] = &database.FailedVscTx{
+		TxId:     txId,
+		Action:   action,
+		Payload:  payload,
+		FailedAt: now,
+	}
+	return nil
+}
+
+func (m *mockFailedTxStore) GetAll(ctx context.Context) ([]database.FailedVscTx, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]database.FailedVscTx, 0, len(m.records))
+	for _, r := range m.records {
+		out = append(out, *r)
+	}
+	return out, nil
+}
+
+func (m *mockFailedTxStore) GetOne(ctx context.Context, txId string) (*database.FailedVscTx, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.records[txId]
+	if !ok {
+		return nil, database.ErrFailedTxNotFound
+	}
+	cp := *r
+	return &cp, nil
+}
+
+func (m *mockFailedTxStore) TryMarkRetrying(ctx context.Context, txId string, throttle time.Duration) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.records[txId]
+	if !ok {
+		return false, database.ErrFailedTxNotFound
+	}
+	now := time.Now().UTC()
+	if r.LastRetriedAt != nil && now.Sub(*r.LastRetriedAt) < throttle {
+		return false, nil
+	}
+	r.LastRetriedAt = &now
+	return true, nil
+}
+
+func (m *mockFailedTxStore) Delete(ctx context.Context, txId string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.records[txId]; !ok {
+		return database.ErrFailedTxNotFound
+	}
+	delete(m.records, txId)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // mockAddressStore — in-memory satisfying AddressStore
 // ---------------------------------------------------------------------------
 
