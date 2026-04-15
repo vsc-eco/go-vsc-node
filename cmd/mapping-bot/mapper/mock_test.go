@@ -26,8 +26,19 @@ type mockGraphQL struct {
 	observedTx map[string]bool   // key: "txid:vout"
 	txStatuses map[string]string // key: tx ID, value: status
 
+	// L2 submission mocks.
+	nonces    map[string]uint64 // account -> next nonce
+	submitErr error             // error returned by SubmitTransactionV1
+	submitted []submittedL2Tx   // txs accepted by SubmitTransactionV1
+
 	// Track which methods were called and with what args.
 	calls []mockGQLCall
+}
+
+type submittedL2Tx struct {
+	TxB64  string
+	SigB64 string
+	TxID   string
 }
 
 type mockGQLCall struct {
@@ -85,6 +96,28 @@ func (m *mockGraphQL) FetchTransactionStatus(ctx context.Context, txId string) (
 		return status, nil
 	}
 	return "", fmt.Errorf("transaction %s not found", txId)
+}
+
+func (m *mockGraphQL) FetchAccountNonce(ctx context.Context, account string) (uint64, error) {
+	m.recordCall("FetchAccountNonce", account)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.nonces == nil {
+		return 0, nil
+	}
+	return m.nonces[account], nil
+}
+
+func (m *mockGraphQL) SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (string, error) {
+	m.recordCall("SubmitTransactionV1", txB64, sigB64)
+	if m.submitErr != nil {
+		return "", m.submitErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	txID := fmt.Sprintf("bafyrei-mock-l2-%d", len(m.submitted))
+	m.submitted = append(m.submitted, submittedL2Tx{TxB64: txB64, SigB64: sigB64, TxID: txID})
+	return txID, nil
 }
 
 // ---------------------------------------------------------------------------
