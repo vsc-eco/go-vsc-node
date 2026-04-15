@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -12,9 +13,22 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+// txIDPattern allows common VSC tx ID characters and bounds the length.
+var txIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+func validateTxID(txId string) error {
+	if !txIDPattern.MatchString(txId) {
+		return errors.New("invalid txId format")
+	}
+	return nil
+}
+
 // RecordFailed upserts a failed VSC transaction record.
 // If a record with the same TxId already exists, it is overwritten.
 func (s *FailedTxStore) RecordFailed(ctx context.Context, txId, action string, payload json.RawMessage) error {
+	if err := validateTxID(txId); err != nil {
+		return fmt.Errorf("failed to record failed tx [txId:%s]: %w", txId, err)
+	}
 	doc := FailedVscTx{
 		TxId:     txId,
 		Action:   action,
@@ -51,6 +65,9 @@ func (s *FailedTxStore) GetAll(ctx context.Context) ([]FailedVscTx, error) {
 // GetOne returns a single failed VSC transaction by its ID.
 // Returns ErrFailedTxNotFound if no record exists.
 func (s *FailedTxStore) GetOne(ctx context.Context, txId string) (*FailedVscTx, error) {
+	if err := validateTxID(txId); err != nil {
+		return nil, fmt.Errorf("failed to get failed tx [txId:%s]: %w", txId, err)
+	}
 	var result FailedVscTx
 	err := s.collection.FindOne(ctx, bson.M{"_id": txId}).Decode(&result)
 	if err != nil {
@@ -68,6 +85,9 @@ func (s *FailedTxStore) GetOne(ctx context.Context, txId string) (*FailedVscTx, 
 //
 // Returns true if the update was applied (retry is allowed), false if throttled.
 func (s *FailedTxStore) TryMarkRetrying(ctx context.Context, txId string, throttle time.Duration) (bool, error) {
+	if err := validateTxID(txId); err != nil {
+		return false, fmt.Errorf("failed to mark retrying [txId:%s]: %w", txId, err)
+	}
 	now := time.Now().UTC()
 	cutoff := now.Add(-throttle)
 
@@ -90,6 +110,9 @@ func (s *FailedTxStore) TryMarkRetrying(ctx context.Context, txId string, thrott
 
 // Delete removes a failed VSC transaction record by its ID.
 func (s *FailedTxStore) Delete(ctx context.Context, txId string) error {
+	if err := validateTxID(txId); err != nil {
+		return fmt.Errorf("failed to delete failed tx [txId:%s]: %w", txId, err)
+	}
 	result, err := s.collection.DeleteOne(ctx, bson.M{"_id": txId})
 	if err != nil {
 		return fmt.Errorf("failed to delete failed tx [txId:%s]: %w", txId, err)
