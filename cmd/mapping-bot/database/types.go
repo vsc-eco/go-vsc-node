@@ -1,6 +1,7 @@
 package database
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -16,10 +17,11 @@ const (
 )
 
 var (
-	ErrAddrExists   = errors.New("address key exists in datastore")
-	ErrAddrNotFound = errors.New("address not found")
-	ErrTxNotFound   = errors.New("transaction not found")
-	ErrTxExists     = errors.New("tx key exists in datastore")
+	ErrAddrExists       = errors.New("address key exists in datastore")
+	ErrAddrNotFound     = errors.New("address not found")
+	ErrTxNotFound       = errors.New("transaction not found")
+	ErrTxExists         = errors.New("tx key exists in datastore")
+	ErrFailedTxNotFound = errors.New("failed tx not found")
 )
 
 // AddressStore handles address mapping operations
@@ -38,6 +40,7 @@ type Database struct {
 	client    *mongo.Client
 	Addresses *AddressStore
 	State     *StateStore
+	FailedTxs *FailedTxStore
 }
 
 // AddressMapping represents a chain address to VSC instruction mapping document.
@@ -77,4 +80,19 @@ type SignatureSlot struct {
 	WitnessScript []byte `bson:"witnessScript"`
 	Signature     []byte `bson:"signature,omitempty"` // omitempty keeps it null when empty
 	IsBackup      bool   `bson:"isBackup,omitempty"`  // true when signed via HTTP (backup key path)
+}
+
+// FailedVscTx records a map or confirmSpend contract call that reached FAILED status on-chain.
+// Persisted to MongoDB so failed txs survive bot restarts and can be retried via the HTTP API.
+type FailedVscTx struct {
+	TxId          string          `bson:"_id"`
+	Action        string          `bson:"action"`
+	Payload       json.RawMessage `bson:"payload"`
+	FailedAt      time.Time       `bson:"failedAt"`
+	LastRetriedAt *time.Time      `bson:"lastRetriedAt,omitempty"`
+}
+
+// FailedTxStore handles failed VSC transaction persistence
+type FailedTxStore struct {
+	collection *mongo.Collection
 }

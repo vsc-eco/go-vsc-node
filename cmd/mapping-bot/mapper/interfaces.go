@@ -3,6 +3,7 @@ package mapper
 import (
 	"context"
 	"encoding/json"
+	"time"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
 )
@@ -58,4 +59,13 @@ type StateStore interface {
 type AddressStore interface {
 	GetInstruction(ctx context.Context, chainAddr string) (string, error)
 	Insert(ctx context.Context, chainAddr, instruction string) error
+}
+
+// FailedTxStore abstracts persistence of failed VSC contract calls.
+type FailedTxStore interface {
+	RecordFailed(ctx context.Context, txId, action string, payload json.RawMessage) error
+	GetAll(ctx context.Context) ([]database.FailedVscTx, error)
+	GetOne(ctx context.Context, txId string) (*database.FailedVscTx, error)
+	TryMarkRetrying(ctx context.Context, txId string, throttle time.Duration) (bool, error)
+	Delete(ctx context.Context, txId string) error
 }
