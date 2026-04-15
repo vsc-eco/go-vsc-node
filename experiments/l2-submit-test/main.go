@@ -144,8 +144,26 @@ func main() {
 
 	payload := buildPayload(*size)
 	fmt.Println("payload size (JSON bytes):", len(payload))
-	hiveEnvelope := fmt.Sprintf(`{"net_id":"%s","caller":"hive:milo.vsc","contract_id":"%s","action":"map","payload":%s,"rc_limit":10000,"intents":[]}`,
-		netId, testnetBtcCtrct, string(payload))
+	var payloadValue interface{}
+	if err := json.Unmarshal(payload, &payloadValue); err != nil {
+		fmt.Println("payload unmarshal err:", err)
+		os.Exit(1)
+	}
+	hiveEnvelopeObj := map[string]interface{}{
+		"net_id":      netId,
+		"caller":      "hive:milo.vsc",
+		"contract_id": testnetBtcCtrct,
+		"action":      "map",
+		"payload":     payloadValue,
+		"rc_limit":    10000,
+		"intents":     []interface{}{},
+	}
+	hiveEnvelopeBytes, err := json.Marshal(hiveEnvelopeObj)
+	if err != nil {
+		fmt.Println("hive envelope marshal err:", err)
+		os.Exit(1)
+	}
+	hiveEnvelope := string(hiveEnvelopeBytes)
 	over := len(hiveEnvelope) > 8192
 	fmt.Printf("hive custom_json envelope size: %d (cap 8192 → %s)\n",
 		len(hiveEnvelope),
