@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,7 +18,7 @@ import (
 	systemconfig "vsc-node/modules/common/system-config"
 
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/hasura/go-graphql-client"
+	graphql "github.com/hasura/go-graphql-client"
 )
 
 type loggingTransport struct {
@@ -59,10 +60,11 @@ type Bot struct {
 
 	// Optional interface overrides for testing. When nil, the Bot uses its own
 	// concrete implementations (gqlClients, callContract, Db.State, Db.Addresses).
-	Gql     GraphQLFetcher
-	Caller  ContractCaller
-	StateDB StateStore
-	AddrDB  AddressStore
+	Gql        GraphQLFetcher
+	Caller     ContractCaller
+	StateDB    StateStore
+	AddrDB     AddressStore
+	FailedTxDB FailedTxStore
 
 	// GqlClient and GqlURL are single-endpoint overrides used in tests.
 	// When set, they take priority over gqlClients/gqlURLs respectively.
@@ -77,52 +79,83 @@ type Bot struct {
 	lastBlockHeight atomic.Uint64
 	lastBlockAt     atomic.Int64 // Unix nanoseconds; 0 means not yet set
 
-	failedTxsMu sync.Mutex
-	failedTxs   []FailedTx // VSC transactions that reached FAILED status
+	// Global retry throttle: only one retry request allowed per retryGlobalThrottle.
+	retryMu          sync.Mutex
+	lastGlobalRetryAt time.Time
 
 	// L2 submission identity — secp256k1 key + derived did:pkh:eip155 DID.
 	botEthKey *ecdsa.PrivateKey
 	botEthDID dids.EthDID
 }
 
-// FailedTx records a VSC transaction that reached the FAILED status.
-type FailedTx struct {
-	TxId   string    `json:"txId"`
-	Action string    `json:"action"`
-	At     time.Time `json:"at"`
-}
-
-func (b *Bot) recordFailedTx(txId, action string) {
-	b.failedTxsMu.Lock()
-	defer b.failedTxsMu.Unlock()
-	b.failedTxs = append(b.failedTxs, FailedTx{TxId: txId, Action: action, At: time.Now()})
-}
-
-// clearFailedTxs removes previously recorded failures by their VSC tx IDs.
-// Called when a retry of the same logical operation eventually succeeds.
-func (b *Bot) clearFailedTxs(txIds []string) {
-	b.failedTxsMu.Lock()
-	defer b.failedTxsMu.Unlock()
-	remove := make(map[string]struct{}, len(txIds))
-	for _, id := range txIds {
-		remove[id] = struct{}{}
+// failedTxDB returns the FailedTxStore to use — the override if set, otherwise Db.FailedTxs.
+func (b *Bot) failedTxDB() FailedTxStore {
+	if b.FailedTxDB != nil {
+		return b.FailedTxDB
 	}
-	filtered := make([]FailedTx, 0, len(b.failedTxs))
-	for _, ft := range b.failedTxs {
-		if _, ok := remove[ft.TxId]; !ok {
-			filtered = append(filtered, ft)
+	return b.Db.FailedTxs
+}
+
+// recordFailedTx persists a failed VSC tx to MongoDB.
+func (b *Bot) recordFailedTx(ctx context.Context, txId, action string, payload json.RawMessage) {
+	if err := b.failedTxDB().RecordFailed(ctx, txId, action, payload); err != nil {
+		b.L.Error("failed to persist failed tx", "txId", txId, "error", err)
+	}
+}
+
+// clearFailedTxs removes persisted failure records once a retry succeeds.
+func (b *Bot) clearFailedTxs(ctx context.Context, txIds []string) {
+	for _, id := range txIds {
+		if err := b.failedTxDB().Delete(ctx, id); err != nil && !errors.Is(err, database.ErrFailedTxNotFound) {
+			b.L.Error("failed to delete failed tx record", "txId", id, "error", err)
 		}
 	}
-	b.failedTxs = filtered
 }
 
-// FailedTxs returns a snapshot of VSC transactions that reached FAILED status.
-func (b *Bot) FailedTxs() []FailedTx {
-	b.failedTxsMu.Lock()
-	defer b.failedTxsMu.Unlock()
-	out := make([]FailedTx, len(b.failedTxs))
-	copy(out, b.failedTxs)
-	return out
+const (
+	// retryTxThrottle is the minimum time between retries of the same tx.
+	retryTxThrottle = 2 * time.Minute
+	// retryGlobalThrottle is the minimum time between any two retry requests.
+	retryGlobalThrottle = 10 * time.Second
+)
+
+// ErrRetryThrottled is returned when a retry request is rejected due to throttling.
+var ErrRetryThrottled = errors.New("retry throttled")
+
+// RetryFailedTx re-submits a previously failed contract call identified by its VSC tx ID.
+// Returns ErrRetryThrottled if the global or per-tx throttle is still active,
+// or database.ErrFailedTxNotFound if no record exists for txId.
+func (b *Bot) RetryFailedTx(ctx context.Context, txId string) error {
+	// Global throttle: serialise all retry requests.
+	b.retryMu.Lock()
+	sinceGlobal := time.Since(b.lastGlobalRetryAt)
+	if sinceGlobal < retryGlobalThrottle {
+		b.retryMu.Unlock()
+		return fmt.Errorf("%w: global retry cooldown (%.1fs remaining)",
+			ErrRetryThrottled, (retryGlobalThrottle - sinceGlobal).Seconds())
+	}
+	b.lastGlobalRetryAt = time.Now()
+	b.retryMu.Unlock()
+
+	// Per-tx throttle: atomically mark this tx as retrying.
+	allowed, err := b.failedTxDB().TryMarkRetrying(ctx, txId, retryTxThrottle)
+	if err != nil {
+		if errors.Is(err, database.ErrFailedTxNotFound) {
+			return database.ErrFailedTxNotFound
+		}
+		return fmt.Errorf("retry check failed: %w", err)
+	}
+	if !allowed {
+		return fmt.Errorf("%w: per-tx retry cooldown for %s", ErrRetryThrottled, txId)
+	}
+
+	rec, err := b.failedTxDB().GetOne(ctx, txId)
+	if err != nil {
+		return fmt.Errorf("failed to load tx %s for retry: %w", txId, err)
+	}
+
+	b.L.Info("retrying failed VSC tx", "txId", txId, "action", rec.Action)
+	return b.callWithRetry(ctx, rec.Payload, rec.Action, 3)
 }
 
 // gql returns the GraphQLFetcher to use — the override if set, otherwise the Bot itself.
@@ -219,12 +252,12 @@ func (b *Bot) callWithRetry(ctx context.Context, payload json.RawMessage, action
 			b.L.Info("VSC transaction confirmed", "action", action, "txId", txId, "status", status)
 			// A retry succeeded — clear any failures recorded during earlier attempts.
 			if len(recordedFailures) > 0 {
-				b.clearFailedTxs(recordedFailures)
+				b.clearFailedTxs(ctx, recordedFailures)
 			}
 			return nil
 		case "FAILED":
 			b.L.Warn("VSC transaction failed on-chain", "action", action, "txId", txId, "attempt", attempt)
-			b.recordFailedTx(txId, action)
+			b.recordFailedTx(ctx, txId, action, payload)
 			recordedFailures = append(recordedFailures, txId)
 			lastErr = fmt.Errorf("%w: action=%s txId=%s", ErrTxFailed, action, txId)
 			// Fall through to retry with a new broadcast.
