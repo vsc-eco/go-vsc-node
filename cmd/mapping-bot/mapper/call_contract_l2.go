@@ -12,36 +12,16 @@ import (
 	transactionpool "vsc-node/modules/transaction-pool"
 )
 
-// hiveCustomJsonMaxSize is the Hive custom_json operation byte limit (HF20).
-// Payloads whose wrapped envelope exceeds this must be routed through the
-// VSC L2 transaction pool (which caps at 16384 bytes via MAX_TX_SIZE).
-const hiveCustomJsonMaxSize = 8192
-
-// hiveEnvelopeThreshold is the envelope-size ceiling at which we switch to the
-// L2 path. Set below hiveCustomJsonMaxSize to leave headroom for minor size
-// variations between estimation and the actual broadcast.
-const hiveEnvelopeThreshold = 7500
+// l2MaxTxSize is the VSC L2 transaction pool byte limit. Must match
+// transactionpool.MAX_TX_SIZE (modules/transaction-pool/transaction-pool.go).
+const l2MaxTxSize = 16384
 
 // errBotEthKeyMissing is returned when the bot is asked to submit an L2 tx but
 // no signing key is configured.
 var errBotEthKeyMissing = errors.New("L2 signing key not configured for this bot")
 
-// estimateHiveEnvelopeSize approximates the on-wire size of the Hive
-// custom_json operation that callContract would build for the given payload.
-// Used only to decide whether the call needs the L2 fallback — not a
-// security-critical bound.
-func estimateHiveEnvelopeSize(action string, netId, hiveUsername, contractId string, payload json.RawMessage) int {
-	// Wrapper is {"net_id":"...","caller":"hive:...","contract_id":"...",
-	// "action":"...","payload":<inlined>,"rc_limit":10000,"intents":[]}.
-	// The non-payload JSON keys + punctuation + fixed fields total ~120 bytes.
-	const wrapperOverhead = 120
-	return wrapperOverhead + len(netId) + len("hive:") + len(hiveUsername) +
-		len(contractId) + len(action) + len(payload)
-}
-
 // callContractL2 submits a vsc.call contract invocation through the VSC L2
-// transaction pool using the bot's did:pkh:eip155 identity. This path bypasses
-// the Hive custom_json 8192-byte cap and supports payloads up to 16384 bytes.
+// transaction pool using the bot's did:pkh:eip155 identity.
 //
 // The bot's DID must have HBD balance to cover the RC cost — it has no free
 // allotment (unlike hive: accounts). A funding error surfaces as
@@ -90,6 +70,15 @@ func (b *Bot) callContractL2(
 	sTx, err := crafter.SignFinal(vscTx)
 	if err != nil {
 		return "", fmt.Errorf("sign L2 tx: %w", err)
+	}
+
+	if len(sTx.Tx) > l2MaxTxSize {
+		b.L.Error("L2 transaction exceeds maximum size — cannot submit",
+			"action", action,
+			"cbor_size", len(sTx.Tx),
+			"limit", l2MaxTxSize,
+		)
+		return "", fmt.Errorf("L2 tx too large: %d bytes (limit %d)", len(sTx.Tx), l2MaxTxSize)
 	}
 
 	txID, err := b.gql().SubmitTransactionV1(
