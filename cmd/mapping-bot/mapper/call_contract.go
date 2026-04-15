@@ -28,6 +28,26 @@ func (b *Bot) callContract(
 	action string,
 ) (string, error) {
 	username := b.IdentityConfig.Get().HiveUsername
+
+	// Route oversized payloads through the L2 transaction pool — Hive
+	// custom_json is capped at 8192 bytes and silently rejects larger ops,
+	// which was the root cause of the failing bc1q74…rq09 mapping.
+	envelopeSize := estimateHiveEnvelopeSize(
+		action,
+		b.SystemConfig.NetId(),
+		username,
+		b.BotConfig.ContractId(),
+		contractInput,
+	)
+	if envelopeSize > hiveEnvelopeThreshold {
+		b.L.Info("payload exceeds Hive custom_json threshold, routing to L2",
+			"action", action,
+			"envelope_size", envelopeSize,
+			"threshold", hiveEnvelopeThreshold,
+		)
+		return b.callContractL2(ctx, contractInput, action)
+	}
+
 	hiveRpcClient := hivego.NewHiveRpc(b.HiveConfig.Get().HiveURIs)
 	hiveRpcClient.ChainID = b.SystemConfig.HiveChainId()
 

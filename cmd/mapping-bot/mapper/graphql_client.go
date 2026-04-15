@@ -246,6 +246,94 @@ func (b *Bot) FetchTransactionStatus(ctx context.Context, txId string) (string, 
 	return result.Data.FindTransaction[0].Status, nil
 }
 
+// FetchAccountNonce queries the VSC node for the next unused nonce of a given
+// account (did:* or hive:*). Used as the nonce header on L2-submitted txs.
+func (b *Bot) FetchAccountNonce(ctx context.Context, account string) (uint64, error) {
+	reqBody, err := json.Marshal(map[string]any{
+		"query": `query($a: String!){ getAccountNonce(account: $a){ nonce } }`,
+		"variables": map[string]any{
+			"a": account,
+		},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("marshal request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.GqlURL, bytes.NewReader(reqBody))
+	if err != nil {
+		return 0, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("fetch nonce: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Data struct {
+			GetAccountNonce struct {
+				Nonce uint64 `json:"nonce"`
+			} `json:"getAccountNonce"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("decode response: %w", err)
+	}
+	if len(result.Errors) > 0 {
+		return 0, fmt.Errorf("graphql error: %s", result.Errors[0].Message)
+	}
+	return result.Data.GetAccountNonce.Nonce, nil
+}
+
+// SubmitTransactionV1 submits a signed VSC L2 transaction via the node's
+// submitTransactionV1 mutation and returns the resulting CID tx ID.
+func (b *Bot) SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (string, error) {
+	reqBody, err := json.Marshal(map[string]any{
+		"query": `query($tx: String!, $sig: String!){ submitTransactionV1(tx: $tx, sig: $sig){ id } }`,
+		"variables": map[string]any{
+			"tx":  txB64,
+			"sig": sigB64,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.GqlURL, bytes.NewReader(reqBody))
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("submit tx: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Data struct {
+			SubmitTransactionV1 struct {
+				ID *string `json:"id"`
+			} `json:"submitTransactionV1"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if len(result.Errors) > 0 {
+		return "", fmt.Errorf("graphql error: %s", result.Errors[0].Message)
+	}
+	if result.Data.SubmitTransactionV1.ID == nil {
+		return "", fmt.Errorf("submitTransactionV1 returned nil id")
+	}
+	return *result.Data.SubmitTransactionV1.ID, nil
+}
+
 // FetchPublicKeys fetches the primary and backup public keys from contract state.
 // Keys are stored as raw bytes in the contract and returned as hex strings.
 func (b *Bot) FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error) {
