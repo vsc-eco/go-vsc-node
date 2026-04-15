@@ -2,6 +2,7 @@ package mapper
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"time"
 	"vsc-node/cmd/mapping-bot/chain"
 	"vsc-node/cmd/mapping-bot/database"
+	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/hive/streamer"
@@ -74,6 +76,12 @@ type Bot struct {
 
 	failedTxsMu sync.Mutex
 	failedTxs   []FailedTx // VSC transactions that reached FAILED status
+
+	// L2 submission identity — secp256k1 key + derived did:pkh:eip155 DID.
+	// Used when a map/unmap payload would exceed Hive's custom_json cap.
+	// Lazily loaded from MappingBotConfig on first use; nil if unavailable.
+	botEthKey *ecdsa.PrivateKey
+	botEthDID dids.EthDID
 }
 
 // FailedTx records a VSC transaction that reached the FAILED status.
@@ -304,6 +312,24 @@ func NewBot(
 	gqlURL := mappingBotConfig.Get().ConnectedGraphQLAddr
 	gqlClient := graphql.NewClient(gqlURL, http.DefaultClient)
 
+	// Load or generate the bot's L2 signing key. Failure here is non-fatal —
+	// the bot can still operate over the Hive custom_json path for small
+	// payloads; large payloads simply fail until the operator provisions a key.
+	var (
+		ethKey *ecdsa.PrivateKey
+		ethDID dids.EthDID
+	)
+	if priv, generated, err := mappingBotConfig.BotEthKey(); err == nil {
+		ethKey = priv
+		ethDID = mappingBotConfig.BotEthDID(priv)
+		if generated {
+			slog.Warn("generated new L2 signing key — fund this DID with HBD before it can submit oversized map calls",
+				"did", ethDID.String())
+		}
+	} else {
+		slog.Warn("L2 signing key unavailable — oversized payloads will fail until configured", "err", err)
+	}
+
 	return &Bot{
 		Db:             db,
 		GqlClient:      gqlClient,
@@ -315,5 +341,7 @@ func NewBot(
 		HiveConfig:     hiveConfig,
 		SystemConfig:   systemConfig,
 		GqlURL:         gqlURL,
+		botEthKey:      ethKey,
+		botEthDID:      ethDID,
 	}, nil
 }

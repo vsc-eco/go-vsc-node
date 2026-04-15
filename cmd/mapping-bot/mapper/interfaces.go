@@ -16,9 +16,16 @@ type GraphQLFetcher interface {
 	FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error)
 	FetchObservedTx(ctx context.Context, txId string, vout int) (bool, error)
 	// FetchTransactionStatus queries the VSC node for the status of a transaction
-	// by its Hive tx ID. Returns the status string (e.g. "INCLUDED", "CONFIRMED", "FAILED")
-	// or an error if the transaction is not found or the query fails.
+	// by its tx ID (Hive tx ID for custom_json-submitted, or L2 CID for
+	// submitTransactionV1-submitted). Returns the status string (e.g. "INCLUDED",
+	// "CONFIRMED", "FAILED") or an error if the transaction is not found.
 	FetchTransactionStatus(ctx context.Context, txId string) (string, error)
+	// FetchAccountNonce returns the next unused nonce for the given VSC account
+	// (a did:* or hive:* identifier). Used by the L2 submission path.
+	FetchAccountNonce(ctx context.Context, account string) (uint64, error)
+	// SubmitTransactionV1 submits a signed VSC L2 transaction (CBOR-encoded tx
+	// and signature, base64url-encoded) and returns the resulting CID tx ID.
+	SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (string, error)
 }
 
 // ContractCaller abstracts Hive transaction broadcasting for contract calls.
