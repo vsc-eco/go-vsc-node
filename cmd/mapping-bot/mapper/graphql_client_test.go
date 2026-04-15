@@ -27,7 +27,8 @@ func newIntegrationBot(t *testing.T) *Bot {
 	chainCfg := chain.NewBTCTestnet4(http.DefaultClient)
 	return &Bot{
 		Db:          db,
-		GqlClient:   graphql.NewClient(defaultGraphQLUrl, http.DefaultClient),
+		gqlURLs:     []string{defaultGraphQLUrl},
+		gqlClients:  []*graphql.Client{graphql.NewClient(defaultGraphQLUrl, http.DefaultClient)},
 		Chain:       chainCfg,
 		ChainParams: chainCfg.ChainParams,
 		BotConfig:   cfg,
