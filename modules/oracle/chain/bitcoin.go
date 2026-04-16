@@ -114,9 +114,13 @@ func (b *bitcoinRelayer) ChainData(
 	ctx context.Context,
 	startHeight uint64,
 	count uint64,
+	latestValidHeight uint64,
 ) ([]chainBlock, error) {
 	if startHeight == 0 {
 		return nil, errors.New("start height not provided")
+	}
+	if latestValidHeight < startHeight {
+		return nil, fmt.Errorf("bitcoin latest valid height (%d) is behind requested start height (%d)", latestValidHeight, startHeight)
 	}
 
 	// connect to btcd
@@ -126,20 +130,11 @@ func (b *bitcoinRelayer) ChainData(
 	}
 	defer btcdClient.Shutdown()
 
-	// get stopHeight
-	latestBlock, err := btcdClient.GetBlockCount()
-	if err != nil {
-		return nil, err
-	}
-
+	// Cap at latestValidHeight (inclusive) so we never fetch blocks past the
+	// caller's validity cutoff, even when catching up a multi-block batch.
 	stopHeight := startHeight + count
-	if stopHeight > uint64(latestBlock)+1 {
-		stopHeight = uint64(latestBlock) + 1
-	}
-
-	if stopHeight < startHeight {
-		// Local bitcoin node is behind the requested start height — not synced yet.
-		return nil, fmt.Errorf("local bitcoin tip (%d) is behind requested start height (%d)", stopHeight, startHeight)
+	if stopHeight > latestValidHeight+1 {
+		stopHeight = latestValidHeight + 1
 	}
 
 	// Resolve all block hashes first.

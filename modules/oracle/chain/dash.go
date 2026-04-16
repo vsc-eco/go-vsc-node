@@ -106,9 +106,12 @@ func (d *dashRelayer) GetLatestValidHeight() (chainState, error) {
 }
 
 // ChainData implements chainRelay.
-func (d *dashRelayer) ChainData(_ context.Context, startHeight uint64, count uint64) ([]chainBlock, error) {
+func (d *dashRelayer) ChainData(_ context.Context, startHeight uint64, count uint64, latestValidHeight uint64) ([]chainBlock, error) {
 	if startHeight == 0 {
 		return nil, errors.New("start height not provided")
+	}
+	if latestValidHeight < startHeight {
+		return nil, fmt.Errorf("dash latest valid height (%d) is behind requested start height (%d)", latestValidHeight, startHeight)
 	}
 
 	client, err := d.connect()
@@ -117,18 +120,11 @@ func (d *dashRelayer) ChainData(_ context.Context, startHeight uint64, count uin
 	}
 	defer client.Shutdown()
 
-	latestBlock, err := client.GetBlockCount()
-	if err != nil {
-		return nil, err
-	}
-
+	// Cap at latestValidHeight (inclusive) so we never fetch blocks past the
+	// caller's validity cutoff.
 	stopHeight := startHeight + count
-	if stopHeight > uint64(latestBlock) {
-		stopHeight = uint64(latestBlock)
-	}
-
-	if stopHeight < startHeight {
-		return nil, fmt.Errorf("local dash tip (%d) is behind requested start height (%d)", stopHeight, startHeight)
+	if stopHeight > latestValidHeight+1 {
+		stopHeight = latestValidHeight + 1
 	}
 
 	blocks := make([]chainBlock, 0, stopHeight-startHeight)
