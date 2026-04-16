@@ -28,31 +28,33 @@ func ltcTestNetParams() *chaincfg.Params {
 func NewLTCMainnet(httpClient *http.Client) *ChainConfig {
 	params := ltcMainNetParams()
 	return &ChainConfig{
-		Name:           "ltc",
-		AssetSymbol:    "LTC",
-		Client:         NewMempoolSpaceClient(httpClient, "https://litecoinspace.org/api"),
-		Parser:         &BTCBlockParser{Params: params},
-		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 17280},
-		BlockInterval:  150 * time.Second, // 2.5 min blocks
-		SleepInterval:  time.Minute,
-		DropHeightDiff: 17280, // ~30 days at 2.5 min
-		ChainParams:    params,
-		DefaultDbName:  "ltc-mapping-bot",
+		Name:                 "ltc",
+		AssetSymbol:          "LTC",
+		Client:               NewMempoolSpaceClient(httpClient, "https://litecoinspace.org/api"),
+		Parser:               &BTCBlockParser{Params: params},
+		AddressGen:           &BTCAddressGenerator{Params: params, BackupCSVBlocks: 17280},
+		BlockInterval:        150 * time.Second, // 2.5 min blocks
+		SleepInterval:        time.Minute,
+		DropHeightDiff:       17280, // ~30 days at 2.5 min
+		HistoricalTxLookback: 4032,  // ~7 days at 2.5 min
+		ChainParams:          params,
+		DefaultDbName:        "ltc-mapping-bot",
 	}
 }
 
 func NewLTCTestnet(httpClient *http.Client) *ChainConfig {
 	params := ltcTestNetParams()
 	return &ChainConfig{
-		Name:           "ltc",
-		AssetSymbol:    "LTC",
-		Client:         NewMempoolSpaceClient(httpClient, "https://litecoinspace.org/testnet/api"),
-		Parser:         &BTCBlockParser{Params: params},
-		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 2},
-		BlockInterval:  150 * time.Second,
-		SleepInterval:  10 * time.Second,
-		DropHeightDiff: 17280,
-		ChainParams:    params,
-		DefaultDbName:  "ltc-mapping-bot-testnet",
+		Name:                 "ltc",
+		AssetSymbol:          "LTC",
+		Client:               NewMempoolSpaceClient(httpClient, "https://litecoinspace.org/testnet/api"),
+		Parser:               &BTCBlockParser{Params: params},
+		AddressGen:           &BTCAddressGenerator{Params: params, BackupCSVBlocks: 2},
+		BlockInterval:        150 * time.Second,
+		SleepInterval:        10 * time.Second,
+		DropHeightDiff:       17280,
+		HistoricalTxLookback: 4032,
+		ChainParams:          params,
+		DefaultDbName:        "ltc-mapping-bot-testnet",
 	}
 }

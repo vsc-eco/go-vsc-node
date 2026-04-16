@@ -70,8 +70,9 @@ func (b *Bot) gqlHTTPPost(ctx context.Context, bodyBytes []byte, decode func(*ht
 // gqlClientDo calls fn with each configured graphql.Client in order, stopping
 // at the first success. Only errors from fn trigger fallback to the next client.
 // fn should create a fresh query struct on each invocation to avoid partial-state
-// issues across retries.
-func (b *Bot) gqlClientDo(fn func(*graphql.Client) error) error {
+// issues across retries. The inter-endpoint backoff respects ctx cancellation
+// so callers that give up don't block for the full 500 ms per remaining client.
+func (b *Bot) gqlClientDo(ctx context.Context, fn func(*graphql.Client) error) error {
 	clients := b.gqlClients
 	if b.GqlClient != nil {
 		clients = []*graphql.Client{b.GqlClient}
@@ -79,7 +80,11 @@ func (b *Bot) gqlClientDo(fn func(*graphql.Client) error) error {
 	var lastErr error
 	for i, client := range clients {
 		if i > 0 {
-			time.Sleep(500 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(500 * time.Millisecond):
+			}
 		}
 		if err := fn(client); err != nil {
 			lastErr = err
@@ -120,7 +125,7 @@ func (b *Bot) fetchMultipleTxSpendKeys(
 	}
 
 	var result json.RawMessage
-	err := b.gqlClientDo(func(client *graphql.Client) error {
+	err := b.gqlClientDo(ctx, func(client *graphql.Client) error {
 		var q GetContractStateQuery
 		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
 			return err
@@ -171,7 +176,7 @@ func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.
 	}
 
 	var result json.RawMessage
-	err := b.gqlClientDo(func(client *graphql.Client) error {
+	err := b.gqlClientDo(ctx, func(client *graphql.Client) error {
 		var q GetContractStateQuery
 		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
 			return err
@@ -222,7 +227,7 @@ func (b *Bot) FetchObservedTx(ctx context.Context, txId string, vout int) (bool,
 	}
 
 	var result json.RawMessage
-	err := b.gqlClientDo(func(client *graphql.Client) error {
+	err := b.gqlClientDo(ctx, func(client *graphql.Client) error {
 		var q GetContractStateQuery
 		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
 			return err
@@ -259,7 +264,7 @@ func (b *Bot) FetchSignatures(
 	}
 	var rows []tssRow
 
-	err := b.gqlClientDo(func(client *graphql.Client) error {
+	err := b.gqlClientDo(ctx, func(client *graphql.Client) error {
 		var q struct {
 			Tss []tssRow `graphql:"getTssRequests(keyId: $keyId, msgHex: $msgHex)"`
 		}
@@ -422,7 +427,7 @@ func (b *Bot) FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backup
 	}
 
 	var result json.RawMessage
-	err = b.gqlClientDo(func(client *graphql.Client) error {
+	err = b.gqlClientDo(ctx, func(client *graphql.Client) error {
 		var q GetContractStateQuery
 		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
 			return err
@@ -473,7 +478,7 @@ func (b *Bot) FetchLastHeight(ctx context.Context) (string, error) {
 	}
 
 	var result json.RawMessage
-	err := b.gqlClientDo(func(client *graphql.Client) error {
+	err := b.gqlClientDo(ctx, func(client *graphql.Client) error {
 		var q GetContractStateQuery
 		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
 			return err

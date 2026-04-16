@@ -28,31 +28,33 @@ func dashTestNetParams() *chaincfg.Params {
 func NewDASHMainnet(httpClient *http.Client) *ChainConfig {
 	params := dashMainNetParams()
 	return &ChainConfig{
-		Name:           "dash",
-		AssetSymbol:    "DASH",
-		Client:         NewMempoolSpaceClient(httpClient, "https://insight.dash.org/insight-api"),
-		Parser:         &BTCBlockParser{Params: params},
-		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 17280},
-		BlockInterval:  150 * time.Second, // 2.5 min blocks
-		SleepInterval:  time.Minute,
-		DropHeightDiff: 17280,
-		ChainParams:    params,
-		DefaultDbName:  "dash-mapping-bot",
+		Name:                 "dash",
+		AssetSymbol:          "DASH",
+		Client:               NewMempoolSpaceClient(httpClient, "https://insight.dash.org/insight-api"),
+		Parser:               &BTCBlockParser{Params: params},
+		AddressGen:           &BTCAddressGenerator{Params: params, BackupCSVBlocks: 17280},
+		BlockInterval:        150 * time.Second, // 2.5 min blocks
+		SleepInterval:        time.Minute,
+		DropHeightDiff:       17280,
+		HistoricalTxLookback: 4032, // ~7 days at 2.5 min
+		ChainParams:          params,
+		DefaultDbName:        "dash-mapping-bot",
 	}
 }
 
 func NewDASHTestnet(httpClient *http.Client) *ChainConfig {
 	params := dashTestNetParams()
 	return &ChainConfig{
-		Name:           "dash",
-		AssetSymbol:    "DASH",
-		Client:         NewMempoolSpaceClient(httpClient, "https://insight.dash.org/insight-api-testnet"),
-		Parser:         &BTCBlockParser{Params: params},
-		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 2},
-		BlockInterval:  150 * time.Second,
-		SleepInterval:  10 * time.Second,
-		DropHeightDiff: 17280,
-		ChainParams:    params,
-		DefaultDbName:  "dash-mapping-bot-testnet",
+		Name:                 "dash",
+		AssetSymbol:          "DASH",
+		Client:               NewMempoolSpaceClient(httpClient, "https://insight.dash.org/insight-api-testnet"),
+		Parser:               &BTCBlockParser{Params: params},
+		AddressGen:           &BTCAddressGenerator{Params: params, BackupCSVBlocks: 2},
+		BlockInterval:        150 * time.Second,
+		SleepInterval:        10 * time.Second,
+		DropHeightDiff:       17280,
+		HistoricalTxLookback: 4032,
+		ChainParams:          params,
+		DefaultDbName:        "dash-mapping-bot-testnet",
 	}
 }

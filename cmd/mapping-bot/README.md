@@ -1,17 +1,17 @@
 # VSC Mapping Bot
 
-Multi-chain mapping bot that bridges UTXO blockchains (BTC, LTC, DASH, DOGE, BCH) and VSC by monitoring blocks for deposits to mapped addresses, then submitting corresponding mapping transactions to the VSC network via a Hive custom JSON operation.
+Multi-chain mapping bot that bridges UTXO blockchains (BTC, LTC, DASH, DOGE, BCH) and VSC by monitoring blocks for deposits to mapped addresses, then submitting corresponding mapping transactions to the VSC network as signed L2 transactions (`submitTransactionV1`) under a `did:pkh:eip155` caller.
 
 ## General Flow
 
 1. **Startup**: Parse CLI flags (`-chain btc|ltc|dash|doge|bch`, `-chain-network mainnet|testnet|regtest`), load configs, connect to MongoDB.
-2. **HTTP Server**: Start an HTTP server (default port 8000) to accept mapping registration and signing requests.
+2. **HTTP Server**: Start an HTTP server (default port 8000) to accept mapping registration, signing, and retry requests.
 3. **Main Loop** (interval based on chain block time: 10min BTC/BCH, 2.5min LTC/DASH, 1min DOGE):
    - **Cleanup**: Delete address mappings older than 30 days, clean up txs stuck in "sent" for >7 days (runs once per 24h).
    - **HandleUnmap**: Fetch pending transaction spends from the contract, check for TSS signatures, and broadcast any fully-signed transactions (with retry, up to 3 attempts).
    - **HandleConfirmations**: Check sent txs against the blockchain, call `confirmSpend` on the contract to promote unconfirmed UTXOs (with retry).
    - **Block Processing**: Fetch the next block via the chain's API, parse it for transactions to mapped addresses, generate merkle proofs, and call the mapping contract (with retry).
-   - **HandleExistingTxs**: Check for pre-existing transactions on any newly registered addresses.
+   - **HandleExistingTxs**: Check for pre-existing transactions on any newly registered addresses, capped to roughly one week of chain history (per-chain `HistoricalTxLookback`).
 
 ### Architecture Diagram
 
@@ -27,12 +27,18 @@ Multi-chain mapping bot that bridges UTXO blockchains (BTC, LTC, DASH, DOGE, BCH
                                                  │       │
                               ┌──────────────────┘       └──────────────────┐
                               ▼                                             ▼
-                    ┌───────────────────┐                         ┌──────────────────┐
-                    │  Chain API        │                         │ Hive Blockchain  │
-                    │  (mempool.space)  │                         │ (vsc.call ops)   │
-                    │  blocks/txs/post  │                         │ map/confirmSpend │
-                    └───────────────────┘                         └──────────────────┘
+                    ┌───────────────────┐                  ┌──────────────────────────┐
+                    │  Chain API        │                  │ VSC Node (GraphQL)       │
+                    │  (mempool.space)  │                  │ getStateByKeys,          │
+                    │  blocks/txs/post  │                  │ getAccountNonce,         │
+                    └───────────────────┘                  │ submitTransactionV1      │
+                                                           │ (map / confirmSpend)     │
+                                                           └──────────────────────────┘
 ```
+
+All contract calls (`map`, `confirmSpend`) are signed with the bot's secp256k1
+key and submitted through the VSC node's `submitTransactionV1` GraphQL query.
+The bot does not talk to Hive directly.
 
 ## HTTP Server Endpoints
 
@@ -50,6 +56,7 @@ Health check endpoint for monitoring.
 | `staleSecs`       | number   | Seconds since last block (only when stale)                     |
 | `pendingSentTxs`  | number   | Transactions broadcast but not yet confirmed on chain          |
 | `pendingUnsigned` | number   | Signature hashes awaiting TSS signatures                       |
+| `failedVscTxs`    | object[] | VSC L2 transactions that reached `FAILED` status (most recent 100) |
 | `issues`          | string[] | Specific problems detected (only when `unhealthy`)             |
 
 **Status codes**: `200` for `ok`/`starting`, `503` for `unhealthy`.
@@ -58,6 +65,7 @@ Health check endpoint for monitoring.
 - Block processing stale (no new block for 2x chain block interval)
 - Transactions broadcast but unconfirmed
 - Signature hashes waiting on TSS
+- One or more VSC transactions in the persisted failed store
 
 ---
 
@@ -80,7 +88,7 @@ Register a new chain-to-VSC address mapping. Generates a P2WSH address that the 
    - **Backup path**: `OP_ELSE <csvBlocks> OP_CHECKSEQUENCEVERIFY OP_DROP <backupPubKey> OP_CHECKSIG OP_ENDIF`
    - CSV timeout is 4320 blocks (~30 days) on mainnet, 2 blocks on testnet.
 4. Stores the BTC address and instruction in MongoDB.
-5. Checks the address for any pre-existing transactions.
+5. Checks the address for any pre-existing transactions within `HistoricalTxLookback`.
 
 **Status codes**: `201` created, `409` mapping already exists, `400` invalid request, `500` server error.
 
@@ -88,7 +96,7 @@ Register a new chain-to-VSC address mapping. Generates a P2WSH address that the 
 
 ### `POST /sign`
 
-Submit backup signatures for pending transactions (used when the primary TSS signing path is unavailable).
+Submit backup signatures for pending transactions (used when the primary TSS signing path is unavailable). Requires `Authorization: Bearer <SignApiKey>`; disabled if `SignApiKey` is empty.
 
 **Request body** (JSON):
 
@@ -106,6 +114,27 @@ Submit backup signatures for pending transactions (used when the primary TSS sig
 3. Increments the transaction's `currentSignatures` counter.
 
 **Status codes**: `200` signatures applied, `400` invalid request, `404` transaction not found, `500` server error.
+
+---
+
+### `POST /retry`
+
+Re-submit persisted `FAILED` VSC transactions by their tx ID. Requires `Authorization: Bearer <SignApiKey>` (same credential as `/sign`); disabled if `SignApiKey` is empty.
+
+**Request body** (JSON):
+
+| Field   | Type     | Required | Description                                      |
+| ------- | -------- | -------- | ------------------------------------------------ |
+| `txIds` | string[] | yes      | Non-empty list of VSC L2 tx CIDs to retry        |
+
+Each ID is validated as an IPFS CID before being used. Two throttles apply:
+
+- **Global**: only one retry request may proceed every 10 seconds. Requests arriving inside the window are rejected before any per-tx state is touched.
+- **Per-tx**: the same tx may be retried at most once every 2 minutes.
+
+**Response**: JSON array of `{txId, error?}`, one per requested ID.
+
+**Status codes**: `200` always (per-tx errors surface in the response body), `400` invalid JSON or bad txId, `401` missing/invalid bearer token, `403` endpoint disabled.
 
 ## Configuration
 
@@ -125,34 +154,39 @@ Submit backup signatures for pending transactions (used when the primary TSS sig
 
 Defined in `mapper/config.go`. Created on first run with `-init`.
 
-| Field                  | Type   | Default                           | Description                                                                                          |
-| ---------------------- | ------ | --------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `ContractId`           | string | `ADD_MAPPING_CONTRACT_ID`         | The VSC contract ID for the chain's mapping contract. Must be set before running.                    |
-| `ConnectedGraphQLAddr` | string | `0.0.0.0:8080`                    | Address of the VSC node's GraphQL API for contract state, public keys, and TSS signatures.           |
-| `HttpPort`             | uint16 | `8000`                            | Port the mapping bot's HTTP server listens on.                                                       |
-| `SignApiKey`           | string | `""`                              | API key for the `/sign` endpoint. If empty, `/sign` is disabled.                                     |
-| `BotEthPrivKey`        | string | auto-generated on first run       | secp256k1 key used to sign VSC L2 transactions (did:pkh:eip155 caller). Used when a payload exceeds Hive's 8192-byte custom_json cap — e.g. large BTC txs with many inputs or witness data. |
+| Field                   | Type     | Default                                          | Description                                                                                 |
+| ----------------------- | -------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `ContractId`            | string   | `ADD_MAPPING_CONTRACT_ID`                        | The VSC contract ID for the chain's mapping contract. Must be set before running.           |
+| `ConnectedGraphQLAddrs` | string[] | `["http://0.0.0.0:8080/api/v1/graphql"]`         | Ordered list of VSC node GraphQL endpoints. The first entry is primary; others are fallbacks tried in order with a 500ms pause between attempts. |
+| `HttpPort`              | uint16   | `8000`                                           | Port the mapping bot's HTTP server listens on.                                              |
+| `SignApiKey`            | string   | `""`                                             | Bearer token for `/sign` and `/retry`. If empty, both endpoints return 403.                 |
+| `RcLimit`               | uint     | `10000`                                          | Resource-credit limit attached to every submitted L2 transaction. Set higher if contract calls regularly exceed it. |
+| `BotEthPrivKey`         | string   | auto-generated on first run                       | secp256k1 key used to sign every VSC L2 transaction (`did:pkh:eip155` caller). Persisted to `config.json` — see note below. |
+
+> **Upgrade note**: Earlier versions used a singular `ConnectedGraphQLAddr` string. On upgrade, either rename the field to `ConnectedGraphQLAddrs` and wrap the value in a list, or delete the config file and re-init.
+
+> **Private key handling**: `BotEthPrivKey` is written to `config.json` in plaintext. Restrict filesystem permissions on the data directory so only the bot process can read it, and back up the key before deleting the file — losing it means abandoning any RCs funded on the derived DID.
 
 ### L2 Signing Key Setup (first run)
 
-Small map calls (<~7 KB envelope) are broadcast via Hive custom_json using
-`HiveActiveKey` as before — no operator action required.
+All contract calls go through the VSC L2 transaction pool, signed with
+`BotEthPrivKey` under a `did:pkh:eip155` caller. On first run the bot
+generates a fresh key, logs the derived DID at `slog.Warn` level, and
+persists the key to `config.json`.
 
-When a map payload would exceed Hive's 8192-byte `custom_json` limit, the bot
-auto-routes through the VSC L2 transaction pool (16384-byte cap) using the
-`BotEthPrivKey` above. On first run, the bot generates a fresh key, logs the
-derived `did:pkh:eip155:…` address, and persists the key. The derived DID
-needs a small HBD balance to pay for RCs (DIDs have no free allotment, unlike
-`hive:` accounts). Transfer ~1 HBD on VSC L2 to the logged DID — that buys
-roughly 500 large-payload map calls. Top up when the balance drops.
+The derived DID needs a small HBD balance on VSC L2 to pay for RCs — DIDs
+have no free allotment. Transfer ~1 HBD on VSC L2 to the logged DID before
+the bot can submit `map`/`confirmSpend` transactions. Top up when the
+balance drops.
 
 ### Other Config Files
 
-The bot also loads these standard VSC config files from the data directory:
+The bot also loads this standard VSC config file from the data directory:
 
-- **Identity config** (`identityConfig.json`): Hive account name and posting key used to broadcast `vsc.call` custom JSON operations.
-- **Hive config** (`hiveConfig.json`): List of Hive API node URIs.
 - **DB config** (`dbConfig.json`): MongoDB connection string.
+
+(The mapping bot no longer requires `identityConfig.json` or `hiveConfig.json`
+— those were needed when contract calls were broadcast via Hive custom_json.)
 
 ## Running All Chains
 
