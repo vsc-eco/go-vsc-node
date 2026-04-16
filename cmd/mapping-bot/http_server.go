@@ -112,7 +112,9 @@ func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 
 		// Flag failed VSC transactions
 		failedTxs, err := bot.Db.FailedTxs.GetAll(ctx)
-		if err == nil && len(failedTxs) > 0 {
+		if err != nil {
+			issues = append(issues, "failed to query failed VSC transactions: "+err.Error())
+		} else if len(failedTxs) > 0 {
 			resp.FailedVscTxs = failedTxs
 			issues = append(issues, fmt.Sprintf("%d VSC transaction(s) failed", len(failedTxs)))
 		}
@@ -361,6 +363,18 @@ func retryHandler(
 	bot *mapper.Bot,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Auth: reuse the same API key as /sign.
+		apiKey := bot.BotConfig.SignApiKey()
+		if apiKey == "" {
+			writeResponse(w, http.StatusForbidden, "/retry endpoint disabled — set SignApiKey in config")
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "Bearer "+apiKey {
+			writeResponse(w, http.StatusUnauthorized, "invalid or missing API key")
+			return
+		}
+
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		var req retryRequest
 		dec := json.NewDecoder(r.Body)

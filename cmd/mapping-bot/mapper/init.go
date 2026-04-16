@@ -48,6 +48,7 @@ type BotConfiger interface {
 	HttpPort() uint16
 	SignApiKey() string
 	FilePath() string
+	RcLimit() uint
 }
 
 type Bot struct {
@@ -133,18 +134,9 @@ func (b *Bot) RetryFailedTx(ctx context.Context, txId string) error {
 	if !isValidTxID(txId) {
 		return fmt.Errorf("invalid txId")
 	}
-	// Global throttle: serialise all retry requests.
-	b.retryMu.Lock()
-	sinceGlobal := time.Since(b.lastGlobalRetryAt)
-	if sinceGlobal < retryGlobalThrottle {
-		b.retryMu.Unlock()
-		return fmt.Errorf("%w: global retry cooldown (%.1fs remaining)",
-			ErrRetryThrottled, (retryGlobalThrottle - sinceGlobal).Seconds())
-	}
-	b.lastGlobalRetryAt = time.Now()
-	b.retryMu.Unlock()
 
-	// Per-tx throttle: atomically mark this tx as retrying.
+	// Per-tx throttle checked first — avoids burning the global 10s window
+	// if this specific tx is still in its 2-minute cooldown.
 	allowed, err := b.failedTxDB().TryMarkRetrying(ctx, txId, retryTxThrottle)
 	if err != nil {
 		if errors.Is(err, database.ErrFailedTxNotFound) {
@@ -156,13 +148,30 @@ func (b *Bot) RetryFailedTx(ctx context.Context, txId string) error {
 		return fmt.Errorf("%w: per-tx retry cooldown for %s", ErrRetryThrottled, txId)
 	}
 
+	// Global throttle: only advance after per-tx passes.
+	b.retryMu.Lock()
+	sinceGlobal := time.Since(b.lastGlobalRetryAt)
+	if sinceGlobal < retryGlobalThrottle {
+		b.retryMu.Unlock()
+		return fmt.Errorf("%w: global retry cooldown (%.1fs remaining)",
+			ErrRetryThrottled, (retryGlobalThrottle - sinceGlobal).Seconds())
+	}
+	b.lastGlobalRetryAt = time.Now()
+	b.retryMu.Unlock()
+
 	rec, err := b.failedTxDB().GetOne(ctx, txId)
 	if err != nil {
 		return fmt.Errorf("failed to load tx %s for retry: %w", txId, err)
 	}
 
 	b.L.Info("retrying failed VSC tx", "txId", txId, "action", rec.Action)
-	return b.callWithRetry(ctx, rec.Payload, rec.Action, 3)
+	retryErr := b.callWithRetry(ctx, rec.Payload, rec.Action, 3)
+	if retryErr == nil {
+		// All retry attempts succeeded — delete the original failure record so
+		// it no longer appears in health reports.
+		b.clearFailedTxs(ctx, []string{txId})
+	}
+	return retryErr
 }
 
 // gql returns the GraphQLFetcher to use — the override if set, otherwise the Bot itself.

@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
 
@@ -31,7 +32,14 @@ func (b *Bot) gqlHTTPPost(ctx context.Context, bodyBytes []byte, decode func(*ht
 		urls = []string{b.GqlURL}
 	}
 	var lastErr error
-	for _, url := range urls {
+	for i, url := range urls {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 		if err != nil {
 			// Bad URL — non-retriable.
@@ -69,7 +77,10 @@ func (b *Bot) gqlClientDo(fn func(*graphql.Client) error) error {
 		clients = []*graphql.Client{b.GqlClient}
 	}
 	var lastErr error
-	for _, client := range clients {
+	for i, client := range clients {
+		if i > 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
 		if err := fn(client); err != nil {
 			lastErr = err
 			continue
