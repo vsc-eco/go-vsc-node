@@ -27,6 +27,7 @@ func (l2TestBotConfig) ContractId() string { return "vsc1BkWohDf5fPcwn7V9B9ar6Ty
 func (l2TestBotConfig) HttpPort() uint16   { return 0 }
 func (l2TestBotConfig) SignApiKey() string { return "" }
 func (l2TestBotConfig) FilePath() string   { return "" }
+func (l2TestBotConfig) RcLimit() uint      { return 10000 }
 
 // buildBotForL2Test creates a minimal Bot wired for L2-path tests.
 func buildBotForL2Test(t *testing.T, gql GraphQLFetcher) (*Bot, dids.EthDID) {
@@ -126,7 +127,7 @@ func TestCallContractL2_TooLarge(t *testing.T) {
 	bot, did := buildBotForL2Test(t, gql)
 	gql.nonces[did.String()] = 0
 
-	// Build a payload large enough that the serialized CBOR will exceed l2MaxTxSize.
+	// Build a payload large enough that the serialized CBOR will exceed transactionpool.MAX_TX_SIZE.
 	// The CBOR overhead is small; a ~16000-byte payload string will push it over.
 	hugePayload := json.RawMessage(`"` + strings.Repeat("x", 16000) + `"`)
 

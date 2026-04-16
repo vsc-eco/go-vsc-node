@@ -17,9 +17,13 @@ type mappingBotConfig struct {
 	// subsequent entries are fallbacks used when the primary is unreachable.
 	ConnectedGraphQLAddrs []string
 	HttpPort              uint16
-	// SignApiKey authenticates requests to the /sign endpoint.
-	// If empty, /sign is disabled for safety.
+	// SignApiKey authenticates requests to the /sign and /retry endpoints.
+	// If empty, both endpoints are disabled for safety.
 	SignApiKey string
+	// RcLimit is the resource-credit limit attached to every VSC L2 transaction
+	// the bot submits. The VSC node rejects the transaction if the caller's RC
+	// balance is below this value, so set it high enough for your contract calls.
+	RcLimit uint
 	// BotEthPrivKey is a hex-encoded secp256k1 private key used to sign
 	// VSC L2 transactions (did:pkh:eip155 caller). It is auto-generated on
 	// first run; the derived DID must be funded with HBD to pay for RCs.
@@ -41,6 +45,7 @@ func NewMappingBotConfig(dataDir ...string) *mappingBotConfigStruct {
 		ContractId:            "ADD_MAPPING_CONTRACT_ID",
 		ConnectedGraphQLAddrs: []string{"http://0.0.0.0:8080/api/v1/graphql"},
 		HttpPort:              8000,
+		RcLimit:               10000,
 	}, dataDirPtr)}
 }
 
@@ -54,6 +59,13 @@ func (c *mappingBotConfigStruct) HttpPort() uint16 {
 
 func (c *mappingBotConfigStruct) SignApiKey() string {
 	return c.Get().SignApiKey
+}
+
+func (c *mappingBotConfigStruct) RcLimit() uint {
+	if v := c.Get().RcLimit; v > 0 {
+		return v
+	}
+	return 10000
 }
 
 func (c *mappingBotConfigStruct) SetHttpPort(port uint16) {
