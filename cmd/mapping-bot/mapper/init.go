@@ -304,7 +304,7 @@ const (
 	// status poll, giving the VSC node time to index the transaction.
 	initialStatusDelay = 10 * time.Second
 	// statusPollInterval is how often to re-check after the initial delay.
-	statusPollInterval = 3 * time.Second
+	statusPollInterval = 15 * time.Second
 )
 
 // awaitTxStatus waits for a broadcast transaction to reach a terminal status.
