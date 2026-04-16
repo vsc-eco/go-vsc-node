@@ -56,9 +56,14 @@ const (
 	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
 	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
 
-	// maxConcurrentSignSessions caps how many signing requests are dispatched
-	// per interval to avoid flooding p2p with concurrent TSS sessions.
-	maxConcurrentSignSessions = int64(3)
+	// Signing dispatches are staggered across the window to keep peak p2p
+	// load low. One request fires every signStaggerStep blocks for up to
+	// signStaggerCount slots. With signInterval=50 and signStaggerStep=5,
+	// the last dispatch lands at bh+25, leaving 25 blocks (~75s) of headroom
+	// for the 60s sign timeout to drain before the next window opens.
+	maxSignPerWindow = int64(6)
+	signStaggerStep  = uint64(5)
+	signStaggerCount = 6
 )
 
 // ReadyAttestation is a BLS-signed self-attestation that a node is online and
@@ -287,6 +292,16 @@ type TssManager struct {
 	// In-memory dedup for readiness gossip broadcasts. Key is "targetBlock".
 	readinessSent map[string]bool
 
+	// signBatch holds the pre-fetched signing requests for the current
+	// signInterval window. Populated once at bh % signInterval == 0 and
+	// drained one-per-slot at offsets {0, signStaggerStep, 2*...}. Keeps
+	// dispatch deterministic across nodes: all slots in the window work
+	// from the same FIFO snapshot even though they're dispatched at
+	// different block heights.
+	signBatchMu sync.Mutex
+	signBatchBh uint64
+	signBatch   []tss_db.TssRequest
+
 	// Off-chain gossip readiness state. Protected by gossipLock.
 	gossipLock sync.RWMutex
 	// gossipAttestations["targetBlock"][account] = signed attestation.
@@ -501,31 +516,62 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				keyLocks[key.Id] = true
 			}
 		}
-		if bh%signInterval == 0 {
-			signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh, maxConcurrentSignSessions)
-
-			for _, signReq := range signingRequests {
-				keyInfo, _ := tssMgr.tssKeys.FindKey(signReq.KeyId)
-				if keyInfo.Status != tss_db.TssKeyActive {
-					log.Warn(
-						"signing attempted for non-active key, skipping",
-						"keyId",
-						keyInfo.Id,
-						"status",
-						keyInfo.Status,
-					)
-					continue
-				}
-				if !keyLocks[signReq.KeyId] {
-					rawMsg, err := hex.DecodeString(signReq.Msg)
-					if err == nil {
-						generatedActions = append(generatedActions, QueuedAction{
-							Type:  SignAction,
-							KeyId: signReq.KeyId,
-							Args:  rawMsg,
-							Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
-						})
+		signSlotOffset := bh % signInterval
+		isSignSlot := signSlotOffset%signStaggerStep == 0 &&
+			int(signSlotOffset/signStaggerStep) < signStaggerCount
+		if isSignSlot {
+			// Slot 0: pre-fetch the window's batch, filter against reshare/
+			// keygen keyLocks built earlier this tick, and cache it. Later
+			// slots in the window dispatch from this snapshot without
+			// re-querying the DB — the pending requests don't change status
+			// mid-protocol so re-fetching would just return the same rows.
+			if signSlotOffset == 0 {
+				fetched, _ := tssMgr.tssRequests.FindUnsignedRequests(bh, maxSignPerWindow)
+				filtered := make([]tss_db.TssRequest, 0, len(fetched))
+				for _, req := range fetched {
+					keyInfo, _ := tssMgr.tssKeys.FindKey(req.KeyId)
+					if keyInfo.Status != tss_db.TssKeyActive {
+						log.Warn(
+							"signing attempted for non-active key, skipping",
+							"keyId",
+							keyInfo.Id,
+							"status",
+							keyInfo.Status,
+						)
+						continue
 					}
+					if keyLocks[req.KeyId] {
+						continue
+					}
+					filtered = append(filtered, req)
+				}
+				tssMgr.signBatchMu.Lock()
+				tssMgr.signBatchBh = bh
+				tssMgr.signBatch = filtered
+				tssMgr.signBatchMu.Unlock()
+			}
+
+			slotIdx := int(signSlotOffset / signStaggerStep)
+			windowStart := bh - signSlotOffset
+
+			tssMgr.signBatchMu.Lock()
+			var signReq tss_db.TssRequest
+			hasReq := tssMgr.signBatchBh == windowStart && slotIdx < len(tssMgr.signBatch)
+			if hasReq {
+				signReq = tssMgr.signBatch[slotIdx]
+			}
+			tssMgr.signBatchMu.Unlock()
+
+			if hasReq {
+				keyInfo, _ := tssMgr.tssKeys.FindKey(signReq.KeyId)
+				rawMsg, err := hex.DecodeString(signReq.Msg)
+				if err == nil {
+					generatedActions = append(generatedActions, QueuedAction{
+						Type:  SignAction,
+						KeyId: signReq.KeyId,
+						Args:  rawMsg,
+						Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
+					})
 				}
 			}
 		}

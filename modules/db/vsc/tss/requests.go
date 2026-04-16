@@ -103,7 +103,7 @@ func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64, limit int64
 	}
 
 	opts := options.Find().
-		SetSort(bson.D{{Key: "created_height", Value: 1}}).
+		SetSort(bson.D{{Key: "created_height", Value: 1}, {Key: "key_id", Value: 1}, {Key: "msg", Value: 1}}).
 		SetLimit(limit)
 
 	findResult, err := tssReqs.Find(ctx, bson.M{
