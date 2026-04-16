@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
-	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -123,11 +122,8 @@ const (
 // ErrRetryThrottled is returned when a retry request is rejected due to throttling.
 var ErrRetryThrottled = errors.New("retry throttled")
 
-// txIDPattern allows common VSC tx ID characters and bounds the length.
-var txIDPattern = regexp.MustCompile(`^[A-Za-z0-9:_-]{1,128}$`)
-
 func isValidTxID(txId string) bool {
-	return txIDPattern.MatchString(txId)
+	return database.IsValidTxID(txId)
 }
 
 // RetryFailedTx re-submits a previously failed contract call identified by its VSC tx ID.
