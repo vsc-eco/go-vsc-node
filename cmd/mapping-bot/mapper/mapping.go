@@ -19,7 +19,7 @@ func (b *Bot) HandleMap(
 	blockBytes []byte,
 	blockHeight uint64,
 ) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	lastContractHeightStr, err := b.gql().FetchLastHeight(ctx)
 	if err != nil {
@@ -78,7 +78,7 @@ func (b *Bot) HandleMap(
 // (b.Chain.HistoricalTxLookback), sized to roughly one week of chain time.
 func (b *Bot) HandleExistingTxs(chainAddress string) {
 	b.L.Debug("checking existing txs for new address", "address", chainAddress)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	tipHeight, err := b.Chain.Client.GetTipHeight()
