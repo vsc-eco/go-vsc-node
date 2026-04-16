@@ -53,12 +53,19 @@ func (s *FailedTxStore) RecordFailed(ctx context.Context, txId, action string, p
 	return nil
 }
 
-// GetAll returns all persisted failed VSC transactions ordered by failedAt descending.
+// maxFailedTxResults caps the number of records returned by GetAll to prevent
+// unbounded memory use in the health endpoint for unusually large failure sets.
+const maxFailedTxResults = 100
+
+// GetAll returns the most recent persisted failed VSC transactions, newest first,
+// up to maxFailedTxResults records.
 func (s *FailedTxStore) GetAll(ctx context.Context) ([]FailedVscTx, error) {
 	cursor, err := s.collection.Find(
 		ctx,
 		bson.M{},
-		options.Find().SetSort(bson.D{{Key: "failedAt", Value: -1}}),
+		options.Find().
+			SetSort(bson.D{{Key: "failedAt", Value: -1}}).
+			SetLimit(maxFailedTxResults),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list failed txs: %w", err)

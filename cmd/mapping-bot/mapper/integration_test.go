@@ -31,6 +31,7 @@ func (c *testBotConfig) ContractId() string { return "test-contract" }
 func (c *testBotConfig) HttpPort() uint16   { return 0 }
 func (c *testBotConfig) SignApiKey() string { return "" }
 func (c *testBotConfig) FilePath() string   { return "" }
+func (c *testBotConfig) RcLimit() uint      { return 10000 }
 
 // newTestBotWithMocks creates a Bot wired to all mock dependencies.
 // Returns the bot and all mocks so the caller can inspect/configure them.

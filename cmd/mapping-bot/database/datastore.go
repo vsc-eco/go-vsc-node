@@ -71,13 +71,17 @@ func New(ctx context.Context, connString, dbName string) (*Database, error) {
 		return nil, fmt.Errorf("failed to create tx sentAt index: %w", err)
 	}
 
-	// Index on failedAt for ordering failed txs by recency
+	// TTL index on failedAt: MongoDB automatically removes records older than 30
+	// days, preventing unbounded accumulation of stale failure history.
+	// The index also serves GetAll's descending sort query.
 	failedTxIndexModel := mongo.IndexModel{
-		Keys:    bson.D{{Key: "failedAt", Value: -1}},
-		Options: options.Index().SetName("failedAt_idx"),
+		Keys: bson.D{{Key: "failedAt", Value: 1}},
+		Options: options.Index().
+			SetName("failedAt_ttl_idx").
+			SetExpireAfterSeconds(30 * 24 * 60 * 60),
 	}
 	if _, err := failedTxCollection.Indexes().CreateOne(ctx, failedTxIndexModel); err != nil {
-		return nil, fmt.Errorf("failed to create failedAt index: %w", err)
+		return nil, fmt.Errorf("failed to create failedAt TTL index: %w", err)
 	}
 
 	return &Database{
