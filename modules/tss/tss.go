@@ -55,6 +55,10 @@ const (
 	TSS_BAN_GRACE_PERIOD_EPOCHS = 3             // Epochs before new nodes can be banned (as int for comparison)
 	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
 	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
+
+	// maxConcurrentSignSessions caps how many signing requests are dispatched
+	// per interval to avoid flooding p2p with concurrent TSS sessions.
+	maxConcurrentSignSessions = int64(3)
 )
 
 // ReadyAttestation is a BLS-signed self-attestation that a node is online and
@@ -391,7 +395,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	blocksUntilSign := signInterval - (bh % signInterval)
 	if blocksUntilSign <= readinessOffset && bh%signInterval != 0 {
 		// Check if there are unsigned signing requests pending.
-		signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh)
+		signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh, 1)
 		if len(signingRequests) > 0 {
 			gossipTargets[bh+blocksUntilSign] = true
 		}
@@ -498,7 +502,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			}
 		}
 		if bh%signInterval == 0 {
-			signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh)
+			signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh, maxConcurrentSignSessions)
 
 			for _, signReq := range signingRequests {
 				keyInfo, _ := tssMgr.tssKeys.FindKey(signReq.KeyId)
