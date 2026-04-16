@@ -94,6 +94,11 @@ type ChainConfig struct {
 	SleepInterval time.Duration
 	// DropHeightDiff is how many blocks old an address must be before cleanup.
 	DropHeightDiff uint64
+	// HistoricalTxLookback caps how far back (in blocks) HandleExistingTxs
+	// scans when a new address is registered. Sized to roughly one week of
+	// chain time — longer than a typical operational restart gap, shorter
+	// than the mapping cleanup horizon.
+	HistoricalTxLookback uint64
 	// ChainParams holds btcsuite-compatible chain parameters (for UTXO chains).
 	// Nil for non-UTXO chains (e.g., ETH).
 	ChainParams *chaincfg.Params

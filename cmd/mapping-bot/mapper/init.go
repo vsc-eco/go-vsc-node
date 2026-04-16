@@ -84,6 +84,12 @@ type Bot struct {
 	retryMu          sync.Mutex
 	lastGlobalRetryAt time.Time
 
+	// Serializes L2 transaction submissions. The VSC node assigns nonces per
+	// caller DID with strict gap-free ordering, so concurrent callers fetching
+	// the same nonce would collide. Held across fetch → sign → submit so the
+	// node observes our submissions in monotonic nonce order.
+	l2SubmitMu sync.Mutex
+
 	// L2 submission identity — secp256k1 key + derived did:pkh:eip155 DID.
 	botEthKey *ecdsa.PrivateKey
 	botEthDID dids.EthDID
@@ -135,8 +141,21 @@ func (b *Bot) RetryFailedTx(ctx context.Context, txId string) error {
 		return fmt.Errorf("invalid txId")
 	}
 
-	// Per-tx throttle checked first — avoids burning the global 10s window
-	// if this specific tx is still in its 2-minute cooldown.
+	// Global throttle first — rejecting here must not consume the per-tx
+	// cooldown, since TryMarkRetrying writes lastRetriedAt and would block
+	// this tx for 2 minutes even though no retry was attempted.
+	b.retryMu.Lock()
+	sinceGlobal := time.Since(b.lastGlobalRetryAt)
+	if sinceGlobal < retryGlobalThrottle {
+		b.retryMu.Unlock()
+		return fmt.Errorf("%w: global retry cooldown (%.1fs remaining)",
+			ErrRetryThrottled, (retryGlobalThrottle - sinceGlobal).Seconds())
+	}
+	b.lastGlobalRetryAt = time.Now()
+	b.retryMu.Unlock()
+
+	// Per-tx throttle — also serves as the existence check via
+	// ErrFailedTxNotFound.
 	allowed, err := b.failedTxDB().TryMarkRetrying(ctx, txId, retryTxThrottle)
 	if err != nil {
 		if errors.Is(err, database.ErrFailedTxNotFound) {
@@ -147,17 +166,6 @@ func (b *Bot) RetryFailedTx(ctx context.Context, txId string) error {
 	if !allowed {
 		return fmt.Errorf("%w: per-tx retry cooldown for %s", ErrRetryThrottled, txId)
 	}
-
-	// Global throttle: only advance after per-tx passes.
-	b.retryMu.Lock()
-	sinceGlobal := time.Since(b.lastGlobalRetryAt)
-	if sinceGlobal < retryGlobalThrottle {
-		b.retryMu.Unlock()
-		return fmt.Errorf("%w: global retry cooldown (%.1fs remaining)",
-			ErrRetryThrottled, (retryGlobalThrottle - sinceGlobal).Seconds())
-	}
-	b.lastGlobalRetryAt = time.Now()
-	b.retryMu.Unlock()
 
 	rec, err := b.failedTxDB().GetOne(ctx, txId)
 	if err != nil {

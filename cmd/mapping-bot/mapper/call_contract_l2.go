@@ -33,6 +33,10 @@ func (b *Bot) callContractL2(
 
 	did := b.botEthDID
 
+	// Serialize concurrent L2 submissions — see Bot.l2SubmitMu.
+	b.l2SubmitMu.Lock()
+	defer b.l2SubmitMu.Unlock()
+
 	nonce, err := b.gql().FetchAccountNonce(ctx, did.String())
 	if err != nil {
 		return "", fmt.Errorf("fetch L2 nonce: %w", err)
