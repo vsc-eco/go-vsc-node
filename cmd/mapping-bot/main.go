@@ -17,6 +17,16 @@ import (
 	"vsc-node/modules/db"
 )
 
+// releaseBlockLease releases the lease with a fresh short-lived context so it
+// doesn't inherit an already-expired deadline from the main-loop context.
+func releaseBlockLease(bot *mapper.Bot, blockHeight uint64, instanceID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := bot.Db.State.ReleaseBlockLease(ctx, blockHeight, instanceID); err != nil {
+		bot.L.Warn("failed to release block lease", "height", blockHeight, "err", err)
+	}
+}
+
 func main() {
 	args, err := parseArgs()
 	if err != nil {
@@ -174,17 +184,13 @@ func main() {
 			// At head — still run unmap/confirmations, then sleep before checking again
 			bot.HandleUnmap()
 			bot.HandleConfirmations()
-			if err := bot.Db.State.ReleaseBlockLease(ctx, blockHeight, instanceID); err != nil {
-				bot.L.Warn("failed to release block lease", "height", blockHeight, "err", err)
-			}
+			releaseBlockLease(bot, blockHeight, instanceID)
 			time.Sleep(chainCfg.SleepInterval)
 			cancel()
 			continue
 		} else if err != nil {
 			bot.L.Error("error fetching block hash", "height", blockHeight, "err", err)
-			if err := bot.Db.State.ReleaseBlockLease(ctx, blockHeight, instanceID); err != nil {
-				bot.L.Warn("failed to release block lease", "height", blockHeight, "err", err)
-			}
+			releaseBlockLease(bot, blockHeight, instanceID)
 			time.Sleep(chainCfg.SleepInterval)
 			cancel()
 			continue
@@ -192,9 +198,7 @@ func main() {
 		blockBytes, err := bot.Chain.Client.GetRawBlock(hash)
 		if err != nil {
 			bot.L.Error("error fetching raw block", "hash", hash, "err", err)
-			if err := bot.Db.State.ReleaseBlockLease(ctx, blockHeight, instanceID); err != nil {
-				bot.L.Warn("failed to release block lease", "height", blockHeight, "err", err)
-			}
+			releaseBlockLease(bot, blockHeight, instanceID)
 			time.Sleep(chainCfg.SleepInterval)
 			cancel()
 			continue
@@ -214,9 +218,7 @@ func main() {
 			bot.HandleConfirmations()
 		}()
 		wg.Wait()
-		if err := bot.Db.State.ReleaseBlockLease(ctx, blockHeight, instanceID); err != nil {
-			bot.L.Warn("failed to release block lease", "height", blockHeight, "err", err)
-		}
+		releaseBlockLease(bot, blockHeight, instanceID)
 
 		cancel()
 		// If the block wasn't processed (e.g., not yet in the contract), sleep before retrying.
