@@ -42,14 +42,14 @@ func mapBotHttpServer(
 }
 
 type healthResponse struct {
-	Status          string            `json:"status"`
-	BlockHeight     uint64            `json:"blockHeight"`
-	LastBlockAt     *string           `json:"lastBlockAt"`
-	StaleSecs       *int64            `json:"staleSecs,omitempty"`
-	PendingSentTxs  int               `json:"pendingSentTxs"`            // txs broadcast but not yet confirmed
-	PendingUnsigned int               `json:"pendingUnsigned,omitempty"` // txs awaiting TSS signatures
-	FailedVscTxs    []database.FailedVscTx `json:"failedVscTxs,omitempty"` // VSC txs that reached FAILED status
-	Issues          []string          `json:"issues,omitempty"`          // specific problems detected
+	Status          string                 `json:"status"`
+	BlockHeight     uint64                 `json:"blockHeight"`
+	LastBlockAt     *string                `json:"lastBlockAt"`
+	StaleSecs       *int64                 `json:"staleSecs,omitempty"`
+	PendingSentTxs  int                    `json:"pendingSentTxs"`            // txs broadcast but not yet confirmed
+	PendingUnsigned int                    `json:"pendingUnsigned,omitempty"` // txs awaiting TSS signatures
+	FailedVscTxs    []database.FailedVscTx `json:"failedVscTxs,omitempty"`    // VSC txs that reached FAILED status
+	Issues          []string               `json:"issues,omitempty"`          // specific problems detected
 }
 
 func healthHandler(bot *mapper.Bot) http.HandlerFunc {
@@ -90,7 +90,10 @@ func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 		if resp.PendingSentTxs > 0 {
 			oldestHeight, err := bot.Db.State.GetOldestSentAtHeight(ctx)
 			if err == nil && oldestHeight > 0 && height >= oldestHeight+2 {
-				issues = append(issues, fmt.Sprintf("%d txs broadcast but unconfirmed after 2+ blocks", resp.PendingSentTxs))
+				issues = append(
+					issues,
+					fmt.Sprintf("%d txs broadcast but unconfirmed after 2+ blocks", resp.PendingSentTxs),
+				)
 			}
 		}
 
@@ -100,7 +103,10 @@ func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 			const staleSigThreshold = 20 * time.Minute
 			oldestCreated, err := bot.Db.State.GetOldestPendingCreatedAt(ctx)
 			if err == nil && !oldestCreated.IsZero() && time.Since(oldestCreated) > staleSigThreshold {
-				issues = append(issues, fmt.Sprintf("%d sig hashes awaiting TSS signatures for >20m", resp.PendingUnsigned))
+				issues = append(
+					issues,
+					fmt.Sprintf("%d sig hashes awaiting TSS signatures for >20m", resp.PendingUnsigned),
+				)
 			}
 		}
 
@@ -371,6 +377,12 @@ func retryHandler(
 		if err := requestValidator.Struct(&req); err != nil {
 			writeResponse(w, http.StatusBadRequest, "txIds must be a non-empty list of strings")
 			return
+		}
+		for _, txId := range req.TxIds {
+			if !database.IsValidTxID(txId) {
+				writeResponse(w, http.StatusBadRequest, "txIds contain invalid txId format")
+				return
+			}
 		}
 
 		ctx, cancel := context.WithTimeout(globalCtx, 5*time.Minute)
