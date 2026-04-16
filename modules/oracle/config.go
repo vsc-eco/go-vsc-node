@@ -1,7 +1,6 @@
 package oracle
 
 import (
-	"log"
 	"os/exec"
 	"strings"
 
@@ -97,49 +96,6 @@ func NewOracleConfig(dataDir ...string) OracleConfig {
 	}, dataDirPtr)}
 
 	return oc
-}
-
-// TODO(temporary): Remove this migration once nodes have updated their configs.
-// migrateBitcoindToVscBtcd checks if BTC RpcHost references "bitcoind:8332" and
-// no Docker container named "bitcoind" is running while "vsc-btcd" is. If so, it
-// rewrites the config to use "vsc-btcd:8332".
-func (oc *oracleConfigStruct) migrateBitcoindToVscBtcd() {
-	cfg := oc.Get()
-
-	// Check both the new Chains map and the legacy flat field.
-	host := ""
-	if cfg.Chains != nil {
-		if btc, ok := cfg.Chains["BTC"]; ok {
-			host = btc.RpcHost
-		}
-	}
-	if host == "" {
-		host = cfg.BitcoindRpcHost
-	}
-	if host != "bitcoind:8332" {
-		return
-	}
-
-	// Check running Docker containers.
-	hasBitcoind := dockerContainerRunning("bitcoind")
-	hasVscBtcd := dockerContainerRunning("vsc-btcd")
-
-	if hasBitcoind || !hasVscBtcd {
-		return
-	}
-
-	log.Println("[oracle] migrating BTC RpcHost from bitcoind:8332 → vsc-btcd:8332")
-	oc.Update(func(c *oracleConfig) {
-		if c.Chains != nil {
-			if btc, ok := c.Chains["BTC"]; ok {
-				btc.RpcHost = "vsc-btcd:8332"
-				c.Chains["BTC"] = btc
-			}
-		}
-		if c.BitcoindRpcHost == "bitcoind:8332" {
-			c.BitcoindRpcHost = "vsc-btcd:8332"
-		}
-	})
 }
 
 // dockerContainerRunning returns true if a container with the given name is
