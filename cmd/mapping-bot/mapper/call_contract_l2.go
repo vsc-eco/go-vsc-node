@@ -12,10 +12,6 @@ import (
 	transactionpool "vsc-node/modules/transaction-pool"
 )
 
-// l2MaxTxSize is the VSC L2 transaction pool byte limit. Must match
-// transactionpool.MAX_TX_SIZE (modules/transaction-pool/transaction-pool.go).
-const l2MaxTxSize = 16384
-
 // errBotEthKeyMissing is returned when the bot is asked to submit an L2 tx but
 // no signing key is configured.
 var errBotEthKeyMissing = errors.New("L2 signing key not configured for this bot")
@@ -42,11 +38,12 @@ func (b *Bot) callContractL2(
 		return "", fmt.Errorf("fetch L2 nonce: %w", err)
 	}
 
+	rcLimit := b.BotConfig.RcLimit()
 	call := &transactionpool.VscContractCall{
 		ContractId: b.BotConfig.ContractId(),
 		Action:     action,
 		Payload:    string(contractInput),
-		RcLimit:    10000,
+		RcLimit:    rcLimit,
 		Intents:    []contracts.Intent{},
 		Caller:     did.String(),
 		NetId:      b.SystemConfig.NetId(),
@@ -60,7 +57,7 @@ func (b *Bot) callContractL2(
 		Ops:     []transactionpool.VSCTransactionOp{op},
 		Nonce:   nonce,
 		NetId:   b.SystemConfig.NetId(),
-		RcLimit: 10000,
+		RcLimit: uint64(rcLimit),
 	}
 
 	crafter := transactionpool.TransactionCrafter{
@@ -72,13 +69,13 @@ func (b *Bot) callContractL2(
 		return "", fmt.Errorf("sign L2 tx: %w", err)
 	}
 
-	if len(sTx.Tx) > l2MaxTxSize {
+	if len(sTx.Tx) > transactionpool.MAX_TX_SIZE {
 		b.L.Error("L2 transaction exceeds maximum size — cannot submit",
 			"action", action,
 			"cbor_size", len(sTx.Tx),
-			"limit", l2MaxTxSize,
+			"limit", transactionpool.MAX_TX_SIZE,
 		)
-		return "", fmt.Errorf("L2 tx too large: %d bytes (limit %d)", len(sTx.Tx), l2MaxTxSize)
+		return "", fmt.Errorf("L2 tx too large: %d bytes (limit %d)", len(sTx.Tx), transactionpool.MAX_TX_SIZE)
 	}
 
 	txID, err := b.gql().SubmitTransactionV1(
