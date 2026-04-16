@@ -26,31 +26,33 @@ func bchTestNetParams() *chaincfg.Params {
 func NewBCHMainnet(httpClient *http.Client) *ChainConfig {
 	params := bchMainNetParams()
 	return &ChainConfig{
-		Name:           "bch",
-		AssetSymbol:    "BCH",
-		Client:         NewMempoolSpaceClient(httpClient, "https://blockchair.com/bitcoin-cash/api"),
-		Parser:         &BTCBlockParser{Params: params},
-		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 4320},
-		BlockInterval:  10 * time.Minute, // same as BTC
-		SleepInterval:  time.Minute,
-		DropHeightDiff: 4320, // ~30 days
-		ChainParams:    params,
-		DefaultDbName:  "bch-mapping-bot",
+		Name:                 "bch",
+		AssetSymbol:          "BCH",
+		Client:               NewMempoolSpaceClient(httpClient, "https://blockchair.com/bitcoin-cash/api"),
+		Parser:               &BTCBlockParser{Params: params},
+		AddressGen:           &BTCAddressGenerator{Params: params, BackupCSVBlocks: 4320},
+		BlockInterval:        10 * time.Minute, // same as BTC
+		SleepInterval:        time.Minute,
+		DropHeightDiff:       4320, // ~30 days
+		HistoricalTxLookback: 1080, // ~7 days at 10 min
+		ChainParams:          params,
+		DefaultDbName:        "bch-mapping-bot",
 	}
 }
 
 func NewBCHTestnet(httpClient *http.Client) *ChainConfig {
 	params := bchTestNetParams()
 	return &ChainConfig{
-		Name:           "bch",
-		AssetSymbol:    "BCH",
-		Client:         NewMempoolSpaceClient(httpClient, "https://blockchair.com/bitcoin-cash/testnet/api"),
-		Parser:         &BTCBlockParser{Params: params},
-		AddressGen:     &BTCAddressGenerator{Params: params, BackupCSVBlocks: 2},
-		BlockInterval:  10 * time.Minute,
-		SleepInterval:  10 * time.Second,
-		DropHeightDiff: 4320,
-		ChainParams:    params,
-		DefaultDbName:  "bch-mapping-bot-testnet",
+		Name:                 "bch",
+		AssetSymbol:          "BCH",
+		Client:               NewMempoolSpaceClient(httpClient, "https://blockchair.com/bitcoin-cash/testnet/api"),
+		Parser:               &BTCBlockParser{Params: params},
+		AddressGen:           &BTCAddressGenerator{Params: params, BackupCSVBlocks: 2},
+		BlockInterval:        10 * time.Minute,
+		SleepInterval:        10 * time.Second,
+		DropHeightDiff:       4320,
+		HistoricalTxLookback: 1080,
+		ChainParams:          params,
+		DefaultDbName:        "bch-mapping-bot-testnet",
 	}
 }
