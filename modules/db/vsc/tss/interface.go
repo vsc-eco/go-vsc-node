@@ -42,7 +42,7 @@ type TssKeys interface {
 type TssRequests interface {
 	a.Plugin
 	SetSignedRequest(req TssRequest) error
-	FindUnsignedRequests(blockHeight uint64) ([]TssRequest, error)
+	FindUnsignedRequests(blockHeight uint64, limit int64) ([]TssRequest, error)
 	FindRequests(keyID string, msgHex []string) ([]TssRequest, error)
 	UpdateRequest(req TssRequest) error
 }

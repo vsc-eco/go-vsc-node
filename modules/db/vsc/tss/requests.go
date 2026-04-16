@@ -76,7 +76,7 @@ func (tssReqs *tssRequests) SetSignedRequest(req TssRequest) error {
 	return singeResult.Err()
 }
 
-func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64) ([]TssRequest, error) {
+func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64, limit int64) ([]TssRequest, error) {
 	ctx := context.Background()
 
 	// Backfill legacy requests that lack a created_height so they enter
@@ -102,19 +102,21 @@ func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64) ([]TssReque
 		})
 	}
 
-	requests := make([]TssRequest, 0)
+	opts := options.Find().
+		SetSort(bson.D{{Key: "created_height", Value: 1}}).
+		SetLimit(limit)
+
 	findResult, err := tssReqs.Find(ctx, bson.M{
 		"status": "unsigned",
-	})
+	}, opts)
 
 	if err != nil {
 		return nil, err
 	}
 
-	for findResult.Next(ctx) {
-		var req TssRequest
-		findResult.Decode(&req)
-		requests = append(requests, req)
+	var requests []TssRequest
+	if err := findResult.All(ctx, &requests); err != nil {
+		return nil, err
 	}
 	return requests, nil
 }

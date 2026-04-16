@@ -3,6 +3,7 @@ package test_utils
 import (
 	"fmt"
 	"slices"
+	"sort"
 	"vsc-node/modules/aggregate"
 	tss "vsc-node/modules/db/vsc/tss"
 )
@@ -222,7 +223,7 @@ func (m *MockTssRequestsDb) SetSignedRequest(req tss.TssRequest) error {
 	return nil
 }
 
-func (m *MockTssRequestsDb) FindUnsignedRequests(blockHeight uint64) ([]tss.TssRequest, error) {
+func (m *MockTssRequestsDb) FindUnsignedRequests(blockHeight uint64, limit int64) ([]tss.TssRequest, error) {
 	// Backfill legacy requests missing created_height.
 	for id, req := range m.Requests {
 		if req.Status == tss.SignPending && req.CreatedHeight == 0 {
@@ -247,6 +248,12 @@ func (m *MockTssRequestsDb) FindUnsignedRequests(blockHeight uint64) ([]tss.TssR
 		if req.Sig == "" && req.Status == tss.SignPending {
 			results = append(results, req)
 		}
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].CreatedHeight < results[j].CreatedHeight
+	})
+	if limit > 0 && int64(len(results)) > limit {
+		results = results[:limit]
 	}
 	return results, nil
 }
