@@ -113,9 +113,12 @@ func (e *ethereumRelayer) GetLatestValidHeight() (chainState, error) {
 }
 
 // ChainData implements chainRelay.
-func (e *ethereumRelayer) ChainData(_ context.Context, startHeight uint64, count uint64) ([]chainBlock, error) {
+func (e *ethereumRelayer) ChainData(_ context.Context, startHeight uint64, count uint64, latestValidHeight uint64) ([]chainBlock, error) {
 	if startHeight == 0 {
 		return nil, errors.New("start height not provided")
+	}
+	if latestValidHeight < startHeight {
+		return nil, fmt.Errorf("ethereum latest valid height (%d) is behind requested start height (%d)", latestValidHeight, startHeight)
 	}
 
 	client, err := e.connect()
@@ -127,19 +130,11 @@ func (e *ethereumRelayer) ChainData(_ context.Context, startHeight uint64, count
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Cap at the finalized tip to avoid fetching non-final blocks.
-	finalized, err := client.HeaderByNumber(ctx, big.NewInt(int64(rpc.FinalizedBlockNumber)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to get finalized block: %w", err)
-	}
-
+	// Cap at latestValidHeight (inclusive) so we never fetch blocks past the
+	// caller's finality cutoff.
 	stopHeight := startHeight + count
-	if stopHeight > finalized.Number.Uint64() {
-		stopHeight = finalized.Number.Uint64()
-	}
-
-	if stopHeight < startHeight {
-		return nil, fmt.Errorf("finalized tip (%d) is behind requested start height (%d)", stopHeight, startHeight)
+	if stopHeight > latestValidHeight+1 {
+		stopHeight = latestValidHeight + 1
 	}
 
 	blocks := make([]chainBlock, 0, stopHeight-startHeight)
