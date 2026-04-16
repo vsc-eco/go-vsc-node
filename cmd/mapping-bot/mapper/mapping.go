@@ -72,14 +72,10 @@ func (b *Bot) HandleMap(
 	return true
 }
 
-// historicalTxLookback is the maximum number of blocks back that HandleExistingTxs
-// will scan when a new address is registered. Transactions confirmed before this
-// window are ignored.
-const historicalTxLookback = 1080
-
 // HandleExistingTxs checks for existing txs for newly registered addresses.
 // This is a best-effort scan — the main loop's block-by-block processing
-// is the primary detection mechanism.
+// is the primary detection mechanism. The lookback window is chain-specific
+// (b.Chain.HistoricalTxLookback), sized to roughly one week of chain time.
 func (b *Bot) HandleExistingTxs(chainAddress string) {
 	b.L.Debug("checking existing txs for new address", "address", chainAddress)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -90,9 +86,10 @@ func (b *Bot) HandleExistingTxs(chainAddress string) {
 		b.L.Error("failed to fetch chain tip height for historical tx scan", "err", err)
 		return
 	}
+	lookback := b.Chain.HistoricalTxLookback
 	var minHeight uint64
-	if tipHeight >= historicalTxLookback {
-		minHeight = tipHeight - historicalTxLookback
+	if tipHeight >= lookback {
+		minHeight = tipHeight - lookback
 	}
 
 	entries, err := b.Chain.Client.GetAddressTxs(chainAddress)
