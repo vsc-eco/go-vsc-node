@@ -250,7 +250,13 @@ func (m *MockTssRequestsDb) FindUnsignedRequests(blockHeight uint64, limit int64
 		}
 	}
 	sort.Slice(results, func(i, j int) bool {
-		return results[i].CreatedHeight < results[j].CreatedHeight
+		if results[i].CreatedHeight != results[j].CreatedHeight {
+			return results[i].CreatedHeight < results[j].CreatedHeight
+		}
+		if results[i].KeyId != results[j].KeyId {
+			return results[i].KeyId < results[j].KeyId
+		}
+		return results[i].Msg < results[j].Msg
 	})
 	if limit > 0 && int64(len(results)) > limit {
 		results = results[:limit]
