@@ -46,10 +46,14 @@ func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (*chainRelayRespo
 		)
 	}
 
-	// Independently fetch the same blocks from our own RPC
+	// Independently fetch the same blocks from our own RPC. Pass endBlock as
+	// the valid-height cap — we want exactly the range the producer submitted;
+	// if the producer exceeded its own validity threshold, the resulting CID
+	// will differ from what our local chain would have produced and this
+	// witness will refuse to sign.
 	count := (endBlock - startBlock) + 1
 	chainDataStart := time.Now()
-	blocks, err := chain.ChainData(c.ctx, startBlock, count)
+	blocks, err := chain.ChainData(c.ctx, startBlock, count, endBlock)
 	c.logger.Debug("witness chain data fetch",
 		"symbol", chainSymbol,
 		"blocks", count,
