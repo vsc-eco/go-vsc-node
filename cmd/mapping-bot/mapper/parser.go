@@ -37,6 +37,12 @@ func (b *Bot) ParseBlock(
 		return nil, err
 	}
 
+	observed, err := b.gql().FetchObservedAtHeight(ctx, blockHeight)
+	if err != nil {
+		b.L.Debug("error fetching observed outputs for block", "height", blockHeight, "error", err)
+		return nil, err
+	}
+
 	// map of indices to their deposit instructions
 	matchedTxIndices := make(map[int][]string)
 
@@ -48,9 +54,7 @@ func (b *Bot) ParseBlock(
 			for _, addr := range addresses {
 				if instruction, err := b.addrDB().GetInstruction(ctx, addr); err == nil {
 					b.L.Debug("instruction address found", "instruction", instruction)
-					exists, err := b.gql().FetchObservedTx(ctx, tx.TxID(), i)
-					if exists || err != nil {
-						b.L.Debug("error fetching observed tx", "exits", exists, "error", err)
+					if observed.Has(tx.TxID(), i) {
 						break
 					}
 					matchedTxIndices[txIndex] = append(matchedTxIndices[txIndex], instruction)

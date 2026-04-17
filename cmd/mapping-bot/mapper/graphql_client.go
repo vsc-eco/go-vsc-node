@@ -3,12 +3,14 @@ package mapper
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
@@ -216,9 +218,36 @@ func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.
 	return make(map[string]*contractinterface.SigningData), nil
 }
 
-// TODO: use individual utxos (txid:vout) instead of just txids
-func (b *Bot) FetchObservedTx(ctx context.Context, txId string, vout int) (bool, error) {
-	key := contractinterface.ObservedPrefix + fmt.Sprintf("%s:%d", txId, vout)
+// ObservedSet is the set of (txid, vout) outputs the contract has already
+// observed for a given block height. Keys are "<txidHex>:<vout>" where
+// txidHex is the display/reversed form returned by wire.MsgTx.TxID().
+type ObservedSet map[string]struct{}
+
+// Has reports whether the given (txid, vout) was observed. txId must be the
+// display/reversed hex form (same as wire.MsgTx.TxID()).
+func (o ObservedSet) Has(txId string, vout int) bool {
+	if o == nil {
+		return false
+	}
+	_, ok := o[fmt.Sprintf("%s:%d", txId, vout)]
+	return ok
+}
+
+// FetchObservedAtHeight loads the observed-outputs blob for a single block
+// height from contract state and returns the parsed set.
+//
+// Storage format (see external contract spec):
+//   - key:   "o-<blockHeight>" where blockHeight is a base-10 ASCII decimal
+//   - value: raw binary blob whose length is a multiple of 34 bytes. Each
+//     34-byte entry is 32 bytes of raw txid (display/reversed byte order,
+//     matching hex.DecodeString(MsgTx.TxID())) followed by 2 bytes of vout
+//     as uint16 big-endian.
+//
+// An absent or empty key returns an empty set with no error. Note that blocks
+// older than MaxBlockRetention (1080 blocks) are pruned — a missing key for an
+// old height means "pruned," not "never observed."
+func (b *Bot) FetchObservedAtHeight(ctx context.Context, blockHeight uint64) (ObservedSet, error) {
+	key := contractinterface.ObservedPrefix + strconv.FormatUint(blockHeight, 10)
 
 	vars := map[string]interface{}{
 		"contractId": b.BotConfig.ContractId(),
@@ -236,17 +265,40 @@ func (b *Bot) FetchObservedTx(ctx context.Context, txId string, vout int) (bool,
 		return nil
 	})
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 
 	var stateMap map[string]json.RawMessage
 	if err := json.Unmarshal(result, &stateMap); err != nil {
-		return false, err
+		return nil, err
 	}
 
-	value := string(stateMap[key])
-	exists := value != "null"
-	return exists, nil
+	raw, ok := stateMap[key]
+	if !ok || string(raw) == "null" {
+		return ObservedSet{}, nil
+	}
+	var hexStr string
+	if err := json.Unmarshal(raw, &hexStr); err != nil {
+		return nil, fmt.Errorf("decoding observed blob for height %d: %w", blockHeight, err)
+	}
+	if hexStr == "" {
+		return ObservedSet{}, nil
+	}
+	blob, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return nil, fmt.Errorf("decoding observed hex for height %d: %w", blockHeight, err)
+	}
+	if len(blob)%34 != 0 {
+		return nil, fmt.Errorf("observed blob for height %d has invalid length %d (not a multiple of 34)", blockHeight, len(blob))
+	}
+
+	set := make(ObservedSet, len(blob)/34)
+	for off := 0; off < len(blob); off += 34 {
+		txidHex := hex.EncodeToString(blob[off : off+32])
+		vout := binary.BigEndian.Uint16(blob[off+32 : off+34])
+		set[fmt.Sprintf("%s:%d", txidHex, vout)] = struct{}{}
+	}
+	return set, nil
 }
 
 func (b *Bot) FetchSignatures(
