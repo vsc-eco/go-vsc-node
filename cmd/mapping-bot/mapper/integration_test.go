@@ -30,6 +30,7 @@ type testBotConfig struct{}
 func (c *testBotConfig) ContractId() string { return "test-contract" }
 func (c *testBotConfig) HttpPort() uint16   { return 0 }
 func (c *testBotConfig) SignApiKey() string { return "" }
+func (c *testBotConfig) OpsApiKey() string  { return "" }
 func (c *testBotConfig) FilePath() string   { return "" }
 func (c *testBotConfig) RcLimit() uint      { return 10000 }
 

@@ -56,12 +56,12 @@ Health check endpoint for monitoring.
 | `staleSecs`       | number   | Seconds since last block (only when stale)                     |
 | `pendingSentTxs`  | number   | Transactions broadcast but not yet confirmed on chain          |
 | `pendingUnsigned` | number   | Signature hashes awaiting TSS signatures                       |
-| `failedVscTxs`    | object[] | VSC L2 transactions that reached `FAILED` status (most recent 100). Omitted unless the request includes `Authorization: Bearer <SignApiKey>`. |
+| `failedVscTxs`    | object[] | VSC L2 transactions that reached `FAILED` status (most recent 100). Omitted unless the request includes `Authorization: Bearer <OpsApiKey>`. |
 | `issues`          | string[] | Specific problems detected (only when `unhealthy`)             |
 
 **Status codes**: `200` for `ok`/`starting`, `503` for `unhealthy`.
 
-Transaction details in `failedVscTxs` are gated by the same `SignApiKey` used by `/sign` and `/retry`. Unauthenticated callers still see the failed-tx count in `issues` (e.g. `"3 VSC transaction(s) failed"`), which is enough for liveness monitoring without exposing tx IDs or error text.
+Transaction details in `failedVscTxs` are gated by `OpsApiKey` (the same token `/retry` uses, **not** the `SignApiKey` used by `/sign`). Unauthenticated callers still see the failed-tx count in `issues` (e.g. `"3 VSC transaction(s) failed"`), which is enough for liveness monitoring without exposing tx IDs or error text.
 
 **Unhealthy conditions** (any triggers 503):
 - Block processing stale (no new block for 2x chain block interval)
@@ -98,7 +98,7 @@ Register a new chain-to-VSC address mapping. Generates a P2WSH address that the 
 
 ### `POST /sign`
 
-Submit backup signatures for pending transactions (used when the primary TSS signing path is unavailable). Requires `Authorization: Bearer <SignApiKey>`; disabled if `SignApiKey` is empty.
+Submit backup signatures for pending transactions (used when the primary TSS signing path is unavailable). Requires `Authorization: Bearer <SignApiKey>`; disabled if `SignApiKey` is empty. `SignApiKey` is **separate from** `OpsApiKey` — signing permission must not be given to anything that only needs health or retry access.
 
 **Request body** (JSON):
 
@@ -121,7 +121,7 @@ Submit backup signatures for pending transactions (used when the primary TSS sig
 
 ### `POST /retry`
 
-Re-submit persisted `FAILED` VSC transactions by their tx ID. Requires `Authorization: Bearer <SignApiKey>` (same credential as `/sign`); disabled if `SignApiKey` is empty.
+Re-submit persisted `FAILED` VSC transactions by their tx ID. Requires `Authorization: Bearer <OpsApiKey>`; disabled if `OpsApiKey` is empty. This uses a different token from `/sign` so a frontend can be granted retry (and authenticated `/health`) access without also gaining signing permission.
 
 **Request body** (JSON):
 
@@ -161,7 +161,8 @@ Defined in `mapper/config.go`. Created on first run with `-init`.
 | `ContractId`            | string   | `ADD_MAPPING_CONTRACT_ID`                        | The VSC contract ID for the chain's mapping contract. Must be set before running.           |
 | `ConnectedGraphQLAddrs` | string[] | `["http://0.0.0.0:8080/api/v1/graphql"]`         | Ordered list of VSC node GraphQL endpoints. The first entry is primary; others are fallbacks tried in order with a 500ms pause between attempts. |
 | `HttpPort`              | uint16   | `8000`                                           | Port the mapping bot's HTTP server listens on.                                              |
-| `SignApiKey`            | string   | `""`                                             | Bearer token for `/sign` and `/retry`. If empty, both endpoints return 403.                 |
+| `SignApiKey`            | string   | `""`                                             | Bearer token for `/sign` only. Grants backup Bitcoin-signing permission — keep separate from `OpsApiKey`. If empty, `/sign` returns 403. |
+| `OpsApiKey`             | string   | `""`                                             | Bearer token for `/retry` and the authenticated view of `/health`. Safe to share with a frontend or monitoring system. If empty, `/retry` returns 403 and `/health` hides failed-tx details. |
 | `RcLimit`               | uint     | `10000`                                          | Resource-credit limit attached to every submitted L2 transaction. Set higher if contract calls regularly exceed it. |
 | `BotEthPrivKey`         | string   | auto-generated on first run                       | secp256k1 key used to sign every VSC L2 transaction (`did:pkh:eip155` caller). Persisted to `config.json` — see note below. |
 

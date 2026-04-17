@@ -53,8 +53,8 @@ func (b *Bot) HandleMap(
 		jsonMessages[i] = json.RawMessage(jsonBytes)
 	}
 	for _, tx := range jsonMessages {
-		if err := b.callWithRetry(ctx, tx, "map", 3); err != nil {
-			b.L.Error("map call failed after retries", "err", err)
+		if _, err := b.callWithRetry(ctx, tx, "map", broadcastRetryAttempts); err != nil {
+			b.L.Error("map call failed", "err", err)
 		}
 	}
 
@@ -153,8 +153,8 @@ func (b *Bot) HandleExistingTxs(chainAddress string) {
 				b.L.Warn("could not marshal historical transaction", "err", err)
 				continue
 			}
-			if err := b.callWithRetry(ctx, json.RawMessage(jsonBytes), "map", 3); err != nil {
-				b.L.Error("historical map call failed after retries", "err", err)
+			if _, err := b.callWithRetry(ctx, json.RawMessage(jsonBytes), "map", broadcastRetryAttempts); err != nil {
+				b.L.Error("historical map call failed", "err", err)
 			}
 		}
 	}
