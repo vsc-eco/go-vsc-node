@@ -56,10 +56,12 @@ Health check endpoint for monitoring.
 | `staleSecs`       | number   | Seconds since last block (only when stale)                     |
 | `pendingSentTxs`  | number   | Transactions broadcast but not yet confirmed on chain          |
 | `pendingUnsigned` | number   | Signature hashes awaiting TSS signatures                       |
-| `failedVscTxs`    | object[] | VSC L2 transactions that reached `FAILED` status (most recent 100) |
+| `failedVscTxs`    | object[] | VSC L2 transactions that reached `FAILED` status (most recent 100). Omitted unless the request includes `Authorization: Bearer <SignApiKey>`. |
 | `issues`          | string[] | Specific problems detected (only when `unhealthy`)             |
 
 **Status codes**: `200` for `ok`/`starting`, `503` for `unhealthy`.
+
+Transaction details in `failedVscTxs` are gated by the same `SignApiKey` used by `/sign` and `/retry`. Unauthenticated callers still see the failed-tx count in `issues` (e.g. `"3 VSC transaction(s) failed"`), which is enough for liveness monitoring without exposing tx IDs or error text.
 
 **Unhealthy conditions** (any triggers 503):
 - Block processing stale (no new block for 2x chain block interval)

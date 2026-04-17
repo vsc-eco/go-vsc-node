@@ -110,12 +110,16 @@ func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 			}
 		}
 
-		// Flag failed VSC transactions
+		// Flag failed VSC transactions. Tx details are only returned when the
+		// caller presents the SignApiKey bearer token; otherwise the response
+		// is trimmed to the count so unauthenticated monitoring still works.
 		failedTxs, err := bot.Db.FailedTxs.GetAll(ctx)
 		if err != nil {
 			issues = append(issues, "failed to query failed VSC transactions: "+err.Error())
 		} else if len(failedTxs) > 0 {
-			resp.FailedVscTxs = failedTxs
+			if apiKey := bot.BotConfig.SignApiKey(); apiKey != "" && r.Header.Get("Authorization") == "Bearer "+apiKey {
+				resp.FailedVscTxs = failedTxs
+			}
 			issues = append(issues, fmt.Sprintf("%d VSC transaction(s) failed", len(failedTxs)))
 		}
 
