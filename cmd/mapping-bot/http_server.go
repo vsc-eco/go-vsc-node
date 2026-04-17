@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -31,6 +32,14 @@ func mapBotHttpServer(
 	if addressStore == nil {
 		fmt.Fprintf(os.Stderr, "datastore or mutext not providred\n")
 		return
+	}
+
+	// Migration notice: /retry and authenticated /health moved from SignApiKey
+	// to OpsApiKey. Flag operators who have only the old key set so they don't
+	// discover the silent 403 / hidden-detail behavior via production.
+	if bot.BotConfig.SignApiKey() != "" && bot.BotConfig.OpsApiKey() == "" {
+		slog.Warn("OpsApiKey is not set — /retry will return 403 and /health will hide failed-tx detail. " +
+			"Set OpsApiKey in config.json (separate from SignApiKey) to re-enable these.")
 	}
 
 	mux := http.NewServeMux()

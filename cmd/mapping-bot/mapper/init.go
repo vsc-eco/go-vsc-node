@@ -181,10 +181,13 @@ func (b *Bot) RetryFailedTx(ctx context.Context, txId string) error {
 
 	b.L.Info("retrying failed VSC tx", "txId", txId, "action", rec.Action)
 	newTxId, retryErr := b.callWithRetry(ctx, rec.Payload, rec.Action, broadcastRetryAttempts)
-	// Whenever a new broadcast went out under a new txId — whether it CONFIRMED
-	// or FAILED again — the old record is superseded. Delete it so there's
-	// exactly one failed-tx entry per logical operation.
-	if newTxId != "" && newTxId != txId {
+	// Delete the old record ONLY when the new broadcast reached a terminal
+	// on-chain status (CONFIRMED/PROCESSED → nil, or FAILED → ErrTxFailed with
+	// a fresh record already written inside callWithRetry). If the status is
+	// still unknown — e.g. ctx cancelled mid-poll — keep the old record so the
+	// operator doesn't lose tracking of an in-flight retry.
+	terminal := retryErr == nil || errors.Is(retryErr, ErrTxFailed)
+	if terminal && newTxId != "" && newTxId != txId {
 		b.clearFailedTxs(ctx, []string{txId})
 	}
 	return retryErr
