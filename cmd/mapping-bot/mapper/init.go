@@ -93,6 +93,16 @@ type Bot struct {
 	// L2 submission identity — secp256k1 key + derived did:pkh:eip155 DID.
 	botEthKey *ecdsa.PrivateKey
 	botEthDID dids.EthDID
+
+	// Cross-operator collision telemetry. Populated lazily via
+	// `Bot.Metrics()` so tests that construct a `Bot{}` literal get a
+	// functional counter surface without explicit wiring.
+	collisionMetrics *CollisionMetrics
+	metricsOnce      sync.Once
+
+	// heartbeat registry — non-consensus operator endpoint directory.
+	heartbeatsMu sync.RWMutex
+	heartbeats   map[string]BotEndpoint
 }
 
 // failedTxDB returns the FailedTxStore to use — the override if set, otherwise Db.FailedTxs.

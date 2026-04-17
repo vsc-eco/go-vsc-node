@@ -26,6 +26,11 @@ type mockGraphQL struct {
 	observedTx map[string]bool   // key: "txid:vout" (display/reversed hex)
 	txStatuses map[string]string // key: tx ID, value: status
 
+	// Contract-registry dedupe mock. When nil, FetchPendingTxSpendIds falls
+	// back to keys(txSpends); set explicitly with setPendingTxIds to
+	// simulate contract-side dedupe decisions.
+	pendingTxIds map[string]struct{}
+
 	// L2 submission mocks.
 	nonces    map[string]uint64 // account -> next nonce
 	submitErr error             // error returned by SubmitTransactionV1
@@ -98,6 +103,36 @@ func (m *mockGraphQL) FetchTransactionStatus(ctx context.Context, txId string) (
 		return status, nil
 	}
 	return "", fmt.Errorf("transaction %s not found", txId)
+}
+
+// pendingTxIds is the set of txIds the mock contract considers still in its
+// TxSpendsRegistry. Tests set this to simulate contract-side dedupe state.
+// When nil, `FetchPendingTxSpendIds` falls back to the keys of `txSpends`.
+func (m *mockGraphQL) setPendingTxIds(ids ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pendingTxIds = make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		m.pendingTxIds[id] = struct{}{}
+	}
+}
+
+func (m *mockGraphQL) FetchPendingTxSpendIds(ctx context.Context) (map[string]struct{}, error) {
+	m.recordCall("FetchPendingTxSpendIds")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pendingTxIds != nil {
+		out := make(map[string]struct{}, len(m.pendingTxIds))
+		for id := range m.pendingTxIds {
+			out[id] = struct{}{}
+		}
+		return out, nil
+	}
+	out := make(map[string]struct{}, len(m.txSpends))
+	for id := range m.txSpends {
+		out[id] = struct{}{}
+	}
+	return out, nil
 }
 
 func (m *mockGraphQL) FetchAccountNonce(ctx context.Context, account string) (uint64, error) {

@@ -212,7 +212,11 @@ func (b *Bot) ProcessTxSpends(
 			continue
 		}
 		if processed {
-			b.L.Debug("tx spend already processed, skipping", "txId", txId)
+			// The contract just re-offered a txId our local cache already
+			// marks processed. This is benign under contract-as-source-of-
+			// truth semantics (HandleConfirmSpend is idempotent) but it
+			// signals operator interleaving, so record telemetry.
+			b.RecordPendingCollision(txId)
 			continue
 		}
 

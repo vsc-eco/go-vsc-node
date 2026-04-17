@@ -169,8 +169,39 @@ func (b *Bot) fetchMultipleTxSpendKeys(
 	return txSpends, nil
 }
 
-// returns a map of transaction Ids to unsigned data that was submitted to be signed
-func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.SigningData, error) {
+// FetchPendingTxSpendIds returns the set of txIds currently present in the
+// contract's `TxSpendsRegistry`. This is the contract-layer source of truth
+// for "which unmap txs are still pending confirmation" and is the dedupe
+// oracle for operator-independent bot behavior:
+//
+//   - If a txId is in this set, SOME operator still needs to broadcast +
+//     confirmSpend it.
+//   - If a txId is NOT in this set but a bot holds local pending/sent state
+//     for it, that bot has been beaten to the finish by another operator
+//     (or the tx predates the bot's view) and can safely drop local state.
+//
+// Mirrors Lean's `ContractObserved` / `contractSubmit_operator_independent`
+// property: any two operators that query this set converge on the same
+// dedupe decision regardless of their local DB contents.
+//
+// This is a lightweight single-key fetch (the registry key only) rather
+// than the full per-txId SigningData fetch in `FetchTxSpends`, so it is
+// cheap to call on every bot cycle.
+func (b *Bot) FetchPendingTxSpendIds(ctx context.Context) (map[string]struct{}, error) {
+	registry, err := b.fetchTxSpendsRegistry(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]struct{}, len(registry))
+	for _, txId := range registry {
+		out[txId] = struct{}{}
+	}
+	return out, nil
+}
+
+// fetchTxSpendsRegistry loads the raw registry list (order-preserving) so
+// both the dedupe query and the heavyweight SigningData fetch can reuse it.
+func (b *Bot) fetchTxSpendsRegistry(ctx context.Context) (contractinterface.TxSpendsRegistry, error) {
 	vars := map[string]interface{}{
 		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{contractinterface.TxSpendsRegistryKey},
@@ -195,7 +226,7 @@ func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.
 		return nil, err
 	}
 
-	var txSpendsRegistry contractinterface.TxSpendsRegistry
+	var registry contractinterface.TxSpendsRegistry
 	if txSpendsData, exists := stateMap[contractinterface.TxSpendsRegistryKey]; exists &&
 		string(txSpendsData) != `"null"` {
 		var tmp string
@@ -206,10 +237,19 @@ func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.
 		if err != nil {
 			return nil, fmt.Errorf("error decoding tx spends registry hex: %w", err)
 		}
-		txSpendsRegistry, err = contractinterface.UnmarshalTxSpendsRegistry(decoded)
+		registry, err = contractinterface.UnmarshalTxSpendsRegistry(decoded)
 		if err != nil {
 			return nil, err
 		}
+	}
+	return registry, nil
+}
+
+// returns a map of transaction Ids to unsigned data that was submitted to be signed
+func (b *Bot) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.SigningData, error) {
+	txSpendsRegistry, err := b.fetchTxSpendsRegistry(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(txSpendsRegistry) > 0 {

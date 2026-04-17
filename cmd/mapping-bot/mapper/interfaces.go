@@ -21,6 +21,11 @@ type GraphQLFetcher interface {
 	// submitTransactionV1-submitted). Returns the status string (e.g. "INCLUDED",
 	// "CONFIRMED", "FAILED") or an error if the transaction is not found.
 	FetchTransactionStatus(ctx context.Context, txId string) (string, error)
+	// FetchPendingTxSpendIds returns the set of txIds currently present in
+	// the contract's TxSpendsRegistry. This is the cross-operator dedupe
+	// oracle; any txId absent from this set is either never-registered or
+	// already confirm-spent (possibly by another operator).
+	FetchPendingTxSpendIds(ctx context.Context) (map[string]struct{}, error)
 	// FetchAccountNonce returns the next unused nonce for the given VSC account
 	// (a did:* or hive:* identifier). Used by the L2 submission path.
 	FetchAccountNonce(ctx context.Context, account string) (uint64, error)
