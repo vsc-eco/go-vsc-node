@@ -26,6 +26,7 @@ type l2TestBotConfig struct{}
 func (l2TestBotConfig) ContractId() string { return "vsc1BkWohDf5fPcwn7V9B9ar6TyiWc3A2ZGJ4t" }
 func (l2TestBotConfig) HttpPort() uint16   { return 0 }
 func (l2TestBotConfig) SignApiKey() string { return "" }
+func (l2TestBotConfig) OpsApiKey() string  { return "" }
 func (l2TestBotConfig) FilePath() string   { return "" }
 func (l2TestBotConfig) RcLimit() uint      { return 10000 }
 
