@@ -111,13 +111,13 @@ func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 		}
 
 		// Flag failed VSC transactions. Tx details are only returned when the
-		// caller presents the SignApiKey bearer token; otherwise the response
+		// caller presents the OpsApiKey bearer token; otherwise the response
 		// is trimmed to the count so unauthenticated monitoring still works.
 		failedTxs, err := bot.Db.FailedTxs.GetAll(ctx)
 		if err != nil {
 			issues = append(issues, "failed to query failed VSC transactions: "+err.Error())
 		} else if len(failedTxs) > 0 {
-			if apiKey := bot.BotConfig.SignApiKey(); apiKey != "" && r.Header.Get("Authorization") == "Bearer "+apiKey {
+			if apiKey := bot.BotConfig.OpsApiKey(); apiKey != "" && r.Header.Get("Authorization") == "Bearer "+apiKey {
 				resp.FailedVscTxs = failedTxs
 			}
 			issues = append(issues, fmt.Sprintf("%d VSC transaction(s) failed", len(failedTxs)))
@@ -367,10 +367,11 @@ func retryHandler(
 	bot *mapper.Bot,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Auth: reuse the same API key as /sign.
-		apiKey := bot.BotConfig.SignApiKey()
+		// Auth: separate from /sign — uses OpsApiKey so this endpoint can be
+		// exposed to a frontend without also handing out signing permission.
+		apiKey := bot.BotConfig.OpsApiKey()
 		if apiKey == "" {
-			writeResponse(w, http.StatusForbidden, "/retry endpoint disabled — set SignApiKey in config")
+			writeResponse(w, http.StatusForbidden, "/retry endpoint disabled — set OpsApiKey in config")
 			return
 		}
 		authHeader := r.Header.Get("Authorization")

@@ -47,6 +47,7 @@ type BotConfiger interface {
 	ContractId() string
 	HttpPort() uint16
 	SignApiKey() string
+	OpsApiKey() string
 	FilePath() string
 	RcLimit() uint
 }
@@ -81,7 +82,7 @@ type Bot struct {
 	lastBlockAt     atomic.Int64 // Unix nanoseconds; 0 means not yet set
 
 	// Global retry throttle: only one retry request allowed per retryGlobalThrottle.
-	retryMu          sync.Mutex
+	retryMu           sync.Mutex
 	lastGlobalRetryAt time.Time
 
 	// Serializes L2 transaction submissions. The VSC node assigns nonces per
@@ -124,6 +125,12 @@ const (
 	retryTxThrottle = 2 * time.Minute
 	// retryGlobalThrottle is the minimum time between any two retry requests.
 	retryGlobalThrottle = 10 * time.Second
+	// broadcastRetryAttempts is how many times a contract call will be re-broadcast
+	// when the broadcast itself fails (network error, RPC down, etc.).
+	// Terminal on-chain statuses (CONFIRMED, PROCESSED, FAILED) are NEVER
+	// auto-retried — FAILED must be retried manually via /retry so operators
+	// can inspect the failure first.
+	broadcastRetryAttempts = 3
 )
 
 // ErrRetryThrottled is returned when a retry request is rejected due to throttling.
@@ -173,10 +180,11 @@ func (b *Bot) RetryFailedTx(ctx context.Context, txId string) error {
 	}
 
 	b.L.Info("retrying failed VSC tx", "txId", txId, "action", rec.Action)
-	retryErr := b.callWithRetry(ctx, rec.Payload, rec.Action, 3)
-	if retryErr == nil {
-		// All retry attempts succeeded — delete the original failure record so
-		// it no longer appears in health reports.
+	newTxId, retryErr := b.callWithRetry(ctx, rec.Payload, rec.Action, broadcastRetryAttempts)
+	// Whenever a new broadcast went out under a new txId — whether it CONFIRMED
+	// or FAILED again — the old record is superseded. Delete it so there's
+	// exactly one failed-tx entry per logical operation.
+	if newTxId != "" && newTxId != txId {
 		b.clearFailedTxs(ctx, []string{txId})
 	}
 	return retryErr
@@ -241,24 +249,30 @@ func (b *Bot) LastBlock() (height uint64, at time.Time) {
 var ErrTxFailed = fmt.Errorf("VSC transaction failed")
 
 // callWithRetry broadcasts a contract call and monitors its on-chain status.
-// It only re-broadcasts when the previous attempt either failed to broadcast or
-// reached the FAILED status on-chain. While a transaction is still INCLUDED or
-// UNCONFIRMED it keeps polling — it never re-broadcasts over a live transaction.
-func (b *Bot) callWithRetry(ctx context.Context, payload json.RawMessage, action string, maxAttempts int) error {
+// It only retries the broadcast itself (network/RPC failures that mean the tx
+// was never posted). Once a tx is accepted by the node, the on-chain status is
+// treated as terminal — FAILED is recorded once and returned to the caller,
+// never auto-retried. Operators decide whether to resubmit via /retry.
+//
+// Returns the txId of the last attempt (empty if all broadcasts failed) and
+// an error: nil on CONFIRMED/PROCESSED, ErrTxFailed on FAILED, or the
+// broadcast/context error otherwise.
+func (b *Bot) callWithRetry(ctx context.Context, payload json.RawMessage, action string, maxBroadcastAttempts int) (string, error) {
 	var lastErr error
-	var recordedFailures []string // VSC txIds recorded as failed during this call
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	for attempt := 1; attempt <= maxBroadcastAttempts; attempt++ {
 		txId, err := b.caller().CallContract(ctx, payload, action)
 		if err != nil {
-			// Broadcast itself failed — retry with backoff.
+			// Broadcast itself failed — retry with backoff. No failed-tx record
+			// is written here since we don't yet have a txId; only terminal
+			// on-chain statuses produce a FailedVscTx entry.
 			lastErr = err
-			if attempt < maxAttempts {
+			if attempt < maxBroadcastAttempts {
 				backoff := time.Duration(attempt) * 2 * time.Second
 				b.L.Debug("broadcast failed, retrying", "action", action, "attempt", attempt, "backoff", backoff, "error", err)
 				select {
 				case <-time.After(backoff):
 				case <-ctx.Done():
-					return ctx.Err()
+					return "", ctx.Err()
 				}
 			}
 			continue
@@ -268,35 +282,24 @@ func (b *Bot) callWithRetry(ctx context.Context, payload json.RawMessage, action
 		status, err := b.awaitTxStatus(ctx, txId, action)
 		if err != nil {
 			// Context cancelled or similar — stop entirely.
-			return fmt.Errorf("error polling tx %s status: %w", txId, err)
+			return txId, fmt.Errorf("error polling tx %s status: %w", txId, err)
 		}
 
 		switch status {
 		case "CONFIRMED", "PROCESSED":
 			b.L.Info("VSC transaction confirmed", "action", action, "txId", txId, "status", status)
-			// A retry succeeded — clear any failures recorded during earlier attempts.
-			if len(recordedFailures) > 0 {
-				b.clearFailedTxs(ctx, recordedFailures)
-			}
-			return nil
+			return txId, nil
 		case "FAILED":
-			b.L.Warn("VSC transaction failed on-chain", "action", action, "txId", txId, "attempt", attempt)
+			b.L.Warn("VSC transaction failed on-chain", "action", action, "txId", txId)
 			b.recordFailedTx(ctx, txId, action, payload)
-			recordedFailures = append(recordedFailures, txId)
-			lastErr = fmt.Errorf("%w: action=%s txId=%s", ErrTxFailed, action, txId)
-			// Fall through to retry with a new broadcast.
-			if attempt < maxAttempts {
-				backoff := time.Duration(attempt) * 2 * time.Second
-				b.L.Debug("will re-broadcast after FAILED", "action", action, "attempt", attempt, "backoff", backoff)
-				select {
-				case <-time.After(backoff):
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
+			return txId, fmt.Errorf("%w: action=%s txId=%s", ErrTxFailed, action, txId)
+		default:
+			// awaitTxStatus only returns CONFIRMED/PROCESSED/FAILED or a ctx
+			// error, but guard against future additions instead of re-looping.
+			return txId, fmt.Errorf("unexpected tx status %q for action=%s txId=%s", status, action, txId)
 		}
 	}
-	return lastErr
+	return "", lastErr
 }
 
 const (
@@ -400,4 +403,3 @@ func NewBot(
 		botEthDID:    ethDID,
 	}, nil
 }
-

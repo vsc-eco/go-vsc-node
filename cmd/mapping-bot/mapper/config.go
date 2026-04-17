@@ -17,9 +17,16 @@ type mappingBotConfig struct {
 	// subsequent entries are fallbacks used when the primary is unreachable.
 	ConnectedGraphQLAddrs []string
 	HttpPort              uint16
-	// SignApiKey authenticates requests to the /sign and /retry endpoints.
-	// If empty, both endpoints are disabled for safety.
+	// SignApiKey authenticates requests to the /sign endpoint only.
+	// /sign submits backup Bitcoin signatures, so this is the highest-privilege
+	// token and should be kept separate from the operational token below.
+	// If empty, /sign is disabled.
 	SignApiKey string
+	// OpsApiKey authenticates requests to the /retry endpoint and unlocks the
+	// per-tx detail in /health. It does NOT grant /sign access, so this token
+	// is safe to share with a frontend or monitoring system.
+	// If empty, /retry is disabled and /health omits failed-tx details.
+	OpsApiKey string
 	// RcLimit is the resource-credit limit attached to every VSC L2 transaction
 	// the bot submits. The VSC node rejects the transaction if the caller's RC
 	// balance is below this value, so set it high enough for your contract calls.
@@ -59,6 +66,10 @@ func (c *mappingBotConfigStruct) HttpPort() uint16 {
 
 func (c *mappingBotConfigStruct) SignApiKey() string {
 	return c.Get().SignApiKey
+}
+
+func (c *mappingBotConfigStruct) OpsApiKey() string {
+	return c.Get().OpsApiKey
 }
 
 func (c *mappingBotConfigStruct) RcLimit() uint {

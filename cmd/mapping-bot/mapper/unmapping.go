@@ -137,8 +137,8 @@ func (b *Bot) HandleConfirmations() {
 			continue
 		}
 
-		if err := b.callWithRetry(ctx, payload, "confirmSpend", 3); err != nil {
-			b.L.Warn("confirmSpend failed after retries", "txId", txId, "error", err)
+		if _, err := b.callWithRetry(ctx, payload, "confirmSpend", broadcastRetryAttempts); err != nil {
+			b.L.Warn("confirmSpend failed", "txId", txId, "error", err)
 			continue
 		}
 

@@ -32,7 +32,8 @@ func (c *testBotConfig) ContractId() string { return "test-contract" }
 func (c *testBotConfig) PrimaryKey() string { return c.primaryKey }
 func (c *testBotConfig) BackupKey() string  { return c.backupKey }
 func (c *testBotConfig) HttpPort() uint16   { return 8000 }
-func (c *testBotConfig) SignApiKey() string { return "test-api-key" }
+func (c *testBotConfig) SignApiKey() string { return "test-sign-key" }
+func (c *testBotConfig) OpsApiKey() string  { return "test-ops-key" }
 func (c *testBotConfig) FilePath() string   { return "test-config.json" }
 func (c *testBotConfig) RcLimit() uint      { return 10000 }
 
