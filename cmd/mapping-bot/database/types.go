@@ -85,11 +85,11 @@ type SignatureSlot struct {
 // FailedVscTx records a map or confirmSpend contract call that reached FAILED status on-chain.
 // Persisted to MongoDB so failed txs survive bot restarts and can be retried via the HTTP API.
 type FailedVscTx struct {
-	TxId          string          `bson:"_id"`
-	Action        string          `bson:"action"`
-	Payload       json.RawMessage `bson:"payload"`
-	FailedAt      time.Time       `bson:"failedAt"`
-	LastRetriedAt *time.Time      `bson:"lastRetriedAt,omitempty"`
+	TxId          string          `bson:"_id"                      json:"txId"`
+	Action        string          `bson:"action"                   json:"action"`
+	Payload       json.RawMessage `bson:"payload"                  json:"payload"`
+	FailedAt      time.Time       `bson:"failedAt"                 json:"failedAt"`
+	LastRetriedAt *time.Time      `bson:"lastRetriedAt,omitempty"  json:"lastRetriedAt,omitempty"`
 }
 
 // FailedTxStore handles failed VSC transaction persistence

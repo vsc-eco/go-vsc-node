@@ -92,7 +92,7 @@ curl -s -H "Authorization: Bearer $OPS_API_KEY" "$BOT_URL/health" | jq
   "pendingSentTxs": 0,
   "failedVscTxs": [
     {
-      "_id": "bafyreigd...",
+      "txId": "bafyreigd...",
       "action": "map",
       "payload": { "...": "..." },
       "failedAt": "2026-04-16T17:55:03Z"
@@ -106,7 +106,7 @@ The list is capped at the 100 most recent failures, newest first. Each record co
 
 | Field           | Meaning                                                        |
 | --------------- | -------------------------------------------------------------- |
-| `_id`           | VSC L2 tx CID — the value to pass to `/retry`.                 |
+| `txId`          | VSC L2 tx CID — the value to pass to `/retry`.                 |
 | `action`        | `"map"` or `"confirmSpend"`.                                   |
 | `payload`       | Original contract-call arguments, kept for re-submission.      |
 | `failedAt`      | When the bot observed `FAILED` status on-chain.                |
@@ -116,7 +116,7 @@ Extract just the IDs for piping into a retry:
 
 ```bash
 curl -s -H "Authorization: Bearer $OPS_API_KEY" "$BOT_URL/health" \
-  | jq -r '.failedVscTxs[].TxId'
+  | jq -r '.failedVscTxs[].txId'
 ```
 
 ---
@@ -159,7 +159,7 @@ Pipe the authenticated health output into a single retry call:
 
 ```bash
 ids=$(curl -s -H "Authorization: Bearer $OPS_API_KEY" "$BOT_URL/health" \
-  | jq -c '[.failedVscTxs[].TxId]')
+  | jq -c '[.failedVscTxs[].txId]')
 
 curl -s -X POST "$BOT_URL/retry" \
   -H "Authorization: Bearer $OPS_API_KEY" \
@@ -209,7 +209,7 @@ curl -s -H "Authorization: Bearer $OPS_API_KEY" "$BOT_URL/health" | jq '.issues,
 
 ```bash
 curl -s -H "Authorization: Bearer $OPS_API_KEY" "$BOT_URL/health" \
-  | jq '.failedVscTxs[] | select(._id == "bafyreigd...")'
+  | jq '.failedVscTxs[] | select(.txId == "bafyreigd...")'
 ```
 
 ### Bulk retry once per hour (cron-friendly)
@@ -220,7 +220,7 @@ set -euo pipefail
 : "${BOT_URL:?}"; : "${OPS_API_KEY:?}"
 
 ids=$(curl -s -H "Authorization: Bearer $OPS_API_KEY" "$BOT_URL/health" \
-  | jq -c '[.failedVscTxs[]._id // empty]')
+  | jq -c '[.failedVscTxs[].txId // empty]')
 
 # Skip if nothing to do
 [ "$ids" = "[]" ] && exit 0
