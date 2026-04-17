@@ -23,7 +23,7 @@ type mockGraphQL struct {
 	lastHeight string
 	primaryKey []byte
 	backupKey  []byte
-	observedTx map[string]bool   // key: "txid:vout"
+	observedTx map[string]bool   // key: "txid:vout" (display/reversed hex)
 	txStatuses map[string]string // key: tx ID, value: status
 
 	// L2 submission mocks.
@@ -78,13 +78,15 @@ func (m *mockGraphQL) FetchPublicKeys(ctx context.Context) ([]byte, []byte, erro
 	return m.primaryKey, m.backupKey, nil
 }
 
-func (m *mockGraphQL) FetchObservedTx(ctx context.Context, txId string, vout int) (bool, error) {
-	m.recordCall("FetchObservedTx", txId, vout)
-	if m.observedTx == nil {
-		return false, nil
+func (m *mockGraphQL) FetchObservedAtHeight(ctx context.Context, blockHeight uint64) (ObservedSet, error) {
+	m.recordCall("FetchObservedAtHeight", blockHeight)
+	set := ObservedSet{}
+	for key, seen := range m.observedTx {
+		if seen {
+			set[key] = struct{}{}
+		}
 	}
-	key := txId + ":" + string(rune('0'+vout))
-	return m.observedTx[key], nil
+	return set, nil
 }
 
 func (m *mockGraphQL) FetchTransactionStatus(ctx context.Context, txId string) (string, error) {

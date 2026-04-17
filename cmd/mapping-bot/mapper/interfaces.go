@@ -15,7 +15,7 @@ type GraphQLFetcher interface {
 	FetchSignatures(ctx context.Context, msgHex []string) (map[string]database.SignatureUpdate, error)
 	FetchLastHeight(ctx context.Context) (string, error)
 	FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error)
-	FetchObservedTx(ctx context.Context, txId string, vout int) (bool, error)
+	FetchObservedAtHeight(ctx context.Context, blockHeight uint64) (ObservedSet, error)
 	// FetchTransactionStatus queries the VSC node for the status of a transaction
 	// by its tx ID (Hive tx ID for custom_json-submitted, or L2 CID for
 	// submitTransactionV1-submitted). Returns the status string (e.g. "INCLUDED",
