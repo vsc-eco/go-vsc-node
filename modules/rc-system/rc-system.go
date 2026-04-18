@@ -130,8 +130,10 @@ func (rss *rcSession) CanConsume(account string, blockHeight uint64, rcAmt int64
 	}
 }
 
+// GetFrozenAmt on a session includes the session's pending (uncommitted)
+// consumption in rcMap, so callers see a view consistent with CanConsume.
 func (rss *rcSession) GetFrozenAmt(account string, blockHeight uint64) int64 {
-	return rss.rcSystem.GetFrozenAmt(account, blockHeight)
+	return rss.rcSystem.GetFrozenAmt(account, blockHeight) + rss.rcMap[account]
 }
 
 // FreeRcRemaining returns the portion of RC_HIVE_FREE_AMOUNT still available
