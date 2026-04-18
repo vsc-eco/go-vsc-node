@@ -67,6 +67,17 @@ func isValidHiveAccount(name string) bool {
 // Result: STM8jDSGBb3eu6jbk2JmjS3qSHU7cFoQNLN37seTF2ySR1Y3WvaY4
 const NullMemoKey = "STM8jDSGBb3eu6jbk2JmjS3qSHU7cFoQNLN37seTF2ySR1Y3WvaY4"
 
+func accountControlledByGateway(acct hivego.AccountData, gatewayWallet string) bool {
+	for _, auth := range acct.Active.AccountAuths {
+		if len(auth) >= 1 {
+			if name, ok := auth[0].(string); ok && name == gatewayWallet {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // getMemoKeyForNodeAccount returns a valid public key for per-node account memo field.
 // Per-node accounts don't use memos, but Hive requires a valid secp256k1 public key.
 // Uses the gateway's signing keypair (derived from BLS seed + "gateway_key" salt).

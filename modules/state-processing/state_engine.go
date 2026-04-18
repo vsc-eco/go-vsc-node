@@ -1244,7 +1244,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	for _, action := range hpPendingActions {
 		if action.Status == "pending" && endBlock > action.BlockHeight+ledgerSystem.HP_CONFIRM_TIMEOUT {
 			hpRollbackIds = append(hpRollbackIds, action.Id)
-			// Debit pending_hp
+			// Debit pending_hp from recipient
 			hpRollbackRecords = append(hpRollbackRecords, ledgerDb.LedgerRecord{
 				Id:          action.Id + "#rollback-in",
 				Amount:      -action.Amount,
@@ -1253,13 +1253,13 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 				Owner:       action.To,
 				Type:        "hp_timeout_rollback",
 			})
-			// Credit hive_consensus (return funds)
+			// Credit hive_consensus back to the original sender
 			hpRollbackRecords = append(hpRollbackRecords, ledgerDb.LedgerRecord{
 				Id:          action.Id + "#rollback-out",
 				Amount:      action.Amount,
 				Asset:       "hive_consensus",
 				BlockHeight: endBlock,
-				Owner:       action.To,
+				Owner:       action.From,
 				Type:        "hp_timeout_rollback",
 			})
 		}

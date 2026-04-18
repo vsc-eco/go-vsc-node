@@ -142,7 +142,7 @@ func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraI
 
 	for idx, id := range actionIds {
 		record, _ := ls.ActionsDb.Get(id)
-		if record == nil {
+		if record == nil || record.Status != "pending" {
 			continue
 		}
 		ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
@@ -181,6 +181,73 @@ func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraI
 
 				//It'll become available in 3 days of blocks
 				BlockHeight: extraInfo.BlockHeight + blockDelay,
+				BIdx:        -1,
+				OpIdx:       -1,
+			})
+		}
+		if record.Type == "hp_stake" {
+			// HP confirm: pending_hp → hive_hp now that gateway confirmed L1 power-up
+			ls.LedgerDb.StoreLedger(
+				ledger_db.LedgerRecord{
+					Id:          record.Id + "#confirm-in",
+					Amount:      -record.Amount,
+					Asset:       "pending_hp",
+					Owner:       record.To,
+					Type:        "hp_confirm",
+					BlockHeight: extraInfo.BlockHeight + 1,
+					BIdx:        -1,
+					OpIdx:       -1,
+				},
+				ledger_db.LedgerRecord{
+					Id:          record.Id + "#confirm-out",
+					Amount:      record.Amount,
+					Asset:       "hive_hp",
+					Owner:       record.To,
+					Type:        "hp_confirm",
+					BlockHeight: extraInfo.BlockHeight + 1,
+					BIdx:        -1,
+					OpIdx:       -1,
+				},
+			)
+			// Create follow-up action for delegation
+			ls.ActionsDb.StoreAction(ledger_db.ActionRecord{
+				Id:          record.Id + "#delegate",
+				Amount:      record.Amount,
+				Asset:       "hive_hp",
+				From:        record.From,
+				To:          record.To,
+				TxId:        record.Id,
+				Status:      "pending",
+				Type:        "hp_delegate",
+				Params:      record.Params,
+				BlockHeight: extraInfo.BlockHeight,
+			})
+		}
+		if record.Type == "hp_unstake" {
+			// Undelegation confirmed on L1. Schedule power-down after the
+			// 5-day undelegation cooldown (144,000 Hive blocks).
+			ls.ActionsDb.StoreAction(ledger_db.ActionRecord{
+				Id:          record.Id + "#powerdown",
+				Amount:      record.Amount,
+				Asset:       "hive_hp",
+				From:        record.From,
+				To:          record.To,
+				TxId:        record.Id,
+				Status:      "pending",
+				Type:        "hp_start_powerdown",
+				Params:      record.Params,
+				BlockHeight: extraInfo.BlockHeight + 144_000,
+			})
+		}
+		if record.Type == "hp_start_powerdown" {
+			// Power-down confirmed on L1: credit hive_consensus back
+			ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+				Id:          record.Id + "#out",
+				Amount:      record.Amount,
+				Asset:       "hive_consensus",
+				Owner:       record.From,
+				Type:        "hp_unstake_complete",
+				BlockHeight: extraInfo.BlockHeight + 1,
 				BIdx:        -1,
 				OpIdx:       -1,
 			})

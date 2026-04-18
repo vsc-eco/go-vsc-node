@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -830,11 +831,12 @@ func (tx *TxOptInHP) ExecuteTx(se common_types.StateEngine, ledgerSession ledger
 	if !strings.HasPrefix(tx.From, "hive:") || !strings.HasPrefix(tx.To, "hive:") {
 		return TxResult{Success: false, Ret: "Invalid to/from: must be hive: prefixed", RcUsed: 50}
 	}
-	// Validate HiveAccount is non-empty, valid length, and matches the To field
 	if tx.HiveAccount == "" || len(tx.HiveAccount) < 3 || len(tx.HiveAccount) > 16 {
 		return TxResult{Success: false, Ret: "Invalid hive_account", RcUsed: 50}
 	}
-	// HiveAccount must correspond to the To address to prevent L1/L2 mismatch
+	if matched, _ := regexp.MatchString(ledgerSystem.HIVE_REGEX, tx.HiveAccount); !matched {
+		return TxResult{Success: false, Ret: "Invalid hive_account format", RcUsed: 50}
+	}
 	if "hive:"+tx.HiveAccount != tx.To {
 		return TxResult{Success: false, Ret: "hive_account must match to address", RcUsed: 50}
 	}
@@ -902,6 +904,9 @@ func (tx *TxOptOutHP) ExecuteTx(se common_types.StateEngine, ledgerSession ledge
 	}
 	if tx.HiveAccount == "" || len(tx.HiveAccount) < 3 || len(tx.HiveAccount) > 16 {
 		return TxResult{Success: false, Ret: "Invalid hive_account", RcUsed: 50}
+	}
+	if matched, _ := regexp.MatchString(ledgerSystem.HIVE_REGEX, tx.HiveAccount); !matched {
+		return TxResult{Success: false, Ret: "Invalid hive_account format", RcUsed: 50}
 	}
 	if "hive:"+tx.HiveAccount != tx.From {
 		return TxResult{Success: false, Ret: "hive_account must match from address", RcUsed: 50}

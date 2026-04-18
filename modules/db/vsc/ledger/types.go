@@ -116,6 +116,7 @@ type ActionRecord struct {
 	Status string `bson:"status"`
 	Amount int64  `bson:"amount"`
 	Asset  string `bson:"asset"`
+	From   string `bson:"from"`
 	To     string `bson:"to"`
 	Memo   string `bson:"memo"`
 	TxId   string `bson:"action_id"`

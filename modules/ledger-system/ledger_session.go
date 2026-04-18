@@ -302,20 +302,9 @@ func (ledgerSession *ledgerSession) OptInHP(params HPStakeParams) LedgerResult {
 	}
 }
 
-// HP_UNSTAKE_ENABLED controls whether opt-out is allowed. Set to false until
-// Phase 5 (fill_vesting_withdraw virtual op handler) is implemented.
-// Without Phase 5, opt-out debits hive_hp but has no mechanism to credit
-// hive_consensus back from L1 power-down installments — funds would be lost.
-const HP_UNSTAKE_ENABLED = false
+const HP_UNSTAKE_ENABLED = true
 
 func (ledgerSession *ledgerSession) OptOutHP(params HPStakeParams) LedgerResult {
-	if !HP_UNSTAKE_ENABLED {
-		return LedgerResult{
-			Ok:  false,
-			Msg: "hp unstake not yet enabled: power-down handler pending",
-		}
-	}
-
 	if params.Amount <= 0 {
 		return LedgerResult{
 			Ok:  false,

@@ -58,15 +58,35 @@ func TestExecuteOplogHPStake(t *testing.T) {
 	require.Equal(t, "hp_stake", result.actionRecords[0].Type)
 	require.Equal(t, "pending", result.actionRecords[0].Status)
 
-	// BUG I: Verify action record Params contains expected keys
 	require.Contains(t, result.actionRecords[0].Params, "hive_account",
 		"hp_stake action record should contain 'hive_account' param")
+	require.Equal(t, "hive:validator1", result.actionRecords[0].From,
+		"hp_stake action record must preserve From for rollback attribution")
 }
 
-func TestExecuteOplogHPUnstake_Blocked(t *testing.T) {
-	// HP_UNSTAKE_ENABLED is false (Phase 5 pending), so ExecuteOplog
-	// must skip hp_unstake events entirely — defense-in-depth guard.
-	require.False(t, HP_UNSTAKE_ENABLED, "HP_UNSTAKE_ENABLED should be false until Phase 5")
+func TestExecuteOplogHPStake_CrossAccountFromPreserved(t *testing.T) {
+	oplog := []OpLogEvent{
+		{
+			Id:          "hp-cross-1",
+			From:        "hive:alice",
+			To:          "hive:bob",
+			Amount:      50_000_000,
+			Asset:       "hive",
+			Type:        "hp_stake",
+			BlockHeight: 100,
+			Params:      map[string]interface{}{"hive_account": "bob"},
+		},
+	}
+
+	result := ExecuteOplog(oplog, 0, 100)
+
+	require.Equal(t, "hive:alice", result.actionRecords[0].From,
+		"cross-account: From must be the original sender, not the recipient")
+	require.Equal(t, "hive:bob", result.actionRecords[0].To)
+}
+
+func TestExecuteOplogHPUnstake(t *testing.T) {
+	require.True(t, HP_UNSTAKE_ENABLED, "HP_UNSTAKE_ENABLED should be true")
 
 	oplog := []OpLogEvent{
 		{
@@ -86,10 +106,18 @@ func TestExecuteOplogHPUnstake_Blocked(t *testing.T) {
 
 	result := ExecuteOplog(oplog, 0, 200)
 
-	require.Equal(t, 0, len(result.ledgerRecords),
-		"hp_unstake should produce NO ledger records when HP_UNSTAKE_ENABLED=false")
-	require.Equal(t, 0, len(result.actionRecords),
-		"hp_unstake should produce NO action records when HP_UNSTAKE_ENABLED=false")
+	require.Equal(t, 1, len(result.ledgerRecords),
+		"hp_unstake should produce 1 ledger record (debit hive_hp)")
+	require.Equal(t, int64(-50_000_000), result.ledgerRecords[0].Amount)
+	require.Equal(t, "hive_hp", result.ledgerRecords[0].Asset)
+	require.Equal(t, "hive:validator1", result.ledgerRecords[0].Owner)
+
+	require.Equal(t, 1, len(result.actionRecords),
+		"hp_unstake should create 1 action record for gateway")
+	require.Equal(t, "hp_unstake", result.actionRecords[0].Type)
+	require.Equal(t, "pending", result.actionRecords[0].Status)
+	require.Equal(t, "hive:validator1", result.actionRecords[0].From,
+		"hp_unstake action must preserve From")
 }
 
 // ============================================================

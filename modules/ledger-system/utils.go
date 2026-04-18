@@ -95,6 +95,7 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				Id:          v.Id,
 				Amount:      v.Amount,
 				Asset:       v.Asset,
+				From:        v.From,
 				To:          v.To,
 				Memo:        v.Memo,
 				TxId:        v.Id,
@@ -119,6 +120,7 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				Id:          v.Id,
 				Amount:      v.Amount,
 				Asset:       "hbd_savings",
+				From:        v.From,
 				To:          v.To,
 				Memo:        v.Memo,
 				TxId:        v.Id,
@@ -143,6 +145,7 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				Id:          v.Id,
 				Amount:      v.Amount,
 				Asset:       "hbd_savings",
+				From:        v.From,
 				To:          v.To,
 				Memo:        v.Memo,
 				TxId:        v.Id,
@@ -197,6 +200,7 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				Id:          v.Id,
 				Amount:      v.Amount,
 				Asset:       "hive_hp",
+				From:        v.From,
 				To:          v.To,
 				TxId:        v.Id,
 				Status:      "pending",
@@ -206,13 +210,6 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 			})
 		}
 		if v.Type == "hp_unstake" {
-			// Guard: skip hp_unstake processing if unstaking is disabled.
-			// This is a defense-in-depth check — OptOutHP already blocks when
-			// HP_UNSTAKE_ENABLED is false, but if an oplog event somehow arrives
-			// (e.g., from a replayed block), we must not process it.
-			if !HP_UNSTAKE_ENABLED {
-				continue
-			}
 			// HP unstake: debit hive_hp
 			// Action record for gateway to undelegate + start power-down
 			affectedAccounts[v.From] = true
@@ -230,6 +227,7 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				Id:          v.Id,
 				Amount:      v.Amount,
 				Asset:       "hive_hp",
+				From:        v.From,
 				To:          v.To,
 				TxId:        v.Id,
 				Status:      "pending",
@@ -273,6 +271,7 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				Id:     v.Id,
 				Amount: v.Amount,
 				Asset:  "-",
+				From:   v.From,
 				To:     v.To,
 				Memo:   v.Memo,
 				TxId:   v.Id,

@@ -365,7 +365,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 		return signingPackage{}, errors.New("invalid slot")
 	}
 	actionFilter := []string{
-		"withdraw", "stake", "unstake", "hp_stake", "hp_unstake",
+		"withdraw", "stake", "unstake", "hp_stake", "hp_unstake", "hp_delegate", "hp_start_powerdown",
 	}
 	actions, err := ms.ledgerActions.GetPendingActions(bh, actionFilter...)
 
@@ -446,6 +446,9 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 			existingAccounts, err := ms.hiveClient.GetAccount([]string{nodeAccount})
 			if err == nil && len(existingAccounts) > 0 {
 				accountExists = true
+				if !accountControlledByGateway(existingAccounts[0], gatewayWallet) {
+					continue
+				}
 			}
 
 			if !accountExists {
@@ -457,7 +460,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 					gatewayAuth, // owner
 					gatewayAuth, // active
 					gatewayAuth, // posting
-					getMemoKeyForNodeAccount(ms),
+					NullMemoKey,
 					`{"hp_node":"`+hiveAccount+`"}`,
 				)
 				ops = append(ops, createOp)
@@ -503,10 +506,6 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 		}
 
 		if action.Type == "hp_unstake" {
-			// HP unstake: Begin the ~14 week exit process
-			// Steps: Undelegate → Remove proxy
-			// Power-down (WithdrawVesting) is deferred to a follow-up action after
-			// the 5-day undelegation cooldown completes.
 			hiveAccount := ""
 			if action.Params != nil {
 				if ha, ok := action.Params["hive_account"].(string); ok {
@@ -519,7 +518,9 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 
 			nodeAccount := deriveNodeAccountName(hiveAccount)
 
-			// Step 1: Undelegate — set delegation to 0 VESTS (triggers 5-day cooldown on Hive)
+			// Step 1: Undelegate + remove proxy. Power-down is deferred to
+			// hp_start_powerdown because Hive has a 5-day undelegation cooldown —
+			// WithdrawVesting in the same tx as undelegate would fail atomically.
 			undelegateOp := ms.hiveCreator.DelegateVestingShares(
 				nodeAccount,
 				hiveAccount,
@@ -527,20 +528,74 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 			)
 			ops = append(ops, undelegateOp)
 
-			// Step 2: Remove governance proxy
 			removeProxyOp := ms.hiveCreator.AccountWitnessProxy(
 				nodeAccount,
 				"",
 			)
 			ops = append(ops, removeProxyOp)
+		}
 
-			// Step 3: Power-down (WithdrawVesting) — DEFERRED
-			// Must be triggered after the 5-day undelegation cooldown completes.
-			// TODO: Implement "hp_start_powerdown" action type that:
-			//   1. Is scheduled 144,000 blocks (~5 days) after undelegation
-			//   2. Reads the per-node account's vesting_shares from L1
-			//   3. Calls WithdrawVesting(nodeAccount, vestingShares)
-			//   4. 13 weekly installments handled by fill_vesting_withdraw (Phase 5)
+		if action.Type == "hp_start_powerdown" {
+			hiveAccount := ""
+			if action.Params != nil {
+				if ha, ok := action.Params["hive_account"].(string); ok {
+					hiveAccount = ha
+				}
+			}
+			if hiveAccount == "" || len(hiveAccount) < 3 {
+				continue
+			}
+
+			nodeAccount := deriveNodeAccountName(hiveAccount)
+			nodeAccounts, err := ms.hiveClient.GetAccount([]string{nodeAccount})
+			if err != nil || len(nodeAccounts) == 0 {
+				continue
+			}
+			vestingShares := nodeAccounts[0].VestingShares
+			if vestingShares == "" || vestingShares == "0.000000 VESTS" {
+				continue
+			}
+
+			powerDownOp := ms.hiveCreator.WithdrawVesting(
+				nodeAccount,
+				vestingShares,
+			)
+			ops = append(ops, powerDownOp)
+		}
+
+		if action.Type == "hp_delegate" {
+			// Delegate HP back to validator for curation rewards.
+			// Reads the node account's TOTAL vesting_shares from L1 and delegates
+			// the full amount. On Hive, delegate_vesting_shares takes the TOTAL
+			// desired delegation, not a delta — so this naturally handles both
+			// initial delegation AND increased stakes.
+			hiveAccount := ""
+			if action.Params != nil {
+				if ha, ok := action.Params["hive_account"].(string); ok {
+					hiveAccount = ha
+				}
+			}
+			if hiveAccount == "" || len(hiveAccount) < 3 {
+				continue
+			}
+
+			nodeAccount := deriveNodeAccountName(hiveAccount)
+
+			nodeAccounts, err := ms.hiveClient.GetAccount([]string{nodeAccount})
+			if err != nil || len(nodeAccounts) == 0 {
+				continue
+			}
+			vestingShares := nodeAccounts[0].VestingShares
+			if vestingShares == "" || vestingShares == "0.000000 VESTS" {
+				continue
+			}
+
+			delegateOp := ms.hiveCreator.DelegateVestingShares(
+				nodeAccount,
+				hiveAccount,
+				vestingShares,
+			)
+			ops = append(ops, delegateOp)
 		}
 	}
 
