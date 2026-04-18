@@ -130,6 +130,24 @@ func (rss *rcSession) CanConsume(account string, blockHeight uint64, rcAmt int64
 	}
 }
 
+func (rss *rcSession) GetFrozenAmt(account string, blockHeight uint64) int64 {
+	return rss.rcSystem.GetFrozenAmt(account, blockHeight)
+}
+
+// FreeRcRemaining returns the portion of RC_HIVE_FREE_AMOUNT still available
+// to account at blockHeight (0 for non-Hive accounts, and for Hive accounts
+// whose frozen RCs already consumed the free tier).
+func FreeRcRemaining(rs RcSession, account string, blockHeight uint64) int64 {
+	if !strings.HasPrefix(account, "hive:") {
+		return 0
+	}
+	remaining := params.RC_HIVE_FREE_AMOUNT - rs.GetFrozenAmt(account, blockHeight)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
 func (rss *rcSession) Revert() {
 	rss.rcMap = make(map[string]int64)
 }

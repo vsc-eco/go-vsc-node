@@ -133,7 +133,7 @@ func (t TxVscCallContract) ExecuteTx(
 		Caller:               caller,
 		Sender:               caller,
 		Intents:              t.Intents,
-	}, int64(gas), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0)
+	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0)
 
 	validUtf8 := utf8.Valid(t.Payload)
 	if !validUtf8 {

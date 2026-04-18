@@ -264,7 +264,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 			Sender:               caller,
 			Intents:              tx.Intents,
 		},
-		int64(gas), gas*params.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
+		int64(gas), rc_system.FreeRcRemaining(ct.RcSession, rcPayer, ct.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
 	)
 	ctx := context.WithValue(
 		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),

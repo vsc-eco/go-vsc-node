@@ -5,6 +5,8 @@ type RcSession interface {
 	Consume(account string, blockHeight uint64, rcAmt int64) (bool, int64)
 	//Returns: Did consume (bool), remaining (int64), amount consumed (int64)
 	CanConsume(account string, blockHeight uint64, rcAmt int64) (bool, int64, int64)
+	//Returns the currently-frozen (unreturned) RC amount for an account.
+	GetFrozenAmt(account string, blockHeight uint64) int64
 	Revert()
 	Done() RcMapResult
 }

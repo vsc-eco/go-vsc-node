@@ -246,4 +246,134 @@ func TestContractTestUtil(t *testing.T) {
 	})
 	assert.Equal(t, ct.GetBalance("contract:vscmycontract", ledgerDb.AssetHive), int64(980))
 	assert.Equal(t, ct.GetBalance("contract:vscmycontract2", ledgerDb.AssetHive), int64(20))
+
+	// Hive account's RC_HIVE_FREE_AMOUNT must cancel the HBD pull exclusion.
+	// Without the fix, exclusion = rcLimit = 1000 against a 500-HBD balance fails.
+	// With the fix, rcLimit (1000) <= RC_HIVE_FREE_AMOUNT (10000) → exclusion = 0.
+	ct.Deposit("hive:alice", 500, ledgerDb.AssetHbd)
+	txSelfAlice := stateEngine.TxSelf{
+		TxId:                 "alicetxid",
+		BlockId:              "abcdef",
+		Index:                70,
+		OpIndex:              0,
+		Timestamp:            "2025-09-03T00:00:00",
+		RequiredAuths:        []string{"hive:alice"},
+		RequiredPostingAuths: []string{},
+	}
+	drawHbdFree := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelfAlice,
+		ContractId: contractId,
+		Action:     "drawHbd",
+		Payload:    json.RawMessage([]byte("500")),
+		RcLimit:    1000,
+		Intents: []contracts.Intent{{
+			Type: "transfer.allow",
+			Args: map[string]string{"limit": "0.500", "token": "hbd"},
+		}},
+	})
+	assert.True(t, drawHbdFree.Success)
+	assert.Equal(t, int64(0), ct.GetBalance("hive:alice", ledgerDb.AssetHbd))
+	assert.Equal(t, int64(500), ct.GetBalance("contract:"+contractId, ledgerDb.AssetHbd))
+
+	// Inter-contract HBD pull: the source is a contract, not the RC payer, so
+	// no exclusion should apply. Drain contract1's 500 HBD back out, deposit
+	// exactly 100 HBD into it, then have contract1 forward drawHbd(100) into
+	// contract2. Without the fix, exclusion = 1000 against 100 HBD fails.
+	sendBackHbd := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "transferHbd",
+		Payload:    json.RawMessage([]byte("hive:someone,500")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.True(t, sendBackHbd.Success)
+	assert.Equal(t, int64(0), ct.GetBalance("contract:"+contractId, ledgerDb.AssetHbd))
+
+	drawHbdInto1 := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "drawHbd",
+		Payload:    json.RawMessage([]byte("100")),
+		RcLimit:    1000,
+		Intents: []contracts.Intent{{
+			Type: "transfer.allow",
+			Args: map[string]string{"limit": "0.100", "token": "hbd"},
+		}},
+	})
+	assert.True(t, drawHbdInto1.Success)
+	assert.Equal(t, int64(100), ct.GetBalance("contract:"+contractId, ledgerDb.AssetHbd))
+
+	icDrawHbd := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelf,
+		ContractId: contractId,
+		Action:     "contractCall",
+		Payload:    json.RawMessage([]byte(contractId2 + ",drawHbd,100")),
+		RcLimit:    1000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.True(t, icDrawHbd.Success)
+	assert.Equal(t, int64(0), ct.GetBalance("contract:"+contractId, ledgerDb.AssetHbd))
+	assert.Equal(t, int64(100), ct.GetBalance("contract:"+contractId2, ledgerDb.AssetHbd))
+
+	// Boundary: rcLimit above RC_HIVE_FREE_AMOUNT still reserves the remainder
+	// against a Hive payer's HBD balance. hive:bob has 5000 HBD; the test
+	// helper caps gas at availableRCs = 5000 + 10000 - 100 reserve = 14900,
+	// so exclusion = 14900 - 10000 = 4900. Drawing 500 HBD fails because
+	// (5000 - 4900) = 100 < 500.
+	ct.Deposit("hive:bob", 5000, ledgerDb.AssetHbd)
+	txSelfBob := stateEngine.TxSelf{
+		TxId:                 "bobtxid",
+		BlockId:              "abcdef",
+		Index:                71,
+		OpIndex:              0,
+		Timestamp:            "2025-09-03T00:00:00",
+		RequiredAuths:        []string{"hive:bob"},
+		RequiredPostingAuths: []string{},
+	}
+	drawHbdBoundary := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelfBob,
+		ContractId: contractId,
+		Action:     "drawHbd",
+		Payload:    json.RawMessage([]byte("500")),
+		RcLimit:    20000,
+		Intents: []contracts.Intent{{
+			Type: "transfer.allow",
+			Args: map[string]string{"limit": "0.500", "token": "hbd"},
+		}},
+	})
+	assert.False(t, drawHbdBoundary.Success)
+	assert.Equal(t, contracts.LEDGER_ERROR, drawHbdBoundary.Err)
+	assert.Equal(t, int64(5000), ct.GetBalance("hive:bob", ledgerDb.AssetHbd))
+
+	// Boundary: a Hive account that has already consumed most of its free
+	// tier (9500 of 10000 frozen) only has 500 free RCs left. With rcLimit=1000,
+	// exclusion = 1000 - 500 = 500. Drawing 4700 HBD fails because
+	// (5000 - 500) = 4500 < 4700 — i.e. the free tier is a refilling pool, not
+	// a per-operation grant.
+	ct.Deposit("hive:charlie", 5000, ledgerDb.AssetHbd)
+	ct.SetFrozenRc("hive:charlie", ct.BlockHeight, 9500)
+	txSelfCharlie := stateEngine.TxSelf{
+		TxId:                 "charlietxid",
+		BlockId:              "abcdef",
+		Index:                72,
+		OpIndex:              0,
+		Timestamp:            "2025-09-03T00:00:00",
+		RequiredAuths:        []string{"hive:charlie"},
+		RequiredPostingAuths: []string{},
+	}
+	drawHbdDepleted := ct.Call(stateEngine.TxVscCallContract{
+		Self:       txSelfCharlie,
+		ContractId: contractId,
+		Action:     "drawHbd",
+		Payload:    json.RawMessage([]byte("4700")),
+		RcLimit:    1000,
+		Intents: []contracts.Intent{{
+			Type: "transfer.allow",
+			Args: map[string]string{"limit": "4.700", "token": "hbd"},
+		}},
+	})
+	assert.False(t, drawHbdDepleted.Success)
+	assert.Equal(t, contracts.LEDGER_ERROR, drawHbdDepleted.Err)
+	assert.Equal(t, int64(5000), ct.GetBalance("hive:charlie", ledgerDb.AssetHbd))
 }

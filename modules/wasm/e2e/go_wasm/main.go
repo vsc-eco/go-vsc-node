@@ -350,13 +350,22 @@ func ContractCall(a *string) *string {
 		sdk.Revert("invalid payload", "invalid_payload")
 	}
 	return sdk.ContractCall(params[0], params[1], params[2], &sdk.ContractCallOptions{
-		Intents: []sdk.Intent{{
-			Type: "transfer.allow",
-			Args: map[string]string{
-				"token": "hive",
-				"limit": "1.000",
+		Intents: []sdk.Intent{
+			{
+				Type: "transfer.allow",
+				Args: map[string]string{
+					"token": "hive",
+					"limit": "1.000",
+				},
 			},
-		}},
+			{
+				Type: "transfer.allow",
+				Args: map[string]string{
+					"token": "hbd",
+					"limit": "1.000",
+				},
+			},
+		},
 	})
 }
 
