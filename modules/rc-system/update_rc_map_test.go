@@ -1,9 +1,11 @@
-package rc_system
+package rc_system_test
 
 import (
 	"strings"
 	"testing"
+	"vsc-node/lib/test_utils"
 	"vsc-node/modules/common/params"
+	rc_system "vsc-node/modules/rc-system"
 )
 
 // These tests replicate the UpdateRcMap logic from state_engine.go
@@ -15,7 +17,7 @@ import (
 func simulateUpdateRcMap(
 	rcMap map[string]int64,
 	blockHeight uint64,
-	db *mockRcDb,
+	db *test_utils.MockRcDb,
 	getBalance func(account string) int64,
 ) {
 	for k, v := range rcMap {
@@ -25,7 +27,7 @@ func simulateUpdateRcMap(
 		if rcRecord.BlockHeight == 0 {
 			rcBal = v
 		} else {
-			frozeAmt := CalculateFrozenBal(rcRecord.BlockHeight, blockHeight, rcRecord.Amount)
+			frozeAmt := rc_system.CalculateFrozenBal(rcRecord.BlockHeight, blockHeight, rcRecord.Amount)
 			rcBal = frozeAmt + v
 		}
 
@@ -46,7 +48,7 @@ func simulateUpdateRcMap(
 }
 
 func TestUpdateRcMap_FirstConsumption(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	balances := map[string]int64{"hive:alice": 290_000}
 
 	rcMap := map[string]int64{"hive:alice": 1800}
@@ -59,7 +61,7 @@ func TestUpdateRcMap_FirstConsumption(t *testing.T) {
 }
 
 func TestUpdateRcMap_AccumulatesWithDecay(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	balances := map[string]int64{"hive:alice": 290_000}
 	getBalance := func(a string) int64 { return balances[a] }
 
@@ -70,7 +72,7 @@ func TestUpdateRcMap_AccumulatesWithDecay(t *testing.T) {
 	simulateUpdateRcMap(map[string]int64{"hive:alice": 1800}, 1001, db, getBalance)
 
 	rec, _ := db.GetRecord("hive:alice", 1001)
-	// CalculateFrozenBal(1000, 1001, 1800) = 1800 - (1*1800/144000) = 1800 - 0 = 1800
+	// rc_system.CalculateFrozenBal(1000, 1001, 1800) = 1800 - (1*1800/144000) = 1800 - 0 = 1800
 	// rcBal = 1800 + 1800 = 3600
 	if rec.Amount != 3600 {
 		t.Errorf("expected 3600 after 2 blocks, got %d", rec.Amount)
@@ -78,7 +80,7 @@ func TestUpdateRcMap_AccumulatesWithDecay(t *testing.T) {
 }
 
 func TestUpdateRcMap_CapsAtBalance(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	balance := int64(290_000)
 	maxRC := balance + params.RC_HIVE_FREE_AMOUNT // 295,000
 	getBalance := func(a string) int64 { return balance }
@@ -101,7 +103,7 @@ func TestUpdateRcMap_CapsAtBalance(t *testing.T) {
 }
 
 func TestUpdateRcMap_PreventsNegative(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	getBalance := func(a string) int64 { return 0 }
 
 	// Somehow v is negative (shouldn't happen, but defensive)
@@ -117,7 +119,7 @@ func TestUpdateRcMap_MultiTxSlot_CappedCorrectly(t *testing.T) {
 	// Simulates the multi-TxPacket-per-slot scenario
 	// Two contract calls from same user in one slot, each consuming 1800
 	// CanConsume sees same DB frozen for both, so total = 3600
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	balance := int64(5_000)
 	maxRC := balance + params.RC_HIVE_FREE_AMOUNT // 10,000
 	getBalance := func(a string) int64 { return balance }
@@ -139,9 +141,9 @@ func TestUpdateRcMap_MultiTxSlot_CappedCorrectly(t *testing.T) {
 func TestUpdateRcMap_NonContractTx_CappedCorrectly(t *testing.T) {
 	// Non-contract txs add hardcoded RC (e.g., transfer = 100, stake = 200)
 	// without any CanConsume check
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	balance := int64(1_000)
-	maxRC := balance + params.RC_HIVE_FREE_AMOUNT // 6000
+	maxRC := balance + params.RC_HIVE_FREE_AMOUNT // 11000
 	getBalance := func(a string) int64 { return balance }
 
 	// Already at max
@@ -158,7 +160,7 @@ func TestUpdateRcMap_NonContractTx_CappedCorrectly(t *testing.T) {
 
 func TestUpdateRcMap_RegenAfterCap(t *testing.T) {
 	// Verify that after capping, regen proceeds at normal rate
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	balance := int64(290_000)
 	maxRC := balance + params.RC_HIVE_FREE_AMOUNT
 	_ = db // db used for setup below
@@ -168,7 +170,7 @@ func TestUpdateRcMap_RegenAfterCap(t *testing.T) {
 
 	// No consumption for 20 blocks (1 minute)
 	// Check how much frozen has decayed
-	frozen := CalculateFrozenBal(1000, 1020, maxRC)
+	frozen := rc_system.CalculateFrozenBal(1000, 1020, maxRC)
 	regen := maxRC - frozen
 	expectedRegen := int64(20 * uint64(maxRC) / params.RC_RETURN_PERIOD)
 
@@ -184,7 +186,7 @@ func TestUpdateRcMap_RegenAfterCap(t *testing.T) {
 
 func TestUpdateRcMap_DidAccount_NoCap_BeyondBalance(t *testing.T) {
 	// DID accounts don't get free amount
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	balance := int64(10_000)
 	getBalance := func(a string) int64 { return balance }
 
@@ -201,14 +203,14 @@ func TestUpdateRcMap_DidAccount_NoCap_BeyondBalance(t *testing.T) {
 }
 
 func TestUpdateRcMap_ZeroBalance_StillStores(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	getBalance := func(a string) int64 { return 0 }
 
 	// User with zero balance does a transaction (shouldn't happen, but defensive)
 	simulateUpdateRcMap(map[string]int64{"hive:alice": 100}, 1000, db, getBalance)
 
 	rec, _ := db.GetRecord("hive:alice", 1000)
-	// maxRC = 0 + 5000 = 5000, rcBal = 100, 100 < 5000, so stores 100
+	// maxRC = 0 + 10000 = 10000, rcBal = 100, 100 < 10000, so stores 100
 	if rec.Amount != 100 {
 		t.Errorf("expected 100, got %d", rec.Amount)
 	}
@@ -216,7 +218,7 @@ func TestUpdateRcMap_ZeroBalance_StillStores(t *testing.T) {
 
 func TestUpdateRcMap_HighFrequencyTrading(t *testing.T) {
 	// Simulate 200 swaps over 200 blocks, 1 per block
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	balance := int64(290_000)
 	maxRC := balance + params.RC_HIVE_FREE_AMOUNT
 	getBalance := func(a string) int64 { return balance }
@@ -238,7 +240,7 @@ func TestUpdateRcMap_HighFrequencyTrading(t *testing.T) {
 
 func TestUpdateRcMap_RegenAfterBurst(t *testing.T) {
 	// Burst of activity, then idle — verify clean regen
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	balance := int64(290_000)
 	getBalance := func(a string) int64 { return balance }
 
@@ -251,7 +253,7 @@ func TestUpdateRcMap_RegenAfterBurst(t *testing.T) {
 	rec, _ := db.GetRecord("hive:alice", 1049)
 	frozenAfterBurst := rec.Amount
 
-	frozenAfter1hr := CalculateFrozenBal(1049, 1049+1200, frozenAfterBurst)
+	frozenAfter1hr := rc_system.CalculateFrozenBal(1049, 1049+1200, frozenAfterBurst)
 	regenIn1hr := frozenAfterBurst - frozenAfter1hr
 
 	// Regen is proportional to frozen amount, not max balance
@@ -270,7 +272,7 @@ func TestUpdateRcMap_RegenAfterBurst(t *testing.T) {
 
 func TestUpdateRcMap_BalanceDecrease_StillCapped(t *testing.T) {
 	// User's balance decreases (unstake) after accumulating frozen
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	getBalance := func(a string) int64 { return 50_000 } // was 290K, now 50K
 
 	// Old record with high frozen from when balance was higher
@@ -279,7 +281,7 @@ func TestUpdateRcMap_BalanceDecrease_StillCapped(t *testing.T) {
 	simulateUpdateRcMap(map[string]int64{"hive:alice": 100}, 1000, db, getBalance)
 
 	rec, _ := db.GetRecord("hive:alice", 1000)
-	maxRC := int64(50_000) + params.RC_HIVE_FREE_AMOUNT // 55000
+	maxRC := int64(50_000) + params.RC_HIVE_FREE_AMOUNT // 60000
 	if rec.Amount > maxRC {
 		t.Errorf("not capped after balance decrease: stored %d > max %d", rec.Amount, maxRC)
 	}

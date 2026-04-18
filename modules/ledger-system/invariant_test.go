@@ -6,7 +6,6 @@ import (
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/common/params"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
-	rcDb "vsc-node/modules/db/vsc/rcs"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 
@@ -76,10 +75,6 @@ func oplogInTransit(state *ledgerSystem.LedgerState) map[string]int64 {
 		}
 	}
 	return transit
-}
-
-func newMockRcDb() *test_utils.MockRcDb {
-	return &test_utils.MockRcDb{Records: make(map[string][]rcDb.RcRecord)}
 }
 
 // Mock LedgerSystem for RC tests -- wraps a LedgerState.
@@ -483,7 +478,7 @@ func TestInvariant_RCConservation(t *testing.T) {
 
 	seedBalance(state, "hive:alice", 50, 0, balance, 0)
 
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 
 	rcs := rcSystem.New(db, &mockLedgerSystem{state: state})
 
@@ -554,7 +549,7 @@ func TestInvariant_RCConservation_MultipleConsumptions(t *testing.T) {
 
 	seedBalance(state, "hive:alice", 50, 0, balance, 0)
 
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	rcs := rcSystem.New(db, &mockLedgerSystem{state: state})
 
 	maxRC := balance + params.RC_HIVE_FREE_AMOUNT

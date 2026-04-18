@@ -1,48 +1,14 @@
-package rc_system
+package rc_system_test
 
 import (
 	"testing"
+	"vsc-node/lib/test_utils"
 	"vsc-node/modules/common/params"
-	rcDb "vsc-node/modules/db/vsc/rcs"
 	ledgerSystem "vsc-node/modules/ledger-system"
-
-	"github.com/chebyrash/promise"
+	rc_system "vsc-node/modules/rc-system"
 )
 
 // ── Mock implementations ──
-
-type mockRcDb struct {
-	records map[string][]rcDb.RcRecord
-}
-
-func newMockRcDb() *mockRcDb {
-	return &mockRcDb{records: make(map[string][]rcDb.RcRecord)}
-}
-
-func (m *mockRcDb) Init() error { return nil }
-func (m *mockRcDb) Start() *promise.Promise[any] {
-	return promise.New(func(resolve func(interface{}), reject func(error)) { resolve(nil) })
-}
-func (m *mockRcDb) Stop() error { return nil }
-
-func (m *mockRcDb) GetRecord(account string, blockHeight uint64) (rcDb.RcRecord, error) {
-	recs := m.records[account]
-	var best rcDb.RcRecord
-	for _, r := range recs {
-		if r.BlockHeight <= blockHeight && r.BlockHeight >= best.BlockHeight {
-			best = r
-		}
-	}
-	return best, nil
-}
-
-func (m *mockRcDb) SetRecord(account string, blockHeight uint64, amount int64) {
-	m.records[account] = append(m.records[account], rcDb.RcRecord{
-		Account:     account,
-		Amount:      amount,
-		BlockHeight: blockHeight,
-	})
-}
 
 type mockLedgerSession struct {
 	balances map[string]int64
@@ -94,7 +60,7 @@ func (m *mockLedgerSystem) NewEmptyState() *ledgerSystem.LedgerState { return ni
 
 func TestCalculateFrozenBal_NoDecay(t *testing.T) {
 	// Same block, no time passed
-	result := CalculateFrozenBal(100, 100, 1000)
+	result := rc_system.CalculateFrozenBal(100, 100, 1000)
 	if result != 1000 {
 		t.Errorf("expected 1000, got %d", result)
 	}
@@ -103,7 +69,7 @@ func TestCalculateFrozenBal_NoDecay(t *testing.T) {
 func TestCalculateFrozenBal_PartialDecay(t *testing.T) {
 	// 1000 frozen, half the return period passed
 	halfPeriod := params.RC_RETURN_PERIOD / 2
-	result := CalculateFrozenBal(0, halfPeriod, 1000)
+	result := rc_system.CalculateFrozenBal(0, halfPeriod, 1000)
 	if result != 500 {
 		t.Errorf("expected 500, got %d", result)
 	}
@@ -111,7 +77,7 @@ func TestCalculateFrozenBal_PartialDecay(t *testing.T) {
 
 func TestCalculateFrozenBal_FullDecay(t *testing.T) {
 	// Full return period passed, should be 0
-	result := CalculateFrozenBal(0, params.RC_RETURN_PERIOD, 1000)
+	result := rc_system.CalculateFrozenBal(0, params.RC_RETURN_PERIOD, 1000)
 	if result != 0 {
 		t.Errorf("expected 0, got %d", result)
 	}
@@ -119,7 +85,7 @@ func TestCalculateFrozenBal_FullDecay(t *testing.T) {
 
 func TestCalculateFrozenBal_OverDecay(t *testing.T) {
 	// More than return period passed, should clamp to 0
-	result := CalculateFrozenBal(0, params.RC_RETURN_PERIOD+10000, 1000)
+	result := rc_system.CalculateFrozenBal(0, params.RC_RETURN_PERIOD+10000, 1000)
 	if result != 0 {
 		t.Errorf("expected 0, got %d", result)
 	}
@@ -127,7 +93,7 @@ func TestCalculateFrozenBal_OverDecay(t *testing.T) {
 
 func TestCalculateFrozenBal_OneBlock(t *testing.T) {
 	// 1 block decay on small amount — integer truncation
-	result := CalculateFrozenBal(100, 101, 1800)
+	result := rc_system.CalculateFrozenBal(100, 101, 1800)
 	// amtRet = 1 * 1800 / 144000 = 0 (integer division)
 	if result != 1800 {
 		t.Errorf("expected 1800, got %d", result)
@@ -136,7 +102,7 @@ func TestCalculateFrozenBal_OneBlock(t *testing.T) {
 
 func TestCalculateFrozenBal_RegenRate(t *testing.T) {
 	// 290K frozen, 20 blocks (1 minute at 3s blocks)
-	result := CalculateFrozenBal(0, 20, 290_000)
+	result := rc_system.CalculateFrozenBal(0, 20, 290_000)
 	// amtRet = 20 * 290000 / 144000 = 40
 	expected := int64(290_000 - 40)
 	if result != expected {
@@ -147,9 +113,9 @@ func TestCalculateFrozenBal_RegenRate(t *testing.T) {
 // ── GetAvailableRCs tests ──
 
 func TestGetAvailableRCs_Normal(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	ls := &mockLedgerSystem{balances: map[string]int64{"hive:alice:hbd": 10_000}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	avail := rcs.GetAvailableRCs("hive:alice", 100)
 	// No frozen records, so available = balance + free amount
@@ -160,12 +126,12 @@ func TestGetAvailableRCs_Normal(t *testing.T) {
 }
 
 func TestGetAvailableRCs_FrozenExceedsBalance(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	// Set a frozen record that exceeds balance
 	db.SetRecord("hive:alice", 100, 500_000)
 
 	ls := &mockLedgerSystem{balances: map[string]int64{"hive:alice:hbd": 290_000}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	avail := rcs.GetAvailableRCs("hive:alice", 101)
 	// frozeAmt from 500K at 1 block: still ~500K
@@ -180,9 +146,9 @@ func TestGetAvailableRCs_FrozenExceedsBalance(t *testing.T) {
 }
 
 func TestGetAvailableRCs_DidAccount_NoFreeAmount(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	ls := &mockLedgerSystem{balances: map[string]int64{"did:key:abc:hbd": 10_000}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	avail := rcs.GetAvailableRCs("did:key:abc", 100)
 	// DID accounts don't get the free amount
@@ -194,15 +160,15 @@ func TestGetAvailableRCs_DidAccount_NoFreeAmount(t *testing.T) {
 // ── CanConsume tests ──
 
 func TestCanConsume_Normal(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	ls := &mockLedgerSystem{balances: map[string]int64{"hive:alice:hbd": 10_000}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{"hive:alice:hbd": 10_000}})
 
 	can, remaining, _ := session.CanConsume("hive:alice", 100, 1800)
 	if !can {
-		t.Error("should be able to consume 1800 with 15000 available")
+		t.Error("should be able to consume 1800 with 20000 available")
 	}
 	expected := int64(10_000+params.RC_HIVE_FREE_AMOUNT) - 1800
 	if remaining != expected {
@@ -211,26 +177,26 @@ func TestCanConsume_Normal(t *testing.T) {
 }
 
 func TestCanConsume_InsufficientRC(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	ls := &mockLedgerSystem{balances: map[string]int64{"hive:alice:hbd": 50}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{"hive:alice:hbd": 50}})
 
-	// With 50 balance + 5000 free = 5050, asking for 6000
-	can, _, _ := session.CanConsume("hive:alice", 100, 6000)
+	// With 50 balance + 10000 free = 10050, asking for 11000
+	can, _, _ := session.CanConsume("hive:alice", 100, 11000)
 	if can {
-		t.Error("should not be able to consume 6000 with 5050 available")
+		t.Error("should not be able to consume 11000 with 10050 available")
 	}
 }
 
 func TestCanConsume_FrozenExceedsBalance_NeverNegative(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	// Simulate inflated frozen record (the bug scenario)
 	db.SetRecord("hive:alice", 99, 360_000)
 
 	ls := &mockLedgerSystem{balances: map[string]int64{"hive:alice:hbd": 290_000}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{"hive:alice:hbd": 290_000}})
 
@@ -244,26 +210,26 @@ func TestCanConsume_FrozenExceedsBalance_NeverNegative(t *testing.T) {
 }
 
 func TestCanConsume_ExactBalance(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	// Frozen exactly equals balance + free
 	db.SetRecord("hive:alice", 100, int64(params.RC_HIVE_FREE_AMOUNT))
 
 	ls := &mockLedgerSystem{balances: map[string]int64{"hive:alice:hbd": 0}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{"hive:alice:hbd": 0}})
 
 	can, _, _ := session.CanConsume("hive:alice", 100, 100)
-	// frozeAmt from DB = 5000, balAmt = 0 + 5000 = 5000, totalAmt = 0
+	// frozeAmt from DB = 10000, balAmt = 0 + 10000 = 10000, totalAmt = 0
 	if can {
 		t.Error("should not consume when available is exactly 0")
 	}
 }
 
 func TestCanConsume_ZeroBalance_ZeroFrozen(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	ls := &mockLedgerSystem{balances: map[string]int64{"did:key:abc:hbd": 0}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{"did:key:abc:hbd": 0}})
 
@@ -276,13 +242,13 @@ func TestCanConsume_ZeroBalance_ZeroFrozen(t *testing.T) {
 // ── Bug replication scenarios ──
 
 func TestBug1_NegativeRC_Observed(t *testing.T) {
-	// Replicate: account with 290K balance, frozen inflated to 298,683
-	// Previously would return available = 290000 - 298683 = -8683
-	db := newMockRcDb()
-	db.SetRecord("hive:alice", 100, 298_683)
+	// Replicate: account with 290K balance, frozen inflated above budget (300K)
+	// Previously would return available = 300000 - 303683 = -3683
+	db := test_utils.NewMockRcDb()
+	db.SetRecord("hive:alice", 100, 303_683)
 
 	ls := &mockLedgerSystem{balances: map[string]int64{"hive:alice:hbd": 290_000}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	avail := rcs.GetAvailableRCs("hive:alice", 100)
 	if avail < 0 {
@@ -301,7 +267,7 @@ func TestBug1_NegativeRC_Observed(t *testing.T) {
 
 func TestBug3_RegenRate_WithCap(t *testing.T) {
 	// After fix: frozen capped to balance, so regen works at expected rate
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	balance := int64(290_000)
 	freeAmt := params.RC_HIVE_FREE_AMOUNT
 	maxRC := balance + freeAmt
@@ -310,7 +276,7 @@ func TestBug3_RegenRate_WithCap(t *testing.T) {
 	db.SetRecord("hive:alice", 1000, maxRC)
 
 	ls := &mockLedgerSystem{balances: map[string]int64{"hive:alice:hbd": balance}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	// After 20 blocks (1 minute), check regen
 	avail := rcs.GetAvailableRCs("hive:alice", 1020)
@@ -330,11 +296,11 @@ func TestBug3_RegenRate_InflatedFrozen(t *testing.T) {
 	// Without UpdateRcMap cap, this would be in the DB
 	// With CanConsume cap, available = max(0, 295K - frozen)
 	// The frozen is still 500K in DB, regen is based on 500K decay
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	db.SetRecord("hive:alice", 1000, 500_000)
 
 	ls := &mockLedgerSystem{balances: map[string]int64{"hive:alice:hbd": 290_000}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	// How many blocks until user has any available RC?
 	// Need frozen to decay below 295K (balance + free)
@@ -349,91 +315,98 @@ func TestBug3_RegenRate_InflatedFrozen(t *testing.T) {
 }
 
 func TestConsume_AccumulatesInSession(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	ls := &mockLedgerSystem{balances: map[string]int64{"hive:alice:hbd": 10_000}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{"hive:alice:hbd": 10_000}})
 
-	// Available = 10000 + 5000 (free) = 15000
+	// Available = 10000 + 10000 (free) = 20000
 	ok1, _ := session.Consume("hive:alice", 100, 5000)
 	if !ok1 {
 		t.Error("first consume should succeed")
 	}
 
 	// After first consume, rcMap["hive:alice"] = 5000
-	// CanConsume should now see: 15000 - 5000 = 10000 available
+	// CanConsume should now see: 20000 - 5000 = 15000 available
 	ok2, _ := session.Consume("hive:alice", 100, 5000)
 	if !ok2 {
-		t.Error("second consume should succeed (10000 remaining)")
+		t.Error("second consume should succeed (15000 remaining)")
 	}
 
 	// After second consume, rcMap["hive:alice"] = 10000
-	// CanConsume should now see: 15000 - 10000 = 5000 available
+	// CanConsume should now see: 20000 - 10000 = 10000 available
 	ok3, _ := session.Consume("hive:alice", 100, 5000)
 	if !ok3 {
-		t.Error("third consume should succeed (5000 remaining)")
+		t.Error("third consume should succeed (10000 remaining)")
 	}
 
 	// After third consume, rcMap["hive:alice"] = 15000
-	// CanConsume should now see: 15000 - 15000 = 0 available
-	ok4, _ := session.Consume("hive:alice", 100, 1)
-	if ok4 {
-		t.Error("fourth consume should FAIL — all RCs exhausted")
+	// CanConsume should now see: 20000 - 15000 = 5000 available
+	ok4, _ := session.Consume("hive:alice", 100, 5000)
+	if !ok4 {
+		t.Error("fourth consume should succeed (5000 remaining)")
+	}
+
+	// After fourth consume, rcMap["hive:alice"] = 20000
+	// CanConsume should now see: 20000 - 20000 = 0 available
+	ok5, _ := session.Consume("hive:alice", 100, 1)
+	if ok5 {
+		t.Error("fifth consume should FAIL — all RCs exhausted")
 	}
 }
 
 func TestConsume_PreventsNxAmplification(t *testing.T) {
-	// Attack scenario: account has 100 HBD (+ 5000 free = 5100 RC available)
-	// Submits 10 transactions each costing 1000 RC
-	// Before fix: all 10 pass (10000 RC consumed on 5100 balance)
-	// After fix: only 5 pass (5000 RC consumed, 6th rejected)
-	db := newMockRcDb()
+	// Attack scenario: account has 100 HBD (+ 10000 free = 10100 RC available)
+	// Submits 10 transactions each costing 2000 RC
+	// Before fix: all 10 pass (20000 RC consumed on 10100 balance)
+	// After fix: only 5 pass (10000 RC consumed, 6th rejected)
+	db := test_utils.NewMockRcDb()
 	ls := &mockLedgerSystem{balances: map[string]int64{"hive:attacker:hbd": 100}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{"hive:attacker:hbd": 100}})
 
-	// Available = 100 + 5000 (free) = 5100
+	// Available = 100 + 10000 (free) = 10100
 	passed := 0
 	for i := 0; i < 10; i++ {
-		ok, _ := session.Consume("hive:attacker", 100, 1000)
+		ok, _ := session.Consume("hive:attacker", 100, 2000)
 		if ok {
 			passed++
 		}
 	}
 
 	if passed > 5 {
-		t.Errorf("RC AMPLIFICATION BUG: %d/10 transactions passed on 5100 RC budget (max should be 5)", passed)
+		t.Errorf("RC AMPLIFICATION BUG: %d/10 transactions passed on 10100 RC budget (max should be 5)", passed)
 	}
 	if passed != 5 {
 		t.Errorf("expected exactly 5 transactions to pass, got %d", passed)
 	}
-	t.Logf("RC enforcement: %d/10 transactions passed (correct — budget is 5100, each costs 1000)", passed)
+	t.Logf("RC enforcement: %d/10 transactions passed (correct — budget is 10100, each costs 2000)", passed)
 }
 
 func TestRevert_ClearsSession(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	ls := &mockLedgerSystem{balances: map[string]int64{"hive:alice:hbd": 10_000}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
-	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{"hive:alice:hbd": 10_000}}).(*rcSession)
+	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{"hive:alice:hbd": 10_000}})
 
 	session.Consume("hive:alice", 100, 1800)
-	if len(session.rcMap) == 0 {
+	if len(session.Done().RcMap) == 0 {
 		t.Error("rcMap should have entry after consume")
 	}
 
 	session.Revert()
-	if len(session.rcMap) != 0 {
+	if len(session.Done().RcMap) != 0 {
 		t.Error("rcMap should be empty after revert")
 	}
 }
 
 func TestGetFrozenAmt_NoRecord(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	ls := &mockLedgerSystem{balances: map[string]int64{}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	frozen := rcs.GetFrozenAmt("hive:alice", 100)
 	// No record means zero-value RcRecord (BlockHeight=0, Amount=0)
@@ -444,11 +417,11 @@ func TestGetFrozenAmt_NoRecord(t *testing.T) {
 }
 
 func TestGetFrozenAmt_LargeBlockDiff(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	db.SetRecord("hive:alice", 100, 10_000)
 
 	ls := &mockLedgerSystem{balances: map[string]int64{}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	// After full return period
 	frozen := rcs.GetFrozenAmt("hive:alice", 100+params.RC_RETURN_PERIOD)
@@ -466,7 +439,7 @@ func TestCalculateFrozenBal_LargeAmount_Overflow(t *testing.T) {
 	// Max safe initialBal before overflow at diff=144000: uint64_max / 144000 ≈ 1.28e14
 	// Real-world amounts are much smaller (< 1M), so this is safe
 	// But test it anyway
-	result := CalculateFrozenBal(0, 144_000, 1_000_000)
+	result := rc_system.CalculateFrozenBal(0, 144_000, 1_000_000)
 	if result != 0 {
 		t.Errorf("expected 0 at full period, got %d", result)
 	}
@@ -475,14 +448,14 @@ func TestCalculateFrozenBal_LargeAmount_Overflow(t *testing.T) {
 func TestCalculateFrozenBal_IntegerTruncation(t *testing.T) {
 	// Small amounts with short periods lose precision to integer truncation
 	// 100 frozen, 1 block: amtRet = 1 * 100 / 144000 = 0 (truncated)
-	result := CalculateFrozenBal(0, 1, 100)
+	result := rc_system.CalculateFrozenBal(0, 1, 100)
 	if result != 100 {
 		t.Errorf("expected 100 (no decay at 1 block for small amount), got %d", result)
 	}
 
 	// At what block does 100 RC start decaying?
 	// amtRet = diff * 100 / 144000 >= 1 when diff >= 1440
-	result2 := CalculateFrozenBal(0, 1440, 100)
+	result2 := rc_system.CalculateFrozenBal(0, 1440, 100)
 	if result2 != 99 {
 		t.Errorf("expected 99 at 1440 blocks, got %d", result2)
 	}
@@ -492,9 +465,9 @@ func TestCalculateFrozenBal_IntegerTruncation(t *testing.T) {
 
 func TestGetAvailableRCs_NegativeBalance(t *testing.T) {
 	// If somehow balance is negative (ledger bug), available should still be safe
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	ls := &mockLedgerSystem{balances: map[string]int64{"did:key:abc:hbd": -500}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	avail := rcs.GetAvailableRCs("did:key:abc", 100)
 	// balAmt = -500, frozeAmt = 0, cap: 0 > -500 so frozeAmt stays 0
@@ -505,9 +478,9 @@ func TestGetAvailableRCs_NegativeBalance(t *testing.T) {
 }
 
 func TestCanConsume_NegativeBalance(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	ls := &mockLedgerSystem{balances: map[string]int64{"did:key:abc:hbd": -500}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{"did:key:abc:hbd": -500}})
 
@@ -523,11 +496,11 @@ func TestCanConsume_NegativeBalance(t *testing.T) {
 func TestGetAvailableRCs_NeverNegativeForHiveAccount(t *testing.T) {
 	// Critical: transaction-pool does uint64(rcsAvailable) which wraps negative
 	// Ensure Hive accounts (the main users) never get negative from GetAvailableRCs
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	db.SetRecord("hive:alice", 50, 999_999) // huge frozen
 
 	ls := &mockLedgerSystem{balances: map[string]int64{"hive:alice:hbd": 100}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	avail := rcs.GetAvailableRCs("hive:alice", 51)
 	if avail < 0 {
@@ -538,11 +511,11 @@ func TestGetAvailableRCs_NeverNegativeForHiveAccount(t *testing.T) {
 // ── Edge case: same block height for record and query ──
 
 func TestGetFrozenAmt_SameBlockHeight(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	db.SetRecord("hive:alice", 100, 5000)
 
 	ls := &mockLedgerSystem{balances: map[string]int64{}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	// Query at same block as record
 	frozen := rcs.GetFrozenAmt("hive:alice", 100)
@@ -555,12 +528,12 @@ func TestGetFrozenAmt_SameBlockHeight(t *testing.T) {
 // ── Edge case: multiple accounts in same session ──
 
 func TestCanConsume_MultipleAccounts(t *testing.T) {
-	db := newMockRcDb()
+	db := test_utils.NewMockRcDb()
 	ls := &mockLedgerSystem{balances: map[string]int64{
 		"hive:alice:hbd": 10_000,
 		"hive:bob:hbd":   500,
 	}}
-	rcs := New(db, ls)
+	rcs := rc_system.New(db, ls)
 
 	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{
 		"hive:alice:hbd": 10_000,
@@ -574,11 +547,11 @@ func TestCanConsume_MultipleAccounts(t *testing.T) {
 		t.Error("alice should be able to consume 5000")
 	}
 	if !can2 {
-		t.Error("bob should be able to consume 5000 (500 balance + 5000 free)")
+		t.Error("bob should be able to consume 5000 (500 balance + 10000 free)")
 	}
 
-	can3, _, _ := session.CanConsume("hive:bob", 100, 6000)
+	can3, _, _ := session.CanConsume("hive:bob", 100, 11000)
 	if can3 {
-		t.Error("bob should not consume 6000 (only 5500 available)")
+		t.Error("bob should not consume 11000 (only 10500 available)")
 	}
 }

@@ -16,10 +16,12 @@ import (
 	contract_session "vsc-node/modules/contract/session"
 	"vsc-node/modules/db/vsc/contracts"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	rcDb "vsc-node/modules/db/vsc/rcs"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	p2pInterface "vsc-node/modules/p2p"
+	rc_system "vsc-node/modules/rc-system"
 	stateEngine "vsc-node/modules/state-processing"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
@@ -47,6 +49,8 @@ type ContractTest struct {
 	BlockHeight   uint64
 	ContractDb    contracts.Contracts
 	LedgerSession ledgerSystem.LedgerSession
+	RcSession     rc_system.RcSession
+	RcDb          *MockRcDb
 	CallSession   *contract_session.CallSession
 	StateEngine   *stateEngine.StateEngine
 	DataLayer     *datalayer.DataLayer
@@ -72,6 +76,7 @@ func NewContractTest() ContractTest {
 	sysConfig := systemconfig.MocknetConfig()
 	ledgers := MockLedgerDb{LedgerRecords: make(map[string][]ledgerDb.LedgerRecord)}
 	balances := MockBalanceDb{BalanceRecords: make(map[string][]ledgerDb.BalanceRecord)}
+	rc := MockRcDb{Records: make(map[string][]rcDb.RcRecord)}
 	interestClaims := MockInterestClaimsDb{Claims: make([]ledgerDb.ClaimRecord, 0)}
 	actions := MockActionsDb{Actions: make(map[string]ledgerDb.ActionRecord)}
 	elections := MockElectionDb{}
@@ -97,7 +102,7 @@ func NewContractTest() ContractTest {
 		&interestClaims,
 		nil,
 		&actions,
-		nil,
+		&rc,
 		nil,
 		&tssKeys,
 		&tssCommitments,
@@ -113,10 +118,13 @@ func NewContractTest() ContractTest {
 	}
 
 	state := se.LedgerSystem.NewEmptyState()
+	ledgerSession := se.LedgerSystem.NewEmptySession(state, 0)
 	return ContractTest{
 		BlockHeight:   0,
 		ContractDb:    &contractDb,
-		LedgerSession: se.LedgerSystem.NewEmptySession(state, 0),
+		LedgerSession: ledgerSession,
+		RcSession:     se.RcSystem.NewSession(ledgerSession),
+		RcDb:          &rc,
 		CallSession:   contract_session.NewCallSession(dl, &contractDb, &contractState, &tssKeys, 0, nil),
 		DataLayer:     dl,
 		StateEngine:   se,
@@ -139,6 +147,8 @@ func (ct *ContractTest) IncrementBlocks(count uint64) {
 			ct.executeLedgerOpLogs(compiled.OpLog, currentSlot, newSlot-1)
 		}
 		ct.StateEngine.UpdateBalances(currentSlot, newSlot-1)
+		ct.StateEngine.UpdateRcMap(newSlot - 1)
+		ct.StateEngine.RcMap = make(map[string]int64)
 
 		ct.LedgerSession = ledgerSystem.NewSession(&ledgerSystem.LedgerState{
 			Oplog:           make([]ledgerSystem.OpLogEvent, 0),
@@ -150,6 +160,7 @@ func (ct *ContractTest) IncrementBlocks(count uint64) {
 			BalanceDb:   ct.StateEngine.LedgerState.BalanceDb,
 			ActionDb:    ct.StateEngine.LedgerState.ActionDb,
 		})
+		ct.RcSession = ct.StateEngine.RcSystem.NewSession(ct.LedgerSession)
 		// ct.LedgerSession = ct.StateEngine.LedgerExecutor.NewSession(newSlot)
 	}
 	ct.BlockHeight = newHeight
@@ -216,6 +227,24 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 	} else if len(tx.Self.RequiredPostingAuths) > 0 {
 		caller = tx.Self.RequiredPostingAuths[0]
 	}
+	rcPayer := caller
+
+	hasMinRCs, availableRCs, _ := ct.RcSession.CanConsume(rcPayer, ct.BlockHeight, 100)
+	if !hasMinRCs {
+		return ContractTestCallResult{
+			Success: false,
+			ErrMsg:  fmt.Sprintf("minimum RC requirement is not met. RCs available: %d", availableRCs),
+			RcUsed:  100,
+			GasUsed: 0,
+			Logs:    map[string]contract_session.LogOutput{},
+		}
+	}
+
+	gas := min(uint(availableRCs), tx.RcLimit)
+	const maxGas = ^uint(0) / params.CYCLE_GAS_PER_RC
+	if gas > maxGas {
+		gas = maxGas
+	}
 
 	// fmt.Println("tx intents:", tx.Intents)
 
@@ -235,15 +264,17 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 			Sender:               caller,
 			Intents:              tx.Intents,
 		},
-		int64(tx.RcLimit), tx.RcLimit*params.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
+		int64(gas), gas*params.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
 	)
 	ctx := context.WithValue(
 		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
 		wasm_context.WasmExecCodeCtxKey,
 		hex.EncodeToString(code),
 	)
-	res := w.Execute(ctx, tx.RcLimit*params.CYCLE_GAS_PER_RC, tx.Action, string(tx.Payload), wasm_runtime.Go)
+	res := w.Execute(ctx, gas*params.CYCLE_GAS_PER_RC, tx.Action, string(tx.Payload), wasm_runtime.Go)
 	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
+	ct.RcSession.Consume(rcPayer, ct.BlockHeight, rcUsed)
+	ct.StateEngine.RcMap[rcPayer] = ct.StateEngine.RcMap[rcPayer] + rcUsed
 
 	if res.Error != nil {
 		ct.LedgerSession.Revert()
@@ -292,6 +323,21 @@ func (ct *ContractTest) GetBalance(account string, asset ledgerDb.Asset) int64 {
 // Retrieve the balance of an account at the start of the slot.
 func (ct *ContractTest) GetBalanceAtSlotStart(account string, asset ledgerDb.Asset) int64 {
 	return ct.StateEngine.LedgerSystem.GetBalance(account, ct.BlockHeight, string(asset))
+}
+
+// Retrieve the total RCs available to an account at the current block height.
+func (ct *ContractTest) GetAvailableRCs(account string) int64 {
+	return ct.StateEngine.RcSystem.GetAvailableRCs(account, ct.BlockHeight)
+}
+
+// Set a frozen RC record for an account (simulates prior RC consumption thawing over time).
+func (ct *ContractTest) SetFrozenRc(account string, blockHeight uint64, amount int64) {
+	ct.RcDb.SetRecord(account, blockHeight, amount)
+}
+
+// Return the RC consumption map for the current RcSession.
+func (ct *ContractTest) RcUsed() map[string]int64 {
+	return ct.RcSession.Done().RcMap
 }
 
 // Set the value of a key in the contract state storage

@@ -10,6 +10,10 @@ type MockRcDb struct {
 	Records map[string][]rcDb.RcRecord
 }
 
+func NewMockRcDb() *MockRcDb {
+	return &MockRcDb{Records: make(map[string][]rcDb.RcRecord)}
+}
+
 func (m *MockRcDb) GetRecord(account string, blockHeight uint64) (rcDb.RcRecord, error) {
 	recs := m.Records[account]
 	var best rcDb.RcRecord
