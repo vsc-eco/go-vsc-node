@@ -325,9 +325,15 @@ func (ct *ContractTest) GetBalanceAtSlotStart(account string, asset ledgerDb.Ass
 	return ct.StateEngine.LedgerSystem.GetBalance(account, ct.BlockHeight, string(asset))
 }
 
-// Retrieve the total RCs available to an account at the current block height.
+// Retrieve the total RCs available to an account at the current block height,
+// net of consumption already recorded in the current RcSession.
 func (ct *ContractTest) GetAvailableRCs(account string) int64 {
-	return ct.StateEngine.RcSystem.GetAvailableRCs(account, ct.BlockHeight)
+	avail := ct.StateEngine.RcSystem.GetAvailableRCs(account, ct.BlockHeight)
+	used := ct.RcSession.Done().RcMap[account]
+	if used >= avail {
+		return 0
+	}
+	return avail - used
 }
 
 // Set a frozen RC record for an account (simulates prior RC consumption thawing over time).

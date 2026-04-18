@@ -403,6 +403,28 @@ func TestRevert_ClearsSession(t *testing.T) {
 	}
 }
 
+func TestFreeRcRemaining_DeductsSessionConsumption(t *testing.T) {
+	db := test_utils.NewMockRcDb()
+	ls := &mockLedgerSystem{balances: map[string]int64{"hive:alice:hbd": 10_000}}
+	rcs := rc_system.New(db, ls)
+	session := rcs.NewSession(&mockLedgerSession{balances: map[string]int64{"hive:alice:hbd": 10_000}})
+
+	if got := rc_system.FreeRcRemaining(session, "hive:alice", 100); got != params.RC_HIVE_FREE_AMOUNT {
+		t.Errorf("expected full free tier initially, got %d", got)
+	}
+
+	session.Consume("hive:alice", 100, 3000)
+	expected := int64(params.RC_HIVE_FREE_AMOUNT) - 3000
+	if got := rc_system.FreeRcRemaining(session, "hive:alice", 100); got != expected {
+		t.Errorf("expected %d after 3000 consumed, got %d", expected, got)
+	}
+
+	session.Consume("hive:alice", 100, int64(params.RC_HIVE_FREE_AMOUNT))
+	if got := rc_system.FreeRcRemaining(session, "hive:alice", 100); got != 0 {
+		t.Errorf("expected 0 after free tier exhausted, got %d", got)
+	}
+}
+
 func TestGetFrozenAmt_NoRecord(t *testing.T) {
 	db := test_utils.NewMockRcDb()
 	ls := &mockLedgerSystem{balances: map[string]int64{}}
