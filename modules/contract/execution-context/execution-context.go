@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
@@ -31,10 +32,16 @@ type contractExecutionContext struct {
 	ledger      ledgerSystem.LedgerSession
 	env         Environment
 	rcLimit     int64
-	gasRemain   uint
-	callSession *contract_session.CallSession
-	recursion   int
-	gasUsage    uint
+	// Remaining RCs the RC payer can consume from their free tier (e.g.
+	// RC_HIVE_FREE_AMOUNT for Hive accounts minus already-frozen RCs). Used
+	// by PullBalance to decide how much HBD to reserve against RC consumption.
+	// Zero when the source isn't the RC payer (inter-contract calls) or when
+	// the payer has no free-tier capacity left.
+	rcFreeRemaining int64
+	gasRemain       uint
+	callSession     *contract_session.CallSession
+	recursion       int
+	gasUsage        uint
 
 	ioReadGas  int
 	ioWriteGas int
@@ -74,6 +81,7 @@ var _ wasm_context.ExecContextValue = &contractExecutionContext{}
 func New(
 	env Environment,
 	rcLimit int64,
+	rcFreeRemaining int64,
 	gasRemain uint,
 	ledger ledgerSystem.LedgerSession,
 	callSession *contract_session.CallSession,
@@ -115,6 +123,7 @@ func New(
 		ledger,
 		env,
 		rcLimit,
+		rcFreeRemaining,
 		gasRemain,
 		callSession,
 		recursionDepth,
@@ -405,13 +414,18 @@ func (ctx *contractExecutionContext) PullBalance(from string, amount int64, asse
 		)
 	}
 
-	// assuming caller is the RC payer
+	// Reserve HBD for RC consumption only when the source is the RC payer.
+	// Inter-contract pulls (from = "contract:...") originate from a contract
+	// that isn't paying RCs, so no exclusion applies. The RC payer's free
+	// tier (RC_HIVE_FREE_AMOUNT minus what's already frozen) covers part of
+	// rcLimit without needing HBD backing — only the remainder is reserved.
 	var transferOptions []ledgerSystem.TransferOptions
-	if asset == "hbd" {
-		transferOptions = []ledgerSystem.TransferOptions{
-			{
-				Exclusion: ctx.rcLimit,
-			},
+	if asset == "hbd" && !strings.HasPrefix(from, "contract:") {
+		exclusion := ctx.rcLimit - ctx.rcFreeRemaining
+		if exclusion > 0 {
+			transferOptions = []ledgerSystem.TransferOptions{
+				{Exclusion: exclusion},
+			}
 		}
 	}
 	res := ctx.ledger.ExecuteTransfer(ledgerSystem.OpLogEvent{
@@ -527,7 +541,7 @@ func (ctx *contractExecutionContext) ContractCall(
 				Caller:               "contract:" + ctx.env.ContractId,
 				Sender:               ctx.env.Sender,
 				Intents:              opts.Intents,
-			}, ctx.rcLimit, gasRemaining, ctx.ledger, ctx.callSession, nextRecursion)
+			}, ctx.rcLimit, 0, gasRemaining, ctx.ledger, ctx.callSession, nextRecursion)
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)

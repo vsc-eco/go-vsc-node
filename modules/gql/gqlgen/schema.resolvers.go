@@ -30,6 +30,7 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
 	ledgerSystem "vsc-node/modules/ledger-system"
+	rc_system "vsc-node/modules/rc-system"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 	wasm_context "vsc-node/modules/wasm/context"
@@ -701,7 +702,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 				Sender:               caller,
 				Intents:              intents,
 			},
-			int64(rcLimit), rcLimit*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
+			int64(rcLimit), rc_system.FreeRcRemaining(r.StateEngine.RcSystem.NewSession(ledgerSession), caller, blockHeight), rcLimit*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
 		)
 
 		// Unmarshal payload string
