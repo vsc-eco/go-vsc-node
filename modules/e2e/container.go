@@ -133,7 +133,7 @@ func (c *E2EContainer) Init() error {
 	//Make primary node
 
 	c.r2e = &E2ERunner{
-		BlockEvent: make(chan uint64),
+		BlockEvent: make(chan uint64, 100),
 	}
 
 	// nodeNames := make([]string, 0)
@@ -193,6 +193,7 @@ func (c *E2EContainer) Start(t *testing.T) error {
 	// test_utils.RunPlugin(t, startupAggregate, false)
 
 	c.mockReader.ProcessFunction = func(block hive_blocks.HiveBlock, headHeight *uint64) {
+		fmt.Printf("ProcessFunction: block %d, txs=%d\n", block.BlockNumber, len(block.Transactions))
 		for _, node := range c.runningNodes {
 			node.MockHiveBlocks.HighestBlock = block.BlockNumber
 		}
@@ -223,9 +224,9 @@ func (c *E2EContainer) Start(t *testing.T) error {
 
 	c.initClient()
 
-	c.mockReader.StartRealtime()
-
 	test_utils.RunPlugin(t, c.r2e, false)
+
+	c.mockReader.StartRealtime()
 
 	return nil
 }

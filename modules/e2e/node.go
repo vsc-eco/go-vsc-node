@@ -102,10 +102,12 @@ func MakeNode(input MakeNodeInput) *Node {
 	dbConf.SetDbName("go-vsc-" + input.Username)
 	identityConfig.SetUsername(input.Username)
 	p2pConfig.SetOptions(p2pInterface.P2POpts{
-		Port:         input.Port,
-		ServerMode:   true,
-		AllowPrivate: true,
-		Bootnodes:    []string{},
+		Port:                   input.Port,
+		ServerMode:             true,
+		AllowPrivate:           true,
+		Bootnodes:              []string{},
+		PubsubBufferSize:       4096,
+		PubsubConcurrencyLimit: 4096,
 	})
 	gqlConfig.SetHostAddr("0.0.0.0:7080")
 
@@ -373,10 +375,12 @@ func MakeClient(input MakeClientInput) NodeClient {
 	p2pConfig := p2pInterface.NewConfig(dataDir)
 	p2pConfig.Init()
 	p2pConfig.SetOptions(p2pInterface.P2POpts{
-		Port:         0,
-		ServerMode:   false,
-		AllowPrivate: true,
-		Bootnodes:    []string{},
+		Port:                   0,
+		ServerMode:             false,
+		AllowPrivate:           true,
+		Bootnodes:              []string{},
+		PubsubBufferSize:       4096,
+		PubsubConcurrencyLimit: 4096,
 	})
 
 	sysConfig := systemconfig.MocknetConfig()
