@@ -37,6 +37,14 @@ func makeSigHash(b byte) []byte {
 	return h
 }
 
+// mkTxID returns a deterministic 64-character hex string derived from label,
+// suitable as a txID for state store methods that validate txID format.
+func mkTxID(label string) string {
+	b := make([]byte, 32)
+	copy(b, label)
+	return hex.EncodeToString(b)
+}
+
 func makeUnsignedSigHashes(sigHashes ...[]byte) []contractinterface.UnsignedSigHash {
 	slots := make([]contractinterface.UnsignedSigHash, len(sigHashes))
 	for i, h := range sigHashes {
@@ -53,10 +61,11 @@ func TestAddPendingTransaction(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
 
-	err := db.State.AddPendingTransaction(ctx, "txA", []byte{0x01}, makeUnsignedSigHashes(makeSigHash(1)))
+	txID := mkTxID("txA")
+	err := db.State.AddPendingTransaction(ctx, txID, []byte{0x01}, makeUnsignedSigHashes(makeSigHash(1)))
 	require.NoError(t, err)
 
-	tx, err := db.State.GetPendingTransaction(ctx, "txA")
+	tx, err := db.State.GetPendingTransaction(ctx, txID)
 	require.NoError(t, err)
 	assert.Equal(t, database.TxStatePending, tx.State)
 	assert.Equal(t, uint64(1), tx.TotalSignatures)
@@ -146,7 +155,8 @@ func TestUpdateSignatures_IncrementsCount(t *testing.T) {
 	ctx := context.Background()
 
 	sigHash := makeSigHash(0xAA)
-	require.NoError(t, db.State.AddPendingTransaction(ctx, "txSig", []byte{0x06}, makeUnsignedSigHashes(sigHash)))
+	txID := mkTxID("txSig")
+	require.NoError(t, db.State.AddPendingTransaction(ctx, txID, []byte{0x06}, makeUnsignedSigHashes(sigHash)))
 
 	sig := make([]byte, 64)
 	sig[0] = 0xFF
@@ -159,7 +169,7 @@ func TestUpdateSignatures_IncrementsCount(t *testing.T) {
 	assert.Len(t, fullySigned, 1, "single-sig tx should be fully signed after one update")
 
 	// Slot should now be filled and currentSignatures incremented
-	tx, err := db.State.GetPendingTransaction(ctx, "txSig")
+	tx, err := db.State.GetPendingTransaction(ctx, txID)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), tx.CurrentSignatures)
 	assert.NotNil(t, tx.Signatures[0].Signature)

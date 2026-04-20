@@ -16,8 +16,9 @@ func TestProcessTxSpends_NewTransaction(t *testing.T) {
 
 	sigHash := make([]byte, 32)
 	sigHash[0] = 0x11
+	txID := mkTxID("txNew")
 	spends := map[string]*contractinterface.SigningData{
-		"txNew": {
+		txID: {
 			Tx:                []byte{0x01},
 			UnsignedSigHashes: []contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
 		},
@@ -25,7 +26,7 @@ func TestProcessTxSpends_NewTransaction(t *testing.T) {
 
 	bot.ProcessTxSpends(t.Context(), spends)
 
-	tx, err := db.State.GetPendingTransaction(t.Context(), "txNew")
+	tx, err := db.State.GetPendingTransaction(t.Context(), txID)
 	require.NoError(t, err)
 	assert.Equal(t, database.TxStatePending, tx.State)
 }
