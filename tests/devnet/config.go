@@ -78,6 +78,15 @@ type Config struct {
 	// JSON-RPC. Used by tests that need direct RPC access from Go (e.g.
 	// creating large transactions for pruning tests). Defaults to 18543.
 	BitcoindRPCPort int
+	// DashdImage is the Docker image for the dashd regtest service used by
+	// oracle Dash chain-relay tests. Only started when EnableDashd is true.
+	DashdImage string
+	// EnableDashd starts the dashd regtest service alongside the devnet.
+	// Required for oracle Dash chain-relay tests.
+	EnableDashd bool
+	// DashdRPCPort is the host port exposed for the dashd regtest JSON-RPC.
+	// Defaults to 19898 (regtest is 19898 by default for Dash).
+	DashdRPCPort int
 }
 
 // DefaultConfig returns a Config with sensible defaults for testing.
@@ -103,6 +112,8 @@ func DefaultConfig() *Config {
 		DronePort:       19000,
 		BitcoindImage:   "bitcoin/bitcoin:29.3",
 		BitcoindRPCPort: 18543,
+		DashdImage:      "dashpay/dashd:23.1.2",
+		DashdRPCPort:    19898,
 	}
 }
 

@@ -241,6 +241,18 @@ func (d *Devnet) Start(ctx context.Context) error {
 		log.Printf("[devnet] bitcoind is healthy")
 	}
 
+	// Step 9b: optional dashd regtest for oracle Dash chain-relay tests
+	if d.cfg.EnableDashd {
+		log.Printf("[devnet] starting dashd (regtest) for oracle tests...")
+		if err := d.compose(ctx, "--profile", "dashd", "up", "-d", "dashd"); err != nil {
+			return fmt.Errorf("starting dashd: %w", err)
+		}
+		if err := d.waitForService(ctx, "dashd", 2*time.Minute); err != nil {
+			return fmt.Errorf("dashd health check: %w", err)
+		}
+		log.Printf("[devnet] dashd is healthy")
+	}
+
 	d.started = true
 	log.Printf("[devnet] devnet is running")
 	log.Printf("[devnet]   Hive RPC: %s", d.HiveRPCEndpoint())
@@ -289,6 +301,7 @@ func (d *Devnet) Stop() error {
 		"--profile", "bitcoind",
 		"--profile", "bitcoind-pruned",
 		"--profile", "bitcoind-mainnet-pruned",
+		"--profile", "dashd",
 		"down", "-v", "--remove-orphans",
 	); err != nil {
 		log.Printf("[devnet] warning: compose down failed: %v", err)
