@@ -27,28 +27,37 @@ type chainRpcConfigJSON struct {
 }
 
 // WriteOracleConfigs writes a per-node oracleConfig.json into each magi
-// node's data directory pointing the BTC chain at the in-network bitcoind
-// regtest container. Must be called after devnet-setup has created the
-// data-${i} directories (i.e. after Devnet.Start has finished).
+// node's data directory pointing enabled chains at their in-network regtest
+// containers. Must be called after devnet-setup has created the data-${i}
+// directories (i.e. after Devnet.Start has finished).
 //
 // This only sets the RPC connection details. Per-chain contract IDs are
 // set separately via SetOracleContractIDs because they're only known
 // after the contract has been deployed at runtime.
+//
+// At least one of EnableBitcoind or EnableDashd must be true.
 func (d *Devnet) WriteOracleConfigs(ctx context.Context) error {
-	if !d.cfg.EnableBitcoind {
-		return fmt.Errorf("WriteOracleConfigs requires EnableBitcoind=true")
+	if !d.cfg.EnableBitcoind && !d.cfg.EnableDashd {
+		return fmt.Errorf("WriteOracleConfigs requires EnableBitcoind or EnableDashd")
 	}
 
-	cfg := oracleConfigJSON{
-		Chains: map[string]chainRpcConfigJSON{
-			"BTC": {
-				RpcHost: d.BitcoindRPCHostPort(),
-				RpcUser: "vsc-node-user",
-				RpcPass: "vsc-node-pass",
-			},
-		},
+	chains := map[string]chainRpcConfigJSON{}
+	if d.cfg.EnableBitcoind {
+		chains["BTC"] = chainRpcConfigJSON{
+			RpcHost: d.BitcoindRPCHostPort(),
+			RpcUser: "vsc-node-user",
+			RpcPass: "vsc-node-pass",
+		}
+	}
+	if d.cfg.EnableDashd {
+		chains["DASH"] = chainRpcConfigJSON{
+			RpcHost: d.DashdRPCHostPort(),
+			RpcUser: "vsc-node-user",
+			RpcPass: "vsc-node-pass",
+		}
 	}
 
+	cfg := oracleConfigJSON{Chains: chains}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling oracle config: %w", err)
@@ -63,7 +72,11 @@ func (d *Devnet) WriteOracleConfigs(ctx context.Context) error {
 		if err := os.WriteFile(path, data, 0o644); err != nil {
 			return fmt.Errorf("writing %s: %w", path, err)
 		}
-		log.Printf("[devnet] wrote oracle config for magi-%d -> %s", i, d.BitcoindRPCHostPort())
+		targets := make([]string, 0, len(chains))
+		for name, c := range chains {
+			targets = append(targets, name+"="+c.RpcHost)
+		}
+		log.Printf("[devnet] wrote oracle config for magi-%d -> %v", i, targets)
 	}
 	return nil
 }

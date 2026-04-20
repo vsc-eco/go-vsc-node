@@ -40,6 +40,8 @@ func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, imageName
 	kv("MAGI_IMAGE", imageName)
 	kv("BITCOIND_IMAGE", cfg.BitcoindImage)
 	kv("BITCOIND_RPC_PORT", fmt.Sprint(cfg.BitcoindRPCPort))
+	kv("DASHD_IMAGE", cfg.DashdImage)
+	kv("DASHD_RPC_PORT", fmt.Sprint(cfg.DashdRPCPort))
 
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)
 }
