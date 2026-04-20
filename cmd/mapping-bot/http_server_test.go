@@ -143,11 +143,11 @@ func TestRequestHandler(t *testing.T) {
 		assert.Equal(t, instruction, stored)
 	})
 
-	t.Run("409 conflict on duplicate", func(t *testing.T) {
+	t.Run("200 idempotent on duplicate", func(t *testing.T) {
 		req := jsonRequest(t, http.MethodPost, "/", body)
 		w := httptest.NewRecorder()
 		requestHandler(t.Context(), bot).ServeHTTP(w, req)
-		assert.Equal(t, http.StatusConflict, w.Code)
+		assert.Equal(t, http.StatusOK, w.Code)
 	})
 
 	t.Run("400 bad request missing instruction", func(t *testing.T) {
@@ -173,9 +173,10 @@ func TestSignHandler(t *testing.T) {
 	sigHash[0] = 0xAB
 	fakeSigHex := hex.EncodeToString(make([]byte, 64))
 
+	signTxID := mkTxID("txSignTest")
 	require.NoError(t, db.State.AddPendingTransaction(
 		t.Context(),
-		"txSignTest",
+		signTxID,
 		[]byte{0x01, 0x02},
 		[]contractinterface.UnsignedSigHash{
 			{Index: 0, SigHash: sigHash, WitnessScript: []byte{0xDE, 0xAD}},
@@ -184,12 +185,12 @@ func TestSignHandler(t *testing.T) {
 
 	t.Run("200 signature applied", func(t *testing.T) {
 		body := map[string]any{
-			"tx_id": "txSignTest",
+			"tx_id": signTxID,
 			"signatures": []map[string]any{
 				{"index": 0, "signature": fakeSigHex},
 			},
 		}
-		req := jsonRequest(t, http.MethodPost, "/sign", body)
+		req := signedJSONRequest(t, http.MethodPost, "/sign", body)
 		w := httptest.NewRecorder()
 		signHandler(t.Context(), bot).ServeHTTP(w, req)
 		assert.Equal(t, http.StatusOK, w.Code)
@@ -197,57 +198,59 @@ func TestSignHandler(t *testing.T) {
 
 	t.Run("404 tx not found", func(t *testing.T) {
 		body := map[string]any{
-			"tx_id": "doesNotExist",
+			"tx_id": mkTxID("doesNotExist"),
 			"signatures": []map[string]any{
 				{"index": 0, "signature": fakeSigHex},
 			},
 		}
-		req := jsonRequest(t, http.MethodPost, "/sign", body)
+		req := signedJSONRequest(t, http.MethodPost, "/sign", body)
 		w := httptest.NewRecorder()
 		signHandler(t.Context(), bot).ServeHTTP(w, req)
 		assert.Equal(t, http.StatusNotFound, w.Code)
 	})
 
 	t.Run("400 index out of range", func(t *testing.T) {
+		oorTxID := mkTxID("txOOR")
 		require.NoError(t, db.State.AddPendingTransaction(
 			t.Context(),
-			"txOOR",
+			oorTxID,
 			[]byte{0x01},
 			[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: make([]byte, 32), WitnessScript: []byte{0x01}}},
 		))
 		body := map[string]any{
-			"tx_id": "txOOR",
+			"tx_id": oorTxID,
 			"signatures": []map[string]any{
 				{"index": 99, "signature": fakeSigHex},
 			},
 		}
-		req := jsonRequest(t, http.MethodPost, "/sign", body)
+		req := signedJSONRequest(t, http.MethodPost, "/sign", body)
 		w := httptest.NewRecorder()
 		signHandler(t.Context(), bot).ServeHTTP(w, req)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
 	t.Run("400 invalid hex signature", func(t *testing.T) {
+		badHexTxID := mkTxID("txBadHex")
 		require.NoError(t, db.State.AddPendingTransaction(
 			t.Context(),
-			"txBadHex",
+			badHexTxID,
 			[]byte{0x01},
 			[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: make([]byte, 32), WitnessScript: []byte{0x01}}},
 		))
 		body := map[string]any{
-			"tx_id": "txBadHex",
+			"tx_id": badHexTxID,
 			"signatures": []map[string]any{
 				{"index": 0, "signature": "not-hex!"},
 			},
 		}
-		req := jsonRequest(t, http.MethodPost, "/sign", body)
+		req := signedJSONRequest(t, http.MethodPost, "/sign", body)
 		w := httptest.NewRecorder()
 		signHandler(t.Context(), bot).ServeHTTP(w, req)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
 	t.Run("400 missing required fields", func(t *testing.T) {
-		req := jsonRequest(t, http.MethodPost, "/sign", map[string]any{})
+		req := signedJSONRequest(t, http.MethodPost, "/sign", map[string]any{})
 		w := httptest.NewRecorder()
 		signHandler(t.Context(), bot).ServeHTTP(w, req)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -279,4 +282,21 @@ func jsonRequest(t *testing.T, method, path string, body any) *http.Request {
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	return req
+}
+
+// signedJSONRequest returns a jsonRequest with the testBotConfig SignApiKey
+// applied as a bearer token, matching what /sign expects.
+func signedJSONRequest(t *testing.T, method, path string, body any) *http.Request {
+	t.Helper()
+	req := jsonRequest(t, method, path, body)
+	req.Header.Set("Authorization", "Bearer test-sign-key")
+	return req
+}
+
+// mkTxID returns a deterministic 64-character hex string derived from label,
+// suitable as a txID for state store methods that validate txID format.
+func mkTxID(label string) string {
+	b := make([]byte, 32)
+	copy(b, label)
+	return hex.EncodeToString(b)
 }
