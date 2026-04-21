@@ -16,14 +16,24 @@ type tssRequests struct {
 	*db.Collection
 }
 
-// Init runs the base collection init, performs the one-time backoff migration,
-// and creates the composite index used by FindUnsignedRequests.
+// Init runs the base collection init, applies the schema migration, and
+// ensures the composite index used by FindUnsignedRequests exists.
 //
-// The migration resets any status=failed document back to unsigned with a
-// reset backoff state. This revives legacy documents that were hard-failed
-// by the old 1000-block expiry so they get fresh retries under the new
-// backoff system. Migration is idempotent: on subsequent boots the filter
-// matches no rows.
+// Migration is idempotent and covers two starting points:
+//
+//  1. Develop schema: rows with status, created_height, sig — no queue fields.
+//     Failed rows are reset to pending with LastAttempt = CreatedHeight.
+//     Pending rows have LastAttempt backfilled to CreatedHeight.
+//
+//  2. Interim-PR schema: rows carry attempt_count and next_attempt_height. We
+//     adopt next_attempt_height as LastAttempt (it encodes the same in-flight
+//     reservation) and drop the obsolete field.
+//
+// On subsequent boots every row already has last_attempt, so the $exists-
+// guarded branches (A and C) match nothing and are no-ops. Step B continues
+// to match any status=failed rows on every boot — this reset-to-pending on
+// restart is intentional and matches the pre-queue Init behavior, allowing
+// a node restart to revive a request that hard-failed on a previous boot.
 func (tssReqs *tssRequests) Init() error {
 	if err := tssReqs.Collection.Init(); err != nil {
 		return err
@@ -32,43 +42,55 @@ func (tssReqs *tssRequests) Init() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Migration: failed → unsigned, reset backoff, clear sig.
-	// Uses an aggregation pipeline so next_attempt_height can reference the
-	// document's own created_height field.
+	// Migration step A: interim-PR rows carry next_attempt_height. Copy it
+	// into last_attempt, then drop the obsolete field. Must run first so
+	// step B's $exists filter for last_attempt doesn't overwrite the value
+	// we just copied.
+	if _, err := tssReqs.UpdateMany(ctx, bson.M{
+		"next_attempt_height": bson.M{"$exists": true},
+	}, mongo.Pipeline{
+		{{Key: "$set", Value: bson.M{"last_attempt": "$next_attempt_height"}}},
+		{{Key: "$unset", Value: "next_attempt_height"}},
+	}); err != nil {
+		return fmt.Errorf("next_attempt_height → last_attempt migration: %w", err)
+	}
+
+	// Migration step B: failed → pending reset. Interim-PR failed rows may
+	// have a stale last_attempt from a prior dispatch; reset it to
+	// created_height so they re-enter the queue at their original position.
 	if _, err := tssReqs.UpdateMany(ctx, bson.M{
 		"status": string(SignFailed),
 	}, mongo.Pipeline{
 		{{Key: "$set", Value: bson.M{
-			"status":              string(SignPending),
-			"attempt_count":       0,
-			"next_attempt_height": "$created_height",
-			"sig":                 "",
+			"status":        string(SignPending),
+			"sig":           "",
+			"last_attempt":  "$created_height",
+			"attempt_count": 0,
 		}}},
 	}); err != nil {
-		return fmt.Errorf("failed→unsigned migration: %w", err)
+		return fmt.Errorf("failed → pending migration: %w", err)
 	}
 
-	// Backfill next_attempt_height/attempt_count on any existing docs that
-	// predate the new fields. These default to the doc's created_height.
+	// Migration step C: backfill LastAttempt and AttemptCount for develop-
+	// schema rows that have neither field.
 	if _, err := tssReqs.UpdateMany(ctx, bson.M{
-		"next_attempt_height": bson.M{"$exists": false},
+		"last_attempt": bson.M{"$exists": false},
 	}, mongo.Pipeline{
 		{{Key: "$set", Value: bson.M{
-			"attempt_count":       0,
-			"next_attempt_height": "$created_height",
+			"last_attempt":  "$created_height",
+			"attempt_count": 0,
 		}}},
 	}); err != nil {
-		return fmt.Errorf("next_attempt_height backfill: %w", err)
+		return fmt.Errorf("last_attempt backfill: %w", err)
 	}
 
 	if err := tssReqs.CreateIndexIfNotExist(mongo.IndexModel{
 		Keys: bson.D{
 			{Key: "status", Value: 1},
-			{Key: "next_attempt_height", Value: 1},
-			{Key: "created_height", Value: 1},
+			{Key: "last_attempt", Value: 1},
 		},
 	}); err != nil {
-		return fmt.Errorf("failed to create sign-dispatch index: %w", err)
+		return fmt.Errorf("create sign-queue index: %w", err)
 	}
 
 	return nil
@@ -110,16 +132,16 @@ func (tssReq *tssRequests) FindRequests(
 	return tssRequest, nil
 }
 
-// SetSignedRequest handles a new or resubmitted vsc.tss sign operation.
+// SetSignedRequest inserts or revives a signing request for (key_id, msg).
 //
-// - Not found                 → insert as unsigned with NextAttemptHeight=CreatedHeight.
-// - Existing unsigned/complete → no-op.
-// - Existing failed           → reset to unsigned, AttemptCount=0,
-//   NextAttemptHeight=req.CreatedHeight, new CreatedHeight, clear Sig.
+//   - Not found                  → insert as pending, LastAttempt = CreatedHeight.
+//   - Existing pending/complete  → no-op (preserves reservations and signatures).
+//   - Existing failed            → reset to pending, LastAttempt = req.CreatedHeight,
+//                                  AttemptCount = 0, clear sig.
 //
-// The "failed → unsigned" reset is the mechanism users drive retries after a
-// key-deprecation failure: they resubmit the same (key_id, msg) and the request
-// re-enters the retry schedule.
+// The reset path is how users drive retries after key-deprecation or
+// attempt-cap failure: resubmit the same (key_id, msg) and it re-enters the
+// queue at the resubmit block.
 func (tssReqs *tssRequests) SetSignedRequest(req TssRequest) error {
 	ctx := context.Background()
 	existing := tssReqs.FindOne(ctx, bson.M{
@@ -128,18 +150,18 @@ func (tssReqs *tssRequests) SetSignedRequest(req TssRequest) error {
 	})
 
 	if existing.Err() == mongo.ErrNoDocuments {
-		nextAttempt := req.NextAttemptHeight
-		if nextAttempt == 0 {
-			nextAttempt = req.CreatedHeight
+		lastAttempt := req.LastAttempt
+		if lastAttempt == 0 {
+			lastAttempt = req.CreatedHeight
 		}
 		_, err := tssReqs.InsertOne(ctx, bson.M{
-			"key_id":              req.KeyId,
-			"msg":                 req.Msg,
-			"status":              string(SignPending),
-			"sig":                 "",
-			"created_height":      req.CreatedHeight,
-			"attempt_count":       req.AttemptCount,
-			"next_attempt_height": nextAttempt,
+			"key_id":         req.KeyId,
+			"msg":            req.Msg,
+			"status":         string(SignPending),
+			"sig":            "",
+			"created_height": req.CreatedHeight,
+			"last_attempt":   lastAttempt,
+			"attempt_count":  req.AttemptCount,
 		})
 		return err
 	}
@@ -161,11 +183,11 @@ func (tssReqs *tssRequests) SetSignedRequest(req TssRequest) error {
 		"msg":    req.Msg,
 	}, bson.M{
 		"$set": bson.M{
-			"status":              string(SignPending),
-			"sig":                 "",
-			"attempt_count":       uint(0),
-			"next_attempt_height": req.CreatedHeight,
-			"created_height":      req.CreatedHeight,
+			"status":         string(SignPending),
+			"sig":            "",
+			"last_attempt":   req.CreatedHeight,
+			"attempt_count":  uint(0),
+			"created_height": req.CreatedHeight,
 		},
 	})
 	if res.Err() == mongo.ErrNoDocuments {
@@ -174,17 +196,25 @@ func (tssReqs *tssRequests) SetSignedRequest(req TssRequest) error {
 	return res.Err()
 }
 
-// FindUnsignedRequests returns up to `limit` unsigned requests that are due
-// for another dispatch at `blockHeight`. Due = NextAttemptHeight <= blockHeight.
-// Results are sorted by (next_attempt_height, created_height, key_id, msg) so
-// every node picks the same subset when `limit` is smaller than the eligible
-// set.
+// FindUnsignedRequests returns up to `limit` unsigned requests whose
+// reservation has elapsed at `blockHeight`:
+//
+//   - status == pending
+//   - last_attempt <= blockHeight
+//
+// The attempt cap is NOT enforced here — at-cap rows surface to the caller,
+// which calls MarkFailed on them at selection time. This avoids a periodic
+// sweep.
+//
+// Results are sorted by (last_attempt, created_height, key_id, msg) ascending,
+// guaranteeing every node selects the same subset when `limit` < eligible
+// count. Served by the (status, last_attempt) composite index.
 func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64, limit int64) ([]TssRequest, error) {
 	ctx := context.Background()
 
 	opts := options.Find().
 		SetSort(bson.D{
-			{Key: "next_attempt_height", Value: 1},
+			{Key: "last_attempt", Value: 1},
 			{Key: "created_height", Value: 1},
 			{Key: "key_id", Value: 1},
 			{Key: "msg", Value: 1},
@@ -192,8 +222,8 @@ func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64, limit int64
 		SetLimit(limit)
 
 	cursor, err := tssReqs.Find(ctx, bson.M{
-		"status":              string(SignPending),
-		"next_attempt_height": bson.M{"$lte": blockHeight},
+		"status":       string(SignPending),
+		"last_attempt": bson.M{"$lte": blockHeight},
 	}, opts)
 	if err != nil {
 		return nil, err
@@ -208,8 +238,8 @@ func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64, limit int64
 
 // UpdateRequest updates the sig/status of the request identified by
 // (key_id, msg). Callers for signing completion use this to persist the
-// signature. AttemptCount and NextAttemptHeight are untouched — use
-// BumpAttempt for those.
+// signature. AttemptCount and LastAttempt are untouched — use ReserveAttempt
+// for those.
 func (tssReqs *tssRequests) UpdateRequest(req TssRequest) error {
 	ctx := context.Background()
 	singleResult := tssReqs.FindOne(ctx, bson.M{
@@ -234,19 +264,24 @@ func (tssReqs *tssRequests) UpdateRequest(req TssRequest) error {
 	return res.Err()
 }
 
-// BumpAttempt records that the request identified by (keyId, msg) was
-// dispatched and sets its new backoff state. Called once per dispatch from
-// RunActions so determinism holds across nodes.
-func (tssReqs *tssRequests) BumpAttempt(keyId, msg string, attemptCount uint, nextAttemptHeight uint64) error {
+// ReserveAttempt advances LastAttempt to bh + SignAttemptReservation and
+// increments AttemptCount for (keyId, msg) — but only if last_attempt <= bh.
+// The filter guard makes the write idempotent within a reservation window,
+// so replaying a block after a restart applies the update at most once.
+//
+// Called once per selected request from BlockTick on every node. Because
+// BlockTick runs per-block via the L1 consumer and the selection inputs are
+// all on-chain-derived, every node writes the same update.
+func (tssReqs *tssRequests) ReserveAttempt(keyId, msg string, bh uint64) error {
 	ctx := context.Background()
 	_, err := tssReqs.UpdateOne(ctx, bson.M{
-		"key_id": keyId,
-		"msg":    msg,
+		"key_id":       keyId,
+		"msg":          msg,
+		"status":       string(SignPending),
+		"last_attempt": bson.M{"$lte": bh},
 	}, bson.M{
-		"$set": bson.M{
-			"attempt_count":       attemptCount,
-			"next_attempt_height": nextAttemptHeight,
-		},
+		"$set": bson.M{"last_attempt": bh + SignAttemptReservation},
+		"$inc": bson.M{"attempt_count": 1},
 	})
 	return err
 }
@@ -258,6 +293,22 @@ func (tssReqs *tssRequests) MarkFailedByKey(keyId string) error {
 	ctx := context.Background()
 	_, err := tssReqs.UpdateMany(ctx, bson.M{
 		"key_id": keyId,
+		"status": string(SignPending),
+	}, bson.M{
+		"$set": bson.M{"status": string(SignFailed)},
+	})
+	return err
+}
+
+// MarkFailed transitions the pending request identified by (keyId, msg) to
+// failed. Called at selection time when the caller encounters a row with
+// AttemptCount >= MaxSignAttempts. The pending guard prevents clobbering a
+// completed row in a concurrent-resubmission race.
+func (tssReqs *tssRequests) MarkFailed(keyId, msg string) error {
+	ctx := context.Background()
+	_, err := tssReqs.UpdateOne(ctx, bson.M{
+		"key_id": keyId,
+		"msg":    msg,
 		"status": string(SignPending),
 	}, bson.M{
 		"$set": bson.M{"status": string(SignFailed)},

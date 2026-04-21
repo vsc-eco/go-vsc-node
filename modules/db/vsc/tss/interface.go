@@ -17,11 +17,20 @@ const KeyDeprecationGracePeriod = uint64(403200)
 // clock is started and the key stays deprecated indefinitely until renewed.
 const KeyRetirementEnabled = false
 
-// SignBackoffMaxBlocks is the ceiling on the per-attempt backoff delay for an
-// unsigned signing request. The backoff is signInterval << attemptCount, clamped
-// to this cap. At ~3s/block this is roughly 1 hour — a chronically-failing
-// request retries at most once per hour until its key is deprecated.
-const SignBackoffMaxBlocks = uint64(1200)
+// SignAttemptReservation is the number of L1 blocks a request is held out of
+// selection after being dispatched. Must be >= the sign session timeout so a
+// retry is never attempted while the previous session could still complete.
+// At ~3s/block, 60 blocks ≈ 3 minutes, comfortably above the 1-minute sign
+// timeout defined in modules/common/params/params.go DefaultTimeout.
+const SignAttemptReservation = uint64(60)
+
+// MaxSignAttempts caps how many selections a request may receive before being
+// permanently marked failed. Set deliberately high for the initial rollout;
+// tuning is deferred until we observe production retry patterns. A stuck
+// request consumes one slot per ~60 blocks, so at 10000 attempts the cap
+// triggers after >20 days of continuous retries — operationally equivalent to
+// "no cap" for normal use.
+const MaxSignAttempts = uint(10_000)
 
 type TssKeys interface {
 	a.Plugin
@@ -48,12 +57,21 @@ type TssRequests interface {
 	FindUnsignedRequests(blockHeight uint64, limit int64) ([]TssRequest, error)
 	FindRequests(keyID string, msgHex []string) ([]TssRequest, error)
 	UpdateRequest(req TssRequest) error
-	// BumpAttempt records that a signing request was dispatched at the given block
-	// and sets the next eligible attempt height.
-	BumpAttempt(keyId string, msg string, attemptCount uint, nextAttemptHeight uint64) error
-	// MarkFailedByKey transitions every unsigned request for the given key to failed.
-	// Called when a key is deprecated so its pending requests stop being retried.
+	// ReserveAttempt advances LastAttempt to bh+SignAttemptReservation and
+	// increments AttemptCount for (keyId, msg). The update is guarded by
+	// last_attempt <= bh, making it a no-op if the request has already been
+	// reserved at a later block. Called once per selected request from
+	// BlockTick on every node, so writes are deterministic across the cluster.
+	ReserveAttempt(keyId string, msg string, bh uint64) error
+	// MarkFailedByKey transitions every unsigned request for the given key to
+	// failed. Called when a key is deprecated so its pending requests stop
+	// consuming queue slots.
 	MarkFailedByKey(keyId string) error
+	// MarkFailed transitions a single (keyId, msg) pending request to failed.
+	// Invoked at selection time when a request is found to have reached
+	// MaxSignAttempts — we mark it failed instead of dispatching. Lazy cap
+	// enforcement avoids a periodic sweep.
+	MarkFailed(keyId string, msg string) error
 }
 
 type TssCommitments interface {
@@ -109,17 +127,19 @@ type TssRequest struct {
 	KeyId  string        `bson:"key_id"`
 	Msg    string        `bson:"msg"`
 	Sig    string        `bson:"sig"`
-	// CreatedHeight is the block height at which the request was first submitted.
-	// On resubmission after failure it is updated to the resubmit block.
+	// CreatedHeight is the L1 block at which the request was last (re)submitted:
+	// set on insert and reset on the failed→pending path in SetSignedRequest.
+	// Used as a tiebreak for requests with identical LastAttempt values.
 	CreatedHeight uint64 `bson:"created_height"`
-	// AttemptCount is the number of signing dispatches that have targeted this
-	// request. Starts at 0, increments once per dispatch in RunActions.
+	// LastAttempt is the queue-ordering key. Initialised to CreatedHeight on
+	// insert, advanced to bh+SignAttemptReservation each time BlockTick
+	// selects the request. FIFO over unsigned requests falls out of sorting
+	// ascending by this field.
+	LastAttempt uint64 `bson:"last_attempt"`
+	// AttemptCount is the number of selections this request has received.
+	// Incremented atomically with LastAttempt inside ReserveAttempt. A request
+	// with AttemptCount >= MaxSignAttempts is filtered out of selection.
 	AttemptCount uint `bson:"attempt_count"`
-	// NextAttemptHeight is the earliest L1 block at which this request is
-	// eligible for another signing dispatch. Set to CreatedHeight at submission
-	// and advanced by min(signInterval << AttemptCount, SignBackoffMaxBlocks)
-	// each time the request is dispatched.
-	NextAttemptHeight uint64 `bson:"next_attempt_height"`
 }
 
 // CommitmentMetadata optionally stores error/reason for blame commitments (e.g. timeout vs error).

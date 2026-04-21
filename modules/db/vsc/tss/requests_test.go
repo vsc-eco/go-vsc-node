@@ -164,11 +164,9 @@ func findOneTyped(t *testing.T, reqs *tssRequests, keyId, msg string) TssRequest
 
 // --- Init migration ---
 
-func TestInit_MigratesFailedToUnsigned(t *testing.T) {
-	// Seed a failed request as if written by the pre-backoff code: no
-	// attempt_count, no next_attempt_height, status=failed.
+func TestInit_MigratesDevelopSchema(t *testing.T) {
 	client := connectDB(t)
-	dbName := fmt.Sprintf("vsc-test-mig-%d", time.Now().UnixNano())
+	dbName := fmt.Sprintf("vsc-test-mig-dev-%d", time.Now().UnixNano())
 	database := client.Database(dbName)
 	t.Cleanup(func() { database.Drop(t.Context()) })
 
@@ -180,10 +178,9 @@ func TestInit_MigratesFailedToUnsigned(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	if _, err := coll.InsertMany(ctx, []any{
-		bson.M{"key_id": "k1", "msg": "aa", "status": string(SignFailed), "sig": "oldsig", "created_height": uint64(500)},
-		bson.M{"key_id": "k1", "msg": "bb", "status": string(SignFailed), "sig": "", "created_height": uint64(600)},
-		bson.M{"key_id": "k1", "msg": "cc", "status": string(SignPending), "sig": "", "created_height": uint64(700)},
-		bson.M{"key_id": "k1", "msg": "dd", "status": string(SignComplete), "sig": "gotit", "created_height": uint64(800)},
+		bson.M{"key_id": "k1", "msg": "dev-failed", "status": string(SignFailed), "sig": "old", "created_height": uint64(500)},
+		bson.M{"key_id": "k1", "msg": "dev-pending", "status": string(SignPending), "sig": "", "created_height": uint64(600)},
+		bson.M{"key_id": "k1", "msg": "dev-complete", "status": string(SignComplete), "sig": "sig", "created_height": uint64(700)},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -193,32 +190,124 @@ func TestInit_MigratesFailedToUnsigned(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	// All failed → unsigned, attempt_count=0, next_attempt_height=created_height, sig cleared
-	for _, msg := range []string{"aa", "bb"} {
-		doc := findOneTyped(t, reqs, "k1", msg)
-		assert.Equal(t, SignPending, doc.Status, "msg=%s", msg)
-		assert.Equal(t, uint(0), doc.AttemptCount, "msg=%s", msg)
-		assert.Equal(t, doc.CreatedHeight, doc.NextAttemptHeight, "msg=%s", msg)
-		assert.Equal(t, "", doc.Sig, "msg=%s", msg)
+	failed := findOneTyped(t, reqs, "k1", "dev-failed")
+	assert.Equal(t, SignPending, failed.Status)
+	assert.Equal(t, uint64(500), failed.LastAttempt)
+	assert.Equal(t, uint(0), failed.AttemptCount)
+	assert.Equal(t, "", failed.Sig)
+
+	pending := findOneTyped(t, reqs, "k1", "dev-pending")
+	assert.Equal(t, SignPending, pending.Status)
+	assert.Equal(t, uint64(600), pending.LastAttempt)
+	assert.Equal(t, uint(0), pending.AttemptCount)
+
+	complete := findOneTyped(t, reqs, "k1", "dev-complete")
+	assert.Equal(t, SignComplete, complete.Status)
+	assert.Equal(t, "sig", complete.Sig)
+}
+
+func TestInit_MigratesInterimPRSchema(t *testing.T) {
+	client := connectDB(t)
+	dbName := fmt.Sprintf("vsc-test-mig-pr-%d", time.Now().UnixNano())
+	database := client.Database(dbName)
+	t.Cleanup(func() { database.Drop(t.Context()) })
+
+	instance := db.DbInstance{Database: database}
+	coll := db.NewCollection(&instance, "tss_requests")
+	if err := coll.Init(); err != nil {
+		t.Fatalf("base Init: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := coll.InsertMany(ctx, []any{
+		bson.M{
+			"key_id": "k1", "msg": "pr-pending",
+			"status": string(SignPending), "sig": "",
+			"created_height":      uint64(500),
+			"attempt_count":       uint(3),
+			"next_attempt_height": uint64(900),
+		},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
 	}
 
-	// Pre-existing unsigned gets next_attempt_height backfilled to created_height.
-	doc := findOneTyped(t, reqs, "k1", "cc")
-	assert.Equal(t, SignPending, doc.Status)
-	assert.Equal(t, uint(0), doc.AttemptCount)
-	assert.Equal(t, doc.CreatedHeight, doc.NextAttemptHeight)
+	reqs := &tssRequests{coll}
+	if err := reqs.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
 
-	// Complete is untouched.
-	doc = findOneTyped(t, reqs, "k1", "dd")
-	assert.Equal(t, SignComplete, doc.Status)
-	assert.Equal(t, "gotit", doc.Sig)
+	doc := findOneTyped(t, reqs, "k1", "pr-pending")
+	assert.Equal(t, SignPending, doc.Status)
+	// The interim-PR next_attempt_height carries the equivalent scheduling
+	// signal for in-flight requests, so we adopt it as LastAttempt.
+	assert.Equal(t, uint64(900), doc.LastAttempt)
+	assert.Equal(t, uint(3), doc.AttemptCount)
+
+	// next_attempt_height field must be removed.
+	raw := bson.M{}
+	if err := reqs.FindOne(ctx, bson.M{"key_id": "k1", "msg": "pr-pending"}).Decode(&raw); err != nil {
+		t.Fatal(err)
+	}
+	_, hasNAH := raw["next_attempt_height"]
+	assert.False(t, hasNAH, "next_attempt_height should be unset after migration")
+}
+
+func TestInit_MigratesInterimPRFailedRow(t *testing.T) {
+	// Regression guard: a row that is BOTH interim-PR (has next_attempt_height)
+	// AND failed must land with LastAttempt=CreatedHeight after migration, not
+	// LastAttempt=next_attempt_height. This only holds if step A runs before
+	// step B in Init.
+	client := connectDB(t)
+	dbName := fmt.Sprintf("vsc-test-mig-prfail-%d", time.Now().UnixNano())
+	database := client.Database(dbName)
+	t.Cleanup(func() { database.Drop(t.Context()) })
+
+	instance := db.DbInstance{Database: database}
+	coll := db.NewCollection(&instance, "tss_requests")
+	if err := coll.Init(); err != nil {
+		t.Fatalf("base Init: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := coll.InsertMany(ctx, []any{
+		bson.M{
+			"key_id": "k1", "msg": "pr-failed",
+			"status":              string(SignFailed),
+			"sig":                 "stale",
+			"created_height":      uint64(500),
+			"attempt_count":       uint(5),
+			"next_attempt_height": uint64(9000),
+		},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	reqs := &tssRequests{coll}
+	if err := reqs.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	doc := findOneTyped(t, reqs, "k1", "pr-failed")
+	assert.Equal(t, SignPending, doc.Status)
+	assert.Equal(t, uint64(500), doc.LastAttempt, "must reset to created_height, not retain next_attempt_height=9000")
+	assert.Equal(t, uint(0), doc.AttemptCount)
+	assert.Equal(t, "", doc.Sig)
+
+	// next_attempt_height must still be removed.
+	raw := bson.M{}
+	if err := reqs.FindOne(ctx, bson.M{"key_id": "k1", "msg": "pr-failed"}).Decode(&raw); err != nil {
+		t.Fatal(err)
+	}
+	_, hasNAH := raw["next_attempt_height"]
+	assert.False(t, hasNAH, "next_attempt_height should be unset after migration")
 }
 
 func TestInit_Idempotent(t *testing.T) {
 	reqs := newTestRequestsDb(t)
 	insertRaw(t, reqs, bson.M{
 		"key_id": "k1", "msg": "aa",
-		"status": string(SignFailed), "sig": "old",
+		"status":         string(SignFailed),
+		"sig":            "old",
 		"created_height": uint64(500),
 	})
 
@@ -233,20 +322,16 @@ func TestInit_Idempotent(t *testing.T) {
 	second := findOneTyped(t, reqs, "k1", "aa")
 
 	assert.Equal(t, first.Status, second.Status)
-	assert.Equal(t, first.NextAttemptHeight, second.NextAttemptHeight)
+	assert.Equal(t, first.LastAttempt, second.LastAttempt)
 	assert.Equal(t, first.AttemptCount, second.AttemptCount)
 }
 
-// --- FindUnsignedRequests ordering ---
-
-func TestFindUnsignedRequests_OrdersByNextAttemptHeight(t *testing.T) {
+func TestFindUnsignedRequests_OrdersByLastAttempt(t *testing.T) {
 	reqs := newTestRequestsDb(t)
-	// Older-created request with a larger next_attempt_height should come last.
-	now := uint64(10_000)
 	seed := []TssRequest{
-		{KeyId: "k1", Msg: "old-but-backed-off", Status: SignPending, CreatedHeight: 100, NextAttemptHeight: 9_500, AttemptCount: 3},
-		{KeyId: "k1", Msg: "fresh-low-next", Status: SignPending, CreatedHeight: 9_000, NextAttemptHeight: 9_000},
-		{KeyId: "k1", Msg: "fresh-mid", Status: SignPending, CreatedHeight: 9_500, NextAttemptHeight: 9_400},
+		{KeyId: "k1", Msg: "old-stuck", Status: SignPending, CreatedHeight: 100, LastAttempt: 9500, AttemptCount: 3},
+		{KeyId: "k1", Msg: "fresh-head", Status: SignPending, CreatedHeight: 9000, LastAttempt: 9000},
+		{KeyId: "k1", Msg: "mid", Status: SignPending, CreatedHeight: 9500, LastAttempt: 9400},
 	}
 	for _, r := range seed {
 		if err := reqs.SetSignedRequest(r); err != nil {
@@ -254,225 +339,280 @@ func TestFindUnsignedRequests_OrdersByNextAttemptHeight(t *testing.T) {
 		}
 	}
 
-	results, err := reqs.FindUnsignedRequests(now, 10)
+	results, err := reqs.FindUnsignedRequests(10_000, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(results) != 3 {
-		t.Fatalf("want 3 results, got %d", len(results))
+		t.Fatalf("want 3, got %d", len(results))
 	}
-	assert.Equal(t, "fresh-low-next", results[0].Msg)
-	assert.Equal(t, "fresh-mid", results[1].Msg)
-	assert.Equal(t, "old-but-backed-off", results[2].Msg)
+	assert.Equal(t, "fresh-head", results[0].Msg)
+	assert.Equal(t, "mid", results[1].Msg)
+	assert.Equal(t, "old-stuck", results[2].Msg)
 }
 
-func TestFindUnsignedRequests_GatesOnNextAttemptHeight(t *testing.T) {
+func TestFindUnsignedRequests_GatesOnLastAttempt(t *testing.T) {
 	reqs := newTestRequestsDb(t)
 	if err := reqs.SetSignedRequest(TssRequest{
-		KeyId: "k1", Msg: "future", Status: SignPending,
-		CreatedHeight: 50, NextAttemptHeight: 500,
+		KeyId: "k1", Msg: "in-flight", Status: SignPending,
+		CreatedHeight: 50, LastAttempt: 200,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := reqs.SetSignedRequest(TssRequest{
-		KeyId: "k1", Msg: "due", Status: SignPending,
-		CreatedHeight: 50, NextAttemptHeight: 100,
+		KeyId: "k1", Msg: "ready", Status: SignPending,
+		CreatedHeight: 50, LastAttempt: 50,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
+	// bh < in-flight's LastAttempt: only "ready" returned.
 	results, err := reqs.FindUnsignedRequests(100, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("want 1 result, got %d: %+v", len(results), results)
-	}
-	assert.Equal(t, "due", results[0].Msg)
-}
-
-func TestFindUnsignedRequests_LimitAndStatusFilter(t *testing.T) {
-	reqs := newTestRequestsDb(t)
-	statuses := []TssSignStatus{SignPending, SignPending, SignPending, SignComplete, SignFailed}
-	msgs := []string{"a", "b", "c", "d", "e"}
-	for i, s := range statuses {
-		if err := reqs.SetSignedRequest(TssRequest{
-			KeyId: "k1", Msg: msgs[i], Status: s,
-			CreatedHeight: uint64(100 + i), NextAttemptHeight: uint64(100 + i),
-		}); err != nil {
-			t.Fatal(err)
-		}
+	if len(results) != 1 || results[0].Msg != "ready" {
+		t.Fatalf("want [ready], got %+v", results)
 	}
 
-	results, err := reqs.FindUnsignedRequests(1000, 2)
+	// bh past reservation: both eligible.
+	results, err = reqs.FindUnsignedRequests(300, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(results) != 2 {
-		t.Fatalf("want 2 results (limit), got %d", len(results))
-	}
-	// Only unsigned docs can appear.
-	for _, r := range results {
-		assert.Equal(t, SignPending, r.Status)
+		t.Fatalf("want 2 results, got %d", len(results))
 	}
 }
 
-// --- SetSignedRequest resubmission ---
-
-func TestSetSignedRequest_InsertsNewUnsigned(t *testing.T) {
-	reqs := newTestRequestsDb(t)
-	if err := reqs.SetSignedRequest(TssRequest{
-		KeyId: "k1", Msg: "new", CreatedHeight: 500,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	doc := findOneTyped(t, reqs, "k1", "new")
-	assert.Equal(t, SignPending, doc.Status)
-	// NextAttemptHeight defaults to CreatedHeight for fresh inserts.
-	assert.Equal(t, uint64(500), doc.NextAttemptHeight)
-}
-
-func TestSetSignedRequest_NoOpOnExistingUnsigned(t *testing.T) {
-	reqs := newTestRequestsDb(t)
-	if err := reqs.SetSignedRequest(TssRequest{
-		KeyId: "k1", Msg: "dup", CreatedHeight: 500,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// Simulate a prior dispatch that bumped backoff.
-	if err := reqs.BumpAttempt("k1", "dup", 3, 1_200); err != nil {
-		t.Fatal(err)
-	}
-
-	// Resubmit at a later height.
-	if err := reqs.SetSignedRequest(TssRequest{
-		KeyId: "k1", Msg: "dup", CreatedHeight: 700,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	doc := findOneTyped(t, reqs, "k1", "dup")
-	// Must still be the bumped state, not reset.
-	assert.Equal(t, uint(3), doc.AttemptCount)
-	assert.Equal(t, uint64(1_200), doc.NextAttemptHeight)
-	assert.Equal(t, uint64(500), doc.CreatedHeight)
-}
-
-func TestSetSignedRequest_NoOpOnComplete(t *testing.T) {
+func TestFindUnsignedRequests_SurfacesCapped(t *testing.T) {
+	// At-cap rows remain in the query result so the caller can mark them
+	// failed at selection time. Enforcement is lazy, not filter-based.
 	reqs := newTestRequestsDb(t)
 	insertRaw(t, reqs, bson.M{
-		"key_id": "k1", "msg": "done",
-		"status":              string(SignComplete),
-		"sig":                 "signedsig",
-		"created_height":      uint64(500),
-		"attempt_count":       0,
-		"next_attempt_height": uint64(500),
+		"key_id": "k1", "msg": "capped",
+		"status":         string(SignPending),
+		"sig":            "",
+		"created_height": uint64(100),
+		"last_attempt":   uint64(100),
+		"attempt_count":  MaxSignAttempts,
 	})
 
-	if err := reqs.SetSignedRequest(TssRequest{
-		KeyId: "k1", Msg: "done", CreatedHeight: 900,
-	}); err != nil {
+	results, err := reqs.FindUnsignedRequests(500, 10)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	doc := findOneTyped(t, reqs, "k1", "done")
-	assert.Equal(t, SignComplete, doc.Status)
-	assert.Equal(t, "signedsig", doc.Sig)
+	if len(results) != 1 || results[0].Msg != "capped" {
+		t.Fatalf("want [capped] returned for caller to mark failed, got %+v", results)
+	}
+	assert.Equal(t, MaxSignAttempts, results[0].AttemptCount)
 }
 
-func TestSetSignedRequest_ResetsFailedToUnsigned(t *testing.T) {
+func TestFindUnsignedRequests_RespectsLimit(t *testing.T) {
 	reqs := newTestRequestsDb(t)
-	insertRaw(t, reqs, bson.M{
-		"key_id": "k1", "msg": "retryme",
-		"status":              string(SignFailed),
-		"sig":                 "stale",
-		"created_height":      uint64(500),
-		"attempt_count":       5,
-		"next_attempt_height": uint64(1_200),
-	})
-
-	if err := reqs.SetSignedRequest(TssRequest{
-		KeyId: "k1", Msg: "retryme", CreatedHeight: 9_000,
-	}); err != nil {
+	for i := 0; i < 20; i++ {
+		if err := reqs.SetSignedRequest(TssRequest{
+			KeyId: "k1", Msg: fmt.Sprintf("m-%02d", i),
+			Status: SignPending, CreatedHeight: uint64(100 + i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results, err := reqs.FindUnsignedRequests(500, 6)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	doc := findOneTyped(t, reqs, "k1", "retryme")
-	assert.Equal(t, SignPending, doc.Status)
-	assert.Equal(t, uint(0), doc.AttemptCount)
-	assert.Equal(t, uint64(9_000), doc.NextAttemptHeight)
-	assert.Equal(t, uint64(9_000), doc.CreatedHeight)
-	assert.Equal(t, "", doc.Sig)
+	if len(results) != 6 {
+		t.Fatalf("want 6, got %d", len(results))
+	}
+	// Lowest LastAttempt (== CreatedHeight) first → m-00..m-05.
+	for i, r := range results {
+		assert.Equal(t, fmt.Sprintf("m-%02d", i), r.Msg)
+	}
 }
 
-// --- BumpAttempt ---
+func TestFindUnsignedRequests_TiebreakChain(t *testing.T) {
+	// Locks in the full (last_attempt, created_height, key_id, msg) sort
+	// chain. Consensus-critical: every node must produce the same subset
+	// under `limit`, so identical LastAttempt values must resolve to the
+	// same order via the subsequent keys.
+	reqs := newTestRequestsDb(t)
+	// All rows share last_attempt=100. Differentiated by the later keys.
+	seed := []TssRequest{
+		// Same last_attempt and created_height: tiebreak falls to (key_id, msg).
+		{KeyId: "kb", Msg: "a", Status: SignPending, CreatedHeight: 50, LastAttempt: 100},
+		{KeyId: "ka", Msg: "b", Status: SignPending, CreatedHeight: 50, LastAttempt: 100},
+		{KeyId: "ka", Msg: "a", Status: SignPending, CreatedHeight: 50, LastAttempt: 100},
+		// Same last_attempt but distinct created_height: created_height wins before key_id.
+		{KeyId: "kz", Msg: "z", Status: SignPending, CreatedHeight: 40, LastAttempt: 100},
+	}
+	for _, r := range seed {
+		if err := reqs.SetSignedRequest(r); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-func TestBumpAttempt_UpdatesTargetedRequest(t *testing.T) {
+	results, err := reqs.FindUnsignedRequests(200, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 4 {
+		t.Fatalf("want 4, got %d", len(results))
+	}
+
+	// Expected order:
+	// 1. created_height=40 (kz/z) — smallest created_height wins after last_attempt tie.
+	// 2. ka/a (key_id ka < kb, msg a < b)
+	// 3. ka/b
+	// 4. kb/a
+	assert.Equal(t, "kz", results[0].KeyId, "smallest created_height wins after last_attempt tie")
+	assert.Equal(t, "z", results[0].Msg)
+
+	assert.Equal(t, "ka", results[1].KeyId)
+	assert.Equal(t, "a", results[1].Msg)
+
+	assert.Equal(t, "ka", results[2].KeyId)
+	assert.Equal(t, "b", results[2].Msg)
+
+	assert.Equal(t, "kb", results[3].KeyId)
+	assert.Equal(t, "a", results[3].Msg)
+}
+
+func TestReserveAttempt_AdvancesLastAttemptAndCount(t *testing.T) {
 	reqs := newTestRequestsDb(t)
 	if err := reqs.SetSignedRequest(TssRequest{
 		KeyId: "k1", Msg: "aa", CreatedHeight: 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := reqs.SetSignedRequest(TssRequest{
-		KeyId: "k2", Msg: "aa", CreatedHeight: 100,
-	}); err != nil {
+
+	if err := reqs.ReserveAttempt("k1", "aa", 500); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := reqs.BumpAttempt("k1", "aa", 2, 400); err != nil {
-		t.Fatal(err)
-	}
-
-	target := findOneTyped(t, reqs, "k1", "aa")
-	assert.Equal(t, uint(2), target.AttemptCount)
-	assert.Equal(t, uint64(400), target.NextAttemptHeight)
-
-	// Different key, same msg is untouched.
-	other := findOneTyped(t, reqs, "k2", "aa")
-	assert.Equal(t, uint(0), other.AttemptCount)
-	assert.Equal(t, uint64(100), other.NextAttemptHeight)
+	doc := findOneTyped(t, reqs, "k1", "aa")
+	assert.Equal(t, uint64(500+SignAttemptReservation), doc.LastAttempt)
+	assert.Equal(t, uint(1), doc.AttemptCount)
 }
 
-// --- MarkFailedByKey ---
-
-func TestMarkFailedByKey_OnlyUnsignedForMatchingKey(t *testing.T) {
+func TestReserveAttempt_IdempotentWithinReservation(t *testing.T) {
 	reqs := newTestRequestsDb(t)
+	if err := reqs.SetSignedRequest(TssRequest{
+		KeyId: "k1", Msg: "aa", CreatedHeight: 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
+	// First reservation at bh=500.
+	if err := reqs.ReserveAttempt("k1", "aa", 500); err != nil {
+		t.Fatal(err)
+	}
+	// Re-issuing the same block's reservation must not double-count.
+	if err := reqs.ReserveAttempt("k1", "aa", 500); err != nil {
+		t.Fatal(err)
+	}
+	// Even at bh within the reservation window: no-op.
+	if err := reqs.ReserveAttempt("k1", "aa", 500+SignAttemptReservation-1); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := findOneTyped(t, reqs, "k1", "aa")
+	assert.Equal(t, uint64(500+SignAttemptReservation), doc.LastAttempt)
+	assert.Equal(t, uint(1), doc.AttemptCount)
+}
+
+func TestReserveAttempt_AdvancesAfterReservationElapses(t *testing.T) {
+	reqs := newTestRequestsDb(t)
 	if err := reqs.SetSignedRequest(TssRequest{
-		KeyId: "targetKey", Msg: "m1", CreatedHeight: 100,
+		KeyId: "k1", Msg: "aa", CreatedHeight: 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := reqs.SetSignedRequest(TssRequest{
-		KeyId: "otherKey", Msg: "m2", CreatedHeight: 100,
-	}); err != nil {
+	if err := reqs.ReserveAttempt("k1", "aa", 500); err != nil {
 		t.Fatal(err)
 	}
+	// bh now past the first reservation.
+	if err := reqs.ReserveAttempt("k1", "aa", 500+SignAttemptReservation); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := findOneTyped(t, reqs, "k1", "aa")
+	assert.Equal(t, uint64(500+2*SignAttemptReservation), doc.LastAttempt)
+	assert.Equal(t, uint(2), doc.AttemptCount)
+}
+
+func TestReserveAttempt_NoOpOnNonPending(t *testing.T) {
+	// Defensive guard: if a row has transitioned to failed or complete,
+	// ReserveAttempt must not touch it. Protects the failed→pending reset
+	// path in SetSignedRequest from stale bumps by any future caller that
+	// bypasses the BlockTick selection flow.
+	reqs := newTestRequestsDb(t)
 	insertRaw(t, reqs, bson.M{
-		"key_id": "targetKey", "msg": "done",
-		"status":              string(SignComplete),
-		"sig":                 "existingsig",
-		"created_height":      uint64(90),
-		"attempt_count":       0,
-		"next_attempt_height": uint64(90),
+		"key_id": "k1", "msg": "failed",
+		"status":         string(SignFailed),
+		"sig":            "",
+		"created_height": uint64(100),
+		"last_attempt":   uint64(100),
+		"attempt_count":  uint(3),
+	})
+	insertRaw(t, reqs, bson.M{
+		"key_id": "k1", "msg": "complete",
+		"status":         string(SignComplete),
+		"sig":            "sig",
+		"created_height": uint64(100),
+		"last_attempt":   uint64(100),
+		"attempt_count":  uint(1),
 	})
 
-	if err := reqs.MarkFailedByKey("targetKey"); err != nil {
+	if err := reqs.ReserveAttempt("k1", "failed", 500); err != nil {
+		t.Fatal(err)
+	}
+	if err := reqs.ReserveAttempt("k1", "complete", 500); err != nil {
 		t.Fatal(err)
 	}
 
-	// Unsigned targetKey → failed.
-	failed := findOneTyped(t, reqs, "targetKey", "m1")
-	assert.Equal(t, SignFailed, failed.Status)
+	failed := findOneTyped(t, reqs, "k1", "failed")
+	assert.Equal(t, uint64(100), failed.LastAttempt, "failed row must not be bumped")
+	assert.Equal(t, uint(3), failed.AttemptCount, "failed row AttemptCount must not increment")
 
-	// Completed targetKey → still complete, sig intact.
-	still := findOneTyped(t, reqs, "targetKey", "done")
-	assert.Equal(t, SignComplete, still.Status)
-	assert.Equal(t, "existingsig", still.Sig)
+	complete := findOneTyped(t, reqs, "k1", "complete")
+	assert.Equal(t, uint64(100), complete.LastAttempt, "complete row must not be bumped")
+	assert.Equal(t, uint(1), complete.AttemptCount, "complete row AttemptCount must not increment")
+}
 
-	// Other key untouched.
-	other := findOneTyped(t, reqs, "otherKey", "m2")
-	assert.Equal(t, SignPending, other.Status)
+func TestMarkFailed_TransitionsPendingRow(t *testing.T) {
+	reqs := newTestRequestsDb(t)
+	insertRaw(t, reqs, bson.M{
+		"key_id": "k1", "msg": "to-fail",
+		"status": string(SignPending), "sig": "",
+		"created_height": uint64(100),
+		"last_attempt":   uint64(100),
+		"attempt_count":  MaxSignAttempts,
+	})
+
+	if err := reqs.MarkFailed("k1", "to-fail"); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := findOneTyped(t, reqs, "k1", "to-fail")
+	assert.Equal(t, SignFailed, doc.Status)
+}
+
+func TestMarkFailed_NoOpOnComplete(t *testing.T) {
+	reqs := newTestRequestsDb(t)
+	insertRaw(t, reqs, bson.M{
+		"key_id": "k1", "msg": "done",
+		"status": string(SignComplete), "sig": "sig",
+		"created_height": uint64(100),
+		"last_attempt":   uint64(100),
+		"attempt_count":  uint(2),
+	})
+
+	if err := reqs.MarkFailed("k1", "done"); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := findOneTyped(t, reqs, "k1", "done")
+	assert.Equal(t, SignComplete, doc.Status)
+	assert.Equal(t, "sig", doc.Sig)
 }
