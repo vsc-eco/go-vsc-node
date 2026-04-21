@@ -203,6 +203,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					k.DeprecatedHeight = int64(block.BlockNumber)
 				}
 				se.tssKeys.SetKey(k)
+				// Eagerly fail any unsigned requests tied to this key so
+				// they stop being retried by the backoff scheduler.
+				if err := se.tssRequests.MarkFailedByKey(k.Id); err != nil {
+					tssLog.Warn("MarkFailedByKey after deprecation failed", "keyId", k.Id, "err", err)
+				}
 				tssLog.Info(
 					"key deprecated",
 					"keyId",
@@ -1510,8 +1515,16 @@ func (se *StateEngine) Init() error {
 	// One-time migration: deprecate any active keys that pre-date the expiry system.
 	// These keys have no ExpiryEpoch and would otherwise reshare forever.
 	// deprecated_height=0 means no retirement clock — they stay deprecated until renewed.
-	if err := se.tssKeys.DeprecateLegacyKeys(); err != nil {
+	// Fail any unsigned requests tied to the newly-deprecated keys so the backoff
+	// scheduler stops retrying them.
+	deprecated, err := se.tssKeys.DeprecateLegacyKeys()
+	if err != nil {
 		tssLog.Warn("DeprecateLegacyKeys failed during init", "err", err)
+	}
+	for _, keyId := range deprecated {
+		if err := se.tssRequests.MarkFailedByKey(keyId); err != nil {
+			tssLog.Warn("MarkFailedByKey after legacy deprecation failed", "keyId", keyId, "err", err)
+		}
 	}
 	return nil
 }

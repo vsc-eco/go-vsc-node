@@ -3827,9 +3827,12 @@ func TestKeyLifecycle(t *testing.T) {
 			Epoch: 1, ExpiryEpoch: 101,
 		})
 
-		err := tssKeys.DeprecateLegacyKeys()
+		deprecated, err := tssKeys.DeprecateLegacyKeys()
 		if err != nil {
 			t.Fatalf("DeprecateLegacyKeys failed: %v", err)
+		}
+		if len(deprecated) != 1 || deprecated[0] != "key-legacy" {
+			t.Errorf("Expected deprecated=[key-legacy], got %v", deprecated)
 		}
 
 		legacy, _ := tssKeys.FindKey("key-legacy")

@@ -80,15 +80,18 @@ func (m *MockTssKeysDb) FindNewlyRetired(blockHeight uint64) ([]tss.TssKey, erro
 	return results, nil
 }
 
-func (m *MockTssKeysDb) DeprecateLegacyKeys() error {
+func (m *MockTssKeysDb) DeprecateLegacyKeys() ([]string, error) {
+	deprecated := make([]string, 0)
 	for id, key := range m.Keys {
 		if key.Status == tss.TssKeyActive && key.ExpiryEpoch == 0 {
 			key.Status = tss.TssKeyDeprecated
 			key.DeprecatedHeight = 0
 			m.Keys[id] = key
+			deprecated = append(deprecated, id)
 		}
 	}
-	return nil
+	sort.Strings(deprecated)
+	return deprecated, nil
 }
 
 // MockTssCommitmentsDb implements tss.TssCommitments interface for testing
@@ -219,37 +222,51 @@ type MockTssRequestsDb struct {
 }
 
 func (m *MockTssRequestsDb) SetSignedRequest(req tss.TssRequest) error {
+	existing, ok := m.Requests[req.Id]
+	if !ok {
+		// Resolve by (key_id, msg) as a fallback since the Id column is unused.
+		for id, other := range m.Requests {
+			if other.KeyId == req.KeyId && other.Msg == req.Msg {
+				existing = other
+				req.Id = id
+				ok = true
+				break
+			}
+		}
+	}
+	if ok {
+		if existing.Status == tss.SignFailed {
+			existing.Status = tss.SignPending
+			existing.AttemptCount = 0
+			existing.NextAttemptHeight = req.CreatedHeight
+			existing.CreatedHeight = req.CreatedHeight
+			existing.Sig = ""
+			m.Requests[existing.Id] = existing
+		}
+		return nil
+	}
+	if req.NextAttemptHeight == 0 {
+		req.NextAttemptHeight = req.CreatedHeight
+	}
 	m.Requests[req.Id] = req
 	return nil
 }
 
 func (m *MockTssRequestsDb) FindUnsignedRequests(blockHeight uint64, limit int64) ([]tss.TssRequest, error) {
-	// Backfill legacy requests missing created_height.
-	for id, req := range m.Requests {
-		if req.Status == tss.SignPending && req.CreatedHeight == 0 {
-			req.CreatedHeight = blockHeight
-			m.Requests[id] = req
-		}
-	}
-
-	// Mark expired requests as failed.
-	if blockHeight > tss.SignExpiryBlocks {
-		cutoff := blockHeight - tss.SignExpiryBlocks
-		for id, req := range m.Requests {
-			if req.Status == tss.SignPending && req.CreatedHeight <= cutoff {
-				req.Status = tss.SignFailed
-				m.Requests[id] = req
-			}
-		}
-	}
-
 	var results []tss.TssRequest
 	for _, req := range m.Requests {
-		if req.Sig == "" && req.Status == tss.SignPending {
-			results = append(results, req)
+		if req.Status != tss.SignPending {
+			continue
 		}
+		if req.NextAttemptHeight > blockHeight {
+			continue
+		}
+		results = append(results, req)
 	}
 	sort.Slice(results, func(i, j int) bool {
+		if results[i].NextAttemptHeight != results[j].NextAttemptHeight {
+			return results[i].NextAttemptHeight < results[j].NextAttemptHeight
+		}
 		if results[i].CreatedHeight != results[j].CreatedHeight {
 			return results[i].CreatedHeight < results[j].CreatedHeight
 		}
@@ -262,6 +279,28 @@ func (m *MockTssRequestsDb) FindUnsignedRequests(blockHeight uint64, limit int64
 		results = results[:limit]
 	}
 	return results, nil
+}
+
+func (m *MockTssRequestsDb) BumpAttempt(keyId, msg string, attemptCount uint, nextAttemptHeight uint64) error {
+	for id, req := range m.Requests {
+		if req.KeyId == keyId && req.Msg == msg {
+			req.AttemptCount = attemptCount
+			req.NextAttemptHeight = nextAttemptHeight
+			m.Requests[id] = req
+			return nil
+		}
+	}
+	return fmt.Errorf("request not found: keyId=%s msg=%s", keyId, msg)
+}
+
+func (m *MockTssRequestsDb) MarkFailedByKey(keyId string) error {
+	for id, req := range m.Requests {
+		if req.KeyId == keyId && req.Status == tss.SignPending {
+			req.Status = tss.SignFailed
+			m.Requests[id] = req
+		}
+	}
+	return nil
 }
 
 func (m *MockTssRequestsDb) FindRequests(keyID string, msgs []string) ([]tss.TssRequest, error) {
