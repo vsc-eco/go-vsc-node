@@ -222,31 +222,21 @@ type MockTssRequestsDb struct {
 }
 
 func (m *MockTssRequestsDb) SetSignedRequest(req tss.TssRequest) error {
-	existing, ok := m.Requests[req.Id]
-	if !ok {
-		// Resolve by (key_id, msg) as a fallback since the Id column is unused.
-		for id, other := range m.Requests {
-			if other.KeyId == req.KeyId && other.Msg == req.Msg {
-				existing = other
-				req.Id = id
-				ok = true
-				break
+	for id, other := range m.Requests {
+		if other.KeyId == req.KeyId && other.Msg == req.Msg {
+			if other.Status == tss.SignFailed {
+				other.Status = tss.SignPending
+				other.AttemptCount = 0
+				other.LastAttempt = req.CreatedHeight
+				other.CreatedHeight = req.CreatedHeight
+				other.Sig = ""
+				m.Requests[id] = other
 			}
+			return nil
 		}
 	}
-	if ok {
-		if existing.Status == tss.SignFailed {
-			existing.Status = tss.SignPending
-			existing.AttemptCount = 0
-			existing.NextAttemptHeight = req.CreatedHeight
-			existing.CreatedHeight = req.CreatedHeight
-			existing.Sig = ""
-			m.Requests[existing.Id] = existing
-		}
-		return nil
-	}
-	if req.NextAttemptHeight == 0 {
-		req.NextAttemptHeight = req.CreatedHeight
+	if req.LastAttempt == 0 {
+		req.LastAttempt = req.CreatedHeight
 	}
 	m.Requests[req.Id] = req
 	return nil
@@ -258,14 +248,14 @@ func (m *MockTssRequestsDb) FindUnsignedRequests(blockHeight uint64, limit int64
 		if req.Status != tss.SignPending {
 			continue
 		}
-		if req.NextAttemptHeight > blockHeight {
+		if req.LastAttempt > blockHeight {
 			continue
 		}
 		results = append(results, req)
 	}
 	sort.Slice(results, func(i, j int) bool {
-		if results[i].NextAttemptHeight != results[j].NextAttemptHeight {
-			return results[i].NextAttemptHeight < results[j].NextAttemptHeight
+		if results[i].LastAttempt != results[j].LastAttempt {
+			return results[i].LastAttempt < results[j].LastAttempt
 		}
 		if results[i].CreatedHeight != results[j].CreatedHeight {
 			return results[i].CreatedHeight < results[j].CreatedHeight
@@ -281,11 +271,19 @@ func (m *MockTssRequestsDb) FindUnsignedRequests(blockHeight uint64, limit int64
 	return results, nil
 }
 
-func (m *MockTssRequestsDb) BumpAttempt(keyId, msg string, attemptCount uint, nextAttemptHeight uint64) error {
+func (m *MockTssRequestsDb) ReserveAttempt(keyId, msg string, bh uint64) error {
 	for id, req := range m.Requests {
 		if req.KeyId == keyId && req.Msg == msg {
-			req.AttemptCount = attemptCount
-			req.NextAttemptHeight = nextAttemptHeight
+			// Mirror the DB method's defensive guard: only reserve pending rows.
+			if req.Status != tss.SignPending {
+				return nil
+			}
+			if req.LastAttempt > bh {
+				// Reservation still active — idempotent no-op.
+				return nil
+			}
+			req.LastAttempt = bh + tss.SignAttemptReservation
+			req.AttemptCount++
 			m.Requests[id] = req
 			return nil
 		}
@@ -298,6 +296,17 @@ func (m *MockTssRequestsDb) MarkFailedByKey(keyId string) error {
 		if req.KeyId == keyId && req.Status == tss.SignPending {
 			req.Status = tss.SignFailed
 			m.Requests[id] = req
+		}
+	}
+	return nil
+}
+
+func (m *MockTssRequestsDb) MarkFailed(keyId, msg string) error {
+	for id, req := range m.Requests {
+		if req.KeyId == keyId && req.Msg == msg && req.Status == tss.SignPending {
+			req.Status = tss.SignFailed
+			m.Requests[id] = req
+			return nil
 		}
 	}
 	return nil

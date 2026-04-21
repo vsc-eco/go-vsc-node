@@ -1,17 +1,18 @@
 package test_utils
 
 import (
+	"fmt"
 	"testing"
 
 	tss "vsc-node/modules/db/vsc/tss"
 )
 
-func TestFindUnsignedRequests_OrdersByNextAttemptHeight(t *testing.T) {
+func TestFindUnsignedRequests_OrdersByLastAttempt(t *testing.T) {
 	mock := &MockTssRequestsDb{
 		Requests: map[string]tss.TssRequest{
-			"a": {Id: "a", KeyId: "k1", Msg: "aa", Status: tss.SignPending, CreatedHeight: 300, NextAttemptHeight: 300},
-			"b": {Id: "b", KeyId: "k1", Msg: "bb", Status: tss.SignPending, CreatedHeight: 100, NextAttemptHeight: 100},
-			"c": {Id: "c", KeyId: "k1", Msg: "cc", Status: tss.SignPending, CreatedHeight: 200, NextAttemptHeight: 200},
+			"a": {Id: "a", KeyId: "k1", Msg: "aa", Status: tss.SignPending, CreatedHeight: 300, LastAttempt: 300},
+			"b": {Id: "b", KeyId: "k1", Msg: "bb", Status: tss.SignPending, CreatedHeight: 100, LastAttempt: 100},
+			"c": {Id: "c", KeyId: "k1", Msg: "cc", Status: tss.SignPending, CreatedHeight: 200, LastAttempt: 200},
 		},
 	}
 
@@ -22,64 +23,100 @@ func TestFindUnsignedRequests_OrdersByNextAttemptHeight(t *testing.T) {
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(results))
 	}
-	if results[0].NextAttemptHeight != 100 || results[1].NextAttemptHeight != 200 || results[2].NextAttemptHeight != 300 {
-		t.Errorf("expected next-attempt order [100,200,300], got [%d,%d,%d]",
-			results[0].NextAttemptHeight, results[1].NextAttemptHeight, results[2].NextAttemptHeight)
+	if results[0].LastAttempt != 100 || results[1].LastAttempt != 200 || results[2].LastAttempt != 300 {
+		t.Errorf("expected last-attempt order [100,200,300], got [%d,%d,%d]",
+			results[0].LastAttempt, results[1].LastAttempt, results[2].LastAttempt)
 	}
 }
 
-func TestFindUnsignedRequests_BackedOffMovesToEnd(t *testing.T) {
+func TestFindUnsignedRequests_GatesOnLastAttempt(t *testing.T) {
 	mock := &MockTssRequestsDb{
 		Requests: map[string]tss.TssRequest{
-			// Old creation but backed off - should be LAST despite older CreatedHeight.
-			"stale": {Id: "stale", KeyId: "k1", Msg: "stale", Status: tss.SignPending, CreatedHeight: 50, AttemptCount: 4, NextAttemptHeight: 450},
-			"fresh": {Id: "fresh", KeyId: "k1", Msg: "fresh", Status: tss.SignPending, CreatedHeight: 400, NextAttemptHeight: 400},
+			"in-flight": {Id: "in-flight", KeyId: "k1", Msg: "in-flight", Status: tss.SignPending, CreatedHeight: 50, LastAttempt: 200},
+			"ready":     {Id: "ready", KeyId: "k1", Msg: "ready", Status: tss.SignPending, CreatedHeight: 50, LastAttempt: 50},
 		},
 	}
 
-	results, err := mock.FindUnsignedRequests(500, 10)
+	// bh < in-flight's LastAttempt: only "ready" returned.
+	results, err := mock.FindUnsignedRequests(100, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Msg != "ready" {
+		t.Fatalf("want [ready], got %+v", results)
+	}
+
+	// bh past the reservation: both eligible.
+	results, err = mock.FindUnsignedRequests(300, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
-	}
-	if results[0].Msg != "fresh" || results[1].Msg != "stale" {
-		t.Errorf("expected fresh before stale, got %s,%s", results[0].Msg, results[1].Msg)
+		t.Fatalf("want 2 results, got %d", len(results))
 	}
 }
 
-func TestFindUnsignedRequests_LimitTruncates(t *testing.T) {
+func TestFindUnsignedRequests_SurfacesCapped(t *testing.T) {
+	// At-cap rows remain in the query result so the caller can mark them
+	// failed at selection time. Enforcement is lazy, not filter-based.
 	mock := &MockTssRequestsDb{
 		Requests: map[string]tss.TssRequest{
-			"a": {Id: "a", KeyId: "k1", Msg: "aa", Status: tss.SignPending, NextAttemptHeight: 300, CreatedHeight: 300},
-			"b": {Id: "b", KeyId: "k1", Msg: "bb", Status: tss.SignPending, NextAttemptHeight: 100, CreatedHeight: 100},
-			"c": {Id: "c", KeyId: "k1", Msg: "cc", Status: tss.SignPending, NextAttemptHeight: 200, CreatedHeight: 200},
-			"d": {Id: "d", KeyId: "k1", Msg: "dd", Status: tss.SignPending, NextAttemptHeight: 400, CreatedHeight: 400},
-			"e": {Id: "e", KeyId: "k1", Msg: "ee", Status: tss.SignPending, NextAttemptHeight: 500, CreatedHeight: 500},
+			"capped": {
+				Id: "capped", KeyId: "k1", Msg: "capped",
+				Status:        tss.SignPending,
+				CreatedHeight: 100,
+				LastAttempt:   100,
+				AttemptCount:  tss.MaxSignAttempts,
+			},
 		},
 	}
 
-	results, err := mock.FindUnsignedRequests(600, 3)
+	results, err := mock.FindUnsignedRequests(500, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 3 {
-		t.Fatalf("expected 3 results, got %d", len(results))
+	if len(results) != 1 || results[0].Msg != "capped" {
+		t.Fatalf("want [capped] returned for caller to mark failed, got %+v", results)
 	}
-	if results[0].NextAttemptHeight != 100 {
-		t.Errorf("expected earliest (100), got %d", results[0].NextAttemptHeight)
+	if results[0].AttemptCount != tss.MaxSignAttempts {
+		t.Errorf("expected AttemptCount=%d, got %d", tss.MaxSignAttempts, results[0].AttemptCount)
 	}
-	if results[2].NextAttemptHeight != 300 {
-		t.Errorf("expected third earliest (300), got %d", results[2].NextAttemptHeight)
+}
+
+func TestFindUnsignedRequests_RespectsLimit(t *testing.T) {
+	mock := &MockTssRequestsDb{
+		Requests: map[string]tss.TssRequest{},
+	}
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("m-%02d", i)
+		mock.Requests[id] = tss.TssRequest{
+			Id: id, KeyId: "k1", Msg: id,
+			Status: tss.SignPending, CreatedHeight: uint64(100 + i), LastAttempt: uint64(100 + i),
+		}
+	}
+
+	results, err := mock.FindUnsignedRequests(500, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 6 {
+		t.Fatalf("want 6, got %d", len(results))
+	}
+	// Lowest LastAttempt (== CreatedHeight) first → m-00..m-05.
+	for i, r := range results {
+		want := fmt.Sprintf("m-%02d", i)
+		if r.Msg != want {
+			t.Errorf("position %d: want %q, got %q", i, want, r.Msg)
+		}
 	}
 }
 
 func TestFindUnsignedRequests_Limit1ForExistenceCheck(t *testing.T) {
+	// tss.go:437 uses Limit=1 as an existence check. Preserve this.
 	mock := &MockTssRequestsDb{
 		Requests: map[string]tss.TssRequest{
-			"a": {Id: "a", KeyId: "k1", Msg: "aa", Status: tss.SignPending, CreatedHeight: 100, NextAttemptHeight: 100},
-			"b": {Id: "b", KeyId: "k1", Msg: "bb", Status: tss.SignPending, CreatedHeight: 200, NextAttemptHeight: 200},
+			"a": {Id: "a", KeyId: "k1", Msg: "aa", Status: tss.SignPending, CreatedHeight: 100, LastAttempt: 100},
+			"b": {Id: "b", KeyId: "k1", Msg: "bb", Status: tss.SignPending, CreatedHeight: 200, LastAttempt: 200},
 		},
 	}
 
@@ -90,18 +127,18 @@ func TestFindUnsignedRequests_Limit1ForExistenceCheck(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result for existence check, got %d", len(results))
 	}
-	if results[0].NextAttemptHeight != 100 {
-		t.Errorf("expected earliest (100), got %d", results[0].NextAttemptHeight)
+	if results[0].LastAttempt != 100 {
+		t.Errorf("expected earliest (100), got %d", results[0].LastAttempt)
 	}
 }
 
 func TestFindUnsignedRequests_SkipsSignedAndFailed(t *testing.T) {
 	mock := &MockTssRequestsDb{
 		Requests: map[string]tss.TssRequest{
-			"a":      {Id: "a", KeyId: "k1", Msg: "aa", Status: tss.SignPending, NextAttemptHeight: 100, CreatedHeight: 100},
-			"signed": {Id: "signed", KeyId: "k1", Msg: "ss", Sig: "somesig", Status: tss.SignComplete, NextAttemptHeight: 50, CreatedHeight: 50},
-			"failed": {Id: "failed", KeyId: "k1", Msg: "ff", Status: tss.SignFailed, NextAttemptHeight: 60, CreatedHeight: 60},
-			"b":      {Id: "b", KeyId: "k1", Msg: "bb", Status: tss.SignPending, NextAttemptHeight: 200, CreatedHeight: 200},
+			"a":      {Id: "a", KeyId: "k1", Msg: "aa", Status: tss.SignPending, LastAttempt: 100, CreatedHeight: 100},
+			"signed": {Id: "signed", KeyId: "k1", Msg: "ss", Sig: "somesig", Status: tss.SignComplete, LastAttempt: 50, CreatedHeight: 50},
+			"failed": {Id: "failed", KeyId: "k1", Msg: "ff", Status: tss.SignFailed, LastAttempt: 60, CreatedHeight: 60},
+			"b":      {Id: "b", KeyId: "k1", Msg: "bb", Status: tss.SignPending, LastAttempt: 200, CreatedHeight: 200},
 		},
 	}
 
@@ -114,30 +151,10 @@ func TestFindUnsignedRequests_SkipsSignedAndFailed(t *testing.T) {
 	}
 }
 
-func TestFindUnsignedRequests_GatesOnNextAttemptHeight(t *testing.T) {
-	mock := &MockTssRequestsDb{
-		Requests: map[string]tss.TssRequest{
-			"due":    {Id: "due", KeyId: "k1", Msg: "due", Status: tss.SignPending, NextAttemptHeight: 100, CreatedHeight: 50},
-			"future": {Id: "future", KeyId: "k1", Msg: "future", Status: tss.SignPending, NextAttemptHeight: 500, CreatedHeight: 50},
-		},
-	}
-
-	results, err := mock.FindUnsignedRequests(100, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result (gated), got %d: %+v", len(results), results)
-	}
-	if results[0].Msg != "due" {
-		t.Errorf("expected 'due', got %q", results[0].Msg)
-	}
-}
-
 func TestFindUnsignedRequests_LimitLargerThanResults(t *testing.T) {
 	mock := &MockTssRequestsDb{
 		Requests: map[string]tss.TssRequest{
-			"a": {Id: "a", KeyId: "k1", Msg: "aa", Status: tss.SignPending, NextAttemptHeight: 100, CreatedHeight: 100},
+			"a": {Id: "a", KeyId: "k1", Msg: "aa", Status: tss.SignPending, LastAttempt: 100, CreatedHeight: 100},
 		},
 	}
 
@@ -153,7 +170,7 @@ func TestFindUnsignedRequests_LimitLargerThanResults(t *testing.T) {
 func TestSetSignedRequest_ResetsFailed(t *testing.T) {
 	mock := &MockTssRequestsDb{
 		Requests: map[string]tss.TssRequest{
-			"x": {Id: "x", KeyId: "k1", Msg: "m", Status: tss.SignFailed, Sig: "stale", CreatedHeight: 100, AttemptCount: 5, NextAttemptHeight: 1200},
+			"x": {Id: "x", KeyId: "k1", Msg: "m", Status: tss.SignFailed, Sig: "stale", CreatedHeight: 100, AttemptCount: 5, LastAttempt: 1200},
 		},
 	}
 
@@ -168,8 +185,8 @@ func TestSetSignedRequest_ResetsFailed(t *testing.T) {
 	if got.AttemptCount != 0 {
 		t.Errorf("expected AttemptCount reset to 0, got %d", got.AttemptCount)
 	}
-	if got.NextAttemptHeight != 900 {
-		t.Errorf("expected NextAttemptHeight=900, got %d", got.NextAttemptHeight)
+	if got.LastAttempt != 900 {
+		t.Errorf("expected LastAttempt=900, got %d", got.LastAttempt)
 	}
 	if got.CreatedHeight != 900 {
 		t.Errorf("expected CreatedHeight=900, got %d", got.CreatedHeight)
@@ -182,7 +199,7 @@ func TestSetSignedRequest_ResetsFailed(t *testing.T) {
 func TestSetSignedRequest_NoOpOnUnsigned(t *testing.T) {
 	mock := &MockTssRequestsDb{
 		Requests: map[string]tss.TssRequest{
-			"x": {Id: "x", KeyId: "k1", Msg: "m", Status: tss.SignPending, CreatedHeight: 100, AttemptCount: 2, NextAttemptHeight: 400},
+			"x": {Id: "x", KeyId: "k1", Msg: "m", Status: tss.SignPending, CreatedHeight: 100, AttemptCount: 2, LastAttempt: 400},
 		},
 	}
 
@@ -191,28 +208,121 @@ func TestSetSignedRequest_NoOpOnUnsigned(t *testing.T) {
 	}
 
 	got := mock.Requests["x"]
-	if got.AttemptCount != 2 || got.NextAttemptHeight != 400 || got.CreatedHeight != 100 {
+	if got.AttemptCount != 2 || got.LastAttempt != 400 || got.CreatedHeight != 100 {
 		t.Errorf("expected unchanged unsigned, got %+v", got)
 	}
 }
 
-func TestBumpAttempt_SetsAttemptAndNext(t *testing.T) {
+func TestReserveAttempt_IdempotentWithinReservation(t *testing.T) {
 	mock := &MockTssRequestsDb{
 		Requests: map[string]tss.TssRequest{
-			"x": {Id: "x", KeyId: "k1", Msg: "m", Status: tss.SignPending, CreatedHeight: 100, NextAttemptHeight: 100},
-			"y": {Id: "y", KeyId: "k2", Msg: "m", Status: tss.SignPending, CreatedHeight: 100, NextAttemptHeight: 100},
+			"x": {Id: "x", KeyId: "k1", Msg: "aa", Status: tss.SignPending, CreatedHeight: 100, LastAttempt: 100},
 		},
 	}
 
-	if err := mock.BumpAttempt("k1", "m", 3, 750); err != nil {
+	// First reservation at bh=500.
+	if err := mock.ReserveAttempt("k1", "aa", 500); err != nil {
+		t.Fatal(err)
+	}
+	// Re-issuing the same block's reservation must not double-count.
+	if err := mock.ReserveAttempt("k1", "aa", 500); err != nil {
+		t.Fatal(err)
+	}
+	// Even at bh within the reservation window: no-op.
+	if err := mock.ReserveAttempt("k1", "aa", 500+tss.SignAttemptReservation-1); err != nil {
 		t.Fatal(err)
 	}
 
-	if mock.Requests["x"].AttemptCount != 3 || mock.Requests["x"].NextAttemptHeight != 750 {
-		t.Errorf("expected bumped x, got %+v", mock.Requests["x"])
+	got := mock.Requests["x"]
+	if got.LastAttempt != 500+tss.SignAttemptReservation {
+		t.Errorf("expected LastAttempt=%d, got %d", 500+tss.SignAttemptReservation, got.LastAttempt)
 	}
-	if mock.Requests["y"].AttemptCount != 0 || mock.Requests["y"].NextAttemptHeight != 100 {
-		t.Errorf("expected untouched y, got %+v", mock.Requests["y"])
+	if got.AttemptCount != 1 {
+		t.Errorf("expected AttemptCount=1, got %d", got.AttemptCount)
+	}
+}
+
+func TestReserveAttempt_NoOpOnNonPending(t *testing.T) {
+	// Defensive guard: if a row has transitioned to failed or complete,
+	// ReserveAttempt must not touch it.
+	mock := &MockTssRequestsDb{
+		Requests: map[string]tss.TssRequest{
+			"failed":   {Id: "failed", KeyId: "k1", Msg: "failed", Status: tss.SignFailed, CreatedHeight: 100, LastAttempt: 100, AttemptCount: 3},
+			"complete": {Id: "complete", KeyId: "k1", Msg: "complete", Status: tss.SignComplete, Sig: "sig", CreatedHeight: 100, LastAttempt: 100, AttemptCount: 1},
+		},
+	}
+
+	if err := mock.ReserveAttempt("k1", "failed", 500); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ReserveAttempt("k1", "complete", 500); err != nil {
+		t.Fatal(err)
+	}
+
+	failed := mock.Requests["failed"]
+	if failed.LastAttempt != 100 {
+		t.Errorf("failed row LastAttempt should stay 100, got %d", failed.LastAttempt)
+	}
+	if failed.AttemptCount != 3 {
+		t.Errorf("failed row AttemptCount should stay 3, got %d", failed.AttemptCount)
+	}
+
+	complete := mock.Requests["complete"]
+	if complete.LastAttempt != 100 {
+		t.Errorf("complete row LastAttempt should stay 100, got %d", complete.LastAttempt)
+	}
+	if complete.AttemptCount != 1 {
+		t.Errorf("complete row AttemptCount should stay 1, got %d", complete.AttemptCount)
+	}
+}
+
+func TestMarkFailed_TransitionsPendingRow(t *testing.T) {
+	mock := &MockTssRequestsDb{
+		Requests: map[string]tss.TssRequest{
+			"to-fail": {
+				Id: "to-fail", KeyId: "k1", Msg: "to-fail",
+				Status:        tss.SignPending,
+				CreatedHeight: 100,
+				LastAttempt:   100,
+				AttemptCount:  tss.MaxSignAttempts,
+			},
+		},
+	}
+
+	if err := mock.MarkFailed("k1", "to-fail"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := mock.Requests["to-fail"]
+	if got.Status != tss.SignFailed {
+		t.Errorf("expected SignFailed, got %s", got.Status)
+	}
+}
+
+func TestMarkFailed_NoOpOnComplete(t *testing.T) {
+	mock := &MockTssRequestsDb{
+		Requests: map[string]tss.TssRequest{
+			"done": {
+				Id: "done", KeyId: "k1", Msg: "done",
+				Status:        tss.SignComplete,
+				Sig:           "sig",
+				CreatedHeight: 100,
+				LastAttempt:   100,
+				AttemptCount:  2,
+			},
+		},
+	}
+
+	if err := mock.MarkFailed("k1", "done"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := mock.Requests["done"]
+	if got.Status != tss.SignComplete {
+		t.Errorf("expected SignComplete, got %s", got.Status)
+	}
+	if got.Sig != "sig" {
+		t.Errorf("expected Sig preserved, got %q", got.Sig)
 	}
 }
 

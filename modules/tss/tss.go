@@ -56,39 +56,20 @@ const (
 	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
 	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
 
-	// Signing dispatches are staggered across the window to keep peak p2p
-	// load low. One request fires every signStaggerStep blocks for up to
-	// signStaggerCount slots. With signInterval=50 and signStaggerStep=5,
-	// the last dispatch lands at bh+25, leaving 25 blocks (~75s) of headroom
-	// for the 60s sign timeout to drain before the next window opens.
+	// Signing dispatches are staggered across the interval to bound peak p2p
+	// load. One request fires every signStaggerStep blocks for up to
+	// signStaggerCount slots. With signInterval=50 and signStaggerStep=5, the
+	// last dispatch lands at bh+25, leaving 25 blocks of headroom for the sign
+	// timeout before the next window opens.
+	//
+	// Queue ordering and reservation lifecycle are in modules/db/vsc/tss —
+	// selected requests have their LastAttempt advanced deterministically via
+	// ReserveAttempt at slot 0 of each window; RunActions consumes the cache
+	// read-only.
 	maxSignPerWindow = int64(6)
 	signStaggerStep  = uint64(5)
 	signStaggerCount = 6
 )
-
-// computeNextAttemptHeight returns the block height at which a signing request
-// becomes eligible for another dispatch, given that it was just dispatched at
-// bh with the new attemptCount. Backoff grows as signInterval << attemptCount
-// and saturates at SignBackoffMaxBlocks so a chronically-failing request
-// retries at most once per ~hour until its key is deprecated.
-func computeNextAttemptHeight(bh uint64, attemptCount uint, signInterval uint64) uint64 {
-	shift := attemptCount
-	// Bound shift to avoid overflow on very large attempt counts. 63 fits all
-	// plausible values; SignBackoffMaxBlocks will have already saturated the
-	// result well before this point.
-	if shift > 63 {
-		shift = 63
-	}
-	backoff := signInterval << shift
-	if backoff < signInterval {
-		// Overflow fallback (shouldn't trigger given the 63 guard above).
-		backoff = tss_db.SignBackoffMaxBlocks
-	}
-	if backoff > tss_db.SignBackoffMaxBlocks {
-		backoff = tss_db.SignBackoffMaxBlocks
-	}
-	return bh + backoff
-}
 
 // ReadyAttestation is a BLS-signed self-attestation that a node is online and
 // ready for TSS operations at a given block height. Attestations are per-height
@@ -553,15 +534,20 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				fetched, _ := tssMgr.tssRequests.FindUnsignedRequests(bh, maxSignPerWindow)
 				filtered := make([]tss_db.TssRequest, 0, len(fetched))
 				for _, req := range fetched {
+					// Lazy attempt-cap enforcement: a row only surfaces here if it
+					// slipped through FindUnsignedRequests because the filter is
+					// status+last_attempt only. Mark it failed and drop.
+					if req.AttemptCount >= tss_db.MaxSignAttempts {
+						if err := tssMgr.tssRequests.MarkFailed(req.KeyId, req.Msg); err != nil {
+							log.Warn("MarkFailed for capped request failed",
+								"keyId", req.KeyId, "err", err)
+						}
+						continue
+					}
 					keyInfo, _ := tssMgr.tssKeys.FindKey(req.KeyId)
 					if keyInfo.Status != tss_db.TssKeyActive {
-						log.Warn(
-							"signing attempted for non-active key, skipping",
-							"keyId",
-							keyInfo.Id,
-							"status",
-							keyInfo.Status,
-						)
+						log.Warn("signing attempted for non-active key, skipping",
+							"keyId", keyInfo.Id, "status", keyInfo.Status)
 						continue
 					}
 					if keyLocks[req.KeyId] {
@@ -569,6 +555,19 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 					}
 					filtered = append(filtered, req)
 				}
+
+				// Deterministic reservation: advance LastAttempt + increment
+				// AttemptCount for each selected request. Runs on every node because
+				// BlockTick runs per-block via the L1 consumer — no TryLock gate,
+				// no dispatch-success dependency. The idempotent guard in
+				// ReserveAttempt ensures block replay after a restart is a no-op.
+				for _, req := range filtered {
+					if err := tssMgr.tssRequests.ReserveAttempt(req.KeyId, req.Msg, bh); err != nil {
+						log.Warn("ReserveAttempt failed",
+							"keyId", req.KeyId, "bh", bh, "err", err)
+					}
+				}
+
 				tssMgr.signBatchMu.Lock()
 				tssMgr.signBatchBh = bh
 				tssMgr.signBatch = filtered
@@ -591,11 +590,10 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				rawMsg, err := hex.DecodeString(signReq.Msg)
 				if err == nil {
 					generatedActions = append(generatedActions, QueuedAction{
-						Type:         SignAction,
-						KeyId:        signReq.KeyId,
-						Args:         rawMsg,
-						Algo:         tss_helpers.SigningAlgo(keyInfo.Algo),
-						AttemptCount: signReq.AttemptCount,
+						Type:  SignAction,
+						KeyId: signReq.KeyId,
+						Args:  rawMsg,
+						Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
 					})
 				}
 			}
@@ -1192,16 +1190,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			tssMgr.bufferLock.Lock()
 			tssMgr.actionMap[sessionId] = dispatcher
 			tssMgr.bufferLock.Unlock()
-
-			// Record this dispatch in the request's backoff state so the
-			// scheduler doesn't pick it up again until the next attempt
-			// window. Filter paths above (missing commitment, insufficient
-			// participants) reach this via continue and correctly skip the bump.
-			newAttempt := action.AttemptCount + 1
-			nextHeight := computeNextAttemptHeight(bh, newAttempt, getSignInterval(tssMgr.sconf))
-			if err := tssMgr.tssRequests.BumpAttempt(action.KeyId, hex.EncodeToString(action.Args), newAttempt, nextHeight); err != nil {
-				log.Warn("BumpAttempt failed", "sessionId", sessionId, "keyId", action.KeyId, "err", err)
-			}
 		} else if action.Type == ReshareAction {
 
 			sessionId = "reshare-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
