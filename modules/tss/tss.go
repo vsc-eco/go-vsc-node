@@ -66,6 +66,30 @@ const (
 	signStaggerCount = 6
 )
 
+// computeNextAttemptHeight returns the block height at which a signing request
+// becomes eligible for another dispatch, given that it was just dispatched at
+// bh with the new attemptCount. Backoff grows as signInterval << attemptCount
+// and saturates at SignBackoffMaxBlocks so a chronically-failing request
+// retries at most once per ~hour until its key is deprecated.
+func computeNextAttemptHeight(bh uint64, attemptCount uint, signInterval uint64) uint64 {
+	shift := attemptCount
+	// Bound shift to avoid overflow on very large attempt counts. 63 fits all
+	// plausible values; SignBackoffMaxBlocks will have already saturated the
+	// result well before this point.
+	if shift > 63 {
+		shift = 63
+	}
+	backoff := signInterval << shift
+	if backoff < signInterval {
+		// Overflow fallback (shouldn't trigger given the 63 guard above).
+		backoff = tss_db.SignBackoffMaxBlocks
+	}
+	if backoff > tss_db.SignBackoffMaxBlocks {
+		backoff = tss_db.SignBackoffMaxBlocks
+	}
+	return bh + backoff
+}
+
 // ReadyAttestation is a BLS-signed self-attestation that a node is online and
 // ready for TSS operations at a given block height. Attestations are per-height
 // (not per-key) because readiness is a node property — if a node is up, it can
@@ -567,10 +591,11 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				rawMsg, err := hex.DecodeString(signReq.Msg)
 				if err == nil {
 					generatedActions = append(generatedActions, QueuedAction{
-						Type:  SignAction,
-						KeyId: signReq.KeyId,
-						Args:  rawMsg,
-						Algo:  tss_helpers.SigningAlgo(keyInfo.Algo),
+						Type:         SignAction,
+						KeyId:        signReq.KeyId,
+						Args:         rawMsg,
+						Algo:         tss_helpers.SigningAlgo(keyInfo.Algo),
+						AttemptCount: signReq.AttemptCount,
 					})
 				}
 			}
@@ -1167,6 +1192,16 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			tssMgr.bufferLock.Lock()
 			tssMgr.actionMap[sessionId] = dispatcher
 			tssMgr.bufferLock.Unlock()
+
+			// Record this dispatch in the request's backoff state so the
+			// scheduler doesn't pick it up again until the next attempt
+			// window. Filter paths above (missing commitment, insufficient
+			// participants) reach this via continue and correctly skip the bump.
+			newAttempt := action.AttemptCount + 1
+			nextHeight := computeNextAttemptHeight(bh, newAttempt, getSignInterval(tssMgr.sconf))
+			if err := tssMgr.tssRequests.BumpAttempt(action.KeyId, hex.EncodeToString(action.Args), newAttempt, nextHeight); err != nil {
+				log.Warn("BumpAttempt failed", "sessionId", sessionId, "keyId", action.KeyId, "err", err)
+			}
 		} else if action.Type == ReshareAction {
 
 			sessionId = "reshare-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId

@@ -41,6 +41,10 @@ type QueuedAction struct {
 	KeyId string
 	Args  []byte
 	Algo  tss_helpers.SigningAlgo
+	// AttemptCount is the pre-dispatch attempt count of the signing request.
+	// Only populated for SignAction; used in RunActions to compute the
+	// post-dispatch backoff for BumpAttempt.
+	AttemptCount uint
 }
 
 type partyConfig struct {

@@ -155,15 +155,36 @@ func (tssKeys *tssKeys) FindEpochKeys(epoch uint64) ([]TssKey, error) {
 
 // DeprecateLegacyKeys bulk-deprecates all active keys that have no expiry epoch set.
 // deprecated_height is left at 0, meaning no retirement clock is running — the key
-// stays deprecated until renewed.
-func (tssKeys *tssKeys) DeprecateLegacyKeys() error {
-	_, err := tssKeys.UpdateMany(context.Background(), bson.M{
+// stays deprecated until renewed. Returns the IDs of the keys that were newly
+// deprecated so the caller can fail their pending signing requests.
+func (tssKeys *tssKeys) DeprecateLegacyKeys() ([]string, error) {
+	ctx := context.Background()
+
+	filter := bson.M{
 		"status": TssKeyActive,
 		"$or": []bson.M{
 			{"expiry_epoch": bson.M{"$exists": false}},
 			{"expiry_epoch": 0},
 		},
-	}, bson.M{
+	}
+
+	cursor, err := tssKeys.Find(ctx, filter)
+	if err != nil {
+		log.Warn("DeprecateLegacyKeys find failed", "err", err)
+		return nil, err
+	}
+	legacy := make([]TssKey, 0)
+	if err := cursor.All(ctx, &legacy); err != nil {
+		log.Warn("DeprecateLegacyKeys decode failed", "err", err)
+		return nil, err
+	}
+
+	ids := make([]string, 0, len(legacy))
+	for _, k := range legacy {
+		ids = append(ids, k.Id)
+	}
+
+	_, err = tssKeys.UpdateMany(ctx, filter, bson.M{
 		"$set": bson.M{
 			"status":            TssKeyDeprecated,
 			"deprecated_height": 0,
@@ -171,10 +192,10 @@ func (tssKeys *tssKeys) DeprecateLegacyKeys() error {
 	})
 	if err != nil {
 		log.Warn("DeprecateLegacyKeys failed", "err", err)
-	} else {
-		log.Info("DeprecateLegacyKeys completed")
+		return nil, err
 	}
-	return err
+	log.Info("DeprecateLegacyKeys completed", "count", len(ids))
+	return ids, nil
 }
 
 func NewKeys(d *vsc.VscDb) TssKeys {

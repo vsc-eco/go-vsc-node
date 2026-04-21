@@ -17,9 +17,11 @@ const KeyDeprecationGracePeriod = uint64(403200)
 // clock is started and the key stays deprecated indefinitely until renewed.
 const KeyRetirementEnabled = false
 
-// SignExpiryBlocks is the number of blocks after which an unsigned signing request
-// is marked as failed. At ~3s/block this is roughly 50 minutes (20 sign intervals).
-const SignExpiryBlocks = uint64(1000)
+// SignBackoffMaxBlocks is the ceiling on the per-attempt backoff delay for an
+// unsigned signing request. The backoff is signInterval << attemptCount, clamped
+// to this cap. At ~3s/block this is roughly 1 hour — a chronically-failing
+// request retries at most once per hour until its key is deprecated.
+const SignBackoffMaxBlocks = uint64(1200)
 
 type TssKeys interface {
 	a.Plugin
@@ -36,7 +38,8 @@ type TssKeys interface {
 	// Called once at node startup so pre-expiry-system keys are no longer reshared or signed.
 	// Keys with deprecated_height=0 are not subject to the retirement grace period — they stay
 	// deprecated until explicitly renewed.
-	DeprecateLegacyKeys() error
+	// Returns the IDs of the keys that were newly deprecated by this call.
+	DeprecateLegacyKeys() ([]string, error)
 }
 
 type TssRequests interface {
@@ -45,6 +48,12 @@ type TssRequests interface {
 	FindUnsignedRequests(blockHeight uint64, limit int64) ([]TssRequest, error)
 	FindRequests(keyID string, msgHex []string) ([]TssRequest, error)
 	UpdateRequest(req TssRequest) error
+	// BumpAttempt records that a signing request was dispatched at the given block
+	// and sets the next eligible attempt height.
+	BumpAttempt(keyId string, msg string, attemptCount uint, nextAttemptHeight uint64) error
+	// MarkFailedByKey transitions every unsigned request for the given key to failed.
+	// Called when a key is deprecated so its pending requests stop being retried.
+	MarkFailedByKey(keyId string) error
 }
 
 type TssCommitments interface {
@@ -95,12 +104,22 @@ type TssKey struct {
 }
 
 type TssRequest struct {
-	Id            string        `bson:"id"`
-	Status        TssSignStatus `bson:"status"`
-	KeyId         string        `bson:"key_id"`
-	Msg           string        `bson:"msg"`
-	Sig           string        `bson:"sig"`
-	CreatedHeight uint64        `bson:"created_height"`
+	Id     string        `bson:"id"`
+	Status TssSignStatus `bson:"status"`
+	KeyId  string        `bson:"key_id"`
+	Msg    string        `bson:"msg"`
+	Sig    string        `bson:"sig"`
+	// CreatedHeight is the block height at which the request was first submitted.
+	// On resubmission after failure it is updated to the resubmit block.
+	CreatedHeight uint64 `bson:"created_height"`
+	// AttemptCount is the number of signing dispatches that have targeted this
+	// request. Starts at 0, increments once per dispatch in RunActions.
+	AttemptCount uint `bson:"attempt_count"`
+	// NextAttemptHeight is the earliest L1 block at which this request is
+	// eligible for another signing dispatch. Set to CreatedHeight at submission
+	// and advanced by min(signInterval << AttemptCount, SignBackoffMaxBlocks)
+	// each time the request is dispatched.
+	NextAttemptHeight uint64 `bson:"next_attempt_height"`
 }
 
 // CommitmentMetadata optionally stores error/reason for blame commitments (e.g. timeout vs error).
