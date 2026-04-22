@@ -75,6 +75,16 @@ const (
 // ready for TSS operations at a given block height. Attestations are per-height
 // (not per-key) because readiness is a node property — if a node is up, it can
 // participate in any key's reshare or signing at that height.
+//
+// For reshare, TargetBlock is the exact block at which the reshare fires.
+// For signing, TargetBlock is the windowStart (next signInterval boundary) and
+// covers all signStaggerCount dispatch slots within that window; the sign
+// pre-flight gate rounds bh down to windowStart before looking up the ready set
+// so every slot 0..signStaggerCount-1 shares one attestation. The wire field
+// name is kept stable across this change for rolling-upgrade compatibility:
+// old-code nodes emitting per-block and new-code nodes emitting per-window
+// coexist in gossipAttestations without translation. See
+// signWindowGossipTarget for the emission logic.
 type ReadyAttestation struct {
 	Account     string `json:"account"`
 	TargetBlock uint64 `json:"target_block"`
@@ -245,32 +255,24 @@ func getReadinessOffset(sconf systemconfig.SystemConfig) uint64 {
 	return offset
 }
 
-// signSlotGossipTargets returns the target block heights that need readiness
-// gossip priming for the next signInterval window. Each entry corresponds to
-// one of the `signStaggerCount` dispatch slots inside that window, at offsets
-// {0, signStaggerStep, 2*signStaggerStep, ...}.
+// signWindowGossipTarget returns the windowStart block that needs readiness
+// gossip priming for the upcoming signInterval window, and whether it falls
+// within readinessOffset of bh. A single attestation at windowStart covers all
+// signStaggerCount dispatch slots inside the window (offsets {0, 5, 10, ...}):
+// the sign pre-flight gate rounds the session bh down to windowStart before
+// the ready-set lookup, so every slot resolves to the same key.
 //
-// The sign dispatcher at tss.go:1125 looks up readiness by the session's exact
-// block height, and ReadyAttestation is BLS-signed over (account, target_block),
-// so each slot requires its own attestation. Returning only the slot-0 target
-// would leave the five staggered slots of every window without readiness —
-// they dispatch with empty signReadyAccounts and bail out with
-// "insufficient participants for signing", capping throughput at one
-// signature per window instead of signStaggerCount.
-//
-// Only targets currently within `readinessOffset` blocks of `bh` are returned;
-// later slots enter the window as bh advances and get added on subsequent ticks.
-func signSlotGossipTargets(bh, signInterval, readinessOffset uint64) []uint64 {
+// This replaces the earlier signSlotGossipTargets which returned up to
+// signStaggerCount per-slot target blocks, each requiring its own BLS-signed
+// attestation. Emitting once per window cuts attestation signings ~6× and
+// pubsub bundle broadcasts ~6× over the readiness window.
+func signWindowGossipTarget(bh, signInterval, readinessOffset uint64) (uint64, bool) {
 	blocksUntilSign := signInterval - (bh % signInterval)
-	nextBoundary := bh + blocksUntilSign
-	targets := make([]uint64, 0, signStaggerCount)
-	for slot := uint64(0); slot < uint64(signStaggerCount); slot++ {
-		target := nextBoundary + slot*signStaggerStep
-		if target-bh <= readinessOffset {
-			targets = append(targets, target)
-		}
+	windowStart := bh + blocksUntilSign
+	if windowStart-bh > readinessOffset {
+		return 0, false
 	}
-	return targets
+	return windowStart, true
 }
 
 type TssManager struct {
@@ -440,16 +442,14 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			}
 		}
 	}
-	// Prime readiness gossip for every staggered sign slot whose target block
-	// falls inside the current readiness window. See signSlotGossipTargets.
-	signTargets := signSlotGossipTargets(bh, signInterval, readinessOffset)
-	if len(signTargets) > 0 {
+	// Prime readiness gossip once per signInterval window. The windowStart
+	// attestation is reused by every staggered sign slot via the pre-flight
+	// gate's windowStart lookup. See signWindowGossipTarget.
+	if signWindow, ok := signWindowGossipTarget(bh, signInterval, readinessOffset); ok {
 		// Only gossip if there is at least one unsigned request pending.
 		signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh, 1)
 		if len(signingRequests) > 0 {
-			for _, target := range signTargets {
-				gossipTargets[target] = true
-			}
+			gossipTargets[signWindow] = true
 		}
 	}
 
@@ -1154,7 +1154,42 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			// Build gossip readiness set — same mechanism as reshare.
 			// Per-height key: readiness is a node property, not per-key.
-			signHeightKey := strconv.FormatUint(bh, 10)
+			// For signing, all staggered slots within a signInterval window
+			// share a single attestation keyed by the windowStart block. Round
+			// bh down to the window boundary before the lookup so slot 0..N-1
+			// resolve to the same ready set.
+			signInterval := getSignInterval(tssMgr.sconf)
+			signWindowStart := bh - (bh % signInterval)
+			signHeightKey := strconv.FormatUint(signWindowStart, 10)
+
+			// Mixed-version rollout detector: if any per-block attestation
+			// exists for a non-slot-0 offset within this window, an old-code
+			// node is emitting per-slot attestations. New-code nodes would
+			// otherwise build a party list including those nodes for slots
+			// 1..N-1, then stall waiting for btss messages they will never
+			// send (old code looks up per-block keys that new code does not
+			// populate for later slots). Skip slots 1..N-1 until rollout
+			// completes; slot 0 always works because old and new emissions
+			// collide at target_block = windowStart. Drop this block once
+			// the network is known to be fully on window-based readiness.
+			if bh != signWindowStart {
+				tssMgr.gossipLock.RLock()
+				mixed := false
+				for offset := uint64(1); offset < uint64(signStaggerCount); offset++ {
+					slotKey := strconv.FormatUint(signWindowStart+offset*signStaggerStep, 10)
+					if len(tssMgr.gossipAttestations[slotKey]) > 0 {
+						mixed = true
+						break
+					}
+				}
+				tssMgr.gossipLock.RUnlock()
+				if mixed {
+					log.Warn("mixed-version rollout detected, skipping non-slot-0 sign dispatch",
+						"sessionId", sessionId, "bh", bh, "windowStart", signWindowStart)
+					continue
+				}
+			}
+
 			tssMgr.gossipLock.RLock()
 			signAttMap := tssMgr.gossipAttestations[signHeightKey]
 			signReadyAccounts := make(map[string]bool, len(signAttMap))
@@ -1163,7 +1198,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 			tssMgr.gossipLock.RUnlock()
 			log.Verbose("signing gossip readiness set",
-				"sessionId", sessionId, "readyCount", len(signReadyAccounts))
+				"sessionId", sessionId, "readyCount", len(signReadyAccounts),
+				"windowStart", signWindowStart)
 
 			filtered := make([]Participant, 0, len(participants))
 			for _, p := range participants {

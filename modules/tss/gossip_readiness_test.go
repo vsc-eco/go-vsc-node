@@ -293,102 +293,145 @@ func TestGossipReadySetDeterministicFromSameAttestations(t *testing.T) {
 	}
 }
 
-// TestSignSlotGossipTargets_BeforeWindow verifies that no targets are primed
+// TestSignWindowGossipTarget_BeforeWindow verifies that no target is primed
 // before the readiness window opens (i.e. when bh is more than readinessOffset
 // blocks away from the next signInterval boundary).
-func TestSignSlotGossipTargets_BeforeWindow(t *testing.T) {
+func TestSignWindowGossipTarget_BeforeWindow(t *testing.T) {
 	// signInterval=50, readinessOffset=30, bh=2000 (bh%50=0)
-	// blocksUntilSign = 50, slot-0 target-bh = 50 > 30 → empty.
-	got := signSlotGossipTargets(2000, 50, 30)
-	if len(got) != 0 {
-		t.Fatalf("expected no targets before window, got %v", got)
+	// blocksUntilSign=50, windowStart=2050, 50 > 30 → not in window.
+	if _, ok := signWindowGossipTarget(2000, 50, 30); ok {
+		t.Fatal("expected no target before readiness window")
 	}
 }
 
-// TestSignSlotGossipTargets_WindowEntry verifies only slot-0 is primed at the
-// moment the readiness window opens.
-func TestSignSlotGossipTargets_WindowEntry(t *testing.T) {
-	// bh=2020 (bh%50=20), blocksUntilSign=30, nextBoundary=2050.
-	// Slot 0 target-bh = 30 ≤ 30 → in. Slot 1 target-bh = 35 > 30 → out.
-	got := signSlotGossipTargets(2020, 50, 30)
-	want := []uint64{2050}
-	if !equalSlice(got, want) {
-		t.Fatalf("want %v, got %v", want, got)
+// TestSignWindowGossipTarget_WindowEntry verifies the windowStart is primed at
+// the moment the readiness window opens.
+func TestSignWindowGossipTarget_WindowEntry(t *testing.T) {
+	// bh=2020 (bh%50=20), blocksUntilSign=30, windowStart=2050, 30 ≤ 30 → in.
+	got, ok := signWindowGossipTarget(2020, 50, 30)
+	if !ok || got != 2050 {
+		t.Fatalf("want (2050, true), got (%d, %v)", got, ok)
 	}
 }
 
-// TestSignSlotGossipTargets_FullWindowPrimesAllSlots verifies that once bh is
-// close enough, all signStaggerCount slot targets enter the gossip window.
-func TestSignSlotGossipTargets_FullWindowPrimesAllSlots(t *testing.T) {
-	// bh=2045 (bh%50=45), blocksUntilSign=5, nextBoundary=2050.
-	// Slot offsets 0/5/10/15/20/25 → target-bh 5/10/15/20/25/30, all ≤ 30.
-	got := signSlotGossipTargets(2045, 50, 30)
-	want := []uint64{2050, 2055, 2060, 2065, 2070, 2075}
-	if !equalSlice(got, want) {
-		t.Fatalf("want %v, got %v", want, got)
+// TestSignWindowGossipTarget_DeepInWindow verifies that a single windowStart
+// is returned even when bh is well inside the readiness window.
+func TestSignWindowGossipTarget_DeepInWindow(t *testing.T) {
+	// bh=2045 (bh%50=45), blocksUntilSign=5, windowStart=2050.
+	got, ok := signWindowGossipTarget(2045, 50, 30)
+	if !ok || got != 2050 {
+		t.Fatalf("want (2050, true), got (%d, %v)", got, ok)
 	}
 }
 
-// TestSignSlotGossipTargets_AtBoundary verifies the behaviour at bh =
-// signInterval boundary (slot 0 dispatch block): no priming because the next
-// window is a full signInterval away.
-func TestSignSlotGossipTargets_AtBoundary(t *testing.T) {
-	// bh=2050, bh%50=0, blocksUntilSign=50, nextBoundary=2100.
-	// Slot 0 target-bh = 50 > 30. All slots out of range.
-	got := signSlotGossipTargets(2050, 50, 30)
-	if len(got) != 0 {
-		t.Fatalf("expected no targets at boundary, got %v", got)
+// TestSignWindowGossipTarget_AtBoundary verifies that at bh = signInterval
+// boundary, priming is deferred: the next windowStart is a full signInterval
+// away which is outside the readiness offset.
+func TestSignWindowGossipTarget_AtBoundary(t *testing.T) {
+	// bh=2050, bh%50=0, blocksUntilSign=50, windowStart=2100. 50 > 30.
+	if _, ok := signWindowGossipTarget(2050, 50, 30); ok {
+		t.Fatal("expected no target at boundary (next window outside offset)")
 	}
 }
 
-// TestSignSlotGossipTargets_MidWindowDispatch verifies priming behaviour at a
-// staggered-slot dispatch block (e.g. slot 5 at bh=2075). Priming is for the
-// *next* window's slots, not the current one.
-func TestSignSlotGossipTargets_MidWindowDispatch(t *testing.T) {
-	// bh=2075 (bh%50=25), blocksUntilSign=25, nextBoundary=2100.
-	// Slot 0 target-bh=25 ✓, slot 1 target-bh=30 ✓, slot 2 target-bh=35 ✗.
-	got := signSlotGossipTargets(2075, 50, 30)
-	want := []uint64{2100, 2105}
-	if !equalSlice(got, want) {
-		t.Fatalf("want %v, got %v", want, got)
+// TestSignWindowGossipTarget_MidWindowDispatch verifies that at a staggered
+// dispatch block (e.g. bh=2075), priming targets the *next* window.
+func TestSignWindowGossipTarget_MidWindowDispatch(t *testing.T) {
+	// bh=2075 (bh%50=25), blocksUntilSign=25, windowStart=2100, 25 ≤ 30.
+	got, ok := signWindowGossipTarget(2075, 50, 30)
+	if !ok || got != 2100 {
+		t.Fatalf("want (2100, true), got (%d, %v)", got, ok)
 	}
 }
 
-// TestSignSlotGossipTargets_ConvergesOverTicks walks BlockTick from just
-// before window entry through window close and asserts the union of targets
-// primed across all ticks covers every staggered slot exactly once.
-func TestSignSlotGossipTargets_ConvergesOverTicks(t *testing.T) {
+// TestSignWindowGossipTarget_ConvergesOverTicks walks the tick range from
+// before window entry through window close and asserts that exactly one
+// windowStart is returned across all in-range ticks (no slot fragmentation).
+func TestSignWindowGossipTarget_ConvergesOverTicks(t *testing.T) {
 	const signInterval uint64 = 50
 	const readinessOffset uint64 = 30
-	// Walk from bh=2019 (just before window) through bh=2049 (just before
-	// slot-0 dispatch). The next window starts at 2050.
 	primed := map[uint64]bool{}
 	for bh := uint64(2019); bh <= 2049; bh++ {
-		for _, target := range signSlotGossipTargets(bh, signInterval, readinessOffset) {
+		if target, ok := signWindowGossipTarget(bh, signInterval, readinessOffset); ok {
 			primed[target] = true
 		}
 	}
-	expected := []uint64{2050, 2055, 2060, 2065, 2070, 2075}
-	if len(primed) != len(expected) {
-		t.Fatalf("expected %d primed targets, got %d: %v", len(expected), len(primed), primed)
+	// Exactly one windowStart should be primed for the whole 30-block window.
+	if len(primed) != 1 || !primed[2050] {
+		t.Fatalf("expected exactly {2050}, got %v", primed)
 	}
-	for _, target := range expected {
-		if !primed[target] {
-			t.Fatalf("target %d never primed over the readiness window", target)
+}
+
+// TestSignWindow_AllSlotsResolveToSameKey confirms that the sign pre-flight
+// gate rounds bh down to windowStart so every staggered slot in the window
+// resolves to the same gossip key and returns the same ready set.
+func TestSignWindow_AllSlotsResolveToSameKey(t *testing.T) {
+	const signInterval uint64 = 50
+	windowStart := uint64(2050)
+	mgr := &TssManager{
+		gossipAttestations: make(map[string]map[string]ReadyAttestation),
+	}
+	key := strconv.FormatUint(windowStart, 10)
+	mgr.gossipAttestations[key] = map[string]ReadyAttestation{
+		"alice": {Account: "alice", TargetBlock: windowStart},
+		"bob":   {Account: "bob", TargetBlock: windowStart},
+		"carol": {Account: "carol", TargetBlock: windowStart},
+	}
+
+	for slot := uint64(0); slot < uint64(signStaggerCount); slot++ {
+		bh := windowStart + slot*signStaggerStep
+		lookup := bh - (bh % signInterval)
+		attMap := mgr.gossipAttestations[strconv.FormatUint(lookup, 10)]
+		if len(attMap) != 3 {
+			t.Fatalf("slot %d (bh=%d): expected 3 ready accounts via windowStart key, got %d",
+				slot, bh, len(attMap))
 		}
 	}
 }
 
-func equalSlice(a, b []uint64) bool {
-	if len(a) != len(b) {
-		return false
+// TestSignWindow_MixedVersionDetectorSkipsNonSlotZero exercises the rollout
+// detector: when an old-code node has emitted a per-block attestation for a
+// non-slot-0 offset within the current window, new-code dispatchers at that
+// slot must skip to avoid stalling a session with cohort-local party lists.
+func TestSignWindow_MixedVersionDetectorSkipsNonSlotZero(t *testing.T) {
+	const signInterval uint64 = 50
+	windowStart := uint64(2050)
+	mgr := &TssManager{
+		gossipAttestations: make(map[string]map[string]ReadyAttestation),
 	}
-	for i := range a {
-		if a[i] != b[i] {
+	// New-code node's windowStart attestation.
+	mgr.gossipAttestations[strconv.FormatUint(windowStart, 10)] = map[string]ReadyAttestation{
+		"new-node": {Account: "new-node", TargetBlock: windowStart},
+	}
+	// Old-code node's per-slot attestation for slot 1.
+	slot1Block := windowStart + signStaggerStep
+	mgr.gossipAttestations[strconv.FormatUint(slot1Block, 10)] = map[string]ReadyAttestation{
+		"old-node": {Account: "old-node", TargetBlock: slot1Block},
+	}
+
+	isMixed := func(bh uint64) bool {
+		wstart := bh - (bh % signInterval)
+		if bh == wstart {
 			return false
 		}
+		for offset := uint64(1); offset < uint64(signStaggerCount); offset++ {
+			k := strconv.FormatUint(wstart+offset*signStaggerStep, 10)
+			if len(mgr.gossipAttestations[k]) > 0 {
+				return true
+			}
+		}
+		return false
 	}
-	return true
+
+	if isMixed(windowStart) {
+		t.Fatal("slot 0 must not trip the detector (it always works cross-cohort)")
+	}
+	if !isMixed(windowStart + signStaggerStep) {
+		t.Fatal("slot 1 must trip the detector when old-code slot-1 entry is present")
+	}
+	if !isMixed(windowStart + 5*signStaggerStep) {
+		t.Fatal("slot 5 must trip the detector as long as any later-slot key exists")
+	}
 }
 
 func TestPerHeightGossipSharedAcrossKeys(t *testing.T) {
