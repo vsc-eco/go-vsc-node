@@ -688,6 +688,66 @@ func TestClaimHBDInterest_FrBalanceInterestGoesToDao(t *testing.T) {
 	assert.Empty(t, lDb.LedgerRecords["system:fr_balance"])
 }
 
+func TestClaimHBDInterest_ObservedApr_MonthlyInterval(t *testing.T) {
+	// Claim interval of exactly one month (876_600 Hive blocks = HIVE_BLOCKS_PER_YEAR/12).
+	// amount=15, TWAB=1000 → (15/1000) * (10_519_200/876_600) = 0.015 * 12 = 0.18
+	ls, _, claimDb := newLedgerEnvWithClaims(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:           "hive:alice",
+			BlockHeight:       100,
+			HBD_SAVINGS:       1000,
+			HBD_AVG:           0,
+			HBD_CLAIM_HEIGHT:  100,
+			HBD_MODIFY_HEIGHT: 100,
+		}},
+	})
+
+	ls.ClaimHBDInterest(100, 876_700, 15, "")
+
+	require.Len(t, claimDb.Claims, 1)
+	assert.InDelta(t, 0.18, claimDb.Claims[0].ObservedApr, 1e-9)
+}
+
+func TestClaimHBDInterest_ObservedApr_HalfMonthIntervalSameApr(t *testing.T) {
+	// Claim interval of half a month (438_300 blocks = HIVE_BLOCKS_PER_YEAR/24).
+	// amount=75, TWAB=10000 → (75/10000) * (10_519_200/438_300) = 0.0075 * 24 = 0.18
+	// Same annualized APR as the monthly test — confirms interval-based annualization.
+	ls, _, claimDb := newLedgerEnvWithClaims(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:           "hive:alice",
+			BlockHeight:       100,
+			HBD_SAVINGS:       10000,
+			HBD_AVG:           0,
+			HBD_CLAIM_HEIGHT:  100,
+			HBD_MODIFY_HEIGHT: 100,
+		}},
+	})
+
+	ls.ClaimHBDInterest(100, 438_400, 75, "")
+
+	require.Len(t, claimDb.Claims, 1)
+	assert.InDelta(t, 0.18, claimDb.Claims[0].ObservedApr, 1e-9)
+}
+
+func TestClaimHBDInterest_ObservedApr_NoPriorClaimIsZero(t *testing.T) {
+	// lastClaim==0 means no prior claim on record — no interval to annualize against.
+	ls, _, claimDb := newLedgerEnvWithClaims(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:           "hive:alice",
+			BlockHeight:       100,
+			HBD_SAVINGS:       1000,
+			HBD_AVG:           0,
+			HBD_CLAIM_HEIGHT:  100,
+			HBD_MODIFY_HEIGHT: 100,
+		}},
+	})
+
+	ls.ClaimHBDInterest(0, 200, 50, "")
+
+	require.Len(t, claimDb.Claims, 1)
+	assert.Equal(t, float64(0), claimDb.Claims[0].ObservedApr)
+}
+
 func TestOplogIngest(t *testing.T) {
 	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
 		"hive:alice": {{

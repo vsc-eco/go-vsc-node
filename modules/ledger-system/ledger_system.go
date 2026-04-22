@@ -29,6 +29,9 @@ import (
 
 var log = vsclog.Module("ledger")
 
+// Hive produces one block every 3 seconds → 365.25 * 24 * 3600 / 3 blocks per year.
+const HIVE_BLOCKS_PER_YEAR = uint64(10_519_200)
+
 type ledgerSystem struct {
 	BalanceDb ledger_db.Balances
 	LedgerDb  ledger_db.Ledger
@@ -177,11 +180,11 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 			})
 		}
 	}
-	//Note this calculation is inaccurate and should be calculated based on N blocks of Y claim period
-	//Should not assume a static amount of time or 12 exactly claim interals per year. But since this is for statistics, it doesn't matter.
 	var observedApr float64
-	if totalAvg > 0 {
-		observedApr = (float64(amount) / float64(totalAvg)) * 12
+	if totalAvg > 0 && lastClaim > 0 && blockHeight > lastClaim {
+		blocksInPeriod := blockHeight - lastClaim
+		observedApr = (float64(amount) / float64(totalAvg)) *
+			(float64(HIVE_BLOCKS_PER_YEAR) / float64(blocksInPeriod))
 	}
 
 	savedAmount := amount
