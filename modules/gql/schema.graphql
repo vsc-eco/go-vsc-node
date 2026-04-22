@@ -718,7 +718,41 @@ input SimulateContractCallInput {
 }
 
 """
-Input for simulating one or more contract calls as a batch.
+Input for simulating a deposit from L1 (Hive) that credits an in-session balance.
+Mirrors the memo-parsing semantics used by on-chain deposits, but never persists.
+"""
+input SimulateDepositInput {
+  """Source account (bare Hive username or DID). Receives 'hive:' prefix if bare."""
+  from: String!
+  """Target VSC account. Parsed from memo 'to=' by default. Bare username, 'hive:<name>', or 'did:...'."""
+  to: String
+  """Amount in smallest unit (e.g. 1000 = 1.000 HIVE)."""
+  amount: Int64!
+  """Asset: 'hive', 'hbd', or 'hbd_savings'."""
+  asset: String!
+  """Optional memo. Parsed for 'to=<account>' override, matching production semantics."""
+  memo: String
+}
+
+"""
+Input for a single op in an ordered simulated transaction. Exactly one of
+`call` / `deposit` must be set, matching `type`.
+"""
+input SimulateOpInput {
+  """Op type discriminator: 'call' or 'deposit'."""
+  type: String!
+  """Contract call body; required when type='call'."""
+  call: SimulateContractCallInput
+  """Deposit body; required when type='deposit'."""
+  deposit: SimulateDepositInput
+}
+
+"""
+Input for simulating one or more ops as a batch.
+
+When `ops` is non-empty it defines the execution order across mixed op types
+(deposit, call, …). When only `calls` is supplied, behavior matches the
+original single-op-type semantics.
 """
 input SimulateContractCallsInput {
   """Transaction ID to use in the simulation context."""
@@ -727,8 +761,10 @@ input SimulateContractCallsInput {
   required_auths: [String!]
   """Accounts providing posting key authorization."""
   required_posting_auths: [String!]
-  """List of contract calls to simulate in sequence."""
-  calls: [SimulateContractCallInput!]!
+  """Deprecated: use `ops` for mixed op types. Kept for backwards compatibility."""
+  calls: [SimulateContractCallInput!]
+  """Ordered list of ops (deposit, call, …). Takes precedence over `calls` when non-empty."""
+  ops: [SimulateOpInput!]
 }
 
 """

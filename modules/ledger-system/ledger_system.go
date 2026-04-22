@@ -233,16 +233,18 @@ func (ls *ledgerSystem) GetBalance(account string, blockHeight uint64, asset str
 
 // Empties the virtual state, such as when a block is executed
 
-func (ls *ledgerSystem) Deposit(deposit Deposit) string {
+// ResolveDepositTarget parses a deposit memo to determine the destination
+// account, matching the logic used by Deposit(). Exposed so simulation paths
+// can compute the same owner without writing to LedgerDb.
+func ResolveDepositTarget(memo, from string) string {
 	decodedParams := DepositParams{}
-	values, err := url.ParseQuery(deposit.Memo)
+	values, err := url.ParseQuery(memo)
 	if err == nil {
 		decodedParams.To = values.Get("to")
-		// fmt.Println("decodedParams.To", decodedParams.To)
 	} else {
-		err = json.Unmarshal([]byte(deposit.Memo), &decodedParams)
+		err = json.Unmarshal([]byte(memo), &decodedParams)
 		if err != nil {
-			decodedParams.To = deposit.From
+			decodedParams.To = from
 		}
 	}
 
@@ -254,18 +256,21 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 	} else if matchedEth {
 		decodedParams.To = `did:pkh:eip155:1:` + decodedParams.To
 	} else if strings.HasPrefix(decodedParams.To, "hive:") {
-		//No nothing. It's parsed correctly
 		matchedEth, _ := regexp.MatchString(HIVE_REGEX, strings.Split(decodedParams.To, ":")[1])
 		if !(matchedEth && len(decodedParams.To) >= 3 && len(decodedParams.To) < 17) {
-			decodedParams.To = "hive:" + deposit.From
+			decodedParams.To = "hive:" + from
 		}
 	} else if strings.HasPrefix(decodedParams.To, "did:") {
 		//No nothing. It's parsed correctly
 	} else {
 		//Default to the original sender to prevent fund loss
-		// addr, _ := NormalizeAddress(deposit.From, "hive")
-		decodedParams.To = deposit.From
+		decodedParams.To = from
 	}
+	return decodedParams.To
+}
+
+func (ls *ledgerSystem) Deposit(deposit Deposit) string {
+	decodedParams := DepositParams{To: ResolveDepositTarget(deposit.Memo, deposit.From)}
 	// if le.VirtualLedger == nil {
 	// 	le.VirtualLedger = make(map[string][]LedgerUpdate)
 	// }
