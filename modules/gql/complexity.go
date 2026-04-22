@@ -64,7 +64,11 @@ func NewComplexityRoot() gqlgen.ComplexityRoot {
 		return 10 + childComplexity
 	}
 	c.Query.SimulateContractCalls = func(childComplexity int, input gqlgen.SimulateContractCallsInput) int {
-		return 10 + len(input.Calls)*childComplexity
+		n := len(input.Calls)
+		if len(input.Ops) > n {
+			n = len(input.Ops)
+		}
+		return 10 + n*childComplexity
 	}
 
 	// List/search queries: base cost 5, scaled by limit * childComplexity

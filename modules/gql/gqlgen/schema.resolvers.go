@@ -584,8 +584,47 @@ func (r *queryResolver) FindTssCommitments(ctx context.Context, filterOptions *T
 
 // SimulateContractCalls is the resolver for the simulateContractCalls field.
 func (r *queryResolver) SimulateContractCalls(ctx context.Context, input SimulateContractCallsInput) ([]SimulateContractCallResult, error) {
-	if len(input.Calls) > 10 {
-		return nil, fmt.Errorf("maximum 10 calls per simulation")
+	// Normalize the input into an ordered op list. `ops` takes precedence when
+	// non-empty so callers can mix deposit and call ops; otherwise each entry in
+	// `calls` is wrapped as a call-type op to preserve pre-existing behavior.
+	ops := input.Ops
+	if len(ops) == 0 {
+		ops = make([]SimulateOpInput, 0, len(input.Calls))
+		for i := range input.Calls {
+			call := input.Calls[i]
+			ops = append(ops, SimulateOpInput{Type: "call", Call: &call})
+		}
+	}
+
+	if len(ops) > 10 {
+		return nil, fmt.Errorf("maximum 10 ops per simulation")
+	}
+
+	// Validate op shape and rc_limit before spinning up sessions.
+	for i, op := range ops {
+		switch op.Type {
+		case "call":
+			if op.Call == nil {
+				return nil, fmt.Errorf("op %d: type='call' requires a call body", i)
+			}
+			if op.Call.RcLimit < 1 || op.Call.RcLimit > 100000 {
+				return nil, fmt.Errorf("op %d: rc_limit must be between 1 and 100000, got %d", i, op.Call.RcLimit)
+			}
+		case "deposit":
+			if op.Deposit == nil {
+				return nil, fmt.Errorf("op %d: type='deposit' requires a deposit body", i)
+			}
+			if int64(op.Deposit.Amount) <= 0 {
+				return nil, fmt.Errorf("op %d: deposit amount must be positive", i)
+			}
+			switch op.Deposit.Asset {
+			case "hive", "hbd", "hbd_savings":
+			default:
+				return nil, fmt.Errorf("op %d: unsupported asset %q (expected hive, hbd, or hbd_savings)", i, op.Deposit.Asset)
+			}
+		default:
+			return nil, fmt.Errorf("op %d: unknown type %q (expected call or deposit)", i, op.Type)
+		}
 	}
 
 	// Get latest block info
@@ -602,173 +641,231 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 	blockId := block.BlockID
 	timestamp := block.Timestamp
 
-	// Validate rc_limit for all calls
-	for i, call := range input.Calls {
-		if call.RcLimit < 1 || call.RcLimit > 100000 {
-			return nil, fmt.Errorf("call %d: rc_limit must be between 1 and 100000, got %d", i, call.RcLimit)
+	// Sessions persist across ops so a deposit's in-session credit is visible to a
+	// subsequent call's GetBalance. Revert() wipes them at the end — simulation
+	// never mutates live state.
+	ledgerSession := ledgerSystem.NewSession(r.StateEngine.LedgerState)
+	callSession := contract_session.NewCallSession(r.Da, r.Contracts, r.ContractsState, r.TssKeys, blockHeight, nil)
+	defer ledgerSession.Revert()
+
+	results := make([]SimulateContractCallResult, 0, len(ops))
+
+	for opIndex, op := range ops {
+		switch op.Type {
+		case "deposit":
+			result, fatal := r.executeSimulatedDeposit(*op.Deposit, opIndex, blockHeight, input.TxID, ledgerSession)
+			results = append(results, result)
+			if fatal {
+				callSession.Rollback()
+				return results, nil
+			}
+		case "call":
+			result, fatal := r.executeSimulatedCall(*op.Call, opIndex, blockHeight, blockId, timestamp, input, ledgerSession, callSession)
+			results = append(results, result)
+			if fatal {
+				return results, nil
+			}
 		}
 	}
 
-	// Create sessions from live DB state
-	ledgerSession := ledgerSystem.NewSession(r.StateEngine.LedgerState)
-	callSession := contract_session.NewCallSession(r.Da, r.Contracts, r.ContractsState, r.TssKeys, blockHeight, nil)
+	return results, nil
+}
 
-	results := make([]SimulateContractCallResult, 0, len(input.Calls))
+// executeSimulatedCall runs a single contract call against the shared sessions.
+// Returns (result, fatal): fatal=true means the caller should abort the
+// simulation — sessions have already been reverted by this helper.
+func (r *queryResolver) executeSimulatedCall(
+	call SimulateContractCallInput,
+	opIndex int,
+	blockHeight uint64,
+	blockId string,
+	timestamp string,
+	input SimulateContractCallsInput,
+	ledgerSession ledgerSystem.LedgerSession,
+	callSession *contract_session.CallSession,
+) (SimulateContractCallResult, bool) {
+	rcLimit := uint(call.RcLimit)
+	// Cap rcLimit to prevent overflow when multiplied by CYCLE_GAS_PER_RC
+	if maxGas := ^uint(0) / params.CYCLE_GAS_PER_RC; rcLimit > maxGas {
+		rcLimit = maxGas
+	}
 
-	for opIndex, call := range input.Calls {
-		rcLimit := uint(call.RcLimit)
-		// Cap rcLimit to prevent overflow when multiplied by CYCLE_GAS_PER_RC
-		if maxGas := ^uint(0) / params.CYCLE_GAS_PER_RC; rcLimit > maxGas {
-			rcLimit = maxGas
+	info, err := r.Contracts.ContractById(call.ContractID, blockHeight)
+	if err != nil {
+		errMsg := err.Error()
+		ledgerSession.Revert()
+		callSession.Rollback()
+		return SimulateContractCallResult{
+			Success: false,
+			ErrMsg:  &errMsg,
+			RcUsed:  model.Int64(100),
+			GasUsed: model.Uint64(0),
+		}, true
+	}
+
+	c, err := cid.Decode(info.Code)
+	if err != nil {
+		errMsg := err.Error()
+		ledgerSession.Revert()
+		callSession.Rollback()
+		return SimulateContractCallResult{
+			Success: false,
+			ErrMsg:  &errMsg,
+			RcUsed:  model.Int64(100),
+			GasUsed: model.Uint64(0),
+		}, true
+	}
+
+	node, err := r.Da.Get(c, nil)
+	if err != nil {
+		errMsg := err.Error()
+		ledgerSession.Revert()
+		callSession.Rollback()
+		return SimulateContractCallResult{
+			Success: false,
+			ErrMsg:  &errMsg,
+			RcUsed:  model.Int64(100),
+			GasUsed: model.Uint64(0),
+		}, true
+	}
+
+	code := node.RawData()
+
+	caller := ""
+	if len(input.RequiredAuths) > 0 {
+		caller = input.RequiredAuths[0]
+	} else if len(input.RequiredPostingAuths) > 0 {
+		caller = input.RequiredPostingAuths[0]
+	}
+
+	// Convert intents
+	intents := make([]contracts.Intent, 0, len(call.Intents))
+	for _, intent := range call.Intents {
+		args := make(map[string]string)
+		for k, v := range intent.Args {
+			args[k] = fmt.Sprintf("%v", v)
 		}
-
-		info, err := r.Contracts.ContractById(call.ContractID, blockHeight)
-		if err != nil {
-			errMsg := err.Error()
-			results = append(results, SimulateContractCallResult{
-				Success: false,
-				ErrMsg:  &errMsg,
-				RcUsed:  model.Int64(100),
-				GasUsed: model.Uint64(0),
-			})
-			ledgerSession.Revert()
-			callSession.Rollback()
-			return results, nil
-		}
-
-		c, err := cid.Decode(info.Code)
-		if err != nil {
-			errMsg := err.Error()
-			results = append(results, SimulateContractCallResult{
-				Success: false,
-				ErrMsg:  &errMsg,
-				RcUsed:  model.Int64(100),
-				GasUsed: model.Uint64(0),
-			})
-			ledgerSession.Revert()
-			callSession.Rollback()
-			return results, nil
-		}
-
-		node, err := r.Da.Get(c, nil)
-		if err != nil {
-			errMsg := err.Error()
-			results = append(results, SimulateContractCallResult{
-				Success: false,
-				ErrMsg:  &errMsg,
-				RcUsed:  model.Int64(100),
-				GasUsed: model.Uint64(0),
-			})
-			ledgerSession.Revert()
-			callSession.Rollback()
-			return results, nil
-		}
-
-		code := node.RawData()
-
-		caller := ""
-		if len(input.RequiredAuths) > 0 {
-			caller = input.RequiredAuths[0]
-		} else if len(input.RequiredPostingAuths) > 0 {
-			caller = input.RequiredPostingAuths[0]
-		}
-
-		// Convert intents
-		intents := make([]contracts.Intent, 0, len(call.Intents))
-		for _, intent := range call.Intents {
-			args := make(map[string]string)
-			for k, v := range intent.Args {
-				args[k] = fmt.Sprintf("%v", v)
-			}
-			intents = append(intents, contracts.Intent{
-				Type: intent.Type,
-				Args: args,
-			})
-		}
-
-		ctxValue := contract_execution_context.New(
-			contract_execution_context.Environment{
-				ContractId:           call.ContractID,
-				ContractOwner:        info.Owner,
-				BlockHeight:          blockHeight,
-				TxId:                 input.TxID,
-				BlockId:              blockId,
-				Index:                0,
-				OpIndex:              opIndex,
-				Timestamp:            timestamp,
-				RequiredAuths:        input.RequiredAuths,
-				RequiredPostingAuths: input.RequiredPostingAuths,
-				Caller:               caller,
-				Sender:               caller,
-				Intents:              intents,
-			},
-			int64(rcLimit), rc_system.FreeRcRemaining(r.StateEngine.RcSystem.NewSession(ledgerSession), caller, blockHeight), rcLimit*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
-		)
-
-		// Unmarshal payload string
-		var payload string
-		if err := json.Unmarshal([]byte(call.Payload), &payload); err != nil {
-			payload = call.Payload
-		}
-
-		wasmCtx := context.WithValue(
-			context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
-			wasm_context.WasmExecCodeCtxKey,
-			hex.EncodeToString(code),
-		)
-
-		w := wasm_runtime_ipc.New()
-		w.Init()
-		res := w.Execute(wasmCtx, rcLimit*params.CYCLE_GAS_PER_RC, call.Action, payload, info.Runtime)
-		rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
-
-		if res.Error != nil {
-			ledgerSession.Revert()
-			callSession.Rollback()
-			errCode := string(res.ErrorCode)
-			errMsg := *res.Error
-			results = append(results, SimulateContractCallResult{
-				Success: false,
-				Err:     &errCode,
-				ErrMsg:  &errMsg,
-				RcUsed:  model.Int64(rcUsed),
-				GasUsed: model.Uint64(res.Gas),
-			})
-			return results, nil
-		}
-
-		diff := callSession.GetStateDiff()
-		logs := callSession.PopLogs()
-
-		// Convert logs to map[string]interface{}
-		logsMap := make(model.Map)
-		for k, v := range logs {
-			logsMap[k] = v
-		}
-
-		// Convert state diff to map[string]interface{}
-		diffMap := make(model.Map)
-		for k, v := range diff {
-			diffMap[k] = v
-		}
-
-		ret := res.Result
-		results = append(results, SimulateContractCallResult{
-			Success:   true,
-			Ret:       &ret,
-			RcUsed:    model.Int64(rcUsed),
-			GasUsed:   model.Uint64(res.Gas),
-			Logs:      logsMap,
-			StateDiff: diffMap,
+		intents = append(intents, contracts.Intent{
+			Type: intent.Type,
+			Args: args,
 		})
 	}
 
-	// After all calls succeed, collect results but do not mutate live state.
-	// Done() would append to the live LedgerState oplog/virtual ledger,
-	// corrupting production balances from a read-only simulation endpoint.
-	ledgerSession.Revert()
+	ctxValue := contract_execution_context.New(
+		contract_execution_context.Environment{
+			ContractId:           call.ContractID,
+			ContractOwner:        info.Owner,
+			BlockHeight:          blockHeight,
+			TxId:                 input.TxID,
+			BlockId:              blockId,
+			Index:                0,
+			OpIndex:              opIndex,
+			Timestamp:            timestamp,
+			RequiredAuths:        input.RequiredAuths,
+			RequiredPostingAuths: input.RequiredPostingAuths,
+			Caller:               caller,
+			Sender:               caller,
+			Intents:              intents,
+		},
+		int64(rcLimit), rc_system.FreeRcRemaining(r.StateEngine.RcSystem.NewSession(ledgerSession), caller, blockHeight), rcLimit*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
+	)
 
-	return results, nil
+	// Unmarshal payload string
+	var payload string
+	if err := json.Unmarshal([]byte(call.Payload), &payload); err != nil {
+		payload = call.Payload
+	}
+
+	wasmCtx := context.WithValue(
+		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
+		wasm_context.WasmExecCodeCtxKey,
+		hex.EncodeToString(code),
+	)
+
+	w := wasm_runtime_ipc.New()
+	w.Init()
+	res := w.Execute(wasmCtx, rcLimit*params.CYCLE_GAS_PER_RC, call.Action, payload, info.Runtime)
+	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
+
+	if res.Error != nil {
+		ledgerSession.Revert()
+		callSession.Rollback()
+		errCode := string(res.ErrorCode)
+		errMsg := *res.Error
+		return SimulateContractCallResult{
+			Success: false,
+			Err:     &errCode,
+			ErrMsg:  &errMsg,
+			RcUsed:  model.Int64(rcUsed),
+			GasUsed: model.Uint64(res.Gas),
+		}, true
+	}
+
+	diff := callSession.GetStateDiff()
+	logs := callSession.PopLogs()
+
+	logsMap := make(model.Map)
+	for k, v := range logs {
+		logsMap[k] = v
+	}
+
+	diffMap := make(model.Map)
+	for k, v := range diff {
+		diffMap[k] = v
+	}
+
+	ret := res.Result
+	return SimulateContractCallResult{
+		Success:   true,
+		Ret:       &ret,
+		RcUsed:    model.Int64(rcUsed),
+		GasUsed:   model.Uint64(res.Gas),
+		Logs:      logsMap,
+		StateDiff: diffMap,
+	}, false
+}
+
+// executeSimulatedDeposit credits the target account's in-session balance,
+// mirroring production memo-parsing but bypassing LedgerDb. The credit is
+// visible to any subsequent op via session.GetBalance, and is discarded by the
+// deferred Revert() at the end of the simulation.
+func (r *queryResolver) executeSimulatedDeposit(
+	deposit SimulateDepositInput,
+	opIndex int,
+	blockHeight uint64,
+	txID string,
+	ledgerSession ledgerSystem.LedgerSession,
+) (SimulateContractCallResult, bool) {
+	memo := ""
+	if deposit.Memo != nil {
+		memo = *deposit.Memo
+	}
+
+	// An explicit `to` overrides the memo resolution; otherwise follow the same
+	// memo → owner logic production uses for on-chain deposits.
+	var owner string
+	if deposit.To != nil && *deposit.To != "" {
+		owner = ledgerSystem.ResolveDepositTarget("to="+*deposit.To, deposit.From)
+	} else {
+		owner = ledgerSystem.ResolveDepositTarget(memo, deposit.From)
+	}
+
+	ledgerSession.AppendLedger(ledgerSystem.LedgerUpdate{
+		Id:          stateEngine.MakeTxId(txID, opIndex),
+		BlockHeight: blockHeight,
+		OpIdx:       int64(opIndex),
+		Owner:       owner,
+		Amount:      int64(deposit.Amount),
+		Asset:       deposit.Asset,
+		Memo:        memo,
+		Type:        "deposit",
+	})
+
+	return SimulateContractCallResult{
+		Success: true,
+		RcUsed:  model.Int64(0),
+		GasUsed: model.Uint64(0),
+	}, false
 }
 
 // Amount is the resolver for the amount field.

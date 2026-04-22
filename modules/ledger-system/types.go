@@ -115,6 +115,7 @@ type LedgerSession interface {
 	Unstake(StakeOp) LedgerResult
 	ConsensusStake(ConsensusParams) LedgerResult
 	ConsensusUnstake(ConsensusParams) LedgerResult
+	AppendLedger(event LedgerUpdate)
 	Done() []string
 	Revert()
 }
