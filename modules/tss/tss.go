@@ -245,6 +245,34 @@ func getReadinessOffset(sconf systemconfig.SystemConfig) uint64 {
 	return offset
 }
 
+// signSlotGossipTargets returns the target block heights that need readiness
+// gossip priming for the next signInterval window. Each entry corresponds to
+// one of the `signStaggerCount` dispatch slots inside that window, at offsets
+// {0, signStaggerStep, 2*signStaggerStep, ...}.
+//
+// The sign dispatcher at tss.go:1125 looks up readiness by the session's exact
+// block height, and ReadyAttestation is BLS-signed over (account, target_block),
+// so each slot requires its own attestation. Returning only the slot-0 target
+// would leave the five staggered slots of every window without readiness —
+// they dispatch with empty signReadyAccounts and bail out with
+// "insufficient participants for signing", capping throughput at one
+// signature per window instead of signStaggerCount.
+//
+// Only targets currently within `readinessOffset` blocks of `bh` are returned;
+// later slots enter the window as bh advances and get added on subsequent ticks.
+func signSlotGossipTargets(bh, signInterval, readinessOffset uint64) []uint64 {
+	blocksUntilSign := signInterval - (bh % signInterval)
+	nextBoundary := bh + blocksUntilSign
+	targets := make([]uint64, 0, signStaggerCount)
+	for slot := uint64(0); slot < uint64(signStaggerCount); slot++ {
+		target := nextBoundary + slot*signStaggerStep
+		if target-bh <= readinessOffset {
+			targets = append(targets, target)
+		}
+	}
+	return targets
+}
+
 type TssManager struct {
 	p2p    *libp2p.P2PServer
 	pubsub libp2p.PubSubService[p2pMessage]
@@ -412,12 +440,16 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			}
 		}
 	}
-	blocksUntilSign := signInterval - (bh % signInterval)
-	if blocksUntilSign <= readinessOffset && bh%signInterval != 0 {
-		// Check if there are unsigned signing requests pending.
+	// Prime readiness gossip for every staggered sign slot whose target block
+	// falls inside the current readiness window. See signSlotGossipTargets.
+	signTargets := signSlotGossipTargets(bh, signInterval, readinessOffset)
+	if len(signTargets) > 0 {
+		// Only gossip if there is at least one unsigned request pending.
 		signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh, 1)
 		if len(signingRequests) > 0 {
-			gossipTargets[bh+blocksUntilSign] = true
+			for _, target := range signTargets {
+				gossipTargets[target] = true
+			}
 		}
 	}
 
