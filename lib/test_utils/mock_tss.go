@@ -251,6 +251,13 @@ func (m *MockTssRequestsDb) FindUnsignedRequests(blockHeight uint64, limit int64
 		if req.LastAttempt > blockHeight {
 			continue
 		}
+		// Mirror the DB's created_height < blockHeight cross-node
+		// determinism gate. Rows created at the current block are
+		// non-deterministically visible due to the state engine race
+		// and must wait until bh+1 to become eligible.
+		if req.CreatedHeight >= blockHeight {
+			continue
+		}
 		results = append(results, req)
 	}
 	sort.Slice(results, func(i, j int) bool {

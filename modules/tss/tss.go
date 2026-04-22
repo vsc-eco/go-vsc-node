@@ -80,10 +80,7 @@ const (
 // For signing, TargetBlock is the windowStart (next signInterval boundary) and
 // covers all signStaggerCount dispatch slots within that window; the sign
 // pre-flight gate rounds bh down to windowStart before looking up the ready set
-// so every slot 0..signStaggerCount-1 shares one attestation. The wire field
-// name is kept stable across this change for rolling-upgrade compatibility:
-// old-code nodes emitting per-block and new-code nodes emitting per-window
-// coexist in gossipAttestations without translation. See
+// so every slot 0..signStaggerCount-1 shares one attestation. See
 // signWindowGossipTarget for the emission logic.
 type ReadyAttestation struct {
 	Account     string `json:"account"`
@@ -1161,34 +1158,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			signInterval := getSignInterval(tssMgr.sconf)
 			signWindowStart := bh - (bh % signInterval)
 			signHeightKey := strconv.FormatUint(signWindowStart, 10)
-
-			// Mixed-version rollout detector: if any per-block attestation
-			// exists for a non-slot-0 offset within this window, an old-code
-			// node is emitting per-slot attestations. New-code nodes would
-			// otherwise build a party list including those nodes for slots
-			// 1..N-1, then stall waiting for btss messages they will never
-			// send (old code looks up per-block keys that new code does not
-			// populate for later slots). Skip slots 1..N-1 until rollout
-			// completes; slot 0 always works because old and new emissions
-			// collide at target_block = windowStart. Drop this block once
-			// the network is known to be fully on window-based readiness.
-			if bh != signWindowStart {
-				tssMgr.gossipLock.RLock()
-				mixed := false
-				for offset := uint64(1); offset < uint64(signStaggerCount); offset++ {
-					slotKey := strconv.FormatUint(signWindowStart+offset*signStaggerStep, 10)
-					if len(tssMgr.gossipAttestations[slotKey]) > 0 {
-						mixed = true
-						break
-					}
-				}
-				tssMgr.gossipLock.RUnlock()
-				if mixed {
-					log.Warn("mixed-version rollout detected, skipping non-slot-0 sign dispatch",
-						"sessionId", sessionId, "bh", bh, "windowStart", signWindowStart)
-					continue
-				}
-			}
 
 			tssMgr.gossipLock.RLock()
 			signAttMap := tssMgr.gossipAttestations[signHeightKey]

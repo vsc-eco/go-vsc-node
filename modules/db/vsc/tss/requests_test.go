@@ -206,100 +206,30 @@ func TestInit_MigratesDevelopSchema(t *testing.T) {
 	assert.Equal(t, "sig", complete.Sig)
 }
 
-func TestInit_MigratesInterimPRSchema(t *testing.T) {
-	client := connectDB(t)
-	dbName := fmt.Sprintf("vsc-test-mig-pr-%d", time.Now().UnixNano())
-	database := client.Database(dbName)
-	t.Cleanup(func() { database.Drop(t.Context()) })
+// TestInit_DoesNotRevivePostMigrationFailedRows confirms the one-time
+// revival only applies to pre-queue rows (missing last_attempt). A row
+// failed under the queue schema — by MarkFailed for attempt-cap exhaustion
+// or MarkFailedByKey for key deprecation — already has last_attempt set
+// and must stay failed across restarts.
+func TestInit_DoesNotRevivePostMigrationFailedRows(t *testing.T) {
+	reqs := newTestRequestsDb(t)
+	insertRaw(t, reqs, bson.M{
+		"key_id": "k1", "msg": "post-fail",
+		"status":         string(SignFailed),
+		"sig":            "",
+		"created_height": uint64(500),
+		"last_attempt":   uint64(600),
+		"attempt_count":  uint(3),
+	})
 
-	instance := db.DbInstance{Database: database}
-	coll := db.NewCollection(&instance, "tss_requests")
-	if err := coll.Init(); err != nil {
-		t.Fatalf("base Init: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	if _, err := coll.InsertMany(ctx, []any{
-		bson.M{
-			"key_id": "k1", "msg": "pr-pending",
-			"status": string(SignPending), "sig": "",
-			"created_height":      uint64(500),
-			"attempt_count":       uint(3),
-			"next_attempt_height": uint64(900),
-		},
-	}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	reqs := &tssRequests{coll}
 	if err := reqs.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
-	doc := findOneTyped(t, reqs, "k1", "pr-pending")
-	assert.Equal(t, SignPending, doc.Status)
-	// The interim-PR next_attempt_height carries the equivalent scheduling
-	// signal for in-flight requests, so we adopt it as LastAttempt.
-	assert.Equal(t, uint64(900), doc.LastAttempt)
-	assert.Equal(t, uint(3), doc.AttemptCount)
-
-	// next_attempt_height field must be removed.
-	raw := bson.M{}
-	if err := reqs.FindOne(ctx, bson.M{"key_id": "k1", "msg": "pr-pending"}).Decode(&raw); err != nil {
-		t.Fatal(err)
-	}
-	_, hasNAH := raw["next_attempt_height"]
-	assert.False(t, hasNAH, "next_attempt_height should be unset after migration")
-}
-
-func TestInit_MigratesInterimPRFailedRow(t *testing.T) {
-	// Regression guard: a row that is BOTH interim-PR (has next_attempt_height)
-	// AND failed must land with LastAttempt=CreatedHeight after migration, not
-	// LastAttempt=next_attempt_height. This only holds if step A runs before
-	// step B in Init.
-	client := connectDB(t)
-	dbName := fmt.Sprintf("vsc-test-mig-prfail-%d", time.Now().UnixNano())
-	database := client.Database(dbName)
-	t.Cleanup(func() { database.Drop(t.Context()) })
-
-	instance := db.DbInstance{Database: database}
-	coll := db.NewCollection(&instance, "tss_requests")
-	if err := coll.Init(); err != nil {
-		t.Fatalf("base Init: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	if _, err := coll.InsertMany(ctx, []any{
-		bson.M{
-			"key_id": "k1", "msg": "pr-failed",
-			"status":              string(SignFailed),
-			"sig":                 "stale",
-			"created_height":      uint64(500),
-			"attempt_count":       uint(5),
-			"next_attempt_height": uint64(9000),
-		},
-	}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	reqs := &tssRequests{coll}
-	if err := reqs.Init(); err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-
-	doc := findOneTyped(t, reqs, "k1", "pr-failed")
-	assert.Equal(t, SignPending, doc.Status)
-	assert.Equal(t, uint64(500), doc.LastAttempt, "must reset to created_height, not retain next_attempt_height=9000")
-	assert.Equal(t, uint(0), doc.AttemptCount)
-	assert.Equal(t, "", doc.Sig)
-
-	// next_attempt_height must still be removed.
-	raw := bson.M{}
-	if err := reqs.FindOne(ctx, bson.M{"key_id": "k1", "msg": "pr-failed"}).Decode(&raw); err != nil {
-		t.Fatal(err)
-	}
-	_, hasNAH := raw["next_attempt_height"]
-	assert.False(t, hasNAH, "next_attempt_height should be unset after migration")
+	doc := findOneTyped(t, reqs, "k1", "post-fail")
+	assert.Equal(t, SignFailed, doc.Status, "queue-schema failed row must stay failed")
+	assert.Equal(t, uint64(600), doc.LastAttempt, "last_attempt must be preserved")
+	assert.Equal(t, uint(3), doc.AttemptCount, "attempt_count must be preserved")
 }
 
 func TestInit_Idempotent(t *testing.T) {

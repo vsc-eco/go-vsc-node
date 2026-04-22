@@ -389,51 +389,6 @@ func TestSignWindow_AllSlotsResolveToSameKey(t *testing.T) {
 	}
 }
 
-// TestSignWindow_MixedVersionDetectorSkipsNonSlotZero exercises the rollout
-// detector: when an old-code node has emitted a per-block attestation for a
-// non-slot-0 offset within the current window, new-code dispatchers at that
-// slot must skip to avoid stalling a session with cohort-local party lists.
-func TestSignWindow_MixedVersionDetectorSkipsNonSlotZero(t *testing.T) {
-	const signInterval uint64 = 50
-	windowStart := uint64(2050)
-	mgr := &TssManager{
-		gossipAttestations: make(map[string]map[string]ReadyAttestation),
-	}
-	// New-code node's windowStart attestation.
-	mgr.gossipAttestations[strconv.FormatUint(windowStart, 10)] = map[string]ReadyAttestation{
-		"new-node": {Account: "new-node", TargetBlock: windowStart},
-	}
-	// Old-code node's per-slot attestation for slot 1.
-	slot1Block := windowStart + signStaggerStep
-	mgr.gossipAttestations[strconv.FormatUint(slot1Block, 10)] = map[string]ReadyAttestation{
-		"old-node": {Account: "old-node", TargetBlock: slot1Block},
-	}
-
-	isMixed := func(bh uint64) bool {
-		wstart := bh - (bh % signInterval)
-		if bh == wstart {
-			return false
-		}
-		for offset := uint64(1); offset < uint64(signStaggerCount); offset++ {
-			k := strconv.FormatUint(wstart+offset*signStaggerStep, 10)
-			if len(mgr.gossipAttestations[k]) > 0 {
-				return true
-			}
-		}
-		return false
-	}
-
-	if isMixed(windowStart) {
-		t.Fatal("slot 0 must not trip the detector (it always works cross-cohort)")
-	}
-	if !isMixed(windowStart + signStaggerStep) {
-		t.Fatal("slot 1 must trip the detector when old-code slot-1 entry is present")
-	}
-	if !isMixed(windowStart + 5*signStaggerStep) {
-		t.Fatal("slot 5 must trip the detector as long as any later-slot key exists")
-	}
-}
-
 func TestPerHeightGossipSharedAcrossKeys(t *testing.T) {
 	// Verify that a single per-height gossip entry is usable for multiple keys.
 	mgr := &TssManager{

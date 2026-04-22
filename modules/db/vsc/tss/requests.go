@@ -16,24 +16,23 @@ type tssRequests struct {
 	*db.Collection
 }
 
-// Init runs the base collection init, applies the schema migration, and
-// ensures the composite index used by FindUnsignedRequests exists.
+// Init runs the base collection init, applies the one-time schema migration,
+// and ensures the composite index used by FindUnsignedRequests exists.
 //
-// Migration is idempotent and covers two starting points:
+// Migration: pre-queue rows have neither last_attempt nor attempt_count.
+// Detect them by the absence of last_attempt and:
 //
-//  1. Develop schema: rows with status, created_height, sig — no queue fields.
-//     Failed rows are reset to pending with LastAttempt = CreatedHeight.
-//     Pending rows have LastAttempt backfilled to CreatedHeight.
+//   - set last_attempt = created_height so they enter the new FIFO queue at
+//     their original submission position
+//   - set attempt_count = 0
+//   - if the row was status=failed (under the pre-queue 1000-block expiry
+//     scheme), revive it to pending and clear sig — this is a one-time
+//     revival on the migration boot only
 //
-//  2. Interim-PR schema: rows carry attempt_count and next_attempt_height. We
-//     adopt next_attempt_height as LastAttempt (it encodes the same in-flight
-//     reservation) and drop the obsolete field.
-//
-// On subsequent boots every row already has last_attempt, so the $exists-
-// guarded branches (A and C) match nothing and are no-ops. Step B continues
-// to match any status=failed rows on every boot — this reset-to-pending on
-// restart is intentional and matches the pre-queue Init behavior, allowing
-// a node restart to revive a request that hard-failed on a previous boot.
+// Rows failed AFTER the queue migration (by MarkFailed for cap exhaustion or
+// MarkFailedByKey for key deprecation) already have last_attempt set, so they
+// do not match this filter and stay failed across restarts. Subsequent boots
+// match no rows and are no-ops.
 func (tssReqs *tssRequests) Init() error {
 	if err := tssReqs.Collection.Init(); err != nil {
 		return err
@@ -42,24 +41,12 @@ func (tssReqs *tssRequests) Init() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Migration step A: interim-PR rows carry next_attempt_height. Copy it
-	// into last_attempt, then drop the obsolete field. Must run first so
-	// step B's $exists filter for last_attempt doesn't overwrite the value
-	// we just copied.
+	// One-time revival: pre-queue failed rows lack last_attempt and need
+	// status/sig reset alongside the backfill. Done first so the second
+	// pass below catches only the remaining (non-failed) pre-queue rows.
 	if _, err := tssReqs.UpdateMany(ctx, bson.M{
-		"next_attempt_height": bson.M{"$exists": true},
-	}, mongo.Pipeline{
-		{{Key: "$set", Value: bson.M{"last_attempt": "$next_attempt_height"}}},
-		{{Key: "$unset", Value: "next_attempt_height"}},
-	}); err != nil {
-		return fmt.Errorf("next_attempt_height → last_attempt migration: %w", err)
-	}
-
-	// Migration step B: failed → pending reset. Interim-PR failed rows may
-	// have a stale last_attempt from a prior dispatch; reset it to
-	// created_height so they re-enter the queue at their original position.
-	if _, err := tssReqs.UpdateMany(ctx, bson.M{
-		"status": string(SignFailed),
+		"status":       string(SignFailed),
+		"last_attempt": bson.M{"$exists": false},
 	}, mongo.Pipeline{
 		{{Key: "$set", Value: bson.M{
 			"status":        string(SignPending),
@@ -68,11 +55,12 @@ func (tssReqs *tssRequests) Init() error {
 			"attempt_count": 0,
 		}}},
 	}); err != nil {
-		return fmt.Errorf("failed → pending migration: %w", err)
+		return fmt.Errorf("revive pre-queue failed rows: %w", err)
 	}
 
-	// Migration step C: backfill LastAttempt and AttemptCount for develop-
-	// schema rows that have neither field.
+	// Backfill last_attempt (= created_height) and attempt_count for any
+	// remaining pre-queue rows so they enter the new queue at their
+	// original CreatedHeight position. Preserves created_height verbatim.
 	if _, err := tssReqs.UpdateMany(ctx, bson.M{
 		"last_attempt": bson.M{"$exists": false},
 	}, mongo.Pipeline{
@@ -81,7 +69,7 @@ func (tssReqs *tssRequests) Init() error {
 			"attempt_count": 0,
 		}}},
 	}); err != nil {
-		return fmt.Errorf("last_attempt backfill: %w", err)
+		return fmt.Errorf("backfill last_attempt: %w", err)
 	}
 
 	if err := tssReqs.CreateIndexIfNotExist(mongo.IndexModel{
@@ -201,6 +189,18 @@ func (tssReqs *tssRequests) SetSignedRequest(req TssRequest) error {
 //
 //   - status == pending
 //   - last_attempt <= blockHeight
+//   - created_height < blockHeight
+//
+// The `created_height < blockHeight` gate is the cross-node determinism
+// anchor. BlockTick is registered async on the L1 consumer: at block N, the
+// TSS tick goroutine races the state engine's same-block writes. State
+// engine inserts for block N have created_height == N and may or may not
+// be visible when the tick reads the queue. Excluding rows inserted at the
+// current block forces every honest node to use the same cutoff — rows only
+// become eligible at block N+1, by which point the state engine for block N
+// has committed on every node. Without this gate, two nodes can select
+// different subsets at block N, advance LastAttempt to different values, and
+// permanently disagree about which slot the request fires in.
 //
 // The attempt cap is NOT enforced here — at-cap rows surface to the caller,
 // which calls MarkFailed on them at selection time. This avoids a periodic
@@ -222,8 +222,9 @@ func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64, limit int64
 		SetLimit(limit)
 
 	cursor, err := tssReqs.Find(ctx, bson.M{
-		"status":       string(SignPending),
-		"last_attempt": bson.M{"$lte": blockHeight},
+		"status":         string(SignPending),
+		"last_attempt":   bson.M{"$lte": blockHeight},
+		"created_height": bson.M{"$lt": blockHeight},
 	}, opts)
 	if err != nil {
 		return nil, err
