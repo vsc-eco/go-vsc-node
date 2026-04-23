@@ -66,14 +66,15 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 		}
 
 		for _, tssOp := range tssOps {
-			if tssOp.Type == "create" {
+			switch tssOp.Type {
+			case "create":
 				tssLog.Verbose("creating TSS key", "keyId", tssOp.KeyId, "algo", tssOp.Args, "epochs", tssOp.Epochs)
 				_, err := se.tssKeys.FindKey(tssOp.KeyId)
 
 				if err == mongo.ErrNoDocuments {
 					se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args), tssOp.Epochs)
 				}
-			} else if tssOp.Type == "renew" {
+			case "renew":
 				key, err := se.tssKeys.FindKey(tssOp.KeyId)
 				renewable := err == nil && tssOp.Epochs > 0 &&
 					(key.Status == tss_db.TssKeyActive || key.Status == tss_db.TssKeyDeprecated)
@@ -92,16 +93,23 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 							key.Status = tss_db.TssKeyActive
 							key.DeprecatedHeight = 0
 						}
-						tssLog.Info("key renewed", "keyId", key.Id, "newExpiryEpoch", key.ExpiryEpoch, "status", key.Status)
+						tssLog.Info(
+							"key renewed",
+							"keyId",
+							key.Id,
+							"newExpiryEpoch",
+							key.ExpiryEpoch,
+							"status",
+							key.Status,
+						)
 						se.tssKeys.SetKey(key)
 					}
 				}
-			} else if tssOp.Type == "sign" {
+			case "sign":
 				se.tssRequests.SetSignedRequest(tss_db.TssRequest{
-					KeyId:         tssOp.KeyId,
-					Status:        "unsigned",
-					Msg:           tssOp.Args,
-					CreatedHeight: txSelf.BlockHeight,
+					KeyId:  tssOp.KeyId,
+					Status: "unsigned",
+					Msg:    tssOp.Args,
 				})
 				// if err == mongo.ErrNoDocuments {
 				// 	se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args))
@@ -633,7 +641,7 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 		return false
 	}
 
-	signingScore, total := elections.CalculateSigningScore(*circuit, elecResult)
+	signingScore, total := elections.CalculateSigningScore(circuit, elecResult)
 
 	verifiedR := signingScore > ((total * 2) / 3)
 
