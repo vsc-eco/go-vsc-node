@@ -46,6 +46,13 @@ func (pc *p2pConfigStruct) SetOptions(conf p2pConfig) error {
 	} else if conf.Port > 0 && conf.Port < 1024 {
 		return fmt.Errorf("cannot listen to privileged ports")
 	}
+	defaults := pc.DefaultValue()
+	if conf.PubsubBufferSize == 0 {
+		conf.PubsubBufferSize = defaults.PubsubBufferSize
+	}
+	if conf.PubsubConcurrencyLimit == 0 {
+		conf.PubsubConcurrencyLimit = defaults.PubsubConcurrencyLimit
+	}
 	return pc.Update(func(pc *p2pConfig) {
 		pc.Port = conf.Port
 		pc.ServerMode = conf.ServerMode

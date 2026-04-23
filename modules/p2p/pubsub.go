@@ -102,6 +102,16 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 
 	startStatus := start_status.New()
 
+	// Defensive default: any caller path that bypasses Init (notably test
+	// helpers calling SetOptions without specifying every field) can leave
+	// PubsubConcurrencyLimit at zero. An unbuffered semaphore drops every
+	// inbound message — a silent and total failure mode. Fall back to the
+	// configured default rather than rely on Init having run.
+	concurrencyLimit := p2p.config.Get().PubsubConcurrencyLimit
+	if concurrencyLimit <= 0 {
+		concurrencyLimit = p2p.config.DefaultValue().PubsubConcurrencyLimit
+	}
+
 	res := &pubSubService[Msg]{
 		topic:       topic,
 		cancelRelay: cancelRelay,
@@ -110,7 +120,7 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 		ctx:         ctx,
 		cancelCtx:   cancel,
 		startStatus: startStatus,
-		semaphore:   make(chan struct{}, p2p.config.Get().PubsubConcurrencyLimit),
+		semaphore:   make(chan struct{}, concurrencyLimit),
 	}
 
 	go func() {
