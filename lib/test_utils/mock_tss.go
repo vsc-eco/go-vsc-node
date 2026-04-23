@@ -223,22 +223,12 @@ func (m *MockTssRequestsDb) SetSignedRequest(req tss.TssRequest) error {
 }
 
 func (m *MockTssRequestsDb) FindUnsignedRequests(blockHeight uint64) ([]tss.TssRequest, error) {
-	// Backfill legacy requests missing created_height.
+	// Revive any requests left in legacy "failed" state (from the removed
+	// block-age expiry) so they are retried.
 	for id, req := range m.Requests {
-		if req.Status == tss.SignPending && req.CreatedHeight == 0 {
-			req.CreatedHeight = blockHeight
+		if req.Status == "failed" {
+			req.Status = tss.SignPending
 			m.Requests[id] = req
-		}
-	}
-
-	// Mark expired requests as failed.
-	if blockHeight > tss.SignExpiryBlocks {
-		cutoff := blockHeight - tss.SignExpiryBlocks
-		for id, req := range m.Requests {
-			if req.Status == tss.SignPending && req.CreatedHeight <= cutoff {
-				req.Status = tss.SignFailed
-				m.Requests[id] = req
-			}
 		}
 	}
 

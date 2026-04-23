@@ -182,7 +182,7 @@ func (e *elections) GetElectionByHeight(height uint64) (ElectionResult, error) {
 }
 
 // Utility function
-func CalculateSigningScore(circuit dids.BlsCircuit, election ElectionResult) (uint64, uint64) {
+func CalculateSigningScore(circuit *dids.BlsCircuit, election ElectionResult) (uint64, uint64) {
 	IncludedDids := circuit.IncludedDIDs()
 	BitVector := circuit.RawBitVector()
 	WeightTotal := uint64(0)
