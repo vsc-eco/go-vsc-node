@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
@@ -178,6 +179,25 @@ func (r *queryResolver) executeSimulatedCall(
 	}, false
 }
 
+// normalizeDepositFrom matches the live state-processing path
+// (state_engine.go:612 & siblings, which always do `"hive:" + from` before
+// calling LedgerSystem.Deposit). Without this, a bare Hive username from the
+// SDK would reach ResolveDepositTarget's default-fallback branch — which
+// returns `from` verbatim — and the deposit would credit e.g. `tibfox`
+// while the subsequent call's `required_auths` lookup targets `hive:tibfox`.
+// The session cache misses, the swap's PullBalance reads 0, and the sim
+// reports `insufficient balance` despite a successful deposit result.
+// Accounts already prefixed (`hive:`, `did:`) pass through untouched.
+func normalizeDepositFrom(from string) string {
+	if from == "" {
+		return from
+	}
+	if strings.HasPrefix(from, "hive:") || strings.HasPrefix(from, "did:") {
+		return from
+	}
+	return "hive:" + from
+}
+
 // executeSimulatedDeposit credits the target account's in-session balance,
 // mirroring production memo-parsing but bypassing LedgerDb. The credit is
 // visible to any subsequent op via session.GetBalance, and is discarded by the
@@ -194,11 +214,17 @@ func (r *queryResolver) executeSimulatedDeposit(
 		memo = *deposit.Memo
 	}
 
+	// Align with live state-engine behaviour: production only ever feeds
+	// ResolveDepositTarget a `hive:`/`did:`-prefixed `from`. The sim helper
+	// is the first place bare usernames can reach the resolver, so
+	// normalize up front or the default-fallback returns a bare owner.
+	from := normalizeDepositFrom(deposit.From)
+
 	var owner string
 	if deposit.To != nil && *deposit.To != "" {
-		owner = ledgerSystem.ResolveDepositTarget("to="+*deposit.To, deposit.From)
+		owner = ledgerSystem.ResolveDepositTarget("to="+*deposit.To, from)
 	} else {
-		owner = ledgerSystem.ResolveDepositTarget(memo, deposit.From)
+		owner = ledgerSystem.ResolveDepositTarget(memo, from)
 	}
 
 	ledgerSession.AppendLedger(ledgerSystem.LedgerUpdate{
@@ -212,8 +238,16 @@ func (r *queryResolver) executeSimulatedDeposit(
 		Type:        "deposit",
 	})
 
+	// Echo the resolved owner + amount back in Ret so SDKs can confirm
+	// the memo/to parsed the way they expected. Small payload, big help
+	// when debugging "I deposited X but the swap still fails" reports.
+	ret := fmt.Sprintf(
+		`{"owner":%q,"amount":%d,"asset":%q}`,
+		owner, deposit.Amount, deposit.Asset,
+	)
 	return SimulateContractCallResult{
 		Success: true,
+		Ret:     &ret,
 		RcUsed:  model.Int64(0),
 		GasUsed: model.Uint64(0),
 	}, false

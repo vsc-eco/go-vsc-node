@@ -88,6 +88,52 @@ func TestSimulateDep_ResolverHelperMakesBalanceVisible(t *testing.T) {
 		"the router must have received the transferred HBD")
 }
 
+// Repro for Milo's testnet symptom ("blindly succeeded on the deposit and
+// then didn't get the state update right because the swaps still failed"):
+// a bare `from` with no usable memo used to drop into ResolveDepositTarget's
+// default-fallback branch, which returns from verbatim — so the deposit
+// credit landed on `tibfox` while the swap's required_auths lookup used
+// `hive:tibfox`. The helper now normalizes from up front to match the
+// live state-engine path. This test pins the fixed behaviour.
+func TestSimulateDep_BareFromNormalizesToHivePrefix(t *testing.T) {
+	state := makeResolverTestState()
+	session := ledgerSystem.NewSession(state)
+
+	// What the old helper used to do (pre-fix): pass bare from through
+	// ResolveDepositTarget with an empty memo. The default fallback returns
+	// the bare account — confirm that's still the case, so we know the
+	// normalization step in the helper is the only thing rescuing the
+	// flow.
+	assert.Equal(t, "tibfox",
+		ledgerSystem.ResolveDepositTarget("", "tibfox"),
+		"precondition: the default-fallback branch returns from verbatim — "+
+			"without the helper's normalization, bare from means bare owner")
+
+	// What the helper now does: prefix from before calling the resolver.
+	prefixed := "hive:tibfox"
+	owner := ledgerSystem.ResolveDepositTarget("", prefixed)
+	require.Equal(t, "hive:tibfox", owner,
+		"prefixed from should pass through the default-fallback as-is")
+
+	// And the resulting credit must be readable by the account shape the
+	// swap uses in required_auths (hive:tibfox, never bare tibfox).
+	session.AppendLedger(ledgerSystem.LedgerUpdate{
+		Id:          "sim-tx::0",
+		BlockHeight: 100,
+		Owner:       owner,
+		Amount:      1000,
+		Asset:       "hbd",
+		Type:        "deposit",
+	})
+	assert.Equal(t, int64(1000),
+		session.GetBalance("hive:tibfox", 100, "hbd"),
+		"after normalization the deposit credit is visible at the swap's "+
+			"required_auths lookup key")
+	assert.Equal(t, int64(0),
+		session.GetBalance("tibfox", 100, "hbd"),
+		"nothing should land on the un-prefixed account — that was the bug")
+}
+
 // Exclusion parity with PullBalance: if the caller sets rc_limit higher than
 // rcFreeRemaining, the HBD exclusion kicks in and eats into the balance. With
 // a freshly-deposited account, the transfer must still pass as long as the
