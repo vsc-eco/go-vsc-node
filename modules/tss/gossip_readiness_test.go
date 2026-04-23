@@ -7,8 +7,11 @@ import (
 	"math/big"
 	"sort"
 	"strconv"
+	"sync"
 	"testing"
 
+	"vsc-node/lib/test_utils"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
 
 	blsu "github.com/protolambda/bls12-381-util"
@@ -415,5 +418,243 @@ func TestPerHeightGossipSharedAcrossKeys(t *testing.T) {
 	}
 	if len(readyAccounts) != 2 {
 		t.Fatalf("expected 2 ready accounts, got %d", len(readyAccounts))
+	}
+}
+
+// gossipTestSetup builds a TssManager + p2pSpec wired to a MockElectionDb
+// containing a real-keyed election. Returns the manager, the spec, the BLS
+// secret keys keyed by account (for signing test attestations), and the target
+// block to use.
+func gossipTestSetup(t *testing.T, accounts []string, targetBlock uint64) (*TssManager, p2pSpec, map[string]*blsu.SecretKey) {
+	t.Helper()
+
+	members := make([]elections.ElectionMember, len(accounts))
+	keys := make(map[string]*blsu.SecretKey, len(accounts))
+	for i, a := range accounts {
+		sk, pk := generateTestBLSKey(byte(i + 1))
+		keys[a] = &sk
+		members[i] = elections.ElectionMember{Account: a, Key: testBlsDIDFromPubKey(pk)}
+	}
+	election := elections.ElectionResult{
+		ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 0},
+		ElectionDataInfo:   elections.ElectionDataInfo{Members: members},
+	}
+
+	mgr := newTestTssManager(t, accounts[0])
+	mgr.electionDb = &test_utils.MockElectionDb{
+		ElectionsByHeight: map[uint64]elections.ElectionResult{targetBlock: election},
+	}
+	mgr.sconf = systemconfig.MocknetConfig()
+	mgr.gossipAttestations = make(map[string]map[string]ReadyAttestation)
+	// Place currentBh outside the settle period: targetBlock - currentBh > DEFAULT_SETTLE_BLOCKS.
+	mgr.lastBlockHeight.Store(targetBlock - uint64(DEFAULT_SETTLE_BLOCKS) - 10)
+
+	return mgr, p2pSpec{tssMgr: mgr}, keys
+}
+
+// makeBundle builds a ready_gossip pubsub message body for the given
+// account → secret-key set, signing each attestation directly.
+func makeBundle(t *testing.T, keys map[string]*blsu.SecretKey, accounts []string, targetBlock uint64) p2pMessage {
+	t.Helper()
+	atts := make([]interface{}, 0, len(accounts))
+	for _, a := range accounts {
+		att, err := signAttestationDirect(keys[a], a, targetBlock)
+		if err != nil {
+			t.Fatalf("sign for %s: %v", a, err)
+		}
+		atts = append(atts, map[string]interface{}{
+			"account":      a,
+			"target_block": float64(targetBlock),
+			"sig":          att.Sig,
+		})
+	}
+	return p2pMessage{
+		Type: "ready_gossip",
+		Data: map[string]interface{}{
+			"target_block": float64(targetBlock),
+			"attestations": atts,
+		},
+	}
+}
+
+// TestHandleReadyGossip_ConcurrentOverlappingBundles fires N goroutines that
+// each call handleReadyGossip with overlapping bundles. The final map must be
+// the union of all valid attestations and there must be no race or panic.
+// This guards the Phase 3 re-check that prevents lost-update on concurrent
+// merges.
+func TestHandleReadyGossip_ConcurrentOverlappingBundles(t *testing.T) {
+	accounts := []string{"alice", "bob", "carol", "dave", "eve", "frank"}
+	const targetBlock uint64 = 5000
+
+	mgr, spec, keys := gossipTestSetup(t, accounts, targetBlock)
+
+	// Each goroutine sends a bundle covering 4 of 6 accounts, with rotation
+	// so every pair of bundles overlaps but no two are identical.
+	bundles := [][]string{
+		{"alice", "bob", "carol", "dave"},
+		{"bob", "carol", "dave", "eve"},
+		{"carol", "dave", "eve", "frank"},
+		{"dave", "eve", "frank", "alice"},
+		{"eve", "frank", "alice", "bob"},
+		{"frank", "alice", "bob", "carol"},
+	}
+
+	var wg sync.WaitGroup
+	for _, b := range bundles {
+		wg.Add(1)
+		go func(accs []string) {
+			defer wg.Done()
+			spec.handleReadyGossip(makeBundle(t, keys, accs, targetBlock))
+		}(b)
+	}
+	wg.Wait()
+
+	mgr.gossipLock.RLock()
+	final := mgr.gossipAttestations[strconv.FormatUint(targetBlock, 10)]
+	got := make([]string, 0, len(final))
+	for a := range final {
+		got = append(got, a)
+	}
+	mgr.gossipLock.RUnlock()
+	sort.Strings(got)
+
+	want := append([]string(nil), accounts...)
+	sort.Strings(want)
+	if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
+		t.Fatalf("expected union %v, got %v", want, got)
+	}
+}
+
+// TestHandleReadyGossip_RaceWithBlockTickWriter races handleReadyGossip against
+// a writer that mimics BlockTick's self-attestation insert path (direct map
+// write under gossipLock.Lock). Both paths must coexist safely.
+func TestHandleReadyGossip_RaceWithBlockTickWriter(t *testing.T) {
+	accounts := []string{"alice", "bob", "carol"}
+	const targetBlock uint64 = 5000
+	mgr, spec, keys := gossipTestSetup(t, accounts, targetBlock)
+	dedupKey := strconv.FormatUint(targetBlock, 10)
+
+	const iters = 50
+	var wg sync.WaitGroup
+
+	// Writer 1: BlockTick-style direct insert of "alice" each iteration.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		att, err := signAttestationDirect(keys["alice"], "alice", targetBlock)
+		if err != nil {
+			t.Errorf("sign alice: %v", err)
+			return
+		}
+		for i := 0; i < iters; i++ {
+			mgr.gossipLock.Lock()
+			if mgr.gossipAttestations[dedupKey] == nil {
+				mgr.gossipAttestations[dedupKey] = make(map[string]ReadyAttestation)
+			}
+			mgr.gossipAttestations[dedupKey]["alice"] = *att
+			mgr.gossipLock.Unlock()
+		}
+	}()
+
+	// Writer 2: handler-style merge of bob+carol each iteration.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		bundle := makeBundle(t, keys, []string{"bob", "carol"}, targetBlock)
+		for i := 0; i < iters; i++ {
+			spec.handleReadyGossip(bundle)
+		}
+	}()
+
+	wg.Wait()
+
+	mgr.gossipLock.RLock()
+	final := mgr.gossipAttestations[dedupKey]
+	mgr.gossipLock.RUnlock()
+	for _, a := range accounts {
+		if _, ok := final[a]; !ok {
+			t.Fatalf("expected %s in final map, got keys=%v", a, final)
+		}
+	}
+}
+
+// TestHandleReadyGossip_FullyRedundantBundleEarlyExit verifies that a bundle
+// containing only attestations the manager already has triggers the Phase 1
+// early exit — Phase 3's write lock is never taken, and no spurious mutation
+// occurs. The Phase 3 re-check would also prevent overwrite, but the early
+// exit is the steady-state hot path that drove the original lock contention.
+func TestHandleReadyGossip_FullyRedundantBundleEarlyExit(t *testing.T) {
+	accounts := []string{"alice", "bob", "carol"}
+	const targetBlock uint64 = 5000
+	mgr, spec, keys := gossipTestSetup(t, accounts, targetBlock)
+	dedupKey := strconv.FormatUint(targetBlock, 10)
+
+	// Pre-populate every account so the incoming bundle is fully redundant.
+	mgr.gossipLock.Lock()
+	mgr.gossipAttestations[dedupKey] = make(map[string]ReadyAttestation)
+	for _, a := range accounts {
+		att, err := signAttestationDirect(keys[a], a, targetBlock)
+		if err != nil {
+			t.Fatalf("sign %s: %v", a, err)
+		}
+		mgr.gossipAttestations[dedupKey][a] = *att
+	}
+	mgr.gossipLock.Unlock()
+
+	// Snapshot the map identity before the call so we can detect any reset.
+	mgr.gossipLock.RLock()
+	beforePtr := fmt.Sprintf("%p", mgr.gossipAttestations[dedupKey])
+	beforeLen := len(mgr.gossipAttestations[dedupKey])
+	mgr.gossipLock.RUnlock()
+
+	spec.handleReadyGossip(makeBundle(t, keys, accounts, targetBlock))
+
+	mgr.gossipLock.RLock()
+	afterPtr := fmt.Sprintf("%p", mgr.gossipAttestations[dedupKey])
+	afterLen := len(mgr.gossipAttestations[dedupKey])
+	mgr.gossipLock.RUnlock()
+
+	if beforePtr != afterPtr {
+		t.Fatalf("map was replaced (before=%s after=%s)", beforePtr, afterPtr)
+	}
+	if beforeLen != afterLen {
+		t.Fatalf("map length changed (before=%d after=%d)", beforeLen, afterLen)
+	}
+}
+
+// TestHandleReadyGossip_PartialBundleMergesNewOnly verifies that a bundle
+// mixing already-known and new accounts merges only the new ones, leaving
+// existing entries untouched.
+func TestHandleReadyGossip_PartialBundleMergesNewOnly(t *testing.T) {
+	accounts := []string{"alice", "bob", "carol", "dave"}
+	const targetBlock uint64 = 5000
+	mgr, spec, keys := gossipTestSetup(t, accounts, targetBlock)
+	dedupKey := strconv.FormatUint(targetBlock, 10)
+
+	// Pre-populate alice with a sentinel signature.
+	sentinelSig := "SENTINEL"
+	mgr.gossipLock.Lock()
+	mgr.gossipAttestations[dedupKey] = map[string]ReadyAttestation{
+		"alice": {Account: "alice", TargetBlock: targetBlock, Sig: sentinelSig},
+	}
+	mgr.gossipLock.Unlock()
+
+	// Bundle includes alice (already-known) plus bob/carol/dave (new).
+	spec.handleReadyGossip(makeBundle(t, keys, accounts, targetBlock))
+
+	mgr.gossipLock.RLock()
+	final := mgr.gossipAttestations[dedupKey]
+	mgr.gossipLock.RUnlock()
+
+	if len(final) != 4 {
+		t.Fatalf("expected 4 final entries, got %d", len(final))
+	}
+	if final["alice"].Sig != sentinelSig {
+		t.Fatalf("alice's sentinel signature was overwritten")
+	}
+	for _, a := range []string{"bob", "carol", "dave"} {
+		if _, ok := final[a]; !ok {
+			t.Fatalf("expected %s to be merged in", a)
+		}
 	}
 }

@@ -1072,8 +1072,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			keyInfo, _ := tssMgr.tssKeys.FindKey(action.KeyId)
 
-			participants := make([]Participant, 0)
-
 			// Fix 4: Use the commitment's epoch election for bitset mapping,
 			// not currentElection which may have different members/order.
 			commitElection := tssMgr.electionDb.GetElection(commitment.Epoch)
@@ -1081,27 +1079,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				log.Warn("cannot find commit election", "epoch", commitElection.Epoch)
 				continue
 			}
-			for midx, member := range commitElection.Members {
-				if bv.Bit(midx) == 1 {
-					participants = append(participants, Participant{
-						Account: member.Account,
-					})
-				}
-			}
 
-			// Record the full committee size before any exclusion — threshold
-			// is computed from this so the cryptographic parameters match the
-			// original keygen/reshare.
-			origSignCommitteeSize := len(participants)
-
-			// Exclude blamed and banned nodes deterministically (on-chain data
-			// only). DO NOT filter by connectivity — that is non-deterministic.
-			// BuildLocalSaveDataSubset remaps indices for the remaining subset.
-			//
-			// Uses the same accumulated-threshold approach as reshare: collect
-			// ALL blame commits in the BLAME_EXPIRE window, decode each against
-			// its own epoch election, and exclude nodes appearing in >33% of
-			// blame commits.
+			// Accumulated blame over the BLAME_EXPIRE window. Decoded against
+			// each blame commit's own epoch election. Excludes nodes appearing
+			// in >TSS_BLAME_THRESHOLD_PERCENT of blame commits. Fully on-chain.
 			var signBlameExpireBlock uint64
 			if bh > BLAME_EXPIRE {
 				signBlameExpireBlock = bh - BLAME_EXPIRE
@@ -1155,86 +1136,39 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					"threshold", TSS_BLAME_THRESHOLD_PERCENT)
 			}
 
-			// Build gossip readiness set — same mechanism as reshare.
-			// Per-height key: readiness is a node property, not per-key.
-			// For signing, all staggered slots within a signInterval window
-			// share a single attestation keyed by the windowStart block. Round
-			// bh down to the window boundary before the lookup so slot 0..N-1
-			// resolve to the same ready set.
+			// Gossip readiness is read for observability only. It MUST NOT
+			// drive control flow here — pubsub arrival order differs across
+			// nodes, so using it as a filter would produce divergent party
+			// lists → divergent SortedPartyIDs → BuildLocalSaveDataSubset
+			// remaps Paillier keys to wrong positions → btss signing round 2
+			// fails with "failed to calculate Bob_mid or Bob_mid_wc".
+			// See CLAUDE.md Constraint 2.
 			signInterval := getSignInterval(tssMgr.sconf)
 			signWindowStart := bh - (bh % signInterval)
 			signHeightKey := strconv.FormatUint(signWindowStart, 10)
-
 			tssMgr.gossipLock.RLock()
-			signAttMap := tssMgr.gossipAttestations[signHeightKey]
-			signReadyAccounts := make(map[string]bool, len(signAttMap))
-			for account := range signAttMap {
-				signReadyAccounts[account] = true
-			}
+			gossipReadyCount := len(tssMgr.gossipAttestations[signHeightKey])
 			tssMgr.gossipLock.RUnlock()
-			log.Verbose("signing gossip readiness set",
-				"sessionId", sessionId, "readyCount", len(signReadyAccounts),
-				"windowStart", signWindowStart)
+
+			// Deterministic participant list: commitment bitset − blamed − banned.
+			// All inputs are on-chain. Identical across all honest nodes.
+			participants, origSignCommitteeSize := buildSignParticipants(
+				commitElection, bv, signBlamedAccounts, blameMap.BannedNodes,
+			)
 
 			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
 			required := origThreshold + 1
 
-			// Strict filter: exclude blamed, banned, and non-ready.
-			filtered := make([]Participant, 0, len(participants))
-			for _, p := range participants {
-				if signBlamedAccounts[p.Account] {
-					log.Verbose("excluding blamed node from signing", "sessionId", sessionId, "account", p.Account)
-					continue
-				}
-				if blameMap.BannedNodes[p.Account] {
-					log.Verbose("excluding banned node from signing", "sessionId", sessionId, "account", p.Account)
-					continue
-				}
-				if !signReadyAccounts[p.Account] {
-					log.Verbose("excluding non-ready node from signing", "sessionId", sessionId, "account", p.Account)
-					continue
-				}
-				filtered = append(filtered, p)
+			if gossipReadyCount < required {
+				log.Info("signing dispatch with low local gossip readiness",
+					"sessionId", sessionId,
+					"gossipReadyCount", gossipReadyCount,
+					"participants", len(participants),
+					"required", required,
+					"windowStart", signWindowStart)
 			}
 
-			// Liveness short-circuit: if the strict filter would leave us
-			// below threshold, relax the blame exclusion (keep ban + readiness).
-			// A sub-threshold session cannot produce a signature anyway, so
-			// re-including blamed nodes can only help: if they've recovered,
-			// the session succeeds; if they're still misbehaving, the session
-			// fails and they get re-blamed — same outcome as skipping, but
-			// with a chance at recovery.
-			if len(filtered) < required && len(signBlamedAccounts) > 0 {
-				relaxed := make([]Participant, 0, len(participants))
-				for _, p := range participants {
-					if blameMap.BannedNodes[p.Account] {
-						continue
-					}
-					if !signReadyAccounts[p.Account] {
-						continue
-					}
-					relaxed = append(relaxed, p)
-				}
-				if len(relaxed) >= required && len(relaxed) > len(filtered) {
-					reincluded := make([]string, 0, len(signBlamedAccounts))
-					for _, p := range relaxed {
-						if signBlamedAccounts[p.Account] {
-							reincluded = append(reincluded, p.Account)
-						}
-					}
-					log.Warn("liveness fallback: re-including blamed nodes to reach signing threshold",
-						"sessionId", sessionId,
-						"strictReady", len(filtered),
-						"relaxedReady", len(relaxed),
-						"required", required,
-						"reincluded", reincluded)
-					filtered = relaxed
-				}
-			}
-			participants = filtered
-
-			// Pre-flight gate: need threshold+1 participants after all
-			// exclusions (post-fallback if it fired).
+			// Pre-flight gate. len(participants) is deterministic here.
 			if len(participants) < required {
 				log.Warn("insufficient participants for signing", "sessionId", sessionId, "ready", len(participants), "needed", required, "total", origSignCommitteeSize)
 				continue
@@ -1359,102 +1293,58 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				continue
 			}
 
-			// Build party lists from gossip attestations. Each node
-			// independently computes the ready set from BLS-signed
-			// self-attestations collected via pubsub gossip.
-			// Per-height key: readiness is a node property, not per-key.
+			// Gossip readiness is read for observability only. It MUST NOT
+			// drive control flow here — pubsub arrival order differs across
+			// nodes, so using it as a filter would produce divergent party
+			// lists → divergent SortedPartyIDs → SSID mismatch → session
+			// failure. See CLAUDE.md Constraint 2.
 			heightKey := strconv.FormatUint(bh, 10)
 			tssMgr.gossipLock.RLock()
-			attMap := tssMgr.gossipAttestations[heightKey]
-			readyAccounts := make(map[string]bool, len(attMap))
-			for account := range attMap {
-				readyAccounts[account] = true
-			}
+			gossipReadyCount := len(tssMgr.gossipAttestations[heightKey])
 			tssMgr.gossipLock.RUnlock()
-			log.Verbose("gossip readiness set",
-				"sessionId", sessionId, "readyCount", len(readyAccounts))
 
 			// Decode commitment bitset for old committee membership
 			commitmentBytes, err := base64.RawURLEncoding.DecodeString(commitment.Commitment)
 			bitset := new(big.Int).SetBytes(commitmentBytes)
 
-			commitedMembers := make([]Participant, 0)
-			fullOldCommitteeSize := 0
-
-			for idx, member := range commitmentElection.Members {
-				if idx < bitset.BitLen() && bitset.Bit(idx) == 1 {
-					fullOldCommitteeSize++
-					if blamedAccounts[member.Account] {
-						log.Verbose("excluding blamed node from old committee", "sessionId", sessionId, "account", member.Account)
-						continue
-					}
-					if blameMap.BannedNodes[member.Account] {
-						log.Verbose("excluding banned node from old committee", "sessionId", sessionId, "account", member.Account)
-						continue
-					}
-					// On-chain readiness gate: only include if node broadcast readiness
-					if !readyAccounts[member.Account] {
-						log.Verbose("excluding non-ready node from old committee", "sessionId", sessionId, "account", member.Account)
-						continue
-					}
-					commitedMembers = append(commitedMembers, Participant{
-						Account: member.Account,
-					})
-				}
-			}
-
-			newParticipants := make([]Participant, 0)
-			excludedNodes := make([]string, 0)
-
-			for _, member := range currentElection.Members {
-				if blamedAccounts[member.Account] {
-					excludedNodes = append(excludedNodes, member.Account)
-					log.Verbose("excluding blamed node from new committee", "sessionId", sessionId, "account", member.Account)
-					continue
-				}
-				if blameMap.BannedNodes[member.Account] {
-					excludedNodes = append(excludedNodes, member.Account)
-					log.Verbose("excluding banned node from new committee", "sessionId", sessionId, "account", member.Account)
-					continue
-				}
-				// On-chain readiness gate: only include if node broadcast readiness
-				if !readyAccounts[member.Account] {
-					excludedNodes = append(excludedNodes, member.Account)
-					log.Verbose("excluding non-ready node from new committee", "sessionId", sessionId, "account", member.Account)
-					continue
-				}
-				newParticipants = append(newParticipants, Participant{
-					Account: member.Account,
-				})
-			}
+			// Deterministic party lists: both committees are commitment/election
+			// membership minus blamed minus banned. All inputs on-chain.
+			commitedMembers, newParticipants, fullOldCommitteeSize := buildReshareParticipants(
+				commitmentElection, bitset, &currentElection,
+				blamedAccounts, blameMap.BannedNodes,
+			)
 
 			log.Verbose("reshare participant selection", "sessionId", sessionId,
 				"oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants),
-				"excluded", len(excludedNodes), "excludedNodes", excludedNodes,
-				"readyCount", len(readyAccounts))
+				"gossipReadyCount", gossipReadyCount)
 
 			// Threshold from FULL commitment size (pre-filter). Party lists are
-			// already filtered deterministically by on-chain readiness + blame + ban.
+			// already filtered deterministically by on-chain blame + ban.
 			origOldSize := fullOldCommitteeSize
 			origNewSize := len(newParticipants) // post-filter: threshold for the NEW key is based on actual participants, not full election
 			origOldThreshold, _ := tss_helpers.GetThreshold(origOldSize)
 			origNewThreshold, _ := tss_helpers.GetThreshold(origNewSize)
 
-			// Pre-flight checks — lists are already on-chain-readiness-filtered
+			// Pre-flight checks — party lists are deterministic; gossip readiness
+			// is informational only and does not gate dispatch.
 			minNewRequired := origNewThreshold + 1
 			if minNewRequired < 2 {
 				minNewRequired = 2
 			}
 			if len(newParticipants) < minNewRequired {
-				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "newParticipants", len(newParticipants), "required", minNewRequired, "readyCount", len(readyAccounts))
+				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "newParticipants", len(newParticipants), "required", minNewRequired, "gossipReadyCount", gossipReadyCount)
 				continue
 			}
 			if len(commitedMembers) < origOldThreshold+1 {
-				log.Warn("insufficient old participants for reshare", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "required", origOldThreshold+1, "readyCount", len(readyAccounts))
+				log.Warn("insufficient old participants for reshare", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "required", origOldThreshold+1, "gossipReadyCount", gossipReadyCount)
 				continue
 			}
 
-			log.Verbose("reshare pre-flight checks passed", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "readyCount", len(readyAccounts))
+			if gossipReadyCount < minNewRequired {
+				log.Info("reshare dispatch with low local gossip readiness", "sessionId", sessionId, "gossipReadyCount", gossipReadyCount, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "required", minNewRequired)
+			}
+
+			log.Verbose("reshare pre-flight checks passed", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "gossipReadyCount", gossipReadyCount)
 
 			dispatcher := &ReshareDispatcher{
 				BaseDispatcher: BaseDispatcher{

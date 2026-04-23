@@ -267,16 +267,18 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 	}
 
 	dedupKey := strconv.FormatUint(targetBlock, 10)
-	newCount := 0
 
-	s.tssMgr.gossipLock.Lock()
-	defer s.tssMgr.gossipLock.Unlock()
-
-	if s.tssMgr.gossipAttestations[dedupKey] == nil {
-		s.tssMgr.gossipAttestations[dedupKey] = make(map[string]ReadyAttestation)
+	// Phase 1: pre-filter under RLock to identify attestations not already
+	// known. BLS verify (Phase 2) is CPU-bound and must not run under any
+	// gossipLock — write-lock contention here used to saturate the pubsub
+	// concurrency limit during readiness storms.
+	type pendingAtt struct {
+		account string
+		sig     string
 	}
+	pending := make([]pendingAtt, 0, len(attList))
+	s.tssMgr.gossipLock.RLock()
 	existing := s.tssMgr.gossipAttestations[dedupKey]
-
 	for _, raw := range attList {
 		attMap, ok := raw.(map[string]interface{})
 		if !ok {
@@ -287,44 +289,69 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 		if account == "" || sig == "" {
 			continue
 		}
-
-		// Only accept attestations from actual election members.
 		if !electionMembers[account] {
 			continue
 		}
-
-		// Skip if we already have this attestation.
-		if _, has := existing[account]; has {
-			continue
+		if existing != nil {
+			if _, has := existing[account]; has {
+				continue
+			}
 		}
-
-		// During settle period, reject attestations from accounts not already seen.
 		if inSettlePeriod {
 			log.Trace("rejecting new attestation during settle period",
 				"account", account, "targetBlock", targetBlock)
 			continue
 		}
+		pending = append(pending, pendingAtt{account: account, sig: sig})
+	}
+	s.tssMgr.gossipLock.RUnlock()
 
+	if len(pending) == 0 {
+		return
+	}
+
+	// Phase 2: BLS verify lock-free — parallel-safe, read-only on TssManager.
+	verifiedAtts := make([]ReadyAttestation, 0, len(pending))
+	for _, p := range pending {
 		att := ReadyAttestation{
-			Account:     account,
+			Account:     p.account,
 			TargetBlock: targetBlock,
-			Sig:         sig,
+			Sig:         p.sig,
 		}
-
 		if !s.tssMgr.verifyAttestation(att, election) {
 			log.Warn("rejecting attestation with invalid BLS signature",
-				"account", account, "targetBlock", targetBlock)
+				"account", p.account, "targetBlock", targetBlock)
 			continue
 		}
+		verifiedAtts = append(verifiedAtts, att)
+	}
 
-		existing[account] = att
+	if len(verifiedAtts) == 0 {
+		return
+	}
+
+	// Phase 3: brief write lock to merge. Re-check per-account to handle the
+	// race where another handler inserted the same account in the meantime.
+	newCount := 0
+	s.tssMgr.gossipLock.Lock()
+	if s.tssMgr.gossipAttestations[dedupKey] == nil {
+		s.tssMgr.gossipAttestations[dedupKey] = make(map[string]ReadyAttestation)
+	}
+	m := s.tssMgr.gossipAttestations[dedupKey]
+	for _, att := range verifiedAtts {
+		if _, has := m[att.Account]; has {
+			continue
+		}
+		m[att.Account] = att
 		newCount++
 	}
+	total := len(m)
+	s.tssMgr.gossipLock.Unlock()
 
 	if newCount > 0 {
 		log.Trace("merged gossip attestations",
 			"targetBlock", targetBlock,
-			"new", newCount, "total", len(existing))
+			"new", newCount, "total", total)
 	}
 }
 

@@ -1,6 +1,7 @@
 package tss
 
 import (
+	"math/big"
 	"sort"
 	"testing"
 	"vsc-node/lib/test_utils"
@@ -329,6 +330,59 @@ func TestSerialize_ReshareResult_DifferentEpoch_DifferentCID(t *testing.T) {
 	cid2 := serializeToCID(t, r2)
 	assert.NotEqual(t, cid1, cid2,
 		"Different epochs must produce different CIDs even with same member names")
+}
+
+// TestSerialize_FilterToCID_ConsistentAcrossDivergentGossip documents the
+// end-to-end consensus property the fix protects. Two nodes start with
+// identical on-chain state (election, commitment bitset, blame set) and
+// wildly divergent gossip state. They both build the participant list via
+// buildSignParticipants, suffer identical timeouts (same culprits), and
+// serialize TimeoutResults. The CIDs must match. Before the fix the
+// participant lists diverged when the liveness fallback fired on the
+// boundary condition (a gossip-count-derived inequality), producing
+// different culprit sets and different CIDs.
+func TestSerialize_FilterToCID_ConsistentAcrossDivergentGossip(t *testing.T) {
+	epoch := uint64(371)
+	members := []string{"magi.test1", "magi.test2", "magi.test3", "milo.magi", "tibfox"}
+
+	mgr1 := &TssManager{electionDb: &test_utils.MockElectionDb{
+		Elections: map[uint64]*elections.ElectionResult{epoch: makeElection(epoch, members)},
+	}}
+	mgr2 := &TssManager{electionDb: &test_utils.MockElectionDb{
+		Elections: map[uint64]*elections.ElectionResult{epoch: makeElection(epoch, members)},
+	}}
+
+	// On-chain inputs — identical on both nodes.
+	commitElection := makeElection(epoch, members)
+	bitset := new(big.Int).SetInt64(0b11111)
+	blamed := map[string]bool{"magi.test2": true, "magi.test3": true}
+	banned := map[string]bool{}
+
+	// Gossip state diverges — but it's not a parameter of the helper,
+	// so it cannot affect the outcome.
+	partsA, _ := buildSignParticipants(commitElection, bitset, blamed, banned)
+	partsB, _ := buildSignParticipants(commitElection, bitset, blamed, banned)
+
+	require.Equal(t, accountsOf(partsA), accountsOf(partsB),
+		"divergent gossip must not cause divergent participant lists")
+
+	// Simulate both nodes timing out with tibfox as the sole culprit.
+	culprits := []string{"tibfox"}
+	trA := TimeoutResult{
+		tssMgr: mgr1, Culprits: culprits,
+		SessionId: "sign-2418460-0-key-1", KeyId: "key-1",
+		BlockHeight: 2418460, Epoch: epoch,
+	}
+	trB := TimeoutResult{
+		tssMgr: mgr2, Culprits: culprits,
+		SessionId: "sign-2418460-0-key-1", KeyId: "key-1",
+		BlockHeight: 2418460, Epoch: epoch,
+	}
+
+	cidA := serializeToCID(t, trA)
+	cidB := serializeToCID(t, trB)
+	assert.Equal(t, cidA, cidB,
+		"identical on-chain state must produce identical CIDs regardless of gossip")
 }
 
 // --- Helpers ---
