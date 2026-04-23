@@ -194,7 +194,6 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 	// -------------------------------------------------------------------------
 	"system": {
 		"call": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
-			_ = ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 			callArg, ok := arg1.(string)
 			if !ok {
 				return ErrInvalidArgument
@@ -206,7 +205,11 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			var valArg struct {
 				Arg0 string `json:"arg0"`
 			}
-			err := json.Unmarshal([]byte(rawValArg), &valArg)
+			if err := json.Unmarshal([]byte(rawValArg), &valArg); err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("INVALID_ARGUMENT_JSON"), err),
+				)
+			}
 			// Use sdkNamespacesRef (set in init()) to avoid an init cycle.
 			if ns, method, hasDot := strings.Cut(callArg, "."); hasDot {
 				if methods, ok2 := (*sdkNamespacesRef)[ns]; ok2 {
@@ -217,16 +220,29 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 								errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("ARITY_MISMATCH")),
 							)
 						}
-						return result.And(
-							result.Err[any](err),
-							result.Map(
-								fn(ctx, valArg.Arg0),
-								func(res SdkResultStruct) SdkResultStruct {
-									res.Result = fmt.Sprintf(`{"result":"%s"}`, res.Result)
-									return res
-								},
-							),
-						)
+						return func() (ret SdkResult) {
+							defer func() {
+								if r := recover(); r != nil {
+									ret = result.Err[SdkResultStruct](
+										errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("SYSTEM_CALL_PANIC"), fmt.Errorf("%v", r)),
+									)
+								}
+							}()
+
+							out := fn(ctx, valArg.Arg0)
+							if out.IsErr() {
+								return out
+							}
+							unwrapped := out.Unwrap()
+							payload, err := json.Marshal(map[string]string{"result": unwrapped.Result})
+							if err != nil {
+								return result.Err[SdkResultStruct](
+									errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("SERIALIZATION_ERROR"), err),
+								)
+							}
+							unwrapped.Result = string(payload)
+							return result.Ok(unwrapped)
+						}()
 					}
 				}
 			}
