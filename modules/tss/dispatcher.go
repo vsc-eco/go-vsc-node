@@ -540,15 +540,16 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 			// Check connection status for each culprit to provide context
 			culpritContext := make(map[string]string)
 
-			// Collect all waiting parties from both old and new sides.
-			// WaitingFor() returns combined old+new, so we deduplicate via
-			// the culprits map and label based on actual committee membership.
+			// Only the new party's WaitingFor identifies root-cause culprits.
+			// When round 1 stalls on a missing old-committee broadcast, the new
+			// party still sits in round 1 and points at the silent old member.
+			// The old party has advanced to round 2 and is waiting on every new
+			// party's ACK — those new parties are themselves blocked in round 1
+			// by the same root cause, so old.WaitingFor reports collateral
+			// victims. Merging both inflated culprit counts past maxBlamed and
+			// tripped systemic-blame suppression (tss.go:1552), so no blame
+			// ever landed on Hive and the offender was never excluded.
 			allWaiting := make(map[string]bool)
-			if dispatcher.party != nil {
-				for _, p := range dispatcher.party.WaitingFor() {
-					allWaiting[p.Id] = true
-				}
-			}
 			if dispatcher.newParty != nil {
 				for _, p := range dispatcher.newParty.WaitingFor() {
 					allWaiting[p.Id] = true
