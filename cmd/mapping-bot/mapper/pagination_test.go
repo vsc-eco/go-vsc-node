@@ -4,15 +4,33 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"testing"
 
 	transactionpool "vsc-node/modules/transaction-pool"
+
+	"encoding/hex"
+
+	"github.com/btcsuite/btcd/wire"
 )
 
 func base64Decode(wire []byte) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(string(wire))
+}
+
+func buildRawTxHex(t *testing.T) (rawTxHex string, txID string) {
+	t.Helper()
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{Index: 0},
+		Sequence:         wire.MaxTxInSequenceNum,
+	})
+	tx.AddTxOut(&wire.TxOut{Value: 1000, PkScript: []byte{0x51}})
+	var buf bytes.Buffer
+	if err := tx.Serialize(&buf); err != nil {
+		t.Fatalf("serialize tx: %v", err)
+	}
+	return hex.EncodeToString(buf.Bytes()), tx.TxID()
 }
 
 // --- mustPaginate / size boundary ---------------------------------------------------
@@ -77,49 +95,29 @@ func TestSplitIntoPages_EmptyYieldsSinglePage(t *testing.T) {
 }
 
 func TestSplitIntoPages_RejectsTooManyPages(t *testing.T) {
-	// A raw payload of 128 * (maxPagePayloadBytes * 3 / 4) bytes expands
-	// to ~128 pages on the base64 wire, which exceeds the contract's
-	// MaxPagesPerParent cap.
+	// A raw payload large enough to require 129 pages must be rejected.
 	rawPerPage := maxPagePayloadBytes * 3 / 4
-	payload := make([]byte, 128*rawPerPage)
+	payload := make([]byte, 129*rawPerPage)
 	if _, err := splitIntoPages(payload); err == nil {
-		t.Fatalf("expected error for payload exceeding MaxPagesPerParent")
+		t.Fatalf("expected error for payload exceeding MaxPagesPerPlan")
 	}
 }
 
-// --- parent-id stability ------------------------------------------------------------
-
-func TestComputeParentID_StableAndSameAsContract(t *testing.T) {
-	input := []byte(`{"hello":"world"}`)
-	a := computeParentID(input)
-	b := computeParentID(input)
-	if a != b {
-		t.Fatalf("parent id not deterministic: %s vs %s", a, b)
-	}
-	if len(a) != 64 {
-		t.Fatalf("expected 64-hex-char digest, got %d chars (%q)", len(a), a)
-	}
-	if _, err := hex.DecodeString(a); err != nil {
-		t.Fatalf("parent id not hex: %v", err)
-	}
-	if computeParentID(append([]byte{}, input...)) != a {
-		t.Fatalf("parent id sensitive to slice aliasing")
-	}
-}
-
-// --- buildPagePlan / ordering ------------------------------------------------------
+// --- buildPagePlan / ordering -------------------------------------------------------
 
 func TestBuildPagePlan_OrderedAndBound(t *testing.T) {
 	payload := make([]byte, maxPagePayloadBytes*2+42)
 	for i := range payload {
 		payload[i] = byte(i % 251)
 	}
-	plan, parentID, err := buildPagePlan(payload)
+	env := paginationEnvelopeData{
+		TxID:        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Vout:        7,
+		BlockHeight: 1234,
+	}
+	plan, err := buildPagePlan(payload, env)
 	if err != nil {
 		t.Fatalf("buildPagePlan: %v", err)
-	}
-	if want := computeParentID(payload); parentID != want {
-		t.Fatalf("parent id mismatch: got %s want %s", parentID, want)
 	}
 	if len(plan) < 2 {
 		t.Fatalf("expected >= 2 pages for a 2x+ payload, got %d", len(plan))
@@ -131,8 +129,8 @@ func TestBuildPagePlan_OrderedAndBound(t *testing.T) {
 		if job.TotalPages != uint32(len(plan)) {
 			t.Fatalf("plan[%d].TotalPages = %d", i, job.TotalPages)
 		}
-		if job.ParentID != parentID {
-			t.Fatalf("plan[%d].ParentID mismatch", i)
+		if job.TxID != env.TxID || job.Vout != env.Vout || job.BlockHeight != env.BlockHeight {
+			t.Fatalf("plan[%d] envelope mismatch", i)
 		}
 	}
 
@@ -140,11 +138,7 @@ func TestBuildPagePlan_OrderedAndBound(t *testing.T) {
 	// decoding yields the original payload and hashes to parentID.
 	var joined bytes.Buffer
 	for _, job := range plan {
-		var s string
-		if err := json.Unmarshal(job.Payload, &s); err != nil {
-			t.Fatalf("decode page payload: %v", err)
-		}
-		joined.WriteString(s)
+		joined.WriteString(job.Payload)
 	}
 	decoded, err := base64Decode(joined.Bytes())
 	if err != nil {
@@ -159,7 +153,11 @@ func TestBuildPagePlan_OrderedAndBound(t *testing.T) {
 
 func TestAssertPagePlanFitsL2_Holds(t *testing.T) {
 	payload := make([]byte, maxPagePayloadBytes*3+1)
-	plan, _, err := buildPagePlan(payload)
+	plan, err := buildPagePlan(payload, paginationEnvelopeData{
+		TxID:        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Vout:        1,
+		BlockHeight: 77,
+	})
 	if err != nil {
 		t.Fatalf("buildPagePlan: %v", err)
 	}
@@ -181,7 +179,12 @@ func TestAssertPagePlanFitsL2_Holds(t *testing.T) {
 
 func TestEncodePageSubmission_MatchesContractSchema(t *testing.T) {
 	payload := []byte(`{"action":"map","x":1}`)
-	plan, parentID, err := buildPagePlan(payload)
+	env := paginationEnvelopeData{
+		TxID:        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		Vout:        2,
+		BlockHeight: 90,
+	}
+	plan, err := buildPagePlan(payload, env)
 	if err != nil {
 		t.Fatalf("buildPagePlan: %v", err)
 	}
@@ -193,16 +196,18 @@ func TestEncodePageSubmission_MatchesContractSchema(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	var decoded struct {
-		ParentID   string `json:"parent_id"`
-		PageIdx    uint32 `json:"page_idx"`
-		TotalPages uint32 `json:"total_pages"`
-		Payload    string `json:"payload"`
+		TxID        string `json:"tx_id"`
+		Vout        uint32 `json:"vout"`
+		BlockHeight uint32 `json:"block_height"`
+		PageIdx     uint32 `json:"page_idx"`
+		TotalPages  uint32 `json:"total_pages"`
+		Payload     string `json:"payload"`
 	}
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if decoded.ParentID != parentID {
-		t.Fatalf("parent id mismatch: %s vs %s", decoded.ParentID, parentID)
+	if decoded.TxID != env.TxID || decoded.Vout != env.Vout || decoded.BlockHeight != env.BlockHeight {
+		t.Fatalf("envelope mismatch: %+v", decoded)
 	}
 	if decoded.PageIdx != 0 || decoded.TotalPages != 1 {
 		t.Fatalf("unexpected indices: %+v", decoded)
@@ -242,5 +247,38 @@ func TestRequirePaginatedAction(t *testing.T) {
 	}
 	if err := requirePaginatedAction("unmap"); err == nil {
 		t.Fatalf("unmap should not be paginatable")
+	}
+}
+
+func TestParseEnvelopeData_Map(t *testing.T) {
+	rawTxHex, txID := buildRawTxHex(t)
+	body := []byte(`{"tx_data":{"block_height":42,"raw_tx_hex":"` + rawTxHex + `","merkle_proof_hex":"","tx_index":0},"instructions":["x=y"]}`)
+	env, err := parseEnvelopeData("map", body)
+	if err != nil {
+		t.Fatalf("parse map envelope: %v", err)
+	}
+	if env.TxID != txID || env.BlockHeight != 42 || env.Vout != 0 {
+		t.Fatalf("unexpected env: %+v", env)
+	}
+}
+
+func TestParseEnvelopeData_ConfirmSpend(t *testing.T) {
+	rawTxHex, txID := buildRawTxHex(t)
+	body := []byte(`{"tx_data":{"block_height":55,"raw_tx_hex":"` + rawTxHex + `","merkle_proof_hex":"","tx_index":0},"indices":[9,10]}`)
+	env, err := parseEnvelopeData("confirmSpend", body)
+	if err != nil {
+		t.Fatalf("parse confirmSpend envelope: %v", err)
+	}
+	if env.TxID != txID || env.BlockHeight != 55 || env.Vout != 9 {
+		t.Fatalf("unexpected env: %+v", env)
+	}
+}
+
+func TestParseEnvelopeData_RejectsBadPayload(t *testing.T) {
+	if _, err := parseEnvelopeData("map", []byte(`{"tx_data":{}}`)); err == nil {
+		t.Fatalf("expected error for missing raw tx")
+	}
+	if _, err := parseEnvelopeData("confirmSpend", []byte(`{"tx_data":{"block_height":1,"raw_tx_hex":"zz"}}`)); err == nil {
+		t.Fatalf("expected error for invalid raw tx hex")
 	}
 }

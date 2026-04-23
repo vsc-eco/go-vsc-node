@@ -13,7 +13,7 @@ package mapper
 //
 //   - `beyond_l2_requires_pagination`        → `mustPaginate` decision
 //   - `PagePlanFitsL2` / `pagination_plan_each_page_fits_l2` → per-page size bound
-//   - `pagination_reconstructs_original`     → content-hash parentId binding
+//   - `pagination_reconstructs_original`      → byte-exact assembly
 //   - `contractSubmit_idempotent`             → duplicate page resubmit is safe
 //
 // Payload encoding is the UTF-8 JSON bytes of the full MapParams /
@@ -21,20 +21,24 @@ package mapper
 // not required to be well-formed per page — reassembly is byte-exact).
 
 import (
-	"crypto/sha256"
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	transactionpool "vsc-node/modules/transaction-pool"
+
+	"github.com/btcsuite/btcd/wire"
 )
 
 // maxPagePayloadBytes is the conservative per-page payload byte cap, in
 // BYTES OF THE BASE64 WIRE FORM.
 //
 // The L2 MAX_TX_SIZE is 16384 bytes, but the signed tx envelope wraps the
-// payload with `{parent_id, page_idx, total_pages, payload}` JSON (~120 B
+// payload with `{tx_id, vout, block_height, page_idx, total_pages, payload}`
+// JSON (~120 B
 // overhead), a `VscContractCall` op header (~300 B with action + contract +
 // caller + nonce + rc_limit), plus a CBOR outer wrapper and signature. We
 // budget 2 KB for envelope + signature headroom, leaving 14 000 bytes for
@@ -55,10 +59,12 @@ const paginationActionSuffix = "Page"
 // pageJob captures a single chunk of a paginated payload to be submitted as
 // its own L2 transaction.
 type pageJob struct {
-	ParentID   string          `json:"parent_id"`
-	PageIdx    uint32          `json:"page_idx"`
-	TotalPages uint32          `json:"total_pages"`
-	Payload    json.RawMessage `json:"payload"`
+	TxID        string `json:"tx_id"`
+	Vout        uint32 `json:"vout"`
+	BlockHeight uint32 `json:"block_height"`
+	PageIdx     uint32 `json:"page_idx"`
+	TotalPages  uint32 `json:"total_pages"`
+	Payload     string `json:"payload"`
 }
 
 // pagePayload is the on-wire shape of a single page body. It matches
@@ -66,19 +72,18 @@ type pageJob struct {
 // contract side. Kept as a local type so the mapping-bot does not depend on
 // the WASM contract Go package.
 type pagePayload struct {
-	ParentID   string `json:"parent_id"`
-	PageIdx    uint32 `json:"page_idx"`
-	TotalPages uint32 `json:"total_pages"`
-	Payload    string `json:"payload"`
+	TxID        string `json:"tx_id"`
+	Vout        uint32 `json:"vout"`
+	BlockHeight uint32 `json:"block_height"`
+	PageIdx     uint32 `json:"page_idx"`
+	TotalPages  uint32 `json:"total_pages"`
+	Payload     string `json:"payload"`
 }
 
-// computeParentID is the client-side counterpart to
-// `mapping.ComputeParentId`. It MUST produce the same 64-char lower-hex
-// sha256 digest the contract computes on reassembly, otherwise the contract
-// rejects the plan as tampered.
-func computeParentID(payload []byte) string {
-	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:])
+type paginationEnvelopeData struct {
+	TxID        string
+	Vout        uint32
+	BlockHeight uint32
 }
 
 // mustPaginate reports whether a payload is too large for a single L2 tx
@@ -112,16 +117,16 @@ func encodeForWire(payload []byte) []byte {
 //
 // Empty input returns a single empty page (rather than zero pages) so that
 // total_pages is always ≥ 1 and the contract still receives a final-page
-// signal. An oversized input whose total pages would exceed 127 is rejected
-// because the contract caps `MaxPagesPerParent` at 128.
+// signal. An oversized input whose total pages would exceed 128 is rejected
+// because the contract caps `MaxPagesPerPlan` at 128.
 func splitIntoPages(payload []byte) ([][]byte, error) {
 	wire := encodeForWire(payload)
 	if len(wire) == 0 {
 		return [][]byte{{}}, nil
 	}
 	total := (len(wire) + maxPagePayloadBytes - 1) / maxPagePayloadBytes
-	if total > 127 {
-		return nil, fmt.Errorf("payload requires %d pages which exceeds contract MaxPagesPerParent (128)", total)
+	if total > 128 {
+		return nil, fmt.Errorf("payload requires %d pages which exceeds contract MaxPagesPerPlan (128)", total)
 	}
 	pages := make([][]byte, 0, total)
 	for i := 0; i < len(wire); i += maxPagePayloadBytes {
@@ -136,30 +141,26 @@ func splitIntoPages(payload []byte) ([][]byte, error) {
 	return pages, nil
 }
 
-// buildPagePlan produces the full list of `pageJob` descriptors for a
-// payload, bound to the content-addressed parent id. The plan is order-
-// preserving: pages[i].PageIdx == i for all i.
-func buildPagePlan(payload []byte) ([]pageJob, string, error) {
+// buildPagePlan produces the full list of `pageJob` descriptors for a payload.
+// The plan is order-preserving: pages[i].PageIdx == i for all i.
+func buildPagePlan(payload []byte, envelope paginationEnvelopeData) ([]pageJob, error) {
 	chunks, err := splitIntoPages(payload)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	parentID := computeParentID(payload)
 	total := uint32(len(chunks))
 	plan := make([]pageJob, 0, total)
 	for i, c := range chunks {
-		raw, err := json.Marshal(string(c))
-		if err != nil {
-			return nil, "", fmt.Errorf("marshal page %d payload: %w", i, err)
-		}
 		plan = append(plan, pageJob{
-			ParentID:   parentID,
-			PageIdx:    uint32(i),
-			TotalPages: total,
-			Payload:    raw,
+			TxID:        envelope.TxID,
+			Vout:        envelope.Vout,
+			BlockHeight: envelope.BlockHeight,
+			PageIdx:     uint32(i),
+			TotalPages:  total,
+			Payload:     string(c),
 		})
 	}
-	return plan, parentID, nil
+	return plan, nil
 }
 
 // pageActionFor returns the paginated WASM-export action name for a base
@@ -174,18 +175,13 @@ func pageActionFor(base string) string {
 // encodePageSubmission serializes a pageJob into the JSON body expected by
 // the contract's page-handling exports.
 func encodePageSubmission(job pageJob) (json.RawMessage, error) {
-	// Payload is a JSON-encoded string (the raw bytes of this page as a JSON
-	// string literal). We unmarshal -> re-marshal through pagePayload to keep
-	// field ordering and type stable.
-	var payloadStr string
-	if err := json.Unmarshal(job.Payload, &payloadStr); err != nil {
-		return nil, fmt.Errorf("re-decode page payload: %w", err)
-	}
 	body, err := json.Marshal(pagePayload{
-		ParentID:   job.ParentID,
-		PageIdx:    job.PageIdx,
-		TotalPages: job.TotalPages,
-		Payload:    payloadStr,
+		TxID:        job.TxID,
+		Vout:        job.Vout,
+		BlockHeight: job.BlockHeight,
+		PageIdx:     job.PageIdx,
+		TotalPages:  job.TotalPages,
+		Payload:     job.Payload,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal page submission: %w", err)
@@ -229,4 +225,77 @@ func requirePaginatedAction(base string) error {
 		return fmt.Errorf("%w: %s", errPageActionUnsupported, base)
 	}
 	return nil
+}
+
+type mapPayloadForPagination struct {
+	TxData *VerificationRequest `json:"tx_data"`
+}
+
+type confirmSpendPayloadForPagination struct {
+	TxData  *VerificationRequest `json:"tx_data"`
+	Indices []uint32             `json:"indices"`
+}
+
+func txIDFromRawTxHexStrict(rawTxHex string) (string, error) {
+	rawTx, err := hex.DecodeString(rawTxHex)
+	if err != nil {
+		return "", fmt.Errorf("decode raw_tx_hex: %w", err)
+	}
+	var tx wire.MsgTx
+	if err := tx.Deserialize(bytes.NewReader(rawTx)); err != nil {
+		return "", fmt.Errorf("deserialize raw tx: %w", err)
+	}
+	return tx.TxID(), nil
+}
+
+func parseEnvelopeData(action string, contractInput json.RawMessage) (paginationEnvelopeData, error) {
+	switch action {
+	case "map":
+		var payload mapPayloadForPagination
+		if err := json.Unmarshal(contractInput, &payload); err != nil {
+			return paginationEnvelopeData{}, fmt.Errorf("decode map payload: %w", err)
+		}
+		if payload.TxData == nil || payload.TxData.RawTxHex == "" {
+			return paginationEnvelopeData{}, fmt.Errorf("map payload missing tx_data.raw_tx_hex")
+		}
+		if payload.TxData.BlockHeight > math.MaxUint32 {
+			return paginationEnvelopeData{}, fmt.Errorf("map block_height exceeds uint32")
+		}
+		txID, err := txIDFromRawTxHexStrict(payload.TxData.RawTxHex)
+		if err != nil {
+			return paginationEnvelopeData{}, err
+		}
+		// For map, vout is only a race pre-check anchor; use a stable vout.
+		return paginationEnvelopeData{
+			TxID:        txID,
+			Vout:        0,
+			BlockHeight: uint32(payload.TxData.BlockHeight),
+		}, nil
+	case "confirmSpend":
+		var payload confirmSpendPayloadForPagination
+		if err := json.Unmarshal(contractInput, &payload); err != nil {
+			return paginationEnvelopeData{}, fmt.Errorf("decode confirmSpend payload: %w", err)
+		}
+		if payload.TxData == nil || payload.TxData.RawTxHex == "" {
+			return paginationEnvelopeData{}, fmt.Errorf("confirmSpend payload missing tx_data.raw_tx_hex")
+		}
+		if payload.TxData.BlockHeight > math.MaxUint32 {
+			return paginationEnvelopeData{}, fmt.Errorf("confirmSpend block_height exceeds uint32")
+		}
+		txID, err := txIDFromRawTxHexStrict(payload.TxData.RawTxHex)
+		if err != nil {
+			return paginationEnvelopeData{}, err
+		}
+		vout := uint32(0)
+		if len(payload.Indices) > 0 {
+			vout = payload.Indices[0]
+		}
+		return paginationEnvelopeData{
+			TxID:        txID,
+			Vout:        vout,
+			BlockHeight: uint32(payload.TxData.BlockHeight),
+		}, nil
+	default:
+		return paginationEnvelopeData{}, fmt.Errorf("%w: %s", errPageActionUnsupported, action)
+	}
 }

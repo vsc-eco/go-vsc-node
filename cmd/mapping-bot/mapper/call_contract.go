@@ -48,7 +48,12 @@ func (b *Bot) callContractPaginated(
 		return "", err
 	}
 
-	plan, parentID, err := buildPagePlan([]byte(contractInput))
+	envelope, err := parseEnvelopeData(action, contractInput)
+	if err != nil {
+		return "", fmt.Errorf("pagination envelope: %w", err)
+	}
+
+	plan, err := buildPagePlan([]byte(contractInput), envelope)
 	if err != nil {
 		return "", fmt.Errorf("pagination plan: %w", err)
 	}
@@ -60,7 +65,9 @@ func (b *Bot) callContractPaginated(
 	b.L.Info("paginating oversized contract call",
 		"base_action", action,
 		"page_action", pageAction,
-		"parent_id", parentID,
+		"tx_id", envelope.TxID,
+		"vout", envelope.Vout,
+		"block_height", envelope.BlockHeight,
 		"total_pages", len(plan),
 		"payload_bytes", len(contractInput),
 	)
@@ -74,14 +81,16 @@ func (b *Bot) callContractPaginated(
 
 		txID, err := b.callContractL2(ctx, body, pageAction)
 		if err != nil {
-			return "", fmt.Errorf("submit page %d/%d (parent=%s): %w",
-				job.PageIdx+1, job.TotalPages, parentID, err)
+			return "", fmt.Errorf("submit page %d/%d (tx_id=%s): %w",
+				job.PageIdx+1, job.TotalPages, envelope.TxID, err)
 		}
 		b.L.Info("page submitted",
-			"parent_id", parentID,
+			"tx_id", job.TxID,
+			"vout", job.Vout,
+			"block_height", job.BlockHeight,
 			"page_idx", job.PageIdx,
 			"total_pages", job.TotalPages,
-			"tx_id", txID,
+			"submit_tx_id", txID,
 		)
 		lastTxID = txID
 	}

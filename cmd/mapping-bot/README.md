@@ -40,6 +40,26 @@ All contract calls (`map`, `confirmSpend`) are signed with the bot's secp256k1
 key and submitted through the VSC node's `submitTransactionV1` GraphQL query.
 The bot does not talk to Hive directly.
 
+## Pagination (L2 Oversize Payloads)
+
+When a `map` or `confirmSpend` payload is larger than a single L2 submission can safely carry, the bot automatically switches to paginated submission (`mapPage` / `confirmSpendPage`) and sends base64 URL-safe chunks.
+
+Each page now uses the contract envelope:
+
+| Field          | Type   | Description |
+| -------------- | ------ | ----------- |
+| `tx_id`        | string | 64-char display txid derived from `tx_data.raw_tx_hex` |
+| `vout`         | uint32 | race-anchor output index (`0` for `map`; first `indices` element for `confirmSpend`, or `0` when empty) |
+| `block_height` | uint32 | copied from `tx_data.block_height` |
+| `page_idx`     | uint32 | zero-based page index |
+| `total_pages`  | uint32 | total page count (max 128) |
+| `payload`      | string | one base64-URL-no-padding chunk |
+
+Notes:
+- Legacy `parent_id` page envelopes are no longer used.
+- Non-final pages are emitted 4-char aligned so contract base64 checks pass.
+- The final page returns the same `"0"` success sentinel as non-paginated calls; failures are still signaled through transaction failure/revert.
+
 ## HTTP Server Endpoints
 
 ### `GET /health`
@@ -189,6 +209,20 @@ The bot also loads this standard VSC config file from the data directory:
 
 (The mapping bot no longer requires `identityConfig.json` or `hiveConfig.json`
 — those were needed when contract calls were broadcast via Hive custom_json.)
+
+## Branch / Worktree Workflow
+
+If your local repo has unrelated WIP and checkout is blocked, use a worktree to patch pagination safely:
+
+```bash
+cd go-vsc-node
+git worktree add ../go-vsc-node-pagination feat/mapping-bot-pagination
+cd ../go-vsc-node-pagination
+go test ./cmd/mapping-bot/mapper
+go build ./cmd/mapping-bot
+```
+
+This keeps the active branch untouched while you validate pagination changes on the dedicated branch.
 
 ## Running All Chains
 
