@@ -78,13 +78,33 @@ func (tssReqs *tssRequests) SetSignedRequest(req TssRequest) error {
 func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64) ([]TssRequest, error) {
 	ctx := context.Background()
 
-	// Revive requests that were marked "failed" by the removed block-age expiry
-	// so they are retried. Idempotent — a no-op once drained.
-	tssReqs.UpdateMany(ctx, bson.M{
-		"status": "failed",
-	}, bson.M{
-		"$set": bson.M{"status": "unsigned"},
-	})
+	// Revive "failed" requests (from the removed block-age expiry, or from
+	// deprecated-key filtering when a key is later renewed) — but only for keys
+	// that are currently active. Requests whose key is still deprecated/retired
+	// stay "failed" so selection skips them without re-checking every tick.
+	activeKeysColl := tssReqs.Database().Collection("tss_keys")
+	activeCur, keyErr := activeKeysColl.Find(ctx, bson.M{"status": TssKeyActive},
+		options.Find().SetProjection(bson.M{"id": 1}))
+	if keyErr == nil {
+		var activeKeyIds []string
+		for activeCur.Next(ctx) {
+			var k struct {
+				Id string `bson:"id"`
+			}
+			if activeCur.Decode(&k) == nil {
+				activeKeyIds = append(activeKeyIds, k.Id)
+			}
+		}
+		activeCur.Close(ctx)
+		if len(activeKeyIds) > 0 {
+			tssReqs.UpdateMany(ctx, bson.M{
+				"status": "failed",
+				"key_id": bson.M{"$in": activeKeyIds},
+			}, bson.M{
+				"$set": bson.M{"status": "unsigned"},
+			})
+		}
+	}
 
 	requests := make([]TssRequest, 0)
 	findResult, err := tssReqs.Find(ctx, bson.M{

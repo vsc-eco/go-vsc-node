@@ -504,12 +504,18 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				keyInfo, _ := tssMgr.tssKeys.FindKey(signReq.KeyId)
 				if keyInfo.Status != tss_db.TssKeyActive {
 					log.Warn(
-						"signing attempted for non-active key, skipping",
+						"marking sign request as failed for non-active key",
 						"keyId",
 						keyInfo.Id,
 						"status",
 						keyInfo.Status,
 					)
+					tssMgr.tssRequests.UpdateRequest(tss_db.TssRequest{
+						KeyId:  signReq.KeyId,
+						Msg:    signReq.Msg,
+						Sig:    signReq.Sig,
+						Status: tss_db.SignFailed,
+					})
 					continue
 				}
 				if !keyLocks[signReq.KeyId] {
