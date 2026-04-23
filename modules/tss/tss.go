@@ -1176,6 +1176,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				"sessionId", sessionId, "readyCount", len(signReadyAccounts),
 				"windowStart", signWindowStart)
 
+			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
+			required := origThreshold + 1
+
+			// Strict filter: exclude blamed, banned, and non-ready.
 			filtered := make([]Participant, 0, len(participants))
 			for _, p := range participants {
 				if signBlamedAccounts[p.Account] {
@@ -1192,13 +1196,47 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 				filtered = append(filtered, p)
 			}
+
+			// Liveness short-circuit: if the strict filter would leave us
+			// below threshold, relax the blame exclusion (keep ban + readiness).
+			// A sub-threshold session cannot produce a signature anyway, so
+			// re-including blamed nodes can only help: if they've recovered,
+			// the session succeeds; if they're still misbehaving, the session
+			// fails and they get re-blamed — same outcome as skipping, but
+			// with a chance at recovery.
+			if len(filtered) < required && len(signBlamedAccounts) > 0 {
+				relaxed := make([]Participant, 0, len(participants))
+				for _, p := range participants {
+					if blameMap.BannedNodes[p.Account] {
+						continue
+					}
+					if !signReadyAccounts[p.Account] {
+						continue
+					}
+					relaxed = append(relaxed, p)
+				}
+				if len(relaxed) >= required && len(relaxed) > len(filtered) {
+					reincluded := make([]string, 0, len(signBlamedAccounts))
+					for _, p := range relaxed {
+						if signBlamedAccounts[p.Account] {
+							reincluded = append(reincluded, p.Account)
+						}
+					}
+					log.Warn("liveness fallback: re-including blamed nodes to reach signing threshold",
+						"sessionId", sessionId,
+						"strictReady", len(filtered),
+						"relaxedReady", len(relaxed),
+						"required", required,
+						"reincluded", reincluded)
+					filtered = relaxed
+				}
+			}
 			participants = filtered
 
 			// Pre-flight gate: need threshold+1 participants after all
-			// deterministic exclusions (blame, ban, gossip readiness).
-			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
-			if len(participants) < origThreshold+1 {
-				log.Warn("insufficient participants for signing", "sessionId", sessionId, "ready", len(participants), "needed", origThreshold+1, "total", origSignCommitteeSize)
+			// exclusions (post-fallback if it fired).
+			if len(participants) < required {
+				log.Warn("insufficient participants for signing", "sessionId", sessionId, "ready", len(participants), "needed", required, "total", origSignCommitteeSize)
 				continue
 			}
 
