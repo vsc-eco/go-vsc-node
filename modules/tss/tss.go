@@ -1136,32 +1136,23 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					"threshold", TSS_BLAME_THRESHOLD_PERCENT)
 			}
 
-			// Gossip readiness snapshot — used to exclude offline participants
-			// so btss CanProceed() does not block on missing messages
-			// (CLAUDE.md Constraint 1). The snapshot key (signWindowStart) is
-			// deterministic; the snapshot CONTENTS are not strictly so —
-			// pubsub arrival timing means two honest nodes may have slightly
-			// different sets at dispatch.
-			//
-			// On divergence: SSID mismatch → silent timeout → blame
-			// commitment. Trade-off accepted to avoid a guaranteed timeout
-			// per offline node. See participant_filter.go for the full
-			// determinism note.
+			// Gossip readiness is observability only. It MUST NOT drive the
+			// party list — pubsub arrival order differs across nodes, so
+			// using it as a filter produces divergent SortedPartyIDs →
+			// BuildLocalSaveDataSubset remaps Paillier keys to the wrong
+			// positions → signing round 2 fails with "failed to calculate
+			// Bob_mid or Bob_mid_wc". See CLAUDE.md Constraint 2 and the
+			// determinism note in participant_filter.go.
 			signInterval := getSignInterval(tssMgr.sconf)
 			signWindowStart := bh - (bh % signInterval)
 			signHeightKey := strconv.FormatUint(signWindowStart, 10)
 			tssMgr.gossipLock.RLock()
-			signAttMap := tssMgr.gossipAttestations[signHeightKey]
-			signReadyAccounts := make(map[string]bool, len(signAttMap))
-			for account := range signAttMap {
-				signReadyAccounts[account] = true
-			}
+			gossipReadyCount := len(tssMgr.gossipAttestations[signHeightKey])
 			tssMgr.gossipLock.RUnlock()
-			gossipReadyCount := len(signReadyAccounts)
 
 			participants, origSignCommitteeSize := buildSignParticipants(
 				commitElection, bv, signBlamedAccounts, blameMap.BannedNodes,
-				signReadyAccounts,
+				nil,
 			)
 
 			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
@@ -1301,22 +1292,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				continue
 			}
 
-			// Gossip readiness snapshot — same trade-off as the signing path.
-			// Excludes offline participants from both old and new committees
-			// so btss CanProceed() does not block on missing messages
-			// (CLAUDE.md Constraint 1). Divergence risk: rare cases where
-			// two honest nodes have different snapshots at dispatch produce
-			// SSID mismatch → silent timeout → blame. See
-			// participant_filter.go for the full determinism note.
+			// Gossip readiness is observability only — same reasoning as the
+			// signing path. Using it as a filter causes divergent old/new
+			// committees across nodes → SSID mismatch in reshare round 2 →
+			// silent timeout. See CLAUDE.md Constraint 2.
 			heightKey := strconv.FormatUint(bh, 10)
 			tssMgr.gossipLock.RLock()
-			reshareAttMap := tssMgr.gossipAttestations[heightKey]
-			reshareReadyAccounts := make(map[string]bool, len(reshareAttMap))
-			for account := range reshareAttMap {
-				reshareReadyAccounts[account] = true
-			}
+			gossipReadyCount := len(tssMgr.gossipAttestations[heightKey])
 			tssMgr.gossipLock.RUnlock()
-			gossipReadyCount := len(reshareReadyAccounts)
 
 			// Decode commitment bitset for old committee membership
 			commitmentBytes, err := base64.RawURLEncoding.DecodeString(commitment.Commitment)
@@ -1325,7 +1308,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			commitedMembers, newParticipants, fullOldCommitteeSize := buildReshareParticipants(
 				commitmentElection, bitset, &currentElection,
 				blamedAccounts, blameMap.BannedNodes,
-				reshareReadyAccounts,
+				nil,
 			)
 
 			log.Verbose("reshare participant selection", "sessionId", sessionId,

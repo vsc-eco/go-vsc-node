@@ -589,6 +589,14 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 			for c := range culprits {
 				culpritsList = append(culpritsList, c)
 			}
+			// Encode the blame bitset against the OLD epoch, not the new one.
+			// Old-committee culprits (the common timeout case) are guaranteed
+			// to be in the old-epoch election — they came from the commitment
+			// bitset against that election. If the new epoch has dropped the
+			// culprit (witness replacement scenario), setToCommitment against
+			// newEpoch would yield an empty bitset and blame would silently
+			// lose the culprit. The retry decode reads blame.Epoch to look up
+			// the election, so the Epoch field must match the encoding choice.
 			resolve(TimeoutResult{
 				tssMgr:   dispatcher.tssMgr,
 				Culprits: culpritsList,
@@ -596,7 +604,7 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
 				BlockHeight: dispatcher.blockHeight,
-				Epoch:       dispatcher.newEpoch,
+				Epoch:       dispatcher.epoch,
 			})
 			return
 		}
@@ -604,12 +612,14 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 		if tssErr != nil {
 			log.Warn("reshare TSS error", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", tssErr)
 			dispatcher.tssMgr.metrics.IncrementReshareFailure()
+			// Same reasoning as TimeoutResult above: prefer old-epoch
+			// encoding so old-committee culprits land in the bitset.
 			resolve(ErrorResult{
 				tssErr:      tssErr,
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
 				BlockHeight: dispatcher.blockHeight,
-				Epoch:       dispatcher.newEpoch,
+				Epoch:       dispatcher.epoch,
 			})
 			return
 		}

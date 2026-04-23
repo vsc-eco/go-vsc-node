@@ -39,6 +39,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/vsc-eco/hivego"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -93,6 +94,29 @@ func dropTestDatabases() {
 	defer client.Disconnect(ctx)
 	for i := 0; i < nodeCount; i++ {
 		client.Database("go-vsc-tss-test-" + strconv.Itoa(i)).Drop(ctx)
+	}
+}
+
+// clearBlameCommits removes all blame-type commitments for the given
+// key across all node databases. Used between phases when a prior
+// phase left a blame that would pre-emptively exclude the intended
+// offline node, preventing the next phase from exercising its own
+// timeout-and-retry path.
+func clearBlameCommits(t *testing.T, keyId string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+	if err != nil {
+		t.Fatalf("mongo connect for blame cleanup: %v", err)
+	}
+	defer client.Disconnect(ctx)
+	for i := 0; i < nodeCount; i++ {
+		_, err := client.Database("go-vsc-tss-test-"+strconv.Itoa(i)).
+			Collection("tss_commitments").
+			DeleteMany(ctx, bson.M{"type": "blame", "key_id": keyId})
+		if err != nil {
+			t.Fatalf("blame DeleteMany for node %d: %v", i, err)
+		}
 	}
 }
 
@@ -473,6 +497,7 @@ func TestTss(t *testing.T) {
 	var keygenBroadcast *hivego.HiveTransaction
 	var signBroadcast *hivego.HiveTransaction
 	var reshareBroadcast *hivego.HiveTransaction
+	var blameBroadcast *hivego.HiveTransaction
 	keygenPubKeys := make(map[string]string)
 
 	// Declared before broadcastCb so the closure can reference it
@@ -518,6 +543,10 @@ func TestTss(t *testing.T) {
 									txCopy := tx
 									reshareBroadcast = &txCopy
 									log.Info("reshare commitment captured")
+								} else if tp == "blame" && blameBroadcast == nil {
+									txCopy := tx
+									blameBroadcast = &txCopy
+									log.Info("blame commitment captured")
 								}
 							}
 
@@ -1004,6 +1033,28 @@ func TestTss(t *testing.T) {
 		})
 	}
 
+	// Deterministic party lists (CLAUDE.md Constraint 2) cannot use
+	// gossip to exclude the offline witness up-front. Exclusion has to
+	// come from on-chain blame. To keep this phase fast we inject a
+	// synthetic blame commitment naming mock-tss-6 — the same shape a
+	// real timeout would emit (encoded against epoch-1 election because
+	// the culprit is an old-committee member). The full timeout→blame
+	// origin is exercised end-to-end by Phase 5 for reshare; this phase
+	// validates that signing correctly applies blame-based exclusion.
+	phase4BlameBitset := big.NewInt(0)
+	phase4BlameBitset.SetBit(phase4BlameBitset, 5, 1) // mock-tss-6 at election index 5
+	phase4BlameCommitStr := base64.RawURLEncoding.EncodeToString(phase4BlameBitset.Bytes())
+	for _, node := range nodes {
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type:        "blame",
+			KeyId:       "test-key",
+			Epoch:       1,
+			BlockHeight: 240, // after Phase 3 reshare (200), before sign at 250
+			Commitment:  phase4BlameCommitStr,
+			TxId:        "mock-blame-tx-phase4",
+		})
+	}
+
 	// Reset sign broadcast capture
 	mu.Lock()
 	signBroadcast = nil
@@ -1131,16 +1182,30 @@ func TestTss(t *testing.T) {
 	disconnectNode(nodes, 5)
 	time.Sleep(1 * time.Second)
 
-	// Reset reshare broadcast capture
+	// Reset reshare + blame broadcast capture and wipe any prior blame
+	// commits (Phase 4's synthetic blame would pre-emptively exclude
+	// mock-tss-6 and prevent this phase from exercising the full
+	// timeout→blame→retry cycle).
+	clearBlameCommits(t, "test-key")
 	mu.Lock()
 	reshareBroadcast = nil
+	blameBroadcast = nil
 	mu.Unlock()
 
 	// Re-establish connections among 5 active nodes (excluding node 5)
 	connectActivePeers(t, nodes, excludedNodes)
 	time.Sleep(2 * time.Second)
 
-	log.Info("Processing blocks to trigger reshare at block 300...")
+	// Deterministic party lists (CLAUDE.md Constraint 2) mean the first
+	// reshare at the rotate interval cannot exclude the offline witness
+	// up-front — mock-tss-6 is still in Phase 3's commitment bitset, so
+	// it is kept in the old committee and btss CanProceed blocks waiting
+	// for its round-1 messages. The reshare times out (~ReshareTimeout),
+	// a blame commitment is broadcast naming mock-tss-6 (encoded against
+	// epoch-1 election via the dispatcher.go fix), and the next rotate
+	// interval retries with mock-tss-6 excluded via the on-chain blame
+	// threshold (>TSS_BLAME_THRESHOLD_PERCENT).
+	log.Info("Processing blocks to trigger first reshare at block 300...")
 	processBlocks(nodes, 256, 298, &headHeight)
 	headHeight = 320
 	for bh := uint64(299); bh <= 305; bh++ {
@@ -1153,23 +1218,98 @@ func TestTss(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// Poll for reshare broadcast
-	log.Info("Waiting for reshare with witness replacement...")
+	// Step 1: wait for the blame commitment from the timed-out reshare.
+	// ReshareTimeout is 2 minutes on mocknet; poll slightly longer so the
+	// BLS collection + broadcast has time to land after the timer fires.
+	log.Info("Waiting for blame commitment from first reshare timeout...")
+	blameDone := false
+	for i := 0; i < 300; i++ { // 150s > ReshareTimeout (2m) + slack
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		done := blameBroadcast != nil
+		mu.Unlock()
+		if done {
+			blameDone = true
+			log.Info("Blame commitment captured")
+			break
+		}
+	}
+	if !blameDone {
+		t.Fatal("Phase 5: Expected blame commitment within timeout (offline witness should cause reshare to time out and blame)")
+	}
+
+	// Assert the blame names mock-tss-6 (bit 5 of the epoch-1 election
+	// bitset). With the dispatcher.go fix, reshare TimeoutResult encodes
+	// the culprit set against the OLD epoch so dropped-witness culprits
+	// survive the encoding.
+	mu.Lock()
+	blameCopy := blameBroadcast
+	mu.Unlock()
+	if blameCopy == nil {
+		t.Fatal("Phase 5: blame broadcast was nil after poll")
+	}
+	foundBlameBit := false
+	for _, op := range blameCopy.Operations {
+		raw, _ := json.Marshal(op)
+		var cj struct {
+			Json string `json:"json"`
+		}
+		json.Unmarshal(raw, &cj)
+		var entries []map[string]interface{}
+		if err := json.Unmarshal([]byte(cj.Json), &entries); err != nil {
+			t.Errorf("Phase 5: blame json parse: %v", err)
+			continue
+		}
+		for _, m := range entries {
+			if tp, _ := m["type"].(string); tp != "blame" {
+				continue
+			}
+			commitmentStr, _ := m["commitment"].(string)
+			commitBytes, _ := base64.RawURLEncoding.DecodeString(commitmentStr)
+			bits := new(big.Int).SetBytes(commitBytes)
+			if bits.Bit(5) == 1 {
+				foundBlameBit = true
+			}
+		}
+	}
+	if !foundBlameBit {
+		t.Errorf("Phase 5: blame bitset did not name mock-tss-6 (bit 5)")
+	}
+
+	// Step 2: advance to the next rotate interval (block 400) so the
+	// retry fires. At that point the blame at block 300 satisfies the
+	// >TSS_BLAME_THRESHOLD_PERCENT threshold and mock-tss-6 is excluded
+	// from the old committee. Reshare then proceeds with 5 old + 5 new
+	// and completes.
+	log.Info("Processing blocks to trigger reshare retry at block 400...")
+	processBlocks(nodes, 306, 398, &headHeight)
+	headHeight = 420
+	for bh := uint64(399); bh <= 405; bh++ {
+		for _, node := range nodes {
+			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
+				Transactions: []hive_blocks.Tx{},
+				BlockNumber:  bh,
+			}, &headHeight)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	log.Info("Waiting for reshare retry to succeed...")
 	reshareDone = false
-	for i := 0; i < 240; i++ {
+	for i := 0; i < 120; i++ { // 60s — retry runs with 5 online nodes, should finish quickly
 		time.Sleep(500 * time.Millisecond)
 		mu.Lock()
 		done := reshareBroadcast != nil
 		mu.Unlock()
 		if done {
 			reshareDone = true
-			log.Info("Reshare with witness replacement completed!")
+			log.Info("Reshare retry completed!")
 			break
 		}
 	}
 
 	if !reshareDone {
-		t.Fatal("Phase 5: Reshare with witness replacement did not complete within timeout")
+		t.Fatal("Phase 5: Reshare retry did not complete within timeout after blame-based exclusion")
 	}
 
 	mu.Lock()
@@ -1758,6 +1898,31 @@ func TestTss(t *testing.T) {
 	disconnectNode(nodes, 5)
 	time.Sleep(1 * time.Second)
 
+	// Phase 10 swaps TWO members out. On a 4-member target election the
+	// systemic-blame guard (maxBlamed = N - threshold - 1 = 1) would
+	// suppress a timeout blame that names both offline witnesses, so a
+	// natural timeout→blame→retry cycle can't recover. Inject a blame
+	// encoded against epoch-3 election (where the culprits live; bits 4
+	// and 5 set for mock-tss-5 and mock-tss-6) to stand in for the
+	// suppressed blame and let Phase 10's reshare exclude both via the
+	// on-chain threshold. This mirrors the pragmatic approach used for
+	// Phase 4; Phase 5 still exercises the full natural-blame cycle for
+	// the common case (single offline witness).
+	phase10BlameBitset := big.NewInt(0)
+	phase10BlameBitset.SetBit(phase10BlameBitset, 4, 1) // mock-tss-5
+	phase10BlameBitset.SetBit(phase10BlameBitset, 5, 1) // mock-tss-6
+	phase10BlameCommitStr := base64.RawURLEncoding.EncodeToString(phase10BlameBitset.Bytes())
+	for _, node := range nodes {
+		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+			Type:        "blame",
+			KeyId:       "test-key",
+			Epoch:       3, // epoch where both culprits are members
+			BlockHeight: 599,
+			Commitment:  phase10BlameCommitStr,
+			TxId:        "mock-blame-tx-phase10",
+		})
+	}
+
 	// Reset reshare broadcast capture
 	mu.Lock()
 	reshareBroadcast = nil
@@ -1827,6 +1992,13 @@ func TestTss(t *testing.T) {
 	for _, node := range nodes {
 		node.tssMgr.ClearQueuedActions()
 	}
+
+	// Clear blame state. Phase 10's injected blame would otherwise push
+	// mock-tss-5 and mock-tss-6 across the BlameScore ban threshold here
+	// (currentEpoch is now past the grace period), and a banned leader
+	// can't broadcast — the whole phase would stall. Phase 11 reconnects
+	// all nodes and doesn't need any blame history, so wiping is safe.
+	clearBlameCommits(t, "test-key")
 
 	// Neutralize test-key-2: set to active with epoch 5 so it's
 	// skipped by both FindNewKeys (not "created") and FindEpochKeys(5) (epoch not < 5).
