@@ -212,11 +212,17 @@ func (tssMgr *TssManager) broadcastGossipBundle(targetBlock uint64) {
 }
 
 // cleanupGossipState evicts gossip state for target blocks that have passed.
+//
+// Retention must cover the full signing stagger window — attestations for
+// targetBlock=X are looked up by every slot from X to X+signStaggerStep*(signStaggerCount-1).
+// Reshare targets are single-block, so this retention is generous for reshare
+// but that's cheap (a few stale entries in a small map).
 func (tssMgr *TssManager) cleanupGossipState(bh uint64) {
+	const retention = signStaggerStep*uint64(signStaggerCount) + 5 // covers all stagger slots + small grace
 	tssMgr.gossipLock.Lock()
 	defer tssMgr.gossipLock.Unlock()
 	for k := range tssMgr.gossipAttestations {
-		if block, err := strconv.ParseUint(k, 10, 64); err == nil && block+5 < bh {
+		if block, err := strconv.ParseUint(k, 10, 64); err == nil && block+retention < bh {
 			delete(tssMgr.gossipAttestations, k)
 		}
 	}
