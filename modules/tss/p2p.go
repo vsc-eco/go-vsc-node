@@ -243,14 +243,6 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 		electionMembers[m.Account] = true
 	}
 
-	// Check settle period: if we're within DEFAULT_SETTLE_BLOCKS of the
-	// target, only accept attestations for accounts we've already seen.
-	inSettlePeriod := false
-	if currentBh > 0 && targetBlock > currentBh {
-		blocksUntil := targetBlock - currentBh
-		inSettlePeriod = blocksUntil <= DEFAULT_SETTLE_BLOCKS
-	}
-
 	attList, ok := msg.Data["attestations"].([]interface{})
 	if !ok {
 		return
@@ -296,11 +288,6 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 			if _, has := existing[account]; has {
 				continue
 			}
-		}
-		if inSettlePeriod {
-			log.Trace("rejecting new attestation during settle period",
-				"account", account, "targetBlock", targetBlock)
-			continue
 		}
 		pending = append(pending, pendingAtt{account: account, sig: sig})
 	}

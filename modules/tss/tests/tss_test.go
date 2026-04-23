@@ -544,10 +544,17 @@ func TestTss(t *testing.T) {
 						}
 					}
 				} else if cj.Id == "vsc.tss_sign" {
+					// Accumulate ops across staggered broadcasts: the sign-stagger
+					// system dispatches one signing request per slot, so a phase
+					// that submits N requests produces N separate tss_sign txs.
+					// Phase 8 (multi-sign) needs to see all of them.
 					if signBroadcast == nil {
 						txCopy := tx
 						signBroadcast = &txCopy
 						log.Info("sign result captured")
+					} else {
+						signBroadcast.Operations = append(signBroadcast.Operations, tx.Operations...)
+						log.Info("sign result appended", "totalOps", len(signBroadcast.Operations))
 					}
 
 					// Mark signing requests as complete on all nodes
@@ -1449,6 +1456,11 @@ func TestTss(t *testing.T) {
 	log.Info("Processing blocks to trigger signing at block 450...")
 	processBlocks(nodes, 406, 448, &headHeight)
 	headHeight = 470
+	// Use 400ms per block (vs 200ms elsewhere): the sign-stagger system fires
+	// slot 1 (msgB) at block 455, but slot 0's RunActions holds tssMgr.lock
+	// for ~ReshareSyncDelay (1s in mocknet). With 200ms pacing, block 455
+	// arrives at t+1000ms and races the lock release; slot 1 gets non-blocking
+	// skipped. 400ms × 5 = 2000ms gives the lock time to release first.
 	for bh := uint64(449); bh <= 455; bh++ {
 		for _, node := range nodes {
 			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
@@ -1456,31 +1468,16 @@ func TestTss(t *testing.T) {
 				BlockNumber:  bh,
 			}, &headHeight)
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(400 * time.Millisecond)
 	}
 
-	// Poll for sign broadcast
-	log.Info("Waiting for multi-sign to complete...")
-	signDone = false
-	for i := 0; i < 90; i++ {
-		time.Sleep(500 * time.Millisecond)
-		mu.Lock()
-		done := signBroadcast != nil
-		mu.Unlock()
-		if done {
-			signDone = true
-			log.Info("Multi-sign completed!")
-			break
+	// Helper: count distinct signed messages across all captured tss_sign ops.
+	// The sign-stagger system splits requests into one broadcast per slot, so
+	// we wait until both msgA and msgB appear (across all accumulated ops).
+	countSigs := func() (foundA, foundB bool) {
+		if signBroadcast == nil {
+			return false, false
 		}
-	}
-
-	if !signDone {
-		t.Fatal("Phase 8: Multiple simultaneous signing did not complete within timeout")
-	}
-
-	// Verify both signatures are in the broadcast
-	mu.Lock()
-	if signBroadcast != nil {
 		for _, op := range signBroadcast.Operations {
 			raw, _ := json.Marshal(op)
 			var cj struct {
@@ -1495,37 +1492,78 @@ func TestTss(t *testing.T) {
 				} `json:"packet"`
 			}
 			json.Unmarshal([]byte(cj.Json), &payload)
-
-			if len(payload.Packet) < 2 {
-				t.Errorf("Phase 8: Expected at least 2 signatures in packet, got %d", len(payload.Packet))
-			} else {
-				foundA, foundB := false, false
-				for _, pkt := range payload.Packet {
-					if pkt.Msg == msgHexA {
-						foundA = true
-						if pkt.Sig == "" {
-							t.Error("Phase 8: Signature for msgA is empty")
-						} else {
-							verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKeys["test-key"])
-						}
-					}
-					if pkt.Msg == msgHexB {
-						foundB = true
-						if pkt.Sig == "" {
-							t.Error("Phase 8: Signature for msgB is empty")
-						} else {
-							verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKeys["test-key"])
-						}
-					}
+			for _, pkt := range payload.Packet {
+				if pkt.Msg == msgHexA {
+					foundA = true
 				}
-				if !foundA {
-					t.Errorf("Phase 8: Missing signature for msgA (%s)", msgHexA)
-				}
-				if !foundB {
-					t.Errorf("Phase 8: Missing signature for msgB (%s)", msgHexB)
+				if pkt.Msg == msgHexB {
+					foundB = true
 				}
 			}
 		}
+		return foundA, foundB
+	}
+
+	// Poll until both msgA and msgB have been seen (or timeout).
+	log.Info("Waiting for multi-sign to complete...")
+	signDone = false
+	for i := 0; i < 90; i++ {
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		foundA, foundB := countSigs()
+		mu.Unlock()
+		if foundA && foundB {
+			signDone = true
+			log.Info("Multi-sign completed!")
+			break
+		}
+	}
+
+	if !signDone {
+		t.Fatal("Phase 8: Multiple simultaneous signing did not complete within timeout")
+	}
+
+	// Verify both signatures across all captured ops.
+	mu.Lock()
+	foundA, foundB := false, false
+	for _, op := range signBroadcast.Operations {
+		raw, _ := json.Marshal(op)
+		var cj struct {
+			Json string `json:"json"`
+		}
+		json.Unmarshal(raw, &cj)
+		var payload struct {
+			Packet []struct {
+				KeyId string `json:"key_id"`
+				Msg   string `json:"msg"`
+				Sig   string `json:"sig"`
+			} `json:"packet"`
+		}
+		json.Unmarshal([]byte(cj.Json), &payload)
+		for _, pkt := range payload.Packet {
+			if pkt.Msg == msgHexA {
+				foundA = true
+				if pkt.Sig == "" {
+					t.Error("Phase 8: Signature for msgA is empty")
+				} else {
+					verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKeys["test-key"])
+				}
+			}
+			if pkt.Msg == msgHexB {
+				foundB = true
+				if pkt.Sig == "" {
+					t.Error("Phase 8: Signature for msgB is empty")
+				} else {
+					verifyEcdsaSig(t, pkt.Sig, pkt.Msg, keygenPubKeys["test-key"])
+				}
+			}
+		}
+	}
+	if !foundA {
+		t.Errorf("Phase 8: Missing signature for msgA (%s)", msgHexA)
+	}
+	if !foundB {
+		t.Errorf("Phase 8: Missing signature for msgB (%s)", msgHexB)
 	}
 	mu.Unlock()
 

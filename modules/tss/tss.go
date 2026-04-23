@@ -88,9 +88,6 @@ type ReadyAttestation struct {
 	Sig         string `json:"sig"` // base64 BLS signature over CBOR(account, target_block)
 }
 
-// DEFAULT_SETTLE_BLOCKS is the number of blocks before reshare during which
-// no new attestations are accepted — only re-gossip of existing ones.
-const DEFAULT_SETTLE_BLOCKS = 3
 
 // attestationCID computes a deterministic CID for a readiness attestation.
 // The same (account, targetBlock) always produces the same CID.
@@ -213,12 +210,18 @@ func (tssMgr *TssManager) broadcastGossipBundle(targetBlock uint64) {
 
 // cleanupGossipState evicts gossip state for target blocks that have passed.
 //
-// Retention must cover the full signing stagger window — attestations for
-// targetBlock=X are looked up by every slot from X to X+signStaggerStep*(signStaggerCount-1).
-// Reshare targets are single-block, so this retention is generous for reshare
-// but that's cheap (a few stale entries in a small map).
+// Retention must cover both the full signing stagger window AND the worst-case
+// async BlockTick race: the consumer launches BlockTick(N) as a goroutine, so
+// BlockTick(N+K) can begin (and run cleanupGossipState) before BlockTick(N)'s
+// RunActions reads the gossip snapshot. Without enough headroom, a later
+// BlockTick races ahead and deletes the entry the dispatch needs.
+//
+// signStaggerStep*signStaggerCount + 5 covered the stagger window in serial
+// execution. We add a full DEFAULT_SIGN_INTERVAL of headroom so even if
+// BlockTick for sign-window-end has already run cleanup, the entry survives
+// until the dispatching goroutine has had a chance to read it.
 func (tssMgr *TssManager) cleanupGossipState(bh uint64) {
-	const retention = signStaggerStep*uint64(signStaggerCount) + 5 // covers all stagger slots + small grace
+	const retention = signStaggerStep*uint64(signStaggerCount) + 5 + uint64(DEFAULT_SIGN_INTERVAL)
 	tssMgr.gossipLock.Lock()
 	defer tssMgr.gossipLock.Unlock()
 	for k := range tssMgr.gossipAttestations {
@@ -473,20 +476,17 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 
 		if isMember {
 			for targetBlock := range gossipTargets {
-				blocksUntil := targetBlock - bh
-				inSettlePeriod := blocksUntil <= DEFAULT_SETTLE_BLOCKS
 				dedupKey := strconv.FormatUint(targetBlock, 10)
 
-				// During the announce phase, sign and store our own attestation.
-				// During the settle phase, skip new attestations but still gossip.
+				// Sign and store our own attestation once per target.
 				tssMgr.gossipLock.Lock()
 				alreadySent := tssMgr.readinessSent[dedupKey]
-				if !inSettlePeriod && !alreadySent {
+				if !alreadySent {
 					tssMgr.readinessSent[dedupKey] = true
 				}
 				tssMgr.gossipLock.Unlock()
 
-				if !inSettlePeriod && !alreadySent {
+				if !alreadySent {
 					att, err := tssMgr.signReadyAttestation(targetBlock)
 					if err != nil {
 						log.Warn("failed to sign readiness attestation",
@@ -1136,24 +1136,32 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					"threshold", TSS_BLAME_THRESHOLD_PERCENT)
 			}
 
-			// Gossip readiness is read for observability only. It MUST NOT
-			// drive control flow here — pubsub arrival order differs across
-			// nodes, so using it as a filter would produce divergent party
-			// lists → divergent SortedPartyIDs → BuildLocalSaveDataSubset
-			// remaps Paillier keys to wrong positions → btss signing round 2
-			// fails with "failed to calculate Bob_mid or Bob_mid_wc".
-			// See CLAUDE.md Constraint 2.
+			// Gossip readiness snapshot — used to exclude offline participants
+			// so btss CanProceed() does not block on missing messages
+			// (CLAUDE.md Constraint 1). The snapshot key (signWindowStart) is
+			// deterministic; the snapshot CONTENTS are not strictly so —
+			// pubsub arrival timing means two honest nodes may have slightly
+			// different sets at dispatch.
+			//
+			// On divergence: SSID mismatch → silent timeout → blame
+			// commitment. Trade-off accepted to avoid a guaranteed timeout
+			// per offline node. See participant_filter.go for the full
+			// determinism note.
 			signInterval := getSignInterval(tssMgr.sconf)
 			signWindowStart := bh - (bh % signInterval)
 			signHeightKey := strconv.FormatUint(signWindowStart, 10)
 			tssMgr.gossipLock.RLock()
-			gossipReadyCount := len(tssMgr.gossipAttestations[signHeightKey])
+			signAttMap := tssMgr.gossipAttestations[signHeightKey]
+			signReadyAccounts := make(map[string]bool, len(signAttMap))
+			for account := range signAttMap {
+				signReadyAccounts[account] = true
+			}
 			tssMgr.gossipLock.RUnlock()
+			gossipReadyCount := len(signReadyAccounts)
 
-			// Deterministic participant list: commitment bitset − blamed − banned.
-			// All inputs are on-chain. Identical across all honest nodes.
 			participants, origSignCommitteeSize := buildSignParticipants(
 				commitElection, bv, signBlamedAccounts, blameMap.BannedNodes,
+				signReadyAccounts,
 			)
 
 			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
@@ -1293,25 +1301,31 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				continue
 			}
 
-			// Gossip readiness is read for observability only. It MUST NOT
-			// drive control flow here — pubsub arrival order differs across
-			// nodes, so using it as a filter would produce divergent party
-			// lists → divergent SortedPartyIDs → SSID mismatch → session
-			// failure. See CLAUDE.md Constraint 2.
+			// Gossip readiness snapshot — same trade-off as the signing path.
+			// Excludes offline participants from both old and new committees
+			// so btss CanProceed() does not block on missing messages
+			// (CLAUDE.md Constraint 1). Divergence risk: rare cases where
+			// two honest nodes have different snapshots at dispatch produce
+			// SSID mismatch → silent timeout → blame. See
+			// participant_filter.go for the full determinism note.
 			heightKey := strconv.FormatUint(bh, 10)
 			tssMgr.gossipLock.RLock()
-			gossipReadyCount := len(tssMgr.gossipAttestations[heightKey])
+			reshareAttMap := tssMgr.gossipAttestations[heightKey]
+			reshareReadyAccounts := make(map[string]bool, len(reshareAttMap))
+			for account := range reshareAttMap {
+				reshareReadyAccounts[account] = true
+			}
 			tssMgr.gossipLock.RUnlock()
+			gossipReadyCount := len(reshareReadyAccounts)
 
 			// Decode commitment bitset for old committee membership
 			commitmentBytes, err := base64.RawURLEncoding.DecodeString(commitment.Commitment)
 			bitset := new(big.Int).SetBytes(commitmentBytes)
 
-			// Deterministic party lists: both committees are commitment/election
-			// membership minus blamed minus banned. All inputs on-chain.
 			commitedMembers, newParticipants, fullOldCommitteeSize := buildReshareParticipants(
 				commitmentElection, bitset, &currentElection,
 				blamedAccounts, blameMap.BannedNodes,
+				reshareReadyAccounts,
 			)
 
 			log.Verbose("reshare participant selection", "sessionId", sessionId,

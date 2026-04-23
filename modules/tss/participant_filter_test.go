@@ -28,8 +28,8 @@ func TestBuildSignParticipants_DeterministicFromInputs(t *testing.T) {
 	blamed := map[string]bool{"bob": true, "carol": true}
 	banned := map[string]bool{}
 
-	listA, sizeA := buildSignParticipants(election, bitset, blamed, banned)
-	listB, sizeB := buildSignParticipants(election, bitset, blamed, banned)
+	listA, sizeA := buildSignParticipants(election, bitset, blamed, banned, nil)
+	listB, sizeB := buildSignParticipants(election, bitset, blamed, banned, nil)
 
 	assert.Equal(t, accountsOf(listA), accountsOf(listB),
 		"identical inputs must produce identical participant lists")
@@ -77,7 +77,7 @@ func TestBuildSignParticipants_ExcludesBlamedAndBanned(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, fullSize := buildSignParticipants(election, bitset, tc.blamed, tc.banned)
+			got, fullSize := buildSignParticipants(election, bitset, tc.blamed, tc.banned, nil)
 			assert.Equal(t, tc.expect, accountsOf(got))
 			assert.Equal(t, 5, fullSize, "fullSize always reflects pre-filter bitset count")
 		})
@@ -89,7 +89,7 @@ func TestBuildSignParticipants_BitsetSkipsNonMembers(t *testing.T) {
 	election := makeElection(1, []string{"alice", "bob", "carol", "dave", "eve"})
 	bitset := new(big.Int).SetInt64(0b10101)
 
-	got, fullSize := buildSignParticipants(election, bitset, nil, nil)
+	got, fullSize := buildSignParticipants(election, bitset, nil, nil, nil)
 	assert.Equal(t, []string{"alice", "carol", "eve"}, accountsOf(got))
 	assert.Equal(t, 3, fullSize, "fullSize reflects only bits set in the bitset")
 }
@@ -101,7 +101,7 @@ func TestBuildSignParticipants_EmptyBitset(t *testing.T) {
 	bitset := big.NewInt(0)
 
 	got, fullSize := buildSignParticipants(election, bitset,
-		map[string]bool{}, map[string]bool{})
+		map[string]bool{}, map[string]bool{}, nil)
 	assert.Empty(t, got)
 	assert.Equal(t, 0, fullSize)
 }
@@ -114,9 +114,9 @@ func TestBuildReshareParticipants_Deterministic(t *testing.T) {
 	banned := map[string]bool{"e": true}
 
 	oldA, newA, sizeA := buildReshareParticipants(
-		commitElection, bitset, currentElection, blamed, banned)
+		commitElection, bitset, currentElection, blamed, banned, nil)
 	oldB, newB, sizeB := buildReshareParticipants(
-		commitElection, bitset, currentElection, blamed, banned)
+		commitElection, bitset, currentElection, blamed, banned, nil)
 
 	assert.Equal(t, accountsOf(oldA), accountsOf(oldB))
 	assert.Equal(t, accountsOf(newA), accountsOf(newB))
@@ -151,7 +151,7 @@ func TestBuildReshareParticipants_OldFullSizeUnaffectedByFilter(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, oldFullSize := buildReshareParticipants(
-				commitElection, bitset, currentElection, tc.blamed, tc.banned)
+				commitElection, bitset, currentElection, tc.blamed, tc.banned, nil)
 			assert.Equal(t, 5, oldFullSize,
 				"oldFullSize must always reflect pre-filter bitset count")
 		})
@@ -168,37 +168,97 @@ func TestBuildReshareParticipants_BitsetBounds(t *testing.T) {
 
 	old, _, oldFullSize := buildReshareParticipants(
 		commitElection, bitset, currentElection,
-		map[string]bool{}, map[string]bool{})
+		map[string]bool{}, map[string]bool{}, nil)
 	assert.Equal(t, []string{"a", "c"}, accountsOf(old))
 	assert.Equal(t, 2, oldFullSize)
 }
 
-// This test is the direct regression guard for the bug report. It
-// reproduces the 5-node testnet scenario where two nodes had different
-// gossip readiness views but identical on-chain state. With the fix,
-// the participant list no longer depends on gossip, so divergent views
-// cannot produce divergent lists.
-func TestBuildSignParticipants_RegressionBobMidBugReport(t *testing.T) {
-	// Testnet election: 5 members.
+// Two nodes with identical on-chain state AND identical gossip snapshots
+// must produce identical lists. This is the convergence assumption that the
+// gossip-readiness filter relies on (CLAUDE.md Constraint 2). The long
+// readiness window with repeated bundle re-broadcast drives convergence
+// in practice.
+func TestBuildSignParticipants_IdenticalOnChainAndGossipMatch(t *testing.T) {
 	election := makeElection(371, []string{
 		"magi.test1", "magi.test2", "magi.test3", "milo.magi", "tibfox",
 	})
-	// Commitment bitset had all 5 members in the keygen committee.
 	bitset := new(big.Int).SetInt64(0b11111)
-	// Two nodes got blamed from prior reshare timeouts.
 	blamed := map[string]bool{"magi.test2": true, "magi.test3": true}
 	banned := map[string]bool{}
+	gossip := map[string]bool{
+		"magi.test1": true, "magi.test2": true, "magi.test3": true,
+		"milo.magi": true, "tibfox": true,
+	}
 
-	// Node A (magi.test2): had all 5 gossip attestations.
-	// Node B (magi.test1): was missing tibfox's attestation.
-	// Pre-fix: node A produced {m1, milo, tibfox, m2, m3} (fallback fired, 5)
-	//          node B produced {m1, milo, m2, m3} (fallback fired, 4, no tibfox)
-	// Post-fix: gossip is NOT a parameter — both produce the same list.
-	nodeA, _ := buildSignParticipants(election, bitset, blamed, banned)
-	nodeB, _ := buildSignParticipants(election, bitset, blamed, banned)
+	nodeA, _ := buildSignParticipants(election, bitset, blamed, banned, gossip)
+	nodeB, _ := buildSignParticipants(election, bitset, blamed, banned, gossip)
 
-	assert.Equal(t, accountsOf(nodeA), accountsOf(nodeB),
-		"two nodes with identical on-chain state must produce identical lists")
-	assert.Equal(t, []string{"magi.test1", "milo.magi", "tibfox"}, accountsOf(nodeA),
-		"blamed excluded; bitset-set members kept in election order")
+	assert.Equal(t, accountsOf(nodeA), accountsOf(nodeB))
+	assert.Equal(t, []string{"magi.test1", "milo.magi", "tibfox"}, accountsOf(nodeA))
+}
+
+// Documents the divergence failure mode from CLAUDE.md Constraint 2: two
+// honest nodes with different gossip snapshots produce different party lists.
+// The runtime cost of this divergence is a silent SSID mismatch → timeout →
+// blame commitment. This test does not assert divergence is acceptable; it
+// exists so reviewers can see the worst case in code form.
+func TestBuildSignParticipants_DivergentGossipDivergentLists(t *testing.T) {
+	election := makeElection(371, []string{"alice", "bob", "carol", "dave", "eve"})
+	bitset := new(big.Int).SetInt64(0b11111)
+
+	nodeAGossip := map[string]bool{"alice": true, "bob": true, "carol": true, "dave": true, "eve": true}
+	nodeBGossip := map[string]bool{"alice": true, "bob": true, "dave": true, "eve": true} // missing carol
+
+	listA, _ := buildSignParticipants(election, bitset, nil, nil, nodeAGossip)
+	listB, _ := buildSignParticipants(election, bitset, nil, nil, nodeBGossip)
+
+	assert.Equal(t, []string{"alice", "bob", "carol", "dave", "eve"}, accountsOf(listA))
+	assert.Equal(t, []string{"alice", "bob", "dave", "eve"}, accountsOf(listB))
+	assert.NotEqual(t, accountsOf(listA), accountsOf(listB),
+		"different gossip snapshots produce different lists — SSID mismatch risk")
+}
+
+func TestBuildSignParticipants_NilGossipDisablesFilter(t *testing.T) {
+	// nil readyAccounts means no readiness filter, preserving the
+	// strictly-on-chain participant list for callers/tests that don't care
+	// about liveness.
+	election := makeElection(1, []string{"alice", "bob", "carol"})
+	bitset := new(big.Int).SetInt64(0b111)
+	got, fullSize := buildSignParticipants(election, bitset,
+		map[string]bool{}, map[string]bool{}, nil)
+	assert.Equal(t, []string{"alice", "bob", "carol"}, accountsOf(got))
+	assert.Equal(t, 3, fullSize)
+}
+
+func TestBuildSignParticipants_GossipFiltersOfflineNode(t *testing.T) {
+	// The Phase 4 scenario: 6-node committee, node 5 offline → not in gossip.
+	// Filter excludes offline node so btss CanProceed is not blocked on it.
+	election := makeElection(1, []string{"n1", "n2", "n3", "n4", "n5", "n6"})
+	bitset := new(big.Int).SetInt64(0b111111)
+	gossip := map[string]bool{"n1": true, "n2": true, "n3": true, "n4": true, "n5": true} // n6 offline
+
+	got, fullSize := buildSignParticipants(election, bitset, nil, nil, gossip)
+	assert.Equal(t, []string{"n1", "n2", "n3", "n4", "n5"}, accountsOf(got))
+	assert.Equal(t, 6, fullSize, "fullSize is the pre-filter bitset count, used for threshold math")
+}
+
+func TestBuildReshareParticipants_GossipFiltersBothCommittees(t *testing.T) {
+	// Reshare requires every listed party in both committees to send messages.
+	// Apply the readiness filter symmetrically so an offline node in either
+	// committee is excluded from both.
+	commitElection := makeElection(0, []string{"a", "b", "c", "d", "e"})
+	currentElection := makeElection(1, []string{"a", "b", "c", "d", "f"})
+	bitset := new(big.Int).SetInt64(0b11111)
+	gossip := map[string]bool{"a": true, "c": true, "d": true, "f": true} // b and e offline
+
+	old, new_, oldFullSize := buildReshareParticipants(
+		commitElection, bitset, currentElection,
+		nil, nil, gossip,
+	)
+	// Old committee from {a,b,c,d,e} ∩ gossip = {a,c,d}
+	assert.Equal(t, []string{"a", "c", "d"}, accountsOf(old))
+	// New committee from {a,b,c,d,f} ∩ gossip = {a,c,d,f}
+	assert.Equal(t, []string{"a", "c", "d", "f"}, accountsOf(new_))
+	// oldFullSize is pre-filter bitset count (5), not affected by readiness
+	assert.Equal(t, 5, oldFullSize)
 }

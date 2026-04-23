@@ -259,7 +259,10 @@ func TestGossipCleanupEvictsOldEntries(t *testing.T) {
 		"bob": {Account: "bob"},
 	}
 
-	mgr.cleanupGossipState(150)
+	// Retention covers the stagger window plus a full sign interval of headroom
+	// (see cleanupGossipState). Pick a bh well past block 100's retention horizon
+	// but still inside block 200's so we exercise the boundary.
+	mgr.cleanupGossipState(250)
 
 	if _, exists := mgr.gossipAttestations["100"]; exists {
 		t.Fatal("expected block 100 entry to be evicted")
@@ -446,8 +449,8 @@ func gossipTestSetup(t *testing.T, accounts []string, targetBlock uint64) (*TssM
 	}
 	mgr.sconf = systemconfig.MocknetConfig()
 	mgr.gossipAttestations = make(map[string]map[string]ReadyAttestation)
-	// Place currentBh outside the settle period: targetBlock - currentBh > DEFAULT_SETTLE_BLOCKS.
-	mgr.lastBlockHeight.Store(targetBlock - uint64(DEFAULT_SETTLE_BLOCKS) - 10)
+	// Place currentBh well below targetBlock so the staleness check accepts gossip.
+	mgr.lastBlockHeight.Store(targetBlock - 20)
 
 	return mgr, p2pSpec{tssMgr: mgr}, keys
 }
