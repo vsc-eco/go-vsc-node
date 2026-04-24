@@ -196,11 +196,12 @@ func MakeNode(index int, mes *MockElectionSystem, broadcastCb func(tx hivego.Hiv
 	dbConf.SetDbName("go-vsc-tss-test-" + strconv.Itoa(index))
 	identity.SetUsername("mock-tss-" + strconv.Itoa(index+1))
 	p2pConf.SetOptions(libp2p.P2POpts{
-		Port:             22222 + index,
-		ServerMode:       true,
-		AllowPrivate:     true,
-		PubsubBufferSize: 2048,
-		Bootnodes:        []string{},
+		Port:                   22222 + index,
+		ServerMode:             true,
+		AllowPrivate:           true,
+		PubsubBufferSize:       4096,
+		PubsubConcurrencyLimit: 1024,
+		Bootnodes:              []string{},
 	})
 	sysConf := systemconfig.MocknetConfig()
 

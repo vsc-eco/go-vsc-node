@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,9 @@ import (
 	"vsc-node/modules/db/vsc/contracts"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	wasm_context "vsc-node/modules/wasm/context"
+
+	ethCrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/rlp"
 	wasm_types "vsc-node/modules/wasm/types"
 
 	"github.com/JustinKnueppel/go-result"
@@ -520,4 +524,99 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			return result.Err[SdkResultStruct](res.UnwrapErr())
 		},
 	},
+
+	// -------------------------------------------------------------------------
+	// crypto — pure cryptographic operations run on the host, not in WASM
+	// -------------------------------------------------------------------------
+	"crypto": {
+		"keccak256": func(ctx context.Context, arg1 any) SdkResult {
+			hexData, ok := arg1.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			data, err := hexDecode(hexData)
+			if err != nil {
+				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid hex")))
+			}
+			hash := ethCrypto.Keccak256(data)
+			return result.Ok(SdkResultStruct{Result: hexEncode(hash), Gas: params.CYCLE_GAS_PER_RC / 4})
+		},
+		"ecrecover": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+			hashHex, ok := arg1.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			sigHex, ok := arg2.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			hash, err := hexDecode(hashHex)
+			if err != nil || len(hash) != 32 {
+				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("hash must be 32 bytes hex")))
+			}
+			sig, err := hexDecode(sigHex)
+			if err != nil || len(sig) != 65 {
+				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("sig must be 65 bytes hex (r+s+v)")))
+			}
+			pubkey, err := ethCrypto.Ecrecover(hash, sig)
+			if err != nil {
+				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("ecrecover failed: %w", err)))
+			}
+			addr := ethCrypto.Keccak256(pubkey[1:])[12:]
+			return result.Ok(SdkResultStruct{Result: hexEncode(addr), Gas: params.CYCLE_GAS_PER_RC})
+		},
+		"rlp_decode": func(ctx context.Context, arg1 any) SdkResult {
+			hexData, ok := arg1.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			data, err := hexDecode(hexData)
+			if err != nil {
+				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid hex")))
+			}
+			decoded, err := rlpDecodeToJSON(data)
+			if err != nil {
+				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("rlp decode failed: %w", err)))
+			}
+			return result.Ok(SdkResultStruct{Result: decoded, Gas: params.CYCLE_GAS_PER_RC / 4})
+		},
+	},
+}
+
+func hexDecode(s string) ([]byte, error) {
+	s = strings.TrimPrefix(s, "0x")
+	return hex.DecodeString(s)
+}
+
+func hexEncode(b []byte) string {
+	return hex.EncodeToString(b)
+}
+
+func rlpDecodeToJSON(data []byte) (string, error) {
+	var items []interface{}
+	if err := rlp.DecodeBytes(data, &items); err != nil {
+		var single []byte
+		if err2 := rlp.DecodeBytes(data, &single); err2 != nil {
+			return "", err
+		}
+		return hex.EncodeToString(single), nil
+	}
+	result := make([]string, len(items))
+	for i, item := range items {
+		switch v := item.(type) {
+		case []byte:
+			result[i] = hex.EncodeToString(v)
+		case []interface{}:
+			sub := make([]string, len(v))
+			for j, s := range v {
+				if b, ok := s.([]byte); ok {
+					sub[j] = hex.EncodeToString(b)
+				}
+			}
+			subJSON, _ := json.Marshal(sub)
+			result[i] = string(subJSON)
+		}
+	}
+	j, _ := json.Marshal(result)
+	return string(j), nil
 }

@@ -263,7 +263,8 @@ func (mr *MockReader) witnessBlock() {
 	}
 
 	if mr.ProcessFunction != nil {
-		go mr.ProcessFunction(hb, &bn)
+		bh := bn
+		go mr.ProcessFunction(hb, &bh)
 	}
 
 	mr.lastTs = ts
