@@ -1,201 +1,100 @@
 package chain
 
 import (
-	"encoding/json"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"fmt"
-	"strings"
-	"time"
+	"log/slog"
+	"vsc-node/modules/oracle/chain/api"
+
+	"github.com/ipfs/go-cid"
+	blsu "github.com/protolambda/bls12-381-util"
 )
 
-// witnessChainData independently verifies chain data and returns a BLS signature.
-// The witness fetches the same blocks from its own RPC, builds the identical
-// transaction, and signs the resulting CID with its BLS key.
-func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (*chainRelayResponse, error) {
-	// Parse the request payload
-	var request chainRelayRequest
-	if err := json.Unmarshal(msg.Payload, &request); err != nil {
-		return nil, fmt.Errorf("failed to parse relay request: %w", err)
-	}
+var (
+	errInvalidBlockProducer = errors.New("invalid block producer")
+	errInvalidChainHash     = errors.New("invalid chain hash")
+)
 
-	// Check if this is a replaceBlock session
-	if isReplaceSession(msg.SessionID) {
-		return witnessReplaceBlock(c, msg.SessionID, &request)
-	}
-
-	// Parse the session ID to get symbol, start, end blocks
-	chainSymbol, _, startBlock, endBlock, err := parseChainSessionID(msg.SessionID)
-	if err != nil {
-		return nil, fmt.Errorf("invalid session id: %w", err)
-	}
-
-	// Look up the local chain relayer for this symbol
-	chain, ok := c.chainRelayers[strings.ToUpper(chainSymbol)]
-	if !ok {
-		return nil, errInvalidChainSymbol
-	}
-
-	// Verify the contract ID matches our local config
-	localContractId := chain.ContractId()
-	if localContractId == "" {
-		return nil, fmt.Errorf("no contract ID configured locally for %s", chainSymbol)
-	}
-	if localContractId != request.ContractId {
-		return nil, fmt.Errorf(
-			"contract ID mismatch for %s: local=%s, request=%s",
-			chainSymbol, localContractId, request.ContractId,
-		)
-	}
-
-	// Independently fetch the same blocks from our own RPC. Pass endBlock as
-	// the valid-height cap — we want exactly the range the producer submitted;
-	// if the producer exceeded its own validity threshold, the resulting CID
-	// will differ from what our local chain would have produced and this
-	// witness will refuse to sign.
-	count := (endBlock - startBlock) + 1
-	chainDataStart := time.Now()
-	blocks, err := chain.ChainData(c.ctx, startBlock, count, endBlock)
-	c.logger.Debug("witness chain data fetch",
-		"symbol", chainSymbol,
-		"blocks", count,
-		"duration", time.Since(chainDataStart),
-		"err", err,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch chain data for verification: %w", err)
-	}
-
-	if len(blocks) == 0 {
-		return nil, fmt.Errorf("no blocks returned for %s %d-%d", chainSymbol, startBlock, endBlock)
-	}
-
-	// Build the exact same transaction payload the producer built
-	payload, err := makeTransactionPayload(blocks)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build transaction payload: %w", err)
-	}
-
-	payloadJson, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	tx := makeTransaction(request.ContractId, string(payloadJson), "addBlocks", chainSymbol, request.NetId, request.Nonce)
-
-	// Hash the transaction to get the CID (must match what the producer computed)
-	signableBlock, err := tx.ToSignableBlock()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create signable block: %w", err)
-	}
-
-	txCid := signableBlock.Cid()
-
-	// Sign the CID with our BLS key
-	blsProvider, err := c.conf.BlsProvider()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get BLS provider: %w", err)
-	}
-
-	sig, err := blsProvider.Sign(txCid)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign chain data: %w", err)
-	}
-
-	blsDid, err := c.conf.BlsDID()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get BLS DID: %w", err)
-	}
-
-	// Record that we witnessed this range so we don't re-produce it
-	// if we become the next block producer.
-	witnessKey := fmt.Sprintf("%s:%d-%d", strings.ToUpper(chainSymbol), startBlock, endBlock)
-	c.recentlyWitnessed[witnessKey] = time.Now()
-
-	c.logger.Debug("signed chain relay data",
-		"symbol", chainSymbol,
-		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock),
-		"cid", txCid.String(),
-	)
-
-	return &chainRelayResponse{
-		Signature: sig,
-		Account:   c.conf.Get().HiveUsername,
-		BlsDid:    blsDid.String(),
-	}, nil
+type chainOracleWitness struct {
+	logger            *slog.Logger
+	chainMap          map[string]api.ChainRelay
+	username          string
+	privateBlsKeySeed string
+	sessionID         string
+	chainRelayMap     map[string]api.ChainRelay
+	blockProducer     string
 }
 
-// isReplaceSession checks if a session ID is for a replaceBlock operation.
-func isReplaceSession(sessionID string) bool {
-	return strings.HasSuffix(sessionID, "-replace")
-}
-
-// witnessReplaceBlock verifies and signs a replaceBlocks transaction.
-// The witness independently fetches the canonical block headers from its own
-// RPC (walking back to find the reorg depth) and builds the same replaceBlocks
-// transaction to sign.
-func witnessReplaceBlock(c *ChainOracle, sessionID string, request *chainRelayRequest) (*chainRelayResponse, error) {
-	// Session ID format: "SYMBOL-hiveHeight-replace"
-	parts := strings.Split(sessionID, "-")
-	if len(parts) < 3 {
-		return nil, fmt.Errorf("invalid replace session ID: %s", sessionID)
-	}
-	chainSymbol := parts[0]
-
-	chain, ok := c.chainRelayers[strings.ToUpper(chainSymbol)]
-	if !ok {
-		return nil, errInvalidChainSymbol
+// signs off chain data and returns a signature
+func (o *chainOracleWitness) witnessChainData(
+	msg *chainOracleBlockProducerMessage,
+) (*chainOracleWitnessMessage, error) {
+	if o.blockProducer != msg.BlockProducer {
+		return nil, errInvalidBlockProducer
 	}
 
-	// Get the contract height to know which blocks to replace
-	contractHeight, err := c.getContractBlockHeight(request.ContractId)
+	// get blocks from chain
+	chain, blocks, err := getSessionData(o.chainMap, o.sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get contract height: %w", err)
+		return nil, fmt.Errorf("failed to get blocks from chain: %w", err)
 	}
 
-	// Perform the same reorg detection walk-back as the producer
-	reorgDetected, concatenatedHex, depth, err := c.checkForReorg(chain, request.ContractId, contractHeight)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check for reorg: %w", err)
-	}
-	if !reorgDetected {
-		return nil, fmt.Errorf("witness does not detect reorg at height %d", contractHeight)
-	}
-
-	// Build the same replaceBlocks transaction.
-	// Payload is concatenated hex — SerializeVSC handles JSON encoding.
-	tx := makeTransaction(request.ContractId, concatenatedHex, "replaceBlocks", chainSymbol, request.NetId, request.Nonce)
-
-	signableBlock, err := tx.ToSignableBlock()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create signable block: %w", err)
-	}
-
-	txCid := signableBlock.Cid()
-
-	blsProvider, err := c.conf.BlsProvider()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get BLS provider: %w", err)
-	}
-
-	sig, err := blsProvider.Sign(txCid)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign: %w", err)
-	}
-
-	blsDid, err := c.conf.BlsDID()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get BLS DID: %w", err)
-	}
-
-	c.logger.Info("signed replaceBlocks data",
-		"symbol", chainSymbol,
-		"contractHeight", contractHeight,
-		"depth", depth,
-		"cid", txCid.String(),
+	o.logger.Debug(
+		"got blocks",
+		"blocksCount", len(blocks),
 	)
 
-	return &chainRelayResponse{
-		Signature: sig,
-		Account:   c.conf.Get().HiveUsername,
-		BlsDid:    blsDid.String(),
-	}, nil
+	// verify blocks against block producer's hashes
+	tx, err := buildChainBlock(chain, blocks)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tx: %w", err)
+	}
+	txCid := tx.Cid()
+
+	chainHashMatch := txCid.String() == msg.SigHash
+	if !chainHashMatch {
+		return nil, errInvalidChainHash
+	}
+
+	// sign and respond
+	signature, err := o.signChainData(&txCid)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign producer block: %w", err)
+	}
+
+	response := chainOracleWitnessMessage{
+		Signature: signature,
+		Signer:    o.username,
+	}
+
+	return &response, nil
+}
+
+func (w *chainOracleWitness) signChainData(
+	txCid *cid.Cid,
+) (string, error) {
+	// decode bls key seed
+	blsKeyDecoded, err := hex.DecodeString(w.privateBlsKeySeed)
+	if err != nil {
+		return "", fmt.Errorf("failed to deserialize bsl key seed: %w", err)
+	}
+
+	if len(blsKeyDecoded) != 32 {
+		return "", errors.New("bls priv seed must be 32 bytes")
+	}
+
+	var blsKeyBuf [32]byte
+	copy(blsKeyBuf[:], blsKeyDecoded)
+
+	blsSecretKey := &blsu.SecretKey{}
+	if err := blsSecretKey.Deserialize(&blsKeyBuf); err != nil {
+		return "", fmt.Errorf("failed to deserialize bls priv key: %w", err)
+	}
+
+	sigBytes := blsu.Sign(blsSecretKey, txCid.Bytes()).Serialize()
+	sig := base64.RawURLEncoding.EncodeToString(sigBytes[:])
+
+	return sig, nil
 }

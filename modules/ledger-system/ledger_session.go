@@ -107,7 +107,7 @@ func (ledgerSession *ledgerSession) Withdraw(withdraw WithdrawParams) LedgerResu
 		}
 	}
 
-	if !slices.Contains([]string{"hive", "hbd"}, withdraw.Asset) {
+	if !slices.Contains([]string{"hive", "hbd", "eth", "usdc"}, withdraw.Asset) {
 		return LedgerResult{
 			Ok:  false,
 			Msg: "invalid asset",
@@ -130,6 +130,22 @@ func (ledgerSession *ledgerSession) Withdraw(withdraw WithdrawParams) LedgerResu
 				Ok:  false,
 				Msg: "invalid destination",
 			}
+		}
+	} else if strings.HasPrefix(withdraw.To, "eth:") {
+		ethAddr := strings.Split(withdraw.To, ":")[1]
+		matchedEth, _ := regexp.MatchString(ETH_REGEX, ethAddr)
+		if matchedEth {
+			dest = withdraw.To
+		} else {
+			return LedgerResult{Ok: false, Msg: "invalid eth address"}
+		}
+	} else if strings.HasPrefix(withdraw.To, "did:pkh:eip155:1:") {
+		ethAddr := strings.TrimPrefix(withdraw.To, "did:pkh:eip155:1:")
+		matchedEth, _ := regexp.MatchString(ETH_REGEX, ethAddr)
+		if matchedEth {
+			dest = withdraw.To
+		} else {
+			return LedgerResult{Ok: false, Msg: "invalid eth address"}
 		}
 	} else {
 		return LedgerResult{
