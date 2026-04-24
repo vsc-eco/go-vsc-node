@@ -1523,8 +1523,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					// threshold+1 nodes remain unblamed, the protocol
 					// could not have succeeded — this is a systemic
 					// failure, not individual misbehavior.
-					errorCulpritCount := 0
-					if res.tssErr != nil {
+					//
+					// Count from res.Culprits, which is what Serialize()
+					// commits to the bitset. Falls back to tssErr.Culprits()
+					// only when Culprits is empty, mirroring Serialize's
+					// fallback so the suppression gate measures the same
+					// set the bitset will encode.
+					errorCulpritCount := len(res.Culprits)
+					if errorCulpritCount == 0 && res.tssErr != nil {
 						errorCulpritCount = len(res.tssErr.Culprits())
 					}
 					blameThreshold, _ := tss_helpers.GetThreshold(len(currentElection.Members))
