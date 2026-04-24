@@ -1,11 +1,13 @@
 package sdk
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
@@ -539,7 +541,10 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid hex")))
 			}
 			hash := ethCrypto.Keccak256(data)
-			return result.Ok(SdkResultStruct{Result: hexEncode(hash), Gas: params.CYCLE_GAS_PER_RC / 4})
+			return result.Ok(SdkResultStruct{
+				Result: hexEncode(hash),
+				Gas:    params.CYCLE_GAS_PER_RC/4 + uint(len(data))*keccak256GasPerByte,
+			})
 		},
 		"ecrecover": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
 			hashHex, ok := arg1.(string)
@@ -578,7 +583,10 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			if err != nil {
 				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("rlp decode failed: %w", err)))
 			}
-			return result.Ok(SdkResultStruct{Result: decoded, Gas: params.CYCLE_GAS_PER_RC / 4})
+			return result.Ok(SdkResultStruct{
+				Result: decoded,
+				Gas:    params.CYCLE_GAS_PER_RC/4 + uint(len(data))*rlpDecodeGasPerByte,
+			})
 		},
 	},
 }
@@ -592,31 +600,76 @@ func hexEncode(b []byte) string {
 	return hex.EncodeToString(b)
 }
 
+// Per-byte gas for host-side crypto. Keccak256 and RLP decode are both O(n)
+// in input size; charging constant gas lets a contract DoS the node with
+// large inputs. Values picked so that a 10 KB input costs roughly one RC.
+const (
+	keccak256GasPerByte = params.CYCLE_GAS_PER_RC / 256
+	rlpDecodeGasPerByte = params.CYCLE_GAS_PER_RC / 128
+)
+
+// rlpMaxDecodeDepth bounds recursion to prevent stack exhaustion. Ethereum
+// transactions reach depth 3 (tx → accessList → [addr, [storageKeys]]); 16
+// is comfortably above any legitimate payload.
+const rlpMaxDecodeDepth = 16
+
+// rlpDecodeToJSON decodes RLP into a JSON document where byte strings become
+// hex-encoded JSON strings and lists become JSON arrays. Output is
+// consensus-critical: every node must produce byte-identical JSON.
 func rlpDecodeToJSON(data []byte) (string, error) {
-	var items []interface{}
-	if err := rlp.DecodeBytes(data, &items); err != nil {
-		var single []byte
-		if err2 := rlp.DecodeBytes(data, &single); err2 != nil {
-			return "", err
-		}
-		return hex.EncodeToString(single), nil
+	stream := rlp.NewStream(bytes.NewReader(data), uint64(len(data)))
+	val, err := decodeRlpValue(stream, 0)
+	if err != nil {
+		return "", err
 	}
-	result := make([]string, len(items))
-	for i, item := range items {
-		switch v := item.(type) {
-		case []byte:
-			result[i] = hex.EncodeToString(v)
-		case []interface{}:
-			sub := make([]string, len(v))
-			for j, s := range v {
-				if b, ok := s.([]byte); ok {
-					sub[j] = hex.EncodeToString(b)
-				}
+	// Reject trailing bytes — only a single top-level RLP item is valid.
+	if _, _, err := stream.Kind(); err != io.EOF {
+		if err == nil {
+			return "", fmt.Errorf("trailing data after RLP item")
+		}
+		return "", err
+	}
+	out, err := json.Marshal(val)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func decodeRlpValue(s *rlp.Stream, depth int) (interface{}, error) {
+	if depth > rlpMaxDecodeDepth {
+		return nil, fmt.Errorf("max nesting depth %d exceeded", rlpMaxDecodeDepth)
+	}
+	kind, _, err := s.Kind()
+	if err != nil {
+		return nil, err
+	}
+	switch kind {
+	case rlp.Byte, rlp.String:
+		b, err := s.Bytes()
+		if err != nil {
+			return nil, err
+		}
+		return hex.EncodeToString(b), nil
+	case rlp.List:
+		if _, err := s.List(); err != nil {
+			return nil, err
+		}
+		arr := []interface{}{}
+		for {
+			item, err := decodeRlpValue(s, depth+1)
+			if err == rlp.EOL {
+				break
 			}
-			subJSON, _ := json.Marshal(sub)
-			result[i] = string(subJSON)
+			if err != nil {
+				return nil, err
+			}
+			arr = append(arr, item)
 		}
+		if err := s.ListEnd(); err != nil {
+			return nil, err
+		}
+		return arr, nil
 	}
-	j, _ := json.Marshal(result)
-	return string(j), nil
+	return nil, fmt.Errorf("unexpected RLP kind %v", kind)
 }
