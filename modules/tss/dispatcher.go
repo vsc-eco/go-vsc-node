@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"slices"
+	"sort"
 	"sync"
 	"time"
 
@@ -515,11 +516,36 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 	return promise.New(func(resolve func(DispatcherResult), reject func(error)) {
 		<-dispatcher.done
 
-		dispatcher.p2pMu.Lock()
-		tssErr := dispatcher.tssErr
-		dispatcher.p2pMu.Unlock()
+		tssErr, culprits := dispatcher.snapshotTssError()
 
-		log.Verbose("reshare done called", "sessionId", dispatcher.sessionId, "timeout", dispatcher.timeout, "hasTssErr", tssErr != nil, "hasErr", dispatcher.err != nil)
+		log.Verbose("reshare done called", "sessionId", dispatcher.sessionId, "timeout", dispatcher.timeout, "hasTssErr", tssErr != nil, "culpritCount", len(culprits), "hasErr", dispatcher.err != nil)
+
+		// Prefer the btss error path over the timeout path when culprits are
+		// available. A protocol error (e.g. SSID mismatch, share/decommit
+		// failure) names a specific misbehaving party, whereas the timeout
+		// path's WaitingFor() set is the set of parties that owed messages we
+		// never received — typically the collateral victims of the protocol
+		// error rather than its cause. Attributing to the latter trips
+		// systemic-blame suppression and loses the real signal.
+		if tssErr != nil && len(culprits) > 0 {
+			if dispatcher.timeout {
+				log.Warn("reshare TSS error (preferred over fired timeout)", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "culprits", culprits, "err", tssErr.Error())
+			} else {
+				log.Warn("reshare TSS error", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "culprits", culprits, "err", tssErr.Error())
+			}
+			dispatcher.tssMgr.metrics.IncrementReshareFailure()
+			resolve(ErrorResult{
+				tssMgr:      dispatcher.tssMgr,
+				tssErr:      tssErr,
+				Culprits:    culprits,
+				SessionId:   dispatcher.sessionId,
+				KeyId:       dispatcher.keyId,
+				BlockHeight: dispatcher.blockHeight,
+				Epoch:       dispatcher.newEpoch,
+			})
+			return
+		}
+
 		if dispatcher.timeout {
 			culprits := make(map[string]bool, 0)
 			oldCulprits := make([]string, 0)
@@ -602,10 +628,16 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 			return
 		}
 
+		// tssErr was set but produced no culprits and no timeout fired —
+		// degenerate btss error (e.g. malformed message from an unknown
+		// sender). Emit a best-effort ErrorResult; Serialize will fall back
+		// to tssErr.Culprits() which is also empty, yielding an empty blame
+		// bitset. Safe but not useful.
 		if tssErr != nil {
-			log.Warn("reshare TSS error", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", tssErr)
+			log.Warn("reshare TSS error (no culprits, no timeout)", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", tssErr)
 			dispatcher.tssMgr.metrics.IncrementReshareFailure()
 			resolve(ErrorResult{
+				tssMgr:      dispatcher.tssMgr,
 				tssErr:      tssErr,
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
@@ -674,9 +706,7 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 				ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
 				if err != nil {
 					log.Trace("UpdateFromBytes failed (old party)", "sessionId", dispatcher.sessionId, "from", fromStr, "ok", ok, "err", err)
-					dispatcher.p2pMu.Lock()
-					dispatcher.tssErr = err
-					dispatcher.p2pMu.Unlock()
+					dispatcher.recordTssError(err)
 				} else {
 					dispatcher.p2pMu.Lock()
 					dispatcher.lastMsg = time.Now()
@@ -698,9 +728,7 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 
 				if err != nil {
 					log.Trace("UpdateFromBytes failed (new party)", "sessionId", dispatcher.sessionId, "from", fromStr, "ok", ok, "err", err)
-					dispatcher.p2pMu.Lock()
-					dispatcher.tssErr = err
-					dispatcher.p2pMu.Unlock()
+					dispatcher.recordTssError(err)
 				} else {
 					dispatcher.p2pMu.Lock()
 					dispatcher.lastMsg = time.Now()
@@ -1039,6 +1067,30 @@ func (dispatcher *SignDispatcher) Done() *promise.Promise[DispatcherResult] {
 	return promise.New(func(resolve func(DispatcherResult), reject func(error)) {
 		<-dispatcher.done
 
+		tssErr, culprits := dispatcher.snapshotTssError()
+
+		// Prefer btss error path over timeout: protocol-level errors name
+		// the actual misbehaving party, whereas timeout WaitingFor() captures
+		// the collateral victims blocked waiting for rounds the offender
+		// poisoned. See ReshareDispatcher.Done for full rationale.
+		if tssErr != nil && len(culprits) > 0 {
+			if dispatcher.timeout {
+				log.Warn("sign TSS error (preferred over fired timeout)", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "culprits", culprits, "err", tssErr.Error())
+			} else {
+				log.Warn("sign TSS error", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "culprits", culprits, "err", tssErr.Error())
+			}
+			resolve(ErrorResult{
+				tssMgr:      dispatcher.tssMgr,
+				tssErr:      tssErr,
+				Culprits:    culprits,
+				SessionId:   dispatcher.sessionId,
+				KeyId:       dispatcher.keyId,
+				BlockHeight: dispatcher.blockHeight,
+				Epoch:       dispatcher.epoch,
+			})
+			return
+		}
+
 		if dispatcher.timeout {
 			culprits := make([]string, 0)
 			for _, p := range dispatcher.party.WaitingFor() {
@@ -1056,14 +1108,13 @@ func (dispatcher *SignDispatcher) Done() *promise.Promise[DispatcherResult] {
 			return
 		}
 
-		dispatcher.p2pMu.Lock()
-		tssErr := dispatcher.tssErr
-		dispatcher.p2pMu.Unlock()
-
+		// Degenerate: tssErr set but produced no culprits and no timeout.
+		// Emit an empty-bitset ErrorResult as a safety default.
 		if tssErr != nil {
+			log.Warn("sign TSS error (no culprits, no timeout)", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", tssErr)
 			resolve(ErrorResult{
-				tssErr: tssErr,
-
+				tssMgr:      dispatcher.tssMgr,
+				tssErr:      tssErr,
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
 				BlockHeight: dispatcher.blockHeight,
@@ -1096,8 +1147,14 @@ type BaseDispatcher struct {
 	keyId   string
 	err     error
 	tssErr  *btss.Error
-	timeout bool
-	p2pMu   sync.Mutex // protects tssErr and lastMsg from concurrent HandleP2P goroutine writes
+	// tssCulprits accumulates the union of Culprits() across every btss error
+	// reported via HandleP2P. tssErr itself is first-write-wins (preserved for
+	// its Error() text), but culprits from subsequent errors still need to be
+	// tracked so Done() can publish an accurate blame set instead of only the
+	// last error's culprits. Lazy-initialized; read/write under p2pMu.
+	tssCulprits map[string]bool
+	timeout     bool
+	p2pMu       sync.Mutex // protects tssErr, tssCulprits, and lastMsg from concurrent HandleP2P goroutine writes
 	// partyType string
 
 	done       chan struct{}
@@ -1312,6 +1369,39 @@ func (dispatcher *BaseDispatcher) startWait() {
 	}
 }
 
+// recordTssError stores the first btss error for its diagnostic text and
+// unions the error's culprits into tssCulprits. Called from HandleP2P
+// goroutines; must be safe for concurrent invocation.
+func (dispatcher *BaseDispatcher) recordTssError(err *btss.Error) {
+	dispatcher.p2pMu.Lock()
+	defer dispatcher.p2pMu.Unlock()
+	if dispatcher.tssErr == nil {
+		dispatcher.tssErr = err
+	}
+	if dispatcher.tssCulprits == nil {
+		dispatcher.tssCulprits = make(map[string]bool)
+	}
+	for _, c := range err.Culprits() {
+		dispatcher.tssCulprits[string(c.GetId())] = true
+	}
+}
+
+// snapshotTssError returns the stored btss error and the accumulated culprit
+// set as a sorted slice. The sort is required so different nodes produce an
+// identical bitset input to setToCommitment; setToCommitment itself is order
+// agnostic, but sorting here keeps logs and any future CID-sensitive paths
+// deterministic.
+func (dispatcher *BaseDispatcher) snapshotTssError() (*btss.Error, []string) {
+	dispatcher.p2pMu.Lock()
+	defer dispatcher.p2pMu.Unlock()
+	culprits := make([]string, 0, len(dispatcher.tssCulprits))
+	for account := range dispatcher.tssCulprits {
+		culprits = append(culprits, account)
+	}
+	sort.Strings(culprits)
+	return dispatcher.tssErr, culprits
+}
+
 func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcst bool, cmt string, cmtFrom string) {
 	dispatcher.startWait()
 
@@ -1347,9 +1437,7 @@ func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcs
 		log.Trace("update party", "ok", ok, "inputLen", len(input), "from", from.Id)
 		if err != nil {
 			log.Trace("UpdateFromBytes error", "ok", ok, "err", err)
-			dispatcher.p2pMu.Lock()
-			dispatcher.tssErr = err
-			dispatcher.p2pMu.Unlock()
+			dispatcher.recordTssError(err)
 		} else {
 			dispatcher.p2pMu.Lock()
 			dispatcher.lastMsg = time.Now()
@@ -1613,15 +1701,21 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 	return promise.New(func(resolve func(DispatcherResult), reject func(error)) {
 		<-dispatcher.done
 
-		if dispatcher.timeout {
-			culprits := make([]string, 0)
-			for _, p := range dispatcher.party.WaitingFor() {
-				culprits = append(culprits, p.Id)
-			}
-			log.Warn("keygen done: timeout", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "culprits", culprits)
-			resolve(TimeoutResult{
-				tssMgr: dispatcher.tssMgr,
+		tssErr, culprits := dispatcher.snapshotTssError()
 
+		// Prefer btss error path over timeout: protocol-level errors name
+		// the actual misbehaving party, whereas timeout WaitingFor() captures
+		// the collateral victims blocked waiting for rounds the offender
+		// poisoned. See ReshareDispatcher.Done for full rationale.
+		if tssErr != nil && len(culprits) > 0 {
+			if dispatcher.timeout {
+				log.Warn("keygen TSS error (preferred over fired timeout)", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "culprits", culprits, "err", tssErr.Error())
+			} else {
+				log.Warn("keygen done: TSS error", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "culprits", culprits, "err", tssErr.Error())
+			}
+			resolve(ErrorResult{
+				tssMgr:      dispatcher.tssMgr,
+				tssErr:      tssErr,
 				Culprits:    culprits,
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
@@ -1631,19 +1725,31 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 			return
 		}
 
-		dispatcher.p2pMu.Lock()
-		tssErr := dispatcher.tssErr
-		dispatcher.p2pMu.Unlock()
-
-		if tssErr != nil {
-			culprits := make([]string, 0)
-			for _, n := range tssErr.Culprits() {
-				culprits = append(culprits, string(n.GetId()))
+		if dispatcher.timeout {
+			timeoutCulprits := make([]string, 0)
+			for _, p := range dispatcher.party.WaitingFor() {
+				timeoutCulprits = append(timeoutCulprits, p.Id)
 			}
-			log.Warn("keygen done: TSS error", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "culprits", culprits, "err", tssErr.Error())
-			resolve(ErrorResult{
-				tssErr: tssErr,
+			log.Warn("keygen done: timeout", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "culprits", timeoutCulprits)
+			resolve(TimeoutResult{
+				tssMgr: dispatcher.tssMgr,
 
+				Culprits:    timeoutCulprits,
+				SessionId:   dispatcher.sessionId,
+				KeyId:       dispatcher.keyId,
+				BlockHeight: dispatcher.blockHeight,
+				Epoch:       dispatcher.epoch,
+			})
+			return
+		}
+
+		// Degenerate: tssErr set but produced no culprits and no timeout.
+		// Emit an empty-bitset ErrorResult as a safety default.
+		if tssErr != nil {
+			log.Warn("keygen TSS error (no culprits, no timeout)", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", tssErr.Error())
+			resolve(ErrorResult{
+				tssMgr:      dispatcher.tssMgr,
+				tssErr:      tssErr,
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
 				BlockHeight: dispatcher.blockHeight,
@@ -1768,6 +1874,11 @@ type ErrorResult struct {
 	tssMgr *TssManager `json:"-"`
 	err    error
 	tssErr *btss.Error
+	// Culprits is the accumulated blame set collected across every btss error
+	// observed during the session. When populated it drives the commitment
+	// bitset; if empty, Serialize falls back to tssErr.Culprits() for backward
+	// compatibility with callers that haven't migrated yet.
+	Culprits []string
 
 	SessionId   string
 	KeyId       string
@@ -1781,9 +1892,12 @@ func (ErrorResult) Type() DispatcherType {
 
 func (eres ErrorResult) Serialize() tss_helpers.BaseCommitment {
 	if eres.tssErr != nil {
-		blameNodes := make([]string, 0)
-		for _, n := range eres.tssErr.Culprits() {
-			blameNodes = append(blameNodes, string(n.GetId()))
+		blameNodes := eres.Culprits
+		if len(blameNodes) == 0 {
+			blameNodes = make([]string, 0)
+			for _, n := range eres.tssErr.Culprits() {
+				blameNodes = append(blameNodes, string(n.GetId()))
+			}
 		}
 
 		log.Verbose("blame node culprits", "blameNodes", blameNodes)
