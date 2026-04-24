@@ -107,7 +107,9 @@ func (ledgerSession *ledgerSession) Withdraw(withdraw WithdrawParams) LedgerResu
 		}
 	}
 
-	if !slices.Contains([]string{"hive", "hbd", "eth", "usdc"}, withdraw.Asset) {
+	hiveAsset := slices.Contains([]string{"hive", "hbd"}, withdraw.Asset)
+	ethAsset := slices.Contains([]string{"eth", "usdc"}, withdraw.Asset)
+	if !hiveAsset && !ethAsset {
 		return LedgerResult{
 			Ok:  false,
 			Msg: "invalid asset",
@@ -115,42 +117,50 @@ func (ledgerSession *ledgerSession) Withdraw(withdraw WithdrawParams) LedgerResu
 	}
 
 	var dest string
-	matchedHive, _ := regexp.MatchString(HIVE_REGEX, withdraw.To)
 
-	if matchedHive && len(withdraw.To) >= 3 && len(withdraw.To) < 17 {
-		dest = `hive:` + withdraw.To
-	} else if strings.HasPrefix(withdraw.To, "hive:") {
-		//No nothing. It's parsed correctly
-		splitHive := strings.Split(withdraw.To, ":")[1]
-		matchedHive, _ := regexp.MatchString(HIVE_REGEX, splitHive)
-		if matchedHive && len(splitHive) >= 3 && len(splitHive) < 17 {
-			dest = withdraw.To
+	if hiveAsset {
+		matchedHive, _ := regexp.MatchString(HIVE_REGEX, withdraw.To)
+		if matchedHive && len(withdraw.To) >= 3 && len(withdraw.To) < 17 {
+			dest = `hive:` + withdraw.To
+		} else if strings.HasPrefix(withdraw.To, "hive:") {
+			splitHive := strings.Split(withdraw.To, ":")[1]
+			matchedHive, _ := regexp.MatchString(HIVE_REGEX, splitHive)
+			if matchedHive && len(splitHive) >= 3 && len(splitHive) < 17 {
+				dest = withdraw.To
+			} else {
+				return LedgerResult{
+					Ok:  false,
+					Msg: "invalid destination",
+				}
+			}
 		} else {
 			return LedgerResult{
 				Ok:  false,
 				Msg: "invalid destination",
 			}
 		}
-	} else if strings.HasPrefix(withdraw.To, "eth:") {
-		ethAddr := strings.Split(withdraw.To, ":")[1]
-		matchedEth, _ := regexp.MatchString(ETH_REGEX, ethAddr)
-		if matchedEth {
-			dest = withdraw.To
-		} else {
-			return LedgerResult{Ok: false, Msg: "invalid eth address"}
-		}
-	} else if strings.HasPrefix(withdraw.To, "did:pkh:eip155:1:") {
-		ethAddr := strings.TrimPrefix(withdraw.To, "did:pkh:eip155:1:")
-		matchedEth, _ := regexp.MatchString(ETH_REGEX, ethAddr)
-		if matchedEth {
-			dest = withdraw.To
-		} else {
-			return LedgerResult{Ok: false, Msg: "invalid eth address"}
-		}
 	} else {
-		return LedgerResult{
-			Ok:  false,
-			Msg: "invalid destination",
+		if strings.HasPrefix(withdraw.To, "eth:") {
+			ethAddr := strings.Split(withdraw.To, ":")[1]
+			matchedEth, _ := regexp.MatchString(ETH_REGEX, ethAddr)
+			if matchedEth {
+				dest = withdraw.To
+			} else {
+				return LedgerResult{Ok: false, Msg: "invalid eth address"}
+			}
+		} else if strings.HasPrefix(withdraw.To, "did:pkh:eip155:1:") {
+			ethAddr := strings.TrimPrefix(withdraw.To, "did:pkh:eip155:1:")
+			matchedEth, _ := regexp.MatchString(ETH_REGEX, ethAddr)
+			if matchedEth {
+				dest = withdraw.To
+			} else {
+				return LedgerResult{Ok: false, Msg: "invalid eth address"}
+			}
+		} else {
+			return LedgerResult{
+				Ok:  false,
+				Msg: "invalid destination",
+			}
 		}
 	}
 
