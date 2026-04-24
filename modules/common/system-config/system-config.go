@@ -82,14 +82,14 @@ func (c *config) TssParams() params.TssParams {
 // Only fields present in the JSON are applied; the rest keep their
 // network defaults.
 type SysConfigOverrides struct {
-	BootstrapPeers  []string               `json:"bootstrapPeers,omitempty"`
-	NetId           string                 `json:"netId,omitempty"`
-	HiveChainId     string                 `json:"hiveChainId,omitempty"`
-	GatewayWallet   string                 `json:"gatewayWallet,omitempty"`
-	StartHeight     *uint64                `json:"startHeight,omitempty"`
+	BootstrapPeers  []string                `json:"bootstrapPeers,omitempty"`
+	NetId           string                  `json:"netId,omitempty"`
+	HiveChainId     string                  `json:"hiveChainId,omitempty"`
+	GatewayWallet   string                  `json:"gatewayWallet,omitempty"`
+	StartHeight     *uint64                 `json:"startHeight,omitempty"`
 	ConsensusParams *params.ConsensusParams `json:"consensusParams,omitempty"`
-	OracleParams    *params.OracleParams   `json:"oracleParams,omitempty"`
-	TssParams       *params.TssParams      `json:"tssParams,omitempty"`
+	OracleParams    *params.OracleParams    `json:"oracleParams,omitempty"`
+	TssParams       *params.TssParams       `json:"tssParams,omitempty"`
 }
 
 func (c *config) LoadOverrides(path string) error {
@@ -159,12 +159,12 @@ func MainnetConfig() SystemConfig {
 		gatewayWallet:  "vsc.gateway",
 		startHeight:    94601000,
 		consensusParams: params.ConsensusParams{
-			MinStake:           params.CONSENSUS_MINIMUM,
-			MinMembers:         7,
-			MinSpSigners:       6,
-			MinRcLimit:         params.MINIMUM_RC_LIMIT,
-			TssIndexHeight:     params.TSS_INDEX_HEIGHT,
-			ElectionInterval:   params.ELECTION_INTERVAL,
+			MinStake:             params.CONSENSUS_MINIMUM,
+			MinMembers:           7,
+			MinSpSigners:         6,
+			MinRcLimit:           params.MINIMUM_RC_LIMIT,
+			TssIndexHeight:       params.TSS_INDEX_HEIGHT,
+			ElectionInterval:     params.ELECTION_INTERVAL,
 			ElectionDupeFixEpoch: 1406,
 		},
 		oracleParams: params.OracleParams{
@@ -199,6 +199,7 @@ func TestnetConfig() SystemConfig {
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
 				"BTC": "vsc1BkWohDf5fPcwn7V9B9ar6TyiWc3A2ZGJ4t",
+				"ETH": "vsc1BobRTdfEV8oM5Y5d12HfJc4EGEqZBK3Qrb",
 				// "DASH": "vsc1...", // deploy dash-mapping-contract and add contract ID
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
 			},
