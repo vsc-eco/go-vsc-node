@@ -31,6 +31,7 @@ Where the two differ (e.g. reward floors/ceilings), the implemented library foll
 | §6–§7 Split, yields, \(2s^2/(1-s)\) | `Split`, `YieldRatio`, tests |
 | §8 Table 2 behaviour | `TestTable2Behaviour` in [`pendulum_test.go`](../../modules/incentive-pendulum/pendulum_test.go) |
 | §9 Redirect *recommendation* (not execution) | `ProtocolFeeRedirectRecommended`, `ProtocolFeeRedirectToNodes` |
+| Oracle participation slashing (window evidence) | `SlashParams`, `OracleEvidence`, `SlashBps` in [`slashing.go`](../../modules/incentive-pendulum/slashing.go) |
 | §11 Safety bands (cliff, ideal, safe, warning, extreme low) | `CollateralReport` in [`collateral.go`](../../modules/incentive-pendulum/collateral.go) |
 
 ---
@@ -53,6 +54,7 @@ Where the two differ (e.g. reward floors/ceilings), the implemented library foll
 |-------|----------------|
 | Split LP vs nodes from LP/stake geometry | `Split`, `PendulumBolt.Evaluate` |
 | Single-side HBD, vault aggregation \(V \approx 2\sum P_{\text{HBD}}\) | `PoolPendulumLiquidity`, `SumPendulumVault` |
+| Global pool eligibility (current) | `PendulumBolt` defaults to DAO-owner-only pools (`hive:vsc.dao`, normalized) |
 | Target **1.5×** overcollateral as **input** | \(u = T/E\) passed as `SplitInputs.U` / derived in `Evaluate`; **not enforced** as an invariant. |
 
 ---
@@ -62,7 +64,7 @@ Where the two differ (e.g. reward floors/ceilings), the implemented library foll
 | Topic | Gap |
 |-------|-----|
 | **Internal market** for HBD | Out of library; no DEX ops in this repo. |
-| **Protocol-approved pools** only | Callers pass `[]PoolPendulumLiquidity`; no on-chain approval registry in this module. |
+| **User pools via DAO approval** | Planned: DAO-voted `(runtime, code_hash)` allowlist for eligibility; not yet wired. |
 | **Min/max 90% / 10%** and **neither side 0%** | **Intentionally omitted** in code: these rules **conflict** with **from the PDF** §6.1 (0% LP at \(s \ge 1\)). Implemented behaviour follows **from the PDF**. |
 
 ---
@@ -74,7 +76,10 @@ Where the two differ (e.g. reward floors/ceilings), the implemented library foll
 | Rolling witness signature window | [`oracle/window.go`](../../modules/incentive-pendulum/oracle/window.go) |
 | Trust: **≥4** signatures + feed update | `FeedTrust` in [`oracle/feed.go`](../../modules/incentive-pendulum/oracle/feed.go) |
 | Trusted quote mean, MA ring | `TrustedHivePrice`, `MovingAverageRing` |
-| Wire to block production, custom ops, `height % 100` tick | **Not** in the node binary; library only. |
+| Trusted running witness group (cap 20) + APR mode from properties | `RunningWitnessGroup`, `HBDAPRModeFromGroup` in [`oracle/properties.go`](../../modules/incentive-pendulum/oracle/properties.go) |
+| Hive block ingestion + `height % 100` tick | [`oracle/tracker.go`](../../modules/incentive-pendulum/oracle/tracker.go) updated from [`state_engine.go`](../../modules/state-processing/state_engine.go) (`ProcessBlock`); `StateEngine.PendulumFeedTracker()` |
+| Tick slashing evidence | `FeedTickSnapshot.WitnessSlashBps` and env key `pendulum.witness_slash_bps` |
+| Custom ops / consensus-enforced oracle tx | **Not** wired |
 
 ---
 
@@ -93,6 +98,7 @@ go test ./modules/incentive-pendulum -fuzz=FuzzSplitConservesR -fuzztime=10s
 |-----------|------------------|
 | [`pendulum_test.go`](../../modules/incentive-pendulum/pendulum_test.go) | PDF **Table 2** behaviour (\(u=1.5\), \(w=2/3\)); hard cliff \(s \ge 1\); **§7** yield ratio identity; CLP fee sanity; **§3** pendulum fee fraction micro-trade; stabilizer **\(m=1\)** at \(s=0.5\). |
 | [`property_test.go`](../../modules/incentive-pendulum/property_test.go) | **Conservation:** `FinalNodeShare + FinalPoolShare = R` over a grid; cliff case; **§7** `nodeYield/poolYield` vs `YieldRatio(s)`; **§5** charged total ≥ base subtotal, `AccrueToPendulumR == CLP`; `SumPendulumVault`; `PendulumBolt.Evaluate` with safe-growth \(s\); missing `T` handling; **`FuzzSplitConservesR`** on random valid inputs. |
+| [`slashing_test.go`](../../modules/incentive-pendulum/slashing_test.go) | Slashing schedule invariants: compliant witness = 0 bps, additive penalties (signature deficit/update/equivocation), and cap enforcement. |
 | [`collateral_test.go`](../../modules/incentive-pendulum/collateral_test.go) | **§11** band flags (`IdealZone`, `SafeGrowth`, `WarningZone`, `ExtremeLow`, `UnderSecured`); `EffectiveBondHBD` edge cases. |
 | [`integration_test.go`](../../modules/incentive-pendulum/integration_test.go) | End-to-end: signature window → `FeedTrust` → `TrustedHivePrice` → `MovingAverageRing` → `PendulumBolt.Evaluate` split conservation. |
 

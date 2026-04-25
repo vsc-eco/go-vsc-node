@@ -48,6 +48,9 @@ type StateEngine interface {
 	GetContractInfo(id string, height uint64) (contracts.Contract, bool)
 	GetElectionInfo(height ...uint64) elections.ElectionResult
 	SystemConfig() systemconfig.SystemConfig
+	// PendulumOracleEnv returns key/value pairs merged into wasm contract env (system.get_env / get_env_key).
+	// Keys use the "pendulum.*" prefix; nil or empty means no pendulum snapshot is available.
+	PendulumOracleEnv() map[string]interface{}
 }
 
 type BlockStatusGetter interface {
