@@ -120,6 +120,47 @@ func TestMakeTransactionPayload_ETH(t *testing.T) {
 	assert.Equal(t, uint64(1000000000), payload.LatestFee)
 }
 
+func TestMakeTransactionPayload_ETHNilBaseFee(t *testing.T) {
+	blocks := []chainBlock{
+		&ethChainData{
+			Height: 101,
+			header: &types.Header{
+				TxHash:      common.HexToHash("bbbbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd"),
+				ReceiptHash: common.HexToHash("2222334411223344112233441122334411223344112233441122334411223344"),
+				BaseFee:     nil,
+				GasLimit:    31000000,
+				Time:        1700000001,
+			},
+		},
+	}
+
+	raw, err := makeTransactionPayload(blocks)
+	assert.NoError(t, err)
+	payload := raw.(*ethAddBlocksPayload)
+	assert.Equal(t, uint64(0), payload.Blocks[0].BaseFeePerGas)
+	assert.Equal(t, uint64(0), payload.LatestFee)
+}
+
+func TestMakeTransactionPayload_ETHBaseFeeOverflow(t *testing.T) {
+	overflowFee := new(big.Int).Lsh(big.NewInt(1), 65)
+	blocks := []chainBlock{
+		&ethChainData{
+			Height: 102,
+			header: &types.Header{
+				TxHash:      common.HexToHash("ccccccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd"),
+				ReceiptHash: common.HexToHash("3333334411223344112233441122334411223344112233441122334411223344"),
+				BaseFee:     overflowFee,
+				GasLimit:    32000000,
+				Time:        1700000002,
+			},
+		},
+	}
+
+	_, err := makeTransactionPayload(blocks)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "base fee out of uint64 range")
+}
+
 func TestMakeTransaction(t *testing.T) {
 	tx := makeTransaction("vsc1contract", `["aabb","ccdd"]`, "addBlocks", "BTC", "vsc-mocknet", 0)
 

@@ -559,7 +559,7 @@ type ethAddBlockEntry struct {
 
 // makeTransactionPayload builds the chain-appropriate payload.
 // UTXO chains (BTC/DASH/LTC) use concatenated hex + fee rate.
-// ETH uses an array of individual hex strings.
+// ETH uses structured block entries expected by AddBlocksParams.
 func makeTransactionPayload(blocks []chainBlock) (any, error) {
 	if len(blocks) == 0 {
 		return &utxoAddBlocksPayload{}, nil
@@ -605,6 +605,10 @@ func makeEthPayload(blocks []chainBlock) (*ethAddBlocksPayload, error) {
 		}
 		var baseFee uint64
 		if eth.header.BaseFee != nil {
+			// Reject out-of-range/negative fees instead of silently truncating.
+			if eth.header.BaseFee.Sign() < 0 || eth.header.BaseFee.BitLen() > 64 {
+				return nil, fmt.Errorf("block %d base fee out of uint64 range", i)
+			}
 			baseFee = eth.header.BaseFee.Uint64()
 		}
 		entries[i] = ethAddBlockEntry{
