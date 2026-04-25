@@ -1,11 +1,14 @@
 package chain
 
 import (
+	"math/big"
 	"testing"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/db/vsc/elections"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -92,14 +95,70 @@ func TestMakeTransactionPayload_BTCFeeRate(t *testing.T) {
 
 func TestMakeTransactionPayload_ETH(t *testing.T) {
 	blocks := []chainBlock{
-		&mockChainBlock{height: 100, data: "aabbccdd", chainType: "ETH"},
-		&mockChainBlock{height: 101, data: "11223344", chainType: "ETH"},
+		&ethChainData{
+			Height: 100,
+			header: &types.Header{
+				TxHash:      common.HexToHash("aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd"),
+				ReceiptHash: common.HexToHash("1122334411223344112233441122334411223344112233441122334411223344"),
+				BaseFee:     big.NewInt(1000000000),
+				GasLimit:    30000000,
+				Time:        1700000000,
+			},
+		},
 	}
 
 	raw, err := makeTransactionPayload(blocks)
 	assert.NoError(t, err)
 	payload := raw.(*ethAddBlocksPayload)
-	assert.Equal(t, []string{"aabbccdd", "11223344"}, payload.Blocks)
+	assert.Equal(t, 1, len(payload.Blocks))
+	assert.Equal(t, uint64(100), payload.Blocks[0].BlockNumber)
+	assert.Equal(t, "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd", payload.Blocks[0].TransactionsRoot)
+	assert.Equal(t, "1122334411223344112233441122334411223344112233441122334411223344", payload.Blocks[0].ReceiptsRoot)
+	assert.Equal(t, uint64(1000000000), payload.Blocks[0].BaseFeePerGas)
+	assert.Equal(t, uint64(30000000), payload.Blocks[0].GasLimit)
+	assert.Equal(t, uint64(1700000000), payload.Blocks[0].Timestamp)
+	assert.Equal(t, uint64(1000000000), payload.LatestFee)
+}
+
+func TestMakeTransactionPayload_ETHNilBaseFee(t *testing.T) {
+	blocks := []chainBlock{
+		&ethChainData{
+			Height: 101,
+			header: &types.Header{
+				TxHash:      common.HexToHash("bbbbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd"),
+				ReceiptHash: common.HexToHash("2222334411223344112233441122334411223344112233441122334411223344"),
+				BaseFee:     nil,
+				GasLimit:    31000000,
+				Time:        1700000001,
+			},
+		},
+	}
+
+	raw, err := makeTransactionPayload(blocks)
+	assert.NoError(t, err)
+	payload := raw.(*ethAddBlocksPayload)
+	assert.Equal(t, uint64(0), payload.Blocks[0].BaseFeePerGas)
+	assert.Equal(t, uint64(0), payload.LatestFee)
+}
+
+func TestMakeTransactionPayload_ETHBaseFeeOverflow(t *testing.T) {
+	overflowFee := new(big.Int).Lsh(big.NewInt(1), 65)
+	blocks := []chainBlock{
+		&ethChainData{
+			Height: 102,
+			header: &types.Header{
+				TxHash:      common.HexToHash("ccccccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd"),
+				ReceiptHash: common.HexToHash("3333334411223344112233441122334411223344112233441122334411223344"),
+				BaseFee:     overflowFee,
+				GasLimit:    32000000,
+				Time:        1700000002,
+			},
+		},
+	}
+
+	_, err := makeTransactionPayload(blocks)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "base fee out of uint64 range")
 }
 
 func TestMakeTransaction(t *testing.T) {

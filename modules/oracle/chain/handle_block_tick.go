@@ -2,6 +2,7 @@ package chain
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -541,15 +542,24 @@ type utxoAddBlocksPayload struct {
 	LatestFee int64  `json:"latest_fee"`
 }
 
-// ethAddBlocksPayload matches the ETH mapping contract's AddBlocksParams:
-// an array of individually hex-encoded RLP block headers (variable length).
+// ethAddBlocksPayload matches the ETH mapping contract's AddBlocksParams.
 type ethAddBlocksPayload struct {
-	Blocks []string `json:"blocks"`
+	Blocks    []ethAddBlockEntry `json:"blocks"`
+	LatestFee uint64             `json:"latest_fee"`
+}
+
+type ethAddBlockEntry struct {
+	BlockNumber      uint64 `json:"block_number"`
+	TransactionsRoot string `json:"transactions_root"`
+	ReceiptsRoot     string `json:"receipts_root"`
+	BaseFeePerGas    uint64 `json:"base_fee_per_gas"`
+	GasLimit         uint64 `json:"gas_limit"`
+	Timestamp        uint64 `json:"timestamp"`
 }
 
 // makeTransactionPayload builds the chain-appropriate payload.
 // UTXO chains (BTC/DASH/LTC) use concatenated hex + fee rate.
-// ETH uses an array of individual hex strings.
+// ETH uses structured block entries expected by AddBlocksParams.
 func makeTransactionPayload(blocks []chainBlock) (any, error) {
 	if len(blocks) == 0 {
 		return &utxoAddBlocksPayload{}, nil
@@ -586,15 +596,35 @@ func makeUtxoPayload(blocks []chainBlock) (*utxoAddBlocksPayload, error) {
 }
 
 func makeEthPayload(blocks []chainBlock) (*ethAddBlocksPayload, error) {
-	headers := make([]string, len(blocks))
+	entries := make([]ethAddBlockEntry, len(blocks))
+	var latestFee uint64
 	for i, block := range blocks {
-		hex, err := block.Serialize()
-		if err != nil {
-			return nil, err
+		eth, ok := block.(*ethChainData)
+		if !ok {
+			return nil, fmt.Errorf("block %d is not ethChainData", i)
 		}
-		headers[i] = hex
+		var baseFee uint64
+		if eth.header.BaseFee != nil {
+			// Reject out-of-range/negative fees instead of silently truncating.
+			if eth.header.BaseFee.Sign() < 0 || eth.header.BaseFee.BitLen() > 64 {
+				return nil, fmt.Errorf("block %d base fee out of uint64 range", i)
+			}
+			baseFee = eth.header.BaseFee.Uint64()
+		}
+		entries[i] = ethAddBlockEntry{
+			BlockNumber:      eth.Height,
+			TransactionsRoot: hex.EncodeToString(eth.header.TxHash.Bytes()),
+			ReceiptsRoot:     hex.EncodeToString(eth.header.ReceiptHash.Bytes()),
+			BaseFeePerGas:    baseFee,
+			GasLimit:         eth.header.GasLimit,
+			Timestamp:        eth.header.Time,
+		}
+		latestFee = baseFee
 	}
-	return &ethAddBlocksPayload{Blocks: headers}, nil
+	return &ethAddBlocksPayload{
+		Blocks:    entries,
+		LatestFee: latestFee,
+	}, nil
 }
 
 // findMemberWeight returns the election weight for a given BLS DID.
