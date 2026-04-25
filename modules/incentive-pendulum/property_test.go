@@ -81,8 +81,8 @@ func TestQuoteSwapFeesSurplusNonNegativeWhenMultiplierGte1(t *testing.T) {
 
 func TestSumPendulumVault(t *testing.T) {
 	v, p := SumPendulumVault([]PoolPendulumLiquidity{
-		{"a", 100},
-		{"b", 50},
+		{PoolID: "a", Owner: "hive:vsc.dao", PHbd: 100},
+		{PoolID: "b", Owner: "hive:vsc.dao", PHbd: 50},
 	})
 	if p != 150 || v != 300 {
 		t.Fatalf("v=%v p=%v", v, p)
@@ -96,7 +96,7 @@ func TestPendulumBoltEvaluate(t *testing.T) {
 		TotalHiveStake: 10_000,
 		HivePriceHBD:   0.25,
 		TotalBondT:     5000,
-		Pools:          []PoolPendulumLiquidity{{"p1", 300}},
+		Pools:          []PoolPendulumLiquidity{{PoolID: "p1", Owner: "hive:vsc.dao", PHbd: 300}},
 	}, 1e6)
 	if !ok {
 		t.Fatal("expected ok")
@@ -118,6 +118,45 @@ func TestPendulumBoltEvaluate(t *testing.T) {
 	}
 }
 
+func TestPendulumBoltEvaluateDAOOnlyFilter(t *testing.T) {
+	b := NewPendulumBolt()
+	ev, ok := b.Evaluate(NetworkSnapshot{
+		TotalHiveStake: 10_000,
+		HivePriceHBD:   0.25,
+		TotalBondT:     5000,
+		Pools: []PoolPendulumLiquidity{
+			{PoolID: "dao-pool", Owner: "hive:vsc.dao", PHbd: 300},
+			{PoolID: "user-pool", Owner: "hive:alice", PHbd: 700},
+		},
+	}, 1e6)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if ev.P != 300 || ev.V != 600 {
+		t.Fatalf("DAO filter failed, got V=%v P=%v", ev.V, ev.P)
+	}
+}
+
+func TestPendulumBoltEvaluateCanDisableDAOFilter(t *testing.T) {
+	b := NewPendulumBolt()
+	b.EnforceDAOOwnedPools = false
+	ev, ok := b.Evaluate(NetworkSnapshot{
+		TotalHiveStake: 10_000,
+		HivePriceHBD:   0.25,
+		TotalBondT:     5000,
+		Pools: []PoolPendulumLiquidity{
+			{PoolID: "dao-pool", Owner: "hive:vsc.dao", PHbd: 300},
+			{PoolID: "user-pool", Owner: "hive:alice", PHbd: 700},
+		},
+	}, 1e6)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if ev.P != 1000 || ev.V != 2000 {
+		t.Fatalf("expected all pools included, got V=%v P=%v", ev.V, ev.P)
+	}
+}
+
 func TestEvaluateMissingT(t *testing.T) {
 	b := NewPendulumBolt()
 	ev, ok := b.Evaluate(NetworkSnapshot{
@@ -131,6 +170,18 @@ func TestEvaluateMissingT(t *testing.T) {
 	}
 	if ev.E <= 0 {
 		t.Fatal("E should still be computed")
+	}
+}
+
+func TestPoolOwnedByAcceptsHivePrefixVariants(t *testing.T) {
+	if !PoolOwnedBy("vsc.dao", "hive:vsc.dao") {
+		t.Fatal("expected owner match")
+	}
+	if !PoolOwnedBy("HIVE:VSC.DAO", "hive:vsc.dao") {
+		t.Fatal("expected case-insensitive owner match")
+	}
+	if PoolOwnedBy("hive:alice", "hive:vsc.dao") {
+		t.Fatal("unexpected owner match")
 	}
 }
 
