@@ -29,6 +29,7 @@ import (
 	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
+	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	tss_helpers "vsc-node/modules/tss/helpers"
@@ -99,6 +100,9 @@ type StateEngine struct {
 	slotStatus *SlotStatus
 
 	BlockHeight int
+
+	// pendulumFeed tracks sole-HIVE witness feed + HBD APR (Magi pendulum oracle); updated from Hive blocks.
+	pendulumFeed *pendulumoracle.FeedTracker
 }
 
 //Transaction
@@ -246,6 +250,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		Timestamp:   block.Timestamp,
 	}
 
+	if se.pendulumFeed != nil && block.Witness != "" {
+		se.pendulumFeed.RecordWitnessBlock(block.Witness)
+	}
+
 	//What is active slot?
 	// bh = 5
 	// 0 - 10
@@ -295,6 +303,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	}
 
 	for blkIdx, tx := range block.Transactions {
+		if se.pendulumFeed != nil {
+			se.pendulumFeed.IngestTransactionOps(block.BlockNumber, tx)
+		}
 
 		if tx.Operations[0].Type == "custom_json" {
 			headerOp := tx.Operations[0]
@@ -1040,6 +1051,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		se.ExecuteBatch()
 		//Balances must be updated after the current slot has been fully executed
 	}
+
+	if se.pendulumFeed != nil {
+		se.pendulumFeed.TickIfDue(block.BlockNumber)
+	}
 }
 
 // executeTxSafely runs a transaction handler with panic recovery so that a
@@ -1573,6 +1588,42 @@ func (se *StateEngine) SystemConfig() systemconfig.SystemConfig {
 	return se.sconf
 }
 
+// PendulumFeedTracker returns the Magi pendulum sole-HIVE / HBD-APR oracle tracker (may be nil in tests).
+func (se *StateEngine) PendulumFeedTracker() *pendulumoracle.FeedTracker {
+	if se == nil {
+		return nil
+	}
+	return se.pendulumFeed
+}
+
+// PendulumOracleEnv implements common_types.StateEngine: values merged into wasm contract env (system.get_env).
+func (se *StateEngine) PendulumOracleEnv() map[string]interface{} {
+	if se == nil || se.pendulumFeed == nil {
+		return nil
+	}
+	s := se.pendulumFeed.LastTick()
+	m := map[string]interface{}{
+		"pendulum.hbd_interest_rate_bps": s.HBDInterestRateBps,
+		"pendulum.hbd_interest_rate_ok":  s.HBDInterestRateOK,
+		"pendulum.trusted_hive_mean_hbd": s.TrustedHiveMean,
+		"pendulum.trusted_hive_mean_ok":  s.TrustedHiveOK,
+		"pendulum.hive_ma_hbd":           s.HiveMovingAvg,
+		"pendulum.hive_ma_ok":            s.HiveMovingAvgOK,
+		"pendulum.tick_block_height":     s.TickBlockHeight,
+	}
+	if len(s.TrustedWitnessGroup) > 0 {
+		m["pendulum.trusted_witness_group"] = append([]string(nil), s.TrustedWitnessGroup...)
+	}
+	if len(s.WitnessSlashBps) > 0 {
+		slash := make(map[string]int, len(s.WitnessSlashBps))
+		for w, bps := range s.WitnessSlashBps {
+			slash[w] = bps
+		}
+		m["pendulum.witness_slash_bps"] = slash
+	}
+	return m
+}
+
 func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	witnessesDb witnesses.Witnesses,
 	electionsDb elections.Elections,
@@ -1647,5 +1698,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		// },
 		LedgerSystem: ls,
 		LedgerState:  ledgerState,
+
+		pendulumFeed: pendulumoracle.NewFeedTracker(),
 	}
 }

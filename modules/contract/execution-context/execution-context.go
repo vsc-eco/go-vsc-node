@@ -74,6 +74,8 @@ type Environment struct {
 	Caller               string
 	Sender               string
 	Intents              []contracts.Intent
+	// PendulumOracle is merged into wasm env JSON (system.get_env) and visible via system.get_env_key.
+	PendulumOracle map[string]interface{}
 }
 
 var _ wasm_context.ExecContextValue = &contractExecutionContext{}
@@ -253,6 +255,11 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 	case "block.timestamp":
 		return result.Ok(ctx.env.Timestamp)
 	}
+	if ctx.env.PendulumOracle != nil {
+		if v, ok := ctx.env.PendulumOracle[key]; ok {
+			return envOracleValueToResult(v)
+		}
+	}
 	return result.Err[string](
 		errors.Join(
 			fmt.Errorf(contracts.ENV_VAR_ERROR),
@@ -300,6 +307,9 @@ func (ctx *contractExecutionContext) GetEnv() result.Result[string] {
 		"msg.payer":                  payer,
 		"msg.caller":                 ctx.env.Caller,
 		"intents":                    ctx.env.Intents,
+	}
+	for k, v := range ctx.env.PendulumOracle {
+		envMap[k] = v
 	}
 
 	envBytes, err := json.Marshal(envMap)
@@ -656,6 +666,44 @@ func (ctx *contractExecutionContext) TssKeySign(keyId string, msg string) result
 		Args:  msg,
 	})
 	return result.Ok("ok")
+}
+
+// envOracleValueToResult stringifies values from PendulumOracle for system.get_env_key.
+func envOracleValueToResult(v interface{}) result.Result[string] {
+	switch t := v.(type) {
+	case string:
+		return result.Ok(t)
+	case bool:
+		return result.Ok(strconv.FormatBool(t))
+	case float64:
+		return result.Ok(strconv.FormatFloat(t, 'g', -1, 64))
+	case float32:
+		return result.Ok(strconv.FormatFloat(float64(t), 'g', -1, 32))
+	case int:
+		return result.Ok(strconv.Itoa(t))
+	case int32:
+		return result.Ok(strconv.FormatInt(int64(t), 10))
+	case int64:
+		return result.Ok(strconv.FormatInt(t, 10))
+	case uint:
+		return result.Ok(strconv.FormatUint(uint64(t), 10))
+	case uint32:
+		return result.Ok(strconv.FormatUint(uint64(t), 10))
+	case uint64:
+		return result.Ok(strconv.FormatUint(t, 10))
+	case []string:
+		b, err := json.Marshal(t)
+		if err != nil {
+			return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), err))
+		}
+		return result.Ok(string(b))
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), err))
+		}
+		return result.Ok(string(b))
+	}
 }
 
 // wrap the result of json.Marshal as used by EnvVar(), joins with ENV_VAR_ERROR symbol if Err
