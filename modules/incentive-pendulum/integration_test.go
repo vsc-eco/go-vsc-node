@@ -44,7 +44,7 @@ func TestBoltOracleIntegration(t *testing.T) {
 		HivePriceHBD:   mx,
 		TotalBondT:     12_000,
 		Pools: []PoolPendulumLiquidity{
-			{"main", 500},
+			{PoolID: "main", Owner: "hive:vsc.dao", PHbd: 500},
 		},
 	}, 99_000)
 	if !ok {

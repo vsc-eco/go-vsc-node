@@ -22,6 +22,7 @@ type Document struct {
 type HiveBlock struct {
 	BlockNumber  uint64             `json:"block_number" bson:"block_number"`
 	BlockID      string             `json:"block_id" bson:"block_id"`
+	Witness      string             `json:"witness" bson:"witness"` // L1 block producer (Hive account)
 	Timestamp    string             `json:"timestamp" bson:"timestamp"`
 	MerkleRoot   string             `json:"merkle_root" bson:"merkle_root"`
 	Transactions []Tx               `json:"transactions" bson:"transactions"`

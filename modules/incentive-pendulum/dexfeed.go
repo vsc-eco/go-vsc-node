@@ -1,11 +1,16 @@
 package pendulum
 
-import "math"
+import (
+	"math"
+	"strings"
+	"vsc-node/modules/common/params"
+)
 
 // PoolPendulumLiquidity is HBD-side depth for one approved CLP pool (HackMD single-side tracking).
 // V_contrib for global V is typically 2*PHbd (symmetry assumption); P_contrib = PHbd.
 type PoolPendulumLiquidity struct {
 	PoolID string
+	Owner  string  // hive account that controls the pool contract (e.g. "hive:vsc.dao")
 	PHbd   float64 // HBD-side depth (HBD = $1 units)
 }
 
@@ -20,6 +25,29 @@ func SumPendulumVault(pools []PoolPendulumLiquidity) (vTotal, pTotal float64) {
 		vTotal += 2 * p.PHbd
 	}
 	return vTotal, pTotal
+}
+
+func normalizeHiveAccount(a string) string {
+	a = strings.ToLower(strings.TrimSpace(a))
+	return strings.TrimPrefix(a, "hive:")
+}
+
+// PoolOwnedBy returns true when poolOwner matches expectedOwner (case-insensitive,
+// accepts either "hive:acct" or "acct" forms).
+func PoolOwnedBy(poolOwner, expectedOwner string) bool {
+	return normalizeHiveAccount(poolOwner) != "" &&
+		normalizeHiveAccount(poolOwner) == normalizeHiveAccount(expectedOwner)
+}
+
+// DAOOwnedPools filters pools to only those owned by daoOwner.
+func DAOOwnedPools(pools []PoolPendulumLiquidity, daoOwner string) []PoolPendulumLiquidity {
+	out := make([]PoolPendulumLiquidity, 0, len(pools))
+	for _, p := range pools {
+		if PoolOwnedBy(p.Owner, daoOwner) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // SwapLegDepths are CLP reserves for the swap fee formula (open-market; no extra oracles).
@@ -96,6 +124,10 @@ type PendulumBolt struct {
 	Stabilizer StabilizerParams
 	// EffectiveStakeFraction is applied to HIVE stake for E (e.g. 2/3).
 	EffectiveStakeFraction float64
+	// EnforceDAOOwnedPools limits global pendulum V/P to DAO-owned pools.
+	EnforceDAOOwnedPools bool
+	// DAOOwner is the owner account accepted for global pool aggregation.
+	DAOOwner string
 }
 
 // NewPendulumBolt returns defaults suitable for Magi PDF.
@@ -103,6 +135,8 @@ func NewPendulumBolt() *PendulumBolt {
 	return &PendulumBolt{
 		Stabilizer:             DefaultStabilizerParams(),
 		EffectiveStakeFraction: 2.0 / 3.0,
+		EnforceDAOOwnedPools:   true,
+		DAOOwner:               params.DAO_WALLET,
 	}
 }
 
@@ -125,7 +159,15 @@ func (b *PendulumBolt) Evaluate(net NetworkSnapshot, R float64) (BoltEvaluation,
 		frac = 2.0 / 3.0
 	}
 	E := EffectiveBondHBD(net.TotalHiveStake, net.HivePriceHBD, frac)
-	V, P := SumPendulumVault(net.Pools)
+	pools := net.Pools
+	if b.EnforceDAOOwnedPools {
+		daoOwner := b.DAOOwner
+		if strings.TrimSpace(daoOwner) == "" {
+			daoOwner = params.DAO_WALLET
+		}
+		pools = DAOOwnedPools(pools, daoOwner)
+	}
+	V, P := SumPendulumVault(pools)
 	ev.E, ev.T, ev.V, ev.P = E, net.TotalBondT, V, P
 	ev.S = RatioSV(V, E)
 	ev.W = 0
