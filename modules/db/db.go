@@ -8,10 +8,13 @@ import (
 	"github.com/chebyrash/promise"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/mongo/writeconcern"
 )
 
 type Db interface {
 	Database(name string, opts ...*options.DatabaseOptions) *mongo.Database
+	WithSlotTransaction(ctx context.Context, fn func(sessCtx mongo.SessionContext) error) error
 }
 type db struct {
 	conf   DbConfig
@@ -50,4 +53,19 @@ func (db *db) Start() *promise.Promise[any] {
 func (db *db) Stop() error {
 	db.cancel()
 	return nil
+}
+
+// WithSlotTransaction runs fn inside a MongoDB transaction with snapshot read concern
+// and majority write concern. Used to commit slot-end writes (balances, RC, nonces,
+// TSS key transitions) atomically. Requires a replica set deployment.
+func (db *db) WithSlotTransaction(ctx context.Context, fn func(sessCtx mongo.SessionContext) error) error {
+	txnOpts := options.Transaction().
+		SetReadConcern(readconcern.Snapshot()).
+		SetWriteConcern(writeconcern.Majority())
+	return db.Client.UseSession(ctx, func(sessCtx mongo.SessionContext) error {
+		_, err := sessCtx.WithTransaction(sessCtx, func(sessCtx mongo.SessionContext) (interface{}, error) {
+			return nil, fn(sessCtx)
+		}, txnOpts)
+		return err
+	})
 }

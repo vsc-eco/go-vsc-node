@@ -204,6 +204,49 @@ func (ledger *ledger) GetRawLedgerRange(account *string, txId *string, txTypes [
 	return results, nil
 }
 
+// GetLedgerRangeBulk returns a single round-trip aggregation of ledger records keyed
+// by owner. Each account's records are filtered to [perAccountStart[account], end].
+func (ledger *ledger) GetLedgerRangeBulk(ctx context.Context, perAccountStart map[string]uint64, end uint64, asset string) (map[string][]LedgerRecord, error) {
+	out := make(map[string][]LedgerRecord, len(perAccountStart))
+	if len(perAccountStart) == 0 {
+		return out, nil
+	}
+	accounts := make([]string, 0, len(perAccountStart))
+	minStart := uint64(0)
+	first := true
+	for account, st := range perAccountStart {
+		accounts = append(accounts, account)
+		if first || st < minStart {
+			minStart = st
+			first = false
+		}
+	}
+	query := bson.M{
+		"owner":        bson.M{"$in": accounts},
+		"block_height": bson.M{"$gte": minStart, "$lte": end},
+	}
+	if asset != "" {
+		query["tk"] = asset
+	}
+	opts := options.Find().SetSort(bson.D{{Key: "owner", Value: 1}, {Key: "block_height", Value: 1}})
+	cursor, err := ledger.Find(ctx, query, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	for cursor.Next(ctx) {
+		var rec LedgerRecord
+		if err := cursor.Decode(&rec); err != nil {
+			return nil, err
+		}
+		if rec.BlockHeight < perAccountStart[rec.Owner] {
+			continue
+		}
+		out[rec.Owner] = append(out[rec.Owner], rec)
+	}
+	return out, nil
+}
+
 func (ledger *ledger) GetDistinctAccountsRange(startHeight, endHeight uint64) ([]string, error) {
 	arr, err := ledger.Distinct(context.Background(), "owner", bson.M{
 		"block_height": bson.M{
@@ -282,6 +325,56 @@ func (balances *balances) UpdateBalanceRecord(record BalanceRecord) error {
 		"$set": record,
 	}, findUpdateOpts)
 	return nil
+}
+
+// GetBalanceRecordsBulk returns the most recent balance record per account at or
+// before blockHeight, in one aggregation round-trip. Accounts with no record are
+// absent from the returned map.
+func (balances *balances) GetBalanceRecordsBulk(ctx context.Context, accounts []string, blockHeight uint64) (map[string]BalanceRecord, error) {
+	out := make(map[string]BalanceRecord, len(accounts))
+	if len(accounts) == 0 {
+		return out, nil
+	}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"account":      bson.M{"$in": accounts},
+			"block_height": bson.M{"$lte": blockHeight},
+		}}},
+		{{Key: "$sort", Value: bson.D{{Key: "account", Value: 1}, {Key: "block_height", Value: -1}}}},
+		{{Key: "$group", Value: bson.M{
+			"_id": "$account",
+			"doc": bson.M{"$first": "$$ROOT"},
+		}}},
+		{{Key: "$replaceRoot", Value: bson.M{"newRoot": "$doc"}}},
+	}
+	cursor, err := balances.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	for cursor.Next(ctx) {
+		var rec BalanceRecord
+		if err := cursor.Decode(&rec); err != nil {
+			return nil, err
+		}
+		out[rec.Account] = rec
+	}
+	return out, nil
+}
+
+func (balances *balances) BulkUpdateBalanceRecords(ctx context.Context, records []BalanceRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, 0, len(records))
+	for _, rec := range records {
+		models = append(models, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"account": rec.Account, "block_height": rec.BlockHeight}).
+			SetUpdate(bson.M{"$set": rec}).
+			SetUpsert(true))
+	}
+	_, err := balances.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
+	return err
 }
 
 func (balances *balances) GetAll(blockHeight uint64) []BalanceRecord {

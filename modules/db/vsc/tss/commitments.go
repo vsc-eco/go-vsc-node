@@ -16,6 +16,24 @@ type tssCommitments struct {
 	*db.Collection
 }
 
+func (tsc *tssCommitments) Init() error {
+	if err := tsc.Collection.Init(); err != nil {
+		return err
+	}
+	indexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "key_id", Value: 1}, {Key: "tx_id", Value: 1}}},
+		{Keys: bson.D{{Key: "key_id", Value: 1}, {Key: "epoch", Value: 1}}},
+		{Keys: bson.D{{Key: "key_id", Value: 1}, {Key: "block_height", Value: -1}}},
+		{Keys: bson.D{{Key: "type", Value: 1}, {Key: "epoch", Value: 1}}},
+	}
+	for _, idx := range indexes {
+		if err := tsc.CreateIndexIfNotExist(idx); err != nil {
+			return fmt.Errorf("failed to create tss_commitments index: %w", err)
+		}
+	}
+	return nil
+}
+
 func (tsc *tssCommitments) SetCommitmentData(commitment TssCommitment) error {
 	options := options.FindOneAndUpdate().SetUpsert(true)
 	updateResult := tsc.FindOneAndUpdate(context.Background(), bson.M{

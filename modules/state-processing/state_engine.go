@@ -16,6 +16,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
+	node_config "vsc-node/modules/common/node-config"
 	"vsc-node/modules/common/common_types"
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
@@ -61,8 +62,9 @@ type ProcessExtraInfo struct {
 }
 
 type StateEngine struct {
-	sconf systemconfig.SystemConfig
-	da    *DataLayer.DataLayer
+	sconf    systemconfig.SystemConfig
+	da       *DataLayer.DataLayer
+	nodeRole node_config.NodeRole
 
 	//db access
 	witnessDb      witnesses.Witnesses
@@ -85,6 +87,9 @@ type StateEngine struct {
 	contractInfoCache *lru.Cache[string, contractInfoCacheEntry]
 	// LRU cache for WASM code by CID (content-addressed, never stale)
 	codeCache *lru.Cache[string, []byte]
+	// LRU cache for GetElectionByHeight keyed by the exact lookup height. Invalidated
+	// fully whenever a vsc.election_result is processed.
+	electionCache *lru.Cache[uint64, electionCacheEntry]
 
 	//Nonce map similar to what we use before
 	NonceMap map[string]int
@@ -120,6 +125,11 @@ type StateEngine struct {
 type contractInfoCacheEntry struct {
 	info   contracts.Contract
 	exists bool
+}
+
+type electionCacheEntry struct {
+	result elections.ElectionResult
+	err    error
 }
 
 //Transaction
@@ -158,7 +168,7 @@ func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64, txId s
 // Uses a different PRNG variant from the original used in JS VSC
 // Not aiming for exact replica
 func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
-	lastElection, err := se.electionDb.GetElectionByHeight(slotHeight)
+	lastElection, err := se.getElectionByHeightCached(slotHeight)
 
 	if err != nil {
 		return nil
@@ -257,52 +267,92 @@ func (se *StateEngine) prefetchBlockData(block hive_blocks.HiveBlock) {
 	}
 }
 
+// pruneInterval is how often (in L1 blocks) the periodic local-storage prune fires.
+// Off the slot critical path; runs in a background goroutine.
+const pruneInterval = uint64(1000)
+
 func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	se.BlockHeight = int(block.BlockNumber)
 
 	// Kick off P2P prefetching for L2 block content before processing
 	se.prefetchBlockData(block)
 
+	// Local-storage pruning hook. Runs ~every 1000 blocks, never on the slot critical
+	// path. Each step is gated on the node role; archive nodes skip both prunes.
+	if block.BlockNumber%pruneInterval == 0 && block.BlockNumber > 0 {
+		bh := block.BlockNumber
+		role := se.nodeRole
+		if role.PrunesRcs() && bh > 2*params.RC_RETURN_PERIOD {
+			cutoff := bh - 2*params.RC_RETURN_PERIOD
+			go func() {
+				if _, err := se.rcDb.PruneOlderThan(context.Background(), cutoff); err != nil {
+					log.Warn("rcs prune failed", "err", err, "cutoff", cutoff)
+				}
+			}()
+		}
+		if role.PrunesExpiredUnconfirmedTxs() {
+			go func() {
+				if _, err := se.txDb.PruneExpiredUnconfirmed(context.Background(), bh); err != nil {
+					log.Warn("txpool prune failed", "err", err, "currentHeight", bh)
+				}
+			}()
+		}
+		if role.PrunesConfirmedTxs() && bh > pruneInterval {
+			cutoff := bh - pruneInterval
+			go func() {
+				if _, err := se.txDb.PruneConfirmedOlderThan(context.Background(), cutoff); err != nil {
+					log.Warn("confirmed-tx prune failed", "err", err, "cutoff", cutoff)
+				}
+			}()
+		}
+	}
+
 	// --- Key lifecycle: deprecation and retirement ---
-	if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
+	if electionData, elecErr := se.getElectionByHeightCached(block.BlockNumber); elecErr == nil {
 		currentEpoch := electionData.Epoch
 
 		// Phase 1: deprecate active keys that have reached their expiry epoch.
-		if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
-			for _, k := range deprecating {
-				k.Status = tss_db.TssKeyDeprecated
+		if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil && len(deprecating) > 0 {
+			for i := range deprecating {
+				deprecating[i].Status = tss_db.TssKeyDeprecated
 				if tss_db.KeyRetirementEnabled {
-					k.DeprecatedHeight = int64(block.BlockNumber)
+					deprecating[i].DeprecatedHeight = int64(block.BlockNumber)
 				}
-				se.tssKeys.SetKey(k)
-				tssLog.Info(
-					"key deprecated",
-					"keyId",
-					k.Id,
-					"expiryEpoch",
-					k.ExpiryEpoch,
-					"blockHeight",
-					block.BlockNumber,
-				)
+			}
+			if bulkErr := se.tssKeys.BulkSetKeys(context.Background(), deprecating); bulkErr == nil {
+				for _, k := range deprecating {
+					tssLog.Info(
+						"key deprecated",
+						"keyId",
+						k.Id,
+						"expiryEpoch",
+						k.ExpiryEpoch,
+						"blockHeight",
+						block.BlockNumber,
+					)
+				}
 			}
 		}
 	}
 
 	// Phase 2: retire deprecated keys whose grace period has elapsed (block-height based).
 	if tss_db.KeyRetirementEnabled {
-		if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil {
-			for _, k := range retiring {
-				k.Status = tss_db.TssKeyRetired
-				se.tssKeys.SetKey(k)
-				tssLog.Info(
-					"key retired",
-					"keyId",
-					k.Id,
-					"deprecatedHeight",
-					k.DeprecatedHeight,
-					"blockHeight",
-					block.BlockNumber,
-				)
+		if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil && len(retiring) > 0 {
+			for i := range retiring {
+				retiring[i].Status = tss_db.TssKeyRetired
+			}
+			if bulkErr := se.tssKeys.BulkSetKeys(context.Background(), retiring); bulkErr == nil {
+				for _, k := range retiring {
+					tssLog.Info(
+						"key retired",
+						"keyId",
+						k.Id,
+						"deprecatedHeight",
+						k.DeprecatedHeight,
+						"blockHeight",
+						block.BlockNumber,
+					)
+				}
 			}
 		}
 	}
@@ -918,7 +968,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						// Using GetElection(commitment.Epoch) returns a different election
 						// when the epoch has advanced, causing BLS verification to fail
 						// because the member lists (and BLS keys) differ.
-						electionData, elErr := se.electionDb.GetElectionByHeight(commitment.BlockHeight)
+						electionData, elErr := se.getElectionByHeightCached(commitment.BlockHeight)
 
 						if elErr != nil || electionData.Members == nil {
 							tssLog.Warn("election lookup failed", "keyId", commitment.KeyId, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "err", elErr)
@@ -1075,6 +1125,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			startBlock = uint64(vscBlock.EndBlock)
 		}
 
+		// UpdateBalances and UpdateRcMap each commit one bulk write internally (atomic
+		// at the BulkWrite level). UpdateRcMap reads the just-written balances via
+		// LedgerSystem.GetBalance, so the two phases must commit sequentially — they
+		// cannot share a single transaction without threading session context through
+		// the LedgerState read path. The db.WithSlotTransaction helper exists for that
+		// future plumbing.
 		se.UpdateBalances(startBlock, se.slotStatus.SlotHeight)
 
 		se.UpdateRcMap(se.slotStatus.SlotHeight)
@@ -1372,7 +1428,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		stBlock = endBlock - 9
 	}
 
-	election, _ := se.electionDb.GetElectionByHeight(endBlock)
+	election, _ := se.getElectionByHeightCached(endBlock)
 	records, _ := se.LedgerState.ActionDb.GetPendingActionsByEpoch(election.Epoch, "consensus_unstake")
 
 	completeIds := make([]string, 0)
@@ -1391,10 +1447,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	}
 	se.LedgerState.LedgerDb.StoreLedger(ledgerRecords...)
 	se.LedgerState.ActionDb.ExecuteComplete(nil, completeIds...)
-	// se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)
-	// se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(nil, completeIds...)
 
-	//log.Debug("stBlock, endBlock", stBlock, endBlock)
 	distinctAccounts, _ := se.LedgerState.LedgerDb.GetDistinctAccountsRange(stBlock, endBlock)
 
 	//Ensure system:fr_balance is always processed so its hbd_claim stays current.
@@ -1414,95 +1467,89 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		}
 	}
 
-	assets := []string{"hbd", "hive", "hbd_savings", "hive_consensus"}
+	if len(distinctAccounts) == 0 {
+		return
+	}
 
-	//Cleanup!
+	ctx := context.Background()
+	prevBalances, _ := se.LedgerState.BalanceDb.GetBalanceRecordsBulk(ctx, distinctAccounts, endBlock)
+
+	perAccountStart := make(map[string]uint64, len(distinctAccounts))
 	for _, k := range distinctAccounts {
-		ledgerBalances := map[string]int64{}
-		prevBalRecord, _ := se.LedgerState.BalanceDb.GetBalanceRecord(k, endBlock)
+		if rec, ok := prevBalances[k]; ok {
+			perAccountStart[k] = rec.BlockHeight + 1
+		} else {
+			perAccountStart[k] = 0
+		}
+	}
+	ledgerByAccount, _ := se.LedgerState.LedgerDb.GetLedgerRangeBulk(ctx, perAccountStart, endBlock, "")
+
+	//Hoisted: claim record is identical for all accounts at endBlock; one read instead of N.
+	claimRecord := se.claimDb.GetLastClaim(endBlock)
+	var claimRecordBlockHeight uint64
+	if claimRecord != nil {
+		claimRecordBlockHeight = claimRecord.BlockHeight
+	}
+
+	updatedRecords := make([]ledgerDb.BalanceRecord, 0, len(distinctAccounts))
+	for _, k := range distinctAccounts {
 		var balanceR ledgerDb.BalanceRecord
-		var stHeight uint64
-		if prevBalRecord != nil {
-			balanceR = *prevBalRecord
-			stHeight = prevBalRecord.BlockHeight + 1 //Must add one to prevent querying ledger results from same bal record
-		}
-		for _, asset := range assets {
-			if asset == "hbd" {
-				ledgerBalances[asset] = balanceR.HBD
-			} else if asset == "hive" {
-				ledgerBalances[asset] = balanceR.Hive
-			} else if asset == "hbd_savings" {
-				ledgerBalances[asset] = balanceR.HBD_SAVINGS
-			} else if asset == "hive_consensus" {
-				ledgerBalances[asset] = balanceR.HIVE_CONSENSUS
-			} else {
-				ledgerBalances[asset] = 0
-			}
-		}
-		//As of block X or below
-		// se.LedgerExecutor.Ls.log.Debug("GetBalance for account", stBlock, stHeight, endBlock)
-
-		ledgerUpdates, _ := se.LedgerState.LedgerDb.GetLedgerRange(k, stHeight, endBlock, "")
-
-		hasLedgerUpdates := len(*ledgerUpdates) > 0
-
-		//Previous claim record
-		claimRecord := se.claimDb.GetLastClaim(endBlock)
-
-		var hbdAvg = int64(0)
-		var modifyHeight = uint64(0)
-		var claimHeight = uint64(0)
-
-		exists := claimRecord != nil
-		var claimRecordC ledgerDb.ClaimRecord
-		if exists {
-			claimRecordC = *claimRecord
-			modifyHeight = endBlock
+		hasPrev := false
+		if rec, ok := prevBalances[k]; ok {
+			balanceR = rec
+			hasPrev = true
 		}
 
-		needsClaimUpdate := claimRecordC.BlockHeight != balanceR.HBD_CLAIM_HEIGHT
+		ledgerUpdates := ledgerByAccount[k]
+		hasLedgerUpdates := len(ledgerUpdates) > 0
+		needsClaimUpdate := claimRecordBlockHeight != balanceR.HBD_CLAIM_HEIGHT
 
 		//Skip accounts that have no new ledger records AND no pending claim update
 		if !hasLedgerUpdates && !needsClaimUpdate {
 			continue
 		}
 
-		for _, v := range *ledgerUpdates {
+		ledgerBalances := map[string]int64{
+			"hbd":            balanceR.HBD,
+			"hive":           balanceR.Hive,
+			"hbd_savings":    balanceR.HBD_SAVINGS,
+			"hive_consensus": balanceR.HIVE_CONSENSUS,
+		}
+		for _, v := range ledgerUpdates {
 			ledgerBalances[v.Asset] += v.Amount
 		}
 
+		var hbdAvg int64
+		var modifyHeight uint64
+		var claimHeight uint64
 		if needsClaimUpdate {
 			//Need to execute recalculation of the claim
 			hbdAvg = 0
-			claimHeight = claimRecord.BlockHeight
-		} else if prevBalRecord != nil {
-			//There is a previous balance record
+			modifyHeight = endBlock
+			claimHeight = claimRecordBlockHeight
+		} else if hasPrev {
 			//HBD_AVG stores an unnormalized cumulative sum (balance * blocks) since the last claim.
 			//Accumulate the previous balance's contribution for blocks since last modification.
-			A := endBlock - prevBalRecord.HBD_MODIFY_HEIGHT
-			hbdAvg = prevBalRecord.HBD_AVG + prevBalRecord.HBD_SAVINGS*int64(A)
+			A := endBlock - balanceR.HBD_MODIFY_HEIGHT
+			hbdAvg = balanceR.HBD_AVG + balanceR.HBD_SAVINGS*int64(A)
 			modifyHeight = endBlock
-			claimHeight = prevBalRecord.HBD_CLAIM_HEIGHT
+			claimHeight = balanceR.HBD_CLAIM_HEIGHT
 		} else {
 			modifyHeight = endBlock
 			hbdAvg = 0
 		}
 
-		newRecord := ledgerDb.BalanceRecord{
-			Account:        k,
-			BlockHeight:    endBlock,
-			Hive:           ledgerBalances["hive"],
-			HIVE_CONSENSUS: ledgerBalances["hive_consensus"],
-			HBD:            ledgerBalances["hbd"],
-			HBD_SAVINGS:    ledgerBalances["hbd_savings"],
-			HBD_AVG:        hbdAvg,
-		}
-
-		newRecord.HBD_MODIFY_HEIGHT = modifyHeight
-
-		newRecord.HBD_CLAIM_HEIGHT = claimHeight
-
-		se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord)
+		updatedRecords = append(updatedRecords, ledgerDb.BalanceRecord{
+			Account:           k,
+			BlockHeight:       endBlock,
+			Hive:              ledgerBalances["hive"],
+			HIVE_CONSENSUS:    ledgerBalances["hive_consensus"],
+			HBD:               ledgerBalances["hbd"],
+			HBD_SAVINGS:       ledgerBalances["hbd_savings"],
+			HBD_AVG:           hbdAvg,
+			HBD_MODIFY_HEIGHT: modifyHeight,
+			HBD_CLAIM_HEIGHT:  claimHeight,
+		})
 
 		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(
 			se.LedgerState.VirtualLedger[k],
@@ -1511,20 +1558,28 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			},
 		)
 	}
+	se.LedgerState.BalanceDb.BulkUpdateBalanceRecords(ctx, updatedRecords)
 }
 
 func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
+	if len(se.RcMap) == 0 {
+		return
+	}
+
+	accounts := make([]string, 0, len(se.RcMap))
+	for k := range se.RcMap {
+		accounts = append(accounts, k)
+	}
+	prevRecords, _ := se.rcDb.GetRecordsBulk(context.Background(), accounts, blockHeight-1)
+
+	updated := make([]rcDb.RcRecord, 0, len(se.RcMap))
 	for k, v := range se.RcMap {
-		//Get the last rc record
-		rcRecord, _ := se.rcDb.GetRecord(k, blockHeight-1)
-
 		var rcBal int64
-		if rcRecord.BlockHeight == 0 {
-			rcBal = v
-		} else {
-			frozeAmt := rcSystem.CalculateFrozenBal(rcRecord.BlockHeight, blockHeight, rcRecord.Amount)
-
+		if rec, ok := prevRecords[k]; ok && rec.BlockHeight != 0 {
+			frozeAmt := rcSystem.CalculateFrozenBal(rec.BlockHeight, blockHeight, rec.Amount)
 			rcBal = frozeAmt + v
+		} else {
+			rcBal = v
 		}
 
 		// Cap rcBal to the user's actual balance (+ free amount for Hive accounts)
@@ -1540,8 +1595,13 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 			rcBal = 0
 		}
 
-		se.rcDb.SetRecord(k, blockHeight, rcBal)
+		updated = append(updated, rcDb.RcRecord{
+			Account:     k,
+			BlockHeight: blockHeight,
+			Amount:      rcBal,
+		})
 	}
+	se.rcDb.SetRecordsBulk(context.Background(), updated)
 }
 
 // Append a contract output to the output map
@@ -1621,6 +1681,24 @@ func (se *StateEngine) GetContractInfo(id string, height uint64) (contracts.Cont
 	return contractInfo, true
 }
 
+// getElectionByHeightCached returns the election active at the given block height,
+// caching successful results. Caller is responsible for purging the cache via
+// invalidateElectionCache when a new vsc.election_result is processed.
+func (se *StateEngine) getElectionByHeightCached(bh uint64) (elections.ElectionResult, error) {
+	if cached, ok := se.electionCache.Get(bh); ok {
+		return cached.result, cached.err
+	}
+	result, err := se.electionDb.GetElectionByHeight(bh)
+	if err == nil {
+		se.electionCache.Add(bh, electionCacheEntry{result: result})
+	}
+	return result, err
+}
+
+func (se *StateEngine) invalidateElectionCache() {
+	se.electionCache.Purge()
+}
+
 func (se *StateEngine) WasmRuntime() *wasm_runtime.Wasm {
 	return se.wasm
 }
@@ -1641,7 +1719,7 @@ func (se *StateEngine) GetElectionInfo(height ...uint64) elections.ElectionResul
 	} else {
 		heightf = uint64(se.BlockHeight)
 	}
-	electionResult, _ := se.electionDb.GetElectionByHeight(heightf)
+	electionResult, _ := se.getElectionByHeightCached(heightf)
 
 	return electionResult
 }
@@ -1715,6 +1793,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 
 	return &StateEngine{
 		sconf:           sconf,
+		nodeRole:        node_config.FromEnv(),
 		TxOutput:        make(map[string]TxOutput),
 		ContractResults: make(map[string][]ContractResult),
 		TempOutputs:     make(map[string]*contract_session.TempOutput),
@@ -1743,6 +1822,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 
 		contractInfoCache: must(lru.New[string, contractInfoCacheEntry](4096)),
 		codeCache:         must(lru.New[string, []byte](512)),
+		electionCache:     must(lru.New[uint64, electionCacheEntry](256)),
 
 		LedgerSystem: ls,
 		LedgerState:  ledgerState,

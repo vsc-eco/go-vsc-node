@@ -1,6 +1,7 @@
 package test_utils
 
 import (
+	"context"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db/vsc/transactions"
 )
@@ -130,4 +131,37 @@ func (m *MockTxDb) FindUnconfirmedTransactions(height uint64) ([]transactions.Tr
 		}
 	}
 	return results, nil
+}
+
+func (m *MockTxDb) PruneExpiredUnconfirmed(ctx context.Context, currentHeight uint64) (int64, error) {
+	var count int64
+	for id, rec := range m.Records {
+		if rec.Status != transactions.TransactionStatusUnconfirmed {
+			continue
+		}
+		// MockTxDb doesn't track expire_block; treat as never-expired.
+		_ = currentHeight
+		_ = id
+		_ = rec
+	}
+	return count, nil
+}
+
+func (m *MockTxDb) PruneConfirmedOlderThan(ctx context.Context, cutoff uint64) (int64, error) {
+	var count int64
+	for id, rec := range m.Records {
+		switch rec.Status {
+		case transactions.TransactionStatusConfirmed,
+			transactions.TransactionStatusFailed,
+			transactions.TransactionStatusIncluded:
+		default:
+			continue
+		}
+		if rec.AnchoredHeight >= cutoff {
+			continue
+		}
+		delete(m.Records, id)
+		count++
+	}
+	return count, nil
 }

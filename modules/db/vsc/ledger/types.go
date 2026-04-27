@@ -1,6 +1,7 @@
 package ledger_db
 
 import (
+	"context"
 	"vsc-node/modules/aggregate"
 )
 
@@ -9,6 +10,10 @@ type Ledger interface {
 	StoreLedger(...LedgerRecord)
 	GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error)
 	GetLedgerRange(account string, start uint64, end uint64, asset string, options ...LedgerOptions) (*[]LedgerRecord, error)
+	// GetLedgerRangeBulk returns ledger records for multiple accounts at once. Each
+	// account's records cover [perAccountStart[account], end]; records before that
+	// account's individual start are filtered out.
+	GetLedgerRangeBulk(ctx context.Context, perAccountStart map[string]uint64, end uint64, asset string) (map[string][]LedgerRecord, error)
 	GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error)
 	GetRawLedgerRange(account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error)
 	//Gets distinct accounts on or after a block height
@@ -19,7 +24,9 @@ type Ledger interface {
 type Balances interface {
 	aggregate.Plugin
 	GetBalanceRecord(account string, blockHeight uint64) (*BalanceRecord, error)
+	GetBalanceRecordsBulk(ctx context.Context, accounts []string, blockHeight uint64) (map[string]BalanceRecord, error)
 	UpdateBalanceRecord(record BalanceRecord) error
+	BulkUpdateBalanceRecords(ctx context.Context, records []BalanceRecord) error
 	GetAll(blockHeight uint64) []BalanceRecord
 }
 

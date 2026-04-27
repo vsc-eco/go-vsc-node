@@ -1,6 +1,7 @@
 package test_utils
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"vsc-node/modules/aggregate"
@@ -35,6 +36,13 @@ func (m *MockTssKeysDb) FindKey(id string) (tss.TssKey, error) {
 
 func (m *MockTssKeysDb) SetKey(key tss.TssKey) error {
 	m.Keys[key.Id] = key
+	return nil
+}
+
+func (m *MockTssKeysDb) BulkSetKeys(ctx context.Context, keys []tss.TssKey) error {
+	for _, key := range keys {
+		m.Keys[key.Id] = key
+	}
 	return nil
 }
 

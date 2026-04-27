@@ -28,11 +28,14 @@ func (e *transactions) Init() error {
 		return err
 	}
 
-	idx := mongo.IndexModel{
-		Keys: bson.D{{Key: "status", Value: 1}, {Key: "type", Value: 1}, {Key: "expire_block", Value: 1}},
+	indexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "type", Value: 1}, {Key: "expire_block", Value: 1}}},
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "anchr_height", Value: 1}}},
 	}
-	if err := e.CreateIndexIfNotExist(idx); err != nil {
-		return fmt.Errorf("failed to create transaction_pool index: %w", err)
+	for _, idx := range indexes {
+		if err := e.CreateIndexIfNotExist(idx); err != nil {
+			return fmt.Errorf("failed to create transaction_pool index: %w", err)
+		}
 	}
 
 	return nil
@@ -230,6 +233,45 @@ func (e *transactions) HasUnconfirmedWithNonce(requiredAuths []string, nonce uin
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// PruneExpiredUnconfirmed deletes UNCONFIRMED tx records whose expire_block has
+// already passed. The compound index (status, type, expire_block) covers this query.
+func (e *transactions) PruneExpiredUnconfirmed(ctx context.Context, currentHeight uint64) (int64, error) {
+	if currentHeight == 0 {
+		return 0, nil
+	}
+	res, err := e.DeleteMany(ctx, bson.M{
+		"status":       string(TransactionStatusUnconfirmed),
+		"expire_block": bson.M{"$lt": currentHeight},
+	})
+	if err != nil {
+		return 0, err
+	}
+	return res.DeletedCount, nil
+}
+
+// PruneConfirmedOlderThan deletes terminal-state tx records (CONFIRMED, FAILED,
+// INCLUDED) anchored before cutoff. The (status, anchr_height) index covers this
+// query. Caller is responsible for picking a cutoff that respects whatever local
+// query/audit window is desired — by default the witness-node hook uses
+// currentHeight - pruneInterval, keeping at least one prune-interval of history.
+func (e *transactions) PruneConfirmedOlderThan(ctx context.Context, cutoff uint64) (int64, error) {
+	if cutoff == 0 {
+		return 0, nil
+	}
+	res, err := e.DeleteMany(ctx, bson.M{
+		"status": bson.M{"$in": []TransactionStatus{
+			TransactionStatusConfirmed,
+			TransactionStatusFailed,
+			TransactionStatusIncluded,
+		}},
+		"anchr_height": bson.M{"$lt": cutoff},
+	})
+	if err != nil {
+		return 0, err
+	}
+	return res.DeletedCount, nil
 }
 
 // Searches for unconfirmed VSC transactions with no verification

@@ -1,6 +1,7 @@
 package test_utils
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"vsc-node/modules/aggregate"
@@ -37,6 +38,24 @@ func (m *MockBalanceDb) UpdateBalanceRecord(record ledgerDb.BalanceRecord) error
 		m.BalanceRecords[record.Account] = append(m.BalanceRecords[record.Account], record)
 	}
 
+	return nil
+}
+
+func (m *MockBalanceDb) GetBalanceRecordsBulk(ctx context.Context, accounts []string, blockHeight uint64) (map[string]ledgerDb.BalanceRecord, error) {
+	out := make(map[string]ledgerDb.BalanceRecord, len(accounts))
+	for _, account := range accounts {
+		rec, _ := m.GetBalanceRecord(account, blockHeight)
+		if rec != nil {
+			out[account] = *rec
+		}
+	}
+	return out, nil
+}
+
+func (m *MockBalanceDb) BulkUpdateBalanceRecords(ctx context.Context, records []ledgerDb.BalanceRecord) error {
+	for _, rec := range records {
+		m.UpdateBalanceRecord(rec)
+	}
 	return nil
 }
 
@@ -93,6 +112,17 @@ func (m *MockLedgerDb) GetLedgerRange(account string, start uint64, end uint64, 
 	}
 
 	return &filteredResults, nil
+}
+
+func (m *MockLedgerDb) GetLedgerRangeBulk(ctx context.Context, perAccountStart map[string]uint64, end uint64, asset string) (map[string][]ledgerDb.LedgerRecord, error) {
+	out := make(map[string][]ledgerDb.LedgerRecord, len(perAccountStart))
+	for account, start := range perAccountStart {
+		recs, _ := m.GetLedgerRange(account, start, end, asset)
+		if recs != nil && len(*recs) > 0 {
+			out[account] = *recs
+		}
+	}
+	return out, nil
 }
 
 // GraphQL use only, not implemented in mocks

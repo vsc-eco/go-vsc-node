@@ -1,6 +1,7 @@
 package tss_db
 
 import (
+	"context"
 	a "vsc-node/modules/aggregate"
 )
 
@@ -22,6 +23,7 @@ type TssKeys interface {
 	InsertKey(id string, t TssKeyAlgo, epochs uint64) error
 	FindKey(id string) (TssKey, error)
 	SetKey(key TssKey) error
+	BulkSetKeys(ctx context.Context, keys []TssKey) error
 	FindNewKeys(blockHeight uint64) ([]TssKey, error)
 	FindEpochKeys(epoch uint64) ([]TssKey, error)
 	// FindDeprecatingKeys returns active keys whose ExpiryEpoch has been reached.

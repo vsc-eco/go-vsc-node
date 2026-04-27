@@ -8,6 +8,7 @@ import (
 	"vsc-node/modules/db/vsc"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -15,6 +16,24 @@ var log = vsclog.Module("tss")
 
 type tssKeys struct {
 	*db.Collection
+}
+
+func (tssKeys *tssKeys) Init() error {
+	if err := tssKeys.Collection.Init(); err != nil {
+		return err
+	}
+	indexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "id", Value: 1}}},
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "expiry_epoch", Value: 1}}},
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "deprecated_height", Value: 1}}},
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "epoch", Value: 1}}},
+	}
+	for _, idx := range indexes {
+		if err := tssKeys.CreateIndexIfNotExist(idx); err != nil {
+			return fmt.Errorf("failed to create tss_keys index: %w", err)
+		}
+	}
+	return nil
 }
 
 func (tssKeys *tssKeys) InsertKey(id string, t TssKeyAlgo, epochs uint64) error {
@@ -74,6 +93,32 @@ func (tssKeys *tssKeys) SetKey(key TssKey) error {
 		log.Verbose("SetKey OK", "keyId", key.Id, "status", key.Status, "epoch", key.Epoch)
 	}
 	return dbErr
+}
+
+// BulkSetKeys updates multiple keys in a single round-trip. Each key is matched on
+// {id} and the same fields as SetKey are $set.
+func (tssKeys *tssKeys) BulkSetKeys(ctx context.Context, keys []TssKey) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, 0, len(keys))
+	for _, key := range keys {
+		models = append(models, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"id": key.Id}).
+			SetUpdate(bson.M{"$set": bson.M{
+				"status":            key.Status,
+				"public_key":        key.PublicKey,
+				"epoch":             key.Epoch,
+				"created_height":    key.CreatedHeight,
+				"expiry_epoch":      key.ExpiryEpoch,
+				"deprecated_height": key.DeprecatedHeight,
+			}}))
+	}
+	_, err := tssKeys.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
+	if err != nil {
+		log.Warn("BulkSetKeys failed", "count", len(keys), "err", err)
+	}
+	return err
 }
 
 // FindDeprecatingKeys returns active keys whose ExpiryEpoch has been reached (and ExpiryEpoch > 0).

@@ -16,6 +16,22 @@ type tssRequests struct {
 	*db.Collection
 }
 
+func (tssReq *tssRequests) Init() error {
+	if err := tssReq.Collection.Init(); err != nil {
+		return err
+	}
+	indexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "key_id", Value: 1}, {Key: "msg", Value: 1}}},
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "key_id", Value: 1}}},
+	}
+	for _, idx := range indexes {
+		if err := tssReq.CreateIndexIfNotExist(idx); err != nil {
+			return fmt.Errorf("failed to create tss_requests index: %w", err)
+		}
+	}
+	return nil
+}
+
 // FindRequests implements TssRequests.
 // To get all msgHex associated with keyID, pass in nil for msgHex, or empty slice.
 // Returns only the matching hex, if no matching element, nil value is returned.

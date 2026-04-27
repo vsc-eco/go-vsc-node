@@ -131,6 +131,22 @@ type contractState struct {
 	*db.Collection
 }
 
+func (ch *contractState) Init() error {
+	if err := ch.Collection.Init(); err != nil {
+		return err
+	}
+	indexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "contract_id", Value: 1}, {Key: "block_height", Value: -1}}},
+		{Keys: bson.D{{Key: "id", Value: 1}}},
+	}
+	for _, idx := range indexes {
+		if err := ch.CreateIndexIfNotExist(idx); err != nil {
+			return fmt.Errorf("failed to create contract_state index: %w", err)
+		}
+	}
+	return nil
+}
+
 func (ch *contractState) IngestOutput(output IngestOutputArgs) {
 	options := options.FindOneAndUpdate().SetUpsert(true)
 	ch.FindOneAndUpdate(context.Background(), bson.M{"id": output.Id}, bson.M{

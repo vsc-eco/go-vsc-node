@@ -1,6 +1,9 @@
 package transactions
 
-import a "vsc-node/modules/aggregate"
+import (
+	"context"
+	a "vsc-node/modules/aggregate"
+)
 
 type Transactions interface {
 	a.Plugin
@@ -11,4 +14,13 @@ type Transactions interface {
 	FindUnconfirmedTransactions(height uint64) ([]TransactionRecord, error)
 	InvalidateCompetingTransactions(requiredAuths []string, nonces []uint64) (int64, error)
 	HasUnconfirmedWithNonce(requiredAuths []string, nonce uint64) (bool, error)
+	// PruneExpiredUnconfirmed deletes UNCONFIRMED transactions whose expire_block has
+	// already passed. FindUnconfirmedTransactions filters them out anyway, so deletion
+	// is invisible to active reads. Local-only optimization.
+	PruneExpiredUnconfirmed(ctx context.Context, currentHeight uint64) (int64, error)
+	// PruneConfirmedOlderThan deletes terminal-state transaction records (CONFIRMED,
+	// FAILED, INCLUDED) whose anchr_height < cutoff. Witness-only: full and archive
+	// nodes serve historical tx queries via GraphQL. State engine and TSS never read
+	// confirmed-tx records.
+	PruneConfirmedOlderThan(ctx context.Context, cutoff uint64) (int64, error)
 }

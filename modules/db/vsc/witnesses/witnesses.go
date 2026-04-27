@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -29,6 +29,15 @@ func (e *witnesses) Init() error {
 		return err
 	}
 
+	indexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "account", Value: 1}, {Key: "height", Value: -1}}},
+		{Keys: bson.D{{Key: "height", Value: 1}}},
+	}
+	for _, idx := range indexes {
+		if err := e.CreateIndexIfNotExist(idx); err != nil {
+			return fmt.Errorf("failed to create witnesses index: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -173,7 +182,9 @@ func (w *witnesses) GetLastestWitnesses(searchOptions ...SearchOption) ([]Witnes
 
 const maxSignedDiff = (3 * 24 * 60 * 20)
 
-// Deterministically sorted (alphetical) list of witnesses at a given block height
+// Deterministically sorted (alphabetical) list of witnesses at a given block height.
+// Single-aggregation pipeline: $match → $sort by height desc → $group keeps first (latest)
+// per account → $replaceRoot → $sort by account asc.
 func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) ([]Witness, error) {
 	ctx := context.Background()
 
@@ -184,74 +195,44 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) (
 		gte = 0
 	}
 
-	distinctAccounts, err := w.Distinct(ctx, "account", bson.M{
+	matchFilter := bson.M{
 		"height": bson.M{
 			"$gte": gte,
 			"$lt":  bh,
 		},
-	})
-
-	if err != nil {
-		return nil, err
 	}
-
-	query := bson.M{
-		"height": bson.M{
-			"$gte": gte,
-			"$lt":  bh,
-		},
-
-		"account": bson.M{"$in": distinctAccounts},
-	}
-
 	for _, opt := range opts {
-		opt(&query)
+		if err := opt(&matchFilter); err != nil {
+			return nil, err
+		}
 	}
 
-	findOptions := options.Find().SetSort(bson.D{{
-		Key:   "height",
-		Value: -1,
-	}})
-	cursor, err := w.Find(ctx, query, findOptions)
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: matchFilter}},
+		{{Key: "$sort", Value: bson.D{{Key: "height", Value: -1}}}},
+		{{Key: "$group", Value: bson.M{
+			"_id": "$account",
+			"doc": bson.M{"$first": "$$ROOT"},
+		}}},
+		{{Key: "$replaceRoot", Value: bson.M{"newRoot": "$doc"}}},
+		{{Key: "$sort", Value: bson.D{{Key: "account", Value: 1}}}},
+	}
+
+	cursor, err := w.Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, err
 	}
+	defer cursor.Close(ctx)
 
-	var witnesses []Witness
+	out := make([]Witness, 0)
 	for cursor.Next(ctx) {
 		var result Witness
 		if err := cursor.Decode(&result); err != nil {
 			return nil, fmt.Errorf("failed to decode witness: %w", err)
 		}
-		witnesses = append(witnesses, result)
+		out = append(out, result)
 	}
-
-	//TODO: add filtering options equivalent to the old VSC network
-
-	witnessMap := make(map[string]*Witness)
-
-	for _, witness := range witnesses {
-		if witnessMap[witness.Account] == nil {
-			witnessMap[witness.Account] = &witness
-		}
-	}
-
-	outNames := make([]string, 0)
-	for _, witness := range witnessMap {
-		outNames = append(outNames, witness.Account)
-	}
-
-	sort.Strings(outNames)
-
-	outWit := make([]Witness, 0)
-	for _, name := range outNames {
-		if witnessMap[name] == nil {
-			return nil, fmt.Errorf("witness not found")
-		}
-		outWit = append(outWit, *witnessMap[name])
-	}
-
-	return outWit, nil
+	return out, nil
 }
 
 func (w *witnesses) GetWitnessesByPeerId(PeerIds []string, options ...SearchOption) ([]Witness, error) {

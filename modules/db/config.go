@@ -29,7 +29,7 @@ func NewDbConfig(dataDir ...string) DbConfig {
 	}
 
 	return &dbConfigStruct{config.New(dbConfig{
-		DbURI:  "mongodb://localhost:27017",
+		DbURI:  "mongodb://localhost:27017/?replicaSet=rs0&retryWrites=true",
 		DbName: DefaultDbName,
 	}, dataDirPtr)}
 }

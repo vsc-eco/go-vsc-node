@@ -31,16 +31,30 @@ func (n *nonceDb) GetNonce(account string) (NonceRecord, error) {
 func (n *nonceDb) SetNonce(account string, nonce uint64) error {
 
 	options := options.FindOneAndUpdate().SetUpsert(true)
-	singleResult := n.FindOneAndUpdate(context.Background(), bson.M{
+	n.FindOneAndUpdate(context.Background(), bson.M{
 		"account": account,
 	}, bson.M{
 		"$set": bson.M{
 			"nonce": nonce,
 		},
 	}, options)
-	fmt.Println(singleResult)
 
 	return nil
+}
+
+func (n *nonceDb) BulkSetNonces(ctx context.Context, updates map[string]uint64) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, 0, len(updates))
+	for account, nonce := range updates {
+		models = append(models, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"account": account}).
+			SetUpdate(bson.M{"$set": bson.M{"nonce": nonce}}).
+			SetUpsert(true))
+	}
+	_, err := n.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
+	return err
 }
 
 func (n *nonceDb) Init() error {
@@ -50,16 +64,12 @@ func (n *nonceDb) Init() error {
 	}
 
 	indexModel := mongo.IndexModel{
-		Keys:    bson.D{{Key: "account", Value: 1}}, // ascending order
-		Options: options.Index().SetUnique(true),    // not unique
+		Keys:    bson.D{{Key: "account", Value: 1}},
+		Options: options.Index().SetUnique(true),
 	}
-	n.Collection.Collection.Indexes().CreateOne(context.Background(), indexModel)
-
-	// // create index on block.block_number for faster queries
-	// err = createIndexIfNotExist(n.Collection.Collection, indexModel)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to create index: %w", err)
-	// }
+	if err := n.CreateIndexIfNotExist(indexModel); err != nil {
+		return fmt.Errorf("failed to create nonces index: %w", err)
+	}
 
 	return nil
 }

@@ -80,7 +80,7 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 				renewable := err == nil && tssOp.Epochs > 0 &&
 					(key.Status == tss_db.TssKeyActive || key.Status == tss_db.TssKeyDeprecated)
 				if renewable {
-					electionData, elecErr := se.electionDb.GetElectionByHeight(txSelf.BlockHeight)
+					electionData, elecErr := se.getElectionByHeightCached(txSelf.BlockHeight)
 					if elecErr == nil {
 						maxExpiry := electionData.Epoch + tss_db.MaxKeyEpochs
 						// base on current epoch so you can't renew infinitely into the future
@@ -190,7 +190,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 		}
 	}
 
-	election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
+	election, err := se.getElectionByHeightCached(tx.Self.BlockHeight)
 
 	if err != nil {
 		return TxResult{
@@ -370,7 +370,7 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 				Err:     "runtime name is invalid",
 			}
 		}
-		election, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
+		election, err := se.getElectionByHeightCached(tx.Self.BlockHeight)
 		if err != nil {
 			return UpdateContractResult{
 				Success: false,
@@ -445,6 +445,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 
 			//Store
 			se.electionDb.StoreElection(elecResult)
+			se.invalidateElectionCache()
 		}
 	} else {
 		//Validate normally
@@ -559,6 +560,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			json.Unmarshal(bbytes, &elecResult)
 
 			se.electionDb.StoreElection(elecResult)
+			se.invalidateElectionCache()
 			fmt.Println("Indexed Election", tx.Epoch)
 		} else {
 			fmt.Println("Election Failed verification")
@@ -597,7 +599,7 @@ func (tx *TxProposeBlock) TxSelf() TxSelf {
 }
 
 func (t *TxProposeBlock) Validate(se *StateEngine) bool {
-	elecResult, err := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
+	elecResult, err := se.getElectionByHeightCached(t.Self.BlockHeight)
 	if err != nil {
 		//Cannot process block due to missing election
 		return false
@@ -779,8 +781,12 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		}
 	}
 
-	for k, v := range nonceUpdates {
-		se.nonceDb.SetNonce(k, v+1)
+	if len(nonceUpdates) > 0 {
+		bumped := make(map[string]uint64, len(nonceUpdates))
+		for k, v := range nonceUpdates {
+			bumped[k] = v + 1
+		}
+		se.nonceDb.BulkSetNonces(context.Background(), bumped)
 	}
 
 	for _, info := range confirmedNonces {
