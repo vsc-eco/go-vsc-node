@@ -2,6 +2,7 @@ package chain
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/chebyrash/promise"
@@ -88,7 +89,7 @@ func TestFetchChainStatus_BootstrapWhenContractHeightZero(t *testing.T) {
 	assert.Equal(t, uint64(10745000), session.chainData[0].BlockHeight(), "first block should be tip")
 }
 
-func TestFetchChainStatus_BootstrapChainTooShort(t *testing.T) {
+func TestFetchChainStatus_BootstrapEmptyChainSkips(t *testing.T) {
 	logger := vsclog.Module("test")
 
 	oracle := &ChainOracle{
@@ -108,10 +109,10 @@ func TestFetchChainStatus_BootstrapChainTooShort(t *testing.T) {
 
 	session, err := oracle.fetchChainStatus(chain)
 	require.NoError(t, err)
-	assert.False(t, session.newBlocksToSubmit, "chain too short, should not submit")
+	assert.False(t, session.newBlocksToSubmit, "no blocks on chain yet, nothing to submit")
 }
 
-func TestFetchChainStatus_BootstrapExactlyAtLookback(t *testing.T) {
+func TestFetchChainStatus_BootstrapShortChainStartsAtGenesis(t *testing.T) {
 	logger := vsclog.Module("test")
 
 	oracle := &ChainOracle{
@@ -131,5 +132,30 @@ func TestFetchChainStatus_BootstrapExactlyAtLookback(t *testing.T) {
 
 	session, err := oracle.fetchChainStatus(chain)
 	require.NoError(t, err)
-	assert.False(t, session.newBlocksToSubmit, "tip exactly at lookback, should not submit")
+	assert.True(t, session.newBlocksToSubmit, "should bootstrap from genesis on a short chain")
+	assert.Len(t, session.chainData, 1, "should fetch the only block")
+	assert.Equal(t, uint64(1), session.chainData[0].BlockHeight(), "first block should be genesis (height 1)")
+}
+
+func TestFetchChainStatus_BootstrapTransientErrorWaits(t *testing.T) {
+	logger := vsclog.Module("test")
+
+	oracle := &ChainOracle{
+		ctx:    context.Background(),
+		logger: logger,
+		contractState: &mockContractState{
+			output: contracts.ContractOutput{},
+			err:    errors.New("simulated DB outage"),
+		},
+	}
+
+	chain := &mockChainRelay{
+		symbol:     "ETH",
+		contractId: "vsc1TestContract",
+		tipHeight:  10745000,
+	}
+
+	session, err := oracle.fetchChainStatus(chain)
+	require.NoError(t, err)
+	assert.False(t, session.newBlocksToSubmit, "transient read error should wait, not bootstrap")
 }
