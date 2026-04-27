@@ -39,6 +39,8 @@ func Resolve(chainName, network string, httpClient *http.Client) (*ChainConfig, 
 			return NewDASHMainnet(httpClient), nil
 		case "testnet":
 			return NewDASHTestnet(httpClient), nil
+		case "regtest":
+			return NewDASHRegtest(httpClient), nil
 		}
 	case "doge":
 		switch network {
