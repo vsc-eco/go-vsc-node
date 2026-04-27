@@ -363,23 +363,32 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 
 	contractHeight, err := c.getContractBlockHeight(contractId)
 	if err != nil || contractHeight == 0 {
-		// Contract state unavailable (new contract, stale CID, data layer
-		// unreachable). Start from near the chain tip so the first addBlocks
-		// creates a fresh state CID that all nodes can resolve.
-		const bootstrapLookback = 5
-		if latestChainState.blockHeight <= bootstrapLookback {
-			c.logger.Debug("chain too short for bootstrap, waiting",
-				"symbol", chain.Symbol())
-			return chainSession{newBlocksToSubmit: false}, nil
+		if chain.Symbol() == "ETH" {
+			const bootstrapLookback = 1
+			if latestChainState.blockHeight <= bootstrapLookback {
+				c.logger.Debug("chain too short for bootstrap, waiting",
+					"symbol", chain.Symbol())
+				return chainSession{newBlocksToSubmit: false}, nil
+			}
+			contractHeight = latestChainState.blockHeight - bootstrapLookback
+			c.logger.Info("contract state unavailable, bootstrapping from near chain tip",
+				"symbol", chain.Symbol(),
+				"contractId", contractId,
+				"startHeight", contractHeight+1,
+				"chainTip", latestChainState.blockHeight,
+				"err", err,
+			)
+		} else {
+			c.logger.Debug("failed to get contract state, waiting",
+				"symbol", chain.Symbol(),
+				"contractId", contractId,
+				"fallbackHeight", contractHeight,
+				"err", err,
+			)
+			return chainSession{
+				newBlocksToSubmit: false,
+			}, nil
 		}
-		contractHeight = latestChainState.blockHeight - bootstrapLookback
-		c.logger.Info("contract state unavailable, bootstrapping from near chain tip",
-			"symbol", chain.Symbol(),
-			"contractId", contractId,
-			"startHeight", contractHeight+1,
-			"chainTip", latestChainState.blockHeight,
-			"err", err,
-		)
 	}
 
 	if latestChainState.blockHeight <= contractHeight {
@@ -418,7 +427,12 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 		}
 	}
 
-	chainData, err := chain.ChainData(c.ctx, contractHeight+1, 50, latestChainState.blockHeight)
+	var chainData []chainBlock
+	if chain.Symbol() == "ETH" {
+		chainData, err = chain.ChainData(c.ctx, contractHeight+1, 35, latestChainState.blockHeight)
+	} else {
+		chainData, err = chain.ChainData(c.ctx, contractHeight+1, 50, latestChainState.blockHeight)
+	}
 	if err != nil {
 		return chainSession{}, fmt.Errorf("failed to get chain data: %w", err)
 	}
