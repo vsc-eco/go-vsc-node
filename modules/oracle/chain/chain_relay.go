@@ -363,18 +363,23 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 
 	contractHeight, err := c.getContractBlockHeight(contractId)
 	if err != nil || contractHeight == 0 {
-		// When contract state is unavailable (e.g. new or dummy contract),
-		// start from near the chain tip instead of block 0 to avoid
-		// requesting pruned blocks.
-		c.logger.Debug("failed to get contract state, waiting",
+		// Contract state unavailable (new contract, stale CID, data layer
+		// unreachable). Start from near the chain tip so the first addBlocks
+		// creates a fresh state CID that all nodes can resolve.
+		const bootstrapLookback = 5
+		if latestChainState.blockHeight <= bootstrapLookback {
+			c.logger.Debug("chain too short for bootstrap, waiting",
+				"symbol", chain.Symbol())
+			return chainSession{newBlocksToSubmit: false}, nil
+		}
+		contractHeight = latestChainState.blockHeight - bootstrapLookback
+		c.logger.Info("contract state unavailable, bootstrapping from near chain tip",
 			"symbol", chain.Symbol(),
 			"contractId", contractId,
-			"fallbackHeight", contractHeight,
+			"startHeight", contractHeight+1,
+			"chainTip", latestChainState.blockHeight,
 			"err", err,
 		)
-		return chainSession{
-			newBlocksToSubmit: false,
-		}, nil
 	}
 
 	if latestChainState.blockHeight <= contractHeight {
