@@ -84,9 +84,8 @@ func TestFetchChainStatus_BootstrapWhenContractHeightZero(t *testing.T) {
 	assert.True(t, session.newBlocksToSubmit, "should have blocks to submit after bootstrap")
 	assert.Equal(t, "ETH", session.symbol)
 	assert.Equal(t, "vsc1TestContract", session.contractId)
-	assert.Len(t, session.chainData, 5, "should fetch bootstrapLookback=5 blocks")
-	assert.Equal(t, uint64(10744996), session.chainData[0].BlockHeight(), "first block should be tip-4")
-	assert.Equal(t, uint64(10745000), session.chainData[4].BlockHeight(), "last block should be tip")
+	assert.Len(t, session.chainData, 1, "should fetch bootstrapLookback=1 block")
+	assert.Equal(t, uint64(10745000), session.chainData[0].BlockHeight(), "first block should be tip")
 }
 
 func TestFetchChainStatus_BootstrapChainTooShort(t *testing.T) {
@@ -104,7 +103,7 @@ func TestFetchChainStatus_BootstrapChainTooShort(t *testing.T) {
 	chain := &mockChainRelay{
 		symbol:     "ETH",
 		contractId: "vsc1TestContract",
-		tipHeight:  3,
+		tipHeight:  0,
 	}
 
 	session, err := oracle.fetchChainStatus(chain)
@@ -127,7 +126,7 @@ func TestFetchChainStatus_BootstrapExactlyAtLookback(t *testing.T) {
 	chain := &mockChainRelay{
 		symbol:     "ETH",
 		contractId: "vsc1TestContract",
-		tipHeight:  5,
+		tipHeight:  1,
 	}
 
 	session, err := oracle.fetchChainStatus(chain)
