@@ -1448,8 +1448,8 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 		cfg:    cfg,
 	}
 
-	// TSS key ID follows the UTXO bot's pattern: "{contractId}-main"
-	tssKeyID := cfg.ContractID + "-main"
+	// EVM contract creates key with ID "primary" (BTC contract uses "main")
+	tssKeyID := cfg.ContractID + "-primary"
 
 	slog.Info("loaded checkpoint", "lastBlock", cp.LastScannedBlock, "pendingTxs", len(cp.SentWithdrawals))
 
@@ -1704,7 +1704,36 @@ func handleWithdrawals(
 		}
 		txHash, err = rpc.broadcastTx(signedTxHex)
 		if err != nil {
-			slog.Error("broadcast failed with both v values", "err", err)
+			slog.Warn("broadcast failed with both v values, checking if already mined", "err", err)
+			for _, tryV := range []byte{0, 1} {
+				candidate, aErr := attachSignatureToTx(ps.UnsignedTxHex, tryV, r, s)
+				if aErr != nil {
+					continue
+				}
+				candidateBytes, _ := hex.DecodeString(candidate)
+				candidateHash := fmt.Sprintf("0x%x", keccak256(candidateBytes))
+				receiptData, rErr := rpc.getReceipt(candidateHash)
+				if rErr != nil || receiptData == nil {
+					continue
+				}
+				var receipt struct {
+					Status string `json:"status"`
+				}
+				if json.Unmarshal(receiptData, &receipt) != nil || receipt.Status == "" {
+					continue
+				}
+				slog.Info("withdrawal TX already mined on chain, recovering",
+					"txHash", candidateHash, "status", receipt.Status, "nonce", confirmedNonce)
+				cp.mu.Lock()
+				cp.SentWithdrawals[nonceKey] = SentTx{
+					SignedTxHex: candidate,
+					TxHash:     candidateHash,
+					Nonce:      confirmedNonce,
+					SentAt:     time.Now().Unix(),
+				}
+				cp.mu.Unlock()
+				return
+			}
 			return
 		}
 	}
@@ -1866,32 +1895,26 @@ func buildMapPayloadFromRPC(ctx context.Context, rpc *ethRPC, dep detectedDeposi
 		return nil
 	}
 
-	allReceipts := make([]receiptForProof, len(block.Transactions))
+	rawTxs := make([][]byte, len(block.Transactions))
 	for i, hash := range block.Transactions {
-		rData, err := rpc.getReceipt(hash)
+		rData, err := rpc.call("eth_getRawTransactionByHash", fmt.Sprintf(`"%s"`, hash))
 		if err != nil {
-			slog.Error("fetch receipt for proof", "block", blockHeight, "tx", i, "err", err)
+			slog.Error("fetch raw tx for proof", "block", blockHeight, "tx", i, "err", err)
 			return nil
 		}
-		if err := json.Unmarshal(rData, &allReceipts[i]); err != nil {
-			slog.Error("parse receipt for proof", "block", blockHeight, "tx", i, "err", err)
-			return nil
-		}
+		var rawHex string
+		json.Unmarshal(rData, &rawHex)
+		rawTxs[i] = hexToBytes(rawHex)
 	}
 
-	encodedReceipts := make([][]byte, len(allReceipts))
-	for i := range allReceipts {
-		encodedReceipts[i] = encodeReceiptRLP(&allReceipts[i])
-	}
-
-	keys := make([][]byte, len(encodedReceipts))
+	keys := make([][]byte, len(rawTxs))
 	for i := range keys {
 		keys[i] = rlpEncodeUint64(uint64(i))
 	}
 
-	_, proofNodes, targetRLP := buildMPTProof(keys, encodedReceipts, dep.TxIndex)
+	_, proofNodes, targetRLP := buildMPTProof(keys, rawTxs, dep.TxIndex)
 	if proofNodes == nil {
-		slog.Error("proof construction failed", "block", blockHeight, "txIndex", dep.TxIndex, "receiptCount", len(encodedReceipts))
+		slog.Error("proof construction failed", "block", blockHeight, "txIndex", dep.TxIndex, "txCount", len(rawTxs))
 		return nil
 	}
 
