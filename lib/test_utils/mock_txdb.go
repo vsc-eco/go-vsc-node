@@ -42,6 +42,9 @@ func (m *MockTxDb) SetOutput(sOut transactions.SetResultUpdate) {
 	if sOut.Output != nil {
 		rec.Output = append(rec.Output, *sOut.Output)
 	}
+	if sOut.RcUsed != nil {
+		rec.RcUsed = *sOut.RcUsed
+	}
 	m.Records[sOut.Id] = rec
 }
 

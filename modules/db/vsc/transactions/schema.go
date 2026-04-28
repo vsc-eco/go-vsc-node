@@ -28,6 +28,7 @@ type SetResultUpdate struct {
 	Ledger *[]ledgerSystem.OpLogEvent
 	Status *TransactionStatus
 	Output *TransactionOutput
+	RcUsed *int64
 }
 
 type TransactionStatus string
@@ -61,6 +62,7 @@ type TransactionRecord struct {
 	Nonce                int64    `json:"nonce" bson:"nonce"`
 
 	RcLimit uint64 `json:"rc_limit" bson:"rc_limit"`
+	RcUsed  int64  `json:"rc_used" bson:"rc_used"`
 
 	//VSC or Hive
 	// TxId    string                 `json:"tx_id,omitempty" bson:"tx_id,omitempty"`

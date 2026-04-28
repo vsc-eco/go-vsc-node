@@ -77,6 +77,8 @@ type TransactionRecord {
   nonce: Uint64!
   """Maximum resource credits the sender is willing to spend."""
   rc_limit: Uint64!
+  """Resource credits actually consumed by execution. Null while UNCONFIRMED."""
+  rc_used: Int64
   """Accounts whose active key authority is required to sign this transaction."""
   required_auths: [String!]
   """Accounts whose posting key authority is required to sign this transaction."""

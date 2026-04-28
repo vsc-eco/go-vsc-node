@@ -826,6 +826,15 @@ func (r *transactionRecordResolver) RcLimit(ctx context.Context, obj *transactio
 	return model.Uint64(obj.RcLimit), nil
 }
 
+// RcUsed is the resolver for the rc_used field.
+func (r *transactionRecordResolver) RcUsed(ctx context.Context, obj *transactions.TransactionRecord) (*model.Int64, error) {
+	if obj.RcUsed == 0 {
+		return nil, nil
+	}
+	v := model.Int64(obj.RcUsed)
+	return &v, nil
+}
+
 // LedgerActions is the resolver for the ledger_actions field.
 func (r *transactionRecordResolver) LedgerActions(ctx context.Context, obj *transactions.TransactionRecord) ([]*LedgerAction, error) {
 	lrs, err := r.Actions.GetActionsByTxId(obj.Id)

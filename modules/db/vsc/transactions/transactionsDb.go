@@ -107,6 +107,9 @@ func (e *transactions) SetOutput(sOut SetResultUpdate) {
 	if sOut.Status != nil {
 		update["status"] = sOut.Status
 	}
+	if sOut.RcUsed != nil {
+		update["rc_used"] = *sOut.RcUsed
+	}
 
 	e.UpdateOne(ctx, query, bson.M{
 		"$set":  update,

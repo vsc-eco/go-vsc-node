@@ -1263,6 +1263,7 @@ func (se *StateEngine) ExecuteBatch() {
 
 		outputs := make([]ContractIdResult, 0)
 		ok := true
+		var txRcUsed int64
 		for idx, vscTx := range tx.Ops {
 			fmt.Println("Execute tx.bh", vscTx.TxSelf().BlockHeight)
 
@@ -1325,6 +1326,7 @@ func (se *StateEngine) ExecuteBatch() {
 
 			rcUsed := se.RcMap[payer] // don't crash if payer is not in RC map
 			se.RcMap[payer] = rcUsed + result.RcUsed
+			txRcUsed += result.RcUsed
 
 			if vscTx.Type() == "call" {
 				txId := MakeTxId(tx.TxId, idx)
@@ -1411,8 +1413,16 @@ func (se *StateEngine) ExecuteBatch() {
 		se.TxOutput[tx.TxId] = TxOutput{
 			Ok:        ok,
 			LedgerIds: ledgerIds,
+			RcUsed:    txRcUsed,
 		}
 		se.TxOutIds = append(se.TxOutIds, tx.TxId)
+
+		if txRcUsed > 0 {
+			se.txDb.SetOutput(transactions.SetResultUpdate{
+				Id:     tx.TxId,
+				RcUsed: &txRcUsed,
+			})
+		}
 	}
 
 	se.TxBatch = make([]TxPacket, 0)
