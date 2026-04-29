@@ -736,3 +736,99 @@ func TestOplogIngest(t *testing.T) {
 	// This is expected behavior — GetBalance only accounts for deposits and unstakes on top of snapshots.
 	t.Logf("alice balance after ingest: %d, bob balance: %d", aliceBal, bobBal)
 }
+
+func TestPendulumLedgerOps(t *testing.T) {
+	ls, state := newLedgerEnv()
+
+	t.Run("accrue writes pool bucket deterministically", func(t *testing.T) {
+		result := ls.PendulumAccrue("pool-a", "hive", 25, "pendulum-accrue-1", 100)
+		require.True(t, result.Ok)
+
+		// second call with same key should be idempotent-upsert, not fail
+		dup := ls.PendulumAccrue("pool-a", "hive", 25, "pendulum-accrue-1", 100)
+		require.True(t, dup.Ok)
+
+		records, err := state.LedgerDb.GetLedgerRange("pendulum:pool:pool-a:HIVE", 0, 1000, "hive")
+		require.NoError(t, err)
+		require.NotEmpty(t, *records)
+		last := (*records)[len(*records)-1]
+		assert.Equal(t, int64(25), last.Amount)
+		assert.Equal(t, "pendulum_accrue", last.Type)
+	})
+
+	t.Run("convert debits pool bucket and credits global hbd bucket", func(t *testing.T) {
+		result := ls.PendulumConvert("pool-a", "hive", 10, 7, "pendulum-convert-1", 101)
+		require.True(t, result.Ok)
+
+		poolRecs, err := state.LedgerDb.GetLedgerRange("pendulum:pool:pool-a:HIVE", 0, 1000, "hive")
+		require.NoError(t, err)
+		var foundDebit bool
+		for _, rec := range *poolRecs {
+			if rec.Type == "pendulum_convert" && rec.Amount == -10 {
+				foundDebit = true
+			}
+		}
+		assert.True(t, foundDebit, "expected native debit from pool bucket")
+
+		globalRecs, err := state.LedgerDb.GetLedgerRange("pendulum:global:HBD_R", 0, 1000, "hbd")
+		require.NoError(t, err)
+		var foundCredit bool
+		for _, rec := range *globalRecs {
+			if rec.Type == "pendulum_convert" && rec.Amount == 7 {
+				foundCredit = true
+			}
+		}
+		assert.True(t, foundCredit, "expected HBD credit to global bucket")
+	})
+
+	t.Run("distribute debits global and credits destination", func(t *testing.T) {
+		result := ls.PendulumDistribute("hive:node1", 3, "pendulum-distribute-1", 102)
+		require.True(t, result.Ok)
+
+		globalRecs, err := state.LedgerDb.GetLedgerRange("pendulum:global:HBD_R", 0, 1000, "hbd")
+		require.NoError(t, err)
+		var foundGlobalDebit bool
+		for _, rec := range *globalRecs {
+			if rec.Type == "pendulum_distribute" && rec.Amount == -3 {
+				foundGlobalDebit = true
+			}
+		}
+		assert.True(t, foundGlobalDebit)
+
+		nodeRecs, err := state.LedgerDb.GetLedgerRange("hive:node1", 0, 1000, "hbd")
+		require.NoError(t, err)
+		require.NotEmpty(t, *nodeRecs)
+		assert.Equal(t, int64(3), (*nodeRecs)[0].Amount)
+		assert.Equal(t, "pendulum_distribute", (*nodeRecs)[0].Type)
+	})
+
+	t.Run("distribute fails on insufficient global bucket balance", func(t *testing.T) {
+		result := ls.PendulumDistribute("hive:node2", 999999, "pendulum-distribute-too-much", 102)
+		require.False(t, result.Ok)
+		assert.Equal(t, "insufficient pendulum global balance", result.Msg)
+	})
+
+	t.Run("shared tx id across different distribution destinations is allowed", func(t *testing.T) {
+		r1 := ls.PendulumDistribute("hive:nodeA", 2, "pendulum-distribute-shared", 103)
+		r2 := ls.PendulumDistribute("hive:nodeB", 1, "pendulum-distribute-shared", 103)
+		require.True(t, r1.Ok)
+		require.True(t, r2.Ok)
+	})
+
+	t.Run("redirect bucket accrual", func(t *testing.T) {
+		res := ls.PendulumAccrueRedirect(9, "pendulum-redirect-1", 104)
+		require.True(t, res.Ok)
+		recs, err := state.LedgerDb.GetLedgerRange("pendulum:redirect:HBD", 0, 1000, "hbd")
+		require.NoError(t, err)
+		require.NotEmpty(t, *recs)
+		last := (*recs)[len(*recs)-1]
+		assert.Equal(t, int64(9), last.Amount)
+		assert.Equal(t, "pendulum_redirect_accrue", last.Type)
+	})
+
+	t.Run("pendulum bucket balance includes convert and distribute effects", func(t *testing.T) {
+		// Existing flow did +7 (convert), then -3, -2, -1 distributions => net +1.
+		bal := ls.PendulumBucketBalance("pendulum:global:HBD_R", 200)
+		assert.Equal(t, int64(1), bal)
+	})
+}
