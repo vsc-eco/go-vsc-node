@@ -24,6 +24,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/pendulum_oracle"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -105,6 +106,13 @@ type StateEngine struct {
 	// pendulumFeed tracks sole-HIVE witness feed + HBD APR (Magi pendulum oracle); updated from Hive blocks.
 	pendulumFeed   *pendulumoracle.FeedTracker
 	pendulumSettle *pendulumsettlement.Engine
+	// pendulumOracleDb persists the consensus-grade integer snapshot per tick.
+	// Nil-safe: state engines constructed without it (older test harnesses) skip persistence.
+	pendulumOracleDb pendulum_oracle.PendulumOracleSnapshots
+
+	// lastPersistedTickHeight guards against re-saving an unchanged snapshot
+	// every block; we only write when the tracker advances to a new tick.
+	lastPersistedTickHeight uint64
 }
 
 //Transaction
@@ -485,7 +493,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					json.Unmarshal(cj.Json, &parsedTx)
 
 					if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
-						hasFee, feeAmt, feePayer := hasFeePaymentOp(tx.Operations, params.CONTRACT_DEPLOYMENT_FEE, "hbd")
+						hasFee, feeAmt, feePayer := hasFeePaymentOp(
+							tx.Operations,
+							params.CONTRACT_DEPLOYMENT_FEE,
+							"hbd",
+						)
 						if !hasFee {
 							continue
 						}
@@ -1056,6 +1068,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 	if se.pendulumFeed != nil {
 		se.pendulumFeed.TickIfDue(block.BlockNumber)
+		se.persistPendulumSnapshotIfNew()
 	}
 	if se.pendulumSettle != nil {
 		_ = se.pendulumSettle.ProcessBlock(block.BlockNumber)
@@ -1094,6 +1107,44 @@ func executeTxSafely(
 		}
 	}()
 	return vscTx.ExecuteTx(se, ledgerSession, rcSession, callSession, payer)
+}
+
+// persistPendulumSnapshotIfNew writes the current integer-form tick snapshot to
+// pendulum_oracle_snapshots if it represents a tick we haven't persisted yet.
+// All fields are deterministic across nodes (sorted witness aggregation + SQ64
+// arithmetic), so the persisted bson is byte-equal on every replaying node.
+func (se *StateEngine) persistPendulumSnapshotIfNew() {
+	if se == nil || se.pendulumFeed == nil || se.pendulumOracleDb == nil {
+		return
+	}
+	snap := se.pendulumFeed.LastTickInt()
+	if snap.TickBlockHeight == 0 || snap.TickBlockHeight == se.lastPersistedTickHeight {
+		return
+	}
+	rec := pendulum_oracle.SnapshotRecord{
+		TickBlockHeight:     snap.TickBlockHeight,
+		TrustedHiveMean:     int64(snap.TrustedHiveMean),
+		TrustedHiveOK:       snap.TrustedHiveOK,
+		HiveMovingAvg:       int64(snap.HiveMovingAvg),
+		HiveMovingAvgOK:     snap.HiveMovingAvgOK,
+		HBDInterestRateBps:  snap.HBDInterestRateBps,
+		HBDInterestRateOK:   snap.HBDInterestRateOK,
+		TrustedWitnessGroup: snap.TrustedWitnessGroup,
+	}
+	if len(snap.WitnessSlashBps) > 0 {
+		rec.WitnessSlashBps = make([]pendulum_oracle.WitnessSlashRecord, 0, len(snap.WitnessSlashBps))
+		for _, e := range snap.WitnessSlashBps {
+			rec.WitnessSlashBps = append(rec.WitnessSlashBps, pendulum_oracle.WitnessSlashRecord{
+				Witness: e.Witness,
+				Bps:     e.Bps,
+			})
+		}
+	}
+	if err := se.pendulumOracleDb.SaveSnapshot(rec); err != nil {
+		log.Debug("pendulum oracle snapshot persist failed", "tick", snap.TickBlockHeight, "err", err)
+		return
+	}
+	se.lastPersistedTickHeight = snap.TickBlockHeight
 }
 
 func (se *StateEngine) ExecuteBatch() {
@@ -1646,6 +1697,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	tssKeys tss_db.TssKeys,
 	tssCommitments tss_db.TssCommitments,
 	tssRequests tss_db.TssRequests,
+	pendulumOracleDb pendulum_oracle.PendulumOracleSnapshots,
 	wasm *wasm_runtime.Wasm,
 ) *StateEngine {
 
@@ -1704,7 +1756,8 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		LedgerSystem: ls,
 		LedgerState:  ledgerState,
 
-		pendulumFeed: pendulumoracle.NewFeedTracker(),
+		pendulumFeed:     pendulumoracle.NewFeedTracker(),
+		pendulumOracleDb: pendulumOracleDb,
 	}
 
 	se.pendulumSettle = pendulumsettlement.New(
@@ -1723,14 +1776,28 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		},
 		func(info pendulumsettlement.BoundaryInfo) error {
 			// W5 scaffold: deterministic settlement marker + deterministic split/distribution preview.
-			txID := pendulumsettlement.BuildDeterministicSettlementTxID(info.CurrentEpoch, info.PreviousEpoch, info.Leader)
+			txID := pendulumsettlement.BuildDeterministicSettlementTxID(
+				info.CurrentEpoch,
+				info.PreviousEpoch,
+				info.Leader,
+			)
 			bh := info.BlockHeight
 			if bh > 0 {
 				bh = bh - 1
 			}
 			r := se.LedgerSystem.PendulumBucketBalance("pendulum:global:HBD_R", bh)
 			if r <= 0 {
-				log.Debug("pendulum settlement boundary detected (empty R bucket)", "epoch", info.CurrentEpoch, "prev_epoch", info.PreviousEpoch, "tx_id", txID, "leader", info.Leader)
+				log.Debug(
+					"pendulum settlement boundary detected (empty R bucket)",
+					"epoch",
+					info.CurrentEpoch,
+					"prev_epoch",
+					info.PreviousEpoch,
+					"tx_id",
+					txID,
+					"leader",
+					info.Leader,
+				)
 				return nil
 			}
 

@@ -20,19 +20,21 @@ type SystemConfig interface {
 	ConsensusParams() params.ConsensusParams
 	OracleParams() params.OracleParams
 	TssParams() params.TssParams
+	PendulumPoolWhitelist() []string
 	LoadOverrides(path string) error
 }
 
 type config struct {
-	network         string
-	bootstrapPeers  []string
-	netId           string
-	hiveChainId     string
-	gatewayWallet   string
-	startHeight     uint64
-	consensusParams params.ConsensusParams
-	oracleParams    params.OracleParams
-	tssParams       params.TssParams
+	network               string
+	bootstrapPeers        []string
+	netId                 string
+	hiveChainId           string
+	gatewayWallet         string
+	startHeight           uint64
+	consensusParams       params.ConsensusParams
+	oracleParams          params.OracleParams
+	tssParams             params.TssParams
+	pendulumPoolWhitelist []string
 }
 
 func (c *config) OnMainnet() bool {
@@ -78,18 +80,31 @@ func (c *config) TssParams() params.TssParams {
 	return c.tssParams
 }
 
+// PendulumPoolWhitelist returns the per-network list of pool contract IDs that
+// are eligible to participate in the Magi pendulum (CLP fee accrual + LP rewards),
+// in addition to any DAO-owned pools matched by PendulumBolt.EnforceDAOOwnedPools.
+func (c *config) PendulumPoolWhitelist() []string {
+	if len(c.pendulumPoolWhitelist) == 0 {
+		return nil
+	}
+	out := make([]string, len(c.pendulumPoolWhitelist))
+	copy(out, c.pendulumPoolWhitelist)
+	return out
+}
+
 // SysConfigOverrides is the JSON shape for the -sysconfig override file.
 // Only fields present in the JSON are applied; the rest keep their
 // network defaults.
 type SysConfigOverrides struct {
-	BootstrapPeers  []string                `json:"bootstrapPeers,omitempty"`
-	NetId           string                  `json:"netId,omitempty"`
-	HiveChainId     string                  `json:"hiveChainId,omitempty"`
-	GatewayWallet   string                  `json:"gatewayWallet,omitempty"`
-	StartHeight     *uint64                 `json:"startHeight,omitempty"`
-	ConsensusParams *params.ConsensusParams `json:"consensusParams,omitempty"`
-	OracleParams    *params.OracleParams    `json:"oracleParams,omitempty"`
-	TssParams       *params.TssParams       `json:"tssParams,omitempty"`
+	BootstrapPeers        []string                `json:"bootstrapPeers,omitempty"`
+	NetId                 string                  `json:"netId,omitempty"`
+	HiveChainId           string                  `json:"hiveChainId,omitempty"`
+	GatewayWallet         string                  `json:"gatewayWallet,omitempty"`
+	StartHeight           *uint64                 `json:"startHeight,omitempty"`
+	ConsensusParams       *params.ConsensusParams `json:"consensusParams,omitempty"`
+	OracleParams          *params.OracleParams    `json:"oracleParams,omitempty"`
+	TssParams             *params.TssParams       `json:"tssParams,omitempty"`
+	PendulumPoolWhitelist *[]string               `json:"pendulumPoolWhitelist,omitempty"`
 }
 
 func (c *config) LoadOverrides(path string) error {
@@ -101,14 +116,15 @@ func (c *config) LoadOverrides(path string) error {
 	// directly onto the existing config, preserving defaults for
 	// fields not present in the JSON.
 	var raw struct {
-		BootstrapPeers  []string        `json:"bootstrapPeers,omitempty"`
-		NetId           string          `json:"netId,omitempty"`
-		HiveChainId     string          `json:"hiveChainId,omitempty"`
-		GatewayWallet   string          `json:"gatewayWallet,omitempty"`
-		StartHeight     *uint64         `json:"startHeight,omitempty"`
-		ConsensusParams json.RawMessage `json:"consensusParams,omitempty"`
-		OracleParams    json.RawMessage `json:"oracleParams,omitempty"`
-		TssParams       json.RawMessage `json:"tssParams,omitempty"`
+		BootstrapPeers        []string        `json:"bootstrapPeers,omitempty"`
+		NetId                 string          `json:"netId,omitempty"`
+		HiveChainId           string          `json:"hiveChainId,omitempty"`
+		GatewayWallet         string          `json:"gatewayWallet,omitempty"`
+		StartHeight           *uint64         `json:"startHeight,omitempty"`
+		ConsensusParams       json.RawMessage `json:"consensusParams,omitempty"`
+		OracleParams          json.RawMessage `json:"oracleParams,omitempty"`
+		TssParams             json.RawMessage `json:"tssParams,omitempty"`
+		PendulumPoolWhitelist *[]string       `json:"pendulumPoolWhitelist,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("parsing sysconfig overrides: %w", err)
@@ -143,6 +159,9 @@ func (c *config) LoadOverrides(path string) error {
 			return fmt.Errorf("applying tss overrides: %w", err)
 		}
 	}
+	if raw.PendulumPoolWhitelist != nil {
+		c.pendulumPoolWhitelist = append([]string(nil), (*raw.PendulumPoolWhitelist)...)
+	}
 	return nil
 }
 
@@ -175,6 +194,8 @@ func MainnetConfig() SystemConfig {
 			},
 		},
 		tssParams: params.DefaultTssParams,
+		// Mainnet defaults to empty — eligibility falls back to PendulumBolt's DAO-owner check.
+		pendulumPoolWhitelist: nil,
 	}
 	return conf
 }
@@ -207,6 +228,10 @@ func TestnetConfig() SystemConfig {
 			},
 		},
 		tssParams: params.DefaultTssParams,
+		// Populate with deployed pool contract IDs once they exist; operators
+		// can override via -sysconfig pendulumPoolWhitelist. Listed pools bypass
+		// the DAO-owner check in PendulumBolt.
+		pendulumPoolWhitelist: nil,
 	}
 	return conf
 }
@@ -228,6 +253,8 @@ func DevnetConfig() SystemConfig {
 			ElectionDupeFixEpoch: 0,
 		},
 		tssParams: params.DefaultTssParams,
+		// Devnet operators set via -sysconfig pendulumPoolWhitelist on each node.
+		pendulumPoolWhitelist: nil,
 	}
 	return conf
 }
