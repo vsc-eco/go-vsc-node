@@ -22,6 +22,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/pendulum_oracle"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -89,6 +90,7 @@ func main() {
 	tssKeys := tss_db.NewKeys(vscDb)
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
+	pendulumOracleDb := pendulum_oracle.New(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
 	wasm_sdk.Init(sysConfig.OnMainnet())
 	if args.sysconfigPath != "" {
@@ -183,6 +185,7 @@ func main() {
 		tssKeys,
 		tssCommitments,
 		tssRequests,
+		pendulumOracleDb,
 		wasm,
 	)
 
@@ -301,6 +304,7 @@ func main() {
 		tssKeys,
 		tssCommitments,
 		tssRequests,
+		pendulumOracleDb,
 
 		p2p,
 		da,                   //Deps: [p2p]
