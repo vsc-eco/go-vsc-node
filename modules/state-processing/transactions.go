@@ -134,7 +134,9 @@ func (t TxVscCallContract) ExecuteTx(
 		Sender:               caller,
 		Intents:              t.Intents,
 		PendulumOracle:       se.PendulumOracleEnv(),
-	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0)
+	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
+		contract_execution_context.WithPendulumApplier(se.PendulumApplier()),
+	)
 
 	validUtf8 := utf8.Valid(t.Payload)
 	if !validUtf8 {
