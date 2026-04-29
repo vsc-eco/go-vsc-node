@@ -35,7 +35,9 @@ import (
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	tss_helpers "vsc-node/modules/tss/helpers"
+	wasm_context "vsc-node/modules/wasm/context"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
+	pendulumwasm "vsc-node/modules/incentive-pendulum/wasm"
 
 	"github.com/chebyrash/promise"
 	"github.com/eager7/dogd/btcec"
@@ -109,6 +111,9 @@ type StateEngine struct {
 	// pendulumOracleDb persists the consensus-grade integer snapshot per tick.
 	// Nil-safe: state engines constructed without it (older test harnesses) skip persistence.
 	pendulumOracleDb pendulum_oracle.PendulumOracleSnapshots
+	// pendulumApplier is the swap-time SDK method's executor; nil when the
+	// snapshot DB or whitelist isn't wired (e.g. some test harnesses).
+	pendulumApplier wasm_context.PendulumApplier
 
 	// lastPersistedTickHeight guards against re-saving an unchanged snapshot
 	// every block; we only write when the tracker advances to a new tick.
@@ -965,6 +970,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 					}
+				} else if cj.Id == "vsc.pendulum_settlement" {
+					se.handlePendulumSettlement(block, tx, cj, txSelf)
 				}
 				// NOTE: vsc.tss_ready was removed — readiness is now handled
 				// off-chain via BLS-signed gossip attestations in the TSS module.
@@ -1652,6 +1659,15 @@ func (se *StateEngine) PendulumFeedTracker() *pendulumoracle.FeedTracker {
 	return se.pendulumFeed
 }
 
+// PendulumApplier implements common_types.StateEngine. Returns the swap-time
+// applier wired during construction; nil-safe.
+func (se *StateEngine) PendulumApplier() wasm_context.PendulumApplier {
+	if se == nil {
+		return nil
+	}
+	return se.pendulumApplier
+}
+
 // PendulumOracleEnv implements common_types.StateEngine: values merged into wasm contract env (system.get_env).
 func (se *StateEngine) PendulumOracleEnv() map[string]interface{} {
 	if se == nil || se.pendulumFeed == nil {
@@ -1760,6 +1776,15 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		pendulumOracleDb: pendulumOracleDb,
 	}
 
+	if pendulumOracleDb != nil {
+		se.pendulumApplier = pendulumwasm.New(
+			pendulumOracleDb,
+			ls,
+			func() []string { return sconf.PendulumPoolWhitelist() },
+			pendulumwasm.DefaultConfig(),
+		)
+	}
+
 	se.pendulumSettle = pendulumsettlement.New(
 		se.electionDb,
 		"",
@@ -1785,7 +1810,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 			if bh > 0 {
 				bh = bh - 1
 			}
-			r := se.LedgerSystem.PendulumBucketBalance("pendulum:global:HBD_R", bh)
+			r := se.LedgerSystem.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, bh)
 			if r <= 0 {
 				log.Debug(
 					"pendulum settlement boundary detected (empty R bucket)",
@@ -1856,7 +1881,6 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 			payload := pendulumsettlement.BuildSettlementPayload(
 				info.CurrentEpoch,
 				info.PreviousEpoch,
-				nil, // conversions wired in next step
 				slashPayload,
 				distPayload,
 			)
