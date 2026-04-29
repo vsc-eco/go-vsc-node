@@ -35,7 +35,7 @@ func main() {
 	action := os.Args[2]
 	payloadJSON := os.Args[3]
 	netID := os.Args[4]
-	rcLimit, err := strconv.ParseUint(os.Args[5], 10, 64)
+	rcLimit, err := strconv.ParseUint(os.Args[5], 10, strconv.IntSize)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid rcLimit: %v\n", err)
 		os.Exit(1)
