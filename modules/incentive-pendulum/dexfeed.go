@@ -50,6 +50,31 @@ func DAOOwnedPools(pools []PoolPendulumLiquidity, daoOwner string) []PoolPendulu
 	return out
 }
 
+// EligiblePools filters pools to those eligible for the pendulum:
+// either DAO-owned (when daoOwner is set) OR explicitly whitelisted by PoolID.
+// Whitelist entries always pass; pools matched by both routes are included once.
+// Passing daoOwner == "" disables the owner check (whitelist-only mode).
+func EligiblePools(pools []PoolPendulumLiquidity, daoOwner string, whitelist []string) []PoolPendulumLiquidity {
+	wl := make(map[string]struct{}, len(whitelist))
+	for _, id := range whitelist {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			wl[id] = struct{}{}
+		}
+	}
+	out := make([]PoolPendulumLiquidity, 0, len(pools))
+	for _, p := range pools {
+		if _, ok := wl[strings.TrimSpace(p.PoolID)]; ok {
+			out = append(out, p)
+			continue
+		}
+		if daoOwner != "" && PoolOwnedBy(p.Owner, daoOwner) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // SwapLegDepths are CLP reserves for the swap fee formula (open-market; no extra oracles).
 type SwapLegDepths struct {
 	X float64 // input-side depth
@@ -128,6 +153,9 @@ type PendulumBolt struct {
 	EnforceDAOOwnedPools bool
 	// DAOOwner is the owner account accepted for global pool aggregation.
 	DAOOwner string
+	// PoolWhitelist lists pool contract IDs that are always eligible regardless
+	// of EnforceDAOOwnedPools / DAOOwner. Sourced from SystemConfig per network.
+	PoolWhitelist []string
 }
 
 // NewPendulumBolt returns defaults suitable for Magi PDF.
@@ -160,12 +188,15 @@ func (b *PendulumBolt) Evaluate(net NetworkSnapshot, R float64) (BoltEvaluation,
 	}
 	E := EffectiveBondHBD(net.TotalHiveStake, net.HivePriceHBD, frac)
 	pools := net.Pools
-	if b.EnforceDAOOwnedPools {
-		daoOwner := b.DAOOwner
-		if strings.TrimSpace(daoOwner) == "" {
-			daoOwner = params.DAO_WALLET
+	if b.EnforceDAOOwnedPools || len(b.PoolWhitelist) > 0 {
+		daoOwner := ""
+		if b.EnforceDAOOwnedPools {
+			daoOwner = b.DAOOwner
+			if strings.TrimSpace(daoOwner) == "" {
+				daoOwner = params.DAO_WALLET
+			}
 		}
-		pools = DAOOwnedPools(pools, daoOwner)
+		pools = EligiblePools(pools, daoOwner, b.PoolWhitelist)
 	}
 	V, P := SumPendulumVault(pools)
 	ev.E, ev.T, ev.V, ev.P = E, net.TotalBondT, V, P
