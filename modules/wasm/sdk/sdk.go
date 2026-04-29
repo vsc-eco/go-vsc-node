@@ -588,6 +588,52 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 				Gas:    params.CYCLE_GAS_PER_RC/4 + uint(len(data))*rlpDecodeGasPerByte,
 			})
 		},
+		"sp1_verify_groth16": func(ctx context.Context, arg1 any, arg2 any, arg3 any, arg4 any, arg5 any) SdkResult {
+			proofHex, ok := arg1.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			publicInputsHex, ok := arg2.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			sp1VkeyHashHex, ok := arg3.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			groth16VkHex, ok := arg4.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			vkRootHex, ok := arg5.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			proof, err := hexDecode(proofHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid proof hex")))
+			}
+			publicInputs, err := hexDecode(publicInputsHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid public inputs hex")))
+			}
+			vkeyHash, err := hexDecode(sp1VkeyHashHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid vkey hash hex")))
+			}
+			groth16Vk, err := hexDecode(groth16VkHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid groth16 vk hex")))
+			}
+			vkRoot, err := hexDecode(vkRootHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid vk root hex")))
+			}
+			if err := Sp1VerifyGroth16(proof, publicInputs, vkeyHash, groth16Vk, vkRoot); err != nil {
+				return result.Ok(SdkResultStruct{Result: "false", Gas: params.CYCLE_GAS_PER_RC * 10})
+			}
+			return result.Ok(SdkResultStruct{Result: "true", Gas: params.CYCLE_GAS_PER_RC * 10})
+		},
 	},
 }
 

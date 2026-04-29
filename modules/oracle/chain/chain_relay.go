@@ -282,6 +282,12 @@ func (c *ChainOracle) fetchAllStatuses() []chainSession {
 			continue
 		}
 
+		// Skip chains that use ZK proof verification instead of oracle relay.
+		// A ZK prover submits headers directly to the verifier contract.
+		if c.sconf.OracleParams().HasZKVerifier(chain.Symbol()) {
+			continue
+		}
+
 		chainSession, err := c.fetchChainStatus(chain)
 		if err != nil {
 			c.logger.Error(

@@ -168,8 +168,23 @@ type OracleParams struct {
 	// relay mapping contract IDs.
 	ChainContracts map[string]string `json:"chainContracts,omitempty"`
 
+	// ZKVerifierChains lists chain symbols whose headers are provided by
+	// a ZK prover submitting directly to a verifier contract. When a chain
+	// is in this map, the oracle skips BLS relay for it.
+	ZKVerifierChains map[string]string `json:"zkVerifierChains,omitempty"`
+
 	// Deprecated: use ChainContracts["BTC"] instead.
 	BtcContractId string `json:"btcContractId,omitempty"`
+}
+
+// HasZKVerifier returns true if the given chain uses ZK proof verification
+// instead of oracle BLS relay.
+func (o OracleParams) HasZKVerifier(symbol string) bool {
+	if o.ZKVerifierChains == nil {
+		return false
+	}
+	_, ok := o.ZKVerifierChains[symbol]
+	return ok
 }
 
 // ContractId returns the relay contract ID for the given chain symbol.
