@@ -52,6 +52,12 @@ func TestSnapshotRecord_RoundTripsBson(t *testing.T) {
 		HBDInterestRateOK:   true,
 		TrustedWitnessGroup: []string{"x"},
 		WitnessSlashBps:     []WitnessSlashRecord{{Witness: "x", Bps: 17}},
+		GeometryOK:          true,
+		GeometryV:           500_000,
+		GeometryP:           250_000,
+		GeometryE:           750_000,
+		GeometryT:           1_000_000,
+		GeometryS:           66_666_666,
 	}
 	raw, err := bson.Marshal(rec)
 	if err != nil {
@@ -67,7 +73,13 @@ func TestSnapshotRecord_RoundTripsBson(t *testing.T) {
 		got.HBDInterestRateBps != rec.HBDInterestRateBps ||
 		len(got.WitnessSlashBps) != 1 ||
 		got.WitnessSlashBps[0].Witness != "x" ||
-		got.WitnessSlashBps[0].Bps != 17 {
+		got.WitnessSlashBps[0].Bps != 17 ||
+		got.GeometryOK != rec.GeometryOK ||
+		got.GeometryV != rec.GeometryV ||
+		got.GeometryP != rec.GeometryP ||
+		got.GeometryE != rec.GeometryE ||
+		got.GeometryT != rec.GeometryT ||
+		got.GeometryS != rec.GeometryS {
 		t.Fatalf("round trip lost fields: got %+v want %+v", got, rec)
 	}
 }
