@@ -550,6 +550,7 @@ type ethAddBlocksPayload struct {
 
 type ethAddBlockEntry struct {
 	BlockNumber      uint64 `json:"block_number"`
+	StateRoot        string `json:"state_root"`
 	TransactionsRoot string `json:"transactions_root"`
 	ReceiptsRoot     string `json:"receipts_root"`
 	BaseFeePerGas    uint64 `json:"base_fee_per_gas"`
@@ -613,6 +614,7 @@ func makeEthPayload(blocks []chainBlock) (*ethAddBlocksPayload, error) {
 		}
 		entries[i] = ethAddBlockEntry{
 			BlockNumber:      eth.Height,
+			StateRoot:        hex.EncodeToString(eth.header.Root.Bytes()),
 			TransactionsRoot: hex.EncodeToString(eth.header.TxHash.Bytes()),
 			ReceiptsRoot:     hex.EncodeToString(eth.header.ReceiptHash.Bytes()),
 			BaseFeePerGas:    baseFee,
