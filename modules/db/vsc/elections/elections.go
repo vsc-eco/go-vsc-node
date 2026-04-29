@@ -30,23 +30,10 @@ func (e *elections) Init() error {
 	}
 
 	indexModel := mongo.IndexModel{
-		Keys:    bson.D{{Key: "block_height", Value: 1}},
-		Options: options.Index().SetUnique(true),
+		Keys: bson.D{{Key: "block_height", Value: 1}},
 	}
 
-	// create index on block.block_number for faster queries
 	err = e.CreateIndexIfNotExist(indexModel)
-	if err != nil {
-		return fmt.Errorf("failed to create index: %w", err)
-	}
-
-	indexModel2 := mongo.IndexModel{
-		Keys:    bson.D{{Key: "epoch", Value: 1}},
-		Options: options.Index().SetUnique(true),
-	}
-
-	// create index on block.block_number for faster queries
-	err = e.CreateIndexIfNotExist(indexModel2)
 	if err != nil {
 		return fmt.Errorf("failed to create index: %w", err)
 	}
@@ -66,9 +53,9 @@ func (e *elections) StoreElection(a ElectionResult) error {
 	}
 	a.TotalWeight = totalWeight
 	ctx := context.Background()
-	options := options.Update().SetUpsert(true)
+	opts := options.Replace().SetUpsert(true)
 	filter := bson.M{
-		"epoch": a.Epoch,
+		"_id": a.Epoch,
 	}
 	update := ElectionResultRecord{}
 	err := refmt.CloneAtlased(a, &update, cbornode.CborAtlas)
@@ -78,16 +65,13 @@ func (e *elections) StoreElection(a ElectionResult) error {
 	if err != nil {
 		return err
 	}
-	updateQuery := bson.M{
-		"$set": update,
-	}
-	_, err = e.UpdateOne(ctx, filter, updateQuery, options)
+	_, err = e.ReplaceOne(ctx, filter, update, opts)
 	return err
 }
 
 func (e *elections) GetElection(epoch uint64) *ElectionResult {
 	findQuery := bson.M{
-		"epoch": epoch,
+		"_id": epoch,
 	}
 	ctx := context.Background()
 	findResult := e.FindOne(ctx, findQuery)
@@ -114,12 +98,12 @@ func (e *elections) GetElection(epoch uint64) *ElectionResult {
 
 func (e *elections) GetPreviousElections(beforeEpoch uint64, limit int) []ElectionResult {
 	findQuery := bson.M{
-		"epoch": bson.M{
+		"_id": bson.M{
 			"$lt": beforeEpoch,
 		},
 	}
 	queryOptions := options.Find()
-	queryOptions.SetSort(bson.M{"epoch": -1})
+	queryOptions.SetSort(bson.M{"_id": -1})
 	queryOptions.SetLimit(int64(limit))
 
 	ctx := context.Background()

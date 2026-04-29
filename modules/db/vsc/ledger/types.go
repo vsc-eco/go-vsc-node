@@ -83,7 +83,7 @@ const (
 
 type LedgerRecord struct {
 	//Unique ID of the operation
-	Id          string  `json:"id" bson:"id"`
+	Id          string  `json:"id" bson:"_id"`
 	Amount      int64   `json:"amount" bson:"amount"`
 	BlockHeight uint64  `json:"block_height" bson:"block_height"`
 	Timestamp   *string `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
@@ -117,7 +117,7 @@ type BridgeActions interface {
 // }
 
 type ActionRecord struct {
-	Id     string `bson:"id"`
+	Id     string `bson:"_id"`
 	Status string `bson:"status"`
 	Amount int64  `bson:"amount"`
 	Asset  string `bson:"asset"`

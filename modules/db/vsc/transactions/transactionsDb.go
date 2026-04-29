@@ -31,6 +31,25 @@ func (e *transactions) Init() error {
 	indexes := []mongo.IndexModel{
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "type", Value: 1}, {Key: "expire_block", Value: 1}}},
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "anchr_height", Value: 1}}},
+		{Keys: bson.D{{Key: "required_auths", Value: 1}}},
+		{Keys: bson.D{{Key: "required_posting_auths", Value: 1}}},
+		{Keys: bson.D{{Key: "ops.type", Value: 1}}},
+		{
+			Keys: bson.D{{Key: "ops.data.contract_id", Value: 1}},
+			Options: options.Index().SetPartialFilterExpression(bson.M{
+				"ops.data.contract_id": bson.M{"$exists": true},
+			}),
+		},
+		// TTL backstop: drop UNCONFIRMED records older than 4 days that the
+		// block-height-based PruneExpiredUnconfirmed missed (e.g. crashed witness).
+		{
+			Keys: bson.D{{Key: "first_seen", Value: 1}},
+			Options: options.Index().
+				SetExpireAfterSeconds(int32(4 * 24 * 60 * 60)).
+				SetPartialFilterExpression(bson.M{
+					"status": string(TransactionStatusUnconfirmed),
+				}),
+		},
 	}
 	for _, idx := range indexes {
 		if err := e.CreateIndexIfNotExist(idx); err != nil {
@@ -60,7 +79,6 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 		"anchr_id":               offTx.AnchoredId,
 		"type":                   offTx.Type,
 		"ops":                    offTx.Ops,
-		"op_types":               offTx.OpTypes,
 		"required_auths":         offTx.RequiredAuths,
 		"required_posting_auths": offTx.RequiredPostingAuths,
 		"nonce":                  offTx.Nonce,
@@ -160,7 +178,7 @@ func (e *transactions) FindTransactions(ids []string, id *string, account *strin
 		filters = append(filters, bson.E{Key: "status", Value: string(*status)})
 	}
 	if byType != nil {
-		filters = append(filters, bson.E{Key: "op_types", Value: bson.M{
+		filters = append(filters, bson.E{Key: "ops.type", Value: bson.M{
 			"$in": byType,
 		}})
 	}

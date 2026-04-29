@@ -29,7 +29,6 @@ func (l *ledger) Init() error {
 	indexes := []mongo.IndexModel{
 		{Keys: bson.D{{Key: "owner", Value: 1}, {Key: "block_height", Value: 1}}},
 		{Keys: bson.D{{Key: "owner", Value: 1}, {Key: "tk", Value: 1}, {Key: "block_height", Value: 1}}},
-		{Keys: bson.D{{Key: "id", Value: 1}}},
 	}
 	for _, idx := range indexes {
 		if err := l.CreateIndexIfNotExist(idx); err != nil {
@@ -46,9 +45,9 @@ func (ledger *ledger) StoreLedger(ledgerRecords ...LedgerRecord) {
 
 	models := make([]mongo.WriteModel, len(ledgerRecords))
 	for i, record := range ledgerRecords {
-		models[i] = mongo.NewUpdateOneModel().
-			SetFilter(bson.M{"id": record.Id}).
-			SetUpdate(bson.M{"$set": record}).
+		models[i] = mongo.NewReplaceOneModel().
+			SetFilter(bson.M{"_id": record.Id}).
+			SetReplacement(record).
 			SetUpsert(true)
 	}
 
@@ -129,7 +128,7 @@ func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes [
 		}})
 	}
 	if txId != nil {
-		filters = append(filters, bson.E{Key: "id", Value: bson.D{{Key: "$regex", Value: "^" + (*txId)}}})
+		filters = append(filters, bson.E{Key: "_id", Value: bson.D{{Key: "$regex", Value: "^" + (*txId)}}})
 	}
 	if fromBlock != nil {
 		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$gte", Value: *fromBlock}}})
@@ -169,7 +168,7 @@ func (ledger *ledger) GetRawLedgerRange(account *string, txId *string, txTypes [
 		}})
 	}
 	if txId != nil {
-		filters = append(filters, bson.E{Key: "id", Value: bson.D{{Key: "$regex", Value: "^" + (*txId)}}})
+		filters = append(filters, bson.E{Key: "_id", Value: bson.D{{Key: "$regex", Value: "^" + (*txId)}}})
 	}
 	if fromBlock != nil {
 		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$gte", Value: *fromBlock}}})
@@ -416,7 +415,12 @@ func (a *actionsDb) Init() error {
 
 	indexes := []mongo.IndexModel{
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "block_height", Value: 1}}},
-		{Keys: bson.D{{Key: "id", Value: 1}}},
+		{
+			Keys: bson.D{{Key: "data.epoch", Value: 1}},
+			Options: options.Index().SetPartialFilterExpression(bson.M{
+				"data.epoch": bson.M{"$exists": true},
+			}),
+		},
 	}
 	for _, idx := range indexes {
 		if err := a.CreateIndexIfNotExist(idx); err != nil {
@@ -427,12 +431,10 @@ func (a *actionsDb) Init() error {
 }
 
 func (actionsDb *actionsDb) StoreAction(withdraw ActionRecord) {
-	findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
-	actionsDb.FindOneAndUpdate(context.Background(), bson.M{
-		"id": withdraw.Id,
-	}, bson.M{
-		"$set": withdraw,
-	}, findUpdateOpts)
+	opts := options.Replace().SetUpsert(true)
+	actionsDb.ReplaceOne(context.Background(), bson.M{
+		"_id": withdraw.Id,
+	}, withdraw, opts)
 }
 
 func (actionsDb *actionsDb) ExecuteComplete(actionId *string, ids ...string) {
@@ -446,7 +448,7 @@ func (actionsDb *actionsDb) ExecuteComplete(actionId *string, ids ...string) {
 		updated["action_id"] = *actionId
 	}
 	actionsDb.UpdateMany(context.Background(), bson.M{
-		"id": bson.M{
+		"_id": bson.M{
 			"$in": ids,
 		},
 	}, bson.M{
@@ -456,7 +458,7 @@ func (actionsDb *actionsDb) ExecuteComplete(actionId *string, ids ...string) {
 
 func (actionsDb *actionsDb) Get(id string) (*ActionRecord, error) {
 	findResult := actionsDb.FindOne(context.Background(), bson.M{
-		"id": id,
+		"_id": id,
 	})
 
 	if findResult.Err() != nil {
@@ -481,7 +483,7 @@ func (actionsDb *actionsDb) GetPendingActions(bh uint64, t ...string) ([]ActionR
 			Value: 1,
 		},
 		{
-			Key:   "id",
+			Key:   "_id",
 			Value: 1,
 		},
 	})
@@ -520,7 +522,7 @@ func (actions *actionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([
 			Value: 1,
 		},
 		{
-			Key:   "id",
+			Key:   "_id",
 			Value: 1,
 		},
 	})
@@ -553,7 +555,7 @@ func (actions *actionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([
 func (actions *actionsDb) GetActionsRange(txId *string, actionId *string, account *string, byTypes []string, asset *Asset, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ActionRecord, error) {
 	filters := bson.D{}
 	if txId != nil {
-		filters = append(filters, bson.E{Key: "id", Value: *txId})
+		filters = append(filters, bson.E{Key: "_id", Value: *txId})
 	}
 	if actionId != nil {
 		filters = append(filters, bson.E{Key: "action_id", Value: *actionId})
@@ -624,7 +626,7 @@ func (actions *actionsDb) GetAccountPendingConsensusUnstake(account string) (int
 
 func (actions *actionsDb) GetActionsByTxId(txId string) ([]ActionRecord, error) {
 	cursor, err := actions.Find(context.Background(), bson.M{
-		"id": bson.M{
+		"_id": bson.M{
 			"$regex": "^" + txId,
 		},
 	})

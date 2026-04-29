@@ -1,6 +1,7 @@
 package test_utils
 
 import (
+	"context"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db/vsc/witnesses"
 )
@@ -41,3 +42,5 @@ func (m *MockWitnessDb) GetWitnessAtHeight(account string, _ *uint64) (*witnesse
 	}
 	return nil, nil
 }
+
+func (m *MockWitnessDb) PruneOlderThan(context.Context, uint64) (int64, error) { return 0, nil }

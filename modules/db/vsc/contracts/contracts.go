@@ -137,7 +137,6 @@ func (ch *contractState) Init() error {
 	}
 	indexes := []mongo.IndexModel{
 		{Keys: bson.D{{Key: "contract_id", Value: 1}, {Key: "block_height", Value: -1}}},
-		{Keys: bson.D{{Key: "id", Value: 1}}},
 	}
 	for _, idx := range indexes {
 		if err := ch.CreateIndexIfNotExist(idx); err != nil {
@@ -149,9 +148,8 @@ func (ch *contractState) Init() error {
 
 func (ch *contractState) IngestOutput(output IngestOutputArgs) {
 	options := options.FindOneAndUpdate().SetUpsert(true)
-	ch.FindOneAndUpdate(context.Background(), bson.M{"id": output.Id}, bson.M{
+	ch.FindOneAndUpdate(context.Background(), bson.M{"_id": output.Id}, bson.M{
 		"$set": bson.M{
-			"id":           output.Id,
 			"contract_id":  output.ContractId,
 			"state_merkle": output.StateMerkle,
 			"block_height": output.AnchoredHeight,
@@ -180,7 +178,7 @@ func (ch *contractState) GetLastOutput(contractId string, height uint64) (Contra
 }
 
 func (ch *contractState) GetOutput(outputId string) *ContractOutput {
-	findResult := ch.FindOne(context.Background(), bson.M{"id": outputId})
+	findResult := ch.FindOne(context.Background(), bson.M{"_id": outputId})
 	if findResult.Err() != nil {
 		return nil
 	}
@@ -193,7 +191,7 @@ func (ch *contractState) GetOutput(outputId string) *ContractOutput {
 func (ch *contractState) FindOutputs(id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ContractOutput, error) {
 	filters := bson.D{}
 	if id != nil {
-		filters = append(filters, bson.E{Key: "id", Value: *id})
+		filters = append(filters, bson.E{Key: "_id", Value: *id})
 	}
 	if input != nil {
 		filters = append(filters, bson.E{Key: "inputs", Value: bson.D{{Key: "$elemMatch", Value: bson.D{{Key: "$eq", Value: *input}}}}})

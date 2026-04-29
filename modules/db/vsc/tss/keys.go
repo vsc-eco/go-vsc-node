@@ -23,7 +23,6 @@ func (tssKeys *tssKeys) Init() error {
 		return err
 	}
 	indexes := []mongo.IndexModel{
-		{Keys: bson.D{{Key: "id", Value: 1}}},
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "expiry_epoch", Value: 1}}},
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "deprecated_height", Value: 1}}},
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "epoch", Value: 1}}},
@@ -39,7 +38,7 @@ func (tssKeys *tssKeys) Init() error {
 func (tssKeys *tssKeys) InsertKey(id string, t TssKeyAlgo, epochs uint64) error {
 	opts := options.FindOneAndUpdate().SetUpsert(true)
 	tssKeys.FindOneAndUpdate(context.Background(), bson.M{
-		"id": id,
+		"_id": id,
 	}, bson.M{
 		"$set": bson.M{
 			"algo":   t,
@@ -55,7 +54,7 @@ func (tssKeys *tssKeys) InsertKey(id string, t TssKeyAlgo, epochs uint64) error 
 func (tssKeys *tssKeys) FindKey(id string) (TssKey, error) {
 	ctx := context.Background()
 	result := tssKeys.FindOne(ctx, bson.M{
-		"id": id,
+		"_id": id,
 	})
 
 	if result.Err() != nil {
@@ -74,7 +73,7 @@ func (tssKeys *tssKeys) FindKey(id string) (TssKey, error) {
 
 func (tssKeys *tssKeys) SetKey(key TssKey) error {
 	res := tssKeys.FindOneAndUpdate(context.Background(), bson.M{
-		"id": key.Id,
+		"_id": key.Id,
 	}, bson.M{
 		"$set": bson.M{
 			"status":            key.Status,
@@ -104,7 +103,7 @@ func (tssKeys *tssKeys) BulkSetKeys(ctx context.Context, keys []TssKey) error {
 	models := make([]mongo.WriteModel, 0, len(keys))
 	for _, key := range keys {
 		models = append(models, mongo.NewUpdateOneModel().
-			SetFilter(bson.M{"id": key.Id}).
+			SetFilter(bson.M{"_id": key.Id}).
 			SetUpdate(bson.M{"$set": bson.M{
 				"status":            key.Status,
 				"public_key":        key.PublicKey,

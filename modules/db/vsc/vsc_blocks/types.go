@@ -15,7 +15,7 @@ type VscBlocks interface {
 }
 
 type VscHeaderRecord struct {
-	Id string `bson:"id"`
+	Id string `bson:"_id"`
 	//CID of content
 	BlockContent string   `bson:"block"`
 	EndBlock     int      `bson:"end_block"`
@@ -29,8 +29,7 @@ type VscHeaderRecord struct {
 	Stats        struct {
 		Size uint64 `bson:"size"`
 	} `bson:"stats"`
-	Ts        string      `bson:"ts"`
-	DebugData interface{} `bson:"debug_data"`
+	Ts string `bson:"ts"`
 }
 
 type VscBlock struct {

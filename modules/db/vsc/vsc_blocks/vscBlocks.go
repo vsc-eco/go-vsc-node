@@ -30,18 +30,6 @@ func (blocks *vscBlocks) Init() error {
 		Options: options.Index().SetUnique(true),
 	}
 
-	// create index on block.block_number for faster queries
-	err = blocks.CreateIndexIfNotExist(indexModel)
-	if err != nil {
-		return fmt.Errorf("failed to create index: %w", err)
-	}
-
-	indexModel = mongo.IndexModel{
-		Keys:    bson.D{{Key: "id", Value: 1}},
-		Options: options.Index().SetUnique(true),
-	}
-
-	// create index on block.block_number for faster queries
 	err = blocks.CreateIndexIfNotExist(indexModel)
 	if err != nil {
 		return fmt.Errorf("failed to create index: %w", err)
@@ -51,9 +39,8 @@ func (blocks *vscBlocks) Init() error {
 }
 
 func (vblks *vscBlocks) StoreHeader(header VscHeaderRecord) {
-	opts := options.FindOneAndUpdate()
-	opts.SetUpsert(true)
-	vblks.FindOneAndUpdate(context.Background(), bson.M{"id": header.Id}, bson.M{"$set": header}, opts)
+	opts := options.Replace().SetUpsert(true)
+	vblks.ReplaceOne(context.Background(), bson.M{"_id": header.Id}, header, opts)
 }
 
 // Gets VSC block by height
@@ -87,11 +74,7 @@ func (vblks *vscBlocks) GetBlockByHeight(height uint64) (*VscHeaderRecord, error
 func (vblks *vscBlocks) GetBlockById(id string) (*VscHeaderRecord, error) {
 	ctx := context.Background()
 
-	findResult := vblks.FindOne(ctx, bson.M{
-		"id": bson.M{
-			"$eq": id,
-		},
-	})
+	findResult := vblks.FindOne(ctx, bson.M{"_id": id})
 
 	if findResult.Err() != nil {
 		return nil, findResult.Err()

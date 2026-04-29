@@ -305,6 +305,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 			}()
 		}
+		if role.PrunesWitnessHistory() && bh > 2*witnesses.WITNESS_EXPIRE_BLOCKS {
+			cutoff := bh - 2*witnesses.WITNESS_EXPIRE_BLOCKS
+			go func() {
+				if _, err := se.witnessDb.PruneOlderThan(context.Background(), cutoff); err != nil {
+					log.Warn("witnesses prune failed", "err", err, "cutoff", cutoff)
+				}
+			}()
+		}
 	}
 
 	// --- Key lifecycle: deprecation and retirement ---
@@ -1105,7 +1113,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				RequiredPostingAuths: self.RequiredPostingAuths,
 				Status:               defaultStatus,
 				Type:                 "hive",
-				OpTypes:              opTypes,
 				Ops:                  opDataList,
 				AnchoredBlock:        &block.BlockID,
 				AnchoredHeight:       &block.BlockNumber,

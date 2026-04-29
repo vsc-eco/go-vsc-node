@@ -816,6 +816,20 @@ func (r *transactionRecordResolver) AnchrTs(ctx context.Context, obj *transactio
 	return obj.AnchoredTs, nil
 }
 
+// OpTypes is the resolver for the op_types field.
+func (r *transactionRecordResolver) OpTypes(ctx context.Context, obj *transactions.TransactionRecord) ([]string, error) {
+	seen := make(map[string]struct{}, len(obj.Ops))
+	out := make([]string, 0, len(obj.Ops))
+	for _, op := range obj.Ops {
+		if _, ok := seen[op.Type]; ok {
+			continue
+		}
+		seen[op.Type] = struct{}{}
+		out = append(out, op.Type)
+	}
+	return out, nil
+}
+
 // Nonce is the resolver for the nonce field.
 func (r *transactionRecordResolver) Nonce(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
 	return model.Uint64(obj.Nonce), nil

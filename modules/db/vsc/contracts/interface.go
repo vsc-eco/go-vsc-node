@@ -45,7 +45,7 @@ type ContractOutputResult struct {
 }
 
 type ContractOutput struct {
-	Id          string           `json:"id"`
+	Id          string           `json:"id" bson:"_id"`
 	BlockHeight int64            `json:"block_height" bson:"block_height"`
 	Timestamp   *string          `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
 	ContractId  string           `json:"contract_id" bson:"contract_id"`

@@ -378,11 +378,8 @@ func (tp *TransactionPool) indexTx(txId string, txShell VSCTransactionShell) err
 		return errors.New("transaction has no operations")
 	}
 
-	opTypesM := make(map[string]bool, 0)
 	ops := make([]transactions.TransactionOperation, 0)
 	for idx, op := range txShell.Tx {
-		opTypesM[op.Type] = true
-
 		opData := make(map[string]interface{})
 		err := cbornode.DecodeInto(op.Payload, &opData)
 
@@ -397,11 +394,6 @@ func (tp *TransactionPool) indexTx(txId string, txShell VSCTransactionShell) err
 		})
 	}
 
-	opTypes := make([]string, 0, len(opTypesM))
-	for opType := range opTypesM {
-		opTypes = append(opTypes, opType)
-	}
-
 	return tp.TxDb.Ingest(transactions.IngestTransactionUpdate{
 		Id:            txId,
 		Status:        "UNCONFIRMED",
@@ -409,7 +401,6 @@ func (tp *TransactionPool) indexTx(txId string, txShell VSCTransactionShell) err
 		Type:          "vsc",
 		Version:       txShell.Version,
 		Nonce:         txShell.Headers.Nonce,
-		OpTypes:       opTypes,
 		Ops:           ops,
 		RcLimit:       txShell.Headers.RcLimit,
 		Ledger:        make([]ledgerSystem.OpLogEvent, 0),

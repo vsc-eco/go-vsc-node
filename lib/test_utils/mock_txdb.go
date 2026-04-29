@@ -21,7 +21,6 @@ func (m *MockTxDb) Ingest(offTx transactions.IngestTransactionUpdate) error {
 		Version:              offTx.Version,
 		Nonce:                int64(offTx.Nonce),
 		Ops:                  offTx.Ops,
-		OpTypes:              offTx.OpTypes,
 		RcLimit:              offTx.RcLimit,
 		Ledger:               &offTx.Ledger,
 	}

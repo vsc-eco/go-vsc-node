@@ -92,66 +92,21 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 	}
 	w.FindOneAndUpdate(ctx, query, update, findOptions)
 
-	oldRecordsFilter := bson.M{
-		"account": request.Account,
-	}
-	//Maximum of 5 old records on a node should be maintained
-	oldRecordsOptions := options.Find().SetLimit(6).SetSort(bson.D{{
-		Key:   "height",
-		Value: -1,
-	}})
-	cursor, err := w.Find(ctx, oldRecordsFilter, oldRecordsOptions)
-	if err != nil {
-		return err
-	}
-	var deletionHeight *uint64
-	for cursor.Next(ctx) {
-		var result bson.M
-		if err := cursor.Decode(&result); err != nil {
-			return fmt.Errorf("failed to decode block: %w", err)
-		}
-		delHeight := uint64(result["height"].(int64))
-		deletionHeight = &delHeight
-	}
-
-	if deletionHeight != nil {
-		filter := bson.M{
-			"account": request.Account,
-			"height": bson.M{
-				"$lt": *deletionHeight,
-			},
-		}
-		w.DeleteMany(ctx, filter)
-	}
-
 	return nil
 }
 
-func (w *witnesses) GetWitnessNode(account string, blockHeight *int64) {
-	ctx := context.Background()
-	var filter bson.M
-	//Get at specific block interval. More safe
-	if blockHeight != nil {
-		filter = bson.M{
-			"account": account,
-			"height": bson.M{
-				"$lte": blockHeight,
-			},
-		}
-	} else {
-		//Get most latest record
-		filter = bson.M{
-			"account": account,
-		}
+// PruneOlderThan deletes witness records with height < cutoff. Caller must pass
+// cutoff <= currentHeight - WITNESS_EXPIRE_BLOCKS so records still in the
+// GetWitnessesAtBlockHeight lookback window survive.
+func (w *witnesses) PruneOlderThan(ctx context.Context, cutoff uint64) (int64, error) {
+	if cutoff == 0 {
+		return 0, nil
 	}
-	findOptions := options.FindOne().SetSort(bson.D{{
-		Key:   "height",
-		Value: -1,
-	}})
-	mongoResult := w.FindOne(ctx, filter, findOptions)
-
-	result := bson.M{}
-	mongoResult.Decode(&result)
+	res, err := w.DeleteMany(ctx, bson.M{"height": bson.M{"$lt": cutoff}})
+	if err != nil {
+		return 0, err
+	}
+	return res.DeletedCount, nil
 }
 
 func (w *witnesses) GetLastestWitnesses(searchOptions ...SearchOption) ([]Witness, error) {
@@ -177,11 +132,6 @@ func (w *witnesses) GetLastestWitnesses(searchOptions ...SearchOption) ([]Witnes
 	return witnesses, nil
 }
 
-//Get valid witnesses at block height
-//
-
-const maxSignedDiff = (3 * 24 * 60 * 20)
-
 // Deterministically sorted (alphabetical) list of witnesses at a given block height.
 // Single-aggregation pipeline: $match → $sort by height desc → $group keeps first (latest)
 // per account → $replaceRoot → $sort by account asc.
@@ -189,8 +139,8 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) (
 	ctx := context.Background()
 
 	var gte uint64
-	if bh > maxSignedDiff {
-		gte = bh - maxSignedDiff
+	if bh > WITNESS_EXPIRE_BLOCKS {
+		gte = bh - WITNESS_EXPIRE_BLOCKS
 	} else {
 		gte = 0
 	}

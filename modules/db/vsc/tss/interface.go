@@ -75,7 +75,7 @@ type TssCommitments interface {
 }
 
 type TssKey struct {
-	Id            string     `bson:"id"`
+	Id            string     `bson:"_id"`
 	Status        string     `bson:"status"` // created, active, deprecated, retired
 	PublicKey     string     `bson:"public_key"`
 	Owner         string     `bson:"owner"`

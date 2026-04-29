@@ -51,3 +51,10 @@ func (r NodeRole) PrunesExpiredUnconfirmedTxs() bool {
 func (r NodeRole) PrunesConfirmedTxs() bool {
 	return r == RoleWitness
 }
+
+// PrunesWitnessHistory returns true if this role should periodically prune
+// witness records older than the GetWitnessesAtBlockHeight lookback window.
+// Archive nodes keep everything; full and witness nodes drop the surplus.
+func (r NodeRole) PrunesWitnessHistory() bool {
+	return r != RoleArchive
+}

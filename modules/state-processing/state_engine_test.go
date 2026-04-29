@@ -132,6 +132,14 @@ func newTestEnv() *testEnv {
 }
 
 // processAndWait creates a block and waits for async processing.
+func opTypes(ops []transactions.TransactionOperation) []string {
+	out := make([]string, len(ops))
+	for i, op := range ops {
+		out[i] = op.Type
+	}
+	return out
+}
+
 func (te *testEnv) processAndWait() {
 	te.Reader.CreateBlock()
 	time.Sleep(100 * time.Millisecond)
@@ -222,7 +230,7 @@ func TestDepositIndexedInTxDb(t *testing.T) {
 	rec := te.TxDb.GetTransaction(conf.Id)
 	if assert.NotNil(t, rec) {
 		assert.Equal(t, transactions.TransactionStatus("CONFIRMED"), rec.Status)
-		assert.Contains(t, rec.OpTypes, "deposit")
+		assert.Contains(t, opTypes(rec.Ops), "deposit")
 	}
 }
 
@@ -738,7 +746,7 @@ func TestUserTxIndexedAsIncluded(t *testing.T) {
 	rec := te.TxDb.GetTransaction(conf.Id)
 	assert.NotNil(t, rec)
 	assert.Equal(t, transactions.TransactionStatus("INCLUDED"), rec.Status)
-	assert.Contains(t, rec.OpTypes, "transfer")
+	assert.Contains(t, opTypes(rec.Ops), "transfer")
 }
 
 // ============================================================

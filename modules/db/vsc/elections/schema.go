@@ -37,7 +37,7 @@ type ElectionResult struct {
 }
 
 type ElectionResultRecord struct {
-	Epoch           uint64           `json:"epoch" graphql:"epoch" refmt:"epoch" bson:"epoch"`
+	Epoch           uint64           `json:"epoch" graphql:"epoch" refmt:"epoch" bson:"_id"`
 	NetId           string           `json:"net_id" graphql:"net_id" refmt:"net_id" bson:"net_id"`
 	Data            string           `json:"data" graphql:"data" refmt:"data" bson:"data"`
 	Members         []ElectionMember `json:"members" graphql:"members" refmt:"members" bson:"members"`

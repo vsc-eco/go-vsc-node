@@ -13,6 +13,6 @@ type Nonces interface {
 }
 
 type NonceRecord struct {
-	Account string `bson:"account"`
+	Account string `bson:"_id"`
 	Nonce   uint64 `bson:"nonce"`
 }

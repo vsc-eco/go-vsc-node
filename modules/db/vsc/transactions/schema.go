@@ -13,7 +13,6 @@ type IngestTransactionUpdate struct {
 	Type                 string
 	Version              string
 	Nonce                uint64
-	OpTypes              []string
 	Ops                  []TransactionOperation
 	RcLimit              uint64
 	AnchoredBlock        *string
@@ -69,11 +68,10 @@ type TransactionRecord struct {
 	Type    string `json:"type" bson:"type"`
 	Version string `json:"__v" bson:"__v"`
 	// Data    map[string]interface{} `json:"data" bson:"data"`
-	Ops     []TransactionOperation `json:"ops" bson:"ops"`
-	OpTypes []string               `json:"op_types" bson:"op_types"`
+	Ops []TransactionOperation `json:"ops" bson:"ops"`
 
-	AnchoredBlock  string  `json:"anchr_block" bson:"anchr_block"`               // L1 block ID
-	AnchoredId     *string `json:"anchr_id,omitempty" bson:"anchr_id,omitempty"` // Tx ID of the L2 block proposal in which the offfchain transaction was included in
+	AnchoredBlock  *string `json:"anchr_block,omitempty" bson:"anchr_block,omitempty"` // L1 block ID; nil while UNCONFIRMED
+	AnchoredId     *string `json:"anchr_id,omitempty" bson:"anchr_id,omitempty"`       // Tx ID of the L2 block proposal in which the offfchain transaction was included in
 	AnchoredIndex  int64   `json:"anchr_index" bson:"anchr_index"`               // Transaction position in L1 or L2 block
 	AnchoredTs     *string `json:"anchr_ts,omitempty" bson:"anchr_ts,omitempty"`
 	AnchoredHeight uint64  `json:"anchr_height" bson:"anchr_height"`
