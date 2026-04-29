@@ -48,6 +48,8 @@ type contractExecutionContext struct {
 	ioSessions []*ioSession
 
 	tokenLimits map[string]*int64
+
+	pendulumApplier wasm_context.PendulumApplier
 }
 
 type ContractExecutionContext = *contractExecutionContext
@@ -88,6 +90,7 @@ func New(
 	ledger ledgerSystem.LedgerSession,
 	callSession *contract_session.CallSession,
 	recursionDepth int,
+	opts ...Option,
 ) ContractExecutionContext {
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
@@ -120,21 +123,30 @@ func New(
 			tokenLimits[token] = &val
 		}
 	}
-	// fmt.Println("tokenLimits", tokenLimits, "depth", recursionDepth)
-	return &contractExecutionContext{
-		ledger,
-		env,
-		rcLimit,
-		rcFreeRemaining,
-		gasRemain,
-		callSession,
-		recursionDepth,
-		0,
-		0,
-		0,
-		nil,
-		tokenLimits,
+	ctx := &contractExecutionContext{
+		ledger:          ledger,
+		env:             env,
+		rcLimit:         rcLimit,
+		rcFreeRemaining: rcFreeRemaining,
+		gasRemain:       gasRemain,
+		callSession:     callSession,
+		recursion:       recursionDepth,
+		tokenLimits:     tokenLimits,
 	}
+	for _, opt := range opts {
+		opt(ctx)
+	}
+	return ctx
+}
+
+// Option mutates a fresh contractExecutionContext during construction.
+// Options exist so callers can wire in deps (currently the pendulum
+// applier) without growing New's positional arg list and breaking the
+// existing call sites that don't need them.
+type Option func(*contractExecutionContext)
+
+func WithPendulumApplier(p wasm_context.PendulumApplier) Option {
+	return func(ctx *contractExecutionContext) { ctx.pendulumApplier = p }
 }
 
 func (ctx *contractExecutionContext) IOGas() int {
@@ -475,6 +487,15 @@ func (ctx *contractExecutionContext) SendBalance(to string, amount int64, asset 
 		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_ERROR), fmt.Errorf("%s", res.Msg)))
 	}
 	return result.Ok(struct{}{})
+}
+
+func (ctx *contractExecutionContext) PendulumApplySwapFees(args wasm_context.PendulumSwapFeeArgs) result.Result[wasm_context.PendulumSwapFeeResult] {
+	if ctx.pendulumApplier == nil {
+		return result.Err[wasm_context.PendulumSwapFeeResult](
+			errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("pendulum applier not configured")),
+		)
+	}
+	return ctx.pendulumApplier.ApplySwapFees(ctx.env.ContractId, ctx.env.TxId, ctx.env.BlockHeight, args)
 }
 
 func (ctx *contractExecutionContext) WithdrawBalance(to string, amount int64, asset string) result.Result[struct{}] {
