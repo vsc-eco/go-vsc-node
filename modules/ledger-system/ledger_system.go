@@ -42,17 +42,29 @@ type ledgerSystem struct {
 }
 
 const (
-	pendulumGlobalHBDBucket   = "pendulum:global:HBD_R"
-	pendulumRedirectHBDBucket = "pendulum:redirect:HBD"
+	// PendulumNodesHBDBucket is the single global HBD-only bucket holding the
+	// cumulative node-runner share since the last epoch close. The swap-time
+	// SDK method credits it; the epoch settlement op drains it. The bucket is
+	// stored as the Owner field on each LedgerRecord; the asset column ("hbd")
+	// is queried separately, so the constant stays asset-suffix-free.
+	PendulumNodesHBDBucket = "pendulum:nodes"
 )
 
-func pendulumPoolBucket(poolID, asset string) string {
-	return "pendulum:pool:" + poolID + ":" + strings.ToUpper(asset)
+func pendulumBucketAccount(account string) string {
+	a := strings.TrimSpace(account)
+	if a == "" {
+		return ""
+	}
+	if strings.HasPrefix(a, "pendulum:") {
+		return a
+	}
+	return "pendulum:" + a
 }
 
-func (ls *ledgerSystem) PendulumAccrue(poolID, asset string, amount int64, txID string, blockHeight uint64) LedgerResult {
-	if strings.TrimSpace(poolID) == "" || strings.TrimSpace(asset) == "" {
-		return LedgerResult{Ok: false, Msg: "invalid pool or asset"}
+func (ls *ledgerSystem) PendulumAccrue(account, asset string, amount int64, txID string, blockHeight uint64) LedgerResult {
+	bucket := pendulumBucketAccount(account)
+	if bucket == "" || strings.TrimSpace(asset) == "" {
+		return LedgerResult{Ok: false, Msg: "invalid account or asset"}
 	}
 	if amount <= 0 {
 		return LedgerResult{Ok: false, Msg: "invalid amount"}
@@ -60,68 +72,15 @@ func (ls *ledgerSystem) PendulumAccrue(poolID, asset string, amount int64, txID 
 	if txID == "" {
 		return LedgerResult{Ok: false, Msg: "missing tx id"}
 	}
+	assetLower := strings.ToLower(asset)
 	ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-		Id:          txID + "#accrue#" + pendulumPoolBucket(poolID, asset),
+		Id:          txID + "#accrue#" + bucket + ":" + strings.ToUpper(asset),
 		TxId:        txID,
 		BlockHeight: blockHeight,
 		Amount:      amount,
-		Asset:       strings.ToLower(asset),
-		Owner:       pendulumPoolBucket(poolID, asset),
+		Asset:       assetLower,
+		Owner:       bucket,
 		Type:        "pendulum_accrue",
-	})
-	return LedgerResult{Ok: true, Msg: "success"}
-}
-
-func (ls *ledgerSystem) PendulumConvert(poolID, asset string, nativeAmount int64, hbdAmountOut int64, txID string, blockHeight uint64) LedgerResult {
-	if strings.TrimSpace(poolID) == "" || strings.TrimSpace(asset) == "" {
-		return LedgerResult{Ok: false, Msg: "invalid pool or asset"}
-	}
-	if nativeAmount <= 0 || hbdAmountOut <= 0 {
-		return LedgerResult{Ok: false, Msg: "invalid amount"}
-	}
-	if txID == "" {
-		return LedgerResult{Ok: false, Msg: "missing tx id"}
-	}
-	poolBucket := pendulumPoolBucket(poolID, asset)
-	ls.LedgerDb.StoreLedger(
-		ledger_db.LedgerRecord{
-			Id:          txID + "#convert_debit#" + poolBucket,
-			TxId:        txID,
-			BlockHeight: blockHeight,
-			Amount:      -nativeAmount,
-			Asset:       strings.ToLower(asset),
-			Owner:       poolBucket,
-			Type:        "pendulum_convert",
-		},
-		ledger_db.LedgerRecord{
-			Id:          txID + "#convert_credit#" + poolBucket,
-			TxId:        txID,
-			BlockHeight: blockHeight,
-			Amount:      hbdAmountOut,
-			Asset:       "hbd",
-			Owner:       pendulumGlobalHBDBucket,
-			Type:        "pendulum_convert",
-		},
-	)
-
-	return LedgerResult{Ok: true, Msg: "success"}
-}
-
-func (ls *ledgerSystem) PendulumAccrueRedirect(amount int64, txID string, blockHeight uint64) LedgerResult {
-	if amount <= 0 {
-		return LedgerResult{Ok: false, Msg: "invalid amount"}
-	}
-	if txID == "" {
-		return LedgerResult{Ok: false, Msg: "missing tx id"}
-	}
-	ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-		Id:          txID + "#redirect_accrue",
-		TxId:        txID,
-		BlockHeight: blockHeight,
-		Amount:      amount,
-		Asset:       "hbd",
-		Owner:       pendulumRedirectHBDBucket,
-		Type:        "pendulum_redirect_accrue",
 	})
 	return LedgerResult{Ok: true, Msg: "success"}
 }
@@ -136,9 +95,9 @@ func (ls *ledgerSystem) PendulumDistribute(toAccount string, amount int64, txID 
 	if txID == "" {
 		return LedgerResult{Ok: false, Msg: "missing tx id"}
 	}
-	available := ls.PendulumBucketBalance(pendulumGlobalHBDBucket, blockHeight)
+	available := ls.PendulumBucketBalance(PendulumNodesHBDBucket, blockHeight)
 	if available < amount {
-		return LedgerResult{Ok: false, Msg: "insufficient pendulum global balance"}
+		return LedgerResult{Ok: false, Msg: "insufficient pendulum nodes bucket balance"}
 	}
 	ls.LedgerDb.StoreLedger(
 		ledger_db.LedgerRecord{
@@ -147,7 +106,7 @@ func (ls *ledgerSystem) PendulumDistribute(toAccount string, amount int64, txID 
 			BlockHeight: blockHeight,
 			Amount:      -amount,
 			Asset:       "hbd",
-			Owner:       pendulumGlobalHBDBucket,
+			Owner:       PendulumNodesHBDBucket,
 			Type:        "pendulum_distribute",
 		},
 		ledger_db.LedgerRecord{
@@ -164,6 +123,9 @@ func (ls *ledgerSystem) PendulumDistribute(toAccount string, amount int64, txID 
 	return LedgerResult{Ok: true, Msg: "success"}
 }
 
+// PendulumBucketBalance sums every ledger record whose Owner == bucket and
+// Asset == hbd, regardless of op type. It bypasses GetBalance's op-type
+// filtering so accrue/distribute records are both visible.
 func (ls *ledgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64) int64 {
 	if strings.TrimSpace(bucket) == "" {
 		return 0
