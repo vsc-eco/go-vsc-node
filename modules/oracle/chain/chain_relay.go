@@ -282,6 +282,12 @@ func (c *ChainOracle) fetchAllStatuses() []chainSession {
 			continue
 		}
 
+		// Skip chains that use ZK proof verification instead of oracle relay.
+		// A ZK prover submits headers directly to the verifier contract.
+		if c.sconf.OracleParams().HasZKVerifier(chain.Symbol()) {
+			continue
+		}
+
 		chainSession, err := c.fetchChainStatus(chain)
 		if err != nil {
 			c.logger.Error(
@@ -315,7 +321,14 @@ type chainSession struct {
 func (c *ChainOracle) getContractBlockHeight(contractId string) (uint64, error) {
 	output, err := c.contractState.GetLastOutput(contractId, math.MaxInt64)
 	if err != nil {
-		return 0, fmt.Errorf("no contract output found for %s: %w", contractId, err)
+		return 0, fmt.Errorf("failed to query contract output for %s: %w", contractId, err)
+	}
+	// GetLastOutput returns a zero-valued ContractOutput (no error) when the
+	// contract has never produced an output. Surface that as the same
+	// "fresh contract" signal as a missing height key in the databin so the
+	// caller can distinguish fresh state from a transient read error.
+	if output.StateMerkle == "" {
+		return 0, nil
 	}
 
 	cidz, err := cid.Parse(output.StateMerkle)
@@ -362,19 +375,43 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 	}
 
 	contractHeight, err := c.getContractBlockHeight(contractId)
-	if err != nil || contractHeight == 0 {
-		// When contract state is unavailable (e.g. new or dummy contract),
-		// start from near the chain tip instead of block 0 to avoid
-		// requesting pruned blocks.
-		c.logger.Debug("failed to get contract state, waiting",
+	if err != nil {
+		// Transient read error (DA unreachable, malformed CID, etc.). Wait
+		// and retry on the next tick — do NOT bootstrap, because a transient
+		// error on a contract that already has state would submit a
+		// tip-relative range that doesn't follow the contract's last height.
+		c.logger.Debug("failed to read contract state, waiting",
 			"symbol", chain.Symbol(),
 			"contractId", contractId,
-			"fallbackHeight", contractHeight,
 			"err", err,
 		)
-		return chainSession{
-			newBlocksToSubmit: false,
-		}, nil
+		return chainSession{newBlocksToSubmit: false}, nil
+	}
+	if contractHeight == 0 {
+		// Fresh contract: no prior addBlocks output. Only ETH bootstraps
+		// today — UTXO chains stay quiet until manually seeded.
+		if chain.Symbol() != "ETH" {
+			c.logger.Debug("contract has no state, waiting (bootstrap not enabled for chain)",
+				"symbol", chain.Symbol(),
+				"contractId", contractId,
+			)
+			return chainSession{newBlocksToSubmit: false}, nil
+		}
+		const bootstrapLookback = 1
+		// On a short chain (devnet / fresh testnet) start from genesis so
+		// the contract picks up every block. On a long-running chain,
+		// start near the tip to avoid requesting pruned blocks.
+		startFromGenesis := latestChainState.blockHeight <= bootstrapLookback
+		if !startFromGenesis {
+			contractHeight = latestChainState.blockHeight - bootstrapLookback
+		}
+		c.logger.Info("contract has no state, bootstrapping",
+			"symbol", chain.Symbol(),
+			"contractId", contractId,
+			"startHeight", contractHeight+1,
+			"chainTip", latestChainState.blockHeight,
+			"fromGenesis", startFromGenesis,
+		)
 	}
 
 	if latestChainState.blockHeight <= contractHeight {
@@ -413,7 +450,12 @@ func (c *ChainOracle) fetchChainStatus(chain chainRelay) (chainSession, error) {
 		}
 	}
 
-	chainData, err := chain.ChainData(c.ctx, contractHeight+1, 50, latestChainState.blockHeight)
+	var chainData []chainBlock
+	if chain.Symbol() == "ETH" {
+		chainData, err = chain.ChainData(c.ctx, contractHeight+1, 35, latestChainState.blockHeight)
+	} else {
+		chainData, err = chain.ChainData(c.ctx, contractHeight+1, 50, latestChainState.blockHeight)
+	}
 	if err != nil {
 		return chainSession{}, fmt.Errorf("failed to get chain data: %w", err)
 	}
