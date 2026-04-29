@@ -284,6 +284,67 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 				SdkResultStruct{Result: dids.VerifyAddress(addr, onMainnet), Gas: params.CYCLE_GAS_PER_RC / 4},
 			)
 		},
+		// pendulum_apply_swap_fees: pool contracts call this from inside their
+		// swap handler after computing base_clp, before paying out the user.
+		// Single string arg: JSON-encoded PendulumSwapFeeInput (see types below).
+		// Returns JSON-encoded PendulumSwapFeeOutput.
+		// Whitelist + math + node-side accrual all happen inside the applier
+		// behind eCtx — the SDK function itself is a thin marshalling shim.
+		"pendulum_apply_swap_fees": func(ctx context.Context, a any) SdkResult {
+			eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+			payload, ok := a.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			var in pendulumSwapFeeInput
+			if err := json.Unmarshal([]byte(payload), &in); err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("INVALID_ARGUMENT_JSON"), err),
+				)
+			}
+			x, ok := parseInt64(in.X)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			xRes, ok := parseInt64(in.XReserve)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			yRes, ok := parseInt64(in.YReserve)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			baseCLP, ok := parseInt64(in.BaseCLP)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			session := eCtx.IOSession()
+			res := eCtx.PendulumApplySwapFees(wasm_context.PendulumSwapFeeArgs{
+				AssetIn:     in.AssetIn,
+				AssetOut:    in.AssetOut,
+				X:           x,
+				XReserve:    xRes,
+				YReserve:    yRes,
+				BaseCLP:     baseCLP,
+				Exacerbates: in.Exacerbates,
+			})
+			return result.Map(res, func(r wasm_context.PendulumSwapFeeResult) SdkResultStruct {
+				out := pendulumSwapFeeOutput{
+					UserOutput:            strconv.FormatInt(r.UserOutput, 10),
+					NewXReserve:           strconv.FormatInt(r.NewXReserve, 10),
+					NewYReserve:           strconv.FormatInt(r.NewYReserve, 10),
+					NodeBucketCreditedHBD: strconv.FormatInt(r.NodeBucketCreditedHBD, 10),
+					MultiplierQ8:          strconv.FormatInt(r.MultiplierQ8, 10),
+					SAfterQ8:              strconv.FormatInt(r.SAfterQ8, 10),
+					NetworkCredit: pendulumNetworkCreditJSON{
+						AssetInAmount:  strconv.FormatInt(r.NetworkCredit.AssetInAmount, 10),
+						AssetOutAmount: strconv.FormatInt(r.NetworkCredit.AssetOutAmount, 10),
+					},
+				}
+				js, _ := json.Marshal(out)
+				return SdkResultStruct{Result: string(js), Gas: session.End()}
+			})
+		},
 	},
 
 	// -------------------------------------------------------------------------
@@ -735,4 +796,44 @@ func decodeRlpValue(s *rlp.Stream, depth int) (interface{}, error) {
 		return arr, nil
 	}
 	return nil, fmt.Errorf("unexpected RLP kind %v", kind)
+}
+
+// pendulumSwapFeeInput is the JSON shape contracts pass to
+// system.pendulum_apply_swap_fees. All amounts are decimal strings to
+// keep precision (wasm guests typically pass big-int-like values).
+type pendulumSwapFeeInput struct {
+	AssetIn     string `json:"asset_in"`
+	AssetOut    string `json:"asset_out"`
+	X           string `json:"x"`
+	XReserve    string `json:"x_reserve"`
+	YReserve    string `json:"y_reserve"`
+	BaseCLP     string `json:"base_clp"`
+	Exacerbates bool   `json:"exacerbates"`
+}
+
+// pendulumSwapFeeOutput is the JSON shape returned to contracts.
+type pendulumSwapFeeOutput struct {
+	UserOutput            string                    `json:"user_output"`
+	NewXReserve           string                    `json:"new_x_reserve"`
+	NewYReserve           string                    `json:"new_y_reserve"`
+	NodeBucketCreditedHBD string                    `json:"node_bucket_credited_hbd"`
+	MultiplierQ8          string                    `json:"multiplier_q8"`
+	SAfterQ8              string                    `json:"s_after_q8"`
+	NetworkCredit         pendulumNetworkCreditJSON `json:"network_credit_native"`
+}
+
+type pendulumNetworkCreditJSON struct {
+	AssetInAmount  string `json:"asset_in_amount"`
+	AssetOutAmount string `json:"asset_out_amount"`
+}
+
+func parseInt64(s string) (int64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }

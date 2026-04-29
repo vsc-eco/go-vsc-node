@@ -96,6 +96,14 @@ func (m *mockLedgerSystem) NewEmptySession(state *ledgerSystem.LedgerState, star
 }
 func (m *mockLedgerSystem) NewEmptyState() *ledgerSystem.LedgerState { return m.state }
 
+func (m *mockLedgerSystem) PendulumAccrue(account, asset string, amount int64, txID string, blockHeight uint64) ledgerSystem.LedgerResult {
+	return ledgerSystem.LedgerResult{Ok: true, Msg: "noop"}
+}
+func (m *mockLedgerSystem) PendulumDistribute(toAccount string, amount int64, txID string, blockHeight uint64) ledgerSystem.LedgerResult {
+	return ledgerSystem.LedgerResult{Ok: true, Msg: "noop"}
+}
+func (m *mockLedgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64) int64 { return 0 }
+
 // ---------------------------------------------------------------------------
 // Invariant 1: Balance Conservation
 //
