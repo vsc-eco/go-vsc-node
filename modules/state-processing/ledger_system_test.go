@@ -740,15 +740,15 @@ func TestOplogIngest(t *testing.T) {
 func TestPendulumLedgerOps(t *testing.T) {
 	ls, state := newLedgerEnv()
 
-	t.Run("accrue writes pool bucket deterministically", func(t *testing.T) {
-		result := ls.PendulumAccrue("pool-a", "hive", 25, "pendulum-accrue-1", 100)
+	t.Run("accrue credits the nodes HBD bucket", func(t *testing.T) {
+		result := ls.PendulumAccrue("nodes", "hbd", 25, "pendulum-accrue-1", 100)
 		require.True(t, result.Ok)
 
 		// second call with same key should be idempotent-upsert, not fail
-		dup := ls.PendulumAccrue("pool-a", "hive", 25, "pendulum-accrue-1", 100)
+		dup := ls.PendulumAccrue("nodes", "hbd", 25, "pendulum-accrue-1", 100)
 		require.True(t, dup.Ok)
 
-		records, err := state.LedgerDb.GetLedgerRange("pendulum:pool:pool-a:HIVE", 0, 1000, "hive")
+		records, err := state.LedgerDb.GetLedgerRange(ledgerSystem.PendulumNodesHBDBucket, 0, 1000, "hbd")
 		require.NoError(t, err)
 		require.NotEmpty(t, *records)
 		last := (*records)[len(*records)-1]
@@ -756,44 +756,31 @@ func TestPendulumLedgerOps(t *testing.T) {
 		assert.Equal(t, "pendulum_accrue", last.Type)
 	})
 
-	t.Run("convert debits pool bucket and credits global hbd bucket", func(t *testing.T) {
-		result := ls.PendulumConvert("pool-a", "hive", 10, 7, "pendulum-convert-1", 101)
+	t.Run("accrue accepts already-prefixed account string", func(t *testing.T) {
+		result := ls.PendulumAccrue(ledgerSystem.PendulumNodesHBDBucket, "hbd", 5, "pendulum-accrue-prefixed", 100)
 		require.True(t, result.Ok)
-
-		poolRecs, err := state.LedgerDb.GetLedgerRange("pendulum:pool:pool-a:HIVE", 0, 1000, "hive")
-		require.NoError(t, err)
-		var foundDebit bool
-		for _, rec := range *poolRecs {
-			if rec.Type == "pendulum_convert" && rec.Amount == -10 {
-				foundDebit = true
-			}
-		}
-		assert.True(t, foundDebit, "expected native debit from pool bucket")
-
-		globalRecs, err := state.LedgerDb.GetLedgerRange("pendulum:global:HBD_R", 0, 1000, "hbd")
-		require.NoError(t, err)
-		var foundCredit bool
-		for _, rec := range *globalRecs {
-			if rec.Type == "pendulum_convert" && rec.Amount == 7 {
-				foundCredit = true
-			}
-		}
-		assert.True(t, foundCredit, "expected HBD credit to global bucket")
 	})
 
-	t.Run("distribute debits global and credits destination", func(t *testing.T) {
+	t.Run("accrue rejects empty account or asset", func(t *testing.T) {
+		bad1 := ls.PendulumAccrue("", "hbd", 1, "pendulum-bad-acct", 100)
+		assert.False(t, bad1.Ok)
+		bad2 := ls.PendulumAccrue("nodes", "", 1, "pendulum-bad-asset", 100)
+		assert.False(t, bad2.Ok)
+	})
+
+	t.Run("distribute debits the nodes bucket and credits the destination", func(t *testing.T) {
 		result := ls.PendulumDistribute("hive:node1", 3, "pendulum-distribute-1", 102)
 		require.True(t, result.Ok)
 
-		globalRecs, err := state.LedgerDb.GetLedgerRange("pendulum:global:HBD_R", 0, 1000, "hbd")
+		bucketRecs, err := state.LedgerDb.GetLedgerRange(ledgerSystem.PendulumNodesHBDBucket, 0, 1000, "hbd")
 		require.NoError(t, err)
-		var foundGlobalDebit bool
-		for _, rec := range *globalRecs {
+		var foundDebit bool
+		for _, rec := range *bucketRecs {
 			if rec.Type == "pendulum_distribute" && rec.Amount == -3 {
-				foundGlobalDebit = true
+				foundDebit = true
 			}
 		}
-		assert.True(t, foundGlobalDebit)
+		assert.True(t, foundDebit)
 
 		nodeRecs, err := state.LedgerDb.GetLedgerRange("hive:node1", 0, 1000, "hbd")
 		require.NoError(t, err)
@@ -802,10 +789,10 @@ func TestPendulumLedgerOps(t *testing.T) {
 		assert.Equal(t, "pendulum_distribute", (*nodeRecs)[0].Type)
 	})
 
-	t.Run("distribute fails on insufficient global bucket balance", func(t *testing.T) {
+	t.Run("distribute fails on insufficient bucket balance", func(t *testing.T) {
 		result := ls.PendulumDistribute("hive:node2", 999999, "pendulum-distribute-too-much", 102)
 		require.False(t, result.Ok)
-		assert.Equal(t, "insufficient pendulum global balance", result.Msg)
+		assert.Equal(t, "insufficient pendulum nodes bucket balance", result.Msg)
 	})
 
 	t.Run("shared tx id across different distribution destinations is allowed", func(t *testing.T) {
@@ -815,20 +802,11 @@ func TestPendulumLedgerOps(t *testing.T) {
 		require.True(t, r2.Ok)
 	})
 
-	t.Run("redirect bucket accrual", func(t *testing.T) {
-		res := ls.PendulumAccrueRedirect(9, "pendulum-redirect-1", 104)
-		require.True(t, res.Ok)
-		recs, err := state.LedgerDb.GetLedgerRange("pendulum:redirect:HBD", 0, 1000, "hbd")
-		require.NoError(t, err)
-		require.NotEmpty(t, *recs)
-		last := (*recs)[len(*recs)-1]
-		assert.Equal(t, int64(9), last.Amount)
-		assert.Equal(t, "pendulum_redirect_accrue", last.Type)
-	})
-
-	t.Run("pendulum bucket balance includes convert and distribute effects", func(t *testing.T) {
-		// Existing flow did +7 (convert), then -3, -2, -1 distributions => net +1.
-		bal := ls.PendulumBucketBalance("pendulum:global:HBD_R", 200)
-		assert.Equal(t, int64(1), bal)
+	t.Run("bucket balance reflects accrue and distribute effects", func(t *testing.T) {
+		// Mock LedgerDb does not dedupe by record Id (production Mongo does via unique index),
+		// so the duplicate accrue from the first sub-test contributes twice here:
+		// 25 (accrue-1) * 2 + 5 (accrue-prefixed) - 3 - 2 - 1 = 49.
+		bal := ls.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, 200)
+		assert.Equal(t, int64(49), bal)
 	})
 }
