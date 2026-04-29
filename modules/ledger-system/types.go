@@ -125,6 +125,11 @@ type LedgerSystem interface {
 	IndexActions(actionUpdate map[string]interface{}, extraInfo ExtraInfo)
 	Deposit(deposit Deposit) string
 	IngestOplog(oplog []OpLogEvent, options OplogInjestOptions)
+	PendulumAccrue(poolID, asset string, amount int64, txID string, blockHeight uint64) LedgerResult
+	PendulumAccrueRedirect(amount int64, txID string, blockHeight uint64) LedgerResult
+	PendulumConvert(poolID, asset string, nativeAmount int64, hbdAmountOut int64, txID string, blockHeight uint64) LedgerResult
+	PendulumDistribute(toAccount string, amount int64, txID string, blockHeight uint64) LedgerResult
+	PendulumBucketBalance(bucket string, blockHeight uint64) int64
 	NewEmptySession(state *LedgerState, startHeight uint64) LedgerSession
 	NewEmptyState() *LedgerState
 }
