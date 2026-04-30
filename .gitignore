@@ -18,3 +18,5 @@ contract-deployer
 *.tar
 logs/
 *attack-vectors.md
+*.wasm
+.bin
