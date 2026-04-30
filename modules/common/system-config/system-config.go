@@ -199,9 +199,11 @@ func TestnetConfig() SystemConfig {
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
 				"BTC": "vsc1BkWohDf5fPcwn7V9B9ar6TyiWc3A2ZGJ4t",
-				"ETH": "vsc1BobRTdfEV8oM5Y5d12HfJc4EGEqZBK3Qrb",
 				// "DASH": "vsc1...", // deploy dash-mapping-contract and add contract ID
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
+			},
+			ZKVerifierChains: map[string]string{
+				"ETH": "vsc1BbR6AMNwmPFrc1MjMMWkpaQCAfzwCmXgkj",
 			},
 		},
 		tssParams: params.DefaultTssParams,
