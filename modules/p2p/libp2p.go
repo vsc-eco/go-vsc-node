@@ -506,7 +506,10 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 		var selectedAddr []multiaddr.Multiaddr
 		//Select
 		for _, peer := range witness.PeerAddrs {
-			m, _ := multiaddr.NewMultiaddr(peer)
+			m, err := multiaddr.NewMultiaddr(peer)
+			if err != nil || m == nil {
+				continue
+			}
 
 			if isCircuitAddr(m) {
 				selectedAddr = append(selectedAddr, m.Encapsulate(mp))
