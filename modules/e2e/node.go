@@ -235,6 +235,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	dataAvailability := data_availability.New(p2p, identityConfig, datalayer)
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, 0)
+	sr.SetHaltCheck(se.ConsumeUnsafeHalt)
 
 	ds, err := flatfs.CreateOrOpen(dataDir+"/keys", flatfs.Prefix(1), false)
 	if err != nil {

@@ -230,6 +230,10 @@ func main() {
 	)
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
+	// Halt-on-unsafe-CID: if the state engine flagged an oplog/election/
+	// block-DAG fetch failure during a block, the streamer aborts the poll
+	// loop without advancing lastSaved so the same block is retried.
+	sr.SetHaltCheck(se.ConsumeUnsafeHalt)
 
 	flatDb, err := flatfs.CreateOrOpen(path.Join(args.dataDir, "tss-keys"), flatfs.Prefix(1), false)
 	if err != nil {

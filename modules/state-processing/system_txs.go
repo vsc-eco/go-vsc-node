@@ -430,13 +430,9 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			}
 			node, err := se.da.Get(parsedCid, nil)
 			if err != nil {
-				log.Warn(
-					"TxElectionResult: failed to fetch genesis election data, skipping",
-					"cid",
-					parsedCid,
-					"err",
-					err,
-				)
+				// UNSAFE: a missed election permanently distorts member
+				// sets used by TSS reshare/sign. Halt and retry the block.
+				se.SetUnsafeHalt("TxElectionResult.genesis", fmt.Errorf("fetch %s: %w", parsedCid, err))
 				return
 			}
 
@@ -574,7 +570,9 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			fmt.Println("Election CID", parsedCid)
 			node, err := se.da.Get(parsedCid, nil)
 			if err != nil {
-				log.Warn("TxElectionResult: failed to fetch election data, skipping", "epoch", tx.Epoch, "cid", parsedCid, "err", err)
+				// UNSAFE: see genesis path comment.
+				se.SetUnsafeHalt("TxElectionResult.normal",
+					fmt.Errorf("fetch epoch=%d cid=%s: %w", tx.Epoch, parsedCid, err))
 				return
 			}
 			fmt.Println("Got Election from DA")
@@ -704,24 +702,28 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 // ProcessTx implements VSCTransaction.
 func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
+	// UNSAFE: the block CID resolves the entire VSC block payload, which
+	// contains the Oplog (sole driver of LedgerDb writes) plus all the
+	// per-tx containers. Skipping at this layer drops every persisted
+	// write the producer signed for in this block. Halt and retry.
 	blockCid, err := cid.Parse(t.SignedBlock.Block)
 	if err != nil {
-		log.Warn("TxProposeBlock: invalid block CID, skipping", "block", t.SignedBlock.Block, "err", err)
+		se.SetUnsafeHalt("TxProposeBlock.parseCid",
+			fmt.Errorf("invalid block CID %q: %w", t.SignedBlock.Block, err))
 		return
 	}
 	node, err := se.da.GetDag(blockCid)
 	if err != nil {
-		return
-	}
-	if err != nil {
-		log.Warn("TxProposeBlock: failed to fetch block DAG, skipping block", "cid", blockCid, "err", err)
+		se.SetUnsafeHalt("TxProposeBlock.GetDag",
+			fmt.Errorf("fetch block DAG %s: %w", blockCid, err))
 		return
 	}
 	jsonBytes, _ := node.MarshalJSON()
 	blockContentC := vscBlocks.VscBlock{}
 
 	if err := se.da.GetObject(blockCid, &blockContentC, common_types.GetOptions{}); err != nil {
-		log.Warn("TxProposeBlock: failed to decode block content, skipping block", "cid", blockCid, "err", err)
+		se.SetUnsafeHalt("TxProposeBlock.GetObject",
+			fmt.Errorf("decode block content %s: %w", blockCid, err))
 		return
 	}
 
@@ -790,6 +792,9 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 		if txContainer.Type() == "transaction" {
 			//Note: sig verification has already happened
+			// SAFE-with-warn: skip omits the off-chain tx body from txDb
+			// (API-only divergence). LedgerDb is unaffected because it's
+			// driven by the producer's Oplog later in this same loop.
 			tx, err := txContainer.AsTransaction()
 			if err != nil {
 				log.Warn("TxProposeBlock: failed to fetch transaction, skipping", "txId", txInfo.Id, "err", err)
@@ -825,6 +830,9 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				Ops:  txs,
 			})
 		} else if txContainer.Type() == "output" {
+			// SAFE: IngestOutput is upsert-by-id; the next ContractOutput
+			// for the same contract overwrites the latest state_merkle
+			// pointer regardless of whether this one was applied.
 			contractOutput, err := txContainer.AsContractOutput()
 			if err != nil {
 				log.Warn("TxProposeBlock: failed to fetch contract output, skipping", "txId", txInfo.Id, "err", err)
@@ -838,10 +846,14 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			}, int64(se.slotStatus.SlotHeight))
 
 		} else if txContainer.Type() == "oplog" {
+			// UNSAFE: IngestOplog -> LedgerDb.StoreLedger is the sole writer
+			// of persisted ledger records. A skipped oplog leaves a permanent
+			// gap that BalanceDb's rollup carries forward. Halt and retry.
 			oplog, err := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))
 			if err != nil {
-				log.Warn("TxProposeBlock: failed to fetch oplog, skipping", "txId", txInfo.Id, "err", err)
-				continue
+				se.SetUnsafeHalt("TxProposeBlock.AsOplog",
+					fmt.Errorf("fetch oplog %s: %w", txInfo.Id, err))
+				return
 			}
 			oplog.ExecuteTx(se)
 		} else if txContainer.Type() == "pendulum_settlement" {
@@ -918,6 +930,12 @@ func (bTx *BlockTx) Decode(da *datalayer.DataLayer, txSelf TxSelf) TransactionCo
 	//Do some conversion back to a TX type?
 	txCid := cid.MustParse(bTx.Id)
 
+	// Best-effort prefetch: warms the local blockstore so subsequent
+	// AsTransaction / AsContractOutput / AsOplog calls hit cache. Errors
+	// here are non-fatal — the caller's typed As*() will re-fetch with
+	// the appropriate Bounded/Skippable semantics, where the actual halt-
+	// vs-skip decision lives. tx.Decode is a no-op so we can safely skip
+	// it on a nil dagNode.
 	dagNode, _ := da.GetDag(txCid)
 	tx := TransactionContainer{
 		da:      da,
@@ -926,7 +944,9 @@ func (bTx *BlockTx) Decode(da *datalayer.DataLayer, txSelf TxSelf) TransactionCo
 
 		Self: txSelf,
 	}
-	tx.Decode(dagNode.RawData())
+	if dagNode != nil {
+		tx.Decode(dagNode.RawData())
+	}
 
 	return tx
 }

@@ -872,13 +872,19 @@ func (tx *TransactionContainer) Type() string {
 	}
 }
 
-// Converts to Contract Output
+// AsContractOutput — SAFE skip site. The output's payload (state_merkle,
+// metadata, results) is recorded via IngestOutput, which is upsert-by-id.
+// The next ContractOutput for the same contract overwrites the latest
+// pointer regardless of whether this one was ingested, so a missed CID
+// is structurally healed once a later output for that contract lands.
+// Hence GetDagSkippable: the negative cache fast-fails repeat misses
+// within the TTL window.
 func (tx *TransactionContainer) AsContractOutput() (*ContractOutput, error) {
 	output := ContractOutput{
 		Id: tx.Id,
 	}
 	txCid := cid.MustParse(tx.Id)
-	dag, err := tx.da.GetDag(txCid)
+	dag, err := tx.da.GetDagSkippable(txCid)
 	if err != nil {
 		return nil, fmt.Errorf("AsContractOutput(%s): %w", tx.Id, err)
 	}
@@ -889,10 +895,13 @@ func (tx *TransactionContainer) AsContractOutput() (*ContractOutput, error) {
 	return &output, nil
 }
 
-// As a regular VSC transaction
+// AsTransaction — SAFE-with-warn skip site. Skipping omits the off-chain
+// tx body from txDb (API-facing only); LedgerDb writes flow through the
+// producer's Oplog regardless. Marginal API divergence acknowledged in
+// exchange for indexer liveness past stuck container CIDs.
 func (tx *TransactionContainer) AsTransaction() (*OffchainTransaction, error) {
 	txCid := cid.MustParse(tx.Id)
-	dag, err := tx.da.GetDag(txCid)
+	dag, err := tx.da.GetDagSkippable(txCid)
 	if err != nil {
 		return nil, fmt.Errorf("AsTransaction(%s): %w", tx.Id, err)
 	}
@@ -908,6 +917,11 @@ func (tx *TransactionContainer) AsTransaction() (*OffchainTransaction, error) {
 	return &offchainTx, nil
 }
 
+// AsOplog — UNSAFE site. IngestOplog -> LedgerDb.StoreLedger is the only
+// path that persists ledger records; a missed Oplog leaves a permanent
+// gap that no future block fills. Uses GetDag (Bounded, no negative cache)
+// — the caller in TxProposeBlock raises an unsafe halt on error so the
+// streamer retries the same block until the CID becomes fetchable.
 func (tx *TransactionContainer) AsOplog(endBlock uint64) (Oplog, error) {
 	cid := cid.MustParse(tx.Id)
 	node, err := tx.da.GetDag(cid)

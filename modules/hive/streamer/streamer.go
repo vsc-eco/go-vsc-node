@@ -74,9 +74,15 @@ var (
 type StreamReader struct {
 	process        ProcessFunction
 	getBlockHeight BlockHeightFunction
-	ctx            context.Context
-	cancel         context.CancelFunc
-	// mtx           sync.Mutex
+	// haltCheck is optional. When set, it's invoked after every successful
+	// process(block, headHeight) call. If it returns a non-nil error, the
+	// streamer aborts the poll loop WITHOUT advancing lastSaved, so the
+	// next poll will re-feed the same Hive block. Used by the state engine
+	// to surface unsafe-tagged CID fetch failures (oplog / election / block
+	// DAG) so the indexer halts and retries instead of silently diverging.
+	haltCheck     HaltCheckFunction
+	ctx           context.Context
+	cancel        context.CancelFunc
 	isPaused      atomic.Bool
 	lastProcessed uint64
 	lastSaved     *uint64
@@ -86,6 +92,12 @@ type StreamReader struct {
 	stopOnlyOnce  sync.Once
 	wg            sync.WaitGroup
 	startBlock    uint64
+}
+
+// SetHaltCheck wires an optional halt-check callback. Safe to leave unset —
+// the streamer still functions, just without the halt-on-unsafe-fetch path.
+func (s *StreamReader) SetHaltCheck(fn HaltCheckFunction) {
+	s.haltCheck = fn
 }
 
 // inits a StreamReader with the provided hiveBlocks interface and process function
@@ -181,8 +193,19 @@ func (s *StreamReader) pollDb(fail func(error)) {
 	newBlocksProcessed := 0
 	processBlock := func(block hiveblocks.HiveBlock, headHeight *uint64) error {
 		s.process(block, headHeight)
-		// update last processed block
 
+		// Halt-check runs BEFORE advancing lastSaved. If the state engine
+		// flagged an unsafe-tagged CID fetch failure during this block's
+		// processing, we want the same block re-fed on the next poll —
+		// returning an error here propagates through pollDb's errChan and
+		// stops the loop, leaving lastSaved at its prior value.
+		if s.haltCheck != nil {
+			if err := s.haltCheck(); err != nil {
+				return fmt.Errorf("halt at hive block %d: %w", block.BlockNumber, err)
+			}
+		}
+
+		// update last processed block
 		if s.getBlockHeight == nil {
 			s.lastSaved = &block.BlockNumber
 		} else {
@@ -242,6 +265,11 @@ var _ aggregate.Plugin = &StreamReader{}
 type FilterFunc func(tx hivego.Operation, ctx *BlockParams) bool
 type VirtualFilterFunc func(vop hivego.VirtualOp) bool
 type ProcessFunction func(block hiveblocks.HiveBlock, headHeight *uint64)
+
+// HaltCheckFunction reports whether processing should halt after the most
+// recent block. Non-nil error → halt poll loop, do NOT advance lastSaved,
+// so the same Hive block will be retried on the next tick.
+type HaltCheckFunction func() error
 
 // Block height function returns the last block height that should be resumed form
 // This is useful for production where there is a replay requirement to get into *now* state

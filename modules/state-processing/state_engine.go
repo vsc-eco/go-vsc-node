@@ -51,6 +51,14 @@ import (
 var tssLog = vsclog.Module("tss")
 var log = vsclog.Module("se")
 
+// AllowUnsafeSkip — when true, downgrades unsafe-tagged fetch failures from a
+// halt to a warn-and-skip. Default is false: an unfetchable oplog/election/
+// block-DAG halts the indexer rather than silently advancing past divergent
+// state. Operators can flip this for emergency historical reindexes where
+// they've accepted that some on-chain data is unrecoverable and divergence
+// is a known cost.
+const AllowUnsafeSkip = false
+
 type ProcessExtraInfo struct {
 	BlockHeight int
 	BlockId     string
@@ -139,6 +147,62 @@ type StateEngine struct {
 	// has flushed slot S-1 reads stale ledger/balance state and produces a
 	// divergent CID. See WaitForProcessedHeight for the consumer API.
 	lastProcessedHeight atomic.Uint64
+	// unsafeFetchErr is set by call sites that require divergence-safe
+	// reads (oplog, election, block DAG). When set, the streamer's halt
+	// check picks it up and stops advancing lastSaved so the same Hive
+	// block is retried until the underlying CID becomes fetchable. Only
+	// consumed (and cleared) by ConsumeUnsafeHalt.
+	unsafeFetchErr atomic.Pointer[unsafeHaltErr]
+}
+
+// unsafeHaltErr is the payload stored in StateEngine.unsafeFetchErr. Wraps
+// the underlying error along with the call-site identifier so log output
+// can pinpoint where the halt fired without grepping.
+type unsafeHaltErr struct {
+	site string
+	err  error
+}
+
+func (e *unsafeHaltErr) Error() string {
+	return fmt.Sprintf("unsafe-halt at %s: %v", e.site, e.err)
+}
+
+func (e *unsafeHaltErr) Unwrap() error {
+	return e.err
+}
+
+// SetUnsafeHalt records that an unsafe-tagged fetch site failed. Only the
+// first failure per block is retained — subsequent failures during the same
+// block keep the original cause, since whatever broke first is what the
+// operator most needs to see. Honors AllowUnsafeSkip: when set, downgrades
+// to a warn and does NOT halt.
+func (se *StateEngine) SetUnsafeHalt(site string, err error) {
+	if AllowUnsafeSkip {
+		log.Warn("unsafe fetch failure (allow_unsafe_skip enabled, continuing)",
+			"site", site, "err", err)
+		return
+	}
+	if se.unsafeFetchErr.Load() != nil {
+		// preserve first cause
+		log.Warn("additional unsafe fetch failure (halt already pending)",
+			"site", site, "err", err)
+		return
+	}
+	se.unsafeFetchErr.Store(&unsafeHaltErr{site: site, err: err})
+	log.Error("unsafe fetch failure — indexer will halt and retry block",
+		"site", site, "err", err)
+}
+
+// ConsumeUnsafeHalt is read-and-clear. The streamer calls this after each
+// ProcessBlock; if non-nil, the streamer returns the error to its poll
+// loop, which causes lastSaved NOT to advance and the same Hive block to
+// be retried on the next tick.
+func (se *StateEngine) ConsumeUnsafeHalt() error {
+	e := se.unsafeFetchErr.Swap(nil)
+	if e == nil {
+		return nil
+	}
+	return e
 }
 
 //Transaction
@@ -1211,8 +1275,17 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 			if lastSlot >= firstSlot {
 				blocks, err := se.vscBlocks.GetBlocksInSlotRange(firstSlot, lastSlot)
 				if err != nil {
-					log.Warn("pendulum reductions: vsc_blocks slot-range lookup failed; block production/attestation skipped this tick",
-						"tick_height", tickHeight, "from_slot", firstSlot, "to_slot", lastSlot, "err", err)
+					log.Warn(
+						"pendulum reductions: vsc_blocks slot-range lookup failed; block production/attestation skipped this tick",
+						"tick_height",
+						tickHeight,
+						"from_slot",
+						firstSlot,
+						"to_slot",
+						lastSlot,
+						"err",
+						err,
+					)
 				} else {
 					produced := make(map[uint64]struct{}, len(blocks))
 					in.BlocksInWindow = make([]rewards.TickBlockHeader, 0, len(blocks))
@@ -1759,16 +1832,21 @@ func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint
 			return pinHeight
 		}
 		// Pin window expired — the corresponding contract output was never
-		// ingested (e.g. unreachable CID during reindex).  Flush the stale
-		// batch so we stop pinning and let the checkpoint advance.
+		// ingested (e.g. unreachable CID during reindex). Clear ONLY the
+		// pin-driving fields so the checkpoint can advance. Do NOT call
+		// se.Flush(): on a producer that's mid-slot, Flush would also clear
+		// TempOutputs / ContractResults / TxOutIds, which back the next
+		// MakeOplog and the cross-batch contract state thread. Wiping
+		// those mid-slot would produce a divergent oplog / contract output.
 		log.Warn(
-			"SaveBlockHeight: flushing stale TxOutput",
+			"SaveBlockHeight: clearing stale TxOutput pin",
 			"lastBlk", lastBlk,
 			"pinHeight", pinHeight,
 			"firstTxHeight", se.firstTxHeight,
 			"txOutputLen", len(se.TxOutput),
 		)
-		se.Flush()
+		se.TxOutput = make(map[string]TxOutput)
+		se.firstTxHeight = 0
 	}
 
 	log.Trace(
