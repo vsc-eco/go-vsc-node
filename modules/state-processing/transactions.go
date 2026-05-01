@@ -895,13 +895,18 @@ func (tx *TransactionContainer) AsContractOutput() (*ContractOutput, error) {
 	return &output, nil
 }
 
-// AsTransaction — SAFE-with-warn skip site. Skipping omits the off-chain
-// tx body from txDb (API-facing only); LedgerDb writes flow through the
-// producer's Oplog regardless. Marginal API divergence acknowledged in
-// exchange for indexer liveness past stuck container CIDs.
+// AsTransaction — UNSAFE site. Although the off-chain tx body is only
+// indexed into txDb (which is API-facing), TxProposeBlock also pulls
+// tx.Headers.Nonce and tx.Headers.RequiredAuths out of the decoded body
+// to drive nonceDb.SetNonce and txDb.InvalidateCompetingTransactions.
+// Skipping a tx leaves nonces unadvanced and competing-tx invalidation
+// unfired — a real divergence between the indexer's mempool view and the
+// producer's. Uses GetDag (Bounded, no negative cache); the caller in
+// TxProposeBlock raises an unsafe halt on error so the streamer retries
+// the same block until the CID becomes fetchable.
 func (tx *TransactionContainer) AsTransaction() (*OffchainTransaction, error) {
 	txCid := cid.MustParse(tx.Id)
-	dag, err := tx.da.GetDagSkippable(txCid)
+	dag, err := tx.da.GetDag(txCid)
 	if err != nil {
 		return nil, fmt.Errorf("AsTransaction(%s): %w", tx.Id, err)
 	}

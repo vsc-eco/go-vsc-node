@@ -48,7 +48,51 @@ const dagFetchMaxRetries = 3
 // enough that legitimately healed network state recovers quickly.
 const failedCidTTL = 5 * time.Minute
 
+// negCacheMaxEntries caps the negative cache so a flood of unreachable CIDs
+// can't grow the map without bound. Past this size, expired entries are
+// purged eagerly; if everything is still within TTL, the oldest are
+// evicted regardless.
+const negCacheMaxEntries = 4096
+
 var daLog = vsclog.Module("datalayer")
+
+// retryBlockService wraps a BlockService so that every GetBlock call —
+// including implicit ones from DagServ / merkledag traversal — gets a
+// per-attempt timeout and bounded retries with exponential backoff. This
+// covers HAMT shard reads, NewDataBinFromCid traversal, and the explicit
+// DataLayer.Get* helpers uniformly. Without the wrapper, those implicit
+// paths could block indefinitely on a single unreachable CID.
+type retryBlockService struct {
+	blockservice.BlockService
+}
+
+func (r *retryBlockService) GetBlock(ctx context.Context, c cid.Cid) (blocks.Block, error) {
+	var lastErr error
+	backoff := 5 * time.Second
+
+	for attempt := 0; attempt <= dagFetchMaxRetries; attempt++ {
+		if attempt > 0 {
+			daLog.Warn("retrying block fetch", "cid", c, "attempt", attempt, "backoff", backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			backoff *= 2
+		}
+
+		tCtx, cancel := context.WithTimeout(ctx, dagFetchTimeout)
+		block, err := r.BlockService.GetBlock(tCtx, c)
+		cancel()
+
+		if err == nil {
+			return block, nil
+		}
+		lastErr = err
+	}
+
+	return nil, fmt.Errorf("fetch(%s): all %d attempts failed: %w", c, dagFetchMaxRetries+1, lastErr)
+}
 
 // negCache is a per-DataLayer negative cache used only by Skippable fetches.
 // Bounded fetches do not consult it — every call retries fresh.
@@ -63,8 +107,8 @@ func newNegCache() *negCache {
 
 func (n *negCache) recentlyFailed(c cid.Cid) (time.Duration, bool) {
 	n.mu.RLock()
-	defer n.mu.RUnlock()
 	t, ok := n.m[c]
+	n.mu.RUnlock()
 	if !ok {
 		return 0, false
 	}
@@ -72,13 +116,23 @@ func (n *negCache) recentlyFailed(c cid.Cid) (time.Duration, bool) {
 	if age < failedCidTTL {
 		return age, true
 	}
+	// Lazy eviction: TTL elapsed, drop the entry so the map can shrink
+	// without waiting for a periodic GC.
+	n.mu.Lock()
+	if t2, ok := n.m[c]; ok && time.Since(t2) >= failedCidTTL {
+		delete(n.m, c)
+	}
+	n.mu.Unlock()
 	return 0, false
 }
 
 func (n *negCache) markFailed(c cid.Cid) {
 	n.mu.Lock()
+	defer n.mu.Unlock()
 	n.m[c] = time.Now()
-	n.mu.Unlock()
+	if len(n.m) > negCacheMaxEntries {
+		n.evictLocked()
+	}
 }
 
 func (n *negCache) clear(c cid.Cid) {
@@ -87,32 +141,35 @@ func (n *negCache) clear(c cid.Cid) {
 	n.mu.Unlock()
 }
 
-// fetchWithRetry performs a single CID fetch with per-attempt timeout and
-// exponential backoff between attempts. Used by both Bounded and Skippable
-// helpers; the difference is purely whether the negative cache is consulted
-// before / written after.
-func fetchWithRetry(ctx context.Context, bs blockservice.BlockService, c cid.Cid) (blocks.Block, error) {
-	var lastErr error
-	backoff := 5 * time.Second
-
-	for attempt := 0; attempt <= dagFetchMaxRetries; attempt++ {
-		if attempt > 0 {
-			daLog.Warn("retrying block fetch", "cid", c, "attempt", attempt, "backoff", backoff)
-			time.Sleep(backoff)
-			backoff *= 2
+// evictLocked drops expired entries first; if the map is still over cap,
+// drops the oldest entries until it fits. Caller must hold n.mu.
+func (n *negCache) evictLocked() {
+	cutoff := time.Now().Add(-failedCidTTL)
+	for k, t := range n.m {
+		if t.Before(cutoff) {
+			delete(n.m, k)
 		}
-
-		tCtx, cancel := context.WithTimeout(ctx, dagFetchTimeout)
-		block, err := bs.GetBlock(tCtx, c)
-		cancel()
-
-		if err == nil {
-			return block, nil
-		}
-		lastErr = err
 	}
-
-	return nil, fmt.Errorf("fetch(%s): all %d attempts failed: %w", c, dagFetchMaxRetries+1, lastErr)
+	if len(n.m) <= negCacheMaxEntries {
+		return
+	}
+	// Degenerate path: every entry is fresh. Find the oldest few and drop
+	// them so subsequent failures aren't lost. We only need to drop a
+	// handful (one extra per markFailed once we're at cap), so a linear
+	// scan beats sorting.
+	for len(n.m) > negCacheMaxEntries {
+		var oldestK cid.Cid
+		var oldestT time.Time
+		first := true
+		for k, t := range n.m {
+			if first || t.Before(oldestT) {
+				oldestK = k
+				oldestT = t
+				first = false
+			}
+		}
+		delete(n.m, oldestK)
+	}
 }
 
 type DataLayer struct {
@@ -183,12 +240,16 @@ func (dl *DataLayer) Init() error {
 	// A wrapped providing exchange using the previous exchange and the provider.
 	exchange := providing.New(bswap, provider)
 
-	// Plain blockservice — bounded/skippable retry behaviour is layered at
-	// the helper level (getBlockBounded / getBlockSkippable) so each call
-	// site can choose whether the negative cache applies. Sites that resolve
-	// CIDs implicitly (HAMT traversal via DagServ, contract WASM state reads)
-	// see no negative cache; only explicitly-tagged Skippable sites do.
-	blockService := blockservice.New(bstore, exchange)
+	// Wrap the blockservice with retry + per-attempt timeout so EVERY
+	// GetBlock call — including implicit ones via DagServ / merkledag /
+	// HAMT shard traversal — is bounded. Without the wrapper, a single
+	// unreachable CID inside a HAMT walk would block indefinitely on
+	// bitswap. The negative cache is an additional layer applied only at
+	// explicitly-tagged Skippable call sites; HAMT and other implicit
+	// consumers see no negative cache, just the retry/timeout.
+	blockService := &retryBlockService{
+		BlockService: blockservice.New(bstore, exchange),
+	}
 	dl.blockServ = blockService
 	dl.bitswap = bswap
 	dl.negCache = newNegCache()
@@ -321,22 +382,26 @@ func (dl *DataLayer) HashObject(data interface{}) (*cid.Cid, error) {
 // access. Use this from sites where a missed CID risks state divergence
 // (oplog ingestion, election ingestion, top-level block DAG fetches) — the
 // caller is responsible for treating the returned error as a halt signal.
+//
+// Retry/timeout semantics live on the wrapped BlockService (retryBlockService),
+// so this helper is a thin pass-through — the same retry behavior also covers
+// implicit fetches via DagServ / HAMT traversal.
 func (dl *DataLayer) getBlockBounded(c cid.Cid) (blocks.Block, error) {
-	return fetchWithRetry(context.Background(), dl.blockServ, c)
+	return dl.blockServ.GetBlock(context.Background(), c)
 }
 
-// getBlockSkippable performs a fetch like getBlockBounded but additionally
-// fast-fails for `failedCidTTL` after a fully-exhausted retry cycle, and
-// records exhaustion into the negative cache. Use ONLY at sites where
-// skipping the CID is structurally healed by the protocol (e.g. contract
-// output ingestion, where the next ContractOutput's upsert overwrites the
+// getBlockSkippable wraps getBlockBounded with a negative cache: after the
+// underlying retry cycle exhausts, the CID fast-fails for `failedCidTTL`
+// instead of paying the retry cost again. Use ONLY at sites where skipping
+// the CID is structurally healed by the protocol (e.g. contract output
+// ingestion, where the next ContractOutput's upsert overwrites the
 // `state_merkle` pointer regardless of whether the missed one was applied).
 func (dl *DataLayer) getBlockSkippable(c cid.Cid) (blocks.Block, error) {
 	if age, recent := dl.negCache.recentlyFailed(c); recent {
 		return nil, fmt.Errorf("GetBlock(%s): skipped (unreachable, last failed %s ago)", c, age.Round(time.Second))
 	}
 
-	block, err := fetchWithRetry(context.Background(), dl.blockServ, c)
+	block, err := dl.blockServ.GetBlock(context.Background(), c)
 	if err != nil {
 		dl.negCache.markFailed(c)
 		daLog.Warn("block unreachable, adding to negative cache",

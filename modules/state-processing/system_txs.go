@@ -702,16 +702,19 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 // ProcessTx implements VSCTransaction.
 func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
+	// CONTENT-DETERMINED skip: a malformed CID string was signed by the
+	// producer. Retrying can never succeed (the bytes don't change), so
+	// halting would loop forever on a single bad block. Loud-warn and skip.
+	blockCid, err := cid.Parse(t.SignedBlock.Block)
+	if err != nil {
+		log.Warn("TxProposeBlock: malformed block CID, skipping",
+			"raw", t.SignedBlock.Block, "txId", t.Self.TxId, "err", err)
+		return
+	}
 	// UNSAFE: the block CID resolves the entire VSC block payload, which
 	// contains the Oplog (sole driver of LedgerDb writes) plus all the
 	// per-tx containers. Skipping at this layer drops every persisted
 	// write the producer signed for in this block. Halt and retry.
-	blockCid, err := cid.Parse(t.SignedBlock.Block)
-	if err != nil {
-		se.SetUnsafeHalt("TxProposeBlock.parseCid",
-			fmt.Errorf("invalid block CID %q: %w", t.SignedBlock.Block, err))
-		return
-	}
 	node, err := se.da.GetDag(blockCid)
 	if err != nil {
 		se.SetUnsafeHalt("TxProposeBlock.GetDag",
@@ -721,9 +724,13 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	jsonBytes, _ := node.MarshalJSON()
 	blockContentC := vscBlocks.VscBlock{}
 
+	// CONTENT-DETERMINED skip: GetDag above already pulled the block bytes
+	// into the local store, so GetObject's only failure mode here is CBOR
+	// decoding the bytes that were just persisted. Decode failures don't
+	// heal on retry. Loud-warn and skip.
 	if err := se.da.GetObject(blockCid, &blockContentC, common_types.GetOptions{}); err != nil {
-		se.SetUnsafeHalt("TxProposeBlock.GetObject",
-			fmt.Errorf("decode block content %s: %w", blockCid, err))
+		log.Warn("TxProposeBlock: failed to decode block content, skipping",
+			"cid", blockCid, "txId", t.Self.TxId, "err", err)
 		return
 	}
 
@@ -792,13 +799,16 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 		if txContainer.Type() == "transaction" {
 			//Note: sig verification has already happened
-			// SAFE-with-warn: skip omits the off-chain tx body from txDb
-			// (API-only divergence). LedgerDb is unaffected because it's
-			// driven by the producer's Oplog later in this same loop.
+			// UNSAFE: tx.Headers.Nonce / RequiredAuths drive nonceDb.SetNonce
+			// and txDb.InvalidateCompetingTransactions below. Skipping leaves
+			// nonces unadvanced and competing-tx invalidation unfired — a
+			// real divergence between the indexer's mempool view and the
+			// producer's. Halt and retry.
 			tx, err := txContainer.AsTransaction()
 			if err != nil {
-				log.Warn("TxProposeBlock: failed to fetch transaction, skipping", "txId", txInfo.Id, "err", err)
-				continue
+				se.SetUnsafeHalt("TxProposeBlock.AsTransaction",
+					fmt.Errorf("fetch transaction %s: %w", txInfo.Id, err))
+				return
 			}
 
 			tx.Ingest(se, t.Self.TxId, TxSelf{

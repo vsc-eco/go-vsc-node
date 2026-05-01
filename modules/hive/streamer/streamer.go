@@ -3,6 +3,7 @@ package streamer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -194,14 +195,14 @@ func (s *StreamReader) pollDb(fail func(error)) {
 	processBlock := func(block hiveblocks.HiveBlock, headHeight *uint64) error {
 		s.process(block, headHeight)
 
-		// Halt-check runs BEFORE advancing lastSaved. If the state engine
-		// flagged an unsafe-tagged CID fetch failure during this block's
-		// processing, we want the same block re-fed on the next poll —
-		// returning an error here propagates through pollDb's errChan and
-		// stops the loop, leaving lastSaved at its prior value.
+		// Halt-check runs BEFORE advancing lastSaved/lastProcessed. If the
+		// state engine flagged an unsafe-tagged CID fetch failure during
+		// this block's processing, we surface a HaltError so the outer
+		// retry loop in pollDb restarts the listener (without advancing
+		// past the offending block) instead of terminating the streamer.
 		if s.haltCheck != nil {
 			if err := s.haltCheck(); err != nil {
-				return fmt.Errorf("halt at hive block %d: %w", block.BlockNumber, err)
+				return &HaltError{Block: block.BlockNumber, Inner: err}
 			}
 		}
 
@@ -228,26 +229,71 @@ func (s *StreamReader) pollDb(fail func(error)) {
 		}
 		return nil
 	}
-	cancel, errChan := s.hiveBlocks.ListenToBlockUpdates(s.ctx, s.lastProcessed, processBlock)
-	select {
-	case err := <-errChan:
-		// Two-step output to keep the structured prefix line while still
-		// rendering the multi-line panic/stack trace correctly. slog's
-		// TextHandler escapes \n and \t inside string values, so passing
-		// the stack as an "err" attr produces unreadable output. Instead,
-		// log the structured "StreamReader stopped" line first, then write
-		// the verbatim error+stack to stderr — gated on the same level so
-		// disabling Error-level logs for this module suppresses both.
-		vlog.Error("StreamReader stopped — listener error", "lastProcessed", s.lastProcessed)
-		if vlog.Enabled(context.Background(), slog.LevelError) {
-			fmt.Fprintln(os.Stderr, err)
+
+	// Outer retry loop. Halt errors restart the listener after a backoff so
+	// the same Hive block is re-fed (lastProcessed is unchanged on halt).
+	// Non-halt errors are still treated as fatal — the previous behavior
+	// for db / decode failures is preserved.
+	backoff := haltRetryInitialBackoff
+	for {
+		cancel, errChan := s.hiveBlocks.ListenToBlockUpdates(s.ctx, s.lastProcessed, processBlock)
+		select {
+		case err := <-errChan:
+			cancel()
+			var halt *HaltError
+			if errors.As(err, &halt) {
+				vlog.Warn("listener halted on unsafe fetch — will retry same block",
+					"block", halt.Block, "err", halt.Inner, "backoff", backoff)
+				select {
+				case <-time.After(backoff):
+				case <-s.ctx.Done():
+					return
+				}
+				backoff *= 2
+				if backoff > haltRetryMaxBackoff {
+					backoff = haltRetryMaxBackoff
+				}
+				continue
+			}
+			// Two-step output to keep the structured prefix line while still
+			// rendering the multi-line panic/stack trace correctly. slog's
+			// TextHandler escapes \n and \t inside string values, so passing
+			// the stack as an "err" attr produces unreadable output. Instead,
+			// log the structured "StreamReader stopped" line first, then write
+			// the verbatim error+stack to stderr — gated on the same level so
+			// disabling Error-level logs for this module suppresses both.
+			vlog.Error("StreamReader stopped — listener error", "lastProcessed", s.lastProcessed)
+			if vlog.Enabled(context.Background(), slog.LevelError) {
+				fmt.Fprintln(os.Stderr, err)
+			}
+			fail(err)
+			return
+		case <-s.ctx.Done():
+			cancel()
+			return
 		}
-		fail(err)
-	case <-s.ctx.Done():
-		cancel()
-		return
 	}
 }
+
+// HaltError signals that the state engine's halt check fired during block
+// processing. The outer pollDb loop treats it as recoverable: wait, then
+// re-listen from the same lastProcessed so the offending block is re-fed.
+// Other errors continue to propagate as fatal.
+type HaltError struct {
+	Block uint64
+	Inner error
+}
+
+func (e *HaltError) Error() string {
+	return fmt.Sprintf("halt at hive block %d: %v", e.Block, e.Inner)
+}
+
+func (e *HaltError) Unwrap() error { return e.Inner }
+
+const (
+	haltRetryInitialBackoff = 2 * time.Second
+	haltRetryMaxBackoff     = 30 * time.Second
+)
 
 // stops the StreamReader
 func (s *StreamReader) Stop() error {

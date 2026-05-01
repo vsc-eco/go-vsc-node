@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"runtime/debug"
 	"slices"
 	"sort"
@@ -51,13 +52,19 @@ import (
 var tssLog = vsclog.Module("tss")
 var log = vsclog.Module("se")
 
-// AllowUnsafeSkip — when true, downgrades unsafe-tagged fetch failures from a
-// halt to a warn-and-skip. Default is false: an unfetchable oplog/election/
-// block-DAG halts the indexer rather than silently advancing past divergent
-// state. Operators can flip this for emergency historical reindexes where
-// they've accepted that some on-chain data is unrecoverable and divergence
-// is a known cost.
-const AllowUnsafeSkip = false
+// AllowUnsafeSkip — when true, downgrades unsafe-tagged fetch failures from
+// a halt to a warn-and-skip. Default is false: an unfetchable oplog /
+// election / block-DAG halts the indexer rather than silently advancing
+// past divergent state.
+//
+// Set the environment variable VSC_ALLOW_UNSAFE_SKIP=1 (or "true") at node
+// start for emergency historical reindexes where the operator has accepted
+// that some on-chain data is unrecoverable and the resulting divergence is
+// a known cost. Read once at process start; not safe to flip at runtime.
+var AllowUnsafeSkip = func() bool {
+	v := os.Getenv("VSC_ALLOW_UNSAFE_SKIP")
+	return v == "1" || strings.EqualFold(v, "true")
+}()
 
 type ProcessExtraInfo struct {
 	BlockHeight int
