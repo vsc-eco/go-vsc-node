@@ -967,9 +967,6 @@ func (tx *TransactionContainer) AsPendulumSettlement() (pendulumsettlement.Settl
 	return rec, true
 }
 
-func (tx *TransactionContainer) Decode(bytes []byte) {
-
-}
 
 type Oplog struct {
 	Self TxSelf

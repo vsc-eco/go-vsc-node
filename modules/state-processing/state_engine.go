@@ -163,15 +163,22 @@ type StateEngine struct {
 }
 
 // unsafeHaltErr is the payload stored in StateEngine.unsafeFetchErr. Wraps
-// the underlying error along with the call-site identifier so log output
-// can pinpoint where the halt fired without grepping.
+// the underlying error along with the call-site identifier and the L1
+// block height the StateEngine was processing when the halt was raised.
+// blockHeight is diagnostic: today every SetUnsafeHalt call site fires
+// synchronously inside ProcessBlock, so it always matches the streamer's
+// notion of "current block." Recording it surfaces drift if a future
+// async path ever calls SetUnsafeHalt — the streamer log will print both
+// values and any mismatch is visible without rebuilding the call graph.
 type unsafeHaltErr struct {
-	site string
-	err  error
+	site        string
+	err         error
+	blockHeight int
 }
 
 func (e *unsafeHaltErr) Error() string {
-	return fmt.Sprintf("unsafe-halt at %s: %v", e.site, e.err)
+	return fmt.Sprintf("unsafe-halt at %s (recorded at L1 block %d): %v",
+		e.site, e.blockHeight, e.err)
 }
 
 func (e *unsafeHaltErr) Unwrap() error {
@@ -181,23 +188,25 @@ func (e *unsafeHaltErr) Unwrap() error {
 // SetUnsafeHalt records that an unsafe-tagged fetch site failed. Only the
 // first failure per block is retained — subsequent failures during the same
 // block keep the original cause, since whatever broke first is what the
-// operator most needs to see. Honors AllowUnsafeSkip: when set, downgrades
-// to a warn and does NOT halt.
+// operator most needs to see. The transition is a single CompareAndSwap so
+// the "first cause wins" guarantee holds even under concurrent calls (e.g.
+// if a future async tick path ever raises a halt). Honors AllowUnsafeSkip:
+// when set, downgrades to a warn and does NOT halt.
 func (se *StateEngine) SetUnsafeHalt(site string, err error) {
 	if AllowUnsafeSkip {
 		log.Warn("unsafe fetch failure (allow_unsafe_skip enabled, continuing)",
 			"site", site, "err", err)
 		return
 	}
-	if se.unsafeFetchErr.Load() != nil {
-		// preserve first cause
+	newErr := &unsafeHaltErr{site: site, err: err, blockHeight: se.BlockHeight}
+	if !se.unsafeFetchErr.CompareAndSwap(nil, newErr) {
+		// First cause already recorded — log and bail without overwriting.
 		log.Warn("additional unsafe fetch failure (halt already pending)",
 			"site", site, "err", err)
 		return
 	}
-	se.unsafeFetchErr.Store(&unsafeHaltErr{site: site, err: err})
 	log.Error("unsafe fetch failure — indexer will halt and retry block",
-		"site", site, "err", err)
+		"site", site, "blockHeight", se.BlockHeight, "err", err)
 }
 
 // ConsumeUnsafeHalt is read-and-clear. The streamer calls this after each
@@ -1811,11 +1820,36 @@ func (se *StateEngine) Flush() {
 	se.firstTxHeight = 0
 }
 
+// pinWindowSlots is how long SaveBlockHeight will hold the checkpoint
+// pinned to firstTxHeight-1 while waiting for the matching ContractOutput
+// to land. Sized to comfortably cover worst-case healthy producer latency
+// (last-in-schedule + queue churn ≈ 30-40 blocks) with ~2× headroom, so
+// the expiry path only fires on genuinely stuck state. Bumping past 6
+// slots starts trading off slow recovery from a real stuck condition for
+// less false-positive flushing, which is rarely the right call given a
+// stuck-but-eventually-healed state ends up in the same place either way.
+const pinWindowSlots = 6
+
 // SaveBlockHeight determines the persisted checkpoint for crash recovery.
-// When uncommitted transaction outputs exist (TxOutput populated by ExecuteBatch
-// but not yet cleared by Flush), pin the checkpoint just before the first TX so
-// a restart replays the batch. The pin is bounded to 2 slot lengths so a stale
-// TxOutput (Flush never fired) cannot freeze the checkpoint indefinitely.
+//
+// When uncommitted transaction outputs exist (TxOutput populated by
+// ExecuteBatch but not yet cleared by Flush), pin the checkpoint just
+// before the first TX so a restart replays the batch. The pin is
+// bounded to pinWindowSlots*SlotLength so stale TxOutput (Flush never
+// fired) cannot freeze the checkpoint indefinitely; on expiry we Flush
+// (not partial-clear) so no ghost contract state survives into the next
+// batch's callSession.
+//
+// Note on the slot-boundary fall-through: by the time the producer's
+// vsc.propose_block lands on L1, every ContractOutput inside it has run
+// ContractOutput.Ingest -> Flush, so TxOutput is empty and this function
+// falls through to `return lastBlk`. The previous develop-era logic
+// consulted vscBlocks.GetBlockByHeight(lastBlk) and returned
+// SlotHeight+1 in this case, which is strictly behind lastBlk; on crash
+// recovery the indexer would re-execute blocks (SlotHeight, lastBlk]
+// even though they were already processed. The new behavior advances by
+// one block instead — same correctness, slightly less replay. The
+// vscBlocks consultation was therefore deliberately dropped.
 func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint64 {
 	if lastBlk == 0 || lastSavedBlk == 0 {
 		return lastSavedBlk
@@ -1823,10 +1857,11 @@ func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint
 
 	if len(se.TxOutput) > 0 && se.firstTxHeight > 0 {
 		pinHeight := se.firstTxHeight - 1
+		pinWindow := pinWindowSlots * CONSENSUS_SPECS.SlotLength
 		// Only pin if the first uncommitted TX is within a recent window.
-		// Beyond 2 slot lengths the output is stale — flush the orphaned
-		// batch results so the checkpoint can advance.
-		if lastBlk > pinHeight && lastBlk-pinHeight <= 2*CONSENSUS_SPECS.SlotLength {
+		// Beyond the window the output is stale — Flush so the checkpoint
+		// can advance.
+		if lastBlk > pinHeight && lastBlk-pinHeight <= pinWindow {
 			log.Trace(
 				"SaveBlockHeight: pinning",
 				"lastBlk",
@@ -1838,22 +1873,27 @@ func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint
 			)
 			return pinHeight
 		}
-		// Pin window expired — the corresponding contract output was never
-		// ingested (e.g. unreachable CID during reindex). Clear ONLY the
-		// pin-driving fields so the checkpoint can advance. Do NOT call
-		// se.Flush(): on a producer that's mid-slot, Flush would also clear
-		// TempOutputs / ContractResults / TxOutIds, which back the next
-		// MakeOplog and the cross-batch contract state thread. Wiping
-		// those mid-slot would produce a divergent oplog / contract output.
+		// Pin window expired — the corresponding ContractOutput never landed
+		// (e.g. unreachable CID during reindex, offline producer). Full
+		// Flush, not partial-clear: TempOutputs / ContractResults / TxOutIds
+		// would otherwise persist as ghost state for the next batch's
+		// callSession to read, since by definition no ContractOutput.Ingest
+		// is going to fire and reset them. The "mid-slot Flush is unsafe"
+		// concern doesn't apply here — the >pinWindowSlots*SlotLength
+		// window means we're already past several slots without a producer
+		// landing the matching output, so there is no in-progress slot
+		// whose state we'd be corrupting.
 		log.Warn(
-			"SaveBlockHeight: clearing stale TxOutput pin",
+			"SaveBlockHeight: stale TxOutput pin expired, flushing",
 			"lastBlk", lastBlk,
 			"pinHeight", pinHeight,
 			"firstTxHeight", se.firstTxHeight,
 			"txOutputLen", len(se.TxOutput),
+			"tempOutputsLen", len(se.TempOutputs),
+			"contractResultsLen", len(se.ContractResults),
+			"txOutIdsLen", len(se.TxOutIds),
 		)
-		se.TxOutput = make(map[string]TxOutput)
-		se.firstTxHeight = 0
+		se.Flush()
 	}
 
 	log.Trace(

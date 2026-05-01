@@ -56,42 +56,25 @@ const negCacheMaxEntries = 4096
 
 var daLog = vsclog.Module("datalayer")
 
-// retryBlockService wraps a BlockService so that every GetBlock call —
+// timeoutBlockService wraps a BlockService so that every GetBlock call —
 // including implicit ones from DagServ / merkledag traversal — gets a
-// per-attempt timeout and bounded retries with exponential backoff. This
-// covers HAMT shard reads, NewDataBinFromCid traversal, and the explicit
-// DataLayer.Get* helpers uniformly. Without the wrapper, those implicit
-// paths could block indefinitely on a single unreachable CID.
-type retryBlockService struct {
+// per-call timeout. This bounds blocking on HAMT shard reads,
+// NewDataBinFromCid traversal, and any other implicit consumer so a
+// single unreachable CID can't stall a fetch indefinitely.
+//
+// Note: this layer does NOT retry. Retries live in DataLayer.getBlockBounded
+// so they only apply at explicitly-tagged Bounded / Skippable call sites,
+// not to incidental traversal which would otherwise compound the failure
+// cost (e.g. one missing HAMT shard becoming 4 × 60s = 4 minutes of stall
+// for what was previously a fast-fail).
+type timeoutBlockService struct {
 	blockservice.BlockService
 }
 
-func (r *retryBlockService) GetBlock(ctx context.Context, c cid.Cid) (blocks.Block, error) {
-	var lastErr error
-	backoff := 5 * time.Second
-
-	for attempt := 0; attempt <= dagFetchMaxRetries; attempt++ {
-		if attempt > 0 {
-			daLog.Warn("retrying block fetch", "cid", c, "attempt", attempt, "backoff", backoff)
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-			backoff *= 2
-		}
-
-		tCtx, cancel := context.WithTimeout(ctx, dagFetchTimeout)
-		block, err := r.BlockService.GetBlock(tCtx, c)
-		cancel()
-
-		if err == nil {
-			return block, nil
-		}
-		lastErr = err
-	}
-
-	return nil, fmt.Errorf("fetch(%s): all %d attempts failed: %w", c, dagFetchMaxRetries+1, lastErr)
+func (t *timeoutBlockService) GetBlock(ctx context.Context, c cid.Cid) (blocks.Block, error) {
+	tCtx, cancel := context.WithTimeout(ctx, dagFetchTimeout)
+	defer cancel()
+	return t.BlockService.GetBlock(tCtx, c)
 }
 
 // negCache is a per-DataLayer negative cache used only by Skippable fetches.
@@ -240,14 +223,19 @@ func (dl *DataLayer) Init() error {
 	// A wrapped providing exchange using the previous exchange and the provider.
 	exchange := providing.New(bswap, provider)
 
-	// Wrap the blockservice with retry + per-attempt timeout so EVERY
-	// GetBlock call — including implicit ones via DagServ / merkledag /
-	// HAMT shard traversal — is bounded. Without the wrapper, a single
-	// unreachable CID inside a HAMT walk would block indefinitely on
-	// bitswap. The negative cache is an additional layer applied only at
-	// explicitly-tagged Skippable call sites; HAMT and other implicit
-	// consumers see no negative cache, just the retry/timeout.
-	blockService := &retryBlockService{
+	// Wrap the blockservice with a per-call timeout so EVERY GetBlock call
+	// — including implicit ones via DagServ / merkledag / HAMT shard
+	// traversal — is bounded. Without the wrapper, a single unreachable
+	// CID inside a HAMT walk would block indefinitely on bitswap.
+	//
+	// Retries are deliberately NOT applied here. They live in
+	// getBlockBounded / getBlockSkippable so they only fire at
+	// explicitly-tagged divergence-critical call sites. Applying retry
+	// globally would turn an incidental missing CID encountered during
+	// HAMT traversal into a 4 × 60s = 4-minute stall, instead of the
+	// fast-fail it should be. The negative cache is also applied only
+	// at Skippable sites — implicit consumers see neither retry nor cache.
+	blockService := &timeoutBlockService{
 		BlockService: blockservice.New(bstore, exchange),
 	}
 	dl.blockServ = blockService
@@ -377,31 +365,57 @@ func (dl *DataLayer) HashObject(data interface{}) (*cid.Cid, error) {
 	return &cid, err
 }
 
-// getBlockBounded performs a fetch with timeout + retry. It NEVER consults
-// or writes the negative cache, so transient misses don't poison subsequent
-// access. Use this from sites where a missed CID risks state divergence
-// (oplog ingestion, election ingestion, top-level block DAG fetches) — the
-// caller is responsible for treating the returned error as a halt signal.
-//
-// Retry/timeout semantics live on the wrapped BlockService (retryBlockService),
-// so this helper is a thin pass-through — the same retry behavior also covers
-// implicit fetches via DagServ / HAMT traversal.
-func (dl *DataLayer) getBlockBounded(c cid.Cid) (blocks.Block, error) {
-	return dl.blockServ.GetBlock(context.Background(), c)
+// fetchWithRetry runs the multi-attempt retry loop against the wrapped
+// BlockService (which already applies a per-call timeout). Used by both
+// Bounded and Skippable helpers; NOT used by implicit DagServ traversal,
+// which gets only the per-call timeout.
+func (dl *DataLayer) fetchWithRetry(c cid.Cid) (blocks.Block, error) {
+	ctx := context.Background()
+	var lastErr error
+	backoff := 5 * time.Second
+
+	for attempt := 0; attempt <= dagFetchMaxRetries; attempt++ {
+		if attempt > 0 {
+			daLog.Warn("retrying block fetch", "cid", c, "attempt", attempt, "backoff", backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			backoff *= 2
+		}
+
+		block, err := dl.blockServ.GetBlock(ctx, c)
+		if err == nil {
+			return block, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("fetch(%s): all %d attempts failed: %w", c, dagFetchMaxRetries+1, lastErr)
 }
 
-// getBlockSkippable wraps getBlockBounded with a negative cache: after the
-// underlying retry cycle exhausts, the CID fast-fails for `failedCidTTL`
-// instead of paying the retry cost again. Use ONLY at sites where skipping
-// the CID is structurally healed by the protocol (e.g. contract output
-// ingestion, where the next ContractOutput's upsert overwrites the
-// `state_merkle` pointer regardless of whether the missed one was applied).
+// getBlockBounded performs a fetch with timeout + bounded retries. It
+// NEVER consults or writes the negative cache, so transient misses don't
+// poison subsequent access. Use from sites where a missed CID risks state
+// divergence (oplog ingestion, election ingestion, top-level block DAG
+// fetches) — the caller is responsible for treating the returned error
+// as a halt signal.
+func (dl *DataLayer) getBlockBounded(c cid.Cid) (blocks.Block, error) {
+	return dl.fetchWithRetry(c)
+}
+
+// getBlockSkippable wraps fetchWithRetry with a negative cache: after the
+// retry cycle exhausts, the CID fast-fails for `failedCidTTL` instead of
+// paying the retry cost again. Use ONLY at sites where skipping the CID
+// is structurally healed by the protocol (e.g. contract output ingestion,
+// where the next ContractOutput's upsert overwrites the `state_merkle`
+// pointer regardless of whether the missed one was applied).
 func (dl *DataLayer) getBlockSkippable(c cid.Cid) (blocks.Block, error) {
 	if age, recent := dl.negCache.recentlyFailed(c); recent {
 		return nil, fmt.Errorf("GetBlock(%s): skipped (unreachable, last failed %s ago)", c, age.Round(time.Second))
 	}
 
-	block, err := dl.blockServ.GetBlock(context.Background(), c)
+	block, err := dl.fetchWithRetry(c)
 	if err != nil {
 		dl.negCache.markFailed(c)
 		daLog.Warn("block unreachable, adding to negative cache",

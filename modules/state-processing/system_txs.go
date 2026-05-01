@@ -937,26 +937,18 @@ type BlockTx struct {
 }
 
 func (bTx *BlockTx) Decode(da *datalayer.DataLayer, txSelf TxSelf) TransactionContainer {
-	//Do some conversion back to a TX type?
-	txCid := cid.MustParse(bTx.Id)
-
-	// Best-effort prefetch: warms the local blockstore so subsequent
-	// AsTransaction / AsContractOutput / AsOplog calls hit cache. Errors
-	// here are non-fatal — the caller's typed As*() will re-fetch with
-	// the appropriate Bounded/Skippable semantics, where the actual halt-
-	// vs-skip decision lives. tx.Decode is a no-op so we can safely skip
-	// it on a nil dagNode.
-	dagNode, _ := da.GetDag(txCid)
-	tx := TransactionContainer{
+	// No prefetch here. TransactionContainer.Type() is determined by
+	// TypeInt alone, and each AsTransaction / AsContractOutput / AsOplog
+	// does its own GetDag with the appropriate Bounded vs Skippable
+	// semantics. A prefetch via GetDag (Bounded) would pay the full
+	// retry cost on a missing CID and then the As*() helper would pay
+	// it AGAIN — doubling the failure cost for a local-cache warmup
+	// that's redundant on the success path anyway (the As*() fetch
+	// hits the local blockstore once the first GetBlock succeeds).
+	return TransactionContainer{
 		da:      da,
 		Id:      bTx.Id,
 		TypeInt: bTx.Type,
-
-		Self: txSelf,
+		Self:    txSelf,
 	}
-	if dagNode != nil {
-		tx.Decode(dagNode.RawData())
-	}
-
-	return tx
 }

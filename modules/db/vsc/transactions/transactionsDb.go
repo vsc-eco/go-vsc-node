@@ -83,23 +83,35 @@ func (e *transactions) SetOutput(sOut SetResultUpdate) {
 	}
 	ctx := context.Background()
 
-	update := bson.M{}
-	push := bson.M{}
+	set := bson.M{}
+	// $addToSet (not $push) — block reprocessing on a halt-and-retry cycle
+	// would otherwise duplicate the same TransactionOutput entry. The
+	// (Id, Index) value is content-determined: same ContractOutput CID +
+	// same input indices on every retry → $addToSet dedupes exactly.
+	addToSet := bson.M{}
 
 	if sOut.Output != nil {
-		push["output"] = sOut.Output
+		addToSet["output"] = sOut.Output
 	}
 	if sOut.Ledger != nil {
-		update["ledger"] = sOut.Ledger
+		set["ledger"] = sOut.Ledger
 	}
 	if sOut.Status != nil {
-		update["status"] = sOut.Status
+		set["status"] = sOut.Status
 	}
 
-	e.UpdateOne(ctx, query, bson.M{
-		"$set":  update,
-		"$push": push,
-	})
+	update := bson.M{}
+	if len(set) > 0 {
+		update["$set"] = set
+	}
+	if len(addToSet) > 0 {
+		update["$addToSet"] = addToSet
+	}
+	if len(update) == 0 {
+		return
+	}
+
+	e.UpdateOne(ctx, query, update)
 }
 
 func (e *transactions) GetTransaction(id string) *TransactionRecord {
