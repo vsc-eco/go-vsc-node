@@ -203,7 +203,7 @@ func TestnetConfig() SystemConfig {
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
 			},
 			ZKVerifierChains: map[string]string{
-				"ETH": "vsc1BbR6AMNwmPFrc1MjMMWkpaQCAfzwCmXgkj",
+				"ETH": "vsc1BdjvsW9XtHZKKLXNscsiqBrPt2hhsbdZgp",
 			},
 		},
 		tssParams: params.DefaultTssParams,
