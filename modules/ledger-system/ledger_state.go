@@ -100,6 +100,9 @@ func (state *LedgerState) SnapshotForAccount(account string, blockHeight uint64,
 	return bal
 }
 
+// Mirror state_engine.UpdateBalances (state_engine.go:1295-1380): start from the
+// BalanceDb snapshot field for the asset, then add every LedgerDb record past
+// the snapshot height.
 func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset string) int64 {
 	if !slices.Contains(assetTypes, asset) {
 		return 0
@@ -109,60 +112,28 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 
 	var recordHeight uint64
 	var balRecord ledger_db.BalanceRecord
-	if balRecordPtr == nil {
-		recordHeight = 0
-	} else {
+	if balRecordPtr != nil {
 		balRecord = *balRecordPtr
 		recordHeight = balRecord.BlockHeight + 1
 	}
-	if asset == "hbd" {
-		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, recordHeight, blockHeight, asset, ledger_db.LedgerOptions{
-			OpType: []string{"unstake", "deposit"},
-		})
 
-		balAdjust := int64(0)
+	ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, recordHeight, blockHeight, asset)
 
-		for _, v := range *ledgerResults {
-			balAdjust += v.Amount
-		}
-
-		return balRecord.HBD + balAdjust
-	} else if asset == "hive" {
-		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, recordHeight, blockHeight, asset, ledger_db.LedgerOptions{
-			OpType: []string{"deposit"},
-		})
-
-		balAdjust := int64(0)
-
-		for _, v := range *ledgerResults {
-			balAdjust += v.Amount
-		}
-
-		return balRecord.Hive + balAdjust
-	} else if asset == "hbd_savings" {
-
-		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, recordHeight, blockHeight, asset, ledger_db.LedgerOptions{
-			OpType: []string{"stake"},
-		})
-
-		stakeBal := int64(0)
-
-		for _, v := range *ledgerResults {
-			stakeBal += v.Amount
-		}
-
-		return balRecord.HBD_SAVINGS + stakeBal
-	} else if asset == "hive_consensus" {
-		return balRecord.HIVE_CONSENSUS
-	} else {
-		return 0
+	balAdjust := int64(0)
+	for _, v := range *ledgerResults {
+		balAdjust += v.Amount
 	}
 
-	// LedgerResults, _ := ls.LedgerDb.GetLedgerRange(account, lastHeight, blockHeight, asset)
-
-	// fmt.Println("LedgerResults.len()", len(*LedgerResults))
-	// for _, v := range *LedgerResults {
-	// 	balRecord = balRecord + v.Amount
-	// }
-	// return balRecord
+	switch asset {
+	case "hbd":
+		return balRecord.HBD + balAdjust
+	case "hive":
+		return balRecord.Hive + balAdjust
+	case "hbd_savings":
+		return balRecord.HBD_SAVINGS + balAdjust
+	case "hive_consensus":
+		return balRecord.HIVE_CONSENSUS + balAdjust
+	default:
+		return 0
+	}
 }
