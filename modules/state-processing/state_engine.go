@@ -488,7 +488,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 
 				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() {
-					actionUpdate := map[string]interface{}{}
+					actionUpdate := map[string]any{}
 					err := json.Unmarshal(cj.Json, &actionUpdate)
 
 					if err == nil {
@@ -590,9 +590,18 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						validated := parsedBlock.Validate(se)
 
 						if validated {
-							se.slotStatus.Done = true
+							// Producer is recorded BEFORE execution because
+							// ExecuteTx reads se.slotStatus elsewhere; the
+							// Done flag is deliberately set AFTER ExecuteTx
+							// returns so a halt-mid-ExecuteTx (e.g. an
+							// unsafe-tagged DAG fetch failure) leaves Done
+							// false, preventing the bottom-of-ProcessBlock
+							// ExecuteBatch from running on incomplete state.
 							se.slotStatus.Producer = cj.RequiredAuths[0]
 							parsedBlock.ExecuteTx(se)
+							if se.unsafeFetchErr.Load() == nil {
+								se.slotStatus.Done = true
+							}
 						}
 					}
 					continue
@@ -733,10 +742,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				//TODO: Finish up support for directly handling staked transfers
 
 				var token string
-				if op.Value["amount"].(map[string]interface{})["nai"] == "@@000000021" {
+				switch op.Value["amount"].(map[string]any)["nai"] {
+				case "@@000000021":
 					token = "hive"
 
-				} else if op.Value["amount"].(map[string]interface{})["nai"] == "@@000000013" {
+				case "@@000000013":
 					token = "hbd"
 				}
 
@@ -944,7 +954,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								sigBytes, err1 := hex.DecodeString(sigPack.Sig)
 								msgBytes, _ := hex.DecodeString(sigPack.Msg)
 								if err == nil && err1 == nil {
-									if keyCache[sigPack.KeyId].Algo == tss_db.EcdsaType {
+									switch keyCache[sigPack.KeyId].Algo {
+									case tss_db.EcdsaType:
 										pubKey, err1 := btcec.ParsePubKey(publicKey, btcec.S256())
 
 										fmt.Println("err", err1)
@@ -965,7 +976,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 												Status: tss_db.SignComplete,
 											})
 										}
-									} else if keyCache[sigPack.KeyId].Algo == tss_db.EddsaType {
+									case tss_db.EddsaType:
 										pk := ed25519.PublicKey(publicKey)
 
 										edVerify := ed25519.Verify(pk, msgBytes, sigBytes)
@@ -1169,8 +1180,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		}
 	}
 
-	//Detects new slot and executes batch if so
-	if se.slotStatus.SlotHeight != slotInfo.StartHeight {
+	// Detects new slot and executes batch if so. Guarded by unsafeFetchErr:
+	// if any halt fired during this block's processing (election fetch,
+	// propose_block fetch, etc.), do NOT advance slotStatus or fire
+	// ExecuteBatch. ResetSlotState (called by the streamer's halt-retry
+	// path) reads slotStatus.SlotHeight to know where to replay from —
+	// advancing it here would lose the prior slot's start as the replay
+	// anchor, so the slot's L1 user ops in TxBatch would never be re-fed
+	// and the eventual successful run would miss them.
+	if se.slotStatus.SlotHeight != slotInfo.StartHeight && se.unsafeFetchErr.Load() == nil {
 		//Updates balances index before next batch can execute
 		vscBlock, _ := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight - 1)
 
@@ -1687,15 +1705,16 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			stHeight = prevBalRecord.BlockHeight + 1 //Must add one to prevent querying ledger results from same bal record
 		}
 		for _, asset := range assets {
-			if asset == "hbd" {
+			switch asset {
+			case "hbd":
 				ledgerBalances[asset] = balanceR.HBD
-			} else if asset == "hive" {
+			case "hive":
 				ledgerBalances[asset] = balanceR.Hive
-			} else if asset == "hbd_savings" {
+			case "hbd_savings":
 				ledgerBalances[asset] = balanceR.HBD_SAVINGS
-			} else if asset == "hive_consensus" {
+			case "hive_consensus":
 				ledgerBalances[asset] = balanceR.HIVE_CONSENSUS
-			} else {
+			default:
 				ledgerBalances[asset] = 0
 			}
 		}
@@ -1810,6 +1829,62 @@ func (se *StateEngine) AppendOutput(contractId string, out ContractResult) {
 		se.ContractResults[contractId] = make([]ContractResult, 0)
 	}
 	se.ContractResults[contractId] = append(se.ContractResults[contractId], out)
+}
+
+// ResetSlotState wipes every in-memory accumulator that grows by append
+// during slot execution and returns the slot start to replay from. Called
+// by the streamer after an unsafe-halt so the next listener entry can
+// re-feed the slot from clean state — the determinism requirement is that
+// a successful retry produces the same end state as a successful first-try,
+// which only holds if every replay starts from an identically-empty engine.
+//
+// Returned (replayFrom, ok):
+//   - ok=true with replayFrom = slotStatus.SlotHeight when there is an
+//     active slot. The streamer rewinds lastProcessed to replayFrom-1 so
+//     the listener delivers blocks starting at replayFrom.
+//   - ok=false when slotStatus is nil (process just started, no slot
+//     active). The streamer leaves lastProcessed alone and the listener
+//     will re-feed the failing block on its next iteration.
+//
+// Note on idempotency of DB side effects from the failed attempt:
+// every write site exercised between slot start and the halt is upsert-by-id
+// (StoreHeader, txDb.Ingest, IngestOplog→StoreLedger, IngestOutput,
+// SetNonce, SetOutput with $addToSet, StoreElection, ExecuteComplete,
+// IndexActions, Deposit). Replaying them is a no-op at the row level.
+// One latent exception: ClaimHBDInterest's StoreLedger Id includes a
+// positional index from BalanceDb.GetAll's Distinct() result, whose order
+// is not formally stable; pre-existing, fires only on monthly interest_op
+// virtual ops, not introduced by this PR.
+func (se *StateEngine) ResetSlotState() (replayFrom uint64, ok bool) {
+	if se.slotStatus != nil {
+		replayFrom = se.slotStatus.SlotHeight
+		ok = true
+	}
+
+	// State-engine accumulators (also cleared by Flush, kept explicit here
+	// so the field set this function clears is a self-documenting list).
+	se.ContractResults = make(map[string][]ContractResult)
+	se.TempOutputs = make(map[string]*contract_session.TempOutput)
+	se.TxOutput = make(map[string]TxOutput)
+	se.TxOutIds = make([]string, 0)
+	se.firstTxHeight = 0
+
+	// Cleared exclusively by reset, not by Flush:
+	se.TxBatch = make([]TxPacket, 0)
+	se.RcMap = make(map[string]int64)
+	se.slotStatus = nil
+
+	// Ledger-state accumulators (Oplog, VirtualLedger, GatewayBalances).
+	// These also drive ledgerSession.GetBalance during ExecuteBatch — leaving
+	// them populated would diverge balance reads on the replay.
+	se.LedgerState.Flush()
+
+	// Drop the recorded halt error so the next replay's halt-check starts
+	// clean. The streamer has already consumed the error via ConsumeUnsafeHalt
+	// before calling here, so this is normally a no-op, but stay defensive.
+	se.unsafeFetchErr.Store(nil)
+
+	return replayFrom, ok
 }
 
 func (se *StateEngine) Flush() {

@@ -236,6 +236,7 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, 0)
 	sr.SetHaltCheck(se.ConsumeUnsafeHalt)
+	sr.SetHaltReset(se.ResetSlotState)
 
 	ds, err := flatfs.CreateOrOpen(dataDir+"/keys", flatfs.Prefix(1), false)
 	if err != nil {

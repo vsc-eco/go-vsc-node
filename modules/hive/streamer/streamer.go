@@ -81,9 +81,18 @@ type StreamReader struct {
 	// next poll will re-feed the same Hive block. Used by the state engine
 	// to surface unsafe-tagged CID fetch failures (oplog / election / block
 	// DAG) so the indexer halts and retries instead of silently diverging.
-	haltCheck     HaltCheckFunction
-	ctx           context.Context
-	cancel        context.CancelFunc
+	haltCheck HaltCheckFunction
+	// haltReset is optional. When set, it's invoked after the halt-check
+	// fires and before the listener is recreated. Returns the slot start to
+	// replay from; if ok, the streamer rewinds lastProcessed so the next
+	// listener delivers from that block. The state engine's ResetSlotState
+	// method is the canonical implementation: it clears every in-memory
+	// accumulator that grows by append (TxBatch, state.Oplog, VirtualLedger,
+	// TxOutIds, ContractResults, RcMap, ...) so the replay starts from a
+	// clean engine and produces the same end state as a successful first-try.
+	haltReset HaltResetFunction
+	ctx       context.Context
+	cancel    context.CancelFunc
 	isPaused      atomic.Bool
 	lastProcessed uint64
 	lastSaved     *uint64
@@ -99,6 +108,15 @@ type StreamReader struct {
 // the streamer still functions, just without the halt-on-unsafe-fetch path.
 func (s *StreamReader) SetHaltCheck(fn HaltCheckFunction) {
 	s.haltCheck = fn
+}
+
+// SetHaltReset wires the optional halt-reset callback. Without it, halt-retry
+// re-feeds only the failing block — sufficient if no slot-level state has
+// accumulated, but loses determinism if the prior slot's L1 user ops are in
+// TxBatch (they'd never be re-fed). With it, the streamer rewinds to the
+// reported slot start so the replay is deterministic.
+func (s *StreamReader) SetHaltReset(fn HaltResetFunction) {
+	s.haltReset = fn
 }
 
 // inits a StreamReader with the provided hiveBlocks interface and process function
@@ -234,7 +252,7 @@ func (s *StreamReader) pollDb(fail func(error)) {
 	// the same Hive block is re-fed (lastProcessed is unchanged on halt).
 	// Non-halt errors are still treated as fatal — the previous behavior
 	// for db / decode failures is preserved.
-	backoff := haltRetryInitialBackoff
+	backoff := HaltRetryInitialBackoff
 	for {
 		cancel, errChan := s.hiveBlocks.ListenToBlockUpdates(s.ctx, s.lastProcessed, processBlock)
 		select {
@@ -242,16 +260,42 @@ func (s *StreamReader) pollDb(fail func(error)) {
 			cancel()
 			var halt *HaltError
 			if errors.As(err, &halt) {
-				vlog.Warn("listener halted on unsafe fetch — will retry same block",
-					"block", halt.Block, "err", halt.Inner, "backoff", backoff)
+				// Wipe slot accumulators and rewind lastProcessed to the
+				// slot start so the next listener delivers the slot's
+				// blocks fresh into a clean engine. Re-feeding only the
+				// failing block is non-deterministic when prior in-slot
+				// blocks contributed to TxBatch / state.Oplog —
+				// the slot-crossing ExecuteBatch consumed those during
+				// cycle 1, advanced slotStatus, and they wouldn't be
+				// re-fed on a halt-only-failing-block retry, so the
+				// eventual successful run would diverge from a clean
+				// first-try.
+				replayFrom, ok := halt.Block, false
+				if s.haltReset != nil {
+					if from, hasSlot := s.haltReset(); hasSlot {
+						replayFrom = from
+						ok = true
+					}
+				}
+				if ok {
+					// Rewind so the listener's `> lastProcessed` query
+					// starts delivery at replayFrom.
+					s.lastProcessed = replayFrom - 1
+					vlog.Warn("listener halted on unsafe fetch — replaying slot from clean state",
+						"haltBlock", halt.Block, "replayFrom", replayFrom,
+						"err", halt.Inner, "backoff", backoff)
+				} else {
+					vlog.Warn("listener halted on unsafe fetch — will retry same block",
+						"block", halt.Block, "err", halt.Inner, "backoff", backoff)
+				}
 				select {
 				case <-time.After(backoff):
 				case <-s.ctx.Done():
 					return
 				}
 				backoff *= 2
-				if backoff > haltRetryMaxBackoff {
-					backoff = haltRetryMaxBackoff
+				if backoff > HaltRetryMaxBackoff {
+					backoff = HaltRetryMaxBackoff
 				}
 				continue
 			}
@@ -290,9 +334,13 @@ func (e *HaltError) Error() string {
 
 func (e *HaltError) Unwrap() error { return e.Inner }
 
-const (
-	haltRetryInitialBackoff = 2 * time.Second
-	haltRetryMaxBackoff     = 30 * time.Second
+// Vars (not consts) so tests can shrink them. Production value chosen to
+// give a transient peer-routing hiccup time to heal before the next retry,
+// while capping at 30s so a sustained outage doesn't bloat the cycle time
+// indefinitely.
+var (
+	HaltRetryInitialBackoff = 2 * time.Second
+	HaltRetryMaxBackoff     = 30 * time.Second
 )
 
 // stops the StreamReader
@@ -316,6 +364,12 @@ type ProcessFunction func(block hiveblocks.HiveBlock, headHeight *uint64)
 // recent block. Non-nil error → halt poll loop, do NOT advance lastSaved,
 // so the same Hive block will be retried on the next tick.
 type HaltCheckFunction func() error
+
+// HaltResetFunction wipes in-memory state-engine accumulators after a halt
+// and reports the slot start the next listener should replay from. ok=false
+// means there is nothing to replay (no active slot); the streamer leaves
+// lastProcessed alone in that case.
+type HaltResetFunction func() (replayFrom uint64, ok bool)
 
 // Block height function returns the last block height that should be resumed form
 // This is useful for production where there is a replay requirement to get into *now* state

@@ -382,7 +382,12 @@ func (h *hiveBlocks) GetHighestBlock() (uint64, error) {
 }
 
 func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block HiveBlock, headBlock *uint64) error) (context.CancelFunc, <-chan error) {
-	startBlock--
+	// Caller's startBlock is "the last successfully processed block". Query
+	// strictly greater so the next delivery is startBlock+1. Re-feeding the
+	// last processed block would re-execute it under non-idempotent in-memory
+	// accumulators (TxBatch, state.Oplog, VirtualLedger, TxOutIds, etc.) — so
+	// halt-retry uses StateEngine.ResetSlotState + a rewound startBlock to
+	// drive a clean slot replay rather than relying on a single re-feed here.
 	ctx, cancel := context.WithCancel(ctx)
 	errChan := make(chan error)
 	go func() {
