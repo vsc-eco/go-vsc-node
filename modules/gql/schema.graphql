@@ -948,4 +948,115 @@ type Query {
     """Simulation input containing the batch of contract calls to execute."""
     input: SimulateContractCallsInput!
   ): [SimulateContractCallResult!]!
+
+  """
+  Get the Magi pendulum oracle snapshot whose tick block height is the
+  greatest value less than or equal to the given block height. Returns null
+  if no snapshot has been persisted yet.
+  """
+  pendulumOracleSnapshot(
+    """Block height to look up the snapshot for. Returns the latest tick at or before this height."""
+    blockHeight: Uint64!
+  ): PendulumOracleSnapshot
+
+  """
+  Get every pendulum oracle snapshot whose tick block height falls in the
+  half-open interval (fromBlock, toBlock], sorted by tick block height ascending.
+  Use this to drive dashboards that need the per-tick stream of (V, P, E, T, s)
+  geometry plus the trusted-mean / slash inputs feeding the swap-time SDK.
+  """
+  pendulumOracleSnapshotsInRange(
+    """Inclusive lower bound is fromBlock+1; pass 0 to read from the earliest tick."""
+    fromBlock: Uint64!
+    """Inclusive upper bound."""
+    toBlock: Uint64!
+  ): [PendulumOracleSnapshot!]!
+
+  """
+  Convenience query that returns just the (V, P, E, T, s) geometry block from
+  the snapshot at or before a given block height. The same data is reachable
+  via pendulumOracleSnapshot — this is the read path the W3 SDK consumes,
+  exposed standalone for contracts/UIs that only care about the geometry.
+  """
+  pendulumGeometry(
+    """Block height to look up the geometry for."""
+    blockHeight: Uint64!
+  ): PendulumGeometry
+}
+
+"""
+A per-tick oracle snapshot from the Magi pendulum FeedTracker. Each record
+mirrors the integer/SQ64 form persisted on every tick. SQ64 fields use 10^8
+fixed-point scale (1.0 = 100_000_000); HBD-side amounts are in HBD base
+units (int64).
+
+Geometry fields are populated when a tick has both live oracle data and a
+bonded committee — gate consumption on geometry_ok before reading them.
+"""
+type PendulumOracleSnapshot {
+  """Block height at which this oracle tick was produced."""
+  tick_block_height: Uint64!
+
+  """Trusted mean HIVE→HBD price in SQ64. Aggregated from on-chain feed_publish ops."""
+  trusted_hive_mean_sq64: Int64!
+  """True when the trusted mean had enough valid feeds to produce a value."""
+  trusted_hive_ok: Boolean!
+
+  """Moving-average HIVE→HBD price in SQ64."""
+  hive_moving_avg_sq64: Int64!
+  """True when the moving average had a value at this tick."""
+  hive_moving_avg_ok: Boolean!
+
+  """Current HBD interest rate in basis points (e.g. 1500 = 15%)."""
+  hbd_interest_rate_bps: Int!
+  """True when the HBD interest rate had a value at this tick."""
+  hbd_interest_rate_ok: Boolean!
+
+  """Sorted list of witness accounts whose feeds contributed to the trusted mean at this tick."""
+  trusted_witness_group: [String!]
+  """Sorted slash bps per witness for this tick window."""
+  witness_slash_bps: [PendulumWitnessSlash!]
+
+  """True when the geometry block (V/P/E/T/S) was computable for this tick. Required before consuming any geometry_* field."""
+  geometry_ok: Boolean!
+  """Total vault value V = 2P (HBD base units)."""
+  geometry_v_hbd: Int64!
+  """Pooled HBD-side depth P, summed across whitelisted pool contract balances."""
+  geometry_p_hbd: Int64!
+  """Effective bond E = T · hivePriceHBD · effectiveFraction (HBD base units)."""
+  geometry_e_hbd: Int64!
+  """Total HIVE_CONSENSUS bond across the current committee (HIVE base units)."""
+  geometry_t_hive: Int64!
+  """Geometry ratio s = V/E in SQ64 (10^8 scale)."""
+  geometry_s_sq64: Int64!
+}
+
+"""One row of the per-tick witness slash bps list."""
+type PendulumWitnessSlash {
+  """Hive account name of the slashed witness."""
+  witness: String!
+  """Slash basis points accumulated over this tick window."""
+  bps: Int!
+}
+
+"""
+The (V, P, E, T, s) geometry block extracted from a pendulum oracle snapshot.
+Same data as the geometry_* fields on PendulumOracleSnapshot, presented
+standalone for callers that only care about the swap-time inputs.
+"""
+type PendulumGeometry {
+  """Block height of the source oracle tick."""
+  tick_block_height: Uint64!
+  """True when the geometry was computable (live oracle + bonded committee)."""
+  ok: Boolean!
+  """Total vault value V = 2P (HBD base units)."""
+  v_hbd: Int64!
+  """Pooled HBD-side depth P (HBD base units)."""
+  p_hbd: Int64!
+  """Effective bond E (HBD base units)."""
+  e_hbd: Int64!
+  """Total HIVE_CONSENSUS bond T across the current committee (HIVE base units)."""
+  t_hive: Int64!
+  """Geometry ratio s = V/E in SQ64 (10^8 scale)."""
+  s_sq64: Int64!
 }
