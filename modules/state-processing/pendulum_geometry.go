@@ -1,52 +1,55 @@
 package state_engine
 
 import (
-	"strconv"
 	"strings"
 
-	"vsc-node/modules/contract/session"
 	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 )
 
-// pendulumPoolReserveReader reads each whitelisted pool's published HBD-side
-// reserve from the contract state DB. The pool MUST publish a base-10 ASCII
-// integer at PoolReserveStateKey on every swap; this reader is read-only and
-// returns (0, false) if the key is missing or unparseable.
+// PendulumPoolReserveReaderForTest exposes the unexported
+// pendulumPoolReserveReader so external test packages can drive the
+// production read path without standing up the full state engine.
+func (se *StateEngine) PendulumPoolReserveReaderForTest() pendulumoracle.PoolReserveReader {
+	return &pendulumPoolReserveReader{se: se}
+}
+
+// pendulumPoolReserveReader reads each whitelisted pool's HBD-side reserve
+// directly from the ledger as the contract account's HBD balance.
 //
-// Determinism: GetLastOutput pins the output to the highest block_height ≤
-// requested. Two nodes with identical state DBs return identical bytes for
-// the same (contractID, blockHeight). The geometry tick passes the persisted
-// snapshot's TickBlockHeight, which is itself a deterministic function of
-// the on-chain block stream.
+// Why direct balance and not contract state: every CLP pool already holds
+// its HBD reserves in the contract's HBD ledger account ("contract:<id>",
+// asset "hbd") — that's where users deposit when adding liquidity and
+// where swaps source their output. The only HBD a pool holds that ISN'T
+// liquidity is the network's claimable protocol-fee accumulation; that is
+// collected regularly via the pool's claim flow, so balance ≈ live
+// reserves with bounded drift. Reading the balance avoids forcing every
+// pool contract author to publish a state key in lockstep with their swap
+// handler.
+//
+// Determinism: LedgerSystem.GetBalance pins to a snapshot at blockHeight
+// from the balance DB plus in-flight unstake/deposit ops. Two nodes
+// processing identical block streams produce identical balance snapshots
+// at the same block height — the same determinism guarantee the W5
+// settlement reader relies on.
 type pendulumPoolReserveReader struct {
 	se *StateEngine
 }
 
 func (r *pendulumPoolReserveReader) ReadPoolHBDReserve(contractID string, blockHeight uint64) (int64, bool) {
-	if r == nil || r.se == nil || r.se.contractDb == nil || r.se.contractState == nil || r.se.da == nil {
+	if r == nil || r.se == nil || r.se.LedgerSystem == nil {
 		return 0, false
 	}
-	cs := contract_session.NewCallSession(
-		r.se.da,
-		r.se.contractDb,
-		r.se.contractState,
-		r.se.tssKeys,
-		blockHeight,
-		nil,
-	)
-	store := cs.GetStateStore(contractID)
-	if store == nil {
+	contractID = strings.TrimSpace(contractID)
+	if contractID == "" {
 		return 0, false
 	}
-	raw := store.Get(pendulumoracle.PoolReserveStateKey)
-	if len(raw) == 0 {
+	// Contract-owned ledger accounts are stored under the "contract:" prefix
+	// (see execution-context.go SendBalance / PullBalance).
+	bal := r.se.LedgerSystem.GetBalance("contract:"+contractID, blockHeight, "hbd")
+	if bal <= 0 {
 		return 0, false
 	}
-	v, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
-	if err != nil || v <= 0 {
-		return 0, false
-	}
-	return v, true
+	return bal, true
 }
 
 // pendulumCommitteeBondReader sums HIVE_CONSENSUS over the current election's
