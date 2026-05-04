@@ -191,6 +191,12 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		if uint64(rcsAvailable) < txShell.Headers.RcLimit || txShell.Headers.RcLimit == 0 {
 			return nil, fmt.Errorf("not enough RCS available: %d < %d", rcsAvailable, txShell.Headers.RcLimit)
 		}
+
+		// Reject multi-op txs whose declared RcLimit cannot cover the
+		// worst-case cost of their ops. See StaticMaxRcCost.
+		if staticMax := StaticMaxRcCost(txShell.Tx); staticMax > txShell.Headers.RcLimit {
+			return nil, fmt.Errorf("rc_limit insufficient for declared ops: %d < %d", txShell.Headers.RcLimit, staticMax)
+		}
 	}
 
 	//VALIDATION COMPLETE

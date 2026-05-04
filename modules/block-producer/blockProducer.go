@@ -328,24 +328,13 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 
 		tx := txMap[keyId][0]
 
-		rcLimit := uint64(0)
-		if tx.RcLimit == 0 {
-			//Minimum of 0.05 hbd or 50 integer units
-			for _, op := range tx.Ops {
-				if op.Type == "transfer" {
-					rcLimit += 100
-				} else if op.Type == "stake_hbd" {
-					rcLimit += 200
-				} else if op.Type == "unstake_hbd" {
-					rcLimit += 200
-				} else if op.Type == "withdraw" {
-					rcLimit += 200
-				} else if op.Type == "call" {
-					rcLimit += 100
-				} else {
-					rcLimit += 50
-				}
-			}
+		// Drop txs whose declared RcLimit cannot cover the worst-case
+		// cost of their ops. Mirrors the ingestion-layer check in
+		// transaction-pool.IngestTx so a byzantine peer can't bypass it.
+		if staticMax := transactionpool.StaticMaxRcCostFromRecord(tx.Ops); staticMax > tx.RcLimit {
+			vlog.Debug("tx dropped - rc_limit insufficient for ops",
+				"id", tx.Id, "rcLimit", tx.RcLimit, "staticMax", staticMax)
+			continue
 		}
 
 		didConsume, _ := rcSession.Consume(payer, slotHeight, int64(tx.RcLimit))
