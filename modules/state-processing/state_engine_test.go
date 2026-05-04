@@ -100,6 +100,7 @@ func newTestEnv() *testEnv {
 		txDb, ledgerDbImpl, balanceDb, nil,
 		interestClaims, vscBlocksDb, actionsDb, mockRcDb, nonceDb,
 		tssKeys, tssCommitments, tssRequests, nil, nil,
+		nil, nil,
 	)
 
 	mockReader := stateEngine.NewMockReader()
