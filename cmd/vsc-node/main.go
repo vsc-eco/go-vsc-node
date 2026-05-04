@@ -30,6 +30,7 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	election_proposer "vsc-node/modules/election-proposer"
 	"vsc-node/modules/gateway"
+	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
@@ -166,6 +167,11 @@ func main() {
 
 	dataAvailability := data_availability.New(p2p, identityConfig, da)
 
+	pendulumSettlementBroadcaster := pendulumsettlement.NewHiveBroadcaster(
+		&hiveCreator,
+		identityConfig.Get().HiveUsername,
+	)
+
 	se := stateEngine.New(
 		sysConfig,
 		da,
@@ -187,6 +193,8 @@ func main() {
 		tssRequests,
 		pendulumOracleDb,
 		wasm,
+		identityConfig,
+		pendulumSettlementBroadcaster,
 	)
 
 	rcSystem := se.RcSystem

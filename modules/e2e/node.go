@@ -180,6 +180,8 @@ func MakeNode(input MakeNodeInput) *Node {
 		tssRequests,
 		pendulumOracleDb,
 		wasm,
+		identityConfig,
+		nil,
 	)
 
 	blockConsumer := blockconsumer.New(se)
