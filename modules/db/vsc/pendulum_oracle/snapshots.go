@@ -56,6 +56,31 @@ func (s *snapshotsDb) GetSnapshot(tickBlockHeight uint64) (*SnapshotRecord, bool
 	return &out, true, nil
 }
 
+func (s *snapshotsDb) GetSnapshotsInRange(fromBlockHeight, toBlockHeight uint64) ([]SnapshotRecord, error) {
+	if toBlockHeight <= fromBlockHeight {
+		return nil, nil
+	}
+	filter := bson.M{"tick_block_height": bson.M{"$gt": fromBlockHeight, "$lte": toBlockHeight}}
+	opts := options.Find().SetSort(bson.D{{Key: "tick_block_height", Value: 1}})
+	cur, err := s.Find(context.Background(), filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(context.Background())
+	out := make([]SnapshotRecord, 0)
+	for cur.Next(context.Background()) {
+		var rec SnapshotRecord
+		if err := cur.Decode(&rec); err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	if err := cur.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *snapshotsDb) GetSnapshotAtOrBefore(blockHeight uint64) (*SnapshotRecord, bool, error) {
 	filter := bson.M{"tick_block_height": bson.M{"$lte": blockHeight}}
 	opts := options.FindOne().SetSort(bson.D{{Key: "tick_block_height", Value: -1}})
