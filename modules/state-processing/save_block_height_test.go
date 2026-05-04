@@ -106,25 +106,22 @@ func TestSaveBlockHeight_PinExactlyAtBoundary(t *testing.T) {
 	assert.Equal(t, pin, got, "boundary case (exactly pinWindow) should still pin")
 }
 
-func TestSaveBlockHeight_LastBlkBehindPinFallsThroughToFlush(t *testing.T) {
-	// Documents current behavior in a corner case that should be
-	// unreachable in production. SaveBlockHeight is called from the
-	// streamer with lastBlk = the block that was just processed, and
-	// firstTxHeight is set to (block being processed - 1) by ExecuteBatch,
-	// so the invariant lastBlk >= firstTxHeight holds whenever this is
-	// called from the live indexer path.
-	//
-	// However, the implementation's Flush branch fires for ANY non-pin
-	// case — including lastBlk < pinHeight — so the state IS wiped here.
-	// If a future change causes this to trigger in production it would
-	// silently advance the checkpoint past pending tx output. Worth
-	// pinning the behavior in a test.
+func TestSaveBlockHeight_LastBlkBehindPinIsDefensiveNoOp(t *testing.T) {
+	// Defensive no-op for the "lastBlk behind the pin" corner case
+	// (lastBlk <= pinHeight). Unreachable on the live indexer path —
+	// firstTxHeight is set during processing of a block, so firstTxHeight-1
+	// is always ≤ any subsequent lastBlk — but the prior implementation
+	// fell through into the stale-pin Flush branch in this case, which
+	// would silently wipe pending output state on any future code path
+	// that triggered it (out-of-order delivery, clock skew, refactor
+	// mistake). The fix preserves state and holds the checkpoint at
+	// lastSavedBlk instead of advancing past pending output.
 	se := newSEWithTxOutput(100, 1)
 
 	got := se.SaveBlockHeight(50, 200)
-	assert.Equal(t, uint64(50), got)
-	assert.Empty(t, se.TxOutput, "current behavior: Flush fires for any non-pin case")
-	assert.Equal(t, uint64(0), se.firstTxHeight)
+	assert.Equal(t, uint64(200), got, "must return lastSavedBlk to hold the checkpoint, not advance to lastBlk")
+	assert.Len(t, se.TxOutput, 1, "pending TxOutput must be preserved, NOT wiped")
+	assert.Equal(t, uint64(100), se.firstTxHeight, "firstTxHeight must be preserved")
 }
 
 func TestSaveBlockHeight_NoFirstTxHeightSkipsPinLogic(t *testing.T) {

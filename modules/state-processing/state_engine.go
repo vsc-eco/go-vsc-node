@@ -63,7 +63,16 @@ var log = vsclog.Module("se")
 // a known cost. Read once at process start; not safe to flip at runtime.
 var AllowUnsafeSkip = func() bool {
 	v := os.Getenv("VSC_ALLOW_UNSAFE_SKIP")
-	return v == "1" || strings.EqualFold(v, "true")
+	enabled := v == "1" || strings.EqualFold(v, "true")
+	if enabled {
+		log.Warn(
+			"VSC_ALLOW_UNSAFE_SKIP=true — unsafe-tagged fetch failures will be DOWNGRADED to warn-and-skip. " +
+				"Indexer state may diverge from consensus. Unset the variable for normal operation.",
+		)
+	} else {
+		log.Debug("VSC_ALLOW_UNSAFE_SKIP disabled — unsafe-tagged fetch failures will halt the indexer (default).")
+	}
+	return enabled
 }()
 
 type ProcessExtraInfo struct {
@@ -435,6 +444,17 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	}
 
 	for blkIdx, tx := range block.Transactions {
+		// Short-circuit: if an unsafe-tagged fetch halt fired during a
+		// prior Hive tx in this block, stop processing the rest of the
+		// block. The streamer's haltCheck will pick the flag up after
+		// ProcessBlock returns and re-feed this block from clean state
+		// via ResetSlotState. Continuing here would only run more
+		// upsert-by-id writes that re-apply identically on retry — no
+		// correctness benefit, just wasted work and confusing log lines
+		// from handlers operating on partial state.
+		if se.unsafeFetchErr.Load() != nil {
+			break
+		}
 		if se.pendulumFeed != nil {
 			se.pendulumFeed.IngestTransactionOps(block.BlockNumber, tx)
 		}
@@ -450,10 +470,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			// auth are handled in the user operations section below.
 			if len(RequiredAuths) > 0 {
 				cj := CustomJson{
-					Id:                   opVal["id"].(string),
-					RequiredAuths:        common.ArrayToStringArray(opVal["required_auths"]),
-					RequiredPostingAuths: common.ArrayToStringArray(opVal["required_posting_auths"]),
-					Json:                 []byte(opVal["json"].(string)),
+					// unused fields
+					// Id:                   opVal["id"].(string),
+					// RequiredAuths:        common.ArrayToStringArray(opVal["required_auths"]),
+					// RequiredPostingAuths: common.ArrayToStringArray(opVal["required_posting_auths"]),
+					Json: []byte(opVal["json"].(string)),
 				}
 
 				if Id == "vsc.fr_sync" && RequiredAuths[0] == se.sconf.GatewayWallet() {
@@ -1918,13 +1939,12 @@ const pinWindowSlots = 6
 // Note on the slot-boundary fall-through: by the time the producer's
 // vsc.propose_block lands on L1, every ContractOutput inside it has run
 // ContractOutput.Ingest -> Flush, so TxOutput is empty and this function
-// falls through to `return lastBlk`. The previous develop-era logic
+// falls through to `return lastBlk`. The previous logic
 // consulted vscBlocks.GetBlockByHeight(lastBlk) and returned
 // SlotHeight+1 in this case, which is strictly behind lastBlk; on crash
-// recovery the indexer would re-execute blocks (SlotHeight, lastBlk]
-// even though they were already processed. The new behavior advances by
-// one block instead — same correctness, slightly less replay. The
-// vscBlocks consultation was therefore deliberately dropped.
+// recovery the indexer would re-execute blocks (SlotHeight, lastBlk].
+// The new behavior advances by one block instead — same correctness, less
+// replay. The vscBlocks consultation was therefore deliberately dropped.
 func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint64 {
 	if lastBlk == 0 || lastSavedBlk == 0 {
 		return lastSavedBlk
@@ -1933,10 +1953,27 @@ func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint
 	if len(se.TxOutput) > 0 && se.firstTxHeight > 0 {
 		pinHeight := se.firstTxHeight - 1
 		pinWindow := pinWindowSlots * CONSENSUS_SPECS.SlotLength
+		// Defensive no-op for "lastBlk behind the pin" (lastBlk <= pinHeight).
+		// This is unreachable on the live path — firstTxHeight is set during
+		// processing of a block that is, by definition, <= any subsequent
+		// lastBlk — but the prior implementation fell through into the
+		// stale-pin Flush branch in this case, which would silently wipe
+		// pending output state on any future code path that triggered it
+		// (out-of-order delivery, clock skew, refactor mistake). Hold the
+		// checkpoint and leave state intact instead.
+		if lastBlk <= pinHeight {
+			log.Warn(
+				"SaveBlockHeight: lastBlk behind pin (defensive no-op, no flush)",
+				"lastBlk", lastBlk,
+				"pinHeight", pinHeight,
+				"firstTxHeight", se.firstTxHeight,
+			)
+			return lastSavedBlk
+		}
 		// Only pin if the first uncommitted TX is within a recent window.
 		// Beyond the window the output is stale — Flush so the checkpoint
 		// can advance.
-		if lastBlk > pinHeight && lastBlk-pinHeight <= pinWindow {
+		if lastBlk-pinHeight <= pinWindow {
 			log.Trace(
 				"SaveBlockHeight: pinning",
 				"lastBlk",
