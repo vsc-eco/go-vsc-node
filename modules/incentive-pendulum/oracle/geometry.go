@@ -6,23 +6,22 @@ import (
 	"vsc-node/lib/intmath"
 )
 
-// PoolReserveStateKey is the contract-state key each whitelisted pool MUST
-// publish its current HBD-side reserve under. The value is a base-10 ASCII
-// integer (HBD base units, signed int64). Pools update this on every swap
-// alongside their own reserve bookkeeping.
+// PoolReserveReader fetches the HBD-side reserve for a single pool at a
+// specific block height. The production reader returns the pool contract's
+// HBD ledger balance: pool HBD reserves live as the contract account's HBD
+// balance, so the ledger snapshot is the source of truth — no per-pool
+// state-key publication required.
 //
-// Convention is intentionally narrow: a single key, no JSON, no nested
-// structure — the geometry tick reads it from every whitelisted pool every
-// 5 minutes, and any parse-side complexity multiplies across the whole
-// committee. The pool integration spec (W8) documents this for contract
-// authors.
-const PoolReserveStateKey = "__pendulum_hbd_reserve"
-
-// PoolReserveReader fetches the published HBD-side reserve for a single pool
-// at a specific block height. Returns (amount, true) when the pool has
-// published a reserve, (0, false) otherwise. Implementations MUST be
-// deterministic: two nodes calling the same (contractID, blockHeight) must
-// receive identical results.
+// The only HBD a pool holds that is NOT liquidity is the network's
+// claimable protocol-fee accumulation (kept inside the pool per the W3
+// design); that is collected regularly via the pool's claim flow, so the
+// difference between balance and live reserves stays small. Erring slightly
+// high on P only inflates V, which biases the split slightly toward LPs —
+// the safe direction.
+//
+// Returns (amount, true) when the contract holds a positive HBD balance,
+// (0, false) otherwise. Implementations MUST be deterministic: two nodes
+// calling the same (contractID, blockHeight) must receive identical results.
 type PoolReserveReader interface {
 	ReadPoolHBDReserve(contractID string, blockHeight uint64) (int64, bool)
 }
