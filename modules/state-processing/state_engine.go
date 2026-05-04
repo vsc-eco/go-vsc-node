@@ -114,6 +114,9 @@ type StateEngine struct {
 	// pendulumApplier is the swap-time SDK method's executor; nil when the
 	// snapshot DB or whitelist isn't wired (e.g. some test harnesses).
 	pendulumApplier wasm_context.PendulumApplier
+	// pendulumGeometry computes (V, P, E, T, s) per tick from contract state
+	// and balance ledger. nil-safe when the snapshot DB isn't wired.
+	pendulumGeometry *pendulumoracle.GeometryComputer
 
 	// lastPersistedTickHeight guards against re-saving an unchanged snapshot
 	// every block; we only write when the tracker advances to a new tick.
@@ -1147,6 +1150,26 @@ func (se *StateEngine) persistPendulumSnapshotIfNew() {
 			})
 		}
 	}
+
+	// W7: populate geometry. Reads pool reserves + committee bond at the
+	// tick's block height; the W3 SDK method consumes this on every swap.
+	if se.pendulumGeometry != nil {
+		geo := se.pendulumGeometry.Compute(pendulumoracle.GeometryInputs{
+			BlockHeight:       snap.TickBlockHeight,
+			HivePriceHBDSQ64:  snap.TrustedHiveMean,
+			HivePriceOK:       snap.TrustedHiveOK,
+			WhitelistedPools:  se.sconf.PendulumPoolWhitelist(),
+			EffectiveStakeNum: 2,
+			EffectiveStakeDen: 3,
+		})
+		rec.GeometryOK = geo.OK
+		rec.GeometryV = geo.V
+		rec.GeometryP = geo.P
+		rec.GeometryE = geo.E
+		rec.GeometryT = geo.T
+		rec.GeometryS = int64(geo.S)
+	}
+
 	if err := se.pendulumOracleDb.SaveSnapshot(rec); err != nil {
 		log.Debug("pendulum oracle snapshot persist failed", "tick", snap.TickBlockHeight, "err", err)
 		return
@@ -1782,6 +1805,10 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 			ls,
 			func() []string { return sconf.PendulumPoolWhitelist() },
 			pendulumwasm.DefaultConfig(),
+		)
+		se.pendulumGeometry = pendulumoracle.NewGeometryComputer(
+			&pendulumPoolReserveReader{se: se},
+			&pendulumCommitteeBondReader{se: se},
 		)
 	}
 
