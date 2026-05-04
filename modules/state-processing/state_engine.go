@@ -117,6 +117,19 @@ type StateEngine struct {
 	// pendulumGeometry computes (V, P, E, T, s) per tick from contract state
 	// and balance ledger. nil-safe when the snapshot DB isn't wired.
 	pendulumGeometry *pendulumoracle.GeometryComputer
+	// pendulumBroadcaster emits vsc.pendulum_settlement on epoch transitions
+	// when the local node is the elected leader. Nil disables broadcasts
+	// (test harnesses, --disable-pendulum builds).
+	pendulumBroadcaster pendulumsettlement.Broadcaster
+	// balanceDb is held so the W5 settlement orchestration can read
+	// HIVE_CONSENSUS bonds via BalanceRecord directly, bypassing the
+	// op-type-filter trap on LedgerSystem.GetBalance.
+	balanceDb ledgerDb.Balances
+	// selfHiveUsername is the local node's Hive account name, used by the
+	// settlement engine to gate leader-only orchestration. Empty string
+	// means "any node may run" which only happens when identityConfig isn't
+	// wired (test harness path).
+	selfHiveUsername string
 
 	// lastPersistedTickHeight guards against re-saving an unchanged snapshot
 	// every block; we only write when the tracker advances to a new tick.
@@ -1081,7 +1094,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		se.persistPendulumSnapshotIfNew()
 	}
 	if se.pendulumSettle != nil {
-		_ = se.pendulumSettle.ProcessBlock(block.BlockNumber)
+		if err := se.pendulumSettle.ProcessBlock(block.BlockNumber); err != nil {
+			log.Warn("pendulum settlement boundary handler failed", "block_height", block.BlockNumber, "err", err)
+		}
 	}
 }
 
@@ -1738,6 +1753,8 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	tssRequests tss_db.TssRequests,
 	pendulumOracleDb pendulum_oracle.PendulumOracleSnapshots,
 	wasm *wasm_runtime.Wasm,
+	identityConfig common.IdentityConfig,
+	pendulumBroadcaster pendulumsettlement.Broadcaster,
 ) *StateEngine {
 
 	ls := ledgerSystem.New(balanceDb, ledgerDb, interestClaims, actionDb)
@@ -1795,8 +1812,13 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		LedgerSystem: ls,
 		LedgerState:  ledgerState,
 
-		pendulumFeed:     pendulumoracle.NewFeedTracker(),
-		pendulumOracleDb: pendulumOracleDb,
+		pendulumFeed:        pendulumoracle.NewFeedTracker(),
+		pendulumOracleDb:    pendulumOracleDb,
+		pendulumBroadcaster: pendulumBroadcaster,
+		balanceDb:           balanceDb,
+	}
+	if identityConfig != nil {
+		se.selfHiveUsername = identityConfig.Get().HiveUsername
 	}
 
 	if pendulumOracleDb != nil {
@@ -1814,7 +1836,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 
 	se.pendulumSettle = pendulumsettlement.New(
 		se.electionDb,
-		"",
+		se.selfHiveUsername,
 		func(slotHeight uint64) []pendulumsettlement.ScheduledLeader {
 			schedule := se.GetSchedule(slotHeight)
 			out := make([]pendulumsettlement.ScheduledLeader, 0, len(schedule))
@@ -1826,109 +1848,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 			}
 			return out
 		},
-		func(info pendulumsettlement.BoundaryInfo) error {
-			// W5 scaffold: deterministic settlement marker + deterministic split/distribution preview.
-			txID := pendulumsettlement.BuildDeterministicSettlementTxID(
-				info.CurrentEpoch,
-				info.PreviousEpoch,
-				info.Leader,
-			)
-			bh := info.BlockHeight
-			if bh > 0 {
-				bh = bh - 1
-			}
-			r := se.LedgerSystem.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, bh)
-			if r <= 0 {
-				log.Debug(
-					"pendulum settlement boundary detected (empty R bucket)",
-					"epoch",
-					info.CurrentEpoch,
-					"prev_epoch",
-					info.PreviousEpoch,
-					"tx_id",
-					txID,
-					"leader",
-					info.Leader,
-				)
-				return nil
-			}
-
-			electionInfo, err := se.electionDb.GetElectionByHeight(info.BlockHeight)
-			if err != nil {
-				return nil
-			}
-
-			bondByAccount := make(map[string]int64)
-			totalBond := int64(0)
-			slashBpsByAccount := make(map[string]int)
-			feedTick := se.PendulumFeedTracker().LastTick()
-			for _, m := range electionInfo.Members {
-				account := m.Account
-				if !strings.HasPrefix(account, "hive:") {
-					account = "hive:" + account
-				}
-				bond := se.LedgerSystem.GetBalance(account, bh, "hive_consensus")
-				if bond <= 0 {
-					continue
-				}
-				bondByAccount[account] = bond
-				totalBond += bond
-
-				plain := strings.TrimPrefix(account, "hive:")
-				if bps, ok := feedTick.WitnessSlashBps[plain]; ok {
-					slashBpsByAccount[account] = bps
-				}
-				if bps, ok := feedTick.WitnessSlashBps[account]; ok {
-					slashBpsByAccount[account] = bps
-				}
-			}
-
-			postSlashBonds, appliedSlashes := pendulumsettlement.ApplySlashesToBonds(bondByAccount, slashBpsByAccount)
-			totalBondPost := int64(0)
-			for _, b := range postSlashBonds {
-				totalBondPost += b
-			}
-
-			split := pendulumsettlement.CalculateSplitPreviewFixed(r, totalBondPost, 2, 3, 0, 0)
-			nodeDists := pendulumsettlement.ComputeNodeDistributions(split.FinalNodeShare, postSlashBonds)
-			distPayload := make([]pendulumsettlement.DistributionEntry, 0, len(nodeDists))
-			for _, d := range nodeDists {
-				distPayload = append(distPayload, pendulumsettlement.DistributionEntry{
-					Account: d.Account,
-					HBDAmt:  d.Amount,
-				})
-			}
-			slashPayload := make([]pendulumsettlement.SlashEntry, 0, len(appliedSlashes))
-			for _, s := range appliedSlashes {
-				slashPayload = append(slashPayload, pendulumsettlement.SlashEntry{
-					Account: s.Account,
-					Bps:     s.Bps,
-				})
-			}
-			payload := pendulumsettlement.BuildSettlementPayload(
-				info.CurrentEpoch,
-				info.PreviousEpoch,
-				slashPayload,
-				distPayload,
-			)
-			log.Debug(
-				"pendulum settlement preview",
-				"epoch", info.CurrentEpoch,
-				"prev_epoch", info.PreviousEpoch,
-				"tx_id", txID,
-				"leader", info.Leader,
-				"r_hbd", split.R,
-				"t_hive", totalBond,
-				"t_hive_post_slash", totalBondPost,
-				"e_hive", split.E,
-				"node_share_hbd", split.FinalNodeShare,
-				"pool_share_hbd", split.FinalPoolShare,
-				"node_dist_count", len(nodeDists),
-				"slash_count", len(slashPayload),
-				"payload_dist_count", len(payload.Dists),
-			)
-			return nil
-		},
+		se.runPendulumSettlement,
 	)
 
 	return se

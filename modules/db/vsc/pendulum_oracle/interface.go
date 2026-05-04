@@ -14,4 +14,11 @@ type PendulumOracleSnapshots interface {
 
 	// GetSnapshot returns the snapshot at exactly tickBlockHeight, if any.
 	GetSnapshot(tickBlockHeight uint64) (*SnapshotRecord, bool, error)
+
+	// GetSnapshotsInRange returns every snapshot whose TickBlockHeight is in
+	// the half-open interval (fromBlockHeight, toBlockHeight], sorted by
+	// TickBlockHeight ascending. The boundary is exclusive on the low end so
+	// the W5 settlement leader can read "(prev_epoch_start, bh-1]" without
+	// double-counting the prior epoch's last tick.
+	GetSnapshotsInRange(fromBlockHeight, toBlockHeight uint64) ([]SnapshotRecord, error)
 }
