@@ -278,6 +278,7 @@ func main() {
 		TssRequests:    tssRequests,
 		InterestClaims: interestClaims,
 		ChainOracle:    oracle.ChainOracle(),
+		PendulumOracle: pendulumOracleDb,
 	}}), gqlConf)
 
 	plugins := make([]aggregate.Plugin, 0)

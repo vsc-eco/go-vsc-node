@@ -24,6 +24,7 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/pendulum_oracle"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -774,6 +775,94 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 	ledgerSession.Revert()
 
 	return results, nil
+}
+
+// PendulumOracleSnapshot is the resolver for the pendulumOracleSnapshot field.
+func (r *queryResolver) PendulumOracleSnapshot(ctx context.Context, blockHeight model.Uint64) (*PendulumOracleSnapshot, error) {
+	if r.PendulumOracle == nil {
+		return nil, nil
+	}
+	rec, ok, err := r.PendulumOracle.GetSnapshotAtOrBefore(uint64(blockHeight))
+	if err != nil {
+		return nil, err
+	}
+	if !ok || rec == nil {
+		return nil, nil
+	}
+	out := pendulumSnapshotToGQL(*rec)
+	return &out, nil
+}
+
+// PendulumOracleSnapshotsInRange is the resolver for the pendulumOracleSnapshotsInRange field.
+func (r *queryResolver) PendulumOracleSnapshotsInRange(ctx context.Context, fromBlock model.Uint64, toBlock model.Uint64) ([]PendulumOracleSnapshot, error) {
+	if r.PendulumOracle == nil {
+		return []PendulumOracleSnapshot{}, nil
+	}
+	if uint64(toBlock) < uint64(fromBlock) {
+		return nil, fmt.Errorf("toBlock must be >= fromBlock")
+	}
+	recs, err := r.PendulumOracle.GetSnapshotsInRange(uint64(fromBlock), uint64(toBlock))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PendulumOracleSnapshot, 0, len(recs))
+	for _, rec := range recs {
+		out = append(out, pendulumSnapshotToGQL(rec))
+	}
+	return out, nil
+}
+
+// PendulumGeometry is the resolver for the pendulumGeometry field.
+func (r *queryResolver) PendulumGeometry(ctx context.Context, blockHeight model.Uint64) (*PendulumGeometry, error) {
+	if r.PendulumOracle == nil {
+		return nil, nil
+	}
+	rec, ok, err := r.PendulumOracle.GetSnapshotAtOrBefore(uint64(blockHeight))
+	if err != nil {
+		return nil, err
+	}
+	if !ok || rec == nil {
+		return nil, nil
+	}
+	return &PendulumGeometry{
+		TickBlockHeight: model.Uint64(rec.TickBlockHeight),
+		Ok:              rec.GeometryOK,
+		VHbd:            model.Int64(rec.GeometryV),
+		PHbd:            model.Int64(rec.GeometryP),
+		EHbd:            model.Int64(rec.GeometryE),
+		THive:           model.Int64(rec.GeometryT),
+		SSq64:           model.Int64(rec.GeometryS),
+	}, nil
+}
+
+// pendulumSnapshotToGQL converts a persisted SnapshotRecord into the GraphQL
+// model. Field-by-field mapping kept explicit so renames in either layer
+// surface as a compile error rather than a silent drop.
+func pendulumSnapshotToGQL(rec pendulum_oracle.SnapshotRecord) PendulumOracleSnapshot {
+	var slashes []PendulumWitnessSlash
+	if len(rec.WitnessSlashBps) > 0 {
+		slashes = make([]PendulumWitnessSlash, 0, len(rec.WitnessSlashBps))
+		for _, s := range rec.WitnessSlashBps {
+			slashes = append(slashes, PendulumWitnessSlash{Witness: s.Witness, Bps: s.Bps})
+		}
+	}
+	return PendulumOracleSnapshot{
+		TickBlockHeight:     model.Uint64(rec.TickBlockHeight),
+		TrustedHiveMeanSq64: model.Int64(rec.TrustedHiveMean),
+		TrustedHiveOk:       rec.TrustedHiveOK,
+		HiveMovingAvgSq64:   model.Int64(rec.HiveMovingAvg),
+		HiveMovingAvgOk:     rec.HiveMovingAvgOK,
+		HbdInterestRateBps:  rec.HBDInterestRateBps,
+		HbdInterestRateOk:   rec.HBDInterestRateOK,
+		TrustedWitnessGroup: rec.TrustedWitnessGroup,
+		WitnessSlashBps:     slashes,
+		GeometryOk:          rec.GeometryOK,
+		GeometryVHbd:        model.Int64(rec.GeometryV),
+		GeometryPHbd:        model.Int64(rec.GeometryP),
+		GeometryEHbd:        model.Int64(rec.GeometryE),
+		GeometryTHive:       model.Int64(rec.GeometryT),
+		GeometrySSq64:       model.Int64(rec.GeometryS),
+	}
 }
 
 // Amount is the resolver for the amount field.
