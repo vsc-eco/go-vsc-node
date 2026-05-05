@@ -2,7 +2,6 @@ package oracle
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +21,16 @@ const (
 )
 
 // FeedTickSnapshot is the last computed pendulum oracle view (after a tick).
+//
+// The tracker's responsibility is the price oracle: aggregating Hive
+// witnesses' feed_publish quotes into a trusted HBD/HIVE mean, and tracking
+// each Hive witness's recency + signature window for the trust filter.
+//
+// Liveness scoring for the VSC committee is NOT done here. VSC committee
+// members are not necessarily Hive witnesses; their reward-reduction bps
+// are computed by the rewards/ package from L2 evidence (vsc_blocks +
+// tss_commitments) at snapshot persistence time, and stored alongside this
+// snapshot in the pendulum_oracle_snapshots collection.
 type FeedTickSnapshot struct {
 	TickBlockHeight uint64
 
@@ -35,7 +44,6 @@ type FeedTickSnapshot struct {
 	HBDInterestRateOK  bool
 
 	TrustedWitnessGroup []string
-	WitnessSlashBps     map[string]int
 }
 
 // FeedTracker ingests Hive L1 blocks: witness producer schedule, feed_publish (HIVE/HBD),
@@ -78,12 +86,6 @@ func (t *FeedTracker) LastTick() FeedTickSnapshot {
 	out := t.last
 	if len(t.last.TrustedWitnessGroup) > 0 {
 		out.TrustedWitnessGroup = append([]string(nil), t.last.TrustedWitnessGroup...)
-	}
-	if len(t.last.WitnessSlashBps) > 0 {
-		out.WitnessSlashBps = make(map[string]int, len(t.last.WitnessSlashBps))
-		for w, bps := range t.last.WitnessSlashBps {
-			out.WitnessSlashBps[w] = bps
-		}
 	}
 	return out
 }
@@ -145,124 +147,17 @@ func (t *FeedTracker) TickIfDue(blockHeight uint64) {
 
 	group := RunningWitnessGroup(trusted, sigs, DefaultWitnessGroupSize)
 	apr, aprOk := HBDAPRModeFromGroup(group, t.witnessProps)
-	slashBps := t.computeWitnessSlashBps(blockHeight)
 
 	t.last = FeedTickSnapshot{
-		TickBlockHeight:      blockHeight,
-		TrustedHiveMean:      mean,
-		TrustedHiveOK:        meanOk,
-		HiveMovingAvg:        ma,
-		HiveMovingAvgOK:      maOk,
-		HBDInterestRateBps:   apr,
-		HBDInterestRateOK:    aprOk,
-		TrustedWitnessGroup:  append([]string(nil), group...),
-		WitnessSlashBps:      slashBps,
+		TickBlockHeight:     blockHeight,
+		TrustedHiveMean:     mean,
+		TrustedHiveOK:       meanOk,
+		HiveMovingAvg:       ma,
+		HiveMovingAvgOK:     maOk,
+		HBDInterestRateBps:  apr,
+		HBDInterestRateOK:   aprOk,
+		TrustedWitnessGroup: append([]string(nil), group...),
 	}
-}
-
-func (t *FeedTracker) computeWitnessSlashBps(blockHeight uint64) map[string]int {
-	if t == nil {
-		return nil
-	}
-	p := defaultOracleSlashParams()
-	width := t.win.Width
-	if width < 1 {
-		width = 100
-	}
-
-	ws := t.witnessUniverse()
-	if len(ws) == 0 {
-		return nil
-	}
-	out := make(map[string]int, len(ws))
-	for _, w := range ws {
-		published := t.lastFeedBlk[w] > 0 && t.lastFeedBlk[w]+uint64(width) > blockHeight
-		e := oracleSlashEvidence{
-			Signatures:  t.win.SignatureCount(w),
-			UpdatedFeed: published,
-			Equivocated: false, // equivocation evidence is a future extension point
-		}
-		out[w] = oracleSlashBps(p, e)
-	}
-	return out
-}
-
-type oracleSlashParams struct {
-	MinSignatures     int
-	MissingSigStepBps int
-	MissingUpdateBps  int
-	EquivocationBps   int
-	CapBps            int
-}
-
-type oracleSlashEvidence struct {
-	Signatures  int
-	UpdatedFeed bool
-	Equivocated bool
-}
-
-func defaultOracleSlashParams() oracleSlashParams {
-	return oracleSlashParams{
-		MinSignatures:     4,
-		MissingSigStepBps: 25,
-		MissingUpdateBps:  50,
-		EquivocationBps:   500,
-		CapBps:            1000,
-	}
-}
-
-func oracleSlashBps(p oracleSlashParams, e oracleSlashEvidence) int {
-	deficit := p.MinSignatures - e.Signatures
-	if deficit < 0 {
-		deficit = 0
-	}
-	raw := deficit*p.MissingSigStepBps
-	if !e.UpdatedFeed {
-		raw += p.MissingUpdateBps
-	}
-	if e.Equivocated {
-		raw += p.EquivocationBps
-	}
-	if raw < 0 {
-		return 0
-	}
-	if p.CapBps > 0 && raw > p.CapBps {
-		return p.CapBps
-	}
-	return raw
-}
-
-func (t *FeedTracker) witnessUniverse() []string {
-	u := make(map[string]struct{})
-	for w := range t.seenWitness {
-		if strings.TrimSpace(w) != "" {
-			u[w] = struct{}{}
-		}
-	}
-	for w := range t.quotes {
-		if strings.TrimSpace(w) != "" {
-			u[w] = struct{}{}
-		}
-	}
-	for w := range t.lastFeedBlk {
-		if strings.TrimSpace(w) != "" {
-			u[w] = struct{}{}
-		}
-	}
-	for w := range t.witnessProps {
-		if strings.TrimSpace(w) != "" {
-			u[w] = struct{}{}
-		}
-	}
-	if len(u) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(u))
-	for w := range u {
-		out = append(out, w)
-	}
-	sort.Strings(out)
-	return out
 }
 
 func (t *FeedTracker) ingestFeedPublish(blockHeight uint64, value map[string]interface{}) {

@@ -166,26 +166,29 @@ func TestOrchestration_LeaderEmitsExactPayload(t *testing.T) {
 			t.Errorf("dist for %s: got %d want 500", d.Account, d.HBDAmt)
 		}
 	}
-	if len(payload.Slashes) != 0 {
-		t.Errorf("expected no slashes when no snapshots present, got %d", len(payload.Slashes))
+	if len(payload.RewardReductions) != 0 {
+		t.Errorf("expected no reward reductions when no snapshots present, got %d", len(payload.RewardReductions))
 	}
 }
 
-// TestOrchestration_DistributionResidualToLargestPostSlashStake pins the
+// TestOrchestration_DistributionResidualToLargestEffectiveStake pins the
 // rule from the plan: floor-division residual goes to the largest
-// post-slash stake, not the largest original stake.
-func TestOrchestration_DistributionResidualToLargestPostSlashStake(t *testing.T) {
+// effective-bond stake, not the largest original stake.
+func TestOrchestration_DistributionResidualToLargestEffectiveStake(t *testing.T) {
 	env := newOrchestrationEnv(t)
 	seedElection(env.elDb, 7, 1000, "alice", "bob")
-	// alice originally larger; with 10% slash she falls below bob.
+	// alice originally larger; with 10% reduction she falls below bob.
 	seedBond(env.balDb, "hive:alice", 999, 1_000_000)
 	seedBond(env.balDb, "hive:bob", 999, 950_000)
 	seedNodeBucket(env.se.LedgerSystem, 100, "test-accrue", 999)
 
-	// 10% (1000 bps, the per-epoch hard cap) slash on alice across the closed epoch.
+	// Total bps must clear the 250-bps forgiveness buffer to land in the
+	// payload. 1250 bps - 250 buffer = 1000 effective (10% reduction on alice).
 	env.snaps.records = []pendulum_oracle.SnapshotRecord{{
 		TickBlockHeight: 1050,
-		WitnessSlashBps: []pendulum_oracle.WitnessSlashRecord{{Witness: "alice", Bps: 1000}},
+		WitnessRewardReductions: []pendulum_oracle.WitnessRewardReductionRecord{
+			{Witness: "alice", Bps: 1250},
+		},
 	}}
 
 	if err := env.se.RunPendulumSettlementForTest(pendulumsettlement.BoundaryInfo{
@@ -198,11 +201,12 @@ func TestOrchestration_DistributionResidualToLargestPostSlashStake(t *testing.T)
 	}
 	payload := env.bcast.calls[0]
 
-	// alice post-slash = 900_000; bob post-slash = 950_000.
+	// alice effective bond = 1_000_000 × (10000-1000)/10000 = 900_000.
+	// bob effective bond = 950_000.
 	// total = 1_850_000, R = 100.
 	// alice = 100 * 900_000 / 1_850_000 = 48 (floor)
 	// bob   = 100 * 950_000 / 1_850_000 = 51 (floor)
-	// residual = 100 - (48+51) = 1 → bob (largest post-slash stake)
+	// residual = 100 - (48+51) = 1 → bob (largest effective stake)
 	wantAlice := int64(48)
 	wantBob := int64(52) // 51 + 1 residual
 	got := map[string]int64{}
@@ -213,7 +217,7 @@ func TestOrchestration_DistributionResidualToLargestPostSlashStake(t *testing.T)
 		t.Errorf("alice: got %d want %d", got["hive:alice"], wantAlice)
 	}
 	if got["hive:bob"] != wantBob {
-		t.Errorf("bob (largest post-slash): got %d want %d", got["hive:bob"], wantBob)
+		t.Errorf("bob (largest effective bond): got %d want %d", got["hive:bob"], wantBob)
 	}
 	if got["hive:alice"]+got["hive:bob"] != 100 {
 		t.Errorf("distributions should sum to bucket balance: got %d want 100",
@@ -221,22 +225,25 @@ func TestOrchestration_DistributionResidualToLargestPostSlashStake(t *testing.T)
 	}
 }
 
-// TestOrchestration_AggregatesSlashesAcrossClosedEpoch verifies multi-tick
-// slash aggregation lands in the slash payload (vs the previous behavior of
+// TestOrchestration_AggregatesReductionsAcrossClosedEpoch verifies multi-tick
+// aggregation lands in the reductions payload (vs the previous behavior of
 // using only the most recent feed tick).
-func TestOrchestration_AggregatesSlashesAcrossClosedEpoch(t *testing.T) {
+func TestOrchestration_AggregatesReductionsAcrossClosedEpoch(t *testing.T) {
 	env := newOrchestrationEnv(t)
 	seedElection(env.elDb, 7, 1000, "alice", "bob")
 	seedBond(env.balDb, "hive:alice", 999, 1_000_000)
 	seedBond(env.balDb, "hive:bob", 999, 1_000_000)
 	seedNodeBucket(env.se.LedgerSystem, 100, "test-accrue", 999)
 
-	// 3 ticks, each adding 50 bps. Total = 150 bps on alice across the closed
-	// epoch — captured only if the orchestration sums across snapshots.
+	// 5 ticks × 100 bps = 500 raw, minus the 250 forgiveness buffer = 250 bps
+	// effective. Verifies the orchestrator sums across snapshots AND applies
+	// the buffer.
 	env.snaps.records = []pendulum_oracle.SnapshotRecord{
-		{TickBlockHeight: 1010, WitnessSlashBps: []pendulum_oracle.WitnessSlashRecord{{Witness: "alice", Bps: 50}}},
-		{TickBlockHeight: 1050, WitnessSlashBps: []pendulum_oracle.WitnessSlashRecord{{Witness: "alice", Bps: 50}}},
-		{TickBlockHeight: 1090, WitnessSlashBps: []pendulum_oracle.WitnessSlashRecord{{Witness: "alice", Bps: 50}}},
+		{TickBlockHeight: 1010, WitnessRewardReductions: []pendulum_oracle.WitnessRewardReductionRecord{{Witness: "alice", Bps: 100}}},
+		{TickBlockHeight: 1030, WitnessRewardReductions: []pendulum_oracle.WitnessRewardReductionRecord{{Witness: "alice", Bps: 100}}},
+		{TickBlockHeight: 1050, WitnessRewardReductions: []pendulum_oracle.WitnessRewardReductionRecord{{Witness: "alice", Bps: 100}}},
+		{TickBlockHeight: 1070, WitnessRewardReductions: []pendulum_oracle.WitnessRewardReductionRecord{{Witness: "alice", Bps: 100}}},
+		{TickBlockHeight: 1090, WitnessRewardReductions: []pendulum_oracle.WitnessRewardReductionRecord{{Witness: "alice", Bps: 100}}},
 	}
 
 	if err := env.se.RunPendulumSettlementForTest(pendulumsettlement.BoundaryInfo{
@@ -248,8 +255,8 @@ func TestOrchestration_AggregatesSlashesAcrossClosedEpoch(t *testing.T) {
 		t.Fatalf("expected one broadcast, got %d", len(env.bcast.calls))
 	}
 	payload := env.bcast.calls[0]
-	if len(payload.Slashes) != 1 || payload.Slashes[0].Account != "hive:alice" || payload.Slashes[0].Bps != 150 {
-		t.Fatalf("expected aggregated 150 bps slash on hive:alice, got %+v", payload.Slashes)
+	if len(payload.RewardReductions) != 1 || payload.RewardReductions[0].Account != "hive:alice" || payload.RewardReductions[0].Bps != 250 {
+		t.Fatalf("expected aggregated 250 bps reduction (500 raw - 250 buffer) on hive:alice, got %+v", payload.RewardReductions)
 	}
 }
 

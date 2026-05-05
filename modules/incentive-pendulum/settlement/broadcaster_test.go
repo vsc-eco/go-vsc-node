@@ -45,7 +45,7 @@ func TestHiveBroadcaster_EmitsCustomJsonOp(t *testing.T) {
 	b := NewHiveBroadcaster(creator, "magi-leader")
 	payload := BuildSettlementPayload(
 		7, 6,
-		[]SlashEntry{{Account: "hive:bad", Bps: 50}},
+		[]RewardReductionEntry{{Account: "hive:bad", Bps: 50}},
 		[]DistributionEntry{{Account: "hive:good", HBDAmt: 1000}},
 	)
 	id, err := b.Broadcast(payload)
