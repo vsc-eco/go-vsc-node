@@ -1110,17 +1110,12 @@ func (oplog *Oplog) ExecuteTx(se *StateEngine) {
 	})
 
 	for _, v := range oplog.Outputs {
-		ledgerOps := make([]ledgerSystem.OpLogEvent, 0)
-		for _, v2 := range v.LedgerIdx {
-			ledgerOps = append(ledgerOps, oplog.LedgerOps[v2])
-		}
 		status := transactions.TransactionStatusConfirmed
 		if !v.Ok {
 			status = transactions.TransactionStatusFailed
 		}
 		se.txDb.SetOutput(transactions.SetResultUpdate{
 			Id:     v.Id,
-			Ledger: &ledgerOps,
 			Status: &status,
 		})
 	}
@@ -1248,8 +1243,7 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSe
 		OpTypes:        opTypes,
 		Ops:            opList,
 		//Transaction is a VSC transaction
-		Type:   "vsc",
-		Ledger: make([]ledgerSystem.OpLogEvent, 0),
+		Type: "vsc",
 	})
 
 }

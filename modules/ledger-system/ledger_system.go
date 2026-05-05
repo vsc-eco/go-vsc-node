@@ -943,6 +943,8 @@ func (ls *ledgerSystem) IngestOplog(oplog []OpLogEvent, options OplogInjestOptio
 			Asset:       v.Asset,
 			From:        v.From,
 			To:          v.To,
+			Memo:        v.Memo,
+			Params:      v.Params,
 			Type:        v.Type,
 		}); err != nil {
 			log.Error("IngestOplog: ledger write failed", "id", v.Id, "from", v.From, "to", v.To, "err", err)

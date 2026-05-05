@@ -1522,7 +1522,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				AnchoredBlock:        &block.BlockID,
 				AnchoredHeight:       &block.BlockNumber,
 				AnchoredIndex:        &blkIdx,
-				Ledger:               make([]ledgerSystem.OpLogEvent, 0),
 			})
 		}
 	}

@@ -68,6 +68,8 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				To:          v.To,
 				Amount:      v.Amount,
 				Asset:       v.Asset,
+				Memo:        v.Memo,
+				Params:      v.Params,
 				Type:        "transfer",
 				BlockHeight: endBlock,
 			})
@@ -80,6 +82,8 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				From:        v.From,
 				Amount:      v.Amount,
 				Asset:       v.Asset,
+				Memo:        v.Memo,
+				Params:      v.Params,
 				Type:        "withdraw",
 				BlockHeight: endBlock,
 			})
@@ -104,6 +108,8 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				From:        v.From,
 				Amount:      v.Amount,
 				Asset:       "hbd",
+				Memo:        v.Memo,
+				Params:      v.Params,
 				Type:        "stake",
 				BlockHeight: endBlock,
 			})
@@ -130,6 +136,8 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				Amount:      v.Amount,
 				Asset:       "hbd_savings",
 				From:        v.From,
+				Memo:        v.Memo,
+				Params:      v.Params,
 				Type:        "unstake",
 			})
 			actionRecords = append(actionRecords, ledgerDb.ActionRecord{
@@ -151,6 +159,8 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				Amount:      v.Amount,
 				Asset:       "hive",
 				From:        v.From,
+				Memo:        v.Memo,
+				Params:      v.Params,
 				Type:        "consensus_stake",
 			})
 			ledgerRecords = append(ledgerRecords, LedgerUpdate{
@@ -159,6 +169,8 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				Amount:      v.Amount,
 				Asset:       "hive_consensus",
 				To:          v.To,
+				Memo:        v.Memo,
+				Params:      v.Params,
 				Type:        "consensus_stake",
 			})
 		}
@@ -169,6 +181,8 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				Amount:      v.Amount,
 				Asset:       "hive_consensus",
 				From:        v.From,
+				Memo:        v.Memo,
+				Params:      v.Params,
 				Type:        "consensus_unstake",
 			})
 
