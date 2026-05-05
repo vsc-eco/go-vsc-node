@@ -1,14 +1,17 @@
 package state_engine_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"vsc-node/lib/test_utils"
+	"vsc-node/modules/common/params"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	ledgerSystem "vsc-node/modules/ledger-system"
+	safetyslash "vsc-node/modules/incentive-pendulum/safety_slash"
 )
 
 // newLedgerEnv creates a LedgerSystem + LedgerState pair for testing.
@@ -805,4 +808,389 @@ func TestPendulumLedgerOps(t *testing.T) {
 		bal := ls.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, 200)
 		assert.Equal(t, int64(44), bal)
 	})
+}
+
+func TestGetBalance_HiveConsensusIncludesSlashLedger(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	state := ls.NewEmptyState()
+
+	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "tx-consensus-read",
+		BlockHeight:     200,
+		EvidenceKind:    "settlement_payload_fraud",
+		BurnDelayBlocks: 0,
+	}).Ok)
+
+	bal := state.GetBalance("hive:alice", 200, "hive_consensus")
+	require.Equal(t, int64(900_000), bal)
+}
+
+func TestSafetySlashConsensusBond_DebitsBondAndBurnsWithoutDAO(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+
+	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "evidence-tx-1",
+		BlockHeight:     200,
+		EvidenceKind:    "settlement_payload_fraud",
+		BurnDelayBlocks: 0,
+	})
+	require.True(t, res.Ok, res.Msg)
+
+	var debitAmt, burnAmt int64
+	for _, recs := range lDb.LedgerRecords {
+		for _, r := range recs {
+			if r.Type == "safety_slash_consensus" {
+				debitAmt = r.Amount
+			}
+			if r.Type == ledgerSystem.LedgerTypeSafetySlashHiveBurn {
+				burnAmt += r.Amount
+				assert.Equal(t, params.ProtocolSlashBurnAccount, r.Owner)
+			}
+			assert.NotEqual(t, "safety_slash_hive_credit", r.Type)
+		}
+	}
+	require.Equal(t, int64(-100_000), debitAmt)
+	require.Equal(t, int64(100_000), burnAmt)
+}
+
+func TestSafetySlashConsensusBond_RestitutionThenBurn(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	q := safetyslash.NewMemoryRestitutionQueue()
+	q.Enqueue(ledgerSystem.SlashRestitutionClaim{ClaimID: "c1", VictimAccount: "bob", LossHive: 30_000})
+
+	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "evidence-tx-2",
+		BlockHeight:     200,
+		EvidenceKind:    "settlement_payload_fraud",
+		Restitution:     q,
+		BurnDelayBlocks: 0,
+	})
+	require.True(t, res.Ok, res.Msg)
+
+	var restitutionAmt, burnAmt int64
+	for _, recs := range lDb.LedgerRecords {
+		for _, r := range recs {
+			switch r.Type {
+			case ledgerSystem.LedgerTypeSafetySlashRestitution:
+				restitutionAmt += r.Amount
+				assert.Equal(t, "hive:bob", r.Owner)
+			case ledgerSystem.LedgerTypeSafetySlashHiveBurn:
+				burnAmt += r.Amount
+			}
+		}
+	}
+	require.Equal(t, int64(30_000), restitutionAmt)
+	require.Equal(t, int64(70_000), burnAmt)
+}
+
+func TestSafetySlashConsensusBond_DelayedBurnFinalizes(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+
+	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "evidence-tx-delay",
+		BlockHeight:     200,
+		EvidenceKind:    "settlement_payload_fraud",
+		BurnDelayBlocks: 50,
+	})
+	require.True(t, res.Ok, res.Msg)
+
+	var pendingAmt int64
+	var finalBurn int64
+	for _, recs := range lDb.LedgerRecords {
+		for _, r := range recs {
+			switch r.Type {
+			case ledgerSystem.LedgerTypeSafetySlashHiveBurnPending:
+				pendingAmt += r.Amount
+				assert.Equal(t, params.ProtocolSlashPendingBurnAccount, r.Owner)
+				assert.Equal(t, "250", r.From)
+			case ledgerSystem.LedgerTypeSafetySlashHiveBurn:
+				finalBurn += r.Amount
+			}
+		}
+	}
+	require.Equal(t, int64(100_000), pendingAmt)
+	require.Equal(t, int64(0), finalBurn)
+
+	ls.FinalizeMaturedSafetySlashBurns(249)
+	finalBurn = 0
+	for _, recs := range lDb.LedgerRecords {
+		for _, r := range recs {
+			if r.Type == ledgerSystem.LedgerTypeSafetySlashHiveBurn {
+				finalBurn += r.Amount
+			}
+		}
+	}
+	require.Equal(t, int64(0), finalBurn)
+
+	ls.FinalizeMaturedSafetySlashBurns(250)
+	finalBurn = 0
+	for _, recs := range lDb.LedgerRecords {
+		for _, r := range recs {
+			if r.Type == ledgerSystem.LedgerTypeSafetySlashHiveBurn {
+				finalBurn += r.Amount
+			}
+		}
+	}
+	require.Equal(t, int64(100_000), finalBurn)
+}
+
+func TestSafetySlashConsensusBond_ClampsBurnDelayBlocks(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+
+	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "tx-clamp-delay",
+		BlockHeight:     200,
+		EvidenceKind:    "settlement_payload_fraud",
+		BurnDelayBlocks: 9_000_000,
+	}).Ok)
+
+	for _, recs := range lDb.LedgerRecords {
+		for _, r := range recs {
+			if r.Type == ledgerSystem.LedgerTypeSafetySlashHiveBurnPending {
+				// Capped to params.MaxSafetySlashBurnDelayBlocks
+				assert.Equal(t, "3333533", r.From)
+			}
+		}
+	}
+}
+
+type badRestitutionSum struct{}
+
+func (badRestitutionSum) AllocateHive(slashAmt int64, _ uint64, _, _, _ string) ([]ledgerSystem.SlashRestitutionPayment, int64) {
+	return []ledgerSystem.SlashRestitutionPayment{
+		{ClaimID: "a", VictimAccount: "bob", Amount: slashAmt},
+	}, 1
+}
+
+func TestSafetySlashConsensusBond_RejectsRestitutionReconcileMismatch(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "tx-bad-reconcile",
+		BlockHeight:     200,
+		EvidenceKind:    "settlement_payload_fraud",
+		Restitution:     badRestitutionSum{},
+		BurnDelayBlocks: 0,
+	})
+	require.False(t, res.Ok)
+}
+
+type emptyVictimRestitution struct{}
+
+func (emptyVictimRestitution) AllocateHive(slashAmt int64, _ uint64, _, _, _ string) ([]ledgerSystem.SlashRestitutionPayment, int64) {
+	return []ledgerSystem.SlashRestitutionPayment{
+		{ClaimID: "x", VictimAccount: "   ", Amount: slashAmt},
+	}, 0
+}
+
+func TestSafetySlashConsensusBond_RejectsEmptyRestitutionVictim(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "tx-empty-victim",
+		BlockHeight:     200,
+		EvidenceKind:    "settlement_payload_fraud",
+		Restitution:     emptyVictimRestitution{},
+		BurnDelayBlocks: 0,
+	})
+	require.False(t, res.Ok)
+}
+
+type overflowRestitution struct{}
+
+func (overflowRestitution) AllocateHive(slashAmt int64, _ uint64, _, _, _ string) ([]ledgerSystem.SlashRestitutionPayment, int64) {
+	return []ledgerSystem.SlashRestitutionPayment{
+		{ClaimID: "a", VictimAccount: "bob", Amount: math.MaxInt64},
+		{ClaimID: "b", VictimAccount: "carol", Amount: 1},
+	}, 0
+}
+
+func TestSafetySlashConsensusBond_RejectsRestitutionSumOverflow(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "tx-overflow",
+		BlockHeight:     200,
+		EvidenceKind:    "settlement_payload_fraud",
+		Restitution:     overflowRestitution{},
+		BurnDelayBlocks: 0,
+	})
+	require.False(t, res.Ok)
+}
+
+type dupClaimIDRestitution struct{}
+
+func (dupClaimIDRestitution) AllocateHive(slashAmt int64, _ uint64, _, _, _ string) ([]ledgerSystem.SlashRestitutionPayment, int64) {
+	half := slashAmt / 2
+	return []ledgerSystem.SlashRestitutionPayment{
+		{ClaimID: "dup", VictimAccount: "bob", Amount: half},
+		{ClaimID: "dup", VictimAccount: "bob", Amount: slashAmt - half},
+	}, 0
+}
+
+func TestSafetySlashConsensusBond_DistinctRestitutionIdsForDuplicateClaimID(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "tx-dup-claim",
+		BlockHeight:     200,
+		EvidenceKind:    "settlement_payload_fraud",
+		Restitution:     dupClaimIDRestitution{},
+		BurnDelayBlocks: 0,
+	}).Ok)
+	ids := make(map[string]struct{})
+	for _, recs := range lDb.LedgerRecords {
+		for _, r := range recs {
+			if r.Type == ledgerSystem.LedgerTypeSafetySlashRestitution {
+				require.NotContains(t, ids, r.Id, "duplicate restitution ledger id")
+				ids[r.Id] = struct{}{}
+			}
+		}
+	}
+	require.Len(t, ids, 2)
+}
+
+func TestSafetySlashConsensusBond_FinalizeMaturedBurnIdempotent(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "tx-idem",
+		BlockHeight:     200,
+		EvidenceKind:    "settlement_payload_fraud",
+		BurnDelayBlocks: 50,
+	}).Ok)
+	ls.FinalizeMaturedSafetySlashBurns(250)
+	n1 := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn)
+	ls.FinalizeMaturedSafetySlashBurns(250)
+	ls.FinalizeMaturedSafetySlashBurns(300)
+	n2 := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn)
+	require.Equal(t, n1, n2)
+}
+
+func countLedgerType(l *test_utils.MockLedgerDb, typ string) int {
+	n := 0
+	for _, recs := range l.LedgerRecords {
+		for _, r := range recs {
+			if r.Type == typ {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func TestSafetySlashConsensusBond_RejectsMaturityOverflow(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "tx-wrap",
+		BlockHeight:     ^uint64(0) - 1000,
+		EvidenceKind:    "settlement_payload_fraud",
+		BurnDelayBlocks: 9_000_000,
+	})
+	require.False(t, res.Ok)
 }

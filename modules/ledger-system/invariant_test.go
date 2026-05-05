@@ -85,7 +85,8 @@ type mockLedgerSystem struct {
 func (m *mockLedgerSystem) GetBalance(account string, blockHeight uint64, asset string) int64 {
 	return m.state.SnapshotForAccount(account, blockHeight, asset)
 }
-func (m *mockLedgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {}
+func (m *mockLedgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {
+}
 func (m *mockLedgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ledgerSystem.ExtraInfo) {
 }
 func (m *mockLedgerSystem) Deposit(deposit ledgerSystem.Deposit) string { return "" }
@@ -103,6 +104,13 @@ func (m *mockLedgerSystem) PendulumDistribute(toAccount string, amount int64, tx
 	return ledgerSystem.LedgerResult{Ok: true, Msg: "noop"}
 }
 func (m *mockLedgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64) int64 { return 0 }
+
+func (m *mockLedgerSystem) SafetySlashConsensusBond(p ledgerSystem.SafetySlashConsensusParams) ledgerSystem.LedgerResult {
+	_ = p
+	return ledgerSystem.LedgerResult{Ok: false, Msg: "mock ledger: safety slash not implemented"}
+}
+
+func (m *mockLedgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) { _ = blockHeight }
 
 // ---------------------------------------------------------------------------
 // Invariant 1: Balance Conservation
