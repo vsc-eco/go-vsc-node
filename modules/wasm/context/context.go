@@ -18,36 +18,39 @@ type IOSession interface {
 // PendulumSwapFeeArgs is the input the pool contract passes to
 // system.pendulum_apply_swap_fees. Quantities are base units (int64);
 // asset tags are lowercase strings ("hbd", "hive", etc.). The contract
-// computes BaseCLP itself from its own CLP formula and supplies it.
+// passes only the swap inputs; the SDK derives gross output, base CLP,
+// base protocol fee, and the stabilizer push direction internally on the
+// output side — matching the existing pre-pendulum contract math where
+// both fee components live in the output asset.
+//
+// The "exacerbates" hint that older spec drafts asked the contract to
+// supply is now derived from the snapshot's s and the swap direction
+// (HBD-in raises s, HBD-out lowers s). Letting a contract pass it would
+// be a non-determinism vector.
 type PendulumSwapFeeArgs struct {
-	AssetIn      string
-	AssetOut     string
-	X            int64 // user input, base units
-	XReserve     int64 // pre-swap input-side reserves
-	YReserve     int64 // pre-swap output-side reserves
-	BaseCLP      int64 // x²·Y / (x+X)² in output asset
-	Exacerbates  bool  // contract's hint for stabilizer push
-}
-
-// PendulumNetworkCredit returns the per-side amounts the contract should
-// add to its internal network-share accounting (claim-based, in pool).
-type PendulumNetworkCredit struct {
-	AssetInAmount  int64
-	AssetOutAmount int64
+	AssetIn  string
+	AssetOut string
+	X        int64 // user input, base units
+	XReserve int64 // pre-swap input-side reserves
+	YReserve int64 // pre-swap output-side reserves
 }
 
 // PendulumSwapFeeResult is the SDK method's return shape. The contract
 // updates its reserves to (NewXReserve, NewYReserve), pays UserOutput to
-// the user, and adds NetworkCredit to its claim-bucket accounting. The
-// SDK has already credited NodeBucketCreditedHBD to pendulum:nodes:HBD.
+// the user, and adds NetworkCreditOutput to its single output-asset
+// network-share accumulator. The SDK has already credited
+// NodeBucketCreditedHBD to pendulum:nodes:HBD.
 type PendulumSwapFeeResult struct {
-	UserOutput              int64
-	NewXReserve             int64
-	NewYReserve             int64
-	NetworkCredit           PendulumNetworkCredit
-	NodeBucketCreditedHBD   int64
-	MultiplierQ8            int64
-	SAfterQ8                int64
+	UserOutput            int64
+	NewXReserve           int64
+	NewYReserve           int64
+	// NetworkCreditOutput is the 25% network cut on (totalCLP + totalProtocol),
+	// in the output asset of the swap (since both fee components live on the
+	// output side under the unified model).
+	NetworkCreditOutput   int64
+	NodeBucketCreditedHBD int64
+	MultiplierQ8          int64
+	SAfterQ8              int64
 }
 
 // PendulumApplier is the per-call entry point the SDK uses to delegate

@@ -45,13 +45,11 @@ func (r *recordingLedger) PendulumAccrue(account, asset string, amount int64, tx
 
 func defaultArgs(assetIn, assetOut string) wasm_context.PendulumSwapFeeArgs {
 	return wasm_context.PendulumSwapFeeArgs{
-		AssetIn:     assetIn,
-		AssetOut:    assetOut,
-		X:           1_000,        // 0.001 of input asset (small swap)
-		XReserve:    1_000_000,    // 1.0 input asset reserve
-		YReserve:    1_000_000,    // 1.0 output asset reserve
-		BaseCLP:     1,            // contract-supplied CLP fee
-		Exacerbates: false,
+		AssetIn:  assetIn,
+		AssetOut: assetOut,
+		X:        1_000,     // 0.001 of input asset (small swap)
+		XReserve: 1_000_000, // 1.0 input asset reserve
+		YReserve: 1_000_000, // 1.0 output asset reserve
 	}
 }
 
@@ -123,8 +121,9 @@ func TestRejectsNonHBDPair(t *testing.T) {
 }
 
 // TestSwapHBDInAccruesNodeBucket exercises a HBD→ASSET1 swap end to end:
-// the protocol leg passes through (HBD), the CLP leg converts (ASSET1 → HBD),
-// and the resulting node-share lands in pendulum:nodes:HBD.
+// the output asset is non-HBD, so the entire node-share (CLP+protocol)
+// goes through one secondary CPMM hop (ASSET1 → HBD) and lands in
+// pendulum:nodes:HBD.
 func TestSwapHBDInAccruesNodeBucket(t *testing.T) {
 	a, led := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
 
@@ -134,8 +133,6 @@ func TestSwapHBDInAccruesNodeBucket(t *testing.T) {
 		X:           10_000,
 		XReserve:    1_000_000,
 		YReserve:    1_000_000,
-		BaseCLP:     98, // ~ 10000^2 * 1000000 / 1010000^2 ≈ 98
-		Exacerbates: true,
 	}
 
 	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args)
@@ -166,7 +163,8 @@ func TestSwapHBDInAccruesNodeBucket(t *testing.T) {
 }
 
 // TestSwapASSET1InAccruesNodeBucket runs the mirror direction: ASSET1→HBD.
-// The protocol leg now needs the secondary CPMM hop, the CLP leg passes through.
+// Output asset is HBD, so the node share passes through directly with no
+// secondary swap; nodeBucketHBD == nodeShareOutput exactly.
 func TestSwapASSET1InAccruesNodeBucket(t *testing.T) {
 	a, led := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
 
@@ -176,8 +174,6 @@ func TestSwapASSET1InAccruesNodeBucket(t *testing.T) {
 		X:           10_000,
 		XReserve:    1_000_000,
 		YReserve:    1_000_000,
-		BaseCLP:     98,
-		Exacerbates: true,
 	}
 
 	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args)
@@ -207,8 +203,6 @@ func TestUnderSecuredCliffRoutesAllToNodes(t *testing.T) {
 		X:           10_000,
 		XReserve:    1_000_000,
 		YReserve:    1_000_000,
-		BaseCLP:     98,
-		Exacerbates: true,
 	}
 
 	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args)
@@ -223,6 +217,99 @@ func TestUnderSecuredCliffRoutesAllToNodes(t *testing.T) {
 	// total fees (the network 25% stays in pool reserves).
 	if led.calls[0].Amount <= 0 {
 		t.Fatalf("expected positive node accrual under cliff, got %d", led.calls[0].Amount)
+	}
+}
+
+// TestNetworkCreditIsSingleOutputAssetValue pins the unified-output-side
+// invariant: the network credit is one int64 in the output asset
+// (covering 25% of total CLP + 25% of total protocol fee — both of which
+// live on the output side under the post-rewrite model).
+func TestNetworkCreditIsSingleOutputAssetValue(t *testing.T) {
+	a, _ := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+
+	args := wasm_context.PendulumSwapFeeArgs{
+		AssetIn:     "hive",
+		AssetOut:    "hbd",
+		X:           10_000,
+		XReserve:    1_000_000,
+		YReserve:    1_000_000,
+	}
+	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args)
+	if res.IsErr() {
+		t.Fatalf("expected success, got %v", res)
+	}
+	out := res.Unwrap()
+	if out.NetworkCreditOutput <= 0 {
+		t.Fatalf("expected positive single-value network credit, got %d", out.NetworkCreditOutput)
+	}
+}
+
+// TestReserveConservation pins the no-loss invariant for the HBD-output
+// case: every base unit either reaches the user, accrues to the node bucket,
+// or stays in the pool. The X side (HBD-paired pool, X is non-HBD here)
+// gains exactly the user's input.
+func TestReserveConservation(t *testing.T) {
+	a, led := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+
+	xIn := int64(10_000)
+	xRes := int64(1_000_000)
+	yRes := int64(1_000_000)
+	args := wasm_context.PendulumSwapFeeArgs{
+		AssetIn:     "hive",
+		AssetOut:    "hbd",
+		X:           xIn,
+		XReserve:    xRes,
+		YReserve:    yRes,
+	}
+	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args)
+	if res.IsErr() {
+		t.Fatalf("expected success, got %v", res)
+	}
+	out := res.Unwrap()
+
+	// X side: pure addition of the user's input (no conversion when output is HBD).
+	if out.NewXReserve != xRes+xIn {
+		t.Fatalf("X side: got %d want %d", out.NewXReserve, xRes+xIn)
+	}
+	// Y side: starting Y minus user's output minus node-share withdrawal.
+	wantY := yRes - out.UserOutput - out.NodeBucketCreditedHBD
+	if out.NewYReserve != wantY {
+		t.Fatalf("Y side: got %d want %d (Y=%d - user=%d - node=%d)", out.NewYReserve, wantY, yRes, out.UserOutput, out.NodeBucketCreditedHBD)
+	}
+	// Ledger record matches reported credit.
+	if len(led.calls) != 1 || led.calls[0].Amount != out.NodeBucketCreditedHBD {
+		t.Fatalf("ledger != reported: %+v vs %d", led.calls, out.NodeBucketCreditedHBD)
+	}
+}
+
+// TestExacerbatesFromSnapshot pins the truth table for the auto-derived
+// stabilizer hint: HBD-in raises s, HBD-out lowers it; "exacerbates"
+// means the swap moves s away from 0.5.
+func TestExacerbatesFromSnapshot(t *testing.T) {
+	half := intmath.SQ64(intmath.SQ64Scale / 2)
+	low := intmath.SQ64(intmath.SQ64Scale * 30 / 100)  // 0.3
+	high := intmath.SQ64(intmath.SQ64Scale * 70 / 100) // 0.7
+
+	cases := []struct {
+		name  string
+		s     intmath.SQ64
+		hbdIn bool
+		want  bool
+	}{
+		{"s_low_hbd_in_corrective", low, true, false},
+		{"s_low_hbd_out_exacerbates", low, false, true},
+		{"s_high_hbd_in_exacerbates", high, true, true},
+		{"s_high_hbd_out_corrective", high, false, false},
+		{"s_at_half_hbd_in_exacerbates", half, true, true},
+		{"s_at_half_hbd_out_exacerbates", half, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := exacerbatesFromSnapshot(tc.s, tc.hbdIn)
+			if got != tc.want {
+				t.Fatalf("got %v want %v (s=%d hbdIn=%v)", got, tc.want, tc.s, tc.hbdIn)
+			}
+		})
 	}
 }
 
