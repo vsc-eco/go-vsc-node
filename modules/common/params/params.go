@@ -31,6 +31,20 @@ var FR_VIRTUAL_ACCOUNT = "system:fr_balance"
 
 var DAO_WALLET = "hive:vsc.dao"
 
+// ProtocolSlashBurnAccount is the ledger owner for safety-slash amounts that are
+// not paid as restitution. Rows are audit-only: they must not increase spendable
+// HIVE (see state engine balance aggregation and GetBalance op-type rules).
+var ProtocolSlashBurnAccount = "system:protocol_slash_burn"
+
+// ProtocolSlashPendingBurnAccount holds the liquid HIVE slice of a safety slash
+// until BurnDelayBlocks passes, then FinalizeMaturedSafetySlashBurns moves it
+// to ProtocolSlashBurnAccount. Not spendable (excluded from balance aggregation).
+var ProtocolSlashPendingBurnAccount = "system:protocol_slash_burn_pending"
+
+// MaxSafetySlashBurnDelayBlocks caps BurnDelayBlocks to avoid uint64 maturity
+// overflow and unbounded pending queues. ~115 days at 3s/block.
+const MaxSafetySlashBurnDelayBlocks uint64 = 3_333_333
+
 var RC_RETURN_PERIOD uint64 = 120 * 60 * 20 // 5 day cool down period for RCs
 var RC_HIVE_FREE_AMOUNT int64 = 10_000      // 5 HBD worth of RCs for Hive accounts
 var MINIMUM_RC_LIMIT uint64 = 50

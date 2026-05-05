@@ -112,26 +112,81 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 
 	var recordHeight uint64
 	var balRecord ledger_db.BalanceRecord
-	if balRecordPtr != nil {
+	if balRecordPtr == nil {
+		recordHeight = 0
+	} else {
 		balRecord = *balRecordPtr
 		recordHeight = balRecord.BlockHeight + 1
 	}
-
-	ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, recordHeight, blockHeight, asset)
-
-	balAdjust := int64(0)
-	for _, v := range *ledgerResults {
-		balAdjust += v.Amount
-	}
-
 	switch asset {
 	case "hbd":
+		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(
+			account,
+			recordHeight,
+			blockHeight,
+			asset,
+			ledger_db.LedgerOptions{
+				OpType: []string{"unstake", "deposit"},
+			},
+		)
+
+		balAdjust := int64(0)
+
+		for _, v := range *ledgerResults {
+			balAdjust += v.Amount
+		}
+
 		return balRecord.HBD + balAdjust
 	case "hive":
+		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(
+			account,
+			recordHeight,
+			blockHeight,
+			asset,
+			ledger_db.LedgerOptions{
+				OpType: []string{"deposit", LedgerTypeSafetySlashRestitution},
+			},
+		)
+
+		balAdjust := int64(0)
+
+		for _, v := range *ledgerResults {
+			balAdjust += v.Amount
+		}
+
 		return balRecord.Hive + balAdjust
 	case "hbd_savings":
-		return balRecord.HBD_SAVINGS + balAdjust
+		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(
+			account,
+			recordHeight,
+			blockHeight,
+			asset,
+			ledger_db.LedgerOptions{
+				OpType: []string{"stake"},
+			},
+		)
+
+		stakeBal := int64(0)
+
+		for _, v := range *ledgerResults {
+			stakeBal += v.Amount
+		}
+
+		return balRecord.HBD_SAVINGS + stakeBal
 	case "hive_consensus":
+		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(
+			account,
+			recordHeight,
+			blockHeight,
+			asset,
+			ledger_db.LedgerOptions{
+				OpType: []string{"consensus_stake", "consensus_unstake", LedgerTypeSafetySlashConsensus},
+			},
+		)
+		balAdjust := int64(0)
+		for _, v := range *ledgerResults {
+			balAdjust += v.Amount
+		}
 		return balRecord.HIVE_CONSENSUS + balAdjust
 	default:
 		return 0
