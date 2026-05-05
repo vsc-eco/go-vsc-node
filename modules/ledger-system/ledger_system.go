@@ -213,6 +213,8 @@ func (ls *ledgerSystem) IngestOplog(oplog []OpLogEvent, options OplogInjestOptio
 			Asset:       v.Asset,
 			From:        v.From,
 			To:          v.To,
+			Memo:        v.Memo,
+			Params:      v.Params,
 			Type:        v.Type,
 		})
 	}

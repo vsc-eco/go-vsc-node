@@ -592,10 +592,6 @@ input TransactionFilter {
   byStatus: TransactionStatus
   """Filter by operation types."""
   byType: [String!]
-  """Filter by ledger sender or receiver account."""
-  byLedgerToFrom: String
-  """Filter by ledger transfer types."""
-  byLedgerTypes: [String!]
   """Include only transactions from this block height onwards."""
   fromBlock: Uint64
   """Include only transactions up to this block height."""
