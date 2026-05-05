@@ -1,7 +1,22 @@
 // Package safetyslash defines verifiable safety-fault principal slashing (HIVE_CONSENSUS debit)
 // distinct from liveness reward-reduction bps in the pendulum rewards path.
 //
+// Design intent: this is a node-wide policy surface — reward reductions stay tied to
+// pendulum distribution math, but principal safety slashes should eventually be triggered
+// from any provable fault path (TSS equivocation, conflicting block signatures, invalid
+// oracle attestations, fraudulent settlement bodies, etc.). Only a subset is wired in Go
+// today; each new detector should call the same ledger entrypoint with a stable evidence
+// kind string and correlated BPS composition.
+//
 // Evidence kinds are stable string keys stored in ledger metadata and mirrored in Lean.
+// Reserved (unwired) examples for future detectors — do not reuse strings:
+//
+//	"tss_equivocation" — conflicting TSS aggregate signatures for the same logical round
+//	"vsc_double_block_sign" — same witness key signs two canonical block hashes at one height
+//	"oracle_payload_fraud" — signed oracle payload disagrees with deterministic replay
+//
+// Reversal / governance undo of pending burn + consensus credit is not implemented yet;
+// delayed burn exists so protocol bugs can be corrected before maturity.
 package safetyslash
 
 // CorrelatedSlashCapBps is the maximum total principal slash in basis points
@@ -11,7 +26,9 @@ const CorrelatedSlashCapBps = 10000
 
 const (
 	// EvidenceSettlementPayloadFraud: elected leader signed vsc.pendulum_settlement
-	// that fails deterministic replay against canonical chain state.
+	// that fails deterministic replay against canonical chain state (Hive L1 custom_json
+	// ingress — see state_engine.handlePendulumSettlement). This is distinct from W3
+	// system.pendulum_apply_swap_fees, which only validates swap fee math against oracle snapshots.
 	EvidenceSettlementPayloadFraud = "settlement_payload_fraud"
 )
 

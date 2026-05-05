@@ -2066,6 +2066,31 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	return se
 }
 
+// applyPrincipalSlashForProvableEvidence debits HIVE_CONSENSUS for a single evidence line.
+// Call from any detector that can prove a safety fault (today: fraudulent vsc.pendulum_settlement
+// replay). Uses the shared restitution queue and delayed-burn policy so behaviour stays uniform
+// as TSS / signing / oracle detectors are added.
+func (se *StateEngine) applyPrincipalSlashForProvableEvidence(
+	accountHive string,
+	slashBps int,
+	txID string,
+	blockHeight uint64,
+	evidenceKind string,
+) ledgerSystem.LedgerResult {
+	if se == nil || se.LedgerSystem == nil {
+		return ledgerSystem.LedgerResult{Ok: false, Msg: "state engine or ledger not configured"}
+	}
+	return se.LedgerSystem.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         accountHive,
+		SlashBps:        slashBps,
+		TxID:            txID,
+		BlockHeight:     blockHeight,
+		EvidenceKind:    evidenceKind,
+		Restitution:     se.slashRestitution,
+		BurnDelayBlocks: safetyslash.DefaultSafetySlashBurnDelayBlocks,
+	})
+}
+
 // EnqueueSlashRestitutionClaim registers remaining HIVE loss owed to a victim.
 // Payouts are sourced from future safety-slash proceeds (FIFO) before protocol burn.
 //
