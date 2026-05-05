@@ -40,9 +40,9 @@ type WhitelistGetter func() []string
 
 // Config is the per-network tuning the applier reads on every swap.
 type Config struct {
-	Stabilizer        pendulum.StabilizerParamsFixed
-	NetworkShareNum   int64 // 1 of 4 → 25% network share
-	NetworkShareDen   int64
+	Stabilizer      pendulum.StabilizerParamsFixed
+	NetworkShareNum int64 // 1 of 4 → 25% network share
+	NetworkShareDen int64
 	// MinFractionBps is the LP-side floor the plan parks behind a TODO. Zero
 	// means PDF behavior (no floor); leaving as a Config knob so we can dial
 	// it without code change once the team picks a value.
@@ -88,12 +88,23 @@ func sdkErr[T any](inner error) result.Result[T] {
 	return result.Err[T](errors.Join(fmt.Errorf(contracts.SDK_ERROR), inner))
 }
 
-// ApplySwapFees implements wasm_context.PendulumApplier.
+// ApplySwapFees implements wasm_context.PendulumApplier under the unified
+// output-side fee model — both protocol and CLP fees live in the output
+// asset, matching the existing pre-pendulum contract math. The contract
+// passes only (assetIn, assetOut, x, X, Y, exacerbates); the SDK derives
+// gross output, base CLP, base protocol, the stabilizer surplus, the 25%
+// network cut, the pendulum split, and any non-HBD-leg conversion.
 //
-// Math walkthrough is the 12-step recipe from the W3 plan section. All
-// arithmetic is integer / SQ64; conversion residuals are assigned
-// deterministically (LP gets the floor, node side gets the residual on the
-// CLP leg; same convention on protocol leg).
+// Reserve flow:
+//   newX = X + x                                (entire input enters the pool)
+//   newY = Y - userOutput                       (the user takes only userOutput)
+//                                                — all fees stay in pool reserves
+//   then if assetOut == "hbd":
+//     newY -= nodeShareOutput                   (HBD leaves pool to nodes bucket)
+//   else (assetOut is non-HBD):
+//     hbdOut = nodeShareOutput · newX / (newY + nodeShareOutput)
+//     newY += nodeShareOutput                   (virtual: non-HBD added back)
+//     newX -= hbdOut                            (HBD leaves X reserve to nodes bucket)
 func (a *Applier) ApplySwapFees(contractID, txID string, blockHeight uint64, args wasm_context.PendulumSwapFeeArgs) result.Result[wasm_context.PendulumSwapFeeResult] {
 	if a == nil || a.snapshots == nil || a.ledger == nil || a.whitelist == nil {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errors.New("pendulum applier not configured"))
@@ -106,9 +117,6 @@ func (a *Applier) ApplySwapFees(contractID, txID string, blockHeight uint64, arg
 
 	// Validate inputs.
 	if args.X <= 0 || args.XReserve <= 0 || args.YReserve <= 0 {
-		return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
-	}
-	if args.BaseCLP < 0 {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
 	}
 	assetIn := normalizeAsset(args.AssetIn)
@@ -138,13 +146,40 @@ func (a *Applier) ApplySwapFees(contractID, txID string, blockHeight uint64, arg
 	xBig := big.NewInt(args.X)
 	xReserveBig := big.NewInt(args.XReserve)
 	yReserveBig := big.NewInt(args.YReserve)
-	baseCLPBig := big.NewInt(args.BaseCLP)
 
-	// 3. Protocol fee + stabilizer (input asset).
-	baseProtocol := intmath.MulDivFloor(xBig, big.NewInt(int64(pendulum.ProtocolFeeRateFixed)), big.NewInt(intmath.SQ64Scale))
+	// 3. Output-side gross + base fees.
+	xPlusReserve := new(big.Int).Add(xReserveBig, xBig)
+	if xPlusReserve.Sign() == 0 {
+		return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
+	}
+	grossOut := intmath.MulDivFloor(xBig, yReserveBig, xPlusReserve)
+	if grossOut.Sign() <= 0 {
+		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+	}
+	if grossOut.Cmp(yReserveBig) > 0 {
+		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+	}
+	// CLP = x²·Y / (x+X)²  (output units)
+	xSquaredY := new(big.Int).Mul(xBig, xBig)
+	denomSquared := new(big.Int).Mul(xPlusReserve, xPlusReserve)
+	baseCLP := intmath.MulDivFloor(xSquaredY, yReserveBig, denomSquared)
+	// Protocol fee = grossOut · 8 bps  (output units; matches the contract's
+	// existing `baseFee = grossOut * feeBps / 10000`).
+	baseProtocol := intmath.MulDivFloor(grossOut, big.NewInt(int64(pendulum.ProtocolFeeRateFixed)), big.NewInt(intmath.SQ64Scale))
+
+	// 4. Stabilizer multiplier on the protocol fee. PDF §5: the stabilizer
+	// inflates the protocol fee specifically; the surplus is what funds the
+	// rebalancing incentive. CLP fee is unaffected by m.
+	//
+	// "Exacerbates" is derived from snapshot s and the swap direction — the
+	// SDK has all inputs, so accepting a contract-supplied hint would be a
+	// pure non-determinism vector with no information gain. HBD-in raises
+	// P (and therefore s = V/E = 2P/E); HBD-out lowers it. A swap is
+	// corrective when its direction matches the move toward s = 0.5; any
+	// move away (including any move at exactly s = 0.5) is exacerbating.
 	rTrade, _ := intmath.SQ64Div(toSQ64Ratio(args.X, args.XReserve)) // r = x/X in SQ64
 	stab := a.cfg.Stabilizer
-	if !args.Exacerbates {
+	if !exacerbatesFromSnapshot(s, assetIn == "hbd") {
 		// PDF §5: non-exacerbating swaps push at 0.7×.
 		stab.Push = intmath.SQ64(intmath.SQ64Scale * 70 / 100)
 	}
@@ -155,28 +190,36 @@ func (a *Applier) ApplySwapFees(contractID, txID string, blockHeight uint64, arg
 		surplus.SetInt64(0)
 	}
 
-	// 4. Total fee per side.
-	totalCLP := baseCLPBig                                 // output asset
-	totalProtocol := new(big.Int).Add(baseProtocol, surplus) // input asset
+	// 5. Total fees per type, all output units.
+	totalCLP := baseCLP
+	totalProtocol := new(big.Int).Add(baseProtocol, surplus)
 
-	// 5. Network 25% (per-side, native).
+	// 6. User pays both fees out of grossOut.
+	totalFee := new(big.Int).Add(totalCLP, totalProtocol)
+	userOutput := new(big.Int).Sub(grossOut, totalFee)
+	if userOutput.Sign() < 0 {
+		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+	}
+
+	// 7. Network 25% cut on each fee type (output units).
 	networkShareNum := big.NewInt(a.cfg.NetworkShareNum)
 	networkShareDen := big.NewInt(a.cfg.NetworkShareDen)
 	if networkShareDen.Sign() <= 0 {
 		networkShareDen = big.NewInt(4)
 		networkShareNum = big.NewInt(1)
 	}
-	networkCLPNative := intmath.MulDivFloor(totalCLP, networkShareNum, networkShareDen)
-	networkProtocolNative := intmath.MulDivFloor(totalProtocol, networkShareNum, networkShareDen)
+	networkCLP := intmath.MulDivFloor(totalCLP, networkShareNum, networkShareDen)
+	networkProtocol := intmath.MulDivFloor(totalProtocol, networkShareNum, networkShareDen)
+	networkCreditOutput := new(big.Int).Add(networkCLP, networkProtocol)
 
-	// 6. Pendulum 75% pot.
-	pendulumCLP := new(big.Int).Sub(totalCLP, networkCLPNative)
-	pendulumProtocol := new(big.Int).Sub(totalProtocol, networkProtocolNative)
+	// 8. Pendulum 75% pot per fee type.
+	pendulumCLP := new(big.Int).Sub(totalCLP, networkCLP)
+	pendulumProtocol := new(big.Int).Sub(totalProtocol, networkProtocol)
 
-	// 7. Split ratios from snapshot — closed form, integer math.
+	// 9. Split ratios from snapshot — closed form, integer math.
 	fNode, fNodeProtocol := splitFractions(T, V, E, P, s)
 
-	// 8. Per-side splits. LP gets floor, node side gets residual.
+	// 10. Per-pot splits (LP gets floor, node side gets residual for exact conservation).
 	scale := big.NewInt(intmath.SQ64Scale)
 	lpCLPKept := intmath.MulDivFloor(pendulumCLP, big.NewInt(intmath.SQ64Scale-int64(fNode)), scale)
 	nodeCLPNative := new(big.Int).Sub(pendulumCLP, lpCLPKept)
@@ -184,63 +227,48 @@ func (a *Applier) ApplySwapFees(contractID, txID string, blockHeight uint64, arg
 	lpProtocolKept := intmath.MulDivFloor(pendulumProtocol, big.NewInt(intmath.SQ64Scale-int64(fNodeProtocol)), scale)
 	nodeProtocolNative := new(big.Int).Sub(pendulumProtocol, lpProtocolKept)
 
-	// 9. Intermediate reserves before node-side conversion. The user pays the
-	// full CLP fee on the output side, so user_output = gross - base_clp.
-	xIntermediate := new(big.Int).Add(xReserveBig, xBig)
-	xIntermediate.Add(xIntermediate, lpProtocolKept)
-	xIntermediate.Add(xIntermediate, networkProtocolNative)
+	// 11. Single output-asset node share (CLP + Protocol portions both live in
+	// the output asset under the unified model).
+	nodeShareOutput := new(big.Int).Add(nodeCLPNative, nodeProtocolNative)
 
-	grossOut := intmath.MulDivFloor(xBig, yReserveBig, new(big.Int).Add(xReserveBig, xBig))
-	if grossOut.Cmp(yReserveBig) > 0 {
-		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
-	}
-	yIntermediate := new(big.Int).Sub(yReserveBig, grossOut)
-	yIntermediate.Add(yIntermediate, lpCLPKept)
-	yIntermediate.Add(yIntermediate, networkCLPNative)
-	if yIntermediate.Sign() < 0 {
-		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
-	}
+	// 12. Reserve update — fees stay in pool implicitly (Y - userOutput
+	// captures all retained fees). Then either drain the node share as HBD
+	// directly, or do one secondary CPMM hop to convert non-HBD → HBD.
+	newX := new(big.Int).Add(xReserveBig, xBig)
+	newY := new(big.Int).Sub(yReserveBig, userOutput)
 
-	userOutput := new(big.Int).Sub(grossOut, baseCLPBig)
-	if userOutput.Sign() < 0 {
-		userOutput.SetInt64(0)
-	}
-
-	// 10. Node-side conversion to HBD via closed-form CPMM through the same pool.
-	// Whichever side is non-HBD needs the secondary hop; the HBD side passes through.
 	nodeBucketHBD := new(big.Int)
-	if assetIn == "hbd" {
-		// Input is HBD: protocol fee is in HBD (passes through), CLP fee is in
-		// non-HBD output asset (needs conversion). Y is HBD (output). X is ASSET1 (input).
-		// Wait — HBD→ASSET1 means X is HBD-side. Re-resolve relative to which
-		// reserve holds HBD.
-		nodeBucketHBD.Add(nodeBucketHBD, nodeProtocolNative) // input side is HBD
-		// Output side (Y) is ASSET1 — need to swap nodeCLPNative ASSET1 → HBD.
-		// But Y holds ASSET1 reserves, so we swap into the X (HBD) side.
-		hbdOut := convertNonHBDLeg(nodeCLPNative, yIntermediate, xIntermediate)
-		nodeBucketHBD.Add(nodeBucketHBD, hbdOut)
-		// Update reserves.
-		yIntermediate.Add(yIntermediate, nodeCLPNative)
-		xIntermediate.Sub(xIntermediate, hbdOut)
+	if assetOut == "hbd" {
+		// Output is HBD: node share leaves Y directly as HBD.
+		if newY.Cmp(nodeShareOutput) < 0 {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+		}
+		nodeBucketHBD.Set(nodeShareOutput)
+		newY.Sub(newY, nodeShareOutput)
 	} else {
-		// Input is ASSET1 (X), output is HBD (Y).
-		// CLP fee in HBD passes through. Protocol fee in ASSET1 needs conversion.
-		nodeBucketHBD.Add(nodeBucketHBD, nodeCLPNative)
-		hbdOut := convertNonHBDLeg(nodeProtocolNative, xIntermediate, yIntermediate)
-		nodeBucketHBD.Add(nodeBucketHBD, hbdOut)
-		xIntermediate.Add(xIntermediate, nodeProtocolNative)
-		yIntermediate.Sub(yIntermediate, hbdOut)
+		// Output is non-HBD (X is HBD): convert via secondary CPMM hop.
+		// Closed-form: hbdOut = nodeShare · newX / (newY + nodeShare).
+		denom := new(big.Int).Add(newY, nodeShareOutput)
+		if denom.Sign() <= 0 {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+		}
+		hbdOut := intmath.MulDivFloor(nodeShareOutput, newX, denom)
+		if hbdOut.Cmp(newX) > 0 {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+		}
+		newY.Add(newY, nodeShareOutput) // virtual: non-HBD added back to Y
+		newX.Sub(newX, hbdOut)          // HBD leaves X to nodes bucket
+		nodeBucketHBD.Set(hbdOut)
 	}
-	if xIntermediate.Sign() < 0 || yIntermediate.Sign() < 0 {
+
+	if newX.Sign() < 0 || newY.Sign() < 0 {
+		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+	}
+	if !newX.IsInt64() || !newY.IsInt64() || !userOutput.IsInt64() || !nodeBucketHBD.IsInt64() || !networkCreditOutput.IsInt64() {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
 	}
 
-	// 11. Final reserves.
-	if !xIntermediate.IsInt64() || !yIntermediate.IsInt64() || !userOutput.IsInt64() || !nodeBucketHBD.IsInt64() {
-		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
-	}
-
-	// 12. Ledger writes.
+	// 13. Ledger write.
 	if nodeBucketHBD.Sign() > 0 {
 		res := a.ledger.PendulumAccrue("nodes", "hbd", nodeBucketHBD.Int64(), txID, blockHeight)
 		if !res.Ok {
@@ -250,15 +278,12 @@ func (a *Applier) ApplySwapFees(contractID, txID string, blockHeight uint64, arg
 
 	out := wasm_context.PendulumSwapFeeResult{
 		UserOutput:            userOutput.Int64(),
-		NewXReserve:           xIntermediate.Int64(),
-		NewYReserve:           yIntermediate.Int64(),
+		NewXReserve:           newX.Int64(),
+		NewYReserve:           newY.Int64(),
+		NetworkCreditOutput:   networkCreditOutput.Int64(),
 		NodeBucketCreditedHBD: nodeBucketHBD.Int64(),
 		MultiplierQ8:          int64(multiplier),
 		SAfterQ8:              int64(s),
-		NetworkCredit: wasm_context.PendulumNetworkCredit{
-			AssetInAmount:  asInt64(networkProtocolNative),
-			AssetOutAmount: asInt64(networkCLPNative),
-		},
 	}
 	return result.Ok(out)
 }
@@ -297,6 +322,28 @@ func toSQ64Ratio(a, b int64) (intmath.SQ64, intmath.SQ64) {
 		return 0, 1
 	}
 	return intmath.SQ64(a), intmath.SQ64(b)
+}
+
+// exacerbatesFromSnapshot derives the stabilizer "exacerbates" hint from the
+// current pendulum state and the swap direction.
+//
+//   s = V/E = 2P/E. HBD-in raises P (and therefore s); HBD-out lowers it.
+//
+// The trade exacerbates the imbalance whenever it moves s away from 0.5
+// (the equilibrium target the StabilizerMultiplier penalizes deviations
+// from). At exactly s = 0.5 any nonzero swap exacerbates by definition.
+func exacerbatesFromSnapshot(s intmath.SQ64, hbdIn bool) bool {
+	const half = intmath.SQ64(intmath.SQ64Scale / 2)
+	switch {
+	case s == half:
+		return true
+	case s < half:
+		// We want s to rise. HBD-in raises s (corrective); HBD-out lowers it.
+		return !hbdIn
+	default: // s > half
+		// We want s to fall. HBD-out lowers s (corrective); HBD-in raises it.
+		return hbdIn
+	}
 }
 
 // splitFractions returns (f_node, f_node_protocol) as SQ64. fNode applies to
@@ -341,28 +388,4 @@ func splitFractions(T, V, E, P *big.Int, s intmath.SQ64) (intmath.SQ64, intmath.
 		fNodeProtocol = 0
 	}
 	return fNode, fNodeProtocol
-}
-
-// convertNonHBDLeg runs a closed-form CPMM swap of `amount` non-HBD tokens
-// against (nonHBDReserve, hbdReserve). Returns the HBD output. If amount is
-// zero or non-positive, returns 0.
-func convertNonHBDLeg(amount, nonHBDReserve, hbdReserve *big.Int) *big.Int {
-	if amount == nil || amount.Sign() <= 0 || nonHBDReserve.Sign() <= 0 || hbdReserve.Sign() <= 0 {
-		return new(big.Int)
-	}
-	denom := new(big.Int).Add(nonHBDReserve, amount)
-	if denom.Sign() == 0 {
-		return new(big.Int)
-	}
-	return intmath.MulDivFloor(amount, hbdReserve, denom)
-}
-
-func asInt64(x *big.Int) int64 {
-	if x == nil {
-		return 0
-	}
-	if !x.IsInt64() {
-		return 0
-	}
-	return x.Int64()
 }
