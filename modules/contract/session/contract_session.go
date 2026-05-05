@@ -2,6 +2,7 @@ package contract_session
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -75,7 +76,7 @@ func (cs *CallSession) GetContractSession(contractId string) *ContractSession {
 		if tmpOut := cs.takePending(contractId); tmpOut != nil {
 			cs.FromOutput(contractId, *tmpOut)
 		} else {
-			lastOutput, err := cs.stateDb.GetLastOutput(contractId, cs.lastBh)
+			lastOutput, err := cs.stateDb.GetLastOutput(context.Background(), contractId, cs.lastBh)
 
 			var cid string
 			metadata := contracts.ContractMetadata{}
@@ -211,7 +212,7 @@ func (cs *CallSession) GetStateDiff() map[string]StateDiff {
 }
 
 func (cs *CallSession) GetContractFromDb(contractId string, height uint64) result.Result[ContractWithCode] {
-	info, err := cs.contractDb.ContractById(contractId, height)
+	info, err := cs.contractDb.ContractById(context.Background(), contractId, height)
 	if err == mongo.ErrNoDocuments {
 		return result.Err[ContractWithCode](
 			errors.Join(fmt.Errorf(contracts.IC_CONTRT_NOT_FND), fmt.Errorf("contract not found")),

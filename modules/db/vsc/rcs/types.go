@@ -1,11 +1,14 @@
 package rcDb
 
-import "vsc-node/modules/aggregate"
+import (
+	"context"
+	"vsc-node/modules/aggregate"
+)
 
 type RcDb interface {
 	aggregate.Plugin
-	GetRecord(account string, blockHeight uint64) (RcRecord, error)
-	SetRecord(account string, blockHeight uint64, amount int64)
+	GetRecord(ctx context.Context, account string, blockHeight uint64) (RcRecord, error)
+	SetRecord(ctx context.Context, account string, blockHeight uint64, amount int64)
 }
 
 type RcRecord struct {

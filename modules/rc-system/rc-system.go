@@ -1,6 +1,7 @@
 package rc_system
 
 import (
+	"context"
 	"math"
 	"strings"
 	"vsc-node/modules/common/params"
@@ -15,9 +16,11 @@ type RcSystem struct {
 	LedgerSystem ledgerSystem.LedgerSystem
 }
 
-// Returns the amount of RCs that are frozen for the given account at the given block height
+// Returns the amount of RCs that are frozen for the given account at the given block height.
+// This is a read path used by mempool / GraphQL (not the slot transaction); it always
+// reads committed state via context.Background().
 func (rcs *RcSystem) GetFrozenAmt(account string, blockHeight uint64) int64 {
-	rcRecord, _ := rcs.RcDb.GetRecord(account, blockHeight)
+	rcRecord, _ := rcs.RcDb.GetRecord(context.Background(), account, blockHeight)
 
 	diff := blockHeight - rcRecord.BlockHeight
 

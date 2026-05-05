@@ -1,6 +1,7 @@
 package tss_db
 
 import (
+	"context"
 	a "vsc-node/modules/aggregate"
 )
 
@@ -19,36 +20,37 @@ const KeyRetirementEnabled = false
 
 type TssKeys interface {
 	a.Plugin
-	InsertKey(id string, t TssKeyAlgo, epochs uint64) error
-	FindKey(id string) (TssKey, error)
-	SetKey(key TssKey) error
-	FindNewKeys(blockHeight uint64) ([]TssKey, error)
-	FindEpochKeys(epoch uint64) ([]TssKey, error)
+	InsertKey(ctx context.Context, id string, t TssKeyAlgo, epochs uint64) error
+	FindKey(ctx context.Context, id string) (TssKey, error)
+	SetKey(ctx context.Context, key TssKey) error
+	FindNewKeys(ctx context.Context, blockHeight uint64) ([]TssKey, error)
+	FindEpochKeys(ctx context.Context, epoch uint64) ([]TssKey, error)
 	// FindDeprecatingKeys returns active keys whose ExpiryEpoch has been reached.
-	FindDeprecatingKeys(epoch uint64) ([]TssKey, error)
+	FindDeprecatingKeys(ctx context.Context, epoch uint64) ([]TssKey, error)
 	// FindNewlyRetired returns deprecated keys whose grace period has just elapsed.
-	FindNewlyRetired(blockHeight uint64) ([]TssKey, error)
+	FindNewlyRetired(ctx context.Context, blockHeight uint64) ([]TssKey, error)
 	// DeprecateLegacyKeys marks all active keys with no expiry as deprecated (deprecated_height=0).
 	// Called once at node startup so pre-expiry-system keys are no longer reshared or signed.
 	// Keys with deprecated_height=0 are not subject to the retirement grace period — they stay
 	// deprecated until explicitly renewed.
-	DeprecateLegacyKeys() error
+	DeprecateLegacyKeys(ctx context.Context) error
 }
 
 type TssRequests interface {
 	a.Plugin
-	SetSignedRequest(req TssRequest) error
-	FindUnsignedRequests(blockHeight uint64) ([]TssRequest, error)
-	FindRequests(keyID string, msgHex []string) ([]TssRequest, error)
-	UpdateRequest(req TssRequest) error
+	SetSignedRequest(ctx context.Context, req TssRequest) error
+	FindUnsignedRequests(ctx context.Context, blockHeight uint64) ([]TssRequest, error)
+	FindRequests(ctx context.Context, keyID string, msgHex []string) ([]TssRequest, error)
+	UpdateRequest(ctx context.Context, req TssRequest) error
 }
 
 type TssCommitments interface {
 	a.Plugin
-	SetCommitmentData(commitment TssCommitment) error
-	GetCommitment(keyId string, epoch uint64) (TssCommitment, error)
-	GetCommitmentByHeight(keyId string, height uint64, qtype ...string) (TssCommitment, error)
+	SetCommitmentData(ctx context.Context, commitment TssCommitment) error
+	GetCommitment(ctx context.Context, keyId string, epoch uint64) (TssCommitment, error)
+	GetCommitmentByHeight(ctx context.Context, keyId string, height uint64, qtype ...string) (TssCommitment, error)
 	FindCommitments(
+		ctx context.Context,
 		keyId *string,
 		byTypes []string,
 		epoch *uint64,
@@ -62,6 +64,7 @@ type TssCommitments interface {
 	// needed and records may not have matching hive_blocks entries (e.g., type="ready"
 	// records stored directly via SetCommitmentData).
 	FindCommitmentsSimple(
+		ctx context.Context,
 		keyId *string,
 		byTypes []string,
 		epoch *uint64,
@@ -69,7 +72,7 @@ type TssCommitments interface {
 		toBlock *uint64,
 		limit int,
 	) ([]TssCommitment, error)
-	GetBlames(epoch *uint64) ([]TssCommitment, error)
+	GetBlames(ctx context.Context, epoch *uint64) ([]TssCommitment, error)
 }
 
 type TssKey struct {

@@ -944,7 +944,7 @@ func (oplog *Oplog) ExecuteTx(se *StateEngine) {
 	}
 
 	// se.log.Debug("Execute Oplog", oplog.EndBlock)
-	se.LedgerSystem.IngestOplog(aoplog, ledgerSystem.OplogInjestOptions{
+	se.LedgerSystem.IngestOplog(se.SlotCtx(), aoplog, ledgerSystem.OplogInjestOptions{
 		EndHeight:   oplog.EndBlock,
 		StartHeight: startBlock,
 	})
@@ -954,7 +954,7 @@ func (oplog *Oplog) ExecuteTx(se *StateEngine) {
 		if !v.Ok {
 			status = transactions.TransactionStatusFailed
 		}
-		se.txDb.SetOutput(transactions.SetResultUpdate{
+		se.txDb.SetOutput(se.SlotCtx(), transactions.SetResultUpdate{
 			Id:     v.Id,
 			Status: &status,
 		})
@@ -1070,7 +1070,7 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSe
 		opTypes = append(opTypes, opType)
 	}
 
-	se.txDb.Ingest(transactions.IngestTransactionUpdate{
+	se.txDb.Ingest(se.SlotCtx(), transactions.IngestTransactionUpdate{
 		Status:         "INCLUDED",
 		Id:             tx.TxId,
 		AnchoredIndex:  &anchoredIndex,

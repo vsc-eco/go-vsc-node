@@ -615,7 +615,7 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 				}
 
 				// Check if culprit is connected
-				witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(id, nil)
+				witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(context.Background(), id, nil)
 				if err == nil {
 					peerId, err := peer.Decode(witness.PeerId)
 					if err == nil {
@@ -870,7 +870,7 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 				continue
 			}
 
-			witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(account, nil)
+			witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(context.Background(), account, nil)
 			if err != nil {
 				continue
 			}

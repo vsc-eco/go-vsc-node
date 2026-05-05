@@ -1,6 +1,7 @@
 package test_utils
 
 import (
+	"context"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db/vsc/contracts"
 
@@ -12,11 +13,11 @@ type MockContractDb struct {
 	Contracts map[string]contracts.Contract
 }
 
-func (m *MockContractDb) RegisterContract(contractId string, args contracts.Contract) {
+func (m *MockContractDb) RegisterContract(_ context.Context, contractId string, args contracts.Contract) {
 	m.Contracts[contractId] = args
 }
 
-func (m *MockContractDb) ContractById(contractId string, height uint64) (contracts.Contract, error) {
+func (m *MockContractDb) ContractById(_ context.Context, contractId string, height uint64) (contracts.Contract, error) {
 	info, exists := m.Contracts[contractId]
 	if !exists {
 		return contracts.Contract{}, mongo.ErrNoDocuments
@@ -25,7 +26,7 @@ func (m *MockContractDb) ContractById(contractId string, height uint64) (contrac
 }
 
 // GraphQL use only, not implemented in mocks
-func (m *MockContractDb) FindContracts(contractId *string, code *string, historical *bool, offset int, limit int) ([]contracts.Contract, error) {
+func (m *MockContractDb) FindContracts(_ context.Context, contractId *string, code *string, historical *bool, offset int, limit int) ([]contracts.Contract, error) {
 	return []contracts.Contract{}, nil
 }
 
@@ -34,7 +35,7 @@ type MockContractStateDb struct {
 	Outputs map[string]contracts.ContractOutput
 }
 
-func (m *MockContractStateDb) IngestOutput(inputArgs contracts.IngestOutputArgs) {
+func (m *MockContractStateDb) IngestOutput(_ context.Context, inputArgs contracts.IngestOutputArgs) {
 	// Convert IngestOutputArgs to ContractOutput
 	output := contracts.ContractOutput{
 		Id:          inputArgs.Id,
@@ -49,7 +50,7 @@ func (m *MockContractStateDb) IngestOutput(inputArgs contracts.IngestOutputArgs)
 	m.Outputs[output.Id] = output
 }
 
-func (m *MockContractStateDb) GetLastOutput(contractId string, height uint64) (contracts.ContractOutput, error) {
+func (m *MockContractStateDb) GetLastOutput(_ context.Context, contractId string, height uint64) (contracts.ContractOutput, error) {
 	var lastOutput contracts.ContractOutput
 	found := false
 
@@ -69,12 +70,12 @@ func (m *MockContractStateDb) GetLastOutput(contractId string, height uint64) (c
 	return lastOutput, nil
 }
 
-func (m *MockContractStateDb) GetOutput(outputId string) *contracts.ContractOutput {
+func (m *MockContractStateDb) GetOutput(_ context.Context, outputId string) *contracts.ContractOutput {
 	result := m.Outputs[outputId]
 	return &result
 }
 
 // GraphQL use only, not implemented in mocks
-func (m *MockContractStateDb) FindOutputs(id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]contracts.ContractOutput, error) {
+func (m *MockContractStateDb) FindOutputs(_ context.Context, id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]contracts.ContractOutput, error) {
 	return []contracts.ContractOutput{}, nil
 }

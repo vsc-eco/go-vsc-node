@@ -33,13 +33,12 @@ func (e *witnesses) Init() error {
 }
 
 // StoreNodeAnnouncement implements Witnesses.
-func (w *witnesses) StoreNodeAnnouncement(nodeId string) error {
-	_, err := w.InsertOne(context.Background(), Witness{})
+func (w *witnesses) StoreNodeAnnouncement(ctx context.Context, nodeId string) error {
+	_, err := w.InsertOne(ctx, Witness{})
 	return err
 }
 
-func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
-	ctx := context.Background()
+func (w *witnesses) SetWitnessUpdate(ctx context.Context, requestIn SetWitnessUpdateType) error {
 	findOptions := options.FindOneAndUpdate().SetUpsert(true)
 
 	bbytes, _ := json.Marshal(requestIn)
@@ -118,8 +117,7 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 	return nil
 }
 
-func (w *witnesses) GetWitnessNode(account string, blockHeight *int64) {
-	ctx := context.Background()
+func (w *witnesses) GetWitnessNode(ctx context.Context, account string, blockHeight *int64) {
 	var filter bson.M
 	//Get at specific block interval. More safe
 	if blockHeight != nil {
@@ -145,8 +143,7 @@ func (w *witnesses) GetWitnessNode(account string, blockHeight *int64) {
 	mongoResult.Decode(&result)
 }
 
-func (w *witnesses) GetLastestWitnesses(searchOptions ...SearchOption) ([]Witness, error) {
-	ctx := context.Background()
+func (w *witnesses) GetLastestWitnesses(ctx context.Context, searchOptions ...SearchOption) ([]Witness, error) {
 	findOptions := options.Find().SetSort(bson.D{{
 		Key:   "height",
 		Value: -1,
@@ -174,9 +171,7 @@ func (w *witnesses) GetLastestWitnesses(searchOptions ...SearchOption) ([]Witnes
 const maxSignedDiff = (3 * 24 * 60 * 20)
 
 // Deterministically sorted (alphetical) list of witnesses at a given block height
-func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) ([]Witness, error) {
-	ctx := context.Background()
-
+func (w *witnesses) GetWitnessesAtBlockHeight(ctx context.Context, bh uint64, opts ...SearchOption) ([]Witness, error) {
 	var gte uint64
 	if bh > maxSignedDiff {
 		gte = bh - maxSignedDiff
@@ -261,8 +256,8 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) (
 	return outWit, nil
 }
 
-func (w *witnesses) GetWitnessesByPeerId(PeerIds []string, options ...SearchOption) ([]Witness, error) {
-	findResult, err := w.Find(context.Background(), bson.M{
+func (w *witnesses) GetWitnessesByPeerId(ctx context.Context, PeerIds []string, options ...SearchOption) ([]Witness, error) {
+	findResult, err := w.Find(ctx, bson.M{
 		"peer_id": bson.M{
 			"$in": PeerIds,
 		},
@@ -273,7 +268,7 @@ func (w *witnesses) GetWitnessesByPeerId(PeerIds []string, options ...SearchOpti
 	}
 
 	witnessSet := make(map[string]Witness)
-	for findResult.Next(context.Background()) {
+	for findResult.Next(ctx) {
 		var result Witness
 		if err := findResult.Decode(&result); err != nil {
 			return nil, fmt.Errorf("failed to decode witness: %w", err)
@@ -296,9 +291,7 @@ func (w *witnesses) GetWitnessesByPeerId(PeerIds []string, options ...SearchOpti
 	return witnesses, nil
 }
 
-func (w *witnesses) GetWitnessAtHeight(account string, bh *uint64) (*Witness, error) {
-	ctx := context.Background()
-
+func (w *witnesses) GetWitnessAtHeight(ctx context.Context, account string, bh *uint64) (*Witness, error) {
 	findOptions := options.FindOne().SetSort(bson.D{{Key: "height", Value: -1}})
 	findQuery := bson.M{
 		"account": account,

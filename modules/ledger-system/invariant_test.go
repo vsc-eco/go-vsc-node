@@ -1,6 +1,7 @@
 package ledgerSystem_test
 
 import (
+	"context"
 	"testing"
 
 	"vsc-node/lib/test_utils"
@@ -85,11 +86,11 @@ type mockLedgerSystem struct {
 func (m *mockLedgerSystem) GetBalance(account string, blockHeight uint64, asset string) int64 {
 	return m.state.SnapshotForAccount(account, blockHeight, asset)
 }
-func (m *mockLedgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {}
-func (m *mockLedgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ledgerSystem.ExtraInfo) {
+func (m *mockLedgerSystem) ClaimHBDInterest(_ context.Context, lastClaim uint64, blockHeight uint64, amount int64, txId string) {}
+func (m *mockLedgerSystem) IndexActions(_ context.Context, actionUpdate map[string]interface{}, extraInfo ledgerSystem.ExtraInfo) {
 }
-func (m *mockLedgerSystem) Deposit(deposit ledgerSystem.Deposit) string { return "" }
-func (m *mockLedgerSystem) IngestOplog(oplog []ledgerSystem.OpLogEvent, options ledgerSystem.OplogInjestOptions) {
+func (m *mockLedgerSystem) Deposit(_ context.Context, deposit ledgerSystem.Deposit) string { return "" }
+func (m *mockLedgerSystem) IngestOplog(_ context.Context, oplog []ledgerSystem.OpLogEvent, options ledgerSystem.OplogInjestOptions) {
 }
 func (m *mockLedgerSystem) NewEmptySession(state *ledgerSystem.LedgerState, startHeight uint64) ledgerSystem.LedgerSession {
 	return ledgerSystem.NewSession(state)
@@ -501,7 +502,7 @@ func TestInvariant_RCConservation(t *testing.T) {
 	// Commit RC usage: record the frozen amount
 	rcResult := rcSess.Done()
 	for acc, amt := range rcResult.RcMap {
-		db.SetRecord(acc, bh, amt)
+		db.SetRecord(context.Background(), acc, bh, amt)
 	}
 	session.Revert() // don't commit ledger changes
 
@@ -571,7 +572,7 @@ func TestInvariant_RCConservation_MultipleConsumptions(t *testing.T) {
 
 	rcResult := rcSess.Done()
 	for acc, amt := range rcResult.RcMap {
-		db.SetRecord(acc, bh, amt)
+		db.SetRecord(context.Background(), acc, bh, amt)
 	}
 	session.Revert()
 
@@ -602,7 +603,7 @@ func TestInvariant_IdempotentDeposit(t *testing.T) {
 	ledgerDbMock := state.LedgerDb.(*test_utils.MockLedgerDb)
 
 	// First deposit
-	ledgerDbMock.StoreLedger(ledgerDb.LedgerRecord{
+	ledgerDbMock.StoreLedger(context.Background(), ledgerDb.LedgerRecord{
 		Id:          "deposit-1",
 		BlockHeight: 80,
 		Amount:      1000,
@@ -617,7 +618,7 @@ func TestInvariant_IdempotentDeposit(t *testing.T) {
 	// Second deposit with SAME ID -- this simulates the idempotency requirement.
 	// In production, StoreLedger with same ID should be a no-op or deduplicated.
 	// The mock doesn't deduplicate, so this shows what happens without protection.
-	ledgerDbMock.StoreLedger(ledgerDb.LedgerRecord{
+	ledgerDbMock.StoreLedger(context.Background(), ledgerDb.LedgerRecord{
 		Id:          "deposit-1",
 		BlockHeight: 80,
 		Amount:      1000,

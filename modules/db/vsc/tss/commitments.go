@@ -16,9 +16,9 @@ type tssCommitments struct {
 	*db.Collection
 }
 
-func (tsc *tssCommitments) SetCommitmentData(commitment TssCommitment) error {
+func (tsc *tssCommitments) SetCommitmentData(ctx context.Context, commitment TssCommitment) error {
 	options := options.FindOneAndUpdate().SetUpsert(true)
-	updateResult := tsc.FindOneAndUpdate(context.Background(), bson.M{
+	updateResult := tsc.FindOneAndUpdate(ctx, bson.M{
 		"key_id": commitment.KeyId,
 		"tx_id":  commitment.TxId,
 	}, bson.M{
@@ -44,8 +44,8 @@ func (tsc *tssCommitments) SetCommitmentData(commitment TssCommitment) error {
 	return nil
 }
 
-func (tsc *tssCommitments) GetCommitment(keyId string, epoch uint64) (TssCommitment, error) {
-	findResult := tsc.FindOne(context.Background(), bson.M{
+func (tsc *tssCommitments) GetCommitment(ctx context.Context, keyId string, epoch uint64) (TssCommitment, error) {
+	findResult := tsc.FindOne(ctx, bson.M{
 		"key_id": keyId,
 		"epoch":  epoch,
 	})
@@ -63,7 +63,7 @@ func (tsc *tssCommitments) GetCommitment(keyId string, epoch uint64) (TssCommitm
 	return record, nil
 }
 
-func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qtype ...string) (TssCommitment, error) {
+func (tsc *tssCommitments) GetCommitmentByHeight(ctx context.Context, keyId string, height uint64, qtype ...string) (TssCommitment, error) {
 	findOpts := options.FindOne().SetSort(bson.M{
 		"block_height": -1,
 	})
@@ -83,7 +83,7 @@ func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qt
 
 	log.Trace("getCommitmentByHeight", "query", query)
 
-	findResult := tsc.FindOne(context.Background(), query, findOpts)
+	findResult := tsc.FindOne(ctx, query, findOpts)
 
 	if findResult.Err() != nil {
 		return TssCommitment{}, findResult.Err()
@@ -94,7 +94,7 @@ func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qt
 	return commitment, err
 }
 
-func (tsc *tssCommitments) FindCommitments(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TssCommitment, error) {
+func (tsc *tssCommitments) FindCommitments(ctx context.Context, keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TssCommitment, error) {
 	filters := bson.D{}
 	if keyId != nil {
 		filters = append(filters, bson.E{Key: "key_id", Value: *keyId})
@@ -113,14 +113,14 @@ func (tsc *tssCommitments) FindCommitments(keyId *string, byTypes []string, epoc
 	}
 
 	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
-	cursor, err := tsc.Aggregate(context.Background(), pipe)
+	cursor, err := tsc.Aggregate(ctx, pipe)
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(context.Background())
+	defer cursor.Close(ctx)
 
 	commitments := make([]TssCommitment, 0)
-	for cursor.Next(context.Background()) {
+	for cursor.Next(ctx) {
 		var commitment TssCommitment
 		if err := cursor.Decode(&commitment); err != nil {
 			return nil, fmt.Errorf("failed to decode commitment: %w", err)
@@ -131,7 +131,7 @@ func (tsc *tssCommitments) FindCommitments(keyId *string, byTypes []string, epoc
 	return commitments, nil
 }
 
-func (tsc *tssCommitments) FindCommitmentsSimple(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, limit int) ([]TssCommitment, error) {
+func (tsc *tssCommitments) FindCommitmentsSimple(ctx context.Context, keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, limit int) ([]TssCommitment, error) {
 	query := bson.M{}
 	if keyId != nil {
 		query["key_id"] = *keyId
@@ -158,14 +158,14 @@ func (tsc *tssCommitments) FindCommitmentsSimple(keyId *string, byTypes []string
 		findOpts.SetLimit(int64(limit))
 	}
 
-	cursor, err := tsc.Find(context.Background(), query, findOpts)
+	cursor, err := tsc.Find(ctx, query, findOpts)
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(context.Background())
+	defer cursor.Close(ctx)
 
 	commitments := make([]TssCommitment, 0)
-	for cursor.Next(context.Background()) {
+	for cursor.Next(ctx) {
 		var commitment TssCommitment
 		if err := cursor.Decode(&commitment); err != nil {
 			return nil, fmt.Errorf("failed to decode commitment: %w", err)
@@ -175,7 +175,7 @@ func (tsc *tssCommitments) FindCommitmentsSimple(keyId *string, byTypes []string
 	return commitments, nil
 }
 
-func (tsc *tssCommitments) GetBlames(epoch *uint64) ([]TssCommitment, error) {
+func (tsc *tssCommitments) GetBlames(ctx context.Context, epoch *uint64) ([]TssCommitment, error) {
 	query := bson.M{
 		"type": "blame",
 	}
@@ -183,14 +183,14 @@ func (tsc *tssCommitments) GetBlames(epoch *uint64) ([]TssCommitment, error) {
 		query["epoch"] = *epoch
 	}
 
-	findResult, err := tsc.Find(context.Background(), query)
+	findResult, err := tsc.Find(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	defer findResult.Close(context.Background())
+	defer findResult.Close(ctx)
 
 	commitments := make([]TssCommitment, 0)
-	for findResult.Next(context.Background()) {
+	for findResult.Next(ctx) {
 		var commitment TssCommitment
 		if err := findResult.Decode(&commitment); err != nil {
 			return nil, fmt.Errorf("failed to decode commitment: %w", err)

@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"context"
 	"crypto"
 	"errors"
 	"fmt"
@@ -66,7 +67,7 @@ func TxStatusAssertion(txns []TxStatusAssert, waitTimeSec uint) EvaluateFunc {
 		runner := ctx.Container.Runner()
 
 		for _, txn := range txns {
-			getTransaction := runner.TxDb.GetTransaction(txn.TxId)
+			getTransaction := runner.TxDb.GetTransaction(context.Background(), txn.TxId)
 			if getTransaction == nil {
 				return errors.New("non-existent transaction")
 			}

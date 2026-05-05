@@ -196,7 +196,7 @@ func (o *ChainOracle) processChainRelay(
 	oracleDid := "did:vsc:oracle:" + strings.ToLower(chainStatus.symbol)
 	var nonce uint64
 	if o.nonceDb != nil {
-		if nonceRecord, err := o.nonceDb.GetNonce(oracleDid); err == nil {
+		if nonceRecord, err := o.nonceDb.GetNonce(context.Background(), oracleDid); err == nil {
 			nonce = nonceRecord.Nonce
 		}
 	}

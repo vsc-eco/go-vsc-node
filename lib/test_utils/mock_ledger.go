@@ -1,6 +1,7 @@
 package test_utils
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"vsc-node/modules/aggregate"
@@ -12,7 +13,7 @@ type MockBalanceDb struct {
 	BalanceRecords map[string][]ledgerDb.BalanceRecord
 }
 
-func (m *MockBalanceDb) GetBalanceRecord(account string, blockHeight uint64) (*ledgerDb.BalanceRecord, error) {
+func (m *MockBalanceDb) GetBalanceRecord(_ context.Context, account string, blockHeight uint64) (*ledgerDb.BalanceRecord, error) {
 	if len(m.BalanceRecords[account]) == 0 {
 		return nil, nil
 	}
@@ -26,7 +27,7 @@ func (m *MockBalanceDb) GetBalanceRecord(account string, blockHeight uint64) (*l
 	return &latestRecord, nil
 }
 
-func (m *MockBalanceDb) UpdateBalanceRecord(record ledgerDb.BalanceRecord) error {
+func (m *MockBalanceDb) UpdateBalanceRecord(_ context.Context, record ledgerDb.BalanceRecord) error {
 	if _, exists := m.BalanceRecords[record.Account]; !exists {
 		m.BalanceRecords[record.Account] = make([]ledgerDb.BalanceRecord, 0)
 	}
@@ -40,7 +41,7 @@ func (m *MockBalanceDb) UpdateBalanceRecord(record ledgerDb.BalanceRecord) error
 	return nil
 }
 
-func (m *MockBalanceDb) GetAll(blockHeight uint64) []ledgerDb.BalanceRecord {
+func (m *MockBalanceDb) GetAll(_ context.Context, blockHeight uint64) []ledgerDb.BalanceRecord {
 	out := make([]ledgerDb.BalanceRecord, 0)
 	for _, records := range m.BalanceRecords {
 		if len(records) > 0 {
@@ -55,7 +56,7 @@ type MockLedgerDb struct {
 	LedgerRecords map[string][]ledgerDb.LedgerRecord
 }
 
-func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) {
+func (m *MockLedgerDb) StoreLedger(_ context.Context, ledgerRecords ...ledgerDb.LedgerRecord) {
 	for _, record := range ledgerRecords {
 		if record.From != "" {
 			m.LedgerRecords[record.From] = append(m.LedgerRecords[record.From], record)
@@ -66,7 +67,7 @@ func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) {
 	}
 }
 
-func (m *MockLedgerDb) GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]ledgerDb.LedgerRecord, error) {
+func (m *MockLedgerDb) GetLedgerAfterHeight(_ context.Context, account string, blockHeight uint64, asset string, limit *int64) (*[]ledgerDb.LedgerRecord, error) {
 	das := m.LedgerRecords[account]
 	filteredResults := make([]ledgerDb.LedgerRecord, 0)
 	for _, record := range das {
@@ -80,7 +81,7 @@ func (m *MockLedgerDb) GetLedgerAfterHeight(account string, blockHeight uint64, 
 	return &filteredResults, nil
 }
 
-func (m *MockLedgerDb) GetLedgerRange(account string, start uint64, end uint64, asset string, options ...ledgerDb.LedgerOptions) (*[]ledgerDb.LedgerRecord, error) {
+func (m *MockLedgerDb) GetLedgerRange(_ context.Context, account string, start uint64, end uint64, asset string, options ...ledgerDb.LedgerOptions) (*[]ledgerDb.LedgerRecord, error) {
 	das := m.LedgerRecords[account]
 	opTypes := make([]string, 0)
 	filteredResults := make([]ledgerDb.LedgerRecord, 0)
@@ -101,16 +102,16 @@ func (m *MockLedgerDb) GetLedgerRange(account string, start uint64, end uint64, 
 }
 
 // GraphQL use only, not implemented in mocks
-func (m *MockLedgerDb) GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *ledgerDb.Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledgerDb.LedgerRecord, error) {
+func (m *MockLedgerDb) GetLedgersTsRange(_ context.Context, account *string, txId *string, txTypes []string, asset *ledgerDb.Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledgerDb.LedgerRecord, error) {
 	return make([]ledgerDb.LedgerRecord, 0), nil
 }
 
 // GraphQL use only, not implemented in mocks
-func (m *MockLedgerDb) GetRawLedgerRange(account *string, txId *string, txTypes []string, asset *ledgerDb.Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledgerDb.LedgerRecord, error) {
+func (m *MockLedgerDb) GetRawLedgerRange(_ context.Context, account *string, txId *string, txTypes []string, asset *ledgerDb.Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledgerDb.LedgerRecord, error) {
 	return make([]ledgerDb.LedgerRecord, 0), nil
 }
 
-func (m *MockLedgerDb) GetDistinctAccountsRange(startBlock, endBlock uint64) ([]string, error) {
+func (m *MockLedgerDb) GetDistinctAccountsRange(_ context.Context, startBlock, endBlock uint64) ([]string, error) {
 	results := make([]string, 0)
 	for acc, records := range m.LedgerRecords {
 		exists := false
@@ -133,7 +134,7 @@ type MockInterestClaimsDb struct {
 	Claims []ledgerDb.ClaimRecord
 }
 
-func (ic *MockInterestClaimsDb) GetLastClaim(blockHeight uint64) *ledgerDb.ClaimRecord {
+func (ic *MockInterestClaimsDb) GetLastClaim(_ context.Context, blockHeight uint64) *ledgerDb.ClaimRecord {
 	var result ledgerDb.ClaimRecord
 	for _, claim := range ic.Claims {
 		if claim.BlockHeight < blockHeight {
@@ -143,11 +144,11 @@ func (ic *MockInterestClaimsDb) GetLastClaim(blockHeight uint64) *ledgerDb.Claim
 	return &result
 }
 
-func (ic *MockInterestClaimsDb) SaveClaim(claim ledgerDb.ClaimRecord) {
+func (ic *MockInterestClaimsDb) SaveClaim(_ context.Context, claim ledgerDb.ClaimRecord) {
 	ic.Claims = append(ic.Claims, claim)
 }
 
-func (ic *MockInterestClaimsDb) FindClaims(fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledgerDb.ClaimRecord, error) {
+func (ic *MockInterestClaimsDb) FindClaims(_ context.Context, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledgerDb.ClaimRecord, error) {
 	return make([]ledgerDb.ClaimRecord, 0), nil
 }
 
@@ -156,11 +157,11 @@ type MockActionsDb struct {
 	Actions map[string]ledgerDb.ActionRecord
 }
 
-func (m *MockActionsDb) StoreAction(action ledgerDb.ActionRecord) {
+func (m *MockActionsDb) StoreAction(_ context.Context, action ledgerDb.ActionRecord) {
 	m.Actions[action.Id] = action
 }
 
-func (m *MockActionsDb) ExecuteComplete(actionId *string, ids ...string) {
+func (m *MockActionsDb) ExecuteComplete(_ context.Context, actionId *string, ids ...string) {
 	for _, id := range ids {
 		action, exists := m.Actions[id]
 		if exists {
@@ -173,7 +174,7 @@ func (m *MockActionsDb) ExecuteComplete(actionId *string, ids ...string) {
 	}
 }
 
-func (m *MockActionsDb) Get(id string) (*ledgerDb.ActionRecord, error) {
+func (m *MockActionsDb) Get(_ context.Context, id string) (*ledgerDb.ActionRecord, error) {
 	d, exists := m.Actions[id]
 	if !exists {
 		return nil, nil
@@ -181,18 +182,18 @@ func (m *MockActionsDb) Get(id string) (*ledgerDb.ActionRecord, error) {
 	return &d, nil
 }
 
-func (m *MockActionsDb) SetStatus(id string, status string) {
+func (m *MockActionsDb) SetStatus(_ context.Context, id string, status string) {
 	action := m.Actions[id]
 	action.Status = status
 	m.Actions[id] = action
 }
 
 // Multisig gatway use only, not implemented in mocks
-func (m *MockActionsDb) GetPendingActions(bh uint64, t ...string) ([]ledgerDb.ActionRecord, error) {
+func (m *MockActionsDb) GetPendingActions(_ context.Context, bh uint64, t ...string) ([]ledgerDb.ActionRecord, error) {
 	return make([]ledgerDb.ActionRecord, 0), nil
 }
 
-func (m *MockActionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([]ledgerDb.ActionRecord, error) {
+func (m *MockActionsDb) GetPendingActionsByEpoch(_ context.Context, epoch uint64, t ...string) ([]ledgerDb.ActionRecord, error) {
 	result := make([]ledgerDb.ActionRecord, 0)
 	for _, action := range m.Actions {
 		if slices.Contains(t, action.Type) && action.Params != nil && action.Params["epoch"] == epoch {
@@ -203,11 +204,11 @@ func (m *MockActionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([]l
 }
 
 // GraphQL use only, not implemented in mocks
-func (m *MockActionsDb) GetActionsRange(txId *string, actionId *string, account *string, byTypes []string, asset *ledgerDb.Asset, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledgerDb.ActionRecord, error) {
+func (m *MockActionsDb) GetActionsRange(_ context.Context, txId *string, actionId *string, account *string, byTypes []string, asset *ledgerDb.Asset, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledgerDb.ActionRecord, error) {
 	return make([]ledgerDb.ActionRecord, 0), nil
 }
 
-func (m *MockActionsDb) GetAccountPendingConsensusUnstake(account string) (int64, error) {
+func (m *MockActionsDb) GetAccountPendingConsensusUnstake(_ context.Context, account string) (int64, error) {
 	result := int64(0)
 	for _, action := range m.Actions {
 		if action.To == account && action.Type == "consensus_unstake" && action.Status == "pending" {
@@ -217,7 +218,7 @@ func (m *MockActionsDb) GetAccountPendingConsensusUnstake(account string) (int64
 	return result, nil
 }
 
-func (m *MockActionsDb) GetActionsByTxId(txId string) ([]ledgerDb.ActionRecord, error) {
+func (m *MockActionsDb) GetActionsByTxId(_ context.Context, txId string) ([]ledgerDb.ActionRecord, error) {
 	result := make([]ledgerDb.ActionRecord, 0)
 	for id, action := range m.Actions {
 		if strings.HasPrefix(id, txId) {

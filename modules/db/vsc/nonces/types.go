@@ -1,11 +1,14 @@
 package nonces
 
-import a "vsc-node/modules/aggregate"
+import (
+	"context"
+	a "vsc-node/modules/aggregate"
+)
 
 type Nonces interface {
 	a.Plugin
-	GetNonce(account string) (NonceRecord, error)
-	SetNonce(account string, nonce uint64) error
+	GetNonce(ctx context.Context, account string) (NonceRecord, error)
+	SetNonce(ctx context.Context, account string, nonce uint64) error
 }
 
 type NonceRecord struct {

@@ -20,10 +20,11 @@ type tssRequests struct {
 // To get all msgHex associated with keyID, pass in nil for msgHex, or empty slice.
 // Returns only the matching hex, if no matching element, nil value is returned.
 func (tssReq *tssRequests) FindRequests(
+	ctx context.Context,
 	keyID string,
 	msgHex []string,
 ) ([]TssRequest, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
 	filter := bson.D{{Key: "key_id", Value: keyID}}
@@ -52,8 +53,7 @@ func (tssReq *tssRequests) FindRequests(
 	return tssRequest, nil
 }
 
-func (tssReqs *tssRequests) SetSignedRequest(req TssRequest) error {
-	ctx := context.Background()
+func (tssReqs *tssRequests) SetSignedRequest(ctx context.Context, req TssRequest) error {
 	singleResult := tssReqs.FindOne(ctx, bson.M{
 		"key_id": req.KeyId,
 		"msg":    req.Msg,
@@ -64,7 +64,7 @@ func (tssReqs *tssRequests) SetSignedRequest(req TssRequest) error {
 	}
 
 	updateOptions := options.FindOneAndUpdate().SetUpsert(true)
-	singeResult := tssReqs.FindOneAndUpdate(context.Background(), bson.M{
+	singeResult := tssReqs.FindOneAndUpdate(ctx, bson.M{
 		"key_id": req.KeyId,
 		"msg":    req.Msg,
 	}, bson.M{
@@ -75,9 +75,7 @@ func (tssReqs *tssRequests) SetSignedRequest(req TssRequest) error {
 	return singeResult.Err()
 }
 
-func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64) ([]TssRequest, error) {
-	ctx := context.Background()
-
+func (tssReqs *tssRequests) FindUnsignedRequests(ctx context.Context, blockHeight uint64) ([]TssRequest, error) {
 	// Revive "failed" requests (from the removed block-age expiry, or from
 	// deprecated-key filtering when a key is later renewed) — but only for keys
 	// that are currently active. Requests whose key is still deprecated/retired
@@ -123,8 +121,7 @@ func (tssReqs *tssRequests) FindUnsignedRequests(blockHeight uint64) ([]TssReque
 	return requests, nil
 }
 
-func (tssReqs *tssRequests) UpdateRequest(req TssRequest) error {
-	ctx := context.Background()
+func (tssReqs *tssRequests) UpdateRequest(ctx context.Context, req TssRequest) error {
 	singleResult := tssReqs.FindOne(ctx, bson.M{
 		"key_id": req.KeyId,
 		"msg":    req.Msg,
@@ -135,7 +132,7 @@ func (tssReqs *tssRequests) UpdateRequest(req TssRequest) error {
 		return nil
 	}
 
-	res := tssReqs.FindOneAndUpdate(context.Background(), bson.M{
+	res := tssReqs.FindOneAndUpdate(ctx, bson.M{
 		"key_id": req.KeyId,
 		"msg":    req.Msg,
 	}, bson.M{

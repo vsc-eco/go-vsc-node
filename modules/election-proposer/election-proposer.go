@@ -179,7 +179,7 @@ func (e *electionProposer) GenerateElection() (elections.ElectionHeader, electio
 
 // Generates a raw election graph from local data
 func (e *electionProposer) GenerateElectionAtBlock(blk uint64) (elections.ElectionHeader, elections.ElectionData, error) {
-	witnesses, err := e.witnesses.GetWitnessesAtBlockHeight(blk, witnesses.EnabledOnly())
+	witnesses, err := e.witnesses.GetWitnessesAtBlockHeight(context.Background(), blk, witnesses.EnabledOnly())
 	if err != nil {
 		return elections.ElectionHeader{}, elections.ElectionData{}, err
 	}
@@ -240,10 +240,10 @@ func (e *electionProposer) GenerateFullElection(
 		// if etype == "initial" {
 		// 	weightMap[w.Account] = 10
 		// } else {
-		// 	balRecord, _ := e.balanceDb.GetBalanceRecord("hive:"+w.Account, blockHeight)
+		// 	balRecord, _ := e.balanceDb.GetBalanceRecord(context.Background(), "hive:"+w.Account, blockHeight)
 		// 	weightMap[w.Account] = uint64(balRecord.HIVE_CONSENSUS)
 		// }
-		balRecord, err := e.balanceDb.GetBalanceRecord("hive:"+w.Account, blockHeight)
+		balRecord, err := e.balanceDb.GetBalanceRecord(context.Background(), "hive:"+w.Account, blockHeight)
 		if err != nil {
 			return elections.ElectionHeader{}, elections.ElectionData{}, err
 		}
@@ -423,7 +423,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 
 		var memberKeys []dids.BlsDID
 		if firstElection {
-			w, err := ep.witnesses.GetWitnessesAtBlockHeight(blk)
+			w, err := ep.witnesses.GetWitnessesAtBlockHeight(context.Background(), blk)
 
 			if err != nil {
 				log.Warn("HoldElection: GetWitnessesAtBlockHeight failed", "blk", blk, "err", err)

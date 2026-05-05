@@ -67,7 +67,7 @@ var _ aggregate.Plugin = &P2PServer{}
 var _ start_status.Starter = &P2PServer{}
 
 type WitnessGetter interface {
-	GetLastestWitnesses(...witnesses.SearchOption) ([]witnesses.Witness, error)
+	GetLastestWitnesses(ctx context.Context, opts ...witnesses.SearchOption) ([]witnesses.Witness, error)
 }
 
 func New(witnessDb WitnessGetter, config P2PConfig, idConfig common.IdentityConfig, sconf systemconfig.SystemConfig, blockStatus common_types.BlockStatusGetter) *P2PServer {
@@ -489,7 +489,7 @@ func (p2p *P2PServer) addrFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multi
 func (p2p *P2PServer) connectRegisteredPeers() {
 	opts := []witnesses.SearchOption{}
 
-	witnesses, _ := p2p.witnessDb.GetLastestWitnesses(opts...)
+	witnesses, _ := p2p.witnessDb.GetLastestWitnesses(context.Background(), opts...)
 
 	for _, witness := range witnesses {
 		if witness.PeerId == "" {

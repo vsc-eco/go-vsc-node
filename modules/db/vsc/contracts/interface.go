@@ -1,22 +1,23 @@
 package contracts
 
 import (
+	"context"
 	a "vsc-node/modules/aggregate"
 	tss_db "vsc-node/modules/db/vsc/tss"
 )
 
 type Contracts interface {
 	a.Plugin
-	RegisterContract(contractId string, args Contract)
-	ContractById(contractId string, height uint64) (Contract, error)
-	FindContracts(contractId *string, code *string, historical *bool, offset int, limit int) ([]Contract, error)
+	RegisterContract(ctx context.Context, contractId string, args Contract)
+	ContractById(ctx context.Context, contractId string, height uint64) (Contract, error)
+	FindContracts(ctx context.Context, contractId *string, code *string, historical *bool, offset int, limit int) ([]Contract, error)
 }
 
 type ContractState interface {
 	a.Plugin
-	IngestOutput(inputArgs IngestOutputArgs)
-	GetLastOutput(contractId string, height uint64) (ContractOutput, error)
-	FindOutputs(id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ContractOutput, error)
+	IngestOutput(ctx context.Context, inputArgs IngestOutputArgs)
+	GetLastOutput(ctx context.Context, contractId string, height uint64) (ContractOutput, error)
+	FindOutputs(ctx context.Context, id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ContractOutput, error)
 }
 
 type IngestOutputArgs struct {

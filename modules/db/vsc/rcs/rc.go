@@ -26,7 +26,7 @@ func (e *rcDb) Init() error {
 	return nil
 }
 
-func (e *rcDb) GetRecord(account string, blockHeight uint64) (RcRecord, error) {
+func (e *rcDb) GetRecord(ctx context.Context, account string, blockHeight uint64) (RcRecord, error) {
 
 	query := bson.M{
 		"account":      account,
@@ -34,7 +34,7 @@ func (e *rcDb) GetRecord(account string, blockHeight uint64) (RcRecord, error) {
 	}
 	opts := options.FindOne().SetSort(bson.D{{Key: "block_height", Value: -1}})
 
-	findResult := e.Collection.FindOne(context.Background(), query, opts)
+	findResult := e.Collection.FindOne(ctx, query, opts)
 
 	var record RcRecord
 	err := findResult.Decode(&record)
@@ -46,13 +46,13 @@ func (e *rcDb) GetRecord(account string, blockHeight uint64) (RcRecord, error) {
 	return record, nil
 }
 
-func (e rcDb) SetRecord(account string, blockHeight uint64, amount int64) {
+func (e rcDb) SetRecord(ctx context.Context, account string, blockHeight uint64, amount int64) {
 	query := bson.M{
 		"account":      account,
 		"block_height": blockHeight,
 	}
 	options := options.FindOneAndUpdate().SetUpsert(true)
-	e.Collection.FindOneAndUpdate(context.Background(), query, bson.M{
+	e.Collection.FindOneAndUpdate(ctx, query, bson.M{
 		"$set": bson.M{
 			"amount": amount,
 		},

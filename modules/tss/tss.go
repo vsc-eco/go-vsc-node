@@ -381,8 +381,8 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	if blocksUntilReshare <= readinessOffset && bh%rotateInterval != 0 {
 		// Check if there are keys that need reshare at the next rotate interval.
 		if electionData, err := tssMgr.electionDb.GetElectionByHeight(bh); err == nil {
-			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(electionData.Epoch)
-			newKeys, _ := tssMgr.tssKeys.FindNewKeys(bh + blocksUntilReshare)
+			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(context.Background(), electionData.Epoch)
+			newKeys, _ := tssMgr.tssKeys.FindNewKeys(context.Background(), bh + blocksUntilReshare)
 			if len(reshareKeys) > 0 || len(newKeys) > 0 {
 				gossipTargets[bh+blocksUntilReshare] = true
 			}
@@ -391,7 +391,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	blocksUntilSign := signInterval - (bh % signInterval)
 	if blocksUntilSign <= readinessOffset && bh%signInterval != 0 {
 		// Check if there are unsigned signing requests pending.
-		signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh)
+		signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(context.Background(), bh)
 		if len(signingRequests) > 0 {
 			gossipTargets[bh+blocksUntilSign] = true
 		}
@@ -476,7 +476,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			}
 
 			epoch := electionData.Epoch
-			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(epoch)
+			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(context.Background(), epoch)
 
 			for _, key := range reshareKeys {
 				generatedActions = append(generatedActions, QueuedAction{
@@ -486,7 +486,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				})
 				keyLocks[key.Id] = true
 			}
-			newKeys, _ := tssMgr.tssKeys.FindNewKeys(bh)
+			newKeys, _ := tssMgr.tssKeys.FindNewKeys(context.Background(), bh)
 
 			for _, key := range newKeys {
 				generatedActions = append(generatedActions, QueuedAction{
@@ -498,10 +498,10 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			}
 		}
 		if bh%signInterval == 0 {
-			signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh)
+			signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(context.Background(), bh)
 
 			for _, signReq := range signingRequests {
-				keyInfo, _ := tssMgr.tssKeys.FindKey(signReq.KeyId)
+				keyInfo, _ := tssMgr.tssKeys.FindKey(context.Background(), signReq.KeyId)
 				if keyInfo.Status != tss_db.TssKeyActive {
 					log.Warn(
 						"marking sign request as failed for non-active key",
@@ -510,7 +510,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 						"status",
 						keyInfo.Status,
 					)
-					tssMgr.tssRequests.UpdateRequest(tss_db.TssRequest{
+					tssMgr.tssRequests.UpdateRequest(context.Background(), tss_db.TssRequest{
 						KeyId:  signReq.KeyId,
 						Msg:    signReq.Msg,
 						Sig:    signReq.Sig,
@@ -558,7 +558,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 
 	// Keystore cleanup: delete flatfs entries for newly retired keys.
 	if tss_db.KeyRetirementEnabled {
-		if retiredKeys, err := tssMgr.tssKeys.FindNewlyRetired(bh); err == nil {
+		if retiredKeys, err := tssMgr.tssKeys.FindNewlyRetired(context.Background(), bh); err == nil {
 			for _, key := range retiredKeys {
 				dsKey := makeKey("key", key.Id, int(key.Epoch))
 				if delErr := tssMgr.keyStore.Delete(context.Background(), dsKey); delErr != nil {
@@ -623,7 +623,7 @@ func (tss *TssManager) BlameScore() ScoreMap {
 	errorBlameMap := make(map[string]int)
 
 	for _, election := range electionMap {
-		blames, _ := tss.tssCommitments.GetBlames(&election.Epoch)
+		blames, _ := tss.tssCommitments.GetBlames(context.Background(), &election.Epoch)
 
 		// Compute threshold for this election's size to detect systemic failures.
 		electionThreshold, _ := tss_helpers.GetThreshold(len(election.Members))
@@ -868,7 +868,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			participants := make([]Participant, 0)
 
 			sessionId = "keygen-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
-			lastBlame, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "blame")
+			lastBlame, err := tssMgr.tssCommitments.GetCommitmentByHeight(context.Background(), action.KeyId, bh, "blame")
 
 			var isBlame bool
 			bitset := big.NewInt(0)
@@ -959,7 +959,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		} else if action.Type == SignAction {
 			sessionId = "sign-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
-			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "reshare", "keygen")
+			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(context.Background(), action.KeyId, bh, "reshare", "keygen")
 
 			bv := big.NewInt(0)
 
@@ -968,7 +968,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				bv = bv.SetBytes(commitmentBytes)
 			}
 
-			keyInfo, _ := tssMgr.tssKeys.FindKey(action.KeyId)
+			keyInfo, _ := tssMgr.tssKeys.FindKey(context.Background(), action.KeyId)
 
 			participants := make([]Participant, 0)
 
@@ -1005,7 +1005,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				signBlameExpireBlock = bh - BLAME_EXPIRE
 			}
 			signKeyId := action.KeyId
-			signBlames, signBlameErr := tssMgr.tssCommitments.FindCommitmentsSimple(
+			signBlames, signBlameErr := tssMgr.tssCommitments.FindCommitmentsSimple(context.Background(), 
 				&signKeyId,
 				[]string{"blame"},
 				nil,
@@ -1128,7 +1128,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			sessionId = "reshare-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
 			log.Verbose("creating reshare session", "sessionId", sessionId, "keyId", action.KeyId, "blockHeight", bh)
-			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "keygen", "reshare")
+			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(context.Background(), action.KeyId, bh, "keygen", "reshare")
 
 			if commitment.Epoch >= currentElection.Epoch || err != nil {
 				log.Verbose("skipping reshare, commitment epoch meets or exceeds current", "sessionId", sessionId, "keyId", action.KeyId, "commitmentEpoch", commitment.Epoch, "currentEpoch", currentElection.Epoch, "err", err)
@@ -1145,7 +1145,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				blameExpireBlock = bh - BLAME_EXPIRE
 			}
 			keyIdStr := action.KeyId
-			allBlames, blameErr := tssMgr.tssCommitments.FindCommitmentsSimple(
+			allBlames, blameErr := tssMgr.tssCommitments.FindCommitmentsSimple(context.Background(), 
 				&keyIdStr,
 				[]string{"blame"},
 				nil,
@@ -1923,7 +1923,7 @@ func (tssMgr *TssManager) KeyGen(keyId string, algo tss_helpers.SigningAlgo) int
 }
 
 func (tssMgr *TssManager) KeySign(msgs []byte, keyId string) (int, error) {
-	keyInfo, err := tssMgr.tssKeys.FindKey(keyId)
+	keyInfo, err := tssMgr.tssKeys.FindKey(context.Background(), keyId)
 
 	if err != nil {
 		return 0, err
@@ -1941,7 +1941,7 @@ func (tssMgr *TssManager) KeySign(msgs []byte, keyId string) (int, error) {
 }
 
 func (tssMgr *TssManager) KeyReshare(keyId string) (int, error) {
-	keyInfo, err := tssMgr.tssKeys.FindKey(keyId)
+	keyInfo, err := tssMgr.tssKeys.FindKey(context.Background(), keyId)
 
 	if err != nil {
 		return 0, err

@@ -24,6 +24,7 @@ import (
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
 	rcDb "vsc-node/modules/db/vsc/rcs"
+	state_checkpoint "vsc-node/modules/db/vsc/state_checkpoint"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
@@ -90,6 +91,7 @@ func main() {
 	tssKeys := tss_db.NewKeys(vscDb)
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
+	checkpointDb := state_checkpoint.New(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
 	wasm_sdk.Init(sysConfig.OnMainnet())
 	if args.sysconfigPath != "" {
@@ -185,7 +187,7 @@ func main() {
 		tssCommitments,
 		tssRequests,
 		wasm,
-	)
+	).WithTxStarter(dbImpl).WithCheckpointDb(checkpointDb)
 
 	rcSystem := se.RcSystem
 
@@ -303,6 +305,7 @@ func main() {
 		tssKeys,
 		tssCommitments,
 		tssRequests,
+		checkpointDb,
 
 		p2p,
 		da,                   //Deps: [p2p]

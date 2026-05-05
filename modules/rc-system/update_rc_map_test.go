@@ -1,6 +1,7 @@
 package rc_system_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"vsc-node/lib/test_utils"
@@ -21,7 +22,7 @@ func simulateUpdateRcMap(
 	getBalance func(account string) int64,
 ) {
 	for k, v := range rcMap {
-		rcRecord, _ := db.GetRecord(k, blockHeight-1)
+		rcRecord, _ := db.GetRecord(context.Background(), k, blockHeight-1)
 
 		var rcBal int64
 		if rcRecord.BlockHeight == 0 {
@@ -43,7 +44,7 @@ func simulateUpdateRcMap(
 			rcBal = 0
 		}
 
-		db.SetRecord(k, blockHeight, rcBal)
+		db.SetRecord(context.Background(), k, blockHeight, rcBal)
 	}
 }
 
@@ -54,7 +55,7 @@ func TestUpdateRcMap_FirstConsumption(t *testing.T) {
 	rcMap := map[string]int64{"hive:alice": 1800}
 	simulateUpdateRcMap(rcMap, 1000, db, func(a string) int64 { return balances[a] })
 
-	rec, _ := db.GetRecord("hive:alice", 1000)
+	rec, _ := db.GetRecord(context.Background(), "hive:alice", 1000)
 	if rec.Amount != 1800 {
 		t.Errorf("expected 1800 stored, got %d", rec.Amount)
 	}
@@ -71,7 +72,7 @@ func TestUpdateRcMap_AccumulatesWithDecay(t *testing.T) {
 	// Block 1001: second consumption (1 block later)
 	simulateUpdateRcMap(map[string]int64{"hive:alice": 1800}, 1001, db, getBalance)
 
-	rec, _ := db.GetRecord("hive:alice", 1001)
+	rec, _ := db.GetRecord(context.Background(), "hive:alice", 1001)
 	// rc_system.CalculateFrozenBal(1000, 1001, 1800) = 1800 - (1*1800/144000) = 1800 - 0 = 1800
 	// rcBal = 1800 + 1800 = 3600
 	if rec.Amount != 3600 {
@@ -86,12 +87,12 @@ func TestUpdateRcMap_CapsAtBalance(t *testing.T) {
 	getBalance := func(a string) int64 { return balance }
 
 	// Simulate frozen already at max
-	db.SetRecord("hive:alice", 999, maxRC)
+	db.SetRecord(context.Background(), "hive:alice", 999, maxRC)
 
 	// Try to add more consumption
 	simulateUpdateRcMap(map[string]int64{"hive:alice": 5000}, 1000, db, getBalance)
 
-	rec, _ := db.GetRecord("hive:alice", 1000)
+	rec, _ := db.GetRecord(context.Background(), "hive:alice", 1000)
 	// frozeAmt from 295K at 1 block ≈ 295000 (tiny decay)
 	// rcBal = 295000 + 5000 = 300000 → capped to 295000
 	if rec.Amount > maxRC {
@@ -109,7 +110,7 @@ func TestUpdateRcMap_PreventsNegative(t *testing.T) {
 	// Somehow v is negative (shouldn't happen, but defensive)
 	simulateUpdateRcMap(map[string]int64{"did:key:abc": -500}, 1000, db, getBalance)
 
-	rec, _ := db.GetRecord("did:key:abc", 1000)
+	rec, _ := db.GetRecord(context.Background(), "did:key:abc", 1000)
 	if rec.Amount < 0 {
 		t.Errorf("BUG 2 NOT FIXED: negative amount stored: %d", rec.Amount)
 	}
@@ -125,12 +126,12 @@ func TestUpdateRcMap_MultiTxSlot_CappedCorrectly(t *testing.T) {
 	getBalance := func(a string) int64 { return balance }
 
 	// User already has 8000 frozen
-	db.SetRecord("hive:alice", 999, 8000)
+	db.SetRecord(context.Background(), "hive:alice", 999, 8000)
 
 	// Both contract calls in same slot: se.RcMap accumulates 1800 + 1800 = 3600
 	simulateUpdateRcMap(map[string]int64{"hive:alice": 3600}, 1000, db, getBalance)
 
-	rec, _ := db.GetRecord("hive:alice", 1000)
+	rec, _ := db.GetRecord(context.Background(), "hive:alice", 1000)
 	// frozeAmt ≈ 8000 (1 block decay negligible)
 	// rcBal = 8000 + 3600 = 11600 → capped to 10000
 	if rec.Amount > maxRC {
@@ -147,12 +148,12 @@ func TestUpdateRcMap_NonContractTx_CappedCorrectly(t *testing.T) {
 	getBalance := func(a string) int64 { return balance }
 
 	// Already at max
-	db.SetRecord("hive:alice", 999, maxRC)
+	db.SetRecord(context.Background(), "hive:alice", 999, maxRC)
 
 	// Transfer adds 100 RC bypassing CanConsume
 	simulateUpdateRcMap(map[string]int64{"hive:alice": 100}, 1000, db, getBalance)
 
-	rec, _ := db.GetRecord("hive:alice", 1000)
+	rec, _ := db.GetRecord(context.Background(), "hive:alice", 1000)
 	if rec.Amount > maxRC {
 		t.Errorf("non-contract RC bypass not capped: stored %d > max %d", rec.Amount, maxRC)
 	}
@@ -166,7 +167,7 @@ func TestUpdateRcMap_RegenAfterCap(t *testing.T) {
 	_ = db // db used for setup below
 
 	// Cap at max
-	db.SetRecord("hive:alice", 1000, maxRC)
+	db.SetRecord(context.Background(), "hive:alice", 1000, maxRC)
 
 	// No consumption for 20 blocks (1 minute)
 	// Check how much frozen has decayed
@@ -190,12 +191,12 @@ func TestUpdateRcMap_DidAccount_NoCap_BeyondBalance(t *testing.T) {
 	balance := int64(10_000)
 	getBalance := func(a string) int64 { return balance }
 
-	db.SetRecord("did:key:abc", 999, 9_900)
+	db.SetRecord(context.Background(), "did:key:abc", 999, 9_900)
 
 	// Consumption of 200 RC (like a stake)
 	simulateUpdateRcMap(map[string]int64{"did:key:abc": 200}, 1000, db, getBalance)
 
-	rec, _ := db.GetRecord("did:key:abc", 1000)
+	rec, _ := db.GetRecord(context.Background(), "did:key:abc", 1000)
 	// frozeAmt ≈ 9900, rcBal = 9900 + 200 = 10100 → capped to 10000
 	if rec.Amount > balance {
 		t.Errorf("DID account not capped: stored %d > balance %d", rec.Amount, balance)
@@ -209,7 +210,7 @@ func TestUpdateRcMap_ZeroBalance_StillStores(t *testing.T) {
 	// User with zero balance does a transaction (shouldn't happen, but defensive)
 	simulateUpdateRcMap(map[string]int64{"hive:alice": 100}, 1000, db, getBalance)
 
-	rec, _ := db.GetRecord("hive:alice", 1000)
+	rec, _ := db.GetRecord(context.Background(), "hive:alice", 1000)
 	// maxRC = 0 + 10000 = 10000, rcBal = 100, 100 < 10000, so stores 100
 	if rec.Amount != 100 {
 		t.Errorf("expected 100, got %d", rec.Amount)
@@ -227,7 +228,7 @@ func TestUpdateRcMap_HighFrequencyTrading(t *testing.T) {
 		simulateUpdateRcMap(map[string]int64{"hive:alice": 1800}, block, db, getBalance)
 	}
 
-	rec, _ := db.GetRecord("hive:alice", 1199)
+	rec, _ := db.GetRecord(context.Background(), "hive:alice", 1199)
 	if rec.Amount > maxRC {
 		t.Errorf("after 200 swaps, frozen %d exceeds max %d", rec.Amount, maxRC)
 	}
@@ -250,7 +251,7 @@ func TestUpdateRcMap_RegenAfterBurst(t *testing.T) {
 	}
 
 	// Now idle for 1 hour (1200 blocks at 3s)
-	rec, _ := db.GetRecord("hive:alice", 1049)
+	rec, _ := db.GetRecord(context.Background(), "hive:alice", 1049)
 	frozenAfterBurst := rec.Amount
 
 	frozenAfter1hr := rc_system.CalculateFrozenBal(1049, 1049+1200, frozenAfterBurst)
@@ -276,11 +277,11 @@ func TestUpdateRcMap_BalanceDecrease_StillCapped(t *testing.T) {
 	getBalance := func(a string) int64 { return 50_000 } // was 290K, now 50K
 
 	// Old record with high frozen from when balance was higher
-	db.SetRecord("hive:alice", 999, 200_000)
+	db.SetRecord(context.Background(), "hive:alice", 999, 200_000)
 
 	simulateUpdateRcMap(map[string]int64{"hive:alice": 100}, 1000, db, getBalance)
 
-	rec, _ := db.GetRecord("hive:alice", 1000)
+	rec, _ := db.GetRecord(context.Background(), "hive:alice", 1000)
 	maxRC := int64(50_000) + params.RC_HIVE_FREE_AMOUNT // 60000
 	if rec.Amount > maxRC {
 		t.Errorf("not capped after balance decrease: stored %d > max %d", rec.Amount, maxRC)

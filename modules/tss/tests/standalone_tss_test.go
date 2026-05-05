@@ -108,7 +108,7 @@ func setupCluster(t *testing.T) (
 								pubKey = &pk
 							}
 							for _, node := range nodes {
-								node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+								node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 									Type:        cType,
 									KeyId:       keyId,
 									Commitment:  commitmentStr,
@@ -134,7 +134,7 @@ func setupCluster(t *testing.T) (
 					json.Unmarshal([]byte(cj.Json), &signPayload)
 					for _, pkt := range signPayload.Packet {
 						for _, node := range nodes {
-							node.tssRequests.UpdateRequest(tss_db.TssRequest{
+							node.tssRequests.UpdateRequest(context.Background(), tss_db.TssRequest{
 								KeyId:  pkt.KeyId,
 								Msg:    pkt.Msg,
 								Sig:    pkt.Sig,
@@ -232,7 +232,7 @@ func doKeygen(t *testing.T, nodes []nodeComponents, keyId string, keygenBroadcas
 	t.Helper()
 
 	for _, node := range nodes {
-		node.tssKeys.InsertKey(keyId, tss_db.EcdsaType, tss_db.MaxKeyEpochs)
+		node.tssKeys.InsertKey(context.Background(), keyId, tss_db.EcdsaType, tss_db.MaxKeyEpochs)
 	}
 
 	headHeight := uint64(120)
@@ -269,7 +269,7 @@ func doReshare(t *testing.T, nodes []nodeComponents, epoch uint64, blockStart ui
 
 	// Update key epoch and status for reshare
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:     "test-key",
 			Status: tss_db.TssKeyActive,
 			Algo:   tss_db.EcdsaType,
@@ -342,7 +342,7 @@ func TestSigningWithRenewedKey(t *testing.T) {
 	log.Info("=== RENEW KEY ===")
 	renewedExpiry := uint64(1 + tss_db.MaxKeyEpochs)
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:          "test-key",
 			Status:      tss_db.TssKeyActive,
 			Algo:        tss_db.EcdsaType,
@@ -353,7 +353,7 @@ func TestSigningWithRenewedKey(t *testing.T) {
 	}
 
 	// Verify renewal
-	renewedKey, err := nodes[0].tssKeys.FindKey("test-key")
+	renewedKey, err := nodes[0].tssKeys.FindKey(context.Background(), "test-key")
 	if err != nil {
 		t.Fatalf("FindKey after renewal failed: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestSigningWithRenewedKey(t *testing.T) {
 	log.Info("=== SIGN WITH RENEWED KEY ===")
 	msgHex := "7777777777777777777777777777777777777777777777777777777777777777"
 	for _, node := range nodes {
-		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		node.tssRequests.SetSignedRequest(context.Background(), tss_db.TssRequest{
 			KeyId:  "test-key",
 			Msg:    msgHex,
 			Status: tss_db.SignPending,
@@ -463,7 +463,7 @@ func TestBlameDbRoundTripOldCommitteeExclusion(t *testing.T) {
 	log.Info("keygen done", "pubkey", keygenPubKeys["test-key"])
 
 	// Get the keygen commitment to know who's in the old committee
-	keygenCommitment, err := nodes[0].tssCommitments.GetCommitmentByHeight("test-key", 999, "keygen")
+	keygenCommitment, err := nodes[0].tssCommitments.GetCommitmentByHeight(context.Background(), "test-key", 999, "keygen")
 	if err != nil {
 		t.Fatalf("Failed to get keygen commitment: %v", err)
 	}
@@ -539,7 +539,7 @@ func TestBlameDbRoundTripOldCommitteeExclusion(t *testing.T) {
 	// (SetCommitmentData upserts on {key_id, tx_id}).
 	blameBlockHeight := keygenCommitment.BlockHeight + 50
 	for _, node := range nodes {
-		err := node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		err := node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type:        "blame",
 			KeyId:       "test-key",
 			Commitment:  blameEncoded,
@@ -556,7 +556,7 @@ func TestBlameDbRoundTripOldCommitteeExclusion(t *testing.T) {
 	// Step 3: Read blame back from DB and decode it
 	// This mirrors RunActions line 677: GetCommitmentByHeight(keyId, bh, "blame")
 	readBh := blameBlockHeight + 100 // must be > blame blockHeight
-	lastBlame, err := nodes[0].tssCommitments.GetCommitmentByHeight("test-key", readBh, "blame")
+	lastBlame, err := nodes[0].tssCommitments.GetCommitmentByHeight(context.Background(), "test-key", readBh, "blame")
 	if err != nil {
 		t.Fatalf("Failed to read blame from DB: %v", err)
 	}
@@ -673,7 +673,7 @@ func TestBlameDbRoundTripOldCommitteeExclusion(t *testing.T) {
 
 	// Set key to active at epoch 0 so reshare triggers
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:     "test-key",
 			Status: tss_db.TssKeyActive,
 			Algo:   tss_db.EcdsaType,
@@ -717,7 +717,7 @@ func TestBlameDbRoundTripOldCommitteeExclusion(t *testing.T) {
 	}
 
 	// Read the reshare commitment from DB
-	reshareCommitment, err := nodes[0].tssCommitments.GetCommitmentByHeight("test-key", 999, "reshare")
+	reshareCommitment, err := nodes[0].tssCommitments.GetCommitmentByHeight(context.Background(), "test-key", 999, "reshare")
 	if err != nil {
 		t.Fatalf("Failed to get reshare commitment: %v", err)
 	}
@@ -779,7 +779,7 @@ func TestBlameDbRoundTripOldCommitteeExclusion(t *testing.T) {
 
 	// Store blame at block 250 (after reshare commitment at ~200)
 	for _, node := range nodes {
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type:        "blame",
 			KeyId:       "test-key",
 			Commitment:  blame3Encoded,
@@ -791,7 +791,7 @@ func TestBlameDbRoundTripOldCommitteeExclusion(t *testing.T) {
 
 	// Update key to epoch 1 (from the reshare that just completed)
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:     "test-key",
 			Status: tss_db.TssKeyActive,
 			Algo:   tss_db.EcdsaType,
@@ -862,7 +862,7 @@ func TestSignWithNodeFlap(t *testing.T) {
 	// In production, state_engine.go:917 sets status="active" when processing the
 	// vsc.tss_commitment transaction. We replicate that here.
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:          "test-key",
 			Status:      tss_db.TssKeyActive,
 			Algo:        tss_db.EcdsaType,
@@ -882,7 +882,7 @@ func TestSignWithNodeFlap(t *testing.T) {
 	log.Info("=== TRIGGER SIGNING WITH NODE 5 OFFLINE ===")
 	msgHex := "cafebabe00000000000000000000000000000000000000000000000000000001"
 	for _, node := range nodes {
-		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		node.tssRequests.SetSignedRequest(context.Background(), tss_db.TssRequest{
 			KeyId:  "test-key",
 			Msg:    msgHex,
 			Status: tss_db.SignPending,

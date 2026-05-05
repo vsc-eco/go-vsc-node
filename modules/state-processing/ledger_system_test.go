@@ -1,6 +1,7 @@
 package state_engine_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,7 +27,7 @@ func TestInsertCheckBalance(t *testing.T) {
 	ls, state := newLedgerEnv()
 
 	// Deposit 100 HIVE to test-account (no memo redirect)
-	ls.Deposit(ledgerSystem.Deposit{
+	ls.Deposit(context.Background(), ledgerSystem.Deposit{
 		Id:          "tx0-1",
 		Asset:       "HIVE",
 		Amount:      100,
@@ -42,7 +43,7 @@ func TestInsertCheckBalance(t *testing.T) {
 	assert.Equal(t, int64(0), bal)
 
 	// Re-deposit with correct lowercase asset
-	ls.Deposit(ledgerSystem.Deposit{
+	ls.Deposit(context.Background(), ledgerSystem.Deposit{
 		Id:          "tx0-2",
 		Asset:       "hive",
 		Amount:      100,
@@ -57,7 +58,7 @@ func TestInsertCheckBalance(t *testing.T) {
 	assert.Equal(t, int64(100), bal)
 
 	// Deposit with memo redirect to Ethereum address
-	dest := ls.Deposit(ledgerSystem.Deposit{
+	dest := ls.Deposit(context.Background(), ledgerSystem.Deposit{
 		Id:          "tx0-3",
 		Asset:       "hive",
 		Amount:      100,
@@ -73,7 +74,7 @@ func TestInsertCheckBalance(t *testing.T) {
 	assert.Equal(t, int64(100), ethBal)
 
 	// Deposit with memo redirect to another Hive account
-	dest = ls.Deposit(ledgerSystem.Deposit{
+	dest = ls.Deposit(context.Background(), ledgerSystem.Deposit{
 		Id:          "tx0-4",
 		Asset:       "hive",
 		Amount:      100,
@@ -108,7 +109,7 @@ func TestInsertCheckBalance(t *testing.T) {
 	assert.Equal(t, int64(110), vaultecSnap)
 
 	// Stake HBD (need to deposit HBD first)
-	ls.Deposit(ledgerSystem.Deposit{
+	ls.Deposit(context.Background(), ledgerSystem.Deposit{
 		Id:          "tx0-5",
 		Asset:       "hbd",
 		Amount:      100,
@@ -203,7 +204,7 @@ func TestGatewayWithdrawal(t *testing.T) {
 	ls, state := newLedgerEnv()
 
 	// Deposit 100 HBD
-	ls.Deposit(ledgerSystem.Deposit{
+	ls.Deposit(context.Background(), ledgerSystem.Deposit{
 		Id:          "tx0-1",
 		Asset:       "hbd",
 		Amount:      100,
@@ -260,7 +261,7 @@ func TestDepositMemoRouting(t *testing.T) {
 	ls, _ := newLedgerEnv()
 
 	t.Run("no memo defaults to sender", func(t *testing.T) {
-		dest := ls.Deposit(ledgerSystem.Deposit{
+		dest := ls.Deposit(context.Background(), ledgerSystem.Deposit{
 			Id:          "route-1",
 			Asset:       "hbd",
 			Amount:      50,
@@ -272,7 +273,7 @@ func TestDepositMemoRouting(t *testing.T) {
 	})
 
 	t.Run("memo to=<hive account>", func(t *testing.T) {
-		dest := ls.Deposit(ledgerSystem.Deposit{
+		dest := ls.Deposit(context.Background(), ledgerSystem.Deposit{
 			Id:          "route-2",
 			Asset:       "hbd",
 			Amount:      50,
@@ -284,7 +285,7 @@ func TestDepositMemoRouting(t *testing.T) {
 	})
 
 	t.Run("memo to=<eth address>", func(t *testing.T) {
-		dest := ls.Deposit(ledgerSystem.Deposit{
+		dest := ls.Deposit(context.Background(), ledgerSystem.Deposit{
 			Id:          "route-3",
 			Asset:       "hbd",
 			Amount:      50,
@@ -328,7 +329,7 @@ func TestClaimHBDInterest_SingleAccount_ConstantBalance(t *testing.T) {
 		}},
 	})
 
-	ls.ClaimHBDInterest(100, 200, 50, "")
+	ls.ClaimHBDInterest(context.Background(), 100, 200, 50, "")
 
 	// Alice should receive all 50 interest
 	records := lDb.LedgerRecords["hive:alice"]
@@ -365,7 +366,7 @@ func TestClaimHBDInterest_TwoAccounts_EqualBalances(t *testing.T) {
 		}},
 	})
 
-	ls.ClaimHBDInterest(100, 200, 100, "")
+	ls.ClaimHBDInterest(context.Background(), 100, 200, 100, "")
 
 	aliceRecords := lDb.LedgerRecords["hive:alice"]
 	bobRecords := lDb.LedgerRecords["hive:bob"]
@@ -396,7 +397,7 @@ func TestClaimHBDInterest_TwoAccounts_DifferentBalances(t *testing.T) {
 		}},
 	})
 
-	ls.ClaimHBDInterest(100, 200, 100, "")
+	ls.ClaimHBDInterest(context.Background(), 100, 200, 100, "")
 
 	aliceRecords := lDb.LedgerRecords["hive:alice"]
 	bobRecords := lDb.LedgerRecords["hive:bob"]
@@ -435,7 +436,7 @@ func TestClaimHBDInterest_MidPeriodStake(t *testing.T) {
 		}},
 	})
 
-	ls.ClaimHBDInterest(100, 200, 120, "")
+	ls.ClaimHBDInterest(context.Background(), 100, 200, 120, "")
 
 	aliceRecords := lDb.LedgerRecords["hive:alice"]
 	bobRecords := lDb.LedgerRecords["hive:bob"]
@@ -460,7 +461,7 @@ func TestClaimHBDInterest_DivisionByZero(t *testing.T) {
 
 	// Should not panic
 	require.NotPanics(t, func() {
-		ls.ClaimHBDInterest(200, 200, 50, "")
+		ls.ClaimHBDInterest(context.Background(), 200, 200, 50, "")
 	})
 
 	// No interest should be distributed
@@ -492,7 +493,7 @@ func TestClaimHBDInterest_ZeroSavings(t *testing.T) {
 		}},
 	})
 
-	ls.ClaimHBDInterest(100, 200, 50, "")
+	ls.ClaimHBDInterest(context.Background(), 100, 200, 50, "")
 
 	// Alice gets everything, Bob gets nothing
 	aliceRecords := lDb.LedgerRecords["hive:alice"]
@@ -520,7 +521,7 @@ func TestClaimHBDInterest_AccumulatedAvg(t *testing.T) {
 		}},
 	})
 
-	ls.ClaimHBDInterest(100, 200, 75, "")
+	ls.ClaimHBDInterest(context.Background(), 100, 200, 75, "")
 
 	// Single account → gets 100% of interest
 	records := lDb.LedgerRecords["hive:alice"]
@@ -580,7 +581,7 @@ func TestClaimHBDInterest_TruncatesDown(t *testing.T) {
 			}},
 		})
 
-		ls.ClaimHBDInterest(100, 200, 99, "")
+		ls.ClaimHBDInterest(context.Background(), 100, 200, 99, "")
 
 		aliceRecords := lDb.LedgerRecords["hive:alice"]
 		bobRecords := lDb.LedgerRecords["hive:bob"]
@@ -634,7 +635,7 @@ func TestClaimHBDInterest_TruncatesDown(t *testing.T) {
 			}},
 		})
 
-		ls.ClaimHBDInterest(100, 203, 100, "")
+		ls.ClaimHBDInterest(context.Background(), 100, 203, 100, "")
 
 		aliceRecords := lDb.LedgerRecords["hive:alice"]
 		bobRecords := lDb.LedgerRecords["hive:bob"]
@@ -672,7 +673,7 @@ func TestClaimHBDInterest_FrBalanceInterestGoesToDao(t *testing.T) {
 		}},
 	})
 
-	ls.ClaimHBDInterest(100, 200, 100, "")
+	ls.ClaimHBDInterest(context.Background(), 100, 200, 100, "")
 
 	// Alice gets 25% (TWAB 1000 out of 4000 total)
 	aliceRecords := lDb.LedgerRecords["hive:alice"]
@@ -718,7 +719,7 @@ func TestOplogIngest(t *testing.T) {
 	require.Len(t, exported.Oplog, 1)
 
 	// Ingest into the ledger system (writes to mock DB)
-	ls.IngestOplog(exported.Oplog, ledgerSystem.OplogInjestOptions{
+	ls.IngestOplog(context.Background(), exported.Oplog, ledgerSystem.OplogInjestOptions{
 		StartHeight: 10,
 		EndHeight:   20,
 	})

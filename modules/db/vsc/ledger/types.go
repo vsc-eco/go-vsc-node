@@ -1,33 +1,34 @@
 package ledger_db
 
 import (
+	"context"
 	"vsc-node/modules/aggregate"
 )
 
 type Ledger interface {
 	aggregate.Plugin
-	StoreLedger(...LedgerRecord)
-	GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error)
-	GetLedgerRange(account string, start uint64, end uint64, asset string, options ...LedgerOptions) (*[]LedgerRecord, error)
-	GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error)
-	GetRawLedgerRange(account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error)
+	StoreLedger(ctx context.Context, records ...LedgerRecord)
+	GetLedgerAfterHeight(ctx context.Context, account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error)
+	GetLedgerRange(ctx context.Context, account string, start uint64, end uint64, asset string, options ...LedgerOptions) (*[]LedgerRecord, error)
+	GetLedgersTsRange(ctx context.Context, account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error)
+	GetRawLedgerRange(ctx context.Context, account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error)
 	//Gets distinct accounts on or after a block height
 	//Used to indicate whether balance has been updated or not
-	GetDistinctAccountsRange(startBlock, endBlock uint64) ([]string, error)
+	GetDistinctAccountsRange(ctx context.Context, startBlock, endBlock uint64) ([]string, error)
 }
 
 type Balances interface {
 	aggregate.Plugin
-	GetBalanceRecord(account string, blockHeight uint64) (*BalanceRecord, error)
-	UpdateBalanceRecord(record BalanceRecord) error
-	GetAll(blockHeight uint64) []BalanceRecord
+	GetBalanceRecord(ctx context.Context, account string, blockHeight uint64) (*BalanceRecord, error)
+	UpdateBalanceRecord(ctx context.Context, record BalanceRecord) error
+	GetAll(ctx context.Context, blockHeight uint64) []BalanceRecord
 }
 
 type InterestClaims interface {
 	aggregate.Plugin
-	GetLastClaim(blockHeight uint64) *ClaimRecord
-	SaveClaim(claimRecord ClaimRecord)
-	FindClaims(fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ClaimRecord, error)
+	GetLastClaim(ctx context.Context, blockHeight uint64) *ClaimRecord
+	SaveClaim(ctx context.Context, claimRecord ClaimRecord)
+	FindClaims(ctx context.Context, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ClaimRecord, error)
 }
 
 type ClaimRecord struct {
@@ -107,15 +108,15 @@ func (r LedgerRecord) DeltaFor(account string) int64 {
 
 type BridgeActions interface {
 	aggregate.Plugin
-	StoreAction(withdraw ActionRecord)
-	ExecuteComplete(actionId *string, ids ...string)
-	Get(id string) (*ActionRecord, error)
-	SetStatus(id string, status string)
-	GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error)
-	GetPendingActionsByEpoch(epoch uint64, t ...string) ([]ActionRecord, error)
-	GetActionsRange(txId *string, actionId *string, account *string, byTypes []string, asset *Asset, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ActionRecord, error)
-	GetAccountPendingConsensusUnstake(account string) (int64, error)
-	GetActionsByTxId(txId string) ([]ActionRecord, error)
+	StoreAction(ctx context.Context, withdraw ActionRecord)
+	ExecuteComplete(ctx context.Context, actionId *string, ids ...string)
+	Get(ctx context.Context, id string) (*ActionRecord, error)
+	SetStatus(ctx context.Context, id string, status string)
+	GetPendingActions(ctx context.Context, bh uint64, t ...string) ([]ActionRecord, error)
+	GetPendingActionsByEpoch(ctx context.Context, epoch uint64, t ...string) ([]ActionRecord, error)
+	GetActionsRange(ctx context.Context, txId *string, actionId *string, account *string, byTypes []string, asset *Asset, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ActionRecord, error)
+	GetAccountPendingConsensusUnstake(ctx context.Context, account string) (int64, error)
+	GetActionsByTxId(ctx context.Context, txId string) ([]ActionRecord, error)
 }
 
 // TODO: Flesh out to build more modular op creation

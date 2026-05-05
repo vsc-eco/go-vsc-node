@@ -172,7 +172,7 @@ func (ct *ContractTest) RegisterContract(contractId string, owner string, byteco
 	if err != nil {
 		panic(fmt.Errorf("failed to create cid for contract %s", contractId))
 	}
-	ct.ContractDb.RegisterContract(contractId, contracts.Contract{
+	ct.ContractDb.RegisterContract(context.Background(), contractId, contracts.Contract{
 		Id:             contractId,
 		Owner:          owner,
 		Code:           cid.String(),
@@ -183,7 +183,7 @@ func (ct *ContractTest) RegisterContract(contractId string, owner string, byteco
 
 // Executes a contract call transaction. Returns the call result, gas used and logs emitted.
 func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallResult {
-	info, err := ct.ContractDb.ContractById(tx.ContractId, tx.Self.BlockHeight)
+	info, err := ct.ContractDb.ContractById(context.Background(), tx.ContractId, tx.Self.BlockHeight)
 	if err != nil {
 		return ContractTestCallResult{
 			Success: false,
@@ -305,7 +305,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 // Add funds to an account in the ledger.
 func (ct *ContractTest) Deposit(toAccount string, amount int64, asset ledgerDb.Asset) {
 	randomTxId := randomHex(40)
-	ct.StateEngine.LedgerSystem.Deposit(ledgerSystem.Deposit{
+	ct.StateEngine.LedgerSystem.Deposit(context.Background(), ledgerSystem.Deposit{
 		Id:          randomTxId,
 		BlockHeight: ct.BlockHeight,
 		From:        "contract-test-account",
@@ -338,7 +338,7 @@ func (ct *ContractTest) GetAvailableRCs(account string) int64 {
 
 // Set a frozen RC record for an account (simulates prior RC consumption thawing over time).
 func (ct *ContractTest) SetFrozenRc(account string, blockHeight uint64, amount int64) {
-	ct.RcDb.SetRecord(account, blockHeight, amount)
+	ct.RcDb.SetRecord(context.Background(), account, blockHeight, amount)
 }
 
 // Return the RC consumption map for the current RcSession.
@@ -393,7 +393,7 @@ func (ct *ContractTest) executeLedgerOpLogs(ledgerOps []ledgerSystem.OpLogEvent,
 		aoplog = append(aoplog, v)
 	}
 
-	ct.StateEngine.LedgerSystem.IngestOplog(aoplog, ledgerSystem.OplogInjestOptions{
+	ct.StateEngine.LedgerSystem.IngestOplog(context.Background(), aoplog, ledgerSystem.OplogInjestOptions{
 		EndHeight:   endBlock,
 		StartHeight: startBlock,
 	})

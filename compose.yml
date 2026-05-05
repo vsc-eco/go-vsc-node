@@ -35,6 +35,12 @@ services:
   db:
     image: mongo:8.0.17
     # restart: always
+    command:
+      - mongod
+      - --replSet=rs0
+      - --bind_ip_all
+      - --setParameter
+      - transactionLifetimeLimitSeconds=300
     ports:
       - 127.0.0.1:27017:27017
     networks:
@@ -42,10 +48,26 @@ services:
     volumes:
       - db:/data/db
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      # Self-initiate a single-node replica set on first run, then report
+      # healthy only when this node has reached PRIMARY.
+      test:
+        - "CMD-SHELL"
+        - |
+          mongosh --quiet --eval '
+            try {
+              var s = rs.status();
+              quit(s.ok && s.myState === 1 ? 0 : 1);
+            } catch (e) {
+              if (e.codeName === "NotYetInitialized") {
+                rs.initiate({_id: "rs0", members: [{_id: 0, host: "db:27017"}]});
+              }
+              quit(1);
+            }
+          '
       interval: 10s
-      retries: 5
+      retries: 10
       timeout: 5s
+      start_period: 30s
     deploy:
       resources:
         limits:

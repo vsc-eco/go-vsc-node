@@ -533,7 +533,7 @@ func TestTss(t *testing.T) {
 								pubKey = &pk
 							}
 							for _, node := range nodes {
-								node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+								node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 									Type:        cType,
 									KeyId:       keyId,
 									Commitment:  commitmentStr,
@@ -563,7 +563,7 @@ func TestTss(t *testing.T) {
 					json.Unmarshal([]byte(cj.Json), &signPayload)
 					for _, pkt := range signPayload.Packet {
 						for _, node := range nodes {
-							node.tssRequests.UpdateRequest(tss_db.TssRequest{
+							node.tssRequests.UpdateRequest(context.Background(), tss_db.TssRequest{
 								KeyId:  pkt.KeyId,
 								Msg:    pkt.Msg,
 								Sig:    pkt.Sig,
@@ -684,7 +684,7 @@ func TestTss(t *testing.T) {
 
 	// Step 4: Insert TSS key for keygen in all nodes
 	for _, node := range nodes {
-		node.tssKeys.InsertKey("test-key", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
+		node.tssKeys.InsertKey(context.Background(), "test-key", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
 	}
 
 	// Goroutine leak guard: baseline taken AFTER all nodes, P2P, DB, and
@@ -749,7 +749,7 @@ func TestTss(t *testing.T) {
 	commitmentStr := base64.RawURLEncoding.EncodeToString(bitset.Bytes())
 
 	for _, node := range nodes {
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type:        "keygen",
 			KeyId:       "test-key",
 			Epoch:       0,
@@ -761,7 +761,7 @@ func TestTss(t *testing.T) {
 
 	// Step 7: Update key status to active for signing and reshare
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:     "test-key",
 			Status: "active",
 			Algo:   tss_db.EcdsaType,
@@ -770,7 +770,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Assertion 1: Verify TSS key was created
-	key, err := nodes[0].tssKeys.FindKey("test-key")
+	key, err := nodes[0].tssKeys.FindKey(context.Background(), "test-key")
 	if err != nil {
 		t.Fatalf("TSS key not found after keygen: %v", err)
 	}
@@ -782,7 +782,7 @@ func TestTss(t *testing.T) {
 	// Step 8: Insert signing request
 	msgHex := "4c67f5f07565d45cccd89bebfb3a9ee357bff33fef45b14b8f424cd17c93e6f8"
 	for _, node := range nodes {
-		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		node.tssRequests.SetSignedRequest(context.Background(), tss_db.TssRequest{
 			KeyId:  "test-key",
 			Msg:    msgHex,
 			Status: tss_db.SignPending,
@@ -963,7 +963,7 @@ func TestTss(t *testing.T) {
 
 	// Insert reshare commitment from Phase 3 into all nodes
 	for _, node := range nodes {
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type:        "reshare",
 			KeyId:       "test-key",
 			Epoch:       1,
@@ -975,7 +975,7 @@ func TestTss(t *testing.T) {
 
 	// Update key epoch to 1 for all nodes
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:     "test-key",
 			Status: "active",
 			Algo:   tss_db.EcdsaType,
@@ -991,7 +991,7 @@ func TestTss(t *testing.T) {
 	// Insert new signing request
 	msgHex2 := "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
 	for _, node := range nodes {
-		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		node.tssRequests.SetSignedRequest(context.Background(), tss_db.TssRequest{
 			KeyId:  "test-key",
 			Msg:    msgHex2,
 			Status: tss_db.SignPending,
@@ -1196,7 +1196,7 @@ func TestTss(t *testing.T) {
 	commitmentStr5 := base64.RawURLEncoding.EncodeToString(bitset5.Bytes())
 
 	for _, node := range nodes {
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type:        "reshare",
 			KeyId:       "test-key",
 			Epoch:       2,
@@ -1208,7 +1208,7 @@ func TestTss(t *testing.T) {
 
 	// Update key epoch to 2
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:     "test-key",
 			Status: "active",
 			Algo:   tss_db.EcdsaType,
@@ -1219,7 +1219,7 @@ func TestTss(t *testing.T) {
 	// Insert new signing request
 	msgHex3 := "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3"
 	for _, node := range nodes {
-		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		node.tssRequests.SetSignedRequest(context.Background(), tss_db.TssRequest{
 			KeyId:  "test-key",
 			Msg:    msgHex3,
 			Status: tss_db.SignPending,
@@ -1402,7 +1402,7 @@ func TestTss(t *testing.T) {
 
 	// Insert reshare commitment from Phase 7 into all nodes
 	for _, node := range nodes {
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type:        "reshare",
 			KeyId:       "test-key",
 			Epoch:       3,
@@ -1414,7 +1414,7 @@ func TestTss(t *testing.T) {
 
 	// Update key epoch to 3 for all nodes
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:     "test-key",
 			Status: "active",
 			Algo:   tss_db.EcdsaType,
@@ -1426,12 +1426,12 @@ func TestTss(t *testing.T) {
 	msgHexA := "1111111111111111111111111111111111111111111111111111111111111111"
 	msgHexB := "2222222222222222222222222222222222222222222222222222222222222222"
 	for _, node := range nodes {
-		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		node.tssRequests.SetSignedRequest(context.Background(), tss_db.TssRequest{
 			KeyId:  "test-key",
 			Msg:    msgHexA,
 			Status: tss_db.SignPending,
 		})
-		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		node.tssRequests.SetSignedRequest(context.Background(), tss_db.TssRequest{
 			KeyId:  "test-key",
 			Msg:    msgHexB,
 			Status: tss_db.SignPending,
@@ -1547,13 +1547,13 @@ func TestTss(t *testing.T) {
 
 	// Insert a second key "test-key-2" as "new" (will trigger keygen)
 	for _, node := range nodes {
-		node.tssKeys.InsertKey("test-key-2", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
+		node.tssKeys.InsertKey(context.Background(), "test-key-2", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
 	}
 
 	// Insert a signing request for test-key-2 (should be blocked by keyLocks during keygen)
 	msgHexLock := "3333333333333333333333333333333333333333333333333333333333333333"
 	for _, node := range nodes {
-		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		node.tssRequests.SetSignedRequest(context.Background(), tss_db.TssRequest{
 			KeyId:  "test-key-2",
 			Msg:    msgHexLock,
 			Status: tss_db.SignPending,
@@ -1563,7 +1563,7 @@ func TestTss(t *testing.T) {
 	// Also insert a signing request for test-key (already active, should NOT be locked)
 	msgHex4 := "4444444444444444444444444444444444444444444444444444444444444444"
 	for _, node := range nodes {
-		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		node.tssRequests.SetSignedRequest(context.Background(), tss_db.TssRequest{
 			KeyId:  "test-key",
 			Msg:    msgHex4,
 			Status: tss_db.SignPending,
@@ -1794,7 +1794,7 @@ func TestTss(t *testing.T) {
 	// Neutralize test-key-2: set to active with epoch 5 so it's
 	// skipped by both FindNewKeys (not "created") and FindEpochKeys(5) (epoch not < 5).
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:     "test-key-2",
 			Status: "active",
 			Algo:   tss_db.EcdsaType,
@@ -1810,7 +1810,7 @@ func TestTss(t *testing.T) {
 	commitmentStr4 := base64.RawURLEncoding.EncodeToString(bitset4Phase10.Bytes())
 
 	for _, node := range nodes {
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type:        "reshare",
 			KeyId:       "test-key",
 			Epoch:       4,
@@ -1818,7 +1818,7 @@ func TestTss(t *testing.T) {
 			Commitment:  commitmentStr4,
 			TxId:        "mock-reshare-tx-4",
 		})
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:     "test-key",
 			Status: "active",
 			Algo:   tss_db.EcdsaType,
@@ -1828,7 +1828,7 @@ func TestTss(t *testing.T) {
 
 	// Insert new key for keygen
 	for _, node := range nodes {
-		node.tssKeys.InsertKey("test-key-multi", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
+		node.tssKeys.InsertKey(context.Background(), "test-key-multi", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
 	}
 
 	// Store epoch 5 election with all 6 members
@@ -1948,7 +1948,7 @@ func TestTss(t *testing.T) {
 	// With the old {tx_id}-only filter, the second SetCommitmentData would
 	// overwrite the first. With the {key_id, tx_id} fix, both persist.
 	for _, node := range nodes {
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type:        "reshare",
 			KeyId:       "test-key",
 			Epoch:       55,
@@ -1956,7 +1956,7 @@ func TestTss(t *testing.T) {
 			Commitment:  commitmentStr,
 			TxId:        "mock-multi-tx",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type:        "keygen",
 			KeyId:       "test-key-multi",
 			Epoch:       55,
@@ -1967,7 +1967,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Verify both records exist (the core assertion for the DB fix)
-	c1, err := nodes[0].tssCommitments.GetCommitment("test-key", 55)
+	c1, err := nodes[0].tssCommitments.GetCommitment(context.Background(), "test-key", 55)
 	if err != nil {
 		t.Fatalf("Phase 11: Failed to get commitment for test-key epoch 55: %v", err)
 	}
@@ -1978,7 +1978,7 @@ func TestTss(t *testing.T) {
 		t.Errorf("Phase 11: Expected test-key tx_id 'mock-multi-tx', got '%s'", c1.TxId)
 	}
 
-	c2, err := nodes[0].tssCommitments.GetCommitment("test-key-multi", 55)
+	c2, err := nodes[0].tssCommitments.GetCommitment(context.Background(), "test-key-multi", 55)
 	if err != nil {
 		t.Fatalf("Phase 11: Failed to get commitment for test-key-multi epoch 55: %v", err)
 	}
@@ -1992,13 +1992,13 @@ func TestTss(t *testing.T) {
 
 	// Update key states
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:     "test-key",
 			Status: "active",
 			Algo:   tss_db.EcdsaType,
 			Epoch:  5,
 		})
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:     "test-key-multi",
 			Status: "active",
 			Algo:   tss_db.EcdsaType,
@@ -2024,7 +2024,7 @@ func TestTss(t *testing.T) {
 	// Insert signing request for test-key
 	msgHex5 := "5555555555555555555555555555555555555555555555555555555555555555"
 	for _, node := range nodes {
-		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		node.tssRequests.SetSignedRequest(context.Background(), tss_db.TssRequest{
 			KeyId:  "test-key",
 			Msg:    msgHex5,
 			Status: tss_db.SignPending,
@@ -2119,7 +2119,7 @@ func TestTss(t *testing.T) {
 
 	// Set test-key to have ExpiryEpoch=6 (about to expire at current epoch)
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:          "test-key",
 			Status:      tss_db.TssKeyActive,
 			Algo:        tss_db.EcdsaType,
@@ -2130,7 +2130,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Verify FindDeprecatingKeys returns test-key at epoch 6
-	deprecating, err := nodes[0].tssKeys.FindDeprecatingKeys(6)
+	deprecating, err := nodes[0].tssKeys.FindDeprecatingKeys(context.Background(), 6)
 	if err != nil {
 		t.Fatalf("Phase 13: FindDeprecatingKeys failed: %v", err)
 	}
@@ -2146,7 +2146,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// FindDeprecatingKeys at epoch 5 should NOT return it (not yet expired)
-	notYet, err := nodes[0].tssKeys.FindDeprecatingKeys(5)
+	notYet, err := nodes[0].tssKeys.FindDeprecatingKeys(context.Background(), 5)
 	if err != nil {
 		t.Fatalf("Phase 13: FindDeprecatingKeys(5) failed: %v", err)
 	}
@@ -2158,7 +2158,7 @@ func TestTss(t *testing.T) {
 
 	// Simulate what ProcessBlock does: deprecate the key on all nodes
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:          "test-key",
 			Status:      tss_db.TssKeyDeprecated,
 			Algo:        tss_db.EcdsaType,
@@ -2169,7 +2169,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Verify key is now deprecated
-	deprecatedKey, err := nodes[0].tssKeys.FindKey("test-key")
+	deprecatedKey, err := nodes[0].tssKeys.FindKey(context.Background(), "test-key")
 	if err != nil {
 		t.Fatalf("Phase 13: FindKey after deprecation failed: %v", err)
 	}
@@ -2178,7 +2178,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// FindEpochKeys should NOT return the deprecated key
-	epochKeys, _ := nodes[0].tssKeys.FindEpochKeys(7)
+	epochKeys, _ := nodes[0].tssKeys.FindEpochKeys(context.Background(), 7)
 	for _, k := range epochKeys {
 		if k.Id == "test-key" {
 			t.Error("Phase 13: FindEpochKeys(7) should NOT return deprecated test-key")
@@ -2205,7 +2205,7 @@ func TestTss(t *testing.T) {
 	// Key stays at epoch 5 (its actual crypto-material epoch in flatfs).
 	renewedExpiry := uint64(6 + tss_db.MaxKeyEpochs)
 	for _, node := range nodes {
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id:          "test-key",
 			Status:      tss_db.TssKeyActive,
 			Algo:        tss_db.EcdsaType,
@@ -2216,7 +2216,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// Verify key is active again with correct expiry
-	renewedKey, err := nodes[0].tssKeys.FindKey("test-key")
+	renewedKey, err := nodes[0].tssKeys.FindKey(context.Background(), "test-key")
 	if err != nil {
 		t.Fatalf("Phase 14: FindKey after renewal failed: %v", err)
 	}
@@ -2228,7 +2228,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// FindDeprecatingKeys should no longer return this key at epoch 6
-	notDeprecating, _ := nodes[0].tssKeys.FindDeprecatingKeys(6)
+	notDeprecating, _ := nodes[0].tssKeys.FindDeprecatingKeys(context.Background(), 6)
 	for _, k := range notDeprecating {
 		if k.Id == "test-key" {
 			t.Error("Phase 14: FindDeprecatingKeys(6) should NOT return renewed test-key")
@@ -2236,7 +2236,7 @@ func TestTss(t *testing.T) {
 	}
 
 	// FindEpochKeys(6) should return it (active, epoch 5 < 6, ExpiryEpoch > 6)
-	epochKeysAfterRenewal, _ := nodes[0].tssKeys.FindEpochKeys(6)
+	epochKeysAfterRenewal, _ := nodes[0].tssKeys.FindEpochKeys(context.Background(), 6)
 	foundForReshare := false
 	for _, k := range epochKeysAfterRenewal {
 		if k.Id == "test-key" {
@@ -2251,7 +2251,7 @@ func TestTss(t *testing.T) {
 	// Sign with renewed key at block 800 (TSS_SIGN_INTERVAL = 50, 800 % 50 == 0)
 	msgHex6 := "6666666666666666666666666666666666666666666666666666666666666666"
 	for _, node := range nodes {
-		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		node.tssRequests.SetSignedRequest(context.Background(), tss_db.TssRequest{
 			KeyId:  "test-key",
 			Msg:    msgHex6,
 			Status: tss_db.SignPending,
@@ -2436,7 +2436,7 @@ func TestTssThresholdIntegration(t *testing.T) {
 								pubKey = &pk
 							}
 							for _, node := range nodes {
-								node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+								node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 									Type:        cType,
 									KeyId:       keyId,
 									Commitment:  commitmentStr,
@@ -2463,7 +2463,7 @@ func TestTssThresholdIntegration(t *testing.T) {
 					json.Unmarshal([]byte(cj.Json), &signPayload)
 					for _, pkt := range signPayload.Packet {
 						for _, node := range nodes {
-							node.tssRequests.UpdateRequest(tss_db.TssRequest{
+							node.tssRequests.UpdateRequest(context.Background(), tss_db.TssRequest{
 								KeyId:  pkt.KeyId,
 								Msg:    pkt.Msg,
 								Sig:    pkt.Sig,
@@ -2639,7 +2639,7 @@ func TestTssThresholdIntegration(t *testing.T) {
 
 	// Insert TSS key for keygen
 	for _, node := range nodes {
-		node.tssKeys.InsertKey("intg-key", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
+		node.tssKeys.InsertKey(context.Background(), "intg-key", tss_db.EcdsaType, tss_db.MaxKeyEpochs)
 	}
 
 	// =====================================================
@@ -2685,11 +2685,11 @@ func TestTssThresholdIntegration(t *testing.T) {
 	}
 	commitmentStr := base64.RawURLEncoding.EncodeToString(bitset.Bytes())
 	for _, node := range nodes {
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "keygen", KeyId: "intg-key", Epoch: 0,
 			BlockHeight: 100, Commitment: commitmentStr, TxId: "mock-intg-keygen-tx",
 		})
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id: "intg-key", Status: "active", Algo: tss_db.EcdsaType, Epoch: 0,
 		})
 	}
@@ -2785,18 +2785,18 @@ func TestTssThresholdIntegration(t *testing.T) {
 	}
 	commitmentStr5 := base64.RawURLEncoding.EncodeToString(bitset5.Bytes())
 	for _, node := range nodes {
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "reshare", KeyId: "intg-key", Epoch: 1,
 			BlockHeight: 200, Commitment: commitmentStr5, TxId: "mock-intg-reshare-tx",
 		})
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id: "intg-key", Status: "active", Algo: tss_db.EcdsaType, Epoch: 1,
 		})
 	}
 
 	msgHex := "aabbccdd11223344556677889900aabbccdd11223344556677889900aabbccdd"
 	for _, node := range nodes {
-		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		node.tssRequests.SetSignedRequest(context.Background(), tss_db.TssRequest{
 			KeyId: "intg-key", Msg: msgHex, Status: tss_db.SignPending,
 		})
 	}
@@ -2944,18 +2944,18 @@ func TestTssThresholdIntegration(t *testing.T) {
 	// The bitset mapping must use epoch 2's election (swappedMembers),
 	// not whatever election is "current" at signing time.
 	for _, node := range nodes {
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "reshare", KeyId: "intg-key", Epoch: 2,
 			BlockHeight: 300, Commitment: commitmentStr, TxId: "mock-intg-reshare-tx-2",
 		})
-		node.tssKeys.SetKey(tss_db.TssKey{
+		node.tssKeys.SetKey(context.Background(), tss_db.TssKey{
 			Id: "intg-key", Status: "active", Algo: tss_db.EcdsaType, Epoch: 2,
 		})
 	}
 
 	msgHex2 := "ddccbbaa44332211998877665500ddccbbaa44332211998877665500ddccbbaa"
 	for _, node := range nodes {
-		node.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		node.tssRequests.SetSignedRequest(context.Background(), tss_db.TssRequest{
 			KeyId: "intg-key", Msg: msgHex2, Status: tss_db.SignPending,
 		})
 	}
@@ -3226,11 +3226,11 @@ func TestBlameScore(t *testing.T) {
 		storeElectionsWithGracePeriodBypass(10)
 
 		// Insert 2 blame commitments in epoch 6 (where members exist), both blaming node-a (index 0)
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
 			Commitment: blameBitset(0), TxId: "blame-tx-1",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
 			Commitment: blameBitset(0), TxId: "blame-tx-2",
 		})
@@ -3252,15 +3252,15 @@ func TestBlameScore(t *testing.T) {
 		storeElectionsWithGracePeriodBypass(10)
 
 		// Insert 3 blame commitments in epoch 6, each blaming a different node (33% < 60%)
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
 			Commitment: blameBitset(1), TxId: "blame-tx-1",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
 			Commitment: blameBitset(2), TxId: "blame-tx-2",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 602,
 			Commitment: blameBitset(3), TxId: "blame-tx-3",
 		})
@@ -3301,7 +3301,7 @@ func TestBlameScore(t *testing.T) {
 		}
 
 		// Blame node-d (index 3) in epoch 9 — 100% failure rate but grace period protects
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 9, BlockHeight: 900,
 			Commitment: blameBitset(3), TxId: "blame-tx-9",
 		})
@@ -3320,11 +3320,11 @@ func TestBlameScore(t *testing.T) {
 		storeElectionsWithGracePeriodBypass(10)
 
 		// Insert blame commitments blaming node-c (index 2) — should trigger ban
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
 			Commitment: blameBitset(2), TxId: "blame-tx-1",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
 			Commitment: blameBitset(2), TxId: "blame-tx-2",
 		})
@@ -3345,12 +3345,12 @@ func TestBlameScore(t *testing.T) {
 		// Insert blame commitments with timeout metadata blaming node-b (index 1)
 		timeoutErr := "timeout"
 		timeoutReason := "Timeout waiting for 1 nodes: [node-b]"
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
 			Commitment: blameBitset(1), TxId: "blame-timeout-1",
 			Metadata: &tss_db.CommitmentMetadata{Error: &timeoutErr, Reason: &timeoutReason},
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
 			Commitment: blameBitset(1), TxId: "blame-timeout-2",
 			Metadata: &tss_db.CommitmentMetadata{Error: &timeoutErr, Reason: &timeoutReason},
@@ -3375,18 +3375,18 @@ func TestBlameScore(t *testing.T) {
 		// Insert 3 blame commitments for node-a (index 0): 2 timeouts + 1 error
 		// Total 3 blames out of 3 operations = 100% > 60% threshold → ban
 		timeoutErr := "timeout"
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
 			Commitment: blameBitset(0), TxId: "blame-mix-1",
 			Metadata: &tss_db.CommitmentMetadata{Error: &timeoutErr},
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
 			Commitment: blameBitset(0), TxId: "blame-mix-2",
 			Metadata: &tss_db.CommitmentMetadata{Error: &timeoutErr},
 		})
 		// Error blame (no timeout metadata)
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 602,
 			Commitment: blameBitset(0), TxId: "blame-mix-3",
 		})
@@ -3413,11 +3413,11 @@ func TestBlameScore(t *testing.T) {
 
 		// Ban exactly 1 of 4 members (node-a, index 0), leaving 3
 		// threshold = ceil(4*2/3)-1 = 2, so threshold+1 = 3 → exactly at minimum quorum
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
 			Commitment: blameBitset(0), TxId: "blame-thresh-1",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
 			Commitment: blameBitset(0), TxId: "blame-thresh-2",
 		})
@@ -3487,27 +3487,27 @@ func TestBlameScore(t *testing.T) {
 		// Node-b: blamed in (a,b) and (b,c) commits = 4 of 6 = 67% > 60%.
 		// Node-c: blamed in (a,c) and (b,c) commits = 4 of 6 = 67% > 60%.
 		// All 3 exceed threshold but maxBans=2, so only 2 get banned.
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
 			Commitment: blameBitset(0, 1), TxId: "blame-below-1",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 601,
 			Commitment: blameBitset(0, 1), TxId: "blame-below-2",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 602,
 			Commitment: blameBitset(0, 2), TxId: "blame-below-3",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 603,
 			Commitment: blameBitset(0, 2), TxId: "blame-below-4",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 604,
 			Commitment: blameBitset(1, 2), TxId: "blame-below-5",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 605,
 			Commitment: blameBitset(1, 2), TxId: "blame-below-6",
 		})
@@ -3557,11 +3557,11 @@ func TestBlameScore(t *testing.T) {
 		})
 
 		// Blame node-d (index 3) with 100% rate in epoch 7
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 7, BlockHeight: 700,
 			Commitment: blameBitset(3), TxId: "blame-grace3-1",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 7, BlockHeight: 701,
 			Commitment: blameBitset(3), TxId: "blame-grace3-2",
 		})
@@ -3601,11 +3601,11 @@ func TestBlameScore(t *testing.T) {
 		})
 
 		// Blame node-d (index 3) with 100% rate in epoch 8
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 8, BlockHeight: 800,
 			Commitment: blameBitset(3), TxId: "blame-grace2-1",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 8, BlockHeight: 801,
 			Commitment: blameBitset(3), TxId: "blame-grace2-2",
 		})
@@ -3629,18 +3629,18 @@ func TestBlameScore(t *testing.T) {
 		// Insert blame commitments for node-b (index 1) across 3 different epochs
 		// Each epoch has 1 blame commitment, so weight per epoch = 1
 		// Total: 3 blames out of 3 weight = 100% → ban
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 6, BlockHeight: 600,
 			Commitment: blameBitset(1), TxId: "blame-multi-ep-1",
 		})
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 10, BlockHeight: 1000,
 			Commitment: blameBitset(1), TxId: "blame-multi-ep-2",
 		})
 		// Also add a blame in the epoch where members exist (epoch current-4 = 6)
 		// Use a different epoch that has members — epoch 6 already has members from bypass helper
 		// Add blame in epoch 10 (current) which also has members
-		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+		node.tssCommitments.SetCommitmentData(context.Background(), tss_db.TssCommitment{
 			Type: "blame", KeyId: "test-key", Epoch: 10, BlockHeight: 1001,
 			Commitment: blameBitset(1), TxId: "blame-multi-ep-3",
 		})

@@ -50,7 +50,7 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 	}
 
 	for txId, txOutIdxs := range txOuts {
-		se.txDb.SetOutput(transactions.SetResultUpdate{
+		se.txDb.SetOutput(se.SlotCtx(), transactions.SetResultUpdate{
 			Id: txId,
 			Output: &transactions.TransactionOutput{
 				Id:    output.Id,
@@ -70,13 +70,13 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 			switch tssOp.Type {
 			case "create":
 				tssLog.Verbose("creating TSS key", "keyId", tssOp.KeyId, "algo", tssOp.Args, "epochs", tssOp.Epochs)
-				_, err := se.tssKeys.FindKey(tssOp.KeyId)
+				_, err := se.tssKeys.FindKey(se.SlotCtx(), tssOp.KeyId)
 
 				if err == mongo.ErrNoDocuments {
-					se.tssKeys.InsertKey(tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args), tssOp.Epochs)
+					se.tssKeys.InsertKey(se.SlotCtx(), tssOp.KeyId, tss_db.TssKeyAlgo(tssOp.Args), tssOp.Epochs)
 				}
 			case "renew":
-				key, err := se.tssKeys.FindKey(tssOp.KeyId)
+				key, err := se.tssKeys.FindKey(se.SlotCtx(), tssOp.KeyId)
 				renewable := err == nil && tssOp.Epochs > 0 &&
 					(key.Status == tss_db.TssKeyActive || key.Status == tss_db.TssKeyDeprecated)
 				if renewable {
@@ -103,11 +103,11 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 							"status",
 							key.Status,
 						)
-						se.tssKeys.SetKey(key)
+						se.tssKeys.SetKey(se.SlotCtx(), key)
 					}
 				}
 			case "sign":
-				se.tssRequests.SetSignedRequest(tss_db.TssRequest{
+				se.tssRequests.SetSignedRequest(se.SlotCtx(), tss_db.TssRequest{
 					KeyId:  tssOp.KeyId,
 					Status: "unsigned",
 					Msg:    tssOp.Args,
@@ -135,7 +135,7 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 		}
 	}()
 	//Set output history
-	se.contractState.IngestOutput(contracts.IngestOutputArgs{
+	se.contractState.IngestOutput(se.SlotCtx(), contracts.IngestOutputArgs{
 		Id:         output.Id,
 		ContractId: output.ContractId,
 
@@ -224,7 +224,7 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 		}
 	}
 
-	se.contractDb.RegisterContract(id, contracts.Contract{
+	se.contractDb.RegisterContract(se.SlotCtx(), id, contracts.Contract{
 		Code:           tx.Code,
 		Name:           tx.Name,
 		Description:    tx.Description,
@@ -329,7 +329,7 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 			Err:     "cannot update contract with posting auths",
 		}
 	}
-	existing, err := se.contractDb.ContractById(tx.Id, tx.Self.BlockHeight)
+	existing, err := se.contractDb.ContractById(se.SlotCtx(), tx.Id, tx.Self.BlockHeight)
 	if err != nil {
 		return UpdateContractResult{
 			Success: false,
@@ -391,7 +391,7 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 		updatedContract.Code = tx.Code
 		updatedContract.Runtime = *tx.Runtime
 	}
-	se.contractDb.RegisterContract(tx.Id, updatedContract)
+	se.contractDb.RegisterContract(se.SlotCtx(), tx.Id, updatedContract)
 
 	return UpdateContractResult{
 		Success:     true,
@@ -815,7 +815,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	}
 
 	for k, v := range nonceUpdates {
-		se.nonceDb.SetNonce(k, v+1)
+		se.nonceDb.SetNonce(se.SlotCtx(), k, v+1)
 	}
 
 	for _, info := range confirmedNonces {
@@ -823,7 +823,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		for n := range info.Nonces {
 			nonces = append(nonces, n)
 		}
-		se.txDb.InvalidateCompetingTransactions(info.RequiredAuths, nonces)
+		se.txDb.InvalidateCompetingTransactions(se.SlotCtx(), info.RequiredAuths, nonces)
 	}
 
 	se.TxBatch = append(txsToInjest, se.TxBatch...)

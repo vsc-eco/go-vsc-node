@@ -21,11 +21,11 @@ func New(d *vsc.VscDb) Ledger {
 	return &ledger{db.NewCollection(d.DbInstance, "ledger")}
 }
 
-func (ledger *ledger) StoreLedger(ledgerRecords ...LedgerRecord) {
+func (ledger *ledger) StoreLedger(ctx context.Context, ledgerRecords ...LedgerRecord) {
 	if len(ledgerRecords) > 0 {
 		for _, ledgerRecord := range ledgerRecords {
 			findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
-			ledger.FindOneAndUpdate(context.Background(), bson.M{
+			ledger.FindOneAndUpdate(ctx, bson.M{
 				"id": ledgerRecord.Id,
 			}, bson.M{
 				"$set": ledgerRecord,
@@ -35,12 +35,12 @@ func (ledger *ledger) StoreLedger(ledgerRecords ...LedgerRecord) {
 }
 
 // Get ledger ops after height inclusive
-func (ledger *ledger) GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error) {
+func (ledger *ledger) GetLedgerAfterHeight(ctx context.Context, account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error) {
 	opts := options.Find().SetSort(bson.M{"block_height": 1})
 	if limit != nil {
 		opts.SetLimit(*limit)
 	}
-	findResult, err := ledger.Find(context.Background(), bson.M{
+	findResult, err := ledger.Find(ctx, bson.M{
 		"$or": bson.A{
 			bson.M{"from": account},
 			bson.M{"to": account},
@@ -54,7 +54,7 @@ func (ledger *ledger) GetLedgerAfterHeight(account string, blockHeight uint64, a
 	}
 
 	results := make([]LedgerRecord, 0)
-	for findResult.Next(context.Background()) {
+	for findResult.Next(ctx) {
 		ledRes := LedgerRecord{}
 		findResult.Decode(&ledRes)
 		results = append(results, ledRes)
@@ -65,7 +65,7 @@ func (ledger *ledger) GetLedgerAfterHeight(account string, blockHeight uint64, a
 }
 
 // Get ledger ops after height inclusive
-func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, asset string, searchOps ...LedgerOptions) (*[]LedgerRecord, error) {
+func (ledger *ledger) GetLedgerRange(ctx context.Context, account string, start uint64, end uint64, asset string, searchOps ...LedgerOptions) (*[]LedgerRecord, error) {
 	opts := options.Find().SetSort(bson.M{"block_height": 1})
 
 	query := bson.M{
@@ -89,13 +89,13 @@ func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, a
 			}
 		}
 	}
-	findResult, err := ledger.Find(context.Background(), query, opts)
+	findResult, err := ledger.Find(ctx, query, opts)
 	if err != nil {
 		return nil, err
 	}
 
 	results := make([]LedgerRecord, 0)
-	for findResult.Next(context.Background()) {
+	for findResult.Next(ctx) {
 		ledRes := LedgerRecord{}
 		findResult.Decode(&ledRes)
 		results = append(results, ledRes)
@@ -104,7 +104,7 @@ func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, a
 	return &results, nil
 }
 
-func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error) {
+func (ledger *ledger) GetLedgersTsRange(ctx context.Context, account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error) {
 	filters := bson.D{}
 	if account != nil {
 		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
@@ -128,13 +128,13 @@ func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes [
 		filters = append(filters, bson.E{Key: "tk", Value: string(*asset)})
 	}
 	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
-	cursor, err := ledger.Aggregate(context.TODO(), pipe)
+	cursor, err := ledger.Aggregate(ctx, pipe)
 	if err != nil {
 		return []LedgerRecord{}, err
 	}
-	defer cursor.Close(context.TODO())
+	defer cursor.Close(ctx)
 	var results []LedgerRecord
-	for cursor.Next(context.TODO()) {
+	for cursor.Next(ctx) {
 		var elem LedgerRecord
 		if err := cursor.Decode(&elem); err != nil {
 			return []LedgerRecord{}, err
@@ -144,7 +144,7 @@ func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes [
 	return results, nil
 }
 
-func (ledger *ledger) GetRawLedgerRange(account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error) {
+func (ledger *ledger) GetRawLedgerRange(ctx context.Context, account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error) {
 	filters := bson.D{}
 	if account != nil {
 		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
@@ -168,7 +168,7 @@ func (ledger *ledger) GetRawLedgerRange(account *string, txId *string, txTypes [
 		filters = append(filters, bson.E{Key: "tk", Value: string(*asset)})
 	}
 
-	cursor, err := ledger.Aggregate(context.TODO(), mongo.Pipeline{
+	cursor, err := ledger.Aggregate(ctx, mongo.Pipeline{
 		{{Key: "$match", Value: filters}},
 		{{Key: "$skip", Value: offset}},
 		{{Key: "$limit", Value: limit}},
@@ -176,9 +176,9 @@ func (ledger *ledger) GetRawLedgerRange(account *string, txId *string, txTypes [
 	if err != nil {
 		return []LedgerRecord{}, err
 	}
-	defer cursor.Close(context.TODO())
+	defer cursor.Close(ctx)
 	var results []LedgerRecord
-	for cursor.Next(context.TODO()) {
+	for cursor.Next(ctx) {
 		var elem LedgerRecord
 		if err := cursor.Decode(&elem); err != nil {
 			return []LedgerRecord{}, err
@@ -188,8 +188,8 @@ func (ledger *ledger) GetRawLedgerRange(account *string, txId *string, txTypes [
 	return results, nil
 }
 
-func (ledger *ledger) GetDistinctAccountsRange(startHeight, endHeight uint64) ([]string, error) {
-	cursor, err := ledger.Aggregate(context.Background(), mongo.Pipeline{
+func (ledger *ledger) GetDistinctAccountsRange(ctx context.Context, startHeight, endHeight uint64) ([]string, error) {
+	cursor, err := ledger.Aggregate(ctx, mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{
 			"block_height": bson.M{
 				"$gte": startHeight,
@@ -204,10 +204,10 @@ func (ledger *ledger) GetDistinctAccountsRange(startHeight, endHeight uint64) ([
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(context.Background())
+	defer cursor.Close(ctx)
 
 	accounts := make([]string, 0)
-	for cursor.Next(context.Background()) {
+	for cursor.Next(ctx) {
 		var doc struct {
 			ID string `bson:"_id"`
 		}
@@ -230,9 +230,9 @@ func NewBalances(d *vsc.VscDb) Balances {
 
 // Gets the balance record for a given account and asset
 // Note: this does not return updated ledger records
-func (balances *balances) GetBalanceRecord(account string, blockHeight uint64) (*BalanceRecord, error) {
+func (balances *balances) GetBalanceRecord(ctx context.Context, account string, blockHeight uint64) (*BalanceRecord, error) {
 	options := options.FindOne().SetSort(bson.D{{"block_height", -1}})
-	singleResult := balances.FindOne(context.Background(), bson.M{
+	singleResult := balances.FindOne(ctx, bson.M{
 		"account": account,
 		"block_height": bson.M{
 			"$lte": blockHeight,
@@ -252,9 +252,9 @@ func (balances *balances) GetBalanceRecord(account string, blockHeight uint64) (
 }
 
 // FIX ME!!
-func (balances *balances) UpdateBalanceRecord(record BalanceRecord) error {
+func (balances *balances) UpdateBalanceRecord(ctx context.Context, record BalanceRecord) error {
 	findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
-	balances.FindOneAndUpdate(context.Background(), bson.M{
+	balances.FindOneAndUpdate(ctx, bson.M{
 		"account":      record.Account,
 		"block_height": record.BlockHeight,
 	}, bson.M{
@@ -263,15 +263,15 @@ func (balances *balances) UpdateBalanceRecord(record BalanceRecord) error {
 	return nil
 }
 
-func (balances *balances) GetAll(blockHeight uint64) []BalanceRecord {
-	distinctAccountZ, _ := balances.Distinct(context.Background(), "account", bson.M{})
+func (balances *balances) GetAll(ctx context.Context, blockHeight uint64) []BalanceRecord {
+	distinctAccountZ, _ := balances.Distinct(ctx, "account", bson.M{})
 	distinctAccount := common.ArrayToStringArray(distinctAccountZ)
 
 	//TODO: Either use a bulk read or use threads
 	//Initial iteration
 	records := make([]BalanceRecord, 0)
 	for _, act := range distinctAccount {
-		br, _ := balances.GetBalanceRecord(act, blockHeight)
+		br, _ := balances.GetBalanceRecord(ctx, act, blockHeight)
 
 		if br != nil {
 			records = append(records, *br)
@@ -289,16 +289,16 @@ func NewActionsDb(d *vsc.VscDb) BridgeActions {
 	return &actionsDb{db.NewCollection(d.DbInstance, "ledger_actions")}
 }
 
-func (actionsDb *actionsDb) StoreAction(withdraw ActionRecord) {
+func (actionsDb *actionsDb) StoreAction(ctx context.Context, withdraw ActionRecord) {
 	findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
-	actionsDb.FindOneAndUpdate(context.Background(), bson.M{
+	actionsDb.FindOneAndUpdate(ctx, bson.M{
 		"id": withdraw.Id,
 	}, bson.M{
 		"$set": withdraw,
 	}, findUpdateOpts)
 }
 
-func (actionsDb *actionsDb) ExecuteComplete(actionId *string, ids ...string) {
+func (actionsDb *actionsDb) ExecuteComplete(ctx context.Context, actionId *string, ids ...string) {
 	if len(ids) == 0 {
 		return
 	}
@@ -308,7 +308,7 @@ func (actionsDb *actionsDb) ExecuteComplete(actionId *string, ids ...string) {
 	if actionId != nil {
 		updated["action_id"] = *actionId
 	}
-	actionsDb.UpdateMany(context.Background(), bson.M{
+	actionsDb.UpdateMany(ctx, bson.M{
 		"id": bson.M{
 			"$in": ids,
 		},
@@ -317,8 +317,8 @@ func (actionsDb *actionsDb) ExecuteComplete(actionId *string, ids ...string) {
 	})
 }
 
-func (actionsDb *actionsDb) Get(id string) (*ActionRecord, error) {
-	findResult := actionsDb.FindOne(context.Background(), bson.M{
+func (actionsDb *actionsDb) Get(ctx context.Context, id string) (*ActionRecord, error) {
+	findResult := actionsDb.FindOne(ctx, bson.M{
 		"id": id,
 	})
 
@@ -333,11 +333,11 @@ func (actionsDb *actionsDb) Get(id string) (*ActionRecord, error) {
 	return &ac, nil
 }
 
-func (actionsDb *actionsDb) SetStatus(id string, status string) {
+func (actionsDb *actionsDb) SetStatus(ctx context.Context, id string, status string) {
 
 }
 
-func (actionsDb *actionsDb) GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error) {
+func (actionsDb *actionsDb) GetPendingActions(ctx context.Context, bh uint64, t ...string) ([]ActionRecord, error) {
 	options := options.Find().SetSort(bson.D{
 		{
 			Key:   "block_height",
@@ -359,14 +359,14 @@ func (actionsDb *actionsDb) GetPendingActions(bh uint64, t ...string) ([]ActionR
 			"$in": t,
 		}
 	}
-	cursor, err := actionsDb.Find(context.Background(), query, options)
+	cursor, err := actionsDb.Find(ctx, query, options)
 
 	if err != nil {
 		return nil, err
 	}
 
 	results := make([]ActionRecord, 0)
-	for cursor.Next(context.Background()) {
+	for cursor.Next(ctx) {
 		action := ActionRecord{}
 		cursor.Decode(&action)
 		results = append(results, action)
@@ -376,7 +376,7 @@ func (actionsDb *actionsDb) GetPendingActions(bh uint64, t ...string) ([]ActionR
 }
 
 // Gets list of actions equal or less than the supplied epoch
-func (actions *actionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([]ActionRecord, error) {
+func (actions *actionsDb) GetPendingActionsByEpoch(ctx context.Context, epoch uint64, t ...string) ([]ActionRecord, error) {
 	options := options.Find().SetSort(bson.D{
 		{
 			Key:   "block_height",
@@ -399,11 +399,11 @@ func (actions *actionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([
 			"$in": t,
 		}
 	}
-	cursor, _ := actions.Find(context.Background(), query, options)
+	cursor, _ := actions.Find(ctx, query, options)
 
 	actionRecords := make([]ActionRecord, 0)
 
-	if cursor.Next(context.Background()) {
+	if cursor.Next(ctx) {
 		record := ActionRecord{}
 		cursor.Decode(&record)
 
@@ -413,7 +413,7 @@ func (actions *actionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([
 	return actionRecords, nil
 }
 
-func (actions *actionsDb) GetActionsRange(txId *string, actionId *string, account *string, byTypes []string, asset *Asset, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ActionRecord, error) {
+func (actions *actionsDb) GetActionsRange(ctx context.Context, txId *string, actionId *string, account *string, byTypes []string, asset *Asset, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ActionRecord, error) {
 	filters := bson.D{}
 	if txId != nil {
 		filters = append(filters, bson.E{Key: "id", Value: *txId})
@@ -440,13 +440,13 @@ func (actions *actionsDb) GetActionsRange(txId *string, actionId *string, accoun
 		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$lte", Value: *toBlock}}})
 	}
 	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
-	cursor, err := actions.Aggregate(context.TODO(), pipe)
+	cursor, err := actions.Aggregate(ctx, pipe)
 	if err != nil {
 		return []ActionRecord{}, err
 	}
-	defer cursor.Close(context.TODO())
+	defer cursor.Close(ctx)
 	var results []ActionRecord
-	for cursor.Next(context.TODO()) {
+	for cursor.Next(ctx) {
 		var elem ActionRecord
 		if err := cursor.Decode(&elem); err != nil {
 			return []ActionRecord{}, err
@@ -456,8 +456,8 @@ func (actions *actionsDb) GetActionsRange(txId *string, actionId *string, accoun
 	return results, nil
 }
 
-func (actions *actionsDb) GetAccountPendingConsensusUnstake(account string) (int64, error) {
-	cursor, err := actions.Aggregate(context.TODO(), mongo.Pipeline{
+func (actions *actionsDb) GetAccountPendingConsensusUnstake(ctx context.Context, account string) (int64, error) {
+	cursor, err := actions.Aggregate(ctx, mongo.Pipeline{
 		{{Key: "$match", Value: bson.D{
 			{Key: "to", Value: account},
 			{Key: "status", Value: "pending"},
@@ -471,12 +471,12 @@ func (actions *actionsDb) GetAccountPendingConsensusUnstake(account string) (int
 	if err != nil {
 		return -1, err
 	}
-	defer cursor.Close(context.TODO())
+	defer cursor.Close(ctx)
 
 	var result struct {
 		TotalAmount int64 `bson:"totalAmount"`
 	}
-	if cursor.Next(context.TODO()) {
+	if cursor.Next(ctx) {
 		if err := cursor.Decode(&result); err != nil {
 			return -1, err
 		}
@@ -485,8 +485,8 @@ func (actions *actionsDb) GetAccountPendingConsensusUnstake(account string) (int
 	return 0, nil
 }
 
-func (actions *actionsDb) GetActionsByTxId(txId string) ([]ActionRecord, error) {
-	cursor, err := actions.Find(context.Background(), bson.M{
+func (actions *actionsDb) GetActionsByTxId(ctx context.Context, txId string) ([]ActionRecord, error) {
+	cursor, err := actions.Find(ctx, bson.M{
 		"id": bson.M{
 			"$regex": "^" + txId,
 		},
@@ -497,7 +497,7 @@ func (actions *actionsDb) GetActionsByTxId(txId string) ([]ActionRecord, error) 
 
 	actionRecords := make([]ActionRecord, 0)
 
-	for cursor.Next(context.Background()) {
+	for cursor.Next(ctx) {
 		record := ActionRecord{}
 		cursor.Decode(&record)
 
@@ -511,9 +511,9 @@ type interestClaims struct {
 	*db.Collection
 }
 
-func (ic *interestClaims) GetLastClaim(blockHeight uint64) *ClaimRecord {
+func (ic *interestClaims) GetLastClaim(ctx context.Context, blockHeight uint64) *ClaimRecord {
 	options := options.FindOne().SetSort(bson.D{{"block_height", -1}})
-	findResult := ic.FindOne(context.Background(), bson.M{
+	findResult := ic.FindOne(ctx, bson.M{
 		"block_height": bson.M{
 			"$lt": blockHeight,
 		},
@@ -526,17 +526,16 @@ func (ic *interestClaims) GetLastClaim(blockHeight uint64) *ClaimRecord {
 	return &claimRecord
 }
 
-func (ic *interestClaims) SaveClaim(claim ClaimRecord) {
-
+func (ic *interestClaims) SaveClaim(ctx context.Context, claim ClaimRecord) {
 	options := options.FindOneAndUpdate().SetUpsert(true)
-	ic.FindOneAndUpdate(context.Background(), bson.M{
+	ic.FindOneAndUpdate(ctx, bson.M{
 		"block_height": claim.BlockHeight,
 	}, bson.M{
 		"$set": claim,
 	}, options)
 }
 
-func (ic *interestClaims) FindClaims(fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ClaimRecord, error) {
+func (ic *interestClaims) FindClaims(ctx context.Context, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ClaimRecord, error) {
 	filters := bson.D{}
 	if fromBlock != nil {
 		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$gte", Value: *fromBlock}}})
@@ -545,13 +544,13 @@ func (ic *interestClaims) FindClaims(fromBlock *uint64, toBlock *uint64, offset 
 		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$lte", Value: *toBlock}}})
 	}
 	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
-	cursor, err := ic.Aggregate(context.TODO(), pipe)
+	cursor, err := ic.Aggregate(ctx, pipe)
 	if err != nil {
 		return []ClaimRecord{}, err
 	}
-	defer cursor.Close(context.TODO())
+	defer cursor.Close(ctx)
 	var results []ClaimRecord
-	for cursor.Next(context.TODO()) {
+	for cursor.Next(ctx) {
 		var elem ClaimRecord
 		if err := cursor.Decode(&elem); err != nil {
 			return []ClaimRecord{}, err

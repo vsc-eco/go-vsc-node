@@ -14,9 +14,9 @@ type nonceDb struct {
 	*db.Collection
 }
 
-func (n *nonceDb) GetNonce(account string) (NonceRecord, error) {
+func (n *nonceDb) GetNonce(ctx context.Context, account string) (NonceRecord, error) {
 	nonceRecord := NonceRecord{}
-	findResult := n.FindOne(context.Background(), bson.M{"account": account})
+	findResult := n.FindOne(ctx, bson.M{"account": account})
 
 	err := findResult.Decode(&nonceRecord)
 
@@ -27,10 +27,10 @@ func (n *nonceDb) GetNonce(account string) (NonceRecord, error) {
 	return nonceRecord, nil
 }
 
-func (n *nonceDb) SetNonce(account string, nonce uint64) error {
+func (n *nonceDb) SetNonce(ctx context.Context, account string, nonce uint64) error {
 
 	options := options.FindOneAndUpdate().SetUpsert(true)
-	singleResult := n.FindOneAndUpdate(context.Background(), bson.M{
+	singleResult := n.FindOneAndUpdate(ctx, bson.M{
 		"account": account,
 	}, bson.M{
 		"$set": bson.M{

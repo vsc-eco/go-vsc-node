@@ -102,7 +102,7 @@ func (r *balanceRecordResolver) HiveConsensus(ctx context.Context, obj *ledgerDb
 
 // ConsensusUnstaking is the resolver for the consensus_unstaking field.
 func (r *balanceRecordResolver) ConsensusUnstaking(ctx context.Context, obj *ledgerDb.BalanceRecord) (model.Int64, error) {
-	amt, err := r.Actions.GetAccountPendingConsensusUnstake(obj.Account)
+	amt, err := r.Actions.GetAccountPendingConsensusUnstake(ctx, obj.Account)
 	return model.Int64(amt), err
 }
 
@@ -113,7 +113,7 @@ func (r *balanceRecordResolver) PendingHbdUnstaking(ctx context.Context, obj *le
 	startBlk := doc.LastProcessedBlock
 	endBlk := *startBlk + common.HBD_UNSTAKE_BLOCKS
 	asset := ledgerDb.AssetHbd
-	ledgerRecords, err := r.Ledger.GetRawLedgerRange(&obj.Account, nil, []string{"unstake"}, &asset, startBlk, &endBlk, 0, 900)
+	ledgerRecords, err := r.Ledger.GetRawLedgerRange(ctx, &obj.Account, nil, []string{"unstake"}, &asset, startBlk, &endBlk, 0, 900)
 
 	if err != nil {
 		return nil, err
@@ -220,7 +220,7 @@ func (r *queryResolver) GetStateByKeys(ctx context.Context, contractID string, k
 	if len(keys) < 1 || len(keys) > 100 {
 		return nil, fmt.Errorf("number of state keys to query must be between 1 and 100")
 	}
-	output, err := r.ContractsState.GetLastOutput(contractID, math.MaxInt64)
+	output, err := r.ContractsState.GetLastOutput(ctx, contractID, math.MaxInt64)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +265,7 @@ func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *Tran
 		return nil, paginateErr
 	}
 
-	return r.Transactions.FindTransactions(filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
+	return r.Transactions.FindTransactions(ctx, filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
 // FindContractOutput is the resolver for the findContractOutput field.
@@ -277,7 +277,7 @@ func (r *queryResolver) FindContractOutput(ctx context.Context, filterOptions *C
 	if paginateErr != nil {
 		return nil, paginateErr
 	}
-	return r.ContractsState.FindOutputs(filterOptions.ByID, filterOptions.ByInput, filterOptions.ByContract, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
+	return r.ContractsState.FindOutputs(ctx, filterOptions.ByID, filterOptions.ByInput, filterOptions.ByContract, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
 // FindLedgerTXs is the resolver for the findLedgerTXs field.
@@ -292,7 +292,7 @@ func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *Ledger
 	if filterOptions.ByTxID != nil && utf8.RuneCountInString(*filterOptions.ByTxID) < 40 {
 		return nil, fmt.Errorf("invalid tx id")
 	}
-	return r.Ledger.GetLedgersTsRange(filterOptions.ByToFrom, filterOptions.ByTxID, filterOptions.ByTypes, filterOptions.ByAsset, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
+	return r.Ledger.GetLedgersTsRange(ctx, filterOptions.ByToFrom, filterOptions.ByTxID, filterOptions.ByTypes, filterOptions.ByAsset, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
 // FindLedgerActions is the resolver for the findLedgerActions field.
@@ -307,7 +307,7 @@ func (r *queryResolver) FindLedgerActions(ctx context.Context, filterOptions *Le
 	if filterOptions.ByTxID != nil && utf8.RuneCountInString(*filterOptions.ByTxID) < 40 {
 		return nil, fmt.Errorf("invalid tx id")
 	}
-	return r.Actions.GetActionsRange(filterOptions.ByTxID, filterOptions.ByActionID, filterOptions.ByAccount, filterOptions.ByTypes, filterOptions.ByAsset, filterOptions.ByStatus, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
+	return r.Actions.GetActionsRange(ctx, filterOptions.ByTxID, filterOptions.ByActionID, filterOptions.ByAccount, filterOptions.ByTypes, filterOptions.ByAsset, filterOptions.ByStatus, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
 // GetAccountBalance is the resolver for the getAccountBalance field.
@@ -316,7 +316,7 @@ func (r *queryResolver) GetAccountBalance(ctx context.Context, account string, h
 		return nil, fmt.Errorf("account parameter cannot be empty")
 	}
 	blockHeight := ParseHeight(height)
-	return r.Balances.GetBalanceRecord(account, blockHeight)
+	return r.Balances.GetBalanceRecord(ctx, account, blockHeight)
 }
 
 // GetAccountRc is the resolver for the getAccountRC field.
@@ -345,7 +345,7 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 		amount = params.RC_HIVE_FREE_AMOUNT
 	}
 
-	balRecord, err := r.Balances.GetBalanceRecord(account, blockHeight)
+	balRecord, err := r.Balances.GetBalanceRecord(ctx, account, blockHeight)
 
 	if err == mongo.ErrNoDocuments {
 		return &rcDb.RcRecord{
@@ -356,7 +356,7 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 		}, nil
 	}
 
-	rcRecord, err := r.Rc.GetRecord(account, blockHeight)
+	rcRecord, err := r.Rc.GetRecord(ctx, account, blockHeight)
 
 	if err == mongo.ErrNoDocuments {
 		return &rcDb.RcRecord{
@@ -409,7 +409,7 @@ func (r *queryResolver) FindContract(ctx context.Context, filterOptions *FindCon
 	if paginateErr != nil {
 		return nil, paginateErr
 	}
-	return r.Contracts.FindContracts(filterOptions.ByID, filterOptions.ByCode, filterOptions.Historical, offset, limit)
+	return r.Contracts.FindContracts(ctx, filterOptions.ByID, filterOptions.ByCode, filterOptions.Historical, offset, limit)
 }
 
 // SubmitTransactionV1 is the resolver for the submitTransactionV1 field.
@@ -437,7 +437,7 @@ func (r *queryResolver) SubmitTransactionV1(ctx context.Context, tx string, sig 
 
 // GetAccountNonce is the resolver for the getAccountNonce field.
 func (r *queryResolver) GetAccountNonce(ctx context.Context, account string) (*nonces.NonceRecord, error) {
-	record, err := r.Nonces.GetNonce(account)
+	record, err := r.Nonces.GetNonce(ctx, account)
 
 	if err == mongo.ErrNoDocuments {
 		return &nonces.NonceRecord{
@@ -481,12 +481,12 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 // GetWitness is the resolver for the getWitness field.
 func (r *queryResolver) GetWitness(ctx context.Context, account string, height *model.Uint64) (*witnesses.Witness, error) {
 	blockHeight := ParseHeight(height)
-	return r.Witnesses.GetWitnessAtHeight(account, &blockHeight)
+	return r.Witnesses.GetWitnessAtHeight(ctx, account, &blockHeight)
 }
 
 // WitnessNodes is the resolver for the witnessNodes field.
 func (r *queryResolver) WitnessNodes(ctx context.Context, height model.Uint64) ([]witnesses.Witness, error) {
-	return r.Witnesses.GetWitnessesAtBlockHeight(uint64(height))
+	return r.Witnesses.GetWitnessesAtBlockHeight(ctx, uint64(height))
 }
 
 // WitnessSchedule is the resolver for the witnessSchedule field.
@@ -498,7 +498,7 @@ func (r *queryResolver) WitnessSchedule(ctx context.Context, height model.Uint64
 
 // WitnessStake is the resolver for the witnessStake field.
 func (r *queryResolver) WitnessStake(ctx context.Context, account string) (model.Uint64, error) {
-	res, err := r.Balances.GetBalanceRecord(account, uint64(math.MaxInt64))
+	res, err := r.Balances.GetBalanceRecord(ctx, account, uint64(math.MaxInt64))
 	if err != nil {
 		return 0, err
 	}
@@ -546,7 +546,7 @@ func (r *queryResolver) ElectionByBlockHeight(ctx context.Context, blockHeight *
 
 // GetTssKey is the resolver for the getTssKey field.
 func (r *queryResolver) GetTssKey(ctx context.Context, keyID string) (*tss_db.TssKey, error) {
-	t, err := r.TssKeys.FindKey(keyID)
+	t, err := r.TssKeys.FindKey(ctx, keyID)
 	if err != nil {
 		return nil, err
 	}
@@ -555,7 +555,7 @@ func (r *queryResolver) GetTssKey(ctx context.Context, keyID string) (*tss_db.Ts
 
 // GetTssRequests is the resolver for the getTssRequests field.
 func (r *queryResolver) GetTssRequests(ctx context.Context, keyID string, msgHex []string) ([]tss_db.TssRequest, error) {
-	return r.TssRequests.FindRequests(keyID, msgHex)
+	return r.TssRequests.FindRequests(ctx, keyID, msgHex)
 }
 
 // FindLedgerClaims is the resolver for the findLedgerClaims field.
@@ -567,7 +567,7 @@ func (r *queryResolver) FindLedgerClaims(ctx context.Context, filterOptions *Led
 	if err != nil {
 		return nil, err
 	}
-	return r.InterestClaims.FindClaims((*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
+	return r.InterestClaims.FindClaims(ctx, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
 // FindTssCommitments is the resolver for the findTssCommitments field.
@@ -579,7 +579,7 @@ func (r *queryResolver) FindTssCommitments(ctx context.Context, filterOptions *T
 	if err != nil {
 		return nil, err
 	}
-	return r.TssCommitments.FindCommitments(filterOptions.ByKeyID, filterOptions.ByTypes, (*uint64)(filterOptions.ByEpoch), (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), off, lim)
+	return r.TssCommitments.FindCommitments(ctx, filterOptions.ByKeyID, filterOptions.ByTypes, (*uint64)(filterOptions.ByEpoch), (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), off, lim)
 }
 
 // SimulateContractCalls is the resolver for the simulateContractCalls field.
@@ -622,7 +622,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			rcLimit = maxGas
 		}
 
-		info, err := r.Contracts.ContractById(call.ContractID, blockHeight)
+		info, err := r.Contracts.ContractById(ctx, call.ContractID, blockHeight)
 		if err != nil {
 			errMsg := err.Error()
 			results = append(results, SimulateContractCallResult{
@@ -828,7 +828,7 @@ func (r *transactionRecordResolver) RcLimit(ctx context.Context, obj *transactio
 
 // Ledger is the resolver for the ledger field.
 func (r *transactionRecordResolver) Ledger(ctx context.Context, obj *transactions.TransactionRecord) ([]ledgerSystem.OpLogEvent, error) {
-	records, err := r.Resolver.Ledger.GetRawLedgerRange(nil, &obj.Id, nil, nil, nil, nil, 0, 100)
+	records, err := r.Resolver.Ledger.GetRawLedgerRange(ctx, nil, &obj.Id, nil, nil, nil, nil, 0, 100)
 	if err != nil {
 		return nil, err
 	}
@@ -850,7 +850,7 @@ func (r *transactionRecordResolver) Ledger(ctx context.Context, obj *transaction
 
 // LedgerActions is the resolver for the ledger_actions field.
 func (r *transactionRecordResolver) LedgerActions(ctx context.Context, obj *transactions.TransactionRecord) ([]*LedgerAction, error) {
-	lrs, err := r.Actions.GetActionsByTxId(obj.Id)
+	lrs, err := r.Actions.GetActionsByTxId(ctx, obj.Id)
 	if err != nil {
 		return nil, err
 	}

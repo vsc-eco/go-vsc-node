@@ -1,6 +1,7 @@
 package ledgerSystem
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"math/big"
@@ -40,11 +41,11 @@ type ledgerSystem struct {
 	ActionsDb ledger_db.BridgeActions
 }
 
-func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {
+func (ls *ledgerSystem) ClaimHBDInterest(ctx context.Context, lastClaim uint64, blockHeight uint64, amount int64, txId string) {
 	log.Verbose("ClaimHBDInterest", "lastClaim", lastClaim, "bh", blockHeight, "amount", amount)
 	//Do distribution of HBD interest on an going forward basis
 	//Save to ledger DB the difference.
-	ledgerBalances := ls.BalanceDb.GetAll(blockHeight)
+	ledgerBalances := ls.BalanceDb.GetAll(ctx, blockHeight)
 
 	processedBalRecords := make([]ledger_db.BalanceRecord, 0)
 	totalAvg := int64(0)
@@ -100,7 +101,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 				owner = balance.Account
 			}
 
-			ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+			ls.LedgerDb.StoreLedger(ctx, ledger_db.LedgerRecord{
 				Id: "hbd_interest_" + strconv.Itoa(int(blockHeight)) + "_" + strconv.Itoa(id),
 				//next block
 				BlockHeight: blockHeight + 1,
@@ -122,7 +123,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	if totalAvg == 0 {
 		savedAmount = 0
 	}
-	ls.ClaimDb.SaveClaim(ledger_db.ClaimRecord{
+	ls.ClaimDb.SaveClaim(ctx, ledger_db.ClaimRecord{
 		BlockHeight: blockHeight,
 		Amount:      savedAmount,
 		TxId:        txId,
@@ -132,7 +133,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	//DONE
 }
 
-func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ExtraInfo) {
+func (ls *ledgerSystem) IndexActions(ctx context.Context, actionUpdate map[string]interface{}, extraInfo ExtraInfo) {
 	log.Debug("IndexActions", "actionUpdate", actionUpdate)
 
 	actionIds := common.ArrayToStringArray(actionUpdate["ops"].([]interface{}))
@@ -147,15 +148,15 @@ func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraI
 	bs.SetBytes(b64)
 
 	for idx, id := range actionIds {
-		record, _ := ls.ActionsDb.Get(id)
+		record, _ := ls.ActionsDb.Get(ctx, id)
 		if record == nil {
 			continue
 		}
-		ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
+		ls.ActionsDb.ExecuteComplete(ctx, &extraInfo.ActionId, id)
 
 		if record.Type == "stake" {
 			log.Debug("Indexxing stake Ledger")
-			ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+			ls.LedgerDb.StoreLedger(ctx, ledger_db.LedgerRecord{
 				Id:     record.Id + ":hbd_savings",
 				Amount: record.Amount,
 				Asset:  "hbd_savings",
@@ -178,7 +179,7 @@ func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraI
 			} else {
 				blockDelay = common.HBD_UNSTAKE_BLOCKS
 			}
-			ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+			ls.LedgerDb.StoreLedger(ctx, ledger_db.LedgerRecord{
 				Id:     record.Id + ":hbd",
 				Amount: record.Amount,
 				Asset:  "hbd",
@@ -195,14 +196,14 @@ func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraI
 
 }
 
-func (ls *ledgerSystem) IngestOplog(oplog []OpLogEvent, options OplogInjestOptions) {
+func (ls *ledgerSystem) IngestOplog(ctx context.Context, oplog []OpLogEvent, options OplogInjestOptions) {
 	executeResults := ExecuteOplog(oplog, options.StartHeight, options.EndHeight)
 
 	ledgerRecords := executeResults.ledgerRecords
 	actionRecords := executeResults.actionRecords
 
 	for _, v := range ledgerRecords {
-		ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+		ls.LedgerDb.StoreLedger(ctx, ledger_db.LedgerRecord{
 			Id: v.Id,
 			//plz passthrough original block height
 			BlockHeight: options.EndHeight,
@@ -217,7 +218,7 @@ func (ls *ledgerSystem) IngestOplog(oplog []OpLogEvent, options OplogInjestOptio
 	}
 
 	for _, v := range actionRecords {
-		ls.ActionsDb.StoreAction(v)
+		ls.ActionsDb.StoreAction(ctx, v)
 	}
 
 }
@@ -232,7 +233,7 @@ func (ls *ledgerSystem) GetBalance(account string, blockHeight uint64, asset str
 
 // Empties the virtual state, such as when a block is executed
 
-func (ls *ledgerSystem) Deposit(deposit Deposit) string {
+func (ls *ledgerSystem) Deposit(ctx context.Context, deposit Deposit) string {
 	decodedParams := DepositParams{}
 	values, err := url.ParseQuery(deposit.Memo)
 	if err == nil {
@@ -273,7 +274,7 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 	// 	le.Ls.log.Debug("ledgerExecutor", le.VirtualLedger[decodedParams.To])
 	// }
 
-	ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+	ls.LedgerDb.StoreLedger(ctx, ledger_db.LedgerRecord{
 		Id:          deposit.Id,
 		BlockHeight: deposit.BlockHeight,
 		Amount:      deposit.Amount,

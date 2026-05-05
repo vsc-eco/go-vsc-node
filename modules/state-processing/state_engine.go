@@ -1,6 +1,7 @@
 package state_engine
 
 import (
+	"context"
 	"crypto"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -67,6 +68,13 @@ type StateEngine struct {
 	tssRequests    tss_db.TssRequests
 	tssKeys        tss_db.TssKeys
 	tssCommitments tss_db.TssCommitments
+
+	// Slot-transaction wiring. txStarter and checkpointDb are optional: when
+	// either is nil the slot runs without a Mongo transaction (legacy /test
+	// behavior). slot holds the in-flight session+ctx; nil between slots.
+	txStarter    TxStarter
+	checkpointDb CheckpointDb
+	slot         *slotTxn
 
 	wasm *wasm_runtime.Wasm
 
@@ -164,14 +172,14 @@ func (se *StateEngine) logTssSigIndexed(bh int, keyId, algo string) {
 }
 
 func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64, txId string) {
-	lastClaim := se.claimDb.GetLastClaim(blockHeight - 1)
+	lastClaim := se.claimDb.GetLastClaim(se.SlotCtx(), blockHeight - 1)
 
 	claimHeight := uint64(0)
 	if lastClaim != nil {
 		claimHeight = lastClaim.BlockHeight
 	}
 
-	se.LedgerSystem.ClaimHBDInterest(claimHeight, blockHeight, amount, txId)
+	se.LedgerSystem.ClaimHBDInterest(se.SlotCtx(), claimHeight, blockHeight, amount, txId)
 }
 
 // Gets ranomized schedule of witnesses
@@ -238,13 +246,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		currentEpoch := electionData.Epoch
 
 		// Phase 1: deprecate active keys that have reached their expiry epoch.
-		if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
+		if deprecating, err := se.tssKeys.FindDeprecatingKeys(se.SlotCtx(), currentEpoch); err == nil {
 			for _, k := range deprecating {
 				k.Status = tss_db.TssKeyDeprecated
 				if tss_db.KeyRetirementEnabled {
 					k.DeprecatedHeight = int64(block.BlockNumber)
 				}
-				se.tssKeys.SetKey(k)
+				se.tssKeys.SetKey(se.SlotCtx(), k)
 				tssLog.Info(
 					"key deprecated",
 					"keyId",
@@ -260,10 +268,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 	// Phase 2: retire deprecated keys whose grace period has elapsed (block-height based).
 	if tss_db.KeyRetirementEnabled {
-		if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil {
+		if retiring, err := se.tssKeys.FindNewlyRetired(se.SlotCtx(), block.BlockNumber); err == nil {
 			for _, k := range retiring {
 				k.Status = tss_db.TssKeyRetired
-				se.tssKeys.SetKey(k)
+				se.tssKeys.SetKey(se.SlotCtx(), k)
 				tssLog.Info(
 					"key retired",
 					"keyId",
@@ -297,7 +305,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			SlotHeight: slotInfo.StartHeight,
 			Done:       false,
 		}
-
+		// Open the very first slot's transaction. Subsequent slots are opened
+		// by the boundary handler below after committing the prior slot.
+		if err := se.beginSlot(slotInfo.StartHeight); err != nil {
+			log.Warn("beginSlot (first) failed", "slotHeight", slotInfo.StartHeight, "err", err)
+		}
 	}
 
 	for _, virtualOp := range block.VirtualOps {
@@ -376,7 +388,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						rec.From = params.FR_VIRTUAL_ACCOUNT
 					}
 
-					se.LedgerState.LedgerDb.StoreLedger(rec)
+					se.LedgerState.LedgerDb.StoreLedger(se.SlotCtx(), rec)
 				}
 
 				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() {
@@ -384,7 +396,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					err := json.Unmarshal(cj.Json, &actionUpdate)
 
 					if err == nil {
-						se.LedgerSystem.IndexActions(actionUpdate, ledgerSystem.ExtraInfo{
+						se.LedgerSystem.IndexActions(se.SlotCtx(), actionUpdate, ledgerSystem.ExtraInfo{
 							BlockHeight: block.BlockNumber,
 							ActionId:    tx.TransactionID,
 						})
@@ -417,7 +429,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						BlockId:  blockInfo.BlockId,
 						Metadata: rawJson,
 					}
-					se.witnessDb.SetWitnessUpdate(inputData)
+					se.witnessDb.SetWitnessUpdate(se.SlotCtx(), inputData)
 				}
 			}
 			continue
@@ -515,7 +527,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						txResult := parsedTx.ExecuteTx(se)
 
 						if txResult.Success {
-							se.LedgerSystem.Deposit(ledgerSystem.Deposit{
+							se.LedgerSystem.Deposit(se.SlotCtx(), ledgerSystem.Deposit{
 								Id:          MakeTxId(tx.TransactionID, 1),
 								Asset:       "hbd",
 								Amount:      feeAmt,
@@ -527,7 +539,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								OpIdx:       int64(1),
 							})
 						} else {
-							se.LedgerSystem.Deposit(ledgerSystem.Deposit{
+							se.LedgerSystem.Deposit(se.SlotCtx(), ledgerSystem.Deposit{
 								Id:          MakeTxId(tx.TransactionID, 1),
 								Asset:       "hbd",
 								Amount:      feeAmt,
@@ -564,7 +576,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 						if hasFee {
 							if txResult.Success && txResult.CodeUpdated {
-								se.LedgerSystem.Deposit(ledgerSystem.Deposit{
+								se.LedgerSystem.Deposit(se.SlotCtx(), ledgerSystem.Deposit{
 									Id:          MakeTxId(tx.TransactionID, 1),
 									Asset:       "hbd",
 									Amount:      feeAmt,
@@ -576,7 +588,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 									OpIdx:       int64(1),
 								})
 							} else {
-								se.LedgerSystem.Deposit(ledgerSystem.Deposit{
+								se.LedgerSystem.Deposit(se.SlotCtx(), ledgerSystem.Deposit{
 									Id:          MakeTxId(tx.TransactionID, 1),
 									Asset:       "hbd",
 									Amount:      feeAmt,
@@ -659,7 +671,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						BIdx:  int64(tx.Index),
 						OpIdx: int64(opIndex),
 					}
-					depositedTo := se.LedgerSystem.Deposit(leDeposit)
+					depositedTo := se.LedgerSystem.Deposit(se.SlotCtx(), leDeposit)
 
 					// create deposit payload for indexing
 					depositPayload := make(map[string]interface{})
@@ -797,7 +809,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					if err == nil {
 						for _, sigPack := range signedData.Packet {
 							if keyCache[sigPack.KeyId] == nil {
-								tssKey, err := se.tssKeys.FindKey(sigPack.KeyId)
+								tssKey, err := se.tssKeys.FindKey(se.SlotCtx(), sigPack.KeyId)
 								if err != nil {
 									log.Warn("failed to find key", "keyId", sigPack.KeyId, "err", err)
 									continue
@@ -827,7 +839,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 										verified := signature.Verify(msgBytes, pubKey)
 
 										if verified {
-											se.tssRequests.UpdateRequest(tss_db.TssRequest{
+											se.tssRequests.UpdateRequest(se.SlotCtx(), tss_db.TssRequest{
 												KeyId:  sigPack.KeyId,
 												Msg:    sigPack.Msg,
 												Sig:    sigPack.Sig,
@@ -841,7 +853,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 										edVerify := ed25519.Verify(pk, msgBytes, sigBytes)
 
 										if edVerify {
-											se.tssRequests.UpdateRequest(tss_db.TssRequest{
+											se.tssRequests.UpdateRequest(se.SlotCtx(), tss_db.TssRequest{
 												KeyId:  sigPack.KeyId,
 												Msg:    sigPack.Msg,
 												Sig:    sigPack.Sig,
@@ -933,7 +945,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						}
 
 						tssLog.Verbose("writing commitment to DB", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "txId", tx.TransactionID)
-						se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
+						se.tssCommitments.SetCommitmentData(se.SlotCtx(), tss_db.TssCommitment{
 							Type:        commitment.Type,
 							BlockHeight: commitment.BlockHeight,
 							Epoch:       commitment.Epoch,
@@ -944,13 +956,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						})
 
 						var newKey bool
-						savedKeyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
+						savedKeyInfo, _ := se.tssKeys.FindKey(se.SlotCtx(), commitment.KeyId)
 						if savedKeyInfo.Status == "created" {
 							newKey = true
 						}
 
 						if commitment.Type == "keygen" || commitment.Type == "reshare" {
-							keyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
+							keyInfo, _ := se.tssKeys.FindKey(se.SlotCtx(), commitment.KeyId)
 							if newKey && commitment.PublicKey != nil {
 								keyInfo.PublicKey = *commitment.PublicKey
 								keyInfo.CreatedHeight = int64(block.BlockNumber)
@@ -960,13 +972,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 									keyInfo.ExpiryEpoch = commitment.Epoch + keyInfo.Epochs
 								}
 								tssLog.Info("key activated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch, "blockHeight", block.BlockNumber, "pubKey", keyInfo.PublicKey)
-								se.tssKeys.SetKey(keyInfo)
+								se.tssKeys.SetKey(se.SlotCtx(), keyInfo)
 							} else if newKey {
 								tssLog.Verbose("keygen/reshare acknowledged (no pubKey)", "keyId", commitment.KeyId, "epoch", commitment.Epoch)
 							} else {
 								keyInfo.Epoch = commitment.Epoch
 								tssLog.Info("key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch)
-								se.tssKeys.SetKey(keyInfo)
+								se.tssKeys.SetKey(se.SlotCtx(), keyInfo)
 							}
 						}
 					}
@@ -1017,7 +1029,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			}
 
 			blkIdx := int64(self.Index)
-			se.txDb.Ingest(transactions.IngestTransactionUpdate{
+			se.txDb.Ingest(se.SlotCtx(), transactions.IngestTransactionUpdate{
 				Id:                   self.TxId,
 				RequiredAuths:        self.RequiredAuths,
 				RequiredPostingAuths: self.RequiredPostingAuths,
@@ -1048,11 +1060,29 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 		se.RcMap = make(map[string]int64)
 
+		priorSlotHeight := se.slotStatus.SlotHeight
 		se.slotStatus = &SlotStatus{
 			SlotHeight: slotInfo.StartHeight,
 			Done:       false,
 		}
 		se.ExecuteBatch()
+
+		// Commit the prior slot's transaction (writes from UpdateBalances,
+		// UpdateRcMap, ExecuteBatch and all in-block writes for blocks
+		// priorSlotHeight..priorSlotHeight+9 land atomically here). On commit
+		// failure the transaction aborts, the checkpoint stays at the slot
+		// before priorSlotHeight, and the state will be replayed on restart
+		// from saved Hive blocks.
+		if err := se.commitSlot(); err != nil {
+			log.Warn("commitSlot failed", "slotHeight", priorSlotHeight, "err", err)
+			return
+		}
+		// Open the new slot's transaction. Block-by-block writes for the
+		// upcoming slot will land in this transaction.
+		if err := se.beginSlot(slotInfo.StartHeight); err != nil {
+			log.Warn("beginSlot failed", "slotHeight", slotInfo.StartHeight, "err", err)
+			return
+		}
 	}
 
 	//Executes user action when the slot has been completed
@@ -1186,7 +1216,7 @@ func (se *StateEngine) ExecuteBatch() {
 				if ok {
 					contractId = contractCall.ContractId
 					if lastTmpOut, exist := se.TempOutputs[contractId]; !exist {
-						contractOutput, err := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
+						contractOutput, err := se.contractState.GetLastOutput(se.SlotCtx(), contractCall.ContractId, lastBlockBh)
 						if err == nil {
 							lastContractMeta = contractOutput.Metadata
 							lastStateCid = contractOutput.StateMerkle
@@ -1321,7 +1351,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	}
 
 	election, _ := se.electionDb.GetElectionByHeight(endBlock)
-	records, _ := se.LedgerState.ActionDb.GetPendingActionsByEpoch(election.Epoch, "consensus_unstake")
+	records, _ := se.LedgerState.ActionDb.GetPendingActionsByEpoch(se.SlotCtx(), election.Epoch, "consensus_unstake")
 
 	completeIds := make([]string, 0)
 	ledgerRecords := make([]ledgerDb.LedgerRecord, 0)
@@ -1337,13 +1367,13 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			Type:        "consensus_unstake",
 		})
 	}
-	se.LedgerState.LedgerDb.StoreLedger(ledgerRecords...)
-	se.LedgerState.ActionDb.ExecuteComplete(nil, completeIds...)
+	se.LedgerState.LedgerDb.StoreLedger(se.SlotCtx(), ledgerRecords...)
+	se.LedgerState.ActionDb.ExecuteComplete(se.SlotCtx(), nil, completeIds...)
 	// se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)
 	// se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(nil, completeIds...)
 
 	//log.Debug("stBlock, endBlock", stBlock, endBlock)
-	distinctAccounts, _ := se.LedgerState.LedgerDb.GetDistinctAccountsRange(stBlock, endBlock)
+	distinctAccounts, _ := se.LedgerState.LedgerDb.GetDistinctAccountsRange(se.SlotCtx(), stBlock, endBlock)
 
 	//Ensure system:fr_balance is always processed so its hbd_claim stays current.
 	//Its interest goes to hive:vsc.dao, so it never appears in distinctAccounts via
@@ -1356,7 +1386,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		}
 	}
 	if !hasFr {
-		frBal, _ := se.LedgerState.BalanceDb.GetBalanceRecord(params.FR_VIRTUAL_ACCOUNT, endBlock)
+		frBal, _ := se.LedgerState.BalanceDb.GetBalanceRecord(se.SlotCtx(), params.FR_VIRTUAL_ACCOUNT, endBlock)
 		if frBal != nil {
 			distinctAccounts = append(distinctAccounts, params.FR_VIRTUAL_ACCOUNT)
 		}
@@ -1367,7 +1397,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	//Cleanup!
 	for _, k := range distinctAccounts {
 		ledgerBalances := map[string]int64{}
-		prevBalRecord, _ := se.LedgerState.BalanceDb.GetBalanceRecord(k, endBlock)
+		prevBalRecord, _ := se.LedgerState.BalanceDb.GetBalanceRecord(se.SlotCtx(), k, endBlock)
 		var balanceR ledgerDb.BalanceRecord
 		var stHeight uint64
 		if prevBalRecord != nil {
@@ -1390,12 +1420,12 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		//As of block X or below
 		// se.LedgerExecutor.Ls.log.Debug("GetBalance for account", stBlock, stHeight, endBlock)
 
-		ledgerUpdates, _ := se.LedgerState.LedgerDb.GetLedgerRange(k, stHeight, endBlock, "")
+		ledgerUpdates, _ := se.LedgerState.LedgerDb.GetLedgerRange(se.SlotCtx(), k, stHeight, endBlock, "")
 
 		hasLedgerUpdates := len(*ledgerUpdates) > 0
 
 		//Previous claim record
-		claimRecord := se.claimDb.GetLastClaim(endBlock)
+		claimRecord := se.claimDb.GetLastClaim(se.SlotCtx(), endBlock)
 
 		var hbdAvg = int64(0)
 		var modifyHeight = uint64(0)
@@ -1450,7 +1480,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		newRecord.HBD_CLAIM_HEIGHT = claimHeight
 
-		se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord)
+		se.LedgerState.BalanceDb.UpdateBalanceRecord(se.SlotCtx(), newRecord)
 
 		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(
 			se.LedgerState.VirtualLedger[k],
@@ -1462,9 +1492,10 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 }
 
 func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
+	ctx := se.SlotCtx()
 	for k, v := range se.RcMap {
 		//Get the last rc record
-		rcRecord, _ := se.rcDb.GetRecord(k, blockHeight-1)
+		rcRecord, _ := se.rcDb.GetRecord(ctx, k, blockHeight-1)
 
 		var rcBal int64
 		if rcRecord.BlockHeight == 0 {
@@ -1488,7 +1519,7 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 			rcBal = 0
 		}
 
-		se.rcDb.SetRecord(k, blockHeight, rcBal)
+		se.rcDb.SetRecord(ctx, k, blockHeight, rcBal)
 	}
 }
 
@@ -1545,7 +1576,7 @@ func (se *StateEngine) DataLayer() common_types.DataLayer {
 }
 
 func (se *StateEngine) GetContractInfo(id string, height uint64) (contracts.Contract, bool) {
-	contractInfo, err := se.contractDb.ContractById(id, height)
+	contractInfo, err := se.contractDb.ContractById(se.SlotCtx(), id, height)
 
 	if err == mongo.ErrNoDocuments {
 		return contracts.Contract{}, false
@@ -1577,7 +1608,7 @@ func (se *StateEngine) Init() error {
 	// One-time migration: deprecate any active keys that pre-date the expiry system.
 	// These keys have no ExpiryEpoch and would otherwise reshare forever.
 	// deprecated_height=0 means no retirement clock — they stay deprecated until renewed.
-	if err := se.tssKeys.DeprecateLegacyKeys(); err != nil {
+	if err := se.tssKeys.DeprecateLegacyKeys(context.Background()); err != nil {
 		tssLog.Warn("DeprecateLegacyKeys failed during init", "err", err)
 	}
 	return nil
@@ -1671,4 +1702,20 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		LedgerSystem: ls,
 		LedgerState:  ledgerState,
 	}
+}
+
+// WithTxStarter wires a Mongo client (or compatible session-starter) into the
+// state engine so slot processing runs under multi-document transactions.
+// Without it, slot processing falls back to per-operation auto-commit and
+// crash recovery is best-effort. Returns the engine for chaining.
+func (se *StateEngine) WithTxStarter(t TxStarter) *StateEngine {
+	se.txStarter = t
+	return se
+}
+
+// WithCheckpointDb wires the state_checkpoint collection used to record the
+// last fully-committed slot. Returns the engine for chaining.
+func (se *StateEngine) WithCheckpointDb(c CheckpointDb) *StateEngine {
+	se.checkpointDb = c
+	return se
 }

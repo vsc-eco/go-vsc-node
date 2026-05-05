@@ -1,6 +1,7 @@
 package transactionpool
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -128,7 +129,7 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	}
 
 	hashAuths := HashKeyAuths(txShell.Headers.RequiredAuths)
-	nonceRecord, err := tp.nonceDb.GetNonce(hashAuths)
+	nonceRecord, err := tp.nonceDb.GetNonce(context.Background(), hashAuths)
 
 	if err != mongo.ErrNoDocuments && err != nil {
 		return nil, fmt.Errorf("failed to get nonce: %w", err)
@@ -148,7 +149,7 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	// exist as UNCONFIRMED in the transaction pool.  This prevents gaps in the
 	// nonce sequence.
 	if txShell.Headers.Nonce > nonce {
-		prevExists, err := tp.TxDb.HasUnconfirmedWithNonce(txShell.Headers.RequiredAuths, txShell.Headers.Nonce-1)
+		prevExists, err := tp.TxDb.HasUnconfirmedWithNonce(context.Background(), txShell.Headers.RequiredAuths, txShell.Headers.Nonce-1)
 		if err != nil {
 			return nil, fmt.Errorf("failed to check previous nonce: %w", err)
 		}
@@ -360,7 +361,7 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 
 	if verified {
 		hashAuths := HashKeyAuths(txShell.Headers.RequiredAuths)
-		nonceRecord, nonceErr := tp.nonceDb.GetNonce(hashAuths)
+		nonceRecord, nonceErr := tp.nonceDb.GetNonce(context.Background(), hashAuths)
 		if nonceErr != nil && nonceErr != mongo.ErrNoDocuments {
 			return
 		}
@@ -371,7 +372,7 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 		}
 
 		if txShell.Headers.Nonce > confirmedNonce {
-			prevExists, err := tp.TxDb.HasUnconfirmedWithNonce(txShell.Headers.RequiredAuths, txShell.Headers.Nonce-1)
+			prevExists, err := tp.TxDb.HasUnconfirmedWithNonce(context.Background(), txShell.Headers.RequiredAuths, txShell.Headers.Nonce-1)
 			if err != nil || !prevExists {
 				return
 			}
@@ -410,7 +411,7 @@ func (tp *TransactionPool) indexTx(txId string, txShell VSCTransactionShell) err
 		opTypes = append(opTypes, opType)
 	}
 
-	return tp.TxDb.Ingest(transactions.IngestTransactionUpdate{
+	return tp.TxDb.Ingest(context.Background(), transactions.IngestTransactionUpdate{
 		Id:            txId,
 		Status:        "UNCONFIRMED",
 		RequiredAuths: txShell.Headers.RequiredAuths,

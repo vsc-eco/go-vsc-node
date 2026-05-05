@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -93,7 +94,7 @@ func main() {
 	hiveRpcClient.ChainID = sysConfig.HiveChainId()
 
 	head, _ := hiveBlocks.GetHighestBlock()
-	wits, _ := witnessDb.GetWitnessesAtBlockHeight(head)
+	wits, _ := witnessDb.GetWitnessesAtBlockHeight(context.Background(), head)
 	members := []elections.ElectionMember{}
 	weights := []uint64{}
 

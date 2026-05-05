@@ -171,7 +171,7 @@ func (e2e *E2ERunner) BroadcastElection() Step {
 			witnessList := []witnesses.Witness{}
 			//TODO detect current height
 			for _, wStr := range witnessListS {
-				w, err := e2e.Witnesses.GetWitnessAtHeight(wStr, nil)
+				w, err := e2e.Witnesses.GetWitnessAtHeight(context.Background(), wStr, nil)
 				if err != nil {
 					continue
 				}

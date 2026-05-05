@@ -568,7 +568,7 @@ func (ctx *contractExecutionContext) ContractCall(
 
 func (ctx *contractExecutionContext) TssCreateKey(keyId string, keyType string, epochs uint64) result.Result[string] {
 	fullKey := ctx.env.ContractId + "-" + keyId
-	_, err := ctx.callSession.TssKeys.FindKey(fullKey)
+	_, err := ctx.callSession.TssKeys.FindKey(context.Background(), fullKey)
 
 	if err == mongo.ErrNoDocuments {
 		ctx.callSession.AppendTssLog(ctx.env.ContractId, tss_db.TssOp{
@@ -587,7 +587,7 @@ func (ctx *contractExecutionContext) TssCreateKey(keyId string, keyType string, 
 
 func (ctx *contractExecutionContext) TssRenewKey(keyId string, additionalEpochs uint64) result.Result[string] {
 	fullKey := ctx.env.ContractId + "-" + keyId
-	key, err := ctx.callSession.TssKeys.FindKey(fullKey)
+	key, err := ctx.callSession.TssKeys.FindKey(context.Background(), fullKey)
 
 	if err == mongo.ErrNoDocuments {
 		return result.Err[string](errors.New("key not found"))
@@ -616,7 +616,7 @@ func (ctx *contractExecutionContext) TssRenewKey(keyId string, additionalEpochs 
 func (ctx *contractExecutionContext) TssGetKey(keyId string) result.Result[string] {
 	fullKey := ctx.env.ContractId + "-" + keyId
 
-	tssKey, err := ctx.callSession.TssKeys.FindKey(fullKey)
+	tssKey, err := ctx.callSession.TssKeys.FindKey(context.Background(), fullKey)
 
 	var status string
 	if err == mongo.ErrNoDocuments {
@@ -637,7 +637,7 @@ func (ctx *contractExecutionContext) TssGetKey(keyId string) result.Result[strin
 func (ctx *contractExecutionContext) TssKeySign(keyId string, msg string) result.Result[string] {
 	fullKey := ctx.env.ContractId + "-" + keyId
 
-	keyInfo, err := ctx.callSession.TssKeys.FindKey(fullKey)
+	keyInfo, err := ctx.callSession.TssKeys.FindKey(context.Background(), fullKey)
 
 	if err == mongo.ErrNoDocuments {
 		tssLog.Verbose("key sign rejected: key not found", "keyId", fullKey)

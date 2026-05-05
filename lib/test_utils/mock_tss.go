@@ -1,6 +1,7 @@
 package test_utils
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"vsc-node/modules/aggregate"
@@ -13,7 +14,7 @@ type MockTssKeysDb struct {
 	Keys map[string]tss.TssKey
 }
 
-func (m *MockTssKeysDb) InsertKey(id string, t tss.TssKeyAlgo, epochs uint64) error {
+func (m *MockTssKeysDb) InsertKey(_ context.Context, id string, t tss.TssKeyAlgo, epochs uint64) error {
 	if _, exists := m.Keys[id]; exists {
 		return fmt.Errorf("key already exists")
 	}
@@ -25,7 +26,7 @@ func (m *MockTssKeysDb) InsertKey(id string, t tss.TssKeyAlgo, epochs uint64) er
 	return nil
 }
 
-func (m *MockTssKeysDb) FindKey(id string) (tss.TssKey, error) {
+func (m *MockTssKeysDb) FindKey(_ context.Context, id string) (tss.TssKey, error) {
 	key, exists := m.Keys[id]
 	if !exists {
 		return tss.TssKey{}, fmt.Errorf("key not found: %s", id)
@@ -33,12 +34,12 @@ func (m *MockTssKeysDb) FindKey(id string) (tss.TssKey, error) {
 	return key, nil
 }
 
-func (m *MockTssKeysDb) SetKey(key tss.TssKey) error {
+func (m *MockTssKeysDb) SetKey(_ context.Context, key tss.TssKey) error {
 	m.Keys[key.Id] = key
 	return nil
 }
 
-func (m *MockTssKeysDb) FindNewKeys(blockHeight uint64) ([]tss.TssKey, error) {
+func (m *MockTssKeysDb) FindNewKeys(_ context.Context, blockHeight uint64) ([]tss.TssKey, error) {
 	var results []tss.TssKey
 	for _, key := range m.Keys {
 		if uint64(key.CreatedHeight) == blockHeight {
@@ -48,7 +49,7 @@ func (m *MockTssKeysDb) FindNewKeys(blockHeight uint64) ([]tss.TssKey, error) {
 	return results, nil
 }
 
-func (m *MockTssKeysDb) FindEpochKeys(epoch uint64) ([]tss.TssKey, error) {
+func (m *MockTssKeysDb) FindEpochKeys(_ context.Context, epoch uint64) ([]tss.TssKey, error) {
 	var results []tss.TssKey
 	for _, key := range m.Keys {
 		if key.Epoch == epoch {
@@ -58,7 +59,7 @@ func (m *MockTssKeysDb) FindEpochKeys(epoch uint64) ([]tss.TssKey, error) {
 	return results, nil
 }
 
-func (m *MockTssKeysDb) FindDeprecatingKeys(epoch uint64) ([]tss.TssKey, error) {
+func (m *MockTssKeysDb) FindDeprecatingKeys(_ context.Context, epoch uint64) ([]tss.TssKey, error) {
 	var results []tss.TssKey
 	for _, key := range m.Keys {
 		if key.Status == tss.TssKeyActive && key.ExpiryEpoch > 0 && key.ExpiryEpoch <= epoch {
@@ -68,7 +69,7 @@ func (m *MockTssKeysDb) FindDeprecatingKeys(epoch uint64) ([]tss.TssKey, error) 
 	return results, nil
 }
 
-func (m *MockTssKeysDb) FindNewlyRetired(blockHeight uint64) ([]tss.TssKey, error) {
+func (m *MockTssKeysDb) FindNewlyRetired(_ context.Context, blockHeight uint64) ([]tss.TssKey, error) {
 	var results []tss.TssKey
 	for _, key := range m.Keys {
 		if key.Status == tss.TssKeyDeprecated && key.DeprecatedHeight > 0 &&
@@ -79,7 +80,7 @@ func (m *MockTssKeysDb) FindNewlyRetired(blockHeight uint64) ([]tss.TssKey, erro
 	return results, nil
 }
 
-func (m *MockTssKeysDb) DeprecateLegacyKeys() error {
+func (m *MockTssKeysDb) DeprecateLegacyKeys(_ context.Context) error {
 	for id, key := range m.Keys {
 		if key.Status == tss.TssKeyActive && key.ExpiryEpoch == 0 {
 			key.Status = tss.TssKeyDeprecated
@@ -96,13 +97,13 @@ type MockTssCommitmentsDb struct {
 	Commitments map[string]tss.TssCommitment
 }
 
-func (m *MockTssCommitmentsDb) SetCommitmentData(commitment tss.TssCommitment) error {
+func (m *MockTssCommitmentsDb) SetCommitmentData(_ context.Context, commitment tss.TssCommitment) error {
 	key := fmt.Sprintf("%s:%d:%s", commitment.KeyId, commitment.Epoch, commitment.Type)
 	m.Commitments[key] = commitment
 	return nil
 }
 
-func (m *MockTssCommitmentsDb) GetCommitment(keyId string, epoch uint64) (tss.TssCommitment, error) {
+func (m *MockTssCommitmentsDb) GetCommitment(_ context.Context, keyId string, epoch uint64) (tss.TssCommitment, error) {
 	for _, commitment := range m.Commitments {
 		if commitment.KeyId == keyId && commitment.Epoch == epoch {
 			return commitment, nil
@@ -112,6 +113,7 @@ func (m *MockTssCommitmentsDb) GetCommitment(keyId string, epoch uint64) (tss.Ts
 }
 
 func (m *MockTssCommitmentsDb) GetCommitmentByHeight(
+	_ context.Context,
 	keyId string,
 	height uint64,
 	qtype ...string,
@@ -177,7 +179,7 @@ func (m *MockTssCommitmentsDb) filterAndSort(keyIdFilter *string, byTypes []stri
 	return results
 }
 
-func (m *MockTssCommitmentsDb) FindCommitments(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]tss.TssCommitment, error) {
+func (m *MockTssCommitmentsDb) FindCommitments(_ context.Context, keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]tss.TssCommitment, error) {
 	results := m.filterAndSort(keyId, byTypes, epoch, fromBlock, toBlock)
 	if offset > len(results) {
 		return []tss.TssCommitment{}, nil
@@ -189,7 +191,7 @@ func (m *MockTssCommitmentsDb) FindCommitments(keyId *string, byTypes []string, 
 	return results, nil
 }
 
-func (m *MockTssCommitmentsDb) FindCommitmentsSimple(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, limit int) ([]tss.TssCommitment, error) {
+func (m *MockTssCommitmentsDb) FindCommitmentsSimple(_ context.Context, keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, limit int) ([]tss.TssCommitment, error) {
 	results := m.filterAndSort(keyId, byTypes, epoch, fromBlock, toBlock)
 	if limit > 0 && limit < len(results) {
 		results = results[:limit]
@@ -197,7 +199,7 @@ func (m *MockTssCommitmentsDb) FindCommitmentsSimple(keyId *string, byTypes []st
 	return results, nil
 }
 
-func (m *MockTssCommitmentsDb) GetBlames(epoch *uint64) ([]tss.TssCommitment, error) {
+func (m *MockTssCommitmentsDb) GetBlames(_ context.Context, epoch *uint64) ([]tss.TssCommitment, error) {
 	var results []tss.TssCommitment
 	for _, commitment := range m.Commitments {
 		if commitment.Type != "blame" {
@@ -217,12 +219,12 @@ type MockTssRequestsDb struct {
 	Requests map[string]tss.TssRequest
 }
 
-func (m *MockTssRequestsDb) SetSignedRequest(req tss.TssRequest) error {
+func (m *MockTssRequestsDb) SetSignedRequest(_ context.Context, req tss.TssRequest) error {
 	m.Requests[req.Id] = req
 	return nil
 }
 
-func (m *MockTssRequestsDb) FindUnsignedRequests(blockHeight uint64) ([]tss.TssRequest, error) {
+func (m *MockTssRequestsDb) FindUnsignedRequests(_ context.Context, blockHeight uint64) ([]tss.TssRequest, error) {
 	var results []tss.TssRequest
 	for _, req := range m.Requests {
 		if req.Sig == "" && req.Status == tss.SignPending {
@@ -232,7 +234,7 @@ func (m *MockTssRequestsDb) FindUnsignedRequests(blockHeight uint64) ([]tss.TssR
 	return results, nil
 }
 
-func (m *MockTssRequestsDb) FindRequests(keyID string, msgs []string) ([]tss.TssRequest, error) {
+func (m *MockTssRequestsDb) FindRequests(_ context.Context, keyID string, msgs []string) ([]tss.TssRequest, error) {
 	var results []tss.TssRequest
 	if len(msgs) == 0 {
 		return results, nil
@@ -249,7 +251,7 @@ func (m *MockTssRequestsDb) FindRequests(keyID string, msgs []string) ([]tss.Tss
 	return results, nil
 }
 
-func (m *MockTssRequestsDb) UpdateRequest(req tss.TssRequest) error {
+func (m *MockTssRequestsDb) UpdateRequest(_ context.Context, req tss.TssRequest) error {
 	if _, exists := m.Requests[req.Id]; !exists {
 		return fmt.Errorf("request not found: %s", req.Id)
 	}

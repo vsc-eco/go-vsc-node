@@ -94,7 +94,7 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
 			}
 
 			peerIds := []string{peerId.String()}
-			witness, err := tss.mgr.witnessDb.GetWitnessesByPeerId(peerIds)
+			witness, err := tss.mgr.witnessDb.GetWitnessesByPeerId(context.Background(), peerIds)
 			if err != nil || len(witness) == 0 {
 				log.Warn("failed to get witness", "peerId", peerId.String(), "sessionId", req.SessionId, "err", err)
 				return nil
@@ -224,7 +224,7 @@ func (tss *TssRpc) replayBufferedMessages(sessionId string, dispatcher Dispatche
 			}
 
 			peerIds := []string{peerId.String()}
-			witness, err := tss.mgr.witnessDb.GetWitnessesByPeerId(peerIds)
+			witness, err := tss.mgr.witnessDb.GetWitnessesByPeerId(context.Background(), peerIds)
 			if err != nil || len(witness) == 0 {
 				log.Warn(
 					"failed to get witness for buffered message",

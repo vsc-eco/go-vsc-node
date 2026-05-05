@@ -319,7 +319,7 @@ type chainSession struct {
 // getContractBlockHeight reads the last submitted block height from a
 // mapping contract's state via the data layer.
 func (c *ChainOracle) getContractBlockHeight(contractId string) (uint64, error) {
-	output, err := c.contractState.GetLastOutput(contractId, math.MaxInt64)
+	output, err := c.contractState.GetLastOutput(context.Background(), contractId, math.MaxInt64)
 	if err != nil {
 		return 0, fmt.Errorf("failed to query contract output for %s: %w", contractId, err)
 	}
@@ -549,7 +549,7 @@ func (c *ChainOracle) checkForReorg(chain chainRelay, contractId string, height 
 // getStoredBlockHeaderHex reads the raw block header from the contract state
 // at the given height and returns it as a hex string.
 func (c *ChainOracle) getStoredBlockHeaderHex(contractId string, height uint64) (string, error) {
-	output, err := c.contractState.GetLastOutput(contractId, math.MaxInt64)
+	output, err := c.contractState.GetLastOutput(context.Background(), contractId, math.MaxInt64)
 	if err != nil {
 		return "", fmt.Errorf("no contract output found: %w", err)
 	}

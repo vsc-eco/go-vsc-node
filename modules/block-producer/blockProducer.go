@@ -244,7 +244,7 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 	txs := make([]vscBlocks.VscBlockTx, 0)
 	//Get transactions here!
 
-	prefilteredTxs, _ := bp.TxDb.FindUnconfirmedTransactions(slotHeight)
+	prefilteredTxs, _ := bp.TxDb.FindUnconfirmedTransactions(context.Background(), slotHeight)
 
 	vlog.Debug("generateTransactions", "prefilteredCount", len(prefilteredTxs), "slotHeight", slotHeight)
 	txRecords := make([]transactions.TransactionRecord, 0)
@@ -254,7 +254,7 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 	for _, txRecord := range prefilteredTxs {
 		keyId := transactionpool.HashKeyAuths(txRecord.RequiredAuths)
 		if nonceMap[keyId] == 0 {
-			nonceRecord, _ := bp.nonceDb.GetNonce(keyId)
+			nonceRecord, _ := bp.nonceDb.GetNonce(context.Background(), keyId)
 			nonceMap[keyId] = int64(nonceRecord.Nonce)
 		}
 		if txRecord.Nonce >= nonceMap[keyId] && txRecord.RcLimit >= bp.sconf.ConsensusParams().MinRcLimit {
@@ -573,7 +573,7 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 
 	transactions := []vscBlocks.VscBlockTx{}
 	for _, txStr := range txStrs {
-		txRecord := bp.TxDb.GetTransaction(txStr)
+		txRecord := bp.TxDb.GetTransaction(context.Background(), txStr)
 		if txRecord == nil {
 			return "", errors.New("invalid transaction")
 		}
@@ -682,7 +682,7 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 }
 
 func (bp *BlockProducer) canProduce(height uint64) bool {
-	// txRecords, _ := bp.TxDb.FindUnconfirmedTransactions(height)
+	// txRecords, _ := bp.TxDb.FindUnconfirmedTransactions(context.Background(), height)
 	txRecords := bp.generateTransactions(height)
 
 	if len(txRecords) > 0 {

@@ -1,6 +1,7 @@
 package witnesses_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -34,7 +35,7 @@ func TestWitness(t *testing.T) {
 
 	json.Unmarshal([]byte(data), &info)
 
-	assert.NoError(t, witness.SetWitnessUpdate(info))
+	assert.NoError(t, witness.SetWitnessUpdate(context.Background(), info))
 
 	testData := map[string]interface{}{
 		"Hello": []byte("hello world"),

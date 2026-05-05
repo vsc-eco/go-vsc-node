@@ -1,6 +1,7 @@
 package test_utils
 
 import (
+	"context"
 	"vsc-node/modules/aggregate"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 )
@@ -14,7 +15,7 @@ func NewMockRcDb() *MockRcDb {
 	return &MockRcDb{Records: make(map[string][]rcDb.RcRecord)}
 }
 
-func (m *MockRcDb) GetRecord(account string, blockHeight uint64) (rcDb.RcRecord, error) {
+func (m *MockRcDb) GetRecord(_ context.Context, account string, blockHeight uint64) (rcDb.RcRecord, error) {
 	recs := m.Records[account]
 	var best rcDb.RcRecord
 	for _, r := range recs {
@@ -25,7 +26,7 @@ func (m *MockRcDb) GetRecord(account string, blockHeight uint64) (rcDb.RcRecord,
 	return best, nil
 }
 
-func (m *MockRcDb) SetRecord(account string, blockHeight uint64, amount int64) {
+func (m *MockRcDb) SetRecord(_ context.Context, account string, blockHeight uint64, amount int64) {
 	m.Records[account] = append(m.Records[account], rcDb.RcRecord{
 		Account:     account,
 		Amount:      amount,

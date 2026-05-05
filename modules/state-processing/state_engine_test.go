@@ -1,6 +1,7 @@
 package state_engine_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -220,7 +221,7 @@ func TestDepositIndexedInTxDb(t *testing.T) {
 	conf := te.Creator.Transfer("alice", "vsc.gateway", "10", "HBD", "my memo")
 	te.processAndWait()
 
-	rec := te.TxDb.GetTransaction(conf.Id)
+	rec := te.TxDb.GetTransaction(context.Background(), conf.Id)
 	if assert.NotNil(t, rec) {
 		assert.Equal(t, transactions.TransactionStatus("CONFIRMED"), rec.Status)
 		assert.Contains(t, rec.OpTypes, "deposit")
@@ -738,7 +739,7 @@ func TestUserTxIndexedAsIncluded(t *testing.T) {
 	})
 	te.processAndWait()
 
-	rec := te.TxDb.GetTransaction(conf.Id)
+	rec := te.TxDb.GetTransaction(context.Background(), conf.Id)
 	assert.NotNil(t, rec)
 	assert.Equal(t, transactions.TransactionStatus("INCLUDED"), rec.Status)
 	assert.Contains(t, rec.OpTypes, "transfer")
@@ -979,14 +980,14 @@ func TestUpdateBalances_ClaimResetsAvgAndSetsClaimHeight(t *testing.T) {
 	}}
 
 	// Insert a claim record at block 200
-	te.InterestClaims.SaveClaim(ledgerDb.ClaimRecord{
+	te.InterestClaims.SaveClaim(context.Background(), ledgerDb.ClaimRecord{
 		BlockHeight: 200,
 		Amount:      100,
 		ReceivedN:   1,
 	})
 
 	// Insert a ledger record so the account appears in distinctAccounts
-	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+	te.LedgerDb.StoreLedger(context.Background(), ledgerDb.LedgerRecord{
 		Id:          "interest_alice",
 		To:          "hive:alice",
 		Amount:      100,
@@ -1025,14 +1026,14 @@ func TestUpdateBalances_NonClaimPreservesClaimHeight(t *testing.T) {
 	}}
 
 	// A claim exists at block 100 (matching the balance record)
-	te.InterestClaims.SaveClaim(ledgerDb.ClaimRecord{
+	te.InterestClaims.SaveClaim(context.Background(), ledgerDb.ClaimRecord{
 		BlockHeight: 100,
 		Amount:      50,
 		ReceivedN:   1,
 	})
 
 	// A deposit at block 150 triggers the balance update
-	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+	te.LedgerDb.StoreLedger(context.Background(), ledgerDb.LedgerRecord{
 		Id:          "deposit_alice",
 		To:          "hive:alice",
 		Amount:      500,
@@ -1076,14 +1077,14 @@ func TestUpdateBalances_RepeatedNonClaimUpdatesAccumulateAvg(t *testing.T) {
 		HBD_MODIFY_HEIGHT: 100,
 	}}
 
-	te.InterestClaims.SaveClaim(ledgerDb.ClaimRecord{
+	te.InterestClaims.SaveClaim(context.Background(), ledgerDb.ClaimRecord{
 		BlockHeight: 100,
 		Amount:      10,
 		ReceivedN:   1,
 	})
 
 	// First deposit at block 200
-	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+	te.LedgerDb.StoreLedger(context.Background(), ledgerDb.LedgerRecord{
 		Id: "dep1", To: "hive:alice", Amount: 500,
 		Asset: "hbd", Type: "deposit", BlockHeight: 200,
 	})
@@ -1098,7 +1099,7 @@ func TestUpdateBalances_RepeatedNonClaimUpdatesAccumulateAvg(t *testing.T) {
 	assert.Equal(t, int64(1000), mid.HBD_SAVINGS, "savings unchanged by HBD deposit")
 
 	// Second deposit at block 300
-	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+	te.LedgerDb.StoreLedger(context.Background(), ledgerDb.LedgerRecord{
 		Id: "dep2", To: "hive:alice", Amount: 300,
 		Asset: "hbd", Type: "deposit", BlockHeight: 300,
 	})
@@ -1129,7 +1130,7 @@ func TestUpdateBalances_FrBalanceGetsClaimUpdate(t *testing.T) {
 	}}
 
 	// A claim exists at block 200
-	te.InterestClaims.SaveClaim(ledgerDb.ClaimRecord{
+	te.InterestClaims.SaveClaim(context.Background(), ledgerDb.ClaimRecord{
 		BlockHeight: 200,
 		Amount:      500,
 		ReceivedN:   10,
@@ -1143,7 +1144,7 @@ func TestUpdateBalances_FrBalanceGetsClaimUpdate(t *testing.T) {
 		HBD_CLAIM_HEIGHT:  200,
 		HBD_MODIFY_HEIGHT: 100,
 	}}
-	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+	te.LedgerDb.StoreLedger(context.Background(), ledgerDb.LedgerRecord{
 		Id: "dep_alice", To: "hive:alice", Amount: 100,
 		Asset: "hbd", Type: "deposit", BlockHeight: 210,
 	})
@@ -1169,7 +1170,7 @@ func TestUpdateBalances_TwabCorrectAfterClaimThenDeposit(t *testing.T) {
 	te := newTestEnv()
 
 	// Claim at block 100
-	te.InterestClaims.SaveClaim(ledgerDb.ClaimRecord{
+	te.InterestClaims.SaveClaim(context.Background(), ledgerDb.ClaimRecord{
 		BlockHeight: 100, Amount: 50, ReceivedN: 1,
 	})
 
@@ -1184,7 +1185,7 @@ func TestUpdateBalances_TwabCorrectAfterClaimThenDeposit(t *testing.T) {
 	}}
 
 	// Deposit at block 200 (non-claim activity)
-	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+	te.LedgerDb.StoreLedger(context.Background(), ledgerDb.LedgerRecord{
 		Id: "dep1", To: "hive:alice", Amount: 1000,
 		Asset: "hbd", Type: "deposit", BlockHeight: 200,
 	})
@@ -1200,10 +1201,10 @@ func TestUpdateBalances_TwabCorrectAfterClaimThenDeposit(t *testing.T) {
 	assert.Equal(t, uint64(200), afterDeposit.HBD_MODIFY_HEIGHT)
 
 	// Now add second claim at block 300
-	te.InterestClaims.SaveClaim(ledgerDb.ClaimRecord{
+	te.InterestClaims.SaveClaim(context.Background(), ledgerDb.ClaimRecord{
 		BlockHeight: 300, Amount: 100, ReceivedN: 1,
 	})
-	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+	te.LedgerDb.StoreLedger(context.Background(), ledgerDb.LedgerRecord{
 		Id: "int1", To: "hive:alice", Amount: 100,
 		Asset: "hbd_savings", Type: "interest", BlockHeight: 310,
 	})

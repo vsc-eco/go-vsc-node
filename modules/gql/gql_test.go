@@ -15,8 +15,8 @@ import (
 
 func TestTssKeyLifecycleResolver(t *testing.T) {
 	keys := &test_utils.MockTssKeysDb{Keys: map[string]tss_db.TssKey{}}
-	require.NoError(t, keys.InsertKey("key-1", tss_db.EcdsaType, 12))
-	require.NoError(t, keys.SetKey(tss_db.TssKey{
+	require.NoError(t, keys.InsertKey(context.Background(), "key-1", tss_db.EcdsaType, 12))
+	require.NoError(t, keys.SetKey(context.Background(), tss_db.TssKey{
 		Id:               "key-1",
 		Status:           tss_db.TssKeyDeprecated,
 		PublicKey:        "02deadbeef",

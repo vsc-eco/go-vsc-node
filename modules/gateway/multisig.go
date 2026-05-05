@@ -266,7 +266,7 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	weightMap := make(map[string]uint64)
 	gatewayKeys := make([][2]interface{}, 0)
 	for idx, member := range electionResult.Members {
-		witnessData, _ := ms.witnessDb.GetWitnessAtHeight(member.Account, &bh)
+		witnessData, _ := ms.witnessDb.GetWitnessAtHeight(context.Background(), member.Account, &bh)
 		if witnessData == nil {
 			log.Verbose("no witness data", "account", member.Account, "bh", bh)
 			continue
@@ -368,7 +368,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 	actionFilter := []string{
 		"withdraw", "stake", "unstake",
 	}
-	actions, err := ms.ledgerActions.GetPendingActions(bh, actionFilter...)
+	actions, err := ms.ledgerActions.GetPendingActions(context.Background(), bh, actionFilter...)
 
 	// fmt.Println("Tick actions", actions, err)
 	if err != nil {
@@ -522,7 +522,7 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 	//system:sync_balance is the tag that is used to track the system balance
 	//Note: when interest is claimed it goes to a separate account
 	//This account is considered a "virtual" account.
-	balRecord, _ := ms.balanceDb.GetBalanceRecord("system:fr_balance", bh)
+	balRecord, _ := ms.balanceDb.GetBalanceRecord(context.Background(), "system:fr_balance", bh)
 
 	if balRecord != nil {
 		if balRecord.BlockHeight > bh-SYNC_INTERVAL {
@@ -537,7 +537,7 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 
 	totalHbd := int64(0)
 	balList := make(map[string]int64, 0)
-	balRecords := ms.balanceDb.GetAll(bh)
+	balRecords := ms.balanceDb.GetAll(context.Background(), bh)
 	topBalances := make([]int64, 0)
 	for _, record := range balRecords {
 		//Don't include any system balances

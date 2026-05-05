@@ -1,17 +1,18 @@
 package witnesses
 
 import (
+	"context"
 	a "vsc-node/modules/aggregate"
 )
 
 type Witnesses interface {
 	a.Plugin
-	StoreNodeAnnouncement(nodeId string) error
-	SetWitnessUpdate(accountInfo SetWitnessUpdateType) error
-	GetLastestWitnesses(options ...SearchOption) ([]Witness, error)
-	GetWitnessesAtBlockHeight(bh uint64, options ...SearchOption) ([]Witness, error)
-	GetWitnessesByPeerId(peerIds []string, options ...SearchOption) ([]Witness, error)
-	GetWitnessAtHeight(account string, bh *uint64) (*Witness, error)
+	StoreNodeAnnouncement(ctx context.Context, nodeId string) error
+	SetWitnessUpdate(ctx context.Context, accountInfo SetWitnessUpdateType) error
+	GetLastestWitnesses(ctx context.Context, options ...SearchOption) ([]Witness, error)
+	GetWitnessesAtBlockHeight(ctx context.Context, bh uint64, options ...SearchOption) ([]Witness, error)
+	GetWitnessesByPeerId(ctx context.Context, peerIds []string, options ...SearchOption) ([]Witness, error)
+	GetWitnessAtHeight(ctx context.Context, account string, bh *uint64) (*Witness, error)
 }
 
 type SearchConfig struct {

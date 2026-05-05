@@ -1,6 +1,7 @@
 package test_utils
 
 import (
+	"context"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db/vsc/transactions"
 )
@@ -10,7 +11,7 @@ type MockTxDb struct {
 	Records map[string]transactions.TransactionRecord
 }
 
-func (m *MockTxDb) Ingest(offTx transactions.IngestTransactionUpdate) error {
+func (m *MockTxDb) Ingest(_ context.Context, offTx transactions.IngestTransactionUpdate) error {
 	m.Records[offTx.Id] = transactions.TransactionRecord{
 		Id:                   offTx.Id,
 		Status:               transactions.TransactionStatus(offTx.Status),
@@ -26,7 +27,7 @@ func (m *MockTxDb) Ingest(offTx transactions.IngestTransactionUpdate) error {
 	return nil
 }
 
-func (m *MockTxDb) SetOutput(sOut transactions.SetResultUpdate) {
+func (m *MockTxDb) SetOutput(_ context.Context, sOut transactions.SetResultUpdate) {
 	rec, exists := m.Records[sOut.Id]
 	if !exists {
 		return
@@ -40,7 +41,7 @@ func (m *MockTxDb) SetOutput(sOut transactions.SetResultUpdate) {
 	m.Records[sOut.Id] = rec
 }
 
-func (m *MockTxDb) GetTransaction(id string) *transactions.TransactionRecord {
+func (m *MockTxDb) GetTransaction(_ context.Context, id string) *transactions.TransactionRecord {
 	rec, exists := m.Records[id]
 	if !exists {
 		return nil
@@ -48,11 +49,11 @@ func (m *MockTxDb) GetTransaction(id string) *transactions.TransactionRecord {
 	return &rec
 }
 
-func (m *MockTxDb) FindTransactions(ids []string, id *string, account *string, contract *string, status *transactions.TransactionStatus, byType []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]transactions.TransactionRecord, error) {
+func (m *MockTxDb) FindTransactions(_ context.Context, ids []string, id *string, account *string, contract *string, status *transactions.TransactionStatus, byType []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]transactions.TransactionRecord, error) {
 	return make([]transactions.TransactionRecord, 0), nil
 }
 
-func (m *MockTxDb) InvalidateCompetingTransactions(requiredAuths []string, nonces []uint64) (int64, error) {
+func (m *MockTxDb) InvalidateCompetingTransactions(_ context.Context, requiredAuths []string, nonces []uint64) (int64, error) {
 	nonceSet := make(map[uint64]bool, len(nonces))
 	for _, n := range nonces {
 		nonceSet[n] = true
@@ -88,7 +89,7 @@ func (m *MockTxDb) InvalidateCompetingTransactions(requiredAuths []string, nonce
 	return count, nil
 }
 
-func (m *MockTxDb) HasUnconfirmedWithNonce(requiredAuths []string, nonce uint64) (bool, error) {
+func (m *MockTxDb) HasUnconfirmedWithNonce(_ context.Context, requiredAuths []string, nonce uint64) (bool, error) {
 	authSet := make(map[string]bool, len(requiredAuths))
 	for _, a := range requiredAuths {
 		authSet[a] = true
@@ -118,7 +119,7 @@ func (m *MockTxDb) HasUnconfirmedWithNonce(requiredAuths []string, nonce uint64)
 	return false, nil
 }
 
-func (m *MockTxDb) FindUnconfirmedTransactions(height uint64) ([]transactions.TransactionRecord, error) {
+func (m *MockTxDb) FindUnconfirmedTransactions(_ context.Context, height uint64) ([]transactions.TransactionRecord, error) {
 	var results []transactions.TransactionRecord
 	for _, rec := range m.Records {
 		if rec.Status == transactions.TransactionStatusUnconfirmed {

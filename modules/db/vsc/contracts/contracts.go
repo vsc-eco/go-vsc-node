@@ -49,7 +49,7 @@ func (e *contracts) Init() error {
 }
 
 // ContractById implements Contracts.
-func (c *contracts) ContractById(contractId string, height uint64) (Contract, error) {
+func (c *contracts) ContractById(ctx context.Context, contractId string, height uint64) (Contract, error) {
 	res := Contract{}
 	filter := bson.M{
 		"id": contractId,
@@ -58,7 +58,7 @@ func (c *contracts) ContractById(contractId string, height uint64) (Contract, er
 		},
 	}
 	opts := options.FindOne().SetSort(bson.M{"creation_height": -1})
-	qRes := c.FindOne(context.TODO(), filter, opts)
+	qRes := c.FindOne(ctx, filter, opts)
 	if err := qRes.Err(); err != nil {
 		return res, err
 	}
@@ -67,7 +67,7 @@ func (c *contracts) ContractById(contractId string, height uint64) (Contract, er
 	return res, err
 }
 
-func (c *contracts) FindContracts(contractId *string, code *string, historical *bool, offset int, limit int) ([]Contract, error) {
+func (c *contracts) FindContracts(ctx context.Context, contractId *string, code *string, historical *bool, offset int, limit int) ([]Contract, error) {
 	filters := bson.D{}
 	if contractId != nil {
 		filters = append(filters, bson.E{Key: "id", Value: *contractId})
@@ -79,13 +79,13 @@ func (c *contracts) FindContracts(contractId *string, code *string, historical *
 		filters = append(filters, bson.E{Key: "latest", Value: true})
 	}
 	pipe := hive_blocks.GetAggTimestampPipeline(filters, "creation_height", "creation_ts", offset, limit)
-	cursor, err := c.Aggregate(context.TODO(), pipe)
+	cursor, err := c.Aggregate(ctx, pipe)
 	if err != nil {
 		return []Contract{}, err
 	}
-	defer cursor.Close(context.TODO())
+	defer cursor.Close(ctx)
 	var results []Contract
-	for cursor.Next(context.TODO()) {
+	for cursor.Next(ctx) {
 		var elem Contract
 		if err := cursor.Decode(&elem); err != nil {
 			return []Contract{}, err
@@ -95,7 +95,7 @@ func (c *contracts) FindContracts(contractId *string, code *string, historical *
 	return results, nil
 }
 
-func (c *contracts) RegisterContract(contractId string, args Contract) {
+func (c *contracts) RegisterContract(ctx context.Context, contractId string, args Contract) {
 	// TODO: config to prune old versions
 	findQuery := bson.M{
 		"id":              contractId,
@@ -123,17 +123,17 @@ func (c *contracts) RegisterContract(contractId string, args Contract) {
 			"latest": "",
 		},
 	}
-	c.UpdateMany(context.Background(), oldVersionsFilter, oldVersionsUpdate)
-	c.FindOneAndUpdate(context.Background(), findQuery, updateQuery, opts)
+	c.UpdateMany(ctx, oldVersionsFilter, oldVersionsUpdate)
+	c.FindOneAndUpdate(ctx, findQuery, updateQuery, opts)
 }
 
 type contractState struct {
 	*db.Collection
 }
 
-func (ch *contractState) IngestOutput(output IngestOutputArgs) {
+func (ch *contractState) IngestOutput(ctx context.Context, output IngestOutputArgs) {
 	options := options.FindOneAndUpdate().SetUpsert(true)
-	ch.FindOneAndUpdate(context.Background(), bson.M{"id": output.Id}, bson.M{
+	ch.FindOneAndUpdate(ctx, bson.M{"id": output.Id}, bson.M{
 		"$set": bson.M{
 			"id":           output.Id,
 			"contract_id":  output.ContractId,
@@ -148,9 +148,9 @@ func (ch *contractState) IngestOutput(output IngestOutputArgs) {
 
 }
 
-func (ch *contractState) GetLastOutput(contractId string, height uint64) (ContractOutput, error) {
+func (ch *contractState) GetLastOutput(ctx context.Context, contractId string, height uint64) (ContractOutput, error) {
 	options := options.FindOne().SetSort(bson.M{"block_height": -1})
-	findResult := ch.FindOne(context.Background(), bson.M{"contract_id": contractId, "block_height": bson.M{
+	findResult := ch.FindOne(ctx, bson.M{"contract_id": contractId, "block_height": bson.M{
 		"$lte": height,
 	}}, options)
 	if findResult.Err() != nil {
@@ -163,8 +163,8 @@ func (ch *contractState) GetLastOutput(contractId string, height uint64) (Contra
 	return contractOutput, err
 }
 
-func (ch *contractState) GetOutput(outputId string) *ContractOutput {
-	findResult := ch.FindOne(context.Background(), bson.M{"id": outputId})
+func (ch *contractState) GetOutput(ctx context.Context, outputId string) *ContractOutput {
+	findResult := ch.FindOne(ctx, bson.M{"id": outputId})
 	if findResult.Err() != nil {
 		return nil
 	}
@@ -174,7 +174,7 @@ func (ch *contractState) GetOutput(outputId string) *ContractOutput {
 	return &contractOutput
 }
 
-func (ch *contractState) FindOutputs(id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ContractOutput, error) {
+func (ch *contractState) FindOutputs(ctx context.Context, id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ContractOutput, error) {
 	filters := bson.D{}
 	if id != nil {
 		filters = append(filters, bson.E{Key: "id", Value: *id})
@@ -192,13 +192,13 @@ func (ch *contractState) FindOutputs(id *string, input *string, contract *string
 		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$lte", Value: *toBlock}}})
 	}
 	pipe := hive_blocks.GetAggTimestampPipeline(filters, "block_height", "timestamp", offset, limit)
-	cursor, err := ch.Aggregate(context.TODO(), pipe)
+	cursor, err := ch.Aggregate(ctx, pipe)
 	if err != nil {
 		return []ContractOutput{}, err
 	}
-	defer cursor.Close(context.TODO())
+	defer cursor.Close(ctx)
 	var results []ContractOutput
-	for cursor.Next(context.TODO()) {
+	for cursor.Next(ctx) {
 		var elem ContractOutput
 		if err := cursor.Decode(&elem); err != nil {
 			return []ContractOutput{}, err

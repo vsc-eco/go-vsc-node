@@ -65,7 +65,7 @@ func TestTssRequests(t *testing.T) {
 	hexQueries[0] = mockData[0].Msg
 	hexQueries[1] = mockData[1].Msg
 
-	result, err := tssDb.FindRequests(testTssKeyID, hexQueries)
+	result, err := tssDb.FindRequests(context.Background(), testTssKeyID, hexQueries)
 	assert.NoError(t, err)
 	assert.Equal(t, mockData[:2], result)
 
@@ -73,24 +73,24 @@ func TestTssRequests(t *testing.T) {
 	hexQueries[0] = mockData[0].Msg
 	hexQueries[1] = mockData[dataCount-1].Msg
 
-	result, err = tssDb.FindRequests(testTssKeyID, hexQueries)
+	result, err = tssDb.FindRequests(context.Background(), testTssKeyID, hexQueries)
 	assert.NoError(t, err)
 	assert.Equal(t, []TssRequest{mockData[0], mockData[dataCount-1]}, result)
 
 	// all tss
 	hexQueries = []string{}
-	result, err = tssDb.FindRequests(testTssKeyID, hexQueries)
+	result, err = tssDb.FindRequests(context.Background(), testTssKeyID, hexQueries)
 	assert.NoError(t, err)
 	assert.Equal(t, mockData[:], result)
 
 	hexQueries = nil
-	result, err = tssDb.FindRequests(testTssKeyID, hexQueries)
+	result, err = tssDb.FindRequests(context.Background(), testTssKeyID, hexQueries)
 	assert.NoError(t, err)
 	assert.Equal(t, mockData[:], result)
 
 	// non matching
 	hexQueries = []string{"foo"}
-	result, err = tssDb.FindRequests(testTssKeyID, hexQueries)
+	result, err = tssDb.FindRequests(context.Background(), testTssKeyID, hexQueries)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, len(result))
 }

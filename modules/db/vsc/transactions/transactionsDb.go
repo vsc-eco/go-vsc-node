@@ -29,9 +29,7 @@ func (e *transactions) Init() error {
 	return nil
 }
 
-func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
-	ctx := context.Background()
-
+func (e *transactions) Ingest(ctx context.Context, offTx IngestTransactionUpdate) error {
 	queryy := bson.M{
 		"id": offTx.Id,
 	}
@@ -76,11 +74,10 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 	return err
 }
 
-func (e *transactions) SetOutput(sOut SetResultUpdate) {
+func (e *transactions) SetOutput(ctx context.Context, sOut SetResultUpdate) {
 	query := bson.M{
 		"id": sOut.Id,
 	}
-	ctx := context.Background()
 
 	update := bson.M{}
 	push := bson.M{}
@@ -98,11 +95,10 @@ func (e *transactions) SetOutput(sOut SetResultUpdate) {
 	})
 }
 
-func (e *transactions) GetTransaction(id string) *TransactionRecord {
+func (e *transactions) GetTransaction(ctx context.Context, id string) *TransactionRecord {
 	query := bson.M{
 		"id": id,
 	}
-	ctx := context.Background()
 	findResult := e.FindOne(ctx, query)
 
 	if findResult.Err() != nil {
@@ -116,7 +112,7 @@ func (e *transactions) GetTransaction(id string) *TransactionRecord {
 	return &record
 }
 
-func (e *transactions) FindTransactions(ids []string, id *string, account *string, contract *string, status *TransactionStatus, byType []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TransactionRecord, error) {
+func (e *transactions) FindTransactions(ctx context.Context, ids []string, id *string, account *string, contract *string, status *TransactionStatus, byType []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TransactionRecord, error) {
 	if id != nil && ids != nil {
 		return nil, errors.New("either input a single id or a list of ids")
 	}
@@ -152,13 +148,13 @@ func (e *transactions) FindTransactions(ids []string, id *string, account *strin
 		filters = append(filters, bson.E{Key: "anchr_height", Value: bson.D{{Key: "$lte", Value: *toBlock}}})
 	}
 	pipe := hive_blocks.GetAggTimestampPipeline2(filters, "anchr_height", "anchr_ts", offset, limit)
-	cursor, err := e.Aggregate(context.TODO(), pipe)
+	cursor, err := e.Aggregate(ctx, pipe)
 	if err != nil {
 		return []TransactionRecord{}, err
 	}
-	defer cursor.Close(context.TODO())
+	defer cursor.Close(ctx)
 	var results []TransactionRecord
-	for cursor.Next(context.TODO()) {
+	for cursor.Next(ctx) {
 		var elem TransactionRecord
 		if err := cursor.Decode(&elem); err != nil {
 			return []TransactionRecord{}, err
@@ -170,7 +166,7 @@ func (e *transactions) FindTransactions(ids []string, id *string, account *strin
 
 // InvalidateCompetingTransactions deletes UNCONFIRMED transactions
 // that share the same required_auths and nonce as a confirmed transaction.
-func (e *transactions) InvalidateCompetingTransactions(requiredAuths []string, nonces []uint64) (int64, error) {
+func (e *transactions) InvalidateCompetingTransactions(ctx context.Context, requiredAuths []string, nonces []uint64) (int64, error) {
 	filter := bson.M{
 		"status": string(TransactionStatusUnconfirmed),
 		"required_auths": bson.M{
@@ -180,7 +176,7 @@ func (e *transactions) InvalidateCompetingTransactions(requiredAuths []string, n
 		"nonce": bson.M{"$in": nonces},
 	}
 
-	result, err := e.DeleteMany(context.Background(), filter)
+	result, err := e.DeleteMany(ctx, filter)
 	if err != nil {
 		return 0, err
 	}
@@ -189,7 +185,7 @@ func (e *transactions) InvalidateCompetingTransactions(requiredAuths []string, n
 
 // HasUnconfirmedWithNonce checks if an UNCONFIRMED transaction exists
 // with the given required_auths and nonce.
-func (e *transactions) HasUnconfirmedWithNonce(requiredAuths []string, nonce uint64) (bool, error) {
+func (e *transactions) HasUnconfirmedWithNonce(ctx context.Context, requiredAuths []string, nonce uint64) (bool, error) {
 	filter := bson.M{
 		"status": string(TransactionStatusUnconfirmed),
 		"required_auths": bson.M{
@@ -199,7 +195,7 @@ func (e *transactions) HasUnconfirmedWithNonce(requiredAuths []string, nonce uin
 		"nonce": nonce,
 	}
 
-	count, err := e.CountDocuments(context.Background(), filter)
+	count, err := e.CountDocuments(ctx, filter)
 	if err != nil {
 		return false, err
 	}
@@ -208,7 +204,7 @@ func (e *transactions) HasUnconfirmedWithNonce(requiredAuths []string, nonce uin
 
 // Searches for unconfirmed VSC transactions with no verification
 // Provide height for expiration filtering
-func (e *transactions) FindUnconfirmedTransactions(height uint64) ([]TransactionRecord, error) {
+func (e *transactions) FindUnconfirmedTransactions(ctx context.Context, height uint64) ([]TransactionRecord, error) {
 	query := bson.M{
 		"status": "UNCONFIRMED",
 		"type":   "vsc",
@@ -231,7 +227,6 @@ func (e *transactions) FindUnconfirmedTransactions(height uint64) ([]Transaction
 		},
 	}
 
-	ctx := context.Background()
 	findResult, _ := e.Find(ctx, query)
 
 	txList := make([]TransactionRecord, 0)

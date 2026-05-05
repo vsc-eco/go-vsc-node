@@ -385,7 +385,7 @@ func (tss *TssManager) SendMsg(
 	startTime := time.Now()
 	fromAccount := tss.config.Get().HiveUsername
 
-	witness, err := tss.witnessDb.GetWitnessAtHeight(participant.Account, nil)
+	witness, err := tss.witnessDb.GetWitnessAtHeight(context.Background(), participant.Account, nil)
 	if err != nil {
 		log.Error("GetWitnessAtHeight failed",
 			"sessionId", sessionId, "from", fromAccount, "to", participant.Account, "err", err)
@@ -469,7 +469,7 @@ func (tss *TssManager) countReadyParticipants(participants []Participant, sessio
 		}
 
 		go func(p Participant) {
-			witness, err := tss.witnessDb.GetWitnessAtHeight(p.Account, nil)
+			witness, err := tss.witnessDb.GetWitnessAtHeight(context.Background(), p.Account, nil)
 			if err != nil || witness.PeerId == "" {
 				results <- readyResult{ok: false, account: p.Account, reason: "no_witness"}
 				return

@@ -1,6 +1,7 @@
 package ledgerSystem
 
 import (
+	"context"
 	"slices"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
 )
@@ -108,7 +109,12 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 		return 0
 	}
 
-	balRecordPtr, _ := ls.BalanceDb.GetBalanceRecord(account, blockHeight)
+	// LedgerState reads use context.Background(): they may be invoked
+	// from non-slot paths (GraphQL, tx-pool) where committed state is the
+	// right answer. Within-slot consistency is provided by LedgerSession's
+	// in-memory Oplog/VirtualLedger overlay rather than DB reads.
+	ctx := context.Background()
+	balRecordPtr, _ := ls.BalanceDb.GetBalanceRecord(ctx, account, blockHeight)
 
 	var recordHeight uint64
 	var balRecord ledger_db.BalanceRecord
@@ -117,7 +123,7 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 		recordHeight = balRecord.BlockHeight + 1
 	}
 
-	ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, recordHeight, blockHeight, asset)
+	ledgerResults, _ := ls.LedgerDb.GetLedgerRange(ctx, account, recordHeight, blockHeight, asset)
 
 	balAdjust := int64(0)
 	for _, v := range *ledgerResults {
