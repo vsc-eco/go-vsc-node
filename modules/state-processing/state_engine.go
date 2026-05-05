@@ -31,6 +31,7 @@ import (
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
+	"vsc-node/modules/incentive-pendulum/rewards"
 	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
@@ -957,6 +958,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							KeyId:       commitment.KeyId,
 							PublicKey:   commitment.PublicKey,
 							TxId:        tx.TransactionID,
+							BitSet:      commitment.BitSet,
 						})
 
 						var newKey bool
@@ -1156,15 +1158,7 @@ func (se *StateEngine) persistPendulumSnapshotIfNew() {
 		HBDInterestRateOK:   snap.HBDInterestRateOK,
 		TrustedWitnessGroup: snap.TrustedWitnessGroup,
 	}
-	if len(snap.WitnessSlashBps) > 0 {
-		rec.WitnessSlashBps = make([]pendulum_oracle.WitnessSlashRecord, 0, len(snap.WitnessSlashBps))
-		for _, e := range snap.WitnessSlashBps {
-			rec.WitnessSlashBps = append(rec.WitnessSlashBps, pendulum_oracle.WitnessSlashRecord{
-				Witness: e.Witness,
-				Bps:     e.Bps,
-			})
-		}
-	}
+	rec.WitnessRewardReductions = se.computeRewardReductionsForTick(snap.TickBlockHeight)
 
 	// W7: populate geometry. Reads pool reserves + committee bond at the
 	// tick's block height; the W3 SDK method consumes this on every swap.
@@ -1190,6 +1184,147 @@ func (se *StateEngine) persistPendulumSnapshotIfNew() {
 		return
 	}
 	se.lastPersistedTickHeight = snap.TickBlockHeight
+}
+
+// computeRewardReductionsForTick scores VSC committee liveness across the L1
+// block window (tickHeight - DefaultTickIntervalBlocks, tickHeight] using
+// the rewards/ aggregator. Returns sorted records suitable for inclusion in
+// the persisted SnapshotRecord. Read-only on MongoDB collections; safe to
+// call from the per-tick persistence path.
+func (se *StateEngine) computeRewardReductionsForTick(tickHeight uint64) []pendulum_oracle.WitnessRewardReductionRecord {
+	if se == nil || se.electionDb == nil || tickHeight == 0 {
+		return nil
+	}
+	election, err := se.electionDb.GetElectionByHeight(tickHeight)
+	if err != nil || len(election.Members) == 0 {
+		return nil
+	}
+	committee := make([]string, 0, len(election.Members))
+	for _, m := range election.Members {
+		committee = append(committee, m.Account)
+	}
+
+	const tickWindow = uint64(pendulumoracle.DefaultTickIntervalBlocks)
+	var fromBlock uint64
+	if tickHeight > tickWindow {
+		fromBlock = tickHeight - tickWindow
+	}
+
+	in := rewards.TickInputs{Committee: committee}
+
+	// Block production + attestation: iterate slots in the tick window.
+	if se.vscBlocks != nil {
+		slotLen := common.CONSENSUS_SPECS.SlotLength
+		if slotLen >= 1 {
+			firstSlot := fromBlock - (fromBlock % slotLen)
+			if firstSlot < fromBlock {
+				firstSlot += slotLen
+			}
+			lastSlot := tickHeight - (tickHeight % slotLen)
+			if lastSlot >= firstSlot {
+				blocks, err := se.vscBlocks.GetBlocksInSlotRange(firstSlot, lastSlot)
+				if err == nil {
+					produced := make(map[uint64]struct{}, len(blocks))
+					in.BlocksInWindow = make([]rewards.TickBlockHeader, 0, len(blocks))
+					for _, b := range blocks {
+						produced[uint64(b.SlotHeight)] = struct{}{}
+						in.BlocksInWindow = append(in.BlocksInWindow, rewards.TickBlockHeader{
+							Signers: append([]string(nil), b.Signers...),
+						})
+					}
+					in.ProducedSlotHeights = produced
+					for s := firstSlot; s <= lastSlot; s += slotLen {
+						sched := se.GetSchedule(s)
+						leader := ""
+						for _, slot := range sched {
+							if slot.SlotHeight == s {
+								leader = slot.Account
+								break
+							}
+						}
+						if leader != "" {
+							in.Slots = append(in.Slots, rewards.SlotProposer{
+								SlotHeight: s,
+								Account:    leader,
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// TSS commitments: pull all reshare/blame/sign_result types in the window.
+	if se.tssCommitments != nil {
+		from := fromBlock
+		to := tickHeight
+		commits, err := se.tssCommitments.FindCommitments(nil, []string{"reshare", "blame", "sign_result"}, nil, &from, &to, 0, 0)
+		if err == nil {
+			for _, c := range commits {
+				memberAccounts := se.committeeAccountsForEpoch(c.Epoch)
+				if len(memberAccounts) == 0 {
+					continue
+				}
+				switch c.Type {
+				case "reshare":
+					in.Reshares = append(in.Reshares, rewards.ReshareWithCommittee{
+						Commitment:   c,
+						NewCommittee: memberAccounts,
+					})
+				case "blame":
+					in.Blames = append(in.Blames, rewards.BlameWithCommittee{
+						Commitment:     c,
+						BlameCommittee: memberAccounts,
+					})
+				case "sign_result":
+					// Sign committee is the election active at the
+					// commitment's BlockHeight (the leader collected BLS sigs
+					// from that election — same convention as the verifier
+					// path at state_engine.go:895).
+					signCommittee := se.committeeAccountsAtHeight(c.BlockHeight)
+					if len(signCommittee) == 0 {
+						continue
+					}
+					in.Signs = append(in.Signs, rewards.SignResultWithCommittee{
+						Commitment:    c,
+						SignCommittee: signCommittee,
+					})
+				}
+			}
+		}
+	}
+
+	return rewards.AggregateTick(in)
+}
+
+func (se *StateEngine) committeeAccountsForEpoch(epoch uint64) []string {
+	if se == nil || se.electionDb == nil {
+		return nil
+	}
+	res := se.electionDb.GetElection(epoch)
+	if res == nil || len(res.Members) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(res.Members))
+	for _, m := range res.Members {
+		out = append(out, m.Account)
+	}
+	return out
+}
+
+func (se *StateEngine) committeeAccountsAtHeight(height uint64) []string {
+	if se == nil || se.electionDb == nil {
+		return nil
+	}
+	res, err := se.electionDb.GetElectionByHeight(height)
+	if err != nil || len(res.Members) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(res.Members))
+	for _, m := range res.Members {
+		out = append(out, m.Account)
+	}
+	return out
 }
 
 func (se *StateEngine) ExecuteBatch() {
@@ -1723,13 +1858,6 @@ func (se *StateEngine) PendulumOracleEnv() map[string]interface{} {
 	}
 	if len(s.TrustedWitnessGroup) > 0 {
 		m["pendulum.trusted_witness_group"] = append([]string(nil), s.TrustedWitnessGroup...)
-	}
-	if len(s.WitnessSlashBps) > 0 {
-		slash := make(map[string]int, len(s.WitnessSlashBps))
-		for w, bps := range s.WitnessSlashBps {
-			slash[w] = bps
-		}
-		m["pendulum.witness_slash_bps"] = slash
 	}
 	return m
 }

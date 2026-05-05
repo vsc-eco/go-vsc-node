@@ -69,69 +69,6 @@ func TestFeedTrackerTick(t *testing.T) {
 	if len(snap.TrustedWitnessGroup) != 1 || snap.TrustedWitnessGroup[0] != "alice" {
 		t.Fatalf("group=%v", snap.TrustedWitnessGroup)
 	}
-	if snap.WitnessSlashBps["alice"] != 0 {
-		t.Fatalf("alice slash bps=%d want 0", snap.WitnessSlashBps["alice"])
-	}
-}
-
-func TestFeedTrackerTick_WitnessSlashComputedFromWindowEvidence(t *testing.T) {
-	tr := NewFeedTracker()
-	for h := uint64(1); h <= 4; h++ {
-		tr.RecordWitnessBlock("alice")
-	}
-	tr.RecordWitnessBlock("bob")
-	tr.IngestTransactionOps(4, hive_blocks.Tx{
-		Operations: []hivego.Operation{{
-			Type: "feed_publish",
-			Value: map[string]interface{}{
-				"publisher": "alice",
-				"exchange_rate": map[string]interface{}{
-					"base":  "0.25 HBD",
-					"quote": "1 HIVE",
-				},
-			},
-		}},
-	})
-
-	tr.TickIfDue(100)
-	snap := tr.LastTick()
-
-	// alice: 4 sigs + updated feed => 0 bps
-	if snap.WitnessSlashBps["alice"] != 0 {
-		t.Fatalf("alice slash bps=%d want 0", snap.WitnessSlashBps["alice"])
-	}
-	// bob: deficit 3 (75 bps) + missing update (50 bps) => 125 bps
-	if snap.WitnessSlashBps["bob"] != 125 {
-		t.Fatalf("bob slash bps=%d want 125", snap.WitnessSlashBps["bob"])
-	}
-}
-
-func TestFeedTrackerTick_StaleFeedBoundaryTriggersMissingUpdatePenalty(t *testing.T) {
-	tr := NewFeedTracker()
-	for h := uint64(1); h <= 200; h++ {
-		tr.RecordWitnessBlock("alice")
-		if h == 100 {
-			tr.IngestTransactionOps(h, hive_blocks.Tx{
-				Operations: []hivego.Operation{{
-					Type: "feed_publish",
-					Value: map[string]interface{}{
-						"publisher": "alice",
-						"exchange_rate": map[string]interface{}{
-							"base":  "0.25 HBD",
-							"quote": "1 HIVE",
-						},
-					},
-				}},
-			})
-		}
-	}
-
-	// lastFeedBlk+width > blockHeight is strict; 100+100 > 200 is false.
-	tr.TickIfDue(200)
-	snap := tr.LastTick()
-	if snap.WitnessSlashBps["alice"] != 50 {
-		t.Fatalf("alice slash bps=%d want 50", snap.WitnessSlashBps["alice"])
-	}
 }
 
 func TestFeedTrackerLastTickReturnsDefensiveCopies(t *testing.T) {
@@ -155,13 +92,9 @@ func TestFeedTrackerLastTickReturnsDefensiveCopies(t *testing.T) {
 
 	s1 := tr.LastTick()
 	s1.TrustedWitnessGroup[0] = "mutated"
-	s1.WitnessSlashBps["alice"] = 999
 
 	s2 := tr.LastTick()
 	if len(s2.TrustedWitnessGroup) != 1 || s2.TrustedWitnessGroup[0] != "alice" {
 		t.Fatalf("unexpected group copy behavior: %v", s2.TrustedWitnessGroup)
-	}
-	if s2.WitnessSlashBps["alice"] != 0 {
-		t.Fatalf("unexpected slash map copy behavior: %d", s2.WitnessSlashBps["alice"])
 	}
 }
