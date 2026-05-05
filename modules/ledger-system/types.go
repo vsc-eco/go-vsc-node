@@ -9,12 +9,26 @@ type LedgerUpdate struct {
 	//Op Index: Index of the operation in the TX
 	OpIdx int64
 
-	Owner  string
+	From   string
+	To     string
 	Amount int64
 	Asset  string
 	Memo   string
 	//transfer, withdraw, stake, unstake
 	Type string
+}
+
+// DeltaFor returns the signed balance change this update produces for account.
+// + when account is the recipient (To), - when sender (From), 0 otherwise.
+func (u LedgerUpdate) DeltaFor(account string) int64 {
+	var delta int64
+	if u.To == account {
+		delta += u.Amount
+	}
+	if u.From == account {
+		delta -= u.Amount
+	}
+	return delta
 }
 
 type OpLogEvent struct {

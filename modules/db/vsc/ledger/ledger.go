@@ -41,7 +41,10 @@ func (ledger *ledger) GetLedgerAfterHeight(account string, blockHeight uint64, a
 		opts.SetLimit(*limit)
 	}
 	findResult, err := ledger.Find(context.Background(), bson.M{
-		"owner": account,
+		"$or": bson.A{
+			bson.M{"from": account},
+			bson.M{"to": account},
+		},
 		"block_height": bson.M{
 			"$gte": blockHeight,
 		},
@@ -66,7 +69,10 @@ func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, a
 	opts := options.Find().SetSort(bson.M{"block_height": 1})
 
 	query := bson.M{
-		"owner": account,
+		"$or": bson.A{
+			bson.M{"from": account},
+			bson.M{"to": account},
+		},
 		"block_height": bson.M{
 			"$gte": start,
 			"$lte": end,
@@ -103,7 +109,7 @@ func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes [
 	if account != nil {
 		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
 			bson.D{{Key: "from", Value: *account}},
-			bson.D{{Key: "owner", Value: *account}},
+			bson.D{{Key: "to", Value: *account}},
 		}})
 	}
 	if txId != nil {
@@ -143,7 +149,7 @@ func (ledger *ledger) GetRawLedgerRange(account *string, txId *string, txTypes [
 	if account != nil {
 		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
 			bson.D{{Key: "from", Value: *account}},
-			bson.D{{Key: "owner", Value: *account}},
+			bson.D{{Key: "to", Value: *account}},
 		}})
 	}
 	if txId != nil {
@@ -183,23 +189,32 @@ func (ledger *ledger) GetRawLedgerRange(account *string, txId *string, txTypes [
 }
 
 func (ledger *ledger) GetDistinctAccountsRange(startHeight, endHeight uint64) ([]string, error) {
-	arr, err := ledger.Distinct(context.Background(), "owner", bson.M{
-		"block_height": bson.M{
-			//Example: 21
-			"$gte": startHeight,
-			//Example: 30
-			"$lte": endHeight,
-			//Captures range of 21 - 30 (inclusive)
-		},
+	cursor, err := ledger.Aggregate(context.Background(), mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"block_height": bson.M{
+				"$gte": startHeight,
+				"$lte": endHeight,
+			},
+		}}},
+		{{Key: "$project", Value: bson.M{"accounts": bson.A{"$from", "$to"}}}},
+		{{Key: "$unwind", Value: "$accounts"}},
+		{{Key: "$match", Value: bson.M{"accounts": bson.M{"$ne": ""}}}},
+		{{Key: "$group", Value: bson.M{"_id": "$accounts"}}},
 	})
-
 	if err != nil {
 		return nil, err
 	}
+	defer cursor.Close(context.Background())
 
 	accounts := make([]string, 0)
-	for _, v := range arr {
-		accounts = append(accounts, v.(string))
+	for cursor.Next(context.Background()) {
+		var doc struct {
+			ID string `bson:"_id"`
+		}
+		if err := cursor.Decode(&doc); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, doc.ID)
 	}
 
 	return accounts, nil

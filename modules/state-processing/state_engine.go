@@ -324,24 +324,22 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					fmt.Println("frSync", frSync)
 
-					var amt int64
-
-					if frSync.StakedAmount > 0 {
-						amt = frSync.StakedAmount
-					} else {
-						//Must be negative to indicate unstaking has occurred
-						amt = -frSync.UnstakedAmount
-					}
-
-					se.LedgerState.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+					rec := ledgerDb.LedgerRecord{
 						Id:          MakeTxId(tx.TransactionID, 0),
-						Amount:      amt,
 						BlockHeight: blockInfo.BlockHeight + 1,
-						Owner:       params.FR_VIRTUAL_ACCOUNT,
 						//Fractional reserve update
 						Asset: "hbd_savings",
 						Type:  "fr_sync",
-					})
+					}
+					if frSync.StakedAmount > 0 {
+						rec.Amount = frSync.StakedAmount
+						rec.To = params.FR_VIRTUAL_ACCOUNT
+					} else {
+						rec.Amount = frSync.UnstakedAmount
+						rec.From = params.FR_VIRTUAL_ACCOUNT
+					}
+
+					se.LedgerState.LedgerDb.StoreLedger(rec)
 				}
 
 				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() {
@@ -1300,11 +1298,11 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		completeIds = append(completeIds, record.Id)
 
 		ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
-			Id:          record.Id + "#out",
+			Id:          record.Id + ":hive",
 			Amount:      record.Amount,
 			Asset:       "hive",
 			BlockHeight: endBlock,
-			Owner:       record.To,
+			To:          record.To,
 			Type:        "consensus_unstake",
 		})
 	}
@@ -1387,7 +1385,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		}
 
 		for _, v := range *ledgerUpdates {
-			ledgerBalances[v.Asset] += v.Amount
+			ledgerBalances[v.Asset] += v.DeltaFor(k)
 		}
 
 		if needsClaimUpdate {

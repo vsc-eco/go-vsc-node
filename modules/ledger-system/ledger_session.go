@@ -30,7 +30,12 @@ func (session *ledgerSession) Done() []string {
 	session.state.Oplog = append(session.state.Oplog, session.oplog...)
 	for _, op := range session.ledgerOps {
 		// lss.le.Ls.log.Debug("LedgerSession.Done adding LedgerResult", op)
-		session.state.VirtualLedger[op.Owner] = append(session.state.VirtualLedger[op.Owner], op)
+		if op.From != "" {
+			session.state.VirtualLedger[op.From] = append(session.state.VirtualLedger[op.From], op)
+		}
+		if op.To != "" && op.To != op.From {
+			session.state.VirtualLedger[op.To] = append(session.state.VirtualLedger[op.To], op)
+		}
 	}
 	session.balances = make(map[string]*int64)
 	session.oplog = make([]OpLogEvent, 0)
@@ -74,8 +79,14 @@ func (lss *ledgerSession) Transfer() {
 func (session *ledgerSession) AppendLedger(event LedgerUpdate) {
 	session.state.Validate()
 	// lss.le.Ls.log.Debug("LedgerSession.AppendLedger GetBalance")
-	bal := session.GetBalance(event.Owner, event.BlockHeight, event.Asset)
-	session.setBalance(event.Owner, event.Asset, bal+event.Amount)
+	if event.From != "" {
+		bal := session.GetBalance(event.From, event.BlockHeight, event.Asset)
+		session.setBalance(event.From, event.Asset, bal-event.Amount)
+	}
+	if event.To != "" && event.To != event.From {
+		bal := session.GetBalance(event.To, event.BlockHeight, event.Asset)
+		session.setBalance(event.To, event.Asset, bal+event.Amount)
+	}
 
 	session.ledgerOps = append(session.ledgerOps, event)
 }

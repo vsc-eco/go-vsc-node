@@ -607,7 +607,7 @@ func TestInvariant_IdempotentDeposit(t *testing.T) {
 		BlockHeight: 80,
 		Amount:      1000,
 		Asset:       "hbd",
-		Owner:       "hive:alice",
+		To:          "hive:alice",
 		Type:        "deposit",
 		TxId:        "deposit-1",
 	})
@@ -623,7 +623,7 @@ func TestInvariant_IdempotentDeposit(t *testing.T) {
 		BlockHeight: 80,
 		Amount:      1000,
 		Asset:       "hbd",
-		Owner:       "hive:alice",
+		To:          "hive:alice",
 		Type:        "deposit",
 		TxId:        "deposit-1",
 	})
