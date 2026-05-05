@@ -35,6 +35,7 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 	"vsc-node/modules/incentive-pendulum/rewards"
+	safetyslash "vsc-node/modules/incentive-pendulum/safety_slash"
 	pendulumwasm "vsc-node/modules/incentive-pendulum/wasm"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
@@ -139,6 +140,9 @@ type StateEngine struct {
 	// has flushed slot S-1 reads stale ledger/balance state and produces a
 	// divergent CID. See WaitForProcessedHeight for the consumer API.
 	lastProcessedHeight atomic.Uint64
+
+	// slashRestitution pays harmed parties from safety slashes (FIFO); remainder is burned.
+	slashRestitution *safetyslash.MemoryRestitutionQueue
 }
 
 //Transaction
@@ -1543,8 +1547,13 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		stBlock = endBlock - 9
 	}
 
-	election, _ := se.electionDb.GetElectionByHeight(endBlock)
-	records, _ := se.LedgerState.ActionDb.GetPendingActionsByEpoch(election.Epoch, "consensus_unstake")
+	var epoch uint64
+	if se.electionDb != nil {
+		if election, err := se.electionDb.GetElectionByHeight(endBlock); err == nil {
+			epoch = election.Epoch
+		}
+	}
+	records, _ := se.LedgerState.ActionDb.GetPendingActionsByEpoch(epoch, "consensus_unstake")
 
 	completeIds := make([]string, 0)
 	ledgerRecords := make([]ledgerDb.LedgerRecord, 0)
@@ -1564,6 +1573,10 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	se.LedgerState.ActionDb.ExecuteComplete(nil, completeIds...)
 	// se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)
 	// se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(nil, completeIds...)
+
+	if se.LedgerSystem != nil {
+		se.LedgerSystem.FinalizeMaturedSafetySlashBurns(endBlock)
+	}
 
 	//log.Debug("stBlock, endBlock", stBlock, endBlock)
 	distinctAccounts, _ := se.LedgerState.LedgerDb.GetDistinctAccountsRange(stBlock, endBlock)
@@ -1639,7 +1652,15 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		}
 
 		for _, v := range *ledgerUpdates {
-			ledgerBalances[v.Asset] += v.Amount
+			switch v.Type {
+			case ledgerSystem.LedgerTypeSafetySlashHiveBurn,
+				ledgerSystem.LedgerTypeSafetySlashHiveBurnPending,
+				ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingRelease,
+				ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingFinalized:
+				continue
+			default:
+				ledgerBalances[v.Asset] += v.Amount
+			}
 		}
 
 		if needsClaimUpdate {
@@ -1978,11 +1999,12 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	}
 
 	se := &StateEngine{
-		sconf:           sconf,
-		TxOutput:        make(map[string]TxOutput),
-		ContractResults: make(map[string][]ContractResult),
-		TempOutputs:     make(map[string]*contract_session.TempOutput),
-		TxOutIds:        make([]string, 0),
+		sconf:            sconf,
+		TxOutput:         make(map[string]TxOutput),
+		ContractResults:  make(map[string][]ContractResult),
+		TempOutputs:      make(map[string]*contract_session.TempOutput),
+		TxOutIds:         make([]string, 0),
+		slashRestitution: safetyslash.NewMemoryRestitutionQueue(),
 
 		da: da,
 		// db: db,
@@ -2042,4 +2064,16 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	)
 
 	return se
+}
+
+// EnqueueSlashRestitutionClaim registers remaining HIVE loss owed to a victim.
+// Payouts are sourced from future safety-slash proceeds (FIFO) before protocol burn.
+//
+// Not consensus-safe unless every validator performs the same Enqueue in the same
+// order (e.g. from a future chain op). Prefer leaving the queue empty until then.
+func (se *StateEngine) EnqueueSlashRestitutionClaim(c ledgerSystem.SlashRestitutionClaim) {
+	if se == nil || se.slashRestitution == nil {
+		return
+	}
+	se.slashRestitution.Enqueue(c)
 }

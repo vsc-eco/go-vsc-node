@@ -59,6 +59,42 @@ type ConsensusParams struct {
 	ElectionEpoch uint64
 }
 
+// SlashRestitutionPayment credits liquid HIVE to a victim from a safety slash.
+type SlashRestitutionPayment struct {
+	ClaimID       string
+	VictimAccount string
+	Amount        int64
+}
+
+// SlashRestitutionClaim is a FIFO queue entry: remaining LossHive still owed to VictimAccount.
+type SlashRestitutionClaim struct {
+	ClaimID       string
+	VictimAccount string
+	LossHive      int64
+}
+
+// SlashRestitutionAllocator splits slashed liquid HIVE between victims and protocol burn.
+// Implementations must return payments and burnAmt with Sum(payments.Amount)+burnAmt == slashAmt.
+type SlashRestitutionAllocator interface {
+	AllocateHive(slashAmt int64, blockHeight uint64, txID, evidenceKind, slashedAccount string) (payments []SlashRestitutionPayment, burnAmt int64)
+}
+
+// SafetySlashConsensusParams debits HIVE_CONSENSUS principal for provable safety faults.
+// Liquid HIVE is credited via Restitution (FIFO victims) and/or protocol burn (see params.ProtocolSlashBurnAccount).
+// When Restitution is nil, the full slash is recorded as burn (nothing held for the DAO).
+type SafetySlashConsensusParams struct {
+	Account      string
+	SlashBps     int
+	TxID         string
+	BlockHeight  uint64
+	EvidenceKind string
+	Restitution  SlashRestitutionAllocator
+	// BurnDelayBlocks: if 0, the burn slice is written immediately to ProtocolSlashBurnAccount.
+	// If > 0, it sits on ProtocolSlashPendingBurnAccount until block height reaches
+	// BlockHeight+BurnDelayBlocks (see FinalizeMaturedSafetySlashBurns). Restitution is always immediate.
+	BurnDelayBlocks uint64
+}
+
 type LedgerResult struct {
 	Ok  bool
 	Msg string
@@ -132,6 +168,8 @@ type LedgerSystem interface {
 	// LedgerSession.ExecuteTransfer from the executing contract account, NOT
 	// through this interface.
 	PendulumDistribute(toAccount string, amount int64, txID string, blockHeight uint64) LedgerResult
+	SafetySlashConsensusBond(p SafetySlashConsensusParams) LedgerResult
+	FinalizeMaturedSafetySlashBurns(blockHeight uint64)
 	PendulumBucketBalance(bucket string, blockHeight uint64) int64
 	NewEmptySession(state *LedgerState, startHeight uint64) LedgerSession
 	NewEmptyState() *LedgerState

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"net/url"
 	"regexp"
@@ -86,6 +87,230 @@ func (ls *ledgerSystem) PendulumDistribute(toAccount string, amount int64, txID 
 	)
 
 	return LedgerResult{Ok: true, Msg: "success"}
+}
+
+const (
+	// LedgerTypeSafetySlashConsensus debits HIVE_CONSENSUS bond for safety faults.
+	LedgerTypeSafetySlashConsensus = "safety_slash_consensus"
+	// LedgerTypeSafetySlashRestitution credits liquid HIVE to a harmed party.
+	LedgerTypeSafetySlashRestitution = "safety_slash_restitution"
+	// LedgerTypeSafetySlashHiveBurn is audit-only; must not count as spendable HIVE.
+	LedgerTypeSafetySlashHiveBurn = "safety_slash_hive_burn"
+	// LedgerTypeSafetySlashHiveBurnPending holds delayed burn on ProtocolSlashPendingBurnAccount.
+	LedgerTypeSafetySlashHiveBurnPending = "safety_slash_hive_burn_pending"
+	// LedgerTypeSafetySlashHiveBurnPendingRelease nets out pending when promoting to final burn.
+	LedgerTypeSafetySlashHiveBurnPendingRelease = "safety_slash_hive_burn_pending_release"
+	// LedgerTypeSafetySlashHiveBurnPendingFinalized marks a pending row as promoted (idempotency).
+	LedgerTypeSafetySlashHiveBurnPendingFinalized = "safety_slash_hive_burn_pending_finalized"
+)
+
+func normalizeHiveConsensusAccount(a string) string {
+	a = strings.TrimSpace(a)
+	if a == "" {
+		return ""
+	}
+	if strings.HasPrefix(a, "hive:") {
+		return a
+	}
+	return "hive:" + a
+}
+
+// SafetySlashConsensusBond removes up to SlashBps/10000 of the account's current
+// HIVE_CONSENSUS bond. The same amount is split between optional FIFO restitution
+// (liquid HIVE to victims) and protocol burn on params.ProtocolSlashBurnAccount.
+// Deterministic ledger ids make replay idempotent.
+func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) LedgerResult {
+	acct := normalizeHiveConsensusAccount(p.Account)
+	if acct == "" || strings.TrimSpace(p.TxID) == "" || strings.TrimSpace(p.EvidenceKind) == "" {
+		return LedgerResult{Ok: false, Msg: "invalid safety slash params"}
+	}
+	if p.SlashBps <= 0 || p.SlashBps > 10000 {
+		return LedgerResult{Ok: false, Msg: "invalid slash bps"}
+	}
+	if ls.BalanceDb == nil || ls.LedgerDb == nil {
+		return LedgerResult{Ok: false, Msg: "ledger not configured"}
+	}
+
+	bondRecord := func(height uint64) *ledger_db.BalanceRecord {
+		rec, _ := ls.BalanceDb.GetBalanceRecord(acct, height)
+		return rec
+	}
+	rec := bondRecord(p.BlockHeight)
+	if rec == nil || rec.HIVE_CONSENSUS <= 0 {
+		if p.BlockHeight > 0 {
+			rec = bondRecord(p.BlockHeight - 1)
+		}
+	}
+	if rec == nil || rec.HIVE_CONSENSUS <= 0 {
+		return LedgerResult{Ok: false, Msg: "zero consensus bond"}
+	}
+	bond := rec.HIVE_CONSENSUS
+
+	slashAmt := (bond * int64(p.SlashBps)) / 10000
+	if slashAmt <= 0 {
+		return LedgerResult{Ok: false, Msg: "slash rounds to zero"}
+	}
+	if slashAmt > bond {
+		slashAmt = bond
+	}
+
+	payments, burnAmt := ([]SlashRestitutionPayment)(nil), slashAmt
+	if p.Restitution != nil {
+		payments, burnAmt = p.Restitution.AllocateHive(slashAmt, p.BlockHeight, p.TxID, p.EvidenceKind, acct)
+	}
+	var paid int64
+	for _, pay := range payments {
+		if pay.Amount <= 0 {
+			return LedgerResult{Ok: false, Msg: "invalid restitution amount"}
+		}
+		victim := normalizeHiveConsensusAccount(pay.VictimAccount)
+		if victim == "" {
+			return LedgerResult{Ok: false, Msg: "invalid restitution victim"}
+		}
+		if pay.Amount > math.MaxInt64-paid {
+			return LedgerResult{Ok: false, Msg: "restitution sum overflow"}
+		}
+		paid += pay.Amount
+	}
+	if burnAmt < 0 {
+		return LedgerResult{Ok: false, Msg: "invalid slash burn amount"}
+	}
+	if paid+burnAmt != slashAmt {
+		return LedgerResult{Ok: false, Msg: "slash allocation does not reconcile"}
+	}
+
+	baseID := p.TxID + "#safety_slash#" + p.EvidenceKind
+	records := []ledger_db.LedgerRecord{
+		{
+			Id:          baseID + "#consensus_debit#" + acct,
+			TxId:        p.TxID,
+			BlockHeight: p.BlockHeight,
+			Amount:      -slashAmt,
+			Asset:       "hive_consensus",
+			Owner:       acct,
+			Type:        LedgerTypeSafetySlashConsensus,
+		},
+	}
+	for i, pay := range payments {
+		victim := normalizeHiveConsensusAccount(pay.VictimAccount)
+		idSuffix := strings.TrimSpace(pay.ClaimID)
+		if idSuffix == "" {
+			idSuffix = "_"
+		}
+		// Payment index is always included so duplicate ClaimID+victim in one slash cannot collide.
+		records = append(records, ledger_db.LedgerRecord{
+			Id:          baseID + "#restitution#i" + strconv.Itoa(i) + "#" + idSuffix + "#" + victim,
+			TxId:        p.TxID,
+			BlockHeight: p.BlockHeight,
+			Amount:      pay.Amount,
+			Asset:       "hive",
+			Owner:       victim,
+			Type:        LedgerTypeSafetySlashRestitution,
+		})
+	}
+	if burnAmt > 0 {
+		if p.BurnDelayBlocks == 0 {
+			records = append(records, ledger_db.LedgerRecord{
+				Id:          baseID + "#hive_burn#" + acct,
+				TxId:        p.TxID,
+				BlockHeight: p.BlockHeight,
+				Amount:      burnAmt,
+				Asset:       "hive",
+				Owner:       params.ProtocolSlashBurnAccount,
+				Type:        LedgerTypeSafetySlashHiveBurn,
+			})
+		} else {
+			delay := p.BurnDelayBlocks
+			if delay > params.MaxSafetySlashBurnDelayBlocks {
+				delay = params.MaxSafetySlashBurnDelayBlocks
+			}
+			maturity := p.BlockHeight + delay
+			if maturity < p.BlockHeight {
+				return LedgerResult{Ok: false, Msg: "slash burn maturity overflow"}
+			}
+			records = append(records, ledger_db.LedgerRecord{
+				Id:          baseID + "#hive_burn_pending#" + acct,
+				TxId:        p.TxID,
+				BlockHeight: p.BlockHeight,
+				Amount:      burnAmt,
+				Asset:       "hive",
+				Owner:       params.ProtocolSlashPendingBurnAccount,
+				From:        strconv.FormatUint(maturity, 10),
+				Type:        LedgerTypeSafetySlashHiveBurnPending,
+			})
+		}
+	}
+	ls.LedgerDb.StoreLedger(records...)
+	return LedgerResult{Ok: true, Msg: "success"}
+}
+
+// FinalizeMaturedSafetySlashBurns promotes pending slash burn rows whose maturity
+// height (stored in From) is <= blockHeight. Idempotent per pending row.
+func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
+	if ls.LedgerDb == nil || blockHeight == 0 {
+		return
+	}
+	pendingAcct := params.ProtocolSlashPendingBurnAccount
+	pendingRecs, err := ls.LedgerDb.GetLedgerRange(pendingAcct, 0, blockHeight, "hive", ledger_db.LedgerOptions{
+		OpType: []string{LedgerTypeSafetySlashHiveBurnPending},
+	})
+	if err != nil || pendingRecs == nil {
+		return
+	}
+	finalizedRecs, _ := ls.LedgerDb.GetLedgerRange(pendingAcct, 0, blockHeight, "hive", ledger_db.LedgerOptions{
+		OpType: []string{LedgerTypeSafetySlashHiveBurnPendingFinalized},
+	})
+	done := make(map[string]struct{})
+	if finalizedRecs != nil {
+		for _, m := range *finalizedRecs {
+			if strings.HasSuffix(m.Id, "#finalized_marker") {
+				done[strings.TrimSuffix(m.Id, "#finalized_marker")] = struct{}{}
+			}
+		}
+	}
+	for _, rec := range *pendingRecs {
+		if rec.Amount <= 0 {
+			continue
+		}
+		if _, ok := done[rec.Id]; ok {
+			continue
+		}
+		mat, err := strconv.ParseUint(strings.TrimSpace(rec.From), 10, 64)
+		if err != nil || mat > blockHeight {
+			continue
+		}
+		ls.LedgerDb.StoreLedger(
+			ledger_db.LedgerRecord{
+				Id:          rec.Id + "#pending_release",
+				TxId:        rec.TxId,
+				BlockHeight: blockHeight,
+				Amount:      -rec.Amount,
+				Asset:       "hive",
+				Owner:       pendingAcct,
+				From:        rec.From,
+				Type:        LedgerTypeSafetySlashHiveBurnPendingRelease,
+			},
+			ledger_db.LedgerRecord{
+				Id:          rec.Id + "#promoted_to_burn",
+				TxId:        rec.TxId,
+				BlockHeight: blockHeight,
+				Amount:      rec.Amount,
+				Asset:       "hive",
+				Owner:       params.ProtocolSlashBurnAccount,
+				Type:        LedgerTypeSafetySlashHiveBurn,
+			},
+			ledger_db.LedgerRecord{
+				Id:          rec.Id + "#finalized_marker",
+				TxId:        rec.TxId,
+				BlockHeight: blockHeight,
+				Amount:      0,
+				Asset:       "hive",
+				Owner:       pendingAcct,
+				From:        rec.From,
+				Type:        LedgerTypeSafetySlashHiveBurnPendingFinalized,
+			},
+		)
+	}
 }
 
 // PendulumBucketBalance sums every ledger record whose Owner == bucket and
