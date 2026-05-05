@@ -30,6 +30,7 @@ func (tsc *tssCommitments) SetCommitmentData(commitment TssCommitment) error {
 			"commitment":   commitment.Commitment,
 			"public_key":   commitment.PublicKey,
 			"tx_id":        commitment.TxId,
+			"bv":           commitment.BitSet,
 		},
 	}, options)
 

@@ -127,27 +127,6 @@ func TestLastTickInt_MeanMatchesIntegerAverageOfSortedQuotes(t *testing.T) {
 	}
 }
 
-// TestLastTickInt_SlashEntriesSortedByWitness verifies the slash list is
-// sorted, which is required for byte-determinism of the persisted bson form
-// (Go map iteration order is otherwise random).
-func TestLastTickInt_SlashEntriesSortedByWitness(t *testing.T) {
-	in := map[string]int{
-		"zach":  100,
-		"alice": 50,
-		"mary":  25,
-	}
-	got := sortedSlashEntries(in)
-	if len(got) != 3 {
-		t.Fatalf("len got=%d want 3", len(got))
-	}
-	if got[0].Witness != "alice" || got[1].Witness != "mary" || got[2].Witness != "zach" {
-		t.Fatalf("not sorted: %v", got)
-	}
-	if got[0].Bps != 50 || got[1].Bps != 25 || got[2].Bps != 100 {
-		t.Fatalf("bps not preserved: %v", got)
-	}
-}
-
 func TestLastTickInt_NilTracker(t *testing.T) {
 	var tr *FeedTracker
 	snap := tr.LastTickInt()

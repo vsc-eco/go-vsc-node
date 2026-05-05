@@ -21,10 +21,10 @@ func TestSnapshotRecord_BsonStableForIdenticalInputs(t *testing.T) {
 		HBDInterestRateBps:  1500,
 		HBDInterestRateOK:   true,
 		TrustedWitnessGroup: []string{"alice", "bob", "carol"},
-		WitnessSlashBps: []WitnessSlashRecord{
+		WitnessRewardReductions: []WitnessRewardReductionRecord{
 			{Witness: "alice", Bps: 0},
-			{Witness: "bob", Bps: 25},
-			{Witness: "carol", Bps: 50},
+			{Witness: "bob", Bps: 25, Evidence: WitnessLivenessEvidence{BlockAttestationBps: 25}},
+			{Witness: "carol", Bps: 200, Evidence: WitnessLivenessEvidence{BlockProductionBps: 200}},
 		},
 	}
 
@@ -51,13 +51,15 @@ func TestSnapshotRecord_RoundTripsBson(t *testing.T) {
 		HBDInterestRateBps:  2000,
 		HBDInterestRateOK:   true,
 		TrustedWitnessGroup: []string{"x"},
-		WitnessSlashBps:     []WitnessSlashRecord{{Witness: "x", Bps: 17}},
-		GeometryOK:          true,
-		GeometryV:           500_000,
-		GeometryP:           250_000,
-		GeometryE:           750_000,
-		GeometryT:           1_000_000,
-		GeometryS:           66_666_666,
+		WitnessRewardReductions: []WitnessRewardReductionRecord{
+			{Witness: "x", Bps: 17, Evidence: WitnessLivenessEvidence{TssBlameBps: 17}},
+		},
+		GeometryOK: true,
+		GeometryV:  500_000,
+		GeometryP:  250_000,
+		GeometryE:  750_000,
+		GeometryT:  1_000_000,
+		GeometryS:  66_666_666,
 	}
 	raw, err := bson.Marshal(rec)
 	if err != nil {
@@ -71,9 +73,10 @@ func TestSnapshotRecord_RoundTripsBson(t *testing.T) {
 		got.TrustedHiveMean != rec.TrustedHiveMean ||
 		got.TrustedHiveOK != rec.TrustedHiveOK ||
 		got.HBDInterestRateBps != rec.HBDInterestRateBps ||
-		len(got.WitnessSlashBps) != 1 ||
-		got.WitnessSlashBps[0].Witness != "x" ||
-		got.WitnessSlashBps[0].Bps != 17 ||
+		len(got.WitnessRewardReductions) != 1 ||
+		got.WitnessRewardReductions[0].Witness != "x" ||
+		got.WitnessRewardReductions[0].Bps != 17 ||
+		got.WitnessRewardReductions[0].Evidence.TssBlameBps != 17 ||
 		got.GeometryOK != rec.GeometryOK ||
 		got.GeometryV != rec.GeometryV ||
 		got.GeometryP != rec.GeometryP ||
