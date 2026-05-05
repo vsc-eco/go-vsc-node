@@ -12,6 +12,12 @@ type VscBlocks interface {
 	GetBlockByHeight(height uint64) (*VscHeaderRecord, error)
 	GetBlockById(id string) (*VscHeaderRecord, error)
 	GetBlocksByElection(epoch uint64) ([]VscHeaderRecord, error)
+	// GetBlocksInSlotRange returns headers whose slot_height falls in
+	// [fromSlot, toSlot] (inclusive both ends), sorted ascending. Used by
+	// per-tick liveness scoring so the reward-reduction aggregator can iterate
+	// the small window of blocks for the tick instead of pulling the whole
+	// epoch.
+	GetBlocksInSlotRange(fromSlot uint64, toSlot uint64) ([]VscHeaderRecord, error)
 }
 
 type VscHeaderRecord struct {

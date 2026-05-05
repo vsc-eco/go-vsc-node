@@ -108,16 +108,18 @@ func (se *StateEngine) runPendulumSettlement(info pendulumsettlement.BoundaryInf
 		return nil
 	}
 
-	// Aggregate slash bps over the closed epoch's snapshot range.
-	slashBpsByAccount := se.collectClosedEpochSlashes(info.PreviousEpoch, bh)
+	// Aggregate per-witness reward-reduction bps over the closed epoch's
+	// snapshot range. These reduce effective bonds for the distribution math
+	// but never debit the underlying HIVE_CONSENSUS principal.
+	reductionBpsByAccount := se.collectClosedEpochReductions(info.PreviousEpoch, bh)
 
-	postSlashBonds, appliedSlashes := pendulumsettlement.ApplySlashesToBonds(bonds, slashBpsByAccount)
-	totalBondPost := int64(0)
-	for _, b := range postSlashBonds {
-		totalBondPost += b
+	effectiveBonds, appliedReductions := pendulumsettlement.ApplyRewardReductionsToBonds(bonds, reductionBpsByAccount)
+	totalEffectiveBond := int64(0)
+	for _, b := range effectiveBonds {
+		totalEffectiveBond += b
 	}
-	if totalBondPost <= 0 {
-		log.Warn("pendulum settlement: post-slash committee bond is zero, skipping",
+	if totalEffectiveBond <= 0 {
+		log.Warn("pendulum settlement: post-reduction committee bond is zero, skipping",
 			"epoch", info.CurrentEpoch, "tx_id", txID)
 		return nil
 	}
@@ -125,15 +127,15 @@ func (se *StateEngine) runPendulumSettlement(info pendulumsettlement.BoundaryInf
 	// FinalNodeShare = R when E unset (the simplified W4-era model: every HBD
 	// in the nodes bucket is destined for nodes already; LP retention happens
 	// at swap time per W3, not at settlement). CalculateSplitPreviewFixed
-	// with E inferred from totalBondPost preserves audit-doc parity with the
-	// preview log.
-	split := pendulumsettlement.CalculateSplitPreviewFixed(r, totalBondPost, 2, 3, 0, 0)
+	// with E inferred from totalEffectiveBond preserves audit-doc parity with
+	// the preview log.
+	split := pendulumsettlement.CalculateSplitPreviewFixed(r, totalEffectiveBond, 2, 3, 0, 0)
 	nodeShare := split.FinalNodeShare
 	if nodeShare <= 0 {
 		nodeShare = r // bucket dollars must clear; under the post-W3 design pool side stayed in the pool already.
 	}
 
-	nodeDists := pendulumsettlement.ComputeNodeDistributions(nodeShare, postSlashBonds)
+	nodeDists := pendulumsettlement.ComputeNodeDistributions(nodeShare, effectiveBonds)
 
 	distPayload := make([]pendulumsettlement.DistributionEntry, 0, len(nodeDists))
 	for _, d := range nodeDists {
@@ -145,17 +147,17 @@ func (se *StateEngine) runPendulumSettlement(info pendulumsettlement.BoundaryInf
 			HBDAmt:  d.Amount,
 		})
 	}
-	slashPayload := make([]pendulumsettlement.SlashEntry, 0, len(appliedSlashes))
-	for _, s := range appliedSlashes {
-		slashPayload = append(slashPayload, pendulumsettlement.SlashEntry{
-			Account: s.Account,
-			Bps:     s.Bps,
+	reductionPayload := make([]pendulumsettlement.RewardReductionEntry, 0, len(appliedReductions))
+	for _, r := range appliedReductions {
+		reductionPayload = append(reductionPayload, pendulumsettlement.RewardReductionEntry{
+			Account: r.Account,
+			Bps:     r.Bps,
 		})
 	}
 	payload := pendulumsettlement.BuildSettlementPayload(
 		info.CurrentEpoch,
 		info.PreviousEpoch,
-		slashPayload,
+		reductionPayload,
 		distPayload,
 	)
 
@@ -166,10 +168,10 @@ func (se *StateEngine) runPendulumSettlement(info pendulumsettlement.BoundaryInf
 		"tx_id", txID,
 		"leader", info.Leader,
 		"r_hbd", r,
-		"t_hive_post_slash", totalBondPost,
+		"t_hive_effective", totalEffectiveBond,
 		"node_share_hbd", nodeShare,
 		"node_dist_count", len(distPayload),
-		"slash_count", len(slashPayload),
+		"reward_reduction_count", len(reductionPayload),
 	)
 
 	if se.pendulumBroadcaster == nil {
@@ -188,15 +190,15 @@ func (se *StateEngine) runPendulumSettlement(info pendulumsettlement.BoundaryInf
 	return nil
 }
 
-// collectClosedEpochSlashes aggregates per-witness slash bps from every
-// snapshot in (prev_epoch_start_bh, currentBh]. The lower bound is the
-// previous election's activation block; if it's missing we fall back to 0
-// which conservatively includes every snapshot up to the boundary.
+// collectClosedEpochReductions aggregates per-witness reward-reduction bps
+// from every snapshot in (prev_epoch_start_bh, currentBh]. The lower bound
+// is the previous election's activation block; if it's missing we fall back
+// to 0 which conservatively includes every snapshot up to the boundary.
 //
 // Returned map keys use the "hive:account" form so they line up with the
 // committee bonds map; snapshots store witnesses in plain "account" form,
 // so we normalize on the way in.
-func (se *StateEngine) collectClosedEpochSlashes(prevEpoch uint64, currentBh uint64) map[string]int {
+func (se *StateEngine) collectClosedEpochReductions(prevEpoch uint64, currentBh uint64) map[string]int {
 	if se.pendulumOracleDb == nil {
 		return nil
 	}
@@ -209,7 +211,7 @@ func (se *StateEngine) collectClosedEpochSlashes(prevEpoch uint64, currentBh uin
 	if err != nil || len(snaps) == 0 {
 		return nil
 	}
-	rawTotals := pendulumsettlement.AccumulateSlashBps(snaps)
+	rawTotals := pendulumsettlement.AccumulateRewardReductionBps(snaps)
 	if len(rawTotals) == 0 {
 		return nil
 	}

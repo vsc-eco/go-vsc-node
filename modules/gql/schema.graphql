@@ -1014,8 +1014,8 @@ type PendulumOracleSnapshot {
 
   """Sorted list of witness accounts whose feeds contributed to the trusted mean at this tick."""
   trusted_witness_group: [String!]
-  """Sorted slash bps per witness for this tick window."""
-  witness_slash_bps: [PendulumWitnessSlash!]
+  """Per-witness reward-reduction bps for this tick (post max-of, post-clamp). Sorted by witness account."""
+  witness_reward_reductions: [PendulumWitnessRewardReduction!]
 
   """True when the geometry block (V/P/E/T/S) was computable for this tick. Required before consuming any geometry_* field."""
   geometry_ok: Boolean!
@@ -1031,12 +1031,28 @@ type PendulumOracleSnapshot {
   geometry_s_sq64: Int64!
 }
 
-"""One row of the per-tick witness slash bps list."""
-type PendulumWitnessSlash {
-  """Hive account name of the slashed witness."""
+"""One row of the per-tick witness reward-reduction list."""
+type PendulumWitnessRewardReduction {
+  """Hive account name of the witness."""
   witness: String!
-  """Slash basis points accumulated over this tick window."""
+  """Consolidated reward-reduction bps for this tick (max-of across signals)."""
   bps: Int!
+  """Per-signal raw bps that contributed to this tick's reduction. The max-of these (after pre-cap) is the consolidated bps. Sub-values are not summed."""
+  evidence: PendulumWitnessLivenessEvidence!
+}
+
+"""Per-signal raw bps for a single witness at one tick. Observability-only — settlement math reads only the consolidated PendulumWitnessRewardReduction.bps."""
+type PendulumWitnessLivenessEvidence {
+  """Bps from missed VSC block production (you were elected proposer, no block produced)."""
+  block_production_bps: Int!
+  """Bps from missed VSC block attestation (committee member not in block's Signers list)."""
+  block_attestation_bps: Int!
+  """Bps from being absent from a TSS reshare commitment (Tier A — locks witness out of the epoch's TSS work)."""
+  tss_reshare_exclusion_bps: Int!
+  """Bps from being named in a TSS blame commitment (Tier B — caused a session retry)."""
+  tss_blame_bps: Int!
+  """Bps from being absent from a successful TSS sign_result's BLS bitvec (Tier C — passive non-participation)."""
+  tss_sign_non_participation_bps: Int!
 }
 
 """

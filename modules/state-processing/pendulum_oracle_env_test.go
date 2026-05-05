@@ -65,10 +65,6 @@ func TestPendulumOracleEnv_ExposesTickSnapshot(t *testing.T) {
 	group, ok := env["pendulum.trusted_witness_group"].([]string)
 	require.True(t, ok)
 	assert.Equal(t, []string{"alice"}, group)
-
-	slash, ok := env["pendulum.witness_slash_bps"].(map[string]int)
-	require.True(t, ok)
-	assert.Equal(t, 0, slash["alice"])
 }
 
 func TestPendulumOracleEnv_NoTrustedFeed(t *testing.T) {
@@ -91,48 +87,3 @@ func TestPendulumOracleEnv_NoTrustedFeed(t *testing.T) {
 	assert.Equal(t, false, env["pendulum.trusted_hive_mean_ok"])
 }
 
-func TestPendulumOracleEnv_ExposesSlashMapForMultipleWitnesses(t *testing.T) {
-	te := newTestEnv()
-
-	for bh := uint64(1); bh <= 100; bh++ {
-		witness := "alice"
-		if bh == 2 {
-			witness = "bob"
-		}
-		block := hive_blocks.HiveBlock{
-			BlockNumber:  bh,
-			BlockID:      fmt.Sprintf("block-%d", bh),
-			Witness:      witness,
-			Timestamp:    "2026-01-01T00:00:00",
-			Transactions: nil,
-		}
-		if bh == 1 {
-			block.Transactions = []hive_blocks.Tx{
-				{
-					Operations: []hivego.Operation{
-						{
-							Type: "feed_publish",
-							Value: map[string]interface{}{
-								"publisher": "alice",
-								"exchange_rate": map[string]interface{}{
-									"base":  "0.25 HBD",
-									"quote": "1.000 HIVE",
-								},
-							},
-						},
-					},
-				},
-			}
-		}
-		te.SE.ProcessBlock(block)
-	}
-
-	env := te.SE.PendulumOracleEnv()
-	require.NotNil(t, env)
-	slash, ok := env["pendulum.witness_slash_bps"].(map[string]int)
-	require.True(t, ok)
-
-	assert.Equal(t, 0, slash["alice"])
-	// bob: 1 signature => deficit 3 (75 bps) + missing update (50 bps) = 125
-	assert.Equal(t, 125, slash["bob"])
-}

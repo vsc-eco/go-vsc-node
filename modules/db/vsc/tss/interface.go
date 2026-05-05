@@ -105,7 +105,7 @@ type CommitmentMetadata struct {
 }
 
 type TssCommitment struct {
-	//type = blame, reshare
+	//type = blame, reshare, sign_result, keygen
 	Type        string              `json:"type"         bson:"type"`
 	BlockHeight uint64              `json:"block_height" bson:"block_height"`
 	Epoch       uint64              `json:"epoch"        bson:"epoch"`
@@ -113,8 +113,15 @@ type TssCommitment struct {
 	KeyId       string              `json:"key_id"       bson:"key_id"`
 	TxId        string              `json:"tx_id"        bson:"tx_id"`
 	PublicKey   *string             `json:"public_key"   bson:"public_key"`
-	Metadata    *CommitmentMetadata `json:"metadata"     bson:"metadata,omitempty"`
-	Timestamp   string              `json:"timestamp"    bson:"timestamp,omitempty"`
+	// BitSet is the BLS signers bitvec from the on-chain SignedCommitment
+	// (the "bv" field). For sign_result commitments this enumerates which
+	// committee members BLS-signed the result; the reward-reduction
+	// aggregator reads it to score Tier-C non-participation. Empty string
+	// for legacy records persisted before this field was added — those
+	// contribute zero Tier-C bps.
+	BitSet    string              `json:"bv"           bson:"bv,omitempty"`
+	Metadata  *CommitmentMetadata `json:"metadata"     bson:"metadata,omitempty"`
+	Timestamp string              `json:"timestamp"    bson:"timestamp,omitempty"`
 }
 
 type TssKeyAlgo string

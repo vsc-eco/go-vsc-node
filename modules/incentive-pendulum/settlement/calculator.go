@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"vsc-node/modules/incentive-pendulum"
+	"vsc-node/modules/incentive-pendulum/rewards"
 )
 
 type SplitPreview struct {
@@ -23,12 +24,16 @@ type Distribution struct {
 	Amount  int64
 }
 
-type SlashApplied struct {
-	Account       string
-	Bps           int
-	OriginalBond  int64
-	SlashedAmount int64
-	PostSlashBond int64
+// RewardReductionApplied is one row of the per-epoch effective-bond
+// computation. ReductionAmount is what gets removed from the bond in the
+// distribution math; the underlying ledger HIVE_CONSENSUS balance is NOT
+// debited (that would be true slashing — out of scope).
+type RewardReductionApplied struct {
+	Account          string
+	Bps              int
+	OriginalBond     int64
+	ReductionAmount  int64
+	EffectiveBond    int64
 }
 
 func CalculateSplitPreviewFixed(r int64, t int64, effectiveNumerator int64, effectiveDenominator int64, v int64, p int64) SplitPreview {
@@ -126,43 +131,52 @@ func ComputeNodeDistributions(nodeShare int64, bonds map[string]int64) []Distrib
 	return out
 }
 
-func ApplySlashesToBonds(bonds map[string]int64, slashBps map[string]int) (map[string]int64, []SlashApplied) {
+// ApplyRewardReductionsToBonds returns a new bond map with each account's
+// effective bond reduced by reductionBps[acct]/10000 (capped at
+// rewards.PerEpochCapBps = 100%). The original ledger HIVE_CONSENSUS bonds
+// are NOT touched — this only computes the per-epoch effective bond used by
+// the pro-rata distribution math.
+//
+// Returns (effectiveBonds, applied) where applied lists every account that
+// had a non-zero reduction, sorted lexicographically for deterministic
+// payload construction.
+func ApplyRewardReductionsToBonds(bonds map[string]int64, reductionBps map[string]int) (map[string]int64, []RewardReductionApplied) {
 	out := make(map[string]int64, len(bonds))
 	for k, v := range bonds {
 		out[k] = v
 	}
 
-	accounts := make([]string, 0, len(slashBps))
-	for acc := range slashBps {
+	accounts := make([]string, 0, len(reductionBps))
+	for acc := range reductionBps {
 		accounts = append(accounts, acc)
 	}
 	sort.Strings(accounts)
 
-	applied := make([]SlashApplied, 0, len(accounts))
+	applied := make([]RewardReductionApplied, 0, len(accounts))
 	for _, acc := range accounts {
 		orig := out[acc]
 		if orig <= 0 {
 			continue
 		}
-		bps := slashBps[acc]
+		bps := reductionBps[acc]
 		if bps <= 0 {
 			continue
 		}
-		if bps > 1000 {
-			bps = 1000
+		if bps > rewards.PerEpochCapBps {
+			bps = rewards.PerEpochCapBps
 		}
-		slashed := (orig * int64(bps)) / 10000
-		post := orig - slashed
-		if post < 0 {
-			post = 0
+		reduction := (orig * int64(bps)) / 10000
+		eff := orig - reduction
+		if eff < 0 {
+			eff = 0
 		}
-		out[acc] = post
-		applied = append(applied, SlashApplied{
-			Account:       acc,
-			Bps:           bps,
-			OriginalBond:  orig,
-			SlashedAmount: slashed,
-			PostSlashBond: post,
+		out[acc] = eff
+		applied = append(applied, RewardReductionApplied{
+			Account:         acc,
+			Bps:             bps,
+			OriginalBond:    orig,
+			ReductionAmount: reduction,
+			EffectiveBond:   eff,
 		})
 	}
 	return out, applied
