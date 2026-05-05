@@ -500,8 +500,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					log.Verbose("frSync", "stakeAmt", frSync.StakedAmount, "unstakeAmt", frSync.UnstakedAmount)
 
-					amt, ok := frSyncLedgerAmount(frSync.StakedAmount, frSync.UnstakedAmount)
-					if !ok {
+					if frSync.StakedAmount < 0 || frSync.UnstakedAmount < 0 {
 						// GV-H9: a malformed/replayed fr_sync carrying a negative
 						// amount is rejected, not applied — see frSyncLedgerAmount.
 						log.Warn(
@@ -513,16 +512,23 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							"unstake_amt",
 							frSync.UnstakedAmount,
 						)
-					} else if err := se.LedgerState.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-						Id:          MakeTxId(tx.TransactionID, 0),
-						Amount:      amt,
-						BlockHeight: blockInfo.BlockHeight + 1,
-						Owner:       params.FR_VIRTUAL_ACCOUNT,
-						//Fractional reserve update
-						Asset: "hbd_savings",
-						Type:  "fr_sync",
-					}); err != nil {
-						log.Error("fr_sync: ledger write failed", "txId", tx.TransactionID, "amount", amt, "err", err)
+					} else if frSync.StakedAmount > 0 || frSync.UnstakedAmount > 0 {
+						rec := ledgerDb.LedgerRecord{
+							Id:          MakeTxId(tx.TransactionID, 0),
+							BlockHeight: blockInfo.BlockHeight + 1,
+							Asset: "hbd_savings",
+							Type:  "fr_sync",
+						}
+						if frSync.StakedAmount > 0 {
+							rec.Amount = frSync.StakedAmount
+							rec.To = params.FR_VIRTUAL_ACCOUNT
+						} else {
+							rec.Amount = frSync.UnstakedAmount
+							rec.From = params.FR_VIRTUAL_ACCOUNT
+						}
+						if err := se.LedgerState.LedgerDb.StoreLedger(rec); err != nil {
+							log.Error("fr_sync: ledger write failed", "txId", tx.TransactionID, "amount", rec.Amount, "err", err)
+						}
 					}
 				}
 
@@ -2098,11 +2104,11 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		completeIds = append(completeIds, record.Id)
 
 		ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
-			Id:          record.Id + "#out",
+			Id:          record.Id + ":hive",
 			Amount:      record.Amount,
 			Asset:       "hive",
 			BlockHeight: endBlock,
-			Owner:       record.To,
+			To:          record.To,
 			Type:        "consensus_unstake",
 		})
 	}
@@ -2225,7 +2231,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			if ledgerSystem.IsProtocolMetaLedgerType(v.Type) {
 				continue
 			}
-			ledgerBalances[v.Asset] += v.Amount
+			ledgerBalances[v.Asset] += v.DeltaFor(k)
 		}
 
 		if needsClaimUpdate {

@@ -67,24 +67,26 @@ type MockLedgerDb struct {
 // double-counts.
 func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) error {
 	for _, record := range ledgerRecords {
-		owner := record.Owner
-		existing := m.LedgerRecords[owner]
-		// Records with empty Id fall through to append (legacy flow).
-		if record.Id != "" {
-			replaced := false
-			for i := range existing {
-				if existing[i].Id == record.Id {
-					existing[i] = record
-					replaced = true
-					break
+		upsertRecord := func(key string) {
+			existing := m.LedgerRecords[key]
+			// Records with empty Id fall through to append (legacy flow).
+			if record.Id != "" {
+				for i := range existing {
+					if existing[i].Id == record.Id {
+						existing[i] = record
+						m.LedgerRecords[key] = existing
+						return
+					}
 				}
 			}
-			if replaced {
-				m.LedgerRecords[owner] = existing
-				continue
-			}
+			m.LedgerRecords[key] = append(existing, record)
 		}
-		m.LedgerRecords[owner] = append(existing, record)
+		if record.From != "" {
+			upsertRecord(record.From)
+		}
+		if record.To != "" && record.To != record.From {
+			upsertRecord(record.To)
+		}
 	}
 	return nil
 }

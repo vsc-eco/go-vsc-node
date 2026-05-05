@@ -35,8 +35,7 @@ type VscHeaderRecord struct {
 	Stats        struct {
 		Size uint64 `bson:"size"`
 	} `bson:"stats"`
-	Ts        string      `bson:"ts"`
-	DebugData interface{} `bson:"debug_data"`
+	Ts string `bson:"ts"`
 }
 
 type VscBlock struct {

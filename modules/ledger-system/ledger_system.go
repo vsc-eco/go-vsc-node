@@ -818,7 +818,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 				BlockHeight: blockHeight + 1,
 				Amount:      int64(distributeAmt),
 				Asset:       "hbd_savings",
-				Owner:       owner,
+				To:          owner,
 				Type:        "interest",
 			}); err != nil {
 				log.Error(
@@ -897,10 +897,10 @@ func (ls *ledgerSystem) IndexActions(actionUpdate ActionUpdate, extraInfo ExtraI
 		if record.Type == "stake" {
 			log.Debug("Indexxing stake Ledger")
 			if err := ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-				Id:     record.Id + "#out",
+				Id:     record.Id + ":hbd_savings",
 				Amount: record.Amount,
 				Asset:  "hbd_savings",
-				Owner:  record.To,
+				To:     record.To,
 				Type:   "stake",
 
 				//Next block balance should be clear
@@ -922,10 +922,10 @@ func (ls *ledgerSystem) IndexActions(actionUpdate ActionUpdate, extraInfo ExtraI
 				blockDelay = common.HBD_UNSTAKE_BLOCKS
 			}
 			if err := ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-				Id:     record.Id + "#out",
+				Id:     record.Id + ":hbd",
 				Amount: record.Amount,
 				Asset:  "hbd",
-				Owner:  record.To,
+				To:     record.To,
 				Type:   "unstake",
 
 				//It'll become available in 3 days of blocks
@@ -953,11 +953,12 @@ func (ls *ledgerSystem) IngestOplog(oplog []OpLogEvent, options OplogInjestOptio
 			BlockHeight: options.EndHeight,
 			Amount:      v.Amount,
 			Asset:       v.Asset,
-			Owner:       v.Owner,
+			From:        v.From,
+			To:          v.To,
 			Type:        v.Type,
 			// TxId:        v.,
 		}); err != nil {
-			log.Error("IngestOplog: ledger write failed", "id", v.Id, "owner", v.Owner, "err", err)
+			log.Error("IngestOplog: ledger write failed", "id", v.Id, "from", v.From, "to", v.To, "err", err)
 		}
 	}
 
@@ -1053,8 +1054,7 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 		BlockHeight: deposit.BlockHeight,
 		Amount:      deposit.Amount,
 		Asset:       deposit.Asset,
-		From:        deposit.From,
-		Owner:       decodedParams.To,
+		To:          decodedParams.To,
 		Type:        "deposit",
 		TxId:        deposit.Id,
 	}); err != nil {

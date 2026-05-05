@@ -1049,8 +1049,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		}{
 			Size: uint64(len(jsonBytes)),
 		},
-		Ts:        t.Self.Timestamp,
-		DebugData: blockContentC,
+		Ts: t.Self.Timestamp,
 	})
 
 	se.logMagiBlock(t, &blockContentC, slotInfo.StartHeight, start)

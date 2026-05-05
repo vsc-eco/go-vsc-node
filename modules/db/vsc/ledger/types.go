@@ -58,8 +58,8 @@ type BalanceRecord struct {
 // 	"id": "e719b65bd0a44e7b074029d2dc9d8aa20a7f9823-0",
 // 	"amount": 100,
 // 	"block_height": 88098888,
-// 	"from": "vaultectest7778",
-// 	"owner": "did:pkh:eip155:1:0x0F8239B80720BA9367B19047c92924e7287b7A35",
+// 	"from": "",
+// 	"to": "did:pkh:eip155:1:0x0F8239B80720BA9367B19047c92924e7287b7A35",
 // 	"t": "deposit",
 // 	"tk": "HBD",
 // 	"tx_id": "e719b65bd0a44e7b074029d2dc9d8aa20a7f9823"
@@ -81,7 +81,7 @@ type LedgerRecord struct {
 	BlockHeight uint64  `json:"block_height" bson:"block_height"`
 	Timestamp   *string `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
 	From        string  `json:"from" bson:"from"`
-	Owner       string  `json:"owner" bson:"owner"`
+	To          string  `json:"to" bson:"to"`
 	Type        string  `json:"t" bson:"t"`
 	Asset       string  `json:"tk" bson:"tk"`
 	TxId        string  `json:"tx_id" bson:"tx_id"`
@@ -89,6 +89,19 @@ type LedgerRecord struct {
 	BIdx int64
 	//Op Index: Index of the operation in the TX
 	OpIdx int64
+}
+
+// DeltaFor returns the signed balance change this record produces for account.
+// + when account is the recipient (To), - when sender (From), 0 otherwise.
+func (r LedgerRecord) DeltaFor(account string) int64 {
+	var delta int64
+	if r.To == account {
+		delta += r.Amount
+	}
+	if r.From == account {
+		delta -= r.Amount
+	}
+	return delta
 }
 
 type BridgeActions interface {
