@@ -357,7 +357,12 @@ type RcRecord {
 A ledger transfer record representing a balance movement between accounts.
 """
 type LedgerRecord {
-  """Unique record identifier."""
+  """
+  Unique record identifier. Equals the originating transaction ID, with an
+  `:<asset>` suffix appended when one operation produces multiple records
+  (e.g. `<txId>:hive` and `<txId>:hive_consensus` for a consensus_stake, or
+  `<txId>:hbd_savings` for the credit half of a stake completion).
+  """
   id: String!
   """Transfer amount in smallest unit of the asset (always positive)."""
   amount: Int64!
@@ -373,8 +378,6 @@ type LedgerRecord {
   type: String!
   """Asset type involved."""
   asset: String!
-  """Transaction ID that produced this ledger record."""
-  tx_id: String!
 }
 
 """
