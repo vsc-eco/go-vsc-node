@@ -125,7 +125,7 @@ func TestE2E(t *testing.T) {
 			}, nil
 		},
 	})
-	container.AddStep(r2e.Wait(5))
+	container.AddStep(r2e.Wait(2))
 
 	var contractId string
 	container.AddStep(e2e.Step{
@@ -176,7 +176,7 @@ func TestE2E(t *testing.T) {
 		},
 	})
 
-	container.AddStep(r2e.DupElection(5 * time.Second))
+	container.AddStep(r2e.DupElection(2 * time.Second))
 	container.AddStep(e2e.Step{
 		Name: "Update Contract",
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
@@ -219,7 +219,7 @@ func TestE2E(t *testing.T) {
 		},
 	})
 
-	container.AddStep(r2e.Wait(10))
+	// container.AddStep(r2e.Wait(10))
 	container.AddStep(e2e.Step{
 		Name: "Execute Contract - Test 1",
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
@@ -261,9 +261,10 @@ func TestE2E(t *testing.T) {
 				return nil, err
 			}
 			tx := transactionpool.VSCTransaction{
-				Ops:   []transactionpool.VSCTransactionOp{op1, op2, op3},
-				Nonce: 0,
-				NetId: "vsc-mocknet",
+				Ops:     []transactionpool.VSCTransactionOp{op1, op2, op3},
+				Nonce:   0,
+				NetId:   "vsc-mocknet",
+				RcLimit: 1000,
 			}
 			sTx, err := transactionCreator.SignFinal(tx)
 			txId, err := transactionCreator.Broadcast(sTx)
@@ -273,7 +274,7 @@ func TestE2E(t *testing.T) {
 			}
 
 			fmt.Println("txId", txId)
-			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}}, 120), nil
+			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}}, 30), nil
 		},
 	})
 
@@ -302,7 +303,7 @@ func TestE2E(t *testing.T) {
 		},
 	})
 
-	container.AddStep(r2e.DupElection(10 * time.Second))
+	container.AddStep(r2e.DupElection(3 * time.Second))
 
 	container.AddStep(e2e.Step{
 		Name: "Execute Contract - Test 2",
@@ -346,9 +347,10 @@ func TestE2E(t *testing.T) {
 				return nil, err
 			}
 			tx := transactionpool.VSCTransaction{
-				Ops:   []transactionpool.VSCTransactionOp{op1, op2, op3},
-				Nonce: 1,
-				NetId: "vsc-mocknet",
+				Ops:     []transactionpool.VSCTransactionOp{op1, op2, op3},
+				Nonce:   1,
+				NetId:   "vsc-mocknet",
+				RcLimit: 1000,
 			}
 			sTx, err := transactionCreator.SignFinal(tx)
 			txId, err := transactionCreator.Broadcast(sTx)
@@ -377,8 +379,9 @@ func TestE2E(t *testing.T) {
 				Ops: []transactionpool.VSCTransactionOp{
 					op4,
 				},
-				Nonce: 2,
-				NetId: "vsc-mocknet",
+				Nonce:   2,
+				NetId:   "vsc-mocknet",
+				RcLimit: 200,
 			}
 			sTx2, _ := transactionCreator.SignFinal(tx2)
 			txId2, err := transactionCreator.Broadcast(sTx2)
@@ -388,10 +391,10 @@ func TestE2E(t *testing.T) {
 			}
 
 			fmt.Println("txId2", txId2)
-			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}, {txId2, transactions.TransactionStatusFailed}}, 120), nil
+			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}, {txId2, transactions.TransactionStatusFailed}}, 30), nil
 		},
 	})
-	container.AddStep(r2e.Wait(10))
+	// container.AddStep(r2e.Wait(10))
 
 	err := container.RunSteps(t)
 

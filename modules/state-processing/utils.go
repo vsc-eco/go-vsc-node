@@ -184,6 +184,11 @@ type MockReader struct {
 	ProcessFunction streamer.ProcessFunction
 	LastBlock       uint64
 
+	// BlockTime controls both the real-time interval at which StartRealtime
+	// produces blocks and the simulated timestamp delta between consecutive
+	// blocks. Defaults to 3s (Hive mainnet block time).
+	BlockTime time.Duration
+
 	lastTs time.Time
 	mutex  *sync.Mutex
 }
@@ -217,9 +222,9 @@ func (mr *MockReader) BroadcastTx() {
 
 }
 
-// Run the mock in real time, producing blocks every 3s.
+// Run the mock in real time, producing blocks at mr.BlockTime intervals.
 func (mr *MockReader) StartRealtime() {
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(mr.BlockTime)
 	quit := make(chan struct{})
 	go func() {
 		for {
@@ -237,7 +242,7 @@ func (mr *MockReader) StartRealtime() {
 
 func (mr *MockReader) witnessBlock() {
 	mr.mutex.Lock()
-	ts := mr.lastTs.Add(3 * time.Second)
+	ts := mr.lastTs.Add(mr.BlockTime)
 
 	bn := mr.LastBlock + 1
 	headerbytes := make([]byte, 4)
@@ -283,7 +288,8 @@ func (mr *MockReader) IngestTx(tx hive_blocks.Tx) {
 
 func NewMockReader() *MockReader {
 	return &MockReader{
-		mutex: &sync.Mutex{},
+		BlockTime: 3 * time.Second,
+		mutex:     &sync.Mutex{},
 	}
 }
 

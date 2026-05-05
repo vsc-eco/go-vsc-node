@@ -115,6 +115,7 @@ func (c *E2EContainer) Init() error {
 	cbortypes.RegisterTypes()
 
 	c.mockReader = stateEngine.NewMockReader()
+	c.mockReader.BlockTime = 1 * time.Second
 
 	mockCreator := stateEngine.MockCreator{
 		Mr: c.mockReader,
