@@ -13,11 +13,13 @@ import (
 // handlePendulumSettlement processes a vsc.pendulum_settlement custom-JSON op.
 //
 // Wire flow:
-//  1. Parse the SettlementPayload (epoch, prev_epoch, slashes, distributions).
+//  1. Parse the SettlementPayload (epoch, prev_epoch, reward_reductions, distributions).
 //  2. Verify the active-auth signer is the elected leader at this block.
-//  3. Apply slashes by debiting HIVE_CONSENSUS for each named witness via
-//     a slash op on the ledger system.  (Slash destination is the open
-//     B7 question — for now slashed HIVE is removed from circulation.)
+//  3. Reward reductions are informational at the L1 op layer — they were
+//     already applied by the leader to compute distribution amounts and the
+//     ledger principal (HIVE_CONSENSUS) is intentionally not debited.
+//     Liveness penalties never touch principal; true slashing for safety
+//     faults is a separate workstream.
 //  4. Apply distributions by draining pendulum:nodes:HBD into each named
 //     account via PendulumDistribute.
 //
@@ -50,32 +52,12 @@ func (se *StateEngine) handlePendulumSettlement(block hive_blocks.HiveBlock, tx 
 	bh := block.BlockNumber
 	txID := pendulumsettlement.BuildDeterministicSettlementTxID(payload.Epoch, payload.PrevEpoch, primaryAuth(cj.RequiredAuths))
 
-	// Apply slashes first so distributions reflect post-slash bond weights.
-	for _, sl := range payload.Slashes {
-		if sl.Bps <= 0 {
+	for _, rr := range payload.RewardReductions {
+		if rr.Bps <= 0 {
 			continue
 		}
-		acct := normalizeHiveAccount(sl.Account)
-		bond := se.LedgerSystem.GetBalance(acct, bh, "hive_consensus")
-		if bond <= 0 {
-			continue
-		}
-		// bps clamped to TSS_BAN_THRESHOLD-equivalent cap so a malformed payload
-		// can't move more than 10% of bond per epoch.
-		bps := sl.Bps
-		if bps > 1000 {
-			bps = 1000
-		}
-		amount := bond * int64(bps) / 10000
-		if amount <= 0 {
-			continue
-		}
-		// W4-simplified path: no PendulumSlash op exists yet; the slash debit is
-		// applied through a direct LedgerSystem write, mirroring the convention
-		// the existing PendulumAccrue/Distribute use. Destination is open per
-		// plan question B7 — for now the bond is burned (no credit emitted).
-		log.Debug("pendulum settlement slash", "account", acct, "bps", bps, "bond", bond, "amount_hive_consensus", amount, "tx_id", txID)
-		// TODO(W6 follow-up): wire LedgerSystem.SlashConsensus once the destination is finalized.
+		log.Debug("pendulum settlement reward reduction (informational)",
+			"account", normalizeHiveAccount(rr.Account), "bps", rr.Bps, "tx_id", txID)
 	}
 
 	for _, d := range payload.Dists {
