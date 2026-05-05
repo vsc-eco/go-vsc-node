@@ -271,7 +271,7 @@ func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *Tran
 		return nil, paginateErr
 	}
 
-	return r.Transactions.FindTransactions(filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, filterOptions.ByLedgerToFrom, filterOptions.ByLedgerTypes, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
+	return r.Transactions.FindTransactions(filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
 // FindContractOutput is the resolver for the findContractOutput field.
@@ -874,6 +874,28 @@ func (r *transactionRecordResolver) Nonce(ctx context.Context, obj *transactions
 // RcLimit is the resolver for the rc_limit field.
 func (r *transactionRecordResolver) RcLimit(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
 	return model.Uint64(obj.RcLimit), nil
+}
+
+// Ledger is the resolver for the ledger field.
+func (r *transactionRecordResolver) Ledger(ctx context.Context, obj *transactions.TransactionRecord) ([]ledgerSystem.OpLogEvent, error) {
+	records, err := r.Resolver.Ledger.GetRawLedgerRange(nil, &obj.Id, nil, nil, nil, nil, 0, 100)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ledgerSystem.OpLogEvent, len(records))
+	for i, rec := range records {
+		out[i] = ledgerSystem.OpLogEvent{
+			Id:     rec.Id,
+			From:   rec.From,
+			To:     rec.To,
+			Amount: rec.Amount,
+			Asset:  rec.Asset,
+			Memo:   rec.Memo,
+			Type:   rec.Type,
+			Params: rec.Params,
+		}
+	}
+	return out, nil
 }
 
 // LedgerActions is the resolver for the ledger_actions field.

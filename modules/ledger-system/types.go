@@ -15,7 +15,8 @@ type LedgerUpdate struct {
 	Asset  string
 	Memo   string
 	//transfer, withdraw, stake, unstake
-	Type string
+	Type   string
+	Params map[string]interface{}
 }
 
 // DeltaFor returns the signed balance change this update produces for account.

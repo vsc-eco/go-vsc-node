@@ -84,6 +84,9 @@ type LedgerRecord struct {
 	Type        string  `json:"t" bson:"t"`
 	Asset       string  `json:"tk" bson:"tk"`
 
+	Memo   string                 `json:"memo,omitempty" bson:"memo,omitempty"`
+	Params map[string]interface{} `json:"params,omitempty" bson:"params,omitempty"`
+
 	BIdx int64
 	//Op Index: Index of the operation in the TX
 	OpIdx int64

@@ -2,7 +2,6 @@ package transactions
 
 import (
 	"time"
-	ledgerSystem "vsc-node/modules/ledger-system"
 )
 
 type IngestTransactionUpdate struct {
@@ -20,12 +19,10 @@ type IngestTransactionUpdate struct {
 	AnchoredId           *string
 	AnchoredIndex        *int64
 	AnchoredHeight       *uint64
-	Ledger               []ledgerSystem.OpLogEvent
 }
 
 type SetResultUpdate struct {
 	Id     string
-	Ledger *[]ledgerSystem.OpLogEvent
 	Status *TransactionStatus
 	Output *TransactionOutput
 }
@@ -77,7 +74,6 @@ type TransactionRecord struct {
 	AnchoredTs     *string `json:"anchr_ts,omitempty" bson:"anchr_ts,omitempty"`
 	AnchoredHeight uint64  `json:"anchr_height" bson:"anchr_height"`
 
-	FirstSeen time.Time                  `json:"first_seen" bson:"first_seen"`
-	Ledger    *[]ledgerSystem.OpLogEvent `json:"ledger,omitempty" bson:"ledger,omitempty"`
-	Output    []TransactionOutput        `json:"output,omitempty" bson:"output,omitempty"`
+	FirstSeen time.Time           `json:"first_seen" bson:"first_seen"`
+	Output    []TransactionOutput `json:"output,omitempty" bson:"output,omitempty"`
 }
