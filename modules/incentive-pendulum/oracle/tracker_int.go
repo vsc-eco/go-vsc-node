@@ -14,6 +14,11 @@ import (
 // snapshot here re-derives the price aggregate by sorting trusted witnesses
 // and summing SQ64 quotes — bit-equal across nodes given the same on-chain
 // inputs. This is the only form persisted to consensus state by W2.
+//
+// Per-witness reward-reduction bps are computed by the rewards/ package
+// from L2 evidence (vsc_blocks + tss_commitments) at snapshot persistence
+// time and stored alongside this snapshot — they are NOT carried on the
+// in-memory tracker.
 type FeedTickSnapshotInt struct {
 	TickBlockHeight uint64
 
@@ -28,16 +33,6 @@ type FeedTickSnapshotInt struct {
 	HBDInterestRateOK  bool
 
 	TrustedWitnessGroup []string
-
-	// WitnessSlashBps stored as a sorted slice (NOT a map) so the persisted
-	// bson form is byte-deterministic across nodes.
-	WitnessSlashBps []WitnessSlashEntry
-}
-
-// WitnessSlashEntry is one (witness → bps) row in a snapshot's slash list.
-type WitnessSlashEntry struct {
-	Witness string
-	Bps     int
 }
 
 // LastTickInt returns the most recent tick as a deterministic integer snapshot.
@@ -73,8 +68,6 @@ func (t *FeedTracker) LastTickInt() FeedTickSnapshotInt {
 	}
 
 	out.TrustedHiveMean, out.TrustedHiveOK = t.deterministicTrustedMeanLocked()
-
-	out.WitnessSlashBps = sortedSlashEntries(t.last.WitnessSlashBps)
 	return out
 }
 
@@ -107,14 +100,3 @@ func (t *FeedTracker) deterministicTrustedMeanLocked() (intmath.SQ64, bool) {
 	return intmath.SQ64(mean.Int64()), true
 }
 
-func sortedSlashEntries(m map[string]int) []WitnessSlashEntry {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make([]WitnessSlashEntry, 0, len(m))
-	for w, bps := range m {
-		out = append(out, WitnessSlashEntry{Witness: w, Bps: bps})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Witness < out[j].Witness })
-	return out
-}

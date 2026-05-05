@@ -42,3 +42,17 @@ func (m *MockVscBlocksDb) GetBlocksByElection(epoch uint64) ([]vscBlocks.VscHead
 	}
 	return results, nil
 }
+
+func (m *MockVscBlocksDb) GetBlocksInSlotRange(fromSlot uint64, toSlot uint64) ([]vscBlocks.VscHeaderRecord, error) {
+	if toSlot < fromSlot {
+		return nil, nil
+	}
+	var results []vscBlocks.VscHeaderRecord
+	for _, b := range m.Blocks {
+		s := uint64(b.SlotHeight)
+		if s >= fromSlot && s <= toSlot {
+			results = append(results, b)
+		}
+	}
+	return results, nil
+}
