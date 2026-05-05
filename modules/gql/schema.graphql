@@ -359,16 +359,16 @@ A ledger transfer record representing a balance movement between accounts.
 type LedgerRecord {
   """Unique record identifier."""
   id: String!
-  """Transfer amount in smallest unit of the asset."""
+  """Transfer amount in smallest unit of the asset (always positive)."""
   amount: Int64!
   """Block height at which the transfer occurred."""
   block_height: Uint64!
   """Timestamp of the transfer."""
   timestamp: String!
-  """Source account of the transfer."""
+  """Source account of the transfer (empty when funds enter the system)."""
   from: String!
-  """Owner account associated with this record."""
-  owner: String!
+  """Destination account of the transfer (empty when funds exit the system)."""
+  to: String!
   """Transfer type (e.g. transfer, stake, unstake)."""
   type: String!
   """Asset type involved."""

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 	"vsc-node/lib/test_utils"
+	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -437,7 +438,9 @@ func TestFrSyncUnstake(t *testing.T) {
 	records := te.LedgerDb.LedgerRecords["system:fr_balance"]
 	assert.NotEmpty(t, records)
 	if len(records) > 0 {
-		assert.Equal(t, int64(-30), records[0].Amount, "unstake should be stored as negative")
+		assert.Equal(t, int64(30), records[0].Amount, "amount stays positive; direction encoded in from/to")
+		assert.Equal(t, params.FR_VIRTUAL_ACCOUNT, records[0].From, "unstake debits FR account")
+		assert.Equal(t, "", records[0].To)
 	}
 }
 
@@ -986,7 +989,7 @@ func TestUpdateBalances_ClaimResetsAvgAndSetsClaimHeight(t *testing.T) {
 	// Insert a ledger record so the account appears in distinctAccounts
 	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
 		Id:          "interest_alice",
-		Owner:       "hive:alice",
+		To:          "hive:alice",
 		Amount:      100,
 		Asset:       "hbd_savings",
 		Type:        "interest",
@@ -1032,7 +1035,7 @@ func TestUpdateBalances_NonClaimPreservesClaimHeight(t *testing.T) {
 	// A deposit at block 150 triggers the balance update
 	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
 		Id:          "deposit_alice",
-		Owner:       "hive:alice",
+		To:          "hive:alice",
 		Amount:      500,
 		Asset:       "hbd",
 		Type:        "deposit",
@@ -1082,7 +1085,7 @@ func TestUpdateBalances_RepeatedNonClaimUpdatesAccumulateAvg(t *testing.T) {
 
 	// First deposit at block 200
 	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-		Id: "dep1", Owner: "hive:alice", Amount: 500,
+		Id: "dep1", To: "hive:alice", Amount: 500,
 		Asset: "hbd", Type: "deposit", BlockHeight: 200,
 	})
 	te.SE.UpdateBalances(100, 200)
@@ -1097,7 +1100,7 @@ func TestUpdateBalances_RepeatedNonClaimUpdatesAccumulateAvg(t *testing.T) {
 
 	// Second deposit at block 300
 	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-		Id: "dep2", Owner: "hive:alice", Amount: 300,
+		Id: "dep2", To: "hive:alice", Amount: 300,
 		Asset: "hbd", Type: "deposit", BlockHeight: 300,
 	})
 	te.SE.UpdateBalances(200, 300)
@@ -1142,7 +1145,7 @@ func TestUpdateBalances_FrBalanceGetsClaimUpdate(t *testing.T) {
 		HBD_MODIFY_HEIGHT: 100,
 	}}
 	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-		Id: "dep_alice", Owner: "hive:alice", Amount: 100,
+		Id: "dep_alice", To: "hive:alice", Amount: 100,
 		Asset: "hbd", Type: "deposit", BlockHeight: 210,
 	})
 
@@ -1183,7 +1186,7 @@ func TestUpdateBalances_TwabCorrectAfterClaimThenDeposit(t *testing.T) {
 
 	// Deposit at block 200 (non-claim activity)
 	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-		Id: "dep1", Owner: "hive:alice", Amount: 1000,
+		Id: "dep1", To: "hive:alice", Amount: 1000,
 		Asset: "hbd", Type: "deposit", BlockHeight: 200,
 	})
 	te.SE.UpdateBalances(110, 200)
@@ -1202,7 +1205,7 @@ func TestUpdateBalances_TwabCorrectAfterClaimThenDeposit(t *testing.T) {
 		BlockHeight: 300, Amount: 100, ReceivedN: 1,
 	})
 	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
-		Id: "int1", Owner: "hive:alice", Amount: 100,
+		Id: "int1", To: "hive:alice", Amount: 100,
 		Asset: "hbd_savings", Type: "interest", BlockHeight: 310,
 	})
 	te.SE.UpdateBalances(200, 310)

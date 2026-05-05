@@ -63,16 +63,9 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 			affectedAccounts[v.To] = true
 
 			ledgerRecords = append(ledgerRecords, LedgerUpdate{
-				Id:          v.Id + "#in",
-				Owner:       v.From,
-				Amount:      -v.Amount,
-				Asset:       v.Asset,
-				Type:        "transfer",
-				BlockHeight: endBlock,
-			})
-			ledgerRecords = append(ledgerRecords, LedgerUpdate{
-				Id:          v.Id + "#out",
-				Owner:       v.To,
+				Id:          v.Id,
+				From:        v.From,
+				To:          v.To,
 				Amount:      v.Amount,
 				Asset:       v.Asset,
 				Type:        "transfer",
@@ -83,9 +76,9 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 			affectedAccounts[v.From] = true
 
 			ledgerRecords = append(ledgerRecords, LedgerUpdate{
-				Id:          v.Id + "#in",
-				Owner:       v.From,
-				Amount:      -v.Amount,
+				Id:          v.Id,
+				From:        v.From,
+				Amount:      v.Amount,
 				Asset:       v.Asset,
 				Type:        "withdraw",
 				BlockHeight: endBlock,
@@ -107,9 +100,9 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 			affectedAccounts[v.From] = true
 
 			ledgerRecords = append(ledgerRecords, LedgerUpdate{
-				Id:          v.Id + "#in",
-				Owner:       v.From,
-				Amount:      -v.Amount,
+				Id:          v.Id,
+				From:        v.From,
+				Amount:      v.Amount,
 				Asset:       "hbd",
 				Type:        "stake",
 				BlockHeight: endBlock,
@@ -132,11 +125,11 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 			affectedAccounts[v.From] = true
 
 			ledgerRecords = append(ledgerRecords, LedgerUpdate{
-				Id:          v.Id + "#in",
+				Id:          v.Id,
 				BlockHeight: endBlock,
-				Amount:      -v.Amount,
+				Amount:      v.Amount,
 				Asset:       "hbd_savings",
-				Owner:       v.From,
+				From:        v.From,
 				Type:        "unstake",
 			})
 			actionRecords = append(actionRecords, ledgerDb.ActionRecord{
@@ -153,29 +146,29 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 		}
 		if v.Type == "consensus_stake" {
 			ledgerRecords = append(ledgerRecords, LedgerUpdate{
-				Id:          v.Id + "#in",
+				Id:          v.Id + ":hive",
 				BlockHeight: endBlock,
-				Amount:      -v.Amount,
+				Amount:      v.Amount,
 				Asset:       "hive",
-				Owner:       v.From,
+				From:        v.From,
 				Type:        "consensus_stake",
 			})
 			ledgerRecords = append(ledgerRecords, LedgerUpdate{
-				Id:          v.Id + "#out",
+				Id:          v.Id + ":hive_consensus",
 				BlockHeight: endBlock,
 				Amount:      v.Amount,
 				Asset:       "hive_consensus",
-				Owner:       v.To,
+				To:          v.To,
 				Type:        "consensus_stake",
 			})
 		}
 		if v.Type == "consensus_unstake" {
 			ledgerRecords = append(ledgerRecords, LedgerUpdate{
-				Id:          v.Id + "#in",
+				Id:          v.Id,
 				BlockHeight: endBlock,
-				Amount:      -v.Amount,
+				Amount:      v.Amount,
 				Asset:       "hive_consensus",
-				Owner:       v.From,
+				From:        v.From,
 				Type:        "consensus_unstake",
 			})
 
@@ -195,26 +188,6 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 			})
 		}
 	}
-	// assets := []string{"hbd", "hive", "hbd_savings"}
-
-	// fmt.Println("Affected Accounts", affectedAccounts)
-	// //Cleanup!
-	// for k := range affectedAccounts {
-	// 	ledgerBalances := map[string]int64{}
-	// 	for _, asset := range assets {
-	// 		//As of block X or below
-	// 		bal := ls.GetBalance(k, endBlock, asset)
-	// 		fmt.Println("bal", bal)
-	// 		ledgerBalances[asset] = bal
-
-	// 		// LedgerUpdates, _ := ls.LedgerDb.GetLedgerRange(k, startHeight, endBlock, asset)
-
-	// 		// for _, v := range *LedgerUpdates {
-	// 		// 	ledgerBalances[asset] += v.Amount
-	// 		// }
-	// 	}
-	// 	ls.BalanceDb.UpdateBalanceRecord(k, endBlock, ledgerBalances)
-	// }
 
 	accounts := make([]string, 0)
 	for k := range affectedAccounts {

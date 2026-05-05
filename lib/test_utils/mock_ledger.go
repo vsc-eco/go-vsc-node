@@ -57,7 +57,12 @@ type MockLedgerDb struct {
 
 func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) {
 	for _, record := range ledgerRecords {
-		m.LedgerRecords[record.Owner] = append(m.LedgerRecords[record.Owner], record)
+		if record.From != "" {
+			m.LedgerRecords[record.From] = append(m.LedgerRecords[record.From], record)
+		}
+		if record.To != "" && record.To != record.From {
+			m.LedgerRecords[record.To] = append(m.LedgerRecords[record.To], record)
+		}
 	}
 }
 

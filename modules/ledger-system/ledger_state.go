@@ -94,7 +94,7 @@ func (state *LedgerState) SnapshotForAccount(account string, blockHeight uint64,
 		//Must be ledger ops with height below or equal to the current block height
 		//Current block height ledger ops are recently executed
 		if v.Asset == asset {
-			bal += v.Amount
+			bal += v.DeltaFor(account)
 		}
 	}
 	return bal
@@ -121,7 +121,7 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 
 	balAdjust := int64(0)
 	for _, v := range *ledgerResults {
-		balAdjust += v.Amount
+		balAdjust += v.DeltaFor(account)
 	}
 
 	switch asset {

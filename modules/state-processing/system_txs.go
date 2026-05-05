@@ -782,8 +782,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		}{
 			Size: uint64(len(jsonBytes)),
 		},
-		Ts:        t.Self.Timestamp,
-		DebugData: blockContentC,
+		Ts: t.Self.Timestamp,
 	})
 
 	txsToInjest := make([]TxPacket, 0)
