@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 	"vsc-node/lib/test_utils"
+	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -16,6 +17,7 @@ import (
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 
+	ledgerSystem "vsc-node/modules/ledger-system"
 	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/stretchr/testify/assert"
@@ -960,6 +962,61 @@ func TestRapidBlockProcessing(t *testing.T) {
 // ============================================================
 // Group 15: TWAB / UpdateBalances correctness
 // ============================================================
+
+// TestUpdateBalances_PromotesPendingSlashBurn verifies FinalizeMaturedSafetySlashBurns
+// runs inside UpdateBalances and promotes matured pending burn rows.
+func TestUpdateBalances_PromotesPendingSlashBurn(t *testing.T) {
+	te := newTestEnv()
+	te.BalanceDb.BalanceRecords["hive:alice"] = []ledgerDb.BalanceRecord{{
+		Account:           "hive:alice",
+		BlockHeight:       100,
+		HIVE_CONSENSUS:    1_000_000,
+		HBD_CLAIM_HEIGHT:  100,
+		HBD_MODIFY_HEIGHT: 100,
+	}}
+	te.InterestClaims.SaveClaim(ledgerDb.ClaimRecord{BlockHeight: 100, Amount: 0, ReceivedN: 0})
+
+	require.True(t, te.SE.LedgerSystem.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "updbal-pending-burn",
+		BlockHeight:     200,
+		EvidenceKind:    "settlement_payload_fraud",
+		BurnDelayBlocks: 10,
+	}).Ok)
+
+	finalBurnsBefore := countLedgerByTypeOwner(te.LedgerDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn, params.ProtocolSlashBurnAccount)
+	require.Equal(t, 0, finalBurnsBefore)
+
+	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+		Id:          "deposit_alice_updbal_slash",
+		Owner:       "hive:alice",
+		Amount:      1,
+		Asset:       "hbd",
+		Type:        "deposit",
+		BlockHeight: 211,
+	})
+
+	te.SE.UpdateBalances(200, 211)
+
+	finalBurnsAfter := countLedgerByTypeOwner(te.LedgerDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn, params.ProtocolSlashBurnAccount)
+	require.GreaterOrEqual(t, finalBurnsAfter, 1)
+}
+
+func countLedgerByTypeOwner(l *test_utils.MockLedgerDb, typ, owner string) int {
+	if l == nil {
+		return 0
+	}
+	n := 0
+	for _, recs := range l.LedgerRecords {
+		for _, r := range recs {
+			if r.Type == typ && r.Owner == owner {
+				n++
+			}
+		}
+	}
+	return n
+}
 
 // TestUpdateBalances_ClaimResetsAvgAndSetsClaimHeight verifies that when a new
 // claim record exists, UpdateBalances resets hbd_avg to 0 and sets hbd_claim.
