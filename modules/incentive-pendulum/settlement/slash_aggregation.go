@@ -1,54 +1,28 @@
 package settlement
 
 import (
-	"sort"
-
 	pendulum_oracle "vsc-node/modules/db/vsc/pendulum_oracle"
+	"vsc-node/modules/incentive-pendulum/rewards"
 )
 
-// AccumulateSlashBps sums each witness's slash bps across the supplied
-// snapshots and returns the deterministic per-witness total. Snapshots
-// should already be ordered (callers pass output of
-// PendulumOracleSnapshots.GetSnapshotsInRange) but the order does not affect
-// the sum — only the iteration over the returned map's seed-sorted keys is
-// load-bearing.
+// AccumulateRewardReductionBps returns the per-witness reward reduction bps
+// for an epoch, computed by summing each witness's per-tick consolidated bps
+// across the supplied snapshots, subtracting the per-epoch forgiveness
+// buffer, and clamping at the per-epoch cap.
 //
-// Per-witness bps are CAPPED at 10000 (100%) here so a malformed snapshot
-// can't make later math overflow; the per-epoch hard cap (e.g. 1000 bps =
-// 10%) is enforced at slash-application time, not here.
-func AccumulateSlashBps(snapshots []pendulum_oracle.SnapshotRecord) map[string]int {
-	if len(snapshots) == 0 {
-		return nil
-	}
-	totals := make(map[string]int)
-	for _, snap := range snapshots {
-		for _, entry := range snap.WitnessSlashBps {
-			if entry.Witness == "" || entry.Bps <= 0 {
-				continue
-			}
-			totals[entry.Witness] += entry.Bps
-			if totals[entry.Witness] > 10000 {
-				totals[entry.Witness] = 10000
-			}
-		}
-	}
-	if len(totals) == 0 {
-		return nil
-	}
-	return totals
+// Snapshots must already be ordered (callers pass output of
+// PendulumOracleSnapshots.GetSnapshotsInRange) but the order does not affect
+// the sum.
+//
+// The returned map omits witnesses whose effective bps is 0 (either because
+// they accumulated nothing or the buffer absorbed everything). This is the
+// canonical input for ApplyRewardReductionsToBonds.
+func AccumulateRewardReductionBps(snapshots []pendulum_oracle.SnapshotRecord) map[string]int {
+	return rewards.AggregateEpoch(snapshots)
 }
 
-// SortedSlashAccounts returns the keys of an accumulated slash map in
-// lexicographic order — the canonical iteration order for building a
-// SettlementPayload's slash list.
-func SortedSlashAccounts(totals map[string]int) []string {
-	if len(totals) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(totals))
-	for k := range totals {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+// SortedReductionAccounts is a thin re-export of the rewards package helper
+// so existing callers in this package don't have to import rewards/.
+func SortedReductionAccounts(totals map[string]int) []string {
+	return rewards.SortedReductionAccounts(totals)
 }
