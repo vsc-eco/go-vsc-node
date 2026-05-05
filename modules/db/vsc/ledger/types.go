@@ -61,8 +61,7 @@ type BalanceRecord struct {
 // 	"from": "",
 // 	"to": "did:pkh:eip155:1:0x0F8239B80720BA9367B19047c92924e7287b7A35",
 // 	"t": "deposit",
-// 	"tk": "HBD",
-// 	"tx_id": "e719b65bd0a44e7b074029d2dc9d8aa20a7f9823"
+// 	"tk": "HBD"
 //   }
 
 type Asset string
@@ -84,7 +83,6 @@ type LedgerRecord struct {
 	To          string  `json:"to" bson:"to"`
 	Type        string  `json:"t" bson:"t"`
 	Asset       string  `json:"tk" bson:"tk"`
-	TxId        string  `json:"tx_id" bson:"tx_id"`
 
 	BIdx int64
 	//Op Index: Index of the operation in the TX

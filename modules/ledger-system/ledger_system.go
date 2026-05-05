@@ -84,7 +84,6 @@ func (ls *ledgerSystem) PendulumDistribute(
 	if err := ls.LedgerDb.StoreLedger(
 		ledger_db.LedgerRecord{
 			Id:          txID + "#distribute_debit#" + toAccount,
-			TxId:        txID,
 			BlockHeight: blockHeight,
 			Amount:      amount,
 			Asset:       "hbd",
@@ -93,7 +92,6 @@ func (ls *ledgerSystem) PendulumDistribute(
 		},
 		ledger_db.LedgerRecord{
 			Id:          txID + "#distribute_credit#" + toAccount,
-			TxId:        txID,
 			BlockHeight: blockHeight,
 			Amount:      amount,
 			Asset:       "hbd",
@@ -262,7 +260,6 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 	records := []ledger_db.LedgerRecord{
 		{
 			Id:          baseID + "#consensus_debit#" + acct,
-			TxId:        p.TxID,
 			BlockHeight: p.BlockHeight,
 			Amount:      slashAmt,
 			Asset:       "hive_consensus",
@@ -277,7 +274,6 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 			// (the reverse cap) sees it.
 			records = append(records, ledger_db.LedgerRecord{
 				Id:          baseID + "#reserve#" + acct,
-				TxId:        p.TxID,
 				BlockHeight: p.BlockHeight,
 				Amount:      burnAmt,
 				Asset:       "hive",
@@ -295,7 +291,6 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 			}
 			records = append(records, ledger_db.LedgerRecord{
 				Id:          baseID + "#hive_burn_pending#" + acct,
-				TxId:        p.TxID,
 				BlockHeight: p.BlockHeight,
 				Amount:      burnAmt,
 				Asset:       "hive",
@@ -437,7 +432,6 @@ func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 		ls.LedgerDb.StoreLedger(
 			ledger_db.LedgerRecord{
 				Id:          rec.Id + "#pending_release",
-				TxId:        rec.TxId,
 				BlockHeight: blockHeight,
 				Amount:      -rec.Amount,
 				Asset:       "hive",
@@ -451,7 +445,6 @@ func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 				// the baseID prefix so the reverse cap's alreadyFinalizedToReserveAmt
 				// prefix match still bounds reversals.
 				Id:          rec.Id + "#promoted_to_reserve",
-				TxId:        rec.TxId,
 				BlockHeight: blockHeight,
 				Amount:      rec.Amount,
 				Asset:       "hive",
@@ -460,7 +453,6 @@ func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 			},
 			ledger_db.LedgerRecord{
 				Id:          rec.Id + "#finalized_marker",
-				TxId:        rec.TxId,
 				BlockHeight: blockHeight,
 				Amount:      0,
 				Asset:       "hive",
@@ -578,7 +570,6 @@ func (ls *ledgerSystem) CancelPendingSafetySlashBurn(p CancelPendingSafetySlashB
 	ls.LedgerDb.StoreLedger(
 		ledger_db.LedgerRecord{
 			Id:          releaseID,
-			TxId:        pendingRec.TxId,
 			BlockHeight: p.BlockHeight,
 			Amount:      -pendingRec.Amount,
 			Asset:       "hive",
@@ -590,7 +581,6 @@ func (ls *ledgerSystem) CancelPendingSafetySlashBurn(p CancelPendingSafetySlashB
 		// skips this row even when maturity is reached.
 		ledger_db.LedgerRecord{
 			Id:          finalizedID,
-			TxId:        pendingRec.TxId,
 			BlockHeight: p.BlockHeight,
 			Amount:      0,
 			Asset:       "hive",
@@ -602,7 +592,6 @@ func (ls *ledgerSystem) CancelPendingSafetySlashBurn(p CancelPendingSafetySlashB
 		// can tell cancellations apart from natural maturations.
 		ledger_db.LedgerRecord{
 			Id:          cancelID,
-			TxId:        pendingRec.TxId,
 			BlockHeight: p.BlockHeight,
 			Amount:      0,
 			Asset:       "hive",
@@ -646,7 +635,6 @@ func (ls *ledgerSystem) ReverseSafetySlashConsensusDebit(p ReverseSafetySlashCon
 	}
 	ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
 		Id:          id,
-		TxId:        tx,
 		BlockHeight: p.BlockHeight,
 		Amount:      p.Amount,
 		Asset:       "hive_consensus",
@@ -956,7 +944,6 @@ func (ls *ledgerSystem) IngestOplog(oplog []OpLogEvent, options OplogInjestOptio
 			From:        v.From,
 			To:          v.To,
 			Type:        v.Type,
-			// TxId:        v.,
 		}); err != nil {
 			log.Error("IngestOplog: ledger write failed", "id", v.Id, "from", v.From, "to", v.To, "err", err)
 		}
@@ -1056,7 +1043,6 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 		Asset:       deposit.Asset,
 		To:          decodedParams.To,
 		Type:        "deposit",
-		TxId:        deposit.Id,
 	}); err != nil {
 		log.Error("Deposit: ledger write failed", "id", deposit.Id, "owner", decodedParams.To, "err", err)
 	}

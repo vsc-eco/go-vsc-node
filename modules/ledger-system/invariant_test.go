@@ -634,7 +634,6 @@ func TestInvariant_IdempotentDeposit(t *testing.T) {
 		Asset:       "hbd",
 		To:          "hive:alice",
 		Type:        "deposit",
-		TxId:        "deposit-1",
 	})
 
 	bal1 := state.GetBalance("hive:alice", bh, "hbd")
@@ -650,7 +649,6 @@ func TestInvariant_IdempotentDeposit(t *testing.T) {
 		Asset:       "hbd",
 		To:          "hive:alice",
 		Type:        "deposit",
-		TxId:        "deposit-1",
 	})
 
 	bal2 := state.GetBalance("hive:alice", bh, "hbd")
