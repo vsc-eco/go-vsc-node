@@ -280,7 +280,6 @@ func (ls *ledgerSystem) IngestOplog(oplog []OpLogEvent, options OplogInjestOptio
 			From:        v.From,
 			To:          v.To,
 			Type:        v.Type,
-			// TxId:        v.,
 		})
 	}
 
@@ -348,7 +347,6 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 		Asset:       deposit.Asset,
 		To:          decodedParams.To,
 		Type:        "deposit",
-		TxId:        deposit.Id,
 	})
 
 	return decodedParams.To
