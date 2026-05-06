@@ -23,6 +23,7 @@ import (
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/pendulum_oracle"
+	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -30,7 +31,6 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	election_proposer "vsc-node/modules/election-proposer"
 	"vsc-node/modules/gateway"
-	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
@@ -96,6 +96,7 @@ func main() {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
 	pendulumOracleDb := pendulum_oracle.New(vscDb)
+	pendulumSettlementsDb := pendulum_settlements.New(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
 	wasm_sdk.Init(sysConfig.OnMainnet())
 	if args.sysconfigPath != "" {
@@ -171,11 +172,6 @@ func main() {
 
 	dataAvailability := data_availability.New(p2p, identityConfig, da)
 
-	pendulumSettlementBroadcaster := pendulumsettlement.NewHiveBroadcaster(
-		&hiveCreator,
-		identityConfig.Get().HiveUsername,
-	)
-
 	se := stateEngine.New(
 		sysConfig,
 		da,
@@ -196,9 +192,9 @@ func main() {
 		tssCommitments,
 		tssRequests,
 		pendulumOracleDb,
+		pendulumSettlementsDb,
 		wasm,
 		identityConfig,
-		pendulumSettlementBroadcaster,
 	)
 
 	rcSystem := se.RcSystem
@@ -318,6 +314,7 @@ func main() {
 		tssCommitments,
 		tssRequests,
 		pendulumOracleDb,
+		pendulumSettlementsDb,
 
 		p2p,
 		da,                   //Deps: [p2p]
