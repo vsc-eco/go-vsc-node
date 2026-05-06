@@ -6,7 +6,6 @@ import (
 	"vsc-node/lib/intmath"
 	pendulum_oracle "vsc-node/modules/db/vsc/pendulum_oracle"
 	pendulum "vsc-node/modules/incentive-pendulum"
-	ledgerSystem "vsc-node/modules/ledger-system"
 	wasm_context "vsc-node/modules/wasm/context"
 )
 
@@ -22,25 +21,15 @@ func (s *stubSnapshots) GetSnapshotAtOrBefore(blockHeight uint64) (*pendulum_ora
 	return s.rec, true, nil
 }
 
-// recordingLedger captures every PendulumAccrue call so tests can assert on
-// the bucket movement without standing up MongoDB.
-type recordingLedger struct {
-	calls []recordedAccrual
+// recordingAccrual captures every AccrueNodeBucketFn invocation so tests can
+// assert on the bucket movement without standing up a LedgerSession.
+type recordingAccrual struct {
+	calls []int64
 }
 
-type recordedAccrual struct {
-	Account string
-	Asset   string
-	Amount  int64
-	TxID    string
-	Height  uint64
-}
-
-func (r *recordingLedger) PendulumAccrue(account, asset string, amount int64, txID string, blockHeight uint64) ledgerSystem.LedgerResult {
-	r.calls = append(r.calls, recordedAccrual{
-		Account: account, Asset: asset, Amount: amount, TxID: txID, Height: blockHeight,
-	})
-	return ledgerSystem.LedgerResult{Ok: true}
+func (r *recordingAccrual) fn(amountHBD int64) error {
+	r.calls = append(r.calls, amountHBD)
+	return nil
 }
 
 func defaultArgs(assetIn, assetOut string) wasm_context.PendulumSwapFeeArgs {
@@ -68,12 +57,10 @@ func balancedSnapshot() *pendulum_oracle.SnapshotRecord {
 	}
 }
 
-func newApplier(t *testing.T, snap *pendulum_oracle.SnapshotRecord, whitelist []string) (*Applier, *recordingLedger) {
+func newApplier(t *testing.T, snap *pendulum_oracle.SnapshotRecord, whitelist []string) (*Applier, *recordingAccrual) {
 	t.Helper()
-	led := &recordingLedger{}
 	a := New(
 		&stubSnapshots{rec: snap},
-		led,
 		func() []string { return whitelist },
 		Config{
 			Stabilizer:      pendulum.DefaultStabilizerParamsFixed(),
@@ -81,20 +68,20 @@ func newApplier(t *testing.T, snap *pendulum_oracle.SnapshotRecord, whitelist []
 			NetworkShareDen: 4,
 		},
 	)
-	return a, led
+	return a, &recordingAccrual{}
 }
 
 // TestRejectsNonWhitelistedContract is the first guard the SDK method
 // applies — calls from contracts not in the whitelist produce a clean error
-// without touching the ledger or snapshot DB.
+// without invoking the accrual callback or snapshot DB.
 func TestRejectsNonWhitelistedContract(t *testing.T) {
-	a, led := newApplier(t, balancedSnapshot(), []string{"contract:other"})
-	res := a.ApplySwapFees("contract:not-whitelisted", "tx-1", 100, defaultArgs("hbd", "hive"))
+	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:other"})
+	res := a.ApplySwapFees("contract:not-whitelisted", "tx-1", 100, defaultArgs("hbd", "hive"), acc.fn)
 	if !res.IsErr() {
 		t.Fatal("expected error for non-whitelisted contract")
 	}
-	if len(led.calls) != 0 {
-		t.Fatalf("expected no ledger calls, got %d", len(led.calls))
+	if len(acc.calls) != 0 {
+		t.Fatalf("expected no accrual calls, got %d", len(acc.calls))
 	}
 }
 
@@ -104,8 +91,8 @@ func TestRejectsNonWhitelistedContract(t *testing.T) {
 func TestRejectsMissingSnapshot(t *testing.T) {
 	snap := balancedSnapshot()
 	snap.GeometryOK = false
-	a, _ := newApplier(t, snap, []string{"contract:pool-1"})
-	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, defaultArgs("hbd", "hive"))
+	a, acc := newApplier(t, snap, []string{"contract:pool-1"})
+	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, defaultArgs("hbd", "hive"), acc.fn)
 	if !res.IsErr() {
 		t.Fatal("expected error for missing snapshot")
 	}
@@ -113,8 +100,8 @@ func TestRejectsMissingSnapshot(t *testing.T) {
 
 // TestRejectsNonHBDPair confirms the testnet-only HBD-paired requirement.
 func TestRejectsNonHBDPair(t *testing.T) {
-	a, _ := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
-	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, defaultArgs("hive", "btc"))
+	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, defaultArgs("hive", "btc"), acc.fn)
 	if !res.IsErr() {
 		t.Fatal("expected error for non-HBD-paired swap")
 	}
@@ -125,17 +112,17 @@ func TestRejectsNonHBDPair(t *testing.T) {
 // goes through one secondary CPMM hop (ASSET1 → HBD) and lands in
 // pendulum:nodes:HBD.
 func TestSwapHBDInAccruesNodeBucket(t *testing.T) {
-	a, led := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
 
 	args := wasm_context.PendulumSwapFeeArgs{
-		AssetIn:     "hbd",
-		AssetOut:    "hive",
-		X:           10_000,
-		XReserve:    1_000_000,
-		YReserve:    1_000_000,
+		AssetIn:  "hbd",
+		AssetOut: "hive",
+		X:        10_000,
+		XReserve: 1_000_000,
+		YReserve: 1_000_000,
 	}
 
-	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args)
+	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args, acc.fn)
 	if res.IsErr() {
 		t.Fatalf("expected success, got %v", res)
 	}
@@ -144,15 +131,11 @@ func TestSwapHBDInAccruesNodeBucket(t *testing.T) {
 	if out.NodeBucketCreditedHBD <= 0 {
 		t.Fatalf("expected positive node bucket credit, got %d", out.NodeBucketCreditedHBD)
 	}
-	if len(led.calls) != 1 {
-		t.Fatalf("expected exactly one ledger accrual, got %d", len(led.calls))
+	if len(acc.calls) != 1 {
+		t.Fatalf("expected exactly one accrual call, got %d", len(acc.calls))
 	}
-	got := led.calls[0]
-	if got.Account != "nodes" || got.Asset != "hbd" {
-		t.Fatalf("ledger account/asset wrong: %+v", got)
-	}
-	if got.Amount != out.NodeBucketCreditedHBD {
-		t.Fatalf("ledger amount %d != reported credit %d", got.Amount, out.NodeBucketCreditedHBD)
+	if acc.calls[0] != out.NodeBucketCreditedHBD {
+		t.Fatalf("accrual amount %d != reported credit %d", acc.calls[0], out.NodeBucketCreditedHBD)
 	}
 	if out.UserOutput <= 0 {
 		t.Fatalf("expected positive user output, got %d", out.UserOutput)
@@ -166,17 +149,17 @@ func TestSwapHBDInAccruesNodeBucket(t *testing.T) {
 // Output asset is HBD, so the node share passes through directly with no
 // secondary swap; nodeBucketHBD == nodeShareOutput exactly.
 func TestSwapASSET1InAccruesNodeBucket(t *testing.T) {
-	a, led := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
 
 	args := wasm_context.PendulumSwapFeeArgs{
-		AssetIn:     "hive",
-		AssetOut:    "hbd",
-		X:           10_000,
-		XReserve:    1_000_000,
-		YReserve:    1_000_000,
+		AssetIn:  "hive",
+		AssetOut: "hbd",
+		X:        10_000,
+		XReserve: 1_000_000,
+		YReserve: 1_000_000,
 	}
 
-	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args)
+	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args, acc.fn)
 	if res.IsErr() {
 		t.Fatalf("expected success, got %v", res)
 	}
@@ -184,8 +167,8 @@ func TestSwapASSET1InAccruesNodeBucket(t *testing.T) {
 	if out.NodeBucketCreditedHBD <= 0 {
 		t.Fatalf("expected positive node bucket credit, got %d", out.NodeBucketCreditedHBD)
 	}
-	if len(led.calls) != 1 {
-		t.Fatalf("expected one ledger call, got %d", len(led.calls))
+	if len(acc.calls) != 1 {
+		t.Fatalf("expected one accrual call, got %d", len(acc.calls))
 	}
 }
 
@@ -195,28 +178,28 @@ func TestUnderSecuredCliffRoutesAllToNodes(t *testing.T) {
 	snap := balancedSnapshot()
 	snap.GeometryV = snap.GeometryE + 1 // V > E → cliff
 	snap.GeometryS = intmath.SQ64Scale * 11 / 10
-	a, led := newApplier(t, snap, []string{"contract:pool-1"})
+	a, acc := newApplier(t, snap, []string{"contract:pool-1"})
 
 	args := wasm_context.PendulumSwapFeeArgs{
-		AssetIn:     "hbd",
-		AssetOut:    "hive",
-		X:           10_000,
-		XReserve:    1_000_000,
-		YReserve:    1_000_000,
+		AssetIn:  "hbd",
+		AssetOut: "hive",
+		X:        10_000,
+		XReserve: 1_000_000,
+		YReserve: 1_000_000,
 	}
 
-	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args)
+	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args, acc.fn)
 	if res.IsErr() {
 		t.Fatalf("expected success, got %v", res)
 	}
-	if len(led.calls) != 1 {
-		t.Fatalf("expected one ledger call, got %d", len(led.calls))
+	if len(acc.calls) != 1 {
+		t.Fatalf("expected one accrual call, got %d", len(acc.calls))
 	}
 	// Cliff: f_node = 1, so all of the pendulum pot goes to nodes. The accrued
 	// amount should be greater than zero and roughly proportional to 75% of
 	// total fees (the network 25% stays in pool reserves).
-	if led.calls[0].Amount <= 0 {
-		t.Fatalf("expected positive node accrual under cliff, got %d", led.calls[0].Amount)
+	if acc.calls[0] <= 0 {
+		t.Fatalf("expected positive node accrual under cliff, got %d", acc.calls[0])
 	}
 }
 
@@ -225,16 +208,16 @@ func TestUnderSecuredCliffRoutesAllToNodes(t *testing.T) {
 // (covering 25% of total CLP + 25% of total protocol fee — both of which
 // live on the output side under the post-rewrite model).
 func TestNetworkCreditIsSingleOutputAssetValue(t *testing.T) {
-	a, _ := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
 
 	args := wasm_context.PendulumSwapFeeArgs{
-		AssetIn:     "hive",
-		AssetOut:    "hbd",
-		X:           10_000,
-		XReserve:    1_000_000,
-		YReserve:    1_000_000,
+		AssetIn:  "hive",
+		AssetOut: "hbd",
+		X:        10_000,
+		XReserve: 1_000_000,
+		YReserve: 1_000_000,
 	}
-	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args)
+	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args, acc.fn)
 	if res.IsErr() {
 		t.Fatalf("expected success, got %v", res)
 	}
@@ -249,19 +232,19 @@ func TestNetworkCreditIsSingleOutputAssetValue(t *testing.T) {
 // or stays in the pool. The X side (HBD-paired pool, X is non-HBD here)
 // gains exactly the user's input.
 func TestReserveConservation(t *testing.T) {
-	a, led := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
 
 	xIn := int64(10_000)
 	xRes := int64(1_000_000)
 	yRes := int64(1_000_000)
 	args := wasm_context.PendulumSwapFeeArgs{
-		AssetIn:     "hive",
-		AssetOut:    "hbd",
-		X:           xIn,
-		XReserve:    xRes,
-		YReserve:    yRes,
+		AssetIn:  "hive",
+		AssetOut: "hbd",
+		X:        xIn,
+		XReserve: xRes,
+		YReserve: yRes,
 	}
-	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args)
+	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args, acc.fn)
 	if res.IsErr() {
 		t.Fatalf("expected success, got %v", res)
 	}
@@ -276,9 +259,34 @@ func TestReserveConservation(t *testing.T) {
 	if out.NewYReserve != wantY {
 		t.Fatalf("Y side: got %d want %d (Y=%d - user=%d - node=%d)", out.NewYReserve, wantY, yRes, out.UserOutput, out.NodeBucketCreditedHBD)
 	}
-	// Ledger record matches reported credit.
-	if len(led.calls) != 1 || led.calls[0].Amount != out.NodeBucketCreditedHBD {
-		t.Fatalf("ledger != reported: %+v vs %d", led.calls, out.NodeBucketCreditedHBD)
+	// Accrual call matches reported credit.
+	if len(acc.calls) != 1 || acc.calls[0] != out.NodeBucketCreditedHBD {
+		t.Fatalf("accrual != reported: %+v vs %d", acc.calls, out.NodeBucketCreditedHBD)
+	}
+}
+
+// TestAccrualErrorPropagates confirms that an error returned by the accrual
+// callback aborts the swap with errAccrualFailed wrapping. This is the
+// "insufficient HBD on the pool contract account" case in production —
+// LedgerSession.ExecuteTransfer rejects the transfer and ApplySwapFees must
+// not silently succeed.
+func TestAccrualErrorPropagates(t *testing.T) {
+	a, _ := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+
+	failingAccrual := func(amountHBD int64) error {
+		return errBucketUnderfunded
+	}
+
+	args := wasm_context.PendulumSwapFeeArgs{
+		AssetIn:  "hive",
+		AssetOut: "hbd",
+		X:        10_000,
+		XReserve: 1_000_000,
+		YReserve: 1_000_000,
+	}
+	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args, failingAccrual)
+	if !res.IsErr() {
+		t.Fatal("expected error when accrual callback fails")
 	}
 }
 
@@ -314,11 +322,28 @@ func TestExacerbatesFromSnapshot(t *testing.T) {
 }
 
 // TestApplierConfiguredNilDeps exercises the defensive nil guard so a partly-
-// wired state engine returns a clean error rather than panicking.
+// wired state engine returns a clean error rather than panicking. Includes the
+// nil accrual callback case.
 func TestApplierConfiguredNilDeps(t *testing.T) {
-	a := New(nil, nil, nil, DefaultConfig())
-	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, defaultArgs("hbd", "hive"))
+	a := New(nil, nil, DefaultConfig())
+	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, defaultArgs("hbd", "hive"), nil)
 	if !res.IsErr() {
 		t.Fatal("expected error from nil-dep applier")
 	}
+
+	// Configured applier but nil accrual callback also fails cleanly.
+	a2 := New(&stubSnapshots{rec: balancedSnapshot()}, func() []string { return []string{"contract:pool-1"} }, DefaultConfig())
+	res = a2.ApplySwapFees("contract:pool-1", "tx-1", 100, defaultArgs("hbd", "hive"), nil)
+	if !res.IsErr() {
+		t.Fatal("expected error when accrual callback is nil")
+	}
 }
+
+// errBucketUnderfunded is a sentinel for the failing-accrual test; it stands
+// in for the production "insufficient balance on contract HBD" failure that
+// LedgerSession.ExecuteTransfer would return.
+var errBucketUnderfunded = errSentinel("insufficient balance")
+
+type errSentinel string
+
+func (e errSentinel) Error() string { return string(e) }

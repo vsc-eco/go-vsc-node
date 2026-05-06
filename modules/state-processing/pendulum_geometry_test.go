@@ -7,7 +7,6 @@ import (
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	pendulum_oracle "vsc-node/modules/db/vsc/pendulum_oracle"
 	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
-	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	state_engine "vsc-node/modules/state-processing"
 )
@@ -34,7 +33,7 @@ func newPoolReserveReaderEnv(t *testing.T) poolReserveReaderEnv {
 		Actions: make(map[string]ledgerDb.ActionRecord),
 	}
 	ls := ledgerSystem.New(balDb, lDb, nil, aDb)
-	se := state_engine.NewForPendulumSettlementTest(ls, nil, balDb, nil, (pendulumsettlement.Broadcaster)(nil))
+	se := state_engine.NewForGeometryTest(ls, nil, balDb, nil, nil)
 	return poolReserveReaderEnv{se: se, balDb: balDb}
 }
 
