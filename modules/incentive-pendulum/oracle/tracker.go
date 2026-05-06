@@ -2,6 +2,7 @@ package oracle
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -185,6 +186,48 @@ func (t *FeedTracker) Warmup(src WarmupSource) error {
 	t.warmedExplicit = true
 	t.mu.Unlock()
 	return nil
+}
+
+// DivergingTrustedWitnesses returns trusted-group witnesses whose latest quoted
+// HBD/HIVE price diverges from the trusted mean by at least thresholdBps.
+// Returned slice is sorted for deterministic downstream handling.
+func (t *FeedTracker) DivergingTrustedWitnesses(thresholdBps int) []string {
+	if t == nil || thresholdBps <= 0 {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	meanBps := t.last.TrustedHivePriceBps
+	if !t.last.TrustedHiveOK || meanBps <= 0 || len(t.last.TrustedWitnessGroup) == 0 {
+		return nil
+	}
+	out := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, w := range t.last.TrustedWitnessGroup {
+		q, ok := t.quotes[w]
+		if !ok {
+			continue
+		}
+		qBps := q.PriceBps()
+		if qBps <= 0 {
+			continue
+		}
+		absDiff := qBps - meanBps
+		if absDiff < 0 {
+			absDiff = -absDiff
+		}
+		diffBps := int(absDiff * 10000 / meanBps)
+		if diffBps < thresholdBps {
+			continue
+		}
+		if _, dup := seen[w]; dup {
+			continue
+		}
+		seen[w] = struct{}{}
+		out = append(out, w)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // RecordWitnessBlock records the Hive L1 block producer for the rolling signature window.

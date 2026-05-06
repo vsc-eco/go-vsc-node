@@ -143,6 +143,13 @@ type StateEngine struct {
 
 	// slashRestitution pays harmed parties from safety slashes (FIFO); remainder is burned.
 	slashRestitution *safetyslash.MemoryRestitutionQueue
+	// safetyEvidenceSeen deduplicates evidence events per account+kind+evidenceID.
+	safetyEvidenceSeen map[string]uint64
+	// safetyEvidenceHeights tracks observed heights per account+kind for thresholded detectors.
+	safetyEvidenceHeights map[string][]uint64
+	// seenProposalBySlotProposer tracks first observed block content per (slot, proposer)
+	// to detect conflicting proposals in the same slot deterministically.
+	seenProposalBySlotProposer map[string]string
 }
 
 //Transaction
@@ -510,6 +517,25 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							},
 						}
 						json.Unmarshal(cj.Json, &parsedBlock)
+						if se.seenProposalBySlotProposer == nil {
+							se.seenProposalBySlotProposer = make(map[string]string)
+						}
+						slotKey := strconv.FormatUint(slotInfo.StartHeight, 10) + "|" + normalizeHiveAccount(cj.RequiredAuths[0])
+						if prevBlockRef, exists := se.seenProposalBySlotProposer[slotKey]; exists && prevBlockRef != parsedBlock.SignedBlock.Block {
+							slashRes := se.slashForEvidenceIfPolicyAllows(
+								cj.RequiredAuths[0],
+								safetyslash.EvidenceVSCDoubleBlockSign,
+								"double-block|"+slotKey+"|"+prevBlockRef+"|"+parsedBlock.SignedBlock.Block,
+								tx.TransactionID,
+								block.BlockNumber,
+							)
+							if slashRes.Ok {
+								log.Warn("principal slash applied for double block proposal",
+									"account", cj.RequiredAuths[0], "slot_height", slotInfo.StartHeight, "tx_id", tx.TransactionID)
+							}
+						} else if !exists {
+							se.seenProposalBySlotProposer[slotKey] = parsedBlock.SignedBlock.Block
+						}
 
 						validated := parsedBlock.Validate(se)
 
@@ -517,6 +543,18 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							se.slotStatus.Done = true
 							se.slotStatus.Producer = cj.RequiredAuths[0]
 							parsedBlock.ExecuteTx(se)
+						} else {
+							slashRes := se.slashForEvidenceIfPolicyAllows(
+								cj.RequiredAuths[0],
+								safetyslash.EvidenceVSCInvalidBlockProposal,
+								"invalid-block|"+tx.TransactionID,
+								tx.TransactionID,
+								block.BlockNumber,
+							)
+							if slashRes.Ok {
+								log.Warn("principal slash applied for invalid block proposal",
+									"account", cj.RequiredAuths[0], "tx_id", tx.TransactionID, "slot_height", slotInfo.StartHeight)
+							}
 						}
 					}
 					continue
@@ -997,6 +1035,26 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							TxId:        tx.TransactionID,
 							BitSet:      commitment.BitSet,
 						})
+						if commitment.Type == "blame" {
+							blamedAccounts := blamedAccountsFromBitSet(commitment.BitSet, electionData.Members)
+							evID := "tss-blame|" + commitment.KeyId + "|" + commitment.SessionId + "|" + tx.TransactionID
+							for _, acct := range blamedAccounts {
+								slashRes := se.slashForEvidenceIfPolicyAllows(
+									acct,
+									safetyslash.EvidenceTSSEquivocation,
+									evID+"|"+acct,
+									tx.TransactionID,
+									block.BlockNumber,
+								)
+								if slashRes.Ok {
+									tssLog.Warn("principal slash applied from tss blame evidence",
+										"account", acct, "txId", tx.TransactionID, "sessionId", commitment.SessionId)
+								} else {
+									tssLog.Verbose("tss blame evidence recorded without slash",
+										"account", acct, "txId", tx.TransactionID, "msg", slashRes.Msg)
+								}
+							}
+						}
 
 						var newKey bool
 						savedKeyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
@@ -2005,6 +2063,9 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		TempOutputs:      make(map[string]*contract_session.TempOutput),
 		TxOutIds:         make([]string, 0),
 		slashRestitution: safetyslash.NewMemoryRestitutionQueue(),
+		safetyEvidenceSeen:         make(map[string]uint64),
+		safetyEvidenceHeights:      make(map[string][]uint64),
+		seenProposalBySlotProposer: make(map[string]string),
 
 		da: da,
 		// db: db,
@@ -2089,6 +2150,104 @@ func (se *StateEngine) applyPrincipalSlashForProvableEvidence(
 		Restitution:     se.slashRestitution,
 		BurnDelayBlocks: safetyslash.DefaultSafetySlashBurnDelayBlocks,
 	})
+}
+
+func (se *StateEngine) evidenceKey(accountHive, kind string) string {
+	return normalizeHiveAccount(accountHive) + "|" + kind
+}
+
+func (se *StateEngine) evidenceSeenKey(accountHive, kind, evidenceID string) string {
+	return se.evidenceKey(accountHive, kind) + "|" + evidenceID
+}
+
+func (se *StateEngine) recordEvidenceAndShouldSlash(accountHive, kind, evidenceID string, blockHeight uint64) bool {
+	if se == nil {
+		return false
+	}
+	if se.safetyEvidenceSeen == nil {
+		se.safetyEvidenceSeen = make(map[string]uint64)
+	}
+	if se.safetyEvidenceHeights == nil {
+		se.safetyEvidenceHeights = make(map[string][]uint64)
+	}
+	acct := normalizeHiveAccount(accountHive)
+	if acct == "" || strings.TrimSpace(kind) == "" {
+		return false
+	}
+	id := strings.TrimSpace(evidenceID)
+	if id == "" {
+		id = strconv.FormatUint(blockHeight, 10)
+	}
+	seenKey := se.evidenceSeenKey(acct, kind, id)
+	if seenH, ok := se.safetyEvidenceSeen[seenKey]; ok && seenH <= blockHeight {
+		return false
+	}
+	se.safetyEvidenceSeen[seenKey] = blockHeight
+	if !safetyslash.UsesThreshold(kind) {
+		return true
+	}
+	baseKey := se.evidenceKey(acct, kind)
+	window := uint64(safetyslash.EvidenceThresholdWindowBlocks)
+	old := se.safetyEvidenceHeights[baseKey]
+	filtered := make([]uint64, 0, len(old)+1)
+	for _, h := range old {
+		if blockHeight >= h && (blockHeight-h) <= window {
+			filtered = append(filtered, h)
+		}
+	}
+	filtered = append(filtered, blockHeight)
+	se.safetyEvidenceHeights[baseKey] = filtered
+	return len(filtered) >= safetyslash.ThresholdCountForEvidenceKind(kind)
+}
+
+func (se *StateEngine) slashForEvidenceIfPolicyAllows(accountHive, kind, evidenceID, txID string, blockHeight uint64) ledgerSystem.LedgerResult {
+	if se == nil {
+		return ledgerSystem.LedgerResult{Ok: false, Msg: "state engine not configured"}
+	}
+	if !se.recordEvidenceAndShouldSlash(accountHive, kind, evidenceID, blockHeight) {
+		return ledgerSystem.LedgerResult{Ok: false, Msg: "threshold not met or duplicate evidence"}
+	}
+	bps := safetyslash.EffectiveCorrelatedBps(
+		[]int{safetyslash.SlashBpsForEvidenceKind(kind)},
+		safetyslash.CorrelatedSlashCapBps,
+	)
+	if bps <= 0 {
+		return ledgerSystem.LedgerResult{Ok: false, Msg: "unsupported evidence kind"}
+	}
+	return se.applyPrincipalSlashForProvableEvidence(accountHive, bps, txID, blockHeight, kind)
+}
+
+func blamedAccountsFromBitSet(bitsetHex string, members []elections.ElectionMember) []string {
+	bs := strings.TrimSpace(strings.TrimPrefix(bitsetHex, "0x"))
+	if bs == "" || len(members) == 0 {
+		return nil
+	}
+	raw, err := hex.DecodeString(bs)
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	out := make([]string, 0)
+	seen := make(map[string]struct{})
+	for memberIdx, m := range members {
+		byteIdx := memberIdx / 8
+		bitIdx := uint(memberIdx % 8)
+		if byteIdx >= len(raw) {
+			break
+		}
+		if (raw[byteIdx] & (1 << bitIdx)) == 0 {
+			continue
+		}
+		acct := normalizeHiveAccount(m.Account)
+		if acct == "" {
+			continue
+		}
+		if _, ok := seen[acct]; ok {
+			continue
+		}
+		seen[acct] = struct{}{}
+		out = append(out, acct)
+	}
+	return out
 }
 
 // EnqueueSlashRestitutionClaim registers remaining HIVE loss owed to a victim.

@@ -411,3 +411,21 @@ func TestFeedTrackerLastTickReturnsDefensiveCopies(t *testing.T) {
 		t.Fatalf("unexpected group copy behavior: %v", s2.TrustedWitnessGroup)
 	}
 }
+
+func TestDivergingTrustedWitnesses(t *testing.T) {
+	tr := NewFeedTracker()
+	// Build tracker internals directly to isolate divergence calculation.
+	tr.last = FeedTickSnapshot{
+		TrustedHiveMean:     1.0,
+		TrustedHiveOK:       true,
+		TrustedWitnessGroup: []string{"alice", "bob", "carol"},
+	}
+	tr.quotes["alice"] = 1.00
+	tr.quotes["bob"] = 1.08   // 800 bps divergence
+	tr.quotes["carol"] = 1.01 // 100 bps divergence
+
+	got := tr.DivergingTrustedWitnesses(300)
+	if len(got) != 1 || got[0] != "bob" {
+		t.Fatalf("unexpected divergers: %#v", got)
+	}
+}
