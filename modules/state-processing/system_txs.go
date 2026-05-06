@@ -537,6 +537,29 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 		fmt.Println(verified, "realWeight", realWeight, " len(includedDids)", len(includedDids))
 
 		if verified && realWeight >= minimums {
+			// Pendulum settlement gate: the prior epoch must already be
+			// settled before the next election can activate. The closing
+			// committee's settlement is delivered as a BlockTypePendulumSettlement
+			// block tx in a VSC block before this point; rejecting here gives
+			// the state engine a defence-in-depth fallback if the election
+			// proposer's `canHold` check was bypassed (malicious proposer or
+			// timing race). The bucket carries forward; the next election
+			// attempt picks up after settlement lands.
+			//
+			// Genesis path: when prevElection.Epoch == 0 there is no closing
+			// epoch to settle, so the gate only applies once a real first
+			// epoch has been served (tx.Epoch >= 2).
+			if tx.Epoch >= 2 {
+				latestSettled := se.GetLatestSettledEpoch()
+				if latestSettled < tx.Epoch-1 {
+					log.Warn("pendulum settlement gate: election_result deferred",
+						"tx_epoch", tx.Epoch,
+						"required_settled_epoch", tx.Epoch-1,
+						"latest_settled_epoch", latestSettled)
+					return
+				}
+			}
+
 			fmt.Println("Election verified, indexing...", tx.Epoch)
 			fmt.Println("Election CID", parsedCid)
 			se.da.GetDag(parsedCid)
@@ -793,6 +816,16 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		} else if txContainer.Type() == "oplog" {
 			oplog := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))
 			oplog.ExecuteTx(se)
+		} else if txContainer.Type() == "pendulum_settlement" {
+			rec, ok := txContainer.AsPendulumSettlement()
+			if !ok {
+				log.Warn("pendulum settlement: failed to decode block tx", "id", txInfo.Id)
+				continue
+			}
+			// The closing committee's 2/3 BLS aggregate over the carrying VSC
+			// block already validated the bytes; applyPendulumSettlement trusts
+			// the payload and pairs the bucket debit with per-account credits.
+			se.applyPendulumSettlement(rec, uint64(t.SignedBlock.Headers.Br[1]))
 		}
 	}
 

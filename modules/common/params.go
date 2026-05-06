@@ -21,4 +21,5 @@ const (
 	BlockTypeAnchor
 	BlockTypeOplog
 	BlockTypeRcUpdate
+	BlockTypePendulumSettlement
 )

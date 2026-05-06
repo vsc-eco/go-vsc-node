@@ -14,7 +14,6 @@ import (
 	"vsc-node/modules/db/vsc/contracts"
 	pendulum_oracle "vsc-node/modules/db/vsc/pendulum_oracle"
 	pendulum "vsc-node/modules/incentive-pendulum"
-	ledgerSystem "vsc-node/modules/ledger-system"
 	wasm_context "vsc-node/modules/wasm/context"
 
 	"github.com/JustinKnueppel/go-result"
@@ -25,12 +24,6 @@ import (
 // MongoDB.
 type SnapshotReader interface {
 	GetSnapshotAtOrBefore(blockHeight uint64) (*pendulum_oracle.SnapshotRecord, bool, error)
-}
-
-// LedgerAccruer is the narrow PendulumAccrue side of the ledger system the
-// applier touches. Same testability rationale as SnapshotReader.
-type LedgerAccruer interface {
-	PendulumAccrue(account, asset string, amount int64, txID string, blockHeight uint64) ledgerSystem.LedgerResult
 }
 
 // WhitelistGetter returns the current pool whitelist (returned slice may be a
@@ -60,9 +53,10 @@ func DefaultConfig() Config {
 }
 
 // Applier is the concrete PendulumApplier impl wired by the state engine.
+// It is stateless across calls — per-call ledger movement happens through the
+// AccrueNodeBucketFn the execution context supplies at call time.
 type Applier struct {
 	snapshots SnapshotReader
-	ledger    LedgerAccruer
 	whitelist WhitelistGetter
 	cfg       Config
 }
@@ -70,8 +64,8 @@ type Applier struct {
 // New constructs an Applier. Any nil dep produces an applier that always
 // returns ErrUnimplemented from ApplySwapFees, so the wasm runtime can call
 // without worrying about partial wiring.
-func New(snapshots SnapshotReader, ledger LedgerAccruer, whitelist WhitelistGetter, cfg Config) *Applier {
-	return &Applier{snapshots: snapshots, ledger: ledger, whitelist: whitelist, cfg: cfg}
+func New(snapshots SnapshotReader, whitelist WhitelistGetter, cfg Config) *Applier {
+	return &Applier{snapshots: snapshots, whitelist: whitelist, cfg: cfg}
 }
 
 // Sentinel errors. Wrapped with contracts.SDK_ERROR so the wasm runtime maps
@@ -105,8 +99,13 @@ func sdkErr[T any](inner error) result.Result[T] {
 //     hbdOut = nodeShareOutput · newX / (newY + nodeShareOutput)
 //     newY += nodeShareOutput                   (virtual: non-HBD added back)
 //     newX -= hbdOut                            (HBD leaves X reserve to nodes bucket)
-func (a *Applier) ApplySwapFees(contractID, txID string, blockHeight uint64, args wasm_context.PendulumSwapFeeArgs) result.Result[wasm_context.PendulumSwapFeeResult] {
-	if a == nil || a.snapshots == nil || a.ledger == nil || a.whitelist == nil {
+func (a *Applier) ApplySwapFees(
+	contractID, txID string,
+	blockHeight uint64,
+	args wasm_context.PendulumSwapFeeArgs,
+	accrueNodeBucket wasm_context.AccrueNodeBucketFn,
+) result.Result[wasm_context.PendulumSwapFeeResult] {
+	if a == nil || a.snapshots == nil || a.whitelist == nil || accrueNodeBucket == nil {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errors.New("pendulum applier not configured"))
 	}
 
@@ -268,11 +267,14 @@ func (a *Applier) ApplySwapFees(contractID, txID string, blockHeight uint64, arg
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
 	}
 
-	// 13. Ledger write.
+	// 13. Ledger write — paired transfer from contract:<id> to pendulum:nodes
+	// via the active LedgerSession. Conservation is structural: the contract
+	// account is debited by the same amount the bucket is credited; nothing
+	// is minted. ExecuteTransfer also enforces sufficient HBD balance on the
+	// source, so an under-reserved pool fails fast rather than printing.
 	if nodeBucketHBD.Sign() > 0 {
-		res := a.ledger.PendulumAccrue("nodes", "hbd", nodeBucketHBD.Int64(), txID, blockHeight)
-		if !res.Ok {
-			return sdkErr[wasm_context.PendulumSwapFeeResult](fmt.Errorf("%w: %s", errAccrualFailed, res.Msg))
+		if err := accrueNodeBucket(nodeBucketHBD.Int64()); err != nil {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](fmt.Errorf("%w: %s", errAccrualFailed, err.Error()))
 		}
 	}
 
