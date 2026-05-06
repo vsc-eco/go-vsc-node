@@ -33,12 +33,12 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 	"vsc-node/modules/incentive-pendulum/rewards"
+	pendulumwasm "vsc-node/modules/incentive-pendulum/wasm"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	tss_helpers "vsc-node/modules/tss/helpers"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
-	pendulumwasm "vsc-node/modules/incentive-pendulum/wasm"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
@@ -687,12 +687,18 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						fromStr, _ := op.Value["from"].(string)
 						log.Warn(
 							"review2 #104: untracked-asset transfer to gateway stranded — NOT credited, manual refund required",
-							"tx", tx.TransactionID,
-							"op", opIndex,
-							"from", fromStr,
-							"nai", amountMap["nai"],
-							"amount", amountMap["amount"],
-							"blockHeight", blockInfo.BlockHeight,
+							"tx",
+							tx.TransactionID,
+							"op",
+							opIndex,
+							"from",
+							fromStr,
+							"nai",
+							amountMap["nai"],
+							"amount",
+							amountMap["amount"],
+							"blockHeight",
+							blockInfo.BlockHeight,
 						)
 					}
 					continue
@@ -710,13 +716,25 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						continue
 					}
 				}
-				amountStr, ok := amountMap["amount"].(string)
+				amtStr, ok := amountMap["amount"].(string)
 				if !ok {
 					continue // review2 #86
 				}
-				amount, _ := strconv.ParseFloat(amountStr, 64)
-
-				amt := int64(amount)
+				amt, err := strconv.ParseInt(amtStr, 10, 64)
+				if err != nil {
+					log.Warn(
+						"skipping transfer with unparseable amount",
+						"tx",
+						tx.TransactionID,
+						"op",
+						opIndex,
+						"amount",
+						amtStr,
+						"err",
+						err,
+					)
+					continue
+				}
 
 				if op.Value["to"] == "vsc.gateway" {
 					fromStr, ok := op.Value["from"].(string)
@@ -1275,7 +1293,9 @@ func (se *StateEngine) persistPendulumSnapshotIfNew() {
 // the rewards/ aggregator. Returns sorted records suitable for inclusion in
 // the persisted SnapshotRecord. Read-only on MongoDB collections; safe to
 // call from the per-tick persistence path.
-func (se *StateEngine) computeRewardReductionsForTick(tickHeight uint64) []pendulum_oracle.WitnessRewardReductionRecord {
+func (se *StateEngine) computeRewardReductionsForTick(
+	tickHeight uint64,
+) []pendulum_oracle.WitnessRewardReductionRecord {
 	in := se.buildTickInputs(tickHeight)
 	if len(in.Committee) == 0 {
 		return nil
@@ -1354,7 +1374,15 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 	if se.tssCommitments != nil {
 		from := fromBlock
 		to := tickHeight
-		commits, err := se.tssCommitments.FindCommitments(nil, []string{"reshare", "blame", "sign_result"}, nil, &from, &to, 0, 0)
+		commits, err := se.tssCommitments.FindCommitments(
+			nil,
+			[]string{"reshare", "blame", "sign_result"},
+			nil,
+			&from,
+			&to,
+			0,
+			0,
+		)
 		if err == nil {
 			for _, c := range commits {
 				memberAccounts := se.committeeAccountsForEpoch(c.Epoch)

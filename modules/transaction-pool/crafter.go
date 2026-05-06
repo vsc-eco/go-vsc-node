@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"strconv"
 	"strings"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
@@ -268,13 +267,6 @@ func (tx *VSCStake) SerializeHive() ([]hivego.HiveOperation, error) {
 // }
 
 func (tx *VSCStake) Validate() (bool, error) {
-	fl, err := strconv.ParseFloat(tx.Amount, 64)
-	if err != nil {
-		return false, err
-	}
-	if fl < 0.001 {
-		return false, fmt.Errorf("failed validation - amount must be greater or equal to 0.001")
-	}
 	if tx.NetId == "" {
 		return false, fmt.Errorf("failed validation - net_id must be set")
 	}
@@ -282,14 +274,20 @@ func (tx *VSCStake) Validate() (bool, error) {
 		return false, fmt.Errorf("failed validation - to and from must be set")
 	}
 	valid := tx.Asset == "hbd" || tx.Asset == "hbd_savings" && (tx.Type == "stake" || tx.Type == "unstake")
-
 	if !valid {
 		return false, fmt.Errorf(
 			"failed validation - invalid asset or type; asset must equal hbd, and stake = stake|unstake",
 		)
 	}
+	amt, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
+	if err != nil {
+		return false, err
+	}
+	if amt < 1 {
+		return false, fmt.Errorf("failed validation - amount must be greater or equal to 0.001")
+	}
 
-	return valid, nil
+	return true, nil
 }
 
 type VscConsenusStake struct {
@@ -353,7 +351,7 @@ func (tx *VscConsenusStake) Validate() (bool, error) {
 	if tx.Type != "stake" && tx.Type != "unstake" {
 		return false, fmt.Errorf("failed validation - type must be stake or unstake")
 	}
-	if _, err := strconv.ParseFloat(tx.Amount, 64); err != nil {
+	if _, err := common.ParseAssetAmount(tx.Amount, "hive"); err != nil {
 		return false, fmt.Errorf("failed validation - amount must be a valid number")
 	}
 
@@ -440,13 +438,6 @@ func (tx *VscWithdraw) SerializeHive() ([]hivego.HiveOperation, error) {
 // }
 
 func (tx *VscWithdraw) Validate() (bool, error) {
-	fl, err := strconv.ParseFloat(tx.Amount, 64)
-	if err != nil {
-		return false, err
-	}
-	if fl < 0.001 {
-		return false, fmt.Errorf("failed validation - amount must be greater or equal to 0.001")
-	}
 	if tx.NetId == "" {
 		return false, fmt.Errorf("failed validation - net_id must be set")
 	}
@@ -460,8 +451,15 @@ func (tx *VscWithdraw) Validate() (bool, error) {
 			"failed validation - invalid asset or type; asset must equal hbd, and stake = stake|unstake",
 		)
 	}
+	amt, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
+	if err != nil {
+		return false, err
+	}
+	if amt < 1 {
+		return false, fmt.Errorf("failed validation - amount must be greater or equal to 0.001")
+	}
 
-	return valid, nil
+	return true, nil
 }
 
 type VscContractCall struct {
