@@ -3,6 +3,7 @@ package pendulum
 import (
 	"testing"
 
+	"vsc-node/lib/intmath"
 	"vsc-node/modules/incentive-pendulum/oracle"
 )
 
@@ -16,23 +17,28 @@ func TestBoltOracleIntegration(t *testing.T) {
 		t.Fatal()
 	}
 
-	quotes := map[string]float64{"w1": 0.24, "w2": 0.26}
+	// HBD/HIVE precision = 3; rational form is base-unit raw integers.
+	quotes := map[string]oracle.Quote{
+		"w1": {HbdRaw: 240, HiveRaw: 1000}, // 0.240 HBD per 1 HIVE
+		"w2": {HbdRaw: 260, HiveRaw: 1000}, // 0.260 HBD per 1 HIVE
+	}
 	updated := map[string]bool{"w1": true, "w2": true}
 	trusted := map[string]bool{}
 	for w := range quotes {
 		trusted[w] = oracle.FeedTrust(win.SignatureCount(w), updated[w], 4)
 	}
-	px, ok := oracle.TrustedHivePrice(quotes, trusted)
+	pxSQ, ok := oracle.TrustedHivePriceSQ64(quotes, trusted)
 	if !ok {
 		t.Fatal()
 	}
+	px := pxSQ.ToFloat()
 	if px < 0.249 || px > 0.251 {
 		t.Fatalf("px %v", px)
 	}
 
 	ring := oracle.NewMovingAverageRing(3)
 	ring.Push(px)
-	ring.Push(px * 1.01)
+	ring.Push(intmath.SQ64(float64(pxSQ) * 1.01).ToFloat())
 	mx, ok := ring.Mean()
 	if !ok {
 		t.Fatal()
