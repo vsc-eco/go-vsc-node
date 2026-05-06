@@ -412,14 +412,14 @@ func (t *TxVSCWithdraw) ExecuteTx(
 		Amount:      amount,
 		BlockHeight: t.Self.BlockHeight,
 	}
-	if t.From == "" {
-		params.From = t.Self.RequiredAuths[0]
-	} else {
+	if t.From != "" {
 		params.From = t.From
+	} else if len(t.Self.RequiredAuths) > 0 {
+		params.From = t.Self.RequiredAuths[0]
 	}
 
 	//Verifies
-	if !slices.Contains(t.Self.RequiredAuths, t.From) {
+	if t.From == "" || !slices.Contains(t.Self.RequiredAuths, t.From) {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid RequiredAuths",
@@ -469,7 +469,7 @@ func (t *TxStakeHbd) ExecuteTx(
 	if t.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
-	if t.To == "" || t.From == "" {
+	if t.To == "" {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
@@ -498,13 +498,13 @@ func (t *TxStakeHbd) ExecuteTx(
 			BlockHeight: t.Self.BlockHeight,
 		},
 	}
-	if t.From == "" {
-		params.From = "hive:" + t.Self.RequiredAuths[0]
-	} else {
+	if t.From != "" {
 		params.From = t.From
+	} else if len(t.Self.RequiredAuths) > 0 {
+		params.From = "hive:" + t.Self.RequiredAuths[0]
 	}
 
-	if !slices.Contains(t.Self.RequiredAuths, t.From) {
+	if t.From == "" || !slices.Contains(t.Self.RequiredAuths, t.From) {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid RequiredAuths",
@@ -557,7 +557,7 @@ func (t *TxUnstakeHbd) ExecuteTx(
 	if t.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 50)
 	}
-	if t.To == "" || t.From == "" {
+	if t.To == "" {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
@@ -587,13 +587,13 @@ func (t *TxUnstakeHbd) ExecuteTx(
 			Type:        "unstake",
 		},
 	}
-	if t.From == "" {
-		params.From = "hive:" + t.Self.RequiredAuths[0]
-	} else {
+	if t.From != "" {
 		params.From = t.From
+	} else if len(t.Self.RequiredAuths) > 0 {
+		params.From = "hive:" + t.Self.RequiredAuths[0]
 	}
 
-	if !slices.Contains(t.Self.RequiredAuths, t.From) {
+	if t.From == "" || !slices.Contains(t.Self.RequiredAuths, t.From) {
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid RequiredAuths",
