@@ -3,7 +3,12 @@ package state_engine
 import (
 	"strings"
 
+	"vsc-node/modules/db/vsc/elections"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	pendulum_oracle "vsc-node/modules/db/vsc/pendulum_oracle"
+	pendulum_settlements "vsc-node/modules/db/vsc/pendulum_settlements"
 	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
+	ledgerSystem "vsc-node/modules/ledger-system"
 )
 
 // PendulumPoolReserveReaderForTest exposes the unexported
@@ -11,6 +16,26 @@ import (
 // production read path without standing up the full state engine.
 func (se *StateEngine) PendulumPoolReserveReaderForTest() pendulumoracle.PoolReserveReader {
 	return &pendulumPoolReserveReader{se: se}
+}
+
+// NewForGeometryTest constructs a minimum-viable StateEngine wired only with
+// the dependencies the pendulum geometry / pool-reserve readers consume. Skips
+// the full constructor so geometry-only tests don't need a wasm runtime, RC
+// system, etc.
+func NewForGeometryTest(
+	ls ledgerSystem.LedgerSystem,
+	electionDb elections.Elections,
+	balanceDb ledgerDb.Balances,
+	pendulumOracleDb pendulum_oracle.PendulumOracleSnapshots,
+	pendulumSettlementsDb pendulum_settlements.PendulumSettlements,
+) *StateEngine {
+	return &StateEngine{
+		LedgerSystem:          ls,
+		electionDb:            electionDb,
+		balanceDb:             balanceDb,
+		pendulumOracleDb:      pendulumOracleDb,
+		pendulumSettlementsDb: pendulumSettlementsDb,
+	}
 }
 
 // pendulumPoolReserveReader reads each whitelisted pool's HBD-side reserve
