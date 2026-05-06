@@ -78,7 +78,10 @@ func (t TxVscCallContract) ExecuteTx(
 	// before any contract fetch or execution, so the bound holds
 	// deterministically on every node regardless of the ingest path.
 	if len(t.Payload) > params.MAX_CONTRACT_PAYLOAD_SIZE {
-		return errorToTxResult(fmt.Errorf("payload exceeds maximum size of %d bytes", params.MAX_CONTRACT_PAYLOAD_SIZE), 100)
+		return errorToTxResult(
+			fmt.Errorf("payload exceeds maximum size of %d bytes", params.MAX_CONTRACT_PAYLOAD_SIZE),
+			100,
+		)
 	}
 
 	info, exists := se.GetContractInfo(t.ContractId, t.Self.BlockHeight)
@@ -317,7 +320,7 @@ func (tx TxVSCTransfer) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	amount, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -406,7 +409,7 @@ func (t *TxVSCWithdraw) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(t.Amount)
+	amount, err := common.ParseAssetAmount(t.Amount, t.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -491,7 +494,7 @@ func (t *TxStakeHbd) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(t.Amount)
+	amount, err := common.ParseAssetAmount(t.Amount, t.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -579,7 +582,7 @@ func (t *TxUnstakeHbd) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(t.Amount)
+	amount, err := common.ParseAssetAmount(t.Amount, t.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -700,7 +703,7 @@ func (tx *TxConsensusStake) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	amount, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -800,7 +803,7 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	amount, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
 
 	if err != nil {
 		return TxResult{
