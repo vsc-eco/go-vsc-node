@@ -165,7 +165,25 @@ func (e *electionProposer) canHold() bool {
 
 	result, _ := e.elections.GetElectionByHeight(e.bh)
 
-	return result.BlockHeight < e.bh-electionInterval
+	if result.BlockHeight >= e.bh-electionInterval {
+		return false
+	}
+
+	// Pendulum settlement gate: the closing epoch must have its settlement
+	// record on chain before the next election can fire. The state engine's
+	// `vsc.election_result` handler enforces the same gate as defence in
+	// depth; this check here just prevents the proposer from broadcasting
+	// elections that will be rejected anyway.
+	//
+	// `result.Epoch` is the active (closing) epoch at e.bh. We need it
+	// settled before proposing epoch+1.
+	if result.Epoch >= 1 && e.se != nil {
+		if e.se.GetLatestSettledEpoch() < result.Epoch {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (e *electionProposer) GenerateElection() (elections.ElectionHeader, elections.ElectionData, error) {

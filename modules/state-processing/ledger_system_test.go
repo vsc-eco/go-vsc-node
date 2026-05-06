@@ -737,35 +737,33 @@ func TestOplogIngest(t *testing.T) {
 	t.Logf("alice balance after ingest: %d, bob balance: %d", aliceBal, bobBal)
 }
 
+// seedPendulumBucket simulates the per-swap accrual side-effect: a paired
+// transfer ledger record on the bucket (positive) — the matching debit on the
+// source contract account is irrelevant for these distribute / balance tests.
+func seedPendulumBucket(t *testing.T, lDb ledgerDb.Ledger, txID string, amount int64, blockHeight uint64) {
+	t.Helper()
+	lDb.StoreLedger(ledgerDb.LedgerRecord{
+		Id:          txID + "#out",
+		BlockHeight: blockHeight,
+		Amount:      amount,
+		Asset:       "hbd",
+		Owner:       ledgerSystem.PendulumNodesHBDBucket,
+		Type:        "transfer",
+	})
+}
+
 func TestPendulumLedgerOps(t *testing.T) {
 	ls, state := newLedgerEnv()
 
-	t.Run("accrue credits the nodes HBD bucket", func(t *testing.T) {
-		result := ls.PendulumAccrue("nodes", "hbd", 25, "pendulum-accrue-1", 100)
-		require.True(t, result.Ok)
+	// Seed the bucket as the swap-time path would: paired ExecuteTransfer
+	// records produce type=transfer entries (the matching contract-side debit
+	// is exercised by the LedgerSession tests in ledger-system/).
+	seedPendulumBucket(t, state.LedgerDb, "swap-tx-1", 25, 100)
+	seedPendulumBucket(t, state.LedgerDb, "swap-tx-2", 25, 101)
 
-		// second call with same key should be idempotent-upsert, not fail
-		dup := ls.PendulumAccrue("nodes", "hbd", 25, "pendulum-accrue-1", 100)
-		require.True(t, dup.Ok)
-
-		records, err := state.LedgerDb.GetLedgerRange(ledgerSystem.PendulumNodesHBDBucket, 0, 1000, "hbd")
-		require.NoError(t, err)
-		require.NotEmpty(t, *records)
-		last := (*records)[len(*records)-1]
-		assert.Equal(t, int64(25), last.Amount)
-		assert.Equal(t, "pendulum_accrue", last.Type)
-	})
-
-	t.Run("accrue accepts already-prefixed account string", func(t *testing.T) {
-		result := ls.PendulumAccrue(ledgerSystem.PendulumNodesHBDBucket, "hbd", 5, "pendulum-accrue-prefixed", 100)
-		require.True(t, result.Ok)
-	})
-
-	t.Run("accrue rejects empty account or asset", func(t *testing.T) {
-		bad1 := ls.PendulumAccrue("", "hbd", 1, "pendulum-bad-acct", 100)
-		assert.False(t, bad1.Ok)
-		bad2 := ls.PendulumAccrue("nodes", "", 1, "pendulum-bad-asset", 100)
-		assert.False(t, bad2.Ok)
+	t.Run("bucket balance sums seeded transfers", func(t *testing.T) {
+		bal := ls.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, 200)
+		assert.Equal(t, int64(50), bal)
 	})
 
 	t.Run("distribute debits the nodes bucket and credits the destination", func(t *testing.T) {
@@ -802,11 +800,9 @@ func TestPendulumLedgerOps(t *testing.T) {
 		require.True(t, r2.Ok)
 	})
 
-	t.Run("bucket balance reflects accrue and distribute effects", func(t *testing.T) {
-		// Mock LedgerDb does not dedupe by record Id (production Mongo does via unique index),
-		// so the duplicate accrue from the first sub-test contributes twice here:
-		// 25 (accrue-1) * 2 + 5 (accrue-prefixed) - 3 - 2 - 1 = 49.
+	t.Run("bucket balance reflects distribute effects", func(t *testing.T) {
+		// 50 seeded - 3 distributed - 2 distributed - 1 distributed = 44.
 		bal := ls.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, 200)
-		assert.Equal(t, int64(49), bal)
+		assert.Equal(t, int64(44), bal)
 	})
 }
