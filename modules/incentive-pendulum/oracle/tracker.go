@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 
+	"vsc-node/lib/intmath"
+	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/hive_blocks"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -54,21 +56,23 @@ type FeedTracker struct {
 
 	win *WitnessSignatureWindow
 
-	quotes       map[string]float64
+	quotes       map[string]Quote
 	lastFeedBlk  map[string]uint64
 	witnessProps map[string]WitnessProperties
 	seenWitness  map[string]struct{}
 
 	ma *MovingAverageRing
 
-	last FeedTickSnapshot
+	last           FeedTickSnapshot
+	lastMeanSQ64   intmath.SQ64
+	lastMeanSQ64OK bool
 }
 
 // NewFeedTracker builds a tracker with a 100-block signature window and a short MA over ticks.
 func NewFeedTracker() *FeedTracker {
 	return &FeedTracker{
 		win:          NewWitnessSignatureWindow(100),
-		quotes:       make(map[string]float64),
+		quotes:       make(map[string]Quote),
 		lastFeedBlk:  make(map[string]uint64),
 		witnessProps: make(map[string]WitnessProperties),
 		seenWitness:  make(map[string]struct{}),
@@ -139,8 +143,10 @@ func (t *FeedTracker) TickIfDue(blockHeight uint64) {
 		trusted[w] = FeedTrust(sigs[w], published, DefaultMinSignatures)
 	}
 
-	mean, meanOk := TrustedHivePrice(t.quotes, trusted)
+	meanSQ, meanOk := TrustedHivePriceSQ64(t.quotes, trusted)
+	var mean float64
 	if meanOk {
+		mean = meanSQ.ToFloat()
 		t.ma.Push(mean)
 	}
 	ma, maOk := t.ma.Mean()
@@ -158,6 +164,8 @@ func (t *FeedTracker) TickIfDue(blockHeight uint64) {
 		HBDInterestRateOK:   aprOk,
 		TrustedWitnessGroup: append([]string(nil), group...),
 	}
+	t.lastMeanSQ64 = meanSQ
+	t.lastMeanSQ64OK = meanOk
 }
 
 func (t *FeedTracker) ingestFeedPublish(blockHeight uint64, value map[string]interface{}) {
@@ -171,11 +179,11 @@ func (t *FeedTracker) ingestFeedPublish(blockHeight uint64, value map[string]int
 	}
 	base, _ := asString(er["base"])
 	quote, _ := asString(er["quote"])
-	price, ok := hiveHBDPerHiveFromFeed(base, quote)
-	if !ok || price <= 0 {
+	q, ok := hiveHBDPerHiveFromFeed(base, quote)
+	if !ok {
 		return
 	}
-	t.quotes[pub] = price
+	t.quotes[pub] = q
 	t.lastFeedBlk[pub] = blockHeight
 	t.seenWitness[pub] = struct{}{}
 }
@@ -216,47 +224,49 @@ func asString(v interface{}) (string, bool) {
 	}
 }
 
-func hiveHBDPerHiveFromFeed(base, quote string) (float64, bool) {
-	if p, ok := parseHbdPerHivePair(base, quote); ok {
-		return p, true
+// hiveHBDPerHiveFromFeed accepts a feed_publish exchange_rate's base+quote in
+// either order and returns the rational HBD-per-HIVE Quote.
+func hiveHBDPerHiveFromFeed(base, quote string) (Quote, bool) {
+	if q, ok := parseHbdPerHivePair(base, quote); ok {
+		return q, true
 	}
 	return parseHbdPerHivePair(quote, base)
 }
 
-// parseHbdPerHivePair returns HBD amount per 1 HIVE given "X HBD" and "Y HIVE" asset strings.
-func parseHbdPerHivePair(a, b string) (float64, bool) {
+// parseHbdPerHivePair returns the rational Quote {HbdRaw, HiveRaw} given the
+// "X HBD" and "Y HIVE" asset strings — base-unit integers, no float intermediate.
+func parseHbdPerHivePair(a, b string) (Quote, bool) {
 	va, ca, okA := parseAssetAmount(a)
 	vb, cb, okB := parseAssetAmount(b)
 	if !okA || !okB {
-		return 0, false
+		return Quote{}, false
 	}
-	if isHBD(ca) && isHive(cb) && vb > 0 {
-		return va / vb, true
+	if ca == "hbd" && cb == "hive" && vb > 0 {
+		return Quote{HbdRaw: va, HiveRaw: vb}, true
 	}
-	return 0, false
+	return Quote{}, false
 }
 
-func parseAssetAmount(s string) (amt float64, sym string, ok bool) {
+// parseAssetAmount parses a Hive asset string ("0.250 HBD" / "1.000 HIVE") into
+// base-unit raw int64 + canonical lowercase symbol. Hive's legacy STEEM symbol
+// is normalized to "hive". The amount goes through the precision registry, so
+// inputs that exceed an asset's L1 precision (e.g. "1.0001 HBD") fail loudly
+// rather than silently truncating.
+func parseAssetAmount(s string) (amount int64, sym string, ok bool) {
 	s = strings.TrimSpace(s)
 	parts := strings.Fields(s)
 	if len(parts) != 2 {
 		return 0, "", false
 	}
-	v, err := strconv.ParseFloat(parts[0], 64)
-	if err != nil || v <= 0 {
+	sym = strings.ToLower(strings.TrimSpace(parts[1]))
+	if sym == "steem" {
+		sym = "hive"
+	}
+	amt, err := common.ParseAssetAmount(parts[0], sym)
+	if err != nil || amt <= 0 {
 		return 0, "", false
 	}
-	return v, strings.TrimSpace(parts[1]), true
-}
-
-func isHBD(sym string) bool {
-	s := strings.ToUpper(sym)
-	return s == "HBD"
-}
-
-func isHive(sym string) bool {
-	s := strings.ToUpper(sym)
-	return s == "HIVE" || s == "STEEM"
+	return amt, sym, true
 }
 
 func hbdInterestFromProps(props interface{}) (int, bool) {

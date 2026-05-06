@@ -1,9 +1,6 @@
 package oracle
 
 import (
-	"math/big"
-	"sort"
-
 	"vsc-node/lib/intmath"
 )
 
@@ -37,17 +34,16 @@ type FeedTickSnapshotInt struct {
 
 // LastTickInt returns the most recent tick as a deterministic integer snapshot.
 //
-// Recomputes the trusted HIVE price from the per-witness quote map by:
-//  1. Sorting trusted witnesses by name (deterministic order across nodes).
-//  2. Converting each quote to SQ64 (bit-exact float→int rounding).
-//  3. Summing in big.Int and dividing by count via integer arithmetic.
+// The trusted HIVE mean is computed at TickIfDue time from rational Quote
+// pairs (HbdRaw / HiveRaw) iterated in sorted witness order — bit-equal across
+// nodes given the same on-chain inputs. We just read the cached SQ64 result
+// here; no recomputation needed.
 //
-// The HiveMovingAvg field is the SQ64 form of the float MA, which is itself
-// non-deterministic across nodes when its inputs were non-deterministic floats.
-// This is acceptable for the v1 testnet: only TrustedHiveMean feeds the
-// pendulum settlement math; HiveMovingAvg is informational.
-// TODO(W2 follow-up): replace MovingAverageRing with an SQ64 ring once the
-// tracker is migrated end-to-end.
+// HiveMovingAvg is the SQ64 form of the float MA. Now that its float inputs
+// are themselves derived deterministically from SQ64 means, the MA value is
+// also deterministic across nodes — but it remains marked informational and
+// is slated for a native-SQ64 (or post-SQ64) rewrite alongside the wider
+// pendulum integer migration.
 func (t *FeedTracker) LastTickInt() FeedTickSnapshotInt {
 	if t == nil {
 		return FeedTickSnapshotInt{}
@@ -61,42 +57,14 @@ func (t *FeedTracker) LastTickInt() FeedTickSnapshotInt {
 		HBDInterestRateOK:  t.last.HBDInterestRateOK,
 		HiveMovingAvg:      intmath.SQ64FromFloat(t.last.HiveMovingAvg),
 		HiveMovingAvgOK:    t.last.HiveMovingAvgOK,
+		TrustedHiveMean:    t.lastMeanSQ64,
+		TrustedHiveOK:      t.lastMeanSQ64OK,
 	}
 
 	if len(t.last.TrustedWitnessGroup) > 0 {
 		out.TrustedWitnessGroup = append([]string(nil), t.last.TrustedWitnessGroup...)
 	}
 
-	out.TrustedHiveMean, out.TrustedHiveOK = t.deterministicTrustedMeanLocked()
 	return out
-}
-
-// deterministicTrustedMeanLocked recomputes the trusted-witness HIVE mean as SQ64.
-// Caller must hold t.mu. Iterates trusted witnesses in lexicographic order so the
-// SQ64 sum (and the resulting mean after integer division) is identical across nodes.
-func (t *FeedTracker) deterministicTrustedMeanLocked() (intmath.SQ64, bool) {
-	trusted := t.last.TrustedWitnessGroup
-	if len(trusted) == 0 || len(t.quotes) == 0 {
-		return 0, false
-	}
-
-	names := append([]string(nil), trusted...)
-	sort.Strings(names)
-
-	sum := new(big.Int)
-	count := 0
-	for _, w := range names {
-		q, ok := t.quotes[w]
-		if !ok || q <= 0 {
-			continue
-		}
-		sum.Add(sum, big.NewInt(int64(intmath.SQ64FromFloat(q))))
-		count++
-	}
-	if count == 0 {
-		return 0, false
-	}
-	mean := new(big.Int).Quo(sum, big.NewInt(int64(count)))
-	return intmath.SQ64(mean.Int64()), true
 }
 

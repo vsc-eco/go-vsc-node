@@ -99,19 +99,6 @@ func VerifySignatures(auths []dids.DID, blk blocks.Block, sigs []Sig) (bool, err
 	return verified, err
 }
 
-func SafeParseHiveFloat(amount string) (int64, error) {
-	parts := strings.Split(amount, ".")
-	if len(parts) != 2 {
-		return 0, fmt.Errorf("must have exactly 1 decimal point")
-	}
-
-	if len(parts[1]) != 3 {
-		return 0, fmt.Errorf("decimal part must have 3 decimal places")
-	}
-
-	return strconv.ParseInt(strings.Join(parts, ""), 10, 64)
-}
-
 // parses an integer or decimal amount string, with an optional decimals value
 // decimals: the number of decimals supported by this token. use -1 to indicate
 // unknown, and the amount be assumed to be in base units

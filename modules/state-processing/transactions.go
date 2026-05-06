@@ -307,7 +307,7 @@ func (tx TxVSCTransfer) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	amount, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -396,7 +396,7 @@ func (t *TxVSCWithdraw) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(t.Amount)
+	amount, err := common.ParseAssetAmount(t.Amount, t.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -481,7 +481,7 @@ func (t *TxStakeHbd) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(t.Amount)
+	amount, err := common.ParseAssetAmount(t.Amount, t.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -569,7 +569,7 @@ func (t *TxUnstakeHbd) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(t.Amount)
+	amount, err := common.ParseAssetAmount(t.Amount, t.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -678,7 +678,7 @@ func (tx *TxConsensusStake) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	amount, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -767,7 +767,7 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	amount, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
 
 	if err != nil {
 		return TxResult{

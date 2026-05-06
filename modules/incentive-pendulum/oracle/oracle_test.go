@@ -31,15 +31,23 @@ func TestFeedTrust(t *testing.T) {
 	}
 }
 
-func TestTrustedHivePrice(t *testing.T) {
-	q := map[string]float64{"a": 0.25, "b": 0.27, "c": 0.5}
+func TestTrustedHivePriceSQ64(t *testing.T) {
+	// HBD/HIVE precision = 3, so 0.250 HBD = 250 raw, 1.000 HIVE = 1000 raw.
+	// Quote.ToSQ64() = HbdRaw * SQ64Scale / HiveRaw.
+	q := map[string]Quote{
+		"a": {HbdRaw: 250, HiveRaw: 1000},
+		"b": {HbdRaw: 270, HiveRaw: 1000},
+		"c": {HbdRaw: 500, HiveRaw: 1000}, // ignored: not trusted
+	}
 	tr := map[string]bool{"a": true, "b": true, "c": false}
-	p, ok := TrustedHivePrice(q, tr)
+	got, ok := TrustedHivePriceSQ64(q, tr)
 	if !ok {
 		t.Fatal("ok")
 	}
-	want := (0.25 + 0.27) / 2
-	if p != want {
-		t.Fatalf("want %v got %v", want, p)
+	// Mean of SQ64(0.250) and SQ64(0.270) = (25_000_000 + 27_000_000) / 2.
+	wantSum := q["a"].ToSQ64() + q["b"].ToSQ64()
+	want := wantSum / 2
+	if got != want {
+		t.Fatalf("want %d got %d", want, got)
 	}
 }
