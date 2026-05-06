@@ -19,6 +19,7 @@ import (
 	ledger_db "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/pendulum_oracle"
+	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rc_db "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -132,6 +133,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssKeys := tss_db.NewKeys(vscDb)
 	pendulumOracleDb := pendulum_oracle.New(vscDb)
+	pendulumSettlementsDb := pendulum_settlements.New(vscDb)
 
 	sysConfig := systemconfig.MocknetConfig()
 	kp := HashSeed([]byte(SEED_PREFIX + input.Username))
@@ -179,9 +181,9 @@ func MakeNode(input MakeNodeInput) *Node {
 		tssCommitments,
 		tssRequests,
 		pendulumOracleDb,
+		pendulumSettlementsDb,
 		wasm,
 		identityConfig,
-		nil,
 	)
 
 	blockConsumer := blockconsumer.New(se)
@@ -283,6 +285,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		tssKeys,
 		tssRequests,
 		pendulumOracleDb,
+		pendulumSettlementsDb,
 		dataAvailability,
 		blockConsumer,
 		wasm,
