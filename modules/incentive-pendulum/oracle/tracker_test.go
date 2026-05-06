@@ -9,9 +9,12 @@ import (
 )
 
 func TestParseHbdPerHivePair(t *testing.T) {
-	p, ok := hiveHBDPerHiveFromFeed("0.250 HBD", "1.000000 HIVE")
-	if !ok || p < 0.249 || p > 0.251 {
-		t.Fatalf("p=%v ok=%v", p, ok)
+	q, ok := hiveHBDPerHiveFromFeed("0.250 HBD", "1.000 HIVE")
+	if !ok {
+		t.Fatalf("ok=%v", ok)
+	}
+	if q.HbdRaw != 250 || q.HiveRaw != 1000 {
+		t.Fatalf("q=%+v want {HbdRaw:250 HiveRaw:1000}", q)
 	}
 }
 

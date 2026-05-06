@@ -33,12 +33,12 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 	"vsc-node/modules/incentive-pendulum/rewards"
+	pendulumwasm "vsc-node/modules/incentive-pendulum/wasm"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	tss_helpers "vsc-node/modules/tss/helpers"
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
-	pendulumwasm "vsc-node/modules/incentive-pendulum/wasm"
 
 	"github.com/chebyrash/promise"
 	"github.com/eager7/dogd/btcec"
@@ -650,9 +650,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						continue
 					}
 				}
-				amount, _ := strconv.ParseFloat(op.Value["amount"].(map[string]interface{})["amount"].(string), 64)
-
-				amt := int64(amount)
+				amtStr := op.Value["amount"].(map[string]interface{})["amount"].(string)
+				amt, err := strconv.ParseInt(amtStr, 10, 64)
+				if err != nil {
+					log.Warn("skipping transfer with unparseable amount", "tx", tx.TransactionID, "op", opIndex, "amount", amtStr, "err", err)
+					continue
+				}
 
 				if op.Value["to"] == "vsc.gateway" {
 					depositedFrom := "hive:" + op.Value["from"].(string)
@@ -1187,7 +1190,9 @@ func (se *StateEngine) persistPendulumSnapshotIfNew() {
 // the rewards/ aggregator. Returns sorted records suitable for inclusion in
 // the persisted SnapshotRecord. Read-only on MongoDB collections; safe to
 // call from the per-tick persistence path.
-func (se *StateEngine) computeRewardReductionsForTick(tickHeight uint64) []pendulum_oracle.WitnessRewardReductionRecord {
+func (se *StateEngine) computeRewardReductionsForTick(
+	tickHeight uint64,
+) []pendulum_oracle.WitnessRewardReductionRecord {
 	in := se.buildTickInputs(tickHeight)
 	if len(in.Committee) == 0 {
 		return nil
@@ -1266,7 +1271,15 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 	if se.tssCommitments != nil {
 		from := fromBlock
 		to := tickHeight
-		commits, err := se.tssCommitments.FindCommitments(nil, []string{"reshare", "blame", "sign_result"}, nil, &from, &to, 0, 0)
+		commits, err := se.tssCommitments.FindCommitments(
+			nil,
+			[]string{"reshare", "blame", "sign_result"},
+			nil,
+			&from,
+			&to,
+			0,
+			0,
+		)
 		if err == nil {
 			for _, c := range commits {
 				memberAccounts := se.committeeAccountsForEpoch(c.Epoch)

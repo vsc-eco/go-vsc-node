@@ -138,9 +138,10 @@ func TestLastTickInt_NilTracker(t *testing.T) {
 // helpers
 
 func formatHbd(v float64) string {
-	// Hive feed_publish exchange-rate strings parse via parseAssetAmount(); a
-	// fixed-precision value with the "HBD" suffix round-trips through the parser.
-	return strconv.FormatFloat(v, 'f', 6, 64) + " HBD"
+	// Hive HBD precision is 3; feed_publish strings beyond 3 decimals are
+	// rejected by the asset registry. Format at exactly precision 3 so the
+	// test value round-trips into the registered base-unit form.
+	return strconv.FormatFloat(v, 'f', 3, 64) + " HBD"
 }
 
 func sliceEqualString(a, b []string) bool {
