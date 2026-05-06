@@ -495,7 +495,37 @@ func (ctx *contractExecutionContext) PendulumApplySwapFees(args wasm_context.Pen
 			errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("pendulum applier not configured")),
 		)
 	}
-	return ctx.pendulumApplier.ApplySwapFees(ctx.env.ContractId, ctx.env.TxId, ctx.env.BlockHeight, args)
+	// Construct the per-call accrual closure bound to the active ledger
+	// session. The applier invokes it with the HBD amount to move from the
+	// pool contract's account into the global pendulum:nodes bucket.
+	// ExecuteTransfer is the same primitive hive.transfer / hive.draw use,
+	// so the accrual is a paired (debit, credit) ledger op — no minting.
+	//
+	// Id matches the convention used by SendBalance/PullBalance: pass the
+	// bare TxId. ledgerSession.AppendOplog disambiguates multiple
+	// ExecuteTransfer calls in one session via its `idCache` (txId → txId:1
+	// → txId:2 …); manually appending a tag here would bypass that
+	// machinery and break callers that correlate ledger records by the
+	// canonical {txId}[:N]#in/out shape.
+	accrue := func(amountHBD int64) error {
+		if amountHBD <= 0 {
+			return nil
+		}
+		res := ctx.ledger.ExecuteTransfer(ledgerSystem.OpLogEvent{
+			From:        "contract:" + ctx.env.ContractId,
+			To:          ledgerSystem.PendulumNodesHBDBucket,
+			Amount:      amountHBD,
+			Asset:       "hbd",
+			Type:        "transfer",
+			Id:          ctx.env.TxId,
+			BlockHeight: ctx.env.BlockHeight,
+		})
+		if !res.Ok {
+			return errors.New(res.Msg)
+		}
+		return nil
+	}
+	return ctx.pendulumApplier.ApplySwapFees(ctx.env.ContractId, ctx.env.TxId, ctx.env.BlockHeight, args, accrue)
 }
 
 func (ctx *contractExecutionContext) WithdrawBalance(to string, amount int64, asset string) result.Result[struct{}] {

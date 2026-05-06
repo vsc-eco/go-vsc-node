@@ -53,13 +53,31 @@ type PendulumSwapFeeResult struct {
 	SAfterQ8              int64
 }
 
-// PendulumApplier is the per-call entry point the SDK uses to delegate
-// the swap-time fee math + accrual. State engine constructs a concrete
-// implementation holding the snapshot DB, whitelist, and ledger system.
-// nil is permitted (e.g. in GraphQL read-path simulation) and causes the
-// SDK method to return ErrUnimplemented.
+// AccrueNodeBucketFn is the callback the applier invokes to move the
+// node-runner share from the pool contract's HBD ledger account into the
+// global `pendulum:nodes` bucket. The execution context constructs this
+// closure per-call, binding it to the active LedgerSession so the transfer
+// rides on the same rollback unit as the rest of the swap's ledger effects.
+//
+// Implementations MUST debit the source contract's HBD balance and credit
+// the bucket atomically — i.e., a paired (debit, credit) ledger op pair, not
+// a unilateral mint. Returning a non-nil error aborts the swap; the wasm
+// runtime surfaces the failure to the contract caller.
+type AccrueNodeBucketFn func(amountHBD int64) error
+
+// PendulumApplier is the per-call entry point the SDK uses to delegate the
+// swap-time fee math + accrual. State engine constructs a concrete
+// implementation holding the snapshot DB and whitelist; the per-call ledger
+// movement is delegated through the AccrueNodeBucketFn the execution context
+// supplies. nil is permitted (e.g. GraphQL read-path simulation) and causes
+// the SDK method to return ErrUnimplemented.
 type PendulumApplier interface {
-	ApplySwapFees(contractID, txID string, blockHeight uint64, args PendulumSwapFeeArgs) result.Result[PendulumSwapFeeResult]
+	ApplySwapFees(
+		contractID, txID string,
+		blockHeight uint64,
+		args PendulumSwapFeeArgs,
+		accrueNodeBucket AccrueNodeBucketFn,
+	) result.Result[PendulumSwapFeeResult]
 }
 
 type ExecContextValue interface {
