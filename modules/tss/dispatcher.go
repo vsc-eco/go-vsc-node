@@ -239,6 +239,13 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			defer func() {
 				initOnce.Do(func() { partyInitWg.Done() })
 				if r := recover(); r != nil {
+					// The reachable panic in this path is BuildLocalSaveDataSubset
+					// (keygen/save_data.go:92) when a party's PartyID.Key isn't
+					// found in the loaded keydata.Ks — caused by epoch-modification
+					// mismatch (prevCommitmentType disagreeing with how keydata was
+					// produced) or an OLD-committee member who wasn't in the original
+					// keygen. Subset-shrinking (e.g. excluding banned nodes) does NOT
+					// trigger it; the library is designed for that case.
 					log.Error("panic recovered in old party start", "algo", "ECDSA", "sessionId", dispatcher.sessionId, "panic", r)
 					dispatcher.err = fmt.Errorf("panic in old party start: %v", r)
 				}

@@ -204,10 +204,6 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) (
 		"account": bson.M{"$in": distinctAccounts},
 	}
 
-	for _, opt := range opts {
-		opt(&query)
-	}
-
 	findOptions := options.Find().SetSort(bson.D{{
 		Key:   "height",
 		Value: -1,
@@ -228,6 +224,10 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) (
 
 	//TODO: add filtering options equivalent to the old VSC network
 
+	// Dedupe to the most recent record per account (cursor is height-desc,
+	// so the first occurrence wins). SearchOption filters are applied AFTER
+	// this — applying them to the Mongo query would let an older enabled=true
+	// record stand in for an account whose latest announcement is disabled.
 	witnessMap := make(map[string]*Witness)
 
 	for _, witness := range witnesses {
@@ -238,6 +238,16 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) (
 
 	outNames := make([]string, 0)
 	for _, witness := range witnessMap {
+		keep := true
+		for _, opt := range opts {
+			if !opt(*witness) {
+				keep = false
+				break
+			}
+		}
+		if !keep {
+			continue
+		}
 		outNames = append(outNames, witness.Account)
 	}
 
@@ -245,9 +255,6 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) (
 
 	outWit := make([]Witness, 0)
 	for _, name := range outNames {
-		if witnessMap[name] == nil {
-			return nil, fmt.Errorf("witness not found")
-		}
 		outWit = append(outWit, *witnessMap[name])
 	}
 

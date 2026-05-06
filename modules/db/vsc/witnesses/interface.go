@@ -2,8 +2,6 @@ package witnesses
 
 import (
 	a "vsc-node/modules/aggregate"
-
-	"go.mongodb.org/mongo-driver/bson"
 )
 
 type Witnesses interface {
@@ -22,12 +20,15 @@ type SearchConfig struct {
 	Enabled          bool
 }
 
-type SearchOption func(cfg *bson.M) error
+// SearchOption filters witnesses post-dedupe. It must be a predicate over the
+// latest record per account, not a query-time filter — applying enabled=true
+// at the Mongo query level would surface an older enabled=true record for an
+// account whose most-recent announcement is enabled=false.
+type SearchOption func(w Witness) bool
 
 // Only returns witnesses that are enabled
 func EnabledOnly() SearchOption {
-	return func(cfg *bson.M) error {
-		(*cfg)["enabled"] = true
-		return nil
+	return func(w Witness) bool {
+		return w.Enabled
 	}
 }
