@@ -25,6 +25,7 @@ import (
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/pendulum_oracle"
+	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -32,7 +33,6 @@ import (
 	"vsc-node/modules/db/vsc/witnesses"
 	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 	"vsc-node/modules/incentive-pendulum/rewards"
-	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	tss_helpers "vsc-node/modules/tss/helpers"
@@ -107,29 +107,27 @@ type StateEngine struct {
 	BlockHeight int
 
 	// pendulumFeed tracks sole-HIVE witness feed + HBD APR (Magi pendulum oracle); updated from Hive blocks.
-	pendulumFeed   *pendulumoracle.FeedTracker
-	pendulumSettle *pendulumsettlement.Engine
+	pendulumFeed *pendulumoracle.FeedTracker
 	// pendulumOracleDb persists the consensus-grade integer snapshot per tick.
 	// Nil-safe: state engines constructed without it (older test harnesses) skip persistence.
 	pendulumOracleDb pendulum_oracle.PendulumOracleSnapshots
+	// pendulumSettlementsDb stores the per-epoch settlement marker written
+	// when applyPendulumSettlement processes a BlockTypePendulumSettlement
+	// record. Drives the proposer's `canHold` guard and the
+	// `vsc.election_result` handler's "prior epoch must be settled" check.
+	pendulumSettlementsDb pendulum_settlements.PendulumSettlements
 	// pendulumApplier is the swap-time SDK method's executor; nil when the
 	// snapshot DB or whitelist isn't wired (e.g. some test harnesses).
 	pendulumApplier wasm_context.PendulumApplier
 	// pendulumGeometry computes (V, P, E, T, s) per tick from contract state
 	// and balance ledger. nil-safe when the snapshot DB isn't wired.
 	pendulumGeometry *pendulumoracle.GeometryComputer
-	// pendulumBroadcaster emits vsc.pendulum_settlement on epoch transitions
-	// when the local node is the elected leader. Nil disables broadcasts
-	// (test harnesses, --disable-pendulum builds).
-	pendulumBroadcaster pendulumsettlement.Broadcaster
-	// balanceDb is held so the W5 settlement orchestration can read
-	// HIVE_CONSENSUS bonds via BalanceRecord directly, bypassing the
-	// op-type-filter trap on LedgerSystem.GetBalance.
+	// balanceDb is held so settlement composition can read HIVE_CONSENSUS
+	// bonds via BalanceRecord directly, bypassing the op-type-filter trap
+	// on LedgerSystem.GetBalance.
 	balanceDb ledgerDb.Balances
-	// selfHiveUsername is the local node's Hive account name, used by the
-	// settlement engine to gate leader-only orchestration. Empty string
-	// means "any node may run" which only happens when identityConfig isn't
-	// wired (test harness path).
+	// selfHiveUsername is the local node's Hive account name. Currently
+	// unused outside of tests now that settlement is leader-agnostic.
 	selfHiveUsername string
 
 	// lastPersistedTickHeight guards against re-saving an unchanged snapshot
@@ -988,11 +986,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 					}
-				} else if cj.Id == "vsc.pendulum_settlement" {
-					se.handlePendulumSettlement(block, tx, cj, txSelf)
 				}
 				// NOTE: vsc.tss_ready was removed — readiness is now handled
 				// off-chain via BLS-signed gossip attestations in the TSS module.
+				// NOTE: vsc.pendulum_settlement (L1 Hive op) was removed —
+				// settlement now rides as a BlockTypePendulumSettlement L2 op
+				// inside a VSC block, signed by the closing committee's 2/3 BLS
+				// aggregate. See modules/incentive-pendulum/settlement/compose.go
+				// and applyPendulumSettlement.
 
 				if vscTx != nil {
 					opList = append(opList, vscTx)
@@ -1095,11 +1096,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		se.pendulumFeed.TickIfDue(block.BlockNumber)
 		se.persistPendulumSnapshotIfNew()
 	}
-	if se.pendulumSettle != nil {
-		if err := se.pendulumSettle.ProcessBlock(block.BlockNumber); err != nil {
-			log.Warn("pendulum settlement boundary handler failed", "block_height", block.BlockNumber, "err", err)
-		}
-	}
 }
 
 // executeTxSafely runs a transaction handler with panic recovery so that a
@@ -1192,12 +1188,24 @@ func (se *StateEngine) persistPendulumSnapshotIfNew() {
 // the persisted SnapshotRecord. Read-only on MongoDB collections; safe to
 // call from the per-tick persistence path.
 func (se *StateEngine) computeRewardReductionsForTick(tickHeight uint64) []pendulum_oracle.WitnessRewardReductionRecord {
-	if se == nil || se.electionDb == nil || tickHeight == 0 {
+	in := se.buildTickInputs(tickHeight)
+	if len(in.Committee) == 0 {
 		return nil
+	}
+	return rewards.AggregateTick(in)
+}
+
+// buildTickInputs assembles the per-tick L2 evidence bundle the rewards
+// aggregator scores. Pure read on on-chain caches; deterministic across
+// nodes given identical chain state. Returns a zero-Committee TickInputs
+// when the tick can't be scored (no election, no committee, etc.).
+func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
+	if se == nil || se.electionDb == nil || tickHeight == 0 {
+		return rewards.TickInputs{}
 	}
 	election, err := se.electionDb.GetElectionByHeight(tickHeight)
 	if err != nil || len(election.Members) == 0 {
-		return nil
+		return rewards.TickInputs{}
 	}
 	committee := make([]string, 0, len(election.Members))
 	for _, m := range election.Members {
@@ -1294,7 +1302,7 @@ func (se *StateEngine) computeRewardReductionsForTick(tickHeight uint64) []pendu
 		}
 	}
 
-	return rewards.AggregateTick(in)
+	return in
 }
 
 func (se *StateEngine) committeeAccountsForEpoch(epoch uint64) []string {
@@ -1880,9 +1888,9 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	tssCommitments tss_db.TssCommitments,
 	tssRequests tss_db.TssRequests,
 	pendulumOracleDb pendulum_oracle.PendulumOracleSnapshots,
+	pendulumSettlementsDb pendulum_settlements.PendulumSettlements,
 	wasm *wasm_runtime.Wasm,
 	identityConfig common.IdentityConfig,
-	pendulumBroadcaster pendulumsettlement.Broadcaster,
 ) *StateEngine {
 
 	ls := ledgerSystem.New(balanceDb, ledgerDb, interestClaims, actionDb)
@@ -1940,10 +1948,10 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		LedgerSystem: ls,
 		LedgerState:  ledgerState,
 
-		pendulumFeed:        pendulumoracle.NewFeedTracker(),
-		pendulumOracleDb:    pendulumOracleDb,
-		pendulumBroadcaster: pendulumBroadcaster,
-		balanceDb:           balanceDb,
+		pendulumFeed:          pendulumoracle.NewFeedTracker(),
+		pendulumOracleDb:      pendulumOracleDb,
+		pendulumSettlementsDb: pendulumSettlementsDb,
+		balanceDb:             balanceDb,
 	}
 	if identityConfig != nil {
 		se.selfHiveUsername = identityConfig.Get().HiveUsername
@@ -1952,7 +1960,6 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	if pendulumOracleDb != nil {
 		se.pendulumApplier = pendulumwasm.New(
 			pendulumOracleDb,
-			ls,
 			func() []string { return sconf.PendulumPoolWhitelist() },
 			pendulumwasm.DefaultConfig(),
 		)
@@ -1961,23 +1968,6 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 			&pendulumCommitteeBondReader{se: se},
 		)
 	}
-
-	se.pendulumSettle = pendulumsettlement.New(
-		se.electionDb,
-		se.selfHiveUsername,
-		func(slotHeight uint64) []pendulumsettlement.ScheduledLeader {
-			schedule := se.GetSchedule(slotHeight)
-			out := make([]pendulumsettlement.ScheduledLeader, 0, len(schedule))
-			for _, s := range schedule {
-				out = append(out, pendulumsettlement.ScheduledLeader{
-					Account:    s.Account,
-					SlotHeight: s.SlotHeight,
-				})
-			}
-			return out
-		},
-		se.runPendulumSettlement,
-	)
 
 	return se
 }

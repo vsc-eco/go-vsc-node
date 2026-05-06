@@ -20,6 +20,7 @@ import (
 
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/transactions"
+	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	transactionpool "vsc-node/modules/transaction-pool"
@@ -859,6 +860,8 @@ func (tx *TransactionContainer) Type() string {
 		return "oplog"
 	} else if tx.TypeInt == int(common.BlockTypeRcUpdate) {
 		return "rc_update"
+	} else if tx.TypeInt == int(common.BlockTypePendulumSettlement) {
+		return "pendulum_settlement"
 	} else {
 		return "unknown"
 	}
@@ -913,6 +916,29 @@ func (tx *TransactionContainer) AsOplog(endBlock uint64) Oplog {
 	json.Unmarshal(jsonBytes, &oplog)
 
 	return oplog
+}
+
+// AsPendulumSettlement decodes the SettlementRecord pointed at by this
+// container's CID. Returns (record, true) on success; (zero, false) if the
+// underlying DAG fetch or decode fails. The state engine treats false as a
+// dropped settlement — the carrying block already had its CID validated by
+// 2/3 BLS aggregation, so a fetch failure indicates a local I/O issue rather
+// than malformed bytes.
+func (tx *TransactionContainer) AsPendulumSettlement() (pendulumsettlement.SettlementRecord, bool) {
+	if tx == nil || tx.da == nil {
+		return pendulumsettlement.SettlementRecord{}, false
+	}
+	txCid := cid.MustParse(tx.Id)
+	node, err := tx.da.GetDag(txCid)
+	if err != nil {
+		return pendulumsettlement.SettlementRecord{}, false
+	}
+	jsonBytes, _ := node.MarshalJSON()
+	var rec pendulumsettlement.SettlementRecord
+	if err := json.Unmarshal(jsonBytes, &rec); err != nil {
+		return pendulumsettlement.SettlementRecord{}, false
+	}
+	return rec, true
 }
 
 func (tx *TransactionContainer) Decode(bytes []byte) {

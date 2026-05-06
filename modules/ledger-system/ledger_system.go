@@ -50,41 +50,6 @@ const (
 	PendulumNodesHBDBucket = "pendulum:nodes"
 )
 
-func pendulumBucketAccount(account string) string {
-	a := strings.TrimSpace(account)
-	if a == "" {
-		return ""
-	}
-	if strings.HasPrefix(a, "pendulum:") {
-		return a
-	}
-	return "pendulum:" + a
-}
-
-func (ls *ledgerSystem) PendulumAccrue(account, asset string, amount int64, txID string, blockHeight uint64) LedgerResult {
-	bucket := pendulumBucketAccount(account)
-	if bucket == "" || strings.TrimSpace(asset) == "" {
-		return LedgerResult{Ok: false, Msg: "invalid account or asset"}
-	}
-	if amount <= 0 {
-		return LedgerResult{Ok: false, Msg: "invalid amount"}
-	}
-	if txID == "" {
-		return LedgerResult{Ok: false, Msg: "missing tx id"}
-	}
-	assetLower := strings.ToLower(asset)
-	ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-		Id:          txID + "#accrue#" + bucket + ":" + strings.ToUpper(asset),
-		TxId:        txID,
-		BlockHeight: blockHeight,
-		Amount:      amount,
-		Asset:       assetLower,
-		Owner:       bucket,
-		Type:        "pendulum_accrue",
-	})
-	return LedgerResult{Ok: true, Msg: "success"}
-}
-
 func (ls *ledgerSystem) PendulumDistribute(toAccount string, amount int64, txID string, blockHeight uint64) LedgerResult {
 	if strings.TrimSpace(toAccount) == "" {
 		return LedgerResult{Ok: false, Msg: "invalid destination"}
@@ -124,8 +89,9 @@ func (ls *ledgerSystem) PendulumDistribute(toAccount string, amount int64, txID 
 }
 
 // PendulumBucketBalance sums every ledger record whose Owner == bucket and
-// Asset == hbd, regardless of op type. It bypasses GetBalance's op-type
-// filtering so accrue/distribute records are both visible.
+// Asset == hbd. The bucket is credited via paired LedgerSession.ExecuteTransfer
+// records (type=transfer) at swap time and debited via PendulumDistribute
+// records (type=pendulum_distribute) at settlement time.
 func (ls *ledgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64) int64 {
 	if strings.TrimSpace(bucket) == "" {
 		return 0
