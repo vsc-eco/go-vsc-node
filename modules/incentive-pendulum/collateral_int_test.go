@@ -116,12 +116,28 @@ func TestCollateralFromSVBps_RedirectFlags(t *testing.T) {
 	}
 }
 
-func TestProtocolFeeRedirectBps_MatchesFloat(t *testing.T) {
-	for _, s := range []float64{0, 0.1, 0.29, 0.3, 0.31, 0.5, 0.69, 0.7, 0.71, 0.95, 1.0} {
-		fl := ProtocolFeeRedirectRecommended(s)
-		fx := ProtocolFeeRedirectRecommendedBps(bpsFromFloat(s))
-		if fl != fx {
-			t.Errorf("s=%v: float=%v bps=%v", s, fl, fx)
+func TestProtocolFeeRedirectBps_BandTransitions(t *testing.T) {
+	// |s-0.5| > 0.2 triggers redirect. Sample either side of the cliffs in bps.
+	cases := []struct {
+		sBps int64
+		want bool
+	}{
+		{0, true},
+		{1_000, true},
+		{2_900, true},
+		{3_000, false}, // boundary closed at 0.3
+		{3_100, false},
+		{5_000, false},
+		{6_900, false},
+		{7_000, false}, // boundary closed at 0.7
+		{7_100, true},
+		{9_500, true},
+		{10_000, true},
+	}
+	for _, c := range cases {
+		got := ProtocolFeeRedirectRecommendedBps(c.sBps)
+		if got != c.want {
+			t.Errorf("sBps=%d: got %v, want %v", c.sBps, got, c.want)
 		}
 	}
 }
