@@ -95,6 +95,45 @@ type SafetySlashConsensusParams struct {
 	BurnDelayBlocks uint64
 }
 
+// CancelPendingSafetySlashBurnParams identifies a pending burn slice to cancel
+// before it matures. The (TxID, EvidenceKind) tuple matches the original
+// SafetySlashConsensusParams; if the row has already been finalized (or
+// cancelled), the call is a no-op.
+type CancelPendingSafetySlashBurnParams struct {
+	// TxID of the original slash (the on-chain proof Tx).
+	TxID string
+	// EvidenceKind of the original slash.
+	EvidenceKind string
+	// SlashedAccount carried for traceability; the pending row's owner is
+	// always params.ProtocolSlashPendingBurnAccount.
+	SlashedAccount string
+	// BlockHeight at which the cancel is recorded.
+	BlockHeight uint64
+	// Reason is logged in the cancellation marker for explorers.
+	Reason string
+}
+
+// ReverseSafetySlashConsensusDebitParams re-credits a previously debited
+// HIVE_CONSENSUS bond. Use after CancelPendingSafetySlashBurnParams to fully
+// undo a slash, or alone when a finalized burn has already been processed but
+// governance still wants to make the validator whole from another source.
+type ReverseSafetySlashConsensusDebitParams struct {
+	// TxID of the original slash.
+	TxID string
+	// EvidenceKind of the original slash.
+	EvidenceKind string
+	// Account whose HIVE_CONSENSUS bond is being re-credited.
+	Account string
+	// Amount in satoshis to re-credit. Caller must enforce that this does
+	// not exceed the original debit recorded for (TxID, EvidenceKind, Account)
+	// — the ledger primitive does not currently look up the original debit.
+	Amount int64
+	// BlockHeight at which the credit is recorded.
+	BlockHeight uint64
+	// Reason is logged in the credit row for explorers.
+	Reason string
+}
+
 type LedgerResult struct {
 	Ok  bool
 	Msg string
@@ -170,6 +209,15 @@ type LedgerSystem interface {
 	PendulumDistribute(toAccount string, amount int64, txID string, blockHeight uint64) LedgerResult
 	SafetySlashConsensusBond(p SafetySlashConsensusParams) LedgerResult
 	FinalizeMaturedSafetySlashBurns(blockHeight uint64)
+	// CancelPendingSafetySlashBurn cancels a pending burn slice before maturity.
+	// Idempotent: if the (TxID, EvidenceKind) row is missing, finalized, or
+	// already cancelled, returns Ok=false with a descriptive Msg but does not
+	// error. Pair with ReverseSafetySlashConsensusDebit to fully undo a slash.
+	CancelPendingSafetySlashBurn(p CancelPendingSafetySlashBurnParams) LedgerResult
+	// ReverseSafetySlashConsensusDebit re-credits HIVE_CONSENSUS bond debited
+	// by a previous SafetySlashConsensusBond call. Idempotent per
+	// (TxID, EvidenceKind, Account) tuple.
+	ReverseSafetySlashConsensusDebit(p ReverseSafetySlashConsensusDebitParams) LedgerResult
 	PendulumBucketBalance(bucket string, blockHeight uint64) int64
 	NewEmptySession(state *LedgerState, startHeight uint64) LedgerSession
 	NewEmptyState() *LedgerState

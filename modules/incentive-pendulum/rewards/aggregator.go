@@ -25,6 +25,7 @@ type WitnessLivenessEvidence struct {
 	TssReshareExclusionBps     int
 	TssBlameBps                int
 	TssSignNonParticipationBps int
+	OracleQuoteDivergenceBps   int
 }
 
 // TickInputs bundles the per-signal pre-fetched data the aggregator consumes
@@ -44,6 +45,12 @@ type TickInputs struct {
 	Reshares []ReshareWithCommittee
 	Blames   []BlameWithCommittee
 	Signs    []SignResultWithCommittee
+
+	// DivergingOracleWitnesses is the trusted-group set whose latest quote
+	// drifted from the trusted-group mean by at least
+	// OracleQuoteDivergenceThresholdBps at the tick. Pre-deduplicated and
+	// sorted is fine but not required — the scorer dedupes internally.
+	DivergingOracleWitnesses []string
 }
 
 // TickBlockHeader is the narrow projection of vsc_blocks.VscHeaderRecord the
@@ -68,6 +75,7 @@ func AggregateTick(in TickInputs) []WitnessRewardReductionRecord {
 	tssA := ScoreTssReshareExclusion(in.Reshares)
 	tssB := ScoreTssBlame(in.Blames)
 	tssC := ScoreTssSignNonParticipation(in.Signs)
+	oracle := ScoreOracleQuoteDivergence(in.DivergingOracleWitnesses, in.Committee)
 
 	out := make([]WitnessRewardReductionRecord, 0, len(in.Committee))
 
@@ -82,13 +90,15 @@ func AggregateTick(in TickInputs) []WitnessRewardReductionRecord {
 			TssReshareExclusionBps:     clampPerTick(tssA[w]),
 			TssBlameBps:                clampPerTick(tssB[w]),
 			TssSignNonParticipationBps: clampPerTick(tssC[w]),
+			OracleQuoteDivergenceBps:   clampPerTick(oracle[w]),
 		}
-		bps := maxOfFive(
+		bps := maxOfMany(
 			ev.BlockProductionBps,
 			ev.BlockAttestationBps,
 			ev.TssReshareExclusionBps,
 			ev.TssBlameBps,
 			ev.TssSignNonParticipationBps,
+			ev.OracleQuoteDivergenceBps,
 		)
 		bps = clampPerTick(bps)
 
@@ -155,19 +165,17 @@ func clampPerTick(v int) int {
 	return v
 }
 
-func maxOfFive(a, b, c, d, e int) int {
-	m := a
-	if b > m {
-		m = b
-	}
-	if c > m {
-		m = c
-	}
-	if d > m {
-		m = d
-	}
-	if e > m {
-		m = e
+// maxOfMany returns the maximum across a variadic int list. The reward path
+// is intentionally max-of (not sum-of): a witness who fails one signal
+// shouldn't compound penalties just because the same downtime touches
+// adjacent signals (e.g. missing block production correlates with missing
+// attestation in the same tick).
+func maxOfMany(vals ...int) int {
+	m := 0
+	for i, v := range vals {
+		if i == 0 || v > m {
+			m = v
+		}
 	}
 	return m
 }
