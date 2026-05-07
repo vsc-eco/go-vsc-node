@@ -7,7 +7,7 @@ import (
 	"math/big"
 
 	"github.com/bnb-chain/tss-lib/v3/tss"
-	"github.com/eager7/dogd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
