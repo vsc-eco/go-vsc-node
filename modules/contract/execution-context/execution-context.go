@@ -525,7 +525,15 @@ func (ctx *contractExecutionContext) ContractCall(
 		func(ct contract_session.ContractWithCode) wasm_types.WasmResult {
 			w := wasm_runtime_ipc.New()
 			w.Init()
-			gasRemaining := ctx.gasRemain - ctx.gasUsage
+			// Pentest finding N-L3: gasRemain and gasUsage are
+			// uint; bare subtraction wraps to a near-MaxUint64
+			// value if gasUsage exceeds gasRemain, handing a
+			// child contract call essentially unlimited gas.
+			// Clamp at zero so the child gets at most what's left.
+			var gasRemaining uint
+			if ctx.gasRemain > ctx.gasUsage {
+				gasRemaining = ctx.gasRemain - ctx.gasUsage
+			}
 
 			ctxValue := New(Environment{
 				ContractId:           contractId,
