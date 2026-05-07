@@ -4,21 +4,21 @@ import "testing"
 
 func TestMovingAverageRing(t *testing.T) {
 	m := NewMovingAverageRing(3)
-	m.Push(1)
-	m.Push(2)
+	m.Push(10)
+	m.Push(20)
 	mu, ok := m.Mean()
-	if !ok || mu != 1.5 {
+	if !ok || mu != 15 {
 		t.Fatal(mu, ok)
 	}
-	m.Push(3)
+	m.Push(30)
 	mu, ok = m.Mean()
-	if !ok || mu != 2 {
+	if !ok || mu != 20 {
 		t.Fatal(mu)
 	}
-	m.Push(10) // drops 1
+	m.Push(100) // drops 10
 	mu, ok = m.Mean()
-	if !ok || mu != 5 {
-		t.Fatalf("want 5 got %v", mu)
+	if !ok || mu != 50 {
+		t.Fatalf("want 50 got %d", mu)
 	}
 	m.Reset()
 	if _, ok := m.Mean(); ok {
@@ -33,9 +33,9 @@ func TestMovingAverageRingIgnoresBad(t *testing.T) {
 	if _, ok := m.Mean(); ok {
 		t.Fatal()
 	}
-	m.Push(4)
+	m.Push(40)
 	mu, ok := m.Mean()
-	if !ok || mu != 4 {
+	if !ok || mu != 40 {
 		t.Fatal()
 	}
 }

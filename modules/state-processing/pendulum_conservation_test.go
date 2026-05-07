@@ -37,7 +37,7 @@ func balancedConservationSnapshot() *pendulum_oracle.SnapshotRecord {
 		GeometryP:       250_000,
 		GeometryE:       1_000_000,
 		GeometryT:       1_000_000,
-		GeometryS:       intmath.SQ64Scale / 2,
+		GeometrySBps:    intmath.BpsScale / 2,
 	}
 }
 
@@ -104,7 +104,7 @@ func TestPendulumAccrualHBDConservation(t *testing.T) {
 		&stubSnapshotsForConservation{rec: balancedConservationSnapshot()},
 		func() []string { return []string{contractID} },
 		pendulumwasm.Config{
-			Stabilizer:      pendulum.DefaultStabilizerParamsFixed(),
+			Stabilizer:      pendulum.DefaultStabilizerParamsBps(),
 			NetworkShareNum: 1,
 			NetworkShareDen: 4,
 		},
@@ -182,7 +182,7 @@ func TestPendulumAccrualFailsWhenContractUnderfunded(t *testing.T) {
 		&stubSnapshotsForConservation{rec: balancedConservationSnapshot()},
 		func() []string { return []string{contractID} },
 		pendulumwasm.Config{
-			Stabilizer:      pendulum.DefaultStabilizerParamsFixed(),
+			Stabilizer:      pendulum.DefaultStabilizerParamsBps(),
 			NetworkShareNum: 1,
 			NetworkShareDen: 4,
 		},
