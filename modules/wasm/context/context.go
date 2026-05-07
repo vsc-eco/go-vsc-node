@@ -49,8 +49,11 @@ type PendulumSwapFeeResult struct {
 	// output side under the unified model).
 	NetworkCreditOutput   int64
 	NodeBucketCreditedHBD int64
-	MultiplierQ8          int64
-	SAfterQ8              int64
+	// MultiplierBps is the stabilizer multiplier m the SDK applied to the base
+	// protocol fee, in basis points (10000 = 1.0). SAfterBps is the geometry
+	// ratio s = V/E sampled at the snapshot the swap consumed, also in bps.
+	MultiplierBps int64
+	SAfterBps     int64
 }
 
 // AccrueNodeBucketFn is the callback the applier invokes to move the

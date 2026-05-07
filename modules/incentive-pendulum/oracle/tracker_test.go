@@ -63,8 +63,9 @@ func TestFeedTrackerTick(t *testing.T) {
 	if !snap.TrustedHiveOK {
 		t.Fatal("expected trusted hive")
 	}
-	if snap.TrustedHiveMean < 0.24 || snap.TrustedHiveMean > 0.26 {
-		t.Fatalf("mean=%v", snap.TrustedHiveMean)
+	// 0.25 HBD per 1 HIVE = 2500 bps. Allow ±1 bps for integer-floor noise.
+	if snap.TrustedHivePriceBps < 2_499 || snap.TrustedHivePriceBps > 2_501 {
+		t.Fatalf("priceBps=%d", snap.TrustedHivePriceBps)
 	}
 	if !snap.HBDInterestRateOK || snap.HBDInterestRateBps != 1500 {
 		t.Fatalf("apr=%d ok=%v", snap.HBDInterestRateBps, snap.HBDInterestRateOK)
