@@ -63,7 +63,6 @@ func (g *gqlManager) Init() error {
 	mux.Handle("POST /api/v1/graphql", gqlServer)
 	mux.Handle("GET /sandbox", pg.ApolloSandboxHandler("Apollo Sandbox", "/api/v1/graphql"))
 
-	// Configure CORS
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
@@ -71,10 +70,12 @@ func (g *gqlManager) Init() error {
 		AllowCredentials: false,
 	})
 
+	// F15: security headers wrap the whole stack so every response
+	// (including OPTIONS preflights) gets HSTS / nosniff / etc.
 	// assigns the HTTP server
 	g.server = &http.Server{
 		Addr:              g.conf.GetHostAddr(),
-		Handler:           c.Handler(mux),
+		Handler:           securityHeaders(c.Handler(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
