@@ -830,7 +830,7 @@ func (r *queryResolver) PendulumGeometry(ctx context.Context, blockHeight model.
 		PHbd:            model.Int64(rec.GeometryP),
 		EHbd:            model.Int64(rec.GeometryE),
 		THive:           model.Int64(rec.GeometryT),
-		SSq64:           model.Int64(rec.GeometryS),
+		SBps:            model.Int64(rec.GeometrySBps),
 	}, nil
 }
 

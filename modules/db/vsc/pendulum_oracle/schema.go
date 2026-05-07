@@ -1,27 +1,29 @@
 package pendulum_oracle
 
 // SnapshotRecord is the persisted, consensus-grade integer form of an oracle
-// tick produced by the Magi pendulum FeedTracker. It mirrors
-// oracle.FeedTickSnapshotInt: TrustedHiveMean / HiveMovingAvg are SQ64
-// fixed-point (10^8 scale, signed int64 storage); WitnessRewardReductions is
-// a sorted slice (NOT a map) so the bson byte sequence is deterministic
-// across nodes.
+// tick produced by the Magi pendulum FeedTracker. Every numeric field is a
+// raw integer (HBD/HIVE base units, precision 3) or a basis-point integer
+// (BpsScale = 10000); no fixed-point fixed-decimal abstraction is needed
+// outside the registry because the pendulum math operates directly on
+// int64 + big.Int.
 //
-// Geometry fields V/P/E/T/S are populated when the tick is produced and pin
-// the (V, E, P, T, s) inputs the W3 swap-time SDK method consumes. Storing
-// them inline keeps the SDK method's deterministic computation reading from a
-// single record. See the geometry section of the testnet plan for the precise
-// definitions.
+// WitnessRewardReductions is a sorted slice (NOT a map) so the bson byte
+// sequence is deterministic across nodes.
+//
+// Geometry fields V/P/E/T/SBps are populated when the tick is produced and
+// pin the inputs the swap-time SDK method consumes. Storing them inline keeps
+// the SDK method's deterministic computation reading from a single record.
 //
 // Indexed by TickBlockHeight (unique).
 type SnapshotRecord struct {
 	TickBlockHeight uint64 `bson:"tick_block_height"`
 
-	TrustedHiveMean int64 `bson:"trusted_hive_mean_sq64"`
-	TrustedHiveOK   bool  `bson:"trusted_hive_ok"`
+	// HBD per HIVE in basis points.
+	TrustedHivePriceBps int64 `bson:"trusted_hive_price_bps"`
+	TrustedHiveOK       bool  `bson:"trusted_hive_ok"`
 
-	HiveMovingAvg   int64 `bson:"hive_moving_avg_sq64"`
-	HiveMovingAvgOK bool  `bson:"hive_moving_avg_ok"`
+	HiveMovingAvgBps int64 `bson:"hive_moving_avg_bps"`
+	HiveMovingAvgOK  bool  `bson:"hive_moving_avg_ok"`
 
 	HBDInterestRateBps int  `bson:"hbd_interest_rate_bps"`
 	HBDInterestRateOK  bool `bson:"hbd_interest_rate_ok"`
@@ -36,16 +38,16 @@ type SnapshotRecord struct {
 	// settlement math — only the consolidated Bps value is.
 	WitnessRewardReductions []WitnessRewardReductionRecord `bson:"witness_reward_reductions"`
 
-	// Pendulum geometry (W7). All values stored in HBD base units (int64) for
-	// money-side fields, SQ64 for ratios. GeometryOK gates whether the SDK
-	// method may consume them — early-life snapshots before bond data exists
-	// will set OK=false and the SDK call rejects with ErrSnapshotUnavailable.
-	GeometryOK bool  `bson:"geometry_ok"`
-	GeometryV  int64 `bson:"geometry_v_hbd"`  // total vault value (HBD base units)
-	GeometryP  int64 `bson:"geometry_p_hbd"`  // pooled HBD-side depth, summed across whitelisted pools
-	GeometryE  int64 `bson:"geometry_e_hbd"`  // effective bond, T·hivePriceHBD·effectiveFraction
-	GeometryT  int64 `bson:"geometry_t_hive"` // total HIVE_CONSENSUS bond across committee
-	GeometryS  int64 `bson:"geometry_s_sq64"` // ratio s = V/E in SQ64
+	// Pendulum geometry. All money-side fields are HBD/HIVE base units (int64).
+	// SBps is V/E in basis points. GeometryOK gates whether the SDK method may
+	// consume them — early-life snapshots before bond data exists will set
+	// OK=false and the SDK call rejects with ErrSnapshotUnavailable.
+	GeometryOK   bool  `bson:"geometry_ok"`
+	GeometryV    int64 `bson:"geometry_v_hbd"`  // total vault value (HBD base units)
+	GeometryP    int64 `bson:"geometry_p_hbd"`  // pooled HBD-side depth, summed across whitelisted pools
+	GeometryE    int64 `bson:"geometry_e_hbd"`  // effective bond, T·hivePriceHBD·effectiveFraction
+	GeometryT    int64 `bson:"geometry_t_hive"` // total HIVE_CONSENSUS bond across committee
+	GeometrySBps int64 `bson:"geometry_s_bps"`  // ratio s = V/E in basis points
 }
 
 // WitnessRewardReductionRecord is one row of the sorted reward-reduction list.
@@ -64,9 +66,9 @@ type WitnessRewardReductionRecord struct {
 // reads Bps, never Evidence. Kept on the snapshot so a witness who disputes
 // their reduction can see exactly which signals contributed.
 type WitnessLivenessEvidence struct {
-	BlockProductionBps    int `bson:"block_production_bps"`
-	BlockAttestationBps   int `bson:"block_attestation_bps"`
-	TssReshareExclusionBps int `bson:"tss_reshare_exclusion_bps"`
-	TssBlameBps           int `bson:"tss_blame_bps"`
+	BlockProductionBps         int `bson:"block_production_bps"`
+	BlockAttestationBps        int `bson:"block_attestation_bps"`
+	TssReshareExclusionBps     int `bson:"tss_reshare_exclusion_bps"`
+	TssBlameBps                int `bson:"tss_blame_bps"`
 	TssSignNonParticipationBps int `bson:"tss_sign_non_participation_bps"`
 }

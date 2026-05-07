@@ -25,9 +25,9 @@ func pendulumSnapshotToGQL(rec pendulum_oracle.SnapshotRecord) PendulumOracleSna
 	}
 	return PendulumOracleSnapshot{
 		TickBlockHeight:         model.Uint64(rec.TickBlockHeight),
-		TrustedHiveMeanSq64:     model.Int64(rec.TrustedHiveMean),
+		TrustedHivePriceBps:     model.Int64(rec.TrustedHivePriceBps),
 		TrustedHiveOk:           rec.TrustedHiveOK,
-		HiveMovingAvgSq64:       model.Int64(rec.HiveMovingAvg),
+		HiveMovingAvgBps:        model.Int64(rec.HiveMovingAvgBps),
 		HiveMovingAvgOk:         rec.HiveMovingAvgOK,
 		HbdInterestRateBps:      rec.HBDInterestRateBps,
 		HbdInterestRateOk:       rec.HBDInterestRateOK,
@@ -38,6 +38,6 @@ func pendulumSnapshotToGQL(rec pendulum_oracle.SnapshotRecord) PendulumOracleSna
 		GeometryPHbd:            model.Int64(rec.GeometryP),
 		GeometryEHbd:            model.Int64(rec.GeometryE),
 		GeometryTHive:           model.Int64(rec.GeometryT),
-		GeometrySSq64:           model.Int64(rec.GeometryS),
+		GeometrySBps:            model.Int64(rec.GeometrySBps),
 	}
 }
