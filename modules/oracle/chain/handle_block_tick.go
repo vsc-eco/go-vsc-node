@@ -549,7 +549,14 @@ type ethAddBlocksPayload struct {
 }
 
 type ethAddBlockEntry struct {
-	BlockNumber      uint64 `json:"block_number"`
+	BlockNumber uint64 `json:"block_number"`
+	// ParentHash is the keccak256 of the previous tip's contract-
+	// format serialization. Required by EVM-C2 chain-link
+	// validation in evm-mapping-contract's HandleAddBlocks. Without
+	// it the contract rejects the entry; without a matching value
+	// it rejects with "parent_hash mismatch". Populated from
+	// ethChainData.ParentHashContract by makeEthPayload.
+	ParentHash       string `json:"parent_hash"`
 	StateRoot        string `json:"state_root"`
 	TransactionsRoot string `json:"transactions_root"`
 	ReceiptsRoot     string `json:"receipts_root"`
@@ -614,6 +621,7 @@ func makeEthPayload(blocks []chainBlock) (*ethAddBlocksPayload, error) {
 		}
 		entries[i] = ethAddBlockEntry{
 			BlockNumber:      eth.Height,
+			ParentHash:       eth.ParentHashContract,
 			StateRoot:        hex.EncodeToString(eth.header.Root.Bytes()),
 			TransactionsRoot: hex.EncodeToString(eth.header.TxHash.Bytes()),
 			ReceiptsRoot:     hex.EncodeToString(eth.header.ReceiptHash.Bytes()),
