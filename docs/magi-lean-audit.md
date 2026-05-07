@@ -248,3 +248,41 @@ Scope delta: fixes applied after Pass 2 (pendulum bucket balance path + insuffic
 
 - **Current status:** materially improved and safer for incremental development; major blockers from Pass 2 fixed.
 - **Still not complete for W5 finalization:** orchestration/emission/replay validation and integer settlement math remain.
+
+---
+
+## Pass 4 — Principal-slash scope narrowing (2026-05-07)
+
+### Scope decision: principal slashing covers block production only
+
+After security review on the pendulum, the principal-slash surface was deliberately narrowed:
+
+- **Surviving principal-slash kinds (immediate, deterministic, single-proof):**
+  - `vsc_double_block_sign` — proposer signs two distinct VSC blocks at one slot height.
+  - `vsc_invalid_block_proposal` — block fails deterministic re-execution (`TxProposeBlock.Validate` returns false in a non-transient way).
+- **Retired (intentionally not principal-slashed):**
+  - `settlement_payload_fraud` — settlement payloads now ride inside BLS-signed VSC blocks, so block-level rejection already covers this path. The string is reserved (returns 0 bps) so old metadata cannot accidentally re-activate it.
+  - `tss_equivocation` — TSS commitment blame is most often a liveness violation. True safety-violating divergence (different shares to different peers) lives entirely on the p2p layer and cannot be proved from on-chain data. Routed to reward reduction via `rewards.ScoreTssBlame`.
+  - `oracle_payload_fraud` — a stale or out-of-sync witness feed is indistinguishable from a fraudulent value when seen only from on-chain `feed_publish` data. Routed to reward reduction via `rewards.ScoreOracleQuoteDivergence`.
+
+### Surfaces touched
+
+- `modules/incentive-pendulum/safety_slash/policy.go` — kind constants, BPS, `SlashBpsForEvidenceKind`, `EffectiveCorrelatedBps`.
+- `modules/state-processing/state_engine.go` — `applyPrincipalSlashForProvableEvidence`, `slashForEvidenceIfPolicyAllows`, the two block-production detector call-sites.
+- `modules/ledger-system/ledger_system.go` — `SafetySlashConsensusBond`, restitution + delayed burn + `FinalizeMaturedSafetySlashBurns`, plus the new reverse / cancel primitives below.
+- `modules/incentive-pendulum/rewards/sources.go` — `ScoreOracleQuoteDivergence` (new tier).
+- `magi-lean/MagiLean/Pendulum/SafetySlashLiquidSplit.lean` — `SafetyEvidenceKind` mirrored to surviving kinds.
+- `magi-lean/MagiLean/Pendulum/Slashing.lean` — docstrings clarify file describes reward reduction, not principal slashing (names retained for OracleTracker compatibility).
+
+### Liveness (reward reduction) path
+
+`modules/incentive-pendulum/rewards/AggregateTick` consolidates per-tick liveness signals. Block production / attestation, three TSS sub-signals, and oracle quote divergence each contribute a per-witness raw bps; the per-tick consolidated value is the max across signals (not the sum), clamped at `PerTickCapBps`. Per-epoch aggregation forgives `PerEpochForgivenessBps` and clamps at `PerEpochCapBps`.
+
+Bond principal is never debited from this path.
+
+### Pass 4 Verdict
+
+- **Principal-slash surface:** narrow, immediate, deterministic, mirrored in Lean.
+- **Reversal primitive:** ledger-level only (`CancelPendingSafetySlashBurn`, `ReverseSafetySlashConsensusDebit`); a chain-op auth model still has to be designed before pledge liquidity lands.
+- **Restitution queue:** in-memory, deliberately empty in production; will gate behind a chain op when a claim system ships.
+- **`FinalizeMaturedSafetySlashBurns`:** scans from the maturity cursor — see `modules/db/vsc/ledger`.
