@@ -90,15 +90,16 @@ func sdkErr[T any](inner error) result.Result[T] {
 // network cut, the pendulum split, and any non-HBD-leg conversion.
 //
 // Reserve flow:
-//   newX = X + x                                (entire input enters the pool)
-//   newY = Y - userOutput                       (the user takes only userOutput)
-//                                                — all fees stay in pool reserves
-//   then if assetOut == "hbd":
-//     newY -= nodeShareOutput                   (HBD leaves pool to nodes bucket)
-//   else (assetOut is non-HBD):
-//     hbdOut = nodeShareOutput · newX / (newY + nodeShareOutput)
-//     newY += nodeShareOutput                   (virtual: non-HBD added back)
-//     newX -= hbdOut                            (HBD leaves X reserve to nodes bucket)
+//
+//	newX = X + x                                (entire input enters the pool)
+//	newY = Y - userOutput                       (the user takes only userOutput)
+//	                                             — all fees stay in pool reserves
+//	then if assetOut == "hbd":
+//	  newY -= nodeShareOutput                   (HBD leaves pool to nodes bucket)
+//	else (assetOut is non-HBD):
+//	  hbdOut = nodeShareOutput · newX / (newY + nodeShareOutput)
+//	  newY += nodeShareOutput                   (virtual: non-HBD added back)
+//	  newX -= hbdOut                            (HBD leaves X reserve to nodes bucket)
 func (a *Applier) ApplySwapFees(
 	contractID, txID string,
 	blockHeight uint64,
@@ -164,11 +165,16 @@ func (a *Applier) ApplySwapFees(
 	baseCLP := intmath.MulDivFloor(xSquaredY, yReserveBig, denomSquared)
 	// Protocol fee = grossOut · 8 bps  (output units; matches the contract's
 	// existing `baseFee = grossOut * feeBps / 10000`).
-	baseProtocol := intmath.MulDivFloor(grossOut, big.NewInt(pendulum.ProtocolFeeRateBps), big.NewInt(pendulum.BpsScale))
+	baseProtocol := intmath.MulDivFloor(
+		grossOut,
+		big.NewInt(pendulum.ProtocolFeeRateBps),
+		big.NewInt(pendulum.BpsScale),
+	)
 
-	// 4. Stabilizer multiplier on the protocol fee. PDF §5: the stabilizer
-	// inflates the protocol fee specifically; the surplus is what funds the
-	// rebalancing incentive. CLP fee is unaffected by m.
+	// 4. Stabilizer multiplier on both fee legs. PDF §5: total fee is
+	// (baseProtocol + baseCLP) · m; the surplus on each leg funds the
+	// rebalancing incentive and flows through the same 25%/75%
+	// network/pendulum split as the base fee.
 	//
 	// "Exacerbates" is derived from snapshot s and the swap direction — the
 	// SDK has all inputs, so accepting a contract-supplied hint would be a
@@ -183,15 +189,20 @@ func (a *Applier) ApplySwapFees(
 		stab.PushBps = pendulum.BpsScale * 70 / 100
 	}
 	multiplierBps := pendulum.StabilizerMultiplierBps(sBps, rTradeBps, stab)
+	chargedCLP := pendulum.ApplyMultiplierBps(baseCLP, multiplierBps)
 	chargedProtocol := pendulum.ApplyMultiplierBps(baseProtocol, multiplierBps)
-	surplus := new(big.Int).Sub(chargedProtocol, baseProtocol)
-	if surplus.Sign() < 0 {
-		surplus.SetInt64(0)
-	}
 
-	// 5. Total fees per type, all output units.
-	totalCLP := baseCLP
-	totalProtocol := new(big.Int).Add(baseProtocol, surplus)
+	// 5. Total fees per type, all output units. m rides on both legs;
+	// totalX == chargedX == baseX·m (with a floor of baseX so a degenerate
+	// m < 1 cannot subtract from the base fee).
+	totalCLP := chargedCLP
+	if totalCLP.Cmp(baseCLP) < 0 {
+		totalCLP = baseCLP
+	}
+	totalProtocol := chargedProtocol
+	if totalProtocol.Cmp(baseProtocol) < 0 {
+		totalProtocol = baseProtocol
+	}
 
 	// 6. User pays both fees out of grossOut.
 	totalFee := new(big.Int).Add(totalCLP, totalProtocol)
@@ -255,15 +266,15 @@ func (a *Applier) ApplySwapFees(
 		if hbdOut.Cmp(newX) > 0 {
 			return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
 		}
-		newY.Add(newY, nodeShareOutput) // virtual: non-HBD added back to Y
-		newX.Sub(newX, hbdOut)          // HBD leaves X to nodes bucket
+		newX.Sub(newX, hbdOut) // HBD leaves X to nodes bucket
 		nodeBucketHBD.Set(hbdOut)
 	}
 
 	if newX.Sign() < 0 || newY.Sign() < 0 {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
 	}
-	if !newX.IsInt64() || !newY.IsInt64() || !userOutput.IsInt64() || !nodeBucketHBD.IsInt64() || !networkCreditOutput.IsInt64() {
+	if !newX.IsInt64() || !newY.IsInt64() || !userOutput.IsInt64() || !nodeBucketHBD.IsInt64() ||
+		!networkCreditOutput.IsInt64() {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
 	}
 
@@ -328,7 +339,7 @@ func tradeRatioBps(x, X int64) int64 {
 // exacerbatesFromSnapshot derives the stabilizer "exacerbates" hint from the
 // current pendulum state and the swap direction.
 //
-//   s = V/E = 2P/E. HBD-in raises P (and therefore s); HBD-out lowers it.
+//	s = V/E = 2P/E. HBD-in raises P (and therefore s); HBD-out lowers it.
 //
 // The trade exacerbates the imbalance whenever it moves s away from 0.5
 // (the equilibrium target the StabilizerMultiplier penalizes deviations
