@@ -8,6 +8,8 @@ import (
 	"time"
 	start_status "vsc-node/modules/start-status"
 
+	"vsc-node/lib/utils"
+
 	"github.com/chebyrash/promise"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -163,10 +165,14 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 				continue
 			}
 
-			go func() {
+			// N-L4: each dispatch goroutine processes untrusted P2P
+			// input. Wrap in recover so a panic in a handler (or in
+			// any library it calls) does not kill the process.
+			go utils.RecoverGoroutine("pubsub.dispatch."+service.Topic(), func() {
+				defer func() { <-res.semaphore }()
+
 				parsedMsg, err := service.ParseMessage(msg.GetData())
 				if err != nil {
-					<-res.semaphore
 					//TODO handle error
 					return
 				}
@@ -174,16 +180,16 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 				var wg sync.WaitGroup
 				wg.Add(2)
 
-				go func() {
+				go utils.RecoverGoroutine("pubsub.handleRaw."+service.Topic(), func() {
 					defer wg.Done()
 					err := service.HandleRawMessage(ctx, msg, res.Send)
 					if err != nil {
 						//TODO handle error
 						return
 					}
-				}()
+				})
 
-				go func() {
+				go utils.RecoverGoroutine("pubsub.handleMessage."+service.Topic(), func() {
 					defer wg.Done()
 					err := service.HandleMessage(ctx, msg.GetFrom(), parsedMsg, res.Send)
 					if err != nil {
@@ -191,11 +197,10 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 						fmt.Println("pubsub handling error:", err)
 						return
 					}
-				}()
+				})
 
 				wg.Wait()
-				<-res.semaphore
-			}()
+			})
 		}
 	}()
 
