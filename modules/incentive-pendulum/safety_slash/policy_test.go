@@ -21,11 +21,8 @@ func TestSlashPolicy_KindMappings(t *testing.T) {
 		threshold bool
 		wantCount int
 	}{
-		{EvidenceSettlementPayloadFraud, SettlementFraudSlashBps, false, 1},
-		{EvidenceTSSEquivocation, TSSEquivocationSlashBps, true, TSSEquivocationThresholdCount},
 		{EvidenceVSCDoubleBlockSign, DoubleBlockSignSlashBps, false, 1},
 		{EvidenceVSCInvalidBlockProposal, InvalidBlockSlashBps, false, 1},
-		{EvidenceOraclePayloadFraud, OraclePayloadSlashBps, true, OraclePayloadThresholdCount},
 	}
 	for _, tc := range cases {
 		if got := SlashBpsForEvidenceKind(tc.kind); got != tc.wantBps {
@@ -36,6 +33,30 @@ func TestSlashPolicy_KindMappings(t *testing.T) {
 		}
 		if got := ThresholdCountForEvidenceKind(tc.kind); got != tc.wantCount {
 			t.Fatalf("kind %s: threshold count got %d want %d", tc.kind, got, tc.wantCount)
+		}
+	}
+}
+
+// TestSlashPolicy_UnknownKindZeroBps documents that retired/unknown evidence
+// strings (e.g. the reserved "settlement_payload_fraud", "tss_equivocation",
+// "oracle_payload_fraud") yield zero bps, which slashForEvidenceIfPolicyAllows
+// rejects — keeping retired kinds inert if they ever leak from old metadata.
+func TestSlashPolicy_UnknownKindZeroBps(t *testing.T) {
+	for _, k := range []string{
+		"settlement_payload_fraud",
+		"tss_equivocation",
+		"oracle_payload_fraud",
+		"",
+		"unknown_kind",
+	} {
+		if got := SlashBpsForEvidenceKind(k); got != 0 {
+			t.Fatalf("unknown kind %q: expected 0 bps, got %d", k, got)
+		}
+		if UsesThreshold(k) {
+			t.Fatalf("unknown kind %q: should not be thresholded", k)
+		}
+		if got := ThresholdCountForEvidenceKind(k); got != 1 {
+			t.Fatalf("unknown kind %q: expected default threshold 1, got %d", k, got)
 		}
 	}
 }

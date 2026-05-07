@@ -827,7 +827,7 @@ func TestGetBalance_HiveConsensusIncludesSlashLedger(t *testing.T) {
 		SlashBps:        1000,
 		TxID:            "tx-consensus-read",
 		BlockHeight:     200,
-		EvidenceKind:    "settlement_payload_fraud",
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
 		BurnDelayBlocks: 0,
 	}).Ok)
 
@@ -851,7 +851,7 @@ func TestSafetySlashConsensusBond_DebitsBondAndBurnsWithoutDAO(t *testing.T) {
 		SlashBps:        1000,
 		TxID:            "evidence-tx-1",
 		BlockHeight:     200,
-		EvidenceKind:    "settlement_payload_fraud",
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
 		BurnDelayBlocks: 0,
 	})
 	require.True(t, res.Ok, res.Msg)
@@ -891,7 +891,7 @@ func TestSafetySlashConsensusBond_RestitutionThenBurn(t *testing.T) {
 		SlashBps:        1000,
 		TxID:            "evidence-tx-2",
 		BlockHeight:     200,
-		EvidenceKind:    "settlement_payload_fraud",
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
 		Restitution:     q,
 		BurnDelayBlocks: 0,
 	})
@@ -929,7 +929,7 @@ func TestSafetySlashConsensusBond_DelayedBurnFinalizes(t *testing.T) {
 		SlashBps:        1000,
 		TxID:            "evidence-tx-delay",
 		BlockHeight:     200,
-		EvidenceKind:    "settlement_payload_fraud",
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
 		BurnDelayBlocks: 50,
 	})
 	require.True(t, res.Ok, res.Msg)
@@ -990,7 +990,7 @@ func TestSafetySlashConsensusBond_ClampsBurnDelayBlocks(t *testing.T) {
 		SlashBps:        1000,
 		TxID:            "tx-clamp-delay",
 		BlockHeight:     200,
-		EvidenceKind:    "settlement_payload_fraud",
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
 		BurnDelayBlocks: 9_000_000,
 	}).Ok)
 
@@ -1027,7 +1027,7 @@ func TestSafetySlashConsensusBond_RejectsRestitutionReconcileMismatch(t *testing
 		SlashBps:        1000,
 		TxID:            "tx-bad-reconcile",
 		BlockHeight:     200,
-		EvidenceKind:    "settlement_payload_fraud",
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
 		Restitution:     badRestitutionSum{},
 		BurnDelayBlocks: 0,
 	})
@@ -1057,7 +1057,7 @@ func TestSafetySlashConsensusBond_RejectsEmptyRestitutionVictim(t *testing.T) {
 		SlashBps:        1000,
 		TxID:            "tx-empty-victim",
 		BlockHeight:     200,
-		EvidenceKind:    "settlement_payload_fraud",
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
 		Restitution:     emptyVictimRestitution{},
 		BurnDelayBlocks: 0,
 	})
@@ -1088,7 +1088,7 @@ func TestSafetySlashConsensusBond_RejectsRestitutionSumOverflow(t *testing.T) {
 		SlashBps:        1000,
 		TxID:            "tx-overflow",
 		BlockHeight:     200,
-		EvidenceKind:    "settlement_payload_fraud",
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
 		Restitution:     overflowRestitution{},
 		BurnDelayBlocks: 0,
 	})
@@ -1120,7 +1120,7 @@ func TestSafetySlashConsensusBond_DistinctRestitutionIdsForDuplicateClaimID(t *t
 		SlashBps:        1000,
 		TxID:            "tx-dup-claim",
 		BlockHeight:     200,
-		EvidenceKind:    "settlement_payload_fraud",
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
 		Restitution:     dupClaimIDRestitution{},
 		BurnDelayBlocks: 0,
 	}).Ok)
@@ -1151,7 +1151,7 @@ func TestSafetySlashConsensusBond_FinalizeMaturedBurnIdempotent(t *testing.T) {
 		SlashBps:        1000,
 		TxID:            "tx-idem",
 		BlockHeight:     200,
-		EvidenceKind:    "settlement_payload_fraud",
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
 		BurnDelayBlocks: 50,
 	}).Ok)
 	ls.FinalizeMaturedSafetySlashBurns(250)
@@ -1189,7 +1189,7 @@ func TestSafetySlashConsensusBond_RejectsMaturityOverflow(t *testing.T) {
 		SlashBps:        1000,
 		TxID:            "tx-wrap",
 		BlockHeight:     ^uint64(0) - 1000,
-		EvidenceKind:    "settlement_payload_fraud",
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
 		BurnDelayBlocks: 9_000_000,
 	})
 	require.False(t, res.Ok)

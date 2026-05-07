@@ -1035,26 +1035,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							TxId:        tx.TransactionID,
 							BitSet:      commitment.BitSet,
 						})
-						if commitment.Type == "blame" {
-							blamedAccounts := blamedAccountsFromBitSet(commitment.BitSet, electionData.Members)
-							evID := "tss-blame|" + commitment.KeyId + "|" + commitment.SessionId + "|" + tx.TransactionID
-							for _, acct := range blamedAccounts {
-								slashRes := se.slashForEvidenceIfPolicyAllows(
-									acct,
-									safetyslash.EvidenceTSSEquivocation,
-									evID+"|"+acct,
-									tx.TransactionID,
-									block.BlockNumber,
-								)
-								if slashRes.Ok {
-									tssLog.Warn("principal slash applied from tss blame evidence",
-										"account", acct, "txId", tx.TransactionID, "sessionId", commitment.SessionId)
-								} else {
-									tssLog.Verbose("tss blame evidence recorded without slash",
-										"account", acct, "txId", tx.TransactionID, "msg", slashRes.Msg)
-								}
-							}
+					if commitment.Type == "blame" {
+						// Blame events stay on-chain for liveness analysis (and future
+						// reward-reduction wiring), but are NOT principal-slashed: a
+						// missing/late share looks identical to malicious silence from
+						// the chain's perspective, and the only true safety violations
+						// (divergent shares to different peers) live entirely on the
+						// p2p layer where we have no on-chain proof. See
+						// modules/incentive-pendulum/safety_slash/policy.go.
+						blamedAccounts := blamedAccountsFromBitSet(commitment.BitSet, electionData.Members)
+						for _, acct := range blamedAccounts {
+							tssLog.Verbose("tss blame recorded (liveness only, no slash)",
+								"account", acct, "txId", tx.TransactionID, "sessionId", commitment.SessionId)
 						}
+					}
 
 						var newKey bool
 						savedKeyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
@@ -2127,10 +2121,13 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	return se
 }
 
-// applyPrincipalSlashForProvableEvidence debits HIVE_CONSENSUS for a single evidence line.
-// Call from any detector that can prove a safety fault (today: fraudulent vsc.pendulum_settlement
-// replay). Uses the shared restitution queue and delayed-burn policy so behaviour stays uniform
-// as TSS / signing / oracle detectors are added.
+// applyPrincipalSlashForProvableEvidence debits HIVE_CONSENSUS for a single
+// evidence line. Currently invoked only by block-production safety detectors
+// (double-block-sign and invalid-block-proposal); other on-chain signals like
+// TSS blame and oracle quote divergence are routed to the liveness path
+// instead — see modules/incentive-pendulum/safety_slash/policy.go.
+// Uses the shared restitution queue and delayed-burn policy so behaviour
+// stays uniform if additional provable detectors are added later.
 func (se *StateEngine) applyPrincipalSlashForProvableEvidence(
 	accountHive string,
 	slashBps int,

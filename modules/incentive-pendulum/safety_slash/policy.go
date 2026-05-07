@@ -1,22 +1,26 @@
-// Package safetyslash defines verifiable safety-fault principal slashing (HIVE_CONSENSUS debit)
-// distinct from liveness reward-reduction bps in the pendulum rewards path.
+// Package safetyslash defines verifiable safety-fault principal slashing
+// (HIVE_CONSENSUS debit) distinct from liveness reward-reduction bps in the
+// pendulum rewards path.
 //
-// Design intent: this is a node-wide policy surface — reward reductions stay tied to
-// pendulum distribution math, but principal safety slashes should eventually be triggered
-// from any provable fault path (TSS equivocation, conflicting block signatures, invalid
-// oracle attestations, fraudulent settlement bodies, etc.). Only a subset is wired in Go
-// today; each new detector should call the same ledger entrypoint with a stable evidence
-// kind string and correlated BPS composition.
+// Scope (current): the only on-chain provable safety violations available to a
+// replaying node are about block production/signing — every other candidate
+// (TSS commitment blame, oracle quote divergence, settlement-body replay) is
+// either now block-internal and BLS-signed (so block-level rejection already
+// covers it) or fundamentally a liveness signal that cannot be distinguished
+// from honest p2p outages on-chain. Those still feed the liveness reward
+// reduction path; they intentionally do NOT trigger a principal slash here.
 //
-// Evidence kinds are stable string keys stored in ledger metadata and mirrored in Lean.
-// Reserved (unwired) examples for future detectors — do not reuse strings:
+// Reserved (unwired) kinds — do not reuse the strings — that may return when
+// the underlying detector becomes deterministically provable from chain data:
 //
-//	"tss_equivocation" — conflicting TSS aggregate signatures for the same logical round
-//	"vsc_double_block_sign" — same witness key signs two canonical block hashes at one height
-//	"oracle_payload_fraud" — signed oracle payload disagrees with deterministic replay
+//	"tss_equivocation"          — divergent TSS shares for the same logical round
+//	"oracle_payload_fraud"      — signed oracle payload disagrees with replay
+//	"settlement_payload_fraud"  — fraudulent settlement body (now caught at
+//	                              block-validation time before this layer)
 //
-// Reversal / governance undo of pending burn + consensus credit is not implemented yet;
-// delayed burn exists so protocol bugs can be corrected before maturity.
+// Reversal / governance undo of pending burn + consensus credit is not yet
+// wired; the delayed burn merely creates a window so protocol bugs can be
+// corrected before maturity.
 package safetyslash
 
 // CorrelatedSlashCapBps is the maximum total principal slash in basis points
@@ -25,41 +29,26 @@ package safetyslash
 const CorrelatedSlashCapBps = 10000
 
 const (
-	// EvidenceSettlementPayloadFraud: elected leader signed vsc.pendulum_settlement
-	// that fails deterministic replay against canonical chain state (Hive L1 custom_json
-	// ingress — see state_engine.handlePendulumSettlement). This is distinct from W3
-	// system.pendulum_apply_swap_fees, which only validates swap fee math against oracle snapshots.
-	EvidenceSettlementPayloadFraud = "settlement_payload_fraud"
-	// EvidenceTSSEquivocation: node emits conflicting signed TSS commitments/shares
-	// for the same logical session/round, evidenced on-chain.
-	EvidenceTSSEquivocation = "tss_equivocation"
-	// EvidenceVSCDoubleBlockSign: proposer signs competing VSC blocks at one slot height.
+	// EvidenceVSCDoubleBlockSign: proposer signs competing VSC blocks at one slot
+	// height. Both signatures land on Hive L1 (or are reconstructible from there),
+	// so any replaying node can deterministically prove the equivocation.
 	EvidenceVSCDoubleBlockSign = "vsc_double_block_sign"
-	// EvidenceVSCInvalidBlockProposal: proposer submits block that fails deterministic replay checks.
+	// EvidenceVSCInvalidBlockProposal: proposer submits a block whose state
+	// transitions fail deterministic re-execution (TxProposeBlock.Validate=false).
 	EvidenceVSCInvalidBlockProposal = "vsc_invalid_block_proposal"
-	// EvidenceOraclePayloadFraud: witness feed attestation diverges from deterministic canonical feed view.
-	EvidenceOraclePayloadFraud = "oracle_payload_fraud"
 )
 
 // Default slash severities (basis points of current HIVE_CONSENSUS bond).
 const (
-	// SettlementFraudSlashBps penalizes signing an objectively invalid settlement body.
-	SettlementFraudSlashBps = 1000 // 10%
-	TSSEquivocationSlashBps = 1000 // 10%
 	DoubleBlockSignSlashBps = 1000 // 10%
 	InvalidBlockSlashBps    = 1000 // 10%
-	OraclePayloadSlashBps   = 1000 // 10%
 )
 
-// Threshold policy (hybrid default):
-//   - immediate slash on deterministic proof: settlement, double-block, invalid-block
-//   - thresholded slash: tss equivocation, oracle payload fraud
-const (
-	TSSEquivocationThresholdCount = 2
-	OraclePayloadThresholdCount   = 2
-	EvidenceThresholdWindowBlocks = 1000
-	OracleDivergenceThresholdBps  = 300
-)
+// EvidenceThresholdWindowBlocks bounds how far back recordEvidenceAndShouldSlash
+// looks when counting incidents for a thresholded kind. Currently no kinds are
+// thresholded (block-production faults slash on first proof), but the constant
+// stays so future thresholded kinds slot in without policy churn.
+const EvidenceThresholdWindowBlocks = 1000
 
 // DefaultSafetySlashBurnDelayBlocks holds the burn (post-restitution) portion on
 // params.ProtocolSlashPendingBurnAccount for this many Hive block heights before
@@ -89,37 +78,27 @@ func EffectiveCorrelatedBps(rawParts []int, capBps int) int {
 
 func SlashBpsForEvidenceKind(kind string) int {
 	switch kind {
-	case EvidenceSettlementPayloadFraud:
-		return SettlementFraudSlashBps
-	case EvidenceTSSEquivocation:
-		return TSSEquivocationSlashBps
 	case EvidenceVSCDoubleBlockSign:
 		return DoubleBlockSignSlashBps
 	case EvidenceVSCInvalidBlockProposal:
 		return InvalidBlockSlashBps
-	case EvidenceOraclePayloadFraud:
-		return OraclePayloadSlashBps
 	default:
 		return 0
 	}
 }
 
+// UsesThreshold reports whether a kind requires multiple incidents inside
+// EvidenceThresholdWindowBlocks before triggering a slash. Currently always
+// false: every wired kind is a deterministic single-shot proof.
 func UsesThreshold(kind string) bool {
-	switch kind {
-	case EvidenceTSSEquivocation, EvidenceOraclePayloadFraud:
-		return true
-	default:
-		return false
-	}
+	_ = kind
+	return false
 }
 
+// ThresholdCountForEvidenceKind returns the minimum number of distinct
+// incidents required inside the rolling window to slash. Defaults to 1 — a
+// kind only needs override when it opts into thresholded behaviour.
 func ThresholdCountForEvidenceKind(kind string) int {
-	switch kind {
-	case EvidenceTSSEquivocation:
-		return TSSEquivocationThresholdCount
-	case EvidenceOraclePayloadFraud:
-		return OraclePayloadThresholdCount
-	default:
-		return 1
-	}
+	_ = kind
+	return 1
 }
