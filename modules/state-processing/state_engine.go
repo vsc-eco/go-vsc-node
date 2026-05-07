@@ -881,10 +881,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							continue
 						}
 
-						circuit, _ := dids.DeserializeBlsCircuit(dids.SerializedCircuit{
+						circuit, derr := dids.DeserializeBlsCircuit(dids.SerializedCircuit{
 							Signature: commitment.Signature,
 							BitVector: commitment.BitSet,
 						}, members, commitmentCid)
+						if derr != nil || circuit == nil {
+							tssLog.Warn("BLS deserialize failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "err", derr)
+							continue
+						}
 
 						verified, _, _ := circuit.Verify()
 						tssIndexHeight := se.SystemConfig().ConsensusParams().TssIndexHeight
