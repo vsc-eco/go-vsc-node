@@ -33,7 +33,7 @@ type WhitelistGetter func() []string
 
 // Config is the per-network tuning the applier reads on every swap.
 type Config struct {
-	Stabilizer      pendulum.StabilizerParamsFixed
+	Stabilizer      pendulum.StabilizerParamsBps
 	NetworkShareNum int64 // 1 of 4 → 25% network share
 	NetworkShareDen int64
 	// MinFractionBps is the LP-side floor the plan parks behind a TODO. Zero
@@ -46,7 +46,7 @@ type Config struct {
 // share, no LP floor. Override per-network via SystemConfig.
 func DefaultConfig() Config {
 	return Config{
-		Stabilizer:      pendulum.DefaultStabilizerParamsFixed(),
+		Stabilizer:      pendulum.DefaultStabilizerParamsBps(),
 		NetworkShareNum: 1,
 		NetworkShareDen: 4,
 	}
@@ -137,7 +137,7 @@ func (a *Applier) ApplySwapFees(
 	E := big.NewInt(snap.GeometryE)
 	P := big.NewInt(snap.GeometryP)
 	T := big.NewInt(snap.GeometryT)
-	s := intmath.SQ64(snap.GeometryS)
+	sBps := snap.GeometrySBps
 	if E.Sign() <= 0 || T.Sign() <= 0 {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errSnapshotUnavailable)
 	}
@@ -164,7 +164,7 @@ func (a *Applier) ApplySwapFees(
 	baseCLP := intmath.MulDivFloor(xSquaredY, yReserveBig, denomSquared)
 	// Protocol fee = grossOut · 8 bps  (output units; matches the contract's
 	// existing `baseFee = grossOut * feeBps / 10000`).
-	baseProtocol := intmath.MulDivFloor(grossOut, big.NewInt(int64(pendulum.ProtocolFeeRateFixed)), big.NewInt(intmath.SQ64Scale))
+	baseProtocol := intmath.MulDivFloor(grossOut, big.NewInt(pendulum.ProtocolFeeRateBps), big.NewInt(pendulum.BpsScale))
 
 	// 4. Stabilizer multiplier on the protocol fee. PDF §5: the stabilizer
 	// inflates the protocol fee specifically; the surplus is what funds the
@@ -176,14 +176,14 @@ func (a *Applier) ApplySwapFees(
 	// P (and therefore s = V/E = 2P/E); HBD-out lowers it. A swap is
 	// corrective when its direction matches the move toward s = 0.5; any
 	// move away (including any move at exactly s = 0.5) is exacerbating.
-	rTrade, _ := intmath.SQ64Div(toSQ64Ratio(args.X, args.XReserve)) // r = x/X in SQ64
+	rTradeBps := tradeRatioBps(args.X, args.XReserve)
 	stab := a.cfg.Stabilizer
-	if !exacerbatesFromSnapshot(s, assetIn == "hbd") {
+	if !exacerbatesFromSnapshot(sBps, assetIn == "hbd") {
 		// PDF §5: non-exacerbating swaps push at 0.7×.
-		stab.Push = intmath.SQ64(intmath.SQ64Scale * 70 / 100)
+		stab.PushBps = pendulum.BpsScale * 70 / 100
 	}
-	multiplier := pendulum.StabilizerMultiplierFixed(s, rTrade, stab)
-	chargedProtocol := pendulum.ApplyMultiplierFixed(baseProtocol, multiplier)
+	multiplierBps := pendulum.StabilizerMultiplierBps(sBps, rTradeBps, stab)
+	chargedProtocol := pendulum.ApplyMultiplierBps(baseProtocol, multiplierBps)
 	surplus := new(big.Int).Sub(chargedProtocol, baseProtocol)
 	if surplus.Sign() < 0 {
 		surplus.SetInt64(0)
@@ -216,14 +216,14 @@ func (a *Applier) ApplySwapFees(
 	pendulumProtocol := new(big.Int).Sub(totalProtocol, networkProtocol)
 
 	// 9. Split ratios from snapshot — closed form, integer math.
-	fNode, fNodeProtocol := splitFractions(T, V, E, P, s)
+	fNodeBps, fNodeProtocolBps := splitFractionsBps(T, V, E, P, sBps)
 
 	// 10. Per-pot splits (LP gets floor, node side gets residual for exact conservation).
-	scale := big.NewInt(intmath.SQ64Scale)
-	lpCLPKept := intmath.MulDivFloor(pendulumCLP, big.NewInt(intmath.SQ64Scale-int64(fNode)), scale)
+	scale := big.NewInt(pendulum.BpsScale)
+	lpCLPKept := intmath.MulDivFloor(pendulumCLP, big.NewInt(pendulum.BpsScale-fNodeBps), scale)
 	nodeCLPNative := new(big.Int).Sub(pendulumCLP, lpCLPKept)
 
-	lpProtocolKept := intmath.MulDivFloor(pendulumProtocol, big.NewInt(intmath.SQ64Scale-int64(fNodeProtocol)), scale)
+	lpProtocolKept := intmath.MulDivFloor(pendulumProtocol, big.NewInt(pendulum.BpsScale-fNodeProtocolBps), scale)
 	nodeProtocolNative := new(big.Int).Sub(pendulumProtocol, lpProtocolKept)
 
 	// 11. Single output-asset node share (CLP + Protocol portions both live in
@@ -284,8 +284,8 @@ func (a *Applier) ApplySwapFees(
 		NewYReserve:           newY.Int64(),
 		NetworkCreditOutput:   networkCreditOutput.Int64(),
 		NodeBucketCreditedHBD: nodeBucketHBD.Int64(),
-		MultiplierQ8:          int64(multiplier),
-		SAfterQ8:              int64(s),
+		MultiplierBps:         multiplierBps,
+		SAfterBps:             sBps,
 	}
 	return result.Ok(out)
 }
@@ -317,13 +317,12 @@ func normalizeAsset(a string) string {
 	return string(out)
 }
 
-// toSQ64Ratio converts a/b to SQ64 inputs for SQ64Div: returns (a*SQ64Scale, b).
-// Rolled out separately so the caller stays readable.
-func toSQ64Ratio(a, b int64) (intmath.SQ64, intmath.SQ64) {
-	if b == 0 {
-		return 0, 1
+// tradeRatioBps returns r = x/X expressed in basis points. 0 if X is non-positive.
+func tradeRatioBps(x, X int64) int64 {
+	if X <= 0 {
+		return 0
 	}
-	return intmath.SQ64(a), intmath.SQ64(b)
+	return intmath.MulDivFloorI64(x, pendulum.BpsScale, X)
 }
 
 // exacerbatesFromSnapshot derives the stabilizer "exacerbates" hint from the
@@ -334,29 +333,29 @@ func toSQ64Ratio(a, b int64) (intmath.SQ64, intmath.SQ64) {
 // The trade exacerbates the imbalance whenever it moves s away from 0.5
 // (the equilibrium target the StabilizerMultiplier penalizes deviations
 // from). At exactly s = 0.5 any nonzero swap exacerbates by definition.
-func exacerbatesFromSnapshot(s intmath.SQ64, hbdIn bool) bool {
-	const half = intmath.SQ64(intmath.SQ64Scale / 2)
+func exacerbatesFromSnapshot(sBps int64, hbdIn bool) bool {
+	const half = pendulum.BpsScale / 2
 	switch {
-	case s == half:
+	case sBps == half:
 		return true
-	case s < half:
+	case sBps < half:
 		// We want s to rise. HBD-in raises s (corrective); HBD-out lowers it.
 		return !hbdIn
-	default: // s > half
+	default: // sBps > half
 		// We want s to fall. HBD-out lowers s (corrective); HBD-in raises it.
 		return hbdIn
 	}
 }
 
-// splitFractions returns (f_node, f_node_protocol) as SQ64. fNode applies to
-// the CLP pot; fNodeProtocol applies to the protocol+surplus pot with PDF §9
-// redirect cliffs at s ∈ {0.3, 0.7}.
-func splitFractions(T, V, E, P *big.Int, s intmath.SQ64) (intmath.SQ64, intmath.SQ64) {
-	scale := big.NewInt(intmath.SQ64Scale)
+// splitFractionsBps returns (f_node, f_node_protocol) as basis points. fNode
+// applies to the CLP pot; fNodeProtocol applies to the protocol+surplus pot
+// with PDF §9 redirect cliffs at s ∈ {0.3, 0.7}.
+func splitFractionsBps(T, V, E, P *big.Int, sBps int64) (int64, int64) {
+	scale := big.NewInt(pendulum.BpsScale)
 
 	if V.Cmp(E) >= 0 {
 		// Cliff: all to nodes.
-		return intmath.SQ64(intmath.SQ64Scale), intmath.SQ64(intmath.SQ64Scale)
+		return pendulum.BpsScale, pendulum.BpsScale
 	}
 
 	// denom = T·V² + P·E·(E − V)
@@ -367,26 +366,26 @@ func splitFractions(T, V, E, P *big.Int, s intmath.SQ64) (intmath.SQ64, intmath.
 	peTerm.Mul(peTerm, eMinusV)
 	denom := new(big.Int).Add(tvSquared, peTerm)
 	if denom.Sign() == 0 {
-		return intmath.SQ64(intmath.SQ64Scale), intmath.SQ64(intmath.SQ64Scale)
+		return pendulum.BpsScale, pendulum.BpsScale
 	}
 
-	// f_node = T·V² / denom in SQ64
+	// f_node = T·V² / denom in bps.
 	fNodeBig := intmath.MulDivFloor(tvSquared, scale, denom)
 	if !fNodeBig.IsInt64() {
-		return intmath.SQ64(intmath.SQ64Scale), intmath.SQ64(intmath.SQ64Scale)
+		return pendulum.BpsScale, pendulum.BpsScale
 	}
-	fNode := intmath.SQ64(fNodeBig.Int64())
-	if fNode > intmath.SQ64(intmath.SQ64Scale) {
-		fNode = intmath.SQ64(intmath.SQ64Scale)
+	fNode := fNodeBig.Int64()
+	if fNode > pendulum.BpsScale {
+		fNode = pendulum.BpsScale
 	}
 
 	// PDF §9: protocol leg redirects past extreme s.
-	const sLow = intmath.SQ64(intmath.SQ64Scale * 30 / 100)  // 0.3
-	const sHigh = intmath.SQ64(intmath.SQ64Scale * 70 / 100) // 0.7
+	const sLowBps = pendulum.BpsScale * 30 / 100  // 0.3
+	const sHighBps = pendulum.BpsScale * 70 / 100 // 0.7
 	fNodeProtocol := fNode
-	if s < sLow {
-		fNodeProtocol = intmath.SQ64(intmath.SQ64Scale)
-	} else if s > sHigh {
+	if sBps < sLowBps {
+		fNodeProtocol = pendulum.BpsScale
+	} else if sBps > sHighBps {
 		fNodeProtocol = 0
 	}
 	return fNode, fNodeProtocol

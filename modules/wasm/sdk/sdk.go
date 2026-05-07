@@ -330,8 +330,8 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 					NewXReserve:           strconv.FormatInt(r.NewXReserve, 10),
 					NewYReserve:           strconv.FormatInt(r.NewYReserve, 10),
 					NodeBucketCreditedHBD: strconv.FormatInt(r.NodeBucketCreditedHBD, 10),
-					MultiplierQ8:          strconv.FormatInt(r.MultiplierQ8, 10),
-					SAfterQ8:              strconv.FormatInt(r.SAfterQ8, 10),
+					MultiplierBps:         strconv.FormatInt(r.MultiplierBps, 10),
+					SAfterBps:             strconv.FormatInt(r.SAfterBps, 10),
 					NetworkCreditOutput:   strconv.FormatInt(r.NetworkCreditOutput, 10),
 				}
 				js, _ := json.Marshal(out)
@@ -814,8 +814,8 @@ type pendulumSwapFeeOutput struct {
 	NewXReserve           string `json:"new_x_reserve"`
 	NewYReserve           string `json:"new_y_reserve"`
 	NodeBucketCreditedHBD string `json:"node_bucket_credited_hbd"`
-	MultiplierQ8          string `json:"multiplier_q8"`
-	SAfterQ8              string `json:"s_after_q8"`
+	MultiplierBps         string `json:"multiplier_bps"`
+	SAfterBps             string `json:"s_after_bps"`
 	NetworkCreditOutput   string `json:"network_credit_output"`
 }
 
