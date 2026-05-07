@@ -148,7 +148,9 @@ func (s *StreamReader) Start() *promise.Promise[any] {
 
 func inteceptError() {
 	MyError := recover()
-	vlog.Warn("intercepted error", "err", MyError)
+	if MyError != nil {
+		vlog.Warn("intercepted panic", "err", MyError)
+	}
 }
 
 // polls the database at intervals, processing new blocks as they arrive
@@ -204,6 +206,7 @@ func (s *StreamReader) pollDb(fail func(error)) {
 	cancel, errChan := s.hiveBlocks.ListenToBlockUpdates(s.ctx, s.lastProcessed, processBlock)
 	select {
 	case err := <-errChan:
+		vlog.Error("StreamReader stopped — listener error", "err", err, "lastProcessed", s.lastProcessed)
 		fail(err)
 	case <-s.ctx.Done():
 		cancel()

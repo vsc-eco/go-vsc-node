@@ -136,6 +136,9 @@ func (d BlsDID) Verify(blk blocks.Block, sig string) (bool, error) {
 		return false, fmt.Errorf("failed to decode signature: %w", err)
 	}
 
+	if len(sigBytes) != 96 {
+		return false, fmt.Errorf("invalid signature length for DID %s: got %d, want 96", d.String(), len(sigBytes))
+	}
 	// decompress the sig into a P2Affine-type (which is a BlsSig)
 	signature := new(BlsSig)
 	if signature.Deserialize((*[96]byte)(sigBytes)) == nil {
@@ -439,6 +442,9 @@ func (b *BlsCircuit) add(member Member, sig string) (bool, error) {
 func (b *BlsCircuit) addRaw(DID BlsDID, sigBytes []byte) (bool, error) {
 	pubKey := DID.Identifier()
 
+	if len(sigBytes) != 96 {
+		return false, fmt.Errorf("invalid signature length for DID %s: got %d, want 96", DID.String(), len(sigBytes))
+	}
 	// decompress the sig
 	signature := new(BlsSig)
 	if signature.Deserialize((*[96]byte)(sigBytes)) != nil {
@@ -599,6 +605,9 @@ func DeserializeBlsCircuit(serialized SerializedCircuit, keyset []BlsDID, msg ci
 		return nil, err
 	}
 
+	if len(sigBytes) != 96 {
+		return nil, fmt.Errorf("invalid signature length: got %d, want 96", len(sigBytes))
+	}
 	signature := new(BlsSig)
 	err = signature.Deserialize((*[96]byte)(sigBytes))
 	if err != nil {
