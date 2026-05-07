@@ -264,6 +264,122 @@ func TestReserveConservation(t *testing.T) {
 	}
 }
 
+// TestReserveConservationHBDIn pins the no-loss invariant for the HBD-input
+// (non-HBD-output) case: the secondary CPMM hop withdraws the node share as
+// HBD from the X side, so newX accounts for both the user's input and the
+// node bucket withdrawal. The Y side (non-HBD) only loses the user's output —
+// all fees stay in the pool, no double-counting.
+//
+// This is the mirror of TestReserveConservation and would have caught the
+// pre-fix bug where `newY.Add(newY, nodeShareOutput)` ran after Y had already
+// been reduced by userOutput-with-fees-retained, inflating Y by nodeShareOutput.
+func TestReserveConservationHBDIn(t *testing.T) {
+	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+
+	xIn := int64(10_000)
+	xRes := int64(1_000_000)
+	yRes := int64(1_000_000)
+	args := wasm_context.PendulumSwapFeeArgs{
+		AssetIn:  "hbd",
+		AssetOut: "hive",
+		X:        xIn,
+		XReserve: xRes,
+		YReserve: yRes,
+	}
+	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, args, acc.fn)
+	if res.IsErr() {
+		t.Fatalf("expected success, got %v", res)
+	}
+	out := res.Unwrap()
+
+	// X side (HBD-paired): user's input enters X, node share leaves X as HBD.
+	wantX := xRes + xIn - out.NodeBucketCreditedHBD
+	if out.NewXReserve != wantX {
+		t.Fatalf("X side: got %d want %d (X=%d + in=%d - node=%d)", out.NewXReserve, wantX, xRes, xIn, out.NodeBucketCreditedHBD)
+	}
+	// Y side (non-HBD): only the user's output leaves; fees stay implicit.
+	wantY := yRes - out.UserOutput
+	if out.NewYReserve != wantY {
+		t.Fatalf("Y side: got %d want %d (Y=%d - user=%d)", out.NewYReserve, wantY, yRes, out.UserOutput)
+	}
+	// Accrual call matches reported credit.
+	if len(acc.calls) != 1 || acc.calls[0] != out.NodeBucketCreditedHBD {
+		t.Fatalf("accrual != reported: %+v vs %d", acc.calls, out.NodeBucketCreditedHBD)
+	}
+}
+
+// TestStabilizerMultiplierAppliesToFullFee pins the policy decision from
+// review-and-plan.md issue #7: m rides on (baseProtocol + baseCLP), not
+// protocol alone. The load-bearing assertion is that the extra fee charged
+// when m > 1 is dominated by the CLP leg — under the prior "m on protocol
+// only" code, the delta would be ~baseProtocol·(m−1) (single-digit base
+// units in this scenario), nowhere near baseCLP·(m−1).
+func TestStabilizerMultiplierAppliesToFullFee(t *testing.T) {
+	args := wasm_context.PendulumSwapFeeArgs{
+		AssetIn:  "hbd", // HBD-in raises s; with s already > 0.5, this exacerbates → push=1.0.
+		AssetOut: "hive",
+		X:        10_000,
+		XReserve: 1_000_000,
+		YReserve: 1_000_000,
+	}
+
+	// Baseline: s = 0.5 → m = 1.0 → totalFee == baseCLP + baseProtocol.
+	aBase, accBase := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	resBase := aBase.ApplySwapFees("contract:pool-1", "tx-1", 100, args, accBase.fn)
+	if resBase.IsErr() {
+		t.Fatalf("baseline swap failed: %v", resBase)
+	}
+	outBase := resBase.Unwrap()
+	if outBase.MultiplierBps != pendulum.BpsScale {
+		t.Fatalf("expected m == 1.0 at s=0.5, got %d bps", outBase.MultiplierBps)
+	}
+
+	// Off-equilibrium: s = 0.7 with V=700_000 (P=350_000=V/2 keeps geometry
+	// consistent). At r = x/X = 1% and r0 = 1% → r/r0 = 1.0 → inner = 2.0.
+	// tail = K · |s−0.5| · inner · push = 1 · 0.2 · 2 · 1 = 0.4 → m = 1.4.
+	snapHigh := balancedSnapshot()
+	snapHigh.GeometryV = 700_000
+	snapHigh.GeometryP = 350_000
+	snapHigh.GeometrySBps = pendulum.BpsScale * 70 / 100
+	aHigh, accHigh := newApplier(t, snapHigh, []string{"contract:pool-1"})
+	resHigh := aHigh.ApplySwapFees("contract:pool-1", "tx-2", 100, args, accHigh.fn)
+	if resHigh.IsErr() {
+		t.Fatalf("off-equilibrium swap failed: %v", resHigh)
+	}
+	outHigh := resHigh.Unwrap()
+	if outHigh.MultiplierBps != pendulum.BpsScale*14/10 {
+		t.Fatalf("expected m == 1.4 at s=0.7, r=1%%, got %d bps", outHigh.MultiplierBps)
+	}
+
+	// Reserves identical in both runs → grossOut, baseCLP, baseProtocol all
+	// identical. Any difference in userOutput is the extra fee charged by m.
+	extraFee := outBase.UserOutput - outHigh.UserOutput
+	if extraFee <= 0 {
+		t.Fatalf("expected user output to drop with m>1, got base=%d high=%d", outBase.UserOutput, outHigh.UserOutput)
+	}
+
+	// Hand-computed at args + s=0.7:
+	//   grossOut       = floor(10000·1_000_000 / 1_010_000) = 9900
+	//   baseCLP        = floor(10000² · 1_000_000 / 1_010_000²) = 98
+	//   baseProtocol   = floor(9900 · 8 / 10000) = 7
+	//   chargedCLP     = floor(98 · 14000 / 10000) = 137 → surplusCLP = 39
+	//   chargedProtocol= floor(7 · 14000 / 10000) = 9   → surplusProtocol = 2
+	// Total surplus under "m on full fee" = 41.
+	// Under prior "m on protocol only" the surplus would have been just 2.
+	wantExtraFee := int64(41)
+	if extraFee != wantExtraFee {
+		t.Fatalf("extra fee from m=1.4 = %d, want %d (m must ride on full fee, not protocol only)", extraFee, wantExtraFee)
+	}
+
+	// Sanity: the CLP leg alone contributes far more than the protocol leg —
+	// i.e., even if integer rounding shifts the exact value, the delta cannot
+	// collapse back to the "protocol-only" regime.
+	const protocolOnlyBound = 5 // generous upper bound on (chargedProtocol − baseProtocol)
+	if extraFee <= protocolOnlyBound {
+		t.Fatalf("extra fee %d ≤ protocol-only bound %d — CLP leg is not being multiplied", extraFee, protocolOnlyBound)
+	}
+}
+
 // TestAccrualErrorPropagates confirms that an error returned by the accrual
 // callback aborts the swap with errAccrualFailed wrapping. This is the
 // "insufficient HBD on the pool contract account" case in production —

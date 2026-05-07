@@ -1980,7 +1980,12 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 			pendulumwasm.DefaultConfig(),
 		)
 		se.pendulumGeometry = pendulumoracle.NewGeometryComputer(
-			&pendulumPoolReserveReader{se: se},
+			&pendulumPoolReserveReader{
+				states: &liveContractStateKeyReader{
+					contractState: se.contractState,
+					da:            se.da,
+				},
+			},
 			&pendulumCommitteeBondReader{se: se},
 		)
 	}
