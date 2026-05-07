@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -389,17 +388,16 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 	go func() {
 		// Panic recovery in the block-listener goroutine. A panic in the
 		// listener (e.g. ProcessBlock) is treated as fatal-but-graceful:
-		// the panic is logged with a full stack trace, sent to errChan to
-		// halt the StreamReader, and the rest of the process keeps running
-		// so the operator can inspect logs and DB state. Halting prevents
-		// silent state divergence — fine-grained recovery for individual
-		// transactions belongs at the tx layer (see executeTxSafely in the
-		// state engine), not here.
+		// the panic and its stack trace are sent to errChan so the
+		// StreamReader halts and logs them once via its structured logger,
+		// and the rest of the process keeps running so the operator can
+		// inspect logs and DB state. Halting prevents silent state
+		// divergence — fine-grained recovery for individual transactions
+		// belongs at the tx layer (see executeTxSafely in the state
+		// engine), not here.
 		defer func() {
 			if r := recover(); r != nil {
-				stack := debug.Stack()
-				log.Printf("[hive_blocks] FATAL: panic in block listener at block %d: %v\n%s", startBlock, r, stack)
-				errChan <- fmt.Errorf("panic in block listener at block %d: %v\n%s", startBlock, r, stack)
+				errChan <- fmt.Errorf("panic in block listener at block %d: %v\n%s", startBlock, r, debug.Stack())
 			}
 		}()
 		for {

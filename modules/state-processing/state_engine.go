@@ -560,7 +560,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					parsedTx := &TxElectionResult{
 						Self: txSelf,
 					}
-					json.Unmarshal(cj.Json, &parsedTx)
+					// Pass parsedTx (a *TxElectionResult), not &parsedTx
+					// (**TxElectionResult). With the double pointer, a JSON
+					// payload of `null` would set the inner pointer to nil
+					// and the subsequent ExecuteTx call would panic with a
+					// nil receiver.
+					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
 					continue
 				}

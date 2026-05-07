@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -206,7 +208,17 @@ func (s *StreamReader) pollDb(fail func(error)) {
 	cancel, errChan := s.hiveBlocks.ListenToBlockUpdates(s.ctx, s.lastProcessed, processBlock)
 	select {
 	case err := <-errChan:
-		vlog.Error("StreamReader stopped — listener error", "err", err, "lastProcessed", s.lastProcessed)
+		// Two-step output to keep the structured prefix line while still
+		// rendering the multi-line panic/stack trace correctly. slog's
+		// TextHandler escapes \n and \t inside string values, so passing
+		// the stack as an "err" attr produces unreadable output. Instead,
+		// log the structured "StreamReader stopped" line first, then write
+		// the verbatim error+stack to stderr — gated on the same level so
+		// disabling Error-level logs for this module suppresses both.
+		vlog.Error("StreamReader stopped — listener error", "lastProcessed", s.lastProcessed)
+		if vlog.Enabled(context.Background(), slog.LevelError) {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		fail(err)
 	case <-s.ctx.Done():
 		cancel()
