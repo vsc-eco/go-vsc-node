@@ -37,7 +37,24 @@ const (
 	// commitment whose BLS bitvec does not include this witness. Lighter than
 	// a blame because the session still succeeded without them.
 	TssSignNonParticipationBps = 30
+
+	// OracleQuoteDivergenceBps applies once per tick when a trusted-group
+	// witness's published HBD/HIVE quote diverges from the trusted-group mean
+	// by at least OracleQuoteDivergenceThresholdBps. This signal is liveness,
+	// not safety: a stale or out-of-sync feed is indistinguishable from a
+	// fraudulent one when seen only from on-chain feed_publish data, so the
+	// reward path is the appropriate response. Comparable in weight to
+	// TssBlameBps because divergence persists across many sub-ticks until the
+	// witness republishes.
+	OracleQuoteDivergenceBps = 150
 )
+
+// OracleQuoteDivergenceThresholdBps is the minimum |quote - trusted_mean|
+// (in basis points of the mean) that flags a trusted witness as divergent.
+// Mirrors the legacy safetyslash.OracleDivergenceThresholdBps that drove the
+// retired principal-slash detector — preserved here so the reward-reduction
+// path applies the same evidence threshold.
+const OracleQuoteDivergenceThresholdBps = 300
 
 // PerTickCapBps clamps each per-signal raw bps and the post-max-of tick
 // total. Defensive — prevents a single bad tick from dominating an epoch.

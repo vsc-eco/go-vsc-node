@@ -55,9 +55,32 @@ type MockLedgerDb struct {
 	LedgerRecords map[string][]ledgerDb.LedgerRecord
 }
 
+// StoreLedger upserts by Id within the per-owner slice — matching the
+// production Mongo semantics where every consensus-relevant ledger write is
+// keyed on a deterministic Id and a duplicate Id replaces (not appends) the
+// existing row. This lets idempotency-by-design code (cancel/reverse, slash
+// detectors) be exercised by mock-backed tests without false-positive
+// double-counts.
 func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) {
 	for _, record := range ledgerRecords {
-		m.LedgerRecords[record.Owner] = append(m.LedgerRecords[record.Owner], record)
+		owner := record.Owner
+		existing := m.LedgerRecords[owner]
+		// Records with empty Id fall through to append (legacy flow).
+		if record.Id != "" {
+			replaced := false
+			for i := range existing {
+				if existing[i].Id == record.Id {
+					existing[i] = record
+					replaced = true
+					break
+				}
+			}
+			if replaced {
+				m.LedgerRecords[owner] = existing
+				continue
+			}
+		}
+		m.LedgerRecords[owner] = append(existing, record)
 	}
 }
 

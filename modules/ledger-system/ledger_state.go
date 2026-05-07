@@ -174,13 +174,23 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 
 		return balRecord.HBD_SAVINGS + stakeBal
 	case "hive_consensus":
+		// Include consensus_stake (positive), consensus_unstake (negative),
+		// safety_slash_consensus (negative — debits a slashed bond), AND
+		// safety_slash_consensus_reverse (positive — re-credits a previously
+		// slashed bond, e.g. governance reversal of an erroneous slash) so
+		// the spendable bond reflects the net of all four ledger paths.
 		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(
 			account,
 			recordHeight,
 			blockHeight,
 			asset,
 			ledger_db.LedgerOptions{
-				OpType: []string{"consensus_stake", "consensus_unstake", LedgerTypeSafetySlashConsensus},
+				OpType: []string{
+					"consensus_stake",
+					"consensus_unstake",
+					LedgerTypeSafetySlashConsensus,
+					LedgerTypeSafetySlashConsensusReverse,
+				},
 			},
 		)
 		balAdjust := int64(0)

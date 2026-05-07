@@ -144,12 +144,25 @@ type StateEngine struct {
 	// slashRestitution pays harmed parties from safety slashes (FIFO); remainder is burned.
 	slashRestitution *safetyslash.MemoryRestitutionQueue
 	// safetyEvidenceSeen deduplicates evidence events per account+kind+evidenceID.
+	// Backstop only — the underlying ledger ids in SafetySlashConsensusBond are
+	// deterministic and Mongo upserts on (id), so replay never double-debits even
+	// when this in-memory map is empty (post-restart).
 	safetyEvidenceSeen map[string]uint64
-	// safetyEvidenceHeights tracks observed heights per account+kind for thresholded detectors.
-	safetyEvidenceHeights map[string][]uint64
 	// seenProposalBySlotProposer tracks first observed block content per (slot, proposer)
 	// to detect conflicting proposals in the same slot deterministically.
+	//
+	// First-seen-wins: whichever block ref the replaying node observes first
+	// for a given (slot, account) becomes the reference; any later op from the
+	// same account with a different block CID at the same slot triggers
+	// vsc_double_block_sign. The producer signed both refs, so the choice of
+	// reference is irrelevant to correctness — the map only needs to record
+	// "this account already proposed something at this slot".
 	seenProposalBySlotProposer map[string]string
+	// slashIncidentBpsBySlotAccount accumulates the bps already slashed in the
+	// current (slot, account) incident so a producer who hits two block-
+	// production kinds at the same slot is correlated under
+	// CorrelatedSlashCapBps instead of being slashed independently per kind.
+	slashIncidentBpsBySlotAccount map[string]int
 }
 
 //Transaction
@@ -520,14 +533,23 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						if se.seenProposalBySlotProposer == nil {
 							se.seenProposalBySlotProposer = make(map[string]string)
 						}
+						// First-seen-wins: whichever block ref this replaying node
+						// observes first for (slot, account) becomes the reference;
+						// any later op from the same account with a different block
+						// CID at the same slot proves equivocation. Either way the
+						// account signed two distinct refs — choice of reference is
+						// irrelevant to correctness.
 						slotKey := strconv.FormatUint(slotInfo.StartHeight, 10) + "|" + normalizeHiveAccount(cj.RequiredAuths[0])
+						doubleSign := false
 						if prevBlockRef, exists := se.seenProposalBySlotProposer[slotKey]; exists && prevBlockRef != parsedBlock.SignedBlock.Block {
+							doubleSign = true
 							slashRes := se.slashForEvidenceIfPolicyAllows(
 								cj.RequiredAuths[0],
 								safetyslash.EvidenceVSCDoubleBlockSign,
 								"double-block|"+slotKey+"|"+prevBlockRef+"|"+parsedBlock.SignedBlock.Block,
 								tx.TransactionID,
 								block.BlockNumber,
+								slotKey,
 							)
 							if slashRes.Ok {
 								log.Warn("principal slash applied for double block proposal",
@@ -537,19 +559,34 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							se.seenProposalBySlotProposer[slotKey] = parsedBlock.SignedBlock.Block
 						}
 
-						validated := parsedBlock.Validate(se)
+						outcome := parsedBlock.ValidateDetailed(se)
 
-						if validated {
+						switch {
+						case outcome.Skip:
+							// Transient validation failure (e.g. missing election).
+							// Do NOT slash — the producer signed a block we cannot
+							// even attempt to verify. A replay with a healthy view
+							// will reach a deterministic decision.
+							log.Warn("block validation skipped (no slash)",
+								"account", cj.RequiredAuths[0], "tx_id", tx.TransactionID,
+								"slot_height", slotInfo.StartHeight, "reason", outcome.SkipReason)
+						case outcome.Valid:
 							se.slotStatus.Done = true
 							se.slotStatus.Producer = cj.RequiredAuths[0]
 							parsedBlock.ExecuteTx(se)
-						} else {
+						default:
+							// Proven-invalid (deterministic). Correlate with any
+							// double-sign that already fired in this same incident
+							// so we don't stack two independent 10% slashes against
+							// CorrelatedSlashCapBps without acknowledging it.
+							_ = doubleSign
 							slashRes := se.slashForEvidenceIfPolicyAllows(
 								cj.RequiredAuths[0],
 								safetyslash.EvidenceVSCInvalidBlockProposal,
 								"invalid-block|"+tx.TransactionID,
 								tx.TransactionID,
 								block.BlockNumber,
+								slotKey,
 							)
 							if slashRes.Ok {
 								log.Warn("principal slash applied for invalid block proposal",
@@ -1298,6 +1335,16 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 				}
 			}
 		}
+	}
+
+	// Oracle quote divergence (replaces the retired EvidenceOraclePayloadFraud
+	// principal slash). Trusted-group witnesses whose latest published quote
+	// drifted >= rewards.OracleQuoteDivergenceThresholdBps from the trusted
+	// mean at this tick each accumulate one OracleQuoteDivergenceBps charge.
+	// Identical evidence on every replaying node because FeedTracker quotes
+	// are sourced deterministically from feed_publish.
+	if se.pendulumFeed != nil {
+		in.DivergingOracleWitnesses = se.pendulumFeed.DivergingTrustedWitnesses(rewards.OracleQuoteDivergenceThresholdBps)
 	}
 
 	// TSS commitments: pull all reshare/blame/sign_result types in the window.
@@ -2056,10 +2103,10 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		ContractResults:  make(map[string][]ContractResult),
 		TempOutputs:      make(map[string]*contract_session.TempOutput),
 		TxOutIds:         make([]string, 0),
-		slashRestitution: safetyslash.NewMemoryRestitutionQueue(),
-		safetyEvidenceSeen:         make(map[string]uint64),
-		safetyEvidenceHeights:      make(map[string][]uint64),
-		seenProposalBySlotProposer: make(map[string]string),
+		slashRestitution:              safetyslash.NewMemoryRestitutionQueue(),
+		safetyEvidenceSeen:            make(map[string]uint64),
+		seenProposalBySlotProposer:    make(map[string]string),
+		slashIncidentBpsBySlotAccount: make(map[string]int),
 
 		da: da,
 		// db: db,
@@ -2157,15 +2204,18 @@ func (se *StateEngine) evidenceSeenKey(accountHive, kind, evidenceID string) str
 	return se.evidenceKey(accountHive, kind) + "|" + evidenceID
 }
 
+// recordEvidenceAndShouldSlash returns true when this is the first time we
+// have observed this (account, kind, evidenceID) tuple in the current process
+// lifetime. Replay-safe even when this map is empty (e.g. after restart):
+// SafetySlashConsensusBond derives deterministic ledger ids from the same
+// inputs, and the underlying Mongo store upserts by id, so a redundant call
+// rewrites the same row instead of double-debiting.
 func (se *StateEngine) recordEvidenceAndShouldSlash(accountHive, kind, evidenceID string, blockHeight uint64) bool {
 	if se == nil {
 		return false
 	}
 	if se.safetyEvidenceSeen == nil {
 		se.safetyEvidenceSeen = make(map[string]uint64)
-	}
-	if se.safetyEvidenceHeights == nil {
-		se.safetyEvidenceHeights = make(map[string][]uint64)
 	}
 	acct := normalizeHiveAccount(accountHive)
 	if acct == "" || strings.TrimSpace(kind) == "" {
@@ -2180,36 +2230,55 @@ func (se *StateEngine) recordEvidenceAndShouldSlash(accountHive, kind, evidenceI
 		return false
 	}
 	se.safetyEvidenceSeen[seenKey] = blockHeight
-	if !safetyslash.UsesThreshold(kind) {
-		return true
-	}
-	baseKey := se.evidenceKey(acct, kind)
-	window := uint64(safetyslash.EvidenceThresholdWindowBlocks)
-	old := se.safetyEvidenceHeights[baseKey]
-	filtered := make([]uint64, 0, len(old)+1)
-	for _, h := range old {
-		if blockHeight >= h && (blockHeight-h) <= window {
-			filtered = append(filtered, h)
-		}
-	}
-	filtered = append(filtered, blockHeight)
-	se.safetyEvidenceHeights[baseKey] = filtered
-	return len(filtered) >= safetyslash.ThresholdCountForEvidenceKind(kind)
+	return true
 }
 
-func (se *StateEngine) slashForEvidenceIfPolicyAllows(accountHive, kind, evidenceID, txID string, blockHeight uint64) ledgerSystem.LedgerResult {
+// slashForEvidenceIfPolicyAllows is the single policy-enforcing entrypoint
+// every detector calls. incidentKey, when non-empty, correlates multiple
+// evidence kinds that arose from the same on-chain incident (today: the
+// (slot, account) tuple for block-production faults). When the running total
+// for an incident already exceeds CorrelatedSlashCapBps, the additional
+// evidence is recorded but does not produce a further ledger debit.
+func (se *StateEngine) slashForEvidenceIfPolicyAllows(accountHive, kind, evidenceID, txID string, blockHeight uint64, incidentKey string) ledgerSystem.LedgerResult {
 	if se == nil {
 		return ledgerSystem.LedgerResult{Ok: false, Msg: "state engine not configured"}
 	}
 	if !se.recordEvidenceAndShouldSlash(accountHive, kind, evidenceID, blockHeight) {
-		return ledgerSystem.LedgerResult{Ok: false, Msg: "threshold not met or duplicate evidence"}
+		return ledgerSystem.LedgerResult{Ok: false, Msg: "duplicate evidence"}
 	}
-	bps := safetyslash.EffectiveCorrelatedBps(
-		[]int{safetyslash.SlashBpsForEvidenceKind(kind)},
-		safetyslash.CorrelatedSlashCapBps,
-	)
-	if bps <= 0 {
+	rawBps := safetyslash.SlashBpsForEvidenceKind(kind)
+	if rawBps <= 0 {
 		return ledgerSystem.LedgerResult{Ok: false, Msg: "unsupported evidence kind"}
+	}
+	bps := rawBps
+	if incidentKey != "" {
+		if se.slashIncidentBpsBySlotAccount == nil {
+			se.slashIncidentBpsBySlotAccount = make(map[string]int)
+		}
+		already := se.slashIncidentBpsBySlotAccount[incidentKey]
+		// Effective bps after correlation: cap minus what's already been
+		// applied for this incident, never exceeding the kind's own bps.
+		room := safetyslash.CorrelatedSlashCapBps - already
+		if room <= 0 {
+			return ledgerSystem.LedgerResult{Ok: false, Msg: "incident already at correlated cap"}
+		}
+		if rawBps < room {
+			bps = rawBps
+		} else {
+			bps = room
+		}
+		se.slashIncidentBpsBySlotAccount[incidentKey] = already + bps
+	} else {
+		// No incident grouping: still apply the per-evidence cap so a single
+		// kind cannot exceed CorrelatedSlashCapBps on its own (defensive;
+		// today both kinds' bps are well under the cap).
+		bps = safetyslash.EffectiveCorrelatedBps(
+			[]int{rawBps},
+			safetyslash.CorrelatedSlashCapBps,
+		)
+	}
+	if bps <= 0 {
+		return ledgerSystem.LedgerResult{Ok: false, Msg: "no headroom under correlated cap"}
 	}
 	return se.applyPrincipalSlashForProvableEvidence(accountHive, bps, txID, blockHeight, kind)
 }
@@ -2247,12 +2316,18 @@ func blamedAccountsFromBitSet(bitsetHex string, members []elections.ElectionMemb
 	return out
 }
 
-// EnqueueSlashRestitutionClaim registers remaining HIVE loss owed to a victim.
-// Payouts are sourced from future safety-slash proceeds (FIFO) before protocol burn.
+// enqueueSlashRestitutionClaimForTest registers remaining HIVE loss owed to a
+// victim. Payouts are sourced from future safety-slash proceeds (FIFO) before
+// protocol burn.
 //
-// Not consensus-safe unless every validator performs the same Enqueue in the same
-// order (e.g. from a future chain op). Prefer leaving the queue empty until then.
-func (se *StateEngine) EnqueueSlashRestitutionClaim(c ledgerSystem.SlashRestitutionClaim) {
+// CONSENSUS WARNING: this method is intentionally unexported. The underlying
+// MemoryRestitutionQueue is process-local — if any node calls this outside a
+// deterministic replay path, validators will diverge on
+// SafetySlashConsensusBond outputs. Until claims are gated through a chain op
+// (or replayed deterministically from the ledger), the queue MUST stay empty
+// in production. The hook is kept for unit tests that exercise the
+// restitution split inside SafetySlashConsensusBond.
+func (se *StateEngine) enqueueSlashRestitutionClaimForTest(c ledgerSystem.SlashRestitutionClaim) {
 	if se == nil || se.slashRestitution == nil {
 		return
 	}

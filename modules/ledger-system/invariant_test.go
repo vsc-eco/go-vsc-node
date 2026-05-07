@@ -112,6 +112,16 @@ func (m *mockLedgerSystem) SafetySlashConsensusBond(p ledgerSystem.SafetySlashCo
 
 func (m *mockLedgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) { _ = blockHeight }
 
+func (m *mockLedgerSystem) CancelPendingSafetySlashBurn(p ledgerSystem.CancelPendingSafetySlashBurnParams) ledgerSystem.LedgerResult {
+	_ = p
+	return ledgerSystem.LedgerResult{Ok: false, Msg: "mock ledger: cancel pending burn not implemented"}
+}
+
+func (m *mockLedgerSystem) ReverseSafetySlashConsensusDebit(p ledgerSystem.ReverseSafetySlashConsensusDebitParams) ledgerSystem.LedgerResult {
+	_ = p
+	return ledgerSystem.LedgerResult{Ok: false, Msg: "mock ledger: reverse consensus debit not implemented"}
+}
+
 // ---------------------------------------------------------------------------
 // Invariant 1: Balance Conservation
 //

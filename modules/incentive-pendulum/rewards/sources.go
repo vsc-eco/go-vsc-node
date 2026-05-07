@@ -210,6 +210,42 @@ type SignResultWithCommittee struct {
 	SignCommittee []string
 }
 
+// ScoreOracleQuoteDivergence returns per-witness Tier-D bps. Each entry in
+// `divergingWitnesses` is a trusted-group member whose latest HBD/HIVE quote
+// drifted from the trusted-group mean by at least
+// OracleQuoteDivergenceThresholdBps at this tick. Each member receives a
+// single OracleQuoteDivergenceBps charge per tick — the divergence signal is
+// observed once at tick close, not per swap.
+//
+// Witnesses outside `committee` are dropped (a witness can be trusted-group
+// without being on the rewardable committee for the tick — only committee
+// members earn pendulum rewards).
+func ScoreOracleQuoteDivergence(divergingWitnesses []string, committee []string) map[string]int {
+	if len(divergingWitnesses) == 0 {
+		return nil
+	}
+	cm := committeeFromMembers(committee)
+	if len(cm) == 0 {
+		return nil
+	}
+	out := make(map[string]int)
+	seen := make(map[string]struct{})
+	for _, w := range divergingWitnesses {
+		if w == "" {
+			continue
+		}
+		if _, ok := cm[w]; !ok {
+			continue
+		}
+		if _, dup := seen[w]; dup {
+			continue
+		}
+		seen[w] = struct{}{}
+		out[w] += OracleQuoteDivergenceBps
+	}
+	return out
+}
+
 // decodeBitset parses a base64-RawURL-encoded big.Int bitset (the format
 // used by setToCommitment in tss.go and by SerializeBlsCircuit in
 // lib/dids/bls.go). Returns (nil, false) on any parse error so callers can

@@ -618,18 +618,52 @@ func (tx *TxProposeBlock) TxSelf() TxSelf {
 	return tx.Self
 }
 
+// BlockValidationOutcome carries the result of TxProposeBlock.Validate so the
+// caller can distinguish "this proposal is provably invalid (slash)" from
+// "we couldn't even attempt validation due to a transient lookup failure
+// (skip — do not slash)". Without this split, a corrupt election cache or a
+// transient DB error during replay would produce a false-positive slash on
+// an honest producer.
+type BlockValidationOutcome struct {
+	// Valid is true iff the BLS aggregate verifies, meets 2/3, and the block
+	// is in-window. Only meaningful when Skip is false.
+	Valid bool
+	// Skip is true when validation could not be attempted (e.g. election
+	// lookup failure, malformed block CID). Callers must not slash on Skip;
+	// a future replay with a healthy view will validate normally.
+	Skip bool
+	// SkipReason is logged when Skip is true so node operators can see why a
+	// proposal could not be checked. Empty when Skip is false.
+	SkipReason string
+}
+
 func (t *TxProposeBlock) Validate(se *StateEngine) bool {
+	out := t.ValidateDetailed(se)
+	if out.Skip {
+		return false
+	}
+	return out.Valid
+}
+
+// ValidateDetailed mirrors Validate but exposes the skip-vs-invalid
+// distinction needed by the principal-slash detectors.
+func (t *TxProposeBlock) ValidateDetailed(se *StateEngine) BlockValidationOutcome {
 	elecResult, err := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
 	if err != nil {
-		//Cannot process block due to missing election
-		return false
+		// Election lookup failure is environmental, not fault of producer.
+		return BlockValidationOutcome{Skip: true, SkipReason: "election lookup failed: " + err.Error()}
 	}
 	memberDids := make([]dids.BlsDID, 0)
 	for _, member := range elecResult.Members {
 		memberDids = append(memberDids, dids.BlsDID(member.Key))
 	}
 
-	blockCid, _ := cid.Parse(t.SignedBlock.Block)
+	blockCid, cidErr := cid.Parse(t.SignedBlock.Block)
+	if cidErr != nil {
+		// Malformed CID: the block can't be checked at all. Treat as
+		// proven-invalid (deterministic decision from the bytes), not skip.
+		return BlockValidationOutcome{Valid: false}
+	}
 	blockHeader := vscBlocks.VscHeader{
 		Type:    t.SignedBlock.Type,
 		Version: t.SignedBlock.Version,
@@ -644,19 +678,15 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 		Block:      blockCid,
 	}
 
-	cid, err := se.da.HashObject(blockHeader)
-	if err != nil || cid == nil {
-		return false
+	headerCid, hashErr := se.da.HashObject(blockHeader)
+	if hashErr != nil || headerCid == nil {
+		return BlockValidationOutcome{Skip: true, SkipReason: "header hash failed"}
 	}
 
-	circuit, err := dids.DeserializeBlsCircuit(t.SignedBlock.Signature, memberDids, *cid)
-	if err != nil || circuit == nil {
-		return false
-	}
-
-	verified, includedDids, err := circuit.Verify()
-	if err != nil {
-		return false
+	circuit, dErr := dids.DeserializeBlsCircuit(t.SignedBlock.Signature, memberDids, *headerCid)
+	if dErr != nil {
+		// Malformed signature bytes — deterministic from the proposal.
+		return BlockValidationOutcome{Valid: false}
 	}
 
 	if uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength <= t.Self.BlockHeight {
@@ -666,16 +696,15 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 			uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength,
 			t.Self.BlockHeight,
 		)
-		return false
+		return BlockValidationOutcome{Valid: false}
 	}
 
-	if !verified {
-		return false
+	verified, includedDids, vErr := circuit.Verify()
+	if vErr != nil || !verified {
+		return BlockValidationOutcome{Valid: false}
 	}
 
 	signingScore, total := elections.CalculateSigningScore(circuit, elecResult)
-
-	verifiedR := signingScore > ((total * 2) / 3)
 
 	for _, did := range includedDids {
 		for _, member := range elecResult.Members {
@@ -686,7 +715,7 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 	}
 	t.Epoch = elecResult.Epoch
 
-	return verifiedR
+	return BlockValidationOutcome{Valid: signingScore > ((total * 2) / 3)}
 }
 
 // ProcessTx implements VSCTransaction.

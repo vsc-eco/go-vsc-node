@@ -1,6 +1,35 @@
 package safetyslash
 
-import "testing"
+import (
+	"testing"
+
+	"vsc-node/modules/common/params"
+)
+
+// TestSlashPolicy_LeanConstantsMirroredInGo pins the literal values that the
+// Magi Lean modules `SafetySlashLiquidSplit.lean` (`maxSafetySlashBurnDelayBlocks`)
+// and policy doc-comments hard-code. If either side changes, this test fires and
+// the maintainer must update both manually — there is no automatic build-time
+// link between the two repos.
+func TestSlashPolicy_LeanConstantsMirroredInGo(t *testing.T) {
+	if params.MaxSafetySlashBurnDelayBlocks != 3_333_333 {
+		t.Fatalf("params.MaxSafetySlashBurnDelayBlocks drifted from Lean's maxSafetySlashBurnDelayBlocks: got %d, want 3_333_333. "+
+			"Update magi-lean/MagiLean/Pendulum/SafetySlashLiquidSplit.lean in lockstep.",
+			params.MaxSafetySlashBurnDelayBlocks)
+	}
+	if DefaultSafetySlashBurnDelayBlocks != 3*28800 {
+		t.Fatalf("DefaultSafetySlashBurnDelayBlocks drifted: got %d, want %d. "+
+			"Lean docs reference ~3 days at 3s/block; update both sides.",
+			DefaultSafetySlashBurnDelayBlocks, 3*28800)
+	}
+	if CorrelatedSlashCapBps != 10000 {
+		t.Fatalf("CorrelatedSlashCapBps drifted from 100%% (10000 bps): got %d", CorrelatedSlashCapBps)
+	}
+	if DoubleBlockSignSlashBps != 1000 || InvalidBlockSlashBps != 1000 {
+		t.Fatalf("Per-kind slash bps drifted from Lean slashBps_uniform_10pct: doubleBlock=%d invalidBlock=%d",
+			DoubleBlockSignSlashBps, InvalidBlockSlashBps)
+	}
+}
 
 func TestEffectiveCorrelatedBps_Caps(t *testing.T) {
 	if g := EffectiveCorrelatedBps([]int{3000, 4000, 5000}, 10000); g != 10000 {
@@ -16,23 +45,15 @@ func TestEffectiveCorrelatedBps_Caps(t *testing.T) {
 
 func TestSlashPolicy_KindMappings(t *testing.T) {
 	cases := []struct {
-		kind      string
-		wantBps   int
-		threshold bool
-		wantCount int
+		kind    string
+		wantBps int
 	}{
-		{EvidenceVSCDoubleBlockSign, DoubleBlockSignSlashBps, false, 1},
-		{EvidenceVSCInvalidBlockProposal, InvalidBlockSlashBps, false, 1},
+		{EvidenceVSCDoubleBlockSign, DoubleBlockSignSlashBps},
+		{EvidenceVSCInvalidBlockProposal, InvalidBlockSlashBps},
 	}
 	for _, tc := range cases {
 		if got := SlashBpsForEvidenceKind(tc.kind); got != tc.wantBps {
 			t.Fatalf("kind %s: bps got %d want %d", tc.kind, got, tc.wantBps)
-		}
-		if got := UsesThreshold(tc.kind); got != tc.threshold {
-			t.Fatalf("kind %s: threshold got %v want %v", tc.kind, got, tc.threshold)
-		}
-		if got := ThresholdCountForEvidenceKind(tc.kind); got != tc.wantCount {
-			t.Fatalf("kind %s: threshold count got %d want %d", tc.kind, got, tc.wantCount)
 		}
 	}
 }
@@ -51,12 +72,6 @@ func TestSlashPolicy_UnknownKindZeroBps(t *testing.T) {
 	} {
 		if got := SlashBpsForEvidenceKind(k); got != 0 {
 			t.Fatalf("unknown kind %q: expected 0 bps, got %d", k, got)
-		}
-		if UsesThreshold(k) {
-			t.Fatalf("unknown kind %q: should not be thresholded", k)
-		}
-		if got := ThresholdCountForEvidenceKind(k); got != 1 {
-			t.Fatalf("unknown kind %q: expected default threshold 1, got %d", k, got)
 		}
 	}
 }

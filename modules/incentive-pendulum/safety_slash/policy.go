@@ -44,12 +44,6 @@ const (
 	InvalidBlockSlashBps    = 1000 // 10%
 )
 
-// EvidenceThresholdWindowBlocks bounds how far back recordEvidenceAndShouldSlash
-// looks when counting incidents for a thresholded kind. Currently no kinds are
-// thresholded (block-production faults slash on first proof), but the constant
-// stays so future thresholded kinds slot in without policy churn.
-const EvidenceThresholdWindowBlocks = 1000
-
 // DefaultSafetySlashBurnDelayBlocks holds the burn (post-restitution) portion on
 // params.ProtocolSlashPendingBurnAccount for this many Hive block heights before
 // it is promoted to the final burn sink. ~3 days at ~3s/block. Governance can
@@ -85,20 +79,4 @@ func SlashBpsForEvidenceKind(kind string) int {
 	default:
 		return 0
 	}
-}
-
-// UsesThreshold reports whether a kind requires multiple incidents inside
-// EvidenceThresholdWindowBlocks before triggering a slash. Currently always
-// false: every wired kind is a deterministic single-shot proof.
-func UsesThreshold(kind string) bool {
-	_ = kind
-	return false
-}
-
-// ThresholdCountForEvidenceKind returns the minimum number of distinct
-// incidents required inside the rolling window to slash. Defaults to 1 — a
-// kind only needs override when it opts into thresholded behaviour.
-func ThresholdCountForEvidenceKind(kind string) int {
-	_ = kind
-	return 1
 }

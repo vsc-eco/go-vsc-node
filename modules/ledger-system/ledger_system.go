@@ -102,6 +102,16 @@ const (
 	LedgerTypeSafetySlashHiveBurnPendingRelease = "safety_slash_hive_burn_pending_release"
 	// LedgerTypeSafetySlashHiveBurnPendingFinalized marks a pending row as promoted (idempotency).
 	LedgerTypeSafetySlashHiveBurnPendingFinalized = "safety_slash_hive_burn_pending_finalized"
+	// LedgerTypeSafetySlashHiveBurnPendingCancelled marks a pending row as
+	// cancelled before maturity. Paired with LedgerTypeSafetySlashHiveBurnPendingRelease
+	// so the pending account nets to 0 and FinalizeMaturedSafetySlashBurns
+	// will skip the row even if the cursor revisits it.
+	LedgerTypeSafetySlashHiveBurnPendingCancelled = "safety_slash_hive_burn_pending_cancelled"
+	// LedgerTypeSafetySlashConsensusReverse re-credits HIVE_CONSENSUS bond
+	// previously debited by SafetySlashConsensusBond. Aggregated by
+	// LedgerState.GetBalance(hive_consensus). Idempotent per (slashTxID,
+	// kind, account) tuple.
+	LedgerTypeSafetySlashConsensusReverse = "safety_slash_consensus_reverse"
 )
 
 func normalizeHiveConsensusAccount(a string) string {
@@ -311,6 +321,169 @@ func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 			},
 		)
 	}
+}
+
+// safetySlashBaseID reproduces the deterministic baseID format used by
+// SafetySlashConsensusBond ("{txID}#safety_slash#{kind}"). Cancel and
+// reverse callers reuse it so Mongo upserts keep the record set self-
+// consistent and replays converge.
+func safetySlashBaseID(txID, kind string) string {
+	return strings.TrimSpace(txID) + "#safety_slash#" + strings.TrimSpace(kind)
+}
+
+// CancelPendingSafetySlashBurn writes a release record that nets the pending
+// burn slice for (TxID, EvidenceKind) and a cancellation marker. After a
+// successful cancel:
+//   - the pending account's HIVE balance for this slash returns to 0
+//   - FinalizeMaturedSafetySlashBurns will skip the cancelled row even when
+//     its maturity height is reached (the cancellation marker matches the
+//     finalized-marker key).
+//
+// Idempotent: repeated calls with the same (TxID, EvidenceKind) succeed
+// silently after the first.
+func (ls *ledgerSystem) CancelPendingSafetySlashBurn(p CancelPendingSafetySlashBurnParams) LedgerResult {
+	tx := strings.TrimSpace(p.TxID)
+	kind := strings.TrimSpace(p.EvidenceKind)
+	if tx == "" || kind == "" {
+		return LedgerResult{Ok: false, Msg: "invalid cancel params"}
+	}
+	if ls.LedgerDb == nil {
+		return LedgerResult{Ok: false, Msg: "ledger not configured"}
+	}
+	pendingAcct := params.ProtocolSlashPendingBurnAccount
+	// Reproduce the id SafetySlashConsensusBond writes; the slashed account
+	// is the trailing component (see line ~242 of this file).
+	slashedAcct := normalizeHiveConsensusAccount(p.SlashedAccount)
+	if slashedAcct == "" {
+		return LedgerResult{Ok: false, Msg: "invalid slashed account"}
+	}
+	pendingID := safetySlashBaseID(tx, kind) + "#hive_burn_pending#" + slashedAcct
+	cancelID := pendingID + "#cancelled_marker"
+	releaseID := pendingID + "#cancel_release"
+	finalizedID := pendingID + "#finalized_marker"
+
+	// Look up pending row to recover amount + maturity height.
+	allPending, err := ls.LedgerDb.GetLedgerRange(pendingAcct, 0, p.BlockHeight, "hive", ledger_db.LedgerOptions{
+		OpType: []string{LedgerTypeSafetySlashHiveBurnPending},
+	})
+	if err != nil || allPending == nil {
+		return LedgerResult{Ok: false, Msg: "no pending burn rows"}
+	}
+	var pendingRec *ledger_db.LedgerRecord
+	for i, r := range *allPending {
+		if r.Id == pendingID {
+			pendingRec = &(*allPending)[i]
+			break
+		}
+	}
+	if pendingRec == nil {
+		return LedgerResult{Ok: false, Msg: "pending burn row not found"}
+	}
+
+	// Order matters: cancel always writes BOTH a cancelled-marker and a
+	// finalized-marker (the latter blocks future natural maturation). When a
+	// follower-up call arrives, we must report "already cancelled" not
+	// "already finalized" so callers can distinguish the two outcomes.
+	cancelled, _ := ls.LedgerDb.GetLedgerRange(pendingAcct, 0, p.BlockHeight, "hive", ledger_db.LedgerOptions{
+		OpType: []string{LedgerTypeSafetySlashHiveBurnPendingCancelled},
+	})
+	if cancelled != nil {
+		for _, m := range *cancelled {
+			if m.Id == cancelID {
+				return LedgerResult{Ok: true, Msg: "already cancelled"}
+			}
+		}
+	}
+
+	// Otherwise, if a finalized-marker already exists, the row matured
+	// naturally before cancel arrived → reject (governance must use
+	// ReverseSafetySlashConsensusDebit instead).
+	finalized, _ := ls.LedgerDb.GetLedgerRange(pendingAcct, 0, p.BlockHeight, "hive", ledger_db.LedgerOptions{
+		OpType: []string{LedgerTypeSafetySlashHiveBurnPendingFinalized},
+	})
+	if finalized != nil {
+		for _, m := range *finalized {
+			if m.Id == finalizedID {
+				return LedgerResult{Ok: false, Msg: "pending burn already finalized"}
+			}
+		}
+	}
+
+	// Reason is currently unused (LedgerRecord has no memo field).
+	// Logged at the call site for explorers; idempotency lives in the ID.
+	_ = strings.TrimSpace(p.Reason)
+	ls.LedgerDb.StoreLedger(
+		ledger_db.LedgerRecord{
+			Id:          releaseID,
+			TxId:        pendingRec.TxId,
+			BlockHeight: p.BlockHeight,
+			Amount:      -pendingRec.Amount,
+			Asset:       "hive",
+			Owner:       pendingAcct,
+			From:        pendingRec.From,
+			Type:        LedgerTypeSafetySlashHiveBurnPendingRelease,
+		},
+		// finalized-marker matching id so FinalizeMaturedSafetySlashBurns
+		// skips this row even when maturity is reached.
+		ledger_db.LedgerRecord{
+			Id:          finalizedID,
+			TxId:        pendingRec.TxId,
+			BlockHeight: p.BlockHeight,
+			Amount:      0,
+			Asset:       "hive",
+			Owner:       pendingAcct,
+			From:        pendingRec.From,
+			Type:        LedgerTypeSafetySlashHiveBurnPendingFinalized,
+		},
+		// distinct cancellation marker so explorers (and idempotency checks)
+		// can tell cancellations apart from natural maturations.
+		ledger_db.LedgerRecord{
+			Id:          cancelID,
+			TxId:        pendingRec.TxId,
+			BlockHeight: p.BlockHeight,
+			Amount:      0,
+			Asset:       "hive",
+			Owner:       pendingAcct,
+			From:        pendingRec.From,
+			Type:        LedgerTypeSafetySlashHiveBurnPendingCancelled,
+		},
+	)
+	return LedgerResult{Ok: true, Msg: "cancelled"}
+}
+
+// ReverseSafetySlashConsensusDebit re-credits HIVE_CONSENSUS bond previously
+// debited by SafetySlashConsensusBond. The credit row's deterministic id is
+// {txID}#{kind}#{account}#consensus_reverse so a replay/upsert lands on the
+// same row instead of double-crediting.
+//
+// LedgerState.GetBalance(hive_consensus) sums Amount across consensus_stake,
+// consensus_unstake, AND safety_slash_consensus_reverse types so the credit
+// applies to spendable bond after this call returns.
+func (ls *ledgerSystem) ReverseSafetySlashConsensusDebit(p ReverseSafetySlashConsensusDebitParams) LedgerResult {
+	acct := normalizeHiveConsensusAccount(p.Account)
+	tx := strings.TrimSpace(p.TxID)
+	kind := strings.TrimSpace(p.EvidenceKind)
+	if acct == "" || tx == "" || kind == "" {
+		return LedgerResult{Ok: false, Msg: "invalid reverse params"}
+	}
+	if p.Amount <= 0 {
+		return LedgerResult{Ok: false, Msg: "reverse amount must be positive"}
+	}
+	if ls.LedgerDb == nil {
+		return LedgerResult{Ok: false, Msg: "ledger not configured"}
+	}
+	_ = strings.TrimSpace(p.Reason)
+	id := safetySlashBaseID(tx, kind) + "#consensus_reverse#" + acct
+	ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+		Id:          id,
+		TxId:        tx,
+		BlockHeight: p.BlockHeight,
+		Amount:      p.Amount,
+		Asset:       "hive_consensus",
+		Owner:       acct,
+		Type:        LedgerTypeSafetySlashConsensusReverse,
+	})
+	return LedgerResult{Ok: true, Msg: "reverse credit recorded"}
 }
 
 // PendulumBucketBalance sums every ledger record whose Owner == bucket and

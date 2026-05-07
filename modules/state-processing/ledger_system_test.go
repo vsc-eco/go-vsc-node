@@ -1174,6 +1174,188 @@ func countLedgerType(l *test_utils.MockLedgerDb, typ string) int {
 	return n
 }
 
+// TestCancelPendingSafetySlashBurn_PreMaturity exercises the cancel path:
+// a slash with a non-zero burn delay creates a pending row; cancelling
+// before maturity must net the pending HIVE balance back to zero AND prevent
+// FinalizeMaturedSafetySlashBurns from later promoting the row to a burn.
+func TestCancelPendingSafetySlashBurn_PreMaturity(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "tx-cancel",
+		BlockHeight:     200,
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
+		BurnDelayBlocks: 100,
+	})
+	require.True(t, res.Ok)
+
+	// Pre-cancel: pending account holds the burn slice.
+	pendingBefore := lDbPendingSlashBalance(t, lDb)
+	require.Equal(t, int64(100_000), pendingBefore, "expected 10%% of bond on pending account before cancel")
+
+	cancelRes := ls.CancelPendingSafetySlashBurn(ledgerSystem.CancelPendingSafetySlashBurnParams{
+		TxID:           "tx-cancel",
+		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
+		SlashedAccount: "alice",
+		BlockHeight:    250,
+		Reason:         "false-positive double sign rollback",
+	})
+	require.True(t, cancelRes.Ok, "cancel must succeed pre-maturity: %s", cancelRes.Msg)
+
+	// Post-cancel: pending account net balance for this slash is 0.
+	pendingAfter := lDbPendingSlashBalance(t, lDb)
+	require.Equal(t, int64(0), pendingAfter, "pending must net to 0 after cancel")
+
+	// Idempotent: second cancel returns Ok with "already cancelled" and
+	// emits no further records.
+	count1 := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingCancelled)
+	cancelRes2 := ls.CancelPendingSafetySlashBurn(ledgerSystem.CancelPendingSafetySlashBurnParams{
+		TxID:           "tx-cancel",
+		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
+		SlashedAccount: "alice",
+		BlockHeight:    260,
+	})
+	require.True(t, cancelRes2.Ok)
+	require.Contains(t, cancelRes2.Msg, "already cancelled")
+	count2 := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingCancelled)
+	require.Equal(t, count1, count2, "second cancel must not double-write")
+
+	// FinalizeMaturedSafetySlashBurns at maturity must NOT promote a
+	// cancelled row.
+	finalBurnsBefore := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn)
+	ls.FinalizeMaturedSafetySlashBurns(400)
+	finalBurnsAfter := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn)
+	require.Equal(t, finalBurnsBefore, finalBurnsAfter, "cancelled pending row must not promote to burn")
+}
+
+// TestCancelPendingSafetySlashBurn_AfterFinalizeRejected proves cancel is a
+// no-op once the burn has already been finalized.
+func TestCancelPendingSafetySlashBurn_AfterFinalizeRejected(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "tx-late",
+		BlockHeight:     200,
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
+		BurnDelayBlocks: 50,
+	}).Ok)
+	ls.FinalizeMaturedSafetySlashBurns(250)
+
+	res := ls.CancelPendingSafetySlashBurn(ledgerSystem.CancelPendingSafetySlashBurnParams{
+		TxID:           "tx-late",
+		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
+		SlashedAccount: "alice",
+		BlockHeight:    300,
+	})
+	require.False(t, res.Ok, "cancel after finalize must fail")
+	require.Contains(t, res.Msg, "already finalized")
+}
+
+// TestReverseSafetySlashConsensusDebit_RestoresBond verifies the reverse
+// credit primitive's effect on hive_consensus balance.
+func TestReverseSafetySlashConsensusDebit_RestoresBond(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+
+	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:      "alice",
+		SlashBps:     1000,
+		TxID:         "tx-reverse",
+		BlockHeight:  200,
+		EvidenceKind: safetyslash.EvidenceVSCDoubleBlockSign,
+	}).Ok)
+	postSlash := ls.GetBalance("hive:alice", 200, "hive_consensus")
+	require.Equal(t, int64(900_000), postSlash, "10%% slash should leave 90%% of bond")
+
+	revRes := ls.ReverseSafetySlashConsensusDebit(ledgerSystem.ReverseSafetySlashConsensusDebitParams{
+		TxID:         "tx-reverse",
+		EvidenceKind: safetyslash.EvidenceVSCDoubleBlockSign,
+		Account:      "alice",
+		Amount:       100_000,
+		BlockHeight:  220,
+		Reason:       "validator restored after governance review",
+	})
+	require.True(t, revRes.Ok, "reverse must succeed: %s", revRes.Msg)
+
+	postReverse := ls.GetBalance("hive:alice", 220, "hive_consensus")
+	require.Equal(t, int64(1_000_000), postReverse,
+		"reverse credit equal to original debit must restore the bond exactly (Lean: bond_full_reverse_restores)")
+
+	// Idempotency: same reverse twice writes one row (Mongo upsert keys on Id).
+	require.True(t, ls.ReverseSafetySlashConsensusDebit(ledgerSystem.ReverseSafetySlashConsensusDebitParams{
+		TxID:         "tx-reverse",
+		EvidenceKind: safetyslash.EvidenceVSCDoubleBlockSign,
+		Account:      "alice",
+		Amount:       100_000,
+		BlockHeight:  221,
+	}).Ok)
+	postIdem := ls.GetBalance("hive:alice", 221, "hive_consensus")
+	require.Equal(t, int64(1_000_000), postIdem,
+		"idempotent reverse must not double-credit (deterministic ledger Id)")
+}
+
+// TestReverseSafetySlashConsensusDebit_RejectsInvalid covers parameter
+// validation: zero amount, blank account, blank txID/kind.
+func TestReverseSafetySlashConsensusDebit_RejectsInvalid(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	for _, c := range []struct {
+		name string
+		p    ledgerSystem.ReverseSafetySlashConsensusDebitParams
+	}{
+		{"blank tx", ledgerSystem.ReverseSafetySlashConsensusDebitParams{Account: "alice", EvidenceKind: "k", Amount: 1}},
+		{"blank kind", ledgerSystem.ReverseSafetySlashConsensusDebitParams{TxID: "t", Account: "alice", Amount: 1}},
+		{"blank account", ledgerSystem.ReverseSafetySlashConsensusDebitParams{TxID: "t", EvidenceKind: "k", Amount: 1}},
+		{"zero amount", ledgerSystem.ReverseSafetySlashConsensusDebitParams{TxID: "t", EvidenceKind: "k", Account: "alice", Amount: 0}},
+		{"negative amount", ledgerSystem.ReverseSafetySlashConsensusDebitParams{TxID: "t", EvidenceKind: "k", Account: "alice", Amount: -1}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			require.False(t, ls.ReverseSafetySlashConsensusDebit(c.p).Ok)
+		})
+	}
+}
+
+// lDbPendingSlashBalance sums HIVE amounts on the pending burn account.
+// Helper test utility — keeps test asserts focused on net effect.
+func lDbPendingSlashBalance(t *testing.T, lDb *test_utils.MockLedgerDb) int64 {
+	t.Helper()
+	total := int64(0)
+	for _, recs := range lDb.LedgerRecords {
+		for _, r := range recs {
+			if r.Owner == params.ProtocolSlashPendingBurnAccount && r.Asset == "hive" {
+				total += r.Amount
+			}
+		}
+	}
+	return total
+}
+
 func TestSafetySlashConsensusBond_RejectsMaturityOverflow(t *testing.T) {
 	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
 		"hive:alice": {{
