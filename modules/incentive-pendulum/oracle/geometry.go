@@ -1,6 +1,7 @@
 package oracle
 
 import (
+	"math/big"
 	"strings"
 
 	"vsc-node/lib/intmath"
@@ -34,9 +35,10 @@ type CommitteeBondReader interface {
 }
 
 // GeometryInputs is the per-tick input bundle the GeometryComputer reads.
+// HivePriceHBDBps is HBD per HIVE in basis points (BpsScale = 1.0).
 type GeometryInputs struct {
 	BlockHeight       uint64
-	HivePriceHBDSQ64  intmath.SQ64 // SQ64 fixed-point, 1.0 = SQ64Scale
+	HivePriceHBDBps   int64
 	HivePriceOK       bool
 	WhitelistedPools  []string
 	EffectiveStakeNum int64 // numerator of the effective-stake fraction (default 2)
@@ -44,23 +46,23 @@ type GeometryInputs struct {
 }
 
 // GeometryOutputs is the integer-form geometry block written to a snapshot.
-// All HBD-denominated fields are base units (int64). S is SQ64 (10^8 scale).
-// OK == false means at least one input was unavailable; SDK callers gate on
-// this to refuse swaps before geometry can be computed.
+// All HBD-denominated fields are base units (int64). SBps is the V/E ratio in
+// basis points. OK == false means at least one input was unavailable; SDK
+// callers gate on this to refuse swaps before geometry can be computed.
 type GeometryOutputs struct {
-	OK bool
-	V  int64 // 2 * P
-	P  int64 // sum of HBD-side pool depths
-	E  int64 // T * hivePriceHBD * effectiveFraction (HBD base units)
-	T  int64 // sum of HIVE_CONSENSUS (HIVE base units)
-	S  intmath.SQ64
+	OK   bool
+	V    int64 // 2 * P
+	P    int64 // sum of HBD-side pool depths
+	E    int64 // T * hivePriceHBD * effectiveFraction (HBD base units)
+	T    int64 // sum of HIVE_CONSENSUS (HIVE base units)
+	SBps int64 // V/E in basis points
 }
 
 // GeometryComputer wires the readers + the per-network effective fraction.
 // Stateless — safe to construct once and reuse.
 type GeometryComputer struct {
-	pools  PoolReserveReader
-	bonds  CommitteeBondReader
+	pools PoolReserveReader
+	bonds CommitteeBondReader
 }
 
 func NewGeometryComputer(pools PoolReserveReader, bonds CommitteeBondReader) *GeometryComputer {
@@ -70,13 +72,12 @@ func NewGeometryComputer(pools PoolReserveReader, bonds CommitteeBondReader) *Ge
 // Compute produces the integer geometry block for one tick.
 //
 // Determinism: every input either originates on-chain (committee, balances,
-// pool state at a pinned block height) or is itself a deterministic SQ64
-// quantity (hivePriceHBD from the W2 snapshot). Computation uses int64 +
-// SQ64 arithmetic; no floats.
+// pool state at a pinned block height) or is itself a deterministic basis-
+// point integer (hivePriceHBDBps from the trusted-witness aggregation).
+// Computation uses int64 + big.Int arithmetic; no floats.
 //
 // Failure modes — all surface as OK == false:
-//   - no whitelisted pools (empty input)
-//   - hive price unavailable (W2 trusted-mean miss)
+//   - hive price unavailable (trusted-mean miss)
 //   - committee has no bonded members
 //   - effective fraction degenerate (den <= 0)
 //
@@ -93,7 +94,7 @@ func (g *GeometryComputer) Compute(in GeometryInputs) GeometryOutputs {
 	if num <= 0 || den <= 0 {
 		num, den = 2, 3
 	}
-	if !in.HivePriceOK || in.HivePriceHBDSQ64 <= 0 {
+	if !in.HivePriceOK || in.HivePriceHBDBps <= 0 {
 		return out
 	}
 
@@ -103,16 +104,14 @@ func (g *GeometryComputer) Compute(in GeometryInputs) GeometryOutputs {
 		return out
 	}
 
-	// E = T * hivePriceHBD * (num/den), all in HBD base units.
-	// hivePriceHBDSQ64 is HBD-per-HIVE in SQ64; T is HIVE base units.
-	// E_sq = T * hivePriceHBDSQ64 / den * num — split to avoid intermediate
-	// overflow on huge T values.
-	priceQ := int64(in.HivePriceHBDSQ64)
-	eHBDSQ64 := mulDivSafe(totalHive, priceQ, int64(intmath.SQ64Scale))
-	if eHBDSQ64 <= 0 {
+	// E = T · hivePriceHBDBps · (num/den) / BpsScale, all in HBD base units.
+	// Compute the bps-scaled value first, then apply num/den; saturate-to-zero
+	// on overflow so the OK gate trips.
+	eHBDBpsScaled := mulDivSafe(totalHive, in.HivePriceHBDBps, intmath.BpsScale)
+	if eHBDBpsScaled <= 0 {
 		return out
 	}
-	e := mulDivSafe(eHBDSQ64, num, den)
+	e := mulDivSafe(eHBDBpsScaled, num, den)
 	if e <= 0 {
 		return out
 	}
@@ -140,11 +139,11 @@ func (g *GeometryComputer) Compute(in GeometryInputs) GeometryOutputs {
 		v = 0
 	}
 
-	// s = V / E in SQ64. If V == 0 we leave S == 0 (cliff); the SDK applier
+	// s = V / E in bps. If V == 0 we leave s == 0 (cliff); the SDK applier
 	// detects V >= E to route everything to nodes.
-	var s intmath.SQ64
+	var sBps int64
 	if v > 0 {
-		s = intmath.SQ64(mulDivSafe(v, int64(intmath.SQ64Scale), e))
+		sBps = mulDivSafe(v, intmath.BpsScale, e)
 	}
 
 	out.OK = true
@@ -152,7 +151,7 @@ func (g *GeometryComputer) Compute(in GeometryInputs) GeometryOutputs {
 	out.P = p
 	out.E = e
 	out.T = totalHive
-	out.S = s
+	out.SBps = sBps
 	return out
 }
 
@@ -161,17 +160,11 @@ func (g *GeometryComputer) Compute(in GeometryInputs) GeometryOutputs {
 // disagree on. Returns 0 on overflow / divide-by-zero so the caller's OK
 // gate trips.
 func mulDivSafe(a, b, c int64) int64 {
-	if c == 0 {
+	if c == 0 || a == 0 || b == 0 {
 		return 0
 	}
-	if a == 0 || b == 0 {
-		return 0
-	}
-	// Use math/big internally — same primitive intmath.MulDivFloor uses, but
-	// we stay int64-typed at the boundary because every snapshot field is
-	// int64. Detect overflow by checking IsInt64.
-	prod := bigMul(a, b)
-	prod = bigQuo(prod, c)
+	prod := new(big.Int).Mul(big.NewInt(a), big.NewInt(b))
+	prod.Quo(prod, big.NewInt(c))
 	if !prod.IsInt64() {
 		return 0
 	}
@@ -186,3 +179,4 @@ func saturatingAdd(a, b int64) int64 {
 	}
 	return r
 }
+

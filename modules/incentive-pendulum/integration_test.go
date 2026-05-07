@@ -3,7 +3,6 @@ package pendulum
 import (
 	"testing"
 
-	"vsc-node/lib/intmath"
 	"vsc-node/modules/incentive-pendulum/oracle"
 )
 
@@ -27,23 +26,27 @@ func TestBoltOracleIntegration(t *testing.T) {
 	for w := range quotes {
 		trusted[w] = oracle.FeedTrust(win.SignatureCount(w), updated[w], 4)
 	}
-	pxSQ, ok := oracle.TrustedHivePriceSQ64(quotes, trusted)
+	pxBps, ok := oracle.TrustedHivePriceBps(quotes, trusted)
 	if !ok {
 		t.Fatal()
 	}
-	px := pxSQ.ToFloat()
-	if px < 0.249 || px > 0.251 {
-		t.Fatalf("px %v", px)
+	// 0.250 HBD/HIVE = 2500 bps; with floor rounding 2499 or 2500 depending
+	// on per-witness order.
+	if pxBps < 2_499 || pxBps > 2_501 {
+		t.Fatalf("pxBps %d", pxBps)
 	}
 
 	ring := oracle.NewMovingAverageRing(3)
-	ring.Push(px)
-	ring.Push(intmath.SQ64(float64(pxSQ) * 1.01).ToFloat())
-	mx, ok := ring.Mean()
+	ring.Push(pxBps)
+	ring.Push(pxBps + pxBps/100) // ~1% step in bps
+	mxBps, ok := ring.Mean()
 	if !ok {
 		t.Fatal()
 	}
 
+	// Bolt Evaluate is the float reference path; convert bps→float at the
+	// boundary just for this informational test.
+	mx := float64(mxBps) / float64(BpsScale)
 	b := NewPendulumBolt()
 	ev, ok := b.Evaluate(NetworkSnapshot{
 		TotalHiveStake: 20_000,

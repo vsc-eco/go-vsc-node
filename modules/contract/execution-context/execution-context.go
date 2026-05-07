@@ -720,16 +720,17 @@ func (ctx *contractExecutionContext) TssKeySign(keyId string, msg string) result
 }
 
 // envOracleValueToResult stringifies values from PendulumOracle for system.get_env_key.
+//
+// Float values are intentionally NOT supported: every pendulum.* numeric key
+// is integer-typed (basis points or raw counts) so wasm contracts always see
+// a deterministic integer string. A float in this map is a programmer error
+// upstream — surfaced as ENV_VAR_ERROR rather than silently formatted.
 func envOracleValueToResult(v interface{}) result.Result[string] {
 	switch t := v.(type) {
 	case string:
 		return result.Ok(t)
 	case bool:
 		return result.Ok(strconv.FormatBool(t))
-	case float64:
-		return result.Ok(strconv.FormatFloat(t, 'g', -1, 64))
-	case float32:
-		return result.Ok(strconv.FormatFloat(float64(t), 'g', -1, 32))
 	case int:
 		return result.Ok(strconv.Itoa(t))
 	case int32:

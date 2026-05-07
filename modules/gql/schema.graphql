@@ -997,13 +997,13 @@ type PendulumOracleSnapshot {
   """Block height at which this oracle tick was produced."""
   tick_block_height: Uint64!
 
-  """Trusted mean HIVE→HBD price in SQ64. Aggregated from on-chain feed_publish ops."""
-  trusted_hive_mean_sq64: Int64!
+  """Trusted mean HIVE→HBD price in basis points (10000 = 1.0). Aggregated from on-chain feed_publish ops."""
+  trusted_hive_price_bps: Int64!
   """True when the trusted mean had enough valid feeds to produce a value."""
   trusted_hive_ok: Boolean!
 
-  """Moving-average HIVE→HBD price in SQ64."""
-  hive_moving_avg_sq64: Int64!
+  """Moving-average HIVE→HBD price in basis points."""
+  hive_moving_avg_bps: Int64!
   """True when the moving average had a value at this tick."""
   hive_moving_avg_ok: Boolean!
 
@@ -1027,8 +1027,8 @@ type PendulumOracleSnapshot {
   geometry_e_hbd: Int64!
   """Total HIVE_CONSENSUS bond across the current committee (HIVE base units)."""
   geometry_t_hive: Int64!
-  """Geometry ratio s = V/E in SQ64 (10^8 scale)."""
-  geometry_s_sq64: Int64!
+  """Geometry ratio s = V/E in basis points (10000 = 1.0)."""
+  geometry_s_bps: Int64!
 }
 
 """One row of the per-tick witness reward-reduction list."""
@@ -1073,6 +1073,6 @@ type PendulumGeometry {
   e_hbd: Int64!
   """Total HIVE_CONSENSUS bond T across the current committee (HIVE base units)."""
   t_hive: Int64!
-  """Geometry ratio s = V/E in SQ64 (10^8 scale)."""
-  s_sq64: Int64!
+  """Geometry ratio s = V/E in basis points (10000 = 1.0)."""
+  s_bps: Int64!
 }

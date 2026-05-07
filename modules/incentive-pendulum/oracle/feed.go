@@ -32,26 +32,27 @@ type Quote struct {
 	HiveRaw int64
 }
 
-// ToSQ64 returns the SQ64 fixed-point form of HBD per 1 HIVE for this quote
-// (HbdRaw * SQ64Scale / HiveRaw, big.Int internally to avoid overflow).
-// Returns 0 when HiveRaw is zero — caller is expected to filter those out
-// upstream via the trusted-witness predicate.
-func (q Quote) ToSQ64() intmath.SQ64 {
+// PriceBps returns the HBD-per-HIVE price for this quote in basis points
+// (BpsScale = 1.0). Returns 0 when HiveRaw is zero — caller is expected to
+// filter those out upstream via the trusted-witness predicate.
+func (q Quote) PriceBps() int64 {
 	if q.HiveRaw <= 0 {
 		return 0
 	}
-	num := new(big.Int).Mul(big.NewInt(q.HbdRaw), big.NewInt(intmath.SQ64Scale))
+	num := new(big.Int).Mul(big.NewInt(q.HbdRaw), big.NewInt(intmath.BpsScale))
 	num.Quo(num, big.NewInt(q.HiveRaw))
-	return intmath.SQ64(num.Int64())
+	if !num.IsInt64() {
+		return 0
+	}
+	return num.Int64()
 }
 
-// TrustedHivePriceSQ64 is the deterministic mean HIVE price (HBD per HIVE,
-// SQ64 fixed-point) across trusted witnesses. Iterates witness names in
-// lexicographic order, converts each Quote to SQ64, and integer-divides the
-// big.Int sum by the count. Bit-equal across nodes given the same on-chain
-// inputs — replaces the prior float aggregator that summed map values in
-// random Go map iteration order.
-func TrustedHivePriceSQ64(quotes map[string]Quote, trusted map[string]bool) (intmath.SQ64, bool) {
+// TrustedHivePriceBps is the deterministic mean HIVE price (HBD per HIVE,
+// basis points) across trusted witnesses. Iterates witness names in
+// lexicographic order, computes each Quote.PriceBps in big.Int, sums, and
+// integer-divides by the count. Bit-equal across nodes given the same on-chain
+// inputs.
+func TrustedHivePriceBps(quotes map[string]Quote, trusted map[string]bool) (int64, bool) {
 	if len(quotes) == 0 || len(trusted) == 0 {
 		return 0, false
 	}
@@ -70,9 +71,19 @@ func TrustedHivePriceSQ64(quotes map[string]Quote, trusted map[string]bool) (int
 	}
 	sort.Strings(names)
 	sum := new(big.Int)
+	bpsBig := big.NewInt(intmath.BpsScale)
 	for _, w := range names {
-		sum.Add(sum, big.NewInt(int64(quotes[w].ToSQ64())))
+		q := quotes[w]
+		// Per-witness price in bps, computed in big.Int to avoid overflow on
+		// HbdRaw * BpsScale before the divide.
+		num := new(big.Int).Mul(big.NewInt(q.HbdRaw), bpsBig)
+		num.Quo(num, big.NewInt(q.HiveRaw))
+		sum.Add(sum, num)
 	}
 	mean := new(big.Int).Quo(sum, big.NewInt(int64(len(names))))
-	return intmath.SQ64(mean.Int64()), true
+	if !mean.IsInt64() {
+		return 0, false
+	}
+	return mean.Int64(), true
 }
+

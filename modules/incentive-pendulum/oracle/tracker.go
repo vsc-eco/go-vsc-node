@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 
-	"vsc-node/lib/intmath"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/hive_blocks"
 
@@ -22,25 +21,25 @@ const (
 	bsonFieldPrefix = "69ba102f-c815-4ce9-8022-90e520fe8516_"
 )
 
-// FeedTickSnapshot is the last computed pendulum oracle view (after a tick).
+// FeedTickSnapshot is the integer-typed pendulum oracle view (after a tick).
 //
-// The tracker's responsibility is the price oracle: aggregating Hive
-// witnesses' feed_publish quotes into a trusted HBD/HIVE mean, and tracking
-// each Hive witness's recency + signature window for the trust filter.
+// All numeric fields are basis-point integers (BpsScale = 1.0) or raw counts;
+// no float ever lives in this struct. The same record is what
+// PendulumOracleEnv exposes to wasm and what the SnapshotRecord persists.
 //
 // Liveness scoring for the VSC committee is NOT done here. VSC committee
-// members are not necessarily Hive witnesses; their reward-reduction bps
-// are computed by the rewards/ package from L2 evidence (vsc_blocks +
-// tss_commitments) at snapshot persistence time, and stored alongside this
-// snapshot in the pendulum_oracle_snapshots collection.
+// members are not necessarily Hive witnesses; their reward-reduction bps are
+// computed by the rewards/ package from L2 evidence (vsc_blocks +
+// tss_commitments) at snapshot persistence time.
 type FeedTickSnapshot struct {
 	TickBlockHeight uint64
 
-	TrustedHiveMean float64
-	TrustedHiveOK   bool
+	// HBD per HIVE in basis points (10_000 = 1.0).
+	TrustedHivePriceBps int64
+	TrustedHiveOK       bool
 
-	HiveMovingAvg   float64
-	HiveMovingAvgOK bool
+	HiveMovingAvgBps int64
+	HiveMovingAvgOK  bool
 
 	HBDInterestRateBps int
 	HBDInterestRateOK  bool
@@ -63,9 +62,7 @@ type FeedTracker struct {
 
 	ma *MovingAverageRing
 
-	last           FeedTickSnapshot
-	lastMeanSQ64   intmath.SQ64
-	lastMeanSQ64OK bool
+	last FeedTickSnapshot
 }
 
 // NewFeedTracker builds a tracker with a 100-block signature window and a short MA over ticks.
@@ -122,7 +119,10 @@ func (t *FeedTracker) IngestTransactionOps(blockHeight uint64, tx hive_blocks.Tx
 	}
 }
 
-// TickIfDue runs the trusted-price + APR aggregation when blockHeight is a multiple of the tick interval.
+// TickIfDue runs the trusted-price + APR aggregation when blockHeight is a
+// multiple of the tick interval. The trusted mean and the MA over recent
+// trusted means are both computed deterministically from the per-witness
+// rational quotes — bit-equal across nodes.
 func (t *FeedTracker) TickIfDue(blockHeight uint64) {
 	if t == nil || blockHeight == 0 || blockHeight%DefaultTickIntervalBlocks != 0 {
 		return
@@ -143,29 +143,25 @@ func (t *FeedTracker) TickIfDue(blockHeight uint64) {
 		trusted[w] = FeedTrust(sigs[w], published, DefaultMinSignatures)
 	}
 
-	meanSQ, meanOk := TrustedHivePriceSQ64(t.quotes, trusted)
-	var mean float64
+	meanBps, meanOk := TrustedHivePriceBps(t.quotes, trusted)
 	if meanOk {
-		mean = meanSQ.ToFloat()
-		t.ma.Push(mean)
+		t.ma.Push(meanBps)
 	}
-	ma, maOk := t.ma.Mean()
+	maBps, maOk := t.ma.Mean()
 
 	group := RunningWitnessGroup(trusted, sigs, DefaultWitnessGroupSize)
 	apr, aprOk := HBDAPRModeFromGroup(group, t.witnessProps)
 
 	t.last = FeedTickSnapshot{
 		TickBlockHeight:     blockHeight,
-		TrustedHiveMean:     mean,
+		TrustedHivePriceBps: meanBps,
 		TrustedHiveOK:       meanOk,
-		HiveMovingAvg:       ma,
+		HiveMovingAvgBps:    maBps,
 		HiveMovingAvgOK:     maOk,
 		HBDInterestRateBps:  apr,
 		HBDInterestRateOK:   aprOk,
 		TrustedWitnessGroup: append([]string(nil), group...),
 	}
-	t.lastMeanSQ64 = meanSQ
-	t.lastMeanSQ64OK = meanOk
 }
 
 func (t *FeedTracker) ingestFeedPublish(blockHeight uint64, value map[string]interface{}) {

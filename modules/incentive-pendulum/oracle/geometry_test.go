@@ -2,8 +2,6 @@ package oracle
 
 import (
 	"testing"
-
-	"vsc-node/lib/intmath"
 )
 
 type stubPools struct {
@@ -30,7 +28,7 @@ func (s *stubBonds) ReadCommitteeBond(blockHeight uint64) ([]string, int64) {
 func happyInputs() GeometryInputs {
 	return GeometryInputs{
 		BlockHeight:       1_000,
-		HivePriceHBDSQ64:  intmath.SQ64(intmath.SQ64Scale * 30 / 100), // 0.30 HBD per HIVE
+		HivePriceHBDBps:   3_000, // 0.30 HBD per HIVE
 		HivePriceOK:       true,
 		WhitelistedPools:  []string{"vsc1Pool1", "vsc1Pool2"},
 		EffectiveStakeNum: 2,
@@ -65,10 +63,9 @@ func TestGeometry_HappyPath(t *testing.T) {
 	if out.E != 2_000_000 {
 		t.Errorf("E: got %d want 2000000", out.E)
 	}
-	// s = V/E = 3_000_000 / 2_000_000 = 1.5 → SQ64 = 1.5 * 1e8 = 150_000_000
-	wantS := intmath.SQ64(150_000_000)
-	if out.S != wantS {
-		t.Errorf("S: got %d want %d", out.S, wantS)
+	// s = V/E = 3_000_000 / 2_000_000 = 1.5 → 15_000 bps
+	if out.SBps != 15_000 {
+		t.Errorf("SBps: got %d want 15000", out.SBps)
 	}
 }
 
@@ -89,11 +86,6 @@ func TestGeometry_PoolWithoutPublishedReserveSkipped(t *testing.T) {
 }
 
 func TestGeometry_NoPoolsYieldsZeroVCliffPath(t *testing.T) {
-	// No published pool reserves → V = 0. SDK applier's cliff path treats
-	// V >= E as all-to-nodes (since E > 0 here, V = 0 < E so the regular
-	// split path runs, but f_node = 0 → all to LP). Either way, OK == true
-	// is correct because every other input was valid; the geometry is just
-	// degenerate, not unavailable.
 	pools := &stubPools{reserves: map[string]int64{}}
 	bonds := &stubBonds{total: 10_000_000}
 	g := NewGeometryComputer(pools, bonds)
@@ -105,8 +97,8 @@ func TestGeometry_NoPoolsYieldsZeroVCliffPath(t *testing.T) {
 	if out.V != 0 || out.P != 0 {
 		t.Errorf("expected V=P=0, got V=%d P=%d", out.V, out.P)
 	}
-	if out.S != 0 {
-		t.Errorf("expected S=0 when V=0, got %d", out.S)
+	if out.SBps != 0 {
+		t.Errorf("expected SBps=0 when V=0, got %d", out.SBps)
 	}
 }
 
@@ -135,8 +127,6 @@ func TestGeometry_NoBondedCommitteeFails(t *testing.T) {
 }
 
 func TestGeometry_DegenerateEffectiveFractionFallsBackToTwoThirds(t *testing.T) {
-	// num<=0 or den<=0 should fall back to 2/3 silently — the genesis path
-	// where overrides aren't loaded yet shouldn't poison every snapshot.
 	pools := &stubPools{reserves: map[string]int64{"vsc1Pool1": 1_500_000}}
 	bonds := &stubBonds{total: 10_000_000}
 	g := NewGeometryComputer(pools, bonds)
@@ -151,8 +141,6 @@ func TestGeometry_DegenerateEffectiveFractionFallsBackToTwoThirds(t *testing.T) 
 }
 
 func TestGeometry_DeterministicAcrossPoolOrder(t *testing.T) {
-	// Two callers with the same whitelist contents but different ordering
-	// must produce identical geometry (sorted internally).
 	pools := &stubPools{reserves: map[string]int64{
 		"vsc1Z": 100_000,
 		"vsc1A": 200_000,
@@ -174,8 +162,6 @@ func TestGeometry_DeterministicAcrossPoolOrder(t *testing.T) {
 }
 
 func TestGeometry_EmptyWhitelistAllowedWhenOtherInputsValid(t *testing.T) {
-	// Mainnet default until a pool is whitelisted: no pools, but committee
-	// + price are present. Should yield OK with V=0.
 	pools := &stubPools{}
 	bonds := &stubBonds{total: 10_000_000}
 	g := NewGeometryComputer(pools, bonds)
