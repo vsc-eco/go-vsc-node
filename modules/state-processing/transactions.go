@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -159,7 +158,13 @@ func (t TxVscCallContract) ExecuteTx(
 
 	res := w.Execute(wasmCtx, gas*params.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime)
 
-	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
+	// Integer ceil-divide: (gas + denom − 1) / denom. uint64 stays well below
+	// overflow for any realistic gas value (denom = 100_000). Floored at the
+	// minimum 100 RC charge.
+	rcUsed := int64((uint64(res.Gas) + params.CYCLE_GAS_PER_RC - 1) / params.CYCLE_GAS_PER_RC)
+	if rcUsed < 100 {
+		rcUsed = 100
+	}
 
 	if res.Error != nil {
 		return TxResult{
