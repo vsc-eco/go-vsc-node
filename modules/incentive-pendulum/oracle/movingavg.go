@@ -1,12 +1,13 @@
 package oracle
 
-import "math"
-
-// MovingAverageRing keeps the last N trusted oracle tick prices (HIVE in HBD).
-// Use at height % tick == 0 to align consensus; Push each tick’s aggregated trusted mean.
+// MovingAverageRing keeps the last N trusted oracle tick prices (HBD per HIVE,
+// basis points). Push each tick's aggregated trusted-mean bps; Mean returns
+// the simple integer mean of the filled slots in the ring.
+//
+// Integer-only: identical inputs across nodes produce identical Mean output.
 type MovingAverageRing struct {
 	N   int
-	buf []float64
+	buf []int64
 	i   int
 	len int
 }
@@ -16,19 +17,20 @@ func NewMovingAverageRing(n int) *MovingAverageRing {
 	if n < 1 {
 		n = 1
 	}
-	return &MovingAverageRing{N: n, buf: make([]float64, n)}
+	return &MovingAverageRing{N: n, buf: make([]int64, n)}
 }
 
-// Push adds a tick value; oldest drops when full.
-func (m *MovingAverageRing) Push(v float64) {
+// Push adds a tick value (in bps); oldest drops when full. Non-positive values
+// are ignored — same intent as the float ring's NaN/Inf/<=0 guard.
+func (m *MovingAverageRing) Push(v int64) {
 	if m == nil || m.N < 1 {
 		return
 	}
-	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+	if v <= 0 {
 		return
 	}
 	if len(m.buf) != m.N {
-		m.buf = make([]float64, m.N)
+		m.buf = make([]int64, m.N)
 	}
 	m.buf[m.i] = v
 	m.i = (m.i + 1) % m.N
@@ -37,17 +39,17 @@ func (m *MovingAverageRing) Push(v float64) {
 	}
 }
 
-// Mean returns the simple MA over stored ticks (only filled slots if not yet full).
-func (m *MovingAverageRing) Mean() (float64, bool) {
+// Mean returns the integer mean (in bps) over stored ticks.
+func (m *MovingAverageRing) Mean() (int64, bool) {
 	if m == nil || m.len == 0 {
 		return 0, false
 	}
-	var s float64
+	var s int64
 	for k := 0; k < m.len; k++ {
 		idx := (m.i - m.len + k + m.N) % m.N
 		s += m.buf[idx]
 	}
-	return s / float64(m.len), true
+	return s / int64(m.len), true
 }
 
 // Reset clears the buffer.

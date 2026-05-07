@@ -3,7 +3,6 @@ package pendulumwasm
 import (
 	"testing"
 
-	"vsc-node/lib/intmath"
 	pendulum_oracle "vsc-node/modules/db/vsc/pendulum_oracle"
 	pendulum "vsc-node/modules/incentive-pendulum"
 	wasm_context "vsc-node/modules/wasm/context"
@@ -53,7 +52,7 @@ func balancedSnapshot() *pendulum_oracle.SnapshotRecord {
 		GeometryP:       250_000,
 		GeometryE:       1_000_000,
 		GeometryT:       1_000_000,
-		GeometryS:       intmath.SQ64Scale / 2,
+		GeometrySBps:    pendulum.BpsScale / 2, // s = 0.5 → 5000 bps
 	}
 }
 
@@ -63,7 +62,7 @@ func newApplier(t *testing.T, snap *pendulum_oracle.SnapshotRecord, whitelist []
 		&stubSnapshots{rec: snap},
 		func() []string { return whitelist },
 		Config{
-			Stabilizer:      pendulum.DefaultStabilizerParamsFixed(),
+			Stabilizer:      pendulum.DefaultStabilizerParamsBps(),
 			NetworkShareNum: 1,
 			NetworkShareDen: 4,
 		},
@@ -177,7 +176,7 @@ func TestSwapASSET1InAccruesNodeBucket(t *testing.T) {
 func TestUnderSecuredCliffRoutesAllToNodes(t *testing.T) {
 	snap := balancedSnapshot()
 	snap.GeometryV = snap.GeometryE + 1 // V > E → cliff
-	snap.GeometryS = intmath.SQ64Scale * 11 / 10
+	snap.GeometrySBps = pendulum.BpsScale * 11 / 10
 	a, acc := newApplier(t, snap, []string{"contract:pool-1"})
 
 	args := wasm_context.PendulumSwapFeeArgs{
@@ -294,13 +293,13 @@ func TestAccrualErrorPropagates(t *testing.T) {
 // stabilizer hint: HBD-in raises s, HBD-out lowers it; "exacerbates"
 // means the swap moves s away from 0.5.
 func TestExacerbatesFromSnapshot(t *testing.T) {
-	half := intmath.SQ64(intmath.SQ64Scale / 2)
-	low := intmath.SQ64(intmath.SQ64Scale * 30 / 100)  // 0.3
-	high := intmath.SQ64(intmath.SQ64Scale * 70 / 100) // 0.7
+	half := pendulum.BpsScale / 2          // 0.5 in bps
+	low := pendulum.BpsScale * 30 / 100    // 0.3 in bps
+	high := pendulum.BpsScale * 70 / 100   // 0.7 in bps
 
 	cases := []struct {
 		name  string
-		s     intmath.SQ64
+		sBps  int64
 		hbdIn bool
 		want  bool
 	}{
@@ -313,9 +312,9 @@ func TestExacerbatesFromSnapshot(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := exacerbatesFromSnapshot(tc.s, tc.hbdIn)
+			got := exacerbatesFromSnapshot(tc.sBps, tc.hbdIn)
 			if got != tc.want {
-				t.Fatalf("got %v want %v (s=%d hbdIn=%v)", got, tc.want, tc.s, tc.hbdIn)
+				t.Fatalf("got %v want %v (s=%d hbdIn=%v)", got, tc.want, tc.sBps, tc.hbdIn)
 			}
 		})
 	}
