@@ -526,6 +526,19 @@ func (w *Wasm) Execute(
 	args string,
 	runtime wasm_runtime.Runtime,
 ) wasm_types.WasmResultStruct {
+	// Pentest finding F30: reject vsc.call invocations that target a
+	// language-runtime / dispatch-shim export (alloc, _initialize,
+	// __new, ...). The unfiltered path let any account spam those
+	// for ~3.1M gas per call against every deployed Go contract.
+	if isForbiddenEntrypoint(entrypoint) {
+		errStr := fmt.Errorf("entrypoint %q is reserved by the runtime", entrypoint).Error()
+		return wasm_types.WasmResultStruct{
+			Error:     &errStr,
+			ErrorCode: contracts.WASM_FUNC_NOT_FND,
+			Gas:       0,
+		}
+	}
+
 	conf := wasmedge.NewConfigure()
 	defer conf.Release()
 	conf.SetStatisticsCostMeasuring(true)
