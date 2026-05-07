@@ -157,3 +157,47 @@ func TestScoreTssSignNonParticipation_AbsentMembersPenalized(t *testing.T) {
 		t.Errorf("carol: got %d want %d", got["carol"], TssSignNonParticipationBps)
 	}
 }
+
+func TestScoreOracleQuoteDivergence_ChargesEachDivergentCommitteeMember(t *testing.T) {
+	committee := []string{"alice", "bob", "carol"}
+	got := ScoreOracleQuoteDivergence([]string{"bob"}, committee)
+	if got["bob"] != OracleQuoteDivergenceBps {
+		t.Errorf("bob: got %d want %d", got["bob"], OracleQuoteDivergenceBps)
+	}
+	if _, ok := got["alice"]; ok {
+		t.Errorf("alice should not be penalized when not divergent")
+	}
+}
+
+func TestScoreOracleQuoteDivergence_DropsNonCommittee(t *testing.T) {
+	committee := []string{"alice", "bob"}
+	// "carol" is divergent but not on the rewardable committee — drop her.
+	got := ScoreOracleQuoteDivergence([]string{"carol", "alice"}, committee)
+	if got["alice"] != OracleQuoteDivergenceBps {
+		t.Errorf("alice: got %d want %d", got["alice"], OracleQuoteDivergenceBps)
+	}
+	if _, ok := got["carol"]; ok {
+		t.Errorf("carol is non-committee; should not appear: %d", got["carol"])
+	}
+}
+
+func TestScoreOracleQuoteDivergence_DedupesRepeatedAccounts(t *testing.T) {
+	committee := []string{"alice"}
+	// Same account listed twice in one tick must not double-charge.
+	got := ScoreOracleQuoteDivergence([]string{"alice", "alice"}, committee)
+	if got["alice"] != OracleQuoteDivergenceBps {
+		t.Errorf("alice: got %d want %d (must be deduped)", got["alice"], OracleQuoteDivergenceBps)
+	}
+}
+
+func TestScoreOracleQuoteDivergence_EmptyInputs(t *testing.T) {
+	if got := ScoreOracleQuoteDivergence(nil, []string{"alice"}); len(got) != 0 {
+		t.Fatalf("empty divergent list should yield empty map, got %v", got)
+	}
+	if got := ScoreOracleQuoteDivergence([]string{"alice"}, nil); len(got) != 0 {
+		t.Fatalf("empty committee should yield empty map, got %v", got)
+	}
+	if got := ScoreOracleQuoteDivergence([]string{""}, []string{"alice"}); len(got) != 0 {
+		t.Fatalf("blank witness must be dropped, got %v", got)
+	}
+}

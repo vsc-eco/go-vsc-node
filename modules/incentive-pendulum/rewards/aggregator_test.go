@@ -64,9 +64,75 @@ func TestAggregateTick_PerSignalPreCap(t *testing.T) {
 	}
 }
 
-// TestAggregateTick_SortedByWitness: ordering must be lexicographic across
-// all returned records — `ComputeReductionsForEpoch` relies on stable
-// ordering when accumulating across ticks.
+// TestAggregateTick_OracleDivergencePopulatesEvidence verifies the new
+// liveness signal lands on the per-witness Evidence record and contributes
+// to the consolidated max-of bps without disturbing other signals.
+func TestAggregateTick_OracleDivergencePopulatesEvidence(t *testing.T) {
+	in := TickInputs{
+		Committee:                []string{"alice", "bob"},
+		DivergingOracleWitnesses: []string{"alice"},
+	}
+	got := AggregateTick(in)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(got))
+	}
+	var aliceRec, bobRec WitnessRewardReductionRecord
+	for _, r := range got {
+		switch r.Witness {
+		case "alice":
+			aliceRec = r
+		case "bob":
+			bobRec = r
+		}
+	}
+	if aliceRec.Evidence.OracleQuoteDivergenceBps != OracleQuoteDivergenceBps {
+		t.Errorf("alice oracle bps: got %d want %d",
+			aliceRec.Evidence.OracleQuoteDivergenceBps, OracleQuoteDivergenceBps)
+	}
+	if aliceRec.Bps != OracleQuoteDivergenceBps {
+		t.Errorf("alice consolidated bps: got %d want %d (max-of with single non-zero signal)",
+			aliceRec.Bps, OracleQuoteDivergenceBps)
+	}
+	if bobRec.Evidence.OracleQuoteDivergenceBps != 0 {
+		t.Errorf("bob: oracle bps should be 0, got %d", bobRec.Evidence.OracleQuoteDivergenceBps)
+	}
+	if bobRec.Bps != 0 {
+		t.Errorf("bob: consolidated bps should be 0, got %d", bobRec.Bps)
+	}
+}
+
+// TestAggregateTick_OracleDivergenceTakenByMaxOf: when oracle divergence is
+// the largest signal, the consolidated bps must equal it; when a larger
+// signal is also present, max-of selects that one.
+func TestAggregateTick_OracleDivergenceTakenByMaxOf(t *testing.T) {
+	in := TickInputs{
+		Committee: []string{"alice"},
+		Slots: []SlotProposer{
+			{SlotHeight: 100, Account: "alice"},
+		},
+		ProducedSlotHeights:      map[uint64]struct{}{}, // alice missed her slot (200 bps)
+		DivergingOracleWitnesses: []string{"alice"},     // oracle bps 150
+	}
+	got := AggregateTick(in)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(got))
+	}
+	// max(prod=200, oracle=150) = 200
+	if got[0].Bps != BlockProductionMissBps {
+		t.Errorf("consolidated bps: got %d want %d (block production dominates oracle here)",
+			got[0].Bps, BlockProductionMissBps)
+	}
+	// Both raw values still recorded for explorers/disputes.
+	if got[0].Evidence.OracleQuoteDivergenceBps != OracleQuoteDivergenceBps {
+		t.Errorf("oracle evidence not preserved: got %d", got[0].Evidence.OracleQuoteDivergenceBps)
+	}
+	if got[0].Evidence.BlockProductionBps != BlockProductionMissBps {
+		t.Errorf("prod evidence not preserved: got %d", got[0].Evidence.BlockProductionBps)
+	}
+}
+
+// TestAggregateTick_SortedByWitness: persistence depends on byte-stable
+// bson; ordering must be lexicographic across all returned records.
 func TestAggregateTick_SortedByWitness(t *testing.T) {
 	in := TickInputs{
 		Committee: []string{"zach", "alice", "mary"},
