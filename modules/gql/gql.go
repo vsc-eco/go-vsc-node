@@ -55,6 +55,10 @@ func (g *gqlManager) Init() error {
 	gqlServer.AddTransport(transport.POST{})
 	gqlServer.Use(extension.Introspection{})
 	gqlServer.Use(extension.FixedComplexityLimit(g.conf.GetMaxComplexity()))
+	// F10: cap total field selections per operation, independent
+	// of per-field complexity (cheap fields can otherwise be
+	// aliased thousands of times under the complexity ceiling).
+	gqlServer.Use(NewAliasLimit(DefaultAliasLimit))
 
 	// OPTIONAL, UNCOMMENT TO ENABLE TRACING
 	// gqlServer.Use(apollotracing.Tracer{})
