@@ -17,6 +17,7 @@ import (
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 
+	safetyslash "vsc-node/modules/incentive-pendulum/safety_slash"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	stateEngine "vsc-node/modules/state-processing"
 
@@ -981,7 +982,7 @@ func TestUpdateBalances_PromotesPendingSlashBurn(t *testing.T) {
 		SlashBps:        1000,
 		TxID:            "updbal-pending-burn",
 		BlockHeight:     200,
-		EvidenceKind:    "settlement_payload_fraud",
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
 		BurnDelayBlocks: 10,
 	}).Ok)
 
