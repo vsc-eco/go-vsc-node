@@ -60,7 +60,11 @@ func TestPendulumOracleEnv_ExposesTickSnapshot(t *testing.T) {
 	assert.Equal(t, true, env["pendulum.hbd_interest_rate_ok"])
 	assert.Equal(t, 1500, env["pendulum.hbd_interest_rate_bps"])
 	assert.Equal(t, true, env["pendulum.trusted_hive_mean_ok"])
-	assert.InDelta(t, 0.25, env["pendulum.trusted_hive_mean_hbd"], 1e-9)
+	// 0.25 HBD per 1 HIVE = 2500 bps (allow ±1 base unit for integer-floor noise).
+	priceBps, ok := env["pendulum.trusted_hive_price_bps"].(int64)
+	require.True(t, ok)
+	assert.GreaterOrEqual(t, priceBps, int64(2_499))
+	assert.LessOrEqual(t, priceBps, int64(2_501))
 
 	group, ok := env["pendulum.trusted_witness_group"].([]string)
 	require.True(t, ok)

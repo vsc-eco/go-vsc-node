@@ -52,7 +52,14 @@ func TestSplitIntMatchesFloatOnGrid(t *testing.T) {
 		floatNode := int64(math.Round(floatOut.FinalNodeShare))
 		floatPool := int64(math.Round(floatOut.FinalPoolShare))
 		if absI64(intNode-floatNode) > 1 || absI64(intPool-floatPool) > 1 {
-			t.Errorf("case %d: int=(%d,%d) float=(%v,%v)", i, intNode, intPool, floatOut.FinalNodeShare, floatOut.FinalPoolShare)
+			t.Errorf(
+				"case %d: int=(%d,%d) float=(%v,%v)",
+				i,
+				intNode,
+				intPool,
+				floatOut.FinalNodeShare,
+				floatOut.FinalPoolShare,
+			)
 		}
 		if intOut.UnderSecured != floatOut.UnderSecured {
 			t.Errorf("case %d: cliff flag mismatch int=%v float=%v", i, intOut.UnderSecured, floatOut.UnderSecured)
@@ -84,7 +91,7 @@ func TestCLPFeeIntMatchesFloatOnGrid(t *testing.T) {
 // FuzzSplitIntMatchesFloat asserts that the integer Split and float Split agree
 // within 1 base unit per side on randomly-generated valid inputs. Run via
 //
-//	go1.24.2 test ./modules/incentive-pendulum -fuzz=FuzzSplitIntMatchesFloat -fuzztime=30s
+//	go test ./modules/incentive-pendulum -fuzz=FuzzSplitIntMatchesFloat -fuzztime=30s
 func FuzzSplitIntMatchesFloat(f *testing.F) {
 	f.Add(int64(100_000), int64(1_000_000), int64(1_500_000), int64(400_000), int64(250_000))
 	f.Add(int64(1), int64(100), int64(150), int64(40), int64(25))
@@ -141,10 +148,14 @@ func TestEffectiveBondHBDIntMatchesFloat(t *testing.T) {
 		{1, 1.0, 1.0},
 	}
 	for _, tc := range cases {
-		got := EffectiveBondHBDInt(big.NewInt(tc.stake), SQ64FromFloat(tc.price), SQ64FromFloat(tc.frac)).Int64()
+		got := EffectiveBondHBDInt(big.NewInt(tc.stake), bpsFromFloat(tc.price), bpsFromFloat(tc.frac)).Int64()
 		want := int64(math.Floor(EffectiveBondHBD(float64(tc.stake), tc.price, tc.frac)))
-		if absI64(got-want) > 2 { // small fixed-point round drift acceptable
-			t.Errorf("stake=%d price=%v frac=%v: int=%d float=%d", tc.stake, tc.price, tc.frac, got, want)
+		// bps precision = 1/10000 per factor; two bps-rounded factors compose
+		// up to ~stake/5000 of absolute drift in the worst case (floor-rounding
+		// + double-quantization). Allow that envelope plus 2 base units of slack.
+		tol := tc.stake/5_000 + 2
+		if absI64(got-want) > tol {
+			t.Errorf("stake=%d price=%v frac=%v: int=%d float=%d (tol=%d)", tc.stake, tc.price, tc.frac, got, want, tol)
 		}
 	}
 }

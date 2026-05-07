@@ -1143,15 +1143,15 @@ func (se *StateEngine) persistPendulumSnapshotIfNew() {
 	if se == nil || se.pendulumFeed == nil || se.pendulumOracleDb == nil {
 		return
 	}
-	snap := se.pendulumFeed.LastTickInt()
+	snap := se.pendulumFeed.LastTick()
 	if snap.TickBlockHeight == 0 || snap.TickBlockHeight == se.lastPersistedTickHeight {
 		return
 	}
 	rec := pendulum_oracle.SnapshotRecord{
 		TickBlockHeight:     snap.TickBlockHeight,
-		TrustedHiveMean:     int64(snap.TrustedHiveMean),
+		TrustedHivePriceBps: snap.TrustedHivePriceBps,
 		TrustedHiveOK:       snap.TrustedHiveOK,
-		HiveMovingAvg:       int64(snap.HiveMovingAvg),
+		HiveMovingAvgBps:    snap.HiveMovingAvgBps,
 		HiveMovingAvgOK:     snap.HiveMovingAvgOK,
 		HBDInterestRateBps:  snap.HBDInterestRateBps,
 		HBDInterestRateOK:   snap.HBDInterestRateOK,
@@ -1164,7 +1164,7 @@ func (se *StateEngine) persistPendulumSnapshotIfNew() {
 	if se.pendulumGeometry != nil {
 		geo := se.pendulumGeometry.Compute(pendulumoracle.GeometryInputs{
 			BlockHeight:       snap.TickBlockHeight,
-			HivePriceHBDSQ64:  snap.TrustedHiveMean,
+			HivePriceHBDBps:   snap.TrustedHivePriceBps,
 			HivePriceOK:       snap.TrustedHiveOK,
 			WhitelistedPools:  se.sconf.PendulumPoolWhitelist(),
 			EffectiveStakeNum: 2,
@@ -1175,7 +1175,7 @@ func (se *StateEngine) persistPendulumSnapshotIfNew() {
 		rec.GeometryP = geo.P
 		rec.GeometryE = geo.E
 		rec.GeometryT = geo.T
-		rec.GeometryS = int64(geo.S)
+		rec.GeometrySBps = geo.SBps
 	}
 
 	if err := se.pendulumOracleDb.SaveSnapshot(rec); err != nil {
@@ -1868,14 +1868,17 @@ func (se *StateEngine) PendulumOracleEnv() map[string]interface{} {
 		return nil
 	}
 	s := se.pendulumFeed.LastTick()
+	// All numeric values are integer-typed: HBD-per-HIVE prices in basis
+	// points (BpsScale = 1.0); the wasm host serializer renders them as
+	// integer strings.
 	m := map[string]interface{}{
-		"pendulum.hbd_interest_rate_bps": s.HBDInterestRateBps,
-		"pendulum.hbd_interest_rate_ok":  s.HBDInterestRateOK,
-		"pendulum.trusted_hive_mean_hbd": s.TrustedHiveMean,
-		"pendulum.trusted_hive_mean_ok":  s.TrustedHiveOK,
-		"pendulum.hive_ma_hbd":           s.HiveMovingAvg,
-		"pendulum.hive_ma_ok":            s.HiveMovingAvgOK,
-		"pendulum.tick_block_height":     s.TickBlockHeight,
+		"pendulum.hbd_interest_rate_bps":     s.HBDInterestRateBps,
+		"pendulum.hbd_interest_rate_ok":      s.HBDInterestRateOK,
+		"pendulum.trusted_hive_price_bps":    s.TrustedHivePriceBps,
+		"pendulum.trusted_hive_mean_ok":      s.TrustedHiveOK,
+		"pendulum.hive_moving_avg_bps":       s.HiveMovingAvgBps,
+		"pendulum.hive_ma_ok":                s.HiveMovingAvgOK,
+		"pendulum.tick_block_height":         s.TickBlockHeight,
 	}
 	if len(s.TrustedWitnessGroup) > 0 {
 		m["pendulum.trusted_witness_group"] = append([]string(nil), s.TrustedWitnessGroup...)

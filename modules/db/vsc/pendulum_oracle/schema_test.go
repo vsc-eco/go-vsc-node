@@ -14,9 +14,9 @@ import (
 func TestSnapshotRecord_BsonStableForIdenticalInputs(t *testing.T) {
 	rec := SnapshotRecord{
 		TickBlockHeight:     12345,
-		TrustedHiveMean:     30_000_000,
+		TrustedHivePriceBps: 3_000,
 		TrustedHiveOK:       true,
-		HiveMovingAvg:       29_500_000,
+		HiveMovingAvgBps:    2_950,
 		HiveMovingAvgOK:     true,
 		HBDInterestRateBps:  1500,
 		HBDInterestRateOK:   true,
@@ -44,9 +44,9 @@ func TestSnapshotRecord_BsonStableForIdenticalInputs(t *testing.T) {
 func TestSnapshotRecord_RoundTripsBson(t *testing.T) {
 	rec := SnapshotRecord{
 		TickBlockHeight:     999,
-		TrustedHiveMean:     -1234,
+		TrustedHivePriceBps: -1234,
 		TrustedHiveOK:       true,
-		HiveMovingAvg:       0,
+		HiveMovingAvgBps:    0,
 		HiveMovingAvgOK:     false,
 		HBDInterestRateBps:  2000,
 		HBDInterestRateOK:   true,
@@ -58,8 +58,8 @@ func TestSnapshotRecord_RoundTripsBson(t *testing.T) {
 		GeometryV:  500_000,
 		GeometryP:  250_000,
 		GeometryE:  750_000,
-		GeometryT:  1_000_000,
-		GeometryS:  66_666_666,
+		GeometryT:    1_000_000,
+		GeometrySBps: 6_667,
 	}
 	raw, err := bson.Marshal(rec)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestSnapshotRecord_RoundTripsBson(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if got.TickBlockHeight != rec.TickBlockHeight ||
-		got.TrustedHiveMean != rec.TrustedHiveMean ||
+		got.TrustedHivePriceBps != rec.TrustedHivePriceBps ||
 		got.TrustedHiveOK != rec.TrustedHiveOK ||
 		got.HBDInterestRateBps != rec.HBDInterestRateBps ||
 		len(got.WitnessRewardReductions) != 1 ||
@@ -82,7 +82,7 @@ func TestSnapshotRecord_RoundTripsBson(t *testing.T) {
 		got.GeometryP != rec.GeometryP ||
 		got.GeometryE != rec.GeometryE ||
 		got.GeometryT != rec.GeometryT ||
-		got.GeometryS != rec.GeometryS {
+		got.GeometrySBps != rec.GeometrySBps {
 		t.Fatalf("round trip lost fields: got %+v want %+v", got, rec)
 	}
 }
