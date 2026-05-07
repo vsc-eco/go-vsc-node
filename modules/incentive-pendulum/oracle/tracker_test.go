@@ -462,3 +462,23 @@ func TestFeedTrackerTick_TestnetSymbols_MainnetIgnored(t *testing.T) {
 		t.Fatal("TBD/TESTS feeds should be silently dropped on mainnet")
 	}
 }
+
+func TestDivergingTrustedWitnesses(t *testing.T) {
+	tr := NewFeedTracker(false)
+	// Build tracker internals directly to isolate divergence calculation.
+	// PriceBps = HbdRaw * BpsScale / HiveRaw, so HbdRaw=10000, HiveRaw=10000
+	// gives 10000 bps (1.0), HbdRaw=10800, HiveRaw=10000 gives 10800 bps (1.08).
+	tr.last = FeedTickSnapshot{
+		TrustedHivePriceBps: 10000, // 1.0 in bps
+		TrustedHiveOK:       true,
+		TrustedWitnessGroup: []string{"alice", "bob", "carol"},
+	}
+	tr.quotes["alice"] = Quote{HbdRaw: 10000, HiveRaw: 10000} // 10000 bps, 0 divergence
+	tr.quotes["bob"] = Quote{HbdRaw: 10800, HiveRaw: 10000}   // 10800 bps, 800 bps divergence
+	tr.quotes["carol"] = Quote{HbdRaw: 10100, HiveRaw: 10000} // 10100 bps, 100 bps divergence
+
+	got := tr.DivergingTrustedWitnesses(300)
+	if len(got) != 1 || got[0] != "bob" {
+		t.Fatalf("unexpected divergers: %#v", got)
+	}
+}
