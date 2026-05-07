@@ -1,39 +1,36 @@
 package pendulum
 
 import (
-	"math"
 	"math/big"
 	"testing"
 )
 
 func TestCLPFeeInt_BalancedPool(t *testing.T) {
+	// CLP = x²·Y / (x+X)² = 100²·1e6 / 1_000_100² = floor(0.00999800...) = 0
 	X := biTest("1000000")
 	Y := biTest("1000000")
 	x := biTest("100")
 	got := CLPFeeInt(x, X, Y)
-	wantFloat := (100.0 * 100.0 * 1e6) / (1000100.0 * 1000100.0)
-	wantInt := int64(math.Floor(wantFloat))
-	if got.Int64() != wantInt {
-		t.Fatalf("CLPFeeInt got %s want %d (float %.6f)", got, wantInt, wantFloat)
+	if got.Int64() != 0 {
+		t.Fatalf("CLPFeeInt got %s want 0", got)
 	}
 }
 
-func TestCLPFeeInt_MatchesFloatOnGrid(t *testing.T) {
+func TestCLPFeeInt_OnGrid(t *testing.T) {
+	// Hand-computed floor(x²·Y / (x+X)²) for each row.
 	cases := []struct {
 		x, X, Y int64
+		want    int64
 	}{
-		{100, 1_000_000, 1_000_000},
-		{1, 1_000, 1_000},
-		{50_000, 1_000_000, 2_000_000},
-		{1_000_000, 1_000_000, 1_000_000},
-		{1, 1, 1},
+		{1, 1_000, 1_000, 0},                       // 1·1000 / 1_002_001 = 0
+		{50_000, 1_000_000, 2_000_000, 4535},       // 2.5e9·2e6 / 1.1025e12 = 4535
+		{1_000_000, 1_000_000, 1_000_000, 250_000}, // 1e12·1e6 / 4e12 = 250_000
+		{1, 1, 1, 0},                               // 1·1 / 4 = 0
 	}
 	for _, tc := range cases {
 		got := CLPFeeInt(big.NewInt(tc.x), big.NewInt(tc.X), big.NewInt(tc.Y))
-		want := int64(math.Floor(CLPFee(float64(tc.x), float64(tc.X), float64(tc.Y))))
-		diff := got.Int64() - want
-		if diff < -1 || diff > 1 {
-			t.Errorf("x=%d X=%d Y=%d: int=%s float-floor=%d", tc.x, tc.X, tc.Y, got, want)
+		if got.Int64() != tc.want {
+			t.Errorf("x=%d X=%d Y=%d: got %s want %d", tc.x, tc.X, tc.Y, got, tc.want)
 		}
 	}
 }
@@ -66,18 +63,23 @@ func TestStabilizerMultiplierBps_AtEquilibrium(t *testing.T) {
 	}
 }
 
-func TestStabilizerMultiplierBps_MatchesFloatOnGrid(t *testing.T) {
-	pFloat := DefaultStabilizerParams()
-	pBps := DefaultStabilizerParamsBps()
-	for _, s := range []float64{0.1, 0.3, 0.5, 0.7, 0.9} {
-		for _, r := range []float64{0, 0.001, 0.01, 0.05, 0.5} {
-			fl := StabilizerMultiplier(s, r, pFloat)
-			bps := StabilizerMultiplierBps(bpsFromFloat(s), bpsFromFloat(r), pBps)
-			fxFloat := float64(bps) / float64(BpsScale)
-			// 1 bps == 0.0001; allow ~3 bps drift from chained MulDivFloor rounding.
-			if math.Abs(fl-fxFloat) > 3e-4 {
-				t.Errorf("s=%v r=%v float=%v bps=%v(=%v)", s, r, fl, bps, fxFloat)
-			}
+func TestStabilizerMultiplierBps_OnGrid(t *testing.T) {
+	// m(s, r) = 1 + K·|s−0.5|·(1 + r/R0)·push, capped at Cap.
+	// Defaults: K=1.0, R0=0.01, Cap=2.0, Push=1.0.
+	p := DefaultStabilizerParamsBps()
+	cases := []struct {
+		sBps, rBps int64
+		want       int64
+	}{
+		{1_000, 0, 14_000},   // s=0.1, r=0    → 1 + 0.4·1·1 = 1.4
+		{3_000, 0, 12_000},   // s=0.3, r=0    → 1 + 0.2·1·1 = 1.2
+		{5_000, 5_000, 10_000}, // s=0.5, any r → m == 1 (no deviation)
+		{7_000, 100, 14_000}, // s=0.7, r=0.01 → 1 + 0.2·2·1 = 1.4
+	}
+	for _, c := range cases {
+		got := StabilizerMultiplierBps(c.sBps, c.rBps, p)
+		if got != c.want {
+			t.Errorf("sBps=%d rBps=%d: got %d want %d", c.sBps, c.rBps, got, c.want)
 		}
 	}
 }
