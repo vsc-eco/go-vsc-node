@@ -1,6 +1,8 @@
 package common_test
 
 import (
+	"math"
+	"strconv"
 	"testing"
 	"vsc-node/modules/common"
 )
@@ -27,6 +29,9 @@ func TestParseAssetAmount(t *testing.T) {
 		{"1.234", "wat", 0, true},  // unknown asset
 		{"abc", "hbd", 0, true},    // not a number
 		{"1.2.3", "hbd", 0, true},  // malformed
+		{"--1.000", "hbd", 0, true},                         // double-negative rejected
+		{"+-1.000", "hbd", 0, true},                         // mixed-sign rejected
+		{strconv.FormatInt(math.MaxInt64, 10), "hbd", 0, true}, // integer-form base-unit overflow rejected
 	}
 	for _, tt := range tests {
 		got, err := common.ParseAssetAmount(tt.in, tt.asset)
@@ -61,6 +66,7 @@ func TestFormatAssetAmount(t *testing.T) {
 		{10000, "hbd", "10.000", false},
 		{100, "hbd", "0.100", false},
 		{10, "hbd", "0.010", false},
+		{math.MinInt64, "hbd", "-9223372036854775.808", false}, // INT64_MIN must not double-negate
 		{1234, "wat", "", true},
 	}
 	for _, tt := range tests {

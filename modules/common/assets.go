@@ -2,6 +2,7 @@ package common
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -51,6 +52,10 @@ func ParseAssetAmount(amount, asset string) (int64, error) {
 		for i := uint8(0); i < prec; i++ {
 			mult *= 10
 		}
+		// Detect int64 overflow on n*mult before it silently wraps.
+		if n != 0 && (n > math.MaxInt64/mult || n < math.MinInt64/mult) {
+			return 0, fmt.Errorf("amount %q overflows int64 base units for %s", amount, asset)
+		}
 		return n * mult, nil
 	case 2:
 		intPart, fracPart := parts[0], parts[1]
@@ -59,13 +64,17 @@ func ParseAssetAmount(amount, asset string) (int64, error) {
 		}
 		// pad to exactly `prec` digits
 		fracPart += strings.Repeat("0", int(prec)-len(fracPart))
-		// strip a leading sign from intPart so we can re-attach after concat
+		// strip a leading sign from intPart so we can re-attach after concat;
+		// reject any further sign characters so "--1.000" / "+-1.000" don't slip through
 		neg := false
 		if strings.HasPrefix(intPart, "-") {
 			neg = true
 			intPart = intPart[1:]
 		} else if strings.HasPrefix(intPart, "+") {
 			intPart = intPart[1:]
+		}
+		if strings.ContainsAny(intPart, "+-") {
+			return 0, fmt.Errorf("amount %q has malformed sign", amount)
 		}
 		joined := intPart + fracPart
 		n, err := strconv.ParseInt(joined, 10, 64)
@@ -92,11 +101,14 @@ func FormatAssetAmount(amount int64, asset string) (string, error) {
 	if prec == 0 {
 		return strconv.FormatInt(amount, 10), nil
 	}
-	neg := amount < 0
-	if neg {
-		amount = -amount
-	}
+	// FormatInt then strip any leading '-' so we never rely on -amount, which
+	// wraps to itself for math.MinInt64.
 	s := strconv.FormatInt(amount, 10)
+	neg := false
+	if strings.HasPrefix(s, "-") {
+		neg = true
+		s = s[1:]
+	}
 	for len(s) <= int(prec) {
 		s = "0" + s
 	}
