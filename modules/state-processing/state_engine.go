@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
@@ -1032,6 +1033,40 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	}
 }
 
+// executeTxSafely runs a transaction handler with panic recovery so that a
+// malformed or attacker-crafted op cannot halt block processing. A panic in
+// the handler is converted to a failed TxResult; the failure is recorded
+// through the normal oplog flow (TxOutput{Ok:false}) and ExecuteBatch
+// continues with the next op in the batch.
+func executeTxSafely(
+	vscTx VSCTransaction,
+	se common_types.StateEngine,
+	ledgerSession ledgerSystem.LedgerSession,
+	rcSession rcSystem.RcSession,
+	callSession *contract_session.CallSession,
+	payer string,
+) (result TxResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			self := vscTx.TxSelf()
+			log.Error(
+				"PANIC during transaction execution",
+				"txId", self.TxId,
+				"type", vscTx.Type(),
+				"blockHeight", self.BlockHeight,
+				"panic", fmt.Sprint(r),
+				"stack", string(debug.Stack()),
+			)
+			result = TxResult{
+				Success: false,
+				Ret:     "internal error: panic during execution",
+				RcUsed:  100,
+			}
+		}
+	}()
+	return vscTx.ExecuteTx(se, ledgerSession, rcSession, callSession, payer)
+}
+
 func (se *StateEngine) ExecuteBatch() {
 
 	lastBlock, _ := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight)
@@ -1124,7 +1159,7 @@ func (se *StateEngine) ExecuteBatch() {
 					}
 				}
 			}
-			result := vscTx.ExecuteTx(se, ledgerSession, rcSession, callSession, payer)
+			result := executeTxSafely(vscTx, se, ledgerSession, rcSession, callSession, payer)
 
 			log.Debug(
 				"TRANSACTION STATUS",

@@ -621,11 +621,20 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 		Block:      blockCid,
 	}
 
-	cid, _ := se.da.HashObject(blockHeader)
+	cid, err := se.da.HashObject(blockHeader)
+	if err != nil || cid == nil {
+		return false
+	}
 
 	circuit, err := dids.DeserializeBlsCircuit(t.SignedBlock.Signature, memberDids, *cid)
+	if err != nil || circuit == nil {
+		return false
+	}
 
 	verified, includedDids, err := circuit.Verify()
+	if err != nil {
+		return false
+	}
 
 	if uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength <= t.Self.BlockHeight {
 		fmt.Println(
@@ -660,9 +669,18 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 // ProcessTx implements VSCTransaction.
 func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
-	blockCid, _ := cid.Parse(t.SignedBlock.Block)
-	node, _ := se.da.GetDag(blockCid)
-	jsonBytes, _ := node.MarshalJSON()
+	blockCid, err := cid.Parse(t.SignedBlock.Block)
+	if err != nil {
+		return
+	}
+	node, err := se.da.GetDag(blockCid)
+	if err != nil || node == nil {
+		return
+	}
+	jsonBytes, err := node.MarshalJSON()
+	if err != nil {
+		return
+	}
 	blockContentC := vscBlocks.VscBlock{}
 	// json.Unmarshal(jsonBytes, &blockContent)
 
