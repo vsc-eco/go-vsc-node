@@ -785,19 +785,21 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								msgBytes, _ := hex.DecodeString(sigPack.Msg)
 								if err == nil && err1 == nil {
 									if keyCache[sigPack.KeyId].Algo == tss_db.EcdsaType {
-										pubKey, err1 := btcec.ParsePubKey(publicKey, btcec.S256())
-
-										fmt.Println("err", err1)
+										pubKey, err := btcec.ParsePubKey(publicKey, btcec.S256())
+										if err != nil {
+											log.Warn("invalid TSS public key, skipping", "keyId", sigPack.KeyId, "err", err)
+											continue
+										}
 
 										signature, err := btcec.ParseDERSignature(sigBytes, btcec.S256())
+										if err != nil {
+											log.Warn("invalid TSS DER signature, skipping", "keyId", sigPack.KeyId, "err", err)
+											continue
+										}
 
 										verified := signature.Verify(msgBytes, pubKey)
 
-										fmt.Println("signature, err", signature, err, verified)
 										if verified {
-
-											fmt.Println("NEED TO SAVE SIGNATURE")
-											// se.tssRequests.SetSignedRequest()
 											se.tssRequests.UpdateRequest(tss_db.TssRequest{
 												KeyId:  sigPack.KeyId,
 												Msg:    sigPack.Msg,
@@ -810,7 +812,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 										edVerify := ed25519.Verify(pk, msgBytes, sigBytes)
 
-										fmt.Println("edVerify", edVerify)
 										if edVerify {
 											se.tssRequests.UpdateRequest(tss_db.TssRequest{
 												KeyId:  sigPack.KeyId,
