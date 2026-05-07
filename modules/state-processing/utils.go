@@ -535,7 +535,9 @@ type Buffer struct {
 }
 
 func NewBuffer() *Buffer {
-	return &Buffer{c: make(chan byte, 8*1024*1024)} // TODO by making the buffer size very large, the test will no longer be flaky. Does this indicate a likely problem in production?
+	return &Buffer{
+		c: make(chan byte, 8*1024*1024),
+	} // TODO by making the buffer size very large, the test will no longer be flaky. Does this indicate a likely problem in production?
 	// r, w := io.Pipe()
 	// return &Buffer{r, w}
 }
@@ -558,4 +560,18 @@ func (b *Buffer) Write(p []byte) (n int, err error) {
 		b.c <- v
 	}
 	return len(p), nil
+}
+
+// normalizeHiveAccount canonicalizes Hive account strings to the "hive:<name>"
+// form so equality checks across detectors agree on prefix handling. Mirrors
+// the helpers in incentive-pendulum/dexfeed.go and settlement/bond_reader.go.
+func normalizeHiveAccount(a string) string {
+	a = strings.TrimSpace(a)
+	if a == "" {
+		return ""
+	}
+	if strings.HasPrefix(a, "hive:") {
+		return a
+	}
+	return "hive:" + a
 }
