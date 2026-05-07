@@ -2,7 +2,9 @@ package tss
 
 import (
 	"context"
+	"errors"
 	"math/big"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -62,7 +64,26 @@ type TRes struct {
 	Data []byte
 }
 
-func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) error {
+func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) (err error) {
+	// N-L4: ReceiveMsg processes untrusted P2P input and dispatches
+	// to btss via dispatcher.HandleP2P. A panic in any downstream
+	// library (or in dispatcher state mutation) must not propagate
+	// up to gorpc's transport goroutine — log it and surface a
+	// generic error to the caller.
+	defer func() {
+		if r := recover(); r != nil {
+			sessionId := ""
+			if req != nil {
+				sessionId = req.SessionId
+			}
+			log.Error("ReceiveMsg panic recovered",
+				"sessionId", sessionId,
+				"panic", r,
+				"stack", string(debug.Stack()))
+			err = errors.New("internal error")
+		}
+	}()
+
 	receiveTime := time.Now()
 	myAccount := tss.mgr.config.Get().HiveUsername
 	peerId, _ := gorpc.GetRequestSender(ctx)
