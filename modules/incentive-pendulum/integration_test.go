@@ -6,8 +6,10 @@ import (
 	"vsc-node/modules/incentive-pendulum/oracle"
 )
 
-// TestBoltOracleIntegration exercises witness window → trusted price → MA → bolt Evaluate.
-func TestBoltOracleIntegration(t *testing.T) {
+// TestOracleIntegration exercises the integer-only path: witness window →
+// trusted Quote → bps mean → moving-average ring. The float bolt-evaluate path
+// has been retired alongside the legacy float pendulum APIs.
+func TestOracleIntegration(t *testing.T) {
 	win := oracle.NewWitnessSignatureWindow(10)
 	for i := 0; i < 4; i++ {
 		win.PushBlock([]string{"w1", "w2"})
@@ -39,30 +41,7 @@ func TestBoltOracleIntegration(t *testing.T) {
 	ring := oracle.NewMovingAverageRing(3)
 	ring.Push(pxBps)
 	ring.Push(pxBps + pxBps/100) // ~1% step in bps
-	mxBps, ok := ring.Mean()
-	if !ok {
+	if _, ok := ring.Mean(); !ok {
 		t.Fatal()
-	}
-
-	// Bolt Evaluate is the float reference path; convert bps→float at the
-	// boundary just for this informational test.
-	mx := float64(mxBps) / float64(BpsScale)
-	b := NewPendulumBolt()
-	ev, ok := b.Evaluate(NetworkSnapshot{
-		TotalHiveStake: 20_000,
-		HivePriceHBD:   mx,
-		TotalBondT:     12_000,
-		Pools: []PoolPendulumLiquidity{
-			{PoolID: "main", Owner: "hive:vsc.dao", PHbd: 500},
-		},
-	}, 99_000)
-	if !ok {
-		t.Fatal()
-	}
-	if ev.Split.FinalNodeShare+ev.Split.FinalPoolShare != 99_000 {
-		t.Fatal("split")
-	}
-	if ev.Collateral.UnderSecured {
-		t.Fatal("unexpected cliff in fixture")
 	}
 }

@@ -501,7 +501,9 @@ func makeDIDs(
 	for _, w := range electionMemberWeights {
 		threshold += w
 	}
-	threshold = uint64(math.Floor(float64(threshold) * (2.0 / 3.0)))
+	// floor(threshold · 2/3) in integer arithmetic; uint64 stays well below
+	// overflow for any plausible election-weight sum.
+	threshold = (threshold * 2) / 3
 
 	for i, authKID := range requiredAuths {
 		isVscDID := strings.HasPrefix(authKID, dids.VscDIDPrefix)
