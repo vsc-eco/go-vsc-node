@@ -164,7 +164,16 @@ func (p2pServer *P2PServer) Init() error {
 		),
 		libp2p.Identity(key),
 		libp2p.EnableNATService(),
-		libp2p.EnableRelayService(relay.WithInfiniteLimits(), relay.WithResources(relayResources)),
+		// Pentest finding N-M3: relay.WithInfiniteLimits() removed.
+		// relay.DefaultResources() (used to seed relayResources above)
+		// already has Duration / Data / MaxCircuits caps; the previous
+		// WithInfiniteLimits overrode all of them, making the node an
+		// unmetered relay — a bandwidth amplification vector.
+		libp2p.EnableRelayService(relay.WithResources(relayResources)),
+		// Pentest finding N-M4: enforce connection caps so the host
+		// can't accept unbounded peers under attack. Low/high water
+		// 200/400 with 30s grace, matching common libp2p defaults.
+		libp2p.ConnectionManager(p2pConnectionManager()),
 		libp2p.NATPortMap(),
 		libp2p.EnableAutoNATv2(),
 		libp2p.EnableHolePunching(),
