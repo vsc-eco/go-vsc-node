@@ -1,7 +1,26 @@
-// Package safetyslash defines verifiable safety-fault principal slashing (HIVE_CONSENSUS debit)
-// distinct from liveness reward-reduction bps in the pendulum rewards path.
+// Package safetyslash defines verifiable safety-fault principal slashing
+// (HIVE_CONSENSUS debit) distinct from liveness reward-reduction bps in the
+// pendulum rewards path.
 //
-// Evidence kinds are stable string keys stored in ledger metadata and mirrored in Lean.
+// Scope (current): the only on-chain provable safety violations available to a
+// replaying node are about block production/signing — every other candidate
+// (TSS commitment blame, oracle quote divergence, settlement-body replay) is
+// either now block-internal and BLS-signed (so block-level rejection already
+// covers it) or fundamentally a liveness signal that cannot be distinguished
+// from honest p2p outages on-chain. Those still feed the liveness reward
+// reduction path; they intentionally do NOT trigger a principal slash here.
+//
+// Reserved (unwired) kinds — do not reuse the strings — that may return when
+// the underlying detector becomes deterministically provable from chain data:
+//
+//	"tss_equivocation"          — divergent TSS shares for the same logical round
+//	"oracle_payload_fraud"      — signed oracle payload disagrees with replay
+//	"settlement_payload_fraud"  — fraudulent settlement body (now caught at
+//	                              block-validation time before this layer)
+//
+// Reversal / governance undo of pending burn + consensus credit is not yet
+// wired; the delayed burn merely creates a window so protocol bugs can be
+// corrected before maturity.
 package safetyslash
 
 // CorrelatedSlashCapBps is the maximum total principal slash in basis points
@@ -10,16 +29,26 @@ package safetyslash
 const CorrelatedSlashCapBps = 10000
 
 const (
-	// EvidenceSettlementPayloadFraud: elected leader signed vsc.pendulum_settlement
-	// that fails deterministic replay against canonical chain state.
-	EvidenceSettlementPayloadFraud = "settlement_payload_fraud"
+	// EvidenceVSCDoubleBlockSign: proposer signs competing VSC blocks at one slot
+	// height. Both signatures land on Hive L1 (or are reconstructible from there),
+	// so any replaying node can deterministically prove the equivocation.
+	EvidenceVSCDoubleBlockSign = "vsc_double_block_sign"
+	// EvidenceVSCInvalidBlockProposal: proposer submits a block whose state
+	// transitions fail deterministic re-execution (TxProposeBlock.Validate=false).
+	EvidenceVSCInvalidBlockProposal = "vsc_invalid_block_proposal"
 )
 
 // Default slash severities (basis points of current HIVE_CONSENSUS bond).
 const (
-	// SettlementFraudSlashBps penalizes signing an objectively invalid settlement body.
-	SettlementFraudSlashBps = 1000 // 10%
+	DoubleBlockSignSlashBps = 1000 // 10%
+	InvalidBlockSlashBps    = 1000 // 10%
 )
+
+// EvidenceThresholdWindowBlocks bounds how far back recordEvidenceAndShouldSlash
+// looks when counting incidents for a thresholded kind. Currently no kinds are
+// thresholded (block-production faults slash on first proof), but the constant
+// stays so future thresholded kinds slot in without policy churn.
+const EvidenceThresholdWindowBlocks = 1000
 
 // DefaultSafetySlashBurnDelayBlocks holds the burn (post-restitution) portion on
 // params.ProtocolSlashPendingBurnAccount for this many Hive block heights before
@@ -45,4 +74,31 @@ func EffectiveCorrelatedBps(rawParts []int, capBps int) int {
 		return capBps
 	}
 	return sum
+}
+
+func SlashBpsForEvidenceKind(kind string) int {
+	switch kind {
+	case EvidenceVSCDoubleBlockSign:
+		return DoubleBlockSignSlashBps
+	case EvidenceVSCInvalidBlockProposal:
+		return InvalidBlockSlashBps
+	default:
+		return 0
+	}
+}
+
+// UsesThreshold reports whether a kind requires multiple incidents inside
+// EvidenceThresholdWindowBlocks before triggering a slash. Currently always
+// false: every wired kind is a deterministic single-shot proof.
+func UsesThreshold(kind string) bool {
+	_ = kind
+	return false
+}
+
+// ThresholdCountForEvidenceKind returns the minimum number of distinct
+// incidents required inside the rolling window to slash. Defaults to 1 — a
+// kind only needs override when it opts into thresholded behaviour.
+func ThresholdCountForEvidenceKind(kind string) int {
+	_ = kind
+	return 1
 }
