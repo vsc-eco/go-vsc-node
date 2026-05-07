@@ -33,7 +33,8 @@ import (
 	stateEngine "vsc-node/modules/state-processing"
 	vtss "vsc-node/modules/tss"
 
-	"github.com/eager7/dogd/btcec"
+	"github.com/btcsuite/btcd/btcec/v2"
+	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	flatfs "github.com/ipfs/go-ds-flatfs"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -380,7 +381,7 @@ func verifyEcdsaSig(t *testing.T, sigHex, msgHex, pubKeyHex string) {
 		return
 	}
 
-	sig, err := btcec.ParseDERSignature(sigBytes, btcec.S256())
+	sig, err := btcecdsa.ParseDERSignature(sigBytes)
 	if err != nil {
 		t.Errorf("failed to parse DER signature: %v", err)
 		return
@@ -392,7 +393,7 @@ func verifyEcdsaSig(t *testing.T, sigHex, msgHex, pubKeyHex string) {
 		return
 	}
 
-	pubKey, err := btcec.ParsePubKey(pubKeyBytes, btcec.S256())
+	pubKey, err := btcec.ParsePubKey(pubKeyBytes)
 	if err != nil {
 		t.Errorf("failed to parse public key: %v", err)
 		return
