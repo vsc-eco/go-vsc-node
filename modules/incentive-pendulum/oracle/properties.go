@@ -15,11 +15,13 @@ type WitnessProperties struct {
 	HBDInterestRateBps int
 }
 
-// RunningWitnessGroup returns the active trusted witness set, ranked by recent signatures.
-// Only witnesses with trusted[w] = true are included; result is capped at maxWitnesses.
+// RunningWitnessGroup returns the active trusted witness set, ranked by
+// recent L1 block-production count (busier witnesses sort first; ties broken
+// lexicographically by witness name). Only witnesses with trusted[w] = true
+// are included; result is capped at maxWitnesses.
 func RunningWitnessGroup(
 	trusted map[string]bool,
-	signaturesInWindow map[string]int,
+	blocksInWindow map[string]int,
 	maxWitnesses int,
 ) []string {
 	if len(trusted) == 0 {
@@ -42,9 +44,9 @@ func RunningWitnessGroup(
 
 	sort.Slice(group, func(i, j int) bool {
 		a, b := group[i], group[j]
-		sa, sb := signaturesInWindow[a], signaturesInWindow[b]
-		if sa != sb {
-			return sa > sb
+		ba, bb := blocksInWindow[a], blocksInWindow[b]
+		if ba != bb {
+			return ba > bb
 		}
 		return a < b
 	})

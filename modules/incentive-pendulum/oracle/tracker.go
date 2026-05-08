@@ -56,11 +56,12 @@ type FeedTickSnapshot struct {
 
 // FeedTracker ingests Hive L1 blocks: witness producer schedule, feed_publish (HIVE/HBD),
 // and witness_set_properties (hbd_interest_rate). Every DefaultTickIntervalBlocks it
-// recomputes trusted mean HIVE price and mode HBD APR from the top trusted witnesses.
+// recomputes the trusted interquartile-mean HIVE price and mode HBD APR from the top
+// trusted witnesses.
 type FeedTracker struct {
 	mu sync.Mutex
 
-	win *WitnessSignatureWindow
+	win *WitnessProductionWindow
 
 	quotes       map[string]Quote
 	lastFeedBlk  map[string]uint64
@@ -82,7 +83,7 @@ type FeedTracker struct {
 // NewFeedTracker builds a tracker with a 100-block signature window and a short MA over ticks.
 func NewFeedTracker() *FeedTracker {
 	return &FeedTracker{
-		win:          NewWitnessSignatureWindow(100),
+		win:          NewWitnessProductionWindow(100),
 		quotes:       make(map[string]Quote),
 		lastFeedBlk:  make(map[string]uint64),
 		witnessProps: make(map[string]WitnessProperties),
@@ -230,12 +231,27 @@ func (t *FeedTracker) TickIfDue(blockHeight uint64) {
 		width = 100
 	}
 
+	// Evict feed entries that have aged out of the trust window. The trust
+	// check below uses `lastFeedBlk + width > blockHeight`; entries failing
+	// that predicate can't contribute to this tick or any future tick
+	// without a fresh feed_publish (which re-populates the maps), so
+	// holding them is pure overhead. Bounds the maps by the actively-
+	// publishing witness count.
+	for w, last := range t.lastFeedBlk {
+		if last+uint64(width) <= blockHeight {
+			delete(t.quotes, w)
+			delete(t.lastFeedBlk, w)
+			delete(t.witnessProps, w)
+			delete(t.seenWitness, w)
+		}
+	}
+
 	trusted := make(map[string]bool)
-	sigs := make(map[string]int)
+	blocksProduced := make(map[string]int)
 	for w := range t.quotes {
-		sigs[w] = t.win.SignatureCount(w)
+		blocksProduced[w] = t.win.BlocksProducedBy(w)
 		published := t.lastFeedBlk[w] > 0 && t.lastFeedBlk[w]+uint64(width) > blockHeight
-		trusted[w] = FeedTrust(sigs[w], published, DefaultMinSignatures)
+		trusted[w] = FeedTrust(blocksProduced[w], published, DefaultMinBlocksProduced)
 	}
 
 	meanBps, meanOk := TrustedHivePriceBps(t.quotes, trusted)
@@ -244,7 +260,7 @@ func (t *FeedTracker) TickIfDue(blockHeight uint64) {
 	}
 	maBps, maOk := t.ma.Mean()
 
-	group := RunningWitnessGroup(trusted, sigs, DefaultWitnessGroupSize)
+	group := RunningWitnessGroup(trusted, blocksProduced, DefaultWitnessGroupSize)
 	apr, aprOk := HBDAPRModeFromGroup(group, t.witnessProps)
 
 	t.last = FeedTickSnapshot{
@@ -259,9 +275,32 @@ func (t *FeedTracker) TickIfDue(blockHeight uint64) {
 	}
 }
 
+// witnessIsActive returns true iff the account has produced at least one
+// L1 block inside the rolling production window. Used as the ingest gate
+// for both feed_publish and witness_set_properties so non-witness spam
+// can't grow the in-memory maps.
+//
+// Hive's top-20 witness rotation guarantees ~5 productions per 100-block
+// window for active witnesses, so requiring just 1 production is permissive
+// enough that newly-promoted witnesses are accepted as soon as they enter
+// rotation, while non-witnesses (who can't produce L1 blocks at all) are
+// rejected. RecordWitnessBlock fires before IngestTransactionOps for the
+// same Hive block (state_engine.ProcessBlock), so a witness publishing
+// alongside their own production passes the gate even on the very first
+// block they produce.
+func (t *FeedTracker) witnessIsActive(account string) bool {
+	if t == nil || t.win == nil {
+		return false
+	}
+	return t.win.BlocksProducedBy(account) >= 1
+}
+
 func (t *FeedTracker) ingestFeedPublish(blockHeight uint64, value map[string]interface{}) {
 	pub, _ := value["publisher"].(string)
 	if pub == "" {
+		return
+	}
+	if !t.witnessIsActive(pub) {
 		return
 	}
 	er, _ := value["exchange_rate"].(map[string]interface{})
@@ -282,6 +321,9 @@ func (t *FeedTracker) ingestFeedPublish(blockHeight uint64, value map[string]int
 func (t *FeedTracker) ingestWitnessSetProperties(value map[string]interface{}) {
 	owner, _ := value["owner"].(string)
 	if owner == "" {
+		return
+	}
+	if !t.witnessIsActive(owner) {
 		return
 	}
 	propsVal, ok := value["props"]

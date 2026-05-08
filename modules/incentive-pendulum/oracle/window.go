@@ -1,27 +1,40 @@
 package oracle
 
-// WitnessSignatureWindow counts, for each witness, how many of the last Width blocks
-// included that witness as a signer (plan: Magi incentive pendulum oracle eligibility).
-type WitnessSignatureWindow struct {
+// WitnessProductionWindow is a fixed-width rolling counter of "which witness
+// produced each of the last Width L1 (Hive) blocks."
+//
+// Despite the historical "signature" naming this used to carry, no
+// cryptographic signatures are involved — Hive blocks are single-producer,
+// and this just records the producer field of each block. Counting per-
+// witness production over the window is the pendulum oracle's eligibility
+// gate (FeedTrust): a witness must have produced at least
+// DefaultMinBlocksProduced of the last Width blocks to count toward the
+// trusted price mean, which effectively requires being an actively-rotating
+// Hive top-witness.
+type WitnessProductionWindow struct {
 	Width int
 	ring  []map[string]struct{}
 }
 
-// NewWitnessSignatureWindow creates an empty window. Width should be 100 for the pendulum spec.
-func NewWitnessSignatureWindow(width int) *WitnessSignatureWindow {
+// NewWitnessProductionWindow creates an empty window. Width should be 100 for the pendulum spec.
+func NewWitnessProductionWindow(width int) *WitnessProductionWindow {
 	if width < 1 {
 		width = 1
 	}
-	return &WitnessSignatureWindow{Width: width}
+	return &WitnessProductionWindow{Width: width}
 }
 
-// PushBlock records one block's signer set (deduplicated). Oldest block drops when length > Width.
-func (w *WitnessSignatureWindow) PushBlock(signers []string) {
+// PushBlock records one block's producer set (deduplicated). In production
+// the slice is a single-element list ({block.Witness}) since Hive is single-
+// producer-per-block; the set type is retained so a future multi-producer
+// chain could be plugged in without rewriting the storage layer. Oldest
+// block drops when length > Width.
+func (w *WitnessProductionWindow) PushBlock(producers []string) {
 	if w == nil {
 		return
 	}
-	m := make(map[string]struct{}, len(signers))
-	for _, s := range signers {
+	m := make(map[string]struct{}, len(producers))
+	for _, s := range producers {
 		if s == "" {
 			continue
 		}
@@ -33,8 +46,8 @@ func (w *WitnessSignatureWindow) PushBlock(signers []string) {
 	}
 }
 
-// SignatureCount returns how many stored blocks include this witness.
-func (w *WitnessSignatureWindow) SignatureCount(witness string) int {
+// BlocksProducedBy returns how many stored blocks list this witness as a producer.
+func (w *WitnessProductionWindow) BlocksProducedBy(witness string) int {
 	if w == nil || witness == "" {
 		return 0
 	}
@@ -48,7 +61,7 @@ func (w *WitnessSignatureWindow) SignatureCount(witness string) int {
 }
 
 // BlocksRecorded is the number of blocks currently in the window (≤ Width).
-func (w *WitnessSignatureWindow) BlocksRecorded() int {
+func (w *WitnessProductionWindow) BlocksRecorded() int {
 	if w == nil {
 		return 0
 	}
