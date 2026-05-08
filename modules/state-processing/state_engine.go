@@ -1145,7 +1145,15 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 		return rewards.TickInputs{}
 	}
 	election, err := se.electionDb.GetElectionByHeight(tickHeight)
-	if err != nil || len(election.Members) == 0 {
+	if err != nil {
+		// Transient electionDb error: skip scoring this tick. The signer
+		// path will retry on the next settlement attempt; logged for
+		// operator visibility into per-node DB outages.
+		log.Warn("pendulum reductions: election lookup failed; tick skipped",
+			"tick_height", tickHeight, "err", err)
+		return rewards.TickInputs{}
+	}
+	if len(election.Members) == 0 {
 		return rewards.TickInputs{}
 	}
 	committee := make([]string, 0, len(election.Members))
@@ -1172,7 +1180,10 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 			lastSlot := tickHeight - (tickHeight % slotLen)
 			if lastSlot >= firstSlot {
 				blocks, err := se.vscBlocks.GetBlocksInSlotRange(firstSlot, lastSlot)
-				if err == nil {
+				if err != nil {
+					log.Warn("pendulum reductions: vsc_blocks slot-range lookup failed; block production/attestation skipped this tick",
+						"tick_height", tickHeight, "from_slot", firstSlot, "to_slot", lastSlot, "err", err)
+				} else {
 					produced := make(map[uint64]struct{}, len(blocks))
 					in.BlocksInWindow = make([]rewards.TickBlockHeader, 0, len(blocks))
 					for _, b := range blocks {
@@ -1216,7 +1227,10 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 			0,
 			0,
 		)
-		if err == nil {
+		if err != nil {
+			log.Warn("pendulum reductions: tss_commitments lookup failed; TSS reductions skipped this tick",
+				"tick_height", tickHeight, "from_block", from, "to_block", to, "err", err)
+		} else {
 			for _, c := range commits {
 				memberAccounts := se.committeeAccountsForEpoch(c.Epoch)
 				if len(memberAccounts) == 0 {

@@ -4,7 +4,10 @@ import (
 	"strings"
 
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/lib/vsclog"
 )
+
+var log = vsclog.Module("pendulum-settlement")
 
 // BalanceRecordReader is the narrow read surface this package needs from
 // ledgerDb.Balances. Pulled out so tests can stub without standing up Mongo.
@@ -36,7 +39,17 @@ func ReadCommitteeBonds(reader BalanceRecordReader, members []string, blockHeigh
 			continue
 		}
 		rec, err := reader.GetBalanceRecord(acct, blockHeight)
-		if err != nil || rec == nil {
+		if err != nil {
+			// Transient ledger-DB error: drop this member from the bonds
+			// map, same liveness contract as any other per-signer outage
+			// (the BLS gate handles divergent CIDs by simply not signing).
+			// Logged so operators can see when their node is repeatedly
+			// dropping out of settlement composition.
+			log.Warn("bond read failed; member dropped from settlement",
+				"account", acct, "block_height", blockHeight, "err", err)
+			continue
+		}
+		if rec == nil {
 			continue
 		}
 		if rec.HIVE_CONSENSUS <= 0 {
