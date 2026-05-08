@@ -3,21 +3,18 @@ package pendulumwasm
 import (
 	"testing"
 
-	pendulum_oracle "vsc-node/modules/db/vsc/pendulum_oracle"
 	pendulum "vsc-node/modules/incentive-pendulum"
+	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 	wasm_context "vsc-node/modules/wasm/context"
 )
 
-// stubSnapshots is a deterministic SnapshotReader for unit tests.
-type stubSnapshots struct {
-	rec *pendulum_oracle.SnapshotRecord
+// stubGeometry is a deterministic GeometryReader for unit tests.
+type stubGeometry struct {
+	out pendulumoracle.GeometryOutputs
 }
 
-func (s *stubSnapshots) GetSnapshotAtOrBefore(blockHeight uint64) (*pendulum_oracle.SnapshotRecord, bool, error) {
-	if s.rec == nil {
-		return nil, false, nil
-	}
-	return s.rec, true, nil
+func (s *stubGeometry) GeometryAt(_ uint64) (pendulumoracle.GeometryOutputs, bool) {
+	return s.out, s.out.OK
 }
 
 // recordingAccrual captures every AccrueNodeBucketFn invocation so tests can
@@ -41,25 +38,22 @@ func defaultArgs(assetIn, assetOut string) wasm_context.PendulumSwapFeeArgs {
 	}
 }
 
-func balancedSnapshot() *pendulum_oracle.SnapshotRecord {
-	// V = E and P = V/2: PDF equilibrium s = 1.0 (cliff to all-nodes), but we
-	// use s strictly less than 1.0 so the proper split path executes.
-	// Pick V=500_000, E=1_000_000, T=1_000_000, P=250_000 → s = V/E = 0.5.
-	return &pendulum_oracle.SnapshotRecord{
-		TickBlockHeight: 100,
-		GeometryOK:      true,
-		GeometryV:       500_000,
-		GeometryP:       250_000,
-		GeometryE:       1_000_000,
-		GeometryT:       1_000_000,
-		GeometrySBps:    pendulum.BpsScale / 2, // s = 0.5 → 5000 bps
+func balancedGeometry() pendulumoracle.GeometryOutputs {
+	// V=500_000, E=1_000_000, T=1_000_000, P=250_000 → s = V/E = 0.5.
+	return pendulumoracle.GeometryOutputs{
+		OK:   true,
+		V:    500_000,
+		P:    250_000,
+		E:    1_000_000,
+		T:    1_000_000,
+		SBps: pendulum.BpsScale / 2, // s = 0.5 → 5000 bps
 	}
 }
 
-func newApplier(t *testing.T, snap *pendulum_oracle.SnapshotRecord, whitelist []string) (*Applier, *recordingAccrual) {
+func newApplier(t *testing.T, geo pendulumoracle.GeometryOutputs, whitelist []string) (*Applier, *recordingAccrual) {
 	t.Helper()
 	a := New(
-		&stubSnapshots{rec: snap},
+		&stubGeometry{out: geo},
 		func() []string { return whitelist },
 		Config{
 			Stabilizer:      pendulum.DefaultStabilizerParamsBps(),
@@ -74,7 +68,7 @@ func newApplier(t *testing.T, snap *pendulum_oracle.SnapshotRecord, whitelist []
 // applies — calls from contracts not in the whitelist produce a clean error
 // without invoking the accrual callback or snapshot DB.
 func TestRejectsNonWhitelistedContract(t *testing.T) {
-	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:other"})
+	a, acc := newApplier(t, balancedGeometry(), []string{"contract:other"})
 	res := a.ApplySwapFees("contract:not-whitelisted", "tx-1", 100, defaultArgs("hbd", "hive"), acc.fn)
 	if !res.IsErr() {
 		t.Fatal("expected error for non-whitelisted contract")
@@ -84,13 +78,13 @@ func TestRejectsNonWhitelistedContract(t *testing.T) {
 	}
 }
 
-// TestRejectsMissingSnapshot guards against pre-warmup swap calls — until W7
-// populates geometry, GeometryOK == false should refuse the swap rather than
-// silently mis-priced.
-func TestRejectsMissingSnapshot(t *testing.T) {
-	snap := balancedSnapshot()
-	snap.GeometryOK = false
-	a, acc := newApplier(t, snap, []string{"contract:pool-1"})
+// TestRejectsMissingGeometry guards against pre-warmup swap calls — until
+// the geometry computer has bond + price data, OK == false should refuse the
+// swap rather than silently misprice.
+func TestRejectsMissingGeometry(t *testing.T) {
+	geo := balancedGeometry()
+	geo.OK = false
+	a, acc := newApplier(t, geo, []string{"contract:pool-1"})
 	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, defaultArgs("hbd", "hive"), acc.fn)
 	if !res.IsErr() {
 		t.Fatal("expected error for missing snapshot")
@@ -99,7 +93,7 @@ func TestRejectsMissingSnapshot(t *testing.T) {
 
 // TestRejectsNonHBDPair confirms the testnet-only HBD-paired requirement.
 func TestRejectsNonHBDPair(t *testing.T) {
-	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	a, acc := newApplier(t, balancedGeometry(), []string{"contract:pool-1"})
 	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, defaultArgs("hive", "btc"), acc.fn)
 	if !res.IsErr() {
 		t.Fatal("expected error for non-HBD-paired swap")
@@ -111,7 +105,7 @@ func TestRejectsNonHBDPair(t *testing.T) {
 // goes through one secondary CPMM hop (ASSET1 → HBD) and lands in
 // pendulum:nodes:HBD.
 func TestSwapHBDInAccruesNodeBucket(t *testing.T) {
-	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	a, acc := newApplier(t, balancedGeometry(), []string{"contract:pool-1"})
 
 	args := wasm_context.PendulumSwapFeeArgs{
 		AssetIn:  "hbd",
@@ -148,7 +142,7 @@ func TestSwapHBDInAccruesNodeBucket(t *testing.T) {
 // Output asset is HBD, so the node share passes through directly with no
 // secondary swap; nodeBucketHBD == nodeShareOutput exactly.
 func TestSwapASSET1InAccruesNodeBucket(t *testing.T) {
-	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	a, acc := newApplier(t, balancedGeometry(), []string{"contract:pool-1"})
 
 	args := wasm_context.PendulumSwapFeeArgs{
 		AssetIn:  "hive",
@@ -174,10 +168,10 @@ func TestSwapASSET1InAccruesNodeBucket(t *testing.T) {
 // TestUnderSecuredCliffRoutesAllToNodes locks in the V≥E cliff: when the vault
 // outweighs the bond, the entire pendulum pot routes to nodes per SplitInt.
 func TestUnderSecuredCliffRoutesAllToNodes(t *testing.T) {
-	snap := balancedSnapshot()
-	snap.GeometryV = snap.GeometryE + 1 // V > E → cliff
-	snap.GeometrySBps = pendulum.BpsScale * 11 / 10
-	a, acc := newApplier(t, snap, []string{"contract:pool-1"})
+	geo := balancedGeometry()
+	geo.V = geo.E + 1 // V > E → cliff
+	geo.SBps = pendulum.BpsScale * 11 / 10
+	a, acc := newApplier(t, geo, []string{"contract:pool-1"})
 
 	args := wasm_context.PendulumSwapFeeArgs{
 		AssetIn:  "hbd",
@@ -207,7 +201,7 @@ func TestUnderSecuredCliffRoutesAllToNodes(t *testing.T) {
 // (covering 25% of total CLP + 25% of total protocol fee — both of which
 // live on the output side under the post-rewrite model).
 func TestNetworkCreditIsSingleOutputAssetValue(t *testing.T) {
-	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	a, acc := newApplier(t, balancedGeometry(), []string{"contract:pool-1"})
 
 	args := wasm_context.PendulumSwapFeeArgs{
 		AssetIn:  "hive",
@@ -231,7 +225,7 @@ func TestNetworkCreditIsSingleOutputAssetValue(t *testing.T) {
 // or stays in the pool. The X side (HBD-paired pool, X is non-HBD here)
 // gains exactly the user's input.
 func TestReserveConservation(t *testing.T) {
-	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	a, acc := newApplier(t, balancedGeometry(), []string{"contract:pool-1"})
 
 	xIn := int64(10_000)
 	xRes := int64(1_000_000)
@@ -274,7 +268,7 @@ func TestReserveConservation(t *testing.T) {
 // pre-fix bug where `newY.Add(newY, nodeShareOutput)` ran after Y had already
 // been reduced by userOutput-with-fees-retained, inflating Y by nodeShareOutput.
 func TestReserveConservationHBDIn(t *testing.T) {
-	a, acc := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	a, acc := newApplier(t, balancedGeometry(), []string{"contract:pool-1"})
 
 	xIn := int64(10_000)
 	xRes := int64(1_000_000)
@@ -324,7 +318,7 @@ func TestStabilizerMultiplierAppliesToFullFee(t *testing.T) {
 	}
 
 	// Baseline: s = 0.5 → m = 1.0 → totalFee == baseCLP + baseProtocol.
-	aBase, accBase := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	aBase, accBase := newApplier(t, balancedGeometry(), []string{"contract:pool-1"})
 	resBase := aBase.ApplySwapFees("contract:pool-1", "tx-1", 100, args, accBase.fn)
 	if resBase.IsErr() {
 		t.Fatalf("baseline swap failed: %v", resBase)
@@ -337,11 +331,11 @@ func TestStabilizerMultiplierAppliesToFullFee(t *testing.T) {
 	// Off-equilibrium: s = 0.7 with V=700_000 (P=350_000=V/2 keeps geometry
 	// consistent). At r = x/X = 1% and r0 = 1% → r/r0 = 1.0 → inner = 2.0.
 	// tail = K · |s−0.5| · inner · push = 1 · 0.2 · 2 · 1 = 0.4 → m = 1.4.
-	snapHigh := balancedSnapshot()
-	snapHigh.GeometryV = 700_000
-	snapHigh.GeometryP = 350_000
-	snapHigh.GeometrySBps = pendulum.BpsScale * 70 / 100
-	aHigh, accHigh := newApplier(t, snapHigh, []string{"contract:pool-1"})
+	geoHigh := balancedGeometry()
+	geoHigh.V = 700_000
+	geoHigh.P = 350_000
+	geoHigh.SBps = pendulum.BpsScale * 70 / 100
+	aHigh, accHigh := newApplier(t, geoHigh, []string{"contract:pool-1"})
 	resHigh := aHigh.ApplySwapFees("contract:pool-1", "tx-2", 100, args, accHigh.fn)
 	if resHigh.IsErr() {
 		t.Fatalf("off-equilibrium swap failed: %v", resHigh)
@@ -386,7 +380,7 @@ func TestStabilizerMultiplierAppliesToFullFee(t *testing.T) {
 // LedgerSession.ExecuteTransfer rejects the transfer and ApplySwapFees must
 // not silently succeed.
 func TestAccrualErrorPropagates(t *testing.T) {
-	a, _ := newApplier(t, balancedSnapshot(), []string{"contract:pool-1"})
+	a, _ := newApplier(t, balancedGeometry(), []string{"contract:pool-1"})
 
 	failingAccrual := func(amountHBD int64) error {
 		return errBucketUnderfunded
@@ -447,7 +441,7 @@ func TestApplierConfiguredNilDeps(t *testing.T) {
 	}
 
 	// Configured applier but nil accrual callback also fails cleanly.
-	a2 := New(&stubSnapshots{rec: balancedSnapshot()}, func() []string { return []string{"contract:pool-1"} }, DefaultConfig())
+	a2 := New(&stubGeometry{out: balancedGeometry()}, func() []string { return []string{"contract:pool-1"} }, DefaultConfig())
 	res = a2.ApplySwapFees("contract:pool-1", "tx-1", 100, defaultArgs("hbd", "hive"), nil)
 	if !res.IsErr() {
 		t.Fatal("expected error when accrual callback is nil")
