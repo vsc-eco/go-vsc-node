@@ -222,7 +222,17 @@ func (r *pendulumCommitteeBondReader) ReadCommitteeBond(blockHeight uint64) ([]s
 		return nil, 0
 	}
 	election, err := r.se.electionDb.GetElectionByHeight(blockHeight)
-	if err != nil || len(election.Members) == 0 {
+	if err != nil {
+		// Transient electionDb error during a swap-time geometry read.
+		// Returning (nil, 0) makes GeometryComputer.Compute trip its OK
+		// gate, which surfaces as errSnapshotUnavailable to the calling
+		// contract. Logged so operators can see when their node is
+		// failing to serve swaps due to DB issues.
+		log.Warn("pendulum geometry: committee-bond election lookup failed; swap will reject",
+			"block_height", blockHeight, "err", err)
+		return nil, 0
+	}
+	if len(election.Members) == 0 {
 		return nil, 0
 	}
 	members := make([]string, 0, len(election.Members))

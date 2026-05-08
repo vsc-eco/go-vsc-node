@@ -1,8 +1,11 @@
 package state_engine
 
 import (
+	"bytes"
+	"fmt"
 	"strings"
 
+	"vsc-node/modules/common"
 	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 	"vsc-node/modules/incentive-pendulum/rewards"
 	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
@@ -28,21 +31,23 @@ func (se *StateEngine) GetLatestSettledEpoch() uint64 {
 
 // applyPendulumSettlement applies a SettlementRecord that landed inside a VSC
 // block. The record's bytes were already validated by the closing committee's
-// 2/3 BLS aggregate at block-acceptance time; this function trusts the bytes
-// and applies the per-account distributions through the existing ledger
-// session (paired debit on pendulum:nodes + credit on each named account).
+// 2/3 BLS aggregate at block-acceptance time; this function adds two layers
+// of defense-in-depth before touching the ledger:
+//
+//  1. Structural validation (validatePendulumSettlement) — pure-arithmetic
+//     conservation + committee-membership check. Cheap, no flush-timing
+//     risk. Hard-fails the apply on violation.
+//  2. Re-derivation (rederivePendulumSettlement) — re-runs ComposeRecord
+//     against the same on-chain inputs at the snapshot heights and byte-
+//     compares the CBOR encoding. Hard-fails on byte mismatch; transient
+//     inability to run the re-derivation falls through to the structural
+//     check we already passed.
 //
 // Idempotency: the pendulum_settlements collection's epoch index gates
 // re-application; a record for an already-settled epoch is a no-op.
 //
 // Chain-continuity: rec.PrevEpoch must equal the current latestSettledEpoch.
 // Mismatches indicate a misordered or skipped settlement and are dropped.
-//
-// Bucket conservation: the function does not enforce that
-// rec.TotalDistributedHBD equals the live bucket balance. The state engine
-// trusts the BLS-signed bytes; if the closing committee signed off on a
-// payload that under-distributes, the residual carries forward in the bucket
-// as expected.
 func (se *StateEngine) applyPendulumSettlement(rec pendulumsettlement.SettlementRecord, blockHeight uint64) {
 	if se == nil || se.LedgerSystem == nil || se.pendulumSettlementsDb == nil {
 		return
@@ -59,6 +64,31 @@ func (se *StateEngine) applyPendulumSettlement(rec pendulumsettlement.Settlement
 			"record_epoch", rec.Epoch, "record_prev_epoch", rec.PrevEpoch,
 			"latest_settled_epoch", latest)
 		return
+	}
+
+	// Defense-in-depth pass 1: structural safety. Catches paying outsiders,
+	// over-spending the bucket, and sum/distribution conservation breaks
+	// regardless of any other state. Pure-arithmetic over the payload plus
+	// a committee-membership lookup at the snapshot height; cannot false-
+	// positive due to per-node DB flush timing.
+	if err := se.validatePendulumSettlement(rec); err != nil {
+		log.Error("pendulum settlement: structural validation failed; refusing to apply",
+			"epoch", rec.Epoch, "err", err)
+		return
+	}
+
+	// Defense-in-depth pass 2: re-derive the expected payload from on-chain
+	// reads at the snapshot heights and byte-compare via CBOR. The 2/3 BLS
+	// aggregate is the primary check; this is the second line — if our own
+	// re-derivation disagrees with what the chain attested, refuse rather
+	// than silently apply a payload we would not have signed.
+	if mismatchErr, ran := se.rederivePendulumSettlement(rec); ran && mismatchErr != nil {
+		log.Error("pendulum settlement: re-derivation mismatch; refusing to apply",
+			"epoch", rec.Epoch, "err", mismatchErr)
+		return
+	} else if !ran {
+		log.Warn("pendulum settlement: re-derivation could not run; relying on structural validation only",
+			"epoch", rec.Epoch)
 	}
 
 	txID := pendulumSettlementTxID(rec.Epoch)
@@ -103,6 +133,168 @@ func (se *StateEngine) applyPendulumSettlement(rec pendulumsettlement.Settlement
 		"residual_hbd", rec.ResidualHBD,
 		"distributions", len(rec.Distributions),
 		"reductions", len(rec.RewardReductions))
+}
+
+// validatePendulumSettlement performs structural safety checks that hold
+// regardless of state-engine flush timing — pure arithmetic over the
+// payload plus a committee-membership lookup at the snapshot height. Even
+// though the carrying VSC block is BLS-attested by 2/3 of the committee,
+// these checks catch the most exploitable abuse classes (paying non-
+// members, over-spending the bucket, sum/distribution mismatch) that a
+// malicious leader plus complicit signers could attempt.
+//
+// Returns an error on any structural violation; the caller refuses the
+// apply. A transient electionDb error during the membership check is
+// downgraded to a warning so a single-node DB blip doesn't cause this
+// node to drop a legitimate settlement — the arithmetic invariants above
+// still bound the worst case.
+func (se *StateEngine) validatePendulumSettlement(rec pendulumsettlement.SettlementRecord) error {
+	if rec.BucketBalanceHBD < 0 {
+		return fmt.Errorf("negative BucketBalanceHBD %d", rec.BucketBalanceHBD)
+	}
+	if rec.TotalDistributedHBD < 0 {
+		return fmt.Errorf("negative TotalDistributedHBD %d", rec.TotalDistributedHBD)
+	}
+	// Over-spend check fires before negative-residual so the more exploit-
+	// relevant message wins when both are violated by the same payload.
+	if rec.TotalDistributedHBD > rec.BucketBalanceHBD {
+		return fmt.Errorf("TotalDistributedHBD %d exceeds BucketBalanceHBD %d",
+			rec.TotalDistributedHBD, rec.BucketBalanceHBD)
+	}
+	if rec.ResidualHBD < 0 {
+		return fmt.Errorf("negative ResidualHBD %d", rec.ResidualHBD)
+	}
+	if rec.TotalDistributedHBD+rec.ResidualHBD != rec.BucketBalanceHBD {
+		return fmt.Errorf("conservation broken: distributed %d + residual %d != bucket %d",
+			rec.TotalDistributedHBD, rec.ResidualHBD, rec.BucketBalanceHBD)
+	}
+
+	var sum int64
+	for _, d := range rec.Distributions {
+		if d.HBDAmt < 0 {
+			return fmt.Errorf("negative distribution amount %d for %s", d.HBDAmt, d.Account)
+		}
+		sum += d.HBDAmt
+	}
+	if sum != rec.TotalDistributedHBD {
+		return fmt.Errorf("sum(distributions)=%d != TotalDistributedHBD=%d",
+			sum, rec.TotalDistributedHBD)
+	}
+
+	if se.electionDb == nil {
+		return nil
+	}
+	election, err := se.electionDb.GetElectionByHeight(rec.SnapshotRangeTo)
+	if err != nil {
+		log.Warn("pendulum settlement: election lookup failed during validation; membership check skipped",
+			"epoch", rec.Epoch, "snapshot_to", rec.SnapshotRangeTo, "err", err)
+		return nil
+	}
+	if len(election.Members) == 0 {
+		return fmt.Errorf("election at snapshot_to=%d has no members", rec.SnapshotRangeTo)
+	}
+	members := make(map[string]struct{}, len(election.Members))
+	for _, m := range election.Members {
+		acct := m.Account
+		if !strings.HasPrefix(acct, "hive:") {
+			acct = "hive:" + acct
+		}
+		members[acct] = struct{}{}
+	}
+	for _, d := range rec.Distributions {
+		acct := d.Account
+		if !strings.HasPrefix(acct, "hive:") {
+			acct = "hive:" + acct
+		}
+		if _, ok := members[acct]; !ok {
+			return fmt.Errorf("distribution to non-committee account %s at epoch=%d",
+				d.Account, rec.Epoch)
+		}
+	}
+	for _, r := range rec.RewardReductions {
+		acct := r.Account
+		if !strings.HasPrefix(acct, "hive:") {
+			acct = "hive:" + acct
+		}
+		if _, ok := members[acct]; !ok {
+			return fmt.Errorf("reward reduction for non-committee account %s at epoch=%d",
+				r.Account, rec.Epoch)
+		}
+	}
+	return nil
+}
+
+// rederivePendulumSettlement re-runs ComposeRecord against the same on-chain
+// inputs the leader used and byte-compares the CBOR encoding with rec. The
+// snapshot heights (SnapshotRangeFrom/To) are the contract that lets every
+// honest node — at any apply time, regardless of when its consumer caught
+// up — read identical inputs and produce a byte-equal record.
+//
+// Returns:
+//   - (nil, true) if the re-derivation ran and matched the payload,
+//   - (mismatchErr, true) if it ran and the bytes diverged (caller refuses apply),
+//   - (nil, false) if it could not run because of a transient input
+//     unavailability (caller falls back to structural validation only).
+func (se *StateEngine) rederivePendulumSettlement(rec pendulumsettlement.SettlementRecord) (mismatchErr error, ran bool) {
+	if se == nil || se.electionDb == nil || se.balanceDb == nil || se.LedgerSystem == nil {
+		return nil, false
+	}
+	election, err := se.electionDb.GetElectionByHeight(rec.SnapshotRangeTo)
+	if err != nil || len(election.Members) == 0 {
+		return nil, false
+	}
+
+	members := make([]string, 0, len(election.Members))
+	for _, m := range election.Members {
+		acct := m.Account
+		if !strings.HasPrefix(acct, "hive:") {
+			acct = "hive:" + acct
+		}
+		members = append(members, acct)
+	}
+
+	bonds := pendulumsettlement.ReadCommitteeBonds(se.balanceDb, members, rec.SnapshotRangeTo)
+	if len(bonds) == 0 {
+		return nil, false
+	}
+	bucket := se.LedgerSystem.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, rec.SnapshotRangeTo)
+	if !pendulumsettlement.PreCheckBucket(bucket) {
+		return nil, false
+	}
+
+	reductions := rewards.ComputeReductionsForEpoch(
+		se.PendulumEpochInputsProvider(),
+		rec.SnapshotRangeFrom,
+		rec.SnapshotRangeTo,
+		uint64(pendulumoracle.DefaultTickIntervalBlocks),
+	)
+
+	expected, err := pendulumsettlement.ComposeRecord(pendulumsettlement.ComposeInputs{
+		Epoch:               rec.Epoch,
+		PrevEpoch:           rec.PrevEpoch,
+		EpochStartBh:        rec.SnapshotRangeFrom,
+		SlotHeight:          rec.SnapshotRangeTo,
+		CommitteeBonds:      bonds,
+		BucketBalanceHBD:    bucket,
+		ReductionsByAccount: reductions,
+	})
+	if err != nil || expected == nil {
+		return nil, false
+	}
+
+	expectedBytes, err := common.EncodeDagCbor(*expected)
+	if err != nil {
+		return nil, false
+	}
+	actualBytes, err := common.EncodeDagCbor(rec)
+	if err != nil {
+		return nil, false
+	}
+	if !bytes.Equal(expectedBytes, actualBytes) {
+		return fmt.Errorf("settlement byte mismatch (expected %d bytes, got %d)",
+			len(expectedBytes), len(actualBytes)), true
+	}
+	return nil, true
 }
 
 // pendulumSettlementTxID is the deterministic ledger-record id prefix used to

@@ -27,17 +27,23 @@ func MulDivFloor(a, b, c *big.Int) *big.Int {
 }
 
 // MulDivFloorI64 is MulDivFloor for callers that already have int64 values.
-// Promotes through big.Int to avoid intermediate overflow on a*b, then returns
-// 0 if the result doesn't fit int64 (saturate-to-zero so the caller's gate
-// trips). Panics on c == 0.
-func MulDivFloorI64(a, b, c int64) int64 {
+// Promotes through big.Int to avoid intermediate overflow on a*b, then
+// returns (val, true) on success or (0, false) if the floor doesn't fit
+// int64. Panics on c == 0.
+//
+// Overflow is a hard failure callers must handle — the previous saturate-
+// to-zero behavior was load-bearing for the pendulum stabilizer's cap
+// clamp: a tail of 0 silently produced m = BpsScale (multiplier 1.0,
+// stabilizer disabled) instead of tripping the cap. Returning ok=false
+// forces the caller to abort the operation.
+func MulDivFloorI64(a, b, c int64) (int64, bool) {
 	if c == 0 {
 		panic("intmath.MulDivFloorI64: divide by zero")
 	}
 	out := new(big.Int).Mul(big.NewInt(a), big.NewInt(b))
 	out.Quo(out, big.NewInt(c))
 	if !out.IsInt64() {
-		return 0
+		return 0, false
 	}
-	return out.Int64()
+	return out.Int64(), true
 }
