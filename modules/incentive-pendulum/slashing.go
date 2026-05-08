@@ -2,34 +2,51 @@ package pendulum
 
 // SlashParams controls the basis-point slashing schedule for oracle participation.
 type SlashParams struct {
-	MinSignatures     int
-	MissingSigStepBps int
-	MissingUpdateBps  int
-	EquivocationBps   int
-	CapBps            int
+	// MinBlocksProduced is the L1 block-production threshold per window
+	// below which a witness starts accumulating block-production-deficit
+	// slashing.
+	MinBlocksProduced int
+	// MissingBlockStepBps is the per-block-shortfall slashing amount in
+	// basis points. Total deficit slashing == (MinBlocksProduced -
+	// blocksProduced) * MissingBlockStepBps, floored at 0.
+	MissingBlockStepBps int
+	// MissingUpdateBps is the flat penalty for failing to refresh a
+	// feed_publish op inside the trust window.
+	MissingUpdateBps int
+	// EquivocationBps is the flat penalty for double-signing or otherwise
+	// publishing conflicting price updates inside the same window.
+	EquivocationBps int
+	// CapBps is the maximum total slashing in basis points per window.
+	CapBps int
 }
 
 // DefaultSlashParams mirrors the Lean model in MagiLean.Pendulum.Slashing.
 func DefaultSlashParams() SlashParams {
 	return SlashParams{
-		MinSignatures:     4,
-		MissingSigStepBps: 25,
-		MissingUpdateBps:  50,
-		EquivocationBps:   500,
-		CapBps:            1000,
+		MinBlocksProduced:   4,
+		MissingBlockStepBps: 25,
+		MissingUpdateBps:    50,
+		EquivocationBps:     500,
+		CapBps:              1000,
 	}
 }
 
 // OracleEvidence is per-window participation evidence for one witness.
 type OracleEvidence struct {
-	Signatures  int
+	// BlocksProduced is the count of L1 (Hive) blocks this witness produced
+	// inside the rolling production window.
+	BlocksProduced int
+	// UpdatedFeed is true iff the witness published or refreshed a price
+	// update in the trust window.
 	UpdatedFeed bool
+	// Equivocated is true iff conflicting price updates from this witness
+	// were observed in the same window.
 	Equivocated bool
 }
 
-// SignatureDeficit returns max(0, minSignatures-signatures).
-func SignatureDeficit(p SlashParams, e OracleEvidence) int {
-	deficit := p.MinSignatures - e.Signatures
+// BlockProductionDeficit returns max(0, MinBlocksProduced - BlocksProduced).
+func BlockProductionDeficit(p SlashParams, e OracleEvidence) int {
+	deficit := p.MinBlocksProduced - e.BlocksProduced
 	if deficit < 0 {
 		return 0
 	}
@@ -38,7 +55,7 @@ func SignatureDeficit(p SlashParams, e OracleEvidence) int {
 
 // SlashBpsRaw computes uncapped slashing in basis points.
 func SlashBpsRaw(p SlashParams, e OracleEvidence) int {
-	raw := SignatureDeficit(p, e) * p.MissingSigStepBps
+	raw := BlockProductionDeficit(p, e) * p.MissingBlockStepBps
 	if !e.UpdatedFeed {
 		raw += p.MissingUpdateBps
 	}
