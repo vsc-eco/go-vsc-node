@@ -38,8 +38,16 @@ type ComposeInputs struct {
 // epoch. Pure function: no I/O, no side effects, no state mutation. Two honest
 // nodes with the same ComposeInputs produce byte-equal output.
 //
-// Returns nil + error if the inputs are insufficient to settle (e.g., empty
-// bucket, no committee bonds). The producer skips the block-tx in that case.
+// An empty-activity epoch (BucketBalanceHBD == 0) returns a marker-only
+// record with no distributions and no reductions. The next epoch's election
+// gates on `latestSettled >= prior_epoch`, so quiet epochs still need to
+// land a marker — otherwise the chain stalls until somebody swaps. The
+// committee-bonds requirement only applies when there is actually HBD to
+// distribute.
+//
+// Returns nil + error only on inputs that prevent any meaningful record
+// (zero epoch, slot at or before the epoch start, negative bucket, or
+// distribution math that overflows the bucket).
 func ComposeRecord(in ComposeInputs) (*SettlementRecord, error) {
 	if in.Epoch == 0 {
 		return nil, fmt.Errorf("epoch must be > 0")
@@ -47,10 +55,26 @@ func ComposeRecord(in ComposeInputs) (*SettlementRecord, error) {
 	if in.SlotHeight <= in.EpochStartBh {
 		return nil, fmt.Errorf("slotHeight (%d) must exceed epochStartBh (%d)", in.SlotHeight, in.EpochStartBh)
 	}
-	if in.BucketBalanceHBD <= 0 {
-		// Empty bucket — no settlement to record. Caller treats as no-op.
-		return nil, fmt.Errorf("bucket balance is 0; nothing to settle")
+	if in.BucketBalanceHBD < 0 {
+		return nil, fmt.Errorf("negative bucket balance %d", in.BucketBalanceHBD)
 	}
+
+	// Empty-activity epoch: emit a marker-only record so the chain can
+	// advance to the next election. Bonds and reductions are not required —
+	// nothing is being distributed.
+	if in.BucketBalanceHBD == 0 {
+		rec := BuildSettlementRecord(
+			in.Epoch,
+			in.PrevEpoch,
+			in.EpochStartBh,
+			in.SlotHeight,
+			0, 0, 0,
+			nil,
+			nil,
+		)
+		return &rec, nil
+	}
+
 	if len(in.CommitteeBonds) == 0 {
 		return nil, fmt.Errorf("committee bonds map is empty")
 	}
@@ -111,13 +135,6 @@ func ComposeRecord(in ComposeInputs) (*SettlementRecord, error) {
 		distPayload,
 	)
 	return &rec, nil
-}
-
-// PreCheckBucket returns the bucket-balance threshold below which composition
-// should be skipped. Currently 1 base unit (any positive value); kept as a
-// helper so the predicate is in one place if we want to add a minimum.
-func PreCheckBucket(balanceHBD int64) bool {
-	return balanceHBD > 0
 }
 
 // SortedAccountsFromMap re-exports the rewards helper so callers in this

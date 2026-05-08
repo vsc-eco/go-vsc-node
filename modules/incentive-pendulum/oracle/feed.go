@@ -8,17 +8,21 @@ import (
 )
 
 const (
-	// DefaultMinSignatures is the minimum blocks signed in the last window to trust a feed (pendulum plan).
-	DefaultMinSignatures = 4
+	// DefaultMinBlocksProduced is the minimum L1 blocks a witness must have
+	// produced inside the rolling production window to count toward the
+	// trusted price mean. Combined with FeedTrust's published-recently gate,
+	// this restricts contributors to actively-rotating Hive top-witnesses.
+	DefaultMinBlocksProduced = 4
 )
 
-// FeedTrust returns true if the witness may contribute to the aggregate HIVE price:
-// they published or refreshed a price update and signed at least minSig blocks in the window.
-func FeedTrust(sigsInWindow int, publishedPriceUpdate bool, minSig int) bool {
-	if minSig < 1 {
-		minSig = DefaultMinSignatures
+// FeedTrust returns true iff the witness may contribute to the aggregate
+// HIVE price: they published or refreshed a price update in the trust
+// window AND produced at least minBlocks of the last Width L1 blocks.
+func FeedTrust(blocksInWindow int, publishedPriceUpdate bool, minBlocks int) bool {
+	if minBlocks < 1 {
+		minBlocks = DefaultMinBlocksProduced
 	}
-	return publishedPriceUpdate && sigsInWindow >= minSig
+	return publishedPriceUpdate && blocksInWindow >= minBlocks
 }
 
 // Quote is a witness's published HIVE price as the rational pair from a
@@ -47,11 +51,25 @@ func (q Quote) PriceBps() int64 {
 	return num.Int64()
 }
 
-// TrustedHivePriceBps is the deterministic mean HIVE price (HBD per HIVE,
-// basis points) across trusted witnesses. Iterates witness names in
-// lexicographic order, computes each Quote.PriceBps in big.Int, sums, and
-// integer-divides by the count. Bit-equal across nodes given the same on-chain
-// inputs.
+// TrustedHivePriceBps is the deterministic interquartile mean HIVE price
+// (HBD per HIVE, basis points) across trusted witnesses. The bottom and
+// top quartiles of the per-witness prices are dropped before averaging,
+// so a colluding cluster pushing extreme values off any single side has to
+// overwhelm 75% of the trusted set instead of 50% to move the result —
+// while preserving mean-style smoothing across the middle 50%.
+//
+// Trim formula: drop floor(N/4) values from each end and mean the
+// remainder. Examples:
+//
+//	N=1..3 → no trim, simple mean (too few points to define quartiles)
+//	N=4    → keep middle 2 (drop 1 from each end)
+//	N=8    → keep middle 4
+//	N=20   → keep middle 10
+//
+// Determinism: the price list is sorted ascending. Equal prices have
+// identical contribution to the sum and the trim, so sort.Slice's lack of
+// stability doesn't affect the output. Bit-equal across nodes given the
+// same on-chain inputs.
 func TrustedHivePriceBps(quotes map[string]Quote, trusted map[string]bool) (int64, bool) {
 	if len(quotes) == 0 || len(trusted) == 0 {
 		return 0, false
@@ -69,21 +87,38 @@ func TrustedHivePriceBps(quotes map[string]Quote, trusted map[string]bool) (int6
 	if len(names) == 0 {
 		return 0, false
 	}
+	// Iterate by sorted name to compute prices deterministically.
 	sort.Strings(names)
-	sum := new(big.Int)
 	bpsBig := big.NewInt(intmath.BpsScale)
+	prices := make([]*big.Int, 0, len(names))
 	for _, w := range names {
 		q := quotes[w]
-		// Per-witness price in bps, computed in big.Int to avoid overflow on
-		// HbdRaw * BpsScale before the divide.
 		num := new(big.Int).Mul(big.NewInt(q.HbdRaw), bpsBig)
 		num.Quo(num, big.NewInt(q.HiveRaw))
-		sum.Add(sum, num)
+		prices = append(prices, num)
 	}
-	mean := new(big.Int).Quo(sum, big.NewInt(int64(len(names))))
+
+	// Sort ascending by price for the interquartile trim.
+	sort.Slice(prices, func(i, j int) bool {
+		return prices[i].Cmp(prices[j]) < 0
+	})
+
+	n := len(prices)
+	trim := n / 4 // drop floor(N/4) from each end
+	kept := prices[trim : n-trim]
+	if len(kept) == 0 {
+		// Defensive — n/4*2 < n for any n >= 1 so kept is non-empty,
+		// but guard anyway.
+		return 0, false
+	}
+
+	sum := new(big.Int)
+	for _, p := range kept {
+		sum.Add(sum, p)
+	}
+	mean := new(big.Int).Quo(sum, big.NewInt(int64(len(kept))))
 	if !mean.IsInt64() {
 		return 0, false
 	}
 	return mean.Int64(), true
 }
-
