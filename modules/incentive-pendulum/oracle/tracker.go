@@ -22,15 +22,6 @@ const (
 )
 
 // FeedTickSnapshot is the integer-typed pendulum oracle view (after a tick).
-//
-// All numeric fields are basis-point integers (BpsScale = 1.0) or raw counts;
-// no float ever lives in this struct. The same record is what
-// PendulumOracleEnv exposes to wasm and what the SnapshotRecord persists.
-//
-// Liveness scoring for the VSC committee is NOT done here. VSC committee
-// members are not necessarily Hive witnesses; their reward-reduction bps are
-// computed by the rewards/ package from L2 evidence (vsc_blocks +
-// tss_commitments) at snapshot persistence time.
 type FeedTickSnapshot struct {
 	TickBlockHeight uint64
 
