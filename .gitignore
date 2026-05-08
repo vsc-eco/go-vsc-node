@@ -19,3 +19,4 @@ contract-deployer
 logs/
 *attack-vectors.md
 *.wasm
+.claude/scheduled_tasks.lock
