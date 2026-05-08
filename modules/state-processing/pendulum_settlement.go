@@ -43,6 +43,12 @@ func (se *StateEngine) GetLatestSettledEpoch() uint64 {
 //     inability to run the re-derivation falls through to the structural
 //     check we already passed.
 //
+// Per-distribution failures inside the loop are logged and skipped (matches
+// the codebase-wide ledger-write convention — recovery via restart-replay
+// + idempotent upserts, not transactional rollback). Real atomicity should
+// come from a future refactor that wraps multi-record writes in
+// mongo.Session.WithTransaction at the LedgerDb level.
+//
 // Idempotency: the pendulum_settlements collection's epoch index gates
 // re-application; a record for an already-settled epoch is a no-op.
 //
@@ -93,6 +99,23 @@ func (se *StateEngine) applyPendulumSettlement(rec pendulumsettlement.Settlement
 
 	txID := pendulumSettlementTxID(rec.Epoch)
 
+	// Per-distribution apply: log and continue on failure rather than abort.
+	// This matches every other multi-record ledger-write site in the
+	// codebase (the slot-end ExecuteBatch flush, IngestOplog, IndexActions,
+	// ClaimHBDInterest, Deposit) — none of them wrap their writes in a
+	// Mongo transaction or roll back on a per-record failure. The shared
+	// recovery story is "deterministic record IDs + idempotent upserts +
+	// restart-replay reconciles partial state."
+	//
+	// Validation layer 1 already guarantees TotalDistributed ≤ Bucket, so
+	// PendulumDistribute can't fail from insufficient funds. The remaining
+	// failure surface is a transient Mongo write error, which StoreLedger
+	// silently swallows today anyway — meaning the !res.Ok branch is
+	// effectively unreachable in current code. A future refactor that
+	// wraps the apply path (and the rest of the codebase's ledger writes)
+	// in mongo.Session.WithTransaction is the right place to introduce
+	// real atomicity; doing it just here would be inconsistent with how
+	// every other write site behaves.
 	for _, d := range rec.Distributions {
 		if d.HBDAmt <= 0 {
 			continue
@@ -254,11 +277,12 @@ func (se *StateEngine) rederivePendulumSettlement(rec pendulumsettlement.Settlem
 	}
 
 	bonds := pendulumsettlement.ReadCommitteeBonds(se.balanceDb, members, rec.SnapshotRangeTo)
-	if len(bonds) == 0 {
-		return nil, false
-	}
 	bucket := se.LedgerSystem.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, rec.SnapshotRangeTo)
-	if !pendulumsettlement.PreCheckBucket(bucket) {
+	// bucket==0 is a real (empty-activity) state ComposeRecord must
+	// re-derive against; bonds==0 only matters when bucket>0 and the
+	// composer would have errored. Both are passed through and let
+	// ComposeRecord decide.
+	if bucket < 0 {
 		return nil, false
 	}
 

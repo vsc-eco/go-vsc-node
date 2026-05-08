@@ -10,11 +10,11 @@ import (
 // trusted Quote → bps mean → moving-average ring. The float bolt-evaluate path
 // has been retired alongside the legacy float pendulum APIs.
 func TestOracleIntegration(t *testing.T) {
-	win := oracle.NewWitnessSignatureWindow(10)
+	win := oracle.NewWitnessProductionWindow(10)
 	for i := 0; i < 4; i++ {
 		win.PushBlock([]string{"w1", "w2"})
 	}
-	if win.SignatureCount("w1") != 4 {
+	if win.BlocksProducedBy("w1") != 4 {
 		t.Fatal()
 	}
 
@@ -26,7 +26,7 @@ func TestOracleIntegration(t *testing.T) {
 	updated := map[string]bool{"w1": true, "w2": true}
 	trusted := map[string]bool{}
 	for w := range quotes {
-		trusted[w] = oracle.FeedTrust(win.SignatureCount(w), updated[w], 4)
+		trusted[w] = oracle.FeedTrust(win.BlocksProducedBy(w), updated[w], 4)
 	}
 	pxBps, ok := oracle.TrustedHivePriceBps(quotes, trusted)
 	if !ok {
