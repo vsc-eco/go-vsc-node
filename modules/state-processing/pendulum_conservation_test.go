@@ -7,37 +7,33 @@ import (
 	"vsc-node/lib/intmath"
 	"vsc-node/lib/test_utils"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
-	pendulum_oracle "vsc-node/modules/db/vsc/pendulum_oracle"
 	pendulum "vsc-node/modules/incentive-pendulum"
+	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 	pendulumwasm "vsc-node/modules/incentive-pendulum/wasm"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	wasm_context "vsc-node/modules/wasm/context"
 )
 
-// stubSnapshotsForConservation is a deterministic SnapshotReader for the
-// HBD-conservation tests. Mirrors the in-package stub used by the applier's
-// own tests; duplicated here because the wasm package can't import test_utils
-// without an import cycle.
-type stubSnapshotsForConservation struct {
-	rec *pendulum_oracle.SnapshotRecord
+// stubGeometryForConservation is a deterministic GeometryReader for the
+// HBD-conservation tests. Mirrors the applier package's own stub; duplicated
+// here so this _test package can run without importing the wasm package's
+// internal test helpers.
+type stubGeometryForConservation struct {
+	out pendulumoracle.GeometryOutputs
 }
 
-func (s *stubSnapshotsForConservation) GetSnapshotAtOrBefore(_ uint64) (*pendulum_oracle.SnapshotRecord, bool, error) {
-	if s.rec == nil {
-		return nil, false, nil
-	}
-	return s.rec, true, nil
+func (s *stubGeometryForConservation) GeometryAt(_ uint64) (pendulumoracle.GeometryOutputs, bool) {
+	return s.out, s.out.OK
 }
 
-func balancedConservationSnapshot() *pendulum_oracle.SnapshotRecord {
-	return &pendulum_oracle.SnapshotRecord{
-		TickBlockHeight: 100,
-		GeometryOK:      true,
-		GeometryV:       500_000,
-		GeometryP:       250_000,
-		GeometryE:       1_000_000,
-		GeometryT:       1_000_000,
-		GeometrySBps:    intmath.BpsScale / 2,
+func balancedConservationGeometry() pendulumoracle.GeometryOutputs {
+	return pendulumoracle.GeometryOutputs{
+		OK:   true,
+		V:    500_000,
+		P:    250_000,
+		E:    1_000_000,
+		T:    1_000_000,
+		SBps: intmath.BpsScale / 2,
 	}
 }
 
@@ -101,7 +97,7 @@ func TestPendulumAccrualHBDConservation(t *testing.T) {
 	session := ledgerSystem.NewSession(state)
 
 	a := pendulumwasm.New(
-		&stubSnapshotsForConservation{rec: balancedConservationSnapshot()},
+		&stubGeometryForConservation{out: balancedConservationGeometry()},
 		func() []string { return []string{contractID} },
 		pendulumwasm.Config{
 			Stabilizer:      pendulum.DefaultStabilizerParamsBps(),
@@ -179,7 +175,7 @@ func TestPendulumAccrualFailsWhenContractUnderfunded(t *testing.T) {
 	session := ledgerSystem.NewSession(state)
 
 	a := pendulumwasm.New(
-		&stubSnapshotsForConservation{rec: balancedConservationSnapshot()},
+		&stubGeometryForConservation{out: balancedConservationGeometry()},
 		func() []string { return []string{contractID} },
 		pendulumwasm.Config{
 			Stabilizer:      pendulum.DefaultStabilizerParamsBps(),

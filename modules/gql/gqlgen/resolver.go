@@ -7,7 +7,6 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
-	"vsc-node/modules/db/vsc/pendulum_oracle"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -41,6 +40,4 @@ type Resolver struct {
 	TssCommitments tss_db.TssCommitments
 	TssRequests    tss_db.TssRequests
 	ChainOracle    *chain.ChainOracle
-
-	PendulumOracle pendulum_oracle.PendulumOracleSnapshots
 }

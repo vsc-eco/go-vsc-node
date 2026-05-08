@@ -21,3 +21,4 @@ logs/
 *attack-vectors.md
 *.wasm
 data-rr2-*
+.claude/scheduled_tasks.lock

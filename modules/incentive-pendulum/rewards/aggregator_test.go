@@ -2,8 +2,6 @@ package rewards
 
 import (
 	"testing"
-
-	pendulum_oracle "vsc-node/modules/db/vsc/pendulum_oracle"
 )
 
 func TestAggregateTick_NoCommittee(t *testing.T) {
@@ -66,8 +64,9 @@ func TestAggregateTick_PerSignalPreCap(t *testing.T) {
 	}
 }
 
-// TestAggregateTick_SortedByWitness: persistence depends on byte-stable
-// bson; ordering must be lexicographic across all returned records.
+// TestAggregateTick_SortedByWitness: ordering must be lexicographic across
+// all returned records — `ComputeReductionsForEpoch` relies on stable
+// ordering when accumulating across ticks.
 func TestAggregateTick_SortedByWitness(t *testing.T) {
 	in := TickInputs{
 		Committee: []string{"zach", "alice", "mary"},
@@ -78,39 +77,5 @@ func TestAggregateTick_SortedByWitness(t *testing.T) {
 	}
 	if got[0].Witness != "alice" || got[1].Witness != "mary" || got[2].Witness != "zach" {
 		t.Fatalf("not sorted: %+v", got)
-	}
-}
-
-// TestAggregateEpoch_BufferAbsorbsSmallReductions: total < buffer → omitted.
-func TestAggregateEpoch_BufferAbsorbsSmallReductions(t *testing.T) {
-	snaps := []pendulum_oracle.SnapshotRecord{
-		{WitnessRewardReductions: []pendulum_oracle.WitnessRewardReductionRecord{
-			{Witness: "alice", Bps: 100},
-		}},
-		{WitnessRewardReductions: []pendulum_oracle.WitnessRewardReductionRecord{
-			{Witness: "alice", Bps: 100}, // total 200 < 250 buffer
-		}},
-	}
-	got := AggregateEpoch(snaps)
-	if _, ok := got["alice"]; ok {
-		t.Fatalf("expected buffer to absorb 200 bps, got %d", got["alice"])
-	}
-}
-
-// TestAggregateEpoch_PostCapAfterBuffer: cap applies AFTER buffer
-// subtraction. A 200_000-bps accumulator with 250 buffer caps to
-// PerEpochCapBps (10_000), not 9_750.
-func TestAggregateEpoch_PostCapAfterBuffer(t *testing.T) {
-	snaps := make([]pendulum_oracle.SnapshotRecord, 0, 200)
-	for i := 0; i < 200; i++ {
-		snaps = append(snaps, pendulum_oracle.SnapshotRecord{
-			WitnessRewardReductions: []pendulum_oracle.WitnessRewardReductionRecord{
-				{Witness: "alice", Bps: 1000},
-			},
-		})
-	}
-	got := AggregateEpoch(snaps)
-	if got["alice"] != PerEpochCapBps {
-		t.Fatalf("expected %d (post-buffer cap), got %d", PerEpochCapBps, got["alice"])
 	}
 }
