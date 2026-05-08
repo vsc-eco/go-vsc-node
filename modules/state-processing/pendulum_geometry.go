@@ -111,6 +111,14 @@ func (r *liveGeometryReader) GeometryAt(blockHeight uint64) (pendulumoracle.Geom
 	if r == nil || r.computer == nil || r.feed == nil {
 		return pendulumoracle.GeometryOutputs{}, false
 	}
+	// Refuse swaps until the FeedTracker is warm. A partial MA ring or
+	// partial signature window produces a TrustedHivePriceBps that differs
+	// from peers running since genesis — feeding that into geometry would
+	// fork the chain at every swap. Surfaces as errSnapshotUnavailable to
+	// the contract caller, same shape as a missing feed.
+	if !r.feed.Warmed() {
+		return pendulumoracle.GeometryOutputs{}, false
+	}
 	tick := r.feed.LastTick()
 	num, den := r.effectiveStakeNum, r.effectiveStakeDen
 	if num <= 0 || den <= 0 {
