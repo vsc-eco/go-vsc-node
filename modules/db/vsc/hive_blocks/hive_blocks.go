@@ -492,33 +492,47 @@ func (h *hiveBlocks) GetMetadata() (Document, error) {
 	return result, nil
 }
 
-// creates a mongo aggregation pipeline that joins localField with block.block_number in hive_blocks to obtain the block timestamp
+// creates a mongo aggregation pipeline that joins localField with block.block_number in hive_blocks to obtain the block timestamp.
+//
+// offset/limit semantics match mongo.Find: a non-positive value means
+// "unbounded" (no $skip / no $limit stage emitted). MongoDB rejects a
+// literal $limit:0 with "the limit must be positive", so callers that
+// previously passed 0,0 to mean "all results" silently received no data
+// and an opaque error — most visibly the pendulum reward-reduction
+// aggregator, which silently dropped every TSS commitment.
 func GetAggTimestampPipeline(filters bson.D, localField string, timestampField string, offset int, limit int) mongo.Pipeline {
-	return mongo.Pipeline{
+	pipe := mongo.Pipeline{
 		{{Key: "$match", Value: filters}},
 		// Sort and paginate BEFORE the lookup so MongoDB can use indexes
 		// and only join the paginated subset with hive_blocks
 		{{Key: "$sort", Value: bson.D{{Key: localField, Value: -1}}}},
-		{{Key: "$skip", Value: offset}},
-		{{Key: "$limit", Value: limit}},
+	}
+	if offset > 0 {
+		pipe = append(pipe, bson.D{{Key: "$skip", Value: offset}})
+	}
+	if limit > 0 {
+		pipe = append(pipe, bson.D{{Key: "$limit", Value: limit}})
+	}
+	pipe = append(pipe,
 		// Join with hive_blocks (now only on paginated subset)
-		{{Key: "$lookup", Value: bson.D{
+		bson.D{{Key: "$lookup", Value: bson.D{
 			{Key: "from", Value: "hive_blocks"},
 			{Key: "localField", Value: localField},
 			{Key: "foreignField", Value: "block.block_number"},
 			{Key: "as", Value: "block_info"},
 		}}},
 		// Unwind the joined array
-		{{Key: "$unwind", Value: "$block_info"}},
+		bson.D{{Key: "$unwind", Value: "$block_info"}},
 		// Add timestamp field
-		{{Key: "$addFields", Value: bson.D{
+		bson.D{{Key: "$addFields", Value: bson.D{
 			{Key: timestampField, Value: "$block_info.block.timestamp"},
 		}}},
 		// Remove temporary field
-		{{Key: "$project", Value: bson.D{
+		bson.D{{Key: "$project", Value: bson.D{
 			{Key: "block_info", Value: 0},
 		}}},
-	}
+	)
+	return pipe
 }
 
 // AggTimestampPipeline with anchr_opidx appended to id
