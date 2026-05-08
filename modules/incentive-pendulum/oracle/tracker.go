@@ -17,9 +17,25 @@ const (
 	DefaultTickIntervalBlocks = 100
 	defaultMovingAvgTicks     = 3
 
+	// WarmupDistanceBlocks is the minimum span of replayed Hive blocks
+	// required to fully populate the rolling signature window (100 blocks)
+	// AND the moving-average ring (3 ticks × 100 blocks = 300 blocks).
+	// 400 leaves a one-tick buffer so the explicit warmup pass crosses at
+	// least three tick boundaries even if the head sits mid-tick.
+	WarmupDistanceBlocks = 400
+
 	// bsonFieldPrefix matches hive_blocks.makeBSONCompatible nested-array encoding.
 	bsonFieldPrefix = "69ba102f-c815-4ce9-8022-90e520fe8516_"
 )
+
+// WarmupSource is the minimal hive_blocks reader the FeedTracker needs to
+// replay the rolling-state-defining blocks at startup. Implementations must
+// return blocks deterministically given the same range parameters; production
+// is satisfied directly by hive_blocks.HiveBlocks.
+type WarmupSource interface {
+	GetLastProcessedBlock() (uint64, error)
+	FetchStoredBlocks(startBlock uint64, endBlock uint64) ([]hive_blocks.HiveBlock, error)
+}
 
 // FeedTickSnapshot is the integer-typed pendulum oracle view (after a tick).
 type FeedTickSnapshot struct {
@@ -54,6 +70,13 @@ type FeedTracker struct {
 	ma *MovingAverageRing
 
 	last FeedTickSnapshot
+
+	// warmedExplicit flips true after Warmup() completes a successful
+	// replay. Allows callers to gate on Warmed() before warmup has had a
+	// chance to fill the rolling state organically (the natural-fill path
+	// of Warmed() — full signature window + full MA ring — also satisfies
+	// the gate but requires ~300 blocks of live operation).
+	warmedExplicit bool
 }
 
 // NewFeedTracker builds a tracker with a 100-block signature window and a short MA over ticks.
@@ -80,6 +103,87 @@ func (t *FeedTracker) LastTick() FeedTickSnapshot {
 		out.TrustedWitnessGroup = append([]string(nil), t.last.TrustedWitnessGroup...)
 	}
 	return out
+}
+
+// Warmed reports whether the tracker's in-memory state has reached a
+// long-running peer's steady state. Returns true when either:
+//
+//   - Warmup() has completed an explicit replay, OR
+//   - the rolling signature window is full AND the moving-average ring is
+//     full (i.e., enough live blocks have flowed through ProcessBlock to
+//     fill both organically).
+//
+// Consumers that read tracker outputs in consensus paths (the swap-time
+// applier, contract env keys) MUST gate on this — a partial signature
+// window or partial MA ring produces values that diverge from peers running
+// since genesis, causing the same swap to compute different geometry across
+// nodes and forking the chain.
+func (t *FeedTracker) Warmed() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.warmedExplicit {
+		return true
+	}
+	winFull := t.win != nil && t.win.BlocksRecorded() >= t.win.Width
+	maFull := t.ma != nil && t.ma.IsFull()
+	return winFull && maFull
+}
+
+// Warmup replays the last WarmupDistanceBlocks of stored Hive blocks through
+// the ingest path so the tracker's in-memory state matches a long-running
+// peer at the same head before any consensus-bound caller (swap applier,
+// contract env) reads from it. Marks the tracker explicitly warmed on
+// completion.
+//
+// Idempotent — re-invoking is a no-op once Warmed() returns true. Safe to
+// call before the block consumer starts streaming new blocks; the consumer
+// resumes from GetLastProcessedBlock()+1 so there's no double-ingest of the
+// replayed range.
+func (t *FeedTracker) Warmup(src WarmupSource) error {
+	if t == nil || src == nil {
+		return nil
+	}
+	if t.Warmed() {
+		return nil
+	}
+	head, err := src.GetLastProcessedBlock()
+	if err != nil {
+		return err
+	}
+	if head == 0 {
+		// Fresh chain or fresh node — nothing to replay. Mark warmed so
+		// genesis-era consumers don't block forever waiting for the
+		// rolling state to fill from prior history that doesn't exist.
+		t.mu.Lock()
+		t.warmedExplicit = true
+		t.mu.Unlock()
+		return nil
+	}
+	var start uint64 = 1
+	if head > WarmupDistanceBlocks {
+		start = head - WarmupDistanceBlocks + 1
+	}
+	blocks, err := src.FetchStoredBlocks(start, head)
+	if err != nil {
+		return err
+	}
+	for i := range blocks {
+		blk := &blocks[i]
+		if blk.Witness != "" {
+			t.RecordWitnessBlock(blk.Witness)
+		}
+		for _, tx := range blk.Transactions {
+			t.IngestTransactionOps(blk.BlockNumber, tx)
+		}
+		t.TickIfDue(blk.BlockNumber)
+	}
+	t.mu.Lock()
+	t.warmedExplicit = true
+	t.mu.Unlock()
+	return nil
 }
 
 // RecordWitnessBlock records the Hive L1 block producer for the rolling signature window.
