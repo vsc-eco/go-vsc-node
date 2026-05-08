@@ -24,7 +24,6 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
-	"vsc-node/modules/db/vsc/pendulum_oracle"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
@@ -108,19 +107,16 @@ type StateEngine struct {
 
 	// pendulumFeed tracks sole-HIVE witness feed + HBD APR (Magi pendulum oracle); updated from Hive blocks.
 	pendulumFeed *pendulumoracle.FeedTracker
-	// pendulumOracleDb persists the consensus-grade integer snapshot per tick.
-	// Nil-safe: state engines constructed without it (older test harnesses) skip persistence.
-	pendulumOracleDb pendulum_oracle.PendulumOracleSnapshots
 	// pendulumSettlementsDb stores the per-epoch settlement marker written
 	// when applyPendulumSettlement processes a BlockTypePendulumSettlement
 	// record. Drives the proposer's `canHold` guard and the
 	// `vsc.election_result` handler's "prior epoch must be settled" check.
 	pendulumSettlementsDb pendulum_settlements.PendulumSettlements
-	// pendulumApplier is the swap-time SDK method's executor; nil when the
-	// snapshot DB or whitelist isn't wired (e.g. some test harnesses).
+	// pendulumApplier is the swap-time SDK method's executor.
 	pendulumApplier wasm_context.PendulumApplier
-	// pendulumGeometry computes (V, P, E, T, s) per tick from contract state
-	// and balance ledger. nil-safe when the snapshot DB isn't wired.
+	// pendulumGeometry recomputes (V, P, E, T, s) on demand from contract
+	// state and committee bond. Read by the applier per swap and by
+	// settlement composition; no snapshot persistence layer.
 	pendulumGeometry *pendulumoracle.GeometryComputer
 	// balanceDb is held so settlement composition can read HIVE_CONSENSUS
 	// bonds via BalanceRecord directly, bypassing the op-type-filter trap
@@ -129,10 +125,6 @@ type StateEngine struct {
 	// selfHiveUsername is the local node's Hive account name. Currently
 	// unused outside of tests now that settlement is leader-agnostic.
 	selfHiveUsername string
-
-	// lastPersistedTickHeight guards against re-saving an unchanged snapshot
-	// every block; we only write when the tracker advances to a new tick.
-	lastPersistedTickHeight uint64
 }
 
 //Transaction
@@ -653,7 +645,17 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				amtStr := op.Value["amount"].(map[string]interface{})["amount"].(string)
 				amt, err := strconv.ParseInt(amtStr, 10, 64)
 				if err != nil {
-					log.Warn("skipping transfer with unparseable amount", "tx", tx.TransactionID, "op", opIndex, "amount", amtStr, "err", err)
+					log.Warn(
+						"skipping transfer with unparseable amount",
+						"tx",
+						tx.TransactionID,
+						"op",
+						opIndex,
+						"amount",
+						amtStr,
+						"err",
+						err,
+					)
 					continue
 				}
 
@@ -1097,7 +1099,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 	if se.pendulumFeed != nil {
 		se.pendulumFeed.TickIfDue(block.BlockNumber)
-		se.persistPendulumSnapshotIfNew()
 	}
 }
 
@@ -1133,71 +1134,6 @@ func executeTxSafely(
 		}
 	}()
 	return vscTx.ExecuteTx(se, ledgerSession, rcSession, callSession, payer)
-}
-
-// persistPendulumSnapshotIfNew writes the current integer-form tick snapshot to
-// pendulum_oracle_snapshots if it represents a tick we haven't persisted yet.
-// All fields are deterministic across nodes (sorted witness aggregation + SQ64
-// arithmetic), so the persisted bson is byte-equal on every replaying node.
-func (se *StateEngine) persistPendulumSnapshotIfNew() {
-	if se == nil || se.pendulumFeed == nil || se.pendulumOracleDb == nil {
-		return
-	}
-	snap := se.pendulumFeed.LastTick()
-	if snap.TickBlockHeight == 0 || snap.TickBlockHeight == se.lastPersistedTickHeight {
-		return
-	}
-	rec := pendulum_oracle.SnapshotRecord{
-		TickBlockHeight:     snap.TickBlockHeight,
-		TrustedHivePriceBps: snap.TrustedHivePriceBps,
-		TrustedHiveOK:       snap.TrustedHiveOK,
-		HiveMovingAvgBps:    snap.HiveMovingAvgBps,
-		HiveMovingAvgOK:     snap.HiveMovingAvgOK,
-		HBDInterestRateBps:  snap.HBDInterestRateBps,
-		HBDInterestRateOK:   snap.HBDInterestRateOK,
-		TrustedWitnessGroup: snap.TrustedWitnessGroup,
-	}
-	rec.WitnessRewardReductions = se.computeRewardReductionsForTick(snap.TickBlockHeight)
-
-	// W7: populate geometry. Reads pool reserves + committee bond at the
-	// tick's block height; the W3 SDK method consumes this on every swap.
-	if se.pendulumGeometry != nil {
-		geo := se.pendulumGeometry.Compute(pendulumoracle.GeometryInputs{
-			BlockHeight:       snap.TickBlockHeight,
-			HivePriceHBDBps:   snap.TrustedHivePriceBps,
-			HivePriceOK:       snap.TrustedHiveOK,
-			WhitelistedPools:  se.sconf.PendulumPoolWhitelist(),
-			EffectiveStakeNum: 2,
-			EffectiveStakeDen: 3,
-		})
-		rec.GeometryOK = geo.OK
-		rec.GeometryV = geo.V
-		rec.GeometryP = geo.P
-		rec.GeometryE = geo.E
-		rec.GeometryT = geo.T
-		rec.GeometrySBps = geo.SBps
-	}
-
-	if err := se.pendulumOracleDb.SaveSnapshot(rec); err != nil {
-		log.Debug("pendulum oracle snapshot persist failed", "tick", snap.TickBlockHeight, "err", err)
-		return
-	}
-	se.lastPersistedTickHeight = snap.TickBlockHeight
-}
-
-// computeRewardReductionsForTick scores VSC committee liveness across the L1
-// block window (tickHeight - DefaultTickIntervalBlocks, tickHeight] using
-// the rewards/ aggregator. Returns sorted records suitable for inclusion in
-// the persisted SnapshotRecord. Read-only on MongoDB collections; safe to
-// call from the per-tick persistence path.
-func (se *StateEngine) computeRewardReductionsForTick(
-	tickHeight uint64,
-) []pendulum_oracle.WitnessRewardReductionRecord {
-	in := se.buildTickInputs(tickHeight)
-	if len(in.Committee) == 0 {
-		return nil
-	}
-	return rewards.AggregateTick(in)
 }
 
 // buildTickInputs assembles the per-tick L2 evidence bundle the rewards
@@ -1872,13 +1808,13 @@ func (se *StateEngine) PendulumOracleEnv() map[string]interface{} {
 	// points (BpsScale = 1.0); the wasm host serializer renders them as
 	// integer strings.
 	m := map[string]interface{}{
-		"pendulum.hbd_interest_rate_bps":     s.HBDInterestRateBps,
-		"pendulum.hbd_interest_rate_ok":      s.HBDInterestRateOK,
-		"pendulum.trusted_hive_price_bps":    s.TrustedHivePriceBps,
-		"pendulum.trusted_hive_mean_ok":      s.TrustedHiveOK,
-		"pendulum.hive_moving_avg_bps":       s.HiveMovingAvgBps,
-		"pendulum.hive_ma_ok":                s.HiveMovingAvgOK,
-		"pendulum.tick_block_height":         s.TickBlockHeight,
+		"pendulum.hbd_interest_rate_bps":  s.HBDInterestRateBps,
+		"pendulum.hbd_interest_rate_ok":   s.HBDInterestRateOK,
+		"pendulum.trusted_hive_price_bps": s.TrustedHivePriceBps,
+		"pendulum.trusted_hive_mean_ok":   s.TrustedHiveOK,
+		"pendulum.hive_moving_avg_bps":    s.HiveMovingAvgBps,
+		"pendulum.hive_ma_ok":             s.HiveMovingAvgOK,
+		"pendulum.tick_block_height":      s.TickBlockHeight,
 	}
 	if len(s.TrustedWitnessGroup) > 0 {
 		m["pendulum.trusted_witness_group"] = append([]string(nil), s.TrustedWitnessGroup...)
@@ -1903,7 +1839,6 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	tssKeys tss_db.TssKeys,
 	tssCommitments tss_db.TssCommitments,
 	tssRequests tss_db.TssRequests,
-	pendulumOracleDb pendulum_oracle.PendulumOracleSnapshots,
 	pendulumSettlementsDb pendulum_settlements.PendulumSettlements,
 	wasm *wasm_runtime.Wasm,
 	identityConfig common.IdentityConfig,
@@ -1965,7 +1900,6 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		LedgerState:  ledgerState,
 
 		pendulumFeed:          pendulumoracle.NewFeedTracker(),
-		pendulumOracleDb:      pendulumOracleDb,
 		pendulumSettlementsDb: pendulumSettlementsDb,
 		balanceDb:             balanceDb,
 	}
@@ -1973,22 +1907,26 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		se.selfHiveUsername = identityConfig.Get().HiveUsername
 	}
 
-	if pendulumOracleDb != nil {
-		se.pendulumApplier = pendulumwasm.New(
-			pendulumOracleDb,
-			func() []string { return sconf.PendulumPoolWhitelist() },
-			pendulumwasm.DefaultConfig(),
-		)
-		se.pendulumGeometry = pendulumoracle.NewGeometryComputer(
-			&pendulumPoolReserveReader{
-				states: &liveContractStateKeyReader{
-					contractState: se.contractState,
-					da:            se.da,
-				},
+	se.pendulumGeometry = pendulumoracle.NewGeometryComputer(
+		&pendulumPoolReserveReader{
+			states: &liveContractStateKeyReader{
+				contractState: se.contractState,
+				da:            se.da,
 			},
-			&pendulumCommitteeBondReader{se: se},
-		)
-	}
+		},
+		&pendulumCommitteeBondReader{se: se},
+	)
+	se.pendulumApplier = pendulumwasm.New(
+		&liveGeometryReader{
+			computer:          se.pendulumGeometry,
+			feed:              se.pendulumFeed,
+			whitelist:         func() []string { return sconf.PendulumPoolWhitelist() },
+			effectiveStakeNum: 2,
+			effectiveStakeDen: 3,
+		},
+		func() []string { return sconf.PendulumPoolWhitelist() },
+		pendulumwasm.DefaultConfig(),
+	)
 
 	return se
 }
