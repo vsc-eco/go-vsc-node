@@ -99,7 +99,7 @@ func newTestEnv() *testEnv {
 		witnessesDb, electionDb, contractDb, contractState,
 		txDb, ledgerDbImpl, balanceDb, nil,
 		interestClaims, vscBlocksDb, actionsDb, mockRcDb, nonceDb,
-		tssKeys, tssCommitments, tssRequests, nil, nil,
+		tssKeys, tssCommitments, tssRequests, nil,
 		nil, nil,
 	)
 
