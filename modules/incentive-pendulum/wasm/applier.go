@@ -79,6 +79,7 @@ var (
 	errInvalidArgument      = errors.New("invalid pendulum swap argument")
 	errInsufficientReserves = errors.New("insufficient reserves for pendulum split")
 	errAccrualFailed        = errors.New("pendulum accrual failed")
+	errArithmeticOverflow   = errors.New("pendulum arithmetic overflow")
 )
 
 func sdkErr[T any](inner error) result.Result[T] {
@@ -187,13 +188,19 @@ func (a *Applier) ApplySwapFees(
 	// P (and therefore s = V/E = 2P/E); HBD-out lowers it. A swap is
 	// corrective when its direction matches the move toward s = 0.5; any
 	// move away (including any move at exactly s = 0.5) is exacerbating.
-	rTradeBps := tradeRatioBps(args.X, args.XReserve)
+	rTradeBps, err := tradeRatioBps(args.X, args.XReserve)
+	if err != nil {
+		return sdkErr[wasm_context.PendulumSwapFeeResult](err)
+	}
 	stab := a.cfg.Stabilizer
 	if !exacerbatesFromSnapshot(sBps, assetIn == "hbd") {
 		// PDF §5: non-exacerbating swaps push at 0.7×.
 		stab.PushBps = pendulum.BpsScale * 70 / 100
 	}
-	multiplierBps := pendulum.StabilizerMultiplierBps(sBps, rTradeBps, stab)
+	multiplierBps, err := pendulum.StabilizerMultiplierBps(sBps, rTradeBps, stab)
+	if err != nil {
+		return sdkErr[wasm_context.PendulumSwapFeeResult](err)
+	}
 	chargedCLP := pendulum.ApplyMultiplierBps(baseCLP, multiplierBps)
 	chargedProtocol := pendulum.ApplyMultiplierBps(baseProtocol, multiplierBps)
 
@@ -333,12 +340,20 @@ func normalizeAsset(a string) string {
 	return string(out)
 }
 
-// tradeRatioBps returns r = x/X expressed in basis points. 0 if X is non-positive.
-func tradeRatioBps(x, X int64) int64 {
+// tradeRatioBps returns r = x/X expressed in basis points. (0, nil) if X
+// is non-positive (the stabilizer treats that as r=0 — same as a zero-size
+// trade, no destabilization). On int64 overflow returns
+// errArithmeticOverflow so the swap fails fast rather than feeding a
+// bogus ratio into StabilizerMultiplierBps.
+func tradeRatioBps(x, X int64) (int64, error) {
 	if X <= 0 {
-		return 0
+		return 0, nil
 	}
-	return intmath.MulDivFloorI64(x, pendulum.BpsScale, X)
+	v, ok := intmath.MulDivFloorI64(x, pendulum.BpsScale, X)
+	if !ok {
+		return 0, errArithmeticOverflow
+	}
+	return v, nil
 }
 
 // exacerbatesFromSnapshot derives the stabilizer "exacerbates" hint from the
