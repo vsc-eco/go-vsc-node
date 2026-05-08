@@ -838,15 +838,15 @@ func (bp *BlockProducer) MakePendulumSettlement(slotHeight uint64, session *data
 		return nil
 	}
 	bonds := pendulumsettlement.ReadCommitteeBonds(balanceReader, members, slotHeight)
-	if len(bonds) == 0 {
-		return nil
-	}
 
 	bucket := bp.StateEngine.PendulumNodesBucketBalance(slotHeight)
-	if !pendulumsettlement.PreCheckBucket(bucket) {
-		return nil
-	}
 
+	// Always proceed to ComposeRecord — including for an empty-activity
+	// epoch (bucket == 0) where the leader still emits a marker-only
+	// record. Without it, GetLatestSettledEpoch never advances and the
+	// next vsc.election_result is rejected by the prev-epoch chain-
+	// continuity check. ComposeRecord skips the bonds requirement when
+	// there is nothing to distribute.
 	prevEpoch := bp.StateEngine.GetLatestSettledEpoch()
 	tickInterval := bp.StateEngine.PendulumOracleTickInterval()
 	reductions := computeEpochReductions(bp.StateEngine, election.BlockHeight, slotHeight, tickInterval)

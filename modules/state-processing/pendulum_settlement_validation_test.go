@@ -167,6 +167,25 @@ func TestValidate_RejectsNonMemberReduction(t *testing.T) {
 	}
 }
 
+func TestValidate_AcceptsEmptyMarkerRecord(t *testing.T) {
+	// Marker-only record for a no-activity epoch: bucket=0, no
+	// distributions, no reductions. The arithmetic invariants hold (0+0=0)
+	// and there are no accounts to membership-check.
+	se := withElection(2000, "alice", "bob")
+	rec := pendulumsettlement.SettlementRecord{
+		Epoch:               5,
+		PrevEpoch:           4,
+		SnapshotRangeFrom:   1000,
+		SnapshotRangeTo:     2000,
+		BucketBalanceHBD:    0,
+		TotalDistributedHBD: 0,
+		ResidualHBD:         0,
+	}
+	if err := se.validatePendulumSettlement(rec); err != nil {
+		t.Fatalf("empty marker record rejected: %v", err)
+	}
+}
+
 func TestValidate_NormalizesUnprefixedAccounts(t *testing.T) {
 	// Compose may emit accounts without the "hive:" prefix; the validator
 	// must tolerate that since the on-chain election has the same nuance.
