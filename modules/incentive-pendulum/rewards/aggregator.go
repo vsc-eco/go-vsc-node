@@ -2,9 +2,30 @@ package rewards
 
 import (
 	"sort"
-
-	pendulum_oracle "vsc-node/modules/db/vsc/pendulum_oracle"
 )
+
+// WitnessRewardReductionRecord is one row of the per-tick reward-reduction
+// list. Bps is the consolidated per-tick value (post max-of, post-clamp)
+// used by settlement math. Evidence breaks out the per-signal raw bps for
+// debugging and dispute resolution; the consolidated Bps is the max-of (not
+// the sum), so settlement reads only Bps.
+type WitnessRewardReductionRecord struct {
+	Witness  string
+	Bps      int
+	Evidence WitnessLivenessEvidence
+}
+
+// WitnessLivenessEvidence breaks the per-tick reduction into its 5
+// underlying signals. Read by `AggregateTick` callers (currently only
+// `ComputeReductionsForEpoch` for settlement composition); not consumed by
+// the settlement math itself.
+type WitnessLivenessEvidence struct {
+	BlockProductionBps         int
+	BlockAttestationBps        int
+	TssReshareExclusionBps     int
+	TssBlameBps                int
+	TssSignNonParticipationBps int
+}
 
 // TickInputs bundles the per-signal pre-fetched data the aggregator consumes
 // to produce one tick's reward-reduction records. Each field is the output of
@@ -36,9 +57,8 @@ type TickBlockHeader struct {
 // AggregateTick computes per-witness reward-reduction records for one tick:
 // per-signal raw bps → per-signal pre-clamp at PerTickCapBps → max-of across
 // signals → final clamp at PerTickCapBps. Returns records sorted
-// lexicographically by Witness so the caller can persist them with
-// byte-stable bson encoding across nodes.
-func AggregateTick(in TickInputs) []pendulum_oracle.WitnessRewardReductionRecord {
+// lexicographically by Witness.
+func AggregateTick(in TickInputs) []WitnessRewardReductionRecord {
 	if len(in.Committee) == 0 {
 		return nil
 	}
@@ -49,14 +69,14 @@ func AggregateTick(in TickInputs) []pendulum_oracle.WitnessRewardReductionRecord
 	tssB := ScoreTssBlame(in.Blames)
 	tssC := ScoreTssSignNonParticipation(in.Signs)
 
-	out := make([]pendulum_oracle.WitnessRewardReductionRecord, 0, len(in.Committee))
+	out := make([]WitnessRewardReductionRecord, 0, len(in.Committee))
 
-	// Iterate committee in sorted order so persisted bson is deterministic.
+	// Iterate committee in sorted order so output is deterministic.
 	committee := append([]string(nil), in.Committee...)
 	sort.Strings(committee)
 
 	for _, w := range committee {
-		ev := pendulum_oracle.WitnessLivenessEvidence{
+		ev := WitnessLivenessEvidence{
 			BlockProductionBps:         clampPerTick(prod[w]),
 			BlockAttestationBps:        clampPerTick(att[w]),
 			TssReshareExclusionBps:     clampPerTick(tssA[w]),
@@ -72,12 +92,7 @@ func AggregateTick(in TickInputs) []pendulum_oracle.WitnessRewardReductionRecord
 		)
 		bps = clampPerTick(bps)
 
-		// Only emit records for witnesses with non-zero bps OR with any
-		// evidence — a fully-clean witness gets a zero record so explorers
-		// can show "you are at 0 bps" rather than "you have no record".
-		// In practice, persisting every committee member's row keeps the
-		// snapshot self-describing.
-		out = append(out, pendulum_oracle.WitnessRewardReductionRecord{
+		out = append(out, WitnessRewardReductionRecord{
 			Witness:  w,
 			Bps:      bps,
 			Evidence: ev,
@@ -111,48 +126,6 @@ func scoreAttestationFromHeaders(blocks []TickBlockHeader, committee []string) m
 			}
 			out[member] += BlockAttestationMissBps
 		}
-	}
-	return out
-}
-
-// AggregateEpoch aggregates per-witness bps across an epoch's snapshot
-// range. For each witness:
-//   1. Sum the per-tick consolidated Bps across all snapshots
-//   2. Subtract PerEpochForgivenessBps (clamped at 0)
-//   3. Clamp the result to [0, PerEpochCapBps]
-//
-// Returns a map keyed by witness account; witnesses with zero effective bps
-// are omitted so callers can iterate the result and only see those whose
-// rewards are actually reduced.
-func AggregateEpoch(snapshots []pendulum_oracle.SnapshotRecord) map[string]int {
-	if len(snapshots) == 0 {
-		return nil
-	}
-	totals := make(map[string]int)
-	for _, snap := range snapshots {
-		for _, entry := range snap.WitnessRewardReductions {
-			if entry.Witness == "" || entry.Bps <= 0 {
-				continue
-			}
-			totals[entry.Witness] += entry.Bps
-		}
-	}
-	if len(totals) == 0 {
-		return nil
-	}
-	out := make(map[string]int, len(totals))
-	for w, raw := range totals {
-		eff := raw - PerEpochForgivenessBps
-		if eff <= 0 {
-			continue
-		}
-		if eff > PerEpochCapBps {
-			eff = PerEpochCapBps
-		}
-		out[w] = eff
-	}
-	if len(out) == 0 {
-		return nil
 	}
 	return out
 }

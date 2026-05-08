@@ -8,7 +8,6 @@ import (
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
-	pendulum_oracle "vsc-node/modules/db/vsc/pendulum_oracle"
 	pendulum_settlements "vsc-node/modules/db/vsc/pendulum_settlements"
 	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 	ledgerSystem "vsc-node/modules/ledger-system"
@@ -41,14 +40,12 @@ func NewForGeometryTest(
 	ls ledgerSystem.LedgerSystem,
 	electionDb elections.Elections,
 	balanceDb ledgerDb.Balances,
-	pendulumOracleDb pendulum_oracle.PendulumOracleSnapshots,
 	pendulumSettlementsDb pendulum_settlements.PendulumSettlements,
 ) *StateEngine {
 	return &StateEngine{
 		LedgerSystem:          ls,
 		electionDb:            electionDb,
 		balanceDb:             balanceDb,
-		pendulumOracleDb:      pendulumOracleDb,
 		pendulumSettlementsDb: pendulumSettlementsDb,
 	}
 }
@@ -88,6 +85,50 @@ func (r *liveContractStateKeyReader) ReadStateKey(contractID string, blockHeight
 		return nil, false
 	}
 	return raw, true
+}
+
+// liveGeometryReader implements pendulumwasm.GeometryReader by recomputing
+// the (V, P, E, T, sBps) tuple on every swap call from on-chain inputs:
+// the FeedTracker's most-recent-tick price + the GeometryComputer wired
+// against committee bond and pool state-key reserves.
+//
+// Per-swap cost: one feed read + one committee-bond sum + one state-key
+// read per whitelisted pool. All inputs are deterministic at the swap's
+// block height — two honest nodes processing the same block produce
+// identical outputs.
+//
+// `OK == false` on the returned outputs surfaces as ErrSnapshotUnavailable
+// to the contract caller, matching the prior pre-warmup gate semantics.
+type liveGeometryReader struct {
+	computer          *pendulumoracle.GeometryComputer
+	feed              *pendulumoracle.FeedTracker
+	whitelist         func() []string
+	effectiveStakeNum int64
+	effectiveStakeDen int64
+}
+
+func (r *liveGeometryReader) GeometryAt(blockHeight uint64) (pendulumoracle.GeometryOutputs, bool) {
+	if r == nil || r.computer == nil || r.feed == nil {
+		return pendulumoracle.GeometryOutputs{}, false
+	}
+	tick := r.feed.LastTick()
+	num, den := r.effectiveStakeNum, r.effectiveStakeDen
+	if num <= 0 || den <= 0 {
+		num, den = 2, 3
+	}
+	var pools []string
+	if r.whitelist != nil {
+		pools = r.whitelist()
+	}
+	out := r.computer.Compute(pendulumoracle.GeometryInputs{
+		BlockHeight:       blockHeight,
+		HivePriceHBDBps:   tick.TrustedHivePriceBps,
+		HivePriceOK:       tick.TrustedHiveOK,
+		WhitelistedPools:  pools,
+		EffectiveStakeNum: num,
+		EffectiveStakeDen: den,
+	})
+	return out, out.OK
 }
 
 // pendulumPoolReserveReader reads each whitelisted pool's HBD-side reserve

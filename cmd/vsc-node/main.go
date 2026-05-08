@@ -22,7 +22,6 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
-	"vsc-node/modules/db/vsc/pendulum_oracle"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
@@ -91,7 +90,6 @@ func main() {
 	tssKeys := tss_db.NewKeys(vscDb)
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
-	pendulumOracleDb := pendulum_oracle.New(vscDb)
 	pendulumSettlementsDb := pendulum_settlements.New(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
 	wasm_sdk.Init(sysConfig.OnMainnet())
@@ -187,7 +185,6 @@ func main() {
 		tssKeys,
 		tssCommitments,
 		tssRequests,
-		pendulumOracleDb,
 		pendulumSettlementsDb,
 		wasm,
 		identityConfig,
@@ -274,7 +271,6 @@ func main() {
 		TssRequests:    tssRequests,
 		InterestClaims: interestClaims,
 		ChainOracle:    oracle.ChainOracle(),
-		PendulumOracle: pendulumOracleDb,
 	}}), gqlConf)
 
 	plugins := make([]aggregate.Plugin, 0)
@@ -309,7 +305,6 @@ func main() {
 		tssKeys,
 		tssCommitments,
 		tssRequests,
-		pendulumOracleDb,
 		pendulumSettlementsDb,
 
 		p2p,

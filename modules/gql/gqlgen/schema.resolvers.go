@@ -776,64 +776,6 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 	return results, nil
 }
 
-// PendulumOracleSnapshot is the resolver for the pendulumOracleSnapshot field.
-func (r *queryResolver) PendulumOracleSnapshot(ctx context.Context, blockHeight model.Uint64) (*PendulumOracleSnapshot, error) {
-	if r.PendulumOracle == nil {
-		return nil, nil
-	}
-	rec, ok, err := r.PendulumOracle.GetSnapshotAtOrBefore(uint64(blockHeight))
-	if err != nil {
-		return nil, err
-	}
-	if !ok || rec == nil {
-		return nil, nil
-	}
-	out := pendulumSnapshotToGQL(*rec)
-	return &out, nil
-}
-
-// PendulumOracleSnapshotsInRange is the resolver for the pendulumOracleSnapshotsInRange field.
-func (r *queryResolver) PendulumOracleSnapshotsInRange(ctx context.Context, fromBlock model.Uint64, toBlock model.Uint64) ([]PendulumOracleSnapshot, error) {
-	if r.PendulumOracle == nil {
-		return []PendulumOracleSnapshot{}, nil
-	}
-	if uint64(toBlock) < uint64(fromBlock) {
-		return nil, fmt.Errorf("toBlock must be >= fromBlock")
-	}
-	recs, err := r.PendulumOracle.GetSnapshotsInRange(uint64(fromBlock), uint64(toBlock))
-	if err != nil {
-		return nil, err
-	}
-	out := make([]PendulumOracleSnapshot, 0, len(recs))
-	for _, rec := range recs {
-		out = append(out, pendulumSnapshotToGQL(rec))
-	}
-	return out, nil
-}
-
-// PendulumGeometry is the resolver for the pendulumGeometry field.
-func (r *queryResolver) PendulumGeometry(ctx context.Context, blockHeight model.Uint64) (*PendulumGeometry, error) {
-	if r.PendulumOracle == nil {
-		return nil, nil
-	}
-	rec, ok, err := r.PendulumOracle.GetSnapshotAtOrBefore(uint64(blockHeight))
-	if err != nil {
-		return nil, err
-	}
-	if !ok || rec == nil {
-		return nil, nil
-	}
-	return &PendulumGeometry{
-		TickBlockHeight: model.Uint64(rec.TickBlockHeight),
-		Ok:              rec.GeometryOK,
-		VHbd:            model.Int64(rec.GeometryV),
-		PHbd:            model.Int64(rec.GeometryP),
-		EHbd:            model.Int64(rec.GeometryE),
-		THive:           model.Int64(rec.GeometryT),
-		SBps:            model.Int64(rec.GeometrySBps),
-	}, nil
-}
-
 // Amount is the resolver for the amount field.
 func (r *rcRecordResolver) Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error) {
 	return model.Int64(obj.Amount), nil

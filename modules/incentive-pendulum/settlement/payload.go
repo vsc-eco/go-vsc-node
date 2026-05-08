@@ -43,9 +43,8 @@ type SettlementRecord struct {
 	PrevEpoch uint64 `json:"prev_epoch" refmt:"prev_epoch"`
 
 	// Block-height bounds of the L2 evidence window the reductions cover.
-	// SnapshotRangeFrom is exclusive (matches GetSnapshotsInRange semantics);
-	// SnapshotRangeTo is inclusive and equals the slot height the record was
-	// composed at.
+	// SnapshotRangeFrom is exclusive; SnapshotRangeTo is inclusive and
+	// equals the slot height the record was composed at.
 	SnapshotRangeFrom uint64 `json:"snapshot_range_from" refmt:"snapshot_range_from"`
 	SnapshotRangeTo   uint64 `json:"snapshot_range_to" refmt:"snapshot_range_to"`
 

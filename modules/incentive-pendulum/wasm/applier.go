@@ -12,18 +12,21 @@ import (
 
 	"vsc-node/lib/intmath"
 	"vsc-node/modules/db/vsc/contracts"
-	pendulum_oracle "vsc-node/modules/db/vsc/pendulum_oracle"
 	pendulum "vsc-node/modules/incentive-pendulum"
+	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 	wasm_context "vsc-node/modules/wasm/context"
 
 	"github.com/JustinKnueppel/go-result"
 )
 
-// SnapshotReader is the read-side of pendulum_oracle.PendulumOracleSnapshots
-// the applier needs. Pulled out so tests can stub it without standing up
-// MongoDB.
-type SnapshotReader interface {
-	GetSnapshotAtOrBefore(blockHeight uint64) (*pendulum_oracle.SnapshotRecord, bool, error)
+// GeometryReader returns the live (V, P, E, T, sBps) geometry for a swap at
+// the given block height. Production wires the GeometryComputer + FeedTracker
+// directly; tests stub with a static value. The boolean follows
+// `GeometryOutputs.OK` semantics — if false the applier rejects the swap with
+// `errSnapshotUnavailable` (the geometry isn't computable yet, e.g. pre-W7
+// warmup before bond data exists).
+type GeometryReader interface {
+	GeometryAt(blockHeight uint64) (pendulumoracle.GeometryOutputs, bool)
 }
 
 // WhitelistGetter returns the current pool whitelist (returned slice may be a
@@ -56,7 +59,7 @@ func DefaultConfig() Config {
 // It is stateless across calls — per-call ledger movement happens through the
 // AccrueNodeBucketFn the execution context supplies at call time.
 type Applier struct {
-	snapshots SnapshotReader
+	geometry  GeometryReader
 	whitelist WhitelistGetter
 	cfg       Config
 }
@@ -64,8 +67,8 @@ type Applier struct {
 // New constructs an Applier. Any nil dep produces an applier that always
 // returns ErrUnimplemented from ApplySwapFees, so the wasm runtime can call
 // without worrying about partial wiring.
-func New(snapshots SnapshotReader, whitelist WhitelistGetter, cfg Config) *Applier {
-	return &Applier{snapshots: snapshots, whitelist: whitelist, cfg: cfg}
+func New(geometry GeometryReader, whitelist WhitelistGetter, cfg Config) *Applier {
+	return &Applier{geometry: geometry, whitelist: whitelist, cfg: cfg}
 }
 
 // Sentinel errors. Wrapped with contracts.SDK_ERROR so the wasm runtime maps
@@ -106,7 +109,7 @@ func (a *Applier) ApplySwapFees(
 	args wasm_context.PendulumSwapFeeArgs,
 	accrueNodeBucket wasm_context.AccrueNodeBucketFn,
 ) result.Result[wasm_context.PendulumSwapFeeResult] {
-	if a == nil || a.snapshots == nil || a.whitelist == nil || accrueNodeBucket == nil {
+	if a == nil || a.geometry == nil || a.whitelist == nil || accrueNodeBucket == nil {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errors.New("pendulum applier not configured"))
 	}
 
@@ -129,16 +132,18 @@ func (a *Applier) ApplySwapFees(
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
 	}
 
-	// 2. Read snapshot.
-	snap, ok, err := a.snapshots.GetSnapshotAtOrBefore(blockHeight)
-	if err != nil || !ok || snap == nil || !snap.GeometryOK {
+	// 2. Read live geometry. Recomputed at the swap's block height from
+	// on-chain inputs (committee bond + whitelisted pool reserves) — no
+	// per-tick snapshot cache.
+	geo, ok := a.geometry.GeometryAt(blockHeight)
+	if !ok || !geo.OK {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errSnapshotUnavailable)
 	}
-	V := big.NewInt(snap.GeometryV)
-	E := big.NewInt(snap.GeometryE)
-	P := big.NewInt(snap.GeometryP)
-	T := big.NewInt(snap.GeometryT)
-	sBps := snap.GeometrySBps
+	V := big.NewInt(geo.V)
+	E := big.NewInt(geo.E)
+	P := big.NewInt(geo.P)
+	T := big.NewInt(geo.T)
+	sBps := geo.SBps
 	if E.Sign() <= 0 || T.Sign() <= 0 {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errSnapshotUnavailable)
 	}
