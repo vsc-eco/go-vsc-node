@@ -51,7 +51,7 @@ func readerForTest(states pendulumoracle.PoolReserveReader) pendulumoracle.PoolR
 
 func newPoolReserveReader(t *testing.T, states *stubStates) pendulumoracle.PoolReserveReader {
 	t.Helper()
-	se := state_engine.NewForGeometryTest(nil, nil, nil, nil, nil)
+	se := state_engine.NewForGeometryTest(nil, nil, nil, nil)
 	return se.PendulumPoolReserveReaderForTest(states)
 }
 
