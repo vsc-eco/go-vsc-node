@@ -52,6 +52,17 @@ func (m *MovingAverageRing) Mean() (int64, bool) {
 	return s / int64(m.len), true
 }
 
+// IsFull reports whether the ring has reached its capacity. Used by the
+// FeedTracker's warmup gate to decide when in-memory state matches a long-
+// running peer (a partial ring would expose a divergent moving-average
+// value to consumers).
+func (m *MovingAverageRing) IsFull() bool {
+	if m == nil {
+		return false
+	}
+	return m.len >= m.N
+}
+
 // Reset clears the buffer.
 func (m *MovingAverageRing) Reset() {
 	if m == nil {

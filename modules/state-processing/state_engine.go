@@ -1765,6 +1765,24 @@ func (se *StateEngine) Init() error {
 	if err := se.tssKeys.DeprecateLegacyKeys(); err != nil {
 		tssLog.Warn("DeprecateLegacyKeys failed during init", "err", err)
 	}
+
+	// Warm the pendulum FeedTracker before the block consumer starts so the
+	// in-memory rolling state (signature window + MA ring + per-witness
+	// quotes) matches long-running peers. Without warmup, the first ~300
+	// blocks after a restart expose a partial MA to the swap applier and
+	// contract env keys — different across nodes that started at different
+	// heights, which forks any contract that consumes those values.
+	//
+	// Failure here is non-fatal: the tracker stays unwarmed, callers see
+	// Warmed()=false and degrade gracefully (applier rejects swaps with
+	// errSnapshotUnavailable; env returns nil) until natural ingest fills
+	// both rings ~400 blocks later.
+	if se.pendulumFeed != nil && se.hiveBlocks != nil {
+		if err := se.pendulumFeed.Warmup(se.hiveBlocks); err != nil {
+			log.Warn("pendulum feed warmup failed; tracker will warm organically", "err", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1801,6 +1819,13 @@ func (se *StateEngine) PendulumApplier() wasm_context.PendulumApplier {
 // PendulumOracleEnv implements common_types.StateEngine: values merged into wasm contract env (system.get_env).
 func (se *StateEngine) PendulumOracleEnv() map[string]interface{} {
 	if se == nil || se.pendulumFeed == nil {
+		return nil
+	}
+	// Withhold env keys until the tracker is warm. The exposed values
+	// include the moving average and trusted-witness group, both of which
+	// diverge across nodes during the warmup window — any contract that
+	// reads them and writes derived state would fork the chain.
+	if !se.pendulumFeed.Warmed() {
 		return nil
 	}
 	s := se.pendulumFeed.LastTick()
