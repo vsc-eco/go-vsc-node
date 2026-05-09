@@ -4,15 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"math"
 	"slices"
 	"strings"
 	"time"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/oracle/p2p"
 )
 
 const float64Epsilon = 1e-9
+
+var priceLog = vsclog.Module("oracle-price")
 
 // HandleBlockTick implements oracle.BlockTickHandler.
 func (o *PriceOracle) HandleBlockTick(
@@ -110,7 +112,7 @@ func pricePointCollector(
 			for _, pp := range pricePoints {
 				v, ok := appBuf[sym]
 				if !ok {
-					log.Println("unsupported symbol", sym)
+					priceLog.Warn("unsupported symbol", "symbol", sym)
 				}
 
 				pricePointExpired := timeThreshold.After(pp.CollectedAt)
