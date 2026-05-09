@@ -73,7 +73,7 @@ func main() {
 
 	dbImpl := db.New(dbConf)
 	vscDb := vsc.New(dbImpl, dbConf)
-	reindexDb := db.NewReindex(vscDb.DbInstance)
+	reindexDb := db.NewReindex(vscDb.DbInstance, args.forceReindex)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)
 	vscBlocks := vscBlocks.New(vscDb)
