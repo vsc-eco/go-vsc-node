@@ -19,6 +19,7 @@ var IMMUTABLE_COLLECTIONS = []string{
 
 type DbReindex struct {
 	*DbInstance
+	force bool
 }
 
 func (dbr *DbReindex) Init() error {
@@ -38,8 +39,12 @@ func (dbr *DbReindex) Init() error {
 		log.Verbose("reindex metadata", "reindex_id", indexId)
 	}
 
-	if indexId != uint64(REINDEX_ID) {
-		log.Info("reindexing database", "from", indexId, "to", REINDEX_ID)
+	if indexId != uint64(REINDEX_ID) || dbr.force {
+		if dbr.force {
+			log.Info("force reindexing database", "from", indexId, "to", REINDEX_ID)
+		} else {
+			log.Info("reindexing database", "from", indexId, "to", REINDEX_ID)
+		}
 		cols, _ := dbr.ListCollectionNames(ctx, bson.M{})
 
 		for _, name := range cols {
@@ -61,8 +66,8 @@ func (dbr *DbReindex) Init() error {
 	return nil
 }
 
-func NewReindex(db *DbInstance) *DbReindex {
-	return &DbReindex{db}
+func NewReindex(db *DbInstance, force bool) *DbReindex {
+	return &DbReindex{db, force}
 }
 
 type SearchResult struct {
