@@ -229,6 +229,8 @@ func main() {
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
 
+	prefetcher := stateEngine.NewPrefetcher(hiveBlocks, da, blockStatus, args.prefetchLookahead, args.prefetchParallelism)
+
 	flatDb, err := flatfs.CreateOrOpen(path.Join(args.dataDir, "tss-keys"), flatfs.Prefix(1), false)
 	if err != nil {
 		panic(err)
@@ -317,6 +319,7 @@ func main() {
 		oracle,
 		ep,
 		multisig,
+		prefetcher,
 		sr,
 
 		//WASM execution environment
