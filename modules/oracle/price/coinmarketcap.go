@@ -2,7 +2,6 @@ package price
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -62,7 +61,7 @@ func (c *coinMarketCapHandler) queryMarketPrice(
 
 	marketPrices, err := c.fetchPrices(symbols)
 	if err != nil {
-		log.Println("[coinmarketcap] failed to query market data:", err)
+		priceLog.With("source", "coinmarketcap").Error("failed to query market data", "err", err)
 	}
 
 	observePricePoints := make(map[string]p2p.ObservePricePoint)
