@@ -62,7 +62,7 @@ func newBlameScoreMgr(
 		tssCommitments: &test_utils.MockTssCommitmentsDb{
 			Commitments: blamesToCommitments(blamesByEpoch),
 		},
-		metrics: &Metrics{BlameCount: make(map[string]int64)},
+		metrics: &Metrics{},
 	}
 }
 
@@ -397,7 +397,7 @@ func TestBlameScore_ElectionLookupFailure(t *testing.T) {
 		tssCommitments: &test_utils.MockTssCommitmentsDb{
 			Commitments: make(map[string]tss_db.TssCommitment),
 		},
-		metrics: &Metrics{BlameCount: make(map[string]int64)},
+		metrics: &Metrics{},
 	}
 
 	result := mgr.BlameScore()

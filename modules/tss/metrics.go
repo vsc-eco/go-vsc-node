@@ -1,167 +1,122 @@
 package tss
 
 import (
-	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// Metrics tracks TSS operation metrics for observability
-type Metrics struct {
-	mu sync.RWMutex
+var (
+	reshareSuccess = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "magi", Subsystem: "tss",
+		Name: "reshare_success_total",
+		Help: "Total successful reshare sessions",
+	})
+	reshareFailure = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "magi", Subsystem: "tss",
+		Name: "reshare_failure_total",
+		Help: "Total failed reshare sessions",
+	})
+	reshareTimeout = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "magi", Subsystem: "tss",
+		Name: "reshare_timeout_total",
+		Help: "Total reshare sessions that ended in timeout",
+	})
+	reshareDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Namespace: "magi", Subsystem: "tss",
+		Name:    "reshare_duration_seconds",
+		Help:    "Histogram of reshare session completion durations",
+		Buckets: prometheus.ExponentialBuckets(0.5, 2, 10),
+	})
+	msgSendFailures = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "magi", Subsystem: "tss",
+		Name: "message_send_failures_total",
+		Help: "Total failed P2P message sends",
+	})
+	msgDrops = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "magi", Subsystem: "tss",
+		Name: "message_drop_total",
+		Help: "Total dropped messages (no matching session)",
+	})
+	msgRetries = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "magi", Subsystem: "tss",
+		Name: "message_retry_total",
+		Help: "Total P2P message retries",
+	})
+	msgSendLatency = promauto.NewHistogram(prometheus.HistogramOpts{
+		Namespace: "magi", Subsystem: "tss",
+		Name:    "message_send_latency_seconds",
+		Help:    "Histogram of P2P message send latencies",
+		Buckets: prometheus.ExponentialBuckets(0.001, 2, 12),
+	})
+	blameCount = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "magi", Subsystem: "tss",
+		Name: "blame_total",
+		Help: "Total blame events attributed to each node",
+	}, []string{"node"})
+	banCount = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "magi", Subsystem: "tss",
+		Name: "ban_total",
+		Help: "Total node bans",
+	})
+	readinessFailures = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "magi", Subsystem: "tss",
+		Name: "participant_readiness_failures_total",
+		Help: "Total participant readiness check failures",
+	})
+)
 
-	// Reshare metrics
-	ReshareDuration      []time.Duration // Histogram of reshare completion times
-	ReshareSuccessCount  int64           // Counter of successful reshares
-	ReshareFailureCount  int64           // Counter of failed reshares
-	ReshareTimeoutCount  int64           // Counter of timeout occurrences
+// Metrics is a thin handle exposing typed helpers for TSS instrumentation.
+// All counters/histograms back onto the default Prometheus registry.
+type Metrics struct{}
 
-	// Message metrics
-	MessageSendFailures  int64           // Counter of failed message sends
-	MessageDrops         int64           // Counter of dropped messages (missing actionMap)
-	MessageRetryCount    int64           // Counter of message retries
-	MessageSendLatency   []time.Duration // Histogram of message send latencies
+var globalMetrics = &Metrics{}
 
-	// Blame metrics
-	BlameCount           map[string]int64 // Counter of blame events per node
-	BanCount             int64            // Counter of node bans
-
-	// Participant metrics
-	ParticipantReadinessFailures int64 // Counter of readiness check failures
-}
-
-var globalMetrics = &Metrics{
-	BlameCount: make(map[string]int64),
-}
-
-// GetMetrics returns the global metrics instance
 func GetMetrics() *Metrics {
 	return globalMetrics
 }
 
-// RecordReshareDuration records a reshare completion duration
-func (m *Metrics) RecordReshareDuration(duration time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.ReshareDuration = append(m.ReshareDuration, duration)
-	// Keep only last 100 entries
-	if len(m.ReshareDuration) > 100 {
-		m.ReshareDuration = m.ReshareDuration[len(m.ReshareDuration)-100:]
-	}
+func (m *Metrics) RecordReshareDuration(d time.Duration) {
+	reshareDuration.Observe(d.Seconds())
 }
 
-// IncrementReshareSuccess increments successful reshare counter
 func (m *Metrics) IncrementReshareSuccess() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.ReshareSuccessCount++
+	reshareSuccess.Inc()
 }
 
-// IncrementReshareFailure increments failed reshare counter
 func (m *Metrics) IncrementReshareFailure() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.ReshareFailureCount++
+	reshareFailure.Inc()
 }
 
-// IncrementReshareTimeout increments timeout counter
 func (m *Metrics) IncrementReshareTimeout() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.ReshareTimeoutCount++
+	reshareTimeout.Inc()
 }
 
-// IncrementMessageSendFailure increments failed message send counter
 func (m *Metrics) IncrementMessageSendFailure() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.MessageSendFailures++
+	msgSendFailures.Inc()
 }
 
-// IncrementMessageDrop increments dropped message counter
 func (m *Metrics) IncrementMessageDrop() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.MessageDrops++
+	msgDrops.Inc()
 }
 
-// IncrementMessageRetry increments message retry counter
 func (m *Metrics) IncrementMessageRetry() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.MessageRetryCount++
+	msgRetries.Inc()
 }
 
-// RecordMessageSendLatency records message send latency
 func (m *Metrics) RecordMessageSendLatency(latency time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.MessageSendLatency = append(m.MessageSendLatency, latency)
-	// Keep only last 100 entries
-	if len(m.MessageSendLatency) > 100 {
-		m.MessageSendLatency = m.MessageSendLatency[len(m.MessageSendLatency)-100:]
-	}
+	msgSendLatency.Observe(latency.Seconds())
 }
 
-// IncrementBlameCount increments blame count for a specific node
 func (m *Metrics) IncrementBlameCount(nodeAccount string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.BlameCount[nodeAccount]++
+	blameCount.WithLabelValues(nodeAccount).Inc()
 }
 
-// IncrementBanCount increments ban counter
 func (m *Metrics) IncrementBanCount() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.BanCount++
+	banCount.Inc()
 }
 
-// IncrementParticipantReadinessFailure increments readiness check failure counter
 func (m *Metrics) IncrementParticipantReadinessFailure() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.ParticipantReadinessFailures++
-}
-
-// GetStats returns current metric statistics
-func (m *Metrics) GetStats() map[string]interface{} {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	stats := make(map[string]interface{})
-	stats["reshare_success_count"] = m.ReshareSuccessCount
-	stats["reshare_failure_count"] = m.ReshareFailureCount
-	stats["reshare_timeout_count"] = m.ReshareTimeoutCount
-	stats["message_send_failures"] = m.MessageSendFailures
-	stats["message_drops"] = m.MessageDrops
-	stats["message_retry_count"] = m.MessageRetryCount
-	stats["ban_count"] = m.BanCount
-	stats["participant_readiness_failures"] = m.ParticipantReadinessFailures
-
-	// Calculate average reshare duration
-	if len(m.ReshareDuration) > 0 {
-		var total time.Duration
-		for _, d := range m.ReshareDuration {
-			total += d
-		}
-		stats["reshare_avg_duration_ms"] = total.Milliseconds() / int64(len(m.ReshareDuration))
-	}
-
-	// Calculate average message send latency
-	if len(m.MessageSendLatency) > 0 {
-		var total time.Duration
-		for _, d := range m.MessageSendLatency {
-			total += d
-		}
-		stats["message_avg_latency_ms"] = total.Milliseconds() / int64(len(m.MessageSendLatency))
-	}
-
-	// Blame counts per node
-	blameCounts := make(map[string]int64)
-	for node, count := range m.BlameCount {
-		blameCounts[node] = count
-	}
-	stats["blame_counts"] = blameCounts
-
-	return stats
+	readinessFailures.Inc()
 }

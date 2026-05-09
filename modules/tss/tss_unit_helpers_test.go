@@ -72,7 +72,7 @@ func newTestTssManager(t *testing.T, myAccount string) *TssManager {
 		sigChannels:    make(map[string]chan sigMsg),
 		messageBuffer:  newSessionBuffer(),
 		witnessDb:      &test_utils.MockWitnessDb{},
-		metrics:        &Metrics{BlameCount: make(map[string]int64)},
+		metrics:        &Metrics{},
 	}
 	mgr.lastBlockHeight.Store(1000) // reasonable current height
 	return mgr

@@ -52,7 +52,12 @@ type IngestOptions struct {
 var MAX_TX_SIZE = 16384
 
 // Ingests and verifies a transaction
-func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...IngestOptions) (*cid.Cid, error) {
+func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...IngestOptions) (cidOut *cid.Cid, retErr error) {
+	defer func() {
+		if retErr != nil {
+			txIngestFailures.Inc()
+		}
+	}()
 	if sTx.Sig == nil {
 		return nil, errors.New("no signature provided")
 	}
@@ -218,10 +223,12 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 		err = tp.Broadcast(cidz.String(), sTx)
 		log.Verbose("broadcasting transaction", "cid", cidz.String(), "err", err)
 		if err != nil {
+			txBroadcastFailures.Inc()
 			return nil, err
 		}
 	}
 
+	txIngestTotal.Inc()
 	return &cidz, nil
 }
 
