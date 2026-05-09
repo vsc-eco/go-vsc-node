@@ -324,7 +324,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 	blockStart := time.Now()
 	defer func() {
-		globalProfile.Record("total", time.Since(blockStart))
+		elapsed := time.Since(blockStart)
+		globalProfile.Record("total", elapsed)
+		blockProcessDuration.Observe(elapsed.Seconds())
+		blocksProcessed.Inc()
 		n := globalProfile.IncBlock(block.BlockNumber)
 		if n%5000 == 0 {
 			globalProfile.LogSummary(block.BlockNumber)
@@ -1461,6 +1464,7 @@ func (se *StateEngine) committeeAccountsAtHeight(height uint64) []string {
 }
 
 func (se *StateEngine) ExecuteBatch() {
+	txBatchSize.Set(float64(len(se.TxBatch)))
 
 	lastBlock, _ := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight)
 

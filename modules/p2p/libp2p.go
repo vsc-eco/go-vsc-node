@@ -207,6 +207,7 @@ func (p2pServer *P2PServer) Init() error {
 	routedHost := rhost.Wrap(p2p, idht)
 	p2pServer.host = routedHost
 	p2pServer.dht = idht
+	p2pServer.registerPeerGauge()
 	log.Info("p2p host ready", "peer_id", p2pServer.GetPeerId(), "addrs", p2pServer.Addrs())
 
 	go func() {

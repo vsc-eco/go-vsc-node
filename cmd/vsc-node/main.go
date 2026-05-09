@@ -35,6 +35,7 @@ import (
 	"vsc-node/modules/gql/gqlgen"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
 	"vsc-node/modules/hive/streamer"
+	"vsc-node/modules/metrics"
 	"vsc-node/modules/oracle"
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
@@ -63,6 +64,7 @@ func main() {
 	dbConf := db.NewDbConfig(args.dataDir)
 	p2pConf := p2pInterface.NewConfig(args.dataDir)
 	gqlConf := gql.NewGqlConfig(args.dataDir)
+	metricsConf := metrics.NewMetricsConfig(args.dataDir)
 	oracleConf := oracle.NewOracleConfig(args.dataDir)
 	hiveApiUrl := streamer.NewHiveConfig(args.dataDir)
 	hiveApiUrlErr := hiveApiUrl.Init()
@@ -255,6 +257,8 @@ func main() {
 		&hiveCreator,
 	)
 
+	metricsManager := metrics.New(metricsConf)
+
 	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Complexity: gql.NewComplexityRoot(), Resolvers: &gqlgen.Resolver{
 		Witnesses:      witnessDb,
 		TxPool:         txpool,
@@ -285,6 +289,7 @@ func main() {
 		p2pConf,
 		identityConfig,
 		gqlConf,
+		metricsConf,
 		oracleConf,
 
 		//DB plugin initialization
@@ -336,6 +341,9 @@ func main() {
 		plugins = append(plugins, tssMgr)
 	}
 
+	//Metrics endpoint comes up before GraphQL so scraping is available during long startup
+	plugins = append(plugins, metricsManager)
+
 	//Setup graphql manager after everything is initialized
 	plugins = append(plugins, gqlManager)
 
@@ -350,6 +358,7 @@ func main() {
 			p2pConf,
 			identityConfig,
 			gqlConf,
+			metricsConf,
 			oracleConf,
 			hiveApiUrl,
 		})

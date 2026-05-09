@@ -7,6 +7,21 @@ import (
 	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/chebyrash/promise"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+var (
+	processedHeight = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "magi", Subsystem: "hive",
+		Name: "processed_height",
+		Help: "Most recent Hive block height processed by this node",
+	})
+	headHeightGauge = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "magi", Subsystem: "hive",
+		Name: "head_height",
+		Help: "Most recent Hive head block height observed by this node",
+	})
 )
 
 //VSC Block streaming module
@@ -46,6 +61,7 @@ func (v *HiveConsumer) RegisterBlockTick(name string, funck BTFunc, async bool) 
 func (v *HiveConsumer) ProcessBlock(blk hive_blocks.HiveBlock, headHeight *uint64) {
 	if headHeight != nil {
 		v.hh = *headHeight
+		headHeightGauge.Set(float64(*headHeight))
 	}
 	for _, tick := range v.ticks {
 		if tick.async {
@@ -58,6 +74,7 @@ func (v *HiveConsumer) ProcessBlock(blk hive_blocks.HiveBlock, headHeight *uint6
 		v.StateEngine.ProcessBlock(blk)
 	}
 	v.bh = blk.BlockNumber
+	processedHeight.Set(float64(blk.BlockNumber))
 }
 
 func (v *HiveConsumer) BlockStatus() common_types.BlockStatusGetter {

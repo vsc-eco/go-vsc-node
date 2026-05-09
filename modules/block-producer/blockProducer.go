@@ -398,6 +398,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	if err != nil {
 		vlog.Error("Error generating block", "err", err)
+		blockProduceFailures.WithLabelValues("generate").Inc()
 		return
 	}
 
@@ -409,6 +410,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	if err != nil {
 		vlog.Error("Error generating block", "err", err)
+		blockProduceFailures.WithLabelValues("election_lookup").Inc()
 		return
 	}
 
@@ -448,11 +450,13 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	if err != nil {
 		vlog.Error("Error waiting for signatures", "err", err)
+		blockProduceFailures.WithLabelValues("sign").Inc()
 		return
 	}
 
 	if !(signedWeight > (electionResult.TotalWeight * 2 / 3)) {
 		vlog.Warn("not enough signatures", "signedW", signedWeight, "totalW", electionResult.TotalWeight*2/3)
+		blockProduceFailures.WithLabelValues("insufficient_signatures").Inc()
 		return
 	}
 
@@ -493,6 +497,12 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	tx.AddSig(sig)
 
 	id, err := bp.HiveCreator.Broadcast(tx)
+
+	if err != nil {
+		blockProduceFailures.WithLabelValues("broadcast").Inc()
+	} else {
+		blocksProduced.Inc()
+	}
 
 	vlog.Info("Block produced", "blockID", id, "err", err)
 }
