@@ -3,7 +3,6 @@ package oracle
 import (
 	"context"
 	"errors"
-	"log"
 	"time"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/vsclog"
@@ -110,7 +109,7 @@ func (o *Oracle) ChainOracle() *chain.ChainOracle {
 // Init implements aggregate.Plugin.
 // Runs initialization in order of how they are passed in to `Aggregate`
 func (o *Oracle) Init() error {
-	log.Println("[oracle] Init: registering blockTick callback")
+	o.logger.Debug("registering blockTick callback")
 	o.hiveConsumer.RegisterBlockTick("oracle", o.blockTick, true)
 
 	// TODO(temporary): remove once nodes have updated configs.

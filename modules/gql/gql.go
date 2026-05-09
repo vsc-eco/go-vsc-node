@@ -2,13 +2,13 @@ package gql
 
 import (
 	"context"
-	"log"
 	"net"
 	"net/http"
 	"sync/atomic"
 	"time"
 
 	"vsc-node/lib/utils"
+	"vsc-node/lib/vsclog"
 	a "vsc-node/modules/aggregate"
 
 	"github.com/99designs/gqlgen/graphql"
@@ -19,6 +19,8 @@ import (
 	"github.com/chebyrash/promise"
 	"github.com/rs/cors"
 )
+
+var gqlLog = vsclog.Module("gql")
 
 // ===== constants =====
 
@@ -93,7 +95,7 @@ func (g *gqlManager) Init() error {
 
 func (g *gqlManager) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
-		log.Printf("GraphQL sandbox available on %s/sandbox", g.conf.GetHostAddr())
+		gqlLog.Info("GraphQL sandbox available", "addr", g.conf.GetHostAddr()+"/sandbox")
 
 		if err := g.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			reject(err)
@@ -104,7 +106,7 @@ func (g *gqlManager) Start() *promise.Promise[any] {
 }
 
 func (g *gqlManager) Stop() error {
-	log.Println("Shutting down GraphQL server...")
+	gqlLog.Info("shutting down GraphQL server")
 
 	// gracefully shuts down the server with a timeout
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -114,7 +116,7 @@ func (g *gqlManager) Stop() error {
 		return err
 	}
 
-	log.Println("GraphQL server shut down successfully")
+	gqlLog.Info("GraphQL server shut down successfully")
 	return nil
 }
 

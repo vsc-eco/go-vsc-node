@@ -5,10 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
+	"vsc-node/lib/vsclog"
 	agg "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
@@ -23,6 +23,8 @@ import (
 	"github.com/chebyrash/promise"
 	ethBls "github.com/protolambda/bls12-381-util"
 )
+
+var alog = vsclog.Module("announcements")
 
 // ===== types =====
 
@@ -87,7 +89,7 @@ func (a *AnnouncementsManager) Start() *promise.Promise[any] {
 		go func() {
 			err := a.announce(a.ctx)
 			if err != nil {
-				log.Println("error announcing:", err)
+				alog.Error("error announcing", "err", err)
 			}
 		}()
 
@@ -103,7 +105,7 @@ func (a *AnnouncementsManager) Start() *promise.Promise[any] {
 				go func() {
 					err := a.announce(a.ctx)
 					if err != nil {
-						log.Println("error announcing:", err)
+						alog.Error("error announcing", "err", err)
 					}
 				}()
 			}
@@ -168,10 +170,9 @@ var (
 func (a *AnnouncementsManager) announce(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
-		log.Println("announce task canceled")
+		alog.Debug("announce task canceled")
 		return nil
 	default:
-		// log.Println("announcing")
 	}
 
 	// get the account's memo key based on their account username
@@ -269,7 +270,7 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 
 	jsonBytes, err := json.Marshal(payload)
 	if err != nil {
-		log.Println("error marshaling JSON:", err)
+		alog.Error("error marshaling JSON", "err", err)
 	}
 
 	op := a.hiveCreator.UpdateAccount(a.conf.Get().HiveUsername, nil, nil, nil, string(jsonBytes), memoKey)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"log/slog"
 	"os"
 	"sync"
@@ -130,7 +129,7 @@ func (s *StreamReader) Init() error {
 	// guard against stale lastProcessed that's ahead of actual stored blocks
 	highestBlock, err := s.hiveBlocks.GetHighestBlock()
 	if err == nil && highestBlock > 0 && lp > highestBlock {
-		log.Printf("[StreamReader] lastProcessed=%d exceeds highestBlock=%d, resetting", lp, highestBlock)
+		vlog.Warn("lastProcessed exceeds highestBlock, resetting", "lastProcessed", lp, "highestBlock", highestBlock)
 		lp = highestBlock
 	}
 
@@ -384,7 +383,7 @@ func (s *Streamer) trackHeadHeight() {
 
 				head, err := updateHead(s.client)
 				if err != nil {
-					log.Printf("failed to update head height: %v\n", err)
+					vlog.Error("failed to update head height", "err", err)
 
 					// apply backoff with max cap if update fails
 					if backoff < HeadBlockMaxBackoffInterval {
@@ -442,14 +441,14 @@ func (s *Streamer) streamBlocks() {
 
 			blocks, err := s.fetchBlockBatch(*s.startBlock, min(BlockBatchSize, s.headHeight-*s.startBlock))
 			if err != nil {
-				log.Printf("error fetching block batch: %v\n", err)
+				vlog.Error("error fetching block batch", "err", err)
 				time.Sleep(MinTimeBetweenBlockBatchFetches + 3*time.Second)
 
 				continue
 			}
 
 			if len(blocks) == 0 {
-				log.Println("warning no blocks fetched")
+				vlog.Warn("no blocks fetched")
 				time.Sleep(MinTimeBetweenBlockBatchFetches + 3*time.Second)
 
 				continue
@@ -474,7 +473,7 @@ func (s *Streamer) streamBlocks() {
 				defer s.processWg.Done()
 				if err := s.storeBlocks(blocks); err != nil {
 					if err.Error() != "empty blocks" {
-						log.Printf("processing blocks failed: %v\n", err)
+						vlog.Error("processing blocks failed", "err", err)
 					}
 				}
 			}()
@@ -644,9 +643,9 @@ func (s *Streamer) Stop() error {
 
 		select {
 		case <-stoppedProcessing:
-			log.Println("all processing routines stopped successfully")
+			vlog.Debug("all processing routines stopped successfully")
 		case <-time.After(5 * time.Second):
-			log.Println("timeout waiting for processing routines to stop")
+			vlog.Warn("timeout waiting for processing routines to stop")
 		}
 	})
 	return nil
