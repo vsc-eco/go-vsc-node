@@ -115,6 +115,15 @@ type StateEngine struct {
 	// throttle the log to once per 10k L1 blocks during catchup.
 	lastMagiLogHeight uint64
 
+	// Cache for GetElectionByHeight, shared across phase 1 (ProcessBlock),
+	// produce_block.Validate, and UpdateBalances.unstake_setup. Invalidated
+	// when an election_result tx is processed, which is the only event that
+	// can change GetElectionByHeight's result going forward. See
+	// GetCachedElection for the cache-hit invariant.
+	electionCacheValid   bool
+	cachedElection       *elections.ElectionResult
+	lastDeprecationEpoch uint64 // 0 = never run
+
 	BlockHeight int
 
 	// pendulumFeed tracks sole-HIVE witness feed + HBD APR (Magi pendulum oracle); updated from Hive blocks.
@@ -176,6 +185,30 @@ type StateEngine struct {
 // is constructed; safe to leave unset in tests.
 func (se *StateEngine) SetBlockStatus(bs common_types.BlockStatusGetter) {
 	se.blockStatus = bs
+}
+
+// GetCachedElection returns the election active at the given block height,
+// using a shared cache to avoid redundant MongoDB round-trips when phase 1,
+// produce_block.Validate, and UpdateBalances all want the same election within
+// a single block. The cache hits when:
+//   - the cache has been populated and not invalidated since, AND
+//   - height is strictly greater than the cached election's BlockHeight
+//     (mirroring the strict-less-than predicate used by GetElectionByHeight).
+//
+// Cache invalidation is triggered by the vsc.election_result handler when a
+// new election commits, so a concurrent commit cannot leak a stale result to
+// later callers.
+func (se *StateEngine) GetCachedElection(height uint64) (elections.ElectionResult, error) {
+	if se.electionCacheValid && se.cachedElection != nil && height > se.cachedElection.BlockHeight {
+		return *se.cachedElection, nil
+	}
+	res, err := se.electionDb.GetElectionByHeight(height)
+	if err != nil {
+		return elections.ElectionResult{}, err
+	}
+	se.cachedElection = &res
+	se.electionCacheValid = true
+	return res, nil
 }
 
 // IsLiveSynced returns true if the given L1 block height is within 20 blocks of
@@ -289,32 +322,51 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 	se.BlockHeight = int(block.BlockNumber)
 
-	// --- Key lifecycle: deprecation and retirement ---
-	if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
-		currentEpoch := electionData.Epoch
+	blockStart := time.Now()
+	defer func() {
+		globalProfile.Record("total", time.Since(blockStart))
+		n := globalProfile.IncBlock(block.BlockNumber)
+		if n%5000 == 0 {
+			globalProfile.LogSummary(block.BlockNumber)
+			globalProfile.Reset(block.BlockNumber)
+		}
+	}()
 
-		// Phase 1: deprecate active keys that have reached their expiry epoch.
-		if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
-			for _, k := range deprecating {
-				k.Status = tss_db.TssKeyDeprecated
-				if tss_db.KeyRetirementEnabled {
-					k.DeprecatedHeight = int64(block.BlockNumber)
+	// --- Key lifecycle: deprecation and retirement ---
+	//
+	// Hot path on every block. The election only changes when an election_result
+	// tx is committed (which we hook below), so we cache the lookup and skip the
+	// MongoDB call until invalidated. FindDeprecatingKeys is only re-run when
+	// the epoch actually advances, since within a single epoch no new keys can
+	// become eligible for deprecation.
+	p1Start := time.Now()
+	if electionData, elecErr := se.GetCachedElection(block.BlockNumber); elecErr == nil {
+		if electionData.Epoch != se.lastDeprecationEpoch {
+			if deprecating, err := se.tssKeys.FindDeprecatingKeys(electionData.Epoch); err == nil {
+				for _, k := range deprecating {
+					k.Status = tss_db.TssKeyDeprecated
+					if tss_db.KeyRetirementEnabled {
+						k.DeprecatedHeight = int64(block.BlockNumber)
+					}
+					se.tssKeys.SetKey(k)
+					tssLog.Info(
+						"key deprecated",
+						"keyId",
+						k.Id,
+						"expiryEpoch",
+						k.ExpiryEpoch,
+						"blockHeight",
+						block.BlockNumber,
+					)
 				}
-				se.tssKeys.SetKey(k)
-				tssLog.Info(
-					"key deprecated",
-					"keyId",
-					k.Id,
-					"expiryEpoch",
-					k.ExpiryEpoch,
-					"blockHeight",
-					block.BlockNumber,
-				)
+				se.lastDeprecationEpoch = electionData.Epoch
 			}
 		}
 	}
 
-	// Phase 2: retire deprecated keys whose grace period has elapsed (block-height based).
+	// Retire deprecated keys whose grace period has elapsed (block-height based).
+	// Currently gated off by KeyRetirementEnabled = false; when re-enabled, this
+	// runs every block but only does work when the bh threshold is crossed.
 	if tss_db.KeyRetirementEnabled {
 		if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil {
 			for _, k := range retiring {
@@ -332,6 +384,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			}
 		}
 	}
+	globalProfile.Record("phase1_key_lifecycle", time.Since(p1Start))
 
 	blockInfo := struct {
 		BlockHeight uint64
@@ -360,6 +413,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 	}
 
+	p2Start := time.Now()
 	for _, virtualOp := range block.VirtualOps {
 		if virtualOp.Op.Type == "interest_operation" {
 			owner, ok := virtualOp.Op.Value["owner"].(string)
@@ -390,7 +444,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			}
 		}
 	}
+	globalProfile.Record("phase2_interest_ops", time.Since(p2Start))
 
+	p3Start := time.Now()
 	for blkIdx, tx := range block.Transactions {
 		if se.pendulumFeed != nil {
 			se.pendulumFeed.IngestTransactionOps(block.BlockNumber, tx)
@@ -414,6 +470,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 
 				if Id == "vsc.fr_sync" && RequiredAuths[0] == se.sconf.GatewayWallet() {
+					txStart := time.Now()
 					log.Debug("vsc.fr_sync", "opVal", opVal)
 
 					frSync := struct {
@@ -440,9 +497,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 
 					se.LedgerState.LedgerDb.StoreLedger(rec)
+					globalProfile.Record("tx.fr_sync", time.Since(txStart))
 				}
 
 				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() {
+					txStart := time.Now()
 					actionUpdate := map[string]interface{}{}
 					err := json.Unmarshal(cj.Json, &actionUpdate)
 
@@ -452,6 +511,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							ActionId:    tx.TransactionID,
 						})
 					}
+					globalProfile.Record("tx.actions", time.Since(txStart))
 				}
 			}
 		}
@@ -461,6 +521,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 		//Main pipeline
 		if singleOp.Type == "account_update" {
+			txStart := time.Now()
 			opValue := singleOp.Value
 
 			if opValue["json_metadata"] != nil {
@@ -483,6 +544,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					se.witnessDb.SetWitnessUpdate(inputData)
 				}
 			}
+			globalProfile.Record("tx.account_update", time.Since(txStart))
 			continue
 		}
 
@@ -510,6 +572,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 				//Start parsing block
 				if cj.Id == "vsc.produce_block" {
+					txStart := time.Now()
 					//Process block production
 					rawJson := map[string]interface{}{}
 					json.Unmarshal(cj.Json, &rawJson)
@@ -550,12 +613,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							parsedBlock.ExecuteTx(se)
 						}
 					}
+					globalProfile.Record("tx.produce_block", time.Since(txStart))
 					continue
 				}
 				//# End parsing block
 
 				//# Start parsing system transactions
 				if cj.Id == "vsc.create_contract" {
+					txStart := time.Now()
 					for idx, auth := range txSelf.RequiredAuths {
 						txSelf.RequiredAuths[idx] = "hive:" + auth
 					}
@@ -576,6 +641,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							"hbd",
 						)
 						if !hasFee {
+							globalProfile.Record("tx.create_contract", time.Since(txStart))
 							continue
 						}
 
@@ -610,8 +676,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					} else {
 						parsedTx.ExecuteTx(se)
 					}
+					globalProfile.Record("tx.create_contract", time.Since(txStart))
 					continue
 				} else if cj.Id == "vsc.update_contract" {
+					txStart := time.Now()
 					if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_UPDATE_HEIGHT {
 						for idx, auth := range txSelf.RequiredAuths {
 							txSelf.RequiredAuths[idx] = "hive:" + auth
@@ -657,8 +725,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 					}
+					globalProfile.Record("tx.update_contract", time.Since(txStart))
 					continue
 				} else if cj.Id == "vsc.election_result" {
+					txStart := time.Now()
 					parsedTx := &TxElectionResult{
 						Self: txSelf,
 					}
@@ -669,6 +739,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// nil receiver.
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
+					// A new election was committed — phase 1's cached epoch
+					// for the next block is now potentially stale.
+					se.electionCacheValid = false
+					globalProfile.Record("tx.election_result", time.Since(txStart))
 					continue
 				}
 			} //# End parsing system transactions
@@ -739,7 +813,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						BIdx:  int64(tx.Index),
 						OpIdx: int64(opIndex),
 					}
+					depStart := time.Now()
 					depositedTo := se.LedgerSystem.Deposit(leDeposit)
+					globalProfile.Record("tx.deposit", time.Since(depStart))
 
 					// create deposit payload for indexing
 					depositPayload := make(map[string]interface{})
@@ -858,8 +934,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.tss_sign" {
+					txStart := time.Now()
 					if se.sconf.OnTestnet() && txSelf.BlockHeight < se.SystemConfig().ConsensusParams().TssIndexHeight {
 						// for testnet, ignore below tss index height
+						globalProfile.Record("tx.tss_sign", time.Since(txStart))
 						continue
 					}
 
@@ -934,7 +1012,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 					}
+					globalProfile.Record("tx.tss_sign", time.Since(txStart))
 				} else if cj.Id == "vsc.tss_commitment" {
+					txStart := time.Now()
 
 					var commitments []tss_helpers.SignedCommitment
 
@@ -943,6 +1023,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						commitmentMap := make(map[string]tss_helpers.SignedCommitment)
 						if err := json.Unmarshal(cj.Json, &commitmentMap); err != nil {
 							tssLog.Warn("vsc.tss_commitment parse error", "txId", tx.TransactionID, "err", err)
+							globalProfile.Record("tx.tss_commitment", time.Since(txStart))
 							continue
 						}
 						for _, c := range commitmentMap {
@@ -962,7 +1043,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						// Using GetElection(commitment.Epoch) returns a different election
 						// when the epoch has advanced, causing BLS verification to fail
 						// because the member lists (and BLS keys) differ.
+						elStart := time.Now()
 						electionData, elErr := se.electionDb.GetElectionByHeight(commitment.BlockHeight)
+						globalProfile.Record("tss_commitment.election_lookup", time.Since(elStart))
 
 						if elErr != nil || electionData.Members == nil {
 							tssLog.Warn("election lookup failed", "keyId", commitment.KeyId, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "err", elErr)
@@ -983,24 +1066,29 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							Epoch:       commitment.Epoch,
 						}
 
+						cborStart := time.Now()
 						data, _ := common.EncodeDagCbor(baseComment)
 
 						commitmentCid, err := common.HashBytes(data, multicodec.DagCbor)
+						globalProfile.Record("tss_commitment.cbor_hash", time.Since(cborStart))
 						if err != nil {
 							tssLog.Warn("CID hash error", "keyId", commitment.KeyId, "err", err)
 							continue
 						}
 
+						blsStart := time.Now()
 						circuit, derr := dids.DeserializeBlsCircuit(dids.SerializedCircuit{
 							Signature: commitment.Signature,
 							BitVector: commitment.BitSet,
 						}, members, commitmentCid)
 						if derr != nil || circuit == nil {
+							globalProfile.Record("tss_commitment.bls_verify", time.Since(blsStart))
 							tssLog.Warn("BLS deserialize failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "err", derr)
 							continue
 						}
 
 						verified, _, _ := circuit.Verify()
+						globalProfile.Record("tss_commitment.bls_verify", time.Since(blsStart))
 						tssIndexHeight := se.SystemConfig().ConsensusParams().TssIndexHeight
 
 						if !verified {
@@ -1012,6 +1100,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							continue
 						}
 
+						dbStart := time.Now()
 						tssLog.Verbose("writing commitment to DB", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "txId", tx.TransactionID)
 						se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
 							Type:        commitment.Type,
@@ -1050,7 +1139,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								se.tssKeys.SetKey(keyInfo)
 							}
 						}
+						globalProfile.Record("tss_commitment.db_write", time.Since(dbStart))
 					}
+					globalProfile.Record("tx.tss_commitment", time.Since(txStart))
 				}
 				// NOTE: vsc.tss_ready was removed — readiness is now handled
 				// off-chain via BLS-signed gossip attestations in the TSS module.
@@ -1103,6 +1194,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			}
 
 			blkIdx := int64(self.Index)
+			ingStart := time.Now()
 			se.txDb.Ingest(transactions.IngestTransactionUpdate{
 				Id:                   self.TxId,
 				RequiredAuths:        self.RequiredAuths,
@@ -1115,8 +1207,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				AnchoredHeight:       &block.BlockNumber,
 				AnchoredIndex:        &blkIdx,
 			})
+			globalProfile.Record("tx.ingest_db", time.Since(ingStart))
 		}
 	}
+
+	globalProfile.Record("phase3_tx_loop", time.Since(p3Start))
 
 	//Detects new slot and executes batch if so
 	if se.slotStatus.SlotHeight != slotInfo.StartHeight {
@@ -1128,9 +1223,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			startBlock = uint64(vscBlock.EndBlock)
 		}
 
+		ubStart := time.Now()
 		se.UpdateBalances(startBlock, se.slotStatus.SlotHeight)
+		globalProfile.Record("phase4_update_balances", time.Since(ubStart))
 
+		rcStart := time.Now()
 		se.UpdateRcMap(se.slotStatus.SlotHeight)
+		globalProfile.Record("phase4_update_rc_map", time.Since(rcStart))
 
 		se.RcMap = make(map[string]int64)
 
@@ -1138,7 +1237,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			SlotHeight: slotInfo.StartHeight,
 			Done:       false,
 		}
+		ebStart := time.Now()
 		se.ExecuteBatch()
+		globalProfile.Record("phase4_execute_batch", time.Since(ebStart))
 	}
 
 	//Executes user action when the slot has been completed
@@ -1152,7 +1253,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 		// se.UpdateBalances(startBlock, se.slotStatus.SlotHeight)
 
+		ebStart := time.Now()
 		se.ExecuteBatch()
+		globalProfile.Record("phase4_execute_batch_done", time.Since(ebStart))
 		//Balances must be updated after the current slot has been fully executed
 	}
 
@@ -1572,7 +1675,8 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		stBlock = endBlock - 9
 	}
 
-	election, _ := se.electionDb.GetElectionByHeight(endBlock)
+	usStart := time.Now()
+	election, _ := se.GetCachedElection(endBlock)
 	records, _ := se.LedgerState.ActionDb.GetPendingActionsByEpoch(election.Epoch, "consensus_unstake")
 
 	completeIds := make([]string, 0)
@@ -1593,9 +1697,12 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	se.LedgerState.ActionDb.ExecuteComplete(nil, completeIds...)
 	// se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)
 	// se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(nil, completeIds...)
+	globalProfile.Record("update_balances.unstake_setup", time.Since(usStart))
 
 	//log.Debug("stBlock, endBlock", stBlock, endBlock)
+	daStart := time.Now()
 	distinctAccounts, _ := se.LedgerState.LedgerDb.GetDistinctAccountsRange(stBlock, endBlock)
+	globalProfile.Record("update_balances.distinct_accounts", time.Since(daStart))
 
 	//Ensure system:fr_balance is always processed so its hbd_claim stays current.
 	//Its interest goes to hive:vsc.dao, so it never appears in distinctAccounts via
@@ -1619,7 +1726,9 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	//Cleanup!
 	for _, k := range distinctAccounts {
 		ledgerBalances := map[string]int64{}
+		brStart := time.Now()
 		prevBalRecord, _ := se.LedgerState.BalanceDb.GetBalanceRecord(k, endBlock)
+		globalProfile.Record("update_balances.balance_record_lookup", time.Since(brStart))
 		var balanceR ledgerDb.BalanceRecord
 		var stHeight uint64
 		if prevBalRecord != nil {
@@ -1642,12 +1751,16 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		//As of block X or below
 		// se.LedgerExecutor.Ls.log.Debug("GetBalance for account", stBlock, stHeight, endBlock)
 
+		lrStart := time.Now()
 		ledgerUpdates, _ := se.LedgerState.LedgerDb.GetLedgerRange(k, stHeight, endBlock, "")
+		globalProfile.Record("update_balances.ledger_range_query", time.Since(lrStart))
 
 		hasLedgerUpdates := len(*ledgerUpdates) > 0
 
 		//Previous claim record
+		crStart := time.Now()
 		claimRecord := se.claimDb.GetLastClaim(endBlock)
+		globalProfile.Record("update_balances.claim_record_lookup", time.Since(crStart))
 
 		var hbdAvg = int64(0)
 		var modifyHeight = uint64(0)
@@ -1702,7 +1815,9 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		newRecord.HBD_CLAIM_HEIGHT = claimHeight
 
+		buwStart := time.Now()
 		se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord)
+		globalProfile.Record("update_balances.balance_update_write", time.Since(buwStart))
 
 		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(
 			se.LedgerState.VirtualLedger[k],

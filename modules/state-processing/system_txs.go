@@ -679,7 +679,9 @@ func (tx *TxProposeBlock) TxSelf() TxSelf {
 }
 
 func (t *TxProposeBlock) Validate(se *StateEngine) bool {
-	elecResult, err := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
+	elStart := time.Now()
+	elecResult, err := se.GetCachedElection(t.Self.BlockHeight)
+	globalProfile.Record("produce_block.validate.election_lookup", time.Since(elStart))
 	if err != nil {
 		//Cannot process block due to missing election
 		return false
@@ -704,17 +706,23 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 		Block:      blockCid,
 	}
 
+	hashStart := time.Now()
 	cid, err := se.da.HashObject(blockHeader)
+	globalProfile.Record("produce_block.validate.hash_object", time.Since(hashStart))
 	if err != nil || cid == nil {
 		return false
 	}
 
+	desStart := time.Now()
 	circuit, err := dids.DeserializeBlsCircuit(t.SignedBlock.Signature, memberDids, *cid)
+	globalProfile.Record("produce_block.validate.bls_deserialize", time.Since(desStart))
 	if err != nil || circuit == nil {
 		return false
 	}
 
+	verStart := time.Now()
 	verified, includedDids, err := circuit.Verify()
+	globalProfile.Record("produce_block.validate.bls_verify", time.Since(verStart))
 	if err != nil {
 		return false
 	}
@@ -758,21 +766,23 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	if err != nil {
 		return
 	}
+	fetchStart := time.Now()
 	node, err := se.da.GetDag(blockCid)
+	globalProfile.Record("produce_block.execute.fetch_block", time.Since(fetchStart))
 	if err != nil || node == nil {
 		return
 	}
-	jsonBytes, err := node.MarshalJSON()
-	if err != nil {
+	rawBlock := node.RawData()
+	decStart := time.Now()
+	blockContentC := vscBlocks.VscBlock{}
+	if err := dagCbor.DecodeInto(rawBlock, &blockContentC); err != nil {
 		return
 	}
-	blockContentC := vscBlocks.VscBlock{}
-	// json.Unmarshal(jsonBytes, &blockContent)
-
-	se.da.GetObject(blockCid, &blockContentC, common_types.GetOptions{})
+	globalProfile.Record("produce_block.execute.decode_block", time.Since(decStart))
 
 	slotInfo := CalculateSlotInfo(t.Self.BlockHeight)
 
+	shStart := time.Now()
 	se.vscBlocks.StoreHeader(vscBlocks.VscHeaderRecord{
 		Id: t.Self.TxId,
 
@@ -792,10 +802,11 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		Stats: struct {
 			Size uint64 `bson:"size"`
 		}{
-			Size: uint64(len(jsonBytes)),
+			Size: uint64(len(rawBlock)),
 		},
 		Ts: t.Self.Timestamp,
 	})
+	globalProfile.Record("produce_block.execute.store_header", time.Since(shStart))
 
 	se.logMagiBlock(t, &blockContentC, slotInfo.StartHeight, start)
 
@@ -813,6 +824,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	//To kick off finalization of the inflight state
 	//Such as transfers, contract calls, etc
 	//New TXs should be indexed at this point
+	loopStart := time.Now()
 	for idx, txInfo := range blockContentC.Transactions {
 		tx := BlockTx{
 			Id:   txInfo.Id,
@@ -827,6 +839,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		//Thus: TX confirmation is 30s maximum
 		//Author: @vaultec81
 
+		txDecStart := time.Now()
 		txContainer := tx.Decode(se.da, TxSelf{
 			TxId:        txInfo.Id,
 			Index:       idx,
@@ -834,7 +847,9 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			BlockId:     t.Self.BlockId,
 			Timestamp:   t.Self.Timestamp,
 		})
+		globalProfile.Record("produce_block.execute.tx_decode", time.Since(txDecStart))
 
+		txIngStart := time.Now()
 		if txContainer.Type() == "transaction" {
 			//Note: sig verification has already happened
 			tx := txContainer.AsTransaction()
@@ -847,6 +862,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			})
 
 			if len(tx.Headers.RequiredAuths) == 0 {
+				globalProfile.Record("produce_block.execute.tx_ingest", time.Since(txIngStart))
 				continue
 			}
 			keyId := transactionpool.HashKeyAuths(tx.Headers.RequiredAuths)
@@ -890,8 +906,11 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			// the payload and pairs the bucket debit with per-account credits.
 			se.applyPendulumSettlement(rec, uint64(t.SignedBlock.Headers.Br[1]))
 		}
+		globalProfile.Record("produce_block.execute.tx_ingest", time.Since(txIngStart))
 	}
+	globalProfile.Record("produce_block.execute.tx_loop_total", time.Since(loopStart))
 
+	nonceStart := time.Now()
 	for k, v := range nonceUpdates {
 		se.nonceDb.SetNonce(k, v+1)
 	}
@@ -903,6 +922,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		}
 		se.txDb.InvalidateCompetingTransactions(info.RequiredAuths, nonces)
 	}
+	globalProfile.Record("produce_block.execute.nonce_writes", time.Since(nonceStart))
 
 	se.TxBatch = append(txsToInjest, se.TxBatch...)
 }

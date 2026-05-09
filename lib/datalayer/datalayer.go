@@ -265,14 +265,18 @@ func (dl *DataLayer) GetObject(cid cid.Cid, v interface{}, options common_types.
 }
 
 func (dl *DataLayer) GetDag(cid cid.Cid) (*dagCbor.Node, error) {
-	block, err := dl.blockServ.GetBlock(context.Background(), cid)
-	//Make sure it is stored
-	// dl.blockServ.AddBlock(context.Background(), block)
+	return dl.GetDagCtx(context.Background(), cid)
+}
+
+// GetDagCtx is GetDag with a caller-supplied context. Use this when the fetch
+// must be cancellable (e.g. a per-request timeout) so a bad or unfetchable CID
+// can't hang the goroutine forever.
+func (dl *DataLayer) GetDagCtx(ctx context.Context, c cid.Cid) (*dagCbor.Node, error) {
+	block, err := dl.blockServ.GetBlock(ctx, c)
 	if err != nil {
 		return nil, err
 	}
-	dag, err := dagCbor.Decode(block.RawData(), mh.SHA2_256, -1)
-	return dag, err
+	return dagCbor.Decode(block.RawData(), mh.SHA2_256, -1)
 }
 
 func (dl *DataLayer) GetRaw(cid cid.Cid) ([]byte, error) {
