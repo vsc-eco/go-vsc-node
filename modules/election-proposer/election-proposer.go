@@ -15,6 +15,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/utils"
+	"vsc-node/lib/vsclog"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
@@ -34,6 +35,8 @@ import (
 	"github.com/vsc-eco/hivego"
 	"go.mongodb.org/mongo-driver/mongo"
 )
+
+var log = vsclog.Module("ep")
 
 type electionProposer struct {
 	conf  common.IdentityConfig
@@ -424,7 +427,7 @@ type ElectionOptions struct {
 
 func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) error {
 	if ep.signingInfo != nil {
-		fmt.Println("election already in progress")
+		log.Verbose("election already in progress")
 		return errors.New("election already in progress")
 	}
 
@@ -433,14 +436,14 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 	if err == mongo.ErrNoDocuments {
 		firstElection = true
 	} else if err != nil {
-		fmt.Println("election.err", err)
+		log.Warn("HoldElection: get prev election failed", "err", err)
 		return err
 	}
 
 	electionHeader, electionData, err := ep.GenerateElectionAtBlock(blk)
 
 	if err != nil {
-		fmt.Println("election.err", err)
+		log.Warn("HoldElection: generate election failed", "blk", blk, "err", err)
 		return err
 	}
 
@@ -452,7 +455,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		}
 		jsonBytes, err := json.Marshal(electionResultJson)
 		if err != nil {
-			fmt.Println("election.err", err)
+			log.Warn("HoldElection: marshal first election failed", "err", err)
 			return err
 		}
 
@@ -469,7 +472,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 
 		sig, err := ep.txCreator.Sign(tx)
 		if err != nil {
-			fmt.Println("election.err", err)
+			log.Warn("HoldElection: sign tx failed", "err", err)
 			return fmt.Errorf("failed to update account: %w", err)
 		}
 
@@ -480,7 +483,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 			return err
 		}
 
-		fmt.Println("Propose Election TxId", txId)
+		log.Verbose("propose election broadcast", "txId", txId)
 
 		return nil
 	} else {
@@ -495,13 +498,13 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		}
 
 		if len(electionData.Members) < minimumMemberCount {
-			fmt.Println("election minimum member count not met", len(electionData.Members), minimumMemberCount)
+			log.Verbose("election minimum member count not met", "members", len(electionData.Members), "min", minimumMemberCount)
 			return errors.New("Minimum network config not met for election. Skipping.")
 		}
 
 		cid, err := electionHeader.Cid()
 		if err != nil {
-			fmt.Println("election.err", err)
+			log.Warn("HoldElection: header cid failed", "err", err)
 			return err
 		}
 
@@ -509,9 +512,8 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		if firstElection {
 			w, err := ep.witnesses.GetWitnessesAtBlockHeight(blk)
 
-			fmt.Println("GetWitnessesAtBlockHeight err", err)
 			if err != nil {
-				fmt.Println("election.err", err)
+				log.Warn("HoldElection: GetWitnessesAtBlockHeight failed", "blk", blk, "err", err)
 				return err
 			}
 			res := resultJoin(utils.Map(w, func(w witnesses.Witness) result.Result[dids.BlsDID] {
@@ -528,7 +530,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 
 		circuit, err := dids.NewBlsCircuitGenerator(memberKeys).Generate(cid)
 		if err != nil {
-			fmt.Println("election.err", err)
+			log.Warn("HoldElection: build bls circuit failed", "err", err)
 			return err
 		}
 
@@ -563,7 +565,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 
 		ep.sigChannels[ep.signingInfo.epoch] = make(chan *signResponse)
 
-		fmt.Println("[ep] waiting for signatures", blk, electionHeader.Epoch)
+		log.Verbose("waiting for signatures", "blk", blk, "epoch", electionHeader.Epoch)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		signedWeight, err := ep.waitForSigs(ctx, &electionResult)
@@ -573,12 +575,12 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 			return err
 		}
 
-		fmt.Println("signedWeight", signedWeight)
+		log.Verbose("signed weight collected", "weight", signedWeight)
 		ep.signingInfo = nil
 
 		finalCircuit, err := circuit.Finalize()
 		if err != nil {
-			fmt.Println("election.err", err)
+			log.Warn("HoldElection: finalize circuit failed", "err", err)
 			return err
 		}
 
@@ -603,7 +605,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 
 			circuit, err := finalCircuit.Serialize()
 			if err != nil {
-				fmt.Println("election.err", err)
+				log.Warn("HoldElection: serialize circuit failed", "err", err)
 				return err
 			}
 
@@ -767,14 +769,14 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 			var signResp *signResponse
 			select {
 			case <-ctx.Done():
-				fmt.Println("[ep] goroutine: context cancelled")
+				log.Verbose("waitForSigs: context cancelled")
 				end <- struct{}{}
 				return
 			case signResp = <-sigChan:
 			}
 
 			if signResp == nil {
-				fmt.Println("[ep] timed out waiting")
+				log.Verbose("waitForSigs: timed out")
 				break
 			}
 
@@ -810,20 +812,19 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 
 			added, err := c.AddAndVerify(member, sigStr)
 
-			fmt.Println("[ep] aggregating signature", sigStr, "from", account)
-			fmt.Println("[ep] agg err", err)
+			log.Verbose("aggregating signature", "from", account, "added", added, "err", err)
 			if added {
 				signedWeight += election.Weights[index]
 			}
 		}
-		fmt.Println("Done waittt")
+		log.Verbose("waitForSigs: done collecting")
 		// res = signedWeight
 		end <- struct{}{}
 	}()
 
 	select {
 	case <-ctx.Done():
-		fmt.Println("[ep] collect sigs timeout")
+		log.Verbose("waitForSigs: collect timeout")
 		<-end // Wait for goroutine to finish before returning
 		return signedWeight, nil
 	case <-end:

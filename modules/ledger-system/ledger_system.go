@@ -3,7 +3,6 @@ package ledgerSystem
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"math/big"
 	"net/url"
 	"regexp"
@@ -108,7 +107,7 @@ func (ls *ledgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64)
 }
 
 func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {
-	fmt.Println("ClaimHBDInterest", lastClaim, blockHeight, amount)
+	log.Verbose("ClaimHBDInterest", "lastClaim", lastClaim, "bh", blockHeight, "amount", amount)
 	//Do distribution of HBD interest on an going forward basis
 	//Save to ledger DB the difference.
 	ledgerBalances := ls.BalanceDb.GetAll(blockHeight)
@@ -135,7 +134,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 		endingAvg := (balance.HBD_AVG + balance.HBD_SAVINGS*int64(A)) / int64(B)
 
 		if endingAvg < 1 {
-			fmt.Println("ClaimHBD endingAvg is sub zero", balance.Account, endingAvg)
+			log.Verbose("ClaimHBD endingAvg sub-zero", "account", balance.Account, "avg", endingAvg)
 			continue
 		}
 
@@ -145,9 +144,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 		totalAvg = totalAvg + endingAvg
 	}
 
-	bsj, _ := json.Marshal(processedBalRecords)
-
-	fmt.Println("Processed bal records", ledgerBalances, string(bsj))
+	log.Verbose("processed bal records", "count", len(processedBalRecords), "totalAvg", totalAvg)
 
 	for id, balance := range processedBalRecords {
 		// if balance.HBD_AVG == 0 {
@@ -403,10 +400,9 @@ func (ls *ledgerSystem) CalculationFractStats(accountList []string, blockHeight 
 		belowBal = belowBal + v
 	}
 
-	fmt.Println("Top Balances", topBalances)
-	fmt.Println("Top 5", topBal, "Below 5", belowBal)
+	log.Verbose("balance distribution", "topCount", len(topBalances), "top5", topBal, "below5", belowBal)
 	stakedAmt := belowBal / 3
-	fmt.Println("StakedAmt", stakedAmt)
+	log.Verbose("staked amount computed", "stakedAmt", stakedAmt)
 
 	StakedBalance := int64(0)
 

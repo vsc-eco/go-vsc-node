@@ -1,7 +1,6 @@
 package ledgerSystem
 
 import (
-	"fmt"
 	"regexp"
 	"slices"
 	"strconv"
@@ -323,7 +322,7 @@ func (ledgerSession *ledgerSession) ExecuteTransfer(opLogEvent OpLogEvent, optio
 	// le.Ls.log.Debug("Transfer - balAmt", fromBal, "bh="+strconv.Itoa(int(opLogEvent.BlockHeight)))
 	// le.Ls.log.Debug("ledgerSession.StartHeight", ledgerSession.StartHeight, "OpLogEvent.BlockHeight", opLogEvent.BlockHeight)
 
-	fmt.Println("Ledger.Status", opLogEvent.From, fromBal, opLogEvent.Amount)
+	log.Verbose("transfer balance check", "from", opLogEvent.From, "balance", fromBal, "amount", opLogEvent.Amount)
 	if (fromBal - exclusion) < opLogEvent.Amount {
 		return LedgerResult{
 			Ok:  false,

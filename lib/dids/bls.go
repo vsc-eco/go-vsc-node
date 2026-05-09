@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"vsc-node/lib/vsclog"
 
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
@@ -16,6 +17,8 @@ import (
 
 	bls "github.com/protolambda/bls12-381-util"
 )
+
+var log = vsclog.Module("dids")
 
 // ===== constants =====
 
@@ -107,7 +110,7 @@ func (d BlsDID) Identifier() *BlsPubKey {
 	// decode from base58
 	_, data, err := multibase.Decode(base58Encoded)
 	if err != nil {
-		fmt.Println(err)
+		log.Warn("BlsDID.Identifier: multibase decode failed", "err", err)
 		return nil
 	}
 

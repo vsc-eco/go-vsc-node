@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
 
@@ -104,7 +103,7 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 
 			signPkg, err := s.ms.executeActions(signReq.BlockHeight)
 
-			fmt.Println("executeActions signPkg", signPkg)
+			log.Verbose("executeActions signPkg", "txId", signPkg.TxId)
 
 			if err != nil {
 				return nil

@@ -657,7 +657,6 @@ func (ctx *contractExecutionContext) TssCreateKey(keyId string, keyType string, 
 	if err == nil {
 		return result.Ok("already_exists")
 	}
-	fmt.Println("err", err)
 	return result.Err[string](errors.New("runtime error"))
 }
 

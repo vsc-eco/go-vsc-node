@@ -9,6 +9,7 @@ import (
 	cbortypes "vsc-node/lib/cbor-types"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/hive"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/announcements"
 	blockproducer "vsc-node/modules/block-producer"
@@ -52,10 +53,12 @@ func main() {
 	cbortypes.RegisterTypes()
 	args, err := ParseArgs()
 	if err != nil {
-		fmt.Println("Error parsing arguments:", err)
+		fmt.Fprintln(os.Stderr, "Error parsing arguments:", err)
 		os.Exit(1)
 	}
 	initLogLevel(args.logLevel)
+
+	log := vsclog.Module("magid")
 
 	dbConf := db.NewDbConfig(args.dataDir)
 	p2pConf := p2pInterface.NewConfig(args.dataDir)
@@ -66,9 +69,7 @@ func main() {
 
 	hiveURIs := hiveApiUrl.Get().HiveURIs
 
-	fmt.Println("Network:", args.network)
-	fmt.Println("Hive Nodes", hiveURIs)
-	fmt.Println("Git Commit", announcements.GitCommit)
+	log.Info("starting magid", "network", args.network, "hive_nodes", hiveURIs, "git_commit", announcements.GitCommit)
 
 	dbImpl := db.New(dbConf)
 	vscDb := vsc.New(dbImpl, dbConf)
@@ -95,25 +96,25 @@ func main() {
 	wasm_sdk.Init(sysConfig.OnMainnet())
 	if args.sysconfigPath != "" {
 		if args.network != "devnet" && args.network != "mocknet" {
-			fmt.Println("Error: -sysconfig overrides are only allowed on devnet and mocknet")
+			log.Error("sysconfig overrides only allowed on devnet/mocknet", "network", args.network)
 			os.Exit(1)
 		}
 		if err := sysConfig.LoadOverrides(args.sysconfigPath); err != nil {
-			fmt.Println("Error loading sysconfig overrides:", err)
+			log.Error("failed loading sysconfig overrides", "err", err)
 			os.Exit(1)
 		}
 	}
 
 	if err != nil {
-		fmt.Println("error is", err)
+		log.Error("startup error", "err", err)
 		os.Exit(1)
 	} else if hiveApiUrlErr != nil {
-		fmt.Println("Failed to parse Hive API config", hiveApiUrlErr)
+		log.Error("failed to parse Hive API config", "err", hiveApiUrlErr)
 		os.Exit(1)
 	}
 
 	if sysConfig.OnMainnet() && args.disableTss {
-		fmt.Println("cannot disable TSS plugin on mainnet")
+		log.Error("cannot disable TSS plugin on mainnet")
 		os.Exit(1)
 	}
 
@@ -156,7 +157,7 @@ func main() {
 		p2p,
 	)
 	if err != nil {
-		fmt.Println("error is", err)
+		log.Error("announcements init failed", "err", err)
 		os.Exit(1)
 	}
 
@@ -195,6 +196,7 @@ func main() {
 	blockConsumer := blockconsumer.New(se)
 
 	blockStatus = blockConsumer.BlockStatus()
+	se.SetBlockStatus(blockStatus)
 	ep := election_proposer.New(
 		p2p,
 		witnessesDb,
@@ -339,7 +341,7 @@ func main() {
 	)
 
 	if args.isInit {
-		fmt.Println("initing")
+		log.Info("initializing config")
 		configs := aggregate.New([]aggregate.Plugin{
 			dbConf,
 			p2pConf,
@@ -353,7 +355,7 @@ func main() {
 		err = a.Run()
 	}
 	if err != nil {
-		fmt.Println("error is", err)
+		log.Error("startup failure", "err", err)
 		os.Exit(1)
 	}
 }

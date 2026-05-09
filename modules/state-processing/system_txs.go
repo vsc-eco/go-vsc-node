@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
@@ -450,12 +451,12 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 		//Validate normally
 		prevElection := se.electionDb.GetElection(tx.Epoch - 1)
 		if prevElection == nil {
-			fmt.Println("NO PREVIOUS ELECTION")
+			log.Debug("election ignored: no previous election", "epoch", tx.Epoch)
 			return
 		}
 
 		if prevElection.Epoch >= tx.Epoch {
-			fmt.Println("Election is back in time!")
+			log.Debug("election ignored: out of order", "epoch", tx.Epoch, "prevEpoch", prevElection.Epoch)
 			return
 		}
 
@@ -497,7 +498,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 		}.Sum(verifyData)
 
 		if err != nil {
-			fmt.Println("Failed to create cid for election", err)
+			log.Debug("failed to build election verify hash", "epoch", tx.Epoch, "err", err)
 			return
 		}
 
@@ -534,8 +535,13 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 				}
 			}
 		}
-		fmt.Println("Minimum requirements", minimums, "orig reqs", len(prevElection.Members)*2/3)
-		fmt.Println(verified, "realWeight", realWeight, " len(includedDids)", len(includedDids))
+		log.Verbose("election verify",
+			"epoch", tx.Epoch,
+			"verified", verified,
+			"realWeight", realWeight,
+			"minWeight", minimums,
+			"includedDids", len(includedDids),
+		)
 
 		if verified && realWeight >= minimums {
 			// Fetch and decode the body BEFORE the settlement gate so we
@@ -544,12 +550,8 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			// header references); applying it here advances
 			// latestSettledEpoch so the defensive gate below passes for
 			// the new flow.
-			fmt.Println("Election verified, indexing...", tx.Epoch)
-			fmt.Println("Election CID", parsedCid)
-			se.da.GetDag(parsedCid)
-			fmt.Println("Got dag prolly")
+ttt//Verified and 2/3 majority signed			se.da.GetDag(parsedCid)
 			node, _ := se.da.Get(parsedCid, nil)
-			fmt.Println("Got Election from DA")
 			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
 			elecResult := elections.ElectionResult{
 				Proposer:    tx.Self.RequiredAuths[0],
@@ -631,9 +633,15 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			if err := se.electionDb.StoreElection(elecResult); err != nil {
 				log.Error("failed to store election", "epoch", tx.Epoch, "err", err)
 			}
-			fmt.Println("Indexed Election", tx.Epoch)
+			log.Info("election processed",
+				"epoch", tx.Epoch,
+				"proposer", elecResult.Proposer,
+				"new_members", len(elecResult.Members),
+				"new_weight", sumWeights(elecResult.Weights, len(elecResult.Members)),
+				"participation", fmt.Sprintf("%d/%d", realWeight, totalWeight),
+			)
 		} else {
-			fmt.Println("Election Failed verification")
+			log.Debug("election failed verification", "epoch", tx.Epoch, "verified", verified, "realWeight", realWeight, "minWeight", minimums)
 		}
 
 	}
@@ -656,8 +664,10 @@ type TxProposeBlock struct {
 	NetId       string            `json:"net_id"`
 	SignedBlock SignedBlockHeader `json:"signed_block"`
 
-	Signers []string `json:"-"`
-	Epoch   uint64   `json:"-"`
+	Signers      []string `json:"-"`
+	Epoch        uint64   `json:"-"`
+	SigningScore uint64   `json:"-"`
+	SigningTotal uint64   `json:"-"`
 }
 
 func (tx *TxProposeBlock) Type() string {
@@ -710,11 +720,10 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 	}
 
 	if uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength <= t.Self.BlockHeight {
-		fmt.Println(
-			"Block is too far in the future",
-			t.SignedBlock.Headers.Br,
-			uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength,
-			t.Self.BlockHeight,
+		log.Debug("propose_block too far in the future",
+			"br", t.SignedBlock.Headers.Br,
+			"deadline", uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength,
+			"hive_bh", t.Self.BlockHeight,
 		)
 		return false
 	}
@@ -735,12 +744,15 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 		}
 	}
 	t.Epoch = elecResult.Epoch
+	t.SigningScore = signingScore
+	t.SigningTotal = total
 
 	return verifiedR
 }
 
 // ProcessTx implements VSCTransaction.
 func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
+	start := time.Now()
 
 	blockCid, err := cid.Parse(t.SignedBlock.Block)
 	if err != nil {
@@ -784,6 +796,8 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		},
 		Ts: t.Self.Timestamp,
 	})
+
+	se.logMagiBlock(t, &blockContentC, slotInfo.StartHeight, start)
 
 	txsToInjest := make([]TxPacket, 0)
 
@@ -950,4 +964,58 @@ func (bTx *BlockTx) Decode(da *datalayer.DataLayer, txSelf TxSelf) TransactionCo
 	tx.Decode(dagNode.RawData())
 
 	return tx
+}
+
+// shortCid abbreviates a CID string to its trailing 8 characters for log
+// readability. Mirrors a git short-sha.
+func shortCid(c string) string {
+	if len(c) <= 8 {
+		return c
+	}
+	return c[len(c)-8:]
+}
+
+// sumWeights returns the total weight of an election. If weights are nil
+// (unweighted election), returns the member count.
+func sumWeights(weights []uint64, memberCount int) uint64 {
+	if len(weights) == 0 {
+		return uint64(memberCount)
+	}
+	total := uint64(0)
+	for _, w := range weights {
+		total += w
+	}
+	return total
+}
+
+// logMagiBlock emits a one-line summary for a finalized Magi (VSC L2) block.
+// During live sync, every block is logged. During catchup, the log is
+// throttled to once per 1,000 L1 blocks and tagged with indexing=true so
+// operators can tell the node is still working through history.
+func (se *StateEngine) logMagiBlock(t *TxProposeBlock, blk *vscBlocks.VscBlock, slot uint64, start time.Time) {
+	liveSynced := se.IsLiveSynced(int(t.Self.BlockHeight))
+
+	if !liveSynced && t.Self.BlockHeight-se.lastMagiLogHeight < 1000 {
+		return
+	}
+	se.lastMagiLogHeight = t.Self.BlockHeight
+
+	hiveHead, err := se.hiveBlocks.GetHighestBlock()
+	if err != nil {
+		hiveHead = t.Self.BlockHeight
+	}
+	fields := []any{
+		"slot", slot,
+		"cid", shortCid(t.SignedBlock.Block),
+		"txs", len(blk.Transactions),
+		"proposer", t.Self.RequiredAuths[0],
+		"participation", fmt.Sprintf("%d/%d", t.SigningScore, t.SigningTotal),
+		"hive_head", hiveHead,
+	}
+	if liveSynced {
+		fields = append(fields, "elapsed_ms", time.Since(start).Milliseconds())
+		log.Info("Magi block", fields...)
+	} else {
+		log.Info("Magi block (indexing)", fields...)
+	}
 }
