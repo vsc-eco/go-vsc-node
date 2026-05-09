@@ -2,7 +2,6 @@ package nonces
 
 import (
 	"context"
-	"fmt"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
@@ -38,7 +37,7 @@ func (n *nonceDb) SetNonce(account string, nonce uint64) error {
 			"nonce": nonce,
 		},
 	}, options)
-	fmt.Println(singleResult)
+	_ = singleResult
 
 	return nil
 }

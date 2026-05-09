@@ -29,9 +29,9 @@ import (
 var tssLog = vsclog.Module("tss")
 
 type contractExecutionContext struct {
-	ledger      ledgerSystem.LedgerSession
-	env         Environment
-	rcLimit     int64
+	ledger  ledgerSystem.LedgerSession
+	env     Environment
+	rcLimit int64
 	// Remaining RCs the RC payer can consume from their free tier (e.g.
 	// RC_HIVE_FREE_AMOUNT for Hive accounts minus already-frozen RCs). Used
 	// by PullBalance to decide how much HBD to reserve against RC consumption.
@@ -582,7 +582,6 @@ func (ctx *contractExecutionContext) TssCreateKey(keyId string, keyType string, 
 	if err == nil {
 		return result.Ok("already_exists")
 	}
-	fmt.Println("err", err)
 	return result.Err[string](errors.New("runtime error"))
 }
 

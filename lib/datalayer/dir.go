@@ -3,7 +3,6 @@ package datalayer
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -365,7 +364,7 @@ func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
 
 	node, err := da.DagServ.Get(ctx, inputCid)
 	if err != nil {
-		fmt.Println("[databin] ERROR loading node for CID", inputCid, "err:", err)
+		log.Warn("databin: error loading node for CID", "cid", inputCid, "err", err)
 		// Return empty leaf to avoid panic
 		return LeafDir{
 			Dir:    uio.NewDirectory(da.DagServ),
@@ -375,7 +374,7 @@ func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
 
 	dir, err := uio.NewDirectoryFromNode(da.DagServ, node)
 	if err != nil {
-		fmt.Println("[databin] ERROR creating directory from node", inputCid, "err:", err)
+		log.Warn("databin: error creating directory from node", "cid", inputCid, "err", err)
 		return LeafDir{
 			Dir:    uio.NewDirectory(da.DagServ),
 			leaves: make(map[string]*LeafDir),

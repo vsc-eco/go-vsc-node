@@ -2,7 +2,6 @@ package libp2p
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -145,7 +144,7 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 		for {
 			msg, err := sub.Next(ctx)
 			if err != nil {
-				fmt.Println("Error in subscription:", err)
+				log.Warn("subscription error", "topic", service.Topic(), "err", err)
 				res.Close()
 				return
 			}
@@ -159,7 +158,7 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 			select {
 			case res.semaphore <- struct{}{}:
 			default:
-				fmt.Println("pubsub: dropping message, concurrency limit reached")
+				log.Warn("pubsub: dropping message, concurrency limit reached", "topic", service.Topic())
 				continue
 			}
 
@@ -188,7 +187,7 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 					err := service.HandleMessage(ctx, msg.GetFrom(), parsedMsg, res.Send)
 					if err != nil {
 						//TODO handle error
-						fmt.Println("pubsub handling error:", err)
+						log.Verbose("pubsub handling error", "topic", service.Topic(), "err", err)
 						return
 					}
 				}()

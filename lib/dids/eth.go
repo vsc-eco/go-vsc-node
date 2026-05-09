@@ -154,8 +154,7 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 	expectedAddress := d.Identifier()
 
 	err = runDebug(func() error {
-		fmt.Println("RECOVERED: ", recoveredAddress)
-		fmt.Println("EXPECTED: ", expectedAddress)
+		log.Trace("EthDID.Verify", "recovered", recoveredAddress, "expected", expectedAddress)
 		return nil
 	})
 
@@ -197,8 +196,7 @@ func convertPathMapToMessage(pathMap []struct {
 	if isArray && !isObjArray {
 		res := make([]interface{}, len(keys))
 		if len(keys) != len(pathMap) {
-			fmt.Println(keys)
-			fmt.Println(pathMap)
+			log.Error("buildJsonFromPaths: key/pathMap length mismatch", "keys", keys, "pathMap", pathMap)
 			panic("BUG")
 		}
 		for i, pathInfo := range pathMap {
@@ -476,15 +474,15 @@ func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeNam
 
 	err = runDebug(func() error {
 		for key, tv := range typedData.Data.Message {
-			fmt.Println(key, ":", tv)
+			log.Trace("typedData.Message", "key", key, "val", tv)
 		}
 
 		jsonData, err := json.MarshalIndent(typedData, "", "  ")
 		if err != nil {
-			fmt.Println("Error:", err)
+			log.Trace("typedData marshal error", "err", err)
 			return err
 		}
-		fmt.Println(string(jsonData))
+		log.Trace("typedData json", "json", string(jsonData))
 		return nil
 	})
 
@@ -556,19 +554,19 @@ func computeEIP712Hash(typedData apitypes.TypedData) ([]byte, error) {
 
 	realTypedData := typedData
 	err = runDebug(func() error {
-		fmt.Println("domain", hexutil.Encode(domainSeparator))
+		log.Trace("eip712 domain", "separator", hexutil.Encode(domainSeparator))
 
 		err = mapstructure.Decode(typedData, &realTypedData)
 		if err != nil {
 			return err
 		}
 
-		fmt.Println("real typed data:", realTypedData)
+		log.Trace("eip712 real typed data", "data", realTypedData)
 		enc, err := realTypedData.EncodeData(typedData.PrimaryType, typedData.Message, 1)
 		if err != nil {
 			return err
 		}
-		fmt.Println("real encoded:", enc.String())
+		log.Trace("eip712 real encoded", "enc", enc.String())
 		return nil
 	})
 	if err != nil {
@@ -582,7 +580,7 @@ func computeEIP712Hash(typedData apitypes.TypedData) ([]byte, error) {
 	}
 
 	err = runDebug(func() error {
-		fmt.Println("msg", typedData.PrimaryType, "\n", typedData.Message, "\n", typedData.Types, "\n", hexutil.Encode(messageHash))
+		log.Trace("eip712 msg", "primaryType", typedData.PrimaryType, "msg", typedData.Message, "types", typedData.Types, "hash", hexutil.Encode(messageHash))
 		return nil
 	})
 	if err != nil {
@@ -602,7 +600,7 @@ func computeEIP712Hash(typedData apitypes.TypedData) ([]byte, error) {
 	)
 
 	err = runDebug(func() error {
-		fmt.Println("final", hexutil.Encode(finalHash))
+		log.Trace("eip712 final hash", "hash", hexutil.Encode(finalHash))
 		return nil
 	})
 	if err != nil {

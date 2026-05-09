@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 	"vsc-node/lib/utils"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
@@ -40,6 +41,8 @@ import (
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 )
+
+var log = vsclog.Module("p2p")
 
 type P2PServer struct {
 	witnessDb    WitnessGetter
@@ -108,7 +111,7 @@ func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 		}
 		time.Sleep(30 * time.Second)
 	}
-	fmt.Println("Bootstrap discovery complete")
+	log.Info("bootstrap discovery complete")
 }
 
 // Started implements start_status.Starter.
@@ -135,7 +138,7 @@ func (p2pServer *P2PServer) Init() error {
 	for _, peerStr := range p2pServer.GetBootnodes() {
 		peerId, err := peer.AddrInfoFromString(peerStr)
 		if err != nil {
-			fmt.Println("Error parsing bootstrap peer:", peerStr, err)
+			log.Warn("error parsing bootstrap peer", "peer", peerStr, "err", err)
 			continue
 		}
 		bootstrapPeers = append(bootstrapPeers, *peerId)
@@ -204,8 +207,7 @@ func (p2pServer *P2PServer) Init() error {
 	routedHost := rhost.Wrap(p2p, idht)
 	p2pServer.host = routedHost
 	p2pServer.dht = idht
-	fmt.Println("peer ID:", p2pServer.GetPeerId())
-	fmt.Println("peer addrs:", p2pServer.Addrs())
+	log.Info("p2p host ready", "peer_id", p2pServer.GetPeerId(), "addrs", p2pServer.Addrs())
 
 	go func() {
 		cSub, _ := p2pServer.host.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
@@ -214,7 +216,7 @@ func (p2pServer *P2PServer) Init() error {
 		select {
 		case stat := <-cSub.Out():
 
-			fmt.Println("NAT Status", stat)
+			log.Info("NAT status", "reachability", stat.(event.EvtLocalReachabilityChanged).Reachability)
 			p2pServer.reachabilityStatus = stat.(event.EvtLocalReachabilityChanged).Reachability
 		case <-time.After(30 * time.Second):
 
@@ -272,8 +274,9 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 		}
 	}
 
-	err := p2ps.dht.Bootstrap(context.Background())
-	fmt.Println("DHT Bootstrap error:", err)
+	if err := p2ps.dht.Bootstrap(context.Background()); err != nil {
+		log.Warn("DHT bootstrap error", "err", err)
+	}
 
 	go func() {
 		time.Sleep(50 * time.Millisecond)
@@ -296,7 +299,7 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 				}
 			}
 			peerLen := len(p2ps.host.Network().Peers())
-			fmt.Println("peers", "["+peerList+"]", "peers.len()="+strconv.Itoa(peerLen))
+			log.Verbose("connected peers", "count", peerLen, "list", peerList)
 			if peerLen >= len(uniquePeers)-1 {
 				p2ps.startStatus.TriggerStart()
 			}
@@ -538,7 +541,7 @@ func (p2p *P2PServer) connectRegisteredPeers() {
 }
 
 func (p2p *P2PServer) discoverPeers() {
-	fmt.Println("Discovering peers...")
+	log.Verbose("discovering peers")
 	if len(p2p.host.Network().Peers()) < 2 {
 		if !p2p.systemConfig.OnMocknet() {
 			for _, peerStr := range p2p.GetBootnodes() {

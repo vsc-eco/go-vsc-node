@@ -10,6 +10,7 @@ import (
 	"strings"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
 	"vsc-node/modules/db/vsc/elections"
@@ -27,6 +28,8 @@ import (
 	"github.com/multiformats/go-multihash"
 	"go.mongodb.org/mongo-driver/mongo"
 )
+
+var log = vsclog.Module("txpool")
 
 type TransactionPool struct {
 	TxDb       transactions.Transactions
@@ -213,7 +216,7 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 
 	if len(options) == 0 || options[0].Broadcast {
 		err = tp.Broadcast(cidz.String(), sTx)
-		fmt.Println("Broadcasting transaction", cidz.String(), err)
+		log.Verbose("broadcasting transaction", "cid", cidz.String(), "err", err)
 		if err != nil {
 			return nil, err
 		}

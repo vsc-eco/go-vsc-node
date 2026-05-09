@@ -10,7 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"vsc-node/lib/vsclog"
 )
+
+var log = vsclog.Module("wasm")
 
 func home() string {
 	return os.Getenv("HOME")
@@ -20,7 +23,7 @@ func source(file string) (bool, error) {
 	cmd := exec.Command("bash", "-c", "source \""+file+"\" && echo '<<<ENVIRONMENT>>>' && env")
 	bs, err := cmd.CombinedOutput()
 	if err != nil {
-		println(string(bs))
+		log.Verbose("source command output", "output", string(bs))
 		if _, ok := err.(*exec.ExitError); ok {
 			return false, nil
 		}
