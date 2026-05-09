@@ -1,12 +1,14 @@
 package oracle
 
 import (
-	"log"
 	"os/exec"
 	"strings"
 
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/config"
 )
+
+var oracleLog = vsclog.Module("oracle")
 
 // ChainRpcConfig holds RPC connection details for a single chain node.
 type ChainRpcConfig struct {
@@ -128,7 +130,7 @@ func (oc *oracleConfigStruct) migrateBitcoindToVscBtcd() {
 		return
 	}
 
-	log.Println("[oracle] migrating BTC RpcHost from bitcoind:8332 → vsc-btcd:8332")
+	oracleLog.Info("migrating BTC RpcHost", "from", "bitcoind:8332", "to", "vsc-btcd:8332")
 	oc.Update(func(c *oracleConfig) {
 		if c.Chains != nil {
 			if btc, ok := c.Chains["BTC"]; ok {
