@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mattn/go-isatty"
 )
 
 const (
@@ -49,9 +52,35 @@ var (
 	moduleLevels  = map[string]slog.Level{}
 	moduleLoggers = map[string]*Logger{}
 	baseHandler   slog.Handler
+	colorEnabled  bool
 )
 
+const (
+	ansiReset   = "\x1b[0m"
+	ansiBold    = "\x1b[1m"
+	ansiDim     = "\x1b[2m"
+	ansiError   = "\x1b[1;31m" // bold red
+	ansiWarn    = "\x1b[33m"   // yellow
+	ansiInfo    = "\x1b[32m"   // green
+	ansiDebug   = "\x1b[36m"   // cyan
+	ansiVerbose = "\x1b[34m"   // blue
+	ansiTrace   = "\x1b[90m"   // bright black / dim
+)
+
+var levelColors = []struct {
+	tag   []byte
+	color string
+}{
+	{[]byte("[ERROR]"), ansiError},
+	{[]byte("[WARN]"), ansiWarn},
+	{[]byte("[INFO]"), ansiInfo},
+	{[]byte("[DEBUG]"), ansiDebug},
+	{[]byte("[VERBOSE]"), ansiVerbose},
+	{[]byte("[TRACE]"), ansiTrace},
+}
+
 func init() {
+	colorEnabled = os.Getenv("NO_COLOR") == "" && isatty.IsTerminal(os.Stderr.Fd())
 	rebuildHandler()
 }
 
@@ -181,15 +210,238 @@ func (h *moduleHandler) WithGroup(name string) slog.Handler {
 	return &moduleHandler{base: h.base.WithGroup(name), module: h.module}
 }
 
-// stripTimeKeyWriter strips the "time=" key prefix emitted by slog's
-// TextHandler so the timestamp appears bare at the start of each line.
+// stripTimeKeyWriter post-processes slog TextHandler output: strips the
+// "time=", "level=", and "msg=" key envelopes, and applies ANSI tinting
+// (dim timestamp, colored level tag, bold message, dim attribute keys)
+// when stderr is a TTY.
 type stripTimeKeyWriter struct{}
 
 func (stripTimeKeyWriter) Write(p []byte) (int, error) {
-	p = bytes.Replace(p, []byte("time="), nil, 1)
-	p = bytes.Replace(p, []byte("level="), nil, 1)
-	_, err := os.Stderr.Write(p)
+	out := formatLine(p)
+	_, err := os.Stderr.Write(out)
 	return len(p), err
+}
+
+// formatLine parses one slog text-handler record and rewrites it.
+// On any deviation from the expected `time=… level=[X] msg=… <attrs>`
+// shape, it returns the input unchanged.
+func formatLine(p []byte) []byte {
+	body := p
+	var trailingNL bool
+	if n := len(body); n > 0 && body[n-1] == '\n' {
+		body = body[:n-1]
+		trailingNL = true
+	}
+
+	if !bytes.HasPrefix(body, []byte("time=")) {
+		return p
+	}
+	body = body[len("time="):]
+
+	spaceIdx := bytes.IndexByte(body, ' ')
+	if spaceIdx < 0 {
+		return p
+	}
+	timestamp := body[:spaceIdx]
+	body = body[spaceIdx+1:]
+
+	if !bytes.HasPrefix(body, []byte("level=")) {
+		return p
+	}
+	body = body[len("level="):]
+
+	if len(body) == 0 || body[0] != '[' {
+		return p
+	}
+	closeBracket := bytes.IndexByte(body, ']')
+	if closeBracket < 0 {
+		return p
+	}
+	level := body[:closeBracket+1]
+	body = body[closeBracket+1:]
+
+	if len(body) > 0 && body[0] == ' ' {
+		body = body[1:]
+	}
+
+	msg, attrs := extractMessage(body)
+
+	out := bytes.NewBuffer(make([]byte, 0, len(p)+64))
+	if colorEnabled {
+		out.WriteString(ansiDim)
+		out.Write(timestamp)
+		out.WriteString(ansiReset)
+		out.WriteByte(' ')
+		if c := levelColor(level); c != "" {
+			out.WriteString(c)
+			out.Write(level)
+			out.WriteString(ansiReset)
+		} else {
+			out.Write(level)
+		}
+		if len(msg) > 0 {
+			out.WriteByte(' ')
+			out.WriteString(ansiBold)
+			out.Write(msg)
+			out.WriteString(ansiReset)
+		}
+		if len(attrs) > 0 {
+			if msg == nil && attrs[0] != ' ' {
+				out.WriteByte(' ')
+			}
+			out.Write(walkAttrs(attrs))
+		}
+	} else {
+		out.Write(timestamp)
+		out.WriteByte(' ')
+		out.Write(level)
+		if len(msg) > 0 {
+			out.WriteByte(' ')
+			out.Write(msg)
+		}
+		if len(attrs) > 0 {
+			if msg == nil && attrs[0] != ' ' {
+				out.WriteByte(' ')
+			}
+			out.Write(attrs)
+		}
+	}
+
+	if trailingNL {
+		out.WriteByte('\n')
+	}
+	return out.Bytes()
+}
+
+// extractMessage parses a "msg=VALUE" prefix and returns the unquoted
+// message bytes plus the trailing attrs bytes (with the leading space
+// preserved). If body does not start with "msg=", returns (nil, body).
+// An empty quoted msg ("") returns a non-nil zero-length slice so the
+// caller can distinguish "msg= present but empty" from "no msg= field".
+func extractMessage(body []byte) (msg, attrs []byte) {
+	if !bytes.HasPrefix(body, []byte("msg=")) {
+		return nil, body
+	}
+	body = body[len("msg="):]
+	if len(body) == 0 {
+		return body[:0], nil
+	}
+	if body[0] == '"' {
+		end := 1
+		for end < len(body) {
+			if body[end] == '\\' && end+1 < len(body) {
+				end += 2
+				continue
+			}
+			if body[end] == '"' {
+				end++
+				break
+			}
+			end++
+		}
+		if unquoted, err := strconv.Unquote(string(body[:end])); err == nil {
+			msg = []byte(unquoted)
+		} else if end >= 2 {
+			msg = body[1 : end-1]
+		} else {
+			msg = body[:0]
+		}
+		attrs = body[end:]
+		return msg, attrs
+	}
+	end := bytes.IndexAny(body, " \n")
+	if end < 0 {
+		return body, nil
+	}
+	return body[:end], body[end:]
+}
+
+// walkAttrs scans the attrs portion of a slog record and dims each
+// "key=" prefix. The caller has already verified colorEnabled. Recognises
+// the four value shapes slog can emit: bare token, "quoted", [bracketed
+// slice], and "[quoted bracketed slice]".
+func walkAttrs(p []byte) []byte {
+	out := bytes.NewBuffer(make([]byte, 0, len(p)+32))
+	i := 0
+	for i < len(p) {
+		for i < len(p) && (p[i] == ' ' || p[i] == '\t') {
+			out.WriteByte(p[i])
+			i++
+		}
+		if i >= len(p) {
+			break
+		}
+		eq := -1
+		for j := i; j < len(p); j++ {
+			c := p[j]
+			if c == '=' {
+				eq = j
+				break
+			}
+			if c == ' ' || c == '\n' {
+				break
+			}
+		}
+		if eq < 0 {
+			out.Write(p[i:])
+			break
+		}
+		out.WriteString(ansiDim)
+		out.Write(p[i : eq+1])
+		out.WriteString(ansiReset)
+		i = eq + 1
+		if i >= len(p) {
+			break
+		}
+		switch p[i] {
+		case '"':
+			j := i + 1
+			for j < len(p) {
+				if p[j] == '\\' && j+1 < len(p) {
+					j += 2
+					continue
+				}
+				if p[j] == '"' {
+					j++
+					break
+				}
+				j++
+			}
+			out.Write(p[i:j])
+			i = j
+		case '[':
+			j := i + 1
+			depth := 1
+			for j < len(p) && depth > 0 {
+				switch p[j] {
+				case '[':
+					depth++
+				case ']':
+					depth--
+				}
+				j++
+			}
+			out.Write(p[i:j])
+			i = j
+		default:
+			j := i
+			for j < len(p) && p[j] != ' ' && p[j] != '\n' {
+				j++
+			}
+			out.Write(p[i:j])
+			i = j
+		}
+	}
+	return out.Bytes()
+}
+
+func levelColor(level []byte) string {
+	for _, lc := range levelColors {
+		if bytes.Equal(level, lc.tag) {
+			return lc.color
+		}
+	}
+	return ""
 }
 
 func rebuildHandler() {
