@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
@@ -70,7 +71,9 @@ func (t TxVscCallContract) ExecuteTx(
 	if t.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 100)
 	}
+	ciStart := time.Now()
 	info, exists := se.GetContractInfo(t.ContractId, t.Self.BlockHeight)
+	globalProfile.Record("exec_batch.contract_info_lookup", time.Since(ciStart))
 
 	if !exists {
 		return errorToTxResult(fmt.Errorf("contract not found"), 100)
@@ -81,7 +84,9 @@ func (t TxVscCallContract) ExecuteTx(
 		return errorToTxResult(err, 100)
 	}
 
+	dlStart := time.Now()
 	node, err := se.DataLayer().Get(c, nil)
+	globalProfile.Record("exec_batch.contract_code_fetch", time.Since(dlStart))
 	if err != nil {
 		return errorToTxResult(err, 100)
 	}
@@ -113,8 +118,10 @@ func (t TxVscCallContract) ExecuteTx(
 		return errorToTxResult(fmt.Errorf("caller is not in required_auths or required_posting_auths"), 100)
 	}
 
+	wasmStart := time.Now()
 	w := wasm_runtime_ipc.New()
 	w.Init()
+	globalProfile.Record("exec_batch.wasm_init", time.Since(wasmStart))
 
 	// ensure entrypoint contract is appended to outputs regardless of state access or logs
 	callSession.GetContractSession(t.ContractId)

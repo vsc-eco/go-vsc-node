@@ -52,6 +52,9 @@ var globalProfile = &Profile{
 // GetProfile returns the process-wide profile collector.
 func GetProfile() *Profile { return globalProfile }
 
+// GlobalProfile is an exported reference to the global profile for use in other modules.
+var GlobalProfile = globalProfile
+
 // Record adds a single timing sample to the named bucket.
 func (p *Profile) Record(name string, d time.Duration) {
 	profileBucketDuration.WithLabelValues(name).Observe(d.Seconds())
