@@ -47,6 +47,9 @@ type DataLayer struct {
 	dataDir []string
 }
 
+// Bitswap exposes the underlying bitswap instance for diagnostics/probe use.
+func (dl *DataLayer) Bitswap() *bitswap.Bitswap { return dl.bitswap }
+
 type MetricsCtx context.Context
 
 type GetOptions struct {
@@ -106,6 +109,24 @@ func (dl *DataLayer) Init() error {
 	dl.bitswap = bswap
 
 	dl.DagServ = merkledag.NewDAGService(blockService)
+
+	// Pre-populate the universal empty-bytes block. boxo's bitswap server has
+	// a bug where getBlockSizes filters zero-size results out of its return
+	// map, causing the engine to respond DontHave for any 0-byte block even
+	// when blockstore.Has returns true (boxo@v0.27.2 — and current main —
+	// blockstoremanager.go: `if n != 0 { res[ks[i]] = n }`). Contracts that
+	// store empty values produce the universal CID
+	// bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku, and any
+	// node lacking it locally would hang forever in the unbounded GetDag
+	// path during state reads. Writing the block here makes blockservice.GetBlock
+	// short-circuit on the local-blockstore lookup before it ever falls through
+	// to bitswap, so every node self-heals at startup.
+	emptyPrefix := cid.Prefix{Version: 1, Codec: uint64(multicodec.Raw), MhType: mh.SHA2_256, MhLength: -1}
+	emptyCid, _ := emptyPrefix.Sum(nil)
+	emptyBlock, _ := blocks.NewBlockWithCid(nil, emptyCid)
+	if err := blockService.AddBlock(ctx, emptyBlock); err != nil {
+		return fmt.Errorf("failed to seed empty-bytes block: %w", err)
+	}
 
 	return nil
 }
