@@ -11,9 +11,11 @@ import (
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common/common_types"
 	"vsc-node/modules/db/vsc/hive_blocks"
+	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 
 	"github.com/chebyrash/promise"
 	"github.com/ipfs/go-cid"
+	dagCbor "github.com/ipfs/go-ipld-cbor"
 )
 
 var _ aggregate.Plugin = (*BlockPrefetcher)(nil)
@@ -36,21 +38,25 @@ type BlockPrefetcher struct {
 	da          *datalayer.DataLayer
 	blockStatus common_types.BlockStatusGetter
 
-	lookahead   uint64
-	parallelism int
+	lookahead    uint64
+	parallelism  int
 	scanInterval time.Duration
 
-	workQueue chan cid.Cid
+	workQueue   chan cid.Cid
+	txWorkQueue chan cid.Cid // separate queue for transaction CIDs inside VSC blocks
 
 	seenMu sync.Mutex
 	seen   map[string]uint64 // cid string → hive block height it was queued for
 
-	statsMu      sync.Mutex
-	totalQueued  uint64
-	totalFetched uint64
-	totalErrored uint64
-	totalTimeout uint64
-	totalFetchNs int64
+	statsMu        sync.Mutex
+	totalQueued    uint64
+	totalFetched   uint64
+	totalErrored   uint64
+	totalTimeout   uint64
+	totalFetchNs   int64
+	totalTxQueued  uint64
+	totalTxFetched uint64
+	totalTxFetchNs int64
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -90,6 +96,7 @@ func (p *BlockPrefetcher) Start() *promise.Promise[any] {
 		}
 		p.ctx, p.cancel = context.WithCancel(context.Background())
 		p.workQueue = make(chan cid.Cid, p.parallelism*4)
+		p.txWorkQueue = make(chan cid.Cid, p.parallelism*8) // larger queue for txs
 
 		p.scanWg.Add(1)
 		go p.scanLoop()
@@ -97,6 +104,11 @@ func (p *BlockPrefetcher) Start() *promise.Promise[any] {
 		for i := 0; i < p.parallelism; i++ {
 			p.workersWg.Add(1)
 			go p.fetchWorker(i)
+		}
+		// Transaction prefetch workers - can use same parallelism
+		for i := 0; i < p.parallelism; i++ {
+			p.workersWg.Add(1)
+			go p.txFetchWorker(i)
 		}
 		go p.statsLoop()
 		prefetchLog.Info("prefetch started", "lookahead", p.lookahead, "parallelism", p.parallelism)
@@ -120,19 +132,30 @@ func (p *BlockPrefetcher) statsLoop() {
 			errored := p.totalErrored
 			timedOut := p.totalTimeout
 			ns := p.totalFetchNs
+			txQueued := p.totalTxQueued
+			txFetched := p.totalTxFetched
+			txNs := p.totalTxFetchNs
 			p.statsMu.Unlock()
 			prefetchQueueDepth.Set(float64(len(p.workQueue)))
 			var avgMs int64
 			if fetched > 0 {
 				avgMs = (ns / int64(fetched)) / int64(time.Millisecond)
 			}
-			prefetchLog.Info("prefetch stats",
+			var txAvgMs int64
+			if txFetched > 0 {
+				txAvgMs = (txNs / int64(txFetched)) / int64(time.Millisecond)
+			}
+			prefetchLog.Debug("prefetch stats",
 				"queued", queued,
 				"fetched", fetched,
 				"errored", errored,
 				"timeout", timedOut,
 				"avg_fetch_ms", avgMs,
 				"queue_depth", len(p.workQueue),
+				"tx_queued", txQueued,
+				"tx_fetched", txFetched,
+				"tx_avg_fetch_ms", txAvgMs,
+				"tx_queue_depth", len(p.txWorkQueue),
 				"current_bh", p.blockStatus.BlockHeight(),
 			)
 		}
@@ -147,6 +170,7 @@ func (p *BlockPrefetcher) Stop() error {
 	p.cancel()
 	p.scanWg.Wait()
 	close(p.workQueue)
+	close(p.txWorkQueue)
 	p.workersWg.Wait()
 	return nil
 }
@@ -310,7 +334,7 @@ func (p *BlockPrefetcher) fetchWorker(id int) {
 	for c := range p.workQueue {
 		fetchStart := time.Now()
 		fetchCtx, cancel := context.WithTimeout(p.ctx, prefetchFetchTimeout)
-		_, err := p.da.GetDagCtx(fetchCtx, c)
+		node, err := p.da.GetDagCtx(fetchCtx, c)
 		cancel()
 		elapsed := time.Since(fetchStart)
 		globalProfile.Record("prefetch.fetch", elapsed)
@@ -336,7 +360,70 @@ func (p *BlockPrefetcher) fetchWorker(id int) {
 				prefetchFetchErrors.WithLabelValues("error").Inc()
 			}
 			prefetchLog.Trace("prefetch fetch failed", "worker", id, "cid", c.String(), "timeout", timedOut, "err", err)
+			continue
+		}
+
+		// Try to extract transaction CIDs from VSC block
+		if node != nil {
+			p.extractTxCids(node, c)
 		}
 	}
 }
 
+// extractTxCids attempts to parse a VSC block and queue its transaction CIDs
+// for prefetching. This is best-effort - if parsing fails, we just skip it.
+func (p *BlockPrefetcher) extractTxCids(node *dagCbor.Node, blockCid cid.Cid) {
+	var block vscBlocks.VscBlock
+	if err := dagCbor.DecodeInto(node.RawData(), &block); err != nil {
+		// Not a VSC block (likely a transaction or other CID type)
+		return
+	}
+
+	// Successfully parsed as VSC block - extract transaction CIDs
+	txQueued := 0
+	for _, tx := range block.Transactions {
+		if tx.Id == "" {
+			continue
+		}
+		txCid, err := cid.Parse(tx.Id)
+		if err != nil {
+			continue
+		}
+		select {
+		case p.txWorkQueue <- txCid:
+			txQueued++
+		default:
+			// Transaction queue full - drop this CID
+			break
+		}
+	}
+
+	if txQueued > 0 {
+		p.statsMu.Lock()
+		p.totalTxQueued += uint64(txQueued)
+		p.statsMu.Unlock()
+	}
+}
+
+// txFetchWorker drains the transaction work queue and prefetches transaction CIDs.
+// These are typically smaller than VSC blocks and can be fetched in parallel.
+func (p *BlockPrefetcher) txFetchWorker(id int) {
+	defer p.workersWg.Done()
+	for c := range p.txWorkQueue {
+		fetchStart := time.Now()
+		fetchCtx, cancel := context.WithTimeout(p.ctx, prefetchFetchTimeout)
+		_, err := p.da.GetDagCtx(fetchCtx, c)
+		cancel()
+		elapsed := time.Since(fetchStart)
+		globalProfile.Record("prefetch.tx_fetch", elapsed)
+
+		p.statsMu.Lock()
+		p.totalTxFetched++
+		p.totalTxFetchNs += int64(elapsed)
+		p.statsMu.Unlock()
+
+		if err != nil {
+			prefetchLog.Trace("prefetch tx failed", "worker", id, "cid", c.String(), "err", err)
+		}
+	}
+}
