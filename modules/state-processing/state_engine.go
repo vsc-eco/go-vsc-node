@@ -329,7 +329,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		blockProcessDuration.Observe(elapsed.Seconds())
 		blocksProcessed.Inc()
 		n := globalProfile.IncBlock(block.BlockNumber)
-		if n%5000 == 0 {
+		if n%10000 == 0 {
 			globalProfile.LogSummary(block.BlockNumber)
 			globalProfile.Reset(block.BlockNumber)
 		}
@@ -1216,6 +1216,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 	globalProfile.Record("phase3_tx_loop", time.Since(p3Start))
 
+	p4Start := time.Now()
+
 	//Detects new slot and executes batch if so
 	if se.slotStatus.SlotHeight != slotInfo.StartHeight {
 		//Updates balances index before next batch can execute
@@ -1265,6 +1267,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	if se.pendulumFeed != nil {
 		se.pendulumFeed.TickIfDue(block.BlockNumber)
 	}
+	globalProfile.Record("phase4_total", time.Since(p4Start))
 }
 
 // executeTxSafely runs a transaction handler with panic recovery so that a
