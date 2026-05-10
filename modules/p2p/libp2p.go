@@ -300,7 +300,7 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 				}
 			}
 			peerLen := len(p2ps.host.Network().Peers())
-			log.Verbose("connected peers", "count", peerLen, "list", peerList)
+			log.Info("connected peers", "count", peerLen)
 			if peerLen >= len(uniquePeers)-1 {
 				p2ps.startStatus.TriggerStart()
 			}
