@@ -54,6 +54,7 @@ func GetProfile() *Profile { return globalProfile }
 
 // Record adds a single timing sample to the named bucket.
 func (p *Profile) Record(name string, d time.Duration) {
+	profileBucketDuration.WithLabelValues(name).Observe(d.Seconds())
 	p.mu.Lock()
 	b, ok := p.buckets[name]
 	if !ok {

@@ -121,6 +121,7 @@ func (p *BlockPrefetcher) statsLoop() {
 			timedOut := p.totalTimeout
 			ns := p.totalFetchNs
 			p.statsMu.Unlock()
+			prefetchQueueDepth.Set(float64(len(p.workQueue)))
 			var avgMs int64
 			if fetched > 0 {
 				avgMs = (ns / int64(fetched)) / int64(time.Millisecond)
@@ -244,6 +245,7 @@ func (p *BlockPrefetcher) scanOnce() {
 					p.statsMu.Lock()
 					p.totalQueued++
 					p.statsMu.Unlock()
+					prefetchQueued.Inc()
 				case <-p.ctx.Done():
 					return
 				default:
@@ -329,6 +331,9 @@ func (p *BlockPrefetcher) fetchWorker(id int) {
 			globalProfile.Record("prefetch.fetch_err", elapsed)
 			if timedOut {
 				globalProfile.Record("prefetch.fetch_timeout", elapsed)
+				prefetchFetchErrors.WithLabelValues("timeout").Inc()
+			} else {
+				prefetchFetchErrors.WithLabelValues("error").Inc()
 			}
 			prefetchLog.Trace("prefetch fetch failed", "worker", id, "cid", c.String(), "timeout", timedOut, "err", err)
 		}
