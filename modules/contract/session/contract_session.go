@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sync/atomic"
+	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/db/vsc/contracts"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -18,6 +20,24 @@ import (
 type ContractWithCode struct {
 	Info contracts.Contract
 	Code []byte
+}
+
+var (
+	stateReadCount     int64
+	stateDatabinGetUs  int64
+	stateDatalayerGetUs int64
+)
+
+func ResetStateStats() {
+	atomic.StoreInt64(&stateReadCount, 0)
+	atomic.StoreInt64(&stateDatabinGetUs, 0)
+	atomic.StoreInt64(&stateDatalayerGetUs, 0)
+}
+
+func StateStats() (count int64, databinUs int64, datalayerUs int64) {
+	return atomic.LoadInt64(&stateReadCount),
+		atomic.LoadInt64(&stateDatabinGetUs),
+		atomic.LoadInt64(&stateDatalayerGetUs)
 }
 
 type LogOutput struct {
@@ -344,10 +364,15 @@ func (ss *StateStore) Get(key string) []byte {
 		if val := ss.cs.StateGet(key); val != nil {
 			return val
 		}
+		atomic.AddInt64(&stateReadCount, 1)
+		getStart := time.Now()
 		cidz, err := ss.databin.Get(key)
+		atomic.AddInt64(&stateDatabinGetUs, time.Since(getStart).Microseconds())
 
 		if err == nil {
+			rawStart := time.Now()
 			rawBytes, err := ss.datalayer.GetRaw(*cidz)
+			atomic.AddInt64(&stateDatalayerGetUs, time.Since(rawStart).Microseconds())
 			if err == nil {
 				ss.cache[key] = rawBytes
 			} else {

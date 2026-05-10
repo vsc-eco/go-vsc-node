@@ -1237,6 +1237,8 @@ func (se *StateEngine) ExecuteBatch() {
 	se.LedgerState.BlockHeight = lastBlockBh
 	ledgerSession := ledgerSystem.NewSession(se.LedgerState)
 
+	txTypeTimings := make(map[string]time.Duration)
+
 	for idx, tx := range se.TxBatch {
 		var opTypes map[string]bool = make(map[string]bool)
 		for _, vscTx := range tx.Ops {
@@ -1254,6 +1256,7 @@ func (se *StateEngine) ExecuteBatch() {
 		log.Verbose("executing batch item", "idx", idx, "total", len(se.TxBatch))
 		// ledgerSession := se.LedgerSystem.NewSession(lastBlockBh)
 		rcSession := se.RcSystem.NewSession(ledgerSession)
+		csStart := time.Now()
 		// Pass the current temp outputs so calls within this slot see the
 		// latest in-memory state instead of the latest contract state
 		callSession := contract_session.NewCallSession(
@@ -1264,6 +1267,7 @@ func (se *StateEngine) ExecuteBatch() {
 			lastBlockBh,
 			se.TempOutputs,
 		)
+		globalProfile.Record("exec_batch.call_session", time.Since(csStart))
 
 		outputs := make([]ContractIdResult, 0)
 		ok := true
@@ -1298,7 +1302,9 @@ func (se *StateEngine) ExecuteBatch() {
 				if ok {
 					contractId = contractCall.ContractId
 					if lastTmpOut, exist := se.TempOutputs[contractId]; !exist {
+						csLookupStart := time.Now()
 						contractOutput, err := se.contractState.GetLastOutput(contractCall.ContractId, lastBlockBh)
+						globalProfile.Record("exec_batch.contract_state_lookup", time.Since(csLookupStart))
 						if err == nil {
 							lastContractMeta = contractOutput.Metadata
 							lastStateCid = contractOutput.StateMerkle
@@ -1309,7 +1315,11 @@ func (se *StateEngine) ExecuteBatch() {
 					}
 				}
 			}
+			txStart := time.Now()
 			result := executeTxSafely(vscTx, se, ledgerSession, rcSession, callSession, payer)
+			txElapsed := time.Since(txStart)
+			txTypeTimings[vscTx.Type()] += txElapsed
+			globalProfile.Record("exec_batch."+vscTx.Type(), txElapsed)
 
 			log.Debug(
 				"TRANSACTION STATUS",
@@ -1420,6 +1430,18 @@ func (se *StateEngine) ExecuteBatch() {
 	}
 
 	se.TxBatch = make([]TxPacket, 0)
+
+	for txType, total := range txTypeTimings {
+		globalProfile.Record("exec_batch.total."+txType, total)
+	}
+
+	stateReadCount, stateDatabinUs, stateDatalayerUs := contract_session.StateStats()
+	if stateReadCount > 0 {
+		globalProfile.Record("exec_batch.state_reads", time.Duration(stateReadCount)*time.Millisecond)
+		globalProfile.Record("exec_batch.state_databin_get", time.Duration(stateDatabinUs)*time.Microsecond)
+		globalProfile.Record("exec_batch.state_datalayer_get", time.Duration(stateDatalayerUs)*time.Microsecond)
+	}
+	contract_session.ResetStateStats()
 }
 
 func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
