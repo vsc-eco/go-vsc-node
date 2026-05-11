@@ -45,9 +45,9 @@ var log = vsclog.Module("tss")
 
 const (
 	// Defaults for configurable intervals (overridable via sysconfig TssParams).
-	DEFAULT_SIGN_INTERVAL     = 50      // 50 L1 blocks
-	DEFAULT_ROTATE_INTERVAL   = 20 * 5  // 5 minutes in L1 blocks
-	DEFAULT_READINESS_OFFSET  = 30      // blocks before reshare to broadcast readiness
+	DEFAULT_SIGN_INTERVAL    = 50     // 50 L1 blocks
+	DEFAULT_ROTATE_INTERVAL  = 20 * 5 // 5 minutes in L1 blocks
+	DEFAULT_READINESS_OFFSET = 30     // blocks before reshare to broadcast readiness
 
 	TSS_MESSAGE_RETRY_COUNT     = 3             // Number of retries for failed messages
 	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for long-term bans
@@ -1169,8 +1169,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// This prevents a malicious coalition from excluding healthy nodes
 			// with a single manufactured blame.
 			// ═══════════════════════════════════════════════════════════
-			blameCount := make(map[string]int)   // account → number of blames naming this account
-			blameOpportunities := 0              // total blame commitments in window (denominator)
+			blameCount := make(map[string]int) // account → number of blames naming this account
+			blameOpportunities := 0            // total blame commitments in window (denominator)
 			for _, blame := range allBlames {
 				if blame.BlockHeight <= commitment.BlockHeight {
 					continue
@@ -1821,8 +1821,18 @@ func (tssMgr *TssManager) waitForSigs(
 	blsCircuit := dids.NewBlsCircuitGenerator(members)
 
 	tssMgr.bufferLock.Lock()
-	tssMgr.sigChannels[sessionId] = make(chan sigMsg, 16)
+	tssMgr.sigChannels[sessionId] = make(chan sigMsg, len(election.Members))
 	tssMgr.bufferLock.Unlock()
+
+	// Without this, the channel stays in the map forever after waitForSigs
+	// returns — late res_sig messages then accumulate in the buffer and the
+	// 17th late send blocks indefinitely, leaking a pubsub semaphore slot.
+	// The earlier deletes in RunActions fire BEFORE waitForSigs is called.
+	defer func() {
+		tssMgr.bufferLock.Lock()
+		delete(tssMgr.sigChannels, sessionId)
+		tssMgr.bufferLock.Unlock()
+	}()
 
 	tssMgr.pubsub.Send(p2pMessage{
 		Type:    "ask_sigs",
@@ -1847,7 +1857,6 @@ func (tssMgr *TssManager) waitForSigs(
 		sigChan := tssMgr.sigChannels[sessionId]
 		tssMgr.bufferLock.RUnlock()
 
-		signedMap := make(map[string]bool)
 		for signedWeight*3 < weightTotal*2 {
 			var msg sigMsg
 			select {
@@ -1857,7 +1866,6 @@ func (tssMgr *TssManager) waitForSigs(
 			}
 
 			var member dids.Member
-			var memberAccount string
 			var index int = -1
 			for i, data := range election.Members {
 				if data.Account == msg.Account {
@@ -1877,7 +1885,6 @@ func (tssMgr *TssManager) waitForSigs(
 
 			if added {
 				signedWeight += election.Weights[index]
-				signedMap[memberAccount] = true
 			}
 		}
 		finalizedCiruit, err := circuit.Finalize()
@@ -2043,11 +2050,11 @@ func New(
 		electionDb: electionDb,
 		VStream:    vstream,
 
-		queuedActions:  make([]QueuedAction, 0),
-		actionMap:      make(map[string]Dispatcher),
-		messageBuffer:  newSessionBuffer(),
-		sessionMap:     make(map[string]sessionInfo),
-		sessionResults: make(map[string]sessionResultEntry),
+		queuedActions:      make([]QueuedAction, 0),
+		actionMap:          make(map[string]Dispatcher),
+		messageBuffer:      newSessionBuffer(),
+		sessionMap:         make(map[string]sessionInfo),
+		sessionResults:     make(map[string]sessionResultEntry),
 		readinessSent:      make(map[string]bool),
 		gossipAttestations: make(map[string]map[string]ReadyAttestation),
 	}
