@@ -141,6 +141,21 @@ func (r *contractOutputResolver) BlockHeight(ctx context.Context, obj *contracts
 	return model.Int64(obj.BlockHeight), nil
 }
 
+// MemberMajor is the resolver for the member_major field.
+func (r *electionMemberResolver) MemberMajor(ctx context.Context, obj *elections.ElectionMember) (model.Uint64, error) {
+	return model.Uint64(obj.MemberMajor), nil
+}
+
+// MemberConsensus is the resolver for the member_consensus field.
+func (r *electionMemberResolver) MemberConsensus(ctx context.Context, obj *elections.ElectionMember) (model.Uint64, error) {
+	return model.Uint64(obj.MemberConsensus), nil
+}
+
+// MemberNonConsensus is the resolver for the member_non_consensus field.
+func (r *electionMemberResolver) MemberNonConsensus(ctx context.Context, obj *elections.ElectionMember) (model.Uint64, error) {
+	return model.Uint64(obj.MemberNonConsensus), nil
+}
+
 // Epoch is the resolver for the epoch field.
 func (r *electionResultResolver) Epoch(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error) {
 	return model.Uint64(obj.Epoch), nil
@@ -158,6 +173,16 @@ func (r *electionResultResolver) Weights(ctx context.Context, obj *elections.Ele
 // ProtocolVersion is the resolver for the protocol_version field.
 func (r *electionResultResolver) ProtocolVersion(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error) {
 	return model.Uint64(obj.ProtocolVersion), nil
+}
+
+// VersionMajor is the resolver for the version_major field.
+func (r *electionResultResolver) VersionMajor(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error) {
+	return model.Uint64(obj.VersionMajor), nil
+}
+
+// VersionNonConsensus is the resolver for the version_non_consensus field.
+func (r *electionResultResolver) VersionNonConsensus(ctx context.Context, obj *elections.ElectionResult) (model.Uint64, error) {
+	return model.Uint64(obj.VersionNonConsensus), nil
 }
 
 // TotalWeight is the resolver for the total_weight field.
@@ -459,11 +484,27 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 		return nil, electionErr
 	}
 	info := &LocalNodeInfo{
-		GitCommit:          announcements.GitCommit,
-		VersionID:          announcements.VersionId,
-		LastProcessedBlock: model.Uint64(head),
-		Epoch:              model.Uint64(election.Epoch),
-		ChainOracles:       []ChainOracleStatus{},
+		GitCommit:               announcements.GitCommit,
+		VersionID:               announcements.VersionId,
+		LastProcessedBlock:      model.Uint64(head),
+		Epoch:                   model.Uint64(election.Epoch),
+		ConsensusVersionDisplay: r.StateEngine.DisplayConsensusVersion(),
+		ProcessingSuspended:     r.StateEngine.ProcessingSuspendedForPool(),
+		ActiveConsensusLine:     r.StateEngine.ActiveConsensusLine(head).Key(),
+		ActiveConsensusExecutor: r.StateEngine.ActiveConsensusExecutor(head).Name(),
+		ChainOracles:            []ChainOracleStatus{},
+	}
+	if act := r.StateEngine.ConsensusActivation(); act != nil {
+		info.ConsensusActivationMode = &act.Mode
+		h := model.Uint64(act.ActivationHeight)
+		info.ConsensusActivationHeight = &h
+		ab := model.Uint64(act.AttestedBlockHeight)
+		info.ConsensusActivationAttestedBlock = &ab
+		av := act.Version.Format()
+		info.ConsensusActivationVersion = &av
+		if act.AttestedTxId != "" {
+			info.ConsensusActivationAttestedTxid = &act.AttestedTxId
+		}
 	}
 	if r.ChainOracle != nil {
 		for _, cs := range r.ChainOracle.GetAllChainStatuses() {
@@ -894,6 +935,16 @@ func (r *witnessResolver) ProtocolVersion(ctx context.Context, obj *witnesses.Wi
 	return model.Uint64(obj.ProtocolVersion), nil
 }
 
+// VersionMajor is the resolver for the version_major field.
+func (r *witnessResolver) VersionMajor(ctx context.Context, obj *witnesses.Witness) (model.Uint64, error) {
+	return model.Uint64(obj.VersionMajor), nil
+}
+
+// VersionNonConsensus is the resolver for the version_non_consensus field.
+func (r *witnessResolver) VersionNonConsensus(ctx context.Context, obj *witnesses.Witness) (model.Uint64, error) {
+	return model.Uint64(obj.VersionNonConsensus), nil
+}
+
 // Bn is the resolver for the bn field.
 func (r *witnessSlotResolver) Bn(ctx context.Context, obj *stateEngine.WitnessSlot) (model.Uint64, error) {
 	return model.Uint64(obj.SlotHeight), nil
@@ -910,6 +961,9 @@ func (r *Resolver) Contract() ContractResolver { return &contractResolver{r} }
 
 // ContractOutput returns ContractOutputResolver implementation.
 func (r *Resolver) ContractOutput() ContractOutputResolver { return &contractOutputResolver{r} }
+
+// ElectionMember returns ElectionMemberResolver implementation.
+func (r *Resolver) ElectionMember() ElectionMemberResolver { return &electionMemberResolver{r} }
 
 // ElectionResult returns ElectionResultResolver implementation.
 func (r *Resolver) ElectionResult() ElectionResultResolver { return &electionResultResolver{r} }
@@ -963,6 +1017,7 @@ type actionRecordResolver struct{ *Resolver }
 type balanceRecordResolver struct{ *Resolver }
 type contractResolver struct{ *Resolver }
 type contractOutputResolver struct{ *Resolver }
+type electionMemberResolver struct{ *Resolver }
 type electionResultResolver struct{ *Resolver }
 type ledgerClaimRecordResolver struct{ *Resolver }
 type ledgerRecordResolver struct{ *Resolver }

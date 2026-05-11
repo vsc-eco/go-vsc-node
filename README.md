@@ -16,3 +16,8 @@ go run github.com/99designs/gqlgen generate
 ```
 
 To view the GraphQL playground, start the `gql` package and navigate to whatever URL specified when creating a new `gql` with `gql.New(...)` + `/sandbox`.
+
+## Consensus Upgrade Development
+
+For maintainers adding new consensus lines/executors and coordinating rollout,
+see [`docs/consensus-upgrades.md`](docs/consensus-upgrades.md).

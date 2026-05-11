@@ -57,8 +57,8 @@ func TestGetElectionByHeight(t *testing.T) {
 	electionMock.Epoch = 69
 	electionMock.Members = []elections.ElectionMember{
 		{
-			"test-key",
-			"test-account",
+			Key:     "test-key",
+			Account: "test-account",
 		},
 	}
 	electionMock.NetId = "test-net-id"

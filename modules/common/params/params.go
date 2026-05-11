@@ -54,6 +54,11 @@ type ConsensusParams struct {
 	TssIndexHeight       uint64 `json:"tssIndexHeight,omitempty"`
 	ElectionInterval     uint64 `json:"electionInterval,omitempty"`
 	ElectionDupeFixEpoch uint64 `json:"electionDupeFixEpoch,omitempty"`
+	// RecoveryMultisigAccounts are Hive account names (no hive: prefix) authorized to post
+	// vsc.recovery_suspend and vsc.recovery_require_version.
+	RecoveryMultisigAccounts []string `json:"recoveryMultisigAccounts,omitempty"`
+	// RecoveryMultisigThreshold is M in M-of-N (distinct accounts from RecoveryMultisigAccounts in required_auths).
+	RecoveryMultisigThreshold int `json:"recoveryMultisigThreshold,omitempty"`
 }
 
 type TssParams struct {

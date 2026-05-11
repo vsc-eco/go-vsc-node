@@ -255,6 +255,24 @@ type LocalNodeInfo {
   last_processed_block: Uint64!
   """Current consensus epoch."""
   epoch: Uint64!
+  """Consensus triple display (major.consensus.non_consensus), provisional -p during recovery suspension."""
+  consensus_version_display: String!
+  """True while chain processing is suspended until recovery multisig clears the gate."""
+  processing_suspended: Boolean!
+  """Active coordinated consensus line (major.consensus) at the local head."""
+  active_consensus_line: String!
+  """Active consensus executor implementation identifier at the local head."""
+  active_consensus_executor: String!
+  """Attested activation mode for the next/active switch-over (normal or recovery)."""
+  consensus_activation_mode: String
+  """Attested cutover height for activation."""
+  consensus_activation_height: Uint64
+  """Attested activation version display (major.consensus.non_consensus)."""
+  consensus_activation_version: String
+  """Block height where the activation was attested."""
+  consensus_activation_attested_block: Uint64
+  """Transaction id that attested the activation."""
+  consensus_activation_attested_txid: String
   """Status of each registered chain oracle."""
   chain_oracles: [ChainOracleStatus!]!
 }
@@ -291,6 +309,10 @@ type Witness {
   peer_id: String
   """Magi protocol version supported by the witness."""
   protocol_version: Uint64!
+  """Major component of major.consensus.non_consensus."""
+  version_major: Uint64!
+  """Non-consensus component (optional behavior); may differ without excluding the witness."""
+  version_non_consensus: Uint64!
   """Timestamp of the witness registration or last update."""
   ts: String
   """Transaction ID of the witness registration or last update."""
@@ -413,6 +435,14 @@ type ElectionMember {
   key: String!
   """Hive account of the elected member."""
   account: String!
+  """True when per-member version fields were recorded at election time."""
+  has_per_member_version: Boolean!
+  """Major component at election snapshot for this member."""
+  member_major: Uint64!
+  """Consensus component at election snapshot for this member."""
+  member_consensus: Uint64!
+  """Non-consensus component at election snapshot for this member."""
+  member_non_consensus: Uint64!
 }
 
 """
@@ -433,6 +463,10 @@ type ElectionResult {
   weights: [Uint64!]!
   """Protocol version at the time of election."""
   protocol_version: Uint64!
+  """Major component at election time."""
+  version_major: Uint64!
+  """Non-consensus component at election time."""
+  version_non_consensus: Uint64!
   """Total combined weight of all elected members."""
   total_weight: Uint64!
   """Block height at which the election was finalized."""

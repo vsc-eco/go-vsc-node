@@ -976,7 +976,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// not currentElection which may have different members/order.
 			commitElection := tssMgr.electionDb.GetElection(commitment.Epoch)
 			if commitElection == nil || commitElection.Members == nil {
-				log.Warn("cannot find commit election", "epoch", commitElection.Epoch)
+				log.Warn("cannot find commit election", "epoch", commitment.Epoch)
 				continue
 			}
 			for midx, member := range commitElection.Members {
@@ -1066,6 +1066,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			log.Verbose("signing gossip readiness set",
 				"sessionId", sessionId, "readyCount", len(signReadyAccounts))
 
+			minSignVer := tssMgr.scheduler.TssMinimumConsensusVersion(bh)
 			filtered := make([]Participant, 0, len(participants))
 			for _, p := range participants {
 				if signBlamedAccounts[p.Account] {
@@ -1078,6 +1079,16 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 				if !signReadyAccounts[p.Account] {
 					log.Verbose("excluding non-ready node from signing", "sessionId", sessionId, "account", p.Account)
+					continue
+				}
+				em, ok := electionMemberByAccount(commitElection.Members, p.Account)
+				if !ok {
+					log.Verbose("excluding signing participant not in commit election", "sessionId", sessionId, "account", p.Account)
+					continue
+				}
+				mv := elections.MemberConsensusVersion(em, *commitElection)
+				if !mv.MeetsConsensusMin(minSignVer) {
+					log.Verbose("excluding node failing version gate from signing", "sessionId", sessionId, "account", p.Account)
 					continue
 				}
 				filtered = append(filtered, p)
@@ -1226,6 +1237,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			log.Verbose("gossip readiness set",
 				"sessionId", sessionId, "readyCount", len(readyAccounts))
 
+			minReshareVer := tssMgr.scheduler.TssMinimumConsensusVersion(bh)
+
 			// Decode commitment bitset for old committee membership
 			commitmentBytes, err := base64.RawURLEncoding.DecodeString(commitment.Commitment)
 			bitset := new(big.Int).SetBytes(commitmentBytes)
@@ -1247,6 +1260,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					// On-chain readiness gate: only include if node broadcast readiness
 					if !readyAccounts[member.Account] {
 						log.Verbose("excluding non-ready node from old committee", "sessionId", sessionId, "account", member.Account)
+						continue
+					}
+					ov := elections.MemberConsensusVersion(member, *commitmentElection)
+					if !ov.MeetsConsensusMin(minReshareVer) {
+						log.Verbose("excluding old committee node failing version gate", "sessionId", sessionId, "account", member.Account)
 						continue
 					}
 					commitedMembers = append(commitedMembers, Participant{
@@ -1273,6 +1291,12 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				if !readyAccounts[member.Account] {
 					excludedNodes = append(excludedNodes, member.Account)
 					log.Verbose("excluding non-ready node from new committee", "sessionId", sessionId, "account", member.Account)
+					continue
+				}
+				nv := elections.MemberConsensusVersion(member, currentElection)
+				if !nv.MeetsConsensusMin(minReshareVer) {
+					excludedNodes = append(excludedNodes, member.Account)
+					log.Verbose("excluding new committee node failing version gate", "sessionId", sessionId, "account", member.Account)
 					continue
 				}
 				newParticipants = append(newParticipants, Participant{
@@ -2058,6 +2082,16 @@ func New(
 		readinessSent:      make(map[string]bool),
 		gossipAttestations: make(map[string]map[string]ReadyAttestation),
 	}
+}
+
+// electionMemberByAccount resolves committee membership for deterministic TSS version checks.
+func electionMemberByAccount(members []elections.ElectionMember, account string) (elections.ElectionMember, bool) {
+	for _, m := range members {
+		if m.Account == account {
+			return m, true
+		}
+	}
+	return elections.ElectionMember{}, false
 }
 
 //Processes:

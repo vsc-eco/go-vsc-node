@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/minio/sha256-simd"
+	"github.com/multiformats/go-multiaddr"
 	"github.com/robfig/cron/v3"
 	"github.com/vsc-eco/hivego"
 
@@ -143,7 +145,9 @@ type payloadVscNode struct {
 	Ts              string   `json:"ts"`
 	VersionId       string   `json:"version_id"`
 	GitCommit       string   `json:"git_commit"`
+	VersionMajor    uint64   `json:"version_major"`
 	ProtocolVersion uint64   `json:"protocol_version"`
+	VersionNonConsensus uint64 `json:"version_non_consensus"`
 	GatewayKey      string   `json:"gateway_key"`
 	Witness         struct {
 		Enabled bool `json:"enabled"`
@@ -160,7 +164,25 @@ type didConsensusKey struct {
 var (
 	GitCommit string = "" // Default value if not set during build
 	VersionId string = "go-v0.1.0"
+	// These are strings so they can be set via -ldflags -X.
+	// Example:
+	// -ldflags "-X vsc-node/modules/announcements.AnnounceVersionMajor=1 -X vsc-node/modules/announcements.AnnounceProtocolVersion=2 -X vsc-node/modules/announcements.AnnounceVersionNonConsensus=7"
+	AnnounceVersionMajor         string
+	AnnounceProtocolVersion      string
+	AnnounceVersionNonConsensus  string
 )
+
+func parseAnnounceVersionComponent(raw, field string) uint64 {
+	if raw == "" {
+		return 0
+	}
+	v, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		log.Printf("invalid %s=%q, defaulting to 0", field, raw)
+		return 0
+	}
+	return v
+}
 
 // ===== announcement impl =====
 
@@ -231,7 +253,7 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 	if len(a.p2pconf.Get().AnnounceAddrs) > 0 {
 		peerAddrs = append(peerAddrs, a.p2pconf.Get().AnnounceAddrs...)
 	} else {
-		for _, addr := range a.peerInfo.GetPeerAddrs() {
+		for _, addr := range a.safePeerAddrs() {
 			peerAddrs = append(peerAddrs, addr.String())
 		}
 	}
@@ -254,8 +276,10 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 			PeerAddrs:       peerAddrs,
 			Ts:              time.Now().Format(time.RFC3339),
 			GitCommit:       GitCommit,
-			VersionId:       VersionId, //Use standard versioning
-			ProtocolVersion: 0,         //Protocol 0 until protocol 1 is finalized.
+			VersionId:           VersionId, //Use standard versioning
+			VersionMajor:        parseAnnounceVersionComponent(AnnounceVersionMajor, "AnnounceVersionMajor"),
+			ProtocolVersion:     parseAnnounceVersionComponent(AnnounceProtocolVersion, "AnnounceProtocolVersion"),
+			VersionNonConsensus: parseAnnounceVersionComponent(AnnounceVersionNonConsensus, "AnnounceVersionNonConsensus"),
 			GatewayKey:      *gatewayKP.GetPublicKeyString(),
 			Witness: struct {
 				Enabled bool `json:"enabled"`
@@ -304,4 +328,14 @@ func (a *AnnouncementsManager) Announce() {
 
 func (a *AnnouncementsManager) PeerConnect() {
 
+}
+
+func (a *AnnouncementsManager) safePeerAddrs() (out []multiaddr.Multiaddr) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("peerInfo.GetPeerAddrs panic recovered: %v", r)
+			out = []multiaddr.Multiaddr{}
+		}
+	}()
+	return a.peerInfo.GetPeerAddrs()
 }

@@ -17,6 +17,7 @@ import (
 	"vsc-node/lib/utils"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -176,20 +177,27 @@ func (e *electionProposer) GenerateElection() (elections.ElectionHeader, electio
 
 // Generates a raw election graph from local data
 func (e *electionProposer) GenerateElectionAtBlock(blk uint64) (elections.ElectionHeader, elections.ElectionData, error) {
-	witnesses, err := e.witnesses.GetWitnessesAtBlockHeight(blk, witnesses.EnabledOnly())
-	if err != nil {
-		return elections.ElectionHeader{}, elections.ElectionData{}, err
+	witnesses, werr := e.witnesses.GetWitnessesAtBlockHeight(blk, witnesses.EnabledOnly())
+	if werr != nil {
+		return elections.ElectionHeader{}, elections.ElectionData{}, werr
 	}
-	electionResult, err := e.elections.GetElectionByHeight(blk - 1)
-	if err != nil && err != mongo.ErrNoDocuments {
-		return elections.ElectionHeader{}, elections.ElectionData{}, err
+	electionResult, elecErr := e.elections.GetElectionByHeight(blk - 1)
+	if elecErr != nil && elecErr != mongo.ErrNoDocuments {
+		return elections.ElectionHeader{}, elections.ElectionData{}, elecErr
+	}
+
+	var prevEpoch uint64
+	var prevVer consensusversion.Version
+	if elecErr == nil {
+		prevEpoch = electionResult.Epoch
+		prevVer = elections.ResultVersion(electionResult)
 	}
 
 	// TODO: Add a way to get the witness active score
 	// const scoreChart = await this.self.witness.getWitnessActiveScore(blk)
 	// scoreChart := map[string]uint64{}
 
-	return e.GenerateFullElection(witnesses, electionResult.Epoch, electionResult.ProtocolVersion, blk)
+	return e.GenerateFullElection(witnesses, prevEpoch, prevVer, blk)
 }
 
 const DEFAULT_NEW_NODE_WEIGHT = uint64(10)
@@ -203,11 +211,14 @@ const VSC_ELECTION_TX_ID = "vsc.election_result"
 func (e *electionProposer) GenerateFullElection(
 	witnessList []witnesses.Witness,
 	previousEpoch uint64,
-	consensusVersion uint64,
+	prevVersion consensusversion.Version,
 	blockHeight uint64,
 ) (elections.ElectionHeader, elections.ElectionData, error) {
+	_ = prevVersion
+	effective := e.se.TssMinimumConsensusVersion(blockHeight)
+
 	witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
-		return w.ProtocolVersion < consensusVersion
+		return !w.ConsensusVersionTriple().MeetsConsensusMin(effective)
 	})
 
 	// ensure the list is in a deterministic order
@@ -289,9 +300,14 @@ func (e *electionProposer) GenerateFullElection(
 		if err != nil {
 			panic(err)
 		}
+		t := w.ConsensusVersionTriple()
 		return elections.ElectionMember{
-			Key:     key.String(),
-			Account: w.Account,
+			Key:                 key.String(),
+			Account:             w.Account,
+			HasPerMemberVersion: true,
+			MemberMajor:         t.Major,
+			MemberConsensus:     t.Consensus,
+			MemberNonConsensus:  t.NonConsensus,
 		}
 	})
 
@@ -313,7 +329,9 @@ func (e *electionProposer) GenerateFullElection(
 	}
 	electionData.Members = members
 	electionData.NetId = e.sconf.NetId()
-	electionData.ProtocolVersion = consensusVersion
+	electionData.ProtocolVersion = effective.Consensus
+	electionData.VersionMajor = effective.Major
+	electionData.VersionNonConsensus = effective.NonConsensus
 	electionData.Weights = weights
 	electionData.Type = pType
 	cid, err := electionData.Cid()
