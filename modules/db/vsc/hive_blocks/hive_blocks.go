@@ -3,11 +3,13 @@ package hive_blocks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
@@ -16,6 +18,8 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+var vlog = vsclog.Module("hive_blocks")
 
 type hiveBlocks struct {
 	*db.Collection
@@ -446,6 +450,19 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 				}
 				err = cur.Err()
 				if err != nil {
+					// MongoDB cursors die server-side after the idle timeout
+					// (default cursorTimeoutMillis, 10m) or if the server kills
+					// them. startBlock has been advanced to the last delivered
+					// block inside the loop above, so re-issuing the Find on
+					// the next iteration resumes from the correct point with
+					// no duplicate delivery. Don't escalate to the streamer —
+					// this is internal cursor bookkeeping, not a halt.
+					var cmdErr mongo.CommandError
+					if errors.As(err, &cmdErr) && (cmdErr.Code == 43 || cmdErr.Code == 237 || cmdErr.Code == 50) {
+						vlog.Warn("mongo cursor expired; restarting listener find",
+							"startBlock", startBlock, "code", cmdErr.Code, "err", cmdErr)
+						continue
+					}
 					errChan <- err
 					return
 				}
