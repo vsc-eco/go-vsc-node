@@ -1,6 +1,7 @@
 package state_engine
 
 import (
+	"context"
 	"crypto"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -11,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/vsclog"
@@ -125,6 +128,17 @@ type StateEngine struct {
 	// selfHiveUsername is the local node's Hive account name. Currently
 	// unused outside of tests now that settlement is leader-agnostic.
 	selfHiveUsername string
+
+	// lastProcessedHeight is the height of the most recent Hive block whose
+	// ProcessBlock call ran to completion (set via defer so a panic in
+	// processing still records the height). It exists so the block producer
+	// can synchronise compose-time reads — concretely, MakePendulumSettlement
+	// and the signer-side HandleBlockMsg re-derive — with the state engine's
+	// slot-boundary ExecuteBatch flush. Without it, an async producer tick
+	// or a p2p signing request that arrives before this node's state engine
+	// has flushed slot S-1 reads stale ledger/balance state and produces a
+	// divergent CID. See WaitForProcessedHeight for the consumer API.
+	lastProcessedHeight atomic.Uint64
 }
 
 //Transaction
@@ -216,6 +230,22 @@ func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 // In other words, it adds complexity to the state engine while being less efficient.
 // This model is more efficient and best yet, it prevents MEV potential by locking the block execution time to the witness slot.
 func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
+	// Record completion via defer so compose-time waiters
+	// (MakePendulumSettlement, HandleBlockMsg) unblock once this block's
+	// processing — including any slot-boundary ExecuteBatch flush — is
+	// fully done. Survives panics mid-processing.
+	defer func() {
+		for {
+			prev := se.lastProcessedHeight.Load()
+			if block.BlockNumber <= prev {
+				return
+			}
+			if se.lastProcessedHeight.CompareAndSwap(prev, block.BlockNumber) {
+				return
+			}
+		}
+	}()
+
 	se.BlockHeight = int(block.BlockNumber)
 
 	// --- Key lifecycle: deprecation and retirement ---
@@ -1811,6 +1841,50 @@ func (se *StateEngine) Stop() error {
 
 func (se *StateEngine) SystemConfig() systemconfig.SystemConfig {
 	return se.sconf
+}
+
+// LastProcessedHeight returns the height of the most recent Hive block this
+// state engine has fully processed. Returns 0 before the first ProcessBlock.
+//
+// Block producer compose paths use this — through WaitForProcessedHeight —
+// to ensure consensus-critical reads (settlement bonds, bucket balance,
+// epoch reductions) see all writes flushed by ProcessBlock(slotHeight).
+// Without this barrier, an async producer tick or an early-arriving p2p
+// signing request can read mid-flush state and produce a divergent CID.
+func (se *StateEngine) LastProcessedHeight() uint64 {
+	if se == nil {
+		return 0
+	}
+	return se.lastProcessedHeight.Load()
+}
+
+// WaitForProcessedHeight blocks until LastProcessedHeight >= height, the
+// context is canceled, or the deadline elapses. Polls every 25ms; the
+// caller's context bounds the overall wait.
+//
+// Returns nil on success or the context's error on cancel/deadline. The
+// poll interval is short enough (Hive blocks every 3s, slot ~30s) that
+// catch-up is observed near-immediately under healthy operation; the
+// timeout exists only to protect against a stuck state engine.
+func (se *StateEngine) WaitForProcessedHeight(ctx context.Context, height uint64) error {
+	if se == nil {
+		return nil
+	}
+	if se.lastProcessedHeight.Load() >= height {
+		return nil
+	}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if se.lastProcessedHeight.Load() >= height {
+				return nil
+			}
+		}
+	}
 }
 
 // PendulumFeedTracker returns the Magi pendulum sole-HIVE / HBD-APR oracle tracker (may be nil in tests).
