@@ -597,6 +597,23 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		})
 	}
 
+	// Wait for the state engine to have processed through msg.SlotHeight
+	// before re-deriving. The `bp.bh >= msg.SlotHeight` check above
+	// confirms the producer-side tick saw this slot, but the tick fires
+	// before StateEngine.ProcessBlock runs — so without this barrier the
+	// re-derive below can read pre-flush state and produce a CID that
+	// diverges from peers whose state engines have caught up. Same shape
+	// as the leader-side wait in MakePendulumSettlement; on timeout the
+	// signer's vote is excluded from the BLS aggregate (treated like any
+	// other transient signer outage).
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), settlementComposeStateWaitTimeout)
+	if err := bp.StateEngine.WaitForProcessedHeight(waitCtx, msg.SlotHeight); err != nil {
+		waitCancel()
+		return "", fmt.Errorf("state engine not caught up to slot %d (lastProcessed=%d): %w",
+			msg.SlotHeight, bp.StateEngine.LastProcessedHeight(), err)
+	}
+	waitCancel()
+
 	// Independently derive block (including oplog + contract outputs)
 	blockHeader, _, err := bp.GenerateBlock(msg.SlotHeight, generateBlockParams{
 		Transactions: transactions,
@@ -806,6 +823,14 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 // earliest valid firing point. Tunable per network if needed.
 const settlementHeadroomSlots uint64 = 2
 
+// settlementComposeStateWaitTimeout bounds how long MakePendulumSettlement
+// (and the signer-side re-derive in HandleBlockMsg) will wait for this
+// node's state engine to finish processing through the compose slotHeight
+// before reading Mongo. Bounded well below Hive's slot cadence (~30s) so a
+// stuck state engine surfaces as a missed-this-slot rather than blocking
+// block production indefinitely.
+const settlementComposeStateWaitTimeout = 2 * time.Second
+
 // MakePendulumSettlement composes a SettlementRecord block tx for `slotHeight`
 // when this slot is the deterministic settlement slot for the closing epoch
 // AND the closing epoch is not yet settled. Returns nil otherwise.
@@ -816,6 +841,22 @@ const settlementHeadroomSlots uint64 = 2
 // GenerateBlock pass; CID match enforces consensus.
 func (bp *BlockProducer) MakePendulumSettlement(slotHeight uint64, session *datalayer.Session) *vscBlocks.VscBlockTx {
 	if !bp.shouldSettleAt(slotHeight) {
+		return nil
+	}
+
+	// Wait for this node's state engine to finish processing through
+	// `slotHeight` so the Mongo reads below (bonds at slotHeight, bucket
+	// balance at slotHeight, per-tick reductions over the closed epoch)
+	// see the slot-boundary ExecuteBatch flush. Without this barrier, an
+	// async producer tick or an early-arriving p2p signing request can
+	// read mid-flush state and produce a CID that diverges from peers who
+	// happen to be further along. Timeout → skip this slot's settlement
+	// attempt; the next eligible slot retries.
+	ctx, cancel := context.WithTimeout(context.Background(), settlementComposeStateWaitTimeout)
+	defer cancel()
+	if err := bp.StateEngine.WaitForProcessedHeight(ctx, slotHeight); err != nil {
+		vlog.Debug("MakePendulumSettlement: state engine catch-up timed out; skipping",
+			"slotHeight", slotHeight, "lastProcessedHeight", bp.StateEngine.LastProcessedHeight(), "err", err)
 		return nil
 	}
 
