@@ -35,7 +35,12 @@ func (p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Me
 	return true
 }
 
-func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
+func (s p2pSpec) HandleMessage(
+	ctx context.Context,
+	from peer.ID,
+	msg p2pMessage,
+	send libp2p.SendFunc[p2pMessage],
+) error {
 	//Do something with the message
 	if msg.Type == "block" {
 
@@ -61,9 +66,12 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 		ch := s.bp.sigChannels[msg.SlotHeight]
 		s.bp.sigMu.RUnlock()
 		if ch != nil {
-			ch <- sigMsg{
+			select {
+			case ch <- sigMsg{
 				Type: "sig",
 				Msg:  msg,
+			}:
+			default:
 			}
 		}
 	}

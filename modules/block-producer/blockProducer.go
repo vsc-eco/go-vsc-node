@@ -422,7 +422,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 		})
 	}()
 
-	sigChan := make(chan sigMsg, 1)
+	sigChan := make(chan sigMsg, len(electionResult.Members))
 	bp.sigMu.Lock()
 	bp.sigChannels[bh] = sigChan
 	bp.sigMu.Unlock()
