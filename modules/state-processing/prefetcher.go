@@ -9,7 +9,9 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
+	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 
@@ -27,36 +29,52 @@ var prefetchLog = vsclog.Module("se-prefetch")
 // drain the worker pool and silently kill prefetching for the rest of the run.
 const prefetchFetchTimeout = 60 * time.Second
 
+// stateMerklePrefetchTimeout caps how long EnumerateCids + PrefetchBlocks
+// may take for a single state merkle tree. Large trees may need more time.
+const stateMerklePrefetchTimeout = 30 * time.Second
+
+// stateMerklePrefetchParallelism is the number of parallel block fetches
+// during state merkle tree prefetch.
+const stateMerklePrefetchParallelism = 8
+
 // BlockPrefetcher scans upcoming hive blocks for vsc.produce_block ops,
 // extracts the referenced VSC block CIDs, and issues concurrent IPFS fetches
 // to populate the local blockstore before the state engine processes them.
 //
-// During reindex this turns sequential bitswap fetches into a pipelined
-// pattern, which is the dominant cost on a cold blockstore.
+// It also prefetches contract state merkle trees so that DataBin lookups
+// during contract execution find all blocks already in local storage.
 type BlockPrefetcher struct {
-	hiveBlocks  hive_blocks.HiveBlocks
-	da          *datalayer.DataLayer
-	blockStatus common_types.BlockStatusGetter
+	hiveBlocks    hive_blocks.HiveBlocks
+	da            *datalayer.DataLayer
+	blockStatus   common_types.BlockStatusGetter
+	contractState contracts.ContractState
 
 	lookahead    uint64
 	parallelism  int
 	scanInterval time.Duration
 
-	workQueue   chan cid.Cid
-	txWorkQueue chan cid.Cid // separate queue for transaction CIDs inside VSC blocks
+	workQueue      chan cid.Cid
+	txWorkQueue    chan cid.Cid // separate queue for transaction CIDs inside VSC blocks
+	stateWorkQueue chan cid.Cid // queue for contract state merkle root CIDs
 
 	seenMu sync.Mutex
 	seen   map[string]uint64 // cid string → hive block height it was queued for
 
-	statsMu        sync.Mutex
-	totalQueued    uint64
-	totalFetched   uint64
-	totalErrored   uint64
-	totalTimeout   uint64
-	totalFetchNs   int64
-	totalTxQueued  uint64
-	totalTxFetched uint64
-	totalTxFetchNs int64
+	stateSeenMu sync.Mutex
+	stateSeen   map[string]bool // state merkle root CID strings already queued
+
+	statsMu           sync.Mutex
+	totalQueued       uint64
+	totalFetched      uint64
+	totalErrored      uint64
+	totalTimeout      uint64
+	totalFetchNs      int64
+	totalTxQueued     uint64
+	totalTxFetched    uint64
+	totalTxFetchNs    int64
+	totalStateQueued  uint64
+	totalStateFetched uint64
+	totalStateFetchNs int64
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -69,17 +87,20 @@ func NewPrefetcher(
 	hiveBlocks hive_blocks.HiveBlocks,
 	da *datalayer.DataLayer,
 	blockStatus common_types.BlockStatusGetter,
+	contractState contracts.ContractState,
 	lookahead uint64,
 	parallelism int,
 ) *BlockPrefetcher {
 	return &BlockPrefetcher{
-		hiveBlocks:   hiveBlocks,
-		da:           da,
-		blockStatus:  blockStatus,
-		lookahead:    lookahead,
-		parallelism:  parallelism,
-		scanInterval: time.Second,
-		seen:         make(map[string]uint64),
+		hiveBlocks:    hiveBlocks,
+		da:            da,
+		blockStatus:   blockStatus,
+		contractState: contractState,
+		lookahead:     lookahead,
+		parallelism:   parallelism,
+		scanInterval:  time.Second,
+		seen:          make(map[string]uint64),
+		stateSeen:     make(map[string]bool),
 	}
 }
 
@@ -96,7 +117,8 @@ func (p *BlockPrefetcher) Start() *promise.Promise[any] {
 		}
 		p.ctx, p.cancel = context.WithCancel(context.Background())
 		p.workQueue = make(chan cid.Cid, p.parallelism*4)
-		p.txWorkQueue = make(chan cid.Cid, p.parallelism*8) // larger queue for txs
+		p.txWorkQueue = make(chan cid.Cid, p.parallelism*8)    // larger queue for txs
+		p.stateWorkQueue = make(chan cid.Cid, p.parallelism*16) // even larger for state merkle
 
 		p.scanWg.Add(1)
 		go p.scanLoop()
@@ -105,10 +127,15 @@ func (p *BlockPrefetcher) Start() *promise.Promise[any] {
 			p.workersWg.Add(1)
 			go p.fetchWorker(i)
 		}
-		// Transaction prefetch workers - can use same parallelism
+		// Transaction prefetch workers
 		for i := 0; i < p.parallelism; i++ {
 			p.workersWg.Add(1)
 			go p.txFetchWorker(i)
+		}
+		// State merkle prefetch workers
+		for i := 0; i < p.parallelism; i++ {
+			p.workersWg.Add(1)
+			go p.stateMerkleWorker(i)
 		}
 		go p.statsLoop()
 		prefetchLog.Info("prefetch started", "lookahead", p.lookahead, "parallelism", p.parallelism)
@@ -135,6 +162,9 @@ func (p *BlockPrefetcher) statsLoop() {
 			txQueued := p.totalTxQueued
 			txFetched := p.totalTxFetched
 			txNs := p.totalTxFetchNs
+			stateQueued := p.totalStateQueued
+			stateFetched := p.totalStateFetched
+			stateNs := p.totalStateFetchNs
 			p.statsMu.Unlock()
 			prefetchQueueDepth.Set(float64(len(p.workQueue)))
 			var avgMs int64
@@ -144,6 +174,10 @@ func (p *BlockPrefetcher) statsLoop() {
 			var txAvgMs int64
 			if txFetched > 0 {
 				txAvgMs = (txNs / int64(txFetched)) / int64(time.Millisecond)
+			}
+			var stateAvgMs int64
+			if stateFetched > 0 {
+				stateAvgMs = (stateNs / int64(stateFetched)) / int64(time.Millisecond)
 			}
 			prefetchLog.Debug("prefetch stats",
 				"queued", queued,
@@ -156,6 +190,10 @@ func (p *BlockPrefetcher) statsLoop() {
 				"tx_fetched", txFetched,
 				"tx_avg_fetch_ms", txAvgMs,
 				"tx_queue_depth", len(p.txWorkQueue),
+				"state_queued", stateQueued,
+				"state_fetched", stateFetched,
+				"state_avg_fetch_ms", stateAvgMs,
+				"state_queue_depth", len(p.stateWorkQueue),
 				"current_bh", p.blockStatus.BlockHeight(),
 			)
 		}
@@ -171,6 +209,7 @@ func (p *BlockPrefetcher) Stop() error {
 	p.scanWg.Wait()
 	close(p.workQueue)
 	close(p.txWorkQueue)
+	close(p.stateWorkQueue)
 	p.workersWg.Wait()
 	return nil
 }
@@ -325,10 +364,6 @@ func (p *BlockPrefetcher) pruneSeen(currentBh uint64) {
 }
 
 // fetchWorker drains the work queue and pulls each CID into the IPFS blockstore.
-//
-// Each fetch runs under a context derived from p.ctx with a per-CID timeout.
-// That bounds the cost of an unfetchable CID to prefetchFetchTimeout instead of
-// forever, and lets Stop() unblock any in-flight fetch immediately.
 func (p *BlockPrefetcher) fetchWorker(id int) {
 	defer p.workersWg.Done()
 	for c := range p.workQueue {
@@ -372,6 +407,8 @@ func (p *BlockPrefetcher) fetchWorker(id int) {
 
 // extractTxCids attempts to parse a VSC block and queue its transaction CIDs
 // for prefetching. This is best-effort - if parsing fails, we just skip it.
+// Also extracts contract calls from VSC block transactions to queue state
+// merkle tree CIDs for prefetch.
 func (p *BlockPrefetcher) extractTxCids(node *dagCbor.Node, blockCid cid.Cid) {
 	var block vscBlocks.VscBlock
 	if err := dagCbor.DecodeInto(node.RawData(), &block); err != nil {
@@ -406,13 +443,14 @@ func (p *BlockPrefetcher) extractTxCids(node *dagCbor.Node, blockCid cid.Cid) {
 }
 
 // txFetchWorker drains the transaction work queue and prefetches transaction CIDs.
-// These are typically smaller than VSC blocks and can be fetched in parallel.
+// It also attempts to extract contract call info from each transaction to queue
+// state merkle tree CIDs for prefetching.
 func (p *BlockPrefetcher) txFetchWorker(id int) {
 	defer p.workersWg.Done()
 	for c := range p.txWorkQueue {
 		fetchStart := time.Now()
 		fetchCtx, cancel := context.WithTimeout(p.ctx, prefetchFetchTimeout)
-		_, err := p.da.GetDagCtx(fetchCtx, c)
+		node, err := p.da.GetDagCtx(fetchCtx, c)
 		cancel()
 		elapsed := time.Since(fetchStart)
 		globalProfile.Record("prefetch.tx_fetch", elapsed)
@@ -424,6 +462,113 @@ func (p *BlockPrefetcher) txFetchWorker(id int) {
 
 		if err != nil {
 			prefetchLog.Trace("prefetch tx failed", "worker", id, "cid", c.String(), "err", err)
+			continue
 		}
+
+		// Try to extract contract calls and queue state merkle CIDs
+		if node != nil {
+			p.extractContractStateCids(node.RawData())
+		}
+	}
+}
+
+// extractContractStateCids attempts to decode a VSC transaction, find contract
+// calls, look up the contracts' state merkle CIDs, and queue them for prefetch.
+func (p *BlockPrefetcher) extractContractStateCids(rawData []byte) {
+	// VSC transactions use EncodeDagCbor (struct→JSON→IPLD→CBOR), so the
+	// CBOR map keys match the json tags, not refmt tags or Go field names.
+	// Use common.DecodeCbor which goes through the same JSON intermediate path
+	// (CBOR→cbornode→JSON→struct) and therefore matches correctly.
+	var shell struct {
+		Tx []struct {
+			Type    string `json:"type"`
+			Payload []byte `json:"payload"`
+		} `json:"tx"`
+	}
+	if err := common.DecodeCbor(rawData, &shell); err != nil {
+		return
+	}
+
+	for _, op := range shell.Tx {
+		if op.Type != "call" {
+			continue
+		}
+		// Decode the call payload (CBOR-encoded TxVscCallContract).
+		var call struct {
+			ContractId string `json:"contract_id"`
+		}
+		if err := common.DecodeCbor(op.Payload, &call); err != nil {
+			continue
+		}
+		if call.ContractId == "" {
+			continue
+		}
+
+		// Deduplicate by contract ID within the batch using stateSeen.
+		if !p.markStateSeen(call.ContractId) {
+			continue
+		}
+
+		// Look up the contract's state merkle CID from the database.
+		output, err := p.contractState.GetLastOutput(call.ContractId, p.blockStatus.BlockHeight())
+		if err != nil || output.StateMerkle == "" {
+			continue
+		}
+		root, err := cid.Parse(output.StateMerkle)
+		if err != nil {
+			continue
+		}
+
+		// Queue the state merkle root CID for prefetch.
+		select {
+		case p.stateWorkQueue <- root:
+			p.statsMu.Lock()
+			p.totalStateQueued++
+			p.statsMu.Unlock()
+		default:
+			// queue full — drop
+		}
+	}
+}
+
+// markStateSeen returns true if the contract ID wasn't already seen in this
+// prefetch window, and marks it as seen.
+func (p *BlockPrefetcher) markStateSeen(contractId string) bool {
+	p.stateSeenMu.Lock()
+	defer p.stateSeenMu.Unlock()
+	if p.stateSeen[contractId] {
+		return false
+	}
+	p.stateSeen[contractId] = true
+	return true
+}
+
+// stateMerkleWorker drains the state work queue and prefetches all blocks in
+// each contract's state merkle tree into the local blockstore.
+func (p *BlockPrefetcher) stateMerkleWorker(id int) {
+	defer p.workersWg.Done()
+	for root := range p.stateWorkQueue {
+		fetchStart := time.Now()
+
+		// Enumerate all CIDs in the state merkle tree, then prefetch them.
+		ctx, cancel := context.WithTimeout(p.ctx, stateMerklePrefetchTimeout)
+		cids, err := p.da.EnumerateCids(ctx, root)
+		if err != nil {
+			cancel()
+			prefetchLog.Trace("state merkle enumerate failed", "worker", id, "root", root.String(), "err", err)
+			continue
+		}
+		// EnumerateCids already fetched the tree structure via DagServ.Get;
+		// PrefetchBlocks ensures any remaining leaf blocks are local too.
+		_ = p.da.PrefetchBlocks(ctx, cids, stateMerklePrefetchParallelism)
+		cancel()
+
+		elapsed := time.Since(fetchStart)
+		globalProfile.Record("prefetch.state_merkle", elapsed)
+
+		p.statsMu.Lock()
+		p.totalStateFetched++
+		p.totalStateFetchNs += int64(elapsed)
+		p.statsMu.Unlock()
 	}
 }

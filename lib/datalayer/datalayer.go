@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/chebyrash/promise"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -300,12 +302,20 @@ func (dl *DataLayer) GetDagCtx(ctx context.Context, c cid.Cid) (*dagCbor.Node, e
 	return dagCbor.Decode(block.RawData(), mh.SHA2_256, -1)
 }
 
-func (dl *DataLayer) GetRaw(cid cid.Cid) ([]byte, error) {
-	block, err := dl.blockServ.GetBlock(context.Background(), cid)
+// GetRawCtx fetches the raw block data for the given CID, using the
+// caller-supplied context for cancellation/timeout control.
+func (dl *DataLayer) GetRawCtx(ctx context.Context, cid cid.Cid) ([]byte, error) {
+	block, err := dl.blockServ.GetBlock(ctx, cid)
 	if err != nil {
 		return nil, err
 	}
 	return block.RawData(), nil
+}
+
+func (dl *DataLayer) GetRaw(cid cid.Cid) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return dl.GetRawCtx(ctx, cid)
 }
 
 func (dl *DataLayer) notify(ctx context.Context, block blocks.Block) {
@@ -361,6 +371,95 @@ func (dl *DataLayer) RmPin(pinCid cid.Cid, options struct {
 func (dl *DataLayer) FindProviders(cid.Cid) []peer.ID {
 
 	return make([]peer.ID, 0)
+}
+
+// EnumerateCids walks the DAG rooted at `root` and returns every CID in the
+// graph, including the root itself, all internal directory/shard nodes, and
+// all leaf data blocks. The returned slice is in no particular order.
+// This is used to discover the full set of blocks that must be prefetched
+// to bring a contract state merkle tree entirely into local storage.
+func (dl *DataLayer) EnumerateCids(ctx context.Context, root cid.Cid) ([]cid.Cid, error) {
+	seen := make(map[string]bool)
+	var cids []cid.Cid
+	if err := dl.enumerateCidsRecursive(ctx, root, seen, &cids); err != nil {
+		return nil, err
+	}
+	return cids, nil
+}
+
+func (dl *DataLayer) enumerateCidsRecursive(ctx context.Context, c cid.Cid, seen map[string]bool, cids *[]cid.Cid) error {
+	key := c.String()
+	if seen[key] {
+		return nil
+	}
+	seen[key] = true
+	*cids = append(*cids, c)
+
+	node, err := dl.DagServ.Get(ctx, c)
+	if err != nil {
+		return err
+	}
+	for _, link := range node.Links() {
+		if err := dl.enumerateCidsRecursive(ctx, link.Cid, seen, cids); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PrefetchBlocks fetches a batch of CIDs into the local blockstore using the
+// given parallelism. Already-local blocks return immediately (blockstore hit);
+// remote blocks are fetched via bitswap. Callers should use a context with a
+// reasonable timeout to bound the effect of unfetchable CIDs.
+func (dl *DataLayer) PrefetchBlocks(ctx context.Context, cids []cid.Cid, parallelism int) error {
+	if len(cids) == 0 || parallelism <= 0 {
+		return nil
+	}
+
+	sem := make(chan struct{}, parallelism)
+	var wg sync.WaitGroup
+	var errsMu sync.Mutex
+	var errs []error
+
+	for _, c := range cids {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		wg.Add(1)
+		go func(c cid.Cid) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			// Use GetBlock to pull into local blockstore. If already present
+			// it returns immediately from Badger; otherwise bitswap fetches it.
+			if _, err := dl.blockServ.GetBlock(ctx, c); err != nil {
+				errsMu.Lock()
+				errs = append(errs, err)
+				errsMu.Unlock()
+			}
+		}(c)
+	}
+	wg.Wait()
+
+	if len(errs) > 0 {
+		return fmt.Errorf("prefetch: %d/%d blocks failed (first: %w)", len(errs), len(cids), errs[0])
+	}
+	return nil
 }
 
 var _ a.Plugin = &DataLayer{}
