@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	uio "github.com/ipfs/boxo/ipld/unixfs/io"
 	"github.com/ipfs/go-cid"
@@ -33,6 +34,7 @@ type MutableDirectory struct {
 type LeafDir struct {
 	Dir         uio.Directory
 	leaves      map[string]*LeafDir
+	leafEntries map[string]cid.Cid // leaf key → CID cache; avoids Dir.Find blockstore reads
 	leafDeleted bool
 }
 
@@ -93,14 +95,18 @@ func (db *DataBin) Has(path string) bool {
 	}
 	endPath := splitPath[len(splitPath)-1]
 
-	// fmt.Println("End pathing for search", endPath)
-
 	if wrkDir.leaves[endPath] != nil {
 		return true
 	}
 
-	_, err = wrkDir.Dir.Find(context.Background(), endPath)
+	// Fast path: check the leaf entries cache populated during newLeafFromCid or Set.
+	if wrkDir.leafEntries != nil {
+		if _, ok := wrkDir.leafEntries[endPath]; ok {
+			return true
+		}
+	}
 
+	_, err = wrkDir.Dir.Find(context.Background(), endPath)
 	return err == nil
 }
 
@@ -158,8 +164,9 @@ func (db *DataBin) Set(path string, link cid.Cid) error {
 			nextLeaf := leaf.leaves[pathElement]
 			if nextLeaf == nil {
 				lf := &LeafDir{
-					Dir:    uio.NewDirectory(db.DataLayer.DagServ),
-					leaves: make(map[string]*LeafDir),
+					Dir:         uio.NewDirectory(db.DataLayer.DagServ),
+					leaves:      make(map[string]*LeafDir),
+					leafEntries: make(map[string]cid.Cid),
 				}
 				leaf.leaves[pathElement] = lf
 				leaf = lf
@@ -174,12 +181,14 @@ func (db *DataBin) Set(path string, link cid.Cid) error {
 	}
 
 	err := wrkDir.AddChild(context.Background(), splitPath[len(splitPath)-1], node)
-
-	// dag, _ := dagCbor.Decode(nodeDir.RawData(), mh.SHA2_256, -1)
-	// json := dag.RawData()
-
-	// fmt.Println("Json", json)
-	return err
+	if err != nil {
+		return err
+	}
+	if leaf.leafEntries == nil {
+		leaf.leafEntries = make(map[string]cid.Cid)
+	}
+	leaf.leafEntries[splitPath[len(splitPath)-1]] = link
+	return nil
 }
 
 func (db *DataBin) Get(path string) (*cid.Cid, error) {
@@ -198,17 +207,25 @@ func (db *DataBin) Get(path string) (*cid.Cid, error) {
 		return nil, os.ErrNotExist
 	}
 
-	node, err := wrkDir.Dir.Find(context.Background(), endPath)
-
-	// listo, _ := wrkDir.Dir.Links(context.Background())
-
-	if err != nil {
-
-		return nil, err
-	} else {
-		cid := node.Cid()
-		return &cid, nil
+	// Fast path: leaf entry CID was cached during newLeafFromCid or Set.
+	if wrkDir.leafEntries != nil {
+		if c, ok := wrkDir.leafEntries[endPath]; ok {
+			return &c, nil
+		}
 	}
+
+	// Slow path: fall back to HAMT Find (may hit blockstore for the data node).
+	node, err := wrkDir.Dir.Find(context.Background(), endPath)
+	if err != nil {
+		return nil, err
+	}
+	c := node.Cid()
+	// Populate the cache so subsequent reads for the same key are fast.
+	if wrkDir.leafEntries == nil {
+		wrkDir.leafEntries = make(map[string]cid.Cid)
+	}
+	wrkDir.leafEntries[endPath] = c
+	return &c, nil
 }
 
 func (db *DataBin) Delete(path string) (bool, error) {
@@ -234,6 +251,9 @@ func (db *DataBin) Delete(path string) (bool, error) {
 		return true, nil
 	} else {
 		err := wrkDir.Dir.RemoveChild(context.Background(), endPath)
+		if wrkDir.leafEntries != nil {
+			delete(wrkDir.leafEntries, endPath)
+		}
 		if err == os.ErrNotExist {
 			return false, nil
 		} else {
@@ -298,6 +318,40 @@ func enumerateLeaf(lf *LeafDir, prefix string, result map[string]cid.Cid) error 
 	return nil
 }
 
+// collectLeafCids traverses the LeafDir tree recursively and collects all unique
+// leaf data CIDs stored in leafEntries maps. CIDs are deduplicated by string key.
+func collectLeafCids(lf *LeafDir, seen map[string]bool, cids *[]cid.Cid) {
+	for _, c := range lf.leafEntries {
+		key := c.String()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		*cids = append(*cids, c)
+	}
+	for _, sub := range lf.leaves {
+		collectLeafCids(sub, seen, cids)
+	}
+}
+
+// prefetchLeaves eagerly fetches all leaf data blocks into the local blockstore
+// so subsequent GetRaw calls hit Badger directly instead of falling through to
+// bitswap. This is a best-effort optimization; failures are logged but not
+// propagated since individual GetRaw calls will retry with their own timeout.
+func (db *DataBin) prefetchLeaves() {
+	seen := make(map[string]bool)
+	var cids []cid.Cid
+	collectLeafCids(&db.Leaf, seen, &cids)
+	if len(cids) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := db.DataLayer.PrefetchBlocks(ctx, cids, 8); err != nil {
+		log.Debug("databin: leaf prefetch completed with errors", "total", len(cids), "err", err)
+	}
+}
+
 // Must compact to be safe. If single level
 func (db *DataBin) Cid() cid.Cid {
 	db.Leaf.Compact(true)
@@ -345,18 +399,21 @@ func NewDataBin(da *DataLayer) DataBin {
 	return DataBin{
 		DataLayer: da,
 		Leaf: LeafDir{
-			Dir:    dir,
-			leaves: make(map[string]*LeafDir),
+			Dir:         dir,
+			leaves:      make(map[string]*LeafDir),
+			leafEntries: make(map[string]cid.Cid),
 		},
 	}
 }
 
 func NewDataBinFromCid(da *DataLayer, inputCid cid.Cid) DataBin {
 	uio.HAMTShardingSize = 256
-	return DataBin{
+	db := DataBin{
 		DataLayer: da,
 		Leaf:      newLeafFromCid(da, inputCid),
 	}
+	db.prefetchLeaves()
+	return db
 }
 
 func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
@@ -384,15 +441,20 @@ func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
 	links, _ := dir.Links(ctx)
 
 	leaves := make(map[string]*LeafDir)
+	leafEntries := make(map[string]cid.Cid)
 	for _, lnk := range links {
 		if lnk.Cid.Prefix().Codec == uint64(multicodec.Protobuf) {
 			lf := newLeafFromCid(da, lnk.Cid)
 			leaves[lnk.Name] = &lf
+		} else {
+			// Cache leaf entry CID so Get/Has can avoid the Dir.Find blockstore read.
+			leafEntries[lnk.Name] = lnk.Cid
 		}
 	}
 
 	return LeafDir{
-		Dir:    dir,
-		leaves: leaves,
+		Dir:         dir,
+		leaves:      leaves,
+		leafEntries: leafEntries,
 	}
 }
