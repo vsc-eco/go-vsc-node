@@ -225,14 +225,13 @@ func (se *StateEngine) IsLiveSynced(bh int) bool {
 	return *hh <= 20 || uint64(bh) >= *hh-20
 }
 
-// logTssSigIndexed reports a TSS signature being persisted to the requests DB
-// after a successful on-chain commit. Info during live sync (rare event), Debug
-// during catchup (can fire many times in a row).
-func (se *StateEngine) logTssSigIndexed(bh int, keyId, algo string) {
-	if se.IsLiveSynced(bh) {
-		tssLog.Info("indexing TSS signature", "keyId", keyId, "algo", algo)
+// tssLogSync logs at Info level during live sync and Debug level during catchup,
+// to reduce noise when indexing historical blocks.
+func (se *StateEngine) tssLogSync(bh uint64, msg string, args ...any) {
+	if se.IsLiveSynced(int(bh)) {
+		tssLog.Info(msg, args...)
 	} else {
-		tssLog.Debug("indexing TSS signature", "keyId", keyId, "algo", algo)
+		tssLog.Debug(msg, args...)
 	}
 }
 
@@ -352,7 +351,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						k.DeprecatedHeight = int64(block.BlockNumber)
 					}
 					se.tssKeys.SetKey(k)
-					tssLog.Info(
+					se.tssLogSync(
+						block.BlockNumber,
 						"key deprecated",
 						"keyId",
 						k.Id,
@@ -375,7 +375,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			for _, k := range retiring {
 				k.Status = tss_db.TssKeyRetired
 				se.tssKeys.SetKey(k)
-				tssLog.Info(
+				se.tssLogSync(
+					block.BlockNumber,
 					"key retired",
 					"keyId",
 					k.Id,
@@ -994,7 +995,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 												Sig:    sigPack.Sig,
 												Status: tss_db.SignComplete,
 											})
-											se.logTssSigIndexed(int(txSelf.BlockHeight), sigPack.KeyId, "ecdsa")
+											se.tssLogSync(txSelf.BlockHeight, "indexing TSS signature", "keyId", sigPack.KeyId, "algo", "ecdsa")
 										}
 									} else if keyCache[sigPack.KeyId].Algo == tss_db.EddsaType {
 										pk := ed25519.PublicKey(publicKey)
@@ -1008,7 +1009,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 												Sig:    sigPack.Sig,
 												Status: tss_db.SignComplete,
 											})
-											se.logTssSigIndexed(int(txSelf.BlockHeight), sigPack.KeyId, "eddsa")
+											se.tssLogSync(txSelf.BlockHeight, "indexing TSS signature", "keyId", sigPack.KeyId, "algo", "eddsa")
 										}
 									}
 								}
@@ -1025,7 +1026,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					if err := json.Unmarshal(cj.Json, &commitments); err != nil {
 						commitmentMap := make(map[string]tss_helpers.SignedCommitment)
 						if err := json.Unmarshal(cj.Json, &commitmentMap); err != nil {
-							tssLog.Warn("vsc.tss_commitment parse error", "txId", tx.TransactionID, "err", err)
+							tssLog.Debug("vsc.tss_commitment parse error", "txId", tx.TransactionID, "err", err)
 							globalProfile.Record("tx.tss_commitment", time.Since(txStart))
 							continue
 						}
@@ -1034,10 +1035,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						}
 					}
 
-					tssLog.Verbose("processing vsc.tss_commitment", "txId", tx.TransactionID, "blockHeight", block.BlockNumber, "count", len(commitments))
+					se.tssLogSync(block.BlockNumber, "processing vsc.tss_commitment", "txId", tx.TransactionID, "blockHeight", block.BlockNumber, "count", len(commitments))
 
 					for _, commitment := range commitments {
-						tssLog.Verbose("commitment entry", "sessionId", commitment.SessionId, "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
+						se.tssLogSync(block.BlockNumber, "commitment entry", "sessionId", commitment.SessionId, "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
 
 						members := make([]dids.BlsDID, 0)
 						// Use the election active at the commitment's block height,
@@ -1051,7 +1052,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						globalProfile.Record("tss_commitment.election_lookup", time.Since(elStart))
 
 						if elErr != nil || electionData.Members == nil {
-							tssLog.Warn("election lookup failed", "keyId", commitment.KeyId, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "err", elErr)
+							tssLog.Debug("election lookup failed", "keyId", commitment.KeyId, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "err", elErr)
 							continue
 						}
 						for _, mbr := range electionData.Members {
@@ -1075,7 +1076,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						commitmentCid, err := common.HashBytes(data, multicodec.DagCbor)
 						globalProfile.Record("tss_commitment.cbor_hash", time.Since(cborStart))
 						if err != nil {
-							tssLog.Warn("CID hash error", "keyId", commitment.KeyId, "err", err)
+							tssLog.Debug("CID hash error", "keyId", commitment.KeyId, "err", err)
 							continue
 						}
 
@@ -1086,7 +1087,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						}, members, commitmentCid)
 						if derr != nil || circuit == nil {
 							globalProfile.Record("tss_commitment.bls_verify", time.Since(blsStart))
-							tssLog.Warn("BLS deserialize failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "err", derr)
+							tssLog.Debug("BLS deserialize failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "err", derr)
 							continue
 						}
 
@@ -1095,16 +1096,16 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						tssIndexHeight := se.SystemConfig().ConsensusParams().TssIndexHeight
 
 						if !verified {
-							tssLog.Warn("BLS verification failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "cid", commitmentCid)
+							tssLog.Debug("BLS verification failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "cid", commitmentCid)
 							continue
 						}
 						if block.BlockNumber <= tssIndexHeight {
-							tssLog.Verbose("skipped (before TssIndexHeight)", "keyId", commitment.KeyId, "blockHeight", block.BlockNumber, "tssIndexHeight", tssIndexHeight)
+							se.tssLogSync(block.BlockNumber, "skipped (before TssIndexHeight)", "keyId", commitment.KeyId, "blockHeight", block.BlockNumber, "tssIndexHeight", tssIndexHeight)
 							continue
 						}
 
 						dbStart := time.Now()
-						tssLog.Verbose("writing commitment to DB", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "txId", tx.TransactionID)
+						se.tssLogSync(block.BlockNumber, "writing commitment to DB", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "txId", tx.TransactionID)
 						se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
 							Type:        commitment.Type,
 							BlockHeight: commitment.BlockHeight,
@@ -1132,13 +1133,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								if keyInfo.Epochs > 0 {
 									keyInfo.ExpiryEpoch = commitment.Epoch + keyInfo.Epochs
 								}
-								tssLog.Info("key activated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch, "blockHeight", block.BlockNumber, "pubKey", keyInfo.PublicKey)
+								se.tssLogSync(block.BlockNumber, "key activated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch, "blockHeight", block.BlockNumber, "pubKey", keyInfo.PublicKey)
 								se.tssKeys.SetKey(keyInfo)
 							} else if newKey {
-								tssLog.Verbose("keygen/reshare acknowledged (no pubKey)", "keyId", commitment.KeyId, "epoch", commitment.Epoch)
+								se.tssLogSync(block.BlockNumber, "keygen/reshare acknowledged (no pubKey)", "keyId", commitment.KeyId, "epoch", commitment.Epoch)
 							} else {
 								keyInfo.Epoch = commitment.Epoch
-								tssLog.Info("key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch)
+								se.tssLogSync(block.BlockNumber, "key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch)
 								se.tssKeys.SetKey(keyInfo)
 							}
 						}
