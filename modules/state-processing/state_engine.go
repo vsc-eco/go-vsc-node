@@ -141,8 +141,15 @@ type StateEngine struct {
 	// divergent CID. See WaitForProcessedHeight for the consumer API.
 	lastProcessedHeight atomic.Uint64
 
-	// slashRestitution pays harmed parties from safety slashes (FIFO); remainder is burned.
-	slashRestitution *safetyslash.MemoryRestitutionQueue
+	// slashRestitution pays harmed parties from safety slashes (FIFO);
+	// remainder is burned. Production wiring uses
+	// safetyslash.OnLedgerRestitutionAllocator (consensus-safe, reads
+	// claim rows from ProtocolSlashRestitutionClaimsAccount written by
+	// the vsc.restitution_claim chain op handler). The legacy
+	// MemoryRestitutionQueue is kept as a SlashRestitutionAllocator
+	// implementation only for tests that pre-date the on-ledger queue
+	// — see enqueueSlashRestitutionClaimForTest.
+	slashRestitution ledgerSystem.SlashRestitutionAllocator
 	// safetyEvidenceSeen deduplicates evidence events per account+kind+evidenceID.
 	// Backstop only — the underlying ledger ids in SafetySlashConsensusBond are
 	// deterministic and Mongo upserts on (id), so replay never double-debits even
@@ -2123,7 +2130,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		ContractResults:  make(map[string][]ContractResult),
 		TempOutputs:      make(map[string]*contract_session.TempOutput),
 		TxOutIds:         make([]string, 0),
-		slashRestitution:              safetyslash.NewMemoryRestitutionQueue(),
+		slashRestitution:              safetyslash.NewOnLedgerRestitutionAllocator(ledgerDb),
 		safetyEvidenceSeen:            make(map[string]uint64),
 		seenProposalBySlotProposer:    make(map[string]string),
 		slashIncidentBpsBySlotAccount: make(map[string]int),
@@ -2414,16 +2421,30 @@ func blamedAccountsFromBitSet(bitsetHex string, members []elections.ElectionMemb
 // victim. Payouts are sourced from future safety-slash proceeds (FIFO) before
 // protocol burn.
 //
-// CONSENSUS WARNING: this method is intentionally unexported. The underlying
-// MemoryRestitutionQueue is process-local — if any node calls this outside a
-// deterministic replay path, validators will diverge on
-// SafetySlashConsensusBond outputs. Until claims are gated through a chain op
-// (or replayed deterministically from the ledger), the queue MUST stay empty
-// in production. The hook is kept for unit tests that exercise the
-// restitution split inside SafetySlashConsensusBond.
+// CONSENSUS WARNING: this method is intentionally unexported. It only takes
+// effect when the underlying allocator is the legacy
+// safetyslash.MemoryRestitutionQueue — tests that pre-date the on-ledger
+// queue swap that allocator in via SetSlashRestitutionForTest. In production
+// the allocator is safetyslash.OnLedgerRestitutionAllocator and claims arrive
+// via the vsc.restitution_claim block-content tx (LedgerSystem.EnqueueRestitutionClaim);
+// this helper is a no-op in that wiring, which is the desired behaviour.
 func (se *StateEngine) enqueueSlashRestitutionClaimForTest(c ledgerSystem.SlashRestitutionClaim) {
 	if se == nil || se.slashRestitution == nil {
 		return
 	}
-	se.slashRestitution.Enqueue(c)
+	if mq, ok := se.slashRestitution.(*safetyslash.MemoryRestitutionQueue); ok {
+		mq.Enqueue(c)
+	}
+}
+
+// SetSlashRestitutionForTest replaces the slash restitution allocator with
+// a caller-provided implementation. Only intended for unit tests that need
+// to assert behaviour against an in-memory queue rather than the on-ledger
+// allocator. Production paths must stay on
+// safetyslash.OnLedgerRestitutionAllocator (the wiring set in newStateEngine).
+func (se *StateEngine) SetSlashRestitutionForTest(a ledgerSystem.SlashRestitutionAllocator) {
+	if se == nil {
+		return
+	}
+	se.slashRestitution = a
 }

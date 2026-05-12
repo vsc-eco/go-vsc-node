@@ -19,6 +19,7 @@ import (
 
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/transactions"
+	safetyslash "vsc-node/modules/incentive-pendulum/safety_slash"
 	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
@@ -867,6 +868,10 @@ func (tx *TransactionContainer) Type() string {
 		return "rc_update"
 	} else if tx.TypeInt == int(common.BlockTypePendulumSettlement) {
 		return "pendulum_settlement"
+	} else if tx.TypeInt == int(common.BlockTypeRestitutionClaim) {
+		return "restitution_claim"
+	} else if tx.TypeInt == int(common.BlockTypeSafetySlashReverse) {
+		return "safety_slash_reverse"
 	} else {
 		return "unknown"
 	}
@@ -944,6 +949,49 @@ func (tx *TransactionContainer) AsPendulumSettlement() (pendulumsettlement.Settl
 		return pendulumsettlement.SettlementRecord{}, false
 	}
 	return rec, true
+}
+
+// AsRestitutionClaim decodes a RestitutionClaimRecord pointed at by this
+// container's CID. Returns (record, true) on success; (zero, false) if the
+// underlying DAG fetch or decode fails. The state engine treats false as a
+// dropped op — the carrying block's 2/3 BLS aggregate already validated
+// the CID bytes, so a fetch miss indicates a local I/O issue, not
+// malformed payload.
+func (tx *TransactionContainer) AsRestitutionClaim() (safetyslash.RestitutionClaimRecord, bool) {
+	if tx == nil || tx.da == nil {
+		return safetyslash.RestitutionClaimRecord{}, false
+	}
+	txCid := cid.MustParse(tx.Id)
+	node, err := tx.da.GetDag(txCid)
+	if err != nil {
+		return safetyslash.RestitutionClaimRecord{}, false
+	}
+	jsonBytes, _ := node.MarshalJSON()
+	var rec safetyslash.RestitutionClaimRecord
+	if err := json.Unmarshal(jsonBytes, &rec); err != nil {
+		return safetyslash.RestitutionClaimRecord{}, false
+	}
+	return rec.Normalize(), true
+}
+
+// AsSafetySlashReverse decodes a SafetySlashReverseRecord pointed at by
+// this container's CID. Same I/O-vs-malformed-payload story as the other
+// As* helpers.
+func (tx *TransactionContainer) AsSafetySlashReverse() (safetyslash.SafetySlashReverseRecord, bool) {
+	if tx == nil || tx.da == nil {
+		return safetyslash.SafetySlashReverseRecord{}, false
+	}
+	txCid := cid.MustParse(tx.Id)
+	node, err := tx.da.GetDag(txCid)
+	if err != nil {
+		return safetyslash.SafetySlashReverseRecord{}, false
+	}
+	jsonBytes, _ := node.MarshalJSON()
+	var rec safetyslash.SafetySlashReverseRecord
+	if err := json.Unmarshal(jsonBytes, &rec); err != nil {
+		return safetyslash.SafetySlashReverseRecord{}, false
+	}
+	return rec.Normalize(), true
 }
 
 func (tx *TransactionContainer) Decode(bytes []byte) {
