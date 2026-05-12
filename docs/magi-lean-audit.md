@@ -286,3 +286,57 @@ Bond principal is never debited from this path.
 - **Reversal primitive:** ledger-level only (`CancelPendingSafetySlashBurn`, `ReverseSafetySlashConsensusDebit`); a chain-op auth model still has to be designed before pledge liquidity lands.
 - **Restitution queue:** in-memory, deliberately empty in production; will gate behind a chain op when a claim system ships.
 - **`FinalizeMaturedSafetySlashBurns`:** scans from the maturity cursor — see `modules/db/vsc/ledger`.
+
+---
+
+## Pass 5 — Chain-op surface (2026-05-12)
+
+### Scope decision: BLS-in-block chain ops, harm proof included, no explicit window
+
+After confirming the auth model, the open Pass 4 items (reversal chain op + restitution claim chain op) shipped together:
+
+- **Auth gate:** both ops ride inside VSC blocks as new `BlockType*` entries. The witness committee's 2/3 BLS aggregate over the carrying block is the supermajority authorization (witnesses gate inclusion of the op). No new auth machinery; the same trust model that signs `pendulum_settlement` now signs reversal and restitution.
+- **Harm proof:** restitution claims include an optional `victim_tx_id`. When supplied, the apply path verifies the victim's tx record's `AnchoredId` matches the slash's `tx_id` and the tx did not complete successfully — i.e. the victim's transaction was carried by the same bad block that triggered the slash and never got a successful execution result. Missing/mismatched proofs drop the claim.
+- **No explicit window:** governance supermajority is the timelock. Cancel rejects automatically once the burn finalizes (`CancelPendingSafetySlashBurn` is a no-op post-finalize); reverse caps at `slashAmount - alreadyReversed` so the validator's bond can never be re-credited past its initial debit.
+
+### Surfaces added
+
+- **New ledger op types in `modules/ledger-system/ledger_system.go`:**
+  - `safety_restitution_claim` — FIFO queue rows on `params.ProtocolSlashRestitutionClaimsAccount`.
+  - `safety_restitution_claim_consumed` — paired consume markers per (claim, slashTxID, kind).
+- **New ledger primitive `LedgerSystem.EnqueueRestitutionClaim`** — idempotent per ClaimID via deterministic row id `safety_restitution_claim#<ClaimID>`.
+- **New `OnLedgerRestitutionAllocator`** in `modules/incentive-pendulum/safety_slash/onledger_allocator.go` — consensus-safe replacement for `MemoryRestitutionQueue`. Reads claim rows ordered by `(BlockHeight, Id)`, allocates HIVE FIFO, writes consume markers carrying signed-debit deltas so per-claim outstanding balance is recoverable from the ledger alone.
+- **Two new BlockType constants** in `modules/common/params.go`:
+  - `BlockTypeRestitutionClaim` (apply: `applyRestitutionClaim`).
+  - `BlockTypeSafetySlashReverse` (apply: `applySafetySlashReverse`).
+- **Container plumbing** — `transactions.go` adds `Type()` cases plus `AsRestitutionClaim` / `AsSafetySlashReverse` decoders that fetch the CID from the DataLayer and `Normalize()` the payload.
+- **Dispatch** in `system_txs.go::Ingest` routes both new types through the new state-engine apply functions before the existing nonce/output updates.
+- **Apply functions** in `modules/state-processing/safety_slash_chain_ops.go`:
+  - `applyRestitutionClaim` — required-field validation, deterministic slash row lookup, headroom cap, optional harm-proof verification, then `EnqueueRestitutionClaim`.
+  - `applySafetySlashReverse` — required-field + action-enum validation, slash row lookup, then cancel / reverse / both with the unfinalized-portion cap.
+- **Per-op reverse Id (bug uncovered by tests)** — `ReverseSafetySlashConsensusDebit` now accepts `OpInstanceID` and folds it into the row Id, so two distinct reverses on the same slash accumulate while replays of the same op upsert. Without this fix, governance running totals would silently zero out.
+
+### Wiring
+
+- `StateEngine.slashRestitution` field changed from `*MemoryRestitutionQueue` to the `SlashRestitutionAllocator` interface.
+- Production `newStateEngine` now wires `safetyslash.NewOnLedgerRestitutionAllocator(ledgerDb)`. The legacy `MemoryRestitutionQueue` survives only for tests that pre-date the on-ledger queue (via `enqueueSlashRestitutionClaimForTest` and `SetSlashRestitutionForTest`).
+- `state_engine.UpdateBalances` skip-list extended to include `safety_restitution_claim` and `safety_restitution_claim_consumed` so the meta queue rows never appear in spendable balances.
+
+### Magi-Lean coverage
+
+Added in `magi-lean/MagiLean/Pendulum/SafetySlashLiquidSplit.lean`:
+
+- `reverseHeadroom`, `reverseApplied`, `reverseApplied_le_headroom`, `reverseApplied_le_requested` — pin the per-op cap rule the apply path uses.
+- `totalReversed_le_slash_after_apply` — the running-total cap: after any apply, `priorReversed + applied ≤ slashed`.
+- `chainOpReverse_never_mints_past_slash` — the named theorem cited here as the chain-op surface invariant: governance can never re-credit more `HIVE_CONSENSUS` than was originally debited.
+- `ClaimRow` + `consume_monotone` + `consume_le_loss_when_capped` — per-claim consumption invariants matching the on-ledger allocator's semantics.
+- Per-claim-id idempotency under enqueue is documented as a Mongo-upsert invariant covered empirically by `TestEnqueueRestitutionClaim_Idempotent_PerClaimID` and `TestApplyRestitutionClaim_Idempotent_SameClaimID`; promotion to a Lean theorem is a clean follow-up.
+
+### Pass 5 Verdict
+
+- **Chain-op surface:** complete and merge-ready. Both ops authenticated by witness 2/3 BLS, exercised end-to-end in tests, and pin the running-total invariant in Lean.
+- **Production restitution queue:** consensus-safe (on-ledger). `OnLedgerRestitutionAllocator` is the production wiring; `MemoryRestitutionQueue` retained for legacy tests only.
+- **Reverse safety:** running-total cap enforced both at the apply layer and proved arithmetically in Lean.
+- **Open follow-ups (not blockers):**
+  - Self-serve harm-proof model — current ship has DAO-curated path with optional on-chain proof; tightening to mandatory proof is a future hardening.
+  - Configurable cooling-off window on reverse — deferred per the auth choice; today's window is implicit (DAO supermajority + burn-not-finalized for cancel).
