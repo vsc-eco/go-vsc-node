@@ -41,6 +41,15 @@ var ProtocolSlashBurnAccount = "system:protocol_slash_burn"
 // to ProtocolSlashBurnAccount. Not spendable (excluded from balance aggregation).
 var ProtocolSlashPendingBurnAccount = "system:protocol_slash_burn_pending"
 
+// ProtocolSlashFinalizeCursorAccount stores the single-row scan cursor used by
+// FinalizeMaturedSafetySlashBurns. The cursor's value (in the From field) is
+// the lowest emission BlockHeight at which any pending burn row could still be
+// unfinalized. On every UpdateBalances tick, the finalizer scans only
+// [cursor, blockHeight] instead of [0, blockHeight], so the cost is bounded by
+// the active pending-row window rather than chain length. Account is balance-
+// neutral (every row has Amount=0); it exists purely as a meta marker.
+var ProtocolSlashFinalizeCursorAccount = "system:protocol_slash_finalize_cursor"
+
 // MaxSafetySlashBurnDelayBlocks caps BurnDelayBlocks to avoid uint64 maturity
 // overflow and unbounded pending queues. ~115 days at 3s/block.
 const MaxSafetySlashBurnDelayBlocks uint64 = 3_333_333

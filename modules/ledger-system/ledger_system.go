@@ -112,6 +112,15 @@ const (
 	// LedgerState.GetBalance(hive_consensus). Idempotent per (slashTxID,
 	// kind, account) tuple.
 	LedgerTypeSafetySlashConsensusReverse = "safety_slash_consensus_reverse"
+	// LedgerTypeSafetySlashBurnFinalizeCursor is a single-row meta marker
+	// (Owner=ProtocolSlashFinalizeCursorAccount, Amount=0, From=cursor height
+	// as a decimal string) used by FinalizeMaturedSafetySlashBurns to bound
+	// its scan window. Replaced (upserted by Id) every tick the cursor moves.
+	LedgerTypeSafetySlashBurnFinalizeCursor = "safety_slash_burn_finalize_cursor"
+
+	// safetySlashFinalizeCursorRowID is the deterministic Id used for the
+	// single cursor row. Repeating writes upsert the same row.
+	safetySlashFinalizeCursorRowID = "safety_slash_burn_finalize_cursor"
 )
 
 func normalizeHiveConsensusAccount(a string) string {
@@ -254,20 +263,91 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 	return LedgerResult{Ok: true, Msg: "success"}
 }
 
+// readSafetySlashFinalizeCursor returns the lowest emission BlockHeight at
+// which any pending burn row could still be unfinalized. Zero on first run or
+// if the cursor has not been written yet, which makes the caller fall back to
+// scanning from height 0 the first time. The cursor is a single ledger row on
+// ProtocolSlashFinalizeCursorAccount, upserted by safetySlashFinalizeCursorRowID,
+// so reads always return at most one row.
+func (ls *ledgerSystem) readSafetySlashFinalizeCursor() uint64 {
+	if ls.LedgerDb == nil {
+		return 0
+	}
+	recs, err := ls.LedgerDb.GetLedgerRange(
+		params.ProtocolSlashFinalizeCursorAccount,
+		0,
+		math.MaxUint64,
+		"hive",
+		ledger_db.LedgerOptions{OpType: []string{LedgerTypeSafetySlashBurnFinalizeCursor}},
+	)
+	if err != nil || recs == nil || len(*recs) == 0 {
+		return 0
+	}
+	// Single-row upsert; if more than one is observed (shouldn't happen),
+	// take the latest by BlockHeight as a defensive fallback.
+	var latestHeight uint64
+	var latestCursor uint64
+	for _, r := range *recs {
+		if r.BlockHeight < latestHeight {
+			continue
+		}
+		c, perr := strconv.ParseUint(strings.TrimSpace(r.From), 10, 64)
+		if perr != nil {
+			continue
+		}
+		latestHeight = r.BlockHeight
+		latestCursor = c
+	}
+	return latestCursor
+}
+
+// writeSafetySlashFinalizeCursor upserts the cursor row to scanFrom. Called
+// only when the new value is strictly greater than the current cursor so we
+// never go backward and never write a no-op row.
+func (ls *ledgerSystem) writeSafetySlashFinalizeCursor(blockHeight, scanFrom uint64) {
+	if ls.LedgerDb == nil {
+		return
+	}
+	ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+		Id:          safetySlashFinalizeCursorRowID,
+		BlockHeight: blockHeight,
+		Amount:      0,
+		Asset:       "hive",
+		Owner:       params.ProtocolSlashFinalizeCursorAccount,
+		From:        strconv.FormatUint(scanFrom, 10),
+		Type:        LedgerTypeSafetySlashBurnFinalizeCursor,
+	})
+}
+
 // FinalizeMaturedSafetySlashBurns promotes pending slash burn rows whose maturity
 // height (stored in From) is <= blockHeight. Idempotent per pending row.
+//
+// Bounded scan: instead of scanning [0, blockHeight] every block, this reads a
+// persisted cursor (lowest emission height that could still hold an unfinalized
+// pending row) and scans only [cursor, blockHeight]. After processing, the
+// cursor advances to the minimum emission height of any row that is still
+// unfinalized in the window, or to blockHeight+1 if all rows in the window are
+// done. Cursor never moves backward, so concurrent finalization paths and
+// replays converge to the same final state.
 func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 	if ls.LedgerDb == nil || blockHeight == 0 {
 		return
 	}
 	pendingAcct := params.ProtocolSlashPendingBurnAccount
-	pendingRecs, err := ls.LedgerDb.GetLedgerRange(pendingAcct, 0, blockHeight, "hive", ledger_db.LedgerOptions{
+	cursor := ls.readSafetySlashFinalizeCursor()
+	if cursor > blockHeight {
+		// Cursor already past current height (e.g. after a long quiet period).
+		// Nothing to do; new pending rows arrive at heights >= blockHeight and
+		// will be picked up by future calls.
+		return
+	}
+	pendingRecs, err := ls.LedgerDb.GetLedgerRange(pendingAcct, cursor, blockHeight, "hive", ledger_db.LedgerOptions{
 		OpType: []string{LedgerTypeSafetySlashHiveBurnPending},
 	})
 	if err != nil || pendingRecs == nil {
 		return
 	}
-	finalizedRecs, _ := ls.LedgerDb.GetLedgerRange(pendingAcct, 0, blockHeight, "hive", ledger_db.LedgerOptions{
+	finalizedRecs, _ := ls.LedgerDb.GetLedgerRange(pendingAcct, cursor, blockHeight, "hive", ledger_db.LedgerOptions{
 		OpType: []string{LedgerTypeSafetySlashHiveBurnPendingFinalized},
 	})
 	done := make(map[string]struct{})
@@ -278,7 +358,13 @@ func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 			}
 		}
 	}
+	// minUnfinalized tracks the lowest emission BlockHeight of any row in
+	// [cursor, blockHeight] that we observed but could not finalize yet. If
+	// none, the cursor advances past blockHeight.
+	var minUnfinalized uint64 = math.MaxUint64
+	sawAny := false
 	for _, rec := range *pendingRecs {
+		sawAny = true
 		if rec.Amount <= 0 {
 			continue
 		}
@@ -286,7 +372,13 @@ func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 			continue
 		}
 		mat, err := strconv.ParseUint(strings.TrimSpace(rec.From), 10, 64)
-		if err != nil || mat > blockHeight {
+		if err != nil {
+			continue
+		}
+		if mat > blockHeight {
+			if rec.BlockHeight < minUnfinalized {
+				minUnfinalized = rec.BlockHeight
+			}
 			continue
 		}
 		ls.LedgerDb.StoreLedger(
@@ -320,6 +412,20 @@ func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 				Type:        LedgerTypeSafetySlashHiveBurnPendingFinalized,
 			},
 		)
+	}
+	// Compute new cursor. Only advance if it strictly grows.
+	var newCursor uint64
+	if !sawAny || minUnfinalized == math.MaxUint64 {
+		// Either no pending rows existed in the window, or every row found
+		// was finalizable. Either way, the next scan can start past
+		// blockHeight; new rows enter at heights >= the next call's
+		// blockHeight and are within the new window.
+		newCursor = blockHeight + 1
+	} else {
+		newCursor = minUnfinalized
+	}
+	if newCursor > cursor {
+		ls.writeSafetySlashFinalizeCursor(blockHeight, newCursor)
 	}
 }
 

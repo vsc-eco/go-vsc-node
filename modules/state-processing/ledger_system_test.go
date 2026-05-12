@@ -2,6 +2,8 @@ package state_engine_test
 
 import (
 	"math"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1375,4 +1377,191 @@ func TestSafetySlashConsensusBond_RejectsMaturityOverflow(t *testing.T) {
 		BurnDelayBlocks: 9_000_000,
 	})
 	require.False(t, res.Ok)
+}
+
+// readCursorRow returns the parsed cursor scan-from height for the
+// finalize cursor row (single deterministic Id), or 0 if not present.
+func readCursorRow(t *testing.T, lDb *test_utils.MockLedgerDb) uint64 {
+	t.Helper()
+	var got uint64
+	var gotHeight uint64
+	for _, recs := range lDb.LedgerRecords {
+		for _, r := range recs {
+			if r.Type != ledgerSystem.LedgerTypeSafetySlashBurnFinalizeCursor {
+				continue
+			}
+			if r.BlockHeight < gotHeight {
+				continue
+			}
+			c, err := strconv.ParseUint(strings.TrimSpace(r.From), 10, 64)
+			require.NoError(t, err)
+			gotHeight = r.BlockHeight
+			got = c
+		}
+	}
+	return got
+}
+
+// TestFinalizeCursor_AdvancesPastFullyMatured verifies that after a slash
+// matures and is finalized, the cursor advances to blockHeight+1, so
+// subsequent finalize calls don't re-scan the now-empty range.
+func TestFinalizeCursor_AdvancesPastFullyMatured(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+
+	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account:         "alice",
+		SlashBps:        1000,
+		TxID:            "tx-cursor-1",
+		BlockHeight:     200,
+		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
+		BurnDelayBlocks: 50,
+	}).Ok)
+
+	// Before finalize: no cursor written.
+	require.Equal(t, uint64(0), readCursorRow(t, lDb))
+
+	// Finalize after maturity (200+50 = 250).
+	ls.FinalizeMaturedSafetySlashBurns(250)
+	cursor := readCursorRow(t, lDb)
+	require.Equal(t, uint64(251), cursor, "cursor should advance past blockHeight when nothing remains pending")
+	finalized := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn)
+	require.Equal(t, 1, finalized)
+
+	// A subsequent finalize call should be a no-op (no new burn rows).
+	ls.FinalizeMaturedSafetySlashBurns(300)
+	require.Equal(t, finalized, countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn))
+	// Cursor advances further once nothing is pending in the new range.
+	require.Equal(t, uint64(301), readCursorRow(t, lDb))
+}
+
+// TestFinalizeCursor_AnchorsToOldestUnfinalized verifies the cursor
+// anchors to the lowest emission height of any still-unfinalized pending
+// row when finalize runs but some rows are not yet mature.
+func TestFinalizeCursor_AnchorsToOldestUnfinalized(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+		"hive:bob": {{
+			Account:        "hive:bob",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+
+	// Slash alice at 200 (maturity 250) and bob at 220 (maturity 320).
+	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account: "alice", SlashBps: 1000, TxID: "tx-a",
+		BlockHeight: 200, EvidenceKind: safetyslash.EvidenceVSCDoubleBlockSign,
+		BurnDelayBlocks: 50,
+	}).Ok)
+	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account: "bob", SlashBps: 1000, TxID: "tx-b",
+		BlockHeight: 220, EvidenceKind: safetyslash.EvidenceVSCDoubleBlockSign,
+		BurnDelayBlocks: 100,
+	}).Ok)
+
+	// Finalize at 250: alice's row is mature (250 == maturity), bob's
+	// is not (mat 320 > 250). Cursor should anchor to bob's emission
+	// height 220, the oldest still-unfinalized row.
+	ls.FinalizeMaturedSafetySlashBurns(250)
+	require.Equal(t, uint64(220), readCursorRow(t, lDb))
+	require.Equal(t, 1, countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn))
+
+	// Finalize at 320: bob now matures, cursor advances to 321.
+	ls.FinalizeMaturedSafetySlashBurns(320)
+	require.Equal(t, uint64(321), readCursorRow(t, lDb))
+	require.Equal(t, 2, countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn))
+}
+
+// TestFinalizeCursor_NeverGoesBackward proves the cursor is monotonic
+// even if FinalizeMaturedSafetySlashBurns is called repeatedly with the
+// same blockHeight or with a height earlier than the last seen.
+func TestFinalizeCursor_NeverGoesBackward(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+
+	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account: "alice", SlashBps: 1000, TxID: "tx-mono",
+		BlockHeight: 200, EvidenceKind: safetyslash.EvidenceVSCDoubleBlockSign,
+		BurnDelayBlocks: 50,
+	}).Ok)
+
+	ls.FinalizeMaturedSafetySlashBurns(250)
+	cursor1 := readCursorRow(t, lDb)
+	require.Equal(t, uint64(251), cursor1)
+
+	// Replay the same call: cursor must not move backward.
+	ls.FinalizeMaturedSafetySlashBurns(250)
+	require.Equal(t, cursor1, readCursorRow(t, lDb))
+
+	// Earlier-height call (out-of-order replay protection).
+	ls.FinalizeMaturedSafetySlashBurns(240)
+	require.Equal(t, cursor1, readCursorRow(t, lDb))
+
+	// Forward progress still works.
+	ls.FinalizeMaturedSafetySlashBurns(400)
+	require.Equal(t, uint64(401), readCursorRow(t, lDb))
+}
+
+// TestFinalizeCursor_BackfillsFromZeroOnFirstRun proves a node that has
+// never written a cursor (e.g. just upgraded with pending rows already in
+// the DB) starts scanning from height 0 and picks up every existing
+// pending row, then writes its first cursor.
+func TestFinalizeCursor_BackfillsFromZeroOnFirstRun(t *testing.T) {
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account:        "hive:alice",
+			BlockHeight:    100,
+			HIVE_CONSENSUS: 1_000_000,
+		}},
+	})
+	lDb := newMockLedgerDb()
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+
+	// Pre-populate a slash + pending row at height 200, then drop any
+	// cursor row that may have been written (simulate pre-cursor data
+	// from a prior version of the node).
+	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
+		Account: "alice", SlashBps: 1000, TxID: "tx-old",
+		BlockHeight: 200, EvidenceKind: safetyslash.EvidenceVSCDoubleBlockSign,
+		BurnDelayBlocks: 100,
+	}).Ok)
+
+	for k, recs := range lDb.LedgerRecords {
+		filtered := recs[:0]
+		for _, r := range recs {
+			if r.Type == ledgerSystem.LedgerTypeSafetySlashBurnFinalizeCursor {
+				continue
+			}
+			filtered = append(filtered, r)
+		}
+		lDb.LedgerRecords[k] = filtered
+	}
+	require.Equal(t, uint64(0), readCursorRow(t, lDb))
+
+	// First post-upgrade finalize after maturity (200+100=300): must
+	// scan from 0 and pick up the legacy row, then plant the first cursor.
+	ls.FinalizeMaturedSafetySlashBurns(300)
+	require.Equal(t, 1, countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn))
+	require.Equal(t, uint64(301), readCursorRow(t, lDb))
 }

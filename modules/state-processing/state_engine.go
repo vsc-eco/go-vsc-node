@@ -1755,7 +1755,14 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			case ledgerSystem.LedgerTypeSafetySlashHiveBurn,
 				ledgerSystem.LedgerTypeSafetySlashHiveBurnPending,
 				ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingRelease,
-				ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingFinalized:
+				ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingFinalized,
+				ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingCancelled,
+				ledgerSystem.LedgerTypeSafetySlashBurnFinalizeCursor:
+				// Burn / pending-burn / finalize-cursor are protocol meta rows
+				// (Amount=0 for cancelled and cursor; non-zero for burn moves
+				// but always on protocol-owned accounts). They never contribute
+				// to a user-facing spendable balance, so skip them in the
+				// per-account aggregation snapshot.
 				continue
 			default:
 				ledgerBalances[v.Asset] += v.Amount
