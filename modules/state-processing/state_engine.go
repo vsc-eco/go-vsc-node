@@ -130,6 +130,16 @@ type StateEngine struct {
 	cachedElection       *elections.ElectionResult
 	lastDeprecationEpoch uint64 // 0 = never run
 
+	// Cache for GetSchedule — the schedule is deterministic for a given
+	// (round start, election) pair. Elections can happen mid-round (no
+	// strict epoch-boundary guarantee), so the cache key includes the
+	// election's BlockHeight. Invalidated when an election_result tx is
+	// processed.
+	scheduleCache           []WitnessSlot
+	scheduleCacheRound      uint64 // roundInfo.StartHeight
+	scheduleCacheElectionBh uint64 // election.BlockHeight
+	scheduleCacheValid      bool
+
 	BlockHeight int
 
 	// pendulumFeed tracks sole-HIVE witness feed + HBD APR (Magi pendulum oracle); updated from Hive blocks.
@@ -256,10 +266,19 @@ func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64, txId s
 // Uses a different PRNG variant from the original used in JS VSC
 // Not aiming for exact replica
 func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
-	lastElection, err := se.electionDb.GetElectionByHeight(slotHeight)
+	roundInfo := vscBlocks.CalculateRoundInfo(slotHeight)
+
+	lastElection, err := se.GetCachedElection(slotHeight)
 
 	if err != nil {
 		return nil
+	}
+
+	// Cache hit: same round AND same election
+	if se.scheduleCacheValid &&
+		se.scheduleCacheRound == roundInfo.StartHeight &&
+		se.scheduleCacheElectionBh == lastElection.BlockHeight {
+		return se.scheduleCache
 	}
 
 	witnessList := make([]Witness, 0)
@@ -270,10 +289,6 @@ func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 			Account: v.Account,
 		})
 	}
-
-	//Use the slot height to calculate round start and finish.
-	//Slot height is consistent.
-	roundInfo := vscBlocks.CalculateRoundInfo(slotHeight)
 
 	randBlock := roundInfo.StartHeight - 1
 
@@ -295,6 +310,12 @@ func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 	// var seed2 [32]byte
 	copy(seed32[:], seed)
 	witnessSchedule := GenerateSchedule(slotHeight, witnessList, seed32)
+
+	// Populate cache
+	se.scheduleCache = witnessSchedule
+	se.scheduleCacheRound = roundInfo.StartHeight
+	se.scheduleCacheElectionBh = lastElection.BlockHeight
+	se.scheduleCacheValid = true
 
 	return witnessSchedule
 }
@@ -739,6 +760,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// A new election was committed — phase 1's cached epoch
 					// for the next block is now potentially stale.
 					se.electionCacheValid = false
+					se.scheduleCacheValid = false
 					globalProfile.Record("tx.election_result", time.Since(txStart))
 					continue
 				}
