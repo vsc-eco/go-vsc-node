@@ -415,14 +415,16 @@ func TestFeedTrackerLastTickReturnsDefensiveCopies(t *testing.T) {
 func TestDivergingTrustedWitnesses(t *testing.T) {
 	tr := NewFeedTracker()
 	// Build tracker internals directly to isolate divergence calculation.
+	// PriceBps = HbdRaw * BpsScale / HiveRaw, so HbdRaw=10000, HiveRaw=10000
+	// gives 10000 bps (1.0), HbdRaw=10800, HiveRaw=10000 gives 10800 bps (1.08).
 	tr.last = FeedTickSnapshot{
-		TrustedHiveMean:     1.0,
+		TrustedHivePriceBps: 10000, // 1.0 in bps
 		TrustedHiveOK:       true,
 		TrustedWitnessGroup: []string{"alice", "bob", "carol"},
 	}
-	tr.quotes["alice"] = 1.00
-	tr.quotes["bob"] = 1.08   // 800 bps divergence
-	tr.quotes["carol"] = 1.01 // 100 bps divergence
+	tr.quotes["alice"] = Quote{HbdRaw: 10000, HiveRaw: 10000} // 10000 bps, 0 divergence
+	tr.quotes["bob"] = Quote{HbdRaw: 10800, HiveRaw: 10000}   // 10800 bps, 800 bps divergence
+	tr.quotes["carol"] = Quote{HbdRaw: 10100, HiveRaw: 10000} // 10100 bps, 100 bps divergence
 
 	got := tr.DivergingTrustedWitnesses(300)
 	if len(got) != 1 || got[0] != "bob" {
