@@ -1198,6 +1198,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 		se.RcMap = make(map[string]int64)
 
+		// The slot we just rolled past is finalized: its block
+		// (or absence thereof) has been applied, double-sign and
+		// correlated-cap state for that slot is no longer reachable
+		// by any in-flight detector. Prune slot-keyed maps before
+		// they accumulate one entry per (slot, proposer) for the
+		// process lifetime.
+		se.pruneSafetySlotMaps(se.slotStatus.SlotHeight)
+		se.pruneSafetyEvidenceSeen(slotInfo.StartHeight)
+
 		se.slotStatus = &SlotStatus{
 			SlotHeight: slotInfo.StartHeight,
 			Done:       false,
@@ -2209,6 +2218,80 @@ func (se *StateEngine) evidenceKey(accountHive, kind string) string {
 
 func (se *StateEngine) evidenceSeenKey(accountHive, kind, evidenceID string) string {
 	return se.evidenceKey(accountHive, kind) + "|" + evidenceID
+}
+
+// slotHeightFromSlotKey extracts the slot height encoded as the decimal
+// prefix of a slot-keyed in-memory map entry. Slot keys produced by the
+// detector and slashForEvidenceIfPolicyAllows use the format
+// "slotHeightDecimal|account"; this helper inverts that for prune logic.
+// Returns 0 if the key is malformed (which trips the pruner into deleting
+// the entry, since 0 is always <= the finalized slot threshold).
+func slotHeightFromSlotKey(k string) uint64 {
+	sep := strings.IndexByte(k, '|')
+	if sep < 0 {
+		return 0
+	}
+	h, err := strconv.ParseUint(k[:sep], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return h
+}
+
+// pruneSafetySlotMaps drops entries from the per-slot in-memory maps
+// whose slot is at or before finalizedSlotHeight. Called from the slot
+// transition path so the maps stay bounded by the active slot horizon
+// instead of growing for the lifetime of the validator process.
+//
+// Replay safety: nothing on the consensus path depends on a stale slot
+// remaining in either map. seenProposalBySlotProposer is a first-seen-
+// wins record of "did this account already propose for this slot?" and
+// is irrelevant once the slot has finalized; slashIncidentBpsBySlotAccount
+// is a correlated-cap accumulator scoped to a single incident. Re-entering
+// either map for a finalized slot would only happen if we replayed an
+// already-applied slash, in which case the deterministic ledger ids in
+// SafetySlashConsensusBond upsert and converge regardless.
+func (se *StateEngine) pruneSafetySlotMaps(finalizedSlotHeight uint64) {
+	if se == nil {
+		return
+	}
+	for k := range se.seenProposalBySlotProposer {
+		if slotHeightFromSlotKey(k) <= finalizedSlotHeight {
+			delete(se.seenProposalBySlotProposer, k)
+		}
+	}
+	for k := range se.slashIncidentBpsBySlotAccount {
+		if slotHeightFromSlotKey(k) <= finalizedSlotHeight {
+			delete(se.slashIncidentBpsBySlotAccount, k)
+		}
+	}
+}
+
+// pruneSafetyEvidenceSeen drops entries from the dedup map that were
+// recorded more than (2 * MaxSafetySlashBurnDelayBlocks) blocks before
+// currentHeight. The window is intentionally conservative: a reversed
+// slash plus a re-slash for the same evidence at the burn-delay boundary
+// must remain dedup-protected, but anything beyond twice the maximum
+// configurable delay cannot still be in flight.
+//
+// safetyEvidenceSeen is documented as a backstop; replay safety is
+// guaranteed by deterministic ledger ids in SafetySlashConsensusBond +
+// Mongo upsert semantics, so even a fully-empty map cannot cause a double
+// debit. The prune is a memory hygiene measure.
+func (se *StateEngine) pruneSafetyEvidenceSeen(currentHeight uint64) {
+	if se == nil || se.safetyEvidenceSeen == nil {
+		return
+	}
+	keepWindow := 2 * params.MaxSafetySlashBurnDelayBlocks
+	if currentHeight <= keepWindow {
+		return
+	}
+	threshold := currentHeight - keepWindow
+	for k, h := range se.safetyEvidenceSeen {
+		if h < threshold {
+			delete(se.safetyEvidenceSeen, k)
+		}
+	}
 }
 
 // recordEvidenceAndShouldSlash returns true when this is the first time we
