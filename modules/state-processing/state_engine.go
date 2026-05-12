@@ -961,11 +961,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							if keyCache[sigPack.KeyId] == nil {
 								tssKey, err := se.tssKeys.FindKey(sigPack.KeyId)
 								if err != nil {
-									log.Warn("failed to find key", "keyId", sigPack.KeyId, "err", err)
+									log.Debug("failed to find key", "keyId", sigPack.KeyId, "err", err)
 									continue
 								}
 								if tssKey.Status != tss_db.TssKeyActive {
-									log.Warn(
+									log.Debug(
 										"signing attempted for non-active key, skipping",
 										"keyId",
 										tssKey.Id,
