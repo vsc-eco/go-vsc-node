@@ -31,6 +31,7 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
+	safetyslash "vsc-node/modules/incentive-pendulum/safety_slash"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	libp2p "vsc-node/modules/p2p"
 	rcSystem "vsc-node/modules/rc-system"
@@ -71,6 +72,15 @@ type BlockProducer struct {
 	bh           uint64
 
 	electionsDb elections.Elections
+
+	// PendingGovOps is the witness-local pool that DAO operators / RPC
+	// handlers populate with vsc.restitution_claim and
+	// vsc.safety_slash_reverse payloads. Drained during GenerateBlock
+	// for slots this node leads. Defaults to an empty
+	// MemoryPendingGovernanceOps in New(); deployments may swap in a
+	// persistent implementation later without changing the caller
+	// surface. Safe for concurrent submission and drain.
+	PendingGovOps safetyslash.PendingGovernanceOps
 
 	_started bool
 }
@@ -169,6 +179,23 @@ func (bp *BlockProducer) GenerateBlock(
 	// atomically with the election by TxElectionResult.ExecuteTx. See
 	// modules/election-proposer/election-proposer.go: GenerateFullElection
 	// and modules/state-processing/system_txs.go: TxElectionResult.ExecuteTx.
+
+	// Governance chain-ops: drain the witness-local pool of pending
+	// vsc.restitution_claim and vsc.safety_slash_reverse payloads.
+	// Unlike pendulum settlement these are NOT deterministically
+	// re-derivable from on-chain state — DAO operators submit them
+	// out-of-band. Different leaders see different pools, so each
+	// proposal carries the leader's local view; the apply path
+	// re-validates each payload against canonical ledger state at
+	// apply time, so stale or malformed entries are silently dropped.
+	// The 2/3 BLS aggregate over the carrying block is the consensus
+	// auth gate.
+	if claims := bp.MakeRestitutionClaims(daSession); len(claims) > 0 {
+		offchainTxs = append(offchainTxs, claims...)
+	}
+	if reverses := bp.MakeSafetySlashReverses(daSession); len(reverses) > 0 {
+		offchainTxs = append(offchainTxs, reverses...)
+	}
 
 	vlog.Info("GenerateBlock", "slotHeight", slotHeight, "txCount", len(offchainTxs))
 	for i, tx := range offchainTxs {
@@ -1073,5 +1100,10 @@ func New(
 		TxDb:         txDb,
 		rcSystem:     rcSystem,
 		nonceDb:      nonceDb,
+		// Default to an empty in-memory pool. Production deployments
+		// can replace this field after construction (e.g. with a
+		// persistent pool fed by an RPC handler) without touching the
+		// New() signature.
+		PendingGovOps: safetyslash.NewMemoryPendingGovernanceOps(),
 	}
 }
