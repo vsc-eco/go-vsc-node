@@ -46,7 +46,7 @@ func (m *mockLedgerSystem) GetBalance(account string, blockHeight uint64, asset 
 	return m.balances[account+":"+asset]
 }
 func (m *mockLedgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {}
-func (m *mockLedgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ledgerSystem.ExtraInfo) {
+func (m *mockLedgerSystem) IndexActions(actionUpdate ledgerSystem.ActionUpdate, extraInfo ledgerSystem.ExtraInfo) {
 }
 func (m *mockLedgerSystem) Deposit(deposit ledgerSystem.Deposit) string { return "" }
 func (m *mockLedgerSystem) IngestOplog(oplog []ledgerSystem.OpLogEvent, options ledgerSystem.OplogInjestOptions) {
