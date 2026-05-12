@@ -201,13 +201,13 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	//DONE
 }
 
-func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ExtraInfo) {
+func (ls *ledgerSystem) IndexActions(actionUpdate ActionUpdate, extraInfo ExtraInfo) {
 	log.Debug("IndexActions", "actionUpdate", actionUpdate)
 
-	actionIds := common.ArrayToStringArray(actionUpdate["ops"].([]interface{}))
+	actionIds := actionUpdate.Ops
 
 	//All stake related ops
-	completeOps := actionUpdate["cleared_ops"].(string)
+	completeOps := actionUpdate.ClearedOps
 
 	b64, _ := base64.RawURLEncoding.DecodeString(completeOps)
 

@@ -512,7 +512,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() {
 					txStart := time.Now()
-					actionUpdate := map[string]interface{}{}
+					var actionUpdate ledgerSystem.ActionUpdate
 					err := json.Unmarshal(cj.Json, &actionUpdate)
 
 					if err == nil {
@@ -535,10 +535,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			opValue := singleOp.Value
 
 			if opValue["json_metadata"] != nil {
-				untypedJson := make(map[string]interface{})
-
 				bbytes := []byte(opValue["json_metadata"].(string))
-				json.Unmarshal(bbytes, &untypedJson)
 
 				rawJson := witnesses.PostingJsonMetadata{}
 				json.Unmarshal(bbytes, &rawJson)
@@ -584,13 +581,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				if cj.Id == "vsc.produce_block" {
 					txStart := time.Now()
 					//Process block production
-					rawJson := map[string]interface{}{}
-					json.Unmarshal(cj.Json, &rawJson)
-					// parsedTx := TxProposeBlock{}
-					// json.Unmarshal(cj.Json, &parsedTx)
-
-					// parsedTx.ExecuteTx(se)
-
 					schedule := se.GetSchedule(slotInfo.StartHeight)
 
 					var scheduleSlot WitnessSlot
@@ -603,9 +593,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 
 					if cj.RequiredAuths[0] == scheduleSlot.Account {
-						rawJson := map[string]interface{}{}
-						json.Unmarshal(cj.Json, &rawJson)
-
 						parsedBlock := TxProposeBlock{
 							Self: txSelf,
 							SignedBlock: SignedBlockHeader{

@@ -505,14 +505,6 @@ func HashAuths(auths []string) *cid.Cid {
 	return &cid
 }
 
-func copyJsonToType(src map[string]interface{}, dest interface{}) error {
-	bytes, err := json.Marshal(src)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(bytes, dest)
-}
-
 type Buffer struct {
 	c chan byte
 	// *io.PipeReader
