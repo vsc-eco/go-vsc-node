@@ -332,11 +332,24 @@ Added in `magi-lean/MagiLean/Pendulum/SafetySlashLiquidSplit.lean`:
 - `ClaimRow` + `consume_monotone` + `consume_le_loss_when_capped` — per-claim consumption invariants matching the on-ledger allocator's semantics.
 - Per-claim-id idempotency under enqueue is documented as a Mongo-upsert invariant covered empirically by `TestEnqueueRestitutionClaim_Idempotent_PerClaimID` and `TestApplyRestitutionClaim_Idempotent_SameClaimID`; promotion to a Lean theorem is a clean follow-up.
 
+### Producer hooks (issuer side)
+
+The Pass 5 chain-op surface above describes the receiver path (decode → validate → apply). The complementary producer path — how a witness *creates* a `vsc.restitution_claim` or `vsc.safety_slash_reverse` and includes it in a block — was added in the same branch:
+
+- **`PendingGovernanceOps` interface** in `modules/incentive-pendulum/safety_slash/pending_governance_ops.go`. Defines `Enqueue{RestitutionClaim,SlashReverse}` (idempotent per ClaimID / per (slashTx, kind, slashed, action)) and `Drain{RestitutionClaims,SlashReverses}(max)` (FIFO).
+- **Default implementation `MemoryPendingGovernanceOps`** — process-local, mutex-guarded queue. Pre-validates structural fields at enqueue time so junk doesn't waste pool slots; the apply path remains the authoritative gate.
+- **`BlockProducer.PendingGovOps` field** with a default `NewMemoryPendingGovernanceOps()` constructed in `New()`. Submission paths (admin RPC, future DAO contract action, file watcher, etc.) populate the pool out-of-band and are deliberately out of scope of this branch.
+- **`BlockProducer.MakeRestitutionClaims(session)`** and **`BlockProducer.MakeSafetySlashReverses(session)`** in `modules/block-producer/governance_ops.go` — drain up to `maxGovernanceOpsPerBlock` (32) entries from the pool, encode each as DAG-CBOR, pin bytes to the carrying block's DataLayer session, and return `VscBlockTx` stubs tagged with the appropriate `BlockType*`. Bounded inclusion prevents a poison-pool from inflating any single block.
+- **Wired into `GenerateBlock`** alongside `MakePendulumSettlement` so every block this node produces drains the pool. Different leaders may carry different (or zero) governance ops per slot — fine because the apply path independently re-validates and silently drops invalid entries; the BLS aggregate is the consensus auth gate.
+- **Determinism:** identical pool contents across two producers yield byte-identical DAG-CBOR (verified by `TestMakeRestitutionClaims_DeterministicCID`), so signers re-fetching bytes from the DataLayer match leader CIDs exactly.
+
 ### Pass 5 Verdict
 
-- **Chain-op surface:** complete and merge-ready. Both ops authenticated by witness 2/3 BLS, exercised end-to-end in tests, and pin the running-total invariant in Lean.
+- **Chain-op surface:** complete and merge-ready. Both ops authenticated by witness 2/3 BLS, issuable from the leader-side producer hooks, exercised end-to-end in tests, and pin the running-total invariant in Lean.
 - **Production restitution queue:** consensus-safe (on-ledger). `OnLedgerRestitutionAllocator` is the production wiring; `MemoryRestitutionQueue` retained for legacy tests only.
 - **Reverse safety:** running-total cap enforced both at the apply layer and proved arithmetically in Lean.
+- **Producer pool:** in-memory default. Operational submission front-ends (admin RPC / DAO contract action / file watcher) sit on top of the `PendingGovernanceOps` interface and are explicitly out of scope of this branch — this is a deliberate seam so the policy decision about *who* may submit, and *how*, can be made independently of the chain-op semantics.
 - **Open follow-ups (not blockers):**
-  - Self-serve harm-proof model — current ship has DAO-curated path with optional on-chain proof; tightening to mandatory proof is a future hardening.
+  - Self-serve harm-proof model — current ship has DAO-curated path with optional on-chain proof; tightening to mandatory proof is a future hardening (one-line policy flip in `applyRestitutionClaim`).
   - Configurable cooling-off window on reverse — deferred per the auth choice; today's window is implicit (DAO supermajority + burn-not-finalized for cancel).
+  - Operational submission path for governance ops (admin RPC / DAO contract action). The `PendingGovernanceOps` interface is the integration seam; pick the policy independently.
