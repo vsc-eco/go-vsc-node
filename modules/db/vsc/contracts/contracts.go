@@ -211,3 +211,17 @@ func (ch *contractState) FindOutputs(id *string, input *string, contract *string
 func NewContractState(d *vsc.VscDb) ContractState {
 	return &contractState{db.NewCollection(d.DbInstance, "contract_state")}
 }
+
+func (ch *contractState) Init() error {
+	err := ch.Collection.Init()
+	if err != nil {
+		return err
+	}
+	err = ch.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "contract_id", Value: 1}, {Key: "block_height", Value: -1}},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create contract_state index: %w", err)
+	}
+	return nil
+}

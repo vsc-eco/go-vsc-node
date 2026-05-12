@@ -3,12 +3,14 @@ package transactions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -25,22 +27,19 @@ func (e *transactions) Init() error {
 	if err != nil {
 		return err
 	}
-
+	// Index for finding unconfirmed transactions by type
+	err = e.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "status", Value: 1}, {Key: "type", Value: 1}},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create transaction_pool status+type index: %w", err)
+	}
 	return nil
 }
 
 func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 	ctx := context.Background()
 
-	queryy := bson.M{
-		"id": offTx.Id,
-	}
-
-	findResult := e.FindOne(ctx, bson.M{
-		"id": offTx.Id,
-	})
-
-	opts := options.Update().SetUpsert(true)
 	setOp := bson.M{
 		"anchr_height":           offTx.AnchoredHeight,
 		"anchr_block":            offTx.AnchoredBlock,
@@ -54,23 +53,19 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 		"nonce":                  offTx.Nonce,
 		"rc_limit":               offTx.RcLimit,
 	}
-	if findResult.Err() != nil {
-		setOp["first_seen"] = time.Now()
-		//Prevents case of reprocessing/reindexing
-		if offTx.Status != "" {
-			setOp["status"] = offTx.Status
-		} else {
-			setOp["status"] = "UNCONFIRMED"
-		}
+	setOnInsert := bson.M{
+		"first_seen": time.Now(),
+	}
+	if offTx.Status != "" {
+		setOp["status"] = offTx.Status
 	} else {
-		//If it already exists do nothing
-		if offTx.Status != "" {
-			setOp["status"] = offTx.Status
-		}
+		setOnInsert["status"] = "UNCONFIRMED"
 	}
 
-	_, err := e.UpdateOne(ctx, queryy, bson.M{
-		"$set": setOp,
+	opts := options.Update().SetUpsert(true)
+	_, err := e.UpdateOne(ctx, bson.M{"id": offTx.Id}, bson.M{
+		"$set":         setOp,
+		"$setOnInsert": setOnInsert,
 	}, opts)
 
 	return err

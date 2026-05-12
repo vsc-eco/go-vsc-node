@@ -2,6 +2,7 @@ package ledger_db
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db"
@@ -19,6 +20,35 @@ type ledger struct {
 
 func New(d *vsc.VscDb) Ledger {
 	return &ledger{db.NewCollection(d.DbInstance, "ledger")}
+}
+
+func (ledger *ledger) Init() error {
+	err := ledger.Collection.Init()
+	if err != nil {
+		return err
+	}
+	// Index for block_height range queries (GetDistinctAccountsRange)
+	err = ledger.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "block_height", Value: 1}},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create ledger block_height index: %w", err)
+	}
+	// Compound index for GetLedgerRange / GetLedgerAfterHeight (from + block_height)
+	err = ledger.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "from", Value: 1}, {Key: "block_height", Value: 1}},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create ledger from+block_height index: %w", err)
+	}
+	// Compound index for GetLedgerRange (to + block_height)
+	err = ledger.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "to", Value: 1}, {Key: "block_height", Value: 1}},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create ledger to+block_height index: %w", err)
+	}
+	return nil
 }
 
 func (ledger *ledger) StoreLedger(ledgerRecords ...LedgerRecord) {
@@ -228,6 +258,20 @@ func NewBalances(d *vsc.VscDb) Balances {
 	return &balances{db.NewCollection(d.DbInstance, "ledger_balances")}
 }
 
+func (balances *balances) Init() error {
+	err := balances.Collection.Init()
+	if err != nil {
+		return err
+	}
+	err = balances.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "account", Value: 1}, {Key: "block_height", Value: -1}},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create ledger_balances index: %w", err)
+	}
+	return nil
+}
+
 // Gets the balance record for a given account and asset
 // Note: this does not return updated ledger records
 func (balances *balances) GetBalanceRecord(account string, blockHeight uint64) (*BalanceRecord, error) {
@@ -287,6 +331,20 @@ type actionsDb struct {
 
 func NewActionsDb(d *vsc.VscDb) BridgeActions {
 	return &actionsDb{db.NewCollection(d.DbInstance, "ledger_actions")}
+}
+
+func (actionsDb *actionsDb) Init() error {
+	err := actionsDb.Collection.Init()
+	if err != nil {
+		return err
+	}
+	err = actionsDb.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "status", Value: 1}, {Key: "block_height", Value: 1}},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create ledger_actions index: %w", err)
+	}
+	return nil
 }
 
 func (actionsDb *actionsDb) StoreAction(withdraw ActionRecord) {
@@ -563,4 +621,18 @@ func (ic *interestClaims) FindClaims(fromBlock *uint64, toBlock *uint64, offset 
 
 func NewInterestClaimDb(d *vsc.VscDb) InterestClaims {
 	return &interestClaims{db.NewCollection(d.DbInstance, "ledger_claims")}
+}
+
+func (ic *interestClaims) Init() error {
+	err := ic.Collection.Init()
+	if err != nil {
+		return err
+	}
+	err = ic.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "block_height", Value: -1}},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create ledger_claims index: %w", err)
+	}
+	return nil
 }
