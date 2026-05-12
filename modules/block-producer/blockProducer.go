@@ -123,10 +123,34 @@ type generateBlockParams struct {
 
 // This function should generate a deterministically generated block
 // In the future we should apply protocol versioning to this
+//
+// Consensus boundary: every read inside this function that depends on
+// state-engine output (settlement bonds, bucket balance, latest-settled
+// epoch, per-tick reductions, oplog contents, contract outputs) must see
+// the slot-boundary ExecuteBatch flush for `slotHeight`. We enforce that
+// at the entry point so both the leader (ProduceBlock) and signer
+// (HandleBlockMsg) paths apply the same barrier — the previous design,
+// where MakePendulumSettlement waited internally on the leader path but
+// the signer's outer wait at HandleBlockMsg let it get further, caused
+// settlement to be included on one side and skipped on the other for
+// the same slot, producing divergent CIDs.
+//
+// On timeout we return an error so the caller aborts this slot's block
+// entirely. Producing a partial block (settlement missing) is unsafe —
+// it forks the network as soon as any peer's state engine is further
+// along. Missing a slot is the safe outcome.
 func (bp *BlockProducer) GenerateBlock(
 	slotHeight uint64,
 	options ...generateBlockParams,
 ) (*vscBlocks.VscHeader, []string, error) {
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), composeStateWaitTimeout)
+	if err := bp.StateEngine.WaitForProcessedHeight(waitCtx, slotHeight); err != nil {
+		waitCancel()
+		return nil, nil, fmt.Errorf("state engine not caught up to slot %d (lastProcessed=%d): %w",
+			slotHeight, bp.StateEngine.LastProcessedHeight(), err)
+	}
+	waitCancel()
+
 	prevBlock, err := bp.VscBlocks.GetBlockByHeight(slotHeight)
 	daSession := datalayer.NewSession(bp.Datalayer)
 
@@ -597,24 +621,13 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		})
 	}
 
-	// Wait for the state engine to have processed through msg.SlotHeight
-	// before re-deriving. The `bp.bh >= msg.SlotHeight` check above
-	// confirms the producer-side tick saw this slot, but the tick fires
-	// before StateEngine.ProcessBlock runs — so without this barrier the
-	// re-derive below can read pre-flush state and produce a CID that
-	// diverges from peers whose state engines have caught up. Same shape
-	// as the leader-side wait in MakePendulumSettlement; on timeout the
-	// signer's vote is excluded from the BLS aggregate (treated like any
-	// other transient signer outage).
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), settlementComposeStateWaitTimeout)
-	if err := bp.StateEngine.WaitForProcessedHeight(waitCtx, msg.SlotHeight); err != nil {
-		waitCancel()
-		return "", fmt.Errorf("state engine not caught up to slot %d (lastProcessed=%d): %w",
-			msg.SlotHeight, bp.StateEngine.LastProcessedHeight(), err)
-	}
-	waitCancel()
-
-	// Independently derive block (including oplog + contract outputs)
+	// Independently derive block (including oplog + contract outputs).
+	// GenerateBlock applies the state-engine catch-up barrier at its entry
+	// point; if this signer's state engine can't catch up to msg.SlotHeight
+	// within composeStateWaitTimeout, GenerateBlock returns an error and
+	// this signer's vote is excluded from the BLS aggregate (treated like
+	// any other transient signer outage). The leader path applies the
+	// same barrier symmetrically, so both sides see consistent state.
 	blockHeader, _, err := bp.GenerateBlock(msg.SlotHeight, generateBlockParams{
 		Transactions: transactions,
 	})
@@ -823,13 +836,18 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 // earliest valid firing point. Tunable per network if needed.
 const settlementHeadroomSlots uint64 = 2
 
-// settlementComposeStateWaitTimeout bounds how long MakePendulumSettlement
-// (and the signer-side re-derive in HandleBlockMsg) will wait for this
-// node's state engine to finish processing through the compose slotHeight
-// before reading Mongo. Bounded well below Hive's slot cadence (~30s) so a
-// stuck state engine surfaces as a missed-this-slot rather than blocking
-// block production indefinitely.
-const settlementComposeStateWaitTimeout = 2 * time.Second
+// composeStateWaitTimeout bounds how long GenerateBlock will wait for this
+// node's state engine to finish processing through `slotHeight` before
+// composing the block. Bounded well below the VSC slot cadence (~30s) so
+// a stuck state engine surfaces as a missed-this-slot rather than blocking
+// block production indefinitely. 10s leaves ~20s of the slot for BLS
+// signature collection.
+//
+// Applied uniformly to leader (ProduceBlock → GenerateBlock) and signer
+// (HandleBlockMsg → GenerateBlock) paths so both sides either pass the
+// barrier together or abort together; partial passes were the source of
+// the settlement-include-vs-skip CID fork.
+const composeStateWaitTimeout = 10 * time.Second
 
 // MakePendulumSettlement composes a SettlementRecord block tx for `slotHeight`
 // when this slot is the deterministic settlement slot for the closing epoch
@@ -844,21 +862,13 @@ func (bp *BlockProducer) MakePendulumSettlement(slotHeight uint64, session *data
 		return nil
 	}
 
-	// Wait for this node's state engine to finish processing through
-	// `slotHeight` so the Mongo reads below (bonds at slotHeight, bucket
-	// balance at slotHeight, per-tick reductions over the closed epoch)
-	// see the slot-boundary ExecuteBatch flush. Without this barrier, an
-	// async producer tick or an early-arriving p2p signing request can
-	// read mid-flush state and produce a CID that diverges from peers who
-	// happen to be further along. Timeout → skip this slot's settlement
-	// attempt; the next eligible slot retries.
-	ctx, cancel := context.WithTimeout(context.Background(), settlementComposeStateWaitTimeout)
-	defer cancel()
-	if err := bp.StateEngine.WaitForProcessedHeight(ctx, slotHeight); err != nil {
-		vlog.Debug("MakePendulumSettlement: state engine catch-up timed out; skipping",
-			"slotHeight", slotHeight, "lastProcessedHeight", bp.StateEngine.LastProcessedHeight(), "err", err)
-		return nil
-	}
+	// Caller (GenerateBlock) guarantees StateEngine.LastProcessedHeight() >=
+	// slotHeight before invoking this — so the Mongo reads below (bonds at
+	// slotHeight, bucket balance at slotHeight, per-tick reductions over
+	// the closed epoch) see the slot-boundary ExecuteBatch flush. We must
+	// not gate inclusion on a local-state predicate here: doing so makes
+	// settlement-inclusion non-deterministic across nodes and forks the
+	// chain.
 
 	election, err := bp.electionsDb.GetElectionByHeight(slotHeight)
 	if err != nil || len(election.Members) == 0 {
