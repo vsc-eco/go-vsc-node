@@ -151,6 +151,21 @@ func (bp *BlockProducer) GenerateBlock(
 	}
 	waitCancel()
 
+	// Diagnostic: snapshot the SE in-memory accumulators that compose
+	// reads from. Two nodes composing the same slotHeight with the same
+	// SE history should produce identical digests. If digests match but
+	// the resulting block CIDs don't, the bug is in serialization /
+	// derivation. If digests differ, the SE state itself diverged.
+	composeIn := bp.snapshotComposeInputs()
+	vlog.Info("GenerateBlock compose inputs",
+		"slotHeight", slotHeight,
+		"lastProcessedHeight", bp.StateEngine.LastProcessedHeight(),
+		"oplog", composeIn.OplogHash,
+		"txout", composeIn.TxOutHash,
+		"outputs", composeIn.TempOutputsHash,
+		"results", composeIn.ContractResultsHash,
+	)
+
 	prevBlock, err := bp.VscBlocks.GetBlockByHeight(slotHeight)
 	daSession := datalayer.NewSession(bp.Datalayer)
 
@@ -200,17 +215,32 @@ func (bp *BlockProducer) GenerateBlock(
 		offchainTxs = append(offchainTxs, *settlement)
 	}
 
-	vlog.Info("GenerateBlock", "slotHeight", slotHeight, "txCount", len(offchainTxs))
+	// Diagnostic: emit derived CIDs at INFO level so leader/signer logs
+	// can be grep'd and diffed when chasing CID MISMATCH. The compose
+	// inputs digest above pairs with this output digest: if inputs match
+	// but any of these CIDs differ, the bug is in derivation; if inputs
+	// already differ, look upstream at SE state divergence.
+	oplogCidStr := ""
+	if oplog != nil {
+		oplogCidStr = oplog.Id
+	}
+	outputCidStrs := make([]string, 0, len(contractOutputs))
+	for _, co := range contractOutputs {
+		outputCidStrs = append(outputCidStrs, co.Id)
+	}
+	settlementCidStr := ""
+	if settlement != nil {
+		settlementCidStr = settlement.Id
+	}
+	vlog.Info("GenerateBlock",
+		"slotHeight", slotHeight,
+		"txCount", len(offchainTxs),
+		"oplogCid", oplogCidStr,
+		"outputCids", outputCidStrs,
+		"settlementCid", settlementCidStr,
+	)
 	for i, tx := range offchainTxs {
 		vlog.Trace("GenerateBlock tx", "index", i, "type", tx.Type, "id", tx.Id)
-	}
-	if oplog != nil {
-		vlog.Trace("GenerateBlock oplog", "CID", oplog.Id)
-	} else {
-		vlog.Trace("GenerateBlock oplog=nil")
-	}
-	for i, co := range contractOutputs {
-		vlog.Trace("GenerateBlock output", "index", i, "id", co.Id)
 	}
 
 	for _, tx := range offchainTxs {
