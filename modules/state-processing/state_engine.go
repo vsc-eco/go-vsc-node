@@ -1766,12 +1766,16 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 				ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingRelease,
 				ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingFinalized,
 				ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingCancelled,
-				ledgerSystem.LedgerTypeSafetySlashBurnFinalizeCursor:
-				// Burn / pending-burn / finalize-cursor are protocol meta rows
-				// (Amount=0 for cancelled and cursor; non-zero for burn moves
-				// but always on protocol-owned accounts). They never contribute
-				// to a user-facing spendable balance, so skip them in the
-				// per-account aggregation snapshot.
+				ledgerSystem.LedgerTypeSafetySlashBurnFinalizeCursor,
+				ledgerSystem.LedgerTypeSafetyRestitutionClaim,
+				ledgerSystem.LedgerTypeSafetyRestitutionClaimConsumed:
+				// Protocol meta rows. Burn / pending-burn / finalize-cursor
+				// rows live on protocol-owned accounts; restitution claim
+				// rows live on ProtocolSlashRestitutionClaimsAccount and
+				// represent queue state, never spendable HIVE on the
+				// victim's own account (the victim is credited via a
+				// separate LedgerTypeSafetySlashRestitution row written by
+				// SafetySlashConsensusBond when the queue is allocated).
 				continue
 			default:
 				ledgerBalances[v.Asset] += v.Amount

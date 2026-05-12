@@ -118,6 +118,19 @@ const (
 	// its scan window. Replaced (upserted by Id) every tick the cursor moves.
 	LedgerTypeSafetySlashBurnFinalizeCursor = "safety_slash_burn_finalize_cursor"
 
+	// LedgerTypeSafetyRestitutionClaim is the on-ledger FIFO queue entry for
+	// victim restitution claims. Owner=ProtocolSlashRestitutionClaimsAccount,
+	// asset=hive, Amount=remaining claim balance (positive = unconsumed),
+	// From=normalized victim account. Idempotent per ClaimID via deterministic
+	// row Id.
+	LedgerTypeSafetyRestitutionClaim = "safety_restitution_claim"
+
+	// LedgerTypeSafetyRestitutionClaimConsumed marks how much of a claim was
+	// drawn down by a particular slash. Owner=ProtocolSlashRestitutionClaimsAccount,
+	// Amount=signed-debit of remaining claim balance. Replays converge via
+	// deterministic id (claim row id + "#consumed#" + slashTxID + "#" + kind).
+	LedgerTypeSafetyRestitutionClaimConsumed = "safety_restitution_claim_consumed"
+
 	// safetySlashFinalizeCursorRowID is the deterministic Id used for the
 	// single cursor row. Repeating writes upsert the same row.
 	safetySlashFinalizeCursorRowID = "safety_slash_burn_finalize_cursor"
@@ -590,6 +603,63 @@ func (ls *ledgerSystem) ReverseSafetySlashConsensusDebit(p ReverseSafetySlashCon
 		Type:        LedgerTypeSafetySlashConsensusReverse,
 	})
 	return LedgerResult{Ok: true, Msg: "reverse credit recorded"}
+}
+
+// restitutionClaimRowID returns the deterministic Id for a claim row. Used
+// by both EnqueueRestitutionClaim (write) and OnLedgerRestitutionAllocator
+// (read + consume marker derivation) so replays converge.
+func restitutionClaimRowID(claimID string) string {
+	return "safety_restitution_claim#" + strings.TrimSpace(claimID)
+}
+
+// EnqueueRestitutionClaim writes a restitution claim row on
+// params.ProtocolSlashRestitutionClaimsAccount. Idempotent per ClaimID:
+// re-enqueueing the same claim upserts the same row, which is critical for
+// chain replay since the carrying block-content tx may be observed multiple
+// times during catch-up.
+func (ls *ledgerSystem) EnqueueRestitutionClaim(p EnqueueRestitutionClaimParams) LedgerResult {
+	if ls.LedgerDb == nil {
+		return LedgerResult{Ok: false, Msg: "ledger not configured"}
+	}
+	cid := strings.TrimSpace(p.ClaimID)
+	victim := normalizeHiveAcct(p.VictimAccount)
+	if cid == "" || victim == "" {
+		return LedgerResult{Ok: false, Msg: "claim id and victim account are required"}
+	}
+	if p.LossHive <= 0 {
+		return LedgerResult{Ok: false, Msg: "claim loss must be positive"}
+	}
+	tx := strings.TrimSpace(p.TxID)
+	if tx == "" {
+		// TxID is forwarded verbatim into the row's TxId field for
+		// explorer attribution; if missing, fall back to the ClaimID.
+		tx = cid
+	}
+	ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+		Id:          restitutionClaimRowID(cid),
+		TxId:        tx,
+		BlockHeight: p.BlockHeight,
+		Amount:      p.LossHive,
+		Asset:       "hive",
+		Owner:       params.ProtocolSlashRestitutionClaimsAccount,
+		From:        victim,
+		Type:        LedgerTypeSafetyRestitutionClaim,
+	})
+	return LedgerResult{Ok: true, Msg: "claim enqueued"}
+}
+
+// normalizeHiveAcct mirrors normalizeHiveAccount in state-processing for
+// the ledger-system package boundary. We intentionally keep the function
+// local rather than depending on state-processing to avoid an import cycle.
+func normalizeHiveAcct(s string) string {
+	v := strings.TrimSpace(s)
+	if v == "" {
+		return ""
+	}
+	if strings.HasPrefix(v, "hive:") {
+		return v
+	}
+	return "hive:" + v
 }
 
 // PendulumBucketBalance sums every ledger record whose Owner == bucket and

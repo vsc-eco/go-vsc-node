@@ -134,6 +134,41 @@ type ReverseSafetySlashConsensusDebitParams struct {
 	Reason string
 }
 
+// EnqueueRestitutionClaimParams persists a restitution claim as a ledger row
+// on params.ProtocolSlashRestitutionClaimsAccount so future
+// SafetySlashConsensusBond calls allocate liquid HIVE FIFO from the queue
+// rather than burning the entire slash. The on-ledger queue is the
+// consensus-safe replacement for the in-memory MemoryRestitutionQueue:
+// every node sees the same claims after replay because the rows are part
+// of the deterministic ledger.
+//
+// All claims are submitted via the vsc.restitution_claim block-content tx,
+// which the witness committee signs with a 2/3 BLS aggregate. Per-claim
+// validation (slash row exists, amount within slash residual, optional
+// victim_tx_id verification) happens in the chain-op handler before this
+// primitive is called.
+type EnqueueRestitutionClaimParams struct {
+	// ClaimID is the deterministic identifier; replays upsert by this ID.
+	// The chain-op handler builds it from the carrying block + tx index so
+	// retries within the same block are stable.
+	ClaimID string
+	// VictimAccount is the recipient credited when the queue allocates.
+	// Stored normalized ("hive:<name>").
+	VictimAccount string
+	// SlashTxID is the original safety_slash_consensus row this claim is
+	// scoped to. Mainly explanatory; the allocator does not enforce
+	// per-slash quotas in this version.
+	SlashTxID string
+	// LossHive is the amount in satoshi-HIVE the claim is asking to be
+	// restituted from future slashes. Must be > 0.
+	LossHive int64
+	// BlockHeight at which the claim was enqueued (the carrying block).
+	BlockHeight uint64
+	// TxID of the carrying block-content tx (for traceability + idempotency
+	// id derivation).
+	TxID string
+}
+
 type LedgerResult struct {
 	Ok  bool
 	Msg string
@@ -218,6 +253,12 @@ type LedgerSystem interface {
 	// by a previous SafetySlashConsensusBond call. Idempotent per
 	// (TxID, EvidenceKind, Account) tuple.
 	ReverseSafetySlashConsensusDebit(p ReverseSafetySlashConsensusDebitParams) LedgerResult
+	// EnqueueRestitutionClaim persists a victim's restitution claim as a
+	// ledger row on params.ProtocolSlashRestitutionClaimsAccount. The row
+	// becomes part of the consensus-safe FIFO queue read by
+	// OnLedgerRestitutionAllocator the next time a slash fires. Idempotent
+	// per ClaimID — replays upsert the same row.
+	EnqueueRestitutionClaim(p EnqueueRestitutionClaimParams) LedgerResult
 	PendulumBucketBalance(bucket string, blockHeight uint64) int64
 	NewEmptySession(state *LedgerState, startHeight uint64) LedgerSession
 	NewEmptyState() *LedgerState

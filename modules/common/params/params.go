@@ -50,6 +50,16 @@ var ProtocolSlashPendingBurnAccount = "system:protocol_slash_burn_pending"
 // neutral (every row has Amount=0); it exists purely as a meta marker.
 var ProtocolSlashFinalizeCursorAccount = "system:protocol_slash_finalize_cursor"
 
+// ProtocolSlashRestitutionClaimsAccount stores the FIFO queue of victim
+// restitution claims as ledger rows. New claims are written via the
+// vsc.restitution_claim block-content tx (see modules/state-processing).
+// SafetySlashConsensusBond calls OnLedgerRestitutionAllocator, which reads
+// the unconsumed claim rows here, allocates HIVE FIFO, and writes consume
+// markers. The account is balance-neutral (allocate writes credit the
+// victim on their own account, not this meta account); it only acts as
+// the queue's storage.
+var ProtocolSlashRestitutionClaimsAccount = "system:protocol_slash_restitution_claims"
+
 // MaxSafetySlashBurnDelayBlocks caps BurnDelayBlocks to avoid uint64 maturity
 // overflow and unbounded pending queues. ~115 days at 3s/block.
 const MaxSafetySlashBurnDelayBlocks uint64 = 3_333_333

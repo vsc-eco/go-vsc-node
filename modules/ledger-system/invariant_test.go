@@ -122,6 +122,11 @@ func (m *mockLedgerSystem) ReverseSafetySlashConsensusDebit(p ledgerSystem.Rever
 	return ledgerSystem.LedgerResult{Ok: false, Msg: "mock ledger: reverse consensus debit not implemented"}
 }
 
+func (m *mockLedgerSystem) EnqueueRestitutionClaim(p ledgerSystem.EnqueueRestitutionClaimParams) ledgerSystem.LedgerResult {
+	_ = p
+	return ledgerSystem.LedgerResult{Ok: false, Msg: "mock ledger: enqueue restitution claim not implemented"}
+}
+
 // ---------------------------------------------------------------------------
 // Invariant 1: Balance Conservation
 //
