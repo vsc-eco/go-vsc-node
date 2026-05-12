@@ -592,7 +592,14 @@ func (ls *ledgerSystem) ReverseSafetySlashConsensusDebit(p ReverseSafetySlashCon
 		return LedgerResult{Ok: false, Msg: "ledger not configured"}
 	}
 	_ = strings.TrimSpace(p.Reason)
+	// Include OpInstanceID in the row Id so two distinct chain-op
+	// reverses on the same (tx, kind, acct) accumulate rather than
+	// upserting onto a single shared row. Replays of the same chain op
+	// pass the same OpInstanceID and converge via Mongo upsert.
 	id := safetySlashBaseID(tx, kind) + "#consensus_reverse#" + acct
+	if op := strings.TrimSpace(p.OpInstanceID); op != "" {
+		id = id + "#" + op
+	}
 	ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
 		Id:          id,
 		TxId:        tx,

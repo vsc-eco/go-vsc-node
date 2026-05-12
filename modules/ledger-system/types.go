@@ -132,6 +132,15 @@ type ReverseSafetySlashConsensusDebitParams struct {
 	BlockHeight uint64
 	// Reason is logged in the credit row for explorers.
 	Reason string
+	// OpInstanceID is a unique identifier for this *invocation* of the
+	// reverse primitive (typically the carrying chain-op's tx id). It is
+	// folded into the deterministic ledger row Id so two distinct
+	// reverses on the same (TxID, EvidenceKind, Account) tuple produce
+	// distinct rows and accumulate, while replays of the same chain op
+	// upsert. When blank, the primitive falls back to a single per-tuple
+	// row (the legacy single-shot behaviour) — which is still correct
+	// when there is exactly one reverse ever issued.
+	OpInstanceID string
 }
 
 // EnqueueRestitutionClaimParams persists a restitution claim as a ledger row

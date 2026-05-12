@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"vsc-node/modules/common/params"
-	"vsc-node/modules/db/vsc/transactions"
+	dbTransactions "vsc-node/modules/db/vsc/transactions"
 	safetyslash "vsc-node/modules/incentive-pendulum/safety_slash"
 	ledgerSystem "vsc-node/modules/ledger-system"
 
@@ -138,6 +138,38 @@ func (se *StateEngine) alreadyReversedConsensusAmt(slashTxID, evidenceKind, slas
 	return total
 }
 
+// ApplyRestitutionClaimForTest exposes applyRestitutionClaim for the
+// external state_engine_test package. The block dispatcher path is
+// covered by the same code; this wrapper exists solely so external
+// tests can drive the apply path without needing a full BLS-signed
+// block fixture.
+func (se *StateEngine) ApplyRestitutionClaimForTest(rec safetyslash.RestitutionClaimRecord, carryingTxID string, blockHeight uint64) {
+	se.applyRestitutionClaim(rec, carryingTxID, blockHeight)
+}
+
+// ApplySafetySlashReverseForTest exposes applySafetySlashReverse for the
+// external state_engine_test package. Same reasoning as the claim
+// wrapper above.
+func (se *StateEngine) ApplySafetySlashReverseForTest(rec safetyslash.SafetySlashReverseRecord, carryingTxID string, blockHeight uint64) {
+	se.applySafetySlashReverse(rec, carryingTxID, blockHeight)
+}
+
+// NewChainOpStateEngineForTest builds a minimal StateEngine wired with
+// caller-supplied LedgerSystem + LedgerState + txDb so external tests can
+// exercise the chain-op apply functions end-to-end without needing the
+// full plugin constellation that newStateEngine assembles. Production
+// code never calls this constructor.
+func NewChainOpStateEngineForTest(ls ledgerSystem.LedgerSystem, state *ledgerSystem.LedgerState, txDb dbTransactions.Transactions) *StateEngine {
+	return &StateEngine{
+		LedgerSystem:                  ls,
+		LedgerState:                   state,
+		txDb:                          txDb,
+		safetyEvidenceSeen:            make(map[string]uint64),
+		seenProposalBySlotProposer:    make(map[string]string),
+		slashIncidentBpsBySlotAccount: make(map[string]int),
+	}
+}
+
 // applyRestitutionClaim is the BlockTypeRestitutionClaim handler. The
 // 2/3 BLS aggregate over the carrying VSC block is the authorisation
 // gate (witnesses gate inclusion of the op). This function performs
@@ -250,7 +282,7 @@ func (se *StateEngine) harmProofVerified(rec safetyslash.RestitutionClaimRecord)
 	}
 	// Defense in depth: the harmed tx must not have completed
 	// successfully. If it did, there's no harm to compensate.
-	if victimRec.Status == transactions.TransactionStatusConfirmed {
+	if victimRec.Status == dbTransactions.TransactionStatusConfirmed {
 		return false
 	}
 	return true
@@ -277,7 +309,6 @@ func (se *StateEngine) applySafetySlashReverse(
 	if se == nil || se.LedgerSystem == nil {
 		return
 	}
-	_ = carryingTxID
 	rec = rec.Normalize()
 
 	if rec.SlashTxID == "" || rec.EvidenceKind == "" || rec.SlashedAccount == "" {
@@ -364,6 +395,9 @@ func (se *StateEngine) applySafetySlashReverse(
 			Amount:       amount,
 			BlockHeight:  blockHeight,
 			Reason:       rec.Reason,
+			// Distinct ops on the same slash get distinct row Ids via
+			// the carrying chain-op tx id; replays of the same op upsert.
+			OpInstanceID: carryingTxID,
 		})
 		if credRes.Ok {
 			log.Info("safety slash reverse: bond credit recorded",
