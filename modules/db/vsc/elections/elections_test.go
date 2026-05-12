@@ -4,7 +4,6 @@ import (
 	"testing"
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/aggregate"
-	"vsc-node/modules/config"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/elections"
@@ -33,8 +32,7 @@ func TestElectionMinimum(t *testing.T) {
 }
 
 func TestGetElectionByHeight(t *testing.T) {
-	config.UseMainConfigDuringTests = true
-	dbConfig := db.NewDbConfig()
+	dbConfig := db.NewDbConfig(t.TempDir())
 	dbConfig.Init()
 	dbConfig.SetDbName("go-vsc-election-test")
 	db := db.New(dbConfig)
@@ -65,6 +63,7 @@ func TestGetElectionByHeight(t *testing.T) {
 	electionMock.Proposer = "test-proposer-account"
 	electionMock.ProtocolVersion = 12
 	electionMock.TotalWeight = 42069
+	electionMock.Type = "initial"
 	electionMock.Weights = []uint64{
 		42069,
 	}

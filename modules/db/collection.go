@@ -90,21 +90,18 @@ func (collection *Collection) CreateIndexIfNotExist(indexModel mongo.IndexModel)
 		return fmt.Errorf("failed to marshal index model: %v", err)
 	}
 
-	// Check if the index already exists and matches the options
+	// Check if the index already exists. If keys match, skip creation even
+	// if options differ — MongoDB auto-generates names from keys and rejects
+	// a second index with identical keys regardless of options.
 	var indexExists bool
 	for _, existingIndex := range indexes {
-		// Compare the index keys
 		existingKeys, err := bson.Marshal(existingIndex.KeysDocument)
 		if err != nil {
 			return fmt.Errorf("failed to marshal existing index key doc: %v", err)
 		}
-
 		if slices.Equal(existingKeys, keys) {
-			// Compare the options of the index
-			if compareIndexOptions(existingIndex, indexModel.Options) {
-				indexExists = true
-				break
-			}
+			indexExists = true
+			break
 		}
 	}
 

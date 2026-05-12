@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 	"vsc-node/lib/datalayer"
+	"vsc-node/lib/lru"
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
@@ -32,6 +33,9 @@ import (
 	dagCbor "github.com/ipfs/go-ipld-cbor"
 	mh "github.com/multiformats/go-multihash"
 )
+
+// WASM bytecode is immutable by CID; bounded LRU prevents unbounded growth.
+var wasmCodeCache = lru.New[string, []byte](64)
 
 type CustomJson struct {
 	Id                   string   `json:"id"`
@@ -84,14 +88,21 @@ func (t TxVscCallContract) ExecuteTx(
 		return errorToTxResult(err, 100)
 	}
 
-	dlStart := time.Now()
-	node, err := se.DataLayer().Get(c, nil)
-	globalProfile.Record("exec_batch.contract_code_fetch", time.Since(dlStart))
-	if err != nil {
-		return errorToTxResult(err, 100)
+	// Check WASM bytecode cache first — code is immutable by CID
+	var code []byte
+	if cached, ok := wasmCodeCache.Get(info.Code); ok {
+		code = cached
+		globalProfile.Record("exec_batch.contract_code_fetch", 0)
+	} else {
+		dlStart := time.Now()
+		node, err := se.DataLayer().Get(c, nil)
+		globalProfile.Record("exec_batch.contract_code_fetch", time.Since(dlStart))
+		if err != nil {
+			return errorToTxResult(err, 100)
+		}
+		code = node.RawData()
+		wasmCodeCache.Put(info.Code, code)
 	}
-
-	code := node.RawData()
 
 	hasMinRCs, availableGas, _ := rcSession.CanConsume(rcPayer, t.Self.BlockHeight, 100)
 

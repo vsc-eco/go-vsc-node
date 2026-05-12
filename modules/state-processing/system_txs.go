@@ -911,9 +911,12 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	globalProfile.Record("produce_block.execute.tx_loop_total", time.Since(loopStart))
 
 	nonceStart := time.Now()
+	// Build BulkWrite argument: nonce = max_nonce_in_block + 1
+	bulkNonceUpdates := make(map[string]uint64, len(nonceUpdates))
 	for k, v := range nonceUpdates {
-		se.nonceDb.SetNonce(k, v+1)
+		bulkNonceUpdates[k] = v + 1
 	}
+	se.nonceDb.BulkSetNonces(bulkNonceUpdates)
 
 	for _, info := range confirmedNonces {
 		nonces := make([]uint64, 0, len(info.Nonces))

@@ -2,6 +2,7 @@ package nonces
 
 import (
 	"context"
+	"fmt"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
@@ -49,18 +50,30 @@ func (n *nonceDb) Init() error {
 	}
 
 	indexModel := mongo.IndexModel{
-		Keys:    bson.D{{Key: "account", Value: 1}}, // ascending order
-		Options: options.Index().SetUnique(true),    // not unique
+		Keys:    bson.D{{Key: "account", Value: 1}},
+		Options: options.Index().SetUnique(true),
 	}
-	n.Collection.Collection.Indexes().CreateOne(context.Background(), indexModel)
-
-	// // create index on block.block_number for faster queries
-	// err = createIndexIfNotExist(n.Collection.Collection, indexModel)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to create index: %w", err)
-	// }
+	err = n.CreateIndexIfNotExist(indexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create nonces index: %w", err)
+	}
 
 	return nil
+}
+
+func (n *nonceDb) BulkSetNonces(updates map[string]uint64) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, 0, len(updates))
+	for account, nonce := range updates {
+		models = append(models, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"account": account}).
+			SetUpdate(bson.M{"$set": bson.M{"nonce": nonce}}).
+			SetUpsert(true))
+	}
+	_, err := n.BulkWrite(context.Background(), models)
+	return err
 }
 
 func New(d *vsc.VscDb) Nonces {

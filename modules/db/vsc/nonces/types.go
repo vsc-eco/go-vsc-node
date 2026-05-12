@@ -6,6 +6,7 @@ type Nonces interface {
 	a.Plugin
 	GetNonce(account string) (NonceRecord, error)
 	SetNonce(account string, nonce uint64) error
+	BulkSetNonces(updates map[string]uint64) error
 }
 
 type NonceRecord struct {

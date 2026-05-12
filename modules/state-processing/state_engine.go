@@ -16,6 +16,7 @@ import (
 	"time"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
+	"vsc-node/lib/lru"
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
@@ -60,6 +61,11 @@ type ProcessExtraInfo struct {
 type StateEngine struct {
 	sconf systemconfig.SystemConfig
 	da    *DataLayer.DataLayer
+
+	// Cache keyed by "contractId:height" so contract updates are
+	// handled correctly — a new version at a different height won't
+	// match the old cache entry. Capacity 256 covers batch/slot reuse.
+	contractInfoCache *lru.Cache[string, contracts.Contract]
 
 	//db access
 	witnessDb      witnesses.Witnesses
@@ -328,7 +334,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		blockProcessDuration.Observe(elapsed.Seconds())
 		blocksProcessed.Inc()
 		n := globalProfile.IncBlock(block.BlockNumber)
-		if n%10000 == 0 {
+		if n%100000 == 0 {
 			globalProfile.LogSummary(block.BlockNumber)
 			globalProfile.Reset(block.BlockNumber)
 		}
@@ -1559,6 +1565,14 @@ func (se *StateEngine) ExecuteBatch() {
 						if err == nil {
 							lastContractMeta = contractOutput.Metadata
 							lastStateCid = contractOutput.StateMerkle
+							// Pre-populate callSession to avoid duplicate
+							// GetLastOutput inside GetContractSession.
+							callSession.FromOutput(contractId, contract_session.TempOutput{
+								Cache:     make(map[string][]byte),
+								Metadata:  lastContractMeta,
+								Deletions: make(map[string]bool),
+								Cid:       lastStateCid,
+							})
 						}
 					} else {
 						lastContractMeta = lastTmpOut.Metadata
@@ -1753,6 +1767,14 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 	assets := []string{"hbd", "hive", "hbd_savings", "hive_consensus"}
 
+	// Previous claim record — identical for all accounts, fetch once outside loop
+	var claimRecord *ledgerDb.ClaimRecord
+	if len(distinctAccounts) > 0 {
+		crStart := time.Now()
+		claimRecord = se.claimDb.GetLastClaim(endBlock)
+		globalProfile.Record("update_balances.claim_record_lookup", time.Since(crStart))
+	}
+
 	//Cleanup!
 	for _, k := range distinctAccounts {
 		ledgerBalances := map[string]int64{}
@@ -1786,11 +1808,6 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		globalProfile.Record("update_balances.ledger_range_query", time.Since(lrStart))
 
 		hasLedgerUpdates := len(*ledgerUpdates) > 0
-
-		//Previous claim record
-		crStart := time.Now()
-		claimRecord := se.claimDb.GetLastClaim(endBlock)
-		globalProfile.Record("update_balances.claim_record_lookup", time.Since(crStart))
 
 		var hbdAvg = int64(0)
 		var modifyHeight = uint64(0)
@@ -1942,6 +1959,13 @@ func (se *StateEngine) DataLayer() common_types.DataLayer {
 }
 
 func (se *StateEngine) GetContractInfo(id string, height uint64) (contracts.Contract, bool) {
+	// Cache keyed by "contractId:height" — exact match so contract updates
+	// (which change creation_height) don't return stale entries.
+	cacheKey := fmt.Sprintf("%s:%d", id, height)
+	if cached, ok := se.contractInfoCache.Get(cacheKey); ok {
+		return cached, true
+	}
+
 	contractInfo, err := se.contractDb.ContractById(id, height)
 
 	if err == mongo.ErrNoDocuments {
@@ -1950,6 +1974,7 @@ func (se *StateEngine) GetContractInfo(id string, height uint64) (contracts.Cont
 		return contracts.Contract{}, false
 	}
 
+	se.contractInfoCache.Put(cacheKey, contractInfo)
 	return contractInfo, true
 }
 
@@ -2156,6 +2181,8 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		ContractResults: make(map[string][]ContractResult),
 		TempOutputs:     make(map[string]*contract_session.TempOutput),
 		TxOutIds:        make([]string, 0),
+
+		contractInfoCache: lru.New[string, contracts.Contract](256),
 
 		da: da,
 		// db: db,

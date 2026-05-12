@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"vsc-node/lib/lru"
 	"vsc-node/lib/vsclog"
 
 	blocks "github.com/ipfs/go-block-format"
@@ -626,6 +627,16 @@ func DeserializeBlsCircuit(serialized SerializedCircuit, keyset []BlsDID, msg ci
 	}, nil
 }
 
+type blsCacheEntry struct {
+	pubKey *BlsPubKey
+	dids   []BlsDID
+}
+
+// blsAggPubKeyCache caches aggregated BLS public keys + included DIDs
+// keyed by (keyset_dids... + bitvector_bytes).
+// Capacity 256 covers typical epoch reuse during reindex.
+var blsAggPubKeyCache = lru.New[string, blsCacheEntry](256)
+
 // verifies the correctness of the BLS circuit by comparing the aggregate signature with the dynamically aggregated pub keys
 //
 // returns whether it's valid and which BLS DIDs were part of the valid sig aggregation
@@ -683,6 +694,24 @@ func (b *BlsCircuit) Verify() (bool, []BlsDID, error) {
 	var includedPubKeys []*BlsPubKey
 	var includedDIDs []BlsDID
 
+	// Build cache key: concatenate all DID strings with bit vector bytes.
+	// Different epochs have different committees → different cache key.
+	var cacheKey string
+	if len(b.keyset) > 0 {
+		var sb strings.Builder
+		for _, did := range b.keyset {
+			sb.WriteString(did.String())
+			sb.WriteByte(',')
+		}
+		sb.Write(b.bitVector.Bytes())
+		cacheKey = sb.String()
+	}
+	if cacheKey != "" {
+		if cached, ok := blsAggPubKeyCache.Get(cacheKey); ok {
+			return bls.Verify(cached.pubKey, b.msg.Bytes(), b.aggSigs), cached.dids, nil
+		}
+	}
+
 	for idx, did := range b.keyset {
 		if b.bitVector.Bit(idx) == 1 {
 			pubKey := did.Identifier()
@@ -698,6 +727,12 @@ func (b *BlsCircuit) Verify() (bool, []BlsDID, error) {
 	// aggregate the pub keys
 	// agg all the pub keys at once
 	pubKey, _ := bls.AggregatePubkeys(includedPubKeys)
+	// aggWorks := aggPub.Aggregate(includedPubKeys, true)
+	// aggPubKey := aggPub.ToAffine()
+
+	if cacheKey != "" {
+		blsAggPubKeyCache.Put(cacheKey, blsCacheEntry{pubKey: pubKey, dids: includedDIDs})
+	}
 	// aggWorks := aggPub.Aggregate(includedPubKeys, true)
 	// aggPubKey := aggPub.ToAffine()
 
