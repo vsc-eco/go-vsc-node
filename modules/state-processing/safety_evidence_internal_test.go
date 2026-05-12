@@ -1,8 +1,10 @@
 package state_engine
 
 import (
+	"strconv"
 	"testing"
 
+	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/elections"
 	safetyslash "vsc-node/modules/incentive-pendulum/safety_slash"
 	ledgerSystem "vsc-node/modules/ledger-system"
@@ -279,5 +281,143 @@ func TestValidateDetailed_SkipDoesNotBecomeValid(t *testing.T) {
 	out := BlockValidationOutcome{Skip: true, SkipReason: "election lookup failed"}
 	if out.Valid {
 		t.Fatal("Skip outcomes must not also be Valid")
+	}
+}
+
+// TestPruneSafetySlotMaps_DropsAtOrBelowFinalizedSlot verifies the slot-
+// keyed in-memory maps shed entries up to and including the finalized
+// slot, and preserve entries for slots strictly newer than the threshold.
+func TestPruneSafetySlotMaps_DropsAtOrBelowFinalizedSlot(t *testing.T) {
+	se, _ := newTestSlashingEngine()
+
+	se.seenProposalBySlotProposer["100|hive:alice"] = "cidA"
+	se.seenProposalBySlotProposer["100|hive:bob"] = "cidB"
+	se.seenProposalBySlotProposer["200|hive:alice"] = "cidC"
+	se.seenProposalBySlotProposer["300|hive:carol"] = "cidD"
+
+	se.slashIncidentBpsBySlotAccount["100|hive:alice"] = 1000
+	se.slashIncidentBpsBySlotAccount["200|hive:alice"] = 1000
+	se.slashIncidentBpsBySlotAccount["300|hive:carol"] = 1000
+
+	se.pruneSafetySlotMaps(200)
+
+	if _, ok := se.seenProposalBySlotProposer["100|hive:alice"]; ok {
+		t.Fatalf("slot 100 must be pruned at finalized=200")
+	}
+	if _, ok := se.seenProposalBySlotProposer["200|hive:alice"]; ok {
+		t.Fatalf("slot 200 (finalized) must be pruned")
+	}
+	if _, ok := se.seenProposalBySlotProposer["300|hive:carol"]; !ok {
+		t.Fatalf("slot 300 (after finalized) must be preserved")
+	}
+
+	if _, ok := se.slashIncidentBpsBySlotAccount["100|hive:alice"]; ok {
+		t.Fatalf("incident at slot 100 must be pruned")
+	}
+	if _, ok := se.slashIncidentBpsBySlotAccount["300|hive:carol"]; !ok {
+		t.Fatalf("incident at slot 300 must be preserved")
+	}
+}
+
+// TestPruneSafetySlotMaps_NoOpOnEmptyMaps proves the prune is safe to
+// call when the engine has never seen evidence — important because the
+// slot-transition path runs every block, including blocks before any
+// double-sign or invalid-block detector has fired.
+func TestPruneSafetySlotMaps_NoOpOnEmptyMaps(t *testing.T) {
+	se := &StateEngine{
+		seenProposalBySlotProposer:    make(map[string]string),
+		slashIncidentBpsBySlotAccount: make(map[string]int),
+	}
+	se.pruneSafetySlotMaps(1000)
+	if len(se.seenProposalBySlotProposer) != 0 || len(se.slashIncidentBpsBySlotAccount) != 0 {
+		t.Fatalf("prune on empty maps must not introduce entries")
+	}
+}
+
+// TestPruneSafetySlotMaps_HandlesMalformedKeys ensures keys that do not
+// follow the "slot|account" convention are dropped on prune. Defensive:
+// the maps are only written by code paths that produce well-formed keys,
+// but the prune must still be robust.
+func TestPruneSafetySlotMaps_HandlesMalformedKeys(t *testing.T) {
+	se, _ := newTestSlashingEngine()
+	se.seenProposalBySlotProposer["malformed-no-pipe"] = "cidX"
+	se.seenProposalBySlotProposer["100|hive:alice"] = "cidA"
+
+	se.pruneSafetySlotMaps(50)
+	if _, ok := se.seenProposalBySlotProposer["malformed-no-pipe"]; ok {
+		t.Fatalf("malformed key (slot=0) must be pruned at any finalized height")
+	}
+	if _, ok := se.seenProposalBySlotProposer["100|hive:alice"]; !ok {
+		t.Fatalf("slot 100 entry must survive when finalized=50")
+	}
+}
+
+// TestPruneSafetyEvidenceSeen_HeightWindow verifies the dedup map sheds
+// entries older than 2x the maximum burn delay. Newer entries (within
+// the window) must be preserved so dedup still works for in-flight
+// reversal+re-slash sequences at the burn-delay boundary.
+func TestPruneSafetyEvidenceSeen_HeightWindow(t *testing.T) {
+	se, _ := newTestSlashingEngine()
+
+	keepWindow := 2 * params.MaxSafetySlashBurnDelayBlocks
+	currentHeight := keepWindow * 2 // far enough in the chain that the prune fires
+
+	se.safetyEvidenceSeen["old"] = currentHeight - keepWindow - 1     // outside window: prune
+	se.safetyEvidenceSeen["edge"] = currentHeight - keepWindow        // exactly at window: keep
+	se.safetyEvidenceSeen["recent"] = currentHeight - keepWindow + 10 // inside window: keep
+
+	se.pruneSafetyEvidenceSeen(currentHeight)
+
+	if _, ok := se.safetyEvidenceSeen["old"]; ok {
+		t.Fatal("evidence older than 2x max burn delay must be pruned")
+	}
+	if _, ok := se.safetyEvidenceSeen["edge"]; !ok {
+		t.Fatal("evidence exactly at the window boundary must be kept")
+	}
+	if _, ok := se.safetyEvidenceSeen["recent"]; !ok {
+		t.Fatal("evidence inside the window must be kept")
+	}
+}
+
+// TestPruneSafetyEvidenceSeen_NoPruneOnYoungChain proves the prune is a
+// no-op while the chain has not yet reached 2x the maximum burn delay.
+// We don't want a freshly-bootstrapped node to drop evidence whose age
+// underflows the height threshold.
+func TestPruneSafetyEvidenceSeen_NoPruneOnYoungChain(t *testing.T) {
+	se, _ := newTestSlashingEngine()
+	se.safetyEvidenceSeen["a"] = 1
+	se.safetyEvidenceSeen["b"] = 100
+
+	se.pruneSafetyEvidenceSeen(params.MaxSafetySlashBurnDelayBlocks)
+	if len(se.safetyEvidenceSeen) != 2 {
+		t.Fatalf("young chain must not prune evidence: got %d entries", len(se.safetyEvidenceSeen))
+	}
+}
+
+// TestSafetySlotMaps_BoundedAcrossManySlots is a stress-style test: a
+// long sequence of (slot, account) entries must not accumulate when the
+// prune is invoked after each slot finalizes, modeling the slot-transition
+// behavior in StateEngine.ProcessBlock.
+func TestSafetySlotMaps_BoundedAcrossManySlots(t *testing.T) {
+	se, _ := newTestSlashingEngine()
+
+	const slotsToSimulate = 10_000
+	for slot := uint64(1); slot <= slotsToSimulate; slot++ {
+		key := strconv.FormatUint(slot, 10) + "|hive:proposer"
+		se.seenProposalBySlotProposer[key] = "cid-" + key
+		se.slashIncidentBpsBySlotAccount[key] = 1000
+		// Slot N finalizes when slot N+1 begins; mirror that here.
+		if slot > 1 {
+			se.pruneSafetySlotMaps(slot - 1)
+		}
+	}
+
+	// After the loop, only the most recently observed slot should remain
+	// (we never pruned slot N during slot N's iteration).
+	if len(se.seenProposalBySlotProposer) > 1 {
+		t.Fatalf("seenProposalBySlotProposer leaked: %d entries", len(se.seenProposalBySlotProposer))
+	}
+	if len(se.slashIncidentBpsBySlotAccount) > 1 {
+		t.Fatalf("slashIncidentBpsBySlotAccount leaked: %d entries", len(se.slashIncidentBpsBySlotAccount))
 	}
 }
