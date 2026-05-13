@@ -1,6 +1,23 @@
 package settlement
 
-import "sort"
+import (
+	"sort"
+
+	cbornode "github.com/ipfs/go-ipld-cbor"
+)
+
+// Register the settlement payload types with cbornode so that refmt-driven
+// encoders (specifically the one used by ElectionData.Cid() / Node() in
+// modules/db/vsc/elections) can serialise SettlementRecord values when
+// they're embedded inside an ElectionData body. Without these registrations
+// refmt fails with "missing an atlas entry describing how to marshal type
+// settlement.SettlementRecord". Independent of the json-driven dag-cbor path
+// used for the standalone BlockTypePendulumSettlement block-tx encoding.
+func init() {
+	cbornode.RegisterCborType(SettlementRecord{})
+	cbornode.RegisterCborType(RewardReductionEntry{})
+	cbornode.RegisterCborType(DistributionEntry{})
+}
 
 // RewardReductionEntry is one row of the per-epoch reward-reduction list.
 // `Bps` is the consolidated post-forgiveness, post-cap value applied to that

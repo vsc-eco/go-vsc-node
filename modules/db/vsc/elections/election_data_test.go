@@ -1,16 +1,26 @@
 package elections_test
 
 import (
+	"encoding/json"
 	"testing"
 	"vsc-node/modules/db/vsc/elections"
+	settlement "vsc-node/modules/incentive-pendulum/settlement"
 
 	"github.com/ipfs/go-cid"
+	cbornode "github.com/ipfs/go-ipld-cbor"
+	"github.com/multiformats/go-multihash"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestElectionDataCid(t *testing.T) {
-	// This CID is different due to the different format of the election data
-	var validCid = cid.MustParse("bafyreifiekarc6umywsvbug7z27wqa54edmymoks3okkptowjznhbc65jm")
+	// Pinned CID for the canonical-form ElectionData (no Settlement field).
+	// This pin guards against changes to the encoding path: adding an optional
+	// `Settlement *SettlementRecord` field must NOT change this CID when the
+	// field is nil — if it does, refmt is encoding the pointer as CBOR null
+	// instead of omitting the key, and the new encoding will diverge from
+	// historical bytes on replay. See plan in
+	// /home/milo/.claude/plans/please-make-a-concrete-valiant-babbage.md.
+	var validCid = cid.MustParse("bafyreidpho4fa45cy7wbzl4zygvaseb4vulr7xxepeavbyerx45q4tlif4")
 	var validElectionData = elections.ElectionData{}
 	validElectionData.Epoch = 125
 	validElectionData.NetId = "testnet/0bf2e474-6b9e-4165-ad4e-a0d78968d20c"
@@ -197,4 +207,92 @@ func TestElectionDataCid(t *testing.T) {
 	cid, err := validElectionData.Cid()
 	assert.NoError(t, err)
 	assert.Equal(t, validCid.String(), cid.String())
+
+	// Sanity: a non-nil Settlement must change the CID — otherwise the field
+	// is silently being dropped during encoding and on-chain settlement would
+	// never be carried by the election body. Pair with TestElectionDataCid
+	// above: nil → unchanged CID, non-nil → different CID.
+	validElectionData.Settlement = &settlement.SettlementRecord{
+		Epoch:               124,
+		PrevEpoch:           123,
+		SnapshotRangeFrom:   1000,
+		SnapshotRangeTo:     2000,
+		BucketBalanceHBD:    0,
+		TotalDistributedHBD: 0,
+		ResidualHBD:         0,
+		RewardReductions:    []settlement.RewardReductionEntry{},
+		Distributions:       []settlement.DistributionEntry{},
+	}
+	cidWithSettlement, err := validElectionData.Cid()
+	assert.NoError(t, err)
+	assert.NotEqual(t, validCid.String(), cidWithSettlement.String(),
+		"Settlement field must be included in CID; if equal, refmt is dropping the non-nil pointer")
+}
+
+// TestElectionDataSettlementRoundTrip pins the encode → decode contract that
+// TxElectionResult.ExecuteTx relies on at apply time: dag-CBOR encode the
+// ElectionData body, then dag-CBOR decode + json.Unmarshal it back into an
+// ElectionResult, and assert the embedded Settlement round-trips bit-for-bit.
+// If this breaks, the state engine cannot read settlements out of election
+// bodies on chain and the whole inline-settlement design is dead.
+func TestElectionDataSettlementRoundTrip(t *testing.T) {
+	original := elections.ElectionData{}
+	original.Epoch = 42
+	original.NetId = "test-net-id"
+	original.Type = "staked"
+	original.ProtocolVersion = 1
+	original.Members = []elections.ElectionMember{
+		{Key: "did:key:abc", Account: "alice"},
+		{Key: "did:key:def", Account: "bob"},
+	}
+	original.Weights = []uint64{100, 200}
+	original.Settlement = &settlement.SettlementRecord{
+		Epoch:               41,
+		PrevEpoch:           40,
+		SnapshotRangeFrom:   1000,
+		SnapshotRangeTo:     2000,
+		BucketBalanceHBD:    5000,
+		TotalDistributedHBD: 4500,
+		ResidualHBD:         500,
+		RewardReductions: []settlement.RewardReductionEntry{
+			{Account: "alice", Bps: 100},
+			{Account: "bob", Bps: 50},
+		},
+		Distributions: []settlement.DistributionEntry{
+			{Account: "alice", HBDAmt: 3000},
+			{Account: "bob", HBDAmt: 1500},
+		},
+	}
+
+	// Encode via the same Node() path the election proposer uses.
+	cborNode, err := original.Node()
+	assert.NoError(t, err)
+
+	// Decode via the same dagCbor + json.Unmarshal path
+	// TxElectionResult.ExecuteTx uses to recover the body on chain.
+	dagNode, err := cbornode.Decode(cborNode.RawData(), multihash.SHA2_256, -1)
+	assert.NoError(t, err)
+	bbytes, err := dagNode.MarshalJSON()
+	assert.NoError(t, err)
+
+	var recovered elections.ElectionResult
+	err = json.Unmarshal(bbytes, &recovered)
+	assert.NoError(t, err)
+
+	assert.NotNil(t, recovered.Settlement, "Settlement field lost during round-trip")
+	if recovered.Settlement != nil {
+		assert.Equal(t, original.Settlement.Epoch, recovered.Settlement.Epoch)
+		assert.Equal(t, original.Settlement.PrevEpoch, recovered.Settlement.PrevEpoch)
+		assert.Equal(t, original.Settlement.BucketBalanceHBD, recovered.Settlement.BucketBalanceHBD)
+		assert.Equal(t, original.Settlement.TotalDistributedHBD, recovered.Settlement.TotalDistributedHBD)
+		assert.Equal(t, original.Settlement.ResidualHBD, recovered.Settlement.ResidualHBD)
+		assert.Equal(t, len(original.Settlement.Distributions), len(recovered.Settlement.Distributions))
+		assert.Equal(t, len(original.Settlement.RewardReductions), len(recovered.Settlement.RewardReductions))
+		if len(recovered.Settlement.Distributions) >= 2 {
+			assert.Equal(t, "alice", recovered.Settlement.Distributions[0].Account)
+			assert.Equal(t, int64(3000), recovered.Settlement.Distributions[0].HBDAmt)
+			assert.Equal(t, "bob", recovered.Settlement.Distributions[1].Account)
+			assert.Equal(t, int64(1500), recovered.Settlement.Distributions[1].HBDAmt)
+		}
+	}
 }
