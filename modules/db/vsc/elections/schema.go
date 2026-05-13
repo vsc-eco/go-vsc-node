@@ -1,5 +1,9 @@
 package elections
 
+import (
+	settlement "vsc-node/modules/incentive-pendulum/settlement"
+)
+
 type ElectionCommonInfo struct {
 	Epoch uint64 `json:"epoch" graphql:"epoch" refmt:"epoch" bson:"epoch"`
 	NetId string `json:"net_id" graphql:"net_id" refmt:"net_id" bson:"net_id"`
@@ -19,6 +23,17 @@ type ElectionDataInfo struct {
 	Members         []ElectionMember `json:"members" graphql:"members" refmt:"members" bson:"members"`
 	Weights         []uint64         `json:"weights" graphql:"weights" refmt:"weights" bson:"weights"`
 	ProtocolVersion uint64           `json:"protocol_version" graphql:"protocol_version" refmt:"protocol_version" bson:"protocol_version"`
+
+	// Settlement is the closing committee's pendulum settlement record for the
+	// epoch that just ended. Present iff this election rotates away from a
+	// non-genesis committee (proposer skips composition when prevEpoch == 0).
+	// Nil during chain replay of historical elections that pre-date inlined
+	// settlement — the state engine treats nil as a zero-payout marker (see
+	// TxElectionResult.ExecuteTx).
+	//
+	// MUST be encoded such that nil pointers are OMITTED from CBOR, not
+	// written as null — see TestElectionDataCid for the pin that guards this.
+	Settlement *settlement.SettlementRecord `json:"settlement,omitempty" graphql:"settlement" refmt:"settlement,omitempty" bson:"settlement,omitempty"`
 }
 type ElectionData struct {
 	ElectionCommonInfo
