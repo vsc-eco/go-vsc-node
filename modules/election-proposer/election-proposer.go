@@ -23,6 +23,8 @@ import (
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
+	"vsc-node/modules/incentive-pendulum/rewards"
+	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 
@@ -334,6 +336,59 @@ func (e *electionProposer) GenerateFullElection(
 	electionData.ProtocolVersion = consensusVersion
 	electionData.Weights = weights
 	electionData.Type = pType
+
+	// Pendulum settlement (inlined). Skipped on the genesis election because
+	// there's no closing committee to settle. On any other epoch we compose
+	// the settlement record for `previousEpoch` (the epoch this election is
+	// rotating away from) against the same blockHeight the election itself
+	// uses, so every signer's re-derive sees identical inputs. ComposeRecord
+	// failure aborts the election attempt — the proposer returns the error
+	// without broadcasting, and the next slot's leader retries.
+	if !firstElection && e.se != nil && previousElection != nil {
+		settlementMembers := make([]string, 0, len(previousElection.Members))
+		for _, m := range previousElection.Members {
+			acct := m.Account
+			if !strings.HasPrefix(acct, "hive:") {
+				acct = "hive:" + acct
+			}
+			settlementMembers = append(settlementMembers, acct)
+		}
+
+		balanceReader := e.se.PendulumBalanceRecordReader()
+		if balanceReader == nil {
+			return elections.ElectionHeader{}, elections.ElectionData{},
+				fmt.Errorf("pendulum settlement: balance reader unavailable")
+		}
+		bonds := pendulumsettlement.ReadCommitteeBonds(balanceReader, settlementMembers, blockHeight)
+		bucket := e.se.PendulumNodesBucketBalance(blockHeight)
+		prevSettled := e.se.GetLatestSettledEpoch()
+		tickInterval := e.se.PendulumOracleTickInterval()
+
+		var reductions map[string]int
+		if provider := e.se.PendulumEpochInputsProvider(); provider != nil {
+			reductions = rewards.ComputeReductionsForEpoch(provider, previousElection.BlockHeight, blockHeight, tickInterval)
+		}
+
+		rec, composeErr := pendulumsettlement.ComposeRecord(pendulumsettlement.ComposeInputs{
+			Epoch:               previousEpoch,
+			PrevEpoch:           prevSettled,
+			EpochStartBh:        previousElection.BlockHeight,
+			SlotHeight:          blockHeight,
+			CommitteeBonds:      bonds,
+			BucketBalanceHBD:    bucket,
+			ReductionsByAccount: reductions,
+		})
+		if composeErr != nil {
+			return elections.ElectionHeader{}, elections.ElectionData{},
+				fmt.Errorf("pendulum settlement: compose failed: %w", composeErr)
+		}
+		if rec == nil {
+			return elections.ElectionHeader{}, elections.ElectionData{},
+				fmt.Errorf("pendulum settlement: compose returned nil record")
+		}
+		electionData.Settlement = rec
+	}
+
 	cid, err := electionData.Cid()
 	if err != nil {
 		return elections.ElectionHeader{}, elections.ElectionData{}, err
