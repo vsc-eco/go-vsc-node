@@ -428,7 +428,13 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			if err != nil {
 				return
 			}
-			node, _ := se.da.Get(parsedCid, nil)
+			node, err := se.da.Get(parsedCid, nil)
+			if err != nil {
+				// UNSAFE: a missed election permanently distorts member
+				// sets used by TSS reshare/sign. Halt and retry the block.
+				se.SetUnsafeHalt("TxElectionResult.genesis", fmt.Errorf("fetch %s: %w", parsedCid, err))
+				return
+			}
 
 			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
 			elecResult := elections.ElectionResult{}
@@ -537,11 +543,38 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 		fmt.Println(verified, "realWeight", realWeight, " len(includedDids)", len(includedDids))
 
 		if verified && realWeight >= minimums {
+			// Pendulum settlement gate: the prior epoch must already be
+			// settled before the next election can activate. The closing
+			// committee's settlement is delivered as a BlockTypePendulumSettlement
+			// block tx in a VSC block before this point; rejecting here gives
+			// the state engine a defence-in-depth fallback if the election
+			// proposer's `canHold` check was bypassed (malicious proposer or
+			// timing race). The bucket carries forward; the next election
+			// attempt picks up after settlement lands.
+			//
+			// Genesis path: when prevElection.Epoch == 0 there is no closing
+			// epoch to settle, so the gate only applies once a real first
+			// epoch has been served (tx.Epoch >= 2).
+			if tx.Epoch >= 2 {
+				latestSettled := se.GetLatestSettledEpoch()
+				if latestSettled < tx.Epoch-1 {
+					log.Warn("pendulum settlement gate: election_result deferred",
+						"tx_epoch", tx.Epoch,
+						"required_settled_epoch", tx.Epoch-1,
+						"latest_settled_epoch", latestSettled)
+					return
+				}
+			}
+
 			fmt.Println("Election verified, indexing...", tx.Epoch)
 			fmt.Println("Election CID", parsedCid)
-			se.da.GetDag(parsedCid)
-			fmt.Println("Got dag prolly")
-			node, _ := se.da.Get(parsedCid, nil)
+			node, err := se.da.Get(parsedCid, nil)
+			if err != nil {
+				// UNSAFE: see genesis path comment.
+				se.SetUnsafeHalt("TxElectionResult.normal",
+					fmt.Errorf("fetch epoch=%d cid=%s: %w", tx.Epoch, parsedCid, err))
+				return
+			}
 			fmt.Println("Got Election from DA")
 			//Verified and 2/3 majority signed
 			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
@@ -669,22 +702,37 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 // ProcessTx implements VSCTransaction.
 func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
+	// CONTENT-DETERMINED skip: a malformed CID string was signed by the
+	// producer. Retrying can never succeed (the bytes don't change), so
+	// halting would loop forever on a single bad block. Loud-warn and skip.
 	blockCid, err := cid.Parse(t.SignedBlock.Block)
 	if err != nil {
+		log.Warn("TxProposeBlock: malformed block CID, skipping",
+			"raw", t.SignedBlock.Block, "txId", t.Self.TxId, "err", err)
 		return
 	}
+	// UNSAFE: the block CID resolves the entire VSC block payload, which
+	// contains the Oplog (sole driver of LedgerDb writes) plus all the
+	// per-tx containers. Skipping at this layer drops every persisted
+	// write the producer signed for in this block. Halt and retry.
 	node, err := se.da.GetDag(blockCid)
-	if err != nil || node == nil {
-		return
-	}
-	jsonBytes, err := node.MarshalJSON()
 	if err != nil {
+		se.SetUnsafeHalt("TxProposeBlock.GetDag",
+			fmt.Errorf("fetch block DAG %s: %w", blockCid, err))
 		return
 	}
+	jsonBytes, _ := node.MarshalJSON()
 	blockContentC := vscBlocks.VscBlock{}
-	// json.Unmarshal(jsonBytes, &blockContent)
 
-	se.da.GetObject(blockCid, &blockContentC, common_types.GetOptions{})
+	// CONTENT-DETERMINED skip: GetDag above already pulled the block bytes
+	// into the local store, so GetObject's only failure mode here is CBOR
+	// decoding the bytes that were just persisted. Decode failures don't
+	// heal on retry. Loud-warn and skip.
+	if err := se.da.GetObject(blockCid, &blockContentC, common_types.GetOptions{}); err != nil {
+		log.Warn("TxProposeBlock: failed to decode block content, skipping",
+			"cid", blockCid, "txId", t.Self.TxId, "err", err)
+		return
+	}
 
 	slotInfo := CalculateSlotInfo(t.Self.BlockHeight)
 
@@ -751,7 +799,17 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 		if txContainer.Type() == "transaction" {
 			//Note: sig verification has already happened
-			tx := txContainer.AsTransaction()
+			// UNSAFE: tx.Headers.Nonce / RequiredAuths drive nonceDb.SetNonce
+			// and txDb.InvalidateCompetingTransactions below. Skipping leaves
+			// nonces unadvanced and competing-tx invalidation unfired — a
+			// real divergence between the indexer's mempool view and the
+			// producer's. Halt and retry.
+			tx, err := txContainer.AsTransaction()
+			if err != nil {
+				se.SetUnsafeHalt("TxProposeBlock.AsTransaction",
+					fmt.Errorf("fetch transaction %s: %w", txInfo.Id, err))
+				return
+			}
 
 			tx.Ingest(se, t.Self.TxId, TxSelf{
 				BlockId:     t.Self.BlockId,
@@ -782,7 +840,14 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				Ops:  txs,
 			})
 		} else if txContainer.Type() == "output" {
-			contractOutput := txContainer.AsContractOutput()
+			// SAFE: IngestOutput is upsert-by-id; the next ContractOutput
+			// for the same contract overwrites the latest state_merkle
+			// pointer regardless of whether this one was applied.
+			contractOutput, err := txContainer.AsContractOutput()
+			if err != nil {
+				log.Warn("TxProposeBlock: failed to fetch contract output, skipping", "txId", txInfo.Id, "err", err)
+				continue
+			}
 
 			contractOutput.Ingest(se, TxSelf{
 				BlockId:     t.Self.BlockId,
@@ -791,8 +856,26 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			}, int64(se.slotStatus.SlotHeight))
 
 		} else if txContainer.Type() == "oplog" {
-			oplog := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))
+			// UNSAFE: IngestOplog -> LedgerDb.StoreLedger is the sole writer
+			// of persisted ledger records. A skipped oplog leaves a permanent
+			// gap that BalanceDb's rollup carries forward. Halt and retry.
+			oplog, err := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))
+			if err != nil {
+				se.SetUnsafeHalt("TxProposeBlock.AsOplog",
+					fmt.Errorf("fetch oplog %s: %w", txInfo.Id, err))
+				return
+			}
 			oplog.ExecuteTx(se)
+		} else if txContainer.Type() == "pendulum_settlement" {
+			rec, ok := txContainer.AsPendulumSettlement()
+			if !ok {
+				log.Warn("pendulum settlement: failed to decode block tx", "id", txInfo.Id)
+				continue
+			}
+			// The closing committee's 2/3 BLS aggregate over the carrying VSC
+			// block already validated the bytes; applyPendulumSettlement trusts
+			// the payload and pairs the bucket debit with per-account credits.
+			se.applyPendulumSettlement(rec, uint64(t.SignedBlock.Headers.Br[1]))
 		}
 	}
 
@@ -854,18 +937,18 @@ type BlockTx struct {
 }
 
 func (bTx *BlockTx) Decode(da *datalayer.DataLayer, txSelf TxSelf) TransactionContainer {
-	//Do some conversion back to a TX type?
-	txCid := cid.MustParse(bTx.Id)
-
-	dagNode, _ := da.GetDag(txCid)
-	tx := TransactionContainer{
+	// No prefetch here. TransactionContainer.Type() is determined by
+	// TypeInt alone, and each AsTransaction / AsContractOutput / AsOplog
+	// does its own GetDag with the appropriate Bounded vs Skippable
+	// semantics. A prefetch via GetDag (Bounded) would pay the full
+	// retry cost on a missing CID and then the As*() helper would pay
+	// it AGAIN — doubling the failure cost for a local-cache warmup
+	// that's redundant on the success path anyway (the As*() fetch
+	// hits the local blockstore once the first GetBlock succeeds).
+	return TransactionContainer{
 		da:      da,
 		Id:      bTx.Id,
 		TypeInt: bTx.Type,
-
-		Self: txSelf,
+		Self:    txSelf,
 	}
-	tx.Decode(dagNode.RawData())
-
-	return tx
 }

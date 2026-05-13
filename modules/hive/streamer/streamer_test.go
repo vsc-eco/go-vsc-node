@@ -118,16 +118,23 @@ func (m *MockHiveBlockDb) ListenToBlockUpdates(
 	}
 
 	go func() {
+		// Match production semantics: deliver blocks strictly greater than
+		// startBlock (which is "the last successfully processed block").
+		// Use a labeled outer loop so `break Outer` exits both the select
+		// and the for — a plain `break` inside the select would only exit
+		// the select, letting the for continue to deliver later blocks
+		// (and silently advancing past a halt error).
+	Outer:
 		for _, block := range m.Blocks {
-			if block.BlockNumber >= startBlock {
+			if block.BlockNumber > startBlock {
 				select {
 				case <-ctx.Done():
-					break
+					break Outer
 				default:
 					err := listener(block, &m.HeadHeight)
 					if err != nil {
 						errChan <- err
-						break
+						break Outer
 					}
 				}
 			}

@@ -686,6 +686,10 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			})
 		}
 
+		var pendulumOracle map[string]interface{}
+		if r.StateEngine != nil {
+			pendulumOracle = r.StateEngine.PendulumOracleEnv()
+		}
 		ctxValue := contract_execution_context.New(
 			contract_execution_context.Environment{
 				ContractId:           call.ContractID,
@@ -701,6 +705,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 				Caller:               caller,
 				Sender:               caller,
 				Intents:              intents,
+				PendulumOracle:       pendulumOracle,
 			},
 			int64(rcLimit), rc_system.FreeRcRemaining(r.StateEngine.RcSystem.NewSession(ledgerSession), caller, blockHeight), rcLimit*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
 		)

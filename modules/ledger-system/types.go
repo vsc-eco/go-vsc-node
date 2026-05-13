@@ -125,6 +125,14 @@ type LedgerSystem interface {
 	IndexActions(actionUpdate map[string]interface{}, extraInfo ExtraInfo)
 	Deposit(deposit Deposit) string
 	IngestOplog(oplog []OpLogEvent, options OplogInjestOptions)
+	// PendulumDistribute drains the pendulum:nodes:hbd bucket into a recipient
+	// account at settlement time. Paired ledger ops (debit on bucket, credit
+	// on recipient) — settlement is the only path that mutates the bucket
+	// downward. Per-swap accrual INTO the bucket goes through
+	// LedgerSession.ExecuteTransfer from the executing contract account, NOT
+	// through this interface.
+	PendulumDistribute(toAccount string, amount int64, txID string, blockHeight uint64) LedgerResult
+	PendulumBucketBalance(bucket string, blockHeight uint64) int64
 	NewEmptySession(state *LedgerState, startHeight uint64) LedgerSession
 	NewEmptyState() *LedgerState
 }

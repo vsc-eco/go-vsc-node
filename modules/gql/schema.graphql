@@ -949,3 +949,4 @@ type Query {
     input: SimulateContractCallsInput!
   ): [SimulateContractCallResult!]!
 }
+

@@ -48,6 +48,8 @@ type contractExecutionContext struct {
 	ioSessions []*ioSession
 
 	tokenLimits map[string]*int64
+
+	pendulumApplier wasm_context.PendulumApplier
 }
 
 type ContractExecutionContext = *contractExecutionContext
@@ -74,6 +76,8 @@ type Environment struct {
 	Caller               string
 	Sender               string
 	Intents              []contracts.Intent
+	// PendulumOracle is merged into wasm env JSON (system.get_env) and visible via system.get_env_key.
+	PendulumOracle map[string]interface{}
 }
 
 var _ wasm_context.ExecContextValue = &contractExecutionContext{}
@@ -86,6 +90,7 @@ func New(
 	ledger ledgerSystem.LedgerSession,
 	callSession *contract_session.CallSession,
 	recursionDepth int,
+	opts ...Option,
 ) ContractExecutionContext {
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
@@ -118,21 +123,30 @@ func New(
 			tokenLimits[token] = &val
 		}
 	}
-	// fmt.Println("tokenLimits", tokenLimits, "depth", recursionDepth)
-	return &contractExecutionContext{
-		ledger,
-		env,
-		rcLimit,
-		rcFreeRemaining,
-		gasRemain,
-		callSession,
-		recursionDepth,
-		0,
-		0,
-		0,
-		nil,
-		tokenLimits,
+	ctx := &contractExecutionContext{
+		ledger:          ledger,
+		env:             env,
+		rcLimit:         rcLimit,
+		rcFreeRemaining: rcFreeRemaining,
+		gasRemain:       gasRemain,
+		callSession:     callSession,
+		recursion:       recursionDepth,
+		tokenLimits:     tokenLimits,
 	}
+	for _, opt := range opts {
+		opt(ctx)
+	}
+	return ctx
+}
+
+// Option mutates a fresh contractExecutionContext during construction.
+// Options exist so callers can wire in deps (currently the pendulum
+// applier) without growing New's positional arg list and breaking the
+// existing call sites that don't need them.
+type Option func(*contractExecutionContext)
+
+func WithPendulumApplier(p wasm_context.PendulumApplier) Option {
+	return func(ctx *contractExecutionContext) { ctx.pendulumApplier = p }
 }
 
 func (ctx *contractExecutionContext) IOGas() int {
@@ -253,6 +267,11 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 	case "block.timestamp":
 		return result.Ok(ctx.env.Timestamp)
 	}
+	if ctx.env.PendulumOracle != nil {
+		if v, ok := ctx.env.PendulumOracle[key]; ok {
+			return envOracleValueToResult(v)
+		}
+	}
 	return result.Err[string](
 		errors.Join(
 			fmt.Errorf(contracts.ENV_VAR_ERROR),
@@ -300,6 +319,9 @@ func (ctx *contractExecutionContext) GetEnv() result.Result[string] {
 		"msg.payer":                  payer,
 		"msg.caller":                 ctx.env.Caller,
 		"intents":                    ctx.env.Intents,
+	}
+	for k, v := range ctx.env.PendulumOracle {
+		envMap[k] = v
 	}
 
 	envBytes, err := json.Marshal(envMap)
@@ -465,6 +487,45 @@ func (ctx *contractExecutionContext) SendBalance(to string, amount int64, asset 
 		return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.LEDGER_ERROR), fmt.Errorf("%s", res.Msg)))
 	}
 	return result.Ok(struct{}{})
+}
+
+func (ctx *contractExecutionContext) PendulumApplySwapFees(args wasm_context.PendulumSwapFeeArgs) result.Result[wasm_context.PendulumSwapFeeResult] {
+	if ctx.pendulumApplier == nil {
+		return result.Err[wasm_context.PendulumSwapFeeResult](
+			errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("pendulum applier not configured")),
+		)
+	}
+	// Construct the per-call accrual closure bound to the active ledger
+	// session. The applier invokes it with the HBD amount to move from the
+	// pool contract's account into the global pendulum:nodes bucket.
+	// ExecuteTransfer is the same primitive hive.transfer / hive.draw use,
+	// so the accrual is a paired (debit, credit) ledger op — no minting.
+	//
+	// Id matches the convention used by SendBalance/PullBalance: pass the
+	// bare TxId. ledgerSession.AppendOplog disambiguates multiple
+	// ExecuteTransfer calls in one session via its `idCache` (txId → txId:1
+	// → txId:2 …); manually appending a tag here would bypass that
+	// machinery and break callers that correlate ledger records by the
+	// canonical {txId}[:N]#in/out shape.
+	accrue := func(amountHBD int64) error {
+		if amountHBD <= 0 {
+			return nil
+		}
+		res := ctx.ledger.ExecuteTransfer(ledgerSystem.OpLogEvent{
+			From:        "contract:" + ctx.env.ContractId,
+			To:          ledgerSystem.PendulumNodesHBDBucket,
+			Amount:      amountHBD,
+			Asset:       "hbd",
+			Type:        "transfer",
+			Id:          ctx.env.TxId,
+			BlockHeight: ctx.env.BlockHeight,
+		})
+		if !res.Ok {
+			return errors.New(res.Msg)
+		}
+		return nil
+	}
+	return ctx.pendulumApplier.ApplySwapFees(ctx.env.ContractId, ctx.env.TxId, ctx.env.BlockHeight, args, accrue)
 }
 
 func (ctx *contractExecutionContext) WithdrawBalance(to string, amount int64, asset string) result.Result[struct{}] {
@@ -656,6 +717,45 @@ func (ctx *contractExecutionContext) TssKeySign(keyId string, msg string) result
 		Args:  msg,
 	})
 	return result.Ok("ok")
+}
+
+// envOracleValueToResult stringifies values from PendulumOracle for system.get_env_key.
+//
+// Float values are intentionally NOT supported: every pendulum.* numeric key
+// is integer-typed (basis points or raw counts) so wasm contracts always see
+// a deterministic integer string. A float in this map is a programmer error
+// upstream — surfaced as ENV_VAR_ERROR rather than silently formatted.
+func envOracleValueToResult(v interface{}) result.Result[string] {
+	switch t := v.(type) {
+	case string:
+		return result.Ok(t)
+	case bool:
+		return result.Ok(strconv.FormatBool(t))
+	case int:
+		return result.Ok(strconv.Itoa(t))
+	case int32:
+		return result.Ok(strconv.FormatInt(int64(t), 10))
+	case int64:
+		return result.Ok(strconv.FormatInt(t, 10))
+	case uint:
+		return result.Ok(strconv.FormatUint(uint64(t), 10))
+	case uint32:
+		return result.Ok(strconv.FormatUint(uint64(t), 10))
+	case uint64:
+		return result.Ok(strconv.FormatUint(t, 10))
+	case []string:
+		b, err := json.Marshal(t)
+		if err != nil {
+			return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), err))
+		}
+		return result.Ok(string(b))
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return result.Err[string](errors.Join(fmt.Errorf(contracts.ENV_VAR_ERROR), err))
+		}
+		return result.Ok(string(b))
+	}
 }
 
 // wrap the result of json.Marshal as used by EnvVar(), joins with ENV_VAR_ERROR symbol if Err

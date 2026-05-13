@@ -22,6 +22,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -89,6 +90,7 @@ func main() {
 	tssKeys := tss_db.NewKeys(vscDb)
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
+	pendulumSettlementsDb := pendulum_settlements.New(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
 	wasm_sdk.Init(sysConfig.OnMainnet())
 	if args.sysconfigPath != "" {
@@ -183,7 +185,9 @@ func main() {
 		tssKeys,
 		tssCommitments,
 		tssRequests,
+		pendulumSettlementsDb,
 		wasm,
+		identityConfig,
 	)
 
 	rcSystem := se.RcSystem
@@ -226,6 +230,16 @@ func main() {
 	)
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
+	// Halt-on-unsafe-CID: if the state engine flagged an oplog/election/
+	// block-DAG fetch failure during a block, the streamer aborts the poll
+	// loop without advancing lastSaved so the same block is retried.
+	sr.SetHaltCheck(se.ConsumeUnsafeHalt)
+	// On halt, wipe the state engine's in-slot accumulators and rewind to
+	// the slot start so the replay produces the same end state as a clean
+	// first-try. Without this, prior in-slot blocks' TxBatch / state.Oplog
+	// contributions would be consumed by slot-crossing ExecuteBatch in
+	// cycle 1 and never re-fed on subsequent retries.
+	sr.SetHaltReset(se.ResetSlotState)
 
 	flatDb, err := flatfs.CreateOrOpen(path.Join(args.dataDir, "tss-keys"), flatfs.Prefix(1), false)
 	if err != nil {
@@ -301,6 +315,7 @@ func main() {
 		tssKeys,
 		tssCommitments,
 		tssRequests,
+		pendulumSettlementsDb,
 
 		p2p,
 		da,                   //Deps: [p2p]

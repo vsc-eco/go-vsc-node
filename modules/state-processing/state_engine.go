@@ -1,16 +1,20 @@
 package state_engine
 
 import (
+	"context"
 	"crypto"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/vsclog"
@@ -24,14 +28,19 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
+	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
+	"vsc-node/modules/incentive-pendulum/rewards"
+	pendulumwasm "vsc-node/modules/incentive-pendulum/wasm"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	tss_helpers "vsc-node/modules/tss/helpers"
+	wasm_context "vsc-node/modules/wasm/context"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
 	"github.com/chebyrash/promise"
@@ -42,6 +51,29 @@ import (
 
 var tssLog = vsclog.Module("tss")
 var log = vsclog.Module("se")
+
+// AllowUnsafeSkip — when true, downgrades unsafe-tagged fetch failures from
+// a halt to a warn-and-skip. Default is false: an unfetchable oplog /
+// election / block-DAG halts the indexer rather than silently advancing
+// past divergent state.
+//
+// Set the environment variable VSC_ALLOW_UNSAFE_SKIP=1 (or "true") at node
+// start for emergency historical reindexes where the operator has accepted
+// that some on-chain data is unrecoverable and the resulting divergence is
+// a known cost. Read once at process start; not safe to flip at runtime.
+var AllowUnsafeSkip = func() bool {
+	v := os.Getenv("VSC_ALLOW_UNSAFE_SKIP")
+	enabled := v == "1" || strings.EqualFold(v, "true")
+	if enabled {
+		log.Warn(
+			"VSC_ALLOW_UNSAFE_SKIP=true — unsafe-tagged fetch failures will be DOWNGRADED to warn-and-skip. " +
+				"Indexer state may diverge from consensus. Unset the variable for normal operation.",
+		)
+	} else {
+		log.Debug("VSC_ALLOW_UNSAFE_SKIP disabled — unsafe-tagged fetch failures will halt the indexer (default).")
+	}
+	return enabled
+}()
 
 type ProcessExtraInfo struct {
 	BlockHeight int
@@ -99,6 +131,103 @@ type StateEngine struct {
 	slotStatus *SlotStatus
 
 	BlockHeight int
+
+	// pendulumFeed tracks sole-HIVE witness feed + HBD APR (Magi pendulum oracle); updated from Hive blocks.
+	pendulumFeed *pendulumoracle.FeedTracker
+	// pendulumSettlementsDb stores the per-epoch settlement marker written
+	// when applyPendulumSettlement processes a BlockTypePendulumSettlement
+	// record. Drives the proposer's `canHold` guard and the
+	// `vsc.election_result` handler's "prior epoch must be settled" check.
+	pendulumSettlementsDb pendulum_settlements.PendulumSettlements
+	// pendulumApplier is the swap-time SDK method's executor.
+	pendulumApplier wasm_context.PendulumApplier
+	// pendulumGeometry recomputes (V, P, E, T, s) on demand from contract
+	// state and committee bond. Read by the applier per swap and by
+	// settlement composition; no snapshot persistence layer.
+	pendulumGeometry *pendulumoracle.GeometryComputer
+	// balanceDb is held so settlement composition can read HIVE_CONSENSUS
+	// bonds via BalanceRecord directly, bypassing the op-type-filter trap
+	// on LedgerSystem.GetBalance.
+	balanceDb ledgerDb.Balances
+	// selfHiveUsername is the local node's Hive account name. Currently
+	// unused outside of tests now that settlement is leader-agnostic.
+	selfHiveUsername string
+
+	// lastProcessedHeight is the height of the most recent Hive block whose
+	// ProcessBlock call ran to completion (set via defer so a panic in
+	// processing still records the height). It exists so the block producer
+	// can synchronise compose-time reads — concretely, MakePendulumSettlement
+	// and the signer-side HandleBlockMsg re-derive — with the state engine's
+	// slot-boundary ExecuteBatch flush. Without it, an async producer tick
+	// or a p2p signing request that arrives before this node's state engine
+	// has flushed slot S-1 reads stale ledger/balance state and produces a
+	// divergent CID. See WaitForProcessedHeight for the consumer API.
+	lastProcessedHeight atomic.Uint64
+	// unsafeFetchErr is set by call sites that require divergence-safe
+	// reads (oplog, election, block DAG). When set, the streamer's halt
+	// check picks it up and stops advancing lastSaved so the same Hive
+	// block is retried until the underlying CID becomes fetchable. Only
+	// consumed (and cleared) by ConsumeUnsafeHalt.
+	unsafeFetchErr atomic.Pointer[unsafeHaltErr]
+}
+
+// unsafeHaltErr is the payload stored in StateEngine.unsafeFetchErr. Wraps
+// the underlying error along with the call-site identifier and the L1
+// block height the StateEngine was processing when the halt was raised.
+// blockHeight is diagnostic: today every SetUnsafeHalt call site fires
+// synchronously inside ProcessBlock, so it always matches the streamer's
+// notion of "current block." Recording it surfaces drift if a future
+// async path ever calls SetUnsafeHalt — the streamer log will print both
+// values and any mismatch is visible without rebuilding the call graph.
+type unsafeHaltErr struct {
+	site        string
+	err         error
+	blockHeight int
+}
+
+func (e *unsafeHaltErr) Error() string {
+	return fmt.Sprintf("unsafe-halt at %s (recorded at L1 block %d): %v",
+		e.site, e.blockHeight, e.err)
+}
+
+func (e *unsafeHaltErr) Unwrap() error {
+	return e.err
+}
+
+// SetUnsafeHalt records that an unsafe-tagged fetch site failed. Only the
+// first failure per block is retained — subsequent failures during the same
+// block keep the original cause, since whatever broke first is what the
+// operator most needs to see. The transition is a single CompareAndSwap so
+// the "first cause wins" guarantee holds even under concurrent calls (e.g.
+// if a future async tick path ever raises a halt). Honors AllowUnsafeSkip:
+// when set, downgrades to a warn and does NOT halt.
+func (se *StateEngine) SetUnsafeHalt(site string, err error) {
+	if AllowUnsafeSkip {
+		log.Warn("unsafe fetch failure (allow_unsafe_skip enabled, continuing)",
+			"site", site, "err", err)
+		return
+	}
+	newErr := &unsafeHaltErr{site: site, err: err, blockHeight: se.BlockHeight}
+	if !se.unsafeFetchErr.CompareAndSwap(nil, newErr) {
+		// First cause already recorded — log and bail without overwriting.
+		log.Warn("additional unsafe fetch failure (halt already pending)",
+			"site", site, "err", err)
+		return
+	}
+	log.Error("unsafe fetch failure — indexer will halt and retry block",
+		"site", site, "blockHeight", se.BlockHeight, "err", err)
+}
+
+// ConsumeUnsafeHalt is read-and-clear. The streamer calls this after each
+// ProcessBlock; if non-nil, the streamer returns the error to its poll
+// loop, which causes lastSaved NOT to advance and the same Hive block to
+// be retried on the next tick.
+func (se *StateEngine) ConsumeUnsafeHalt() error {
+	e := se.unsafeFetchErr.Swap(nil)
+	if e == nil {
+		return nil
+	}
+	return e
 }
 
 //Transaction
@@ -190,6 +319,22 @@ func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 // In other words, it adds complexity to the state engine while being less efficient.
 // This model is more efficient and best yet, it prevents MEV potential by locking the block execution time to the witness slot.
 func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
+	// Record completion via defer so compose-time waiters
+	// (MakePendulumSettlement, HandleBlockMsg) unblock once this block's
+	// processing — including any slot-boundary ExecuteBatch flush — is
+	// fully done. Survives panics mid-processing.
+	defer func() {
+		for {
+			prev := se.lastProcessedHeight.Load()
+			if block.BlockNumber <= prev {
+				return
+			}
+			if se.lastProcessedHeight.CompareAndSwap(prev, block.BlockNumber) {
+				return
+			}
+		}
+	}()
+
 	se.BlockHeight = int(block.BlockNumber)
 
 	// --- Key lifecycle: deprecation and retirement ---
@@ -246,6 +391,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		Timestamp:   block.Timestamp,
 	}
 
+	if se.pendulumFeed != nil && block.Witness != "" {
+		se.pendulumFeed.RecordWitnessBlock(block.Witness)
+	}
+
 	//What is active slot?
 	// bh = 5
 	// 0 - 10
@@ -295,6 +444,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	}
 
 	for blkIdx, tx := range block.Transactions {
+		// Short-circuit: if an unsafe-tagged fetch halt fired during a
+		// prior Hive tx in this block, stop processing the rest of the
+		// block. The streamer's haltCheck will pick the flag up after
+		// ProcessBlock returns and re-feed this block from clean state
+		// via ResetSlotState. Continuing here would only run more
+		// upsert-by-id writes that re-apply identically on retry — no
+		// correctness benefit, just wasted work and confusing log lines
+		// from handlers operating on partial state.
+		if se.unsafeFetchErr.Load() != nil {
+			break
+		}
+		if se.pendulumFeed != nil {
+			se.pendulumFeed.IngestTransactionOps(block.BlockNumber, tx)
+		}
 
 		if tx.Operations[0].Type == "custom_json" {
 			headerOp := tx.Operations[0]
@@ -307,10 +470,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			// auth are handled in the user operations section below.
 			if len(RequiredAuths) > 0 {
 				cj := CustomJson{
-					Id:                   opVal["id"].(string),
-					RequiredAuths:        common.ArrayToStringArray(opVal["required_auths"]),
-					RequiredPostingAuths: common.ArrayToStringArray(opVal["required_posting_auths"]),
-					Json:                 []byte(opVal["json"].(string)),
+					// unused fields
+					// Id:                   opVal["id"].(string),
+					// RequiredAuths:        common.ArrayToStringArray(opVal["required_auths"]),
+					// RequiredPostingAuths: common.ArrayToStringArray(opVal["required_posting_auths"]),
+					Json: []byte(opVal["json"].(string)),
 				}
 
 				if Id == "vsc.fr_sync" && RequiredAuths[0] == se.sconf.GatewayWallet() {
@@ -345,7 +509,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 
 				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() {
-					actionUpdate := map[string]interface{}{}
+					actionUpdate := map[string]any{}
 					err := json.Unmarshal(cj.Json, &actionUpdate)
 
 					if err == nil {
@@ -447,9 +611,18 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						validated := parsedBlock.Validate(se)
 
 						if validated {
-							se.slotStatus.Done = true
+							// Producer is recorded BEFORE execution because
+							// ExecuteTx reads se.slotStatus elsewhere; the
+							// Done flag is deliberately set AFTER ExecuteTx
+							// returns so a halt-mid-ExecuteTx (e.g. an
+							// unsafe-tagged DAG fetch failure) leaves Done
+							// false, preventing the bottom-of-ProcessBlock
+							// ExecuteBatch from running on incomplete state.
 							se.slotStatus.Producer = cj.RequiredAuths[0]
 							parsedBlock.ExecuteTx(se)
+							if se.unsafeFetchErr.Load() == nil {
+								se.slotStatus.Done = true
+							}
 						}
 					}
 					continue
@@ -472,7 +645,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					json.Unmarshal(cj.Json, &parsedTx)
 
 					if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
-						hasFee, feeAmt, feePayer := hasFeePaymentOp(tx.Operations, params.CONTRACT_DEPLOYMENT_FEE, "hbd")
+						hasFee, feeAmt, feePayer := hasFeePaymentOp(
+							tx.Operations,
+							params.CONTRACT_DEPLOYMENT_FEE,
+							"hbd",
+						)
 						if !hasFee {
 							continue
 						}
@@ -586,10 +763,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				//TODO: Finish up support for directly handling staked transfers
 
 				var token string
-				if op.Value["amount"].(map[string]interface{})["nai"] == "@@000000021" {
+				switch op.Value["amount"].(map[string]any)["nai"] {
+				case "@@000000021":
 					token = "hive"
 
-				} else if op.Value["amount"].(map[string]interface{})["nai"] == "@@000000013" {
+				case "@@000000013":
 					token = "hbd"
 				}
 
@@ -605,9 +783,22 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						continue
 					}
 				}
-				amount, _ := strconv.ParseFloat(op.Value["amount"].(map[string]interface{})["amount"].(string), 64)
-
-				amt := int64(amount)
+				amtStr := op.Value["amount"].(map[string]interface{})["amount"].(string)
+				amt, err := strconv.ParseInt(amtStr, 10, 64)
+				if err != nil {
+					log.Warn(
+						"skipping transfer with unparseable amount",
+						"tx",
+						tx.TransactionID,
+						"op",
+						opIndex,
+						"amount",
+						amtStr,
+						"err",
+						err,
+					)
+					continue
+				}
 
 				if op.Value["to"] == "vsc.gateway" {
 					depositedFrom := "hive:" + op.Value["from"].(string)
@@ -784,7 +975,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								sigBytes, err1 := hex.DecodeString(sigPack.Sig)
 								msgBytes, _ := hex.DecodeString(sigPack.Msg)
 								if err == nil && err1 == nil {
-									if keyCache[sigPack.KeyId].Algo == tss_db.EcdsaType {
+									switch keyCache[sigPack.KeyId].Algo {
+									case tss_db.EcdsaType:
 										pubKey, err1 := btcec.ParsePubKey(publicKey, btcec.S256())
 
 										fmt.Println("err", err1)
@@ -805,7 +997,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 												Status: tss_db.SignComplete,
 											})
 										}
-									} else if keyCache[sigPack.KeyId].Algo == tss_db.EddsaType {
+									case tss_db.EddsaType:
 										pk := ed25519.PublicKey(publicKey)
 
 										edVerify := ed25519.Verify(pk, msgBytes, sigBytes)
@@ -911,6 +1103,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							KeyId:       commitment.KeyId,
 							PublicKey:   commitment.PublicKey,
 							TxId:        tx.TransactionID,
+							BitSet:      commitment.BitSet,
 						})
 
 						var newKey bool
@@ -943,6 +1136,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 				// NOTE: vsc.tss_ready was removed — readiness is now handled
 				// off-chain via BLS-signed gossip attestations in the TSS module.
+				// NOTE: vsc.pendulum_settlement (L1 Hive op) was removed —
+				// settlement now rides as a BlockTypePendulumSettlement L2 op
+				// inside a VSC block, signed by the closing committee's 2/3 BLS
+				// aggregate. See modules/incentive-pendulum/settlement/compose.go
+				// and applyPendulumSettlement.
 
 				if vscTx != nil {
 					opList = append(opList, vscTx)
@@ -1003,8 +1201,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		}
 	}
 
-	//Detects new slot and executes batch if so
-	if se.slotStatus.SlotHeight != slotInfo.StartHeight {
+	// Detects new slot and executes batch if so. Guarded by unsafeFetchErr:
+	// if any halt fired during this block's processing (election fetch,
+	// propose_block fetch, etc.), do NOT advance slotStatus or fire
+	// ExecuteBatch. ResetSlotState (called by the streamer's halt-retry
+	// path) reads slotStatus.SlotHeight to know where to replay from —
+	// advancing it here would lose the prior slot's start as the replay
+	// anchor, so the slot's L1 user ops in TxBatch would never be re-fed
+	// and the eventual successful run would miss them.
+	if se.slotStatus.SlotHeight != slotInfo.StartHeight && se.unsafeFetchErr.Load() == nil {
 		//Updates balances index before next batch can execute
 		vscBlock, _ := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight - 1)
 
@@ -1040,6 +1245,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		se.ExecuteBatch()
 		//Balances must be updated after the current slot has been fully executed
 	}
+
+	if se.pendulumFeed != nil {
+		se.pendulumFeed.TickIfDue(block.BlockNumber)
+	}
 }
 
 // executeTxSafely runs a transaction handler with panic recovery so that a
@@ -1074,6 +1283,177 @@ func executeTxSafely(
 		}
 	}()
 	return vscTx.ExecuteTx(se, ledgerSession, rcSession, callSession, payer)
+}
+
+// buildTickInputs assembles the per-tick L2 evidence bundle the rewards
+// aggregator scores. Pure read on on-chain caches; deterministic across
+// nodes given identical chain state. Returns a zero-Committee TickInputs
+// when the tick can't be scored (no election, no committee, etc.).
+func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
+	if se == nil || se.electionDb == nil || tickHeight == 0 {
+		return rewards.TickInputs{}
+	}
+	election, err := se.electionDb.GetElectionByHeight(tickHeight)
+	if err != nil {
+		// Transient electionDb error: skip scoring this tick. The signer
+		// path will retry on the next settlement attempt; logged for
+		// operator visibility into per-node DB outages.
+		log.Warn("pendulum reductions: election lookup failed; tick skipped",
+			"tick_height", tickHeight, "err", err)
+		return rewards.TickInputs{}
+	}
+	if len(election.Members) == 0 {
+		return rewards.TickInputs{}
+	}
+	committee := make([]string, 0, len(election.Members))
+	for _, m := range election.Members {
+		committee = append(committee, m.Account)
+	}
+
+	const tickWindow = uint64(pendulumoracle.DefaultTickIntervalBlocks)
+	var fromBlock uint64
+	if tickHeight > tickWindow {
+		fromBlock = tickHeight - tickWindow
+	}
+
+	in := rewards.TickInputs{Committee: committee}
+
+	// Block production + attestation: iterate slots in the tick window.
+	if se.vscBlocks != nil {
+		slotLen := common.CONSENSUS_SPECS.SlotLength
+		if slotLen >= 1 {
+			firstSlot := fromBlock - (fromBlock % slotLen)
+			if firstSlot < fromBlock {
+				firstSlot += slotLen
+			}
+			lastSlot := tickHeight - (tickHeight % slotLen)
+			if lastSlot >= firstSlot {
+				blocks, err := se.vscBlocks.GetBlocksInSlotRange(firstSlot, lastSlot)
+				if err != nil {
+					log.Warn(
+						"pendulum reductions: vsc_blocks slot-range lookup failed; block production/attestation skipped this tick",
+						"tick_height",
+						tickHeight,
+						"from_slot",
+						firstSlot,
+						"to_slot",
+						lastSlot,
+						"err",
+						err,
+					)
+				} else {
+					produced := make(map[uint64]struct{}, len(blocks))
+					in.BlocksInWindow = make([]rewards.TickBlockHeader, 0, len(blocks))
+					for _, b := range blocks {
+						produced[uint64(b.SlotHeight)] = struct{}{}
+						in.BlocksInWindow = append(in.BlocksInWindow, rewards.TickBlockHeader{
+							Signers: append([]string(nil), b.Signers...),
+						})
+					}
+					in.ProducedSlotHeights = produced
+					for s := firstSlot; s <= lastSlot; s += slotLen {
+						sched := se.GetSchedule(s)
+						leader := ""
+						for _, slot := range sched {
+							if slot.SlotHeight == s {
+								leader = slot.Account
+								break
+							}
+						}
+						if leader != "" {
+							in.Slots = append(in.Slots, rewards.SlotProposer{
+								SlotHeight: s,
+								Account:    leader,
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// TSS commitments: pull all reshare/blame/sign_result types in the window.
+	if se.tssCommitments != nil {
+		from := fromBlock
+		to := tickHeight
+		commits, err := se.tssCommitments.FindCommitments(
+			nil,
+			[]string{"reshare", "blame", "sign_result"},
+			nil,
+			&from,
+			&to,
+			0,
+			0,
+		)
+		if err != nil {
+			log.Warn("pendulum reductions: tss_commitments lookup failed; TSS reductions skipped this tick",
+				"tick_height", tickHeight, "from_block", from, "to_block", to, "err", err)
+		} else {
+			for _, c := range commits {
+				memberAccounts := se.committeeAccountsForEpoch(c.Epoch)
+				if len(memberAccounts) == 0 {
+					continue
+				}
+				switch c.Type {
+				case "reshare":
+					in.Reshares = append(in.Reshares, rewards.ReshareWithCommittee{
+						Commitment:   c,
+						NewCommittee: memberAccounts,
+					})
+				case "blame":
+					in.Blames = append(in.Blames, rewards.BlameWithCommittee{
+						Commitment:     c,
+						BlameCommittee: memberAccounts,
+					})
+				case "sign_result":
+					// Sign committee is the election active at the
+					// commitment's BlockHeight (the leader collected BLS sigs
+					// from that election — same convention as the verifier
+					// path at state_engine.go:895).
+					signCommittee := se.committeeAccountsAtHeight(c.BlockHeight)
+					if len(signCommittee) == 0 {
+						continue
+					}
+					in.Signs = append(in.Signs, rewards.SignResultWithCommittee{
+						Commitment:    c,
+						SignCommittee: signCommittee,
+					})
+				}
+			}
+		}
+	}
+
+	return in
+}
+
+func (se *StateEngine) committeeAccountsForEpoch(epoch uint64) []string {
+	if se == nil || se.electionDb == nil {
+		return nil
+	}
+	res := se.electionDb.GetElection(epoch)
+	if res == nil || len(res.Members) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(res.Members))
+	for _, m := range res.Members {
+		out = append(out, m.Account)
+	}
+	return out
+}
+
+func (se *StateEngine) committeeAccountsAtHeight(height uint64) []string {
+	if se == nil || se.electionDb == nil {
+		return nil
+	}
+	res, err := se.electionDb.GetElectionByHeight(height)
+	if err != nil || len(res.Members) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(res.Members))
+	for _, m := range res.Members {
+		out = append(out, m.Account)
+	}
+	return out
 }
 
 func (se *StateEngine) ExecuteBatch() {
@@ -1346,15 +1726,16 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			stHeight = prevBalRecord.BlockHeight + 1 //Must add one to prevent querying ledger results from same bal record
 		}
 		for _, asset := range assets {
-			if asset == "hbd" {
+			switch asset {
+			case "hbd":
 				ledgerBalances[asset] = balanceR.HBD
-			} else if asset == "hive" {
+			case "hive":
 				ledgerBalances[asset] = balanceR.Hive
-			} else if asset == "hbd_savings" {
+			case "hbd_savings":
 				ledgerBalances[asset] = balanceR.HBD_SAVINGS
-			} else if asset == "hive_consensus" {
+			case "hive_consensus":
 				ledgerBalances[asset] = balanceR.HIVE_CONSENSUS
-			} else {
+			default:
 				ledgerBalances[asset] = 0
 			}
 		}
@@ -1471,6 +1852,62 @@ func (se *StateEngine) AppendOutput(contractId string, out ContractResult) {
 	se.ContractResults[contractId] = append(se.ContractResults[contractId], out)
 }
 
+// ResetSlotState wipes every in-memory accumulator that grows by append
+// during slot execution and returns the slot start to replay from. Called
+// by the streamer after an unsafe-halt so the next listener entry can
+// re-feed the slot from clean state — the determinism requirement is that
+// a successful retry produces the same end state as a successful first-try,
+// which only holds if every replay starts from an identically-empty engine.
+//
+// Returned (replayFrom, ok):
+//   - ok=true with replayFrom = slotStatus.SlotHeight when there is an
+//     active slot. The streamer rewinds lastProcessed to replayFrom-1 so
+//     the listener delivers blocks starting at replayFrom.
+//   - ok=false when slotStatus is nil (process just started, no slot
+//     active). The streamer leaves lastProcessed alone and the listener
+//     will re-feed the failing block on its next iteration.
+//
+// Note on idempotency of DB side effects from the failed attempt:
+// every write site exercised between slot start and the halt is upsert-by-id
+// (StoreHeader, txDb.Ingest, IngestOplog→StoreLedger, IngestOutput,
+// SetNonce, SetOutput with $addToSet, StoreElection, ExecuteComplete,
+// IndexActions, Deposit). Replaying them is a no-op at the row level.
+// One latent exception: ClaimHBDInterest's StoreLedger Id includes a
+// positional index from BalanceDb.GetAll's Distinct() result, whose order
+// is not formally stable; pre-existing, fires only on monthly interest_op
+// virtual ops, not introduced by this PR.
+func (se *StateEngine) ResetSlotState() (replayFrom uint64, ok bool) {
+	if se.slotStatus != nil {
+		replayFrom = se.slotStatus.SlotHeight
+		ok = true
+	}
+
+	// State-engine accumulators (also cleared by Flush, kept explicit here
+	// so the field set this function clears is a self-documenting list).
+	se.ContractResults = make(map[string][]ContractResult)
+	se.TempOutputs = make(map[string]*contract_session.TempOutput)
+	se.TxOutput = make(map[string]TxOutput)
+	se.TxOutIds = make([]string, 0)
+	se.firstTxHeight = 0
+
+	// Cleared exclusively by reset, not by Flush:
+	se.TxBatch = make([]TxPacket, 0)
+	se.RcMap = make(map[string]int64)
+	se.slotStatus = nil
+
+	// Ledger-state accumulators (Oplog, VirtualLedger, GatewayBalances).
+	// These also drive ledgerSession.GetBalance during ExecuteBatch — leaving
+	// them populated would diverge balance reads on the replay.
+	se.LedgerState.Flush()
+
+	// Drop the recorded halt error so the next replay's halt-check starts
+	// clean. The streamer has already consumed the error via ConsumeUnsafeHalt
+	// before calling here, so this is normally a no-op, but stay defensive.
+	se.unsafeFetchErr.Store(nil)
+
+	return replayFrom, ok
+}
+
 func (se *StateEngine) Flush() {
 	se.ContractResults = make(map[string][]ContractResult)
 	se.TempOutputs = make(map[string]*contract_session.TempOutput)
@@ -1479,41 +1916,108 @@ func (se *StateEngine) Flush() {
 	se.firstTxHeight = 0
 }
 
-// If there is transactions in the queue, use the last vsc block height to resume
-// If not continue parsing from lastBlk
-// Need to test
-func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint64 {
+// pinWindowSlots is how long SaveBlockHeight will hold the checkpoint
+// pinned to firstTxHeight-1 while waiting for the matching ContractOutput
+// to land. Sized to comfortably cover worst-case healthy producer latency
+// (last-in-schedule + queue churn ≈ 30-40 blocks) with ~2× headroom, so
+// the expiry path only fires on genuinely stuck state. Bumping past 6
+// slots starts trading off slow recovery from a real stuck condition for
+// less false-positive flushing, which is rarely the right call given a
+// stuck-but-eventually-healed state ends up in the same place either way.
+const pinWindowSlots = 6
 
+// SaveBlockHeight determines the persisted checkpoint for crash recovery.
+//
+// When uncommitted transaction outputs exist (TxOutput populated by
+// ExecuteBatch but not yet cleared by Flush), pin the checkpoint just
+// before the first TX so a restart replays the batch. The pin is
+// bounded to pinWindowSlots*SlotLength so stale TxOutput (Flush never
+// fired) cannot freeze the checkpoint indefinitely; on expiry we Flush
+// (not partial-clear) so no ghost contract state survives into the next
+// batch's callSession.
+//
+// Note on the slot-boundary fall-through: by the time the producer's
+// vsc.propose_block lands on L1, every ContractOutput inside it has run
+// ContractOutput.Ingest -> Flush, so TxOutput is empty and this function
+// falls through to `return lastBlk`. The previous logic
+// consulted vscBlocks.GetBlockByHeight(lastBlk) and returned
+// SlotHeight+1 in this case, which is strictly behind lastBlk; on crash
+// recovery the indexer would re-execute blocks (SlotHeight, lastBlk].
+// The new behavior advances by one block instead — same correctness, less
+// replay. The vscBlocks consultation was therefore deliberately dropped.
+func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint64 {
 	if lastBlk == 0 || lastSavedBlk == 0 {
 		return lastSavedBlk
 	}
-	var outputExists bool
-	for _, _ = range se.TxOutput {
-		outputExists = true
-		break
-	}
-	if outputExists {
-		vscRecord, _ := se.vscBlocks.GetBlockByHeight(lastBlk)
-		if vscRecord != nil {
-			if lastSavedBlk != uint64(vscRecord.SlotHeight) {
-				return uint64(vscRecord.SlotHeight) + 1
-			} else {
-				return lastSavedBlk
-			}
-		} else {
-			if se.firstTxHeight == 0 {
-				return lastSavedBlk
-			}
-			return se.firstTxHeight - 1
+
+	if len(se.TxOutput) > 0 && se.firstTxHeight > 0 {
+		pinHeight := se.firstTxHeight - 1
+		pinWindow := pinWindowSlots * CONSENSUS_SPECS.SlotLength
+		// Defensive no-op for "lastBlk behind the pin" (lastBlk <= pinHeight).
+		// This is unreachable on the live path — firstTxHeight is set during
+		// processing of a block that is, by definition, <= any subsequent
+		// lastBlk — but the prior implementation fell through into the
+		// stale-pin Flush branch in this case, which would silently wipe
+		// pending output state on any future code path that triggered it
+		// (out-of-order delivery, clock skew, refactor mistake). Hold the
+		// checkpoint and leave state intact instead.
+		if lastBlk <= pinHeight {
+			log.Warn(
+				"SaveBlockHeight: lastBlk behind pin (defensive no-op, no flush)",
+				"lastBlk", lastBlk,
+				"pinHeight", pinHeight,
+				"firstTxHeight", se.firstTxHeight,
+			)
+			return lastSavedBlk
 		}
-	} else {
-		return lastBlk
+		// Only pin if the first uncommitted TX is within a recent window.
+		// Beyond the window the output is stale — Flush so the checkpoint
+		// can advance.
+		if lastBlk-pinHeight <= pinWindow {
+			log.Trace(
+				"SaveBlockHeight: pinning",
+				"lastBlk",
+				lastBlk,
+				"pinHeight",
+				pinHeight,
+				"firstTxHeight",
+				se.firstTxHeight,
+			)
+			return pinHeight
+		}
+		// Pin window expired — the corresponding ContractOutput never landed
+		// (e.g. unreachable CID during reindex, offline producer). Full
+		// Flush, not partial-clear: TempOutputs / ContractResults / TxOutIds
+		// would otherwise persist as ghost state for the next batch's
+		// callSession to read, since by definition no ContractOutput.Ingest
+		// is going to fire and reset them. The "mid-slot Flush is unsafe"
+		// concern doesn't apply here — the >pinWindowSlots*SlotLength
+		// window means we're already past several slots without a producer
+		// landing the matching output, so there is no in-progress slot
+		// whose state we'd be corrupting.
+		log.Warn(
+			"SaveBlockHeight: stale TxOutput pin expired, flushing",
+			"lastBlk", lastBlk,
+			"pinHeight", pinHeight,
+			"firstTxHeight", se.firstTxHeight,
+			"txOutputLen", len(se.TxOutput),
+			"tempOutputsLen", len(se.TempOutputs),
+			"contractResultsLen", len(se.ContractResults),
+			"txOutIdsLen", len(se.TxOutIds),
+		)
+		se.Flush()
 	}
 
-	// if len(se.TxBatch) > 0 {
-	// } else {
-	// 	return lastBlk
-	// }
+	log.Trace(
+		"SaveBlockHeight: advancing",
+		"lastBlk",
+		lastBlk,
+		"txOutputLen",
+		len(se.TxOutput),
+		"firstTxHeight",
+		se.firstTxHeight,
+	)
+	return lastBlk
 }
 
 func (se *StateEngine) DataLayer() common_types.DataLayer {
@@ -1557,6 +2061,24 @@ func (se *StateEngine) Init() error {
 	if err := se.tssKeys.DeprecateLegacyKeys(); err != nil {
 		tssLog.Warn("DeprecateLegacyKeys failed during init", "err", err)
 	}
+
+	// Warm the pendulum FeedTracker before the block consumer starts so the
+	// in-memory rolling state (signature window + MA ring + per-witness
+	// quotes) matches long-running peers. Without warmup, the first ~300
+	// blocks after a restart expose a partial MA to the swap applier and
+	// contract env keys — different across nodes that started at different
+	// heights, which forks any contract that consumes those values.
+	//
+	// Failure here is non-fatal: the tracker stays unwarmed, callers see
+	// Warmed()=false and degrade gracefully (applier rejects swaps with
+	// errSnapshotUnavailable; env returns nil) until natural ingest fills
+	// both rings ~400 blocks later.
+	if se.pendulumFeed != nil && se.hiveBlocks != nil {
+		if err := se.pendulumFeed.Warmup(se.hiveBlocks); err != nil {
+			log.Warn("pendulum feed warmup failed; tracker will warm organically", "err", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1571,6 +2093,98 @@ func (se *StateEngine) Stop() error {
 
 func (se *StateEngine) SystemConfig() systemconfig.SystemConfig {
 	return se.sconf
+}
+
+// LastProcessedHeight returns the height of the most recent Hive block this
+// state engine has fully processed. Returns 0 before the first ProcessBlock.
+//
+// Block producer compose paths use this — through WaitForProcessedHeight —
+// to ensure consensus-critical reads (settlement bonds, bucket balance,
+// epoch reductions) see all writes flushed by ProcessBlock(slotHeight).
+// Without this barrier, an async producer tick or an early-arriving p2p
+// signing request can read mid-flush state and produce a divergent CID.
+func (se *StateEngine) LastProcessedHeight() uint64 {
+	if se == nil {
+		return 0
+	}
+	return se.lastProcessedHeight.Load()
+}
+
+// WaitForProcessedHeight blocks until LastProcessedHeight >= height, the
+// context is canceled, or the deadline elapses. Polls every 25ms; the
+// caller's context bounds the overall wait.
+//
+// Returns nil on success or the context's error on cancel/deadline. The
+// poll interval is short enough (Hive blocks every 3s, slot ~30s) that
+// catch-up is observed near-immediately under healthy operation; the
+// timeout exists only to protect against a stuck state engine.
+func (se *StateEngine) WaitForProcessedHeight(ctx context.Context, height uint64) error {
+	if se == nil {
+		return nil
+	}
+	if se.lastProcessedHeight.Load() >= height {
+		return nil
+	}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if se.lastProcessedHeight.Load() >= height {
+				return nil
+			}
+		}
+	}
+}
+
+// PendulumFeedTracker returns the Magi pendulum sole-HIVE / HBD-APR oracle tracker (may be nil in tests).
+func (se *StateEngine) PendulumFeedTracker() *pendulumoracle.FeedTracker {
+	if se == nil {
+		return nil
+	}
+	return se.pendulumFeed
+}
+
+// PendulumApplier implements common_types.StateEngine. Returns the swap-time
+// applier wired during construction; nil-safe.
+func (se *StateEngine) PendulumApplier() wasm_context.PendulumApplier {
+	if se == nil {
+		return nil
+	}
+	return se.pendulumApplier
+}
+
+// PendulumOracleEnv implements common_types.StateEngine: values merged into wasm contract env (system.get_env).
+func (se *StateEngine) PendulumOracleEnv() map[string]interface{} {
+	if se == nil || se.pendulumFeed == nil {
+		return nil
+	}
+	// Withhold env keys until the tracker is warm. The exposed values
+	// include the moving average and trusted-witness group, both of which
+	// diverge across nodes during the warmup window — any contract that
+	// reads them and writes derived state would fork the chain.
+	if !se.pendulumFeed.Warmed() {
+		return nil
+	}
+	s := se.pendulumFeed.LastTick()
+	// All numeric values are integer-typed: HBD-per-HIVE prices in basis
+	// points (BpsScale = 1.0); the wasm host serializer renders them as
+	// integer strings.
+	m := map[string]interface{}{
+		"pendulum.hbd_interest_rate_bps":  s.HBDInterestRateBps,
+		"pendulum.hbd_interest_rate_ok":   s.HBDInterestRateOK,
+		"pendulum.trusted_hive_price_bps": s.TrustedHivePriceBps,
+		"pendulum.trusted_hive_mean_ok":   s.TrustedHiveOK,
+		"pendulum.hive_moving_avg_bps":    s.HiveMovingAvgBps,
+		"pendulum.hive_ma_ok":             s.HiveMovingAvgOK,
+		"pendulum.tick_block_height":      s.TickBlockHeight,
+	}
+	if len(s.TrustedWitnessGroup) > 0 {
+		m["pendulum.trusted_witness_group"] = append([]string(nil), s.TrustedWitnessGroup...)
+	}
+	return m
 }
 
 func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
@@ -1590,7 +2204,9 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	tssKeys tss_db.TssKeys,
 	tssCommitments tss_db.TssCommitments,
 	tssRequests tss_db.TssRequests,
+	pendulumSettlementsDb pendulum_settlements.PendulumSettlements,
 	wasm *wasm_runtime.Wasm,
+	identityConfig common.IdentityConfig,
 ) *StateEngine {
 
 	ls := ledgerSystem.New(balanceDb, ledgerDb, interestClaims, actionDb)
@@ -1613,7 +2229,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		BalanceDb:       balanceDb,
 	}
 
-	return &StateEngine{
+	se := &StateEngine{
 		sconf:           sconf,
 		TxOutput:        make(map[string]TxOutput),
 		ContractResults: make(map[string][]ContractResult),
@@ -1647,5 +2263,35 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		// },
 		LedgerSystem: ls,
 		LedgerState:  ledgerState,
+
+		pendulumFeed:          pendulumoracle.NewFeedTracker(),
+		pendulumSettlementsDb: pendulumSettlementsDb,
+		balanceDb:             balanceDb,
 	}
+	if identityConfig != nil {
+		se.selfHiveUsername = identityConfig.Get().HiveUsername
+	}
+
+	se.pendulumGeometry = pendulumoracle.NewGeometryComputer(
+		&pendulumPoolReserveReader{
+			states: &liveContractStateKeyReader{
+				contractState: se.contractState,
+				da:            se.da,
+			},
+		},
+		&pendulumCommitteeBondReader{se: se},
+	)
+	se.pendulumApplier = pendulumwasm.New(
+		&liveGeometryReader{
+			computer:          se.pendulumGeometry,
+			feed:              se.pendulumFeed,
+			whitelist:         func() []string { return sconf.PendulumPoolWhitelist() },
+			effectiveStakeNum: 2,
+			effectiveStakeDen: 3,
+		},
+		func() []string { return sconf.PendulumPoolWhitelist() },
+		pendulumwasm.DefaultConfig(),
+	)
+
+	return se
 }

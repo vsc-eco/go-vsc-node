@@ -4,6 +4,7 @@ import (
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
+	wasm_context "vsc-node/modules/wasm/context"
 
 	"github.com/ipfs/go-cid"
 	dagCbor "github.com/ipfs/go-ipld-cbor"
@@ -48,6 +49,14 @@ type StateEngine interface {
 	GetContractInfo(id string, height uint64) (contracts.Contract, bool)
 	GetElectionInfo(height ...uint64) elections.ElectionResult
 	SystemConfig() systemconfig.SystemConfig
+	// PendulumOracleEnv returns key/value pairs merged into wasm contract env (system.get_env / get_env_key).
+	// Keys use the "pendulum.*" prefix; nil or empty means no pendulum snapshot is available.
+	PendulumOracleEnv() map[string]interface{}
+	// PendulumApplier wires the swap-time pendulum SDK method
+	// (system.pendulum_apply_swap_fees). May return nil when the pendulum
+	// data plane (snapshot DB, ledger, whitelist) isn't fully initialized;
+	// the SDK method short-circuits to ErrUnimplemented in that case.
+	PendulumApplier() wasm_context.PendulumApplier
 }
 
 type BlockStatusGetter interface {

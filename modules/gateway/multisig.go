@@ -400,10 +400,15 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 			}
 			amt := action.Amount
 
+			amtStr, err := common.FormatAssetAmount(amt, action.Asset)
+			if err != nil {
+				log.Warn("skipping withdraw action: cannot format amount", "action", action.Id, "asset", action.Asset, "err", err)
+				continue
+			}
 			op := ms.hiveCreator.Transfer(
 				ms.sconf.GatewayWallet(),
 				to,
-				hive.AmountToString(amt),
+				amtStr,
 				ms.toHiveAssetName(action.Asset),
 				action.Memo,
 			)
@@ -425,7 +430,10 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 		//Must stake
 		mustStakeBal := int64(stakeBal - unstakeBal)
 
-		amtStr := hive.AmountToString(mustStakeBal)
+		amtStr, err := common.FormatAssetAmount(mustStakeBal, "hbd")
+		if err != nil {
+			return signingPackage{}, fmt.Errorf("format stake amount: %w", err)
+		}
 
 		op := ms.hiveCreator.TransferToSavings(
 			ms.sconf.GatewayWallet(),
@@ -440,7 +448,10 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 		//Must unstake
 		mustUnstakeBal := int64(unstakeBal - stakeBal)
 
-		amtStr := hive.AmountToString(mustUnstakeBal)
+		amtStr, err := common.FormatAssetAmount(mustUnstakeBal, "hbd")
+		if err != nil {
+			return signingPackage{}, fmt.Errorf("format unstake amount: %w", err)
+		}
 
 		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), amtStr, ms.toHiveAssetName("hbd"), "Unstaking "+amtStr+" HBD from "+strconv.Itoa(unstakeTxCount)+" transactions", int(bh))
 
@@ -581,17 +592,25 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 	//Adjust minimums as necessary
 	var ops []hivego.HiveOperation
 	if (hbdToStake > 100_000 || stakedBal < 150_000) && hbdToStake != 0 {
+		stakeAmtStr, err := common.FormatAssetAmount(hbdToStake, "hbd")
+		if err != nil {
+			return signingPackage{}, fmt.Errorf("format stake amount: %w", err)
+		}
 		op := ms.hiveCreator.TransferToSavings(
 			ms.sconf.GatewayWallet(),
 			ms.sconf.GatewayWallet(),
-			hive.AmountToString(hbdToStake),
+			stakeAmtStr,
 			ms.toHiveAssetName("hbd"),
-			"Staking "+hive.AmountToString(hbdToStake)+" HBD",
+			"Staking "+stakeAmtStr+" HBD",
 		)
 
 		ops = append(ops, op)
 	} else if (hbdToUnstake > 10_000 || stakedBal < 10_000) && hbdToUnstake != 0 {
-		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), hive.AmountToString(hbdToUnstake), ms.toHiveAssetName("hbd"), "Unstaking "+hive.AmountToString(hbdToUnstake)+" HBD", int(bh+1))
+		unstakeAmtStr, err := common.FormatAssetAmount(hbdToUnstake, "hbd")
+		if err != nil {
+			return signingPackage{}, fmt.Errorf("format unstake amount: %w", err)
+		}
+		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), unstakeAmtStr, ms.toHiveAssetName("hbd"), "Unstaking "+unstakeAmtStr+" HBD", int(bh+1))
 
 		ops = append(ops, op)
 	}

@@ -34,6 +34,8 @@ import (
 	ledgerSystem "vsc-node/modules/ledger-system"
 	libp2p "vsc-node/modules/p2p"
 	rcSystem "vsc-node/modules/rc-system"
+	"vsc-node/modules/incentive-pendulum/rewards"
+	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
 
@@ -121,10 +123,34 @@ type generateBlockParams struct {
 
 // This function should generate a deterministically generated block
 // In the future we should apply protocol versioning to this
+//
+// Consensus boundary: every read inside this function that depends on
+// state-engine output (settlement bonds, bucket balance, latest-settled
+// epoch, per-tick reductions, oplog contents, contract outputs) must see
+// the slot-boundary ExecuteBatch flush for `slotHeight`. We enforce that
+// at the entry point so both the leader (ProduceBlock) and signer
+// (HandleBlockMsg) paths apply the same barrier — the previous design,
+// where MakePendulumSettlement waited internally on the leader path but
+// the signer's outer wait at HandleBlockMsg let it get further, caused
+// settlement to be included on one side and skipped on the other for
+// the same slot, producing divergent CIDs.
+//
+// On timeout we return an error so the caller aborts this slot's block
+// entirely. Producing a partial block (settlement missing) is unsafe —
+// it forks the network as soon as any peer's state engine is further
+// along. Missing a slot is the safe outcome.
 func (bp *BlockProducer) GenerateBlock(
 	slotHeight uint64,
 	options ...generateBlockParams,
 ) (*vscBlocks.VscHeader, []string, error) {
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), composeStateWaitTimeout)
+	if err := bp.StateEngine.WaitForProcessedHeight(waitCtx, slotHeight); err != nil {
+		waitCancel()
+		return nil, nil, fmt.Errorf("state engine not caught up to slot %d (lastProcessed=%d): %w",
+			slotHeight, bp.StateEngine.LastProcessedHeight(), err)
+	}
+	waitCancel()
+
 	prevBlock, err := bp.VscBlocks.GetBlockByHeight(slotHeight)
 	daSession := datalayer.NewSession(bp.Datalayer)
 
@@ -162,6 +188,16 @@ func (bp *BlockProducer) GenerateBlock(
 	contractOutputs := bp.MakeOutputs(daSession)
 	if len(contractOutputs) > 0 {
 		offchainTxs = append(offchainTxs, contractOutputs...)
+	}
+
+	// Pendulum settlement: include the closing committee's settlement record
+	// when this slot is the deterministic settlement slot for the active
+	// epoch and the prior epoch hasn't been settled yet. Every signer
+	// re-derives the same record inside this function during their own
+	// GenerateBlock call, so CID match is the consensus on the payload.
+	settlement := bp.MakePendulumSettlement(slotHeight, daSession)
+	if settlement != nil {
+		offchainTxs = append(offchainTxs, *settlement)
 	}
 
 	vlog.Info("GenerateBlock", "slotHeight", slotHeight, "txCount", len(offchainTxs))
@@ -585,7 +621,13 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		})
 	}
 
-	// Independently derive block (including oplog + contract outputs)
+	// Independently derive block (including oplog + contract outputs).
+	// GenerateBlock applies the state-engine catch-up barrier at its entry
+	// point; if this signer's state engine can't catch up to msg.SlotHeight
+	// within composeStateWaitTimeout, GenerateBlock returns an error and
+	// this signer's vote is excluded from the BLS aggregate (treated like
+	// any other transient signer outage). The leader path applies the
+	// same barrier symmetrically, so both sides see consistent state.
 	blockHeader, _, err := bp.GenerateBlock(msg.SlotHeight, generateBlockParams{
 		Transactions: transactions,
 	})
@@ -786,6 +828,174 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 		Id:   cid.String(),
 		Type: int(common.BlockTypeOplog),
 	}
+}
+
+// settlementHeadroomSlots is how many slots before `lastElectionBh + ElectionInterval`
+// the settlement record may first be composed. Set to 2 slots — gives a small
+// buffer for the settlement-bearing block to land before the election proposer's
+// earliest valid firing point. Tunable per network if needed.
+const settlementHeadroomSlots uint64 = 2
+
+// composeStateWaitTimeout bounds how long GenerateBlock will wait for this
+// node's state engine to finish processing through `slotHeight` before
+// composing the block. Bounded well below the VSC slot cadence (~30s) so
+// a stuck state engine surfaces as a missed-this-slot rather than blocking
+// block production indefinitely. 10s leaves ~20s of the slot for BLS
+// signature collection.
+//
+// Applied uniformly to leader (ProduceBlock → GenerateBlock) and signer
+// (HandleBlockMsg → GenerateBlock) paths so both sides either pass the
+// barrier together or abort together; partial passes were the source of
+// the settlement-include-vs-skip CID fork.
+const composeStateWaitTimeout = 10 * time.Second
+
+// MakePendulumSettlement composes a SettlementRecord block tx for `slotHeight`
+// when this slot is the deterministic settlement slot for the closing epoch
+// AND the closing epoch is not yet settled. Returns nil otherwise.
+//
+// The record is built from a pure ComposeInputs bundle assembled from
+// on-chain reads (committee, bonds, bucket balance, L2 evidence-derived
+// reductions). Every signer re-derives the same bytes in their own
+// GenerateBlock pass; CID match enforces consensus.
+func (bp *BlockProducer) MakePendulumSettlement(slotHeight uint64, session *datalayer.Session) *vscBlocks.VscBlockTx {
+	if !bp.shouldSettleAt(slotHeight) {
+		return nil
+	}
+
+	// Caller (GenerateBlock) guarantees StateEngine.LastProcessedHeight() >=
+	// slotHeight before invoking this — so the Mongo reads below (bonds at
+	// slotHeight, bucket balance at slotHeight, per-tick reductions over
+	// the closed epoch) see the slot-boundary ExecuteBatch flush. We must
+	// not gate inclusion on a local-state predicate here: doing so makes
+	// settlement-inclusion non-deterministic across nodes and forks the
+	// chain.
+
+	election, err := bp.electionsDb.GetElectionByHeight(slotHeight)
+	if err != nil || len(election.Members) == 0 {
+		return nil
+	}
+
+	members := make([]string, 0, len(election.Members))
+	for _, m := range election.Members {
+		acct := m.Account
+		if !strings.HasPrefix(acct, "hive:") {
+			acct = "hive:" + acct
+		}
+		members = append(members, acct)
+	}
+
+	balanceReader := bp.StateEngine.PendulumBalanceRecordReader()
+	if balanceReader == nil {
+		return nil
+	}
+	bonds := pendulumsettlement.ReadCommitteeBonds(balanceReader, members, slotHeight)
+
+	bucket := bp.StateEngine.PendulumNodesBucketBalance(slotHeight)
+
+	// Always proceed to ComposeRecord — including for an empty-activity
+	// epoch (bucket == 0) where the leader still emits a marker-only
+	// record. Without it, GetLatestSettledEpoch never advances and the
+	// next vsc.election_result is rejected by the prev-epoch chain-
+	// continuity check. ComposeRecord skips the bonds requirement when
+	// there is nothing to distribute.
+	prevEpoch := bp.StateEngine.GetLatestSettledEpoch()
+	tickInterval := bp.StateEngine.PendulumOracleTickInterval()
+	reductions := computeEpochReductions(bp.StateEngine, election.BlockHeight, slotHeight, tickInterval)
+
+	rec, err := pendulumsettlement.ComposeRecord(pendulumsettlement.ComposeInputs{
+		Epoch:               election.Epoch,
+		PrevEpoch:           prevEpoch,
+		EpochStartBh:        election.BlockHeight,
+		SlotHeight:          slotHeight,
+		CommitteeBonds:      bonds,
+		BucketBalanceHBD:    bucket,
+		ReductionsByAccount: reductions,
+	})
+	if err != nil || rec == nil {
+		vlog.Debug("MakePendulumSettlement: ComposeRecord declined", "epoch", election.Epoch, "err", err)
+		return nil
+	}
+
+	cborBytes, err := common.EncodeDagCbor(rec)
+	if err != nil {
+		vlog.Warn("MakePendulumSettlement: cbor encode failed", "err", err)
+		return nil
+	}
+	cid, err := common.HashBytes(cborBytes, multicodec.DagCbor)
+	if err != nil {
+		vlog.Warn("MakePendulumSettlement: cid hash failed", "err", err)
+		return nil
+	}
+	session.Put(cborBytes, cid)
+
+	vlog.Info("MakePendulumSettlement: composed record",
+		"slot", slotHeight,
+		"epoch", rec.Epoch,
+		"prev_epoch", rec.PrevEpoch,
+		"distributions", len(rec.Distributions),
+		"reductions", len(rec.RewardReductions),
+		"bucket_hbd", rec.BucketBalanceHBD,
+		"distributed_hbd", rec.TotalDistributedHBD,
+		"residual_hbd", rec.ResidualHBD)
+
+	return &vscBlocks.VscBlockTx{
+		Id:   cid.String(),
+		Type: int(common.BlockTypePendulumSettlement),
+	}
+}
+
+// shouldSettleAt is the deterministic eligibility predicate every node
+// evaluates to decide whether `slotHeight` carries the closing epoch's
+// settlement record. True iff:
+//   1. The active election's epoch has not been settled yet, AND
+//   2. The slot is at least `ElectionInterval - settlementHeadroomSlots*SlotLength`
+//      blocks past the active election's anchor.
+//
+// If the producer for the chosen slot is offline, the next online producer
+// re-evaluates and the predicate stays true until some block carries the
+// record. There's no "first slot wins" race because applyPendulumSettlement
+// rejects duplicates by epoch.
+func (bp *BlockProducer) shouldSettleAt(slotHeight uint64) bool {
+	if bp == nil || bp.StateEngine == nil || bp.electionsDb == nil {
+		return false
+	}
+	election, err := bp.electionsDb.GetElectionByHeight(slotHeight)
+	if err != nil || election.Epoch == 0 {
+		// Genesis path: no closing epoch to settle. The first real settlement
+		// fires once epoch 1 has accrued and is ready to close.
+		return false
+	}
+	latestSettled := bp.StateEngine.GetLatestSettledEpoch()
+	if latestSettled >= election.Epoch {
+		return false
+	}
+
+	electionInterval := bp.sconf.ConsensusParams().ElectionInterval
+	if electionInterval == 0 {
+		return false
+	}
+	headroom := settlementHeadroomSlots * CONSENSUS_SPECS.SlotLength
+	if electionInterval <= headroom {
+		// Pathological config; refuse rather than settling immediately on every block.
+		return false
+	}
+	if slotHeight < election.BlockHeight+electionInterval-headroom {
+		return false
+	}
+	return true
+}
+
+// computeEpochReductions runs rewards.ComputeReductionsForEpoch using the
+// state engine's deterministic on-chain inputs provider.
+func computeEpochReductions(se *stateEngine.StateEngine, fromBh, toBh, tickInterval uint64) map[string]int {
+	if se == nil {
+		return nil
+	}
+	provider := se.PendulumEpochInputsProvider()
+	if provider == nil {
+		return nil
+	}
+	return rewards.ComputeReductionsForEpoch(provider, fromBh, toBh, tickInterval)
 }
 
 func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.VscBlockTx {

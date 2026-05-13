@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -20,6 +19,7 @@ import (
 
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/transactions"
+	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	transactionpool "vsc-node/modules/transaction-pool"
@@ -133,7 +133,10 @@ func (t TxVscCallContract) ExecuteTx(
 		Caller:               caller,
 		Sender:               caller,
 		Intents:              t.Intents,
-	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0)
+		PendulumOracle:       se.PendulumOracleEnv(),
+	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
+		contract_execution_context.WithPendulumApplier(se.PendulumApplier()),
+	)
 
 	validUtf8 := utf8.Valid(t.Payload)
 	if !validUtf8 {
@@ -155,7 +158,13 @@ func (t TxVscCallContract) ExecuteTx(
 
 	res := w.Execute(wasmCtx, gas*params.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime)
 
-	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
+	// Integer ceil-divide: (gas + denom − 1) / denom. uint64 stays well below
+	// overflow for any realistic gas value (denom = 100_000). Floored at the
+	// minimum 100 RC charge.
+	rcUsed := int64((uint64(res.Gas) + params.CYCLE_GAS_PER_RC - 1) / params.CYCLE_GAS_PER_RC)
+	if rcUsed < 100 {
+		rcUsed = 100
+	}
 
 	if res.Error != nil {
 		return TxResult{
@@ -303,7 +312,7 @@ func (tx TxVSCTransfer) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	amount, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -392,7 +401,7 @@ func (t *TxVSCWithdraw) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(t.Amount)
+	amount, err := common.ParseAssetAmount(t.Amount, t.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -477,7 +486,7 @@ func (t *TxStakeHbd) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(t.Amount)
+	amount, err := common.ParseAssetAmount(t.Amount, t.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -565,7 +574,7 @@ func (t *TxUnstakeHbd) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(t.Amount)
+	amount, err := common.ParseAssetAmount(t.Amount, t.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -674,7 +683,7 @@ func (tx *TxConsensusStake) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	amount, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -763,7 +772,7 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	amount, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -856,30 +865,51 @@ func (tx *TransactionContainer) Type() string {
 		return "oplog"
 	} else if tx.TypeInt == int(common.BlockTypeRcUpdate) {
 		return "rc_update"
+	} else if tx.TypeInt == int(common.BlockTypePendulumSettlement) {
+		return "pendulum_settlement"
 	} else {
 		return "unknown"
 	}
 }
 
-// Converts to Contract Output
-func (tx *TransactionContainer) AsContractOutput() *ContractOutput {
+// AsContractOutput — SAFE skip site. The output's payload (state_merkle,
+// metadata, results) is recorded via IngestOutput, which is upsert-by-id.
+// The next ContractOutput for the same contract overwrites the latest
+// pointer regardless of whether this one was ingested, so a missed CID
+// is structurally healed once a later output for that contract lands.
+// Hence GetDagSkippable: the negative cache fast-fails repeat misses
+// within the TTL window.
+func (tx *TransactionContainer) AsContractOutput() (*ContractOutput, error) {
 	output := ContractOutput{
 		Id: tx.Id,
 	}
 	txCid := cid.MustParse(tx.Id)
-	dag, _ := tx.da.GetDag(txCid)
+	dag, err := tx.da.GetDagSkippable(txCid)
+	if err != nil {
+		return nil, fmt.Errorf("AsContractOutput(%s): %w", tx.Id, err)
+	}
 
 	bJson, _ := dag.MarshalJSON()
-
 	json.Unmarshal(bJson, &output)
 
-	return &output
+	return &output, nil
 }
 
-// As a regular VSC transaction
-func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
+// AsTransaction — UNSAFE site. Although the off-chain tx body is only
+// indexed into txDb (which is API-facing), TxProposeBlock also pulls
+// tx.Headers.Nonce and tx.Headers.RequiredAuths out of the decoded body
+// to drive nonceDb.SetNonce and txDb.InvalidateCompetingTransactions.
+// Skipping a tx leaves nonces unadvanced and competing-tx invalidation
+// unfired — a real divergence between the indexer's mempool view and the
+// producer's. Uses GetDag (Bounded, no negative cache); the caller in
+// TxProposeBlock raises an unsafe halt on error so the streamer retries
+// the same block until the CID becomes fetchable.
+func (tx *TransactionContainer) AsTransaction() (*OffchainTransaction, error) {
 	txCid := cid.MustParse(tx.Id)
-	dag, _ := tx.da.GetDag(txCid)
+	dag, err := tx.da.GetDag(txCid)
+	if err != nil {
+		return nil, fmt.Errorf("AsTransaction(%s): %w", tx.Id, err)
+	}
 
 	bJson, _ := dag.MarshalJSON()
 
@@ -889,32 +919,54 @@ func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
 	}
 	json.Unmarshal(bJson, &offchainTx)
 
-	return &offchainTx
+	return &offchainTx, nil
 }
 
-func (tx *TransactionContainer) AsOplog(endBlock uint64) Oplog {
+// AsOplog — UNSAFE site. IngestOplog -> LedgerDb.StoreLedger is the only
+// path that persists ledger records; a missed Oplog leaves a permanent
+// gap that no future block fills. Uses GetDag (Bounded, no negative cache)
+// — the caller in TxProposeBlock raises an unsafe halt on error so the
+// streamer retries the same block until the CID becomes fetchable.
+func (tx *TransactionContainer) AsOplog(endBlock uint64) (Oplog, error) {
 	cid := cid.MustParse(tx.Id)
 	node, err := tx.da.GetDag(cid)
-
 	if err != nil {
-		fmt.Println("AsOplog: failed to fetch DAG", "cid", tx.Id, "err", err)
-		return Oplog{Self: tx.Self, EndBlock: endBlock}
+		return Oplog{}, fmt.Errorf("AsOplog(%s): %w", tx.Id, err)
 	}
 	jsonBytes, _ := node.MarshalJSON()
 
 	oplog := Oplog{
-		Self: tx.Self,
-
+		Self:     tx.Self,
 		EndBlock: endBlock,
 	}
 	json.Unmarshal(jsonBytes, &oplog)
 
-	return oplog
+	return oplog, nil
 }
 
-func (tx *TransactionContainer) Decode(bytes []byte) {
-
+// AsPendulumSettlement decodes the SettlementRecord pointed at by this
+// container's CID. Returns (record, true) on success; (zero, false) if the
+// underlying DAG fetch or decode fails. The state engine treats false as a
+// dropped settlement — the carrying block already had its CID validated by
+// 2/3 BLS aggregation, so a fetch failure indicates a local I/O issue rather
+// than malformed bytes.
+func (tx *TransactionContainer) AsPendulumSettlement() (pendulumsettlement.SettlementRecord, bool) {
+	if tx == nil || tx.da == nil {
+		return pendulumsettlement.SettlementRecord{}, false
+	}
+	txCid := cid.MustParse(tx.Id)
+	node, err := tx.da.GetDag(txCid)
+	if err != nil {
+		return pendulumsettlement.SettlementRecord{}, false
+	}
+	jsonBytes, _ := node.MarshalJSON()
+	var rec pendulumsettlement.SettlementRecord
+	if err := json.Unmarshal(jsonBytes, &rec); err != nil {
+		return pendulumsettlement.SettlementRecord{}, false
+	}
+	return rec, true
 }
+
 
 type Oplog struct {
 	Self TxSelf
