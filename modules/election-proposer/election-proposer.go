@@ -195,7 +195,9 @@ func (e *electionProposer) GenerateElection() (elections.ElectionHeader, electio
 }
 
 // Generates a raw election graph from local data
-func (e *electionProposer) GenerateElectionAtBlock(blk uint64) (elections.ElectionHeader, elections.ElectionData, error) {
+func (e *electionProposer) GenerateElectionAtBlock(
+	blk uint64,
+) (elections.ElectionHeader, elections.ElectionData, error) {
 	witnesses, err := e.witnesses.GetWitnessesAtBlockHeight(blk, witnesses.EnabledOnly())
 	if err != nil {
 		return elections.ElectionHeader{}, elections.ElectionData{}, err
@@ -344,7 +346,7 @@ func (e *electionProposer) GenerateFullElection(
 	// uses, so every signer's re-derive sees identical inputs. ComposeRecord
 	// failure aborts the election attempt — the proposer returns the error
 	// without broadcasting, and the next slot's leader retries.
-	if !firstElection && e.se != nil && previousElection != nil {
+	if !firstElection && e.se != nil && previousElection != nil && previousEpoch > 0 {
 		settlementMembers := make([]string, 0, len(previousElection.Members))
 		for _, m := range previousElection.Members {
 			acct := m.Account
@@ -366,7 +368,12 @@ func (e *electionProposer) GenerateFullElection(
 
 		var reductions map[string]int
 		if provider := e.se.PendulumEpochInputsProvider(); provider != nil {
-			reductions = rewards.ComputeReductionsForEpoch(provider, previousElection.BlockHeight, blockHeight, tickInterval)
+			reductions = rewards.ComputeReductionsForEpoch(
+				provider,
+				previousElection.BlockHeight,
+				blockHeight,
+				tickInterval,
+			)
 		}
 
 		rec, composeErr := pendulumsettlement.ComposeRecord(pendulumsettlement.ComposeInputs{
@@ -447,7 +454,12 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 			return err
 		}
 
-		op := ep.txCreator.CustomJson([]string{ep.conf.Get().HiveUsername}, []string{}, VSC_ELECTION_TX_ID, string(jsonBytes))
+		op := ep.txCreator.CustomJson(
+			[]string{ep.conf.Get().HiveUsername},
+			[]string{},
+			VSC_ELECTION_TX_ID,
+			string(jsonBytes),
+		)
 
 		tx := ep.txCreator.MakeTransaction([]hivego.HiveOperation{op})
 

@@ -29,6 +29,7 @@ import (
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
 	"vsc-node/modules/gql/model"
+	"vsc-node/modules/incentive-pendulum/settlement"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rc_system "vsc-node/modules/rc-system"
 	stateEngine "vsc-node/modules/state-processing"
@@ -139,6 +140,11 @@ func (r *contractResolver) Runtime(ctx context.Context, obj *contracts.Contract)
 // BlockHeight is the resolver for the block_height field.
 func (r *contractOutputResolver) BlockHeight(ctx context.Context, obj *contracts.ContractOutput) (model.Int64, error) {
 	return model.Int64(obj.BlockHeight), nil
+}
+
+// HbdAmount is the resolver for the hbd_amount field.
+func (r *distributionEntryResolver) HbdAmount(ctx context.Context, obj *settlement.DistributionEntry) (model.Int64, error) {
+	return model.Int64(obj.HBDAmt), nil
 }
 
 // Epoch is the resolver for the epoch field.
@@ -791,6 +797,41 @@ func (r *rcRecordResolver) MaxRcs(ctx context.Context, obj *rcDb.RcRecord) (mode
 	return model.Int64(obj.MaxRcs), nil
 }
 
+// Epoch is the resolver for the epoch field.
+func (r *settlementRecordResolver) Epoch(ctx context.Context, obj *settlement.SettlementRecord) (model.Uint64, error) {
+	return model.Uint64(obj.Epoch), nil
+}
+
+// PrevEpoch is the resolver for the prev_epoch field.
+func (r *settlementRecordResolver) PrevEpoch(ctx context.Context, obj *settlement.SettlementRecord) (model.Uint64, error) {
+	return model.Uint64(obj.PrevEpoch), nil
+}
+
+// SnapshotRangeFrom is the resolver for the snapshot_range_from field.
+func (r *settlementRecordResolver) SnapshotRangeFrom(ctx context.Context, obj *settlement.SettlementRecord) (model.Uint64, error) {
+	return model.Uint64(obj.SnapshotRangeFrom), nil
+}
+
+// SnapshotRangeTo is the resolver for the snapshot_range_to field.
+func (r *settlementRecordResolver) SnapshotRangeTo(ctx context.Context, obj *settlement.SettlementRecord) (model.Uint64, error) {
+	return model.Uint64(obj.SnapshotRangeTo), nil
+}
+
+// BucketBalanceHbd is the resolver for the bucket_balance_hbd field.
+func (r *settlementRecordResolver) BucketBalanceHbd(ctx context.Context, obj *settlement.SettlementRecord) (model.Int64, error) {
+	return model.Int64(obj.BucketBalanceHBD), nil
+}
+
+// TotalDistributedHbd is the resolver for the total_distributed_hbd field.
+func (r *settlementRecordResolver) TotalDistributedHbd(ctx context.Context, obj *settlement.SettlementRecord) (model.Int64, error) {
+	return model.Int64(obj.TotalDistributedHBD), nil
+}
+
+// ResidualHbd is the resolver for the residual_hbd field.
+func (r *settlementRecordResolver) ResidualHbd(ctx context.Context, obj *settlement.SettlementRecord) (model.Int64, error) {
+	return model.Int64(obj.ResidualHBD), nil
+}
+
 // Index is the resolver for the index field.
 func (r *transactionOperationResolver) Index(ctx context.Context, obj *transactions.TransactionOperation) (model.Uint64, error) {
 	return model.Uint64(obj.Idx), nil
@@ -916,6 +957,11 @@ func (r *Resolver) Contract() ContractResolver { return &contractResolver{r} }
 // ContractOutput returns ContractOutputResolver implementation.
 func (r *Resolver) ContractOutput() ContractOutputResolver { return &contractOutputResolver{r} }
 
+// DistributionEntry returns DistributionEntryResolver implementation.
+func (r *Resolver) DistributionEntry() DistributionEntryResolver {
+	return &distributionEntryResolver{r}
+}
+
 // ElectionResult returns ElectionResultResolver implementation.
 func (r *Resolver) ElectionResult() ElectionResultResolver { return &electionResultResolver{r} }
 
@@ -941,6 +987,9 @@ func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 
 // RcRecord returns RcRecordResolver implementation.
 func (r *Resolver) RcRecord() RcRecordResolver { return &rcRecordResolver{r} }
+
+// SettlementRecord returns SettlementRecordResolver implementation.
+func (r *Resolver) SettlementRecord() SettlementRecordResolver { return &settlementRecordResolver{r} }
 
 // TransactionOperation returns TransactionOperationResolver implementation.
 func (r *Resolver) TransactionOperation() TransactionOperationResolver {
@@ -968,6 +1017,7 @@ type actionRecordResolver struct{ *Resolver }
 type balanceRecordResolver struct{ *Resolver }
 type contractResolver struct{ *Resolver }
 type contractOutputResolver struct{ *Resolver }
+type distributionEntryResolver struct{ *Resolver }
 type electionResultResolver struct{ *Resolver }
 type ledgerClaimRecordResolver struct{ *Resolver }
 type ledgerRecordResolver struct{ *Resolver }
@@ -976,6 +1026,7 @@ type opLogEventResolver struct{ *Resolver }
 type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type rcRecordResolver struct{ *Resolver }
+type settlementRecordResolver struct{ *Resolver }
 type transactionOperationResolver struct{ *Resolver }
 type transactionRecordResolver struct{ *Resolver }
 type tssCommitmentResolver struct{ *Resolver }

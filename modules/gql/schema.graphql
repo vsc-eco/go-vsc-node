@@ -416,6 +416,52 @@ type ElectionMember {
 }
 
 """
+Per-witness consolidated reward reduction applied at settlement time.
+"""
+type RewardReductionEntry {
+  """Hive account whose effective bond was reduced."""
+  account: String!
+  """Reduction in basis points applied to the bond."""
+  bps: Int!
+}
+
+"""
+Per-account HBD payout from the pendulum:nodes bucket at settlement time.
+"""
+type DistributionEntry {
+  """Recipient Hive account."""
+  account: String!
+  """HBD amount distributed."""
+  hbd_amount: Int64!
+}
+
+"""
+Closing committee's pendulum settlement record for the epoch that just ended.
+Sub-arrays are sorted by account on construction so encoding is byte-stable
+across nodes.
+"""
+type SettlementRecord {
+  """Closing epoch — the one whose service the rewards pay for."""
+  epoch: Uint64!
+  """Epoch settled in the previous record (chain-continuity check)."""
+  prev_epoch: Uint64!
+  """Exclusive lower bound of the L2 evidence window (block height)."""
+  snapshot_range_from: Uint64!
+  """Inclusive upper bound of the L2 evidence window (block height)."""
+  snapshot_range_to: Uint64!
+  """Pendulum:nodes:hbd ledger balance the record was composed against."""
+  bucket_balance_hbd: Int64!
+  """Sum of all per-account distributions."""
+  total_distributed_hbd: Int64!
+  """Residual HBD remaining in the bucket after distribution."""
+  residual_hbd: Int64!
+  """Per-witness consolidated reductions, sorted by account."""
+  reward_reductions: [RewardReductionEntry!]!
+  """Per-account HBD payouts, sorted by account."""
+  distributions: [DistributionEntry!]!
+}
+
+"""
 Result of a consensus election for a given epoch.
 """
 type ElectionResult {
@@ -441,6 +487,13 @@ type ElectionResult {
   proposer: String!
   """Transaction ID of the election result."""
   tx_id: String!
+  """
+  Closing committee's settlement record for the epoch that just ended.
+  Null for pre-pendulum elections and for elections that rotate away from
+  the genesis committee (i.e. when the proposer skips composition because
+  there is no prior epoch to settle).
+  """
+  settlement: SettlementRecord
 }
 
 """
