@@ -70,6 +70,12 @@ func (e *elections) StoreElection(a ElectionResult) error {
 	filter := bson.M{
 		"epoch": a.Epoch,
 	}
+	// ElectionResultRecord has no Settlement field, and refmt's struct
+	// unmarshaller is strict about unknown fields — a non-nil Settlement
+	// makes CloneAtlased fail with ErrNoSuchField. The settlement is
+	// persisted separately (pendulum_settlements), so drop it from the
+	// DB-record clone. Receiver is by value; this doesn't affect the caller.
+	a.Settlement = nil
 	update := ElectionResultRecord{}
 	err := refmt.CloneAtlased(a, &update, cbornode.CborAtlas)
 	if update.Type == "" {
