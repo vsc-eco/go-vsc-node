@@ -95,6 +95,15 @@ func main() {
 		host := strings.Replace(args.p2pHost, "?", strconv.Itoa(n), 1)
 		port := args.p2pPort - 1 + n
 
+		// Always need bootnodes to point at every magi node so the deployer can dial in.
+		bootnodes = append(bootnodes, host+"/tcp/"+strconv.Itoa(port)+"/p2p/"+p2pServer.GetPeerId())
+
+		// In -deployer-only mode, the magi nodes are already configured and running.
+		// Skip rewriting their on-disk config and skip the account-create op.
+		if args.deployerOnly {
+			continue
+		}
+
 		hiveConf.SetHiveURIs(strings.Split(args.hiveUrl, ","))
 		p2pConf.SetOptions(p2p.P2POpts{
 			Port:          port,
@@ -108,7 +117,6 @@ func main() {
 
 		gwKey, _ := gateway.GatewayKeyFromBlsSeed(idConf.Get().BlsPrivKeySeed)
 
-		bootnodes = append(bootnodes, host+"/tcp/"+strconv.Itoa(port)+"/p2p/"+p2pServer.GetPeerId())
 		p2pConfs = append(p2pConfs, p2pConf)
 		gwAuths = append(gwAuths, [2]any{*gwKey.GetPublicKeyString(), 1})
 		hiveOps = append(hiveOps, hivego.AccountCreateOperation{
@@ -123,53 +131,96 @@ func main() {
 		})
 	}
 
-	// Set bootnodes
-	for _, p := range p2pConfs {
-		p.SetBootnodes(bootnodes)
+	// Init contract-deployer identity. Lives alongside the magi node data dirs
+	// in a `contract-deploy-1` subdir, dials the magi nodes as its bootnodes,
+	// and uses the witCreator's WIF (matching how the magi accounts are
+	// authenticated).
+	deployerDir := path.Join(args.dataDir, "contract-deploy-1")
+	depP2pConf := p2p.NewConfig(deployerDir)
+	depHiveConf := streamer.NewHiveConfig(deployerDir)
+	depIdConf := common.NewIdentityConfig(deployerDir)
+	depWits := witnesses.NewEmptyWitnesses()
+	depP2pServer := p2p.New(depWits, depP2pConf, depIdConf, sysConf, nil)
+
+	depA := aggregate.New([]aggregate.Plugin{depP2pConf, depHiveConf, depIdConf, depP2pServer})
+	if err := depA.Init(); err != nil {
+		fmt.Printf("Error initializing contract-deployer: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Create gateway and dao accounts
-	daoL1Acc := strings.Replace(params.DAO_WALLET, "hive:", "", 1)
+	depHiveConf.SetHiveURIs(strings.Split(args.hiveUrl, ","))
+	depP2pConf.SetOptions(p2p.P2POpts{
+		Port:                   args.p2pPort + args.nodes,
+		ServerMode:             false,
+		AllowPrivate:           true,
+		PubsubBufferSize:       512,
+		PubsubConcurrencyLimit: 256,
+		Bootnodes:              bootnodes,
+		AnnounceAddrs:          []string{},
+	})
+	depIdConf.SetUsername(args.deployerName)
+	depIdConf.SetActiveKey(args.wif)
+
 	hiveOps = append(hiveOps, hivego.AccountCreateOperation{
 		Fee:            "0.000 TESTS",
 		Creator:        args.witCreator,
-		NewAccountName: sysConf.GatewayWallet(),
-		Owner: hivego.Auths{
-			WeightThreshold: threshold,
-			KeyAuths:        gwAuths,
-			AccountAuths:    [][2]any{},
-		},
-		Active: hivego.Auths{
-			WeightThreshold: threshold,
-			KeyAuths:        gwAuths,
-			AccountAuths:    [][2]any{},
-		},
-		Posting: hivego.Auths{
-			WeightThreshold: threshold,
-			KeyAuths:        gwAuths,
-			AccountAuths:    [][2]any{},
-		},
-		MemoKey:      *pubKey,
-		JsonMetadata: "",
-	}, hivego.AccountCreateOperation{
-		Fee:            "0.000 TESTS",
-		Creator:        args.witCreator,
-		NewAccountName: daoL1Acc,
-		Owner:          defaultAuth,
-		Active:         defaultAuth,
-		Posting:        defaultAuth,
-		MemoKey:        *pubKey,
-		JsonMetadata:   "",
-	}, hivego.AccountCreateOperation{
-		Fee:            "0.000 TESTS",
-		Creator:        args.witCreator,
-		NewAccountName: "vsc.network",
+		NewAccountName: args.deployerName,
 		Owner:          defaultAuth,
 		Active:         defaultAuth,
 		Posting:        defaultAuth,
 		MemoKey:        *pubKey,
 		JsonMetadata:   "",
 	})
+
+	// Set bootnodes
+	for _, p := range p2pConfs {
+		p.SetBootnodes(bootnodes)
+	}
+
+	// Create gateway and dao accounts (skip when -deployer-only: they already exist).
+	daoL1Acc := strings.Replace(params.DAO_WALLET, "hive:", "", 1)
+	if !args.deployerOnly {
+		hiveOps = append(hiveOps, hivego.AccountCreateOperation{
+			Fee:            "0.000 TESTS",
+			Creator:        args.witCreator,
+			NewAccountName: sysConf.GatewayWallet(),
+			Owner: hivego.Auths{
+				WeightThreshold: threshold,
+				KeyAuths:        gwAuths,
+				AccountAuths:    [][2]any{},
+			},
+			Active: hivego.Auths{
+				WeightThreshold: threshold,
+				KeyAuths:        gwAuths,
+				AccountAuths:    [][2]any{},
+			},
+			Posting: hivego.Auths{
+				WeightThreshold: threshold,
+				KeyAuths:        gwAuths,
+				AccountAuths:    [][2]any{},
+			},
+			MemoKey:      *pubKey,
+			JsonMetadata: "",
+		}, hivego.AccountCreateOperation{
+			Fee:            "0.000 TESTS",
+			Creator:        args.witCreator,
+			NewAccountName: daoL1Acc,
+			Owner:          defaultAuth,
+			Active:         defaultAuth,
+			Posting:        defaultAuth,
+			MemoKey:        *pubKey,
+			JsonMetadata:   "",
+		}, hivego.AccountCreateOperation{
+			Fee:            "0.000 TESTS",
+			Creator:        args.witCreator,
+			NewAccountName: "vsc.network",
+			Owner:          defaultAuth,
+			Active:         defaultAuth,
+			Posting:        defaultAuth,
+			MemoKey:        *pubKey,
+			JsonMetadata:   "",
+		})
+	}
 
 	hiveClient := hivego.NewHiveRpc([]string{args.hiveUrl})
 	hiveClient.ChainID = sysConf.HiveChainId()
@@ -181,48 +232,61 @@ func main() {
 	fmt.Println(txId)
 	time.Sleep(3 * time.Second)
 
-	// Deposit and stake
+	// Deposit and stake. Witness staking + gateway/dao HP grants run only on a
+	// full setup; -deployer-only sends just the deployer's HP + TBD funding.
 	hiveOps = []hivego.HiveOperation{}
-	for n := 1; n <= args.nodes; n++ {
-		witnessName := args.witPrefix + strconv.Itoa(n)
+	if !args.deployerOnly {
+		for n := 1; n <= args.nodes; n++ {
+			witnessName := args.witPrefix + strconv.Itoa(n)
 
-		stakeOp := state_engine.TxConsensusStake{
-			From:   "hive:" + witnessName,
-			To:     "hive:" + witnessName,
-			Amount: args.stakeAmt,
-			Asset:  string(ledger_db.AssetHive),
-			NetId:  sysConf.NetId(),
+			stakeOp := state_engine.TxConsensusStake{
+				From:   "hive:" + witnessName,
+				To:     "hive:" + witnessName,
+				Amount: args.stakeAmt,
+				Asset:  string(ledger_db.AssetHive),
+				NetId:  sysConf.NetId(),
+			}
+			stakeOpJson, _ := json.Marshal(stakeOp)
+
+			hiveOps = append(hiveOps, hivego.TransferOperation{
+				From:   args.witCreator,
+				To:     sysConf.GatewayWallet(),
+				Amount: args.stakeAmt + " TESTS",
+				Memo:   "to=" + witnessName,
+			}, hivego.CustomJsonOperation{
+				Id:                   "vsc.consensus_stake",
+				RequiredAuths:        []string{witnessName},
+				RequiredPostingAuths: []string{},
+				Json:                 string(stakeOpJson),
+			}, hivego.TransferToVesting{
+				From:   args.witCreator,
+				To:     witnessName,
+				Amount: "10.000 TESTS",
+			})
 		}
-		stakeOpJson, _ := json.Marshal(stakeOp)
-
-		hiveOps = append(hiveOps, hivego.TransferOperation{
+		hiveOps = append(hiveOps, hivego.TransferToVesting{
 			From:   args.witCreator,
 			To:     sysConf.GatewayWallet(),
-			Amount: args.stakeAmt + " TESTS",
-			Memo:   "to=" + witnessName,
-		}, hivego.CustomJsonOperation{
-			Id:                   "vsc.consensus_stake",
-			RequiredAuths:        []string{witnessName},
-			RequiredPostingAuths: []string{},
-			Json:                 string(stakeOpJson),
+			Amount: "10.000 TESTS",
 		}, hivego.TransferToVesting{
 			From:   args.witCreator,
-			To:     witnessName,
+			To:     daoL1Acc,
+			Amount: "10.000 TESTS",
+		}, hivego.TransferToVesting{
+			From:   args.witCreator,
+			To:     "vsc.network",
 			Amount: "10.000 TESTS",
 		})
 	}
 	hiveOps = append(hiveOps, hivego.TransferToVesting{
 		From:   args.witCreator,
-		To:     sysConf.GatewayWallet(),
-		Amount: "10.000 TESTS",
-	}, hivego.TransferToVesting{
+		To:     args.deployerName,
+		Amount: args.deployerHpAmt + " TESTS",
+	}, hivego.TransferOperation{
 		From:   args.witCreator,
-		To:     daoL1Acc,
-		Amount: "10.000 TESTS",
-	}, hivego.TransferToVesting{
-		From:   args.witCreator,
-		To:     "vsc.network",
-		Amount: "10.000 TESTS",
+		To:     args.deployerName,
+		Amount: args.deployerHbdAmt + " TBD",
+		Memo:   "contract-deployer fees",
 	})
 
 	txId, err = hiveClient.Broadcast(hiveOps, &args.wif)
