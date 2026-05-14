@@ -12,9 +12,11 @@ import (
 // (op id 7). Duplicated from cmd/devnet-setup/ops.go — both binaries are
 // package main so they can't share via import.
 type feedPublishOperation struct {
-	Publisher string
-	Base      string // e.g. "0.250 TBD"
-	Quote     string // e.g. "1.000 TESTS"
+	Publisher    string `json:"publisher"`
+	ExchangeRate struct {
+		Base  string `json:"base"`
+		Quote string `json:"quote"`
+	} `json:"exchange_rate"`
 }
 
 func (o feedPublishOperation) OpName() string { return "feed_publish" }
@@ -23,10 +25,10 @@ func (o feedPublishOperation) SerializeOp() ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteByte(7) // feed_publish op id
 	feedWriteVString(o.Publisher, &buf)
-	if err := feedWriteAsset(o.Base, &buf); err != nil {
+	if err := feedWriteAsset(o.ExchangeRate.Base, &buf); err != nil {
 		return nil, errors.New("feed_publish base: " + err.Error())
 	}
-	if err := feedWriteAsset(o.Quote, &buf); err != nil {
+	if err := feedWriteAsset(o.ExchangeRate.Quote, &buf); err != nil {
 		return nil, errors.New("feed_publish quote: " + err.Error())
 	}
 	return buf.Bytes(), nil

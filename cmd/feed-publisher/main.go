@@ -59,11 +59,9 @@ func main() {
 	fp := fpConf.Get()
 	uris := hiveConf.GetHiveURIs()
 
-	op := feedPublishOperation{
-		Publisher: id.HiveUsername,
-		Base:      fp.Base,
-		Quote:     fp.Quote,
-	}
+	op := feedPublishOperation{Publisher: id.HiveUsername}
+	op.ExchangeRate.Base = fp.Base
+	op.ExchangeRate.Quote = fp.Quote
 	interval := time.Duration(fp.IntervalSeconds) * time.Second
 
 	fmt.Printf("feed-publisher: %s/%s from %s every %s\n", fp.Base, fp.Quote, id.HiveUsername, interval)
