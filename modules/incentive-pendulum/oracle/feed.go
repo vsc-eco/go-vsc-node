@@ -3,9 +3,60 @@ package oracle
 import (
 	"math/big"
 	"sort"
+	"strconv"
 
 	"vsc-node/lib/intmath"
 )
+
+// NAI asset symbol codes. Shared across Hive networks — mainnet HBD/HIVE and
+// testnet TBD/TESTS carry the same codes — so matching on NAI is unambiguous
+// and needs no per-network symbol normalization.
+const (
+	naiHBD  = "@@000000013"
+	naiHIVE = "@@000000021"
+)
+
+// quoteFromNAIExchangeRate builds a Quote from a feed_publish exchange_rate
+// whose base/quote legs are NAI objects ({amount, nai, precision}) — the form
+// the HAF block API emits, and what the rest of the VSC node already consumes
+// (see the transfer handler in state_engine.go). The legs may be in either
+// order. Returns (_, false) for legacy string-form legs so the caller can fall
+// back to parseHbdPerHivePair.
+func quoteFromNAIExchangeRate(er map[string]interface{}) (Quote, bool) {
+	baseAmt, baseNai, ok1 := naiAssetRaw(er["base"])
+	quoteAmt, quoteNai, ok2 := naiAssetRaw(er["quote"])
+	if !ok1 || !ok2 {
+		return Quote{}, false
+	}
+	switch {
+	case baseNai == naiHBD && quoteNai == naiHIVE:
+		return Quote{HbdRaw: baseAmt, HiveRaw: quoteAmt}, true
+	case baseNai == naiHIVE && quoteNai == naiHBD:
+		return Quote{HbdRaw: quoteAmt, HiveRaw: baseAmt}, true
+	default:
+		return Quote{}, false
+	}
+}
+
+// naiAssetRaw extracts (base-unit amount, NAI code) from a NAI asset object.
+// HBD and HIVE both carry L1 precision 3, so the raw amounts are directly
+// comparable inside a Quote with no precision scaling.
+func naiAssetRaw(v interface{}) (amount int64, nai string, ok bool) {
+	m, isMap := v.(map[string]interface{})
+	if !isMap {
+		return 0, "", false
+	}
+	nai, _ = asString(m["nai"])
+	if nai == "" {
+		return 0, "", false
+	}
+	amtStr, _ := asString(m["amount"])
+	amt, err := strconv.ParseInt(amtStr, 10, 64)
+	if err != nil || amt <= 0 {
+		return 0, "", false
+	}
+	return amt, nai, true
+}
 
 const (
 	// DefaultMinBlocksProduced is the minimum L1 blocks a witness must have
