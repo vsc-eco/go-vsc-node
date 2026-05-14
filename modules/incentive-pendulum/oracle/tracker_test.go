@@ -30,7 +30,7 @@ func TestHbdInterestFromProps(t *testing.T) {
 }
 
 func TestFeedTrackerTick(t *testing.T) {
-	tr := NewFeedTracker()
+	tr := NewFeedTracker(false)
 	// Fill 4 blocks with same witness so FeedTrust passes at minSig=4.
 	for h := uint64(1); h <= 4; h++ {
 		tr.RecordWitnessBlock("alice")
@@ -122,7 +122,7 @@ func makePublishBlock(bh uint64, witness string) hive_blocks.HiveBlock {
 // not warm — the swap applier and env gate on this to refuse divergent
 // reads during catch-up.
 func TestFeedTrackerWarmedColdStart(t *testing.T) {
-	tr := NewFeedTracker()
+	tr := NewFeedTracker(false)
 	if tr.Warmed() {
 		t.Fatal("fresh tracker reported warmed")
 	}
@@ -143,7 +143,7 @@ func TestFeedTrackerWarmupReplay(t *testing.T) {
 		src.blocks = append(src.blocks, blk)
 	}
 
-	tr := NewFeedTracker()
+	tr := NewFeedTracker(false)
 	if err := tr.Warmup(src); err != nil {
 		t.Fatalf("Warmup: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestFeedTrackerWarmupIdempotent(t *testing.T) {
 		src.blocks = append(src.blocks, blk)
 	}
 
-	tr := NewFeedTracker()
+	tr := NewFeedTracker(false)
 	if err := tr.Warmup(src); err != nil {
 		t.Fatalf("first Warmup: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestFeedTrackerWarmupIdempotent(t *testing.T) {
 // reports head=0, Warmup marks the tracker explicitly warmed without
 // replaying anything, and consumers proceed past the gate.
 func TestFeedTrackerWarmupGenesis(t *testing.T) {
-	tr := NewFeedTracker()
+	tr := NewFeedTracker(false)
 	if err := tr.Warmup(&stubWarmupSource{head: 0}); err != nil {
 		t.Fatalf("Warmup: %v", err)
 	}
@@ -235,7 +235,7 @@ func witnessSetPropsOp(owner string, rate string) hive_blocks.Tx {
 // path: a feed_publish from an account that has not produced any L1 blocks
 // in the rolling window is silently dropped instead of growing the maps.
 func TestFeedTracker_IngestGate_RejectsNonProducer(t *testing.T) {
-	tr := NewFeedTracker()
+	tr := NewFeedTracker(false)
 	// "spammer" never appears in RecordWitnessBlock — so BlocksProducedBy=0.
 	tr.IngestTransactionOps(50, feedPublishOp("spammer"))
 	tr.IngestTransactionOps(50, witnessSetPropsOp("spammer", "1500"))
@@ -255,7 +255,7 @@ func TestFeedTracker_IngestGate_RejectsNonProducer(t *testing.T) {
 // account that has produced at least one block in the window can publish a
 // feed and have it stored.
 func TestFeedTracker_IngestGate_AcceptsProducer(t *testing.T) {
-	tr := NewFeedTracker()
+	tr := NewFeedTracker(false)
 	tr.RecordWitnessBlock("alice")
 	tr.IngestTransactionOps(50, feedPublishOp("alice"))
 
@@ -273,7 +273,7 @@ func TestFeedTracker_IngestGate_AcceptsProducer(t *testing.T) {
 // state_engine.ProcessBlock calls RecordWitnessBlock before
 // IngestTransactionOps, so by gate time the producer has count=1.
 func TestFeedTracker_IngestGate_PublishAlongsideOwnProduction(t *testing.T) {
-	tr := NewFeedTracker()
+	tr := NewFeedTracker(false)
 	// Mirror state_engine ordering: RecordWitnessBlock first, then op ingest.
 	tr.RecordWitnessBlock("alice")
 	tr.IngestTransactionOps(1, feedPublishOp("alice"))
@@ -286,7 +286,7 @@ func TestFeedTracker_IngestGate_PublishAlongsideOwnProduction(t *testing.T) {
 // feed has aged out of the trust window is removed from the in-memory
 // maps at the next tick. Caps map size at the actively-publishing set.
 func TestFeedTracker_TickEvictsAgedOutFeeds(t *testing.T) {
-	tr := NewFeedTracker()
+	tr := NewFeedTracker(false)
 
 	// Build up 100 blocks of "alice" producing, and have her publish at
 	// block 1. At tick 100, alice's lastFeedBlk=1 satisfies 1+100>100 → trusted.
@@ -324,7 +324,7 @@ func TestFeedTracker_TickEvictsAgedOutFeeds(t *testing.T) {
 // published exactly at blockHeight - width + 1 is still inside the trust
 // window and must not be evicted.
 func TestFeedTracker_TickKeepsRecentFeed(t *testing.T) {
-	tr := NewFeedTracker()
+	tr := NewFeedTracker(false)
 	for h := uint64(1); h <= 200; h++ {
 		tr.RecordWitnessBlock("alice")
 	}
@@ -340,7 +340,7 @@ func TestFeedTracker_TickKeepsRecentFeed(t *testing.T) {
 // is non-permanent: once aged out, a witness can be re-added by publishing
 // again, with the gate still enforcing they're an active producer.
 func TestFeedTracker_RepublishAfterEvictionReadmits(t *testing.T) {
-	tr := NewFeedTracker()
+	tr := NewFeedTracker(false)
 	for h := uint64(1); h <= 200; h++ {
 		tr.RecordWitnessBlock("alice")
 	}
@@ -360,7 +360,7 @@ func TestFeedTracker_RepublishAfterEvictionReadmits(t *testing.T) {
 // Warmup wasn't called or failed — natural ProcessBlock ingest fills both
 // the signature window and MA ring after enough live blocks.
 func TestFeedTrackerWarmedNaturalFill(t *testing.T) {
-	tr := NewFeedTracker()
+	tr := NewFeedTracker(false)
 	for bh := uint64(1); bh <= 300; bh++ {
 		tr.RecordWitnessBlock("alice")
 		if bh == 1 || bh%100 == 0 {
@@ -385,7 +385,7 @@ func TestFeedTrackerWarmedNaturalFill(t *testing.T) {
 }
 
 func TestFeedTrackerLastTickReturnsDefensiveCopies(t *testing.T) {
-	tr := NewFeedTracker()
+	tr := NewFeedTracker(false)
 	for h := uint64(1); h <= 4; h++ {
 		tr.RecordWitnessBlock("alice")
 	}
@@ -409,5 +409,56 @@ func TestFeedTrackerLastTickReturnsDefensiveCopies(t *testing.T) {
 	s2 := tr.LastTick()
 	if len(s2.TrustedWitnessGroup) != 1 || s2.TrustedWitnessGroup[0] != "alice" {
 		t.Fatalf("unexpected group copy behavior: %v", s2.TrustedWitnessGroup)
+	}
+}
+
+func TestFeedTrackerTick_TestnetSymbols(t *testing.T) {
+	tr := NewFeedTracker(false)
+	for h := uint64(1); h <= 4; h++ {
+		tr.RecordWitnessBlock("alice")
+		tr.IngestTransactionOps(h, hive_blocks.Tx{
+			Operations: []hivego.Operation{{
+				Type: "feed_publish",
+				Value: map[string]interface{}{
+					"publisher": "alice",
+					"exchange_rate": map[string]interface{}{
+						"base":  "0.250 TBD",
+						"quote": "1.000 TESTS",
+					},
+				},
+			}},
+		})
+	}
+	tr.TickIfDue(100)
+	snap := tr.LastTick()
+	if !snap.TrustedHiveOK {
+		t.Fatal("TBD/TESTS feeds should produce a trusted hive price on non-mainnet")
+	}
+	if snap.TrustedHivePriceBps < 2_499 || snap.TrustedHivePriceBps > 2_501 {
+		t.Fatalf("priceBps=%d want ~2500", snap.TrustedHivePriceBps)
+	}
+}
+
+func TestFeedTrackerTick_TestnetSymbols_MainnetIgnored(t *testing.T) {
+	tr := NewFeedTracker(true)
+	for h := uint64(1); h <= 4; h++ {
+		tr.RecordWitnessBlock("alice")
+		tr.IngestTransactionOps(h, hive_blocks.Tx{
+			Operations: []hivego.Operation{{
+				Type: "feed_publish",
+				Value: map[string]interface{}{
+					"publisher": "alice",
+					"exchange_rate": map[string]interface{}{
+						"base":  "0.250 TBD",
+						"quote": "1.000 TESTS",
+					},
+				},
+			}},
+		})
+	}
+	tr.TickIfDue(100)
+	snap := tr.LastTick()
+	if snap.TrustedHiveOK {
+		t.Fatal("TBD/TESTS feeds should be silently dropped on mainnet")
 	}
 }
