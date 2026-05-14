@@ -29,6 +29,42 @@ func (se *StateEngine) GetLatestSettledEpoch() uint64 {
 	return epoch
 }
 
+// seedPendulumSettlement bootstraps the settlement chain on a network that
+// pre-dates inlined settlement. Run once at state-engine Init, before block
+// consumption.
+//
+// On an in-place upgrade the pendulum_settlements collection is empty, so
+// GetLatestSettledEpoch() returns 0 and the proposer's canHold gate
+// (latestSettled >= closingEpoch-1) can never be satisfied — elections halt.
+// Seeding a single marker for the network-wide PendulumSeedEpoch constant
+// fixes that: every node (in-place or reindexed) arrives at the identical
+// latestSettledEpoch, so composed settlement PrevEpoch values agree and the
+// gate passes for the first post-rollout election.
+//
+// No-ops when: PendulumSeedEpoch is 0 (fresh chain built with settlement
+// already present — latestSettledEpoch advances naturally from genesis), or a
+// marker already exists (already seeded, or the chain has advanced past it —
+// must not clobber real state with the seed value).
+func (se *StateEngine) seedPendulumSettlement() {
+	if se == nil || se.pendulumSettlementsDb == nil || se.sconf == nil {
+		return
+	}
+	seedEpoch := se.sconf.ConsensusParams().PendulumSeedEpoch
+	if seedEpoch == 0 {
+		return
+	}
+	if _, found := se.pendulumSettlementsDb.GetLatestSettledEpoch(); found {
+		return
+	}
+	if err := se.pendulumSettlementsDb.SaveMarker(pendulum_settlements_db.SettlementMarker{
+		Epoch: seedEpoch,
+	}); err != nil {
+		log.Error("pendulum settlement: seed marker persist failed", "seed_epoch", seedEpoch, "err", err)
+		return
+	}
+	log.Info("pendulum settlement: seeded bootstrap marker", "seed_epoch", seedEpoch)
+}
+
 // applyPendulumSettlement applies a SettlementRecord that landed inside a VSC
 // block. The record's bytes were already validated by the closing committee's
 // 2/3 BLS aggregate at block-acceptance time; this function adds two layers
