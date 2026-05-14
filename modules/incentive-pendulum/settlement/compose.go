@@ -116,10 +116,13 @@ func ComposeRecord(in ComposeInputs) (*SettlementRecord, error) {
 		})
 	}
 
+	// ComputeNodeDistributions floors every per-node share, so totalDistributed
+	// is always <= BucketBalanceHBD; residual is the rounding remainder, which
+	// the apply path leaves in the pendulum:nodes bucket to roll into the next
+	// epoch. The < 0 guard is purely defensive — floored shares cannot overspend
+	// the bucket.
 	residual := in.BucketBalanceHBD - totalDistributed
 	if residual < 0 {
-		// ComputeNodeDistributions assigns the floor residual to the largest
-		// stake — the sum should equal nodeShare exactly. Defensive guard.
 		return nil, fmt.Errorf("distribution sum %d exceeds bucket %d", totalDistributed, in.BucketBalanceHBD)
 	}
 
