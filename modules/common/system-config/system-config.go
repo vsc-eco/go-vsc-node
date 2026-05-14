@@ -185,6 +185,11 @@ func MainnetConfig() SystemConfig {
 			TssIndexHeight:       params.TSS_INDEX_HEIGHT,
 			ElectionInterval:     params.ELECTION_INTERVAL,
 			ElectionDupeFixEpoch: 1406,
+			// MUST be set to the last pre-rollout mainnet epoch before the
+			// pendulum settlement code ships to mainnet. Left 0 (no seed)
+			// until then — 0 on an established chain deadlocks the proposer's
+			// canHold gate, so this is a deliberate "configure before deploy".
+			PendulumSeedEpoch: 0,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -216,6 +221,11 @@ func TestnetConfig() SystemConfig {
 			TssIndexHeight:       1409500,
 			ElectionInterval:     3600,
 			ElectionDupeFixEpoch: 268,
+			// Last pre-rollout testnet epoch. Seeds latestSettledEpoch=515 on
+			// upgrade so the first post-rollout election (epoch 516) can fire;
+			// epoch 515's settlement is skipped as stale and its bucket HBD
+			// rolls into 516's settlement.
+			PendulumSeedEpoch: 515,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
