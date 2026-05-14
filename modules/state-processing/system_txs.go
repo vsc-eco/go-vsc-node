@@ -628,7 +628,9 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 				}
 			}
 
-			se.electionDb.StoreElection(elecResult)
+			if err := se.electionDb.StoreElection(elecResult); err != nil {
+				log.Error("failed to store election", "epoch", tx.Epoch, "err", err)
+			}
 			fmt.Println("Indexed Election", tx.Epoch)
 		} else {
 			fmt.Println("Election Failed verification")
