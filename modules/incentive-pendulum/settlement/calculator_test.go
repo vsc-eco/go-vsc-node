@@ -2,28 +2,54 @@ package settlement
 
 import "testing"
 
-func TestComputeNodeDistributionsResidualToLargestStake(t *testing.T) {
+func TestComputeNodeDistributionsFloorsAndLeavesRemainder(t *testing.T) {
 	bonds := map[string]int64{
 		"hive:a": 5,
 		"hive:b": 3,
 		"hive:c": 2,
 	}
+	// total=10, nodeShare=7 → floors: a=3 (7*5/10), b=2 (7*3/10), c=1 (7*2/10).
+	// sum=6; the leftover base unit is NOT assigned to anyone — ComposeRecord
+	// captures it as ResidualHBD and it rolls into the next epoch.
 	out := ComputeNodeDistributions(7, bonds)
 	if len(out) != 3 {
 		t.Fatalf("expected 3 distributions, got %d", len(out))
 	}
+	want := map[string]int64{"hive:a": 3, "hive:b": 2, "hive:c": 1}
 	sum := int64(0)
 	for _, d := range out {
+		if d.Amount != want[d.Account] {
+			t.Fatalf("%s: expected %d, got %d", d.Account, want[d.Account], d.Amount)
+		}
 		sum += d.Amount
 	}
-	if sum != 7 {
-		t.Fatalf("expected sum=7, got %d", sum)
+	if sum != 6 {
+		t.Fatalf("expected sum=6 (remainder of 1 left unassigned), got %d", sum)
 	}
-	// 7*(5/10)=3.5 floor 3 + residual 1 => 4
+}
+
+// TestComputeNodeDistributionsEqualStakeNoTieBreakAdvantage pins the property
+// the rollover change was made for: an equal-stake committee splits exactly
+// equally, with no base-unit advantage to whoever sorts first.
+func TestComputeNodeDistributionsEqualStakeNoTieBreakAdvantage(t *testing.T) {
+	bonds := map[string]int64{
+		"hive:magi.test1": 100,
+		"hive:magi.test2": 100,
+		"hive:magi.test3": 100,
+		"hive:magi.test4": 100,
+		"hive:magi.test5": 100,
+	}
+	// nodeShare=6, 5 equal nodes → each floor(6*100/500)=1, sum=5, remainder=1.
+	out := ComputeNodeDistributions(6, bonds)
+	sum := int64(0)
 	for _, d := range out {
-		if d.Account == "hive:a" && d.Amount != 4 {
-			t.Fatalf("expected hive:a residual assignment, got %d", d.Amount)
+		if d.Amount != 1 {
+			t.Fatalf("%s: expected equal share 1, got %d", d.Account, d.Amount)
 		}
+		sum += d.Amount
+	}
+	if sum != 5 {
+		t.Fatalf("expected sum=5 (remainder of 1 rolls over), got %d", sum)
 	}
 }
 

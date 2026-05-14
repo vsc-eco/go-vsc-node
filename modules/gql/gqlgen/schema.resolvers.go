@@ -537,6 +537,7 @@ func (r *queryResolver) GetElection(ctx context.Context, epoch model.Uint64) (*e
 	if result == nil {
 		return nil, fmt.Errorf("election not found or error occurred for epoch %d", uint64(epoch))
 	}
+	result.Settlement = r.electionSettlement(result.Data)
 	return result, nil
 }
 
@@ -547,6 +548,9 @@ func (r *queryResolver) ElectionByBlockHeight(ctx context.Context, blockHeight *
 		bh = uint64(*blockHeight)
 	}
 	res, err := r.Elections.GetElectionByHeight(bh)
+	if err == nil {
+		res.Settlement = r.electionSettlement(res.Data)
+	}
 	return &res, err
 }
 
