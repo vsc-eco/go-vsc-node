@@ -171,16 +171,18 @@ func (e *electionProposer) canHold() bool {
 		return false
 	}
 
-	// Pendulum settlement gate: the closing epoch must have its settlement
-	// record on chain before the next election can fire. The state engine's
-	// `vsc.election_result` handler enforces the same gate as defence in
-	// depth; this check here just prevents the proposer from broadcasting
-	// elections that will be rejected anyway.
+	// Pendulum settlement gate. `result.Epoch` is the active (closing) epoch
+	// N at e.bh; this proposer is about to propose epoch N+1, which embeds
+	// the settlement record for epoch N. Composing epoch N's record needs
+	// epoch N-1 already settled (ComposeRecord's PrevEpoch must be N-1 for a
+	// continuous chain), so the gate requires latestSettled >= N-1.
 	//
-	// `result.Epoch` is the active (closing) epoch at e.bh. We need it
-	// settled before proposing epoch+1.
-	if result.Epoch >= 1 && e.se != nil {
-		if e.se.GetLatestSettledEpoch() < result.Epoch {
+	// Gating on N (the old behaviour) deadlocked: epoch N is only settled
+	// once epoch N+1 lands, so "N settled before proposing N+1" can never
+	// be satisfied. Genesis path: closing epoch 0/1 have no prior settlement
+	// to gate on, and `result.Epoch >= 2` also guards the unsigned `- 1`.
+	if result.Epoch >= 2 && e.se != nil {
+		if e.se.GetLatestSettledEpoch() < result.Epoch-1 {
 			return false
 		}
 	}
