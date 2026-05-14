@@ -20,9 +20,9 @@ GQL_GENERATED := modules/gql/gqlgen/generated.go
 GO_SOURCES := $(shell find modules lib -type f -name '*.go') go.mod go.sum
 
 # Targets
-.PHONY: all clean install magid contract-deployer genesis-elector devnet-setup mapping-bot generate
+.PHONY: all clean install magid contract-deployer genesis-elector devnet-setup mapping-bot feed-publisher generate
 
-all: $(GQL_GENERATED) magid contract-deployer genesis-elector devnet-setup mapping-bot
+all: $(GQL_GENERATED) magid contract-deployer genesis-elector devnet-setup mapping-bot feed-publisher
 
 generate: $(GQL_GENERATED)
 
@@ -44,6 +44,9 @@ devnet-setup: $(BUILD_DIR)/devnet-setup
 mapping-bot: $(BUILD_DIR)/mapping-bot
 	@echo "Built mapping-bot"
 
+feed-publisher: $(BUILD_DIR)/feed-publisher
+	@echo "Built feed-publisher"
+
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
@@ -61,6 +64,9 @@ $(BUILD_DIR)/devnet-setup: $(BUILD_DIR) $(GO_SOURCES)
 
 $(BUILD_DIR)/mapping-bot: $(BUILD_DIR) $(GO_SOURCES)
 	go build $(BUILD_FLAGS) -o $@ vsc-node/cmd/mapping-bot
+
+$(BUILD_DIR)/feed-publisher: $(BUILD_DIR) $(GO_SOURCES)
+	go build $(BUILD_FLAGS) -o $@ vsc-node/cmd/feed-publisher
 
 install: all
 	mkdir -p $(INSTALL_DIR)
