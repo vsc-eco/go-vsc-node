@@ -314,15 +314,19 @@ func (t *FeedTracker) ingestFeedPublish(blockHeight uint64, value map[string]int
 	if er == nil {
 		return
 	}
-	base, _ := asString(er["base"])
-	quote, _ := asString(er["quote"])
-	if !t.onMainnet {
-		base = normalizeTestnetAsset(base)
-		quote = normalizeTestnetAsset(quote)
-	}
-	q, ok := hiveHBDPerHiveFromFeed(base, quote)
+	q, ok := quoteFromNAIExchangeRate(er)
 	if !ok {
-		return
+		// Legacy string-form exchange_rate ("1.000 HBD" / "16.000 HIVE").
+		base, _ := asString(er["base"])
+		quote, _ := asString(er["quote"])
+		if !t.onMainnet {
+			base = normalizeTestnetAsset(base)
+			quote = normalizeTestnetAsset(quote)
+		}
+		q, ok = hiveHBDPerHiveFromFeed(base, quote)
+		if !ok {
+			return
+		}
 	}
 	t.quotes[pub] = q
 	t.lastFeedBlk[pub] = blockHeight

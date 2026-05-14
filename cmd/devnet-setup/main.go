@@ -320,11 +320,12 @@ func main() {
 	// (~5 min); re-run devnet-setup -deployer-only to refresh them.
 	if !args.deployerOnly {
 		hiveOps = []hivego.HiveOperation{
-			feedPublishOperation{
-				Publisher: args.witCreator,
-				Base:      "0.250 TBD",
-				Quote:     "1.000 TESTS",
-			},
+			func() feedPublishOperation {
+				op := feedPublishOperation{Publisher: args.witCreator}
+				op.ExchangeRate.Base = "1.000 TBD"
+				op.ExchangeRate.Quote = "16.000 TESTS"
+				return op
+			}(),
 		}
 		txId, err = hiveClient.Broadcast(hiveOps, &args.wif)
 		if err != nil {
