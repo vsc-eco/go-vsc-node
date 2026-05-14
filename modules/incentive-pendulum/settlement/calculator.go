@@ -3,7 +3,6 @@ package settlement
 import (
 	"math/big"
 	"sort"
-	"strings"
 	"vsc-node/modules/incentive-pendulum"
 	"vsc-node/modules/incentive-pendulum/rewards"
 )
@@ -75,6 +74,16 @@ func CalculateSplitPreviewFixed(r int64, t int64, effectiveNumerator int64, effe
 	return out
 }
 
+// ComputeNodeDistributions splits nodeShare across the committee pro-rata by
+// effective bond, using integer floor division: each account receives
+// floor(nodeShare * stake / total).
+//
+// The rounding remainder (nodeShare - sum of floors) is intentionally NOT
+// assigned to any node. ComposeRecord captures it as ResidualHBD, which the
+// apply path leaves sitting in the pendulum:nodes bucket so it rolls into the
+// next epoch's distributable balance. This keeps an equal-stake committee
+// exactly equal — no base-unit advantage to whoever sorts first / stakes
+// most — while still conserving every base unit across epochs.
 func ComputeNodeDistributions(nodeShare int64, bonds map[string]int64) []Distribution {
 	if nodeShare <= 0 || len(bonds) == 0 {
 		return nil
@@ -96,36 +105,15 @@ func ComputeNodeDistributions(nodeShare int64, bonds map[string]int64) []Distrib
 	sort.Strings(accounts)
 
 	out := make([]Distribution, 0, len(accounts))
-	assigned := int64(0)
-	maxAccount := ""
-	maxStake := int64(0)
-
 	for _, account := range accounts {
 		stake := bonds[account]
 		if stake <= 0 {
 			continue
 		}
-		amount := (nodeShare * stake) / total
-		assigned += amount
 		out = append(out, Distribution{
 			Account: account,
-			Amount:  amount,
+			Amount:  (nodeShare * stake) / total,
 		})
-
-		if stake > maxStake || (stake == maxStake && strings.Compare(account, maxAccount) < 0) {
-			maxStake = stake
-			maxAccount = account
-		}
-	}
-
-	residual := nodeShare - assigned
-	if residual > 0 {
-		for i := range out {
-			if out[i].Account == maxAccount {
-				out[i].Amount += residual
-				break
-			}
-		}
 	}
 
 	return out
