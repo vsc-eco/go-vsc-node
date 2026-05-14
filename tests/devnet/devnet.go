@@ -190,11 +190,12 @@ func (d *Devnet) Start(ctx context.Context) error {
 		return fmt.Errorf("devnet-setup: %w", err)
 	}
 
-	log.Printf("[devnet] starting %d magi nodes...", d.cfg.Nodes)
-	names := make([]string, d.cfg.Nodes)
-	for i := range names {
+	log.Printf("[devnet] starting %d magi nodes and feed-publisher...", d.cfg.Nodes)
+	names := make([]string, d.cfg.Nodes+1)
+	for i := 0; i < d.cfg.Nodes; i++ {
 		names[i] = fmt.Sprintf("magi-%d", i+1)
 	}
+	names[d.cfg.Nodes] = "feed-publisher"
 	if err := d.compose(ctx, append([]string{"up", "-d"}, names...)...); err != nil {
 		return fmt.Errorf("starting magi nodes: %w", err)
 	}

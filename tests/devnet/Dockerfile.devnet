@@ -24,7 +24,8 @@ RUN . /home/app/.wasmedge/env && \
     go build -buildvcs=false -o devnet-setup vsc-node/cmd/devnet-setup && \
     go build -buildvcs=false -o genesis-elector vsc-node/cmd/genesis-elector && \
     go build -buildvcs=false -o contract-deployer vsc-node/cmd/contract-deployer && \
-    go build -buildvcs=false -o mapping-bot vsc-node/cmd/mapping-bot
+    go build -buildvcs=false -o mapping-bot vsc-node/cmd/mapping-bot && \
+    go build -buildvcs=false -o feed-publisher vsc-node/cmd/feed-publisher
 
 
 FROM rockylinux:9.3-minimal
@@ -46,6 +47,7 @@ COPY --from=build /home/app/app/devnet-setup .
 COPY --from=build /home/app/app/genesis-elector .
 COPY --from=build /home/app/app/contract-deployer .
 COPY --from=build /home/app/app/mapping-bot .
+COPY --from=build /home/app/app/feed-publisher .
 COPY --from=build /home/app/.wasmedge /home/app/.wasmedge
 
 ENV LD_LIBRARY_PATH=/home/app/.wasmedge/lib:$LD_LIBRARY_PATH

@@ -193,6 +193,20 @@ services:
     networks:
       - devnet
 
+  feed-publisher:
+    image: ${MAGI_IMAGE}
+    restart: unless-stopped
+    command:
+      - ./feed-publisher
+      - -data-dir=/data/devnet/feed-publisher
+    volumes:
+      - ${DEVNET_DATA_DIR}:/data/devnet
+    depends_on:
+      drone:
+        condition: service_healthy
+    networks:
+      - devnet
+
   contract-deployer:
     image: ${MAGI_IMAGE}
     profiles: ["tools"]
