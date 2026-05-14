@@ -29,9 +29,9 @@ import (
 var tssLog = vsclog.Module("tss")
 
 type contractExecutionContext struct {
-	ledger      ledgerSystem.LedgerSession
-	env         Environment
-	rcLimit     int64
+	ledger  ledgerSystem.LedgerSession
+	env     Environment
+	rcLimit int64
 	// Remaining RCs the RC payer can consume from their free tier (e.g.
 	// RC_HIVE_FREE_AMOUNT for Hive accounts minus already-frozen RCs). Used
 	// by PullBalance to decide how much HBD to reserve against RC consumption.
@@ -489,7 +489,9 @@ func (ctx *contractExecutionContext) SendBalance(to string, amount int64, asset 
 	return result.Ok(struct{}{})
 }
 
-func (ctx *contractExecutionContext) PendulumApplySwapFees(args wasm_context.PendulumSwapFeeArgs) result.Result[wasm_context.PendulumSwapFeeResult] {
+func (ctx *contractExecutionContext) PendulumApplySwapFees(
+	args wasm_context.PendulumSwapFeeArgs,
+) result.Result[wasm_context.PendulumSwapFeeResult] {
 	if ctx.pendulumApplier == nil {
 		return result.Err[wasm_context.PendulumSwapFeeResult](
 			errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("pendulum applier not configured")),
