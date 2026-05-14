@@ -72,6 +72,11 @@ type FeedTracker struct {
 
 	last FeedTickSnapshot
 
+	// onMainnet suppresses testnet symbol normalization (TBD→HBD, TESTS→HIVE).
+	// Mainnet witnesses publish canonical HBD/HIVE symbols; enabling normalization
+	// there would silently accept malformed feeds.
+	onMainnet bool
+
 	// warmedExplicit flips true after Warmup() completes a successful
 	// replay. Allows callers to gate on Warmed() before warmup has had a
 	// chance to fill the rolling state organically (the natural-fill path
@@ -80,8 +85,9 @@ type FeedTracker struct {
 	warmedExplicit bool
 }
 
-// NewFeedTracker builds a tracker with a 100-block signature window and a short MA over ticks.
-func NewFeedTracker() *FeedTracker {
+// NewFeedTracker builds a tracker for the given network. Pass onMainnet=true on
+// mainnet to suppress testnet symbol normalization (TBD→HBD, TESTS→HIVE).
+func NewFeedTracker(onMainnet bool) *FeedTracker {
 	return &FeedTracker{
 		win:          NewWitnessProductionWindow(100),
 		quotes:       make(map[string]Quote),
@@ -89,6 +95,7 @@ func NewFeedTracker() *FeedTracker {
 		witnessProps: make(map[string]WitnessProperties),
 		seenWitness:  make(map[string]struct{}),
 		ma:           NewMovingAverageRing(defaultMovingAvgTicks),
+		onMainnet:    onMainnet,
 	}
 }
 
@@ -309,6 +316,10 @@ func (t *FeedTracker) ingestFeedPublish(blockHeight uint64, value map[string]int
 	}
 	base, _ := asString(er["base"])
 	quote, _ := asString(er["quote"])
+	if !t.onMainnet {
+		base = normalizeTestnetAsset(base)
+		quote = normalizeTestnetAsset(quote)
+	}
 	q, ok := hiveHBDPerHiveFromFeed(base, quote)
 	if !ok {
 		return
@@ -338,6 +349,23 @@ func (t *FeedTracker) ingestWitnessSetProperties(value map[string]interface{}) {
 	wp.HBDInterestRateBps = rate
 	t.witnessProps[owner] = wp
 	t.seenWitness[owner] = struct{}{}
+}
+
+// normalizeTestnetAsset replaces devnet/testnet asset symbols with their
+// canonical mainnet equivalents: TBD→HBD, TESTS→HIVE. Called only on
+// non-mainnet networks (guarded by FeedTracker.onMainnet).
+func normalizeTestnetAsset(s string) string {
+	parts := strings.Fields(s)
+	if len(parts) != 2 {
+		return s
+	}
+	switch strings.ToLower(parts[1]) {
+	case "tbd":
+		parts[1] = "HBD"
+	case "tests":
+		parts[1] = "HIVE"
+	}
+	return parts[0] + " " + parts[1]
 }
 
 func normalizeOpType(opType string) string {

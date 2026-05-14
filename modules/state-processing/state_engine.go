@@ -2105,7 +2105,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		LedgerSystem: ls,
 		LedgerState:  ledgerState,
 
-		pendulumFeed:          pendulumoracle.NewFeedTracker(),
+		pendulumFeed:          pendulumoracle.NewFeedTracker(sconf.OnMainnet()),
 		pendulumSettlementsDb: pendulumSettlementsDb,
 		balanceDb:             balanceDb,
 	}

@@ -161,6 +161,21 @@ func main() {
 	depIdConf.SetUsername(args.deployerName)
 	depIdConf.SetActiveKey(args.wif)
 
+	// Init feed-publisher config dir. The feed-publisher reads hiveConfig.json
+	// and identityConfig.json from this directory; feedPublisherConfig.json is
+	// written with defaults on first startup by the binary itself.
+	fpDir := path.Join(args.dataDir, "feed-publisher")
+	fpHiveConf := streamer.NewHiveConfig(fpDir)
+	fpIdConf := common.NewIdentityConfig(fpDir)
+	fpA := aggregate.New([]aggregate.Plugin{fpHiveConf, fpIdConf})
+	if err := fpA.Init(); err != nil {
+		fmt.Printf("Error initializing feed-publisher config: %v\n", err)
+		os.Exit(1)
+	}
+	fpHiveConf.SetHiveURIs(strings.Split(args.hiveUrl, ","))
+	fpIdConf.SetUsername(args.witCreator)
+	fpIdConf.SetActiveKey(args.wif)
+
 	hiveOps = append(hiveOps, hivego.AccountCreateOperation{
 		Fee:            "0.000 TESTS",
 		Creator:        args.witCreator,
@@ -295,6 +310,29 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println(txId)
+
+	// Publish synthetic HIVE/HBD price feeds from the witness creator account
+	// (initminer on devnet). The oracle's FeedTracker trusts feeds only from
+	// accounts that have produced L1 blocks; on a HAF devnet initminer is the
+	// sole Hive witness and satisfies that requirement immediately. Without
+	// these feeds GeometryComputer.Compute returns HivePriceOK=false and swaps
+	// fail with "pendulum snapshot unavailable". Feeds expire after ~100 blocks
+	// (~5 min); re-run devnet-setup -deployer-only to refresh them.
+	if !args.deployerOnly {
+		hiveOps = []hivego.HiveOperation{
+			feedPublishOperation{
+				Publisher: args.witCreator,
+				Base:      "0.250 TBD",
+				Quote:     "1.000 TESTS",
+			},
+		}
+		txId, err = hiveClient.Broadcast(hiveOps, &args.wif)
+		if err != nil {
+			fmt.Println("failed to broadcast feed_publish tx", err)
+			os.Exit(1)
+		}
+		fmt.Println(txId)
+	}
 
 	os.Exit(0)
 }
