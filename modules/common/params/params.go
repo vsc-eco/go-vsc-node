@@ -54,6 +54,16 @@ type ConsensusParams struct {
 	TssIndexHeight       uint64 `json:"tssIndexHeight,omitempty"`
 	ElectionInterval     uint64 `json:"electionInterval,omitempty"`
 	ElectionDupeFixEpoch uint64 `json:"electionDupeFixEpoch,omitempty"`
+
+	// PendulumSeedEpoch bootstraps the pendulum settlement chain on a network
+	// that pre-dates inlined settlement. On startup, if the pendulum_settlements
+	// collection is empty, the state engine seeds a single marker for this epoch
+	// so GetLatestSettledEpoch() returns a value every node agrees on — without
+	// it, an in-place upgrade leaves latestSettledEpoch at 0 and the proposer's
+	// canHold gate deadlocks. Must be a fixed network-wide constant (same on
+	// every node, reindex or not). 0 means "no seed" — correct for fresh chains
+	// built from genesis with the settlement code already present.
+	PendulumSeedEpoch uint64 `json:"pendulumSeedEpoch,omitempty"`
 }
 
 type TssParams struct {

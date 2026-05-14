@@ -1827,6 +1827,11 @@ func (se *StateEngine) Init() error {
 		}
 	}
 
+	// One-time bootstrap: seed latestSettledEpoch on networks that pre-date
+	// inlined settlement, so an in-place upgrade doesn't deadlock the election
+	// proposer's canHold gate. No-op on fresh chains and after the first seed.
+	se.seedPendulumSettlement()
+
 	return nil
 }
 
