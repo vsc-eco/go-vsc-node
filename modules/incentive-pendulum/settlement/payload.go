@@ -32,15 +32,15 @@ func init() {
 // TODO(post-mvp): consider surfacing per-evidence breakdown if explorer demand
 // justifies the extra payload bytes.
 type RewardReductionEntry struct {
-	Account string `json:"account" refmt:"account"`
-	Bps     int    `json:"bps" refmt:"bps"`
+	Account string `json:"account" refmt:"account" graphql:"account"`
+	Bps     int    `json:"bps" refmt:"bps" graphql:"bps"`
 }
 
 // DistributionEntry is one row of the per-account HBD distribution list paid
 // out from the `pendulum:nodes` bucket at settlement time.
 type DistributionEntry struct {
-	Account string `json:"account" refmt:"account"`
-	HBDAmt  int64  `json:"hbd_amount" refmt:"hbd_amount"`
+	Account string `json:"account" refmt:"account" graphql:"account"`
+	HBDAmt  int64  `json:"hbd_amount" refmt:"hbd_amount" graphql:"hbd_amount"`
 }
 
 // SettlementRecord is the L2 op payload carried as a BlockTypePendulumSettlement
@@ -53,30 +53,30 @@ type DistributionEntry struct {
 // is byte-stable across nodes.
 type SettlementRecord struct {
 	// Epoch is the closing epoch — the one whose service the rewards pay for.
-	Epoch uint64 `json:"epoch" refmt:"epoch"`
+	Epoch uint64 `json:"epoch" refmt:"epoch" graphql:"epoch"`
 	// PrevEpoch is the epoch settled in the previous record. Used as a chain
 	// continuity check; the state engine's apply path requires
 	// PrevEpoch == latestSettledEpoch.
-	PrevEpoch uint64 `json:"prev_epoch" refmt:"prev_epoch"`
+	PrevEpoch uint64 `json:"prev_epoch" refmt:"prev_epoch" graphql:"prev_epoch"`
 
 	// Block-height bounds of the L2 evidence window the reductions cover.
 	// SnapshotRangeFrom is exclusive; SnapshotRangeTo is inclusive and
 	// equals the slot height the record was composed at.
-	SnapshotRangeFrom uint64 `json:"snapshot_range_from" refmt:"snapshot_range_from"`
-	SnapshotRangeTo   uint64 `json:"snapshot_range_to" refmt:"snapshot_range_to"`
+	SnapshotRangeFrom uint64 `json:"snapshot_range_from" refmt:"snapshot_range_from" graphql:"snapshot_range_from"`
+	SnapshotRangeTo   uint64 `json:"snapshot_range_to" refmt:"snapshot_range_to" graphql:"snapshot_range_to"`
 
 	// BucketBalanceHBD is the pendulum:nodes:hbd ledger balance the record was
 	// composed against. TotalDistributedHBD + ResidualHBD == BucketBalanceHBD.
-	BucketBalanceHBD    int64 `json:"bucket_balance_hbd" refmt:"bucket_balance_hbd"`
-	TotalDistributedHBD int64 `json:"total_distributed_hbd" refmt:"total_distributed_hbd"`
-	ResidualHBD         int64 `json:"residual_hbd" refmt:"residual_hbd"`
+	BucketBalanceHBD    int64 `json:"bucket_balance_hbd" refmt:"bucket_balance_hbd" graphql:"bucket_balance_hbd"`
+	TotalDistributedHBD int64 `json:"total_distributed_hbd" refmt:"total_distributed_hbd" graphql:"total_distributed_hbd"`
+	ResidualHBD         int64 `json:"residual_hbd" refmt:"residual_hbd" graphql:"residual_hbd"`
 
 	// RewardReductions is the per-witness consolidated bps applied to bonds
 	// before pro-rata distribution. Sorted lexicographically by Account.
-	RewardReductions []RewardReductionEntry `json:"reward_reductions" refmt:"reward_reductions"`
+	RewardReductions []RewardReductionEntry `json:"reward_reductions" refmt:"reward_reductions" graphql:"reward_reductions"`
 
 	// Distributions is the per-account HBD payout. Sorted lexicographically.
-	Distributions []DistributionEntry `json:"distributions" refmt:"distributions"`
+	Distributions []DistributionEntry `json:"distributions" refmt:"distributions" graphql:"distributions"`
 }
 
 // BuildSettlementRecord assembles a SettlementRecord with deterministic
