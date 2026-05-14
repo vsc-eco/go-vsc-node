@@ -602,7 +602,19 @@ func (ctx *contractExecutionContext) ContractCall(
 				Caller:               "contract:" + ctx.env.ContractId,
 				Sender:               ctx.env.Sender,
 				Intents:              opts.Intents,
-			}, ctx.rcLimit, 0, gasRemaining, ctx.ledger, ctx.callSession, nextRecursion)
+				// Propagate the pendulum oracle env so a contract reached via
+				// contracts.call can still read pendulum.* keys through
+				// system.get_env / get_env_key.
+				PendulumOracle: ctx.env.PendulumOracle,
+			}, ctx.rcLimit, 0, gasRemaining, ctx.ledger, ctx.callSession, nextRecursion,
+				// Propagate the pendulum applier into the nested context.
+				// Without this, a pool contract reached via contracts.call
+				// (e.g. router → pair) calls system.pendulum_apply_swap_fees
+				// against a nil applier and gets "pendulum applier not
+				// configured". When the parent context has no applier (e.g.
+				// the GraphQL simulate path), this propagates nil — same
+				// behaviour as before, just now consistent across the call depth.
+				WithPendulumApplier(ctx.pendulumApplier))
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)
