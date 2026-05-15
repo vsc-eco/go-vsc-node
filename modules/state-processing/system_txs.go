@@ -550,7 +550,8 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			// header references); applying it here advances
 			// latestSettledEpoch so the defensive gate below passes for
 			// the new flow.
-ttt//Verified and 2/3 majority signed			se.da.GetDag(parsedCid)
+			//Verified and 2/3 majority signed
+			se.da.GetDag(parsedCid)
 			node, _ := se.da.Get(parsedCid, nil)
 			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
 			elecResult := elections.ElectionResult{

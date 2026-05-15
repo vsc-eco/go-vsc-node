@@ -68,21 +68,12 @@ func (ls *ledgerSystem) PendulumDistribute(toAccount string, amount int64, txID 
 	}
 	ls.LedgerDb.StoreLedger(
 		ledger_db.LedgerRecord{
-			Id:          txID + "#distribute_debit#" + toAccount,
-			TxId:        txID,
-			BlockHeight: blockHeight,
-			Amount:      -amount,
-			Asset:       "hbd",
-			Owner:       PendulumNodesHBDBucket,
-			Type:        "pendulum_distribute",
-		},
-		ledger_db.LedgerRecord{
-			Id:          txID + "#distribute_credit#" + toAccount,
-			TxId:        txID,
+			Id:          txID + "#distribute#" + toAccount,
 			BlockHeight: blockHeight,
 			Amount:      amount,
 			Asset:       "hbd",
-			Owner:       toAccount,
+			From:        PendulumNodesHBDBucket,
+			To:          toAccount,
 			Type:        "pendulum_distribute",
 		},
 	)
@@ -104,7 +95,7 @@ func (ls *ledgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64)
 	}
 	total := int64(0)
 	for _, rec := range *records {
-		total += rec.Amount
+		total += rec.DeltaFor(bucket)
 	}
 	return total
 }

@@ -807,7 +807,7 @@ func seedPendulumBucket(t *testing.T, lDb ledgerDb.Ledger, txID string, amount i
 		BlockHeight: blockHeight,
 		Amount:      amount,
 		Asset:       "hbd",
-		Owner:       ledgerSystem.PendulumNodesHBDBucket,
+		To:          ledgerSystem.PendulumNodesHBDBucket,
 		Type:        "transfer",
 	})
 }
@@ -832,19 +832,20 @@ func TestPendulumLedgerOps(t *testing.T) {
 
 		bucketRecs, err := state.LedgerDb.GetLedgerRange(ledgerSystem.PendulumNodesHBDBucket, 0, 1000, "hbd")
 		require.NoError(t, err)
-		var foundDebit bool
+		var foundDist bool
 		for _, rec := range *bucketRecs {
-			if rec.Type == "pendulum_distribute" && rec.Amount == -3 {
-				foundDebit = true
+			if rec.Type == "pendulum_distribute" && rec.From == ledgerSystem.PendulumNodesHBDBucket && rec.Amount == 3 {
+				foundDist = true
 			}
 		}
-		assert.True(t, foundDebit)
+		assert.True(t, foundDist)
 
 		nodeRecs, err := state.LedgerDb.GetLedgerRange("hive:node1", 0, 1000, "hbd")
 		require.NoError(t, err)
 		require.NotEmpty(t, *nodeRecs)
 		assert.Equal(t, int64(3), (*nodeRecs)[0].Amount)
-		assert.Equal(t, "pendulum_distribute", (*nodeRecs)[0].Type)
+		assert.Equal(t, "hive:node1", (*nodeRecs)[0].To)
+			assert.Equal(t, "pendulum_distribute", (*nodeRecs)[0].Type)
 	})
 
 	t.Run("distribute fails on insufficient bucket balance", func(t *testing.T) {
