@@ -2,6 +2,7 @@ package tss
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -281,6 +282,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 					len(dispatcher.newPids),
 					newThreshold,
 				)
+				applySessionNonce(params.Parameters, dispatcher.sessionId)
 
 				dispatcher.party = reshareSecp256k1.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
 				initOnce.Do(func() { partyInitWg.Done() })
@@ -319,6 +321,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 					len(dispatcher.newPids),
 					newThreshold,
 				)
+				applySessionNonce(newParams.Parameters, dispatcher.sessionId)
 
 				dispatcher.newParty = reshareSecp256k1.NewLocalParty(newParams, save, dispatcher.p2pMsg, end)
 				initOnce.Do(func() { partyInitWg.Done() })
@@ -436,6 +439,8 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			}()
 			if myParty != nil {
 				params := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
+				// No-op for EdDSA resharing in tss-lib v3.0.0 (no SessionNonce support); see applySessionNonce.
+				applySessionNonce(params.Parameters, dispatcher.sessionId)
 				dispatcher.party = reshareEddsa.NewLocalParty(params, keydata, dispatcher.p2pMsg, endOld)
 				initOnce.Do(func() { partyInitWg.Done() })
 
@@ -463,6 +468,8 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			}()
 			if myNewParty != nil {
 				newParams := btss.NewReSharingParameters(btss.Edwards(), p2pCtx, newP2pCtx, myNewParty, len(sortedPids), threshold, len(dispatcher.newPids), newThreshold)
+				// No-op for EdDSA resharing in tss-lib v3.0.0 (no SessionNonce support); see applySessionNonce.
+				applySessionNonce(newParams.Parameters, dispatcher.sessionId)
 
 				dispatcher.newParty = reshareEddsa.NewLocalParty(newParams, save, dispatcher.p2pMsg, end)
 				initOnce.Do(func() { partyInitWg.Done() })
@@ -1715,6 +1722,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		dispatcher.tssMgr.GeneratePreParams()
 		preParams := <-dispatcher.tssMgr.preParams
 		parameters := btss.NewParameters(btss.S256(), p2pCtx, myParty, pl, threshold)
+		applySessionNonce(parameters, dispatcher.sessionId)
 		dispatcher.party = keyGenSecp256k1.NewLocalParty(parameters, dispatcher.p2pMsg, end, preParams)
 
 		go dispatcher.handleMsgs()
@@ -1773,6 +1781,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 	} else if dispatcher.algo == tss_helpers.SigningAlgoEddsa {
 		end := make(chan *keyGenEddsa.LocalPartySaveData)
 		parameters := btss.NewParameters(btss.Edwards(), p2pCtx, myParty, pl, threshold)
+		applySessionNonce(parameters, dispatcher.sessionId)
 		party := keyGenEddsa.NewLocalParty(parameters, dispatcher.p2pMsg, end)
 
 		dispatcher.party = party
@@ -2136,4 +2145,23 @@ func (result TimeoutResult) Serialize() tss_helpers.BaseCommitment {
 		BlockHeight: result.BlockHeight,
 		Epoch:       result.Epoch,
 	}
+}
+
+// applySessionNonce binds GG20 keygen/resharing rounds to a unique session ID so
+// proofs from one session cannot be replayed in another (CVE-2022-47930). The
+// nonce is hashed into the tss-lib SSID (round_1 copies it to round.temp.ssidNonce,
+// which getSSID folds into the SHA512_256 hash); when unset, tss-lib defaults it to 0.
+//
+// Effective for: ECDSA keygen, ECDSA resharing, EdDSA keygen.
+// NO-OP for: EdDSA resharing — tss-lib v3.0.0's eddsa/resharing package has no
+// SessionNonce/ssidNonce/getSSID plumbing, so SetSessionNonce on EdDSA reshare
+// params is never read. The calls are left in place for call-site symmetry and to
+// take effect automatically if upstream adds support. Acceptable for now because no
+// protocol currently uses EdDSA; revisit before enabling EdDSA resharing in production.
+func applySessionNonce(params *btss.Parameters, sessionId string) {
+	if sessionId == "" {
+		return
+	}
+	sum := sha256.Sum256([]byte(sessionId))
+	params.SetSessionNonce(new(big.Int).SetBytes(sum[:]))
 }
