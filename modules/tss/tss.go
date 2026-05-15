@@ -1366,48 +1366,51 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		tssMgr.bufferLock.Unlock()
 	}
 
-	startedDispatcher := make([]Dispatcher, 0)
-	for _, dispatcher := range dispatchers {
-		log.Trace("dispatcher started")
-		//If start fails then done is never possible
-		//todo: handle this better
-		var err error
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					err = fmt.Errorf("panic in dispatcher Start: %v", r)
-					log.Error("panic recovered in dispatcher.Start", "sessionId", dispatcher.SessionId(), "panic", r)
-				}
-			}()
-			err = dispatcher.Start()
-		}()
-
-		if err == nil {
-			startedDispatcher = append(startedDispatcher, dispatcher)
-		} else {
-			// Start() failed before baseStart() could release startLock and
-			// cancel msgCtx. Clean up so HandleP2P callers don't deadlock on
-			// startWait() and reshareMsgs/handleMsgs goroutines don't leak.
-			dispatcher.Cleanup()
-
-			sessionId := dispatcher.SessionId()
-			tssMgr.bufferLock.Lock()
-			delete(tssMgr.sigChannels, sessionId)
-			delete(tssMgr.actionMap, sessionId)
-			tssMgr.messageBuffer.Delete(sessionId)
-			delete(tssMgr.sessionMap, sessionId)
-			tssMgr.bufferLock.Unlock()
-		}
-		log.Trace("dispatcher Start result", "err", err)
-	}
-
-	// Release the lock immediately after starting dispatchers.
-	// The Done/Await goroutine below only reads from dispatchers and writes
-	// to shared maps protected by bufferLock. Holding tssMgr.lock through
-	// the entire await (including timeouts) blocks subsequent RunActions calls,
-	// causing cascading signing failures when reshare retries overlap with
-	// the next sign interval.
+	// Release the lock immediately after all dispatchers are created
+	// and registered in the shared maps. The Start() calls below
+	// (which include a ~5s ReshareSyncDelay per sign/reshare dispatcher)
+	// are launched in parallel goroutines so the sync delay does not
+	// serialize under the lock. Holding the lock through N sequential
+	// 5-second Start() calls would block subsequent RunActions for
+	// minutes when there are many actions, causing cascading timeouts.
 	tssMgr.lock.Unlock()
+
+	startedDispatcher := make([]Dispatcher, 0)
+	var startMu sync.Mutex
+	var startWg sync.WaitGroup
+	for _, dispatcher := range dispatchers {
+		startWg.Add(1)
+		go func(dsc Dispatcher) {
+			defer startWg.Done()
+			var err error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						err = fmt.Errorf("panic in dispatcher Start: %v", r)
+						log.Error("panic recovered in dispatcher.Start", "sessionId", dsc.SessionId(), "panic", r)
+					}
+				}()
+				err = dsc.Start()
+			}()
+
+			startMu.Lock()
+			if err == nil {
+				startedDispatcher = append(startedDispatcher, dsc)
+			} else {
+				dsc.Cleanup()
+				sessionId := dsc.SessionId()
+				tssMgr.bufferLock.Lock()
+				delete(tssMgr.sigChannels, sessionId)
+				delete(tssMgr.actionMap, sessionId)
+				tssMgr.messageBuffer.Delete(sessionId)
+				delete(tssMgr.sessionMap, sessionId)
+				tssMgr.bufferLock.Unlock()
+			}
+			startMu.Unlock()
+			log.Trace("dispatcher Start result", "err", err)
+		}(dispatcher)
+	}
+	startWg.Wait()
 
 	go func() {
 		defer func() {
