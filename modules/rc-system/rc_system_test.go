@@ -51,6 +51,10 @@ func (m *mockLedgerSystem) IndexActions(actionUpdate map[string]interface{}, ext
 func (m *mockLedgerSystem) Deposit(deposit ledgerSystem.Deposit) string { return "" }
 func (m *mockLedgerSystem) IngestOplog(oplog []ledgerSystem.OpLogEvent, options ledgerSystem.OplogInjestOptions) {
 }
+func (m *mockLedgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64) int64 { return 0 }
+func (m *mockLedgerSystem) PendulumDistribute(toAccount string, amount int64, txID string, blockHeight uint64) ledgerSystem.LedgerResult {
+	return ledgerSystem.LedgerResult{}
+}
 func (m *mockLedgerSystem) NewEmptySession(state *ledgerSystem.LedgerState, startHeight uint64) ledgerSystem.LedgerSession {
 	return nil
 }
