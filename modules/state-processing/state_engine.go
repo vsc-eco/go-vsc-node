@@ -977,6 +977,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							tssLog.Warn("BLS verification failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "cid", commitmentCid)
 							continue
 						}
+
+						// Quorum gate: require 2/3 weighted BLS support (matches waitForSigs in tss.go).
+						signingScore, total := elections.CalculateSigningScore(circuit, electionData)
+						if total == 0 || signingScore*3 < total*2 {
+							tssLog.Warn("BLS quorum not met for commitment",
+								"keyId", commitment.KeyId, "sessionId", commitment.SessionId,
+								"score", signingScore, "total", total, "type", commitment.Type)
+							continue
+						}
 						if block.BlockNumber <= tssIndexHeight {
 							tssLog.Verbose("skipped (before TssIndexHeight)", "keyId", commitment.KeyId, "blockHeight", block.BlockNumber, "tssIndexHeight", tssIndexHeight)
 							continue
