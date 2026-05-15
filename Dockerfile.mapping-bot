@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Use the official Go image as the base image
-FROM golang:1.24.1 AS build
+FROM golang:1.25.10 AS build
 
 # Wasmedge Install Dependencies
 RUN apt update && apt install -y git python3
