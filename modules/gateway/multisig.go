@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -318,7 +319,11 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	slices.SortFunc(gatewayKeys, func(a, b [2]interface{}) int {
 		aKey := a[0].(string)
 		bKey := b[0].(string)
-		return int(weightMap[aKey]) - int(weightMap[bKey])
+		// review2 MEDIUM #57: int(uint64) truncates for weights >= 2^63
+		// and int(a)-int(b) overflows for large gaps, producing a wrong
+		// (or non-transitive) gateway-key order. Compare the uint64
+		// weights directly.
+		return cmp.Compare(weightMap[aKey], weightMap[bKey])
 	})
 
 	cutOff := 0
