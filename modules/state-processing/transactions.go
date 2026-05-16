@@ -674,6 +674,18 @@ func (tx *TxConsensusStake) ExecuteTx(
 		}
 	}
 
+	// review2 MEDIUM #45: the asset field is part of the signed payload but
+	// was never validated; the ledger always stakes "hive", so a tx claiming
+	// asset "hbd"/"hbd_savings"/etc was silently treated as a HIVE stake.
+	// Reject anything other than the empty default or explicit "hive".
+	if tx.Asset != "" && tx.Asset != "hive" {
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid asset",
+			RcUsed:  50,
+		}
+	}
+
 	amount, err := common.SafeParseHiveFloat(tx.Amount)
 
 	if err != nil {
@@ -759,6 +771,17 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
+			RcUsed:  50,
+		}
+	}
+
+	// review2 MEDIUM #45: see TxConsensusStake — the asset field was never
+	// validated; the ledger always unstakes "hive". Reject anything other
+	// than the empty default or explicit "hive".
+	if tx.Asset != "" && tx.Asset != "hive" {
+		return TxResult{
+			Success: false,
+			Ret:     "Invalid asset",
 			RcUsed:  50,
 		}
 	}
