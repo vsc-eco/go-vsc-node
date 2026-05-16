@@ -67,6 +67,19 @@ func (g *gqlManager) Init() error {
 	mux.Handle("POST /api/v1/graphql", gqlServer)
 	mux.Handle("GET /sandbox", pg.ApolloSandboxHandler("Apollo Sandbox", "/api/v1/graphql"))
 
+	// review2 HIGH #18: previously /health (and any non-GraphQL path) fell
+	// through to the catch-all and returned SPA HTML, so external probes
+	// could not tell "node up" from "serving stale HTML". This is a
+	// *liveness* probe only (HTTP server responsive). Readiness/solvency
+	// (L2-vs-L1 reconciliation, sync lag) is the separate hardening H1
+	// system and is intentionally NOT implemented here — it needs
+	// DB/head-height wiring and is consensus-sensitive.
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
