@@ -102,7 +102,15 @@ func (d BlsDID) String() string {
 
 // returns the key part of the DID ("did:key:z<what_is_returned>")
 func (d BlsDID) Identifier() *BlsPubKey {
-	base58Encoded := string(d)[len(BlsDIDPrefix):]
+	// review2 MEDIUM #100: DIDs come from untrusted on-chain data (election
+	// keys, tss commitments). Guard every slice/array conversion so a
+	// malformed DID returns nil instead of panicking (slice bounds out of
+	// range) in block/commitment processing.
+	s := string(d)
+	if len(s) < len(BlsDIDPrefix) {
+		return nil
+	}
+	base58Encoded := s[len(BlsDIDPrefix):]
 
 	// decode from base58
 	_, data, err := multibase.Decode(base58Encoded)
@@ -112,7 +120,13 @@ func (d BlsDID) Identifier() *BlsPubKey {
 	}
 
 	// remove indicator bytes
+	if len(data) < 2 {
+		return nil
+	}
 	pubKeyBytes := data[2:]
+	if len(pubKeyBytes) != 48 {
+		return nil
+	}
 
 	// decompress the pub key
 	pubKey := new(BlsPubKey)
@@ -129,6 +143,11 @@ func (d BlsDID) Verify(blk blocks.Block, sig string) (bool, error) {
 	cid := blk.Cid()
 	// get the pub key from the DID
 	pubKey := d.Identifier()
+	// review2 MEDIUM #101: a malformed DID makes Identifier() nil; don't
+	// hand nil to bls.Verify.
+	if pubKey == nil {
+		return false, fmt.Errorf("invalid DID: %s", d.String())
+	}
 
 	// decode the sig from base64
 	sigBytes, err := base64.StdEncoding.DecodeString(sig)
@@ -441,6 +460,10 @@ func (b *BlsCircuit) add(member Member, sig string) (bool, error) {
 
 func (b *BlsCircuit) addRaw(DID BlsDID, sigBytes []byte) (bool, error) {
 	pubKey := DID.Identifier()
+	// review2 MEDIUM #101: reject a malformed DID instead of nil→bls.Verify.
+	if pubKey == nil {
+		return false, fmt.Errorf("invalid DID: %s", DID.String())
+	}
 
 	if len(sigBytes) != 96 {
 		return false, fmt.Errorf("invalid signature length for DID %s: got %d, want 96", DID.String(), len(sigBytes))
@@ -683,6 +706,14 @@ func (b *BlsCircuit) Verify() (bool, []BlsDID, error) {
 	for idx, did := range b.keyset {
 		if b.bitVector.Bit(idx) == 1 {
 			pubKey := did.Identifier()
+			// review2 MEDIUM #101: a malformed DID in the keyset would put a
+			// nil into includedPubKeys and panic bls.AggregatePubkeys. The
+			// keyset is on-chain election data (identical across nodes), so
+			// failing the whole verify deterministically is safe and strictly
+			// better than a node-wide panic.
+			if pubKey == nil {
+				return false, nil, fmt.Errorf("invalid DID in keyset: %s", did.String())
+			}
 			includedPubKeys = append(includedPubKeys, pubKey)
 			includedDIDs = append(includedDIDs, did)
 		}
