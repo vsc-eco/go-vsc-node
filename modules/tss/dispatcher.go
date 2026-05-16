@@ -1008,9 +1008,10 @@ func (dispatcher *SignDispatcher) Start() error {
 		threshold, err := tss_helpers.GetThreshold(dispatcher.origCommitteeSize)
 
 		if err != nil {
-
+			// review2 HIGH #31: surface the error instead of `return nil`,
+			// which claimed success and let the session hang silently.
 			log.Trace("sign threshold error", "err", err)
-			return nil
+			return err
 		}
 
 		params := btss.NewParameters(btss.S256(), p2pCtx, myParty, len(sortedPids), threshold)
@@ -1083,7 +1084,8 @@ func (dispatcher *SignDispatcher) Start() error {
 		threshold, err := tss_helpers.GetThreshold(dispatcher.origCommitteeSize)
 
 		if err != nil {
-			return nil
+			// review2 HIGH #31: surface the error instead of `return nil`.
+			return err
 		}
 
 		params := btss.NewParameters(btss.Edwards(), p2pCtx, myParty, len(sortedPids), threshold)
