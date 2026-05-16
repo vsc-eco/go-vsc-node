@@ -603,6 +603,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					token = "hbd"
 				}
 
+				// review2 LOW #104: an unrecognised NAI left token == "",
+				// and the op was still credited as an empty-asset deposit.
+				// Skip transfers whose asset we don't track.
+				if token == "" {
+					continue
+				}
+
 				if op.Type == "transfer_to_savings" && token == "hbd" {
 					if token == "hbd" {
 						//Labeled as savings as there can be hbd savings, hive savings, and hive staked, but not hbd staked (within hive)
