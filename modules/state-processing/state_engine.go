@@ -586,11 +586,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 				//TODO: Finish up support for directly handling staked transfers
 
+				// review2 MEDIUM #86: these came from untrusted L1 op
+				// payloads via bare type assertions; a malformed transfer
+				// (amount not an object, missing fields) panicked and
+				// crashed block processing. Comma-ok and skip the op.
+				amountMap, ok := op.Value["amount"].(map[string]interface{})
+				if !ok {
+					continue
+				}
+
 				var token string
-				if op.Value["amount"].(map[string]interface{})["nai"] == "@@000000021" {
+				if amountMap["nai"] == "@@000000021" {
 					token = "hive"
 
-				} else if op.Value["amount"].(map[string]interface{})["nai"] == "@@000000013" {
+				} else if amountMap["nai"] == "@@000000013" {
 					token = "hbd"
 				}
 
@@ -606,13 +615,22 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						continue
 					}
 				}
-				amount, _ := strconv.ParseFloat(op.Value["amount"].(map[string]interface{})["amount"].(string), 64)
+				amountStr, ok := amountMap["amount"].(string)
+				if !ok {
+					continue // review2 #86
+				}
+				amount, _ := strconv.ParseFloat(amountStr, 64)
 
 				amt := int64(amount)
 
 				if op.Value["to"] == "vsc.gateway" {
-					depositedFrom := "hive:" + op.Value["from"].(string)
-					depositMemo := op.Value["memo"].(string)
+					fromStr, ok := op.Value["from"].(string)
+					if !ok {
+						continue // review2 #86
+					}
+					// memo is optional on L1; default to "" rather than panic.
+					depositMemo, _ := op.Value["memo"].(string)
+					depositedFrom := "hive:" + fromStr
 					leDeposit := ledgerSystem.Deposit{
 						Id:     MakeTxId(tx.TransactionID, opIndex),
 						Asset:  token,
