@@ -142,16 +142,21 @@ func (s *StreamReader) Init() error {
 // begins the polling loop for the StreamReader
 func (s *StreamReader) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
-		defer inteceptError()
+		defer inteceptError(reject)
 		s.pollDb(reject)
 		resolve(nil)
 	})
 }
 
-func inteceptError() {
-	MyError := recover()
-	if MyError != nil {
-		vlog.Warn("intercepted panic", "err", MyError)
+// review2 HIGH #78: this previously did `recover()` + `vlog.Warn` only and
+// never rejected the promise. A panic in the poll loop therefore killed the
+// block pipeline silently — promise neither resolved nor rejected, no
+// restart, no health signal. It now rejects so the supervisor observes the
+// failure.
+func inteceptError(reject func(error)) {
+	if myError := recover(); myError != nil {
+		vlog.Error("streamer StreamReader panic — rejecting", "err", myError)
+		reject(fmt.Errorf("streamer: StreamReader panicked: %v", myError))
 	}
 }
 
