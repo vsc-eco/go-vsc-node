@@ -32,12 +32,22 @@ import (
 var log = vsclog.Module("gateway")
 
 // VSC On chain gateway wallet
+// hiveAccountClient is the slice of *hivego.HiveRpcNode that getThreshold
+// needs. Extracted to an interface (review2 HIGH #80) so the
+// getThreshold-error path is unit-testable; *hivego.HiveRpcNode satisfies it,
+// so wiring is behaviour-neutral. (hiveClient stays a concrete pointer for
+// p2p.go's hiveClient.ChainID field access.)
+type hiveAccountClient interface {
+	GetAccount(accountNames []string) ([]hivego.AccountData, error)
+}
+
 type MultiSig struct {
 	sconf         systemconfig.SystemConfig
 	identity      common.IdentityConfig
 	ledgerActions ledgerDb.BridgeActions
 	hiveCreator   hive.HiveTransactionCreator
 	hiveClient    *hivego.HiveRpcNode
+	accountClient hiveAccountClient
 	electionDb    elections.Elections
 	witnessDb     witnesses.Witnesses
 	balanceDb     ledgerDb.Balances
@@ -666,7 +676,7 @@ func (ms *MultiSig) ClaimHBDInterest() {
 }
 
 func (ms *MultiSig) getThreshold() (int, []string, []int, error) {
-	accountData, err := ms.hiveClient.GetAccount([]string{ms.sconf.GatewayWallet()})
+	accountData, err := ms.accountClient.GetAccount([]string{ms.sconf.GatewayWallet()})
 
 	if err != nil {
 		return 0, nil, nil, err
@@ -852,6 +862,7 @@ func New(
 		identity:      identityConfig,
 		sconf:         sconf,
 		hiveClient:    hiveClient,
+		accountClient: hiveClient,
 
 		msgChan: make(map[string]chan *p2pMessage),
 	}
