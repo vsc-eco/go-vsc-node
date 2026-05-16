@@ -57,6 +57,10 @@ func main() {
 	}
 	initLogLevel(args.logLevel)
 
+	if args.pprofAddr != "" {
+		startPprofServer(args.pprofAddr)
+	}
+
 	dbConf := db.NewDbConfig(args.dataDir)
 	p2pConf := p2pInterface.NewConfig(args.dataDir)
 	gqlConf := gql.NewGqlConfig(args.dataDir)

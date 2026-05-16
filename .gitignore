@@ -13,8 +13,8 @@ build
 cmd/mapping-bot/*datastore
 modules/gql/gqlgen/generated.go
 modules/gql/gqlgen/models.go
-vsc-node
-contract-deployer
+/vsc-node
+/contract-deployer
 /feed-publisher
 *.tar
 logs/

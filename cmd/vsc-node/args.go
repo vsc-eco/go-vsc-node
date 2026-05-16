@@ -16,6 +16,7 @@ type args struct {
 	disableTss    bool
 	logLevel      string
 	sysconfigPath string
+	pprofAddr     string
 }
 
 func ParseArgs() (args, error) {
@@ -30,6 +31,7 @@ func ParseArgs() (args, error) {
 	disableTss := flag.Bool("disable-tss", false, "Disable TSS plugin (testnet only)")
 	logLevel := flag.String("log-level", "info", "Log level spec: error|warn|info|debug|verbose|trace or comma-separated with module overrides (e.g. error,tss=verbose,bp=info)")
 	sysconfigPath := flag.String("sysconfig", "", "Path to JSON file with system config overrides")
+	pprofAddr := flag.String("pprof", "", "If set, expose net/http/pprof on this address (e.g. localhost:6060). Empty disables.")
 
 	flag.Parse()
 
@@ -40,6 +42,7 @@ func ParseArgs() (args, error) {
 		*disableTss,
 		*logLevel,
 		*sysconfigPath,
+		*pprofAddr,
 	}, nil
 }
 
