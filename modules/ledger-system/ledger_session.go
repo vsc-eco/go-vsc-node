@@ -6,6 +6,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	// aliased: several methods here take a `params ConsensusParams`
+	// argument that would otherwise shadow this package.
+	commonParams "vsc-node/modules/common/params"
 )
 
 type ledgerSession struct {
@@ -104,6 +108,15 @@ func (ledgerSession *ledgerSession) Withdraw(withdraw WithdrawParams) LedgerResu
 		return LedgerResult{
 			Ok:  false,
 			Msg: "invalid amount",
+		}
+	}
+
+	// review2 LOW #108: reject dust withdrawals — each one triggers a
+	// full gateway multisig Hive transfer regardless of size.
+	if withdraw.Amount < commonParams.MINIMUM_WITHDRAWAL {
+		return LedgerResult{
+			Ok:  false,
+			Msg: "amount below minimum withdrawal",
 		}
 	}
 
