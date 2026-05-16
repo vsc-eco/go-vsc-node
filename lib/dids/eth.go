@@ -710,8 +710,11 @@ func ConvertToEIP712TypedData(
 		}
 	}
 
+	// review2 MEDIUM #103: range dataMap, not data.(map…). When data is a
+	// struct the !ok branch above built dataMap via marshal/unmarshal;
+	// re-asserting the original struct as a map panicked.
 	newMap := make(map[any]interface{})
-	for k, v := range data.(map[string]interface{}) {
+	for k, v := range dataMap {
 		newMap[k] = v
 	}
 
