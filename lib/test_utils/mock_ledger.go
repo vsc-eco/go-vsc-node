@@ -168,6 +168,16 @@ func (m *MockActionsDb) ExecuteComplete(actionId *string, ids ...string) {
 	}
 }
 
+func (m *MockActionsDb) SetProcessing(ids ...string) {
+	for _, id := range ids {
+		action, exists := m.Actions[id]
+		if exists && action.Status == "pending" {
+			action.Status = "processing"
+			m.Actions[id] = action
+		}
+	}
+}
+
 func (m *MockActionsDb) Get(id string) (*ledgerDb.ActionRecord, error) {
 	d, exists := m.Actions[id]
 	if !exists {
@@ -182,9 +192,30 @@ func (m *MockActionsDb) SetStatus(id string, status string) {
 	m.Actions[id] = action
 }
 
-// Multisig gatway use only, not implemented in mocks
+// Faithful in-memory mirror of actionsDb.GetPendingActions:
+// status=="pending", block_height<=bh, type in t (when t non-empty),
+// sorted by block_height then id.
 func (m *MockActionsDb) GetPendingActions(bh uint64, t ...string) ([]ledgerDb.ActionRecord, error) {
-	return make([]ledgerDb.ActionRecord, 0), nil
+	result := make([]ledgerDb.ActionRecord, 0)
+	for _, action := range m.Actions {
+		if action.Status != "pending" {
+			continue
+		}
+		if action.BlockHeight > bh {
+			continue
+		}
+		if len(t) > 0 && !slices.Contains(t, action.Type) {
+			continue
+		}
+		result = append(result, action)
+	}
+	slices.SortFunc(result, func(a, b ledgerDb.ActionRecord) int {
+		if a.BlockHeight != b.BlockHeight {
+			return int(a.BlockHeight) - int(b.BlockHeight)
+		}
+		return strings.Compare(a.Id, b.Id)
+	})
+	return result, nil
 }
 
 func (m *MockActionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([]ledgerDb.ActionRecord, error) {
