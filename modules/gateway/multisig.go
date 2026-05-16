@@ -506,6 +506,15 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 
 	txId, _ := tx.GenerateTrxId()
 
+	// CRITICAL #1 (gateway double-spend): the batch is now committed to be
+	// broadcast. Transition every selected action out of "pending" so the
+	// next ACTION_INTERVAL tick does not re-select and re-pay the same
+	// withdrawals before this batch's L1 `vsc.actions` header is re-ingested
+	// (IndexActions -> ExecuteComplete). Fail-safe: if the header never
+	// confirms the action stays "processing" (recoverable) — it is never
+	// auto-requeued, so it can never be paid twice.
+	ms.ledgerActions.SetProcessing(executedOps...)
+
 	//Do signing
 
 	return signingPackage{
