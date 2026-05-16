@@ -204,3 +204,14 @@ func (tsc *tssCommitments) GetBlames(epoch *uint64) ([]TssCommitment, error) {
 func NewCommitments(d *vsc.VscDb) TssCommitments {
 	return &tssCommitments{db.NewCollection(d.DbInstance, "tss_commitments")}
 }
+
+// review2 HIGH #27: tss_commitments is queried by {key_id, block_height}
+// (GetCommitmentByHeight) with only the _id index.
+func (e *tssCommitments) Init() error {
+	if err := e.Collection.Init(); err != nil {
+		return err
+	}
+	return e.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "key_id", Value: 1}, {Key: "block_height", Value: -1}},
+	})
+}
