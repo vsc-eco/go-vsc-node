@@ -892,11 +892,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							continue
 						}
 
-						verified, _, _ := circuit.Verify()
+						verified, includedDIDs, _ := circuit.Verify()
 						tssIndexHeight := se.SystemConfig().ConsensusParams().TssIndexHeight
 
 						if !verified {
 							tssLog.Warn("BLS verification failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "cid", commitmentCid)
+							continue
+						}
+						// review2 CRITICAL #6: a valid aggregate is not enough —
+						// it must carry >= 2/3 of the election weight, the same
+						// rule the leader enforces in waitForSigs. Without this,
+						// a sub-quorum commitment (e.g. 3/6) was accepted and
+						// could activate a TSS key.
+						if !BlsQuorumMet(includedDIDs, electionData.Members, electionData.Weights) {
+							tssLog.Warn("BLS sub-quorum commitment rejected", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "signers", len(includedDIDs), "members", len(electionData.Members))
 							continue
 						}
 						if block.BlockNumber <= tssIndexHeight {
