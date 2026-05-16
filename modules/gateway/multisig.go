@@ -133,7 +133,14 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 		Data: string(sigJson),
 	})
 
-	threshold, _, _, _ := ms.getThreshold()
+	threshold, _, _, thErr := ms.getThreshold()
+	if thErr != nil || threshold <= 0 {
+		// review2 HIGH #80: never proceed with threshold==0 — it makes the
+		// later `weight == threshold` gate trivially true and broadcasts an
+		// under-signed transaction.
+		fmt.Println("keyRotation getThreshold failed, aborting", thErr, threshold)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -182,7 +189,13 @@ func (ms *MultiSig) TickActions(bh uint64) {
 	}()
 
 	fmt.Println("TickActions getThreshold()")
-	threshold, _, _, _ := ms.getThreshold()
+	threshold, _, _, thErr := ms.getThreshold()
+	if thErr != nil || threshold <= 0 {
+		// review2 HIGH #80: see keyRotation — abort instead of broadcasting
+		// an under-signed actions transaction.
+		fmt.Println("TickActions getThreshold failed, aborting", thErr, threshold)
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
@@ -231,7 +244,13 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 		})
 	}()
 
-	threshold, _, _, _ := ms.getThreshold()
+	threshold, _, _, thErr := ms.getThreshold()
+	if thErr != nil || threshold <= 0 {
+		// review2 HIGH #80: see keyRotation — abort instead of broadcasting
+		// an under-signed fr_sync transaction.
+		fmt.Println("TickSyncFr getThreshold failed, aborting", thErr, threshold)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -310,7 +329,9 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	eb[1] = 1
 
 	totalWeight := len(gatewayKeys)
-	weightThreshold := int(totalWeight * 2 / 3)
+	// review2 HIGH #29: ceil(2N/3), not floor — floor let a sub-2/3 set of
+	// gateway signers move funds.
+	weightThreshold := gatewayWeightThreshold(totalWeight)
 
 	var o [2]interface{}
 	o[0] = "vsc.dao"
@@ -670,7 +691,13 @@ func (ms *MultiSig) waitForSigs(
 	tx hivego.HiveTransaction,
 	hivetxId string,
 ) ([]string, uint64, error) {
-	threshold, publicList, weights, _ := ms.getThreshold()
+	threshold, publicList, weights, thErr := ms.getThreshold()
+	if thErr != nil || threshold <= 0 {
+		// review2 HIGH #80: with threshold==0 the collection loop
+		// `for threshold > signedWeight` exits immediately and returns 0
+		// signatures, which the callers then treat as "fully signed".
+		return nil, 0, fmt.Errorf("getThreshold failed: %w (threshold=%d)", thErr, threshold)
+	}
 	txId, err := tx.GenerateTrxId()
 	if err != nil {
 		return nil, 0, err
