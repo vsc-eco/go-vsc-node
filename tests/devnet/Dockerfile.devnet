@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.24.1 AS build
+# go.mod requires go >= 1.25.7 (toolchain go1.25.10); the 1.24.1 base
+# with GOTOOLCHAIN=local fails `go mod download`. Bumped so the devnet
+# suite can build. (develop has the same go.mod bump but kept 1.24.1 —
+# its own devnet is broken without this; flagged upstream.)
+FROM golang:1.25.10 AS build
 
 RUN apt update && apt install -y git python3
 
