@@ -8,6 +8,7 @@ import (
 	"vsc-node/modules/db/vsc"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -179,4 +180,15 @@ func (tssKeys *tssKeys) DeprecateLegacyKeys() error {
 
 func NewKeys(d *vsc.VscDb) TssKeys {
 	return &tssKeys{db.NewCollection(d.DbInstance, "tss_keys")}
+}
+
+// review2 HIGH #27: tss_keys is looked up by id (FindKey) and scanned by
+// status / expiry_epoch with only the _id index.
+func (e *tssKeys) Init() error {
+	if err := e.Collection.Init(); err != nil {
+		return err
+	}
+	return e.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "id", Value: 1}},
+	})
 }

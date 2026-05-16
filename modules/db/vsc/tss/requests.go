@@ -151,3 +151,13 @@ func (tssReqs *tssRequests) UpdateRequest(req TssRequest) error {
 func NewRequests(d *vsc.VscDb) TssRequests {
 	return &tssRequests{db.NewCollection(d.DbInstance, "tss_requests")}
 }
+
+// review2 HIGH #27: tss_requests is queried by key_id with only the _id index.
+func (e *tssRequests) Init() error {
+	if err := e.Collection.Init(); err != nil {
+		return err
+	}
+	return e.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "key_id", Value: 1}},
+	})
+}
