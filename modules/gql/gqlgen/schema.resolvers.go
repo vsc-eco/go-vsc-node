@@ -373,18 +373,9 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	amount = amount + balRecord.HBD
 
 	//Get number of blocks that have elapsed since the last RC update
-	diff := highestHeight - rcRecord.BlockHeight
-
-	//Total amount of RCs (i.e amount unfrozen)
-	amtRet := int64(diff * uint64(rcRecord.Amount) / params.RC_RETURN_PERIOD)
-
-	//Prevent overflow when the return period is greater than RC_RETURN_PERIOD
-	if amtRet > rcRecord.Amount {
-		amtRet = rcRecord.Amount
-	}
-
-	//Subject the returned amount from the currently frozen RCs
-	frozenAmount := rcRecord.Amount - amtRet
+	// review2 MEDIUM #107: overflow/negative/underflow-safe shared helper
+	// (was an inline int64(diff*uint64(amount)/period)).
+	frozenAmount := rc_system.CalculateFrozenBal(rcRecord.BlockHeight, highestHeight, rcRecord.Amount)
 	//Cap frozen to max available RCs
 	if frozenAmount > maxRcs {
 		frozenAmount = maxRcs
