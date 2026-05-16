@@ -40,6 +40,12 @@ var CONTRACT_DEPLOYMENT_FEE_START_HEIGHT uint64 = 99410000
 var CONTRACT_UPDATE_HEIGHT uint64 = 102100000
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
+// review2 LOW #70/#110: contract-call payloads were only UTF-8 checked,
+// with no explicit length cap — the node implicitly relied on Hive's
+// ~8KB custom_json limit. Cap explicitly so the bound is enforced
+// deterministically by the node itself, independent of the L1 path.
+var MAX_CONTRACT_PAYLOAD_SIZE = 8 * 1024 // bytes
+
 // Mainnet TSS key indexing
 var TSS_INDEX_HEIGHT uint64 = 102_083_000
 

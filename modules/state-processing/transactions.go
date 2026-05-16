@@ -70,6 +70,16 @@ func (t TxVscCallContract) ExecuteTx(
 	if t.NetId != se.SystemConfig().NetId() {
 		return errorToTxResult(fmt.Errorf("wrong net ID"), 100)
 	}
+
+	// review2 LOW #70/#110: the contract-call payload was only UTF-8
+	// checked, with no explicit length cap — the node implicitly relied
+	// on Hive's ~8KB custom_json limit. Enforce an explicit cap here,
+	// before any contract fetch or execution, so the bound holds
+	// deterministically on every node regardless of the ingest path.
+	if len(t.Payload) > params.MAX_CONTRACT_PAYLOAD_SIZE {
+		return errorToTxResult(fmt.Errorf("payload exceeds maximum size of %d bytes", params.MAX_CONTRACT_PAYLOAD_SIZE), 100)
+	}
+
 	info, exists := se.GetContractInfo(t.ContractId, t.Self.BlockHeight)
 
 	if !exists {
