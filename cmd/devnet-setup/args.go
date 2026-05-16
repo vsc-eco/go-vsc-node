@@ -7,20 +7,24 @@ import (
 )
 
 type args struct {
-	network       string
-	dataDir       string
-	nodes         int
-	hiveUrl       string
-	dbUrl         string
-	dbPrefix      string
-	dropDb        bool
-	p2pHost       string
-	p2pPort       int
-	witPrefix     string
-	witCreator    string
-	wif           string
-	stakeAmt      string
-	sysconfigPath string
+	network        string
+	dataDir        string
+	nodes          int
+	hiveUrl        string
+	dbUrl          string
+	dbPrefix       string
+	dropDb         bool
+	p2pHost        string
+	p2pPort        int
+	witPrefix      string
+	witCreator     string
+	wif            string
+	stakeAmt       string
+	sysconfigPath  string
+	deployerName   string
+	deployerHpAmt  string
+	deployerHbdAmt string
+	deployerOnly   bool
 }
 
 func ParseArgs() (args, error) {
@@ -43,6 +47,10 @@ func ParseArgs() (args, error) {
 	wif := flag.String("wif", "5JNHfZYKGaomSFvd4NUdQ9qMcEAC43kujbfjueTHpVapX1Kzq2n", "Private active key of witness account creator")
 	stakeAmt := flag.String("stake", "2000.000", "Stake amount for each witness")
 	sysconfigPath := flag.String("sysconfig", "", "Path to JSON file with system config overrides")
+	deployerName := flag.String("deployer-name", "vsc-deployer-1", "Hive account name for the contract deployer")
+	deployerHpAmt := flag.String("deployer-hp", "10.000", "TESTS amount to vest as HP on the contract deployer (covers RC for broadcasts)")
+	deployerHbdAmt := flag.String("deployer-hbd", "1000.000", "TBD amount to transfer to the contract deployer (covers per-deploy fees)")
+	deployerOnly := flag.Bool("deployer-only", false, "Only create + fund the contract-deployer account. Loads existing witness identities to discover peer IDs for the deployer's bootnodes; skips witness/gateway/dao account creation and witness staking.")
 
 	flag.Parse()
 
@@ -61,5 +69,9 @@ func ParseArgs() (args, error) {
 		*wif,
 		*stakeAmt,
 		*sysconfigPath,
+		*deployerName,
+		*deployerHpAmt,
+		*deployerHbdAmt,
+		*deployerOnly,
 	}, nil
 }

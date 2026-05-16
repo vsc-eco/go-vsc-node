@@ -164,6 +164,12 @@ func (bp *BlockProducer) GenerateBlock(
 		offchainTxs = append(offchainTxs, contractOutputs...)
 	}
 
+	// Pendulum settlement moved out of the block-tx path. It now rides
+	// inside the IPFS body that the election header references, applied
+	// atomically with the election by TxElectionResult.ExecuteTx. See
+	// modules/election-proposer/election-proposer.go: GenerateFullElection
+	// and modules/state-processing/system_txs.go: TxElectionResult.ExecuteTx.
+
 	vlog.Info("GenerateBlock", "slotHeight", slotHeight, "txCount", len(offchainTxs))
 	for i, tx := range offchainTxs {
 		vlog.Trace("GenerateBlock tx", "index", i, "type", tx.Type, "id", tx.Id)
@@ -422,7 +428,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 		})
 	}()
 
-	sigChan := make(chan sigMsg, 1)
+	sigChan := make(chan sigMsg, len(electionResult.Members))
 	bp.sigMu.Lock()
 	bp.sigChannels[bh] = sigChan
 	bp.sigMu.Unlock()
@@ -584,6 +590,22 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 			Type: int(common.BlockTypeTransaction),
 		})
 	}
+
+	// Wait for the state engine to have processed through msg.SlotHeight
+	// before re-deriving. The `bp.bh >= msg.SlotHeight` check above
+	// confirms the producer-side tick saw this slot, but the tick fires
+	// before StateEngine.ProcessBlock runs — so without this barrier the
+	// re-derive below can read pre-flush state and produce a CID that
+	// diverges from peers whose state engines have caught up. On timeout
+	// the signer's vote is excluded from the BLS aggregate (treated like
+	// any other transient signer outage).
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), composeStateWaitTimeout)
+	if err := bp.StateEngine.WaitForProcessedHeight(waitCtx, msg.SlotHeight); err != nil {
+		waitCancel()
+		return "", fmt.Errorf("state engine not caught up to slot %d (lastProcessed=%d): %w",
+			msg.SlotHeight, bp.StateEngine.LastProcessedHeight(), err)
+	}
+	waitCancel()
 
 	// Independently derive block (including oplog + contract outputs)
 	blockHeader, _, err := bp.GenerateBlock(msg.SlotHeight, generateBlockParams{
@@ -787,6 +809,20 @@ func (bp *BlockProducer) MakeOplog(bh uint64, session *datalayer.Session) *vscBl
 		Type: int(common.BlockTypeOplog),
 	}
 }
+
+// composeStateWaitTimeout bounds how long the signer-side re-derive in
+// HandleBlockMsg will wait for this node's state engine to finish
+// processing through the compose slotHeight before re-deriving the block.
+// Bounded well below Hive's slot cadence (~30s) so a stuck state engine
+// surfaces as a missed-this-slot rather than blocking block production
+// indefinitely.
+//
+// Pendulum settlement is no longer composed here — it rides inside the
+// election body and is applied by TxElectionResult.ExecuteTx — but the
+// wait is still required for deterministic re-derivation of the oplog
+// and contract outputs that MakeOplog/MakeOutputs read from the SE's
+// in-memory accumulators.
+const composeStateWaitTimeout = 2 * time.Second
 
 func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.VscBlockTx {
 

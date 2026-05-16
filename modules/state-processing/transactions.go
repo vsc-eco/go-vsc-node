@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -20,6 +19,7 @@ import (
 
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/transactions"
+	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	transactionpool "vsc-node/modules/transaction-pool"
@@ -143,7 +143,10 @@ func (t TxVscCallContract) ExecuteTx(
 		Caller:               caller,
 		Sender:               caller,
 		Intents:              t.Intents,
-	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0)
+		PendulumOracle:       se.PendulumOracleEnv(),
+	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
+		contract_execution_context.WithPendulumApplier(se.PendulumApplier()),
+	)
 
 	validUtf8 := utf8.Valid(t.Payload)
 	if !validUtf8 {
@@ -165,7 +168,13 @@ func (t TxVscCallContract) ExecuteTx(
 
 	res := w.Execute(wasmCtx, gas*params.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime)
 
-	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
+	// Integer ceil-divide: (gas + denom − 1) / denom. uint64 stays well below
+	// overflow for any realistic gas value (denom = 100_000). Floored at the
+	// minimum 100 RC charge.
+	rcUsed := int64((uint64(res.Gas) + params.CYCLE_GAS_PER_RC - 1) / params.CYCLE_GAS_PER_RC)
+	if rcUsed < 100 {
+		rcUsed = 100
+	}
 
 	if res.Error != nil {
 		return TxResult{
@@ -313,7 +322,7 @@ func (tx TxVSCTransfer) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	amount, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -402,7 +411,7 @@ func (t *TxVSCWithdraw) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(t.Amount)
+	amount, err := common.ParseAssetAmount(t.Amount, t.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -487,7 +496,7 @@ func (t *TxStakeHbd) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(t.Amount)
+	amount, err := common.ParseAssetAmount(t.Amount, t.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -575,7 +584,7 @@ func (t *TxUnstakeHbd) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(t.Amount)
+	amount, err := common.ParseAssetAmount(t.Amount, t.Asset)
 
 	if err != nil {
 		return TxResult{
@@ -696,7 +705,10 @@ func (tx *TxConsensusStake) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	// consensus stake is HIVE-only (ledger debits "hive"); the crafter
+	// sends no asset field, so parse explicitly as "hive" — develop's
+	// ParseAssetAmount(tx.Amount, tx.Asset) would error on the empty asset.
+	amount, err := common.ParseAssetAmount(tx.Amount, "hive")
 
 	if err != nil {
 		return TxResult{
@@ -796,7 +808,9 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		}
 	}
 
-	amount, err := common.SafeParseHiveFloat(tx.Amount)
+	// consensus unstake is HIVE-only; parse explicitly as "hive" (the
+	// crafter sends no asset; tx.Asset would error in ParseAssetAmount).
+	amount, err := common.ParseAssetAmount(tx.Amount, "hive")
 
 	if err != nil {
 		return TxResult{
@@ -889,6 +903,8 @@ func (tx *TransactionContainer) Type() string {
 		return "oplog"
 	} else if tx.TypeInt == int(common.BlockTypeRcUpdate) {
 		return "rc_update"
+	} else if tx.TypeInt == int(common.BlockTypePendulumSettlement) {
+		return "pendulum_settlement"
 	} else {
 		return "unknown"
 	}
@@ -943,6 +959,29 @@ func (tx *TransactionContainer) AsOplog(endBlock uint64) Oplog {
 	json.Unmarshal(jsonBytes, &oplog)
 
 	return oplog
+}
+
+// AsPendulumSettlement decodes the SettlementRecord pointed at by this
+// container's CID. Returns (record, true) on success; (zero, false) if the
+// underlying DAG fetch or decode fails. The state engine treats false as a
+// dropped settlement — the carrying block already had its CID validated by
+// 2/3 BLS aggregation, so a fetch failure indicates a local I/O issue rather
+// than malformed bytes.
+func (tx *TransactionContainer) AsPendulumSettlement() (pendulumsettlement.SettlementRecord, bool) {
+	if tx == nil || tx.da == nil {
+		return pendulumsettlement.SettlementRecord{}, false
+	}
+	txCid := cid.MustParse(tx.Id)
+	node, err := tx.da.GetDag(txCid)
+	if err != nil {
+		return pendulumsettlement.SettlementRecord{}, false
+	}
+	jsonBytes, _ := node.MarshalJSON()
+	var rec pendulumsettlement.SettlementRecord
+	if err := json.Unmarshal(jsonBytes, &rec); err != nil {
+		return pendulumsettlement.SettlementRecord{}, false
+	}
+	return rec, true
 }
 
 func (tx *TransactionContainer) Decode(bytes []byte) {

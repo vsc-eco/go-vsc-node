@@ -736,3 +736,73 @@ func TestOplogIngest(t *testing.T) {
 	// This is expected behavior — GetBalance only accounts for deposits and unstakes on top of snapshots.
 	t.Logf("alice balance after ingest: %d, bob balance: %d", aliceBal, bobBal)
 }
+
+// seedPendulumBucket simulates the per-swap accrual side-effect: a paired
+// transfer ledger record on the bucket (positive) — the matching debit on the
+// source contract account is irrelevant for these distribute / balance tests.
+func seedPendulumBucket(t *testing.T, lDb ledgerDb.Ledger, txID string, amount int64, blockHeight uint64) {
+	t.Helper()
+	lDb.StoreLedger(ledgerDb.LedgerRecord{
+		Id:          txID + "#out",
+		BlockHeight: blockHeight,
+		Amount:      amount,
+		Asset:       "hbd",
+		Owner:       ledgerSystem.PendulumNodesHBDBucket,
+		Type:        "transfer",
+	})
+}
+
+func TestPendulumLedgerOps(t *testing.T) {
+	ls, state := newLedgerEnv()
+
+	// Seed the bucket as the swap-time path would: paired ExecuteTransfer
+	// records produce type=transfer entries (the matching contract-side debit
+	// is exercised by the LedgerSession tests in ledger-system/).
+	seedPendulumBucket(t, state.LedgerDb, "swap-tx-1", 25, 100)
+	seedPendulumBucket(t, state.LedgerDb, "swap-tx-2", 25, 101)
+
+	t.Run("bucket balance sums seeded transfers", func(t *testing.T) {
+		bal := ls.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, 200)
+		assert.Equal(t, int64(50), bal)
+	})
+
+	t.Run("distribute debits the nodes bucket and credits the destination", func(t *testing.T) {
+		result := ls.PendulumDistribute("hive:node1", 3, "pendulum-distribute-1", 102)
+		require.True(t, result.Ok)
+
+		bucketRecs, err := state.LedgerDb.GetLedgerRange(ledgerSystem.PendulumNodesHBDBucket, 0, 1000, "hbd")
+		require.NoError(t, err)
+		var foundDebit bool
+		for _, rec := range *bucketRecs {
+			if rec.Type == "pendulum_distribute" && rec.Amount == -3 {
+				foundDebit = true
+			}
+		}
+		assert.True(t, foundDebit)
+
+		nodeRecs, err := state.LedgerDb.GetLedgerRange("hive:node1", 0, 1000, "hbd")
+		require.NoError(t, err)
+		require.NotEmpty(t, *nodeRecs)
+		assert.Equal(t, int64(3), (*nodeRecs)[0].Amount)
+		assert.Equal(t, "pendulum_distribute", (*nodeRecs)[0].Type)
+	})
+
+	t.Run("distribute fails on insufficient bucket balance", func(t *testing.T) {
+		result := ls.PendulumDistribute("hive:node2", 999999, "pendulum-distribute-too-much", 102)
+		require.False(t, result.Ok)
+		assert.Equal(t, "insufficient pendulum nodes bucket balance", result.Msg)
+	})
+
+	t.Run("shared tx id across different distribution destinations is allowed", func(t *testing.T) {
+		r1 := ls.PendulumDistribute("hive:nodeA", 2, "pendulum-distribute-shared", 103)
+		r2 := ls.PendulumDistribute("hive:nodeB", 1, "pendulum-distribute-shared", 103)
+		require.True(t, r1.Ok)
+		require.True(t, r2.Ok)
+	})
+
+	t.Run("bucket balance reflects distribute effects", func(t *testing.T) {
+		// 50 seeded - 3 distributed - 2 distributed - 1 distributed = 44.
+		bal := ls.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, 200)
+		assert.Equal(t, int64(44), bal)
+	})
+}

@@ -41,6 +41,72 @@ type ledgerSystem struct {
 	ActionsDb ledger_db.BridgeActions
 }
 
+const (
+	// PendulumNodesHBDBucket is the single global HBD-only bucket holding the
+	// cumulative node-runner share since the last epoch close. The swap-time
+	// SDK method credits it; the epoch settlement op drains it. The bucket is
+	// stored as the Owner field on each LedgerRecord; the asset column ("hbd")
+	// is queried separately, so the constant stays asset-suffix-free.
+	PendulumNodesHBDBucket = "pendulum:nodes"
+)
+
+func (ls *ledgerSystem) PendulumDistribute(toAccount string, amount int64, txID string, blockHeight uint64) LedgerResult {
+	if strings.TrimSpace(toAccount) == "" {
+		return LedgerResult{Ok: false, Msg: "invalid destination"}
+	}
+	if amount <= 0 {
+		return LedgerResult{Ok: false, Msg: "invalid amount"}
+	}
+	if txID == "" {
+		return LedgerResult{Ok: false, Msg: "missing tx id"}
+	}
+	available := ls.PendulumBucketBalance(PendulumNodesHBDBucket, blockHeight)
+	if available < amount {
+		return LedgerResult{Ok: false, Msg: "insufficient pendulum nodes bucket balance"}
+	}
+	ls.LedgerDb.StoreLedger(
+		ledger_db.LedgerRecord{
+			Id:          txID + "#distribute_debit#" + toAccount,
+			TxId:        txID,
+			BlockHeight: blockHeight,
+			Amount:      -amount,
+			Asset:       "hbd",
+			Owner:       PendulumNodesHBDBucket,
+			Type:        "pendulum_distribute",
+		},
+		ledger_db.LedgerRecord{
+			Id:          txID + "#distribute_credit#" + toAccount,
+			TxId:        txID,
+			BlockHeight: blockHeight,
+			Amount:      amount,
+			Asset:       "hbd",
+			Owner:       toAccount,
+			Type:        "pendulum_distribute",
+		},
+	)
+
+	return LedgerResult{Ok: true, Msg: "success"}
+}
+
+// PendulumBucketBalance sums every ledger record whose Owner == bucket and
+// Asset == hbd. The bucket is credited via paired LedgerSession.ExecuteTransfer
+// records (type=transfer) at swap time and debited via PendulumDistribute
+// records (type=pendulum_distribute) at settlement time.
+func (ls *ledgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64) int64 {
+	if strings.TrimSpace(bucket) == "" {
+		return 0
+	}
+	records, err := ls.LedgerDb.GetLedgerRange(bucket, 0, blockHeight, "hbd")
+	if err != nil || records == nil {
+		return 0
+	}
+	total := int64(0)
+	for _, rec := range *records {
+		total += rec.Amount
+	}
+	return total
+}
+
 func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {
 	fmt.Println("ClaimHBDInterest", lastClaim, blockHeight, amount)
 	//Do distribution of HBD interest on an going forward basis

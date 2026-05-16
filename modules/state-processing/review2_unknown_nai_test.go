@@ -35,7 +35,9 @@ func TestReview2UnknownNaiNotCredited(t *testing.T) {
 						"to":   "vsc.gateway",
 						"memo": "",
 						"amount": map[string]interface{}{
-							"amount":    "1.000",
+							// integer base units — develop's streamer
+							// normalises L1 decimals before ProcessBlock.
+							"amount":    "1000",
 							"nai":       "@@999999999", // unrecognised NAI
 							"precision": 3,
 						},
@@ -52,7 +54,7 @@ func TestReview2UnknownNaiNotCredited(t *testing.T) {
 						"to":   "vsc.gateway",
 						"memo": "",
 						"amount": map[string]interface{}{
-							"amount":    "2.000",
+							"amount":    "2000", // integer base units
 							"nai":       "@@000000021", // HIVE
 							"precision": 3,
 						},

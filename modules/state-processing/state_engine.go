@@ -1,6 +1,7 @@
 package state_engine
 
 import (
+	"context"
 	"crypto"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -11,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/vsclog"
@@ -24,14 +27,19 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
+	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
+	"vsc-node/modules/incentive-pendulum/rewards"
+	pendulumwasm "vsc-node/modules/incentive-pendulum/wasm"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	rcSystem "vsc-node/modules/rc-system"
 	tss_helpers "vsc-node/modules/tss/helpers"
+	wasm_context "vsc-node/modules/wasm/context"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -100,6 +108,38 @@ type StateEngine struct {
 	slotStatus *SlotStatus
 
 	BlockHeight int
+
+	// pendulumFeed tracks sole-HIVE witness feed + HBD APR (Magi pendulum oracle); updated from Hive blocks.
+	pendulumFeed *pendulumoracle.FeedTracker
+	// pendulumSettlementsDb stores the per-epoch settlement marker written
+	// when applyPendulumSettlement processes a BlockTypePendulumSettlement
+	// record. Drives the proposer's `canHold` guard and the
+	// `vsc.election_result` handler's "prior epoch must be settled" check.
+	pendulumSettlementsDb pendulum_settlements.PendulumSettlements
+	// pendulumApplier is the swap-time SDK method's executor.
+	pendulumApplier wasm_context.PendulumApplier
+	// pendulumGeometry recomputes (V, P, E, T, s) on demand from contract
+	// state and committee bond. Read by the applier per swap and by
+	// settlement composition; no snapshot persistence layer.
+	pendulumGeometry *pendulumoracle.GeometryComputer
+	// balanceDb is held so settlement composition can read HIVE_CONSENSUS
+	// bonds via BalanceRecord directly, bypassing the op-type-filter trap
+	// on LedgerSystem.GetBalance.
+	balanceDb ledgerDb.Balances
+	// selfHiveUsername is the local node's Hive account name. Currently
+	// unused outside of tests now that settlement is leader-agnostic.
+	selfHiveUsername string
+
+	// lastProcessedHeight is the height of the most recent Hive block whose
+	// ProcessBlock call ran to completion (set via defer so a panic in
+	// processing still records the height). It exists so the block producer
+	// can synchronise compose-time reads — concretely, MakePendulumSettlement
+	// and the signer-side HandleBlockMsg re-derive — with the state engine's
+	// slot-boundary ExecuteBatch flush. Without it, an async producer tick
+	// or a p2p signing request that arrives before this node's state engine
+	// has flushed slot S-1 reads stale ledger/balance state and produces a
+	// divergent CID. See WaitForProcessedHeight for the consumer API.
+	lastProcessedHeight atomic.Uint64
 }
 
 //Transaction
@@ -191,6 +231,22 @@ func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 // In other words, it adds complexity to the state engine while being less efficient.
 // This model is more efficient and best yet, it prevents MEV potential by locking the block execution time to the witness slot.
 func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
+	// Record completion via defer so compose-time waiters
+	// (MakePendulumSettlement, HandleBlockMsg) unblock once this block's
+	// processing — including any slot-boundary ExecuteBatch flush — is
+	// fully done. Survives panics mid-processing.
+	defer func() {
+		for {
+			prev := se.lastProcessedHeight.Load()
+			if block.BlockNumber <= prev {
+				return
+			}
+			if se.lastProcessedHeight.CompareAndSwap(prev, block.BlockNumber) {
+				return
+			}
+		}
+	}()
+
 	se.BlockHeight = int(block.BlockNumber)
 
 	// --- Key lifecycle: deprecation and retirement ---
@@ -247,6 +303,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		Timestamp:   block.Timestamp,
 	}
 
+	if se.pendulumFeed != nil && block.Witness != "" {
+		se.pendulumFeed.RecordWitnessBlock(block.Witness)
+	}
+
 	//What is active slot?
 	// bh = 5
 	// 0 - 10
@@ -296,6 +356,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	}
 
 	for blkIdx, tx := range block.Transactions {
+		if se.pendulumFeed != nil {
+			se.pendulumFeed.IngestTransactionOps(block.BlockNumber, tx)
+		}
 
 		if tx.Operations[0].Type == "custom_json" {
 			headerOp := tx.Operations[0]
@@ -473,7 +536,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					json.Unmarshal(cj.Json, &parsedTx)
 
 					if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
-						hasFee, feeAmt, feePayer := hasFeePaymentOp(tx.Operations, params.CONTRACT_DEPLOYMENT_FEE, "hbd")
+						hasFee, feeAmt, feePayer := hasFeePaymentOp(
+							tx.Operations,
+							params.CONTRACT_DEPLOYMENT_FEE,
+							"hbd",
+						)
 						if !hasFee {
 							continue
 						}
@@ -622,13 +689,28 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						continue
 					}
 				}
-				amountStr, ok := amountMap["amount"].(string)
+				// review2 MEDIUM #86: comma-ok the nested amount string
+				// (untrusted L1 payload) instead of a bare assertion;
+				// keep develop's ParseInt + unparseable-amount skip.
+				amtStr, ok := amountMap["amount"].(string)
 				if !ok {
 					continue // review2 #86
 				}
-				amount, _ := strconv.ParseFloat(amountStr, 64)
-
-				amt := int64(amount)
+				amt, err := strconv.ParseInt(amtStr, 10, 64)
+				if err != nil {
+					log.Warn(
+						"skipping transfer with unparseable amount",
+						"tx",
+						tx.TransactionID,
+						"op",
+						opIndex,
+						"amount",
+						amtStr,
+						"err",
+						err,
+					)
+					continue
+				}
 
 				if op.Value["to"] == "vsc.gateway" {
 					fromStr, ok := op.Value["from"].(string)
@@ -947,6 +1029,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							KeyId:       commitment.KeyId,
 							PublicKey:   commitment.PublicKey,
 							TxId:        tx.TransactionID,
+							BitSet:      commitment.BitSet,
 						})
 
 						var newKey bool
@@ -979,6 +1062,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 				// NOTE: vsc.tss_ready was removed — readiness is now handled
 				// off-chain via BLS-signed gossip attestations in the TSS module.
+				// NOTE: vsc.pendulum_settlement (L1 Hive op) was removed —
+				// settlement now rides as a BlockTypePendulumSettlement L2 op
+				// inside a VSC block, signed by the closing committee's 2/3 BLS
+				// aggregate. See modules/incentive-pendulum/settlement/compose.go
+				// and applyPendulumSettlement.
 
 				if vscTx != nil {
 					opList = append(opList, vscTx)
@@ -1076,6 +1164,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		se.ExecuteBatch()
 		//Balances must be updated after the current slot has been fully executed
 	}
+
+	if se.pendulumFeed != nil {
+		se.pendulumFeed.TickIfDue(block.BlockNumber)
+	}
 }
 
 // executeTxSafely runs a transaction handler with panic recovery so that a
@@ -1110,6 +1202,168 @@ func executeTxSafely(
 		}
 	}()
 	return vscTx.ExecuteTx(se, ledgerSession, rcSession, callSession, payer)
+}
+
+// buildTickInputs assembles the per-tick L2 evidence bundle the rewards
+// aggregator scores. Pure read on on-chain caches; deterministic across
+// nodes given identical chain state. Returns a zero-Committee TickInputs
+// when the tick can't be scored (no election, no committee, etc.).
+func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
+	if se == nil || se.electionDb == nil || tickHeight == 0 {
+		return rewards.TickInputs{}
+	}
+	election, err := se.electionDb.GetElectionByHeight(tickHeight)
+	if err != nil {
+		// Transient electionDb error: skip scoring this tick. The signer
+		// path will retry on the next settlement attempt; logged for
+		// operator visibility into per-node DB outages.
+		log.Warn("pendulum reductions: election lookup failed; tick skipped",
+			"tick_height", tickHeight, "err", err)
+		return rewards.TickInputs{}
+	}
+	if len(election.Members) == 0 {
+		return rewards.TickInputs{}
+	}
+	committee := make([]string, 0, len(election.Members))
+	for _, m := range election.Members {
+		committee = append(committee, m.Account)
+	}
+
+	const tickWindow = uint64(pendulumoracle.DefaultTickIntervalBlocks)
+	var fromBlock uint64
+	if tickHeight > tickWindow {
+		fromBlock = tickHeight - tickWindow
+	}
+
+	in := rewards.TickInputs{Committee: committee}
+
+	// Block production + attestation: iterate slots in the tick window.
+	if se.vscBlocks != nil {
+		slotLen := common.CONSENSUS_SPECS.SlotLength
+		if slotLen >= 1 {
+			firstSlot := fromBlock - (fromBlock % slotLen)
+			if firstSlot < fromBlock {
+				firstSlot += slotLen
+			}
+			lastSlot := tickHeight - (tickHeight % slotLen)
+			if lastSlot >= firstSlot {
+				blocks, err := se.vscBlocks.GetBlocksInSlotRange(firstSlot, lastSlot)
+				if err != nil {
+					log.Warn("pendulum reductions: vsc_blocks slot-range lookup failed; block production/attestation skipped this tick",
+						"tick_height", tickHeight, "from_slot", firstSlot, "to_slot", lastSlot, "err", err)
+				} else {
+					produced := make(map[uint64]struct{}, len(blocks))
+					in.BlocksInWindow = make([]rewards.TickBlockHeader, 0, len(blocks))
+					for _, b := range blocks {
+						produced[uint64(b.SlotHeight)] = struct{}{}
+						in.BlocksInWindow = append(in.BlocksInWindow, rewards.TickBlockHeader{
+							Signers: append([]string(nil), b.Signers...),
+						})
+					}
+					in.ProducedSlotHeights = produced
+					for s := firstSlot; s <= lastSlot; s += slotLen {
+						sched := se.GetSchedule(s)
+						leader := ""
+						for _, slot := range sched {
+							if slot.SlotHeight == s {
+								leader = slot.Account
+								break
+							}
+						}
+						if leader != "" {
+							in.Slots = append(in.Slots, rewards.SlotProposer{
+								SlotHeight: s,
+								Account:    leader,
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// TSS commitments: pull all reshare/blame/sign_result types in the window.
+	if se.tssCommitments != nil {
+		from := fromBlock
+		to := tickHeight
+		commits, err := se.tssCommitments.FindCommitments(
+			nil,
+			[]string{"reshare", "blame", "sign_result"},
+			nil,
+			&from,
+			&to,
+			0,
+			0,
+		)
+		if err != nil {
+			log.Warn("pendulum reductions: tss_commitments lookup failed; TSS reductions skipped this tick",
+				"tick_height", tickHeight, "from_block", from, "to_block", to, "err", err)
+		} else {
+			for _, c := range commits {
+				memberAccounts := se.committeeAccountsForEpoch(c.Epoch)
+				if len(memberAccounts) == 0 {
+					continue
+				}
+				switch c.Type {
+				case "reshare":
+					in.Reshares = append(in.Reshares, rewards.ReshareWithCommittee{
+						Commitment:   c,
+						NewCommittee: memberAccounts,
+					})
+				case "blame":
+					in.Blames = append(in.Blames, rewards.BlameWithCommittee{
+						Commitment:     c,
+						BlameCommittee: memberAccounts,
+					})
+				case "sign_result":
+					// Sign committee is the election active at the
+					// commitment's BlockHeight (the leader collected BLS sigs
+					// from that election — same convention as the verifier
+					// path at state_engine.go:895).
+					signCommittee := se.committeeAccountsAtHeight(c.BlockHeight)
+					if len(signCommittee) == 0 {
+						continue
+					}
+					in.Signs = append(in.Signs, rewards.SignResultWithCommittee{
+						Commitment:    c,
+						SignCommittee: signCommittee,
+					})
+				}
+			}
+		}
+	}
+
+	return in
+}
+
+func (se *StateEngine) committeeAccountsForEpoch(epoch uint64) []string {
+	if se == nil || se.electionDb == nil {
+		return nil
+	}
+	res := se.electionDb.GetElection(epoch)
+	if res == nil || len(res.Members) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(res.Members))
+	for _, m := range res.Members {
+		out = append(out, m.Account)
+	}
+	return out
+}
+
+func (se *StateEngine) committeeAccountsAtHeight(height uint64) []string {
+	if se == nil || se.electionDb == nil {
+		return nil
+	}
+	res, err := se.electionDb.GetElectionByHeight(height)
+	if err != nil || len(res.Members) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(res.Members))
+	for _, m := range res.Members {
+		out = append(out, m.Account)
+	}
+	return out
 }
 
 func (se *StateEngine) ExecuteBatch() {
@@ -1593,6 +1847,29 @@ func (se *StateEngine) Init() error {
 	if err := se.tssKeys.DeprecateLegacyKeys(); err != nil {
 		tssLog.Warn("DeprecateLegacyKeys failed during init", "err", err)
 	}
+
+	// Warm the pendulum FeedTracker before the block consumer starts so the
+	// in-memory rolling state (signature window + MA ring + per-witness
+	// quotes) matches long-running peers. Without warmup, the first ~300
+	// blocks after a restart expose a partial MA to the swap applier and
+	// contract env keys — different across nodes that started at different
+	// heights, which forks any contract that consumes those values.
+	//
+	// Failure here is non-fatal: the tracker stays unwarmed, callers see
+	// Warmed()=false and degrade gracefully (applier rejects swaps with
+	// errSnapshotUnavailable; env returns nil) until natural ingest fills
+	// both rings ~400 blocks later.
+	if se.pendulumFeed != nil && se.hiveBlocks != nil {
+		if err := se.pendulumFeed.Warmup(se.hiveBlocks); err != nil {
+			log.Warn("pendulum feed warmup failed; tracker will warm organically", "err", err)
+		}
+	}
+
+	// One-time bootstrap: seed latestSettledEpoch on networks that pre-date
+	// inlined settlement, so an in-place upgrade doesn't deadlock the election
+	// proposer's canHold gate. No-op on fresh chains and after the first seed.
+	se.seedPendulumSettlement()
+
 	return nil
 }
 
@@ -1607,6 +1884,98 @@ func (se *StateEngine) Stop() error {
 
 func (se *StateEngine) SystemConfig() systemconfig.SystemConfig {
 	return se.sconf
+}
+
+// LastProcessedHeight returns the height of the most recent Hive block this
+// state engine has fully processed. Returns 0 before the first ProcessBlock.
+//
+// Block producer compose paths use this — through WaitForProcessedHeight —
+// to ensure consensus-critical reads (settlement bonds, bucket balance,
+// epoch reductions) see all writes flushed by ProcessBlock(slotHeight).
+// Without this barrier, an async producer tick or an early-arriving p2p
+// signing request can read mid-flush state and produce a divergent CID.
+func (se *StateEngine) LastProcessedHeight() uint64 {
+	if se == nil {
+		return 0
+	}
+	return se.lastProcessedHeight.Load()
+}
+
+// WaitForProcessedHeight blocks until LastProcessedHeight >= height, the
+// context is canceled, or the deadline elapses. Polls every 25ms; the
+// caller's context bounds the overall wait.
+//
+// Returns nil on success or the context's error on cancel/deadline. The
+// poll interval is short enough (Hive blocks every 3s, slot ~30s) that
+// catch-up is observed near-immediately under healthy operation; the
+// timeout exists only to protect against a stuck state engine.
+func (se *StateEngine) WaitForProcessedHeight(ctx context.Context, height uint64) error {
+	if se == nil {
+		return nil
+	}
+	if se.lastProcessedHeight.Load() >= height {
+		return nil
+	}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if se.lastProcessedHeight.Load() >= height {
+				return nil
+			}
+		}
+	}
+}
+
+// PendulumFeedTracker returns the Magi pendulum sole-HIVE / HBD-APR oracle tracker (may be nil in tests).
+func (se *StateEngine) PendulumFeedTracker() *pendulumoracle.FeedTracker {
+	if se == nil {
+		return nil
+	}
+	return se.pendulumFeed
+}
+
+// PendulumApplier implements common_types.StateEngine. Returns the swap-time
+// applier wired during construction; nil-safe.
+func (se *StateEngine) PendulumApplier() wasm_context.PendulumApplier {
+	if se == nil {
+		return nil
+	}
+	return se.pendulumApplier
+}
+
+// PendulumOracleEnv implements common_types.StateEngine: values merged into wasm contract env (system.get_env).
+func (se *StateEngine) PendulumOracleEnv() map[string]interface{} {
+	if se == nil || se.pendulumFeed == nil {
+		return nil
+	}
+	// Withhold env keys until the tracker is warm. The exposed values
+	// include the moving average and trusted-witness group, both of which
+	// diverge across nodes during the warmup window — any contract that
+	// reads them and writes derived state would fork the chain.
+	if !se.pendulumFeed.Warmed() {
+		return nil
+	}
+	s := se.pendulumFeed.LastTick()
+	// All numeric values are integer-typed: HBD-per-HIVE prices in basis
+	// points (BpsScale = 1.0); the wasm host serializer renders them as
+	// integer strings.
+	m := map[string]interface{}{
+		"pendulum.hbd_interest_rate_bps":  s.HBDInterestRateBps,
+		"pendulum.hbd_interest_rate_ok":   s.HBDInterestRateOK,
+		"pendulum.trusted_hive_price_bps": s.TrustedHivePriceBps,
+		"pendulum.trusted_hive_mean_ok":   s.TrustedHiveOK,
+		"pendulum.hive_moving_avg_bps":    s.HiveMovingAvgBps,
+		"pendulum.hive_ma_ok":             s.HiveMovingAvgOK,
+		"pendulum.tick_block_height":      s.TickBlockHeight,
+	}
+	if len(s.TrustedWitnessGroup) > 0 {
+		m["pendulum.trusted_witness_group"] = append([]string(nil), s.TrustedWitnessGroup...)
+	}
+	return m
 }
 
 func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
@@ -1626,7 +1995,9 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	tssKeys tss_db.TssKeys,
 	tssCommitments tss_db.TssCommitments,
 	tssRequests tss_db.TssRequests,
+	pendulumSettlementsDb pendulum_settlements.PendulumSettlements,
 	wasm *wasm_runtime.Wasm,
+	identityConfig common.IdentityConfig,
 ) *StateEngine {
 
 	ls := ledgerSystem.New(balanceDb, ledgerDb, interestClaims, actionDb)
@@ -1649,7 +2020,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		BalanceDb:       balanceDb,
 	}
 
-	return &StateEngine{
+	se := &StateEngine{
 		sconf:           sconf,
 		TxOutput:        make(map[string]TxOutput),
 		ContractResults: make(map[string][]ContractResult),
@@ -1683,5 +2054,35 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		// },
 		LedgerSystem: ls,
 		LedgerState:  ledgerState,
+
+		pendulumFeed:          pendulumoracle.NewFeedTracker(sconf.OnMainnet()),
+		pendulumSettlementsDb: pendulumSettlementsDb,
+		balanceDb:             balanceDb,
 	}
+	if identityConfig != nil {
+		se.selfHiveUsername = identityConfig.Get().HiveUsername
+	}
+
+	se.pendulumGeometry = pendulumoracle.NewGeometryComputer(
+		&pendulumPoolReserveReader{
+			states: &liveContractStateKeyReader{
+				contractState: se.contractState,
+				da:            se.da,
+			},
+		},
+		&pendulumCommitteeBondReader{se: se},
+	)
+	se.pendulumApplier = pendulumwasm.New(
+		&liveGeometryReader{
+			computer:          se.pendulumGeometry,
+			feed:              se.pendulumFeed,
+			whitelist:         func() []string { return sconf.PendulumPoolWhitelist() },
+			effectiveStakeNum: 2,
+			effectiveStakeDen: 3,
+		},
+		func() []string { return sconf.PendulumPoolWhitelist() },
+		pendulumwasm.DefaultConfig(),
+	)
+
+	return se
 }

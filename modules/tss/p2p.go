@@ -193,10 +193,18 @@ func (s p2pSpec) HandleMessage(
 		sigChan := s.tssMgr.sigChannels[sessId]
 		s.tssMgr.bufferLock.RUnlock()
 		if sigChan != nil {
-			sigChan <- sigMsg{
+			// Non-blocking send: the collector may have already exited
+			// (threshold reached or WaitForSigsTimeout fired) and a blocking
+			// send here would park this goroutine forever, leaking a pubsub
+			// concurrency-limit slot. Additional sigs past threshold or after
+			// timeout don't change the outcome, so drop them.
+			select {
+			case sigChan <- sigMsg{
 				Account:   msg.Account,
 				SessionId: sessId,
 				Sig:       sig,
+			}:
+			default:
 			}
 		}
 	}

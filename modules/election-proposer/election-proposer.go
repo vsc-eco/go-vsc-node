@@ -23,6 +23,8 @@ import (
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
+	"vsc-node/modules/incentive-pendulum/rewards"
+	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	libp2p "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 
@@ -165,7 +167,27 @@ func (e *electionProposer) canHold() bool {
 
 	result, _ := e.elections.GetElectionByHeight(e.bh)
 
-	return result.BlockHeight < e.bh-electionInterval
+	if result.BlockHeight >= e.bh-electionInterval {
+		return false
+	}
+
+	// Pendulum settlement gate. `result.Epoch` is the active (closing) epoch
+	// N at e.bh; this proposer is about to propose epoch N+1, which embeds
+	// the settlement record for epoch N. Composing epoch N's record needs
+	// epoch N-1 already settled (ComposeRecord's PrevEpoch must be N-1 for a
+	// continuous chain), so the gate requires latestSettled >= N-1.
+	//
+	// Gating on N (the old behaviour) deadlocked: epoch N is only settled
+	// once epoch N+1 lands, so "N settled before proposing N+1" can never
+	// be satisfied. Genesis path: closing epoch 0/1 have no prior settlement
+	// to gate on, and `result.Epoch >= 2` also guards the unsigned `- 1`.
+	if result.Epoch >= 2 && e.se != nil {
+		if e.se.GetLatestSettledEpoch() < result.Epoch-1 {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (e *electionProposer) GenerateElection() (elections.ElectionHeader, elections.ElectionData, error) {
@@ -175,7 +197,9 @@ func (e *electionProposer) GenerateElection() (elections.ElectionHeader, electio
 }
 
 // Generates a raw election graph from local data
-func (e *electionProposer) GenerateElectionAtBlock(blk uint64) (elections.ElectionHeader, elections.ElectionData, error) {
+func (e *electionProposer) GenerateElectionAtBlock(
+	blk uint64,
+) (elections.ElectionHeader, elections.ElectionData, error) {
 	witnesses, err := e.witnesses.GetWitnessesAtBlockHeight(blk, witnesses.EnabledOnly())
 	if err != nil {
 		return elections.ElectionHeader{}, elections.ElectionData{}, err
@@ -322,6 +346,64 @@ func (e *electionProposer) GenerateFullElection(
 	electionData.ProtocolVersion = consensusVersion
 	electionData.Weights = weights
 	electionData.Type = pType
+
+	// Pendulum settlement (inlined). Skipped on the genesis election because
+	// there's no closing committee to settle. On any other epoch we compose
+	// the settlement record for `previousEpoch` (the epoch this election is
+	// rotating away from) against the same blockHeight the election itself
+	// uses, so every signer's re-derive sees identical inputs. ComposeRecord
+	// failure aborts the election attempt — the proposer returns the error
+	// without broadcasting, and the next slot's leader retries.
+	if !firstElection && e.se != nil && previousElection != nil && previousEpoch > 0 {
+		settlementMembers := make([]string, 0, len(previousElection.Members))
+		for _, m := range previousElection.Members {
+			acct := m.Account
+			if !strings.HasPrefix(acct, "hive:") {
+				acct = "hive:" + acct
+			}
+			settlementMembers = append(settlementMembers, acct)
+		}
+
+		balanceReader := e.se.PendulumBalanceRecordReader()
+		if balanceReader == nil {
+			return elections.ElectionHeader{}, elections.ElectionData{},
+				fmt.Errorf("pendulum settlement: balance reader unavailable")
+		}
+		bonds := pendulumsettlement.ReadCommitteeBonds(balanceReader, settlementMembers, blockHeight)
+		bucket := e.se.PendulumNodesBucketBalance(blockHeight)
+		prevSettled := e.se.GetLatestSettledEpoch()
+		tickInterval := e.se.PendulumOracleTickInterval()
+
+		var reductions map[string]int
+		if provider := e.se.PendulumEpochInputsProvider(); provider != nil {
+			reductions = rewards.ComputeReductionsForEpoch(
+				provider,
+				previousElection.BlockHeight,
+				blockHeight,
+				tickInterval,
+			)
+		}
+
+		rec, composeErr := pendulumsettlement.ComposeRecord(pendulumsettlement.ComposeInputs{
+			Epoch:               previousEpoch,
+			PrevEpoch:           prevSettled,
+			EpochStartBh:        previousElection.BlockHeight,
+			SlotHeight:          blockHeight,
+			CommitteeBonds:      bonds,
+			BucketBalanceHBD:    bucket,
+			ReductionsByAccount: reductions,
+		})
+		if composeErr != nil {
+			return elections.ElectionHeader{}, elections.ElectionData{},
+				fmt.Errorf("pendulum settlement: compose failed: %w", composeErr)
+		}
+		if rec == nil {
+			return elections.ElectionHeader{}, elections.ElectionData{},
+				fmt.Errorf("pendulum settlement: compose returned nil record")
+		}
+		electionData.Settlement = rec
+	}
+
 	cid, err := electionData.Cid()
 	if err != nil {
 		return elections.ElectionHeader{}, elections.ElectionData{}, err
@@ -380,7 +462,12 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 			return err
 		}
 
-		op := ep.txCreator.CustomJson([]string{ep.conf.Get().HiveUsername}, []string{}, VSC_ELECTION_TX_ID, string(jsonBytes))
+		op := ep.txCreator.CustomJson(
+			[]string{ep.conf.Get().HiveUsername},
+			[]string{},
+			VSC_ELECTION_TX_ID,
+			string(jsonBytes),
+		)
 
 		tx := ep.txCreator.MakeTransaction([]hivego.HiveOperation{op})
 

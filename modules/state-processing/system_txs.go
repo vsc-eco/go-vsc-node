@@ -14,6 +14,7 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
+	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	transactionpool "vsc-node/modules/transaction-pool"
 	wasm_runtime "vsc-node/modules/wasm/runtime"
 
@@ -552,13 +553,18 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 		fmt.Println(verified, "realWeight", realWeight, " len(includedDids)", len(includedDids))
 
 		if verified && realWeight >= minimums {
+			// Fetch and decode the body BEFORE the settlement gate so we
+			// can apply any inlined settlement. The settlement now lands
+			// atomically with the election (carried inside the body the
+			// header references); applying it here advances
+			// latestSettledEpoch so the defensive gate below passes for
+			// the new flow.
 			fmt.Println("Election verified, indexing...", tx.Epoch)
 			fmt.Println("Election CID", parsedCid)
 			se.da.GetDag(parsedCid)
 			fmt.Println("Got dag prolly")
 			node, _ := se.da.Get(parsedCid, nil)
 			fmt.Println("Got Election from DA")
-			//Verified and 2/3 majority signed
 			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
 			elecResult := elections.ElectionResult{
 				Proposer:    tx.Self.RequiredAuths[0],
@@ -572,7 +578,74 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			bbytes, _ := dagNode.MarshalJSON()
 			json.Unmarshal(bbytes, &elecResult)
 
-			se.electionDb.StoreElection(elecResult)
+			// Apply inlined pendulum settlement BEFORE StoreElection so
+			// validatePendulumSettlement's GetElectionByHeight(SnapshotRangeTo)
+			// resolves to the CLOSING committee, not the incoming one. Two
+			// cases:
+			//
+			//   1) Settlement field is non-nil — the proposer composed and
+			//      embedded the closing epoch's payout. Apply it. The new
+			//      production flow always takes this branch for tx.Epoch >= 1.
+			//
+			//   2) Settlement field is nil AND the closing epoch isn't already
+			//      settled — historical / replay path. Synthesise a zero-
+			//      payout marker so latestSettledEpoch still advances and the
+			//      gate sequence below stays consistent. Per design
+			//      ("no settlement op == 0 settlement"), bucket HBD for that
+			//      epoch is forfeited. Skip the synthesis entirely if a prior
+			//      BlockTypePendulumSettlement block-tx already settled the
+			//      epoch — that path also advances latestSettledEpoch.
+			if tx.Epoch >= 1 {
+				if elecResult.Settlement != nil {
+					se.applyPendulumSettlement(*elecResult.Settlement, tx.Self.BlockHeight)
+				} else if tx.Epoch >= 2 && se.GetLatestSettledEpoch() < tx.Epoch-1 {
+					markerRec := pendulumsettlement.SettlementRecord{
+						Epoch:               tx.Epoch - 1,
+						PrevEpoch:           se.GetLatestSettledEpoch(),
+						SnapshotRangeFrom:   prevElection.BlockHeight,
+						SnapshotRangeTo:     tx.Self.BlockHeight,
+						BucketBalanceHBD:    0,
+						TotalDistributedHBD: 0,
+						ResidualHBD:         0,
+						RewardReductions:    []pendulumsettlement.RewardReductionEntry{},
+						Distributions:       []pendulumsettlement.DistributionEntry{},
+					}
+					log.Info("election_result: synthesising 0-settlement marker for replay",
+						"tx_epoch", tx.Epoch,
+						"marker_epoch", markerRec.Epoch,
+						"latest_settled_before", markerRec.PrevEpoch)
+					se.applyPendulumSettlement(markerRec, tx.Self.BlockHeight)
+				}
+			}
+
+			// Pendulum settlement gate (defence in depth). For new-flow
+			// elections the apply step above advanced latestSettledEpoch
+			// to tx.Epoch-1 so this is unreachable. For historical replay
+			// elections that fell into the synthesis branch, the synthetic
+			// marker likewise advanced it. The gate stays here as a guard
+			// against future code paths bypassing apply, or a malformed
+			// embedded settlement that applyPendulumSettlement silently
+			// rejected (mis-ordered, validation failed, etc.) — in that
+			// case the election is deferred until something else settles
+			// the closing epoch.
+			//
+			// Genesis path: when prevElection.Epoch == 0 there is no closing
+			// epoch to settle, so the gate only applies once a real first
+			// epoch has been served (tx.Epoch >= 2).
+			if tx.Epoch >= 2 {
+				latestSettled := se.GetLatestSettledEpoch()
+				if latestSettled < tx.Epoch-1 {
+					log.Warn("pendulum settlement gate: election_result deferred",
+						"tx_epoch", tx.Epoch,
+						"required_settled_epoch", tx.Epoch-1,
+						"latest_settled_epoch", latestSettled)
+					return
+				}
+			}
+
+			if err := se.electionDb.StoreElection(elecResult); err != nil {
+				log.Error("failed to store election", "epoch", tx.Epoch, "err", err)
+			}
 			fmt.Println("Indexed Election", tx.Epoch)
 		} else {
 			fmt.Println("Election Failed verification")
@@ -808,6 +881,16 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		} else if txContainer.Type() == "oplog" {
 			oplog := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))
 			oplog.ExecuteTx(se)
+		} else if txContainer.Type() == "pendulum_settlement" {
+			rec, ok := txContainer.AsPendulumSettlement()
+			if !ok {
+				log.Warn("pendulum settlement: failed to decode block tx", "id", txInfo.Id)
+				continue
+			}
+			// The closing committee's 2/3 BLS aggregate over the carrying VSC
+			// block already validated the bytes; applyPendulumSettlement trusts
+			// the payload and pairs the bucket debit with per-account credits.
+			se.applyPendulumSettlement(rec, uint64(t.SignedBlock.Headers.Br[1]))
 		}
 	}
 

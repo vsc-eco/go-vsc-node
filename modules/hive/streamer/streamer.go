@@ -518,6 +518,7 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 		hiveBlock := hiveblocks.HiveBlock{
 			BlockNumber:  uint64(block.BlockNumber),
 			BlockID:      block.BlockID,
+			Witness:      block.Witness,
 			Timestamp:    block.Timestamp,
 			Transactions: []hiveblocks.Tx{},
 			MerkleRoot:   block.TransactionMerkleRoot,
