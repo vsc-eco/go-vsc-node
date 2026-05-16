@@ -79,7 +79,10 @@ func main() {
 	}
 
 	// Resolve chain configuration from CLI flags
-	chainCfg, err := chain.Resolve(args.chainName, args.chainNetwork, http.DefaultClient)
+	// review2 LOW #117: http.DefaultClient has no timeout, so every
+	// mempool.space call could hang forever on an unresponsive endpoint.
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	chainCfg, err := chain.Resolve(args.chainName, args.chainNetwork, httpClient)
 	if err != nil {
 		slog.Error("unsupported chain", "err", err)
 		os.Exit(1)
