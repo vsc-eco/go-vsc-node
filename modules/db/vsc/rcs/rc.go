@@ -6,6 +6,7 @@ import (
 	"vsc-node/modules/db/vsc"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -23,7 +24,11 @@ func (e *rcDb) Init() error {
 		return err
 	}
 
-	return nil
+	// review2 HIGH #27: rcs is read by {account, latest block_height}
+	// (GetRecord) with only the _id index.
+	return e.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "account", Value: 1}, {Key: "block_height", Value: -1}},
+	})
 }
 
 func (e *rcDb) GetRecord(account string, blockHeight uint64) (RcRecord, error) {
