@@ -129,12 +129,25 @@ func (c *Config[T]) Update(updater func(*T)) error {
 	if err != nil {
 		return err
 	}
-	err = os.MkdirAll(path.Dir(c.FilePath()), 0755)
+	// review2 CRITICAL #5: node config can hold the BLS seed, Hive active
+	// WIF and libp2p private key. Persist owner-only (dir 0700, file 0600),
+	// never world-readable.
+	dir := path.Dir(c.FilePath())
+	err = os.MkdirAll(dir, 0700)
 	if err != nil {
 		return err
 	}
-	err = os.WriteFile(c.FilePath(), b, 0644)
+	err = os.WriteFile(c.FilePath(), b, 0600)
 	if err != nil {
+		return err
+	}
+	// MkdirAll / WriteFile do not tighten an already-existing dir/file, so
+	// explicitly re-assert perms to migrate nodes whose config was created
+	// world-readable by an earlier build (the live 0777 dir / 0644 file).
+	if err = os.Chmod(dir, 0700); err != nil {
+		return err
+	}
+	if err = os.Chmod(c.FilePath(), 0600); err != nil {
 		return err
 	}
 	c.value = temp

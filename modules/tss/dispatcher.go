@@ -76,9 +76,19 @@ type ReshareDispatcher struct {
 // verifyResharedKey checks that the reshared public key matches the original.
 // extractPub deserializes the stored key data and returns the original (X, Y).
 func (dispatcher *ReshareDispatcher) verifyResharedKey(newX, newY *big.Int, algo string, extractPub func([]byte) (*big.Int, *big.Int, error)) error {
-	origKeyData, err := dispatcher.keystore.Get(context.Background(), makeKey("key", dispatcher.keyId, int(dispatcher.epoch)))
+	encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
+	if err != nil {
+		return fmt.Errorf("keystore encryption key: %w", err)
+	}
+	origBlob, err := dispatcher.keystore.Get(context.Background(), makeKey("key", dispatcher.keyId, int(dispatcher.epoch)))
 	if err != nil {
 		return nil // no original key to compare against
+	}
+	origKeyData, err := decryptKeystoreBlob(encKey, origBlob)
+	if err != nil {
+		// Blob exists but cannot be decrypted: do NOT silently skip the
+		// public-key-mismatch safety check — abort the reshare.
+		return fmt.Errorf("decrypt original key %s: %w", dispatcher.keyId, err)
 	}
 	origX, origY, err := extractPub(origKeyData)
 	if err != nil {
@@ -183,9 +193,16 @@ func (dispatcher *ReshareDispatcher) Start() error {
 	var err error
 	var savedKeyData []byte
 	if myParty != nil {
-		savedKeyData, err = dispatcher.keystore.Get(
+		encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey()
+		if encErr != nil {
+			log.Error("keystore encryption key error", "keyId", dispatcher.keyId, "err", encErr, "sessionId", dispatcher.sessionId)
+			return encErr
+		}
+		savedKeyData, err = keystoreGetDecrypted(
 			context.Background(),
+			dispatcher.keystore,
 			makeKey("key", dispatcher.keyId, int(dispatcher.epoch)),
+			encKey,
 		)
 		log.Verbose("key retrieval result", "keyId", dispatcher.keyId, "epoch", dispatcher.epoch, "err", err, "dataLen", len(savedKeyData), "sessionId", dispatcher.sessionId)
 		if err != nil {
@@ -355,7 +372,11 @@ func (dispatcher *ReshareDispatcher) Start() error {
 					keydata, _ := json.Marshal(reshareResult)
 
 					k := makeKey("key", dispatcher.keyId, int(dispatcher.newEpoch))
-					dispatcher.keystore.Put(context.Background(), k, keydata)
+					if encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey(); encErr != nil {
+						log.Error("keystore encryption key error, NOT writing reshared key in clear", "algo", "ECDSA", "keyId", dispatcher.keyId, "err", encErr, "sessionId", dispatcher.sessionId)
+					} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.keystore, k, keydata, encKey); ksErr != nil {
+						log.Error("reshared keystore write failed", "algo", "ECDSA", "keyId", dispatcher.keyId, "err", ksErr, "sessionId", dispatcher.sessionId)
+					}
 
 					dispatcher.result = &ReshareResult{
 						Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch),
@@ -498,7 +519,11 @@ func (dispatcher *ReshareDispatcher) Start() error {
 				keydata, _ := json.Marshal(reshareResult)
 
 				k := makeKey("key", dispatcher.keyId, int(dispatcher.newEpoch))
-				dispatcher.keystore.Put(context.Background(), k, keydata)
+				if encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey(); encErr != nil {
+					log.Error("keystore encryption key error, NOT writing reshared key in clear", "algo", "EdDSA", "keyId", dispatcher.keyId, "err", encErr, "sessionId", dispatcher.sessionId)
+				} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.keystore, k, keydata, encKey); ksErr != nil {
+					log.Error("reshared keystore write failed", "algo", "EdDSA", "keyId", dispatcher.keyId, "err", ksErr, "sessionId", dispatcher.sessionId)
+				}
 
 				dispatcher.result = &ReshareResult{
 					Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch),
@@ -965,7 +990,12 @@ func (dispatcher *SignDispatcher) Start() error {
 		keydata := keyGenSecp256k1.LocalPartySaveData{}
 		k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
 
-		rawKey, err := dispatcher.keystore.Get(context.Background(), k)
+		encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
+		if err != nil {
+			log.Trace("sign keystore encryption key error", "err", err)
+			return err
+		}
+		rawKey, err := keystoreGetDecrypted(context.Background(), dispatcher.keystore, k, encKey)
 
 		if err != nil {
 			log.Trace("sign key retrieval error", "err", err)
@@ -978,9 +1008,10 @@ func (dispatcher *SignDispatcher) Start() error {
 		threshold, err := tss_helpers.GetThreshold(dispatcher.origCommitteeSize)
 
 		if err != nil {
-
+			// review2 HIGH #31: surface the error instead of `return nil`,
+			// which claimed success and let the session hang silently.
 			log.Trace("sign threshold error", "err", err)
-			return nil
+			return err
 		}
 
 		params := btss.NewParameters(btss.S256(), p2pCtx, myParty, len(sortedPids), threshold)
@@ -1033,7 +1064,11 @@ func (dispatcher *SignDispatcher) Start() error {
 
 		k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
 
-		rawKey, err := dispatcher.keystore.Get(context.Background(), k)
+		encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
+		if err != nil {
+			return err
+		}
+		rawKey, err := keystoreGetDecrypted(context.Background(), dispatcher.keystore, k, encKey)
 
 		if err != nil {
 			return err
@@ -1049,7 +1084,8 @@ func (dispatcher *SignDispatcher) Start() error {
 		threshold, err := tss_helpers.GetThreshold(dispatcher.origCommitteeSize)
 
 		if err != nil {
-			return nil
+			// review2 HIGH #31: surface the error instead of `return nil`.
+			return err
 		}
 
 		params := btss.NewParameters(btss.Edwards(), p2pCtx, myParty, len(sortedPids), threshold)
@@ -1687,8 +1723,10 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 			bytes, _ := json.Marshal(savedOutput)
 
 			k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
-			ksErr := dispatcher.tssMgr.keyStore.Put(context.Background(), k, bytes)
-			if ksErr != nil {
+			encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey()
+			if encErr != nil {
+				log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", encErr)
+			} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, k, bytes, encKey); ksErr != nil {
 				log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", ksErr)
 			} else {
 				log.Info("keystore write OK", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
@@ -1740,8 +1778,10 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 			bytes, _ := json.Marshal(savedOutput)
 
 			k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
-			ksErr := dispatcher.tssMgr.keyStore.Put(context.Background(), k, bytes)
-			if ksErr != nil {
+			encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey()
+			if encErr != nil {
+				log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", encErr)
+			} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, k, bytes, encKey); ksErr != nil {
 				log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", ksErr)
 			} else {
 				log.Info("keystore write OK", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)

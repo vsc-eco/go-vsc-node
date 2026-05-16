@@ -95,6 +95,10 @@ type BridgeActions interface {
 	aggregate.Plugin
 	StoreAction(withdraw ActionRecord)
 	ExecuteComplete(actionId *string, ids ...string)
+	// SetProcessing transitions the given actions from "pending" to
+	// "processing" so an in-flight broadcast batch is not re-selected (and
+	// re-paid) by the next gateway action tick before its L1 header confirms.
+	SetProcessing(ids ...string)
 	Get(id string) (*ActionRecord, error)
 	SetStatus(id string, status string)
 	GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error)

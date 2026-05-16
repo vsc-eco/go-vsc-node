@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 	"vsc-node/lib/utils"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
@@ -41,6 +42,8 @@ import (
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 )
 
+var log = vsclog.Module("p2p")
+
 type P2PServer struct {
 	witnessDb    WitnessGetter
 	idConfig     common.IdentityConfig
@@ -51,6 +54,10 @@ type P2PServer struct {
 	dht    *kadDht.IpfsDHT
 	pubsub *pubsub.PubSub
 	cron   *cron.Cron
+
+	// gater: pentest finding N-L6. Lazy-initialised; access via
+	// p2pServer.connectionGater().
+	gater *p2pConnectionGater
 
 	startStatus start_status.StartStatus
 	blockStatus common_types.BlockStatusGetter
@@ -95,7 +102,12 @@ func bootstrapVSCPeers(ctx context.Context, p2p *P2PServer) {
 	for !anyConnected {
 		peerChan, err := routingDiscovery.FindPeers(ctx, p2p.topicName())
 		if err != nil {
-			panic(err)
+			// Pentest finding N-L5: panic on transient discovery
+			// failure killed the whole node — peer discovery
+			// errors should be retried, not fatal.
+			log.Warn("FindPeers failed during bootstrap discovery", "err", err)
+			time.Sleep(2 * time.Second)
+			continue
 		}
 		for peer := range peerChan {
 			if peer.ID == h.ID() {
@@ -164,7 +176,23 @@ func (p2pServer *P2PServer) Init() error {
 		),
 		libp2p.Identity(key),
 		libp2p.EnableNATService(),
-		libp2p.EnableRelayService(relay.WithInfiniteLimits(), relay.WithResources(relayResources)),
+		// Pentest finding N-M3: relay.WithInfiniteLimits() removed.
+		// relay.DefaultResources() (used to seed relayResources above)
+		// already has Duration / Data / MaxCircuits caps; the previous
+		// WithInfiniteLimits overrode all of them, making the node an
+		// unmetered relay — a bandwidth amplification vector.
+		libp2p.EnableRelayService(relay.WithResources(relayResources)),
+		// Pentest finding N-M4: enforce connection caps so the host
+		// can't accept unbounded peers under attack. Low/high water
+		// 200/400 with 30s grace, matching common libp2p defaults.
+		libp2p.ConnectionManager(p2pConnectionManager()),
+		// Pentest finding N-L6: install a ConnectionGater so
+		// operators can ban specific peer IDs or address ranges
+		// without restarting the node. Default is allow-all
+		// (matches prior behaviour); operators populate the deny
+		// lists at runtime via the exposed BlockPeer / BlockSubnet
+		// methods.
+		libp2p.ConnectionGater(p2pServer.connectionGater()),
 		libp2p.NATPortMap(),
 		libp2p.EnableAutoNATv2(),
 		libp2p.EnableHolePunching(),
@@ -558,7 +586,11 @@ func (p2p *P2PServer) discoverPeers() {
 	// Look for others who have announced and attempt to connect to them
 	peerChan, err := routingDiscovery.FindPeers(ctx, p2p.topicName())
 	if err != nil {
-		panic(err)
+		// Pentest finding N-L5: panic on transient discovery
+		// failure killed the whole node. Log and bail out of
+		// this discovery cycle; the caller will try again.
+		log.Warn("FindPeers failed during reconnect cycle", "err", err)
+		return
 	}
 	for {
 		peer := <-peerChan

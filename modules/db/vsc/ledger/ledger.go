@@ -21,6 +21,24 @@ func New(d *vsc.VscDb) Ledger {
 	return &ledger{db.NewCollection(d.DbInstance, "ledger")}
 }
 
+// review2 HIGH #27: the ledger collection had only the _id index, so every
+// per-account/height lookup and every StoreLedger upsert was a full
+// collection scan.
+func (e *ledger) Init() error {
+	if err := e.Collection.Init(); err != nil {
+		return err
+	}
+	for _, m := range []mongo.IndexModel{
+		{Keys: bson.D{{Key: "owner", Value: 1}, {Key: "block_height", Value: 1}}},
+		{Keys: bson.D{{Key: "id", Value: 1}}},
+	} {
+		if err := e.CreateIndexIfNotExist(m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (ledger *ledger) StoreLedger(ledgerRecords ...LedgerRecord) {
 	if len(ledgerRecords) > 0 {
 		for _, ledgerRecord := range ledgerRecords {
@@ -209,6 +227,17 @@ type balances struct {
 	*db.Collection
 }
 
+// review2 HIGH #27: ledger_balances is read by {account, latest block_height}
+// on every balance lookup — index it.
+func (e *balances) Init() error {
+	if err := e.Collection.Init(); err != nil {
+		return err
+	}
+	return e.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "account", Value: 1}, {Key: "block_height", Value: -1}},
+	})
+}
+
 func NewBalances(d *vsc.VscDb) Balances {
 	return &balances{db.NewCollection(d.DbInstance, "ledger_balances")}
 }
@@ -274,6 +303,24 @@ func NewActionsDb(d *vsc.VscDb) BridgeActions {
 	return &actionsDb{db.NewCollection(d.DbInstance, "ledger_actions")}
 }
 
+// review2 HIGH #27: ledger_actions is scanned every gateway tick by
+// {status, block_height} (GetPendingActions) and by {id} (Get/ExecuteComplete/
+// SetProcessing) with only the _id index.
+func (e *actionsDb) Init() error {
+	if err := e.Collection.Init(); err != nil {
+		return err
+	}
+	for _, m := range []mongo.IndexModel{
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "block_height", Value: 1}}},
+		{Keys: bson.D{{Key: "id", Value: 1}}},
+	} {
+		if err := e.CreateIndexIfNotExist(m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (actionsDb *actionsDb) StoreAction(withdraw ActionRecord) {
 	findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
 	actionsDb.FindOneAndUpdate(context.Background(), bson.M{
@@ -302,6 +349,28 @@ func (actionsDb *actionsDb) ExecuteComplete(actionId *string, ids ...string) {
 	})
 }
 
+// SetProcessing flips the given actions from "pending" to "processing".
+// The status filter is deliberate: an action whose completing L1 header was
+// already indexed (status "complete") between selection and this call must
+// NOT be dragged back to "processing". Fail-safe: a broadcast whose header
+// never confirms stays "processing" (recoverable) rather than being
+// re-selected and re-paid on the next action tick.
+func (actionsDb *actionsDb) SetProcessing(ids ...string) {
+	if len(ids) == 0 {
+		return
+	}
+	actionsDb.UpdateMany(context.Background(), bson.M{
+		"id": bson.M{
+			"$in": ids,
+		},
+		"status": "pending",
+	}, bson.M{
+		"$set": bson.M{
+			"status": "processing",
+		},
+	})
+}
+
 func (actionsDb *actionsDb) Get(id string) (*ActionRecord, error) {
 	findResult := actionsDb.FindOne(context.Background(), bson.M{
 		"id": id,
@@ -318,8 +387,21 @@ func (actionsDb *actionsDb) Get(id string) (*ActionRecord, error) {
 	return &ac, nil
 }
 
+// SetStatus transitions a single action to the given status.
+// review2 HIGH #30: this was an empty body — any caller relying on it (it is
+// part of the BridgeActions interface) would silently no-op, leaving the
+// action in its prior state. Implemented to mirror ExecuteComplete.
 func (actionsDb *actionsDb) SetStatus(id string, status string) {
-
+	if id == "" || status == "" {
+		return
+	}
+	actionsDb.UpdateMany(context.Background(), bson.M{
+		"id": id,
+	}, bson.M{
+		"$set": bson.M{
+			"status": status,
+		},
+	})
 }
 
 func (actionsDb *actionsDb) GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error) {

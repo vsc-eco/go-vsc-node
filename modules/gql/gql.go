@@ -55,6 +55,10 @@ func (g *gqlManager) Init() error {
 	gqlServer.AddTransport(transport.POST{})
 	gqlServer.Use(extension.Introspection{})
 	gqlServer.Use(extension.FixedComplexityLimit(g.conf.GetMaxComplexity()))
+	// F10: cap total field selections per operation, independent
+	// of per-field complexity (cheap fields can otherwise be
+	// aliased thousands of times under the complexity ceiling).
+	gqlServer.Use(NewAliasLimit(DefaultAliasLimit))
 
 	// OPTIONAL, UNCOMMENT TO ENABLE TRACING
 	// gqlServer.Use(apollotracing.Tracer{})
@@ -63,7 +67,19 @@ func (g *gqlManager) Init() error {
 	mux.Handle("POST /api/v1/graphql", gqlServer)
 	mux.Handle("GET /sandbox", pg.ApolloSandboxHandler("Apollo Sandbox", "/api/v1/graphql"))
 
-	// Configure CORS
+	// review2 HIGH #18: previously /health (and any non-GraphQL path) fell
+	// through to the catch-all and returned SPA HTML, so external probes
+	// could not tell "node up" from "serving stale HTML". This is a
+	// *liveness* probe only (HTTP server responsive). Readiness/solvency
+	// (L2-vs-L1 reconciliation, sync lag) is the separate hardening H1
+	// system and is intentionally NOT implemented here — it needs
+	// DB/head-height wiring and is consensus-sensitive.
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
@@ -71,10 +87,12 @@ func (g *gqlManager) Init() error {
 		AllowCredentials: false,
 	})
 
+	// F15: security headers wrap the whole stack so every response
+	// (including OPTIONS preflights) gets HSTS / nosniff / etc.
 	// assigns the HTTP server
 	g.server = &http.Server{
 		Addr:              g.conf.GetHostAddr(),
-		Handler:           c.Handler(mux),
+		Handler:           securityHeaders(c.Handler(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

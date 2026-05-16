@@ -142,16 +142,21 @@ func (s *StreamReader) Init() error {
 // begins the polling loop for the StreamReader
 func (s *StreamReader) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
-		defer inteceptError()
+		defer inteceptError(reject)
 		s.pollDb(reject)
 		resolve(nil)
 	})
 }
 
-func inteceptError() {
-	MyError := recover()
-	if MyError != nil {
-		vlog.Warn("intercepted panic", "err", MyError)
+// review2 HIGH #78: this previously did `recover()` + `vlog.Warn` only and
+// never rejected the promise. A panic in the poll loop therefore killed the
+// block pipeline silently — promise neither resolved nor rejected, no
+// restart, no health signal. It now rejects so the supervisor observes the
+// failure.
+func inteceptError(reject func(error)) {
+	if myError := recover(); myError != nil {
+		vlog.Error("streamer StreamReader panic — rejecting", "err", myError)
+		reject(fmt.Errorf("streamer: StreamReader panicked: %v", myError))
 	}
 }
 
@@ -572,7 +577,15 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 
 		if needsVirtualOps {
 			vlog.Trace("Pulling virtual ops")
-			virtualOps, _ := s.client.FetchVirtualOps(int(block.BlockNumber), true, false)
+			// review2 HIGH #25: the error was discarded with `_`. On an RPC
+			// failure virtualOps would be empty and the block was stored as
+			// if it had no virtual ops — permanently dropping deposits /
+			// payouts that depend on them. Fail closed: abort this batch so
+			// it is retried rather than persisting an incomplete block.
+			virtualOps, vopErr := s.client.FetchVirtualOps(int(block.BlockNumber), true, false)
+			if vopErr != nil {
+				return fmt.Errorf("streamer: FetchVirtualOps block %d: %w", block.BlockNumber, vopErr)
+			}
 			bbytes, _ := json.Marshal(virtualOps)
 			vlog.Trace("virtual ops fetched", "data", string(bbytes))
 			filteredOps := make([]hivego.VirtualOp, 0)

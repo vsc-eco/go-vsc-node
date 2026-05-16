@@ -10,6 +10,7 @@ import (
 	"vsc-node/modules/db/vsc"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -29,7 +30,11 @@ func (e *witnesses) Init() error {
 		return err
 	}
 
-	return nil
+	// review2 HIGH #27: witnesses is queried by {account, height} with only
+	// the _id index.
+	return e.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "account", Value: 1}, {Key: "height", Value: -1}},
+	})
 }
 
 // StoreNodeAnnouncement implements Witnesses.

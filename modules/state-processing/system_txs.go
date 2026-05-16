@@ -207,7 +207,15 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 		}
 	}
 
-	cidz := cid.MustParse(tx.Code)
+	// review2 HIGH #36: tx.Code is user-supplied — cid.MustParse panics on a
+	// malformed CID and crashes the node. Fail the tx instead.
+	cidz, cidErr := cid.Decode(tx.Code)
+	if cidErr != nil {
+		return TxResult{
+			Success: false,
+			Ret:     "invalid contract code cid",
+		}
+	}
 	go func() {
 		se.da.Get(cidz, &common_types.GetOptions{})
 	}()
@@ -384,7 +392,14 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 				Err:     "invalid storage proof",
 			}
 		}
-		cidz := cid.MustParse(tx.Code)
+		// review2 HIGH #36: tx.Code is user-supplied — guard the parse.
+		cidz, cidErr := cid.Decode(tx.Code)
+		if cidErr != nil {
+			return UpdateContractResult{
+				Success: false,
+				Err:     "invalid contract code cid",
+			}
+		}
 		go func() {
 			se.da.Get(cidz, &common_types.GetOptions{})
 		}()

@@ -42,8 +42,9 @@ import (
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/chebyrash/promise"
-	"github.com/eager7/dogd/btcec"
 	"github.com/multiformats/go-multicodec"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -865,19 +866,21 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								msgBytes, _ := hex.DecodeString(sigPack.Msg)
 								if err == nil && err1 == nil {
 									if keyCache[sigPack.KeyId].Algo == tss_db.EcdsaType {
-										pubKey, err1 := btcec.ParsePubKey(publicKey, btcec.S256())
+										pubKey, err := btcec.ParsePubKey(publicKey)
+										if err != nil {
+											log.Warn("invalid TSS public key, skipping", "keyId", sigPack.KeyId, "err", err)
+											continue
+										}
 
-										fmt.Println("err", err1)
-
-										signature, err := btcec.ParseDERSignature(sigBytes, btcec.S256())
+										signature, err := btcecdsa.ParseDERSignature(sigBytes)
+										if err != nil {
+											log.Warn("invalid TSS DER signature, skipping", "keyId", sigPack.KeyId, "err", err)
+											continue
+										}
 
 										verified := signature.Verify(msgBytes, pubKey)
 
-										fmt.Println("signature, err", signature, err, verified)
 										if verified {
-
-											fmt.Println("NEED TO SAVE SIGNATURE")
-											// se.tssRequests.SetSignedRequest()
 											se.tssRequests.UpdateRequest(tss_db.TssRequest{
 												KeyId:  sigPack.KeyId,
 												Msg:    sigPack.Msg,
@@ -890,7 +893,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 										edVerify := ed25519.Verify(pk, msgBytes, sigBytes)
 
-										fmt.Println("edVerify", edVerify)
 										if edVerify {
 											se.tssRequests.UpdateRequest(tss_db.TssRequest{
 												KeyId:  sigPack.KeyId,
@@ -970,11 +972,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							continue
 						}
 
-						verified, _, _ := circuit.Verify()
+						verified, includedDIDs, _ := circuit.Verify()
 						tssIndexHeight := se.SystemConfig().ConsensusParams().TssIndexHeight
 
 						if !verified {
 							tssLog.Warn("BLS verification failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "cid", commitmentCid)
+							continue
+						}
+						// review2 CRITICAL #6: a valid aggregate is not enough —
+						// it must carry >= 2/3 of the election weight, the same
+						// rule the leader enforces in waitForSigs. Without this,
+						// a sub-quorum commitment (e.g. 3/6) was accepted and
+						// could activate a TSS key.
+						if !BlsQuorumMet(includedDIDs, electionData.Members, electionData.Weights) {
+							tssLog.Warn("BLS sub-quorum commitment rejected", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "signers", len(includedDIDs), "members", len(electionData.Members))
 							continue
 						}
 						if block.BlockNumber <= tssIndexHeight {
