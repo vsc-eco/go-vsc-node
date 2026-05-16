@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strconv"
 	"strings"
 	"vsc-node/lib/dids"
@@ -68,19 +67,28 @@ func HashBytes(data []byte, mf multicodec.Code) (cid.Cid, error) {
 
 func ArrayToStringArray(arr interface{}) []string {
 	out := make([]string, 0)
-	if reflect.TypeOf(arr).String() == "primitive.A" {
-		for _, v := range arr.(primitive.A) {
-			out = append(out, v.(string))
+	// review2 MEDIUM #87: arr is parsed from untrusted L1 custom_json
+	// (e.g. opVal["required_auths"]). A missing field is nil, and elements
+	// may not be strings — neither must crash block processing.
+	if arr == nil {
+		return out
+	}
+	switch v := arr.(type) {
+	case primitive.A:
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
 		}
-	} else if reflect.TypeOf(arr).String() == "[]string" {
-		out = append(out, arr.([]string)...)
-	} else {
-		//Assume []interface{}
-		for _, v := range arr.([]interface{}) {
-			out = append(out, v.(string))
+	case []string:
+		out = append(out, v...)
+	case []interface{}:
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
 		}
 	}
-
 	return out
 }
 
