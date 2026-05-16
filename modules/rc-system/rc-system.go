@@ -19,15 +19,9 @@ type RcSystem struct {
 func (rcs *RcSystem) GetFrozenAmt(account string, blockHeight uint64) int64 {
 	rcRecord, _ := rcs.RcDb.GetRecord(account, blockHeight)
 
-	diff := blockHeight - rcRecord.BlockHeight
-
-	amtRet := int64(diff * uint64(rcRecord.Amount) / params.RC_RETURN_PERIOD)
-
-	if amtRet > rcRecord.Amount {
-		amtRet = rcRecord.Amount
-	}
-
-	return rcRecord.Amount - amtRet
+	// review2 MEDIUM #107: route through the overflow/negative/underflow-safe
+	// shared helper instead of an inline int64(diff*uint64(amount)/period).
+	return CalculateFrozenBal(rcRecord.BlockHeight, blockHeight, rcRecord.Amount)
 }
 
 func (rcs *RcSystem) GetAvailableRCs(account string, blockHeight uint64) int64 {
