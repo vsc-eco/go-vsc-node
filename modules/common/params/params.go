@@ -40,6 +40,12 @@ var CONTRACT_DEPLOYMENT_FEE_START_HEIGHT uint64 = 99410000
 var CONTRACT_UPDATE_HEIGHT uint64 = 102100000
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
+// review2 LOW #108: Withdraw only rejected Amount <= 0; a 0.001 dust
+// withdrawal still triggered a full gateway multisig Hive transfer
+// (economically nonsensical and spammable). Enforce a small minimum.
+// Units are milli (×1000): 10 == 0.010.
+var MINIMUM_WITHDRAWAL int64 = 10
+
 // review2 LOW #70/#110: contract-call payloads were only UTF-8 checked,
 // with no explicit length cap — the node implicitly relied on Hive's
 // ~8KB custom_json limit. Cap explicitly so the bound is enforced
