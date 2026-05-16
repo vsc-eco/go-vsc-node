@@ -598,6 +598,27 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 		return nil, fmt.Errorf("maximum 10 calls per simulation")
 	}
 
+	// Pentest finding F14: the resolver previously accepted any
+	// value (including the empty list and unprefixed garbage) for
+	// required_auths and required_posting_auths and derived caller
+	// from the first entry without sanity-checking either list.
+	// That made simulation a probing primitive: an attacker could
+	// simulate as any user, real or fabricated. Validate format
+	// here so simulation at least matches the on-chain auth shape.
+	if len(input.RequiredAuths) == 0 && len(input.RequiredPostingAuths) == 0 {
+		return nil, fmt.Errorf("simulateContractCalls: at least one required_auths or required_posting_auths entry is required")
+	}
+	for _, a := range input.RequiredAuths {
+		if !strings.HasPrefix(a, "hive:") && !strings.HasPrefix(a, "did:") {
+			return nil, fmt.Errorf("simulateContractCalls: required_auths entry %q must start with hive: or did:", a)
+		}
+	}
+	for _, a := range input.RequiredPostingAuths {
+		if !strings.HasPrefix(a, "hive:") && !strings.HasPrefix(a, "did:") {
+			return nil, fmt.Errorf("simulateContractCalls: required_posting_auths entry %q must start with hive: or did:", a)
+		}
+	}
+
 	// Get latest block info
 	highestBlock, err := r.HiveBlocks.GetHighestBlock()
 	if err != nil {

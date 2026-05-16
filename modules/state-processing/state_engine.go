@@ -42,8 +42,9 @@ import (
 	wasm_context "vsc-node/modules/wasm/context"
 	wasm_runtime "vsc-node/modules/wasm/runtime_ipc"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/chebyrash/promise"
-	"github.com/eager7/dogd/btcec"
 	"github.com/multiformats/go-multicodec"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -865,19 +866,21 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								msgBytes, _ := hex.DecodeString(sigPack.Msg)
 								if err == nil && err1 == nil {
 									if keyCache[sigPack.KeyId].Algo == tss_db.EcdsaType {
-										pubKey, err1 := btcec.ParsePubKey(publicKey, btcec.S256())
+										pubKey, err := btcec.ParsePubKey(publicKey)
+										if err != nil {
+											log.Warn("invalid TSS public key, skipping", "keyId", sigPack.KeyId, "err", err)
+											continue
+										}
 
-										fmt.Println("err", err1)
-
-										signature, err := btcec.ParseDERSignature(sigBytes, btcec.S256())
+										signature, err := btcecdsa.ParseDERSignature(sigBytes)
+										if err != nil {
+											log.Warn("invalid TSS DER signature, skipping", "keyId", sigPack.KeyId, "err", err)
+											continue
+										}
 
 										verified := signature.Verify(msgBytes, pubKey)
 
-										fmt.Println("signature, err", signature, err, verified)
 										if verified {
-
-											fmt.Println("NEED TO SAVE SIGNATURE")
-											// se.tssRequests.SetSignedRequest()
 											se.tssRequests.UpdateRequest(tss_db.TssRequest{
 												KeyId:  sigPack.KeyId,
 												Msg:    sigPack.Msg,
@@ -890,7 +893,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 										edVerify := ed25519.Verify(pk, msgBytes, sigBytes)
 
-										fmt.Println("edVerify", edVerify)
 										if edVerify {
 											se.tssRequests.UpdateRequest(tss_db.TssRequest{
 												KeyId:  sigPack.KeyId,
