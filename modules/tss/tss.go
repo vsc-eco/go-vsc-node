@@ -245,6 +245,12 @@ type TssManager struct {
 
 	keyStore *flatfs.Datastore
 
+	// review2 CRITICAL #4: AES-256 key for encrypting TSS key shares at rest,
+	// derived once from the node's BLS seed. Cached via keystoreKeyOnce.
+	keystoreKeyOnce sync.Once
+	keystoreKey     []byte
+	keystoreKeyErr  error
+
 	//Generates a fresh set of local key params.
 	//A new set of fresh pre params will be available after depletion
 	preParams chan ecKeyGen.LocalPreParams
