@@ -283,17 +283,23 @@ func (e *electionProposer) GenerateFullElection(
 		distWeight = uint64(math.Ceil((1 + float64(totalOptionalWeight)/2) / float64(len(REQUIRED_ELECTION_MEMBERS))))
 	}
 
-	members := utils.Map(witnessList, func(w witnesses.Witness) elections.ElectionMember {
+	// review2 MEDIUM #66: a witness consensus key comes from untrusted L1
+	// account data; a single malformed key must not panic (crash) every
+	// proposer. Deterministically skip the witness instead — all nodes
+	// read the same witness records, so dropping the same bad-key members
+	// keeps the proposed election identical across the network.
+	members := make([]elections.ElectionMember, 0, len(witnessList))
+	for _, w := range witnessList {
 		key, err := w.ConsensusKey()
-
 		if err != nil {
-			panic(err)
+			fmt.Println("election.skip witness with invalid consensus key", w.Account, err)
+			continue
 		}
-		return elections.ElectionMember{
+		members = append(members, elections.ElectionMember{
 			Key:     key.String(),
 			Account: w.Account,
-		}
-	})
+		})
+	}
 
 	weights := make([]uint64, len(members))
 	for i, member := range members {
