@@ -99,8 +99,19 @@ func hasFeePaymentOp(ops []hivego.Operation, feeAmt int64, feeAsset string) (boo
 
 	secondOp := ops[1]
 	if secondOp.Type == "transfer" {
-		amountData := secondOp.Value["amount"].(map[string]any)
-		amount, err := strconv.ParseInt(amountData["amount"].(string), 10, 64)
+		// review2 MEDIUM #88: the fee-payment op is part of an
+		// attacker-shaped system transaction; bare type assertions on
+		// amount/from panicked block processing. Comma-ok every access
+		// and treat any malformed shape as "no fee payment".
+		amountData, ok := secondOp.Value["amount"].(map[string]any)
+		if !ok {
+			return false, 0, ""
+		}
+		amountStr, ok := amountData["amount"].(string)
+		if !ok {
+			return false, 0, ""
+		}
+		amount, err := strconv.ParseInt(amountStr, 10, 64)
 
 		if err != nil {
 			return false, 0, ""
@@ -114,7 +125,11 @@ func hasFeePaymentOp(ops []hivego.Operation, feeAmt int64, feeAsset string) (boo
 		if amount < feeAmt || amountData["nai"] != feeNai || secondOp.Value["to"] != params.GATEWAY_WALLET {
 			return false, 0, ""
 		}
-		return true, amount, secondOp.Value["from"].(string)
+		from, ok := secondOp.Value["from"].(string)
+		if !ok {
+			return false, 0, ""
+		}
+		return true, amount, from
 	} else {
 		return false, 0, ""
 	}
