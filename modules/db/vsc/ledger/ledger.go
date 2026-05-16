@@ -340,8 +340,21 @@ func (actionsDb *actionsDb) Get(id string) (*ActionRecord, error) {
 	return &ac, nil
 }
 
+// SetStatus transitions a single action to the given status.
+// review2 HIGH #30: this was an empty body — any caller relying on it (it is
+// part of the BridgeActions interface) would silently no-op, leaving the
+// action in its prior state. Implemented to mirror ExecuteComplete.
 func (actionsDb *actionsDb) SetStatus(id string, status string) {
-
+	if id == "" || status == "" {
+		return
+	}
+	actionsDb.UpdateMany(context.Background(), bson.M{
+		"id": id,
+	}, bson.M{
+		"$set": bson.M{
+			"status": status,
+		},
+	})
 }
 
 func (actionsDb *actionsDb) GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error) {
