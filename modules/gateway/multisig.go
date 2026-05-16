@@ -87,7 +87,10 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 	if headHeight == nil {
 		return
 	}
-	if bh < *headHeight-20 {
+	// review2 LOW #112: *headHeight-20 underflows to ~1.8e19 when the head
+	// is below block 20 (fresh chain), making this skip every early block.
+	// bh+20 < *headHeight is the same predicate without the underflow.
+	if bh+20 < *headHeight {
 		return
 	}
 
@@ -803,7 +806,10 @@ func (ms *MultiSig) waitCheckBh(INTERVAL uint64, blockHeight uint64) error {
 		if !clear {
 			return errors.New("timeout waiting for block height")
 		}
-	} else if blockHeight < ms.bh-10 {
+		// review2 LOW #113: ms.bh-10 underflows to ~1.8e19 when the node
+		// is below block 10, rejecting every early block as "too far into
+		// past". blockHeight+10 < ms.bh is the same check without underflow.
+	} else if blockHeight+10 < ms.bh {
 		return errors.New("too far into past")
 	}
 
