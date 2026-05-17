@@ -26,9 +26,18 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 8 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <contractId> <action> <payloadJSON> <netId> <rcLimit> <nonce> <privateKeyHex>\n", os.Args[0])
+	// review2 #122: the private key must not be passed as a CLI arg —
+	// argv is world-readable via /proc/<pid>/cmdline (and leaks to ps,
+	// shell history, logs). Prefer ZK_TX_SIGNER_PRIVKEY; keep the
+	// deprecated positional form as a fallback so a rollout version-skew
+	// between caller and signer can't break signing.
+	privKeyHex, fromArgv, argErr := resolvePrivKey(os.Args, os.Getenv("ZK_TX_SIGNER_PRIVKEY"))
+	if argErr != nil {
+		fmt.Fprintf(os.Stderr, "Usage: %s <contractId> <action> <payloadJSON> <netId> <rcLimit> <nonce> [<privateKeyHex>]\n  (set ZK_TX_SIGNER_PRIVKEY instead of the deprecated, insecure positional key) — %v\n", os.Args[0], argErr)
 		os.Exit(1)
+	}
+	if fromArgv {
+		fmt.Fprintln(os.Stderr, "zk-tx-signer: WARNING private key passed as a CLI argument (visible via /proc/<pid>/cmdline & ps); set ZK_TX_SIGNER_PRIVKEY instead")
 	}
 
 	contractID := os.Args[1]
@@ -45,7 +54,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "invalid nonce: %v\n", err)
 		os.Exit(1)
 	}
-	privKeyHex := os.Args[7]
 
 	privKey, err := ethCrypto.HexToECDSA(privKeyHex)
 	if err != nil {
@@ -110,4 +118,23 @@ func signTransaction(
 	sigB64 := base64.URLEncoding.EncodeToString(sTx.Sig)
 
 	return txB64, sigB64, nil
+}
+
+// resolvePrivKey returns the signing key, preferring envPrivKey
+// (ZK_TX_SIGNER_PRIVKEY) over the deprecated positional argv form.
+// args is os.Args (args[0] is the program name). fromArgv reports the
+// insecure CLI-arg path so the caller can warn. review2 #122.
+func resolvePrivKey(args []string, envPrivKey string) (privKey string, fromArgv bool, err error) {
+	if envPrivKey != "" {
+		// 6 positional args (no key on the command line).
+		if len(args) != 7 {
+			return "", false, fmt.Errorf("with ZK_TX_SIGNER_PRIVKEY set, expected 6 positional args, got %d", len(args)-1)
+		}
+		return envPrivKey, false, nil
+	}
+	// Legacy: key as the 7th positional arg (insecure, deprecated).
+	if len(args) != 8 {
+		return "", false, fmt.Errorf("expected 7 positional args, or set ZK_TX_SIGNER_PRIVKEY for 6, got %d", len(args)-1)
+	}
+	return args[7], true, nil
 }
