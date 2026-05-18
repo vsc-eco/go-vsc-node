@@ -24,6 +24,18 @@ import (
 
 const shutdownTimeout = 5 * time.Second
 
+// MaxRequestBodyBytes caps the GraphQL POST body before gqlgen reads
+// it. The alias limit (F10) bounds execution-time amplification but
+// fires only after parse + validate, so an unbounded body would still
+// let an attacker exhaust memory by streaming a huge query that gets
+// fully read + AST-built before rejection. 1 MiB is ~30x the largest
+// plausible legitimate query (see alias_limit_test.go: 1000 aliases
+// is ~30 KiB). Operators exposing the GQL port directly to the
+// internet should still front it with a reverse proxy enforcing its
+// own body cap, rate limit, and CORS allowlist — this constant is
+// defense-in-depth, not a substitute for that.
+const MaxRequestBodyBytes = 1 << 20
+
 // ===== types =====
 
 type gqlManager struct {
@@ -64,7 +76,7 @@ func (g *gqlManager) Init() error {
 	// gqlServer.Use(apollotracing.Tracer{})
 
 	// adds handlers for GraphQL and Apollo sandbox environment
-	mux.Handle("POST /api/v1/graphql", gqlServer)
+	mux.Handle("POST /api/v1/graphql", http.MaxBytesHandler(gqlServer, MaxRequestBodyBytes))
 	mux.Handle("GET /sandbox", pg.ApolloSandboxHandler("Apollo Sandbox", "/api/v1/graphql"))
 
 	c := cors.New(cors.Options{
