@@ -299,19 +299,28 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 		if tx.Operations[0].Type == "custom_json" {
 			headerOp := tx.Operations[0]
-			Id := headerOp.Value["id"].(string)
 			opVal := headerOp.Value
+			// review2 MED #86/#88 (sweep): id/json come from an
+			// untrusted L1 custom_json payload. A bare type assertion
+			// panicked block processing on a malformed op. Comma-ok
+			// and skip just this system-header handling — the rest of
+			// the tx (transfers, user ops) still processes. Hive
+			// validates these as strings server-side so this is
+			// defense-in-depth, but the assertion no longer crashes
+			// the node if the L1 ever diverges.
+			Id, idOk := opVal["id"].(string)
+			headerJson, jsonOk := opVal["json"].(string)
 			RequiredAuths := common.ArrayToStringArray(opVal["required_auths"])
 
 			// Only process system header operations (vsc.fr_sync, vsc.actions)
 			// when active auth is present. User operations with posting-only
 			// auth are handled in the user operations section below.
-			if len(RequiredAuths) > 0 {
+			if idOk && jsonOk && len(RequiredAuths) > 0 {
 				cj := CustomJson{
-					Id:                   opVal["id"].(string),
-					RequiredAuths:        common.ArrayToStringArray(opVal["required_auths"]),
+					Id:                   Id,
+					RequiredAuths:        RequiredAuths,
 					RequiredPostingAuths: common.ArrayToStringArray(opVal["required_posting_auths"]),
-					Json:                 []byte(opVal["json"].(string)),
+					Json:                 []byte(headerJson),
 				}
 
 				if Id == "vsc.fr_sync" && RequiredAuths[0] == se.sconf.GatewayWallet() {
@@ -366,10 +375,16 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		if singleOp.Type == "account_update" {
 			opValue := singleOp.Value
 
-			if opValue["json_metadata"] != nil {
+			// review2 MED #86/#88 (sweep): json_metadata / account from
+			// an untrusted L1 account_update payload — comma-ok and
+			// skip the witness-update path instead of a bare assertion
+			// that panicked block processing.
+			jsonMeta, jsonMetaOk := opValue["json_metadata"].(string)
+			acct, acctOk := singleOp.Value["account"].(string)
+			if jsonMetaOk && acctOk {
 				untypedJson := make(map[string]interface{})
 
-				bbytes := []byte(opValue["json_metadata"].(string))
+				bbytes := []byte(jsonMeta)
 				json.Unmarshal(bbytes, &untypedJson)
 
 				rawJson := witnesses.PostingJsonMetadata{}
@@ -377,7 +392,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 				if slices.Contains(rawJson.Services, "vsc.network") {
 					inputData := witnesses.SetWitnessUpdateType{
-						Account:  singleOp.Value["account"].(string),
+						Account:  acct,
 						Height:   blockInfo.BlockHeight,
 						TxId:     tx.TransactionID,
 						BlockId:  blockInfo.BlockId,
@@ -391,16 +406,21 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 		if singleOp.Type == "custom_json" {
 			opVal := singleOp.Value
+			// review2 MED #86/#88 (sweep): comma-ok the untrusted L1
+			// id/json instead of a bare assertion that crashed block
+			// processing on a malformed system op.
+			cjId, cjIdOk := opVal["id"].(string)
+			cjJson, cjJsonOk := opVal["json"].(string)
 			cj := CustomJson{
-				Id:                   opVal["id"].(string),
+				Id:                   cjId,
 				RequiredAuths:        common.ArrayToStringArray(opVal["required_auths"]),
 				RequiredPostingAuths: common.ArrayToStringArray(opVal["required_posting_auths"]),
-				Json:                 []byte(opVal["json"].(string)),
+				Json:                 []byte(cjJson),
 			}
 
 			// Only process system transactions when active auth is present.
 			// User operations with posting-only auth are handled below.
-			if len(cj.RequiredAuths) > 0 {
+			if cjIdOk && cjJsonOk && len(cj.RequiredAuths) > 0 {
 				txSelf := TxSelf{
 					BlockHeight:          blockInfo.BlockHeight,
 					BlockId:              blockInfo.BlockId,
@@ -606,7 +626,30 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				// review2 LOW #104: an unrecognised NAI left token == "",
 				// and the op was still credited as an empty-asset deposit.
 				// Skip transfers whose asset we don't track.
+				//
+				// Defense-in-depth (milo review follow-up): Hive L1
+				// transfers today only carry HIVE/HBD, so token == ""
+				// should be unreachable for a real op — but if the L1
+				// ever diverges, a transfer of an untracked asset TO the
+				// gateway would be silently dropped, leaving funds in the
+				// multisig with no L2 credit and no refund trail. Do not
+				// credit it (no empty-asset record), but make it loud and
+				// auditable so operators can refund manually. State
+				// transition is unchanged (still skipped) — log only, so
+				// this stays deterministic.
 				if token == "" {
+					if toStr, _ := op.Value["to"].(string); toStr == "vsc.gateway" {
+						fromStr, _ := op.Value["from"].(string)
+						log.Warn(
+							"review2 #104: untracked-asset transfer to gateway stranded — NOT credited, manual refund required",
+							"tx", tx.TransactionID,
+							"op", opIndex,
+							"from", fromStr,
+							"nai", amountMap["nai"],
+							"amount", amountMap["amount"],
+							"blockHeight", blockInfo.BlockHeight,
+						)
+					}
 					continue
 				}
 
@@ -686,11 +729,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			//# Start parsing onchain user operations
 			if op.Type == "custom_json" {
 				opVal := op.Value
+				// review2 MED #86/#88 (sweep): untrusted L1 user op —
+				// comma-ok id/json and skip just this op instead of a
+				// bare assertion that crashed the whole block.
+				uId, uIdOk := opVal["id"].(string)
+				uJson, uJsonOk := opVal["json"].(string)
+				if !uIdOk || !uJsonOk {
+					log.Warn("skipping malformed user custom_json op", "tx", tx.TransactionID, "op", opIndex)
+					continue
+				}
 				cj := CustomJson{
-					Id:                   opVal["id"].(string),
+					Id:                   uId,
 					RequiredAuths:        common.ArrayToStringArray(opVal["required_auths"]),
 					RequiredPostingAuths: common.ArrayToStringArray(opVal["required_posting_auths"]),
-					Json:                 []byte(opVal["json"].(string)),
+					Json:                 []byte(uJson),
 				}
 
 				for idx, auth := range cj.RequiredAuths {
