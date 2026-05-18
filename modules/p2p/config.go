@@ -13,6 +13,14 @@ type p2pConfig struct {
 	PubsubConcurrencyLimit  int
 	Bootnodes               []string
 	AnnounceAddrs           []string
+
+	// Pentest finding N-L6: operator-managed connection deny lists,
+	// applied to the libp2p ConnectionGater at node start. Empty by
+	// default (allow-all, matches prior behaviour). BlockedPeers is a
+	// list of base58 peer IDs; BlockedSubnets is a list of CIDR
+	// ranges. Edit the p2p config file and restart to ban.
+	BlockedPeers   []string
+	BlockedSubnets []string
 }
 
 type p2pConfigStruct struct {
@@ -36,6 +44,8 @@ func NewConfig(dataDir ...string) P2PConfig {
 		PubsubConcurrencyLimit: 256,
 		Bootnodes:              []string{},
 		AnnounceAddrs:          []string{},
+		BlockedPeers:           []string{},
+		BlockedSubnets:         []string{},
 	}, dataDirPtr)}
 }
 
@@ -54,6 +64,8 @@ func (pc *p2pConfigStruct) SetOptions(conf p2pConfig) error {
 		pc.PubsubConcurrencyLimit = conf.PubsubConcurrencyLimit
 		pc.Bootnodes = conf.Bootnodes
 		pc.AnnounceAddrs = conf.AnnounceAddrs
+		pc.BlockedPeers = conf.BlockedPeers
+		pc.BlockedSubnets = conf.BlockedSubnets
 	})
 }
 
