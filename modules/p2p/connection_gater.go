@@ -20,8 +20,10 @@ import (
 //
 // The gater here is a thin opt-in: by default it accepts
 // everything, matching the prior behaviour. Operators populate
-// the deny lists at runtime via BlockPeer / BlockSubnet to ban
-// without a node restart.
+// the deny lists through the p2p config (BlockedPeers /
+// BlockedSubnets), loaded once at host start by applyConfig.
+// BlockPeer / BlockSubnet also remain callable programmatically
+// for runtime bans without a config edit.
 
 type p2pConnectionGater struct {
 	mu             sync.RWMutex
@@ -71,6 +73,40 @@ func (g *p2pConnectionGater) BlockSubnet(cidr string) error {
 	defer g.mu.Unlock()
 	g.blockedSubnets = append(g.blockedSubnets, n)
 	return nil
+}
+
+// applyConfig seeds the deny lists from the node's p2p config
+// (BlockedPeers / BlockedSubnets). Called once at host start so the
+// gater is actually enforced instead of being allow-all dead code
+// (pentest finding N-L6). Returns how many entries were applied and
+// any per-entry parse errors; a malformed entry is skipped, not
+// fatal, so one typo can't keep the node from starting.
+func (g *p2pConnectionGater) applyConfig(peers, subnets []string) (nPeers, nSubnets int, errs []error) {
+	for _, ps := range peers {
+		ps = strings.TrimSpace(ps)
+		if ps == "" {
+			continue
+		}
+		pid, err := peer.Decode(ps)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		g.BlockPeer(pid)
+		nPeers++
+	}
+	for _, cidr := range subnets {
+		cidr = strings.TrimSpace(cidr)
+		if cidr == "" {
+			continue
+		}
+		if err := g.BlockSubnet(cidr); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		nSubnets++
+	}
+	return nPeers, nSubnets, errs
 }
 
 func (g *p2pConnectionGater) isPeerBlocked(p peer.ID) bool {

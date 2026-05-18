@@ -166,6 +166,23 @@ func (p2pServer *P2PServer) Init() error {
 	relayResources.ReservationTTL = 8 * time.Hour
 
 	port := p2pServer.config.Get().Port
+
+	// Pentest finding N-L6: seed the ConnectionGater deny lists from
+	// the node's p2p config before the host is built. Without this the
+	// gater is allow-all dead code with no caller. Malformed entries
+	// are logged and skipped so one bad line can't block startup.
+	gater := p2pServer.connectionGater()
+	nPeers, nSubnets, gaterErrs := gater.applyConfig(
+		p2pServer.config.Get().BlockedPeers,
+		p2pServer.config.Get().BlockedSubnets,
+	)
+	for _, gErr := range gaterErrs {
+		log.Warn("p2p: skipping malformed connection-gater deny entry", "error", gErr)
+	}
+	if nPeers > 0 || nSubnets > 0 {
+		log.Info("p2p: connection gater active", "blockedPeers", nPeers, "blockedSubnets", nSubnets)
+	}
+
 	var idht *dht.IpfsDHT
 	options := []libp2p.Option{
 		libp2p.ListenAddrStrings(
@@ -187,12 +204,13 @@ func (p2pServer *P2PServer) Init() error {
 		// 200/400 with 30s grace, matching common libp2p defaults.
 		libp2p.ConnectionManager(p2pConnectionManager()),
 		// Pentest finding N-L6: install a ConnectionGater so
-		// operators can ban specific peer IDs or address ranges
-		// without restarting the node. Default is allow-all
-		// (matches prior behaviour); operators populate the deny
-		// lists at runtime via the exposed BlockPeer / BlockSubnet
-		// methods.
-		libp2p.ConnectionGater(p2pServer.connectionGater()),
+		// operators can ban specific peer IDs or address ranges.
+		// Deny lists are loaded above from the p2p config
+		// (BlockedPeers / BlockedSubnets); editing the config and
+		// restarting bans a peer. Default is allow-all (matches
+		// prior behaviour). BlockPeer / UnblockPeer / BlockSubnet
+		// remain available for programmatic runtime bans.
+		libp2p.ConnectionGater(gater),
 		libp2p.NATPortMap(),
 		libp2p.EnableAutoNATv2(),
 		libp2p.EnableHolePunching(),
