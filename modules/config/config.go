@@ -74,6 +74,21 @@ func projectRoot() result.Result[string] {
 	return result.Ok(wd)
 }
 
+// stripWorld removes any o+rwx bits from path while preserving owner and
+// group bits, so operators who have widened group access for shared editing
+// don't have their setup clobbered on every config write.
+func stripWorld(p string) error {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return err
+	}
+	cur := fi.Mode().Perm()
+	if cur&0o007 == 0 {
+		return nil
+	}
+	return os.Chmod(p, cur&^0o007)
+}
+
 func (c *Config[T]) FilePath() string {
 	name := reflect.TypeFor[T]().Name()
 	if testing.Testing() && UseMainConfigDuringTests && c.dataDir == DEFAULT_CONFIG_DIR {
@@ -130,8 +145,9 @@ func (c *Config[T]) Update(updater func(*T)) error {
 		return err
 	}
 	// review2 CRITICAL #5: node config can hold the BLS seed, Hive active
-	// WIF and libp2p private key. Persist owner-only (dir 0700, file 0600),
-	// never world-readable.
+	// WIF and libp2p private key. Create owner-only (dir 0700, file 0600),
+	// and on existing paths strip world bits only — operators may have
+	// intentionally widened group access to share editing with other UIDs.
 	dir := path.Dir(c.FilePath())
 	err = os.MkdirAll(dir, 0700)
 	if err != nil {
@@ -141,13 +157,14 @@ func (c *Config[T]) Update(updater func(*T)) error {
 	if err != nil {
 		return err
 	}
-	// MkdirAll / WriteFile do not tighten an already-existing dir/file, so
-	// explicitly re-assert perms to migrate nodes whose config was created
-	// world-readable by an earlier build (the live 0777 dir / 0644 file).
-	if err = os.Chmod(dir, 0700); err != nil {
+	// MkdirAll / WriteFile do not change perms on an already-existing
+	// dir/file, so explicitly strip world bits to migrate nodes whose config
+	// was created world-readable by an earlier build. Group bits are left
+	// alone so operators can grant shared-group access manually.
+	if err = stripWorld(dir); err != nil {
 		return err
 	}
-	if err = os.Chmod(c.FilePath(), 0600); err != nil {
+	if err = stripWorld(c.FilePath()); err != nil {
 		return err
 	}
 	c.value = temp
