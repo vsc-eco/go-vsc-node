@@ -2,6 +2,7 @@ package transactions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -83,6 +84,29 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 		}
 	}
 
+	// Extract recipients buried in contract-call payloads (e.g. sats/token
+	// transfers). The recipient lives inside ops.data.payload as a JSON
+	// string, unreachable by Mongo equality; surface it as an indexed field
+	// so FindTransactions can match inbound contract transfers.
+	payloadRecipients := []string{}
+	for _, op := range offTx.Ops {
+		if op.Type != "call" {
+			continue
+		}
+		pl, ok := op.Data["payload"].(string)
+		if !ok {
+			continue
+		}
+		var parsed map[string]interface{}
+		if json.Unmarshal([]byte(pl), &parsed) != nil {
+			continue
+		}
+		if to, ok := parsed["to"].(string); ok && to != "" {
+			payloadRecipients = append(payloadRecipients, to)
+		}
+	}
+	setOp["payload_recipients"] = payloadRecipients
+
 	_, err := e.UpdateOne(ctx, queryy, bson.M{
 		"$set": setOp,
 	}, opts)
@@ -149,6 +173,8 @@ func (e *transactions) FindTransactions(ids []string, id *string, account *strin
 			bson.D{{Key: "required_auths", Value: *account}},
 			bson.D{{Key: "required_posting_auths", Value: *account}},
 			bson.D{{Key: "ops.data.to", Value: *account}},
+			// Inbound contract transfers: recipient extracted at ingest.
+			bson.D{{Key: "payload_recipients", Value: *account}},
 		}})
 	}
 	if contract != nil {
