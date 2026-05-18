@@ -378,7 +378,9 @@ func NewBot(
 
 	gqlClients := make([]*graphql.Client, len(gqlAddrs))
 	for i, addr := range gqlAddrs {
-		gqlClients[i] = graphql.NewClient(addr, http.DefaultClient)
+		// review2 LOW #117 (sweep): timeout client, not http.DefaultClient,
+		// so a hung GraphQL peer node can't block the bot forever.
+		gqlClients[i] = graphql.NewClient(addr, gqlHTTPClient)
 	}
 
 	// Load or generate the bot's L2 signing key. Failure here is fatal since

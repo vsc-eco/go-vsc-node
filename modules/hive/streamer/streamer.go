@@ -467,22 +467,48 @@ func (s *Streamer) streamBlocks() {
 				continue
 			}
 
+			// review2 HIGH #25 follow-up: do NOT advance the cursor
+			// before the batch is durably stored. The previous code
+			// incremented *s.startBlock and then launched storeBlocks
+			// in a detached goroutine, so an in-process failure
+			// (FetchVirtualOps RPC error, DB store error, or a
+			// pause/stop mid-batch) permanently skipped the batch —
+			// the only recovery was a process restart, since Init
+			// re-reads GetHighestBlock. The PR's in-process bail at
+			// storeBlocks (HIGH #25) is correct, but it only achieves
+			// "retried" across restarts while the cursor moves first.
+			//
+			// Store synchronously and advance the cursor only after
+			// success; on failure back off and retry the SAME range
+			// in-process. This trades the previous fetch/store
+			// pipelining for correctness of fund-bearing block
+			// ingest (a follow-up could reintroduce pipelining with
+			// an explicit rewind-on-failure high-water mark).
+			batchStart := *s.startBlock
+			s.processWg.Add(1)
+			storeErr := func() error {
+				defer s.processWg.Done()
+				return s.storeBlocks(blocks)
+			}()
+			if storeErr != nil {
+				if storeErr.Error() != "empty blocks" {
+					log.Printf("processing blocks failed at %d, retrying in-process: %v\n", batchStart, storeErr)
+				}
+				// Interruptible backoff: a failing range is retried in
+				// place, but ctx cancel (Stop) must not wait out the
+				// full backoff.
+				select {
+				case <-s.ctx.Done():
+					return
+				case <-time.After(MinTimeBetweenBlockBatchFetches + 3*time.Second):
+				}
+
+				continue
+			}
+
 			s.mtx.Lock()
 			*s.startBlock += uint64(len(blocks))
 			s.mtx.Unlock()
-
-			// start goroutine to process the blocks
-			//
-			// this REALLY, REALLY helps speed up the processing of blocks
-			s.processWg.Add(1)
-			go func() {
-				defer s.processWg.Done()
-				if err := s.storeBlocks(blocks); err != nil {
-					if err.Error() != "empty blocks" {
-						log.Printf("processing blocks failed: %v\n", err)
-					}
-				}
-			}()
 
 			// wait before fetching the next batch whatever min duration that is preset
 			time.Sleep(MinTimeBetweenBlockBatchFetches)

@@ -35,7 +35,24 @@ func (a *Aggregate) Run() error {
 	}
 
 	running := a.Start()
-	if _, err := a.lastPlugin.Await(a.ctx); err != nil {
+
+	// review2 HIGH #78: Run previously awaited ONLY a.lastPlugin (the
+	// final plugin in the slice — gqlManager). A long-lived plugin
+	// such as the Hive streamer rejecting its Start() promise (ingest
+	// dead) was not observed until gqlManager itself exited, i.e. at
+	// shutdown: the process kept running with dead block ingest and a
+	// still-green liveness probe, with no auto-restart.
+	//
+	// `running` is promise.All over every plugin, which rejects as
+	// soon as ANY plugin rejects. Race the intended-shutdown signal
+	// (lastPlugin completing) against `running`: a dead plugin now
+	// ends Run() immediately, so Run returns the error, magid exits
+	// non-zero, and the process supervisor restarts the node instead
+	// of masking the failure until shutdown.
+	if _, err := promise.Race(a.ctx, a.lastPlugin, running).Await(a.ctx); err != nil {
+		// Best-effort orderly shutdown of the surviving plugins; the
+		// original error is what callers must see.
+		_ = a.Stop()
 		return err
 	}
 
