@@ -45,6 +45,25 @@ func TestF30_ForbiddenEntrypoints(t *testing.T) {
 		}
 	})
 
+	t.Run("PrefixFamiliesBlocked", func(t *testing.T) {
+		// Prefix-based denial must cover the toolchain export families
+		// without each spelling being enumerated. syscall.seek is
+		// exported by Magi's own test wasms; the wasm-bindgen names are
+		// what the PR body claims coverage for.
+		blocked := []string{
+			"syscall.seek", "syscall.fd_write",
+			"runtime.alloc", "runtime.gc",
+			"__wbindgen_malloc", "__wbindgen_describe",
+			"__data_end", "__heap_base", "__externref_table_dealloc",
+			"__pin", "__unpin", "__collect", "__alloc",
+		}
+		for _, name := range blocked {
+			if !isForbiddenEntrypoint(name) {
+				t.Errorf("reserved-prefix export %q must be blocked", name)
+			}
+		}
+	})
+
 	t.Run("EmptyEntrypointBlocked", func(t *testing.T) {
 		if !isForbiddenEntrypoint("") {
 			t.Error("empty entrypoint must be blocked — no contract uses it as an action")

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -726,7 +727,14 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
-						log.Error("panic recovered in old party UpdateFromBytes", "sessionId", dispatcher.sessionId, "from", fromStr, "panic", r)
+						// N-L4: a panic here is consensus-unsafe to turn
+						// into a tssErr — see comment at the new-party
+						// site below. Keep swallowing, but log with the
+						// stack so the otherwise-silent CanProceed stall
+						// is at least diagnosable.
+						log.Error("panic recovered in old party UpdateFromBytes",
+							"sessionId", dispatcher.sessionId, "from", fromStr,
+							"panic", r, "stack", string(debug.Stack()))
 					}
 				}()
 				ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
@@ -747,7 +755,25 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
-						log.Error("panic recovered in new party UpdateFromBytes", "sessionId", dispatcher.sessionId, "from", fromStr, "panic", r)
+						// N-L4: deliberately NOT routed to recordTssError.
+						// recordTssError feeds tssErr -> Done() error
+						// branch -> ErrorResult.Culprits -> setToCommitment
+						// -> CID. A panic here happens on whichever node
+						// received this particular (possibly malicious or
+						// malformed) message and reached this btss state;
+						// P2P delivery is non-deterministic, so other nodes
+						// may not panic. One node taking the ErrorResult
+						// path while the rest time out yields divergent
+						// culprit sets -> divergent CIDs -> silent BLS
+						// failure (the SSID-BLAME-FIX failure mode in
+						// CLAUDE.md). Falling through to the shared 2-min
+						// timeout path is the consensus-safe behaviour. A
+						// real fix is a protocol-level deterministic blame,
+						// out of scope for this hardening PR (tracked as a
+						// follow-up). Log with stack so it is diagnosable.
+						log.Error("panic recovered in new party UpdateFromBytes",
+							"sessionId", dispatcher.sessionId, "from", fromStr,
+							"panic", r, "stack", string(debug.Stack()))
 					}
 				}()
 				ok, err := dispatcher.newParty.UpdateFromBytes(input, from, isBrcst)
