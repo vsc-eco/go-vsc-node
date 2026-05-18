@@ -66,7 +66,7 @@ func encryptKeystoreBlob(key, plaintext []byte) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("read nonce: %w", err)
 	}
-	out := make([]byte, 0, len(keystoreEncMagic)+len(nonce)+len(plaintext)+gcm.Overhead())
+	out := make([]byte, 0, len(keystoreEncMagic)+gcm.NonceSize())
 	out = append(out, keystoreEncMagic...)
 	out = append(out, nonce...)
 	out = gcm.Seal(out, nonce, plaintext, nil)
