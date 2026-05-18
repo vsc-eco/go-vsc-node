@@ -241,7 +241,10 @@ func TestnetConfig() SystemConfig {
 		// Populate with deployed pool contract IDs once they exist; operators
 		// can override via -sysconfig pendulumPoolWhitelist. Listed pools bypass
 		// the DAO-owner check in PendulumBolt.
-		pendulumPoolWhitelist: nil,
+		pendulumPoolWhitelist: []string{
+			"vsc1BVMsKovjCSBiU5V4hD3YcC7x8rN5m9ErSz",
+			"vsc1BhV2bjSAt9NY48mRhL9XzBSxnt4aYbfkZR",
+		},
 	}
 	return conf
 }
