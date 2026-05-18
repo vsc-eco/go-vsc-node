@@ -13,6 +13,7 @@ import (
 	"vsc-node/modules/db/vsc/transactions"
 
 	"github.com/stretchr/testify/assert"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // testAnchorHeight is the hive block height every test transaction is anchored
@@ -112,6 +113,48 @@ func TestInboundContractTransferVisibleToRecipient(t *testing.T) {
 	// Unrelated account sees nothing.
 	other := "hive:nobody"
 	res, err = tx.FindTransactions(nil, nil, &other, nil, nil, nil, nil, nil, nil, nil, 0, 50)
+	assert.NoError(t, err)
+	assert.Len(t, res, 0)
+}
+
+func TestLegacyInboundTransferVisibleViaRegexFallback(t *testing.T) {
+	tx, dbi, dbConfig := setupTxDB(t)
+
+	// Simulate a document ingested by OLD code: no payload_recipients
+	// field, recipient only present inside the ops.data.payload string.
+	// anchr_height matches the seeded hive block so the timestamp pipeline
+	// does not drop it.
+	coll := dbi.Database(dbConfig.GetDbName()).Collection("transaction_pool")
+	_, err := coll.InsertOne(context.Background(), bson.M{
+		"id":             "tx-legacy-1",
+		"status":         "CONFIRMED",
+		"type":           "call",
+		"required_auths": bson.A{"hive:devser.v4vapp"},
+		"anchr_height":   testAnchorHeight,
+		"ops": bson.A{bson.M{
+			"type": "call",
+			"data": bson.M{
+				"contract_id": "vsc1BdrQ6EtbQ64rq2PkPd21x4MaLnVRcJj85d",
+				"action":      "transfer",
+				"payload":     `{"amount":"99","to":"hive:v4vapp-test"}`,
+			},
+		}},
+		// NOTE: deliberately no "payload_recipients" key.
+	})
+	assert.NoError(t, err)
+
+	// Recipient must still be found, via the regex fallback.
+	acct := "hive:v4vapp-test"
+	res, err := tx.FindTransactions(nil, nil, &acct, nil, nil, nil, nil, nil, nil, nil, 0, 50)
+	assert.NoError(t, err)
+	assert.Len(t, res, 1)
+	if len(res) == 1 {
+		assert.Equal(t, "tx-legacy-1", res[0].Id)
+	}
+
+	// Prefix safety: a longer account name must not match this doc.
+	bobby := "hive:v4vapp-testxyz"
+	res, err = tx.FindTransactions(nil, nil, &bobby, nil, nil, nil, nil, nil, nil, nil, 0, 50)
 	assert.NoError(t, err)
 	assert.Len(t, res, 0)
 }
