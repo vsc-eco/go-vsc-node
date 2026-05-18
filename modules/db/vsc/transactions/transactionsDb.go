@@ -3,12 +3,14 @@ package transactions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -24,6 +26,17 @@ func (e *transactions) Init() error {
 	err := e.Collection.Init()
 	if err != nil {
 		return err
+	}
+
+	// Indexes inbound contract-transfer recipients extracted at ingest
+	// (see Ingest). Sparse: the vast majority of txs have no contract
+	// recipients. Non-unique: many txs can credit the same account.
+	indexModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "payload_recipients", Value: 1}},
+		Options: options.Index().SetSparse(true),
+	}
+	if err = e.CreateIndexIfNotExist(indexModel); err != nil {
+		return fmt.Errorf("failed to create payload_recipients index: %w", err)
 	}
 
 	return nil
