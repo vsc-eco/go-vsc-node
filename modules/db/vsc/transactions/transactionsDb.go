@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
@@ -169,13 +170,22 @@ func (e *transactions) FindTransactions(ids []string, id *string, account *strin
 		filters = append(filters, bson.E{Key: "id", Value: bson.D{{Key: "$in", Value: ids}}})
 	}
 	if account != nil {
-		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
+		or := bson.A{
 			bson.D{{Key: "required_auths", Value: *account}},
 			bson.D{{Key: "required_posting_auths", Value: *account}},
 			bson.D{{Key: "ops.data.to", Value: *account}},
 			// Inbound contract transfers: recipient extracted at ingest.
 			bson.D{{Key: "payload_recipients", Value: *account}},
-		}})
+			// TRANSITIONAL: makes historical docs ingested before the
+			// payload_recipients field existed still visible. Unindexed
+			// regex; remove this single clause once
+			// magi-mongo-indexer/scripts/backfill_payload_recipients.js
+			// has populated payload_recipients across mainnet + testnet.
+			bson.D{{Key: "ops.data.payload", Value: bson.M{
+				"$regex": `"to"\s*:\s*"` + regexp.QuoteMeta(*account) + `"`,
+			}}},
+		}
+		filters = append(filters, bson.E{Key: "$or", Value: or})
 	}
 	if contract != nil {
 		filters = append(filters, bson.E{Key: "ops.data.contract_id", Value: *contract})
