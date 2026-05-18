@@ -6,7 +6,6 @@ package gqlgen
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -420,11 +419,11 @@ func (r *queryResolver) FindContract(ctx context.Context, filterOptions *FindCon
 
 // SubmitTransactionV1 is the resolver for the submitTransactionV1 field.
 func (r *queryResolver) SubmitTransactionV1(ctx context.Context, tx string, sig string) (*TransactionSubmitResult, error) {
-	Tx, err := base64.URLEncoding.DecodeString(tx)
+	Tx, err := decodeSubmittedB64(tx)
 	if err != nil {
 		return nil, err
 	}
-	Sig, err := base64.URLEncoding.DecodeString(sig)
+	Sig, err := decodeSubmittedB64(sig)
 	if err != nil {
 		return nil, err
 	}
