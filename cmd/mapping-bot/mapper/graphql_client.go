@@ -19,6 +19,13 @@ import (
 	graphql "github.com/hasura/go-graphql-client"
 )
 
+// review2 LOW #117 (sweep, milo review follow-up): main.go gave the
+// mempool.space client a 30s timeout, but the GraphQL peer-node path
+// still used http.DefaultClient (no timeout) here and in init.go's
+// graphql.NewClient — an unresponsive node could hang the bot
+// forever. Shared timeout client mirrors the 30s used in main.go.
+var gqlHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 // ---------------------------------------------------------------------------
 // Fallback helpers
 // ---------------------------------------------------------------------------
@@ -49,7 +56,7 @@ func (b *Bot) gqlHTTPPost(ctx context.Context, bodyBytes []byte, decode func(*ht
 		}
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := gqlHTTPClient.Do(req)
 		if err != nil {
 			lastErr = err
 			continue // network error — try next URL
