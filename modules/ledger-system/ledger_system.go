@@ -138,10 +138,20 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ExtraInfo) {
 	log.Debug("IndexActions", "actionUpdate", actionUpdate)
 
-	actionIds := common.ArrayToStringArray(actionUpdate["ops"].([]interface{}))
+	// review2 MED #86/#88 (sweep): actionUpdate is json.Unmarshal'd
+	// from an L1 custom_json payload. Bare assertions on ops /
+	// cleared_ops panicked block processing on a malformed (or
+	// future-divergent) vsc.actions op. Comma-ok and skip indexing
+	// this op deterministically instead.
+	opsRaw, opsOk := actionUpdate["ops"].([]interface{})
+	completeOps, clearedOk := actionUpdate["cleared_ops"].(string)
+	if !opsOk || !clearedOk {
+		log.Warn("skipping malformed vsc.actions op (ops/cleared_ops wrong type)",
+			"actionId", extraInfo.ActionId, "blockHeight", extraInfo.BlockHeight)
+		return
+	}
 
-	//All stake related ops
-	completeOps := actionUpdate["cleared_ops"].(string)
+	actionIds := common.ArrayToStringArray(opsRaw)
 
 	b64, _ := base64.RawURLEncoding.DecodeString(completeOps)
 
