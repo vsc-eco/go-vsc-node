@@ -22,29 +22,51 @@ import (
 // schema; raise via NewAliasLimit() if a future client needs
 // genuinely larger aggregations.
 //
-// Pentest finding W-C1 (fragment depth DoS): the original
-// countSelections walked fragment spreads without counting the
-// spread itself and without memoization. A chain of N empty
-// fragments (fragment F1 { ...F2 } ... fragment FN { __typename })
-// yielded a count of 1 and bypassed the cap entirely, while still
-// forcing gqlparser/gqlgen to walk all N fragments at execute
-// time. A branching pattern (fragment FN { ...FN+1 ...FN+1 })
-// also blew up countSelections itself to O(2^N). The fixes:
+// Pentest finding W-C1 (fragment depth DoS): two layered bugs.
 //
-//   1. Cap the number of fragment definitions per document
-//      (DefaultMaxFragmentDefinitions). Legitimate queries use a
-//      handful of fragments; thousands are always abusive.
-//   2. Count each fragment spread as one selection so chained
-//      empty fragments contribute to the alias cap.
-//   3. Memoize per-fragment-name counts so a fragment body is
-//      walked at most once during counting, making the count
-//      O(F + S) instead of O(2^F) for branching graphs.
-//   4. Guard the memo against fragment cycles defensively even
-//      though gqlparser's validator should reject them.
+// (a) The original countSelections walked fragment spreads without
+// counting the spread itself and without memoization. A chain of
+// N empty fragments yielded a count of 1 and bypassed the cap.
+// Fixed by counting spreads and memoizing per fragment name.
+//
+// (b) gqlgen v0.17.81 graphql.collectFields has a doubling bug
+// (executable_schema.go:81-89): when a fragment spread or inline
+// fragment introduces a NEW field, the code creates the field by
+// copying childField (which already has Selections populated) and
+// THEN appends childField.Selections again, doubling the slice at
+// every nesting level. A chain of N fragments whose leaf has a
+// non-empty selection set (e.g. `types { name }`) therefore makes
+// gqlgen allocate 2^N selection pointers at execute time:
+//   - N=20 → 8 MB (slow, ~1s)
+//   - N=30 → 8 GB (OOM)
+//   - N=50 → unallocatable, process killed
+// This exploded the testnet and techcoderx nodes against the
+// payload `{ __schema { ...f1 } } fragment f1 on __Schema { ...f2 } ...`.
+// The bug is downstream of every validator, so the only defense
+// is to reject the request before execute. We do that by:
+//
+//   1. Capping fragment definitions per document at
+//      DefaultMaxFragmentDefinitions. The doubling bug needs
+//      depth ≥ 20 to be slow and ≥ 30 to OOM; capping the
+//      *total* fragment count at 15 makes those depths
+//      unreachable while remaining far above any legitimate
+//      query (Apollo Sandbox introspection uses 3).
+//   2. Capping the maximum fragment-spread / inline-fragment
+//      *chain depth* at DefaultMaxFragmentDepth. Inline
+//      fragments hit the same gqlgen doubling bug, so they
+//      must be counted too; the depth walker treats both
+//      identically.
+//   3. Counting each spread as one selection so chained empty
+//      fragments still contribute to the alias cap.
+//   4. Memoizing per-fragment-name counts in countSelections
+//      so the count itself is O(F+S) regardless of branching.
+//   5. Defensive cycle guard in the memo even though
+//      gqlparser's validator should reject cycles.
 
 const (
 	DefaultAliasLimit             = 100
-	DefaultMaxFragmentDefinitions = 50
+	DefaultMaxFragmentDefinitions = 15
+	DefaultMaxFragmentDepth       = 5
 )
 
 type aliasLimit struct {
@@ -76,6 +98,17 @@ func (a aliasLimit) MutateOperationContext(_ context.Context, opCtx *graphql.Ope
 	if op == nil {
 		return nil
 	}
+	// Fragment chain depth — defends against the gqlgen
+	// collectFields 2^N doubling bug (see file header comment (b)).
+	// Walks named-fragment spreads AND inline fragments, since both
+	// trigger the same allocator pattern.
+	depthMemo := make(map[string]int, len(opCtx.Doc.Fragments))
+	if d := fragmentChainDepth(op.SelectionSet, opCtx.Doc.Fragments, depthMemo); d > DefaultMaxFragmentDepth {
+		return gqlerror.Errorf(
+			"operation fragment chain depth %d exceeds the limit of %d",
+			d, DefaultMaxFragmentDepth,
+		)
+	}
 	memo := make(map[string]int, len(opCtx.Doc.Fragments))
 	count := countSelections(op.SelectionSet, opCtx.Doc.Fragments, memo)
 	if count > a.max {
@@ -85,6 +118,46 @@ func (a aliasLimit) MutateOperationContext(_ context.Context, opCtx *graphql.Ope
 		)
 	}
 	return nil
+}
+
+// fragmentChainDepth returns the longest chain of fragment-spread
+// or inline-fragment layers reachable from set. Each spread or
+// inline fragment adds 1 to depth; ordinary fields reset to 0 for
+// their sub-selection. The memo caches per-fragment-name results
+// so the walk is O(F + S) even for branching fragment graphs.
+//
+// Cycle guard: each recursion seeds memo[name]=0 before descending
+// so a cyclic spread (which gqlparser should reject) cannot loop
+// here. The seed is overwritten with the real value before return.
+func fragmentChainDepth(set ast.SelectionSet, fragments ast.FragmentDefinitionList, memo map[string]int) int {
+	maxD := 0
+	for _, sel := range set {
+		var d int
+		switch s := sel.(type) {
+		case *ast.Field:
+			// New field: chain depth resets for its sub-selection.
+			d = fragmentChainDepth(s.SelectionSet, fragments, memo)
+		case *ast.InlineFragment:
+			d = 1 + fragmentChainDepth(s.SelectionSet, fragments, memo)
+		case *ast.FragmentSpread:
+			if c, ok := memo[s.Name]; ok {
+				d = 1 + c
+				break
+			}
+			def := fragments.ForName(s.Name)
+			if def == nil {
+				continue
+			}
+			memo[s.Name] = 0
+			inner := fragmentChainDepth(def.SelectionSet, fragments, memo)
+			memo[s.Name] = inner
+			d = 1 + inner
+		}
+		if d > maxD {
+			maxD = d
+		}
+	}
+	return maxD
 }
 
 // countSelections walks an operation's selection tree and returns
