@@ -9,7 +9,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/lib/utils"
 
-	"github.com/btcsuite/btcutil/base58"
+	"github.com/btcsuite/btcd/btcutil/base58"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	cbornode "github.com/ipfs/go-ipld-cbor"
