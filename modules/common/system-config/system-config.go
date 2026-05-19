@@ -242,8 +242,8 @@ func TestnetConfig() SystemConfig {
 		// can override via -sysconfig pendulumPoolWhitelist. Listed pools bypass
 		// the DAO-owner check in PendulumBolt.
 		pendulumPoolWhitelist: []string{
-			"vsc1BVMsKovjCSBiU5V4hD3YcC7x8rN5m9ErSz",
-			"vsc1BhV2bjSAt9NY48mRhL9XzBSxnt4aYbfkZR",
+			"vsc1BbGEc5XXqptJj7dC6AkToRZb4tJ6vi44Rn",
+			"vsc1BYVWLFJRb13GuGZd721LoJ4suxnZZghLV7",
 		},
 	}
 	return conf
