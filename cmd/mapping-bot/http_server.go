@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,18 @@ var requestValidator = validator.New(validator.WithRequiredStructEnabled())
 // staleBlockMultiplier is how many block intervals without a processed block
 // before health is degraded. 2x gives one missed block of headroom.
 const staleBlockMultiplier = 2
+
+// authorizedBearer reports whether the request's Authorization header carries
+// the expected bearer API key. The comparison is constant-time to avoid
+// leaking the key via timing side-channels. apiKey must be non-empty; an empty
+// apiKey always returns false.
+func authorizedBearer(authHeader, apiKey string) bool {
+	if apiKey == "" {
+		return false
+	}
+	expected := "Bearer " + apiKey
+	return subtle.ConstantTimeCompare([]byte(authHeader), []byte(expected)) == 1
+}
 
 func mapBotHttpServer(
 	ctx context.Context,
@@ -126,7 +139,7 @@ func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 		if err != nil {
 			issues = append(issues, "failed to query failed VSC transactions: "+err.Error())
 		} else if len(failedTxs) > 0 {
-			if apiKey := bot.BotConfig.OpsApiKey(); apiKey != "" && r.Header.Get("Authorization") == "Bearer "+apiKey {
+			if authorizedBearer(r.Header.Get("Authorization"), bot.BotConfig.OpsApiKey()) {
 				resp.FailedVscTxs = failedTxs
 			}
 			issues = append(issues, fmt.Sprintf("%d VSC transaction(s) failed", len(failedTxs)))
@@ -283,7 +296,7 @@ func signHandler(
 			return
 		}
 		authHeader := r.Header.Get("Authorization")
-		if authHeader != "Bearer "+apiKey {
+		if !authorizedBearer(authHeader, apiKey) {
 			writeResponse(w, http.StatusUnauthorized, "invalid or missing API key")
 			return
 		}
@@ -384,7 +397,7 @@ func retryHandler(
 			return
 		}
 		authHeader := r.Header.Get("Authorization")
-		if authHeader != "Bearer "+apiKey {
+		if !authorizedBearer(authHeader, apiKey) {
 			writeResponse(w, http.StatusUnauthorized, "invalid or missing API key")
 			return
 		}

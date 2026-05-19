@@ -5,7 +5,7 @@ import (
 	"crypto"
 	"fmt"
 
-	"github.com/btcsuite/btcutil/base58"
+	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/ethereum/go-ethereum/crypto/secp256k1"
 )
 
