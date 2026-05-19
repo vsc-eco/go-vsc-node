@@ -21,8 +21,31 @@ import (
 // every legitimate use we have observed against the production
 // schema; raise via NewAliasLimit() if a future client needs
 // genuinely larger aggregations.
+//
+// Pentest finding W-C1 (fragment depth DoS): the original
+// countSelections walked fragment spreads without counting the
+// spread itself and without memoization. A chain of N empty
+// fragments (fragment F1 { ...F2 } ... fragment FN { __typename })
+// yielded a count of 1 and bypassed the cap entirely, while still
+// forcing gqlparser/gqlgen to walk all N fragments at execute
+// time. A branching pattern (fragment FN { ...FN+1 ...FN+1 })
+// also blew up countSelections itself to O(2^N). The fixes:
+//
+//   1. Cap the number of fragment definitions per document
+//      (DefaultMaxFragmentDefinitions). Legitimate queries use a
+//      handful of fragments; thousands are always abusive.
+//   2. Count each fragment spread as one selection so chained
+//      empty fragments contribute to the alias cap.
+//   3. Memoize per-fragment-name counts so a fragment body is
+//      walked at most once during counting, making the count
+//      O(F + S) instead of O(2^F) for branching graphs.
+//   4. Guard the memo against fragment cycles defensively even
+//      though gqlparser's validator should reject them.
 
-const DefaultAliasLimit = 100
+const (
+	DefaultAliasLimit             = 100
+	DefaultMaxFragmentDefinitions = 50
+)
 
 type aliasLimit struct {
 	max int
@@ -40,14 +63,21 @@ var _ interface {
 	graphql.HandlerExtension
 } = aliasLimit{}
 
-func (aliasLimit) ExtensionName() string                          { return "AliasLimit" }
-func (aliasLimit) Validate(_ graphql.ExecutableSchema) error      { return nil }
+func (aliasLimit) ExtensionName() string                     { return "AliasLimit" }
+func (aliasLimit) Validate(_ graphql.ExecutableSchema) error { return nil }
 func (a aliasLimit) MutateOperationContext(_ context.Context, opCtx *graphql.OperationContext) *gqlerror.Error {
+	if n := len(opCtx.Doc.Fragments); n > DefaultMaxFragmentDefinitions {
+		return gqlerror.Errorf(
+			"operation has %d fragment definitions, exceeding the limit of %d",
+			n, DefaultMaxFragmentDefinitions,
+		)
+	}
 	op := opCtx.Doc.Operations.ForName(opCtx.OperationName)
 	if op == nil {
 		return nil
 	}
-	count := countSelections(op.SelectionSet, opCtx.Doc.Fragments)
+	memo := make(map[string]int, len(opCtx.Doc.Fragments))
+	count := countSelections(op.SelectionSet, opCtx.Doc.Fragments, memo)
 	if count > a.max {
 		return gqlerror.Errorf(
 			"operation has %d field selections, exceeding the alias / field-selection limit of %d",
@@ -58,22 +88,38 @@ func (a aliasLimit) MutateOperationContext(_ context.Context, opCtx *graphql.Ope
 }
 
 // countSelections walks an operation's selection tree and returns
-// the total number of fields encountered. Fragment spreads expand
-// to the fragment's selection set; inline fragments inline their
-// own selection set.
-func countSelections(set ast.SelectionSet, fragments ast.FragmentDefinitionList) int {
+// the total number of selections encountered. Fragment spreads
+// expand to the fragment's selection set; inline fragments inline
+// their own selection set. Each spread itself counts as one
+// selection so a chain of empty fragments still contributes to
+// the cap. memo caches the per-fragment-body count so a fragment
+// referenced from many places is walked only once.
+func countSelections(set ast.SelectionSet, fragments ast.FragmentDefinitionList, memo map[string]int) int {
 	n := 0
 	for _, sel := range set {
 		switch s := sel.(type) {
 		case *ast.Field:
 			n++
-			n += countSelections(s.SelectionSet, fragments)
+			n += countSelections(s.SelectionSet, fragments, memo)
 		case *ast.InlineFragment:
-			n += countSelections(s.SelectionSet, fragments)
+			n += countSelections(s.SelectionSet, fragments, memo)
 		case *ast.FragmentSpread:
-			if def := fragments.ForName(s.Name); def != nil {
-				n += countSelections(def.SelectionSet, fragments)
+			n++
+			if c, ok := memo[s.Name]; ok {
+				n += c
+				continue
 			}
+			def := fragments.ForName(s.Name)
+			if def == nil {
+				continue
+			}
+			// Defensive cycle guard: seed the memo with 0 before
+			// recursing so a cyclic reference (which gqlparser
+			// should already reject) cannot re-enter.
+			memo[s.Name] = 0
+			inner := countSelections(def.SelectionSet, fragments, memo)
+			memo[s.Name] = inner
+			n += inner
 		}
 	}
 	return n
