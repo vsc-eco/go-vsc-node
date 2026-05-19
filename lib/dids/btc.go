@@ -303,23 +303,69 @@ func parseCompactWitnessStack(data []byte) ([][]byte, error) {
 		return nil, fmt.Errorf("empty witness data")
 	}
 	offset := 0
-	numItems := int(data[offset])
-	offset++
+	numItems64, offset, err := readVarInt(data, offset)
+	if err != nil {
+		return nil, fmt.Errorf("witness item count: %w", err)
+	}
+	numItems := int(numItems64)
 
 	items := make([][]byte, 0, numItems)
 	for i := 0; i < numItems; i++ {
-		if offset >= len(data) {
-			return nil, fmt.Errorf("unexpected end of witness data at item %d", i)
+		itemLen64, newOffset, err := readVarInt(data, offset)
+		if err != nil {
+			return nil, fmt.Errorf("witness item %d length: %w", i, err)
 		}
-		itemLen := int(data[offset])
-		offset++
-		if offset+itemLen > len(data) {
+		offset = newOffset
+		itemLen := int(itemLen64)
+		if itemLen < 0 || offset+itemLen > len(data) {
 			return nil, fmt.Errorf("witness item %d length %d exceeds data bounds", i, itemLen)
 		}
 		items = append(items, data[offset:offset+itemLen])
 		offset += itemLen
 	}
 	return items, nil
+}
+
+// readVarInt reads a Bitcoin compact-size (varint) unsigned integer from data
+// starting at offset. It returns the decoded value, the new offset positioned
+// just past the varint, and an error if the buffer is truncated.
+//
+//	0x00..0xFC : value is the single byte
+//	0xFD       : value is the next 2 bytes, little-endian
+//	0xFE       : value is the next 4 bytes, little-endian
+//	0xFF       : value is the next 8 bytes, little-endian
+func readVarInt(data []byte, offset int) (uint64, int, error) {
+	if offset < 0 || offset >= len(data) {
+		return 0, offset, fmt.Errorf("unexpected end of data reading varint prefix")
+	}
+	prefix := data[offset]
+	offset++
+	switch prefix {
+	case 0xFD:
+		if offset+2 > len(data) {
+			return 0, offset, fmt.Errorf("unexpected end of data reading 2-byte varint")
+		}
+		v := uint64(data[offset]) | uint64(data[offset+1])<<8
+		return v, offset + 2, nil
+	case 0xFE:
+		if offset+4 > len(data) {
+			return 0, offset, fmt.Errorf("unexpected end of data reading 4-byte varint")
+		}
+		v := uint64(data[offset]) | uint64(data[offset+1])<<8 |
+			uint64(data[offset+2])<<16 | uint64(data[offset+3])<<24
+		return v, offset + 4, nil
+	case 0xFF:
+		if offset+8 > len(data) {
+			return 0, offset, fmt.Errorf("unexpected end of data reading 8-byte varint")
+		}
+		v := uint64(data[offset]) | uint64(data[offset+1])<<8 |
+			uint64(data[offset+2])<<16 | uint64(data[offset+3])<<24 |
+			uint64(data[offset+4])<<32 | uint64(data[offset+5])<<40 |
+			uint64(data[offset+6])<<48 | uint64(data[offset+7])<<56
+		return v, offset + 8, nil
+	default:
+		return uint64(prefix), offset, nil
+	}
 }
 
 // stripSighashType removes the trailing sighash type byte from a DER+sighash signature.
