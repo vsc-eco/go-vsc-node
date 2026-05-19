@@ -75,8 +75,13 @@ func (g *gqlManager) Init() error {
 	// OPTIONAL, UNCOMMENT TO ENABLE TRACING
 	// gqlServer.Use(apollotracing.Tracer{})
 
-	// adds handlers for GraphQL and Apollo sandbox environment
-	mux.Handle("POST /api/v1/graphql", http.MaxBytesHandler(gqlServer, MaxRequestBodyBytes))
+	// adds handlers for GraphQL and Apollo sandbox environment.
+	// W-C1: fragmentDefLimiter sits between the MaxBytesHandler body
+	// cap and gqlgen so a request with thousands of fragment
+	// definitions is rejected before gqlparser's O(F^2) fragment
+	// cycle validator can stall the server.
+	mux.Handle("POST /api/v1/graphql",
+		http.MaxBytesHandler(fragmentDefLimiter(gqlServer), MaxRequestBodyBytes))
 	mux.Handle("GET /sandbox", pg.ApolloSandboxHandler("Apollo Sandbox", "/api/v1/graphql"))
 
 	// review2 HIGH #18: previously /health (and any non-GraphQL path) fell
