@@ -2,10 +2,14 @@ package gql
 
 import (
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+// strconvQuote wraps strconv.Quote so the test bodies stay readable.
+func strconvQuote(s string) string { return strconv.Quote(s) }
 
 // End-to-end reproduction of pentest finding F10.
 //
@@ -152,6 +156,148 @@ func TestWC1_FragmentChainDoSRejected(t *testing.T) {
 		!strings.Contains(resp, "limit") {
 		t.Fatalf("W-C1 fix not in effect: expected fragment / alias / limit error, got: %s",
 			truncate(resp, 200))
+	}
+}
+
+// W-C1 follow-up: the colleague's payload that crashed two
+// testnet nodes — 50 chained fragments on __Schema, each
+// containing only a spread to the next, leaf resolving
+// `types { name }`. The crash is a 2^N allocation in
+// gqlgen's collectFields (executable_schema.go:81-89), see
+// the file header in alias_limit.go for the full diagnosis.
+//
+// We never let the harness construct the unmitigated depth-50
+// payload — that's an 8 PB allocation that would kill the test
+// runner. We only construct depth 50 *after* confirming the
+// limiter rejects it; if the limiter is regressed and forwards
+// the payload, the test machine OOMs and the test author sees
+// the same failure mode as the testnet node.
+func TestWC1_ChainedFragmentsRejectedFast(t *testing.T) {
+	clearHardeningEnv(t)
+	h := makeTestHandler(t)
+
+	const depth = 50
+	var q strings.Builder
+	q.WriteString(`{ __schema { ...f1 } } `)
+	for i := depth; i >= 1; i-- {
+		if i == depth {
+			q.WriteString("fragment f")
+			q.WriteString(itoa(i))
+			q.WriteString(" on __Schema { types { name } } ")
+		} else {
+			q.WriteString("fragment f")
+			q.WriteString(itoa(i))
+			q.WriteString(" on __Schema { ...f")
+			q.WriteString(itoa(i + 1))
+			q.WriteString(" } ")
+		}
+	}
+	body := `{"query":` + strconvQuote(q.String()) + `}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/graphql", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(rec, req)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		// If we hit this branch the limiter is broken; fail fast
+		// before gqlgen's collectFields can OOM the test runner.
+		t.Fatalf("W-C1 LEAK: handler took >2s on a %d-fragment chain — gqlgen would OOM. Test aborted before that.", depth)
+	}
+	elapsed := time.Since(start)
+	if elapsed > 100*time.Millisecond {
+		t.Fatalf("W-C1: handler took %v to reject a %d-fragment chain (want <100ms)", elapsed, depth)
+	}
+	resp := strings.ToLower(rec.Body.String())
+	if strings.Contains(resp, `"types"`) || strings.Contains(resp, `"data":{"`) {
+		t.Fatalf("W-C1 LEAK: chained-fragment payload reached the resolver: %s", truncate(resp, 200))
+	}
+	if !strings.Contains(resp, "fragment") && !strings.Contains(resp, "limit") && !strings.Contains(resp, "depth") {
+		t.Fatalf("W-C1: rejection message looks wrong: %s", truncate(resp, 200))
+	}
+}
+
+// W-C1 also blocks inline-fragment chains since they trigger
+// the same gqlgen collectFields doubling bug. With a non-empty
+// leaf (`types { name }`), this would also OOM at depth ~30.
+func TestWC1_InlineFragmentChainRejected(t *testing.T) {
+	clearHardeningEnv(t)
+	h := makeTestHandler(t)
+
+	const depth = 30
+	var q strings.Builder
+	q.WriteString(`{ __schema { `)
+	for i := 0; i < depth; i++ {
+		q.WriteString("... on __Schema { ")
+	}
+	q.WriteString("types { name } ")
+	for i := 0; i < depth; i++ {
+		q.WriteString("} ")
+	}
+	q.WriteString(`} }`)
+	body := `{"query":` + strconvQuote(q.String()) + `}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/graphql", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(rec, req)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("W-C1 LEAK: inline-fragment chain depth=%d not rejected in 2s — gqlgen would OOM. Test aborted.", depth)
+	}
+	elapsed := time.Since(start)
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("W-C1: inline-fragment chain took %v to reject (want <200ms)", elapsed)
+	}
+	resp := strings.ToLower(rec.Body.String())
+	if strings.Contains(resp, `"data":{"__schema"`) {
+		t.Fatalf("W-C1 LEAK: inline-fragment chain reached the resolver: %s", truncate(resp, 200))
+	}
+	if !strings.Contains(resp, "depth") && !strings.Contains(resp, "limit") {
+		t.Fatalf("W-C1: rejection message looks wrong: %s", truncate(resp, 200))
+	}
+}
+
+// W-C1: an Apollo Sandbox-style introspection query (3 named
+// fragments, chain depth 2) must continue to work. This is the
+// shape clients actually send when they open /sandbox, so it
+// sits closest to our limits and is the most likely regression
+// surface if we ever tighten the caps further.
+func TestWC1_IntrospectionQueryStillWorks(t *testing.T) {
+	clearHardeningEnv(t)
+	h := makeTestHandler(t)
+
+	q := `query Introspection { __schema {
+		queryType { name }
+		types { ...FullType }
+	} }
+	fragment FullType on __Type { kind name description fields { ...F } }
+	fragment F on __Field { name description type { ...TR } }
+	fragment TR on __Type { kind name ofType { kind name } }`
+	body := `{"query":` + strconvQuote(q) + `}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/graphql", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+
+	resp := rec.Body.String()
+	if !strings.Contains(resp, `"queryType"`) {
+		t.Fatalf("introspection query was rejected by W-C1 caps: %s", truncate(resp, 200))
 	}
 }
 
