@@ -29,6 +29,12 @@ const wasmEdgeInstallURL = "https://raw.githubusercontent.com/WasmEdge/WasmEdge/
 // The script is never piped to bash unless its hash matches this constant.
 const wasmEdgeInstallSHA256 = "89460d9ea15f097e2831c099ee8adb6975b9ffff8a919b33874a655cd54420c0"
 
+// wasmEdgeInstallMaxBytes caps the install-script download. The real 0.13.4
+// install.sh is ~25 KB; 1 MiB is generous headroom while preventing a
+// hostile/MITM endpoint from forcing us to buffer an unbounded body before
+// the SHA-256 check rejects it.
+const wasmEdgeInstallMaxBytes = 1 << 20
+
 func home() string {
 	return os.Getenv("HOME")
 }
@@ -77,10 +83,16 @@ func setup() error {
 		return fmt.Errorf("wasmedge install: unexpected HTTP status %d fetching %s", res.StatusCode, wasmEdgeInstallURL)
 	}
 
-	// Read the script fully and verify its integrity before executing it.
-	script, err := io.ReadAll(res.Body)
+	// Read the script fully (with a hard cap) and verify its integrity before
+	// executing it. The cap blocks a hostile endpoint from forcing unbounded
+	// memory use before the hash check runs.
+	limited := io.LimitReader(res.Body, wasmEdgeInstallMaxBytes+1)
+	script, err := io.ReadAll(limited)
 	if err != nil {
 		return err
+	}
+	if len(script) > wasmEdgeInstallMaxBytes {
+		return fmt.Errorf("wasmedge install: script from %s exceeds %d byte cap", wasmEdgeInstallURL, wasmEdgeInstallMaxBytes)
 	}
 	sum := sha256.Sum256(script)
 	got := hex.EncodeToString(sum[:])
