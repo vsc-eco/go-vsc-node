@@ -307,6 +307,14 @@ func parseCompactWitnessStack(data []byte) ([][]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("witness item count: %w", err)
 	}
+	// Each witness item consumes >=1 byte on the wire (its length prefix), so a
+	// legitimate numItems can never exceed the remaining buffer length. This
+	// bound also prevents a hostile varint (e.g. 0xFF...) from triggering an
+	// oversized make([][]byte, 0, numItems) — either a panic from a negative
+	// int cast on 64-bit platforms, or a multi-GB allocation.
+	if numItems64 > uint64(len(data)-offset) {
+		return nil, fmt.Errorf("witness item count %d exceeds remaining data length %d", numItems64, len(data)-offset)
+	}
 	numItems := int(numItems64)
 
 	items := make([][]byte, 0, numItems)
