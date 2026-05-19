@@ -28,7 +28,6 @@ func TestReview2ConsensusStakeAssetValidated(t *testing.T) {
 	te := newTestEnv() // wired StateEngine; MocknetConfig NetId = vsc-mocknet
 
 	newSession := func() ledgerSystem.LedgerSession {
-		// Hive is fixed-point ×1000 (SafeParseHiveFloat); 100000 = 100.000.
 		balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
 			"hive:alice": {{Account: "hive:alice", BlockHeight: 0, Hive: 100000}},
 		})
