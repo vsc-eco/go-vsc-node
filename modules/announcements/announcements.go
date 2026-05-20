@@ -154,6 +154,10 @@ type didConsensusKey struct {
 	T   string      `json:"t"`
 	Ct  string      ` json:"ct"`
 	Key dids.BlsDID `json:"key"`
+	// PoP is a base64 (raw-url) BLS proof-of-possession for Key, bound to the
+	// announcing Hive account. Lets ingesters confirm this node holds the
+	// secret behind the announced BLS key (defeats rogue-key aggregate forgery).
+	PoP string `json:"pop,omitempty"`
 }
 
 // ===== git head commit =====
@@ -221,6 +225,15 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create bls did: %w", err)
 	}
+
+	// Proof-of-possession over the BLS pubkey, bound to this Hive account, so
+	// ingesting nodes can confirm we actually hold the secret behind the
+	// announced BLS key — defeating rogue-key aggregate-signature forgery.
+	blsPoP, err := dids.GenerateBlsPoP(&blsPrivKey, a.conf.Get().HiveUsername)
+	if err != nil {
+		return fmt.Errorf("failed to generate bls proof-of-possession: %w", err)
+	}
+
 	salt := []byte("gateway_key")
 	gatewayKey := sha256.Sum256(append(blsPrivSeed, salt...))
 
@@ -245,6 +258,7 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 				T:   "consensus",
 				Ct:  "DID-BLS",
 				Key: blsDid,
+				PoP: blsPoP,
 			},
 		},
 		VscNode: payloadVscNode{
