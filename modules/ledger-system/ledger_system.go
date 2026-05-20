@@ -695,7 +695,11 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	fmt.Println("ClaimHBDInterest", lastClaim, blockHeight, amount)
 	//Do distribution of HBD interest on an going forward basis
 	//Save to ledger DB the difference.
-	ledgerBalances := ls.BalanceDb.GetAll(blockHeight)
+	ledgerBalances, err := ls.BalanceDb.GetAll(blockHeight)
+	if err != nil {
+		log.Warn("ClaimHBDInterest: balance enumeration failed", "err", err)
+		return
+	}
 
 	processedBalRecords := make([]ledger_db.BalanceRecord, 0)
 	totalAvg := int64(0)
