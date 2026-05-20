@@ -714,9 +714,14 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 		}
 		A := blockHeight - balance.HBD_MODIFY_HEIGHT //Blocks since last balance modification
 
-		//HBD_AVG is an unnormalized cumulative sum (balance * blocks).
-		//Add the current balance's contribution for the remaining period, then divide by B to get TWAB.
-		endingAvg := (balance.HBD_AVG + balance.HBD_SAVINGS*int64(A)) / int64(B)
+		// HBD_AVG is an unnormalized cumulative sum (balance * blocks).
+		// Add the current balance's contribution for the remaining period, then divide by B to get TWAB.
+		// Overflow-safe — see review4 HIGH #15 / computeEndingAvg.
+		endingAvg, okAvg := computeEndingAvg(balance.HBD_AVG, balance.HBD_SAVINGS, int64(A), int64(B))
+		if !okAvg {
+			fmt.Println("ClaimHBD endingAvg overflows int64", balance.Account)
+			continue
+		}
 
 		if endingAvg < 1 {
 			fmt.Println("ClaimHBD endingAvg is sub zero", balance.Account, endingAvg)
@@ -738,7 +743,12 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 		// 	continue
 		// }
 
-		distributeAmt := balance.HBD_AVG * amount / totalAvg
+		// Overflow-safe HBD_AVG * amount / totalAvg — see review4 HIGH #15.
+		distributeAmt, okDist := computeDistributeAmount(balance.HBD_AVG, amount, totalAvg)
+		if !okDist {
+			fmt.Println("ClaimHBD distributeAmt overflows int64", balance.Account)
+			continue
+		}
 
 		if distributeAmt > 0 {
 			var owner string
