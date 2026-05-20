@@ -3,6 +3,7 @@ package settlement
 import (
 	"math/big"
 	"sort"
+	"vsc-node/lib/intmath"
 	"vsc-node/modules/incentive-pendulum"
 	"vsc-node/modules/incentive-pendulum/rewards"
 )
@@ -110,9 +111,16 @@ func ComputeNodeDistributions(nodeShare int64, bonds map[string]int64) []Distrib
 		if stake <= 0 {
 			continue
 		}
+		// floor(nodeShare * stake / total) via big.Int to avoid int64 overflow
+		// on the intermediate product. stake ≤ total so the result always fits
+		// int64; the !ok branch is defensive and deterministic across nodes.
+		amount, ok := intmath.MulDivFloorI64(nodeShare, stake, total)
+		if !ok {
+			continue
+		}
 		out = append(out, Distribution{
 			Account: account,
-			Amount:  (nodeShare * stake) / total,
+			Amount:  amount,
 		})
 	}
 
@@ -142,7 +150,13 @@ func ApplyRewardReductionsToBonds(bonds map[string]int64, reductionBps map[strin
 
 	applied := make([]RewardReductionApplied, 0, len(accounts))
 	for _, acc := range accounts {
-		orig := out[acc]
+		// The bond map (out) is keyed "hive:<account>" (see ReadCommitteeBonds /
+		// normalizeHiveAccount), but reductionBps is keyed by the bare account
+		// name (committee members are bare m.Account). Without normalizing here
+		// every lookup missed, orig was always 0, and the entire reward-reduction
+		// (penalty) system was silently inert. Normalize to the bond namespace.
+		key := normalizeHiveAccount(acc)
+		orig := out[key]
 		if orig <= 0 {
 			continue
 		}
@@ -153,12 +167,18 @@ func ApplyRewardReductionsToBonds(bonds map[string]int64, reductionBps map[strin
 		if bps > rewards.PerEpochCapBps {
 			bps = rewards.PerEpochCapBps
 		}
-		reduction := (orig * int64(bps)) / 10000
+		// floor(orig * bps / 10000) via big.Int to avoid int64 overflow on the
+		// intermediate product for large bonds. reduction ≤ orig so it always
+		// fits int64; !ok is defensive (treat as no reduction this epoch).
+		reduction, ok := intmath.MulDivFloorI64(orig, int64(bps), intmath.BpsScale)
+		if !ok {
+			reduction = 0
+		}
 		eff := orig - reduction
 		if eff < 0 {
 			eff = 0
 		}
-		out[acc] = eff
+		out[key] = eff
 		applied = append(applied, RewardReductionApplied{
 			Account:         acc,
 			Bps:             bps,

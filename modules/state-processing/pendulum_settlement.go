@@ -135,23 +135,21 @@ func (se *StateEngine) applyPendulumSettlement(rec pendulumsettlement.Settlement
 
 	txID := pendulumSettlementTxID(rec.Epoch)
 
-	// Per-distribution apply: log and continue on failure rather than abort.
-	// This matches every other multi-record ledger-write site in the
-	// codebase (the slot-end ExecuteBatch flush, IngestOplog, IndexActions,
-	// ClaimHBDInterest, Deposit) — none of them wrap their writes in a
-	// Mongo transaction or roll back on a per-record failure. The shared
-	// recovery story is "deterministic record IDs + idempotent upserts +
-	// restart-replay reconciles partial state."
+	// Per-distribution apply. Validation layer 1 already guarantees
+	// TotalDistributed ≤ Bucket, so PendulumDistribute can't fail from
+	// insufficient funds; the remaining failure surface is a transient Mongo
+	// write error, which StoreLedger now surfaces (it used to be swallowed) as
+	// res.Ok == false.
 	//
-	// Validation layer 1 already guarantees TotalDistributed ≤ Bucket, so
-	// PendulumDistribute can't fail from insufficient funds. The remaining
-	// failure surface is a transient Mongo write error, which StoreLedger
-	// silently swallows today anyway — meaning the !res.Ok branch is
-	// effectively unreachable in current code. A future refactor that
-	// wraps the apply path (and the rest of the codebase's ledger writes)
-	// in mongo.Session.WithTransaction is the right place to introduce
-	// real atomicity; doing it just here would be inconsistent with how
-	// every other write site behaves.
+	// If ANY distribution write fails we must NOT advance the settlement marker
+	// below: leaving the epoch unsettled lets restart-replay re-attempt it. The
+	// record IDs are deterministic (txID#acct) so the retry idempotently
+	// re-upserts the writes that did land and completes the ones that didn't —
+	// the codebase's documented "deterministic IDs + idempotent upserts +
+	// restart-replay" recovery story. Advancing the marker past a failed write
+	// would mark a lossy epoch permanently settled, the exact silent-fund-loss
+	// bug this guards against.
+	distributeFailed := false
 	for _, d := range rec.Distributions {
 		if d.HBDAmt <= 0 {
 			continue
@@ -163,10 +161,15 @@ func (se *StateEngine) applyPendulumSettlement(rec pendulumsettlement.Settlement
 		txKey := txID + "#" + acct
 		res := se.LedgerSystem.PendulumDistribute(acct, d.HBDAmt, txKey, blockHeight)
 		if !res.Ok {
-			log.Warn("pendulum settlement: distribute failed",
+			log.Error("pendulum settlement: distribute failed; epoch will not be marked settled",
 				"account", acct, "amount_hbd", d.HBDAmt, "msg", res.Msg, "epoch", rec.Epoch)
-			continue
+			distributeFailed = true
 		}
+	}
+
+	if distributeFailed {
+		// Do not SaveMarker — restart-replay will re-attempt this epoch.
+		return
 	}
 
 	if remaining := se.LedgerSystem.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, blockHeight); remaining != rec.ResidualHBD {

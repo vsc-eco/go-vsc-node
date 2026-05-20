@@ -406,7 +406,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						amt = -frSync.UnstakedAmount
 					}
 
-					se.LedgerState.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+					if err := se.LedgerState.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
 						Id:          MakeTxId(tx.TransactionID, 0),
 						Amount:      amt,
 						BlockHeight: blockInfo.BlockHeight + 1,
@@ -414,7 +414,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						//Fractional reserve update
 						Asset: "hbd_savings",
 						Type:  "fr_sync",
-					})
+					}); err != nil {
+						log.Error("fr_sync: ledger write failed", "txId", tx.TransactionID, "amount", amt, "err", err)
+					}
 				}
 
 				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() {
@@ -1653,8 +1655,17 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			Type:        "consensus_unstake",
 		})
 	}
-	se.LedgerState.LedgerDb.StoreLedger(ledgerRecords...)
-	se.LedgerState.ActionDb.ExecuteComplete(nil, completeIds...)
+	// Only mark the unstake actions complete if their payout records actually
+	// landed. If the write failed, leaving the actions pending lets the next
+	// pass re-attempt them — record IDs are deterministic (record.Id+"#out"),
+	// so the retry is idempotent and cannot double-pay. Completing them on a
+	// failed write would strand the HIVE permanently.
+	if err := se.LedgerState.LedgerDb.StoreLedger(ledgerRecords...); err != nil {
+		log.Error("consensus_unstake: ledger write failed; leaving actions pending for retry",
+			"epoch", election.Epoch, "count", len(ledgerRecords), "err", err)
+	} else {
+		se.LedgerState.ActionDb.ExecuteComplete(nil, completeIds...)
+	}
 	// se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)
 	// se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(nil, completeIds...)
 

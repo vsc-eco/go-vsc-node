@@ -200,8 +200,16 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 		if err != nil {
 			return nil
 		}
-		if s.ms.msgChan[signResp.TxId] != nil {
-			s.ms.msgChan[signResp.TxId] <- &msg
+		// Guarded read + non-blocking send. The collector goroutine in
+		// waitForSigs exits on its ctx timeout, so a blocking send here could
+		// hang the pubsub dispatch goroutine forever on a full buffer with no
+		// reader. Dropping a late signature is harmless — collection is
+		// best-effort and the action is retried on the next tick.
+		if ch := s.ms.getMsgChan(signResp.TxId); ch != nil {
+			select {
+			case ch <- &msg:
+			default:
+			}
 		}
 	}
 	return nil

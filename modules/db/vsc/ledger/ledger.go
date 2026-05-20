@@ -39,21 +39,32 @@ func (e *ledger) Init() error {
 	return nil
 }
 
-func (ledger *ledger) StoreLedger(ledgerRecords ...LedgerRecord) {
-	if len(ledgerRecords) > 0 {
-		for _, ledgerRecord := range ledgerRecords {
-			findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
-			ledger.FindOneAndUpdate(context.Background(), bson.M{
-				"id": ledgerRecord.Id,
-			}, bson.M{
-				"$set": ledgerRecord,
-			}, findUpdateOpts)
+func (ledger *ledger) StoreLedger(ledgerRecords ...LedgerRecord) error {
+	for _, ledgerRecord := range ledgerRecords {
+		findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
+		res := ledger.FindOneAndUpdate(context.Background(), bson.M{
+			"id": ledgerRecord.Id,
+		}, bson.M{
+			"$set": ledgerRecord,
+		}, findUpdateOpts)
+		// With SetUpsert(true) and the default ReturnDocument (Before), a
+		// newly-inserted record reports ErrNoDocuments — that is the success
+		// path, not a write failure. Any other error is a real DB failure that
+		// callers must be able to see (previously this was swallowed entirely).
+		if err := res.Err(); err != nil && err != mongo.ErrNoDocuments {
+			return err
 		}
 	}
+	return nil
 }
 
 // Get ledger ops after height inclusive
-func (ledger *ledger) GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error) {
+func (ledger *ledger) GetLedgerAfterHeight(
+	account string,
+	blockHeight uint64,
+	asset string,
+	limit *int64,
+) (*[]LedgerRecord, error) {
 	opts := options.Find().SetSort(bson.M{"block_height": 1})
 	if limit != nil {
 		opts.SetLimit(*limit)
@@ -80,7 +91,13 @@ func (ledger *ledger) GetLedgerAfterHeight(account string, blockHeight uint64, a
 }
 
 // Get ledger ops after height inclusive
-func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, asset string, searchOps ...LedgerOptions) (*[]LedgerRecord, error) {
+func (ledger *ledger) GetLedgerRange(
+	account string,
+	start uint64,
+	end uint64,
+	asset string,
+	searchOps ...LedgerOptions,
+) (*[]LedgerRecord, error) {
 	opts := options.Find().SetSort(bson.M{"block_height": 1})
 
 	query := bson.M{
@@ -116,7 +133,16 @@ func (ledger *ledger) GetLedgerRange(account string, start uint64, end uint64, a
 	return &results, nil
 }
 
-func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error) {
+func (ledger *ledger) GetLedgersTsRange(
+	account *string,
+	txId *string,
+	txTypes []string,
+	asset *Asset,
+	fromBlock *uint64,
+	toBlock *uint64,
+	offset int,
+	limit int,
+) ([]LedgerRecord, error) {
 	filters := bson.D{}
 	if account != nil {
 		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
@@ -156,7 +182,16 @@ func (ledger *ledger) GetLedgersTsRange(account *string, txId *string, txTypes [
 	return results, nil
 }
 
-func (ledger *ledger) GetRawLedgerRange(account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error) {
+func (ledger *ledger) GetRawLedgerRange(
+	account *string,
+	txId *string,
+	txTypes []string,
+	asset *Asset,
+	fromBlock *uint64,
+	toBlock *uint64,
+	offset int,
+	limit int,
+) ([]LedgerRecord, error) {
 	filters := bson.D{}
 	if account != nil {
 		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
@@ -488,7 +523,7 @@ func (actions *actionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([
 
 	actionRecords := make([]ActionRecord, 0)
 
-	if cursor.Next(context.Background()) {
+	for cursor.Next(context.Background()) {
 		record := ActionRecord{}
 		cursor.Decode(&record)
 
@@ -498,7 +533,18 @@ func (actions *actionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([
 	return actionRecords, nil
 }
 
-func (actions *actionsDb) GetActionsRange(txId *string, actionId *string, account *string, byTypes []string, asset *Asset, status *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ActionRecord, error) {
+func (actions *actionsDb) GetActionsRange(
+	txId *string,
+	actionId *string,
+	account *string,
+	byTypes []string,
+	asset *Asset,
+	status *string,
+	fromBlock *uint64,
+	toBlock *uint64,
+	offset int,
+	limit int,
+) ([]ActionRecord, error) {
 	filters := bson.D{}
 	if txId != nil {
 		filters = append(filters, bson.E{Key: "id", Value: *txId})
