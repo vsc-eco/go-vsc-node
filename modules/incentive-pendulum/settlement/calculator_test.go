@@ -85,6 +85,48 @@ func TestApplyRewardReductionsToBonds_FullCap(t *testing.T) {
 	}
 }
 
+// Regression for the key-namespace mismatch (audit #82/#4) that made the
+// reward-reduction penalty system silently inert: committee bonds are keyed
+// "hive:<account>" but reductions arrive keyed by the BARE account name (from
+// election m.Account). Before the fix every lookup missed, orig was 0, and no
+// reduction was ever applied. A bare reduction key must reduce the
+// hive:-prefixed bond.
+func TestApplyRewardReductionsToBonds_BareAccountKeyNamespace(t *testing.T) {
+	bonds := map[string]int64{"hive:a": 1000}
+	post, applied := ApplyRewardReductionsToBonds(bonds, map[string]int{
+		"a": 250, // 2.5%, BARE key as produced from committee m.Account
+	})
+	if post["hive:a"] != 975 {
+		t.Fatalf("expected hive:a effective bond 975 after bare-keyed reduction, got %d", post["hive:a"])
+	}
+	if len(applied) != 1 {
+		t.Fatalf("expected one reduction to be applied, got %d", len(applied))
+	}
+	if applied[0].ReductionAmount != 25 {
+		t.Fatalf("expected reduction amount 25, got %d", applied[0].ReductionAmount)
+	}
+}
+
+// Regression for the int64 overflow (audit #1/#2): nodeShare*stake is computed
+// through big.Int, so a product that exceeds math.MaxInt64 must still yield the
+// correct floor instead of wrapping.
+func TestComputeNodeDistributionsNoInt64Overflow(t *testing.T) {
+	const huge = int64(4_000_000_000_000_000_000) // 4e18
+	bonds := map[string]int64{"hive:a": huge, "hive:b": huge}
+	// total=8e18; nodeShare=4e18. The raw product 4e18*4e18=1.6e37 overflows
+	// int64; the correct floor(4e18*4e18/8e18) is 2e18.
+	out := ComputeNodeDistributions(huge, bonds)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 distributions, got %d", len(out))
+	}
+	want := huge / 2
+	for _, d := range out {
+		if d.Amount != want {
+			t.Fatalf("%s: expected %d, got %d (int64 overflow?)", d.Account, want, d.Amount)
+		}
+	}
+}
+
 func TestCalculateSplitPreviewFixedConservesR(t *testing.T) {
 	out := CalculateSplitPreviewFixed(1000, 900, 2, 3, 0, 0)
 	if out.E != 600 {
