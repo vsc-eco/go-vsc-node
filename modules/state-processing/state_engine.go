@@ -456,6 +456,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				json.Unmarshal(bbytes, &rawJson)
 
 				if slices.Contains(rawJson.Services, "vsc.network") {
+					// Fix 5 (verify+warn rollout): check the consensus BLS key's
+					// proof-of-possession. A valid PoP proves the announcer holds
+					// the secret behind the announced BLS pubkey, defeating
+					// rogue-key aggregate-signature forgery. For now we only log
+					// failures and still store the key, so witnesses that
+					// announced before PoP support are not dropped before they
+					// re-announce. A later change flips this to rejection (and
+					// election exclusion) once all witnesses carry a valid PoP.
+					// The check is deterministic, so that future strict mode is
+					// consensus-safe.
+					if err := verifyAnnouncedBlsPoP(rawJson, acct); err != nil {
+						log.Warn("witness announce: BLS proof-of-possession check failed (accepting during rollout)",
+							"account", acct, "txId", tx.TransactionID, "err", err)
+					}
 					inputData := witnesses.SetWitnessUpdateType{
 						Account:  acct,
 						Height:   blockInfo.BlockHeight,
@@ -1225,6 +1239,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	if se.pendulumFeed != nil {
 		se.pendulumFeed.TickIfDue(block.BlockNumber)
 	}
+}
+
+// verifyAnnouncedBlsPoP locates the consensus BLS DID key in a witness announce
+// payload and verifies its proof-of-possession, bound to the announcing
+// account. Returns an error if the consensus key is missing/malformed or the
+// PoP is absent or invalid. Pure function of the announce payload, so every
+// node reaches the same verdict.
+func verifyAnnouncedBlsPoP(meta witnesses.PostingJsonMetadata, account string) error {
+	for _, k := range meta.DidKeys {
+		if k.CryptoType == "DID-BLS" && k.Type == "consensus" {
+			return dids.VerifyBlsPoP(dids.BlsDID(k.Key), account, k.PoP)
+		}
+	}
+	return fmt.Errorf("no consensus BLS key in announce")
 }
 
 // executeTxSafely runs a transaction handler with panic recovery so that a

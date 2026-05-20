@@ -473,3 +473,67 @@ func TestBlsGnark(t *testing.T) {
 	// fmt.Println("verified blst", blstSig.Verify(true, &blstPub, true, cidt.Bytes(), []byte("BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_")))
 	fmt.Println("verified", ethBls.Verify(&pk, cidt.Bytes(), &sig))
 }
+
+// ===== proof-of-possession (Fix 5) =====
+
+// A witness that holds its secret key can produce a PoP that verifies for its
+// own DID + account.
+func TestBlsPoPRoundTrip(t *testing.T) {
+	var seed [32]byte
+	copy(seed[:], []byte("pop_round_trip_seed_0001"))
+	did, privKey, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed)
+	assert.NoError(t, err)
+
+	pop, err := dids.GenerateBlsPoP(privKey, "alice")
+	assert.NoError(t, err)
+
+	assert.NoError(t, dids.VerifyBlsPoP(did, "alice", pop))
+}
+
+// A PoP is bound to the account: the same key's PoP must not verify under a
+// different account (prevents replaying a key/PoP across Hive accounts).
+func TestBlsPoPWrongAccountFails(t *testing.T) {
+	var seed [32]byte
+	copy(seed[:], []byte("pop_wrong_account_seed_01"))
+	did, privKey, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed)
+	assert.NoError(t, err)
+
+	pop, err := dids.GenerateBlsPoP(privKey, "alice")
+	assert.NoError(t, err)
+
+	assert.Error(t, dids.VerifyBlsPoP(did, "mallory", pop))
+}
+
+// The core rogue-key defense: a PoP produced by one keypair must not verify for
+// a different DID. A rogue-key attacker registers pk = s'·G1 − Σ(pkᵢ) whose
+// secret it does not know, so it cannot sign a PoP that verifies under that pk —
+// any PoP it can produce was made with a key it actually controls, which is a
+// different key and fails here.
+func TestBlsPoPWrongKeyFails(t *testing.T) {
+	var seed1, seed2 [32]byte
+	copy(seed1[:], []byte("pop_wrong_key_seed_aaaa01"))
+	copy(seed2[:], []byte("pop_wrong_key_seed_bbbb02"))
+
+	did1, _, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed1)
+	assert.NoError(t, err)
+	_, privKey2, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed2)
+	assert.NoError(t, err)
+
+	// PoP made by key2's secret, presented as if it were key1's.
+	popFromKey2, err := dids.GenerateBlsPoP(privKey2, "alice")
+	assert.NoError(t, err)
+
+	assert.Error(t, dids.VerifyBlsPoP(did1, "alice", popFromKey2))
+}
+
+// Missing and malformed PoPs are rejected.
+func TestBlsPoPMalformedFails(t *testing.T) {
+	var seed [32]byte
+	copy(seed[:], []byte("pop_malformed_seed_000001"))
+	did, _, err := genRandomBlsDIDAndBlstSecretKeyWithSeed(seed)
+	assert.NoError(t, err)
+
+	assert.Error(t, dids.VerifyBlsPoP(did, "alice", ""))            // missing
+	assert.Error(t, dids.VerifyBlsPoP(did, "alice", "!!not-b64!!")) // undecodable
+	assert.Error(t, dids.VerifyBlsPoP(did, "alice", "AAAA"))        // wrong length
+}
