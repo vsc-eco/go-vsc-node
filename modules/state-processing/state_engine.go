@@ -1809,13 +1809,32 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		stBlock = endBlock - 9
 	}
 
+	// review4 HIGH #94: if the election lookup fails the zero-value
+	// ElectionResult has Epoch==0, so GetPendingActionsByEpoch(0, ...)
+	// queries the wrong (genesis) epoch and may release unstakes that
+	// belong to the current epoch. Treat the lookup as fail-closed: log
+	// and skip releasing unstakes for this slot; the next slot retries
+	// once the DB recovers.
 	var epoch uint64
+	var records []ledgerDb.ActionRecord
 	if se.electionDb != nil {
-		if election, err := se.electionDb.GetElectionByHeight(endBlock); err == nil {
+		election, electionErr := se.electionDb.GetElectionByHeight(endBlock)
+		if electionErr != nil || election.Epoch == 0 {
+			if electionErr != nil {
+				fmt.Println("ExecuteBatch: GetElectionByHeight failed; deferring consensus_unstake release this slot", endBlock, electionErr)
+			}
+			// Election with Epoch=0 is the genesis-default zero value; never
+			// release unstakes under that epoch.
+		} else {
 			epoch = election.Epoch
+			var recordsErr error
+			records, recordsErr = se.LedgerState.ActionDb.GetPendingActionsByEpoch(election.Epoch, "consensus_unstake")
+			if recordsErr != nil {
+				fmt.Println("ExecuteBatch: GetPendingActionsByEpoch failed; deferring this slot", endBlock, recordsErr)
+				records = nil
+			}
 		}
 	}
-	records, _ := se.LedgerState.ActionDb.GetPendingActionsByEpoch(epoch, "consensus_unstake")
 
 	completeIds := make([]string, 0)
 	ledgerRecords := make([]ledgerDb.LedgerRecord, 0)
@@ -1897,9 +1916,19 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		//As of block X or below
 		// se.LedgerExecutor.Ls.log.Debug("GetBalance for account", stBlock, stHeight, endBlock)
 
-		ledgerUpdates, _ := se.LedgerState.LedgerDb.GetLedgerRange(k, stHeight, endBlock, "")
+		// review4 HIGH #118: GetLedgerRange returns `(nil, err)` on Mongo
+		// failure. The prior form discarded the error and then derefed the
+		// nil pointer at `len(*ledgerUpdates)`, panicking the entire slot
+		// processing path. Treat any error (or a nil result) as "no
+		// updates" and continue — the claim-record / TWAB path below has
+		// no dependency on the failed range, and the next slot will retry.
+		ledgerUpdates, err := se.LedgerState.LedgerDb.GetLedgerRange(k, stHeight, endBlock, "")
+		if err != nil {
+			fmt.Println("ExecuteBatch: GetLedgerRange failed", k, err)
+			continue
+		}
 
-		hasLedgerUpdates := len(*ledgerUpdates) > 0
+		hasLedgerUpdates := ledgerUpdates != nil && len(*ledgerUpdates) > 0
 
 		//Previous claim record
 		claimRecord := se.claimDb.GetLastClaim(endBlock)
@@ -1976,7 +2005,15 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		newRecord.HBD_CLAIM_HEIGHT = claimHeight
 
-		se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord)
+		// review4 HIGH #95: UpdateBalanceRecord returns an error on Mongo
+		// write failure. Silently dropping it leaves the next slot's TWAB
+		// calc reading the stale snapshot, which feeds the HBD-interest
+		// distribution path. We can't safely abort the slot here (other
+		// accounts already wrote), but we surface the failure so it shows
+		// up in operator monitoring instead of vanishing.
+		if err := se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord); err != nil {
+			fmt.Println("ExecuteBatch: UpdateBalanceRecord failed", k, endBlock, err)
+		}
 
 		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(
 			se.LedgerState.VirtualLedger[k],
