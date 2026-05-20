@@ -280,7 +280,7 @@ func (p *priceBlockWitness) validateBlock(
 		}
 	}
 
-	return false
+	return true
 }
 
 func (p *priceBlockWitness) signBlock(b *p2p.OracleBlock) (string, error) {

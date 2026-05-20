@@ -79,6 +79,13 @@ var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 // deterministically by the node itself, independent of the L1 path.
 var MAX_CONTRACT_PAYLOAD_SIZE = 8 * 1024 // bytes
 
+// Maximum age (in Hive L1 blocks) for a TSS commitment's self-declared
+// BlockHeight relative to the carrying transaction's block. Commitments
+// older than this are rejected to prevent replay of stale aggregate BLS
+// signatures against long-retired elections. 28800 blocks ≈ 24 hours at
+// 3s/block, matching tss.BLAME_EXPIRE.
+var TSS_COMMITMENT_MAX_STALENESS = uint64(28800)
+
 // Mainnet TSS key indexing
 var TSS_INDEX_HEIGHT uint64 = 102_083_000
 

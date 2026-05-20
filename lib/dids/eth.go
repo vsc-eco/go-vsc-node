@@ -22,7 +22,7 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 	blocks "github.com/ipfs/go-block-format"
 
-	"github.com/vsc-eco/go-ethereum/signer/core/apitypes"
+	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 
 	"github.com/ugorji/go/codec"
 )
