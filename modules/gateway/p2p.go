@@ -102,9 +102,13 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 				return nil
 			}
 
-			signPkg, err := s.ms.executeActions(signReq.BlockHeight)
+			// Cosigners must NOT mutate their local DB (no SetProcessing) —
+			// if the leader's broadcast then fails, the cosigner is left
+			// with actions stuck in "processing" forever (split-brain).
+			// Use the pure buildActionBatch instead of executeActions.
+			signPkg, _, err := s.ms.buildActionBatch(signReq.BlockHeight)
 
-			fmt.Println("executeActions signPkg", signPkg)
+			fmt.Println("buildActionBatch signPkg", signPkg)
 
 			if err != nil {
 				return nil

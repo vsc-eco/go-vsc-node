@@ -99,6 +99,7 @@ type BridgeActions interface {
 	// "processing" so an in-flight broadcast batch is not re-selected (and
 	// re-paid) by the next gateway action tick before its L1 header confirms.
 	SetProcessing(ids ...string)
+	RevertToPending(ids ...string)
 	Get(id string) (*ActionRecord, error)
 	SetStatus(id string, status string)
 	GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error)

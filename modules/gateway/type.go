@@ -8,7 +8,16 @@ type ChainAction struct {
 }
 
 type signingPackage struct {
-	Ops  []hivego.HiveOperation
-	Tx   hivego.HiveTransaction
-	TxId string
+	Ops         []hivego.HiveOperation
+	Tx          hivego.HiveTransaction
+	TxId        string
+	ExecutedOps []string
+}
+
+type pendingGatewayTx struct {
+	SignedTx        hivego.HiveTransaction
+	TxId            string
+	ActionIds       []string
+	Expiration      string
+	ExpirationBlock uint64
 }

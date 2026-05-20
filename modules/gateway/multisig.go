@@ -59,7 +59,8 @@ type MultiSig struct {
 	se      *stateEngine.StateEngine
 	msgChan map[string]chan *p2pMessage
 
-	bh uint64
+	bh        uint64
+	pendingTx *pendingGatewayTx
 }
 
 func (ms *MultiSig) Init() error {
@@ -177,7 +178,60 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 	}
 }
 
+// pendingTxProcessed returns true once every action in the stored pending
+// tx has been marked "complete" by the state engine — i.e. the L1
+// `vsc.actions` header for this batch has been re-ingested and
+// IndexActions -> ExecuteComplete fired. At that point the stored tx is
+// safe to prune.
+func (ms *MultiSig) pendingTxProcessed() bool {
+	if ms.pendingTx == nil {
+		return false
+	}
+	for _, id := range ms.pendingTx.ActionIds {
+		rec, err := ms.ledgerActions.Get(id)
+		if err != nil || rec == nil {
+			continue
+		}
+		if rec.Status != "complete" {
+			return false
+		}
+	}
+	return true
+}
+
+func (ms *MultiSig) prunePendingTx() {
+	ms.pendingTx = nil
+}
+
 func (ms *MultiSig) TickActions(bh uint64) {
+	// If we have a pending broadcast from a previous tick, either prune
+	// it (state engine confirmed every action complete), revert + prune
+	// (the Hive tx's expiration window has passed without confirmation —
+	// 10 blocks ≈ 30s, matches the Hive tx wall-clock expiration set in
+	// PopulateSigningProps), or retry the broadcast (idempotent — Hive
+	// nodes reject duplicates by txid). Until pendingTx is cleared we do
+	// NOT build a new batch, so we cannot double-broadcast on top of a
+	// still-alive signed tx.
+	if ms.pendingTx != nil {
+		if ms.pendingTxProcessed() {
+			fmt.Println("TickActions: pending tx processed by state engine, pruning")
+			ms.prunePendingTx()
+			return
+		}
+
+		if bh > ms.pendingTx.ExpirationBlock {
+			fmt.Println("TickActions: pending tx expired, reverting actions and pruning")
+			ms.ledgerActions.RevertToPending(ms.pendingTx.ActionIds...)
+			ms.prunePendingTx()
+			return
+		}
+
+		fmt.Println("TickActions: retrying broadcast of pending tx", ms.pendingTx.TxId)
+		_, retryErr := ms.hiveCreator.Broadcast(ms.pendingTx.SignedTx)
+		fmt.Println("TickActions: retry result", retryErr)
+		return
+	}
+
 	signPkg, err := ms.executeActions(bh)
 
 	fmt.Println("TickActions", err, signPkg)
@@ -206,8 +260,13 @@ func (ms *MultiSig) TickActions(bh uint64) {
 	threshold, _, _, thErr := ms.getThreshold()
 	if thErr != nil || threshold <= 0 {
 		// review2 HIGH #80: see keyRotation — abort instead of broadcasting
-		// an under-signed actions transaction.
+		// an under-signed actions transaction. Revert the local
+		// SetProcessing transition so the actions are retriable on the
+		// next ACTION_INTERVAL tick instead of being stuck "processing"
+		// forever (cosigner split-brain follow-up: a getThreshold blip
+		// here used to permanently strand the batch on the leader).
 		fmt.Println("TickActions getThreshold failed, aborting", thErr, threshold)
+		ms.ledgerActions.RevertToPending(signPkg.ExecutedOps...)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -217,6 +276,7 @@ func (ms *MultiSig) TickActions(bh uint64) {
 
 	fmt.Println("TickActions signatures", signatures, weight, err)
 	if err != nil {
+		ms.ledgerActions.RevertToPending(signPkg.ExecutedOps...)
 		return
 	}
 
@@ -225,10 +285,20 @@ func (ms *MultiSig) TickActions(bh uint64) {
 		tx.AddSig(sig)
 	}
 
-	if weight == uint64(threshold) {
-		rotationId, err := ms.hiveCreator.Broadcast(tx)
+	if weight < uint64(threshold) {
+		ms.ledgerActions.RevertToPending(signPkg.ExecutedOps...)
+		return
+	}
 
-		fmt.Println("Actions txId", rotationId, err)
+	_, broadcastErr := ms.hiveCreator.Broadcast(tx)
+	fmt.Println("Actions txId", signPkg.TxId, broadcastErr)
+
+	ms.pendingTx = &pendingGatewayTx{
+		SignedTx:        tx,
+		TxId:            signPkg.TxId,
+		ActionIds:       signPkg.ExecutedOps,
+		Expiration:      tx.Expiration,
+		ExpirationBlock: bh + 10,
 	}
 }
 
@@ -401,21 +471,27 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	}, nil
 }
 
-func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
+// buildActionBatch deterministically builds the signed (unsigned-yet) action
+// batch tx for block height bh, with NO DB mutations. Used by both the leader
+// (via executeActions) and cosigners (via p2p HandleMessage). The pure form
+// is the load-bearing half of the cosigner split-brain fix — cosigners must
+// not mark actions "processing" in their own DB, because if the leader's
+// broadcast fails the cosigner is left stuck with actions that never
+// complete and never auto-requeue.
+func (ms *MultiSig) buildActionBatch(bh uint64) (signingPackage, []string, error) {
 	if bh%ACTION_INTERVAL != 0 {
-		return signingPackage{}, errors.New("invalid slot")
+		return signingPackage{}, nil, errors.New("invalid slot")
 	}
 	actionFilter := []string{
 		"withdraw", "stake", "unstake",
 	}
 	actions, err := ms.ledgerActions.GetPendingActions(bh, actionFilter...)
 
-	// fmt.Println("Tick actions", actions, err)
 	if err != nil {
-		return signingPackage{}, err
+		return signingPackage{}, nil, err
 	}
 	if len(actions) == 0 {
-		return signingPackage{}, errors.New("no actions to process")
+		return signingPackage{}, nil, errors.New("no actions to process")
 	}
 
 	ops := []hivego.HiveOperation{}
@@ -425,15 +501,12 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 	unstakeTxCount := 0
 	executedOps := make([]string, 0)
 	for _, action := range actions {
-		// ops = append(ops, ms.createWithdrawOps(action)...)
-
 		executedOps = append(executedOps, action.Id)
 		if action.Type == "withdraw" {
 			splitTo := strings.Split(action.To, ":")
 			net := splitTo[0]
 			to := splitTo[1]
 
-			//Safety protection against bad inputs if other protections fail
 			if net != "hive" {
 				continue
 			}
@@ -461,7 +534,6 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 	}
 
 	if stakeBal > unstakeBal {
-		//Must stake
 		mustStakeBal := int64(stakeBal - unstakeBal)
 
 		amtStr := hive.AmountToString(mustStakeBal)
@@ -476,7 +548,6 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 
 		ops = append(ops, op)
 	} else if unstakeBal > stakeBal {
-		//Must unstake
 		mustUnstakeBal := int64(unstakeBal - stakeBal)
 
 		amtStr := hive.AmountToString(mustUnstakeBal)
@@ -486,7 +557,6 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 		ops = append(ops, op)
 	}
 
-	//Stake Ops of any category
 	unstakeOps := make([]ledgerDb.ActionRecord, 0)
 
 	for _, action := range actions {
@@ -545,22 +615,30 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 
 	txId, _ := tx.GenerateTrxId()
 
-	// CRITICAL #1 (gateway double-spend): the batch is now committed to be
-	// broadcast. Transition every selected action out of "pending" so the
-	// next ACTION_INTERVAL tick does not re-select and re-pay the same
-	// withdrawals before this batch's L1 `vsc.actions` header is re-ingested
-	// (IndexActions -> ExecuteComplete). Fail-safe: if the header never
-	// confirms the action stays "processing" (recoverable) — it is never
-	// auto-requeued, so it can never be paid twice.
+	return signingPackage{
+		Ops:         ops,
+		Tx:          tx,
+		TxId:        txId,
+		ExecutedOps: executedOps,
+	}, executedOps, nil
+}
+
+// executeActions is the leader-only entry: build the batch, then mark
+// every selected action "processing" in the local DB so the next
+// ACTION_INTERVAL tick does not re-select and re-pay the same withdrawals
+// before this batch's L1 `vsc.actions` header is re-ingested
+// (IndexActions -> ExecuteComplete). Fail-safe: a broadcast failure
+// triggers RevertToPending in TickActions so the actions are
+// retriable on the next tick rather than stuck forever.
+func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
+	pkg, executedOps, err := ms.buildActionBatch(bh)
+	if err != nil {
+		return signingPackage{}, err
+	}
+
 	ms.ledgerActions.SetProcessing(executedOps...)
 
-	//Do signing
-
-	return signingPackage{
-		Ops:  ops,
-		Tx:   tx,
-		TxId: txId,
-	}, nil
+	return pkg, nil
 }
 
 // Sync balances between liquid and staked HBD

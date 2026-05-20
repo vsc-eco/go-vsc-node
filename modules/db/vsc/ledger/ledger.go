@@ -371,6 +371,26 @@ func (actionsDb *actionsDb) SetProcessing(ids ...string) {
 	})
 }
 
+// RevertToPending walks back a SetProcessing transition for the named
+// action ids when a multisig broadcast attempt fails. Only "processing"
+// rows are affected — "complete" rows (already confirmed via the L1
+// `vsc.actions` header) are left alone. Idempotent.
+func (actionsDb *actionsDb) RevertToPending(ids ...string) {
+	if len(ids) == 0 {
+		return
+	}
+	actionsDb.UpdateMany(context.Background(), bson.M{
+		"id": bson.M{
+			"$in": ids,
+		},
+		"status": "processing",
+	}, bson.M{
+		"$set": bson.M{
+			"status": "pending",
+		},
+	})
+}
+
 func (actionsDb *actionsDb) Get(id string) (*ActionRecord, error) {
 	findResult := actionsDb.FindOne(context.Background(), bson.M{
 		"id": id,
