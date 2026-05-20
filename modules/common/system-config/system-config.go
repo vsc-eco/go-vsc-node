@@ -242,6 +242,7 @@ func MocknetConfig() SystemConfig {
 		consensusParams: params.ConsensusParams{
 			MinStake:             1,
 			MinMembers:           3,
+			MinSpSigners:         3,
 			MinRcLimit:           1,
 			TssIndexHeight:       0,
 			ElectionInterval:     1000,

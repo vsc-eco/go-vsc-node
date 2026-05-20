@@ -86,7 +86,7 @@ func TestGC(t *testing.T) {
 	sysConfig := systemconfig.MocknetConfig()
 
 	p2p := p2pInterface.New(witnesses.NewEmptyWitnesses(), p2pConfig, identityConfig, sysConfig, nil)
-	da := DataLayer.New(p2p)
+	da := DataLayer.New(p2p, t.TempDir())
 	a := aggregate.New([]aggregate.Plugin{identityConfig, p2pConfig, p2p, da})
 	assert.Nil(t, a.Init())
 
@@ -136,7 +136,7 @@ func TestDir(t *testing.T) {
 	sysConfig := systemconfig.MocknetConfig()
 
 	p2p := p2pInterface.New(witnesses.NewEmptyWitnesses(), p2pConfig, identityConfig, sysConfig, nil)
-	da := DataLayer.New(p2p)
+	da := DataLayer.New(p2p, t.TempDir())
 	a := aggregate.New([]aggregate.Plugin{identityConfig, p2pConfig, p2p, da})
 	assert.Nil(t, a.Init())
 	db := DataLayer.NewDataBin(da)

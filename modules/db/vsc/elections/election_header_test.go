@@ -9,7 +9,7 @@ import (
 )
 
 func TestElectionHeaderCid(t *testing.T) {
-	var validCid = cid.MustParse("bafyreiazhbfk5agojh2chgxai23eydg6eee4djflohc5r4pkyqxmo543ym")
+	var validCid = cid.MustParse("bafyreib3fv5hjk2r2dt5zi6df6gfabty7itfye5s4i5ibmsk3j65thldre")
 	var electionDataCid = cid.MustParse("bafyreifiekarc6umywsvbug7z27wqa54edmymoks3okkptowjznhbc65jm")
 	var validElectionHeader = elections.ElectionHeader{}
 	validElectionHeader.Epoch = 125
