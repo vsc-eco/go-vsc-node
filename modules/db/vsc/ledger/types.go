@@ -6,7 +6,7 @@ import (
 
 type Ledger interface {
 	aggregate.Plugin
-	StoreLedger(...LedgerRecord)
+	StoreLedger(...LedgerRecord) error
 	GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error)
 	GetLedgerRange(account string, start uint64, end uint64, asset string, options ...LedgerOptions) (*[]LedgerRecord, error)
 	GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error)

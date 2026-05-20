@@ -55,10 +55,11 @@ type MockLedgerDb struct {
 	LedgerRecords map[string][]ledgerDb.LedgerRecord
 }
 
-func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) {
+func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) error {
 	for _, record := range ledgerRecords {
 		m.LedgerRecords[record.Owner] = append(m.LedgerRecords[record.Owner], record)
 	}
+	return nil
 }
 
 func (m *MockLedgerDb) GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]ledgerDb.LedgerRecord, error) {

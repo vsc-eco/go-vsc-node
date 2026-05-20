@@ -64,7 +64,7 @@ func (ls *ledgerSystem) PendulumDistribute(toAccount string, amount int64, txID 
 	if available < amount {
 		return LedgerResult{Ok: false, Msg: "insufficient pendulum nodes bucket balance"}
 	}
-	ls.LedgerDb.StoreLedger(
+	if err := ls.LedgerDb.StoreLedger(
 		ledger_db.LedgerRecord{
 			Id:          txID + "#distribute_debit#" + toAccount,
 			TxId:        txID,
@@ -83,7 +83,10 @@ func (ls *ledgerSystem) PendulumDistribute(toAccount string, amount int64, txID 
 			Owner:       toAccount,
 			Type:        "pendulum_distribute",
 		},
-	)
+	); err != nil {
+		log.Error("PendulumDistribute: ledger write failed", "txId", txID, "account", toAccount, "amount", amount, "err", err)
+		return LedgerResult{Ok: false, Msg: "ledger write failed"}
+	}
 
 	return LedgerResult{Ok: true, Msg: "success"}
 }
@@ -169,7 +172,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 				owner = balance.Account
 			}
 
-			ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+			if err := ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
 				Id: "hbd_interest_" + strconv.Itoa(int(blockHeight)) + "_" + strconv.Itoa(id),
 				//next block
 				BlockHeight: blockHeight + 1,
@@ -177,7 +180,9 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 				Asset:       "hbd_savings",
 				Owner:       owner,
 				Type:        "interest",
-			})
+			}); err != nil {
+				log.Error("ClaimHBDInterest: ledger write failed", "blockHeight", blockHeight, "owner", owner, "err", err)
+			}
 		}
 	}
 	//Note this calculation is inaccurate and should be calculated based on N blocks of Y claim period
@@ -234,7 +239,7 @@ func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraI
 
 		if record.Type == "stake" {
 			log.Debug("Indexxing stake Ledger")
-			ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+			if err := ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
 				Id:     record.Id + "#out",
 				Amount: record.Amount,
 				Asset:  "hbd_savings",
@@ -246,7 +251,9 @@ func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraI
 				//Before everything
 				BIdx:  -1,
 				OpIdx: -1,
-			})
+			}); err != nil {
+				log.Error("IndexActions: stake ledger write failed", "id", record.Id, "to", record.To, "err", err)
+			}
 		}
 		if record.Type == "unstake" {
 			var blockDelay uint64
@@ -257,7 +264,7 @@ func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraI
 			} else {
 				blockDelay = common.HBD_UNSTAKE_BLOCKS
 			}
-			ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+			if err := ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
 				Id:     record.Id + "#out",
 				Amount: record.Amount,
 				Asset:  "hbd",
@@ -268,7 +275,9 @@ func (ls *ledgerSystem) IndexActions(actionUpdate map[string]interface{}, extraI
 				BlockHeight: extraInfo.BlockHeight + blockDelay,
 				BIdx:        -1,
 				OpIdx:       -1,
-			})
+			}); err != nil {
+				log.Error("IndexActions: unstake ledger write failed", "id", record.Id, "to", record.To, "err", err)
+			}
 		}
 	}
 
@@ -281,7 +290,7 @@ func (ls *ledgerSystem) IngestOplog(oplog []OpLogEvent, options OplogInjestOptio
 	actionRecords := executeResults.actionRecords
 
 	for _, v := range ledgerRecords {
-		ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+		if err := ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
 			Id: v.Id,
 			//plz passthrough original block height
 			BlockHeight: options.EndHeight,
@@ -290,7 +299,9 @@ func (ls *ledgerSystem) IngestOplog(oplog []OpLogEvent, options OplogInjestOptio
 			Owner:       v.Owner,
 			Type:        v.Type,
 			// TxId:        v.,
-		})
+		}); err != nil {
+			log.Error("IngestOplog: ledger write failed", "id", v.Id, "owner", v.Owner, "err", err)
+		}
 	}
 
 	for _, v := range actionRecords {
@@ -350,7 +361,7 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 	// 	le.Ls.log.Debug("ledgerExecutor", le.VirtualLedger[decodedParams.To])
 	// }
 
-	ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+	if err := ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
 		Id:          deposit.Id,
 		BlockHeight: deposit.BlockHeight,
 		Amount:      deposit.Amount,
@@ -359,7 +370,9 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 		Owner:       decodedParams.To,
 		Type:        "deposit",
 		TxId:        deposit.Id,
-	})
+	}); err != nil {
+		log.Error("Deposit: ledger write failed", "id", deposit.Id, "owner", decodedParams.To, "err", err)
+	}
 
 	return decodedParams.To
 }

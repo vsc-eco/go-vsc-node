@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/utils"
@@ -58,6 +59,12 @@ type MultiSig struct {
 	p2p     *libp2p.P2PServer
 	se      *stateEngine.StateEngine
 	msgChan map[string]chan *p2pMessage
+	// msgMu guards every access to msgChan. The map is read by the pubsub
+	// dispatch goroutine (p2p.go HandleMessage) while the Tick* goroutines
+	// (TickKeyRotation/TickActions/TickSyncFr) concurrently create and delete
+	// entries. Without this lock the Go runtime aborts the process with
+	// "fatal error: concurrent map writes".
+	msgMu sync.Mutex
 
 	bh uint64
 }
@@ -82,6 +89,31 @@ func (ms *MultiSig) Init() error {
 		}
 	}
 	return nil
+}
+
+// setMsgChan creates a buffered collection channel for txId, registers it, and
+// returns it. All msgChan mutations go through these helpers so the lock
+// discipline lives in one place.
+func (ms *MultiSig) setMsgChan(txId string) chan *p2pMessage {
+	ch := make(chan *p2pMessage, 16)
+	ms.msgMu.Lock()
+	ms.msgChan[txId] = ch
+	ms.msgMu.Unlock()
+	return ch
+}
+
+// getMsgChan returns the channel for txId, or nil if none is registered.
+func (ms *MultiSig) getMsgChan(txId string) chan *p2pMessage {
+	ms.msgMu.Lock()
+	defer ms.msgMu.Unlock()
+	return ms.msgChan[txId]
+}
+
+// deleteMsgChan unregisters the channel for txId.
+func (ms *MultiSig) deleteMsgChan(txId string) {
+	ms.msgMu.Lock()
+	delete(ms.msgChan, txId)
+	ms.msgMu.Unlock()
 }
 
 func (ms *MultiSig) Start() *promise.Promise[any] {
@@ -150,7 +182,7 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 		return
 	}
 
-	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage, 16)
+	ms.setMsgChan(signPkg.TxId)
 	signReq := signRequest{
 		TxId:        signPkg.TxId,
 		BlockHeight: bh,
@@ -176,7 +208,7 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
-	delete(ms.msgChan, signPkg.TxId)
+	ms.deleteMsgChan(signPkg.TxId)
 
 	if err != nil {
 		return
@@ -202,7 +234,7 @@ func (ms *MultiSig) TickActions(bh uint64) {
 		return
 	}
 
-	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage, 16)
+	ms.setMsgChan(signPkg.TxId)
 	signReq := signRequest{
 		TxId:        signPkg.TxId,
 		BlockHeight: bh,
@@ -230,7 +262,7 @@ func (ms *MultiSig) TickActions(bh uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
-	delete(ms.msgChan, signPkg.TxId)
+	ms.deleteMsgChan(signPkg.TxId)
 
 	fmt.Println("TickActions signatures", signatures, weight, err)
 	if err != nil {
@@ -258,7 +290,7 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 		return
 	}
 
-	ms.msgChan[signPkg.TxId] = make(chan *p2pMessage, 16)
+	ms.setMsgChan(signPkg.TxId)
 	signReq := signRequest{
 		TxId:        signPkg.TxId,
 		BlockHeight: bh,
@@ -286,7 +318,7 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
-	delete(ms.msgChan, signPkg.TxId)
+	ms.deleteMsgChan(signPkg.TxId)
 
 	if err != nil {
 		return
@@ -759,7 +791,12 @@ func (ms *MultiSig) waitForSigs(
 	if err != nil {
 		return nil, 0, err
 	}
-	if ms.msgChan[txId] == nil {
+	// Capture the channel once, locally. The collector goroutine below reads
+	// from this local — never from msgChan — so it cannot block forever on a
+	// nil read after the caller deletes the map entry on return (the leak this
+	// guards against).
+	ch := ms.getMsgChan(txId)
+	if ch == nil {
 		return nil, 0, errors.New("no channel for txId")
 	}
 
@@ -770,61 +807,63 @@ func (ms *MultiSig) waitForSigs(
 	}
 	txHash := hivego.HashTxForSig(txBytes, ms.sconf.HiveChainId())
 
-	// var timeoutz time.Duration
-	// if len(timeout) > 0 {
-	// 	timeoutz = timeout[0]
-	// } else {
-	// 	timeoutz = 20 * time.Second
-	// }
+	type collectResult struct {
+		sigs   []string
+		weight uint64
+	}
+	// Buffered so the collector can always hand back its result and exit, even
+	// if the parent already returned via ctx timeout — no goroutine leak.
+	resCh := make(chan collectResult, 1)
 
-	// go func() {
-	// 	time.Sleep(timeoutz)
-	// 	fmt.Println("waitForSigs Timeout waiting for signatures")
-	// 	if ms.msgChan[txId] != nil {
-	// 		ms.msgChan[txId] <- nil
-	// 	}
-	// }()
-
-	end := make(chan struct{})
-
-	signedWeight := uint64(0)
-	sigs := make([]string, 0)
 	go func() {
+		signedWeight := uint64(0)
+		sigs := make([]string, 0)
 		for uint64(threshold) > signedWeight {
-			msg := <-ms.msgChan[txId]
+			select {
+			case <-ctx.Done():
+				// Timed out / cancelled: hand back what we have and exit.
+				resCh <- collectResult{sigs, signedWeight}
+				return
+			case msg := <-ch:
+				if msg == nil {
+					continue
+				}
+				if msg.Type == "sign_response" {
+					sigRes := signResponse{}
+					err := json.Unmarshal([]byte(msg.Data), &sigRes)
 
-			if msg.Type == "sign_response" {
-				sigRes := signResponse{}
-				err := json.Unmarshal([]byte(msg.Data), &sigRes)
+					if err == nil {
 
-				if err == nil {
-
-					pubKey, err := RecoverPublicKey(sigRes.Sig, txHash)
-					if err != nil {
-						continue
-						// return nil, 0, err
-					}
-					idx := slices.Index(publicList, pubKey)
-					if idx != -1 {
-						if !slices.Contains(sigs, sigRes.Sig) {
-							sigs = append(sigs, sigRes.Sig)
-							signedWeight = signedWeight + uint64(weights[idx])
+						pubKey, err := RecoverPublicKey(sigRes.Sig, txHash)
+						if err != nil {
+							continue
+						}
+						idx := slices.Index(publicList, pubKey)
+						if idx != -1 {
+							if !slices.Contains(sigs, sigRes.Sig) {
+								sigs = append(sigs, sigRes.Sig)
+								signedWeight = signedWeight + uint64(weights[idx])
+							}
 						}
 					}
 				}
 			}
 		}
 
-		end <- struct{}{}
+		resCh <- collectResult{sigs, signedWeight}
 	}()
 
+	// sigs/signedWeight are owned exclusively by the collector goroutine and
+	// only ever read here after it sends them on resCh — so there is no
+	// concurrent read/write of the slice or counter.
 	select {
 	case <-ctx.Done():
+		res := <-resCh
 		fmt.Println("[ms] collect sigs timeout")
-		return sigs, signedWeight, nil
-	case <-end:
+		return res.sigs, res.weight, nil
+	case res := <-resCh:
 		fmt.Println("[ms] collected needed sigs")
-		return sigs, signedWeight, nil
+		return res.sigs, res.weight, nil
 	}
 }
 
