@@ -14,6 +14,10 @@ import (
 const wif = ""
 
 func TestSavingsWithdraw(t *testing.T) {
+	// Manual integration harness: needs a real WIF filled into `wif` above and a
+	// live Hive API. It broadcasts a real transaction and has no assertions, so it
+	// can never pass unattended (empty WIF -> nil keypair -> panic on Sign).
+	t.Skip("manual integration test: requires a funded WIF and live Hive API")
 	// goenv := os.Getenv("GOENV")
 	hiveClient := hivego.NewHiveRpc(streamer.DefaultHiveURIs)
 

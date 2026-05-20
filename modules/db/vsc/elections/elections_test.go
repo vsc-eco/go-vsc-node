@@ -15,21 +15,21 @@ import (
 func TestElectionMinimum(t *testing.T) {
 	//Yes it won't fail
 	val := elections.MinimalRequiredElectionVotes(elections.MIN_BLOCKS_SINCE_LAST_ELECTION-1, 0)
-	assert.Equal(t, 0, val)
+	assert.Equal(t, uint64(0), val)
 	val = elections.MinimalRequiredElectionVotes(elections.MAX_BLOCKS_SINCE_LAST_ELECTION, 8)
-	assert.Equal(t, 5, val)
+	assert.Equal(t, uint64(5), val)
 	val = elections.MinimalRequiredElectionVotes(elections.MIN_BLOCKS_SINCE_LAST_ELECTION, 8)
-	assert.Equal(t, 6, val)
+	assert.Equal(t, uint64(6), val)
 	val = elections.MinimalRequiredElectionVotes(elections.MIN_BLOCKS_SINCE_LAST_ELECTION, 9)
-	assert.Equal(t, 6, val)
+	assert.Equal(t, uint64(6), val)
 	val = elections.MinimalRequiredElectionVotes(elections.MAX_BLOCKS_SINCE_LAST_ELECTION+1, 9)
-	assert.Equal(t, 5, val)
+	assert.Equal(t, uint64(5), val)
 
 	val = elections.MinimalRequiredElectionVotes((elections.MAX_BLOCKS_SINCE_LAST_ELECTION-elections.MIN_BLOCKS_SINCE_LAST_ELECTION)/2, 100)
-	assert.Equal(t, 59, val)
+	assert.Equal(t, uint64(59), val)
 	val = elections.MinimalRequiredElectionVotes((elections.MAX_BLOCKS_SINCE_LAST_ELECTION-elections.MIN_BLOCKS_SINCE_LAST_ELECTION)/2, 101)
 
-	assert.Equal(t, 60, val)
+	assert.Equal(t, uint64(60), val)
 }
 
 func TestGetElectionByHeight(t *testing.T) {
@@ -72,6 +72,10 @@ func TestGetElectionByHeight(t *testing.T) {
 
 	err = e.StoreElection(electionMock)
 	assert.NoError(t, err)
+
+	// StoreElection defaults an empty Type to "initial" before persisting,
+	// so the stored/read-back record carries Type == "initial".
+	electionMock.Type = "initial"
 
 	res, err := e.GetElectionByHeight(43)
 	assert.NoError(t, err)

@@ -20,3 +20,4 @@ modules/gql/gqlgen/models.go
 logs/
 *attack-vectors.md
 *.wasm
+data-rr2-*

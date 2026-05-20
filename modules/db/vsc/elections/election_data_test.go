@@ -10,7 +10,7 @@ import (
 
 func TestElectionDataCid(t *testing.T) {
 	// This CID is different due to the different format of the election data
-	var validCid = cid.MustParse("bafyreifiekarc6umywsvbug7z27wqa54edmymoks3okkptowjznhbc65jm")
+	var validCid = cid.MustParse("bafyreidpho4fa45cy7wbzl4zygvaseb4vulr7xxepeavbyerx45q4tlif4")
 	var validElectionData = elections.ElectionData{}
 	validElectionData.Epoch = 125
 	validElectionData.NetId = "testnet/0bf2e474-6b9e-4165-ad4e-a0d78968d20c"

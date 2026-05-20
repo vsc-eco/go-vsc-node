@@ -9,7 +9,9 @@ import (
 )
 
 func TestElectionResultCid(t *testing.T) {
-	var electionHeaderCid = cid.MustParse("bafyreiazhbfk5agojh2chgxai23eydg6eee4djflohc5r4pkyqxmo543ym")
+	// ElectionResult.Cid() recomputes the data CID from members/weights, so the
+	// result CID differs from the standalone header CID test.
+	var validCid = cid.MustParse("bafyreiciefg2slbchhq4zmn3avg7f45pzu3t6fq7jnvgk6q5ecjqeo3bqa")
 	var electionDataCid = cid.MustParse("bafyreifiekarc6umywsvbug7z27wqa54edmymoks3okkptowjznhbc65jm")
 	var validElectionResult = elections.ElectionResult{}
 	validElectionResult.Data = electionDataCid.String()
@@ -197,5 +199,5 @@ func TestElectionResultCid(t *testing.T) {
 	}
 	cid, err := validElectionResult.Cid()
 	assert.NoError(t, err)
-	assert.Equal(t, electionHeaderCid.String(), cid.String())
+	assert.Equal(t, validCid.String(), cid.String())
 }

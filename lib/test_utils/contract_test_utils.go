@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"os"
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -111,7 +112,13 @@ func NewContractTest() ContractTest {
 	)
 	var blockStatus common_types.BlockStatusGetter
 	p2p := p2pInterface.New(witnessesDb, p2pConfig, idConfig, sysConfig, blockStatus)
-	dl := datalayer.New(p2p)
+	// Use a unique temp dir per call so multiple ContractTests in the same
+	// process don't collide on a shared badger directory lock.
+	badgerDir, err := os.MkdirTemp("", "vsc-contract-test-badger-")
+	if err != nil {
+		panic(err)
+	}
+	dl := datalayer.New(p2p, badgerDir)
 	a := aggregate.New([]aggregate.Plugin{idConfig, p2pConfig, p2p, dl})
 	if err := a.Init(); err != nil {
 		panic(err)
