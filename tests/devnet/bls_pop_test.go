@@ -115,22 +115,34 @@ func assertAllWitnessesHaveValidBlsPoP(t *testing.T, mongoURI, dbName string, wa
 
 	coll := client.Database(dbName).Collection("witnesses")
 
-	// `enabled:true` is the live announce. Drop disabled rows so an old
-	// pre-PoP record left over from a previous test reuse doesn't trip us.
+	// The `witnesses` collection is append-style: one row per announce, keyed by
+	// (account, height). A witness that re-announces (e.g. property change)
+	// leaves multiple `enabled:true` rows. We only care about the *latest*
+	// announce per account — that's the one the state engine's
+	// verifyAnnouncedBlsPoP ran on most recently and the one downstream
+	// consumers (elections, BLS circuit) read.
 	cursor, err := coll.Find(ctx, bson.M{"enabled": true},
-		options.Find().SetSort(bson.M{"account": 1}))
+		options.Find().SetSort(bson.D{
+			{Key: "account", Value: 1},
+			{Key: "height", Value: -1},
+		}))
 	if err != nil {
 		t.Fatalf("find witnesses in %s: %v", dbName, err)
 	}
 	defer cursor.Close(ctx)
 
-	seen := 0
+	checkedAccounts := make(map[string]struct{}, wantWitnesses)
 	for cursor.Next(ctx) {
 		var w witnesses.Witness
 		if err := cursor.Decode(&w); err != nil {
 			t.Fatalf("decode witness in %s: %v", dbName, err)
 		}
-		seen++
+		// height-desc sort means the first row we see per account is the
+		// latest announce; skip older rows for the same account.
+		if _, already := checkedAccounts[w.Account]; already {
+			continue
+		}
+		checkedAccounts[w.Account] = struct{}{}
 
 		// Find the DID-BLS / consensus key — the exact one the state
 		// engine's verifyAnnouncedBlsPoP looks up.
@@ -160,14 +172,15 @@ func assertAllWitnessesHaveValidBlsPoP(t *testing.T, mongoURI, dbName string, wa
 				dbName, w.Account, err)
 			continue
 		}
-		t.Logf("%s: witness %q has valid PoP (key=%s)", dbName, w.Account, truncateMid(string(blsKey.Key), 16))
+		t.Logf("%s: witness %q has valid PoP at height %d (key=%s)",
+			dbName, w.Account, w.Height, truncateMid(string(blsKey.Key), 16))
 	}
 	if err := cursor.Err(); err != nil {
 		t.Fatalf("cursor err in %s: %v", dbName, err)
 	}
 
-	if seen != wantWitnesses {
-		t.Errorf("%s: expected %d enabled witnesses, found %d", dbName, wantWitnesses, seen)
+	if got := len(checkedAccounts); got != wantWitnesses {
+		t.Errorf("%s: expected %d distinct enabled witness accounts, found %d", dbName, wantWitnesses, got)
 	}
 }
 
