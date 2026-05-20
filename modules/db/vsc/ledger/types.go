@@ -20,7 +20,7 @@ type Balances interface {
 	aggregate.Plugin
 	GetBalanceRecord(account string, blockHeight uint64) (*BalanceRecord, error)
 	UpdateBalanceRecord(record BalanceRecord) error
-	GetAll(blockHeight uint64) []BalanceRecord
+	GetAll(blockHeight uint64) ([]BalanceRecord, error)
 }
 
 type InterestClaims interface {
