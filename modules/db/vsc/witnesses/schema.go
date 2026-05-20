@@ -27,6 +27,9 @@ type PostingJsonKeys struct {
 	CryptoType string `json:"ct" bson:"ct"`
 	Type       string `json:"t" bson:"t"`
 	Key        string `json:"key" bson:"key"`
+	// PoP is a base64 (raw-url) BLS proof-of-possession for Key, bound to the
+	// announcing account. Empty for witnesses that announced before PoP support.
+	PoP string `json:"pop,omitempty" bson:"pop,omitempty"`
 }
 
 type PostingJsonMetadataVscNode struct {
