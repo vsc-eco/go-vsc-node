@@ -1137,12 +1137,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						tssLog.Verbose("commitment entry", "sessionId", commitment.SessionId, "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
 
 						members := make([]dids.BlsDID, 0)
-						// Use the election active at the commitment's block height,
-						// not the commitment's epoch. The leader collects BLS signatures
-						// from GetElectionByHeight(bh) where bh = commitment.BlockHeight.
-						// Using GetElection(commitment.Epoch) returns a different election
-						// when the epoch has advanced, causing BLS verification to fail
-						// because the member lists (and BLS keys) differ.
+
+						if commitment.BlockHeight+params.TSS_COMMITMENT_MAX_STALENESS < block.BlockNumber {
+							tssLog.Warn("stale commitment rejected", "keyId", commitment.KeyId, "commitmentHeight", commitment.BlockHeight, "blockNumber", block.BlockNumber)
+							continue
+						}
+
 						electionData, elErr := se.electionDb.GetElectionByHeight(commitment.BlockHeight)
 
 						if elErr != nil || electionData.Members == nil {

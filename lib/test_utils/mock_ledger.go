@@ -10,6 +10,7 @@ import (
 type MockBalanceDb struct {
 	aggregate.Plugin
 	BalanceRecords map[string][]ledgerDb.BalanceRecord
+	GetAllErr      error
 }
 
 func (m *MockBalanceDb) GetBalanceRecord(account string, blockHeight uint64) (*ledgerDb.BalanceRecord, error) {
@@ -40,14 +41,17 @@ func (m *MockBalanceDb) UpdateBalanceRecord(record ledgerDb.BalanceRecord) error
 	return nil
 }
 
-func (m *MockBalanceDb) GetAll(blockHeight uint64) []ledgerDb.BalanceRecord {
+func (m *MockBalanceDb) GetAll(blockHeight uint64) ([]ledgerDb.BalanceRecord, error) {
+	if m.GetAllErr != nil {
+		return nil, m.GetAllErr
+	}
 	out := make([]ledgerDb.BalanceRecord, 0)
 	for _, records := range m.BalanceRecords {
 		if len(records) > 0 {
 			out = append(out, records[len(records)-1])
 		}
 	}
-	return out
+	return out, nil
 }
 
 type MockLedgerDb struct {

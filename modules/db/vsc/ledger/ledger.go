@@ -312,22 +312,25 @@ func (balances *balances) UpdateBalanceRecord(record BalanceRecord) error {
 	return nil
 }
 
-func (balances *balances) GetAll(blockHeight uint64) []BalanceRecord {
-	distinctAccountZ, _ := balances.Distinct(context.Background(), "account", bson.M{})
+func (balances *balances) GetAll(blockHeight uint64) ([]BalanceRecord, error) {
+	distinctAccountZ, err := balances.Distinct(context.Background(), "account", bson.M{})
+	if err != nil {
+		return nil, err
+	}
 	distinctAccount := common.ArrayToStringArray(distinctAccountZ)
 
-	//TODO: Either use a bulk read or use threads
-	//Initial iteration
 	records := make([]BalanceRecord, 0)
 	for _, act := range distinctAccount {
-		br, _ := balances.GetBalanceRecord(act, blockHeight)
-
+		br, err := balances.GetBalanceRecord(act, blockHeight)
+		if err != nil {
+			return nil, err
+		}
 		if br != nil {
 			records = append(records, *br)
 		}
 	}
 
-	return records
+	return records, nil
 }
 
 type actionsDb struct {

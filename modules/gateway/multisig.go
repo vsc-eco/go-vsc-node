@@ -649,7 +649,10 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 
 	totalHbd := int64(0)
 	balList := make(map[string]int64, 0)
-	balRecords := ms.balanceDb.GetAll(bh)
+	balRecords, err := ms.balanceDb.GetAll(bh)
+	if err != nil {
+		return signingPackage{}, errors.New("balance enumeration failed")
+	}
 	topBalances := make([]int64, 0)
 	for _, record := range balRecords {
 		//Don't include any system balances
