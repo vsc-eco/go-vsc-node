@@ -821,6 +821,20 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 
 	electionResult := se.GetElectionInfo(tx.Self.BlockHeight - 1)
 
+	// review4 HIGH #96: GetElectionInfo swallows the DB error and returns a
+	// zero-value ElectionResult on failure. If we accept the zero epoch,
+	// the unstake locks for `0 + 5 = 5` epochs regardless of the current
+	// epoch — i.e. an unstake submitted at epoch 100 would unlock at
+	// epoch 5, which has already passed. Refuse the tx instead so the
+	// user resubmits once the proposer DB recovers.
+	if electionResult.Epoch == 0 && tx.Self.BlockHeight > 1 {
+		return TxResult{
+			Success: false,
+			Ret:     "election lookup unavailable; retry unstake later",
+			RcUsed:  50,
+		}
+	}
+
 	params := ledgerSystem.ConsensusParams{
 		Id:            MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
 		From:          tx.From,
