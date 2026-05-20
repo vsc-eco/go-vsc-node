@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -302,10 +303,7 @@ func (e *electionProposer) GenerateFullElection(
 		}),
 	)
 
-	distWeight := uint64(0)
-	if len(REQUIRED_ELECTION_MEMBERS) > 0 {
-		distWeight = uint64(math.Ceil((1 + float64(totalOptionalWeight)/2) / float64(len(REQUIRED_ELECTION_MEMBERS))))
-	}
+	distWeight := computeRequiredMemberWeight(totalOptionalWeight, uint64(len(REQUIRED_ELECTION_MEMBERS)))
 
 	// review2 MEDIUM #66: a witness consensus key comes from untrusted L1
 	// account data; a single malformed key must not panic (crash) every
@@ -698,11 +696,16 @@ func (ep *electionProposer) scoreMap() (ScoreMap, error) {
 		samples += uint64(len(blocks))
 	}
 
+	// review4 HIGH #40: sort before iterating so Members and BannedNodes are
+	// deterministic. Map iteration order is randomised by Go; if this slice
+	// is ever consumed by code that depends on order (BLS bitset, slicing
+	// at quorum cutoff, tie-break), divergent ordering would break
+	// consensus across honest nodes.
 	members := make([]string, 0, len(witnessMap))
-
 	for member := range witnessMap {
 		members = append(members, member)
 	}
+	sort.Strings(members)
 
 	bannedNodes := []string{}
 	for _, member := range members {
