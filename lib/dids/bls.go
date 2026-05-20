@@ -176,6 +176,78 @@ func (d BlsDID) Verify(blk blocks.Block, sig string) (bool, error) {
 	return true, nil
 }
 
+// ===== BLS proof-of-possession =====
+
+// blsPoPDomain is the application-level domain-separation tag for BLS
+// proof-of-possession messages. It is mixed into the signed bytes so a PoP can
+// never be confused with any other BLS signature this node produces (block
+// attestations, tss commitments, etc.). Bump the version to invalidate old PoPs.
+const blsPoPDomain = "VSC-BLS-POP-v1"
+
+// blsPoPMessage builds the exact byte string a witness signs to prove it holds
+// the secret behind pubKey, bound to its Hive account. Signer and verifier MUST
+// construct this identically. Binding the account prevents a PoP (or key) from
+// being replayed under a different account.
+func blsPoPMessage(pubKey *BlsPubKey, account string) []byte {
+	pkBytes := pubKey.Serialize()
+	msg := make([]byte, 0, len(blsPoPDomain)+len(pkBytes)+len(account))
+	msg = append(msg, []byte(blsPoPDomain)...)
+	msg = append(msg, pkBytes[:]...)
+	msg = append(msg, []byte(account)...)
+	return msg
+}
+
+// GenerateBlsPoP returns a base64 (raw-url) proof-of-possession for privKey,
+// bound to account. An honest witness — which knows its secret key — can always
+// produce this. A rogue-key attacker who registered pk = s'·G1 − Σ(pkᵢ) cannot:
+// that requires signing under sk = s' − Σ(skᵢ), and the honest skᵢ are unknown.
+// This is the check that closes the rogue-key aggregate-forgery hole, because at
+// consensus-time verify only the aggregate signature is available — possession
+// must be proven once here, at registration.
+func GenerateBlsPoP(privKey *BlsPrivKey, account string) (string, error) {
+	if privKey == nil {
+		return "", fmt.Errorf("bls pop: nil private key")
+	}
+	pubKey, err := bls.SkToPk(privKey)
+	if err != nil {
+		return "", fmt.Errorf("bls pop: derive pubkey: %w", err)
+	}
+	sig := bls.Sign(privKey, blsPoPMessage(pubKey, account))
+	sigBytes := sig.Serialize()
+	return base64.RawURLEncoding.EncodeToString(sigBytes[:]), nil
+}
+
+// VerifyBlsPoP checks a base64 (raw-url) proof-of-possession for did, bound to
+// account. It is deterministic — a pure function of the announced DID, account,
+// and PoP bytes — so every node reaches the same verdict and it is safe to gate
+// consensus-relevant decisions on it. (Pubkey deserialization in Identifier()
+// performs the BLS subgroup check; an identity/zero key cannot produce a valid
+// PoP, so both rogue-key and identity-key registrations fail here.)
+func VerifyBlsPoP(did BlsDID, account string, pop string) error {
+	pubKey := did.Identifier()
+	if pubKey == nil {
+		return fmt.Errorf("bls pop: invalid DID: %s", did.String())
+	}
+	if pop == "" {
+		return fmt.Errorf("bls pop: missing proof-of-possession for %s", did.String())
+	}
+	sigBytes, err := base64.RawURLEncoding.DecodeString(pop)
+	if err != nil {
+		return fmt.Errorf("bls pop: decode signature: %w", err)
+	}
+	if len(sigBytes) != 96 {
+		return fmt.Errorf("bls pop: invalid signature length: got %d, want 96", len(sigBytes))
+	}
+	sig := new(BlsSig)
+	if sig.Deserialize((*[96]byte)(sigBytes)) != nil {
+		return fmt.Errorf("bls pop: failed to decompress signature for %s", did.String())
+	}
+	if !bls.Verify(pubKey, blsPoPMessage(pubKey, account), sig) {
+		return fmt.Errorf("bls pop: verification failed for %s", did.String())
+	}
+	return nil
+}
+
 // ===== KeyDIDProvider =====
 
 type blsProvider struct {
