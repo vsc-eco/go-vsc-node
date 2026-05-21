@@ -878,7 +878,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 			})
 		}()
 
-		ep.sigChannels[ep.signingInfo.epoch] = make(chan *signResponse)
+		ep.sigChannels[ep.signingInfo.epoch] = make(chan *signResponse, 32)
 
 		log.Info("waiting for signatures",
 			"block_height", anchorBh,

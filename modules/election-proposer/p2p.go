@@ -58,54 +58,22 @@ func (d *electionProposer) stopP2P() error {
 	return d.service.Close()
 }
 
-// ValidateMessage implements libp2p.PubSubServiceParams.
+// ValidateMessage rejects structurally invalid messages and messages arriving
+// after the election proposer has been GC'd (prevents the weak.Pointer nil
+// deref in HandleMessage — finding W-M4). Full BLS authentication of
+// sign_response happens downstream in AddAndVerify; sign_request only
+// triggers deterministic computation guarded by epoch/existence checks.
 func (s p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
-
+	if parsedMsg.Type != "sign_request" && parsedMsg.Type != "sign_response" {
+		return false
+	}
+	if parsedMsg.Op != "hold_election" {
+		return false
+	}
+	if s.electionProposer.Value() == nil {
+		return false
+	}
 	return true
-	// switch parsedMsg := parsedMsg.(type) {
-	// case p2pMessageElectionProposal:
-	// 	return s.ValidateMessage(ctx, from, msg, p2pMessageElectionProposal(parsedMsg))
-	// case p2pMessageElectionSignature:
-	// 	proposer := s.electionProposer.Value()
-	// 	if proposer == nil {
-	// 		return false
-	// 	}
-	// 	fromStr := from.String()
-	// 	res, err := proposer.witnesses.GetWitnessesByPeerId(fromStr)
-
-	// 	fmt.Println("res, err", res, err)
-	// 	if err != nil {
-	// 		return false
-	// 	}
-
-	// 	if len(res) != 1 {
-	// 		return false
-	// 	}
-
-	// 	key, err := res[0].ConsensusKey()
-	// 	fmt.Println("key, err", res, err)
-	// 	if err != nil {
-	// 		return false
-	// 	}
-
-	// 	// err = proposer.circuit.AddAndVerifyRaw(key, electionData.Signature)
-	// 	electionHeader, _, err := proposer.GenerateElection()
-
-	// 	fmt.Println("electionHeader, _, err", electionHeader, err)
-	// 	if err != nil {
-	// 		return false
-	// 	}
-
-	// 	cid, err := electionHeader.Cid()
-	// 	if err != nil {
-	// 		return false
-	// 	}
-
-	// 	// Ensure that the signature is valid.
-	// 	return blsu.Verify(key.Identifier(), cid.Bytes(), &parsedMsg.Signature)
-	// default:
-	// 	return false
-	// }
 }
 
 // HandleMessage implements libp2p.PubSubServiceParams.
@@ -116,8 +84,11 @@ func (s p2pSpec) HandleMessage(
 	send libp2p.SendFunc[p2pMessage],
 ) error {
 	ep := s.electionProposer.Value()
+	if ep == nil {
+		return nil
+	}
 	if msg.Type == "sign_request" {
-		if s.electionProposer.Value().bh == 0 {
+		if ep.bh == 0 {
 			log.Verbose("sign_request: skipping (local bh=0, not yet synced)", "from", from.String())
 			return nil
 		}
@@ -240,8 +211,11 @@ func (s p2pSpec) HandleMessage(
 
 			// err = s.electionProposer.waitCheckBh(ROTATION_INTERVAL, signResp.BlockHeight)
 
-			if ep.sigChannels[signResp.Epoch] != nil {
-				ep.sigChannels[signResp.Epoch] <- &signResp
+			if ch := ep.sigChannels[signResp.Epoch]; ch != nil {
+				select {
+				case ch <- &signResp:
+				default:
+				}
 			}
 		}
 	}
