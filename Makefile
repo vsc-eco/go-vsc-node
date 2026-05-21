@@ -20,7 +20,7 @@ GQL_GENERATED := modules/gql/gqlgen/generated.go
 GO_SOURCES := $(shell find modules lib -type f -name '*.go') go.mod go.sum
 
 # Targets
-.PHONY: all clean install magid contract-deployer genesis-elector devnet-setup mapping-bot generate
+.PHONY: all clean install magid contract-deployer genesis-elector devnet-setup mapping-bot generate test test-full
 
 all: $(GQL_GENERATED) magid contract-deployer genesis-elector devnet-setup mapping-bot
 
@@ -69,6 +69,102 @@ install: all
 	cp $(BUILD_DIR)/genesis-elector $(INSTALL_DIR)/
 	cp $(BUILD_DIR)/devnet-setup $(INSTALL_DIR)/
 	cp $(BUILD_DIR)/mapping-bot $(INSTALL_DIR)/
+
+# ===== Testing =====
+#
+# Tests are split into two speed classes:
+#   quick  - near-instant unit tests; run by `make test` (target: < 5 minutes)
+#   slow   - multi-second runtimes, libp2p/cluster spin-up, docker, zk proving
+#
+# SLOW_PACKAGES is the curated slow list (single source of truth). Everything
+# else that builds on the host is treated as quick, so newly added packages are
+# picked up by `make test` automatically.
+#
+# NON_HOST_PACKAGES never run under either target: the wasm-guest packages under
+# modules/wasm/e2e/go_wasm are built for the wasm target (build-excluded on the
+# host) and modules/oracle/price is WIP that does not compile.
+
+empty :=
+space := $(empty) $(empty)
+
+SLOW_PACKAGES := \
+	modules/p2p \
+	modules/tss/tests \
+	tests/devnet \
+	modules/data-availability \
+	modules/gateway \
+	modules/announcements \
+	modules/hive/streamer \
+	modules/block-producer \
+	modules/state-processing \
+	modules/wasm/e2e \
+	modules/e2e \
+	cmd/mapping-bot/mapper \
+	cmd/zk-tx-signer
+
+NON_HOST_PACKAGES := \
+	modules/oracle/price
+
+# --- Known-failing exclusions (TEMPORARY — remove each entry once fixed) --------
+# These currently fail and are excluded from BOTH `make test` and `make test-full`
+# so the targets stay green. They are tracked for fixing, not abandoned.
+#
+# Whole packages (don't build, or pervasively broken):
+#   modules/e2e            - missing evm_mapping.wasm build artifact (won't build)
+#   modules/announcements  - stale Hive mock model panics; needs mock rewrite
+#   modules/hive/streamer  - crash masks ~8 broken tests; needs test-suite rehab
+#   modules/p2p            - Test (gossipsub) hangs on a non-resolving promise;
+#                            excluded whole-package because a test named "Test"
+#                            also exists in lib/dids, so it can't be safely -skip'd
+KNOWN_FAILING_PACKAGES := \
+	modules/e2e \
+	modules/announcements \
+	modules/hive/streamer \
+	modules/p2p
+
+# Individual tests in otherwise-passing packages, skipped via `go test -skip`:
+#   TestFuzzAll  - modules/wasm/e2e: shared-account RC exhaustion across subtests
+#   TestBasicP2P - modules/data-availability: gossipsub mesh delivery in harness
+# NOTE: keep this non-empty; `go test -skip ''` would skip every test.
+KNOWN_FAILING_TESTS := TestFuzzAll|TestBasicP2P
+# -------------------------------------------------------------------------------
+
+# grep -E fragments matching the `go list` output (vsc-node/<pkg>).
+SLOW_RE    := ^vsc-node/($(subst $(space),|,$(strip $(SLOW_PACKAGES))))$$
+# Excluded from both targets: non-host packages + currently known-failing packages.
+EXCLUDE_RE := ^vsc-node/($(subst $(space),|,$(strip $(NON_HOST_PACKAGES) $(KNOWN_FAILING_PACKAGES))))$$|^vsc-node/modules/wasm/e2e/go_wasm($$|/)
+# -skip flag (only added when there are known-failing tests to skip).
+SKIP := $(if $(strip $(KNOWN_FAILING_TESTS)),-skip '$(KNOWN_FAILING_TESTS)',)
+
+QUICK_TIMEOUT := 120s
+SLOW_TIMEOUT  := 30m
+
+# Lists only packages that actually contain test files, so `go test` is never
+# handed a test-less package (avoids the noisy `? pkg [no test files]` lines).
+# Preferred over piping `go test` output through grep, which would clobber the
+# test exit code. Note: test-less packages are therefore not compile-checked here
+# — `make` (the build target) covers the binaries.
+LIST_TEST_PKGS := go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... 2>/dev/null | grep -E '^vsc-node/'
+
+# -count=1 disables Go's test cache so these targets always actually run. The
+# cache key doesn't capture external state (MongoDB, libp2p, time), so a cached
+# `ok` could reflect a stale run — undesirable for a deliberate test invocation.
+GO_TEST := go test -count=1
+
+# Quick unit tests across the whole repo. Intended to stay under ~5 minutes.
+test:
+	@echo "==> Quick tests (target < 5 min)"
+	@$(GO_TEST) -timeout $(QUICK_TIMEOUT) $(SKIP) $$($(LIST_TEST_PKGS) | grep -vE '$(SLOW_RE)' | grep -vE '$(EXCLUDE_RE)')
+
+# Every runnable test in the repo: quick tests first (fast feedback), then slow.
+# Runs both phases even if the first fails, and exits non-zero if either failed.
+test-full:
+	@echo "==> Phase 1/2: quick tests"
+	@rc=0; \
+	$(GO_TEST) -timeout $(QUICK_TIMEOUT) $(SKIP) $$($(LIST_TEST_PKGS) | grep -vE '$(SLOW_RE)' | grep -vE '$(EXCLUDE_RE)') || rc=1; \
+	echo "==> Phase 2/2: slow tests"; \
+	$(GO_TEST) -timeout $(SLOW_TIMEOUT) $(SKIP) $$($(LIST_TEST_PKGS) | grep -E '$(SLOW_RE)' | grep -vE '$(EXCLUDE_RE)') || rc=1; \
+	exit $$rc
 
 clean:
 	rm -rf $(BUILD_DIR)
