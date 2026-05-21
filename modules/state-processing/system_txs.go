@@ -883,17 +883,24 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		//Thus: TX confirmation is 30s maximum
 		//Author: @vaultec81
 
-		txContainer := tx.Decode(se.da, TxSelf{
+		txContainer, err := tx.Decode(se.da, TxSelf{
 			TxId:        txInfo.Id,
 			Index:       idx,
 			BlockHeight: uint64(t.SignedBlock.Headers.Br[1]),
 			BlockId:     t.Self.BlockId,
 			Timestamp:   t.Self.Timestamp,
 		})
+		if err != nil {
+			log.Error("block tx decode failed, skipping", "id", txInfo.Id, "idx", idx, "err", err)
+			continue
+		}
 
 		if txContainer.Type() == "transaction" {
-			//Note: sig verification has already happened
-			tx := txContainer.AsTransaction()
+			tx, err := txContainer.AsTransaction()
+			if err != nil {
+				log.Error("block tx AsTransaction failed, skipping", "id", txInfo.Id, "idx", idx, "err", err)
+				continue
+			}
 
 			tx.Ingest(se, t.Self.TxId, TxSelf{
 				BlockId:     t.Self.BlockId,
@@ -924,7 +931,11 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				Ops:  txs,
 			})
 		} else if txContainer.Type() == "output" {
-			contractOutput := txContainer.AsContractOutput()
+			contractOutput, err := txContainer.AsContractOutput()
+			if err != nil {
+				log.Error("block tx AsContractOutput failed, skipping", "id", txInfo.Id, "idx", idx, "err", err)
+				continue
+			}
 
 			contractOutput.Ingest(se, TxSelf{
 				BlockId:     t.Self.BlockId,
@@ -933,7 +944,11 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			}, int64(se.slotStatus.SlotHeight))
 
 		} else if txContainer.Type() == "oplog" {
-			oplog := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))
+			oplog, err := txContainer.AsOplog(uint64(t.SignedBlock.Headers.Br[1]))
+			if err != nil {
+				log.Error("block tx AsOplog failed, skipping", "id", txInfo.Id, "idx", idx, "err", err)
+				continue
+			}
 			oplog.ExecuteTx(se)
 		} else if txContainer.Type() == "pendulum_settlement" {
 			rec, ok := txContainer.AsPendulumSettlement()
@@ -1022,19 +1037,27 @@ type BlockTx struct {
 	Type int `json:"type"`
 }
 
-func (bTx *BlockTx) Decode(da *datalayer.DataLayer, txSelf TxSelf) TransactionContainer {
-	//Do some conversion back to a TX type?
-	txCid := cid.MustParse(bTx.Id)
+func (bTx *BlockTx) Decode(da *datalayer.DataLayer, txSelf TxSelf) (TransactionContainer, error) {
+	txCid, err := cid.Parse(bTx.Id)
+	if err != nil {
+		return TransactionContainer{}, fmt.Errorf("invalid tx CID %q: %w", bTx.Id, err)
+	}
 
-	dagNode, _ := da.GetDag(txCid)
+	dagNode, err := da.GetDag(txCid)
+	if err != nil {
+		return TransactionContainer{}, fmt.Errorf("GetDag failed for tx %s: %w", bTx.Id, err)
+	}
+	if dagNode == nil {
+		return TransactionContainer{}, fmt.Errorf("GetDag returned nil for tx %s", bTx.Id)
+	}
+
 	tx := TransactionContainer{
 		da:      da,
 		Id:      bTx.Id,
 		TypeInt: bTx.Type,
-
-		Self: txSelf,
+		Self:    txSelf,
 	}
 	tx.Decode(dagNode.RawData())
 
-	return tx
+	return tx, nil
 }
