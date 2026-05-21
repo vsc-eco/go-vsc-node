@@ -605,20 +605,31 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 						outcome := parsedBlock.ValidateDetailed(se)
 
-						switch {
-						case outcome.Skip:
+						switch outcome.Kind {
+						case BlockSkip:
 							// Transient validation failure (e.g. missing election).
 							// Do NOT slash — the producer signed a block we cannot
 							// even attempt to verify. A replay with a healthy view
 							// will reach a deterministic decision.
 							log.Warn("block validation skipped (no slash)",
 								"account", cj.RequiredAuths[0], "tx_id", tx.TransactionID,
-								"slot_height", slotInfo.StartHeight, "reason", outcome.SkipReason)
-						case outcome.Valid:
+								"slot_height", slotInfo.StartHeight, "reason", outcome.Reason)
+						case BlockStale:
+							// Deterministically late: the op confirmed past the
+							// producer's slot window. Every node computes this
+							// identically from Br[1]/SlotLength/BlockHeight, but a
+							// correct-but-slow producer can hit it under network
+							// conditions outside its control, so it is a liveness
+							// fault, not a safety fault. Reject (not applied)
+							// without slashing.
+							log.Warn("stale block proposal rejected (no slash)",
+								"account", cj.RequiredAuths[0], "tx_id", tx.TransactionID,
+								"slot_height", slotInfo.StartHeight, "reason", outcome.Reason)
+						case BlockValid:
 							se.slotStatus.Done = true
 							se.slotStatus.Producer = cj.RequiredAuths[0]
 							parsedBlock.ExecuteTx(se)
-						default:
+						case BlockInvalid:
 							// Proven-invalid (deterministic). Correlate with any
 							// double-sign that already fired in this same incident
 							// so we don't stack two independent 10% slashes against
