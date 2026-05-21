@@ -798,7 +798,7 @@ type PendingSpend struct {
 
 func parsePendingSpend(nonce uint64, raw string) *PendingSpend {
 	fields := strings.Split(raw, "|")
-	if len(fields) < 6 {
+	if len(fields) != 7 {
 		return nil
 	}
 	ps := &PendingSpend{Nonce: nonce}
