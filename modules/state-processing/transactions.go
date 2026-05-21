@@ -930,54 +930,80 @@ func (tx *TransactionContainer) Type() string {
 }
 
 // Converts to Contract Output
-func (tx *TransactionContainer) AsContractOutput() *ContractOutput {
-	output := ContractOutput{
-		Id: tx.Id,
+func (tx *TransactionContainer) AsContractOutput() (*ContractOutput, error) {
+	txCid, err := cid.Parse(tx.Id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid output CID %q: %w", tx.Id, err)
 	}
-	txCid := cid.MustParse(tx.Id)
-	dag, _ := tx.da.GetDag(txCid)
-
-	bJson, _ := dag.MarshalJSON()
-
-	json.Unmarshal(bJson, &output)
-
-	return &output
+	dag, err := tx.da.GetDag(txCid)
+	if err != nil {
+		return nil, fmt.Errorf("GetDag failed for output %s: %w", tx.Id, err)
+	}
+	if dag == nil {
+		return nil, fmt.Errorf("GetDag returned nil for output %s", tx.Id)
+	}
+	bJson, err := dag.MarshalJSON()
+	if err != nil {
+		return nil, fmt.Errorf("MarshalJSON failed for output %s: %w", tx.Id, err)
+	}
+	output := ContractOutput{Id: tx.Id}
+	if err := json.Unmarshal(bJson, &output); err != nil {
+		return nil, fmt.Errorf("Unmarshal failed for output %s: %w", tx.Id, err)
+	}
+	return &output, nil
 }
 
 // As a regular VSC transaction
-func (tx *TransactionContainer) AsTransaction() *OffchainTransaction {
-	txCid := cid.MustParse(tx.Id)
-	dag, _ := tx.da.GetDag(txCid)
-
-	bJson, _ := dag.MarshalJSON()
-
+func (tx *TransactionContainer) AsTransaction() (*OffchainTransaction, error) {
+	txCid, err := cid.Parse(tx.Id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid tx CID %q: %w", tx.Id, err)
+	}
+	dag, err := tx.da.GetDag(txCid)
+	if err != nil {
+		return nil, fmt.Errorf("GetDag failed for tx %s: %w", tx.Id, err)
+	}
+	if dag == nil {
+		return nil, fmt.Errorf("GetDag returned nil for tx %s", tx.Id)
+	}
+	bJson, err := dag.MarshalJSON()
+	if err != nil {
+		return nil, fmt.Errorf("MarshalJSON failed for tx %s: %w", tx.Id, err)
+	}
 	offchainTx := OffchainTransaction{
 		TxId: tx.Id,
 		Self: tx.Self,
 	}
-	json.Unmarshal(bJson, &offchainTx)
-
-	return &offchainTx
+	if err := json.Unmarshal(bJson, &offchainTx); err != nil {
+		return nil, fmt.Errorf("Unmarshal failed for tx %s: %w", tx.Id, err)
+	}
+	return &offchainTx, nil
 }
 
-func (tx *TransactionContainer) AsOplog(endBlock uint64) Oplog {
-	cid := cid.MustParse(tx.Id)
-	node, err := tx.da.GetDag(cid)
-
+func (tx *TransactionContainer) AsOplog(endBlock uint64) (Oplog, error) {
+	txCid, err := cid.Parse(tx.Id)
 	if err != nil {
-		fmt.Println("AsOplog: failed to fetch DAG", "cid", tx.Id, "err", err)
-		return Oplog{Self: tx.Self, EndBlock: endBlock}
+		return Oplog{Self: tx.Self, EndBlock: endBlock}, fmt.Errorf("invalid oplog CID %q: %w", tx.Id, err)
 	}
-	jsonBytes, _ := node.MarshalJSON()
-
+	node, err := tx.da.GetDag(txCid)
+	if err != nil {
+		return Oplog{Self: tx.Self, EndBlock: endBlock}, fmt.Errorf("GetDag failed for oplog %s: %w", tx.Id, err)
+	}
+	if node == nil {
+		return Oplog{Self: tx.Self, EndBlock: endBlock}, fmt.Errorf("GetDag returned nil for oplog %s", tx.Id)
+	}
+	jsonBytes, err := node.MarshalJSON()
+	if err != nil {
+		return Oplog{Self: tx.Self, EndBlock: endBlock}, fmt.Errorf("MarshalJSON failed for oplog %s: %w", tx.Id, err)
+	}
 	oplog := Oplog{
-		Self: tx.Self,
-
+		Self:     tx.Self,
 		EndBlock: endBlock,
 	}
-	json.Unmarshal(jsonBytes, &oplog)
-
-	return oplog
+	if err := json.Unmarshal(jsonBytes, &oplog); err != nil {
+		return Oplog{Self: tx.Self, EndBlock: endBlock}, fmt.Errorf("Unmarshal failed for oplog %s: %w", tx.Id, err)
+	}
+	return oplog, nil
 }
 
 // AsPendulumSettlement decodes the SettlementRecord pointed at by this
@@ -990,12 +1016,18 @@ func (tx *TransactionContainer) AsPendulumSettlement() (pendulumsettlement.Settl
 	if tx == nil || tx.da == nil {
 		return pendulumsettlement.SettlementRecord{}, false
 	}
-	txCid := cid.MustParse(tx.Id)
-	node, err := tx.da.GetDag(txCid)
+	txCid, err := cid.Parse(tx.Id)
 	if err != nil {
 		return pendulumsettlement.SettlementRecord{}, false
 	}
-	jsonBytes, _ := node.MarshalJSON()
+	node, err := tx.da.GetDag(txCid)
+	if err != nil || node == nil {
+		return pendulumsettlement.SettlementRecord{}, false
+	}
+	jsonBytes, err := node.MarshalJSON()
+	if err != nil {
+		return pendulumsettlement.SettlementRecord{}, false
+	}
 	var rec pendulumsettlement.SettlementRecord
 	if err := json.Unmarshal(jsonBytes, &rec); err != nil {
 		return pendulumsettlement.SettlementRecord{}, false
