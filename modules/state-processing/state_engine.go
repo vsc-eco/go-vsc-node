@@ -1105,6 +1105,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 											continue
 										}
 
+										sigS := signature.S()
+										if sigS.IsOverHalfOrder() {
+											log.Warn("TSS signature has high-S (BIP-62 non-canonical), rejecting", "keyId", sigPack.KeyId)
+											continue
+										}
+
 										verified := signature.Verify(msgBytes, pubKey)
 
 										if verified {

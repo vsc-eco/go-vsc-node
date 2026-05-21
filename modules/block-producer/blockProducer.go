@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 	"vsc-node/lib/datalayer"
@@ -69,7 +70,7 @@ type BlockProducer struct {
 	sigMu        sync.RWMutex
 	sigChannels  map[uint64]chan sigMsg
 	blockSigning *signingInfo
-	bh           uint64
+	bh           atomic.Uint64
 
 	electionsDb elections.Elections
 
@@ -107,7 +108,7 @@ func (bp *BlockProducer) BlockTick(bh uint64, headHeight *uint64) {
 	if !bp._started {
 		return
 	}
-	bp.bh = bh
+	bp.bh.Store(bh)
 	if headHeight == nil {
 		vlog.Warn("HeadHeight is nil")
 		return
@@ -443,9 +444,8 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	//For right now we will just produce a blank
 	//This will allow us to test the e2e parsing
 
-	vlog.Trace("ProduceBlock", "bh", bp.bh)
-
-	stTime := bp.bh + 1
+	vlog.Trace("ProduceBlock", "bh", bp.bh.Load())
+	stTime := bp.bh.Load() + 1
 	for i := 0; i < 5; i++ {
 		if bh == stTime {
 			break
@@ -500,11 +500,13 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 		bp.sigMu.Unlock()
 	}()
 
+	bp.sigMu.Lock()
 	bp.blockSigning = &signingInfo{
 		cid:        *cid,
 		slotHeight: bh,
 		circuit:    &circuit,
 	}
+	bp.sigMu.Unlock()
 
 	signedWeight, err := bp.waitForSigs(context.Background(), &electionResult)
 
@@ -564,29 +566,33 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		return "", errors.New("invalid input data")
 	}
 
-	if msg.SlotHeight+common.CONSENSUS_SPECS.SlotLength < bp.bh {
+	if msg.SlotHeight+common.CONSENSUS_SPECS.SlotLength < bp.bh.Load() {
 		return "", errors.New("invalid slot height (1)")
 	}
 
-	if msg.SlotHeight > bp.bh {
-		if math.MaxUint64-bp.bh < 20 {
+	if msg.SlotHeight > bp.bh.Load() {
+		if math.MaxUint64-bp.bh.Load() < 20 {
 			return "", fmt.Errorf("block height impossibly high")
 		}
 		// Reject messages too far in the future to prevent DoS via large SlotHeight
-		if msg.SlotHeight > bp.bh+20 {
-			return "", fmt.Errorf("slot height %d too far ahead of current %d", msg.SlotHeight, bp.bh)
+		if msg.SlotHeight > bp.bh.Load()+20 {
+			return "", fmt.Errorf("slot height %d too far ahead of current %d", msg.SlotHeight, bp.bh.Load())
 		}
 		// Local node is out of sync perhaps — wait briefly with bounded timeout
 		timeout := time.After(10 * time.Second)
-		for msg.SlotHeight > bp.bh {
+		for msg.SlotHeight > bp.bh.Load() {
 			select {
 			case <-timeout:
-				return "", fmt.Errorf("timed out waiting for slot height %d (current: %d)", msg.SlotHeight, bp.bh)
+				return "", fmt.Errorf(
+					"timed out waiting for slot height %d (current: %d)",
+					msg.SlotHeight,
+					bp.bh.Load(),
+				)
 			case <-time.After(1 * time.Second):
 				// re-check bp.bh
 			}
 		}
-	} else if msg.SlotHeight-common.CONSENSUS_SPECS.SlotLength > bp.bh {
+	} else if msg.SlotHeight-common.CONSENSUS_SPECS.SlotLength > bp.bh.Load() {
 		return "", errors.New("invalid slot height (2)")
 	}
 
@@ -619,8 +625,11 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	}
 
 	// Producer receiving its own message: use cached CID, skip GenerateBlock
-	if producer == bp.config.Get().HiveUsername && bp.blockSigning != nil {
-		sig := blsu.Sign(&blsPrivKey, bp.blockSigning.cid.Bytes())
+	bp.sigMu.RLock()
+	signing := bp.blockSigning
+	bp.sigMu.RUnlock()
+	if producer == bp.config.Get().HiveUsername && signing != nil {
+		sig := blsu.Sign(&blsPrivKey, signing.cid.Bytes())
 		sigBytes := sig.Serialize()
 		return base64.RawURLEncoding.EncodeToString(sigBytes[:]), nil
 	}
@@ -704,7 +713,10 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 }
 
 func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.ElectionResult) (uint64, error) {
-	if bp.blockSigning == nil {
+	bp.sigMu.RLock()
+	signing := bp.blockSigning
+	bp.sigMu.RUnlock()
+	if signing == nil {
 		return 0, errors.New("no block signing info")
 	}
 
@@ -717,7 +729,7 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 	}
 
 	bp.sigMu.RLock()
-	sigChan := bp.sigChannels[bp.blockSigning.slotHeight]
+	sigChan := bp.sigChannels[signing.slotHeight]
 	bp.sigMu.RUnlock()
 
 	signedWeight := uint64(0)
@@ -747,7 +759,7 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 					}
 				}
 
-				circuit := *bp.blockSigning.circuit
+				circuit := *signing.circuit
 
 				added, err := circuit.AddAndVerify(member, sigStr)
 				if err != nil {
