@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"time"
 
 	"github.com/go-playground/validator/v10"
 )
@@ -17,7 +18,8 @@ var httpClient *http.Client
 func init() {
 	jar, _ := cookiejar.New(nil)
 	httpClient = &http.Client{
-		Jar: jar,
+		Jar:     jar,
+		Timeout: 30 * time.Second,
 	}
 }
 
