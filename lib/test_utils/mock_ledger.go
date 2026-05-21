@@ -168,16 +168,6 @@ func (m *MockActionsDb) ExecuteComplete(actionId *string, ids ...string) {
 	}
 }
 
-func (m *MockActionsDb) SetProcessing(ids ...string) {
-	for _, id := range ids {
-		action, exists := m.Actions[id]
-		if exists && action.Status == "pending" {
-			action.Status = "processing"
-			m.Actions[id] = action
-		}
-	}
-}
-
 func (m *MockActionsDb) Get(id string) (*ledgerDb.ActionRecord, error) {
 	d, exists := m.Actions[id]
 	if !exists {
