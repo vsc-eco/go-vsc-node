@@ -60,7 +60,15 @@ func mapBotHttpServer(
 	mux.Handle("POST /sign", signHandler(ctx, bot))
 	mux.Handle("POST /retry", retryHandler(ctx, bot))
 	mux.Handle("/", requestHandler(ctx, bot))
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", bot.BotConfig.HttpPort()), mux))
+	srv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", bot.BotConfig.HttpPort()),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      6 * time.Minute,
+		IdleTimeout:       120 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
 }
 
 type healthResponse struct {
