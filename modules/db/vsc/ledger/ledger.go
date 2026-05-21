@@ -304,8 +304,8 @@ func NewActionsDb(d *vsc.VscDb) BridgeActions {
 }
 
 // review2 HIGH #27: ledger_actions is scanned every gateway tick by
-// {status, block_height} (GetPendingActions) and by {id} (Get/ExecuteComplete/
-// SetProcessing) with only the _id index.
+// {status, block_height} (GetPendingActions) and by {id} (Get/ExecuteComplete)
+// with only the _id index.
 func (e *actionsDb) Init() error {
 	if err := e.Collection.Init(); err != nil {
 		return err
@@ -346,28 +346,6 @@ func (actionsDb *actionsDb) ExecuteComplete(actionId *string, ids ...string) {
 		},
 	}, bson.M{
 		"$set": updated,
-	})
-}
-
-// SetProcessing flips the given actions from "pending" to "processing".
-// The status filter is deliberate: an action whose completing L1 header was
-// already indexed (status "complete") between selection and this call must
-// NOT be dragged back to "processing". Fail-safe: a broadcast whose header
-// never confirms stays "processing" (recoverable) rather than being
-// re-selected and re-paid on the next action tick.
-func (actionsDb *actionsDb) SetProcessing(ids ...string) {
-	if len(ids) == 0 {
-		return
-	}
-	actionsDb.UpdateMany(context.Background(), bson.M{
-		"id": bson.M{
-			"$in": ids,
-		},
-		"status": "pending",
-	}, bson.M{
-		"$set": bson.M{
-			"status": "processing",
-		},
 	})
 }
 

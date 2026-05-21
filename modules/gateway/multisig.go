@@ -545,14 +545,17 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 
 	txId, _ := tx.GenerateTrxId()
 
-	// CRITICAL #1 (gateway double-spend): the batch is now committed to be
-	// broadcast. Transition every selected action out of "pending" so the
-	// next ACTION_INTERVAL tick does not re-select and re-pay the same
-	// withdrawals before this batch's L1 `vsc.actions` header is re-ingested
-	// (IndexActions -> ExecuteComplete). Fail-safe: if the header never
-	// confirms the action stays "processing" (recoverable) — it is never
-	// auto-requeued, so it can never be paid twice.
-	ms.ledgerActions.SetProcessing(executedOps...)
+	// executeActions is intentionally PURE — it builds the deterministic batch
+	// but does not mutate action state. It is called by both the leader
+	// (TickActions) and every cosigner (p2p HandleMessage on a sign_request),
+	// so a per-node status mutation here was the cosigner split-brain bug: a
+	// cosigner marked the batch "processing" in its own DB and, if the leader's
+	// broadcast then failed, was left with actions stuck "processing" forever
+	// (never re-selected, never completed). Re-selection safety instead comes
+	// from L1 settlement (status -> "complete" on the re-ingested vsc.actions
+	// header) plus the ACTION_INTERVAL (20 blocks) > tx-expiry (~10 blocks)
+	// timing — a re-selected action's prior attempt is, by the next tick, either
+	// already settled (and excluded) or permanently expired.
 
 	//Do signing
 

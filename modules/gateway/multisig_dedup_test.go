@@ -38,12 +38,21 @@ func (stubHiveCreator) PopulateSigningProps(_ *hivego.HiveTransaction, _ []int) 
 func (stubHiveCreator) Sign(_ hivego.HiveTransaction) (string, error)                { return "sig", nil }
 func (stubHiveCreator) Broadcast(_ hivego.HiveTransaction) (string, error)           { return "txid", nil }
 
-// TestExecuteActionsDoesNotReselectBroadcastActions reproduces CRITICAL #1
-// (gateway double-spend). A single pending withdraw is selected on the first
-// action tick and broadcast. With no intervening L1 `vsc.actions` header
-// ingest, the *next* action tick must NOT re-select and re-pay the same
-// withdrawal.
-func TestExecuteActionsDoesNotReselectBroadcastActions(t *testing.T) {
+// TestExecuteActionsDoesNotMutateDB guards the cosigner split-brain fix.
+// executeActions is called by BOTH the action leader (TickActions) and every
+// cosigner (p2p HandleMessage on a sign_request), so it must be PURE: it builds
+// the deterministic batch but must not mutate local action state. The earlier
+// "processing" intermediate state (c9a86798) violated this — a cosigner marked
+// the selected batch "processing" in its own DB, and if the leader's broadcast
+// then failed the cosigner was left with actions stuck "processing" forever
+// (never re-selected, never completed: the bradleyarrow incident).
+//
+// Re-selection safety does NOT depend on a per-node status flag: it comes from
+// L1 settlement (status -> "complete" when the vsc.actions header is re-ingested)
+// plus the ACTION_INTERVAL (20 blocks) > tx-expiry (~10 blocks) timing, so by the
+// next selection tick a prior attempt has either settled (and is excluded) or
+// permanently expired.
+func TestExecuteActionsDoesNotMutateDB(t *testing.T) {
 	const bh = uint64(20) // ACTION_INTERVAL, so bh % ACTION_INTERVAL == 0
 	const actionID = "withdraw-1"
 
@@ -67,28 +76,18 @@ func TestExecuteActionsDoesNotReselectBroadcastActions(t *testing.T) {
 		hiveCreator:   stubHiveCreator{},
 	}
 
-	// First action tick: the withdraw is pending, so it is selected & broadcast.
-	pkg1, err := ms.executeActions(bh)
+	pkg, err := ms.executeActions(bh)
 	if err != nil {
-		t.Fatalf("first executeActions: unexpected error: %v", err)
+		t.Fatalf("executeActions: unexpected error: %v", err)
 	}
-	if len(pkg1.Ops) < 2 {
-		t.Fatalf("first executeActions: expected header + transfer op, got %d ops", len(pkg1.Ops))
+	if len(pkg.Ops) < 2 {
+		t.Fatalf("executeActions: expected header + transfer op, got %d ops", len(pkg.Ops))
 	}
 
-	// The selected action must no longer be re-selectable: a broadcast batch
-	// is in-flight until its L1 header confirms.
+	// The action must be untouched — a cosigner running this must not poison its
+	// own action state.
 	rec, _ := actionsDb.Get(actionID)
-	if rec.Status == "pending" {
-		t.Fatalf("action %s still 'pending' after being broadcast — next tick will double-pay it", actionID)
-	}
-
-	// Second action tick, no L1 ingest in between: nothing should be selected.
-	_, err = ms.executeActions(bh)
-	if err == nil {
-		t.Fatalf("second executeActions: re-selected an already-broadcast action (double-spend)")
-	}
-	if err.Error() != "no actions to process" {
-		t.Fatalf("second executeActions: expected \"no actions to process\", got %v", err)
+	if rec.Status != "pending" {
+		t.Fatalf("executeActions mutated DB: action status is %q, expected 'pending'", rec.Status)
 	}
 }
