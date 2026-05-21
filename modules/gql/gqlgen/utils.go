@@ -27,6 +27,16 @@ func Paginate(offset *int, limit *int) (int, int, error) {
 	return offset_result, limit_result, nil
 }
 
+// ValidateBlockRange returns an error if both fromBlock and toBlock are
+// provided and fromBlock > toBlock. Without this check the DB query silently
+// returns an empty result set (MongoDB $gte/$lte on an impossible range).
+func ValidateBlockRange(fromBlock *model.Uint64, toBlock *model.Uint64) error {
+	if fromBlock != nil && toBlock != nil && *fromBlock > *toBlock {
+		return fmt.Errorf("fromBlock (%d) must not exceed toBlock (%d)", *fromBlock, *toBlock)
+	}
+	return nil
+}
+
 // Parse optional height, falling back to math.MaxInt64 if not specified
 func ParseHeight(height *model.Uint64) uint64 {
 	var blockHeight uint64 = math.MaxInt64

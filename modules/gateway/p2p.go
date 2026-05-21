@@ -34,9 +34,17 @@ type p2pSpec struct {
 	ms *MultiSig
 }
 
-// ValidateMessage implements libp2p.PubSubServiceParams.
-func (p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
-	// Can add a blacklist for spammers or ignore previously seen messages.
+// ValidateMessage rejects sign_request messages from peers not in the current
+// election. Prevents unauthenticated peers from triggering expensive signing
+// work on every witness (finding S7).
+func (s p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
+	if parsedMsg.Type == "sign_request" {
+		allowed := s.ms.electionPeerIDs.Load()
+		if allowed == nil {
+			return false
+		}
+		return (*allowed)[from.String()]
+	}
 	return true
 }
 

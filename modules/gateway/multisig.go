@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/utils"
@@ -68,6 +69,9 @@ type MultiSig struct {
 	msgMu sync.Mutex
 
 	bh uint64
+
+	electionPeerIDs   atomic.Pointer[map[string]bool]
+	lastElectionEpoch uint64
 }
 
 func (ms *MultiSig) Init() error {
@@ -163,6 +167,21 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 	// bh+20 < *headHeight is the same predicate without the underflow.
 	if bh+20 < *headHeight {
 		return
+	}
+
+	if ms.electionPeerIDs.Load() == nil || bh%ACTION_INTERVAL == 0 {
+		election, err := ms.electionDb.GetElectionByHeight(bh)
+		if err == nil && election.Epoch != ms.lastElectionEpoch {
+			peerIDs := make(map[string]bool, len(election.Members))
+			for _, member := range election.Members {
+				w, _ := ms.witnessDb.GetWitnessAtHeight(member.Account, &bh)
+				if w != nil && w.PeerId != "" {
+					peerIDs[w.PeerId] = true
+				}
+			}
+			ms.electionPeerIDs.Store(&peerIDs)
+			ms.lastElectionEpoch = election.Epoch
+		}
 	}
 
 	if bh%ROTATION_INTERVAL == 0 || bh%ACTION_INTERVAL == 0 {

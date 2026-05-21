@@ -326,6 +326,9 @@ func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *Tran
 	if paginateErr != nil {
 		return nil, paginateErr
 	}
+	if err := ValidateBlockRange(filterOptions.FromBlock, filterOptions.ToBlock); err != nil {
+		return nil, err
+	}
 
 	return r.Transactions.FindTransactions(filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, filterOptions.ByLedgerToFrom, filterOptions.ByLedgerTypes, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
@@ -338,6 +341,9 @@ func (r *queryResolver) FindContractOutput(ctx context.Context, filterOptions *C
 	offset, limit, paginateErr := Paginate(filterOptions.Offset, filterOptions.Limit)
 	if paginateErr != nil {
 		return nil, paginateErr
+	}
+	if err := ValidateBlockRange(filterOptions.FromBlock, filterOptions.ToBlock); err != nil {
+		return nil, err
 	}
 	return r.ContractsState.FindOutputs(filterOptions.ByID, filterOptions.ByInput, filterOptions.ByContract, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
@@ -354,6 +360,9 @@ func (r *queryResolver) FindLedgerTXs(ctx context.Context, filterOptions *Ledger
 	if filterOptions.ByTxID != nil && utf8.RuneCountInString(*filterOptions.ByTxID) < 40 {
 		return nil, fmt.Errorf("invalid tx id")
 	}
+	if err := ValidateBlockRange(filterOptions.FromBlock, filterOptions.ToBlock); err != nil {
+		return nil, err
+	}
 	return r.Ledger.GetLedgersTsRange(filterOptions.ByToFrom, filterOptions.ByTxID, filterOptions.ByTypes, filterOptions.ByAsset, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
@@ -368,6 +377,9 @@ func (r *queryResolver) FindLedgerActions(ctx context.Context, filterOptions *Le
 	}
 	if filterOptions.ByTxID != nil && utf8.RuneCountInString(*filterOptions.ByTxID) < 40 {
 		return nil, fmt.Errorf("invalid tx id")
+	}
+	if err := ValidateBlockRange(filterOptions.FromBlock, filterOptions.ToBlock); err != nil {
+		return nil, err
 	}
 	return r.Actions.GetActionsRange(filterOptions.ByTxID, filterOptions.ByActionID, filterOptions.ByAccount, filterOptions.ByTypes, filterOptions.ByAsset, filterOptions.ByStatus, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
@@ -671,6 +683,9 @@ func (r *queryResolver) FindLedgerClaims(ctx context.Context, filterOptions *Led
 	if err != nil {
 		return nil, err
 	}
+	if err := ValidateBlockRange(filterOptions.FromBlock, filterOptions.ToBlock); err != nil {
+		return nil, err
+	}
 	return r.InterestClaims.FindClaims((*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
@@ -681,6 +696,9 @@ func (r *queryResolver) FindTssCommitments(ctx context.Context, filterOptions *T
 	}
 	off, lim, err := Paginate(filterOptions.Offset, filterOptions.Limit)
 	if err != nil {
+		return nil, err
+	}
+	if err := ValidateBlockRange(filterOptions.FromBlock, filterOptions.ToBlock); err != nil {
 		return nil, err
 	}
 	return r.TssCommitments.FindCommitments(filterOptions.ByKeyID, filterOptions.ByTypes, (*uint64)(filterOptions.ByEpoch), (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), off, lim)
