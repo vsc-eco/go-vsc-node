@@ -276,14 +276,37 @@ func TestSlashForEvidence_UnknownKindRejected(t *testing.T) {
 	}
 }
 
-// TestValidateDetailed_SkipVsInvalid documents the contract added in B1:
-// election-lookup failures yield Skip=true (no slash), explicitly-bad
-// signatures yield Valid=false / Skip=false (slash). The detector wiring
-// reads these two flags to gate the slash trigger correctly.
+// TestValidateDetailed_SkipDoesNotBecomeValid documents the verdict contract
+// the detector wiring relies on: election-lookup/header-hash failures yield
+// BlockSkip (no slash, not applied), explicitly-bad signatures yield
+// BlockInvalid (slash), and only BlockValid is applied. The state-engine switch
+// reads outcome.Kind to gate the slash trigger correctly.
 func TestValidateDetailed_SkipDoesNotBecomeValid(t *testing.T) {
-	out := BlockValidationOutcome{Skip: true, SkipReason: "election lookup failed"}
-	if out.Valid {
-		t.Fatal("Skip outcomes must not also be Valid")
+	out := BlockValidationOutcome{Kind: BlockSkip, Reason: "election lookup failed"}
+	if out.Kind == BlockValid {
+		t.Fatal("Skip outcomes must not be Valid")
+	}
+	if out.Kind == BlockInvalid {
+		t.Fatal("Skip outcomes must not slash")
+	}
+}
+
+// TestValidateDetailed_StaleIsNotValidNorSlashed locks in the stale-block
+// liveness fix: a proposal whose op confirmed past its slot window is its own
+// verdict — rejected (not BlockValid, so never applied) and never slashed (not
+// BlockInvalid), and distinct from the transient BlockSkip bucket because
+// staleness is deterministic from on-chain bytes. Without this, an honest
+// producer slowed by Hive congestion would lose 10% of bond.
+func TestValidateDetailed_StaleIsNotValidNorSlashed(t *testing.T) {
+	out := BlockValidationOutcome{Kind: BlockStale, Reason: "block confirmed past slot window"}
+	if out.Kind == BlockValid {
+		t.Fatal("stale outcomes must not be Valid (would apply a late block)")
+	}
+	if out.Kind == BlockInvalid {
+		t.Fatal("stale outcomes must not be Invalid (would slash an honest slow producer)")
+	}
+	if out.Kind == BlockSkip {
+		t.Fatal("stale is deterministic, not a transient skip")
 	}
 }
 
