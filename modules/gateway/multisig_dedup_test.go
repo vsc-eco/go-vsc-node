@@ -91,3 +91,41 @@ func TestExecuteActionsDoesNotMutateDB(t *testing.T) {
 		t.Fatalf("executeActions mutated DB: action status is %q, expected 'pending'", rec.Status)
 	}
 }
+
+// TestRevertProcessingToPendingHealsStrandedActions covers the one-time rollout
+// heal: actions stranded in the legacy "processing" state are re-queued to
+// "pending" so they settle, while already-settled ("complete") actions are left
+// untouched — re-queueing a settled action would be a double-spend.
+func TestRevertProcessingToPendingHealsStrandedActions(t *testing.T) {
+	actionsDb := &test_utils.MockActionsDb{
+		Actions: map[string]ledgerDb.ActionRecord{
+			"stranded": {Id: "stranded", Status: "processing", Type: "withdraw", To: "hive:alice", Amount: 5000, Asset: "hbd"},
+			"settled":  {Id: "settled", Status: "complete", Type: "withdraw", To: "hive:bob", Amount: 1000, Asset: "hbd"},
+			"queued":   {Id: "queued", Status: "pending", Type: "withdraw", To: "hive:carol", Amount: 2000, Asset: "hbd"},
+		},
+	}
+
+	reverted, err := actionsDb.RevertProcessingToPending()
+	if err != nil {
+		t.Fatalf("RevertProcessingToPending: %v", err)
+	}
+	if len(reverted) != 1 || reverted[0].Id != "stranded" {
+		t.Fatalf("expected exactly [stranded] reverted, got %v", reverted)
+	}
+
+	if s, _ := actionsDb.Get("stranded"); s.Status != "pending" {
+		t.Fatalf("stranded action should be 'pending', got %q", s.Status)
+	}
+	if s, _ := actionsDb.Get("settled"); s.Status != "complete" {
+		t.Fatalf("settled action must stay 'complete' (re-queueing it would double-pay), got %q", s.Status)
+	}
+	if s, _ := actionsDb.Get("queued"); s.Status != "pending" {
+		t.Fatalf("pending action should remain 'pending', got %q", s.Status)
+	}
+
+	// Idempotent: a second run finds nothing to revert.
+	again, _ := actionsDb.RevertProcessingToPending()
+	if len(again) != 0 {
+		t.Fatalf("second run should be a no-op, reverted %d action(s)", len(again))
+	}
+}

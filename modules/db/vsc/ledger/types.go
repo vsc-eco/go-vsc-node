@@ -95,6 +95,11 @@ type BridgeActions interface {
 	aggregate.Plugin
 	StoreAction(withdraw ActionRecord)
 	ExecuteComplete(actionId *string, ids ...string)
+	// RevertProcessingToPending re-queues actions stranded in the legacy
+	// "processing" state (removed with the cosigner split-brain fix). One-time,
+	// idempotent rollout heal; a no-op once no action is "processing". Returns
+	// the reverted records for audit logging.
+	RevertProcessingToPending() ([]ActionRecord, error)
 	Get(id string) (*ActionRecord, error)
 	SetStatus(id string, status string)
 	GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error)

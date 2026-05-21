@@ -168,6 +168,18 @@ func (m *MockActionsDb) ExecuteComplete(actionId *string, ids ...string) {
 	}
 }
 
+func (m *MockActionsDb) RevertProcessingToPending() ([]ledgerDb.ActionRecord, error) {
+	reverted := make([]ledgerDb.ActionRecord, 0)
+	for id, action := range m.Actions {
+		if action.Status == "processing" {
+			action.Status = "pending"
+			m.Actions[id] = action
+			reverted = append(reverted, action)
+		}
+	}
+	return reverted, nil
+}
+
 func (m *MockActionsDb) Get(id string) (*ledgerDb.ActionRecord, error) {
 	d, exists := m.Actions[id]
 	if !exists {

@@ -64,6 +64,23 @@ type MultiSig struct {
 
 func (ms *MultiSig) Init() error {
 	ms.hiveConsumer.RegisterBlockTick("multisig.tick", ms.BlockTick, false)
+
+	// One-time rollout heal: the legacy "processing" intermediate state was
+	// removed (it caused the cosigner split-brain — a cosigner that marked a
+	// batch "processing" was stranded forever if the leader's broadcast failed).
+	// Re-queue any actions left "processing" by the old code so they settle.
+	// Safe: a landed payout is "complete" (atomic vsc.actions header), so a
+	// "processing" action never settled and cannot be double-paid. Idempotent —
+	// nothing writes "processing" anymore, so this is a no-op after rollout.
+	if reverted, err := ms.ledgerActions.RevertProcessingToPending(); err != nil {
+		fmt.Println("Multisig: failed to revert stranded 'processing' actions:", err)
+	} else if len(reverted) > 0 {
+		fmt.Printf("Multisig: rollout heal — re-queued %d stranded 'processing' action(s) to 'pending'\n", len(reverted))
+		for _, a := range reverted {
+			fmt.Printf("  requeued action id=%s to=%s amount=%d %s type=%s block=%d\n",
+				a.Id, a.To, a.Amount, a.Asset, a.Type, a.BlockHeight)
+		}
+	}
 	return nil
 }
 

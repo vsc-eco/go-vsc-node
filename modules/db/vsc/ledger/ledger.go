@@ -349,6 +349,46 @@ func (actionsDb *actionsDb) ExecuteComplete(actionId *string, ids ...string) {
 	})
 }
 
+// RevertProcessingToPending re-queues any actions left in the legacy
+// "processing" state so they are re-selected on the next gateway action tick
+// and paid. The "processing" intermediate state was removed (it caused the
+// cosigner split-brain: a cosigner that marked a batch "processing" in its own
+// DB was stranded forever if the leader's broadcast then failed). This is a
+// one-time, idempotent rollout heal for actions stranded by the old code.
+//
+// Safety: a payout that actually landed on L1 flips its action to "complete"
+// (ExecuteComplete — an unconditional $set driven by the same atomic
+// vsc.actions header that carries the transfer). So any action still
+// "processing" never settled on L1, and re-queueing it cannot double-pay. After
+// rollout nothing writes "processing", so this is a permanent no-op. Returns the
+// reverted records for audit logging.
+func (actionsDb *actionsDb) RevertProcessingToPending() ([]ActionRecord, error) {
+	ctx := context.Background()
+	cursor, err := actionsDb.Find(ctx, bson.M{"status": "processing"})
+	if err != nil {
+		return nil, err
+	}
+	reverted := make([]ActionRecord, 0)
+	for cursor.Next(ctx) {
+		var a ActionRecord
+		if err := cursor.Decode(&a); err != nil {
+			cursor.Close(ctx)
+			return nil, err
+		}
+		reverted = append(reverted, a)
+	}
+	cursor.Close(ctx)
+	if len(reverted) == 0 {
+		return reverted, nil
+	}
+	actionsDb.UpdateMany(ctx, bson.M{
+		"status": "processing",
+	}, bson.M{
+		"$set": bson.M{"status": "pending"},
+	})
+	return reverted, nil
+}
+
 func (actionsDb *actionsDb) Get(id string) (*ActionRecord, error) {
 	findResult := actionsDb.FindOne(context.Background(), bson.M{
 		"id": id,
