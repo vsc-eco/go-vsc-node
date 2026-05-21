@@ -13,8 +13,11 @@ USER app
 
 WORKDIR /home/app/app
 
-# Install Wasmedge
-RUN curl -sSf https://raw.githubusercontent.com/WasmEdge/WasmEdge/master/utils/install.sh | bash -s -- -v 0.13.4
+# Install Wasmedge: pin to immutable release tag + SHA-256 verify (matches main Dockerfile)
+RUN curl -sSfL https://raw.githubusercontent.com/WasmEdge/WasmEdge/0.13.4/utils/install.sh -o /tmp/wasmedge-install.sh && \
+    echo "89460d9ea15f097e2831c099ee8adb6975b9ffff8a919b33874a655cd54420c0  /tmp/wasmedge-install.sh" | sha256sum -c - && \
+    bash /tmp/wasmedge-install.sh -v 0.13.4 && \
+    rm -f /tmp/wasmedge-install.sh
 
 COPY go.mod go.sum ./
 RUN go mod download
