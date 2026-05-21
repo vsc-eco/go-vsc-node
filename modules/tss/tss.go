@@ -1857,6 +1857,7 @@ func (tssMgr *TssManager) waitForSigs(
 	proc1 := make(chan struct{}, 1)
 	go func() {
 		signedWeight := uint64(0)
+		signedAccounts := make(map[string]bool)
 
 		// common.has
 		tssMgr.bufferLock.RLock()
@@ -1869,6 +1870,10 @@ func (tssMgr *TssManager) waitForSigs(
 			case <-ctx.Done():
 				return
 			case msg = <-sigChan:
+			}
+
+			if signedAccounts[msg.Account] {
+				continue
 			}
 
 			var member dids.Member
@@ -1890,6 +1895,7 @@ func (tssMgr *TssManager) waitForSigs(
 			log.Trace("sig add and verify result", "added", added, "err", err)
 
 			if added {
+				signedAccounts[msg.Account] = true
 				signedWeight += election.Weights[index]
 			}
 		}
