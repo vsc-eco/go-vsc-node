@@ -173,8 +173,8 @@ func (se *StateEngine) applyPendulumSettlement(rec pendulumsettlement.Settlement
 	}
 
 	if remaining := se.LedgerSystem.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, blockHeight); remaining != rec.ResidualHBD {
-		log.Debug("pendulum settlement: residual differs from record",
-			"epoch", rec.Epoch, "record_residual", rec.ResidualHBD, "live_residual", remaining)
+		log.Warn("pendulum settlement: residual differs from record",
+			"epoch", rec.Epoch, "blockHeight", blockHeight, "record_residual", rec.ResidualHBD, "live_residual", remaining)
 	}
 
 	if err := se.pendulumSettlementsDb.SaveMarker(pendulum_settlements_db.SettlementMarker{

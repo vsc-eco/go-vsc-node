@@ -33,7 +33,7 @@ services:
     volumes:
       - ./data:/home/app/app/data
   db:
-    image: mongo:8.0.17
+    image: mongo:8.0.17@sha256:9814652e33f0cf8b9fddea8b46dfc9d8e19b130dcfdd7b510ca58bb0d40c8b71
     # restart: always
     ports:
       - 127.0.0.1:27017:27017
@@ -51,7 +51,7 @@ services:
         limits:
           memory: 1G
   bitcoind:
-    image: bitcoin/bitcoin:29.3
+    image: bitcoin/bitcoin:29.3@sha256:27b4c2d260b36df0e3c9929020392b71ae40c0e547d3cf95cae10e1538b1b798
     container_name: vsc-btcd
     command: -rpcuser=vsc-node-user -rpcpassword=vsc-node-pass -rpcallowip=0.0.0.0/0 -rpcbind=0.0.0.0 -prune=550 -dbcache=2048 -server=1 -listen=1
     restart: always

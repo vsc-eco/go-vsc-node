@@ -1350,7 +1350,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	//Detects new slot and executes batch if so
 	if se.slotStatus.SlotHeight != slotInfo.StartHeight {
 		//Updates balances index before next batch can execute
-		vscBlock, _ := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight - 1)
+		vscBlock, err := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight - 1)
+		if err != nil && err != mongo.ErrNoDocuments {
+			log.Error("GetBlockByHeight failed, falling back to full-range balance scan",
+				"slotHeight", se.slotStatus.SlotHeight, "err", err)
+		}
 
 		startBlock := uint64(0)
 		if vscBlock != nil {
@@ -1632,7 +1636,11 @@ func (se *StateEngine) committeeAccountsAtHeight(height uint64) []string {
 
 func (se *StateEngine) ExecuteBatch() {
 
-	lastBlock, _ := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight)
+	lastBlock, err := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight)
+	if err != nil && err != mongo.ErrNoDocuments {
+		log.Error("GetBlockByHeight failed in ExecuteBatch, falling back to lastBlockBh=0",
+			"slotHeight", se.slotStatus.SlotHeight, "err", err)
+	}
 
 	var lastBlockBh uint64
 	if lastBlock == nil {
@@ -1897,7 +1905,11 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	}
 
 	//log.Debug("stBlock, endBlock", stBlock, endBlock)
-	distinctAccounts, _ := se.LedgerState.LedgerDb.GetDistinctAccountsRange(stBlock, endBlock)
+	distinctAccounts, err := se.LedgerState.LedgerDb.GetDistinctAccountsRange(stBlock, endBlock)
+	if err != nil {
+		log.Error("GetDistinctAccountsRange failed, balance snapshots may be incomplete this slot",
+			"stBlock", stBlock, "endBlock", endBlock, "err", err)
+	}
 
 	//Ensure system:fr_balance is always processed so its hbd_claim stays current.
 	//Its interest goes to hive:vsc.dao, so it never appears in distinctAccounts via

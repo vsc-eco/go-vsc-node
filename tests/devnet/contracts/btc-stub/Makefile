@@ -33,7 +33,7 @@ pull-tinygo:
 regen-tinyjson:
 	@if ! command -v $(TINYJSON) >/dev/null 2>&1; then \
 		echo "tinyjson not found, installing..."; \
-		go install github.com/CosmWasm/tinyjson/...@latest; \
+		go install github.com/CosmWasm/tinyjson/...@v0.9.0; \
 		echo "tinyjson installed to $$(go env GOPATH)/bin"; \
 		echo "ensure $$(go env GOPATH)/bin is on your PATH and re-run"; \
 		exit 1; \
