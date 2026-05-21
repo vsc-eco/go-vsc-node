@@ -683,31 +683,46 @@ func (tx *TxProposeBlock) TxSelf() TxSelf {
 	return tx.Self
 }
 
-// BlockValidationOutcome carries the result of TxProposeBlock.Validate so the
-// caller can distinguish "this proposal is provably invalid (slash)" from
-// "we couldn't even attempt validation due to a transient lookup failure
-// (skip — do not slash)". Without this split, a corrupt election cache or a
-// transient DB error during replay would produce a false-positive slash on
-// an honest producer.
+// BlockValidationKind classifies a block proposal for the principal-slash
+// detector. Exactly one kind applies per proposal.
+type BlockValidationKind int
+
+const (
+	// BlockSkip: validation could not be attempted (transient/environmental,
+	// e.g. election lookup or header-hash failure). This is the zero value, so
+	// an unset outcome defaults to the safe no-op — never apply, never slash. A
+	// replay with a healthy view reaches a deterministic verdict.
+	BlockSkip BlockValidationKind = iota
+	// BlockValid: the BLS aggregate verifies, meets 2/3, and the block is in
+	// window. Apply it.
+	BlockValid
+	// BlockInvalid: provably invalid from the proposal bytes alone (malformed
+	// CID, non-deserializable signature, failed BLS verify, sub-2/3 score).
+	// Every replaying node decides this identically — slash.
+	BlockInvalid
+	// BlockStale: deterministically late — the op confirmed at/after the end of
+	// the producer's slot window. A liveness fault (slow producer / Hive
+	// congestion) that a correct node can hit under conditions outside its
+	// control, NOT a provable safety fault. Reject the block but do NOT slash;
+	// reward-reduction handles tardiness elsewhere.
+	BlockStale
+)
+
+// BlockValidationOutcome carries the result of TxProposeBlock validation: a
+// single verdict plus an optional human-readable reason. The Kind split lets
+// the detector distinguish a provable safety fault (BlockInvalid → slash) from
+// a transient skip or a deterministic-but-honest staleness, so a corrupt
+// election cache, a transient DB error during replay, or a slow-but-honest
+// producer never yields a false-positive slash.
 type BlockValidationOutcome struct {
-	// Valid is true iff the BLS aggregate verifies, meets 2/3, and the block
-	// is in-window. Only meaningful when Skip is false.
-	Valid bool
-	// Skip is true when validation could not be attempted (e.g. election
-	// lookup failure, malformed block CID). Callers must not slash on Skip;
-	// a future replay with a healthy view will validate normally.
-	Skip bool
-	// SkipReason is logged when Skip is true so node operators can see why a
-	// proposal could not be checked. Empty when Skip is false.
-	SkipReason string
+	Kind BlockValidationKind
+	// Reason is logged for non-applied verdicts so operators can see why a
+	// proposal was skipped, rejected as stale, or slashed. Empty for BlockValid.
+	Reason string
 }
 
 func (t *TxProposeBlock) Validate(se *StateEngine) bool {
-	out := t.ValidateDetailed(se)
-	if out.Skip {
-		return false
-	}
-	return out.Valid
+	return t.ValidateDetailed(se).Kind == BlockValid
 }
 
 // ValidateDetailed mirrors Validate but exposes the skip-vs-invalid
@@ -716,7 +731,7 @@ func (t *TxProposeBlock) ValidateDetailed(se *StateEngine) BlockValidationOutcom
 	elecResult, err := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
 	if err != nil {
 		// Election lookup failure is environmental, not fault of producer.
-		return BlockValidationOutcome{Skip: true, SkipReason: "election lookup failed: " + err.Error()}
+		return BlockValidationOutcome{Kind: BlockSkip, Reason: "election lookup failed: " + err.Error()}
 	}
 	memberDids := make([]dids.BlsDID, 0)
 	for _, member := range elecResult.Members {
@@ -727,7 +742,7 @@ func (t *TxProposeBlock) ValidateDetailed(se *StateEngine) BlockValidationOutcom
 	if cidErr != nil {
 		// Malformed CID: the block can't be checked at all. Treat as
 		// proven-invalid (deterministic decision from the bytes), not skip.
-		return BlockValidationOutcome{Valid: false}
+		return BlockValidationOutcome{Kind: BlockInvalid, Reason: "malformed block CID"}
 	}
 	blockHeader := vscBlocks.VscHeader{
 		Type:    t.SignedBlock.Type,
@@ -745,28 +760,35 @@ func (t *TxProposeBlock) ValidateDetailed(se *StateEngine) BlockValidationOutcom
 
 	headerCid, hashErr := se.da.HashObject(blockHeader)
 	if hashErr != nil || headerCid == nil {
-		return BlockValidationOutcome{Skip: true, SkipReason: "header hash failed"}
+		return BlockValidationOutcome{Kind: BlockSkip, Reason: "header hash failed"}
 	}
 
 	circuit, dErr := dids.DeserializeBlsCircuit(t.SignedBlock.Signature, memberDids, *headerCid)
 	if dErr != nil {
 		// Malformed signature bytes — deterministic from the proposal.
-		return BlockValidationOutcome{Valid: false}
+		return BlockValidationOutcome{Kind: BlockInvalid, Reason: "malformed BLS signature"}
 	}
 
+	// Staleness: the op confirmed at/after the end of the producer's slot
+	// window (Br[1] is the slot start height). All inputs here are on-chain and
+	// identical on every replaying node, but a correct-but-slow producer can hit
+	// this under normal Hive congestion / BLS-collection latency outside its
+	// control, so it is a liveness fault — reject the block but do NOT slash.
 	if uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength <= t.Self.BlockHeight {
-		fmt.Println(
-			"Block is too far in the future",
-			t.SignedBlock.Headers.Br,
-			uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength,
-			t.Self.BlockHeight,
-		)
-		return BlockValidationOutcome{Valid: false}
+		return BlockValidationOutcome{
+			Kind: BlockStale,
+			Reason: fmt.Sprintf(
+				"block confirmed past slot window: slot=%d cutoff=%d confirmed=%d",
+				t.SignedBlock.Headers.Br[1],
+				uint64(t.SignedBlock.Headers.Br[1])+CONSENSUS_SPECS.SlotLength,
+				t.Self.BlockHeight,
+			),
+		}
 	}
 
 	verified, includedDids, vErr := circuit.Verify()
 	if vErr != nil || !verified {
-		return BlockValidationOutcome{Valid: false}
+		return BlockValidationOutcome{Kind: BlockInvalid, Reason: "BLS aggregate failed verification"}
 	}
 
 	signingScore, total := elections.CalculateSigningScore(circuit, elecResult)
@@ -780,7 +802,10 @@ func (t *TxProposeBlock) ValidateDetailed(se *StateEngine) BlockValidationOutcom
 	}
 	t.Epoch = elecResult.Epoch
 
-	return BlockValidationOutcome{Valid: signingScore > ((total * 2) / 3)}
+	if signingScore > ((total * 2) / 3) {
+		return BlockValidationOutcome{Kind: BlockValid}
+	}
+	return BlockValidationOutcome{Kind: BlockInvalid, Reason: "signing score below 2/3 threshold"}
 }
 
 // ProcessTx implements VSCTransaction.
