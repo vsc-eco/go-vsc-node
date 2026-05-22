@@ -599,7 +599,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						// at startup by rehydrateDoubleSignMap, so a warm restart that
 						// lands mid-slot cannot lose the first ref (see its doc).
 						slotKey := slotProposerKey(slotInfo.StartHeight, cj.RequiredAuths[0])
-						prevBlockRef, exists := se.recordFirstSeenProposal(slotInfo.StartHeight, cj.RequiredAuths[0], parsedBlock.SignedBlock.Block)
+						prevBlockRef, exists := se.recordFirstSeenProposal(
+							slotInfo.StartHeight,
+							cj.RequiredAuths[0],
+							parsedBlock.SignedBlock.Block,
+						)
 						doubleSign := false
 						if exists && prevBlockRef != parsedBlock.SignedBlock.Block {
 							doubleSign = true
@@ -612,8 +616,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								slotKey,
 							)
 							if slashRes.Ok {
-								log.Warn("principal slash applied for double block proposal",
-									"account", cj.RequiredAuths[0], "slot_height", slotInfo.StartHeight, "tx_id", tx.TransactionID)
+								log.Warn(
+									"principal slash applied for double block proposal",
+									"account",
+									cj.RequiredAuths[0],
+									"slot_height",
+									slotInfo.StartHeight,
+									"tx_id",
+									tx.TransactionID,
+								)
 							}
 						}
 
@@ -658,8 +669,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								slotKey,
 							)
 							if slashRes.Ok {
-								log.Warn("principal slash applied for invalid block proposal",
-									"account", cj.RequiredAuths[0], "tx_id", tx.TransactionID, "slot_height", slotInfo.StartHeight)
+								log.Warn(
+									"principal slash applied for invalid block proposal",
+									"account",
+									cj.RequiredAuths[0],
+									"tx_id",
+									tx.TransactionID,
+									"slot_height",
+									slotInfo.StartHeight,
+								)
 							}
 						}
 					}
@@ -1138,6 +1156,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 						members := make([]dids.BlsDID, 0)
 
+						// Use the election active at the commitment's block height,
+						// not the commitment's epoch. The leader collects BLS signatures
+						// from GetElectionByHeight(bh) where bh = commitment.BlockHeight.
+						// Using GetElection(commitment.Epoch) returns a different election
+						// when the epoch has advanced, causing BLS verification to fail
+						// because the member lists (and BLS keys) differ.
 						if commitment.BlockHeight+params.TSS_COMMITMENT_MAX_STALENESS < block.BlockNumber {
 							tssLog.Warn("stale commitment rejected", "keyId", commitment.KeyId, "commitmentHeight", commitment.BlockHeight, "blockNumber", block.BlockNumber)
 							continue
@@ -1213,20 +1237,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							TxId:        tx.TransactionID,
 							BitSet:      commitment.BitSet,
 						})
-					if commitment.Type == "blame" {
-						// Blame events stay on-chain for liveness analysis (and future
-						// reward-reduction wiring), but are NOT principal-slashed: a
-						// missing/late share looks identical to malicious silence from
-						// the chain's perspective, and the only true safety violations
-						// (divergent shares to different peers) live entirely on the
-						// p2p layer where we have no on-chain proof. See
-						// modules/incentive-pendulum/safety_slash/policy.go.
-						blamedAccounts := blamedAccountsFromBitSet(commitment.BitSet, electionData.Members)
-						for _, acct := range blamedAccounts {
-							tssLog.Verbose("tss blame recorded (liveness only, no slash)",
-								"account", acct, "txId", tx.TransactionID, "sessionId", commitment.SessionId)
+						if commitment.Type == "blame" {
+							// Blame events stay on-chain for liveness analysis (and future
+							// reward-reduction wiring), but are NOT principal-slashed: a
+							// missing/late share looks identical to malicious silence from
+							// the chain's perspective, and the only true safety violations
+							// (divergent shares to different peers) live entirely on the
+							// p2p layer where we have no on-chain proof. See
+							// modules/incentive-pendulum/safety_slash/policy.go.
+							blamedAccounts := blamedAccountsFromBitSet(commitment.BitSet, electionData.Members)
+							for _, acct := range blamedAccounts {
+								tssLog.Verbose("tss blame recorded (liveness only, no slash)",
+									"account", acct, "txId", tx.TransactionID, "sessionId", commitment.SessionId)
+							}
 						}
-					}
 
 						var newKey bool
 						savedKeyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
@@ -1468,8 +1492,17 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 			if lastSlot >= firstSlot {
 				blocks, err := se.vscBlocks.GetBlocksInSlotRange(firstSlot, lastSlot)
 				if err != nil {
-					log.Warn("pendulum reductions: vsc_blocks slot-range lookup failed; block production/attestation skipped this tick",
-						"tick_height", tickHeight, "from_slot", firstSlot, "to_slot", lastSlot, "err", err)
+					log.Warn(
+						"pendulum reductions: vsc_blocks slot-range lookup failed; block production/attestation skipped this tick",
+						"tick_height",
+						tickHeight,
+						"from_slot",
+						firstSlot,
+						"to_slot",
+						lastSlot,
+						"err",
+						err,
+					)
 				} else {
 					produced := make(map[uint64]struct{}, len(blocks))
 					in.BlocksInWindow = make([]rewards.TickBlockHeader, 0, len(blocks))
@@ -1508,7 +1541,9 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 	// Identical evidence on every replaying node because FeedTracker quotes
 	// are sourced deterministically from feed_publish.
 	if se.pendulumFeed != nil {
-		in.DivergingOracleWitnesses = se.pendulumFeed.DivergingTrustedWitnesses(rewards.OracleQuoteDivergenceThresholdBps)
+		in.DivergingOracleWitnesses = se.pendulumFeed.DivergingTrustedWitnesses(
+			rewards.OracleQuoteDivergenceThresholdBps,
+		)
 	}
 
 	// TSS commitments: pull all reshare/blame/sign_result types in the window.
@@ -2403,11 +2438,11 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	}
 
 	se := &StateEngine{
-		sconf:            sconf,
-		TxOutput:         make(map[string]TxOutput),
-		ContractResults:  make(map[string][]ContractResult),
-		TempOutputs:      make(map[string]*contract_session.TempOutput),
-		TxOutIds:         make([]string, 0),
+		sconf:                         sconf,
+		TxOutput:                      make(map[string]TxOutput),
+		ContractResults:               make(map[string][]ContractResult),
+		TempOutputs:                   make(map[string]*contract_session.TempOutput),
+		TxOutIds:                      make([]string, 0),
 		slashRestitution:              safetyslash.NewOnLedgerRestitutionAllocator(ledgerDb),
 		safetyEvidenceSeen:            make(map[string]uint64),
 		seenProposalBySlotProposer:    make(map[string]string),
@@ -2526,7 +2561,10 @@ func slotProposerKey(slotHeight uint64, account string) string {
 // an existing entry, so a duplicate or conflicting later proposal leaves the
 // reference unchanged. Shared by the live detector and the startup rehydrate so
 // both seed identically.
-func (se *StateEngine) recordFirstSeenProposal(slotHeight uint64, account, blockCID string) (prev string, existed bool) {
+func (se *StateEngine) recordFirstSeenProposal(
+	slotHeight uint64,
+	account, blockCID string,
+) (prev string, existed bool) {
 	if se.seenProposalBySlotProposer == nil {
 		se.seenProposalBySlotProposer = make(map[string]string)
 	}
@@ -2744,7 +2782,11 @@ func (se *StateEngine) recordEvidenceAndShouldSlash(accountHive, kind, evidenceI
 // (slot, account) tuple for block-production faults). When the running total
 // for an incident already exceeds CorrelatedSlashCapBps, the additional
 // evidence is recorded but does not produce a further ledger debit.
-func (se *StateEngine) slashForEvidenceIfPolicyAllows(accountHive, kind, evidenceID, txID string, blockHeight uint64, incidentKey string) ledgerSystem.LedgerResult {
+func (se *StateEngine) slashForEvidenceIfPolicyAllows(
+	accountHive, kind, evidenceID, txID string,
+	blockHeight uint64,
+	incidentKey string,
+) ledgerSystem.LedgerResult {
 	if se == nil {
 		return ledgerSystem.LedgerResult{Ok: false, Msg: "state engine not configured"}
 	}

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/params"
@@ -691,15 +692,52 @@ func (ls *ledgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64)
 	return total
 }
 
+// blockingRetry retries a consensus-critical DB read until it succeeds, halting
+// the deterministic block-processing path on a transient infra error instead of
+// swallowing it and diverging from peers. Mirrors the fail-stop helper in
+// modules/state-processing (state_engine.go: blockingRetry).
+func blockingRetry(what string, read func() error) {
+	const (
+		baseDelay = 100 * time.Millisecond
+		maxDelay  = 30 * time.Second
+	)
+	delay := baseDelay
+	for attempt := 1; ; attempt++ {
+		if err := read(); err == nil {
+			if attempt > 1 {
+				log.Error("DB read recovered; resuming", "op", what, "attempts", attempt)
+			}
+			return
+		} else {
+			log.Error("DB read failed; halting until DB recovers (fail-stop)",
+				"op", what, "attempt", attempt, "retryIn", delay.String(), "err", err)
+		}
+		time.Sleep(delay)
+		if delay < maxDelay {
+			if delay *= 2; delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+}
+
 func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {
 	fmt.Println("ClaimHBDInterest", lastClaim, blockHeight, amount)
 	//Do distribution of HBD interest on an going forward basis
 	//Save to ledger DB the difference.
-	ledgerBalances, err := ls.BalanceDb.GetAll(blockHeight)
-	if err != nil {
-		log.Warn("ClaimHBDInterest: balance enumeration failed", "err", err)
-		return
-	}
+	//
+	// Fail-stop on a GetAll error rather than returning: this runs on the
+	// deterministic block-processing path and a returned-early node would skip
+	// the entire interest distribution (and SaveClaim) while healthy peers
+	// distribute, diverging the ledger — a fork. The error is a transient infra
+	// failure (Mongo), not a deterministic absence, so block until it recovers.
+	// Mirrors state-processing's blockingRetry / getLedgerRangeOrBlock.
+	var ledgerBalances []ledger_db.BalanceRecord
+	blockingRetry(fmt.Sprintf("ClaimHBDInterest.GetAll(@%d)", blockHeight), func() error {
+		var err error
+		ledgerBalances, err = ls.BalanceDb.GetAll(blockHeight)
+		return err
+	})
 
 	processedBalRecords := make([]ledger_db.BalanceRecord, 0)
 	totalAvg := int64(0)
