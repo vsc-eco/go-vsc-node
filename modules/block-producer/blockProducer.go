@@ -73,6 +73,18 @@ type BlockProducer struct {
 
 	electionsDb elections.Elections
 
+	// startupHead is the chain head observed at the first BlockTick of this
+	// process (0 until set). It is the crash/replay floor for block production:
+	// this process only produces slots strictly above it. A previous process
+	// could only have attempted slots <= its head at crash <= startupHead (Hive
+	// head is monotonic), so refusing slots <= startupHead guarantees a restart
+	// never re-composes (with a changed mempool, hence a different CID) a slot it
+	// may already have broadcast — which the on-chain double-sign detector would
+	// slash. Replayed slots are simply handed off to the next leader. In-memory
+	// only: re-derived every start, and BlockTick is synchronous so no lock is
+	// needed.
+	startupHead uint64
+
 	// PendingGovOps is the witness-local pool that DAO operators / RPC
 	// handlers populate with vsc.restitution_claim and
 	// vsc.safety_slash_reverse payloads. Drained during GenerateBlock
@@ -104,6 +116,12 @@ func (bp *BlockProducer) BlockTick(bh uint64, headHeight *uint64) {
 		return
 	}
 
+	// Crash/replay double-sign guard: only produce slots this process first
+	// reached live. See liveProductionAllowed.
+	if !bp.liveProductionAllowed(bh, *headHeight) {
+		return
+	}
+
 	slotInfo := stateEngine.CalculateSlotInfo(bh)
 
 	schedule := bp.StateEngine.GetSchedule(slotInfo.StartHeight)
@@ -122,6 +140,22 @@ func (bp *BlockProducer) BlockTick(bh uint64, headHeight *uint64) {
 			bp.ProduceBlock(witnessSlot.SlotHeight)
 		}
 	}
+}
+
+// liveProductionAllowed records the chain head seen at the first valid tick of
+// this process and reports whether bh is a slot first reached live this run
+// (bh > startupHead). Because Hive head is monotonic, any slot a previous
+// process could have attempted is <= the head at its crash <= startupHead, so
+// refusing bh <= startupHead guarantees a restart never re-composes (and thus
+// double-signs) a slot it may already have broadcast — the slot is handed off to
+// the next leader instead. ProduceBlock is the only broadcaster and is reachable
+// only from BlockTick, which is synchronous, so no lock is needed and this guard
+// fully covers the (only) re-production path: restart/replay.
+func (bp *BlockProducer) liveProductionAllowed(bh uint64, headHeight uint64) bool {
+	if bp.startupHead == 0 && headHeight > 0 {
+		bp.startupHead = headHeight
+	}
+	return bp.startupHead != 0 && bh > bp.startupHead
 }
 
 type generateBlockParams struct {
@@ -410,6 +444,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	//This will allow us to test the e2e parsing
 
 	vlog.Trace("ProduceBlock", "bh", bp.bh)
+
 	stTime := bp.bh + 1
 	for i := 0; i < 5; i++ {
 		if bh == stTime {
