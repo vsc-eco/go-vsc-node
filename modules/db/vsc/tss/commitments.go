@@ -29,6 +29,13 @@ func (tsc *tssCommitments) SetCommitmentData(commitment TssCommitment) error {
 	// valid commitment can exist for (key_id, block_height, type), so a
 	// non-equal overwrite is either a soft-fork window or evidence of a
 	// double-aggregate attempt — either way operators want to see it.
+	//
+	// This FindOne→FindOneAndUpdate pair is NOT transactional, which is
+	// safe today because SetCommitmentData is invoked serially from
+	// state-engine.ProcessBlock (state_engine.go:1095). If a future caller
+	// ever runs this concurrently, two racing inserts could both miss the
+	// warning, so keep the single-writer invariant or move to a Mongo
+	// transaction first.
 	existing := tsc.FindOne(context.Background(), bson.M{
 		"key_id":       commitment.KeyId,
 		"block_height": commitment.BlockHeight,
