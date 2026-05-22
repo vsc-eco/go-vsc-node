@@ -177,6 +177,12 @@ func (m *MockTssCommitmentsDb) filterAndSort(keyIdFilter *string, byTypes []stri
 	return results
 }
 
+// Each Find/Get below applies tss.DedupCommitmentsBySemanticKey at the
+// return boundary so mock-backed tests see the same semantics as the
+// production DB layer. Without this, a test that seeds duplicate
+// (key_id, block_height, type) rows would observe inflated counts that
+// real prod would not (audit S8 follow-up).
+
 func (m *MockTssCommitmentsDb) FindCommitments(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]tss.TssCommitment, error) {
 	results := m.filterAndSort(keyId, byTypes, epoch, fromBlock, toBlock)
 	if offset > len(results) {
@@ -186,7 +192,7 @@ func (m *MockTssCommitmentsDb) FindCommitments(keyId *string, byTypes []string, 
 	if limit > 0 && limit < len(results) {
 		results = results[:limit]
 	}
-	return results, nil
+	return tss.DedupCommitmentsBySemanticKey(results), nil
 }
 
 func (m *MockTssCommitmentsDb) FindCommitmentsSimple(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, limit int) ([]tss.TssCommitment, error) {
@@ -194,7 +200,7 @@ func (m *MockTssCommitmentsDb) FindCommitmentsSimple(keyId *string, byTypes []st
 	if limit > 0 && limit < len(results) {
 		results = results[:limit]
 	}
-	return results, nil
+	return tss.DedupCommitmentsBySemanticKey(results), nil
 }
 
 func (m *MockTssCommitmentsDb) GetBlames(epoch *uint64) ([]tss.TssCommitment, error) {
@@ -208,7 +214,7 @@ func (m *MockTssCommitmentsDb) GetBlames(epoch *uint64) ([]tss.TssCommitment, er
 		}
 		results = append(results, commitment)
 	}
-	return results, nil
+	return tss.DedupCommitmentsBySemanticKey(results), nil
 }
 
 // MockTssRequestsDb implements tss.TssRequests interface for testing
