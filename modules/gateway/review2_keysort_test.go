@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"crypto/sha256"
 	"testing"
 
 	"vsc-node/lib/test_utils"
@@ -10,6 +11,15 @@ import (
 
 	"github.com/vsc-eco/hivego"
 )
+
+// fixtureGatewayKey returns a well-formed Hive STM-prefixed public key
+// derived deterministically from seed. Used by tests that need real-shape
+// gateway keys post-FUZZ-1 (safeValidateGatewayKey rejects placeholders).
+func fixtureGatewayKey(seed string) string {
+	priv := sha256.Sum256([]byte(seed))
+	kp := hivego.KeyPairFromBytes(priv[:])
+	return *kp.GetPublicKeyString()
+}
 
 // fakeHiveCreator captures the gateway KeyAuths handed to UpdateAccount so
 // the sorted gateway-key order produced by keyRotation is observable.
@@ -71,8 +81,13 @@ func TestReview2KeyRotationWeightSort(t *testing.T) {
 
 	witnessDb := &test_utils.MockWitnessDb{ByAccount: map[string]*witnesses.Witness{}}
 	members := make([]elections.ElectionMember, len(accounts))
+	// FUZZ-1: keyRotation now skips witnesses whose GatewayKey would crash
+	// the hivego serializer. Plug in deterministic well-formed STM pubkeys.
+	gatewayKeys := make(map[string]string, len(accounts))
 	for i, acc := range accounts {
-		witnessDb.ByAccount[acc] = &witnesses.Witness{Account: acc, GatewayKey: acc}
+		gk := fixtureGatewayKey(acc)
+		gatewayKeys[acc] = gk
+		witnessDb.ByAccount[acc] = &witnesses.Witness{Account: acc, GatewayKey: gk}
 		members[i] = elections.ElectionMember{Account: acc, Key: acc}
 	}
 
@@ -107,7 +122,7 @@ func TestReview2KeyRotationWeightSort(t *testing.T) {
 		}
 		return -1
 	}
-	si, bi := idx("s1"), idx("b1")
+	si, bi := idx(gatewayKeys["s1"]), idx(gatewayKeys["b1"])
 	if si < 0 || bi < 0 {
 		t.Fatalf("review2 #57: keys missing from rotation auths: s1=%d b1=%d (auths=%v)", si, bi, fake.keyAuths)
 	}
