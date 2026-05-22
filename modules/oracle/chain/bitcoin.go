@@ -364,12 +364,18 @@ func getBlockByHash(
 		&[]string{"height", "avgfeerate"},
 	)
 	if err != nil {
-		btcBlock.Height = knownHeight
-		btcBlock.AverageFeeRate = 0
-	} else {
-		btcBlock.Height = uint64(blockStats.Height)
-		btcBlock.AverageFeeRate = blockStats.AverageFeeRate
+		// RT-9: silently zeroing AverageFeeRate here let a btcd RPC flake
+		// surface as a "0 sat/vB" fee on the BTC unmap path, which signs
+		// a stuck mainnet tx. Propagate the error so callers can retry or
+		// surface the operational fault instead of producing a poisoned
+		// block record. (Callers wrap with their own context, and the
+		// override at b.fixedFeeRate is applied *after* this function
+		// returns — if operators rely on the override they still see the
+		// underlying RPC failure first.)
+		return nil, fmt.Errorf("failed to get block stats for %s (height %d): %w", blockHash, knownHeight, err)
 	}
+	btcBlock.Height = uint64(blockStats.Height)
+	btcBlock.AverageFeeRate = blockStats.AverageFeeRate
 
 	return &btcBlock, nil
 }
