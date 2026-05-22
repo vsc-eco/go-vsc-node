@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"slices"
@@ -1809,30 +1810,22 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		stBlock = endBlock - 9
 	}
 
-	// review4 HIGH #94: if the election lookup fails the zero-value
-	// ElectionResult has Epoch==0, so GetPendingActionsByEpoch(0, ...)
-	// queries the wrong (genesis) epoch and may release unstakes that
-	// belong to the current epoch. Treat the lookup as fail-closed: log
-	// and skip releasing unstakes for this slot; the next slot retries
-	// once the DB recovers.
+	// review4 HIGH #94 (fail-stop): the consensus_unstake release epoch comes
+	// from an election read, and the matured set from a pending-actions read.
+	// Swallowing a transient error on either and deferring would diverge this
+	// node from peers that read successfully and released — different ledger
+	// writes, different payout heights, a fork. Both reads are therefore
+	// fail-stop (block until the DB recovers), so a node either releases the
+	// same set as everyone else or makes no progress. A deterministic "no
+	// election yet" (pre-genesis) is identical across nodes and releases
+	// nothing; a genuine epoch-0 election queries normally (nothing is due
+	// before epoch 5, so the result is empty either way).
 	var epoch uint64
 	var records []ledgerDb.ActionRecord
 	if se.electionDb != nil {
-		election, electionErr := se.electionDb.GetElectionByHeight(endBlock)
-		if electionErr != nil || election.Epoch == 0 {
-			if electionErr != nil {
-				fmt.Println("ExecuteBatch: GetElectionByHeight failed; deferring consensus_unstake release this slot", endBlock, electionErr)
-			}
-			// Election with Epoch=0 is the genesis-default zero value; never
-			// release unstakes under that epoch.
-		} else {
+		if election, found := se.GetElectionInfoOrBlock(endBlock); found {
 			epoch = election.Epoch
-			var recordsErr error
-			records, recordsErr = se.LedgerState.ActionDb.GetPendingActionsByEpoch(election.Epoch, "consensus_unstake")
-			if recordsErr != nil {
-				fmt.Println("ExecuteBatch: GetPendingActionsByEpoch failed; deferring this slot", endBlock, recordsErr)
-				records = nil
-			}
+			records = se.getPendingActionsByEpochOrBlock(election.Epoch, "consensus_unstake")
 		}
 	}
 
@@ -1917,16 +1910,18 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		// se.LedgerExecutor.Ls.log.Debug("GetBalance for account", stBlock, stHeight, endBlock)
 
 		// review4 HIGH #118: GetLedgerRange returns `(nil, err)` on Mongo
-		// failure. The prior form discarded the error and then derefed the
-		// nil pointer at `len(*ledgerUpdates)`, panicking the entire slot
-		// processing path. Treat any error (or a nil result) as "no
-		// updates" and continue — the claim-record / TWAB path below has
-		// no dependency on the failed range, and the next slot will retry.
-		ledgerUpdates, err := se.LedgerState.LedgerDb.GetLedgerRange(k, stHeight, endBlock, "")
-		if err != nil {
-			fmt.Println("ExecuteBatch: GetLedgerRange failed", k, err)
-			continue
-		}
+		// failure. The original form discarded the error and derefed the nil
+		// pointer at `len(*ledgerUpdates)`, panicking the slot. Skipping the
+		// account on error is also unsafe: HBD_AVG is a path-dependent
+		// cumulative sum kept only in the balance snapshot and is never
+		// rebuilt from the authoritative ledger (unlike spendable balances,
+		// which GetBalance reconstructs from any checkpoint). A single
+		// skipped slot would mistime this account's TWAB accumulation and
+		// permanently diverge its snapshot — and thus its share of the next
+		// HBD-interest distribution — from peers whose DB stayed healthy.
+		// Fail-stop instead: block the slot until the read succeeds. See
+		// getLedgerRangeOrBlock.
+		ledgerUpdates := se.getLedgerRangeOrBlock(k, stHeight, endBlock, "")
 
 		hasLedgerUpdates := ledgerUpdates != nil && len(*ledgerUpdates) > 0
 
@@ -2022,6 +2017,104 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			},
 		)
 	}
+}
+
+// blockingRetry runs `read` until it returns a nil error, sleeping with
+// capped exponential backoff between attempts. It never gives up.
+//
+// This is the fail-stop primitive for the deterministic state path. A DB
+// read that one node completes but another swallows lets the two nodes
+// decide a slot/tx outcome differently — a consensus fork. Rather than
+// advance on a swallowed error (or panic on a nil result), a node whose DB
+// is unavailable simply makes no progress until it recovers (or an operator
+// restarts it). Every honest node computes the identical result once its DB
+// is reachable. `read` returns nil to stop (success OR a deterministic
+// not-found the caller will handle) and a non-nil infra error to keep
+// blocking. `what` labels the operation in logs.
+//
+// (Operator visibility is via logs for now; a health-endpoint surface for
+// the stalled state is deferred to the in-flight health PR.)
+func blockingRetry(what string, read func() error) {
+	const (
+		baseDelay = 100 * time.Millisecond
+		maxDelay  = 30 * time.Second
+	)
+	delay := baseDelay
+	for attempt := 1; ; attempt++ {
+		if err := read(); err == nil {
+			if attempt > 1 {
+				log.Error("DB read recovered; resuming slot", "op", what, "attempts", attempt)
+			}
+			return
+		} else {
+			log.Error("DB read failed; halting slot until DB recovers (fail-stop)",
+				"op", what, "attempt", attempt, "retryIn", delay.String(), "err", err)
+		}
+		time.Sleep(delay)
+		if delay < maxDelay {
+			if delay *= 2; delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+}
+
+// getLedgerRangeOrBlock fail-stops on a GetLedgerRange error. HBD_AVG is a
+// path-dependent cumulative sum that lives only in the balance snapshot and
+// is never reconstructed from the authoritative ledger, so any slot a node
+// skips on a swallowed error is unrecoverable — its TWAB, and therefore its
+// slice of the next HBD-interest distribution, drifts permanently from peers
+// whose DB was healthy. Blocking until the read succeeds keeps the snapshot
+// either correct or unwritten.
+func (se *StateEngine) getLedgerRangeOrBlock(account string, start, end uint64, asset string) *[]ledgerDb.LedgerRecord {
+	var out *[]ledgerDb.LedgerRecord
+	blockingRetry(fmt.Sprintf("GetLedgerRange(%s @%d)", account, end), func() error {
+		var err error
+		out, err = se.LedgerState.LedgerDb.GetLedgerRange(account, start, end, asset)
+		return err
+	})
+	return out
+}
+
+// GetElectionInfoOrBlock is the fail-stop election read. It blocks on an
+// infra-level election read error but distinguishes the deterministic "no
+// election covers this height yet" (mongo.ErrNoDocuments) — which every honest
+// node sees identically and the caller handles via found=false — from a
+// transient DB failure, which blocks. This closes the partial-fork in the
+// consensus_unstake create/release paths where the prior swallow-the-error
+// read returned a zero-value epoch. Exported because the unstake tx handler
+// reaches it through the common_types.StateEngine interface.
+func (se *StateEngine) GetElectionInfoOrBlock(height uint64) (elections.ElectionResult, bool) {
+	var out elections.ElectionResult
+	var found bool
+	blockingRetry(fmt.Sprintf("GetElectionByHeight(%d)", height), func() error {
+		election, err := se.electionDb.GetElectionByHeight(height)
+		if err == nil {
+			out, found = election, true
+			return nil
+		}
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			// Deterministic absence (pre-genesis / no election below height):
+			// not an infra failure. Stop retrying; report not-found.
+			out, found = elections.ElectionResult{}, false
+			return nil
+		}
+		return err // infra failure → keep blocking
+	})
+	return out, found
+}
+
+// getPendingActionsByEpochOrBlock fail-stops on the pending-actions read used
+// to release matured consensus_unstakes. Companion to getElectionByHeightOrBlock
+// so the whole release decision is all-or-nothing per slot.
+func (se *StateEngine) getPendingActionsByEpochOrBlock(epoch uint64, t ...string) []ledgerDb.ActionRecord {
+	var out []ledgerDb.ActionRecord
+	blockingRetry(fmt.Sprintf("GetPendingActionsByEpoch(%d)", epoch), func() error {
+		var err error
+		out, err = se.LedgerState.ActionDb.GetPendingActionsByEpoch(epoch, t...)
+		return err
+	})
+	return out
 }
 
 func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
@@ -2123,19 +2216,6 @@ func (se *StateEngine) GetContractInfo(id string, height uint64) (contracts.Cont
 	}
 
 	return contractInfo, true
-}
-
-func (se *StateEngine) GetElectionInfo(height ...uint64) elections.ElectionResult {
-	var heightf uint64
-
-	if len(height) > 0 {
-		heightf = height[0]
-	} else {
-		heightf = uint64(se.BlockHeight)
-	}
-	electionResult, _ := se.electionDb.GetElectionByHeight(heightf)
-
-	return electionResult
 }
 
 func (se *StateEngine) Commit() {

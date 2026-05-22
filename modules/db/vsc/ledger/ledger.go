@@ -519,7 +519,15 @@ func (actions *actionsDb) GetPendingActionsByEpoch(epoch uint64, t ...string) ([
 			"$in": t,
 		}
 	}
-	cursor, _ := actions.Find(context.Background(), query, options)
+	// Return the Find error rather than discarding it: on a Mongo failure
+	// Find yields a nil cursor and the old `cursor.Next()` loop panicked. The
+	// sole caller (consensus_unstake release) fail-stops on this error, so a
+	// transient failure halts the slot instead of crashing or silently
+	// releasing a divergent set.
+	cursor, err := actions.Find(context.Background(), query, options)
+	if err != nil {
+		return nil, err
+	}
 
 	actionRecords := make([]ActionRecord, 0)
 
