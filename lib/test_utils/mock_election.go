@@ -5,6 +5,8 @@ import (
 
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db/vsc/elections"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type MockElectionDb struct {
@@ -59,5 +61,9 @@ func (m *MockElectionDb) GetElectionByHeight(height uint64) (elections.ElectionR
 	for _, r := range m.ElectionsByHeight {
 		return r, nil
 	}
-	return elections.ElectionResult{}, fmt.Errorf("no election at height %d", height)
+	// Match the real elections DB contract: a not-found lookup returns
+	// mongo.ErrNoDocuments (wrapped for a readable message). Fail-stop
+	// callers (GetElectionInfoOrBlock) rely on errors.Is to tell a
+	// deterministic absence apart from an infra error they must block on.
+	return elections.ElectionResult{}, fmt.Errorf("no election at height %d: %w", height, mongo.ErrNoDocuments)
 }

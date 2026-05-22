@@ -819,15 +819,17 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		}
 	}
 
-	electionResult := se.GetElectionInfo(tx.Self.BlockHeight - 1)
-
-	// review4 HIGH #96: GetElectionInfo swallows the DB error and returns a
-	// zero-value ElectionResult on failure. If we accept the zero epoch,
-	// the unstake locks for `0 + 5 = 5` epochs regardless of the current
-	// epoch — i.e. an unstake submitted at epoch 100 would unlock at
-	// epoch 5, which has already passed. Refuse the tx instead so the
-	// user resubmits once the proposer DB recovers.
-	if electionResult.Epoch == 0 && tx.Self.BlockHeight > 1 {
+	// review4 HIGH #96 (fail-stop): the unstake lock epoch comes from an
+	// election read. The prior read swallowed the DB error and returned a
+	// zero-value epoch, so a transient failure on one node would lock the
+	// unstake to epoch 5 (instant unlock — bypassing the 5-epoch hold) while
+	// peers locked it correctly: a fork plus a fund bug. Route through the
+	// fail-stop reader instead. An infra error blocks until the DB recovers
+	// (no per-node divergence). A deterministic "no election yet"
+	// (pre-genesis) cleanly refuses the tx — every node agrees it's absent.
+	// A genuine epoch-0 election is accepted normally (locks to epoch 5).
+	electionResult, found := se.GetElectionInfoOrBlock(tx.Self.BlockHeight - 1)
+	if !found {
 		return TxResult{
 			Success: false,
 			Ret:     "election lookup unavailable; retry unstake later",
