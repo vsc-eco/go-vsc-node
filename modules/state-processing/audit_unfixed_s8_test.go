@@ -1,23 +1,19 @@
 package state_engine_test
 
-// Audit finding S8 (unfixed): tss_db.SetCommitmentData uses
-// {key_id, tx_id} as the upsert filter (modules/db/vsc/tss/commitments.go:19-46).
-// This means two *different* commitments for the same (key_id, block_height)
-// but different tx_id will produce TWO rows, rather than being deduped to one.
-// Consumers (GetCommitmentByHeight, blame aggregation) then read one of
-// several rows non-deterministically, which can mis-attribute blame or
-// double-count signatures.
+// Post-fix companion to audit finding S8.
 //
-// Reachability: any node that re-broadcasts its commitment in a fresh
-// custom_json (e.g. retry after a Hive RPC error) will end up with a
-// second row.
+// Pre-fix the upsert filter was {key_id, tx_id} — retries with a new tx_id
+// inserted a second row, breaking GetCommitmentByHeight's "highest row wins"
+// assumption and letting any witness rewind keyInfo.Epoch by replaying an
+// older commitment.
 //
-// Without a live mongo we cannot exercise the upsert directly; this
-// test asserts the *static precondition* by reading the source and
-// confirming the filter key is "tx_id" (not "block_height" or the
-// proper logical-dedup key). When the bug is fixed (filter switched to
-// {key_id, block_height, type} or similar) the assertion below will
-// fail, signalling that the test needs to be updated.
+// Post-fix the filter is {key_id, block_height, type}. Retries collapse to
+// one row keyed on the commitment's semantic identity, and the additional
+// state_engine.go gate refuses to advance an active key's epoch backwards.
+//
+// Without a live mongo we still assert at the source level: confirm the
+// filter is now keyed on block_height and that "tx_id" no longer appears in
+// the filter object.
 
 import (
 	"os"
@@ -27,10 +23,10 @@ import (
 	"testing"
 )
 
-// TestAuditUnfixed_S8_UpsertFilterUsesTxIdInsteadOfBlockHeight reads
-// the source file and confirms the upsert filter is keyed on tx_id,
-// which makes the dedup useless across retries.
-func TestAuditUnfixed_S8_UpsertFilterUsesTxIdInsteadOfBlockHeight(t *testing.T) {
+// TestAuditFix_S8_UpsertFilterUsesBlockHeightNotTxId reads
+// the source file and confirms the upsert filter is now keyed on
+// block_height + type, so retries with new tx_ids collapse to one row.
+func TestAuditFix_S8_UpsertFilterUsesBlockHeightNotTxId(t *testing.T) {
 	// Locate modules/db/vsc/tss/commitments.go relative to this test
 	// file (state_engine package lives at modules/state-processing).
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -83,13 +79,14 @@ func TestAuditUnfixed_S8_UpsertFilterUsesTxIdInsteadOfBlockHeight(t *testing.T) 
 	}
 	filter := tail[filterStart : filterStart+closeBrace]
 
-	if !strings.Contains(filter, "\"tx_id\"") {
-		t.Fatalf("expected upsert filter to contain \"tx_id\" (current buggy behavior); got: %q", filter)
+	if !strings.Contains(filter, "\"block_height\"") {
+		t.Fatalf("expected upsert filter to contain \"block_height\" post-fix; got: %q", filter)
 	}
-	if strings.Contains(filter, "\"block_height\"") {
-		// When fixed, block_height becomes part of the dedup key — at
-		// that point this branch fires and we update the assertion.
-		t.Fatalf("upsert filter now contains \"block_height\" — fix appears to have landed, update this test: %q", filter)
+	if strings.Contains(filter, "\"tx_id\"") {
+		t.Fatalf("upsert filter still contains \"tx_id\" — S8 retry-double-write defect is back: %q", filter)
 	}
-	t.Logf("precondition confirmed: SetCommitmentData filter = bson.M{%s}", strings.TrimSpace(filter))
+	if !strings.Contains(filter, "\"type\"") {
+		t.Fatalf("expected upsert filter to also include \"type\" so keygen/reshare/blame/sign rows do not collide at the same (key_id, block_height); got: %q", filter)
+	}
+	t.Logf("S8 fix confirmed: SetCommitmentData filter = bson.M{%s}", strings.TrimSpace(filter))
 }

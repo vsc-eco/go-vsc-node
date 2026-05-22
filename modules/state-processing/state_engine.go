@@ -1279,6 +1279,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							} else if newKey {
 								tssLog.Verbose("keygen/reshare acknowledged (no pubKey)", "keyId", commitment.KeyId, "epoch", commitment.Epoch)
 							} else {
+								// S8: never rewind an active key's Epoch.
+								// keyInfo.Epoch drives the on-disk keystore-path
+								// derivation (tss.go: makeKey("key", id, epoch)),
+								// so accepting an older commitment's epoch here
+								// orphans the live share past retirement.
+								if commitment.Epoch <= keyInfo.Epoch {
+									tssLog.Warn("rejecting stale keygen/reshare commitment (epoch would not advance)", "keyId", commitment.KeyId, "currentEpoch", keyInfo.Epoch, "commitmentEpoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
+									continue
+								}
 								keyInfo.Epoch = commitment.Epoch
 								tssLog.Info("key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch)
 								se.tssKeys.SetKey(keyInfo)
