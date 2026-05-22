@@ -47,7 +47,12 @@ type StateEngine interface {
 	DataLayer() DataLayer
 	//returns: contract information (contracts.Contract) contract exists (bool)
 	GetContractInfo(id string, height uint64) (contracts.Contract, bool)
-	GetElectionInfo(height ...uint64) elections.ElectionResult
+	// GetElectionInfoOrBlock is the fail-stop election read: it blocks on a
+	// transient DB error instead of swallowing it and returning a zero-value
+	// epoch (which would let one node decide a tx outcome differently from
+	// peers — a fork). found=false means a deterministic absence (no election
+	// covers the height yet), which every honest node sees identically.
+	GetElectionInfoOrBlock(height uint64) (elections.ElectionResult, bool)
 	SystemConfig() systemconfig.SystemConfig
 	// PendulumOracleEnv returns key/value pairs merged into wasm contract env (system.get_env / get_env_key).
 	// Keys use the "pendulum.*" prefix; nil or empty means no pendulum snapshot is available.
