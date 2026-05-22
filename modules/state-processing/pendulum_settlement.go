@@ -315,7 +315,7 @@ func (se *StateEngine) rederivePendulumSettlement(rec pendulumsettlement.Settlem
 		members = append(members, acct)
 	}
 
-	bonds := pendulumsettlement.ReadCommitteeBonds(se.balanceDb, members, rec.SnapshotRangeTo)
+	bonds := pendulumsettlement.ReadCommitteeBonds(se.balanceDb, members, rec.SnapshotRangeFrom, rec.SnapshotRangeTo)
 	bucket := se.LedgerSystem.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, rec.SnapshotRangeTo)
 	// bucket==0 is a real (empty-activity) state ComposeRecord must
 	// re-derive against; bonds==0 only matters when bucket>0 and the
