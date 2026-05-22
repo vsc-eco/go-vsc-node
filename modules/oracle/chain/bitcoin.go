@@ -160,7 +160,7 @@ func (b *bitcoinRelayer) ChainData(
 	var prunedIndices []int
 
 	for i, entry := range entries {
-		btcBlock, err := getBlockByHash(btcdClient, entry.hash, entry.height)
+		btcBlock, err := getBlockByHash(btcdClient, entry.hash, entry.height, b.fixedFeeRate)
 		if err != nil {
 			if isPrunedBlockError(err) {
 				prunedHashes = append(prunedHashes, entry.hash)
@@ -184,7 +184,7 @@ func (b *bitcoinRelayer) ChainData(
 		btcLogger.Info("pruned blocks recovered successfully", "count", len(prunedHashes))
 		for _, idx := range prunedIndices {
 			entry := entries[idx]
-			btcBlock, err := getBlockByHash(btcdClient, entry.hash, entry.height)
+			btcBlock, err := getBlockByHash(btcdClient, entry.hash, entry.height, b.fixedFeeRate)
 			if err != nil {
 				return nil, fmt.Errorf(
 					"failed to get block after recovery: [blockHeight: %d], [err: %w]",
@@ -344,6 +344,7 @@ func getBlockByHash(
 	btcdClient *rpcclient.Client,
 	blockHash *chainhash.Hash,
 	knownHeight uint64,
+	fixedFeeRate int64,
 ) (*btcChainData, error) {
 	block, err := btcdClient.GetBlock(blockHash)
 	if err != nil {
@@ -359,19 +360,24 @@ func getBlockByHash(
 		blockHeader: blockHeader,
 	}
 
+	// RT-9: when an operator has set fixedFeeRate (testnet always does,
+	// see bitcoinRelayer.Init), AverageFeeRate is going to be overwritten
+	// in the result loop regardless. Skip GetBlockStats entirely on that
+	// path so a btcd RPC flake can't fail the whole batch on testnet.
+	// On mainnet (fixedFeeRate == 0) we propagate the error — silently
+	// zeroing the fee there would surface as a "0 sat/vB" unmap tx that
+	// sticks on the BTC network.
+	if fixedFeeRate > 0 {
+		btcBlock.Height = knownHeight
+		btcBlock.AverageFeeRate = fixedFeeRate
+		return &btcBlock, nil
+	}
+
 	blockStats, err := btcdClient.GetBlockStats(
 		blockHash,
 		&[]string{"height", "avgfeerate"},
 	)
 	if err != nil {
-		// RT-9: silently zeroing AverageFeeRate here let a btcd RPC flake
-		// surface as a "0 sat/vB" fee on the BTC unmap path, which signs
-		// a stuck mainnet tx. Propagate the error so callers can retry or
-		// surface the operational fault instead of producing a poisoned
-		// block record. (Callers wrap with their own context, and the
-		// override at b.fixedFeeRate is applied *after* this function
-		// returns — if operators rely on the override they still see the
-		// underlying RPC failure first.)
 		return nil, fmt.Errorf("failed to get block stats for %s (height %d): %w", blockHash, knownHeight, err)
 	}
 	btcBlock.Height = uint64(blockStats.Height)
