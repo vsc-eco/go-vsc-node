@@ -357,6 +357,15 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 		if witnessData.GatewayKey == "" {
 			continue
 		}
+		// FUZZ-1: skip witnesses whose announced gateway_key would panic the
+		// hivego serializer (DecodePublicKey slices decoded[-4:] on short
+		// inputs). Without this guard a single malicious witness can crash
+		// every elected witness on the next rotation tick.
+		if err := safeValidateGatewayKey(witnessData.GatewayKey); err != nil {
+			log.Warn("skipping witness with malformed gateway_key",
+				"account", member.Account, "bh", bh, "err", err)
+			continue
+		}
 		var key [2]interface{}
 		key[0] = witnessData.GatewayKey
 		key[1] = 1
