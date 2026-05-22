@@ -139,62 +139,63 @@ func TestAuditUnfixed_60_ReductionsDiscardedOnZeroBucket(t *testing.T) {
 	// len(rec.RewardReductions) == 2 with the bps values matching.
 }
 
-// TestAuditUnfixed_122_BondReaderIsPointInTime — Pendulum audit MEDIUM #122
-// (flash-stake snapshot, no TWAB).
+// TestAuditFix_122_BondReaderMinAcrossWindow — Pendulum audit MEDIUM #122
+// (flash-stake snapshot, now TWAB-style min).
 //
-// Precondition: ReadCommitteeBonds reads BalanceRecord.HIVE_CONSENSUS via a
-// single GetBalanceRecord(account, blockHeight) call — a point-in-time
-// snapshot at the settlement slot. There is no time-weighted average across
-// the snapshot window (EpochStartBh, SlotHeight].
+// Pre-fix: ReadCommitteeBonds did a single point-in-time read at slotHeight.
+// A flash-stake at slotHeight−1 got the full pro-rata distribution weight
+// as if it had been bonded the whole epoch.
 //
-// See bond_reader.go:31-64. The stub here returns the same record for any
-// blockHeight queried, mirroring how a real ledger read would return the
-// latest-as-of-height record. A witness that staked 1,000,000 HIVE_CONSENSUS
-// one block before SlotHeight gets the full pro-rata distribution weight as
-// if they had been bonded the whole epoch — a "flash-stake" front-run.
-//
-// Post-fix bond_reader would integrate the bond across (EpochStartBh,
-// SlotHeight] (TWAB) so the effective weight matches the time the capital
-// was actually at risk during the epoch.
-func TestAuditUnfixed_122_BondReaderIsPointInTime(t *testing.T) {
-	// alice flash-stakes 1,000,000 right at SlotHeight; she was at 0 for the
-	// whole rest of the epoch. The point-in-time read at SlotHeight returns
-	// her flashed bond as if it had been there since EpochStartBh.
+// Post-fix: ReadCommitteeBonds samples bondSampleCount points across
+// (epochStartBh, slotHeight] and returns min(HIVE_CONSENSUS) per account.
+// alice's flash-stake at slotHeight stays unfunded for the whole interior
+// of the window, so the minimum is the pre-flash balance (0) and she is
+// omitted from the bonds map.
+func TestAuditFix_122_BondReaderMinAcrossWindow(t *testing.T) {
 	reader := &auditFlashStakeReader{
 		flashAccount:    "hive:alice",
 		preFlashBalance: 0,
 		flashBalance:    1_000_000,
-		flashBlock:      2000, // == slotHeight in the test below
+		flashBlock:      2000, // == slotHeight
 	}
 
 	const epochStartBh uint64 = 1000
 	const slotHeight uint64 = 2000
 
-	bonds := ReadCommitteeBonds(reader, []string{"hive:alice"}, slotHeight)
+	bonds := ReadCommitteeBonds(reader, []string{"hive:alice"}, epochStartBh, slotHeight)
 
-	// Current (buggy) behavior: alice gets credited with the full
-	// point-in-time balance, no TWAB discount applied.
-	got := bonds["hive:alice"]
-	if got != 1_000_000 {
-		t.Fatalf("audit #122: expected point-in-time read of 1_000_000 (current buggy behavior), got %d", got)
+	if got, present := bonds["hive:alice"]; present {
+		t.Fatalf("audit #122: expected flash-staker to be omitted (min-bond = 0), got %d", got)
 	}
 
-	// Sanity-check the precondition: the stub does return 0 for any block
-	// strictly before flashBlock — i.e., a TWAB across (epochStartBh,
-	// slotHeight] would produce a much smaller effective bond. We don't
-	// integrate it here (the production code doesn't either), but the stub
-	// is wired to support it once the fix lands.
-	preRec, _ := reader.GetBalanceRecord("hive:alice", epochStartBh+1)
-	if preRec == nil || preRec.HIVE_CONSENSUS != 0 {
-		t.Fatalf("audit #122: stub precondition wrong; pre-flash record should be 0, got %+v", preRec)
+	// Sanity: the stub returns 1,000,000 if asked only at slotHeight, so
+	// a regression that drops the window-aware sampling would resurface
+	// the flash-stake.
+	preRec, _ := reader.GetBalanceRecord("hive:alice", slotHeight)
+	if preRec == nil || preRec.HIVE_CONSENSUS != 1_000_000 {
+		t.Fatalf("audit #122: stub precondition wrong; at-slot record should be 1M, got %+v", preRec)
 	}
+	if preRec2, _ := reader.GetBalanceRecord("hive:alice", epochStartBh+1); preRec2 == nil || preRec2.HIVE_CONSENSUS != 0 {
+		t.Fatalf("audit #122: stub precondition wrong; pre-flash record should be 0, got %+v", preRec2)
+	}
+}
 
-	// Post-fix the assertion above should flip: ReadCommitteeBonds should
-	// return a time-weighted average across (EpochStartBh, SlotHeight] —
-	// for this stub, alice was at 0 for ~all of (1000, 2000] and at
-	// 1_000_000 only at block 2000, so the TWAB would be ~1_000 (one block
-	// of weight out of 1000), not 1_000_000. The flash-stake economic
-	// front-run is then closed.
+// TestAuditFix_122_BondReaderHonestStakerKeepsBond ensures a witness that
+// was bonded throughout the window keeps full weight — the TWAB-style min
+// only discounts capital that wasn't actually at risk for the epoch.
+func TestAuditFix_122_BondReaderHonestStakerKeepsBond(t *testing.T) {
+	reader := &auditFlashStakeReader{
+		flashAccount:    "hive:alice",
+		preFlashBalance: 1_000_000,
+		flashBalance:    1_000_000,
+		flashBlock:      0, // bonded since before the window
+	}
+	const epochStartBh uint64 = 1000
+	const slotHeight uint64 = 2000
+	bonds := ReadCommitteeBonds(reader, []string{"hive:alice"}, epochStartBh, slotHeight)
+	if got := bonds["hive:alice"]; got != 1_000_000 {
+		t.Fatalf("audit #122: honest staker must keep full bond, got %d", got)
+	}
 }
 
 // auditFlashStakeReader is the minimum BalanceRecordReader surface needed to

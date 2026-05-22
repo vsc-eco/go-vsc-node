@@ -408,7 +408,7 @@ func (e *electionProposer) GenerateFullElection(
 			return elections.ElectionHeader{}, elections.ElectionData{},
 				fmt.Errorf("pendulum settlement: balance reader unavailable")
 		}
-		bonds := pendulumsettlement.ReadCommitteeBonds(balanceReader, settlementMembers, blockHeight)
+		bonds := pendulumsettlement.ReadCommitteeBonds(balanceReader, settlementMembers, previousElection.BlockHeight, blockHeight)
 		bucket := e.se.PendulumNodesBucketBalance(blockHeight)
 		prevSettled := e.se.GetLatestSettledEpoch()
 		tickInterval := e.se.PendulumOracleTickInterval()
