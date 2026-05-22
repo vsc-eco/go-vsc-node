@@ -17,10 +17,17 @@ type tssCommitments struct {
 }
 
 func (tsc *tssCommitments) SetCommitmentData(commitment TssCommitment) error {
+	// S8: dedup on (key_id, block_height, type), not (key_id, tx_id). A
+	// retried commitment in a fresh custom_json keeps its semantic identity
+	// (same key, same block, same type) but gets a new tx_id, which used
+	// to insert a second row. Two rows broke GetCommitmentByHeight's
+	// "highest row wins" assumption and let any witness rewind keyInfo.Epoch
+	// by re-broadcasting an older commitment for the same active key.
 	options := options.FindOneAndUpdate().SetUpsert(true)
 	updateResult := tsc.FindOneAndUpdate(context.Background(), bson.M{
-		"key_id": commitment.KeyId,
-		"tx_id":  commitment.TxId,
+		"key_id":       commitment.KeyId,
+		"block_height": commitment.BlockHeight,
+		"type":         commitment.Type,
 	}, bson.M{
 		"$set": bson.M{
 			"type":         commitment.Type,
