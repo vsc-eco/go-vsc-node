@@ -23,6 +23,29 @@ func (tsc *tssCommitments) SetCommitmentData(commitment TssCommitment) error {
 	// to insert a second row. Two rows broke GetCommitmentByHeight's
 	// "highest row wins" assumption and let any witness rewind keyInfo.Epoch
 	// by re-broadcasting an older commitment for the same active key.
+	//
+	// Defense in depth: log when an existing row's commitment bytes differ
+	// from the incoming payload. Under honest 2/3 BLS aggregation only one
+	// valid commitment can exist for (key_id, block_height, type), so a
+	// non-equal overwrite is either a soft-fork window or evidence of a
+	// double-aggregate attempt — either way operators want to see it.
+	existing := tsc.FindOne(context.Background(), bson.M{
+		"key_id":       commitment.KeyId,
+		"block_height": commitment.BlockHeight,
+		"type":         commitment.Type,
+	})
+	if existing.Err() == nil {
+		var prev TssCommitment
+		if decodeErr := existing.Decode(&prev); decodeErr == nil {
+			if prev.Commitment != commitment.Commitment || prev.Epoch != commitment.Epoch {
+				log.Warn("SetCommitmentData: overwriting non-equal commitment row",
+					"keyId", commitment.KeyId, "type", commitment.Type, "blockHeight", commitment.BlockHeight,
+					"prevEpoch", prev.Epoch, "newEpoch", commitment.Epoch,
+					"prevTxId", prev.TxId, "newTxId", commitment.TxId)
+			}
+		}
+	}
+
 	options := options.FindOneAndUpdate().SetUpsert(true)
 	updateResult := tsc.FindOneAndUpdate(context.Background(), bson.M{
 		"key_id":       commitment.KeyId,
