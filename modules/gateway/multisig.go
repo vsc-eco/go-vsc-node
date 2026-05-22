@@ -830,6 +830,13 @@ func (ms *MultiSig) waitForSigs(
 	go func() {
 		signedWeight := uint64(0)
 		sigs := make([]string, 0)
+		// S1: dedup on the recovered signer pubkey, not on the raw signature
+		// string. ECDSA sigs are malleable — a single signer can submit (r,s)
+		// and (r,N-s,v^1) which differ as strings but recover the same pubkey;
+		// without this map the signer's weight is counted twice. RecoverPublicKey
+		// additionally rejects high-S sigs so the malleated form never reaches
+		// here, but we still key dedup on pubkey for defense in depth.
+		signedByPubKey := make(map[string]struct{})
 		for uint64(threshold) > signedWeight {
 			select {
 			case <-ctx.Done():
@@ -852,7 +859,8 @@ func (ms *MultiSig) waitForSigs(
 						}
 						idx := slices.Index(publicList, pubKey)
 						if idx != -1 {
-							if !slices.Contains(sigs, sigRes.Sig) {
+							if _, already := signedByPubKey[pubKey]; !already {
+								signedByPubKey[pubKey] = struct{}{}
 								sigs = append(sigs, sigRes.Sig)
 								signedWeight = signedWeight + uint64(weights[idx])
 							}
