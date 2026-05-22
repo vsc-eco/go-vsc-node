@@ -87,6 +87,11 @@ type Config struct {
 	// DashdRPCPort is the host port exposed for the dashd regtest JSON-RPC.
 	// Defaults to 19898 (regtest is 19898 by default for Dash).
 	DashdRPCPort int
+	// MagiEnv is a per-test env-var override map applied to every magi-N
+	// container. Use for devnet-only knobs that don't deserve a SysConfig
+	// field — e.g. VSC_GATEWAY_ROTATION_INTERVAL to drive FUZZ-1 paths
+	// in seconds instead of an hour.
+	MagiEnv map[string]string
 }
 
 // DefaultConfig returns a Config with sensible defaults for testing.

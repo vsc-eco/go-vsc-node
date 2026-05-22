@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -114,6 +115,20 @@ func writeNodesOverride(cfg *Config, devnetDir, projectName, imageName, outputPa
 			nodeImage = oldCodeImageTag(cfg)
 		}
 
+		var envBlock strings.Builder
+		if len(cfg.MagiEnv) > 0 {
+			envBlock.WriteString("    environment:\n")
+			// Sort keys so the rendered compose file is byte-stable.
+			keys := make([]string, 0, len(cfg.MagiEnv))
+			for k := range cfg.MagiEnv {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				fmt.Fprintf(&envBlock, "      %s: %q\n", k, cfg.MagiEnv[k])
+			}
+		}
+
 		fmt.Fprintf(&b, `
   magi-%[1]d:
     image: %[8]s
@@ -127,13 +142,13 @@ func writeNodesOverride(cfg *Config, devnetDir, projectName, imageName, outputPa
     container_name: %[7]s-magi-%[1]d
     hostname: magi-%[1]d
     command: [%[3]s]
-    ports:
+%[9]s    ports:
       - "%[4]d:8080"
       - "%[5]d:%[5]d"
       - "%[5]d:%[5]d/udp"
     volumes:
       - %[6]s:/data/devnet
-`, i, cfg.SourceDir, cmd, gqlPort, p2pPort, devnetDir, projectName, nodeImage)
+`, i, cfg.SourceDir, cmd, gqlPort, p2pPort, devnetDir, projectName, nodeImage, envBlock.String())
 	}
 
 	return os.WriteFile(outputPath, []byte(b.String()), 0o644)
