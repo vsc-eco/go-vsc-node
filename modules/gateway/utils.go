@@ -79,6 +79,11 @@ func RecoverPublicKey(signature string, hash []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Length is checked here so the high-S branch below can't conflate
+	// "wrong byte count" with "non-canonical S" in operator logs.
+	if len(sigBytes) != secpCompactSigSize {
+		return "", fmt.Errorf("invalid compact signature length: got %d, want %d", len(sigBytes), secpCompactSigSize)
+	}
 	// S1: reject the high-S malleated twin of any valid signature before
 	// pubkey recovery. Without this, (r, N-s) recovers the same pubkey but
 	// presents a different sig string, defeating the dedup at collectSigs.

@@ -272,6 +272,16 @@ func (e *electionProposer) GenerateFullElection(
 	//     tiny-denominator misban issue when the chain has just started)
 	//   - any error reading scoreMap (degrade to the no-filter behaviour
 	//     rather than blocking election production on a transient DB read)
+	//
+	// Determinism note: scoreMap reads vscBlocks.GetBlocksByElection from
+	// the LOCAL DB. Verifiers in HandleMessage rebuild the election header
+	// via the same path, so divergent block indexing between proposer and
+	// verifier yields divergent CIDs and the BLS aggregate fails (election
+	// retries next slot — safety preserved, liveness affected). The
+	// scoreMapMinSamples=500 floor caps the divergence window. A cleaner
+	// long-term fix would have the proposer publish its BannedNodes set
+	// alongside the election so verifiers re-derive against the proposed
+	// input. Tracked as a follow-up.
 	if !firstElection && e.vscBlocks != nil {
 		sm, smErr := e.scoreMap()
 		if smErr != nil {
