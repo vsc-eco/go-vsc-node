@@ -723,6 +723,13 @@ func (ep *electionProposer) scoreMap() (ScoreMap, error) {
 	elections = append(elections, election)
 
 	for i := uint64(1); i < electionCount; i++ {
+		// Guard against uint64 underflow on early chains where the latest
+		// epoch is < i. Without this, election.Epoch - i wraps to a very
+		// large number, GetElection returns nil, and the loop breaks
+		// anyway — but only by accident. Be explicit.
+		if election.Epoch < i {
+			break
+		}
 
 		prevElection := ep.elections.GetElection(election.Epoch - i)
 
