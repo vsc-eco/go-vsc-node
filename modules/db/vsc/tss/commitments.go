@@ -3,6 +3,7 @@ package tss_db
 import (
 	"context"
 	"fmt"
+	"sort"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
@@ -11,6 +12,57 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+// dedupCommitmentsBySemanticKey collapses rows sharing
+// (key_id, block_height, type) to a single representative — the row with the
+// lexicographically smallest tx_id, picked deterministically so every node
+// computes the same result.
+//
+// Why this exists: SetCommitmentData used to dedup on (key_id, tx_id) and
+// retries with new tx_ids created multiple rows per semantic commitment
+// (audit S8). The current SetCommitmentData filter is now
+// (key_id, block_height, type), so new inserts are dedup'd at write time —
+// but rows written before the fix may still exist in production DBs.
+// Without read-time dedup, consumers that iterate every row (tss.go blame
+// aggregation, state_engine.go pendulum reductions) would count those
+// historical duplicates multiple times, inflating blame scores or reductions.
+// Apply this helper at every read boundary that aggregates over rows.
+func dedupCommitmentsBySemanticKey(commits []TssCommitment) []TssCommitment {
+	if len(commits) <= 1 {
+		return commits
+	}
+	type semanticKey struct {
+		KeyId       string
+		BlockHeight uint64
+		Type        string
+	}
+	winner := make(map[semanticKey]TssCommitment, len(commits))
+	for _, c := range commits {
+		k := semanticKey{KeyId: c.KeyId, BlockHeight: c.BlockHeight, Type: c.Type}
+		prev, exists := winner[k]
+		if !exists || c.TxId < prev.TxId {
+			winner[k] = c
+		}
+	}
+	out := make([]TssCommitment, 0, len(winner))
+	for _, c := range winner {
+		out = append(out, c)
+	}
+	// Deterministic order so downstream iteration is stable across nodes.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].BlockHeight != out[j].BlockHeight {
+			return out[i].BlockHeight < out[j].BlockHeight
+		}
+		if out[i].KeyId != out[j].KeyId {
+			return out[i].KeyId < out[j].KeyId
+		}
+		if out[i].Type != out[j].Type {
+			return out[i].Type < out[j].Type
+		}
+		return out[i].TxId < out[j].TxId
+	})
+	return out
+}
 
 type tssCommitments struct {
 	*db.Collection
@@ -166,7 +218,7 @@ func (tsc *tssCommitments) FindCommitments(keyId *string, byTypes []string, epoc
 		commitments = append(commitments, commitment)
 	}
 
-	return commitments, nil
+	return dedupCommitmentsBySemanticKey(commitments), nil
 }
 
 func (tsc *tssCommitments) FindCommitmentsSimple(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, limit int) ([]TssCommitment, error) {
@@ -210,7 +262,7 @@ func (tsc *tssCommitments) FindCommitmentsSimple(keyId *string, byTypes []string
 		}
 		commitments = append(commitments, commitment)
 	}
-	return commitments, nil
+	return dedupCommitmentsBySemanticKey(commitments), nil
 }
 
 func (tsc *tssCommitments) GetBlames(epoch *uint64) ([]TssCommitment, error) {
@@ -236,7 +288,7 @@ func (tsc *tssCommitments) GetBlames(epoch *uint64) ([]TssCommitment, error) {
 		commitments = append(commitments, commitment)
 	}
 
-	return commitments, nil
+	return dedupCommitmentsBySemanticKey(commitments), nil
 }
 
 func NewCommitments(d *vsc.VscDb) TssCommitments {
@@ -245,11 +297,19 @@ func NewCommitments(d *vsc.VscDb) TssCommitments {
 
 // review2 HIGH #27: tss_commitments is queried by {key_id, block_height}
 // (GetCommitmentByHeight) with only the _id index.
+//
+// S8 follow-up: SetCommitmentData now upserts on (key_id, block_height, type),
+// so the index is extended to include type. Mongo can still serve the
+// (key_id, block_height) prefix lookups from this index.
 func (e *tssCommitments) Init() error {
 	if err := e.Collection.Init(); err != nil {
 		return err
 	}
 	return e.CreateIndexIfNotExist(mongo.IndexModel{
-		Keys: bson.D{{Key: "key_id", Value: 1}, {Key: "block_height", Value: -1}},
+		Keys: bson.D{
+			{Key: "key_id", Value: 1},
+			{Key: "block_height", Value: -1},
+			{Key: "type", Value: 1},
+		},
 	})
 }
