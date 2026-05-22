@@ -39,11 +39,13 @@ type ComposeInputs struct {
 // nodes with the same ComposeInputs produce byte-equal output.
 //
 // An empty-activity epoch (BucketBalanceHBD == 0) returns a marker-only
-// record with no distributions and no reductions. The next epoch's election
-// gates on `latestSettled >= prior_epoch`, so quiet epochs still need to
-// land a marker — otherwise the chain stalls until somebody swaps. The
-// committee-bonds requirement only applies when there is actually HBD to
-// distribute.
+// record with no distributions and no reductions. A fully-reduced epoch
+// (totalEffectiveBond == 0 after applying ReductionsByAccount) likewise
+// returns a marker with the full bucket assigned to ResidualHBD and the
+// reductions preserved on-chain. The next epoch's election gates on
+// `latestSettled >= prior_epoch`, so a stalling error in this layer freezes
+// the chain — both marker paths exist specifically to keep liveness when
+// no distribution is owed.
 //
 // Returns nil + error only on inputs that prevent any meaningful record
 // (zero epoch, slot at or before the epoch start, negative bucket, or
@@ -86,7 +88,32 @@ func ComposeRecord(in ComposeInputs) (*SettlementRecord, error) {
 		totalEffectiveBond += b
 	}
 	if totalEffectiveBond <= 0 {
-		return nil, fmt.Errorf("total effective bond after reductions is 0")
+		// #52: universal 100% reduction across the committee (every member at
+		// PerEpochCapBps) collapses every effective bond to 0. Erroring here
+		// aborted election production deterministically — a universal stall
+		// reachable purely from on-chain evidence, with no swap path to clear
+		// because the bucket is non-zero. Emit a marker-only record instead:
+		// the bucket rolls into the next epoch via residual, the reductions
+		// remain on the audit trail, and the chain advances.
+		reductionPayload := make([]RewardReductionEntry, 0, len(applied))
+		for _, r := range applied {
+			reductionPayload = append(reductionPayload, RewardReductionEntry{
+				Account: r.Account,
+				Bps:     r.Bps,
+			})
+		}
+		rec := BuildSettlementRecord(
+			in.Epoch,
+			in.PrevEpoch,
+			in.EpochStartBh,
+			in.SlotHeight,
+			in.BucketBalanceHBD,
+			0,
+			in.BucketBalanceHBD,
+			reductionPayload,
+			nil,
+		)
+		return &rec, nil
 	}
 
 	// All HBD in the bucket goes to nodes — LP retention happened at swap
