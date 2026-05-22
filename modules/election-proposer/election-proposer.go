@@ -225,6 +225,14 @@ var REQUIRED_ELECTION_MEMBERS = []string{
 
 const VSC_ELECTION_TX_ID = "vsc.election_result"
 
+// scoreMapMinSamples is the lower bound on (sum of) block-signing samples
+// scoreMap must observe before its BannedNodes list is allowed to filter
+// the next committee. Below this many samples — early epochs, or a node
+// that's still catching up — the score threshold (75%) over a tiny
+// denominator can mis-ban everyone, so we skip the filter and rely on
+// later elections (with more history) to catch persistent delinquency.
+const scoreMapMinSamples = 500
+
 func (e *electionProposer) GenerateFullElection(
 	witnessList []witnesses.Witness,
 	previousEpoch uint64,
@@ -252,6 +260,39 @@ func (e *electionProposer) GenerateFullElection(
 	} else {
 		etype = "initial"
 		firstElection = true
+	}
+
+	// #24: apply the dead-letter BannedNodes filter from scoreMap. Without
+	// this the per-witness score is computed but never read, so persistent
+	// under-participators are still eligible for the next committee. We
+	// skip on:
+	//   - the genesis election (no prior history)
+	//   - missing vscBlocks dependency (test harnesses)
+	//   - early epochs where samples < scoreMapMinSamples (avoids the
+	//     tiny-denominator misban issue when the chain has just started)
+	//   - any error reading scoreMap (degrade to the no-filter behaviour
+	//     rather than blocking election production on a transient DB read)
+	if !firstElection && e.vscBlocks != nil {
+		sm, smErr := e.scoreMap()
+		if smErr != nil {
+			fmt.Println("election.scoreMap failed (skipping ban filter)", "err", smErr)
+		} else if sm.Samples >= scoreMapMinSamples && len(sm.BannedNodes) > 0 {
+			banned := make(map[string]bool, len(sm.BannedNodes))
+			for _, n := range sm.BannedNodes {
+				banned[n] = true
+			}
+			before := len(witnessList)
+			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
+				if banned[w.Account] {
+					fmt.Println("election.skip banned witness (scoreMap < 75%)", "account", w.Account, "samples", sm.Samples, "score", sm.Map[w.Account])
+					return true
+				}
+				return false
+			})
+			if len(witnessList) < before {
+				fmt.Println("election.bannedNodes applied", "removed", before-len(witnessList), "samples", sm.Samples)
+			}
+		}
 	}
 
 	stakedMap := map[string]uint64{}
