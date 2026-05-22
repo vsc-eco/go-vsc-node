@@ -698,7 +698,13 @@ type ScoreMap struct {
 func (ep *electionProposer) scoreMap() (ScoreMap, error) {
 	const electionCount = 4
 
-	elections := make([]elections.ElectionResult, electionCount)
+	// #24: must be 0-length slice with cap N, NOT length-N. The old form
+	// pre-pended 4 zero-valued ElectionResults, so the loop below called
+	// GetBlocksByElection(0) four extra times and inflated `samples` by
+	// 4× the count of genesis blocks. Bans were dead code at the time so
+	// it didn't matter; now that committee selection reads BannedNodes
+	// it would over-ban witnesses against a fictionally large denominator.
+	elections := make([]elections.ElectionResult, 0, electionCount)
 	election, err := ep.elections.GetElectionByHeight(math.MaxInt64)
 	if err != nil {
 		return ScoreMap{}, err
