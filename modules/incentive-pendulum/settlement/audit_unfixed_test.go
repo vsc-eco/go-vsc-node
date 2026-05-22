@@ -8,80 +8,64 @@ import (
 	"vsc-node/modules/incentive-pendulum/rewards"
 )
 
-// TestAuditUnfixed_52_ChainStallsOnFullReduction — Pendulum audit MEDIUM #52.
+// TestAuditFix_52_ChainAdvancesOnFullReduction — Pendulum audit MEDIUM #52.
 //
-// Precondition: ComposeRecord errors out hard when reductions zero the entire
-// committee's effective bond. With a non-empty bucket, every committee member
-// at PerEpochCapBps (10000 = 100%) makes `totalEffectiveBond` collapse to 0,
-// and ComposeRecord refuses to emit a record:
+// Pre-fix: when every committee member earned PerEpochCapBps reduction, the
+// total effective bond collapsed to 0 and ComposeRecord errored out. That
+// error propagated through election-proposer and froze the chain
+// deterministically on every honest node — a universal stall reachable
+// purely from on-chain evidence.
 //
-//   compose.go:88-90
-//     if totalEffectiveBond <= 0 {
-//         return nil, fmt.Errorf("total effective bond after reductions is 0")
-//     }
-//
-// That error propagates up through election-proposer.go:396-403:
-//
-//     if composeErr != nil {
-//         return ..., fmt.Errorf("pendulum settlement: compose failed: %w", composeErr)
-//     }
-//
-// which aborts election production deterministically on every honest node.
-// Because the trigger is on-chain state (reductions derived from on-chain L2
-// evidence), every node will reproduce the abort on the same epoch — a
-// universal stall, no swap can clear it (the bucket is non-zero so the
-// empty-activity fast path doesn't apply).
-//
-// Post-fix the expectation flips: ComposeRecord should emit a marker record
-// (or assign the bucket to ResidualHBD) so the chain can progress past a
-// 100%-reduced epoch instead of stalling.
-func TestAuditUnfixed_52_ChainStallsOnFullReduction(t *testing.T) {
+// Post-fix: ComposeRecord emits a marker-only record with the full bucket
+// rolled forward as ResidualHBD and the reductions preserved for audit. The
+// chain advances past the fully-reduced epoch instead of stalling.
+func TestAuditFix_52_ChainAdvancesOnFullReduction(t *testing.T) {
 	bonds := map[string]int64{
 		"hive:alice": 1_000_000,
 		"hive:bob":   500_000,
 		"hive:carol": 250_000,
 	}
-	// Every committee member at the per-epoch cap → 100% reduction → effective
-	// bonds collapse to 0 across the board.
 	reductions := map[string]int{
 		"alice": rewards.PerEpochCapBps,
 		"bob":   rewards.PerEpochCapBps,
 		"carol": rewards.PerEpochCapBps,
 	}
 
+	const bucket int64 = 1_000_000
 	rec, err := ComposeRecord(ComposeInputs{
 		Epoch:               10,
 		PrevEpoch:           9,
 		EpochStartBh:        1000,
 		SlotHeight:          2000,
 		CommitteeBonds:      bonds,
-		BucketBalanceHBD:    1_000_000, // non-empty bucket → cannot use marker path
+		BucketBalanceHBD:    bucket,
 		ReductionsByAccount: reductions,
 	})
 
-	// Current (buggy) behavior: ComposeRecord returns the "total effective
-	// bond after reductions is 0" error and a nil record.
-	if err == nil {
-		t.Fatalf("audit #52: expected ComposeRecord to error on universal 100%% reduction, got rec=%+v", rec)
+	if err != nil {
+		t.Fatalf("audit #52: expected ComposeRecord to succeed with a marker, got err: %v", err)
 	}
-	if rec != nil {
-		t.Errorf("audit #52: expected nil record alongside error, got %+v", rec)
+	if rec == nil {
+		t.Fatal("audit #52: expected non-nil marker record")
 	}
-	if !strings.Contains(err.Error(), "total effective bond after reductions is 0") {
-		t.Fatalf("audit #52: error text changed; got %q, want it to contain 'total effective bond after reductions is 0'", err.Error())
+	if rec.TotalDistributedHBD != 0 {
+		t.Errorf("audit #52: expected 0 distributed on fully-reduced epoch, got %d", rec.TotalDistributedHBD)
+	}
+	if rec.ResidualHBD != bucket {
+		t.Errorf("audit #52: expected full bucket to roll forward as residual; got %d, want %d", rec.ResidualHBD, bucket)
+	}
+	if rec.BucketBalanceHBD != bucket {
+		t.Errorf("audit #52: bucket balance must round-trip; got %d, want %d", rec.BucketBalanceHBD, bucket)
+	}
+	if len(rec.Distributions) != 0 {
+		t.Errorf("audit #52: expected no distributions on fully-reduced epoch, got %d entries", len(rec.Distributions))
+	}
+	if len(rec.RewardReductions) != len(reductions) {
+		t.Errorf("audit #52: expected all %d reductions preserved on the marker, got %d", len(reductions), len(rec.RewardReductions))
 	}
 
-	// Follow-up: the error propagates through election-proposer.go:396-403
-	// (`return ..., fmt.Errorf("pendulum settlement: compose failed: %w", composeErr)`)
-	// and aborts the election deterministically. There is no swap path that
-	// clears it because the bucket is non-zero, so this is a universal stall
-	// triggered purely by on-chain evidence — every honest node reproduces it.
-	//
-	// Post-fix the assertion above should flip: ComposeRecord should emit a
-	// valid marker / residual-only record so the chain advances past a
-	// fully-reduced epoch instead of stalling, and the test would assert
-	// (err == nil && rec != nil) with TotalDistributedHBD == 0 and
-	// ResidualHBD == BucketBalanceHBD.
+	// silence the unused-import alarm if "strings" is removed from this test
+	_ = strings.Contains
 }
 
 // TestAuditUnfixed_60_ReductionsDiscardedOnZeroBucket — Pendulum audit
