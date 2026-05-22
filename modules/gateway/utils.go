@@ -5,10 +5,33 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v2"
 	"github.com/vsc-eco/hivego"
 )
+
+// secpCompactSigSize is the byte layout of a dcrd compact ECDSA signature
+// (1 header byte + 32-byte R + 32-byte S). Used by IsLowS to reach the S
+// component without re-parsing the whole signature.
+const secpCompactSigSize = 1 + 32 + 32
+
+// halfOrderN is N/2 of the secp256k1 group order, precomputed once. Any
+// signature with S > halfOrderN is non-canonical (high-S form) and is the
+// trivial malleated counterpart of a valid low-S signature.
+var halfOrderN = new(big.Int).Rsh(secp256k1.S256().Params().N, 1)
+
+// IsLowS reports whether the S component of a compact ECDSA signature is
+// in the lower half of the group order. BIP-62 / RFC 6979 low-S form is
+// the canonical form; rejecting high-S kills the (r, N-s) malleability
+// twin that S1 exploits to double-count a single signer's gateway vote.
+func IsLowS(sigBytes []byte) bool {
+	if len(sigBytes) != secpCompactSigSize {
+		return false
+	}
+	s := new(big.Int).SetBytes(sigBytes[1+32:])
+	return s.Sign() > 0 && s.Cmp(halfOrderN) <= 0
+}
 
 // hivePublicKeyPrefix is the Hive base58 public-key prefix. Kept in sync with
 // hivego.PublicKeyPrefix; copied locally so the FUZZ-1 guard can length-check
@@ -55,6 +78,12 @@ func RecoverPublicKey(signature string, hash []byte) (string, error) {
 	sigBytes, err := hex.DecodeString(signature)
 	if err != nil {
 		return "", err
+	}
+	// S1: reject the high-S malleated twin of any valid signature before
+	// pubkey recovery. Without this, (r, N-s) recovers the same pubkey but
+	// presents a different sig string, defeating the dedup at collectSigs.
+	if !IsLowS(sigBytes) {
+		return "", errors.New("signature has non-canonical high-S value")
 	}
 	pubKey, _, err := secp256k1.RecoverCompact(sigBytes, hash)
 
