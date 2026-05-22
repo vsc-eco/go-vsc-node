@@ -6,8 +6,11 @@ import (
 
 	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/db/vsc/hive_blocks"
 	safetyslash "vsc-node/modules/incentive-pendulum/safety_slash"
 	ledgerSystem "vsc-node/modules/ledger-system"
+
+	hivego "github.com/vsc-eco/hivego"
 )
 
 // stubLedgerSystem is a minimal in-test impl of the LedgerSystem interface
@@ -89,6 +92,12 @@ func TestRecordEvidenceAndShouldSlash_RejectsBlankInputs(t *testing.T) {
 	}
 	if se.recordEvidenceAndShouldSlash("alice", "", "ev", 100) {
 		t.Fatal("blank kind must not slash")
+	}
+	if se.recordEvidenceAndShouldSlash("alice", safetyslash.EvidenceVSCDoubleBlockSign, "", 100) {
+		t.Fatal("blank evidence id must not slash (no height fallback)")
+	}
+	if se.recordEvidenceAndShouldSlash("alice", safetyslash.EvidenceVSCDoubleBlockSign, "   ", 100) {
+		t.Fatal("whitespace-only evidence id must not slash")
 	}
 }
 
@@ -445,5 +454,99 @@ func TestSafetySlotMaps_BoundedAcrossManySlots(t *testing.T) {
 	}
 	if len(se.slashIncidentBpsBySlotAccount) > 1 {
 		t.Fatalf("slashIncidentBpsBySlotAccount leaked: %d entries", len(se.slashIncidentBpsBySlotAccount))
+	}
+}
+
+// TestSlotProposerKey_FormatAndRoundTrip locks the consensus-critical key
+// format shared by the double-sign detector, the correlated-slash cap
+// (slashForEvidenceIfPolicyAllows), the pruner (slotHeightFromSlotKey), and the
+// startup rehydrate. If these drift, a restarted node and a continuously-running
+// node key the same incident differently and their ledgers diverge.
+func TestSlotProposerKey_FormatAndRoundTrip(t *testing.T) {
+	key := slotProposerKey(200, "alice")
+	want := "200|" + normalizeHiveAccount("alice")
+	if key != want {
+		t.Fatalf("slotProposerKey format: got %q want %q", key, want)
+	}
+	if got := slotHeightFromSlotKey(key); got != 200 {
+		t.Fatalf("round-trip slot height: got %d want 200", got)
+	}
+}
+
+// TestRecordFirstSeenProposal_FirstSeenWins covers the seeding helper the live
+// detector and the rehydrate share: the first ref sticks, a later differing ref
+// is reported (so the caller can slash) but never overwrites, and distinct
+// accounts are independent.
+func TestRecordFirstSeenProposal_FirstSeenWins(t *testing.T) {
+	se := &StateEngine{}
+
+	if prev, existed := se.recordFirstSeenProposal(100, "alice", "cidA"); existed || prev != "" {
+		t.Fatalf("first sight: got (%q,%v) want (\"\",false)", prev, existed)
+	}
+	// Conflicting later ref: reported, not overwritten.
+	if prev, existed := se.recordFirstSeenProposal(100, "alice", "cidB"); !existed || prev != "cidA" {
+		t.Fatalf("conflict: got (%q,%v) want (\"cidA\",true)", prev, existed)
+	}
+	if got := se.seenProposalBySlotProposer[slotProposerKey(100, "alice")]; got != "cidA" {
+		t.Fatalf("first-seen-wins violated: map holds %q want cidA", got)
+	}
+	// Different account is independent.
+	if _, existed := se.recordFirstSeenProposal(100, "bob", "cidC"); existed {
+		t.Fatal("distinct account must not collide with alice")
+	}
+}
+
+// TestSeedProposalsFromStoredBlock_RebuildsCurrentSlot is the core of the
+// warm-restart fix: replaying a stored block's vsc.produce_block op re-seeds the
+// detector map exactly as live processing would — gated to the scheduled
+// producer and first-seen-wins — so a competing op processed after restart is
+// still caught as equivocation.
+func TestSeedProposalsFromStoredBlock_RebuildsCurrentSlot(t *testing.T) {
+	se := &StateEngine{seenProposalBySlotProposer: make(map[string]string)}
+
+	const h = uint64(81614100)
+	slot := CalculateSlotInfo(h).StartHeight
+
+	mkProduceOp := func(account, blockCID string) hivego.Operation {
+		return hivego.Operation{
+			Type: "custom_json",
+			Value: map[string]interface{}{
+				"id":             "vsc.produce_block",
+				"json":           `{"signed_block":{"block":"` + blockCID + `"}}`,
+				"required_auths": []interface{}{account},
+			},
+		}
+	}
+	block := hive_blocks.HiveBlock{
+		BlockNumber: h,
+		Transactions: []hive_blocks.Tx{
+			// Not the scheduled producer — must be ignored.
+			{TransactionID: "tx-bob", Operations: []hivego.Operation{mkProduceOp("bob", "cidBob")}},
+			// Unrelated op — must be ignored.
+			{TransactionID: "tx-noise", Operations: []hivego.Operation{{
+				Type:  "custom_json",
+				Value: map[string]interface{}{"id": "vsc.actions", "json": "{}", "required_auths": []interface{}{"alice"}},
+			}}},
+			// Scheduled producer, first ref — seeds.
+			{TransactionID: "tx1", Operations: []hivego.Operation{mkProduceOp("alice", "cidA")}},
+			// Scheduled producer, conflicting ref — first-seen-wins, no new seed.
+			{TransactionID: "tx2", Operations: []hivego.Operation{mkProduceOp("alice", "cidB")}},
+		},
+	}
+
+	if seeded := se.seedProposalsFromStoredBlock(block, "alice"); seeded != 1 {
+		t.Fatalf("seeded entries: got %d want 1 (alice once; bob, noise, dup skipped)", seeded)
+	}
+	if got := se.seenProposalBySlotProposer[slotProposerKey(slot, "alice")]; got != "cidA" {
+		t.Fatalf("scheduled producer ref: got %q want cidA", got)
+	}
+	if _, ok := se.seenProposalBySlotProposer[slotProposerKey(slot, "bob")]; ok {
+		t.Fatal("non-scheduled producer must not be seeded")
+	}
+
+	// A later competing op (post-restart) now collides with the rehydrated ref,
+	// which is exactly what lets the live detector flag the equivocation.
+	if prev, existed := se.recordFirstSeenProposal(slot, "alice", "cidB"); !existed || prev != "cidA" {
+		t.Fatalf("rehydrated ref must enable conflict detection: got (%q,%v) want (\"cidA\",true)", prev, existed)
 	}
 }
