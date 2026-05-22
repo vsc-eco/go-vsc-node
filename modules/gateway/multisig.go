@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
 	"slices"
 	"sort"
 	"strconv"
@@ -127,10 +128,30 @@ func (ms *MultiSig) Stop() error {
 }
 
 var ROTATION_INTERVAL = uint64(20 * 60) //One hour of Hive blocks
-// var ROTATION_INTERVAL = uint64(20) //Test interval for e2e; TODO: Make this modifiable through env variables.
-var ACTION_INTERVAL = uint64(20) // One minute of Hive blocks
-var SYNC_INTERVAL = uint64(7200) // Every 6 hours
-// var SYNC_INTERVAL = uint64(20) // Use during e2e testing
+var ACTION_INTERVAL = uint64(20)        // One minute of Hive blocks
+var SYNC_INTERVAL = uint64(7200)        // Every 6 hours
+
+// Devnet-only env-var overrides so e2e tests can drive rotation/action
+// ticks on the order of seconds instead of an hour. Honoured only when
+// set to a positive value; production binaries leave the defaults alone.
+// Documented under tests/devnet/README.md.
+func init() {
+	if v := os.Getenv("VSC_GATEWAY_ROTATION_INTERVAL"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil && n > 0 {
+			ROTATION_INTERVAL = n
+		}
+	}
+	if v := os.Getenv("VSC_GATEWAY_ACTION_INTERVAL"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil && n > 0 {
+			ACTION_INTERVAL = n
+		}
+	}
+	if v := os.Getenv("VSC_GATEWAY_SYNC_INTERVAL"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil && n > 0 {
+			SYNC_INTERVAL = n
+		}
+	}
+}
 
 func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 	ms.bh = bh
