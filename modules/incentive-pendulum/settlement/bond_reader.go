@@ -54,6 +54,10 @@ func ReadCommitteeBonds(reader BalanceRecordReader, members []string, epochStart
 	if reader == nil || len(members) == 0 {
 		return nil
 	}
+	if slotHeight == 0 {
+		// Genesis / uninitialized — no meaningful read possible.
+		return nil
+	}
 	if slotHeight <= epochStartBh {
 		// Degenerate window — degrade gracefully to a single-point read at
 		// slotHeight so callers without a meaningful window (genesis, tests)
