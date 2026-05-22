@@ -9,24 +9,17 @@ import (
 	"testing"
 )
 
-// TestAuditUnfixed_24_ScoreMapBannedNodesIsDeadCode — Pendulum audit
-// MEDIUM #24.
+// TestAuditFix_24_ScoreMapBannedNodesHasLiveCaller — Pendulum audit MEDIUM #24.
 //
-// Precondition: (*electionProposer).scoreMap() computes a list of poorly-
-// participating witnesses (under 75% of recent block-signing samples) and
-// returns it as ScoreMap.BannedNodes. The full computation runs every time
-// scoreMap is invoked — except scoreMap itself is never invoked anywhere
-// outside its own definition site. The witness-misbehavior gate it was
-// meant to feed (excluding poor performers from the next election) is
-// silently dead: any underperformer is still eligible.
+// Pre-fix: (*electionProposer).scoreMap() ran its under-75%-participation
+// computation but was never invoked outside its own def, so BannedNodes was
+// dead and persistent under-participators stayed eligible.
 //
-// This test pins the dead-code precondition via a repo-grep so the next
-// refactor that wires up the gate trips the assertion and forces a review.
-//
-// Post-fix: at least one consumer of scoreMap exists (e.g.
-// GenerateFullElection filters election.Members against BannedNodes), and
-// the assertion below would flip to require >0 callers.
-func TestAuditUnfixed_24_ScoreMapBannedNodesIsDeadCode(t *testing.T) {
+// Post-fix: GenerateFullElection invokes scoreMap and removes BannedNodes
+// from witnessList before the deterministic ordering. This static check
+// asserts at least one call site exists. Behavioural verification of the
+// filter lives in election-build integration tests.
+func TestAuditFix_24_ScoreMapBannedNodesHasLiveCaller(t *testing.T) {
 	// Locate the package directory at runtime so this is hermetic across
 	// checkouts (no hardcoded /home/dockeruser path).
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -104,15 +97,11 @@ func TestAuditUnfixed_24_ScoreMapBannedNodesIsDeadCode(t *testing.T) {
 		callerHits = append(callerHits, hit{file: file, line: trimmed})
 	}
 
-	// Current (buggy) behavior: zero callers — scoreMap and its BannedNodes
-	// output is dead code.
-	if callers != 0 {
-		t.Fatalf("audit #24: expected 0 callers of scoreMap (current dead-code behavior), got %d:\n%v",
-			callers, callerHits)
+	// Post-fix expectation: at least one caller of scoreMap exists
+	// (GenerateFullElection wires the BannedNodes filter).
+	if callers == 0 {
+		t.Fatalf("audit #24: expected at least one caller of scoreMap (BannedNodes filter wired), got 0 — regression")
 	}
 
-	// Post-fix the assertion above should flip: at least one caller exists
-	// (e.g. GenerateFullElection or makeElection filters its member list
-	// through scoreMap().BannedNodes), and the test would assert callers > 0.
-	t.Logf("audit #24 confirmed: scoreMap defined at %s but zero in-package callers; ScoreMap.BannedNodes is unreachable.", defFile)
+	t.Logf("audit #24 fix confirmed: %d caller(s) of scoreMap found, sample hits=%v", callers, callerHits)
 }
