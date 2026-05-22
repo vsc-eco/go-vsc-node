@@ -413,10 +413,15 @@ func (d *Devnet) BuildOldCodeImage(ctx context.Context) error {
 
 	tag := oldCodeImageTag(d.cfg)
 
+	goImage := d.cfg.OldCodeGoImage
+	if goImage == "" {
+		goImage = "golang:1.24.1"
+	}
+
 	// Write a Dockerfile tailored for the old code into the old source dir.
 	dockerfile := filepath.Join(d.cfg.OldCodeSourceDir, "Dockerfile.devnet-old")
 	content := `# syntax=docker/dockerfile:1
-FROM golang:1.24.1 AS build
+FROM ` + goImage + ` AS build
 RUN apt update && apt install -y git python3
 RUN useradd -m app
 USER app

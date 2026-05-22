@@ -92,6 +92,12 @@ type Config struct {
 	// field — e.g. VSC_GATEWAY_ROTATION_INTERVAL to drive FUZZ-1 paths
 	// in seconds instead of an hour.
 	MagiEnv map[string]string
+	// OldCodeGoImage overrides the Go base image used by BuildOldCodeImage.
+	// Defaults to "golang:1.24.1" (the multiversion gossip-resilience
+	// baseline). Set to "golang:1.25.10" or matching when the
+	// OldCodeSourceDir's go.mod requires a newer toolchain (e.g., a
+	// recent-but-pre-fix worktree used for differential audit tests).
+	OldCodeGoImage string
 }
 
 // DefaultConfig returns a Config with sensible defaults for testing.
