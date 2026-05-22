@@ -171,6 +171,9 @@ type StateEngine struct {
 	// production kinds at the same slot is correlated under
 	// CorrelatedSlashCapBps instead of being slashed independently per kind.
 	slashIncidentBpsBySlotAccount map[string]int
+	// doubleSignRehydrated guards the one-shot rehydrateDoubleSignMap so it runs
+	// only on the first block processed after (re)start.
+	doubleSignRehydrated bool
 }
 
 //Transaction
@@ -349,6 +352,16 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			Done:       false,
 		}
 
+	}
+
+	// On the first block after (re)start, rebuild the double-sign detector's
+	// in-memory map for the slot already in progress. The resume height is this
+	// block's height; blocks below it were processed pre-restart and are never
+	// replayed, so a first proposal they carried would otherwise be lost and a
+	// later competing proposal in the same slot would escape detection.
+	if !se.doubleSignRehydrated {
+		se.doubleSignRehydrated = true
+		se.rehydrateDoubleSignMap(block.BlockNumber)
 	}
 
 	for _, virtualOp := range block.VirtualOps {
@@ -574,18 +587,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							},
 						}
 						json.Unmarshal(cj.Json, &parsedBlock)
-						if se.seenProposalBySlotProposer == nil {
-							se.seenProposalBySlotProposer = make(map[string]string)
-						}
 						// First-seen-wins: whichever block ref this replaying node
 						// observes first for (slot, account) becomes the reference;
 						// any later op from the same account with a different block
 						// CID at the same slot proves equivocation. Either way the
 						// account signed two distinct refs — choice of reference is
-						// irrelevant to correctness.
-						slotKey := strconv.FormatUint(slotInfo.StartHeight, 10) + "|" + normalizeHiveAccount(cj.RequiredAuths[0])
+						// irrelevant to correctness. recordFirstSeenProposal seeds on
+						// first sight and returns the prior ref so we can detect the
+						// conflict. The identical key + first-seen seeding is replayed
+						// at startup by rehydrateDoubleSignMap, so a warm restart that
+						// lands mid-slot cannot lose the first ref (see its doc).
+						slotKey := slotProposerKey(slotInfo.StartHeight, cj.RequiredAuths[0])
+						prevBlockRef, exists := se.recordFirstSeenProposal(slotInfo.StartHeight, cj.RequiredAuths[0], parsedBlock.SignedBlock.Block)
 						doubleSign := false
-						if prevBlockRef, exists := se.seenProposalBySlotProposer[slotKey]; exists && prevBlockRef != parsedBlock.SignedBlock.Block {
+						if exists && prevBlockRef != parsedBlock.SignedBlock.Block {
 							doubleSign = true
 							slashRes := se.slashForEvidenceIfPolicyAllows(
 								cj.RequiredAuths[0],
@@ -599,8 +614,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								log.Warn("principal slash applied for double block proposal",
 									"account", cj.RequiredAuths[0], "slot_height", slotInfo.StartHeight, "tx_id", tx.TransactionID)
 							}
-						} else if !exists {
-							se.seenProposalBySlotProposer[slotKey] = parsedBlock.SignedBlock.Block
 						}
 
 						outcome := parsedBlock.ValidateDetailed(se)
@@ -2379,6 +2392,130 @@ func (se *StateEngine) evidenceSeenKey(accountHive, kind, evidenceID string) str
 	return se.evidenceKey(accountHive, kind) + "|" + evidenceID
 }
 
+// slotProposerKey builds the in-memory map / incident key for a
+// (slot, proposer) pair as "slotHeightDecimal|normalizedAccount". This is the
+// single source of truth for the format consumed by slashForEvidenceIfPolicyAllows
+// (incident cap) and inverted by slotHeightFromSlotKey (prune). The double-sign
+// detector and rehydrateDoubleSignMap MUST use it so a restarted node and a
+// continuously-running node produce byte-identical keys.
+func slotProposerKey(slotHeight uint64, account string) string {
+	return strconv.FormatUint(slotHeight, 10) + "|" + normalizeHiveAccount(account)
+}
+
+// recordFirstSeenProposal records blockCID as the first proposal observed for
+// (slotHeight, account) when none is recorded yet (first-seen-wins). It returns
+// the previously-recorded CID and whether one already existed, letting the
+// caller detect equivocation (existed && prev != blockCID). It never overwrites
+// an existing entry, so a duplicate or conflicting later proposal leaves the
+// reference unchanged. Shared by the live detector and the startup rehydrate so
+// both seed identically.
+func (se *StateEngine) recordFirstSeenProposal(slotHeight uint64, account, blockCID string) (prev string, existed bool) {
+	if se.seenProposalBySlotProposer == nil {
+		se.seenProposalBySlotProposer = make(map[string]string)
+	}
+	key := slotProposerKey(slotHeight, account)
+	prev, existed = se.seenProposalBySlotProposer[key]
+	if !existed {
+		se.seenProposalBySlotProposer[key] = blockCID
+	}
+	return prev, existed
+}
+
+// rehydrateDoubleSignMap re-seeds seenProposalBySlotProposer for the slot in
+// progress at resumeHeight. On a warm restart the node resumes from a persisted
+// checkpoint that is NOT guaranteed to sit on a slot boundary (SaveBlockHeight
+// returns the raw block height whenever the last produced block carried no
+// executable txs), so it can land past a producer's first proposal but before a
+// competing second one in the same slot. Blocks below resumeHeight are never
+// replayed, so without this the first ref is lost and the later equivocation
+// escapes detection — diverging this replica's ledger from peers that never
+// restarted. We replay ONLY the first-seen-wins seeding over the already-
+// processed portion of the current slot, [slotStart, resumeHeight-1]: no
+// validation, no slashing, no ledger writes — purely reconstructing the
+// in-memory map a continuously-running node would already hold. Idempotent: a
+// later normal ExecuteTx of those same ops only re-confirms the existing ref.
+func (se *StateEngine) rehydrateDoubleSignMap(resumeHeight uint64) {
+	if se == nil || se.hiveBlocks == nil || resumeHeight == 0 {
+		return
+	}
+	slotStart := CalculateSlotInfo(resumeHeight).StartHeight
+	if slotStart >= resumeHeight {
+		// Resuming exactly at a slot boundary: the whole slot is replayed
+		// normally, so there is nothing already-processed to recover.
+		return
+	}
+	// All blocks in [slotStart, resumeHeight-1] belong to the same slot, so the
+	// scheduled producer is resolved once. Empty means no schedule is known for
+	// this slot yet (e.g. fresh sync) — nothing to seed.
+	scheduled := se.scheduledProducer(slotStart)
+	if scheduled == "" {
+		return
+	}
+	blocks, err := se.hiveBlocks.FetchStoredBlocks(slotStart, resumeHeight-1)
+	if err != nil {
+		log.Warn("double-sign map rehydrate: fetch failed (continuing without it)",
+			"slot", slotStart, "resume", resumeHeight, "err", err)
+		return
+	}
+	seeded := 0
+	for _, blk := range blocks {
+		seeded += se.seedProposalsFromStoredBlock(blk, scheduled)
+	}
+	if seeded > 0 {
+		log.Info("double-sign map rehydrated after restart",
+			"slot", slotStart, "fromHeight", slotStart, "toHeight", resumeHeight-1, "entries", seeded)
+	}
+}
+
+// scheduledProducer returns the account scheduled to produce the slot starting
+// at slotHeight, or "" if none is found. Mirrors the schedule lookup the
+// produce_block handler uses for its auth gate.
+func (se *StateEngine) scheduledProducer(slotHeight uint64) string {
+	for _, slot := range se.GetSchedule(slotHeight) {
+		if slot.SlotHeight == slotHeight {
+			return slot.Account
+		}
+	}
+	return ""
+}
+
+// seedProposalsFromStoredBlock replays ONLY the double-sign detector's
+// first-seen seeding for one stored Hive block: it mirrors the produce_block
+// parse + scheduled-producer auth gate + slot key in ProcessBlock and must stay
+// in sync with that handler. scheduledAccount is the producer scheduled for the
+// block's slot (passed in so the caller resolves the schedule once). Returns the
+// number of newly-seeded map entries.
+func (se *StateEngine) seedProposalsFromStoredBlock(block hive_blocks.HiveBlock, scheduledAccount string) int {
+	slotHeight := CalculateSlotInfo(block.BlockNumber).StartHeight
+	seeded := 0
+	for _, tx := range block.Transactions {
+		if len(tx.Operations) == 0 {
+			continue
+		}
+		op := tx.Operations[0]
+		if op.Type != "custom_json" {
+			continue
+		}
+		cjId, _ := op.Value["id"].(string)
+		cjJson, cjJsonOk := op.Value["json"].(string)
+		if cjId != "vsc.produce_block" || !cjJsonOk {
+			continue
+		}
+		requiredAuths := common.ArrayToStringArray(op.Value["required_auths"])
+		if len(requiredAuths) == 0 || requiredAuths[0] != scheduledAccount {
+			continue
+		}
+		parsedBlock := TxProposeBlock{}
+		if err := json.Unmarshal([]byte(cjJson), &parsedBlock); err != nil {
+			continue
+		}
+		if _, existed := se.recordFirstSeenProposal(slotHeight, requiredAuths[0], parsedBlock.SignedBlock.Block); !existed {
+			seeded++
+		}
+	}
+	return seeded
+}
+
 // slotHeightFromSlotKey extracts the slot height encoded as the decimal
 // prefix of a slot-keyed in-memory map entry. Slot keys produced by the
 // detector and slashForEvidenceIfPolicyAllows use the format
@@ -2467,12 +2604,14 @@ func (se *StateEngine) recordEvidenceAndShouldSlash(accountHive, kind, evidenceI
 		se.safetyEvidenceSeen = make(map[string]uint64)
 	}
 	acct := normalizeHiveAccount(accountHive)
-	if acct == "" || strings.TrimSpace(kind) == "" {
-		return false
-	}
 	id := strings.TrimSpace(evidenceID)
-	if id == "" {
-		id = strconv.FormatUint(blockHeight, 10)
+	if acct == "" || strings.TrimSpace(kind) == "" || id == "" {
+		// Reject blank account/kind/evidence id. Every detector passes a
+		// non-empty, deterministic evidence id; a blank id is a programming
+		// error, and falling back to the block height (the previous behavior)
+		// would collapse distinct evidence at the same height into one dedup
+		// entry. Refuse to slash rather than mask the bug.
+		return false
 	}
 	seenKey := se.evidenceSeenKey(acct, kind, id)
 	if seenH, ok := se.safetyEvidenceSeen[seenKey]; ok && seenH <= blockHeight {
