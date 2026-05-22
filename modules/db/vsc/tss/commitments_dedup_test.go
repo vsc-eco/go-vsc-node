@@ -17,7 +17,7 @@ func TestDedupCommitmentsBySemanticKey_CollapsesDuplicateRetries(t *testing.T) {
 		{KeyId: "k1", BlockHeight: 101, Type: "blame", TxId: "b1", Commitment: "BV2"},
 		{KeyId: "k2", BlockHeight: 100, Type: "blame", TxId: "c1", Commitment: "BV3"},
 	}
-	out := dedupCommitmentsBySemanticKey(input)
+	out := DedupCommitmentsBySemanticKey(input)
 	if len(out) != 3 {
 		t.Fatalf("expected 3 dedup'd rows, got %d: %+v", len(out), out)
 	}
@@ -51,7 +51,7 @@ func TestDedupCommitmentsBySemanticKey_PreservesNonDuplicates(t *testing.T) {
 		{KeyId: "k1", BlockHeight: 101, Type: "blame", TxId: "c"},
 		{KeyId: "k2", BlockHeight: 100, Type: "blame", TxId: "d"},
 	}
-	out := dedupCommitmentsBySemanticKey(input)
+	out := DedupCommitmentsBySemanticKey(input)
 	if len(out) != 4 {
 		t.Fatalf("expected 4 rows (no dups), got %d", len(out))
 	}
@@ -60,11 +60,11 @@ func TestDedupCommitmentsBySemanticKey_PreservesNonDuplicates(t *testing.T) {
 // TestDedupCommitmentsBySemanticKey_EmptyAndSingletonPassthrough confirms
 // the fast paths don't allocate / reorder.
 func TestDedupCommitmentsBySemanticKey_EmptyAndSingletonPassthrough(t *testing.T) {
-	if out := dedupCommitmentsBySemanticKey(nil); len(out) != 0 {
+	if out := DedupCommitmentsBySemanticKey(nil); len(out) != 0 {
 		t.Errorf("nil input should return empty, got %d", len(out))
 	}
 	single := []TssCommitment{{KeyId: "k", BlockHeight: 1, Type: "blame", TxId: "x"}}
-	out := dedupCommitmentsBySemanticKey(single)
+	out := DedupCommitmentsBySemanticKey(single)
 	if len(out) != 1 || out[0].TxId != "x" {
 		t.Errorf("singleton input should round-trip, got %+v", out)
 	}

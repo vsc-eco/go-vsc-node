@@ -13,7 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// dedupCommitmentsBySemanticKey collapses rows sharing
+// DedupCommitmentsBySemanticKey collapses rows sharing
 // (key_id, block_height, type) to a single representative — the row with the
 // lexicographically smallest tx_id, picked deterministically so every node
 // computes the same result.
@@ -27,7 +27,10 @@ import (
 // aggregation, state_engine.go pendulum reductions) would count those
 // historical duplicates multiple times, inflating blame scores or reductions.
 // Apply this helper at every read boundary that aggregates over rows.
-func dedupCommitmentsBySemanticKey(commits []TssCommitment) []TssCommitment {
+//
+// Exported so mock_tss.go in lib/test_utils can apply the same semantics
+// to mock-backed tests — otherwise mock and prod would silently diverge.
+func DedupCommitmentsBySemanticKey(commits []TssCommitment) []TssCommitment {
 	if len(commits) <= 1 {
 		return commits
 	}
@@ -184,6 +187,15 @@ func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qt
 	return commitment, err
 }
 
+// FindCommitments returns commitment rows matching the filter, with
+// (offset, limit) applied by the mongo aggregation BEFORE the S8
+// dedup helper runs. That means a paginated response can shrink below
+// the requested limit if a page lands on a cluster of pre-fix duplicate
+// rows. Consensus-critical callers pass (0, 0) (no limit) so they are
+// unaffected; the GQL explorer caller (schema.resolvers.go) accepts the
+// short-page behavior. If a future caller needs strict-N pagination,
+// either over-fetch (limit ×2) or push the dedup into the aggregation
+// pipeline via a $group stage.
 func (tsc *tssCommitments) FindCommitments(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TssCommitment, error) {
 	filters := bson.D{}
 	if keyId != nil {
@@ -218,9 +230,13 @@ func (tsc *tssCommitments) FindCommitments(keyId *string, byTypes []string, epoc
 		commitments = append(commitments, commitment)
 	}
 
-	return dedupCommitmentsBySemanticKey(commitments), nil
+	return DedupCommitmentsBySemanticKey(commitments), nil
 }
 
+// FindCommitmentsSimple has the same dedup-after-limit caveat as
+// FindCommitments. The TSS blame-window callers in modules/tss use
+// limit=100, large enough that pre-migration duplicate clustering at
+// the head of the sort is unlikely to materially under-count blames.
 func (tsc *tssCommitments) FindCommitmentsSimple(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, limit int) ([]TssCommitment, error) {
 	query := bson.M{}
 	if keyId != nil {
@@ -262,7 +278,7 @@ func (tsc *tssCommitments) FindCommitmentsSimple(keyId *string, byTypes []string
 		}
 		commitments = append(commitments, commitment)
 	}
-	return dedupCommitmentsBySemanticKey(commitments), nil
+	return DedupCommitmentsBySemanticKey(commitments), nil
 }
 
 func (tsc *tssCommitments) GetBlames(epoch *uint64) ([]TssCommitment, error) {
@@ -288,7 +304,7 @@ func (tsc *tssCommitments) GetBlames(epoch *uint64) ([]TssCommitment, error) {
 		commitments = append(commitments, commitment)
 	}
 
-	return dedupCommitmentsBySemanticKey(commitments), nil
+	return DedupCommitmentsBySemanticKey(commitments), nil
 }
 
 func NewCommitments(d *vsc.VscDb) TssCommitments {
