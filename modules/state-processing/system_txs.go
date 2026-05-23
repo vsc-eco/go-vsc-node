@@ -1043,13 +1043,7 @@ func (bTx *BlockTx) Decode(da *datalayer.DataLayer, txSelf TxSelf) (TransactionC
 		return TransactionContainer{}, fmt.Errorf("invalid tx CID %q: %w", bTx.Id, err)
 	}
 
-	dagNode, err := da.GetDag(txCid)
-	if err != nil {
-		return TransactionContainer{}, fmt.Errorf("GetDag failed for tx %s: %w", bTx.Id, err)
-	}
-	if dagNode == nil {
-		return TransactionContainer{}, fmt.Errorf("GetDag returned nil for tx %s", bTx.Id)
-	}
+	dagNode := getDagOrBlock(da, txCid, fmt.Sprintf("GetDag(blockTx %s)", bTx.Id))
 
 	tx := TransactionContainer{
 		da:      da,
