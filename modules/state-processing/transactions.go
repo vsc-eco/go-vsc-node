@@ -929,19 +929,42 @@ func (tx *TransactionContainer) Type() string {
 	}
 }
 
+// getDagOrBlock fetches the DAG node for a CID carried in a VSC block,
+// fail-stopping (blocking with capped backoff) on a fetch error instead of
+// handing it to a caller that would skip the entry. Every CID processed in the
+// block path is anchored in a 2/3-BLS-attested block, so its bytes are
+// guaranteed to propagate from the producer: a GetDag error here is a transient
+// local I/O fault, never missing or malformed payload. Returning the error so
+// the caller skips the entry would let a node with a momentary fault apply a
+// different op set than its peers and silently fork its ledger. Blocking until
+// the fetch succeeds keeps every honest node on the identical op set — the same
+// fail-stop contract as blockingRetry's DB readers. The returned node is always
+// non-nil. (A genuinely undecodable payload is deterministic and identical on
+// every node, so it would block all nodes alike — a network-wide fail-stop, not
+// a fork.)
+func getDagOrBlock(da *datalayer.DataLayer, c cid.Cid, what string) *dagCbor.Node {
+	var node *dagCbor.Node
+	blockingRetry(what, func() error {
+		var err error
+		node, err = da.GetDag(c)
+		if err != nil {
+			return err
+		}
+		if node == nil {
+			return fmt.Errorf("GetDag returned nil node for %s", c)
+		}
+		return nil
+	})
+	return node
+}
+
 // Converts to Contract Output
 func (tx *TransactionContainer) AsContractOutput() (*ContractOutput, error) {
 	txCid, err := cid.Parse(tx.Id)
 	if err != nil {
 		return nil, fmt.Errorf("invalid output CID %q: %w", tx.Id, err)
 	}
-	dag, err := tx.da.GetDag(txCid)
-	if err != nil {
-		return nil, fmt.Errorf("GetDag failed for output %s: %w", tx.Id, err)
-	}
-	if dag == nil {
-		return nil, fmt.Errorf("GetDag returned nil for output %s", tx.Id)
-	}
+	dag := getDagOrBlock(tx.da, txCid, fmt.Sprintf("GetDag(output %s)", tx.Id))
 	bJson, err := dag.MarshalJSON()
 	if err != nil {
 		return nil, fmt.Errorf("MarshalJSON failed for output %s: %w", tx.Id, err)
@@ -959,13 +982,7 @@ func (tx *TransactionContainer) AsTransaction() (*OffchainTransaction, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid tx CID %q: %w", tx.Id, err)
 	}
-	dag, err := tx.da.GetDag(txCid)
-	if err != nil {
-		return nil, fmt.Errorf("GetDag failed for tx %s: %w", tx.Id, err)
-	}
-	if dag == nil {
-		return nil, fmt.Errorf("GetDag returned nil for tx %s", tx.Id)
-	}
+	dag := getDagOrBlock(tx.da, txCid, fmt.Sprintf("GetDag(tx %s)", tx.Id))
 	bJson, err := dag.MarshalJSON()
 	if err != nil {
 		return nil, fmt.Errorf("MarshalJSON failed for tx %s: %w", tx.Id, err)
@@ -985,13 +1002,7 @@ func (tx *TransactionContainer) AsOplog(endBlock uint64) (Oplog, error) {
 	if err != nil {
 		return Oplog{Self: tx.Self, EndBlock: endBlock}, fmt.Errorf("invalid oplog CID %q: %w", tx.Id, err)
 	}
-	node, err := tx.da.GetDag(txCid)
-	if err != nil {
-		return Oplog{Self: tx.Self, EndBlock: endBlock}, fmt.Errorf("GetDag failed for oplog %s: %w", tx.Id, err)
-	}
-	if node == nil {
-		return Oplog{Self: tx.Self, EndBlock: endBlock}, fmt.Errorf("GetDag returned nil for oplog %s", tx.Id)
-	}
+	node := getDagOrBlock(tx.da, txCid, fmt.Sprintf("GetDag(oplog %s)", tx.Id))
 	jsonBytes, err := node.MarshalJSON()
 	if err != nil {
 		return Oplog{Self: tx.Self, EndBlock: endBlock}, fmt.Errorf("MarshalJSON failed for oplog %s: %w", tx.Id, err)
@@ -1007,11 +1018,12 @@ func (tx *TransactionContainer) AsOplog(endBlock uint64) (Oplog, error) {
 }
 
 // AsPendulumSettlement decodes the SettlementRecord pointed at by this
-// container's CID. Returns (record, true) on success; (zero, false) if the
-// underlying DAG fetch or decode fails. The state engine treats false as a
-// dropped settlement — the carrying block already had its CID validated by
-// 2/3 BLS aggregation, so a fetch failure indicates a local I/O issue rather
-// than malformed bytes.
+// container's CID. Returns (record, true) on success; (zero, false) only on a
+// deterministic decode failure (unparseable CID or malformed payload) that
+// every honest node skips alike. A transient DAG fetch fault is a local I/O
+// issue, not missing bytes (the carrying block had its CID validated by 2/3 BLS
+// aggregation); getDagOrBlock blocks on it rather than dropping the settlement,
+// so a momentary fault can't fork this node's ledger.
 func (tx *TransactionContainer) AsPendulumSettlement() (pendulumsettlement.SettlementRecord, bool) {
 	if tx == nil || tx.da == nil {
 		return pendulumsettlement.SettlementRecord{}, false
@@ -1020,10 +1032,7 @@ func (tx *TransactionContainer) AsPendulumSettlement() (pendulumsettlement.Settl
 	if err != nil {
 		return pendulumsettlement.SettlementRecord{}, false
 	}
-	node, err := tx.da.GetDag(txCid)
-	if err != nil || node == nil {
-		return pendulumsettlement.SettlementRecord{}, false
-	}
+	node := getDagOrBlock(tx.da, txCid, fmt.Sprintf("GetDag(pendulum-settlement %s)", tx.Id))
 	jsonBytes, err := node.MarshalJSON()
 	if err != nil {
 		return pendulumsettlement.SettlementRecord{}, false
@@ -1036,21 +1045,25 @@ func (tx *TransactionContainer) AsPendulumSettlement() (pendulumsettlement.Settl
 }
 
 // AsRestitutionClaim decodes a RestitutionClaimRecord pointed at by this
-// container's CID. Returns (record, true) on success; (zero, false) if the
-// underlying DAG fetch or decode fails. The state engine treats false as a
-// dropped op — the carrying block's 2/3 BLS aggregate already validated
-// the CID bytes, so a fetch miss indicates a local I/O issue, not
-// malformed payload.
+// container's CID. Returns (record, true) on success; (zero, false) only on a
+// deterministic decode failure (unparseable CID or malformed payload) that
+// every honest node sees identically and skips alike. A DAG *fetch* error is a
+// transient local I/O fault, not missing payload (the carrying block's 2/3 BLS
+// aggregate already validated the CID bytes); getDagOrBlock blocks on it rather
+// than skipping, so a momentary fault can't fork this node's ledger.
 func (tx *TransactionContainer) AsRestitutionClaim() (safetyslash.RestitutionClaimRecord, bool) {
 	if tx == nil || tx.da == nil {
 		return safetyslash.RestitutionClaimRecord{}, false
 	}
-	txCid := cid.MustParse(tx.Id)
-	node, err := tx.da.GetDag(txCid)
+	txCid, err := cid.Parse(tx.Id)
 	if err != nil {
 		return safetyslash.RestitutionClaimRecord{}, false
 	}
-	jsonBytes, _ := node.MarshalJSON()
+	node := getDagOrBlock(tx.da, txCid, fmt.Sprintf("GetDag(restitution %s)", tx.Id))
+	jsonBytes, err := node.MarshalJSON()
+	if err != nil {
+		return safetyslash.RestitutionClaimRecord{}, false
+	}
 	var rec safetyslash.RestitutionClaimRecord
 	if err := json.Unmarshal(jsonBytes, &rec); err != nil {
 		return safetyslash.RestitutionClaimRecord{}, false
@@ -1060,17 +1073,22 @@ func (tx *TransactionContainer) AsRestitutionClaim() (safetyslash.RestitutionCla
 
 // AsSafetySlashReverse decodes a SafetySlashReverseRecord pointed at by
 // this container's CID. Same I/O-vs-malformed-payload story as the other
-// As* helpers.
+// As* helpers: deterministic decode failures return false (every node skips
+// alike); a transient DAG fetch fault blocks via getDagOrBlock rather than
+// skipping, so it can't fork this node's ledger.
 func (tx *TransactionContainer) AsSafetySlashReverse() (safetyslash.SafetySlashReverseRecord, bool) {
 	if tx == nil || tx.da == nil {
 		return safetyslash.SafetySlashReverseRecord{}, false
 	}
-	txCid := cid.MustParse(tx.Id)
-	node, err := tx.da.GetDag(txCid)
+	txCid, err := cid.Parse(tx.Id)
 	if err != nil {
 		return safetyslash.SafetySlashReverseRecord{}, false
 	}
-	jsonBytes, _ := node.MarshalJSON()
+	node := getDagOrBlock(tx.da, txCid, fmt.Sprintf("GetDag(safetyslash-reverse %s)", tx.Id))
+	jsonBytes, err := node.MarshalJSON()
+	if err != nil {
+		return safetyslash.SafetySlashReverseRecord{}, false
+	}
 	var rec safetyslash.SafetySlashReverseRecord
 	if err := json.Unmarshal(jsonBytes, &rec); err != nil {
 		return safetyslash.SafetySlashReverseRecord{}, false
