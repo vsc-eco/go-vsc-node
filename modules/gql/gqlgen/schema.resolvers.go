@@ -492,15 +492,20 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 		ChainOracles:            []ChainOracleStatus{},
 	}
 	if act := r.StateEngine.ConsensusActivation(); act != nil {
-		info.ConsensusActivationMode = &act.Mode
-		h := model.Uint64(act.ActivationHeight)
+		mode := "normal"
+		if act.Forced {
+			mode = "recovery"
+		}
+		info.ConsensusActivationMode = &mode
+		// Activation is now epoch-scheduled; this field carries the activation EPOCH.
+		h := model.Uint64(act.ActivationEpoch)
 		info.ConsensusActivationHeight = &h
-		ab := model.Uint64(act.AttestedBlockHeight)
+		ab := model.Uint64(act.BlockHeight)
 		info.ConsensusActivationAttestedBlock = &ab
-		av := act.Version.Format()
+		av := act.Target().Format()
 		info.ConsensusActivationVersion = &av
-		if act.AttestedTxId != "" {
-			info.ConsensusActivationAttestedTxid = &act.AttestedTxId
+		if act.TxId != "" {
+			info.ConsensusActivationAttestedTxid = &act.TxId
 		}
 	}
 	if r.ChainOracle != nil {

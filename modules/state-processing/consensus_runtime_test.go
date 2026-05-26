@@ -4,17 +4,12 @@ import (
 	"testing"
 
 	"vsc-node/lib/test_utils"
-	"vsc-node/modules/common/consensusversion"
-	"vsc-node/modules/db/vsc/consensus_state"
 )
 
-func TestConsensusRuntime_DefaultExecutorAndLine(t *testing.T) {
+func TestConsensusRuntime_LineFromElectionAndUnregisteredExecutor(t *testing.T) {
 	mem := test_utils.NewMockConsensusState()
-	mem.ReplaceState(consensus_state.ChainConsensusState{
-		ID:             "singleton",
-		AdoptedVersion: consensusversion.Version{Major: 1, Consensus: 2, NonConsensus: 9},
-	})
 	te := newTestEnvWithConsensus(mem, nil)
+	te.ElectionDb.ElectionsByHeight[1] = versionedElection(1, 1, 1, 2) // active 1.2
 	te.processAndWait()
 
 	line := te.SE.ActiveConsensusLine(1)
@@ -26,35 +21,19 @@ func TestConsensusRuntime_DefaultExecutorAndLine(t *testing.T) {
 	}
 }
 
-func TestConsensusRuntime_ActivationHeightSwitch(t *testing.T) {
+func TestConsensusRuntime_ActiveLineIsPureFunctionOfHeight(t *testing.T) {
 	mem := test_utils.NewMockConsensusState()
-	mem.ReplaceState(consensus_state.ChainConsensusState{
-		ID:             "singleton",
-		AdoptedVersion: consensusversion.Version{Major: 1, Consensus: 2, NonConsensus: 0},
-		NextActivation: &consensus_state.ConsensusActivation{
-			Mode:                "normal",
-			Version:             consensusversion.Version{Major: 1, Consensus: 3, NonConsensus: 0},
-			ActivationHeight:    20,
-			AttestedBlockHeight: 10,
-			AttestedTxId:        "tx-activation",
-		},
-	})
 	te := newTestEnvWithConsensus(mem, nil)
+	// Two elections at distinct heights with distinct versions; the active line at each height
+	// must resolve from the on-chain election at that height (replay-correct, no live cache).
+	te.ElectionDb.ElectionsByHeight[1] = versionedElection(1, 1, 1, 2)
+	te.ElectionDb.ElectionsByHeight[20] = versionedElection(20, 2, 1, 3)
 	te.processAndWait()
 
-	before := te.SE.ActiveConsensusLine(19)
-	if before.Major != 1 || before.Consensus != 2 {
-		t.Fatalf("before activation expected 1.2, got %d.%d", before.Major, before.Consensus)
+	if l := te.SE.ActiveConsensusLine(1); l.Major != 1 || l.Consensus != 2 {
+		t.Fatalf("height 1 expected 1.2, got %d.%d", l.Major, l.Consensus)
 	}
-	after := te.SE.ActiveConsensusLine(20)
-	if after.Major != 1 || after.Consensus != 3 {
-		t.Fatalf("at activation expected 1.3, got %d.%d", after.Major, after.Consensus)
-	}
-	a := te.SE.ConsensusActivation()
-	if a == nil || a.Mode != "normal" || a.AttestedTxId != "tx-activation" {
-		t.Fatalf("expected activation metadata copy from cache")
-	}
-	if te.SE.ActiveConsensusExecutor(20).Name() != "passthrough-unregistered" {
-		t.Fatalf("expected unregistered executor marker at switched line")
+	if l := te.SE.ActiveConsensusLine(20); l.Major != 1 || l.Consensus != 3 {
+		t.Fatalf("height 20 expected 1.3, got %d.%d", l.Major, l.Consensus)
 	}
 }

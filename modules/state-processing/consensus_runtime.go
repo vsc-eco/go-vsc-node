@@ -80,38 +80,16 @@ func lineFromVersion(v consensusversion.Version) ConsensusLine {
 	return ConsensusLine{Major: v.Major, Consensus: v.Consensus}
 }
 
-func lineFromActivation(a *consensus_state.ConsensusActivation) *ConsensusLine {
-	if a == nil {
-		return nil
-	}
-	line := lineFromVersion(coordinationTarget(a.Version))
-	return &line
+// ConsensusActivation reports the pending scheduled version switch (for API visibility).
+func (se *StateEngine) ConsensusActivation() *consensus_state.ScheduledActivation {
+	return se.scheduledActivation()
 }
 
-func (se *StateEngine) ConsensusActivation() *consensus_state.ConsensusActivation {
-	if se.chainConsensusCache.NextActivation == nil {
-		return nil
-	}
-	a := *se.chainConsensusCache.NextActivation
-	return &a
-}
-
-// ActiveConsensusLine returns the coordinated major.consensus line for a block height.
-// Phase-1 behavior is metadata-only and non-breaking: execution logic remains unchanged.
+// ActiveConsensusLine returns the coordinated major.consensus line for a block height,
+// resolved purely from the on-chain election. It is a pure function of blockHeight, so it is
+// correct under replay/resync and selects the executor deterministically.
 func (se *StateEngine) ActiveConsensusLine(blockHeight uint64) ConsensusLine {
-	adopted := lineFromVersion(coordinationTarget(se.EffectiveAdoptedConsensusVersion()))
-	activation := se.ConsensusActivation()
-	if activation == nil {
-		return adopted
-	}
-	attestedLine := lineFromActivation(activation)
-	if attestedLine == nil {
-		return adopted
-	}
-	if blockHeight >= activation.ActivationHeight {
-		return *attestedLine
-	}
-	return adopted
+	return lineFromVersion(se.ActiveConsensusVersion(blockHeight))
 }
 
 func (se *StateEngine) ActiveConsensusExecutor(blockHeight uint64) ConsensusExecutor {

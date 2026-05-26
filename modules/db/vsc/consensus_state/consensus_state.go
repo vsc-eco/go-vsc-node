@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	a "vsc-node/modules/aggregate"
@@ -39,18 +38,17 @@ func (c *consensusState) Stop() error {
 	return nil
 }
 
-// ConsensusState is chain-global consensus version and recovery flags.
+// ConsensusState is chain-global recovery flags plus the pending scheduled version switch.
 type ConsensusState interface {
 	a.Plugin
 	Get(ctx context.Context) (ChainConsensusState, error)
 	Upsert(ctx context.Context, state ChainConsensusState) error
-	SetPendingProposal(ctx context.Context, p *PendingConsensusProposal) error
-	ClearPendingProposal(ctx context.Context) error
-	SetAdoptedVersion(ctx context.Context, v consensusversion.Version) error
+	SetScheduledActivation(ctx context.Context, s *ScheduledActivation) error
+	ClearScheduledActivation(ctx context.Context) error
 	SetProcessingSuspended(ctx context.Context, suspended bool) error
-	SetMinRequiredAndClearSuspension(ctx context.Context, v consensusversion.Version) error
-	SetNextActivation(ctx context.Context, a *ConsensusActivation) error
-	ClearNextActivation(ctx context.Context) error
+	// SetForcedActivationAndClearSuspension is the recovery path: schedule a Forced
+	// switch and lift the processing halt in one update.
+	SetForcedActivationAndClearSuspension(ctx context.Context, s *ScheduledActivation) error
 }
 
 func (c *consensusState) Get(ctx context.Context) (ChainConsensusState, error) {
@@ -68,11 +66,8 @@ func (c *consensusState) Get(ctx context.Context) (ChainConsensusState, error) {
 func defaultState() ChainConsensusState {
 	return ChainConsensusState{
 		ID:                  singletonID,
-		AdoptedVersion:      consensusversion.Version{},
-		ProcessingSuspended:   false,
-		PendingProposal:     nil,
-		MinRequiredVersion:    nil,
-		NextActivation:      nil,
+		ProcessingSuspended: false,
+		ScheduledActivation: nil,
 	}
 }
 
@@ -82,28 +77,19 @@ func (c *consensusState) Upsert(ctx context.Context, state ChainConsensusState) 
 	return err
 }
 
-func (c *consensusState) SetPendingProposal(ctx context.Context, p *PendingConsensusProposal) error {
+func (c *consensusState) SetScheduledActivation(ctx context.Context, s *ScheduledActivation) error {
 	_, err := c.Collection.UpdateOne(ctx,
 		bson.M{"_id": singletonID},
-		bson.M{"$set": bson.M{"pending_proposal": p}},
+		bson.M{"$set": bson.M{"scheduled_activation": s}},
 		options.Update().SetUpsert(true),
 	)
 	return err
 }
 
-func (c *consensusState) ClearPendingProposal(ctx context.Context) error {
+func (c *consensusState) ClearScheduledActivation(ctx context.Context) error {
 	_, err := c.Collection.UpdateOne(ctx,
 		bson.M{"_id": singletonID},
-		bson.M{"$unset": bson.M{"pending_proposal": ""}},
-		options.Update().SetUpsert(true),
-	)
-	return err
-}
-
-func (c *consensusState) SetAdoptedVersion(ctx context.Context, v consensusversion.Version) error {
-	_, err := c.Collection.UpdateOne(ctx,
-		bson.M{"_id": singletonID},
-		bson.M{"$set": bson.M{"adopted_version": v}},
+		bson.M{"$unset": bson.M{"scheduled_activation": ""}},
 		options.Update().SetUpsert(true),
 	)
 	return err
@@ -118,35 +104,15 @@ func (c *consensusState) SetProcessingSuspended(ctx context.Context, suspended b
 	return err
 }
 
-func (c *consensusState) SetMinRequiredAndClearSuspension(ctx context.Context, v consensusversion.Version) error {
+func (c *consensusState) SetForcedActivationAndClearSuspension(ctx context.Context, s *ScheduledActivation) error {
 	_, err := c.Collection.UpdateOne(ctx,
 		bson.M{"_id": singletonID},
 		bson.M{
 			"$set": bson.M{
-				"min_required_version": v,
-				"processing_suspended":   false,
-				"adopted_version":      v,
+				"scheduled_activation": s,
+				"processing_suspended": false,
 			},
-			"$unset": bson.M{"pending_proposal": ""},
 		},
-		options.Update().SetUpsert(true),
-	)
-	return err
-}
-
-func (c *consensusState) SetNextActivation(ctx context.Context, a *ConsensusActivation) error {
-	_, err := c.Collection.UpdateOne(ctx,
-		bson.M{"_id": singletonID},
-		bson.M{"$set": bson.M{"next_activation": a}},
-		options.Update().SetUpsert(true),
-	)
-	return err
-}
-
-func (c *consensusState) ClearNextActivation(ctx context.Context) error {
-	_, err := c.Collection.UpdateOne(ctx,
-		bson.M{"_id": singletonID},
-		bson.M{"$unset": bson.M{"next_activation": ""}},
 		options.Update().SetUpsert(true),
 	)
 	return err

@@ -40,11 +40,17 @@ func TestMaxComponentwise(t *testing.T) {
 	}
 }
 
-func TestMergeElectionAndAdoptedMinMajorBump(t *testing.T) {
-	prev := Version{Major: 0, Consensus: 3, NonConsensus: 0}
-	adopted := Version{Major: 1, Consensus: 0, NonConsensus: 0}
-	m := MergeElectionAndAdoptedMin(prev, adopted)
-	if m != adopted {
-		t.Fatalf("major bump must not inherit old consensus counter: got %+v want %+v", m, adopted)
+func TestRunningVersionDefaultsZero(t *testing.T) {
+	if got := RunningVersion(); got != (Version{}) {
+		t.Fatalf("default running version should be zero, got %+v", got)
+	}
+}
+
+func TestParseComponent(t *testing.T) {
+	if ParseComponent("") != 0 || ParseComponent("bad") != 0 {
+		t.Fatal("empty/invalid must parse to 0")
+	}
+	if ParseComponent("12") != 12 {
+		t.Fatal("expected 12")
 	}
 }

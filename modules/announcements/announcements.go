@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strconv"
 	"time"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
 	agg "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
 	p2p "vsc-node/modules/p2p"
 
@@ -186,24 +186,13 @@ type didConsensusKey struct {
 var (
 	GitCommit string = "" // Default value if not set during build
 	VersionId string = "go-v0.1.0"
-	// These are strings so they can be set via -ldflags -X.
-	// Example:
-	// -ldflags "-X vsc-node/modules/announcements.AnnounceVersionMajor=1 -X vsc-node/modules/announcements.AnnounceProtocolVersion=2 -X vsc-node/modules/announcements.AnnounceVersionNonConsensus=7"
-	AnnounceVersionMajor         string
-	AnnounceProtocolVersion      string
-	AnnounceVersionNonConsensus  string
 )
 
+// parseAnnounceVersionComponent retains the historical helper for tests; the canonical
+// build-time version now lives in consensusversion (NodeVersionMajor/NodeProtocolVersion/
+// NodeVersionNonConsensus) and is read via consensusversion.RunningVersion().
 func parseAnnounceVersionComponent(raw, field string) uint64 {
-	if raw == "" {
-		return 0
-	}
-	v, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil {
-		log.Printf("invalid %s=%q, defaulting to 0", field, raw)
-		return 0
-	}
-	return v
+	return consensusversion.ParseComponent(raw)
 }
 
 // ===== announcement impl =====
@@ -290,7 +279,9 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 	}
 
 	enabled := a.sconf.OnTestnet() || a.sconf.OnDevnet() ||
-		int(a.peerInfo.GetStatus()) == int(network.ReachabilityPublic)
+		int(a.safeStatus()) == int(network.ReachabilityPublic)
+
+	runningVersion := consensusversion.RunningVersion()
 
 	payload := payload{
 		Services: []string{"vsc.network"},
@@ -305,14 +296,14 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 		VscNode: payloadVscNode{
 			//Potentially use specific net ID for E2E tests
 			NetId:           a.sconf.NetId(),
-			PeerId:          a.peerInfo.GetPeerId(), //Plz fill in
+			PeerId:          a.safePeerId(), //Plz fill in
 			PeerAddrs:       peerAddrs,
 			Ts:              time.Now().Format(time.RFC3339),
 			GitCommit:       GitCommit,
 			VersionId:           VersionId, //Use standard versioning
-			VersionMajor:        parseAnnounceVersionComponent(AnnounceVersionMajor, "AnnounceVersionMajor"),
-			ProtocolVersion:     parseAnnounceVersionComponent(AnnounceProtocolVersion, "AnnounceProtocolVersion"),
-			VersionNonConsensus: parseAnnounceVersionComponent(AnnounceVersionNonConsensus, "AnnounceVersionNonConsensus"),
+			VersionMajor:        runningVersion.Major,
+			ProtocolVersion:     runningVersion.Consensus,
+			VersionNonConsensus: runningVersion.NonConsensus,
 			GatewayKey:      *gatewayKP.GetPublicKeyString(),
 			Witness: struct {
 				Enabled bool `json:"enabled"`
@@ -371,4 +362,24 @@ func (a *AnnouncementsManager) safePeerAddrs() (out []multiaddr.Multiaddr) {
 		}
 	}()
 	return a.peerInfo.GetPeerAddrs()
+}
+
+func (a *AnnouncementsManager) safePeerId() (out string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("peerInfo.GetPeerId panic recovered: %v", r)
+			out = ""
+		}
+	}()
+	return a.peerInfo.GetPeerId()
+}
+
+func (a *AnnouncementsManager) safeStatus() (out network.Reachability) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("peerInfo.GetStatus panic recovered: %v", r)
+			out = network.ReachabilityUnknown
+		}
+	}()
+	return a.peerInfo.GetStatus()
 }

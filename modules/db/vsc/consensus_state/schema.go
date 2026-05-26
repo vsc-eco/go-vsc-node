@@ -4,51 +4,42 @@ import "vsc-node/modules/common/consensusversion"
 
 const singletonID = "singleton"
 
-// ChainConsensusState is persisted chain-global consensus / recovery flags.
+// ChainConsensusState is persisted chain-global recovery state plus the pending
+// epoch-scheduled version switch. The *active* consensus version is NOT stored here —
+// it is a pure function of the on-chain election (elections.ResultVersion). This record
+// only holds (a) the recovery halt flag and (b) the scheduled switch awaiting its
+// activation epoch + stake-readiness guard, both consumed deterministically at election build.
 type ChainConsensusState struct {
 	ID string `bson:"_id"`
-
-	AdoptedVersion consensusversion.Version `bson:"adopted_version"`
-
-	PendingProposal *PendingConsensusProposal `bson:"pending_proposal,omitempty"`
 
 	// ProcessingSuspended blocks normal vsc custom_json processing until cleared by recovery_require_version.
 	ProcessingSuspended bool `bson:"processing_suspended"`
 
-	// MinRequiredVersion is set by recovery_require_version; nodes below this must upgrade.
-	MinRequiredVersion *consensusversion.Version `bson:"min_required_version,omitempty"`
-
-	// NextActivation is an attestation-style record that captures when a coordinated
-	// version line should become active (normal upgrade cutover or postponed recovery cutover).
-	NextActivation *ConsensusActivation `bson:"next_activation,omitempty"`
+	// ScheduledActivation is the pending epoch-scheduled version switch (set by
+	// vsc.propose_consensus_version, or Forced by recovery_require_version). It is
+	// resolved into the election at its activation epoch once the stake-readiness guard passes.
+	ScheduledActivation *ScheduledActivation `bson:"scheduled_activation,omitempty"`
 }
 
-type PendingConsensusProposal struct {
-	Major         uint64 `bson:"major"`
-	Consensus     uint64 `bson:"consensus"`
-	NonConsensus uint64 `bson:"non_consensus"`
-	Proposer      string `bson:"proposer"`
-	BlockHeight   uint64 `bson:"block_height"`
-	TxId          string `bson:"tx_id"`
+// ScheduledActivation captures a target major.consensus to switch to at ActivationEpoch.
+type ScheduledActivation struct {
+	TargetMajor     uint64 `bson:"target_major"`
+	TargetConsensus uint64 `bson:"target_consensus"`
+	// ActivationEpoch is the election epoch at/after which the switch may activate.
+	ActivationEpoch uint64 `bson:"activation_epoch"`
+	// Forced skips the stake-readiness guard (recovery path only).
+	Forced bool `bson:"forced"`
+	// Proposer/TxId/BlockHeight record provenance; BlockHeight makes the read
+	// height-addressable (honored only when BlockHeight < query height).
+	Proposer    string `bson:"proposer"`
+	TxId        string `bson:"tx_id"`
+	BlockHeight uint64 `bson:"block_height"`
 }
 
-func (p PendingConsensusProposal) Target() consensusversion.Version {
+// Target returns the coordinated target (non_consensus is not coordinated).
+func (s ScheduledActivation) Target() consensusversion.Version {
 	return consensusversion.Version{
-		Major:         p.Major,
-		Consensus:     p.Consensus,
-		NonConsensus: p.NonConsensus,
+		Major:     s.TargetMajor,
+		Consensus: s.TargetConsensus,
 	}
-}
-
-type ConsensusActivation struct {
-	// Mode is "normal" or "recovery".
-	Mode string `bson:"mode"`
-	// Version line for the activation (major/consensus; non_consensus is informational).
-	Version consensusversion.Version `bson:"version"`
-	// ActivationHeight is the Hive block height when the line should switch over.
-	ActivationHeight uint64 `bson:"activation_height"`
-	// AttestedBlockHeight is the block where this activation was recorded/attested.
-	AttestedBlockHeight uint64 `bson:"attested_block_height"`
-	// AttestedTxId is the transaction that recorded the activation.
-	AttestedTxId string `bson:"attested_tx_id"`
 }

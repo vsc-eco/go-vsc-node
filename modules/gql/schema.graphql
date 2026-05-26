@@ -263,15 +263,15 @@ type LocalNodeInfo {
   active_consensus_line: String!
   """Active consensus executor implementation identifier at the local head."""
   active_consensus_executor: String!
-  """Attested activation mode for the next/active switch-over (normal or recovery)."""
+  """Scheduled activation mode for the pending switch-over (normal or recovery)."""
   consensus_activation_mode: String
-  """Attested cutover height for activation."""
+  """Scheduled activation EPOCH at/after which the version switch may activate."""
   consensus_activation_height: Uint64
-  """Attested activation version display (major.consensus.non_consensus)."""
+  """Scheduled activation version display (major.consensus)."""
   consensus_activation_version: String
-  """Block height where the activation was attested."""
+  """Block height where the activation was scheduled (proposal/recovery tx height)."""
   consensus_activation_attested_block: Uint64
-  """Transaction id that attested the activation."""
+  """Transaction id that scheduled the activation."""
   consensus_activation_attested_txid: String
   """Status of each registered chain oracle."""
   chain_oracles: [ChainOracleStatus!]!

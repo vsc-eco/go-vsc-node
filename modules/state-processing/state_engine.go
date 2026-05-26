@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	DataLayer "vsc-node/lib/datalayer"
@@ -82,6 +83,7 @@ type StateEngine struct {
 
 	consensusState      consensus_state.ConsensusState
 	chainConsensusCache consensus_state.ChainConsensusState
+	chainConsensusMu    sync.RWMutex
 	consensusRuntime    ConsensusRuntime
 
 	wasm *wasm_runtime.Wasm
@@ -529,7 +531,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						Metadata: rawJson,
 					}
 					se.witnessDb.SetWitnessUpdate(inputData)
-					se.TryFinalizeConsensusProposal(blockInfo.BlockHeight)
 				}
 			}
 			continue

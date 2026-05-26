@@ -18,6 +18,7 @@ import (
 	"vsc-node/lib/utils"
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -64,19 +65,38 @@ const (
 type ReadyAttestation struct {
 	Account     string `json:"account"`
 	TargetBlock uint64 `json:"target_block"`
-	Sig         string `json:"sig"` // base64 BLS signature over CBOR(account, target_block)
+	// The node's running consensus version, included in (and authenticated by) the signature.
+	// Receivers only admit a peer to the ready set if this meets the active consensus floor,
+	// keeping TSS sessions version-homogeneous.
+	VersionMajor        uint64 `json:"version_major"`
+	VersionConsensus    uint64 `json:"version_consensus"`
+	VersionNonConsensus uint64 `json:"version_non_consensus"`
+	Sig                 string `json:"sig"` // base64 BLS signature over CBOR(account, target_block, version)
+}
+
+// Version returns the attested consensus triple.
+func (a ReadyAttestation) Version() consensusversion.Version {
+	return consensusversion.Version{
+		Major:        a.VersionMajor,
+		Consensus:    a.VersionConsensus,
+		NonConsensus: a.VersionNonConsensus,
+	}
 }
 
 // DEFAULT_SETTLE_BLOCKS is the number of blocks before reshare during which
 // no new attestations are accepted — only re-gossip of existing ones.
 const DEFAULT_SETTLE_BLOCKS = 3
 
-// attestationCID computes a deterministic CID for a readiness attestation.
-// The same (account, targetBlock) always produces the same CID.
-func attestationCID(account string, targetBlock uint64) (cid.Cid, error) {
+// attestationCID computes a deterministic CID for a readiness attestation. The same
+// (account, targetBlock, version) always produces the same CID, so the signature
+// authenticates the advertised version (re-gossipers cannot tamper with it).
+func attestationCID(account string, targetBlock uint64, ver consensusversion.Version) (cid.Cid, error) {
 	payload := map[string]interface{}{
-		"account":      account,
-		"target_block": targetBlock,
+		"account":               account,
+		"target_block":          targetBlock,
+		"version_major":         ver.Major,
+		"version_consensus":     ver.Consensus,
+		"version_non_consensus": ver.NonConsensus,
 	}
 	data, err := common.EncodeDagCbor(payload)
 	if err != nil {
@@ -85,11 +105,13 @@ func attestationCID(account string, targetBlock uint64) (cid.Cid, error) {
 	return common.HashBytes(data, multicodec.DagCbor)
 }
 
-// signReadyAttestation creates a BLS-signed readiness attestation for this node.
+// signReadyAttestation creates a BLS-signed readiness attestation for this node, tagged with
+// this binary's running consensus version.
 func (tssMgr *TssManager) signReadyAttestation(targetBlock uint64) (*ReadyAttestation, error) {
 	account := tssMgr.config.Get().HiveUsername
+	ver := consensusversion.RunningVersion()
 
-	c, err := attestationCID(account, targetBlock)
+	c, err := attestationCID(account, targetBlock, ver)
 	if err != nil {
 		return nil, err
 	}
@@ -112,9 +134,12 @@ func (tssMgr *TssManager) signReadyAttestation(targetBlock uint64) (*ReadyAttest
 	sigBytes := sig.Serialize()
 
 	return &ReadyAttestation{
-		Account:     account,
-		TargetBlock: targetBlock,
-		Sig:         base64.URLEncoding.EncodeToString(sigBytes[:]),
+		Account:             account,
+		TargetBlock:         targetBlock,
+		VersionMajor:        ver.Major,
+		VersionConsensus:    ver.Consensus,
+		VersionNonConsensus: ver.NonConsensus,
+		Sig:                 base64.URLEncoding.EncodeToString(sigBytes[:]),
 	}, nil
 }
 
@@ -141,7 +166,7 @@ func (tssMgr *TssManager) verifyAttestation(att ReadyAttestation, election elect
 		return false
 	}
 
-	c, err := attestationCID(att.Account, att.TargetBlock)
+	c, err := attestationCID(att.Account, att.TargetBlock, att.Version())
 	if err != nil {
 		return false
 	}
@@ -173,9 +198,12 @@ func (tssMgr *TssManager) broadcastGossipBundle(targetBlock uint64) {
 	attestations := make([]interface{}, 0, len(attMap))
 	for _, att := range attMap {
 		attestations = append(attestations, map[string]interface{}{
-			"account":      att.Account,
-			"target_block": att.TargetBlock,
-			"sig":          att.Sig,
+			"account":               att.Account,
+			"target_block":          att.TargetBlock,
+			"version_major":         att.VersionMajor,
+			"version_consensus":     att.VersionConsensus,
+			"version_non_consensus": att.VersionNonConsensus,
+			"sig":                   att.Sig,
 		})
 	}
 	tssMgr.gossipLock.RUnlock()
@@ -433,7 +461,16 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				}
 				tssMgr.gossipLock.Unlock()
 
-				if !inSettlePeriod && !alreadySent {
+				// Self-gate: don't attest readiness if this binary's version is below the
+				// active consensus floor for the target — it could not participate anyway.
+				floor := tssMgr.scheduler.TssMinimumConsensusVersion(targetBlock)
+				belowFloor := !consensusversion.RunningVersion().MeetsConsensusMin(floor)
+				if belowFloor && !inSettlePeriod && !alreadySent {
+					log.Verbose("skipping readiness attestation; running version below active floor",
+						"targetBlock", targetBlock, "floor", floor.Format())
+				}
+
+				if !belowFloor && !inSettlePeriod && !alreadySent {
 					att, err := tssMgr.signReadyAttestation(targetBlock)
 					if err != nil {
 						log.Warn("failed to sign readiness attestation",
@@ -1060,19 +1097,24 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 
 			// Build gossip readiness set — same mechanism as reshare.
-			// Per-height key: readiness is a node property, not per-key.
+			// Per-height key: readiness is a node property, not per-key. Only peers whose
+			// signed attestation advertises a version meeting the active consensus floor are
+			// included, keeping the signing party set version-homogeneous (live, not the stale
+			// election snapshot). The floor is the deterministic election-active version at bh.
+			minSignVer := tssMgr.scheduler.TssMinimumConsensusVersion(bh)
 			signHeightKey := strconv.FormatUint(bh, 10)
 			tssMgr.gossipLock.RLock()
 			signAttMap := tssMgr.gossipAttestations[signHeightKey]
 			signReadyAccounts := make(map[string]bool, len(signAttMap))
-			for account := range signAttMap {
-				signReadyAccounts[account] = true
+			for account, att := range signAttMap {
+				if att.Version().MeetsConsensusMin(minSignVer) {
+					signReadyAccounts[account] = true
+				}
 			}
 			tssMgr.gossipLock.RUnlock()
 			log.Verbose("signing gossip readiness set",
 				"sessionId", sessionId, "readyCount", len(signReadyAccounts))
 
-			minSignVer := tssMgr.scheduler.TssMinimumConsensusVersion(bh)
 			filtered := make([]Participant, 0, len(participants))
 			for _, p := range participants {
 				if signBlamedAccounts[p.Account] {
@@ -1084,17 +1126,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					continue
 				}
 				if !signReadyAccounts[p.Account] {
-					log.Verbose("excluding non-ready node from signing", "sessionId", sessionId, "account", p.Account)
-					continue
-				}
-				em, ok := electionMemberByAccount(commitElection.Members, p.Account)
-				if !ok {
-					log.Verbose("excluding signing participant not in commit election", "sessionId", sessionId, "account", p.Account)
-					continue
-				}
-				mv := elections.MemberConsensusVersion(em, *commitElection)
-				if !mv.MeetsConsensusMin(minSignVer) {
-					log.Verbose("excluding node failing version gate from signing", "sessionId", sessionId, "account", p.Account)
+					log.Verbose("excluding non-ready or version-mismatched node from signing", "sessionId", sessionId, "account", p.Account)
 					continue
 				}
 				filtered = append(filtered, p)
@@ -1228,22 +1260,24 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				continue
 			}
 
-			// Build party lists from gossip attestations. Each node
-			// independently computes the ready set from BLS-signed
-			// self-attestations collected via pubsub gossip.
-			// Per-height key: readiness is a node property, not per-key.
+			// Build party lists from gossip attestations. Each node independently computes
+			// the ready set from BLS-signed self-attestations collected via pubsub gossip.
+			// Per-height key: readiness is a node property, not per-key. Only peers whose
+			// attestation advertises a version meeting the active consensus floor are admitted,
+			// keeping the reshare session version-homogeneous (live, not stale snapshot).
+			minReshareVer := tssMgr.scheduler.TssMinimumConsensusVersion(bh)
 			heightKey := strconv.FormatUint(bh, 10)
 			tssMgr.gossipLock.RLock()
 			attMap := tssMgr.gossipAttestations[heightKey]
 			readyAccounts := make(map[string]bool, len(attMap))
-			for account := range attMap {
-				readyAccounts[account] = true
+			for account, att := range attMap {
+				if att.Version().MeetsConsensusMin(minReshareVer) {
+					readyAccounts[account] = true
+				}
 			}
 			tssMgr.gossipLock.RUnlock()
 			log.Verbose("gossip readiness set",
 				"sessionId", sessionId, "readyCount", len(readyAccounts))
-
-			minReshareVer := tssMgr.scheduler.TssMinimumConsensusVersion(bh)
 
 			// Decode commitment bitset for old committee membership
 			commitmentBytes, err := base64.RawURLEncoding.DecodeString(commitment.Commitment)
@@ -1263,14 +1297,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						log.Verbose("excluding banned node from old committee", "sessionId", sessionId, "account", member.Account)
 						continue
 					}
-					// On-chain readiness gate: only include if node broadcast readiness
+					// Gossip readiness gate (version-filtered): only include if the node
+					// broadcast readiness with a version meeting the active floor.
 					if !readyAccounts[member.Account] {
-						log.Verbose("excluding non-ready node from old committee", "sessionId", sessionId, "account", member.Account)
-						continue
-					}
-					ov := elections.MemberConsensusVersion(member, *commitmentElection)
-					if !ov.MeetsConsensusMin(minReshareVer) {
-						log.Verbose("excluding old committee node failing version gate", "sessionId", sessionId, "account", member.Account)
+						log.Verbose("excluding non-ready or version-mismatched node from old committee", "sessionId", sessionId, "account", member.Account)
 						continue
 					}
 					commitedMembers = append(commitedMembers, Participant{
@@ -1293,16 +1323,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					log.Verbose("excluding banned node from new committee", "sessionId", sessionId, "account", member.Account)
 					continue
 				}
-				// On-chain readiness gate: only include if node broadcast readiness
+				// Gossip readiness gate (version-filtered): only include if the node
+				// broadcast readiness with a version meeting the active floor.
 				if !readyAccounts[member.Account] {
 					excludedNodes = append(excludedNodes, member.Account)
-					log.Verbose("excluding non-ready node from new committee", "sessionId", sessionId, "account", member.Account)
-					continue
-				}
-				nv := elections.MemberConsensusVersion(member, currentElection)
-				if !nv.MeetsConsensusMin(minReshareVer) {
-					excludedNodes = append(excludedNodes, member.Account)
-					log.Verbose("excluding new committee node failing version gate", "sessionId", sessionId, "account", member.Account)
+					log.Verbose("excluding non-ready or version-mismatched node from new committee", "sessionId", sessionId, "account", member.Account)
 					continue
 				}
 				newParticipants = append(newParticipants, Participant{
@@ -2094,16 +2119,6 @@ func New(
 		readinessSent:      make(map[string]bool),
 		gossipAttestations: make(map[string]map[string]ReadyAttestation),
 	}
-}
-
-// electionMemberByAccount resolves committee membership for deterministic TSS version checks.
-func electionMemberByAccount(members []elections.ElectionMember, account string) (elections.ElectionMember, bool) {
-	for _, m := range members {
-		if m.Account == account {
-			return m, true
-		}
-	}
-	return elections.ElectionMember{}, false
 }
 
 //Processes:

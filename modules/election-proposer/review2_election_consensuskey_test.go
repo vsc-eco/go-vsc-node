@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"vsc-node/lib/test_utils"
+	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/witnesses"
 )
@@ -69,7 +70,7 @@ func TestReview2GenerateFullElectionBadConsensusKey(t *testing.T) {
 				t.Fatalf("review2 #66: GenerateFullElection panicked on a bad consensus key: %v", r)
 			}
 		}()
-		_, data, err := ep.GenerateFullElection([]witnesses.Witness{bad, good}, 0, 0, 100)
+		_, data, err := ep.GenerateFullElection([]witnesses.Witness{bad, good}, 0, consensusversion.Version{}, 100)
 		callErr = err
 		for _, m := range data.Members {
 			members = append(members, m.Account)
