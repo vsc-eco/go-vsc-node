@@ -497,6 +497,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	defer func() {
 		bp.sigMu.Lock()
 		delete(bp.sigChannels, bh)
+		bp.blockSigning = nil
 		bp.sigMu.Unlock()
 	}()
 
@@ -733,6 +734,7 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 	bp.sigMu.RUnlock()
 
 	signedWeight := uint64(0)
+	signedAccounts := make(map[string]bool)
 	for signedWeight < (weightTotal * 9 / 10) {
 		select {
 		case <-ctx.Done():
@@ -749,14 +751,20 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 				if !ok {
 					continue
 				}
+				if signedAccounts[account] {
+					continue
+				}
 				var member dids.Member
-				var index int
+				var index int = -1
 				for i, data := range election.Members {
 					if data.Account == account {
 						member = dids.BlsDID(data.Key)
 						index = i
 						break
 					}
+				}
+				if index == -1 {
+					continue
 				}
 
 				circuit := *signing.circuit
@@ -767,6 +775,7 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 				} else if !added {
 					vlog.Warn("sig rejected", "account", account)
 				} else {
+					signedAccounts[account] = true
 					signedWeight += election.Weights[index]
 					vlog.Trace("sig accepted", "account", account, "weight", election.Weights[index], "totalSigned", signedWeight)
 				}

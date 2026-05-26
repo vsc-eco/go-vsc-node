@@ -826,7 +826,7 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 	// (no per-node divergence). A deterministic "no election yet"
 	// (pre-genesis) cleanly refuses the tx — every node agrees it's absent.
 	// A genuine epoch-0 election is accepted normally (locks to epoch 5).
-	electionResult, found := se.GetElectionInfoOrBlock(tx.Self.BlockHeight - 1)
+	electionResult, found := se.GetElectionInfoOrBlock(tx.Self.BlockHeight)
 	if !found {
 		return TxResult{
 			Success: false,
