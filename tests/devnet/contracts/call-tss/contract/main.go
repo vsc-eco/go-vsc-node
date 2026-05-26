@@ -5,11 +5,44 @@ import (
 	_ "call-tss/sdk" // ensure sdk is imported
 	"encoding/hex"
 	"strconv"
+	"strings"
 
 	. "call-tss/contract/params"
 
 	"github.com/CosmWasm/tinyjson"
 )
+
+// setString stores a contract-state value. Input is "key,value" (matching the
+// go_wasm test contract convention). Used by the node-wide regression test to
+// exercise contract state writes against a freshly-built (non-stale) wasm.
+//
+//go:wasmexport setString
+func setString(input *string) *string {
+	parts := strings.SplitN(*input, ",", 2)
+	if len(parts) != 2 {
+		out := "invalid input, expected key,value"
+		return &out
+	}
+	sdk.StateSetObject(parts[0], parts[1])
+	out := "0"
+	return &out
+}
+
+// getString reads a contract-state value by key.
+//
+//go:wasmexport getString
+func getString(input *string) *string {
+	return sdk.StateGetObject(*input)
+}
+
+// clearString deletes a contract-state value by key.
+//
+//go:wasmexport clearString
+func clearString(input *string) *string {
+	sdk.StateDeleteObject(*input)
+	out := "0"
+	return &out
+}
 
 //go:wasmexport tssCreate
 func tssCreate(input *string) *string {
