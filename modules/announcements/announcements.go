@@ -41,7 +41,15 @@ type AnnouncementsManager struct {
 
 type HiveRpcClient interface {
 	GetAccount(accountNames []string) ([]hivego.AccountData, error)
-	UpdateAccount(account string, owner *hivego.Auths, active *hivego.Auths, posting *hivego.Auths, jsonMetadata string, memoKey string, wif *string) (string, error)
+	UpdateAccount(
+		account string,
+		owner *hivego.Auths,
+		active *hivego.Auths,
+		posting *hivego.Auths,
+		jsonMetadata string,
+		memoKey string,
+		wif *string,
+	) (string, error)
 }
 
 // ===== interface assertions =====
@@ -50,7 +58,15 @@ var _ agg.Plugin = &AnnouncementsManager{}
 
 // ===== constructor =====
 
-func New(client HiveRpcClient, conf common.IdentityConfig, sconf systemconfig.SystemConfig, p2pconf p2p.P2PConfig, cronDuration time.Duration, creator hive.HiveTransactionCreator, peerInfo common_types.PeerInfoGetter) (*AnnouncementsManager, error) {
+func New(
+	client HiveRpcClient,
+	conf common.IdentityConfig,
+	sconf systemconfig.SystemConfig,
+	p2pconf p2p.P2PConfig,
+	cronDuration time.Duration,
+	creator hive.HiveTransactionCreator,
+	peerInfo common_types.PeerInfoGetter,
+) (*AnnouncementsManager, error) {
 
 	// sanity checks
 
@@ -58,7 +74,9 @@ func New(client HiveRpcClient, conf common.IdentityConfig, sconf systemconfig.Sy
 		return nil, fmt.Errorf("client must be provided")
 	}
 	if cronDuration <= 0 || cronDuration < time.Second {
-		return nil, fmt.Errorf("cron duration must be greater than 1 second") // avoid accidental too-frequent announcements
+		return nil, fmt.Errorf(
+			"cron duration must be greater than 1 second",
+		) // avoid accidental too-frequent announcements
 	}
 
 	return &AnnouncementsManager{
@@ -152,7 +170,7 @@ type payloadVscNode struct {
 
 type didConsensusKey struct {
 	T   string      `json:"t"`
-	Ct  string      ` json:"ct"`
+	Ct  string      `json:"ct"`
 	Key dids.BlsDID `json:"key"`
 	// PoP is a base64 (raw-url) BLS proof-of-possession for Key, bound to the
 	// announcing Hive account. Lets ingesters confirm this node holds the
@@ -249,7 +267,8 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 		}
 	}
 
-	enabled := a.sconf.OnTestnet() || int(a.peerInfo.GetStatus()) == int(network.ReachabilityPublic)
+	enabled := a.sconf.OnTestnet() || a.sconf.OnDevnet() ||
+		int(a.peerInfo.GetStatus()) == int(network.ReachabilityPublic)
 
 	payload := payload{
 		Services: []string{"vsc.network"},
