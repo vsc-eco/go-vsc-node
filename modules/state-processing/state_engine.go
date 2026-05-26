@@ -2444,7 +2444,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	identityConfig common.IdentityConfig,
 ) *StateEngine {
 
-	ls := ledgerSystem.New(balanceDb, ledgerDb, interestClaims, actionDb)
+	ls := ledgerSystem.New(balanceDb, ledgerDb, interestClaims, actionDb, sconf.ConsensusParams().EvmAddressChecksumHeight)
 
 	// {
 	// 	BalanceDb: balanceDb,

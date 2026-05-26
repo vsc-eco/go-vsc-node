@@ -16,6 +16,8 @@ import (
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/params"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
+
+	ethcommon "github.com/ethereum/go-ethereum/common"
 )
 
 //Implementation notes:
@@ -41,6 +43,14 @@ type ledgerSystem struct {
 	//Some examples are withdrawals, and stake/unstake operations. Other future operations might be applicable as well
 	//Anything that requires on chain processing to complete
 	ActionsDb ledger_db.BridgeActions
+
+	// evmChecksumHeight is the network's
+	// ConsensusParams.EvmAddressChecksumHeight. When non-zero, gateway
+	// deposits at BlockHeight >= it have their resolved did:pkh:eip155
+	// owner normalized to its EIP-55 checksum form. 0 disables
+	// normalization (legacy verbatim casing). Set once at construction
+	// from the system config; treated as immutable thereafter.
+	evmChecksumHeight uint64
 }
 
 const (
@@ -953,6 +963,26 @@ func (ls *ledgerSystem) GetBalance(account string, blockHeight uint64, asset str
 
 // Empties the virtual state, such as when a block is executed
 
+// ethDIDPrefix is the did:pkh prefix for an EVM (eip155 mainnet) account.
+const ethDIDPrefix = "did:pkh:eip155:1:"
+
+// normalizeEthDID rewrites a did:pkh:eip155 account to its canonical EIP-55
+// checksummed form. Non-eip155 accounts (hive:, did:key:, etc.) and
+// malformed addresses are returned unchanged, so it is safe to apply to the
+// already-resolved owner regardless of which branch produced it. The address
+// portion is regex-validated before HexToAddress so go-ethereum's lenient
+// parser can't silently truncate or pad a bad input.
+func normalizeEthDID(account string) string {
+	addr, ok := strings.CutPrefix(account, ethDIDPrefix)
+	if !ok {
+		return account
+	}
+	if matched, _ := regexp.MatchString(ETH_REGEX, addr); !matched {
+		return account
+	}
+	return ethDIDPrefix + ethcommon.HexToAddress(addr).Hex()
+}
+
 func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 	decodedParams := DepositParams{}
 	values, err := url.ParseQuery(deposit.Memo)
@@ -985,6 +1015,16 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 		//Default to the original sender to prevent fund loss
 		// addr, _ := NormalizeAddress(deposit.From, "hive")
 		decodedParams.To = deposit.From
+	}
+
+	// Consensus-gated EIP-55 normalization. From evmChecksumHeight onward,
+	// canonicalize any did:pkh:eip155 owner to its checksummed form so the
+	// same Ethereum address cannot fragment a balance across case variants.
+	// Gated by block height (see ConsensusParams.EvmAddressChecksumHeight)
+	// so historical deposits keep their as-credited casing and a reindex
+	// stays byte-identical to live state.
+	if ls.evmChecksumHeight != 0 && deposit.BlockHeight >= ls.evmChecksumHeight {
+		decodedParams.To = normalizeEthDID(decodedParams.To)
 	}
 	// if le.VirtualLedger == nil {
 	// 	le.VirtualLedger = make(map[string][]LedgerUpdate)
@@ -1111,11 +1151,16 @@ func (ls *ledgerSystem) NewEmptyState() *LedgerState {
 // Then trigger a delayed (actual stake) even when the onchain operation is executed through the gateway
 // A two part Virtual Ledger operation operating out of sync
 
-func New(balanceDb ledger_db.Balances, ledgerDb ledger_db.Ledger, claimDb ledger_db.InterestClaims, actionDb ledger_db.BridgeActions) LedgerSystem {
+// New constructs a LedgerSystem. evmChecksumHeight is the network's
+// ConsensusParams.EvmAddressChecksumHeight — pass 0 to keep the legacy
+// verbatim-casing behavior (e.g. in tests). See the field doc on
+// ledgerSystem.evmChecksumHeight for the consensus rules.
+func New(balanceDb ledger_db.Balances, ledgerDb ledger_db.Ledger, claimDb ledger_db.InterestClaims, actionDb ledger_db.BridgeActions, evmChecksumHeight uint64) LedgerSystem {
 	return &ledgerSystem{
-		BalanceDb: balanceDb,
-		LedgerDb:  ledgerDb,
-		ClaimDb:   claimDb,
-		ActionsDb: actionDb,
+		BalanceDb:         balanceDb,
+		LedgerDb:          ledgerDb,
+		ClaimDb:           claimDb,
+		ActionsDb:         actionDb,
+		evmChecksumHeight: evmChecksumHeight,
 	}
 }

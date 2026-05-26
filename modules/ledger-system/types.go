@@ -27,9 +27,9 @@ type OpLogEvent struct {
 
 	//Not parted of compiled state
 	Id          string `json:"id" bson:"id"`
-	BIdx        int64  `json:"-" bson:"-"`
-	OpIdx       int64  `json:"-" bson:"-"`
-	BlockHeight uint64 `json:"-" bson:"-"`
+	BIdx        int64  `json:"-"  bson:"-"`
+	OpIdx       int64  `json:"-"  bson:"-"`
+	BlockHeight uint64 `json:"-"  bson:"-"`
 
 	//Fee for instant stake unstake
 	// Fee int64 `json:"fee,omitempty"`
@@ -76,7 +76,11 @@ type SlashRestitutionClaim struct {
 // SlashRestitutionAllocator splits slashed liquid HIVE between victims and protocol burn.
 // Implementations must return payments and burnAmt with Sum(payments.Amount)+burnAmt == slashAmt.
 type SlashRestitutionAllocator interface {
-	AllocateHive(slashAmt int64, blockHeight uint64, txID, evidenceKind, slashedAccount string) (payments []SlashRestitutionPayment, burnAmt int64)
+	AllocateHive(
+		slashAmt int64,
+		blockHeight uint64,
+		txID, evidenceKind, slashedAccount string,
+	) (payments []SlashRestitutionPayment, burnAmt int64)
 }
 
 // SafetySlashConsensusParams debits HIVE_CONSENSUS principal for provable safety faults.
