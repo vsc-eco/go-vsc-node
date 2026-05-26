@@ -130,10 +130,36 @@ func (tsc *tssCommitments) SetCommitmentData(commitment TssCommitment) error {
 	// FindOneAndUpdate with upsert returns ErrNoDocuments when it inserts a new
 	// document (nothing to "find"), but the write still succeeded.
 	if dbErr != nil && dbErr != mongo.ErrNoDocuments {
-		log.Warn("SetCommitmentData failed", "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "txId", commitment.TxId, "err", dbErr)
+		log.Warn(
+			"SetCommitmentData failed",
+			"keyId",
+			commitment.KeyId,
+			"type",
+			commitment.Type,
+			"epoch",
+			commitment.Epoch,
+			"txId",
+			commitment.TxId,
+			"err",
+			dbErr,
+		)
 		return dbErr
 	}
-	log.Verbose("SetCommitmentData OK", "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "txId", commitment.TxId, "db", tsc.Database().Name())
+	log.Verbose(
+		"SetCommitmentData OK",
+		"keyId",
+		commitment.KeyId,
+		"type",
+		commitment.Type,
+		"epoch",
+		commitment.Epoch,
+		"blockHeight",
+		commitment.BlockHeight,
+		"txId",
+		commitment.TxId,
+		"db",
+		tsc.Database().Name(),
+	)
 	return nil
 }
 
@@ -157,8 +183,21 @@ func (tsc *tssCommitments) GetCommitment(keyId string, epoch uint64) (TssCommitm
 }
 
 func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qtype ...string) (TssCommitment, error) {
-	findOpts := options.FindOne().SetSort(bson.M{
-		"block_height": -1,
+	// S8 follow-up: explicit tx_id ASC tiebreaker. The new SetCommitmentData
+	// filter guarantees at most one row per (key_id, block_height, type) for
+	// new commitments, so this is a no-op on a clean DB. It only matters for
+	// nodes still holding pre-fix duplicate rows at the same block_height:
+	// without an explicit tiebreaker Mongo's choice is unspecified and two
+	// nodes can read different rows for the same query, breaking BLS-CID
+	// consensus. Lex-smallest tx_id matches the winner that
+	// DedupCommitmentsBySemanticKey picks, so read semantics agree with the
+	// other read sites (FindCommitments / FindCommitmentsSimple /
+	// GetBlamesByKeyAndHeight / GetBlames). Legacy duplicate rows are
+	// cleared by reindex over time.
+	findOpts := options.FindOne().SetSort(bson.D{
+		{Key: "block_height", Value: -1},
+		{Key: "type", Value: -1},
+		{Key: "tx_id", Value: 1},
 	})
 
 	query := bson.M{
@@ -196,7 +235,15 @@ func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qt
 // short-page behavior. If a future caller needs strict-N pagination,
 // either over-fetch (limit ×2) or push the dedup into the aggregation
 // pipeline via a $group stage.
-func (tsc *tssCommitments) FindCommitments(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TssCommitment, error) {
+func (tsc *tssCommitments) FindCommitments(
+	keyId *string,
+	byTypes []string,
+	epoch *uint64,
+	fromBlock *uint64,
+	toBlock *uint64,
+	offset int,
+	limit int,
+) ([]TssCommitment, error) {
 	filters := bson.D{}
 	if keyId != nil {
 		filters = append(filters, bson.E{Key: "key_id", Value: *keyId})
@@ -237,7 +284,14 @@ func (tsc *tssCommitments) FindCommitments(keyId *string, byTypes []string, epoc
 // FindCommitments. The TSS blame-window callers in modules/tss use
 // limit=100, large enough that pre-migration duplicate clustering at
 // the head of the sort is unlikely to materially under-count blames.
-func (tsc *tssCommitments) FindCommitmentsSimple(keyId *string, byTypes []string, epoch *uint64, fromBlock *uint64, toBlock *uint64, limit int) ([]TssCommitment, error) {
+func (tsc *tssCommitments) FindCommitmentsSimple(
+	keyId *string,
+	byTypes []string,
+	epoch *uint64,
+	fromBlock *uint64,
+	toBlock *uint64,
+	limit int,
+) ([]TssCommitment, error) {
 	query := bson.M{}
 	if keyId != nil {
 		query["key_id"] = *keyId
