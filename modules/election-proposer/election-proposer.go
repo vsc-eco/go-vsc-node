@@ -68,6 +68,12 @@ type electionProposer struct {
 	electionMu sync.Mutex
 	sigMu      sync.Mutex
 	sigRunning bool
+
+	// scoreMapMinSamples is the per-instance floor for the ban filter. See
+	// the documentation on the (removed) package-level default for the why.
+	// Resolved once in New() so the production default (500) is locked at
+	// process start and cannot drift mid-run.
+	scoreMapMinSamples uint64
 }
 
 type ElectionProposer = *electionProposer
@@ -90,19 +96,42 @@ func New(
 	hiveConsumer *blockconsumer.HiveConsumer,
 ) ElectionProposer {
 	return &electionProposer{
-		conf:         conf,
-		p2p:          p2p,
-		witnesses:    witnesses,
-		elections:    elections,
-		vscBlocks:    vscBlocks,
-		balanceDb:    balanceDb,
-		da:           da,
-		txCreator:    txCreator,
-		sconf:        sconf,
-		se:           se,
-		hiveConsumer: hiveConsumer,
-		sigChannels:  make(map[uint64]chan *signResponse),
+		conf:               conf,
+		p2p:                p2p,
+		witnesses:          witnesses,
+		elections:          elections,
+		vscBlocks:          vscBlocks,
+		balanceDb:          balanceDb,
+		da:                 da,
+		txCreator:          txCreator,
+		sconf:              sconf,
+		se:                 se,
+		hiveConsumer:       hiveConsumer,
+		sigChannels:        make(map[uint64]chan *signResponse),
+		scoreMapMinSamples: resolveScoreMapMinSamples(sconf),
 	}
+}
+
+// resolveScoreMapMinSamples returns the per-instance ban-filter sample floor.
+// Production default is 500 (about 25 elections at ElectionInterval=20).
+// VSC_ELECTION_SCOREMAP_MIN_SAMPLES is honoured ONLY on devnet (NetId
+// "vsc-devnet") so testnet/mainnet operators cannot accidentally diverge
+// the consensus-critical threshold across nodes. Devnet tests rely on the
+// override to activate the ban filter within a runnable test horizon.
+func resolveScoreMapMinSamples(sconf systemconfig.SystemConfig) uint64 {
+	const defaultMinSamples = uint64(500)
+	if sconf == nil || sconf.NetId() != "vsc-devnet" {
+		return defaultMinSamples
+	}
+	v := os.Getenv("VSC_ELECTION_SCOREMAP_MIN_SAMPLES")
+	if v == "" {
+		return defaultMinSamples
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil {
+		return defaultMinSamples
+	}
+	return n
 }
 
 // Init implements aggregate.Plugin.
@@ -234,18 +263,9 @@ const VSC_ELECTION_TX_ID = "vsc.election_result"
 // denominator can mis-ban everyone, so we skip the filter and rely on
 // later elections (with more history) to catch persistent delinquency.
 //
-// Production default is 500 (about 25 elections at ElectionInterval=20).
-// Devnet tests override via VSC_ELECTION_SCOREMAP_MIN_SAMPLES so the
-// ban filter activates within a runnable test horizon.
-var scoreMapMinSamples = uint64(500)
-
-func init() {
-	if v := os.Getenv("VSC_ELECTION_SCOREMAP_MIN_SAMPLES"); v != "" {
-		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
-			scoreMapMinSamples = n
-		}
-	}
-}
+// Resolved per-instance via resolveScoreMapMinSamples (see New). The default
+// (500, about 25 elections at ElectionInterval=20) is fixed on testnet and
+// mainnet; only devnet honours the VSC_ELECTION_SCOREMAP_MIN_SAMPLES override.
 
 func (e *electionProposer) GenerateFullElection(
 	witnessList []witnesses.Witness,
@@ -300,7 +320,7 @@ func (e *electionProposer) GenerateFullElection(
 		sm, smErr := e.scoreMap()
 		if smErr != nil {
 			fmt.Println("election.scoreMap failed (skipping ban filter)", "err", smErr)
-		} else if sm.Samples >= scoreMapMinSamples && len(sm.BannedNodes) > 0 {
+		} else if sm.Samples >= e.scoreMapMinSamples && len(sm.BannedNodes) > 0 {
 			banned := make(map[string]bool, len(sm.BannedNodes))
 			for _, n := range sm.BannedNodes {
 				banned[n] = true
@@ -432,7 +452,12 @@ func (e *electionProposer) GenerateFullElection(
 			return elections.ElectionHeader{}, elections.ElectionData{},
 				fmt.Errorf("pendulum settlement: balance reader unavailable")
 		}
-		bonds := pendulumsettlement.ReadCommitteeBonds(balanceReader, settlementMembers, previousElection.BlockHeight, blockHeight)
+		bonds := pendulumsettlement.ReadCommitteeBonds(
+			balanceReader,
+			settlementMembers,
+			previousElection.BlockHeight,
+			blockHeight,
+		)
 		bucket := e.se.PendulumNodesBucketBalance(blockHeight)
 		prevSettled := e.se.GetLatestSettledEpoch()
 		tickInterval := e.se.PendulumOracleTickInterval()
