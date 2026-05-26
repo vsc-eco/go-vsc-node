@@ -59,7 +59,7 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 		})
 	}
 
-	if !se.sconf.OnTestnet() || txSelf.BlockHeight >= se.sconf.ConsensusParams().TssIndexHeight {
+	if se.sconf.OnMainnet() || txSelf.BlockHeight >= se.sconf.ConsensusParams().TssIndexHeight {
 		// for testnet, index only above tss index height
 		tssOps := output.TssOps
 		for _, res := range output.Results {

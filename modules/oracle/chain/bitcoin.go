@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/lib/vsclog"
+	systemconfig "vsc-node/modules/common/system-config"
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -51,7 +51,7 @@ type btcChainData struct {
 
 // Init implements chainRelay.
 func (b *bitcoinRelayer) Init(sconf systemconfig.SystemConfig) error {
-	if sconf.OnTestnet() {
+	if sconf.OnTestnet() || sconf.OnDevnet() {
 		b.validityThreshold = 0
 		b.autoReorg = true
 		b.fixedFeeRate = 1
@@ -120,7 +120,11 @@ func (b *bitcoinRelayer) ChainData(
 		return nil, errors.New("start height not provided")
 	}
 	if latestValidHeight < startHeight {
-		return nil, fmt.Errorf("bitcoin latest valid height (%d) is behind requested start height (%d)", latestValidHeight, startHeight)
+		return nil, fmt.Errorf(
+			"bitcoin latest valid height (%d) is behind requested start height (%d)",
+			latestValidHeight,
+			startHeight,
+		)
 	}
 
 	// connect to btcd

@@ -520,7 +520,15 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 
 			amtStr, err := common.FormatAssetAmount(amt, action.Asset)
 			if err != nil {
-				log.Warn("skipping withdraw action: cannot format amount", "action", action.Id, "asset", action.Asset, "err", err)
+				log.Warn(
+					"skipping withdraw action: cannot format amount",
+					"action",
+					action.Id,
+					"asset",
+					action.Asset,
+					"err",
+					err,
+				)
 				continue
 			}
 			op := ms.hiveCreator.Transfer(
@@ -951,7 +959,7 @@ func (ms *MultiSig) getSigningKp() *hivego.KeyPair {
 
 func (ms *MultiSig) toHiveAssetName(asset string) string {
 	// TODO: transition to NAI format instead of strings
-	if ms.sconf.OnTestnet() {
+	if ms.sconf.OnTestnet() || ms.sconf.OnDevnet() {
 		switch asset {
 		case "hive":
 			return "TESTS"

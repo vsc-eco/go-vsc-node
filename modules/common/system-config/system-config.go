@@ -10,6 +10,7 @@ import (
 type SystemConfig interface {
 	OnMainnet() bool
 	OnTestnet() bool
+	OnDevnet() bool
 	OnMocknet() bool
 	BootstrapPeers() []string
 	PubSubTopicPrefix() string
@@ -42,7 +43,11 @@ func (c *config) OnMainnet() bool {
 }
 
 func (c *config) OnTestnet() bool {
-	return c.network == "testnet" || c.network == "devnet"
+	return c.network == "testnet"
+}
+
+func (c *config) OnDevnet() bool {
+	return c.network == "devnet"
 }
 
 func (c *config) OnMocknet() bool {
