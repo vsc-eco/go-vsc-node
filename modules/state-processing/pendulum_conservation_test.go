@@ -92,7 +92,7 @@ func TestPendulumAccrualHBDConservation(t *testing.T) {
 	aDb := &test_utils.MockActionsDb{
 		Actions: make(map[string]ledgerDb.ActionRecord),
 	}
-	ls := ledgerSystem.New(balDb, lDb, nil, aDb, 0)
+	ls := ledgerSystem.New(balDb, lDb, nil, aDb, nil)
 	state := ls.NewEmptyState()
 	session := ledgerSystem.NewSession(state)
 
@@ -170,7 +170,7 @@ func TestPendulumAccrualFailsWhenContractUnderfunded(t *testing.T) {
 	}
 	lDb := &test_utils.MockLedgerDb{LedgerRecords: make(map[string][]ledgerDb.LedgerRecord)}
 	aDb := &test_utils.MockActionsDb{Actions: make(map[string]ledgerDb.ActionRecord)}
-	ls := ledgerSystem.New(balDb, lDb, nil, aDb, 0)
+	ls := ledgerSystem.New(balDb, lDb, nil, aDb, nil)
 	state := ls.NewEmptyState()
 	session := ledgerSystem.NewSession(state)
 
