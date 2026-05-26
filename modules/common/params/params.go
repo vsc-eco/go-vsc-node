@@ -110,6 +110,25 @@ type ConsensusParams struct {
 	// every node, reindex or not). 0 means "no seed" — correct for fresh chains
 	// built from genesis with the settlement code already present.
 	PendulumSeedEpoch uint64 `json:"pendulumSeedEpoch,omitempty"`
+
+	// EvmAddressChecksumHeight gates EIP-55 checksum normalization of EVM
+	// destination addresses on gateway deposits. A deposit at
+	// BlockHeight >= this value has its resolved did:pkh:eip155 owner
+	// normalized to the canonical EIP-55 (mixed-case) checksum form, so
+	// that the same Ethereum address can no longer fragment a balance
+	// across multiple case-variant DIDs. Below this height the legacy
+	// behavior is preserved: the owner keeps the exact casing from the
+	// deposit memo.
+	//
+	// MUST be a fixed network-wide constant (identical on every node,
+	// reindex or not) set to a height STRICTLY ABOVE the current chain
+	// head before rollout. A height at or below an already-processed block
+	// is a consensus footgun: live nodes credited those historical
+	// deposits verbatim, but a fresh reindex would credit them normalized,
+	// so the two would diverge. 0 disables normalization entirely (legacy
+	// verbatim behavior) — the correct default until an operator pins the
+	// activation height for a deploy.
+	EvmAddressChecksumHeight uint64 `json:"evmAddressChecksumHeight,omitempty"`
 }
 
 type TssParams struct {

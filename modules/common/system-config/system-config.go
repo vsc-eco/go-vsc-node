@@ -194,7 +194,8 @@ func MainnetConfig() SystemConfig {
 			// pendulum settlement code ships to mainnet. Left 0 (no seed)
 			// until then — 0 on an established chain deadlocks the proposer's
 			// canHold gate, so this is a deliberate "configure before deploy".
-			PendulumSeedEpoch: 0,
+			PendulumSeedEpoch:        0,
+			EvmAddressChecksumHeight: 0,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -231,6 +232,9 @@ func TestnetConfig() SystemConfig {
 			// epoch 515's settlement is skipped as stale and its bucket HBD
 			// rolls into 516's settlement.
 			PendulumSeedEpoch: 554,
+			// Set to a future testnet height before rollout (same reindex-
+			// divergence rule as mainnet). 0 = disabled until then.
+			EvmAddressChecksumHeight: 0,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{

@@ -22,9 +22,86 @@ func newLedgerEnv() (ledgerSystem.LedgerSystem, *ledgerSystem.LedgerState) {
 	lDb := newMockLedgerDb()
 	aDb := newMockActionsDb()
 
-	ls := ledgerSystem.New(balDb, lDb, nil, aDb)
+	ls := ledgerSystem.New(balDb, lDb, nil, aDb, 0)
 	state := ls.NewEmptyState()
 	return ls, state
+}
+
+// TestDepositEvmChecksumNormalization verifies the consensus-gated EIP-55
+// normalization of EVM deposit owners. The memo uses an all-lowercase address
+// so the canonical (checksummed) form is observably different.
+func TestDepositEvmChecksumNormalization(t *testing.T) {
+	const lower = "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
+	const checksummed = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+
+	cases := []struct {
+		name           string
+		memo           string
+		checksumHeight uint64
+		blockHeight    uint64
+		wantOwner      string
+	}{
+		{
+			name:           "disabled keeps verbatim casing",
+			memo:           "to=" + lower,
+			checksumHeight: 0,
+			blockHeight:    1000,
+			wantOwner:      "did:pkh:eip155:1:" + lower,
+		},
+		{
+			name:           "below activation height keeps verbatim casing",
+			memo:           "to=" + lower,
+			checksumHeight: 2000,
+			blockHeight:    1000,
+			wantOwner:      "did:pkh:eip155:1:" + lower,
+		},
+		{
+			name:           "at activation height normalizes to checksum",
+			memo:           "to=" + lower,
+			checksumHeight: 1000,
+			blockHeight:    1000,
+			wantOwner:      "did:pkh:eip155:1:" + checksummed,
+		},
+		{
+			name:           "full did memo is also normalized when active",
+			memo:           "to=did:pkh:eip155:1:" + lower,
+			checksumHeight: 1000,
+			blockHeight:    1500,
+			wantOwner:      "did:pkh:eip155:1:" + checksummed,
+		},
+		{
+			name:           "hive owner is untouched by normalization",
+			memo:           "to=vaultec",
+			checksumHeight: 1000,
+			blockHeight:    1500,
+			wantOwner:      "hive:vaultec",
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Construct a ledger system with the per-case activation height —
+			// the gate is now an immutable field set at New().
+			ls := ledgerSystem.New(
+				newMockBalanceDb(nil),
+				newMockLedgerDb(),
+				nil,
+				newMockActionsDb(),
+				tc.checksumHeight,
+			)
+			dest := ls.Deposit(ledgerSystem.Deposit{
+				Id:          "evm-norm-" + strconv.Itoa(i),
+				Asset:       "hive",
+				Amount:      100,
+				From:        "hive:test-account",
+				Memo:        tc.memo,
+				BIdx:        int64(i),
+				OpIdx:       0,
+				BlockHeight: tc.blockHeight,
+			})
+			assert.Equal(t, tc.wantOwner, dest)
+		})
+	}
 }
 
 func TestInsertCheckBalance(t *testing.T) {
@@ -152,7 +229,7 @@ func TestStakeUnstake(t *testing.T) {
 	})
 	lDb := newMockLedgerDb()
 	aDb := newMockActionsDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, aDb)
+	ls := ledgerSystem.New(balDb, lDb, nil, aDb, 0)
 	state := ls.NewEmptyState()
 
 	t.Run("stake HBD", func(t *testing.T) {
@@ -311,7 +388,7 @@ func newLedgerEnvWithClaims(balances map[string][]ledgerDb.BalanceRecord) (
 	lDb := newMockLedgerDb()
 	aDb := newMockActionsDb()
 	claimDb := &test_utils.MockInterestClaimsDb{Claims: make([]ledgerDb.ClaimRecord, 0)}
-	ls := ledgerSystem.New(balDb, lDb, claimDb, aDb)
+	ls := ledgerSystem.New(balDb, lDb, claimDb, aDb, 0)
 	return ls, lDb, claimDb
 }
 
@@ -703,7 +780,7 @@ func TestOplogIngest(t *testing.T) {
 	})
 	lDb := newMockLedgerDb()
 	aDb := newMockActionsDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, aDb)
+	ls := ledgerSystem.New(balDb, lDb, nil, aDb, 0)
 	state := ls.NewEmptyState()
 
 	// Execute a transfer via session, commit, then ingest
@@ -821,7 +898,7 @@ func TestGetBalance_HiveConsensusIncludesSlashLedger(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 	state := ls.NewEmptyState()
 
 	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
@@ -846,7 +923,7 @@ func TestSafetySlashConsensusBond_DebitsBondAndBurnsWithoutDAO(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 
 	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account:         "alice",
@@ -884,7 +961,7 @@ func TestSafetySlashConsensusBond_RestitutionThenBurn(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 	q := safetyslash.NewMemoryRestitutionQueue()
 	q.Enqueue(ledgerSystem.SlashRestitutionClaim{ClaimID: "c1", VictimAccount: "bob", LossHive: 30_000})
 
@@ -924,7 +1001,7 @@ func TestSafetySlashConsensusBond_DelayedBurnFinalizes(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 
 	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account:         "alice",
@@ -985,7 +1062,7 @@ func TestSafetySlashConsensusBond_ClampsBurnDelayBlocks(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 
 	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account:         "alice",
@@ -1023,7 +1100,7 @@ func TestSafetySlashConsensusBond_RejectsRestitutionReconcileMismatch(t *testing
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account:         "alice",
 		SlashBps:        1000,
@@ -1053,7 +1130,7 @@ func TestSafetySlashConsensusBond_RejectsEmptyRestitutionVictim(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account:         "alice",
 		SlashBps:        1000,
@@ -1084,7 +1161,7 @@ func TestSafetySlashConsensusBond_RejectsRestitutionSumOverflow(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account:         "alice",
 		SlashBps:        1000,
@@ -1116,7 +1193,7 @@ func TestSafetySlashConsensusBond_DistinctRestitutionIdsForDuplicateClaimID(t *t
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account:         "alice",
 		SlashBps:        1000,
@@ -1147,7 +1224,7 @@ func TestSafetySlashConsensusBond_FinalizeMaturedBurnIdempotent(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account:         "alice",
 		SlashBps:        1000,
@@ -1189,7 +1266,7 @@ func TestCancelPendingSafetySlashBurn_PreMaturity(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account:         "alice",
 		SlashBps:        1000,
@@ -1250,7 +1327,7 @@ func TestCancelPendingSafetySlashBurn_AfterFinalizeRejected(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account:         "alice",
 		SlashBps:        1000,
@@ -1282,7 +1359,7 @@ func TestReverseSafetySlashConsensusDebit_RestoresBond(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 
 	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account:      "alice",
@@ -1326,7 +1403,7 @@ func TestReverseSafetySlashConsensusDebit_RestoresBond(t *testing.T) {
 func TestReverseSafetySlashConsensusDebit_RejectsInvalid(t *testing.T) {
 	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 	for _, c := range []struct {
 		name string
 		p    ledgerSystem.ReverseSafetySlashConsensusDebitParams
@@ -1367,7 +1444,7 @@ func TestSafetySlashConsensusBond_RejectsMaturityOverflow(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account:         "alice",
 		SlashBps:        1000,
@@ -1414,7 +1491,7 @@ func TestFinalizeCursor_AdvancesPastFullyMatured(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 
 	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account:         "alice",
@@ -1459,7 +1536,7 @@ func TestFinalizeCursor_AnchorsToOldestUnfinalized(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 
 	// Slash alice at 200 (maturity 250) and bob at 220 (maturity 320).
 	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
@@ -1498,7 +1575,7 @@ func TestFinalizeCursor_NeverGoesBackward(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 
 	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
 		Account: "alice", SlashBps: 1000, TxID: "tx-mono",
@@ -1536,7 +1613,7 @@ func TestFinalizeCursor_BackfillsFromZeroOnFirstRun(t *testing.T) {
 		}},
 	})
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), 0)
 
 	// Pre-populate a slash + pending row at height 200, then drop any
 	// cursor row that may have been written (simulate pre-cursor data
@@ -1573,7 +1650,7 @@ func TestFinalizeCursor_BackfillsFromZeroOnFirstRun(t *testing.T) {
 // expected fields and op type.
 func TestEnqueueRestitutionClaim_HappyPath(t *testing.T) {
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), 0)
 
 	res := ls.EnqueueRestitutionClaim(ledgerSystem.EnqueueRestitutionClaimParams{
 		ClaimID:       "claim-1",
@@ -1600,7 +1677,7 @@ func TestEnqueueRestitutionClaim_HappyPath(t *testing.T) {
 // inputs are rejected without writing a row.
 func TestEnqueueRestitutionClaim_RejectsBadInput(t *testing.T) {
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), 0)
 
 	cases := []struct {
 		name string
@@ -1625,7 +1702,7 @@ func TestEnqueueRestitutionClaim_RejectsBadInput(t *testing.T) {
 // semantics) so chain replay converges on the same queue state.
 func TestEnqueueRestitutionClaim_Idempotent_PerClaimID(t *testing.T) {
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), 0)
 
 	p := ledgerSystem.EnqueueRestitutionClaimParams{
 		ClaimID: "dup-claim", VictimAccount: "alice", SlashTxID: "tx-x",
@@ -1643,7 +1720,7 @@ func TestEnqueueRestitutionClaim_Idempotent_PerClaimID(t *testing.T) {
 // preserve the per-claim residual balance.
 func TestOnLedgerAllocator_FIFO_Order(t *testing.T) {
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), 0)
 
 	// Enqueue 3 claims at increasing block heights so FIFO order is
 	// unambiguous (height-based, no Id tie-break needed).
@@ -1683,7 +1760,7 @@ func TestOnLedgerAllocator_FIFO_Order(t *testing.T) {
 // deterministic regardless of map insertion order.
 func TestOnLedgerAllocator_TieBreakByID(t *testing.T) {
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), 0)
 
 	// Both at height 10 — Ids are "safety_restitution_claim#aa" and
 	// "safety_restitution_claim#bb", so aa wins lex order.
@@ -1704,7 +1781,7 @@ func TestOnLedgerAllocator_TieBreakByID(t *testing.T) {
 // remaining balance rather than restarting the queue.
 func TestOnLedgerAllocator_RespectsConsumedTotals(t *testing.T) {
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), 0)
 	require.True(t, ls.EnqueueRestitutionClaim(ledgerSystem.EnqueueRestitutionClaimParams{
 		ClaimID: "c1", VictimAccount: "alice", LossHive: 50_000, BlockHeight: 10, TxID: "tx10"}).Ok)
 
@@ -1729,7 +1806,7 @@ func TestOnLedgerAllocator_RespectsConsumedTotals(t *testing.T) {
 // accidental misuse.
 func TestOnLedgerAllocator_RefusesBlankSlashIdentity(t *testing.T) {
 	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb())
+	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), 0)
 	require.True(t, ls.EnqueueRestitutionClaim(ledgerSystem.EnqueueRestitutionClaimParams{
 		ClaimID: "c1", VictimAccount: "alice", LossHive: 50_000, BlockHeight: 10, TxID: "tx10"}).Ok)
 
