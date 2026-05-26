@@ -3,7 +3,42 @@ package consensusversion
 
 import (
 	"fmt"
+	"strconv"
 )
+
+// Build-time node consensus version, settable via -ldflags -X. These are the single
+// source of truth for both the on-chain witness announcement and TSS gossip readiness.
+// Example:
+//
+//	-ldflags "-X vsc-node/modules/common/consensusversion.NodeVersionMajor=1 \
+//	          -X vsc-node/modules/common/consensusversion.NodeProtocolVersion=2 \
+//	          -X vsc-node/modules/common/consensusversion.NodeVersionNonConsensus=7"
+var (
+	NodeVersionMajor        string
+	NodeProtocolVersion     string
+	NodeVersionNonConsensus string
+)
+
+// ParseComponent parses a build-time version component, defaulting to 0 when empty/invalid.
+func ParseComponent(raw string) uint64 {
+	if raw == "" {
+		return 0
+	}
+	v, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+// RunningVersion returns this binary's consensus triple from build-time vars.
+func RunningVersion() Version {
+	return Version{
+		Major:        ParseComponent(NodeVersionMajor),
+		Consensus:    ParseComponent(NodeProtocolVersion),
+		NonConsensus: ParseComponent(NodeVersionNonConsensus),
+	}
+}
 
 // Version is the canonical on-chain / wire representation.
 type Version struct {
@@ -78,12 +113,3 @@ func MaxComponentwise(a, b Version) Version {
 	return out
 }
 
-// MergeElectionAndAdoptedMin combines the last election's triple with chain-adopted version.
-// When adopted bumps major above the election line, the election's old consensus counter must not
-// be mixed in (otherwise MaxComponentwise would produce a never-announced hybrid like 1.5.0).
-func MergeElectionAndAdoptedMin(prevElection, adopted Version) Version {
-	if adopted.Major > prevElection.Major {
-		return adopted
-	}
-	return MaxComponentwise(prevElection, adopted)
-}

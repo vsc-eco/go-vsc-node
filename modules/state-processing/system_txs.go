@@ -664,13 +664,15 @@ func (tx *TxElectionResult) ToData() map[string]interface{} {
 	}
 }
 
-// TxProposeConsensusVersion proposes a target triple; adoption requires stake-weighted witness readiness.
+// TxProposeConsensusVersion schedules a target major.consensus to switch to at ActivationEpoch.
+// Activation requires the stake-readiness guard to pass at election build (see election-proposer).
 type TxProposeConsensusVersion struct {
-	Self          TxSelf
-	NetId         string `json:"net_id"`
-	Major         uint64 `json:"major"`
-	Consensus     uint64 `json:"consensus"`
-	NonConsensus uint64 `json:"non_consensus"`
+	Self            TxSelf
+	NetId           string `json:"net_id"`
+	Major           uint64 `json:"major"`
+	Consensus       uint64 `json:"consensus"`
+	NonConsensus    uint64 `json:"non_consensus"`
+	ActivationEpoch uint64 `json:"activation_epoch"`
 }
 
 func (tx TxProposeConsensusVersion) Type() string {

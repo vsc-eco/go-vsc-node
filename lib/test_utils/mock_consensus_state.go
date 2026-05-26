@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"vsc-node/modules/aggregate"
-	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/db/vsc/consensus_state"
 
 	"github.com/chebyrash/promise"
@@ -59,24 +58,17 @@ func (m *MockConsensusState) Upsert(_ context.Context, state consensus_state.Cha
 	return nil
 }
 
-func (m *MockConsensusState) SetPendingProposal(_ context.Context, p *consensus_state.PendingConsensusProposal) error {
+func (m *MockConsensusState) SetScheduledActivation(_ context.Context, s *consensus_state.ScheduledActivation) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.S.PendingProposal = p
+	m.S.ScheduledActivation = s
 	return nil
 }
 
-func (m *MockConsensusState) ClearPendingProposal(_ context.Context) error {
+func (m *MockConsensusState) ClearScheduledActivation(_ context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.S.PendingProposal = nil
-	return nil
-}
-
-func (m *MockConsensusState) SetAdoptedVersion(_ context.Context, v consensusversion.Version) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.S.AdoptedVersion = v
+	m.S.ScheduledActivation = nil
 	return nil
 }
 
@@ -87,27 +79,11 @@ func (m *MockConsensusState) SetProcessingSuspended(_ context.Context, suspended
 	return nil
 }
 
-func (m *MockConsensusState) SetMinRequiredAndClearSuspension(_ context.Context, v consensusversion.Version) error {
+func (m *MockConsensusState) SetForcedActivationAndClearSuspension(_ context.Context, s *consensus_state.ScheduledActivation) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.S.MinRequiredVersion = &v
+	m.S.ScheduledActivation = s
 	m.S.ProcessingSuspended = false
-	m.S.AdoptedVersion = v
-	m.S.PendingProposal = nil
-	return nil
-}
-
-func (m *MockConsensusState) SetNextActivation(_ context.Context, a *consensus_state.ConsensusActivation) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.S.NextActivation = a
-	return nil
-}
-
-func (m *MockConsensusState) ClearNextActivation(_ context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.S.NextActivation = nil
 	return nil
 }
 

@@ -24,6 +24,7 @@ import (
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
+	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
@@ -323,11 +324,12 @@ func (e *electionProposer) GenerateFullElection(
 	prevVersion consensusversion.Version,
 	blockHeight uint64,
 ) (elections.ElectionHeader, elections.ElectionData, error) {
-	_ = prevVersion
-	effective := e.se.TssMinimumConsensusVersion(blockHeight)
+	// The version floor carries forward from the previous election (major.consensus only)
+	// and may rise to a scheduled target once the stake-readiness guard passes (below).
+	floor := consensusversion.Version{Major: prevVersion.Major, Consensus: prevVersion.Consensus}
 
 	witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
-		return !w.ConsensusVersionTriple().MeetsConsensusMin(effective)
+		return !w.ConsensusVersionTriple().MeetsConsensusMin(floor)
 	})
 
 	// ensure the list is in a deterministic order
@@ -392,6 +394,12 @@ func (e *electionProposer) GenerateFullElection(
 		}
 	}
 
+	// Epoch this election will create (used to compare against the scheduled activation epoch).
+	var newEpoch uint64
+	if !firstElection {
+		newEpoch = previousEpoch + 1
+	}
+
 	stakedMap := map[string]uint64{}
 	defaultWeightMap := map[string]uint64{}
 	nodesWithStake := uint64(0)
@@ -430,6 +438,38 @@ func (e *electionProposer) GenerateFullElection(
 		weight, included := weightMap[w.Account]
 		return !included || weight == 0
 	})
+
+	// Epoch-scheduled version switch with stake-readiness guard. Resolved here (at the
+	// ratified election checkpoint) rather than via a live singleton, so every signer
+	// regenerating this election at the same height computes the identical floor → CID.
+	// The schedule is read height-addressably (ScheduledActivationForHeight) for purity.
+	var schedule *consensus_state.ScheduledActivation
+	if e.se != nil {
+		schedule = e.se.ScheduledActivationForHeight(blockHeight)
+	}
+	if schedule != nil &&
+		newEpoch >= schedule.ActivationEpoch && schedule.Target().Cmp(floor) > 0 {
+		target := schedule.Target()
+		var totalWeight, readyWeight uint64
+		for _, w := range witnessList {
+			wt := weightMap[w.Account]
+			totalWeight += wt
+			if w.ConsensusVersionTriple().MeetsConsensusMin(target) {
+				readyWeight += wt
+			}
+		}
+		num, den := int64(e.sconf.ConsensusParams().ConsensusVersionActivationNum), int64(e.sconf.ConsensusParams().ConsensusVersionActivationDen)
+		if num <= 0 || den <= 0 {
+			num, den = 4, 5 // default 80%
+		}
+		// Integer-only comparison: readyWeight/totalWeight >= num/den.
+		if schedule.Forced || (totalWeight > 0 && int64(readyWeight)*den >= int64(totalWeight)*num) {
+			floor = target
+			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
+				return !w.ConsensusVersionTriple().MeetsConsensusMin(floor)
+			})
+		}
+	}
 
 	optionalNodes := slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 		return slices.Contains(REQUIRED_ELECTION_MEMBERS, w.Account)
@@ -484,9 +524,10 @@ func (e *electionProposer) GenerateFullElection(
 	}
 	electionData.Members = members
 	electionData.NetId = e.sconf.NetId()
-	electionData.ProtocolVersion = effective.Consensus
-	electionData.VersionMajor = effective.Major
-	electionData.VersionNonConsensus = effective.NonConsensus
+	electionData.ProtocolVersion = floor.Consensus
+	electionData.VersionMajor = floor.Major
+	// non_consensus is informational and not coordinated at the election level.
+	electionData.VersionNonConsensus = 0
 	electionData.Weights = weights
 	electionData.Type = pType
 

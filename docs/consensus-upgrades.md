@@ -38,35 +38,45 @@ This document describes how to add and roll out new consensus lines in the
 
 ## Upgrade flow
 
-### Normal coordination
+The active consensus version is a **pure function of the on-chain election**:
+`activeVersion(blockHeight) = elections.ResultVersion(GetElectionByHeight(blockHeight))`.
+There is no live "adopted version" singleton — version selection is resolved once per election
+at the epoch boundary and ratified by the existing ~80% regenerate-and-sign mechanism. This is
+what makes TSS gating and executor selection deterministic and replay-correct.
 
-1. Committee proposes `vsc.propose_consensus_version` for target `major.consensus`.
-2. Readiness finalizes once threshold is met.
-3. Activation metadata (`next_activation`) is attested and persisted with:
-   - mode = `normal`
-   - target line
-   - activation height
-   - attested block + tx id
-4. At activation height, runtime switches to the new executor line.
+### Normal coordination (epoch-scheduled switch)
+
+1. A committee member posts `vsc.propose_consensus_version` with `major`, `consensus`, and an
+   optional `activation_epoch` (defaults to the next epoch). This records a `ScheduledActivation`
+   in `chain_consensus_state`. A strictly-higher target replaces an existing schedule (monotone).
+2. At each election build (`GenerateFullElection`), the proposer resolves the version floor:
+   - floor carries forward from the previous election;
+   - if the new election's epoch `>= ActivationEpoch` and the target exceeds the floor and the
+     **stake-readiness guard** passes (≥ `ConsensusVersionActivationNum/Den`, default 80%, of
+     committee stake already announces the target), the floor rises to the target.
+   - witnesses below the floor are excluded; the floor is baked into the election version fields.
+3. Because every signer regenerates the election at the same height and reads the schedule
+   height-addressably (`ScheduledActivationForHeight`), all nodes compute the identical election
+   CID and ratify it.
+4. From the activated epoch onward, `activeVersion` (and the executor line) is the new version.
+   Nodes carrying the new binary keep running old behavior until the activation epoch.
 
 ### Halt recovery coordination
 
-1. `vsc.recovery_suspend` halts normal processing.
-2. `vsc.recovery_require_version` sets required/adopted version.
-3. Activation metadata may be postponed (baked into upgrade software policy):
-   - mode = `recovery`
-   - activation height > attestation height
-4. Runtime switches when postponed activation height is reached.
+1. `vsc.recovery_suspend` (recovery multisig) halts normal processing immediately.
+2. `vsc.recovery_require_version` (recovery multisig) records a **Forced** `ScheduledActivation`
+   (activates next epoch, skips the stake-readiness guard) and clears suspension.
 
 ## Data model notes
 
-- `chain_consensus_state` now includes optional `next_activation`:
-  - `mode`
-  - `version`
-  - `activation_height`
-  - `attested_block_height`
-  - `attested_tx_id`
-- Use `SetNextActivation` and `ClearNextActivation` on `ConsensusState`.
+- `chain_consensus_state` holds only `processing_suspended` and an optional
+  `scheduled_activation` (`{target_major, target_consensus, activation_epoch, forced, proposer,
+  tx_id, block_height}`).
+- Use `SetScheduledActivation` / `ClearScheduledActivation` /
+  `SetForcedActivationAndClearSuspension` on `ConsensusState`.
+- The node's own running version is `consensusversion.RunningVersion()` (build-time
+  `NodeVersionMajor` / `NodeProtocolVersion` / `NodeVersionNonConsensus`), used for both the
+  on-chain announcement and the version tag on TSS readiness gossip.
 
 ## GraphQL visibility
 

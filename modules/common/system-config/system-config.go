@@ -220,13 +220,15 @@ func TestnetConfig() SystemConfig {
 		gatewayWallet:  "vsc.gateway",
 		startHeight:    2,
 		consensusParams: params.ConsensusParams{
-			MinStake:             params.CONSENSUS_MINIMUM,
-			MinMembers:           3,
-			MinSpSigners:         3,
-			MinRcLimit:           params.MINIMUM_RC_LIMIT,
-			TssIndexHeight:       1409500,
-			ElectionInterval:     3600,
-			ElectionDupeFixEpoch: 268,
+			MinStake:                      params.CONSENSUS_MINIMUM,
+			MinMembers:                    3,
+			MinSpSigners:                  3,
+			MinRcLimit:                    params.MINIMUM_RC_LIMIT,
+			TssIndexHeight:                1409500,
+			ElectionInterval:              3600,
+			ElectionDupeFixEpoch:          268,
+			ConsensusVersionActivationNum: 4,
+			ConsensusVersionActivationDen: 5,
 			// Last pre-rollout testnet epoch. Seeds latestSettledEpoch=515 on
 			// upgrade so the first post-rollout election (epoch 516) can fire;
 			// epoch 515's settlement is skipped as stale and its bucket HBD
@@ -273,6 +275,8 @@ func DevnetConfig() SystemConfig {
 			TssIndexHeight:       0,
 			ElectionInterval:     40,
 			ElectionDupeFixEpoch: 0,
+			ConsensusVersionActivationNum: 4,
+			ConsensusVersionActivationDen: 5,
 		},
 		tssParams: params.DefaultTssParams,
 		// Devnet operators set via -sysconfig pendulumPoolWhitelist on each node.
@@ -296,6 +300,8 @@ func MocknetConfig() SystemConfig {
 			TssIndexHeight:       0,
 			ElectionInterval:     1000,
 			ElectionDupeFixEpoch: 0,
+			ConsensusVersionActivationNum: 4,
+			ConsensusVersionActivationDen: 5,
 		},
 		tssParams: params.MocknetTssParams,
 	}

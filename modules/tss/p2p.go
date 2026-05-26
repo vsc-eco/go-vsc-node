@@ -314,9 +314,12 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 		}
 
 		att := ReadyAttestation{
-			Account:     account,
-			TargetBlock: targetBlock,
-			Sig:         sig,
+			Account:             account,
+			TargetBlock:         targetBlock,
+			VersionMajor:        gossipUint(attMap["version_major"]),
+			VersionConsensus:    gossipUint(attMap["version_consensus"]),
+			VersionNonConsensus: gossipUint(attMap["version_non_consensus"]),
+			Sig:                 sig,
 		}
 
 		if !s.tssMgr.verifyAttestation(att, election) {
@@ -333,6 +336,32 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 		log.Trace("merged gossip attestations",
 			"targetBlock", targetBlock,
 			"new", newCount, "total", len(existing))
+	}
+}
+
+// gossipUint coerces a gossip-decoded numeric field (typically float64 over pubsub) to uint64.
+// Missing/invalid fields default to 0 (treated as version 0.0.0).
+func gossipUint(v interface{}) uint64 {
+	switch n := v.(type) {
+	case float64:
+		if n < 0 {
+			return 0
+		}
+		return uint64(n)
+	case uint64:
+		return n
+	case int64:
+		if n < 0 {
+			return 0
+		}
+		return uint64(n)
+	case int:
+		if n < 0 {
+			return 0
+		}
+		return uint64(n)
+	default:
+		return 0
 	}
 }
 

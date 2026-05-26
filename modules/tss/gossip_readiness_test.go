@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"testing"
 
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/db/vsc/elections"
 
 	blsu "github.com/protolambda/bls12-381-util"
@@ -35,7 +36,7 @@ func testPubKeyHex(pk blsu.Pubkey) string {
 // signAttestationDirect signs an attestation using the raw BLS key, bypassing
 // TssManager.config (which needs the full config infrastructure).
 func signAttestationDirect(sk *blsu.SecretKey, account string, targetBlock uint64) (*ReadyAttestation, error) {
-	c, err := attestationCID(account, targetBlock)
+	c, err := attestationCID(account, targetBlock, consensusversion.Version{})
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +53,7 @@ func signAttestationDirect(sk *blsu.SecretKey, account string, targetBlock uint6
 // verifyAttestationDirect verifies an attestation using a raw BLS pubkey,
 // bypassing BlsDID parsing (which needs real did:key format).
 func verifyAttestationDirect(att ReadyAttestation, pk *blsu.Pubkey) bool {
-	c, err := attestationCID(att.Account, att.TargetBlock)
+	c, err := attestationCID(att.Account, att.TargetBlock, att.Version())
 	if err != nil {
 		return false
 	}
@@ -111,11 +112,12 @@ func TestAttestationRejectsWrongKey(t *testing.T) {
 }
 
 func TestAttestationCIDDeterministic(t *testing.T) {
-	c1, err := attestationCID("alice", 500)
+	zero := consensusversion.Version{}
+	c1, err := attestationCID("alice", 500, zero)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c2, err := attestationCID("alice", 500)
+	c2, err := attestationCID("alice", 500, zero)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,13 +126,18 @@ func TestAttestationCIDDeterministic(t *testing.T) {
 	}
 
 	// Different inputs must produce different CIDs
-	c3, _ := attestationCID("bob", 500)
+	c3, _ := attestationCID("bob", 500, zero)
 	if c1 == c3 {
 		t.Fatal("different account should produce different CID")
 	}
-	c5, _ := attestationCID("alice", 501)
+	c5, _ := attestationCID("alice", 501, zero)
 	if c1 == c5 {
 		t.Fatal("different block should produce different CID")
+	}
+	// Different version must produce a different CID (authenticated version tag).
+	c6, _ := attestationCID("alice", 500, consensusversion.Version{Major: 1})
+	if c1 == c6 {
+		t.Fatal("different version should produce different CID")
 	}
 }
 

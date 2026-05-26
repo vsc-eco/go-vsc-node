@@ -17,6 +17,7 @@ import (
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
+	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
@@ -95,6 +96,7 @@ func main() {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
 	pendulumSettlementsDb := pendulum_settlements.New(vscDb)
+	consensusStateDb := consensus_state.New(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
 	wasm_sdk.Init(sysConfig.OnMainnet())
 	if args.sysconfigPath != "" {
@@ -190,6 +192,7 @@ func main() {
 		tssCommitments,
 		tssRequests,
 		pendulumSettlementsDb,
+		consensusStateDb,
 		wasm,
 		identityConfig,
 	)
@@ -215,7 +218,7 @@ func main() {
 
 	bp := blockproducer.New(p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
 
-	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, identityConfig, rcSystem)
+	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, identityConfig, rcSystem, se)
 
 	oracle := oracle.New(p2p, identityConfig, sysConfig, electionDb, witnessDb, blockConsumer, se, contractState, da, txpool, oracleConf, nonceDb)
 
@@ -310,6 +313,7 @@ func main() {
 		tssCommitments,
 		tssRequests,
 		pendulumSettlementsDb,
+		consensusStateDb,
 
 		p2p,
 		da,                   //Deps: [p2p]

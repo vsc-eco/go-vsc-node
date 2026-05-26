@@ -1,17 +1,14 @@
 package state_engine_test
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
 	"vsc-node/lib/test_utils"
-	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/elections"
-	"vsc-node/modules/db/vsc/witnesses"
 	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/stretchr/testify/assert"
@@ -36,110 +33,56 @@ func mocknetWithRecoveryMultisig(accounts []string, threshold int) systemconfig.
 	return &recoveryConfigWrapper{SystemConfig: base, cp: p}
 }
 
+// sampleElection: epoch 1, three members, active version 0.0.0.
 func sampleElection(height uint64) elections.ElectionResult {
+	return versionedElection(height, 1, 0, 0)
+}
+
+// versionedElection builds an election with a specific active major.consensus.
+func versionedElection(height, epoch, major, consensus uint64) elections.ElectionResult {
 	return elections.ElectionResult{
-		ElectionCommonInfo: elections.ElectionCommonInfo{
-			Epoch: 1,
-			NetId: "vsc-mocknet",
-			Type:  "initial",
-		},
+		ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: epoch, NetId: "vsc-mocknet", Type: "initial"},
 		ElectionDataInfo: elections.ElectionDataInfo{
 			Members: []elections.ElectionMember{
 				{Account: "alice", Key: "did:key:alice"},
 				{Account: "bob", Key: "did:key:bob"},
 				{Account: "carol", Key: "did:key:carol"},
 			},
-			Weights:             []uint64{1, 1, 1},
-			ProtocolVersion:     0,
-			VersionMajor:        0,
-			VersionNonConsensus: 0,
+			Weights:         []uint64{1, 1, 1},
+			VersionMajor:    major,
+			ProtocolVersion: consensus,
 		},
 		BlockHeight: height,
 		TotalWeight: 3,
 	}
 }
 
-func TestE2E_ProposeCannotReplacePendingWithDifferentTarget(t *testing.T) {
-	mem := test_utils.NewMockConsensusState()
-	te := newTestEnvWithConsensus(mem, nil)
-	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
-
-	high, _ := json.Marshal(map[string]interface{}{
-		"net_id": "vsc-mocknet", "major": 2, "consensus": 2, "non_consensus": 0,
+func proposeJSON(major, consensus, activationEpoch uint64) string {
+	b, _ := json.Marshal(map[string]interface{}{
+		"net_id": "vsc-mocknet", "major": major, "consensus": consensus, "activation_epoch": activationEpoch,
 	})
-	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice"},
-		Id:            "vsc.propose_consensus_version",
-		Json:          string(high),
-	})
-	te.processAndWait()
-	require.NotNil(t, mem.Snapshot().PendingProposal)
-	assert.Equal(t, uint64(2), mem.Snapshot().PendingProposal.Major)
-
-	low, _ := json.Marshal(map[string]interface{}{
-		"net_id": "vsc-mocknet", "major": 1, "consensus": 1, "non_consensus": 0,
-	})
-	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"bob"},
-		Id:            "vsc.propose_consensus_version",
-		Json:          string(low),
-	})
-	te.processAndWait()
-
-	assert.Equal(t, uint64(2), mem.Snapshot().PendingProposal.Major, "downgrade replace must be rejected")
-	assert.Equal(t, uint64(2), mem.Snapshot().PendingProposal.Consensus, "downgrade replace must be rejected")
-
-	higher, _ := json.Marshal(map[string]interface{}{
-		"net_id": "vsc-mocknet", "major": 3, "consensus": 3, "non_consensus": 0,
-	})
-	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"carol"},
-		Id:            "vsc.propose_consensus_version",
-		Json:          string(higher),
-	})
-	te.processAndWait()
-
-	assert.Equal(t, uint64(2), mem.Snapshot().PendingProposal.Major, "higher replace must be rejected while another target is pending")
-
-	// Non-consensus component is not coordinated; same major+consensus is treated as the same target.
-	sameCoordDifferentMinor, _ := json.Marshal(map[string]interface{}{
-		"net_id": "vsc-mocknet", "major": 2, "consensus": 2, "non_consensus": 9,
-	})
-	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice"},
-		Id:            "vsc.propose_consensus_version",
-		Json:          string(sameCoordDifferentMinor),
-	})
-	te.processAndWait()
-
-	require.NotNil(t, mem.Snapshot().PendingProposal)
-	assert.Equal(t, uint64(2), mem.Snapshot().PendingProposal.Major)
-	assert.Equal(t, uint64(2), mem.Snapshot().PendingProposal.Consensus)
-	assert.Equal(t, uint64(0), mem.Snapshot().PendingProposal.NonConsensus, "pending coordination target normalizes non_consensus to 0")
+	return string(b)
 }
 
-func TestE2E_ProposeBelowAdoptedConsensusIsIgnored(t *testing.T) {
+func TestE2E_ProposeSchedulesActivation(t *testing.T) {
 	mem := test_utils.NewMockConsensusState()
-	mem.ReplaceState(consensus_state.ChainConsensusState{
-		ID:             "singleton",
-		AdoptedVersion: consensusversion.Version{Major: 1, Consensus: 2, NonConsensus: 7},
-	})
 	te := newTestEnvWithConsensus(mem, nil)
 	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
 
-	down, _ := json.Marshal(map[string]interface{}{
-		"net_id": "vsc-mocknet", "major": 1, "consensus": 1, "non_consensus": 0,
-	})
 	te.Creator.CustomJson(stateEngine.MockJson{
 		RequiredAuths: []string{"alice"},
 		Id:            "vsc.propose_consensus_version",
-		Json:          string(down),
+		Json:          proposeJSON(1, 1, 0), // 0 -> default activation epoch
 	})
 	te.processAndWait()
 
-	assert.Nil(t, mem.Snapshot().PendingProposal)
-	assert.Equal(t, uint64(1), mem.Snapshot().AdoptedVersion.Major)
-	assert.Equal(t, uint64(2), mem.Snapshot().AdoptedVersion.Consensus)
+	s := mem.Snapshot().ScheduledActivation
+	require.NotNil(t, s)
+	assert.Equal(t, uint64(1), s.TargetMajor)
+	assert.Equal(t, uint64(1), s.TargetConsensus)
+	assert.Equal(t, uint64(2), s.ActivationEpoch, "default activation epoch is currentEpoch+1")
+	assert.False(t, s.Forced)
+	assert.Equal(t, "alice", s.Proposer)
 }
 
 func TestE2E_ProposeIgnoredWhenProposerNotInCommittee(t *testing.T) {
@@ -147,360 +90,142 @@ func TestE2E_ProposeIgnoredWhenProposerNotInCommittee(t *testing.T) {
 	te := newTestEnvWithConsensus(mem, nil)
 	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
 
-	prop, _ := json.Marshal(map[string]interface{}{
-		"net_id":        "vsc-mocknet",
-		"major":         9,
-		"consensus":     9,
-		"non_consensus": 0,
-	})
 	te.Creator.CustomJson(stateEngine.MockJson{
 		RequiredAuths: []string{"stranger"},
 		Id:            "vsc.propose_consensus_version",
-		Json:          string(prop),
+		Json:          proposeJSON(9, 9, 0),
 	})
 	te.processAndWait()
 
-	assert.Nil(t, mem.Snapshot().PendingProposal)
+	assert.Nil(t, mem.Snapshot().ScheduledActivation)
 }
 
-func TestE2E_ProposeConsensusVersionSetsPending(t *testing.T) {
+func TestE2E_ProposeBelowOrEqualActiveIgnored(t *testing.T) {
 	mem := test_utils.NewMockConsensusState()
 	te := newTestEnvWithConsensus(mem, nil)
-	// First CreateBlock uses block height 1 (see MockReader.witnessBlock).
-	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
+	te.ElectionDb.ElectionsByHeight[1] = versionedElection(1, 1, 1, 2) // active 1.2
 
-	prop, _ := json.Marshal(map[string]interface{}{
-		"net_id":        "vsc-mocknet",
-		"major":         1,
-		"consensus":     1,
-		"non_consensus": 0,
-	})
+	// Equal to active → ignored.
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice"},
-		Id:            "vsc.propose_consensus_version",
-		Json:          string(prop),
+		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 2, 0),
 	})
 	te.processAndWait()
+	assert.Nil(t, mem.Snapshot().ScheduledActivation, "target equal to active must be ignored")
 
-	st := mem.Snapshot()
-	require.NotNil(t, st.PendingProposal)
-	assert.Equal(t, uint64(1), st.PendingProposal.Major)
-	assert.Equal(t, uint64(1), st.PendingProposal.Consensus)
-}
-
-func TestE2E_TryFinalizeConsensusProposalAdoptsWhenQuorumReady(t *testing.T) {
-	mem := test_utils.NewMockConsensusState()
-	te := newTestEnvWithConsensus(mem, nil)
-	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
-
-	// Target (1, 1, 0): all three witnesses must announce >= that triple.
-	te.WitnessDb.ByAccount["alice"] = &witnesses.Witness{Account: "alice", VersionMajor: 1, ProtocolVersion: 1, VersionNonConsensus: 0}
-	te.WitnessDb.ByAccount["bob"] = &witnesses.Witness{Account: "bob", VersionMajor: 1, ProtocolVersion: 1, VersionNonConsensus: 0}
-	te.WitnessDb.ByAccount["carol"] = &witnesses.Witness{Account: "carol", VersionMajor: 1, ProtocolVersion: 1, VersionNonConsensus: 0}
-
-	prop, _ := json.Marshal(map[string]interface{}{
-		"net_id":        "vsc-mocknet",
-		"major":         1,
-		"consensus":     1,
-		"non_consensus": 0,
-	})
+	// Below active → ignored.
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice"},
-		Id:            "vsc.propose_consensus_version",
-		Json:          string(prop),
+		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 1, 0),
 	})
 	te.processAndWait()
-
-	// executeProposeConsensusVersion calls TryFinalize immediately; quorum is already met, so pending is cleared in one step.
-	adopted := mem.Snapshot().AdoptedVersion
-	assert.Equal(t, uint64(1), adopted.Major)
-	assert.Equal(t, uint64(1), adopted.Consensus)
-	assert.Nil(t, mem.Snapshot().PendingProposal)
+	assert.Nil(t, mem.Snapshot().ScheduledActivation, "target below active must be ignored")
 }
 
-func TestE2E_TryFinalizeConsensusProposalDeferredUntilWitnessesReady(t *testing.T) {
+func TestE2E_ProposeMonotoneReplace(t *testing.T) {
 	mem := test_utils.NewMockConsensusState()
 	te := newTestEnvWithConsensus(mem, nil)
-	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
+	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1) // active 0.0
 
-	prop, _ := json.Marshal(map[string]interface{}{
-		"net_id":        "vsc-mocknet",
-		"major":         1,
-		"consensus":     1,
-		"non_consensus": 0,
-	})
+	// Schedule 1.1.
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice"},
-		Id:            "vsc.propose_consensus_version",
-		Json:          string(prop),
+		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 1, 0),
 	})
 	te.processAndWait()
-	require.NotNil(t, mem.Snapshot().PendingProposal)
+	require.NotNil(t, mem.Snapshot().ScheduledActivation)
+	assert.Equal(t, uint64(1), mem.Snapshot().ScheduledActivation.TargetConsensus)
 
-	te.WitnessDb.ByAccount["alice"] = &witnesses.Witness{Account: "alice", VersionMajor: 1, ProtocolVersion: 1, VersionNonConsensus: 0}
-	te.WitnessDb.ByAccount["bob"] = &witnesses.Witness{Account: "bob", VersionMajor: 1, ProtocolVersion: 1, VersionNonConsensus: 0}
-	te.WitnessDb.ByAccount["carol"] = &witnesses.Witness{Account: "carol", VersionMajor: 1, ProtocolVersion: 1, VersionNonConsensus: 0}
-	te.SE.TryFinalizeConsensusProposal(1)
-
-	assert.Nil(t, mem.Snapshot().PendingProposal)
-	assert.Equal(t, uint64(1), mem.Snapshot().AdoptedVersion.Consensus)
-}
-
-func TestE2E_TryFinalizeUsesElectionMemberSnapshot(t *testing.T) {
-	mem := test_utils.NewMockConsensusState()
-	te := newTestEnvWithConsensus(mem, nil)
-	te.ElectionDb.ElectionsByHeight[1] = elections.ElectionResult{
-		ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 1, NetId: "vsc-mocknet", Type: "initial"},
-		ElectionDataInfo: elections.ElectionDataInfo{
-			Members: []elections.ElectionMember{
-				{Account: "alice", Key: "did:key:alice", HasPerMemberVersion: true, MemberMajor: 1, MemberConsensus: 1},
-				{Account: "bob", Key: "did:key:bob", HasPerMemberVersion: true, MemberMajor: 1, MemberConsensus: 1},
-				{Account: "carol", Key: "did:key:carol", HasPerMemberVersion: true, MemberMajor: 1, MemberConsensus: 1},
-			},
-			Weights:             []uint64{1, 1, 1},
-			ProtocolVersion:     1,
-			VersionMajor:        1,
-			VersionNonConsensus: 0,
-		},
-		BlockHeight: 1,
-		TotalWeight: 3,
-	}
-
-	prop, _ := json.Marshal(map[string]interface{}{
-		"net_id": "vsc-mocknet", "major": 1, "consensus": 1, "non_consensus": 0,
-	})
+	// Lower target (1.0) must NOT replace.
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice"},
-		Id:            "vsc.propose_consensus_version",
-		Json:          string(prop),
+		RequiredAuths: []string{"bob"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 0, 0),
 	})
 	te.processAndWait()
+	assert.Equal(t, uint64(1), mem.Snapshot().ScheduledActivation.TargetConsensus, "lower target must not replace")
 
-	assert.Nil(t, mem.Snapshot().PendingProposal, "snapshot should allow finalize without witness DB lookups")
-	assert.Equal(t, uint64(1), mem.Snapshot().AdoptedVersion.Major)
-	assert.Equal(t, uint64(1), mem.Snapshot().AdoptedVersion.Consensus)
-}
-
-func TestE2E_TryFinalizePrefersSnapshotOverWitnessClaims(t *testing.T) {
-	mem := test_utils.NewMockConsensusState()
-	te := newTestEnvWithConsensus(mem, nil)
-	te.ElectionDb.ElectionsByHeight[1] = elections.ElectionResult{
-		ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 1, NetId: "vsc-mocknet", Type: "initial"},
-		ElectionDataInfo: elections.ElectionDataInfo{
-			Members: []elections.ElectionMember{
-				{Account: "alice", Key: "did:key:alice", HasPerMemberVersion: true, MemberMajor: 1, MemberConsensus: 1},
-				{Account: "bob", Key: "did:key:bob", HasPerMemberVersion: true, MemberMajor: 1, MemberConsensus: 1},
-				// Carol has dominant weight, but snapshot marks her below target.
-				{Account: "carol", Key: "did:key:carol", HasPerMemberVersion: true, MemberMajor: 0, MemberConsensus: 0},
-			},
-			Weights:             []uint64{1, 1, 10},
-			ProtocolVersion:     1,
-			VersionMajor:        1,
-			VersionNonConsensus: 0,
-		},
-		BlockHeight: 1,
-		TotalWeight: 12,
-	}
-
-	// If finalize used witness DB, carol would push this over threshold.
-	te.WitnessDb.ByAccount["carol"] = &witnesses.Witness{Account: "carol", VersionMajor: 1, ProtocolVersion: 1, VersionNonConsensus: 0}
-
-	prop, _ := json.Marshal(map[string]interface{}{
-		"net_id": "vsc-mocknet", "major": 1, "consensus": 1, "non_consensus": 0,
-	})
+	// Strictly higher target (2.0) replaces.
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice"},
-		Id:            "vsc.propose_consensus_version",
-		Json:          string(prop),
+		RequiredAuths: []string{"carol"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(2, 0, 0),
 	})
 	te.processAndWait()
-
-	require.NotNil(t, mem.Snapshot().PendingProposal, "snapshot gate should keep pending when weighted snapshot is below target")
-	assert.Equal(t, uint64(0), mem.Snapshot().AdoptedVersion.Major)
-	assert.Equal(t, uint64(0), mem.Snapshot().AdoptedVersion.Consensus)
+	assert.Equal(t, uint64(2), mem.Snapshot().ScheduledActivation.TargetMajor, "higher target must replace")
 }
 
-func TestE2E_TryFinalizeConsensusProposalZeroWeightNoAdopt(t *testing.T) {
+func TestE2E_ProposeCustomAndPastActivationEpoch(t *testing.T) {
 	mem := test_utils.NewMockConsensusState()
 	te := newTestEnvWithConsensus(mem, nil)
-	te.ElectionDb.ElectionsByHeight[1] = elections.ElectionResult{
-		ElectionCommonInfo: elections.ElectionCommonInfo{
-			Epoch: 1,
-			NetId: "vsc-mocknet",
-			Type:  "initial",
-		},
-		ElectionDataInfo: elections.ElectionDataInfo{
-			Members: []elections.ElectionMember{},
-			Weights: []uint64{},
-		},
-		BlockHeight: 1,
-		TotalWeight: 0,
-	}
+	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1) // epoch 1
 
-	_ = mem.SetPendingProposal(context.Background(), &consensus_state.PendingConsensusProposal{
-		Major: 1, Consensus: 1, NonConsensus: 0, Proposer: "alice", BlockHeight: 1, TxId: "x",
-	})
-	te.SE.TryFinalizeConsensusProposal(1)
-
-	assert.NotNil(t, mem.Snapshot().PendingProposal, "proposal should remain pending")
-	assert.Equal(t, uint64(0), mem.Snapshot().AdoptedVersion.Major)
-	assert.Equal(t, uint64(0), mem.Snapshot().AdoptedVersion.Consensus)
-}
-
-func TestE2E_ProposeSameCoordDifferentMinorCanFinalize(t *testing.T) {
-	mem := test_utils.NewMockConsensusState()
-	te := newTestEnvWithConsensus(mem, nil)
-	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
-
-	// First propose 1.2.0 with no witnesses ready yet.
-	first, _ := json.Marshal(map[string]interface{}{
-		"net_id": "vsc-mocknet", "major": 1, "consensus": 2, "non_consensus": 0,
-	})
+	// Future activation epoch honored.
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice"},
-		Id:            "vsc.propose_consensus_version",
-		Json:          string(first),
+		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 1, 5),
 	})
 	te.processAndWait()
-	require.NotNil(t, mem.Snapshot().PendingProposal)
+	require.NotNil(t, mem.Snapshot().ScheduledActivation)
+	assert.Equal(t, uint64(5), mem.Snapshot().ScheduledActivation.ActivationEpoch)
 
-	// Make witnesses ready and re-propose with same 1.2 but different non-consensus.
-	te.WitnessDb.ByAccount["alice"] = &witnesses.Witness{Account: "alice", VersionMajor: 1, ProtocolVersion: 2, VersionNonConsensus: 9}
-	te.WitnessDb.ByAccount["bob"] = &witnesses.Witness{Account: "bob", VersionMajor: 1, ProtocolVersion: 2, VersionNonConsensus: 1}
-	te.WitnessDb.ByAccount["carol"] = &witnesses.Witness{Account: "carol", VersionMajor: 1, ProtocolVersion: 2, VersionNonConsensus: 3}
-
-	second, _ := json.Marshal(map[string]interface{}{
-		"net_id": "vsc-mocknet", "major": 1, "consensus": 2, "non_consensus": 99,
-	})
+	// Past/current activation epoch (<= current epoch 1) rejected — a strictly higher target
+	// with a bad epoch must not replace the existing schedule.
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"bob"},
-		Id:            "vsc.propose_consensus_version",
-		Json:          string(second),
+		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(2, 0, 1),
 	})
 	te.processAndWait()
-
-	assert.Nil(t, mem.Snapshot().PendingProposal, "same 1.x target should trigger finalize re-check")
-	assert.Equal(t, uint64(1), mem.Snapshot().AdoptedVersion.Major)
-	assert.Equal(t, uint64(2), mem.Snapshot().AdoptedVersion.Consensus)
-	assert.Equal(t, uint64(0), mem.Snapshot().AdoptedVersion.NonConsensus, "adopted coordination target is normalized")
-	require.NotNil(t, mem.Snapshot().NextActivation)
-	assert.Equal(t, "normal", mem.Snapshot().NextActivation.Mode)
-	assert.Equal(t, uint64(1), mem.Snapshot().NextActivation.Version.Major)
-	assert.Equal(t, uint64(2), mem.Snapshot().NextActivation.Version.Consensus)
-	assert.Equal(t, uint64(3), mem.Snapshot().NextActivation.ActivationHeight, "normal activation defaults to next block")
+	assert.Equal(t, uint64(1), mem.Snapshot().ScheduledActivation.TargetMajor, "proposal with past activation epoch rejected")
 }
 
-func TestE2E_ProposeNextConsensusAfterAdoptionAllowed(t *testing.T) {
-	mem := test_utils.NewMockConsensusState()
-	mem.ReplaceState(consensus_state.ChainConsensusState{
-		ID:             "singleton",
-		AdoptedVersion: consensusversion.Version{Major: 1, Consensus: 2, NonConsensus: 7},
-	})
-	te := newTestEnvWithConsensus(mem, nil)
-	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
-
-	next, _ := json.Marshal(map[string]interface{}{
-		"net_id": "vsc-mocknet", "major": 1, "consensus": 3, "non_consensus": 55,
-	})
-	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice"},
-		Id:            "vsc.propose_consensus_version",
-		Json:          string(next),
-	})
-	te.processAndWait()
-
-	require.NotNil(t, mem.Snapshot().PendingProposal)
-	assert.Equal(t, uint64(1), mem.Snapshot().PendingProposal.Major)
-	assert.Equal(t, uint64(3), mem.Snapshot().PendingProposal.Consensus)
-	assert.Equal(t, uint64(0), mem.Snapshot().PendingProposal.NonConsensus)
-}
-
-func TestE2E_TryFinalizeRejectsPendingBelowAdopted(t *testing.T) {
-	mem := test_utils.NewMockConsensusState()
-	mem.ReplaceState(consensus_state.ChainConsensusState{
-		ID:             "singleton",
-		AdoptedVersion: consensusversion.Version{Major: 1, Consensus: 3, NonConsensus: 0},
-		PendingProposal: &consensus_state.PendingConsensusProposal{
-			Major: 1, Consensus: 2, NonConsensus: 0, Proposer: "alice", BlockHeight: 1, TxId: "down",
-		},
-	})
-	te := newTestEnvWithConsensus(mem, nil)
-	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
-	te.WitnessDb.ByAccount["alice"] = &witnesses.Witness{Account: "alice", VersionMajor: 1, ProtocolVersion: 9, VersionNonConsensus: 0}
-	te.WitnessDb.ByAccount["bob"] = &witnesses.Witness{Account: "bob", VersionMajor: 1, ProtocolVersion: 9, VersionNonConsensus: 0}
-	te.WitnessDb.ByAccount["carol"] = &witnesses.Witness{Account: "carol", VersionMajor: 1, ProtocolVersion: 9, VersionNonConsensus: 0}
-
-	te.SE.TryFinalizeConsensusProposal(1)
-	assert.Equal(t, uint64(3), mem.Snapshot().AdoptedVersion.Consensus, "must not downgrade adopted version")
-	require.NotNil(t, mem.Snapshot().PendingProposal, "invalid pending should remain until replaced/cleared by governance")
-}
-
-func TestE2E_RecoverySuspendThenProposeIsIgnored(t *testing.T) {
+func TestE2E_ProposeIgnoredWhileSuspended(t *testing.T) {
 	mem := test_utils.NewMockConsensusState()
 	sconf := mocknetWithRecoveryMultisig([]string{"alice", "bob"}, 2)
 	te := newTestEnvWithConsensus(mem, sconf)
 	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
 
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice", "bob"},
-		Id:            "vsc.recovery_suspend",
-		Json:          `{}`,
-	})
-	te.processAndWait()
-	assert.True(t, mem.Snapshot().ProcessingSuspended)
-
-	prop, _ := json.Marshal(map[string]interface{}{
-		"net_id":        "vsc-mocknet",
-		"major":         2,
-		"consensus":     0,
-		"non_consensus": 0,
-	})
-	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice"},
-		Id:            "vsc.propose_consensus_version",
-		Json:          string(prop),
-	})
-	te.processAndWait()
-
-	assert.Nil(t, mem.Snapshot().PendingProposal, "propose must be skipped while suspended")
-}
-
-func TestE2E_RecoveryRequireVersionClearsSuspensionAndAdopts(t *testing.T) {
-	mem := test_utils.NewMockConsensusState()
-	sconf := mocknetWithRecoveryMultisig([]string{"alice", "bob"}, 2)
-	te := newTestEnvWithConsensus(mem, sconf)
-
-	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice", "bob"},
-		Id:            "vsc.recovery_suspend",
-		Json:          `{}`,
+		RequiredAuths: []string{"alice", "bob"}, Id: "vsc.recovery_suspend", Json: `{}`,
 	})
 	te.processAndWait()
 	require.True(t, mem.Snapshot().ProcessingSuspended)
 
-	req, _ := json.Marshal(map[string]interface{}{
-		"major":         1,
-		"consensus":     2,
-		"non_consensus": 0,
-		"reason":        "test",
-	})
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice", "bob"},
-		Id:            "vsc.recovery_require_version",
-		Json:          string(req),
+		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(2, 0, 0),
+	})
+	te.processAndWait()
+	assert.Nil(t, mem.Snapshot().ScheduledActivation, "propose must be skipped while suspended")
+}
+
+func TestE2E_RecoverySuspendSetsFlag(t *testing.T) {
+	mem := test_utils.NewMockConsensusState()
+	sconf := mocknetWithRecoveryMultisig([]string{"alice", "bob"}, 2)
+	te := newTestEnvWithConsensus(mem, sconf)
+
+	te.Creator.CustomJson(stateEngine.MockJson{
+		RequiredAuths: []string{"alice", "bob"}, Id: "vsc.recovery_suspend", Json: `{}`,
+	})
+	te.processAndWait()
+	assert.True(t, mem.Snapshot().ProcessingSuspended)
+}
+
+func TestE2E_RecoveryRequireVersionForcedScheduleAndClears(t *testing.T) {
+	mem := test_utils.NewMockConsensusState()
+	sconf := mocknetWithRecoveryMultisig([]string{"alice", "bob"}, 2)
+	te := newTestEnvWithConsensus(mem, sconf)
+	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1) // epoch 1 → recovery activates epoch 2
+
+	te.Creator.CustomJson(stateEngine.MockJson{
+		RequiredAuths: []string{"alice", "bob"}, Id: "vsc.recovery_suspend", Json: `{}`,
+	})
+	te.processAndWait()
+	require.True(t, mem.Snapshot().ProcessingSuspended)
+
+	req, _ := json.Marshal(map[string]interface{}{"major": 1, "consensus": 2, "reason": "test"})
+	te.Creator.CustomJson(stateEngine.MockJson{
+		RequiredAuths: []string{"alice", "bob"}, Id: "vsc.recovery_require_version", Json: string(req),
 	})
 	te.processAndWait()
 
 	st := mem.Snapshot()
 	assert.False(t, st.ProcessingSuspended)
-	assert.Equal(t, uint64(1), st.AdoptedVersion.Major)
-	assert.Equal(t, uint64(2), st.AdoptedVersion.Consensus)
-	require.NotNil(t, st.MinRequiredVersion)
-	require.NotNil(t, st.NextActivation)
-	assert.Equal(t, "recovery", st.NextActivation.Mode)
-	assert.Equal(t, uint64(1), st.NextActivation.Version.Major)
-	assert.Equal(t, uint64(2), st.NextActivation.Version.Consensus)
-	assert.Equal(t, uint64(3), st.NextActivation.ActivationHeight, "recovery activation defaults to next block")
+	require.NotNil(t, st.ScheduledActivation)
+	assert.True(t, st.ScheduledActivation.Forced, "recovery schedules a forced activation")
+	assert.Equal(t, uint64(1), st.ScheduledActivation.TargetMajor)
+	assert.Equal(t, uint64(2), st.ScheduledActivation.TargetConsensus)
+	assert.Equal(t, uint64(2), st.ScheduledActivation.ActivationEpoch, "recovery activates next epoch")
 }
 
 func TestE2E_RecoveryRequireVersionWithoutPriorSuspendNoOp(t *testing.T) {
@@ -509,18 +234,13 @@ func TestE2E_RecoveryRequireVersionWithoutPriorSuspendNoOp(t *testing.T) {
 	te := newTestEnvWithConsensus(mem, sconf)
 	require.False(t, mem.Snapshot().ProcessingSuspended)
 
-	req, _ := json.Marshal(map[string]interface{}{"major": 9, "consensus": 1, "non_consensus": 0})
+	req, _ := json.Marshal(map[string]interface{}{"major": 9, "consensus": 1})
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice", "bob"},
-		Id:            "vsc.recovery_require_version",
-		Json:          string(req),
+		RequiredAuths: []string{"alice", "bob"}, Id: "vsc.recovery_require_version", Json: string(req),
 	})
 	te.processAndWait()
 
-	st := mem.Snapshot()
-	assert.False(t, st.ProcessingSuspended)
-	assert.Equal(t, uint64(0), st.AdoptedVersion.Major, "must not adopt without suspend-then-resume flow")
-	assert.Nil(t, st.MinRequiredVersion)
+	assert.Nil(t, mem.Snapshot().ScheduledActivation, "must not schedule without suspend-then-resume flow")
 }
 
 func TestE2E_RecoveryRequireVersionWithInsufficientSignersNoOp(t *testing.T) {
@@ -529,18 +249,14 @@ func TestE2E_RecoveryRequireVersionWithInsufficientSignersNoOp(t *testing.T) {
 	te := newTestEnvWithConsensus(mem, sconf)
 
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice", "bob"},
-		Id:            "vsc.recovery_suspend",
-		Json:          `{}`,
+		RequiredAuths: []string{"alice", "bob"}, Id: "vsc.recovery_suspend", Json: `{}`,
 	})
 	te.processAndWait()
 	require.True(t, mem.Snapshot().ProcessingSuspended)
 
-	req, _ := json.Marshal(map[string]interface{}{"major": 9, "consensus": 9, "non_consensus": 0})
+	req, _ := json.Marshal(map[string]interface{}{"major": 9, "consensus": 9})
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice"},
-		Id:            "vsc.recovery_require_version",
-		Json:          string(req),
+		RequiredAuths: []string{"alice"}, Id: "vsc.recovery_require_version", Json: string(req),
 	})
 	te.processAndWait()
 
@@ -549,17 +265,12 @@ func TestE2E_RecoveryRequireVersionWithInsufficientSignersNoOp(t *testing.T) {
 
 func TestE2E_DisplayConsensusVersionProvisionalWhenSuspended(t *testing.T) {
 	mem := test_utils.NewMockConsensusState()
-	mem.ReplaceState(consensus_state.ChainConsensusState{
-		ID:             "singleton",
-		AdoptedVersion: consensusversion.Version{Major: 1, Consensus: 3, NonConsensus: 7},
-	})
 	sconf := mocknetWithRecoveryMultisig([]string{"alice"}, 1)
 	te := newTestEnvWithConsensus(mem, sconf)
+	te.ElectionDb.ElectionsByHeight[1] = versionedElection(1, 1, 1, 3) // active 1.3
 
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"alice"},
-		Id:            "vsc.recovery_suspend",
-		Json:          `{}`,
+		RequiredAuths: []string{"alice"}, Id: "vsc.recovery_suspend", Json: `{}`,
 	})
 	te.processAndWait()
 
@@ -567,46 +278,28 @@ func TestE2E_DisplayConsensusVersionProvisionalWhenSuspended(t *testing.T) {
 	assert.True(t, te.SE.ProcessingSuspendedForPool())
 }
 
-func TestE2E_TssMinimumConsensusVersionMergesElectionAndAdopted(t *testing.T) {
+func TestE2E_ActiveConsensusVersionPureOfHeight(t *testing.T) {
 	mem := test_utils.NewMockConsensusState()
-	_ = mem.SetAdoptedVersion(context.Background(), consensusversion.Version{Major: 1, Consensus: 5, NonConsensus: 0})
 	te := newTestEnvWithConsensus(mem, nil)
-	te.ElectionDb.ElectionsByHeight[10] = elections.ElectionResult{
-		ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 2, NetId: "vsc-mocknet", Type: "staked"},
-		ElectionDataInfo: elections.ElectionDataInfo{
-			Members:             []elections.ElectionMember{{Account: "x", Key: "k"}},
-			Weights:             []uint64{10},
-			ProtocolVersion:     3,
-			VersionMajor:        0,
-			VersionNonConsensus: 0,
-		},
-		BlockHeight: 1,
-	}
-	te.processAndWait()
+	te.ElectionDb.ElectionsByHeight[10] = versionedElection(10, 2, 1, 3)
 
 	v := te.SE.TssMinimumConsensusVersion(10)
 	assert.Equal(t, uint64(1), v.Major)
-	assert.Equal(t, uint64(5), v.Consensus, "max of election consensus 3 and adopted 5")
+	assert.Equal(t, uint64(3), v.Consensus, "active version is the election's ResultVersion, no live merge")
 }
 
-func TestE2E_TssMinimumConsensusVersionMajorBumpResetsOldConsensusCounter(t *testing.T) {
+func TestE2E_ScheduledActivationForHeightFilter(t *testing.T) {
 	mem := test_utils.NewMockConsensusState()
-	_ = mem.SetAdoptedVersion(context.Background(), consensusversion.Version{Major: 1, Consensus: 0, NonConsensus: 0})
-	te := newTestEnvWithConsensus(mem, nil)
-	te.ElectionDb.ElectionsByHeight[10] = elections.ElectionResult{
-		ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 2, NetId: "vsc-mocknet", Type: "staked"},
-		ElectionDataInfo: elections.ElectionDataInfo{
-			Members:             []elections.ElectionMember{{Account: "x", Key: "k"}},
-			Weights:             []uint64{10},
-			ProtocolVersion:     3,
-			VersionMajor:        0,
-			VersionNonConsensus: 0,
+	mem.ReplaceState(consensus_state.ChainConsensusState{
+		ID: "singleton",
+		ScheduledActivation: &consensus_state.ScheduledActivation{
+			TargetMajor: 1, TargetConsensus: 1, ActivationEpoch: 3, BlockHeight: 10,
 		},
-		BlockHeight: 1,
-	}
-	te.processAndWait()
+	})
+	te := newTestEnvWithConsensus(mem, nil)
+	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
+	te.processAndWait() // load cache from mem
 
-	v := te.SE.TssMinimumConsensusVersion(10)
-	assert.Equal(t, uint64(1), v.Major)
-	assert.Equal(t, uint64(0), v.Consensus, "major bump should not carry old consensus counter from previous major")
+	assert.Nil(t, te.SE.ScheduledActivationForHeight(10), "schedule not visible at its own block height")
+	assert.NotNil(t, te.SE.ScheduledActivationForHeight(11), "schedule visible after its block height")
 }

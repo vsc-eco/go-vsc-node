@@ -7,7 +7,6 @@ import (
 	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/elections"
-	"vsc-node/modules/db/vsc/witnesses"
 )
 
 func isRecoveryAllowlistedCustomJSON(id string) bool {
@@ -21,131 +20,91 @@ func isRecoveryAllowlistedCustomJSON(id string) bool {
 }
 
 func (se *StateEngine) refreshChainConsensusCache() {
-	if se.consensusState == nil {
-		se.chainConsensusCache = consensus_state.ChainConsensusState{}
-		return
+	var next consensus_state.ChainConsensusState
+	if se.consensusState != nil {
+		if st, err := se.consensusState.Get(context.Background()); err == nil {
+			next = st
+		}
 	}
-	st, err := se.consensusState.Get(context.Background())
-	if err != nil {
-		se.chainConsensusCache = consensus_state.ChainConsensusState{}
-		return
-	}
-	se.chainConsensusCache = st
+	se.chainConsensusMu.Lock()
+	se.chainConsensusCache = next
+	se.chainConsensusMu.Unlock()
 }
 
 func (se *StateEngine) chainProcessingSuspended() bool {
+	se.chainConsensusMu.RLock()
+	defer se.chainConsensusMu.RUnlock()
 	return se.chainConsensusCache.ProcessingSuspended
 }
 
-// EffectiveAdoptedConsensusVersion returns chain-global adopted version (from DB).
-func (se *StateEngine) EffectiveAdoptedConsensusVersion() consensusversion.Version {
-	if se.consensusState == nil {
+// ProcessingSuspendedForPool is used by the transaction pool to reject offchain txs.
+func (se *StateEngine) ProcessingSuspendedForPool() bool {
+	return se.chainProcessingSuspended()
+}
+
+// scheduledActivation returns a copy of the cached pending schedule (or nil).
+func (se *StateEngine) scheduledActivation() *consensus_state.ScheduledActivation {
+	se.chainConsensusMu.RLock()
+	defer se.chainConsensusMu.RUnlock()
+	if se.chainConsensusCache.ScheduledActivation == nil {
+		return nil
+	}
+	s := *se.chainConsensusCache.ScheduledActivation
+	return &s
+}
+
+// ScheduledActivationForHeight returns the pending schedule only if it was recorded before
+// blk. This makes the read a pure function of blk so all signers regenerating an election at
+// the same height resolve the identical version (and CID), regardless of later proposals.
+func (se *StateEngine) ScheduledActivationForHeight(blk uint64) *consensus_state.ScheduledActivation {
+	s := se.scheduledActivation()
+	if s == nil || s.BlockHeight >= blk {
+		return nil
+	}
+	return s
+}
+
+// ActiveConsensusVersion returns the chain-active consensus triple at a block height,
+// sourced purely from the on-chain election (deterministic and height-addressable).
+func (se *StateEngine) ActiveConsensusVersion(blockHeight uint64) consensusversion.Version {
+	elec, err := se.electionDb.GetElectionByHeight(blockHeight)
+	if err != nil {
 		return consensusversion.Version{}
 	}
-	return se.chainConsensusCache.AdoptedVersion
+	return elections.ResultVersion(elec)
+}
+
+// TssMinimumConsensusVersion implements the tss.GetScheduler extension: the minimum
+// major/consensus triple for TSS at this Hive height (the election-active version).
+func (se *StateEngine) TssMinimumConsensusVersion(blockHeight uint64) consensusversion.Version {
+	return se.ActiveConsensusVersion(blockHeight)
+}
+
+// ElectionMinimumVersion returns the version required for TSS/election participation at this epoch.
+func (se *StateEngine) ElectionMinimumVersion(e *elections.ElectionResult) consensusversion.Version {
+	if e == nil {
+		return consensusversion.Version{}
+	}
+	return elections.ResultVersion(*e)
 }
 
 // DisplayConsensusVersion returns the string to show in APIs: provisional during suspended recovery.
 func (se *StateEngine) DisplayConsensusVersion() string {
-	adopted := se.EffectiveAdoptedConsensusVersion()
+	active := se.ActiveConsensusVersion(uint64(se.BlockHeight))
 	if se.chainProcessingSuspended() {
-		return consensusversion.FormatProvisional(adopted)
+		return consensusversion.FormatProvisional(active)
 	}
-	return adopted.Format()
+	return active.Format()
 }
 
-// TryFinalizeConsensusProposal checks stake-weighted witness readiness for a pending target version.
-func (se *StateEngine) TryFinalizeConsensusProposal(blockHeight uint64) {
-	if se.consensusState == nil {
-		return
-	}
-	st := se.chainConsensusCache
-	if st.PendingProposal == nil {
-		return
-	}
-	target := coordinationTarget(st.PendingProposal.Target())
-	adopted := coordinationTarget(se.EffectiveAdoptedConsensusVersion())
-	if target.Cmp(adopted) < 0 {
-		log.Warn("pending consensus target is below adopted; refusing finalize", "target", target.Format(), "adopted", adopted.Format())
-		return
-	}
-
-	prevElec, err := se.electionDb.GetElectionByHeight(blockHeight)
-	if err != nil {
-		return
-	}
-
-	var totalWeight uint64
-	if len(prevElec.Weights) == 0 {
-		totalWeight = uint64(len(prevElec.Members))
-	} else {
-		for _, w := range prevElec.Weights {
-			totalWeight += w
-		}
-	}
-	if totalWeight == 0 {
-		log.Warn("cannot finalize consensus proposal with zero election weight", "blockHeight", blockHeight)
-		return
-	}
-
-	minVotes := elections.MinimalRequiredConsensusVersionVotes(totalWeight)
-
-	var readyWeight uint64
-	for i, m := range prevElec.Members {
-		ready := false
-		// Deterministic fast path: for elections that snapshot per-member versions,
-		// finalize readiness must come from election data, not local witness DB state.
-		if m.HasPerMemberVersion {
-			mv := coordinationTarget(elections.MemberConsensusVersion(m, prevElec))
-			ready = mv.MeetsConsensusMin(target)
-		} else {
-			// Legacy elections fallback.
-			w, err := se.witnessDb.GetWitnessAtHeight(m.Account, &blockHeight)
-			if err == nil && w != nil {
-				ready = coordinationTarget(w.ConsensusVersionTriple()).MeetsConsensusMin(target)
-			}
-		}
-		if !ready {
-			continue
-		}
-		if len(prevElec.Weights) == 0 {
-			readyWeight++
-		} else if i < len(prevElec.Weights) {
-			readyWeight += prevElec.Weights[i]
-		}
-	}
-
-	if readyWeight >= minVotes {
-		if err := se.consensusState.SetAdoptedVersion(context.Background(), target); err != nil {
-			log.Warn("SetAdoptedVersion failed", "err", err)
-			return
-		}
-		if err := se.consensusState.ClearPendingProposal(context.Background()); err != nil {
-			log.Warn("ClearPendingProposal failed after adopt", "err", err)
-			return
-		}
-		if st.PendingProposal != nil {
-			act := &consensus_state.ConsensusActivation{
-				Mode:                "normal",
-				Version:             target,
-				ActivationHeight:    blockHeight + 1,
-				AttestedBlockHeight: blockHeight,
-				AttestedTxId:        st.PendingProposal.TxId,
-			}
-			if err := se.consensusState.SetNextActivation(context.Background(), act); err != nil {
-				log.Warn("SetNextActivation failed after adopt", "err", err)
-				return
-			}
-		}
-		se.refreshChainConsensusCache()
-	}
-}
-
+// executeProposeConsensusVersion records an epoch-scheduled version switch. Any committee
+// member may propose; a strictly-higher target replaces an existing schedule (monotone, no
+// permanent lock). The switch only activates at its epoch once the stake-readiness guard
+// passes during election build (see election-proposer GenerateFullElection).
 func (se *StateEngine) executeProposeConsensusVersion(tx *TxProposeConsensusVersion) {
 	if se.consensusState == nil {
 		return
 	}
-	st := se.chainConsensusCache
 	if tx.NetId != "" && tx.NetId != se.sconf.NetId() {
 		return
 	}
@@ -156,7 +115,7 @@ func (se *StateEngine) executeProposeConsensusVersion(tx *TxProposeConsensusVers
 	proposer := firstHiveAuth(tx.Self.RequiredAuths)
 	found := false
 	for _, m := range elec.Members {
-		if m.Account == proposer || firstHiveAuth([]string{m.Account}) == proposer {
+		if m.Account == proposer {
 			found = true
 			break
 		}
@@ -164,41 +123,37 @@ func (se *StateEngine) executeProposeConsensusVersion(tx *TxProposeConsensusVers
 	if !found {
 		return
 	}
-	target := coordinationTarget(consensusversion.Version{
-		Major:         tx.Major,
-		Consensus:     tx.Consensus,
-		NonConsensus: tx.NonConsensus,
-	})
-	adopted := coordinationTarget(se.EffectiveAdoptedConsensusVersion())
-	if target.Cmp(adopted) < 0 {
+	target := coordinationTarget(consensusversion.Version{Major: tx.Major, Consensus: tx.Consensus})
+	// Target must advance beyond the currently active version.
+	if target.Cmp(elections.ResultVersion(elec)) <= 0 {
 		return
 	}
-	if st.PendingProposal != nil {
-		pending := coordinationTarget(st.PendingProposal.Target())
-		// Coordination mode: once a target is pending, no different target can
-		// replace it until it is adopted/cleared.
-		if target.Cmp(pending) != 0 {
-			return
-		}
-		if target.Cmp(pending) == 0 {
-			se.TryFinalizeConsensusProposal(tx.Self.BlockHeight)
-			return
-		}
+	// Activation epoch: default to the next epoch; reject targets aimed at the past/current.
+	activationEpoch := tx.ActivationEpoch
+	if activationEpoch == 0 {
+		activationEpoch = elec.Epoch + 1
 	}
-	prop := &consensus_state.PendingConsensusProposal{
-		Major:         tx.Major,
-		Consensus:     tx.Consensus,
-		NonConsensus: 0,
-		Proposer:      firstHiveAuth(tx.Self.RequiredAuths),
-		BlockHeight:   tx.Self.BlockHeight,
-		TxId:          tx.Self.TxId,
+	if activationEpoch <= elec.Epoch {
+		return
 	}
-	if err := se.consensusState.SetPendingProposal(context.Background(), prop); err != nil {
-		log.Warn("SetPendingProposal failed", "err", err)
+	// Monotone replace: only a strictly-higher target supersedes an existing schedule.
+	if existing := se.scheduledActivation(); existing != nil && target.Cmp(existing.Target()) <= 0 {
+		return
+	}
+	s := &consensus_state.ScheduledActivation{
+		TargetMajor:     target.Major,
+		TargetConsensus: target.Consensus,
+		ActivationEpoch: activationEpoch,
+		Forced:          false,
+		Proposer:        proposer,
+		TxId:            tx.Self.TxId,
+		BlockHeight:     tx.Self.BlockHeight,
+	}
+	if err := se.consensusState.SetScheduledActivation(context.Background(), s); err != nil {
+		log.Warn("SetScheduledActivation failed", "err", err)
 		return
 	}
 	se.refreshChainConsensusCache()
-	se.TryFinalizeConsensusProposal(tx.Self.BlockHeight)
 }
 
 func (se *StateEngine) executeRecoverySuspend(tx *TxRecoverySuspend) {
@@ -216,6 +171,8 @@ func (se *StateEngine) executeRecoverySuspend(tx *TxRecoverySuspend) {
 	se.refreshChainConsensusCache()
 }
 
+// executeRecoveryRequireVersion clears suspension and schedules a Forced switch (skips the
+// stake-readiness guard) that activates at the next election epoch (multisig only).
 func (se *StateEngine) executeRecoveryRequireVersion(tx *TxRecoveryRequireVersion) {
 	p := se.sconf.ConsensusParams()
 	if !VerifyRecoveryMultisig(p, tx.Self.RequiredAuths) {
@@ -224,27 +181,25 @@ func (se *StateEngine) executeRecoveryRequireVersion(tx *TxRecoveryRequireVersio
 	if se.consensusState == nil {
 		return
 	}
-	if !se.chainConsensusCache.ProcessingSuspended {
+	if !se.chainProcessingSuspended() {
 		return
 	}
-	v := consensusversion.Version{
-		Major:         tx.Major,
-		Consensus:     tx.Consensus,
-		NonConsensus: tx.NonConsensus,
-	}
-	if err := se.consensusState.SetMinRequiredAndClearSuspension(context.Background(), v); err != nil {
-		log.Warn("SetMinRequiredAndClearSuspension failed", "err", err)
+	elec, err := se.electionDb.GetElectionByHeight(tx.Self.BlockHeight)
+	if err != nil {
 		return
 	}
-	act := &consensus_state.ConsensusActivation{
-		Mode:                "recovery",
-		Version:             coordinationTarget(v),
-		ActivationHeight:    tx.Self.BlockHeight + 1,
-		AttestedBlockHeight: tx.Self.BlockHeight,
-		AttestedTxId:        tx.Self.TxId,
+	target := coordinationTarget(consensusversion.Version{Major: tx.Major, Consensus: tx.Consensus})
+	s := &consensus_state.ScheduledActivation{
+		TargetMajor:     target.Major,
+		TargetConsensus: target.Consensus,
+		ActivationEpoch: elec.Epoch + 1,
+		Forced:          true,
+		Proposer:        firstHiveAuth(tx.Self.RequiredAuths),
+		TxId:            tx.Self.TxId,
+		BlockHeight:     tx.Self.BlockHeight,
 	}
-	if err := se.consensusState.SetNextActivation(context.Background(), act); err != nil {
-		log.Warn("SetNextActivation failed for recovery", "err", err)
+	if err := se.consensusState.SetForcedActivationAndClearSuspension(context.Background(), s); err != nil {
+		log.Warn("SetForcedActivationAndClearSuspension failed", "err", err)
 		return
 	}
 	se.refreshChainConsensusCache()
@@ -257,42 +212,8 @@ func firstHiveAuth(auths []string) string {
 	return strings.TrimPrefix(auths[0], "hive:")
 }
 
+// coordinationTarget normalizes a version to the coordinated major.consensus (non_consensus
+// is informational and not coordinated).
 func coordinationTarget(v consensusversion.Version) consensusversion.Version {
-	return consensusversion.Version{
-		Major:         v.Major,
-		Consensus:     v.Consensus,
-		NonConsensus: 0,
-	}
-}
-
-// WitnessMeetsEffectiveMinimum returns true if the witness can participate in TSS for the given election minimum.
-func WitnessMeetsEffectiveMinimum(w *witnesses.Witness, min consensusversion.Version) bool {
-	if w == nil {
-		return false
-	}
-	return w.ConsensusVersionTriple().MeetsConsensusMin(min)
-}
-
-// ElectionMinimumVersion returns the minimum triple required for TSS/election participation at this epoch.
-func (se *StateEngine) ElectionMinimumVersion(e *elections.ElectionResult) consensusversion.Version {
-	if e == nil {
-		return consensusversion.Version{}
-	}
-	v := elections.ResultVersion(*e)
-	adopted := se.EffectiveAdoptedConsensusVersion()
-	return consensusversion.MergeElectionAndAdoptedMin(v, adopted)
-}
-
-// ProcessingSuspendedForPool is used by the transaction pool to reject offchain txs.
-func (se *StateEngine) ProcessingSuspendedForPool() bool {
-	return se.chainProcessingSuspended()
-}
-
-// TssMinimumConsensusVersion implements tss.GetScheduler extension.
-func (se *StateEngine) TssMinimumConsensusVersion(blockHeight uint64) consensusversion.Version {
-	elec, err := se.electionDb.GetElectionByHeight(blockHeight)
-	if err != nil {
-		return consensusversion.Version{}
-	}
-	return se.ElectionMinimumVersion(&elec)
+	return consensusversion.Version{Major: v.Major, Consensus: v.Consensus}
 }
