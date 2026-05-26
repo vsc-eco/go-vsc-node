@@ -1051,8 +1051,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.tss_sign" {
-					if (se.sconf.OnTestnet() || se.sconf.OnDevnet()) && txSelf.BlockHeight < se.SystemConfig().ConsensusParams().TssIndexHeight {
-						// for testnet, ignore below tss index height
+					if (se.sconf.OnTestnet() || se.sconf.OnDevnet()) && !se.sconf.ConsensusParams().TssIndexed(txSelf.BlockHeight) {
 						continue
 					}
 
@@ -2444,7 +2443,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	identityConfig common.IdentityConfig,
 ) *StateEngine {
 
-	ls := ledgerSystem.New(balanceDb, ledgerDb, interestClaims, actionDb, sconf.ConsensusParams().EvmAddressChecksumHeight)
+	ls := ledgerSystem.New(balanceDb, ledgerDb, interestClaims, actionDb, sconf)
 
 	// {
 	// 	BalanceDb: balanceDb,

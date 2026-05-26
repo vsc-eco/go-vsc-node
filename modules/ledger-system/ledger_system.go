@@ -15,6 +15,7 @@ import (
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/params"
+	systemconfig "vsc-node/modules/common/system-config"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -44,13 +45,9 @@ type ledgerSystem struct {
 	//Anything that requires on chain processing to complete
 	ActionsDb ledger_db.BridgeActions
 
-	// evmChecksumHeight is the network's
-	// ConsensusParams.EvmAddressChecksumHeight. When non-zero, gateway
-	// deposits at BlockHeight >= it have their resolved did:pkh:eip155
-	// owner normalized to its EIP-55 checksum form. 0 disables
-	// normalization (legacy verbatim casing). Set once at construction
-	// from the system config; treated as immutable thereafter.
-	evmChecksumHeight uint64
+	// sconf is the network's system config. Per-network activation heights
+	// (EvmAddressChecksumHeight, etc.) are read through it
+	sconf systemconfig.SystemConfig
 }
 
 const (
@@ -62,7 +59,12 @@ const (
 	PendulumNodesHBDBucket = "pendulum:nodes"
 )
 
-func (ls *ledgerSystem) PendulumDistribute(toAccount string, amount int64, txID string, blockHeight uint64) LedgerResult {
+func (ls *ledgerSystem) PendulumDistribute(
+	toAccount string,
+	amount int64,
+	txID string,
+	blockHeight uint64,
+) LedgerResult {
 	if strings.TrimSpace(toAccount) == "" {
 		return LedgerResult{Ok: false, Msg: "invalid destination"}
 	}
@@ -96,7 +98,17 @@ func (ls *ledgerSystem) PendulumDistribute(toAccount string, amount int64, txID 
 			Type:        "pendulum_distribute",
 		},
 	); err != nil {
-		log.Error("PendulumDistribute: ledger write failed", "txId", txID, "account", toAccount, "amount", amount, "err", err)
+		log.Error(
+			"PendulumDistribute: ledger write failed",
+			"txId",
+			txID,
+			"account",
+			toAccount,
+			"amount",
+			amount,
+			"err",
+			err,
+		)
 		return LedgerResult{Ok: false, Msg: "ledger write failed"}
 	}
 
@@ -824,7 +836,15 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 				Owner:       owner,
 				Type:        "interest",
 			}); err != nil {
-				log.Error("ClaimHBDInterest: ledger write failed", "blockHeight", blockHeight, "owner", owner, "err", err)
+				log.Error(
+					"ClaimHBDInterest: ledger write failed",
+					"blockHeight",
+					blockHeight,
+					"owner",
+					owner,
+					"err",
+					err,
+				)
 			}
 		}
 	}
@@ -1017,13 +1037,13 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 		decodedParams.To = deposit.From
 	}
 
-	// Consensus-gated EIP-55 normalization. From evmChecksumHeight onward,
-	// canonicalize any did:pkh:eip155 owner to its checksummed form so the
-	// same Ethereum address cannot fragment a balance across case variants.
-	// Gated by block height (see ConsensusParams.EvmAddressChecksumHeight)
-	// so historical deposits keep their as-credited casing and a reindex
-	// stays byte-identical to live state.
-	if ls.evmChecksumHeight != 0 && deposit.BlockHeight >= ls.evmChecksumHeight {
+	// Consensus-gated EIP-55 normalization. Once active, canonicalize any
+	// did:pkh:eip155 owner to its checksummed form so the same Ethereum
+	// address cannot fragment a balance across case variants. Gated by the
+	// EvmAddressChecksumActive predicate (see ConsensusParams) so historical
+	// deposits keep their as-credited casing and a reindex stays byte-
+	// identical to live state.
+	if ls.sconf != nil && ls.sconf.ConsensusParams().EvmAddressChecksumActive(deposit.BlockHeight) {
 		decodedParams.To = normalizeEthDID(decodedParams.To)
 	}
 	// if le.VirtualLedger == nil {
@@ -1151,16 +1171,23 @@ func (ls *ledgerSystem) NewEmptyState() *LedgerState {
 // Then trigger a delayed (actual stake) even when the onchain operation is executed through the gateway
 // A two part Virtual Ledger operation operating out of sync
 
-// New constructs a LedgerSystem. evmChecksumHeight is the network's
-// ConsensusParams.EvmAddressChecksumHeight — pass 0 to keep the legacy
-// verbatim-casing behavior (e.g. in tests). See the field doc on
-// ledgerSystem.evmChecksumHeight for the consensus rules.
-func New(balanceDb ledger_db.Balances, ledgerDb ledger_db.Ledger, claimDb ledger_db.InterestClaims, actionDb ledger_db.BridgeActions, evmChecksumHeight uint64) LedgerSystem {
+// New constructs a LedgerSystem. The system config is read at the relevant
+// call sites (e.g. EvmAddressChecksumActive) rather than snapshotted, so
+// per-network activation heights stay live (including sysconfig overrides on
+// devnet/mocknet). Tests may pass nil sconf to keep the legacy verbatim
+// behavior; the call sites are nil-safe.
+func New(
+	balanceDb ledger_db.Balances,
+	ledgerDb ledger_db.Ledger,
+	claimDb ledger_db.InterestClaims,
+	actionDb ledger_db.BridgeActions,
+	sconf systemconfig.SystemConfig,
+) LedgerSystem {
 	return &ledgerSystem{
-		BalanceDb:         balanceDb,
-		LedgerDb:          ledgerDb,
-		ClaimDb:           claimDb,
-		ActionsDb:         actionDb,
-		evmChecksumHeight: evmChecksumHeight,
+		BalanceDb: balanceDb,
+		LedgerDb:  ledgerDb,
+		ClaimDb:   claimDb,
+		ActionsDb: actionDb,
+		sconf:     sconf,
 	}
 }

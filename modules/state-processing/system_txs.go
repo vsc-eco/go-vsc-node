@@ -59,7 +59,7 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 		})
 	}
 
-	if se.sconf.OnMainnet() || txSelf.BlockHeight >= se.sconf.ConsensusParams().TssIndexHeight {
+	if se.sconf.OnMainnet() || se.sconf.ConsensusParams().TssIndexed(txSelf.BlockHeight) {
 		// for testnet, index only above tss index height
 		tssOps := output.TssOps
 		for _, res := range output.Results {
@@ -475,7 +475,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 		}
 
 		// Ignore duplicate election results from the dedup epoch onwards
-		if tx.Epoch >= se.sconf.ConsensusParams().ElectionDupeFixEpoch {
+		if se.sconf.ConsensusParams().ElectionDupeFixActive(tx.Epoch) {
 			if existing := se.electionDb.GetElection(tx.Epoch); existing != nil {
 				log.Verbose("duplicate election ignored", "epoch", tx.Epoch)
 				return
