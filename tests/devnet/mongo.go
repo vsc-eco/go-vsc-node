@@ -150,6 +150,64 @@ func (d *Devnet) getLastProcessedBlock(ctx context.Context, node int) (uint64, e
 	return *result.LastProcessedBlock, nil
 }
 
+// CountRegisteredWitnesses returns the number of distinct accounts that have a
+// witness registration in the given node's DB. Every such record carries a
+// consensus key (SetWitnessUpdate rejects records without one), so this is the
+// pool genesis-elector draws the genesis committee from.
+func (d *Devnet) CountRegisteredWitnesses(ctx context.Context, node int) (int, error) {
+	client, err := d.mongoClient(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer client.Disconnect(ctx)
+	coll := client.Database(d.nodeDbName(node)).Collection("witnesses")
+	accts, err := coll.Distinct(ctx, "account", bson.M{"account": bson.M{"$ne": ""}})
+	if err != nil {
+		return 0, err
+	}
+	return len(accts), nil
+}
+
+// waitForWitnessRegistrations polls the node's DB until at least want witnesses
+// are registered AND the node has processed past minHeight, or timeout.
+//
+// The minHeight gate is essential: genesis-elector includes only witnesses whose
+// registration height is strictly < the node's highest block. Node self-
+// announcements cluster around the same early block, so stopping the genesis node
+// the instant `want` docs exist (e.g. at the very block they landed) leaves those
+// witnesses OUTSIDE the [0, head) window — yielding a tiny genesis committee that
+// can't ratify the first election. Processing a few more blocks first puts all
+// the registrations safely inside the window.
+//
+// Returns the final (count, lastBlock) and an error on timeout.
+func (d *Devnet) waitForWitnessRegistrations(ctx context.Context, node, want int, minHeight uint64, timeout time.Duration) (int, uint64, error) {
+	deadline := time.Now().Add(timeout)
+	var lastN int
+	var lastBh uint64
+	for {
+		n, errN := d.CountRegisteredWitnesses(ctx, node)
+		bh, errB := d.getLastProcessedBlock(ctx, node)
+		if errN == nil {
+			lastN = n
+		}
+		if errB == nil {
+			lastBh = bh
+		}
+		if errN == nil && errB == nil && n >= want && bh >= minHeight {
+			return n, bh, nil
+		}
+		if time.Now().After(deadline) {
+			return lastN, lastBh, fmt.Errorf("witness gate not met after %v: %d/%d registered, block %d/%d",
+				timeout, lastN, want, lastBh, minHeight)
+		}
+		select {
+		case <-ctx.Done():
+			return lastN, lastBh, ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
+}
+
 // dumpBlockHeight logs the last processed block for a node.
 func (d *Devnet) dumpBlockHeight(ctx context.Context, t interface{ Logf(string, ...any) }, node int) {
 	bh, err := d.getLastProcessedBlock(ctx, node)

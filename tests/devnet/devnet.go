@@ -203,6 +203,22 @@ func (d *Devnet) Start(ctx context.Context) error {
 	log.Printf("[devnet] waiting for nodes to initialize...")
 	time.Sleep(10 * time.Second)
 
+	// Wait for witnesses to self-announce AND for the genesis node to process
+	// past the announcement cluster before forming the genesis election.
+	// genesis-elector builds the committee from witnesses whose registration
+	// height is strictly < the genesis node's highest block, so we must let the
+	// node advance past where the announcements landed — otherwise the committee
+	// is tiny and the FIRST election can't ratify (a 2-member committee needs
+	// 2 of 2 to sign), stalling the whole network.
+	want := d.cfg.Nodes
+	const genesisMinHeight = 30
+	log.Printf("[devnet] waiting for >=%d witnesses and block >=%d before genesis election...", want, genesisMinHeight)
+	if got, bh, werr := d.waitForWitnessRegistrations(ctx, d.cfg.GenesisNode, want, genesisMinHeight, 5*time.Minute); werr != nil {
+		log.Printf("[devnet] warning: %v; proceeding anyway (genesis may be small)", werr)
+	} else {
+		log.Printf("[devnet] %d witnesses registered, genesis node at block %d; forming genesis election", got, bh)
+	}
+
 	// Step 7: genesis election
 	genesisName := fmt.Sprintf("magi-%d", d.cfg.GenesisNode)
 	log.Printf("[devnet] stopping %s for genesis election...", genesisName)

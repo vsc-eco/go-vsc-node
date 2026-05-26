@@ -9,6 +9,7 @@ make                    # Build all 5 binaries to ./build/
 make magid              # Build the main vsc-node binary
 make test               # Quick unit tests across the repo (< 5 min, the everyday check)
 make test-full          # Every runnable test: quick first, then slow (clusters/docker/zk)
+make test-regression    # Node-wide devnet regression (TestFullNetworkRegression, ~70-110 min, Docker)
 go test ./...           # Run all tests directly
 go test ./modules/tss/  # Run tests in a specific package
 go run github.com/99designs/gqlgen generate  # Regenerate GraphQL code
@@ -19,6 +20,15 @@ go run github.com/99designs/gqlgen generate  # Regenerate GraphQL code
 non-host-runnable ones (`modules/wasm/e2e/go_wasm*` wasm guests,
 `modules/oracle/price` WIP). New packages are quick by default — add genuinely
 slow ones to `SLOW_PACKAGES`.
+
+`make test-regression` runs the single `TestFullNetworkRegression` (in
+`tests/devnet`) with a 130m timeout (TSS stages wait on ~5-min epoch boundaries
+since reshares only fire when an election advances the epoch). It spins up a
+7-node docker devnet once and
+drives a multi-stage scenario (ledger op storm, contract + TSS lifecycle,
+elections with witness churn, chaos) under recoverable faults, asserting
+cross-node consistency. It is too long for the 30m slow budget, so `test-full`
+`-skip`s it (via `SLOW_SKIP`/`REGRESSION_TEST`) — run it deliberately.
 
 Currently-failing tests are temporarily excluded from both targets so they stay
 green, tracked in the Makefile for fixing (remove each once fixed):

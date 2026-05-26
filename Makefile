@@ -20,7 +20,7 @@ GQL_GENERATED := modules/gql/gqlgen/generated.go
 GO_SOURCES := $(shell find modules lib -type f -name '*.go') go.mod go.sum
 
 # Targets
-.PHONY: all clean install magid contract-deployer genesis-elector devnet-setup mapping-bot generate test test-full
+.PHONY: all clean install magid contract-deployer genesis-elector devnet-setup mapping-bot generate test test-full test-regression
 
 all: $(GQL_GENERATED) magid contract-deployer genesis-elector devnet-setup mapping-bot
 
@@ -136,6 +136,16 @@ EXCLUDE_RE := ^vsc-node/($(subst $(space),|,$(strip $(NON_HOST_PACKAGES) $(KNOWN
 # -skip flag (only added when there are known-failing tests to skip).
 SKIP := $(if $(strip $(KNOWN_FAILING_TESTS)),-skip '$(KNOWN_FAILING_TESTS)',)
 
+# The node-wide regression test (and its bring-up smoke test) are far longer than
+# the 30m slow budget and are run deliberately via `make test-regression`. Skip
+# them in the test-full slow phase so that target stays bounded and green.
+REGRESSION_TEST := TestFullNetworkRegression
+SLOW_SKIP := -skip '$(KNOWN_FAILING_TESTS)|$(REGRESSION_TEST)|TestRegressionBringup'
+
+# Set V=1 to stream `go test -v` output (useful for the long regression run).
+V ?=
+VERBOSE := $(if $(strip $(V)),-v,)
+
 QUICK_TIMEOUT := 120s
 SLOW_TIMEOUT  := 30m
 
@@ -163,8 +173,17 @@ test-full:
 	@rc=0; \
 	$(GO_TEST) -timeout $(QUICK_TIMEOUT) $(SKIP) $$($(LIST_TEST_PKGS) | grep -vE '$(SLOW_RE)' | grep -vE '$(EXCLUDE_RE)') || rc=1; \
 	echo "==> Phase 2/2: slow tests"; \
-	$(GO_TEST) -timeout $(SLOW_TIMEOUT) $(SKIP) $$($(LIST_TEST_PKGS) | grep -E '$(SLOW_RE)' | grep -vE '$(EXCLUDE_RE)') || rc=1; \
+	$(GO_TEST) -timeout $(SLOW_TIMEOUT) $(SLOW_SKIP) $$($(LIST_TEST_PKGS) | grep -E '$(SLOW_RE)' | grep -vE '$(EXCLUDE_RE)') || rc=1; \
 	exit $$rc
+
+# Node-wide multi-stage devnet regression test (~50-65 min). Drives many of every
+# network op, holds multiple elections (incl. a hard witness removal while a key
+# is active), deploys/calls contracts incl. TSS, and injects recoverable faults
+# at every stage. Deliberately run; excluded from `make test`/`make test-full`.
+# Requires Docker. Pass V=1 for streaming `-v` output:  make test-regression V=1
+test-regression:
+	@echo "==> Node-wide regression (TestFullNetworkRegression, ~70-110 min)"
+	$(GO_TEST) $(VERBOSE) -timeout 130m -run '^$(REGRESSION_TEST)$$' ./tests/devnet
 
 clean:
 	rm -rf $(BUILD_DIR)
