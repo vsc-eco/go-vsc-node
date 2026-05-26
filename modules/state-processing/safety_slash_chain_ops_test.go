@@ -69,7 +69,7 @@ func newChainOpFixture(t *testing.T) *chainOpFixture {
 	lDb := &test_utils.MockLedgerDb{LedgerRecords: make(map[string][]ledgerDb.LedgerRecord)}
 	aDb := &test_utils.MockActionsDb{Actions: make(map[string]ledgerDb.ActionRecord)}
 
-	ls := ledgerSystem.New(balDb, lDb, nil, aDb, 0)
+	ls := ledgerSystem.New(balDb, lDb, nil, aDb, nil)
 	state := ls.NewEmptyState()
 	tx := &fakeChainOpTxDb{records: make(map[string]*dbTransactions.TransactionRecord)}
 

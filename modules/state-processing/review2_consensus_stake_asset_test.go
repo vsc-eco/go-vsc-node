@@ -31,7 +31,7 @@ func TestReview2ConsensusStakeAssetValidated(t *testing.T) {
 		balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
 			"hive:alice": {{Account: "hive:alice", BlockHeight: 0, Hive: 100000}},
 		})
-		ls := ledgerSystem.New(balDb, newMockLedgerDb(), nil, newMockActionsDb(), 0)
+		ls := ledgerSystem.New(balDb, newMockLedgerDb(), nil, newMockActionsDb(), nil)
 		return ls.NewEmptySession(ls.NewEmptyState(), 1)
 	}
 

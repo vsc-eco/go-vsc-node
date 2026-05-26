@@ -49,10 +49,11 @@ func (se *StateEngine) seedPendulumSettlement() {
 	if se == nil || se.pendulumSettlementsDb == nil || se.sconf == nil {
 		return
 	}
-	seedEpoch := se.sconf.ConsensusParams().PendulumSeedEpoch
-	if seedEpoch == 0 {
+	cp := se.sconf.ConsensusParams()
+	if !cp.PendulumSeedConfigured() {
 		return
 	}
+	seedEpoch := cp.PendulumSeedEpoch
 	if _, found := se.pendulumSettlementsDb.GetLatestSettledEpoch(); found {
 		return
 	}

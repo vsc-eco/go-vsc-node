@@ -355,7 +355,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		return
 	}
 
-	if tssMgr.sconf.ConsensusParams().TssIndexHeight > bh {
+	if !tssMgr.sconf.ConsensusParams().TssIndexed(bh) {
 		return
 	}
 

@@ -131,6 +131,41 @@ type ConsensusParams struct {
 	EvmAddressChecksumHeight uint64 `json:"evmAddressChecksumHeight,omitempty"`
 }
 
+// ───── Named activation predicates (Ethereum ChainConfig style) ─────
+//
+// Each height-gated rule on ConsensusParams gets a single named predicate so the
+// "is feature X active at this height" question lives in one place — including the
+// `0 == disabled` convention where it applies. Use these at the call site instead
+// of bare numeric comparisons, so a future tweak to a gate's semantics (e.g. `>`
+// vs `>=`, or pulling in a network check) is a one-line edit, not a grep.
+
+// EvmAddressChecksumActive returns true at blockHeight when EIP-55 normalization
+// of EVM destination addresses on gateway deposits should be applied. Zero
+// height means the feature is disabled entirely (legacy verbatim casing).
+func (cp ConsensusParams) EvmAddressChecksumActive(blockHeight uint64) bool {
+	return cp.EvmAddressChecksumHeight != 0 && blockHeight >= cp.EvmAddressChecksumHeight
+}
+
+// TssIndexed returns true at blockHeight when TSS state should be indexed for this
+// network. Callers that need network-aware gating (e.g. "only gate on testnet")
+// should keep their explicit OnTestnet/OnMainnet check around this predicate.
+func (cp ConsensusParams) TssIndexed(blockHeight uint64) bool {
+	return blockHeight >= cp.TssIndexHeight
+}
+
+// ElectionDupeFixActive returns true at epoch when the election-result dedup
+// fix is in force. Below this epoch the legacy behavior (no dedup) applies.
+func (cp ConsensusParams) ElectionDupeFixActive(epoch uint64) bool {
+	return epoch >= cp.ElectionDupeFixEpoch
+}
+
+// PendulumSeedConfigured returns true when this network has a pendulum
+// settlement bootstrap epoch configured (i.e. PendulumSeedEpoch != 0). Used to
+// gate the one-time bootstrap marker write on chains that pre-date settlement.
+func (cp ConsensusParams) PendulumSeedConfigured() bool {
+	return cp.PendulumSeedEpoch != 0
+}
+
 type TssParams struct {
 	ReshareSyncDelay      time.Duration `json:"reshareSyncDelay,omitempty"`
 	ReshareTimeout        time.Duration `json:"reshareTimeout,omitempty"`
