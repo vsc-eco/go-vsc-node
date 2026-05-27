@@ -194,6 +194,14 @@ func (s p2pSpec) HandleMessage(
 
 			sigStr := base64.URLEncoding.EncodeToString(sigBytes[:])
 
+			log.Verbose("sign_request: produced signature",
+				"from", from.String(),
+				"req_epoch", signReq.Epoch,
+				"req_block_height", signReq.BlockHeight,
+				"account", ep.conf.Get().HiveUsername,
+				"msg_hex", hex.EncodeToString(cid.Bytes()),
+				"sig", sigStr)
+
 			resp := signResponse{
 				Epoch:   electionHeader.Epoch,
 				Sig:     sigStr,

@@ -3,6 +3,7 @@ package election_proposer
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -994,6 +995,8 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 					"epoch", epoch,
 					"account", account,
 					"expected_cid", expectedCid,
+					"expected_msg_hex", hex.EncodeToString(c.Msg().Bytes()),
+					"received_sig", sigStr,
 					"reason", "already aggregated or did not verify")
 			}
 		}
