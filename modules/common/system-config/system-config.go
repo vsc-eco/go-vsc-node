@@ -230,7 +230,7 @@ func TestnetConfig() SystemConfig {
 			// upgrade so the first post-rollout election (epoch 516) can fire;
 			// epoch 515's settlement is skipped as stale and its bucket HBD
 			// rolls into 516's settlement.
-			PendulumSeedEpoch: 515,
+			PendulumSeedEpoch: 554,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
