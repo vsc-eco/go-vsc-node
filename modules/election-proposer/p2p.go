@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"vsc-node/modules/common"
 	libp2p "vsc-node/modules/p2p"
 	"weak"
@@ -108,48 +109,84 @@ func (s p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.
 }
 
 // HandleMessage implements libp2p.PubSubServiceParams.
-func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
+func (s p2pSpec) HandleMessage(
+	ctx context.Context,
+	from peer.ID,
+	msg p2pMessage,
+	send libp2p.SendFunc[p2pMessage],
+) error {
 	ep := s.electionProposer.Value()
 	if msg.Type == "sign_request" {
 		if s.electionProposer.Value().bh == 0 {
+			log.Verbose("sign_request: skipping (local bh=0, not yet synced)", "from", from.String())
 			return nil
 		}
 		if msg.Op == "hold_election" {
 			var signReq signRequest
 			err := json.Unmarshal([]byte(msg.Data), &signReq)
 			if err != nil {
+				log.Warn("sign_request: malformed payload", "from", from.String(), "err", err)
 				return nil
 			}
 
-			// err = s.electionProposer.waitCheckBh(ROTATION_INTERVAL, signReq.BlockHeight)
-
-			// if err != nil {
-			// 	return nil
-			// }
-
-			electionHeader, err := ep.makeElection(signReq.BlockHeight)
+			electionHeader, electionData, err := ep.makeElection(signReq.BlockHeight)
 
 			if err != nil {
+				log.Warn("sign_request: makeElection failed; not signing",
+					"from", from.String(),
+					"req_epoch", signReq.Epoch,
+					"req_block_height", signReq.BlockHeight,
+					"err", err)
 				return nil
 			}
 
 			if electionHeader.Epoch != signReq.Epoch {
+				log.Warn("sign_request: epoch mismatch in re-derived header; not signing",
+					"from", from.String(),
+					"req_epoch", signReq.Epoch,
+					"req_block_height", signReq.BlockHeight,
+					"local_epoch", electionHeader.Epoch)
 				return nil
 			}
 
 			if existing := ep.elections.GetElection(signReq.Epoch); existing != nil {
+				log.Verbose("sign_request: election already stored locally; not signing again",
+					"from", from.String(),
+					"req_epoch", signReq.Epoch)
 				return nil
 			}
 
 			cid, err := electionHeader.Cid()
 
 			if err != nil {
+				log.Warn("sign_request: CID compute failed; not signing",
+					"from", from.String(),
+					"req_epoch", signReq.Epoch,
+					"req_block_height", signReq.BlockHeight,
+					"err", err)
 				return nil
 			}
+
+			memberAccounts := make([]string, 0, len(electionData.Members))
+			for _, m := range electionData.Members {
+				memberAccounts = append(memberAccounts, m.Account)
+			}
+			log.Verbose("sign_request: signing election",
+				"from", from.String(),
+				"req_epoch", signReq.Epoch,
+				"req_block_height", signReq.BlockHeight,
+				"cid", cid.String(),
+				"data_cid", electionHeader.Data,
+				"member_count", len(electionData.Members),
+				"members", strings.Join(memberAccounts, ","))
 
 			sig, err := signCid(ep.conf, cid)
 
 			if err != nil {
+				log.Warn("sign_request: sign failed",
+					"from", from.String(),
+					"req_epoch", signReq.Epoch,
+					"err", err)
 				return nil
 			}
 
