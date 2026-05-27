@@ -18,6 +18,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/utils"
+	"vsc-node/lib/vsclog"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	systemconfig "vsc-node/modules/common/system-config"
@@ -37,6 +38,8 @@ import (
 	"github.com/vsc-eco/hivego"
 	"go.mongodb.org/mongo-driver/mongo"
 )
+
+var log = vsclog.Module("ep")
 
 type electionProposer struct {
 	conf  common.IdentityConfig
@@ -62,6 +65,7 @@ type electionProposer struct {
 	sigChannels map[uint64]chan *signResponse
 	signingInfo *struct {
 		epoch   uint64
+		block   uint64
 		circuit *dids.PartialBlsCircuit
 	}
 
@@ -319,7 +323,7 @@ func (e *electionProposer) GenerateFullElection(
 	if !firstElection && e.vscBlocks != nil {
 		sm, smErr := e.scoreMap()
 		if smErr != nil {
-			fmt.Println("election.scoreMap failed (skipping ban filter)", "err", smErr)
+			log.Warn("scoreMap failed; skipping ban filter", "err", smErr)
 		} else if sm.Samples >= e.scoreMapMinSamples && len(sm.BannedNodes) > 0 {
 			banned := make(map[string]bool, len(sm.BannedNodes))
 			for _, n := range sm.BannedNodes {
@@ -328,13 +332,13 @@ func (e *electionProposer) GenerateFullElection(
 			before := len(witnessList)
 			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 				if banned[w.Account] {
-					fmt.Println("election.skip banned witness (scoreMap < 75%)", "account", w.Account, "samples", sm.Samples, "score", sm.Map[w.Account])
+					log.Verbose("skipping banned witness", "account", w.Account, "samples", sm.Samples, "score", sm.Map[w.Account])
 					return true
 				}
 				return false
 			})
 			if len(witnessList) < before {
-				fmt.Println("election.bannedNodes applied", "removed", before-len(witnessList), "samples", sm.Samples)
+				log.Info("bannedNodes filter applied", "removed", before-len(witnessList), "samples", sm.Samples)
 			}
 		}
 	}
@@ -399,7 +403,7 @@ func (e *electionProposer) GenerateFullElection(
 	for _, w := range witnessList {
 		key, err := w.ConsensusKey()
 		if err != nil {
-			fmt.Println("election.skip witness with invalid consensus key", w.Account, err)
+			log.Warn("skipping witness with invalid consensus key", "account", w.Account, "err", err)
 			continue
 		}
 		members = append(members, elections.ElectionMember{
@@ -518,7 +522,7 @@ type ElectionOptions struct {
 
 func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) error {
 	if ep.signingInfo != nil {
-		fmt.Println("election already in progress")
+		log.Warn("election already in progress; skipping new attempt", "block_height", blk)
 		return errors.New("election already in progress")
 	}
 
@@ -527,14 +531,14 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 	if err == mongo.ErrNoDocuments {
 		firstElection = true
 	} else if err != nil {
-		fmt.Println("election.err", err)
+		log.Error("GetElectionByHeight failed", "block_height", blk, "err", err)
 		return err
 	}
 
 	electionHeader, electionData, err := ep.GenerateElectionAtBlock(blk)
 
 	if err != nil {
-		fmt.Println("election.err", err)
+		log.Error("GenerateElectionAtBlock failed", "block_height", blk, "err", err)
 		return err
 	}
 
@@ -546,7 +550,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		}
 		jsonBytes, err := json.Marshal(electionResultJson)
 		if err != nil {
-			fmt.Println("election.err", err)
+			log.Error("marshal first-election broadcast failed", "block_height", blk, "epoch", electionHeader.Epoch, "err", err)
 			return err
 		}
 
@@ -563,7 +567,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 
 		sig, err := ep.txCreator.Sign(tx)
 		if err != nil {
-			fmt.Println("election.err", err)
+			log.Error("sign first-election tx failed", "block_height", blk, "epoch", electionHeader.Epoch, "err", err)
 			return fmt.Errorf("failed to update account: %w", err)
 		}
 
@@ -574,7 +578,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 			return err
 		}
 
-		fmt.Println("Propose Election TxId", txId)
+		log.Info("first election proposed", "block_height", blk, "epoch", electionHeader.Epoch, "tx_id", txId)
 
 		return nil
 	} else {
@@ -589,13 +593,17 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		}
 
 		if len(electionData.Members) < minimumMemberCount {
-			fmt.Println("election minimum member count not met", len(electionData.Members), minimumMemberCount)
+			log.Warn("election minimum member count not met",
+				"block_height", blk,
+				"epoch", electionHeader.Epoch,
+				"members", len(electionData.Members),
+				"minimum", minimumMemberCount)
 			return errors.New("Minimum network config not met for election. Skipping.")
 		}
 
 		cid, err := electionHeader.Cid()
 		if err != nil {
-			fmt.Println("election.err", err)
+			log.Error("compute election header CID failed", "block_height", blk, "epoch", electionHeader.Epoch, "err", err)
 			return err
 		}
 
@@ -603,9 +611,8 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		if firstElection {
 			w, err := ep.witnesses.GetWitnessesAtBlockHeight(blk)
 
-			fmt.Println("GetWitnessesAtBlockHeight err", err)
 			if err != nil {
-				fmt.Println("election.err", err)
+				log.Error("GetWitnessesAtBlockHeight failed", "block_height", blk, "epoch", electionHeader.Epoch, "err", err)
 				return err
 			}
 			res := resultJoin(utils.Map(w, func(w witnesses.Witness) result.Result[dids.BlsDID] {
@@ -622,15 +629,17 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 
 		circuit, err := dids.NewBlsCircuitGenerator(memberKeys).Generate(cid)
 		if err != nil {
-			fmt.Println("election.err", err)
+			log.Error("generate BLS circuit failed", "block_height", blk, "epoch", electionHeader.Epoch, "err", err)
 			return err
 		}
 
 		ep.signingInfo = &struct {
 			epoch   uint64
+			block   uint64
 			circuit *dids.PartialBlsCircuit
 		}{
 			epoch:   electionHeader.Epoch,
+			block:   blk,
 			circuit: &circuit,
 		}
 
@@ -657,7 +666,10 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 
 		ep.sigChannels[ep.signingInfo.epoch] = make(chan *signResponse)
 
-		fmt.Println("[ep] waiting for signatures", blk, electionHeader.Epoch)
+		log.Info("waiting for signatures",
+			"block_height", blk,
+			"epoch", electionHeader.Epoch,
+			"timeout", 30*time.Second)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		signedWeight, err := ep.waitForSigs(ctx, &electionResult)
@@ -667,12 +679,15 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 			return err
 		}
 
-		fmt.Println("signedWeight", signedWeight)
+		log.Info("signature collection complete",
+			"block_height", blk,
+			"epoch", electionHeader.Epoch,
+			"signed_weight", signedWeight)
 		ep.signingInfo = nil
 
 		finalCircuit, err := circuit.Finalize()
 		if err != nil {
-			fmt.Println("election.err", err)
+			log.Error("finalize BLS circuit failed", "block_height", blk, "epoch", electionHeader.Epoch, "err", err)
 			return err
 		}
 
@@ -697,7 +712,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 
 			circuit, err := finalCircuit.Serialize()
 			if err != nil {
-				fmt.Println("election.err", err)
+				log.Error("serialize BLS circuit failed", "block_height", blk, "epoch", electionHeader.Epoch, "err", err)
 				return err
 			}
 
@@ -869,24 +884,36 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 	// does not need to access ep.signingInfo (which may become nil on timeout).
 	sigChan := ep.sigChannels[ep.signingInfo.epoch]
 	circuit := ep.signingInfo.circuit
+	block := ep.signingInfo.block
+	epoch := ep.signingInfo.epoch
+	weightRequired := weightTotal * 8 / 10
 
 	var err error
 	var signedWeight uint64
 	go func() {
 		signedWeight = 0
 
-		for signedWeight < (weightTotal * 8 / 10) {
+		for signedWeight < weightRequired {
 			var signResp *signResponse
 			select {
 			case <-ctx.Done():
-				fmt.Println("[ep] goroutine: context cancelled")
+				log.Verbose("signature collector exiting",
+					"block_height", block,
+					"epoch", epoch,
+					"reason", ctx.Err(),
+					"signed_weight", signedWeight,
+					"weight_required", weightRequired)
 				end <- struct{}{}
 				return
 			case signResp = <-sigChan:
 			}
 
 			if signResp == nil {
-				fmt.Println("[ep] timed out waiting")
+				log.Warn("signature channel closed before quorum",
+					"block_height", block,
+					"epoch", epoch,
+					"signed_weight", signedWeight,
+					"weight_required", weightRequired)
 				break
 			}
 
@@ -922,20 +949,45 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 
 			added, err := c.AddAndVerify(member, sigStr)
 
-			fmt.Println("[ep] aggregating signature", sigStr, "from", account)
-			fmt.Println("[ep] agg err", err)
-			if added {
+			if err != nil {
+				log.Warn("signature aggregate failed",
+					"block_height", block,
+					"epoch", epoch,
+					"account", account,
+					"err", err)
+			} else if added {
 				signedWeight += election.Weights[index]
+				log.Verbose("signature aggregated",
+					"block_height", block,
+					"epoch", epoch,
+					"account", account,
+					"added_weight", election.Weights[index],
+					"signed_weight", signedWeight,
+					"weight_required", weightRequired)
+			} else {
+				log.Verbose("signature ignored",
+					"block_height", block,
+					"epoch", epoch,
+					"account", account,
+					"reason", "already aggregated or did not verify")
 			}
 		}
-		fmt.Println("Done waittt")
-		// res = signedWeight
+		log.Verbose("signature collector reached quorum",
+			"block_height", block,
+			"epoch", epoch,
+			"signed_weight", signedWeight,
+			"weight_required", weightRequired)
 		end <- struct{}{}
 	}()
 
 	select {
 	case <-ctx.Done():
-		fmt.Println("[ep] collect sigs timeout")
+		log.Warn("signature collection timeout",
+			"block_height", block,
+			"epoch", epoch,
+			"reason", ctx.Err(),
+			"signed_weight", signedWeight,
+			"weight_required", weightRequired)
 		<-end // Wait for goroutine to finish before returning
 		return signedWeight, nil
 	case <-end:
