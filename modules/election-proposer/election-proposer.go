@@ -66,6 +66,7 @@ type electionProposer struct {
 	signingInfo *struct {
 		epoch   uint64
 		block   uint64
+		cid     string
 		circuit *dids.PartialBlsCircuit
 	}
 
@@ -550,7 +551,15 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		}
 		jsonBytes, err := json.Marshal(electionResultJson)
 		if err != nil {
-			log.Error("marshal first-election broadcast failed", "block_height", blk, "epoch", electionHeader.Epoch, "err", err)
+			log.Error(
+				"marshal first-election broadcast failed",
+				"block_height",
+				blk,
+				"epoch",
+				electionHeader.Epoch,
+				"err",
+				err,
+			)
 			return err
 		}
 
@@ -607,6 +616,18 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 			return err
 		}
 
+		memberAccounts := make([]string, 0, len(electionData.Members))
+		for _, m := range electionData.Members {
+			memberAccounts = append(memberAccounts, m.Account)
+		}
+		log.Verbose("election header built",
+			"block_height", blk,
+			"epoch", electionHeader.Epoch,
+			"cid", cid.String(),
+			"data_cid", electionHeader.Data,
+			"member_count", len(electionData.Members),
+			"members", strings.Join(memberAccounts, ","))
+
 		var memberKeys []dids.BlsDID
 		if firstElection {
 			w, err := ep.witnesses.GetWitnessesAtBlockHeight(blk)
@@ -636,10 +657,12 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		ep.signingInfo = &struct {
 			epoch   uint64
 			block   uint64
+			cid     string
 			circuit *dids.PartialBlsCircuit
 		}{
 			epoch:   electionHeader.Epoch,
 			block:   blk,
+			cid:     cid.String(),
 			circuit: &circuit,
 		}
 
@@ -840,19 +863,19 @@ func (ep *electionProposer) scoreMap() (ScoreMap, error) {
 	}, nil
 }
 
-func (ep *electionProposer) makeElection(blk uint64) (elections.ElectionHeader, error) {
+func (ep *electionProposer) makeElection(blk uint64) (elections.ElectionHeader, elections.ElectionData, error) {
 	electionResult, err := ep.elections.GetElectionByHeight(blk - 1)
 
 	if err != nil {
-		return elections.ElectionHeader{}, err
+		return elections.ElectionHeader{}, elections.ElectionData{}, err
 	}
 
 	if blk-electionResult.BlockHeight < ep.sconf.ConsensusParams().ElectionInterval {
-		return elections.ElectionHeader{}, errors.New("next election not ready")
+		return elections.ElectionHeader{}, elections.ElectionData{}, errors.New("next election not ready")
 	}
-	electionHeader, _, err := ep.GenerateElectionAtBlock(blk)
+	electionHeader, electionData, err := ep.GenerateElectionAtBlock(blk)
 
-	return electionHeader, err
+	return electionHeader, electionData, err
 }
 
 func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections.ElectionResult) (uint64, error) {
@@ -886,6 +909,7 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 	circuit := ep.signingInfo.circuit
 	block := ep.signingInfo.block
 	epoch := ep.signingInfo.epoch
+	expectedCid := ep.signingInfo.cid
 	weightRequired := weightTotal * 8 / 10
 
 	var err error
@@ -965,10 +989,11 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 					"signed_weight", signedWeight,
 					"weight_required", weightRequired)
 			} else {
-				log.Verbose("signature ignored",
+				log.Warn("signature ignored",
 					"block_height", block,
 					"epoch", epoch,
 					"account", account,
+					"expected_cid", expectedCid,
 					"reason", "already aggregated or did not verify")
 			}
 		}
