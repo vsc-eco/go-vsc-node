@@ -681,11 +681,17 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		reqJson, _ := json.Marshal(signReq)
 		go func() {
 			time.Sleep(4 * time.Millisecond)
-			ep.service.Send(p2pMessage{
+			sendStart := time.Now()
+			sendErr := ep.service.Send(p2pMessage{
 				Type: "sign_request",
 				Op:   "hold_election",
 				Data: string(reqJson),
 			})
+			log.Info("sign_request: broadcast returned",
+				"block_height", blk,
+				"epoch", electionHeader.Epoch,
+				"send_duration_ms", time.Since(sendStart).Milliseconds(),
+				"err", sendErr)
 		}()
 
 		ep.sigChannels[ep.signingInfo.epoch] = make(chan *signResponse)

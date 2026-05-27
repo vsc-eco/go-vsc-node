@@ -126,12 +126,11 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 					case <-ctx.Done():
 						return
 					case <-ticker.C:
-						// peers := topic.ListPeers()
+						peers := topic.ListPeers()
+						log.Verbose("pubsub topic mesh state",
+							"topic", service.Topic(),
+							"mesh_peer_count", len(peers))
 						resolve(nil)
-						// fmt.Println(p2p.PeerInfo().GetPeerId(), "pubsub", service.Topic(), "peers:", len(peers))
-						// if len(peers) > 0 {
-						// 	return
-						// }
 					}
 				}
 			}),
@@ -152,6 +151,11 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 				return
 			}
 
+			log.Verbose("pubsub sub.Next returned",
+				"topic", service.Topic(),
+				"from", msg.GetFrom().String(),
+				"data_len", len(msg.GetData()))
+
 			// TODO isn't this already run internally by libp2p?
 			// if !service.ValidateMessage(ctx, msg.GetFrom(), msg) {
 			// 	continue
@@ -161,7 +165,9 @@ func NewPubSubService[Msg any](p2p *P2PServer, service PubSubServiceParams[Msg])
 			select {
 			case res.semaphore <- struct{}{}:
 			default:
-				fmt.Println("pubsub: dropping message, concurrency limit reached")
+				log.Warn("pubsub: dropping message, concurrency limit reached",
+					"topic", service.Topic(),
+					"from", msg.GetFrom().String())
 				continue
 			}
 
