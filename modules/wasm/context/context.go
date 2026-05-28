@@ -41,14 +41,22 @@ type PendulumSwapFeeArgs struct {
 // network-share accumulator. The SDK has already credited
 // NodeBucketCreditedHBD to pendulum:nodes:HBD.
 type PendulumSwapFeeResult struct {
-	UserOutput            int64
-	NewXReserve           int64
-	NewYReserve           int64
+	UserOutput  int64
+	NewXReserve int64
+	NewYReserve int64
 	// NetworkCreditOutput is the 25% network cut on (totalCLP + totalProtocol),
 	// in the output asset of the swap (since both fee components live on the
 	// output side under the unified model).
 	NetworkCreditOutput   int64
 	NodeBucketCreditedHBD int64
+	// LpShareOutput is the fee retained for LPs (output units): the LP-kept
+	// portions of both the CLP and protocol pots after the network cut. It
+	// stays in the pool reserves. NodeShareOutput is the node-runner share
+	// (output units) before the HBD conversion, i.e. the node portions of
+	// both pots. Together with NetworkCreditOutput they reconcile the fee:
+	// LpShareOutput + NodeShareOutput + NetworkCreditOutput == grossOut - UserOutput.
+	LpShareOutput   int64
+	NodeShareOutput int64
 	// MultiplierBps is the stabilizer multiplier m the SDK applied to the base
 	// protocol fee, in basis points (10000 = 1.0). SAfterBps is the geometry
 	// ratio s = V/E sampled at the snapshot the swap consumed, also in bps.
