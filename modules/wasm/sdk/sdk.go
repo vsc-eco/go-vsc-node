@@ -17,9 +17,10 @@ import (
 	tss_db "vsc-node/modules/db/vsc/tss"
 	wasm_context "vsc-node/modules/wasm/context"
 
+	wasm_types "vsc-node/modules/wasm/types"
+
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
-	wasm_types "vsc-node/modules/wasm/types"
 
 	"github.com/JustinKnueppel/go-result"
 )
@@ -231,7 +232,11 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 							defer func() {
 								if r := recover(); r != nil {
 									ret = result.Err[SdkResultStruct](
-										errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("SYSTEM_CALL_PANIC"), fmt.Errorf("%v", r)),
+										errors.Join(
+											fmt.Errorf(contracts.SDK_ERROR),
+											fmt.Errorf("SYSTEM_CALL_PANIC"),
+											fmt.Errorf("%v", r),
+										),
 									)
 								}
 							}()
@@ -244,7 +249,11 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 							payload, err := json.Marshal(map[string]string{"result": unwrapped.Result})
 							if err != nil {
 								return result.Err[SdkResultStruct](
-									errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("SERIALIZATION_ERROR"), err),
+									errors.Join(
+										fmt.Errorf(contracts.SDK_ERROR),
+										fmt.Errorf("SERIALIZATION_ERROR"),
+										err,
+									),
 								)
 							}
 							unwrapped.Result = string(payload)
@@ -333,6 +342,8 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 					MultiplierBps:         strconv.FormatInt(r.MultiplierBps, 10),
 					SAfterBps:             strconv.FormatInt(r.SAfterBps, 10),
 					NetworkCreditOutput:   strconv.FormatInt(r.NetworkCreditOutput, 10),
+					LpShareOutput:         strconv.FormatInt(r.LpShareOutput, 10),
+					NodeShareOutput:       strconv.FormatInt(r.NodeShareOutput, 10),
 				}
 				js, _ := json.Marshal(out)
 				return SdkResultStruct{Result: string(js), Gas: session.End()}
@@ -609,7 +620,9 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			}
 			data, err := hexDecode(hexData)
 			if err != nil {
-				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid hex")))
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid hex")),
+				)
 			}
 			hash := ethCrypto.Keccak256(data)
 			return result.Ok(SdkResultStruct{
@@ -628,15 +641,21 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			}
 			hash, err := hexDecode(hashHex)
 			if err != nil || len(hash) != 32 {
-				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("hash must be 32 bytes hex")))
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("hash must be 32 bytes hex")),
+				)
 			}
 			sig, err := hexDecode(sigHex)
 			if err != nil || len(sig) != 65 {
-				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("sig must be 65 bytes hex (r+s+v)")))
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("sig must be 65 bytes hex (r+s+v)")),
+				)
 			}
 			pubkey, err := ethCrypto.Ecrecover(hash, sig)
 			if err != nil {
-				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("ecrecover failed: %w", err)))
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("ecrecover failed: %w", err)),
+				)
 			}
 			addr := ethCrypto.Keccak256(pubkey[1:])[12:]
 			return result.Ok(SdkResultStruct{Result: hexEncode(addr), Gas: params.CYCLE_GAS_PER_RC})
@@ -648,11 +667,15 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			}
 			data, err := hexDecode(hexData)
 			if err != nil {
-				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid hex")))
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid hex")),
+				)
 			}
 			decoded, err := rlpDecodeToJSON(data)
 			if err != nil {
-				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("rlp decode failed: %w", err)))
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("rlp decode failed: %w", err)),
+				)
 			}
 			return result.Ok(SdkResultStruct{
 				Result: decoded,
@@ -682,23 +705,33 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			}
 			proof, err := hexDecode(proofHex)
 			if err != nil {
-				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid proof hex")))
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid proof hex")),
+				)
 			}
 			publicInputs, err := hexDecode(publicInputsHex)
 			if err != nil {
-				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid public inputs hex")))
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid public inputs hex")),
+				)
 			}
 			vkeyHash, err := hexDecode(sp1VkeyHashHex)
 			if err != nil {
-				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid vkey hash hex")))
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid vkey hash hex")),
+				)
 			}
 			groth16Vk, err := hexDecode(groth16VkHex)
 			if err != nil {
-				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid groth16 vk hex")))
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid groth16 vk hex")),
+				)
 			}
 			vkRoot, err := hexDecode(vkRootHex)
 			if err != nil {
-				return result.Err[SdkResultStruct](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid vk root hex")))
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid vk root hex")),
+				)
 			}
 			if err := Sp1VerifyGroth16(proof, publicInputs, vkeyHash, groth16Vk, vkRoot); err != nil {
 				return result.Ok(SdkResultStruct{Result: "false", Gas: params.CYCLE_GAS_PER_RC * 10})
@@ -817,6 +850,8 @@ type pendulumSwapFeeOutput struct {
 	MultiplierBps         string `json:"multiplier_bps"`
 	SAfterBps             string `json:"s_after_bps"`
 	NetworkCreditOutput   string `json:"network_credit_output"`
+	LpShareOutput         string `json:"lp_share_output"`
+	NodeShareOutput       string `json:"node_share_output"`
 }
 
 func parseInt64(s string) (int64, bool) {

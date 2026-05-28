@@ -250,8 +250,12 @@ func (a *Applier) ApplySwapFees(
 	nodeProtocolNative := new(big.Int).Sub(pendulumProtocol, lpProtocolKept)
 
 	// 11. Single output-asset node share (CLP + Protocol portions both live in
-	// the output asset under the unified model).
+	// the output asset under the unified model). The LP-kept portions of both
+	// pots stay in the pool reserves and are surfaced as lpFeeOutput so the
+	// contract can log the LP/node split explicitly; lpFeeOutput +
+	// nodeShareOutput + networkCreditOutput == grossOut - userOutput.
 	nodeShareOutput := new(big.Int).Add(nodeCLPNative, nodeProtocolNative)
+	lpFeeOutput := new(big.Int).Add(lpCLPKept, lpProtocolKept)
 
 	// 12. Reserve update — fees stay in pool implicitly (Y - userOutput
 	// captures all retained fees). Then either drain the node share as HBD
@@ -286,7 +290,7 @@ func (a *Applier) ApplySwapFees(
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
 	}
 	if !newX.IsInt64() || !newY.IsInt64() || !userOutput.IsInt64() || !nodeBucketHBD.IsInt64() ||
-		!networkCreditOutput.IsInt64() {
+		!networkCreditOutput.IsInt64() || !lpFeeOutput.IsInt64() || !nodeShareOutput.IsInt64() {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
 	}
 
@@ -309,6 +313,8 @@ func (a *Applier) ApplySwapFees(
 		NodeBucketCreditedHBD: nodeBucketHBD.Int64(),
 		MultiplierBps:         multiplierBps,
 		SAfterBps:             sBps,
+		LpShareOutput:         lpFeeOutput.Int64(),
+		NodeShareOutput:       nodeShareOutput.Int64(),
 	}
 	return result.Ok(out)
 }
