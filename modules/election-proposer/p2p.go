@@ -153,8 +153,21 @@ func (s p2pSpec) HandleMessage(
 				log.Verbose("sign_request: election already stored locally; not signing again",
 					"from", from.String(),
 					"req_epoch", signReq.Epoch)
+				ep.lastAttemptedElectionMu.Lock()
+				delete(ep.lastAttemptedElectionBh, signReq.Epoch)
+				ep.lastAttemptedElectionMu.Unlock()
 				return nil
 			}
+
+			// Record the anchor height from this proposal so that if this node
+			// later becomes the slot leader for the same epoch, it reuses the
+			// same block height — keeping the settlement record identical across
+			// consecutive proposers and allowing BLS signatures to pool.
+			ep.lastAttemptedElectionMu.Lock()
+			if _, alreadySet := ep.lastAttemptedElectionBh[signReq.Epoch]; !alreadySet {
+				ep.lastAttemptedElectionBh[signReq.Epoch] = signReq.BlockHeight
+			}
+			ep.lastAttemptedElectionMu.Unlock()
 
 			cid, err := electionHeader.Cid()
 
