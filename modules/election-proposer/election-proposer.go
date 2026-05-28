@@ -80,6 +80,20 @@ type electionProposer struct {
 	// Resolved once in New() so the production default (500) is locked at
 	// process start and cannot drift mid-run.
 	scoreMapMinSamples uint64
+
+	// lastAttemptedElectionBh maps epoch → the block height used by the first
+	// proposer for that epoch. All subsequent proposers for the same epoch
+	// reuse this height so their settlement records (SnapshotRangeTo = blk)
+	// are byte-identical, making BLS signatures pool across consecutive attempts.
+	// Written under lastAttemptedElectionMu; read by both blockTick (via
+	// HoldElection, under electionMu) and HandleMessage (pubsub goroutine).
+	lastAttemptedElectionBh  map[uint64]uint64
+	lastAttemptedElectionMu  sync.RWMutex
+
+	// sigCollectionWindow is the BLS signature collection timeout for
+	// waitForSigs. Resolved once in New() from VSC_ELECTION_SIG_COLLECTION_WINDOW
+	// (devnet only) or the production default of 120s.
+	sigCollectionWindow time.Duration
 }
 
 type ElectionProposer = *electionProposer
@@ -113,8 +127,10 @@ func New(
 		sconf:              sconf,
 		se:                 se,
 		hiveConsumer:       hiveConsumer,
-		sigChannels:        make(map[uint64]chan *signResponse),
-		scoreMapMinSamples: resolveScoreMapMinSamples(sconf),
+		sigChannels:             make(map[uint64]chan *signResponse),
+		scoreMapMinSamples:      resolveScoreMapMinSamples(sconf),
+		lastAttemptedElectionBh: make(map[uint64]uint64),
+		sigCollectionWindow:     resolveSigCollectionWindow(sconf),
 	}
 }
 
@@ -138,6 +154,26 @@ func resolveScoreMapMinSamples(sconf systemconfig.SystemConfig) uint64 {
 		return defaultMinSamples
 	}
 	return n
+}
+
+// resolveSigCollectionWindow returns the BLS signature collection window for
+// waitForSigs. Production default is 120s. VSC_ELECTION_SIG_COLLECTION_WINDOW
+// is honoured ONLY on devnet so testnet/mainnet operators cannot accidentally
+// diverge the window across nodes.
+func resolveSigCollectionWindow(sconf systemconfig.SystemConfig) time.Duration {
+	const defaultWindow = 120 * time.Second
+	if sconf == nil || sconf.NetId() != "vsc-devnet" {
+		return defaultWindow
+	}
+	v := os.Getenv("VSC_ELECTION_SIG_COLLECTION_WINDOW")
+	if v == "" {
+		return defaultWindow
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return defaultWindow
+	}
+	return d
 }
 
 // Init implements aggregate.Plugin.
@@ -183,7 +219,7 @@ func (e *electionProposer) blockTick(bh uint64, headHeight *uint64) {
 		}
 
 		if witnessSlot != nil {
-			if witnessSlot.Account == e.conf.Get().HiveUsername && bh%common.CONSENSUS_SPECS.SlotLength == 0 {
+			if witnessSlot.Account == e.conf.Get().HiveUsername && bh%(5*common.CONSENSUS_SPECS.SlotLength) == 0 {
 				e.HoldElection(bh)
 			}
 		}
@@ -537,10 +573,37 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		return err
 	}
 
-	electionHeader, electionData, err := ep.GenerateElectionAtBlock(blk)
+	// Canonical anchor: all proposers for the same epoch must generate the
+	// election at the same block height so the embedded settlement record
+	// (SnapshotRangeTo = anchorBh) is byte-identical across nodes and BLS
+	// signatures pool across consecutive slot attempts.
+	//
+	// The first proposer for an epoch records its own blk. Every subsequent
+	// proposer — and every signer that receives a sign_request — defers to
+	// that recorded height. This is conveyed via the BlockHeight field already
+	// present in sign_request, so signers always use the proposer's anchorBh.
+	anchorBh := blk
+	if !firstElection {
+		nextEpoch := electionResult.Epoch + 1
+		ep.lastAttemptedElectionMu.Lock()
+		if remembered, ok := ep.lastAttemptedElectionBh[nextEpoch]; ok {
+			anchorBh = remembered
+		} else {
+			ep.lastAttemptedElectionBh[nextEpoch] = blk
+		}
+		ep.lastAttemptedElectionMu.Unlock()
+		if anchorBh != blk {
+			log.Info("reusing anchor height from prior attempt",
+				"proposer_bh", blk,
+				"anchor_bh", anchorBh,
+				"epoch", nextEpoch)
+		}
+	}
+
+	electionHeader, electionData, err := ep.GenerateElectionAtBlock(anchorBh)
 
 	if err != nil {
-		log.Error("GenerateElectionAtBlock failed", "block_height", blk, "err", err)
+		log.Error("GenerateElectionAtBlock failed", "block_height", anchorBh, "err", err)
 		return err
 	}
 
@@ -675,7 +738,7 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 
 		signReq := signRequest{
 			Epoch:       electionHeader.Epoch,
-			BlockHeight: blk,
+			BlockHeight: anchorBh,
 		}
 
 		reqJson, _ := json.Marshal(signReq)
@@ -691,10 +754,10 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		ep.sigChannels[ep.signingInfo.epoch] = make(chan *signResponse)
 
 		log.Info("waiting for signatures",
-			"block_height", blk,
+			"block_height", anchorBh,
 			"epoch", electionHeader.Epoch,
-			"timeout", 30*time.Second)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			"timeout", ep.sigCollectionWindow)
+		ctx, cancel := context.WithTimeout(context.Background(), ep.sigCollectionWindow)
 		defer cancel()
 		signedWeight, err := ep.waitForSigs(ctx, &electionResult)
 		delete(ep.sigChannels, ep.signingInfo.epoch)
@@ -725,9 +788,9 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 			totalWeight += electionResult.Weights[i]
 		}
 
-		blocksSinceLastElection := blk
+		blocksSinceLastElection := anchorBh
 		if !firstElection {
-			blocksSinceLastElection = blk - electionResult.BlockHeight
+			blocksSinceLastElection = anchorBh - electionResult.BlockHeight
 		}
 		voteMajority := elections.MinimalRequiredElectionVotes(blocksSinceLastElection, totalWeight)
 
