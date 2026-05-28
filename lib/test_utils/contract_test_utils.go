@@ -20,6 +20,8 @@ import (
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
+	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
+	pendulumwasm "vsc-node/modules/incentive-pendulum/wasm"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	p2pInterface "vsc-node/modules/p2p"
 	rc_system "vsc-node/modules/rc-system"
@@ -56,6 +58,22 @@ type ContractTest struct {
 	StateEngine   *stateEngine.StateEngine
 	DataLayer     *datalayer.DataLayer
 	Tss           TssState
+	// PendulumApplier is the swap-fee applier wired into every Call. It
+	// defaults to the StateEngine's production applier (which gates swaps on
+	// the FeedTracker being warm, so swaps return ErrSnapshotUnavailable in a
+	// fresh test). Use SetPendulumGeometry to inject deterministic geometry
+	// for manual swap-fee testing.
+	PendulumApplier wasm_context.PendulumApplier
+}
+
+// stubGeometryReader is a deterministic pendulumwasm.GeometryReader for manual
+// contract tests, returning fixed geometry regardless of block height.
+type stubGeometryReader struct {
+	out pendulumoracle.GeometryOutputs
+}
+
+func (s stubGeometryReader) GeometryAt(uint64) (pendulumoracle.GeometryOutputs, bool) {
+	return s.out, s.out.OK
 }
 
 type ContractTestCallResult struct {
@@ -129,14 +147,15 @@ func NewContractTest() ContractTest {
 	state := se.LedgerSystem.NewEmptyState()
 	ledgerSession := se.LedgerSystem.NewEmptySession(state, 0)
 	return ContractTest{
-		BlockHeight:   0,
-		ContractDb:    &contractDb,
-		LedgerSession: ledgerSession,
-		RcSession:     se.RcSystem.NewSession(ledgerSession),
-		RcDb:          &rc,
-		CallSession:   contract_session.NewCallSession(dl, &contractDb, &contractState, &tssKeys, 0, nil),
-		DataLayer:     dl,
-		StateEngine:   se,
+		BlockHeight:     0,
+		ContractDb:      &contractDb,
+		LedgerSession:   ledgerSession,
+		RcSession:       se.RcSystem.NewSession(ledgerSession),
+		RcDb:            &rc,
+		CallSession:     contract_session.NewCallSession(dl, &contractDb, &contractState, &tssKeys, 0, nil),
+		DataLayer:       dl,
+		StateEngine:     se,
+		PendulumApplier: se.PendulumApplier(),
 		Tss: TssState{
 			Keys:        &tssKeys,
 			Commitments: &tssCommitments,
@@ -272,8 +291,10 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 			Caller:               caller,
 			Sender:               caller,
 			Intents:              tx.Intents,
+			PendulumOracle:       ct.StateEngine.PendulumOracleEnv(),
 		},
 		int64(gas), rc_system.FreeRcRemaining(ct.RcSession, rcPayer, ct.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
+		contract_execution_context.WithPendulumApplier(ct.PendulumApplier),
 	)
 	ctx := context.WithValue(
 		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
@@ -309,6 +330,20 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		Logs:      ct.CallSession.PopLogs(),
 		StateDiff: diff,
 	}
+}
+
+// SetPendulumGeometry wires a deterministic swap-fee applier into subsequent
+// Calls, so contracts that invoke system.pendulum_apply_swap_fees can be
+// tested without a warm FeedTracker. The supplied geometry (V, P, E, T, SBps,
+// OK) is returned verbatim by the applier's GeometryReader, and only contracts
+// whose ID is in whitelist are allowed to apply fees — mirroring the on-chain
+// PendulumPoolWhitelist gate.
+func (ct *ContractTest) SetPendulumGeometry(out pendulumoracle.GeometryOutputs, whitelist []string) {
+	ct.PendulumApplier = pendulumwasm.New(
+		stubGeometryReader{out: out},
+		func() []string { return whitelist },
+		pendulumwasm.DefaultConfig(),
+	)
 }
 
 // Add funds to an account in the ledger.

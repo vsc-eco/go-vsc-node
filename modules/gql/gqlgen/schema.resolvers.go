@@ -713,8 +713,18 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 		}
 
 		var pendulumOracle map[string]interface{}
+		var ctxOpts []contract_execution_context.Option
 		if r.StateEngine != nil {
 			pendulumOracle = r.StateEngine.PendulumOracleEnv()
+			// Wire the pendulum swap-fee applier so simulated swaps on
+			// whitelisted pools exercise the same fee/accrual path as
+			// on-chain execution instead of failing with "pendulum applier
+			// not configured". The applier reads geometry from the live
+			// FeedTracker and accrues against this simulation's ledger
+			// session, which is reverted at the end — nothing is committed.
+			if applier := r.StateEngine.PendulumApplier(); applier != nil {
+				ctxOpts = append(ctxOpts, contract_execution_context.WithPendulumApplier(applier))
+			}
 		}
 		ctxValue := contract_execution_context.New(
 			contract_execution_context.Environment{
@@ -734,6 +744,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 				PendulumOracle:       pendulumOracle,
 			},
 			int64(rcLimit), rc_system.FreeRcRemaining(r.StateEngine.RcSystem.NewSession(ledgerSession), caller, blockHeight), rcLimit*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
+			ctxOpts...,
 		)
 
 		// Unmarshal payload string
