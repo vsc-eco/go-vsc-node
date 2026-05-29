@@ -2817,6 +2817,11 @@ func (se *StateEngine) slashForEvidenceIfPolicyAllows(
 	if se == nil {
 		return ledgerSystem.LedgerResult{Ok: false, Msg: "state engine not configured"}
 	}
+	if !safetyslash.SafetySlashEnabled {
+		// Principal slashing temporarily disabled (see safetyslash.SafetySlashEnabled).
+		// Detectors still run and log; they just don't debit the consensus bond.
+		return ledgerSystem.LedgerResult{Ok: false, Msg: "safety slashing disabled"}
+	}
 	if !se.recordEvidenceAndShouldSlash(accountHive, kind, evidenceID, blockHeight) {
 		return ledgerSystem.LedgerResult{Ok: false, Msg: "duplicate evidence"}
 	}

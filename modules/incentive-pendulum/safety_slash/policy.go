@@ -23,6 +23,17 @@
 // corrected before maturity.
 package safetyslash
 
+// SafetySlashEnabled gates the principal (HIVE_CONSENSUS bond) slashing path.
+// When false, slashForEvidenceIfPolicyAllows returns a no-op result, so no
+// detector ever debits a bond and the downstream restitution/burn/reversal
+// machinery stays dormant. Detection logging and normal block validation are
+// unaffected. This is a COMPILE-TIME, consensus-critical gate: it is
+// deterministic only because every node runs the same build. Do NOT convert it
+// to a per-node runtime config — nodes disagreeing on this value would diverge
+// ledger state and fork the network. Temporarily false on mainnet while the
+// safety-slash path gets more testing; flip to true to re-enable.
+const SafetySlashEnabled = false
+
 // CorrelatedSlashCapBps is the maximum total principal slash in basis points
 // applied from one correlation group (e.g. same L1 tx or same block height),
 // similar in spirit to Ethereum's correlated attestation penalties.
