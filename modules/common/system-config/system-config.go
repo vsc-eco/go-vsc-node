@@ -234,7 +234,7 @@ func TestnetConfig() SystemConfig {
 			PendulumSeedEpoch: 554,
 			// Set to a future testnet height before rollout (same reindex-
 			// divergence rule as mainnet). 0 = disabled until then.
-			EvmAddressChecksumHeight: 0,
+			EvmAddressChecksumHeight: 3467200,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
