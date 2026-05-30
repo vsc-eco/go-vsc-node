@@ -9,7 +9,7 @@ This folder holds the **scope document**, the **formal math PDF**, and this READ
 
 **Code:** [`modules/incentive-pendulum`](../../modules/incentive-pendulum) in the `go-vsc-node` tree.
 
-> **The implementation supersedes `Magi.pdf`.** Equilibrium moved from \(s=0.5\) to **\(s=1.0\)** (\(T/V=1.5\), keeping \(E=\tfrac23T\)). Hard cliff is now **\(s \ge 3\)**; equilibrium split **60/40** node/LP; yield ratio **\(2s^2/(3-s)\)**; §9 redirect **direction corrected** (low \(s\)→LPs, high \(s\)→nodes); bands are **derived from `s_eq` + yield-ratio thresholds** in [`params.go`](../../modules/incentive-pendulum/params.go). Several file paths below are also stale from the earlier float→integer rewrite (`pendulum.go`→`pendulum_int.go`, `fees.go`→`fees_int.go`, `collateral.go`→`collateral_int.go`).
+> **The implementation supersedes `Magi.pdf`.** Equilibrium moved from \(s=0.5\) to **\(s=1.0\)** (\(T/V=1.5\), keeping \(E=\tfrac23T\)). Hard cliff is now **\(s \ge 3\)**; equilibrium split **60/40** node/LP; yield ratio **\(2s^2/(3-s)\)**; §9 redirect **direction corrected** (low \(s\)→LPs, high \(s\)→nodes); bands are **derived from `s_eq` + yield-ratio thresholds** in [`params.go`](../../modules/incentive-pendulum/params.go). The library is integer / basis-point throughout: the legacy float `pendulum.go` / `fees.go` / `collateral.go` and the float `dexfeed.go` bolt have been retired in favour of the `*_int.go` files, the `wasm` applier, and the `oracle` geometry computer.
 
 ---
 
@@ -26,15 +26,15 @@ Where the two differ (e.g. reward floors/ceilings), the implemented library foll
 
 | Topic (PDF section) | Implementation |
 |---------------------|----------------|
-| §1 Variables \(s,u,w,R,r\), E/T/V/P | [`pendulum.go`](../../modules/incentive-pendulum/pendulum.go), [`dexfeed.go`](../../modules/incentive-pendulum/dexfeed.go) |
-| §2 CLP fee \(x^2Y/(x+X)^2\) | `CLPFee` in [`fees.go`](../../modules/incentive-pendulum/fees.go) |
-| §3 CLP/total fee mix, pendulum share of fees | `PendulumFeeFraction`; micro-case test |
-| §5 Stabilizer \(m(s,r)\), cap, push 1.0 / 0.7 | `StabilizerMultiplier`, `QuoteSwapFees` |
+| §1 Variables \(s,u,w,R,r\), E/T/V/P | `SplitInputsInt` in [`pendulum_int.go`](../../modules/incentive-pendulum/pendulum_int.go); E/T/V/P/s computed in [`oracle/geometry.go`](../../modules/incentive-pendulum/oracle/geometry.go) |
+| §2 CLP fee \(x^2Y/(x+X)^2\) | `CLPFeeInt` in [`fees_int.go`](../../modules/incentive-pendulum/fees_int.go) |
+| §3 CLP/total fee mix, pendulum share of fees | `ApplySwapFees` (baseCLP + baseProtocol legs) in [`wasm/applier.go`](../../modules/incentive-pendulum/wasm/applier.go); `ProtocolFeeRateBps` in `fees_int.go` |
+| §5 Stabilizer \(m(s,r)\), cap, push 1.0 / 0.7 | `StabilizerMultiplierBps` in [`fees_int.go`](../../modules/incentive-pendulum/fees_int.go); applied by `ApplySwapFees` |
 | §6–§7 Split, yields, \(2s^2/(c-s)\) (\(c=3\)) | `SplitInt`, `YieldRatioBps`, tests |
-| §8 Table 2 behaviour | `TestTable2Behaviour` in [`pendulum_test.go`](../../modules/incentive-pendulum/pendulum_test.go) |
-| §9 Redirect *recommendation* (not execution) | `ProtocolFeeRedirectRecommended`, `ProtocolFeeRedirectToNodes` |
+| §8 Table 2 behaviour | `TestSplitInt_*` in [`pendulum_int_test.go`](../../modules/incentive-pendulum/pendulum_int_test.go); swap scenarios in [`wasm/applier_test.go`](../../modules/incentive-pendulum/wasm/applier_test.go) |
+| §9 Redirect *recommendation* (not execution) | `ProtocolFeeRedirectRecommendedBps`, `ProtocolFeeRedirectToNodesBps` in [`collateral_int.go`](../../modules/incentive-pendulum/collateral_int.go) |
 | Oracle participation slashing (window evidence) | `SlashParams`, `OracleEvidence`, `SlashBps` in [`slashing.go`](../../modules/incentive-pendulum/slashing.go) |
-| §11 Safety bands (cliff, ideal, safe, warning, extreme low) | `CollateralReport` in [`collateral.go`](../../modules/incentive-pendulum/collateral.go) |
+| §11 Safety bands (cliff, ideal, safe, warning, extreme low/high) | `CollateralReportBps` / `CollateralFromSVBps` in [`collateral_int.go`](../../modules/incentive-pendulum/collateral_int.go) |
 
 ---
 
@@ -46,7 +46,7 @@ Where the two differ (e.g. reward floors/ceilings), the implemented library foll
 | §9 **Redirect execution** | Booleans only; no ledger moves of protocol-fee revenue to starved side. |
 | §9 / §12 **Stabilizer surplus** | `SwapFeeQuote.StabilizerSurplus` is computed; no settlement policy for where surplus goes. |
 | **Table 1** (dollar scenarios) | Not reproduced as full numeric regression tests. |
-| **Consensus money** | All **float64**; no fixed-point or minor-unit rounding rules for chain state. |
+| **Consensus money** | Done: the library is integer / basis-point throughout (`*_int.go`, `big.Int` minor units). On-chain settlement rounding lives in [`settlement`](../../modules/incentive-pendulum/settlement) + the ledger, not in this math layer. |
 
 ---
 
@@ -54,9 +54,9 @@ Where the two differ (e.g. reward floors/ceilings), the implemented library foll
 
 | Topic | Implementation |
 |-------|----------------|
-| Split LP vs nodes from LP/stake geometry | `Split`, `PendulumBolt.Evaluate` |
-| Single-side HBD, vault aggregation \(V \approx 2\sum P_{\text{HBD}}\) | `PoolPendulumLiquidity`, `SumPendulumVault` |
-| Global pool eligibility (current) | `PendulumBolt` defaults to DAO-owner-only pools (`hive:vsc.dao`, normalized) |
+| Split LP vs nodes from LP/stake geometry | `SplitInt` in `pendulum_int.go`; driven by `settlement.CalculateSplitPreviewFixed` and the `wasm` `ApplySwapFees` |
+| Single-side HBD, vault aggregation \(V \approx 2\sum P_{\text{HBD}}\) | `GeometryComputer.Compute` (V = 2P) in [`oracle/geometry.go`](../../modules/incentive-pendulum/oracle/geometry.go) |
+| Global pool eligibility (current) | `WhitelistGetter` callback on the `wasm` `Applier` ([`wasm/applier.go`](../../modules/incentive-pendulum/wasm/applier.go)); only whitelisted contracts accrue |
 | Target **1.5×** overcollateral | Now the **equilibrium**: \(s_{eq}=1.0\) with \(E=\tfrac23T\) gives \(T/V=u/s_{eq}=1.5\). The pendulum drives toward it via the fee split (it is the equal-yield fixed point), rather than being a passed-in input. |
 
 ---
@@ -77,7 +77,7 @@ Where the two differ (e.g. reward floors/ceilings), the implemented library foll
 |-------|----------------|
 | Rolling witness signature window | [`oracle/window.go`](../../modules/incentive-pendulum/oracle/window.go) |
 | Trust: **≥4** signatures + feed update | `FeedTrust` in [`oracle/feed.go`](../../modules/incentive-pendulum/oracle/feed.go) |
-| Trusted quote mean, MA ring | `TrustedHivePrice`, `MovingAverageRing` |
+| Trusted quote mean, MA ring | `TrustedHivePriceBps`, `MovingAverageRing` |
 | Trusted running witness group (cap 20) + APR mode from properties | `RunningWitnessGroup`, `HBDAPRModeFromGroup` in [`oracle/properties.go`](../../modules/incentive-pendulum/oracle/properties.go) |
 | Hive block ingestion + `height % 100` tick | [`oracle/tracker.go`](../../modules/incentive-pendulum/oracle/tracker.go) updated from [`state_engine.go`](../../modules/state-processing/state_engine.go) (`ProcessBlock`); `StateEngine.PendulumFeedTracker()` |
 | Tick slashing evidence | `FeedTickSnapshot.WitnessSlashBps` and env key `pendulum.witness_slash_bps` |
@@ -91,24 +91,24 @@ Run from repository root:
 
 ```bash
 go test ./modules/incentive-pendulum/... -count=1
-go test ./modules/incentive-pendulum -fuzz=FuzzSplitConservesR -fuzztime=10s
 ```
 
 ### Package `pendulum` (`modules/incentive-pendulum`)
 
 | Test file | What it covers |
 |-----------|------------------|
-| [`pendulum_int_test.go`](../../modules/incentive-pendulum/pendulum_int_test.go) | 60/40 split at equilibrium \(s=1.0\); hard cliff \(s \ge 3\); conservation; `params_test.go` pins the derived band edges and the faithfulness check (\(s_{eq}=0.5\) reproduces the old \(c=1\) / 0.30–0.70 bands); stabilizer **\(m=1\)** at \(s=1.0\). |
-| [`property_test.go`](../../modules/incentive-pendulum/property_test.go) | **Conservation:** `FinalNodeShare + FinalPoolShare = R` over a grid; cliff case; **§7** `nodeYield/poolYield` vs `YieldRatio(s)`; **§5** charged total ≥ base subtotal, `AccrueToPendulumR == CLP`; `SumPendulumVault`; `PendulumBolt.Evaluate` with safe-growth \(s\); missing `T` handling; **`FuzzSplitConservesR`** on random valid inputs. |
+| [`pendulum_int_test.go`](../../modules/incentive-pendulum/pendulum_int_test.go) | 60/40 split at equilibrium \(s=1.0\); hard cliff \(s \ge 3\); conservation (`FinalNodeShare + FinalPoolShare = R`); degenerate-vault and invalid-input fallbacks. |
+| [`params_test.go`](../../modules/incentive-pendulum/params_test.go) | Cliff derivation \(c = 2s_{eq}^2 + s_{eq}\); the eight derived band edges (independent oracle table); yield-ratio round-trip; faithfulness check (\(s_{eq}=0.5\) reproduces the old \(c=1\) / 0.30–0.70 bands). |
+| [`fees_int_test.go`](../../modules/incentive-pendulum/fees_int_test.go) | `CLPFeeInt`; stabilizer **\(m=1\)** at \(s_{eq}=1.0\), grid of \(\lvert s-s_{eq}\rvert\) deviations, cap enforcement, overflow guards. |
 | [`slashing_test.go`](../../modules/incentive-pendulum/slashing_test.go) | Slashing schedule invariants: compliant witness = 0 bps, additive penalties (signature deficit/update/equivocation), and cap enforcement. |
 | [`collateral_int_test.go`](../../modules/incentive-pendulum/collateral_int_test.go) | Curve-derived band flags (`IdealZone`, `SafeGrowth`, `WarningZone`, `ExtremeLow`, `ExtremeHigh`, `UnderSecured`); corrected redirect direction; `EffectiveBondHBDInt` edge cases. |
-| [`integration_test.go`](../../modules/incentive-pendulum/integration_test.go) | End-to-end: signature window → `FeedTrust` → `TrustedHivePrice` → `MovingAverageRing` → `PendulumBolt.Evaluate` split conservation. |
+| [`integration_test.go`](../../modules/incentive-pendulum/integration_test.go) | `TestOracleIntegration`: signature window → `FeedTrust` → `TrustedHivePriceBps` → `MovingAverageRing` (integer oracle path; the float bolt-evaluate path is retired). |
 
 ### Package `oracle` (`modules/incentive-pendulum/oracle`)
 
 | Test file | What it covers |
 |-----------|------------------|
-| [`oracle_test.go`](../../modules/incentive-pendulum/oracle/oracle_test.go) | `WitnessSignatureWindow` ring eviction; `FeedTrust` thresholds; `TrustedHivePrice` filtering. |
+| [`oracle_test.go`](../../modules/incentive-pendulum/oracle/oracle_test.go) | `WitnessProductionWindow` ring eviction; `FeedTrust` thresholds; `TrustedHivePriceBps` filtering. |
 | [`movingavg_test.go`](../../modules/incentive-pendulum/oracle/movingavg_test.go) | `MovingAverageRing` mean over partial/full buffer, `Reset`, rejection of non-positive values. |
 
 ### Coverage gaps (intentional)

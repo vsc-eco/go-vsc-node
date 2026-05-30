@@ -140,7 +140,7 @@ func (g *GeometryComputer) Compute(in GeometryInputs) GeometryOutputs {
 	}
 
 	// s = V / E in bps. If V == 0 we leave s == 0 (cliff); the SDK applier
-	// detects V >= E to route everything to nodes.
+	// detects V >= c·E (c = CliffSBps) to route everything to nodes.
 	var sBps int64
 	if v > 0 {
 		sBps = mulDivSafe(v, intmath.BpsScale, e)
