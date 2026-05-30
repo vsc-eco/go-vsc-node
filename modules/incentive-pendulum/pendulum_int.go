@@ -24,20 +24,20 @@ type SplitInputsInt struct {
 type SplitOutputsInt struct {
 	FinalNodeShare *big.Int
 	FinalPoolShare *big.Int
-	UnderSecured   bool // s >= 1 (V >= E)
+	UnderSecured   bool // s >= c (V >= c·E)
 }
 
 // SplitInt is the integer-precision Split. It returns ok=false on invalid
-// inputs (nil, negative, or E/T <= 0). For V == 0 or V >= E it falls back to
-// 100% nodes (matching the float Split behaviour: cliff and degenerate-vault
-// branches both route everything to nodes). Otherwise it uses the closed form
+// inputs (nil, negative, or E/T <= 0). For V == 0 or V >= c·E it falls back to
+// 100% nodes (the under-secured cliff and degenerate-vault branches both route
+// everything to nodes). Otherwise it uses the closed form
 //
-//	denom         = T·V² + P·E·(E − V)
-//	FinalPoolShare = floor( R · P·E·(E − V) / denom )
+//	denom         = T·V² + P·E·(c·E − V)
+//	FinalPoolShare = floor( R · P·E·(c·E − V) / denom )
 //	FinalNodeShare = R − FinalPoolShare        (residual lands on node side)
 //
-// which is algebraically equivalent to the PDF formulas after clearing the
-// E²·V denominator.
+// where c = CliffSBps/BpsScale is the cliff ratio (see params.go). This is the
+// generalized PDF closed form; c = 1 recovers the original V ≥ E cliff.
 func SplitInt(in SplitInputsInt) (SplitOutputsInt, bool) {
 	out := SplitOutputsInt{}
 
@@ -51,8 +51,9 @@ func SplitInt(in SplitInputsInt) (SplitOutputsInt, bool) {
 		return out, false
 	}
 
-	// Hard cliff: V >= E.
-	if in.V.Cmp(in.E) >= 0 {
+	// Hard cliff: V >= c·E (under-secured).
+	cE := CliffTimesE(in.E)
+	if in.V.Cmp(cE) >= 0 {
 		out.UnderSecured = true
 		out.FinalNodeShare = new(big.Int).Set(in.R)
 		out.FinalPoolShare = new(big.Int)
@@ -66,25 +67,25 @@ func SplitInt(in SplitInputsInt) (SplitOutputsInt, bool) {
 		return out, true
 	}
 
-	// denom = T·V² + P·E·(E − V).  V > 0 and V < E here, so both terms are >= 0
-	// and denom is strictly positive once T > 0.
+	// denom = T·V² + P·E·(c·E − V).  V > 0 and V < c·E here, so both terms are
+	// >= 0 and denom is strictly positive once T > 0.
 	tvSquared := new(big.Int).Mul(in.V, in.V)
 	tvSquared.Mul(tvSquared, in.T) // T·V²
 
-	eMinusV := new(big.Int).Sub(in.E, in.V) // E − V > 0
+	cEMinusV := new(big.Int).Sub(cE, in.V) // c·E − V > 0
 	peTerm := new(big.Int).Mul(in.P, in.E)
-	peTerm.Mul(peTerm, eMinusV) // P·E·(E−V) >= 0
+	peTerm.Mul(peTerm, cEMinusV) // P·E·(c·E−V) >= 0
 
 	denom := new(big.Int).Add(tvSquared, peTerm)
 	if denom.Sign() == 0 {
-		// Only reachable when T·V² == 0 (impossible given T,V > 0) and P·E·(E−V) == 0.
+		// Only reachable when T·V² == 0 (impossible given T,V > 0) and P·E·(c·E−V) == 0.
 		// Defensive fallback — route to nodes.
 		out.FinalNodeShare = new(big.Int).Set(in.R)
 		out.FinalPoolShare = new(big.Int)
 		return out, true
 	}
 
-	// pool_share = floor( R · P·E·(E−V) / denom )
+	// pool_share = floor( R · P·E·(c·E−V) / denom )
 	poolShare := intmath.MulDivFloor(in.R, peTerm, denom)
 	// node_share = R − pool_share — gives the [0, 1) residual to the node side.
 	nodeShare := new(big.Int).Sub(in.R, poolShare)

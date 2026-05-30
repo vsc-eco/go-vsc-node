@@ -16,23 +16,11 @@ type CollateralReportBps struct {
 	SafeGrowth   bool
 	WarningZone  bool
 	ExtremeLow   bool
+	ExtremeHigh  bool
 
 	ProtocolRedirectRecommended bool
 	ProtocolRedirectToNodes     bool
 }
-
-// Band thresholds in bps (1.0 == 10_000).
-const (
-	bps_0_20 = int64(2_000)
-	bps_0_25 = int64(2_500)
-	bps_0_30 = int64(3_000)
-	bps_0_45 = int64(4_500)
-	bps_0_50 = int64(5_000)
-	bps_0_55 = int64(5_500)
-	bps_0_70 = int64(7_000)
-	bps_0_75 = int64(7_500)
-	bps_1_00 = int64(10_000)
-)
 
 // RatioSVBps returns s = V/E expressed in basis points (HBD base units cancel
 // in the ratio). Returns 0 if E <= 0 or V is nil/negative.
@@ -71,16 +59,20 @@ func EffectiveBondHBDInt(hiveStake *big.Int, hivePriceHBDBps, effectiveFractionB
 	return intmath.MulDivFloor(hiveStake, priceTimesFrac, scaleSquared)
 }
 
-// CollateralFromSVBps mirrors CollateralFromSV in basis-point form.
+// CollateralFromSVBps classifies the V/E ratio s into collateral bands. The
+// band edges are derived from the equilibrium target and the yield-ratio
+// thresholds (see params.go) — they are level sets of the node/LP yield curve,
+// naturally asymmetric around s_eq.
 func CollateralFromSVBps(sBps int64) CollateralReportBps {
 	r := CollateralReportBps{SBps: sBps}
-	if sBps >= bps_1_00 {
+	if sBps >= CliffSBps {
 		r.UnderSecured = true
 	}
-	r.IdealZone = sBps >= bps_0_45 && sBps <= bps_0_55
-	r.SafeGrowth = sBps >= bps_0_30 && sBps <= bps_0_70
-	r.WarningZone = sBps > bps_0_75 || sBps < bps_0_25
-	r.ExtremeLow = sBps < bps_0_20
+	r.IdealZone = sBps >= idealLoEdgeBps && sBps <= idealHiEdgeBps
+	r.SafeGrowth = sBps >= safeLoEdgeBps && sBps <= safeHiEdgeBps
+	r.WarningZone = sBps > warnHiEdgeBps || sBps < warnLoEdgeBps
+	r.ExtremeLow = sBps < extremeLoEdgeBps
+	r.ExtremeHigh = sBps > extremeHiEdgeBps
 	r.ProtocolRedirectRecommended = ProtocolFeeRedirectRecommendedBps(sBps)
 	if r.ProtocolRedirectRecommended {
 		r.ProtocolRedirectToNodes = ProtocolFeeRedirectToNodesBps(sBps)
@@ -88,18 +80,17 @@ func CollateralFromSVBps(sBps int64) CollateralReportBps {
 	return r
 }
 
-// ProtocolFeeRedirectRecommendedBps is true when |s − 0.5| > 0.2 (in bps,
-// a 2000-bps deviation from the equilibrium target).
+// ProtocolFeeRedirectRecommendedBps is the §9 trigger: true when s leaves the
+// safe-growth band (s < RedirectLoBps or s > RedirectHiBps). The band is
+// asymmetric around s_eq, so this is a two-sided bound, not a |s−s_eq| test.
 func ProtocolFeeRedirectRecommendedBps(sBps int64) bool {
-	d := sBps - bps_0_50
-	if d < 0 {
-		d = -d
-	}
-	return d > 2_000
+	return sBps < RedirectLoBps || sBps > RedirectHiBps
 }
 
-// ProtocolFeeRedirectToNodesBps is true when s < 0.3 (starved nodes). Caller
-// should only inspect this when ProtocolFeeRedirectRecommendedBps is true.
+// ProtocolFeeRedirectToNodesBps is true on EXCESS liquidity (s > RedirectHiBps):
+// route the protocol leg to nodes to shed liquidity. Below RedirectLoBps it is
+// false (liquidity starved → fund LPs). Inspect only when
+// ProtocolFeeRedirectRecommendedBps is true.
 func ProtocolFeeRedirectToNodesBps(sBps int64) bool {
-	return sBps < bps_0_30
+	return sBps > RedirectHiBps
 }

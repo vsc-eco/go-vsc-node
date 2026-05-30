@@ -4,13 +4,16 @@
 
 This document describes the **Magi incentive pendulum** implementation on branch **`pendulum`**: closed-form economics from the March 2026 PDF (“The Incentive Pendulum — Formalized Mathematics”), plus the **sole HIVE oracle** design (witness participation + moving average). **HBD is treated as \$1** for accounting. **No other protocol oracles** are used for pool assets; CLP pools price assets via **open-market** reserves and swap math.
 
+> **The implementation supersedes `Magi.pdf`.** The equilibrium target moved from \(s=0.5\) to **\(s=1.0\)** (so total-stake : liquidity \(T/V = 1.5\), keeping \(E=\tfrac23 T\)). Consequences: the hard cliff is now **\(s \ge 3\)** (\(V \ge 3E\)); the equilibrium split is **60/40** node/LP; the yield ratio is **\(2s^2/(3-s)\)**; the §9 protocol-fee redirect **direction is corrected** (starved liquidity → LPs, excess → nodes); and the collateral bands are **derived from `s_eq` + yield-ratio thresholds** (see [`params.go`](../modules/incentive-pendulum/params.go)) rather than hardcoded. The PDF describes the prior \(s=0.5\) model and is kept for historical reference.
+
 ## Code layout
 
 | Path | Purpose |
 |------|---------|
-| [`modules/incentive-pendulum/pendulum.go`](../modules/incentive-pendulum/pendulum.go) | \(s=V/E\), \(w=P/V\), closed-form split of \(R\) and yields (PDF §6); hard cliff \(s \ge 1\) |
-| [`modules/incentive-pendulum/fees.go`](../modules/incentive-pendulum/fees.go) | CLP fee \(x^2Y/(x+X)^2\), pendulum fee fraction (PDF §3), stabilizer \(m(s,r)\) (§5), protocol redirect helper (§9) |
-| [`modules/incentive-pendulum/collateral.go`](../modules/incentive-pendulum/collateral.go) | Collateral bands (PDF §11), `EffectiveBondHBD` (stake × sole oracle × fraction) |
+| [`modules/incentive-pendulum/params.go`](../modules/incentive-pendulum/params.go) | **Source of truth**: equilibrium `TargetSBps` + yield-ratio band thresholds; derives the cliff \(c\) and every band/redirect s-edge by inverting \(2s^2/(c-s)\) |
+| [`modules/incentive-pendulum/pendulum_int.go`](../modules/incentive-pendulum/pendulum_int.go) | \(s=V/E\), \(w=P/V\), closed-form split of \(R\) and yields (PDF §6); hard cliff \(s \ge c\) (\(V \ge cE\)) |
+| [`modules/incentive-pendulum/fees_int.go`](../modules/incentive-pendulum/fees_int.go) | CLP fee \(x^2Y/(x+X)^2\), pendulum fee fraction (PDF §3), stabilizer \(m(s,r)\) centered on `s_eq` (§5), protocol redirect helper (§9) |
+| [`modules/incentive-pendulum/collateral_int.go`](../modules/incentive-pendulum/collateral_int.go) | Collateral bands (curve-derived level sets), `EffectiveBondHBDInt` (stake × sole oracle × fraction) |
 | [`modules/incentive-pendulum/slashing.go`](../modules/incentive-pendulum/slashing.go) | Oracle participation slashing schedule (signature deficit + missing feed update + equivocation, capped) |
 | [`modules/incentive-pendulum/dexfeed.go`](../modules/incentive-pendulum/dexfeed.go) | **Bolt-on DEX/LP feed**: pool aggregation (`SumPendulumVault`), `QuoteSwapFees`, `PendulumBolt` + `NetworkSnapshot` / `BoltEvaluation` |
 | [`modules/incentive-pendulum/oracle/window.go`](../modules/incentive-pendulum/oracle/window.go) | Rolling window of per-block witness signers (default width **100**) |
@@ -35,10 +38,10 @@ DEX routers keep using **open-market** reserves for asset prices; the pendulum o
 
 ## Economics (summary)
 
-- **Inputs** (same unit as HBD minors with HBD = \$1): \(E\) effective bond, \(T\) total effective bond, \(V\) vault liquidity, \(P\) pooled HBD, \(R\) CLP fees to distribute, \(u \approx T/E\) (often 1.5).
-- **\(s = V/E\)**, **\(w = P/V\)** (if \(V=0\), \(w=0\)).
-- **\(s \ge 1\)**: all \(R\) to nodes; `poolYield = 0` (PDF §6.1).
-- **\(s < 1\)**: `denom = u s + w(1-s)`; `finalNodeShare`, `finalPoolShare`, `nodeYield`, `poolYield` per PDF §6.2.
+- **Inputs** (same unit as HBD minors with HBD = \$1): \(E\) effective bond, \(T\) total effective bond, \(V\) vault liquidity, \(P\) pooled HBD, \(R\) CLP fees to distribute, \(u = T/E = 1.5\).
+- **\(s = V/E\)**, **\(w = P/V\)** (if \(V=0\), \(w=0\)); **equilibrium at \(s = 1.0\)** (\(V = E\), equal node/LP yields).
+- **\(s \ge c\)** (cliff, \(c=3\)): all \(R\) to nodes; `poolYield = 0` (generalized PDF §6.1).
+- **\(s < c\)**: `denom = u s + w(c-s)`; `finalNodeShare`, `finalPoolShare`, `nodeYield`, `poolYield` per generalized PDF §6.2; yield ratio \(2s^2/(c-s)\).
 - **Fees**: protocol 8 bps + CLP; stabilizer multiplies total fee; pendulum pool receives the CLP layer per PDF §2–§3.
 
 ## Sole HIVE oracle
@@ -92,4 +95,4 @@ The following remain **out of scope** for full product integration:
 ## References
 
 - On-disk spec copy (workspace root): `Magi.pdf` / `Magi_extracted.txt` (parent folder when working from a full tree).
-- Product scope note: HackMD “MAGI INCENTIVE PENDULUM SCOPE” (bounded min/max splits there **differ** from the PDF; this code follows **PDF** closed-form rules, including **0% LP** at \(s \ge 1\)).
+- Product scope note: HackMD “MAGI INCENTIVE PENDULUM SCOPE” (bounded min/max splits there **differ** from the PDF; this code follows the **generalized** closed-form rules, including **0% LP** at \(s \ge c\) with \(c=3\)).

@@ -14,26 +14,25 @@ func biTest(s string) *big.Int {
 }
 
 func TestSplitInt_BasicMatchesPDF(t *testing.T) {
-	// Mirrors TestPendulumBoltEvaluate fixture in property_test.go but in base units.
-	// E = 10000 * 0.25 * 2/3 ≈ 1666.67 → use exact integer 5000/3 ≈ 1666 (we'll feed
-	// a clean integer geometry instead).
-	// Let s = 0.5: V = E. So pick E = 1_000_000, V = 500_000, P = 250_000, T = 1_500_000.
-	// u = T/E = 1.5, w = P/V = 0.5.
-	// denom = 1.5·0.5 + 0.5·0.5 = 1.0
-	// FinalNodeShare = R · 0.75 / 1.0; FinalPoolShare = R · 0.25 / 1.0.
+	// New equilibrium s = 1.0 (V = E). Pick E = 1000, V = 1000, T = 1500,
+	// P = 500 (w = P/V = ½), R = 1000. With c = 3:
+	//   cE   = 3000
+	//   denom = T·V² + P·E·(cE−V) = 1500·1e6 + 500·1000·2000 = 2.5e9
+	//   pool  = floor(R · 1e9 / 2.5e9) = 400; node = 1000 − 400 = 600.
+	// i.e. 60/40 at equilibrium — equal node/LP yields, since T/V = 1.5.
 	in := SplitInputsInt{
-		R: biTest("1000000"), // 1e6 base units
-		E: biTest("1000000"),
-		T: biTest("1500000"),
-		V: biTest("500000"),
-		P: biTest("250000"),
+		R: biTest("1000"),
+		E: biTest("1000"),
+		T: biTest("1500"),
+		V: biTest("1000"),
+		P: biTest("500"),
 	}
 	out, ok := SplitInt(in)
 	if !ok {
 		t.Fatal("expected ok")
 	}
-	wantNode := biTest("750000")
-	wantPool := biTest("250000")
+	wantNode := biTest("600")
+	wantPool := biTest("400")
 	if out.FinalNodeShare.Cmp(wantNode) != 0 {
 		t.Errorf("node = %s want %s", out.FinalNodeShare, wantNode)
 	}
@@ -41,7 +40,7 @@ func TestSplitInt_BasicMatchesPDF(t *testing.T) {
 		t.Errorf("pool = %s want %s", out.FinalPoolShare, wantPool)
 	}
 	if out.UnderSecured {
-		t.Error("unexpected cliff for s=0.5")
+		t.Error("unexpected cliff for s=1.0 (equilibrium)")
 	}
 }
 
@@ -67,33 +66,34 @@ func TestSplitInt_ConservesRExactly(t *testing.T) {
 	}
 }
 
-func TestSplitInt_HardCliff_VEqualsE(t *testing.T) {
+func TestSplitInt_HardCliff_AtCliff(t *testing.T) {
+	// New cliff is V >= 3E. s = 3.0 (V = 3E) is the exact cliff.
 	in := SplitInputsInt{
 		R: biTest("100000"),
 		E: biTest("1000"),
-		T: biTest("1500"),
-		V: biTest("1000"), // s = 1.0, exact cliff
-		P: biTest("500"),
+		T: biTest("4500"),
+		V: biTest("3000"), // s = 3.0, exact cliff (V = 3E)
+		P: biTest("1500"),
 	}
 	out, ok := SplitInt(in)
 	if !ok {
 		t.Fatal()
 	}
 	if !out.UnderSecured {
-		t.Fatal("expected cliff at V == E")
+		t.Fatal("expected cliff at V == 3E")
 	}
 	if out.FinalNodeShare.Cmp(in.R) != 0 || out.FinalPoolShare.Sign() != 0 {
 		t.Fatalf("expected (R, 0); got (%s, %s)", out.FinalNodeShare, out.FinalPoolShare)
 	}
 }
 
-func TestSplitInt_HardCliff_VGreaterThanE(t *testing.T) {
+func TestSplitInt_HardCliff_PastCliff(t *testing.T) {
 	in := SplitInputsInt{
 		R: biTest("100000"),
 		E: biTest("1000"),
-		T: biTest("3000"),
-		V: biTest("1500"), // s = 1.5
-		P: biTest("750"),
+		T: biTest("10500"),
+		V: biTest("3500"), // s = 3.5, past cliff
+		P: biTest("1750"),
 	}
 	out, ok := SplitInt(in)
 	if !ok {
@@ -104,6 +104,32 @@ func TestSplitInt_HardCliff_VGreaterThanE(t *testing.T) {
 	}
 	if out.FinalNodeShare.Cmp(in.R) != 0 || out.FinalPoolShare.Sign() != 0 {
 		t.Fatalf("got (%s, %s)", out.FinalNodeShare, out.FinalPoolShare)
+	}
+}
+
+func TestSplitInt_S15_PaysLPs(t *testing.T) {
+	// s = 1.5 (V = 1.5E) was a hard cliff in the old model (V ≥ E); under
+	// c = 3 it is a normal over-collateralized point that still pays LPs.
+	in := SplitInputsInt{
+		R: biTest("100000"),
+		E: biTest("1000"),
+		T: biTest("2250"),
+		V: biTest("1500"),
+		P: biTest("750"),
+	}
+	out, ok := SplitInt(in)
+	if !ok {
+		t.Fatal()
+	}
+	if out.UnderSecured {
+		t.Fatal("s=1.5 must not be a cliff under c=3")
+	}
+	if out.FinalPoolShare.Sign() <= 0 {
+		t.Fatalf("expected positive LP share at s=1.5, got %s", out.FinalPoolShare)
+	}
+	sum := new(big.Int).Add(out.FinalNodeShare, out.FinalPoolShare)
+	if sum.Cmp(in.R) != 0 {
+		t.Fatalf("conservation: node+pool=%s want R=%s", sum, in.R)
 	}
 }
 
